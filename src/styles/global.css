@@ -1,0 +1,52 @@
+/* 期刊风/仪器化主题：黑白灰 + 衬线标题 + 等宽数字。浅色为主，自动适配深色。 */
+:root {
+  --bg: #ffffff;
+  --surface: #f7f7f5;
+  --surface-2: #f0f0ed;
+  --text: #1a1a1a;
+  --text-muted: #6b6b66;
+  --text-faint: #9b9b95;
+  --border: #e2e2dd;
+  --border-strong: #c9c9c2;
+  --accent: #1a1a1a;
+  --ok: #1d7a52;
+  --warn: #9a6a00;
+  --danger: #a32d2d;
+  --font-sans: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  --font-serif: Georgia, "Times New Roman", "Songti SC", serif;
+  --font-mono: "Cascadia Code", Consolas, "SF Mono", "Roboto Mono", monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1c1c1a;
+    --surface: #232321;
+    --surface-2: #2a2a27;
+    --text: #ececea;
+    --text-muted: #a4a49e;
+    --text-faint: #74746f;
+    --border: #34342f;
+    --border-strong: #45453f;
+    --accent: #ececea;
+    --ok: #4caf82;
+    --warn: #d8a73a;
+    --danger: #e26a6a;
+  }
+}
+
+* { box-sizing: border-box; }
+html, body, #app { height: 100%; margin: 0; }
+body {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  color: var(--text);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+h1, h2, h3 { font-family: var(--font-serif); font-weight: 500; margin: 0; }
+.mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+input, select, button { font-family: inherit; font-size: inherit; color: inherit; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 0; }
+::-webkit-scrollbar-track { background: transparent; }

@@ -1,0 +1,36 @@
+{
+  "name": "satellite-sim-platform",
+  "version": "0.1.0",
+  "description": "卫星仿真平台 — 桌面端卫星链路预算与可视化（Electron + Vue3 + Cesium + SQLite）",
+  "author": "",
+  "license": "MIT",
+  "main": "out/main/main.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "smoke": "node packages/core/smoke-test.js",
+    "test": "node packages/core/test/accuracy.test.js",
+    "verify:services": "node scripts/verify-services.js",
+    "dist": "electron-vite build && electron-builder --win"
+  },
+  "dependencies": {
+    "cesium": "^1.142.0",
+    "docx": "^9.7.1",
+    "earcut": "^3.0.2",
+    "exceljs": "^4.4.0",
+    "pinia": "^2.1.7",
+    "three": "^0.184.0",
+    "topojson-client": "^3.1.0",
+    "vue": "^3.4.21"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.0.4",
+    "electron": "^31.0.2",
+    "electron-builder": "^24.13.3",
+    "electron-vite": "^2.3.0",
+    "vite": "^5.3.1",
+    "vite-plugin-cesium": "^1.2.23",
+    "vite-plugin-static-copy": "^1.0.6"
+  }
+}

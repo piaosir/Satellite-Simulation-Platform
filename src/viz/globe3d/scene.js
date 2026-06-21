@@ -1,0 +1,741 @@
+import * as THREE from 'three'
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
+import { Line2 } from 'three/addons/lines/Line2.js'
+import { LineSegments2 } from 'three/addons/lines/LineSegments2.js'
+import { LineGeometry } from 'three/addons/lines/LineGeometry.js'
+import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js'
+import { LineMaterial } from 'three/addons/lines/LineMaterial.js'
+import earcut from 'earcut'
+import { feature } from 'topojson-client'
+import topo from './data/countries-10m.json'
+import NAMES from './data/country-names-zh.json'
+import { CHINA_IDS, NO_LABEL_IDS } from './cnClaims.js'
+
+const RE = 6371
+
+function llaToVec(latDeg, lonDeg, altKm) {
+  const r = (RE + altKm) / RE
+  const phi = (90 - latDeg) * Math.PI / 180
+  const theta = (lonDeg + 180) * Math.PI / 180
+  return new THREE.Vector3(
+    -r * Math.sin(phi) * Math.cos(theta),
+    r * Math.cos(phi),
+    r * Math.sin(phi) * Math.sin(theta)
+  )
+}
+
+const LAND = ['#8fa89b', '#b0a98f', '#9fb0c0', '#c0a99f', '#a9b08f', '#9f9fb0', '#b8a0a0', '#90b0a8', '#b0b090', '#a0a8b8', '#bca890', '#98a0a8']
+const OCEAN = '#15426b'
+const CHINA = '#b85a52'   // 中国底色：降低饱和度的砖红（原 #c62f2f 太炸眼）
+const ICE = '#edf2f6'     // 极地冰盖：白色填充（格陵兰 304、南极 010）
+const ICE_IDS = new Set(['304', '010'])
+
+function centroidLonLat(geom) {
+  const polys = geom.type === 'Polygon' ? [geom.coordinates] : geom.coordinates
+  let best = null, bestLen = -1
+  for (const rings of polys) { const r = rings[0]; if (r && r.length > bestLen) { bestLen = r.length; best = r } }
+  if (!best) return null
+  let sx = 0, sy = 0
+  for (const p of best) { sx += p[0]; sy += p[1] }
+  return [sx / best.length, sy / best.length]
+}
+
+// 经度解缠：让环内相邻点经度差不超过 180°（消除跨 ±180° 的跳变），再整体平移到 [-180,180) 附近。
+// 不解缠的话，斐济/俄罗斯/南极洲等跨反子午线的多边形会在等距圆柱纹理里横向拉成长条。
+function unwrapRing(ring) {
+  const out = new Array(ring.length)
+  let prev = ring[0][0]
+  out[0] = [prev, ring[0][1]]
+  for (let i = 1; i < ring.length; i++) {
+    let lon = ring[i][0]
+    while (lon - prev > 180) lon -= 360
+    while (lon - prev < -180) lon += 360
+    out[i] = [lon, ring[i][1]]
+    prev = lon
+  }
+  let s = 0; for (const p of out) s += p[0]
+  const shift = -360 * Math.round((s / out.length) / 360)
+  if (shift) for (const p of out) p[0] += shift
+  return out
+}
+
+// 陆地填色：矢量几何（earcut 三角化 + 投影到球面），任何缩放级别都无限锐利、零虚化。
+// 大三角形投影后会塌陷成弦切入球内，故按经纬度自适应细分到 ≤MAXSEG° 再投影，紧贴球面。
+function buildLandMesh(features) {
+  const MAXSEG = 3            // 三角形最长边超过该度数就细分
+  const positions = [], colors = []
+  const col = new THREE.Color()
+
+  function pushVert(lon, lat) {
+    const v = llaToVec(lat, lon, 0)   // 半径 1，贴在海洋球(0.999)之上
+    positions.push(v.x, v.y, v.z)
+    colors.push(col.r, col.g, col.b)
+  }
+  const dist = (p, q) => Math.hypot(p[0] - q[0], p[1] - q[1])
+  const mid = (p, q) => [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2]
+  // 细分到每条边 ≤MAXSEG° 再投影。关键：是否切分由「边自身长度」决定（而非三角形），
+  // 相邻三角形共享边的端点/长度完全相同 -> 切分点一致 -> 无 T 形接缝（裂纹）。
+  function emitTri(a, b, c, depth) {
+    const sAB = dist(a, b) > MAXSEG, sBC = dist(b, c) > MAXSEG, sCA = dist(c, a) > MAXSEG
+    const n = (sAB ? 1 : 0) + (sBC ? 1 : 0) + (sCA ? 1 : 0)
+    if (n === 0 || depth >= 14) { pushVert(a[0], a[1]); pushVert(b[0], b[1]); pushVert(c[0], c[1]); return }
+    const d = depth + 1
+    if (n === 3) {
+      const mAB = mid(a, b), mBC = mid(b, c), mCA = mid(c, a)
+      emitTri(a, mAB, mCA, d); emitTri(mAB, b, mBC, d); emitTri(mCA, mBC, c, d); emitTri(mAB, mBC, mCA, d)
+      return
+    }
+    if (n === 1) {
+      if (sAB) { const m = mid(a, b); emitTri(a, m, c, d); emitTri(m, b, c, d) }
+      else if (sBC) { const m = mid(b, c); emitTri(b, m, a, d); emitTri(m, c, a, d) }
+      else { const m = mid(c, a); emitTri(c, m, b, d); emitTri(m, a, b, d) }
+      return
+    }
+    // n === 2：切两条边，分成 3 个三角形，未切的那条边保持整段
+    if (!sCA) { const m1 = mid(a, b), m2 = mid(b, c); emitTri(a, m1, m2, d); emitTri(a, m2, c, d); emitTri(m1, b, m2, d) }
+    else if (!sAB) { const m1 = mid(b, c), m2 = mid(c, a); emitTri(b, m1, m2, d); emitTri(b, m2, a, d); emitTri(m1, c, m2, d) }
+    else { const m1 = mid(c, a), m2 = mid(a, b); emitTri(c, m1, m2, d); emitTri(c, m2, b, d); emitTri(m1, a, m2, d) }
+  }
+  // 三角化一个多边形（rings = [外环, 洞...]），先解缠并把洞对齐到外环窗口
+  function addPolygon(rings) {
+    const uw = rings.map(unwrapRing)
+    const meanLon = (r) => { let s = 0; for (const p of r) s += p[0]; return s / r.length }
+    const om = meanLon(uw[0])
+    for (let i = 1; i < uw.length; i++) {
+      const k = Math.round((om - meanLon(uw[i])) / 360)
+      if (k) for (const p of uw[i]) p[0] += k * 360
+    }
+    const flat = [], holeIdx = []
+    for (let r = 0; r < uw.length; r++) {
+      if (r > 0) holeIdx.push(flat.length / 2)
+      for (const p of uw[r]) { flat.push(p[0], p[1]) }
+    }
+    const tri = earcut(flat, holeIdx)
+    for (let t = 0; t < tri.length; t += 3) {
+      const i0 = tri[t] * 2, i1 = tri[t + 1] * 2, i2 = tri[t + 2] * 2
+      emitTri([flat[i0], flat[i0 + 1]], [flat[i1], flat[i1 + 1]], [flat[i2], flat[i2 + 1]], 0)
+    }
+  }
+
+  features.forEach((f, idx) => {
+    const g = f.geometry
+    if (!g) return
+    const id = String(f.id)
+    col.set(CHINA_IDS.has(id) ? CHINA : ICE_IDS.has(id) ? ICE : LAND[idx % LAND.length])
+    const polys = g.type === 'Polygon' ? [g.coordinates] : g.coordinates
+    for (const rings of polys) addPolygon(rings)
+  })
+
+  const geo = new THREE.BufferGeometry()
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3))
+  return new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide }))
+}
+
+function makeLabelSprite(text, hpx, fill) {
+  const pad = 8, fs = 54   // 高分辨率纹理：放大后文字更锐利
+  const c = document.createElement('canvas')
+  let cx = c.getContext('2d')
+  cx.font = `${fs}px "Microsoft YaHei", sans-serif`
+  const w = Math.ceil(cx.measureText(text).width) + pad * 2
+  c.width = w; c.height = fs + pad * 2
+  cx = c.getContext('2d')
+  cx.font = `${fs}px "Microsoft YaHei", sans-serif`
+  cx.textBaseline = 'middle'; cx.textAlign = 'center'
+  cx.lineWidth = 5; cx.strokeStyle = 'rgba(0,0,0,0.85)'
+  cx.strokeText(text, c.width / 2, c.height / 2)
+  cx.fillStyle = fill || '#eef2f6'; cx.fillText(text, c.width / 2, c.height / 2)
+  const tex = new THREE.CanvasTexture(c)
+  tex.colorSpace = THREE.SRGBColorSpace
+  // depthTest 关：正面标签始终完整显示，不被球面裁切；背面由每帧半球剔除隐藏
+  const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, depthWrite: false, transparent: true }))
+  spr.scale.set((c.width / c.height) * hpx, hpx, 1)
+  spr.renderOrder = 10
+  return spr
+}
+
+// 国家「视觉大小」近似：最大环的经纬包围盒线度（按纬度余弦修正）。用来按国家大小定标签字号——
+// 大国字大、欧洲那种小国字小，全部显示也不会糊成一片。
+function featureExtent(geom) {
+  const polys = geom.type === 'Polygon' ? [geom.coordinates] : geom.coordinates
+  let best = null, bl = -1
+  for (const rings of polys) { const r = rings[0]; if (r && r.length > bl) { bl = r.length; best = r } }
+  if (!best) return 0
+  let minLon = 180, maxLon = -180, minLat = 90, maxLat = -90
+  for (const p of best) { if (p[0] < minLon) minLon = p[0]; if (p[0] > maxLon) maxLon = p[0]; if (p[1] < minLat) minLat = p[1]; if (p[1] > maxLat) maxLat = p[1] }
+  const cl = Math.max(Math.cos((minLat + maxLat) / 2 * Math.PI / 180), 0.1)
+  return Math.sqrt((maxLon - minLon) * cl * (maxLat - minLat))  // ~ 线度(度)
+}
+
+function buildLabels(features, lang) {
+  const group = new THREE.Group()
+  group.visible = false
+  for (const f of features) {
+    const id = String(f.id)
+    if (NO_LABEL_IDS.has(id)) continue
+    const rec = NAMES[id]
+    let zh = rec ? rec[0] : null
+    if (id === '156') zh = '中国'
+    if (id === '408') zh = '朝鲜'
+    if (id === '410') zh = '韩国'
+    if (!zh) continue   // 仅标注有中文名的国家（中/英两套用同一集合与位置）
+    let lon = rec && rec[1] != null ? rec[1] : null
+    let lat = rec && rec[2] != null ? rec[2] : null
+    if (lon == null || lat == null) { const c = centroidLonLat(f.geometry); if (!c) continue; lon = c[0]; lat = c[1] }
+    const en = (f.properties && f.properties.name) || zh   // 英文名取自 topojson
+    const name = lang === 'en' ? en : zh
+    // 字号随国家线度：小国（如欧洲诸国）更小，大国更大；夹在 [0.016, 0.030]
+    const ext = featureExtent(f.geometry)
+    const hpx = Math.max(0.016, Math.min(0.030, 0.012 + ext * 0.0016))
+    const spr = makeLabelSprite(name, hpx)
+    spr.position.copy(llaToVec(lat, lon, 25))
+    spr._dir = spr.position.clone().normalize()
+    group.add(spr)
+  }
+  return group
+}
+
+// 把各国多边形的所有环转成线段几何（贴在略高于球面处），作为「矢量轮廓」。
+// 纹理里的描边在放大后会糊；矢量线在任何缩放级别都保持锐利。
+// 距离抽稀：10m 海岸线点距 ~1km，远超所需；按 ~2.5km 抽稀，段数减半以上而肉眼无差。
+function decimateRing(ring, minD) {
+  if (ring.length < 3) return ring
+  const out = [ring[0]]; let last = ring[0]
+  for (let i = 1; i < ring.length - 1; i++) {
+    const p = ring[i]
+    if (Math.hypot(p[0] - last[0], p[1] - last[1]) >= minD) { out.push(p); last = p }
+  }
+  out.push(ring[ring.length - 1])
+  return out
+}
+function buildBorders(features) {
+  const pos = []
+  for (const f of features) {
+    const g = f.geometry
+    if (!g) continue
+    const polys = g.type === 'Polygon' ? [g.coordinates] : g.coordinates
+    for (const rings of polys) {
+      for (const ring0 of rings) {
+        const ring = decimateRing(ring0, 0.025)
+        for (let i = 0; i + 1 < ring.length; i++) {
+          // 抬高 0.04%（标准深度可分辨，视差仍小到看不出；depthWrite=false 保证不与填色 z-fight）
+          const a = llaToVec(ring[i][1], ring[i][0], 0).multiplyScalar(1.0004)
+          const b = llaToVec(ring[i + 1][1], ring[i + 1][0], 0).multiplyScalar(1.0004)
+          pos.push(a.x, a.y, a.z, b.x, b.y, b.z)
+        }
+      }
+    }
+  }
+  return pos   // 段端点坐标对，交给 fatSegments 画成可控宽度的粗线
+}
+
+// 矢量经纬网坐标（半径略低于国界线，使国界压在网格之上）
+function buildGraticule() {
+  const pos = []
+  const push = (lat, lon) => { const v = llaToVec(lat, lon, 0).multiplyScalar(1.0003); pos.push(v.x, v.y, v.z) }
+  for (let lat = -75; lat <= 75; lat += 15) {
+    for (let lon = -180; lon < 180; lon += 3) { push(lat, lon); push(lat, lon + 3) }
+  }
+  for (let lon = -180; lon < 180; lon += 15) {
+    for (let lat = -87; lat < 87; lat += 3) { push(lat, lon); push(lat + 3, lon) }
+  }
+  return pos
+}
+
+// 大洋标记：斜体浅蓝、半透明，区别于国家名
+function makeOceanLabel(text) {
+  const pad = 10, fs = 40
+  const c = document.createElement('canvas')
+  let cx = c.getContext('2d')
+  const font = `italic ${fs}px "Microsoft YaHei", sans-serif`
+  cx.font = font
+  const w = Math.ceil(cx.measureText(text).width) + pad * 2
+  c.width = w; c.height = fs + pad * 2
+  cx = c.getContext('2d')
+  cx.font = font
+  cx.textBaseline = 'middle'; cx.textAlign = 'center'
+  cx.lineWidth = 5; cx.strokeStyle = 'rgba(0,0,0,0.55)'
+  cx.strokeText(text, c.width / 2, c.height / 2)
+  cx.fillStyle = 'rgba(150,195,230,0.92)'; cx.fillText(text, c.width / 2, c.height / 2)
+  const tex = new THREE.CanvasTexture(c)
+  tex.colorSpace = THREE.SRGBColorSpace
+  const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, depthWrite: false, transparent: true }))
+  const hpx = 0.034
+  spr.scale.set((c.width / c.height) * hpx, hpx, 1)
+  spr.renderOrder = 9
+  return spr
+}
+
+// 几大洋（[中文, 英文, 经度, 纬度]）；太平洋/大西洋面积大，分东西两处各标一次
+const OCEANS = [
+  ['太平洋', 'Pacific Ocean', -150, 5], ['太平洋', 'Pacific Ocean', 175, -10],
+  ['大西洋', 'Atlantic Ocean', -35, 28], ['大西洋', 'Atlantic Ocean', -18, -25],
+  ['印度洋', 'Indian Ocean', 78, -28],
+  ['北冰洋', 'Arctic Ocean', 0, 85],
+  ['南大洋', 'Southern Ocean', 40, -62]
+]
+
+function buildOceanLabels(lang) {
+  const group = new THREE.Group()
+  group.visible = false
+  for (const [zh, en, lon, lat] of OCEANS) {
+    const spr = makeOceanLabel(lang === 'en' ? en : zh)
+    spr.position.copy(llaToVec(lat, lon, 25))
+    spr._dir = spr.position.clone().normalize()
+    group.add(spr)
+  }
+  return group
+}
+
+export function createGlobeScene(container) {
+  const w = container.clientWidth || 800, h = container.clientHeight || 600
+  // 用标准深度缓冲（保证 MSAA 抗锯齿生效，线条不闪）。各贴地线层用 depthWrite=false + renderOrder
+  // 分层，避免互相 z-fighting，故不再需要对数深度缓冲（它会让 gl_FragDepth 失效从而破坏 MSAA）。
+  const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' })
+  renderer.setSize(w, h)
+  // 清晰度：至少 3x 超采样，高 DPI 用原生，封顶 4x（MSAA 已恢复，3x 也不再闪）
+  renderer.setPixelRatio(Math.min(Math.max(window.devicePixelRatio || 1, 3), 4))
+  container.appendChild(renderer.domElement)
+
+  const scene = new THREE.Scene()
+  scene.background = new THREE.Color(0x070b12)
+  // near 0.1 / far 60：最近可视面距相机 0.15 不裁切，范围内标准深度精度充足
+  const camera = new THREE.PerspectiveCamera(42, w / h, 0.1, 60)
+  camera.position.set(0.4, 0.9, 3.0)
+
+  const controls = new OrbitControls(camera, renderer.domElement)
+  controls.enableDamping = true
+  controls.dampingFactor = 0.08
+  controls.minDistance = 1.15
+  controls.maxDistance = 16
+  controls.rotateSpeed = 0.5
+  controls.enablePan = false    // 关掉平移：右键留给“标点”，避免误平移
+  controls.enableZoom = false   // 自定义滚轮缩放（见下方 wheel）：指数步进 + 每帧缓动，手感更顺、不突兀
+  controls.autoRotate = true
+  controls.autoRotateSpeed = 0.5
+  // 拖动旋转才停自转（滚轮缩放不影响旋转，与 2D 星座地图一致）；停转时通知上层同步开关
+  let onAutoRotateOff = null
+  function stopAutoRotate() { if (controls.autoRotate) { controls.autoRotate = false; if (onAutoRotateOff) onAutoRotateOff() } }
+
+  // 滚轮缩放：维护一个「目标距离」，按指数步进（zoomTarget *= e^(deltaY·k)）——
+  // 乘性步进天然就是梯度：离地球近时每格走得少（精细），远时每格走得多（快速）。
+  // 每帧把实际距离向目标距离缓动逼近，连续顺滑；累积的滚动一次到位，不必狂滚。
+  let zoomTarget = camera.position.length()
+  renderer.domElement.addEventListener('wheel', (e) => {
+    e.preventDefault()
+    const factor = Math.exp(e.deltaY * 0.0018)   // 每格 deltaY≈±100 -> ~±20% 距离
+    zoomTarget = Math.max(controls.minDistance, Math.min(controls.maxDistance, zoomTarget * factor))
+  }, { passive: false })
+
+  let curW = w, curH = h
+
+  // ---- 粗线（Line2/LineSegments2）：线宽以像素为单位、与 DPR 无关，高分辨率下也清晰不变细 ----
+  const lineMats = new Set()
+  function regMat(m) { m.resolution.set(curW, curH); lineMats.add(m); return m }
+  // depthTest 开（被地球背面遮挡）、depthWrite 关（线之间不写深度 -> 不互相 z-fighting，靠 renderOrder 分层）
+  function fatSegments(flat, color, width, opacity, order) {
+    const g = new LineSegmentsGeometry(); g.setPositions(flat)
+    const m = regMat(new LineMaterial({ color, linewidth: width, transparent: true, opacity, worldUnits: false, depthWrite: false }))
+    const o = new LineSegments2(g, m); o.renderOrder = order || 0; return o
+  }
+  function fatStrip(vecs, color, width, opacity, order) {
+    const flat = []; for (const v of vecs) { flat.push(v.x, v.y, v.z) }
+    const g = new LineGeometry(); g.setPositions(flat)
+    const m = regMat(new LineMaterial({ color, linewidth: width, transparent: true, opacity, worldUnits: false, depthWrite: false }))
+    const o = new Line2(g, m); o.renderOrder = order || 0; return o
+  }
+
+  const features = feature(topo, topo.objects.countries).features
+  // 海洋：纯色球（半径 0.998，留足与陆地细分塌陷下限 ~0.9995 的间隙，标准深度下不 z-fighting）
+  scene.add(new THREE.Mesh(new THREE.SphereGeometry(0.998, 128, 128), new THREE.MeshBasicMaterial({ color: OCEAN })))
+  // 陆地：矢量三角网填色（零虚化，替代原 8192 纹理）
+  scene.add(buildLandMesh(features))
+
+  // 矢量国界/海岸线 + 矢量经纬网：粗线，放大/高分辨率下都锐利清晰
+  scene.add(fatSegments(buildGraticule(), 0xffffff, 0.8, 0.12, 1))
+  scene.add(fatSegments(buildBorders(features), 0x5b7088, 0.8, 0.9, 2))
+
+  // 国名/洋名：中、英两套（按需切换显隐），初始全隐
+  const labelsZh = buildLabels(features, 'zh'); scene.add(labelsZh)
+  const labelsEn = buildLabels(features, 'en'); scene.add(labelsEn)
+  const oceanZh = buildOceanLabels('zh'); scene.add(oceanZh)
+  const oceanEn = buildOceanLabels('en'); scene.add(oceanEn)
+  function setLabelMode(mode) {   // 'zh' | 'en' | 'off'
+    const zh = mode === 'zh', en = mode === 'en'
+    labelsZh.visible = zh; oceanZh.visible = zh
+    labelsEn.visible = en; oceanEn.visible = en
+  }
+
+  // 中国省界 + 省名（按需由上层注入数据）
+  let provinceBorders = null, provinceLabels = null
+  function setProvinces(data) {
+    if (provinceBorders || !data) return
+    const pos = []
+    for (const ring of (data.borders || [])) {
+      for (let i = 0; i + 1 < ring.length; i++) {
+        const a = llaToVec(ring[i][1], ring[i][0], 0).multiplyScalar(1.0005)
+        const b = llaToVec(ring[i + 1][1], ring[i + 1][0], 0).multiplyScalar(1.0005)
+        pos.push(a.x, a.y, a.z, b.x, b.y, b.z)
+      }
+    }
+    provinceBorders = fatSegments(pos, 0x9aa3b0, 1.3, 0.6, 3)
+    provinceBorders.visible = false; scene.add(provinceBorders)
+    provinceLabels = new THREE.Group(); provinceLabels.visible = false
+    for (const l of (data.labels || [])) {
+      // 香港/澳门很小且相邻，字号最小；直辖市（京津沪渝）面积小，字号也调小
+      const tiny = l.name === '香港' || l.name === '澳门'
+      const muni = l.name === '北京' || l.name === '上海' || l.name === '天津' || l.name === '重庆'
+      const hpx = tiny ? 0.007 : muni ? 0.013 : 0.02
+      const spr = makeLabelSprite(l.name, hpx, '#ffe6a8')
+      spr.position.copy(llaToVec(l.lat, l.lon, 25)); spr._dir = spr.position.clone().normalize()
+      provinceLabels.add(spr)
+    }
+    scene.add(provinceLabels)
+  }
+  function setProvincesVisible(v) { if (provinceBorders) provinceBorders.visible = !!v; if (provinceLabels) provinceLabels.visible = !!v }
+
+  // 选中高亮：金色圆环（与 2D 星座地图一致）。用 Sprite + 每帧反缩放成固定屏幕尺寸 ->
+  // 任何缩放级别都清晰看到选中的是哪颗；被地球挡住时隐藏。
+  function makeRingTexture() {
+    const s = 128, c = document.createElement('canvas')
+    c.width = c.height = s
+    const x = c.getContext('2d')
+    x.strokeStyle = '#ffd27a'; x.lineWidth = 9; x.shadowColor = 'rgba(0,0,0,0.6)'; x.shadowBlur = 4
+    x.beginPath(); x.arc(s / 2, s / 2, s / 2 - 12, 0, Math.PI * 2); x.stroke()
+    const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace
+    return t
+  }
+  const ringSpr = new THREE.Sprite(new THREE.SpriteMaterial({ map: makeRingTexture(), depthTest: false, depthWrite: false, transparent: true }))
+  ringSpr.renderOrder = 20
+  ringSpr.visible = false
+  scene.add(ringSpr)
+  let hlPos = null  // 选中星的世界坐标（null=未选中）
+
+  // 选中卫星几何：轨道圈（3D）、星下点轨迹（贴地）、覆盖足迹圈（贴地）。
+  // 球体不透明 + 默认深度测试 -> 背面线段被地球天然遮挡，无需手动分正/背面。
+  let orbitLine = null, trackLine = null, footLine = null
+  function disposeLine(l) { if (l) { scene.remove(l); l.geometry.dispose(); if (l.material) { lineMats.delete(l.material); l.material.dispose() } } }
+  function lineFromLLA(points, color, opacity, width) {
+    const pts = points.map((p) => llaToVec(p.lat, p.lon, p.altKm || 0))
+    return fatStrip(pts, color, width || 1.4, opacity, 4)
+  }
+  const LIFT = 12  // 轨迹/足迹抬离地表 ~12km，避免与球面 z-fighting
+  function setOrbit(points) {
+    disposeLine(orbitLine); orbitLine = null
+    if (points && points.length) { orbitLine = lineFromLLA(points, 0x6f9fc8, 0.75, 1.5); scene.add(orbitLine) }
+  }
+  function setGroundTrack(points) {
+    disposeLine(trackLine); trackLine = null
+    if (points && points.length) { trackLine = lineFromLLA(points.map((p) => ({ lat: p.lat, lon: p.lon, altKm: LIFT })), 0xc2a25e, 0.85, 1.6); scene.add(trackLine) }
+  }
+  function setFootprint(points) {
+    disposeLine(footLine); footLine = null
+    if (points && points.length) { footLine = lineFromLLA(points.map((p) => ({ lat: p.lat, lon: p.lon, altKm: LIFT })), 0x96d7f0, 0.95, 1.6); scene.add(footLine) }
+  }
+  function clearSelectionGeom() { setOrbit(null); setGroundTrack(null); setFootprint(null); setHighlight(null) }
+
+  // 旋转相机使指定方向正对视图（搜索定位时用），保持当前距离
+  function faceTo(vec) {
+    if (!vec) return
+    const dist = camera.position.length()
+    camera.position.copy(vec).normalize().multiplyScalar(dist)
+    controls.autoRotate = false
+    controls.update()
+  }
+  function setAutoRotate(v) { controls.autoRotate = !!v }
+  function setOnAutoRotateOff(fn) { onAutoRotateOff = fn }
+
+  // ===================== GEO 卫星覆盖（仿小程序卫星覆盖，移到 3D 地球） =====================
+  let covGroup = null
+  // 覆盖用小标签（波束名）：白字描边，depthTest 开 -> 背面被地球遮挡
+  function makeCovLabel(text, hpx, color) {
+    const fs = 50, pad = 8, c = document.createElement('canvas')   // 高分辨率纹理 + 较粗描边，放大更锐利
+    let x = c.getContext('2d'); x.font = `bold ${fs}px "Microsoft YaHei", sans-serif`
+    c.width = Math.ceil(x.measureText(text).width) + pad * 2; c.height = fs + pad * 2
+    x = c.getContext('2d'); x.font = `bold ${fs}px "Microsoft YaHei", sans-serif`; x.textBaseline = 'middle'; x.textAlign = 'center'
+    x.lineWidth = 7; x.strokeStyle = 'rgba(0,0,0,0.9)'; x.strokeText(text, c.width / 2, c.height / 2)
+    x.fillStyle = color || '#ffffff'; x.fillText(text, c.width / 2, c.height / 2)
+    const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace
+    const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: t, depthTest: true, depthWrite: false, transparent: true }))
+    const s = hpx || 0.03; spr.scale.set((c.width / c.height) * s, s, 1)
+    return spr
+  }
+  function clearCoverage() {
+    if (!covGroup) return
+    covGroup.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) { lineMats.delete(o.material); if (o.material.map) o.material.map.dispose(); o.material.dispose() } })
+    scene.remove(covGroup); covGroup = null
+  }
+  // spec: { lines:[{p:[[lon,lat]...], color, opacity?, closed?}], dots:[{lon,lat}], labels:[{lon,lat,text}], satLon, satBore:[lon,lat] }
+  function setCoverage(spec) {
+    clearCoverage()
+    if (!spec) return
+    const g = new THREE.Group()
+    for (const ln of (spec.lines || [])) {
+      if (!ln.p || ln.p.length < 2) continue
+      const pts = ln.p.map(([lon, lat]) => llaToVec(lat, lon, 0).multiplyScalar(1.0005))
+      if (ln.closed !== false) pts.push(pts[0].clone())
+      g.add(fatStrip(pts, ln.color, ln.width || 1.6, ln.opacity != null ? ln.opacity : 0.95, 6))
+    }
+    for (const d of (spec.dots || [])) {
+      const dot = new THREE.Mesh(new THREE.SphereGeometry(0.007, 10, 10), new THREE.MeshBasicMaterial({ color: 0xffffff }))
+      dot.position.copy(llaToVec(d.lat, d.lon, 0).multiplyScalar(1.0012)); g.add(dot)
+    }
+    for (const l of (spec.labels || [])) {
+      const spr = makeCovLabel(l.text, l.hpx, l.color)
+      spr.position.copy(llaToVec(l.lat, l.lon, l.alt != null ? l.alt : 130)); spr.renderOrder = 12; g.add(spr)
+    }
+    if (spec.satLon != null) {
+      const satPos = llaToVec(0, spec.satLon, 35786)
+      const m = new THREE.Mesh(new THREE.OctahedronGeometry(0.05), new THREE.MeshBasicMaterial({ color: 0xffb14a }))
+      m.position.copy(satPos); m.renderOrder = 12; g.add(m)
+      if (spec.satName) { const spr = makeCovLabel(spec.satName); spr.position.copy(llaToVec(3, spec.satLon, 35786)); spr.renderOrder = 13; g.add(spr) }
+      if (spec.satBore) g.add(fatStrip([satPos, llaToVec(spec.satBore[1], spec.satBore[0], 0)], 0xffb14a, 1.2, 0.35, 6))
+    }
+    covGroup = g; scene.add(g)
+  }
+  // 把视角转到某经纬度正对（覆盖加载后定位用）
+  function faceLonLat(lon, lat) { faceTo(llaToVec(lat || 0, lon, 0)) }
+
+  // ===================== 鼠标拾取经纬度 / 标记 / 轨迹 =====================
+  // 渲染坐标(半径1) -> 经纬度（llaToVec 的逆）
+  function vecToLatLon(p) {
+    const lat = 90 - Math.acos(Math.max(-1, Math.min(1, p.y))) * 180 / Math.PI
+    let lon = Math.atan2(p.z, -p.x) * 180 / Math.PI - 180
+    lon = ((lon % 360) + 540) % 360 - 180
+    return { lat, lon }
+  }
+  // 屏幕坐标 -> 地球表面经纬度（命中近侧半球），未命中返回 null
+  function pickGlobe(clientX, clientY) {
+    const r = renderer.domElement.getBoundingClientRect()
+    const ndcv = new THREE.Vector2(((clientX - r.left) / r.width) * 2 - 1, -((clientY - r.top) / r.height) * 2 + 1)
+    ray.setFromCamera(ndcv, camera)
+    const o = ray.ray.origin, d = ray.ray.direction
+    const b = 2 * o.dot(d), c = o.dot(o) - 1, disc = b * b - 4 * c
+    if (disc < 0) return null
+    const t = (-b - Math.sqrt(disc)) / 2
+    if (t < 0) return null
+    return vecToLatLon(o.clone().add(d.clone().multiplyScalar(t)))
+  }
+  let onHover = null, onRightClick = null
+  function setOnHover(fn) { onHover = fn }
+  function setOnRightClick(fn) { onRightClick = fn }
+  renderer.domElement.addEventListener('pointermove', (e) => { if (onHover) onHover(pickGlobe(e.clientX, e.clientY)) })
+  renderer.domElement.addEventListener('pointerleave', () => { if (onHover) onHover(null) })
+  renderer.domElement.addEventListener('contextmenu', (e) => { e.preventDefault(); if (onRightClick) onRightClick(pickGlobe(e.clientX, e.clientY)) })
+
+  // 地面站图标（J4：精致立体卡塞格伦天线——淡填充碟面 + 边缘高光 + 四脚馈源 + 叉臂座架 + 落影），共用一张贴图
+  const STATION_SVG = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'>" +
+    "<ellipse cx='32' cy='55' rx='10' ry='2' fill='#000000' opacity='0.22'/>" +
+    "<path d='M25 54 L29 44 M39 54 L35 44' stroke='#46566a' stroke-width='2' stroke-linecap='round' fill='none'/>" +
+    "<path d='M28 44 a 4 4 0 0 1 8 0 z' fill='#46566a'/><rect x='30.5' y='36' width='3' height='6' fill='#46566a'/>" +
+    "<g transform='rotate(-26 32 26)'>" +
+    "<ellipse cx='32' cy='26' rx='16.5' ry='11' fill='#eef3f7' stroke='#2f3a48' stroke-width='1.3'/>" +
+    "<ellipse cx='32' cy='26' rx='16.5' ry='11' fill='none' stroke='#ffffff' stroke-width='0.7' opacity='0.5'/>" +
+    "<ellipse cx='32' cy='26' rx='8' ry='5' fill='none' stroke='#8696a8' stroke-width='0.8'/>" +
+    "<path d='M23.5 19.5 L32 11.5 M40.5 19.5 L32 11.5 M27 31.5 L32 11.5 M37 31.5 L32 11.5' fill='none' stroke='#aebccb' stroke-width='0.9' stroke-linecap='round'/>" +
+    "<circle cx='32' cy='11.5' r='2.4' fill='#dfe7ee' stroke='#5d6e82' stroke-width='0.8'/></g></svg>"
+  let stationTex = null
+  function stationTexture() {
+    if (stationTex) return stationTex
+    stationTex = new THREE.Texture(); stationTex.colorSpace = THREE.SRGBColorSpace
+    const img = new Image(); img.onload = () => { stationTex.image = img; stationTex.needsUpdate = true }
+    img.src = 'data:image/svg+xml;base64,' + btoa(STATION_SVG)
+    return stationTex
+  }
+  function makeDot(hex) {
+    const s = 32, c = document.createElement('canvas'); c.width = c.height = s
+    const x = c.getContext('2d')
+    x.beginPath(); x.arc(16, 16, 9, 0, Math.PI * 2); x.fillStyle = hex; x.fill()
+    x.lineWidth = 3; x.strokeStyle = 'rgba(255,255,255,0.92)'; x.stroke()
+    const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace
+    return new THREE.Sprite(new THREE.SpriteMaterial({ map: t, depthTest: true, depthWrite: false, transparent: true }))
+  }
+
+  let markersGroup = null, trajGroup = null
+  function disposeGroup(grp) { if (grp) { grp.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) { lineMats.delete(o.material); if (o.material.map && o.material.map !== stationTex) o.material.map.dispose(); o.material.dispose() } }); scene.remove(grp) } }
+  // 文字标签：depthTest 关 + 半球剔除 -> 不会被地球边缘裁掉一半，背面整体隐藏
+  function labelSprite(text, lat, lon, color, centerY, px) {
+    const spr = makeCovLabel(text, 0.03, color || '#ffffff')
+    spr.material.depthTest = false
+    spr.center.set(0.5, centerY != null ? centerY : -0.35)   // 文字浮在标记上方
+    spr.position.copy(llaToVec(lat, lon, 0).multiplyScalar(1.0012))
+    spr._dir = spr.position.clone().normalize()
+    spr._px = px || 16; spr._ar = spr.scale.x / spr.scale.y; spr.renderOrder = 16
+    return spr
+  }
+  // points:[{lat,lon,label?}]  stations:[{lat,lon,name?}]
+  function setMarkers(points, stations) {
+    disposeGroup(markersGroup); markersGroup = null
+    const g = new THREE.Group()
+    for (const p of (points || [])) {
+      const dot = makeDot('#ffd24a'); dot.position.copy(llaToVec(p.lat, p.lon, 0).multiplyScalar(1.0012)); dot._px = 11; dot._ar = 1; dot.renderOrder = 15; g.add(dot)
+      if (p.label) g.add(labelSprite(p.label, p.lat, p.lon, '#ffffff', -0.35, 14))   // 坐标：白字、字号缩小
+    }
+    for (const s of (stations || [])) {
+      const st = new THREE.Sprite(new THREE.SpriteMaterial({ map: stationTexture(), depthTest: true, depthWrite: false, transparent: true }))
+      st.position.copy(llaToVec(s.lat, s.lon, 0).multiplyScalar(1.0012)); st.center.set(0.5, 0.08); st._px = 32; st._ar = 1; st.renderOrder = 15; g.add(st)
+      if (s.name) g.add(labelSprite(s.name, s.lat, s.lon, '#cfeaff', 1.15, 17))   // 名称放在地面站下方
+    }
+    markersGroup = g; scene.add(g)
+  }
+  function slerp(a, b, t) {
+    const d = Math.max(-1, Math.min(1, a.dot(b))), ang = Math.acos(d)
+    if (ang < 1e-6) return a.clone()
+    const s = Math.sin(ang)
+    return a.clone().multiplyScalar(Math.sin((1 - t) * ang) / s).add(b.clone().multiplyScalar(Math.sin(t * ang) / s))
+  }
+  // list:[{pts:[{lat,lon}], color, kind}]
+  function setTrajectories(list) {
+    disposeGroup(trajGroup); trajGroup = null
+    const g = new THREE.Group()
+    for (const tr of (list || [])) {
+      const pts = tr.pts || []
+      const verts = []
+      for (let i = 0; i + 1 < pts.length; i++) {
+        const a = llaToVec(pts[i].lat, pts[i].lon, 0), b = llaToVec(pts[i + 1].lat, pts[i + 1].lon, 0)
+        const steps = Math.max(2, Math.ceil(a.angleTo(b) / (2 * Math.PI / 180)))
+        for (let s = 0; s <= steps; s++) verts.push(slerp(a, b, s / steps).multiplyScalar(1.002))
+      }
+      if (verts.length > 1) g.add(fatStrip(verts, tr.color != null ? tr.color : 0xff5a5a, 2.2, 0.95, 7))
+      for (const p of pts) { const dot = makeDot(tr.kind === 'flight' ? '#5ad1ff' : '#ff9a5a'); dot.position.copy(llaToVec(p.lat, p.lon, 0).multiplyScalar(1.002)); dot._px = 8; dot._ar = 1; dot.renderOrder = 15; g.add(dot) }
+    }
+    trajGroup = g; scene.add(g)
+  }
+  // 标记/轨迹精灵每帧反缩放成固定屏幕尺寸；带 _dir 的文字标签做半球剔除（避免被地球裁切）
+  function rescaleMarkers() {
+    const tanH = Math.tan(camera.fov * 0.5 * Math.PI / 180) || 1
+    const cd = camera.position.clone().normalize()
+    const go = (grp) => {
+      if (!grp) return
+      for (const o of grp.children) {
+        if (o._dir) {   // 文字标签：近地平淡出，避免边缘跳变
+          const dot = o._dir.dot(cd)
+          if (dot <= 0.05) { o.visible = false; continue }
+          o.visible = true; o.material.opacity = dot >= 0.22 ? 1 : (dot - 0.05) / 0.17
+        }
+        if (o._px) { const dd = camera.position.distanceTo(o.position); const h = o._px * (2 * dd * tanH) / curH; o.scale.set(h * (o._ar || 1), h, 1) }
+      }
+    }
+    go(markersGroup); go(trajGroup)
+  }
+
+  let satPoints = null
+  function setSatellites(positions) {
+    if (satPoints) { scene.remove(satPoints); satPoints.geometry.dispose(); satPoints.material.dispose() }
+    const arr = new Float32Array(positions.length * 3)
+    for (let i = 0; i < positions.length; i++) {
+      const v = llaToVec(positions[i].lat, positions[i].lon, positions[i].altKm)
+      arr[i * 3] = v.x; arr[i * 3 + 1] = v.y; arr[i * 3 + 2] = v.z
+    }
+    const geo = new THREE.BufferGeometry()
+    geo.setAttribute('position', new THREE.BufferAttribute(arr, 3))
+    // 固定屏幕尺寸（不随距离缩小）：拉远地球变小时卫星仍清晰可见、可点
+    satPoints = new THREE.Points(geo, new THREE.PointsMaterial({ color: 0x9fd0ef, size: 3.2, sizeAttenuation: false }))
+    scene.add(satPoints)
+  }
+  function setHighlight(vec) { hlPos = vec ? vec.clone() : null; if (!hlPos) ringSpr.visible = false }
+  function setHighlightLLA(p) { setHighlight(p ? llaToVec(p.lat, p.lon, p.altKm) : null) }
+
+  // 拾取卫星：非拖拽的点击 -> 离光标最近、且未被地球遮挡的星点
+  const ray = new THREE.Raycaster()
+  let onPick = null
+  function setOnPick(fn) { onPick = fn }
+
+  // 相机到 P 的视线是否在到达 P 之前先穿过地球（即 P 在地球背面被挡住）
+  function occludedByGlobe(P) {
+    const C = camera.position
+    const dx = P.x - C.x, dy = P.y - C.y, dz = P.z - C.z
+    const a = dx * dx + dy * dy + dz * dz
+    const b = 2 * (C.x * dx + C.y * dy + C.z * dz)
+    const c = C.x * C.x + C.y * C.y + C.z * C.z - 1
+    const disc = b * b - 4 * a * c
+    if (disc <= 0) return false
+    const sq = Math.sqrt(disc), EPS = 1e-4
+    const t1 = (-b - sq) / (2 * a), t2 = (-b + sq) / (2 * a)
+    return (t1 > EPS && t1 < 1 - EPS) || (t2 > EPS && t2 < 1 - EPS)
+  }
+
+  let downX = 0, downY = 0
+  renderer.domElement.addEventListener('pointerdown', (e) => { downX = e.clientX; downY = e.clientY })
+  renderer.domElement.addEventListener('pointerup', (e) => {
+    // 拖动（旋转）-> 停自转、不当作点击
+    if (Math.abs(e.clientX - downX) + Math.abs(e.clientY - downY) > 6) { stopAutoRotate(); return }
+    if (!satPoints || !onPick) return
+    const r = renderer.domElement.getBoundingClientRect()
+    const v = new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1)
+    // 命中半径随相机距离缩放，保持屏幕上 ~14px 的固定手感（地球缩小时也好点）
+    const tanHalf = Math.tan(camera.fov * 0.5 * Math.PI / 180) || 1
+    const dist = camera.position.distanceTo(controls.target)
+    ray.params.Points.threshold = Math.max(0.01, Math.min(0.4, 14 * 2 * dist * tanHalf / curH))
+    ray.setFromCamera(v, camera)
+    const hits = ray.intersectObject(satPoints)
+    // 取离视线最近、且不在地球背面的星点
+    let best = null
+    for (const hit of hits) {
+      if (occludedByGlobe(hit.point)) continue
+      if (!best || hit.distanceToRay < best.distanceToRay) best = hit
+    }
+    if (best) onPick(best.index, best.point); else onPick(-1, null)
+  })
+
+  const camDir = new THREE.Vector3()
+  // 标签：近地平处用透明度平滑淡出（而非硬切换显隐），消除旋转时边缘的闪烁/跳变。
+  // dot>0.22 全显；0.05~0.22 线性淡出；<0.05 隐藏。
+  function fadeLabel(s, dot) {
+    if (dot <= 0.05) { s.visible = false; return }
+    s.visible = true
+    s.material.opacity = dot >= 0.22 ? 1 : (dot - 0.05) / 0.17
+  }
+  function updateLabels() {
+    camDir.copy(camera.position).normalize()
+    const cull = (grp) => { if (!grp || !grp.visible) return; for (const s of grp.children) fadeLabel(s, s._dir.dot(camDir)) }
+    cull(labelsZh); cull(labelsEn); cull(oceanZh); cull(oceanEn); cull(provinceLabels)
+  }
+
+  const zoomDir = new THREE.Vector3()
+  let raf = 0
+  function loop() {
+    controls.update()   // 旋转/阻尼（半径在此保持不变）
+    // 滚轮缩放缓动：把当前半径向 zoomTarget 逼近（0.18 的缓动系数 -> 顺滑且跟手）
+    const cur = camera.position.distanceTo(controls.target)
+    if (Math.abs(cur - zoomTarget) > 1e-4) {
+      const next = cur + (zoomTarget - cur) * 0.18
+      zoomDir.copy(camera.position).sub(controls.target).normalize()
+      camera.position.copy(controls.target).addScaledVector(zoomDir, next)
+    }
+    // 选中环：固定屏幕直径 ~24px，背面被地球挡住时隐藏
+    if (hlPos) {
+      const tanHalf = Math.tan(camera.fov * 0.5 * Math.PI / 180) || 1
+      const d = camera.position.distanceTo(hlPos)
+      const sz = 24 * (2 * d * tanHalf) / curH
+      ringSpr.position.copy(hlPos)
+      ringSpr.scale.set(sz, sz, 1)
+      ringSpr.visible = !occludedByGlobe(hlPos)
+    }
+    rescaleMarkers()
+    updateLabels()
+    renderer.render(scene, camera)
+    raf = requestAnimationFrame(loop)
+  }
+  loop()
+
+  function resize() {
+    const ww = container.clientWidth, hh = container.clientHeight
+    if (!ww || !hh) return
+    curW = ww; curH = hh
+    camera.aspect = ww / hh; camera.updateProjectionMatrix(); renderer.setSize(ww, hh)
+    for (const m of lineMats) m.resolution.set(ww, hh)   // 粗线宽度依赖分辨率
+  }
+  function destroy() {
+    cancelAnimationFrame(raf); controls.dispose(); renderer.dispose()
+    if (renderer.domElement.parentNode) renderer.domElement.parentNode.removeChild(renderer.domElement)
+  }
+
+  return {
+    setSatellites, setLabelMode, setHighlight, setHighlightLLA, setOnPick,
+    setOrbit, setGroundTrack, setFootprint, clearSelectionGeom,
+    setCoverage, clearCoverage, faceLonLat, setProvinces, setProvincesVisible,
+    setMarkers, setTrajectories, setOnHover, setOnRightClick,
+    faceTo, setAutoRotate, setOnAutoRotateOff, resize, destroy
+  }
+}
