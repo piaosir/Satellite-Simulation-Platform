@@ -2,7 +2,7 @@ import { defineStore } from 'pinia'
 
 export const useNavStore = defineStore('nav', {
   state: () => ({
-    current: 'link',
+    current: 'globe3d',
     pages: [
       { key: 'link', label: '链路预算', mark: '▦' },
       { key: 'constellation', label: '星座地图', mark: '◍' },

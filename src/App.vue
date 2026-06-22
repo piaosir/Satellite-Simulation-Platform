@@ -43,18 +43,6 @@ const currentLabel = computed(
     </header>
 
     <div class="body">
-      <aside class="sidenav">
-        <button
-          v-for="p in nav.pages"
-          :key="p.key"
-          class="navitem"
-          :class="{ active: nav.current === p.key }"
-          @click="nav.setCurrent(p.key)"
-        >
-          <span class="mark">{{ p.mark }}</span>{{ p.label }}
-        </button>
-      </aside>
-
       <main class="content">
         <component :is="currentComponent" :title="currentLabel" />
       </main>

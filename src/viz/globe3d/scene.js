@@ -150,6 +150,7 @@ function makeLabelSprite(text, hpx, fill) {
   // depthTest 关：正面标签始终完整显示，不被球面裁切；背面由每帧半球剔除隐藏
   const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, depthWrite: false, transparent: true }))
   spr.scale.set((c.width / c.height) * hpx, hpx, 1)
+  spr._base = spr.scale.clone()   // 基准尺寸（供地名字号缩放）
   spr.renderOrder = 10
   return spr
 }
@@ -170,9 +171,10 @@ function featureExtent(geom) {
 function buildLabels(features, lang) {
   const group = new THREE.Group()
   group.visible = false
+  const seen = new Set()   // 同一国家 id 只标一次（topojson 中澳大利亚等含本体+外岛多个 feature）
   for (const f of features) {
     const id = String(f.id)
-    if (NO_LABEL_IDS.has(id)) continue
+    if (NO_LABEL_IDS.has(id) || seen.has(id)) continue
     const rec = NAMES[id]
     let zh = rec ? rec[0] : null
     if (id === '156') zh = '中国'
@@ -190,7 +192,7 @@ function buildLabels(features, lang) {
     const spr = makeLabelSprite(name, hpx)
     spr.position.copy(llaToVec(lat, lon, 25))
     spr._dir = spr.position.clone().normalize()
-    group.add(spr)
+    group.add(spr); seen.add(id)
   }
   return group
 }
@@ -262,6 +264,7 @@ function makeOceanLabel(text) {
   const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, depthWrite: false, transparent: true }))
   const hpx = 0.034
   spr.scale.set((c.width / c.height) * hpx, hpx, 1)
+  spr._base = spr.scale.clone()
   spr.renderOrder = 9
   return spr
 }
@@ -365,6 +368,15 @@ export function createGlobeScene(container) {
     labelsZh.visible = zh; oceanZh.visible = zh
     labelsEn.visible = en; oceanEn.visible = en
   }
+  // 地名字号缩放：国家名/大洋名(cf) 与 省名(pf) 分开
+  let nameScaleC = 1, nameScaleP = 1
+  function applyNameScale(group, f) { if (group) group.traverse((c) => { if (c._base) c.scale.copy(c._base).multiplyScalar(f) }) }
+  function setNameScale(cf, pf) {
+    nameScaleC = cf || 1; nameScaleP = pf != null ? pf : nameScaleC
+    applyNameScale(labelsZh, nameScaleC); applyNameScale(labelsEn, nameScaleC)
+    applyNameScale(oceanZh, nameScaleC); applyNameScale(oceanEn, nameScaleC)
+    applyNameScale(provinceLabels, nameScaleP)
+  }
 
   // 中国省界 + 省名（按需由上层注入数据）
   let provinceBorders = null, provinceLabels = null
@@ -390,6 +402,7 @@ export function createGlobeScene(container) {
       spr.position.copy(llaToVec(l.lat, l.lon, 25)); spr._dir = spr.position.clone().normalize()
       provinceLabels.add(spr)
     }
+    applyNameScale(provinceLabels, nameScaleP)   // 套用当前省名字号
     scene.add(provinceLabels)
   }
   function setProvincesVisible(v) { if (provinceBorders) provinceBorders.visible = !!v; if (provinceLabels) provinceLabels.visible = !!v }
@@ -465,7 +478,7 @@ export function createGlobeScene(container) {
     covGroup.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) { lineMats.delete(o.material); if (o.material.map) o.material.map.dispose(); o.material.dispose() } })
     scene.remove(covGroup); covGroup = null
   }
-  // spec: { lines:[{p:[[lon,lat]...], color, opacity?, closed?}], dots:[{lon,lat}], labels:[{lon,lat,text}], satLon, satBore:[lon,lat] }
+  // spec: { lines:[{p:[[lon,lat]...], color, width?, opacity?, closed?}], dots:[{lon,lat}], bores:[{lon,lat,satLon}], labels:[{lon,lat,text,hpx?,color?,alt?}], sats:[{lon,name}], dotR? }
   function setCoverage(spec) {
     clearCoverage()
     if (!spec) return
@@ -476,20 +489,27 @@ export function createGlobeScene(container) {
       if (ln.closed !== false) pts.push(pts[0].clone())
       g.add(fatStrip(pts, ln.color, ln.width || 1.6, ln.opacity != null ? ln.opacity : 0.95, 6))
     }
+    // 波束中心 -> 所属卫星(GEO)的连线（多星时各成扇形；独立于选中/聚焦）
+    for (const b of (spec.bores || [])) {
+      if (b.satLon == null) continue
+      g.add(fatStrip([llaToVec(0, b.satLon, 35786), llaToVec(b.lat, b.lon, 0).multiplyScalar(1.0012)], 0xffb14a, 1.0, 0.3, 5))
+    }
+    const dotR = spec.dotR || 0.007
     for (const d of (spec.dots || [])) {
-      const dot = new THREE.Mesh(new THREE.SphereGeometry(0.007, 10, 10), new THREE.MeshBasicMaterial({ color: 0xffffff }))
+      const dot = new THREE.Mesh(new THREE.SphereGeometry(dotR, 10, 10), new THREE.MeshBasicMaterial({ color: 0xffffff }))
       dot.position.copy(llaToVec(d.lat, d.lon, 0).multiplyScalar(1.0012)); g.add(dot)
     }
     for (const l of (spec.labels || [])) {
       const spr = makeCovLabel(l.text, l.hpx, l.color)
       spr.position.copy(llaToVec(l.lat, l.lon, l.alt != null ? l.alt : 130)); spr.renderOrder = 12; g.add(spr)
     }
-    if (spec.satLon != null) {
-      const satPos = llaToVec(0, spec.satLon, 35786)
-      const m = new THREE.Mesh(new THREE.OctahedronGeometry(0.05), new THREE.MeshBasicMaterial({ color: 0xffb14a }))
-      m.position.copy(satPos); m.renderOrder = 12; g.add(m)
-      if (spec.satName) { const spr = makeCovLabel(spec.satName); spr.position.copy(llaToVec(3, spec.satLon, 35786)); spr.renderOrder = 13; g.add(spr) }
-      if (spec.satBore) g.add(fatStrip([satPos, llaToVec(spec.satBore[1], spec.satBore[0], 0)], 0xffb14a, 1.2, 0.35, 6))
+    // 卫星名称标签：贴在卫星正上方（sprite.center 上移，紧贴星点；不再画菱形本体，高亮由 selectSat 的环负责）
+    for (const s of (spec.sats || [])) {
+      if (s.lon == null || !s.name) continue
+      const spr = makeCovLabel(s.name)
+      spr.position.copy(llaToVec(0, s.lon, 35786))
+      spr.center.set(0.5, -0.45)
+      spr.renderOrder = 13; g.add(spr)
     }
     covGroup = g; scene.add(g)
   }
@@ -563,18 +583,19 @@ export function createGlobeScene(container) {
     spr._px = px || 16; spr._ar = spr.scale.x / spr.scale.y; spr.renderOrder = 16
     return spr
   }
-  // points:[{lat,lon,label?}]  stations:[{lat,lon,name?}]
-  function setMarkers(points, stations) {
+  // points:[{lat,lon,label?}]  stations:[{lat,lon,name?}]  sizes:{ptFont,stIcon,stFont}
+  function setMarkers(points, stations, sizes) {
+    const sz = sizes || {}, ptFont = sz.ptFont || 14, stIcon = sz.stIcon || 32, stFont = sz.stFont || 17
     disposeGroup(markersGroup); markersGroup = null
     const g = new THREE.Group()
     for (const p of (points || [])) {
       const dot = makeDot('#ffd24a'); dot.position.copy(llaToVec(p.lat, p.lon, 0).multiplyScalar(1.0012)); dot._px = 11; dot._ar = 1; dot.renderOrder = 15; g.add(dot)
-      if (p.label) g.add(labelSprite(p.label, p.lat, p.lon, '#ffffff', -0.35, 14))   // 坐标：白字、字号缩小
+      if (p.label) g.add(labelSprite(p.label, p.lat, p.lon, '#ffffff', -0.35, ptFont))   // 坐标：白字
     }
     for (const s of (stations || [])) {
       const st = new THREE.Sprite(new THREE.SpriteMaterial({ map: stationTexture(), depthTest: true, depthWrite: false, transparent: true }))
-      st.position.copy(llaToVec(s.lat, s.lon, 0).multiplyScalar(1.0012)); st.center.set(0.5, 0.08); st._px = 32; st._ar = 1; st.renderOrder = 15; g.add(st)
-      if (s.name) g.add(labelSprite(s.name, s.lat, s.lon, '#cfeaff', 1.15, 17))   // 名称放在地面站下方
+      st.position.copy(llaToVec(s.lat, s.lon, 0).multiplyScalar(1.0012)); st.center.set(0.5, 0); st._px = stIcon; st._ar = 1; st.renderOrder = 15; g.add(st)
+      if (s.name) g.add(labelSprite(s.name, s.lat, s.lon, '#cfeaff', 1.05, stFont))   // 名称紧贴地面站图标下方
     }
     markersGroup = g; scene.add(g)
   }
@@ -734,7 +755,7 @@ export function createGlobeScene(container) {
   return {
     setSatellites, setLabelMode, setHighlight, setHighlightLLA, setOnPick,
     setOrbit, setGroundTrack, setFootprint, clearSelectionGeom,
-    setCoverage, clearCoverage, faceLonLat, setProvinces, setProvincesVisible,
+    setCoverage, clearCoverage, faceLonLat, setProvinces, setProvincesVisible, setNameScale,
     setMarkers, setTrajectories, setOnHover, setOnRightClick,
     faceTo, setAutoRotate, setOnAutoRotateOff, resize, destroy
   }

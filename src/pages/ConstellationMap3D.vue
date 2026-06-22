@@ -1,8 +1,9 @@
 <script setup>
-import { ref, reactive, watch, onMounted, onBeforeUnmount } from 'vue'
+import { ref, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { cursor } from '../stores/cursor'
 defineOptions({ inheritAttrs: false })   // 不把父级传入的 title 落到根节点（去掉鼠标悬停的“星座3D”原生提示）
 import { createGlobeScene } from '../viz/globe3d/scene.js'
+import { createFlatCoverage } from '../viz/flatmap/flatCoverage.js'
 import sat from '../viz/constellation/satellite.js'
 import { parseOMMCsv, fetchGroupLiveOrSup } from '../viz/constellation/tle.js'
 
@@ -39,6 +40,10 @@ const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v))
 
 const el = ref(null)
 const fileInput = ref(null)
+const flatCanvas = ref(null)       // 平面覆盖图 canvas
+const flatView = ref(false)        // 平面图 / 球体 切换
+let flat = null                    // 平面渲染器实例
+let covGeom = { lines: [], dots: [], labels: [], sats: [] }   // 覆盖几何（3D 与 平面图共用）
 const groupIndex = ref(DEFAULT_GROUP)
 const status = ref('')
 const satCount = ref(0)     // 该组卫星总数
@@ -49,6 +54,7 @@ const autoRotate = ref(true)
 const nameMode = ref('off')   // 国名：'zh' | 'en' | 'off'
 const showProvinces = ref(false)
 let provincesLoaded = false
+let provincesData = null
 const timeOffset = ref(0)   // 分钟，0~1440（未来 24h）
 const timePct = ref(0)
 const keyword = ref('')
@@ -58,66 +64,115 @@ const selected = ref(null)
 const beam = ref('')
 const beamAuto = ref('')
 const beamLock = ref(false)
+const geoOpen = ref(false)         // 地名设置面板开关
 const apiOk = typeof window !== 'undefined' && !!(window.api && window.api.omm)
 const covApiOk = typeof window !== 'undefined' && !!(window.api && window.api.coverage)
 
-// ===================== 覆盖图（GEO 卫星，仿小程序卫星覆盖） =====================
+// ===================== 覆盖图（GEO 卫星，两级模型：卫星 → 批次） =====================
+// covItems: 已添加的卫星 [{ folder, type:'EIRP'|'GT', band:'all'|频段, batches:[batch] }]
+//   batch: { id, name, beams:[beamId], gains:[number], custom:'', mode:'gradient'|'solid'|'perGain', solid:'#hex', gainColors:{gain:'#hex'} }
 const covOpen = ref(false)        // 右侧覆盖面板开关
-const covSats = ref([])           // 索引：[{folder,displayName,lon,beams:[{band,beam,type,gains,file}...]}]
-const covSatFolder = ref('')
-const covBand = ref('all')        // 频段过滤
-const covType = ref('EIRP')       // EIRP / GT
-const selBeams = ref([])          // 选中波束 id（'band|beam'），可多选
-const selGains = ref([])          // 选中增益档位（数值）
-const customGain = ref('')        // 自定义增益（逗号分隔）
+const covSats = ref([])           // 索引：[{folder,displayName,satName,lon,beams:[{band,beam,type,gains,file}...]}]
+const covItems = ref([])          // 已添加卫星（两级结构）
+const covAddSel = ref('')         // 「添加卫星」下拉临时值
 const showBeamLabels = ref(true)
-const beamNames = reactive({})    // 波束 id -> 自定义显示名（覆盖默认）
+const beamLabelSize = ref(16)     // 波束名字号（6–32，内部映射为标签 hpx）
 const showBore = ref(true)        // 波束中心点
+const boreSize = ref(5)           // 波束中心点大小（1–12，映射球半径）
 const showContourLabels = ref(false) // 等值线数值标签
+const contourLabelSize = ref(12)  // 数值标签字号（2–20）
+const countryNameSize = ref(1)    // 国家名/大洋名字号倍率（0.6–2.0）
+const provNameSize = ref(1)       // 省名字号倍率（0.6–2.0）
 const elevText = ref('')          // 等仰角线，如 "5,10"
 const covStatus = ref('')
-const covLegend = ref(null)       // { gmin, gmax, type }
+const covLegend = ref([])         // [{ name, mode, gmin, gmax, type, solid }]
 let covLoaded = false
 const covCache = {}               // file -> 数据（避免重复加载）
+let covSeq = 0                    // 卫星/批次唯一 id
+const newCovId = () => 'c' + (++covSeq)
+let covColorCursor = 0           // 新批次默认配色游标
+const DEF_COLORS = [0xff5a5a, 0x5ad1ff, 0xffd24a, 0x7cff8a, 0xc78bff, 0xff9a5a, 0x66ddff, 0xff6fae]
 
 const clamp01 = (v) => Math.max(0, Math.min(1, v))
-function gainCss(t) { const h = (1 - clamp01(t)) * 240; return `hsl(${h},90%,55%)` }
-// 档位色块颜色：与地图等值线完全同一套取值（用已绘制的 gmin/gmax；单值时 t=1，与地图一致）
-function gainColorCss(g) {
-  const L = covLegend.value
-  if (!L) return gainCss(1)
-  const t = L.gmax > L.gmin ? (g - L.gmin) / (L.gmax - L.gmin) : 1
-  return gainCss(t)
-}
-// HSL(蓝→红) -> 0xRRGGBB（与 gainCss 同色，供 three 线条用）
+// HSL(蓝→红) -> 0xRRGGBB（按增益强弱渐变，供 three 线条用）
 function gainHex(t) {
   const h = (1 - clamp01(t)) * 240 / 360, s = 0.9, l = 0.55, a = s * Math.min(l, 1 - l)
   const f = (n) => { const k = (n + h * 12) % 12; return l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1)) }
   return (Math.round(f(0) * 255) << 16) | (Math.round(f(8) * 255) << 8) | Math.round(f(4) * 255)
 }
+const hexToCss = (n) => '#' + (n & 0xffffff).toString(16).padStart(6, '0')
+const cssToHex = (s) => { const n = parseInt(String(s || '').replace('#', ''), 16); return Number.isFinite(n) ? n : 0xff5a5a }
 const parseNums = (s) => String(s || '').split(/[,，\s]+/).map((x) => parseFloat(x)).filter((x) => Number.isFinite(x))
-const curSat = () => covSats.value.find((x) => x.folder === covSatFolder.value)
-function covBands() { const s = curSat(); if (!s) return []; return [...new Set(s.beams.filter((b) => b.type === covType.value).map((b) => b.band))] }
-function beamRows() {
-  const s = curSat(); if (!s) return []
+
+// ---- 两级模型查询辅助 ----
+const idxOf = (folder) => covSats.value.find((x) => x.folder === folder)
+function itemBands(it) { const s = idxOf(it.folder); if (!s) return []; return [...new Set(s.beams.filter((b) => b.type === it.type).map((b) => b.band))] }
+// 提取波束名里的第一个整数作为波束号（CS26 "1 拉萨"→1、CS19 "Beam No.10"→10；无号→Infinity）
+const beamNum = (s) => { const m = String(s).match(/\d+/); return m ? parseInt(m[0], 10) : Infinity }
+// 某卫星在其 type/band 过滤下的波束行（按波束号升序，无号者保持原序置后，并标 1-based 序号 seq）
+function beamRowsOf(it) {
+  const s = idxOf(it.folder); if (!s) return []
   const map = new Map()
   for (const b of s.beams) {
-    if (b.type !== covType.value) continue
-    if (covBand.value !== 'all' && b.band !== covBand.value) continue
+    if (b.type !== it.type) continue
+    if (it.band !== 'all' && b.band !== it.band) continue
     const id = b.band + '|' + b.beam
     if (!map.has(id)) map.set(id, { id, band: b.band, beam: b.beam, label: `${b.band}·${b.beam}`, file: b.file, gains: b.gains || [] })
   }
-  return [...map.values()]
+  const rows = [...map.values()]
+  rows.sort((a, b) => beamNum(a.beam) - beamNum(b.beam))   // Array.sort 稳定：同号/无号保持原序
+  rows.forEach((r, i) => { r.seq = i + 1 })
+  return rows
 }
-function unionGains() {
+// 搜索词若是纯序号语法（如 "1-62"、"1,3,5"、"1-10,20-30"）则返回序号集合，否则 null
+function parseSeqSet(q) {
   const set = new Set()
-  for (const r of beamRows()) if (selBeams.value.includes(r.id)) for (const g of r.gains) set.add(g)
+  for (const part of q.split(/[,，\s]+/)) {
+    if (!part) continue
+    const m = part.match(/^(\d+)\s*[-~]\s*(\d+)$/)
+    if (m) { const a = +m[1], b = +m[2]; for (let i = Math.min(a, b); i <= Math.max(a, b); i++) set.add(i) }
+    else if (/^\d+$/.test(part)) set.add(+part)
+    else return null   // 含非序号字符 -> 当作文字搜索
+  }
+  return set.size ? set : null
+}
+const beamRowGains = (it, id) => { const r = beamRowsOf(it).find((x) => x.id === id); return r ? r.gains : [] }
+// 按批次搜索词过滤波束行：纯序号语法（"1-62" 等）按序号选，否则按 label/beam 名（大小写不敏感）
+function filteredBeamRows(it, ba) {
+  const q = (ba.q || '').trim()
+  const rows = beamRowsOf(it)
+  if (!q) return rows
+  const seqSet = parseSeqSet(q)
+  if (seqSet) return rows.filter((r) => seqSet.has(r.seq))
+  const ql = q.toLowerCase()
+  return rows.filter((r) => r.label.toLowerCase().includes(ql) || r.beam.toLowerCase().includes(ql))
+}
+// 当前过滤结果是否已全选（用于全选/取消按钮文案）
+const allFilteredOn = (it, ba) => { const rows = filteredBeamRows(it, ba); return rows.length > 0 && rows.every((r) => ba.beams.includes(r.id)) }
+// 批次已选波束的增益档并集（供档位 chips）
+function batchGains(it, ba) {
+  const set = new Set()
+  for (const r of beamRowsOf(it)) if (ba.beams.includes(r.id)) for (const g of r.gains) set.add(g)
   return [...set].sort((a, b) => a - b)
 }
-function effectiveGainSet() {
-  const set = new Set(selGains.value)
-  for (const v of parseNums(customGain.value)) set.add(v)
+// 批次生效的增益档（含自定义输入）
+function batchEffGains(ba) {
+  const set = new Set(ba.gains)
+  for (const v of parseNums(ba.custom)) set.add(v)
   return set
+}
+// 单条等值线最终颜色（按批次统一配色模式）
+function contourColor(ba, g, gmin, gmax) {
+  if (ba.mode === 'solid') return cssToHex(ba.solid)
+  if (ba.mode === 'perGain') { const c = ba.gainColors && ba.gainColors[g]; if (c) return cssToHex(c) }
+  const t = gmax > gmin ? (g - gmin) / (gmax - gmin) : 1
+  return gainHex(t)
+}
+// 面板里某增益档的色块色（与地图同一套取值）
+function gainSwatchCss(ba, g) {
+  const arr = [...batchEffGains(ba)]
+  const gmin = arr.length ? Math.min(...arr) : 0, gmax = arr.length ? Math.max(...arr) : 1
+  return hexToCss(contourColor(ba, g, gmin, gmax))
 }
 
 let scene = null
@@ -382,14 +437,15 @@ function toggleLive() {
   else { if (timer) { clearInterval(timer); timer = null } baseTime = Date.now(); timeOffset.value = 0; timePct.value = 0; refreshPositions() }
 }
 function toggleRotate() { autoRotate.value = !autoRotate.value; scene && scene.setAutoRotate(autoRotate.value) }
-function setNameMode(m) { nameMode.value = m; scene && scene.setLabelMode(m) }
+function setNameMode(m) { nameMode.value = m; scene && scene.setLabelMode(m); if (flat) flat.setNameMode(m) }
 async function toggleProvinces() {
   showProvinces.value = !showProvinces.value
   if (showProvinces.value && !provincesLoaded) {
-    try { const mod = await import('../viz/globe3d/data/china-provinces.json'); scene && scene.setProvinces(mod.default || mod); provincesLoaded = true }
+    try { const mod = await import('../viz/globe3d/data/china-provinces.json'); provincesData = mod.default || mod; scene && scene.setProvinces(provincesData); if (flat) flat.setProvinces(provincesData); provincesLoaded = true }
     catch (e) { /* 省界数据缺失 */ }
   }
   scene && scene.setProvincesVisible(showProvinces.value)
+  if (flat) flat.setProvincesVisible(showProvinces.value)
 }
 
 // ===================== 覆盖图 =====================
@@ -404,38 +460,116 @@ async function toggleCoverage() {
   if (covOpen.value) { await ensureCovIndex(); redraw() }
   // 关闭对话框不清空：已绘制的覆盖图保留在地图上（与标记一致）
 }
+// 球体 <-> 平面覆盖图 切换
+async function toggleFlat() {
+  flatView.value = !flatView.value
+  if (!flatView.value) return
+  await ensureCovIndex(); redraw()
+  await nextTick()
+  if (!flat && flatCanvas.value) flat = createFlatCoverage(flatCanvas.value)
+  if (flat) {
+    flat.resize()
+    flat.setNameMode(nameMode.value)
+    if (provincesData) flat.setProvinces(provincesData)
+    flat.setProvincesVisible(showProvinces.value)
+    flat.setMarkers(
+      points.value.map((p) => ({ lat: p.lat, lon: p.lon, label: fmtLL(p.lat, p.lon) })),
+      stations.value.map((s) => ({ lat: s.lat, lon: s.lon, name: s.name })),
+      trajectories.value.map((t) => ({ pts: t.pts, kind: t.kind, color: t.kind === 'flight' ? 0x5ad1ff : 0xff6a4a }))
+    )
+    flat.setSizes({ beamFont: beamLabelSize.value, contourFont: contourLabelSize.value, dotSize: boreSize.value, showBore: showBore.value, nameScale: countryNameSize.value, provScale: provNameSize.value, ptFont: markPtFont.value, stIcon: stIconSize.value, stFont: stFontSize.value })
+    flat.setGeom(covGeom)
+  }
+}
 
-function onCovSat(e) {
-  covSatFolder.value = e.target.value
-  covBand.value = 'all'; selBeams.value = []; selGains.value = []; customGain.value = ''
-  Object.keys(beamNames).forEach((k) => delete beamNames[k])   // 清掉旧卫星的自定义名
+// ---- 批次 / 卫星 增删改 ----
+function newBatch() {
+  const color = hexToCss(DEF_COLORS[covColorCursor++ % DEF_COLORS.length])
+  return { id: newCovId(), name: '', q: '', beams: [], gains: [], custom: '', mode: 'gradient', solid: color, gainColors: {}, width: 1.6 }
+}
+function addCovSat() {
+  const folder = covAddSel.value; if (!folder) return
+  covAddSel.value = ''
+  if (covItems.value.find((i) => i.folder === folder)) return   // 已添加则跳过
+  const idx = idxOf(folder); if (!idx) return
+  covItems.value.push({ id: newCovId(), folder, type: 'EIRP', band: 'all', batches: [newBatch()] })
   redraw()
 }
-function onCovBand(e) {
-  covBand.value = e.target.value
-  const ids = beamRows().map((r) => r.id)
-  selBeams.value = selBeams.value.filter((id) => ids.includes(id))
-  selGains.value = unionGains()
+function removeCovSat(it) { const i = covItems.value.indexOf(it); if (i >= 0) covItems.value.splice(i, 1); redraw() }
+function setItemType(it, t) {
+  if (it.type === t) return
+  it.type = t; it.band = 'all'
+  for (const ba of it.batches) { ba.beams = []; ba.gains = [] }
   redraw()
 }
-function setType(t) { if (covType.value === t) return; covType.value = t; selBeams.value = []; selGains.value = []; redraw() }
-function toggleBeam(id) {
-  const i = selBeams.value.indexOf(id)
-  if (i >= 0) selBeams.value.splice(i, 1); else selBeams.value.push(id)
-  selGains.value = unionGains()   // 选择变化 -> 增益档位默认全选
+function onItemBand(it, e) {
+  it.band = e.target.value
+  const ids = beamRowsOf(it).map((r) => r.id)
+  for (const ba of it.batches) { ba.beams = ba.beams.filter((id) => ids.includes(id)); ba.gains = batchGains(it, ba) }
   redraw()
 }
-function allBeams(on) { selBeams.value = on ? beamRows().map((r) => r.id) : []; selGains.value = unionGains(); redraw() }
-function toggleGain(g) {
-  const i = selGains.value.indexOf(g)
-  if (i >= 0) selGains.value.splice(i, 1); else selGains.value.push(g)
+function addBatch(it) { it.batches.push(newBatch()); redraw() }
+function removeBatch(it, ba) { const i = it.batches.indexOf(ba); if (i >= 0) it.batches.splice(i, 1); redraw() }
+function setBatchName(it, ba, e) { ba.name = e.target.value }
+function focusCovSat(it) { const idx = idxOf(it.folder); if (idx && idx.lon != null) { scene.faceLonLat(idx.lon, 0); autoRotate.value = false } }
+
+// 批次内设置统一作用于全部波束。增删波束时【保留已选增益档】（新增的波束并入其档，删除的仅去掉失效档）
+function toggleBatchBeam(it, ba, id) {
+  const i = ba.beams.indexOf(id)
+  if (i >= 0) {
+    ba.beams.splice(i, 1)
+    const all = new Set(batchGains(it, ba))
+    ba.gains = ba.gains.filter((g) => all.has(g))                                  // 删波束：保留已选，仅去掉已不可选的档
+  } else {
+    ba.beams.push(id)
+    ba.gains = [...new Set([...ba.gains, ...beamRowGains(it, id)])].sort((a, b) => a - b)   // 加波束：并入新档，保留已选
+  }
   redraw()
 }
-function allGains(on) { selGains.value = on ? unionGains() : []; redraw() }
-function onCustomGain(e) { customGain.value = e.target.value; redraw() }
+function onBatchQuery(it, ba, e) { ba.q = e.target.value }   // 仅过滤波束列表，无需重绘
+// 全选/取消：作用于【当前过滤结果】，可多次累加，便于在大量波束里分批多选
+function allBatchBeams(it, ba, on) {
+  const rows = filteredBeamRows(it, ba)
+  if (on) {
+    const bset = new Set(ba.beams), gset = new Set(ba.gains)
+    for (const r of rows) { bset.add(r.id); for (const g of r.gains) gset.add(g) }
+    ba.beams = [...bset]; ba.gains = [...gset].sort((a, b) => a - b)
+  } else {
+    const rem = new Set(rows.map((r) => r.id))
+    ba.beams = ba.beams.filter((id) => !rem.has(id))
+    const all = new Set(batchGains(it, ba))
+    ba.gains = ba.gains.filter((g) => all.has(g))
+  }
+  redraw()
+}
+// 反选：对当前过滤结果取反
+function invertBatchBeams(it, ba) {
+  const rows = filteredBeamRows(it, ba)
+  const sel = new Set(ba.beams), gset = new Set(ba.gains)
+  for (const r of rows) { if (sel.has(r.id)) sel.delete(r.id); else { sel.add(r.id); for (const g of r.gains) gset.add(g) } }
+  ba.beams = [...sel]
+  const all = new Set(batchGains(it, ba))
+  ba.gains = [...gset].filter((g) => all.has(g)).sort((a, b) => a - b)
+  redraw()
+}
+function toggleBatchGain(it, ba, g) { const i = ba.gains.indexOf(g); if (i >= 0) ba.gains.splice(i, 1); else ba.gains.push(g); redraw() }
+function allBatchGains(it, ba, on) { ba.gains = on ? batchGains(it, ba) : []; redraw() }
+function onBatchCustom(it, ba, e) { ba.custom = e.target.value; redraw() }
+function setBatchMode(it, ba, m) { if (ba.mode === m) return; ba.mode = m; redraw() }
+function onBatchSolid(it, ba, e) { ba.solid = e.target.value; redraw() }
+function onGainColor(it, ba, g, e) { ba.gainColors[g] = e.target.value; redraw() }
+function onBatchWidth(it, ba, e) { ba.width = Number(e.target.value); redraw() }
+
 function toggleBeamLabels() { showBeamLabels.value = !showBeamLabels.value; redraw() }
-const selectedBeamRows = () => beamRows().filter((r) => selBeams.value.includes(r.id))
-function setBeamName(id, v) { beamNames[id] = v; redraw() }
+function setBeamFont(e) { beamLabelSize.value = Number(e.target.value); redraw() }
+function setBoreSize(e) { boreSize.value = Number(e.target.value); redraw() }
+function setContourSize(e) { contourLabelSize.value = Number(e.target.value); redraw() }
+function applyNameScale() { if (scene) scene.setNameScale(countryNameSize.value, provNameSize.value); if (flat) flat.setSizes({ nameScale: countryNameSize.value, provScale: provNameSize.value }) }
+function setCountryNameSize(e) { countryNameSize.value = Number(e.target.value); applyNameScale() }
+function setProvNameSize(e) { provNameSize.value = Number(e.target.value); applyNameScale() }
+function setPtFont(e) { markPtFont.value = Number(e.target.value); syncMarkers() }
+function setStIcon(e) { stIconSize.value = Number(e.target.value); syncMarkers() }
+function setStFont(e) { stFontSize.value = Number(e.target.value); syncMarkers() }
 function toggleBore() { showBore.value = !showBore.value; redraw() }
 function toggleContourLabels() { showContourLabels.value = !showContourLabels.value; redraw() }
 function applyElev(e) { elevText.value = e.target.value; redraw() }
@@ -443,15 +577,16 @@ function applyElev(e) { elevText.value = e.target.value; redraw() }
 // 等仰角线：GEO 卫星(赤道, satLon)下，仰角 El 对应地心角 γ=acos(k·cosEl)−El（k=Re/Rs）。
 // 等仰角线 = 以星下点(0,satLon)为心、角半径 γ 的地表小圆。
 function elevationLines() {
-  const s = curSat(); if (!s || s.lon == null) return []
+  const els = parseNums(elevText.value); if (!els.length || !covItems.value.length) return []
   const Re = 6378.137, Rs = 42164.0, k = Re / Rs, out = []
-  for (const el of parseNums(elevText.value)) {
+  const lons = [...new Set(covItems.value.map((it) => { const s = idxOf(it.folder); return s ? s.lon : null }).filter((v) => v != null))]
+  for (const lon of lons) for (const el of els) {
     if (!(el > 0 && el < 90)) continue
     const elR = el * Math.PI / 180, cosElk = k * Math.cos(elR)
     if (Math.abs(cosElk) > 1) continue
     const gamma = Math.acos(cosElk) - elR
     if (gamma <= 0 || gamma >= Math.PI / 2) continue
-    out.push({ p: circleLonLatArr(0, s.lon, gamma, 160), color: 0x66ddff, opacity: 0.9 })
+    out.push({ p: circleLonLatArr(0, lon, gamma, 160), color: 0x66ddff, opacity: 0.9 })
   }
   return out
 }
@@ -476,48 +611,51 @@ let redrawSeq = 0
 async function redraw() {
   if (!scene) return
   const seq = ++redrawSeq
-  const s = curSat()
-  const chosen = s ? beamRows().filter((r) => selBeams.value.includes(r.id)) : []
-  // 加载所选波束数据（带缓存）
-  if (chosen.length) covStatus.value = '加载覆盖…'
-  const datas = []
-  for (const r of chosen) {
-    try { if (!covCache[r.file]) covCache[r.file] = await window.api.coverage.get(r.file); datas.push({ r, d: covCache[r.file] }) }
-    catch (e) { /* skip */ }
-  }
-  if (seq !== redrawSeq) return   // 已被更新的重绘取代
-  const eff = effectiveGainSet()   // 选中的增益档位（含自定义）；空=不画等值线
-  const allG = []
-  for (const { d } of datas) for (const c of d.contours) if (eff.has(c.g)) allG.push(c.g)
-  const gmin = allG.length ? Math.min(...allG) : 0, gmax = allG.length ? Math.max(...allG) : 1
-  const lines = [], dots = [], labels = []
-  for (const { r, d } of datas) {
-    for (const c of d.contours) {
-      if (!eff.has(c.g)) continue
-      const t = gmax > gmin ? (c.g - gmin) / (gmax - gmin) : 1
-      lines.push({ p: c.p, color: gainHex(t) })
-      // 等值线数值标签：放在该等值线最北端的点上，颜色与线一致
-      if (showContourLabels.value && c.p.length) {
-        let top = c.p[0]; for (const pt of c.p) if (pt[1] > top[1]) top = pt
-        labels.push({ lon: top[0], lat: top[1], text: String(c.g), hpx: 0.022, color: '#ffffff', alt: 50 })
+  const lines = [], dots = [], labels = [], sats = [], bores = [], legend = []
+  let loading = false
+  for (const it of covItems.value) {
+    const idx = idxOf(it.folder); if (!idx) continue
+    sats.push({ lon: idx.lon, name: idx.displayName })
+    const rowById = new Map(beamRowsOf(it).map((r) => [r.id, r]))
+    for (const ba of it.batches) {
+      const eff = batchEffGains(ba)   // 批次统一生效增益档；空=不画等值线
+      // 加载该批次波束数据（带缓存）
+      const datas = []
+      for (const id of ba.beams) {
+        const r = rowById.get(id); if (!r) continue
+        try {
+          if (!covCache[r.file]) { loading = true; covStatus.value = '加载覆盖…'; covCache[r.file] = await window.api.coverage.get(r.file) }
+          datas.push({ r, d: covCache[r.file] })
+        } catch (e) { /* skip */ }
       }
-    }
-    if (showBore.value) for (const b of (d.bore || [])) dots.push({ lon: b[0], lat: b[1] })
-    if (showBeamLabels.value && d.bore && d.bore[0]) {
-      const nm = beamNames[r.id]
-      labels.push({ lon: d.bore[0][0], lat: d.bore[0][1], text: (nm && nm.trim()) ? nm : r.beam })
+      if (seq !== redrawSeq) return   // 已被更新的重绘取代
+      const allG = []
+      for (const { d } of datas) for (const c of d.contours) if (eff.has(c.g)) allG.push(c.g)
+      const gmin = allG.length ? Math.min(...allG) : 0, gmax = allG.length ? Math.max(...allG) : 1
+      for (const { r, d } of datas) {
+        for (const c of d.contours) {
+          if (!eff.has(c.g)) continue
+          lines.push({ p: c.p, color: contourColor(ba, c.g, gmin, gmax), width: ba.width })
+          if (showContourLabels.value && c.p.length) {
+            let top = c.p[0]; for (const pt of c.p) if (pt[1] > top[1]) top = pt
+            labels.push({ lon: top[0], lat: top[1], text: String(c.g), hpx: contourLabelSize.value / 533, color: '#ffffff', alt: 50 })
+          }
+        }
+        if (showBore.value) for (const b of (d.bore || [])) { dots.push({ lon: b[0], lat: b[1] }); bores.push({ lon: b[0], lat: b[1], satLon: idx.lon }) }
+        if (showBeamLabels.value && d.bore && d.bore[0]) labels.push({ lon: d.bore[0][0], lat: d.bore[0][1], text: r.beam, hpx: beamLabelSize.value / 533 })
+      }
+      if (allG.length) legend.push({ name: (ba.name && ba.name.trim()) ? ba.name : idx.displayName, mode: ba.mode, gmin, gmax, type: it.type, solid: ba.solid })
     }
   }
   for (const e of elevationLines()) lines.push(e)
-  const satBore = (datas[0] && datas[0].d.bore && datas[0].d.bore[0]) || null
-  // 只要选了卫星，就始终显示该 GEO 卫星本体（即使未选波束）
-  scene.setCoverage({ lines, dots, labels, satLon: s ? s.lon : null, satName: s ? s.displayName : null, satBore })
-  covLegend.value = allG.length ? { gmin, gmax, type: covType.value } : null
-  covStatus.value = ''
+  scene.setCoverage({ lines, dots, labels, sats, bores, dotR: boreSize.value * 0.0014 })
+  covGeom = { lines, dots, labels, sats }   // 平面图共用同一份几何（不含卫星连线 bores）
+  if (flat) { flat.setSizes({ beamFont: beamLabelSize.value, contourFont: contourLabelSize.value, dotSize: boreSize.value, showBore: showBore.value, nameScale: countryNameSize.value, provScale: provNameSize.value }); flat.setGeom(covGeom) }
+  covLegend.value = legend
+  if (!loading) covStatus.value = ''
 }
-// 清除等值线/仰角线等，但保留选中的卫星（GEO 仍显示）
-function clearCoverage() { selBeams.value = []; selGains.value = []; customGain.value = ''; elevText.value = ''; covLegend.value = null; redraw() }
-function focusBeam() { const d = beamRows().find((r) => selBeams.value.includes(r.id)); if (!d) return; const data = covCache[d.file]; if (data && data.bore && data.bore[0]) { scene.faceLonLat(data.bore[0][0], data.bore[0][1]); autoRotate.value = false } }
+// 清空所有覆盖卫星与批次
+function clearCoverage() { covItems.value = []; covLegend.value = []; elevText.value = ''; covStatus.value = ''; redraw() }
 
 // ===================== 标记 / 地面站 / 轨迹 =====================
 const MK_KEY = 'globe3d/markers'
@@ -529,6 +667,9 @@ const activeTraj = ref('')         // 当前编辑的轨迹 id
 const ptLat = ref(''), ptLon = ref('')
 const stLat = ref(''), stLon = ref(''), stName = ref('')
 const wpLat = ref(''), wpLon = ref('')
+const markPtFont = ref(14)         // 点标记坐标字号（6–32）
+const stIconSize = ref(32)         // 地面站图标大小（16–60）
+const stFontSize = ref(17)         // 地面站名称字号（6–32）
 let mkSeq = 1
 const newId = () => 'm' + Date.now().toString(36) + (mkSeq++)   // 跨会话唯一，避免与已存数据撞 key
 
@@ -537,13 +678,14 @@ const fmtLL = (lat, lon) => `${Math.abs(lon).toFixed(2)}°${lon >= 0 ? 'E' : 'W'
 const validLat = (v) => Number.isFinite(v) && v >= -90 && v <= 90
 const validLon = (v) => Number.isFinite(v) && v >= -180 && v <= 180
 
+const markSizes = () => ({ ptFont: markPtFont.value, stIcon: stIconSize.value, stFont: stFontSize.value })
 function syncMarkers() {
   if (!scene) return
-  scene.setMarkers(
-    points.value.map((p) => ({ lat: p.lat, lon: p.lon, label: fmtLL(p.lat, p.lon) })),
-    stations.value.map((s) => ({ lat: s.lat, lon: s.lon, name: s.name }))
-  )
-  scene.setTrajectories(trajectories.value.map((t) => ({ pts: t.pts, kind: t.kind, color: t.kind === 'flight' ? 0x5ad1ff : 0xff6a4a })))
+  const pts = points.value.map((p) => ({ lat: p.lat, lon: p.lon, label: fmtLL(p.lat, p.lon) }))
+  const sts = stations.value.map((s) => ({ lat: s.lat, lon: s.lon, name: s.name }))
+  const trs = trajectories.value.map((t) => ({ pts: t.pts, kind: t.kind, color: t.kind === 'flight' ? 0x5ad1ff : 0xff6a4a }))
+  scene.setMarkers(pts, sts, markSizes()); scene.setTrajectories(trs)
+  if (flat) { flat.setMarkers(pts, sts, trs); flat.setSizes(markSizes()) }
   persistMarkers()
 }
 function persistMarkers() {
@@ -556,6 +698,7 @@ function loadMarkers() {
   } catch { /* ignore */ }
 }
 function toggleMarkers() { mkOpen.value = !mkOpen.value }
+function toggleGeo() { geoOpen.value = !geoOpen.value }
 
 function addPoint(lat, lon, face) {
   if (!validLat(lat) || !validLon(lon)) return
@@ -609,15 +752,45 @@ function onGroup(e) {
 
 // ===================== 全部选项/设置本地缓存（无感） =====================
 const SETTINGS_KEY = 'globe3d/settings'
+// 批次内设置统一，但持久化时按波束各存一份（每条波束记录自带其增益档/颜色/线粗，便于波束级追溯）
+function serializeCov() {
+  return covItems.value.map((it) => ({
+    id: it.id, folder: it.folder, type: it.type, band: it.band,
+    batches: it.batches.map((ba) => ({
+      id: ba.id, name: ba.name,
+      beams: ba.beams.map((bid) => ({
+        id: bid, gains: ba.gains.slice(), custom: ba.custom,
+        mode: ba.mode, solid: ba.solid, gainColors: { ...ba.gainColors }, width: ba.width
+      }))
+    }))
+  }))
+}
+// 反序列化：把按波束存的记录还原为运行时的批次统一设置（取该批首个波束记录为准）
+function deserializeCov(items) {
+  return (items || []).filter((it) => it && idxOf(it.folder)).map((it) => ({
+    id: it.id, folder: it.folder, type: it.type || 'EIRP', band: it.band || 'all',
+    batches: (it.batches || []).map((ba) => {
+      const bms = ba.beams || [], f = bms[0] || {}
+      return {
+        id: ba.id, name: ba.name || '', q: '',
+        beams: bms.map((b) => (typeof b === 'string' ? b : b.id)),
+        gains: Array.isArray(f.gains) ? f.gains : [], custom: f.custom || '',
+        mode: f.mode || 'gradient', solid: f.solid || '#ff5a5a',
+        gainColors: f.gainColors || {}, width: Number.isFinite(f.width) ? f.width : 1.6
+      }
+    })
+  }))
+}
 function snapshot() {
   return {
-    nameMode: nameMode.value, showProvinces: showProvinces.value, autoRotate: autoRotate.value, live: live.value, beamLock: beamLock.value,
-    covOpen: covOpen.value, mkOpen: mkOpen.value,
+    nameMode: nameMode.value, countryName: countryNameSize.value, provName: provNameSize.value, showProvinces: showProvinces.value, autoRotate: autoRotate.value, live: live.value, beamLock: beamLock.value,
+    mkPt: markPtFont.value, mkStIcon: stIconSize.value, mkStFont: stFontSize.value,
+    covOpen: covOpen.value, mkOpen: mkOpen.value, geoOpen: geoOpen.value,
     cov: {
-      sat: covSatFolder.value, band: covBand.value, type: covType.value,
-      beams: selBeams.value.slice(), gains: selGains.value.slice(), custom: customGain.value,
-      beamLabels: showBeamLabels.value, bore: showBore.value, contourLabels: showContourLabels.value,
-      elev: elevText.value, names: { ...beamNames }
+      items: serializeCov(),
+      beamLabels: showBeamLabels.value, beamFont: beamLabelSize.value, bore: showBore.value, boreSize: boreSize.value,
+      contourLabels: showContourLabels.value, contourSize: contourLabelSize.value,
+      elev: elevText.value
     }
   }
 }
@@ -626,30 +799,43 @@ async function restoreSettings() {
   let s; try { s = JSON.parse(localStorage.getItem(SETTINGS_KEY) || 'null') } catch { s = null }
   if (!s) return
   if (s.nameMode === 'zh' || s.nameMode === 'en' || s.nameMode === 'off') { nameMode.value = s.nameMode; scene.setLabelMode(nameMode.value) }
+  if (Number.isFinite(s.countryName)) countryNameSize.value = s.countryName
+  else if (Number.isFinite(s.geoName)) countryNameSize.value = s.geoName   // 兼容旧字段
+  if (Number.isFinite(s.provName)) provNameSize.value = s.provName
+  else if (Number.isFinite(s.geoName)) provNameSize.value = s.geoName
+  scene.setNameScale(countryNameSize.value, provNameSize.value)
+  if (Number.isFinite(s.mkPt)) markPtFont.value = s.mkPt
+  if (Number.isFinite(s.mkStIcon)) stIconSize.value = s.mkStIcon
+  if (Number.isFinite(s.mkStFont)) stFontSize.value = s.mkStFont
+  syncMarkers()   // 以恢复后的尺寸重建标记
   if (typeof s.autoRotate === 'boolean') { autoRotate.value = s.autoRotate; scene.setAutoRotate(autoRotate.value) }
   if (typeof s.beamLock === 'boolean') beamLock.value = s.beamLock
   if (typeof s.mkOpen === 'boolean') mkOpen.value = s.mkOpen
+  if (typeof s.geoOpen === 'boolean') geoOpen.value = s.geoOpen
   if (s.showProvinces) {
     showProvinces.value = true
-    try { const mod = await import('../viz/globe3d/data/china-provinces.json'); scene.setProvinces(mod.default || mod); scene.setProvincesVisible(true); provincesLoaded = true } catch { /* ignore */ }
+    try { const mod = await import('../viz/globe3d/data/china-provinces.json'); provincesData = mod.default || mod; scene.setProvinces(provincesData); scene.setProvincesVisible(true); provincesLoaded = true } catch { /* ignore */ }
   }
   if (s.live) { live.value = true; if (!timer) timer = setInterval(refreshPositions, 1000) }
   const c = s.cov
-  if (c && c.sat) {
+  if (c && Array.isArray(c.items) && c.items.length) {
     covOpen.value = !!s.covOpen
     await ensureCovIndex()
-    if (curSat() || covSats.value.find((x) => x.folder === c.sat)) {
-      covSatFolder.value = c.sat; covBand.value = c.band || 'all'; covType.value = c.type || 'EIRP'
-      selBeams.value = Array.isArray(c.beams) ? c.beams : []
-      selGains.value = Array.isArray(c.gains) ? c.gains : []
-      customGain.value = c.custom || ''
-      showBeamLabels.value = c.beamLabels !== false
-      showBore.value = c.bore !== false
-      showContourLabels.value = !!c.contourLabels
-      elevText.value = c.elev || ''
-      if (c.names) for (const k in c.names) beamNames[k] = c.names[k]
-      redraw()
+    // 仅恢复索引中仍存在的卫星；同步 id 游标避免冲突
+    const items = deserializeCov(c.items)
+    for (const it of items) {
+      const ids = [it.id, ...(it.batches || []).map((b) => b.id)].map((x) => parseInt(String(x).replace(/\D/g, ''), 10)).filter(Number.isFinite)
+      for (const n of ids) if (n > covSeq) covSeq = n
     }
+    covItems.value = items
+    showBeamLabels.value = c.beamLabels !== false
+    if (Number.isFinite(c.beamFont)) beamLabelSize.value = c.beamFont
+    showBore.value = c.bore !== false
+    if (Number.isFinite(c.boreSize)) boreSize.value = c.boreSize
+    showContourLabels.value = !!c.contourLabels
+    if (Number.isFinite(c.contourSize)) contourLabelSize.value = c.contourSize
+    elevText.value = c.elev || ''
+    redraw()
   } else if (s.covOpen) { covOpen.value = true; await ensureCovIndex() }
 }
 
@@ -680,13 +866,12 @@ onMounted(async () => {
   scene.setOnHover((ll) => { cursor.ll = ll })
   scene.setOnRightClick((ll) => {
     if (!ll) return
-    if (!mkOpen.value) mkOpen.value = true
     const t = curTraj()
     if (t) { t.pts.push({ lat: ll.lat, lon: ll.lon }); syncMarkers() }   // 轨迹编辑中 -> 右键加航点
     else addPoint(ll.lat, ll.lon)                                          // 否则 -> 右键标点
   })
   loadMarkers(); syncMarkers()
-  ro = new ResizeObserver(() => scene && scene.resize()); ro.observe(el.value)
+  ro = new ResizeObserver(() => { if (scene) scene.resize(); if (flat && flatView.value) flat.resize() }); ro.observe(el.value)
 
   // 恢复上次分组 + 选中星
   try {
@@ -699,7 +884,7 @@ onMounted(async () => {
   loadGroup()
   watch(snapshot, saveSettings, { deep: true })   // 此后任意改动自动本地缓存
 })
-onBeforeUnmount(() => { cursor.ll = null; if (timer) clearInterval(timer); if (ro) ro.disconnect(); if (scene) { scene.clearCoverage(); scene.destroy() } })
+onBeforeUnmount(() => { cursor.ll = null; if (timer) clearInterval(timer); if (ro) ro.disconnect(); if (flat) flat.destroy(); if (scene) { scene.clearCoverage(); scene.destroy() } })
 </script>
 
 <template>
@@ -735,34 +920,29 @@ onBeforeUnmount(() => { cursor.ll = null; if (timer) clearInterval(timer); if (r
       <span class="st" :class="{ dis: live }" @click="step(1)">+1m</span>
       <span class="st" :class="{ dis: live }" @click="step(10)">+10m</span>
       <span class="st" :class="{ dis: live }" @click="step(60)">+1h</span>
-    </div>
-
-    <div class="beam">
-      <template v-if="selected">
-        <span class="bl">波束角</span>
-        <input class="bi" :value="beam" :placeholder="beamAuto || '自动'" @input="onBeam" />
-        <span class="bu">°</span>
-        <span class="lock" :class="{ on: beamLock }" @click="toggleBeamLock">{{ beamLock ? '🔒' : '🔓' }}</span>
-      </template>
-      <span v-else class="hint">点击卫星设置波束角</span>
-      <div class="toggles">
-        <span v-if="covApiOk" class="mini" :class="{ on: covOpen }" @click="toggleCoverage">覆盖图（GXT）</span>
-        <span class="mini" :class="{ on: mkOpen }" @click="toggleMarkers">标记</span>
-        <span class="mini" :class="{ on: autoRotate }" @click="toggleRotate">{{ autoRotate ? '旋转中' : '旋转停' }}</span>
-        <span class="mini" :class="{ on: showProvinces }" @click="toggleProvinces">省名</span>
-        <span class="seg nseg">
-          <span class="sg" :class="{ on: nameMode === 'zh' }" @click="setNameMode('zh')">中文</span>
-          <span class="sg" :class="{ on: nameMode === 'en' }" @click="setNameMode('en')">英文</span>
-          <span class="sg" :class="{ on: nameMode === 'off' }" @click="setNameMode('off')">不显示</span>
-        </span>
-        <span class="mini" :class="{ on: live }" @click="toggleLive">{{ live ? '实时开' : '实时关' }}</span>
-      </div>
+      <span class="beamc">
+        <template v-if="selected">
+          <span class="bl">波束角</span>
+          <input class="bi" :value="beam" :placeholder="beamAuto || '自动'" @input="onBeam" />
+          <span class="bu">°</span>
+          <span class="lock" :class="{ on: beamLock }" @click="toggleBeamLock">{{ beamLock ? '🔒' : '🔓' }}</span>
+        </template>
+        <span v-else class="hint">点击卫星设置波束角</span>
+      </span>
     </div>
 
     <div class="body">
+      <div class="lefttools">
+        <span v-if="covApiOk" class="mini" :class="{ on: covOpen }" @click="toggleCoverage">覆盖图（GXT）</span>
+        <span class="mini" :class="{ on: mkOpen }" @click="toggleMarkers">标记</span>
+        <span class="mini" :class="{ on: autoRotate }" @click="toggleRotate">{{ autoRotate ? '旋转中' : '旋转停' }}</span>
+        <span class="mini" :class="{ on: geoOpen }" @click="toggleGeo">地名</span>
+        <span class="mini" :class="{ on: live }" @click="toggleLive">{{ live ? '实时开' : '实时关' }}</span>
+      </div>
       <div class="stage-wrap">
         <div ref="el" class="stage"></div>
-        <div class="hint-fl">点击星点查看 · 拖动旋转 · 滚轮缩放 · 右键标点</div>
+        <canvas v-show="flatView" ref="flatCanvas" class="flat"></canvas>
+        <div class="hint-fl">{{ flatView ? '平面覆盖图 · 拖动平移 · 滚轮缩放 · 双击复位' : '点击星点查看 · 拖动旋转 · 滚轮缩放 · 右键标点' }}</div>
 
         <div v-if="!satCount && status" class="dl-banner">
           <div class="dl-msg">{{ status }}</div>
@@ -775,7 +955,7 @@ onBeforeUnmount(() => { cursor.ll = null; if (timer) clearInterval(timer); if (r
 
         <div v-if="selected" class="card">
           <div class="ch">
-            <span class="cn">{{ selected.name }}</span>
+            <span class="cn" :title="selected.name">{{ selected.name }}</span>
             <span v-if="selected.slot" class="cs">{{ selected.slot }}</span>
             <span class="cx" @click="closeCard">✕</span>
           </div>
@@ -787,7 +967,7 @@ onBeforeUnmount(() => { cursor.ll = null; if (timer) clearInterval(timer); if (r
             <div class="kv"><span class="k">惯性速度</span><span class="v">{{ selected.speedAbs }} km/s</span></div>
             <div class="kv"><span class="k">对地速度</span><span class="v">{{ selected.speedRel }} km/s</span></div>
             <div class="kv"><span class="k">周期</span><span class="v">{{ selected.period }} min</span></div>
-            <div class="kv"><span class="k">近/远地点</span><span class="v">{{ selected.perigee }}/{{ selected.apogee }}</span></div>
+            <div class="kv wide"><span class="k">近/远地点</span><span class="v">{{ selected.perigee }} / {{ selected.apogee }} km</span></div>
             <div class="kv"><span class="k">Ω</span><span class="v">{{ selected.raan }}°</span></div>
             <div class="kv"><span class="k">ω</span><span class="v">{{ selected.argp }}°</span></div>
             <div class="kv wide"><span class="k">星下点</span><span class="v">{{ selected.lat }}, {{ selected.lon }}</span></div>
@@ -796,80 +976,137 @@ onBeforeUnmount(() => { cursor.ll = null; if (timer) clearInterval(timer); if (r
       </div>
 
       <div v-if="covOpen" class="cov-side">
-        <div class="csh"><span class="csn">GEO 卫星覆盖（GXT）</span><span class="csx" @click="toggleCoverage">✕</span></div>
+        <div class="csh"><span class="csn">GEO 卫星覆盖（GXT）</span>
+          <span class="flatbtn" :class="{ on: flatView }" @click="toggleFlat">{{ flatView ? '球体' : '平面图' }}</span>
+          <span class="csx" @click="toggleCoverage">✕</span></div>
 
         <div class="sec">
-          <div class="srow"><label>卫星</label>
-            <select :value="covSatFolder" @change="onCovSat">
-              <option value="" disabled>选择卫星</option>
-              <option v-for="s in covSats" :key="s.folder" :value="s.folder">{{ s.displayName }}（{{ s.lon }}°）</option>
+          <div class="srow"><label>添加卫星</label>
+            <select :value="covAddSel" @change="e => { covAddSel = e.target.value; addCovSat() }">
+              <option value="" disabled>选择卫星…</option>
+              <option v-for="s in covSats" :key="s.folder" :value="s.folder"
+                      :disabled="covItems.some(i => i.folder === s.folder)">{{ s.displayName }}（{{ s.lon }}°）</option>
             </select>
+          </div>
+          <div v-if="!covItems.length" class="tip">添加一颗或多颗卫星，各自可建多个批次（波束分组），分别设增益档与颜色。</div>
+        </div>
+
+        <!-- 每颗已添加卫星 -->
+        <div v-for="it in covItems" :key="it.id" class="sec satcard">
+          <div class="sath">
+            <span class="satn">{{ idxOf(it.folder)?.displayName }} <em>{{ idxOf(it.folder)?.lon }}°</em></span>
+            <span class="seg sm">
+              <span class="sg" :class="{ on: it.type === 'EIRP' }" @click="setItemType(it, 'EIRP')">EIRP</span>
+              <span class="sg" :class="{ on: it.type === 'GT' }" @click="setItemType(it, 'GT')">G/T</span>
+            </span>
+            <span class="ic" title="定位" @click="focusCovSat(it)">◎</span>
+            <span class="ic del" title="移除该星" @click="removeCovSat(it)">✕</span>
           </div>
           <div class="srow"><label>频段</label>
-            <select :value="covBand" @change="onCovBand" :disabled="!covSatFolder">
+            <select :value="it.band" @change="e => onItemBand(it, e)">
               <option value="all">全部频段</option>
-              <option v-for="b in covBands()" :key="b" :value="b">{{ b }}</option>
+              <option v-for="b in itemBands(it)" :key="b" :value="b">{{ b }}</option>
             </select>
           </div>
-          <div class="srow"><label>类型</label>
-            <span class="seg">
-              <span class="sg" :class="{ on: covType === 'EIRP' }" @click="setType('EIRP')">EIRP</span>
-              <span class="sg" :class="{ on: covType === 'GT' }" @click="setType('GT')">G/T</span>
-            </span>
-          </div>
-        </div>
 
-        <div class="sec" v-if="covSatFolder">
-          <div class="sect"><span>波束（可多选）</span>
-            <span class="lnk" @click="allBeams(selBeams.length !== beamRows().length)">{{ selBeams.length === beamRows().length && beamRows().length ? '取消' : '全选' }}</span>
-          </div>
-          <div class="list">
-            <label v-for="r in beamRows()" :key="r.id" class="chk">
-              <input type="checkbox" :checked="selBeams.includes(r.id)" @change="toggleBeam(r.id)" />
-              <span>{{ r.label }}</span>
-            </label>
-            <div v-if="!beamRows().length" class="empty">该频段/类型无波束</div>
-          </div>
-          <div class="cnt">已选 {{ selBeams.length }} 个波束<span class="lnk2" v-if="selBeams.length" @click="focusBeam">定位</span></div>
-        </div>
-
-        <div class="sec" v-if="selBeams.length">
-          <div class="sect"><span>增益档位</span>
-            <span class="lnk" @click="allGains(selGains.length !== unionGains().length)">{{ selGains.length === unionGains().length && unionGains().length ? '取消' : '全选' }}</span>
-          </div>
-          <div class="chips">
-            <span v-for="g in unionGains()" :key="g" class="chip" :class="{ on: selGains.includes(g) }"
-                  :style="selGains.includes(g) ? { borderColor: gainColorCss(g) } : {}"
-                  @click="toggleGain(g)">{{ g }}</span>
-          </div>
-          <div class="srow"><label>自定义</label><input class="ci" :value="customGain" placeholder="如 48,52" @input="onCustomGain" /></div>
-          <label class="chk2"><input type="checkbox" :checked="showBeamLabels" @change="toggleBeamLabels" /><span>显示波束名</span></label>
-          <div v-if="showBeamLabels" class="bnlist">
-            <div v-for="r in selectedBeamRows()" :key="r.id" class="bnrow">
-              <span class="bntag">{{ r.label }}</span>
-              <input class="bni" :value="beamNames[r.id] !== undefined ? beamNames[r.id] : r.beam"
-                     :placeholder="r.beam" @input="e => setBeamName(r.id, e.target.value)" />
+          <!-- 批次 -->
+          <div v-for="(ba, bi) in it.batches" :key="ba.id" class="batch">
+            <div class="bah">
+              <input class="bnm" :value="ba.name" :placeholder="'批次' + (bi + 1)" @input="e => setBatchName(it, ba, e)" />
+              <span class="ic del" title="删除批次" @click="removeBatch(it, ba)">✕</span>
             </div>
+
+            <div class="bsub">波束
+              <span class="lnk" @click="allBatchBeams(it, ba, !allFilteredOn(it, ba))">{{ allFilteredOn(it, ba) ? '取消' : '全选' }}</span>
+              <span class="lnk" @click="invertBatchBeams(it, ba)">反选</span>
+              <span class="cnt2">已选 {{ ba.beams.length }}</span>
+            </div>
+            <input class="ci bq" :value="ba.q" placeholder="搜索：拉萨 / Beam 3，或序号 1-62、1,3,5" @input="e => onBatchQuery(it, ba, e)" />
+            <div class="list">
+              <label v-for="r in filteredBeamRows(it, ba)" :key="r.id" class="chk">
+                <input type="checkbox" :checked="ba.beams.includes(r.id)" @change="toggleBatchBeam(it, ba, r.id)" />
+                <span class="bseq">{{ r.seq }}</span><span>{{ r.label }}</span>
+              </label>
+              <div v-if="!filteredBeamRows(it, ba).length" class="empty">{{ beamRowsOf(it).length ? '无匹配波束' : '该频段/类型无波束' }}</div>
+            </div>
+
+            <template v-if="ba.beams.length">
+              <!-- 增益档（批次统一） -->
+              <div class="bsub">增益档
+                <span class="lnk" @click="allBatchGains(it, ba, ba.gains.length !== batchGains(it, ba).length)">{{ ba.gains.length === batchGains(it, ba).length && batchGains(it, ba).length ? '取消' : '全选' }}</span>
+              </div>
+              <div class="chips">
+                <span v-for="g in batchGains(it, ba)" :key="g" class="chip" :class="{ on: ba.gains.includes(g) }"
+                      :style="ba.gains.includes(g) ? { borderColor: gainSwatchCss(ba, g), color: gainSwatchCss(ba, g) } : {}"
+                      @click="toggleBatchGain(it, ba, g)">
+                  <span v-if="ba.mode === 'perGain' && ba.gains.includes(g)" class="dot" :style="{ background: gainSwatchCss(ba, g) }"></span>{{ g }}
+                </span>
+              </div>
+              <div class="srow"><label>自定义</label><input class="ci" :value="ba.custom" placeholder="如 48,52" @input="e => onBatchCustom(it, ba, e)" /></div>
+
+              <!-- 配色（批次统一） -->
+              <div class="bsub">配色
+                <span class="seg sm">
+                  <span class="sg" :class="{ on: ba.mode === 'gradient' }" @click="setBatchMode(it, ba, 'gradient')">渐变</span>
+                  <span class="sg" :class="{ on: ba.mode === 'solid' }" @click="setBatchMode(it, ba, 'solid')">纯色</span>
+                  <span class="sg" :class="{ on: ba.mode === 'perGain' }" @click="setBatchMode(it, ba, 'perGain')">逐档</span>
+                </span>
+                <input v-if="ba.mode === 'solid'" class="clr" type="color" :value="ba.solid" @input="e => onBatchSolid(it, ba, e)" />
+              </div>
+              <div v-if="ba.mode === 'perGain' && ba.gains.length" class="pglist">
+                <label v-for="g in ba.gains" :key="g" class="pgrow">
+                  <input class="clr" type="color" :value="ba.gainColors[g] || gainSwatchCss(ba, g)" @input="e => onGainColor(it, ba, g, e)" />
+                  <span>{{ g }}</span>
+                </label>
+              </div>
+
+              <!-- 线粗细（批次统一） -->
+              <div class="srow"><label>线粗</label><input class="rng" type="range" min="0.6" max="5" step="0.2" :value="ba.width" @input="e => onBatchWidth(it, ba, e)" /><span class="u">{{ ba.width }}</span></div>
+            </template>
           </div>
-          <label class="chk2"><input type="checkbox" :checked="showBore" @change="toggleBore" /><span>显示波束中心</span></label>
-          <label class="chk2"><input type="checkbox" :checked="showContourLabels" @change="toggleContourLabels" /><span>显示数值标签</span></label>
+          <div class="addbatch" @click="addBatch(it)">＋ 新建批次</div>
         </div>
 
         <div class="sec">
-          <div class="sect"><span>等仰角线</span></div>
-          <div class="srow"><label>仰角</label><input class="ci" :value="elevText" placeholder="如 5,10,20" @input="applyElev" /><span class="u">°</span></div>
-          <div class="tip">GEO 卫星到地面的等仰角线（0–90°，逗号分隔）</div>
+          <div class="sect"><span>显示选项</span></div>
+          <label class="chk2"><input type="checkbox" :checked="showBeamLabels" @change="toggleBeamLabels" /><span>显示波束名</span></label>
+          <div v-if="showBeamLabels" class="srow"><label>字号</label><input class="rng" type="range" min="6" max="32" step="1" :value="beamLabelSize" @input="setBeamFont" /><span class="u">{{ beamLabelSize }}</span></div>
+          <label class="chk2"><input type="checkbox" :checked="showBore" @change="toggleBore" /><span>显示波束中心</span></label>
+          <div v-if="showBore" class="srow"><label>大小</label><input class="rng" type="range" min="1" max="12" step="1" :value="boreSize" @input="setBoreSize" /><span class="u">{{ boreSize }}</span></div>
+          <label class="chk2"><input type="checkbox" :checked="showContourLabels" @change="toggleContourLabels" /><span>显示数值标签</span></label>
+          <div v-if="showContourLabels" class="srow"><label>字号</label><input class="rng" type="range" min="2" max="20" step="1" :value="contourLabelSize" @input="setContourSize" /><span class="u">{{ contourLabelSize }}</span></div>
+          <div class="srow"><label>等仰角线</label><input class="ci" :value="elevText" placeholder="如 5,10,20" @input="applyElev" /><span class="u">°</span></div>
+          <div class="tip">对所有已添加卫星绘制等仰角线（0–90°，逗号分隔）</div>
         </div>
 
-        <div v-if="covLegend" class="legend">
-          <div class="lt">{{ covLegend.type === 'GT' ? 'G/T (dB/K)' : 'EIRP (dBW)' }}</div>
-          <div class="lbar"></div>
-          <div class="lsc"><span>{{ covLegend.gmin }}</span><span>{{ covLegend.gmax }}</span></div>
+        <div v-if="covLegend.length" class="legend">
+          <div class="lrow" v-for="(L, li) in covLegend" :key="li">
+            <span class="lname">{{ L.name }}<em>{{ L.type === 'GT' ? ' G/T' : ' EIRP' }}</em></span>
+            <span v-if="L.mode === 'solid'" class="lsw" :style="{ background: L.solid }"></span>
+            <template v-else><span class="lbar2"></span><span class="lsc2">{{ L.gmin }}~{{ L.gmax }}</span></template>
+          </div>
         </div>
 
         <div class="csfoot">
           <span v-if="covStatus" class="cst">{{ covStatus }}</span>
           <span class="cclr" @click="clearCoverage">清除全部</span>
+        </div>
+      </div>
+
+      <div v-if="geoOpen" class="cov-side geo-side">
+        <div class="csh"><span class="csn">地名</span><span class="csx" @click="toggleGeo">✕</span></div>
+        <div class="sec">
+          <div class="srow"><label>国家名</label>
+            <span class="seg">
+              <span class="sg" :class="{ on: nameMode === 'zh' }" @click="setNameMode('zh')">中文</span>
+              <span class="sg" :class="{ on: nameMode === 'en' }" @click="setNameMode('en')">英文</span>
+              <span class="sg" :class="{ on: nameMode === 'off' }" @click="setNameMode('off')">不显示</span>
+            </span>
+          </div>
+          <div class="srow"><label>国家名字号</label><input class="rng" type="range" min="0.6" max="2" step="0.1" :value="countryNameSize" @input="setCountryNameSize" /><span class="u">{{ countryNameSize.toFixed(1) }}</span></div>
+          <label class="chk2"><input type="checkbox" :checked="showProvinces" @change="toggleProvinces" /><span>显示中国省界 / 省名</span></label>
+          <div class="srow"><label>省名字号</label><input class="rng" type="range" min="0.6" max="2" step="0.1" :value="provNameSize" @input="setProvNameSize" /><span class="u">{{ provNameSize.toFixed(1) }}</span></div>
+          <div class="tip">国家名(含大洋名)与省名字号分开调，同时作用于 3D 与平面图。</div>
         </div>
       </div>
 
@@ -881,6 +1118,7 @@ onBeforeUnmount(() => { cursor.ll = null; if (timer) clearInterval(timer); if (r
           <div class="srow"><label>纬度</label><input class="ci" v-model="ptLat" placeholder="-90 ~ 90" /></div>
           <div class="srow"><label>经度</label><input class="ci" v-model="ptLon" placeholder="-180 ~ 180" /><span class="addb" @click="addPointInput">添加</span></div>
           <div class="tip">右键地图也可直接标点</div>
+          <div class="srow"><label>坐标字号</label><input class="rng" type="range" min="6" max="32" step="1" :value="markPtFont" @input="setPtFont" /><span class="u">{{ markPtFont }}</span></div>
           <div class="mlist">
             <div v-for="p in points" :key="p.id" class="mrow"><span class="mc">{{ fmtLL(p.lat, p.lon) }}</span><span class="del" @click="removePoint(p.id)">✕</span></div>
           </div>
@@ -891,6 +1129,8 @@ onBeforeUnmount(() => { cursor.ll = null; if (timer) clearInterval(timer); if (r
           <div class="srow"><label>纬度</label><input class="ci" v-model="stLat" placeholder="-90 ~ 90" /></div>
           <div class="srow"><label>经度</label><input class="ci" v-model="stLon" placeholder="-180 ~ 180" /></div>
           <div class="srow"><label>名称</label><input class="ci" v-model="stName" placeholder="如 北京站" /><span class="addb" @click="addStation">添加</span></div>
+          <div class="srow"><label>图标大小</label><input class="rng" type="range" min="16" max="60" step="2" :value="stIconSize" @input="setStIcon" /><span class="u">{{ stIconSize }}</span></div>
+          <div class="srow"><label>名称字号</label><input class="rng" type="range" min="6" max="32" step="1" :value="stFontSize" @input="setStFont" /><span class="u">{{ stFontSize }}</span></div>
           <div class="mlist">
             <div v-for="s in stations" :key="s.id" class="mrow">
               <input class="sni" :value="s.name" @input="e => setStationName(s.id, e.target.value)" />
@@ -950,38 +1190,44 @@ onBeforeUnmount(() => { cursor.ll = null; if (timer) clearInterval(timer); if (r
 .tlab { font-family: var(--font-mono); min-width: 150px; color: var(--text-muted); }
 .tl .st { padding: 2px 8px; border: 1px solid var(--border); cursor: pointer; color: var(--text-muted); }
 .tl .st.dis { opacity: 0.4; pointer-events: none; }
-.beam { display: flex; align-items: center; gap: 8px; padding: 6px 16px; border-bottom: 1px solid var(--border); flex: none; font-size: 12.5px; }
-.beam .bl { color: var(--text-muted); }
-.beam .bi { width: 60px; border: 0; border-bottom: 1px solid var(--border-strong); background: transparent; outline: none; color: var(--text); }
-.beam .lock { cursor: pointer; }
-.beam .hint { color: var(--text-faint); }
-.toggles { margin-left: auto; display: flex; gap: 8px; }
-.mini { padding: 3px 10px; border: 1px solid var(--border); cursor: pointer; color: var(--text-muted); }
+.tl .beamc { display: inline-flex; align-items: center; gap: 6px; margin-left: 6px; flex: none; }
+.tl .bl { color: var(--text-muted); }
+.tl .bi { width: 56px; border: 0; border-bottom: 1px solid var(--border-strong); background: transparent; outline: none; color: var(--text); font-size: 11.5px; }
+.tl .bu { color: var(--text-muted); }
+.tl .lock { cursor: pointer; }
+.tl .hint { color: var(--text-faint); }
+.mini { padding: 3px 10px; border: 1px solid var(--border); cursor: pointer; color: var(--text-muted); font-size: 12px; }
 .mini.on { color: var(--text); border-color: var(--accent); }
 .body { flex: 1; min-height: 0; display: flex; }
+.lefttools { width: 106px; flex: none; border-right: 1px solid var(--border); background: var(--bg); display: flex; flex-direction: column; gap: 6px; padding: 8px; }
+.lefttools .mini { text-align: center; }
 .stage-wrap { flex: 1; min-width: 0; position: relative; }
 .stage { width: 100%; height: 100%; background: #070b12; }
+.flat { position: absolute; inset: 0; width: 100%; height: 100%; background: #0b1a2b; }
 .hint-fl { position: absolute; right: 14px; bottom: 10px; font-size: 11px; color: #6b7686; }
 .dl-banner { position: absolute; left: 50%; top: 55%; transform: translate(-50%, -50%); width: 420px; max-width: 86%; background: rgba(20,22,28,0.94); border: 1px solid #34384a; border-radius: 6px; padding: 16px 18px; color: #d7dde6; text-align: center; }
 .dl-msg { font-size: 13px; margin-bottom: 12px; color: #f0c674; line-height: 1.5; }
 .dl-row { display: flex; gap: 10px; justify-content: center; }
 .dl-row button { border: 1px solid #4a5168; background: #1c2230; color: #d7dde6; padding: 6px 14px; cursor: pointer; border-radius: 4px; font-size: 12.5px; }
 .dl-row button:hover { border-color: #6b7490; }
-.card { position: absolute; right: 14px; top: 14px; width: 240px; background: var(--bg); border: 1px solid var(--border-strong); padding: 10px 12px; }
-.ch { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-.cn { font-family: var(--font-serif); font-size: 14px; }
-.cs { font-size: 11px; color: var(--text-muted); }
-.cx { margin-left: auto; cursor: pointer; color: var(--text-faint); }
-.cg { display: grid; grid-template-columns: 1fr 1fr; gap: 5px 12px; font-size: 11.5px; }
-.kv { display: flex; justify-content: space-between; gap: 6px; }
+.card { position: absolute; right: 14px; top: 14px; width: 224px; background: var(--bg); border: 1px solid var(--border-strong); padding: 8px 11px; }
+.ch { display: flex; align-items: baseline; gap: 8px; margin-bottom: 7px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+.cn { font-family: var(--font-serif); font-size: 13.5px; flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cs { font-size: 11px; color: var(--text-muted); flex: none; white-space: nowrap; }
+.cx { flex: none; cursor: pointer; color: var(--text-faint); align-self: center; line-height: 1; }
+.cg { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 14px; font-size: 11px; }
+.kv { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; min-width: 0; white-space: nowrap; }
 .kv.wide { grid-column: 1 / 3; }
-.kv .k { color: var(--text-muted); }
-.kv .v { font-family: var(--font-mono); }
+.kv .k { color: var(--text-muted); flex: none; }
+.kv .v { font-family: var(--font-mono); min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 
 /* 覆盖图：右侧停靠面板（挤压地球，独占右栏） */
 .cov-side { width: 286px; flex: none; border-left: 1px solid var(--border-strong); background: var(--bg); overflow-y: auto; display: flex; flex-direction: column; font-size: 12px; }
 .csh { display: flex; align-items: center; padding: 10px 12px; border-bottom: 1px solid var(--border); }
 .csn { font-family: var(--font-serif); font-size: 14px; }
+.flatbtn { margin-left: 10px; flex: none; border: 1px solid var(--border); padding: 2px 9px; font-size: 11.5px; color: var(--text-muted); cursor: pointer; }
+.flatbtn:hover { border-color: var(--accent); color: var(--text); }
+.flatbtn.on { background: var(--accent); color: #fff; border-color: var(--accent); }
 .csx { margin-left: auto; cursor: pointer; color: var(--text-faint); }
 .sec { padding: 10px 12px; border-bottom: 1px solid var(--border); }
 .srow { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
@@ -999,6 +1245,7 @@ onBeforeUnmount(() => { cursor.ll = null; if (timer) clearInterval(timer); if (r
 .sect .lnk { margin-left: auto; color: var(--accent); cursor: pointer; font-size: 11.5px; }
 .list { max-height: 150px; overflow-y: auto; border: 1px solid var(--border); padding: 4px 6px; }
 .chk { display: flex; align-items: center; gap: 6px; padding: 2px 0; cursor: pointer; }
+.chk .bseq { flex: none; min-width: 20px; text-align: right; color: var(--text-faint); font-family: var(--font-mono); font-size: 10.5px; }
 .chk input, .chk2 input { accent-color: var(--accent); }
 .empty { color: var(--text-faint); padding: 4px 0; }
 .cnt { margin-top: 6px; color: var(--text-faint); font-size: 11.5px; }
@@ -1007,16 +1254,40 @@ onBeforeUnmount(() => { cursor.ll = null; if (timer) clearInterval(timer); if (r
 .chip { padding: 2px 7px; border: 1px solid var(--border); cursor: pointer; color: var(--text-muted); font-family: var(--font-mono); font-size: 11px; }
 .chip.on { color: var(--text); }
 .chk2 { display: flex; align-items: center; gap: 6px; margin-top: 8px; cursor: pointer; }
-.bnlist { margin: 6px 0 2px; display: flex; flex-direction: column; gap: 5px; }
-.bnrow { display: flex; align-items: center; gap: 6px; }
-.bntag { flex: none; max-width: 92px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); font-size: 11px; }
-.bni { flex: 1; min-width: 0; border: 1px solid var(--border); background: var(--bg); padding: 2px 6px; font-size: 11.5px; outline: none; color: var(--text); }
-.bni:focus { border-color: var(--accent); }
 .tip { color: var(--text-faint); font-size: 11px; margin-top: 4px; line-height: 1.5; }
-.legend { padding: 10px 12px; }
-.legend .lt { font-size: 11px; color: var(--text-muted); margin-bottom: 3px; }
-.legend .lbar { height: 10px; border: 1px solid var(--border); background: linear-gradient(to right, hsl(240,90%,55%), hsl(180,90%,55%), hsl(120,90%,55%), hsl(60,90%,55%), hsl(0,90%,55%)); }
-.legend .lsc { display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+/* 两级覆盖：卫星卡 / 批次 */
+.satcard { border-left: 2px solid var(--accent); }
+.sath { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
+.satn { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.satn em { color: var(--text-muted); font-style: normal; font-weight: 400; font-size: 11px; }
+.seg.sm .sg { padding: 2px 7px; font-size: 11px; }
+.ic { flex: none; cursor: pointer; color: var(--text-faint); padding: 0 1px; }
+.ic:hover { color: var(--text); }
+.ic.del:hover { color: #e66; }
+.batch { border: 1px solid var(--border); padding: 7px 8px; margin-top: 8px; }
+.bah { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.bnm { flex: 1; min-width: 0; border: 1px solid var(--border); background: var(--bg); padding: 2px 6px; font-size: 11.5px; color: var(--text); outline: none; }
+.bnm:focus { border-color: var(--accent); }
+.clr { flex: none; width: 26px; height: 20px; padding: 0; border: 1px solid var(--border); background: none; cursor: pointer; }
+.rng { flex: 1; min-width: 0; accent-color: var(--accent); }
+.srow .u { min-width: 18px; text-align: right; }
+.bsub { display: flex; align-items: center; gap: 8px; margin: 7px 0 4px; color: var(--text-muted); font-size: 11.5px; }
+.bsub .lnk { color: var(--accent); cursor: pointer; font-size: 11.5px; }
+.bsub .cnt2 { margin-left: auto; color: var(--text-faint); font-size: 11px; }
+.bq { display: block; width: 100%; box-sizing: border-box; margin-bottom: 5px; border: 1px solid var(--border); background: var(--bg); padding: 3px 6px; font-size: 11.5px; color: var(--text); outline: none; }
+.bq:focus { border-color: var(--accent); }
+.chip .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
+.pglist { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.pgrow { display: flex; align-items: center; gap: 4px; font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); cursor: pointer; }
+.addbatch { margin-top: 8px; text-align: center; border: 1px dashed var(--border); padding: 4px; color: var(--accent); cursor: pointer; font-size: 11.5px; }
+.addbatch:hover { border-color: var(--accent); background: var(--surface); }
+.legend { padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
+.legend .lrow { display: flex; align-items: center; gap: 6px; }
+.legend .lname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--text); }
+.legend .lname em { color: var(--text-muted); font-style: normal; }
+.legend .lsw { width: 22px; height: 10px; flex: none; border: 1px solid var(--border); }
+.legend .lbar2 { width: 56px; height: 10px; flex: none; border: 1px solid var(--border); background: linear-gradient(to right, hsl(240,90%,55%), hsl(120,90%,55%), hsl(0,90%,55%)); }
+.legend .lsc2 { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-muted); flex: none; }
 .csfoot { margin-top: auto; display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--border); }
 .cst { font-size: 11px; color: var(--text-faint); }
 .cclr { margin-left: auto; font-size: 11.5px; color: var(--text-muted); border: 1px solid var(--border); padding: 3px 10px; cursor: pointer; }
