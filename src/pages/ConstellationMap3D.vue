@@ -1,6 +1,7 @@
 <script setup>
 import { ref, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { cursor } from '../stores/cursor'
+import { view } from '../stores/view'
 defineOptions({ inheritAttrs: false })   // 不把父级传入的 title 落到根节点（去掉鼠标悬停的“星座3D”原生提示）
 import { createGlobeScene } from '../viz/globe3d/scene.js'
 import { createFlatCoverage } from '../viz/flatmap/flatCoverage.js'
@@ -25,9 +26,10 @@ const GROUPS = [
   { key: 'globalstar', label: 'Globalstar' },
   { key: 'stations', label: '空间站' },
   { key: 'planet', label: 'Planet' },
-  { key: 'spire', label: 'Spire' }
+  { key: 'spire', label: 'Spire' },
+  { key: 'other', label: '其他' }
 ]
-const GROUP_LABEL = {}
+const GROUP_LABEL = { other: '其他' }
 GROUPS.forEach((g) => { GROUP_LABEL[g.key] = g.label })
 const DEFAULT_GROUP = Math.max(0, GROUPS.findIndex((g) => g.key === 'geo'))
 
@@ -199,15 +201,24 @@ function cardFor(e) {
   const speedAbs = v ? Math.hypot(v.x, v.y, v.z) : 0
   const speedRel = (v && r) ? Math.hypot(v.x + WE * r.y, v.y - WE * r.x, v.z) : 0
   const rec = e.rec
+  const periodMin = (2 * Math.PI) / rec.no            // 轨道周期(min)
+  const meanMotion = rec.no * 1440 / (2 * Math.PI)    // 平均运动(rev/day)
+  const apoKm = rec.alta * RE, perKm = rec.altp * RE, meanKm = (apoKm + perKm) / 2
+  // 轨道类型判定
+  let kind = 'LEO'
+  if (rec.ecco > 0.2) kind = 'HEO'
+  else if (meanKm > 30000) kind = ((rec.inclo / DEG) < 10 ? 'GEO' : 'IGSO')
+  else if (meanKm > 2000) kind = 'MEO'
   const isGeo = (e.group || curKey()) === 'geo'
   return {
-    name: e.name, noradId: e.noradId,
+    name: e.name, noradId: e.noradId, group: GROUP_LABEL[e.group] || GROUP_LABEL[curKey()] || '', kind,
     slot: isGeo ? fmtSlot(sat.degreesLong(gd.longitude)) : '',
     alt: gd.height.toFixed(0), lat: sat.degreesLat(gd.latitude).toFixed(2), lon: sat.degreesLong(gd.longitude).toFixed(2),
-    incl: (rec.inclo / DEG).toFixed(1), ecc: rec.ecco.toFixed(4), period: ((2 * Math.PI) / rec.no).toFixed(0),
-    perigee: (rec.altp * RE).toFixed(0), apogee: (rec.alta * RE).toFixed(0),
-    raan: (((rec.nodeo / DEG) % 360 + 360) % 360).toFixed(1), argp: (((rec.argpo / DEG) % 360 + 360) % 360).toFixed(1),
-    speedAbs: speedAbs.toFixed(2), speedRel: speedRel.toFixed(2)
+    incl: (rec.inclo / DEG).toFixed(2), ecc: rec.ecco.toFixed(5), period: periodMin.toFixed(1),
+    perigee: perKm.toFixed(0), apogee: apoKm.toFixed(0), meanMotion: meanMotion.toFixed(4),
+    raan: (((rec.nodeo / DEG) % 360 + 360) % 360).toFixed(2), argp: (((rec.argpo / DEG) % 360 + 360) % 360).toFixed(2),
+    ma: (((rec.mo / DEG) % 360 + 360) % 360).toFixed(2),
+    speedAbs: speedAbs.toFixed(3), speedRel: speedRel.toFixed(3)
   }
 }
 
@@ -355,23 +366,46 @@ async function loadGroup() {
   status.value = `加载 ${g.label} …`
   try {
     if (g.key === 'all') { await loadAll(); return }
+    if (g.key === 'other') { await loadOther(); return }
     const payload = await fetchGroupLiveOrSup(g.key)
     ingest(payload.sats, g.key, payload.fetchedAt)
   } catch (e) { status.value = `${g.label} 获取失败：${(e && e.message) || '网络不可达'}` }
 }
 
-async function loadAll() {
-  const keys = GROUPS.filter((g) => g.key !== 'all').map((g) => g.key)
+// 加载「全部在轨」全集并归类：各已知分组并集 ∪ active；返回归类后的卫星数组（_group 为分组或 'other'）
+async function loadUniverse() {
+  const keys = GROUPS.filter((g) => g.key !== 'all' && g.key !== 'other').map((g) => g.key)
   let done = 0
-  status.value = `加载全部卫星 0/${keys.length} …`
+  status.value = `加载全部卫星 0/${keys.length + 1} …`
+  const tick = () => { done++; status.value = `加载全部卫星 ${done}/${keys.length + 1} …` }
   const tasks = keys.map((key) => fetchGroupLiveOrSup(key)
-    .then((p) => { done++; status.value = `加载全部卫星 ${done}/${keys.length} …`; for (const s of p.sats) s._group = key; return p.sats })
-    .catch(() => { done++; status.value = `加载全部卫星 ${done}/${keys.length} …`; return [] }))
+    .then((p) => { tick(); for (const s of p.sats) s._group = key; return p.sats })
+    .catch(() => { tick(); return [] }))
   const arrs = await Promise.all(tasks)
-  const sats = []
-  for (const a of arrs) for (const s of a) sats.push(s)
+  // 并集（NORAD 去重）+ 分组归类映射
+  const groupOf = new Map(), universe = new Map()
+  for (const a of arrs) for (const s of a) {
+    if (!groupOf.has(s.noradId)) groupOf.set(s.noradId, s._group)
+    if (!universe.has(s.noradId)) universe.set(s.noradId, s)
+  }
+  // 全部在轨（CelesTrak GROUP=active）并入全集；active 被 403/不可达时自动退化为分组并集
+  let active = []
+  try { const ap = await fetchGroupLiveOrSup('active'); active = ap.sats } catch { /* ignore */ }
+  tick()
+  for (const s of active) if (!universe.has(s.noradId)) universe.set(s.noradId, s)
+  // 归类：在已知分组里的标该组，其余标“其他”
+  for (const s of universe.values()) s._group = groupOf.get(s.noradId) || 'other'
+  return [...universe.values()]
+}
+async function loadAll() {
+  const sats = await loadUniverse()
   if (!sats.length) { status.value = '暂无卫星数据（网络不可达）'; return }
   ingest(sats, 'all', new Date().toISOString())
+}
+async function loadOther() {
+  const others = (await loadUniverse()).filter((s) => s._group === 'other')
+  if (!others.length) { status.value = '暂无“其他”卫星（或全集未加载成功）'; return }
+  ingest(others, 'other', new Date().toISOString())
 }
 
 // ===================== 选择 / 搜索 =====================
@@ -460,13 +494,15 @@ async function toggleCoverage() {
   if (covOpen.value) { await ensureCovIndex(); redraw() }
   // 关闭对话框不清空：已绘制的覆盖图保留在地图上（与标记一致）
 }
-// 球体 <-> 平面覆盖图 切换
-async function toggleFlat() {
-  flatView.value = !flatView.value
-  if (!flatView.value) return
+// 球体 <-> 平面图 切换（顶栏「视图」按钮与覆盖面板按钮共用 view.flat）
+function toggleFlat() { view.flat = !view.flat }
+watch(() => view.flat, (v) => applyFlat(v))
+async function applyFlat(v) {
+  flatView.value = v
+  if (!v) return
   await ensureCovIndex(); redraw()
   await nextTick()
-  if (!flat && flatCanvas.value) flat = createFlatCoverage(flatCanvas.value)
+  if (!flat && flatCanvas.value) { flat = createFlatCoverage(flatCanvas.value); flat.setOnRightClick(onMapRightClick) }
   if (flat) {
     flat.resize()
     flat.setNameMode(nameMode.value)
@@ -678,6 +714,13 @@ const fmtLL = (lat, lon) => `${Math.abs(lon).toFixed(2)}°${lon >= 0 ? 'E' : 'W'
 const validLat = (v) => Number.isFinite(v) && v >= -90 && v <= 90
 const validLon = (v) => Number.isFinite(v) && v >= -180 && v <= 180
 
+// 地图右键标记（3D 球体与 2D 平面图共用）：轨迹编辑中加航点，否则标点
+function onMapRightClick(ll) {
+  if (!ll) return
+  const t = curTraj()
+  if (t) { t.pts.push({ lat: ll.lat, lon: ll.lon }); syncMarkers() }
+  else addPoint(ll.lat, ll.lon)
+}
 const markSizes = () => ({ ptFont: markPtFont.value, stIcon: stIconSize.value, stFont: stFontSize.value })
 function syncMarkers() {
   if (!scene) return
@@ -864,12 +907,7 @@ onMounted(async () => {
   })
   // 鼠标实时经纬度（底部状态栏显示）+ 右键标点/加航点
   scene.setOnHover((ll) => { cursor.ll = ll })
-  scene.setOnRightClick((ll) => {
-    if (!ll) return
-    const t = curTraj()
-    if (t) { t.pts.push({ lat: ll.lat, lon: ll.lon }); syncMarkers() }   // 轨迹编辑中 -> 右键加航点
-    else addPoint(ll.lat, ll.lon)                                          // 否则 -> 右键标点
-  })
+  scene.setOnRightClick(onMapRightClick)
   loadMarkers(); syncMarkers()
   ro = new ResizeObserver(() => { if (scene) scene.resize(); if (flat && flatView.value) flat.resize() }); ro.observe(el.value)
 
@@ -904,6 +942,8 @@ onBeforeUnmount(() => { cursor.ll = null; if (timer) clearInterval(timer); if (r
           </div>
         </div>
       </div>
+      <span class="mini" :class="{ on: autoRotate }" @click="toggleRotate">{{ autoRotate ? '旋转中' : '旋转停' }}</span>
+      <span class="mini" :class="{ on: live }" @click="toggleLive">{{ live ? '实时开' : '实时关' }}</span>
       <span class="meta">在轨 {{ satCount }}<template v-if="shownCount && shownCount < satCount"> · 渲染 {{ shownCount }}</template>
         <template v-if="dataTime"> · OMM {{ dataTime }}</template>
         <template v-if="status"> · {{ status }}</template></span>
@@ -935,9 +975,7 @@ onBeforeUnmount(() => { cursor.ll = null; if (timer) clearInterval(timer); if (r
       <div class="lefttools">
         <span v-if="covApiOk" class="mini" :class="{ on: covOpen }" @click="toggleCoverage">覆盖图（GXT）</span>
         <span class="mini" :class="{ on: mkOpen }" @click="toggleMarkers">标记</span>
-        <span class="mini" :class="{ on: autoRotate }" @click="toggleRotate">{{ autoRotate ? '旋转中' : '旋转停' }}</span>
         <span class="mini" :class="{ on: geoOpen }" @click="toggleGeo">地名</span>
-        <span class="mini" :class="{ on: live }" @click="toggleLive">{{ live ? '实时开' : '实时关' }}</span>
       </div>
       <div class="stage-wrap">
         <div ref="el" class="stage"></div>
@@ -956,21 +994,34 @@ onBeforeUnmount(() => { cursor.ll = null; if (timer) clearInterval(timer); if (r
         <div v-if="selected" class="card">
           <div class="ch">
             <span class="cn" :title="selected.name">{{ selected.name }}</span>
-            <span v-if="selected.slot" class="cs">{{ selected.slot }}</span>
             <span class="cx" @click="closeCard">✕</span>
           </div>
-          <div class="cg">
-            <div class="kv"><span class="k">NORAD</span><span class="v">{{ selected.noradId }}</span></div>
-            <div class="kv"><span class="k">高度</span><span class="v">{{ selected.alt }} km</span></div>
-            <div class="kv"><span class="k">倾角</span><span class="v">{{ selected.incl }}°</span></div>
-            <div class="kv"><span class="k">偏心率</span><span class="v">{{ selected.ecc }}</span></div>
-            <div class="kv"><span class="k">惯性速度</span><span class="v">{{ selected.speedAbs }} km/s</span></div>
-            <div class="kv"><span class="k">对地速度</span><span class="v">{{ selected.speedRel }} km/s</span></div>
-            <div class="kv"><span class="k">周期</span><span class="v">{{ selected.period }} min</span></div>
-            <div class="kv wide"><span class="k">近/远地点</span><span class="v">{{ selected.perigee }} / {{ selected.apogee }} km</span></div>
-            <div class="kv"><span class="k">Ω</span><span class="v">{{ selected.raan }}°</span></div>
-            <div class="kv"><span class="k">ω</span><span class="v">{{ selected.argp }}°</span></div>
-            <div class="kv wide"><span class="k">星下点</span><span class="v">{{ selected.lat }}, {{ selected.lon }}</span></div>
+          <div class="cmeta">
+            <span class="badge">NORAD {{ selected.noradId }}</span>
+            <span class="badge kind">{{ selected.kind }}</span>
+            <span v-if="selected.group" class="badge">{{ selected.group }}</span>
+            <span v-if="selected.slot" class="badge geo">定点 {{ selected.slot }}</span>
+          </div>
+
+          <div class="csec">实时状态</div>
+          <div class="rows">
+            <div class="row"><span class="k">星下点</span><span class="v">{{ selected.lat }}°, {{ selected.lon }}°</span></div>
+            <div class="row"><span class="k">海拔高度</span><span class="v">{{ selected.alt }}<i>km</i></span></div>
+            <div class="row"><span class="k">对地速度</span><span class="v">{{ selected.speedRel }}<i>km/s</i></span></div>
+            <div class="row"><span class="k">惯性速度</span><span class="v">{{ selected.speedAbs }}<i>km/s</i></span></div>
+          </div>
+
+          <div class="csec">轨道根数（开普勒）</div>
+          <div class="rows">
+            <div class="row"><span class="k">轨道周期</span><span class="v">{{ selected.period }}<i>min</i></span></div>
+            <div class="row"><span class="k">平均运动 <em>n</em></span><span class="v">{{ selected.meanMotion }}<i>圈/日</i></span></div>
+            <div class="row"><span class="k">轨道倾角 <em>i</em></span><span class="v">{{ selected.incl }}<i>°</i></span></div>
+            <div class="row"><span class="k">偏心率 <em>e</em></span><span class="v">{{ selected.ecc }}</span></div>
+            <div class="row"><span class="k">近地点高度</span><span class="v">{{ selected.perigee }}<i>km</i></span></div>
+            <div class="row"><span class="k">远地点高度</span><span class="v">{{ selected.apogee }}<i>km</i></span></div>
+            <div class="row"><span class="k">升交点赤经 <em>Ω</em></span><span class="v">{{ selected.raan }}<i>°</i></span></div>
+            <div class="row"><span class="k">近地点幅角 <em>ω</em></span><span class="v">{{ selected.argp }}<i>°</i></span></div>
+            <div class="row"><span class="k">平近点角 <em>M</em></span><span class="v">{{ selected.ma }}<i>°</i></span></div>
           </div>
         </div>
       </div>
@@ -1103,9 +1154,9 @@ onBeforeUnmount(() => { cursor.ll = null; if (timer) clearInterval(timer); if (r
               <span class="sg" :class="{ on: nameMode === 'off' }" @click="setNameMode('off')">不显示</span>
             </span>
           </div>
-          <div class="srow"><label>国家名字号</label><input class="rng" type="range" min="0.6" max="2" step="0.1" :value="countryNameSize" @input="setCountryNameSize" /><span class="u">{{ countryNameSize.toFixed(1) }}</span></div>
+          <div class="srow"><label>国家名字号</label><input class="rng" type="range" min="0.3" max="2" step="0.05" :value="countryNameSize" @input="setCountryNameSize" /><span class="u">{{ countryNameSize.toFixed(2) }}</span></div>
           <label class="chk2"><input type="checkbox" :checked="showProvinces" @change="toggleProvinces" /><span>显示中国省界 / 省名</span></label>
-          <div class="srow"><label>省名字号</label><input class="rng" type="range" min="0.6" max="2" step="0.1" :value="provNameSize" @input="setProvNameSize" /><span class="u">{{ provNameSize.toFixed(1) }}</span></div>
+          <div class="srow"><label>省名字号</label><input class="rng" type="range" min="0.3" max="2" step="0.05" :value="provNameSize" @input="setProvNameSize" /><span class="u">{{ provNameSize.toFixed(2) }}</span></div>
           <div class="tip">国家名(含大洋名)与省名字号分开调，同时作用于 3D 与平面图。</div>
         </div>
       </div>
@@ -1210,16 +1261,30 @@ onBeforeUnmount(() => { cursor.ll = null; if (timer) clearInterval(timer); if (r
 .dl-row { display: flex; gap: 10px; justify-content: center; }
 .dl-row button { border: 1px solid #4a5168; background: #1c2230; color: #d7dde6; padding: 6px 14px; cursor: pointer; border-radius: 4px; font-size: 12.5px; }
 .dl-row button:hover { border-color: #6b7490; }
-.card { position: absolute; right: 14px; top: 14px; width: 224px; background: var(--bg); border: 1px solid var(--border-strong); padding: 8px 11px; }
-.ch { display: flex; align-items: baseline; gap: 8px; margin-bottom: 7px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
-.cn { font-family: var(--font-serif); font-size: 13.5px; flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.cs { font-size: 11px; color: var(--text-muted); flex: none; white-space: nowrap; }
-.cx { flex: none; cursor: pointer; color: var(--text-faint); align-self: center; line-height: 1; }
-.cg { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 14px; font-size: 11px; }
-.kv { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; min-width: 0; white-space: nowrap; }
-.kv.wide { grid-column: 1 / 3; }
-.kv .k { color: var(--text-muted); flex: none; }
-.kv .v { font-family: var(--font-mono); min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.card {
+  position: absolute; right: 14px; top: 14px; width: 256px;
+  max-height: calc(100% - 28px); overflow-y: auto;
+  background: color-mix(in srgb, var(--surface) 80%, transparent);
+  backdrop-filter: blur(14px) saturate(1.1); -webkit-backdrop-filter: blur(14px) saturate(1.1);
+  border: 1px solid color-mix(in srgb, var(--border-strong) 70%, transparent);
+  border-radius: 6px; padding: 11px 13px; font-size: 12px;
+  box-shadow: 0 12px 32px rgba(0,0,0,0.45);
+}
+.ch { display: flex; align-items: flex-start; gap: 8px; }
+.cn { flex: 1 1 auto; min-width: 0; font-family: var(--font-serif); font-size: 15px; line-height: 1.3; overflow-wrap: anywhere; }
+.cx { flex: none; cursor: pointer; color: var(--text-faint); line-height: 1.2; }
+.cx:hover { color: var(--text); }
+.cmeta { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+.badge { font-family: var(--font-mono); font-size: 10.5px; padding: 1px 6px; border: 1px solid var(--border); color: var(--text-muted); }
+.badge.kind { color: var(--accent); border-color: var(--accent); }
+.badge.geo { color: #ffd24a; border-color: #ffd24a; }
+.csec { margin: 11px 0 5px; padding-top: 8px; border-top: 1px solid var(--border); font-size: 10.5px; letter-spacing: 1.5px; color: var(--text-faint); }
+.rows { display: flex; flex-direction: column; gap: 4px; }
+.row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.row .k { color: var(--text-muted); white-space: nowrap; }
+.row .k em { font-style: italic; font-family: var(--font-serif); color: var(--accent); margin-left: 3px; font-size: 12.5px; }
+.row .v { font-family: var(--font-mono); color: var(--text); white-space: nowrap; text-align: right; }
+.row .v i { font-style: normal; color: var(--text-faint); font-size: 10.5px; margin-left: 3px; }
 
 /* 覆盖图：右侧停靠面板（挤压地球，独占右栏） */
 .cov-side { width: 286px; flex: none; border-left: 1px solid var(--border-strong); background: var(--bg); overflow-y: auto; display: flex; flex-direction: column; font-size: 12px; }

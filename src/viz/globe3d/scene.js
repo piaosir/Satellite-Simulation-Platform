@@ -302,15 +302,15 @@ export function createGlobeScene(container) {
 
   const scene = new THREE.Scene()
   scene.background = new THREE.Color(0x070b12)
-  // near 0.1 / far 60：最近可视面距相机 0.15 不裁切，范围内标准深度精度充足
-  const camera = new THREE.PerspectiveCamera(42, w / h, 0.1, 60)
-  camera.position.set(0.4, 0.9, 3.0)
+  // near 0.1：最近可视面距相机 0.15 不裁切。far 120：覆盖拉远到 maxDistance(50) + 大轨道半径(GEO≈6.6/HEO 更大)，避免远端轨道被远裁剪面切掉露出黑底
+  const camera = new THREE.PerspectiveCamera(42, w / h, 0.1, 120)
+  camera.position.copy(llaToVec(36, 104, 0).multiplyScalar(3.0))   // 默认以中国（约 104°E, 36°N）为中心
 
   const controls = new OrbitControls(camera, renderer.domElement)
   controls.enableDamping = true
   controls.dampingFactor = 0.08
   controls.minDistance = 1.15
-  controls.maxDistance = 16
+  controls.maxDistance = 50
   controls.rotateSpeed = 0.5
   controls.enablePan = false    // 关掉平移：右键留给“标点”，避免误平移
   controls.enableZoom = false   // 自定义滚轮缩放（见下方 wheel）：指数步进 + 每帧缓动，手感更顺、不突兀

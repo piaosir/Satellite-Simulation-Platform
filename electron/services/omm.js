@@ -28,7 +28,7 @@ const GROUP_QUERY = {
   qianfan: 'GROUP=qianfan', guowang: 'NAME=HULIANWANG', geo: 'GROUP=geo',
   glonass: 'GROUP=glo-ops', o3b: 'NAME=O3B', iridium: 'GROUP=iridium-NEXT',
   globalstar: 'GROUP=globalstar', stations: 'GROUP=stations', planet: 'GROUP=planet',
-  spire: 'GROUP=spire'
+  spire: 'GROUP=spire', active: 'GROUP=active'
 }
 const SUP_FILE = { starlink: 'starlink', oneweb: 'oneweb', kuiper: 'kuiper', planet: 'planet', iridium: 'iridium', gps: 'gps' }
 const csvUrl = (k) => `https://celestrak.org/NORAD/elements/gp.php?${GROUP_QUERY[k]}&FORMAT=csv`
@@ -129,11 +129,14 @@ module.exports = function createOmm(getCore) {
   const csvCacheFile = (k) => path.join(cacheDir(), `csv_${k}.csv`)
 
   const valid = (t) => t && /MEAN_MOTION/i.test(t)
+  const isToday = (d) => { const n = new Date(), t = new Date(d); return n.getFullYear() === t.getFullYear() && n.getMonth() === t.getMonth() && n.getDate() === t.getDate() }
 
-  // 取某组 OMM CSV 文本：主端点(重试3次)→补充端点(重试2次)→本地缓存兜底（离线优先）。
-  // 国内访问 celestrak.org 不稳，故多次重试 + 命中即落盘缓存，后续/断网可直接读本地。
+  // 取某组 OMM CSV 文本：本地有“今天”的缓存 → 直接用（一天一次）；否则联网（主端点重试3次→补充端点重试2次）→ 命中落盘；再失败回退任意本地缓存（离线优先）。
   async function fetchCsv(key) {
     if (!GROUP_QUERY[key]) throw new Error('unknown group: ' + key)
+    const cf = csvCacheFile(key)
+    // 一天一次：缓存文件是今天写的就直接用，不再联网
+    try { const st = fs.statSync(cf); if (isToday(st.mtime)) { const c = fs.readFileSync(cf, 'utf8'); if (valid(c)) { console.log('[omm] 用今日缓存:', key); return c } } } catch {}
     console.log('[omm] fetchCsv 开始:', key, '->', csvUrl(key))
     let text = null
     for (let i = 0; i < 3 && !valid(text); i++) text = await httpGetText(csvUrl(key))

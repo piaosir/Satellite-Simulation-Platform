@@ -197,7 +197,7 @@ export function createFlatCoverage(canvas) {
     e.preventDefault()
     const r = canvas.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top
     const kk = k(), wx = (mx - tx) / kk, wy = (my - ty) / kk
-    scale = clamp(scale * Math.exp(-e.deltaY * 0.0015), 0.5, 60)
+    scale = clamp(scale * Math.exp(-e.deltaY * 0.0015), 0.9, 60)
     const k2 = k(); tx = mx - wx * k2; ty = my - wy * k2; draw()
   }
   let dragging = false, lx = 0, ly = 0
@@ -205,12 +205,23 @@ export function createFlatCoverage(canvas) {
   function onMove(e) { if (!dragging) return; tx += e.clientX - lx; ty += e.clientY - ly; lx = e.clientX; ly = e.clientY; draw() }
   function onUp() { dragging = false; canvas.style.cursor = 'grab' }
   function onDbl() { fit(); draw() }
+  // 屏幕坐标 -> 经纬度（投影逆运算）；超出地图范围返回 null
+  function screenToLonLat(clientX, clientY) {
+    const r = canvas.getBoundingClientRect(), kk = k()
+    const wx = (clientX - r.left - tx) / kk, wy = (clientY - r.top - ty) / kk
+    if (wy < 0 || wy > 180) return null
+    let lon = wx + LON0; lon = ((lon % 360) + 540) % 360 - 180
+    return { lat: 90 - wy, lon }
+  }
+  let onRightClick = null
+  function onCtx(e) { e.preventDefault(); if (onRightClick) onRightClick(screenToLonLat(e.clientX, e.clientY)) }
   canvas.addEventListener('wheel', onWheel, { passive: false })
   canvas.addEventListener('pointerdown', onDown)
   canvas.addEventListener('pointermove', onMove)
   canvas.addEventListener('pointerup', onUp)
   canvas.addEventListener('pointerleave', onUp)
   canvas.addEventListener('dblclick', onDbl)
+  canvas.addEventListener('contextmenu', onCtx)
   canvas.style.cursor = 'grab'
 
   // 省界数据解析（与 3D setProvinces 同款格式）
@@ -231,6 +242,7 @@ export function createFlatCoverage(canvas) {
     setNameMode(m) { nameMode = m; draw() },
     setProvinces,
     setProvincesVisible(v) { provVisible = !!v; draw() },
+    setOnRightClick(fn) { onRightClick = fn },
     setMarkers(points, stations, trajectories) { mk = { points: points || [], stations: stations || [], trajectories: trajectories || [] }; draw() },
     resize() {
       const w = canvas.clientWidth || canvas.parentElement?.clientWidth || 0, h = canvas.clientHeight || canvas.parentElement?.clientHeight || 0
@@ -242,6 +254,7 @@ export function createFlatCoverage(canvas) {
     destroy() {
       canvas.removeEventListener('wheel', onWheel); canvas.removeEventListener('pointerdown', onDown); canvas.removeEventListener('pointermove', onMove)
       canvas.removeEventListener('pointerup', onUp); canvas.removeEventListener('pointerleave', onUp); canvas.removeEventListener('dblclick', onDbl)
+      canvas.removeEventListener('contextmenu', onCtx)
     }
   }
 }

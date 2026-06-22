@@ -1,7 +1,8 @@
 <script setup>
-import { computed, defineAsyncComponent } from 'vue'
+import { computed, ref, defineAsyncComponent } from 'vue'
 import { useNavStore } from './stores/nav'
 import { cursor } from './stores/cursor'
+import { view } from './stores/view'
 
 // 经度在前、纬度在后，保留两位小数
 const fmtCoord = (ll) => `${Math.abs(ll.lon).toFixed(2)}°${ll.lon >= 0 ? 'E' : 'W'}  ${Math.abs(ll.lat).toFixed(2)}°${ll.lat >= 0 ? 'N' : 'S'}`
@@ -17,6 +18,8 @@ const ConstellationMap3D = defineAsyncComponent(() => import('./pages/Constellat
 const ISL = defineAsyncComponent(() => import('./pages/ISL.vue'))
 
 const nav = useNavStore()
+const viewMenu = ref(false)
+function pickView(v) { view.flat = v; viewMenu.value = false }
 
 const pageMap = {
   link: LinkBudget,
@@ -38,8 +41,21 @@ const currentLabel = computed(
     <header class="topbar">
       <span class="brand">卫星仿真平台</span>
       <nav class="menu">
-        <span>文件</span><span>计算</span><span>视图</span><span>帮助</span>
+        <span>文件</span><span>计算</span>
+        <span class="vwrap">
+          <span class="vbtn" :class="{ on: viewMenu }" @click.stop="viewMenu = !viewMenu">视图 · {{ view.flat ? '2D 平面' : '3D 球体' }} ▾</span>
+          <div v-if="viewMenu" class="vmenu">
+            <div class="vitem" :class="{ sel: !view.flat }" @click="pickView(false)">
+              <span class="ck">{{ !view.flat ? '✓' : '' }}</span><span class="vico">◐</span>3D 球体
+            </div>
+            <div class="vitem" :class="{ sel: view.flat }" @click="pickView(true)">
+              <span class="ck">{{ view.flat ? '✓' : '' }}</span><span class="vico">▦</span>2D 平面图
+            </div>
+          </div>
+        </span>
+        <span>帮助</span>
       </nav>
+      <div v-if="viewMenu" class="vmask" @click="viewMenu = false"></div>
     </header>
 
     <div class="body">
@@ -71,7 +87,23 @@ const currentLabel = computed(
   border-bottom: 1px solid var(--border); flex: none;
 }
 .brand { font-family: var(--font-serif); font-size: 15px; letter-spacing: .4px; }
-.menu { display: flex; gap: 18px; color: var(--text-muted); font-size: 12.5px; }
+.menu { display: flex; align-items: center; gap: 18px; color: var(--text-muted); font-size: 12.5px; }
+.vwrap { position: relative; }
+.vbtn { cursor: pointer; border: 1px solid var(--border); padding: 2px 10px; border-radius: 2px; }
+.vbtn:hover { color: var(--text); border-color: var(--accent); }
+.vbtn.on { color: var(--text); border-color: var(--accent); }
+.vmenu {
+  position: absolute; top: calc(100% + 6px); left: 0; z-index: 100; min-width: 132px;
+  background: var(--surface); border: 1px solid var(--border-strong);
+  box-shadow: 0 6px 18px rgba(0,0,0,0.35); padding: 4px;
+}
+.vitem { display: flex; align-items: center; gap: 7px; padding: 6px 9px; cursor: pointer; color: var(--text-muted); font-size: 12.5px; }
+.vitem:hover { background: var(--bg); color: var(--text); }
+.vitem.sel { color: var(--text); }
+.vitem .ck { width: 12px; color: var(--accent); }
+.vitem .vico { width: 14px; text-align: center; color: var(--text-faint); }
+.vitem.sel .vico { color: var(--accent); }
+.vmask { position: fixed; inset: 0; z-index: 99; }
 .body { display: flex; flex: 1; min-height: 0; }
 .sidenav {
   width: 140px; flex: none; padding: 8px 0;
