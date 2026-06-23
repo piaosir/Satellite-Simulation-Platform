@@ -35,8 +35,6 @@ const DEFAULT_GROUP = Math.max(0, GROUPS.findIndex((g) => g.key === 'geo'))
 
 const RE = 6378.137
 const DEG = Math.PI / 180
-const MAX_RENDER = 9000
-const MAX_RENDER_ALL = 14000
 const STORE_KEY = 'constellation3d/selection'
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v))
 
@@ -179,7 +177,7 @@ function gainSwatchCss(ba, g) {
 
 let scene = null
 let entries = []        // 全部 {rec, name, noradId, group}
-let renderEntries = []  // 抽稀后、与点云顺序一致
+let renderEntries = []  // 有效卫星集，与点云顺序一致
 let selEntry = null
 let baseTime = Date.now()
 let timer = null, ro = null
@@ -295,36 +293,21 @@ function circleLatLon(lat0, lon0, lambda, N) {
   return out
 }
 
-// ===================== 抽稀 + 渲染集 =====================
-function decimate(arr, n) {
-  if (arr.length <= n) return arr
-  const out = [], step = arr.length / n
-  for (let k = 0; k < n; k++) out.push(arr[Math.floor(k * step)])
-  return out
-}
-
-// 换组/加载后：算一次此刻位置，确定（固定的）渲染抽稀子集
+// ===================== 渲染集 =====================
+// 换组/加载后：算一次此刻位置，过滤掉不可解算的，渲染全部有效卫星（PC 端性能足够，不再抽稀）
 function rebuildRenderSet() {
   if (!scene) return
-  const now = calcAt(), gmst = sat.gstime(now)
+  const now = calcAt()
   const valid = []
   for (const e of entries) {
     try { const pv = sat.propagate(e.rec, now); if (pv && pv.position) valid.push(e) } catch { /* skip */ }
   }
-  if (curKey() === 'all') {
-    const nonStar = [], star = []
-    for (const e of valid) (e.group === 'starlink' ? star : nonStar).push(e)
-    const head = decimate(nonStar, MAX_RENDER_ALL)
-    const remain = MAX_RENDER_ALL - head.length
-    renderEntries = remain > 0 ? head.concat(decimate(star, remain)) : head
-  } else {
-    renderEntries = decimate(valid, MAX_RENDER)
-  }
+  renderEntries = valid
   satCount.value = entries.length
   refreshPositions()
 }
 
-// 时间推进 / 实时刷新：只重算渲染子集位置（不重新抽稀），并刷新选中几何/信息卡
+// 时间推进 / 实时刷新：只重算渲染集位置（不重建集合），并刷新选中几何/信息卡
 function refreshPositions() {
   if (!scene) return
   const now = calcAt(), gmst = sat.gstime(now)
@@ -338,7 +321,11 @@ function refreshPositions() {
   }
   scene.setSatellites(positions)
   shownCount.value = renderEntries.length
-  if (selEntry) { const c = cardFor(selEntry); if (c) selected.value = c; buildSelectedGeometry() }
+  if (selEntry) {
+    const c = cardFor(selEntry); if (c) selected.value = c; buildSelectedGeometry()
+    if (points.value.length || stations.value.length) pushMarkers()   // 随卫星移动刷新标记仰角
+  }
+  pushFocusSat()   // 同步 2D 平面图上聚焦卫星实时位置
 }
 
 // ===================== 数据加载 =====================
@@ -414,6 +401,8 @@ function selectSat(e, face) {
   resetBeam()
   const c = cardFor(e); if (c) selected.value = c
   buildSelectedGeometry()
+  pushMarkers()   // 聚焦后立即在标记上显示仰角
+  pushFocusSat()  // 2D 平面图标注聚焦卫星位置
   if (face && scene) {
     const now = calcAt(), gmst = sat.gstime(now)
     const pv = sat.propagate(e.rec, now)
@@ -447,7 +436,7 @@ function onSearch(e) {
 }
 function clearSearch() { keyword.value = ''; searchResults.value = [] }
 function pickResult(item) { searchResults.value = []; keyword.value = ''; selectSat(item.en, true) }
-function closeCard() { selEntry = null; selected.value = null; resetBeam(); scene && scene.clearSelectionGeom(); saveSelection() }
+function closeCard() { selEntry = null; selected.value = null; resetBeam(); scene && scene.clearSelectionGeom(); pushMarkers(); pushFocusSat(); saveSelection() }
 
 // ===================== 波束角 =====================
 function resetBeam() { if (!beamLock.value) beam.value = ''; beamAuto.value = '' }
@@ -458,6 +447,32 @@ function onBeam(e) {
 function toggleBeamLock() { beamLock.value = !beamLock.value }
 
 // ===================== 时间轴 =====================
+const track = ref(null)
+// 文字刻度（0~1440 分钟＝未来 24h）：与小程序时间轴一致的整点标记
+const timeTicks = [
+  { min: 0, label: '此刻' },
+  { min: 360, label: '+6h' },
+  { min: 720, label: '+12h' },
+  { min: 1080, label: '+18h' },
+  { min: 1440, label: '+24h' }
+]
+// 刻度文字定位：首尾贴边、其余居中，避免溢出轨道两端
+function tickStyle(min) {
+  const tf = min === 0 ? 'translateX(0)' : min === 1440 ? 'translateX(-100%)' : 'translateX(-50%)'
+  return { left: min / 14.4 + '%', transform: tf }
+}
+function trackToMin(clientX) {
+  const r = track.value.getBoundingClientRect()
+  return Math.round(clamp01((clientX - r.left) / r.width) * 1440)
+}
+// 拖拽/点击时间轴（监听挂 document，移出轨道仍连续）
+function trackDown(e) {
+  if (live.value || !track.value) return
+  applyTime(trackToMin(e.clientX))
+  const move = (ev) => applyTime(trackToMin(ev.clientX))
+  const up = () => { document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up) }
+  document.addEventListener('mousemove', move); document.addEventListener('mouseup', up)
+}
 function applyTime(v) {
   timeOffset.value = clamp(v, 0, 1440); timePct.value = timeOffset.value / 1440 * 100
   if (live.value) { live.value = false; if (timer) { clearInterval(timer); timer = null } baseTime = Date.now() }
@@ -509,12 +524,13 @@ async function applyFlat(v) {
     if (provincesData) flat.setProvinces(provincesData)
     flat.setProvincesVisible(showProvinces.value)
     flat.setMarkers(
-      points.value.map((p) => ({ lat: p.lat, lon: p.lon, label: fmtLL(p.lat, p.lon) })),
-      stations.value.map((s) => ({ lat: s.lat, lon: s.lon, name: s.name })),
+      points.value.map((p) => ({ lat: p.lat, lon: p.lon, label: fmtLL(p.lat, p.lon), el: fmtElev(p.lat, p.lon) })),
+      stations.value.map((s) => ({ lat: s.lat, lon: s.lon, name: s.name, el: fmtElev(s.lat, s.lon) })),
       trajectories.value.map((t) => ({ pts: t.pts, kind: t.kind, color: t.kind === 'flight' ? 0x5ad1ff : 0xff6a4a }))
     )
     flat.setSizes({ beamFont: beamLabelSize.value, contourFont: contourLabelSize.value, dotSize: boreSize.value, showBore: showBore.value, nameScale: countryNameSize.value, provScale: provNameSize.value, ptFont: markPtFont.value, stIcon: stIconSize.value, stFont: stFontSize.value })
     flat.setGeom(covGeom)
+    pushFocusSat()   // 切到平面图时标注当前聚焦卫星位置
   }
 }
 
@@ -523,15 +539,23 @@ function newBatch() {
   const color = hexToCss(DEF_COLORS[covColorCursor++ % DEF_COLORS.length])
   return { id: newCovId(), name: '', q: '', beams: [], gains: [], custom: '', mode: 'gradient', solid: color, gainColors: {}, width: 1.6 }
 }
+const covTrash = {}   // folder -> 已移除卫星的设置（type/band/batches），再次添加时恢复，避免重配批次
 function addCovSat() {
   const folder = covAddSel.value; if (!folder) return
   covAddSel.value = ''
   if (covItems.value.find((i) => i.folder === folder)) return   // 已添加则跳过
   const idx = idxOf(folder); if (!idx) return
-  covItems.value.push({ id: newCovId(), folder, type: 'EIRP', band: 'all', batches: [newBatch()] })
+  const saved = covTrash[folder]; delete covTrash[folder]   // 恢复上次移除时保留的批次设置
+  covItems.value.push(saved
+    ? { id: newCovId(), folder, type: saved.type, band: saved.band, batches: saved.batches }
+    : { id: newCovId(), folder, type: 'EIRP', band: 'all', batches: [newBatch()] })
   redraw()
 }
-function removeCovSat(it) { const i = covItems.value.indexOf(it); if (i >= 0) covItems.value.splice(i, 1); redraw() }
+// 移除卫星：仅从绘制列表移除，保留其批次设置，再次添加时恢复
+function removeCovSat(it) {
+  covTrash[it.folder] = { type: it.type, band: it.band, batches: it.batches }
+  const i = covItems.value.indexOf(it); if (i >= 0) covItems.value.splice(i, 1); redraw()
+}
 function setItemType(it, t) {
   if (it.type === t) return
   it.type = t; it.band = 'all'
@@ -690,8 +714,13 @@ async function redraw() {
   covLegend.value = legend
   if (!loading) covStatus.value = ''
 }
-// 清空所有覆盖卫星与批次
-function clearCoverage() { covItems.value = []; covLegend.value = []; elevText.value = ''; covStatus.value = ''; redraw() }
+// 只清当前绘制的覆盖图（图形 + 图例），保留卫星 / 批次设置，便于再次绘制
+function clearCoverage() {
+  covGeom = { lines: [], dots: [], labels: [], sats: [] }
+  covLegend.value = []; covStatus.value = ''
+  if (scene) scene.setCoverage(null)
+  if (flat) flat.setGeom(covGeom)
+}
 
 // ===================== 标记 / 地面站 / 轨迹 =====================
 const MK_KEY = 'globe3d/markers'
@@ -714,6 +743,31 @@ const fmtLL = (lat, lon) => `${Math.abs(lon).toFixed(2)}°${lon >= 0 ? 'E' : 'W'
 const validLat = (v) => Number.isFinite(v) && v >= -90 && v <= 90
 const validLon = (v) => Number.isFinite(v) && v >= -180 && v <= 180
 
+// 当前聚焦卫星相对地面点(lat,lon)的仰角；未聚焦或不可解算时返回 null
+function satElevAt(lat, lon) {
+  if (!selEntry) return null
+  const now = calcAt()
+  const pv = sat.propagate(selEntry.rec, now)
+  if (!pv || !pv.position) return null
+  const ecf = sat.eciToEcf(pv.position, sat.gstime(now))
+  const look = sat.ecfToLookAngles({ longitude: lon * DEG, latitude: lat * DEG, height: 0 }, ecf)
+  return look.elevation / DEG
+}
+// 标签用仰角文本：未聚焦返回空串（地平线以下显示负值即标识不可见）
+const fmtElev = (lat, lon) => { const e = satElevAt(lat, lon); return e == null ? '' : `仰角 ${e.toFixed(1)}°` }
+
+// 聚焦卫星实时星下点；无聚焦/不可解算返回 null
+function focusSubpoint() {
+  if (!selEntry) return null
+  const now = calcAt()
+  const pv = sat.propagate(selEntry.rec, now)
+  if (!pv || !pv.position) return null
+  const gd = sat.eciToGeodetic(pv.position, sat.gstime(now))
+  return { lat: sat.degreesLat(gd.latitude), lon: sat.degreesLong(gd.longitude) }
+}
+// 把聚焦卫星星下点推给 2D 平面图（标注其实时位置）
+function pushFocusSat() { if (flat) flat.setFocusSat(focusSubpoint()) }
+
 // 地图右键标记（3D 球体与 2D 平面图共用）：轨迹编辑中加航点，否则标点
 function onMapRightClick(ll) {
   if (!ll) return
@@ -722,15 +776,16 @@ function onMapRightClick(ll) {
   else addPoint(ll.lat, ll.lon)
 }
 const markSizes = () => ({ ptFont: markPtFont.value, stIcon: stIconSize.value, stFont: stFontSize.value })
-function syncMarkers() {
+// 仅把标记推送到两个视图（含聚焦卫星仰角），不写入持久化；供时间推进/选星刷新仰角调用
+function pushMarkers() {
   if (!scene) return
-  const pts = points.value.map((p) => ({ lat: p.lat, lon: p.lon, label: fmtLL(p.lat, p.lon) }))
-  const sts = stations.value.map((s) => ({ lat: s.lat, lon: s.lon, name: s.name }))
+  const pts = points.value.map((p) => ({ lat: p.lat, lon: p.lon, label: fmtLL(p.lat, p.lon), el: fmtElev(p.lat, p.lon) }))
+  const sts = stations.value.map((s) => ({ lat: s.lat, lon: s.lon, name: s.name, el: fmtElev(s.lat, s.lon) }))
   const trs = trajectories.value.map((t) => ({ pts: t.pts, kind: t.kind, color: t.kind === 'flight' ? 0x5ad1ff : 0xff6a4a }))
   scene.setMarkers(pts, sts, markSizes()); scene.setTrajectories(trs)
   if (flat) { flat.setMarkers(pts, sts, trs); flat.setSizes(markSizes()) }
-  persistMarkers()
 }
+function syncMarkers() { pushMarkers(); persistMarkers() }
 function persistMarkers() {
   try { localStorage.setItem(MK_KEY, JSON.stringify({ points: points.value, stations: stations.value, trajectories: trajectories.value })) } catch { /* ignore */ }
 }
@@ -950,8 +1005,12 @@ onBeforeUnmount(() => { cursor.ll = null; if (timer) clearInterval(timer); if (r
     </div>
 
     <div class="tl">
-      <input type="range" min="0" max="1440" step="1" :value="timeOffset"
-             @input="e => applyTime(Number(e.target.value))" :disabled="live" />
+      <div class="tb-track" ref="track" :class="{ dis: live }" @mousedown="trackDown">
+        <span v-for="t in timeTicks" :key="'k' + t.min" class="tb-tick" :style="{ left: t.min / 14.4 + '%' }"></span>
+        <div class="tb-bar"><div class="tb-fill" :style="{ width: timePct + '%' }"></div></div>
+        <div class="tb-knob" :style="{ left: timePct + '%' }"></div>
+        <span v-for="t in timeTicks" :key="'m' + t.min" class="tb-mark" :style="tickStyle(t.min)">{{ t.label }}</span>
+      </div>
       <span class="tlab">{{ timeLabel() }}</span>
       <span class="st" :class="{ dis: live }" @click="step(-60)">−1h</span>
       <span class="st" :class="{ dis: live }" @click="step(-10)">−10m</span>
@@ -1140,7 +1199,7 @@ onBeforeUnmount(() => { cursor.ll = null; if (timer) clearInterval(timer); if (r
 
         <div class="csfoot">
           <span v-if="covStatus" class="cst">{{ covStatus }}</span>
-          <span class="cclr" @click="clearCoverage">清除全部</span>
+          <span class="cclr" @click="clearCoverage">清除绘制</span>
         </div>
       </div>
 
@@ -1236,8 +1295,15 @@ onBeforeUnmount(() => { cursor.ll = null; if (timer) clearInterval(timer); if (r
 .search .nm { font-size: 12.5px; }
 .search .sub { color: var(--text-faint); font-size: 11px; }
 .meta { margin-left: auto; color: var(--text-faint); }
-.tl { display: flex; align-items: center; gap: 10px; padding: 6px 16px; border-bottom: 1px solid var(--border); flex: none; font-size: 11.5px; }
-.tl input[type=range] { flex: 1; }
+.tl { display: flex; align-items: center; gap: 12px; padding: 7px 16px 9px; border-bottom: 1px solid var(--border); flex: none; font-size: 11.5px; }
+/* 时间轴（同小程序样式）：自绘轨道 + 进度 + 圆点滑块 + 文字刻度 */
+.tb-track { position: relative; flex: 1; min-width: 180px; height: 30px; cursor: pointer; }
+.tb-track.dis { opacity: 0.45; pointer-events: none; }
+.tb-bar { position: absolute; left: 0; right: 0; top: 9px; height: 3px; border-radius: 2px; background: var(--border-strong); }
+.tb-fill { height: 100%; border-radius: 2px; background: var(--accent); }
+.tb-knob { position: absolute; top: 4.5px; width: 12px; height: 12px; border-radius: 50%; background: var(--accent); transform: translateX(-50%); box-shadow: 0 0 0 2px var(--bg); }
+.tb-tick { position: absolute; top: 6px; width: 1px; height: 9px; background: var(--border-strong); transform: translateX(-50%); }
+.tb-mark { position: absolute; top: 17px; font-family: var(--font-mono); font-size: 10px; line-height: 1; color: var(--text-faint); white-space: nowrap; pointer-events: none; }
 .tlab { font-family: var(--font-mono); min-width: 150px; color: var(--text-muted); }
 .tl .st { padding: 2px 8px; border: 1px solid var(--border); cursor: pointer; color: var(--text-muted); }
 .tl .st.dis { opacity: 0.4; pointer-events: none; }

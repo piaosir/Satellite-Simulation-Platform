@@ -30,6 +30,16 @@ const STATION_SVG = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'
   "<path d='M23.5 19.5 L32 11.5 M40.5 19.5 L32 11.5 M27 31.5 L32 11.5 M37 31.5 L32 11.5' fill='none' stroke='#aebccb' stroke-width='0.9' stroke-linecap='round'/>" +
   "<circle cx='32' cy='11.5' r='2.4' fill='#dfe7ee' stroke='#5d6e82' stroke-width='0.8'/></g></svg>"
 
+// 聚焦卫星图标：白填充 / 黑描边，姿态倾斜。极简——仅双侧 3×2 圆角块 + 中央星体。
+const SAT_SVG = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'>" +
+  "<g transform='rotate(-20 60 60)' fill='#ffffff' stroke='#0d1117' stroke-width='3' stroke-linejoin='round'>" +
+  "<rect x='8' y='41' width='10' height='16' rx='3'/><rect x='21' y='41' width='10' height='16' rx='3'/><rect x='34' y='41' width='10' height='16' rx='3'/>" +
+  "<rect x='8' y='63' width='10' height='16' rx='3'/><rect x='21' y='63' width='10' height='16' rx='3'/><rect x='34' y='63' width='10' height='16' rx='3'/>" +  // 左阵 3×2
+  "<rect x='76' y='41' width='10' height='16' rx='3'/><rect x='89' y='41' width='10' height='16' rx='3'/><rect x='102' y='41' width='10' height='16' rx='3'/>" +
+  "<rect x='76' y='63' width='10' height='16' rx='3'/><rect x='89' y='63' width='10' height='16' rx='3'/><rect x='102' y='63' width='10' height='16' rx='3'/>" +  // 右阵 3×2
+  "<rect x='49' y='35' width='22' height='50' rx='10'/>" +                                    // 星体
+  "</g></svg>"
+
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v))
 const hex = (c) => typeof c === 'number' ? '#' + (c & 0xffffff).toString(16).padStart(6, '0') : (c || '#fff')
 function unwrap(ring) {
@@ -63,12 +73,17 @@ export function createFlatCoverage(canvas) {
   let geom = null
   let nameMode = 'off', provVisible = false, prov = null
   let mk = { points: [], stations: [], trajectories: [] }
-  const sizes = { beamFont: 16, contourFont: 12, dotSize: 5, showBore: true, nameScale: 1, provScale: 1, ptFont: 14, stIcon: 32, stFont: 17 }
+  let focusSat = null   // 聚焦卫星星下点 { lat, lon }，null 表示无聚焦
+  const sizes = { beamFont: 16, contourFont: 12, dotSize: 5, showBore: true, nameScale: 1, provScale: 1, ptFont: 14, stIcon: 32, stFont: 17, satIcon: 30 }
 
   // 地面站图标
   const stationImg = new Image(); let stationReady = false
   stationImg.onload = () => { stationReady = true; draw() }
   stationImg.src = 'data:image/svg+xml;base64,' + btoa(STATION_SVG)
+  // 聚焦卫星图标
+  const satImg = new Image(); let satReady = false
+  satImg.onload = () => { satReady = true; draw() }
+  satImg.src = 'data:image/svg+xml;base64,' + btoa(SAT_SVG)
 
   // 预处理底图：陆地多边形（按国家配色）+ 国家名 + 大洋名
   const feats = feature(topo, topo.objects.countries).features
@@ -142,7 +157,8 @@ export function createFlatCoverage(canvas) {
     const x = PX(lon) + (o.dx || 0), y = PY(lat) + (o.dy || 0)
     ctx.font = `${o.italic ? 'italic ' : ''}${o.bold ? 'bold ' : ''}${px}px "Microsoft YaHei", sans-serif`
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
-    ctx.lineWidth = Math.max(2, px * 0.2); ctx.strokeStyle = 'rgba(0,0,0,0.8)'
+    ctx.lineJoin = 'round'; ctx.miterLimit = 2
+    ctx.lineWidth = Math.max(1.4, px * 0.13); ctx.strokeStyle = 'rgba(0,0,0,0.72)'
     ctx.strokeText(text, x, y); ctx.fillStyle = color; ctx.fillText(text, x, y)
   }
   function dot(lon, lat, r, fill, ring) {
@@ -187,8 +203,22 @@ export function createFlatCoverage(canvas) {
     if (geom) {
       for (const l of (geom.labels || [])) drawText(l.text, l.lon, l.lat, Math.round((l.hpx || 0.03) * 533), l.color || '#fff')
     }
-    for (const p of mk.points) drawText(p.label, p.lon, p.lat, sizes.ptFont, '#ffffff', { dy: sizes.ptFont * 0.9 + 5 })
-    for (const s of mk.stations) drawText(s.name, s.lon, s.lat, sizes.stFont, '#cfeaff', { dy: sizes.stFont * 0.5 + 3 })
+    for (const p of mk.points) {
+      drawText(p.label, p.lon, p.lat, sizes.ptFont, '#ffffff', { dy: sizes.ptFont * 0.9 + 5 })
+      if (p.el) drawText(p.el, p.lon, p.lat, sizes.ptFont * 0.9, '#cdd6de', { dy: sizes.ptFont * 1.9 + 8 })   // 聚焦卫星仰角：素灰
+    }
+    for (const s of mk.stations) {
+      drawText(s.name, s.lon, s.lat, sizes.stFont, '#cfeaff', { dy: sizes.stFont * 0.5 + 3 })
+      if (s.el) drawText(s.el, s.lon, s.lat, sizes.stFont * 0.9, '#cdd6de', { dy: sizes.stFont * 1.5 + 6 })   // 聚焦卫星仰角：素灰
+    }
+    // 聚焦卫星：图标居中于实时星下点（最上层，带柔和投影）
+    if (focusSat && satReady) {
+      const x = PX(focusSat.lon), y = PY(focusSat.lat), s = sizes.satIcon || 44
+      ctx.save()
+      ctx.shadowColor = 'rgba(0,0,0,0.35)'; ctx.shadowBlur = 6; ctx.shadowOffsetY = 1
+      ctx.drawImage(satImg, x - s / 2, y - s / 2, s, s)
+      ctx.restore()
+    }
     ctx.restore()
   }
 
@@ -244,6 +274,7 @@ export function createFlatCoverage(canvas) {
     setProvincesVisible(v) { provVisible = !!v; draw() },
     setOnRightClick(fn) { onRightClick = fn },
     setMarkers(points, stations, trajectories) { mk = { points: points || [], stations: stations || [], trajectories: trajectories || [] }; draw() },
+    setFocusSat(p) { focusSat = (p && Number.isFinite(p.lat) && Number.isFinite(p.lon)) ? { lat: p.lat, lon: p.lon } : null; draw() },
     resize() {
       const w = canvas.clientWidth || canvas.parentElement?.clientWidth || 0, h = canvas.clientHeight || canvas.parentElement?.clientHeight || 0
       if (!w || !h) return

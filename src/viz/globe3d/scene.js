@@ -142,7 +142,8 @@ function makeLabelSprite(text, hpx, fill) {
   cx = c.getContext('2d')
   cx.font = `${fs}px "Microsoft YaHei", sans-serif`
   cx.textBaseline = 'middle'; cx.textAlign = 'center'
-  cx.lineWidth = 5; cx.strokeStyle = 'rgba(0,0,0,0.85)'
+  cx.lineJoin = 'round'; cx.miterLimit = 2
+  cx.lineWidth = 4; cx.strokeStyle = 'rgba(0,0,0,0.8)'
   cx.strokeText(text, c.width / 2, c.height / 2)
   cx.fillStyle = fill || '#eef2f6'; cx.fillText(text, c.width / 2, c.height / 2)
   const tex = new THREE.CanvasTexture(c)
@@ -256,7 +257,8 @@ function makeOceanLabel(text) {
   cx = c.getContext('2d')
   cx.font = font
   cx.textBaseline = 'middle'; cx.textAlign = 'center'
-  cx.lineWidth = 5; cx.strokeStyle = 'rgba(0,0,0,0.55)'
+  cx.lineJoin = 'round'; cx.miterLimit = 2
+  cx.lineWidth = 4; cx.strokeStyle = 'rgba(0,0,0,0.55)'
   cx.strokeText(text, c.width / 2, c.height / 2)
   cx.fillStyle = 'rgba(150,195,230,0.92)'; cx.fillText(text, c.width / 2, c.height / 2)
   const tex = new THREE.CanvasTexture(c)
@@ -462,11 +464,12 @@ export function createGlobeScene(container) {
   let covGroup = null
   // 覆盖用小标签（波束名）：白字描边，depthTest 开 -> 背面被地球遮挡
   function makeCovLabel(text, hpx, color) {
-    const fs = 50, pad = 8, c = document.createElement('canvas')   // 高分辨率纹理 + 较粗描边，放大更锐利
-    let x = c.getContext('2d'); x.font = `bold ${fs}px "Microsoft YaHei", sans-serif`
+    const fs = 50, pad = 8, font = `${fs}px "Microsoft YaHei", sans-serif`, c = document.createElement('canvas')   // 常规字重 + 细描边，密集时更清晰
+    let x = c.getContext('2d'); x.font = font
     c.width = Math.ceil(x.measureText(text).width) + pad * 2; c.height = fs + pad * 2
-    x = c.getContext('2d'); x.font = `bold ${fs}px "Microsoft YaHei", sans-serif`; x.textBaseline = 'middle'; x.textAlign = 'center'
-    x.lineWidth = 7; x.strokeStyle = 'rgba(0,0,0,0.9)'; x.strokeText(text, c.width / 2, c.height / 2)
+    x = c.getContext('2d'); x.font = font; x.textBaseline = 'middle'; x.textAlign = 'center'
+    x.lineJoin = 'round'; x.miterLimit = 2
+    x.lineWidth = 3.5; x.strokeStyle = 'rgba(0,0,0,0.8)'; x.strokeText(text, c.width / 2, c.height / 2)
     x.fillStyle = color || '#ffffff'; x.fillText(text, c.width / 2, c.height / 2)
     const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace
     const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: t, depthTest: true, depthWrite: false, transparent: true }))
@@ -591,11 +594,13 @@ export function createGlobeScene(container) {
     for (const p of (points || [])) {
       const dot = makeDot('#ffd24a'); dot.position.copy(llaToVec(p.lat, p.lon, 0).multiplyScalar(1.0012)); dot._px = 11; dot._ar = 1; dot.renderOrder = 15; g.add(dot)
       if (p.label) g.add(labelSprite(p.label, p.lat, p.lon, '#ffffff', -0.35, ptFont))   // 坐标：白字
+      if (p.el) g.add(labelSprite(p.el, p.lat, p.lon, '#cdd6de', 1.35, ptFont * 0.9))     // 聚焦卫星仰角：素灰，标记下方
     }
     for (const s of (stations || [])) {
       const st = new THREE.Sprite(new THREE.SpriteMaterial({ map: stationTexture(), depthTest: true, depthWrite: false, transparent: true }))
       st.position.copy(llaToVec(s.lat, s.lon, 0).multiplyScalar(1.0012)); st.center.set(0.5, 0); st._px = stIcon; st._ar = 1; st.renderOrder = 15; g.add(st)
       if (s.name) g.add(labelSprite(s.name, s.lat, s.lon, '#cfeaff', 1.05, stFont))   // 名称紧贴地面站图标下方
+      if (s.el) g.add(labelSprite(s.el, s.lat, s.lon, '#cdd6de', 2.1, stFont * 0.9))   // 聚焦卫星仰角：素灰，名称下方
     }
     markersGroup = g; scene.add(g)
   }
@@ -679,6 +684,7 @@ export function createGlobeScene(container) {
   let downX = 0, downY = 0
   renderer.domElement.addEventListener('pointerdown', (e) => { downX = e.clientX; downY = e.clientY })
   renderer.domElement.addEventListener('pointerup', (e) => {
+    if (e.button !== 0) return   // 仅左键当作选星；右键（标点）/中键不改变聚焦
     // 拖动（旋转）-> 停自转、不当作点击
     if (Math.abs(e.clientX - downX) + Math.abs(e.clientY - downY) > 6) { stopAutoRotate(); return }
     if (!satPoints || !onPick) return
