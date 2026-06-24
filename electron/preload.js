@@ -28,5 +28,10 @@ contextBridge.exposeInMainWorld('api', {
     index: () => ipcRenderer.invoke('coverage:index'),
     get: (file) => ipcRenderer.invoke('coverage:get', file)
   },
+  coverageGrd: {
+    index: () => ipcRenderer.invoke('coverageGrd:index'),
+    get: (file) => ipcRenderer.invoke('coverageGrd:get', file),
+    open: () => ipcRenderer.invoke('coverageGrd:open')
+  },
   platform: process.platform
 })

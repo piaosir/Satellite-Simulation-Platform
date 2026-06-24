@@ -29,6 +29,11 @@ const OCEAN = '#15426b'
 const CHINA = '#b85a52'   // 中国底色：降低饱和度的砖红（原 #c62f2f 太炸眼）
 const ICE = '#edf2f6'     // 极地冰盖：白色填充（格陵兰 304、南极 010）
 const ICE_IDS = new Set(['304', '010'])
+// 北极冰盖：高纬陆地（加拿大北部、俄罗斯北部、北极群岛等）随纬度渐变染白，
+// 北极圈附近(EDGE)起淡入、FULL 以北全白；只染陆地，北冰洋保持海色。
+const ICE_LAT_EDGE = 66.5, ICE_LAT_FULL = 75
+// 南极极冠：数据集南极洲只到约 -85°，极点处留有圆形空洞，补一块极冠盖到 -90°。
+const SOUTH_CAP_LAT = -82
 
 function centroidLonLat(geom) {
   const polys = geom.type === 'Polygon' ? [geom.coordinates] : geom.coordinates
@@ -65,11 +70,18 @@ function buildLandMesh(features) {
   const MAXSEG = 3            // 三角形最长边超过该度数就细分
   const positions = [], colors = []
   const col = new THREE.Color()
+  const ICE_COL = new THREE.Color(ICE), _tmpCol = new THREE.Color()
 
   function pushVert(lon, lat) {
     const v = llaToVec(lat, lon, 0)   // 半径 1，贴在海洋球(0.999)之上
     positions.push(v.x, v.y, v.z)
-    colors.push(col.r, col.g, col.b)
+    // 高纬度顶点向冰色渐变（北极圈以北逐渐染白）；细分后顶点稠密，渐变边自然柔和。
+    let c = col
+    if (lat > ICE_LAT_EDGE) {
+      const t = lat >= ICE_LAT_FULL ? 1 : (lat - ICE_LAT_EDGE) / (ICE_LAT_FULL - ICE_LAT_EDGE)
+      c = _tmpCol.copy(col).lerp(ICE_COL, t)
+    }
+    colors.push(c.r, c.g, c.b)
   }
   const dist = (p, q) => Math.hypot(p[0] - q[0], p[1] - q[1])
   const mid = (p, q) => [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2]
@@ -125,6 +137,14 @@ function buildLandMesh(features) {
     const polys = g.type === 'Polygon' ? [g.coordinates] : g.coordinates
     for (const rings of polys) addPolygon(rings)
   })
+
+  // 南极极冠：南极洲多边形止于约 -85°，极点附近留有圆形空洞。用一圈贴极点的四边形
+  // （每经度两点共塌缩到极点）补齐到 -90°，emitTri 自带细分贴球；南极洲本就 ICE 白，无缝。
+  col.copy(ICE_COL)
+  for (let lon = -180; lon < 180; lon += 3) {
+    const a = [lon, -90], b = [lon, SOUTH_CAP_LAT], c = [lon + 3, SOUTH_CAP_LAT], d = [lon + 3, -90]
+    emitTri(a, b, c, 0); emitTri(a, c, d, 0)
+  }
 
   const geo = new THREE.BufferGeometry()
   geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
@@ -516,6 +536,121 @@ export function createGlobeScene(container) {
     }
     covGroup = g; scene.add(g)
   }
+  // ===================== GRD 覆盖（独立图层：填充面 + 等值线，与烘焙 setCoverage 互不干扰） =====================
+  // field={lon,lat,NX,NY,rgba}（分带填充，可空）；segGroups=[{segs:[[[lon,lat],[lon,lat]]...], color, width, opacity}]（逐档等值线，可空）；
+  // opts={alpha}。整层一个 group，重设即整体替换。
+  let covFieldGroup = null
+  function clearCoverageField() {
+    if (!covFieldGroup) return
+    covFieldGroup.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) { lineMats.delete(o.material); o.material.dispose() } })
+    scene.remove(covFieldGroup); covFieldGroup = null
+  }
+  // 分带填充：dB 作顶点属性，片元按插值 dB 取档（边界=iso 线，无毛刺）。
+  // vis（地平裕度）也作顶点属性，片元插值 vis<0 时 discard → 填充边界精确切在 0°仰角线（地平），无网格锯齿。
+  function buildFieldMesh(field, bands, alpha, liftMul) {
+    const { lon, lat, NX, NY, db, vis } = field
+    const lift = liftMul || 1.0006
+    const pos = [], adb = [], avis = [], idx = [], vid = new Int32Array(NX * NY).fill(-1)
+    let n = 0
+    for (let k = 0; k < NX * NY; k++) {
+      if (db[k] !== db[k] || lon[k] !== lon[k]) continue
+      const v = llaToVec(lat[k], lon[k], 0).multiplyScalar(lift)
+      pos.push(v.x, v.y, v.z); adb.push(db[k]); avis.push(vis ? vis[k] : 1); vid[k] = n++
+    }
+    for (let row = 0; row < NY - 1; row++) {
+      for (let c = 0; c < NX - 1; c++) {
+        const i00 = row * NX + c, i10 = i00 + 1, i01 = i00 + NX, i11 = i01 + 1
+        const a = vid[i00], b = vid[i10], cc = vid[i11], d = vid[i01]
+        if (a < 0 || b < 0 || cc < 0 || d < 0) continue
+        if (vis && vis[i00] < 0 && vis[i10] < 0 && vis[i11] < 0 && vis[i01] < 0) continue   // 整格越地平，丢弃
+        if (Math.max(lon[i00], lon[i10], lon[i11], lon[i01]) - Math.min(lon[i00], lon[i10], lon[i11], lon[i01]) > 180) continue
+        idx.push(a, b, cc, a, cc, d)
+      }
+    }
+    const geo = new THREE.BufferGeometry()
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3))
+    geo.setAttribute('aDb', new THREE.Float32BufferAttribute(adb, 1))
+    geo.setAttribute('aVis', new THREE.Float32BufferAttribute(avis, 1))
+    geo.setIndex(idx); geo.computeBoundingSphere()
+    const MAXB = 16, lev = new Float32Array(MAXB), colv = []
+    for (let i = 0; i < MAXB; i++) colv.push(new THREE.Vector3())
+    const nb = Math.min(MAXB, bands.levels.length)
+    for (let i = 0; i < nb; i++) { lev[i] = bands.levels[i]; const c = bands.colors[i]; colv[i].set(c[0] / 255, c[1] / 255, c[2] / 255) }
+    const mat = new THREE.ShaderMaterial({
+      uniforms: { uLevels: { value: lev }, uColors: { value: colv }, uCount: { value: nb }, uOpacity: { value: alpha != null ? alpha : 0.85 } },
+      transparent: true, side: THREE.DoubleSide, depthWrite: false,
+      vertexShader: 'attribute float aDb; attribute float aVis; varying float vDb; varying float vVis; void main(){ vDb = aDb; vVis = aVis; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+      fragmentShader: 'uniform float uLevels[16]; uniform vec3 uColors[16]; uniform int uCount; uniform float uOpacity; varying float vDb; varying float vVis;\n' +
+        'void main(){ if(vVis < 0.0) discard; int band = -1; for(int i=0;i<16;i++){ if(i>=uCount) break; if(vDb >= uLevels[i]) band = i; }\n' +
+        ' if(band < 0) discard; vec3 c = vec3(0.0); for(int i=0;i<16;i++){ if(i==band) c = uColors[i]; }\n' +
+        ' gl_FragColor = vec4(c, uOpacity); }'
+    })
+    const mesh = new THREE.Mesh(geo, mat); mesh.renderOrder = 5; mesh.frustumCulled = false
+    return mesh
+  }
+  // layers=[{field:{lon,lat,NX,NY,db}|null, bands:{levels,colors}, segGroups:[{segs,color,width}]}]；多天线各一层。
+  // 多层叠加：逐层抬升半径(li·step)，使开启填充的多个天线/卫星交叠时按数组顺序稳定层叠（末层=最上，最醒目），
+  //   各层半透明 alpha 混合 → 交叠区呈层叠加深的混合色；每层等值线略高于自身填充面，不被本层填充盖住。
+  function setCoverageField(layers, opts) {
+    clearCoverageField()
+    const o = opts || {}
+    const g = new THREE.Group()
+    const arr = layers || []
+    arr.forEach((L, li) => {
+      const base = 1.0006 + li * 0.00012, lineLift = base + 0.00003
+      if (L.field && L.field.db && L.bands) g.add(buildFieldMesh(L.field, L.bands, o.alpha, base))
+      for (const grp of (L.segGroups || [])) {
+        if (!grp.segs || !grp.segs.length) continue
+        const flat = []
+        for (const sg of grp.segs) {   // 紧贴本层填充面之上，避免视差错位
+          const a = llaToVec(sg[0][1], sg[0][0], 0).multiplyScalar(lineLift), b = llaToVec(sg[1][1], sg[1][0], 0).multiplyScalar(lineLift)
+          flat.push(a.x, a.y, a.z, b.x, b.y, b.z)
+        }
+        g.add(fatSegments(flat, grp.color != null ? grp.color : 0xffffff, grp.width || 1.2, grp.opacity != null ? grp.opacity : 0.95, 6))
+      }
+    })
+    covFieldGroup = g; scene.add(g)
+  }
+  function setCoverageFieldAlpha(a) {
+    if (!covFieldGroup) return
+    covFieldGroup.traverse((o) => {
+      if (!o.material) return
+      if (o.material.uniforms && o.material.uniforms.uOpacity) o.material.uniforms.uOpacity.value = a
+      else if (o.material.vertexColors) o.material.opacity = a
+    })
+  }
+
+  // ===================== 卫星 / 仰角线（独立图层：等仰角线 + 星下点 + 星点，与 GXT/GRD 覆盖互不干扰） =====================
+  // spec: { lines:[{p:[[lon,lat]...], color, width?, opacity?, closed?}], dots:[{lon,lat,color?,r?}],
+  //         labels:[{lon,lat,text,hpx?,color?,alt?}], sats:[{lon,lat,altKm,name,color?}] }
+  let satLayerGroup = null
+  function clearSatLayer() {
+    if (!satLayerGroup) return
+    satLayerGroup.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) { lineMats.delete(o.material); if (o.material.map) o.material.map.dispose(); o.material.dispose() } })
+    scene.remove(satLayerGroup); satLayerGroup = null
+  }
+  function setSatLayer(spec) {
+    clearSatLayer()
+    if (!spec) return
+    const g = new THREE.Group()
+    for (const ln of (spec.lines || [])) {
+      if (!ln.p || ln.p.length < 2) continue
+      const pts = ln.p.map(([lon, lat]) => llaToVec(lat, lon, 0).multiplyScalar(1.0008))
+      if (ln.closed !== false) pts.push(pts[0].clone())
+      g.add(fatStrip(pts, ln.color != null ? ln.color : 0x66ddff, ln.width || 1.4, ln.opacity != null ? ln.opacity : 0.92, 6))
+    }
+    for (const d of (spec.dots || [])) {
+      const dot = new THREE.Mesh(new THREE.SphereGeometry(d.r || 0.009, 12, 12), new THREE.MeshBasicMaterial({ color: d.color != null ? d.color : 0xffd27a }))
+      dot.position.copy(llaToVec(d.lat, d.lon, 0).multiplyScalar(1.0014)); dot.renderOrder = 11; g.add(dot)
+    }
+    // 3D 下不画星下点标记，也不画卫星名 —— 仰角线卫星只保留仰角线本身
+    for (const l of (spec.labels || [])) {
+      const spr = makeCovLabel(l.text, l.hpx, l.color)
+      spr.position.copy(llaToVec(l.lat, l.lon, l.alt != null ? l.alt : 60)); spr.renderOrder = 12; g.add(spr)
+    }
+    satLayerGroup = g; scene.add(g)
+  }
+
   // 把视角转到某经纬度正对（覆盖加载后定位用）
   function faceLonLat(lon, lat) { faceTo(llaToVec(lat || 0, lon, 0)) }
 
@@ -542,7 +677,14 @@ export function createGlobeScene(container) {
   let onHover = null, onRightClick = null
   function setOnHover(fn) { onHover = fn }
   function setOnRightClick(fn) { onRightClick = fn }
-  renderer.domElement.addEventListener('pointermove', (e) => { if (onHover) onHover(pickGlobe(e.clientX, e.clientY)) })
+  // 拖拽波束模式：左键拖动地球时不旋转，改为回调经纬度（拖动 boresight）
+  let beamDragMode = false, onBeamDrag = null, beamDragging = false
+  function setBeamDragMode(v) { beamDragMode = !!v; controls.enableRotate = !beamDragMode; if (!v) beamDragging = false; renderer.domElement.style.cursor = beamDragMode ? 'move' : '' }
+  function setOnBeamDrag(fn) { onBeamDrag = fn }
+  renderer.domElement.addEventListener('pointermove', (e) => {
+    if (beamDragging) { const ll = pickGlobe(e.clientX, e.clientY); if (ll && onBeamDrag) onBeamDrag(ll, 'move') }
+    if (onHover) onHover(pickGlobe(e.clientX, e.clientY))
+  })
   renderer.domElement.addEventListener('pointerleave', () => { if (onHover) onHover(null) })
   renderer.domElement.addEventListener('contextmenu', (e) => { e.preventDefault(); if (onRightClick) onRightClick(pickGlobe(e.clientX, e.clientY)) })
 
@@ -682,8 +824,12 @@ export function createGlobeScene(container) {
   }
 
   let downX = 0, downY = 0
-  renderer.domElement.addEventListener('pointerdown', (e) => { downX = e.clientX; downY = e.clientY })
+  renderer.domElement.addEventListener('pointerdown', (e) => {
+    downX = e.clientX; downY = e.clientY
+    if (beamDragMode && e.button === 0) { beamDragging = true; const ll = pickGlobe(e.clientX, e.clientY); if (ll && onBeamDrag) onBeamDrag(ll, 'start') }
+  })
   renderer.domElement.addEventListener('pointerup', (e) => {
+    if (beamDragging) { beamDragging = false; return }   // 拖波束结束，不当作选星
     if (e.button !== 0) return   // 仅左键当作选星；右键（标点）/中键不改变聚焦
     // 拖动（旋转）-> 停自转、不当作点击
     if (Math.abs(e.clientX - downX) + Math.abs(e.clientY - downY) > 6) { stopAutoRotate(); return }
@@ -761,8 +907,8 @@ export function createGlobeScene(container) {
   return {
     setSatellites, setLabelMode, setHighlight, setHighlightLLA, setOnPick,
     setOrbit, setGroundTrack, setFootprint, clearSelectionGeom,
-    setCoverage, clearCoverage, faceLonLat, setProvinces, setProvincesVisible, setNameScale,
-    setMarkers, setTrajectories, setOnHover, setOnRightClick,
+    setCoverage, clearCoverage, setCoverageField, clearCoverageField, setCoverageFieldAlpha, setSatLayer, clearSatLayer, faceLonLat, setProvinces, setProvincesVisible, setNameScale,
+    setMarkers, setTrajectories, setOnHover, setOnRightClick, setBeamDragMode, setOnBeamDrag,
     faceTo, setAutoRotate, setOnAutoRotateOff, resize, destroy
   }
 }

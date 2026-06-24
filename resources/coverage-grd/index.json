@@ -1,0 +1,131 @@
+{
+ "satellites": [
+  {
+   "folder": "中星10R",
+   "satName": "CHINASAT 10R",
+   "lon": 110.5,
+   "antennas": [
+    {
+     "name": "EIRP 中国",
+     "type": "EIRP",
+     "band": "Ku",
+     "beams": 10,
+     "peakDb": 54.787,
+     "peak": [
+      120.0093,
+      31.1725
+     ],
+     "file": "中星10R/EIRP 中国.fld.json"
+    },
+    {
+     "name": "G/T 中国",
+     "type": "GT",
+     "band": "Ku",
+     "beams": 11,
+     "peakDb": 7.636,
+     "peak": [
+      82.6837,
+      44.0027
+     ],
+     "file": "中星10R/G_T 中国.fld.json"
+    },
+    {
+     "name": "EIRP 东部",
+     "type": "EIRP",
+     "band": "Ku",
+     "beams": 3,
+     "peakDb": 52.233,
+     "peak": [
+      130.8329,
+      18.1643
+     ],
+     "file": "中星10R/EIRP 东部.fld.json"
+    },
+    {
+     "name": "G/T 东部",
+     "type": "GT",
+     "band": "Ku",
+     "beams": 3,
+     "peakDb": 6.71,
+     "peak": [
+      140.6832,
+      -0.5785
+     ],
+     "file": "中星10R/G_T 东部.fld.json"
+    },
+    {
+     "name": "EIRP 西部",
+     "type": "EIRP",
+     "band": "Ku",
+     "beams": 7,
+     "peakDb": 55.922,
+     "peak": [
+      67.363,
+      28.2289
+     ],
+     "file": "中星10R/EIRP 西部.fld.json"
+    },
+    {
+     "name": "G/T 西部",
+     "type": "GT",
+     "band": "Ku",
+     "beams": 7,
+     "peakDb": 9.691,
+     "peak": [
+      67.7883,
+      27.5316
+     ],
+     "file": "中星10R/G_T 西部.fld.json"
+    },
+    {
+     "name": "EIRP 印尼",
+     "type": "EIRP",
+     "band": "Ku",
+     "beams": 4,
+     "peakDb": 53.303,
+     "peak": [
+      129.597,
+      -2.8538
+     ],
+     "file": "中星10R/EIRP 印尼.fld.json"
+    },
+    {
+     "name": "G/T 印尼",
+     "type": "GT",
+     "band": "Ku",
+     "beams": 8,
+     "peakDb": 8.1,
+     "peak": [
+      114.4408,
+      -3.3937
+     ],
+     "file": "中星10R/G_T 印尼.fld.json"
+    },
+    {
+     "name": "EIRP 东南亚",
+     "type": "EIRP",
+     "band": "Ku",
+     "beams": 4,
+     "peakDb": 55.161,
+     "peak": [
+      115.0041,
+      28.9313
+     ],
+     "file": "中星10R/EIRP 东南亚.fld.json"
+    },
+    {
+     "name": "G/T 东南亚",
+     "type": "GT",
+     "band": "Ku",
+     "beams": 4,
+     "peakDb": 8.194,
+     "peak": [
+      114.9702,
+      28.2548
+     ],
+     "file": "中星10R/G_T 东南亚.fld.json"
+    }
+   ]
+  }
+ ]
+}

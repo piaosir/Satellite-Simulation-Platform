@@ -37,8 +37,9 @@ app.whenReady().then(() => {
   const storage = require(join(root, 'electron/services/storage'))
   const report = require(join(root, 'electron/services/report'))
   const coverage = require(join(root, 'electron/services/coverage'))(join(root, 'resources/coverage'))
+  const coverageGrd = require(join(root, 'electron/services/coverage'))(join(root, 'resources/coverage-grd'))
   const { register } = require(join(root, 'electron/ipc/register'))
-  register({ core, storage, report, coverage })
+  register({ core, storage, report, coverage, coverageGrd })
 
   createWindow()
   app.on('activate', () => {

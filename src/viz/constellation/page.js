@@ -8,6 +8,7 @@
 import sat from './satellite.js';
 import COASTLINE from './coastline-lo.js';            // 海岸线 ~10.5k（= ISL 1:50m）
 import * as tleStore from './tle.js';                 // 桌面端 TLE 层（直连 CelesTrak，无云存储）
+import * as W from '../wgs84.js';                     // WGS84 几何（足迹圈按椭球求边）
 
 const RE = 6378.137;          // 地球赤道半径 km
 const DEG = Math.PI / 180;
@@ -687,10 +688,13 @@ const PAGE = {
     else bDeg = raw;
 
     const eta = (bDeg / 2) * DEG;                                   // 半角 (rad)
-    const lambda = Math.asin(clamp(r / RE * Math.sin(eta), -1, 1)) - eta;
-    const cl = Math.cos(gd.latitude);
-    const u = [cl * Math.cos(gd.longitude), Math.sin(gd.latitude), -cl * Math.sin(gd.longitude)];
-    this._selFootprint = this._circleOnSphere(u, lambda, 72);
+    // WGS84 椭球足迹：从卫星 ECEF 逐方位射线交椭球得地面边，再映射到正交渲染系（geodetic-贴球）。
+    const ecf = sat.eciToEcf(pvNow.position, gmstNow);
+    const edge = W.footprintEllipsoid([ecf.x, ecf.y, ecf.z], eta, 72);
+    this._selFootprint = edge.map((p) => {
+      const la = p.lat * DEG, lo = p.lon * DEG, cl = Math.cos(la);
+      return [cl * Math.cos(lo), Math.sin(la), -cl * Math.sin(lo)];
+    });
 
     // 显示：placeholder 常显 ε=0 上限；超限回写夹断值（清空后不再被自动回填）。
     // 锁定态不回写——保留锁定值原样平等作用于每颗星，几何仍按各星 ε=0 上限夹断

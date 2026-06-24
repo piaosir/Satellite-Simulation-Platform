@@ -1,248 +1,308 @@
 ================================================================================
-                  TICRA / GRASP .grd 覆盖图文件 —— 解析说明
-                （以 SATSOFT 中星10R 公开 GRD 为样本，已实测校验）
+                  TICRA / GRASP .grd 覆盖图文件 —— 解析说明（权威版）
+        （以 TICRA GRASP 官方 .grd 格式定义为准；SATSOFT 公开 GRD 实测校验）
 ================================================================================
 
-样本文件：CS10R-grd/300grd(公开)-China/300_X01G_EIRP.grd
-样本卫星：中星10R，GEO，星下点 110.5°E，轨道高度 35786 km
-校验结论：解析+投影后的波束峰值 = 119.97°E / 31.00°N，
-          与平台现有真值 boresight 120.009°E / 31.172°N 相差约 0.04°/0.17°，
-          等值线形状与真值基本重合 —— 投影方法已确认正确。
+权威依据：TICRA GRASP 手册对 .grd 格式的定义（igrid 网格类型、icomp 极化分量、
+          字段与 klimit 行结构），经参考实现 python-graspfile 逐字复现。
+          本说明的所有解析口径、取功率口径、投影几何均以此为准，不再凭单一样本反推。
 
+校验样本：CS10R-grd/300grd(公开)-China/300_X01G_EIRP.grd
+          中星10R，GEO，星下点 110.5°E，轨道高度 35786 km，igrid=6。
+校验结论：按权威 igrid=6 公式 + 默认星下点指向 + WGS84 椭球投影，波束峰值落点
+          = 120.009°E / 31.172°N，与真值 boresight 完全一致（旧球面近似有约 0.17°
+          偏差，换 WGS84 椭球 + 大地纬度后归零）。端到端实测见 src/viz/wgs84.js。
 
-────────────────────────────────────────────────────────────────────────────
+──────────────────────────────────────────────────────────────────────────────
 0. 一句话理解
-────────────────────────────────────────────────────────────────────────────
-.grd 文件存的不是“增益图”，而是【卫星天线视角下、按角度网格排列的电磁场复数
-分量】。增益 / EIRP / G·T 要由我们自己从场分量算出，再把“角度网格”投影成
-“地球经纬度”才能画到地图上。
+──────────────────────────────────────────────────────────────────────────────
+.grd 存的是【天线坐标系下、按网格排列的电磁场复数分量】。要画到地图上需三步：
+  ① 网格坐标 →（按 igrid 公式）天线系视线单位矢量 r̂；
+  ② r̂ →（按天线指向/姿态旋转）地固系视线，与地球求交得经纬度；
+  ③ 场分量 →（按 icomp 取共极化/总场）功率 → dB。
+天线指向不在 .grd 文件里，由平台“添加天线”时给出（默认星下点，用户可改）。
 
-
-────────────────────────────────────────────────────────────────────────────
-1. 文件整体结构（纯文本，按行）
-────────────────────────────────────────────────────────────────────────────
-[文本说明行 ...]          ← 1 行或多行任意文字（卫星经度/高度/创建时间等，仅供参考）
-++++                      ← 文本头结束标记（固定，必须以它为界）
-KTYPE                     ← 1 个整数（样本=1）
+──────────────────────────────────────────────────────────────────────────────
+1. 文件整体结构（纯文本，按行；务必顺序读取，勿写死行号）
+──────────────────────────────────────────────────────────────────────────────
+[文本说明行 ...]          ← 任意行数文字（卫星经度/高度/创建时间等，仅参考）
+++++                      ← 文本头结束标记（扫描定位它为界）
+KTYPE                     ← 1 个整数（TICRA Tools 文件恒为 1）
 NSET ICOMP NCOMP IGRID    ← 4 个整数，最关键的一行
-IX(1) IY(1)               ┐
-...                       ├ 共 NSET 行，每行 2 个整数（每个 set 的网格中心偏移）
-IX(NSET) IY(NSET)         ┘
-┌──────────── 以下为第 1 个 set ────────────┐
-XS YS XE YE               ← 网格角度范围（4 个浮点，单位：度）
-NX NY KLIMIT              ← 网格点数 NX×NY，KLIMIT 见 §6 注意事项
-data(1)                   ┐
-...                       ├ 共 NX×NY 行数据，每行 2×NCOMP 个浮点
-data(NX*NY)               ┘
-└────────────────────────────────────────────┘
-[第 2 个 set：XS YS XE YE / NX NY KLIMIT / 数据 ...]
-... 直到第 NSET 个 set
+IXc(1) IYc(1)             ┐
+...                       ├ 共 NSET 行，每行 2 整数（每个 set 的网格中心整数偏移）
+IXc(NSET) IYc(NSET)       ┘
+┌──────────── 第 1 个 set ────────────┐
+XS YS XE YE               ← 网格首/末坐标（4 浮点，单位见 §2 的 igrid）
+NX NY KLIMIT              ← 两轴点数 NX×NY；KLIMIT 见 §3
+data ...                  ← NX×NY 个点，每点 2×NCOMP 个浮点；KLIMIT=1 时每行有前缀
+└─────────────────────────────────────┘
+[第 2 个 set ...] ... 直到第 NSET 个 set
 
-⚠ 解析方式：务必“顺序读取”，不要用固定行号。因为文本头行数可变。
-   正确流程：先扫描到 "++++" 这一行 → 读 KTYPE → 读 NSET 行 → 跳过 NSET 行
-   IX/IY → 循环 NSET 次，每次读“范围行 + 点数行 + NX*NY 行数据”。
+正确流程：扫描到 "++++" → 读 KTYPE → 读 NSET/ICOMP/NCOMP/IGRID → 读 NSET 行中心
+→ 循环 NSET 次：读“XS YS XE YE”+“NX NY KLIMIT”+ 数据块。NX/NY/范围/igrid 解释
+逐 set 独立，不要假设各 set 相同。
 
+──────────────────────────────────────────────────────────────────────────────
+2. 头部字段（权威定义）
+──────────────────────────────────────────────────────────────────────────────
+KTYPE
+    文件类型标识，TICRA Tools 恒为 1。其余值视为非常规，需特判。
 
-────────────────────────────────────────────────────────────────────────────
-2. 头部字段逐一详解（样本实测值）
-────────────────────────────────────────────────────────────────────────────
-KTYPE = 1
-    文件类型标识，常规场数据为 1。
+NSET   每个文件的“网格集”数量 = 波束数。本语料实测 1~24 不等（不是固定 10）。
+    约定：单文件 N 个 set 即 N 个波束，默认标注 beam1…beamN；后续支持用户自定义
+    名字（仍保留 beam1…beamN 作为底层标识）。
 
-NSET  = 10   每个文件包含的“网格集”数量。
-    ★ 重要更正：样本中 10 个 set 的峰值全部落在同一点(120/31)，
-      说明它们是【同一个波束的 10 个频点/子带】，不是 10 个不同地理波束。
-      “10 套 = 10 个波束”的说法应理解为【跨文件】X01G…X10G 各自是一个波束，
-      而【单个文件内部】的 10 套是该波束的多频采样。具体语义需向卫星厂商确认。
-
-ICOMP = 3   场分量的极化基定义。
+ICOMP  两个复分量分别是什么极化（决定 §4 取功率口径）：
     1 = 线极化 Eθ, Eφ
-    2 = 右旋/左旋圆极化 (RHCP/LHCP)
-    3 = 线极化 共极化/交叉极化 (Ludwig-3)   ← 样本
-    （对“取功率”不影响，仅说明那两个分量分别是什么极化。）
+    2 = 圆极化 E_RHC, E_LHC（右旋/左旋）
+    3 = 线极化 E_co, E_cx（Ludwig 第三定义，共极化/交叉极化）   ← 校验样本
+    4 = 极化椭圆长/短轴 E_maj, E_min
+    5 = XPD 比值 Eθ/Eφ 与 Eφ/Eθ        ┐
+    6 = XPD 比值 E_RHC/E_LHC 与反之      ├ 分量是“比值”，不是场，|·|² 无功率意义
+    7 = XPD 比值 E_co/E_cx 与反之        │
+    8 = XPD 比值 E_maj/E_min 与反之      ┘
+    9 = 总功率 ‖E‖ 与 E_RHC=E_LHC
+    本语料只出现 1/2/3。
 
-NCOMP = 2   每个网格点的复数分量个数。
-    → 每行数据有 2×NCOMP = 4 个浮点数。
+NCOMP  每个网格点的复分量个数：
+    2 = 远场（每点 2 复数 = 4 浮点）   ← 本语料全部
+    3 = 近场（每点 3 复数 = 6 浮点，第 3 分量为径向 E_r，覆盖图一般不用）
+    → 每行浮点数 = 2×NCOMP，不要写死 4。
 
-IGRID = 6   网格坐标系类型（角度型）。
-    实测结论：样本可按【以星下点(boresight)为中心的方位/俯仰角度偏移】处理，
-    第一轴(X)=东向角，第二轴(Y)=北向角，单位度。投影见 §5。
+IGRID  网格类型（决定 §5 网格坐标→视线矢量的公式）。本语料出现 1/4/6。完整定义见 §5。
 
-IX, IY = 0, 0   网格中心相对边界中点的偏移（样本全为 0，即中心即正中）。
+IXc, IYc  各 set 的网格中心整数偏移（样本全 0）。一般仅作记录，逐点坐标用 XS..XE 线性
+    插值即可，不依赖该偏移。
 
+──────────────────────────────────────────────────────────────────────────────
+3. 每个 set 的网格定义与 KLIMIT
+──────────────────────────────────────────────────────────────────────────────
+XS YS XE YE   两轴的首、末坐标（单位由 igrid 定：角度型为度，uv 型为无量纲方向余弦）。
+    ★ 首值可能大于末值（轴递减）。步长按公式算、保留符号：
+        dx = (XE - XS) / (NX - 1)     dy = (YE - YS) / (NY - 1)
+    本语料实测既有 -9→+9（递增）也有 +0.16→-0.16、Y: 9→-9（递减），必须按实际符号。
 
-────────────────────────────────────────────────────────────────────────────
-3. 每个 set 的网格定义（样本实测值）
-────────────────────────────────────────────────────────────────────────────
-XS YS XE YE = -9  -9  9  9   两个轴的角度范围（度）。
-                              X 轴：XS(-9°) → XE(+9°)
-                              Y 轴：YS(-9°) → YE(+9°)
-NX NY = 181 181              两个轴的采样点数。
-                              步长 = (XE-XS)/(NX-1) = 18/180 = 0.1°
-KLIMIT = 0                   0 = 全网格无逐行裁剪（见 §6）。
+NX NY KLIMIT  两轴点数与裁剪标志。本语料 NX×NY 多样且有非方形：
+    181×181 / 301×301 / 361×361 / 201×201 / 101×101 / 191×191 / 179×179 /
+    211×73 / 181×131 / 181×73 / 501×301 …… 解析器禁止假设方形或固定尺寸。
 
-第 i 个数据点（i 从 0 起）的网格索引：
-    col(X 索引) = i mod NX
-    row(Y 索引) = floor(i / NX)
-即【行优先 / X 先扫】：先沿 X 扫满一行 181 点，再到下一 Y 行。
+KLIMIT（权威行为）：
+    0 = 标准全网格：数据为连续 NX×NY 行（本语料 153 个文件全部 = 0）。
+    1 = 逐 Y 行裁剪：每个 Y 行的数据前多一行整数对 (i_start, count)，含义为
+        该行从第 i_start 列（1 基）起、共 count 个有效点；其余列视为无覆盖。
+        即 i_s = i_start - 1, i_e = i_s + count。
+        ★ 注意是 (起始列, 点数)，不是 (起列, 止列)。
 
-该点的角度：
-    gx = XS + (XE-XS) * col/(NX-1)
-    gy = YS + (YE-YS) * row/(NY-1)
+点序（行优先 / X 先扫）：第 n 个点（n 从 0 起）col = n mod NX, row = ⌊n/NX⌋；
+即先沿 X 扫满一行 NX 点再进下一 Y 行（KLIMIT=1 时按上面的行内裁剪范围扫）。
 
-±9° 这个范围正好覆盖 GEO 卫星看地球的张角（地球边缘约 ±8.7°）——印证了
-网格就是“卫星视角”。
+该点坐标：
+    gx = XS + dx * col      gy = YS + dy * row
 
+──────────────────────────────────────────────────────────────────────────────
+4. 单点场分量 → 功率 / 增益（按 icomp，权威口径）
+──────────────────────────────────────────────────────────────────────────────
+每点 2×NCOMP 浮点。前两复数：分量1 = a + j·b，分量2 = c + j·d。
+    |分量1|² = a² + b²        |分量2|² = c² + d²
 
-────────────────────────────────────────────────────────────────────────────
-4. 单点数据 → 增益 / EIRP（核心公式，已校验）
-────────────────────────────────────────────────────────────────────────────
-每行 4 个浮点：a  b  c  d
-    分量1 = a + j·b      (实部 a, 虚部 b)
-    分量2 = c + j·d      (实部 c, 虚部 d)
-
-功率（取主极化分量，两者较大者）：
-    P = max( a²+b² , c²+d² )
+取标量功率 P（线性）随 icomp 而定——权威里没有“两者取大”：
+    icomp = 2/3/4 : P = |分量1|²        （分量1 即共极化：E_RHC / E_co / E_maj）
+    icomp = 1     : P = |分量1|² + |分量2|²   （Eθ,Eφ 无共/交叉之分，取总场）
+    icomp = 9     : P = |分量1|²        （分量1 本身即总功率 ‖E‖）
+    icomp = 5..8  : 分量是 XPD 比值，P 无意义 → 该数据不可当功率，须特判/拒绝
+若需交叉极化图：icomp=2/3/4 取 |分量2|²。
 
 转 dB：
-    value_dB = 10 · log10(P)
+    value_dB = 10 · log10(P)        （P=0 视为无覆盖 → NaN，绘图跳过/透明）
 
-含义随文件后缀而定：
-    *_EIRP.grd → value_dB 即 EIRP，单位 dBW
-    *_GT.grd   → value_dB 即 G/T，单位 dB/K   （★需向厂商确认是否同口径，见 §9）
-    *.grd(无后缀) → 一般为天线增益等，单位 dBi（同样取 10log10）
+绝对标定：场值已被 GRASP 预先标定到目标量纲——
+    *_EIRP.grd → value_dB 即 EIRP（dBW）
+    *_GT.grd   → value_dB 即 G/T（dB/K）
+    无后缀     → 一般为增益（dBi）
+平台不在解析层区分 EIRP/G/T；“这是哪种量、属于哪个天线”由用户在“添加天线”时标注。
+实测：校验样本 set0 峰值 P≈3.0E5 → ≈54.8 dBW，符合卫星 EIRP 量级。
 
-无覆盖点：
-    a=b=c=d=0  →  P=0  →  无定义。判定为【无覆盖】，绘图时跳过/透明。
-    （样本中网格四角即为 0 0 0 0，对应地球边缘以外。）
+──────────────────────────────────────────────────────────────────────────────
+5. 网格坐标 → 天线系视线单位矢量 r̂（权威 igrid 公式）
+──────────────────────────────────────────────────────────────────────────────
+r̂ 在【天线坐标系】中，第 3 轴 = boresight（电轴），前两轴为横向轴。(X,Y) 即网格坐标。
 
-实测：样本 set0 峰值 P=301070 → 54.79 dBW，符合卫星 EIRP 量级。
+    igrid = 1  uv 网格：X=u, Y=v（方向余弦，无量纲；勿当角度、勿取 tan）
+               r̂ = ( u, v, √(1 − u² − v²) ),  u=sinθcosφ, v=sinθsinφ
+    igrid = 4  elevation over azimuth：X=Az, Y=El（度）
+               r̂ = ( −sinAz·cosEl,  sinEl,  cosAz·cosEl )
+    igrid = 5  elevation and azimuth：Az=−θcosφ, El=θsinφ（先反解 θ,φ 再求 r̂）
+    igrid = 6  azimuth over elevation：X=Az, Y=El（度）        ← 校验样本
+               r̂ = ( −sinAz,  cosAz·sinEl,  cosAz·cosEl )
+    igrid = 7  θφ 网格：X=φ, Y=θ → r̂ = ( sinθcosφ, sinθsinφ, cosθ )
+    igrid = 9  azimuth over elevation（EDX）：r̂ = ( sinAz·cosEl, sinEl, cosAz·cosEl )
+    igrid = 10 elevation over azimuth（EDX）：r̂ = ( sinAz, cosAz·sinEl, cosAz·cosEl )
 
+本语料只出现 1/4/6。注意 9/10 与 4/6 仅首分量符号不同（EDX 坐标系定义）。
 
-────────────────────────────────────────────────────────────────────────────
-5. 角度网格 → 经纬度 投影（已校验，可直接用）
-────────────────────────────────────────────────────────────────────────────
-输入：网格点角度 (gx, gy)（度）；卫星经度 satLon、纬度 0（GEO）、高度 H。
-常量（与平台 packages/core/utils/constants.js 同源）：
-    地球半径 Re = 6371 km
-    轨道高度 H  = 35786 km
-    卫星地心距 rs = Re + H = 42157 km
+──────────────────────────────────────────────────────────────────────────────
+6. 天线系 r̂ → 经纬度（投影；天线指向来自“添加天线”）
+──────────────────────────────────────────────────────────────────────────────
+天线指向（用户在平台“添加天线”时给出，默认星下点，可改）：
+    boresight 目标点 = (boreLon, boreLat)   默认 = (satLon, 0)
+    可选 yaw（绕电轴自转角，默认 0）
+也支持用“方位/俯仰偏置”给出指向，等效换算成目标经纬度。
 
-方法：以星下点为天线 boresight 的【切平面(gnomonic)投影】+ 射线与地球球面求交。
+基准：★ WGS84 椭球（全平台「几何」统一基准，见 src/viz/wgs84.js）。
+    a = 6378.137 km（赤道半径），b = 6356.7523142 km（极半径），e² = 2f−f²。
+    与 satellite.js 的 eciToGeodetic / geodeticToEcf 同源，保证卫星定位与覆盖一致。
+（链路预算保持其自有球面常量，不在此列。非 GEO 时按真实星历给卫星 ECEF，方法不变。）
 
-步骤（在“卫星位于经度0、赤道”的局部坐标系内计算，最后把经度加回 satLon）：
-    1) 局部系：S=(rs,0,0)；boresight=-X 轴；east=+Y 轴；north=+Z 轴
-    2) 视线方向（未归一化）：
-           d = ( -1 ,  tan(gx) ,  tan(gy) )      （gx,gy 转弧度）
-       再归一化 d。
-    3) 射线 P(t)=S+t·d 与球面 |P|=Re 求交：
-           b = 2·S·d = 2·rs·dx
-           c = rs² - Re²
-           判别式 disc = b² - 4c
-           若 disc < 0 → 视线未击中地球（在地球边缘外）→ 该点无经纬度
-           t = ( -b - sqrt(disc) ) / 2     （取近交点）
-           P = S + t·d
-    4) 经纬度：
-           lat = asin(Pz / Re)              （度）
-           lon = atan2(Py, Px) + satLon     （度，再归一化到 -180..180）
+地固坐标系：Z=北极，X 指 (lon0,lat0)，Y 指 (lon90E,lat0)。所有点用 geodeticToEcef /
+反算用 ecefToGeodetic（大地纬度），不再用球面 asin(z/R)。
+步骤（全部调用 src/viz/wgs84.js）：
+    1) 卫星位置  S = geodeticToEcef(satLon, 0, H)，H = RS_GEO − a ≈ 35786 km
+    2) boresight 目标 T = geodeticToEcef(boreLon, boreLat, 0)
+       电轴      ẑ = normalize(T − S)
+       横轴1     x̂ = normalize( Ẑ_world × ẑ )      （Ẑ_world=(0,0,1)）
+       横轴2     ŷ = ẑ × x̂                          （北向朝上）
+       若 yaw≠0：在 (x̂,ŷ) 平面内绕 ẑ 旋转 yaw。
+    3) 地固系视线  d = normalize( a1·x̂ + a2·ŷ + a3·ẑ )   （r̂=(a1,a2,a3) 由 §5 得）
+    4) 射线与 WGS84 椭球面求交：P = rayEllipsoid(S, d)
+           返回 null → 视线未击中地球（边缘外）→ 该点无经纬度
+    5) 经纬度：{lon, lat} = ecefToGeodetic(P)（大地纬度，已归一化）。
 
-约定（实测确认，无需翻转/旋转）：
-    +X(网格) = 东（经度增大方向）
-    +Y(网格) = 北（纬度增大方向）
+约定校准：上式对校验样本（igrid=6、默认星下点指向）给出 +X(网格,Az)=东、
++Y(网格,El)=北，与真值吻合。igrid=1(uv) 因 u 轴朝向取决于天线方位定义，若某 uv
+波束落点呈镜像，按该天线的 yaw（或横轴翻转）校准一次即可——目前无 uv 真值样本，留待校准。
 
-说明：此法用球面+切平面近似，样本峰值误差仅 0.17°，足够工程使用。若日后要更高
-精度，可换 WGS84 椭球求交，并按需引入卫星 yaw 姿态——目前数据看不出需要。
+──────────────────────────────────────────────────────────────────────────────
+7. 解析注意事项 / 坑
+──────────────────────────────────────────────────────────────────────────────
+(1) "++++" 前文本头行数不固定，必须扫描定位。
+(2) 行尾兼容三种：按 /\r\n|\n|\r/ 切分（本语料以 CRLF 为主，亦见混合 LF）。
+(3) 浮点为 Fortran 科学计数法（-0.9000000000E+01）或普通小数，按浮点解析即可。
+(4) NCOMP/IGRID/范围/KLIMIT 逐 set 读取，勿假设统一。
+(5) 文件可达数十 MB（181×181×24 等），按行流式解析。
+(6) 非标准 / 二进制文件：本语料发现
+       中9C/DIANBOSU GT.grd（无 ++++，疑空/二进制）
+       CH6E/.../CS6E_Tx100_X1G_GT_V_A_2024.grd（二进制 grd）
+       CS6E_Tx200_..._2024.grd（“++++0040”+普通小数、头为 5 2 / 721 38，结构异常）
+    标准 TICRA 二进制 grd 可按权威布局支持；上述异常导出建议向来源确认后再决定支持/排除。
 
+──────────────────────────────────────────────────────────────────────────────
+8. 参考实现（JS，按权威定义；供落地移植）
+──────────────────────────────────────────────────────────────────────────────
+// 几何（geodeticToEcef / ecefToGeodetic / rayEllipsoid / RS_GEO, A）来自 WGS84 工具：
+import { geodeticToEcef, ecefToGeodetic, rayEllipsoid, A, RS_GEO } from '../viz/wgs84.js'
+const D2R=Math.PI/180, R2D=180/Math.PI, H=RS_GEO-A   // GEO 等效高度 ≈ 35786 km
+const sub=(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]]
+const add=(a,b)=>[a[0]+b[0],a[1]+b[1],a[2]+b[2]]
+const sc =(a,k)=>[a[0]*k,a[1]*k,a[2]*k]
+const dot=(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2]
+const crs=(a,b)=>[a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]]
+const nrm=a=>sc(a,1/Math.hypot(a[0],a[1],a[2]))
 
-────────────────────────────────────────────────────────────────────────────
-6. 解析的注意事项 / 坑
-────────────────────────────────────────────────────────────────────────────
-(1) "++++" 之前的文本头【行数不固定】，必须扫描定位，不能写死行号。
-(2) KLIMIT（点数行第 3 个数）：
-      0 = 标准全网格，数据就是连续 NX*NY 行（样本即此）。
-      1 = 每个 Y 行前会多出一对整数 (IS, IN) 指明该行有效列的起止，
-          其余列视为 0。若遇到 KLIMIT≠0 的文件需特殊处理。
-(3) NCOMP 决定每行浮点个数 = 2×NCOMP。样本=2 → 4 个；不要写死 4。
-(4) NX/NY/范围【逐 set 读取】，不要假设所有 set 相同（样本恰好都相同）。
-(5) 浮点为 Fortran 科学计数法（如 -0.9000000000E+01），按普通浮点解析即可。
-(6) 文件可能较大（样本 181×181×10 ≈ 24MB / 32 万行），按行流式解析即可。
+function parseGrd(text){
+  const L=text.split(/\r\n|\n|\r/)
+  let i=0
+  while(i<L.length && L[i].trim()!=='++++') i++
+  if(i>=L.length) throw new Error('未找到 ++++：可能是二进制或非标准 grd')
+  i++
+  const KTYPE=parseInt(L[i++].trim())                                   // 应为 1
+  const [NSET,ICOMP,NCOMP,IGRID]=L[i++].trim().split(/\s+/).map(Number)
+  const centers=[]
+  for(let s=0;s<NSET;s++) centers.push(L[i++].trim().split(/\s+/).map(Number))
+  const sets=[]
+  for(let s=0;s<NSET;s++){
+    const [XS,YS,XE,YE]=L[i++].trim().split(/\s+/).map(Number)
+    const [NX,NY,KLIMIT]=L[i++].trim().split(/\s+/).map(Number)
+    const dx=(XE-XS)/(NX-1), dy=(YE-YS)/(NY-1)
+    const val=new Float32Array(NX*NY).fill(NaN)
+    for(let row=0; row<NY; row++){
+      let cs=0, ce=NX
+      if(KLIMIT===1){ const p=L[i++].trim().split(/\s+/).map(Number); cs=p[0]-1; ce=cs+p[1] }
+      for(let col=cs; col<ce; col++){
+        const r=L[i++].trim().split(/\s+/).map(Number)   // 2*NCOMP 浮点
+        val[row*NX+col]=valueDB(r, ICOMP)
+      }
+    }
+    sets.push({XS,YS,XE,YE,NX,NY,dx,dy,val})
+  }
+  return {KTYPE,NSET,ICOMP,NCOMP,IGRID,centers,sets}
+}
 
+// 按 icomp 取标量功率 → dB；无覆盖/无意义返回 NaN
+function valueDB(r, icomp){
+  const c1=r[0]*r[0]+r[1]*r[1], c2=r[2]*r[2]+r[3]*r[3]
+  let P
+  if(icomp===1) P=c1+c2
+  else if(icomp===2||icomp===3||icomp===4||icomp===9) P=c1
+  else return NaN            // 5..8 为 XPD 比值
+  return P>0 ? 10*Math.log10(P) : NaN
+}
 
-────────────────────────────────────────────────────────────────────────────
-7. 接入平台覆盖图的数据链（现状对照，供日后实现参考，本次不改代码）
-────────────────────────────────────────────────────────────────────────────
-平台现有覆盖数据格式（resources/coverage/<卫星>/<波束>_<类型>.json）：
+// 网格坐标 → 天线系单位矢量（第3轴=boresight）
+function gridDir(igrid, X, Y){
+  if(igrid===1){ const u=X,v=Y; return [u,v,Math.sqrt(Math.max(0,1-u*u-v*v))] }
+  if(igrid===7){ const ph=X*D2R,th=Y*D2R; return [Math.sin(th)*Math.cos(ph),Math.sin(th)*Math.sin(ph),Math.cos(th)] }
+  const az=X*D2R, el=Y*D2R, ca=Math.cos(az),sa=Math.sin(az),ce=Math.cos(el),se=Math.sin(el)
+  switch(igrid){
+    case 4:  return [-sa*ce, se,    ca*ce]
+    case 6:  return [-sa,    ca*se, ca*ce]
+    case 9:  return [ sa*ce, se,    ca*ce]
+    case 10: return [ sa,    ca*se, ca*ce]
+    case 5: { const th=Math.hypot(az,el), ph=Math.atan2(el,-az)
+              return [Math.sin(th)*Math.cos(ph),Math.sin(th)*Math.sin(ph),Math.cos(th)] }
+    default: throw new Error('未支持的 igrid='+igrid)
+  }
+}
+
+// 天线姿态基底：boreLon/boreLat 默认 = satLon/0（星下点），yawDeg 默认 0（均 WGS84 椭球）
+function antennaBasis(satLon, boreLon, boreLat, yawDeg=0){
+  const S=geodeticToEcef(satLon, 0, H)             // 卫星 ECEF
+  const T=geodeticToEcef(boreLon, boreLat, 0)      // boresight 目标点（地表）
+  const z=nrm(sub(T,S))
+  let x=nrm(crs([0,0,1], z)), y=crs(z,x)
+  if(yawDeg){ const c=Math.cos(yawDeg*D2R), sn=Math.sin(yawDeg*D2R)
+    const x2=add(sc(x,c),sc(y,sn)), y2=add(sc(y,c),sc(x,-sn)); x=x2; y=y2 }
+  return {S,x,y,z}
+}
+
+// 天线系 r̂ → 大地经纬度；off-limb 返回 null
+function project(dir, basis){
+  const {S,x,y,z}=basis
+  const d=nrm(add(add(sc(x,dir[0]),sc(y,dir[1])),sc(z,dir[2])))
+  const P=rayEllipsoid(S, d)                        // 与 WGS84 椭球面求交
+  if(!P) return null
+  const g=ecefToGeodetic(P[0],P[1],P[2])
+  return {lon:g.lon, lat:g.lat}
+}
+
+// 用法：const g=parseGrd(text); const B=antennaBasis(satLon, boreLon, boreLat, yaw)
+//       逐点 dir=gridDir(g.IGRID, gx, gy); ll=project(dir, B)
+
+──────────────────────────────────────────────────────────────────────────────
+9. 接入平台覆盖图的数据链（供日后实现参考）
+──────────────────────────────────────────────────────────────────────────────
+平台覆盖数据：resources/coverage/<卫星>/<波束>_<类型>.json
     { sat, band, beam, type, lon, bore:[[lon,lat]], contours:[ {g, p:[[lon,lat],...]} ] }
-渲染端 src/viz/flatmap/flatCoverage.js 消费 geom.lines=[{p:[[lon,lat]...]}]，等距圆柱投影绘制。
+渲染端 src/viz/flatmap/flatCoverage.js 消费 geom.lines=[{p:[[lon,lat]...]}]，等距圆柱绘制。
 
-GRD → 平台覆盖 JSON 的转换链：
-    解析 GRD → 每点 10log10(功率) → 投影到经纬度(§5)
-        → 在 dB 网格上按所选增益等级做 marching-squares 提取等值线
-        → 连成 [lon,lat] 折线 → 写成上面同款 JSON
+GRD → 平台覆盖 JSON：
+    parseGrd（按 icomp 取 dB）→ 逐点 gridDir→project 投影到经纬度
+        → 在 dB 网格上按所选等级 marching-squares 提等值线 → [lon,lat] 折线 → 同款 JSON
     boresight 取峰值点经纬度；gains 取所选等级集合。
 
-
-────────────────────────────────────────────────────────────────────────────
-8. 参考实现（已实测可用的解析 + 投影，JS；供日后落地时移植）
-────────────────────────────────────────────────────────────────────────────
-const Re = 6371, H = 35786, rs = Re + H, D2R = Math.PI/180, R2D = 180/Math.PI
-
-function parseGrd(text) {
-  const lines = text.split(/\r?\n/)
-  let i = 0
-  while (i < lines.length && lines[i].trim() !== '++++') i++   // 定位文本头结束
-  i++                                                          // 跳过 ++++
-  i++                                                          // KTYPE
-  const [NSET, ICOMP, NCOMP, IGRID] = lines[i++].trim().split(/\s+/).map(Number)
-  i += NSET                                                    // 跳过 NSET 行 IX/IY
-  const sets = []
-  for (let s = 0; s < NSET; s++) {
-    const [XS, YS, XE, YE] = lines[i++].trim().split(/\s+/).map(Number)
-    const [NX, NY /*, KLIMIT*/] = lines[i++].trim().split(/\s+/).map(Number)
-    const val = new Float32Array(NX * NY)
-    let peak = -Infinity, pk = 0
-    for (let n = 0; n < NX * NY; n++) {
-      const r = lines[i++].trim().split(/\s+/).map(Number)   // 注意：KLIMIT≠0 时此处需改
-      const p = Math.max(r[0]*r[0] + r[1]*r[1], r[2]*r[2] + r[3]*r[3])
-      const dB = p > 0 ? 10 * Math.log10(p) : NaN            // 0 → 无覆盖
-      val[n] = dB
-      if (dB > peak) { peak = dB; pk = n }
-    }
-    sets.push({ XS, YS, XE, YE, NX, NY, val, peak, pkX: pk % NX, pkY: (pk / NX) | 0 })
-  }
-  return { NSET, ICOMP, NCOMP, IGRID, sets }
-}
-
-// 角度(度) → 经纬度；off-limb 返回 null
-function project(gx, gy, satLon) {
-  let dx = -1, dy = Math.tan(gx*D2R), dz = Math.tan(gy*D2R)
-  const dn = Math.hypot(dx, dy, dz); dx/=dn; dy/=dn; dz/=dn
-  const b = 2*rs*dx, c = rs*rs - Re*Re, disc = b*b - 4*c
-  if (disc < 0) return null
-  const t = (-b - Math.sqrt(disc)) / 2
-  const Px = rs + t*dx, Py = t*dy, Pz = t*dz
-  let lon = Math.atan2(Py, Px)*R2D + satLon
-  lon = ((lon + 540) % 360) - 180
-  return { lon, lat: Math.asin(Pz/Re)*R2D }
-}
-
-// 网格索引 → 角度
-// gx = XS + (XE-XS)*col/(NX-1) ;  gy = YS + (YE-YS)*row/(NY-1)
-
-
-────────────────────────────────────────────────────────────────────────────
-9. 待你/厂商确认的问题
-────────────────────────────────────────────────────────────────────────────
-[1] 单文件内 10 个 set 的确切语义：是否就是“同一波束的 10 个频点”？
-    展示覆盖图时希望怎么用？(a) 选某一频点  (b) 10 个逐点取最大(包络)  (c) 平均
-[2] X01G…X10G 与“波束名”的对应表（厂商提供）。GRD 本身无波束名。
-[3] *_GT.grd 的数值口径：是否同样 = 10·log10(max功率)，直接得 dB/K？
-    还是 G/T 需要额外的常数/温度标定？（EIRP 已验证，GT 尚未对照真值）
-[4] 是否存在 KLIMIT≠0、NCOMP≠2、IGRID≠6 或非 181×181/非 ±9° 的 GRD 文件？
-    若有，请给一个样本，以便把解析器做成完全通用。
-[5] 卫星经度/纬度/轨道高度：确认由平台界面输入（GRD 文本头里的数值只作参考、
-    不取用）。非 GEO（带倾角/非零纬度）是否也要支持？
+──────────────────────────────────────────────────────────────────────────────
+10. 仍待确认（少量）
+──────────────────────────────────────────────────────────────────────────────
+[1] 已定：单文件 N 个 set = N 个波束，默认 beam1…beamN，后续可用户改名。
+[2] 已搁置：X01G…X10G 编号↔波束名对照表暂不处理，后续按需定义。
+[3] 非标准/二进制文件（§7(6) 三个）：标准 TICRA 二进制 grd 可支持；异常导出待来源确认。
+[4] uv 网格(igrid=1) 横轴朝向的一次性校准（需一个有真值的 uv 波束样本）。
 
 ================================================================================
+权威定义来源：
+  python-graspfile（逐字复现 GRASP 手册的 igrid/icomp/字段/klimit 定义）
+    https://github.com/PaulKGrimes/python-graspfile
+    https://python-graspfile.readthedocs.io/
+  TICRA GRASP  https://www.ticra.com/software/grasp/
 （本文件仅为解析说明，未改动卫星仿真平台任何运行代码。）
 ================================================================================

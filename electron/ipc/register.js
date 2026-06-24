@@ -3,7 +3,7 @@ const fs = require('fs')
 const createOmm = require('../services/omm')
 
 // 注册所有 IPC 处理器。core 为返回引擎实例的函数（延迟解析）。
-function register({ core, storage, report, coverage }) {
+function register({ core, storage, report, coverage, coverageGrd }) {
   const omm = createOmm(core)
   ipcMain.handle('omm:load', (_e, group, online) => omm.load(group, online))
   ipcMain.handle('omm:positions', (_e, group, iso) => omm.positions(group, iso))
@@ -13,6 +13,24 @@ function register({ core, storage, report, coverage }) {
   if (coverage) {
     ipcMain.handle('coverage:index', () => coverage.index())
     ipcMain.handle('coverage:get', (_e, file) => coverage.get(file))
+  }
+  // ---- GRD 覆盖图（原始场，实时重算）----
+  if (coverageGrd) {
+    ipcMain.handle('coverageGrd:index', () => coverageGrd.index())
+    ipcMain.handle('coverageGrd:get', (_e, file) => coverageGrd.get(file))
+    // 用户导入：原生文件框选 .grd/.pat → 读文本返回渲染进程解析
+    ipcMain.handle('coverageGrd:open', async (e) => {
+      const win = BrowserWindow.fromWebContents(e.sender)
+      const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+        title: '导入 GRD / PAT 文件', properties: ['openFile'],
+        filters: [{ name: 'GRASP 网格 (*.grd, *.pat)', extensions: ['grd', 'pat'] }, { name: '所有文件', extensions: ['*'] }]
+      })
+      if (canceled || !filePaths || !filePaths.length) return { canceled: true }
+      try {
+        const text = fs.readFileSync(filePaths[0], 'latin1')
+        return { canceled: false, base: require('path').basename(filePaths[0]), text }
+      } catch (err) { return { canceled: false, error: err.message } }
+    })
   }
 
   // ---- 链路计算 ----
