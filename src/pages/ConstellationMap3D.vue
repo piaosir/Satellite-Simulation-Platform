@@ -773,7 +773,7 @@ function commitRenameAnt(sat, a) {
 function setSatEls(node, v) { node.els = v; redrawSats() }
 function setSatElevColor(node, v) { node.elevColor = v; redrawSats() }
 function toggleSatElev(node) { node.elevShow = !node.elevShow; redrawSats() }
-function toggleSatLabel(node) { node.labelShow = node.labelShow === false; redrawSats() }
+function toggleSatLabel(node) { node.labelShow = node.labelShow === false; redrawSats(); if (grdOpen.value) grd.recompute() }   // 卫星名开关也影响 3D 覆盖连线(卫星↔波束中心)，需重绘覆盖层
 // 是否有显示中且关联星座的卫星（其仰角线/卫星名需随星历刷新位置）
 const hasLinkedElev = () => grdSats.value.some((s) => s.noradId && (s.elevShow || s.labelShow !== false))
 // 随 GRD「清除绘图」一并隐藏所有仰角线与卫星名（保留各星配置，再点亮即重绘）
@@ -1513,6 +1513,8 @@ onBeforeUnmount(() => { cursor.ll = null; if (timer) clearInterval(timer); if (r
             <div v-if="grdS.showName" class="srow"><label>字号</label><input class="rng" type="range" min="2" max="32" step="0.5" v-model.number="grdS.nameSize" /><span class="u">{{ grdS.nameSize }}</span></div>
             <label class="chk2"><input type="checkbox" v-model="grdS.showBore" /><span>显示波束中心</span></label>
             <div v-if="grdS.showBore" class="srow"><label>大小</label><input class="rng" type="range" min="0.5" max="12" step="0.5" v-model.number="grdS.boreSize" /><span class="u">{{ grdS.boreSize }}</span></div>
+            <label class="chk2"><input type="checkbox" v-model="grdS.showPeak" /><span>显示波束中心峰值</span></label>
+            <div v-if="grdS.showPeak" class="srow"><label>字号</label><input class="rng" type="range" min="2" max="30" step="0.5" v-model.number="grdS.peakSize" /><span class="u">{{ grdS.peakSize }}</span></div>
             <label class="chk2"><input type="checkbox" v-model="grdS.showVal" /><span>显示数值标签</span></label>
             <div v-if="grdS.showVal" class="srow"><label>字号</label><input class="rng" type="range" min="2" max="30" step="0.5" v-model.number="grdS.valSize" /><span class="u">{{ grdS.valSize }}</span></div>
             <div class="tip">数值标签按各天线「电平」档显示（相对峰值模式标档值，绝对模式标绝对 dB），需开启「显示等值线」。</div>

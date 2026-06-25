@@ -2,7 +2,7 @@
 // 几何全程 WGS84，复用 src/viz/wgs84.js。填充面着色(L2a) 在渲染层做。
 // 见 docs/GRD导入与覆盖可视化设计.md（性能分层 §4、面+线 §5）。
 
-import { geodeticToEcef, ecefToGeodetic, rayEllipsoid, rayEllipsoidMargin, A, RS_GEO } from '../wgs84.js'
+import { geodeticToEcef, ecefToGeodetic, rayEllipsoid, rayEllipsoidMargin, A, E2, RS_GEO } from '../wgs84.js'
 
 const D2R = Math.PI / 180, H = RS_GEO - A
 const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
@@ -71,6 +71,7 @@ export function gridDirs(set, igrid) {
 // vis>0 在地球可见面内、=0 恰在 0°仰角线、<0 越过地平。越过地平的点不再返回 NaN，而是落到
 // 地平上的趋近点（位置连续），由 vis 符号区分——渲染层据此把覆盖精确切在 0°仰角线，无网格锯齿。
 // 热路径（拖拽每帧）：复用缓存的天线系 dir 表，逐点只做 basis 旋转 + 射线求交，无 trig、无中间数组分配。
+const R2D = 180 / Math.PI
 export function projectGrid(set, igrid, basis) {
   const { NX, NY } = set
   const N = NX * NY, { S, x, y, z } = basis
@@ -84,9 +85,13 @@ export function projectGrid(set, igrid, basis) {
     let ex = x0 * a + y0 * b + z0 * c, ey = x1 * a + y1 * b + z1 * c, ez = x2 * a + y2 * b + z2 * c
     const inv = 1 / (Math.hypot(ex, ey, ez) || 1)
     d[0] = ex * inv; d[1] = ey * inv; d[2] = ez * inv
-    const r = rayEllipsoidMargin(S, d), g = ecefToGeodetic(r.p[0], r.p[1], r.p[2])
-    lon[k] = g.lon; lat[k] = g.lat; vis[k] = r.m
-    slant[k] = Math.hypot(r.p[0] - S0, r.p[1] - S1, r.p[2] - S2)
+    const r = rayEllipsoidMargin(S, d), px = r.p[0], py = r.p[1], pz = r.p[2]
+    // 内联大地纬度反算（4 次定点迭代，地表点早收敛——替代共享版 20 次，拖拽热路径省 80% 三角运算）
+    const Rxy = Math.hypot(px, py)
+    let glat = Math.atan2(pz, Rxy)
+    for (let it = 0; it < 4; it++) { const sgl = Math.sin(glat); glat = Math.atan2(pz + A * E2 * sgl / Math.sqrt(1 - E2 * sgl * sgl), Rxy) }
+    lon[k] = Math.atan2(py, px) * R2D; lat[k] = glat * R2D; vis[k] = r.m
+    slant[k] = Math.hypot(px - S0, py - S1, pz - S2)
   }
   return { lon, lat, slant, vis, NX, NY }
 }

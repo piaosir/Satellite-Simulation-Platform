@@ -607,10 +607,17 @@ export function createGlobeScene(container) {
     const b = L.bore
     if (b) {
       if (o.showBore) {
-        g.add(fatStrip([llaToVec(b.satLat || 0, b.satLon, b.satAlt || 35786), llaToVec(b.lat, b.lon, 0).multiplyScalar(1.0012)], 0xffb14a, 1.0, 0.3, 5))
+        // 连线(卫星↔波束中心)仅当该卫星「卫星名」也显示时才画（3D 专属，2D 无连线）
+        if (b.satShown) g.add(fatStrip([llaToVec(b.satLat || 0, b.satLon, b.satAlt || 35786), llaToVec(b.lat, b.lon, 0).multiplyScalar(1.0012)], 0xffb14a, 1.0, 0.3, 5))
         const dotR = (o.boreSize || 5) * 0.0014
         const dot = new THREE.Mesh(new THREE.SphereGeometry(dotR, 10, 10), new THREE.MeshBasicMaterial({ color: 0xffffff }))
         dot.position.copy(llaToVec(b.lat, b.lon, 0).multiplyScalar(1.0012)); dot.renderOrder = 11; g.add(dot)
+      }
+      // 波束中心峰值 dB：贴在中心点上方（位于天线名标签之下）
+      if (o.showPeak && b.peak != null) {
+        const spr = makeCovLabel(b.peak.toFixed(1) + ' dB', (o.peakSize || 12) / 533, '#ffe1a0')
+        const pos = llaToVec(b.lat, b.lon, 40); pos.addScaledVector(pos.clone().normalize(), spr.scale.y * 0.6)
+        spr.position.copy(pos); spr.renderOrder = 12; g.add(spr)
       }
       if (o.showName && L.name) {
         const spr = makeCovLabel(L.name, (o.nameSize || 16) / 533)

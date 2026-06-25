@@ -45,8 +45,8 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
     pol: 'RSS', gainOffset: 0, pathLoss: 'none',
     boreType: 'azel', boreLon: null, boreLat: 0, boreAz: 0, boreEl: 0, yaw: 0,
     beamsToPlot: [0],   // 多波束 GRD：要绘制的波束序号（SATSOFT「Beams To Plot」多选；共用本天线同一套电平/极化设置）
-    // 全局显示选项（与 GXT 一致；不随聚焦天线切换，对所有选中天线生效）：天线名 / 波束中心 / 数值标签
-    showName: true, nameSize: 16, showBore: true, boreSize: 5, showVal: false, valSize: 12
+    // 全局显示选项（与 GXT 一致；不随聚焦天线切换，对所有选中天线生效）：天线名 / 波束中心 / 波束中心峰值 / 数值标签
+    showName: true, nameSize: 16, showBore: true, boreSize: 5, showPeak: false, peakSize: 12, showVal: false, valSize: 12
   })
   // 方位/俯仰(相对星下点) → boresight 目标经纬度（igrid6 约定，与天线网格一致）
   function azelToLonLat(satLon, az, el, satLat = 0, altKm) { return project(gridDir(6, az, el), antennaBasis(satLon, satLon, satLat, 0, satLat, altKm)) }
@@ -312,51 +312,68 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
   // （HTS 多点波束各自的 −3dB 圈），绝对模式所有波束共用同一绝对 dB。
   // 填充与等值线由 bandGeometry 一次性同源生成（逐三角形线性插值）：填充 = 各档环带多边形，
   // 线 = 相邻档公共边 → 二者精确重合；地平/接缝裁剪在 bandGeometry 内完成（无需再 clipSegsVisible）。
-  function buildBeamLayer(c, cfg, beam, name) {
-    const field = fieldDb({ P1: beam.P1, P2: beam.P2, NX: beam.proj.NX, NY: beam.proj.NY }, beam.proj, { pol: cfg.pol, gainOffset: cfg.gainOffset, pathLoss: cfg.pathLoss })
+  // 方向图 dB 只随 极化/增益 变，与指向(投影)无关 → pathLoss='none' 时按 (pol,gain) 缓存到波束上，
+  // 拖拽时直接复用，免去每帧整张网格的 log10 重算。pathLoss 依赖斜距(随指向变)，此时照常重算不缓存。
+  function beamField(beam, cfg) {
+    const arg = { P1: beam.P1, P2: beam.P2, NX: beam.proj.NX, NY: beam.proj.NY }
+    if (cfg.pathLoss !== 'none') return fieldDb(arg, beam.proj, { pol: cfg.pol, gainOffset: cfg.gainOffset, pathLoss: cfg.pathLoss })
+    const cc = beam._fld
+    if (cc && cc.pol === cfg.pol && cc.gain === cfg.gainOffset) return cc.field
+    const field = fieldDb(arg, beam.proj, { pol: cfg.pol, gainOffset: cfg.gainOffset, pathLoss: 'none' })
+    beam._fld = { pol: cfg.pol, gain: cfg.gainOffset, field }
+    return field
+  }
+  function buildBeamLayer(c, cfg, beam, name, withLabels) {
+    const field = beamField(beam, cfg)
     const lv = absLevels(field.max, cfg)
     const asc = [...lv].sort((a, b) => a.abs - b.abs)   // 升序档：外圈冷、内圈热（与 jet 配色一致）
     const need = cfg.fill || cfg.line
     const geo = need ? bandGeometry({ lon: beam.proj.lon, lat: beam.proj.lat, vis: beam.proj.vis, db: field.db, NX: beam.proj.NX, NY: beam.proj.NY }, asc.map((x) => x.abs)) : null
     // 分带填充：每档一个颜色 + 该档环带多边形（升序，逐层从外到内绘制，非嵌套→无重叠透明叠加）
     const fillBands = cfg.fill && geo ? asc.map((x, i) => ({ color: cssRgb(x.color), polys: geo.fills[i] })).filter((b) => b.polys.length) : null
-    // 等值线：每档一组线段（= 填充相邻档公共边）；数值标签按拼环后每条取最上端点
+    // 等值线：每档一组线段（= 填充相邻档公共边）；数值标签按拼环后每条取最上端点。
+    // 标签仅在「显示数值」开启时才拼环求锚点——关闭时跳过 stitchLoops，拖拽时省一笔。
     const segGroups = cfg.line && geo
       ? asc.map((x, i) => {
         const segs = geo.lines[i]
         const labels = []
-        for (const loop of stitchLoops(segs)) { if (loop.length >= 4) labels.push(loopTop(loop)) }
+        if (withLabels) for (const loop of stitchLoops(segs)) { if (loop.length >= 4) labels.push(loopTop(loop)) }
         return { segs, color: x.lineColor, width: cfg.lineWidth, txt: cfg.ctype === 'rel' ? String(x.v) : x.abs.toFixed(1), labels }
       }).filter((g) => g.segs.length)
       : []
     // 波束中心 = 当前场的峰值点（随指向/拖拽实时变化）；天线名标签贴在此处，并向所属卫星连线
     const pk = (Number.isFinite(beam.proj.lon[field.maxIdx]) && Number.isFinite(beam.proj.lat[field.maxIdx])) ? [beam.proj.lon[field.maxIdx], beam.proj.lat[field.maxIdx]] : (beam.peak || c.meta.peak || [c.meta.satLon, 0])
-    const bore = { lon: pk[0], lat: pk[1], satLon: c.meta.satLon, satLat: c.meta.satLat || 0, satAlt: c.meta.satAlt || H }
+    // peak = 波束中心峰值 dB（当前场峰值；显示用，随极化/增益/路损变）
+    const bore = { lon: pk[0], lat: pk[1], satLon: c.meta.satLon, satLat: c.meta.satLat || 0, satAlt: c.meta.satAlt || H, peak: Number.isFinite(field.max) ? field.max : null }
     return { fillBands, segGroups, bore, name }
   }
   // 每个选中天线 → N 个子图层（按 Beams To Plot 选中的波束逐个出层）；所有子层共用该天线同一套设置。
   // 所有选中画线，每个【开启填充】的天线各自分带填充（多天线/多波束/多星可叠加）。
   // 2D 与 3D 同源同一份几何 { fillBands(各档环带多边形+色), segGroups(等值线段) }，均由 bandGeometry
   //   逐三角形线性插值生成 → 填充与线精确重合；地平/接缝裁剪在 bandGeometry 内完成（不再依赖位图/着色器取档）。
-  function buildLayer(key) {
+  function buildLayer(key, withLabels) {
     const c = cache.get(key); if (!c || !c.beams) return []
     const cfg = c.settings   // 每层用自身保存的设置（聚焦层的实时编辑已由 watcher 回存到此）
     const antName = key.split('|')[1]
     const multi = c.beams.length > 1
+    // satShown = 该天线所属卫星的「卫星名」是否显示：3D 连线(卫星↔波束中心)需 showBore 且 satShown 同时为真
+    const node = sats.value.find((x) => x.folder === key.split('|')[0])
+    const satShown = !node || node.labelShow !== false
     const plot = (cfg.beamsToPlot && cfg.beamsToPlot.length ? cfg.beamsToPlot : [0]).filter((i) => i < c.beams.length)
     return plot.map((bi) => {
-      const L = buildBeamLayer(c, cfg, c.beams[bi], multi ? `${antName}·B${bi + 1}` : antName)
+      const L = buildBeamLayer(c, cfg, c.beams[bi], multi ? `${antName}·B${bi + 1}` : antName, withLabels)
       L.id = `${key}#${bi}`   // 稳定层 id（天线键|波束序号）：渲染层据此做拖拽增量更新（只重建聚焦天线层）
+      if (L.bore) L.bore.satShown = satShown
       return L
     })
   }
 
-  const fieldOpts = () => ({ alpha: s.alpha, showBore: s.showBore, boreSize: s.boreSize, showName: s.showName, nameSize: s.nameSize, showVal: s.showVal, valSize: s.valSize })
+  const fieldOpts = () => ({ alpha: s.alpha, showBore: s.showBore, boreSize: s.boreSize, showName: s.showName, nameSize: s.nameSize, showPeak: s.showPeak, peakSize: s.peakSize, showVal: s.showVal, valSize: s.valSize })
   function recompute() {
     const sc = getScene(), fl = getFlat()
     // 聚焦（编辑中）天线排到最后 → 填充叠加时位于最上层，最醒目（其余按选中顺序在下）
     const ks = [...selected.value].sort((a, b) => (a === active.value ? 1 : 0) - (b === active.value ? 1 : 0))
-    const layers = ks.flatMap(buildLayer)   // 每天线展开成 N 个波束子层；2D/3D 共用同一份（省一半重算）
+    const layers = ks.flatMap((k) => buildLayer(k, s.showVal))   // 每天线展开成 N 个波束子层；2D/3D 共用同一份（省一半重算）
     const opts = fieldOpts()
     if (sc) sc.setCoverageField(layers, opts)
     if (fl) fl.setField(layers, opts)
@@ -365,7 +382,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
   // 其余天线层不变（拖拽不改它们的投影），另一视图在拖拽结束时由 recompute 一次性补齐 → 每帧工作量大幅下降。
   function recomputeActive() {
     if (!active.value) return
-    const layers = buildLayer(active.value)
+    const layers = buildLayer(active.value, s.showVal)
     const opts = fieldOpts()
     if (isFlat()) { const fl = getFlat(); if (fl) fl.patchField(layers, opts) }
     else { const sc = getScene(); if (sc) sc.patchCoverageLayers(layers, opts) }
@@ -523,13 +540,13 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
         satLon: a.satLon, satLat: a.satLat, satAlt: a.satAlt, imported: true
       }))
     }))
-    const disp = { showName: s.showName, nameSize: s.nameSize, showBore: s.showBore, boreSize: s.boreSize, showVal: s.showVal, valSize: s.valSize }
+    const disp = { showName: s.showName, nameSize: s.nameSize, showBore: s.showBore, boreSize: s.boreSize, showPeak: s.showPeak, peakSize: s.peakSize, showVal: s.showVal, valSize: s.valSize }
     return { selected: selected.value.slice(), active: active.value, cfgs, sats: satsState, disp }
   }
   async function restoreState(st) {
     if (!st) return
     // 全局显示选项（天线名/波束中心/数值标签）：先恢复，后续 recompute 即按此绘制
-    if (st.disp) for (const k of ['showName', 'nameSize', 'showBore', 'boreSize', 'showVal', 'valSize']) if (st.disp[k] != null) s[k] = st.disp[k]
+    if (st.disp) for (const k of ['showName', 'nameSize', 'showBore', 'boreSize', 'showPeak', 'peakSize', 'showVal', 'valSize']) if (st.disp[k] != null) s[k] = st.disp[k]
     // 先恢复卫星：自定义/星座关联星补建到树；所有星（含预置）叠加用户编辑（名称/位置/关联/仰角线）。
     // 预置星节点本身由 index 复现，这里仅叠加用户改过的字段；预置星 kind 始终保持 'preset'。
     if (Array.isArray(st.sats)) {
@@ -602,7 +619,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
   // 指向变化：reproject 只重投影聚焦天线（本就轻）；拖拽中走单层+单视图快路径，否则全量。
   watch(() => [s.boreLon, s.boreLat, s.yaw], () => { reproject(); _dragging ? recomputeActive() : recompute() })
   // 全局显示选项（天线名/波束中心/数值标签开关与字号）：仅影响标注层，重绘即可（不回存到天线设置）
-  watch(() => [s.showName, s.nameSize, s.showBore, s.boreSize, s.showVal, s.valSize], () => recompute())
+  watch(() => [s.showName, s.nameSize, s.showBore, s.boreSize, s.showPeak, s.peakSize, s.showVal, s.valSize], () => recompute())
   // 方位/俯仰模式：az/el 变 → 换算到 boresight 经纬度（再由上面的 watch 触发重投影）
   watch(() => [s.boreAz, s.boreEl, s.boreType], () => {
     if (s.boreType !== 'azel') return

@@ -67,7 +67,7 @@ export function createFlatCoverage(canvas) {
   let geom = null
   let fieldLayers = [], fieldAlpha = 0.8   // GRD 覆盖多层（每层=一个天线：分带填充 Path2D + 逐档等值线，独立于 geom）
   // GRD 全局标注选项（与 3D 同步）：天线名 / 波束中心 / 数值标签
-  let fieldOpts = { showName: true, nameSize: 16, showBore: true, boreSize: 5, showVal: false, valSize: 12 }
+  let fieldOpts = { showName: true, nameSize: 16, showBore: true, boreSize: 5, showPeak: false, peakSize: 12, showVal: false, valSize: 12 }
   let nameMode = 'off', provVisible = false, prov = null
   let mk = { points: [], stations: [], trajectories: [] }
   let focusSat = null   // 聚焦卫星星下点 { lat, lon }，null 表示无聚焦
@@ -271,6 +271,8 @@ export function createFlatCoverage(canvas) {
       const b = L.bore; if (!b) continue
       const br = o.boreSize != null ? o.boreSize : 5
       if (o.showBore) dot(b.lon, b.lat, Math.max(0.3, br), '#ffffff', true)
+      // 波束中心峰值 dB：标在中心点下方（2D 无卫星连线）
+      if (o.showPeak && b.peak != null) drawText(b.peak.toFixed(1) + ' dB', b.lon, b.lat, o.peakSize || 12, '#ffe1a0', { dy: (o.showBore ? br : 0) + (o.peakSize || 12) * 0.7 + 3 })
       if (o.showName && L.name) drawText(L.name, b.lon, b.lat, o.nameSize || 16, '#ffffff', { dy: -((o.showBore ? br : 0) + (o.nameSize || 16) * 0.6 + 2) })
     }
   }
