@@ -27,9 +27,14 @@ function createWindow() {
 
   if (process.env['ELECTRON_RENDERER_URL']) {
     win.loadURL(process.env['ELECTRON_RENDERER_URL'])
+    win.webContents.openDevTools()   // dev 模式自动开 DevTools（看渲染进程 console）
   } else {
     win.loadFile(join(__dirname, '../renderer/index.html'))
   }
+  // F12 切换开发者工具（autoHideMenuBar 下默认快捷键可能失效，这里显式绑定）
+  win.webContents.on('before-input-event', (e, input) => {
+    if (input.type === 'keyDown' && input.key === 'F12') { win.webContents.toggleDevTools(); e.preventDefault() }
+  })
 }
 
 app.whenReady().then(() => {

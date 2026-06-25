@@ -71,12 +71,13 @@ export function createFlatCoverage(canvas) {
   let nameMode = 'off', provVisible = false, prov = null
   let mk = { points: [], stations: [], trajectories: [] }
   let focusSat = null   // 聚焦卫星星下点 { lat, lon }，null 表示无聚焦
+  let selGeom = null    // 聚焦卫星几何：{ footprint:[{lat,lon}...], track:[{lat,lon}...] }，与 3D 同源（覆盖范围蓝 + 星下点轨迹黄）
   let satLayer = null   // 卫星/仰角线独立图层 { lines, dots, labels, sats }（与 geom/field 互不干扰）
   const sizes = { beamFont: 16, contourFont: 12, dotSize: 5, showBore: true, nameScale: 1, provScale: 1, ptFont: 14, stIcon: 32, stFont: 17, satIcon: 30 }
 
   // 地面站图标
   const stationImg = new Image(); let stationReady = false
-  stationImg.onload = () => { stationReady = true; requestDraw() }
+  stationImg.onload = () => { stationReady = true; invalidateStatic(); requestDraw() }
   stationImg.src = 'data:image/svg+xml;base64,' + btoa(STATION_SVG)
 
   // 预处理底图：陆地多边形（按国家配色）+ 国家名 + 大洋名
@@ -123,6 +124,14 @@ export function createFlatCoverage(canvas) {
   // 合帧：把一帧内的多次重绘请求合并成一次 rAF 渲染（拖拽/缩放不再被高频事件淹没）。
   let rafId = 0
   function requestDraw() { if (rafId) return; rafId = requestAnimationFrame(() => { rafId = 0; draw() }) }
+
+  // 静态层快照（拖拽波束/调覆盖参数提速核心）：底图(海陆/冰盖/网格)与标注(省界/国家名/标记/卫星层)在拖拽中
+  // 完全不变，却原本每帧重画（含上百国家名描边文字，开销大）。把它们渲到离屏缓冲，只在视图变换或静态数据
+  // 变化时重建；覆盖图(GRD 填充/等值线)夹在二者之间，故拆「below(field 之下) + above(field 之上)」两张快照。
+  // 拖拽/改场只重绘覆盖层，复合 = blit(below) + 覆盖填充/线 + blit(above) + 覆盖标注 + 聚焦星。
+  let belowCanvas = null, belowCtx = null, aboveCanvas = null, aboveCtx = null
+  let staticValid = false
+  function invalidateStatic() { staticValid = false }
 
   function fit() { base = Math.min(cw / 360, ch / 180); scale = 1; tx = (cw - 360 * base) / 2; ty = (ch - 180 * base) / 2 }
   const k = () => base * scale
@@ -224,6 +233,14 @@ export function createFlatCoverage(canvas) {
   // 烘成一个「世界度坐标」Path2D（x=lon-LON0, y=90-lat，仅在 setField 时一次），同档多边形并入一条 path
   // 一次 fill → 相邻三角形无 AA 缝隙。draw() 随 pan/zoom 只用 setTransform 平移缩放矢量填充（清晰、分辨率无关），
   // 并在 -360/0/+360 三档经度环绕各填一份 → 跨东经180° 无缝。地平/接缝裁剪已在 bandGeometry 内完成。
+  // 一层覆盖在「世界 X」(=lon-LON0) 上的经度跨度，供 drawField 的 ±360 环绕做视口裁剪（只填可见副本）。
+  function layerBounds(L) {
+    let lo = Infinity, hi = -Infinity
+    const upd = (lon) => { const x = lon - LON0; if (x < lo) lo = x; if (x > hi) hi = x }
+    if (L.fillBands) for (const fb of L.fillBands) for (const poly of fb.polys) for (const p of poly) upd(p[0])
+    if (lo > hi) return null
+    return { lo, hi }
+  }
   function buildFillPaths(fillBands) {
     return fillBands.map((fb) => {
       const path = new Path2D()
@@ -237,11 +254,14 @@ export function createFlatCoverage(canvas) {
 
   function drawField() {
     const kk = k()
-    // 填充：把 pan/zoom 烘进变换矩阵，直接填充缓存的世界坐标 Path2D（每帧零顶点遍历），-360/0/+360 三档环绕
+    // 填充：把 pan/zoom 烘进变换矩阵，直接填充缓存的世界坐标 Path2D（每帧零顶点遍历），-360/0/+360 三档环绕。
+    // 环绕副本按视口裁剪：放大到某区域时三份里通常只有一份可见 → 大足迹填充成本直降到 1/3（拖拽开填充提速核心）。
+    const wl = -tx / kk, wr = (cw - tx) / kk
     ctx.save(); ctx.globalAlpha = fieldAlpha
     for (const L of fieldLayers) {
       if (!L.fillPaths || !L.fillPaths.length) continue
       for (const off of [-360, 0, 360]) {
+        if (L.bounds && (L.bounds.hi + off < wl || L.bounds.lo + off > wr)) continue
         ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * (tx + off * kk), dpr * ty)
         for (const fb of L.fillPaths) { ctx.fillStyle = fb.color; ctx.fill(fb.path) }
       }
@@ -277,17 +297,18 @@ export function createFlatCoverage(canvas) {
     }
   }
 
-  function draw() {
-    if (cw < 2 || ch < 2) return
-    // 画布位图尺寸只在 resize() 里重设，这里不再每帧重分配（避免每帧清空+重建后备缓冲）。
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-    ctx.clearRect(0, 0, cw, ch); ctx.fillStyle = BG; ctx.fillRect(0, 0, cw, ch)
+  // field 之下的底图（海陆/冰盖/网格）。渲到主画布后由 renderStaticLayers 拷到 belowCanvas。
+  function drawBelowContent(rx, ry, rw, rh) {
     ctx.save()
-    const rx = PX(LON0), ry = PY(90), rw = 360 * k(), rh = 180 * k()
     ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip()
     ctx.fillStyle = OCEAN; ctx.fillRect(rx, ry, rw, rh)
     drawLand(); drawIceCaps(); drawGrid()
-    drawField()   // GRD 覆盖填充面（在底图之上、等值线/标记之下）
+    ctx.restore()
+  }
+  // field 之上的标注（省界/覆盖数据/轨迹/标记/国家名/卫星层）。透明背景，叠在覆盖填充之上。
+  function drawAboveContent(rx, ry, rw, rh) {
+    ctx.save()
+    ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip()
     // 省界
     if (provVisible && prov) for (const ring of prov.borders) drawPolyline(ring, PROV, 1.0)
     // 覆盖数据
@@ -334,9 +355,44 @@ export function createFlatCoverage(canvas) {
         drawText(s.name, s.lon, s.lat, ls, hex(s.color != null ? s.color : 0xffd27a), { dy: -((s.iconSize || sizes.satIcon || 30) * 0.5 + ls * 0.6) })
       }
     }
+    ctx.restore()
+  }
+  // 重建两张静态快照：分别渲到主画布再拷到离屏缓冲（below 不透明含底色；above 透明叠加）。
+  function renderStaticLayers() {
+    const rx = PX(LON0), ry = PY(90), rw = 360 * k(), rh = 180 * k()
+    const bw = belowCanvas.width, bh = belowCanvas.height
+    // below：海陆/冰盖/网格（含背景底色）
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    ctx.clearRect(0, 0, cw, ch); ctx.fillStyle = BG; ctx.fillRect(0, 0, cw, ch)
+    drawBelowContent(rx, ry, rw, rh)
+    belowCtx.setTransform(1, 0, 0, 1, 0, 0); belowCtx.clearRect(0, 0, bw, bh); belowCtx.drawImage(canvas, 0, 0)
+    // above：省界/覆盖数据/标记/国家名/卫星层（透明）
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, cw, ch)
+    drawAboveContent(rx, ry, rw, rh)
+    aboveCtx.setTransform(1, 0, 0, 1, 0, 0); aboveCtx.clearRect(0, 0, bw, bh); aboveCtx.drawImage(canvas, 0, 0)
+  }
+
+  function draw() {
+    if (cw < 2 || ch < 2 || !belowCanvas) return
+    if (!staticValid) { renderStaticLayers(); staticValid = true }
+    const bw = belowCanvas.width, bh = belowCanvas.height
+    const rx = PX(LON0), ry = PY(90), rw = 360 * k(), rh = 180 * k()
+    // 复合：blit below（不透明）→ 覆盖填充/线（夹在中间）→ blit above（透明）→ 覆盖标注 → 聚焦星
+    ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, bw, bh); ctx.drawImage(belowCanvas, 0, 0)
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    ctx.save(); ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip()
+    drawField()   // GRD 覆盖填充面 + 等值线（在底图之上、标注之下）
+    ctx.restore()
+    ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.drawImage(aboveCanvas, 0, 0)
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    ctx.save(); ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip()
     drawFieldOverlays()   // GRD 天线名/波束中心/数值标签（覆盖层之上）
-    // 聚焦卫星：图标居中于实时星下点（最上层，默认白色）
-    if (focusSat) drawSatIcon(focusSat.lon, focusSat.lat, sizes.satIcon, '#ffffff')
+    // 聚焦卫星几何（实时，不入静态快照）：覆盖范围(浅蓝) + 星下点轨迹(金黄)，颜色与 3D 球体同源
+    if (selGeom) {
+      if (selGeom.footprint && selGeom.footprint.length > 1) drawPolyline(selGeom.footprint, '#96d7f0', 1.8)
+      if (selGeom.track && selGeom.track.length > 1) drawPolyline(selGeom.track, '#c2a25e', 2.0)
+    }
+    if (focusSat) drawSatIcon(focusSat.lon, focusSat.lat, sizes.satIcon, '#ffffff')   // 聚焦卫星（最上层）
     ctx.restore()
   }
 
@@ -346,7 +402,7 @@ export function createFlatCoverage(canvas) {
     const r = canvas.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top
     const kk = k(), wx = (mx - tx) / kk, wy = (my - ty) / kk
     scale = clamp(scale * Math.exp(-e.deltaY * 0.0015), 0.9, 60)
-    const k2 = k(); tx = mx - wx * k2; ty = my - wy * k2; requestDraw()
+    const k2 = k(); tx = mx - wx * k2; ty = my - wy * k2; invalidateStatic(); requestDraw()
   }
   let dragging = false, lx = 0, ly = 0
   let beamDragMode = false, onBeamDrag = null, beamDragging = false   // 拖拽波束（不平移地图）
@@ -356,12 +412,12 @@ export function createFlatCoverage(canvas) {
   }
   function onMove(e) {
     if (beamDragging) { const ll = screenToLonLat(e.clientX, e.clientY); if (ll && onBeamDrag) onBeamDrag(ll, 'move') }
-    else if (dragging) { tx += e.clientX - lx; ty += e.clientY - ly; lx = e.clientX; ly = e.clientY; requestDraw() }
+    else if (dragging) { tx += e.clientX - lx; ty += e.clientY - ly; lx = e.clientX; ly = e.clientY; invalidateStatic(); requestDraw() }
     if (onHover) onHover(screenToLonLat(e.clientX, e.clientY))   // 实时经纬度（拖拽时也更新）
   }
   function onUp() { if (beamDragging && onBeamDrag) onBeamDrag(null, 'end'); dragging = false; beamDragging = false; canvas.style.cursor = beamDragMode ? 'move' : 'grab' }
   function onLeave() { onUp(); if (onHover) onHover(null) }       // 移出地图：清空读数
-  function onDbl() { fit(); requestDraw() }
+  function onDbl() { fit(); invalidateStatic(); requestDraw() }
   // 屏幕坐标 -> 经纬度（投影逆运算）；超出地图范围返回 null
   function screenToLonLat(clientX, clientY) {
     const r = canvas.getBoundingClientRect(), kk = k()
@@ -371,7 +427,7 @@ export function createFlatCoverage(canvas) {
     return { lat: 90 - wy, lon }
   }
   let onRightClick = null, onHover = null
-  function onCtx(e) { e.preventDefault(); if (onRightClick) onRightClick(screenToLonLat(e.clientX, e.clientY)) }
+  function onCtx(e) { e.preventDefault(); if (onRightClick) onRightClick(screenToLonLat(e.clientX, e.clientY), { x: e.clientX, y: e.clientY }) }
   canvas.addEventListener('wheel', onWheel, { passive: false })
   canvas.addEventListener('pointerdown', onDown)
   canvas.addEventListener('pointermove', onMove)
@@ -390,15 +446,15 @@ export function createFlatCoverage(canvas) {
       return { name: l.name, lon: l.lon, lat: l.lat, px: tiny ? 9 : muni ? 12 : 15 }
     })
     prov = { borders: data.borders || [], labels }
-    requestDraw()
+    invalidateStatic(); requestDraw()
   }
 
   return {
-    setGeom(g) { geom = g; requestDraw() },
+    setGeom(g) { geom = g; invalidateStatic(); requestDraw() },
     // GRD 覆盖多层：layers=[{fillBands:[{color:[r,g,b], polys:[[[lon,lat]...]]}]|null, segGroups:[...]}]；
     // opts={alpha}。setField 时把每层 fillBands 烘成各档世界坐标 Path2D 缓存（fillPaths），draw 只设变换矢量填充。整体替换。
     setField(layers, opts) {
-      fieldLayers = (layers || []).map((L) => ({ ...L, fillPaths: L.fillBands ? buildFillPaths(L.fillBands) : null }))
+      fieldLayers = (layers || []).map((L) => ({ ...L, fillPaths: L.fillBands ? buildFillPaths(L.fillBands) : null, bounds: layerBounds(L) }))
       if (opts) { if (opts.alpha != null) fieldAlpha = opts.alpha; fieldOpts = { ...fieldOpts, ...opts } }
       requestDraw()
     },
@@ -406,33 +462,38 @@ export function createFlatCoverage(canvas) {
     patchField(layers, opts) {
       if (opts) { if (opts.alpha != null) fieldAlpha = opts.alpha; fieldOpts = { ...fieldOpts, ...opts } }
       for (const L of (layers || [])) {
-        const entry = { ...L, fillPaths: L.fillBands ? buildFillPaths(L.fillBands) : null }
+        const entry = { ...L, fillPaths: L.fillBands ? buildFillPaths(L.fillBands) : null, bounds: layerBounds(L) }
         const i = L.id != null ? fieldLayers.findIndex((x) => x.id === L.id) : -1
         if (i >= 0) fieldLayers[i] = entry; else fieldLayers.push(entry)
       }
       requestDraw()
     },
-    setFieldAlpha(a) { fieldAlpha = a; requestDraw() },
-    setSizes(s) { Object.assign(sizes, s || {}); requestDraw() },
-    setNameMode(m) { nameMode = m; requestDraw() },
+    setFieldAlpha(a) { fieldAlpha = a; requestDraw() },   // 仅覆盖层透明度，静态快照不变
+    setSizes(s) { Object.assign(sizes, s || {}); invalidateStatic(); requestDraw() },
+    setNameMode(m) { nameMode = m; invalidateStatic(); requestDraw() },
     setProvinces,
-    setProvincesVisible(v) { provVisible = !!v; requestDraw() },
+    setProvincesVisible(v) { provVisible = !!v; invalidateStatic(); requestDraw() },
     setOnRightClick(fn) { onRightClick = fn },
     setOnHover(fn) { onHover = fn },
     setBeamDragMode(v) { beamDragMode = !!v; beamDragging = false; canvas.style.cursor = v ? 'move' : 'grab' },
     setOnBeamDrag(fn) { onBeamDrag = fn },
-    setMarkers(points, stations, trajectories) { mk = { points: points || [], stations: stations || [], trajectories: trajectories || [] }; requestDraw() },
-    setFocusSat(p) { focusSat = (p && Number.isFinite(p.lat) && Number.isFinite(p.lon)) ? { lat: p.lat, lon: p.lon } : null; requestDraw() },
-    setSatLayer(spec) { satLayer = spec; requestDraw() },
+    setMarkers(points, stations, trajectories) { mk = { points: points || [], stations: stations || [], trajectories: trajectories || [] }; invalidateStatic(); requestDraw() },
+    setFocusSat(p) { focusSat = (p && Number.isFinite(p.lat) && Number.isFinite(p.lon)) ? { lat: p.lat, lon: p.lon } : null; requestDraw() },   // 聚焦星每帧实时绘制，不在快照内
+    setSelGeom(g) { selGeom = g || null; requestDraw() },   // 聚焦卫星几何（覆盖范围 + 星下点轨迹），随时间实时，不入快照
+    setSatLayer(spec) { satLayer = spec; invalidateStatic(); requestDraw() },
     resize() {
       const w = canvas.clientWidth || canvas.parentElement?.clientWidth || 0, h = canvas.clientHeight || canvas.parentElement?.clientHeight || 0
       if (!w || !h) return
       const firstFit = cw < 2 || ch < 2; cw = w; ch = h; dpr = Math.max(1, window.devicePixelRatio || 1)
       const bw = Math.round(cw * dpr), bh = Math.round(ch * dpr)   // 仅在尺寸真正变化时重设位图，避免无谓清空
       if (canvas.width !== bw || canvas.height !== bh) { canvas.width = bw; canvas.height = bh }
+      // 离屏静态快照缓冲随主画布尺寸（设备像素）创建/重建
+      if (!belowCanvas) { belowCanvas = document.createElement('canvas'); belowCtx = belowCanvas.getContext('2d'); aboveCanvas = document.createElement('canvas'); aboveCtx = aboveCanvas.getContext('2d') }
+      if (belowCanvas.width !== canvas.width || belowCanvas.height !== canvas.height) { belowCanvas.width = canvas.width; belowCanvas.height = canvas.height; aboveCanvas.width = canvas.width; aboveCanvas.height = canvas.height }
+      invalidateStatic()
       if (firstFit) fit(); requestDraw()
     },
-    reset() { fit(); requestDraw() },
+    reset() { fit(); invalidateStatic(); requestDraw() },
     destroy() {
       if (rafId) cancelAnimationFrame(rafId)
       canvas.removeEventListener('wheel', onWheel); canvas.removeEventListener('pointerdown', onDown); canvas.removeEventListener('pointermove', onMove)

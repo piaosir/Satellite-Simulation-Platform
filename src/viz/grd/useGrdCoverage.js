@@ -3,12 +3,12 @@
 // 当前聚焦(active)天线额外画分带填充。计算核心 src/viz/grd/{parse,coverage,colormap}.js。
 import { ref, reactive, watch } from 'vue'
 import { parseGrd } from './parse.js'
-import { antennaBasis, projectGrid, fieldDb, bandGeometry, stitchLoops, gridDir, project } from './coverage.js'
+import { antennaBasis, antennaBasisAzEl, dirToAzEl, azElGround, surfaceAzEl, projectGrid, fieldDb, bandGeometry, stitchLoops } from './coverage.js'
 import { schemeColorsRGB, rgbCss, cssRgb } from './colormap.js'
 import { RS_GEO, A } from '../wgs84.js'
 
 const H = RS_GEO - A
-const GEO_ALT = 35786              // GEO 轨道高度 km（预置星默认）
+const GEO_ALT = 35786              // GEO 轨道高度 km（预置星默认）：NASA 标称值（22,236 mi）
 // 仰角线配色调色板（卫星属性）：新建/预置星按序分配，可逐星改色
 const SAT_PALETTE = ['#66ddff', '#ffd24a', '#7cff8a', '#ff6fae', '#c78bff', '#ff9a5a', '#5ad1ff', '#ff5a5a']
 
@@ -48,8 +48,17 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
     // 全局显示选项（与 GXT 一致；不随聚焦天线切换，对所有选中天线生效）：天线名 / 波束中心 / 波束中心峰值 / 数值标签
     showName: true, nameSize: 16, showBore: true, boreSize: 5, showPeak: false, peakSize: 12, showVal: false, valSize: 12
   })
-  // 方位/俯仰(相对星下点) → boresight 目标经纬度（igrid6 约定，与天线网格一致）
-  function azelToLonLat(satLon, az, el, satLat = 0, altKm) { return project(gridDir(6, az, el), antennaBasis(satLon, satLon, satLat, 0, satLat, altKm)) }
+  // 天线姿态基底：azel 模式用方向基准（boresight 由 az/el 方向给定，可指深空）；geo 模式用地表目标点。
+  function beamBasis(meta, st) {
+    if (st.boreType === 'azel') return antennaBasisAzEl(meta.satLon, meta.satLat || 0, meta.satAlt, st.boreAz || 0, st.boreEl || 0, st.yaw || 0)
+    return antennaBasis(meta.satLon, st.boreLon == null ? meta.satLon : st.boreLon, st.boreLat || 0, st.yaw || 0, meta.satLat || 0, meta.satAlt)
+  }
+  // 当前聚焦天线 boresight 的地表落点（深空则 null）：供 tip 显示与 geo↔azel 互换
+  function boreGround() {
+    const m = antMeta(); if (!m) return null
+    if (s.boreType === 'azel') return azElGround(m.satLon, m.satLat || 0, m.satAlt, s.boreAz || 0, s.boreEl || 0)
+    return { lon: s.boreLon == null ? m.satLon : s.boreLon, lat: s.boreLat || 0 }
+  }
 
   // 加一档：沿现有方向延伸 1 dB，再整体 jet 重新配色
   function addLevel() {
@@ -110,7 +119,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
   let _colorSeq = 0
   const nextElevColor = () => SAT_PALETTE[_colorSeq++ % SAT_PALETTE.length]
   // 预置星（index）补齐统一节点字段：GEO 定点(lon,0,GEO_ALT)、缺省仰角线（关闭）
-  const normPreset = (s) => ({ ...s, kind: 'preset', lat: 0, altKm: GEO_ALT, noradId: null, els: '5,10', elevColor: nextElevColor(), elevShow: false, elevWidth: 1.3, iconSize: 30, labelSize: 14, labelShow: false })
+  const normPreset = (s) => ({ ...s, kind: 'preset', lat: 0, altKm: GEO_ALT, noradId: null, els: '5,10', elevColor: nextElevColor(), elevShow: false, elevWidth: 1.3, elevLabelSize: 13, iconSize: 30, labelSize: 14, labelShow: false })
   // 同名加点号去重，作为节点唯一 key（folder）
   function genFolder(name) {
     const base = (name || '卫星').trim() || '卫星'
@@ -128,6 +137,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
       noradId: draft.noradId || null,
       els: draft.els != null ? draft.els : '5,10',
       elevColor: draft.color || nextElevColor(), elevShow: true, elevWidth: Number(draft.elevWidth) || 1.3,
+      elevLabelSize: Number(draft.elevLabelSize) || 13,
       iconSize: Number(draft.iconSize) || 30, labelSize: Number(draft.labelSize) || 14, labelShow: true,
       antennas: []
     }
@@ -225,7 +235,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
     settings.boreType = 'geo'; settings.boreLon = raw.meta.antenna.boreLon; settings.boreLat = raw.meta.antenna.boreLat
     // 用本地 projectGrid 重投影（而非后端烘焙的 lon/lat），得到地平裕度 vis + 越地平点落到地平，
     // 这样预置天线也能精确切在 0°仰角线（后端数据无 vis、越地平点为 NaN，会留网格锯齿）。
-    const basis = antennaBasis(raw.meta.satLon, settings.boreLon == null ? raw.meta.satLon : settings.boreLon, settings.boreLat, settings.yaw, raw.meta.satLat || 0, raw.meta.satAlt)
+    const basis = beamBasis({ satLon: raw.meta.satLon, satLat: raw.meta.satLat || 0, satAlt: raw.meta.satAlt }, settings)
     const proj = projectGrid(raw.meta.grid, raw.meta.igrid, basis)
     // 预置天线（后端烘焙）只含单波束 set0，包成统一的 beams[1] 结构
     const beam0 = { P1: toF32(raw.P1), P2: toF32(raw.P2), grid: raw.meta.grid, proj, peakDb: raw.meta.peakDb, peak: raw.meta.peak }
@@ -292,12 +302,47 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
   function toggleExpand(folder) { expanded.value = { ...expanded.value, [folder]: !expanded.value[folder] } }
   const isExpanded = (folder) => !!expanded.value[folder]
 
+  // 指向(basis)签名：投影只随它变。azel 模式按 az/el，geo 模式按 lon/lat。
+  const basisKeyOf = (c) => {
+    const m = c.meta, b = c.settings
+    const p = b.boreType === 'azel' ? ('A' + (b.boreAz || 0) + ',' + (b.boreEl || 0)) : ('G' + (b.boreLon == null ? m.satLon : b.boreLon) + ',' + (b.boreLat || 0))
+    return p + ',' + (b.yaw || 0) + ',' + m.satLon + ',' + (m.satLat || 0) + ',' + (m.satAlt || 0)
+  }
+  // 最低绝对档（相对模式 = 峰值 + 最低相对值）：低于它的点无覆盖、不参与绘制。
+  const lowestAbs = (max, cfg) => { let lo = Infinity; for (const L of cfg.levels) { const a = cfg.ctype === 'rel' ? max + L.v : L.v; if (a < lo) lo = a }; return lo }
+  // 覆盖热区子矩形：db ≥ L0 的点的包围盒，各向外扩 1（含边界格的 <L0 角，等值线插值需要）。
+  // db 与指向无关（pathLoss='none'），故拖拽中此盒不变 → 缓存。其余区域不投影/不三角化。
+  function computeBox(db, NX, NY, L0) {
+    let r0 = NY, r1 = -1, c0 = NX, c1 = -1
+    for (let r = 0; r < NY; r++) { const rb = r * NX; for (let c = 0; c < NX; c++) { if (db[rb + c] >= L0) { if (r < r0) r0 = r; if (r > r1) r1 = r; if (c < c0) c0 = c; if (c > c1) c1 = c } } }
+    if (r1 < 0) return { r0: 0, r1: -1, c0: 0, c1: -1 }   // 无覆盖：空盒（投影/三角化都不跑）
+    return { r0: Math.max(0, r0 - 1), r1: Math.min(NY - 1, r1 + 1), c0: Math.max(0, c0 - 1), c1: Math.min(NX - 1, c1 + 1) }
+  }
+  // 取该波束在给定场/电平下的热区盒（按 field 引用 + L0 缓存）。pathLoss≠none 时 db 随指向变 → 不裁剪（返回 null）。
+  function beamBox(beam, cfg, field) {
+    if (cfg.pathLoss !== 'none' || !field) return null
+    const L0 = lowestAbs(field.max, cfg)
+    if (beam._box && beam._box.field === field && beam._box.L0 === L0) return beam._box.box
+    const box = computeBox(field.db, field.NX, field.NY, L0)
+    beam._box = { field, L0, box }
+    return box
+  }
+  // 投影同步：当 (指向 + 热区盒) 变化时才重投影该波束，并原地复用其 proj 数组。
+  // 只对「绘制中(beamsToPlot)」的波束调用 → HTS 只画 1/N 省 N 倍；热区盒进一步把每个波束的投影量降到覆盖区。
+  function syncBeamProj(c, beam, cfg, field) {
+    const box = beamBox(beam, cfg, field)
+    const bkey = basisKeyOf(c) + '|' + (box ? `${box.r0}_${box.r1}_${box.c0}_${box.c1}` : 'F')
+    if (beam._projKey === bkey) return
+    const basis = beamBasis(c.meta, cfg)
+    beam.proj = projectGrid(beam.grid, c.meta.igrid, basis, box, beam.proj)
+    beam._projKey = bkey
+  }
   function reproject() {
     const c = cache.get(active.value); if (!c) return
-    const m = c.meta
     persistActive()   // 回存该天线全部设置（含指向）
-    const basis = antennaBasis(m.satLon, s.boreLon == null ? m.satLon : s.boreLon, s.boreLat, s.yaw, m.satLat || 0, m.satAlt)
-    for (const b of c.beams) b.proj = projectGrid(b.grid, m.igrid, basis)   // 全部波束共用同一指向，逐波束各自网格投影
+    const plot = (s.beamsToPlot && s.beamsToPlot.length ? s.beamsToPlot : [0])
+    // 预投影绘制中的波束（拖拽每帧核心）：用已缓存的场算热区盒（拖拽中 pol/gain 不变 → 场稳定）
+    for (const bi of plot) { const beam = c.beams[bi]; if (beam) syncBeamProj(c, beam, c.settings, (c.settings.pathLoss === 'none' && beam._fld) ? beam._fld.field : null) }
   }
 
   function absLevels(peak, cfg) { return cfg.levels.map((L) => ({ abs: cfg.ctype === 'rel' ? peak + L.v : L.v, v: L.v, color: L.color, lineColor: L.lineColor })) }
@@ -327,8 +372,12 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
     const field = beamField(beam, cfg)
     const lv = absLevels(field.max, cfg)
     const asc = [...lv].sort((a, b) => a.abs - b.abs)   // 升序档：外圈冷、内圈热（与 jet 配色一致）
+    // 用新场算热区盒并确保投影覆盖它（权威同步：处理电平/极化变化导致盒变大、未过 reproject 的情形）
+    const box = beamBox(beam, cfg, field)
+    syncBeamProj(c, beam, cfg, field)
     const need = cfg.fill || cfg.line
-    const geo = need ? bandGeometry({ lon: beam.proj.lon, lat: beam.proj.lat, vis: beam.proj.vis, db: field.db, NX: beam.proj.NX, NY: beam.proj.NY }, asc.map((x) => x.abs)) : null
+    // wantFills=cfg.fill：只画等值线时跳过逐档填充裁剪（关填充的大波束拖拽省一半三角化）；box：只三角化覆盖热区
+    const geo = need ? bandGeometry({ lon: beam.proj.lon, lat: beam.proj.lat, vis: beam.proj.vis, db: field.db, NX: beam.proj.NX, NY: beam.proj.NY }, asc.map((x) => x.abs), cfg.fill, box) : null
     // 分带填充：每档一个颜色 + 该档环带多边形（升序，逐层从外到内绘制，非嵌套→无重叠透明叠加）
     const fillBands = cfg.fill && geo ? asc.map((x, i) => ({ color: cssRgb(x.color), polys: geo.fills[i] })).filter((b) => b.polys.length) : null
     // 等值线：每档一组线段（= 填充相邻档公共边）；数值标签按拼环后每条取最上端点。
@@ -361,6 +410,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
     const satShown = !node || node.labelShow !== false
     const plot = (cfg.beamsToPlot && cfg.beamsToPlot.length ? cfg.beamsToPlot : [0]).filter((i) => i < c.beams.length)
     return plot.map((bi) => {
+      // 投影同步在 buildBeamLayer 内用新场完成（覆盖 reproject 未触及/新勾选的波束，且按热区盒裁剪）
       const L = buildBeamLayer(c, cfg, c.beams[bi], multi ? `${antName}·B${bi + 1}` : antName, withLabels)
       L.id = `${key}#${bi}`   // 稳定层 id（天线键|波束序号）：渲染层据此做拖拽增量更新（只重建聚焦天线层）
       if (L.bore) L.bore.satShown = satShown
@@ -401,15 +451,17 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
   function moveCoverage(c, key, p) {
     const oLon = c.meta.satLon, oLat = c.meta.satLat || 0, oAlt = c.meta.satAlt || 0
     if (Math.abs(p.lon - oLon) < 1e-6 && Math.abs((p.lat || 0) - oLat) < 1e-6 && Math.abs((p.altKm || 0) - oAlt) < 1e-3) return false
-    let dLon = p.lon - oLon; while (dLon > 180) dLon -= 360; while (dLon < -180) dLon += 360
     const b = c.settings
-    const bl = (b.boreLon == null ? oLon : b.boreLon) + dLon
-    b.boreLon = +(((bl % 360) + 540) % 360 - 180).toFixed(4)
-    b.boreLat = +Math.max(-89.9, Math.min(89.9, (b.boreLat || 0) + (p.lat || 0) - oLat)).toFixed(4)
+    // geo 模式：指向随星下点平移（保留地面目标的相对偏置）。azel 模式：az/el 相对天底，星动时自动跟随，无需平移。
+    if (b.boreType !== 'azel') {
+      let dLon = p.lon - oLon; while (dLon > 180) dLon -= 360; while (dLon < -180) dLon += 360
+      const bl = (b.boreLon == null ? oLon : b.boreLon) + dLon
+      b.boreLon = +(((bl % 360) + 540) % 360 - 180).toFixed(4)
+      b.boreLat = +Math.max(-89.9, Math.min(89.9, (b.boreLat || 0) + (p.lat || 0) - oLat)).toFixed(4)
+    }
     c.meta.satLon = p.lon; c.meta.satLat = p.lat || 0; c.meta.satAlt = p.altKm
-    const basis = antennaBasis(p.lon, b.boreLon, b.boreLat, b.yaw, p.lat || 0, p.altKm)
-    for (const bm of c.beams) bm.proj = projectGrid(bm.grid, c.meta.igrid, basis)   // 全部波束随星位平移
-    if (key === active.value) { _muteSync = true; s.boreLon = b.boreLon; s.boreLat = b.boreLat; _muteSync = false }
+    for (const bm of c.beams) bm._projKey = null   // 标记投影过期 → 下次按热区盒重投影（只重算绘制中的波束）
+    if (key === active.value && b.boreType !== 'azel') { _muteSync = true; s.boreLon = b.boreLon; s.boreLat = b.boreLat; _muteSync = false }
     return true
   }
   // 实时跟踪：linked 星随星历/时间轴移动 → 平移各选中天线的覆盖投影。
@@ -495,32 +547,37 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
     } finally { loading.value = false }
   }
 
-  // 拖拽波束：在地图上拖动，按光标位移平移当前天线的 boresight 中心（相对拖动，手感最佳）
+  // 拖拽波束：在方向(az/el)空间相对拖动。地表经纬度在地平附近非单调（过地平会回折，导致"拖不到地平线"），
+  // 故改用「光标方向(夹到地平)的 az/el」做增量 → 单调、可一路拖到地平线；落在可见地表时松手转回 geo 便于精调。
   const dragBore = ref(false)
   function setDragBore(v) { dragBore.value = !!v; const sc = getScene(), fl = getFlat(); if (sc) sc.setBeamDragMode(dragBore.value); if (fl) fl.setBeamDragMode(dragBore.value) }
   let _drag = null, _dragRaf = 0, _dragLL = null, _dragging = false
+  const curAzEl = (m, lon, lat) => surfaceAzEl(m.satLon, m.satLat || 0, m.satAlt, lon, lat)
   function beamDrag(ll, phase) {
-    if (phase === 'end') {   // 松手：取消挂起帧、退出拖拽态，再做一次完整重算补齐被跳过的另一视图
+    if (phase === 'end') {   // 松手：退出拖拽态；boresight 落在可见地表则转回 geo（面板便于精调），地平外保持 azel
       if (_dragRaf) { cancelAnimationFrame(_dragRaf); _dragRaf = 0 }
-      _drag = null; _dragging = false; recompute(); return
+      _drag = null; _dragging = false
+      if (s.boreType === 'azel') { const g = boreGround(); if (g) { s.boreType = 'geo'; s.boreLon = +g.lon.toFixed(4); s.boreLat = +g.lat.toFixed(4) } }
+      recompute(); return
     }
     if (!active.value || !ll) return
-    if (phase === 'start') { _dragging = true; _drag = { ll, lon: s.boreLon == null ? antMeta().satLon : s.boreLon, lat: s.boreLat || 0 }; return }
+    const m = antMeta(); if (!m) return
+    if (phase === 'start') {
+      _dragging = true
+      // 锚点：当前 boresight 的 az/el（geo 模式由其落点换算）+ 起拖光标的 az/el
+      const base = s.boreType === 'azel' ? { az: s.boreAz || 0, el: s.boreEl || 0 } : dirToAzEl(m.satLon, m.satLat || 0, m.satAlt, s.boreLon == null ? m.satLon : s.boreLon, s.boreLat || 0)
+      _drag = { base, cur0: curAzEl(m, ll.lon, ll.lat) }
+      return
+    }
     if (!_drag) return
     _dragLL = ll
-    if (_dragRaf) return                       // rAF 节流：每帧最多重投影一次，拖动顺滑不卡
+    if (_dragRaf) return                       // rAF 节流：每帧最多重投影一次
     _dragRaf = requestAnimationFrame(() => {
       _dragRaf = 0
-      s.boreType = 'geo'
-      // 经度增量按最短弧归一化到 [-180,180]：否则光标/起点分处 ±180 两侧时，增量被算成 ~±360°，
-      // bore 会瞬间甩到地球另一侧（越地平消失，表现为"跨 180° 就乱/拉不动"）。纬度不绕，直接夹紧。
-      let dLon = _dragLL.lon - _drag.ll.lon
-      while (dLon > 180) dLon -= 360
-      while (dLon < -180) dLon += 360
-      let lon = _drag.lon + dLon
-      lon = ((lon % 360) + 540) % 360 - 180   // 结果经度规整到 [-180,180]
-      s.boreLon = +lon.toFixed(4)
-      s.boreLat = +Math.max(-89.9, Math.min(89.9, _drag.lat + (_dragLL.lat - _drag.ll.lat))).toFixed(4)
+      const c = curAzEl(m, _dragLL.lon, _dragLL.lat)
+      s.boreType = 'azel'
+      s.boreAz = +(_drag.base.az + (c.az - _drag.cur0.az)).toFixed(3)
+      s.boreEl = +(_drag.base.el + (c.el - _drag.cur0.el)).toFixed(3)
     })
   }
 
@@ -534,7 +591,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
     const satsState = sats.value.map((s) => ({
       folder: s.folder, kind: s.kind, satName: s.satName,
       lon: s.lon, lat: s.lat, altKm: s.altKm, noradId: s.noradId,
-      els: s.els, elevColor: s.elevColor, elevShow: s.elevShow, elevWidth: s.elevWidth, iconSize: s.iconSize, labelSize: s.labelSize, labelShow: s.labelShow !== false,
+      els: s.els, elevColor: s.elevColor, elevShow: s.elevShow, elevWidth: s.elevWidth, elevLabelSize: s.elevLabelSize, iconSize: s.iconSize, labelSize: s.labelSize, labelShow: s.labelShow !== false,
       antennas: s.antennas.filter((a) => a.imported && a.file).map((a) => ({
         name: a.name, file: a.file, type: a.type || '', band: a.band || '', beams: a.beams, peakDb: a.peakDb, peak: a.peak,
         satLon: a.satLon, satLat: a.satLat, satAlt: a.satAlt, imported: true
@@ -556,11 +613,12 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
           if (!ss.kind || ss.kind === 'preset') continue   // 预置星已不在 index（如已删/改版）→ 跳过
           node = { folder: ss.folder, satName: ss.satName || '卫星', kind: ss.kind, antennas: [],
             lon: ss.lon, lat: ss.lat, altKm: ss.altKm, noradId: ss.noradId || null,
-            els: '5,10', elevColor: nextElevColor(), elevShow: false, elevWidth: 1.3, iconSize: 30, labelSize: 14, labelShow: true }
+            els: '5,10', elevColor: nextElevColor(), elevShow: false, elevWidth: 1.3, elevLabelSize: 13, iconSize: 30, labelSize: 14, labelShow: true }
           sats.value = [...sats.value, node]
         }
         if (ss.satName) node.satName = ss.satName
         if (Number.isFinite(ss.elevWidth)) node.elevWidth = ss.elevWidth
+        if (Number.isFinite(ss.elevLabelSize)) node.elevLabelSize = ss.elevLabelSize
         if (Number.isFinite(ss.iconSize)) node.iconSize = ss.iconSize
         if (Number.isFinite(ss.labelSize)) node.labelSize = ss.labelSize
         if (typeof ss.labelShow === 'boolean') node.labelShow = ss.labelShow
@@ -597,8 +655,8 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
       const cfg = (st.cfgs && st.cfgs[key]) || legacy(key)
       if (cfg) { c.settings = { ...defaultSettings(c.meta.satLon, c.meta.satLat || 0, c.meta.peakDb), ...cfg, levels: cfg.levels ? copyLevels(cfg.levels) : defaultLevels(c.meta.peakDb), beamsToPlot: (cfg.beamsToPlot && cfg.beamsToPlot.length ? cfg.beamsToPlot : [0]).slice() } }
       const b = c.settings
-      const basis = antennaBasis(c.meta.satLon, b.boreLon == null ? c.meta.satLon : b.boreLon, b.boreLat, b.yaw, c.meta.satLat || 0, c.meta.satAlt)
-      for (const bm of c.beams) bm.proj = projectGrid(bm.grid, c.meta.igrid, basis)
+      const basis = beamBasis(c.meta, b)
+      for (const bm of c.beams) { bm.proj = projectGrid(bm.grid, c.meta.igrid, basis); bm._projKey = null }
       expanded.value = { ...expanded.value, [info.sat.folder]: true }
       keys.push(key)
     }
@@ -616,21 +674,23 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
   watch(() => s.levels, () => { persistActive(); recompute() }, { deep: true })
   watch(() => s.beamsToPlot, () => { persistActive(); recompute() }, { deep: true })   // Beams To Plot 多选变更 → 回存 + 重绘
   watch(() => s.alpha, (a) => { persistActive(); const sc = getScene(), fl = getFlat(); if (sc) sc.setCoverageFieldAlpha(a); if (fl) fl.setFieldAlpha(a) })
-  // 指向变化：reproject 只重投影聚焦天线（本就轻）；拖拽中走单层+单视图快路径，否则全量。
-  watch(() => [s.boreLon, s.boreLat, s.yaw], () => { reproject(); _dragging ? recomputeActive() : recompute() })
+  // 切换 boresight 类型：把当前指向无缝换算到另一种表示，避免跳变（geo→azel 取该地表点的 az/el；azel→geo 取落地点）
+  watch(() => s.boreType, (nt, ot) => {
+    if (_muteSync || _dragging || nt === ot) return   // 拖拽自行管理指向，不在此换算
+    const m = antMeta(); if (!m) return
+    if (nt === 'azel') { const ae = dirToAzEl(m.satLon, m.satLat || 0, m.satAlt, s.boreLon == null ? m.satLon : s.boreLon, s.boreLat || 0); _muteSync = true; s.boreAz = +ae.az.toFixed(3); s.boreEl = +ae.el.toFixed(3); _muteSync = false }
+    else { const g = azElGround(m.satLon, m.satLat || 0, m.satAlt, s.boreAz || 0, s.boreEl || 0); if (g) { _muteSync = true; s.boreLon = +g.lon.toFixed(4); s.boreLat = +g.lat.toFixed(4); _muteSync = false } }
+  })
+  // 指向变化（geo 的 lon/lat 或 azel 的 az/el，含 yaw/类型）：reproject 只重投影聚焦天线；拖拽中走单层+单视图快路径，否则全量。
+  watch(() => [s.boreLon, s.boreLat, s.boreAz, s.boreEl, s.yaw, s.boreType], () => {
+    reproject(); _dragging ? recomputeActive() : recompute()
+  })
   // 全局显示选项（天线名/波束中心/数值标签开关与字号）：仅影响标注层，重绘即可（不回存到天线设置）
   watch(() => [s.showName, s.nameSize, s.showBore, s.boreSize, s.showPeak, s.peakSize, s.showVal, s.valSize], () => recompute())
-  // 方位/俯仰模式：az/el 变 → 换算到 boresight 经纬度（再由上面的 watch 触发重投影）
-  watch(() => [s.boreAz, s.boreEl, s.boreType], () => {
-    if (s.boreType !== 'azel') return
-    const m = antMeta(); if (!m) return
-    const g = azelToLonLat(m.satLon, s.boreAz, s.boreEl, m.satLat || 0, m.satAlt)
-    if (g) { s.boreLon = +g.lon.toFixed(4); s.boreLat = +g.lat.toFixed(4) }
-  })
 
   return {
     sats, expanded, selected, active, loading, s,
-    keyOf, isSelected, isActive, isExpanded, antMeta, activeName, beamsCount, satState, dragBore,
+    keyOf, isSelected, isActive, isExpanded, antMeta, activeName, beamsCount, satState, dragBore, boreGround,
     activeBeams, isBeamOn, toggleBeam, setAllBeams, allBeamsOn,
     loadIndex, setActive, toggleAnt, toggleSatAll, toggleExpand, addLevel, removeLevel, importGrd,
     addSatellite, updateSatellite, removeSatellite, removeAntenna, renameAntenna, setElev,

@@ -3,6 +3,7 @@ import { computed, ref, defineAsyncComponent } from 'vue'
 import { useNavStore } from './stores/nav'
 import { cursor } from './stores/cursor'
 import { view } from './stores/view'
+import { covNav } from './stores/coveragePanels'
 
 // 经度在前、纬度在后，保留两位小数
 const fmtCoord = (ll) => `${Math.abs(ll.lon).toFixed(2)}°${ll.lon >= 0 ? 'E' : 'W'}  ${Math.abs(ll.lat).toFixed(2)}°${ll.lat >= 0 ? 'N' : 'S'}`
@@ -53,6 +54,8 @@ const currentLabel = computed(
             </div>
           </div>
         </span>
+        <span v-if="covNav.grdAvail" class="covbtn" :class="{ on: covNav.grdOpen }" @click="covNav.toggleGrd && covNav.toggleGrd()">覆盖图（GRD）</span>
+        <span v-if="covNav.covAvail" class="covbtn" :class="{ on: covNav.covOpen }" @click="covNav.toggleCov && covNav.toggleCov()">覆盖图（GXT）</span>
         <span>帮助</span>
       </nav>
       <div v-if="viewMenu" class="vmask" @click="viewMenu = false"></div>
@@ -72,7 +75,6 @@ const currentLabel = computed(
           <svg class="cur" viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path d="M5 2.5 L5 19.5 L9.3 15.4 L12 21.4 L14.5 20.2 L11.9 14.4 L17.5 14 Z" fill="currentColor" stroke="rgba(0,0,0,0.55)" stroke-width="1" stroke-linejoin="round"/></svg>
           {{ fmtCoord(cursor.ll) }}
         </span>
-        <span v-else>模型 ITU-R P.618-13 / P.676-13 / P.840-9</span>
       </span>
       <span>就绪</span>
     </footer>
@@ -92,6 +94,10 @@ const currentLabel = computed(
 .vbtn { cursor: pointer; border: 1px solid var(--border); padding: 2px 10px; border-radius: 2px; }
 .vbtn:hover { color: var(--text); border-color: var(--accent); }
 .vbtn.on { color: var(--text); border-color: var(--accent); }
+.covbtn { cursor: pointer; border: 1px solid var(--border); padding: 2px 10px; border-radius: 2px; transition: color .12s, background .12s, border-color .12s; }
+.covbtn:hover { color: var(--text); border-color: var(--accent); }
+.covbtn.on { color: var(--bg); background: var(--accent); border-color: var(--accent); font-weight: 600; }
+.covbtn.on:hover { color: var(--bg); }
 .vmenu {
   position: absolute; top: calc(100% + 6px); left: 0; z-index: 100; min-width: 132px;
   background: var(--surface); border: 1px solid var(--border-strong);

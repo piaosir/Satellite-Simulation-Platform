@@ -1,0 +1,12 @@
+import { reactive } from 'vue'
+
+// 覆盖图入口（顶栏「视图」按钮右侧）：由 3D 球体页在挂载时注册可用性与切换回调、卸载时复位。
+// 顶栏据 avail 显隐按钮、据 *Open 高亮，点击调用对应 toggle 回调切换 3D 页内的覆盖面板。
+//  - grdAvail/covAvail：当前在 3D 页且对应 API 可用
+//  - grdOpen/covOpen：面板开关（3D 页用 toRef 直接读写，顶栏据此高亮）
+//  - toggleGrd/toggleCov：切换回调（由 3D 页注入；含懒加载等逻辑）
+export const covNav = reactive({
+  grdAvail: false, covAvail: false,
+  grdOpen: false, covOpen: false,
+  toggleGrd: null, toggleCov: null
+})
