@@ -37,7 +37,7 @@ app.whenReady().then(() => {
   const storage = require(join(root, 'electron/services/storage'))
   const report = require(join(root, 'electron/services/report'))
   const coverage = require(join(root, 'electron/services/coverage'))(join(root, 'resources/coverage'))
-  const coverageGrd = require(join(root, 'electron/services/coverage'))(join(root, 'resources/coverage-grd'))
+  const coverageGrd = require(join(root, 'electron/services/coverage'))(join(root, 'resources/coverage-grd'), join(app.getPath('userData'), 'coverage-grd-imported'))
   const { register } = require(join(root, 'electron/ipc/register'))
   register({ core, storage, report, coverage, coverageGrd })
 

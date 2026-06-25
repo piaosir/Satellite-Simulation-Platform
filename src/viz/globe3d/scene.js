@@ -537,79 +537,114 @@ export function createGlobeScene(container) {
     covGroup = g; scene.add(g)
   }
   // ===================== GRD 覆盖（独立图层：填充面 + 等值线，与烘焙 setCoverage 互不干扰） =====================
-  // field={lon,lat,NX,NY,rgba}（分带填充，可空）；segGroups=[{segs:[[[lon,lat],[lon,lat]]...], color, width, opacity}]（逐档等值线，可空）；
+  // fillBands=[{color:[r,g,b], polys:[[[lon,lat]...]]}]（分带填充多边形，可空）；segGroups=[{segs:[[[lon,lat],[lon,lat]]...], color, width, opacity}]（逐档等值线，可空）；
   // opts={alpha}。整层一个 group，重设即整体替换。
   let covFieldGroup = null
+  let covLayers = new Map()   // 层 id → { group, li }：每个覆盖层(天线·波束)独立子组，支持拖拽时按层增量重建
+  let covOpts = {}
+  function disposeCovGroup(grp) {
+    grp.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) { lineMats.delete(o.material); o.material.dispose() } })
+  }
   function clearCoverageField() {
     if (!covFieldGroup) return
-    covFieldGroup.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) { lineMats.delete(o.material); o.material.dispose() } })
-    scene.remove(covFieldGroup); covFieldGroup = null
+    disposeCovGroup(covFieldGroup)
+    scene.remove(covFieldGroup); covFieldGroup = null; covLayers = new Map()
   }
-  // 分带填充：dB 作顶点属性，片元按插值 dB 取档（边界=iso 线，无毛刺）。
-  // vis（地平裕度）也作顶点属性，片元插值 vis<0 时 discard → 填充边界精确切在 0°仰角线（地平），无网格锯齿。
-  function buildFieldMesh(field, bands, alpha, liftMul) {
-    const { lon, lat, NX, NY, db, vis } = field
+  // 分带填充：与 2D 同源——直接用 bandGeometry 逐三角形切出的各档环带多边形（lon/lat）构网格。
+  // 每个凸多边形扇形三角化，顶点色 = 该档颜色 → 填充边界即等值线、精确重合，无毛刺。地平/接缝裁剪
+  // 已在 bandGeometry 内完成（多边形已切在 0°仰角线内、跨缝已解缠），无需再在着色器里 discard。
+  function buildFieldMesh(fillBands, alpha, liftMul) {
     const lift = liftMul || 1.0006
-    const pos = [], adb = [], avis = [], idx = [], vid = new Int32Array(NX * NY).fill(-1)
+    const pos = [], colA = [], idx = []
     let n = 0
-    for (let k = 0; k < NX * NY; k++) {
-      if (db[k] !== db[k] || lon[k] !== lon[k]) continue
-      const v = llaToVec(lat[k], lon[k], 0).multiplyScalar(lift)
-      pos.push(v.x, v.y, v.z); adb.push(db[k]); avis.push(vis ? vis[k] : 1); vid[k] = n++
-    }
-    for (let row = 0; row < NY - 1; row++) {
-      for (let c = 0; c < NX - 1; c++) {
-        const i00 = row * NX + c, i10 = i00 + 1, i01 = i00 + NX, i11 = i01 + 1
-        const a = vid[i00], b = vid[i10], cc = vid[i11], d = vid[i01]
-        if (a < 0 || b < 0 || cc < 0 || d < 0) continue
-        if (vis && vis[i00] < 0 && vis[i10] < 0 && vis[i11] < 0 && vis[i01] < 0) continue   // 整格越地平，丢弃
-        if (Math.max(lon[i00], lon[i10], lon[i11], lon[i01]) - Math.min(lon[i00], lon[i10], lon[i11], lon[i01]) > 180) continue
-        idx.push(a, b, cc, a, cc, d)
+    for (const fb of fillBands) {
+      const cr = fb.color[0] / 255, cg = fb.color[1] / 255, cb = fb.color[2] / 255
+      for (const poly of fb.polys) {
+        if (poly.length < 3) continue
+        const start = n
+        for (const p of poly) { const v = llaToVec(p[1], p[0], 0).multiplyScalar(lift); pos.push(v.x, v.y, v.z); colA.push(cr, cg, cb); n++ }
+        for (let i = 1; i < poly.length - 1; i++) idx.push(start, start + i, start + i + 1)   // 凸多边形扇形三角化
       }
     }
+    if (!idx.length) return null
     const geo = new THREE.BufferGeometry()
     geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3))
-    geo.setAttribute('aDb', new THREE.Float32BufferAttribute(adb, 1))
-    geo.setAttribute('aVis', new THREE.Float32BufferAttribute(avis, 1))
+    geo.setAttribute('color', new THREE.Float32BufferAttribute(colA, 3))
     geo.setIndex(idx); geo.computeBoundingSphere()
-    const MAXB = 16, lev = new Float32Array(MAXB), colv = []
-    for (let i = 0; i < MAXB; i++) colv.push(new THREE.Vector3())
-    const nb = Math.min(MAXB, bands.levels.length)
-    for (let i = 0; i < nb; i++) { lev[i] = bands.levels[i]; const c = bands.colors[i]; colv[i].set(c[0] / 255, c[1] / 255, c[2] / 255) }
-    const mat = new THREE.ShaderMaterial({
-      uniforms: { uLevels: { value: lev }, uColors: { value: colv }, uCount: { value: nb }, uOpacity: { value: alpha != null ? alpha : 0.85 } },
-      transparent: true, side: THREE.DoubleSide, depthWrite: false,
-      vertexShader: 'attribute float aDb; attribute float aVis; varying float vDb; varying float vVis; void main(){ vDb = aDb; vVis = aVis; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
-      fragmentShader: 'uniform float uLevels[16]; uniform vec3 uColors[16]; uniform int uCount; uniform float uOpacity; varying float vDb; varying float vVis;\n' +
-        'void main(){ if(vVis < 0.0) discard; int band = -1; for(int i=0;i<16;i++){ if(i>=uCount) break; if(vDb >= uLevels[i]) band = i; }\n' +
-        ' if(band < 0) discard; vec3 c = vec3(0.0); for(int i=0;i<16;i++){ if(i==band) c = uColors[i]; }\n' +
-        ' gl_FragColor = vec4(c, uOpacity); }'
-    })
+    const mat = new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, opacity: alpha != null ? alpha : 0.85, side: THREE.DoubleSide, depthWrite: false })
     const mesh = new THREE.Mesh(geo, mat); mesh.renderOrder = 5; mesh.frustumCulled = false
     return mesh
   }
-  // layers=[{field:{lon,lat,NX,NY,db}|null, bands:{levels,colors}, segGroups:[{segs,color,width}]}]；多天线各一层。
+  // layers=[{fillBands:[{color:[r,g,b], polys:[[[lon,lat]...]]}]|null, segGroups:[{segs,color,width}]}]；多天线各一层。
   // 多层叠加：逐层抬升半径(li·step)，使开启填充的多个天线/卫星交叠时按数组顺序稳定层叠（末层=最上，最醒目），
   //   各层半透明 alpha 混合 → 交叠区呈层叠加深的混合色；每层等值线略高于自身填充面，不被本层填充盖住。
+  // 单个覆盖层（一个天线·波束）→ 一个 THREE.Group：分带填充网格 + 逐档等值线 + 数值/名称标签 + 波束中心。
+  // li = 层序（决定抬升半径，避免多层 z-fighting）。供 setCoverageField(全量) 与 patchCoverageLayers(增量) 共用。
+  function buildLayerGroup(L, o, li) {
+    const g = new THREE.Group()
+    const base = 1.0006 + li * 0.00012, lineLift = base + 0.00003
+    if (L.fillBands && L.fillBands.length) { const m = buildFieldMesh(L.fillBands, o.alpha, base); if (m) g.add(m) }
+    for (const grp of (L.segGroups || [])) {
+      if (!grp.segs || !grp.segs.length) continue
+      const flat = []
+      for (const sg of grp.segs) {   // 紧贴本层填充面之上，避免视差错位
+        const a = llaToVec(sg[0][1], sg[0][0], 0).multiplyScalar(lineLift), b = llaToVec(sg[1][1], sg[1][0], 0).multiplyScalar(lineLift)
+        flat.push(a.x, a.y, a.z, b.x, b.y, b.z)
+      }
+      g.add(fatSegments(flat, grp.color != null ? grp.color : 0xffffff, grp.width || 1.2, grp.opacity != null ? grp.opacity : 0.95, 6))
+    }
+    // 数值标签：每条等值线最上端点处各标一次档值（相对/绝对，文本由上游决定）。
+    // billboard 朝向相机，下半部分会探入地球被遮挡 → 沿径向抬出约半个标签高度（随字号缩放），整块浮在地表之上。
+    if (o.showVal) for (const grp of (L.segGroups || [])) {
+      if (grp.txt == null) continue
+      for (const an of (grp.labels || [])) {
+        const spr = makeCovLabel(String(grp.txt), (o.valSize || 12) / 533, '#ffffff')
+        const pos = llaToVec(an[1], an[0], 50); pos.addScaledVector(pos.clone().normalize(), spr.scale.y * 0.6)
+        spr.position.copy(pos); spr.renderOrder = 12; g.add(spr)
+      }
+    }
+    // 波束中心（boresight）：白点 + 指向所属卫星的连线；天线名标签贴在中心上方
+    const b = L.bore
+    if (b) {
+      if (o.showBore) {
+        g.add(fatStrip([llaToVec(b.satLat || 0, b.satLon, b.satAlt || 35786), llaToVec(b.lat, b.lon, 0).multiplyScalar(1.0012)], 0xffb14a, 1.0, 0.3, 5))
+        const dotR = (o.boreSize || 5) * 0.0014
+        const dot = new THREE.Mesh(new THREE.SphereGeometry(dotR, 10, 10), new THREE.MeshBasicMaterial({ color: 0xffffff }))
+        dot.position.copy(llaToVec(b.lat, b.lon, 0).multiplyScalar(1.0012)); dot.renderOrder = 11; g.add(dot)
+      }
+      if (o.showName && L.name) {
+        const spr = makeCovLabel(L.name, (o.nameSize || 16) / 533)
+        const pos = llaToVec(b.lat, b.lon, 80); pos.addScaledVector(pos.clone().normalize(), spr.scale.y * 0.6)   // 同数值标签：径向抬出避免被地球遮挡
+        spr.position.copy(pos); spr.renderOrder = 13; g.add(spr)
+      }
+    }
+    return g
+  }
   function setCoverageField(layers, opts) {
     clearCoverageField()
-    const o = opts || {}
+    covOpts = opts || {}
     const g = new THREE.Group()
-    const arr = layers || []
-    arr.forEach((L, li) => {
-      const base = 1.0006 + li * 0.00012, lineLift = base + 0.00003
-      if (L.field && L.field.db && L.bands) g.add(buildFieldMesh(L.field, L.bands, o.alpha, base))
-      for (const grp of (L.segGroups || [])) {
-        if (!grp.segs || !grp.segs.length) continue
-        const flat = []
-        for (const sg of grp.segs) {   // 紧贴本层填充面之上，避免视差错位
-          const a = llaToVec(sg[0][1], sg[0][0], 0).multiplyScalar(lineLift), b = llaToVec(sg[1][1], sg[1][0], 0).multiplyScalar(lineLift)
-          flat.push(a.x, a.y, a.z, b.x, b.y, b.z)
-        }
-        g.add(fatSegments(flat, grp.color != null ? grp.color : 0xffffff, grp.width || 1.2, grp.opacity != null ? grp.opacity : 0.95, 6))
-      }
+    ;(layers || []).forEach((L, li) => {
+      const lg = buildLayerGroup(L, covOpts, li)
+      covLayers.set(L.id != null ? L.id : '#' + li, { group: lg, li })
+      g.add(lg)
     })
     covFieldGroup = g; scene.add(g)
+  }
+  // 拖拽热路径：只重建给定层（聚焦天线的各波束），其余层的 GPU 资源原样保留 → 不再每帧全量销毁重建。
+  function patchCoverageLayers(layers, opts) {
+    if (!covFieldGroup) { setCoverageField(layers, opts); return }
+    if (opts) covOpts = opts
+    let nextLi = covLayers.size
+    for (const L of (layers || [])) {
+      const id = L.id != null ? L.id : '#' + nextLi
+      const prev = covLayers.get(id)
+      const li = prev ? prev.li : nextLi++
+      if (prev) { covFieldGroup.remove(prev.group); disposeCovGroup(prev.group) }
+      const lg = buildLayerGroup(L, covOpts, li)
+      covLayers.set(id, { group: lg, li })
+      covFieldGroup.add(lg)
+    }
   }
   function setCoverageFieldAlpha(a) {
     if (!covFieldGroup) return
@@ -643,10 +678,15 @@ export function createGlobeScene(container) {
       const dot = new THREE.Mesh(new THREE.SphereGeometry(d.r || 0.009, 12, 12), new THREE.MeshBasicMaterial({ color: d.color != null ? d.color : 0xffd27a }))
       dot.position.copy(llaToVec(d.lat, d.lon, 0).multiplyScalar(1.0014)); dot.renderOrder = 11; g.add(dot)
     }
-    // 3D 下不画星下点标记，也不画卫星名 —— 仰角线卫星只保留仰角线本身
     for (const l of (spec.labels || [])) {
       const spr = makeCovLabel(l.text, l.hpx, l.color)
       spr.position.copy(llaToVec(l.lat, l.lon, l.alt != null ? l.alt : 60)); spr.renderOrder = 12; g.add(spr)
+    }
+    // 卫星名：显示仰角线的卫星，在其真实位置（轨道高度处）画名称（颜色随该星仰角线色）；不画星点本体
+    for (const s of (spec.sats || [])) {
+      if (s.lon == null || !Number.isFinite(s.lat) || !s.name || s.labelShow === false) continue
+      const spr = makeCovLabel(s.name, (s.labelSize || 14) / 533, s.nameColor)
+      spr.position.copy(llaToVec(s.lat, s.lon, s.altKm != null ? s.altKm : 35786)); spr.renderOrder = 14; g.add(spr)
     }
     satLayerGroup = g; scene.add(g)
   }
@@ -829,7 +869,7 @@ export function createGlobeScene(container) {
     if (beamDragMode && e.button === 0) { beamDragging = true; const ll = pickGlobe(e.clientX, e.clientY); if (ll && onBeamDrag) onBeamDrag(ll, 'start') }
   })
   renderer.domElement.addEventListener('pointerup', (e) => {
-    if (beamDragging) { beamDragging = false; return }   // 拖波束结束，不当作选星
+    if (beamDragging) { beamDragging = false; if (onBeamDrag) onBeamDrag(null, 'end'); return }   // 拖波束结束，不当作选星
     if (e.button !== 0) return   // 仅左键当作选星；右键（标点）/中键不改变聚焦
     // 拖动（旋转）-> 停自转、不当作点击
     if (Math.abs(e.clientX - downX) + Math.abs(e.clientY - downY) > 6) { stopAutoRotate(); return }
@@ -907,7 +947,7 @@ export function createGlobeScene(container) {
   return {
     setSatellites, setLabelMode, setHighlight, setHighlightLLA, setOnPick,
     setOrbit, setGroundTrack, setFootprint, clearSelectionGeom,
-    setCoverage, clearCoverage, setCoverageField, clearCoverageField, setCoverageFieldAlpha, setSatLayer, clearSatLayer, faceLonLat, setProvinces, setProvincesVisible, setNameScale,
+    setCoverage, clearCoverage, setCoverageField, patchCoverageLayers, clearCoverageField, setCoverageFieldAlpha, setSatLayer, clearSatLayer, faceLonLat, setProvinces, setProvincesVisible, setNameScale,
     setMarkers, setTrajectories, setOnHover, setOnRightClick, setBeamDragMode, setOnBeamDrag,
     faceTo, setAutoRotate, setOnAutoRotateOff, resize, destroy
   }

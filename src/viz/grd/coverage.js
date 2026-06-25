@@ -26,9 +26,10 @@ export function gridDir(igrid, X, Y) {
   }
 }
 
-// 天线姿态基底：默认 boresight=星下点(satLon,0)；可设 boreLon/boreLat/yaw（WGS84）。
-export function antennaBasis(satLon, boreLon = satLon, boreLat = 0, yawDeg = 0) {
-  const S = geodeticToEcef(satLon, 0, H)
+// 天线姿态基底：默认 boresight=星下点(satLon,boreLat)；可设 boreLon/boreLat/yaw（WGS84）。
+// satLat/altKm = 卫星真实纬度/轨道高度（默认 GEO 赤道）：足迹大小随高度变，LEO 远小于 GEO。
+export function antennaBasis(satLon, boreLon = satLon, boreLat = 0, yawDeg = 0, satLat = 0, altKm = H) {
+  const S = geodeticToEcef(satLon, satLat, altKm)
   const T = geodeticToEcef(boreLon, boreLat, 0)
   const z = nrm(sub(T, S))
   let x = nrm(crs([0, 0, 1], z)), y = crs(z, x)
@@ -49,23 +50,43 @@ export function project(dir, basis) {
   return { lon: g.lon, lat: g.lat, ecef: P }
 }
 
+// 每点天线系单位矢量（gridDir 结果展平成 Float32Array[N*3]）。只随网格几何/igrid 变，与指向(basis)无关，
+// 故记忆化到 set 上——拖拽时 basis 每帧变但这张表不变，省掉逐点 sin/cos。
+export function gridDirs(set, igrid) {
+  if (set._dirs && set._dirsIgrid === igrid) return set._dirs
+  const { XS, YS, XE, YE, NX, NY } = set
+  const dx = (XE - XS) / (NX - 1), dy = (YE - YS) / (NY - 1)
+  const N = NX * NY, dirs = new Float32Array(N * 3)
+  for (let row = 0; row < NY; row++) {
+    for (let col = 0; col < NX; col++) {
+      const d = gridDir(igrid, XS + dx * col, YS + dy * row), o = (row * NX + col) * 3
+      dirs[o] = d[0]; dirs[o + 1] = d[1]; dirs[o + 2] = d[2]
+    }
+  }
+  set._dirs = dirs; set._dirsIgrid = igrid
+  return dirs
+}
+
 // L0：把整张网格逐点投影成 lon/lat（+ 斜距，供路径损耗 + 地平裕度 vis）。仅指向变化时重算。
 // vis>0 在地球可见面内、=0 恰在 0°仰角线、<0 越过地平。越过地平的点不再返回 NaN，而是落到
 // 地平上的趋近点（位置连续），由 vis 符号区分——渲染层据此把覆盖精确切在 0°仰角线，无网格锯齿。
+// 热路径（拖拽每帧）：复用缓存的天线系 dir 表，逐点只做 basis 旋转 + 射线求交，无 trig、无中间数组分配。
 export function projectGrid(set, igrid, basis) {
-  const { XS, YS, XE, YE, NX, NY } = set
-  const dx = (XE - XS) / (NX - 1), dy = (YE - YS) / (NY - 1)
+  const { NX, NY } = set
   const N = NX * NY, { S, x, y, z } = basis
+  const dirs = gridDirs(set, igrid)
+  const x0 = x[0], x1 = x[1], x2 = x[2], y0 = y[0], y1 = y[1], y2 = y[2], z0 = z[0], z1 = z[1], z2 = z[2]
+  const S0 = S[0], S1 = S[1], S2 = S[2]
   const lon = new Float32Array(N), lat = new Float32Array(N), slant = new Float32Array(N), vis = new Float32Array(N)
-  for (let row = 0; row < NY; row++) {
-    for (let col = 0; col < NX; col++) {
-      const dir = gridDir(igrid, XS + dx * col, YS + dy * row)
-      const d = nrm(add(add(sc(x, dir[0]), sc(y, dir[1])), sc(z, dir[2])))
-      const r = rayEllipsoidMargin(S, d), g = ecefToGeodetic(r.p[0], r.p[1], r.p[2])
-      const idx = row * NX + col
-      lon[idx] = g.lon; lat[idx] = g.lat; vis[idx] = r.m
-      slant[idx] = Math.hypot(r.p[0] - S[0], r.p[1] - S[1], r.p[2] - S[2])
-    }
+  const d = [0, 0, 0]
+  for (let k = 0; k < N; k++) {
+    const o = k * 3, a = dirs[o], b = dirs[o + 1], c = dirs[o + 2]
+    let ex = x0 * a + y0 * b + z0 * c, ey = x1 * a + y1 * b + z1 * c, ez = x2 * a + y2 * b + z2 * c
+    const inv = 1 / (Math.hypot(ex, ey, ez) || 1)
+    d[0] = ex * inv; d[1] = ey * inv; d[2] = ez * inv
+    const r = rayEllipsoidMargin(S, d), g = ecefToGeodetic(r.p[0], r.p[1], r.p[2])
+    lon[k] = g.lon; lat[k] = g.lat; vis[k] = r.m
+    slant[k] = Math.hypot(r.p[0] - S0, r.p[1] - S1, r.p[2] - S2)
   }
   return { lon, lat, slant, vis, NX, NY }
 }
@@ -124,6 +145,73 @@ export function contourLines(field, proj, levels) {
     out.push({ g, segs })
   }
   return out
+}
+
+// L2 统一几何：在同一套三角化 + 逐三角形线性插值上，既切出「分带填充多边形」又取「分带边界(等值线)」。
+// 填充与线由同一组顶点插值生成 → 二者逐三角形精确重合；无位图、无对角线/鞍点/接缝分歧（旧 field 着色法
+// 的根因）。地平裁剪：先按 vis≥0 裁三角；接缝：每格三个外角相对首角解缠，不再整格丢弃 → 跨 ±180° 无缺口。
+// field={lon,lat,vis,db,NX,NY}；levelsAsc 升序绝对电平。返回 { fills:[band0Polys,...], lines:[lvl0Segs,...] }：
+//   fills[k] = 该档 [Lk,Lk+1) 环带的多边形列表（每多边形 = [[lon,lat]...]，与 shader band=k 同义）；
+//   lines[k] = Lk 等值线段列表（[[lon,lat],[lon,lat]]，= fills 相邻档的公共边）。
+export function bandGeometry(field, levelsAsc) {
+  const { lon, lat, vis, db, NX, NY } = field
+  const nb = levelsAsc.length
+  const fills = Array.from({ length: nb }, () => [])
+  const lines = Array.from({ length: nb }, () => [])
+  if (!nb || !NX || !NY) return { fills, lines }
+  const L0 = levelsAsc[0]
+  // 顶点 {x:lon(解缠), y:lat, d:db, m:vis}；外三角相对首角解缠经度
+  const corner = (i, refLon) => {
+    let L = lon[i]
+    if (refLon != null) { while (L - refLon > 180) L -= 360; while (L - refLon < -180) L += 360 }
+    return { x: L, y: lat[i], d: db[i], m: vis ? vis[i] : 1 }
+  }
+  // Sutherland-Hodgman：凸多边形按某标量 val 与阈值 t 半平面裁剪（keepGE: 留 val≥t，否则留 val≤t）
+  const clip = (poly, val, t, keepGE) => {
+    if (poly.length < 2) return []
+    const out = []
+    for (let i = 0; i < poly.length; i++) {
+      const A = poly[i], B = poly[(i + 1) % poly.length]
+      const va = val(A), vb = val(B)
+      const ina = keepGE ? va >= t : va <= t, inb = keepGE ? vb >= t : vb <= t
+      if (ina) out.push(A)
+      if (ina !== inb) {
+        const s = (t - va) / (vb - va)
+        out.push({ x: A.x + (B.x - A.x) * s, y: A.y + (B.y - A.y) * s, d: A.d + (B.d - A.d) * s, m: A.m + (B.m - A.m) * s })
+      }
+    }
+    return out
+  }
+  const getD = (p) => p.d, getM = (p) => p.m
+  const emitTri = (t0, t1, t2) => {
+    if (t0.d !== t0.d || t1.d !== t1.d || t2.d !== t2.d) return        // 任一角增益无效
+    if (t0.m < 0 && t1.m < 0 && t2.m < 0) return                       // 整三角越地平
+    if (!(Math.max(t0.d, t1.d, t2.d) >= L0)) return                    // 全部低于最低档 → 无覆盖
+    let base = [t0, t1, t2]
+    if (t0.m < 0 || t1.m < 0 || t2.m < 0) base = clip(base, getM, 0, true)   // 沿 0°仰角线裁
+    if (base.length < 3) return
+    for (let k = 0; k < nb; k++) {
+      let poly = clip(base, getD, levelsAsc[k], true)                  // d ≥ Lk
+      if (k < nb - 1 && poly.length) poly = clip(poly, getD, levelsAsc[k + 1], false)  // 且 d ≤ Lk+1（顶档不封顶）
+      if (poly.length >= 3) fills[k].push(poly.map((p) => [p.x, p.y]))
+    }
+    for (let k = 0; k < nb; k++) {                                     // 各档等值线 = base 上 d==Lk 的穿越段
+      const L = levelsAsc[k], seg = []
+      for (let i = 0; i < base.length; i++) {
+        const A = base[i], B = base[(i + 1) % base.length]
+        if ((A.d < L) !== (B.d < L)) { const s = (L - A.d) / (B.d - A.d); seg.push([A.x + (B.x - A.x) * s, A.y + (B.y - A.y) * s]) }
+      }
+      if (seg.length === 2) lines[k].push([seg[0], seg[1]])            // 凸多边形上恰 0 或 2 个穿越
+    }
+  }
+  for (let row = 0; row < NY - 1; row++) {
+    for (let col = 0; col < NX - 1; col++) {
+      const i00 = row * NX + col, i10 = i00 + 1, i01 = i00 + NX, i11 = i01 + 1
+      const a = corner(i00), b = corner(i10, a.x), c = corner(i11, a.x), d = corner(i01, a.x)
+      emitTri(a, b, c); emitTri(a, c, d)                              // 沿 a–c 对角线三角化（填充/线同源）
+    }
+  }
+  return { fills, lines }
 }
 
 // 相对峰值电平 → 绝对电平（rel 一般为负，如 [-1,-2,-3,-4,-5]）

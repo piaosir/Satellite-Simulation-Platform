@@ -65,7 +65,9 @@ export function createFlatCoverage(canvas) {
   let dpr = Math.max(1, window.devicePixelRatio || 1)
   let cw = 1, ch = 1, base = 1, scale = 1, tx = 0, ty = 0
   let geom = null
-  let fieldLayers = [], fieldAlpha = 0.8   // GRD 覆盖多层（每层=一个天线：分带填充多边形 + 逐档线，独立于 geom）
+  let fieldLayers = [], fieldAlpha = 0.8   // GRD 覆盖多层（每层=一个天线：分带填充 Path2D + 逐档等值线，独立于 geom）
+  // GRD 全局标注选项（与 3D 同步）：天线名 / 波束中心 / 数值标签
+  let fieldOpts = { showName: true, nameSize: 16, showBore: true, boreSize: 5, showVal: false, valSize: 12 }
   let nameMode = 'off', provVisible = false, prov = null
   let mk = { points: [], stations: [], trajectories: [] }
   let focusSat = null   // 聚焦卫星星下点 { lat, lon }，null 表示无聚焦
@@ -218,148 +220,33 @@ export function createFlatCoverage(canvas) {
     if (ring) { ctx.lineWidth = Math.max(1, r * 0.35); ctx.strokeStyle = 'rgba(255,255,255,0.92)'; ctx.stroke() }
   }
 
-  // GRD 覆盖填充面（场栅格化）：与 3D 同源——把投影后的场网格 {lon,lat,vis,db} 按 bands(电平→色)
-  // 烘成一张「连续经度世界度坐标」离屏位图（仅在 setField 时一次）。draw() 随 pan/zoom 用 drawImage
-  // 贴出，并在 -360/0/+360 三档经度环绕各贴一份 → 跨东经180° 无缝、且拖拽时填充只是 blit。
-  // 地平裁剪用 field.vis（仰角<0 的单元不烘），不再依赖等值线拼环（那是旧「2D 没填充」的根因）。
-  const PPD = 16   // 离屏位图分辨率（像素/经纬度）：181² 网格约 18°→288px，足够平滑
-
-  // ===== WebGL 场栅格化（首选）：与 3D scene.buildFieldMesh 同一套着色器逻辑，2D/3D 像素级一致。=====
-  // 逐片元 discard：vVis<0 → 精确切在 0°仰角线（地平，不溢出）；band<0 → 精确切在最低电平（外缘与等值线重合）。
-  // 分带颜色按片元的插值 dB 取（非整格平均），故跨缝/越地平/陡梯度都不糊。CPU 版（下）仅在无 WebGL 时兜底。
-  let _gl = null, _glCanvas = null, _glProg = null, _glLoc = null, _glBuf = null, _glUint = false, _glReady = false, _glFailed = false
-  function initGL() {
-    if (_glReady) return true
-    if (_glFailed) return false
-    try {
-      _glCanvas = document.createElement('canvas')
-      const gl = _glCanvas.getContext('webgl', { alpha: true, premultipliedAlpha: false, antialias: true, preserveDrawingBuffer: true })
-      if (!gl) { _glFailed = true; return false }
-      const vs = 'attribute vec2 aPos; attribute float aDb; attribute float aVis; varying float vDb; varying float vVis;' +
-        'void main(){ vDb=aDb; vVis=aVis; gl_Position=vec4(aPos,0.0,1.0); }'
-      const fs = 'precision highp float; uniform float uLevels[16]; uniform vec3 uColors[16]; uniform int uCount; varying float vDb; varying float vVis;' +
-        'void main(){ if(vVis<0.0) discard; int band=-1; for(int i=0;i<16;i++){ if(i>=uCount) break; if(vDb>=uLevels[i]) band=i; }' +
-        ' if(band<0) discard; vec3 c=vec3(0.0); for(int i=0;i<16;i++){ if(i==band) c=uColors[i]; } gl_FragColor=vec4(c,1.0); }'
-      const sh = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s }
-      const p = gl.createProgram(); gl.attachShader(p, sh(gl.VERTEX_SHADER, vs)); gl.attachShader(p, sh(gl.FRAGMENT_SHADER, fs)); gl.linkProgram(p)
-      if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p))
-      gl.useProgram(p)
-      _glLoc = {
-        aPos: gl.getAttribLocation(p, 'aPos'), aDb: gl.getAttribLocation(p, 'aDb'), aVis: gl.getAttribLocation(p, 'aVis'),
-        uLevels: gl.getUniformLocation(p, 'uLevels[0]'), uColors: gl.getUniformLocation(p, 'uColors[0]'), uCount: gl.getUniformLocation(p, 'uCount')
+  // GRD 分带填充：与 3D 同源——由 bandGeometry 逐三角形切出的各档环带多边形（lon/lat）。每档把全部多边形
+  // 烘成一个「世界度坐标」Path2D（x=lon-LON0, y=90-lat，仅在 setField 时一次），同档多边形并入一条 path
+  // 一次 fill → 相邻三角形无 AA 缝隙。draw() 随 pan/zoom 只用 setTransform 平移缩放矢量填充（清晰、分辨率无关），
+  // 并在 -360/0/+360 三档经度环绕各填一份 → 跨东经180° 无缝。地平/接缝裁剪已在 bandGeometry 内完成。
+  function buildFillPaths(fillBands) {
+    return fillBands.map((fb) => {
+      const path = new Path2D()
+      for (const poly of fb.polys) {
+        for (let i = 0; i < poly.length; i++) { const x = poly[i][0] - LON0, y = 90 - poly[i][1]; i === 0 ? path.moveTo(x, y) : path.lineTo(x, y) }
+        path.closePath()
       }
-      _glBuf = { pos: gl.createBuffer(), db: gl.createBuffer(), vis: gl.createBuffer(), idx: gl.createBuffer() }
-      _glUint = !!gl.getExtension('OES_element_index_uint')
-      gl.disable(gl.CULL_FACE); gl.disable(gl.DEPTH_TEST); gl.disable(gl.BLEND)
-      _gl = gl; _glProg = p; _glReady = true; return true
-    } catch (e) { console.warn('[flatCoverage] WebGL 初始化失败，回退 CPU 栅格化：', e); _glFailed = true; return false }
-  }
-  function rasterizeFieldGL(field, bands) {
-    const { lon, lat, vis, NX, NY, db } = field
-    if (!NX || !NY || !bands || !bands.levels.length) return null
-    if (!initGL()) return rasterizeField(field, bands)
-    if (!_glUint && NX * NY > 65535) return rasterizeField(field, bands)   // 顶点数超 16 位索引且无 uint 扩展 → 兜底
-    const gl = _gl
-    const cLon = lon[(NY >> 1) * NX + (NX >> 1)]   // 网格中心经度，用于解缠
-    const uw = new Float64Array(NX * NY)
-    let lo0 = Infinity, lo1 = -Infinity, la0 = Infinity, la1 = -Infinity
-    for (let i = 0; i < NX * NY; i++) {
-      let L = lon[i]; const la = lat[i]
-      if (!Number.isFinite(L) || !Number.isFinite(la)) { uw[i] = NaN; continue }
-      while (L - cLon > 180) L -= 360; while (L - cLon < -180) L += 360
-      uw[i] = L
-      if (L < lo0) lo0 = L; if (L > lo1) lo1 = L; if (la < la0) la0 = la; if (la > la1) la1 = la
-    }
-    if (!(lo1 > lo0) || !(la1 > la0)) return null
-    const W = Math.max(8, Math.min(2048, Math.round((lo1 - lo0) * PPD)))
-    const Hh = Math.max(8, Math.min(2048, Math.round((la1 - la0) * PPD)))
-    // 顶点 NDC：lo1→x=+1（右）、la1→y=+1（上）—— 与 drawField 贴图取向（顶=lat1）一致，无需翻转
-    const pos = new Float32Array(NX * NY * 2), adb = new Float32Array(NX * NY), avis = new Float32Array(NX * NY)
-    for (let i = 0; i < NX * NY; i++) {
-      const L = uw[i], la = lat[i]
-      if (Number.isFinite(L) && Number.isFinite(la)) {
-        pos[i * 2] = (L - lo0) / (lo1 - lo0) * 2 - 1
-        pos[i * 2 + 1] = (la - la0) / (la1 - la0) * 2 - 1
-      }
-      const v = db[i]; adb[i] = Number.isFinite(v) ? v : -9999
-      avis[i] = vis ? vis[i] : 1
-    }
-    const idx = []
-    for (let j = 0; j < NY - 1; j++) for (let i = 0; i < NX - 1; i++) {
-      const a = j * NX + i, b = a + 1, c = a + NX + 1, d = a + NX
-      if (!(Number.isFinite(db[a]) && Number.isFinite(db[b]) && Number.isFinite(db[c]) && Number.isFinite(db[d]))) continue
-      if (!(Number.isFinite(uw[a]) && Number.isFinite(uw[b]) && Number.isFinite(uw[c]) && Number.isFinite(uw[d]))) continue
-      if (vis && vis[a] < 0 && vis[b] < 0 && vis[c] < 0 && vis[d] < 0) continue   // 整格越地平才弃（与 3D 一致）
-      const mn = Math.min(uw[a], uw[b], uw[c], uw[d]), mx = Math.max(uw[a], uw[b], uw[c], uw[d])
-      if (mx - mn > 180) continue   // 跨缝/折返格丢弃（与 3D scene.buildFieldMesh 一致）
-      idx.push(a, b, c, a, c, d)
-    }
-    if (!idx.length) return null
-    _glCanvas.width = W; _glCanvas.height = Hh
-    gl.viewport(0, 0, W, Hh)
-    gl.useProgram(_glProg)
-    gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT)
-    gl.bindBuffer(gl.ARRAY_BUFFER, _glBuf.pos); gl.bufferData(gl.ARRAY_BUFFER, pos, gl.DYNAMIC_DRAW)
-    gl.enableVertexAttribArray(_glLoc.aPos); gl.vertexAttribPointer(_glLoc.aPos, 2, gl.FLOAT, false, 0, 0)
-    gl.bindBuffer(gl.ARRAY_BUFFER, _glBuf.db); gl.bufferData(gl.ARRAY_BUFFER, adb, gl.DYNAMIC_DRAW)
-    gl.enableVertexAttribArray(_glLoc.aDb); gl.vertexAttribPointer(_glLoc.aDb, 1, gl.FLOAT, false, 0, 0)
-    gl.bindBuffer(gl.ARRAY_BUFFER, _glBuf.vis); gl.bufferData(gl.ARRAY_BUFFER, avis, gl.DYNAMIC_DRAW)
-    gl.enableVertexAttribArray(_glLoc.aVis); gl.vertexAttribPointer(_glLoc.aVis, 1, gl.FLOAT, false, 0, 0)
-    const nb = Math.min(16, bands.levels.length)
-    const lev = new Float32Array(16), col = new Float32Array(48)
-    for (let i = 0; i < nb; i++) { lev[i] = bands.levels[i]; const cc = bands.colors[i]; col[i * 3] = cc[0] / 255; col[i * 3 + 1] = cc[1] / 255; col[i * 3 + 2] = cc[2] / 255 }
-    gl.uniform1fv(_glLoc.uLevels, lev); gl.uniform3fv(_glLoc.uColors, col); gl.uniform1i(_glLoc.uCount, nb)
-    const iarr = _glUint ? new Uint32Array(idx) : new Uint16Array(idx)
-    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, _glBuf.idx); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, iarr, gl.DYNAMIC_DRAW)
-    gl.drawElements(gl.TRIANGLES, idx.length, _glUint ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT, 0)
-    // 快照到 2D 画布（共享 GL 画布会被下一层覆盖）；drawField 仍按 -360/0/+360 三档环绕 blit
-    const cv = document.createElement('canvas'); cv.width = W; cv.height = Hh
-    cv.getContext('2d').drawImage(_glCanvas, 0, 0)
-    return { canvas: cv, lon0: lo0, lon1: lo1, lat0: la0, lat1: la1 }
-  }
-
-  function rasterizeField(field, bands) {
-    const { lon, lat, vis, NX, NY, db } = field
-    if (!NX || !NY || !bands || !bands.levels.length) return null
-    const cLon = lon[(NY >> 1) * NX + (NX >> 1)]   // 网格中心经度，用于解缠
-    const uw = new Float64Array(NX * NY)
-    let lo0 = Infinity, lo1 = -Infinity, la0 = Infinity, la1 = -Infinity
-    for (let i = 0; i < NX * NY; i++) {
-      let L = lon[i]; const la = lat[i]
-      if (!Number.isFinite(L) || !Number.isFinite(la)) { uw[i] = NaN; continue }
-      while (L - cLon > 180) L -= 360; while (L - cLon < -180) L += 360
-      uw[i] = L
-      if (L < lo0) lo0 = L; if (L > lo1) lo1 = L; if (la < la0) la0 = la; if (la > la1) la1 = la
-    }
-    if (!(lo1 > lo0) || !(la1 > la0)) return null
-    const W = Math.max(8, Math.min(2048, Math.round((lo1 - lo0) * PPD)))
-    const Hh = Math.max(8, Math.min(2048, Math.round((la1 - la0) * PPD)))
-    const cv = document.createElement('canvas'); cv.width = W; cv.height = Hh
-    const c2 = cv.getContext('2d')
-    const RX = (L) => (L - lo0) / (lo1 - lo0) * W, RY = (la) => (la1 - la) / (la1 - la0) * Hh
-    const colorOf = (v) => { let ci = -1; for (let kk = 0; kk < bands.levels.length; kk++) if (v >= bands.levels[kk]) ci = kk; return ci >= 0 ? bands.colors[ci] : null }
-    for (let j = 0; j < NY - 1; j++) for (let i = 0; i < NX - 1; i++) {
-      const a = j * NX + i, b = a + 1, c = a + NX + 1, d = a + NX
-      if (vis && vis[a] < 0 && vis[b] < 0 && vis[c] < 0 && vis[d] < 0) continue   // 四角全越地平才弃（与等值线一致）
-      const va = db[a], vb = db[b], vc = db[c], vd = db[d]
-      if (!(Number.isFinite(va) && Number.isFinite(vb) && Number.isFinite(vc) && Number.isFinite(vd))) continue
-      const col = colorOf((va + vb + vc + vd) / 4); if (!col) continue
-      c2.fillStyle = 'rgb(' + col[0] + ',' + col[1] + ',' + col[2] + ')'; c2.beginPath()   // bands.colors 是 [r,g,b]，须组成合法 CSS（直接赋数组会被忽略）
-      c2.moveTo(RX(uw[a]), RY(lat[a])); c2.lineTo(RX(uw[b]), RY(lat[b])); c2.lineTo(RX(uw[c]), RY(lat[c])); c2.lineTo(RX(uw[d]), RY(lat[d])); c2.closePath(); c2.fill()
-    }
-    return { canvas: cv, lon0: lo0, lon1: lo1, lat0: la0, lat1: la1 }
+      return { color: 'rgb(' + fb.color[0] + ',' + fb.color[1] + ',' + fb.color[2] + ')', path }
+    })
   }
 
   function drawField() {
     const kk = k()
-    // 填充：每层位图按 -360/0/+360 三档环绕贴出（跨缝无缝）
+    // 填充：把 pan/zoom 烘进变换矩阵，直接填充缓存的世界坐标 Path2D（每帧零顶点遍历），-360/0/+360 三档环绕
+    ctx.save(); ctx.globalAlpha = fieldAlpha
     for (const L of fieldLayers) {
-      const r = L.raster; if (!r) continue
-      const w = (r.lon1 - r.lon0) * kk, h = (r.lat1 - r.lat0) * kk, y = (90 - r.lat1) * kk + ty
-      ctx.save(); ctx.globalAlpha = fieldAlpha
-      for (const off of [-360, 0, 360]) ctx.drawImage(r.canvas, (r.lon0 - LON0 + off) * kk + tx, y, w, h)
-      ctx.globalAlpha = 1; ctx.restore()
+      if (!L.fillPaths || !L.fillPaths.length) continue
+      for (const off of [-360, 0, 360]) {
+        ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * (tx + off * kk), dpr * ty)
+        for (const fb of L.fillPaths) { ctx.fillStyle = fb.color; ctx.fill(fb.path) }
+      }
     }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.globalAlpha = 1; ctx.restore()
     // 逐档等值线（多层，每层每档一色）：段两端就近解缠，三档环绕
     ctx.lineJoin = 'round'; ctx.lineCap = 'round'
     for (const L of fieldLayers) {
@@ -374,6 +261,17 @@ export function createFlatCoverage(canvas) {
         }
         ctx.strokeStyle = grp.color || 'rgba(255,255,255,0.9)'; ctx.lineWidth = grp.width || 1.2; ctx.stroke(path)
       }
+    }
+  }
+  // GRD 标注层（天线名 / 波束中心点 / 数值标签）：画在填充+等值线之上，随各层 bore/segGroups 数据
+  function drawFieldOverlays() {
+    const o = fieldOpts
+    for (const L of fieldLayers) {
+      if (o.showVal) for (const grp of (L.segGroups || [])) { if (grp.txt == null) continue; for (const an of (grp.labels || [])) drawText(String(grp.txt), an[0], an[1], o.valSize || 12, '#ffffff') }
+      const b = L.bore; if (!b) continue
+      const br = o.boreSize != null ? o.boreSize : 5
+      if (o.showBore) dot(b.lon, b.lat, Math.max(0.3, br), '#ffffff', true)
+      if (o.showName && L.name) drawText(L.name, b.lon, b.lat, o.nameSize || 16, '#ffffff', { dy: -((o.showBore ? br : 0) + (o.nameSize || 16) * 0.6 + 2) })
     }
   }
 
@@ -429,11 +327,12 @@ export function createFlatCoverage(canvas) {
       for (const l of (satLayer.labels || [])) drawText(l.text, l.lon, l.lat, Math.round((l.hpx || 0.026) * 533), l.color || '#fff')
       for (const s of (satLayer.sats || [])) drawSatIcon(s.lon, s.lat, s.iconSize || sizes.satIcon, hex(s.color != null ? s.color : 0xffd27a))   // 颜色/大小随各星设置
       for (const s of (satLayer.sats || [])) {
-        if (!s.name || s.lon == null || s.lat == null) continue
+        if (!s.name || s.lon == null || s.lat == null || s.labelShow === false) continue
         const ls = s.labelSize || 14
         drawText(s.name, s.lon, s.lat, ls, hex(s.color != null ? s.color : 0xffd27a), { dy: -((s.iconSize || sizes.satIcon || 30) * 0.5 + ls * 0.6) })
       }
     }
+    drawFieldOverlays()   // GRD 天线名/波束中心/数值标签（覆盖层之上）
     // 聚焦卫星：图标居中于实时星下点（最上层，默认白色）
     if (focusSat) drawSatIcon(focusSat.lon, focusSat.lat, sizes.satIcon, '#ffffff')
     ctx.restore()
@@ -458,7 +357,7 @@ export function createFlatCoverage(canvas) {
     else if (dragging) { tx += e.clientX - lx; ty += e.clientY - ly; lx = e.clientX; ly = e.clientY; requestDraw() }
     if (onHover) onHover(screenToLonLat(e.clientX, e.clientY))   // 实时经纬度（拖拽时也更新）
   }
-  function onUp() { dragging = false; beamDragging = false; canvas.style.cursor = beamDragMode ? 'move' : 'grab' }
+  function onUp() { if (beamDragging && onBeamDrag) onBeamDrag(null, 'end'); dragging = false; beamDragging = false; canvas.style.cursor = beamDragMode ? 'move' : 'grab' }
   function onLeave() { onUp(); if (onHover) onHover(null) }       // 移出地图：清空读数
   function onDbl() { fit(); requestDraw() }
   // 屏幕坐标 -> 经纬度（投影逆运算）；超出地图范围返回 null
@@ -494,11 +393,21 @@ export function createFlatCoverage(canvas) {
 
   return {
     setGeom(g) { geom = g; requestDraw() },
-    // GRD 覆盖多层：layers=[{field:{lon,lat,vis,db,NX,NY}|null, bands:{levels,colors}, segGroups:[...]}]；
-    // opts={alpha}。setField 时把有 field 的层烘成离屏位图缓存（raster），draw 只 blit。整体替换。
+    // GRD 覆盖多层：layers=[{fillBands:[{color:[r,g,b], polys:[[[lon,lat]...]]}]|null, segGroups:[...]}]；
+    // opts={alpha}。setField 时把每层 fillBands 烘成各档世界坐标 Path2D 缓存（fillPaths），draw 只设变换矢量填充。整体替换。
     setField(layers, opts) {
-      fieldLayers = (layers || []).map((L) => ({ ...L, raster: L.field ? rasterizeFieldGL(L.field, L.bands) : null }))
-      if (opts && opts.alpha != null) fieldAlpha = opts.alpha
+      fieldLayers = (layers || []).map((L) => ({ ...L, fillPaths: L.fillBands ? buildFillPaths(L.fillBands) : null }))
+      if (opts) { if (opts.alpha != null) fieldAlpha = opts.alpha; fieldOpts = { ...fieldOpts, ...opts } }
+      requestDraw()
+    },
+    // 拖拽热路径：只替换给定层（聚焦天线各波束，按 id 匹配），其余层缓存的 fillPaths 原样保留 → 不再每帧全量重建。
+    patchField(layers, opts) {
+      if (opts) { if (opts.alpha != null) fieldAlpha = opts.alpha; fieldOpts = { ...fieldOpts, ...opts } }
+      for (const L of (layers || [])) {
+        const entry = { ...L, fillPaths: L.fillBands ? buildFillPaths(L.fillBands) : null }
+        const i = L.id != null ? fieldLayers.findIndex((x) => x.id === L.id) : -1
+        if (i >= 0) fieldLayers[i] = entry; else fieldLayers.push(entry)
+      }
       requestDraw()
     },
     setFieldAlpha(a) { fieldAlpha = a; requestDraw() },

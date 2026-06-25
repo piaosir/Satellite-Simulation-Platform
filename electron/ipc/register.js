@@ -18,6 +18,10 @@ function register({ core, storage, report, coverage, coverageGrd }) {
   if (coverageGrd) {
     ipcMain.handle('coverageGrd:index', () => coverageGrd.index())
     ipcMain.handle('coverageGrd:get', (_e, file) => coverageGrd.get(file))
+    // 导入的原始 GRD 持久化：存盘 / 读回 / 删除（供天线重载与清理）
+    ipcMain.handle('coverageGrd:save', (_e, name, text) => coverageGrd.save(name, text))
+    ipcMain.handle('coverageGrd:raw', (_e, file) => coverageGrd.raw(file))
+    ipcMain.handle('coverageGrd:remove', (_e, file) => coverageGrd.remove(file))
     // 用户导入：原生文件框选 .grd/.pat → 读文本返回渲染进程解析
     ipcMain.handle('coverageGrd:open', async (e) => {
       const win = BrowserWindow.fromWebContents(e.sender)

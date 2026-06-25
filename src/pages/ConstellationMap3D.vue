@@ -1,5 +1,5 @@
 <script setup>
-import { ref, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { cursor } from '../stores/cursor'
 import { view } from '../stores/view'
 defineOptions({ inheritAttrs: false })   // 不把父级传入的 title 落到根节点（去掉鼠标悬停的“星座3D”原生提示）
@@ -78,7 +78,7 @@ const grdApiOk = typeof window !== 'undefined' && !!(window.api && window.api.co
 const covOpen = ref(false)        // 右侧覆盖面板开关（GXT 烘焙，已隐藏入口）
 
 // 覆盖图（GRD）：实时原始场，渲染到星座3D 的 scene/flat（独立图层）
-const grd = useGrdCoverage(() => scene, () => flat)
+const grd = useGrdCoverage(() => scene, () => flat, () => flatView.value)
 const { sats: grdSats, loading: grdLoading, s: grdS } = grd
 const grdOpen = ref(false)
 async function toggleGrd() {
@@ -326,7 +326,7 @@ function rebuildRenderSet() {
 // 时间推进 / 实时刷新：只重算渲染集位置（不重建集合），并刷新选中几何/信息卡
 function refreshPositions() {
   if (!scene) return
-  if (curKey() === 'none' || !renderEntries.length) { scene.setSatellites([]); shownCount.value = 0; pushFocusSat(); if (hasLinkedElev()) redrawSats(); return }
+  if (curKey() === 'none' || !renderEntries.length) { scene.setSatellites([]); shownCount.value = 0; pushFocusSat(); if (hasLinkedElev()) redrawSats(); grd.tickLive(); return }
   const now = calcAt(), gmst = sat.gstime(now)
   const positions = []
   for (const e of renderEntries) {
@@ -344,6 +344,8 @@ function refreshPositions() {
   }
   pushFocusSat()   // 同步 2D 平面图上聚焦卫星实时位置
   if (hasLinkedElev()) redrawSats()   // 星座关联星：仰角线随时间轴/实时跟踪
+  grd.tickLive()                      // 星座关联星：GRD 覆盖随时间轴/实时跟踪移动（无选中天线即空转）
+  if (satModal.value && satModal.value.noradId) liveTick.value++   // 关联星编辑中：驱动弹窗经纬度/高度刷新
 }
 
 // ===================== 数据加载 =====================
@@ -389,7 +391,7 @@ async function loadGroup() {
 // silent=true：后台构建全量搜索库用，不写主状态栏
 async function loadUniverse(silent) {
   const setS = (t) => { if (!silent) status.value = t }
-  const keys = GROUPS.filter((g) => g.key !== 'all' && g.key !== 'other').map((g) => g.key)
+  const keys = GROUPS.filter((g) => g.key !== 'all' && g.key !== 'other' && g.key !== 'none').map((g) => g.key)
   let done = 0
   setS(`加载全部卫星 0/${keys.length + 1} …`)
   const tick = () => { done++; setS(`加载全部卫星 ${done}/${keys.length + 1} …`) }
@@ -757,16 +759,27 @@ function clearCoverage() {
 // 数据与增删全部走 useGrdCoverage；本页只负责按星历解算关联星位置 + 渲染独立图层。
 const GEO_ALT = 35786              // GEO 轨道高度 km（一键GEO / 预置星默认）
 
+// 天线名内联重命名：grdEditAnt 存正在编辑的天线 key（folder|name），grdEditVal 为输入框值
+const grdEditAnt = ref('')
+const grdEditVal = ref('')
+function startRenameAnt(sat, a) { grdEditAnt.value = grd.keyOf(sat.folder, a.name); grdEditVal.value = a.name }
+function commitRenameAnt(sat, a) {
+  if (grdEditAnt.value === '') return   // 已提交（blur 与 ✓/回车可能重复触发）→ 跳过
+  grdEditAnt.value = ''
+  if (grd.renameAntenna(sat.folder, a.name, grdEditVal.value) === false) alert('天线名为空或与同星其他天线重名')
+}
+
 // 仰角线内联编辑（直接改 grd.sats 节点，响应式）
 function setSatEls(node, v) { node.els = v; redrawSats() }
 function setSatElevColor(node, v) { node.elevColor = v; redrawSats() }
 function toggleSatElev(node) { node.elevShow = !node.elevShow; redrawSats() }
-// 是否有点亮且关联星座的卫星（其仰角线需随星历刷新位置）
-const hasLinkedElev = () => grdSats.value.some((s) => s.noradId && s.elevShow)
-// 随 GRD「清除绘图」一并隐藏所有仰角线（保留各星配置，再点亮即重绘）
+function toggleSatLabel(node) { node.labelShow = node.labelShow === false; redrawSats() }
+// 是否有显示中且关联星座的卫星（其仰角线/卫星名需随星历刷新位置）
+const hasLinkedElev = () => grdSats.value.some((s) => s.noradId && (s.elevShow || s.labelShow !== false))
+// 随 GRD「清除绘图」一并隐藏所有仰角线与卫星名（保留各星配置，再点亮即重绘）
 function grdClearDrawing() {
   grd.clearDrawing()
-  for (const s of grdSats.value) s.elevShow = false
+  for (const s of grdSats.value) { s.elevShow = false; s.labelShow = false }
   redrawSats()
 }
 // 添加/编辑卫星弹窗（null=关闭）+ 从星座点选/搜索状态
@@ -774,28 +787,44 @@ const satModal = ref(null)
 const satPick = ref(false)
 const satSearchKw = ref('')
 const satSearchRes = ref([])
+const liveTick = ref(0)   // 每次 refreshPositions 自增：驱动关联星编辑弹窗的经纬度/高度随星历实时刷新
+
+// 编辑弹窗里展示的位置：关联星按星历实时解算（随 liveTick / 时间轴更新），否则取草稿手填值
+const satModalPos = computed(() => {
+  const m = satModal.value
+  if (!m) return { lon: 0, lat: 0, altKm: 0 }
+  if (m.noradId) {
+    liveTick.value   // 触发依赖：实时/时间轴每秒自增
+    const p = satLivePos({ noradId: m.noradId })
+    if (Number.isFinite(p.lon)) return { lon: +p.lon.toFixed(3), lat: +p.lat.toFixed(3), altKm: +p.altKm.toFixed(1) }
+    return { lon: m.lon, lat: m.lat, altKm: m.altKm }   // 星历未就绪：回退到存储值
+  }
+  return { lon: m.lon, lat: m.lat, altKm: m.altKm }
+})
 
 function defaultSatDraft() {
-  return { folder: null, name: '', lon: 0, lat: 0, altKm: GEO_ALT, color: '', els: '5,10', noradId: null, iconSize: 30, labelSize: 14 }
+  return { folder: null, name: '', lon: 0, lat: 0, altKm: GEO_ALT, color: '', els: '5,10', noradId: null, elevWidth: 1.3, iconSize: 30, labelSize: 14 }
 }
 function openAddSat() { satModal.value = defaultSatDraft(); satPick.value = false; satSearchKw.value = ''; satSearchRes.value = [] }
 // 编辑已有卫星（含预置星）：名称/位置/关联/仰角线/图标与标签大小都可改
-function editSat(node) { satModal.value = { folder: node.folder, name: node.satName, lon: node.lon, lat: node.lat, altKm: node.altKm, color: node.elevColor, els: node.els, noradId: node.noradId, kind: node.kind, iconSize: node.iconSize || 30, labelSize: node.labelSize || 14 }; satPick.value = false; satSearchKw.value = ''; satSearchRes.value = [] }
+function editSat(node) { satModal.value = { folder: node.folder, name: node.satName, lon: node.lon, lat: node.lat, altKm: node.altKm, color: node.elevColor, els: node.els, noradId: node.noradId, kind: node.kind, elevWidth: node.elevWidth || 1.3, iconSize: node.iconSize || 30, labelSize: node.labelSize || 14 }; satPick.value = false; satSearchKw.value = ''; satSearchRes.value = [] }
 function closeSatModal() { satModal.value = null; satPick.value = false; satSearchKw.value = ''; satSearchRes.value = [] }
 function applyGeoAlt() { if (satModal.value) satModal.value.altKm = GEO_ALT }   // 一键GEO：轨道高度设为 GEO
 
 function saveSatModal() {
   const m = satModal.value; if (!m) return
+  // 关联星：保存当前星历解算的位置作为存储回退值（无星座时按此投影），而非草稿里的陈旧值
+  if (m.noradId) { const p = satLivePos({ noradId: m.noradId }); if (Number.isFinite(p.lon)) { m.lon = p.lon; m.lat = p.lat; m.altKm = p.altKm } }
   const lon = Number(m.lon), lat = Number(m.lat), altKm = Number(m.altKm)
   if (!validLon(lon) || !validLat(lat) || !(altKm > 0)) { return }   // 非法输入不保存
   if (m.folder) {
     // 所有星（含预置）都可改名称/经纬度/轨道高度/关联/仰角线。预置星 kind 保持 'preset'（仍属平台数据、不在树里删）；
     // 自定义/星座星按是否关联 NORAD 切换 custom/linked。是否随星历实时跟踪由 noradId 决定，与 kind 无关。
-    const patch = { satName: (m.name || '卫星').trim() || '卫星', lon, lat, altKm, noradId: m.noradId || null, els: m.els || '', elevColor: m.color || '#66ddff', iconSize: Number(m.iconSize) || 30, labelSize: Number(m.labelSize) || 14 }
+    const patch = { satName: (m.name || '卫星').trim() || '卫星', lon, lat, altKm, noradId: m.noradId || null, els: m.els || '', elevColor: m.color || '#66ddff', elevWidth: Number(m.elevWidth) || 1.3, iconSize: Number(m.iconSize) || 30, labelSize: Number(m.labelSize) || 14 }
     if (m.kind !== 'preset') patch.kind = m.noradId ? 'linked' : 'custom'
     grd.updateSatellite(m.folder, patch)
   } else {
-    grd.addSatellite({ name: m.name, lon, lat, altKm, noradId: m.noradId, els: m.els, color: m.color, iconSize: m.iconSize, labelSize: m.labelSize })
+    grd.addSatellite({ name: m.name, lon, lat, altKm, noradId: m.noradId, els: m.els, color: m.color, elevWidth: m.elevWidth, iconSize: m.iconSize, labelSize: m.labelSize })
   }
   closeSatModal(); redrawSats()
 }
@@ -839,24 +868,29 @@ function pickSatSearch(r) { pickEntryIntoModal(r.en); satSearchKw.value = ''; sa
 function redrawSats() {
   if (!scene) return
   const lines = [], labels = [], sats = []
-  const addRings = (lon, lat, altKm, node) => {
-    if (!Number.isFinite(lon) || !Number.isFinite(lat) || !(altKm > 0)) return
-    const color = node.elevColor, colNum = cssToHex(color)
-    const satEcef = W.geodeticToEcef(lon, lat, altKm)
-    for (const el of parseNums(node.els)) {
-      if (!(el >= 0 && el < 90)) continue
-      const ring = W.isoElevationContourAt(satEcef, el, 160)
-      if (!ring || ring.length < 3) continue
-      lines.push({ p: ring, color: colNum, width: el === 0 ? 1.9 : 1.3, opacity: el === 0 ? 0.95 : 0.85, closed: true })
-      let top = ring[0]; for (const q of ring) if (q[1] > top[1]) top = q   // 角度标签贴在环最高点
-      labels.push({ lon: top[0], lat: top[1], text: el === 0 ? '地平' : el + '°', hpx: 0.024, color, alt: 40 })
-    }
-    sats.push({ lon, lat, altKm, name: node.satName, color: colNum, iconSize: node.iconSize || 30, labelSize: node.labelSize || 14 })
-  }
   for (const node of grdSats.value) {
-    if (!node.elevShow || !parseNums(node.els).length) continue
+    // 两项相互独立：卫星名（图标/名称）由 labelShow 控；等仰角线由 elevShow 控且需填仰角值。
+    const showLabel = node.labelShow !== false
+    const els = parseNums(node.els)
+    const showElev = node.elevShow && els.length > 0
+    if (!showLabel && !showElev) continue
     const p = node.noradId ? satLivePos(node) : { lon: node.lon, lat: node.lat, altKm: node.altKm }
-    addRings(p.lon, p.lat, p.altKm, node)
+    if (!Number.isFinite(p.lon) || !Number.isFinite(p.lat) || !(p.altKm > 0)) continue
+    const color = node.elevColor, colNum = cssToHex(color)
+    if (showElev) {
+      const w = node.elevWidth || 1.3
+      const satEcef = W.geodeticToEcef(p.lon, p.lat, p.altKm)
+      for (const el of els) {
+        if (!(el >= 0 && el < 90)) continue
+        const ring = W.isoElevationContourAt(satEcef, el, 160)
+        if (!ring || ring.length < 3) continue
+        lines.push({ p: ring, color: colNum, width: el === 0 ? w * 1.45 : w, opacity: el === 0 ? 0.95 : 0.85, closed: true })
+        let top = ring[0]; for (const q of ring) if (q[1] > top[1]) top = q   // 角度标签贴在环最高点
+        labels.push({ lon: top[0], lat: top[1], text: el === 0 ? '地平' : el + '°', hpx: 0.024, color, alt: 40 })
+      }
+    }
+    // 卫星名/图标：不依赖仰角值，仅由 labelShow 决定（3D 只画名，2D 画图标+名）
+    if (showLabel) sats.push({ lon: p.lon, lat: p.lat, altKm: p.altKm, name: node.satName, color: colNum, nameColor: color, iconSize: node.iconSize || 30, labelSize: node.labelSize || 14, labelShow: true })
   }
   const spec = (lines.length || sats.length) ? { lines, dots: [], labels, sats } : null
   scene.setSatLayer(spec)
@@ -1118,6 +1152,7 @@ onMounted(async () => {
   scene.setOnHover((ll) => { cursor.ll = ll })
   scene.setOnRightClick(onMapRightClick)
   scene.setOnBeamDrag(grd.beamDrag)   // 拖拽波束（GRD boresight 中心）
+  grd.setLivePos(satLivePos)          // GRD 覆盖按星历/时间轴解算星下点+高度（关联星实时跟踪）
   loadMarkers(); syncMarkers()
   ro = new ResizeObserver(() => { if (scene) scene.resize(); if (flat && flatView.value) flat.resize() }); ro.observe(el.value)
 
@@ -1377,31 +1412,51 @@ onBeforeUnmount(() => { cursor.ll = null; if (timer) clearInterval(timer); if (r
                 <span class="ic del" title="删除卫星（含其天线）" @click.stop="removeSat(sat)">✕</span>
               </div>
               <template v-if="grd.isExpanded(sat.folder)">
-                <!-- 仰角线：卫星属性，内联在该星节点下 -->
+                <!-- 卫星显示（卫星名 / 仰角线），卫星属性，内联在该星节点下 -->
                 <div class="elrow elin">
                   <span class="dotc" :style="{ background: sat.elevColor }"></span>
-                  <span class="eln">仰角线</span>
+                  <span class="eln">仰角值</span>
                   <input class="ci elci" :value="sat.els" placeholder="如 5,10" @input="e => setSatEls(sat, e.target.value)" />
-                  <input class="clr" type="color" :value="sat.elevColor" @input="e => setSatElevColor(sat, e.target.value)" />
-                  <span class="ic" :class="{ on: sat.elevShow }" :title="sat.elevShow ? '隐藏仰角线' : '显示仰角线'" @click="toggleSatElev(sat)">{{ sat.elevShow ? '◼' : '◻' }}</span>
-                  <span class="ic" title="定位到该星" @click="focusSatItem(sat)">◎</span>
+                  <input class="clr" type="color" title="该星颜色（仰角线 / 卫星名）" :value="sat.elevColor" @input="e => setSatElevColor(sat, e.target.value)" />
+                </div>
+                <div class="elacts">
+                  <span class="elbtn" :class="{ on: sat.labelShow !== false }" title="在地图上显示/隐藏该卫星（3D 名称、平面图标 + 名称）" @click="toggleSatLabel(sat)">{{ sat.labelShow !== false ? '✓ ' : '' }}卫星名</span>
+                  <span class="elbtn" :class="{ on: sat.elevShow }" title="显示/隐藏等仰角线（需先在上方填仰角值，如 5,10）" @click="toggleSatElev(sat)">{{ sat.elevShow ? '✓ ' : '' }}仰角线</span>
+                  <span class="elbtn act" title="把地图视角转到该卫星" @click="focusSatItem(sat)">⌖ 定位</span>
                 </div>
                 <div v-if="!sat.antennas.length" class="gant noant">暂无天线 — 点「＋天线」导入 GRD</div>
                 <div v-for="a in sat.antennas" :key="a.name" class="gant" :class="{ on: grd.isSelected(sat.folder, a.name), foc: grd.isActive(sat.folder, a.name) }" @click="grd.setActive(sat, a)">
                   <input type="checkbox" class="gck" :checked="grd.isSelected(sat.folder, a.name)" @click.stop @change="grd.toggleAnt(sat, a)" />
-                  <span class="aname">{{ a.name }}</span>
-                  <span v-if="grd.isActive(sat.folder, a.name)" class="afoc">编辑中</span>
+                  <template v-if="grdEditAnt === grd.keyOf(sat.folder, a.name)">
+                    <input class="aname-in" v-model="grdEditVal" @click.stop @keydown.enter="commitRenameAnt(sat, a)" @blur="commitRenameAnt(sat, a)" />
+                    <span class="ic ok" title="确认重命名" @mousedown.prevent @click.stop="commitRenameAnt(sat, a)">✓</span>
+                  </template>
+                  <template v-else>
+                    <span class="aname" title="双击重命名" @dblclick.stop="startRenameAnt(sat, a)">{{ a.name }}</span>
+                    <span v-if="grd.isActive(sat.folder, a.name)" class="afoc">编辑中</span>
+                    <span class="ic" title="重命名天线" @click.stop="startRenameAnt(sat, a)">✎</span>
+                  </template>
                   <span class="ic del" title="删除天线" @click.stop="grd.removeAntenna(sat.folder, a.name)">✕</span>
                 </div>
               </template>
             </template>
           </div>
-          <div class="tip">「＋卫星」加卫星（自定义坐标 / 星座关联）；每颗星「＋天线」导入 GRD；展开卫星即可设该星仰角线（卫星属性）。</div>
+          <div class="tip">「＋卫星」加卫星（自定义坐标 / 星座关联）；每颗星「＋天线」导入 GRD；展开卫星：<b>卫星名</b>=地图上显示该星图标与名称、<b>仰角线</b>=显示等仰角线（需填仰角值）、<b>定位</b>=视角转到该星。</div>
         </div>
 
         <template v-if="grd.antMeta()">
           <div class="sec">
             <div class="sect"><span>设置 · {{ grd.activeName() }}</span><span v-if="grd.selected.value.length > 1" class="editing" title="多选时设置只作用于聚焦（编辑中）天线，各天线独立保存">仅编辑聚焦天线</span></div>
+            <template v-if="grd.activeBeams().length > 1">
+              <div class="sect" style="margin-top:2px"><span>Beams To Plot · {{ grd.activeBeams().length }} 波束</span><span class="lnk" :title="grd.allBeamsOn() ? '取消全部波束' : '绘制全部波束'" @click="grd.setAllBeams(!grd.allBeamsOn())">{{ grd.allBeamsOn() ? '取消全选' : '全选' }}</span></div>
+              <div class="bplist">
+                <label v-for="b in grd.activeBeams()" :key="b.i" class="brow" :class="{ on: grd.isBeamOn(b.i) }">
+                  <input type="checkbox" :checked="grd.isBeamOn(b.i)" @change="grd.toggleBeam(b.i)" />
+                  <span class="bnm">{{ b.label }}</span>
+                  <span class="bpk">{{ b.peakDb.toFixed(1) }}</span>
+                </label>
+              </div>
+            </template>
             <div class="srow"><label>极化</label><select v-model="grdS.pol"><option value="P1">P1 共极化</option><option value="P2">P2 交叉</option><option value="RSS">RSS 合成</option><option value="P1/P2">P1/P2</option><option value="P2/P1">P2/P1</option></select></div>
             <div class="srow"><label>类型</label>
               <span class="seg sm"><span class="sg" :class="{ on: grdS.ctype === 'rel' }" @click="grdS.ctype = 'rel'">相对峰值</span><span class="sg" :class="{ on: grdS.ctype === 'abs' }" @click="grdS.ctype = 'abs'">绝对</span></span>
@@ -1426,7 +1481,7 @@ onBeforeUnmount(() => { cursor.ll = null; if (timer) clearInterval(timer); if (r
           <div class="sec">
             <label class="chk2"><input type="checkbox" v-model="grdS.fill" /><span>Fill Contours（分带填充）</span></label>
             <label class="chk2"><input type="checkbox" v-model="grdS.line" /><span>显示等值线</span></label>
-            <div class="srow"><label>透明度</label><input class="rng" type="range" min="0.2" max="1" step="0.02" v-model.number="grdS.alpha" /><span class="u">{{ grdS.alpha.toFixed(2) }}</span></div>
+            <div class="srow"><label>透明度</label><input class="rng" type="range" min="0" max="1" step="0.02" v-model.number="grdS.alpha" /><span class="u">{{ grdS.alpha.toFixed(2) }}</span></div>
             <div class="tip">多个天线/卫星各自开启「Fill」即可叠加填充；交叠区按透明度混合，编辑中天线置于最上。仰角线在上方卫星树展开各星设置。</div>
           </div>
 
@@ -1450,6 +1505,17 @@ onBeforeUnmount(() => { cursor.ll = null; if (timer) clearInterval(timer); if (r
             </template>
             <div class="srow"><label>旋转 Rot</label><input class="ci" type="number" step="1" v-model.number="grdS.yaw" /><span class="u">°</span></div>
             <div class="tip">指向 {{ (grdS.boreLon || 0).toFixed(2) }}°E, {{ (grdS.boreLat || 0).toFixed(2) }}°N（默认星下点 {{ grd.antMeta().satLon }}°）· 峰值 {{ grd.antMeta().peakDb }}dB @ {{ grd.antMeta().peak[0] }},{{ grd.antMeta().peak[1] }}</div>
+          </div>
+
+          <div class="sec">
+            <div class="sect"><span>显示选项</span><span class="editing" title="对所有选中天线生效">全局</span></div>
+            <label class="chk2"><input type="checkbox" v-model="grdS.showName" /><span>显示天线名</span></label>
+            <div v-if="grdS.showName" class="srow"><label>字号</label><input class="rng" type="range" min="2" max="32" step="0.5" v-model.number="grdS.nameSize" /><span class="u">{{ grdS.nameSize }}</span></div>
+            <label class="chk2"><input type="checkbox" v-model="grdS.showBore" /><span>显示波束中心</span></label>
+            <div v-if="grdS.showBore" class="srow"><label>大小</label><input class="rng" type="range" min="0.5" max="12" step="0.5" v-model.number="grdS.boreSize" /><span class="u">{{ grdS.boreSize }}</span></div>
+            <label class="chk2"><input type="checkbox" v-model="grdS.showVal" /><span>显示数值标签</span></label>
+            <div v-if="grdS.showVal" class="srow"><label>字号</label><input class="rng" type="range" min="2" max="30" step="0.5" v-model.number="grdS.valSize" /><span class="u">{{ grdS.valSize }}</span></div>
+            <div class="tip">数值标签按各天线「电平」档显示（相对峰值模式标档值，绝对模式标绝对 dB），需开启「显示等值线」。</div>
           </div>
         </template>
 
@@ -1541,13 +1607,14 @@ onBeforeUnmount(() => { cursor.ll = null; if (timer) clearInterval(timer); if (r
         <div class="sdh"><span>{{ satModal.folder ? '编辑卫星' : '添加卫星' }}</span><span class="csx" @click="closeSatModal">✕</span></div>
         <div class="sdbody">
           <div class="srow"><label>名称</label><input class="ci" v-model="satModal.name" placeholder="卫星名称" /></div>
-          <div class="srow"><label>经度</label><input class="ci" type="number" step="0.1" v-model.number="satModal.lon" /><span class="u">°E</span></div>
-          <div class="srow"><label>纬度</label><input class="ci" type="number" step="0.1" v-model.number="satModal.lat" /><span class="u">°N</span></div>
-          <div class="srow"><label>轨道高度</label><input class="ci" type="number" step="100" v-model.number="satModal.altKm" /><span class="u">km</span><span class="geobtn" title="设为 GEO 轨道高度 35786km" @click="applyGeoAlt">一键GEO</span></div>
+          <div class="srow"><label>经度</label><input class="ci" type="number" step="0.1" :value="satModalPos.lon" @input="satModal.lon = Number($event.target.value)" :disabled="!!satModal.noradId" :title="satModal.noradId ? '已关联星座卫星，位置随星历实时解算，不可手填' : ''" /><span class="u">°E</span></div>
+          <div class="srow"><label>纬度</label><input class="ci" type="number" step="0.1" :value="satModalPos.lat" @input="satModal.lat = Number($event.target.value)" :disabled="!!satModal.noradId" :title="satModal.noradId ? '已关联星座卫星，位置随星历实时解算，不可手填' : ''" /><span class="u">°N</span></div>
+          <div class="srow"><label>轨道高度</label><input class="ci" type="number" step="100" :value="satModalPos.altKm" @input="satModal.altKm = Number($event.target.value)" :disabled="!!satModal.noradId" :title="satModal.noradId ? '已关联星座卫星，位置随星历实时解算，不可手填' : ''" /><span class="u">km</span><span v-if="!satModal.noradId" class="geobtn" title="设为 GEO 轨道高度 35786km" @click="applyGeoAlt">一键GEO</span></div>
           <div class="srow"><label>仰角线</label><input class="ci" v-model="satModal.els" placeholder="如 5,10,20（0=地平）" /><span class="u">°</span></div>
           <div class="srow"><label>颜色</label><input class="clr" type="color" v-model="satModal.color" /></div>
+          <div class="srow"><label>线粗</label><input class="rng" type="range" min="0.5" max="4" step="0.1" v-model.number="satModal.elevWidth" /><span class="u">{{ (satModal.elevWidth || 1.3).toFixed(1) }}</span></div>
           <div class="srow"><label>图标大小</label><input class="rng" type="range" min="10" max="64" step="1" v-model.number="satModal.iconSize" /><span class="u">{{ satModal.iconSize }}</span></div>
-          <div class="srow"><label>标签字号</label><input class="rng" type="range" min="8" max="30" step="1" v-model.number="satModal.labelSize" /><span class="u">{{ satModal.labelSize }}</span></div>
+          <div class="srow"><label>标签字号</label><input class="rng" type="range" min="1" max="30" step="1" v-model.number="satModal.labelSize" /><span class="u">{{ satModal.labelSize }}</span></div>
           <div v-if="satModal.kind === 'preset'" class="tip2">预置卫星，可改名称 / 位置 / 仰角线；导入的天线沿用其原星下点投影。</div>
 
           <div class="sdiv">从星座选取（可选）</div>
@@ -1654,6 +1721,7 @@ onBeforeUnmount(() => { cursor.ll = null; if (timer) clearInterval(timer); if (r
 .srow:last-child { margin-bottom: 0; }
 .srow label { color: var(--text-muted); width: 36px; flex: none; }
 .srow select, .srow .ci { flex: 1; min-width: 0; border: 1px solid var(--border); background: var(--bg); padding: 3px 6px; font-size: 12px; outline: none; color: var(--text); }
+.srow .ci:disabled { background: var(--surface); color: var(--text-faint); cursor: not-allowed; border-style: dashed; }
 .srow .u { color: var(--text-muted); }
 .seg { display: flex; border: 1px solid var(--border); }
 .seg .sg { padding: 3px 12px; cursor: pointer; color: var(--text-muted); }
@@ -1688,6 +1756,7 @@ onBeforeUnmount(() => { cursor.ll = null; if (timer) clearInterval(timer); if (r
 .gant.on { color: var(--text); border-left-color: color-mix(in srgb, var(--accent) 45%, transparent); }   /* 已选中=绘制中 */
 .gant.foc { color: var(--text); background: color-mix(in srgb, var(--accent) 14%, transparent); border-left-color: var(--accent); font-weight: 600; }   /* 聚焦=编辑中（专业高亮） */
 .gant .aname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gant .aname-in { flex: 1; min-width: 0; border: 1px solid var(--accent); background: var(--bg); padding: 1px 5px; font-size: 11.5px; color: var(--text); outline: none; }
 .gant .afoc { flex: none; font-size: 9.5px; font-weight: 600; letter-spacing: .3px; color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent); border-radius: 8px; padding: 0 5px; line-height: 14px; }
 /* 卫星行操作：＋天线 / 编辑 / 删除 */
 .gsat .sact { flex: none; font-size: 10.5px; color: var(--accent); cursor: pointer; opacity: .85; }
@@ -1714,6 +1783,14 @@ onBeforeUnmount(() => { cursor.ll = null; if (timer) clearInterval(timer); if (r
 .glvrow .ic.del:hover { color: #d66; }
 .glvadd { padding: 4px 7px; text-align: center; color: var(--text-muted); cursor: pointer; font-size: 11.5px; border-top: 1px solid var(--border); }
 .glvadd:hover { color: var(--accent); background: var(--bg); }
+/* Beams To Plot 多波束多选列表（SATSOFT 风格） */
+.bplist { border: 1px solid var(--border); border-radius: 2px; margin-top: 5px; max-height: 132px; overflow-y: auto; }
+.brow { display: flex; align-items: center; gap: 6px; padding: 2px 7px; cursor: pointer; font-size: 11.5px; }
+.brow + .brow { border-top: 1px solid var(--border); }
+.brow:hover { background: var(--bg); }
+.brow.on .bnm { color: var(--text); }
+.brow .bnm { flex: 1; color: var(--text-muted); }
+.brow .bpk { color: var(--text-faint); font-family: var(--font-mono); font-size: 10.5px; }
 /* 两级覆盖：卫星卡 / 批次 */
 .satcard { border-left: 2px solid var(--accent); }
 .sath { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
@@ -1723,6 +1800,8 @@ onBeforeUnmount(() => { cursor.ll = null; if (timer) clearInterval(timer); if (r
 .ic { flex: none; cursor: pointer; color: var(--text-faint); padding: 0 1px; }
 .ic:hover { color: var(--text); }
 .ic.del:hover { color: #e66; }
+.ic.ok { color: #5fbf6a; font-weight: 700; }
+.ic.ok:hover { color: #7ddc88; }
 .batch { border: 1px solid var(--border); padding: 7px 8px; margin-top: 8px; }
 .bah { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
 .bnm { flex: 1; min-width: 0; border: 1px solid var(--border); background: var(--bg); padding: 2px 6px; font-size: 11.5px; color: var(--text); outline: none; }
@@ -1786,10 +1865,17 @@ onBeforeUnmount(() => { cursor.ll = null; if (timer) clearInterval(timer); if (r
 .elrow { display: flex; align-items: center; gap: 5px; margin: 5px 0; }
 .elrow .eln { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; color: var(--text); }
 .elrow .eln em { font-style: normal; color: var(--text-faint); font-size: 10.5px; margin-left: 3px; }
-.elrow .elci { flex: none; width: 58px; padding: 2px 5px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 11.5px; outline: none; }
+.elrow .eln { flex: none; }
+.elrow .elci { flex: 1; min-width: 0; width: auto; padding: 2px 5px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 11.5px; outline: none; }
 .elrow .elci:focus { border-color: var(--accent); }
-.elrow .clr { width: 22px; height: 18px; }
+.elrow .clr { width: 22px; height: 18px; flex: none; }
 .elrow .ic.on { color: var(--accent); }
+/* 卫星显示动作按钮：卫星名 / 仰角线（切换，亮起=开） + 定位（动作），文字直白可辨 */
+.elacts { display: flex; align-items: center; gap: 6px; margin: 0 0 7px; padding-left: 16px; }
+.elacts .elbtn { flex: none; cursor: pointer; font-size: 11px; padding: 2px 9px; border: 1px solid var(--border); border-radius: 10px; color: var(--text-muted); white-space: nowrap; transition: color .12s, border-color .12s; }
+.elacts .elbtn:hover { color: var(--text); border-color: var(--text-faint); }
+.elacts .elbtn.on { color: var(--accent); border-color: var(--accent); }
+.elacts .elbtn.act:hover { color: var(--accent); border-color: var(--accent); }
 
 /* 卫星编辑弹窗 */
 .sat-mask { position: absolute; inset: 0; background: rgba(4,8,14,0.55); display: flex; align-items: center; justify-content: center; z-index: 40; }
