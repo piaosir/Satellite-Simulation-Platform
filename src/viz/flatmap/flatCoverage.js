@@ -63,7 +63,10 @@ function featureExtent(geom) {
 
 export function createFlatCoverage(canvas) {
   const ctx = canvas.getContext('2d')
-  let dpr = Math.max(1, window.devicePixelRatio || 1)
+  // 渲染分辨率倍率（与 3D 同一画质档位）：null=跟随系统 DPR；否则作为绝对设备像素倍率（0.25~4）。
+  let renderScale = null
+  const effDpr = () => renderScale != null ? Math.max(0.25, Math.min(renderScale, 4)) : Math.max(1, window.devicePixelRatio || 1)
+  let dpr = effDpr()
   let cw = 1, ch = 1, base = 1, scale = 1, tx = 0, ty = 0
   let geom = null
   let fieldLayers = [], fieldAlpha = 0.8   // GRD 覆盖多层（每层=一个天线：分带填充 Path2D + 逐档等值线，独立于 geom）
@@ -86,46 +89,62 @@ export function createFlatCoverage(canvas) {
   stationImg.onload = () => { stationReady = true; invalidateStatic(); requestDraw() }
   stationImg.src = 'data:image/svg+xml;base64,' + btoa(STATION_SVG)
 
-  // 预处理底图：陆地多边形（按国家配色）+ 国家名 + 大洋名
-  const feats = feature(topo, topo.objects.countries).features
-  const land = [], clabels = [], seenLabel = new Set()   // 同一国家 id 只标一次（澳大利亚等含本体+外岛）
-  // 静态底图路径只构建一次：每个多边形烘成「世界度坐标」(x=lon-LON0, y=90-lat) 的 Path2D，
-  // 之后渲染只靠 setTransform 平移缩放，不再每帧遍历 54 万顶点。allLandPath 供北极冰盖裁剪复用。
-  const allLandPath = new Path2D()
-  feats.forEach((f, idx) => {
-    if (!f.geometry) return
-    const id = String(f.id)
-    const fill = CHINA_IDS.has(id) ? CHINA : ICE_IDS.has(id) ? ICE : LAND[idx % LAND.length]
-    const polys = f.geometry.type === 'Polygon' ? [f.geometry.coordinates] : f.geometry.coordinates
-    const shapes = []
-    for (const rings of polys) {
-      let lo = Infinity, hi = -Infinity
-      const path = new Path2D()
-      for (const ring of rings) {
-        const u = unwrap(ring)
-        for (let i = 0; i < u.length; i++) { const x = u[i][0] - LON0, y = 90 - u[i][1]; if (x < lo) lo = x; if (x > hi) hi = x; i === 0 ? path.moveTo(x, y) : path.lineTo(x, y) }
-        path.closePath()
+  // 预处理底图：陆地多边形（按国家配色）+ 国家名 + 大洋名。可经 setMapDetail 换源(10m/50m)重建。
+  // 边界抽稀（thin>0，单位度）：与 3D 一致地稀疏化各环顶点，低画质档减少 Path2D 顶点。
+  const decimateRing = (ring, minD) => {
+    if (!minD || ring.length < 3) return ring
+    const out = [ring[0]]; let last = ring[0]
+    for (let i = 1; i < ring.length - 1; i++) { const p = ring[i]; if (Math.hypot(p[0] - last[0], p[1] - last[1]) >= minD) { out.push(p); last = p } }
+    out.push(ring[ring.length - 1]); return out
+  }
+  let land = [], clabels = [], allLandPath = new Path2D(), landClipPath = new Path2D()
+  let mapDetail0 = '10m', mapThin = 0
+  const featsOf = (m) => { const t = m.default || m; return feature(t, t.objects.countries).features }
+  const featCache = { '10m': feature(topo, topo.objects.countries).features }   // 10m 静态；50m/110m 懒加载
+  const loadFeatures = async (detail) => {
+    if (featCache[detail]) return featCache[detail]
+    const mod = detail === '110m' ? await import('../globe3d/data/countries-110m.json') : await import('../globe3d/data/countries-50m.json')
+    featCache[detail] = featsOf(mod)
+    return featCache[detail]
+  }
+  function buildBaseGeo(feats, thin) {
+    land = []; clabels = []; allLandPath = new Path2D()
+    const seenLabel = new Set()   // 同一国家 id 只标一次（澳大利亚等含本体+外岛）
+    feats.forEach((f, idx) => {
+      if (!f.geometry) return
+      const id = String(f.id)
+      const fill = CHINA_IDS.has(id) ? CHINA : ICE_IDS.has(id) ? ICE : LAND[idx % LAND.length]
+      const polys = f.geometry.type === 'Polygon' ? [f.geometry.coordinates] : f.geometry.coordinates
+      const shapes = []
+      for (const rings of polys) {
+        let lo = Infinity, hi = -Infinity
+        const path = new Path2D()
+        for (const ring of rings) {
+          const u = thin > 0 ? decimateRing(unwrap(ring), thin) : unwrap(ring)
+          for (let i = 0; i < u.length; i++) { const x = u[i][0] - LON0, y = 90 - u[i][1]; if (x < lo) lo = x; if (x > hi) hi = x; i === 0 ? path.moveTo(x, y) : path.lineTo(x, y) }
+          path.closePath()
+        }
+        allLandPath.addPath(path)
+        shapes.push({ lo, hi, path })
       }
-      allLandPath.addPath(path)
-      shapes.push({ lo, hi, path })
-    }
-    land.push({ shapes, fill })
-    // 国家名
-    if (NO_LABEL_IDS.has(id) || seenLabel.has(id)) return
-    const rec = NAMES[id]; let zh = rec ? rec[0] : null
-    if (id === '156') zh = '中国'; if (id === '408') zh = '朝鲜'; if (id === '410') zh = '韩国'
-    if (!zh) return
-    seenLabel.add(id)
-    let lon = rec && rec[1] != null ? rec[1] : null, lat = rec && rec[2] != null ? rec[2] : null
-    if (lon == null || lat == null) { const c = centroidLonLat(f.geometry); if (!c) return; lon = c[0]; lat = c[1] }
-    const en = (f.properties && f.properties.name) || zh
-    const px = clamp(Math.round(10 + featureExtent(f.geometry) * 0.22), 10, 20)
-    clabels.push({ zh, en, lon, lat, px })
-  })
-
-  // 北极冰盖裁剪用：陆地路径的 -360/0/360 三份副本合一（跨切口的格陵兰/俄罗斯也能正确裁剪）。
-  const landClipPath = new Path2D()
-  for (const off of [-360, 0, 360]) landClipPath.addPath(allLandPath, new DOMMatrix([1, 0, 0, 1, off, 0]))
+      land.push({ shapes, fill })
+      // 国家名
+      if (NO_LABEL_IDS.has(id) || seenLabel.has(id)) return
+      const rec = NAMES[id]; let zh = rec ? rec[0] : null
+      if (id === '156') zh = '中国'; if (id === '408') zh = '朝鲜'; if (id === '410') zh = '韩国'
+      if (!zh) return
+      seenLabel.add(id)
+      let lon = rec && rec[1] != null ? rec[1] : null, lat = rec && rec[2] != null ? rec[2] : null
+      if (lon == null || lat == null) { const c = centroidLonLat(f.geometry); if (!c) return; lon = c[0]; lat = c[1] }
+      const en = (f.properties && f.properties.name) || zh
+      const px = clamp(Math.round(10 + featureExtent(f.geometry) * 0.22), 10, 20)
+      clabels.push({ zh, en, lon, lat, px })
+    })
+    // 北极冰盖裁剪用：陆地路径的 -360/0/360 三份副本合一（跨切口的格陵兰/俄罗斯也能正确裁剪）。
+    landClipPath = new Path2D()
+    for (const off of [-360, 0, 360]) landClipPath.addPath(allLandPath, new DOMMatrix([1, 0, 0, 1, off, 0]))
+  }
+  buildBaseGeo(featCache['10m'], 0)
 
   // 合帧：把一帧内的多次重绘请求合并成一次 rAF 渲染（拖拽/缩放不再被高频事件淹没）。
   let rafId = 0
@@ -558,6 +577,19 @@ export function createFlatCoverage(canvas) {
     getZoom: () => scaleToT(),
     setZoom: (t) => setZoomT(t),
     setOnZoom(fn) { onZoom = fn },
+    // 渲染分辨率倍率（画质档位）：改后重建位图。this.resize 重算 dpr/位图尺寸并重绘。
+    setRenderScale(n) { renderScale = Number.isFinite(n) ? n : null; this.resize() },
+    // 底图精细化（与 3D 同步）：'10m'/'50m'/'110m' + thin 抽稀阈值。换 topojson 源重建陆地/海岸线。50m/110m 懒加载。
+    async setMapDetail(detail, thin) {
+      const t = (thin != null) ? thin : mapThin
+      if (detail === mapDetail0 && t === mapThin) return
+      let feats
+      try { feats = await loadFeatures(detail) }
+      catch (e) { console.warn(detail + ' 底图加载失败，保持当前精度', e); return }
+      mapDetail0 = detail; mapThin = t
+      buildBaseGeo(feats, t)
+      invalidateStatic(); requestDraw()
+    },
     setBeamDragMode(v) { beamDragMode = !!v; beamDragging = false; canvas.style.cursor = v ? 'move' : 'grab' },
     setOnBeamDrag(fn) { onBeamDrag = fn },
     setMarkers(points, stations, trajectories) { mk = { points: points || [], stations: stations || [], trajectories: trajectories || [] }; invalidateStatic(); requestDraw() },
@@ -567,7 +599,7 @@ export function createFlatCoverage(canvas) {
     resize() {
       const w = canvas.clientWidth || canvas.parentElement?.clientWidth || 0, h = canvas.clientHeight || canvas.parentElement?.clientHeight || 0
       if (!w || !h) return
-      const firstFit = cw < 2 || ch < 2; cw = w; ch = h; dpr = Math.max(1, window.devicePixelRatio || 1)
+      const firstFit = cw < 2 || ch < 2; cw = w; ch = h; dpr = effDpr()
       const bw = Math.round(cw * dpr), bh = Math.round(ch * dpr)   // 仅在尺寸真正变化时重设位图，避免无谓清空
       if (canvas.width !== bw || canvas.height !== bh) { canvas.width = bw; canvas.height = bh }
       // 离屏静态快照缓冲随主画布尺寸（设备像素）创建/重建

@@ -439,7 +439,8 @@ function clipToHull(srcFlat, len, hull) {
 // box（可选，与 projectGrid 同一个）：只遍历覆盖热区的格子，跳过大片无覆盖区（HTS 提速）。
 // hull（可选）：该卫星的平滑地平弧凸包 { ring:[[u,lat]...] CCW, satLon }（见 useGrdCoverage.satHull）。
 //   提供时跨地平三角形的填充沿此弧裁剪（边缘平滑、无锯齿）；缺省则回退到逐三角形 0°仰角线半平面裁剪。
-export function bandGeometry(field, levelsAsc, wantFills = true, box = null, hull = null) {
+// stride：三角化降采样步长（1=全分辨率；2/4=每 N 格取一三角，等值线/填充变粗但场/峰值数值不变）。
+export function bandGeometry(field, levelsAsc, wantFills = true, box = null, hull = null, stride = 1) {
   const { lon, lat, vis, db, NX, NY } = field
   const nb = levelsAsc.length
   const lines = Array.from({ length: nb }, () => [])
@@ -527,9 +528,13 @@ export function bandGeometry(field, levelsAsc, wantFills = true, box = null, hul
   // 格子范围：box 给定则限于热区（点投影也只在此区，索引一致）；否则全网格。
   const rA = box ? box.r0 : 0, rB = box ? Math.min(box.r1, NY - 1) : NY - 1
   const cA = box ? box.c0 : 0, cB = box ? Math.min(box.c1, NX - 1) : NX - 1
-  for (let row = rA; row < rB; row++) {
-    for (let col = cA; col < cB; col++) {
-      const i00 = row * NX + col, i10 = i00 + 1, i01 = i00 + NX, i11 = i01 + 1
+  // 降采样：以 st 为步长跨格三角化，末格夹到边界以铺满整个区域（场值在四角间线性插值 → 等值线更粗但连续）。
+  const st = Math.max(1, stride | 0)
+  for (let row = rA; row < rB; row += st) {
+    const r2 = Math.min(row + st, rB)
+    for (let col = cA; col < cB; col += st) {
+      const c2 = Math.min(col + st, cB)
+      const i00 = row * NX + col, i10 = row * NX + c2, i01 = r2 * NX + col, i11 = r2 * NX + c2
       emitTri(i00, i10, i11); emitTri(i00, i11, i01)                  // 沿 a–c 对角线三角化（填充/线同源）
     }
   }

@@ -4,6 +4,8 @@ import { cursor } from '../stores/cursor'
 import { view } from '../stores/view'
 import { covNav } from '../stores/coveragePanels'
 import { zoom } from '../stores/zoom'
+import { effective as displayQuality } from '../stores/displayQuality'
+import { viewPrefs } from '../stores/viewPrefs'
 defineOptions({ inheritAttrs: false })   // 不把父级传入的 title 落到根节点（去掉鼠标悬停的“星座3D”原生提示）
 import { createGlobeScene } from '../viz/globe3d/scene.js'
 import { createFlatCoverage } from '../viz/flatmap/flatCoverage.js'
@@ -57,7 +59,7 @@ const satCount = ref(0)     // 该组卫星总数
 const shownCount = ref(0)   // 实际渲染点数
 const dataTime = ref('')
 const live = ref(false)     // 实时刷新（与 2D 默认一致：关）
-const autoRotate = ref(true)
+const autoRotate = toRef(viewPrefs, 'autoRotate')   // 自转开关：以 viewPrefs 为单一真相（设置弹窗共享）
 const nameMode = ref('en')   // 国名：'zh' | 'en' | 'off'
 const showProvinces = ref(false)
 let provincesLoaded = false
@@ -763,7 +765,7 @@ async function applyFlat(v) {
   if (!v) { if (grdOpen.value) grd.recompute(); pushZoom(); return }
   await ensureCovIndex(); if (!covCleared) redraw()   // 已清除则切平面图不复现覆盖（covGeom 保持为空）
   await nextTick()
-  if (!flat && flatCanvas.value) { flat = createFlatCoverage(flatCanvas.value); flat.setOnRightClick(onMapRightClick); flat.setOnHover((ll) => { cursor.ll = ll }); flat.setOnBeamDrag(grd.beamDrag); flat.setBeamDragMode(grd.dragBore.value); flat.setOnZoom((t) => { if (flatView.value) zoom.value = t }) }
+  if (!flat && flatCanvas.value) { flat = createFlatCoverage(flatCanvas.value); flat.setRenderScale(displayQuality.value.pixelRatio); flat.setMapDetail(displayQuality.value.mapDetail, displayQuality.value.mapThin); flat.setOnRightClick(onMapRightClick); flat.setOnHover((ll) => { cursor.ll = ll }); flat.setOnBeamDrag(grd.beamDrag); flat.setBeamDragMode(grd.dragBore.value); flat.setOnZoom((t) => { if (flatView.value) zoom.value = t }) }
   if (flat) {
     flat.resize()
     flat.setNameMode(nameMode.value)
@@ -886,6 +888,13 @@ function applyBorderStyle() { const s = { ...borderStyle }; if (scene) scene.set
 function applyLabelStyle() { const s = { ...labelStyle }; if (scene) scene.setLabelStyle(s); if (flat) flat.setLabelStyle(s) }
 // 大海颜色 → 3D 与平面图。
 function setOceanColor(c) { oceanColor.value = c; if (scene) scene.setOceanColor(c); if (flat) flat.setOceanColor(c) }
+// 显示画质（全局档位）→ 应用到 3D / 2D / 覆盖网格。msaa 不在此（需重建上下文，由 3D 视图按 key 重挂载切换）。
+function applyDisplayQuality() {
+  const q = displayQuality.value
+  if (scene) { scene.setPixelRatio(q.pixelRatio); scene.setRenderFps(q.fps); scene.setSphereDetail(q.sphereSeg); scene.setMapDetail(q.mapDetail, q.mapThin) }
+  if (flat) { flat.setRenderScale(q.pixelRatio); flat.setMapDetail(q.mapDetail, q.mapThin) }
+  grd.recompute()   // gridStride 变化 → 覆盖层按新步长重建（无选中层时为空操作）
+}
 function setPtFont(e) { markPtFont.value = Number(e.target.value); syncMarkers() }
 function setStIcon(e) { stIconSize.value = Number(e.target.value); syncMarkers() }
 function setStFont(e) { stFontSize.value = Number(e.target.value); syncMarkers() }
@@ -1093,7 +1102,6 @@ function satLivePos(node) {
   }
   return { lon: node.lon, lat: node.lat, altKm: node.altKm }
 }
-function focusSatItem(node) { const p = satLivePos(node); if (scene && Number.isFinite(p.lon) && Number.isFinite(p.lat)) { scene.faceLonLat(p.lon, p.lat); autoRotate.value = false } }
 
 // 从星座点选：进入点选模式后，地图 onPick 命中的星填入弹窗（见 onMounted）
 function toggleSatPick() { satPick.value = !satPick.value }
@@ -1339,7 +1347,7 @@ function deserializeCov(items) {
 }
 function snapshot() {
   return {
-    nameMode: nameMode.value, countryName: countryNameSize.value, provName: provNameSize.value, showProvinces: showProvinces.value, borderStyle: { ...borderStyle }, labelStyle: { ...labelStyle }, oceanColor: oceanColor.value, autoRotate: autoRotate.value, live: live.value, beamLock: beamLock.value,
+    nameMode: nameMode.value, countryName: countryNameSize.value, provName: provNameSize.value, showProvinces: showProvinces.value, borderStyle: { ...borderStyle }, labelStyle: { ...labelStyle }, oceanColor: oceanColor.value, autoRotate: autoRotate.value, autoRotateSpeed: viewPrefs.autoRotateSpeed, live: live.value, beamLock: beamLock.value,
     mkPt: markPtFont.value, mkStIcon: stIconSize.value, mkStFont: stFontSize.value,
     covOpen: covOpen.value, mkOpen: mkOpen.value, geoOpen: geoOpen.value,
     grdOpen: grdOpen.value, grd: grd.getState(), perf: perf.getState(),
@@ -1370,6 +1378,7 @@ async function restoreSettings() {
   if (Number.isFinite(s.mkStFont)) stFontSize.value = s.mkStFont
   syncMarkers()   // 以恢复后的尺寸重建标记
   if (typeof s.autoRotate === 'boolean') { autoRotate.value = s.autoRotate; scene.setAutoRotate(autoRotate.value) }
+  if (Number.isFinite(s.autoRotateSpeed)) { viewPrefs.autoRotateSpeed = s.autoRotateSpeed; scene.setAutoRotateSpeed(s.autoRotateSpeed) }
   if (typeof s.beamLock === 'boolean') beamLock.value = s.beamLock
   if (typeof s.mkOpen === 'boolean') mkOpen.value = s.mkOpen
   if (typeof s.geoOpen === 'boolean') geoOpen.value = s.geoOpen
@@ -1429,7 +1438,7 @@ onMounted(async () => {
   // 顶栏「视图」按钮右侧的覆盖图入口：注册可用性与切换回调（按钮渲染在 App.vue，状态走 covNav store）
   covNav.grdAvail = grdApiOk; covNav.covAvail = covApiOk
   covNav.toggleGrd = toggleGrd; covNav.toggleCov = toggleCoverage
-  scene = createGlobeScene(el.value)
+  scene = createGlobeScene(el.value, { ...displayQuality.value })
   scene.setAutoRotate(autoRotate.value)
   scene.setLabelMode(nameMode.value)
   scene.setBorderStyle({ ...borderStyle })
@@ -1465,7 +1474,12 @@ onMounted(async () => {
   loadGroup()
   ensureSearchPool()   // 后台构建全量搜索库（当日缓存命中则很快），与当前分组无关
   redrawSats()   // 恢复后立即绘制自定义卫星（关联卫星待 loadGroup 完成由 refreshPositions 跟踪）
+  applyDisplayQuality()   // 套用当前画质档位（含低/中档的 50m 底图按需加载）
+  scene.setAutoRotateSpeed(viewPrefs.autoRotateSpeed)
   watch(snapshot, saveSettings, { deep: true })   // 此后任意改动自动本地缓存
+  watch(displayQuality, applyDisplayQuality, { deep: true })   // 画质档位变化 → 实时套用（msaa 除外，由重挂载处理）
+  // 设置弹窗改自转开关/速度 → 套到 scene（自转开关亦由页内按钮 toggleRotate 写同一 viewPrefs）
+  watch(() => [viewPrefs.autoRotate, viewPrefs.autoRotateSpeed], () => { if (scene) { scene.setAutoRotate(viewPrefs.autoRotate); scene.setAutoRotateSpeed(viewPrefs.autoRotateSpeed) } })
 })
 onBeforeUnmount(() => {
   // 离开 3D 页：复位顶栏覆盖图入口（按钮随之隐藏），并关掉面板镜像状态
@@ -1722,14 +1736,13 @@ onBeforeUnmount(() => {
                   <span class="ic del" title="删除卫星（含其天线）" @click.stop="removeSat(sat)">✕</span>
                 </span>
               </div>
+              <!-- 卫星名 / 仰角线 开关（卫星属性）：卫星名下方独立一行，收起时仍显示；仰角值/颜色在「✎」里编辑 -->
+              <div class="elacts">
+                <span class="dotc" :style="{ background: sat.elevColor }" title="该星颜色（仰角线 / 卫星名），在「✎」里改"></span>
+                <span class="elbtn" :class="{ on: sat.labelShow !== false }" title="在地图上显示/隐藏该卫星（3D 名称、平面图标 + 名称）" @click.stop="toggleSatLabel(sat)">{{ sat.labelShow !== false ? '✓ ' : '' }}卫星名</span>
+                <span class="elbtn" :class="{ on: sat.elevShow }" title="显示/隐藏等仰角线（需先在「✎」里填仰角值，如 5,10）" @click.stop="toggleSatElev(sat)">{{ sat.elevShow ? '✓ ' : '' }}仰角线</span>
+              </div>
               <div v-if="grd.isExpanded(sat.folder)" class="gbody">
-                <!-- 卫星级显示开关（卫星属性）；仰角值/颜色/线宽在「✎」弹窗里编辑 -->
-                <div class="elacts">
-                  <span class="dotc" :style="{ background: sat.elevColor }" title="该星颜色（仰角线 / 卫星名），在「✎」里改"></span>
-                  <span class="elbtn" :class="{ on: sat.labelShow !== false }" title="在地图上显示/隐藏该卫星（3D 名称、平面图标 + 名称）" @click="toggleSatLabel(sat)">{{ sat.labelShow !== false ? '✓ ' : '' }}卫星名</span>
-                  <span class="elbtn" :class="{ on: sat.elevShow }" title="显示/隐藏等仰角线（需先在「✎」里填仰角值，如 5,10）" @click="toggleSatElev(sat)">{{ sat.elevShow ? '✓ ' : '' }}仰角线</span>
-                  <span class="elbtn act" title="把地图视角转到该卫星" @click="focusSatItem(sat)">⌖ 定位</span>
-                </div>
                 <div v-if="!sat.antennas.length" class="gant noant">暂无天线 — 点上方「＋」导入 GRD</div>
                 <template v-for="a in sat.antennas" :key="a.name">
                 <div class="gant" :class="{ on: grd.isSelected(sat.folder, a.name), foc: grd.isActive(sat.folder, a.name) }" @click="grd.setActive(sat, a)">
@@ -2363,7 +2376,7 @@ onBeforeUnmount(() => {
 .chk2 { display: flex; align-items: center; gap: 6px; margin-top: 8px; cursor: pointer; }
 .tip { color: var(--text-faint); font-size: 11px; margin-top: 4px; line-height: 1.5; }
 /* GRD 工程树：卫星 → 天线（二级层次，竖向引导线 + 统一缩进） */
-.gtree { margin-top: 6px; max-height: 240px; overflow-y: auto; }
+.gtree { margin-top: 6px; max-height: clamp(280px, 48vh, 620px); overflow-y: auto; }
 /* 卫星行（节点头） */
 .gsat { display: flex; align-items: center; gap: 6px; padding: 4px 4px 4px 2px; color: var(--text); font-size: 12px; border-radius: 3px; }
 .gsat:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
@@ -2620,8 +2633,8 @@ onBeforeUnmount(() => {
 .lnknm:hover { color: var(--accent); }
 .tip2 { color: var(--text-faint); font-size: 11px; line-height: 1.6; }
 .tip2 .lnk { margin-left: 6px; color: var(--accent); cursor: pointer; }
-/* 卫星显示开关行（在 .gbody 引导线内）：色点 + 卫星名/仰角线（切换） + 定位（动作） */
-.elacts { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: 5px 0 7px; }
+/* 卫星显示开关（卫星名下方独立一行，收起仍显示）：色点 + 卫星名/仰角线（切换） */
+.elacts { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: 1px 0 5px; padding-left: 24px; }
 .elacts .dotc { margin-right: 0; }
 .elacts .elbtn { flex: none; cursor: pointer; font-size: 10.5px; padding: 1.5px 8px; border: 1px solid var(--border); border-radius: 9px; color: var(--text-muted); white-space: nowrap; transition: color .12s, border-color .12s, background .12s; }
 .elacts .elbtn:hover { color: var(--text); border-color: var(--text-faint); }

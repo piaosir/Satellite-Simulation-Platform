@@ -233,7 +233,7 @@ function decimateRing(ring, minD) {
   out.push(ring[ring.length - 1])
   return out
 }
-function buildBorders(features) {
+function buildBorders(features, thin = 0.025) {
   const pos = []
   for (const f of features) {
     const g = f.geometry
@@ -241,7 +241,7 @@ function buildBorders(features) {
     const polys = g.type === 'Polygon' ? [g.coordinates] : g.coordinates
     for (const rings of polys) {
       for (const ring0 of rings) {
-        const ring = decimateRing(ring0, 0.025)
+        const ring = thin > 0 ? decimateRing(ring0, thin) : ring0
         for (let i = 0; i + 1 < ring.length; i++) {
           // 抬高 0.04%（标准深度可分辨，视差仍小到看不出；depthWrite=false 保证不与填色 z-fight）
           const a = llaToVec(ring[i][1], ring[i][0], 0).multiplyScalar(1.0004)
@@ -314,14 +314,19 @@ function buildOceanLabels(lang) {
   return group
 }
 
-export function createGlobeScene(container) {
+export function createGlobeScene(container, quality = {}) {
   const w = container.clientWidth || 800, h = container.clientHeight || 600
+  // 画质参数（见 stores/displayQuality.js）：pixelRatio 渲染分辨率倍率、msaa 抗锯齿、sphereSeg 海洋球细分、
+  // mapDetail/mapThin 底图精度、fps 帧率上限。msaa 是上下文创建期参数，运行时不可改（由上层按 key 重挂载切换）。
+  let pixelRatio = quality.pixelRatio || 3
+  const sphereSeg0 = quality.sphereSeg || 128
+  let fpsCap = quality.fps || 0
   // 用标准深度缓冲（保证 MSAA 抗锯齿生效，线条不闪）。各贴地线层用 depthWrite=false + renderOrder
   // 分层，避免互相 z-fighting，故不再需要对数深度缓冲（它会让 gl_FragDepth 失效从而破坏 MSAA）。
-  const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' })
+  const renderer = new THREE.WebGLRenderer({ antialias: quality.msaa !== false, powerPreference: 'high-performance' })
   renderer.setSize(w, h)
-  // 清晰度：至少 3x 超采样，高 DPI 用原生，封顶 4x（MSAA 已恢复，3x 也不再闪）
-  renderer.setPixelRatio(Math.min(Math.max(window.devicePixelRatio || 1, 3), 4))
+  // 清晰度：渲染分辨率倍率（旧默认 3~4x 超采样）。运行时可经 setPixelRatio 热切。
+  renderer.setPixelRatio(Math.max(0.25, Math.min(pixelRatio, 4)))
   container.appendChild(renderer.domElement)
 
   const scene = new THREE.Scene()
@@ -380,21 +385,24 @@ export function createGlobeScene(container) {
     const o = new Line2(g, m); o.renderOrder = order || 0; return o
   }
 
-  const features = feature(topo, topo.objects.countries).features
+  let features = feature(topo, topo.objects.countries).features
+  let mapThin = quality.mapThin != null ? quality.mapThin : 0.025
   // 海洋：纯色球（半径 0.998，留足与陆地细分塌陷下限 ~0.9995 的间隙，标准深度下不 z-fighting）
-  // 海洋球：保留材质引用，供 setOceanColor 运行时改色（限蓝色系）
+  // 海洋球：保留几何/材质引用，供 setOceanColor 改色、setSphereDetail 改细分段数
   const oceanMat = new THREE.MeshBasicMaterial({ color: OCEAN })
-  scene.add(new THREE.Mesh(new THREE.SphereGeometry(0.998, 128, 128), oceanMat))
-  // 陆地：矢量三角网填色（零虚化，替代原 8192 纹理）
-  scene.add(buildLandMesh(features))
+  let oceanMesh = new THREE.Mesh(new THREE.SphereGeometry(0.998, sphereSeg0, sphereSeg0), oceanMat)
+  scene.add(oceanMesh)
+  // 陆地：矢量三角网填色（零虚化，替代原 8192 纹理）。保留引用供 setMapDetail 重建。
+  let landMesh = buildLandMesh(features)
+  scene.add(landMesh)
 
   // 矢量国界/海岸线 + 矢量经纬网：粗线，放大/高分辨率下都锐利清晰
   // 经纬网 / 海岸线 渲染序高于覆盖填充(5)+等值线(6)、低于数据叠加(轨迹7/点/标注)：
   // 地理骨架贯穿覆盖区之上 → 覆盖与底图融为一体（平级），不再像贴纸浮在地图上面。depthWrite=false，纯绘制顺序。
   scene.add(fatSegments(buildGraticule(), 0xffffff, 0.8, 0.12, 6.3))
-  // 国界/海岸线：保留材质引用，供 setBorderStyle 运行时改线宽/颜色/透明度
+  // 国界/海岸线：保留材质引用，供 setBorderStyle 运行时改线宽/颜色/透明度；setMapDetail 时重建
   const borderCfg = { natColor: 0x5b7088, natWidth: 0.8, natOpacity: 1.0, provColor: 0x9aa3b0, provWidth: 1.2, provOpacity: 0.8 }
-  const coastBorders = fatSegments(buildBorders(features), borderCfg.natColor, borderCfg.natWidth, borderCfg.natOpacity, 6.5)
+  let coastBorders = fatSegments(buildBorders(features, mapThin), borderCfg.natColor, borderCfg.natWidth, borderCfg.natOpacity, 6.5)
   scene.add(coastBorders)
   // 南海十段线：颜色随中国国土(CHINA)、线宽/透明度随省界(borderCfg.prov*)，线宽×惯例倍数（略粗于省界）。
   // 每段为多点折线 → 展开成相邻点对喂给 LineSegments（v0-v1, v1-v2, ...）。
@@ -444,6 +452,62 @@ export function createGlobeScene(container) {
   }
   // 大海颜色（限蓝色系）：直接改海洋球材质色
   function setOceanColor(c) { if (c) oceanMat.color.set(c) }
+
+  // ===================== 显示画质：运行时可热切的项 =====================
+  // 渲染分辨率倍率（超采样）：THREE setPixelRatio，封顶 4x、下限 0.25x。
+  function setPixelRatio(n) {
+    if (!Number.isFinite(n)) return
+    pixelRatio = Math.max(0.25, Math.min(n, 4))
+    renderer.setPixelRatio(pixelRatio)
+    renderer.setSize(curW, curH)                 // 重设尺寸使新 DPR 生效
+    for (const m of lineMats) m.resolution.set(curW, curH)
+  }
+  // 渲染帧率上限（0=每帧不限；30/60=节流省电）。在 loop 中据此跳帧。
+  function setRenderFps(n) { fpsCap = Number.isFinite(n) && n > 0 ? n : 0 }
+  // 海洋球细分段数：重建球几何（材质/颜色保留）。
+  function setSphereDetail(seg) {
+    const s = Math.max(16, Math.min(seg | 0 || 128, 256))
+    scene.remove(oceanMesh); oceanMesh.geometry.dispose()
+    oceanMesh = new THREE.Mesh(new THREE.SphereGeometry(0.998, s, s), oceanMat)
+    scene.add(oceanMesh)
+  }
+  // 释放一条粗线（LineSegments2）：移出场景 + 注销线材质 + dispose
+  function disposeFatLine(o) {
+    if (!o) return
+    scene.remove(o)
+    if (o.geometry) o.geometry.dispose()
+    if (o.material) { lineMats.delete(o.material); o.material.dispose() }
+  }
+  // 底图精细化：'10m'(精细) / '50m'(粗)。换 topojson 源 → 重建陆地网格 + 国界/海岸线。
+  // 50m 数据按需懒加载（避免拖慢首屏）。thin=边界抽稀阈值（度）。
+  let mapDetail0 = '10m'        // 创建时恒以静态 10m 构建；切到 50m/110m 由 setMapDetail 异步换源
+  const featCache = { '10m': features }   // 各精度 features 缓存（10m 静态，其余懒加载）
+  const featsOf = (m) => { const t = m.default || m; return feature(t, t.objects.countries).features }
+  const loadFeatures = async (detail) => {
+    if (featCache[detail]) return featCache[detail]
+    // 字面量 import() 让 Vite 各自打成独立 chunk（变量路径无法分析、构建后会失效）
+    const mod = detail === '110m' ? await import('./data/countries-110m.json') : await import('./data/countries-50m.json')
+    featCache[detail] = featsOf(mod)
+    return featCache[detail]
+  }
+  async function setMapDetail(detail, thin) {
+    const t = (thin != null) ? thin : mapThin
+    const changedThin = t !== mapThin
+    if (detail === mapDetail0 && !changedThin) return
+    mapThin = t
+    let feats
+    try { feats = await loadFeatures(detail) }
+    catch (e) { console.warn(detail + ' 底图加载失败，保持当前精度', e); return }
+    mapDetail0 = detail
+    features = feats
+    // 重建陆地三角网
+    scene.remove(landMesh); landMesh.geometry.dispose(); landMesh.material.dispose()
+    landMesh = buildLandMesh(feats); scene.add(landMesh)
+    // 重建国界/海岸线（沿用当前线样式）
+    disposeFatLine(coastBorders)
+    coastBorders = fatSegments(buildBorders(feats, mapThin), borderCfg.natColor, borderCfg.natWidth, borderCfg.natOpacity, 6.5)
+    scene.add(coastBorders)
+  }
 
   // 中国省界 + 省名（按需由上层注入数据）
   let provinceBorders = null, provinceLabels = null
@@ -547,6 +611,7 @@ export function createGlobeScene(container) {
     controls.update()
   }
   function setAutoRotate(v) { controls.autoRotate = !!v }
+  function setAutoRotateSpeed(v) { if (Number.isFinite(v)) controls.autoRotateSpeed = v }
   function setOnAutoRotateOff(fn) { onAutoRotateOff = fn }
 
   // ===================== GEO 卫星覆盖（仿小程序卫星覆盖，移到 3D 地球） =====================
@@ -1046,8 +1111,11 @@ export function createGlobeScene(container) {
   }
 
   const zoomDir = new THREE.Vector3()
-  let raf = 0
-  function loop() {
+  let raf = 0, lastFrameT = 0
+  function loop(now) {
+    raf = requestAnimationFrame(loop)
+    // 帧率上限（省电）：未到间隔则跳过本帧的更新与渲染（留 1ms 余量避免临界抖动）
+    if (fpsCap > 0) { if (now && (now - lastFrameT) < (1000 / fpsCap - 1)) return; lastFrameT = now || 0 }
     controls.update()   // 旋转/阻尼（半径在此保持不变）
     // 滚轮缩放缓动：把当前半径向 zoomTarget 逼近（0.18 的缓动系数 -> 顺滑且跟手）
     const cur = camera.position.distanceTo(controls.target)
@@ -1068,7 +1136,6 @@ export function createGlobeScene(container) {
     rescaleMarkers()
     updateLabels()
     renderer.render(scene, camera)
-    raf = requestAnimationFrame(loop)
   }
   loop()
 
@@ -1088,8 +1155,9 @@ export function createGlobeScene(container) {
     setSatellites, setLabelMode, setHighlight, setHighlightLLA, setOnPick,
     setOrbit, setGroundTrack, setFootprint, clearSelectionGeom,
     setCoverage, clearCoverage, setCoverageField, patchCoverageLayers, clearCoverageField, setCoverageFieldAlpha, setSatLayer, clearSatLayer, faceLonLat, setProvinces, setProvincesVisible, setBorderStyle, setNameScale, setLabelStyle, setOceanColor,
+    setPixelRatio, setRenderFps, setSphereDetail, setMapDetail,
     setMarkers, setTrajectories, setOnHover, setOnRightClick, setBeamDragMode, setOnBeamDrag,
-    faceTo, setAutoRotate, setOnAutoRotateOff, resize, destroy,
+    faceTo, setAutoRotate, setAutoRotateSpeed, setOnAutoRotateOff, resize, destroy,
     // 缩放进度条接口：getZoom 读当前进度、setZoom 设到进度 t、setOnZoom 注册滚轮缩放回填回调
     getZoom: () => distToT(zoomTarget),
     setZoom: (t) => { zoomTarget = Math.max(controls.minDistance, Math.min(controls.maxDistance, tToDist(t))) },

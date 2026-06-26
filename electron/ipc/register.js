@@ -22,18 +22,20 @@ function register({ core, storage, report, coverage, coverageGrd }) {
     ipcMain.handle('coverageGrd:save', (_e, name, text) => coverageGrd.save(name, text))
     ipcMain.handle('coverageGrd:raw', (_e, file) => coverageGrd.raw(file))
     ipcMain.handle('coverageGrd:remove', (_e, file) => coverageGrd.remove(file))
-    // 用户导入：原生文件框选 .grd/.pat → 读文本返回渲染进程解析
+    // 用户导入：原生文件框选 .grd/.pat（支持多选，一次导入多个天线）→ 逐个读文本返回渲染进程解析
     ipcMain.handle('coverageGrd:open', async (e) => {
       const win = BrowserWindow.fromWebContents(e.sender)
       const { canceled, filePaths } = await dialog.showOpenDialog(win, {
-        title: '导入 GRD / PAT 文件', properties: ['openFile'],
+        title: '导入 GRD / PAT 文件（可多选）', properties: ['openFile', 'multiSelections'],
         filters: [{ name: 'GRASP 网格 (*.grd, *.pat)', extensions: ['grd', 'pat'] }, { name: '所有文件', extensions: ['*'] }]
       })
       if (canceled || !filePaths || !filePaths.length) return { canceled: true }
-      try {
-        const text = fs.readFileSync(filePaths[0], 'latin1')
-        return { canceled: false, base: require('path').basename(filePaths[0]), text }
-      } catch (err) { return { canceled: false, error: err.message } }
+      const path = require('path')
+      const files = filePaths.map((fp) => {
+        try { return { base: path.basename(fp), text: fs.readFileSync(fp, 'latin1') } }
+        catch (err) { return { base: path.basename(fp), error: err.message } }
+      })
+      return { canceled: false, files }
     })
   }
 

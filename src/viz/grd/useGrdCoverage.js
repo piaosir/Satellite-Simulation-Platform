@@ -6,6 +6,7 @@ import { parseGrd } from './parse.js'
 import { antennaBasis, antennaBasisAzEl, dirToAzEl, azElGround, surfaceAzEl, projectGrid, fieldDb, bandGeometry, stitchLoops } from './coverage.js'
 import { schemeColorsRGB, rgbCss, cssRgb } from './colormap.js'
 import { RS_GEO, A, geodeticToEcef, isoElevationContourAt } from '../wgs84.js'
+import { effective as displayQuality } from '../../stores/displayQuality.js'
 
 const H = RS_GEO - A
 const GEO_ALT = 35786              // GEO 轨道高度 km（预置星默认）：NASA 标称值（22,236 mi）
@@ -238,7 +239,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
       noradId: draft.noradId || null,
       elements: draft.elements || null,
       els: draft.els != null ? draft.els : '5,10',
-      elevColor: draft.color || nextElevColor(), elevShow: true, elevWidth: Number(draft.elevWidth) || 1.3,
+      elevColor: draft.color || nextElevColor(), elevShow: false, elevWidth: Number(draft.elevWidth) || 1.3,
       elevLabelSize: Number(draft.elevLabelSize) || 13,
       iconSize: Number(draft.iconSize) || 30, labelSize: Number(draft.labelSize) || 14, labelShow: true,
       antennas: []
@@ -485,7 +486,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
     syncBeamProj(c, beam, cfg, field)
     const need = cfg.fill || cfg.line
     // wantFills=cfg.fill：只画等值线时跳过逐档填充裁剪（关填充的大波束拖拽省一半三角化）；box：只三角化覆盖热区
-    const geo = need ? bandGeometry({ lon: beam.proj.lon, lat: beam.proj.lat, vis: beam.proj.vis, db: field.db, NX: beam.proj.NX, NY: beam.proj.NY }, asc.map((x) => x.abs), cfg.fill, box, cfg.fill ? satHull(c) : null) : null
+    const geo = need ? bandGeometry({ lon: beam.proj.lon, lat: beam.proj.lat, vis: beam.proj.vis, db: field.db, NX: beam.proj.NX, NY: beam.proj.NY }, asc.map((x) => x.abs), cfg.fill, box, cfg.fill ? satHull(c) : null, displayQuality.value.gridStride) : null
     // 分带填充：每档一个颜色 + 该档环带多边形（升序，逐层从外到内绘制，非嵌套→无重叠透明叠加）
     const fillBands = cfg.fill && geo ? asc.map((x, i) => ({ color: cssRgb(x.color), verts: geo.fills[i].verts, counts: geo.fills[i].counts })).filter((b) => b.counts.length) : null
     // 等值线：每档一组线段（= 填充相邻档公共边）；数值标签按拼环后每条取最上端点。
@@ -641,28 +642,39 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
     try {
       const res = await window.api.coverageGrd.open()
       if (!res || res.canceled) return
-      if (res.error || !res.text) { alert('读取失败：' + (res.error || '空文件')); return }
-      let g
-      try { g = parseGrd(res.text) } catch (e) { alert('解析失败：' + e.message); return }
-      let name = (res.base || 'GRD').replace(/\.(grd|pat)$/i, '')
-      while (sat.antennas.some((a) => a.name === name)) name += '·'   // 重名加后缀
-      const ent = importedCacheEntry(sat, g, name)
-      const m = ent.meta
-      // 原始 GRD 存盘（userData/coverage-grd-imported）；失败则仅本会话内有效，不阻断导入
-      let file = null
-      try { const r = await window.api.coverageGrd.save(res.base || name, res.text); file = r && r.file } catch (e) { console.warn('GRD 持久化失败，仅本会话内有效', e) }
-      const key = keyOf(sat.folder, name)
-      // 多波束默认只画第 1 个波束（与 SATSOFT 一致：Beams To Plot 由用户按需多选/全选）。
-      // 切勿默认全选——HTS 动辄 20+ 波束，一次性建几十个网格/提几十遍等值线会瞬时压垮 GPU（见 command_buffer 崩溃）。
-      const settings = defaultSettings(m.satLon, m.satLat, m.peakDb)
-      cache.set(key, { meta: m, beams: ent.beams, settings })
-      sat.antennas.push({ name, type: '', band: '', beams: m.beams, peakDb: ent.peakDb, peak: ent.peak, file, imported: true, satLon: m.satLon, satLat: m.satLat, satAlt: m.satAlt })
-      expanded.value = { ...expanded.value, [sat.folder]: true }
-      selected.value = [...selected.value, key]
-      active.value = key
-      _muteSync = true; applySettings(cache.get(key).settings); _muteSync = false
-      recompute()
-      const sc = getScene(); if (sc) sc.faceLonLat(ent.peak[0], ent.peak[1])
+      // 多选：每个文件 = 一个天线。兼容旧返回（单文件 {base,text}）。
+      const files = res.files || (res.text ? [{ base: res.base, text: res.text }] : [])
+      if (!files.length) { alert('读取失败：' + (res.error || '空文件')); return }
+      const errs = []
+      let lastKey = null, lastPeak = null
+      for (const f of files) {
+        if (f.error || !f.text) { errs.push((f.base || '文件') + '：' + (f.error || '空文件')); continue }
+        let g
+        try { g = parseGrd(f.text) } catch (e) { errs.push((f.base || '文件') + '：解析失败 ' + e.message); continue }
+        let name = (f.base || 'GRD').replace(/\.(grd|pat)$/i, '')
+        while (sat.antennas.some((a) => a.name === name)) name += '·'   // 重名加后缀
+        const ent = importedCacheEntry(sat, g, name)
+        const m = ent.meta
+        // 原始 GRD 存盘（userData/coverage-grd-imported）；失败则仅本会话内有效，不阻断导入
+        let file = null
+        try { const r = await window.api.coverageGrd.save(f.base || name, f.text); file = r && r.file } catch (e) { console.warn('GRD 持久化失败，仅本会话内有效', e) }
+        const key = keyOf(sat.folder, name)
+        // 多波束默认只画第 1 个波束（与 SATSOFT 一致：Beams To Plot 由用户按需多选/全选）。
+        // 切勿默认全选——HTS 动辄 20+ 波束，一次性建几十个网格/提几十遍等值线会瞬时压垮 GPU（见 command_buffer 崩溃）。
+        const settings = defaultSettings(m.satLon, m.satLat, m.peakDb)
+        cache.set(key, { meta: m, beams: ent.beams, settings })
+        sat.antennas.push({ name, type: '', band: '', beams: m.beams, peakDb: ent.peakDb, peak: ent.peak, file, imported: true, satLon: m.satLon, satLat: m.satLat, satAlt: m.satAlt })
+        selected.value = [...selected.value, key]
+        lastKey = key; lastPeak = ent.peak
+      }
+      if (lastKey) {
+        expanded.value = { ...expanded.value, [sat.folder]: true }
+        active.value = lastKey                 // 聚焦最后导入的天线
+        _muteSync = true; applySettings(cache.get(lastKey).settings); _muteSync = false
+        recompute()
+        const sc = getScene(); if (sc && lastPeak) sc.faceLonLat(lastPeak[0], lastPeak[1])
+      }
+      if (errs.length) alert('部分文件导入失败：\n' + errs.join('\n'))
     } finally { loading.value = false }
   }
 

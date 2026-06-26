@@ -5,6 +5,8 @@ import { cursor } from './stores/cursor'
 import { view } from './stores/view'
 import { covNav } from './stores/coveragePanels'
 import { zoom } from './stores/zoom'
+import { effective as displayQuality } from './stores/displayQuality'
+import SettingsModal from './components/SettingsModal.vue'
 
 // 底部状态栏缩放进度条：拖动/按钮 → 设回当前活动地图（zoom.apply）；地图滚轮缩放回填 zoom.value。
 const onZoomInput = (e) => { const t = Number(e.target.value); if (zoom.apply) zoom.apply(t) }
@@ -25,6 +27,10 @@ const ISL = defineAsyncComponent(() => import('./pages/ISL.vue'))
 
 const nav = useNavStore()
 const viewMenu = ref(false)
+const settingsOpen = ref(false)
+// MSAA 是 WebGL 上下文创建期参数，运行时不可改 → 把它并入当前页 key，切换 MSAA 时重挂载页面（一瞬重渲）。
+// 页面状态由各自的本地缓存（reactive watch 持续保存）在重挂载时恢复，无感。
+const pageKey = computed(() => `${nav.current}-msaa${displayQuality.value.msaa !== false ? 1 : 0}`)
 function pickView(v) { view.flat = v; viewMenu.value = false }
 
 const pageMap = {
@@ -61,16 +67,18 @@ const currentLabel = computed(
         </span>
         <span v-if="covNav.grdAvail" class="covbtn" :class="{ on: covNav.grdOpen }" @click="covNav.toggleGrd && covNav.toggleGrd()">覆盖分析</span>
         <span v-if="covNav.covAvail" class="covbtn" :class="{ on: covNav.covOpen }" @click="covNav.toggleCov && covNav.toggleCov()">覆盖图（GXT）</span>
-        <span>帮助</span>
+        <span class="setbtn" @click="settingsOpen = true">设置</span>
       </nav>
       <div v-if="viewMenu" class="vmask" @click="viewMenu = false"></div>
     </header>
 
     <div class="body">
       <main class="content">
-        <component :is="currentComponent" :title="currentLabel" />
+        <component :is="currentComponent" :key="pageKey" :title="currentLabel" />
       </main>
     </div>
+
+    <SettingsModal v-if="settingsOpen" @close="settingsOpen = false" />
 
     <footer class="statusbar">
       <span v-if="zoom.avail" class="zoomctl" title="地图缩放（拖动精细调节，滚轮亦可）">
@@ -101,6 +109,8 @@ const currentLabel = computed(
 }
 .brand { font-family: var(--font-serif); font-size: 15px; letter-spacing: .4px; }
 .menu { display: flex; align-items: center; gap: 18px; color: var(--text-muted); font-size: 12.5px; }
+.setbtn { cursor: pointer; }
+.setbtn:hover { color: var(--text); }
 .vwrap { position: relative; }
 .vbtn { cursor: pointer; border: 1px solid var(--border); padding: 2px 10px; border-radius: 2px; }
 .vbtn:hover { color: var(--text); border-color: var(--accent); }
