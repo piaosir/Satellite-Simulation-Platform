@@ -46,10 +46,13 @@ const COL_GROUPS = [
 function defaultOpts() {
   const cols = {}
   for (const c of COL_DEFS) cols[c.key] = false
-  for (const k of ['beamNo', 'stationNo', 'country', 'city', 'desig', 'lon', 'lat', 'dir', 'param']) cols[k] = true
+  // 默认列对标 SATSOFT 只读性能表：No / Beam No / City / Desig / Lon / Lat / Dir / Parameter / Min·Max Pointing
+  for (const k of ['no', 'beamNo', 'city', 'desig', 'lon', 'lat', 'dir', 'param', 'minPt', 'maxPt']) cols[k] = true
   return {
     cols,
-    filterOn: false, minDir: 50,                 // 过滤：低于最低方向性的记录不显示
+    // 覆盖过滤默认开：结果表只列「覆盖该城市的波束」（方向性≥阈值）。城市仍完整保留在上方输入区，
+    // 故一个经纬度不再因多波束而膨胀成大量行——单波束→1 行，重叠区→数行（对标 SATSOFT）。
+    filterOn: true, minDir: 50,                  // 过滤：低于最低方向性的记录不显示
     sameAsAnt: true, pol: 'RSS', unit: 'dB', pathLoss: 'none', gainOffset: 0,   // 参数计算口径
     pointAz: 0, pointEl: 0, pointYaw: 0,          // 指向误差：方位/俯仰/偏航各自半幅(°)，完全自定 → Min/Max Pointing
     pointShape: 'ellipse'                          // 误差区形状：ellipse(椭圆,TICRA 默认) / rect(矩形)

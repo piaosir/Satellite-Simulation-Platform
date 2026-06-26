@@ -9,6 +9,7 @@ import { createGlobeScene } from '../viz/globe3d/scene.js'
 import { createFlatCoverage } from '../viz/flatmap/flatCoverage.js'
 import { useGrdCoverage } from '../viz/grd/useGrdCoverage.js'
 import { usePerfTable } from '../viz/grd/usePerfTable.js'
+import { useGridSelect } from '../viz/grd/useGridSelect.js'
 import sat from '../viz/constellation/satellite.js'
 import * as W from '../viz/wgs84.js'
 import { parseOMMCsv, fetchGroupLiveOrSup } from '../viz/constellation/tle.js'
@@ -94,6 +95,9 @@ const perf = usePerfTable()
 const perfKey = ref('')                 // 当前打开表的天线 key（''=关闭）；每个天线一张独立表
 const perfNew = ref({ country: '', city: '', desig: '', lon: '', lat: '' })   // 手动加站输入
 const perfOptsOpen = ref(false)         // 「性能表选项」弹窗开关
+// 浮窗几何（可拖拽移动 / 右下角缩放）+ 中缝分隔（城市输入区高度，px）。首次打开按视口初始化一次。
+const perfWin = ref({ x: 0, y: 0, w: 760, h: 560, init: false })
+const perfInputH = ref(190)
 const perfCols = computed(() => perfKey.value ? perf.visibleColumns(perf.getOpts(perfKey.value)) : [])   // 当前显示的列
 const perfOpts = computed(() => perfKey.value ? perf.getOpts(perfKey.value) : null)                      // 当前天线选项（弹窗 v-model）
 // 重算当前表（站点库/天线设置/选中波束/选项变化时调用）
@@ -104,9 +108,55 @@ async function openPerf(sat, a) {
   const ok = await grd.ensureAntLoaded(key)
   if (!ok) { alert('该天线方向图未就绪，无法生成性能表'); return }
   perfKey.value = key
+  perfWinInit()
   refreshPerf()
 }
 function closePerf() { perfKey.value = '' }
+// ===== 浮窗拖拽：移动（标题栏）/ 缩放（右下角）/ 分隔（中缝）。统一一个临时 window 监听会话 =====
+function perfWinInit() {
+  if (perfWin.value.init) return
+  const vw = window.innerWidth, vh = window.innerHeight
+  const w = Math.min(760, vw - 48), h = Math.min(Math.round(vh * 0.74), vh - 48)
+  perfWin.value = { x: Math.max(12, vw - w - 24), y: Math.max(12, Math.round(vh * 0.12)), w, h, init: true }
+  perfInputH.value = Math.min(190, Math.round(h * 0.34))
+}
+function perfDragSession(onMove) {
+  const onUp = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); document.body.style.userSelect = '' }
+  document.body.style.userSelect = 'none'
+  window.addEventListener('mousemove', onMove)
+  window.addEventListener('mouseup', onUp)
+}
+function perfDragMove(e) {
+  if (e.button !== 0 || (e.target.closest && e.target.closest('.csx, .ptb, input, select, label'))) return   // 标题栏空白处才拖动
+  e.preventDefault()
+  const sx = e.clientX, sy = e.clientY, o = { ...perfWin.value }
+  perfDragSession((ev) => {
+    const vw = window.innerWidth, vh = window.innerHeight
+    const x = Math.max(-o.w + 96, Math.min(vw - 48, o.x + (ev.clientX - sx)))   // 不让完全拖出视口
+    const y = Math.max(0, Math.min(vh - 32, o.y + (ev.clientY - sy)))
+    perfWin.value = { ...perfWin.value, x, y }
+  })
+}
+function perfDragResize(e) {
+  if (e.button !== 0) return
+  e.preventDefault(); e.stopPropagation()
+  const sx = e.clientX, sy = e.clientY, o = { ...perfWin.value }
+  perfDragSession((ev) => {
+    const vw = window.innerWidth, vh = window.innerHeight
+    const w = Math.max(380, Math.min(o.w + (ev.clientX - sx), vw - o.x - 6))
+    const h = Math.max(260, Math.min(o.h + (ev.clientY - sy), vh - o.y - 6))
+    perfWin.value = { ...perfWin.value, w, h }
+    if (perfInputH.value > h - 140) perfInputH.value = Math.max(64, h - 140)   // 缩小时让结果区保底
+  })
+}
+function perfDragSplit(e) {
+  if (e.button !== 0) return
+  e.preventDefault()
+  const sy = e.clientY, o = perfInputH.value
+  perfDragSession((ev) => {
+    perfInputH.value = Math.max(64, Math.min(perfWin.value.h - 140, o + (ev.clientY - sy)))
+  })
+}
 function perfAddStation() {
   perf.pushUndo()
   const s = perf.addStation(perfNew.value)
@@ -115,7 +165,6 @@ function perfAddStation() {
   refreshPerf()
 }
 function perfImportMarkers() { perf.pushUndo(); const n = perf.importFromMarkers(points.value, stations.value); if (!n) { perf.dropUndo(); alert('没有可导入的新标记（点标记/地面站）') } refreshPerf() }
-function perfRemoveRow(id) { perf.pushUndo(); perf.removeRow(id) }   // 仅隐藏当前行（站×波束），无需重算
 // Excel 式粘贴：在加站区任一输入框 Ctrl+V 整块表格 → 拦截并批量加站（单值粘贴仍走普通输入）
 function perfPaste(e) {
   const text = e.clipboardData ? e.clipboardData.getData('text') : ''
@@ -134,149 +183,64 @@ async function perfPasteBtn() {
   const n = perf.addStationsBulk(text)
   if (n) refreshPerf(); else { perf.dropUndo(); alert('剪贴板没有可识别的经纬度数据（约定末两列为 经度、纬度）') }
 }
-// ===== Excel 式网格：框选 + 键盘导航 + 双击/键入编辑 + 区域复制/粘贴 =====
-const PERF_EDITABLE = ['country', 'city', 'desig', 'lon', 'lat']
-const perfEditable = (k) => PERF_EDITABLE.includes(k)
-// 选区 = 锚点(ar,ac) → 活动格(ri,ci) 构成的矩形（行=filteredRows 下标，列=perfCols 下标）
-const perfSel = ref({ ar: -1, ac: -1, ri: -1, ci: -1 })
-const perfEdit = ref({ ri: -1, ci: -1 })          // 正在编辑的单元格
-const perfEditSeed = ref(null)                    // 键入进入编辑时的首字符（否则 null=保留原值并全选）
-const perfEditEl = ref(null)                      // 编辑中 input 的 DOM
-const perfBodyEl = ref(null)                      // 网格容器（接收键盘/复制/粘贴焦点）
-let perfDragging = false                           // 鼠标拖拽框选中
-const perfRowList = computed(() => perf.filteredRows.value)
-const perfRect = computed(() => {                  // 选区归一化矩形
-  const s = perfSel.value
-  return { r0: Math.min(s.ar, s.ri), r1: Math.max(s.ar, s.ri), c0: Math.min(s.ac, s.ci), c1: Math.max(s.ac, s.ci) }
+// ===== 两张表都用 Excel 式交互（框选 / 键盘导航 / 复制 / 编辑·粘贴·清除）=====
+// 城市输入网格列（可编辑）；行 = perf.stations，行 id 即站点 id。
+const perfInCols = [
+  { key: 'country', label: '国家' },
+  { key: 'city', label: '城市' },
+  { key: 'desig', label: '代号' },
+  { key: 'lon', label: '经度', num: true },
+  { key: 'lat', label: '纬度', num: true }
+]
+// 上：城市输入（可编辑）——单格编辑/区域粘贴/清除均落到站点库，深 watch 自动重算结果表。
+const perfInGrid = useGridSelect({
+  rows: () => perf.stations.value,
+  cols: () => perfInCols,
+  cellText: (r, c) => { const v = r[c.key]; return v == null ? '' : String(v) },
+  onEdit: (id, key, val) => perf.updateStation(id, { [key]: val }),
+  onPasteBlock: (anchorId, startKey, text) => perf.pasteBlock(anchorId, startKey, text),
+  onPasteAppend: (text) => perf.addStationsBulk(text),
+  onClear: (cells) => cells.forEach(({ rowId, key }) => perf.updateStation(rowId, { [key]: '' })),
+  pushUndo: () => perf.pushUndo(), dropUndo: () => perf.dropUndo(), refresh: () => refreshPerf()
 })
-const perfInSel = (ri, ci) => { const r = perfRect.value; return r.r0 >= 0 && ri >= r.r0 && ri <= r.r1 && ci >= r.c0 && ci <= r.c1 }
-const perfIsActive = (ri, ci) => perfSel.value.ri === ri && perfSel.value.ci === ci
-const perfIsEdit = (ri, ci) => perfEdit.value.ri === ri && perfEdit.value.ci === ci
-
-function perfFocusGrid() { const el = perfBodyEl.value; if (el) el.focus() }
-function perfSetSel(ri, ci, extend) {             // extend=true 保留锚点（扩选）
-  const s = perfSel.value
-  perfSel.value = extend && s.ar >= 0 ? { ar: s.ar, ac: s.ac, ri, ci } : { ar: ri, ac: ci, ri, ci }
+// 下：性能结果（只读）——框选 + 复制 + 键盘导航；行 = filteredRows。
+const perfResGrid = useGridSelect({
+  rows: () => perf.filteredRows.value,
+  cols: () => perfCols.value,
+  readOnly: true,
+  cellText: (r, c) => { const v = r[c.key]; if (c.num && c.fix != null) return v == null ? '' : Number(v).toFixed(c.fix); return v == null ? '' : String(v) }
+})
+function perfDelStation(id) { perf.pushUndo(); perf.removeStation(id) }
+function perfClearStations() { if (!perf.stations.value.length) return; perf.pushUndo(); perf.clearStations() }
+function perfUndo() { if (perf.undo()) refreshPerf() }
+function perfRedo() { if (perf.redo()) refreshPerf() }
+// 复制整张只读结果表为 TSV（含表头，可直接粘进 Excel）。同步 execCommand 优先（见 useGridSelect.writeClip 同理）。
+function perfWriteClipboard(text) {
+  let ok = false
+  try {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.style.cssText = 'position:fixed;top:-1000px;left:0;opacity:0'
+    document.body.appendChild(ta)
+    ta.focus(); ta.select()
+    ok = document.execCommand('copy')
+    document.body.removeChild(ta)
+  } catch { ok = false }
+  if (!ok) { try { navigator.clipboard && navigator.clipboard.writeText(text).catch(() => {}) } catch {} }
+  return ok
 }
-// 鼠标：按下=起点（拖拽框选），进入=扩选；Shift+按下=从锚点扩选
-function perfCellDown(e, ri, ci) {
-  if (perfIsEdit(ri, ci)) return                   // 正在编辑此格 → 交给 input 自己处理
-  e.preventDefault()
-  if (perfEdit.value.ri >= 0) perfCommitEdit()
-  perfSetSel(ri, ci, e.shiftKey); perfDragging = !e.shiftKey; perfFocusGrid()
-}
-function perfCellEnter(ri, ci) { if (perfDragging) perfSetSel(ri, ci, true) }
-function perfUp() { perfDragging = false }
-function perfTryEdit(ri, ci, seed) {
-  const c = perfCols.value[ci]; if (!c || !perfEditable(c.key)) return
-  perfSel.value = { ar: ri, ac: ci, ri, ci }; perfEditSeed.value = seed; perfEdit.value = { ri, ci }
-}
-function perfCommitEdit() {
-  const { ri, ci } = perfEdit.value; if (ri < 0) return
-  const el = perfEditEl.value, r = perfRowList.value[ri], c = perfCols.value[ci]
-  perfEdit.value = { ri: -1, ci: -1 }; perfEditSeed.value = null
-  if (el && r && c && el.value !== (r[c.key] == null ? '' : String(r[c.key]))) {   // 仅在值确实变化时记录撤销
-    perf.pushUndo(); perf.updateStation(r.id.split('#')[0], { [c.key]: el.value })  // 同站多波束行共享
-  }
-  refreshPerf()
-}
-function perfCancelEdit() { perfEdit.value = { ri: -1, ci: -1 }; perfEditSeed.value = null; perfFocusGrid() }
-function perfMove(dr, dc, extend) {
-  const nr = perfRowList.value.length, nc = perfCols.value.length; if (!nr || !nc) return
-  let ri = perfSel.value.ri < 0 ? 0 : perfSel.value.ri, ci = perfSel.value.ci < 0 ? 0 : perfSel.value.ci
-  ri = Math.min(nr - 1, Math.max(0, ri + dr)); ci = Math.min(nc - 1, Math.max(0, ci + dc))
-  perfSetSel(ri, ci, extend)
-}
-// 单元格显示文本（用于区域复制 / 导出）：可编辑列取原值，数值计算列按列小数位格式化
 function perfCellText(r, c) {
   const v = r[c.key]
-  if (perfEditable(c.key)) return v == null ? '' : String(v)
   if (c.num && c.fix != null) return v == null ? '' : Number(v).toFixed(c.fix)
   return v == null ? '' : String(v)
 }
-function perfRangeTSV() {
-  const rows = perfRowList.value, cols = perfCols.value, rc = perfRect.value
-  if (rc.r0 < 0 || !rows.length) return ''
-  const lines = []
-  for (let ri = rc.r0; ri <= rc.r1; ri++) {
-    const r = rows[ri]; if (!r) continue
-    const cells = []; for (let ci = rc.c0; ci <= rc.c1; ci++) cells.push(perfCellText(r, cols[ci]))
-    lines.push(cells.join('\t'))
-  }
-  return lines.join('\n')
+function perfCopyResult() {
+  const cols = perfCols.value, rows = perf.filteredRows.value
+  if (!rows.length) { alert('结果表为空'); return }
+  const head = cols.map((c) => c.label).join('\t')
+  const body = rows.map((r) => cols.map((c) => perfCellText(r, c)).join('\t')).join('\n')
+  if (!perfWriteClipboard(head + '\n' + body)) alert('复制失败，请检查剪贴板权限')
 }
-async function perfWriteClipboard(text) {
-  try { await navigator.clipboard.writeText(text); return true } catch {}
-  try { const ta = document.createElement('textarea'); ta.value = text; ta.style.cssText = 'position:fixed;opacity:0'; document.body.appendChild(ta); ta.select(); const ok = document.execCommand('copy'); document.body.removeChild(ta); return ok } catch { return false }
-}
-function perfCopySel() { const t = perfRangeTSV(); if (t) perfWriteClipboard(t) }
-function perfClearRange() {
-  const rows = perfRowList.value, cols = perfCols.value, rc = perfRect.value
-  if (rc.r0 < 0) return
-  perf.pushUndo()
-  for (let ri = rc.r0; ri <= rc.r1; ri++) { const r = rows[ri]; if (!r) continue; for (let ci = rc.c0; ci <= rc.c1; ci++) { const c = cols[ci]; if (c && perfEditable(c.key)) perf.updateStation(r.id.split('#')[0], { [c.key]: '' }) } }
-  refreshPerf()
-}
-function perfGridKey(e) {
-  if (perfEdit.value.ri >= 0) {                    // 编辑态：仅接管提交/取消/跳格，其余交给 input
-    if (e.key === 'Enter') { e.preventDefault(); perfCommitEdit(); perfMove(1, 0); perfFocusGrid() }
-    else if (e.key === 'Escape') { e.preventDefault(); perfCancelEdit() }
-    else if (e.key === 'Tab') { e.preventDefault(); perfCommitEdit(); perfMove(0, e.shiftKey ? -1 : 1); perfFocusGrid() }
-    return
-  }
-  const ctrl = e.ctrlKey || e.metaKey
-  if (ctrl && (e.key === 'c' || e.key === 'C')) { e.preventDefault(); perfCopySel(); return }
-  if (ctrl && (e.key === 'x' || e.key === 'X')) { e.preventDefault(); perfCopySel(); perfClearRange(); return }
-  if (ctrl && (e.key === 'a' || e.key === 'A')) {  // 全选
-    e.preventDefault(); const nr = perfRowList.value.length, nc = perfCols.value.length
-    if (nr && nc) perfSel.value = { ar: 0, ac: 0, ri: nr - 1, ci: nc - 1 }
-    return
-  }
-  if (ctrl && (e.key === 'v' || e.key === 'V')) { e.preventDefault(); perfDoPaste(); return }
-  if (ctrl && (e.key === 'z' || e.key === 'Z') && !e.shiftKey) { e.preventDefault(); if (perf.undo()) refreshPerf(); return }
-  if (ctrl && ((e.key === 'y' || e.key === 'Y') || ((e.key === 'z' || e.key === 'Z') && e.shiftKey))) { e.preventDefault(); if (perf.redo()) refreshPerf(); return }
-  const { ri, ci } = perfSel.value; if (ri < 0) return
-  const ext = e.shiftKey
-  switch (e.key) {
-    case 'ArrowUp': e.preventDefault(); perfMove(-1, 0, ext); break
-    case 'ArrowDown': e.preventDefault(); perfMove(1, 0, ext); break
-    case 'ArrowLeft': e.preventDefault(); perfMove(0, -1, ext); break
-    case 'ArrowRight': e.preventDefault(); perfMove(0, 1, ext); break
-    case 'Enter': e.preventDefault(); perfMove(1, 0, false); break
-    case 'Tab': e.preventDefault(); perfMove(0, ext ? -1 : 1, false); break
-    case 'F2': e.preventDefault(); perfTryEdit(ri, ci, null); break
-    case 'Delete': case 'Backspace': e.preventDefault(); perfClearRange(); break
-    default: if (e.key.length === 1 && !ctrl && !e.altKey) { e.preventDefault(); perfTryEdit(ri, ci, e.key) }
-  }
-}
-// 进入编辑后聚焦 input：键入进入→光标在末尾；F2/双击进入→全选
-watch(() => perfEdit.value, (v) => { if (v.ri >= 0) nextTick(() => { const el = perfEditEl.value; if (el) { el.focus(); if (perfEditSeed.value == null) el.select() } }) })
-onMounted(() => window.addEventListener('mouseup', perfUp))
-onBeforeUnmount(() => window.removeEventListener('mouseup', perfUp))
-// 网格 Ctrl+V（非编辑态）：focus 在不可编辑的网格容器上时浏览器不派发 paste 事件，
-// 故走键盘 + 读剪贴板。空表/未选→与「粘贴」按钮一致（智能追加）；否则按选区左上角定位填充。
-async function perfDoPaste() {
-  let text = ''
-  try { text = await navigator.clipboard.readText() } catch { alert('无法读取剪贴板，请点「📋 粘贴」按钮'); return }
-  if (!text || !text.trim()) return
-  perf.pushUndo()
-  const rc = perfRect.value, rows = perfRowList.value, c = perfCols.value[rc.c0]
-  const anchorId = (rc.r0 >= 0 && rows[rc.r0]) ? rows[rc.r0].id.split('#')[0] : null
-  const n = (anchorId && c) ? perf.pasteBlock(anchorId, c.key, text) : perf.addStationsBulk(text)
-  if (n) refreshPerf(); else perf.dropUndo()
-}
-// 编辑中的 input 内 Ctrl+V：整块→以该格定位填充（单值走普通输入）
-function perfCellPaste(e, r, key) {
-  const text = e.clipboardData ? e.clipboardData.getData('text') : ''
-  if (!text || !/[\t\n,]/.test(text.trim())) return
-  e.preventDefault()
-  perf.pushUndo()
-  const n = perf.pasteBlock(r ? r.id.split('#')[0] : null, key, text)
-  if (n) refreshPerf(); else perf.dropUndo()
-}
-function perfClearStations() { if (!perf.stations.value.length) return; perf.pushUndo(); perf.clearStations(); refreshPerf() }
-function perfUndo() { if (perf.undo()) { refreshPerf(); perfFocusGrid() } }
-function perfRedo() { if (perf.redo()) { refreshPerf(); perfFocusGrid() } }
 const perfFix = (v, n) => (v == null ? '—' : v.toFixed(n == null ? 2 : n))
 const perfColDef = (k) => perf.colDefs.find((c) => c.key === k)
 const perfColLabel = (k) => { const c = perfColDef(k); return c ? c.label : k }
@@ -1722,7 +1686,13 @@ onBeforeUnmount(() => {
 
         <template v-if="grd.antMeta()">
           <div class="sec">
-            <div class="sect"><span>设置 · {{ grd.activeName() }}</span><span v-if="grd.selected.value.length > 1" class="editing" title="多选时设置只作用于聚焦（编辑中）天线，各天线独立保存">仅编辑聚焦天线</span></div>
+            <div class="sect setsect">
+              <svg class="gsvg ant-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M4 10a7.31 7.31 0 0 0 10 10Z" /><path d="m9 15 3-3" /><path d="M17 13a6 6 0 0 0-6-6" /><path d="M21 13A10 10 0 0 0 11 3" />
+              </svg>
+              <span class="setlbl">天线设置</span><span class="setname" :title="grd.activeName()">{{ grd.activeName() }}</span>
+              <span v-if="grd.selected.value.length > 1" class="editing" title="多选时设置只作用于聚焦（编辑中）天线，各天线独立保存">仅编辑聚焦天线</span>
+            </div>
             <template v-if="grd.activeBeams().length > 1">
               <div class="sect" style="margin-top:2px"><span>Beams To Plot · {{ grd.activeBeams().length }} 波束</span></div>
               <input class="ci bq" :value="grd.beamQuery.value" placeholder="搜索：波束名，或序号 1-62、1,3,5、1-10,20-30" @input="e => grd.setBeamQuery(e.target.value)" />
@@ -1996,58 +1966,102 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <!-- 性能指标表（独立浮窗，每个天线一张；第 1 期：站点库 + Dir/Parameter 取值 + 表内查询） -->
-    <div v-if="perfKey" class="perf-win">
-      <div class="perf-h">
+    <!-- 性能指标表（独立浮窗，每个天线一张）。对标 SATSOFT 两步法、合为一窗：
+         上 = 城市输入区（增删改）；下 = 只读性能结果表（仅列覆盖该城市的波束）。 -->
+    <div v-if="perfKey" class="perf-win" :style="{ left: perfWin.x + 'px', top: perfWin.y + 'px', width: perfWin.w + 'px', height: perfWin.h + 'px' }">
+      <div class="perf-h" @mousedown="perfDragMove">
         <span class="perf-t">性能指标表
           <em v-if="perf.ctxInfo.value">· {{ perf.ctxInfo.value.satName }} / {{ perf.ctxInfo.value.antName }} · {{ perf.ctxInfo.value.beams }} 波束</em>
         </span>
         <span class="csx" @click="closePerf">✕</span>
       </div>
-      <div class="perf-tools">
-        <span class="ptb" :class="{ dis: !perf.canUndo.value }" title="撤销 (Ctrl+Z)" @click="perfUndo">↶ 撤销</span>
-        <span class="ptb" :class="{ dis: !perf.canRedo.value }" title="重做 (Ctrl+Y / Ctrl+Shift+Z)" @click="perfRedo">↷ 重做</span>
-        <span class="ptb" title="把地图上的点标记 / 地面站导入站点库" @click="perfImportMarkers">⭳ 从标记导入</span>
-        <span class="ptb" title="从剪贴板粘贴表格（末两列=经度、纬度，可含 国家/城市/代号）批量加站" @click="perfPasteBtn">📋 粘贴</span>
-        <span class="ptb" title="清空站点库" @click="perfClearStations">清空站点</span>
-        <span class="ptb" :class="{ on: perfOptsOpen }" title="显示列 / 过滤 / 计算口径 / 指向误差" @click="perfOptsOpen = !perfOptsOpen">⚙ 选项…</span>
-        <input class="perf-q" v-model="perf.query.value" placeholder="查询：国家 / 城市 / 代号" />
-        <span class="perf-cnt">{{ perf.filteredRows.value.length }} / {{ perf.rows.value.length }} 行 · {{ perf.stations.value.length }} 站</span>
-      </div>
-      <div class="perf-add" @paste="perfPaste" title="可从 Excel 复制后在此 Ctrl+V 批量粘贴（末两列=经度、纬度）">
-        <input class="pi" v-model="perfNew.country" placeholder="国家" />
-        <input class="pi" v-model="perfNew.city" placeholder="城市" />
-        <input class="pi" v-model="perfNew.desig" placeholder="代号" />
-        <input class="pi nrw" v-model="perfNew.lon" placeholder="经度" />
-        <input class="pi nrw" v-model="perfNew.lat" placeholder="纬度" />
-        <span class="ptb add" @click="perfAddStation">＋ 加站</span>
-      </div>
-      <div class="perf-body" ref="perfBodyEl" tabindex="0" @keydown="perfGridKey" @click="perfFocusGrid">
-        <table class="perf-tbl">
-          <thead>
-            <tr>
-              <th v-for="c in perfCols" :key="c.key" :style="{ width: c.w + 'px' }" :class="{ n: c.num }" :title="c.na ? '本数据仅含功率（无相位），AR 暂不可算' : ''">{{ c.label }}<em v-if="c.na">*</em></th>
-              <th class="th-act"></th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="(r, ri) in perf.filteredRows.value" :key="r.id" :class="{ out: !r.inPattern }">
-              <td v-for="(c, ci) in perfCols" :key="c.key"
-                  :class="{ n: c.num, ed: perfEditable(c.key), sel: perfInSel(ri, ci), active: perfIsActive(ri, ci), editing: perfIsEdit(ri, ci) }"
-                  @mousedown="perfCellDown($event, ri, ci)" @mouseenter="perfCellEnter(ri, ci)" @dblclick="perfTryEdit(ri, ci, null)">
-                <input v-if="perfIsEdit(ri, ci)" :ref="el => perfEditEl = el" class="pcell" :class="{ n: c.num }"
-                       :value="perfEditSeed != null ? perfEditSeed : (r[c.key] == null ? '' : r[c.key])"
-                       @blur="perfCommitEdit" @paste="perfCellPaste($event, r, c.key)" />
-                <template v-else-if="c.num">{{ c.fix != null ? perfFix(r[c.key], c.fix) : (r[c.key] == null ? '—' : r[c.key]) }}</template>
-                <template v-else>{{ r[c.key] || '' }}</template>
-              </td>
-              <td class="td-act"><span class="del" title="删除该行" @click="perfRemoveRow(r.id)">✕</span></td>
-            </tr>
-            <tr v-if="!perf.rows.value.length"><td :colspan="perfCols.length + 1" class="perf-empty">站点库为空 — 在此 Ctrl+V 粘贴表格（末两列=经度、纬度），或「从标记导入」/「＋ 加站」</td></tr>
-            <tr v-else-if="!perf.filteredRows.value.length"><td :colspan="perfCols.length + 1" class="perf-empty">无匹配查询的行</td></tr>
-          </tbody>
-        </table>
-      </div>
+
+      <!-- 上：城市输入区（第一步——输入城市列表；每个经纬度 = 一行城市，不随波束膨胀） -->
+      <section class="perf-input" :style="{ height: perfInputH + 'px' }">
+        <div class="pin-h">
+          <span class="pin-t">城市输入</span>
+          <span class="ptb" :class="{ dis: !perf.canUndo.value }" title="撤销 (Ctrl+Z)" @click="perfUndo">↶</span>
+          <span class="ptb" :class="{ dis: !perf.canRedo.value }" title="重做 (Ctrl+Y)" @click="perfRedo">↷</span>
+          <span class="ptb" title="把地图上的点标记 / 地面站导入为城市" @click="perfImportMarkers">⭳ 从标记导入</span>
+          <span class="ptb" title="从剪贴板粘贴表格（末两列=经度、纬度，可含 国家/城市/代号）批量添加" @click="perfPasteBtn">📋 粘贴</span>
+          <span class="ptb" title="清空城市列表" @click="perfClearStations">清空</span>
+          <span class="perf-cnt">{{ perf.stations.value.length }} 城市</span>
+        </div>
+        <!-- Excel 式网格：拖拽框选 / Shift 扩选 / 方向键导航 / Ctrl+C 复制 / 双击·键入编辑 / Ctrl+V 区域粘贴 / Del 清除 -->
+        <div class="pin-body" :ref="el => perfInGrid.bodyEl.value = el" tabindex="0" @keydown="perfInGrid.gridKey" @click="perfInGrid.focusGrid">
+          <table class="perf-tbl grid">
+            <thead>
+              <tr>
+                <th v-for="c in perfInCols" :key="c.key" :class="{ n: c.num }">{{ c.label }}</th>
+                <th class="th-act"></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(s, ri) in perf.stations.value" :key="s.id">
+                <td v-for="(c, ci) in perfInCols" :key="c.key"
+                    :class="{ n: c.num, ed: true, sel: perfInGrid.inSel(ri, ci), active: perfInGrid.isActive(ri, ci), editing: perfInGrid.isEdit(ri, ci) }"
+                    @mousedown="perfInGrid.cellDown($event, ri, ci)" @mouseenter="perfInGrid.cellEnter(ri, ci)" @dblclick="perfInGrid.tryEdit(ri, ci, null)">
+                  <input v-if="perfInGrid.isEdit(ri, ci)" :ref="el => perfInGrid.editEl.value = el" class="pcell" :class="{ n: c.num }"
+                         :value="perfInGrid.editSeed.value != null ? perfInGrid.editSeed.value : (s[c.key] == null ? '' : s[c.key])"
+                         @blur="perfInGrid.commitEdit" @paste="perfInGrid.cellPaste($event, s, c.key)" />
+                  <template v-else>{{ s[c.key] || '' }}</template>
+                </td>
+                <td class="td-act"><span class="del" title="删除该城市" @click="perfDelStation(s.id)">✕</span></td>
+              </tr>
+              <!-- 末行：新增（可在任一格 Ctrl+V 粘贴整块表格批量添加；不参与框选） -->
+              <tr class="pin-add" @paste="perfPaste" title="可从 Excel 复制后在此 Ctrl+V 批量粘贴（末两列=经度、纬度）">
+                <td><input v-model="perfNew.country" placeholder="国家" @keydown.enter="perfAddStation" /></td>
+                <td><input v-model="perfNew.city" placeholder="城市" @keydown.enter="perfAddStation" /></td>
+                <td><input v-model="perfNew.desig" placeholder="代号" @keydown.enter="perfAddStation" /></td>
+                <td class="n"><input class="n" v-model="perfNew.lon" placeholder="经度" @keydown.enter="perfAddStation" /></td>
+                <td class="n"><input class="n" v-model="perfNew.lat" placeholder="纬度" @keydown.enter="perfAddStation" /></td>
+                <td class="act"><span class="ptb add" title="新增城市 (Enter)" @click="perfAddStation">＋</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- 中缝：上下拖拽调整城市输入区 / 结果区的高度比例 -->
+      <div class="perf-split" title="拖拽调整上下高度" @mousedown="perfDragSplit"><span class="grip"></span></div>
+
+      <!-- 下：只读性能结果表（第二步——输出；仅列覆盖该城市的波束） -->
+      <section class="perf-result">
+        <div class="pr-h">
+          <span class="pr-t">性能结果<em>只读</em></span>
+          <label class="pr-cov"><input type="checkbox" v-model="perfOpts.filterOn" title="仅列方向性≥阈值（覆盖该城市）的波束" /> 仅覆盖波束</label>
+          <label class="pr-cov" :class="{ dis: !perfOpts.filterOn }">阈值<input class="ci" type="number" step="0.5" v-model.number="perfOpts.minDir" :disabled="!perfOpts.filterOn" /><span class="u">dB</span></label>
+          <input class="perf-q" v-model="perf.query.value" placeholder="查询：国家 / 城市 / 代号" />
+          <span class="ptb" title="复制整张结果表（含表头，TSV，可粘进 Excel）" @click="perfCopyResult">⧉ 复制全表</span>
+          <span class="ptb" :class="{ on: perfOptsOpen }" title="显示列 / 计算口径 / 指向误差" @click="perfOptsOpen = !perfOptsOpen">⚙ 选项…</span>
+          <span class="perf-cnt">{{ perf.filteredRows.value.length }} 行</span>
+        </div>
+        <!-- 只读 Excel 网格：拖拽框选 / Shift 扩选 / 方向键导航 / Ctrl+A 全选 / Ctrl+C 复制选区（不可编辑） -->
+        <div class="pr-body" :ref="el => perfResGrid.bodyEl.value = el" tabindex="0" @keydown="perfResGrid.gridKey" @click="perfResGrid.focusGrid">
+          <table class="perf-tbl grid ro">
+            <thead>
+              <tr>
+                <th v-for="c in perfCols" :key="c.key" :style="{ width: c.w + 'px' }" :class="{ n: c.num }" :title="c.na ? '本数据仅含功率（无相位），AR 暂不可算' : ''">{{ c.label }}<em v-if="c.na">*</em></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(r, ri) in perf.filteredRows.value" :key="r.id" :class="{ out: !r.inPattern }">
+                <td v-for="(c, ci) in perfCols" :key="c.key"
+                    :class="{ n: c.num, sel: perfResGrid.inSel(ri, ci), active: perfResGrid.isActive(ri, ci) }"
+                    @mousedown="perfResGrid.cellDown($event, ri, ci)" @mouseenter="perfResGrid.cellEnter(ri, ci)">
+                  <template v-if="c.num">{{ c.fix != null ? perfFix(r[c.key], c.fix) : (r[c.key] == null ? '—' : r[c.key]) }}</template>
+                  <template v-else>{{ r[c.key] || '' }}</template>
+                </td>
+              </tr>
+              <tr v-if="!perf.stations.value.length"><td :colspan="perfCols.length" class="perf-empty">先在上方「城市输入」添加城市（手填 / 从标记导入 / 粘贴）</td></tr>
+              <tr v-else-if="!perf.filteredRows.value.length"><td :colspan="perfCols.length" class="perf-empty">没有波束覆盖这些城市 — 可调低覆盖阈值或取消「仅覆盖波束」</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- 右下角缩放手柄 -->
+      <div class="perf-rsz" title="拖拽缩放窗口" @mousedown="perfDragResize"></div>
     </div>
 
     <!-- 性能表选项弹窗（对标 SATSOFT Performance Table Options）：显示列 / 过滤 / 波束类型 / 计算口径 / 指向误差 -->
@@ -2207,6 +2221,10 @@ onBeforeUnmount(() => {
 .nseg .sg + .sg { border-left: 1px solid var(--border); }
 .sect { display: flex; align-items: center; margin-bottom: 6px; color: var(--text-muted); }
 .sect .lnk { margin-left: auto; color: var(--accent); cursor: pointer; font-size: 11.5px; }
+/* 天线设置区标题：SVG 图标 + 「天线设置」+ 天线名（高区分度） */
+.setsect .ant-svg { width: 14px; height: 14px; color: var(--accent); margin-right: 6px; }
+.setsect .setlbl { color: var(--text); font-weight: 600; }
+.setsect .setname { margin-left: 6px; color: var(--accent); font-weight: 600; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .list { max-height: 150px; overflow-y: auto; border: 1px solid var(--border); padding: 4px 6px; }
 .chk { display: flex; align-items: center; gap: 6px; padding: 2px 0; cursor: pointer; }
 .chk .bseq { flex: none; min-width: 20px; text-align: right; color: var(--text-faint); font-family: var(--font-mono); font-size: 10.5px; }
@@ -2241,47 +2259,78 @@ onBeforeUnmount(() => {
 .gperf.on { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .gperf.on .perf-svg { color: var(--accent); }
 
-/* 性能指标表浮窗 */
-.perf-win { position: absolute; right: 24px; bottom: 24px; width: 720px; max-width: calc(100% - 48px); max-height: 70%; display: flex; flex-direction: column; background: var(--panel, var(--bg)); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 12px 40px rgba(0, 0, 0, .35); z-index: 60; overflow: hidden; }
-.perf-h { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border); flex: none; }
+/* 性能指标表浮窗（几何由 JS 控制：可拖拽移动 / 右下角缩放 / 中缝分隔） */
+.perf-win { position: absolute; left: 24px; top: 64px; display: flex; flex-direction: column; background: var(--panel, var(--bg)); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 12px 40px rgba(0, 0, 0, .35); z-index: 60; overflow: hidden; }
+.perf-h { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border); flex: none; cursor: move; user-select: none; }
 .perf-t { flex: 1; font-family: var(--font-serif); font-size: 13.5px; color: var(--text); }
 .perf-t em { font-style: normal; font-family: var(--font-mono); font-size: 11px; color: var(--text-faint); }
 .perf-h .csx { cursor: pointer; color: var(--text-faint); padding: 0 4px; }
 .perf-h .csx:hover { color: var(--text); }
-.perf-tools, .perf-add { display: flex; align-items: center; gap: 6px; padding: 6px 12px; border-bottom: 1px solid var(--border); flex: none; flex-wrap: wrap; }
 .ptb { font-size: 11.5px; color: var(--text-muted); border: 1px solid var(--border); border-radius: 4px; padding: 2px 8px; cursor: pointer; white-space: nowrap; }
 .ptb:hover { color: var(--text); border-color: var(--accent); }
 .ptb.add { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
 .ptb.dis { opacity: .38; pointer-events: none; }
-.perf-q { flex: 1; min-width: 120px; border: 1px solid var(--border); background: var(--bg); padding: 2px 8px; font-size: 11.5px; color: var(--text); border-radius: 4px; outline: none; }
+.ptb.on { color: var(--accent); border-color: var(--accent); }
+.perf-q { flex: 1; min-width: 110px; border: 1px solid var(--border); background: var(--bg); padding: 2px 8px; font-size: 11.5px; color: var(--text); border-radius: 4px; outline: none; }
 .perf-cnt { font-size: 10.5px; color: var(--text-faint); font-family: var(--font-mono); white-space: nowrap; }
-.perf-add .pi { flex: 1; min-width: 0; border: 1px solid var(--border); background: var(--bg); padding: 2px 6px; font-size: 11.5px; color: var(--text); border-radius: 4px; outline: none; }
-.perf-add .pi.nrw { flex: 0 0 74px; }
-.perf-body { flex: 1; overflow: auto; }
+
+/* —— 上：城市输入区（高度由 JS 控制，可经中缝拖拽） —— */
+.perf-input { flex: none; display: flex; flex-direction: column; min-height: 0; }
+/* 中缝分隔条（上下拖拽） */
+.perf-split { flex: none; height: 7px; cursor: ns-resize; background: var(--border); display: flex; align-items: center; justify-content: center; }
+.perf-split:hover { background: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+.perf-split .grip { width: 30px; height: 2px; border-radius: 2px; background: color-mix(in srgb, var(--text) 35%, transparent); }
+/* 右下角缩放手柄 */
+.perf-rsz { position: absolute; right: 0; bottom: 0; width: 16px; height: 16px; cursor: nwse-resize; z-index: 2; background: linear-gradient(135deg, transparent 50%, color-mix(in srgb, var(--text) 30%, transparent) 50%, color-mix(in srgb, var(--text) 30%, transparent) 62%, transparent 62%, transparent 74%, color-mix(in srgb, var(--text) 30%, transparent) 74%, color-mix(in srgb, var(--text) 30%, transparent) 86%, transparent 86%); }
+.pin-h, .pr-h { display: flex; align-items: center; gap: 6px; padding: 6px 12px; flex: none; flex-wrap: wrap; }
+.pin-h { border-bottom: 1px solid var(--border); }
+.pin-t, .pr-t { font-size: 11.5px; font-weight: 600; color: var(--text-muted); white-space: nowrap; }
+.pr-t em { margin-left: 4px; font-style: normal; font-size: 10px; font-weight: 400; color: var(--text-faint); border: 1px solid var(--border); border-radius: 6px; padding: 0 5px; }
+.pin-body { flex: 1; overflow: auto; outline: none; }
+/* 新增行（不参与框选）：常驻输入框 */
+.perf-tbl tr.pin-add td { padding: 0; cursor: default; }
+.perf-tbl tr.pin-add td input { width: 100%; box-sizing: border-box; border: 1px solid transparent; background: transparent; color: var(--text); font: inherit; font-size: 11.5px; padding: 3px 8px; outline: none; }
+.perf-tbl tr.pin-add td input.n { text-align: right; font-family: var(--font-mono); }
+.perf-tbl tr.pin-add td input:hover { border-color: var(--border); }
+.perf-tbl tr.pin-add td input:focus { border-color: var(--accent); background: var(--bg); }
+.perf-tbl tr.pin-add td input::placeholder { color: var(--text-faint); }
+.perf-tbl tr.pin-add:hover { background: none; }
+.perf-tbl tr.pin-add .ptb.add { display: inline-block; padding: 0 6px; line-height: 18px; }
+
+/* —— 下：只读性能结果表 —— */
+.perf-result { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.pr-h { border-bottom: 1px solid var(--border); }
+.pr-cov { display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--text-muted); white-space: nowrap; cursor: pointer; }
+.pr-cov.dis { opacity: .5; }
+.pr-cov input[type=checkbox] { accent-color: var(--accent); }
+.pr-cov .ci { width: 52px; border: 1px solid var(--border); background: var(--bg); padding: 1px 5px; font-size: 11px; color: var(--text); border-radius: 4px; outline: none; font-family: var(--font-mono); }
+.pr-cov .ci:disabled { opacity: .45; }
+.pr-cov .u { color: var(--text-faint); font-size: 10.5px; }
+.pr-body { flex: 1; overflow: auto; }
 .perf-tbl { width: 100%; border-collapse: collapse; font-size: 11.5px; }
 .perf-tbl th, .perf-tbl td { padding: 3px 8px; border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent); text-align: left; white-space: nowrap; }
 .perf-tbl th { position: sticky; top: 0; background: var(--panel, var(--bg)); color: var(--text-muted); font-weight: 600; z-index: 1; }
 .perf-tbl th.n, .perf-tbl td.n { text-align: right; font-family: var(--font-mono); }
 .perf-tbl td { color: var(--text); }
-/* Excel 式网格：单元格十字光标，框选区淡蓝填充，活动格/编辑格描蓝框 */
-.perf-body:focus { outline: none; }
-.perf-tbl { user-select: none; }                   /* 拖拽框选时不选中文本 */
-.perf-tbl tbody td { cursor: cell; }
-.perf-tbl td.sel { background: color-mix(in srgb, var(--accent) 16%, transparent); }
-.perf-tbl tr.out td.sel { background: color-mix(in srgb, var(--accent) 12%, transparent); }
-.perf-tbl td.active { box-shadow: inset 0 0 0 2px var(--accent); }
-.perf-tbl td.editing { padding: 0; box-shadow: inset 0 0 0 2px var(--accent); }
-.pcell { width: 100%; box-sizing: border-box; border: none; background: var(--bg); color: inherit; font: inherit; padding: 3px 8px; outline: none; }
-.pcell.n { text-align: right; font-family: var(--font-mono); }
+.perf-tbl th em { color: var(--text-faint); font-style: normal; }
 .perf-tbl tbody tr:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
 .perf-tbl tr.out td { color: var(--text-faint); }
+.perf-empty { text-align: center !important; color: var(--text-faint); padding: 18px !important; font-style: italic; }
+/* —— Excel 式网格（城市输入 + 性能结果共用）：十字光标 / 框选淡蓝 / 活动格·编辑格描蓝框 —— */
+.perf-tbl.grid { user-select: none; }                    /* 拖拽框选时不选中文本 */
+.perf-tbl.grid tbody td { cursor: cell; }
+.perf-tbl.grid td.sel { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.perf-tbl.grid tr.out td.sel { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.perf-tbl.grid td.active { box-shadow: inset 0 0 0 2px var(--accent); }
+.perf-tbl.grid td.editing { padding: 0; box-shadow: inset 0 0 0 2px var(--accent); }
+.perf-tbl.grid td.ed { color: var(--text); }
+.pcell { width: 100%; box-sizing: border-box; border: none; background: var(--bg); color: inherit; font: inherit; padding: 3px 8px; outline: none; }
+.pcell.n { text-align: right; font-family: var(--font-mono); }
 .perf-tbl .td-act, .perf-tbl .th-act { width: 22px; text-align: center; }
+.perf-tbl .td-act { cursor: default; }
 .perf-tbl .td-act .del { cursor: pointer; color: var(--text-faint); opacity: 0; }
 .perf-tbl tbody tr:hover .del { opacity: .8; }
 .perf-tbl .td-act .del:hover { color: #ff6a6a; }
-.perf-empty { text-align: center !important; color: var(--text-faint); padding: 18px !important; font-style: italic; }
-.ptb.on { color: var(--accent); border-color: var(--accent); }
-.perf-tbl th em { color: var(--text-faint); font-style: normal; }
 
 /* 性能表选项弹窗 */
 .sat-mask.perf-opt-mask { z-index: 70; }   /* 提高特异性压过 .sat-mask(z40)，高于性能表浮窗(z60)避免被遮挡 */
