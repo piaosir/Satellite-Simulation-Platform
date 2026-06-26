@@ -4,6 +4,11 @@ import { useNavStore } from './stores/nav'
 import { cursor } from './stores/cursor'
 import { view } from './stores/view'
 import { covNav } from './stores/coveragePanels'
+import { zoom } from './stores/zoom'
+
+// 底部状态栏缩放进度条：拖动/按钮 → 设回当前活动地图（zoom.apply）；地图滚轮缩放回填 zoom.value。
+const onZoomInput = (e) => { const t = Number(e.target.value); if (zoom.apply) zoom.apply(t) }
+const stepZoom = (d) => { const t = Math.max(0, Math.min(1, zoom.value + d)); if (zoom.apply) zoom.apply(t) }
 
 // 经度在前、纬度在后，保留两位小数
 const fmtCoord = (ll) => `${Math.abs(ll.lon).toFixed(2)}°${ll.lon >= 0 ? 'E' : 'W'}  ${Math.abs(ll.lat).toFixed(2)}°${ll.lat >= 0 ? 'N' : 'S'}`
@@ -54,7 +59,7 @@ const currentLabel = computed(
             </div>
           </div>
         </span>
-        <span v-if="covNav.grdAvail" class="covbtn" :class="{ on: covNav.grdOpen }" @click="covNav.toggleGrd && covNav.toggleGrd()">覆盖图（GRD）</span>
+        <span v-if="covNav.grdAvail" class="covbtn" :class="{ on: covNav.grdOpen }" @click="covNav.toggleGrd && covNav.toggleGrd()">覆盖分析</span>
         <span v-if="covNav.covAvail" class="covbtn" :class="{ on: covNav.covOpen }" @click="covNav.toggleCov && covNav.toggleCov()">覆盖图（GXT）</span>
         <span>帮助</span>
       </nav>
@@ -68,7 +73,13 @@ const currentLabel = computed(
     </div>
 
     <footer class="statusbar">
-      <span>● 离线模式</span>
+      <span v-if="zoom.avail" class="zoomctl" title="地图缩放（拖动精细调节，滚轮亦可）">
+        <span class="zlbl">缩放</span>
+        <button class="zbtn" title="缩小" @click="stepZoom(-0.01)">－</button>
+        <input class="zrange" type="range" min="0" max="1" step="0.001" :value="zoom.value" @input="onZoomInput" />
+        <button class="zbtn" title="放大" @click="stepZoom(0.01)">＋</button>
+        <span class="zpct">{{ Math.round(zoom.value * 100) }}%</span>
+      </span>
       <span>当前：{{ currentLabel }}</span>
       <span class="grow">
         <span v-if="cursor.ll" class="coord">
@@ -139,4 +150,11 @@ const currentLabel = computed(
 .statusbar .grow { margin-left: auto; }
 .statusbar .coord { display: inline-flex; align-items: center; gap: 5px; font-family: var(--font-mono); font-size: 13px; font-weight: 600; color: var(--accent); letter-spacing: .3px; }
 .statusbar .coord .cur { vertical-align: middle; }
+/* 缩放进度条：拖动精细调节，±按钮步进，右侧百分比 */
+.zoomctl { display: inline-flex; align-items: center; gap: 7px; }
+.zoomctl .zlbl { color: var(--text-faint); }
+.zoomctl .zbtn { width: 16px; height: 16px; line-height: 14px; text-align: center; padding: 0; border: 1px solid var(--border); background: var(--bg); color: var(--text-muted); cursor: pointer; border-radius: 2px; font-size: 12px; }
+.zoomctl .zbtn:hover { color: var(--text); border-color: var(--accent); }
+.zoomctl .zrange { width: 120px; height: 3px; cursor: pointer; accent-color: var(--accent); }
+.zoomctl .zpct { width: 34px; text-align: right; font-family: var(--font-mono); color: var(--text-muted); }
 </style>

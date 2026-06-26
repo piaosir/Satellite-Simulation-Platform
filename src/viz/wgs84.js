@@ -71,6 +71,9 @@ function projectToSurface(p) {
 // 射线 o + t·d（ECEF km）与 WGS84 椭球求交，并返回「地平裕度」m（含正负号）：
 //   m = 判别式 disc = b²−4ac。 m>0 命中地球内侧、m=0 恰切（=地球可见地平/0°仰角线）、m<0 掠地平外。
 // 始终返回一个椭球面点 p：命中取真实交点；未命中(或反向)取最近趋近点投到椭球（即地平上的点）。
+// 另返回 pRaw：命中时同 p；未命中时 = 未投影的最近趋近点（停在椭球【外】，h>0）。pRaw 让越地平网格点
+//   保留在地平【外】的经纬度（而非折叠到地平圆上），使覆盖填充能延伸到地平外、再被平滑地平弧精确裁剪——
+//   否则填充止于地平圆内接折线，与真实地平弧之间会留月牙缝（地平附近锯齿/毛刺的根因）。
 // 用途：覆盖网格逐点既能落地又带「是否越过地平」的连续标量，供 3D 片元 discard / 2D 裁剪精确切在 0°仰角线。
 export function rayEllipsoidMargin(o, d) {
   const ox = o[0] / A, oy = o[1] / A, oz = o[2] / B
@@ -81,11 +84,11 @@ export function rayEllipsoidMargin(o, d) {
   const disc = b * b - 4 * a * c
   if (disc >= 0) {
     const t = (-b - Math.sqrt(disc)) / (2 * a)
-    if (t >= 0) return { p: [o[0] + t * d[0], o[1] + t * d[1], o[2] + t * d[2]], m: disc }
+    if (t >= 0) { const p = [o[0] + t * d[0], o[1] + t * d[1], o[2] + t * d[2]]; return { p, m: disc, pRaw: p } }
   }
-  const t = -b / (2 * a)   // 未命中：取最近趋近点，再投到椭球得地平点
-  const px = o[0] + t * d[0], py = o[1] + t * d[1], pz = o[2] + t * d[2]
-  return { p: projectToSurface([px, py, pz]), m: disc < 0 ? disc : -1 }
+  const t = -b / (2 * a)   // 未命中：取最近趋近点；p 投到椭球得地平点，pRaw 保留地平外原点
+  const pRaw = [o[0] + t * d[0], o[1] + t * d[1], o[2] + t * d[2]]
+  return { p: projectToSurface(pRaw), m: disc < 0 ? disc : -1, pRaw }
 }
 
 // 大地点对卫星(ECEF)的仰角（度，椭球法线为基准）

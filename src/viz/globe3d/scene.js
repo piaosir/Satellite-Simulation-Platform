@@ -346,10 +346,18 @@ export function createGlobeScene(container) {
   // 乘性步进天然就是梯度：离地球近时每格走得少（精细），远时每格走得多（快速）。
   // 每帧把实际距离向目标距离缓动逼近，连续顺滑；累积的滚动一次到位，不必狂滚。
   let zoomTarget = camera.position.length()
+  // 缩放进度（底部状态栏进度条）：距离[min,max]对数映射到 t∈[0,1]，t=0 最远(缩小)、t=1 最近(放大)。
+  // 对数映射 → 进度条每一格的“距离倍率”恒定，靠近地球时绝对步进更小，天然支持精细化缩放。
+  const _lnMin = Math.log(controls.minDistance), _lnMax = Math.log(controls.maxDistance)
+  const distToT = (d) => (_lnMax - Math.log(d)) / (_lnMax - _lnMin)
+  const tToDist = (t) => Math.exp(_lnMax - Math.max(0, Math.min(1, t)) * (_lnMax - _lnMin))
+  let onZoom = null
+  const reportZoom = () => { if (onZoom) onZoom(distToT(zoomTarget)) }
   renderer.domElement.addEventListener('wheel', (e) => {
     e.preventDefault()
     const factor = Math.exp(e.deltaY * 0.0018)   // 每格 deltaY≈±100 -> ~±20% 距离
     zoomTarget = Math.max(controls.minDistance, Math.min(controls.maxDistance, zoomTarget * factor))
+    reportZoom()
   }, { passive: false })
 
   let curW = w, curH = h
@@ -377,8 +385,10 @@ export function createGlobeScene(container) {
   scene.add(buildLandMesh(features))
 
   // 矢量国界/海岸线 + 矢量经纬网：粗线，放大/高分辨率下都锐利清晰
-  scene.add(fatSegments(buildGraticule(), 0xffffff, 0.8, 0.12, 1))
-  scene.add(fatSegments(buildBorders(features), 0x5b7088, 0.8, 0.9, 2))
+  // 经纬网 / 海岸线 渲染序高于覆盖填充(5)+等值线(6)、低于数据叠加(轨迹7/点/标注)：
+  // 地理骨架贯穿覆盖区之上 → 覆盖与底图融为一体（平级），不再像贴纸浮在地图上面。depthWrite=false，纯绘制顺序。
+  scene.add(fatSegments(buildGraticule(), 0xffffff, 0.8, 0.12, 6.3))
+  scene.add(fatSegments(buildBorders(features), 0x5b7088, 0.8, 0.9, 6.5))
 
   // 国名/洋名：中、英两套（按需切换显隐），初始全隐
   const labelsZh = buildLabels(features, 'zh'); scene.add(labelsZh)
@@ -412,7 +422,7 @@ export function createGlobeScene(container) {
         pos.push(a.x, a.y, a.z, b.x, b.y, b.z)
       }
     }
-    provinceBorders = fatSegments(pos, 0x9aa3b0, 1.3, 0.6, 3)
+    provinceBorders = fatSegments(pos, 0x9aa3b0, 1.3, 0.6, 6.6)   // 同海岸线：压在覆盖之上，与底图平级
     provinceBorders.visible = false; scene.add(provinceBorders)
     provinceLabels = new THREE.Group(); provinceLabels.visible = false
     for (const l of (data.labels || [])) {
@@ -484,12 +494,13 @@ export function createGlobeScene(container) {
   let covGroup = null
   // 覆盖用小标签（波束名）：白字描边，depthTest 开 -> 背面被地球遮挡
   function makeCovLabel(text, hpx, color) {
-    const fs = 50, pad = 8, font = `${fs}px "Microsoft YaHei", sans-serif`, c = document.createElement('canvas')   // 常规字重 + 细描边，密集时更清晰
+    const fs = 50, pad = 8, font = `${fs}px "Microsoft YaHei", sans-serif`, c = document.createElement('canvas')
     let x = c.getContext('2d'); x.font = font
     c.width = Math.ceil(x.measureText(text).width) + pad * 2; c.height = fs + pad * 2
     x = c.getContext('2d'); x.font = font; x.textBaseline = 'middle'; x.textAlign = 'center'
+    // 文字描边套色(casing)：沿字形勾一圈与底色同调的窄边——专业制图标准，密集时也清晰，不用底色色块
     x.lineJoin = 'round'; x.miterLimit = 2
-    x.lineWidth = 3.5; x.strokeStyle = 'rgba(0,0,0,0.8)'; x.strokeText(text, c.width / 2, c.height / 2)
+    x.lineWidth = 3.5; x.strokeStyle = 'rgba(6,11,18,0.82)'; x.strokeText(text, c.width / 2, c.height / 2)
     x.fillStyle = color || '#ffffff'; x.fillText(text, c.width / 2, c.height / 2)
     const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace
     const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: t, depthTest: true, depthWrite: false, transparent: true }))
@@ -621,26 +632,31 @@ export function createGlobeScene(container) {
         spr.position.copy(pos); spr.renderOrder = 12; out.push(spr)
       }
     }
-    // 波束中心（boresight）：白点 + 指向所属卫星的连线；天线名标签贴在中心上方
+    // 波束中心（boresight）：白点 + 指向所属卫星的连线。波束名贴中心【上方】、峰值贴【下方】，
+    // 用 billboard 的 center 在【屏幕方向】上下分置（旧版按半径抬高，屏幕上几乎重合）。
     const b = L.bore
     if (b) {
+      // 中心点锚（贴地）：白点 + 卫星连线落点
+      const anchor = llaToVec(b.lat, b.lon, 0).multiplyScalar(1.0012)
+      // 文字锚：径向再抬出 ~45km。billboard 整体深度≈锚点深度，抬到球面之前 → 标签（尤其位于中心点下方的峰值）
+      // 不再被地球模型遮挡；depthTest 仍为真，背面波束的标签照常被球体隐藏。
+      const labelAnchor = llaToVec(b.lat, b.lon, 45)
       if (o.showBore) {
         // 连线(卫星↔波束中心)仅当该卫星「卫星名」也显示时才画（3D 专属，2D 无连线）
-        if (b.satShown) out.push(fatStrip([llaToVec(b.satLat || 0, b.satLon, b.satAlt || 35786), llaToVec(b.lat, b.lon, 0).multiplyScalar(1.0012)], 0xffb14a, 1.0, 0.3, 5))
+        if (b.satShown) out.push(fatStrip([llaToVec(b.satLat || 0, b.satLon, b.satAlt || 35786), anchor], 0xffb14a, 1.0, 0.3, 5))
         const dotR = (o.boreSize || 5) * 0.0014
-        const dot = new THREE.Mesh(new THREE.SphereGeometry(dotR, 10, 10), new THREE.MeshBasicMaterial({ color: 0xffffff }))
-        dot.position.copy(llaToVec(b.lat, b.lon, 0).multiplyScalar(1.0012)); dot.renderOrder = 11; out.push(dot)
+        const dot = new THREE.Mesh(new THREE.SphereGeometry(dotR, 12, 12), new THREE.MeshBasicMaterial({ color: 0xffffff }))
+        dot.position.copy(anchor); dot.renderOrder = 11; out.push(dot)
       }
-      // 波束中心峰值 dB：贴在中心点上方（位于天线名标签之下）
+      // 波束中心峰值 dB：中心点【下方】，中性次级色（弱于波束名，做读数，不再用卡通暖黄）
       if (o.showPeak && b.peak != null) {
-        const spr = makeCovLabel(b.peak.toFixed(1) + ' dB', (o.peakSize || 12) / 533, '#ffe1a0')
-        const pos = llaToVec(b.lat, b.lon, 40); pos.addScaledVector(pos.clone().normalize(), spr.scale.y * 0.6)
-        spr.position.copy(pos); spr.renderOrder = 12; out.push(spr)
+        const spr = makeCovLabel(b.peak.toFixed(1) + ' dB', (o.peakSize || 12) / 533, '#cfd6df')
+        spr.center.set(0.5, 1.35); spr.position.copy(labelAnchor); spr.renderOrder = 12; out.push(spr)
       }
+      // 波束名：中心点【上方】
       if (o.showName && L.name) {
-        const spr = makeCovLabel(L.name, (o.nameSize || 16) / 533)
-        const pos = llaToVec(b.lat, b.lon, 80); pos.addScaledVector(pos.clone().normalize(), spr.scale.y * 0.6)   // 同数值标签：径向抬出避免被地球遮挡
-        spr.position.copy(pos); spr.renderOrder = 13; out.push(spr)
+        const spr = makeCovLabel(L.name, (o.nameSize || 16) / 533, '#ffffff')
+        spr.center.set(0.5, -0.35); spr.position.copy(labelAnchor); spr.renderOrder = 13; out.push(spr)
       }
     }
     return out
@@ -1006,6 +1022,10 @@ export function createGlobeScene(container) {
     setOrbit, setGroundTrack, setFootprint, clearSelectionGeom,
     setCoverage, clearCoverage, setCoverageField, patchCoverageLayers, clearCoverageField, setCoverageFieldAlpha, setSatLayer, clearSatLayer, faceLonLat, setProvinces, setProvincesVisible, setNameScale,
     setMarkers, setTrajectories, setOnHover, setOnRightClick, setBeamDragMode, setOnBeamDrag,
-    faceTo, setAutoRotate, setOnAutoRotateOff, resize, destroy
+    faceTo, setAutoRotate, setOnAutoRotateOff, resize, destroy,
+    // 缩放进度条接口：getZoom 读当前进度、setZoom 设到进度 t、setOnZoom 注册滚轮缩放回填回调
+    getZoom: () => distToT(zoomTarget),
+    setZoom: (t) => { zoomTarget = Math.max(controls.minDistance, Math.min(controls.maxDistance, tToDist(t))) },
+    setOnZoom: (fn) => { onZoom = fn }
   }
 }

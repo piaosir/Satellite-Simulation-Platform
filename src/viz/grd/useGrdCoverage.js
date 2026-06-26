@@ -5,12 +5,41 @@ import { ref, reactive, watch } from 'vue'
 import { parseGrd } from './parse.js'
 import { antennaBasis, antennaBasisAzEl, dirToAzEl, azElGround, surfaceAzEl, projectGrid, fieldDb, bandGeometry, stitchLoops } from './coverage.js'
 import { schemeColorsRGB, rgbCss, cssRgb } from './colormap.js'
-import { RS_GEO, A } from '../wgs84.js'
+import { RS_GEO, A, geodeticToEcef, isoElevationContourAt } from '../wgs84.js'
 
 const H = RS_GEO - A
 const GEO_ALT = 35786              // GEO 轨道高度 km（预置星默认）：NASA 标称值（22,236 mi）
 // 仰角线配色调色板（卫星属性）：新建/预置星按序分配，可逐星改色
 const SAT_PALETTE = ['#66ddff', '#ffd24a', '#7cff8a', '#ff6fae', '#c78bff', '#ff9a5a', '#5ad1ff', '#ff5a5a']
+
+const wrap180 = (x) => ((x % 360) + 540) % 360 - 180
+// 凸包（Andrew monotone chain），输入 [[x,y]...]，返回 CCW 顶点环（<3 点原样返回）。
+function convexHullCCW(pts) {
+  const p = pts.slice().sort((a, b) => a[0] - b[0] || a[1] - b[1])
+  if (p.length < 3) return p
+  const crs = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+  const lo = []
+  for (const q of p) { while (lo.length >= 2 && crs(lo[lo.length - 2], lo[lo.length - 1], q) <= 0) lo.pop(); lo.push(q) }
+  const up = []
+  for (let i = p.length - 1; i >= 0; i--) { const q = p[i]; while (up.length >= 2 && crs(up[up.length - 2], up[up.length - 1], q) <= 0) up.pop(); up.push(q) }
+  lo.pop(); up.pop()
+  return lo.concat(up)   // CCW
+}
+// 卫星可见地平弧（0°仰角线）的凸包，u=lon−satLon 解缠空间、CCW，供 bandGeometry 沿地平平滑裁剪覆盖填充。
+// 只随卫星位置变 → 缓存到缓存条目 c（拖拽指向不动卫星位置，命中缓存）。失败返回 null（bandGeometry 回退半平面裁）。
+function satHull(c) {
+  const lon = c.meta.satLon, lat = c.meta.satLat || 0, alt = c.meta.satAlt
+  const key = lon + ',' + lat + ',' + alt
+  if (c._hull && c._hull.key === key) return c._hull.hull
+  let hull = null
+  const arc = isoElevationContourAt(geodeticToEcef(lon, lat, alt), 0, 120)
+  if (arc && arc.length >= 3) {
+    const ring = convexHullCCW(arc.map((p) => [wrap180(p[0] - lon), p[1]]))
+    if (ring.length >= 3) hull = { ring, satLon: lon }
+  }
+  c._hull = { key, hull }
+  return hull
+}
 
 export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
   // 卫星树（唯一真相）：预置星(index) / 自定义星 / 星座关联星 共用同一数组。
@@ -45,6 +74,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
     pol: 'RSS', gainOffset: 0, pathLoss: 'none',
     boreType: 'azel', boreLon: null, boreLat: 0, boreAz: 0, boreEl: 0, yaw: 0,
     beamsToPlot: [0],   // 多波束 GRD：要绘制的波束序号（SATSOFT「Beams To Plot」多选；共用本天线同一套电平/极化设置）
+    beamNames: {},      // 波束序号 → 自定义波束名（空=用默认「波束 N」）。地图标注与选波束列表均用此名，不再用天线名+波束名
     // 全局显示选项（与 GXT 一致；不随聚焦天线切换，对所有选中天线生效）：天线名 / 波束中心 / 波束中心峰值 / 数值标签
     showName: true, nameSize: 16, showBore: true, boreSize: 5, showPeak: false, peakSize: 12, showVal: false, valSize: 12
   })
@@ -76,9 +106,9 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
   const copyLevels = (lv) => lv.map((L) => ({ v: L.v, color: L.color, lineColor: L.lineColor }))
   function defaultSettings(satLon, satLat = 0, peakDb) {
     return { ctype: 'abs', pol: 'RSS', gainOffset: 0, pathLoss: 'none', fill: false, line: true, lineWidth: 1.6, alpha: 0.78,
-      boreType: 'azel', boreLon: satLon == null ? null : satLon, boreLat: satLat || 0, boreAz: 0, boreEl: 0, yaw: 0, beamsToPlot: [0], levels: defaultLevels(peakDb) }
+      boreType: 'azel', boreLon: satLon == null ? null : satLon, boreLat: satLat || 0, boreAz: 0, boreEl: 0, yaw: 0, beamsToPlot: [0], beamNames: {}, levels: defaultLevels(peakDb) }
   }
-  function applySettings(cfg) { if (!cfg) return; for (const k of PA) s[k] = cfg[k]; s.levels = copyLevels(cfg.levels || defaultLevels()); s.beamsToPlot = (cfg.beamsToPlot && cfg.beamsToPlot.length ? cfg.beamsToPlot : [0]).slice() }
+  function applySettings(cfg) { if (!cfg) return; for (const k of PA) s[k] = cfg[k]; s.levels = copyLevels(cfg.levels || defaultLevels()); s.beamsToPlot = (cfg.beamsToPlot || []).slice(); s.beamNames = { ...(cfg.beamNames || {}) } }
   let _muteSync = false
   function persistActive() {     // 把当前面板设置回存到聚焦天线
     if (_muteSync) return
@@ -86,6 +116,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
     for (const k of PA) c.settings[k] = s[k]
     c.settings.levels = copyLevels(s.levels)
     c.settings.beamsToPlot = s.beamsToPlot.slice()
+    c.settings.beamNames = { ...s.beamNames }
   }
 
   const keyOf = (folder, name) => `${folder}|${name}`
@@ -97,11 +128,24 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
   const beamsCount = () => { const m = antMeta(); return m ? m.beams : 0 }
   const toF32 = (a) => Float32Array.from(a, (v) => (v == null ? NaN : v))
 
+  // 波束名：自定义优先，否则默认「波束 N」（单波束天线退回天线名）。地图标注与选波束列表共用。
+  const defBeamName = (c, bi) => (c.beams.length > 1 ? `波束 ${bi + 1}` : (c.meta && c.meta.name) || `波束 ${bi + 1}`)
+  const beamName = (c, bi) => { const o = c.settings && c.settings.beamNames; return (o && o[bi]) || defBeamName(c, bi) }
+  // 重命名聚焦天线的第 i 个波束：写入响应式 s.beamNames（空/同默认=清除回退默认），回存并重绘。
+  function renameBeam(i, name) {
+    const c = cache.get(active.value); if (!c) return
+    const nm = String(name == null ? '' : name).trim()
+    const m = { ...s.beamNames }
+    if (!nm || nm === defBeamName(c, i)) delete m[i]; else m[i] = nm
+    s.beamNames = m
+    persistActive(); recompute()
+  }
+
   // ===== Beams To Plot（SATSOFT 多选波束）：作用于聚焦天线，共用其同一套电平/极化设置 =====
-  // 聚焦天线已载入的波束列表（{ i, label, peakDb }）；单波束天线返回 1 项。
+  // 聚焦天线已载入的波束列表（{ i, label, peakDb }）；单波束天线返回 1 项。label 用波束名（可编辑）。
   const activeBeams = () => {
     const c = cache.get(active.value); if (!c || !c.beams) return []
-    return c.beams.map((b, i) => ({ i, label: c.beams.length > 1 ? `波束 ${i + 1}` : (c.meta.name || `波束 ${i + 1}`), peakDb: b.peakDb }))
+    return c.beams.map((b, i) => ({ i, label: (s.beamNames && s.beamNames[i]) || defBeamName(c, i), peakDb: b.peakDb }))
   }
   const isBeamOn = (i) => s.beamsToPlot.includes(i)
   function toggleBeam(i) {
@@ -114,6 +158,42 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
     s.beamsToPlot = on ? Array.from({ length: n }, (_, i) => i) : []
   }
   const allBeamsOn = () => { const n = (cache.get(active.value)?.beams || []).length; return n > 0 && s.beamsToPlot.length === n }
+
+  // ===== 部分批量多选：按序号/名称筛选 + 对筛选结果 全选/取消/反选（如 94 波束里一次选 1-62）=====
+  const beamQuery = ref('')
+  const setBeamQuery = (q) => { beamQuery.value = (q == null ? '' : String(q)) }
+  // 纯序号语法（"1-62"、"1,3,5"、"1-10,20-30"）→ 1-based 序号集合，否则 null（当作波束名文字搜索）
+  function parseSeqSet(q) {
+    const set = new Set()
+    for (const part of q.split(/[,，\s]+/)) {
+      if (!part) continue
+      const m = part.match(/^(\d+)\s*[-~]\s*(\d+)$/)
+      if (m) { const a = +m[1], b = +m[2]; for (let i = Math.min(a, b); i <= Math.max(a, b); i++) set.add(i) }
+      else if (/^\d+$/.test(part)) set.add(+part)
+      else return null
+    }
+    return set.size ? set : null
+  }
+  // 按查询过滤聚焦天线波束：序号语法按 1-based 序号(i+1)，否则按波束名文字（大小写不敏感）。空查询=全部。
+  function filteredBeams() {
+    const all = activeBeams()
+    const q = beamQuery.value.trim()
+    if (!q) return all
+    const seq = parseSeqSet(q)
+    if (seq) return all.filter((b) => seq.has(b.i + 1))
+    const ql = q.toLowerCase()
+    return all.filter((b) => String(b.label).toLowerCase().includes(ql))
+  }
+  // Excel 「(全选)」三态：筛选结果全部已选 / 部分已选(半选 indeterminate) / 全未选。
+  const filteredAllOn = () => { const f = filteredBeams(); return f.length > 0 && f.every((b) => s.beamsToPlot.includes(b.i)) }
+  const filteredAnyOn = () => filteredBeams().some((b) => s.beamsToPlot.includes(b.i))
+  // 勾选「(全选)/(全选搜索结果)」：作用于当前筛选结果（无查询=全部），累加进已选 → Excel 式批量选。
+  function selectFiltered(on) {
+    const ids = filteredBeams().map((b) => b.i)
+    const set = new Set(s.beamsToPlot)
+    if (on) ids.forEach((i) => set.add(i)); else ids.forEach((i) => set.delete(i))
+    s.beamsToPlot = [...set].sort((a, b) => a - b)
+  }
 
   // ===== 卫星节点：增/删/改 + 仰角线属性 =====
   let _colorSeq = 0
@@ -236,7 +316,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
     // 用本地 projectGrid 重投影（而非后端烘焙的 lon/lat），得到地平裕度 vis + 越地平点落到地平，
     // 这样预置天线也能精确切在 0°仰角线（后端数据无 vis、越地平点为 NaN，会留网格锯齿）。
     const basis = beamBasis({ satLon: raw.meta.satLon, satLat: raw.meta.satLat || 0, satAlt: raw.meta.satAlt }, settings)
-    const proj = projectGrid(raw.meta.grid, raw.meta.igrid, basis)
+    const proj = projectGrid(raw.meta.grid, raw.meta.igrid, basis, null, null, true)
     // 预置天线（后端烘焙）只含单波束 set0，包成统一的 beams[1] 结构
     const beam0 = { P1: toF32(raw.P1), P2: toF32(raw.P2), grid: raw.meta.grid, proj, peakDb: raw.meta.peakDb, peak: raw.meta.peak }
     cache.set(key, { meta: { ...raw.meta, beams: 1 }, beams: [beam0], settings })   // 每天线各存全部设置（含指向），数据库式
@@ -251,10 +331,9 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
       if (!selected.value.includes(key)) selected.value = [...selected.value, key]
       active.value = key
       const c = cache.get(key)
-      // beamsToPlot 越界保护（如旧存档波束数变化）：过滤掉不存在的波束，空则回退到首波束
+      // beamsToPlot 越界保护（如旧存档波束数变化）：过滤掉不存在的波束。空保持空（= 不绘制任何波束）。
       const nb = (c.beams || []).length
       c.settings.beamsToPlot = (c.settings.beamsToPlot || []).filter((i) => i < nb)
-      if (!c.settings.beamsToPlot.length) c.settings.beamsToPlot = [0]
       _muteSync = true; applySettings(c.settings); _muteSync = false   // 载入该天线已存的全部设置（含指向 / Beams To Plot）
       recompute()
       const sc = getScene(); if (sc && c.meta.peak) sc.faceLonLat(c.meta.peak[0], c.meta.peak[1])
@@ -334,13 +413,13 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
     const bkey = basisKeyOf(c) + '|' + (box ? `${box.r0}_${box.r1}_${box.c0}_${box.c1}` : 'F')
     if (beam._projKey === bkey) return
     const basis = beamBasis(c.meta, cfg)
-    beam.proj = projectGrid(beam.grid, c.meta.igrid, basis, box, beam.proj)
+    beam.proj = projectGrid(beam.grid, c.meta.igrid, basis, box, beam.proj, true)   // limbOutside：越地平点延伸到地平外，供地平弧裁剪
     beam._projKey = bkey
   }
   function reproject() {
     const c = cache.get(active.value); if (!c) return
     persistActive()   // 回存该天线全部设置（含指向）
-    const plot = (s.beamsToPlot && s.beamsToPlot.length ? s.beamsToPlot : [0])
+    const plot = (s.beamsToPlot || [])
     // 预投影绘制中的波束（拖拽每帧核心）：用已缓存的场算热区盒（拖拽中 pol/gain 不变 → 场稳定）
     for (const bi of plot) { const beam = c.beams[bi]; if (beam) syncBeamProj(c, beam, c.settings, (c.settings.pathLoss === 'none' && beam._fld) ? beam._fld.field : null) }
   }
@@ -377,7 +456,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
     syncBeamProj(c, beam, cfg, field)
     const need = cfg.fill || cfg.line
     // wantFills=cfg.fill：只画等值线时跳过逐档填充裁剪（关填充的大波束拖拽省一半三角化）；box：只三角化覆盖热区
-    const geo = need ? bandGeometry({ lon: beam.proj.lon, lat: beam.proj.lat, vis: beam.proj.vis, db: field.db, NX: beam.proj.NX, NY: beam.proj.NY }, asc.map((x) => x.abs), cfg.fill, box) : null
+    const geo = need ? bandGeometry({ lon: beam.proj.lon, lat: beam.proj.lat, vis: beam.proj.vis, db: field.db, NX: beam.proj.NX, NY: beam.proj.NY }, asc.map((x) => x.abs), cfg.fill, box, cfg.fill ? satHull(c) : null) : null
     // 分带填充：每档一个颜色 + 该档环带多边形（升序，逐层从外到内绘制，非嵌套→无重叠透明叠加）
     const fillBands = cfg.fill && geo ? asc.map((x, i) => ({ color: cssRgb(x.color), polys: geo.fills[i] })).filter((b) => b.polys.length) : null
     // 等值线：每档一组线段（= 填充相邻档公共边）；数值标签按拼环后每条取最上端点。
@@ -390,7 +469,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
         return { segs, color: x.lineColor, width: cfg.lineWidth, txt: cfg.ctype === 'rel' ? String(x.v) : x.abs.toFixed(1), labels }
       }).filter((g) => g.segs.length)
       : []
-    // 波束中心 = 当前场的峰值点（随指向/拖拽实时变化）；天线名标签贴在此处，并向所属卫星连线
+    // 波束中心 = 当前场的峰值点（随指向/拖拽实时变化）；波束名标签贴在此处，并向所属卫星连线
     const pk = (Number.isFinite(beam.proj.lon[field.maxIdx]) && Number.isFinite(beam.proj.lat[field.maxIdx])) ? [beam.proj.lon[field.maxIdx], beam.proj.lat[field.maxIdx]] : (beam.peak || c.meta.peak || [c.meta.satLon, 0])
     // peak = 波束中心峰值 dB（当前场峰值；显示用，随极化/增益/路损变）
     const bore = { lon: pk[0], lat: pk[1], satLon: c.meta.satLon, satLat: c.meta.satLat || 0, satAlt: c.meta.satAlt || H, peak: Number.isFinite(field.max) ? field.max : null }
@@ -403,15 +482,14 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
   function buildLayer(key, withLabels) {
     const c = cache.get(key); if (!c || !c.beams) return []
     const cfg = c.settings   // 每层用自身保存的设置（聚焦层的实时编辑已由 watcher 回存到此）
-    const antName = key.split('|')[1]
-    const multi = c.beams.length > 1
     // satShown = 该天线所属卫星的「卫星名」是否显示：3D 连线(卫星↔波束中心)需 showBore 且 satShown 同时为真
     const node = sats.value.find((x) => x.folder === key.split('|')[0])
     const satShown = !node || node.labelShow !== false
-    const plot = (cfg.beamsToPlot && cfg.beamsToPlot.length ? cfg.beamsToPlot : [0]).filter((i) => i < c.beams.length)
+    const plot = (cfg.beamsToPlot || []).filter((i) => i < c.beams.length)   // 全未选 → 不绘制任何波束
     return plot.map((bi) => {
       // 投影同步在 buildBeamLayer 内用新场完成（覆盖 reproject 未触及/新勾选的波束，且按热区盒裁剪）
-      const L = buildBeamLayer(c, cfg, c.beams[bi], multi ? `${antName}·B${bi + 1}` : antName, withLabels)
+      // 标注一律用波束名（自定义或默认「波束 N」）—— 不再用「天线名+波束名」形式
+      const L = buildBeamLayer(c, cfg, c.beams[bi], beamName(c, bi), withLabels)
       L.id = `${key}#${bi}`   // 稳定层 id（天线键|波束序号）：渲染层据此做拖拽增量更新（只重建聚焦天线层）
       if (L.bore) L.bore.satShown = satShown
       return L
@@ -500,10 +578,10 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
     const p0 = pos || liveOf(sat)
     const basis = antennaBasis(p0.lon, p0.lon, p0.lat || 0, 0, p0.lat || 0, p0.altKm)
     const beams = g.sets.map((set) => {
-      const proj = projectGrid(set, g.igrid, basis)
+      const proj = projectGrid(set, g.igrid, basis, null, null, true)
       const field = fieldDb({ P1: set.P1, P2: set.P2, NX: set.NX, NY: set.NY }, proj, { pol: 'RSS' })
       const peak = [+proj.lon[field.maxIdx].toFixed(4), +proj.lat[field.maxIdx].toFixed(4)]
-      return { P1: set.P1, P2: set.P2, grid: { XS: set.XS, YS: set.YS, XE: set.XE, YE: set.YE, NX: set.NX, NY: set.NY }, proj, peakDb: +field.max.toFixed(3), peak }
+      return { P1: set.P1, P2: set.P2, c1re: set.c1re, c1im: set.c1im, c2re: set.c2re, c2im: set.c2im, grid: { XS: set.XS, YS: set.YS, XE: set.XE, YE: set.YE, NX: set.NX, NY: set.NY }, proj, peakDb: +field.max.toFixed(3), peak }
     })
     // 天线整体峰值 = 各波束峰值的最大者（电平表默认值/聚焦定位用）
     const best = beams.reduce((a, b) => (b.peakDb > a.peakDb ? b : a), beams[0])
@@ -585,7 +663,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
   function getState() {
     persistActive()
     const cfgs = {}
-    for (const key of selected.value) { const c = cache.get(key); if (c && c.settings) cfgs[key] = { ...c.settings, levels: copyLevels(c.settings.levels), beamsToPlot: (c.settings.beamsToPlot || [0]).slice() } }
+    for (const key of selected.value) { const c = cache.get(key); if (c && c.settings) cfgs[key] = { ...c.settings, levels: copyLevels(c.settings.levels), beamsToPlot: (c.settings.beamsToPlot || [0]).slice(), beamNames: { ...(c.settings.beamNames || {}) } } }
     // 卫星树：自定义/星座星完整定义 + 全部星的仰角线属性（预置星仅存仰角线，节点本身随 index 复现）
     // 导入天线（已存盘的原始 GRD）随卫星一并保存：重载时据 file 从盘上重建（预置天线由 index 复现，不存）
     const satsState = sats.value.map((s) => ({
@@ -653,10 +731,10 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
       await ensureLoaded(info.sat.folder, info.a)
       const c = cache.get(key); if (!c) continue
       const cfg = (st.cfgs && st.cfgs[key]) || legacy(key)
-      if (cfg) { c.settings = { ...defaultSettings(c.meta.satLon, c.meta.satLat || 0, c.meta.peakDb), ...cfg, levels: cfg.levels ? copyLevels(cfg.levels) : defaultLevels(c.meta.peakDb), beamsToPlot: (cfg.beamsToPlot && cfg.beamsToPlot.length ? cfg.beamsToPlot : [0]).slice() } }
+      if (cfg) { c.settings = { ...defaultSettings(c.meta.satLon, c.meta.satLat || 0, c.meta.peakDb), ...cfg, levels: cfg.levels ? copyLevels(cfg.levels) : defaultLevels(c.meta.peakDb), beamsToPlot: (cfg.beamsToPlot || []).slice(), beamNames: { ...(cfg.beamNames || {}) } } }
       const b = c.settings
       const basis = beamBasis(c.meta, b)
-      for (const bm of c.beams) { bm.proj = projectGrid(bm.grid, c.meta.igrid, basis); bm._projKey = null }
+      for (const bm of c.beams) { bm.proj = projectGrid(bm.grid, c.meta.igrid, basis, null, null, true); bm._projKey = null }
       expanded.value = { ...expanded.value, [info.sat.folder]: true }
       keys.push(key)
     }
@@ -666,13 +744,42 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
     recompute()
   }
 
+  // 性能指标表取值上下文：某天线(key)的名义指向 basis + 当前「Beams To Plot」选中的波束（含数据/名/序号）
+  // + 计算设置。供 usePerfTable 逐站调用 sampleBeamAt。该天线未加载缓存时返回 null。
+  function getPerfContext(key) {
+    const c = cache.get(key); if (!c || !c.beams) return null
+    const basis = beamBasis(c.meta, c.settings)
+    const plot = (c.settings.beamsToPlot || []).filter((i) => i < c.beams.length)
+    const folder = key.split('|')[0]
+    const satIdx = sats.value.findIndex((x) => x.folder === folder)
+    const node = satIdx >= 0 ? sats.value[satIdx] : null
+    const antIdx = node ? node.antennas.findIndex((a) => a.name === key.split('|')[1]) : -1
+    return {
+      key, igrid: c.meta.igrid, icomp: c.meta.icomp, basis, meta: c.meta, settings: c.settings,
+      satNo: satIdx + 1, antNo: antIdx + 1,
+      satName: (node && node.satName) || c.meta.sat || '', antName: key.split('|')[1],
+      beams: plot.map((bi) => ({ bi, name: beamName(c, bi), peakDb: c.beams[bi].peakDb, beam: c.beams[bi] }))
+    }
+  }
+
+  // 确保某天线已载入缓存（性能表对【非聚焦】天线取值前调用），返回是否就绪。
+  async function ensureAntLoaded(key) {
+    if (cache.has(key)) return true
+    const info = findAnt(key); if (!info) return false
+    await ensureLoaded(info.sat.folder, info.a)
+    return cache.has(key)
+  }
+
   function clearAll() { selected.value = []; active.value = ''; const sc = getScene(), fl = getFlat(); if (sc) sc.setCoverageField([], {}); if (fl) fl.setField([], {}) }
   // 一键清除绘图：抹掉地图上的填充/线，但保留各天线设置（数据库）与聚焦项 → 再次勾选天线即按原设置重绘。
   function clearDrawing() { selected.value = []; const sc = getScene(), fl = getFlat(); if (sc) sc.setCoverageField([], {}); if (fl) fl.setField([], {}) }
 
   watch(() => [s.fill, s.line, s.lineWidth, s.ctype, s.pol, s.gainOffset, s.pathLoss], () => { persistActive(); recompute() }, { deep: true })
-  watch(() => s.levels, () => { persistActive(); recompute() }, { deep: true })
+  // 电平改动只影响聚焦天线这一层（persistActive 仅写 active）→ 走单层快路径 recomputeActive，只 patch 当前可见视图。
+  // 另一视图（2D/3D）在切换时由 applyFlat 的 recompute 一次性补齐（与拖拽波束同策略，避免每次编辑全量重算所有选中层）。
+  watch(() => s.levels, () => { persistActive(); recomputeActive() }, { deep: true })
   watch(() => s.beamsToPlot, () => { persistActive(); recompute() }, { deep: true })   // Beams To Plot 多选变更 → 回存 + 重绘
+  watch(active, () => { beamQuery.value = '' })   // 切换聚焦天线：清空波束筛选词（波束数/含义随天线变）
   watch(() => s.alpha, (a) => { persistActive(); const sc = getScene(), fl = getFlat(); if (sc) sc.setCoverageFieldAlpha(a); if (fl) fl.setFieldAlpha(a) })
   // 切换 boresight 类型：把当前指向无缝换算到另一种表示，避免跳变（geo→azel 取该地表点的 az/el；azel→geo 取落地点）
   watch(() => s.boreType, (nt, ot) => {
@@ -691,10 +798,11 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
   return {
     sats, expanded, selected, active, loading, s,
     keyOf, isSelected, isActive, isExpanded, antMeta, activeName, beamsCount, satState, dragBore, boreGround,
-    activeBeams, isBeamOn, toggleBeam, setAllBeams, allBeamsOn,
+    activeBeams, isBeamOn, toggleBeam, setAllBeams, allBeamsOn, renameBeam,
+    beamQuery, setBeamQuery, filteredBeams, filteredAllOn, filteredAnyOn, selectFiltered,
     loadIndex, setActive, toggleAnt, toggleSatAll, toggleExpand, addLevel, removeLevel, importGrd,
     addSatellite, updateSatellite, removeSatellite, removeAntenna, renameAntenna, setElev,
     setDragBore, beamDrag, getState, restoreState, recompute, clearAll, clearDrawing,
-    setLivePos, tickLive
+    setLivePos, tickLive, getPerfContext, ensureAntLoaded
   }
 }

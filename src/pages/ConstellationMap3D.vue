@@ -3,10 +3,12 @@ import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount, toRef } fro
 import { cursor } from '../stores/cursor'
 import { view } from '../stores/view'
 import { covNav } from '../stores/coveragePanels'
+import { zoom } from '../stores/zoom'
 defineOptions({ inheritAttrs: false })   // 不把父级传入的 title 落到根节点（去掉鼠标悬停的“星座3D”原生提示）
 import { createGlobeScene } from '../viz/globe3d/scene.js'
 import { createFlatCoverage } from '../viz/flatmap/flatCoverage.js'
 import { useGrdCoverage } from '../viz/grd/useGrdCoverage.js'
+import { usePerfTable } from '../viz/grd/usePerfTable.js'
 import sat from '../viz/constellation/satellite.js'
 import * as W from '../viz/wgs84.js'
 import { parseOMMCsv, fetchGroupLiveOrSup } from '../viz/constellation/tle.js'
@@ -86,6 +88,203 @@ async function toggleGrd() {
   grdOpen.value = !grdOpen.value
   if (grdOpen.value) { await grd.loadIndex(); grd.recompute(); redrawSats() }
 }
+
+// ===================== 性能指标表（SATSOFT Performance Table，第 1 期）=====================
+const perf = usePerfTable()
+const perfKey = ref('')                 // 当前打开表的天线 key（''=关闭）；每个天线一张独立表
+const perfNew = ref({ country: '', city: '', desig: '', lon: '', lat: '' })   // 手动加站输入
+const perfOptsOpen = ref(false)         // 「性能表选项」弹窗开关
+const perfCols = computed(() => perfKey.value ? perf.visibleColumns(perf.getOpts(perfKey.value)) : [])   // 当前显示的列
+const perfOpts = computed(() => perfKey.value ? perf.getOpts(perfKey.value) : null)                      // 当前天线选项（弹窗 v-model）
+// 重算当前表（站点库/天线设置/选中波束/选项变化时调用）
+function refreshPerf() { if (perfKey.value) perf.compute(grd.getPerfContext(perfKey.value), perf.getOpts(perfKey.value)) }
+// 点天线下方「性能指标表」→ 打开该天线的表（确保其方向图已载入再取值）
+async function openPerf(sat, a) {
+  const key = grd.keyOf(sat.folder, a.name)
+  const ok = await grd.ensureAntLoaded(key)
+  if (!ok) { alert('该天线方向图未就绪，无法生成性能表'); return }
+  perfKey.value = key
+  refreshPerf()
+}
+function closePerf() { perfKey.value = '' }
+function perfAddStation() {
+  perf.pushUndo()
+  const s = perf.addStation(perfNew.value)
+  if (!s) { perf.dropUndo(); alert('请填写有效经纬度'); return }
+  perfNew.value = { country: '', city: '', desig: '', lon: '', lat: '' }
+  refreshPerf()
+}
+function perfImportMarkers() { perf.pushUndo(); const n = perf.importFromMarkers(points.value, stations.value); if (!n) { perf.dropUndo(); alert('没有可导入的新标记（点标记/地面站）') } refreshPerf() }
+function perfRemoveRow(id) { perf.pushUndo(); perf.removeRow(id) }   // 仅隐藏当前行（站×波束），无需重算
+// Excel 式粘贴：在加站区任一输入框 Ctrl+V 整块表格 → 拦截并批量加站（单值粘贴仍走普通输入）
+function perfPaste(e) {
+  const text = e.clipboardData ? e.clipboardData.getData('text') : ''
+  if (!text || !/[\t\n,]/.test(text.trim())) return
+  e.preventDefault()
+  perf.pushUndo()
+  const n = perf.addStationsBulk(text)
+  if (n) { perfNew.value = { country: '', city: '', desig: '', lon: '', lat: '' }; refreshPerf() }
+  else { perf.dropUndo(); alert('未识别到经纬度（约定末两列为 经度、纬度，且需为数字）') }
+}
+// 「粘贴」按钮：直接读剪贴板批量加站（需浏览器授权剪贴板读取）
+async function perfPasteBtn() {
+  let text = ''
+  try { text = await navigator.clipboard.readText() } catch { alert('无法读取剪贴板，请点输入框后按 Ctrl+V 粘贴'); return }
+  perf.pushUndo()
+  const n = perf.addStationsBulk(text)
+  if (n) refreshPerf(); else { perf.dropUndo(); alert('剪贴板没有可识别的经纬度数据（约定末两列为 经度、纬度）') }
+}
+// ===== Excel 式网格：框选 + 键盘导航 + 双击/键入编辑 + 区域复制/粘贴 =====
+const PERF_EDITABLE = ['country', 'city', 'desig', 'lon', 'lat']
+const perfEditable = (k) => PERF_EDITABLE.includes(k)
+// 选区 = 锚点(ar,ac) → 活动格(ri,ci) 构成的矩形（行=filteredRows 下标，列=perfCols 下标）
+const perfSel = ref({ ar: -1, ac: -1, ri: -1, ci: -1 })
+const perfEdit = ref({ ri: -1, ci: -1 })          // 正在编辑的单元格
+const perfEditSeed = ref(null)                    // 键入进入编辑时的首字符（否则 null=保留原值并全选）
+const perfEditEl = ref(null)                      // 编辑中 input 的 DOM
+const perfBodyEl = ref(null)                      // 网格容器（接收键盘/复制/粘贴焦点）
+let perfDragging = false                           // 鼠标拖拽框选中
+const perfRowList = computed(() => perf.filteredRows.value)
+const perfRect = computed(() => {                  // 选区归一化矩形
+  const s = perfSel.value
+  return { r0: Math.min(s.ar, s.ri), r1: Math.max(s.ar, s.ri), c0: Math.min(s.ac, s.ci), c1: Math.max(s.ac, s.ci) }
+})
+const perfInSel = (ri, ci) => { const r = perfRect.value; return r.r0 >= 0 && ri >= r.r0 && ri <= r.r1 && ci >= r.c0 && ci <= r.c1 }
+const perfIsActive = (ri, ci) => perfSel.value.ri === ri && perfSel.value.ci === ci
+const perfIsEdit = (ri, ci) => perfEdit.value.ri === ri && perfEdit.value.ci === ci
+
+function perfFocusGrid() { const el = perfBodyEl.value; if (el) el.focus() }
+function perfSetSel(ri, ci, extend) {             // extend=true 保留锚点（扩选）
+  const s = perfSel.value
+  perfSel.value = extend && s.ar >= 0 ? { ar: s.ar, ac: s.ac, ri, ci } : { ar: ri, ac: ci, ri, ci }
+}
+// 鼠标：按下=起点（拖拽框选），进入=扩选；Shift+按下=从锚点扩选
+function perfCellDown(e, ri, ci) {
+  if (perfIsEdit(ri, ci)) return                   // 正在编辑此格 → 交给 input 自己处理
+  e.preventDefault()
+  if (perfEdit.value.ri >= 0) perfCommitEdit()
+  perfSetSel(ri, ci, e.shiftKey); perfDragging = !e.shiftKey; perfFocusGrid()
+}
+function perfCellEnter(ri, ci) { if (perfDragging) perfSetSel(ri, ci, true) }
+function perfUp() { perfDragging = false }
+function perfTryEdit(ri, ci, seed) {
+  const c = perfCols.value[ci]; if (!c || !perfEditable(c.key)) return
+  perfSel.value = { ar: ri, ac: ci, ri, ci }; perfEditSeed.value = seed; perfEdit.value = { ri, ci }
+}
+function perfCommitEdit() {
+  const { ri, ci } = perfEdit.value; if (ri < 0) return
+  const el = perfEditEl.value, r = perfRowList.value[ri], c = perfCols.value[ci]
+  perfEdit.value = { ri: -1, ci: -1 }; perfEditSeed.value = null
+  if (el && r && c && el.value !== (r[c.key] == null ? '' : String(r[c.key]))) {   // 仅在值确实变化时记录撤销
+    perf.pushUndo(); perf.updateStation(r.id.split('#')[0], { [c.key]: el.value })  // 同站多波束行共享
+  }
+  refreshPerf()
+}
+function perfCancelEdit() { perfEdit.value = { ri: -1, ci: -1 }; perfEditSeed.value = null; perfFocusGrid() }
+function perfMove(dr, dc, extend) {
+  const nr = perfRowList.value.length, nc = perfCols.value.length; if (!nr || !nc) return
+  let ri = perfSel.value.ri < 0 ? 0 : perfSel.value.ri, ci = perfSel.value.ci < 0 ? 0 : perfSel.value.ci
+  ri = Math.min(nr - 1, Math.max(0, ri + dr)); ci = Math.min(nc - 1, Math.max(0, ci + dc))
+  perfSetSel(ri, ci, extend)
+}
+// 单元格显示文本（用于区域复制 / 导出）：可编辑列取原值，数值计算列按列小数位格式化
+function perfCellText(r, c) {
+  const v = r[c.key]
+  if (perfEditable(c.key)) return v == null ? '' : String(v)
+  if (c.num && c.fix != null) return v == null ? '' : Number(v).toFixed(c.fix)
+  return v == null ? '' : String(v)
+}
+function perfRangeTSV() {
+  const rows = perfRowList.value, cols = perfCols.value, rc = perfRect.value
+  if (rc.r0 < 0 || !rows.length) return ''
+  const lines = []
+  for (let ri = rc.r0; ri <= rc.r1; ri++) {
+    const r = rows[ri]; if (!r) continue
+    const cells = []; for (let ci = rc.c0; ci <= rc.c1; ci++) cells.push(perfCellText(r, cols[ci]))
+    lines.push(cells.join('\t'))
+  }
+  return lines.join('\n')
+}
+async function perfWriteClipboard(text) {
+  try { await navigator.clipboard.writeText(text); return true } catch {}
+  try { const ta = document.createElement('textarea'); ta.value = text; ta.style.cssText = 'position:fixed;opacity:0'; document.body.appendChild(ta); ta.select(); const ok = document.execCommand('copy'); document.body.removeChild(ta); return ok } catch { return false }
+}
+function perfCopySel() { const t = perfRangeTSV(); if (t) perfWriteClipboard(t) }
+function perfClearRange() {
+  const rows = perfRowList.value, cols = perfCols.value, rc = perfRect.value
+  if (rc.r0 < 0) return
+  perf.pushUndo()
+  for (let ri = rc.r0; ri <= rc.r1; ri++) { const r = rows[ri]; if (!r) continue; for (let ci = rc.c0; ci <= rc.c1; ci++) { const c = cols[ci]; if (c && perfEditable(c.key)) perf.updateStation(r.id.split('#')[0], { [c.key]: '' }) } }
+  refreshPerf()
+}
+function perfGridKey(e) {
+  if (perfEdit.value.ri >= 0) {                    // 编辑态：仅接管提交/取消/跳格，其余交给 input
+    if (e.key === 'Enter') { e.preventDefault(); perfCommitEdit(); perfMove(1, 0); perfFocusGrid() }
+    else if (e.key === 'Escape') { e.preventDefault(); perfCancelEdit() }
+    else if (e.key === 'Tab') { e.preventDefault(); perfCommitEdit(); perfMove(0, e.shiftKey ? -1 : 1); perfFocusGrid() }
+    return
+  }
+  const ctrl = e.ctrlKey || e.metaKey
+  if (ctrl && (e.key === 'c' || e.key === 'C')) { e.preventDefault(); perfCopySel(); return }
+  if (ctrl && (e.key === 'x' || e.key === 'X')) { e.preventDefault(); perfCopySel(); perfClearRange(); return }
+  if (ctrl && (e.key === 'a' || e.key === 'A')) {  // 全选
+    e.preventDefault(); const nr = perfRowList.value.length, nc = perfCols.value.length
+    if (nr && nc) perfSel.value = { ar: 0, ac: 0, ri: nr - 1, ci: nc - 1 }
+    return
+  }
+  if (ctrl && (e.key === 'v' || e.key === 'V')) { e.preventDefault(); perfDoPaste(); return }
+  if (ctrl && (e.key === 'z' || e.key === 'Z') && !e.shiftKey) { e.preventDefault(); if (perf.undo()) refreshPerf(); return }
+  if (ctrl && ((e.key === 'y' || e.key === 'Y') || ((e.key === 'z' || e.key === 'Z') && e.shiftKey))) { e.preventDefault(); if (perf.redo()) refreshPerf(); return }
+  const { ri, ci } = perfSel.value; if (ri < 0) return
+  const ext = e.shiftKey
+  switch (e.key) {
+    case 'ArrowUp': e.preventDefault(); perfMove(-1, 0, ext); break
+    case 'ArrowDown': e.preventDefault(); perfMove(1, 0, ext); break
+    case 'ArrowLeft': e.preventDefault(); perfMove(0, -1, ext); break
+    case 'ArrowRight': e.preventDefault(); perfMove(0, 1, ext); break
+    case 'Enter': e.preventDefault(); perfMove(1, 0, false); break
+    case 'Tab': e.preventDefault(); perfMove(0, ext ? -1 : 1, false); break
+    case 'F2': e.preventDefault(); perfTryEdit(ri, ci, null); break
+    case 'Delete': case 'Backspace': e.preventDefault(); perfClearRange(); break
+    default: if (e.key.length === 1 && !ctrl && !e.altKey) { e.preventDefault(); perfTryEdit(ri, ci, e.key) }
+  }
+}
+// 进入编辑后聚焦 input：键入进入→光标在末尾；F2/双击进入→全选
+watch(() => perfEdit.value, (v) => { if (v.ri >= 0) nextTick(() => { const el = perfEditEl.value; if (el) { el.focus(); if (perfEditSeed.value == null) el.select() } }) })
+onMounted(() => window.addEventListener('mouseup', perfUp))
+onBeforeUnmount(() => window.removeEventListener('mouseup', perfUp))
+// 网格 Ctrl+V（非编辑态）：focus 在不可编辑的网格容器上时浏览器不派发 paste 事件，
+// 故走键盘 + 读剪贴板。空表/未选→与「粘贴」按钮一致（智能追加）；否则按选区左上角定位填充。
+async function perfDoPaste() {
+  let text = ''
+  try { text = await navigator.clipboard.readText() } catch { alert('无法读取剪贴板，请点「📋 粘贴」按钮'); return }
+  if (!text || !text.trim()) return
+  perf.pushUndo()
+  const rc = perfRect.value, rows = perfRowList.value, c = perfCols.value[rc.c0]
+  const anchorId = (rc.r0 >= 0 && rows[rc.r0]) ? rows[rc.r0].id.split('#')[0] : null
+  const n = (anchorId && c) ? perf.pasteBlock(anchorId, c.key, text) : perf.addStationsBulk(text)
+  if (n) refreshPerf(); else perf.dropUndo()
+}
+// 编辑中的 input 内 Ctrl+V：整块→以该格定位填充（单值走普通输入）
+function perfCellPaste(e, r, key) {
+  const text = e.clipboardData ? e.clipboardData.getData('text') : ''
+  if (!text || !/[\t\n,]/.test(text.trim())) return
+  e.preventDefault()
+  perf.pushUndo()
+  const n = perf.pasteBlock(r ? r.id.split('#')[0] : null, key, text)
+  if (n) refreshPerf(); else perf.dropUndo()
+}
+function perfClearStations() { if (!perf.stations.value.length) return; perf.pushUndo(); perf.clearStations(); refreshPerf() }
+function perfUndo() { if (perf.undo()) { refreshPerf(); perfFocusGrid() } }
+function perfRedo() { if (perf.redo()) { refreshPerf(); perfFocusGrid() } }
+const perfFix = (v, n) => (v == null ? '—' : v.toFixed(n == null ? 2 : n))
+const perfColDef = (k) => perf.colDefs.find((c) => c.key === k)
+const perfColLabel = (k) => { const c = perfColDef(k); return c ? c.label : k }
+const perfColNa = (k) => { const c = perfColDef(k); return !!(c && c.na) }
+// 站点库 / 天线设置（极化/增益/路损/相对绝对）/ 选中波束 / 表选项 变化 → 表重算（仅表开启时）
+watch(() => perf.stations.value, () => refreshPerf(), { deep: true })
+watch(() => perf.optsByAnt.value, () => refreshPerf(), { deep: true })
+watch(() => [grdS.pol, grdS.gainOffset, grdS.pathLoss, grdS.ctype, grdS.beamsToPlot], () => { if (perfKey.value === grd.active.value) refreshPerf() }, { deep: true })
 // 电平颜色 css(rgb) -> #hex（供 <input type=color>）；setLevelColor 反向写回
 function grdLvHex(css) { const m = /(\d+)\D+(\d+)\D+(\d+)/.exec(css || ''); if (!m) return '#ffffff'; const h = (n) => (+n).toString(16).padStart(2, '0'); return '#' + h(m[1]) + h(m[2]) + h(m[3]) }
 function setLevelColor(i, e) { const x = e.target.value; grdS.levels[i].color = `rgb(${parseInt(x.slice(1, 3), 16)},${parseInt(x.slice(3, 5), 16)},${parseInt(x.slice(5, 7), 16)})` }
@@ -567,15 +766,21 @@ async function toggleCoverage() {
   if (covOpen.value) { await ensureCovIndex(); if (!covCleared) redraw() }   // 已清除则重开面板不复现覆盖
   // 关闭对话框不清空：已绘制的覆盖图保留在地图上（与标记一致）
 }
+// 缩放进度条桥接（底部状态栏 ↔ 当前活动地图：球体 scene / 平面图 flat）。
+// 活动地图滚轮缩放 → 回填 zoom.value（进度条走动）；拖动进度条 / 按钮 → zoom.apply 设回地图。
+const activeMap = () => (flatView.value && flat) ? flat : scene
+function pushZoom() { const m = activeMap(); if (m && m.getZoom) zoom.value = m.getZoom() }
+function applyZoom(t) { const m = activeMap(); if (m && m.setZoom) { m.setZoom(t); zoom.value = t } }
 // 球体 <-> 平面图 切换（顶栏「视图」按钮与覆盖面板按钮共用 view.flat）
 function toggleFlat() { view.flat = !view.flat }
 watch(() => view.flat, (v) => applyFlat(v))
 async function applyFlat(v) {
   flatView.value = v
-  if (!v) return
+  // 切回 3D：补齐 3D 覆盖层。编辑电平时只 patch 了当前可见视图（recomputeActive），另一视图需在此一次性重算。
+  if (!v) { if (grdOpen.value) grd.recompute(); pushZoom(); return }
   await ensureCovIndex(); if (!covCleared) redraw()   // 已清除则切平面图不复现覆盖（covGeom 保持为空）
   await nextTick()
-  if (!flat && flatCanvas.value) { flat = createFlatCoverage(flatCanvas.value); flat.setOnRightClick(onMapRightClick); flat.setOnHover((ll) => { cursor.ll = ll }); flat.setOnBeamDrag(grd.beamDrag); flat.setBeamDragMode(grd.dragBore.value) }
+  if (!flat && flatCanvas.value) { flat = createFlatCoverage(flatCanvas.value); flat.setOnRightClick(onMapRightClick); flat.setOnHover((ll) => { cursor.ll = ll }); flat.setOnBeamDrag(grd.beamDrag); flat.setBeamDragMode(grd.dragBore.value); flat.setOnZoom((t) => { if (flatView.value) zoom.value = t }) }
   if (flat) {
     flat.resize()
     flat.setNameMode(nameMode.value)
@@ -592,6 +797,7 @@ async function applyFlat(v) {
     redrawSats()     // 切到平面图时把卫星/仰角线图层喂给 flat
     pushFocusSat()   // 切到平面图时标注当前聚焦卫星位置
     pushSelGeomFlat() // 切到平面图时绘制聚焦卫星覆盖范围 + 星下点轨迹
+    pushZoom()       // 切到平面图时把平面图当前缩放回填进度条
   }
 }
 
@@ -779,13 +985,14 @@ const grdEditVal = ref('')
 function startRenameAnt(sat, a) { grdEditAnt.value = grd.keyOf(sat.folder, a.name); grdEditVal.value = a.name }
 function commitRenameAnt(sat, a) {
   if (grdEditAnt.value === '') return   // 已提交（blur 与 ✓/回车可能重复触发）→ 跳过
+  if (grd.renameAntenna(sat.folder, a.name, grdEditVal.value) === false) {
+    alert('天线名为空或与同星其他天线重名')   // 校验失败 → 保持编辑态，可继续修改
+    return
+  }
   grdEditAnt.value = ''
-  if (grd.renameAntenna(sat.folder, a.name, grdEditVal.value) === false) alert('天线名为空或与同星其他天线重名')
 }
 
-// 仰角线内联编辑（直接改 grd.sats 节点，响应式）
-function setSatEls(node, v) { node.els = v; redrawSats() }
-function setSatElevColor(node, v) { node.elevColor = v; redrawSats() }
+// 仰角线显示开关（仰角值/颜色在卫星「✎」弹窗里编辑）
 function toggleSatElev(node) { node.elevShow = !node.elevShow; redrawSats() }
 function toggleSatLabel(node) { node.labelShow = node.labelShow === false; redrawSats(); if (grdOpen.value) grd.recompute() }   // 卫星名开关也影响 3D 覆盖连线(卫星↔波束中心)，需重绘覆盖层
 // 是否有显示中且关联星座的卫星（其仰角线/卫星名需随星历刷新位置）
@@ -1101,7 +1308,7 @@ function snapshot() {
     nameMode: nameMode.value, countryName: countryNameSize.value, provName: provNameSize.value, showProvinces: showProvinces.value, autoRotate: autoRotate.value, live: live.value, beamLock: beamLock.value,
     mkPt: markPtFont.value, mkStIcon: stIconSize.value, mkStFont: stFontSize.value,
     covOpen: covOpen.value, mkOpen: mkOpen.value, geoOpen: geoOpen.value,
-    grdOpen: grdOpen.value, grd: grd.getState(),
+    grdOpen: grdOpen.value, grd: grd.getState(), perf: perf.getState(),
     cov: {
       items: serializeCov(),
       beamLabels: showBeamLabels.value, beamFont: beamLabelSize.value, bore: showBore.value, boreSize: boreSize.value,
@@ -1153,6 +1360,7 @@ async function restoreSettings() {
   } else if (s.covOpen) { covOpen.value = true; await ensureCovIndex() }
   // 覆盖图（GRD）状态恢复：只要有保存的 GRD 状态就载入索引并恢复卫星树（含自定义/星座星）+
   // 天线设置 + 仰角线属性，使仰角线即便面板关闭也照常画在地图上；面板仅在上次开启时才展开。
+  if (s.perf) perf.restoreState(s.perf)
   if (grdApiOk && s.grd) {
     await grd.loadIndex(false)
     await grd.restoreState(s.grd)
@@ -1197,6 +1405,9 @@ onMounted(async () => {
   scene.setOnHover((ll) => { cursor.ll = ll })
   scene.setOnRightClick(onMapRightClick)
   scene.setOnBeamDrag(grd.beamDrag)   // 拖拽波束（GRD boresight 中心）
+  // 缩放进度条（底部状态栏）：注册当前页缩放能力，球体滚轮缩放回填进度条
+  scene.setOnZoom((t) => { if (!flatView.value) zoom.value = t })
+  zoom.avail = true; zoom.apply = applyZoom; pushZoom()
   grd.setLivePos(satLivePos)          // GRD 覆盖按星历/时间轴解算星下点+高度（关联星实时跟踪）
   loadMarkers(); syncMarkers()
   ro = new ResizeObserver(() => { if (scene) scene.resize(); if (flat && flatView.value) flat.resize() }); ro.observe(el.value)
@@ -1218,6 +1429,8 @@ onBeforeUnmount(() => {
   // 离开 3D 页：复位顶栏覆盖图入口（按钮随之隐藏），并关掉面板镜像状态
   covNav.grdAvail = false; covNav.covAvail = false; covNav.toggleGrd = null; covNav.toggleCov = null
   covNav.grdOpen = false; covNav.covOpen = false
+  zoom.avail = false; zoom.apply = null   // 复位底部状态栏缩放进度条
+
   cursor.ll = null; if (timer) clearInterval(timer); if (ro) ro.disconnect(); if (flat) flat.destroy(); if (scene) { scene.clearCoverage(); scene.destroy() }
 })
 </script>
@@ -1446,7 +1659,7 @@ onBeforeUnmount(() => {
       </div>
 
       <div v-if="grdOpen" class="cov-side grd-side">
-        <div class="csh"><span class="csn">覆盖图（GRD）</span>
+        <div class="csh"><span class="csn">覆盖分析</span>
           <span class="flatbtn" :class="{ on: flatView }" @click="toggleFlat">{{ flatView ? '球体' : '平面图' }}</span>
           <span class="csx" @click="toggleGrd">✕</span></div>
 
@@ -1454,30 +1667,34 @@ onBeforeUnmount(() => {
           <div class="sect"><span>卫星 / 天线</span><span class="lnk" title="添加自定义卫星，或从星座点选/搜索关联卫星" @click="openAddSat">＋ 卫星</span></div>
           <div class="gtree">
             <template v-for="sat in grdSats" :key="sat.folder">
-              <div class="gsat">
-                <i class="tri" @click="grd.toggleExpand(sat.folder)">{{ grd.isExpanded(sat.folder) ? '▾' : '▸' }}</i>
-                <input type="checkbox" class="gck" :checked="grd.satState(sat) === 'all'" :disabled="!sat.antennas.length" :title="sat.antennas.length ? '全选 / 全不选该星天线' : '该星暂无天线'" @change="grd.toggleSatAll(sat)" />
-                <span class="gsname" @click="grd.toggleExpand(sat.folder)">{{ sat.satName }}</span>
-                <span class="sact" title="导入 GRD：在该星下新建天线" @click.stop="grd.importGrd(sat)">＋天线</span>
-                <span class="ic" title="编辑卫星 / 仰角线" @click.stop="editSat(sat)">✎</span>
-                <span class="ic del" title="删除卫星（含其天线）" @click.stop="removeSat(sat)">✕</span>
+              <div class="gsat" :class="{ exp: grd.isExpanded(sat.folder) }">
+                <i class="tri" :class="{ open: grd.isExpanded(sat.folder) }" @click="grd.toggleExpand(sat.folder)">▸</i>
+                <input type="checkbox" class="gck" :checked="grd.satState(sat) === 'all'" :indeterminate="grd.satState(sat) === 'some'" :disabled="!sat.antennas.length" :title="sat.antennas.length ? '全选 / 全不选该星天线' : '该星暂无天线'" @change="grd.toggleSatAll(sat)" />
+                <svg class="gsvg sat-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M13 7 9 3 5 7l4 4" /><path d="m17 11 4 4-4 4-4-4" /><path d="m8 12 4 4 6-6-4-4Z" /><path d="m16 8 3-3" /><path d="M9 21a6 6 0 0 0-6-6" />
+                </svg>
+                <span class="gsname" @click="grd.toggleExpand(sat.folder)" :title="sat.satName">{{ sat.satName }}<em v-if="sat.antennas.length">{{ sat.antennas.length }}</em></span>
+                <span class="sacts">
+                  <span class="ic" title="导入 GRD：在该星下新建天线" @click.stop="grd.importGrd(sat)">＋</span>
+                  <span class="ic" title="编辑卫星 / 仰角线 / 颜色" @click.stop="editSat(sat)">✎</span>
+                  <span class="ic del" title="删除卫星（含其天线）" @click.stop="removeSat(sat)">✕</span>
+                </span>
               </div>
-              <template v-if="grd.isExpanded(sat.folder)">
-                <!-- 卫星显示（卫星名 / 仰角线），卫星属性，内联在该星节点下 -->
-                <div class="elrow elin">
-                  <span class="dotc" :style="{ background: sat.elevColor }"></span>
-                  <span class="eln">仰角值</span>
-                  <input class="ci elci" :value="sat.els" placeholder="如 5,10" @input="e => setSatEls(sat, e.target.value)" />
-                  <input class="clr" type="color" title="该星颜色（仰角线 / 卫星名）" :value="sat.elevColor" @input="e => setSatElevColor(sat, e.target.value)" />
-                </div>
+              <div v-if="grd.isExpanded(sat.folder)" class="gbody">
+                <!-- 卫星级显示开关（卫星属性）；仰角值/颜色/线宽在「✎」弹窗里编辑 -->
                 <div class="elacts">
+                  <span class="dotc" :style="{ background: sat.elevColor }" title="该星颜色（仰角线 / 卫星名），在「✎」里改"></span>
                   <span class="elbtn" :class="{ on: sat.labelShow !== false }" title="在地图上显示/隐藏该卫星（3D 名称、平面图标 + 名称）" @click="toggleSatLabel(sat)">{{ sat.labelShow !== false ? '✓ ' : '' }}卫星名</span>
-                  <span class="elbtn" :class="{ on: sat.elevShow }" title="显示/隐藏等仰角线（需先在上方填仰角值，如 5,10）" @click="toggleSatElev(sat)">{{ sat.elevShow ? '✓ ' : '' }}仰角线</span>
+                  <span class="elbtn" :class="{ on: sat.elevShow }" title="显示/隐藏等仰角线（需先在「✎」里填仰角值，如 5,10）" @click="toggleSatElev(sat)">{{ sat.elevShow ? '✓ ' : '' }}仰角线</span>
                   <span class="elbtn act" title="把地图视角转到该卫星" @click="focusSatItem(sat)">⌖ 定位</span>
                 </div>
-                <div v-if="!sat.antennas.length" class="gant noant">暂无天线 — 点「＋天线」导入 GRD</div>
-                <div v-for="a in sat.antennas" :key="a.name" class="gant" :class="{ on: grd.isSelected(sat.folder, a.name), foc: grd.isActive(sat.folder, a.name) }" @click="grd.setActive(sat, a)">
+                <div v-if="!sat.antennas.length" class="gant noant">暂无天线 — 点上方「＋」导入 GRD</div>
+                <template v-for="a in sat.antennas" :key="a.name">
+                <div class="gant" :class="{ on: grd.isSelected(sat.folder, a.name), foc: grd.isActive(sat.folder, a.name) }" @click="grd.setActive(sat, a)">
                   <input type="checkbox" class="gck" :checked="grd.isSelected(sat.folder, a.name)" @click.stop @change="grd.toggleAnt(sat, a)" />
+                  <svg class="gsvg ant-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M4 10a7.31 7.31 0 0 0 10 10Z" /><path d="m9 15 3-3" /><path d="M17 13a6 6 0 0 0-6-6" /><path d="M21 13A10 10 0 0 0 11 3" />
+                  </svg>
                   <template v-if="grdEditAnt === grd.keyOf(sat.folder, a.name)">
                     <input class="aname-in" v-model="grdEditVal" @click.stop @keydown.enter="commitRenameAnt(sat, a)" @blur="commitRenameAnt(sat, a)" />
                     <span class="ic ok" title="确认重命名" @mousedown.prevent @click.stop="commitRenameAnt(sat, a)">✓</span>
@@ -1485,11 +1702,20 @@ onBeforeUnmount(() => {
                   <template v-else>
                     <span class="aname" title="双击重命名" @dblclick.stop="startRenameAnt(sat, a)">{{ a.name }}</span>
                     <span v-if="grd.isActive(sat.folder, a.name)" class="afoc">编辑中</span>
-                    <span class="ic" title="重命名天线" @click.stop="startRenameAnt(sat, a)">✎</span>
+                    <span class="sacts">
+                      <span class="ic" title="重命名天线" @click.stop="startRenameAnt(sat, a)">✎</span>
+                      <span class="ic del" title="删除天线" @click.stop="grd.removeAntenna(sat.folder, a.name)">✕</span>
+                    </span>
                   </template>
-                  <span class="ic del" title="删除天线" @click.stop="grd.removeAntenna(sat.folder, a.name)">✕</span>
                 </div>
-              </template>
+                <div class="gperf" :class="{ on: perfKey === grd.keyOf(sat.folder, a.name) }" title="打开该天线的性能指标表" @click.stop="openPerf(sat, a)">
+                  <svg class="gsvg perf-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <rect x="3" y="3" width="18" height="18" rx="2" /><path d="M3 9h18" /><path d="M3 15h18" /><path d="M9 3v18" />
+                  </svg>
+                  <span class="gperfn">性能指标表</span>
+                </div>
+                </template>
+              </div>
             </template>
           </div>
         </div>
@@ -1498,13 +1724,21 @@ onBeforeUnmount(() => {
           <div class="sec">
             <div class="sect"><span>设置 · {{ grd.activeName() }}</span><span v-if="grd.selected.value.length > 1" class="editing" title="多选时设置只作用于聚焦（编辑中）天线，各天线独立保存">仅编辑聚焦天线</span></div>
             <template v-if="grd.activeBeams().length > 1">
-              <div class="sect" style="margin-top:2px"><span>Beams To Plot · {{ grd.activeBeams().length }} 波束</span><span class="lnk" :title="grd.allBeamsOn() ? '取消全部波束' : '绘制全部波束'" @click="grd.setAllBeams(!grd.allBeamsOn())">{{ grd.allBeamsOn() ? '取消全选' : '全选' }}</span></div>
+              <div class="sect" style="margin-top:2px"><span>Beams To Plot · {{ grd.activeBeams().length }} 波束</span></div>
+              <input class="ci bq" :value="grd.beamQuery.value" placeholder="搜索：波束名，或序号 1-62、1,3,5、1-10,20-30" @input="e => grd.setBeamQuery(e.target.value)" />
               <div class="bplist">
-                <label v-for="b in grd.activeBeams()" :key="b.i" class="brow" :class="{ on: grd.isBeamOn(b.i) }">
+                <label class="brow ball">
+                  <input type="checkbox" :checked="grd.filteredAllOn()" :indeterminate="grd.filteredAnyOn() && !grd.filteredAllOn()" @change="grd.selectFiltered(!grd.filteredAllOn())" />
+                  <span class="balln">{{ grd.beamQuery.value.trim() ? '(全选搜索结果)' : '(全选)' }}</span>
+                  <span class="bpk">{{ grdS.beamsToPlot.length }}/{{ grd.activeBeams().length }}</span>
+                </label>
+                <label v-for="b in grd.filteredBeams()" :key="b.i" class="brow" :class="{ on: grd.isBeamOn(b.i) }">
                   <input type="checkbox" :checked="grd.isBeamOn(b.i)" @change="grd.toggleBeam(b.i)" />
-                  <span class="bnm">{{ b.label }}</span>
+                  <span class="bseq">{{ b.i + 1 }}</span>
+                  <input class="bnm-in" :value="b.label" title="编辑波束名（地图标注同步用此名）" @click.stop @keydown.enter="e => e.target.blur()" @change="e => grd.renameBeam(b.i, e.target.value)" />
                   <span class="bpk">{{ b.peakDb.toFixed(1) }}</span>
                 </label>
+                <div v-if="!grd.filteredBeams().length" class="empty">无匹配波束</div>
               </div>
             </template>
             <div class="srow"><label>极化</label><select v-model="grdS.pol"><option value="P1">P1 共极化</option><option value="P2">P2 交叉</option><option value="RSS">RSS 合成</option><option value="P1/P2">P1/P2</option><option value="P2/P1">P2/P1</option></select></div>
@@ -1519,7 +1753,7 @@ onBeforeUnmount(() => {
               <div v-for="(L, i) in grdS.levels" :key="i" class="glvrow">
                 <input class="lvclr" type="color" title="填充色" :value="grdLvHex(L.color)" @input="e => setLevelColor(i, e)" />
                 <input class="lvclr" type="color" title="线色" :value="grdLvHex(L.lineColor)" @input="e => setLineColor(i, e)" />
-                <input class="lvval" type="number" step="0.5" v-model.number="L.v" />
+                <input class="lvval" type="number" step="0.5" v-model.number.lazy="L.v" />
                 <span class="lvabs">{{ (grdS.ctype === 'rel' ? (grd.antMeta().peakDb + L.v) : L.v).toFixed(1) }}</span>
                 <span class="ic del" title="删除该档" @click="grd.removeLevel(i)">✕</span>
               </div>
@@ -1738,7 +1972,7 @@ onBeforeUnmount(() => {
         <div class="sdh"><span>覆盖图显示设置</span><span class="csx" @click="covSetOpen = false">✕</span></div>
         <div class="sdbody">
           <template v-if="grdApiOk">
-            <div class="sect"><span>覆盖图（GRD）</span></div>
+            <div class="sect"><span>覆盖分析</span></div>
             <label class="chk2"><input type="checkbox" v-model="grdS.showName" /><span>显示天线名</span></label>
             <div v-if="grdS.showName" class="srow"><label>字号</label><input class="rng" type="range" min="2" max="32" step="0.5" v-model.number="grdS.nameSize" /><span class="u">{{ grdS.nameSize }}</span></div>
             <label class="chk2"><input type="checkbox" v-model="grdS.showBore" /><span>显示波束中心</span></label>
@@ -1759,6 +1993,112 @@ onBeforeUnmount(() => {
           </template>
         </div>
         <div class="sdfoot"><span class="save" @click="covSetOpen = false">完成</span></div>
+      </div>
+    </div>
+
+    <!-- 性能指标表（独立浮窗，每个天线一张；第 1 期：站点库 + Dir/Parameter 取值 + 表内查询） -->
+    <div v-if="perfKey" class="perf-win">
+      <div class="perf-h">
+        <span class="perf-t">性能指标表
+          <em v-if="perf.ctxInfo.value">· {{ perf.ctxInfo.value.satName }} / {{ perf.ctxInfo.value.antName }} · {{ perf.ctxInfo.value.beams }} 波束</em>
+        </span>
+        <span class="csx" @click="closePerf">✕</span>
+      </div>
+      <div class="perf-tools">
+        <span class="ptb" :class="{ dis: !perf.canUndo.value }" title="撤销 (Ctrl+Z)" @click="perfUndo">↶ 撤销</span>
+        <span class="ptb" :class="{ dis: !perf.canRedo.value }" title="重做 (Ctrl+Y / Ctrl+Shift+Z)" @click="perfRedo">↷ 重做</span>
+        <span class="ptb" title="把地图上的点标记 / 地面站导入站点库" @click="perfImportMarkers">⭳ 从标记导入</span>
+        <span class="ptb" title="从剪贴板粘贴表格（末两列=经度、纬度，可含 国家/城市/代号）批量加站" @click="perfPasteBtn">📋 粘贴</span>
+        <span class="ptb" title="清空站点库" @click="perfClearStations">清空站点</span>
+        <span class="ptb" :class="{ on: perfOptsOpen }" title="显示列 / 过滤 / 计算口径 / 指向误差" @click="perfOptsOpen = !perfOptsOpen">⚙ 选项…</span>
+        <input class="perf-q" v-model="perf.query.value" placeholder="查询：国家 / 城市 / 代号" />
+        <span class="perf-cnt">{{ perf.filteredRows.value.length }} / {{ perf.rows.value.length }} 行 · {{ perf.stations.value.length }} 站</span>
+      </div>
+      <div class="perf-add" @paste="perfPaste" title="可从 Excel 复制后在此 Ctrl+V 批量粘贴（末两列=经度、纬度）">
+        <input class="pi" v-model="perfNew.country" placeholder="国家" />
+        <input class="pi" v-model="perfNew.city" placeholder="城市" />
+        <input class="pi" v-model="perfNew.desig" placeholder="代号" />
+        <input class="pi nrw" v-model="perfNew.lon" placeholder="经度" />
+        <input class="pi nrw" v-model="perfNew.lat" placeholder="纬度" />
+        <span class="ptb add" @click="perfAddStation">＋ 加站</span>
+      </div>
+      <div class="perf-body" ref="perfBodyEl" tabindex="0" @keydown="perfGridKey" @click="perfFocusGrid">
+        <table class="perf-tbl">
+          <thead>
+            <tr>
+              <th v-for="c in perfCols" :key="c.key" :style="{ width: c.w + 'px' }" :class="{ n: c.num }" :title="c.na ? '本数据仅含功率（无相位），AR 暂不可算' : ''">{{ c.label }}<em v-if="c.na">*</em></th>
+              <th class="th-act"></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="(r, ri) in perf.filteredRows.value" :key="r.id" :class="{ out: !r.inPattern }">
+              <td v-for="(c, ci) in perfCols" :key="c.key"
+                  :class="{ n: c.num, ed: perfEditable(c.key), sel: perfInSel(ri, ci), active: perfIsActive(ri, ci), editing: perfIsEdit(ri, ci) }"
+                  @mousedown="perfCellDown($event, ri, ci)" @mouseenter="perfCellEnter(ri, ci)" @dblclick="perfTryEdit(ri, ci, null)">
+                <input v-if="perfIsEdit(ri, ci)" :ref="el => perfEditEl = el" class="pcell" :class="{ n: c.num }"
+                       :value="perfEditSeed != null ? perfEditSeed : (r[c.key] == null ? '' : r[c.key])"
+                       @blur="perfCommitEdit" @paste="perfCellPaste($event, r, c.key)" />
+                <template v-else-if="c.num">{{ c.fix != null ? perfFix(r[c.key], c.fix) : (r[c.key] == null ? '—' : r[c.key]) }}</template>
+                <template v-else>{{ r[c.key] || '' }}</template>
+              </td>
+              <td class="td-act"><span class="del" title="删除该行" @click="perfRemoveRow(r.id)">✕</span></td>
+            </tr>
+            <tr v-if="!perf.rows.value.length"><td :colspan="perfCols.length + 1" class="perf-empty">站点库为空 — 在此 Ctrl+V 粘贴表格（末两列=经度、纬度），或「从标记导入」/「＋ 加站」</td></tr>
+            <tr v-else-if="!perf.filteredRows.value.length"><td :colspan="perfCols.length + 1" class="perf-empty">无匹配查询的行</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- 性能表选项弹窗（对标 SATSOFT Performance Table Options）：显示列 / 过滤 / 波束类型 / 计算口径 / 指向误差 -->
+    <div v-if="perfOptsOpen && perfOpts" class="sat-mask perf-opt-mask" @click.self="perfOptsOpen = false">
+      <div class="perf-opt-dlg">
+        <div class="sdh"><span>性能表选项<em v-if="perf.ctxInfo.value"> · {{ perf.ctxInfo.value.antName }}</em></span><span class="csx" @click="perfOptsOpen = false">✕</span></div>
+        <div class="perf-opt-body">
+          <!-- 左：显示列 -->
+          <section class="po-card po-cols">
+            <div class="po-ct">显示列</div>
+            <div class="po-scroll">
+              <div v-for="g in perf.colGroups" :key="g.title" class="po-grp">
+                <div class="po-gt">{{ g.title }}</div>
+                <label v-for="k in g.keys" :key="k" class="po-ck" :class="{ dis: perfColNa(k) }">
+                  <input type="checkbox" v-model="perfOpts.cols[k]" :disabled="perfColNa(k)" />
+                  <span>{{ perfColLabel(k) }}<em v-if="perfColNa(k)"> *</em></span>
+                </label>
+              </div>
+            </div>
+            <div class="po-note">取值用功率域 bicubic 插值；AR 由复场相位算（bicubic）。预置烘焙天线无复场 → AR 显示 —</div>
+          </section>
+
+          <!-- 右：计算设置 -->
+          <div class="po-right">
+            <section class="po-card">
+              <div class="po-ct">过滤</div>
+              <label class="po-chk"><input type="checkbox" v-model="perfOpts.filterOn" /><span>剔除低于最低方向性的记录</span></label>
+              <div class="po-row"><label>最低方向性</label><input class="ci" type="number" step="0.5" v-model.number="perfOpts.minDir" :disabled="!perfOpts.filterOn" /><span class="u">dB</span></div>
+            </section>
+
+            <section class="po-card">
+              <div class="po-ct">参数计算</div>
+              <label class="po-chk"><input type="checkbox" v-model="perfOpts.sameAsAnt" /><span>与天线当前设置一致</span></label>
+              <template v-if="!perfOpts.sameAsAnt">
+                <div class="po-row"><label>极化</label><select v-model="perfOpts.pol"><option value="P1">P1 共极化</option><option value="P2">P2 交叉</option><option value="RSS">RSS 合成</option><option value="P1/P2">P1/P2</option><option value="P2/P1">P2/P1</option></select></div>
+                <div class="po-row"><label>单位</label><span class="seg sm"><span class="sg" :class="{ on: perfOpts.unit === 'dB' }" @click="perfOpts.unit = 'dB'">dB</span><span class="sg" :class="{ on: perfOpts.unit === 'power' }" @click="perfOpts.unit = 'power'">功率</span><span class="sg" :class="{ on: perfOpts.unit === 'voltage' }" @click="perfOpts.unit = 'voltage'">电压</span></span></div>
+                <div class="po-row"><label>路径损耗</label><select v-model="perfOpts.pathLoss"><option value="none">无</option><option value="relative">相对(h/Rs)²</option><option value="absolute">通量密度</option></select></div>
+                <div class="po-row"><label>增益偏置</label><input class="ci" type="number" step="0.5" v-model.number="perfOpts.gainOffset" /><span class="u">dB</span></div>
+              </template>
+            </section>
+
+            <section class="po-card">
+              <div class="po-ct">指向误差 · Min/Max Pointing</div>
+              <div class="po-row"><label>方位 Az</label><input class="ci" type="number" step="any" min="0" v-model.number="perfOpts.pointAz" /><span class="u">°</span></div>
+              <div class="po-row"><label>俯仰 El</label><input class="ci" type="number" step="any" min="0" v-model.number="perfOpts.pointEl" /><span class="u">°</span></div>
+              <div class="po-row"><label>偏航 Yaw</label><input class="ci" type="number" step="any" min="0" v-model.number="perfOpts.pointYaw" /><span class="u">°</span></div>
+              <div class="po-row"><label>误差区</label><span class="seg sm"><span class="sg" :class="{ on: perfOpts.pointShape === 'ellipse' }" @click="perfOpts.pointShape = 'ellipse'">椭圆</span><span class="sg" :class="{ on: perfOpts.pointShape === 'rect' }" @click="perfOpts.pointShape = 'rect'">矩形</span></span></div>
+            </section>
+          </div>
+        </div>
+        <div class="sdfoot"><span class="save" @click="perfOptsOpen = false">完成</span></div>
       </div>
     </div>
   </div>
@@ -1879,32 +2219,118 @@ onBeforeUnmount(() => {
 .chip.on { color: var(--text); }
 .chk2 { display: flex; align-items: center; gap: 6px; margin-top: 8px; cursor: pointer; }
 .tip { color: var(--text-faint); font-size: 11px; margin-top: 4px; line-height: 1.5; }
-/* GRD 工程树：卫星 → 天线 */
-.gtree { margin-top: 4px; max-height: 190px; overflow-y: auto; }
-.gsat { display: flex; align-items: center; gap: 5px; padding: 4px 4px; color: var(--text); font-size: 12px; }
-.gsat .tri { font-style: normal; width: 11px; color: var(--text-faint); font-size: 10px; cursor: pointer; }
+/* GRD 工程树：卫星 → 天线（二级层次，竖向引导线 + 统一缩进） */
+.gtree { margin-top: 6px; max-height: 240px; overflow-y: auto; }
+/* 卫星行（节点头） */
+.gsat { display: flex; align-items: center; gap: 6px; padding: 4px 4px 4px 2px; color: var(--text); font-size: 12px; border-radius: 3px; }
+.gsat:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
+.gsat .tri { font-style: normal; flex: none; width: 12px; text-align: center; color: var(--text-faint); font-size: 9px; cursor: pointer; transition: transform .12s; }
+.gsat .tri.open { transform: rotate(90deg); }
 .gsat .gsname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
 .gsat .gsname:hover { color: var(--accent); }
-.gsat em { font-style: normal; margin-left: auto; color: var(--text-faint); font-family: var(--font-mono); font-size: 11px; }
-.gck { flex: none; width: 12px; height: 12px; margin: 0; cursor: pointer; }
-.gant { display: flex; align-items: center; gap: 6px; padding: 3px 6px 3px 28px; color: var(--text-muted); cursor: pointer; font-size: 11.5px; border-left: 3px solid transparent; transition: background .12s, border-color .12s; }
-.gant:hover { color: var(--text); background: var(--bg); }
-.gant.on { color: var(--text); border-left-color: color-mix(in srgb, var(--accent) 45%, transparent); }   /* 已选中=绘制中 */
-.gant.foc { color: var(--text); background: color-mix(in srgb, var(--accent) 14%, transparent); border-left-color: var(--accent); font-weight: 600; }   /* 聚焦=编辑中（专业高亮） */
+.gsat .gsname em { font-style: normal; margin-left: 5px; color: var(--text-faint); font-family: var(--font-mono); font-size: 10.5px; }
+.gsvg { flex: none; width: 14px; height: 14px; }
+.gsat .sat-svg { color: #000; opacity: .92; }
+.gant .ant-svg { width: 13px; height: 13px; color: var(--text-faint); transition: color .12s; }
+.gant:hover .ant-svg, .gant.on .ant-svg { color: var(--accent); }
+.gant.foc .ant-svg { color: var(--accent); }
+.gperf { display: flex; align-items: center; gap: 6px; margin: 0 0 2px 22px; padding: 2px 6px; color: var(--text-faint); cursor: pointer; font-size: 11px; border-radius: 3px; transition: background .12s, color .12s; }
+.gperf:hover { color: var(--text-muted); background: color-mix(in srgb, var(--text) 5%, transparent); }
+.gperf .perf-svg { width: 12px; height: 12px; flex: none; }
+.gperf .gperfn { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gperf.on { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.gperf.on .perf-svg { color: var(--accent); }
+
+/* 性能指标表浮窗 */
+.perf-win { position: absolute; right: 24px; bottom: 24px; width: 720px; max-width: calc(100% - 48px); max-height: 70%; display: flex; flex-direction: column; background: var(--panel, var(--bg)); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 12px 40px rgba(0, 0, 0, .35); z-index: 60; overflow: hidden; }
+.perf-h { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border); flex: none; }
+.perf-t { flex: 1; font-family: var(--font-serif); font-size: 13.5px; color: var(--text); }
+.perf-t em { font-style: normal; font-family: var(--font-mono); font-size: 11px; color: var(--text-faint); }
+.perf-h .csx { cursor: pointer; color: var(--text-faint); padding: 0 4px; }
+.perf-h .csx:hover { color: var(--text); }
+.perf-tools, .perf-add { display: flex; align-items: center; gap: 6px; padding: 6px 12px; border-bottom: 1px solid var(--border); flex: none; flex-wrap: wrap; }
+.ptb { font-size: 11.5px; color: var(--text-muted); border: 1px solid var(--border); border-radius: 4px; padding: 2px 8px; cursor: pointer; white-space: nowrap; }
+.ptb:hover { color: var(--text); border-color: var(--accent); }
+.ptb.add { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
+.ptb.dis { opacity: .38; pointer-events: none; }
+.perf-q { flex: 1; min-width: 120px; border: 1px solid var(--border); background: var(--bg); padding: 2px 8px; font-size: 11.5px; color: var(--text); border-radius: 4px; outline: none; }
+.perf-cnt { font-size: 10.5px; color: var(--text-faint); font-family: var(--font-mono); white-space: nowrap; }
+.perf-add .pi { flex: 1; min-width: 0; border: 1px solid var(--border); background: var(--bg); padding: 2px 6px; font-size: 11.5px; color: var(--text); border-radius: 4px; outline: none; }
+.perf-add .pi.nrw { flex: 0 0 74px; }
+.perf-body { flex: 1; overflow: auto; }
+.perf-tbl { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+.perf-tbl th, .perf-tbl td { padding: 3px 8px; border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent); text-align: left; white-space: nowrap; }
+.perf-tbl th { position: sticky; top: 0; background: var(--panel, var(--bg)); color: var(--text-muted); font-weight: 600; z-index: 1; }
+.perf-tbl th.n, .perf-tbl td.n { text-align: right; font-family: var(--font-mono); }
+.perf-tbl td { color: var(--text); }
+/* Excel 式网格：单元格十字光标，框选区淡蓝填充，活动格/编辑格描蓝框 */
+.perf-body:focus { outline: none; }
+.perf-tbl { user-select: none; }                   /* 拖拽框选时不选中文本 */
+.perf-tbl tbody td { cursor: cell; }
+.perf-tbl td.sel { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.perf-tbl tr.out td.sel { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.perf-tbl td.active { box-shadow: inset 0 0 0 2px var(--accent); }
+.perf-tbl td.editing { padding: 0; box-shadow: inset 0 0 0 2px var(--accent); }
+.pcell { width: 100%; box-sizing: border-box; border: none; background: var(--bg); color: inherit; font: inherit; padding: 3px 8px; outline: none; }
+.pcell.n { text-align: right; font-family: var(--font-mono); }
+.perf-tbl tbody tr:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
+.perf-tbl tr.out td { color: var(--text-faint); }
+.perf-tbl .td-act, .perf-tbl .th-act { width: 22px; text-align: center; }
+.perf-tbl .td-act .del { cursor: pointer; color: var(--text-faint); opacity: 0; }
+.perf-tbl tbody tr:hover .del { opacity: .8; }
+.perf-tbl .td-act .del:hover { color: #ff6a6a; }
+.perf-empty { text-align: center !important; color: var(--text-faint); padding: 18px !important; font-style: italic; }
+.ptb.on { color: var(--accent); border-color: var(--accent); }
+.perf-tbl th em { color: var(--text-faint); font-style: normal; }
+
+/* 性能表选项弹窗 */
+.sat-mask.perf-opt-mask { z-index: 70; }   /* 提高特异性压过 .sat-mask(z40)，高于性能表浮窗(z60)避免被遮挡 */
+.perf-opt-dlg { width: 620px; max-width: calc(100% - 32px); max-height: 88%; display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 8px; box-shadow: 0 16px 48px rgba(0, 0, 0, .55); }
+.perf-opt-dlg .sdh em { font-style: normal; font-family: var(--font-mono); font-size: 11.5px; color: var(--text-faint); }
+.perf-opt-body { display: flex; gap: 12px; padding: 12px; overflow: auto; align-items: stretch; }
+.po-card { border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; background: color-mix(in srgb, var(--text) 2.5%, transparent); }
+.po-ct { font-size: 11px; font-weight: 600; color: var(--text-muted); letter-spacing: .3px; margin-bottom: 6px; padding-bottom: 4px; border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent); }
+.po-cols { flex: 0 0 196px; display: flex; flex-direction: column; }
+.po-scroll { flex: 1; overflow: auto; display: grid; grid-template-columns: 1fr 1fr; gap: 0 10px; align-content: start; }
+.po-grp { display: contents; }
+.po-gt { grid-column: 1 / -1; font-size: 10px; color: var(--text-faint); margin: 6px 0 1px; letter-spacing: .5px; }
+.po-gt:first-child { margin-top: 0; }
+.po-ck { display: flex; align-items: center; gap: 5px; padding: 2px 0; font-size: 11.5px; color: var(--text); cursor: pointer; min-width: 0; }
+.po-ck span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.po-ck input { flex: none; accent-color: var(--accent); }
+.po-ck.dis { color: var(--text-faint); cursor: not-allowed; }
+.po-ck em { color: var(--text-faint); font-style: normal; }
+.po-note { font-size: 10px; color: var(--text-faint); line-height: 1.4; margin-top: 8px; padding-top: 6px; border-top: 1px solid color-mix(in srgb, var(--border) 70%, transparent); }
+.po-right { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
+.po-chk { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text); cursor: pointer; padding: 1px 0; }
+.po-chk input { accent-color: var(--accent); }
+.po-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 12px; }
+.po-row label { flex: 0 0 64px; color: var(--text-muted); }
+.po-row .ci { flex: 1; min-width: 0; border: 1px solid var(--border); background: var(--bg); padding: 2px 6px; font-size: 12px; color: var(--text); border-radius: 4px; outline: none; }
+.po-row .ci:disabled { opacity: .45; }
+.po-row select { flex: 1; min-width: 0; border: 1px solid var(--border); background: var(--bg); padding: 2px 6px; font-size: 12px; color: var(--text); border-radius: 4px; }
+.po-row .u { flex: none; color: var(--text-faint); font-size: 11px; }
+.po-row .seg, .po-card > .seg { flex: 1; }
+.gck { flex: none; width: 12px; height: 12px; margin: 0; cursor: pointer; accent-color: var(--accent); }
+.gck:disabled { opacity: .35; cursor: not-allowed; }
+/* 展开后的子级容器：左侧一条淡引导线统辖「卫星显示开关 + 天线列表」，缩进统一 */
+.gbody { margin-left: 9px; padding-left: 12px; border-left: 1px solid var(--border); margin-bottom: 2px; }
+/* 天线行（叶子节点） */
+.gant { display: flex; align-items: center; gap: 6px; padding: 3px 6px; margin: 1px 0; color: var(--text-muted); cursor: pointer; font-size: 11.5px; border-radius: 3px; transition: background .12s, color .12s, box-shadow .12s; }
+.gant:hover { color: var(--text); background: color-mix(in srgb, var(--text) 6%, transparent); }
+.gant.on { color: var(--text); }                                                                          /* 已选中=绘制中 */
+.gant.foc { color: var(--text); background: color-mix(in srgb, var(--accent) 14%, transparent); box-shadow: inset 2px 0 0 var(--accent); font-weight: 600; }   /* 聚焦=编辑中 */
 .gant .aname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .gant .aname-in { flex: 1; min-width: 0; border: 1px solid var(--accent); background: var(--bg); padding: 1px 5px; font-size: 11.5px; color: var(--text); outline: none; }
 .gant .afoc { flex: none; font-size: 9.5px; font-weight: 600; letter-spacing: .3px; color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent); border-radius: 8px; padding: 0 5px; line-height: 14px; }
-/* 卫星行操作：＋天线 / 编辑 / 删除 */
-.gsat .sact { flex: none; font-size: 10.5px; color: var(--accent); cursor: pointer; opacity: .85; }
-.gsat .sact:hover { opacity: 1; }
-.gsat .ic { flex: none; font-size: 11px; }
-.gck:disabled { opacity: .35; cursor: not-allowed; }
-/* 暂无天线占位 */
-.gant.noant { color: var(--text-faint); font-style: italic; cursor: default; border-left: none; }
+.gant.noant { color: var(--text-faint); font-style: italic; cursor: default; padding-left: 6px; }
 .gant.noant:hover { background: none; color: var(--text-faint); }
-/* 仰角线内联行（卫星节点属性） */
-.elrow.elin { margin: 3px 0 3px 24px; }
-.elrow.elin .eln { flex: none; color: var(--text-muted); }
+/* 行内次级操作（卫星行 ＋✎✕ / 天线行 ✎✕ 共用）：常驻但弱化淡灰，hover 该行变亮 */
+.sacts { flex: none; display: flex; align-items: center; gap: 8px; margin-left: auto; padding-left: 4px; }
+.sacts .ic { font-size: 11px; color: var(--text-faint); opacity: .5; cursor: pointer; padding: 0; transition: opacity .12s, color .12s; }
+.gsat:hover .sacts .ic, .gant:hover .sacts .ic { opacity: .9; }
+.sacts .ic:hover { color: var(--text); opacity: 1; }
+.sacts .ic.del:hover { color: #e66; }
 /* 设置面板：当前编辑对象提示 */
 .grd-side .sect .editing { margin-left: auto; font-size: 9.5px; font-weight: 600; color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent); border-radius: 8px; padding: 1px 6px; }
 /* GRD 电平表 */
@@ -1924,9 +2350,16 @@ onBeforeUnmount(() => {
 .brow { display: flex; align-items: center; gap: 6px; padding: 2px 7px; cursor: pointer; font-size: 11.5px; }
 .brow + .brow { border-top: 1px solid var(--border); }
 .brow:hover { background: var(--bg); }
-.brow.on .bnm { color: var(--text); }
-.brow .bnm { flex: 1; color: var(--text-muted); }
-.brow .bpk { color: var(--text-faint); font-family: var(--font-mono); font-size: 10.5px; }
+.brow.on .bnm-in { color: var(--text); }
+.brow .bnm-in { flex: 1; min-width: 0; border: 1px solid transparent; background: transparent; color: var(--text-muted); font-size: 11.5px; padding: 1px 4px; border-radius: 2px; outline: none; }
+.brow .bnm-in:hover { border-color: var(--border); }
+.brow .bnm-in:focus { border-color: var(--accent); background: var(--bg); color: var(--text); }
+.brow .bseq { flex: none; min-width: 20px; text-align: right; color: var(--text-faint); font-family: var(--font-mono); font-size: 10.5px; }
+.brow .bpk { flex: none; color: var(--text-faint); font-family: var(--font-mono); font-size: 10.5px; }
+/* Excel 式「(全选)」主行：置顶 sticky、随列表滚动常驻；三态复选框（全/半/无） */
+.brow.ball { position: sticky; top: 0; z-index: 1; background: var(--bg); border-bottom: 1px solid var(--border); }
+.brow.ball + .brow { border-top: 0; }
+.brow .balln { flex: 1; color: var(--text); font-weight: 600; }
 /* 两级覆盖：卫星卡 / 批次 */
 .satcard { border-left: 2px solid var(--accent); }
 .sath { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
@@ -1998,19 +2431,12 @@ onBeforeUnmount(() => {
 .lnknm:hover { color: var(--accent); }
 .tip2 { color: var(--text-faint); font-size: 11px; line-height: 1.6; }
 .tip2 .lnk { margin-left: 6px; color: var(--accent); cursor: pointer; }
-.elrow { display: flex; align-items: center; gap: 5px; margin: 5px 0; }
-.elrow .eln { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; color: var(--text); }
-.elrow .eln em { font-style: normal; color: var(--text-faint); font-size: 10.5px; margin-left: 3px; }
-.elrow .eln { flex: none; }
-.elrow .elci { flex: 1; min-width: 0; width: auto; padding: 2px 5px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 11.5px; outline: none; }
-.elrow .elci:focus { border-color: var(--accent); }
-.elrow .clr { width: 22px; height: 18px; flex: none; }
-.elrow .ic.on { color: var(--accent); }
-/* 卫星显示动作按钮：卫星名 / 仰角线（切换，亮起=开） + 定位（动作），文字直白可辨 */
-.elacts { display: flex; align-items: center; gap: 6px; margin: 0 0 7px; padding-left: 16px; }
-.elacts .elbtn { flex: none; cursor: pointer; font-size: 11px; padding: 2px 9px; border: 1px solid var(--border); border-radius: 10px; color: var(--text-muted); white-space: nowrap; transition: color .12s, border-color .12s; }
+/* 卫星显示开关行（在 .gbody 引导线内）：色点 + 卫星名/仰角线（切换） + 定位（动作） */
+.elacts { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: 5px 0 7px; }
+.elacts .dotc { margin-right: 0; }
+.elacts .elbtn { flex: none; cursor: pointer; font-size: 10.5px; padding: 1.5px 8px; border: 1px solid var(--border); border-radius: 9px; color: var(--text-muted); white-space: nowrap; transition: color .12s, border-color .12s, background .12s; }
 .elacts .elbtn:hover { color: var(--text); border-color: var(--text-faint); }
-.elacts .elbtn.on { color: var(--accent); border-color: var(--accent); }
+.elacts .elbtn.on { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 55%, transparent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
 .elacts .elbtn.act:hover { color: var(--accent); border-color: var(--accent); }
 
 /* 卫星编辑弹窗 */

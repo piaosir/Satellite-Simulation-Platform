@@ -9,7 +9,9 @@
 //  · KLIMIT=1 时每 Y 行前缀 (起始列, 点数)。
 //  · 扩展名无关：.grd 与 .pat 同为本格式，按内容解析。
 //
-// 每点存两个分量的线性功率 P1=|c1|²、P2=|c2|²（极化取值/增益偏置在显示层做）。
+// 每点存两个分量的线性功率 P1=|c1|²、P2=|c2|²（极化取值/增益偏置在显示层做），
+// 并保留两分量的复振幅 (Re/Im)：性能指标表的 AR 轴比需相位（由复场 bicubic 插值算）。
+// 注：dir/功率取值用功率域 bicubic（见 coverage.sampleBeamAt）。
 
 export function parseGrd(text) {
   const L = text.split(/\r\n|\n|\r/)
@@ -27,6 +29,7 @@ export function parseGrd(text) {
     const [NX, NY, KLIMIT] = L[i++].trim().split(/\s+/).map(Number)
     const N = NX * NY
     const P1 = new Float32Array(N), P2 = new Float32Array(N)   // 线性功率
+    const c1re = new Float32Array(N), c1im = new Float32Array(N), c2re = new Float32Array(N), c2im = new Float32Array(N)   // 复振幅（最准确取值/AR 用）
     let peakLin = -Infinity, peakIdx = 0
     for (let row = 0; row < NY; row++) {
       let cs = 0, ce = NX
@@ -37,10 +40,11 @@ export function parseGrd(text) {
         const idx = row * NX + col
         const p1 = a * a + b * b, p2 = c * c + d * d
         P1[idx] = p1; P2[idx] = p2
+        c1re[idx] = a; c1im[idx] = b; c2re[idx] = c; c2im[idx] = d
         if (p1 > peakLin) { peakLin = p1; peakIdx = idx }
       }
     }
-    sets.push({ XS, YS, XE, YE, NX, NY, P1, P2, peakLin, peakIdx })
+    sets.push({ XS, YS, XE, YE, NX, NY, P1, P2, c1re, c1im, c2re, c2im, peakLin, peakIdx })
   }
   return { ktype, nset, icomp, ncomp, igrid, sets }
 }

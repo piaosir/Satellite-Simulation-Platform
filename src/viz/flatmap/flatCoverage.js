@@ -141,9 +141,9 @@ export function createFlatCoverage(canvas) {
 
   // 陆地：把 pan/zoom 烘进变换矩阵，直接填充缓存的 Path2D（每帧零顶点遍历）。
   // 经度环绕用 -360/0/360 三档偏移，按视口裁剪只画可见副本；描边线宽除以缩放保持 0.8px 恒定。
+  // 仅填充陆地（海岸线描边移到覆盖之上的 strokeLand）。覆盖填充叠在陆地填充之上、按 alpha 混合 → 覆盖区底色随之透出。
   function drawLand() {
     const kk = k()
-    ctx.strokeStyle = BORDER; ctx.lineWidth = 0.8 / kk
     const wl = -tx / kk, wr = (cw - tx) / kk   // 视口世界 X 范围（未含 off）
     for (const off of [-360, 0, 360]) {
       ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * (tx + off * kk), dpr * ty)
@@ -152,11 +152,25 @@ export function createFlatCoverage(canvas) {
         for (const sh of c.shapes) {
           if (sh.hi + off < wl || sh.lo + off > wr) continue
           if (!colored) { ctx.fillStyle = c.fill; colored = true }
-          ctx.fill(sh.path, 'evenodd'); ctx.stroke(sh.path)
+          ctx.fill(sh.path, 'evenodd')
         }
       }
     }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)   // 恢复屏幕坐标，后续图层照旧
+  }
+  // 海岸线描边：画在覆盖填充【之上】，使海岸线在覆盖区内外连续 → 覆盖像染进地图、与底图平级，而非浮在其上。
+  function strokeLand() {
+    const kk = k()
+    ctx.strokeStyle = BORDER; ctx.lineWidth = 0.8 / kk
+    const wl = -tx / kk, wr = (cw - tx) / kk
+    for (const off of [-360, 0, 360]) {
+      ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * (tx + off * kk), dpr * ty)
+      for (const c of land) for (const sh of c.shapes) {
+        if (sh.hi + off < wl || sh.lo + off > wr) continue
+        ctx.stroke(sh.path)
+      }
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
   }
   // 极地冰盖：北极高纬陆地渐变染白 + 补全南极极点空洞。
   function drawIceCaps() {
@@ -219,8 +233,9 @@ export function createFlatCoverage(canvas) {
     const x = PX(lon) + (o.dx || 0), y = PY(lat) + (o.dy || 0)
     ctx.font = `${o.italic ? 'italic ' : ''}${o.bold ? 'bold ' : ''}${px}px "Microsoft YaHei", sans-serif`
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
+    // 文字描边套色(casing)：沿字形勾一圈与底色同调的窄边，把字从背景里「切」出来——专业制图标准，不用底色色块
     ctx.lineJoin = 'round'; ctx.miterLimit = 2
-    ctx.lineWidth = Math.max(1.4, px * 0.13); ctx.strokeStyle = 'rgba(0,0,0,0.72)'
+    ctx.lineWidth = Math.max(1.5, px * 0.14); ctx.strokeStyle = 'rgba(6,11,18,0.82)'
     ctx.strokeText(text, x, y); ctx.fillStyle = color; ctx.fillText(text, x, y)
   }
   function dot(lon, lat, r, fill, ring) {
@@ -245,7 +260,8 @@ export function createFlatCoverage(canvas) {
     return fillBands.map((fb) => {
       const path = new Path2D()
       for (const poly of fb.polys) {
-        for (let i = 0; i < poly.length; i++) { const x = poly[i][0] - LON0, y = 90 - poly[i][1]; i === 0 ? path.moveTo(x, y) : path.lineTo(x, y) }
+        const u = unwrap(poly)   // 按相邻点就近解缠：跨 ±180° 的多边形不会被直线横扫全图
+        for (let i = 0; i < u.length; i++) { const x = u[i][0] - LON0, y = 90 - u[i][1]; i === 0 ? path.moveTo(x, y) : path.lineTo(x, y) }
         path.closePath()
       }
       return { color: 'rgb(' + fb.color[0] + ',' + fb.color[1] + ',' + fb.color[2] + ')', path }
@@ -292,7 +308,7 @@ export function createFlatCoverage(canvas) {
       const br = o.boreSize != null ? o.boreSize : 5
       if (o.showBore) dot(b.lon, b.lat, Math.max(0.3, br), '#ffffff', true)
       // 波束中心峰值 dB：标在中心点下方（2D 无卫星连线）
-      if (o.showPeak && b.peak != null) drawText(b.peak.toFixed(1) + ' dB', b.lon, b.lat, o.peakSize || 12, '#ffe1a0', { dy: (o.showBore ? br : 0) + (o.peakSize || 12) * 0.7 + 3 })
+      if (o.showPeak && b.peak != null) drawText(b.peak.toFixed(1) + ' dB', b.lon, b.lat, o.peakSize || 12, '#cfd6df', { dy: (o.showBore ? br : 0) + (o.peakSize || 12) * 0.7 + 3 })
       if (o.showName && L.name) drawText(L.name, b.lon, b.lat, o.nameSize || 16, '#ffffff', { dy: -((o.showBore ? br : 0) + (o.nameSize || 16) * 0.6 + 2) })
     }
   }
@@ -302,13 +318,15 @@ export function createFlatCoverage(canvas) {
     ctx.save()
     ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip()
     ctx.fillStyle = OCEAN; ctx.fillRect(rx, ry, rw, rh)
-    drawLand(); drawIceCaps(); drawGrid()
+    drawLand(); drawIceCaps()
     ctx.restore()
   }
   // field 之上的标注（省界/覆盖数据/轨迹/标记/国家名/卫星层）。透明背景，叠在覆盖填充之上。
   function drawAboveContent(rx, ry, rw, rh) {
     ctx.save()
     ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip()
+    // 海岸线 + 经纬网画在覆盖填充之上：地理骨架贯穿覆盖区内外，覆盖与底图融为一体（平级），不再像贴纸浮在上面
+    drawGrid(); strokeLand()
     // 省界
     if (provVisible && prov) for (const ring of prov.borders) drawPolyline(ring, PROV, 1.0)
     // 覆盖数据
@@ -396,12 +414,24 @@ export function createFlatCoverage(canvas) {
     ctx.restore()
   }
 
+  // ---- 缩放进度（底部状态栏进度条）：scale[0.9,60] 对数映射到 t∈[0,1]，t=0 缩小到底、t=1 放大到底。
+  // 对数映射 → 进度条每格的缩放倍率恒定，放大时绝对步进更细，支持精细化缩放。
+  const SMIN = 0.9, SMAX = 60, _lnS0 = Math.log(SMIN), _lnS1 = Math.log(SMAX)
+  const scaleToT = () => (Math.log(scale) - _lnS0) / (_lnS1 - _lnS0)
+  let onZoom = null
   // ---- 交互 ----
   function onWheel(e) {
     e.preventDefault()
     const r = canvas.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top
     const kk = k(), wx = (mx - tx) / kk, wy = (my - ty) / kk
-    scale = clamp(scale * Math.exp(-e.deltaY * 0.0015), 0.9, 60)
+    scale = clamp(scale * Math.exp(-e.deltaY * 0.0015), SMIN, SMAX)
+    const k2 = k(); tx = mx - wx * k2; ty = my - wy * k2; invalidateStatic(); requestDraw()
+    if (onZoom) onZoom(scaleToT())
+  }
+  // 进度条设缩放：绕画布中心缩放（锚定中心世界点），t∈[0,1]
+  function setZoomT(t) {
+    const mx = cw / 2, my = ch / 2, kk = k(), wx = (mx - tx) / kk, wy = (my - ty) / kk
+    scale = clamp(Math.exp(_lnS0 + Math.max(0, Math.min(1, t)) * (_lnS1 - _lnS0)), SMIN, SMAX)
     const k2 = k(); tx = mx - wx * k2; ty = my - wy * k2; invalidateStatic(); requestDraw()
   }
   let dragging = false, lx = 0, ly = 0
@@ -417,7 +447,7 @@ export function createFlatCoverage(canvas) {
   }
   function onUp() { if (beamDragging && onBeamDrag) onBeamDrag(null, 'end'); dragging = false; beamDragging = false; canvas.style.cursor = beamDragMode ? 'move' : 'grab' }
   function onLeave() { onUp(); if (onHover) onHover(null) }       // 移出地图：清空读数
-  function onDbl() { fit(); invalidateStatic(); requestDraw() }
+  function onDbl() { fit(); invalidateStatic(); requestDraw(); if (onZoom) onZoom(scaleToT()) }
   // 屏幕坐标 -> 经纬度（投影逆运算）；超出地图范围返回 null
   function screenToLonLat(clientX, clientY) {
     const r = canvas.getBoundingClientRect(), kk = k()
@@ -475,6 +505,10 @@ export function createFlatCoverage(canvas) {
     setProvincesVisible(v) { provVisible = !!v; invalidateStatic(); requestDraw() },
     setOnRightClick(fn) { onRightClick = fn },
     setOnHover(fn) { onHover = fn },
+    // 缩放进度条接口：getZoom 读当前进度、setZoom 设到进度 t、setOnZoom 注册滚轮缩放回填回调
+    getZoom: () => scaleToT(),
+    setZoom: (t) => setZoomT(t),
+    setOnZoom(fn) { onZoom = fn },
     setBeamDragMode(v) { beamDragMode = !!v; beamDragging = false; canvas.style.cursor = v ? 'move' : 'grab' },
     setOnBeamDrag(fn) { onBeamDrag = fn },
     setMarkers(points, stations, trajectories) { mk = { points: points || [], stations: stations || [], trajectories: trajectories || [] }; invalidateStatic(); requestDraw() },
