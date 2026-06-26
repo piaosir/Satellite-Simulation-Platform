@@ -227,14 +227,16 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
     while (sats.value.some((x) => x.folder === f)) f = `${base}·${++i}`
     return f
   }
-  // 往树里加一颗卫星：noradId 非空=星座关联星（位置随星历，由页面解算）；否则自定义星（固定 lon/lat/alt）
+  // 往树里加一颗卫星：noradId 非空=星座关联星（位置随星历，由页面解算）；
+  // 否则 elements 非空=轨道根数模拟星（位置由页面 SGP4 自行解算，随时间动）；都没有=固定 lon/lat/alt 自定义星。
   function addSatellite(draft) {
     const folder = genFolder(draft.name)
     const node = {
       folder, satName: (draft.name || '卫星').trim() || '卫星',
-      kind: draft.noradId ? 'linked' : 'custom',
+      kind: draft.noradId ? 'linked' : (draft.elements ? 'orbit' : 'custom'),
       lon: Number(draft.lon) || 0, lat: Number(draft.lat) || 0, altKm: Number(draft.altKm) || GEO_ALT,
       noradId: draft.noradId || null,
+      elements: draft.elements || null,
       els: draft.els != null ? draft.els : '5,10',
       elevColor: draft.color || nextElevColor(), elevShow: true, elevWidth: Number(draft.elevWidth) || 1.3,
       elevLabelSize: Number(draft.elevLabelSize) || 13,
@@ -247,8 +249,8 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
   }
   function updateSatellite(folder, patch) {
     const n = sats.value.find((x) => x.folder === folder); if (!n) return
-    // 位置（经纬度/高度）变化 → 编辑后让该星天线覆盖图跟随重投影（仰角线由页面 redrawSats 处理）
-    const moved = ('lon' in patch && Number(patch.lon) !== n.lon) || ('lat' in patch && Number(patch.lat) !== n.lat) || ('altKm' in patch && Number(patch.altKm) !== n.altKm)
+    // 位置（经纬度/高度 或 轨道根数）变化 → 编辑后让该星天线覆盖图跟随重投影（仰角线由页面 redrawSats 处理）
+    const moved = ('lon' in patch && Number(patch.lon) !== n.lon) || ('lat' in patch && Number(patch.lat) !== n.lat) || ('altKm' in patch && Number(patch.altKm) !== n.altKm) || ('elements' in patch)
     Object.assign(n, patch)
     if (moved) reprojectSat(folder)
   }
@@ -485,7 +487,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
     // wantFills=cfg.fill：只画等值线时跳过逐档填充裁剪（关填充的大波束拖拽省一半三角化）；box：只三角化覆盖热区
     const geo = need ? bandGeometry({ lon: beam.proj.lon, lat: beam.proj.lat, vis: beam.proj.vis, db: field.db, NX: beam.proj.NX, NY: beam.proj.NY }, asc.map((x) => x.abs), cfg.fill, box, cfg.fill ? satHull(c) : null) : null
     // 分带填充：每档一个颜色 + 该档环带多边形（升序，逐层从外到内绘制，非嵌套→无重叠透明叠加）
-    const fillBands = cfg.fill && geo ? asc.map((x, i) => ({ color: cssRgb(x.color), polys: geo.fills[i] })).filter((b) => b.polys.length) : null
+    const fillBands = cfg.fill && geo ? asc.map((x, i) => ({ color: cssRgb(x.color), verts: geo.fills[i].verts, counts: geo.fills[i].counts })).filter((b) => b.counts.length) : null
     // 等值线：每档一组线段（= 填充相邻档公共边）；数值标签按拼环后每条取最上端点。
     // 标签仅在「显示数值」开启时才拼环求锚点——关闭时跳过 stitchLoops，拖拽时省一笔。
     const segGroups = cfg.line && geo
@@ -578,16 +580,21 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
   }
   // 实时跟踪：linked 星随星历/时间轴移动 → 平移各选中天线的覆盖投影。
   // 由页面在 refreshPositions（1s 实时 / 时间轴拖动）调用。
-  function tickLive() {
-    if (!selected.value.length) return
-    let changed = false
-    for (const key of selected.value) {
+  // extraKey：性能指标表当前打开的天线 key。即使其覆盖未绘制（不在 selected），也需随星移动其 meta，
+  // 否则 getPerfContext 取到陈旧星位、表值不随时间轴波动。perfMoved 单独返回，供页面只在该表星动时重算。
+  function tickLive(extraKey = null) {
+    const keys = new Set(selected.value)
+    if (extraKey) keys.add(extraKey)
+    if (!keys.size) return { changed: false, perfMoved: false }
+    let changed = false, perfMoved = false
+    for (const key of keys) {
       const c = cache.get(key); if (!c || !c.meta) continue
       const node = sats.value.find((x) => x.folder === c.meta.folder)
-      if (!node || !node.noradId) continue                 // 仅星座关联星跟踪（固定星不动）
-      if (moveCoverage(c, key, liveOf(node))) changed = true
+      if (!node || (!node.noradId && !node.elements)) continue   // 仅星座关联星 / 轨道根数模拟星跟踪（固定星不动）
+      if (moveCoverage(c, key, liveOf(node))) { if (selected.value.includes(key)) changed = true; if (key === extraKey) perfMoved = true }
     }
-    if (changed) recompute()
+    if (changed) recompute()   // 仅绘制中的覆盖层变了才重绘；未绘制的性能表天线只需 meta 已更新
+    return { changed, perfMoved }
   }
   // 手改卫星信息（经纬度/高度）后，该星全部天线的覆盖图随之平移/缩放（与仰角线一同变化）。
   // 已加载的天线即时重投影；导入天线同步存盘快照，未加载的下次按新位置重建。
@@ -705,7 +712,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
     // 导入天线（已存盘的原始 GRD）随卫星一并保存：重载时据 file 从盘上重建（预置天线由 index 复现，不存）
     const satsState = sats.value.map((s) => ({
       folder: s.folder, kind: s.kind, satName: s.satName,
-      lon: s.lon, lat: s.lat, altKm: s.altKm, noradId: s.noradId,
+      lon: s.lon, lat: s.lat, altKm: s.altKm, noradId: s.noradId, elements: s.elements || null,
       els: s.els, elevColor: s.elevColor, elevShow: s.elevShow, elevWidth: s.elevWidth, elevLabelSize: s.elevLabelSize, iconSize: s.iconSize, labelSize: s.labelSize, labelShow: s.labelShow !== false,
       antennas: s.antennas.filter((a) => a.imported && a.file).map((a) => ({
         name: a.name, file: a.file, type: a.type || '', band: a.band || '', beams: a.beams, peakDb: a.peakDb, peak: a.peak,
@@ -727,7 +734,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
         if (!node) {
           if (!ss.kind || ss.kind === 'preset') continue   // 预置星已不在 index（如已删/改版）→ 跳过
           node = { folder: ss.folder, satName: ss.satName || '卫星', kind: ss.kind, antennas: [],
-            lon: ss.lon, lat: ss.lat, altKm: ss.altKm, noradId: ss.noradId || null,
+            lon: ss.lon, lat: ss.lat, altKm: ss.altKm, noradId: ss.noradId || null, elements: ss.elements || null,
             els: '5,10', elevColor: nextElevColor(), elevShow: false, elevWidth: 1.3, elevLabelSize: 13, iconSize: 30, labelSize: 14, labelShow: true }
           sats.value = [...sats.value, node]
         }
@@ -741,6 +748,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
         if (Number.isFinite(ss.lat)) node.lat = ss.lat
         if (Number.isFinite(ss.altKm)) node.altKm = ss.altKm
         node.noradId = ss.noradId || null
+        if ('elements' in ss) node.elements = ss.elements || null
         if (ss.els != null) node.els = ss.els
         if (ss.elevColor) node.elevColor = ss.elevColor
         if (typeof ss.elevShow === 'boolean') node.elevShow = ss.elevShow

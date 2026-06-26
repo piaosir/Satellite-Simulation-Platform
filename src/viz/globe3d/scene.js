@@ -607,7 +607,7 @@ export function createGlobeScene(container) {
     covGroup = g; scene.add(g)
   }
   // ===================== GRD 覆盖（独立图层：填充面 + 等值线，与烘焙 setCoverage 互不干扰） =====================
-  // fillBands=[{color:[r,g,b], polys:[[[lon,lat]...]]}]（分带填充多边形，可空）；segGroups=[{segs:[[[lon,lat],[lon,lat]]...], color, width, opacity}]（逐档等值线，可空）；
+  // fillBands=[{color:[r,g,b], verts:Float64Array[x,y,...], counts:Int32Array}]（分带填充扁平几何，可空）；segGroups=[{segs:[[[lon,lat],[lon,lat]]...], color, width, opacity}]（逐档等值线，可空）；
   // opts={alpha}。整层一个 group，重设即整体替换。
   let covFieldGroup = null
   let covLayers = new Map()   // 层 id → { group, li }：每个覆盖层(天线·波束)独立子组，支持拖拽时按层增量重建
@@ -628,14 +628,18 @@ export function createGlobeScene(container) {
   // dispose+重建是 GPU churn / command_buffer 崩溃风险的根因），同时内联 lla→vec 免去逐顶点 new Vector3。
   function makeFill(alpha) {
     const geo = new THREE.BufferGeometry()
+    // frustumCulled=false → 该网格的 boundingSphere 永不参与裁剪/拾取，故设一个固定大球占位，
+    // updateFill 不再每帧 computeBoundingSphere（大波束十几万顶点的逐帧遍历，纯属浪费）。
+    geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 2)
     const mat = new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, opacity: alpha != null ? alpha : 0.85, side: THREE.DoubleSide, depthWrite: false })
     const mesh = new THREE.Mesh(geo, mat); mesh.renderOrder = 5; mesh.frustumCulled = false
     return { geo, mat, mesh, posArr: null, colArr: null, idxArr: null, vcap: 0, icap: 0 }
   }
   const D2R_ = Math.PI / 180
+  // fillBands=[{color:[r,g,b], verts:Float64Array[x,y,...], counts:Int32Array(各多边形顶点数)}]（bandGeometry 扁平输出，零分配）
   function updateFill(fm, fillBands, alpha, lift) {
     let nv = 0, ni = 0
-    for (const fb of fillBands) for (const poly of fb.polys) if (poly.length >= 3) { nv += poly.length; ni += (poly.length - 2) * 3 }
+    for (const fb of fillBands) { nv += fb.verts.length >> 1; const cs = fb.counts; for (let j = 0; j < cs.length; j++) ni += (cs[j] - 2) * 3 }
     if (alpha != null) fm.mat.opacity = alpha
     if (!nv) { fm.mesh.visible = false; if (fm.geo.index) fm.geo.setDrawRange(0, 0); return }
     fm.mesh.visible = true
@@ -650,23 +654,25 @@ export function createGlobeScene(container) {
     let n = 0, ii = 0
     for (const fb of fillBands) {
       const cr = fb.color[0] / 255, cg = fb.color[1] / 255, cb = fb.color[2] / 255
-      for (const poly of fb.polys) {
-        if (poly.length < 3) continue
-        const start = n
-        for (const p of poly) {   // 内联 llaToVec(lat,lon,0)*lift（r=1）→ 免逐顶点 Vector3 分配
-          const phi = (90 - p[1]) * D2R_, theta = (p[0] + 180) * D2R_, sp = Math.sin(phi)
+      const verts = fb.verts, counts = fb.counts
+      let vi = 0
+      for (let j = 0; j < counts.length; j++) {
+        const plen = counts[j], start = n
+        for (let q = 0; q < plen; q++) {   // 内联 llaToVec(lat,lon,0)*lift（r=1）→ 免逐顶点 Vector3 分配
+          const lon = verts[(vi + q) * 2], lat = verts[(vi + q) * 2 + 1]
+          const phi = (90 - lat) * D2R_, theta = (lon + 180) * D2R_, sp = Math.sin(phi)
           const o3 = n * 3
           pos[o3] = -lift * sp * Math.cos(theta); pos[o3 + 1] = lift * Math.cos(phi); pos[o3 + 2] = lift * sp * Math.sin(theta)
           col[o3] = cr; col[o3 + 1] = cg; col[o3 + 2] = cb; n++
         }
-        for (let i = 1; i < poly.length - 1; i++) { idx[ii++] = start; idx[ii++] = start + i; idx[ii++] = start + i + 1 }   // 扇形三角化
+        for (let i = 1; i < plen - 1; i++) { idx[ii++] = start; idx[ii++] = start + i; idx[ii++] = start + i + 1 }   // 扇形三角化
+        vi += plen
       }
     }
     fm.geo.setDrawRange(0, ii)
     fm.geo.attributes.position.needsUpdate = true
     fm.geo.attributes.color.needsUpdate = true
     fm.geo.index.needsUpdate = true
-    fm.geo.computeBoundingSphere()
   }
   // 一层的「装饰」子物体（等值线 + 数值/峰值/名称标签 + 波束中心点/连线）：相对填充轻量，每次 patch 重建。
   function buildDeco(L, o, li) {

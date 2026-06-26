@@ -533,7 +533,7 @@ function refreshPositions() {
   }
   pushFocusSat()   // 同步 2D 平面图上聚焦卫星实时位置
   if (hasLinkedElev()) redrawSats()   // 星座关联星：仰角线随时间轴/实时跟踪
-  grd.tickLive()                      // 星座关联星：GRD 覆盖随时间轴/实时跟踪移动（无选中天线即空转）
+  if (grd.tickLive(perfKey.value || null).perfMoved) refreshPerf()   // 星动 → GRD 覆盖随时间轴移动；性能指标表也随之重算（取值依赖星位推出的 basis）
   if (satModal.value && satModal.value.noradId) liveTick.value++   // 关联星编辑中：驱动弹窗经纬度/高度刷新
 }
 
@@ -584,8 +584,9 @@ async function loadUniverse(silent) {
   let done = 0
   setS(`加载全部卫星 0/${keys.length + 1} …`)
   const tick = () => { done++; setS(`加载全部卫星 ${done}/${keys.length + 1} …`) }
+  const fetchedAts = []   // 各组实际下载落盘时间 → 合并视图取最新一份作为 OMM 显示时间
   const tasks = keys.map((key) => fetchGroupLiveOrSup(key)
-    .then((p) => { tick(); for (const s of p.sats) s._group = key; return p.sats })
+    .then((p) => { tick(); if (p.fetchedAt) fetchedAts.push(p.fetchedAt); for (const s of p.sats) s._group = key; return p.sats })
     .catch(() => { tick(); return [] }))
   const arrs = await Promise.all(tasks)
   // 并集（NORAD 去重）+ 分组归类映射
@@ -596,22 +597,25 @@ async function loadUniverse(silent) {
   }
   // 全部在轨（CelesTrak GROUP=active）并入全集；active 被 403/不可达时自动退化为分组并集
   let active = []
-  try { const ap = await fetchGroupLiveOrSup('active'); active = ap.sats } catch { /* ignore */ }
+  try { const ap = await fetchGroupLiveOrSup('active'); active = ap.sats; if (ap.fetchedAt) fetchedAts.push(ap.fetchedAt) } catch { /* ignore */ }
   tick()
   for (const s of active) if (!universe.has(s.noradId)) universe.set(s.noradId, s)
   // 归类：在已知分组里的标该组，其余标“其他”
   for (const s of universe.values()) s._group = groupOf.get(s.noradId) || 'other'
+  // 合并视图的下载时间：取各组最新一份（无则 null → 调用方回退 now）
+  universeFetchedAt = fetchedAts.length ? fetchedAts.reduce((a, b) => (b > a ? b : a)) : null
   return [...universe.values()]
 }
+let universeFetchedAt = null   // loadUniverse 产出的“各组最新下载时间”，供 loadAll/loadOther 显示
 async function loadAll() {
   const sats = await loadUniverse()
   if (!sats.length) { status.value = '暂无卫星数据（网络不可达）'; return }
-  ingest(sats, 'all', new Date().toISOString())
+  ingest(sats, 'all', universeFetchedAt || new Date().toISOString())
 }
 async function loadOther() {
   const others = (await loadUniverse()).filter((s) => s._group === 'other')
   if (!others.length) { status.value = '暂无“其他”卫星（或全集未加载成功）'; return }
-  ingest(others, 'other', new Date().toISOString())
+  ingest(others, 'other', universeFetchedAt || new Date().toISOString())
 }
 
 // ===================== 选择 / 搜索 =====================
@@ -983,8 +987,8 @@ function commitRenameAnt(sat, a) {
 // 仰角线显示开关（仰角值/颜色在卫星「✎」弹窗里编辑）
 function toggleSatElev(node) { node.elevShow = !node.elevShow; redrawSats() }
 function toggleSatLabel(node) { node.labelShow = node.labelShow === false; redrawSats(); if (grdOpen.value) grd.recompute() }   // 卫星名开关也影响 3D 覆盖连线(卫星↔波束中心)，需重绘覆盖层
-// 是否有显示中且关联星座的卫星（其仰角线/卫星名需随星历刷新位置）
-const hasLinkedElev = () => grdSats.value.some((s) => s.noradId && (s.elevShow || s.labelShow !== false))
+// 是否有显示中且位置随时间变化的卫星（星座关联星 / 轨道根数模拟星）：其仰角线/卫星名需随时间刷新位置
+const hasLinkedElev = () => grdSats.value.some((s) => (s.noradId || s.elements) && (s.elevShow || s.labelShow !== false))
 // 随 GRD「清除绘图」一并隐藏所有仰角线与卫星名（保留各星配置，再点亮即重绘）
 function grdClearDrawing() {
   grd.clearDrawing()
@@ -1011,12 +1015,13 @@ const satModalPos = computed(() => {
   return { lon: m.lon, lat: m.lat, altKm: m.altKm }
 })
 
+const defaultElements = () => ({ altKm: 500, ecc: 0, incl: 53, raan: 0, argp: 0, ma: 0 })
 function defaultSatDraft() {
-  return { folder: null, name: '', lon: 0, lat: 0, altKm: GEO_ALT, color: '', els: '5,10', noradId: null, elevWidth: 1.3, elevLabelSize: 13, iconSize: 30, labelSize: 14 }
+  return { folder: null, name: '', lon: 0, lat: 0, altKm: GEO_ALT, color: '', els: '5,10', noradId: null, posMode: 'fixed', elements: defaultElements(), elevWidth: 1.3, elevLabelSize: 13, iconSize: 30, labelSize: 14 }
 }
 function openAddSat() { satModal.value = defaultSatDraft(); satPick.value = false; satSearchKw.value = ''; satSearchRes.value = [] }
 // 编辑已有卫星（含预置星）：名称/位置/关联/仰角线/图标与标签大小都可改
-function editSat(node) { satModal.value = { folder: node.folder, name: node.satName, lon: node.lon, lat: node.lat, altKm: node.altKm, color: node.elevColor, els: node.els, noradId: node.noradId, kind: node.kind, elevWidth: node.elevWidth || 1.3, elevLabelSize: node.elevLabelSize || 13, iconSize: node.iconSize || 30, labelSize: node.labelSize || 14 }; satPick.value = false; satSearchKw.value = ''; satSearchRes.value = [] }
+function editSat(node) { satModal.value = { folder: node.folder, name: node.satName, lon: node.lon, lat: node.lat, altKm: node.altKm, color: node.elevColor, els: node.els, noradId: node.noradId, kind: node.kind, posMode: node.elements ? 'orbit' : 'fixed', elements: node.elements ? { ...node.elements } : defaultElements(), elevWidth: node.elevWidth || 1.3, elevLabelSize: node.elevLabelSize || 13, iconSize: node.iconSize || 30, labelSize: node.labelSize || 14 }; satPick.value = false; satSearchKw.value = ''; satSearchRes.value = [] }
 function closeSatModal() { satModal.value = null; satPick.value = false; satSearchKw.value = ''; satSearchRes.value = [] }
 function applyGeoAlt() { if (satModal.value) satModal.value.altKm = GEO_ALT }   // 一键GEO：轨道高度设为 GEO
 
@@ -1024,26 +1029,67 @@ function saveSatModal() {
   const m = satModal.value; if (!m) return
   // 关联星：保存当前星历解算的位置作为存储回退值（无星座时按此投影），而非草稿里的陈旧值
   if (m.noradId) { const p = satLivePos({ noradId: m.noradId }); if (Number.isFinite(p.lon)) { m.lon = p.lon; m.lat = p.lat; m.altKm = p.altKm } }
+  // 轨道根数模拟星：校验根数 → 试建 satrec → 取当前星下点作为静态回退位置（lon/lat/altKm）
+  const orbit = !m.noradId && m.posMode === 'orbit'
+  let elements = null
+  if (orbit) {
+    const el = m.elements || {}
+    const alt = Number(el.altKm), ecc = Number(el.ecc), incl = Number(el.incl)
+    if (!(alt > 0) || !(ecc >= 0 && ecc < 1) || !(incl >= 0 && incl <= 180)) { alert('轨道根数非法：需 轨道高度>0、0≤偏心率<1、0≤倾角≤180'); return }
+    elements = { altKm: alt, ecc, incl, raan: Number(el.raan) || 0, argp: Number(el.argp) || 0, ma: Number(el.ma) || 0 }
+    let rec; try { rec = elementsToSatrec(elements) } catch { rec = null }
+    if (!rec || rec.error) { alert('该组根数无法构造有效轨道（可能已衰减或超界），请调整'); return }
+    const now = calcAt(); const pv = sat.propagate(rec, now)
+    if (!pv || !pv.position) { alert('轨道传播失败，请检查根数'); return }
+    const gd = sat.eciToGeodetic(pv.position, sat.gstime(now))
+    m.lon = sat.degreesLong(gd.longitude); m.lat = sat.degreesLat(gd.latitude); m.altKm = gd.height
+  }
   const lon = Number(m.lon), lat = Number(m.lat), altKm = Number(m.altKm)
   if (!validLon(lon) || !validLat(lat) || !(altKm > 0)) { return }   // 非法输入不保存
   if (m.folder) {
-    // 所有星（含预置）都可改名称/经纬度/轨道高度/关联/仰角线。预置星 kind 保持 'preset'（仍属平台数据、不在树里删）；
-    // 自定义/星座星按是否关联 NORAD 切换 custom/linked。是否随星历实时跟踪由 noradId 决定，与 kind 无关。
-    const patch = { satName: (m.name || '卫星').trim() || '卫星', lon, lat, altKm, noradId: m.noradId || null, els: m.els || '', elevColor: m.color || '#66ddff', elevWidth: Number(m.elevWidth) || 1.3, elevLabelSize: Number(m.elevLabelSize) || 13, iconSize: Number(m.iconSize) || 30, labelSize: Number(m.labelSize) || 14 }
-    if (m.kind !== 'preset') patch.kind = m.noradId ? 'linked' : 'custom'
+    // 所有星（含预置）都可改名称/位置/关联/仰角线。预置星 kind 保持 'preset'（仍属平台数据、不在树里删）；
+    // 自定义/星座/模拟星按定位方式切换 custom/linked/orbit。是否随时间跟踪由 noradId / elements 决定，与 kind 无关。
+    const patch = { satName: (m.name || '卫星').trim() || '卫星', lon, lat, altKm, noradId: m.noradId || null, elements: orbit ? elements : null, els: m.els || '', elevColor: m.color || '#66ddff', elevWidth: Number(m.elevWidth) || 1.3, elevLabelSize: Number(m.elevLabelSize) || 13, iconSize: Number(m.iconSize) || 30, labelSize: Number(m.labelSize) || 14 }
+    if (m.kind !== 'preset') patch.kind = m.noradId ? 'linked' : (orbit ? 'orbit' : 'custom')
     grd.updateSatellite(m.folder, patch)
   } else {
-    grd.addSatellite({ name: m.name, lon, lat, altKm, noradId: m.noradId, els: m.els, color: m.color, elevWidth: m.elevWidth, elevLabelSize: m.elevLabelSize, iconSize: m.iconSize, labelSize: m.labelSize })
+    grd.addSatellite({ name: m.name, lon, lat, altKm, noradId: m.noradId, elements, els: m.els, color: m.color, elevWidth: m.elevWidth, elevLabelSize: m.elevLabelSize, iconSize: m.iconSize, labelSize: m.labelSize })
   }
   closeSatModal(); redrawSats()
 }
 function removeSat(node) { grd.removeSatellite(node.folder); redrawSats() }
 
-// 当前生效位置：星座关联星按 calcAt() 实时解算，否则取节点存储值
+// ===== 轨道根数模拟星：用经典根数自建 satrec，复用 SGP4 引擎自行解算（不并入真实星座 entries）=====
+const MU = 398600.4418   // 地球引力常数 km^3/s^2
+// 经典轨道根数 → satrec（复用 omm2satrec；历元取当前时刻）。elements 角度单位 °，altKm 视作近地点高度（圆轨道 e=0 即轨道高度）。
+function elementsToSatrec(el) {
+  const ecc = Math.max(0, Math.min(0.999, Number(el.ecc) || 0))
+  const a = (RE + (Number(el.altKm) || 0)) / (1 - ecc)   // 半长轴：a=(RE+hp)/(1-e)
+  const n = Math.sqrt(MU / (a * a * a))                  // 平均运动 rad/s
+  const meanMotion = 86400 * n / (2 * Math.PI)           // rev/day（omm2satrec 所需）
+  return sat.omm2satrec({
+    noradId: 'SIM', epoch: new Date().toISOString(),
+    meanMotion, ecc, incl: Number(el.incl) || 0, raan: Number(el.raan) || 0,
+    argp: Number(el.argp) || 0, ma: Number(el.ma) || 0, bstar: 0, mdot: 0, mddot: 0
+  })
+}
+// 模拟星 satrec 缓存：根数签名不变则复用（历元随之冻结 → 同一会话内相位连续；改根数/重载时重建）
+const customSatrecs = new Map()   // folder -> { sig, rec }
+function orbitSatrec(node) {
+  const sig = JSON.stringify(node.elements)
+  const hit = customSatrecs.get(node.folder)
+  if (hit && hit.sig === sig) return hit.rec
+  const rec = elementsToSatrec(node.elements)
+  customSatrecs.set(node.folder, { sig, rec })
+  return rec
+}
+// 当前生效位置：星座关联星按 calcAt() 实时解算；轨道根数模拟星按自建 satrec 解算；否则取节点存储值
 function satLivePos(node) {
   if (node.noradId) {
     const en = entries.find((x) => String(x.noradId) === String(node.noradId)) || searchPool.find((x) => String(x.noradId) === String(node.noradId))
     if (en) { const now = calcAt(); const pv = sat.propagate(en.rec, now); if (pv && pv.position) { const gd = sat.eciToGeodetic(pv.position, sat.gstime(now)); return { lon: sat.degreesLong(gd.longitude), lat: sat.degreesLat(gd.latitude), altKm: gd.height } } }
+  } else if (node.elements) {
+    try { const now = calcAt(); const pv = sat.propagate(orbitSatrec(node), now); if (pv && pv.position) { const gd = sat.eciToGeodetic(pv.position, sat.gstime(now)); return { lon: sat.degreesLong(gd.longitude), lat: sat.degreesLat(gd.latitude), altKm: gd.height } } } catch { /* 根数异常 → 回退静态值 */ }
   }
   return { lon: node.lon, lat: node.lat, altKm: node.altKm }
 }
@@ -1083,7 +1129,7 @@ function redrawSats() {
     const els = parseNums(node.els)
     const showElev = node.elevShow && els.length > 0
     if (!showLabel && !showElev) continue
-    const p = node.noradId ? satLivePos(node) : { lon: node.lon, lat: node.lat, altKm: node.altKm }
+    const p = (node.noradId || node.elements) ? satLivePos(node) : { lon: node.lon, lat: node.lat, altKm: node.altKm }
     if (!Number.isFinite(p.lon) || !Number.isFinite(p.lat) || !(p.altKm > 0)) continue
     const color = node.elevColor, colNum = cssToHex(color)
     if (showElev) {
@@ -1669,7 +1715,7 @@ onBeforeUnmount(() => {
                 <svg class="gsvg sat-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                   <path d="M13 7 9 3 5 7l4 4" /><path d="m17 11 4 4-4 4-4-4" /><path d="m8 12 4 4 6-6-4-4Z" /><path d="m16 8 3-3" /><path d="M9 21a6 6 0 0 0-6-6" />
                 </svg>
-                <span class="gsname" @click="grd.toggleExpand(sat.folder)" :title="sat.satName">{{ sat.satName }}<em v-if="sat.antennas.length">{{ sat.antennas.length }}</em></span>
+                <span class="gsname" @click="grd.toggleExpand(sat.folder)" :title="sat.satName">{{ sat.satName }}<em v-if="sat.antennas.length">{{ sat.antennas.length }}</em><i v-if="sat.elements" class="simtag" title="轨道根数模拟星：星下点随时间移动">轨</i></span>
                 <span class="sacts">
                   <span class="ic" title="导入 GRD：在该星下新建天线" @click.stop="grd.importGrd(sat)">＋</span>
                   <span class="ic" title="编辑卫星 / 仰角线 / 颜色" @click.stop="editSat(sat)">✎</span>
@@ -1922,9 +1968,24 @@ onBeforeUnmount(() => {
         <div class="sdbody">
           <div class="sdiv">卫星（图标 / 卫星名）</div>
           <div class="srow"><label>名称</label><input class="ci" v-model="satModal.name" placeholder="卫星名称" /></div>
-          <div class="srow"><label>经度</label><input class="ci" type="number" step="0.1" :value="satModalPos.lon" @input="satModal.lon = Number($event.target.value)" :disabled="!!satModal.noradId" :title="satModal.noradId ? '已关联星座卫星，位置随星历实时解算，不可手填' : ''" /><span class="u">°E</span></div>
-          <div class="srow"><label>纬度</label><input class="ci" type="number" step="0.1" :value="satModalPos.lat" @input="satModal.lat = Number($event.target.value)" :disabled="!!satModal.noradId" :title="satModal.noradId ? '已关联星座卫星，位置随星历实时解算，不可手填' : ''" /><span class="u">°N</span></div>
-          <div class="srow"><label>轨道高度</label><input class="ci" type="number" step="100" :value="satModalPos.altKm" @input="satModal.altKm = Number($event.target.value)" :disabled="!!satModal.noradId" :title="satModal.noradId ? '已关联星座卫星，位置随星历实时解算，不可手填' : ''" /><span class="u">km</span><span v-if="!satModal.noradId" class="geobtn" title="设为标准 GEO 轨道高度 35786km（NASA 标称值）" @click="applyGeoAlt">一键GEO</span></div>
+          <div v-if="!satModal.noradId" class="srow"><label>定位方式</label>
+            <span class="pmode" :class="{ on: satModal.posMode !== 'orbit' }" @click="satModal.posMode = 'fixed'">固定经纬度</span>
+            <span class="pmode" :class="{ on: satModal.posMode === 'orbit' }" @click="satModal.posMode = 'orbit'">轨道根数</span>
+          </div>
+          <template v-if="satModal.posMode !== 'orbit' || satModal.noradId">
+            <div class="srow"><label>经度</label><input class="ci" type="number" step="0.1" :value="satModalPos.lon" @input="satModal.lon = Number($event.target.value)" :disabled="!!satModal.noradId" :title="satModal.noradId ? '已关联星座卫星，位置随星历实时解算，不可手填' : ''" /><span class="u">°E</span></div>
+            <div class="srow"><label>纬度</label><input class="ci" type="number" step="0.1" :value="satModalPos.lat" @input="satModal.lat = Number($event.target.value)" :disabled="!!satModal.noradId" :title="satModal.noradId ? '已关联星座卫星，位置随星历实时解算，不可手填' : ''" /><span class="u">°N</span></div>
+            <div class="srow"><label>轨道高度</label><input class="ci" type="number" step="100" :value="satModalPos.altKm" @input="satModal.altKm = Number($event.target.value)" :disabled="!!satModal.noradId" :title="satModal.noradId ? '已关联星座卫星，位置随星历实时解算，不可手填' : ''" /><span class="u">km</span><span v-if="!satModal.noradId" class="geobtn" title="设为标准 GEO 轨道高度 35786km（NASA 标称值）" @click="applyGeoAlt">一键GEO</span></div>
+          </template>
+          <template v-else>
+            <div class="srow"><label>轨道高度</label><input class="ci" type="number" step="50" v-model.number="satModal.elements.altKm" /><span class="u">km</span></div>
+            <div class="srow"><label>偏心率</label><input class="ci" type="number" step="0.001" min="0" max="0.999" v-model.number="satModal.elements.ecc" /></div>
+            <div class="srow"><label>倾角</label><input class="ci" type="number" step="0.1" v-model.number="satModal.elements.incl" /><span class="u">°</span></div>
+            <div class="srow"><label>升交点赤经</label><input class="ci" type="number" step="0.1" v-model.number="satModal.elements.raan" /><span class="u">°</span></div>
+            <div class="srow"><label>近地点幅角</label><input class="ci" type="number" step="0.1" v-model.number="satModal.elements.argp" /><span class="u">°</span></div>
+            <div class="srow"><label>平近点角</label><input class="ci" type="number" step="0.1" v-model.number="satModal.elements.ma" /><span class="u">°</span></div>
+            <div class="tip2">轨道根数模拟星：星下点 / 覆盖足迹随时间轴 / 实时模式移动（历元取保存时刻）。偏心率&gt;0 时轨道高度按近地点高度计。</div>
+          </template>
           <div class="srow"><label>图标大小</label><input class="rng" type="range" min="10" max="64" step="1" v-model.number="satModal.iconSize" /><span class="u">{{ satModal.iconSize }}</span></div>
           <div class="srow"><label>卫星名字号</label><input class="rng" type="range" min="1" max="30" step="1" v-model.number="satModal.labelSize" /><span class="u">{{ satModal.labelSize }}</span></div>
 
@@ -2311,6 +2372,7 @@ onBeforeUnmount(() => {
 .gsat .gsname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
 .gsat .gsname:hover { color: var(--accent); }
 .gsat .gsname em { font-style: normal; margin-left: 5px; color: var(--text-faint); font-family: var(--font-mono); font-size: 10.5px; }
+.gsat .gsname .simtag { font-style: normal; margin-left: 5px; padding: 0 4px; border: 1px solid var(--accent); border-radius: 2px; color: var(--accent); font-size: 10px; vertical-align: middle; }
 .gsvg { flex: none; width: 14px; height: 14px; }
 .gsat .sat-svg { color: #000; opacity: .92; }
 .gant .ant-svg { width: 13px; height: 13px; color: var(--text-faint); transition: color .12s; }
@@ -2579,6 +2641,9 @@ onBeforeUnmount(() => {
 .sdbody .sdiv:first-child { margin-top: 0; padding-top: 0; border-top: none; }
 .pickbtn { flex: 1; text-align: center; border: 1px solid var(--border); color: var(--text-muted); padding: 4px 8px; cursor: pointer; font-size: 12px; }
 .pickbtn:hover { border-color: var(--accent); color: var(--text); }
+.pmode { flex: 1; text-align: center; border: 1px solid var(--border); color: var(--text-muted); padding: 4px 8px; cursor: pointer; font-size: 12px; }
+.pmode:hover { border-color: var(--accent); color: var(--text); }
+.pmode.on { border-color: var(--accent); background: var(--accent); color: #fff; }
 .sres { border: 1px solid var(--border); max-height: 150px; overflow-y: auto; margin-bottom: 8px; }
 .sresi { display: flex; align-items: center; gap: 6px; padding: 4px 8px; cursor: pointer; font-size: 11.5px; }
 .sresi:hover { background: var(--bg); }

@@ -259,19 +259,42 @@ export function createFlatCoverage(canvas) {
   function layerBounds(L) {
     let lo = Infinity, hi = -Infinity
     const upd = (lon) => { const x = lon - LON0; if (x < lo) lo = x; if (x > hi) hi = x }
-    if (L.fillBands) for (const fb of L.fillBands) for (const poly of fb.polys) for (const p of poly) upd(p[0])
+    if (L.fillBands) for (const fb of L.fillBands) { const v = fb.verts; for (let i = 0; i < v.length; i += 2) upd(v[i]) }
+    if (L.segGroups) for (const grp of L.segGroups) for (const sg of (grp.segs || [])) { upd(sg[0][0]); upd(sg[1][0]) }
     if (lo > hi) return null
     return { lo, hi }
   }
   function buildFillPaths(fillBands) {
     return fillBands.map((fb) => {
       const path = new Path2D()
-      for (const poly of fb.polys) {
-        const u = unwrap(poly)   // 按相邻点就近解缠：跨 ±180° 的多边形不会被直线横扫全图
-        for (let i = 0; i < u.length; i++) { const x = u[i][0] - LON0, y = 90 - u[i][1]; i === 0 ? path.moveTo(x, y) : path.lineTo(x, y) }
+      const verts = fb.verts, counts = fb.counts
+      let vi = 0
+      for (let j = 0; j < counts.length; j++) {
+        const plen = counts[j]
+        // 扁平缓冲上就近解缠（跨 ±180° 的多边形不会被直线横扫全图）：首点原值，后续相对滚动 prev 取最近副本
+        let prev = verts[vi * 2]
+        path.moveTo(prev - LON0, 90 - verts[vi * 2 + 1])
+        for (let q = 1; q < plen; q++) {
+          let lo = verts[(vi + q) * 2]; while (lo - prev > 180) lo -= 360; while (lo - prev < -180) lo += 360
+          path.lineTo(lo - LON0, 90 - verts[(vi + q) * 2 + 1]); prev = lo
+        }
         path.closePath()
+        vi += plen
       }
       return { color: 'rgb(' + fb.color[0] + ',' + fb.color[1] + ',' + fb.color[2] + ')', path }
+    })
+  }
+  // 等值线：与填充同策略——每档一条「世界坐标」Path2D（x=lon-LON0, y=90-lat），仅在 setField/patchField 时烘一次。
+  // draw() 随 pan/zoom 只用 setTransform 平移缩放矢量描边（每帧零路径构建），±360 环绕在 drawField 内按视口裁剪。
+  // 段两端就近解缠（跨 ±180° 不被直线横扫全图）。线宽在描边时 /kk 保持恒定屏幕 px。
+  function buildSegPaths(segGroups) {
+    return segGroups.map((grp) => {
+      const path = new Path2D()
+      for (const sg of (grp.segs || [])) {
+        let a = sg[0][0], b = sg[1][0]; while (b - a > 180) b -= 360; while (b - a < -180) b += 360
+        path.moveTo(a - LON0, 90 - sg[0][1]); path.lineTo(b - LON0, 90 - sg[1][1])
+      }
+      return { color: grp.color || 'rgba(255,255,255,0.9)', width: grp.width || 1.2, path }
     })
   }
 
@@ -290,21 +313,18 @@ export function createFlatCoverage(canvas) {
       }
     }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.globalAlpha = 1; ctx.restore()
-    // 逐档等值线（多层，每层每档一色）：段两端就近解缠，三档环绕
+    // 逐档等值线（多层，每层每档一色）：复用缓存的世界坐标 Path2D，setTransform 平移缩放矢量描边（每帧零构建），
+    // ±360 环绕按视口裁剪只描可见副本（与填充同策略）。线宽 /kk 保持恒定屏幕 px。
     ctx.lineJoin = 'round'; ctx.lineCap = 'round'
     for (const L of fieldLayers) {
-      for (const grp of (L.segGroups || [])) {
-        if (!grp.segs || !grp.segs.length) continue
-        const path = new Path2D()
-        for (const sg of grp.segs) {
-          let a = sg[0][0], b = sg[1][0]; while (b - a > 180) b -= 360; while (b - a < -180) b += 360
-          const ax = (a - LON0) * kk + tx, ay = (90 - sg[0][1]) * kk + ty
-          const bx = (b - LON0) * kk + tx, by = (90 - sg[1][1]) * kk + ty
-          for (const off of [-360, 0, 360]) { const o = off * kk; path.moveTo(ax + o, ay); path.lineTo(bx + o, by) }
-        }
-        ctx.strokeStyle = grp.color || 'rgba(255,255,255,0.9)'; ctx.lineWidth = grp.width || 1.2; ctx.stroke(path)
+      if (!L.segPaths || !L.segPaths.length) continue
+      for (const off of [-360, 0, 360]) {
+        if (L.bounds && (L.bounds.hi + off < wl || L.bounds.lo + off > wr)) continue
+        ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * (tx + off * kk), dpr * ty)
+        for (const sp of L.segPaths) { ctx.strokeStyle = sp.color; ctx.lineWidth = sp.width / kk; ctx.stroke(sp.path) }
       }
     }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
   }
   // GRD 标注层（天线名 / 波束中心点 / 数值标签）：画在填充+等值线之上，随各层 bore/segGroups 数据
   function drawFieldOverlays() {
@@ -504,10 +524,10 @@ export function createFlatCoverage(canvas) {
 
   return {
     setGeom(g) { geom = g; invalidateStatic(); requestDraw() },
-    // GRD 覆盖多层：layers=[{fillBands:[{color:[r,g,b], polys:[[[lon,lat]...]]}]|null, segGroups:[...]}]；
+    // GRD 覆盖多层：layers=[{fillBands:[{color:[r,g,b], verts:Float64Array[x,y,...], counts:Int32Array}]|null, segGroups:[...]}]；
     // opts={alpha}。setField 时把每层 fillBands 烘成各档世界坐标 Path2D 缓存（fillPaths），draw 只设变换矢量填充。整体替换。
     setField(layers, opts) {
-      fieldLayers = (layers || []).map((L) => ({ ...L, fillPaths: L.fillBands ? buildFillPaths(L.fillBands) : null, bounds: layerBounds(L) }))
+      fieldLayers = (layers || []).map((L) => ({ ...L, fillPaths: L.fillBands ? buildFillPaths(L.fillBands) : null, segPaths: L.segGroups ? buildSegPaths(L.segGroups) : null, bounds: layerBounds(L) }))
       if (opts) { if (opts.alpha != null) fieldAlpha = opts.alpha; fieldOpts = { ...fieldOpts, ...opts } }
       requestDraw()
     },
@@ -515,7 +535,7 @@ export function createFlatCoverage(canvas) {
     patchField(layers, opts) {
       if (opts) { if (opts.alpha != null) fieldAlpha = opts.alpha; fieldOpts = { ...fieldOpts, ...opts } }
       for (const L of (layers || [])) {
-        const entry = { ...L, fillPaths: L.fillBands ? buildFillPaths(L.fillBands) : null, bounds: layerBounds(L) }
+        const entry = { ...L, fillPaths: L.fillBands ? buildFillPaths(L.fillBands) : null, segPaths: L.segGroups ? buildSegPaths(L.segGroups) : null, bounds: layerBounds(L) }
         const i = L.id != null ? fieldLayers.findIndex((x) => x.id === L.id) : -1
         if (i >= 0) fieldLayers[i] = entry; else fieldLayers.push(entry)
       }

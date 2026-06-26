@@ -131,12 +131,17 @@ module.exports = function createOmm(getCore) {
   const valid = (t) => t && /MEAN_MOTION/i.test(t)
   const isToday = (d) => { const n = new Date(), t = new Date(d); return n.getFullYear() === t.getFullYear() && n.getMonth() === t.getMonth() && n.getDate() === t.getDate() }
 
-  // 取某组 OMM CSV 文本：本地有“今天”的缓存 → 直接用（一天一次）；否则联网（主端点重试3次→补充端点重试2次）→ 命中落盘；再失败回退任意本地缓存（离线优先）。
+  // 缓存文件的写入时间 = 该份数据真正从官网下载落盘的时刻 → 作为“OMM 下载时间”回传（离线复用旧缓存时即旧时间）。
+  const cacheMtime = (cf) => { try { return fs.statSync(cf).mtime.toISOString() } catch { return null } }
+
+  // 取某组 OMM CSV：返回 { text, fetchedAt }。fetchedAt 恒为缓存文件 mtime（= 该数据实际从 CelesTrak 下载落盘的时间），
+  // 而非“此刻”——这样复用今日/旧缓存时显示的也是真实下载时间。本地有“今天”的缓存 → 直接用（一天一次）；
+  // 否则联网（主端点重试3次→补充端点重试2次）→ 命中落盘；再失败回退任意本地缓存（离线优先）。
   async function fetchCsv(key) {
     if (!GROUP_QUERY[key]) throw new Error('unknown group: ' + key)
     const cf = csvCacheFile(key)
     // 一天一次：缓存文件是今天写的就直接用，不再联网
-    try { const st = fs.statSync(cf); if (isToday(st.mtime)) { const c = fs.readFileSync(cf, 'utf8'); if (valid(c)) { console.log('[omm] 用今日缓存:', key); return c } } } catch {}
+    try { const st = fs.statSync(cf); if (isToday(st.mtime)) { const c = fs.readFileSync(cf, 'utf8'); if (valid(c)) { console.log('[omm] 用今日缓存:', key); return { text: c, fetchedAt: st.mtime.toISOString() } } } } catch {}
     console.log('[omm] fetchCsv 开始:', key, '->', csvUrl(key))
     let text = null
     for (let i = 0; i < 3 && !valid(text); i++) text = await httpGetText(csvUrl(key))
@@ -144,8 +149,8 @@ module.exports = function createOmm(getCore) {
       console.log('[omm] 主端点失败，转补充端点:', supCsvUrl(key))
       for (let i = 0; i < 2 && !valid(text); i++) text = await httpGetText(supCsvUrl(key))
     }
-    if (valid(text)) { console.log('[omm] fetchCsv 成功:', key, text.length, 'bytes'); try { fs.writeFileSync(csvCacheFile(key), text) } catch {} ; return text }
-    try { const c = fs.readFileSync(csvCacheFile(key), 'utf8'); if (valid(c)) { console.log('[omm] 用本地缓存:', key); return c } } catch {}
+    if (valid(text)) { console.log('[omm] fetchCsv 成功:', key, text.length, 'bytes'); try { fs.writeFileSync(cf, text) } catch {} ; return { text, fetchedAt: cacheMtime(cf) || new Date().toISOString() } }
+    try { const c = fs.readFileSync(cf, 'utf8'); if (valid(c)) { console.log('[omm] 用本地缓存:', key); return { text: c, fetchedAt: cacheMtime(cf) } } } catch {}
     console.error('[omm] fetchCsv 彻底失败:', key)
     throw new Error('celestrak.org 不可达且无本地缓存（国内访问该站通常需系统代理/VPN）')
   }
