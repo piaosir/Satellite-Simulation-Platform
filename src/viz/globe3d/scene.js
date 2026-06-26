@@ -11,6 +11,7 @@ import topo from './data/countries-10m.json'
 import NAMES from './data/country-names-zh.json'
 import { CHINA_IDS, NO_LABEL_IDS } from './cnClaims.js'
 import { NANHAI_DASHES, NANHAI_WIDTH_MUL, NANHAI_MIN_WIDTH } from '../nanhaiDashes.js'
+import { antarcticaFillRings } from './antarctica.js'
 
 const RE = 6371
 
@@ -30,11 +31,9 @@ const OCEAN = '#15426b'
 const CHINA = '#b85a52'   // 中国底色：降低饱和度的砖红（原 #c62f2f 太炸眼）
 const ICE = '#edf2f6'     // 极地冰盖：白色填充（格陵兰 304、南极 010）
 const ICE_IDS = new Set(['304', '010'])
-// 北极冰盖：高纬陆地（加拿大北部、俄罗斯北部、北极群岛等）随纬度渐变染白，
-// 北极圈附近(EDGE)起淡入、FULL 以北全白；只染陆地，北冰洋保持海色。
-const ICE_LAT_EDGE = 66.5, ICE_LAT_FULL = 75
-// 南极极冠：数据集南极洲只到约 -85°，极点处留有圆形空洞，补一块极冠盖到 -90°。
-const SOUTH_CAP_LAT = -82
+// 北极岛屿冰盖：质心纬度 ≥ ARCTIC_ISLAND_LAT 的「整块多边形」染冰白（格陵兰/加拿大北极群岛/俄罗斯北极诸岛/斯瓦尔巴等离散海岛）；
+// 各大陆与阿拉斯加/冰岛（质心 <65°）保持普通陆地色。不再按纬度逐顶点渐变。
+const ARCTIC_ISLAND_LAT = 70
 
 function centroidLonLat(geom) {
   const polys = geom.type === 'Polygon' ? [geom.coordinates] : geom.coordinates
@@ -71,18 +70,11 @@ function buildLandMesh(features) {
   const MAXSEG = 3            // 三角形最长边超过该度数就细分
   const positions = [], colors = []
   const col = new THREE.Color()
-  const ICE_COL = new THREE.Color(ICE), _tmpCol = new THREE.Color()
 
   function pushVert(lon, lat) {
     const v = llaToVec(lat, lon, 0)   // 半径 1，贴在海洋球(0.999)之上
     positions.push(v.x, v.y, v.z)
-    // 高纬度顶点向冰色渐变（北极圈以北逐渐染白）；细分后顶点稠密，渐变边自然柔和。
-    let c = col
-    if (lat > ICE_LAT_EDGE) {
-      const t = lat >= ICE_LAT_FULL ? 1 : (lat - ICE_LAT_EDGE) / (ICE_LAT_FULL - ICE_LAT_EDGE)
-      c = _tmpCol.copy(col).lerp(ICE_COL, t)
-    }
-    colors.push(c.r, c.g, c.b)
+    colors.push(col.r, col.g, col.b)   // 颜色按「多边形」决定（北极岛屿整块冰白），不再逐顶点纬度渐变
   }
   const dist = (p, q) => Math.hypot(p[0] - q[0], p[1] - q[1])
   const mid = (p, q) => [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2]
@@ -134,18 +126,31 @@ function buildLandMesh(features) {
     const g = f.geometry
     if (!g) return
     const id = String(f.id)
-    col.set(CHINA_IDS.has(id) ? CHINA : ICE_IDS.has(id) ? ICE : LAND[idx % LAND.length])
+    // 南极洲：海岸线收口到南极点直接三角化（替代普通 addPolygon + −82° 极冠）。
+    // 修复 50m 本土不填充（其本土被编码为退化外环+海岸线洞，earcut 得 0），并消除 −82° 极冠对海洋的污染与接缝。
+    if (id === '010') {
+      col.set(ICE)
+      for (const ring of antarcticaFillRings(f)) {
+        const flat = []
+        for (const p of ring) { flat.push(p[0], p[1]) }
+        const tri = earcut(flat, [])
+        for (let t = 0; t < tri.length; t += 3) {
+          const i0 = tri[t] * 2, i1 = tri[t + 1] * 2, i2 = tri[t + 2] * 2
+          emitTri([flat[i0], flat[i0 + 1]], [flat[i1], flat[i1 + 1]], [flat[i2], flat[i2 + 1]], 0)
+        }
+      }
+      return
+    }
+    const baseCol = CHINA_IDS.has(id) ? CHINA : ICE_IDS.has(id) ? ICE : LAND[idx % LAND.length]
     const polys = g.type === 'Polygon' ? [g.coordinates] : g.coordinates
-    for (const rings of polys) addPolygon(rings)
+    // 北极岛屿（多边形质心纬度 ≥ ARCTIC_ISLAND_LAT）整块染冰白：格陵兰本就冰白；
+    // 加拿大北极群岛、俄罗斯北极诸岛、斯瓦尔巴等离散海岛 → 冰白；各大陆/阿拉斯加/冰岛(质心<65°) → 普通陆地。
+    for (const rings of polys) {
+      const o = rings[0]; let sy = 0; for (const p of o) sy += p[1]
+      col.set((sy / o.length) >= ARCTIC_ISLAND_LAT ? ICE : baseCol)
+      addPolygon(rings)
+    }
   })
-
-  // 南极极冠：南极洲多边形止于约 -85°，极点附近留有圆形空洞。用一圈贴极点的四边形
-  // （每经度两点共塌缩到极点）补齐到 -90°，emitTri 自带细分贴球；南极洲本就 ICE 白，无缝。
-  col.copy(ICE_COL)
-  for (let lon = -180; lon < 180; lon += 3) {
-    const a = [lon, -90], b = [lon, SOUTH_CAP_LAT], c = [lon + 3, SOUTH_CAP_LAT], d = [lon + 3, -90]
-    emitTri(a, b, c, 0); emitTri(a, c, d, 0)
-  }
 
   const geo = new THREE.BufferGeometry()
   geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))

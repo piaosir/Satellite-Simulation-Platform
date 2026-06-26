@@ -69,6 +69,7 @@ const timePct = ref(0)
 const keyword = ref('')
 const searchResults = ref([])
 const selected = ref(null)
+const cardCollapsed = ref(false)   // 信息卡收起/展开（点标题栏切换）
 // 波束角
 const beam = ref('')
 const beamAuto = ref('')
@@ -830,16 +831,11 @@ async function exportMap(fmt) {
     await nextTick()
     const { renderFlatPNG, renderFlatPDF } = await import('../viz/flatmap/exportFlat.js')
     if (fmt === 'pdf') {
+      // 矢量 PDF 按「设置」里的底图精度导出（flat 实例已随 displayQuality 同步精度）：
+      // 10m 更清晰但点数约 5.5× → 导出更慢、文件更大；如需更快可在设置里调到 50m/110m。
       const fontBase64 = await getCjkFont()
-      // 矢量化耗时随底图多边形数增长：导出 PDF 时临时把 10m 降到 50m（多边形 4253→1616），
-      // 已是 50m/110m 则保持不变；导出后恢复原精度。PNG 不降（栅格化快，保留 10m 锐度）。
-      const orig = displayQuality.value.mapDetail || '10m'
-      const exp = orig === '10m' ? '50m' : orig
-      try {
-        if (exp !== orig) { await flat.setMapDetail(exp, displayQuality.value.mapThin); await nextTick() }
-        const bytes = await renderFlatPDF(flat, { base: 2400, fontBase64 })
-        await saveExport(bytes, '覆盖图.pdf', [{ name: 'PDF 矢量图', extensions: ['pdf'] }])
-      } finally { if (exp !== orig) await flat.setMapDetail(orig, displayQuality.value.mapThin) }
+      const bytes = await renderFlatPDF(flat, { base: 2400, fontBase64 })
+      await saveExport(bytes, '覆盖图.pdf', [{ name: 'PDF 矢量图', extensions: ['pdf'] }])
     } else {
       const factor = fmt === 'png4' ? 4 : 2
       const bytes = await renderFlatPNG(flat, { base: 2400, factor })
@@ -1625,11 +1621,13 @@ onBeforeUnmount(() => {
           <input ref="fileInput" type="file" accept=".csv,.txt" style="display:none" @change="onFile" />
         </div>
 
-        <div v-if="selected" class="card">
-          <div class="ch">
+        <div v-if="selected" class="card" :class="{ collapsed: cardCollapsed }">
+          <div class="ch" :title="cardCollapsed ? '展开' : '收起'" @click="cardCollapsed = !cardCollapsed">
+            <span class="cc" :class="{ col: cardCollapsed }">▾</span>
             <span class="cn" :title="selected.name">{{ selected.name }}</span>
-            <span class="cx" @click="closeCard">✕</span>
+            <span class="cx" @click.stop="closeCard">✕</span>
           </div>
+          <div v-show="!cardCollapsed" class="cbody">
           <div class="cmeta">
             <span class="badge">NORAD {{ selected.noradId }}</span>
             <span class="badge kind">{{ selected.kind }}</span>
@@ -1656,6 +1654,7 @@ onBeforeUnmount(() => {
             <div class="row"><span class="k">升交点赤经 <em>Ω</em></span><span class="v">{{ selected.raan }}<i>°</i></span></div>
             <div class="row"><span class="k">近地点幅角 <em>ω</em></span><span class="v">{{ selected.argp }}<i>°</i></span></div>
             <div class="row"><span class="k">平近点角 <em>M</em></span><span class="v">{{ selected.ma }}<i>°</i></span></div>
+          </div>
           </div>
         </div>
       </div>
@@ -2382,8 +2381,12 @@ onBeforeUnmount(() => {
   border-radius: 6px; padding: 11px 13px; font-size: 12px;
   box-shadow: 0 12px 32px rgba(0,0,0,0.45);
 }
-.ch { display: flex; align-items: flex-start; gap: 8px; }
+.ch { display: flex; align-items: flex-start; gap: 8px; cursor: pointer; }
+.cc { flex: none; align-self: center; color: var(--text-faint); font-size: 10px; line-height: 1; transition: transform .15s; }
+.cc.col { transform: rotate(-90deg); }
+.ch:hover .cc { color: var(--text); }
 .cn { flex: 1 1 auto; min-width: 0; font-family: var(--font-serif); font-size: 15px; line-height: 1.3; overflow-wrap: anywhere; }
+.card.collapsed .cn { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cx { flex: none; cursor: pointer; color: var(--text-faint); line-height: 1.2; }
 .cx:hover { color: var(--text); }
 .cmeta { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }

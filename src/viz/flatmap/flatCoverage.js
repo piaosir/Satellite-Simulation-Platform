@@ -10,8 +10,9 @@ import { NANHAI_DASHES, NANHAI_WIDTH_MUL, NANHAI_MIN_WIDTH } from '../nanhaiDash
 const LAND = ['#8fa89b', '#b0a98f', '#9fb0c0', '#c0a99f', '#a9b08f', '#9f9fb0', '#b8a0a0', '#90b0a8', '#b0b090', '#a0a8b8', '#bca890', '#98a0a8']
 const OCEAN = '#15426b', CHINA = '#b85a52', ICE = '#edf2f6'
 const ICE_IDS = new Set(['304', '010'])
-// 北极冰盖：高纬陆地随纬度渐变染白（北极圈 EDGE 起淡入、FULL 以北全白），只染陆地。
-const ICE_LAT_EDGE = 66.5, ICE_LAT_FULL = 75, ICE_RGB = '237,242,246'   // = #edf2f6
+// 北极岛屿冰盖：多边形质心纬度 ≥ ARCTIC_ISLAND_LAT 的整块染冰白（格陵兰/加拿大北极群岛/俄罗斯北极诸岛/斯瓦尔巴等）；
+// 各大陆与冰岛(质心<65°)保持普通陆地色。与 3D 球体同口径，不再纬度渐变。
+const ARCTIC_ISLAND_LAT = 70
 // 南极极冠：南极洲数据止于约 -85°，极点处留有空洞，补到 -90°。
 const SOUTH_CAP_LAT = -82
 const BORDER = '#5b7088', GRID = 'rgba(255,255,255,0.12)', PROV = '#9aa3b0', BG = '#070b12'
@@ -102,7 +103,7 @@ export function createFlatCoverage(canvas) {
     for (let i = 1; i < ring.length - 1; i++) { const p = ring[i]; if (Math.hypot(p[0] - last[0], p[1] - last[1]) >= minD) { out.push(p); last = p } }
     out.push(ring[ring.length - 1]); return out
   }
-  let land = [], clabels = [], allLandPath = new Path2D(), landClipPath = new Path2D()
+  let land = [], clabels = []
   let mapDetail0 = '10m', mapThin = 0
   const featsOf = (m) => { const t = m.default || m; return feature(t, t.objects.countries).features }
   const featCache = { '10m': feature(topo, topo.objects.countries).features }   // 10m 静态；50m/110m 懒加载
@@ -113,29 +114,32 @@ export function createFlatCoverage(canvas) {
     return featCache[detail]
   }
   function buildBaseGeo(feats, thin) {
-    land = []; clabels = []; allLandPath = new Path2D()
+    land = []; clabels = []
     const seenLabel = new Set()   // 同一国家 id 只标一次（澳大利亚等含本体+外岛）
     feats.forEach((f, idx) => {
       if (!f.geometry) return
       const id = String(f.id)
       const fill = CHINA_IDS.has(id) ? CHINA : ICE_IDS.has(id) ? ICE : LAND[idx % LAND.length]
       const polys = f.geometry.type === 'Polygon' ? [f.geometry.coordinates] : f.geometry.coordinates
-      const shapes = []
+      const shapes = [], iceShapes = []   // 普通陆地色 / 北极岛屿冰白（按多边形质心纬度分流）
       for (const rings of polys) {
-        let lo = Infinity, hi = -Infinity, yLo = Infinity, yHi = -Infinity
+        let lo = Infinity, hi = -Infinity
         const path = new Path2D()
         const xy = []   // 导出回放用：该多边形各环的「世界度坐标」点列（x=lon-LON0, y=90-lat）
         for (const ring of rings) {
           const u = thin > 0 ? decimateRing(unwrap(ring), thin) : unwrap(ring)
           const r = new Array(u.length)
-          for (let i = 0; i < u.length; i++) { const x = u[i][0] - LON0, y = 90 - u[i][1]; if (x < lo) lo = x; if (x > hi) hi = x; if (y < yLo) yLo = y; if (y > yHi) yHi = y; i === 0 ? path.moveTo(x, y) : path.lineTo(x, y); r[i] = [x, y] }
+          for (let i = 0; i < u.length; i++) { const x = u[i][0] - LON0, y = 90 - u[i][1]; if (x < lo) lo = x; if (x > hi) hi = x; i === 0 ? path.moveTo(x, y) : path.lineTo(x, y); r[i] = [x, y] }
           path.closePath()
           xy.push(r)
         }
-        allLandPath.addPath(path)
-        shapes.push({ lo, hi, yLo, yHi, path, rings: xy })   // yLo/yHi=世界 y 范围(=90-lat)，导出冰盖裁剪据此只取北极陆地
+        // 北极岛屿（外环质心纬度 ≥ ARCTIC_ISLAND_LAT）整块染冰白；其余按国家色。与 3D 球体同口径，不再纬度渐变。
+        const o = rings[0]; let sy = 0; for (const p of o) sy += p[1]
+        const shape = { lo, hi, path, rings: xy }
+        ;((sy / o.length) >= ARCTIC_ISLAND_LAT ? iceShapes : shapes).push(shape)
       }
-      land.push({ shapes, fill })
+      if (shapes.length) land.push({ shapes, fill })
+      if (iceShapes.length) land.push({ shapes: iceShapes, fill: ICE })
       // 国家名
       if (NO_LABEL_IDS.has(id) || seenLabel.has(id)) return
       const rec = NAMES[id]; let zh = rec ? rec[0] : null
@@ -148,9 +152,6 @@ export function createFlatCoverage(canvas) {
       const px = clamp(Math.round(10 + featureExtent(f.geometry) * 0.22), 10, 20)
       clabels.push({ zh, en, lon, lat, px })
     })
-    // 北极冰盖裁剪用：陆地路径的 -360/0/360 三份副本合一（跨切口的格陵兰/俄罗斯也能正确裁剪）。
-    landClipPath = new Path2D()
-    for (const off of [-360, 0, 360]) landClipPath.addPath(allLandPath, new DOMMatrix([1, 0, 0, 1, off, 0]))
   }
   buildBaseGeo(featCache['10m'], 0)
 
@@ -217,34 +218,12 @@ export function createFlatCoverage(canvas) {
     }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.globalAlpha = 1
   }
-  // 极地冰盖：北极高纬陆地渐变染白 + 补全南极极点空洞。
+  // 南极极冠：补 SOUTH_CAP_LAT 以南的中央空洞（南极洲本就 ICE 白，无缝衔接）。
+  // 北极岛屿改由 buildBaseGeo 按「多边形整块」染冰白（与 3D 同口径），不再有北极纬度渐变，故此处只剩南极极冠。
   function drawIceCaps() {
     const kk = k(), x0 = PX(LON0), w = 360 * kk
-    // 南极极冠：补 SOUTH_CAP_LAT 以南的中央空洞（南极洲本就 ICE 白，无缝衔接）。
     const yCap = PY(SOUTH_CAP_LAT)
     ctx.fillStyle = ICE; ctx.fillRect(x0, yCap, w, PY(-90) - yCap)
-    // 北极：仅在陆地范围内，自北极圈向北渐变染白。裁剪复用缓存的 landClipPath（世界坐标）。
-    ctx.save()
-    ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * tx, dpr * ty)
-    if (compat) {
-      // 导出：裁剪路径只取「能到北极圈以北」的陆地（yLo≤90−EDGE），且按视口裁掉不可见经度副本——
-      // 否则全量陆地×3 副本会生成数十万点的 clipPath，是 svg2pdf 的极大开销（绝大多数陆地与北极无关）。
-      const yEdge = 90 - ICE_LAT_EDGE
-      const wl = -tx / kk, wr = (cw - tx) / kk
-      ctx.beginPath()
-      for (const off of [-360, 0, 360]) for (const c of land) for (const sh of c.shapes) {
-        if (sh.yLo > yEdge || sh.hi + off < wl || sh.lo + off > wr) continue
-        for (const r of sh.rings) { for (let i = 0; i < r.length; i++) { const x = r[i][0] + off, y = r[i][1]; i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y) } ctx.closePath() }
-      }
-      ctx.clip('evenodd')
-    } else ctx.clip(landClipPath, 'evenodd')
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-    const g = ctx.createLinearGradient(0, PY(90), 0, PY(ICE_LAT_EDGE))
-    g.addColorStop(0, `rgba(${ICE_RGB},1)`)
-    g.addColorStop((90 - ICE_LAT_FULL) / (90 - ICE_LAT_EDGE), `rgba(${ICE_RGB},1)`)
-    g.addColorStop(1, `rgba(${ICE_RGB},0)`)
-    ctx.fillStyle = g; ctx.fillRect(x0, PY(90), w, PY(ICE_LAT_EDGE) - PY(90))
-    ctx.restore()
   }
   // 卫星图标（矢量复刻聚焦卫星 SVG：双侧 3×2 太阳能板 + 中央星体）。按 color 填充、size 缩放。
   // 仰角线卫星与聚焦卫星共用此函数 —— 平面图上卫星统一为同一枚图标，颜色随各自设置。
