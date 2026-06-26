@@ -27,7 +27,9 @@ const ISL = defineAsyncComponent(() => import('./pages/ISL.vue'))
 
 const nav = useNavStore()
 const viewMenu = ref(false)
+const expMenu = ref(false)        // 「导出图」下拉
 const settingsOpen = ref(false)
+function doExport(fmt) { expMenu.value = false; if (covNav.exportMap) covNav.exportMap(fmt) }
 // MSAA 是 WebGL 上下文创建期参数，运行时不可改 → 把它并入当前页 key，切换 MSAA 时重挂载页面（一瞬重渲）。
 // 页面状态由各自的本地缓存（reactive watch 持续保存）在重挂载时恢复，无感。
 const pageKey = computed(() => `${nav.current}-msaa${displayQuality.value.msaa !== false ? 1 : 0}`)
@@ -67,9 +69,17 @@ const currentLabel = computed(
         </span>
         <span v-if="covNav.grdAvail" class="covbtn" :class="{ on: covNav.grdOpen }" @click="covNav.toggleGrd && covNav.toggleGrd()">覆盖分析</span>
         <span v-if="covNav.covAvail" class="covbtn" :class="{ on: covNav.covOpen }" @click="covNav.toggleCov && covNav.toggleCov()">覆盖图（GXT）</span>
+        <span v-if="covNav.exportAvail" class="vwrap">
+          <span class="covbtn" :class="{ on: expMenu }" @click.stop="expMenu = !expMenu">导出图 ▾</span>
+          <div v-if="expMenu" class="vmenu">
+            <div class="vitem" @click="doExport('png2')"><span class="vico">▦</span>高清 PNG · 2×</div>
+            <div class="vitem" @click="doExport('png4')"><span class="vico">▦</span>高清 PNG · 4×</div>
+            <div class="vitem" @click="doExport('pdf')"><span class="vico">▤</span>矢量 PDF</div>
+          </div>
+        </span>
         <span class="setbtn" @click="settingsOpen = true">设置</span>
       </nav>
-      <div v-if="viewMenu" class="vmask" @click="viewMenu = false"></div>
+      <div v-if="viewMenu || expMenu" class="vmask" @click="viewMenu = false; expMenu = false"></div>
     </header>
 
     <div class="body">

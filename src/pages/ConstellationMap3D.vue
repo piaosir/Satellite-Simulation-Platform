@@ -765,28 +765,88 @@ async function applyFlat(v) {
   if (!v) { if (grdOpen.value) grd.recompute(); pushZoom(); return }
   await ensureCovIndex(); if (!covCleared) redraw()   // 已清除则切平面图不复现覆盖（covGeom 保持为空）
   await nextTick()
-  if (!flat && flatCanvas.value) { flat = createFlatCoverage(flatCanvas.value); flat.setRenderScale(displayQuality.value.pixelRatio); flat.setMapDetail(displayQuality.value.mapDetail, displayQuality.value.mapThin); flat.setOnRightClick(onMapRightClick); flat.setOnHover((ll) => { cursor.ll = ll }); flat.setOnBeamDrag(grd.beamDrag); flat.setBeamDragMode(grd.dragBore.value); flat.setOnZoom((t) => { if (flatView.value) zoom.value = t }) }
-  if (flat) {
-    flat.resize()
-    flat.setNameMode(nameMode.value)
-    if (provincesData) flat.setProvinces(provincesData)
-    flat.setProvincesVisible(showProvinces.value)
-    flat.setBorderStyle({ ...borderStyle })
-    flat.setLabelStyle({ ...labelStyle })
-    flat.setOceanColor(oceanColor.value)
-    flat.setMarkers(
-      points.value.map((p) => ({ lat: p.lat, lon: p.lon, label: fmtLL(p.lat, p.lon), el: fmtElev(p.lat, p.lon) })),
-      stations.value.map((s) => ({ lat: s.lat, lon: s.lon, name: s.name, el: fmtElev(s.lat, s.lon) })),
-      trajectories.value.map((t) => ({ pts: t.pts, kind: t.kind, color: t.kind === 'flight' ? 0x5ad1ff : 0xff6a4a }))
-    )
-    flat.setSizes({ beamFont: beamLabelSize.value, contourFont: contourLabelSize.value, dotSize: boreSize.value, showBore: showBore.value, nameScale: countryNameSize.value, provScale: provNameSize.value, ptFont: markPtFont.value, stIcon: stIconSize.value, stFont: stFontSize.value })
-    flat.setGeom(covGeom)
-    if (grdOpen.value) grd.recompute()   // GRD 覆盖：切到平面图时把面+线喂给 flat
-    redrawSats()     // 切到平面图时把卫星/仰角线图层喂给 flat
-    pushFocusSat()   // 切到平面图时标注当前聚焦卫星位置
-    pushSelGeomFlat() // 切到平面图时绘制聚焦卫星覆盖范围 + 星下点轨迹
-    pushZoom()       // 切到平面图时把平面图当前缩放回填进度条
+  if (ensureFlat()) { feedFlat(); pushZoom() }   // 切到平面图时建好渲染器并喂全当前状态，回填缩放进度条
+}
+// 平面渲染器：按需创建（绑定交互回调）。返回实例（flatCanvas 未就绪时返回 null）。
+function ensureFlat() {
+  if (!flat && flatCanvas.value) {
+    flat = createFlatCoverage(flatCanvas.value)
+    flat.setRenderScale(displayQuality.value.pixelRatio); flat.setMapDetail(displayQuality.value.mapDetail, displayQuality.value.mapThin)
+    flat.setOnRightClick(onMapRightClick); flat.setOnHover((ll) => { cursor.ll = ll }); flat.setOnBeamDrag(grd.beamDrag); flat.setBeamDragMode(grd.dragBore.value)
+    flat.setOnZoom((t) => { if (flatView.value) zoom.value = t })
   }
+  return flat
+}
+// 把当前全部状态（底图选项/标记/覆盖几何/GRD 场/卫星层/聚焦星）喂给平面渲染器。
+// 切到平面图与「导出（含 3D 视图下）」共用，保证导出所见即所得。
+function feedFlat() {
+  if (!flat) return
+  flat.resize()
+  flat.setNameMode(nameMode.value)
+  if (provincesData) flat.setProvinces(provincesData)
+  flat.setProvincesVisible(showProvinces.value)
+  flat.setBorderStyle({ ...borderStyle })
+  flat.setLabelStyle({ ...labelStyle })
+  flat.setOceanColor(oceanColor.value)
+  flat.setMarkers(
+    points.value.map((p) => ({ lat: p.lat, lon: p.lon, label: fmtLL(p.lat, p.lon), el: fmtElev(p.lat, p.lon) })),
+    stations.value.map((s) => ({ lat: s.lat, lon: s.lon, name: s.name, el: fmtElev(s.lat, s.lon) })),
+    trajectories.value.map((t) => ({ pts: t.pts, kind: t.kind, color: t.kind === 'flight' ? 0x5ad1ff : 0xff6a4a }))
+  )
+  flat.setSizes({ beamFont: beamLabelSize.value, contourFont: contourLabelSize.value, dotSize: boreSize.value, showBore: showBore.value, nameScale: countryNameSize.value, provScale: provNameSize.value, ptFont: markPtFont.value, stIcon: stIconSize.value, stFont: stFontSize.value })
+  flat.setGeom(covGeom)
+  grd.recompute()   // GRD 覆盖：把当前选中天线的面+线喂给 flat（recompute 同时喂 scene/flat）
+  redrawSats()      // 卫星/仰角线图层
+  pushFocusSat()    // 聚焦卫星位置
+  pushSelGeomFlat() // 聚焦卫星覆盖范围 + 星下点轨迹
+}
+
+// ===================== 覆盖图导出（高清 PNG / 矢量 PDF，统一走 2D 平面图） =====================
+const exporting = ref(false)
+let _cjkFont   // undefined=未取；string=base64；null=无可用中文字体
+async function getCjkFont() {
+  if (_cjkFont !== undefined) return _cjkFont
+  try { const r = window.api && window.api.cjkFont && await window.api.cjkFont(); _cjkFont = (r && r.ok) ? r.base64 : null }
+  catch { _cjkFont = null }
+  return _cjkFont
+}
+async function saveExport(bytes, defaultName, filters) {
+  if (!(window.api && window.api.exportFile)) { alert('需在 Electron 中运行（npm run dev）'); return }
+  const r = await window.api.exportFile({ defaultName, data: bytes, filters })
+  if (r && r.ok) status.value = '已导出：' + r.filePath
+  else if (r && r.canceled) status.value = ''
+  else { const msg = (r && r.error) || '写入失败'; status.value = '导出失败：' + msg; alert('导出失败：' + msg) }
+}
+// fmt: 'png2' | 'png4' | 'pdf'。无论当前在 2D 还是 3D 视图，都按 2D 平面图导出整幅世界图。
+async function exportMap(fmt) {
+  if (exporting.value) return
+  exporting.value = true
+  status.value = '正在导出…'
+  try {
+    await ensureCovIndex(); if (!covCleared) redraw()
+    await nextTick()
+    if (!ensureFlat()) { alert('地图渲染器未就绪，请切到 2D 平面图后重试'); return }
+    feedFlat()
+    await nextTick()
+    const { renderFlatPNG, renderFlatPDF } = await import('../viz/flatmap/exportFlat.js')
+    if (fmt === 'pdf') {
+      const fontBase64 = await getCjkFont()
+      // 矢量化耗时随底图多边形数增长：导出 PDF 时临时把 10m 降到 50m（多边形 4253→1616），
+      // 已是 50m/110m 则保持不变；导出后恢复原精度。PNG 不降（栅格化快，保留 10m 锐度）。
+      const orig = displayQuality.value.mapDetail || '10m'
+      const exp = orig === '10m' ? '50m' : orig
+      try {
+        if (exp !== orig) { await flat.setMapDetail(exp, displayQuality.value.mapThin); await nextTick() }
+        const bytes = await renderFlatPDF(flat, { base: 2400, fontBase64 })
+        await saveExport(bytes, '覆盖图.pdf', [{ name: 'PDF 矢量图', extensions: ['pdf'] }])
+      } finally { if (exp !== orig) await flat.setMapDetail(orig, displayQuality.value.mapThin) }
+    } else {
+      const factor = fmt === 'png4' ? 4 : 2
+      const bytes = await renderFlatPNG(flat, { base: 2400, factor })
+      await saveExport(bytes, `覆盖图_${factor}x.png`, [{ name: 'PNG 图片', extensions: ['png'] }])
+    }
+  } catch (e) { console.error('导出失败', e); alert('导出失败：' + ((e && e.message) || e)); status.value = '导出失败' }
+  finally { exporting.value = false }
 }
 
 // ---- 批次 / 卫星 增删改 ----
@@ -1438,6 +1498,7 @@ onMounted(async () => {
   // 顶栏「视图」按钮右侧的覆盖图入口：注册可用性与切换回调（按钮渲染在 App.vue，状态走 covNav store）
   covNav.grdAvail = grdApiOk; covNav.covAvail = covApiOk
   covNav.toggleGrd = toggleGrd; covNav.toggleCov = toggleCoverage
+  covNav.exportAvail = true; covNav.exportMap = exportMap   // 顶栏「导出图」入口（高清 PNG / 矢量 PDF）
   scene = createGlobeScene(el.value, { ...displayQuality.value })
   scene.setAutoRotate(autoRotate.value)
   scene.setLabelMode(nameMode.value)
@@ -1484,6 +1545,7 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   // 离开 3D 页：复位顶栏覆盖图入口（按钮随之隐藏），并关掉面板镜像状态
   covNav.grdAvail = false; covNav.covAvail = false; covNav.toggleGrd = null; covNav.toggleCov = null
+  covNav.exportAvail = false; covNav.exportMap = null
   covNav.grdOpen = false; covNav.covOpen = false
   zoom.avail = false; zoom.apply = null   // 复位底部状态栏缩放进度条
 

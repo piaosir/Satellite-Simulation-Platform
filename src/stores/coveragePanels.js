@@ -8,5 +8,7 @@ import { reactive } from 'vue'
 export const covNav = reactive({
   grdAvail: false, covAvail: false,
   grdOpen: false, covOpen: false,
-  toggleGrd: null, toggleCov: null
+  toggleGrd: null, toggleCov: null,
+  // 导出入口（顶栏「导出图」）：在 3D 页注册 exportMap('png2'|'png4'|'pdf')，离开页面复位
+  exportAvail: false, exportMap: null
 })

@@ -58,6 +58,39 @@ function register({ core, storage, report, coverage, coverageGrd }) {
   ipcMain.handle('store:settings:get', () => storage.getSettings())
   ipcMain.handle('store:settings:set', (_e, s) => storage.setSettings(s))
 
+  // ---- 通用二进制导出（原生保存对话框 → 写盘）：覆盖图 PNG / 矢量 PDF 等 ----
+  // payload: { defaultName, data:ArrayBuffer|Uint8Array, filters:[{name,extensions}] }
+  ipcMain.handle('file:save', async (e, payload) => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    const { canceled, filePath } = await dialog.showSaveDialog(win, {
+      defaultPath: payload.defaultName || 'export.bin',
+      filters: payload.filters || [{ name: '所有文件', extensions: ['*'] }]
+    })
+    if (canceled || !filePath) return { ok: false, canceled: true }
+    try {
+      fs.writeFileSync(filePath, Buffer.from(payload.data))
+      return { ok: true, filePath }
+    } catch (err) {
+      // 目标文件被其他程序占用（PDF/图片查看器打开着）→ EBUSY/EPERM。返回友好错误，不抛出。
+      const busy = err && (err.code === 'EBUSY' || err.code === 'EPERM' || err.code === 'EACCES')
+      return { ok: false, error: busy ? '文件可能正被其他程序打开（如 PDF 查看器），请关闭后重试' : (err.message || String(err)) }
+    }
+  })
+
+  // ---- 读取系统中文字体（供矢量 PDF 嵌入；jsPDF 仅支持单面 TTF，不支持 TTC）----
+  // 按候选顺序返回首个存在的单面 TTF 的 base64；找不到返回 ok:false（PDF 则退化为无中文字体）。
+  ipcMain.handle('font:cjk', () => {
+    if (process.platform !== 'win32') return { ok: false }
+    const path = require('path')
+    const dir = path.join(process.env.WINDIR || 'C:\\Windows', 'Fonts')
+    const cands = ['simhei.ttf', 'simkai.ttf', 'simfang.ttf', 'Deng.ttf', 'msyh.ttf', 'simsunb.ttf']
+    for (const f of cands) {
+      const p = path.join(dir, f)
+      try { if (fs.existsSync(p)) return { ok: true, name: f, base64: fs.readFileSync(p).toString('base64') } } catch { /* try next */ }
+    }
+    return { ok: false }
+  })
+
   // ---- 报告导出（原生保存对话框 → 写盘）----
   ipcMain.handle('report:export', async (e, payload) => {
     const fmt = payload.format === 'excel' ? 'excel' : 'word'

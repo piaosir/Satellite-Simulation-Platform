@@ -62,7 +62,12 @@ function featureExtent(geom) {
 }
 
 export function createFlatCoverage(canvas) {
-  const ctx = canvas.getContext('2d')
+  let ctx = canvas.getContext('2d')   // 绘制目标上下文：导出时临时切到离屏 canvas / svgcanvas（见 exportRender）
+  // 导出兼容模式：svgcanvas/canvas2svg 忽略 Path2D 与 evenodd 入参，故导出时把陆地/覆盖填充/等值线
+  // 改为「子路径回放」（moveTo/lineTo），实时绘制仍走 Path2D 缓存（更快）。compat 同时用于离屏高清 PNG，
+  // 保证 PNG 与 PDF 完全一致。textFont：导出可指定字体族名（PDF 用注册名匹配嵌入的中文字体）。
+  let compat = false
+  let textFont = '"Microsoft YaHei", sans-serif'
   // 渲染分辨率倍率（与 3D 同一画质档位）：null=跟随系统 DPR；否则作为绝对设备像素倍率（0.25~4）。
   let renderScale = null
   const effDpr = () => renderScale != null ? Math.max(0.25, Math.min(renderScale, 4)) : Math.max(1, window.devicePixelRatio || 1)
@@ -117,15 +122,18 @@ export function createFlatCoverage(canvas) {
       const polys = f.geometry.type === 'Polygon' ? [f.geometry.coordinates] : f.geometry.coordinates
       const shapes = []
       for (const rings of polys) {
-        let lo = Infinity, hi = -Infinity
+        let lo = Infinity, hi = -Infinity, yLo = Infinity, yHi = -Infinity
         const path = new Path2D()
+        const xy = []   // 导出回放用：该多边形各环的「世界度坐标」点列（x=lon-LON0, y=90-lat）
         for (const ring of rings) {
           const u = thin > 0 ? decimateRing(unwrap(ring), thin) : unwrap(ring)
-          for (let i = 0; i < u.length; i++) { const x = u[i][0] - LON0, y = 90 - u[i][1]; if (x < lo) lo = x; if (x > hi) hi = x; i === 0 ? path.moveTo(x, y) : path.lineTo(x, y) }
+          const r = new Array(u.length)
+          for (let i = 0; i < u.length; i++) { const x = u[i][0] - LON0, y = 90 - u[i][1]; if (x < lo) lo = x; if (x > hi) hi = x; if (y < yLo) yLo = y; if (y > yHi) yHi = y; i === 0 ? path.moveTo(x, y) : path.lineTo(x, y); r[i] = [x, y] }
           path.closePath()
+          xy.push(r)
         }
         allLandPath.addPath(path)
-        shapes.push({ lo, hi, path })
+        shapes.push({ lo, hi, yLo, yHi, path, rings: xy })   // yLo/yHi=世界 y 范围(=90-lat)，导出冰盖裁剪据此只取北极陆地
       }
       land.push({ shapes, fill })
       // 国家名
@@ -172,7 +180,13 @@ export function createFlatCoverage(canvas) {
     const wl = -tx / kk, wr = (cw - tx) / kk   // 视口世界 X 范围（未含 off）
     for (const off of [-360, 0, 360]) {
       ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * (tx + off * kk), dpr * ty)
-      for (const c of land) {
+      if (compat) {
+        // 导出：按填充色合并成「每色一条 path」（节点数不变，但 <path> 元素从「多边形数」降到「颜色数」）。
+        // svg2pdf 逐节点 getComputedStyle 是导出耗时主因——10m 底图有数千多边形，不合并会产生数千节点。
+        const byColor = new Map()
+        for (const c of land) for (const sh of c.shapes) { if (sh.hi + off < wl || sh.lo + off > wr) continue; let a = byColor.get(c.fill); if (!a) { a = []; byColor.set(c.fill, a) } a.push(sh) }
+        for (const [fill, shs] of byColor) { ctx.fillStyle = fill; ctx.beginPath(); for (const sh of shs) for (const r of sh.rings) { for (let i = 0; i < r.length; i++) i === 0 ? ctx.moveTo(r[i][0], r[i][1]) : ctx.lineTo(r[i][0], r[i][1]); ctx.closePath() } ctx.fill('evenodd') }
+      } else for (const c of land) {
         let colored = false
         for (const sh of c.shapes) {
           if (sh.hi + off < wl || sh.lo + off > wr) continue
@@ -191,7 +205,12 @@ export function createFlatCoverage(canvas) {
     const wl = -tx / kk, wr = (cw - tx) / kk
     for (const off of [-360, 0, 360]) {
       ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * (tx + off * kk), dpr * ty)
-      for (const c of land) for (const sh of c.shapes) {
+      if (compat) {
+        // 导出：海岸线同色 → 合并成单条 path 一次描边（数千节点 → 1 节点）
+        ctx.beginPath()
+        for (const c of land) for (const sh of c.shapes) { if (sh.hi + off < wl || sh.lo + off > wr) continue; for (const r of sh.rings) { for (let i = 0; i < r.length; i++) i === 0 ? ctx.moveTo(r[i][0], r[i][1]) : ctx.lineTo(r[i][0], r[i][1]); ctx.closePath() } }
+        ctx.stroke()
+      } else for (const c of land) for (const sh of c.shapes) {
         if (sh.hi + off < wl || sh.lo + off > wr) continue
         ctx.stroke(sh.path)
       }
@@ -207,7 +226,18 @@ export function createFlatCoverage(canvas) {
     // 北极：仅在陆地范围内，自北极圈向北渐变染白。裁剪复用缓存的 landClipPath（世界坐标）。
     ctx.save()
     ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * tx, dpr * ty)
-    ctx.clip(landClipPath, 'evenodd')
+    if (compat) {
+      // 导出：裁剪路径只取「能到北极圈以北」的陆地（yLo≤90−EDGE），且按视口裁掉不可见经度副本——
+      // 否则全量陆地×3 副本会生成数十万点的 clipPath，是 svg2pdf 的极大开销（绝大多数陆地与北极无关）。
+      const yEdge = 90 - ICE_LAT_EDGE
+      const wl = -tx / kk, wr = (cw - tx) / kk
+      ctx.beginPath()
+      for (const off of [-360, 0, 360]) for (const c of land) for (const sh of c.shapes) {
+        if (sh.yLo > yEdge || sh.hi + off < wl || sh.lo + off > wr) continue
+        for (const r of sh.rings) { for (let i = 0; i < r.length; i++) { const x = r[i][0] + off, y = r[i][1]; i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y) } ctx.closePath() }
+      }
+      ctx.clip('evenodd')
+    } else ctx.clip(landClipPath, 'evenodd')
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     const g = ctx.createLinearGradient(0, PY(90), 0, PY(ICE_LAT_EDGE))
     g.addColorStop(0, `rgba(${ICE_RGB},1)`)
@@ -257,7 +287,7 @@ export function createFlatCoverage(canvas) {
   function drawText(text, lon, lat, px, color, opt) {
     const o = opt || {}
     const x = PX(lon) + (o.dx || 0), y = PY(lat) + (o.dy || 0)
-    ctx.font = `${o.italic ? 'italic ' : ''}${o.bold ? 'bold ' : ''}${px}px "Microsoft YaHei", sans-serif`
+    ctx.font = `${o.italic ? 'italic ' : ''}${o.bold ? 'bold ' : ''}${px}px ${textFont}`
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
     // 文字描边套色(casing)：沿字形勾一圈与底色同调的窄边，把字从背景里「切」出来——专业制图标准，不用底色色块
     ctx.lineJoin = 'round'; ctx.miterLimit = 2
@@ -317,6 +347,22 @@ export function createFlatCoverage(canvas) {
     })
   }
 
+  // 导出回放：把一档填充环带 / 一组等值线段描进当前路径（与 buildFillPaths/buildSegPaths 同款就近解缠）。
+  function traceFillBand(fb) {
+    const verts = fb.verts, counts = fb.counts
+    let vi = 0; ctx.beginPath()
+    for (let j = 0; j < counts.length; j++) {
+      const plen = counts[j]; let prev = verts[vi * 2]
+      ctx.moveTo(prev - LON0, 90 - verts[vi * 2 + 1])
+      for (let q = 1; q < plen; q++) { let lo = verts[(vi + q) * 2]; while (lo - prev > 180) lo -= 360; while (lo - prev < -180) lo += 360; ctx.lineTo(lo - LON0, 90 - verts[(vi + q) * 2 + 1]); prev = lo }
+      ctx.closePath(); vi += plen
+    }
+  }
+  function traceSegGroup(grp) {
+    ctx.beginPath()
+    for (const sg of (grp.segs || [])) { let a = sg[0][0], b = sg[1][0]; while (b - a > 180) b -= 360; while (b - a < -180) b += 360; ctx.moveTo(a - LON0, 90 - sg[0][1]); ctx.lineTo(b - LON0, 90 - sg[1][1]) }
+  }
+
   function drawField() {
     const kk = k()
     // 填充：把 pan/zoom 烘进变换矩阵，直接填充缓存的世界坐标 Path2D（每帧零顶点遍历），-360/0/+360 三档环绕。
@@ -328,7 +374,8 @@ export function createFlatCoverage(canvas) {
       for (const off of [-360, 0, 360]) {
         if (L.bounds && (L.bounds.hi + off < wl || L.bounds.lo + off > wr)) continue
         ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * (tx + off * kk), dpr * ty)
-        for (const fb of L.fillPaths) { ctx.fillStyle = fb.color; ctx.fill(fb.path) }
+        if (compat) for (const fb of (L.fillBands || [])) { ctx.fillStyle = 'rgb(' + fb.color[0] + ',' + fb.color[1] + ',' + fb.color[2] + ')'; traceFillBand(fb); ctx.fill() }
+        else for (const fb of L.fillPaths) { ctx.fillStyle = fb.color; ctx.fill(fb.path) }
       }
     }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.globalAlpha = 1; ctx.restore()
@@ -340,7 +387,8 @@ export function createFlatCoverage(canvas) {
       for (const off of [-360, 0, 360]) {
         if (L.bounds && (L.bounds.hi + off < wl || L.bounds.lo + off > wr)) continue
         ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * (tx + off * kk), dpr * ty)
-        for (const sp of L.segPaths) { ctx.strokeStyle = sp.color; ctx.lineWidth = sp.width / kk; ctx.stroke(sp.path) }
+        if (compat) for (const grp of (L.segGroups || [])) { if (!grp.segs || !grp.segs.length) continue; ctx.strokeStyle = grp.color || 'rgba(255,255,255,0.9)'; ctx.lineWidth = (grp.width || 1.2) / kk; traceSegGroup(grp); ctx.stroke() }
+        else for (const sp of L.segPaths) { ctx.strokeStyle = sp.color; ctx.lineWidth = sp.width / kk; ctx.stroke(sp.path) }
       }
     }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
@@ -609,6 +657,33 @@ export function createFlatCoverage(canvas) {
       if (firstFit) fit(); requestDraw()
     },
     reset() { fit(); invalidateStatic(); requestDraw() },
+    // 导出整幅世界平面图到任意 2D 上下文：离屏高清 canvas → PNG；svgcanvas → SVG/PDF。
+    // opts: { width, height, pixelScale=1, background=true, fontFamily }。整幅 fit 一次性绘制，绘后恢复在屏视图。
+    // compat=true 走子路径回放（不依赖 Path2D / evenodd 入参）→ PNG 与 PDF 完全一致。
+    exportRender(targetCtx, opts) {
+      const o = opts || {}
+      const W = o.width || 1600, H = o.height || (W / 2), ps = o.pixelScale || 1
+      const SV = { ctx, dpr, cw, ch, base, scale, tx, ty, font: textFont }
+      ctx = targetCtx; dpr = ps; cw = W; ch = H; compat = true
+      if (o.fontFamily) textFont = o.fontFamily
+      fit()
+      const rx = PX(LON0), ry = PY(90), rw = 360 * k(), rh = 180 * k()
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+      if (o.background !== false) { ctx.fillStyle = BG; ctx.fillRect(0, 0, cw, ch) }
+      drawBelowContent(rx, ry, rw, rh)
+      ctx.save(); ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip(); drawField(); ctx.restore()
+      drawAboveContent(rx, ry, rw, rh)
+      ctx.save(); ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip()
+      drawFieldOverlays()
+      if (selGeom) {
+        if (selGeom.footprint && selGeom.footprint.length > 1) drawPolyline(selGeom.footprint, '#96d7f0', 1.8)
+        if (selGeom.track && selGeom.track.length > 1) drawPolyline(selGeom.track, '#c2a25e', 2.0)
+      }
+      if (focusSat) drawSatIcon(focusSat.lon, focusSat.lat, sizes.satIcon, '#ffffff')
+      ctx.restore()
+      ctx = SV.ctx; dpr = SV.dpr; cw = SV.cw; ch = SV.ch; base = SV.base; scale = SV.scale; tx = SV.tx; ty = SV.ty; textFont = SV.font; compat = false
+      staticValid = false; requestDraw()
+    },
     destroy() {
       if (rafId) cancelAnimationFrame(rafId)
       canvas.removeEventListener('wheel', onWheel); canvas.removeEventListener('pointerdown', onDown); canvas.removeEventListener('pointermove', onMove)

@@ -19,6 +19,9 @@ contextBridge.exposeInMainWorld('api', {
   report: {
     export: (payload) => ipcRenderer.invoke('report:export', payload)
   },
+  // 覆盖图导出：保存二进制（PNG/PDF）到用户选定路径 / 读取系统中文字体（PDF 嵌入用）
+  exportFile: (payload) => ipcRenderer.invoke('file:save', payload),
+  cjkFont: () => ipcRenderer.invoke('font:cjk'),
   omm: {
     load: (group, online) => ipcRenderer.invoke('omm:load', group, online),
     positions: (group, iso) => ipcRenderer.invoke('omm:positions', group, iso),
