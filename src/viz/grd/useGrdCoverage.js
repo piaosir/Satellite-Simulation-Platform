@@ -52,6 +52,9 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
   const loading = ref(false)
   let loaded = false
   const cache = new Map()           // key → { meta, P1, P2, proj }
+  // 已存档但尚未加载到 cache 的天线设置（key → cfg）：恢复时从存档灌入，天线一经 ensureLoaded 即套用并移出。
+  // 作用：清除绘图(selected 清空)/未绘制的天线，其设置依旧随 getState 回存到本地，不丢失（后续改数据库的过渡形态）。
+  const pendingCfgs = new Map()
 
   const STEP = 1   // 电平间隔（固定 1 dB，用户不可见）
   // 默认 5 档：相对峰值 −1..−5；绝对模式（默认）下换算为 peakDb + (−1..−5) 的绝对值（无 peak 时退回相对数值）。
@@ -109,6 +112,23 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
       boreType: 'azel', boreLon: satLon == null ? null : satLon, boreLat: satLat || 0, boreAz: 0, boreEl: 0, yaw: 0, beamsToPlot: [0], beamNames: {}, levels: defaultLevels(peakDb) }
   }
   function applySettings(cfg) { if (!cfg) return; for (const k of PA) s[k] = cfg[k]; s.levels = copyLevels(cfg.levels || defaultLevels()); s.beamsToPlot = (cfg.beamsToPlot || []).slice(); s.beamNames = { ...(cfg.beamNames || {}) } }
+  // 设置序列化（深拷贝 levels/beamsToPlot/beamNames），供 getState 回存每个天线
+  function serializeCfg(st) { return { ...st, levels: copyLevels(st.levels || []), beamsToPlot: (st.beamsToPlot || [0]).slice(), beamNames: { ...(st.beamNames || {}) } } }
+  // 把存档 cfg 合到该天线一份完整 settings（缺省字段以 meta 默认补齐）
+  function mergeCfg(meta, cfg) {
+    return { ...defaultSettings(meta.satLon, meta.satLat || 0, meta.peakDb), ...cfg,
+      levels: cfg.levels ? copyLevels(cfg.levels) : defaultLevels(meta.peakDb),
+      beamsToPlot: (cfg.beamsToPlot || []).slice(), beamNames: { ...(cfg.beamNames || {}) } }
+  }
+  // 天线一经加载即套用其待恢复设置（若有），并移出 pending（此后由 cache 接管、getState 从 cache 取最新）
+  function applyPendingCfg(key) {
+    const cfg = pendingCfgs.get(key); if (!cfg) return
+    const c = cache.get(key); if (!c || !c.meta) return
+    c.settings = mergeCfg(c.meta, cfg)
+    const nb = (c.beams || []).length
+    c.settings.beamsToPlot = (c.settings.beamsToPlot || []).filter((i) => i < nb)   // 波束数变化越界保护
+    pendingCfgs.delete(key)
+  }
   let _muteSync = false
   function persistActive() {     // 把当前面板设置回存到聚焦天线
     if (_muteSync) return
@@ -239,7 +259,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
     for (const a of n.antennas) {
       const k = keyOf(folder, a.name)
       if (a.imported && a.file) { try { window.api.coverageGrd.remove(a.file) } catch { /* ignore */ } }
-      cache.delete(k)
+      cache.delete(k); pendingCfgs.delete(k)
       selected.value = selected.value.filter((x) => x !== k)
       if (active.value === k) active.value = ''
     }
@@ -254,7 +274,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
     const tgt = sat.antennas.find((a) => a.name === name)
     if (tgt && tgt.imported && tgt.file) { try { window.api.coverageGrd.remove(tgt.file) } catch { /* ignore */ } }
     sat.antennas = sat.antennas.filter((a) => a.name !== name)
-    cache.delete(key)
+    cache.delete(key); pendingCfgs.delete(key)
     selected.value = selected.value.filter((k) => k !== key)
     if (active.value === key) { active.value = selected.value[0] || ''; loadActive() }
     recompute()
@@ -271,6 +291,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
     const oldKey = keyOf(folder, oldName), newKey = keyOf(folder, nm)
     a.name = nm
     const c = cache.get(oldKey); if (c) { if (c.meta) c.meta.name = nm; cache.delete(oldKey); cache.set(newKey, c) }
+    if (pendingCfgs.has(oldKey)) { pendingCfgs.set(newKey, pendingCfgs.get(oldKey)); pendingCfgs.delete(oldKey) }   // 迁移未加载天线的存档设置
     selected.value = selected.value.map((k) => (k === oldKey ? newKey : k))
     if (active.value === oldKey) active.value = newKey
     sats.value = [...sats.value]   // 触发卫星树响应式刷新（antennas 内属性变更）
@@ -306,6 +327,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
         const pos = Number.isFinite(a.satLon) ? { lon: a.satLon, lat: a.satLat || 0, altKm: a.satAlt } : null
         const ent = importedCacheEntry(sat, g, a.name, pos)   // 多波束：一并重建全部波束（按文件原始 set 顺序）
         cache.set(key, { meta: ent.meta, beams: ent.beams, settings: defaultSettings(ent.meta.satLon, ent.meta.satLat, ent.meta.peakDb) })
+        applyPendingCfg(key)   // 套用存档设置（若有）
       } catch (e) { console.warn('导入 GRD 重载失败', a.file, e) }
       return key
     }
@@ -320,6 +342,11 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
     // 预置天线（后端烘焙）只含单波束 set0，包成统一的 beams[1] 结构
     const beam0 = { P1: toF32(raw.P1), P2: toF32(raw.P2), grid: raw.meta.grid, proj, peakDb: raw.meta.peakDb, peak: raw.meta.peak }
     cache.set(key, { meta: { ...raw.meta, beams: 1 }, beams: [beam0], settings })   // 每天线各存全部设置（含指向），数据库式
+    applyPendingCfg(key)   // 套用存档设置（若有），并据此重投影
+    if (cache.get(key).settings !== settings) {   // pending 已套用 → 用恢复后的指向重算投影
+      const c = cache.get(key), basis2 = beamBasis({ satLon: raw.meta.satLon, satLat: raw.meta.satLat || 0, satAlt: raw.meta.satAlt }, c.settings)
+      c.beams[0].proj = projectGrid(raw.meta.grid, raw.meta.igrid, basis2, null, null, true)
+    }
     return key
   }
 
@@ -515,6 +542,13 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
     if (isFlat()) { const fl = getFlat(); if (fl) fl.patchField(layers, opts) }
     else { const sc = getScene(); if (sc) sc.patchCoverageLayers(layers, opts) }
   }
+  // rAF 合帧的聚焦层重算（与拖拽同策略）：<input type=color> 的 @input 在挑色时高频连发，
+  // 逐事件同步 recomputeActive 会把主线程打满 → 卡。合帧后一帧最多重算一次，挑色与拖拽同样顺滑。
+  let _activeRaf = 0
+  function scheduleRecomputeActive() {
+    if (_activeRaf) return
+    _activeRaf = requestAnimationFrame(() => { _activeRaf = 0; recomputeActive() })
+  }
 
   // 卫星实时位置解算器（由页面注入：星座关联星按星历/时间轴解算星下点+高度）。
   // 未注入或非关联星 → 回退到节点静态 lon/lat/altKm。
@@ -662,8 +696,11 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
   // 缓存：导出/恢复 GRD 面板状态（选中天线 / 聚焦 / 各天线全部设置 / 全局等仰角线）
   function getState() {
     persistActive()
+    // 回存【所有已配置天线】的设置（不止当前绘制的）：未加载的沿用 pending 存档，已加载的取 cache 最新。
+    // 这样「清除绘图」后 selected 为空，各天线设置仍完整保存到本地，重载即原样恢复。
     const cfgs = {}
-    for (const key of selected.value) { const c = cache.get(key); if (c && c.settings) cfgs[key] = { ...c.settings, levels: copyLevels(c.settings.levels), beamsToPlot: (c.settings.beamsToPlot || [0]).slice(), beamNames: { ...(c.settings.beamNames || {}) } } }
+    for (const [key, cfg] of pendingCfgs) cfgs[key] = cfg
+    for (const [key, c] of cache) { if (c && c.settings) cfgs[key] = serializeCfg(c.settings) }
     // 卫星树：自定义/星座星完整定义 + 全部星的仰角线属性（预置星仅存仰角线，节点本身随 index 复现）
     // 导入天线（已存盘的原始 GRD）随卫星一并保存：重载时据 file 从盘上重建（预置天线由 index 复现，不存）
     const satsState = sats.value.map((s) => ({
@@ -718,6 +755,9 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
         }
       }
     }
+    // 灌入【所有】已存档天线设置到 pending（含未绘制/清除绘图的）：天线一经加载即套用；getState 时一并回存 → 不丢失。
+    pendingCfgs.clear()
+    if (st.cfgs) for (const key in st.cfgs) pendingCfgs.set(key, st.cfgs[key])
     if (!Array.isArray(st.selected)) { recompute(); return }
     // 旧格式（全局设置 + bores）兜底：拼出该天线的 cfg
     const legacy = (key) => st.cfgs ? null : {
@@ -728,10 +768,9 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
     const keys = []
     for (const key of st.selected) {
       const info = findAnt(key); if (!info) continue                      // 索引中已不存在（如内存导入的）跳过
-      await ensureLoaded(info.sat.folder, info.a)
+      await ensureLoaded(info.sat.folder, info.a)                          // 内部 applyPendingCfg 已套用 st.cfgs[key]
       const c = cache.get(key); if (!c) continue
-      const cfg = (st.cfgs && st.cfgs[key]) || legacy(key)
-      if (cfg) { c.settings = { ...defaultSettings(c.meta.satLon, c.meta.satLat || 0, c.meta.peakDb), ...cfg, levels: cfg.levels ? copyLevels(cfg.levels) : defaultLevels(c.meta.peakDb), beamsToPlot: (cfg.beamsToPlot || []).slice(), beamNames: { ...(cfg.beamNames || {}) } } }
+      const lc = legacy(key); if (lc) c.settings = mergeCfg(c.meta, lc)    // 旧格式：pending 为空，在此套用兜底 cfg
       const b = c.settings
       const basis = beamBasis(c.meta, b)
       for (const bm of c.beams) { bm.proj = projectGrid(bm.grid, c.meta.igrid, basis, null, null, true); bm._projKey = null }
@@ -749,7 +788,6 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
   function getPerfContext(key) {
     const c = cache.get(key); if (!c || !c.beams) return null
     const basis = beamBasis(c.meta, c.settings)
-    const plot = (c.settings.beamsToPlot || []).filter((i) => i < c.beams.length)
     const folder = key.split('|')[0]
     const satIdx = sats.value.findIndex((x) => x.folder === folder)
     const node = satIdx >= 0 ? sats.value[satIdx] : null
@@ -758,7 +796,9 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
       key, igrid: c.meta.igrid, icomp: c.meta.icomp, basis, meta: c.meta, settings: c.settings,
       satNo: satIdx + 1, antNo: antIdx + 1,
       satName: (node && node.satName) || c.meta.sat || '', antName: key.split('|')[1],
-      beams: plot.map((bi) => ({ bi, name: beamName(c, bi), peakDb: c.beams[bi].peakDb, beam: c.beams[bi] }))
+      // 性能表列【整张 GRD 的全部波束】（所有 set），不受「Beams To Plot」绘制选择影响；
+      // 取值口径/指向仍跟随天线设置。覆盖该城市的波束由 filterOn(minDir) 过滤后显示（SATSOFT 口径）。
+      beams: c.beams.map((bm, bi) => ({ bi, name: beamName(c, bi), peakDb: bm.peakDb, beam: bm }))
     }
   }
 
@@ -777,7 +817,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
   watch(() => [s.fill, s.line, s.lineWidth, s.ctype, s.pol, s.gainOffset, s.pathLoss], () => { persistActive(); recompute() }, { deep: true })
   // 电平改动只影响聚焦天线这一层（persistActive 仅写 active）→ 走单层快路径 recomputeActive，只 patch 当前可见视图。
   // 另一视图（2D/3D）在切换时由 applyFlat 的 recompute 一次性补齐（与拖拽波束同策略，避免每次编辑全量重算所有选中层）。
-  watch(() => s.levels, () => { persistActive(); recomputeActive() }, { deep: true })
+  watch(() => s.levels, () => { persistActive(); scheduleRecomputeActive() }, { deep: true })   // 合帧：挑色高频连发不再卡（persistActive 同步保证状态最新，重算合到下一帧）
   watch(() => s.beamsToPlot, () => { persistActive(); recompute() }, { deep: true })   // Beams To Plot 多选变更 → 回存 + 重绘
   watch(active, () => { beamQuery.value = '' })   // 切换聚焦天线：清空波束筛选词（波束数/含义随天线变）
   watch(() => s.alpha, (a) => { persistActive(); const sc = getScene(), fl = getFlat(); if (sc) sc.setCoverageFieldAlpha(a); if (fl) fl.setFieldAlpha(a) })

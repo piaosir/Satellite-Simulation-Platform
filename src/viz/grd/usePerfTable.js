@@ -54,8 +54,7 @@ function defaultOpts() {
     // 故一个经纬度不再因多波束而膨胀成大量行——单波束→1 行，重叠区→数行（对标 SATSOFT）。
     filterOn: true, minDir: 50,                  // 过滤：低于最低方向性的记录不显示
     sameAsAnt: true, pol: 'RSS', unit: 'dB', pathLoss: 'none', gainOffset: 0,   // 参数计算口径
-    pointAz: 0, pointEl: 0, pointYaw: 0,          // 指向误差：方位/俯仰/偏航各自半幅(°)，完全自定 → Min/Max Pointing
-    pointShape: 'ellipse'                          // 误差区形状：ellipse(椭圆,TICRA 默认) / rect(矩形)
+    pointAz: 0, pointEl: 0, pointYaw: 0           // 指向误差：方位/俯仰/偏航各自半幅(°)，完全自定 → Min/Max Pointing（误差区恒按椭圆算）
   }
 }
 
@@ -165,27 +164,54 @@ export function usePerfTable() {
   }
 
   // ===== 逐站取值 =====
-  // 指向误差 → 增益波动（TICRA / SATSOFT 口径，一阶梯度法，与 Slope 同源）：
-  // 站点处取方向图对卫星姿态(Az,El,Yaw)的局部梯度 g=(∂P/∂Az, ∂P/∂El, ∂P/∂Yaw)（dB/°，中心差分，
-  // 扰动经 perturbSpacecraft 卫星刚体姿态），增益摆幅 = 误差区在梯度方向的支撑函数：
-  //   椭圆(半轴 Az,El)：ΔG=√((gAz·Az)²+(gEl·El)²)+|gYaw|·Yaw；矩形：ΔG=|gAz|·Az+|gEl|·El+|gYaw|·Yaw。
-  // Min=base−ΔG，Max=base+ΔG（关于名义值对称——已用一行 SatSoft 数据核对 Max−base==base−Min）。
-  const GRAD_D = 0.05   // 局部梯度中心差分步长(°)
-  function pointMinMax(beam, igrid, basis, lon, lat, opts, baseDb, dAz, dEl, dYaw, ellipse) {
+  // 指向误差 → 增益波动（物理最准：在误差区上【真实重采样方向图取极值】，非一阶线性化）。
+  // 线性化(旧法)在峰值附近梯度→0 会误判 Min≈Max≈base，漏掉「偏指必掉增益」的二阶跌落，且强制对称；
+  // 真实搜索：以名义姿态为中心，在【椭圆】误差区边界（半轴 Az×El，周上 N 点）× yaw 端点{−,0,+} 各采一次，
+  //   加中心点（捕获峰值落在区内的情形）→ 取实采 dB 相对中心的最小/最大偏移 lo≤0≤hi。
+  // 扰动经 perturbSpacecraft 施加于卫星刚体姿态；站点经纬度不动 → 斜距/增益偏置/路损在各采样间恒定，
+  //   故 lo/hi 是纯方向图波动，与 rel/增益偏置等常数无关 → Min=baseDb+lo、Max=baseDb+hi（可不对称）。
+  // 误差区固定为椭圆（TICRA 默认指向误差区），不再提供形状选项。
+  const PT_N = 24       // 椭圆边界采样点数
+  function pointMinMax(beam, igrid, basis, lon, lat, opts, baseDb, dAz, dEl, dYaw) {
     if (baseDb == null) return { min: null, max: null }
     if (!(dAz > 0) && !(dEl > 0) && !(dYaw > 0)) return { min: baseDb, max: baseDb }
-    const grad = (ua, ue, uy) => {   // (P(+δ·u)−P(−δ·u))/(2δ)，u 为单位轴方向
-      const p1 = sampleBeamAt(beam, igrid, perturbSpacecraft(basis, ua * GRAD_D, ue * GRAD_D, uy * GRAD_D), lon, lat, opts)
-      const p2 = sampleBeamAt(beam, igrid, perturbSpacecraft(basis, -ua * GRAD_D, -ue * GRAD_D, -uy * GRAD_D), lon, lat, opts)
-      return (p1 && p2) ? (p1.db - p2.db) / (2 * GRAD_D) : 0
+    const at = (az, el, yaw) => {
+      const b = (az || el || yaw) ? perturbSpacecraft(basis, az, el, yaw) : basis
+      const r = sampleBeamAt(beam, igrid, b, lon, lat, opts)
+      return r ? r.db : null
     }
-    const gA = dAz > 0 ? grad(1, 0, 0) : 0
-    const gE = dEl > 0 ? grad(0, 1, 0) : 0
-    const gY = dYaw > 0 ? grad(0, 0, 1) : 0
-    const dG = ellipse
-      ? Math.hypot(gA * dAz, gE * dEl) + Math.abs(gY) * dYaw   // 椭圆(Az/El) ⊗ 区间(Yaw) 的支撑函数
-      : Math.abs(gA) * dAz + Math.abs(gE) * dEl + Math.abs(gY) * dYaw   // 矩形角点
-    return { min: baseDb - dG, max: baseDb + dG }
+    const center = at(0, 0, 0)
+    if (center == null) return { min: baseDb, max: baseDb }
+    let lo = 0, hi = 0
+    const acc = (db) => { if (db == null) return; const d = db - center; if (d < lo) lo = d; if (d > hi) hi = d }
+    const offs = []   // (Az,El) 椭圆边界偏移（半轴 dAz×dEl）
+    for (let i = 0; i < PT_N; i++) { const t = (2 * Math.PI * i) / PT_N; offs.push([dAz * Math.cos(t), dEl * Math.sin(t)]) }
+    const yaws = dYaw > 0 ? [0, dYaw, -dYaw] : [0]
+    for (const [a, e] of offs) for (const y of yaws) acc(at(a, e, y))
+    if (dYaw > 0) { acc(at(0, 0, dYaw)); acc(at(0, 0, -dYaw)) }   // 纯 yaw 端点（dAz=dEl=0 时的极值）
+    return { min: baseDb + lo, max: baseDb + hi }
+  }
+
+  // 波束真峰值 dB（物理：真峰值在网格点之间，离散最大低估）。在所选极化的功率网格上找离散最大，
+  // 再沿行/列各做抛物线顶点细化（可分离二次近似）后转 dB。按 beam×pol 记忆化（峰值与指向无关，
+  // = 网格上场的最大值）。供「相对峰值」口径作扣减基准——同时修正旧 bm.peakDb 恒为 RSS 极化的不一致。
+  function refinedPeakDb(beam, pol) {
+    const k = '_pk_' + pol
+    if (beam[k] !== undefined) return beam[k]
+    const { P1, P2, grid } = beam, NX = grid.NX, NY = grid.NY, N = NX * NY
+    const pw = (i) => { const a = P1[i], b = P2 ? P2[i] : 0
+      return pol === 'P1' ? a : pol === 'P2' ? b : pol === 'RSS' ? a + b : pol === 'P1/P2' ? (b > 0 ? a / b : 0) : pol === 'P2/P1' ? (a > 0 ? b / a : 0) : a }
+    let mi = 0, mv = -Infinity
+    for (let i = 0; i < N; i++) { const v = pw(i); if (v > mv) { mv = v; mi = i } }
+    if (!(mv > 0)) { beam[k] = null; return null }
+    const r = (mi / NX) | 0, c = mi % NX
+    const inc = (fm, f0, fp) => { const den = 2 * f0 - fm - fp; return den > 0 ? (fp - fm) * (fp - fm) / (8 * den) : 0 }   // 抛物线顶点相对 f0 的增量（concave 才有效）
+    let peak = mv
+    if (c > 0 && c < NX - 1) peak += inc(pw(mi - 1), mv, pw(mi + 1))
+    if (r > 0 && r < NY - 1) peak += inc(pw(mi - NX), mv, pw(mi + NX))
+    const db = peak > 0 ? 10 * Math.log10(peak) : null
+    beam[k] = db
+    return db
   }
 
   function compute(ctx, opts) {
@@ -210,10 +236,10 @@ export function usePerfTable() {
         if (o.filterOn && (dir == null || dir < o.minDir)) continue                                       // 最低方向性过滤
         const p = (want('param') || wantPt) ? sampleBeamAt(bm.beam, igrid, basis, s.lon, s.lat, parOpts) : null
         let param = p ? p.db : null
-        if (param != null && rel) param -= bm.peakDb
+        if (param != null && rel) { const pk = refinedPeakDb(bm.beam, polD); if (pk != null) param -= pk }
         // Min/Max Pointing = 一阶梯度法，以 param 为中心对称展开（ΔG 是差分、与 rel/增益偏置等常数无关）。
         // 输入按【全幅误差】解释：实际半幅 = 输入/2（与 SATSOFT 一致，输入 0.06 → 用 ±0.03）。
-        const pt = wantPt ? pointMinMax(bm.beam, igrid, basis, s.lon, s.lat, parOpts, param, o.pointAz / 2, o.pointEl / 2, o.pointYaw / 2, o.pointShape !== 'rect') : { min: null, max: null }
+        const pt = wantPt ? pointMinMax(bm.beam, igrid, basis, s.lon, s.lat, parOpts, param, o.pointAz / 2, o.pointEl / 2, o.pointYaw / 2) : { min: null, max: null }
         // Xpol C/I = 共极化/交叉极化 功率比（dB）
         let xpol = null
         if (want('xpol')) { const a = sampleBeamAt(bm.beam, igrid, basis, s.lon, s.lat, { pol: 'P1', gainOffset: 0, pathLoss: 'none' }); const b = sampleBeamAt(bm.beam, igrid, basis, s.lon, s.lat, { pol: 'P2', gainOffset: 0, pathLoss: 'none' }); xpol = (a && b) ? a.db - b.db : null }

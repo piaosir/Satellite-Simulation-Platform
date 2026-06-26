@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount, toRef } from 'vue'
+import { ref, reactive, computed, watch, nextTick, onMounted, onBeforeUnmount, toRef } from 'vue'
 import { cursor } from '../stores/cursor'
 import { view } from '../stores/view'
 import { covNav } from '../stores/coveragePanels'
@@ -58,7 +58,7 @@ const shownCount = ref(0)   // 实际渲染点数
 const dataTime = ref('')
 const live = ref(false)     // 实时刷新（与 2D 默认一致：关）
 const autoRotate = ref(true)
-const nameMode = ref('off')   // 国名：'zh' | 'en' | 'off'
+const nameMode = ref('en')   // 国名：'zh' | 'en' | 'off'
 const showProvinces = ref(false)
 let provincesLoaded = false
 let provincesData = null
@@ -137,15 +137,22 @@ function perfDragMove(e) {
     perfWin.value = { ...perfWin.value, x, y }
   })
 }
-function perfDragResize(e) {
+// 8 向缩放：dir 含 n/s/e/w（角=两字母）。东/南改 w/h；西/北还要同步移动 x/y（保持对边不动）。
+function perfDragResize(e, dir = 'se') {
   if (e.button !== 0) return
   e.preventDefault(); e.stopPropagation()
   const sx = e.clientX, sy = e.clientY, o = { ...perfWin.value }
+  const minW = 380, minH = 260
+  const E = dir.includes('e'), W = dir.includes('w'), S = dir.includes('s'), N = dir.includes('n')
   perfDragSession((ev) => {
     const vw = window.innerWidth, vh = window.innerHeight
-    const w = Math.max(380, Math.min(o.w + (ev.clientX - sx), vw - o.x - 6))
-    const h = Math.max(260, Math.min(o.h + (ev.clientY - sy), vh - o.y - 6))
-    perfWin.value = { ...perfWin.value, w, h }
+    let x = o.x, y = o.y, w = o.w, h = o.h
+    const dx = ev.clientX - sx, dy = ev.clientY - sy
+    if (E) w = Math.max(minW, Math.min(o.w + dx, vw - o.x - 6))
+    if (S) h = Math.max(minH, Math.min(o.h + dy, vh - o.y - 6))
+    if (W) { const right = o.x + o.w; x = Math.max(6, Math.min(o.x + dx, right - minW)); w = right - x }
+    if (N) { const bottom = o.y + o.h; y = Math.max(0, Math.min(o.y + dy, bottom - minH)); h = bottom - y }
+    perfWin.value = { ...perfWin.value, x, y, w, h }
     if (perfInputH.value > h - 140) perfInputH.value = Math.max(64, h - 140)   // 缩小时让结果区保底
   })
 }
@@ -263,8 +270,16 @@ const showBore = ref(true)        // 波束中心点
 const boreSize = ref(5)           // 波束中心点大小（1–12，映射球半径）
 const showContourLabels = ref(false) // 等值线数值标签
 const contourLabelSize = ref(12)  // 数值标签字号（2–20）
-const countryNameSize = ref(1)    // 国家名/大洋名字号倍率（0.6–2.0）
-const provNameSize = ref(1)       // 省名字号倍率（0.6–2.0）
+const countryNameSize = ref(1.1)  // 国家名/大洋名字号倍率（0.6–2.0）
+const provNameSize = ref(0.55)    // 省名字号倍率（0.6–2.0）
+// 国界(海岸线)/省界线样式：线宽 px / 颜色 / 透明度，同时作用于 3D 与平面图
+const borderStyle = reactive({ natColor: '#000000', natWidth: 0.2, natOpacity: 1.0, provColor: '#000000', provWidth: 0.3, provOpacity: 1.0 })
+// 地名颜色/透明度：国家名 与 省名 分开（大洋名维持固有蓝），同时作用于 3D 与平面图
+const labelStyle = reactive({ countryColor: '#eef2f6', countryOpacity: 1.0, provColor: '#f6fa00', provOpacity: 1.0 })
+// 大海颜色（限蓝色系预设），同时作用于 3D 球体与平面图底色
+// 蓝色系：深→浅，兼顾鲜艳/中性/低饱和；第 2 项 #15426b 为默认深蓝，末项 #92b6e4 取自 SATSOFT 浅蓝海面
+const OCEAN_BLUES = ['#0d2b4d', '#15426b', '#1b5a8c', '#1e6fa8', '#2a85c4', '#3d7ba6', '#5b7f9e', '#92b6e4']
+const oceanColor = ref('#92b6e4')
 const covStatus = ref('')
 const covLegend = ref([])         // [{ name, mode, gmin, gmax, type, solid }]
 let covLoaded = false
@@ -750,6 +765,9 @@ async function applyFlat(v) {
     flat.setNameMode(nameMode.value)
     if (provincesData) flat.setProvinces(provincesData)
     flat.setProvincesVisible(showProvinces.value)
+    flat.setBorderStyle({ ...borderStyle })
+    flat.setLabelStyle({ ...labelStyle })
+    flat.setOceanColor(oceanColor.value)
     flat.setMarkers(
       points.value.map((p) => ({ lat: p.lat, lon: p.lon, label: fmtLL(p.lat, p.lon), el: fmtElev(p.lat, p.lon) })),
       stations.value.map((s) => ({ lat: s.lat, lon: s.lon, name: s.name, el: fmtElev(s.lat, s.lon) })),
@@ -858,6 +876,12 @@ function setContourSize(e) { contourLabelSize.value = Number(e.target.value); re
 function applyNameScale() { if (scene) scene.setNameScale(countryNameSize.value, provNameSize.value); if (flat) flat.setSizes({ nameScale: countryNameSize.value, provScale: provNameSize.value }) }
 function setCountryNameSize(e) { countryNameSize.value = Number(e.target.value); applyNameScale() }
 function setProvNameSize(e) { provNameSize.value = Number(e.target.value); applyNameScale() }
+// 国界/省界线样式 → 3D 与平面图。{ ...borderStyle } 取响应式对象快照传入两个渲染器。
+function applyBorderStyle() { const s = { ...borderStyle }; if (scene) scene.setBorderStyle(s); if (flat) flat.setBorderStyle(s) }
+// 地名颜色/透明度 → 3D 与平面图。
+function applyLabelStyle() { const s = { ...labelStyle }; if (scene) scene.setLabelStyle(s); if (flat) flat.setLabelStyle(s) }
+// 大海颜色 → 3D 与平面图。
+function setOceanColor(c) { oceanColor.value = c; if (scene) scene.setOceanColor(c); if (flat) flat.setOceanColor(c) }
 function setPtFont(e) { markPtFont.value = Number(e.target.value); syncMarkers() }
 function setStIcon(e) { stIconSize.value = Number(e.target.value); syncMarkers() }
 function setStFont(e) { stFontSize.value = Number(e.target.value); syncMarkers() }
@@ -1269,7 +1293,7 @@ function deserializeCov(items) {
 }
 function snapshot() {
   return {
-    nameMode: nameMode.value, countryName: countryNameSize.value, provName: provNameSize.value, showProvinces: showProvinces.value, autoRotate: autoRotate.value, live: live.value, beamLock: beamLock.value,
+    nameMode: nameMode.value, countryName: countryNameSize.value, provName: provNameSize.value, showProvinces: showProvinces.value, borderStyle: { ...borderStyle }, labelStyle: { ...labelStyle }, oceanColor: oceanColor.value, autoRotate: autoRotate.value, live: live.value, beamLock: beamLock.value,
     mkPt: markPtFont.value, mkStIcon: stIconSize.value, mkStFont: stFontSize.value,
     covOpen: covOpen.value, mkOpen: mkOpen.value, geoOpen: geoOpen.value,
     grdOpen: grdOpen.value, grd: grd.getState(), perf: perf.getState(),
@@ -1290,6 +1314,11 @@ async function restoreSettings() {
   if (Number.isFinite(s.provName)) provNameSize.value = s.provName
   else if (Number.isFinite(s.geoName)) provNameSize.value = s.geoName
   scene.setNameScale(countryNameSize.value, provNameSize.value)
+  if (s.borderStyle && typeof s.borderStyle === 'object') Object.assign(borderStyle, s.borderStyle)
+  applyBorderStyle()
+  if (s.labelStyle && typeof s.labelStyle === 'object') Object.assign(labelStyle, s.labelStyle)
+  applyLabelStyle()
+  if (typeof s.oceanColor === 'string') setOceanColor(s.oceanColor)
   if (Number.isFinite(s.mkPt)) markPtFont.value = s.mkPt
   if (Number.isFinite(s.mkStIcon)) stIconSize.value = s.mkStIcon
   if (Number.isFinite(s.mkStFont)) stFontSize.value = s.mkStFont
@@ -1357,6 +1386,9 @@ onMounted(async () => {
   scene = createGlobeScene(el.value)
   scene.setAutoRotate(autoRotate.value)
   scene.setLabelMode(nameMode.value)
+  scene.setBorderStyle({ ...borderStyle })
+  scene.setLabelStyle({ ...labelStyle })
+  scene.setOceanColor(oceanColor.value)
   scene.setOnAutoRotateOff(() => { autoRotate.value = false })
   scene.setOnPick((index) => {
     // 从星座点选模式：命中的星填入卫星编辑弹窗，不改变当前选中星
@@ -1419,7 +1451,7 @@ onBeforeUnmount(() => {
       <span class="mini" :class="{ on: autoRotate }" @click="toggleRotate">{{ autoRotate ? '旋转中' : '旋转停' }}</span>
       <span class="mini" :class="{ on: live }" @click="toggleLive">{{ live ? '实时开' : '实时关' }}</span>
       <span class="mini" :class="{ on: mkOpen }" @click="toggleMarkers">标记</span>
-      <span class="mini" :class="{ on: geoOpen }" @click="toggleGeo">地名</span>
+      <span class="mini" :class="{ on: geoOpen }" @click="toggleGeo">地图设置</span>
       <span class="meta">在轨 {{ satCount }}<template v-if="shownCount && shownCount < satCount"> · 渲染 {{ shownCount }}</template>
         <template v-if="dataTime"> · OMM {{ dataTime }}</template>
         <template v-if="status"> · {{ status }}</template></span>
@@ -1782,7 +1814,14 @@ onBeforeUnmount(() => {
       </div>
 
       <div v-if="geoOpen" class="cov-side geo-side">
-        <div class="csh"><span class="csn">地名</span><span class="csx" @click="toggleGeo">✕</span></div>
+        <div class="csh"><span class="csn">地图设置</span><span class="csx" @click="toggleGeo">✕</span></div>
+        <div class="sec">
+          <div class="sect"><span>大海颜色</span></div>
+          <div class="swatches">
+            <span v-for="c in OCEAN_BLUES" :key="c" class="sw" :class="{ on: oceanColor === c }" :style="{ background: c }" :title="c" @click="setOceanColor(c)"></span>
+          </div>
+          <div class="tip">海洋底色限蓝色系，同时作用于 3D 球体与平面图。</div>
+        </div>
         <div class="sec">
           <div class="srow"><label>国家名</label>
             <span class="seg">
@@ -1792,9 +1831,28 @@ onBeforeUnmount(() => {
             </span>
           </div>
           <div class="srow"><label>国家名字号</label><input class="rng" type="range" min="0.3" max="2" step="0.05" :value="countryNameSize" @input="setCountryNameSize" /><span class="u">{{ countryNameSize.toFixed(2) }}</span></div>
+          <div class="srow"><label>国家名颜色</label><input class="clr" type="color" v-model="labelStyle.countryColor" @input="applyLabelStyle" /><span class="u">{{ labelStyle.countryColor }}</span></div>
+          <div class="srow"><label>国家名透明度</label><input class="rng" type="range" min="0" max="1" step="0.05" v-model.number="labelStyle.countryOpacity" @input="applyLabelStyle" /><span class="u">{{ labelStyle.countryOpacity.toFixed(2) }}</span></div>
           <label class="chk2"><input type="checkbox" :checked="showProvinces" @change="toggleProvinces" /><span>显示中国省界 / 省名</span></label>
           <div class="srow"><label>省名字号</label><input class="rng" type="range" min="0.3" max="2" step="0.05" :value="provNameSize" @input="setProvNameSize" /><span class="u">{{ provNameSize.toFixed(2) }}</span></div>
-          <div class="tip">国家名(含大洋名)与省名字号分开调，同时作用于 3D 与平面图。</div>
+          <div class="srow"><label>省名颜色</label><input class="clr" type="color" v-model="labelStyle.provColor" @input="applyLabelStyle" /><span class="u">{{ labelStyle.provColor }}</span></div>
+          <div class="srow"><label>省名透明度</label><input class="rng" type="range" min="0" max="1" step="0.05" v-model.number="labelStyle.provOpacity" @input="applyLabelStyle" /><span class="u">{{ labelStyle.provOpacity.toFixed(2) }}</span></div>
+          <div class="tip">国家名与省名的字号/颜色/透明度分开调，同时作用于 3D 与平面图（大洋名维持固有蓝）。</div>
+        </div>
+
+        <div class="sec">
+          <div class="sect"><span>国界 / 海岸线</span></div>
+          <div class="srow"><label>线颜色</label><input class="clr" type="color" v-model="borderStyle.natColor" @input="applyBorderStyle" /><span class="u">{{ borderStyle.natColor }}</span></div>
+          <div class="srow"><label>线粗</label><input class="rng" type="range" min="0.1" max="4" step="0.1" v-model.number="borderStyle.natWidth" @input="applyBorderStyle" /><span class="u">{{ borderStyle.natWidth.toFixed(1) }}</span></div>
+          <div class="srow"><label>透明度</label><input class="rng" type="range" min="0" max="1" step="0.05" v-model.number="borderStyle.natOpacity" @input="applyBorderStyle" /><span class="u">{{ borderStyle.natOpacity.toFixed(2) }}</span></div>
+        </div>
+
+        <div class="sec">
+          <div class="sect"><span>中国省界</span></div>
+          <div class="srow"><label>线颜色</label><input class="clr" type="color" v-model="borderStyle.provColor" @input="applyBorderStyle" /><span class="u">{{ borderStyle.provColor }}</span></div>
+          <div class="srow"><label>线粗</label><input class="rng" type="range" min="0.1" max="4" step="0.1" v-model.number="borderStyle.provWidth" @input="applyBorderStyle" /><span class="u">{{ borderStyle.provWidth.toFixed(1) }}</span></div>
+          <div class="srow"><label>透明度</label><input class="rng" type="range" min="0" max="1" step="0.05" v-model.number="borderStyle.provOpacity" @input="applyBorderStyle" /><span class="u">{{ borderStyle.provOpacity.toFixed(2) }}</span></div>
+          <div class="tip">省界样式需勾选「显示中国省界」后可见；线宽为屏幕像素，缩放时恒定。</div>
         </div>
       </div>
 
@@ -2060,8 +2118,15 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
-      <!-- 右下角缩放手柄 -->
-      <div class="perf-rsz" title="拖拽缩放窗口" @mousedown="perfDragResize"></div>
+      <!-- 8 向缩放手柄（窗口 overflow:hidden，故均贴边在框内） -->
+      <div class="prh prh-n" @mousedown="perfDragResize($event, 'n')"></div>
+      <div class="prh prh-s" @mousedown="perfDragResize($event, 's')"></div>
+      <div class="prh prh-w" @mousedown="perfDragResize($event, 'w')"></div>
+      <div class="prh prh-e" @mousedown="perfDragResize($event, 'e')"></div>
+      <div class="prh prh-nw" @mousedown="perfDragResize($event, 'nw')"></div>
+      <div class="prh prh-ne" @mousedown="perfDragResize($event, 'ne')"></div>
+      <div class="prh prh-sw" @mousedown="perfDragResize($event, 'sw')"></div>
+      <div class="perf-rsz" title="拖拽缩放窗口" @mousedown="perfDragResize($event, 'se')"></div>
     </div>
 
     <!-- 性能表选项弹窗（对标 SATSOFT Performance Table Options）：显示列 / 过滤 / 波束类型 / 计算口径 / 指向误差 -->
@@ -2108,7 +2173,6 @@ onBeforeUnmount(() => {
               <div class="po-row"><label>方位 Az</label><input class="ci" type="number" step="any" min="0" v-model.number="perfOpts.pointAz" /><span class="u">°</span></div>
               <div class="po-row"><label>俯仰 El</label><input class="ci" type="number" step="any" min="0" v-model.number="perfOpts.pointEl" /><span class="u">°</span></div>
               <div class="po-row"><label>偏航 Yaw</label><input class="ci" type="number" step="any" min="0" v-model.number="perfOpts.pointYaw" /><span class="u">°</span></div>
-              <div class="po-row"><label>误差区</label><span class="seg sm"><span class="sg" :class="{ on: perfOpts.pointShape === 'ellipse' }" @click="perfOpts.pointShape = 'ellipse'">椭圆</span><span class="sg" :class="{ on: perfOpts.pointShape === 'rect' }" @click="perfOpts.pointShape = 'rect'">矩形</span></span></div>
             </section>
           </div>
         </div>
@@ -2264,7 +2328,7 @@ onBeforeUnmount(() => {
 .perf-h { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border); flex: none; cursor: move; user-select: none; }
 .perf-t { flex: 1; font-family: var(--font-serif); font-size: 13.5px; color: var(--text); }
 .perf-t em { font-style: normal; font-family: var(--font-mono); font-size: 11px; color: var(--text-faint); }
-.perf-h .csx { cursor: pointer; color: var(--text-faint); padding: 0 4px; }
+.perf-h .csx { cursor: pointer; color: var(--text-faint); padding: 0 4px; position: relative; z-index: 5; }   /* 高于 NE 缩放角，保证可点关闭 */
 .perf-h .csx:hover { color: var(--text); }
 .ptb { font-size: 11.5px; color: var(--text-muted); border: 1px solid var(--border); border-radius: 4px; padding: 2px 8px; cursor: pointer; white-space: nowrap; }
 .ptb:hover { color: var(--text); border-color: var(--accent); }
@@ -2280,8 +2344,17 @@ onBeforeUnmount(() => {
 .perf-split { flex: none; height: 7px; cursor: ns-resize; background: var(--border); display: flex; align-items: center; justify-content: center; }
 .perf-split:hover { background: color-mix(in srgb, var(--accent) 45%, var(--border)); }
 .perf-split .grip { width: 30px; height: 2px; border-radius: 2px; background: color-mix(in srgb, var(--text) 35%, transparent); }
-/* 右下角缩放手柄 */
-.perf-rsz { position: absolute; right: 0; bottom: 0; width: 16px; height: 16px; cursor: nwse-resize; z-index: 2; background: linear-gradient(135deg, transparent 50%, color-mix(in srgb, var(--text) 30%, transparent) 50%, color-mix(in srgb, var(--text) 30%, transparent) 62%, transparent 62%, transparent 74%, color-mix(in srgb, var(--text) 30%, transparent) 74%, color-mix(in srgb, var(--text) 30%, transparent) 86%, transparent 86%); }
+/* 缩放手柄：四角 + 四边（窗口 overflow:hidden，全部贴边在框内）。角 z-index 高于边以便优先命中。 */
+.prh { position: absolute; z-index: 3; }
+.prh-n { top: 0; left: 14px; right: 14px; height: 6px; cursor: ns-resize; }
+.prh-s { bottom: 0; left: 14px; right: 14px; height: 6px; cursor: ns-resize; }
+.prh-w { left: 0; top: 14px; bottom: 14px; width: 6px; cursor: ew-resize; }
+.prh-e { right: 0; top: 14px; bottom: 14px; width: 6px; cursor: ew-resize; }
+.prh-nw { left: 0; top: 0; width: 14px; height: 14px; cursor: nwse-resize; z-index: 4; }
+.prh-ne { right: 0; top: 0; width: 14px; height: 14px; cursor: nesw-resize; z-index: 4; }
+.prh-sw { left: 0; bottom: 0; width: 14px; height: 14px; cursor: nesw-resize; z-index: 4; }
+/* 右下角缩放手柄（带可见纹理） */
+.perf-rsz { position: absolute; right: 0; bottom: 0; width: 16px; height: 16px; cursor: nwse-resize; z-index: 4; background: linear-gradient(135deg, transparent 50%, color-mix(in srgb, var(--text) 30%, transparent) 50%, color-mix(in srgb, var(--text) 30%, transparent) 62%, transparent 62%, transparent 74%, color-mix(in srgb, var(--text) 30%, transparent) 74%, color-mix(in srgb, var(--text) 30%, transparent) 86%, transparent 86%); }
 .pin-h, .pr-h { display: flex; align-items: center; gap: 6px; padding: 6px 12px; flex: none; flex-wrap: wrap; }
 .pin-h { border-bottom: 1px solid var(--border); }
 .pin-t, .pr-t { font-size: 11.5px; font-weight: 600; color: var(--text-muted); white-space: nowrap; }
@@ -2426,6 +2499,11 @@ onBeforeUnmount(() => {
 .bnm:focus { border-color: var(--accent); }
 .clr { flex: none; width: 26px; height: 20px; padding: 0; border: 1px solid var(--border); background: none; cursor: pointer; }
 .rng { flex: 1; min-width: 0; accent-color: var(--accent); }
+.clr { flex: 1; min-width: 0; height: 22px; padding: 0; border: 1px solid var(--border); background: var(--bg); cursor: pointer; }
+.swatches { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.sw { width: 24px; height: 24px; border-radius: 3px; border: 1px solid var(--border); cursor: pointer; box-sizing: border-box; }
+.sw:hover { border-color: var(--accent); }
+.sw.on { border: 2px solid var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 .srow .u { min-width: 18px; text-align: right; }
 .bsub { display: flex; align-items: center; gap: 8px; margin: 7px 0 4px; color: var(--text-muted); font-size: 11.5px; }
 .bsub .lnk { color: var(--accent); cursor: pointer; font-size: 11.5px; }

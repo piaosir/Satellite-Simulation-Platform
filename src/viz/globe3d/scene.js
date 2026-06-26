@@ -10,6 +10,7 @@ import { feature } from 'topojson-client'
 import topo from './data/countries-10m.json'
 import NAMES from './data/country-names-zh.json'
 import { CHINA_IDS, NO_LABEL_IDS } from './cnClaims.js'
+import { NANHAI_DASHES, NANHAI_WIDTH_MUL, NANHAI_MIN_WIDTH } from '../nanhaiDashes.js'
 
 const RE = 6371
 
@@ -165,11 +166,12 @@ function makeLabelSprite(text, hpx, fill) {
   cx.lineJoin = 'round'; cx.miterLimit = 2
   cx.lineWidth = 4; cx.strokeStyle = 'rgba(0,0,0,0.8)'
   cx.strokeText(text, c.width / 2, c.height / 2)
-  cx.fillStyle = fill || '#eef2f6'; cx.fillText(text, c.width / 2, c.height / 2)
+  // 字面烘成纯白，颜色由 SpriteMaterial.color 着色（运行时可改）：白×色=色，黑色描边×色仍≈黑，casing 保留
+  cx.fillStyle = '#ffffff'; cx.fillText(text, c.width / 2, c.height / 2)
   const tex = new THREE.CanvasTexture(c)
   tex.colorSpace = THREE.SRGBColorSpace
   // depthTest 关：正面标签始终完整显示，不被球面裁切；背面由每帧半球剔除隐藏
-  const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, depthWrite: false, transparent: true }))
+  const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, color: fill || '#eef2f6', depthTest: false, depthWrite: false, transparent: true }))
   spr.scale.set((c.width / c.height) * hpx, hpx, 1)
   spr._base = spr.scale.clone()   // 基准尺寸（供地名字号缩放）
   spr.renderOrder = 10
@@ -380,7 +382,9 @@ export function createGlobeScene(container) {
 
   const features = feature(topo, topo.objects.countries).features
   // 海洋：纯色球（半径 0.998，留足与陆地细分塌陷下限 ~0.9995 的间隙，标准深度下不 z-fighting）
-  scene.add(new THREE.Mesh(new THREE.SphereGeometry(0.998, 128, 128), new THREE.MeshBasicMaterial({ color: OCEAN })))
+  // 海洋球：保留材质引用，供 setOceanColor 运行时改色（限蓝色系）
+  const oceanMat = new THREE.MeshBasicMaterial({ color: OCEAN })
+  scene.add(new THREE.Mesh(new THREE.SphereGeometry(0.998, 128, 128), oceanMat))
   // 陆地：矢量三角网填色（零虚化，替代原 8192 纹理）
   scene.add(buildLandMesh(features))
 
@@ -388,7 +392,23 @@ export function createGlobeScene(container) {
   // 经纬网 / 海岸线 渲染序高于覆盖填充(5)+等值线(6)、低于数据叠加(轨迹7/点/标注)：
   // 地理骨架贯穿覆盖区之上 → 覆盖与底图融为一体（平级），不再像贴纸浮在地图上面。depthWrite=false，纯绘制顺序。
   scene.add(fatSegments(buildGraticule(), 0xffffff, 0.8, 0.12, 6.3))
-  scene.add(fatSegments(buildBorders(features), 0x5b7088, 0.8, 0.9, 6.5))
+  // 国界/海岸线：保留材质引用，供 setBorderStyle 运行时改线宽/颜色/透明度
+  const borderCfg = { natColor: 0x5b7088, natWidth: 0.8, natOpacity: 1.0, provColor: 0x9aa3b0, provWidth: 1.2, provOpacity: 0.8 }
+  const coastBorders = fatSegments(buildBorders(features), borderCfg.natColor, borderCfg.natWidth, borderCfg.natOpacity, 6.5)
+  scene.add(coastBorders)
+  // 南海十段线：颜色随中国国土(CHINA)、线宽/透明度随省界(borderCfg.prov*)，线宽×惯例倍数（略粗于省界）。
+  // 每段为多点折线 → 展开成相邻点对喂给 LineSegments（v0-v1, v1-v2, ...）。
+  const nanhaiPos = []
+  for (const seg of NANHAI_DASHES) {
+    for (let i = 0; i + 1 < seg.length; i++) {
+      const a = llaToVec(seg[i][1], seg[i][0], 0).multiplyScalar(1.0005)
+      const b = llaToVec(seg[i + 1][1], seg[i + 1][0], 0).multiplyScalar(1.0005)
+      nanhaiPos.push(a.x, a.y, a.z, b.x, b.y, b.z)
+    }
+  }
+  const nanhaiW = (pw) => Math.max(NANHAI_MIN_WIDTH, pw * NANHAI_WIDTH_MUL)
+  const nanhaiLine = fatSegments(nanhaiPos, CHINA, nanhaiW(borderCfg.provWidth), borderCfg.provOpacity, 6.5)
+  scene.add(nanhaiLine)
 
   // 国名/洋名：中、英两套（按需切换显隐），初始全隐
   const labelsZh = buildLabels(features, 'zh'); scene.add(labelsZh)
@@ -409,6 +429,21 @@ export function createGlobeScene(container) {
     applyNameScale(oceanZh, nameScaleC); applyNameScale(oceanEn, nameScaleC)
     applyNameScale(provinceLabels, nameScaleP)
   }
+  // 地名颜色/透明度：国家名(cf) 与 省名(pf) 分开。字面已烘白 → 改 SpriteMaterial.color 即着色，opacity 控整体淡入淡出。
+  // 省名标签懒加载，故同时存进 labelCfg，setProvinces 创建时套用。大洋名维持其固有蓝，不随国家色改。
+  const labelCfg = { countryColor: '#eef2f6', countryOpacity: 1, provColor: '#ffe6a8', provOpacity: 1 }
+  function applyLabelStyle(group, color, opacity) {
+    if (!group) return
+    group.traverse((c) => { if (c.isSprite && c.material) { if (color != null) c.material.color.set(color); if (opacity != null) { c._baseOpacity = opacity; c.material.opacity = opacity } } })
+  }
+  function setLabelStyle(s) {
+    if (!s) return
+    Object.assign(labelCfg, s)
+    if (s.countryColor != null || s.countryOpacity != null) { applyLabelStyle(labelsZh, s.countryColor, s.countryOpacity); applyLabelStyle(labelsEn, s.countryColor, s.countryOpacity) }
+    if (s.provColor != null || s.provOpacity != null) applyLabelStyle(provinceLabels, s.provColor, s.provOpacity)
+  }
+  // 大海颜色（限蓝色系）：直接改海洋球材质色
+  function setOceanColor(c) { if (c) oceanMat.color.set(c) }
 
   // 中国省界 + 省名（按需由上层注入数据）
   let provinceBorders = null, provinceLabels = null
@@ -422,7 +457,7 @@ export function createGlobeScene(container) {
         pos.push(a.x, a.y, a.z, b.x, b.y, b.z)
       }
     }
-    provinceBorders = fatSegments(pos, 0x9aa3b0, 1.3, 0.6, 6.6)   // 同海岸线：压在覆盖之上，与底图平级
+    provinceBorders = fatSegments(pos, borderCfg.provColor, borderCfg.provWidth, borderCfg.provOpacity, 6.6)   // 同海岸线：压在覆盖之上，与底图平级
     provinceBorders.visible = false; scene.add(provinceBorders)
     provinceLabels = new THREE.Group(); provinceLabels.visible = false
     for (const l of (data.labels || [])) {
@@ -435,9 +470,33 @@ export function createGlobeScene(container) {
       provinceLabels.add(spr)
     }
     applyNameScale(provinceLabels, nameScaleP)   // 套用当前省名字号
+    applyLabelStyle(provinceLabels, labelCfg.provColor, labelCfg.provOpacity)   // 套用当前省名颜色/透明度
     scene.add(provinceLabels)
   }
   function setProvincesVisible(v) { if (provinceBorders) provinceBorders.visible = !!v; if (provinceLabels) provinceLabels.visible = !!v }
+  // 国界/省界线样式（线宽 px / 颜色 / 透明度）。merge 到 borderCfg 并改对应材质 uniform；
+  // 省界材质可能尚未创建（懒加载），故同时存进 borderCfg，setProvinces 创建时套用。
+  function setBorderStyle(s) {
+    if (!s) return
+    Object.assign(borderCfg, s)
+    if (coastBorders) {
+      const m = coastBorders.material
+      if (s.natColor != null) m.color.set(s.natColor)
+      if (s.natWidth != null) m.linewidth = s.natWidth
+      if (s.natOpacity != null) m.opacity = s.natOpacity
+    }
+    if (nanhaiLine) {   // 南海十段线随省界透明度，线宽=省界×惯例倍数（颜色固定为国土色）
+      const m = nanhaiLine.material
+      if (s.provWidth != null) m.linewidth = nanhaiW(s.provWidth)
+      if (s.provOpacity != null) m.opacity = s.provOpacity
+    }
+    if (provinceBorders) {
+      const m = provinceBorders.material
+      if (s.provColor != null) m.color.set(s.provColor)
+      if (s.provWidth != null) m.linewidth = s.provWidth
+      if (s.provOpacity != null) m.opacity = s.provOpacity
+    }
+  }
 
   // 选中高亮：金色圆环（与 2D 星座地图一致）。用 Sprite + 每帧反缩放成固定屏幕尺寸 ->
   // 任何缩放级别都清晰看到选中的是哪颗；被地球挡住时隐藏。
@@ -970,7 +1029,9 @@ export function createGlobeScene(container) {
   function fadeLabel(s, dot) {
     if (dot <= 0.05) { s.visible = false; return }
     s.visible = true
-    s.material.opacity = dot >= 0.22 ? 1 : (dot - 0.05) / 0.17
+    // 地平淡出系数 × 用户设定的基准透明度（_baseOpacity，默认 1）：二者相乘，使透明度设置不被每帧淡出覆盖
+    const base = s._baseOpacity != null ? s._baseOpacity : 1
+    s.material.opacity = (dot >= 0.22 ? 1 : (dot - 0.05) / 0.17) * base
   }
   function updateLabels() {
     camDir.copy(camera.position).normalize()
@@ -1020,7 +1081,7 @@ export function createGlobeScene(container) {
   return {
     setSatellites, setLabelMode, setHighlight, setHighlightLLA, setOnPick,
     setOrbit, setGroundTrack, setFootprint, clearSelectionGeom,
-    setCoverage, clearCoverage, setCoverageField, patchCoverageLayers, clearCoverageField, setCoverageFieldAlpha, setSatLayer, clearSatLayer, faceLonLat, setProvinces, setProvincesVisible, setNameScale,
+    setCoverage, clearCoverage, setCoverageField, patchCoverageLayers, clearCoverageField, setCoverageFieldAlpha, setSatLayer, clearSatLayer, faceLonLat, setProvinces, setProvincesVisible, setBorderStyle, setNameScale, setLabelStyle, setOceanColor,
     setMarkers, setTrajectories, setOnHover, setOnRightClick, setBeamDragMode, setOnBeamDrag,
     faceTo, setAutoRotate, setOnAutoRotateOff, resize, destroy,
     // 缩放进度条接口：getZoom 读当前进度、setZoom 设到进度 t、setOnZoom 注册滚轮缩放回填回调

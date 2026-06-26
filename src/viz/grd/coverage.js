@@ -279,9 +279,12 @@ export function axialRatioDb(comp, icomp) {
 
 // 在地表站点(lon,lat)处反查单个波束的方向图值（性能指标表逐站取值内核）。
 // 链路：站点 ECEF → 减卫星位置得视线方向 → 投到天线系 basis（转置）→ invGridDir 反解网格坐标 →
-//   对功率 P1/P2 做【双三次 bicubic】插值（过冲致非正时回退双线性）→ 极化/增益/路损 → dB。
-//   wantComp=true 且有复场(c1re..)时，另对复场 Re/Im 做 bicubic 插值返回 comp（仅供 AR；不影响 dir/功率）。
-//   站点落在方向图域外/背面返回 null。beam: { P1,P2,[c1re,c1im,c2re,c2im], grid:{...} }；basis: { S,x,y,z }。
+//   插值 → 极化/增益/路损 → dB。站点落在方向图域外/背面返回 null。
+// 【插值域 = 复场（物理最准）】带限量是复电场 E（按口径采样到 Nyquist），功率 |E|² 带宽翻倍、
+//   直接插功率相对网格欠采样 → 误差。故有复场(c1re..)时对 Re/Im 各做 bicubic 再平方得功率
+//   （p=re²+im²≥0，无零点处的负过冲问题）；comp 也由此一并得到（AR 用，免重复插值）。
+//   预置烘焙天线无复场 → 回退【对功率 P1/P2 做 bicubic】（过冲致非正时回退双线性）。
+// beam: { P1,P2,[c1re,c1im,c2re,c2im], grid:{...} }；basis: { S,x,y,z }。
 export function sampleBeamAt(beam, igrid, basis, lon, lat, { pol = 'RSS', gainOffset = 0, pathLoss = 'none', hNadir = H, wantComp = false } = {}) {
   const { S, x, y, z } = basis
   const P = geodeticToEcef(lon, lat, 0)
@@ -294,10 +297,16 @@ export function sampleBeamAt(beam, igrid, basis, lon, lat, { pol = 'RSS', gainOf
   const fc = (xy[0] - g.XS) / ((g.XE - g.XS) / (NX - 1))
   const fr = (xy[1] - g.YS) / ((g.YE - g.YS) / (NY - 1))
   if (fc < 0 || fc > NX - 1 || fr < 0 || fr > NY - 1) return null   // 站点在方向图网格域外
-  const samp = (arr) => { const v = bicubicAt(arr, NX, NY, fc, fr); return v > 0 ? v : bilinearAt(arr, NX, NY, fc, fr) }
-  const p1 = samp(beam.P1), p2 = samp(beam.P2)
-  let comp = null
-  if (wantComp && beam.c1re) comp = { re1: bicubicAt(beam.c1re, NX, NY, fc, fr), im1: bicubicAt(beam.c1im, NX, NY, fc, fr), re2: bicubicAt(beam.c2re, NX, NY, fc, fr), im2: bicubicAt(beam.c2im, NX, NY, fc, fr) }
+  let p1, p2, comp = null
+  if (beam.c1re) {                                                   // 复场域插值（物理最准）：插 Re/Im → 平方
+    const re1 = bicubicAt(beam.c1re, NX, NY, fc, fr), im1 = bicubicAt(beam.c1im, NX, NY, fc, fr)
+    const re2 = bicubicAt(beam.c2re, NX, NY, fc, fr), im2 = bicubicAt(beam.c2im, NX, NY, fc, fr)
+    p1 = re1 * re1 + im1 * im1; p2 = re2 * re2 + im2 * im2
+    if (wantComp) comp = { re1, im1, re2, im2 }
+  } else {                                                           // 无复场（预置烘焙）→ 回退功率域插值
+    const samp = (arr) => { const v = bicubicAt(arr, NX, NY, fc, fr); return v > 0 ? v : bilinearAt(arr, NX, NY, fc, fr) }
+    p1 = samp(beam.P1); p2 = samp(beam.P2)
+  }
   let Pw
   if (pol === 'P1') Pw = p1
   else if (pol === 'P2') Pw = p2

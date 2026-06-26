@@ -5,6 +5,7 @@ import { feature } from 'topojson-client'
 import topo from '../globe3d/data/countries-10m.json'
 import NAMES from '../globe3d/data/country-names-zh.json'
 import { CHINA_IDS, NO_LABEL_IDS } from '../globe3d/cnClaims.js'
+import { NANHAI_DASHES, NANHAI_WIDTH_MUL, NANHAI_MIN_WIDTH } from '../nanhaiDashes.js'
 
 const LAND = ['#8fa89b', '#b0a98f', '#9fb0c0', '#c0a99f', '#a9b08f', '#9f9fb0', '#b8a0a0', '#90b0a8', '#b0b090', '#a0a8b8', '#bca890', '#98a0a8']
 const OCEAN = '#15426b', CHINA = '#b85a52', ICE = '#edf2f6'
@@ -69,6 +70,11 @@ export function createFlatCoverage(canvas) {
   // GRD 全局标注选项（与 3D 同步）：天线名 / 波束中心 / 数值标签
   let fieldOpts = { showName: true, nameSize: 16, showBore: true, boreSize: 5, showPeak: false, peakSize: 12, showVal: false, valSize: 12 }
   let nameMode = 'off', provVisible = false, prov = null
+  // 国界(海岸线)/省界线样式：线宽为恒定屏幕 px、颜色十六进制、透明度 0–1（与 3D 同步）
+  let borderStyle = { natColor: BORDER, natWidth: 0.8, natOpacity: 1.0, provColor: PROV, provWidth: 1.2, provOpacity: 0.8 }
+  // 地名颜色/透明度：国家名 与 省名 分开（大洋名维持固有蓝，不随国家色改）
+  let labelStyle = { countryColor: '#eef2f6', countryOpacity: 1, provColor: '#ffe6a8', provOpacity: 1 }
+  let oceanColor = OCEAN   // 大海填充色（可调，限蓝色系），与 3D 球体同步
   let mk = { points: [], stations: [], trajectories: [] }
   let focusSat = null   // 聚焦卫星星下点 { lat, lon }，null 表示无聚焦
   let selGeom = null    // 聚焦卫星几何：{ footprint:[{lat,lon}...], track:[{lat,lon}...] }，与 3D 同源（覆盖范围蓝 + 星下点轨迹黄）
@@ -161,7 +167,8 @@ export function createFlatCoverage(canvas) {
   // 海岸线描边：画在覆盖填充【之上】，使海岸线在覆盖区内外连续 → 覆盖像染进地图、与底图平级，而非浮在其上。
   function strokeLand() {
     const kk = k()
-    ctx.strokeStyle = BORDER; ctx.lineWidth = 0.8 / kk
+    ctx.strokeStyle = borderStyle.natColor; ctx.lineWidth = borderStyle.natWidth / kk   // /kk → 恒定屏幕 px
+    ctx.globalAlpha = borderStyle.natOpacity
     const wl = -tx / kk, wr = (cw - tx) / kk
     for (const off of [-360, 0, 360]) {
       ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * (tx + off * kk), dpr * ty)
@@ -170,7 +177,7 @@ export function createFlatCoverage(canvas) {
         ctx.stroke(sh.path)
       }
     }
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.globalAlpha = 1
   }
   // 极地冰盖：北极高纬陆地渐变染白 + 补全南极极点空洞。
   function drawIceCaps() {
@@ -317,7 +324,7 @@ export function createFlatCoverage(canvas) {
   function drawBelowContent(rx, ry, rw, rh) {
     ctx.save()
     ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip()
-    ctx.fillStyle = OCEAN; ctx.fillRect(rx, ry, rw, rh)
+    ctx.fillStyle = oceanColor; ctx.fillRect(rx, ry, rw, rh)
     drawLand(); drawIceCaps()
     ctx.restore()
   }
@@ -327,8 +334,17 @@ export function createFlatCoverage(canvas) {
     ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip()
     // 海岸线 + 经纬网画在覆盖填充之上：地理骨架贯穿覆盖区内外，覆盖与底图融为一体（平级），不再像贴纸浮在上面
     drawGrid(); strokeLand()
+    // 南海十段线：颜色随中国国土(CHINA)，透明度随省界，线宽=省界×惯例倍数（比省界略粗）
+    ctx.globalAlpha = borderStyle.provOpacity
+    const nhW = Math.max(NANHAI_MIN_WIDTH, borderStyle.provWidth * NANHAI_WIDTH_MUL)
+    for (const seg of NANHAI_DASHES) drawPolyline(seg, CHINA, nhW)
+    ctx.globalAlpha = 1
     // 省界
-    if (provVisible && prov) for (const ring of prov.borders) drawPolyline(ring, PROV, 1.0)
+    if (provVisible && prov) {
+      ctx.globalAlpha = borderStyle.provOpacity
+      for (const ring of prov.borders) drawPolyline(ring, borderStyle.provColor, borderStyle.provWidth)
+      ctx.globalAlpha = 1
+    }
     // 覆盖数据
     if (geom) {
       for (const ln of (geom.lines || [])) if (ln.p && ln.p.length > 1) drawPolyline(ln.p, hex(ln.color), Math.max(0.8, ln.width || 1.6))
@@ -346,10 +362,17 @@ export function createFlatCoverage(canvas) {
     // 文字层（固定字号）
     const ns = sizes.nameScale || 1
     if (nameMode !== 'off') {
-      for (const l of clabels) drawText(nameMode === 'en' ? l.en : l.zh, l.lon, l.lat, Math.round(l.px * ns), '#eef2f6')
+      ctx.globalAlpha = labelStyle.countryOpacity
+      for (const l of clabels) drawText(nameMode === 'en' ? l.en : l.zh, l.lon, l.lat, Math.round(l.px * ns), labelStyle.countryColor)
+      ctx.globalAlpha = 1   // 大洋名维持固有蓝与不透明度
       for (const [zh, en, lon, lat] of OCEANS) drawText(nameMode === 'en' ? en : zh, lon, lat, Math.round(15 * ns), OCEAN_FILL, { italic: true })
     }
-    if (provVisible && prov) { const ps = sizes.provScale || 1; for (const l of prov.labels) drawText(l.name, l.lon, l.lat, Math.round(l.px * ps), '#ffe6a8') }
+    if (provVisible && prov) {
+      const ps = sizes.provScale || 1
+      ctx.globalAlpha = labelStyle.provOpacity
+      for (const l of prov.labels) drawText(l.name, l.lon, l.lat, Math.round(l.px * ps), labelStyle.provColor)
+      ctx.globalAlpha = 1
+    }
     if (geom) {
       for (const l of (geom.labels || [])) drawText(l.text, l.lon, l.lat, Math.round((l.hpx || 0.03) * 533), l.color || '#fff')
     }
@@ -503,6 +526,12 @@ export function createFlatCoverage(canvas) {
     setNameMode(m) { nameMode = m; invalidateStatic(); requestDraw() },
     setProvinces,
     setProvincesVisible(v) { provVisible = !!v; invalidateStatic(); requestDraw() },
+    // 国界/省界线样式（与 3D 同步）：{ natColor, natWidth, natOpacity, provColor, provWidth, provOpacity }
+    setBorderStyle(s) { Object.assign(borderStyle, s || {}); invalidateStatic(); requestDraw() },
+    // 地名颜色/透明度（与 3D 同步）：{ countryColor, countryOpacity, provColor, provOpacity }
+    setLabelStyle(s) { Object.assign(labelStyle, s || {}); invalidateStatic(); requestDraw() },
+    // 大海填充色（与 3D 同步，限蓝色系）
+    setOceanColor(c) { if (c) { oceanColor = c; invalidateStatic(); requestDraw() } },
     setOnRightClick(fn) { onRightClick = fn },
     setOnHover(fn) { onHover = fn },
     // 缩放进度条接口：getZoom 读当前进度、setZoom 设到进度 t、setOnZoom 注册滚轮缩放回填回调
