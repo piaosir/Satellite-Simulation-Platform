@@ -35,6 +35,8 @@ function createWindow() {
   win.webContents.on('before-input-event', (e, input) => {
     if (input.type === 'keyDown' && input.key === 'F12') { win.webContents.toggleDevTools(); e.preventDefault() }
   })
+
+  return win
 }
 
 app.whenReady().then(() => {
@@ -46,7 +48,11 @@ app.whenReady().then(() => {
   const { register } = require(join(root, 'electron/ipc/register'))
   register({ core, storage, report, coverage, coverageGrd })
 
-  createWindow()
+  const win = createWindow()
+
+  // 自动更新（仅打包环境生效，dev 下自动跳过）
+  require(join(root, 'electron/services/updater')).initAutoUpdate(win)
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })

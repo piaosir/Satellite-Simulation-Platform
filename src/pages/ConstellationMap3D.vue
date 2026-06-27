@@ -570,13 +570,26 @@ async function loadGroup() {
     redrawSats()   // 无星座时自定义卫星照常绘制（关联卫星回退到存储位置）
     return
   }
-  status.value = `加载 ${g.label} …`
+  if (g.key === 'all' || g.key === 'other') {
+    status.value = `加载 ${g.label} …`
+    try { await (g.key === 'all' ? loadAll() : loadOther()) }
+    catch (e) { status.value = `${g.label} 获取失败：${(e && e.message) || '网络不可达'}` }
+    return
+  }
+  // 单组星历：缓存优先即时渲染 + 后台静默联网刷新（无网/慢网也不卡住进软件）
+  let shown = false
   try {
-    if (g.key === 'all') { await loadAll(); return }
-    if (g.key === 'other') { await loadOther(); return }
-    const payload = await fetchGroupLiveOrSup(g.key)
-    ingest(payload.sats, g.key, payload.fetchedAt)
-  } catch (e) { status.value = `${g.label} 获取失败：${(e && e.message) || '网络不可达'}` }
+    const cached = await fetchGroupLiveOrSup(g.key, { cacheOnly: true })
+    if (cached && cached.sats.length) { ingest(cached.sats, g.key, cached.fetchedAt); shown = true; status.value = '' }
+  } catch { /* 无缓存：继续走后台联网 */ }
+  if (!shown) status.value = `加载 ${g.label} …`
+  fetchGroupLiveOrSup(g.key)
+    .then((payload) => {
+      if (curKey() !== g.key) return   // 用户已切到别的组：丢弃过期结果
+      if (payload && payload.sats.length) { ingest(payload.sats, g.key, payload.fetchedAt); status.value = '' }
+      else if (!shown) status.value = `${g.label} 暂无数据`
+    })
+    .catch((e) => { if (curKey() === g.key && !shown) status.value = `${g.label} 获取失败：${(e && e.message) || '网络不可达'}` })
 }
 
 // 加载「全部在轨」全集并归类：各已知分组并集 ∪ active；返回归类后的卫星数组（_group 为分组或 'other'）

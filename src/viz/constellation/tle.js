@@ -48,14 +48,16 @@ export function parseOMMCsv(text) {
 
 // 与小程序同名接口：取某组并解析为 payload。CSV 由主进程取回。
 // fetchedAt 取主进程回传的“实际下载落盘时间”（缓存 mtime），而非解析此刻——复用缓存时显示真实下载时间。
-export async function fetchGroupLiveOrSup(key) {
+export async function fetchGroupLiveOrSup(key, opts) {
   if (!(typeof window !== 'undefined' && window.api && window.api.omm)) throw new Error('需在 Electron 中运行')
-  const res = await window.api.omm.csv(key)
+  const res = await window.api.omm.csv(key, opts)
+  // cacheOnly 模式下主进程无缓存会返回 null —— 不抛错，交由调用方走后台联网刷新
+  if (!res) { if (opts && opts.cacheOnly) return null; throw new Error('empty') }
   // 兼容旧返回（纯字符串）与新返回（{ text, fetchedAt }）
   const text = typeof res === 'string' ? res : (res && res.text) || ''
   const fetchedAt = (res && res.fetchedAt) || new Date().toISOString()
   const sats = parseOMMCsv(text)
-  if (!sats.length) throw new Error('empty')
+  if (!sats.length) { if (opts && opts.cacheOnly) return null; throw new Error('empty') }
   return { group: key, fetchedAt, count: sats.length, csv: text, sats }
 }
 

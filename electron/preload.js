@@ -25,7 +25,7 @@ contextBridge.exposeInMainWorld('api', {
   omm: {
     load: (group, online) => ipcRenderer.invoke('omm:load', group, online),
     positions: (group, iso) => ipcRenderer.invoke('omm:positions', group, iso),
-    csv: (group) => ipcRenderer.invoke('omm:csv', group)
+    csv: (group, opts) => ipcRenderer.invoke('omm:csv', group, opts)
   },
   coverage: {
     index: () => ipcRenderer.invoke('coverage:index'),

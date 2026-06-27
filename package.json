@@ -1,6 +1,6 @@
 {
   "name": "satellite-sim-platform",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "description": "卫星仿真平台 — 桌面端卫星链路预算与可视化（Electron + Vue3 + Cesium + SQLite）",
   "author": "",
   "license": "MIT",
@@ -12,12 +12,14 @@
     "smoke": "node packages/core/smoke-test.js",
     "test": "node packages/core/test/accuracy.test.js",
     "verify:services": "node scripts/verify-services.js",
-    "dist": "electron-vite build && electron-builder --win"
+    "dist": "electron-vite build && electron-builder --win && node scripts/publish-cos.mjs",
+    "publish:cos": "node scripts/publish-cos.mjs"
   },
   "dependencies": {
     "cesium": "^1.142.0",
     "docx": "^9.7.1",
     "earcut": "^3.0.2",
+    "electron-updater": "^6.8.9",
     "exceljs": "^4.4.0",
     "jspdf": "^4.2.1",
     "pinia": "^2.1.7",
@@ -30,8 +32,16 @@
   "build": {
     "appId": "com.satsim.platform",
     "productName": "卫星仿真平台",
-    "directories": { "output": "release" },
+    "directories": {
+      "output": "release"
+    },
     "asar": true,
+    "publish": [
+      {
+        "provider": "generic",
+        "url": "https://update-1385987144.cos.ap-beijing.myqcloud.com/updates/"
+      }
+    ],
     "files": [
       "out/**/*",
       "electron/**/*",
@@ -44,8 +54,12 @@
     "win": {
       "icon": "build/icon.ico",
       "target": [
-        { "target": "nsis", "arch": ["x64"] },
-        { "target": "portable", "arch": ["x64"] }
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
       ]
     },
     "nsis": {
@@ -56,9 +70,6 @@
       "createStartMenuShortcut": true,
       "shortcutName": "卫星仿真平台",
       "artifactName": "卫星仿真平台-${version}-Setup.${ext}"
-    },
-    "portable": {
-      "artifactName": "卫星仿真平台-${version}-portable.${ext}"
     }
   },
   "devDependencies": {

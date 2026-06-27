@@ -7,7 +7,7 @@ function register({ core, storage, report, coverage, coverageGrd }) {
   const omm = createOmm(core)
   ipcMain.handle('omm:load', (_e, group, online) => omm.load(group, online))
   ipcMain.handle('omm:positions', (_e, group, iso) => omm.positions(group, iso))
-  ipcMain.handle('omm:csv', (_e, group) => omm.fetchCsv(group))
+  ipcMain.handle('omm:csv', (_e, group, opts) => omm.fetchCsv(group, opts))
 
   // ---- GEO 卫星覆盖数据 ----
   if (coverage) {

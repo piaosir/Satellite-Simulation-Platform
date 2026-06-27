@@ -137,11 +137,16 @@ module.exports = function createOmm(getCore) {
   // 取某组 OMM CSV：返回 { text, fetchedAt }。fetchedAt 恒为缓存文件 mtime（= 该数据实际从 CelesTrak 下载落盘的时间），
   // 而非“此刻”——这样复用今日/旧缓存时显示的也是真实下载时间。本地有“今天”的缓存 → 直接用（一天一次）；
   // 否则联网（主端点重试3次→补充端点重试2次）→ 命中落盘；再失败回退任意本地缓存（离线优先）。
-  async function fetchCsv(key) {
+  async function fetchCsv(key, opts = {}) {
     if (!GROUP_QUERY[key]) throw new Error('unknown group: ' + key)
     const cf = csvCacheFile(key)
     // 一天一次：缓存文件是今天写的就直接用，不再联网
     try { const st = fs.statSync(cf); if (isToday(st.mtime)) { const c = fs.readFileSync(cf, 'utf8'); if (valid(c)) { console.log('[omm] 用今日缓存:', key); return { text: c, fetchedAt: st.mtime.toISOString() } } } } catch {}
+    // 仅取缓存（启动即时渲染用）：有旧缓存即返回，绝不联网；无缓存返回 null 交调用方处理
+    if (opts.cacheOnly) {
+      try { const c = fs.readFileSync(cf, 'utf8'); if (valid(c)) { console.log('[omm] cacheOnly 命中旧缓存:', key); return { text: c, fetchedAt: cacheMtime(cf) } } } catch {}
+      return null
+    }
     console.log('[omm] fetchCsv 开始:', key, '->', csvUrl(key))
     let text = null
     for (let i = 0; i < 3 && !valid(text); i++) text = await httpGetText(csvUrl(key))
