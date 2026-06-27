@@ -8,6 +8,8 @@ import { CHINA_IDS, NO_LABEL_IDS } from '../globe3d/cnClaims.js'
 import { NANHAI_DASHES, NANHAI_WIDTH_MUL, NANHAI_MIN_WIDTH } from '../nanhaiDashes.js'
 
 const LAND = ['#8fa89b', '#b0a98f', '#9fb0c0', '#c0a99f', '#a9b08f', '#9f9fb0', '#b8a0a0', '#90b0a8', '#b0b090', '#a0a8b8', '#bca890', '#98a0a8']
+// 定向覆盖（与 3D 球体同步）：指定国家固定取莫兰迪色板内某成员，覆盖默认 idx 循环色。
+const LAND_OVERRIDE = { '840': '#9fb0c0', '566': '#8fa89b' }   // 美国偏蓝、尼日利亚偏绿
 const OCEAN = '#15426b', CHINA = '#b85a52', ICE = '#edf2f6'
 const ICE_IDS = new Set(['304', '010'])
 // 北极岛屿冰盖：多边形质心纬度 ≥ ARCTIC_ISLAND_LAT 的整块染冰白（格陵兰/加拿大北极群岛/俄罗斯北极诸岛/斯瓦尔巴等）；
@@ -18,7 +20,7 @@ const SOUTH_CAP_LAT = -82
 const BORDER = '#5b7088', GRID = 'rgba(255,255,255,0.12)', PROV = '#9aa3b0', BG = '#070b12'
 const LON0 = -30          // 切口：西经30°为左边缘，经度范围 [-30, 330)
 const OCEANS = [
-  ['太平洋', 'Pacific Ocean', -150, 5], ['太平洋', 'Pacific Ocean', 175, -10],
+  ['太平洋', 'Pacific Ocean', -155, 25], ['太平洋', 'Pacific Ocean', -130, -22],
   ['大西洋', 'Atlantic Ocean', -35, 28], ['大西洋', 'Atlantic Ocean', -18, -25],
   ['印度洋', 'Indian Ocean', 78, -28], ['北冰洋', 'Arctic Ocean', 0, 85], ['南大洋', 'Southern Ocean', 40, -62]
 ]
@@ -119,7 +121,7 @@ export function createFlatCoverage(canvas) {
     feats.forEach((f, idx) => {
       if (!f.geometry) return
       const id = String(f.id)
-      const fill = CHINA_IDS.has(id) ? CHINA : ICE_IDS.has(id) ? ICE : LAND[idx % LAND.length]
+      const fill = CHINA_IDS.has(id) ? CHINA : ICE_IDS.has(id) ? ICE : (LAND_OVERRIDE[id] || LAND[idx % LAND.length])
       const polys = f.geometry.type === 'Polygon' ? [f.geometry.coordinates] : f.geometry.coordinates
       const shapes = [], iceShapes = []   // 普通陆地色 / 北极岛屿冰白（按多边形质心纬度分流）
       for (const rings of polys) {

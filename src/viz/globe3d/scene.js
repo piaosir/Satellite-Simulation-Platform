@@ -27,6 +27,8 @@ function llaToVec(latDeg, lonDeg, altKm) {
 }
 
 const LAND = ['#8fa89b', '#b0a98f', '#9fb0c0', '#c0a99f', '#a9b08f', '#9f9fb0', '#b8a0a0', '#90b0a8', '#b0b090', '#a0a8b8', '#bca890', '#98a0a8']
+// 定向覆盖（按 ISO 数字码）：指定国家固定取莫兰迪色板内某成员，覆盖默认的 idx 循环色，保持整体协调。
+const LAND_OVERRIDE = { '840': '#9fb0c0', '566': '#8fa89b' }   // 美国偏蓝、尼日利亚偏绿
 const OCEAN = '#15426b'
 const CHINA = '#b85a52'   // 中国底色：降低饱和度的砖红（原 #c62f2f 太炸眼）
 const ICE = '#edf2f6'     // 极地冰盖：白色填充（格陵兰 304、南极 010）
@@ -141,7 +143,7 @@ function buildLandMesh(features) {
       }
       return
     }
-    const baseCol = CHINA_IDS.has(id) ? CHINA : ICE_IDS.has(id) ? ICE : LAND[idx % LAND.length]
+    const baseCol = CHINA_IDS.has(id) ? CHINA : ICE_IDS.has(id) ? ICE : (LAND_OVERRIDE[id] || LAND[idx % LAND.length])
     const polys = g.type === 'Polygon' ? [g.coordinates] : g.coordinates
     // 北极岛屿（多边形质心纬度 ≥ ARCTIC_ISLAND_LAT）整块染冰白：格陵兰本就冰白；
     // 加拿大北极群岛、俄罗斯北极诸岛、斯瓦尔巴等离散海岛 → 冰白；各大陆/阿拉斯加/冰岛(质心<65°) → 普通陆地。
@@ -300,7 +302,7 @@ function makeOceanLabel(text) {
 
 // 几大洋（[中文, 英文, 经度, 纬度]）；太平洋/大西洋面积大，分东西两处各标一次
 const OCEANS = [
-  ['太平洋', 'Pacific Ocean', -150, 5], ['太平洋', 'Pacific Ocean', 175, -10],
+  ['太平洋', 'Pacific Ocean', -155, 25], ['太平洋', 'Pacific Ocean', -130, -22],
   ['大西洋', 'Atlantic Ocean', -35, 28], ['大西洋', 'Atlantic Ocean', -18, -25],
   ['印度洋', 'Indian Ocean', 78, -28],
   ['北冰洋', 'Arctic Ocean', 0, 85],
