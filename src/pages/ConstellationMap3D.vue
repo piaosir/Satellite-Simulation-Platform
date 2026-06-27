@@ -265,7 +265,7 @@ function setLevelColor(i, e) { const x = e.target.value; grdS.levels[i].color = 
 function setLineColor(i, e) { const x = e.target.value; grdS.levels[i].lineColor = `rgb(${parseInt(x.slice(1, 3), 16)},${parseInt(x.slice(3, 5), 16)},${parseInt(x.slice(5, 7), 16)})` }
 const covSats = ref([])           // 索引：[{folder,displayName,satName,lon,beams:[{band,beam,type,gains,file}...]}]
 const covItems = ref([])          // 已添加卫星（两级结构）
-let covCleared = false             // 「清除绘制」后置位：保留 covItems 但暂不绘制，避免切视图/重开面板时 GXT 覆盖自行复现（再次 redraw 即解除）
+const covCleared = ref(false)      // 「清除绘制」后置位：保留 covItems 但暂不绘制，避免切视图/重开面板时 GXT 覆盖自行复现（再次 redraw 即解除）。入 snapshot 持久化，使「清除后效果」跨重启保留
 const covAddSel = ref('')         // 「添加卫星」下拉临时值
 const showBeamLabels = ref(true)
 const beamLabelSize = ref(16)     // 波束名字号（6–32，内部映射为标签 hpx）
@@ -749,7 +749,7 @@ async function ensureCovIndex() {
 }
 async function toggleCoverage() {
   covOpen.value = !covOpen.value
-  if (covOpen.value) { await ensureCovIndex(); if (!covCleared) redraw() }   // 已清除则重开面板不复现覆盖
+  if (covOpen.value) { await ensureCovIndex(); if (!covCleared.value) redraw() }   // 已清除则重开面板不复现覆盖
   // 关闭对话框不清空：已绘制的覆盖图保留在地图上（与标记一致）
 }
 // 缩放进度条桥接（底部状态栏 ↔ 当前活动地图：球体 scene / 平面图 flat）。
@@ -764,7 +764,7 @@ async function applyFlat(v) {
   flatView.value = v
   // 切回 3D：补齐 3D 覆盖层。编辑电平时只 patch 了当前可见视图（recomputeActive），另一视图需在此一次性重算。
   if (!v) { if (grdOpen.value) grd.recompute(); pushZoom(); return }
-  await ensureCovIndex(); if (!covCleared) redraw()   // 已清除则切平面图不复现覆盖（covGeom 保持为空）
+  await ensureCovIndex(); if (!covCleared.value) redraw()   // 已清除则切平面图不复现覆盖（covGeom 保持为空）
   await nextTick()
   if (ensureFlat()) { feedFlat(); pushZoom() }   // 切到平面图时建好渲染器并喂全当前状态，回填缩放进度条
 }
@@ -824,7 +824,7 @@ async function exportMap(fmt) {
   exporting.value = true
   status.value = '正在导出…'
   try {
-    await ensureCovIndex(); if (!covCleared) redraw()
+    await ensureCovIndex(); if (!covCleared.value) redraw()
     await nextTick()
     if (!ensureFlat()) { alert('地图渲染器未就绪，请切到 2D 平面图后重试'); return }
     feedFlat()
@@ -976,7 +976,7 @@ function circleLonLatArr(lat0, lon0, lambda, N) {
 let redrawSeq = 0
 async function redraw() {
   if (!scene) return
-  covCleared = false   // 显式重绘（添加卫星/改批次/调显示项等）解除「已清除」状态
+  covCleared.value = false   // 显式重绘（添加卫星/改批次/调显示项等）解除「已清除」状态
   const seq = ++redrawSeq
   const lines = [], dots = [], labels = [], sats = [], bores = [], legend = []
   let loading = false
@@ -1022,7 +1022,7 @@ async function redraw() {
 }
 // 只清当前绘制的覆盖图（图形 + 图例），保留卫星 / 批次设置，便于再次绘制
 function clearCoverage() {
-  covCleared = true   // 保持已清除：后续切视图/重开面板的「被动重绘」不再复现 GXT（直到用户显式重绘）
+  covCleared.value = true   // 保持已清除：后续切视图/重开面板的「被动重绘」不再复现 GXT（直到用户显式重绘）；入 snapshot 后跨重启保留
   covGeom = { lines: [], dots: [], labels: [], sats: [] }
   covLegend.value = []; covStatus.value = ''
   if (scene) scene.setCoverage(null)
@@ -1408,7 +1408,7 @@ function snapshot() {
     covOpen: covOpen.value, mkOpen: mkOpen.value, geoOpen: geoOpen.value,
     grdOpen: grdOpen.value, grd: grd.getState(), perf: perf.getState(),
     cov: {
-      items: serializeCov(),
+      items: serializeCov(), cleared: covCleared.value,
       beamLabels: showBeamLabels.value, beamFont: beamLabelSize.value, bore: showBore.value, boreSize: boreSize.value,
       contourLabels: showContourLabels.value, contourSize: contourLabelSize.value
     }
@@ -1460,7 +1460,9 @@ async function restoreSettings() {
     if (Number.isFinite(c.boreSize)) boreSize.value = c.boreSize
     showContourLabels.value = !!c.contourLabels
     if (Number.isFinite(c.contourSize)) contourLabelSize.value = c.contourSize
-    redraw()
+    // 上次「清除绘制」后退出 → 恢复卫星列表但保持空白（不复现覆盖），直到用户显式重绘
+    if (c.cleared) covCleared.value = true
+    else redraw()
   } else if (s.covOpen) { covOpen.value = true; await ensureCovIndex() }
   // 覆盖图（GRD）状态恢复：只要有保存的 GRD 状态就载入索引并恢复卫星树（含自定义/星座星）+
   // 天线设置 + 仰角线属性，使仰角线即便面板关闭也照常画在地图上；面板仅在上次开启时才展开。
