@@ -7,6 +7,7 @@ import { covNav } from './stores/coveragePanels'
 import { zoom } from './stores/zoom'
 import { effective as displayQuality } from './stores/displayQuality'
 import SettingsModal from './components/SettingsModal.vue'
+import FileManager from './components/FileManager.vue'
 
 // 底部状态栏缩放进度条：拖动/按钮 → 设回当前活动地图（zoom.apply）；地图滚轮缩放回填 zoom.value。
 const onZoomInput = (e) => { const t = Number(e.target.value); if (zoom.apply) zoom.apply(t) }
@@ -29,6 +30,7 @@ const nav = useNavStore()
 const viewMenu = ref(false)
 const expMenu = ref(false)        // 「导出图」下拉
 const settingsOpen = ref(false)
+const fileOpen = ref(false)
 function doExport(fmt) { expMenu.value = false; if (covNav.exportMap) covNav.exportMap(fmt) }
 // MSAA 是 WebGL 上下文创建期参数，运行时不可改 → 把它并入当前页 key，切换 MSAA 时重挂载页面（一瞬重渲）。
 // 页面状态由各自的本地缓存（reactive watch 持续保存）在重挂载时恢复，无感。
@@ -55,7 +57,7 @@ const currentLabel = computed(
     <header class="topbar">
       <span class="brand">卫星仿真平台</span>
       <nav class="menu">
-        <span>文件</span><span>计算</span>
+        <span class="setbtn" @click="fileOpen = true">文件</span><span>计算</span>
         <span class="vwrap">
           <span class="vbtn" :class="{ on: viewMenu }" @click.stop="viewMenu = !viewMenu">视图 · {{ view.flat ? '2D 平面' : '3D 球体' }} ▾</span>
           <div v-if="viewMenu" class="vmenu">
@@ -89,6 +91,7 @@ const currentLabel = computed(
     </div>
 
     <SettingsModal v-if="settingsOpen" @close="settingsOpen = false" />
+    <FileManager v-if="fileOpen" @close="fileOpen = false" />
 
     <footer class="statusbar">
       <span v-if="zoom.avail" class="zoomctl" title="地图缩放（拖动精细调节，滚轮亦可）">

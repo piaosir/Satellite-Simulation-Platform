@@ -45,8 +45,9 @@ app.whenReady().then(() => {
   const report = require(join(root, 'electron/services/report'))
   const coverage = require(join(root, 'electron/services/coverage'))(join(root, 'resources/coverage'))
   const coverageGrd = require(join(root, 'electron/services/coverage'))(join(root, 'resources/coverage-grd'), join(app.getPath('userData'), 'coverage-grd-imported'))
+  const coverageGxt = require(join(root, 'electron/services/coverageGxt'))(() => join(app.getPath('userData'), 'gxt-imported'))
   const { register } = require(join(root, 'electron/ipc/register'))
-  register({ core, storage, report, coverage, coverageGrd })
+  register({ core, storage, report, coverage, coverageGrd, coverageGxt })
 
   const win = createWindow()
 

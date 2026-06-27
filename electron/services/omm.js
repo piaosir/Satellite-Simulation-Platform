@@ -160,6 +160,33 @@ module.exports = function createOmm(getCore) {
     throw new Error('celestrak.org 不可达且无本地缓存（国内访问该站通常需系统代理/VPN）')
   }
 
+  // ---- 文件管理：各星座组 OMM(CSV) 缓存的列举 / 导入替换 / 读出导出 ----
+  // CSV 数据行数（OMM CSV 首行为表头）：粗略卫星数。
+  const csvCount = (t) => { if (!t) return 0; const n = t.split(/\r?\n/).filter((l) => l.trim().length).length; return Math.max(0, n - 1) }
+  // 列出全部内置组及其缓存元信息（文件名/是否存在/更新时间/卫星数）。
+  function listCsv() {
+    return Object.keys(GROUP_QUERY).map((key) => {
+      const cf = csvCacheFile(key)
+      let exists = false, mtime = null, count = 0
+      try { const st = fs.statSync(cf); exists = true; mtime = st.mtime.toISOString(); count = csvCount(fs.readFileSync(cf, 'utf8')) } catch {}
+      return { key, file: `csv_${key}.csv`, exists, mtime, count }
+    })
+  }
+  // 读出某组缓存 CSV 原文（导出用）；无缓存返回 null。
+  function readCsvRaw(key) {
+    if (!GROUP_QUERY[key]) throw new Error('unknown group: ' + key)
+    try { return { text: fs.readFileSync(csvCacheFile(key), 'utf8'), file: `csv_${key}.csv` } } catch { return null }
+  }
+  // 导入并替换某组 OMM CSV：校验为 CelesTrak OMM（含 MEAN_MOTION 表头），写入缓存覆盖，使该星座改用用户文件渲染。
+  function writeCsvRaw(key, text) {
+    if (!GROUP_QUERY[key]) throw new Error('unknown group: ' + key)
+    if (!valid(text)) throw new Error('不是有效的 OMM CSV（缺 MEAN_MOTION 列）——请用 CelesTrak「FORMAT=csv」导出的文件')
+    const cf = csvCacheFile(key)
+    fs.writeFileSync(cf, String(text))
+    const st = fs.statSync(cf)
+    return { ok: true, key, mtime: st.mtime.toISOString(), count: csvCount(String(text)) }
+  }
+
   function positions(group, iso) {
     const sgp4 = getCore().sgp4
     const list = groups[group]
@@ -183,5 +210,5 @@ module.exports = function createOmm(getCore) {
     return out
   }
 
-  return { load, positions, fetchCsv }
+  return { load, positions, fetchCsv, listCsv, readCsvRaw, writeCsvRaw }
 }

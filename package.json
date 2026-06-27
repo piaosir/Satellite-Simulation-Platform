@@ -1,6 +1,6 @@
 {
   "name": "satellite-sim-platform",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "description": "卫星仿真平台 — 桌面端卫星链路预算与可视化（Electron + Vue3 + Cesium + SQLite）",
   "author": "",
   "license": "MIT",

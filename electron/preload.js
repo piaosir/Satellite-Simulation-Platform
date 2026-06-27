@@ -25,7 +25,10 @@ contextBridge.exposeInMainWorld('api', {
   omm: {
     load: (group, online) => ipcRenderer.invoke('omm:load', group, online),
     positions: (group, iso) => ipcRenderer.invoke('omm:positions', group, iso),
-    csv: (group, opts) => ipcRenderer.invoke('omm:csv', group, opts)
+    csv: (group, opts) => ipcRenderer.invoke('omm:csv', group, opts),
+    list: () => ipcRenderer.invoke('omm:list'),
+    import: (key) => ipcRenderer.invoke('omm:import', key),
+    export: (key) => ipcRenderer.invoke('omm:export', key)
   },
   coverage: {
     index: () => ipcRenderer.invoke('coverage:index'),
@@ -38,6 +41,23 @@ contextBridge.exposeInMainWorld('api', {
     save: (name, text) => ipcRenderer.invoke('coverageGrd:save', name, text),
     raw: (file) => ipcRenderer.invoke('coverageGrd:raw', file),
     remove: (file) => ipcRenderer.invoke('coverageGrd:remove', file)
+  },
+  coverageGxt: {
+    index: () => ipcRenderer.invoke('coverageGxt:index'),
+    get: (file) => ipcRenderer.invoke('coverageGxt:get', file),
+    raw: (file) => ipcRenderer.invoke('coverageGxt:raw', file),
+    open: () => ipcRenderer.invoke('coverageGxt:open'),
+    addSat: (name, lon) => ipcRenderer.invoke('coverageGxt:addSat', name, lon),
+    renameSat: (satId, name) => ipcRenderer.invoke('coverageGxt:renameSat', satId, name),
+    removeSat: (satId) => ipcRenderer.invoke('coverageGxt:removeSat', satId),
+    ensureSat: (name, lon) => ipcRenderer.invoke('coverageGxt:ensureSat', name, lon),
+    hidePreset: (kind, key) => ipcRenderer.invoke('coverageGxt:hidePreset', kind, key),
+    unhidePreset: (kind, key) => ipcRenderer.invoke('coverageGxt:unhidePreset', kind, key),
+    addBeam: (satId, name, type, band) => ipcRenderer.invoke('coverageGxt:addBeam', satId, name, type, band),
+    renameBeam: (satId, beamId, name) => ipcRenderer.invoke('coverageGxt:renameBeam', satId, beamId, name),
+    removeBeam: (satId, beamId) => ipcRenderer.invoke('coverageGxt:removeBeam', satId, beamId),
+    attach: (satId, beamId, payload) => ipcRenderer.invoke('coverageGxt:attach', satId, beamId, payload),
+    importBatch: (items) => ipcRenderer.invoke('coverageGxt:importBatch', items)
   },
   platform: process.platform
 })

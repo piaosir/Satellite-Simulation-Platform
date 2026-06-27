@@ -190,8 +190,9 @@ onBeforeUnmount(() => { inst && inst.onUnload && inst.onUnload() })
 .row { display: flex; align-items: center; gap: 12px; }
 .grp { border: 1px solid var(--border); background: var(--bg); padding: 4px 8px; }
 .search { flex: 1; max-width: 280px; position: relative; }
-.search input { width: 100%; border: 1px solid var(--border); background: var(--bg); padding: 4px 8px; outline: none; }
-.clr { position: absolute; right: 8px; top: 4px; cursor: pointer; color: var(--text-faint); }
+.search input { width: 100%; border: 1px solid var(--border); background: var(--bg); padding: 4px 24px 4px 8px; outline: none; }
+.clr { position: absolute; right: 5px; top: 50%; transform: translateY(-50%); display: flex; align-items: center; justify-content: center; width: 16px; height: 16px; font-size: 11px; line-height: 1; cursor: pointer; color: var(--text-faint); }
+.clr:hover { color: var(--text); }
 .tl { gap: 14px; }
 .tb-track { flex: 1; height: 24px; position: relative; cursor: pointer; display: flex; align-items: center; }
 .tb-bar { width: 100%; height: 3px; background: var(--border-strong); position: relative; }

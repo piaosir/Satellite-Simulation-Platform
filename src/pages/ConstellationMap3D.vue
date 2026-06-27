@@ -6,6 +6,8 @@ import { covNav } from '../stores/coveragePanels'
 import { zoom } from '../stores/zoom'
 import { effective as displayQuality } from '../stores/displayQuality'
 import { viewPrefs } from '../stores/viewPrefs'
+import { setGrdBridge, clearGrdBridge, fileBridge } from '../stores/fileBridge'
+import { displaySatName } from '../viz/satName.js'
 defineOptions({ inheritAttrs: false })   // 不把父级传入的 title 落到根节点（去掉鼠标悬停的“星座3D”原生提示）
 import { createGlobeScene } from '../viz/globe3d/scene.js'
 import { createFlatCoverage } from '../viz/flatmap/flatCoverage.js'
@@ -316,7 +318,7 @@ function beamRowsOf(it) {
     if (b.type !== it.type) continue
     if (it.band !== 'all' && b.band !== it.band) continue
     const id = b.band + '|' + b.beam
-    if (!map.has(id)) map.set(id, { id, band: b.band, beam: b.beam, label: `${b.band}·${b.beam}`, file: b.file, gains: b.gains || [] })
+    if (!map.has(id)) map.set(id, { id, band: b.band, beam: b.beam, label: `${b.band}·${b.beam}`, file: b.file, gains: b.gains || [], user: !!b.user })
   }
   const rows = [...map.values()]
   rows.sort((a, b) => beamNum(a.beam) - beamNum(b.beam))   // Array.sort 稳定：同号/无号保持原序
@@ -754,11 +756,38 @@ async function toggleProvinces() {
 }
 
 // ===================== 覆盖图 =====================
+let _presetCovSats = []   // 预置覆盖索引（只读）；用户 GXT 库与之合并成 covSats
 async function ensureCovIndex() {
   if (covLoaded || !covApiOk) return
   covLoaded = true
-  try { const idx = await window.api.coverage.index(); covSats.value = (idx && idx.satellites) || [] }
+  try { const idx = await window.api.coverage.index(); _presetCovSats = ((idx && idx.satellites) || []).map((s) => ({ ...s, displayName: displaySatName(s.displayName) })) }
   catch (e) { covStatus.value = '覆盖索引加载失败' }
+  await mergeUserGxt()
+}
+// 把用户 GXT 库（文件管理器导入）合并进 covSats，使其可在覆盖图(GXT)面板里被添加绘制。
+// 与文件管理器同口径：① 套用软隐藏（hidden）过滤内置星/波束；② 用户卫星【按名并入同名内置卫星】，
+// 避免出现两个同名卫星（如内置「中星10R」+ 在其下加波束自动建的同名用户卫星）。
+async function mergeUserGxt() {
+  let ui = null
+  try { if (window.api && window.api.coverageGxt) ui = await window.api.coverageGxt.index() } catch { /* 无库：仅用预置 */ }
+  const hidden = (ui && ui.hidden) || {}
+  const hiddenSats = new Set(hidden.sats || [])
+  const hiddenBeams = new Set(hidden.beams || [])
+  const byName = new Map(); const merged = []
+  for (const s of _presetCovSats) {
+    if (hiddenSats.has(s.folder)) continue
+    const node = { ...s, beams: (s.beams || []).filter((b) => !hiddenBeams.has(b.key)) }
+    merged.push(node); byName.set(String(s.displayName || '').toLowerCase(), node)
+  }
+  for (const s of (((ui && ui.satellites) || []))) {
+    const ubeams = (s.beams || []).filter((b) => b.file).map((b) => ({ band: b.band || '', beam: b.name, type: b.type || 'EIRP', gains: b.gains || [], file: b.file, user: true, lon: b.lon }))
+    if (!ubeams.length) continue
+    const key = String(s.name || '').toLowerCase()
+    const host = byName.get(key)
+    if (host) host.beams = [...host.beams, ...ubeams]   // 并入同名内置卫星
+    else { const node = { folder: 'gxt:' + s.id, displayName: s.name, satName: s.name, lon: s.lon, beams: ubeams }; merged.push(node); byName.set(key, node) }
+  }
+  covSats.value = merged
 }
 async function toggleCoverage() {
   covOpen.value = !covOpen.value
@@ -1004,7 +1033,7 @@ async function redraw() {
       for (const id of ba.beams) {
         const r = rowById.get(id); if (!r) continue
         try {
-          if (!covCache[r.file]) { loading = true; covStatus.value = '加载覆盖…'; covCache[r.file] = await window.api.coverage.get(r.file) }
+          if (!covCache[r.file]) { loading = true; covStatus.value = '加载覆盖…'; covCache[r.file] = await (r.user ? window.api.coverageGxt.get(r.file) : window.api.coverage.get(r.file)) }
           datas.push({ r, d: covCache[r.file] })
         } catch (e) { /* skip */ }
       }
@@ -1040,6 +1069,27 @@ function clearCoverage() {
   covLegend.value = []; covStatus.value = ''
   if (scene) scene.setCoverage(null)
   if (flat) flat.setGeom(covGeom)
+}
+
+// 采集当前画面绘制的覆盖（GXT 来源 covItems + GRD 来源 grd）为 GXT 用数据数组。供文件管理器「导出当前画面覆盖为 GXT」。
+function collectGxt() {
+  const out = []
+  for (const it of covItems.value) {
+    const idx = idxOf(it.folder); if (!idx) continue
+    const rowById = new Map(beamRowsOf(it).map((r) => [r.id, r]))
+    for (const ba of it.batches) {
+      const eff = batchEffGains(ba)
+      for (const id of ba.beams) {
+        const r = rowById.get(id); if (!r) continue
+        const d = covCache[r.file]; if (!d) continue
+        const contours = (d.contours || []).filter((c) => eff.has(c.g))
+        if (!contours.length) continue
+        out.push({ name: r.beam, satName: idx.displayName, lon: idx.lon, bore: d.bore || [], contours, emiRcp: 'E' })
+      }
+    }
+  }
+  if (grd && grd.exportContours) { try { out.push(...grd.exportContours()) } catch (e) { console.warn('GRD 导出等值线失败', e) } }
+  return out
 }
 
 // ===================== 仰角线（卫星属性，挂在 GRD 卫星树的每个卫星上） =====================
@@ -1532,6 +1582,9 @@ onMounted(async () => {
   scene.setOnZoom((t) => { if (!flatView.value) zoom.value = t })
   zoom.avail = true; zoom.apply = applyZoom; pushZoom()
   grd.setLivePos(satLivePos)          // GRD 覆盖按星历/时间轴解算星下点+高度（关联星实时跟踪）
+  setGrdBridge(grd, collectGxt)       // 注册到文件管理器：镜像 GRD 树 + 导出当前覆盖
+  // 用户在文件管理器导入/删除 GXT → 重新合并 covSats，使覆盖图(GXT)面板可选用新库
+  watch(() => fileBridge.libraryTick, () => { if (covLoaded) mergeUserGxt() })
   loadMarkers(); syncMarkers()
   ro = new ResizeObserver(() => { if (scene) scene.resize(); if (flat && flatView.value) flat.resize() }); ro.observe(el.value)
 
@@ -1560,6 +1613,7 @@ onBeforeUnmount(() => {
   covNav.grdOpen = false; covNav.covOpen = false
   zoom.avail = false; zoom.apply = null   // 复位底部状态栏缩放进度条
 
+  clearGrdBridge()   // 离开 3D 页：注销文件管理器对活树/导出器的引用
   cursor.ll = null; if (timer) clearInterval(timer); if (ro) ro.disconnect(); if (flat) flat.destroy(); if (scene) { scene.clearCoverage(); scene.destroy() }
 })
 </script>
@@ -2338,8 +2392,9 @@ onBeforeUnmount(() => {
 .bar .t { font-family: var(--font-serif); font-size: 14px; }
 .bar select { border: 1px solid var(--border); background: var(--bg); padding: 3px 8px; }
 .search { position: relative; }
-.search input { border: 1px solid var(--border); background: var(--bg); padding: 3px 8px; outline: none; width: 180px; }
-.search .clr { position: absolute; right: 8px; top: 4px; cursor: pointer; color: var(--text-faint); }
+.search input { border: 1px solid var(--border); background: var(--bg); padding: 3px 24px 3px 8px; outline: none; width: 180px; }
+.search .clr { position: absolute; right: 5px; top: 50%; transform: translateY(-50%); display: flex; align-items: center; justify-content: center; width: 16px; height: 16px; font-size: 11px; line-height: 1; cursor: pointer; color: var(--text-faint); }
+.search .clr:hover { color: var(--text); }
 .search .panel { position: absolute; top: 28px; left: 0; width: 260px; max-height: 260px; overflow: auto; background: var(--bg); border: 1px solid var(--border-strong); z-index: 5; }
 .search .item { padding: 6px 10px; border-bottom: 1px solid var(--border); cursor: pointer; }
 .search .item:hover { background: var(--surface); }

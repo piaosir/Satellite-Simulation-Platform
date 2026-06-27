@@ -830,6 +830,34 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
     return cache.has(key)
   }
 
+  // 导出当前【选中且绘制中】天线波束的等值线为 GXT 用数据（闭合环 + 增益）。供文件管理器「导出当前画面覆盖为 GXT」。
+  // 复用绘制同款 bandGeometry，按各档拼成闭合环（stitchLoops）；相对模式记档值，绝对模式记绝对 dB。
+  function exportContours() {
+    const out = []
+    for (const key of selected.value) {
+      const c = cache.get(key); if (!c || !c.beams) continue
+      const cfg = c.settings
+      const node = sats.value.find((x) => x.folder === key.split('|')[0])
+      const plot = (cfg.beamsToPlot || []).filter((i) => i < c.beams.length)
+      for (const bi of plot) {
+        const beam = c.beams[bi]
+        const field = beamField(beam, cfg)
+        const asc = [...absLevels(field.max, cfg)].sort((a, b) => a.abs - b.abs)
+        const box = beamBox(beam, cfg, field)
+        syncBeamProj(c, beam, cfg, field)
+        const geo = bandGeometry({ lon: beam.proj.lon, lat: beam.proj.lat, vis: beam.proj.vis, db: field.db, NX: beam.proj.NX, NY: beam.proj.NY }, asc.map((x) => x.abs), false, box, null, displayQuality.value.gridStride)
+        const contours = []
+        asc.forEach((x, i) => {
+          for (const loop of stitchLoops(geo.lines[i])) {
+            if (loop.length >= 4) contours.push({ g: cfg.ctype === 'rel' ? x.v : +x.abs.toFixed(2), p: loop.map((p) => [+p[0].toFixed(3), +p[1].toFixed(3)]) })
+          }
+        })
+        if (contours.length) out.push({ name: beamName(c, bi), satName: (node && node.satName) || c.meta.sat || '', lon: c.meta.satLon, bore: c.meta.peak ? [c.meta.peak] : [], contours })
+      }
+    }
+    return out
+  }
+
   function clearAll() { selected.value = []; active.value = ''; const sc = getScene(), fl = getFlat(); if (sc) sc.setCoverageField([], {}); if (fl) fl.setField([], {}) }
   // 一键清除绘图：抹掉地图上的填充/线，但保留各天线设置（数据库）与聚焦项 → 再次勾选天线即按原设置重绘。
   function clearDrawing() { selected.value = []; const sc = getScene(), fl = getFlat(); if (sc) sc.setCoverageField([], {}); if (fl) fl.setField([], {}) }
@@ -863,6 +891,6 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
     loadIndex, setActive, toggleAnt, toggleSatAll, toggleExpand, addLevel, removeLevel, importGrd,
     addSatellite, updateSatellite, removeSatellite, removeAntenna, renameAntenna, setElev,
     setDragBore, beamDrag, getState, restoreState, recompute, clearAll, clearDrawing,
-    setLivePos, tickLive, getPerfContext, ensureAntLoaded
+    setLivePos, tickLive, getPerfContext, ensureAntLoaded, exportContours
   }
 }

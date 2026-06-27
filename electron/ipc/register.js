@@ -3,11 +3,72 @@ const fs = require('fs')
 const createOmm = require('../services/omm')
 
 // 注册所有 IPC 处理器。core 为返回引擎实例的函数（延迟解析）。
-function register({ core, storage, report, coverage, coverageGrd }) {
+function register({ core, storage, report, coverage, coverageGrd, coverageGxt }) {
   const omm = createOmm(core)
   ipcMain.handle('omm:load', (_e, group, online) => omm.load(group, online))
   ipcMain.handle('omm:positions', (_e, group, iso) => omm.positions(group, iso))
   ipcMain.handle('omm:csv', (_e, group, opts) => omm.fetchCsv(group, opts))
+
+  // ---- 文件管理：OMM 星座组缓存的列举 / 导入替换 / 导出 ----
+  ipcMain.handle('omm:list', () => omm.listCsv())
+  // 导入并替换某组 OMM：原生选 .csv → 校验 → 覆盖缓存。返回 { ok, key, mtime, count } 或 { canceled }/{ ok:false, error }
+  ipcMain.handle('omm:import', async (e, key) => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+      title: `导入 OMM 文件（替换「${key}」）`, properties: ['openFile'],
+      filters: [{ name: 'CelesTrak OMM (*.csv)', extensions: ['csv'] }, { name: '所有文件', extensions: ['*'] }]
+    })
+    if (canceled || !filePaths || !filePaths.length) return { canceled: true }
+    try {
+      const text = fs.readFileSync(filePaths[0], 'utf8')
+      return omm.writeCsvRaw(key, text)
+    } catch (err) { return { ok: false, error: err.message || String(err) } }
+  })
+  // 导出某组缓存 OMM 到用户选定路径
+  ipcMain.handle('omm:export', async (e, key) => {
+    const r = omm.readCsvRaw(key)
+    if (!r) return { ok: false, error: '该组暂无本地缓存，请先联网刷新或导入' }
+    const win = BrowserWindow.fromWebContents(e.sender)
+    const { canceled, filePath } = await dialog.showSaveDialog(win, {
+      defaultPath: `${key}_OMM.csv`, filters: [{ name: 'CSV 文件', extensions: ['csv'] }]
+    })
+    if (canceled || !filePath) return { ok: false, canceled: true }
+    try { fs.writeFileSync(filePath, r.text); return { ok: true, filePath } }
+    catch (err) { return { ok: false, error: err.message || String(err) } }
+  })
+
+  // ---- 文件管理：用户 GXT 覆盖库（卫星 → 波束 → GXT）----
+  if (coverageGxt) {
+    ipcMain.handle('coverageGxt:index', () => coverageGxt.index())
+    ipcMain.handle('coverageGxt:get', (_e, file) => coverageGxt.get(file))
+    ipcMain.handle('coverageGxt:raw', (_e, file) => coverageGxt.raw(file))
+    ipcMain.handle('coverageGxt:addSat', (_e, name, lon) => coverageGxt.addSat(name, lon))
+    ipcMain.handle('coverageGxt:renameSat', (_e, satId, name) => coverageGxt.renameSat(satId, name))
+    ipcMain.handle('coverageGxt:removeSat', (_e, satId) => coverageGxt.removeSat(satId))
+    ipcMain.handle('coverageGxt:ensureSat', (_e, name, lon) => coverageGxt.ensureSat(name, lon))
+    ipcMain.handle('coverageGxt:hidePreset', (_e, kind, key) => coverageGxt.hidePreset(kind, key))
+    ipcMain.handle('coverageGxt:unhidePreset', (_e, kind, key) => coverageGxt.unhidePreset(kind, key))
+    ipcMain.handle('coverageGxt:addBeam', (_e, satId, name, type, band) => coverageGxt.addBeam(satId, name, type, band))
+    ipcMain.handle('coverageGxt:renameBeam', (_e, satId, beamId, name) => coverageGxt.renameBeam(satId, beamId, name))
+    ipcMain.handle('coverageGxt:removeBeam', (_e, satId, beamId) => coverageGxt.removeBeam(satId, beamId))
+    ipcMain.handle('coverageGxt:attach', (_e, satId, beamId, payload) => coverageGxt.attach(satId, beamId, payload))
+    ipcMain.handle('coverageGxt:importBatch', (_e, items) => coverageGxt.importBatch(items))
+    // 用户导入：原生框选 .gxt（多选）→ 逐个读原文返回渲染进程解析（parse.js）
+    ipcMain.handle('coverageGxt:open', async (e) => {
+      const win = BrowserWindow.fromWebContents(e.sender)
+      const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+        title: '导入 GXT 文件（可多选）', properties: ['openFile', 'multiSelections'],
+        filters: [{ name: 'GXT 等值线 (*.gxt)', extensions: ['gxt'] }, { name: '所有文件', extensions: ['*'] }]
+      })
+      if (canceled || !filePaths || !filePaths.length) return { canceled: true }
+      const path = require('path')
+      const files = filePaths.map((fp) => {
+        try { return { base: path.basename(fp), text: fs.readFileSync(fp, 'latin1') } }
+        catch (err) { return { base: path.basename(fp), error: err.message } }
+      })
+      return { canceled: false, files }
+    })
+  }
 
   // ---- GEO 卫星覆盖数据 ----
   if (coverage) {
