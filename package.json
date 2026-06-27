@@ -27,6 +27,40 @@
     "topojson-client": "^3.1.0",
     "vue": "^3.4.21"
   },
+  "build": {
+    "appId": "com.satsim.platform",
+    "productName": "卫星仿真平台",
+    "directories": { "output": "release" },
+    "asar": true,
+    "files": [
+      "out/**/*",
+      "electron/**/*",
+      "packages/**/*",
+      "resources/**/*",
+      "package.json",
+      "!node_modules/cesium/**/*",
+      "!node_modules/three/**/*"
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        { "target": "nsis", "arch": ["x64"] },
+        { "target": "portable", "arch": ["x64"] }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "卫星仿真平台",
+      "artifactName": "卫星仿真平台-${version}-Setup.${ext}"
+    },
+    "portable": {
+      "artifactName": "卫星仿真平台-${version}-portable.${ext}"
+    }
+  },
   "devDependencies": {
     "@vitejs/plugin-vue": "^5.0.4",
     "electron": "^31.0.2",
