@@ -5,6 +5,28 @@ contextBridge.exposeInMainWorld('api', {
   computeLink: (s, l) => ipcRenderer.invoke('link:compute', s, l),
   computeLinkNGSO: (s, l) => ipcRenderer.invoke('link:computeNGSO', s, l),
   satelliteAngle: (lat, lon, satLon) => ipcRenderer.invoke('link:angle', lat, lon, satLon),
+  linkBudget: {
+    open: () => ipcRenderer.invoke('linkbudget:open'),
+    compute: (s, l) => ipcRenderer.invoke('link:compute', s, l),
+    computeMode: (s, l, opt) => ipcRenderer.invoke('link:computeMode', s, l, opt),
+    geoFill: (lat, lon) => ipcRenderer.invoke('link:geoFill', lat, lon),
+    grdSample: (req) => ipcRenderer.invoke('link:grdSample', req),
+    cities: () => ipcRenderer.invoke('link:cities'),
+    searchCities: (kw) => ipcRenderer.invoke('link:searchCities', kw),
+    baseband: () => ipcRenderer.invoke('link:baseband'),
+    waterfall: (ctx) => ipcRenderer.invoke('link:waterfall', ctx),
+    exportExcel: (payload) => ipcRenderer.invoke('linkbudget:exportExcel', payload),
+    openConfig: () => ipcRenderer.invoke('linkbudget:openConfig')
+  },
+  app: {
+    deviceId: () => ipcRenderer.invoke('app:deviceId')
+  },
+  share: {
+    configured: () => ipcRenderer.invoke('share:configured'),
+    send: (recipientId, payload) => ipcRenderer.invoke('share:send', recipientId, payload),
+    inbox: (myId) => ipcRenderer.invoke('share:inbox', myId),
+    remove: (myId, id) => ipcRenderer.invoke('share:delete', myId, id)
+  },
   store: {
     listHistory: () => ipcRenderer.invoke('store:history:list'),
     addHistory: (r) => ipcRenderer.invoke('store:history:add', r),
@@ -13,6 +35,7 @@ contextBridge.exposeInMainWorld('api', {
     listConfigs: () => ipcRenderer.invoke('store:config:list'),
     saveConfig: (c) => ipcRenderer.invoke('store:config:save', c),
     deleteConfig: (id) => ipcRenderer.invoke('store:config:delete', id),
+    reorderConfigs: (ids) => ipcRenderer.invoke('store:config:reorder', ids),
     getSettings: () => ipcRenderer.invoke('store:settings:get'),
     setSettings: (s) => ipcRenderer.invoke('store:settings:set', s)
   },

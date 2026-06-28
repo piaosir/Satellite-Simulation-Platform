@@ -540,6 +540,7 @@ function refreshPositions() {
   if (hasLinkedElev()) redrawSats()   // 星座关联星：仰角线随时间轴/实时跟踪
   if (grd.tickLive(perfKey.value || null).perfMoved) refreshPerf()   // 星动 → GRD 覆盖随时间轴移动；性能指标表也随之重算（取值依赖星位推出的 basis）
   if (satModal.value && satModal.value.noradId) liveTick.value++   // 关联星编辑中：驱动弹窗经纬度/高度刷新
+  persistGrdLive()   // 写实时关联星当前星下点到轻量缓存，供链路预算窗口「导入时取新位置」
 }
 
 // ===================== 数据加载 =====================
@@ -1147,9 +1148,10 @@ const defaultElements = () => ({ altKm: 500, ecc: 0, incl: 53, raan: 0, argp: 0,
 function defaultSatDraft() {
   return { folder: null, name: '', lon: 0, lat: 0, altKm: GEO_ALT, color: '', els: '5,10', noradId: null, posMode: 'fixed', elements: defaultElements(), elevWidth: 1.3, elevLabelSize: 13, iconSize: 30, labelSize: 14 }
 }
-function openAddSat() { satModal.value = defaultSatDraft(); satPick.value = false; satSearchKw.value = ''; satSearchRes.value = [] }
+// hideViz：从文件管理器调起时为 true，隐藏可视化项（图标/字号/仰角线/颜色），其余功能（定位方式/星座关联）一致
+function openAddSat(hideViz = false) { satModal.value = { ...defaultSatDraft(), hideViz }; satPick.value = false; satSearchKw.value = ''; satSearchRes.value = [] }
 // 编辑已有卫星（含预置星）：名称/位置/关联/仰角线/图标与标签大小都可改
-function editSat(node) { satModal.value = { folder: node.folder, name: node.satName, lon: node.lon, lat: node.lat, altKm: node.altKm, color: node.elevColor, els: node.els, noradId: node.noradId, kind: node.kind, posMode: node.elements ? 'orbit' : 'fixed', elements: node.elements ? { ...node.elements } : defaultElements(), elevWidth: node.elevWidth || 1.3, elevLabelSize: node.elevLabelSize || 13, iconSize: node.iconSize || 30, labelSize: node.labelSize || 14 }; satPick.value = false; satSearchKw.value = ''; satSearchRes.value = [] }
+function editSat(node, hideViz = false) { satModal.value = { folder: node.folder, name: node.satName, lon: node.lon, lat: node.lat, altKm: node.altKm, color: node.elevColor, els: node.els, noradId: node.noradId, kind: node.kind, posMode: node.elements ? 'orbit' : 'fixed', elements: node.elements ? { ...node.elements } : defaultElements(), elevWidth: node.elevWidth || 1.3, elevLabelSize: node.elevLabelSize || 13, iconSize: node.iconSize || 30, labelSize: node.labelSize || 14, hideViz }; satPick.value = false; satSearchKw.value = ''; satSearchRes.value = [] }
 function closeSatModal() { satModal.value = null; satPick.value = false; satSearchKw.value = ''; satSearchRes.value = [] }
 function applyGeoAlt() { if (satModal.value) satModal.value.altKm = GEO_ALT }   // 一键GEO：轨道高度设为 GEO
 
@@ -1220,6 +1222,25 @@ function satLivePos(node) {
     try { const now = calcAt(); const pv = sat.propagate(orbitSatrec(node), now); if (pv && pv.position) { const gd = sat.eciToGeodetic(pv.position, sat.gstime(now)); return { lon: sat.degreesLong(gd.longitude), lat: sat.degreesLat(gd.latitude), altKm: gd.height } } } catch { /* 根数异常 → 回退静态值 */ }
   }
   return { lon: node.lon, lat: node.lat, altKm: node.altKm }
+}
+
+// 把实时关联星(linked/orbit)的【当前】星下点写入轻量缓存 globe3d/grdLive，供独立的链路预算窗口
+// 在选星/导入时取到新位置（与覆盖分析同源 satLivePos）。固定星不写（其 lon 本就是真值）。节流 3s。
+let _grdLiveT = 0
+function persistGrdLive() {
+  const sats = (grd.sats && grd.sats.value) || []
+  if (!sats.some((s) => s.noradId || s.elements)) return
+  const nowMs = Date.now()
+  if (nowMs - _grdLiveT < 3000) return
+  _grdLiveT = nowMs
+  const pos = {}
+  for (const s of sats) {
+    if (!(s.noradId || s.elements)) continue
+    const p = satLivePos(s)
+    if (p && Number.isFinite(p.lon)) pos[s.folder] = { lon: +p.lon.toFixed(4), lat: +(p.lat || 0).toFixed(4), altKm: +(p.altKm || 0).toFixed(1) }
+  }
+  try { localStorage.setItem('globe3d/grdLive', JSON.stringify({ t: nowMs, pos })) } catch { /* ignore */ }
+  fileBridge.liveTick++   // 驱动文件管理器 GRD 树行经度跟随实时
 }
 
 // 从星座点选：进入点选模式后，地图 onPick 命中的星填入弹窗（见 onMounted）
@@ -1582,7 +1603,13 @@ onMounted(async () => {
   scene.setOnZoom((t) => { if (!flatView.value) zoom.value = t })
   zoom.avail = true; zoom.apply = applyZoom; pushZoom()
   grd.setLivePos(satLivePos)          // GRD 覆盖按星历/时间轴解算星下点+高度（关联星实时跟踪）
-  setGrdBridge(grd, collectGxt)       // 注册到文件管理器：镜像 GRD 树 + 导出当前覆盖
+  // 注册到文件管理器：镜像 GRD 树 + 导出当前覆盖 + 改星后重绘 + 复用原版卫星弹窗（隐藏可视化项）
+  setGrdBridge(grd, collectGxt, {
+    redraw: redrawSats,
+    openAddSat: () => openAddSat(true),
+    openEditSat: (folder) => { const n = grdSats.value.find((s) => s.folder === folder); if (n) editSat(n, true) },
+    livePos: (folder) => { const n = grdSats.value.find((s) => s.folder === folder); return n ? satLivePos(n) : null }   // 实时星下点（文件管理器树行经度用）
+  })
   // 用户在文件管理器导入/删除 GXT → 重新合并 covSats，使覆盖图(GXT)面板可选用新库
   watch(() => fileBridge.libraryTick, () => { if (covLoaded) mergeUserGxt() })
   loadMarkers(); syncMarkers()
@@ -2105,7 +2132,8 @@ onBeforeUnmount(() => {
     </div>
 
     <!-- 卫星编辑弹窗（单独对话框）；点选模式下折叠为顶部横幅，便于点击地图上的卫星 -->
-    <div v-if="satModal && !satPick" class="sat-mask">
+    <!-- hideViz（从文件管理器调起）：浮到文件管理器之上与之共存（提升 z-index 并改 fixed 定位） -->
+    <div v-if="satModal && !satPick" class="sat-mask" :class="{ 'sat-overlay': satModal.hideViz }">
       <div class="sat-dlg">
         <div class="sdh"><span>{{ satModal.folder ? '编辑卫星' : '添加卫星' }}</span><span class="csx" @click="closeSatModal">✕</span></div>
         <div class="sdbody">
@@ -2129,16 +2157,18 @@ onBeforeUnmount(() => {
             <div class="srow"><label>平近点角</label><input class="ci" type="number" step="0.1" v-model.number="satModal.elements.ma" /><span class="u">°</span></div>
             <div class="tip2">轨道根数模拟星：星下点 / 覆盖足迹随时间轴 / 实时模式移动（历元取保存时刻）。偏心率&gt;0 时轨道高度按近地点高度计。</div>
           </template>
-          <div class="srow"><label>图标大小</label><input class="rng" type="range" min="10" max="64" step="1" v-model.number="satModal.iconSize" /><span class="u">{{ satModal.iconSize }}</span></div>
-          <div class="srow"><label>卫星名字号</label><input class="rng" type="range" min="1" max="30" step="1" v-model.number="satModal.labelSize" /><span class="u">{{ satModal.labelSize }}</span></div>
+          <template v-if="!satModal.hideViz">
+            <div class="srow"><label>图标大小</label><input class="rng" type="range" min="10" max="64" step="1" v-model.number="satModal.iconSize" /><span class="u">{{ satModal.iconSize }}</span></div>
+            <div class="srow"><label>卫星名字号</label><input class="rng" type="range" min="1" max="30" step="1" v-model.number="satModal.labelSize" /><span class="u">{{ satModal.labelSize }}</span></div>
 
-          <div class="sdiv">仰角线（等仰角环 / 角度标注）</div>
-          <div class="srow"><label>仰角值</label><input class="ci" v-model="satModal.els" placeholder="如 5,10,20（0=地平）" /><span class="u">°</span></div>
-          <div class="srow"><label>线粗</label><input class="rng" type="range" min="0.5" max="4" step="0.1" v-model.number="satModal.elevWidth" /><span class="u">{{ (satModal.elevWidth || 1.3).toFixed(1) }}</span></div>
-          <div class="srow"><label>标注字号</label><input class="rng" type="range" min="6" max="24" step="1" v-model.number="satModal.elevLabelSize" /><span class="u">{{ satModal.elevLabelSize || 13 }}</span></div>
+            <div class="sdiv">仰角线（等仰角环 / 角度标注）</div>
+            <div class="srow"><label>仰角值</label><input class="ci" v-model="satModal.els" placeholder="如 5,10,20（0=地平）" /><span class="u">°</span></div>
+            <div class="srow"><label>线粗</label><input class="rng" type="range" min="0.5" max="4" step="0.1" v-model.number="satModal.elevWidth" /><span class="u">{{ (satModal.elevWidth || 1.3).toFixed(1) }}</span></div>
+            <div class="srow"><label>标注字号</label><input class="rng" type="range" min="6" max="24" step="1" v-model.number="satModal.elevLabelSize" /><span class="u">{{ satModal.elevLabelSize || 13 }}</span></div>
 
-          <div class="sdiv">颜色（仰角线与卫星名共用）</div>
-          <div class="srow"><label>颜色</label><input class="clr" type="color" v-model="satModal.color" /></div>
+            <div class="sdiv">颜色（仰角线与卫星名共用）</div>
+            <div class="srow"><label>颜色</label><input class="clr" type="color" v-model="satModal.color" /></div>
+          </template>
           <div v-if="satModal.kind === 'preset'" class="tip2">预置卫星，可改名称 / 位置 / 仰角线；导入的天线沿用其原星下点投影。</div>
 
           <div class="sdiv">从星座选取（可选）</div>
@@ -2778,6 +2808,8 @@ onBeforeUnmount(() => {
 
 /* 卫星编辑弹窗 */
 .sat-mask { position: absolute; inset: 0; background: rgba(4,8,14,0.55); display: flex; align-items: center; justify-content: center; z-index: 40; }
+/* 从文件管理器（z2000 浮层）调起时，提升到其上方并改 fixed，以便两个弹窗共存 */
+.sat-mask.sat-overlay { position: fixed; z-index: 2100; }
 .sat-dlg { width: 320px; max-height: 86%; overflow-y: auto; background: var(--surface); border: 1px solid var(--border-strong); box-shadow: 0 12px 40px rgba(0,0,0,0.5); display: flex; flex-direction: column; }
 .sdh { display: flex; align-items: center; padding: 11px 14px; border-bottom: 1px solid var(--border); font-family: var(--font-serif); font-size: 14px; }
 .sdh .csx { margin-left: auto; cursor: pointer; color: var(--text-faint); }

@@ -58,9 +58,44 @@ async function exportOmm(row) {
 /* ===================== ② GRD（镜像 3D 页活树）===================== */
 const grdApi = computed(() => fileBridge.grd)
 const grdSats = computed(() => (fileBridge.grd ? fileBridge.grd.sats.value : []))
+// GRD 树行经度：实时关联星跟随星历实时（与覆盖分析/编辑弹窗一致），固定星用其静态值。
+function grdLonText(sat) {
+  void fileBridge.liveTick   // 依赖实时 tick → 星动时本行重渲染
+  const a = fileBridge.grdActions
+  const p = a && a.livePos && a.livePos(sat.folder)
+  const lon = (p && Number.isFinite(p.lon)) ? p.lon : (sat.lon != null ? Number(sat.lon) : null)
+  return lon != null ? lon.toFixed(1) + '°E · ' : ''
+}
+// 改星后让 3D 场景里的卫星图标/仰角线同步刷新（3D 页注入的 redrawSats）
+function grdRedraw() { const a = fileBridge.grdActions; if (a && a.redraw) a.redraw() }
+const grdKeyOf = (sat, a) => `${sat.folder}|${a.name}`
 async function importGrd(sat) { if (fileBridge.grd) await fileBridge.grd.importGrd(sat) }
-async function removeGrdAnt(sat, a) { if (fileBridge.grd && await ask(`删除天线「${a.name}」？`)) fileBridge.grd.removeAntenna(sat.folder, a.name) }
-async function removeGrdSat(sat) { if (fileBridge.grd && await ask(`删除卫星「${sat.satName}」及其全部天线？`)) fileBridge.grd.removeSatellite(sat.folder) }
+async function removeGrdAnt(sat, a) { if (fileBridge.grd && await ask(`删除天线「${a.name}」？`)) { fileBridge.grd.removeAntenna(sat.folder, a.name); grdRedraw() } }
+async function removeGrdSat(sat) { if (fileBridge.grd && await ask(`删除卫星「${sat.satName}」及其全部天线？`)) { fileBridge.grd.removeSatellite(sat.folder); grdRedraw() } }
+
+// —— 添加 / 编辑卫星：直接复用覆盖分析「原版」卫星弹窗（含定位方式 / 星座关联，仅隐藏图标·字号·仰角线·颜色
+//    等可视化项）。弹窗浮在文件管理器之上、与之共存（不关闭文件管理）。两处完全同一弹窗，行为一致。
+function openAddGrdSat() {
+  const a = fileBridge.grdActions
+  if (!a || !a.openAddSat) { flash('请在「星座地图 3D」页操作'); return }
+  a.openAddSat()
+}
+function openEditGrdSat(sat) {
+  const a = fileBridge.grdActions
+  if (!a || !a.openEditSat) { flash('请在「星座地图 3D」页操作'); return }
+  a.openEditSat(sat.folder)
+}
+
+// —— 天线重命名（点名称或「改名」进入编辑，✓/回车提交）——
+const grdAntEdit = ref('')   // 正在重命名的天线 key（folder|name）
+const grdAntVal = ref('')
+function startRenameGrdAnt(sat, a) { grdAntEdit.value = grdKeyOf(sat, a); grdAntVal.value = a.name }
+function commitRenameGrdAnt(sat, a) {
+  if (grdAntEdit.value === '') return
+  if (fileBridge.grd.renameAntenna(sat.folder, a.name, grdAntVal.value) === false) { flash('天线名为空或与同星其他天线重名'); return }
+  grdAntEdit.value = ''; grdRedraw()
+}
+function cancelRenameGrdAnt() { grdAntEdit.value = '' }
 async function exportGrdAnt(a) {
   if (!a.imported || !a.file) { flash('预置天线无原始 GRD 可导出'); return }
   try {
@@ -284,30 +319,47 @@ onMounted(() => { loadOmm(); loadGxt(); loadPreset() })
 
           <!-- ② GRD -->
           <section v-else-if="tab === 'grd'">
-            <p class="lead">卫星 / 天线树（与「星座地图 3D」的覆盖分析共用）。可导入 GRD 新建天线、导出原始 GRD、删除。等值线档位/配色等显示设置仍在 3D 侧栏调整。</p>
+            <p class="lead">卫星 / 天线树（与「星座地图 3D」的覆盖分析共用）。「添加 / 编辑卫星」会在本窗口之上弹出覆盖分析的同一弹窗（定位方式 / 星座关联一应俱全，仅隐藏图标·字号·仰角线·颜色等显示项）。也可导入 GRD 新建天线、重命名、导出原始 GRD。</p>
             <div v-if="!grdApi" class="empty-hint">GRD 数据随「星座地图 3D」加载——请切换到该页面后再来管理。</div>
-            <div v-else-if="!grdSats.length" class="empty-hint">暂无卫星。请在 3D 页覆盖分析里添加卫星，或在此为某颗卫星导入 GRD。</div>
-            <div v-else class="tree">
-              <div v-for="sat in grdSats" :key="sat.folder" class="tnode">
-                <div class="trow sat">
-                  <span class="tname">{{ sat.satName }}</span>
-                  <span class="tcount">{{ sat.antennas.length }} 天线</span>
-                  <span class="trops">
-                    <button class="mini" @click="importGrd(sat)">＋ 导入 GRD</button>
-                    <button class="mini del" @click="removeGrdSat(sat)">删除星</button>
-                  </span>
-                </div>
-                <div v-for="a in sat.antennas" :key="a.name" class="trow ant">
-                  <span class="tname">{{ a.name }}</span>
-                  <span class="tmeta">{{ a.beams }} 波束 · {{ a.imported ? '导入' : '预置' }}<template v-if="a.peakDb != null"> · 峰值 {{ Number(a.peakDb).toFixed(1) }} dB</template></span>
-                  <span class="trops">
-                    <button class="mini ghost" :disabled="!a.imported" @click="exportGrdAnt(a)">导出</button>
-                    <button class="mini del" @click="removeGrdAnt(sat, a)">删除</button>
-                  </span>
-                </div>
-                <div v-if="!sat.antennas.length" class="noant">暂无天线 — 点上方「导入 GRD」</div>
+            <template v-else>
+              <div class="addbar sub">
+                <button class="mini imp" @click="openAddGrdSat">＋ 添加卫星</button>
+                <span class="dimnote">支持固定经纬度 / 轨道根数定位</span>
               </div>
-            </div>
+              <div v-if="!grdSats.length" class="empty-hint">暂无卫星。可点「添加卫星」新建一颗，或为卫星导入 GRD。</div>
+              <div v-else class="tree">
+                <div v-for="sat in grdSats" :key="sat.folder" class="tnode">
+                  <div class="trow sat">
+                    <span class="tname">{{ sat.satName }}</span>
+                    <span class="tcount">{{ grdLonText(sat) }}{{ sat.antennas.length }} 天线</span>
+                    <span class="trops">
+                      <button class="mini" @click="openEditGrdSat(sat)">编辑</button>
+                      <button class="mini" @click="importGrd(sat)">＋ 导入 GRD</button>
+                      <button class="mini del" @click="removeGrdSat(sat)">删除星</button>
+                    </span>
+                  </div>
+                  <div v-for="a in sat.antennas" :key="a.name" class="trow ant">
+                    <template v-if="grdAntEdit === grdKeyOf(sat, a)">
+                      <input class="ci wide" v-model="grdAntVal" @keydown.enter="commitRenameGrdAnt(sat, a)" @keydown.esc="cancelRenameGrdAnt" />
+                      <span class="trops">
+                        <button class="mini imp" @mousedown.prevent @click="commitRenameGrdAnt(sat, a)">✓ 确定</button>
+                        <button class="mini ghost" @click="cancelRenameGrdAnt">取消</button>
+                      </span>
+                    </template>
+                    <template v-else>
+                      <span class="tname rn" title="点击重命名" @click="startRenameGrdAnt(sat, a)">{{ a.name }}</span>
+                      <span class="tmeta">{{ a.beams }} 波束 · {{ a.imported ? '导入' : '预置' }}<template v-if="a.peakDb != null"> · 峰值 {{ Number(a.peakDb).toFixed(1) }} dB</template></span>
+                      <span class="trops">
+                        <button class="mini ghost" @click="startRenameGrdAnt(sat, a)">改名</button>
+                        <button class="mini ghost" :disabled="!a.imported" @click="exportGrdAnt(a)">导出</button>
+                        <button class="mini del" @click="removeGrdAnt(sat, a)">删除</button>
+                      </span>
+                    </template>
+                  </div>
+                  <div v-if="!sat.antennas.length" class="noant">暂无天线 — 点上方「导入 GRD」</div>
+                </div>
+              </div>
+            </template>
           </section>
 
           <!-- ③ GXT -->
@@ -446,6 +498,10 @@ onMounted(() => { loadOmm(); loadGxt(); loadPreset() })
 .ci { border: 1px solid var(--border); background: var(--bg); color: var(--text); padding: 5px 8px; outline: none; font-size: 12.5px; border-radius: 2px; min-width: 0; user-select: text; -webkit-user-select: text; }
 .ci:focus { border-color: var(--accent); }
 .ci.nar { width: 96px; flex: none; }
+.ci.wide { width: 150px; flex: none; }
+/* 天线名可点重命名：悬停提示可交互 */
+.tname.rn { cursor: pointer; }
+.tname.rn:hover { color: var(--accent); }
 .addbar .ci:first-child { width: 180px; flex: none; }
 .spacer { flex: 1; }
 /* 应用内确认弹窗（覆盖在文件管理器之上，居中） */

@@ -29,9 +29,12 @@ const ISL = defineAsyncComponent(() => import('./pages/ISL.vue'))
 const nav = useNavStore()
 const viewMenu = ref(false)
 const expMenu = ref(false)        // 「导出图」下拉
+const calcMenu = ref(false)       // 「计算」下拉
 const settingsOpen = ref(false)
 const fileOpen = ref(false)
 function doExport(fmt) { expMenu.value = false; if (covNav.exportMap) covNav.exportMap(fmt) }
+// 计算菜单项 → 打开独立链路预算工作台窗口（目前仅 GEO）
+function openLinkBudget() { calcMenu.value = false; window.api?.linkBudget?.open?.() }
 // MSAA 是 WebGL 上下文创建期参数，运行时不可改 → 把它并入当前页 key，切换 MSAA 时重挂载页面（一瞬重渲）。
 // 页面状态由各自的本地缓存（reactive watch 持续保存）在重挂载时恢复，无感。
 const pageKey = computed(() => `${nav.current}-msaa${displayQuality.value.msaa !== false ? 1 : 0}`)
@@ -57,7 +60,13 @@ const currentLabel = computed(
     <header class="topbar">
       <span class="brand">卫星仿真平台</span>
       <nav class="menu">
-        <span class="setbtn" @click="fileOpen = true">文件</span><span>计算</span>
+        <span class="setbtn" @click="fileOpen = true">文件</span>
+        <span class="vwrap">
+          <span class="setbtn" :class="{ on: calcMenu }" @click.stop="calcMenu = !calcMenu">计算 ▾</span>
+          <div v-if="calcMenu" class="vmenu calcmenu">
+            <div class="vitem" @click="openLinkBudget"><span class="vico">▤</span>地球静止轨道卫星（GEO）链路预算</div>
+          </div>
+        </span>
         <span class="vwrap">
           <span class="vbtn" :class="{ on: viewMenu }" @click.stop="viewMenu = !viewMenu">视图 · {{ view.flat ? '2D 平面' : '3D 球体' }} ▾</span>
           <div v-if="viewMenu" class="vmenu">
@@ -81,7 +90,7 @@ const currentLabel = computed(
         </span>
         <span class="setbtn" @click="settingsOpen = true">设置</span>
       </nav>
-      <div v-if="viewMenu || expMenu" class="vmask" @click="viewMenu = false; expMenu = false"></div>
+      <div v-if="viewMenu || expMenu || calcMenu" class="vmask" @click="viewMenu = false; expMenu = false; calcMenu = false"></div>
     </header>
 
     <div class="body">
@@ -123,7 +132,7 @@ const currentLabel = computed(
 .brand { font-family: var(--font-serif); font-size: 15px; letter-spacing: .4px; }
 .menu { display: flex; align-items: center; gap: 18px; color: var(--text-muted); font-size: 12.5px; }
 .setbtn { cursor: pointer; }
-.setbtn:hover { color: var(--text); }
+.setbtn:hover, .setbtn.on { color: var(--text); }
 .vwrap { position: relative; }
 .vbtn { cursor: pointer; border: 1px solid var(--border); padding: 2px 10px; border-radius: 2px; }
 .vbtn:hover { color: var(--text); border-color: var(--accent); }
@@ -142,6 +151,7 @@ const currentLabel = computed(
 .vitem.sel { color: var(--text); }
 .vitem .ck { width: 12px; color: var(--accent); }
 .vitem .vico { width: 14px; text-align: center; color: var(--text-faint); }
+.calcmenu .vitem { white-space: nowrap; }
 .vitem.sel .vico { color: var(--accent); }
 .vmask { position: fixed; inset: 0; z-index: 99; }
 .body { display: flex; flex: 1; min-height: 0; }

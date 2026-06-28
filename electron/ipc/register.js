@@ -3,7 +3,7 @@ const fs = require('fs')
 const createOmm = require('../services/omm')
 
 // 注册所有 IPC 处理器。core 为返回引擎实例的函数（延迟解析）。
-function register({ core, storage, report, coverage, coverageGrd, coverageGxt }) {
+function register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget, grd }) {
   const omm = createOmm(core)
   ipcMain.handle('omm:load', (_e, group, online) => omm.load(group, online))
   ipcMain.handle('omm:positions', (_e, group, iso) => omm.positions(group, iso))
@@ -107,6 +107,22 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt })
       ? core().calculateLinkBudgetNGSO(s || {}, l || {})
       : { success: false, message: 'NGSO 引擎未加载' })
   ipcMain.handle('link:angle', (_e, lat, lon, satLon) => core().calculateSatelliteAngle(lat, lon, satLon))
+  // 链路瀑布表分段数据（结果区渲染 / 专业版导出共用同一口径）
+  ipcMain.handle('link:waterfall', (_e, ctx) => core().buildWaterfallSegments(ctx || {}))
+  // 计算方式求解（在主进程内迭代求解功带平衡 / 反推余量，避免大量 IPC 往返）
+  ipcMain.handle('link:computeMode', (_e, s, l, opt) => core().computeLinkMode(s || {}, l || {}, opt || {}))
+  // 经纬度 → 降雨率/海拔自动填值（与小程序口径一致）
+  ipcMain.handle('link:geoFill', (_e, lat, lon) => core().geoAutoFill(parseFloat(lat), parseFloat(lon)))
+  // GRD 天线逐站取值（多波束最大 Parameter）：解析+采样在主进程，渲染端只收发 dB 数字
+  ipcMain.handle('link:grdSample', (_e, req) => (grd ? grd.sample(req || {}) : ((req && req.points) || []).map(() => null)))
+  // 城市列表（选址用）
+  ipcMain.handle('link:cities', () => core().listCities())
+  ipcMain.handle('link:searchCities', (_e, kw) => core().searchCities(String(kw == null ? '' : kw), {}))
+  // 基带选项（调制/FEC/DVB/MODCOD）
+  ipcMain.handle('link:baseband', () => core().basebandOptions())
+
+  // 打开「GEO 链路预算」独立工作台窗口（单例，由 main 注入创建函数）
+  ipcMain.handle('linkbudget:open', () => { if (openLinkBudget) openLinkBudget(); return true })
 
   // ---- 本地存储 ----
   ipcMain.handle('store:history:list', () => storage.listHistory())
@@ -116,6 +132,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt })
   ipcMain.handle('store:config:list', () => storage.listConfigs())
   ipcMain.handle('store:config:save', (_e, c) => storage.saveConfig(c))
   ipcMain.handle('store:config:delete', (_e, id) => storage.deleteConfig(id))
+  ipcMain.handle('store:config:reorder', (_e, ids) => storage.reorderConfigs(ids))
   ipcMain.handle('store:settings:get', () => storage.getSettings())
   ipcMain.handle('store:settings:set', (_e, s) => storage.setSettings(s))
 
@@ -166,6 +183,84 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt })
     fs.writeFileSync(filePath, Buffer.from(buf))
     return { ok: true, filePath }
   })
+
+  // ---- 工作台 m×n 链路矩阵 Excel 导出（Phase 5）----
+  ipcMain.handle('linkbudget:exportExcel', async (e, payload) => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    const { canceled, filePath } = await dialog.showSaveDialog(win, {
+      defaultPath: (payload && payload.defaultName) || 'GEO链路预算结果.xlsx',
+      filters: [{ name: 'Excel 工作簿', extensions: ['xlsx'] }]
+    })
+    if (canceled || !filePath) return { ok: false, canceled: true }
+    try {
+      // 为每条链路构建七段瀑布（与 UI 瀑布同源 buildWaterfallSegments）→「详细计算结果」分表
+      const links = (payload && payload.links) || []
+      for (const l of links) {
+        if (l && l.data) {
+          try { l.segments = core().buildWaterfallSegments({ results: l.data, lang: 'zh', orbitType: 'GEO', txLocation: String(l.txName || ''), rxLocation: String(l.rxName || '') }) }
+          catch (e) { l.segments = [] }
+        }
+      }
+      const buf = await report.buildLinkBudgetExcel(payload || {})
+      fs.writeFileSync(filePath, Buffer.from(buf))
+      return { ok: true, filePath }
+    } catch (err) {
+      const busy = err && (err.code === 'EBUSY' || err.code === 'EPERM' || err.code === 'EACCES')
+      return { ok: false, error: busy ? '文件可能正被其他程序打开（如 Excel），请关闭后重试' : (err.message || String(err)) }
+    }
+  })
+
+  // ---- 设备 ID（按本机 MAC 派生的稳定短码，作为「用户 ID」用于配置分享）----
+  // 取所有非内网物理网卡 MAC 排序后 sha256，取前 10 位 hex 大写；落盘 settings 保证跨网卡变化也稳定。
+  // 管理员身份硬编码（不开放修改，避免他人冒充）：派生ID → 固定标识。
+  // 加 master2/master3：在那台机器上跑一次、看软件左下「我的ID」显示的派生ID，填进此表再发版即可。
+  const ADMIN_IDS = {
+    '2E314A3754': 'master1'      // 开发者本机（MAC 84:9e:56:77:52:9d）
+    // '<机器2派生ID>': 'master2',
+    // '<机器3派生ID>': 'master3'
+  }
+  ipcMain.handle('app:deviceId', () => {
+    const s = storage.getSettings()
+    let base = s && s.deviceId
+    if (!base) {
+      const os = require('os'); const crypto = require('crypto')
+      const ifaces = os.networkInterfaces(); const macs = []
+      for (const name of Object.keys(ifaces)) for (const i of (ifaces[name] || [])) {
+        if (i.mac && i.mac !== '00:00:00:00:00:00' && !i.internal) macs.push(i.mac.toLowerCase())
+      }
+      macs.sort()
+      const seed = macs.join(',') || os.hostname() || String(Date.now())
+      base = crypto.createHash('sha256').update(seed).digest('hex').slice(0, 10).toUpperCase()
+      storage.setSettings({ deviceId: base })
+    }
+    return ADMIN_IDS[base] || base
+  })
+
+  // ---- 配置文件导入（线下分享：选 .lbcfg/.json 读回文本）----
+  ipcMain.handle('linkbudget:openConfig', async (e) => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+      properties: ['openFile'],
+      filters: [{ name: '链路预算配置', extensions: ['lbcfg', 'json'] }]
+    })
+    if (canceled || !filePaths || !filePaths.length) return { ok: false, canceled: true }
+    try { return { ok: true, text: fs.readFileSync(filePaths[0], 'utf8') } }
+    catch (err) { return { ok: false, error: err.message || String(err) } }
+  })
+
+  // ---- 在线分享信箱（COS）：按用户ID收发配置；未配置密钥时 configured=false ----
+  if (share) {
+    ipcMain.handle('share:configured', () => share.configured())
+    ipcMain.handle('share:send', async (_e, recipientId, payload) => {
+      try { return await share.send(recipientId, payload) } catch (err) { return { ok: false, error: err.message || String(err) } }
+    })
+    ipcMain.handle('share:inbox', async (_e, myId) => {
+      try { return await share.inbox(myId) } catch (err) { return { ok: false, error: err.message || String(err) } }
+    })
+    ipcMain.handle('share:delete', async (_e, myId, id) => {
+      try { return await share.remove(myId, id) } catch (err) { return { ok: false, error: err.message || String(err) } }
+    })
+  }
 }
 
 module.exports = { register }

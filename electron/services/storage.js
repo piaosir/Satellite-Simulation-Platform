@@ -15,9 +15,22 @@ function dir() {
 }
 function file(name) { return path.join(dir(), name) }
 function read(name, def) {
-  try { return JSON.parse(fs.readFileSync(file(name), 'utf8')) } catch { return def }
+  try { return JSON.parse(fs.readFileSync(file(name), 'utf8')) }
+  catch {
+    // 主文件损坏（写入中途崩溃/断电）→ 回退上一份完好备份，避免「配置全没了」
+    try { return JSON.parse(fs.readFileSync(file(name) + '.bak', 'utf8')) } catch { return def }
+  }
 }
-function write(name, val) { fs.writeFileSync(file(name), JSON.stringify(val, null, 2)) }
+// 原子写：先写 .tmp，保留上一份 .bak，再 rename 覆盖。崩溃/断电至多丢「本次未落盘的改动」，
+// 不会让既有 configs.json 被截断成乱码后被 read 当空列表清空。
+function write(name, val) {
+  const f = file(name)
+  const data = JSON.stringify(val, null, 2)
+  const tmp = f + '.tmp'
+  fs.writeFileSync(tmp, data)               // 写满临时文件（失败则抛错，原文件不动）
+  try { if (fs.existsSync(f)) fs.copyFileSync(f, f + '.bak') } catch { /* 备份尽力而为 */ }
+  fs.renameSync(tmp, f)                      // 原子替换（Windows MoveFileEx 覆盖）
+}
 function genId() { return Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8) }
 
 // ---- 历史记录 ----
@@ -46,6 +59,16 @@ function saveConfig(cfg) {
   return item
 }
 function deleteConfig(id) { write('configs.json', listConfigs().filter((c) => c.id !== id)); return true }
+// 按给定 id 顺序重排 configs.json（用于剪切/粘贴换位置）；未列出的保持原相对序追加在后
+function reorderConfigs(ids) {
+  const list = listConfigs()
+  const byId = new Map(list.map((c) => [c.id, c]))
+  const ordered = []
+  for (const id of (ids || [])) { const c = byId.get(id); if (c) { ordered.push(c); byId.delete(id) } }
+  for (const c of list) if (byId.has(c.id)) ordered.push(c)
+  write('configs.json', ordered)
+  return ordered
+}
 
 // ---- 应用设置 ----
 function getSettings() { return read('settings.json', {}) }
@@ -57,7 +80,7 @@ function setSettings(patch) {
 
 module.exports = {
   listHistory, addHistory, deleteHistory, clearHistory,
-  listConfigs, saveConfig, deleteConfig,
+  listConfigs, saveConfig, deleteConfig, reorderConfigs,
   getSettings, setSettings,
   _dir: dir
 }

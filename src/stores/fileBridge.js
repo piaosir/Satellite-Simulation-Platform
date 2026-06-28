@@ -10,9 +10,13 @@ import { shallowReactive } from 'vue'
 export const fileBridge = shallowReactive({
   grd: null,
   collectGxt: null,
-  libraryTick: 0
+  // 3D 页注入的宿主动作：{ redraw, openAddSat(), openEditSat(folder), livePos(folder) }。
+  // 文件管理器据此复用覆盖分析「原版」卫星弹窗（含星座关联/地图点选），改星后重绘场景。
+  grdActions: null,
+  libraryTick: 0,
+  liveTick: 0   // 3D 页实时刷新关联星位置时自增，驱动文件管理器 GRD 树行经度跟随实时
 })
 
-export function setGrdBridge(grdApi, collectGxt) { fileBridge.grd = grdApi; fileBridge.collectGxt = collectGxt || null }
-export function clearGrdBridge() { fileBridge.grd = null; fileBridge.collectGxt = null }
+export function setGrdBridge(grdApi, collectGxt, actions) { fileBridge.grd = grdApi; fileBridge.collectGxt = collectGxt || null; fileBridge.grdActions = actions || null }
+export function clearGrdBridge() { fileBridge.grd = null; fileBridge.collectGxt = null; fileBridge.grdActions = null }
 export function bumpLibrary() { fileBridge.libraryTick++ }

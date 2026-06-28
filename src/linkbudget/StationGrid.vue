@@ -1,0 +1,516 @@
+<script setup>
+import { ref, reactive, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
+import { defaultsFor } from './params.js'
+
+// 发信/收信站群 Excel 式电子表格：单元格框选（拖拽）、Ctrl+C/Ctrl+V 复制粘贴（TSV）、
+// 双击整列填充、增删行（按城市表顺序取名）、多选行批量删除/设值、清空、撤销/重做、逐行选址。
+const props = defineProps({
+  stations: { type: Array, required: true },
+  fields: { type: Array, required: true },
+  cities: { type: Array, default: () => [] },
+  label: { type: String, default: '' },
+  autoGeo: { type: Function, default: null },
+  roLabel: { type: String, default: '' },          // 只读末列标题（EIRP / G/T）
+  roUnit: { type: String, default: '' },
+  roValues: { type: Object, default: () => ({}) },  // { _id: 计算值 }，计算后回填
+  citySearch: { type: Function, default: null }      // (关键词)→Promise<城市[]>：支持城市名/省份/拼音缩写检索
+})
+
+let _seq = 1
+const root = ref(null)
+const nameKey = computed(() => (props.fields.find((f) => f.city) || {}).key)
+const lonKey = computed(() => (props.fields.find((f) => /longitude/i.test(f.key)) || {}).key)
+const latKey = computed(() => (props.fields.find((f) => /latitude/i.test(f.key)) || {}).key)
+const nCol = computed(() => props.fields.length)
+// 只读列(EIRP/G·T)作为「可选不可编辑」的最后一列：可框选/复制，但不可编辑/粘贴/填充。
+const roCol = computed(() => (props.roLabel ? props.fields.length : -1))   // 只读列列号，无则 -1
+const nColSel = computed(() => props.fields.length + (props.roLabel ? 1 : 0))  // 可选区总列数（含只读列）
+const isRO = (c) => c === roCol.value
+// 取单元格文本：只读列取其计算值，其余取字段值（复制用）
+function cellText(s, c) { return isRO(c) ? (props.roValues[s._id] != null ? props.roValues[s._id] : '') : s[props.fields[c].key] }
+// 经纬度最多保留 6 位小数（≈0.11 m，GIS/GPS 实用精度；再多是浮点噪声）。导入/粘贴 Excel 时清理
+// 超长小数；非数字/空值原样，少于 6 位不补零（去尾零）。
+const LATLON_DECIMALS = 6
+const isLatLonKey = (key) => key === lonKey.value || key === latKey.value
+function clampLatLon(val) {
+  const s = String(val == null ? '' : val).trim()
+  if (s === '') return s
+  const n = Number(s)
+  return Number.isFinite(n) ? String(Number(n.toFixed(LATLON_DECIMALS))) : val
+}
+
+// 地面站名称命中城市库（按城市名精确匹配，忽略首尾空格/大小写）→ 自动带入该城市经纬度。
+// 返回是否命中（命中后由调用方联动 autoGeo 补降雨/海拔）。
+function applyCityByName(row) {
+  if (!nameKey.value || !props.cities.length) return false
+  const name = String(row[nameKey.value] == null ? '' : row[nameKey.value]).trim()
+  if (!name) return false
+  const lc = name.toLowerCase()
+  const hit = props.cities.find((c) => c && c.name != null && String(c.name).trim().toLowerCase() === lc)
+  if (!hit) return false
+  if (lonKey.value && hit.lon != null) row[lonKey.value] = clampLatLon(hit.lon)
+  if (latKey.value && hit.lat != null) row[latKey.value] = clampLatLon(hit.lat)
+  return true
+}
+
+// —— 撤销/重做 ——
+const undoStack = ref([]); const redoStack = ref([])
+const snapshot = () => props.stations.map((s) => ({ ...s }))
+function restore(snap) { props.stations.splice(0, props.stations.length, ...snap.map((s) => ({ ...s }))) }
+function pushUndo() { undoStack.value.push(snapshot()); if (undoStack.value.length > 100) undoStack.value.shift(); redoStack.value = [] }
+function undo() { if (!undoStack.value.length) return; redoStack.value.push(snapshot()); restore(undoStack.value.pop()) }
+function redo() { if (!redoStack.value.length) return; undoStack.value.push(snapshot()); restore(redoStack.value.pop()) }
+
+// —— 行多选（行级批量）——
+const sel = ref({})
+const selectedRows = computed(() => props.stations.filter((s) => sel.value[s._id]))
+const allSelected = computed(() => props.stations.length > 0 && props.stations.every((s) => sel.value[s._id]))
+function toggleAll() { const v = !allSelected.value; const m = {}; if (v) for (const s of props.stations) m[s._id] = true; sel.value = m }
+
+// —— 增删行（按城市表顺序取名）——
+function cityForIndex(i) { return props.cities.length ? props.cities[i % props.cities.length] : null }
+function makeRow(city) {
+  const row = defaultsFor(props.fields); row._id = 'r' + (_seq++)
+  if (city) {
+    if (nameKey.value) row[nameKey.value] = city.name
+    if (lonKey.value) row[lonKey.value] = String(city.lon)
+    if (latKey.value) row[latKey.value] = String(city.lat)
+  }
+  return row
+}
+function addRow() {
+  pushUndo()
+  const row = makeRow(cityForIndex(props.stations.length))
+  props.stations.push(row)
+  if (props.autoGeo && cityForIndex(props.stations.length - 1)) props.autoGeo(row)
+}
+function removeRow(i) { pushUndo(); const id = props.stations[i]._id; props.stations.splice(i, 1); delete sel.value[id] }
+function removeSelected() {
+  if (!selectedRows.value.length) return
+  pushUndo()
+  const ids = new Set(selectedRows.value.map((s) => s._id))
+  for (let i = props.stations.length - 1; i >= 0; i--) if (ids.has(props.stations[i]._id)) props.stations.splice(i, 1)
+  sel.value = {}
+}
+function clearAll() { if (!props.stations.length) return; pushUndo(); props.stations.splice(0, props.stations.length); sel.value = {} }
+
+// ============ 电子表格单元格选区 ============
+const range = reactive({ ar: 0, ac: 0, fr: 0, fc: 0 }) // anchor / focus (行,列)
+const editing = ref(null) // { r, c }
+let dragging = false
+const r0 = computed(() => Math.min(range.ar, range.fr))
+const r1 = computed(() => Math.max(range.ar, range.fr))
+const c0 = computed(() => Math.min(range.ac, range.fc))
+const c1 = computed(() => Math.max(range.ac, range.fc))
+const inSel = (r, c) => r >= r0.value && r <= r1.value && c >= c0.value && c <= c1.value
+const isFocus = (r, c) => r === range.fr && c === range.fc
+const isEditing = (r, c) => editing.value && editing.value.r === r && editing.value.c === c
+
+function setFocus(r, c, extend) {
+  r = Math.max(0, Math.min(props.stations.length - 1, r))
+  c = Math.max(0, Math.min(nColSel.value - 1, c))
+  range.fr = r; range.fc = c
+  if (!extend) { range.ar = r; range.ac = c }
+}
+function focusGrid() { nextTick(() => root.value && root.value.focus()) }
+
+function onDown(r, c, e) {
+  if (isEditing(r, c)) return
+  e.preventDefault()
+  editing.value = null
+  setFocus(r, c, e.shiftKey)
+  dragging = true
+  focusGrid()
+}
+function onEnter(r, c) {
+  if (fill.active) { fill.toR = Math.max(fill.r1, r); return }   // 填充柄拖拽：只向下跟踪行
+  if (dragging) setFocus(r, c, true)
+}
+function onUp() {
+  if (fill.active) { fill.active = false; applyFill() }
+  dragging = false; rowDragging = false
+  stopAutoScroll()
+}
+
+// 拖拽（框选/填充/选行）到容器边缘时自动滚动，使底部滚动条跟随
+let scrollRAF = null, scrollVX = 0, scrollVY = 0
+function onDragMove(e) {
+  if (!(dragging || fill.active || rowDragging)) { stopAutoScroll(); return }
+  const el = root.value; if (!el) return
+  const r = el.getBoundingClientRect(), edge = 36
+  scrollVX = e.clientX > r.right - edge ? 16 : (e.clientX < r.left + edge ? -16 : 0)
+  scrollVY = e.clientY > r.bottom - edge ? 12 : (e.clientY < r.top + edge ? -12 : 0)
+  if ((scrollVX || scrollVY) && !scrollRAF) scrollRAF = requestAnimationFrame(autoScrollTick)
+}
+function autoScrollTick() {
+  const el = root.value
+  if (!el || !(dragging || fill.active || rowDragging) || (!scrollVX && !scrollVY)) { scrollRAF = null; return }
+  el.scrollLeft += scrollVX; el.scrollTop += scrollVY
+  scrollRAF = requestAnimationFrame(autoScrollTick)
+}
+function stopAutoScroll() { scrollVX = scrollVY = 0; if (scrollRAF) { cancelAnimationFrame(scrollRAF); scrollRAF = null } }
+
+// —— 序号列：点击/长按拖拽框选行 ——
+let rowDragging = false, rowAnchor = 0
+function selectRowRange(a, b) {
+  const lo = Math.min(a, b), hi = Math.max(a, b), m = {}
+  for (let r = lo; r <= hi; r++) m[props.stations[r]._id] = true
+  sel.value = m
+}
+function onRowDown(i, e) {
+  e.preventDefault()
+  if (e.ctrlKey || e.metaKey) { sel.value = { ...sel.value, [props.stations[i]._id]: !sel.value[props.stations[i]._id] }; return }
+  rowAnchor = i; rowDragging = true
+  if (e.shiftKey) selectRowRange(0, i)
+  else sel.value = { [props.stations[i]._id]: true }
+  focusGrid()
+}
+function onRowEnter(i) { if (rowDragging) selectRowRange(rowAnchor, i) }
+
+// —— Excel 填充柄（选区右下角黑色方块）：拖动/双击向下填充【整个选区的列】，按选中行循环复制，与 Excel 一致 ——
+const fill = reactive({ active: false, r0: 0, r1: 0, c0: 0, c1: 0, toR: 0 })
+const inFill = (r, c) => fill.active && c >= fill.c0 && c <= fill.c1 && r > fill.r1 && r <= fill.toR
+const isFillAnchor = (r, c) => r === r1.value && c === c1.value   // 选区右下角 = 填充柄所在格
+function onFillDown(e) {
+  e.stopPropagation(); e.preventDefault()
+  editing.value = null
+  fill.active = true; fill.r0 = r0.value; fill.r1 = r1.value; fill.c0 = c0.value; fill.c1 = c1.value; fill.toR = r1.value
+  focusGrid()
+}
+// 把选区(r0..r1 × c0..c1)按行循环向下填到 toR（只读列跳过）；并把选区扩展到填充范围
+function fillDownTo(r0_, r1_, c0_, c1_, toR) {
+  const lo = r1_ + 1, hi = toR
+  if (hi < lo) return
+  pushUndo()
+  const srcN = r1_ - r0_ + 1
+  for (let c = c0_; c <= c1_; c++) {
+    if (isRO(c)) continue
+    const key = props.fields[c].key
+    for (let r = lo; r <= hi; r++) props.stations[r][key] = props.stations[r0_ + ((r - lo) % srcN)][key]
+  }
+  range.ar = r0_; range.ac = c0_; range.fr = hi; range.fc = c1_
+}
+function applyFill() { fillDownTo(fill.r0, fill.r1, fill.c0, fill.c1, fill.toR) }
+// 双击填充柄 → 从选区底部向下填到最后一行（整个选区的列）
+function onFillDbl(e) {
+  e.stopPropagation()
+  if (r1.value >= props.stations.length - 1) return
+  fillDownTo(r0.value, r1.value, c0.value, c1.value, props.stations.length - 1)
+}
+
+let _editOrig = null   // 进入编辑时的原值：用于判断名称是否真的改动（避免无改动失焦时误覆盖经纬度）
+function startEdit(r, c, ch) {
+  if (isRO(c)) return   // 只读列不可编辑
+  _editOrig = props.stations[r][props.fields[c].key]
+  if (ch != null) props.stations[r][props.fields[c].key] = ch
+  editing.value = { r, c }
+  nextTick(() => {
+    const el = root.value && root.value.querySelector('.sg-cell.editing input, .sg-cell.editing select')
+    if (el) { el.focus(); if (!ch && el.select) el.select() }
+  })
+}
+function endEdit() {
+  if (editing.value) {
+    const { r, c } = editing.value
+    const f = props.fields[c]
+    const row = props.stations[r]
+    if (f && f.key === nameKey.value) {
+      // 名称真的改动且命中城市库 → 带入经纬度，并联动 autoGeo 重算降雨/海拔
+      if (row[f.key] !== _editOrig && applyCityByName(row) && props.autoGeo) props.autoGeo(row)
+    } else if (f && props.autoGeo && (f.key === lonKey.value || f.key === latKey.value)) {
+      props.autoGeo(row)
+    }
+  }
+  editing.value = null; _editOrig = null; focusGrid()
+}
+function onEditKey(e) {
+  if (e.key === 'Enter') { endEdit(); setFocus(range.fr + 1, range.fc); e.preventDefault() }
+  else if (e.key === 'Escape') { endEdit(); e.preventDefault() }
+  else if (e.key === 'Tab') { endEdit(); setFocus(range.fr, range.fc + (e.shiftKey ? -1 : 1)); e.preventDefault() }
+  e.stopPropagation()
+}
+
+function clearSel() {
+  pushUndo()
+  for (let r = r0.value; r <= r1.value; r++) for (let c = c0.value; c <= c1.value; c++) if (!isRO(c)) props.stations[r][props.fields[c].key] = ''
+}
+function copyRange() {
+  const lines = []
+  for (let r = r0.value; r <= r1.value; r++) {
+    const row = []
+    for (let c = c0.value; c <= c1.value; c++) row.push(cellText(props.stations[r], c) ?? '')   // 含只读列（取其计算值）
+    lines.push(row.join('\t'))
+  }
+  try { navigator.clipboard.writeText(lines.join('\n')) } catch (e) { /* ignore */ }
+}
+async function pasteRange() {
+  let text = ''
+  try { text = await navigator.clipboard.readText() } catch (e) { return }
+  if (!text) return
+  const rows = text.replace(/\r/g, '').split('\n'); if (rows.length && rows[rows.length - 1] === '') rows.pop()
+  const grid = rows.map((r) => r.split('\t'))
+  pushUndo()
+  const sr = r0.value, sc = c0.value
+  for (let i = 0; i < grid.length; i++) {
+    const r = sr + i
+    if (r >= props.stations.length) props.stations.push(makeRow(cityForIndex(props.stations.length)))
+    for (let j = 0; j < grid[i].length; j++) {
+      const c = sc + j
+      if (c < nColSel.value && !isRO(c)) { const key = props.fields[c].key; props.stations[r][key] = isLatLonKey(key) ? clampLatLon(grid[i][j]) : grid[i][j] }
+    }
+  }
+  range.ar = sr; range.ac = sc
+  range.fr = Math.min(props.stations.length - 1, sr + grid.length - 1)
+  range.fc = Math.min(nColSel.value - 1, sc + (grid[0] ? grid[0].length - 1 : 0))
+}
+
+function onKey(e) {
+  if (editing.value) return
+  if (!props.stations.length) return
+  const mod = e.ctrlKey || e.metaKey
+  if (mod && (e.key === 'z' || e.key === 'Z')) { if (e.shiftKey) redo(); else undo(); e.preventDefault(); return }
+  if (mod && (e.key === 'y' || e.key === 'Y')) { redo(); e.preventDefault(); return }
+  if (mod && (e.key === 'c' || e.key === 'C')) { copyRange(); e.preventDefault(); return }
+  if (mod && (e.key === 'v' || e.key === 'V')) { pasteRange(); e.preventDefault(); return }
+  if (mod && (e.key === 'a' || e.key === 'A')) { range.ar = 0; range.ac = 0; range.fr = props.stations.length - 1; range.fc = nColSel.value - 1; e.preventDefault(); return }
+  if (mod) return
+  if (e.key === 'Enter' || e.key === 'F2') { startEdit(range.fr, range.fc); e.preventDefault(); return }
+  if (e.key === 'Delete' || e.key === 'Backspace') { clearSel(); e.preventDefault(); return }
+  const arrow = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1] }[e.key]
+  if (arrow) { setFocus(range.fr + arrow[0], range.fc + arrow[1], e.shiftKey); e.preventDefault(); return }
+  if (e.key.length === 1) { startEdit(range.fr, range.fc, e.key); e.preventDefault() }
+}
+
+onMounted(() => { window.addEventListener('mouseup', onUp); window.addEventListener('mousemove', onDragMove) })
+onBeforeUnmount(() => { window.removeEventListener('mouseup', onUp); window.removeEventListener('mousemove', onDragMove); stopAutoScroll() })
+
+// —— 导入（城市库 / 点标记 / 地面站 / 航迹）——
+// 点标记/地面站/航迹来自主窗口 localStorage('globe3d/markers')（同源共享，无需 IPC）。
+const IMPORT_SOURCES = [
+  { key: 'city', label: '城市库' },
+  { key: 'point', label: '点标记' },
+  { key: 'station', label: '地面站' },
+  { key: 'traj', label: '航迹' }
+]
+const imp = reactive({ open: false, source: 'city', query: '', picked: {} })
+function readMarkers() { try { return JSON.parse(localStorage.getItem('globe3d/markers') || 'null') || {} } catch (e) { return {} } }
+// 城市项稳定 id（城市名+经度）：跨关键词/搜索结果保持一致，避免勾选错位
+const cityId = (c) => 'c_' + c.name + '_' + c.lon
+const impItems = computed(() => {
+  if (imp.source === 'city') return props.cities.map((c) => ({ id: cityId(c), name: c.name, lon: c.lon, lat: c.lat }))
+  const mk = readMarkers()
+  if (imp.source === 'point') return (mk.points || []).map((p, i) => ({ id: p.id || 'p' + i, name: '点标记' + (i + 1), lon: p.lon, lat: p.lat }))
+  if (imp.source === 'station') return (mk.stations || []).map((s, i) => ({ id: s.id || 's' + i, name: s.name || ('地面站' + (i + 1)), lon: s.lon, lat: s.lat }))
+  if (imp.source === 'traj') { const out = []; for (const t of (mk.trajectories || [])) (t.pts || []).forEach((p, j) => out.push({ id: (t.id || 't') + '_' + j, name: (t.name || '航迹') + '#' + (j + 1), lon: p.lon, lat: p.lat })); return out }
+  return []
+})
+// 城市关键词检索（城市名 / 省份名含别名 / 拼音首字母缩写）：交给引擎 core.searchCities（与小程序口径一致）。
+// 仅「城市库」源、传入了 citySearch、且有关键词时启用；否则退回本地名称/经度过滤。
+const cityHits = ref([])
+const useCitySearch = computed(() => imp.source === 'city' && !!props.citySearch && imp.query.trim() !== '')
+let _cityT = null
+watch(() => [imp.open, imp.source, imp.query], () => {
+  if (!useCitySearch.value) { cityHits.value = []; return }
+  const q = imp.query.trim()
+  clearTimeout(_cityT)
+  _cityT = setTimeout(async () => {
+    try { const r = await props.citySearch(q); cityHits.value = (r || []).map((c) => ({ id: cityId(c), name: c.name, lon: c.lon, lat: c.lat })) }
+    catch (e) { cityHits.value = [] }
+  }, 160)
+})
+const currentItems = computed(() => (useCitySearch.value ? cityHits.value : impItems.value))   // 勾选/导入的真实数据源
+const IMPORT_LIST_CAP = 1000   // 导入列表展示上限（城市库 349 项可一次看全，亦留余量给点标记/航迹）
+const impResults = computed(() => {
+  if (useCitySearch.value) return cityHits.value.slice(0, IMPORT_LIST_CAP)
+  const q = imp.query.trim().toLowerCase()
+  const l = q ? impItems.value.filter((it) => it.name.toLowerCase().includes(q) || String(it.lon).includes(q)) : impItems.value
+  return l.slice(0, IMPORT_LIST_CAP)
+})
+function openImport() { imp.open = true; imp.query = ''; imp.picked = {} }
+function setSource(k) { imp.source = k; imp.query = ''; imp.picked = {} }
+const impAllSel = computed(() => impResults.value.length > 0 && impResults.value.every((it) => imp.picked[it.id]))
+function impToggleAll() { const v = !impAllSel.value; const m = { ...imp.picked }; for (const it of impResults.value) m[it.id] = v; imp.picked = m }
+function doImport() {
+  const chosen = currentItems.value.filter((it) => imp.picked[it.id])
+  if (!chosen.length) { imp.open = false; return }
+  pushUndo()
+  for (const it of chosen) {
+    const row = defaultsFor(props.fields); row._id = 'r' + (_seq++)
+    if (nameKey.value) row[nameKey.value] = it.name
+    if (lonKey.value && it.lon != null) row[lonKey.value] = clampLatLon(it.lon)
+    if (latKey.value && it.lat != null) row[latKey.value] = clampLatLon(it.lat)
+    props.stations.push(row)
+    if (props.autoGeo) props.autoGeo(row)
+  }
+  imp.open = false
+}
+
+// —— 批量设值（选中行）——
+const batch = reactive({ open: false, key: '', value: '' })
+function openBatch() { if (!selectedRows.value.length) return; batch.key = props.fields[0].key; batch.value = ''; batch.open = true }
+function doBatch() { pushUndo(); for (const s of selectedRows.value) s[batch.key] = batch.value; batch.open = false }
+const batchField = computed(() => props.fields.find((f) => f.key === batch.key) || props.fields[0])
+</script>
+
+<template>
+  <div class="sg">
+    <div class="sg-bar">
+      <span class="sg-count">{{ stations.length }} 个{{ label }}<template v-if="selectedRows.length"> · 选中 {{ selectedRows.length }} 行</template></span>
+      <span class="sg-sp"></span>
+      <button class="sg-btn" @click="addRow">＋ 增加</button>
+      <button class="sg-btn" @click="openImport">⇩ 导入</button>
+      <button class="sg-btn" :disabled="!selectedRows.length" @click="openBatch">批量设值</button>
+      <button class="sg-btn" :disabled="!selectedRows.length" @click="removeSelected">删除选中</button>
+      <button class="sg-btn" :disabled="!stations.length" @click="clearAll">清空</button>
+      <button class="sg-btn" :disabled="!undoStack.length" title="撤销" @click="undo">↶</button>
+      <button class="sg-btn" :disabled="!redoStack.length" title="重做" @click="redo">↷</button>
+    </div>
+
+    <div ref="root" class="sg-scroll" tabindex="0" @keydown="onKey">
+      <table class="sg-tbl">
+        <thead>
+          <tr>
+            <th class="sg-sel"><input type="checkbox" :checked="allSelected" @change="toggleAll" /></th>
+            <th v-for="(f, c) in fields" :key="f.key" :class="{ 'sg-key': c === 0 }" :title="f.label">
+              {{ f.label }}<i v-if="f.unit"> ({{ f.unit }})</i>
+            </th>
+            <th v-if="roLabel" class="sg-ro">{{ roLabel }}<i v-if="roUnit"> ({{ roUnit }})</i></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="(s, i) in stations" :key="s._id || i" :class="{ on: sel[s._id] }">
+            <td class="sg-sel" :title="'拖拽序号可框选行'" @mousedown.left="onRowDown(i, $event)" @mouseenter="onRowEnter(i)"><span class="sg-idx">{{ i + 1 }}</span></td>
+            <td v-for="(f, c) in fields" :key="f.key"
+                class="sg-cell" :class="{ 'sg-key': c === 0, sel: inSel(i, c), focus: isFocus(i, c), editing: isEditing(i, c), fillp: inFill(i, c) }"
+                @mousedown.left="onDown(i, c, $event)" @mouseenter="onEnter(i, c)" @dblclick="startEdit(i, c)">
+              <template v-if="isEditing(i, c)">
+                <select v-if="f.type === 'select'" v-model="s[f.key]" class="sg-i" @blur="endEdit" @keydown="onEditKey">
+                  <option v-for="o in f.options" :key="o" :value="o">{{ o }}</option>
+                </select>
+                <input v-else v-model="s[f.key]" class="sg-i" :class="{ mono: f.type === 'num' }" @blur="endEdit" @keydown="onEditKey" />
+              </template>
+              <span v-else class="sg-v" :class="{ mono: f.type === 'num' }">{{ s[f.key] }}</span>
+              <span v-if="isFillAnchor(i, c) && !isEditing(i, c)" class="sg-handle" title="拖动/双击向下填充" @mousedown.left.stop.prevent="onFillDown" @dblclick.stop="onFillDbl"></span>
+            </td>
+            <td v-if="roLabel" class="sg-ro mono sg-cell" :class="{ sel: inSel(i, fields.length), focus: isFocus(i, fields.length), fillp: inFill(i, fields.length) }"
+                @mousedown.left="onDown(i, fields.length, $event)" @mouseenter="onEnter(i, fields.length)">
+              {{ roValues[s._id] != null ? roValues[s._id] : '—' }}
+              <span v-if="isFillAnchor(i, fields.length)" class="sg-handle" title="拖动/双击向下填充" @mousedown.left.stop.prevent="onFillDown" @dblclick.stop="onFillDbl"></span>
+            </td>
+          </tr>
+          <tr v-if="!stations.length"><td :colspan="fields.length + 1 + (roLabel ? 1 : 0)" class="sg-empty">暂无{{ label }}，点「＋ 增加」或「⇩ 导入」</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- 导入（城市库 / 点标记 / 地面站 / 航迹）——多选 -->
+    <div v-if="imp.open" class="sg-mask" @click="imp.open = false">
+      <div class="sg-box" @click.stop>
+        <div class="sg-box-hd">导入{{ label }}</div>
+        <div class="sg-tabs">
+          <button v-for="s in IMPORT_SOURCES" :key="s.key" class="sg-tab" :class="{ on: imp.source === s.key }" @click="setSource(s.key)">{{ s.label }}</button>
+        </div>
+        <input v-model="imp.query" class="sg-search" :placeholder="imp.source === 'city' ? '搜索城市 / 省份 / 拼音缩写（如 北京 / 江苏 / bj）' : '搜索名称 / 经度'" />
+        <div class="sg-list">
+          <label class="sg-impall"><input type="checkbox" :checked="impAllSel" @change="impToggleAll" /> 全选（{{ impResults.length }} 项）</label>
+          <label v-for="it in impResults" :key="it.id" class="sg-impitem">
+            <input type="checkbox" :checked="!!imp.picked[it.id]" @change="imp.picked = { ...imp.picked, [it.id]: !imp.picked[it.id] }" />
+            <span class="sg-impn">{{ it.name }}</span><span class="mono sg-ll">{{ it.lon }}°E  {{ it.lat }}°N</span>
+          </label>
+          <div v-if="!impResults.length" class="sg-empty">无可导入项{{ imp.source !== 'city' ? '（请先在地图上标记点/地面站/航迹）' : '' }}</div>
+        </div>
+        <div class="sg-box-ft"><button class="sg-btn" @click="imp.open = false">取消</button><button class="sg-btn primary" @click="doImport">导入选中</button></div>
+      </div>
+    </div>
+
+    <!-- 批量设值 -->
+    <div v-if="batch.open" class="sg-mask" @click="batch.open = false">
+      <div class="sg-box sg-box-sm" @click.stop>
+        <div class="sg-box-hd">批量设值（应用到选中的 {{ selectedRows.length }} 行）</div>
+        <div class="sg-batch">
+          <select v-model="batch.key" class="sg-search"><option v-for="f in fields" :key="f.key" :value="f.key">{{ f.label }}</option></select>
+          <select v-if="batchField.type === 'select'" v-model="batch.value" class="sg-search"><option v-for="o in batchField.options" :key="o" :value="o">{{ o }}</option></select>
+          <input v-else v-model="batch.value" class="sg-search" :placeholder="'值（' + (batchField.unit || '') + '）'" />
+        </div>
+        <div class="sg-box-ft"><button class="sg-btn" @click="batch.open = false">取消</button><button class="sg-btn primary" @click="doBatch">应用</button></div>
+      </div>
+    </div>
+  </div>
+</template>
+
+<style scoped>
+.sg { display: flex; flex-direction: column; min-height: 0; height: 100%; }
+.sg-bar { display: flex; align-items: center; gap: 6px; padding: 6px 2px 8px; flex: none; flex-wrap: wrap; }
+.sg-count { font-size: 12px; color: var(--text-muted); }
+.sg-sp { flex: 1; }
+.sg-btn { font: inherit; font-size: 12px; padding: 4px 9px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
+.sg-btn:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
+.sg-btn:disabled { opacity: .4; cursor: not-allowed; }
+.sg-btn.primary { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+
+.sg-scroll { flex: 1; overflow: auto; border: 1px solid var(--border); border-radius: var(--r-box, 3px); outline: none; }
+.sg-tbl { border-collapse: separate; border-spacing: 0; font-size: 12px; white-space: nowrap; }
+.sg-tbl th, .sg-tbl td { border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); background: var(--bg); box-sizing: border-box; }
+.sg-tbl th { position: sticky; top: 0; z-index: 2; padding: 5px 8px; font-weight: 600; color: var(--text-muted); text-align: left; background: var(--surface-2); }
+.sg-tbl th i { color: var(--text-faint); font-style: normal; font-weight: 400; }
+.sg-tbl tbody tr.on > td { background: var(--surface-2); }
+/* 冻结：选择列(固定 44px) + 名称列(c=0) */
+.sg-tbl th.sg-sel, .sg-tbl td.sg-sel { position: sticky; left: 0; z-index: 1; width: 40px; min-width: 40px; max-width: 40px; padding: 4px 2px; text-align: center; white-space: nowrap; }
+.sg-tbl thead th.sg-sel { z-index: 4; }
+.sg-tbl td.sg-sel { cursor: pointer; user-select: none; }
+.sg-tbl td.sg-sel:hover { background: var(--surface-2); }
+.sg-tbl tbody tr.on > td.sg-sel { background: var(--surface-2); }
+.sg-tbl tbody tr.on > td.sg-sel .sg-idx { color: var(--accent); font-weight: 700; }
+.sg-idx { color: var(--text-faint); font-size: 11px; display: block; }
+.sg-tbl th.sg-key, .sg-tbl td.sg-key { position: sticky; left: 40px; z-index: 1; width: 120px; min-width: 120px; }
+.sg-tbl thead th.sg-key { z-index: 4; }
+/* 单元格 */
+.sg-cell { position: relative; padding: 0; cursor: cell; user-select: none; }
+/* Excel 填充柄：聚焦格右下角黑色方块，悬停为十字光标 */
+.sg-handle { position: absolute; right: -2px; bottom: -2px; width: 6px; height: 6px; background: var(--accent); border: 1px solid var(--bg); cursor: crosshair; z-index: 6; }
+.sg-cell.fillp { outline: 1px dashed var(--accent); outline-offset: -1px; }
+.sg-v { display: block; padding: 4px 6px; min-width: 76px; min-height: 22px; overflow: hidden; text-overflow: ellipsis; }
+.sg-key .sg-v { min-width: 108px; }
+.sg-v.mono { font-family: var(--font-mono); }
+.sg-cell.sel { background: color-mix(in srgb, var(--accent) 12%, var(--bg)); }
+.sg-cell.focus { outline: 2px solid var(--accent); outline-offset: -2px; }
+.sg-tbl tbody tr.on > td.sg-cell.sel { background: color-mix(in srgb, var(--accent) 16%, var(--surface-2)); }
+.sg-i { width: 100%; font: inherit; font-size: 12px; padding: 3px 5px; border: 0; background: var(--surface); color: var(--text); }
+.sg-i.mono { font-family: var(--font-mono); }
+.sg-i:focus { outline: none; }
+.sg-act { position: sticky; right: 0; z-index: 1; white-space: nowrap; padding: 0 4px; text-align: center; width: 86px; min-width: 86px; }
+.sg-tbl thead th.sg-act { z-index: 4; }
+.sg-mini { font: inherit; font-size: 11px; padding: 2px 6px; margin: 2px 1px; cursor: pointer; background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
+.sg-mini:hover { color: var(--text); border-color: var(--border-strong); }
+.sg-mini.del:hover { color: var(--danger); border-color: var(--danger); }
+.sg-empty { padding: 16px; text-align: center; color: var(--text-faint); }
+/* 只读末列（EIRP / G/T，计算后回填）——冻结在右侧 */
+.sg-tbl th.sg-ro, .sg-tbl td.sg-ro { position: sticky; right: 0; z-index: 1; width: 1%; white-space: nowrap; text-align: right; padding: 4px 10px; background: var(--surface); color: var(--text); }
+.sg-tbl thead th.sg-ro { z-index: 4; background: var(--surface-2); }
+.sg-tbl td.sg-ro.mono { font-family: var(--font-mono); }
+/* 只读列可框选/复制：选中高亮（基样式更具体，需在此覆写） */
+.sg-tbl td.sg-ro.sel { background: color-mix(in srgb, var(--accent) 12%, var(--surface)); }
+.sg-tbl tbody tr.on > td.sg-ro.sel { background: color-mix(in srgb, var(--accent) 16%, var(--surface-2)); }
+.sg-hint { flex: none; margin: 6px 2px 0; font-size: 11px; color: var(--text-faint); }
+
+.sg-mask { position: fixed; inset: 0; z-index: 200; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.28); }
+.sg-box { width: 380px; max-height: 72vh; display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-modal, 4px); box-shadow: 0 8px 24px rgba(0,0,0,.18); overflow: hidden; }
+.sg-box-sm { width: 320px; }
+.sg-box-hd { padding: 10px 12px; font-size: 11px; font-weight: 600; letter-spacing: 1px; text-transform: uppercase; color: var(--text-muted); background: var(--surface-2); border-bottom: 1px solid var(--border); }
+.sg-search { margin: 10px 12px; padding: 6px 9px; font: inherit; font-size: 12px; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
+.sg-search:focus { outline: none; border-color: var(--accent); }
+.sg-list { flex: 1; overflow: auto; padding: 0 6px 8px; }
+.sg-city { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 8px; cursor: pointer; border-radius: var(--r-ctl, 2px); font-size: 12px; }
+.sg-city:hover { background: var(--surface-2); }
+.sg-ll { font-size: 11px; color: var(--text-faint); }
+/* 导入弹窗 */
+.sg-tabs { display: flex; gap: 4px; padding: 8px 12px 0; }
+.sg-tab { flex: 1; font: inherit; font-size: 12px; padding: 5px 6px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
+.sg-tab.on { background: var(--surface-2); color: var(--text); border-color: var(--border-strong); font-weight: 600; box-shadow: inset 0 -2px 0 var(--accent); }
+.sg-impall { display: flex; align-items: center; gap: 6px; padding: 6px 8px; font-size: 12px; color: var(--text-muted); border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--bg); }
+.sg-impitem { display: flex; align-items: center; gap: 8px; padding: 6px 8px; cursor: pointer; font-size: 12px; }
+.sg-impitem:hover { background: var(--surface-2); }
+.sg-impn { flex: 1; }
+.sg-batch { display: flex; flex-direction: column; }
+.sg-box-ft { display: flex; justify-content: flex-end; gap: 8px; padding: 4px 12px 12px; }
+</style>

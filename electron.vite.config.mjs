@@ -34,7 +34,12 @@ export default defineConfig({
     },
     build: {
       outDir: 'out/renderer',
-      rollupOptions: { input: resolve('src/index.html') }
+      rollupOptions: {
+        input: {
+          index: resolve('src/index.html'),
+          linkbudget: resolve('src/linkbudget.html')
+        }
+      }
     },
     plugins: [
       vue(),
