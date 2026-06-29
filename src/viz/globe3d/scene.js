@@ -15,6 +15,16 @@ import { antarcticaFillRings } from './antarctica.js'
 
 const RE = 6371
 
+// 渲染分辨率倍率上限：实际渲染不超过显示器物理像素密度的 SS_CAP 倍。
+// 超出物理像素的超采样屏幕根本无法显示，纯属浪费 GPU——裁掉它对画质无影响（MSAA 仍负责边缘抗锯齿）。
+// 低端办公机多为 DPR=1，由此把默认/高档位的 2~3× 超采样压到 ≤1.5×，片元着色负载按面积平方下降（≈省一半到四分之三）。
+// HiDPI 屏（DPR≥1.5）取 min 后仍按原生密度渲染，保持锐利、不降画质。需要更多超采样可调大 SS_CAP。
+const SS_CAP = 1.5
+function capPixelRatio(n) {
+  const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) || 1
+  return Math.max(0.25, Math.min(n, dpr * SS_CAP, 4))
+}
+
 function llaToVec(latDeg, lonDeg, altKm) {
   const r = (RE + altKm) / RE
   const phi = (90 - latDeg) * Math.PI / 180
@@ -332,8 +342,8 @@ export function createGlobeScene(container, quality = {}) {
   // 分层，避免互相 z-fighting，故不再需要对数深度缓冲（它会让 gl_FragDepth 失效从而破坏 MSAA）。
   const renderer = new THREE.WebGLRenderer({ antialias: quality.msaa !== false, powerPreference: 'high-performance' })
   renderer.setSize(w, h)
-  // 清晰度：渲染分辨率倍率（旧默认 3~4x 超采样）。运行时可经 setPixelRatio 热切。
-  renderer.setPixelRatio(Math.max(0.25, Math.min(pixelRatio, 4)))
+  // 清晰度：渲染分辨率倍率，封顶为「物理像素密度 × SS_CAP」（capPixelRatio）。运行时可经 setPixelRatio 热切。
+  renderer.setPixelRatio(capPixelRatio(pixelRatio))
   container.appendChild(renderer.domElement)
 
   const scene = new THREE.Scene()
@@ -467,8 +477,8 @@ export function createGlobeScene(container, quality = {}) {
   // 渲染分辨率倍率（超采样）：THREE setPixelRatio，封顶 4x、下限 0.25x。
   function setPixelRatio(n) {
     if (!Number.isFinite(n)) return
-    pixelRatio = Math.max(0.25, Math.min(n, 4))
-    renderer.setPixelRatio(pixelRatio)
+    pixelRatio = Math.max(0.25, Math.min(n, 4))   // 保留「用户请求值」备查
+    renderer.setPixelRatio(capPixelRatio(pixelRatio))   // 实际渲染倍率按物理像素封顶
     renderer.setSize(curW, curH)                 // 重设尺寸使新 DPR 生效
     for (const m of lineMats) m.resolution.set(curW, curH)
   }

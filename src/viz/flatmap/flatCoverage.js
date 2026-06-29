@@ -71,9 +71,16 @@ export function createFlatCoverage(canvas) {
   // 保证 PNG 与 PDF 完全一致。textFont：导出可指定字体族名（PDF 用注册名匹配嵌入的中文字体）。
   let compat = false
   let textFont = '"Microsoft YaHei", sans-serif'
-  // 渲染分辨率倍率（与 3D 同一画质档位）：null=跟随系统 DPR；否则作为绝对设备像素倍率（0.25~4）。
+  // 渲染分辨率倍率（与 3D 同一画质档位）：null=跟随系统 DPR；否则为请求倍率，但封顶为「物理像素密度 × SS_CAP」。
+  // 超出物理像素的超采样屏幕无法显示、纯耗 GPU，封顶后对画质无影响（与 3D 球体同策略，见 globe3d/scene.js）。
   let renderScale = null
-  const effDpr = () => renderScale != null ? Math.max(0.25, Math.min(renderScale, 4)) : Math.max(1, window.devicePixelRatio || 1)
+  const SS_CAP = 1.5
+  const effDpr = () => {
+    const dpr = window.devicePixelRatio || 1
+    return renderScale != null
+      ? Math.max(0.25, Math.min(renderScale, dpr * SS_CAP, 4))
+      : Math.max(1, dpr)
+  }
   let dpr = effDpr()
   let cw = 1, ch = 1, base = 1, scale = 1, tx = 0, ty = 0
   let geom = null

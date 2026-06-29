@@ -1,6 +1,11 @@
 const { app, BrowserWindow } = require('electron')
 const { join } = require('path')
 
+// 强制启用硬件加速：部分老旧集显（常见于国企办公机）落在 Electron 的 GPU 黑名单内，会静默
+// 回退到 SwiftShader 软件渲染——WebGL 改由 CPU 模拟，慢几十倍，是这类机器卡顿的元凶之一。
+// 忽略黑名单使其走真实 GPU。必须在 app ready 之前调用（命令行开关只在启动期生效）。
+app.commandLine.appendSwitch('ignore-gpu-blocklist')
+
 // 引擎与各服务都以磁盘上的 CommonJS 形式按 app 根目录动态加载，
 // 绕开 electron-vite 对相对依赖的外部化（其会把 ./services/* 解析到 out/main 下而找不到）。
 let _core = null
