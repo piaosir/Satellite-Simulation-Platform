@@ -23,25 +23,30 @@ if (!SvgContext.prototype.__perfPatched) {
   P.__perfPatched = true
 }
 
-// 高清 PNG：base=逻辑宽度（地图 2:1），factor=像素倍率。返回 PNG 字节（Uint8Array）。
-export async function renderFlatPNG(flat, { base = 2000, factor = 2 } = {}) {
-  const W = base, H = Math.round(base / 2)
+// 高清 PNG：factor=像素倍率。view=true 时按当前屏幕视图(所见即所得)出图，逻辑尺寸取屏幕 cw×ch；
+// 否则整幅世界图，base=逻辑宽度（地图 2:1）。返回 PNG 字节（Uint8Array）。
+export async function renderFlatPNG(flat, { base = 2000, factor = 2, view = false } = {}) {
+  let W, H
+  if (view) { const v = flat.viewportSize(); W = Math.max(1, Math.round(v.w)); H = Math.max(1, Math.round(v.h)) }
+  else { W = base; H = Math.round(base / 2) }
   const cv = document.createElement('canvas')
   cv.width = W * factor; cv.height = H * factor
-  flat.exportRender(cv.getContext('2d'), { width: W, height: H, pixelScale: factor })
+  flat.exportRender(cv.getContext('2d'), { width: W, height: H, pixelScale: factor, view })
   const blob = await new Promise((res, rej) => cv.toBlob((b) => b ? res(b) : rej(new Error('toBlob 失败')), 'image/png'))
   return new Uint8Array(await blob.arrayBuffer())
 }
 
 // 矢量 PDF：svgcanvas 录制 → svg2pdf。fontBase64=中文 TTF 的 base64（来自主进程 window.api.cjkFont）；
 // 缺失时中文将回退为系统默认字体（可能缺字），拉丁字符不受影响。返回 PDF 字节（Uint8Array）。
-export async function renderFlatPDF(flat, { base = 2000, fontBase64 = null } = {}) {
-  const W = base, H = Math.round(base / 2)
+export async function renderFlatPDF(flat, { base = 2000, fontBase64 = null, view = false } = {}) {
+  let W, H
+  if (view) { const v = flat.viewportSize(); W = Math.max(1, Math.round(v.w)); H = Math.max(1, Math.round(v.h)) }
+  else { W = base; H = Math.round(base / 2) }
   const t = (typeof performance !== 'undefined' ? () => performance.now() : () => Date.now())
   const log = (label, ms) => console.log('[PDF导出] ' + label + ': ' + ms.toFixed(0) + 'ms')
   let t0 = t()
   const sctx = new SvgContext(W, H)
-  flat.exportRender(sctx, { width: W, height: H, pixelScale: 1, fontFamily: EXPORT_FONT })
+  flat.exportRender(sctx, { width: W, height: H, pixelScale: 1, fontFamily: EXPORT_FONT, view })
   log('exportRender(svgcanvas 录制)', t() - t0); t0 = t()
   let svg = sctx.getSerializedSvg(true)
   log('getSerializedSvg', t() - t0)

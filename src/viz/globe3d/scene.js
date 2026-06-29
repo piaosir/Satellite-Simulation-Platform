@@ -160,7 +160,7 @@ function buildLandMesh(features) {
   return new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide }))
 }
 
-function makeLabelSprite(text, hpx, fill) {
+function makeLabelSprite(text, hpx, fill, strokePx = 4) {
   const pad = 8, fs = 54   // 高分辨率纹理：放大后文字更锐利
   const c = document.createElement('canvas')
   let cx = c.getContext('2d')
@@ -171,8 +171,8 @@ function makeLabelSprite(text, hpx, fill) {
   cx.font = `${fs}px "Microsoft YaHei", sans-serif`
   cx.textBaseline = 'middle'; cx.textAlign = 'center'
   cx.lineJoin = 'round'; cx.miterLimit = 2
-  cx.lineWidth = 4; cx.strokeStyle = 'rgba(0,0,0,0.8)'
-  cx.strokeText(text, c.width / 2, c.height / 2)
+  cx.lineWidth = strokePx; cx.strokeStyle = 'rgba(0,0,0,0.8)'   // 黑色描边(casing)：strokePx 控粗细
+  if (strokePx > 0) cx.strokeText(text, c.width / 2, c.height / 2)
   // 字面烘成纯白，颜色由 SpriteMaterial.color 着色（运行时可改）：白×色=色，黑色描边×色仍≈黑，casing 保留
   cx.fillStyle = '#ffffff'; cx.fillText(text, c.width / 2, c.height / 2)
   const tex = new THREE.CanvasTexture(c)
@@ -408,7 +408,7 @@ export function createGlobeScene(container, quality = {}) {
   // 地理骨架贯穿覆盖区之上 → 覆盖与底图融为一体（平级），不再像贴纸浮在地图上面。depthWrite=false，纯绘制顺序。
   scene.add(fatSegments(buildGraticule(), 0xffffff, 0.8, 0.12, 6.3))
   // 国界/海岸线：保留材质引用，供 setBorderStyle 运行时改线宽/颜色/透明度；setMapDetail 时重建
-  const borderCfg = { natColor: 0x5b7088, natWidth: 0.8, natOpacity: 1.0, provColor: 0x9aa3b0, provWidth: 1.2, provOpacity: 0.8 }
+  const borderCfg = { natColor: 0x5b7088, natWidth: 0.8, natOpacity: 1.0, provColor: 0x9aa3b0, provWidth: 1.2, provOpacity: 0.8, cityColor: 0xb6bcc6, cityWidth: 0.5, cityOpacity: 0.6 }
   let coastBorders = fatSegments(buildBorders(features, mapThin), borderCfg.natColor, borderCfg.natWidth, borderCfg.natOpacity, 6.5)
   scene.add(coastBorders)
   // 南海十段线：颜色随中国国土(CHINA)、线宽/透明度随省界(borderCfg.prov*)，线宽×惯例倍数（略粗于省界）。
@@ -435,18 +435,20 @@ export function createGlobeScene(container, quality = {}) {
     labelsZh.visible = zh; oceanZh.visible = zh
     labelsEn.visible = en; oceanEn.visible = en
   }
-  // 地名字号缩放：国家名/大洋名(cf) 与 省名(pf) 分开
-  let nameScaleC = 1, nameScaleP = 1
+  // 地名字号缩放：国家名/大洋名(cf) 与 省名(pf) 与 地级市名(cityf) 分开
+  let nameScaleC = 1, nameScaleP = 1, nameScaleCity = 1
   function applyNameScale(group, f) { if (group) group.traverse((c) => { if (c._base) c.scale.copy(c._base).multiplyScalar(f) }) }
-  function setNameScale(cf, pf) {
+  function setNameScale(cf, pf, cityf) {
     nameScaleC = cf || 1; nameScaleP = pf != null ? pf : nameScaleC
+    if (cityf != null) nameScaleCity = cityf
     applyNameScale(labelsZh, nameScaleC); applyNameScale(labelsEn, nameScaleC)
     applyNameScale(oceanZh, nameScaleC); applyNameScale(oceanEn, nameScaleC)
     applyNameScale(provinceLabels, nameScaleP)
+    applyNameScale(cityLabels, nameScaleCity)
   }
   // 地名颜色/透明度：国家名(cf) 与 省名(pf) 分开。字面已烘白 → 改 SpriteMaterial.color 即着色，opacity 控整体淡入淡出。
   // 省名标签懒加载，故同时存进 labelCfg，setProvinces 创建时套用。大洋名维持其固有蓝，不随国家色改。
-  const labelCfg = { countryColor: '#eef2f6', countryOpacity: 1, provColor: '#ffe6a8', provOpacity: 1 }
+  const labelCfg = { countryColor: '#eef2f6', countryOpacity: 1, provColor: '#ffe6a8', provOpacity: 1, cityColor: '#cdd6e0', cityOpacity: 1 }
   function applyLabelStyle(group, color, opacity) {
     if (!group) return
     group.traverse((c) => { if (c.isSprite && c.material) { if (color != null) c.material.color.set(color); if (opacity != null) { c._baseOpacity = opacity; c.material.opacity = opacity } } })
@@ -456,6 +458,7 @@ export function createGlobeScene(container, quality = {}) {
     Object.assign(labelCfg, s)
     if (s.countryColor != null || s.countryOpacity != null) { applyLabelStyle(labelsZh, s.countryColor, s.countryOpacity); applyLabelStyle(labelsEn, s.countryColor, s.countryOpacity) }
     if (s.provColor != null || s.provOpacity != null) applyLabelStyle(provinceLabels, s.provColor, s.provOpacity)
+    if (s.cityColor != null || s.cityOpacity != null) applyLabelStyle(cityLabels, s.cityColor, s.cityOpacity)
   }
   // 大海颜色（限蓝色系）：直接改海洋球材质色
   function setOceanColor(c) { if (c) oceanMat.color.set(c) }
@@ -545,6 +548,33 @@ export function createGlobeScene(container, quality = {}) {
     scene.add(provinceLabels)
   }
   function setProvincesVisible(v) { if (provinceBorders) provinceBorders.visible = !!v; if (provinceLabels) provinceLabels.visible = !!v }
+
+  // 中国地级市界 + 地级市名（按需由上层注入数据，格式同省界）。渲染序 6.55：压在省界(6.6)之下、海岸/覆盖之上 → 省界更醒目。
+  let cityBorders = null, cityLabels = null
+  function setCities(data) {
+    if (cityBorders || !data) return
+    const pos = []
+    for (const ring of (data.borders || [])) {
+      for (let i = 0; i + 1 < ring.length; i++) {
+        const a = llaToVec(ring[i][1], ring[i][0], 0).multiplyScalar(1.0004)
+        const b = llaToVec(ring[i + 1][1], ring[i + 1][0], 0).multiplyScalar(1.0004)
+        pos.push(a.x, a.y, a.z, b.x, b.y, b.z)
+      }
+    }
+    cityBorders = fatSegments(pos, borderCfg.cityColor, borderCfg.cityWidth, borderCfg.cityOpacity, 6.55)
+    cityBorders.visible = false; scene.add(cityBorders)
+    cityLabels = new THREE.Group(); cityLabels.visible = false
+    for (const l of (data.labels || [])) {
+      // 地级市名密集 → 基准字号偏小（小空间），整体再由 nameScaleCity 缩放；黑边尽量细但保留(2px)
+      const spr = makeLabelSprite(l.name, 0.012, labelCfg.cityColor, 2)
+      spr.position.copy(llaToVec(l.lat, l.lon, 16)); spr._dir = spr.position.clone().normalize()
+      cityLabels.add(spr)
+    }
+    applyNameScale(cityLabels, nameScaleCity)
+    applyLabelStyle(cityLabels, labelCfg.cityColor, labelCfg.cityOpacity)
+    scene.add(cityLabels)
+  }
+  function setCitiesVisible(v) { if (cityBorders) cityBorders.visible = !!v; if (cityLabels) cityLabels.visible = !!v }
   // 国界/省界线样式（线宽 px / 颜色 / 透明度）。merge 到 borderCfg 并改对应材质 uniform；
   // 省界材质可能尚未创建（懒加载），故同时存进 borderCfg，setProvinces 创建时套用。
   function setBorderStyle(s) {
@@ -566,6 +596,12 @@ export function createGlobeScene(container, quality = {}) {
       if (s.provColor != null) m.color.set(s.provColor)
       if (s.provWidth != null) m.linewidth = s.provWidth
       if (s.provOpacity != null) m.opacity = s.provOpacity
+    }
+    if (cityBorders) {
+      const m = cityBorders.material
+      if (s.cityColor != null) m.color.set(s.cityColor)
+      if (s.cityWidth != null) m.linewidth = s.cityWidth
+      if (s.cityOpacity != null) m.opacity = s.cityOpacity
     }
   }
 
@@ -1114,7 +1150,7 @@ export function createGlobeScene(container, quality = {}) {
   function updateLabels() {
     camDir.copy(camera.position).normalize()
     const cull = (grp) => { if (!grp || !grp.visible) return; for (const s of grp.children) fadeLabel(s, s._dir.dot(camDir)) }
-    cull(labelsZh); cull(labelsEn); cull(oceanZh); cull(oceanEn); cull(provinceLabels)
+    cull(labelsZh); cull(labelsEn); cull(oceanZh); cull(oceanEn); cull(provinceLabels); cull(cityLabels)
   }
 
   const zoomDir = new THREE.Vector3()
@@ -1152,6 +1188,7 @@ export function createGlobeScene(container, quality = {}) {
     curW = ww; curH = hh
     camera.aspect = ww / hh; camera.updateProjectionMatrix(); renderer.setSize(ww, hh)
     for (const m of lineMats) m.resolution.set(ww, hh)   // 粗线宽度依赖分辨率
+    renderer.render(scene, camera)   // 立即补画一帧，避免 setSize 清空缓冲后等到下帧才重绘 → 黑一下
   }
   function destroy() {
     cancelAnimationFrame(raf); controls.dispose(); renderer.dispose()
@@ -1161,13 +1198,24 @@ export function createGlobeScene(container, quality = {}) {
   return {
     setSatellites, setLabelMode, setHighlight, setHighlightLLA, setOnPick,
     setOrbit, setGroundTrack, setFootprint, clearSelectionGeom,
-    setCoverage, clearCoverage, setCoverageField, patchCoverageLayers, clearCoverageField, setCoverageFieldAlpha, setSatLayer, clearSatLayer, faceLonLat, setProvinces, setProvincesVisible, setBorderStyle, setNameScale, setLabelStyle, setOceanColor,
+    setCoverage, clearCoverage, setCoverageField, patchCoverageLayers, clearCoverageField, setCoverageFieldAlpha, setSatLayer, clearSatLayer, faceLonLat, setProvinces, setProvincesVisible, setCities, setCitiesVisible, setBorderStyle, setNameScale, setLabelStyle, setOceanColor,
     setPixelRatio, setRenderFps, setSphereDetail, setMapDetail,
     setMarkers, setTrajectories, setOnHover, setOnRightClick, setBeamDragMode, setOnBeamDrag,
     faceTo, setAutoRotate, setAutoRotateSpeed, setOnAutoRotateOff, resize, destroy,
     // 缩放进度条接口：getZoom 读当前进度、setZoom 设到进度 t、setOnZoom 注册滚轮缩放回填回调
     getZoom: () => distToT(zoomTarget),
     setZoom: (t) => { zoomTarget = Math.max(controls.minDistance, Math.min(controls.maxDistance, tToDist(t))) },
-    setOnZoom: (fn) => { onZoom = fn }
+    setOnZoom: (fn) => { onZoom = fn },
+    // 完整视图记忆：相机朝向(单位方向)+缩放进度 t。getView 读、setView 复原（朝向+距离）。
+    getView: () => { const p = camera.position; return { x: p.x, y: p.y, z: p.z, t: distToT(zoomTarget) } },
+    setView: (v) => {
+      if (!v) return
+      if (Number.isFinite(v.t)) zoomTarget = Math.max(controls.minDistance, Math.min(controls.maxDistance, tToDist(v.t)))
+      if (Number.isFinite(v.x) && Number.isFinite(v.y) && Number.isFinite(v.z)) {
+        const d = Math.hypot(v.x, v.y, v.z) || 1
+        camera.position.set(v.x / d * zoomTarget, v.y / d * zoomTarget, v.z / d * zoomTarget)
+        controls.update()
+      }
+    }
   }
 }

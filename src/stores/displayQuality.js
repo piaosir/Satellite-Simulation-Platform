@@ -11,7 +11,7 @@ import { reactive, computed, watch } from 'vue'
 //  - fps         渲染帧率上限（0=不限/每帧；30/60=省电节流）。
 //  - sphereSeg   海洋球细分段数。
 const PRESETS = {
-  low:    { pixelRatio: 1.0,  mapDetail: '110m', mapThin: 0, gridStride: 2, msaa: false, fps: 30, sphereSeg: 64 },
+  low:    { pixelRatio: 1.0,  mapDetail: '110m', mapThin: 0, gridStride: 2, msaa: true,  fps: 30, sphereSeg: 64 },
   mid:    { pixelRatio: 1.5,  mapDetail: '110m', mapThin: 0, gridStride: 1, msaa: true,  fps: 30, sphereSeg: 96 },
   high:   { pixelRatio: 2.0,  mapDetail: '50m',  mapThin: 0, gridStride: 1, msaa: true,  fps: 60, sphereSeg: 128 },
   ultra:  { pixelRatio: 3.0,  mapDetail: '50m',  mapThin: 0, gridStride: 1, msaa: true,  fps: 0,  sphereSeg: 192 },
@@ -31,7 +31,7 @@ export const MAP_LEVELS = [
 // 自定义档可选值（供下拉/滑块），文案与档位预设对应
 export const FIELD_OPTS = {
   pixelRatio: [
-    { v: 1.0, label: '100%' }, { v: 1.5, label: '150%' },
+    { v: 0.75, label: '75%' }, { v: 1.0, label: '100%' }, { v: 1.5, label: '150%' },
     { v: 2.0, label: '200%' }, { v: 3.0, label: '300%' }, { v: 4.0, label: '400%' }
   ],
   gridStride: [{ v: 2, label: '1/2' }, { v: 1, label: '全分辨率' }],

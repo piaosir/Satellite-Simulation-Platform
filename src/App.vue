@@ -29,10 +29,11 @@ const ISL = defineAsyncComponent(() => import('./pages/ISL.vue'))
 const nav = useNavStore()
 const viewMenu = ref(false)
 const expMenu = ref(false)        // 「导出图」下拉
+const expScope = ref('view')      // 导出范围默认「截图」(当前视图，所见即所得)；'world'=整幅世界图
 const calcMenu = ref(false)       // 「计算」下拉
 const settingsOpen = ref(false)
 const fileOpen = ref(false)
-function doExport(fmt) { expMenu.value = false; if (covNav.exportMap) covNav.exportMap(fmt) }
+function doExport(fmt) { expMenu.value = false; if (covNav.exportMap) covNav.exportMap(fmt, expScope.value) }
 // 计算菜单项 → 打开独立链路预算工作台窗口（目前仅 GEO）
 function openLinkBudget() { calcMenu.value = false; window.api?.linkBudget?.open?.() }
 // MSAA 是 WebGL 上下文创建期参数，运行时不可改 → 把它并入当前页 key，切换 MSAA 时重挂载页面（一瞬重渲）。
@@ -81,8 +82,12 @@ const currentLabel = computed(
         <span v-if="covNav.grdAvail" class="covbtn" :class="{ on: covNav.grdOpen }" @click="covNav.toggleGrd && covNav.toggleGrd()">覆盖分析</span>
         <span v-if="covNav.covAvail" class="covbtn" :class="{ on: covNav.covOpen }" @click="covNav.toggleCov && covNav.toggleCov()">覆盖图（GXT）</span>
         <span v-if="covNav.exportAvail" class="vwrap">
-          <span class="covbtn" :class="{ on: expMenu }" @click.stop="expMenu = !expMenu">导出图 ▾</span>
-          <div v-if="expMenu" class="vmenu">
+          <span class="covbtn" :class="{ on: expMenu }" @click.stop="expMenu = !expMenu">导出 ▾</span>
+          <div v-if="expMenu" class="vmenu exp-menu">
+            <div class="vscope" @click.stop>
+              <span class="vsp" :class="{ on: expScope === 'world' }" @click="expScope = 'world'">全球图</span>
+              <span class="vsp" :class="{ on: expScope === 'view' }" @click="expScope = 'view'">截图</span>
+            </div>
             <div class="vitem" @click="doExport('png2')"><span class="vico">▦</span>高清 PNG · 2×</div>
             <div class="vitem" @click="doExport('png4')"><span class="vico">▦</span>高清 PNG · 4×</div>
             <div class="vitem" @click="doExport('pdf')"><span class="vico">▤</span>矢量 PDF</div>
@@ -146,6 +151,11 @@ const currentLabel = computed(
   background: var(--surface); border: 1px solid var(--border-strong);
   box-shadow: 0 6px 18px rgba(0,0,0,0.35); padding: 4px;
 }
+.exp-menu { min-width: 248px; }
+.vscope { display: flex; gap: 4px; padding: 2px 3px 6px; border-bottom: 1px solid var(--border); margin-bottom: 3px; }
+.vsp { flex: 1; text-align: center; cursor: pointer; padding: 3px 6px; border-radius: 2px; font-size: 12px; color: var(--text-muted); border: 1px solid var(--border); }
+.vsp:hover { color: var(--text); border-color: var(--accent); }
+.vsp.on { color: var(--bg); background: var(--accent); border-color: var(--accent); font-weight: 600; }
 .vitem { display: flex; align-items: center; gap: 7px; padding: 6px 9px; cursor: pointer; color: var(--text-muted); font-size: 12.5px; }
 .vitem:hover { background: var(--bg); color: var(--text); }
 .vitem.sel { color: var(--text); }

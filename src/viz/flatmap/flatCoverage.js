@@ -80,17 +80,17 @@ export function createFlatCoverage(canvas) {
   let fieldLayers = [], fieldAlpha = 0.8   // GRD 覆盖多层（每层=一个天线：分带填充 Path2D + 逐档等值线，独立于 geom）
   // GRD 全局标注选项（与 3D 同步）：天线名 / 波束中心 / 数值标签
   let fieldOpts = { showName: true, nameSize: 16, showBore: true, boreSize: 5, showPeak: false, peakSize: 12, showVal: false, valSize: 12 }
-  let nameMode = 'off', provVisible = false, prov = null
-  // 国界(海岸线)/省界线样式：线宽为恒定屏幕 px、颜色十六进制、透明度 0–1（与 3D 同步）
-  let borderStyle = { natColor: BORDER, natWidth: 0.8, natOpacity: 1.0, provColor: PROV, provWidth: 1.2, provOpacity: 0.8 }
-  // 地名颜色/透明度：国家名 与 省名 分开（大洋名维持固有蓝，不随国家色改）
-  let labelStyle = { countryColor: '#eef2f6', countryOpacity: 1, provColor: '#ffe6a8', provOpacity: 1 }
+  let nameMode = 'off', provVisible = false, prov = null, cityVisible = false, city = null
+  // 国界(海岸线)/省界/地级市界线样式：线宽为恒定屏幕 px、颜色十六进制、透明度 0–1（与 3D 同步）
+  let borderStyle = { natColor: BORDER, natWidth: 0.8, natOpacity: 1.0, provColor: PROV, provWidth: 1.2, provOpacity: 0.8, cityColor: '#b6bcc6', cityWidth: 0.5, cityOpacity: 0.6 }
+  // 地名颜色/透明度：国家名 与 省名 与 地级市名 分开（大洋名维持固有蓝，不随国家色改）
+  let labelStyle = { countryColor: '#eef2f6', countryOpacity: 1, provColor: '#ffe6a8', provOpacity: 1, cityColor: '#cdd6e0', cityOpacity: 1 }
   let oceanColor = OCEAN   // 大海填充色（可调，限蓝色系），与 3D 球体同步
   let mk = { points: [], stations: [], trajectories: [] }
   let focusSat = null   // 聚焦卫星星下点 { lat, lon }，null 表示无聚焦
   let selGeom = null    // 聚焦卫星几何：{ footprint:[{lat,lon}...], track:[{lat,lon}...] }，与 3D 同源（覆盖范围蓝 + 星下点轨迹黄）
   let satLayer = null   // 卫星/仰角线独立图层 { lines, dots, labels, sats }（与 geom/field 互不干扰）
-  const sizes = { beamFont: 16, contourFont: 12, dotSize: 5, showBore: true, nameScale: 1, provScale: 1, ptFont: 14, stIcon: 32, stFont: 17, satIcon: 30 }
+  const sizes = { beamFont: 16, contourFont: 12, dotSize: 5, showBore: true, nameScale: 1, provScale: 1, cityScale: 1, ptFont: 14, stIcon: 32, stFont: 17, satIcon: 30 }
 
   // 地面站图标
   const stationImg = new Image(); let stationReady = false
@@ -271,9 +271,11 @@ export function createFlatCoverage(canvas) {
     ctx.font = `${o.italic ? 'italic ' : ''}${o.bold ? 'bold ' : ''}${px}px ${textFont}`
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
     // 文字描边套色(casing)：沿字形勾一圈与底色同调的窄边，把字从背景里「切」出来——专业制图标准，不用底色色块
-    ctx.lineJoin = 'round'; ctx.miterLimit = 2
-    ctx.lineWidth = Math.max(1.5, px * 0.14); ctx.strokeStyle = 'rgba(6,11,18,0.82)'
-    ctx.strokeText(text, x, y); ctx.fillStyle = color; ctx.fillText(text, x, y)
+    // 粗细 = px*strokeScale（默认 0.14），下限 strokeMin（默认 1.5）；地级市名传更细值（尽量细但保留）
+    const sScale = o.strokeScale != null ? o.strokeScale : 0.14, sMin = o.strokeMin != null ? o.strokeMin : 1.5
+    const lw = Math.max(sMin, px * sScale)
+    if (lw > 0) { ctx.lineJoin = 'round'; ctx.miterLimit = 2; ctx.lineWidth = lw; ctx.strokeStyle = 'rgba(6,11,18,0.82)'; ctx.strokeText(text, x, y) }
+    ctx.fillStyle = color; ctx.fillText(text, x, y)
   }
   function dot(lon, lat, r, fill, ring) {
     const x = PX(lon), y = PY(lat)
@@ -407,6 +409,12 @@ export function createFlatCoverage(canvas) {
     const nhW = Math.max(NANHAI_MIN_WIDTH, borderStyle.provWidth * NANHAI_WIDTH_MUL)
     for (const seg of NANHAI_DASHES) drawPolyline(seg, CHINA, nhW)
     ctx.globalAlpha = 1
+    // 地级市界（画在省界之下，省界更醒目）
+    if (cityVisible && city) {
+      ctx.globalAlpha = borderStyle.cityOpacity
+      for (const ring of city.borders) drawPolyline(ring, borderStyle.cityColor, borderStyle.cityWidth)
+      ctx.globalAlpha = 1
+    }
     // 省界
     if (provVisible && prov) {
       ctx.globalAlpha = borderStyle.provOpacity
@@ -427,18 +435,28 @@ export function createFlatCoverage(canvas) {
     const si = sizes.stIcon
     for (const p of mk.points) dot(p.lon, p.lat, 5, '#ffd24a', true)
     for (const s of mk.stations) { const x = PX(s.lon), y = PY(s.lat); if (stationReady) ctx.drawImage(stationImg, x - si / 2, y - si, si, si); else dot(s.lon, s.lat, 5, '#cfeaff', true) }
-    // 文字层（固定字号）
-    const ns = sizes.nameScale || 1
+    // 地名层：字号随缩放联动，且与 3D 球体的「世界尺寸」地名严格一致。
+    // 原理：3D 地名是世界尺寸（固定地理度数），其屏幕 px = 地理度数 × 每度像素。2D 同覆盖下每度像素 = k()。
+    // 故 2D 字号 = 地理度数 × k()。标定：3D 普通省名 hpx=0.02→1.146°，对应 2D 基准 l.px=15 → 系数 k()/13.1。
+    // 这样把"每度像素"折进 zf：font = l.px × 倍率 × (k()/13.1)，与窗口尺寸无关、与 3D 一致。
+    // 标记/波束/数值等注记维持恒定字号（与 3D 一致，不乘 zf）。
+    const ns = sizes.nameScale || 1, zf = k() / 13.1
     if (nameMode !== 'off') {
       ctx.globalAlpha = labelStyle.countryOpacity
-      for (const l of clabels) drawText(nameMode === 'en' ? l.en : l.zh, l.lon, l.lat, Math.round(l.px * ns), labelStyle.countryColor)
+      for (const l of clabels) drawText(nameMode === 'en' ? l.en : l.zh, l.lon, l.lat, Math.round(l.px * ns * zf), labelStyle.countryColor)
       ctx.globalAlpha = 1   // 大洋名维持固有蓝与不透明度
-      for (const [zh, en, lon, lat] of OCEANS) drawText(nameMode === 'en' ? en : zh, lon, lat, Math.round(15 * ns), OCEAN_FILL, { italic: true })
+      for (const [zh, en, lon, lat] of OCEANS) drawText(nameMode === 'en' ? en : zh, lon, lat, Math.round(15 * ns * zf), OCEAN_FILL, { italic: true })
+    }
+    if (cityVisible && city) {
+      const cs = sizes.cityScale || 1
+      ctx.globalAlpha = labelStyle.cityOpacity
+      for (const l of city.labels) drawText(l.name, l.lon, l.lat, Math.round(l.px * cs * zf), labelStyle.cityColor, { strokeScale: 0.07, strokeMin: 0.8 })
+      ctx.globalAlpha = 1
     }
     if (provVisible && prov) {
       const ps = sizes.provScale || 1
       ctx.globalAlpha = labelStyle.provOpacity
-      for (const l of prov.labels) drawText(l.name, l.lon, l.lat, Math.round(l.px * ps), labelStyle.provColor)
+      for (const l of prov.labels) drawText(l.name, l.lon, l.lat, Math.round(l.px * ps * zf), labelStyle.provColor)
       ctx.globalAlpha = 1
     }
     if (geom) {
@@ -570,6 +588,14 @@ export function createFlatCoverage(canvas) {
     invalidateStatic(); requestDraw()
   }
 
+  // 地级市界数据解析（与 3D setCities 同款格式）。地名密集 → 基准 px 偏小（小空间）
+  function setCities(data) {
+    if (city || !data) return
+    const labels = (data.labels || []).map((l) => ({ name: l.name, lon: l.lon, lat: l.lat, px: 11 }))
+    city = { borders: data.borders || [], labels }
+    invalidateStatic(); requestDraw()
+  }
+
   return {
     setGeom(g) { geom = g; invalidateStatic(); requestDraw() },
     // GRD 覆盖多层：layers=[{fillBands:[{color:[r,g,b], verts:Float64Array[x,y,...], counts:Int32Array}]|null, segGroups:[...]}]；
@@ -594,6 +620,8 @@ export function createFlatCoverage(canvas) {
     setNameMode(m) { nameMode = m; invalidateStatic(); requestDraw() },
     setProvinces,
     setProvincesVisible(v) { provVisible = !!v; invalidateStatic(); requestDraw() },
+    setCities,
+    setCitiesVisible(v) { cityVisible = !!v; invalidateStatic(); requestDraw() },
     // 国界/省界线样式（与 3D 同步）：{ natColor, natWidth, natOpacity, provColor, provWidth, provOpacity }
     setBorderStyle(s) { Object.assign(borderStyle, s || {}); invalidateStatic(); requestDraw() },
     // 地名颜色/透明度（与 3D 同步）：{ countryColor, countryOpacity, provColor, provOpacity }
@@ -606,6 +634,17 @@ export function createFlatCoverage(canvas) {
     getZoom: () => scaleToT(),
     setZoom: (t) => setZoomT(t),
     setOnZoom(fn) { onZoom = fn },
+    // 完整视图记忆：缩放 scale + 画面中心的「世界坐标」(cx=lon-LON0, cy=90-lat)。
+    // 用世界中心点而非 tx/ty → 窗口尺寸变化后仍能复原到同一地理中心。setView 需在 resize 后调用（base 已就绪）。
+    getView() { const kk = k(); return { scale, cx: (cw / 2 - tx) / kk, cy: (ch / 2 - ty) / kk } },
+    setView(v) {
+      if (!v || !Number.isFinite(v.scale)) return
+      scale = clamp(v.scale, SMIN, SMAX)
+      const kk = k()
+      if (Number.isFinite(v.cx)) tx = cw / 2 - v.cx * kk
+      if (Number.isFinite(v.cy)) ty = ch / 2 - v.cy * kk
+      invalidateStatic(); requestDraw()
+    },
     // 渲染分辨率倍率（画质档位）：改后重建位图。this.resize 重算 dpr/位图尺寸并重绘。
     setRenderScale(n) { renderScale = Number.isFinite(n) ? n : null; this.resize() },
     // 底图精细化（与 3D 同步）：'10m'/'50m'/'110m' + thin 抽稀阈值。换 topojson 源重建陆地/海岸线。50m/110m 懒加载。
@@ -635,19 +674,27 @@ export function createFlatCoverage(canvas) {
       if (!belowCanvas) { belowCanvas = document.createElement('canvas'); belowCtx = belowCanvas.getContext('2d'); aboveCanvas = document.createElement('canvas'); aboveCtx = aboveCanvas.getContext('2d') }
       if (belowCanvas.width !== canvas.width || belowCanvas.height !== canvas.height) { belowCanvas.width = canvas.width; belowCanvas.height = canvas.height; aboveCanvas.width = canvas.width; aboveCanvas.height = canvas.height }
       invalidateStatic()
-      if (firstFit) fit(); requestDraw()
+      if (firstFit) fit()
+      draw()   // 同步立即重绘：canvas.width 重设会清空画布，若只 requestDraw 会隔一帧露出深色底 → 黑一下
     },
     reset() { fit(); invalidateStatic(); requestDraw() },
-    // 导出整幅世界平面图到任意 2D 上下文：离屏高清 canvas → PNG；svgcanvas → SVG/PDF。
-    // opts: { width, height, pixelScale=1, background=true, fontFamily }。整幅 fit 一次性绘制，绘后恢复在屏视图。
+    // 当前屏幕视图的逻辑尺寸（CSS px）：供「所见即所得」导出按当前画面比例/范围出图
+    viewportSize: () => ({ w: cw, h: ch }),
+    // 导出平面图到任意 2D 上下文：离屏高清 canvas → PNG；svgcanvas → SVG/PDF。
+    // opts: { width, height, pixelScale=1, background=true, fontFamily, view=false }。
+    //   view=false：整幅世界图，fit 一次性绘制；view=true：所见即所得，按当前屏幕缩放/平移出图。绘后恢复在屏视图。
     // compat=true 走子路径回放（不依赖 Path2D / evenodd 入参）→ PNG 与 PDF 完全一致。
     exportRender(targetCtx, opts) {
       const o = opts || {}
+      // view=true：所见即所得，保留当前 base/scale/tx/ty 与屏幕 cw/ch，仅按 pixelScale 放大输出；
+      // 否则：整幅世界图，重置 cw/ch=W/H 后 fit() 一次。
+      const viewMode = o.view === true
       const W = o.width || 1600, H = o.height || (W / 2), ps = o.pixelScale || 1
       const SV = { ctx, dpr, cw, ch, base, scale, tx, ty, font: textFont }
-      ctx = targetCtx; dpr = ps; cw = W; ch = H; compat = true
+      ctx = targetCtx; dpr = ps; compat = true
       if (o.fontFamily) textFont = o.fontFamily
-      fit()
+      if (viewMode) { /* 保留当前屏幕视图（cw/ch/base/scale/tx/ty 不变） */ }
+      else { cw = W; ch = H; fit() }
       const rx = PX(LON0), ry = PY(90), rw = 360 * k(), rh = 180 * k()
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
       if (o.background !== false) { ctx.fillStyle = BG; ctx.fillRect(0, 0, cw, ch) }

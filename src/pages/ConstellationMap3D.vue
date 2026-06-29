@@ -56,7 +56,7 @@ const flatView = ref(false)        // 平面图 / 球体 切换
 let flat = null                    // 平面渲染器实例
 let covGeom = { lines: [], dots: [], labels: [], sats: [] }   // 覆盖几何（3D 与 平面图共用）
 const groupIndex = ref(DEFAULT_GROUP)
-const status = ref('')
+const status = ref('')          // 卫星加载状态（无星时驱动「重试下载 / 导入 TLE」横幅）；导出反馈不走此处，避免误触横幅
 const satCount = ref(0)     // 该组卫星总数
 const shownCount = ref(0)   // 实际渲染点数
 const dataTime = ref('')
@@ -66,6 +66,9 @@ const nameMode = ref('en')   // 国名：'zh' | 'en' | 'off'
 const showProvinces = ref(false)
 let provincesLoaded = false
 let provincesData = null
+const showCities = ref(false)   // 显示中国地级市界 / 地级市名
+let citiesLoaded = false
+let citiesData = null
 const timeOffset = ref(0)   // 分钟，0~1440（未来 24h）
 const timePct = ref(0)
 const keyword = ref('')
@@ -277,10 +280,12 @@ const showContourLabels = ref(false) // 等值线数值标签
 const contourLabelSize = ref(12)  // 数值标签字号（2–20）
 const countryNameSize = ref(1.1)  // 国家名/大洋名字号倍率（0.6–2.0）
 const provNameSize = ref(0.55)    // 省名字号倍率（0.6–2.0）
-// 国界(海岸线)/省界线样式：线宽 px / 颜色 / 透明度，同时作用于 3D 与平面图
-const borderStyle = reactive({ natColor: '#000000', natWidth: 0.2, natOpacity: 1.0, provColor: '#000000', provWidth: 0.3, provOpacity: 1.0 })
-// 地名颜色/透明度：国家名 与 省名 分开（大洋名维持固有蓝），同时作用于 3D 与平面图
-const labelStyle = reactive({ countryColor: '#eef2f6', countryOpacity: 1.0, provColor: '#f6fa00', provOpacity: 1.0 })
+const cityNameSize = ref(0.5)     // 地级市名字号倍率（小空间，默认偏小）
+// 国界(海岸线)/省界/地级市界线样式：线宽 px / 颜色 / 透明度，同时作用于 3D 与平面图
+// 地级市界默认更细更淡（线粗支持到 0.05），层级上从属于省界
+const borderStyle = reactive({ natColor: '#000000', natWidth: 0.2, natOpacity: 1.0, provColor: '#000000', provWidth: 0.3, provOpacity: 1.0, cityColor: '#6b7280', cityWidth: 0.12, cityOpacity: 0.7 })
+// 地名颜色/透明度：国家名 与 省名 与 地级市名 分开（大洋名维持固有蓝），同时作用于 3D 与平面图
+const labelStyle = reactive({ countryColor: '#eef2f6', countryOpacity: 1.0, provColor: '#f6fa00', provOpacity: 1.0, cityColor: '#9aa3b0', cityOpacity: 1.0 })
 // 大海颜色（限蓝色系预设），同时作用于 3D 球体与平面图底色
 // 蓝色系：深→浅，兼顾鲜艳/中性/低饱和；第 2 项 #15426b 为默认深蓝，末项 #92b6e4 取自 SATSOFT 浅蓝海面
 const OCEAN_BLUES = ['#0d2b4d', '#15426b', '#1b5a8c', '#1e6fa8', '#2a85c4', '#3d7ba6', '#5b7f9e', '#92b6e4']
@@ -755,6 +760,16 @@ async function toggleProvinces() {
   scene && scene.setProvincesVisible(showProvinces.value)
   if (flat) flat.setProvincesVisible(showProvinces.value)
 }
+async function toggleCities() {
+  showCities.value = !showCities.value
+  if (showCities.value && !citiesLoaded) {
+    try { const mod = await import('../viz/globe3d/data/china-cities.json'); citiesData = mod.default || mod; scene && scene.setCities(citiesData); if (flat) flat.setCities(citiesData); citiesLoaded = true }
+    catch (e) { /* 地级市数据缺失 */ }
+  }
+  scene && scene.setCitiesVisible(showCities.value)
+  if (flat) flat.setCitiesVisible(showCities.value)
+  applyNameScale()   // 套用当前地级市名字号（首次加载后生效）
+}
 
 // ===================== 覆盖图 =====================
 let _presetCovSats = []   // 预置覆盖索引（只读）；用户 GXT 库与之合并成 covSats
@@ -798,8 +813,23 @@ async function toggleCoverage() {
 // 缩放进度条桥接（底部状态栏 ↔ 当前活动地图：球体 scene / 平面图 flat）。
 // 活动地图滚轮缩放 → 回填 zoom.value（进度条走动）；拖动进度条 / 按钮 → zoom.apply 设回地图。
 const activeMap = () => (flatView.value && flat) ? flat : scene
+// 视图记忆：球体/平面图各存一份完整视图（缩放 + 朝向/平移中心），下次启动恢复。
+const VIEW_KEY = 'globe3d/view'
+const savedView = { globe: null, flat: null }
+try { const o = JSON.parse(localStorage.getItem(VIEW_KEY) || 'null'); if (o && typeof o === 'object') { if (o.globe && typeof o.globe === 'object') savedView.globe = o.globe; if (o.flat && typeof o.flat === 'object') savedView.flat = o.flat } } catch { /* ignore */ }
+let viewRestoredFlat = false
+let _viewSaveTimer = null
+// 读当前活动地图的完整视图并防抖写盘（缩放/平移/旋转任意变化后调用）
+function saveView() {
+  const kind = flatView.value ? 'flat' : 'globe'
+  const m = activeMap()
+  if (!m || !m.getView) return
+  savedView[kind] = m.getView()
+  if (_viewSaveTimer) clearTimeout(_viewSaveTimer)
+  _viewSaveTimer = setTimeout(() => { try { localStorage.setItem(VIEW_KEY, JSON.stringify(savedView)) } catch { /* ignore */ } }, 300)
+}
 function pushZoom() { const m = activeMap(); if (m && m.getZoom) zoom.value = m.getZoom() }
-function applyZoom(t) { const m = activeMap(); if (m && m.setZoom) { m.setZoom(t); zoom.value = t } }
+function applyZoom(t) { const m = activeMap(); if (m && m.setZoom) { m.setZoom(t); zoom.value = t; saveView() } }
 // 球体 <-> 平面图 切换（顶栏「视图」按钮与覆盖面板按钮共用 view.flat）
 function toggleFlat() { view.flat = !view.flat }
 watch(() => view.flat, (v) => applyFlat(v))
@@ -809,7 +839,12 @@ async function applyFlat(v) {
   if (!v) { if (grdOpen.value) grd.recompute(); pushZoom(); return }
   await ensureCovIndex(); if (!covCleared.value) redraw()   // 已清除则切平面图不复现覆盖（covGeom 保持为空）
   await nextTick()
-  if (ensureFlat()) { feedFlat(); pushZoom() }   // 切到平面图时建好渲染器并喂全当前状态，回填缩放进度条
+  if (ensureFlat()) {
+    feedFlat()   // 内含 resize → base 就绪，之后才能正确 setView
+    // 首次进入平面图时恢复上次视图（缩放+平移中心）；之后切换保持当前，不再覆盖
+    if (!viewRestoredFlat) { viewRestoredFlat = true; if (savedView.flat) flat.setView(savedView.flat) }
+    pushZoom()
+  }
 }
 // 平面渲染器：按需创建（绑定交互回调）。返回实例（flatCanvas 未就绪时返回 null）。
 function ensureFlat() {
@@ -817,7 +852,8 @@ function ensureFlat() {
     flat = createFlatCoverage(flatCanvas.value)
     flat.setRenderScale(displayQuality.value.pixelRatio); flat.setMapDetail(displayQuality.value.mapDetail, displayQuality.value.mapThin)
     flat.setOnRightClick(onMapRightClick); flat.setOnHover((ll) => { cursor.ll = ll }); flat.setOnBeamDrag(grd.beamDrag); flat.setBeamDragMode(grd.dragBore.value)
-    flat.setOnZoom((t) => { if (flatView.value) zoom.value = t })
+    flat.setOnZoom((t) => { if (flatView.value) { zoom.value = t; saveView() } })
+    flatCanvas.value.addEventListener('pointerup', saveView)   // 平移结束保存视图（平移中心）
   }
   return flat
 }
@@ -829,6 +865,8 @@ function feedFlat() {
   flat.setNameMode(nameMode.value)
   if (provincesData) flat.setProvinces(provincesData)
   flat.setProvincesVisible(showProvinces.value)
+  if (citiesData) flat.setCities(citiesData)
+  flat.setCitiesVisible(showCities.value)
   flat.setBorderStyle({ ...borderStyle })
   flat.setLabelStyle({ ...labelStyle })
   flat.setOceanColor(oceanColor.value)
@@ -837,7 +875,7 @@ function feedFlat() {
     stations.value.map((s) => ({ lat: s.lat, lon: s.lon, name: s.name, el: fmtElev(s.lat, s.lon) })),
     trajectories.value.map((t) => ({ pts: t.pts, kind: t.kind, color: t.kind === 'flight' ? 0x5ad1ff : 0xff6a4a }))
   )
-  flat.setSizes({ beamFont: beamLabelSize.value, contourFont: contourLabelSize.value, dotSize: boreSize.value, showBore: showBore.value, nameScale: countryNameSize.value, provScale: provNameSize.value, ptFont: markPtFont.value, stIcon: stIconSize.value, stFont: stFontSize.value })
+  flat.setSizes({ beamFont: beamLabelSize.value, contourFont: contourLabelSize.value, dotSize: boreSize.value, showBore: showBore.value, nameScale: countryNameSize.value, provScale: provNameSize.value, cityScale: cityNameSize.value, ptFont: markPtFont.value, stIcon: stIconSize.value, stFont: stFontSize.value })
   flat.setGeom(covGeom)
   grd.recompute()   // GRD 覆盖：把当前选中天线的面+线喂给 flat（recompute 同时喂 scene/flat）
   redrawSats()      // 卫星/仰角线图层
@@ -857,34 +895,36 @@ async function getCjkFont() {
 async function saveExport(bytes, defaultName, filters) {
   if (!(window.api && window.api.exportFile)) { alert('需在 Electron 中运行（npm run dev）'); return }
   const r = await window.api.exportFile({ defaultName, data: bytes, filters })
-  if (r && r.ok) status.value = '已导出：' + r.filePath
-  else if (r && r.canceled) status.value = ''
-  else { const msg = (r && r.error) || '写入失败'; status.value = '导出失败：' + msg; alert('导出失败：' + msg) }
+  // 成功/取消无需提示（已走系统保存对话框，用户自选路径即知结果）；仅失败弹错。
+  if (r && !r.ok && !r.canceled) { const msg = (r && r.error) || '写入失败'; alert('导出失败：' + msg) }
 }
 // fmt: 'png2' | 'png4' | 'pdf'。无论当前在 2D 还是 3D 视图，都按 2D 平面图导出整幅世界图。
-async function exportMap(fmt) {
+// scope: 'world'(整幅世界图，默认) | 'view'(当前视图，所见即所得)。view 模式需在 2D 平面图下，按屏幕缩放/平移出图。
+async function exportMap(fmt, scope) {
   if (exporting.value) return
+  const view = scope === 'view'
+  if (view && !flatView.value) { alert('「截图」导出需先切换到 2D 平面图（顶栏「视图」按钮），再框定要导出的范围'); return }
   exporting.value = true
-  status.value = '正在导出…'
   try {
     await ensureCovIndex(); if (!covCleared.value) redraw()
     await nextTick()
     if (!ensureFlat()) { alert('地图渲染器未就绪，请切到 2D 平面图后重试'); return }
-    feedFlat()
+    feedFlat()   // resize() 仅首帧 fit，已交互过的缩放/平移会保留 → view 模式即所见即所得
     await nextTick()
+    const tag = view ? '截图' : '全球图'
     const { renderFlatPNG, renderFlatPDF } = await import('../viz/flatmap/exportFlat.js')
     if (fmt === 'pdf') {
       // 矢量 PDF 按「设置」里的底图精度导出（flat 实例已随 displayQuality 同步精度）：
       // 10m 更清晰但点数约 5.5× → 导出更慢、文件更大；如需更快可在设置里调到 50m/110m。
       const fontBase64 = await getCjkFont()
-      const bytes = await renderFlatPDF(flat, { base: 2400, fontBase64 })
-      await saveExport(bytes, '覆盖图.pdf', [{ name: 'PDF 矢量图', extensions: ['pdf'] }])
+      const bytes = await renderFlatPDF(flat, { base: 2400, fontBase64, view })
+      await saveExport(bytes, `覆盖图_${tag}.pdf`, [{ name: 'PDF 矢量图', extensions: ['pdf'] }])
     } else {
       const factor = fmt === 'png4' ? 4 : 2
-      const bytes = await renderFlatPNG(flat, { base: 2400, factor })
-      await saveExport(bytes, `覆盖图_${factor}x.png`, [{ name: 'PNG 图片', extensions: ['png'] }])
+      const bytes = await renderFlatPNG(flat, { base: 2400, factor, view })
+      await saveExport(bytes, `覆盖图_${tag}_${factor}x.png`, [{ name: 'PNG 图片', extensions: ['png'] }])
     }
-  } catch (e) { console.error('导出失败', e); alert('导出失败：' + ((e && e.message) || e)); status.value = '导出失败' }
+  } catch (e) { console.error('导出失败', e); alert('导出失败：' + ((e && e.message) || e)) }
   finally { exporting.value = false }
 }
 
@@ -978,9 +1018,10 @@ function toggleBeamLabels() { showBeamLabels.value = !showBeamLabels.value; redr
 function setBeamFont(e) { beamLabelSize.value = Number(e.target.value); redraw() }
 function setBoreSize(e) { boreSize.value = Number(e.target.value); redraw() }
 function setContourSize(e) { contourLabelSize.value = Number(e.target.value); redraw() }
-function applyNameScale() { if (scene) scene.setNameScale(countryNameSize.value, provNameSize.value); if (flat) flat.setSizes({ nameScale: countryNameSize.value, provScale: provNameSize.value }) }
+function applyNameScale() { if (scene) scene.setNameScale(countryNameSize.value, provNameSize.value, cityNameSize.value); if (flat) flat.setSizes({ nameScale: countryNameSize.value, provScale: provNameSize.value, cityScale: cityNameSize.value }) }
 function setCountryNameSize(e) { countryNameSize.value = Number(e.target.value); applyNameScale() }
 function setProvNameSize(e) { provNameSize.value = Number(e.target.value); applyNameScale() }
+function setCityNameSize(e) { cityNameSize.value = Number(e.target.value); applyNameScale() }
 // 国界/省界线样式 → 3D 与平面图。{ ...borderStyle } 取响应式对象快照传入两个渲染器。
 function applyBorderStyle() { const s = { ...borderStyle }; if (scene) scene.setBorderStyle(s); if (flat) flat.setBorderStyle(s) }
 // 地名颜色/透明度 → 3D 与平面图。
@@ -1487,7 +1528,7 @@ function deserializeCov(items) {
 }
 function snapshot() {
   return {
-    nameMode: nameMode.value, countryName: countryNameSize.value, provName: provNameSize.value, showProvinces: showProvinces.value, borderStyle: { ...borderStyle }, labelStyle: { ...labelStyle }, oceanColor: oceanColor.value, autoRotate: autoRotate.value, autoRotateSpeed: viewPrefs.autoRotateSpeed, live: live.value, beamLock: beamLock.value,
+    nameMode: nameMode.value, countryName: countryNameSize.value, provName: provNameSize.value, cityName: cityNameSize.value, showProvinces: showProvinces.value, showCities: showCities.value, borderStyle: { ...borderStyle }, labelStyle: { ...labelStyle }, oceanColor: oceanColor.value, autoRotate: autoRotate.value, autoRotateSpeed: viewPrefs.autoRotateSpeed, live: live.value, beamLock: beamLock.value,
     mkPt: markPtFont.value, mkStIcon: stIconSize.value, mkStFont: stFontSize.value,
     covOpen: covOpen.value, mkOpen: mkOpen.value, geoOpen: geoOpen.value,
     grdOpen: grdOpen.value, grd: grd.getState(), perf: perf.getState(),
@@ -1507,7 +1548,8 @@ async function restoreSettings() {
   else if (Number.isFinite(s.geoName)) countryNameSize.value = s.geoName   // 兼容旧字段
   if (Number.isFinite(s.provName)) provNameSize.value = s.provName
   else if (Number.isFinite(s.geoName)) provNameSize.value = s.geoName
-  scene.setNameScale(countryNameSize.value, provNameSize.value)
+  if (Number.isFinite(s.cityName)) cityNameSize.value = s.cityName
+  scene.setNameScale(countryNameSize.value, provNameSize.value, cityNameSize.value)
   if (s.borderStyle && typeof s.borderStyle === 'object') Object.assign(borderStyle, s.borderStyle)
   applyBorderStyle()
   if (s.labelStyle && typeof s.labelStyle === 'object') Object.assign(labelStyle, s.labelStyle)
@@ -1525,6 +1567,11 @@ async function restoreSettings() {
   if (s.showProvinces) {
     showProvinces.value = true
     try { const mod = await import('../viz/globe3d/data/china-provinces.json'); provincesData = mod.default || mod; scene.setProvinces(provincesData); scene.setProvincesVisible(true); provincesLoaded = true } catch { /* ignore */ }
+  }
+  if (s.showCities) {
+    showCities.value = true
+    try { const mod = await import('../viz/globe3d/data/china-cities.json'); citiesData = mod.default || mod; scene.setCities(citiesData); scene.setCitiesVisible(true); citiesLoaded = true } catch { /* ignore */ }
+    scene.setNameScale(countryNameSize.value, provNameSize.value, cityNameSize.value)
   }
   if (s.live) { live.value = true; if (!timer) timer = setInterval(refreshPositions, 1000) }
   const c = s.cov
@@ -1599,8 +1646,11 @@ onMounted(async () => {
   scene.setOnHover((ll) => { cursor.ll = ll })
   scene.setOnRightClick(onMapRightClick)
   scene.setOnBeamDrag(grd.beamDrag)   // 拖拽波束（GRD boresight 中心）
-  // 缩放进度条（底部状态栏）：注册当前页缩放能力，球体滚轮缩放回填进度条
-  scene.setOnZoom((t) => { if (!flatView.value) zoom.value = t })
+  // 缩放进度条（底部状态栏）：注册当前页缩放能力，球体滚轮缩放回填进度条 + 记忆
+  scene.setOnZoom((t) => { if (!flatView.value) { zoom.value = t; saveView() } })
+  if (savedView.globe) scene.setView(savedView.globe)   // 恢复上次球体视图（朝向+缩放）
+  // 平移/旋转结束也保存视图（滚轮已由 onZoom 覆盖；拖拽无回调，故监听 pointerup）
+  el.value.addEventListener('pointerup', saveView)
   zoom.avail = true; zoom.apply = applyZoom; pushZoom()
   grd.setLivePos(satLivePos)          // GRD 覆盖按星历/时间轴解算星下点+高度（关联星实时跟踪）
   // 注册到文件管理器：镜像 GRD 树 + 导出当前覆盖 + 改星后重绘 + 复用原版卫星弹窗（隐藏可视化项）
@@ -1628,6 +1678,7 @@ onMounted(async () => {
   redrawSats()   // 恢复后立即绘制自定义卫星（关联卫星待 loadGroup 完成由 refreshPositions 跟踪）
   applyDisplayQuality()   // 套用当前画质档位（含低/中档的 50m 底图按需加载）
   scene.setAutoRotateSpeed(viewPrefs.autoRotateSpeed)
+  if (view.flat) await applyFlat(true)   // 恢复上次退出时的 2D 平面图（watch 不触发初始值，故挂载时主动套用一次）
   watch(snapshot, saveSettings, { deep: true })   // 此后任意改动自动本地缓存
   watch(displayQuality, applyDisplayQuality, { deep: true })   // 画质档位变化 → 实时套用（msaa 除外，由重挂载处理）
   // 设置弹窗改自转开关/速度 → 套到 scene（自转开关亦由页内按钮 toggleRotate 写同一 viewPrefs）
@@ -1639,6 +1690,9 @@ onBeforeUnmount(() => {
   covNav.exportAvail = false; covNav.exportMap = null
   covNav.grdOpen = false; covNav.covOpen = false
   zoom.avail = false; zoom.apply = null   // 复位底部状态栏缩放进度条
+  if (_viewSaveTimer) { clearTimeout(_viewSaveTimer); _viewSaveTimer = null }
+  if (el.value) el.value.removeEventListener('pointerup', saveView)
+  if (flatCanvas.value) flatCanvas.value.removeEventListener('pointerup', saveView)
 
   clearGrdBridge()   // 离开 3D 页：注销文件管理器对活树/导出器的引用
   cursor.ll = null; if (timer) clearInterval(timer); if (ro) ro.disconnect(); if (flat) flat.destroy(); if (scene) { scene.clearCoverage(); scene.destroy() }
@@ -1708,7 +1762,7 @@ onBeforeUnmount(() => {
           <div class="fl-row"><span class="fl-sw trk"></span>星下点轨迹</div>
         </div>
 
-        <div v-if="!satCount && status" class="dl-banner">
+        <div v-if="!satCount && status && !exporting" class="dl-banner">
           <div class="dl-msg">{{ status }}</div>
           <div class="dl-row">
             <button @click="loadGroup">重试下载</button>
@@ -2039,6 +2093,7 @@ onBeforeUnmount(() => {
           <div class="tip">海洋底色限蓝色系，同时作用于 3D 球体与平面图。</div>
         </div>
         <div class="sec">
+          <div class="sect"><span>国家（国界）</span></div>
           <div class="srow"><label>国家名</label>
             <span class="seg">
               <span class="sg" :class="{ on: nameMode === 'zh' }" @click="setNameMode('zh')">中文</span>
@@ -2046,29 +2101,37 @@ onBeforeUnmount(() => {
               <span class="sg" :class="{ on: nameMode === 'off' }" @click="setNameMode('off')">不显示</span>
             </span>
           </div>
-          <div class="srow"><label>国家名字号</label><input class="rng" type="range" min="0.3" max="2" step="0.05" :value="countryNameSize" @input="setCountryNameSize" /><span class="u">{{ countryNameSize.toFixed(2) }}</span></div>
-          <div class="srow"><label>国家名颜色</label><input class="clr" type="color" v-model="labelStyle.countryColor" @input="applyLabelStyle" /><span class="u">{{ labelStyle.countryColor }}</span></div>
-          <div class="srow"><label>国家名透明度</label><input class="rng" type="range" min="0" max="1" step="0.05" v-model.number="labelStyle.countryOpacity" @input="applyLabelStyle" /><span class="u">{{ labelStyle.countryOpacity.toFixed(2) }}</span></div>
+          <div class="srow"><label>名字号</label><input class="rng" type="range" min="0.3" max="2" step="0.05" :value="countryNameSize" @input="setCountryNameSize" /><span class="u">{{ countryNameSize.toFixed(2) }}</span></div>
+          <div class="srow"><label>名颜色</label><input class="clr" type="color" v-model="labelStyle.countryColor" @input="applyLabelStyle" /><span class="u">{{ labelStyle.countryColor }}</span></div>
+          <div class="srow"><label>名透明度</label><input class="rng" type="range" min="0" max="1" step="0.05" v-model.number="labelStyle.countryOpacity" @input="applyLabelStyle" /><span class="u">{{ labelStyle.countryOpacity.toFixed(2) }}</span></div>
+          <div class="srow"><label>国界线颜色</label><input class="clr" type="color" v-model="borderStyle.natColor" @input="applyBorderStyle" /><span class="u">{{ borderStyle.natColor }}</span></div>
+          <div class="srow"><label>国界线粗</label><input class="rng" type="range" min="0.1" max="4" step="0.1" v-model.number="borderStyle.natWidth" @input="applyBorderStyle" /><span class="u">{{ borderStyle.natWidth.toFixed(1) }}</span></div>
+          <div class="srow"><label>国界透明度</label><input class="rng" type="range" min="0" max="1" step="0.05" v-model.number="borderStyle.natOpacity" @input="applyBorderStyle" /><span class="u">{{ borderStyle.natOpacity.toFixed(2) }}</span></div>
+          <div class="tip">国家名含海岸线/国境线；大洋名维持固有蓝，不随国家名色改。同时作用于 3D 与平面图。</div>
+        </div>
+
+        <div class="sec">
+          <div class="sect"><span>中国省（中国省界）</span></div>
           <label class="chk2"><input type="checkbox" :checked="showProvinces" @change="toggleProvinces" /><span>显示中国省界 / 省名</span></label>
-          <div class="srow"><label>省名字号</label><input class="rng" type="range" min="0.3" max="2" step="0.05" :value="provNameSize" @input="setProvNameSize" /><span class="u">{{ provNameSize.toFixed(2) }}</span></div>
-          <div class="srow"><label>省名颜色</label><input class="clr" type="color" v-model="labelStyle.provColor" @input="applyLabelStyle" /><span class="u">{{ labelStyle.provColor }}</span></div>
-          <div class="srow"><label>省名透明度</label><input class="rng" type="range" min="0" max="1" step="0.05" v-model.number="labelStyle.provOpacity" @input="applyLabelStyle" /><span class="u">{{ labelStyle.provOpacity.toFixed(2) }}</span></div>
-          <div class="tip">国家名与省名的字号/颜色/透明度分开调，同时作用于 3D 与平面图（大洋名维持固有蓝）。</div>
+          <div class="srow"><label>名字号</label><input class="rng" type="range" min="0.3" max="2" step="0.05" :value="provNameSize" @input="setProvNameSize" /><span class="u">{{ provNameSize.toFixed(2) }}</span></div>
+          <div class="srow"><label>名颜色</label><input class="clr" type="color" v-model="labelStyle.provColor" @input="applyLabelStyle" /><span class="u">{{ labelStyle.provColor }}</span></div>
+          <div class="srow"><label>名透明度</label><input class="rng" type="range" min="0" max="1" step="0.05" v-model.number="labelStyle.provOpacity" @input="applyLabelStyle" /><span class="u">{{ labelStyle.provOpacity.toFixed(2) }}</span></div>
+          <div class="srow"><label>省界线颜色</label><input class="clr" type="color" v-model="borderStyle.provColor" @input="applyBorderStyle" /><span class="u">{{ borderStyle.provColor }}</span></div>
+          <div class="srow"><label>省界线粗</label><input class="rng" type="range" min="0.1" max="4" step="0.1" v-model.number="borderStyle.provWidth" @input="applyBorderStyle" /><span class="u">{{ borderStyle.provWidth.toFixed(1) }}</span></div>
+          <div class="srow"><label>省界透明度</label><input class="rng" type="range" min="0" max="1" step="0.05" v-model.number="borderStyle.provOpacity" @input="applyBorderStyle" /><span class="u">{{ borderStyle.provOpacity.toFixed(2) }}</span></div>
+          <div class="tip">需勾选「显示中国省界」后可见；线宽为屏幕像素，缩放时恒定。</div>
         </div>
 
         <div class="sec">
-          <div class="sect"><span>国界 / 海岸线</span></div>
-          <div class="srow"><label>线颜色</label><input class="clr" type="color" v-model="borderStyle.natColor" @input="applyBorderStyle" /><span class="u">{{ borderStyle.natColor }}</span></div>
-          <div class="srow"><label>线粗</label><input class="rng" type="range" min="0.1" max="4" step="0.1" v-model.number="borderStyle.natWidth" @input="applyBorderStyle" /><span class="u">{{ borderStyle.natWidth.toFixed(1) }}</span></div>
-          <div class="srow"><label>透明度</label><input class="rng" type="range" min="0" max="1" step="0.05" v-model.number="borderStyle.natOpacity" @input="applyBorderStyle" /><span class="u">{{ borderStyle.natOpacity.toFixed(2) }}</span></div>
-        </div>
-
-        <div class="sec">
-          <div class="sect"><span>中国省界</span></div>
-          <div class="srow"><label>线颜色</label><input class="clr" type="color" v-model="borderStyle.provColor" @input="applyBorderStyle" /><span class="u">{{ borderStyle.provColor }}</span></div>
-          <div class="srow"><label>线粗</label><input class="rng" type="range" min="0.1" max="4" step="0.1" v-model.number="borderStyle.provWidth" @input="applyBorderStyle" /><span class="u">{{ borderStyle.provWidth.toFixed(1) }}</span></div>
-          <div class="srow"><label>透明度</label><input class="rng" type="range" min="0" max="1" step="0.05" v-model.number="borderStyle.provOpacity" @input="applyBorderStyle" /><span class="u">{{ borderStyle.provOpacity.toFixed(2) }}</span></div>
-          <div class="tip">省界样式需勾选「显示中国省界」后可见；线宽为屏幕像素，缩放时恒定。</div>
+          <div class="sect"><span>中国地级市（中国地级市界）</span></div>
+          <label class="chk2"><input type="checkbox" :checked="showCities" @change="toggleCities" /><span>显示中国地级市界 / 地级市名</span></label>
+          <div class="srow"><label>名字号</label><input class="rng" type="range" min="0.15" max="2" step="0.05" :value="cityNameSize" @input="setCityNameSize" /><span class="u">{{ cityNameSize.toFixed(2) }}</span></div>
+          <div class="srow"><label>名颜色</label><input class="clr" type="color" v-model="labelStyle.cityColor" @input="applyLabelStyle" /><span class="u">{{ labelStyle.cityColor }}</span></div>
+          <div class="srow"><label>名透明度</label><input class="rng" type="range" min="0" max="1" step="0.05" v-model.number="labelStyle.cityOpacity" @input="applyLabelStyle" /><span class="u">{{ labelStyle.cityOpacity.toFixed(2) }}</span></div>
+          <div class="srow"><label>市界线颜色</label><input class="clr" type="color" v-model="borderStyle.cityColor" @input="applyBorderStyle" /><span class="u">{{ borderStyle.cityColor }}</span></div>
+          <div class="srow"><label>市界线粗</label><input class="rng" type="range" min="0.05" max="2" step="0.05" v-model.number="borderStyle.cityWidth" @input="applyBorderStyle" /><span class="u">{{ borderStyle.cityWidth.toFixed(2) }}</span></div>
+          <div class="srow"><label>市界透明度</label><input class="rng" type="range" min="0" max="1" step="0.05" v-model.number="borderStyle.cityOpacity" @input="applyBorderStyle" /><span class="u">{{ borderStyle.cityOpacity.toFixed(2) }}</span></div>
+          <div class="tip">需勾选「显示中国地级市界」后可见；画在省界之下，线粗可低至 0.05 以适配密集网格与小空间。</div>
         </div>
       </div>
 

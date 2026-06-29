@@ -2252,17 +2252,25 @@ function calculateRainXPD_P618_14(Ap, freq, tauDeg, elevDeg, p) {
   const theta = Math.min(Math.max(elevDeg, 0), 60);
   const D2R = CONSTANTS.PI / 180;
 
-  // Step 1: 频率相关项 Cf = 30·log f （6 ≤ f ≤ 55 GHz）
-  const Cf = 30 * Math.log10(freq);
+  // Step 1: 频率相关项 Cf —— ITU-R P.618-14 §4.1 Step 1，按频段分三式
+  //   6 ≤ f < 9 :  60·log f − 28.3
+  //   9 ≤ f < 36:  26·log f + 4.1
+  //   36 ≤ f ≤ 55: 35.9·log f − 11.3
+  let Cf;
+  if (freq < 9)        Cf = 60 * Math.log10(freq) - 28.3;
+  else if (freq < 36)  Cf = 26 * Math.log10(freq) + 4.1;
+  else                 Cf = 35.9 * Math.log10(freq) - 11.3;
 
-  // Step 2: 降雨衰减相关项 CA = V(f)·log(Ap)
-  //   V(f) = 12.8·f^0.19   (6 ≤ f ≤ 9 GHz)
-  //   V(f) = 22.6          (9 < f ≤ 36 GHz)
-  //   V(f) = 13.0·f^0.19   (36 < f ≤ 55 GHz)
+  // Step 2: 降雨衰减相关项 CA = V(f)·log(Ap) —— ITU-R P.618-14 §4.1 Step 2，按频段分四式
+  //   6 ≤ f < 9 :  V = 30.8·f^(−0.21)
+  //   9 ≤ f < 20:  V = 12.8·f^0.19
+  //   20 ≤ f < 40: V = 22.6
+  //   40 ≤ f ≤ 55: V = 13.0·f^0.15
   let Vf;
-  if (freq <= 9)        Vf = 12.8 * Math.pow(freq, 0.19);
-  else if (freq <= 36)  Vf = 22.6;
-  else                  Vf = 13.0 * Math.pow(freq, 0.19);
+  if (freq < 9)        Vf = 30.8 * Math.pow(freq, -0.21);
+  else if (freq < 20)  Vf = 12.8 * Math.pow(freq, 0.19);
+  else if (freq < 40)  Vf = 22.6;
+  else                 Vf = 13.0 * Math.pow(freq, 0.15);
   const CA = Vf * Math.log10(Ap);
 
   // Step 3: 极化改善因子 Cτ = -10·log[1 - 0.484·(1 + cos4τ)]
@@ -2272,10 +2280,13 @@ function calculateRainXPD_P618_14(Ap, freq, tauDeg, elevDeg, p) {
   // Step 4: 仰角相关项 Cθ = -40·log(cosθ) （θ ≤ 60°）
   const Ctheta = -40 * Math.log10(Math.cos(theta * D2R));
 
-  // Step 5: 雨滴倾角分布相关项 Cσ = 0.0053·σ²
-  //   σ 为雨滴倾角分布的有效标准差（度），对 1%/0.1%/0.01%/0.001%
-  //   分别取 0/5/10/15 度，即 σ = -5·log10(p)（p ≥ 1% 时取 0）
-  const sigma = Math.max(0, -5 * Math.log10(p));
+  // Step 5: 雨滴倾角分布相关项 Cσ = 0.0053·σ² —— ITU-R P.618-14 §4.1 Step 5，σ 按时间百分比离散取值
+  //   σ(°)：p≤0.001%→15；p≤0.01%→10；p≤0.1%→5；其余→0（旧实现误用连续 −5·log10(p)）
+  let sigma;
+  if (p <= 0.001)      sigma = 15;
+  else if (p <= 0.01)  sigma = 10;
+  else if (p <= 0.1)   sigma = 5;
+  else                 sigma = 0;
   const Csigma = 0.0053 * sigma * sigma;
 
   // Step 6: 降雨去极化 XPDrain = Cf - CA + Cτ + Cθ + Cσ （dB）
