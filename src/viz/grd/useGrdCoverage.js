@@ -222,7 +222,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
   let _colorSeq = 0
   const nextElevColor = () => SAT_PALETTE[_colorSeq++ % SAT_PALETTE.length]
   // 预置星（index）补齐统一节点字段：GEO 定点(lon,0,GEO_ALT)、仰角线默认关、卫星名默认开、颜色默认白
-  const normPreset = (s) => ({ ...s, kind: 'preset', lat: 0, altKm: GEO_ALT, noradId: null, els: '5,10', elevColor: '#ffffff', elevShow: false, elevWidth: 1.3, elevLabelSize: 13, iconSize: 10, labelSize: 4, labelShow: true })
+  const normPreset = (s) => ({ ...s, kind: 'preset', lat: 0, altKm: GEO_ALT, noradId: null, els: '5,10', elevColor: '#ffffff', elevShow: false, elevWidth: 1.3, elevLabelSize: 18, iconSize: 10, labelSize: 4, labelShow: true })
   // 同名加点号去重，作为节点唯一 key（folder）
   function genFolder(name) {
     const base = (name || '卫星').trim() || '卫星'
@@ -242,7 +242,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
       elements: draft.elements || null,
       els: draft.els != null ? draft.els : '5,10',
       elevColor: draft.color || '#ffffff', elevShow: false, elevWidth: Number(draft.elevWidth) || 1.3,
-      elevLabelSize: Number(draft.elevLabelSize) || 13,
+      elevLabelSize: Number(draft.elevLabelSize) || 18,
       iconSize: Number(draft.iconSize) || 10, labelSize: Number(draft.labelSize) || 4, labelShow: true,
       antennas: []
     }
@@ -749,7 +749,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
           if (!ss.kind || ss.kind === 'preset') continue   // 预置星已不在 index（如已删/改版）→ 跳过
           node = { folder: ss.folder, satName: ss.satName || '卫星', kind: ss.kind, antennas: [],
             lon: ss.lon, lat: ss.lat, altKm: ss.altKm, noradId: ss.noradId || null, elements: ss.elements || null,
-            els: '5,10', elevColor: '#ffffff', elevShow: false, elevWidth: 1.3, elevLabelSize: 13, iconSize: 10, labelSize: 4, labelShow: true }
+            els: '5,10', elevColor: '#ffffff', elevShow: false, elevWidth: 1.3, elevLabelSize: 18, iconSize: 10, labelSize: 4, labelShow: true }
           sats.value = [...sats.value, node]
         }
         if (ss.satName) node.satName = ss.satName

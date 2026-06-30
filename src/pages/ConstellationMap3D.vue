@@ -1191,12 +1191,12 @@ const satModalPos = computed(() => {
 
 const defaultElements = () => ({ altKm: 500, ecc: 0, incl: 53, raan: 0, argp: 0, ma: 0 })
 function defaultSatDraft() {
-  return { folder: null, name: '', lon: 0, lat: 0, altKm: GEO_ALT, color: '#ffffff', els: '5,10', noradId: null, posMode: 'fixed', elements: defaultElements(), elevWidth: 1.3, elevLabelSize: 13, iconSize: 10, labelSize: 4 }
+  return { folder: null, name: '', lon: 0, lat: 0, altKm: GEO_ALT, color: '#ffffff', els: '5,10', noradId: null, posMode: 'fixed', elements: defaultElements(), elevWidth: 1.3, elevLabelSize: 18, iconSize: 10, labelSize: 4 }
 }
 // hideViz：从文件管理器调起时为 true，隐藏可视化项（图标/字号/仰角线/颜色），其余功能（定位方式/星座关联）一致
 function openAddSat(hideViz = false) { satModal.value = { ...defaultSatDraft(), hideViz }; satPick.value = false; satSearchKw.value = ''; satSearchRes.value = [] }
 // 编辑已有卫星（含预置星）：名称/位置/关联/仰角线/图标与标签大小都可改
-function editSat(node, hideViz = false) { satModal.value = { folder: node.folder, name: node.satName, lon: node.lon, lat: node.lat, altKm: node.altKm, color: node.elevColor, els: node.els, noradId: node.noradId, kind: node.kind, posMode: node.elements ? 'orbit' : 'fixed', elements: node.elements ? { ...node.elements } : defaultElements(), elevWidth: node.elevWidth || 1.3, elevLabelSize: node.elevLabelSize || 13, iconSize: node.iconSize || 10, labelSize: node.labelSize || 4, hideViz }; satPick.value = false; satSearchKw.value = ''; satSearchRes.value = [] }
+function editSat(node, hideViz = false) { satModal.value = { folder: node.folder, name: node.satName, lon: node.lon, lat: node.lat, altKm: node.altKm, color: node.elevColor, els: node.els, noradId: node.noradId, kind: node.kind, posMode: node.elements ? 'orbit' : 'fixed', elements: node.elements ? { ...node.elements } : defaultElements(), elevWidth: node.elevWidth || 1.3, elevLabelSize: node.elevLabelSize || 18, iconSize: node.iconSize || 10, labelSize: node.labelSize || 4, hideViz }; satPick.value = false; satSearchKw.value = ''; satSearchRes.value = [] }
 function closeSatModal() { satModal.value = null; satPick.value = false; satSearchKw.value = ''; satSearchRes.value = [] }
 function applyGeoAlt() { if (satModal.value) satModal.value.altKm = GEO_ALT }   // 一键GEO：轨道高度设为 GEO
 
@@ -1224,7 +1224,7 @@ function saveSatModal() {
   if (m.folder) {
     // 所有星（含预置）都可改名称/位置/关联/仰角线。预置星 kind 保持 'preset'（仍属平台数据、不在树里删）；
     // 自定义/星座/模拟星按定位方式切换 custom/linked/orbit。是否随时间跟踪由 noradId / elements 决定，与 kind 无关。
-    const patch = { satName: (m.name || '卫星').trim() || '卫星', lon, lat, altKm, noradId: m.noradId || null, elements: orbit ? elements : null, els: m.els || '', elevColor: m.color || '#66ddff', elevWidth: Number(m.elevWidth) || 1.3, elevLabelSize: Number(m.elevLabelSize) || 13, iconSize: Number(m.iconSize) || 10, labelSize: Number(m.labelSize) || 4 }
+    const patch = { satName: (m.name || '卫星').trim() || '卫星', lon, lat, altKm, noradId: m.noradId || null, elements: orbit ? elements : null, els: m.els || '', elevColor: m.color || '#66ddff', elevWidth: Number(m.elevWidth) || 1.3, elevLabelSize: Number(m.elevLabelSize) || 18, iconSize: Number(m.iconSize) || 10, labelSize: Number(m.labelSize) || 4 }
     if (m.kind !== 'preset') patch.kind = m.noradId ? 'linked' : (orbit ? 'orbit' : 'custom')
     grd.updateSatellite(m.folder, patch)
   } else {
@@ -1333,8 +1333,16 @@ function redrawSats() {
         const ring = W.isoElevationContourAt(satEcef, el, 160)
         if (!ring || ring.length < 3) continue
         lines.push({ p: ring, color: colNum, width: el === 0 ? w * 1.45 : w, opacity: el === 0 ? 0.95 : 0.85, closed: true })
-        let top = ring[0]; for (const q of ring) if (q[1] > top[1]) top = q   // 角度标签贴在环最高点
-        labels.push({ lon: top[0], lat: top[1], text: el === 0 ? '地平' : el + '°', hpx: (node.elevLabelSize || 13) / 533, color, alt: 40 })
+        // 角度标注：沿正北/东/南/西四个方位（相对星下点的地理方位角）各取一个环上点，0° 也标成「0°」
+        const elTxt = el + '°', elHpx = (node.elevLabelSize || 18) / 533
+        const phi1 = p.lat * DEG, best = [0, 90, 180, 270].map(() => ({ d: Infinity, q: null }))
+        for (const q of ring) {
+          const phi2 = q[1] * DEG, dlon = (q[0] - p.lon) * DEG
+          let az = Math.atan2(Math.sin(dlon) * Math.cos(phi2), Math.cos(phi1) * Math.sin(phi2) - Math.sin(phi1) * Math.cos(phi2) * Math.cos(dlon)) / DEG
+          if (az < 0) az += 360
+          ;[0, 90, 180, 270].forEach((dir, i) => { let diff = Math.abs(az - dir); if (diff > 180) diff = 360 - diff; if (diff < best[i].d) best[i] = { d: diff, q } })
+        }
+        for (const b of best) if (b.q) labels.push({ lon: b.q[0], lat: b.q[1], text: elTxt, hpx: elHpx, color, alt: 40 })
       }
     }
     // 卫星名/图标：不依赖仰角值，仅由 labelShow 决定（3D 只画名，2D 画图标+名）
@@ -2256,7 +2264,7 @@ onBeforeUnmount(() => {
             <div class="sdiv">仰角线（等仰角环 / 角度标注）</div>
             <div class="srow"><label>仰角值</label><input class="ci" v-model="satModal.els" placeholder="如 5,10,20（0=地平）" /><span class="u">°</span></div>
             <div class="srow"><label>线粗</label><input class="rng" type="range" min="0.5" max="4" step="0.1" v-model.number="satModal.elevWidth" /><span class="u">{{ (satModal.elevWidth || 1.3).toFixed(1) }}</span></div>
-            <div class="srow"><label>标注字号</label><input class="rng" type="range" min="6" max="24" step="1" v-model.number="satModal.elevLabelSize" /><span class="u">{{ satModal.elevLabelSize || 13 }}</span></div>
+            <div class="srow"><label>标注字号</label><input class="rng" type="range" min="1" max="35" step="1" v-model.number="satModal.elevLabelSize" /><span class="u">{{ satModal.elevLabelSize || 18 }}</span></div>
 
             <div class="sdiv">颜色（仰角线与卫星名共用）</div>
             <div class="srow"><label>颜色</label><input class="clr" type="color" v-model="satModal.color" /></div>

@@ -498,7 +498,7 @@ export function createFlatCoverage(canvas) {
     if (satLayer) {
       for (const ln of (satLayer.lines || [])) if (ln.p && ln.p.length > 1) drawPolyline(ln.p, hex(ln.color != null ? ln.color : 0x66ddff), Math.max(0.8, ln.width || 1.4))
       for (const d of (satLayer.dots || [])) dot(d.lon, d.lat, Math.max(2, d.r != null ? d.r : 4) * mz, hex(d.color != null ? d.color : 0xffd27a), true)
-      for (const l of (satLayer.labels || [])) drawText(l.text, l.lon, l.lat, Math.round((l.hpx || 0.026) * 533 * mz), l.color || '#fff')
+      for (const l of (satLayer.labels || [])) drawText(l.text, l.lon, l.lat, Math.round((l.hpx || 0.026) * 750 * zf), l.color || '#fff')   // 世界尺寸字号：与 3D makeCovLabel 同源（套用地名标定 hpx0.02↔px15，zf=k()/13.1），2D/3D 一致
       for (const s of (satLayer.sats || [])) drawSatIcon(s.lon, s.lat, (s.iconSize || sizes.satIcon || 30) * mz, hex(s.color != null ? s.color : 0xffd27a))   // 颜色/大小随各星设置
       for (const s of (satLayer.sats || [])) {
         if (!s.name || s.lon == null || s.lat == null || s.labelShow === false) continue

@@ -26,6 +26,31 @@ const nCol = computed(() => props.fields.length)
 const roCol = computed(() => (props.roLabel ? props.fields.length : -1))   // 只读列列号，无则 -1
 const nColSel = computed(() => props.fields.length + (props.roLabel ? 1 : 0))  // 可选区总列数（含只读列）
 const isRO = (c) => c === roCol.value
+
+// —— 隐藏/显示列（仅折叠显示，不动数据与字段集；序号列、名称列 c=0、只读列不可隐藏）——
+const hiddenCols = ref([])                       // 已隐藏的字段列下标（原始 fields 下标）
+const isHidden = (c) => hiddenCols.value.includes(c)
+const visFields = computed(() => props.fields.map((f, c) => ({ f, c })).filter(({ c }) => !isHidden(c)))
+const visColCount = computed(() => visFields.value.length + 1 + (props.roLabel ? 1 : 0))   // 含序号列与只读列
+// 可选区中「可见」的列下标（有序）：可见字段列 +（如有）只读列。用于键盘左右移动时跳过隐藏列。
+const visSelCols = computed(() => {
+  const out = []
+  for (let c = 0; c < props.fields.length; c++) if (!isHidden(c)) out.push(c)
+  if (props.roLabel) out.push(props.fields.length)
+  return out
+})
+const firstVisSelCol = () => (visSelCols.value.length ? visSelCols.value[0] : 0)
+const lastVisSelCol = () => { const v = visSelCols.value; return v.length ? v[v.length - 1] : 0 }
+// 从列 c 朝 dir(±1) 取下一可见可选列；c 自身隐藏时取该方向最近可见列
+function visColAfter(c, dir) {
+  const vis = visSelCols.value
+  if (!vis.length) return c
+  const i = vis.indexOf(c)
+  if (i >= 0) return vis[Math.max(0, Math.min(vis.length - 1, i + dir))]
+  if (dir >= 0) { for (const v of vis) if (v > c) return v; return vis[vis.length - 1] }
+  for (let k = vis.length - 1; k >= 0; k--) if (vis[k] < c) return vis[k]
+  return vis[0]
+}
 // 取单元格文本：只读列取其计算值，其余取字段值（复制用）
 function cellText(s, c) { return isRO(c) ? (props.roValues[s._id] != null ? props.roValues[s._id] : '') : s[props.fields[c].key] }
 // 经纬度最多保留 6 位小数（≈0.11 m，GIS/GPS 实用精度；再多是浮点噪声）。导入/粘贴 Excel 时清理
@@ -226,7 +251,7 @@ function endEdit() {
 function onEditKey(e) {
   if (e.key === 'Enter') { endEdit(); setFocus(range.fr + 1, range.fc); e.preventDefault() }
   else if (e.key === 'Escape') { endEdit(); e.preventDefault() }
-  else if (e.key === 'Tab') { endEdit(); setFocus(range.fr, range.fc + (e.shiftKey ? -1 : 1)); e.preventDefault() }
+  else if (e.key === 'Tab') { endEdit(); setFocus(range.fr, visColAfter(range.fc, e.shiftKey ? -1 : 1)); e.preventDefault() }
   e.stopPropagation()
 }
 
@@ -272,12 +297,12 @@ function onKey(e) {
   if (mod && (e.key === 'y' || e.key === 'Y')) { redo(); e.preventDefault(); return }
   if (mod && (e.key === 'c' || e.key === 'C')) { copyRange(); e.preventDefault(); return }
   if (mod && (e.key === 'v' || e.key === 'V')) { pasteRange(); e.preventDefault(); return }
-  if (mod && (e.key === 'a' || e.key === 'A')) { range.ar = 0; range.ac = 0; range.fr = props.stations.length - 1; range.fc = nColSel.value - 1; e.preventDefault(); return }
+  if (mod && (e.key === 'a' || e.key === 'A')) { range.ar = 0; range.ac = firstVisSelCol(); range.fr = props.stations.length - 1; range.fc = lastVisSelCol(); e.preventDefault(); return }
   if (mod) return
   if (e.key === 'Enter' || e.key === 'F2') { startEdit(range.fr, range.fc); e.preventDefault(); return }
   if (e.key === 'Delete' || e.key === 'Backspace') { clearSel(); e.preventDefault(); return }
   const arrow = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1] }[e.key]
-  if (arrow) { setFocus(range.fr + arrow[0], range.fc + arrow[1], e.shiftKey); e.preventDefault(); return }
+  if (arrow) { setFocus(range.fr + arrow[0], arrow[1] ? visColAfter(range.fc, arrow[1]) : range.fc, e.shiftKey); e.preventDefault(); return }
   if (e.key.length === 1) { startEdit(range.fr, range.fc, e.key); e.preventDefault() }
 }
 
@@ -350,6 +375,76 @@ const batch = reactive({ open: false, key: '', value: '' })
 function openBatch() { if (!selectedRows.value.length) return; batch.key = props.fields[0].key; batch.value = ''; batch.open = true }
 function doBatch() { pushUndo(); for (const s of selectedRows.value) s[batch.key] = batch.value; batch.open = false }
 const batchField = computed(() => props.fields.find((f) => f.key === batch.key) || props.fields[0])
+
+// ============ 右键菜单（Excel 式）：复制/剪切/粘贴/清除内容 · 插入/删除行 · 隐藏列/清除整列 ============
+const menu = reactive({ open: false, x: 0, y: 0 })
+function openMenu(e) {
+  menu.x = Math.min(e.clientX, window.innerWidth - 200)     // 防贴右/下边溢出
+  menu.y = Math.min(e.clientY, window.innerHeight - 320)
+  menu.open = true
+}
+function menuDo(fn) { menu.open = false; fn() }
+function selectedRowIdx() { const out = []; props.stations.forEach((s, i) => { if (sel.value[s._id]) out.push(i) }); return out }
+function selectFullRows(lo, hi) { range.ar = lo; range.fr = hi; range.ac = firstVisSelCol(); range.fc = lastVisSelCol() }
+// 单元格右键：进入「单元格模式」——清行勾选；右键落在选区外则选区跳到该格（与 Excel 一致）
+function onCellContext(r, c, e) {
+  e.preventDefault(); editing.value = null; sel.value = {}
+  if (!inSel(r, c)) setFocus(r, c, false)
+  focusGrid(); openMenu(e)
+}
+// 序号列右键：进入「整行模式」——右键行在已选外则只选该行；并让单元格选区覆盖选中行整行
+function onIdxContext(i, e) {
+  e.preventDefault(); editing.value = null
+  if (!sel.value[props.stations[i]._id]) sel.value = { [props.stations[i]._id]: true }
+  const idx = selectedRowIdx()
+  if (idx.length) selectFullRows(Math.min(...idx), Math.max(...idx))
+  focusGrid(); openMenu(e)
+}
+
+// 复制/剪切/粘贴/清除内容复用电子表格选区逻辑（copyRange/pasteRange/clearSel 已有）
+function cutRange() { copyRange(); clearSel() }
+
+// —— 插入/删除行：行集 = 已勾选行（整行模式）否则单元格选区所在行（单元格模式）——
+function targetRowIdx() {
+  const s = selectedRowIdx()
+  if (s.length) return s
+  const out = []; for (let r = r0.value; r <= r1.value; r++) out.push(r); return out
+}
+function insertRowsAt(at, count) {
+  pushUndo()
+  const rows = []; for (let k = 0; k < count; k++) rows.push(makeRow(null))   // 默认值新行（与「＋ 增加」一致）
+  props.stations.splice(at, 0, ...rows)
+  sel.value = {}; selectFullRows(at, at + count - 1)
+}
+function insertAbove() { const idx = targetRowIdx(); if (idx.length) insertRowsAt(Math.min(...idx), idx.length) }
+function insertBelow() { const idx = targetRowIdx(); if (idx.length) insertRowsAt(Math.max(...idx) + 1, idx.length) }
+function deleteCtxRows() {
+  if (!props.stations.length) return
+  const idx = targetRowIdx().slice().sort((a, b) => b - a)   // 从后往前删，下标不串位
+  pushUndo()
+  for (const i of idx) { const s = props.stations[i]; if (s) { delete sel.value[s._id]; props.stations.splice(i, 1) } }
+  sel.value = {}
+  if (props.stations.length) setFocus(Math.min(idx[idx.length - 1], props.stations.length - 1), range.fc, false)
+}
+
+// —— 列：隐藏/显示、清除整列内容。列集 = 单元格选区跨过的列 ——
+function targetColIdx() { const out = []; for (let c = c0.value; c <= c1.value; c++) out.push(c); return out }
+const canHideSel = computed(() => targetColIdx().some((c) => c < props.fields.length && c !== 0 && !isHidden(c)))
+function hideCols() {
+  const add = targetColIdx().filter((c) => c < props.fields.length && c !== 0 && !isHidden(c))   // 序号/名称列、只读列不可隐藏
+  if (!add.length) return
+  hiddenCols.value = [...hiddenCols.value, ...add]
+  const vis = visSelCols.value                                  // 焦点/锚点落在刚隐藏的列上 → 贴回最近可见列
+  const snap = (c) => (vis.includes(c) ? c : visColAfter(c, -1))
+  range.ac = snap(range.ac); range.fc = snap(range.fc)
+}
+function unhideAll() { hiddenCols.value = [] }
+function clearColContents() {
+  const cols = targetColIdx().filter((c) => c < props.fields.length && !isRO(c))
+  if (!cols.length || !props.stations.length) return
+  pushUndo()
+  for (const c of cols) { const key = props.fields[c].key; for (const s of props.stations) s[key] = '' }
+}
 </script>
 
 <template>
@@ -364,6 +459,7 @@ const batchField = computed(() => props.fields.find((f) => f.key === batch.key) 
       <button class="sg-btn" :disabled="!stations.length" @click="clearAll">清空</button>
       <button class="sg-btn" :disabled="!undoStack.length" title="撤销" @click="undo">↶</button>
       <button class="sg-btn" :disabled="!redoStack.length" title="重做" @click="redo">↷</button>
+      <button v-if="hiddenCols.length" class="sg-btn" :title="'已隐藏 ' + hiddenCols.length + ' 列，点击全部显示'" @click="unhideAll">显示隐藏列 ({{ hiddenCols.length }})</button>
     </div>
 
     <div ref="root" class="sg-scroll" tabindex="0" @keydown="onKey">
@@ -371,7 +467,7 @@ const batchField = computed(() => props.fields.find((f) => f.key === batch.key) 
         <thead>
           <tr>
             <th class="sg-sel"><input type="checkbox" :checked="allSelected" @change="toggleAll" /></th>
-            <th v-for="(f, c) in fields" :key="f.key" :class="{ 'sg-key': c === 0 }" :title="f.label">
+            <th v-for="({ f, c }) in visFields" :key="f.key" :class="{ 'sg-key': c === 0 }" :title="f.label">
               {{ f.label }}<i v-if="f.unit"> ({{ f.unit }})</i>
             </th>
             <th v-if="roLabel" class="sg-ro">{{ roLabel }}<i v-if="roUnit"> ({{ roUnit }})</i></th>
@@ -379,10 +475,10 @@ const batchField = computed(() => props.fields.find((f) => f.key === batch.key) 
         </thead>
         <tbody>
           <tr v-for="(s, i) in stations" :key="s._id || i" :class="{ on: sel[s._id] }">
-            <td class="sg-sel" :title="'拖拽序号可框选行'" @mousedown.left="onRowDown(i, $event)" @mouseenter="onRowEnter(i)"><span class="sg-idx">{{ i + 1 }}</span></td>
-            <td v-for="(f, c) in fields" :key="f.key"
+            <td class="sg-sel" :title="'拖拽序号可框选行 · 右键插入/删除行'" @mousedown.left="onRowDown(i, $event)" @mouseenter="onRowEnter(i)" @contextmenu.prevent="onIdxContext(i, $event)"><span class="sg-idx">{{ i + 1 }}</span></td>
+            <td v-for="({ f, c }) in visFields" :key="f.key"
                 class="sg-cell" :class="{ 'sg-key': c === 0, sel: inSel(i, c), focus: isFocus(i, c), editing: isEditing(i, c), fillp: inFill(i, c) }"
-                @mousedown.left="onDown(i, c, $event)" @mouseenter="onEnter(i, c)" @dblclick="startEdit(i, c)">
+                @mousedown.left="onDown(i, c, $event)" @mouseenter="onEnter(i, c)" @dblclick="startEdit(i, c)" @contextmenu.prevent="onCellContext(i, c, $event)">
               <template v-if="isEditing(i, c)">
                 <select v-if="f.type === 'select'" v-model="s[f.key]" class="sg-i" @blur="endEdit" @keydown="onEditKey">
                   <option v-for="o in f.options" :key="o" :value="o">{{ o }}</option>
@@ -393,12 +489,12 @@ const batchField = computed(() => props.fields.find((f) => f.key === batch.key) 
               <span v-if="isFillAnchor(i, c) && !isEditing(i, c)" class="sg-handle" title="拖动/双击向下填充" @mousedown.left.stop.prevent="onFillDown" @dblclick.stop="onFillDbl"></span>
             </td>
             <td v-if="roLabel" class="sg-ro mono sg-cell" :class="{ sel: inSel(i, fields.length), focus: isFocus(i, fields.length), fillp: inFill(i, fields.length) }"
-                @mousedown.left="onDown(i, fields.length, $event)" @mouseenter="onEnter(i, fields.length)">
+                @mousedown.left="onDown(i, fields.length, $event)" @mouseenter="onEnter(i, fields.length)" @contextmenu.prevent="onCellContext(i, fields.length, $event)">
               {{ roValues[s._id] != null ? roValues[s._id] : '—' }}
               <span v-if="isFillAnchor(i, fields.length)" class="sg-handle" title="拖动/双击向下填充" @mousedown.left.stop.prevent="onFillDown" @dblclick.stop="onFillDbl"></span>
             </td>
           </tr>
-          <tr v-if="!stations.length"><td :colspan="fields.length + 1 + (roLabel ? 1 : 0)" class="sg-empty">暂无{{ label }}，点「＋ 增加」或「⇩ 导入」</td></tr>
+          <tr v-if="!stations.length"><td :colspan="visColCount" class="sg-empty">暂无{{ label }}，点「＋ 增加」或「⇩ 导入」</td></tr>
         </tbody>
       </table>
     </div>
@@ -433,6 +529,24 @@ const batchField = computed(() => props.fields.find((f) => f.key === batch.key) 
           <input v-else v-model="batch.value" class="sg-search" :placeholder="'值（' + (batchField.unit || '') + '）'" />
         </div>
         <div class="sg-box-ft"><button class="sg-btn" @click="batch.open = false">取消</button><button class="sg-btn primary" @click="doBatch">应用</button></div>
+      </div>
+    </div>
+
+    <!-- 右键菜单（Excel 式） -->
+    <div v-if="menu.open" class="sg-ctx-mask" @click="menu.open = false" @contextmenu.prevent="menu.open = false">
+      <div class="sg-ctx" :style="{ left: menu.x + 'px', top: menu.y + 'px' }" @click.stop @contextmenu.stop.prevent>
+        <button class="sg-ctx-i" @click="menuDo(copyRange)"><span>复制</span><kbd>Ctrl+C</kbd></button>
+        <button class="sg-ctx-i" @click="menuDo(cutRange)"><span>剪切</span><kbd>Ctrl+X</kbd></button>
+        <button class="sg-ctx-i" @click="menuDo(pasteRange)"><span>粘贴</span><kbd>Ctrl+V</kbd></button>
+        <button class="sg-ctx-i" @click="menuDo(clearSel)"><span>清除内容</span><kbd>Del</kbd></button>
+        <div class="sg-ctx-sep"></div>
+        <button class="sg-ctx-i" @click="menuDo(insertAbove)">在上方插入行</button>
+        <button class="sg-ctx-i" @click="menuDo(insertBelow)">在下方插入行</button>
+        <button class="sg-ctx-i danger" @click="menuDo(deleteCtxRows)">删除行</button>
+        <div class="sg-ctx-sep"></div>
+        <button class="sg-ctx-i" :disabled="!canHideSel" @click="menuDo(hideCols)">隐藏列</button>
+        <button v-if="hiddenCols.length" class="sg-ctx-i" @click="menuDo(unhideAll)">显示所有列（{{ hiddenCols.length }}）</button>
+        <button class="sg-ctx-i" @click="menuDo(clearColContents)">清除整列内容</button>
       </div>
     </div>
   </div>
@@ -513,4 +627,14 @@ const batchField = computed(() => props.fields.find((f) => f.key === batch.key) 
 .sg-impn { flex: 1; }
 .sg-batch { display: flex; flex-direction: column; }
 .sg-box-ft { display: flex; justify-content: flex-end; gap: 8px; padding: 4px 12px 12px; }
+
+/* 右键菜单（Excel 式）：满屏遮罩拦截点击关闭 + 浮层菜单 */
+.sg-ctx-mask { position: fixed; inset: 0; z-index: 400; }
+.sg-ctx { position: fixed; min-width: 168px; padding: 4px; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-box, 3px); box-shadow: 0 6px 20px rgba(0,0,0,.22); display: flex; flex-direction: column; }
+.sg-ctx-i { display: flex; align-items: center; justify-content: space-between; gap: 16px; font: inherit; font-size: 12px; text-align: left; padding: 6px 10px; cursor: pointer; background: transparent; color: var(--text); border: 0; border-radius: var(--r-ctl, 2px); white-space: nowrap; }
+.sg-ctx-i:hover:not(:disabled) { background: var(--surface-2); }
+.sg-ctx-i:disabled { opacity: .45; cursor: not-allowed; }
+.sg-ctx-i.danger:hover { color: var(--danger); }
+.sg-ctx-i kbd { font: inherit; font-size: 10px; color: var(--text-faint); background: var(--surface-2); border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; }
+.sg-ctx-sep { height: 1px; margin: 4px 6px; background: var(--border); }
 </style>
