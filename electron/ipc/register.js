@@ -194,10 +194,12 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     if (canceled || !filePath) return { ok: false, canceled: true }
     try {
       // 为每条链路构建七段瀑布（与 UI 瀑布同源 buildWaterfallSegments）→「详细计算结果」分表
+      // lang 跟随导出语言选择（中/英），与链路汇总表的中英文口径保持一致
+      const exportLang = (payload && payload.lang === 'en') ? 'en' : 'zh'
       const links = (payload && payload.links) || []
       for (const l of links) {
         if (l && l.data) {
-          try { l.segments = core().buildWaterfallSegments({ results: l.data, lang: 'zh', orbitType: 'GEO', txLocation: String(l.txName || ''), rxLocation: String(l.rxName || '') }) }
+          try { l.segments = core().buildWaterfallSegments({ results: l.data, lang: exportLang, orbitType: 'GEO', txLocation: String(l.txName || ''), rxLocation: String(l.rxName || '') }) }
           catch (e) { l.segments = [] }
         }
       }

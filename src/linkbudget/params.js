@@ -50,6 +50,11 @@ export const FIELD_GROUPS = [
   {
     key: 'uplink', title: '上行 · 发信站', icon: 'up',
     fields: [
+      // 载波由发信站调制器产生（卫星只是弯管转发），故基带配置与发信站绑定而非收信站；放在表格最前一列
+      // （StationGrid 把 fields[0] 当冻结的“关键列”处理）。target:'meta' 为 UI 专用字段，不进引擎参数
+      // （见 buildParams 的过滤）。options 为空，实际选项由 LinkBudgetApp 按当前基带配置库动态生成并
+      // 通过 StationGrid 的 select-options 注入。
+      { key: 'basebandId', label: '基带配置', type: 'select', options: [], def: '', target: 'meta' },
       { key: 'earthStationLocation', label: '地面站位置', type: 'text', def: '北京', target: 'link', city: 'tx' },
       { key: 'longitude', label: '经度', unit: '°E', type: 'num', def: '116.4074', target: 'link' },
       { key: 'latitude', label: '纬度', unit: '°N', type: 'num', def: '39.9042', target: 'link' },
@@ -111,7 +116,7 @@ export function buildParams(satForm, carrierForm, txStation, rxStation) {
   // 卫星模块字段按 target 分流：'sat' → satParams；'link'（如上/下行频率，全站共享）→ linkParams
   for (const f of SAT_FIELDS) (f.target === 'link' ? linkParams : satParams)[f.key] = satForm[f.key]
   for (const f of CARRIER_FIELDS) linkParams[f.key] = carrierForm[f.key]
-  for (const f of TX_FIELDS) linkParams[f.key] = txStation[f.key]
+  for (const f of TX_FIELDS) if (f.target !== 'meta') linkParams[f.key] = txStation[f.key]
   for (const f of RX_FIELDS) linkParams[f.key] = rxStation[f.key]
   const gtRef = parseFloat(satParams.sfdGtRef)
   const sfd = parseFloat(satParams.sfdRef)

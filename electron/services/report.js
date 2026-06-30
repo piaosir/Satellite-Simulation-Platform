@@ -105,16 +105,53 @@ async function buildExcel(payload) {
   return wb.xlsx.writeBuffer()
 }
 
-// ===== 工作台 m×n 链路结果导出（Phase 5，重做）=====
-// payload: { links:[{ti,ri,txName,rxName,ok,error,metric,data,segments}], metricLabel, params, meta }
-// 三类表：① 链路汇总（每条一行，列=矩阵指标∪结果卡片字段，三线表/Times New Roman/舒朗行距）
-//        ② 结果矩阵（发信站 T × 收信站 R，坐标标注清晰）
-//        ③ 详细计算结果：每条链路一个 sheet（七段瀑布，仿小程序专业版），表名=坐标+发信站-收信站。
+// ===== 工作台链路结果导出（Phase 5/6）=====
+// payload: { links:[{ti,ri,txName,rxName,ok,error,metric,data,segments}], pairMode, lang, params, meta }
+// 两类表：① 链路汇总（每条一行，纵向列表——常规计算/矩阵计算共用同一种纵向布局，仅首列「序号」/「坐标」不同；
+//           三线表/Times New Roman/舒朗行距）
+//        ② 详细计算结果：每条链路一个 sheet（七段瀑布，仿小程序专业版，与 UI 瀑布同源），表名=坐标+发信站-收信站。
+// 不再生成"结果矩阵"宽表——多数使用者按行纵向阅读表格，矩阵计算的 m×n 组合已在①里逐行列全，常规计算的
+// 1↔1 配对用宽矩阵展示反而大半是空格；纵向列表对两种配对方式都更直观，也更方便排序/筛选。
+// 标签中英文由 lang('zh'|'en') 控制；详细计算结果表的标签翻译表统一在 packages/core 的 waterfallBuilder.js
+// WF_DICT 维护（与结果区实时瀑布同源，避免两处译法不一致），此文件只维护链路汇总表自己的列头/标题译法。
 const FNT = 'Times New Roman'       // 数字/拉丁；中文由 Excel 按字形自动回退
 const CJK = '微软雅黑'               // 中文标签/标题
 const MED = { style: 'medium', color: { argb: 'FF000000' } }
 const THIN = { style: 'thin', color: { argb: 'FF000000' } }
 const HAIR = { style: 'hair', color: { argb: 'FF999999' } }
+
+// 中英文字符串表（链路汇总表头/标题等）。英文措辞对齐卫星通信工程报告的学术/行业惯用语，并与
+// WF_DICT（瀑布详情表）的译法保持一致（如 Allocated Bandwidth / Link Margin / System Availability 等），
+// 避免同一份工作簿里术语不统一。
+const STR = {
+  zh: {
+    reportTitle: 'GEO 链路预算结果', sheetSummary: '链路汇总',
+    paRecW: '功放建议 (W)', paRecDbw: '功放建议 (dBW)', paActW: '功放实际输出 (W)',
+    linkMargin: '链路余量 (dB)', allocBw: '载波带宽 (kHz)', powerBw: '功率带宽 (kHz)',
+    bwUsage: '带宽占用 (%)', pwUsage: '功率占用 (%)',
+    upCN: '上行 C/N (dB)', downCN: '下行 C/N (dB)', totalCN: '合计 C/N (dB)', thresholdCN: '门限 C/N (dB)',
+    ebno: 'Eb/N₀ (dB)', esno: 'Es/N₀ (dB)', psd: '载波功率谱密度 (dBW/Hz)', avail: '系统可用度 (%)',
+    status: '合格', statusOk: '是', statusBad: '否', statusErr: '错误',
+    pairSeq: '常规计算（1↔1）', pairMatrix: '矩阵计算（m×n）',
+    subtitle: (sat, band, mode, pair, date) => `卫星 ${sat} · 频段 ${band} · 计算方式 ${mode} · 配对方式 ${pair} · ${date}`,
+    calcFailed: '计算失败：',
+    param: '参数', uplink: '上行', downlink: '下行', total: '合计', value: '数值', unit: '单位'
+  },
+  en: {
+    reportTitle: 'GEO Link Budget Results', sheetSummary: 'Link Summary',
+    paRecW: 'Recommended PA Power (W)', paRecDbw: 'Recommended PA Power (dBW)', paActW: 'Actual PA Output (W)',
+    linkMargin: 'Link Margin (dB)', allocBw: 'Allocated Bandwidth (kHz)', powerBw: 'Power Bandwidth (kHz)',
+    bwUsage: 'Bandwidth Usage Ratio (%)', pwUsage: 'Power Usage Ratio (%)',
+    upCN: 'Uplink C/N (dB)', downCN: 'Downlink C/N (dB)', totalCN: 'Combined C/N (dB)', thresholdCN: 'Threshold C/N (dB)',
+    ebno: 'Eb/N₀ (dB)', esno: 'Es/N₀ (dB)', psd: 'Satellite PSD (dBW/Hz)', avail: 'System Availability (%)',
+    status: 'Status', statusOk: 'Pass', statusBad: 'Fail', statusErr: 'Error',
+    pairSeq: 'Sequential (1:1)', pairMatrix: 'Full Matrix (m×n)',
+    subtitle: (sat, band, mode, pair, date) => `Satellite ${sat} · Band ${band} · Calculation Mode: ${mode} · Pairing: ${pair} · ${date}`,
+    calcFailed: 'Calculation Failed: ',
+    param: 'Parameter', uplink: 'Uplink', downlink: 'Downlink', total: 'Total', value: 'Value', unit: 'Unit'
+  }
+}
+const strFor = (lang) => (lang === 'en' ? STR.en : STR.zh)
 function setRowBorder(ws, rowNumber, fromCol, toCol, edges) {
   for (let c = fromCol; c <= toCol; c++) {
     const cell = ws.getCell(rowNumber, c)
@@ -131,119 +168,85 @@ function numOrText(v) {
   return Number.isFinite(n) && String(v).trim() !== '' ? n : v
 }
 
-// 链路汇总列：标识 + 矩阵显示全部指标 ∪ 结果卡片全部字段（去重，含单位）。num=数字列。
-const SUMMARY_COLS = [
-  ['坐标', (l) => l.coord, false],
-  ['发信站', (l) => l.txName, false],
-  ['收信站', (l) => l.rxName, false],
-  ['功放建议 (W)', (l) => val(l.data, 'paRecommendation'), true],
-  ['功放建议 (dBW)', (l) => val(l.data, 'paRecommendationdBResult'), true],
-  ['功放实际输出 (W)', (l) => val(l.data, 'selectedPowerWResult'), true],
-  ['链路余量 (dB)', (l) => val(l.data, 'linkmargin'), true],
-  ['载波带宽 (kHz)', (l) => val(l.data, 'allocBandwidthResult'), true],
-  ['功率带宽 (kHz)', (l) => val(l.data, 'PowerBWResult'), true],
-  ['带宽占用 (%)', (l) => val(l.data, 'bandwidthUsageRatio'), true],
-  ['功率占用 (%)', (l) => val(l.data, 'powerUsageRatio'), true],
-  ['上行 C/N (dB)', (l) => val(l.data, 'uplinkCN'), true],
-  ['下行 C/N (dB)', (l) => val(l.data, 'downlinkCN'), true],
-  ['合计 C/N (dB)', (l) => val(l.data, 'carrierTotalCN'), true],
-  ['门限 C/N (dB)', (l) => val(l.data, 'thresholdCN'), true],
-  ['Eb/N₀ (dB)', (l) => val(l.data, 'ebnoActualResult'), true],
-  ['Es/N₀ (dB)', (l) => val(l.data, 'esnoActualResult'), true],
-  ['载波功率谱密度 (dBW/Hz)', (l) => val(l.data, 'satellitePSDResult'), true],
-  ['系统可用度 (%)', (l) => val(l.data, 'systemAvailabilityResult'), true],
-  ['合格', (l) => (l.error ? '错误' : (l.ok ? '是' : '否')), false]
-]
+// 链路汇总的"参数行"：矩阵显示全部指标 ∪ 结果卡片全部字段。每行一个参数，纵向排列——
+// 这样每条链路占一整列，从上往下读完一列就是这条链路的完整结果，跟下面单链路详细计算结果表
+// （参数纵向列在左、数值在右）是同一种阅读方式，多条链路时天然变成左右并排的对比表。
+function summaryRows(t) {
+  return [
+    { label: t.paRecW, get: (l) => val(l.data, 'paRecommendation') },
+    { label: t.paRecDbw, get: (l) => val(l.data, 'paRecommendationdBResult') },
+    { label: t.paActW, get: (l) => val(l.data, 'selectedPowerWResult') },
+    { label: t.linkMargin, get: (l) => val(l.data, 'linkmargin') },
+    { label: t.allocBw, get: (l) => val(l.data, 'allocBandwidthResult') },
+    { label: t.powerBw, get: (l) => val(l.data, 'PowerBWResult') },
+    { label: t.bwUsage, get: (l) => val(l.data, 'bandwidthUsageRatio') },
+    { label: t.pwUsage, get: (l) => val(l.data, 'powerUsageRatio') },
+    { label: t.upCN, get: (l) => val(l.data, 'uplinkCN') },
+    { label: t.downCN, get: (l) => val(l.data, 'downlinkCN') },
+    { label: t.totalCN, get: (l) => val(l.data, 'carrierTotalCN') },
+    { label: t.thresholdCN, get: (l) => val(l.data, 'thresholdCN') },
+    { label: t.ebno, get: (l) => val(l.data, 'ebnoActualResult') },
+    { label: t.esno, get: (l) => val(l.data, 'esnoActualResult') },
+    { label: t.psd, get: (l) => val(l.data, 'satellitePSDResult') },
+    { label: t.avail, get: (l) => val(l.data, 'systemAvailabilityResult') },
+    { label: t.status, get: (l) => (l.error ? t.statusErr : (l.ok ? t.statusOk : t.statusBad)), text: true }
+  ]
+}
+// 每条链路的列头：常规计算用 #序号，矩阵计算用坐标；第二行换行写发信站→收信站
+function linkColHeader(l, idx, isSequential) {
+  return `${isSequential ? '#' + (idx + 1) : l.coord}\n${l.txName || ''} → ${l.rxName || ''}`
+}
 
 // 瀑布段渲染辅助（与小程序 exportLinkBudget 同口径：黑白三线表）
-const valueHeaders = (cols) => (cols >= 3 ? ['上行', '下行', '合计'] : cols >= 2 ? ['上行', '下行'] : ['数值'])
+const valueHeaders = (cols, t) => (cols >= 3 ? [t.uplink, t.downlink, t.total] : cols >= 2 ? [t.uplink, t.downlink] : [t.value])
 const rowValues = (row, cols) => (cols >= 3 ? [row.up || '', row.down || '', row.total || ''] : cols >= 2 ? [row.up || '', row.down || ''] : [row.up || ''])
 const labelWithSign = (row) => (row.sign ? row.sign + ' ' : '') + (row.label || '')
 
-// ① 链路汇总
-function buildSummarySheet(wb, links, params, meta) {
-  const ncol = SUMMARY_COLS.length
-  const ws = wb.addWorksheet('链路汇总', { views: [{ showGridLines: false, state: 'frozen', xSplit: 3, ySplit: 4 }] })
+// ① 链路汇总（纵向：参数名在左侧纵列，每条链路占一列；常规计算/矩阵计算共用同一种纵向布局，
+// 仅列头标识不同——常规计算 #序号，矩阵计算坐标 T#R#）
+function buildSummarySheet(wb, links, params, meta, t, isSequential) {
+  const rows = summaryRows(t)
+  const ncol = 1 + links.length
+  const ws = wb.addWorksheet(t.sheetSummary, { views: [{ showGridLines: false, state: 'frozen', xSplit: 1, ySplit: 4 }] })
   ws.mergeCells(1, 1, 1, ncol)
-  const t = ws.getCell(1, 1); t.value = meta.title || 'GEO 链路预算结果'
-  t.font = { name: CJK, size: 15, bold: true }; t.alignment = { vertical: 'middle' }; ws.getRow(1).height = 28
+  const title = ws.getCell(1, 1); title.value = meta.title || t.reportTitle
+  title.font = { name: CJK, size: 15, bold: true }; title.alignment = { vertical: 'middle' }; ws.getRow(1).height = 28
   ws.mergeCells(2, 1, 2, ncol)
   const s = ws.getCell(2, 1)
-  s.value = `卫星 ${params.satelliteName || '—'} · 频段 ${params.frequencyBand || '—'} · 计算方式 ${meta.mode || '—'} · ${new Date().toLocaleString()}`
+  s.value = t.subtitle(params.satelliteName || '—', params.frequencyBand || '—', meta.mode || '—', meta.pairMode || (isSequential ? t.pairSeq : t.pairMatrix), new Date().toLocaleString())
   s.font = { name: CJK, size: 10, color: { argb: 'FF666666' } }; s.alignment = { vertical: 'middle' }; ws.getRow(2).height = 20
-  // 表头（第 4 行）
+  // 表头（第 4 行）：左上角「参数」+ 每条链路一列
   const hr = 4
-  SUMMARY_COLS.forEach((c, i) => {
-    const cell = ws.getCell(hr, i + 1)
-    cell.value = c[0]
-    cell.font = { name: i < 3 ? CJK : FNT, bold: true, size: 10 }
-    cell.alignment = { vertical: 'middle', horizontal: i < 3 ? 'left' : 'center', wrapText: true }
+  const corner = ws.getCell(hr, 1); corner.value = t.param
+  corner.font = { name: CJK, bold: true, size: 10 }; corner.alignment = { vertical: 'middle', horizontal: 'left' }
+  links.forEach((l, idx) => {
+    const cell = ws.getCell(hr, idx + 2)
+    cell.value = linkColHeader(l, idx, isSequential)
+    cell.font = { name: CJK, bold: true, size: 10 }
+    cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true }
   })
-  setRowBorder(ws, hr, 1, ncol, { top: MED, bottom: THIN }); ws.getRow(hr).height = 32
-  // 数据行
+  setRowBorder(ws, hr, 1, ncol, { top: MED, bottom: THIN }); ws.getRow(hr).height = 34
+  // 数据行：一行一个参数，横向铺开各条链路的值
   let r = hr + 1
-  for (const l of links) {
-    SUMMARY_COLS.forEach((c, i) => {
-      const raw = c[1](l)
-      const cell = ws.getCell(r, i + 1)
-      const isText = i < 3 || c[0] === '合格'
-      cell.value = isText ? (raw == null ? '' : raw) : numOrText(raw)
-      cell.font = { name: (typeof cell.value === 'number') ? FNT : (i < 3 || c[0] === '合格' ? CJK : FNT), size: 10 }
-      cell.alignment = { vertical: 'middle', horizontal: i < 3 ? 'left' : (c[0] === '合格' ? 'center' : 'right') }
+  rows.forEach((row) => {
+    const lc = ws.getCell(r, 1); lc.value = row.label
+    lc.font = { name: CJK, size: 10 }; lc.alignment = { vertical: 'middle', horizontal: 'left' }
+    links.forEach((l, idx) => {
+      const raw = row.get(l)
+      const cell = ws.getCell(r, idx + 2)
+      cell.value = row.text ? (raw == null ? '' : raw) : numOrText(raw)
+      cell.font = { name: row.text ? CJK : FNT, size: 10 }
+      cell.alignment = { vertical: 'middle', horizontal: row.text ? 'center' : 'right' }
     })
     ws.getRow(r).height = 19
     r++
-  }
-  if (links.length) setRowBorder(ws, r - 1, 1, ncol, { bottom: MED })
-  ws.columns = SUMMARY_COLS.map((c, i) => ({ width: i === 0 ? 9 : i < 3 ? 14 : (c[0].length > 10 ? 20 : 13) }))
-}
-
-// ② 结果矩阵（坐标清晰：行=发信站 T，列=收信站 R）
-function buildMatrixSheet(wb, links, metricLabel) {
-  const tis = [...new Set(links.map((l) => l.ti))].sort((a, b) => a - b)
-  const ris = [...new Set(links.map((l) => l.ri))].sort((a, b) => a - b)
-  if (!tis.length || !ris.length) return
-  const at = (ti, ri) => links.find((l) => l.ti === ti && l.ri === ri)
-  const ws = wb.addWorksheet('结果矩阵', { views: [{ showGridLines: false, state: 'frozen', xSplit: 1, ySplit: 3 }] })
-  const ncol = ris.length + 1
-  ws.mergeCells(1, 1, 1, ncol)
-  const t = ws.getCell(1, 1); t.value = `结果矩阵 · ${metricLabel}`
-  t.font = { name: CJK, size: 14, bold: true }; t.alignment = { vertical: 'middle' }; ws.getRow(1).height = 26
-  ws.mergeCells(2, 1, 2, ncol)
-  const s = ws.getCell(2, 1); s.value = '行 = 发信站（T1…Tm）　列 = 收信站（R1…Rn）　单元格 = ' + metricLabel
-  s.font = { name: CJK, size: 10, color: { argb: 'FF666666' } }; s.alignment = { vertical: 'middle' }; ws.getRow(2).height = 18
-  // 表头（第 3 行）：角标 + R 坐标 + 收信站名
-  const hr = 3
-  const corner = ws.getCell(hr, 1); corner.value = '发信站 ＼ 收信站'
-  corner.font = { name: CJK, size: 10, bold: true }; corner.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true }
-  ris.forEach((ri, j) => {
-    const l = at(tis[0], ri)
-    const cell = ws.getCell(hr, j + 2)
-    cell.value = `R${ri + 1}\n${(l && l.rxName) || ''}`
-    cell.font = { name: CJK, size: 10, bold: true }; cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true }
   })
-  setRowBorder(ws, hr, 1, ncol, { top: MED, bottom: THIN }); ws.getRow(hr).height = 34
-  // 数据行
-  let r = hr + 1
-  for (const ti of tis) {
-    const l0 = at(ti, ris[0])
-    const rc = ws.getCell(r, 1); rc.value = `T${ti + 1}　${(l0 && l0.txName) || ''}`
-    rc.font = { name: CJK, size: 10, bold: true }; rc.alignment = { vertical: 'middle', horizontal: 'left' }
-    ris.forEach((ri, j) => {
-      const l = at(ti, ri)
-      const cell = ws.getCell(r, j + 2)
-      cell.value = l ? (l.error ? '✕' : numOrText(l.metric)) : ''
-      cell.font = { name: FNT, size: 11 }; cell.alignment = { vertical: 'middle', horizontal: 'center' }
-    })
-    ws.getRow(r).height = 22
-    r++
-  }
-  setRowBorder(ws, r - 1, 1, ncol, { bottom: MED })
-  ws.columns = [{ width: 22 }, ...ris.map(() => ({ width: 14 }))]
+  if (rows.length) setRowBorder(ws, r - 1, 1, ncol, { bottom: MED })
+  ws.columns = [{ width: 24 }, ...links.map(() => ({ width: 15 }))]
 }
 
-// ③ 单链路详细计算结果（七段瀑布，仿小程序专业版三线表）
-function writeLinkDetailSheet(ws, link) {
+// ② 单链路详细计算结果（七段瀑布，仿小程序专业版三线表；标签翻译来自 buildWaterfallSegments 本身）
+function writeLinkDetailSheet(ws, link, t) {
   const MAXCOL = 5
   ws.columns = [{ width: 32 }, { width: 16 }, { width: 16 }, { width: 16 }, { width: 10 }]
   let r = 1
@@ -259,13 +262,13 @@ function writeLinkDetailSheet(ws, link) {
   for (const seg of (link.segments || [])) {
     if (!seg || !seg.rows || !seg.rows.length) continue
     const cols = seg.cols || 1
-    const vh = valueHeaders(cols)
+    const vh = valueHeaders(cols, t)
     const totalCols = 2 + vh.length
     ws.mergeCells(r, 1, r, totalCols)
     const cap = ws.getCell(r, 1); cap.value = seg.title || ''
     cap.font = { name: CJK, bold: true, size: 12 }; cap.alignment = { horizontal: 'left', vertical: 'middle' }; ws.getRow(r).height = 24; r++
     // 表头
-    const headerTexts = ['参数', ...vh, '单位']
+    const headerTexts = [t.param, ...vh, t.unit]
     headerTexts.forEach((h, i) => {
       const cell = ws.getCell(r, i + 1); cell.value = h
       cell.font = { name: CJK, bold: true, size: 10 }
@@ -301,13 +304,14 @@ function writeLinkDetailSheet(ws, link) {
 }
 
 async function buildLinkBudgetExcel(payload) {
-  const { links = [], metricLabel = '指标', params = {}, meta = {} } = payload
+  const { links = [], params = {}, meta = {}, lang = 'zh', pairMode = 'matrix' } = payload
+  const t = strFor(lang)
+  const isSequential = pairMode === 'sequential'
   const enriched = links.map((l) => ({ ...l, coord: 'T' + ((l.ti || 0) + 1) + 'R' + ((l.ri || 0) + 1) }))
   const wb = new ExcelJS.Workbook()
-  wb.creator = '卫星链路预算工作台'; wb.created = new Date()
+  wb.creator = lang === 'en' ? 'GEO Satellite Link Budget Workbench' : '卫星链路预算工作台'; wb.created = new Date()
 
-  buildSummarySheet(wb, enriched, params, meta)
-  buildMatrixSheet(wb, enriched, metricLabel)
+  buildSummarySheet(wb, enriched, params, meta, t, isSequential)
 
   // 详细计算结果：每条链路一个 sheet，表名 = 坐标 + 发信站-收信站（去重、截断 31 字符）
   const used = {}
@@ -319,9 +323,9 @@ async function buildLinkBudgetExcel(payload) {
     const ws = wb.addWorksheet(name, { views: [{ showGridLines: false }] })
     writeLinkDetailSheet(ws, {
       name: `${l.coord}　${l.txName || ''} → ${l.rxName || ''}`,
-      subtitle: l.error ? ('计算失败：' + l.error) : `卫星 ${params.satelliteName || '—'} · 频段 ${params.frequencyBand || '—'} · 计算方式 ${meta.mode || '—'}`,
+      subtitle: l.error ? (t.calcFailed + l.error) : t.subtitle(params.satelliteName || '—', params.frequencyBand || '—', meta.mode || '—', meta.pairMode || (isSequential ? t.pairSeq : t.pairMatrix), new Date().toLocaleString()),
       segments: l.segments || []
-    })
+    }, t)
   }
 
   return wb.xlsx.writeBuffer()

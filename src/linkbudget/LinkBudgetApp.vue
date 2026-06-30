@@ -17,42 +17,76 @@ const activeId = ref(null)
 const configsCollapsed = ref(localStorage.getItem('linkbudget/configsCollapsed') === '1')
 watch(configsCollapsed, (v) => { try { localStorage.setItem('linkbudget/configsCollapsed', v ? '1' : '0') } catch (e) { /* ignore */ } })
 
-// —— 共享参数（卫星 / 基带）与多站（发信站群 / 收信站群）——
+// —— 共享参数（卫星）与多站（发信站群 / 收信站群）——
 const satForm = reactive(defaultsFor(SAT_FIELDS))
-// 基带：引擎参数 + UI 态（门限模式/频谱效率模式/DVB/MODCOD）
-const carrierForm = reactive({ ...defaultsFor(CARRIER_FIELDS), rsCodeMode: 'fraction', dvbStandard: 'custom', modcodIndex: -1 })
 const basebandOpts = ref({})
+
+// —— 基带配置库（Phase 6）：载波由发信站调制器产生，故与发信站绑定（非收信站）——
+// 每份配置 = 引擎参数(CARRIER_FIELDS，含系统余量) + UI 态(门限模式/频谱效率模式/DVB/MODCOD)。
+// 「基带」模块以多张卡片同时展示/编辑全部配置（不再是单一表单+下拉切换）。
+// 发信站表新增「基带配置」列选择使用哪一份；同一配置可被多个发信站共用，未选(空)即用第一份。
+let _bbSeq = 1
+function makeBasebandConfig(name) { return { id: 'bb' + (_bbSeq++), name, form: { ...defaultsFor(CARRIER_FIELDS), rsCodeMode: 'fraction', dvbStandard: 'custom', modcodIndex: -1 } } }
+const basebandConfigs = reactive([makeBasebandConfig('默认')])
+// 按 id 解析；正常路径（下拉选 / 粘贴 / 批量设值）StationGrid 已把存值归一化成合法 id，
+// 这里按名称兜底匹配只是双保险（防御旧数据或遗漏路径）。都没命中则退到第一份默认配置。
+function resolveBaseband(id) {
+  if (!id) return basebandConfigs[0]
+  return basebandConfigs.find((c) => c.id === id) || basebandConfigs.find((c) => c.name === id) || basebandConfigs[0]
+}
+const basebandSelectOptions = computed(() => [{ value: '', label: '（默认）' }, ...basebandConfigs.map((c) => ({ value: c.id, label: c.name }))])
+function addBasebandConfig() { basebandConfigs.push(makeBasebandConfig('配置' + (basebandConfigs.length + 1))) }
+function duplicateBasebandConfig(cfg) {
+  basebandConfigs.push({ id: 'bb' + (_bbSeq++), name: cfg.name + ' 副本', form: JSON.parse(JSON.stringify(cfg.form)) })
+}
+function removeBasebandConfig(cfg) {
+  if (basebandConfigs.length <= 1) return
+  const idx = basebandConfigs.findIndex((c) => c.id === cfg.id)
+  if (idx >= 0) basebandConfigs.splice(idx, 1)
+}
 let _sid = 1
 const newStation = (fields) => { const r = defaultsFor(fields); r._id = 's' + (_sid++); return r }
 const txStations = reactive([newStation(TX_FIELDS)])
 const rxStations = reactive([newStation(RX_FIELDS)])
 
-// —— 点击式 4 模块 ——
+// —— 点击式 4 模块 ——（基带与发信站绑定，排在发信站左边）
 const MODULES = [
+  { key: 'carrier', label: '基带', icon: 'wave' },
   { key: 'tx', label: '发信站群', icon: 'up' },
   { key: 'sat', label: '卫星', icon: 'sat' },
-  { key: 'rx', label: '收信站群', icon: 'down' },
-  { key: 'carrier', label: '基带', icon: 'wave' }
+  { key: 'rx', label: '收信站群', icon: 'down' }
 ]
 const activeModule = ref('tx')
 const moduleCount = (k) => (k === 'tx' ? txStations.length : k === 'rx' ? rxStations.length : 0)
 
-// —— 计算方式 ——
+// —— 计算方式 ——（enLabel 供导出 Excel 选英文时用，措辞对齐链路预算工程惯用语）
 const CALC_MODES = [
-  { key: 'margin', label: '设置余量', tip: '输入余量 → 算功放功率' },
-  { key: 'power', label: '设置功放大小', tip: '输入功放功率(W) → 反推余量' },
-  { key: 'balance', label: '功带平衡', tip: '自动求功带平衡点的余量' },
-  { key: 'overbalance', label: '功带平衡下超发', tip: '相对功带平衡超发 x dB → 自动算余量' }
+  { key: 'margin', label: '设置余量', enLabel: 'Fixed Margin', tip: '输入余量 → 算功放功率' },
+  { key: 'power', label: '设置功放大小', enLabel: 'Fixed PA Power', tip: '输入功放功率(W) → 反推余量' },
+  { key: 'balance', label: '功带平衡', enLabel: 'Power-Bandwidth Balance', tip: '自动求功带平衡点的余量' },
+  { key: 'overbalance', label: '功带平衡下超发', enLabel: 'Power-Bandwidth Balance with Overdrive', tip: '相对功带平衡超发 x dB → 自动算余量' }
 ]
 const calcMode = ref('margin')
 const targetPowerW = ref('')
 const overDb = ref('0')
+// 系统余量是「设置余量」模式的批量目标值，与 targetPowerW/overDb 同性质——批量计算的统一目标，
+// 不随某份基带配置走（载波本身不需要知道你想算多少余量，那是计算策略的事）。
+const targetMarginDb = ref('3.00')
+
+// —— 链路配对方式：常规计算(按序号 1↔1，默认) / 矩阵计算(m×n 全配对) ——
+const LINK_PAIR_MODES = [
+  { key: 'sequential', label: '常规计算', enLabel: 'Sequential (1:1)', tip: '按序号 1↔1 配对：发1↔收1、发2↔收2…' },
+  { key: 'matrix', label: '矩阵计算', enLabel: 'Full Matrix (m×n)', tip: 'm×n 全配对：每个发信站对每个收信站都算一条链路' }
+]
+const linkPairMode = ref('sequential')
+const pairCount = computed(() => linkPairMode.value === 'sequential' ? Math.min(nTx.value, nRx.value) : nTx.value * nRx.value)
 
 // —— 计算结果（m×n 链路矩阵）——
 // shallowRef：避免 Vue 把每条链路的 data(引擎结果) 深度代理成 reactive，
 // 否则传给 waterfall IPC 时结构化克隆会报 “could not be cloned”。
 const links = shallowRef([])  // [{ ti, ri, txName, rxName, data, margin, ok, totalCN, thresholdCN, avail, powerW, metric, error }]
 const resultMode = ref('margin') // 出结果时所用的计算方式（决定「自动」口径）
+const resultPairMode = ref('sequential') // 出结果时所用的配对方式（决定矩阵/列表展示）
 // 矩阵单元格显示哪个指标（默认「自动」= 设置余量显功放W、其它显余量dB）
 const METRIC_OPTIONS = [
   { key: 'auto', label: '自动' },
@@ -63,6 +97,8 @@ const METRIC_OPTIONS = [
   { key: 'esnoActualResult', label: 'Es/N₀ (dB)' },
   { key: 'powerUsageRatio', label: '功率占用 (%)' },
   { key: 'bandwidthUsageRatio', label: '带宽占用 (%)' },
+  { key: 'allocBandwidthResult', label: '载波带宽 (kHz)' },
+  { key: 'PowerBWResult', label: '功率带宽 (kHz)' },
   { key: 'uplinkCN', label: '上行 C/N (dB)' },
   { key: 'downlinkCN', label: '下行 C/N (dB)' },
   { key: 'satellitePSDResult', label: '载波功率谱密度 (dBW/Hz)' },
@@ -78,6 +114,25 @@ function cellMetric(l) {
   if (metricKey.value === 'auto') return l.metric
   const v = l.data ? l.data[metricKey.value] : undefined
   return (v === undefined || v === null || v === '') ? '—' : v
+}
+// METRIC_OPTIONS 的 label 统一是「标题 (单位)」格式，拆出标题/单位供列表显示用
+function parseMetricLabel(label) {
+  const m = /^(.*?)\s*\(([^)]+)\)$/.exec(label || '')
+  return m ? { title: m[1], unit: m[2] } : { title: label || '', unit: '' }
+}
+// 常规计算结果列表专用：选「自动」时单看数字不知道对应哪个指标（margin 模式是功放功率，
+// 其它模式是链路余量），矩阵模式靠表头角标统一标注即可，但列表逐行展示没有这层上下文，
+// 改成「标题：数值 单位」；选了具体指标则该指标已经显式选中，数字本身不再有歧义，原样显示。
+function cellMetricList(l) {
+  if (!l) return ''
+  if (l.error) return '✕'
+  if (metricKey.value !== 'auto') return cellMetric(l)
+  const v = l.metric
+  if (v === undefined || v === null || v === '') return '—'
+  const opt = METRIC_OPTIONS.find((m) => m.key === (resultMode.value === 'margin' ? 'paRecommendation' : 'linkmargin'))
+  if (!opt) return v
+  const { title, unit } = parseMetricLabel(opt.label)
+  return `${title}：${v}${unit ? ' ' + unit : ''}`
 }
 // 矩阵十字定位：悬停坐标
 const hoverTi = ref(-1)
@@ -110,15 +165,15 @@ async function refreshReadonly() {
   // 只读列保留两位小数（无法解析则原样保留）
   const fix2 = (v) => { const n = parseFloat(v); return isNaN(n) ? v : n.toFixed(2) }
   for (const tx of txStations) {
-    try { const { satParams, linkParams } = buildParams(satForm, carrierForm, tx, rx0); const r = await api.linkBudget.computeMode(satParams, linkParams, opt); if (r && r.success) te[tx._id] = fix2(r.data.stationEIRPResult) } catch (e) { /* skip */ }
+    try { const { satParams, linkParams } = buildParams(satForm, resolveBaseband(tx.basebandId).form, tx, rx0); linkParams.margin = targetMarginDb.value; const r = await api.linkBudget.computeMode(satParams, linkParams, opt); if (r && r.success) te[tx._id] = fix2(r.data.stationEIRPResult) } catch (e) { /* skip */ }
   }
   for (const rx of rxStations) {
-    try { const { satParams, linkParams } = buildParams(satForm, carrierForm, tx0, rx); const r = await api.linkBudget.computeMode(satParams, linkParams, gtOpt); if (r && r.success) rg[rx._id] = fix2(r.data.gOverTeResult) } catch (e) { /* skip */ }
+    try { const { satParams, linkParams } = buildParams(satForm, resolveBaseband(tx0.basebandId).form, tx0, rx); linkParams.margin = targetMarginDb.value; const r = await api.linkBudget.computeMode(satParams, linkParams, gtOpt); if (r && r.success) rg[rx._id] = fix2(r.data.gOverTeResult) } catch (e) { /* skip */ }
   }
   txEirp.value = te; rxGt.value = rg
 }
 function scheduleReadonly() { if (_suppressRO) return; clearTimeout(_roT); _roT = setTimeout(refreshReadonly, 350) }
-watch([satForm, carrierForm, txStations, rxStations, calcMode, targetPowerW, overDb], scheduleReadonly, { deep: true })
+watch([satForm, basebandConfigs, txStations, rxStations, calcMode, targetPowerW, overDb, targetMarginDb], scheduleReadonly, { deep: true })
 
 // —— GRD 卫星树 + 天线匹配（Phase 3）——
 // 卫星树来自「星座3D」页持久化（localStorage globe3d/settings.grd，同源共享）。选星后给
@@ -199,29 +254,38 @@ async function compute() {
     const mode = calcMode.value
     const opt = { mode, powerW: targetPowerW.value, overDb: overDb.value }
     const out = []
-    for (let ti = 0; ti < txStations.length; ti++) {
-      for (let ri = 0; ri < rxStations.length; ri++) {
-        const { satParams, linkParams } = buildParams(satForm, carrierForm, txStations[ti], rxStations[ri])
-        const txName = txStations[ti].earthStationLocation || ('发' + (ti + 1))
-        const rxName = rxStations[ri].rxEarthStationLocation || ('收' + (ri + 1))
-        const r = await api.linkBudget.computeMode(satParams, linkParams, opt)
-        if (r && r.success) {
-          const d = r.data
-          const m = parseFloat(d.linkmargin)
-          const pUse = parseFloat(d.powerUsageRatio); const bUse = parseFloat(d.bandwidthUsageRatio)
-          // 合格判定：设置余量模式看资源是否够（功率/带宽占用 ≤100%）；其它模式看余量 ≥0
-          const ok = mode === 'margin' ? (!(pUse > 100) && !(bUse > 100)) : (!isNaN(m) && m >= 0)
-          out.push({
-            ti, ri, txName, rxName, data: d, margin: d.linkmargin, powerW: d.paRecommendation,
-            metric: mode === 'margin' ? d.paRecommendation : d.linkmargin, ok,
-            totalCN: d.carrierTotalCN, thresholdCN: d.thresholdCN, avail: d.systemAvailabilityResult
-          })
-        } else {
-          out.push({ ti, ri, txName, rxName, data: null, margin: '—', metric: '—', error: (r && r.message) || '失败' })
-        }
+    // 链路配对集合：常规计算按序号 1↔1（min(发,收) 条）；矩阵计算 m×n 全配对
+    const pairs = []
+    if (linkPairMode.value === 'sequential') {
+      const n = Math.min(txStations.length, rxStations.length)
+      for (let i = 0; i < n; i++) pairs.push([i, i])
+    } else {
+      for (let ti = 0; ti < txStations.length; ti++) for (let ri = 0; ri < rxStations.length; ri++) pairs.push([ti, ri])
+    }
+    for (const [ti, ri] of pairs) {
+      const bbForm = resolveBaseband(txStations[ti].basebandId).form
+      const { satParams, linkParams } = buildParams(satForm, bbForm, txStations[ti], rxStations[ri])
+      linkParams.margin = targetMarginDb.value   // 系统余量是批量目标值，不随基带配置走
+      const txName = txStations[ti].earthStationLocation || ('发' + (ti + 1))
+      const rxName = rxStations[ri].rxEarthStationLocation || ('收' + (ri + 1))
+      const r = await api.linkBudget.computeMode(satParams, linkParams, opt)
+      if (r && r.success) {
+        const d = r.data
+        const m = parseFloat(d.linkmargin)
+        const pUse = parseFloat(d.powerUsageRatio); const bUse = parseFloat(d.bandwidthUsageRatio)
+        // 合格判定：设置余量模式看资源是否够（功率/带宽占用 ≤100%）；其它模式看余量 ≥0
+        const ok = mode === 'margin' ? (!(pUse > 100) && !(bUse > 100)) : (!isNaN(m) && m >= 0)
+        out.push({
+          ti, ri, txName, rxName, data: d, margin: d.linkmargin, powerW: d.paRecommendation,
+          metric: mode === 'margin' ? d.paRecommendation : d.linkmargin, ok,
+          totalCN: d.carrierTotalCN, thresholdCN: d.thresholdCN, avail: d.systemAvailabilityResult
+        })
+      } else {
+        out.push({ ti, ri, txName, rxName, data: null, margin: '—', metric: '—', error: (r && r.message) || '失败' })
       }
     }
     resultMode.value = mode
+    resultPairMode.value = linkPairMode.value
     links.value = out
     selected.value = 0
     await loadWaterfall()
@@ -273,28 +337,48 @@ function toast(msg) { notice.value = msg; clearTimeout(_noticeT); _noticeT = set
 
 function serializeState() {
   return {
-    satForm: { ...satForm }, carrierForm: { ...carrierForm },
+    satForm: { ...satForm },
+    basebandConfigs: basebandConfigs.map((c) => ({ id: c.id, name: c.name, form: { ...c.form } })),
     tx: txStations.map(({ _id, ...r }) => r), rx: rxStations.map(({ _id, ...r }) => r),
-    calcMode: calcMode.value, targetPowerW: targetPowerW.value, overDb: overDb.value,
+    calcMode: calcMode.value, targetPowerW: targetPowerW.value, overDb: overDb.value, targetMarginDb: targetMarginDb.value,
+    linkPairMode: linkPairMode.value,
     grdSel: { ...grdSel }, metricKey: metricKey.value, activeModule: activeModule.value
   }
 }
 function applyState(st) {
   if (!st || typeof st !== 'object') return
   if (st.satForm) Object.assign(satForm, st.satForm)
-  if (st.carrierForm) Object.assign(carrierForm, st.carrierForm)
+  if (Array.isArray(st.basebandConfigs) && st.basebandConfigs.length) {
+    basebandConfigs.splice(0, basebandConfigs.length, ...st.basebandConfigs.map((c) => ({
+      id: c.id || ('bb' + (_bbSeq++)), name: c.name || '配置',
+      form: { ...defaultsFor(CARRIER_FIELDS), rsCodeMode: 'fraction', dvbStandard: 'custom', modcodIndex: -1, ...c.form }
+    })))
+  } else if (st.carrierForm) {
+    // 旧版单一基带表单（升级前保存的配置）：包成一份「默认」配置迁移
+    basebandConfigs.splice(0, basebandConfigs.length, {
+      id: 'bb' + (_bbSeq++), name: '默认',
+      form: { ...defaultsFor(CARRIER_FIELDS), rsCodeMode: 'fraction', dvbStandard: 'custom', modcodIndex: -1, ...st.carrierForm }
+    })
+  }
   if (Array.isArray(st.tx) && st.tx.length) txStations.splice(0, txStations.length, ...st.tx.map((r) => ({ ...r, _id: 's' + (_sid++) })))
   if (Array.isArray(st.rx) && st.rx.length) rxStations.splice(0, rxStations.length, ...st.rx.map((r) => ({ ...r, _id: 's' + (_sid++) })))
   if (st.calcMode) calcMode.value = st.calcMode
   if (st.targetPowerW != null) targetPowerW.value = st.targetPowerW
   if (st.overDb != null) overDb.value = st.overDb
+  // 系统余量：新字段优先；否则从旧存档兜底取（曾短暂挂在 carrierForm.margin / 基带配置卡片里）
+  if (st.targetMarginDb != null) targetMarginDb.value = st.targetMarginDb
+  else if (st.carrierForm && st.carrierForm.margin != null) targetMarginDb.value = st.carrierForm.margin
+  else if (basebandConfigs[0] && basebandConfigs[0].form.margin != null) targetMarginDb.value = basebandConfigs[0].form.margin
+  if (st.linkPairMode) linkPairMode.value = st.linkPairMode
   if (st.metricKey) metricKey.value = st.metricKey
   if (st.activeModule) activeModule.value = st.activeModule
   if (st.grdSel) Object.assign(grdSel, st.grdSel)   // 最后置入：触发 GRD 回填联动
 }
 let _stateT = null
-function scheduleSaveState() { clearTimeout(_stateT); _stateT = setTimeout(() => { try { localStorage.setItem(STATE_KEY, JSON.stringify(serializeState())) } catch (e) { /* 配额满等忽略 */ } }, 600) }
-watch([satForm, carrierForm, txStations, rxStations, calcMode, targetPowerW, overDb, grdSel, metricKey, activeModule], scheduleSaveState, { deep: true })
+// 「上次会话」存盘要带上 activeId：否则重开窗口时配置列表没有任何一项被聚焦，
+// 但工作区却显示着上次的内容，看起来像是内容跟列表对不上号（用户反馈的困惑点）。
+function scheduleSaveState() { clearTimeout(_stateT); _stateT = setTimeout(() => { try { localStorage.setItem(STATE_KEY, JSON.stringify({ ...serializeState(), activeId: activeId.value })) } catch (e) { /* 配额满等忽略 */ } }, 600) }
+watch([satForm, basebandConfigs, txStations, rxStations, calcMode, targetPowerW, overDb, targetMarginDb, linkPairMode, grdSel, metricKey, activeModule, activeId], scheduleSaveState, { deep: true })
 
 // —— 命名配置 CRUD ——
 // 注意：Electron 不支持 window.prompt（静默返回 null → 之前「保存不了」的根因）。改用应用内命名弹窗。
@@ -358,9 +442,9 @@ async function removeConfig(id, e) {
 function blankState() {
   return {
     satForm: defaultsFor(SAT_FIELDS),
-    carrierForm: { ...defaultsFor(CARRIER_FIELDS), rsCodeMode: 'fraction', dvbStandard: 'custom', modcodIndex: -1 },
+    basebandConfigs: [{ name: '默认', form: { ...defaultsFor(CARRIER_FIELDS), rsCodeMode: 'fraction', dvbStandard: 'custom', modcodIndex: -1 } }],
     tx: [defaultsFor(TX_FIELDS)], rx: [defaultsFor(RX_FIELDS)],
-    calcMode: 'margin', targetPowerW: '', overDb: '0',
+    calcMode: 'margin', targetPowerW: '', overDb: '0', targetMarginDb: '3.00', linkPairMode: 'sequential',
     grdSel: { satFolder: '', eirpKey: '', gtKey: '' }, metricKey: 'auto', activeModule: 'tx'
   }
 }
@@ -443,10 +527,10 @@ async function importConfigs(items) {
 
 // —— 改动检测 + 离开提示 + 恢复默认 ——
 // 指纹只取「配置内容」字段（不含 activeModule/metricKey 等视图态），避免切模块/换矩阵指标误判为改动。
-function fingerprint() {
-  const s = serializeState()
-  return JSON.stringify({ satForm: s.satForm, carrierForm: s.carrierForm, tx: s.tx, rx: s.rx, calcMode: s.calcMode, targetPowerW: s.targetPowerW, overDb: s.overDb, grdSel: s.grdSel })
+function fingerprintOf(s) {
+  return JSON.stringify({ satForm: s.satForm, basebandConfigs: s.basebandConfigs, tx: s.tx, rx: s.rx, calcMode: s.calcMode, targetPowerW: s.targetPowerW, overDb: s.overDb, targetMarginDb: s.targetMarginDb, linkPairMode: s.linkPairMode, grdSel: s.grdSel })
 }
+function fingerprint() { return fingerprintOf(serializeState()) }
 let activeBaseline = ''
 function setBaseline() { activeBaseline = fingerprint() }
 function isDirty() { return !!activeId.value && fingerprint() !== activeBaseline }
@@ -544,21 +628,33 @@ async function dismissInbox(item) {
 // 切到线上 tab 自动拉一次收件箱
 watch(() => shareDlg.tab, (t) => { if (t === 'online' && shareConfigured.value) loadInbox() })
 
-// —— Phase 5：计算结果 Excel 导出（汇总 + 矩阵 + 详细参数三表）——
+// —— Phase 5/6：计算结果 Excel 导出（链路汇总 + 详细计算结果；按当前配对方式/语言选择生成不同版式）——
 const exporting = ref(false)
+// 导出语言：中文 / English（学术英文译法，与瀑布详情表的 WF_DICT 同源）。记住上次选择。
+const exportLang = ref(localStorage.getItem('linkbudget/exportLang') || 'zh')
+watch(exportLang, (v) => { try { localStorage.setItem('linkbudget/exportLang', v) } catch (e) { /* ignore */ } })
 async function exportExcel() {
   if (!api) { error.value = '导出需在 Electron 中运行'; return }
   if (!links.value.length) { toast('请先点「计算」生成结果'); return }
   exporting.value = true
   try {
+    const en = exportLang.value === 'en'
+    const calcModeInfo = CALC_MODES.find((m) => m.key === resultMode.value)
+    const pairModeInfo = LINK_PAIR_MODES.find((m) => m.key === resultPairMode.value)
     const payload = {
-      defaultName: `GEO链路预算_${(satForm.satelliteName || '结果').replace(/[\\/:*?"<>|]/g, '_')}.xlsx`,
-      metricLabel: metricLabel.value,
+      defaultName: en
+        ? `GEO_Link_Budget_${(satForm.satelliteName || 'Results').replace(/[^\w-]+/g, '_')}.xlsx`
+        : `GEO链路预算_${(satForm.satelliteName || '结果').replace(/[\\/:*?"<>|]/g, '_')}.xlsx`,
+      lang: exportLang.value,
+      pairMode: resultPairMode.value,
       params: { satelliteName: satForm.satelliteName, frequencyBand: satForm.frequencyBand },
-      meta: { title: 'GEO 链路预算结果', mode: (CALC_MODES.find((m) => m.key === resultMode.value) || {}).label || resultMode.value },
+      meta: {
+        title: en ? 'GEO Link Budget Results' : 'GEO 链路预算结果',
+        mode: (calcModeInfo && (en ? calcModeInfo.enLabel : calcModeInfo.label)) || resultMode.value,
+        pairMode: (pairModeInfo && (en ? pairModeInfo.enLabel : pairModeInfo.label)) || resultPairMode.value
+      },
       links: links.value.map((l) => ({
         ti: l.ti, ri: l.ri, txName: l.txName, rxName: l.rxName, ok: !!l.ok, error: l.error || '',
-        metric: l.error ? '✕' : String(cellMetric(l)),
         data: l.data ? JSON.parse(JSON.stringify(l.data)) : null
       }))
     }
@@ -573,8 +669,19 @@ const cities = ref([])
 onMounted(async () => {
   try { cities.value = (api && await api.linkBudget.cities()) || [] } catch (e) { cities.value = [] }
   try { basebandOpts.value = (api && await api.linkBudget.baseband()) || {} } catch (e) { basebandOpts.value = {} }
-  try { const raw = localStorage.getItem(STATE_KEY); if (raw) applyState(JSON.parse(raw)) } catch (e) { /* 损坏忽略 */ }
   await loadConfigs()
+  // 「上次会话」只在能确定它属于哪个仍然存在的命名配置时才恢复并聚焦该配置——哪怕含未保存的
+  // 编辑，也按该配置已保存的内容算基线，离开时仍会正确提示「未保存」。
+  // 否则（从没聚焦过配置，或聚焦的配置已被删）一律保持工作区默认初始状态、不应用任何内容：
+  // 避免「列表没有任何一项被选中，工作区却显示着不知道属于谁的内容」误导用户。
+  try {
+    const raw = localStorage.getItem(STATE_KEY)
+    if (raw) {
+      const st = JSON.parse(raw)
+      const c = st.activeId && configs.value.find((x) => x.id === st.activeId)
+      if (c) { applyState(st); activeId.value = c.id; activeBaseline = fingerprintOf(c.state) }
+    }
+  } catch (e) { /* 损坏忽略 */ }
   try { deviceId.value = (api && await api.app.deviceId()) || '' } catch (e) { deviceId.value = '' }
   try { shareConfigured.value = !!(api && await api.share.configured()) } catch (e) { shareConfigured.value = false }
   refreshReadonly()
@@ -661,14 +768,39 @@ onMounted(async () => {
 
         <!-- 选中模块的编辑器 -->
         <div class="lb-edit">
-          <StationGrid v-if="activeModule === 'tx'" :stations="txStations" :fields="TX_FIELDS" :cities="cities" :city-search="citySearch" label="发信站" :auto-geo="autoGeoTx" ro-label="EIRP" ro-unit="dBW" :ro-values="txEirp" />
+          <StationGrid v-if="activeModule === 'tx'" :stations="txStations" :fields="TX_FIELDS" :cities="cities" :city-search="citySearch" label="发信站" :auto-geo="autoGeoTx" ro-label="EIRP" ro-unit="dBW" :ro-values="txEirp" :select-options="{ basebandId: basebandSelectOptions }" />
           <StationGrid v-else-if="activeModule === 'rx'" :stations="rxStations" :fields="RX_FIELDS" :cities="cities" :city-search="citySearch" label="收信站" :auto-geo="autoGeoRx" ro-label="G/T" ro-unit="dB/K" :ro-values="rxGt" />
-          <BasebandPanel v-else-if="activeModule === 'carrier'" :form="carrierForm" :options="basebandOpts" />
+          <div v-else-if="activeModule === 'carrier'" class="bb-wrap">
+            <div class="bb-toolbar">
+              <span class="bb-count">{{ basebandConfigs.length }} 份基带配置</span>
+              <span class="lb-spacer"></span>
+              <button class="lb-mini" title="新增配置" @click="addBasebandConfig">＋ 新增配置</button>
+            </div>
+            <p class="bb-tip">载波由发信站调制器产生，与发信站绑定：「发信站群」表的「基带配置」列为每个发信站单独选择使用哪一份，同一份可被多个发信站共用。</p>
+            <div class="bb-cards">
+              <div v-for="cfg in basebandConfigs" :key="cfg.id" class="bb-card">
+                <div class="bb-card-hd">
+                  <input v-model="cfg.name" class="bb-card-name" placeholder="配置名称" />
+                  <span class="lb-spacer"></span>
+                  <button class="lb-mini" title="复制此配置" @click="duplicateBasebandConfig(cfg)">⧉ 复制</button>
+                  <button class="lb-mini" title="删除此配置" :disabled="basebandConfigs.length <= 1" @click="removeBasebandConfig(cfg)">删除</button>
+                </div>
+                <div class="bb-card-bd"><BasebandPanel :form="cfg.form" :options="basebandOpts" /></div>
+              </div>
+            </div>
+          </div>
           <SatellitePanel v-else :form="satForm" :fields="SAT_FIELDS" :sat-tree="satTree" :sel="grdSel" />
         </div>
 
         <!-- 计算方式 + 计算按钮 -->
         <div class="lb-foot">
+          <div class="pairbar">
+            <span class="pf-l">链路配对</span>
+            <div class="seg">
+              <button v-for="pm in LINK_PAIR_MODES" :key="pm.key" class="seg-i" :class="{ on: linkPairMode === pm.key }" :title="pm.tip" @click="linkPairMode = pm.key">{{ pm.label }}</button>
+            </div>
+            <span class="pairbar-desc">{{ linkPairMode === 'sequential' ? '按序号 1↔1 配对：发1↔收1、发2↔收2…；两侧数量不等时按较少一方配对' : '每个发信站与每个收信站两两配对，共 m×n 条链路' }}</span>
+          </div>
           <div class="modebar">
             <label class="pf pf-mode"><span class="pf-l">计算方式</span>
               <select v-model="calcMode" class="pf-i"><option v-for="m in CALC_MODES" :key="m.key" :value="m.key">{{ m.label }}</option></select>
@@ -676,27 +808,55 @@ onMounted(async () => {
             </label>
             <!-- 第二槽位始终占位（功带平衡显「自动」），切换计算方式不再跳版 -->
             <label class="pf">
-              <template v-if="calcMode === 'margin'"><span class="pf-l">系统余量</span><input v-model="carrierForm.margin" class="pf-i mono" placeholder="3.00" /><i class="pf-u">dB</i></template>
+              <template v-if="calcMode === 'margin'"><span class="pf-l">系统余量</span><input v-model="targetMarginDb" class="pf-i mono" placeholder="3.00" /><i class="pf-u">dB</i></template>
               <template v-else-if="calcMode === 'power'"><span class="pf-l">功放功率</span><input v-model="targetPowerW" class="pf-i mono" placeholder="瓦特" /><i class="pf-u">W</i></template>
               <template v-else-if="calcMode === 'overbalance'"><span class="pf-l">超发量</span><input v-model="overDb" class="pf-i mono" /><i class="pf-u">dB</i></template>
               <template v-else><span class="pf-l">系统余量</span><input class="pf-i mono" value="自动" disabled /><i class="pf-u">dB</i></template>
             </label>
           </div>
           <button class="lb-calc" :disabled="computing" @click="compute">
-            {{ computing ? '计算中…' : `计算（${nTx}×${nRx} = ${nTx * nRx} 条链路）` }}
+            {{ computing ? '计算中…' : (linkPairMode === 'sequential' ? `计算（${pairCount} 条链路）` : `计算（矩阵 ${nTx}×${nRx} = ${pairCount} 条链路）`) }}
           </button>
         </div>
       </section>
 
       <!-- ③ 结果区 -->
       <section class="lb-col lb-result">
-        <div class="lb-col-hd"><span>计算结果</span><button class="lb-mini" :disabled="exporting || !links.length" :title="links.length ? '导出 Excel（汇总+矩阵+详细参数）' : '先计算再导出'" @click="exportExcel">{{ exporting ? '导出中…' : '导出 Excel' }}</button></div>
+        <div class="lb-col-hd">
+          <span>计算结果</span>
+          <span class="lb-spacer"></span>
+          <select v-model="exportLang" class="lb-lang-sel" title="导出语言 / Export language">
+            <option value="zh">中文</option>
+            <option value="en">English</option>
+          </select>
+          <button class="lb-mini" :disabled="exporting || !links.length" :title="links.length ? '导出 Excel（链路汇总 + 详细计算结果）' : '先计算再导出'" @click="exportExcel">{{ exporting ? '导出中…' : '导出 Excel' }}</button>
+        </div>
         <div class="lb-col-bd">
           <div v-if="error" class="lb-err">{{ error }}</div>
           <div v-else-if="!links.length" class="lb-placeholder">填写参数后点击「计算」<br />生成链路结果</div>
           <template v-else>
-            <!-- m×n 矩阵（多站时）：单元格=链路余量，点选查看瀑布 -->
-            <div v-if="nTx > 1 || nRx > 1" class="mtx-wrap">
+            <!-- 常规计算（默认）：按序号 1↔1 配对的结果列表，点选查看瀑布 -->
+            <div v-if="resultPairMode === 'sequential' && links.length > 1" class="seq-wrap">
+              <div class="mtx-ctl">
+                <span>列表显示</span>
+                <select v-model="metricKey" class="mtx-sel">
+                  <option v-for="m in METRIC_OPTIONS" :key="m.key" :value="m.key">{{ m.label }}</option>
+                </select>
+              </div>
+              <div class="seq-list">
+                <div v-for="(l, idx) in links" :key="idx" class="seq-row"
+                     :class="[l.error ? 'err' : (l.ok ? 'ok' : 'bad'), { sel: idx === selected }]"
+                     @click="selectLink(l.ti, l.ri)">
+                  <span class="seq-idx">#{{ idx + 1 }}</span>
+                  <span class="seq-name">{{ l.txName }} → {{ l.rxName }}</span>
+                  <span class="seq-val">{{ cellMetricList(l) }}</span>
+                </div>
+              </div>
+              <p class="mtx-tip">常规计算 · 按序号 1↔1 配对 · 点击查看瀑布 · 当前：{{ sel?.txName }} → {{ sel?.rxName }}</p>
+            </div>
+
+            <!-- m×n 矩阵（矩阵计算）：单元格=链路余量，点选查看瀑布 -->
+            <div v-else-if="resultPairMode === 'matrix' && (nTx > 1 || nRx > 1)" class="mtx-wrap">
               <div class="mtx-ctl">
                 <span>矩阵显示</span>
                 <select v-model="metricKey" class="mtx-sel">
@@ -905,6 +1065,8 @@ onMounted(async () => {
 
 .lb-col-hd { display: flex; align-items: center; justify-content: space-between; gap: 8px; height: 30px; flex: none; padding: 0 12px; font-size: 11px; font-weight: 600; letter-spacing: 1px; text-transform: uppercase; background: var(--surface-2); border-bottom: 1px solid var(--border); color: var(--text-muted); }
 .lb-col-bd { flex: 1; overflow: auto; padding: 12px; }
+.lb-lang-sel { font: inherit; font-size: 11px; text-transform: none; letter-spacing: normal; line-height: 1; padding: 3px 6px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl); }
+.lb-lang-sel:focus { outline: none; border-color: var(--accent); }
 .lb-mini { font: inherit; font-size: 11px; line-height: 1; padding: 3px 8px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl); }
 .lb-mini:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
 .lb-mini:disabled { opacity: .45; cursor: not-allowed; }
@@ -985,6 +1147,18 @@ onMounted(async () => {
 
 .lb-edit { flex: 1; min-height: 0; overflow: auto; padding: 12px; }
 .form { max-width: 420px; }
+/* 基带配置库：工具条 + 多张卡片同时展示/编辑 */
+.bb-wrap { max-width: 620px; }
+.bb-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.bb-count { font-size: 12px; color: var(--text-muted); }
+.bb-tip { font-size: 11px; color: var(--text-faint); line-height: 1.6; margin: 0 0 10px; }
+.bb-cards { display: flex; flex-direction: column; gap: 10px; }
+.bb-card { border: 1px solid var(--border); border-radius: var(--r-box); background: var(--surface); overflow: hidden; }
+.bb-card-hd { display: flex; align-items: center; gap: 6px; padding: 5px 8px; background: var(--surface-2); border-bottom: 1px solid var(--border); }
+.bb-card-name { flex: none; width: 160px; font: inherit; font-size: 12px; font-weight: 600; padding: 4px 7px; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl); }
+.bb-card-name:focus { outline: none; border-color: var(--accent); }
+.bb-card-bd { padding: 10px 10px 4px; }
+.bb-card-bd :deep(.bb) { max-width: none; }
 .pf { display: grid; grid-template-columns: 1fr 110px 36px; align-items: center; gap: 6px; margin-bottom: 6px; }
 .pf-l { font-size: 12px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pf-i { font: inherit; font-size: 12px; padding: 4px 7px; width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl); }
@@ -994,6 +1168,13 @@ onMounted(async () => {
 .pf-u { font-size: 11px; color: var(--text-faint); font-style: normal; }
 
 .lb-foot { flex: none; padding: 8px 12px; border-top: 1px solid var(--border); background: var(--surface); }
+/* 链路配对方式：常规计算(默认 1↔1) / 矩阵计算(m×n)——扁平分段标签 */
+.pairbar { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.seg { display: flex; gap: 2px; }
+.seg-i { font: inherit; font-size: 12px; padding: 4px 10px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl); }
+.seg-i:hover { color: var(--text); border-color: var(--border-strong); }
+.seg-i.on { background: var(--surface-2); color: var(--text); border-color: var(--border-strong); font-weight: 600; box-shadow: inset 0 -2px 0 var(--accent); }
+.pairbar-desc { font-size: 11px; color: var(--text-faint); }
 /* 计算方式：两个等宽槽位固定排布，切换方式不跳版 */
 .modebar { display: flex; gap: 14px; align-items: center; margin-bottom: 10px; }
 .modebar .pf { flex: none; width: 236px; margin-bottom: 0; }
@@ -1026,6 +1207,20 @@ onMounted(async () => {
 .mtx-cell.rowhi, .mtx-cell.colhi { background: color-mix(in srgb, var(--accent) 5%, var(--bg)); }
 .mtx-cell.sel { outline: 1.5px solid var(--accent); outline-offset: -1.5px; font-weight: 600; }
 .mtx-tip { margin: 6px 0 0; font-size: 11px; color: var(--text-faint); }
+
+/* 常规计算结果列表（序号 1↔1 配对） */
+.seq-wrap { margin-bottom: 14px; }
+.seq-list { display: flex; flex-direction: column; max-height: 320px; overflow: auto; border: 1px solid var(--border); border-radius: var(--r-box); }
+.seq-row { display: flex; align-items: center; gap: 8px; padding: 6px 10px; font-size: 12px; cursor: pointer; border-bottom: 1px solid var(--border); }
+.seq-row:last-child { border-bottom: none; }
+.seq-row:hover { background: var(--surface-2); }
+.seq-row.sel { background: color-mix(in srgb, var(--accent) 8%, var(--bg)); outline: 1.5px solid var(--accent); outline-offset: -1.5px; }
+.seq-idx { flex: none; width: 26px; font-family: var(--font-mono); font-size: 11px; color: var(--text-faint); }
+.seq-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.seq-val { flex: none; min-width: 64px; text-align: right; font-family: var(--font-mono); font-weight: 600; }
+.seq-row.ok .seq-val { color: var(--ok); }
+.seq-row.bad .seq-val { color: var(--danger); }
+.seq-row.err .seq-val { color: var(--text-faint); }
 
 /* 核心结果卡片 */
 .core-card { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 18px; margin-bottom: 14px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--r-box); background: var(--surface); }

@@ -13,7 +13,8 @@ const props = defineProps({
   roLabel: { type: String, default: '' },          // 只读末列标题（EIRP / G/T）
   roUnit: { type: String, default: '' },
   roValues: { type: Object, default: () => ({}) },  // { _id: 计算值 }，计算后回填
-  citySearch: { type: Function, default: null }      // (关键词)→Promise<城市[]>：支持城市名/省份/拼音缩写检索
+  citySearch: { type: Function, default: null },     // (关键词)→Promise<城市[]>：支持城市名/省份/拼音缩写检索
+  selectOptions: { type: Object, default: () => ({}) } // { 字段key: [选项…] }，覆盖该 select 字段的静态 options（用于运行时动态选项，如基带配置库）
 })
 
 let _seq = 1
@@ -22,6 +23,13 @@ const nameKey = computed(() => (props.fields.find((f) => f.city) || {}).key)
 const lonKey = computed(() => (props.fields.find((f) => /longitude/i.test(f.key)) || {}).key)
 const latKey = computed(() => (props.fields.find((f) => /latitude/i.test(f.key)) || {}).key)
 const nCol = computed(() => props.fields.length)
+// 冻结列：从第一列起，一直冻结到「名称/城市」字段（含）为止——例如发信站表把「基带配置」放在
+// 「地面站位置」前面，两列都需要冻结；收信站表只有「地面站位置」一列，冻结数即为 1。
+const cityFieldIdx = computed(() => props.fields.findIndex((f) => f.city))
+const frozenCount = computed(() => (cityFieldIdx.value >= 0 ? cityFieldIdx.value + 1 : 1))
+const KEY_COL_W = 90   // 冻结列统一窄宽度（原 120/108，缩窄）
+const isKeyCol = (c) => c < frozenCount.value
+function keyColStyle(c) { return { left: (40 + c * KEY_COL_W) + 'px' } }
 // 只读列(EIRP/G·T)作为「可选不可编辑」的最后一列：可框选/复制，但不可编辑/粘贴/填充。
 const roCol = computed(() => (props.roLabel ? props.fields.length : -1))   // 只读列列号，无则 -1
 const nColSel = computed(() => props.fields.length + (props.roLabel ? 1 : 0))  // 可选区总列数（含只读列）
@@ -51,8 +59,34 @@ function visColAfter(c, dir) {
   for (let k = vis.length - 1; k >= 0; k--) if (vis[k] < c) return vis[k]
   return vis[0]
 }
-// 取单元格文本：只读列取其计算值，其余取字段值（复制用）
-function cellText(s, c) { return isRO(c) ? (props.roValues[s._id] != null ? props.roValues[s._id] : '') : s[props.fields[c].key] }
+// 取单元格文本（复制用）：只读列取其计算值；select 字段取显示名（而非内部存值 id）——这样复制出去
+// 看到的就是名字，粘贴回来时 normalizeFieldValue() 也能按名字正确匹配回对应选项，名字和值的口径统一。
+function cellText(s, c) { return isRO(c) ? (props.roValues[s._id] != null ? props.roValues[s._id] : '') : displayValue(s, props.fields[c]) }
+// select 字段选项：优先用父组件传入的动态选项（如基带配置库），否则用字段静态 options。
+// 选项元素可以是普通字符串，也可以是 { value, label }（用于值与显示名不同，如基带配置 id→名称）。
+function fieldOptions(f) { return props.selectOptions[f.key] || f.options || [] }
+const optVal = (o) => (o && typeof o === 'object') ? o.value : o
+const optLabel = (o) => (o && typeof o === 'object') ? o.label : o
+// 单元格显示值：select 字段按选项表把存值换算成展示名，其余原样。
+// 旧数据（升级前保存、缺该字段）值为 undefined，按空字符串对待以匹配“（默认）”选项。
+function displayValue(s, f) {
+  if (f.type !== 'select') return s[f.key]
+  const v = s[f.key] == null ? '' : s[f.key]
+  const hit = fieldOptions(f).find((o) => optVal(o) === v)
+  return hit ? optLabel(hit) : s[f.key]
+}
+// 写入 select 字段时做一次归一化：粘贴/批量设值/直接键入这些路径拿到的是「自由文本」，
+// 用户很可能填的是看到的显示名（如基带配置名）而不是内部存值(id)——原样存进去会匹配不上任何选项，
+// 表现为「只认下拉框选的，手动打/粘贴名字不算数」。这里按显示名兜底换算成正确的存值；
+// 已经是合法存值、或非 select 字段，原样返回。
+function normalizeFieldValue(f, raw) {
+  if (f.type !== 'select') return raw
+  const opts = fieldOptions(f)
+  if (opts.some((o) => optVal(o) === raw)) return raw
+  const s = String(raw == null ? '' : raw).trim()
+  const hit = opts.find((o) => String(optLabel(o)).trim() === s)
+  return hit ? optVal(hit) : raw
+}
 // 经纬度最多保留 6 位小数（≈0.11 m，GIS/GPS 实用精度；再多是浮点噪声）。导入/粘贴 Excel 时清理
 // 超长小数；非数字/空值原样，少于 6 位不补零（去尾零）。
 const LATLON_DECIMALS = 6
@@ -226,9 +260,12 @@ function onFillDbl(e) {
 let _editOrig = null   // 进入编辑时的原值：用于判断名称是否真的改动（避免无改动失焦时误覆盖经纬度）
 function startEdit(r, c, ch) {
   if (isRO(c)) return   // 只读列不可编辑
-  _editOrig = props.stations[r][props.fields[c].key]
-  if (ch != null) props.stations[r][props.fields[c].key] = ch
-  editing.value = { r, c }
+  const f = props.fields[c]
+  _editOrig = props.stations[r][f.key]
+  if (ch != null) props.stations[r][f.key] = ch
+  // typed=true（直接键入触发）：select 字段改渲染成文本输入框，而不是弹出原生下拉框；
+  // 失焦时 endEdit() 会把键入的文本按显示名归一化回合法存值。双击/Enter/F2（ch 为空）仍走原生下拉选择。
+  editing.value = { r, c, typed: ch != null }
   nextTick(() => {
     const el = root.value && root.value.querySelector('.sg-cell.editing input, .sg-cell.editing select')
     if (el) { el.focus(); if (!ch && el.select) el.select() }
@@ -239,6 +276,7 @@ function endEdit() {
     const { r, c } = editing.value
     const f = props.fields[c]
     const row = props.stations[r]
+    if (f && f.type === 'select') row[f.key] = normalizeFieldValue(f, row[f.key])
     if (f && f.key === nameKey.value) {
       // 名称真的改动且命中城市库 → 带入经纬度，并联动 autoGeo 重算降雨/海拔
       if (row[f.key] !== _editOrig && applyCityByName(row) && props.autoGeo) props.autoGeo(row)
@@ -281,7 +319,10 @@ async function pasteRange() {
     if (r >= props.stations.length) props.stations.push(makeRow(cityForIndex(props.stations.length)))
     for (let j = 0; j < grid[i].length; j++) {
       const c = sc + j
-      if (c < nColSel.value && !isRO(c)) { const key = props.fields[c].key; props.stations[r][key] = isLatLonKey(key) ? clampLatLon(grid[i][j]) : grid[i][j] }
+      if (c < nColSel.value && !isRO(c)) {
+        const f = props.fields[c]
+        props.stations[r][f.key] = isLatLonKey(f.key) ? clampLatLon(grid[i][j]) : normalizeFieldValue(f, grid[i][j])
+      }
     }
   }
   range.ar = sr; range.ac = sc
@@ -301,6 +342,7 @@ function onKey(e) {
   if (mod) return
   if (e.key === 'Enter' || e.key === 'F2') { startEdit(range.fr, range.fc); e.preventDefault(); return }
   if (e.key === 'Delete' || e.key === 'Backspace') { clearSel(); e.preventDefault(); return }
+  if (e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) { moveRows(e.key === 'ArrowUp' ? -1 : 1); e.preventDefault(); return }
   const arrow = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1] }[e.key]
   if (arrow) { setFocus(range.fr + arrow[0], arrow[1] ? visColAfter(range.fc, arrow[1]) : range.fc, e.shiftKey); e.preventDefault(); return }
   if (e.key.length === 1) { startEdit(range.fr, range.fc, e.key); e.preventDefault() }
@@ -373,7 +415,7 @@ function doImport() {
 // —— 批量设值（选中行）——
 const batch = reactive({ open: false, key: '', value: '' })
 function openBatch() { if (!selectedRows.value.length) return; batch.key = props.fields[0].key; batch.value = ''; batch.open = true }
-function doBatch() { pushUndo(); for (const s of selectedRows.value) s[batch.key] = batch.value; batch.open = false }
+function doBatch() { pushUndo(); const v = normalizeFieldValue(batchField.value, batch.value); for (const s of selectedRows.value) s[batch.key] = v; batch.open = false }
 const batchField = computed(() => props.fields.find((f) => f.key === batch.key) || props.fields[0])
 
 // ============ 右键菜单（Excel 式）：复制/剪切/粘贴/清除内容 · 插入/删除行 · 隐藏列/清除整列 ============
@@ -427,11 +469,32 @@ function deleteCtxRows() {
   if (props.stations.length) setFocus(Math.min(idx[idx.length - 1], props.stations.length - 1), range.fc, false)
 }
 
+// —— 行上移/下移（整行顺序交换）：行集 = 已勾选行，否则单元格选区所在行；须连续 ——
+function targetRowIdxSorted() { return targetRowIdx().slice().sort((a, b) => a - b) }
+function isContiguousIdx(idx) { for (let i = 1; i < idx.length; i++) if (idx[i] !== idx[i - 1] + 1) return false; return true }
+const canMoveUp = computed(() => { const idx = targetRowIdxSorted(); return idx.length > 0 && isContiguousIdx(idx) && idx[0] > 0 })
+const canMoveDown = computed(() => { const idx = targetRowIdxSorted(); return idx.length > 0 && isContiguousIdx(idx) && idx[idx.length - 1] < props.stations.length - 1 })
+function moveRows(dir) {
+  const idx = targetRowIdxSorted()
+  if (!idx.length || !isContiguousIdx(idx)) return
+  const lo = idx[0], hi = idx[idx.length - 1]
+  if (dir < 0 && lo <= 0) return
+  if (dir > 0 && hi >= props.stations.length - 1) return
+  pushUndo()
+  if (dir < 0) { const row = props.stations.splice(lo - 1, 1)[0]; props.stations.splice(hi, 0, row) }
+  else { const row = props.stations.splice(hi + 1, 1)[0]; props.stations.splice(lo, 0, row) }
+  // 行勾选选区(sel)按 _id 跟随，移动后自动仍指向同一批行，无需重设；这里只需把单元格选区同步到新位置
+  selectFullRows(lo + dir, hi + dir)
+  focusGrid()
+}
+function moveUp() { moveRows(-1) }
+function moveDown() { moveRows(1) }
+
 // —— 列：隐藏/显示、清除整列内容。列集 = 单元格选区跨过的列 ——
 function targetColIdx() { const out = []; for (let c = c0.value; c <= c1.value; c++) out.push(c); return out }
-const canHideSel = computed(() => targetColIdx().some((c) => c < props.fields.length && c !== 0 && !isHidden(c)))
+const canHideSel = computed(() => targetColIdx().some((c) => c < props.fields.length && !isKeyCol(c) && !isHidden(c)))
 function hideCols() {
-  const add = targetColIdx().filter((c) => c < props.fields.length && c !== 0 && !isHidden(c))   // 序号/名称列、只读列不可隐藏
+  const add = targetColIdx().filter((c) => c < props.fields.length && !isKeyCol(c) && !isHidden(c))   // 序号列、冻结列、只读列不可隐藏
   if (!add.length) return
   hiddenCols.value = [...hiddenCols.value, ...add]
   const vis = visSelCols.value                                  // 焦点/锚点落在刚隐藏的列上 → 贴回最近可见列
@@ -459,6 +522,8 @@ function clearColContents() {
       <button class="sg-btn" :disabled="!stations.length" @click="clearAll">清空</button>
       <button class="sg-btn" :disabled="!undoStack.length" title="撤销" @click="undo">↶</button>
       <button class="sg-btn" :disabled="!redoStack.length" title="重做" @click="redo">↷</button>
+      <button class="sg-btn" :disabled="!canMoveUp" title="上移一行（Alt+↑）" @click="moveUp">↑ 上移</button>
+      <button class="sg-btn" :disabled="!canMoveDown" title="下移一行（Alt+↓）" @click="moveDown">↓ 下移</button>
       <button v-if="hiddenCols.length" class="sg-btn" :title="'已隐藏 ' + hiddenCols.length + ' 列，点击全部显示'" @click="unhideAll">显示隐藏列 ({{ hiddenCols.length }})</button>
     </div>
 
@@ -467,7 +532,7 @@ function clearColContents() {
         <thead>
           <tr>
             <th class="sg-sel"><input type="checkbox" :checked="allSelected" @change="toggleAll" /></th>
-            <th v-for="({ f, c }) in visFields" :key="f.key" :class="{ 'sg-key': c === 0 }" :title="f.label">
+            <th v-for="({ f, c }) in visFields" :key="f.key" :class="{ 'sg-key': isKeyCol(c) }" :style="isKeyCol(c) ? keyColStyle(c) : null" :title="f.label">
               {{ f.label }}<i v-if="f.unit"> ({{ f.unit }})</i>
             </th>
             <th v-if="roLabel" class="sg-ro">{{ roLabel }}<i v-if="roUnit"> ({{ roUnit }})</i></th>
@@ -477,15 +542,16 @@ function clearColContents() {
           <tr v-for="(s, i) in stations" :key="s._id || i" :class="{ on: sel[s._id] }">
             <td class="sg-sel" :title="'拖拽序号可框选行 · 右键插入/删除行'" @mousedown.left="onRowDown(i, $event)" @mouseenter="onRowEnter(i)" @contextmenu.prevent="onIdxContext(i, $event)"><span class="sg-idx">{{ i + 1 }}</span></td>
             <td v-for="({ f, c }) in visFields" :key="f.key"
-                class="sg-cell" :class="{ 'sg-key': c === 0, sel: inSel(i, c), focus: isFocus(i, c), editing: isEditing(i, c), fillp: inFill(i, c) }"
+                class="sg-cell" :class="{ 'sg-key': isKeyCol(c), sel: inSel(i, c), focus: isFocus(i, c), editing: isEditing(i, c), fillp: inFill(i, c) }"
+                :style="isKeyCol(c) ? keyColStyle(c) : null"
                 @mousedown.left="onDown(i, c, $event)" @mouseenter="onEnter(i, c)" @dblclick="startEdit(i, c)" @contextmenu.prevent="onCellContext(i, c, $event)">
               <template v-if="isEditing(i, c)">
-                <select v-if="f.type === 'select'" v-model="s[f.key]" class="sg-i" @blur="endEdit" @keydown="onEditKey">
-                  <option v-for="o in f.options" :key="o" :value="o">{{ o }}</option>
+                <select v-if="f.type === 'select' && !editing.typed" v-model="s[f.key]" class="sg-i" @blur="endEdit" @keydown="onEditKey">
+                  <option v-for="o in fieldOptions(f)" :key="optVal(o)" :value="optVal(o)">{{ optLabel(o) }}</option>
                 </select>
                 <input v-else v-model="s[f.key]" class="sg-i" :class="{ mono: f.type === 'num' }" @blur="endEdit" @keydown="onEditKey" />
               </template>
-              <span v-else class="sg-v" :class="{ mono: f.type === 'num' }">{{ s[f.key] }}</span>
+              <span v-else class="sg-v" :class="{ mono: f.type === 'num' }">{{ displayValue(s, f) }}</span>
               <span v-if="isFillAnchor(i, c) && !isEditing(i, c)" class="sg-handle" title="拖动/双击向下填充" @mousedown.left.stop.prevent="onFillDown" @dblclick.stop="onFillDbl"></span>
             </td>
             <td v-if="roLabel" class="sg-ro mono sg-cell" :class="{ sel: inSel(i, fields.length), focus: isFocus(i, fields.length), fillp: inFill(i, fields.length) }"
@@ -525,7 +591,7 @@ function clearColContents() {
         <div class="sg-box-hd">批量设值（应用到选中的 {{ selectedRows.length }} 行）</div>
         <div class="sg-batch">
           <select v-model="batch.key" class="sg-search"><option v-for="f in fields" :key="f.key" :value="f.key">{{ f.label }}</option></select>
-          <select v-if="batchField.type === 'select'" v-model="batch.value" class="sg-search"><option v-for="o in batchField.options" :key="o" :value="o">{{ o }}</option></select>
+          <select v-if="batchField.type === 'select'" v-model="batch.value" class="sg-search"><option v-for="o in fieldOptions(batchField)" :key="optVal(o)" :value="optVal(o)">{{ optLabel(o) }}</option></select>
           <input v-else v-model="batch.value" class="sg-search" :placeholder="'值（' + (batchField.unit || '') + '）'" />
         </div>
         <div class="sg-box-ft"><button class="sg-btn" @click="batch.open = false">取消</button><button class="sg-btn primary" @click="doBatch">应用</button></div>
@@ -543,6 +609,9 @@ function clearColContents() {
         <button class="sg-ctx-i" @click="menuDo(insertAbove)">在上方插入行</button>
         <button class="sg-ctx-i" @click="menuDo(insertBelow)">在下方插入行</button>
         <button class="sg-ctx-i danger" @click="menuDo(deleteCtxRows)">删除行</button>
+        <div class="sg-ctx-sep"></div>
+        <button class="sg-ctx-i" :disabled="!canMoveUp" @click="menuDo(moveUp)"><span>上移一行</span><kbd>Alt+↑</kbd></button>
+        <button class="sg-ctx-i" :disabled="!canMoveDown" @click="menuDo(moveDown)"><span>下移一行</span><kbd>Alt+↓</kbd></button>
         <div class="sg-ctx-sep"></div>
         <button class="sg-ctx-i" :disabled="!canHideSel" @click="menuDo(hideCols)">隐藏列</button>
         <button v-if="hiddenCols.length" class="sg-ctx-i" @click="menuDo(unhideAll)">显示所有列（{{ hiddenCols.length }}）</button>
@@ -568,7 +637,7 @@ function clearColContents() {
 .sg-tbl th { position: sticky; top: 0; z-index: 2; padding: 5px 8px; font-weight: 600; color: var(--text-muted); text-align: left; background: var(--surface-2); }
 .sg-tbl th i { color: var(--text-faint); font-style: normal; font-weight: 400; }
 .sg-tbl tbody tr.on > td { background: var(--surface-2); }
-/* 冻结：选择列(固定 44px) + 名称列(c=0) */
+/* 冻结：选择列(固定 40px) + 名称区(从首列冻结到城市/名称字段，可能不止 1 列，left 由 keyColStyle() 按列动态算) */
 .sg-tbl th.sg-sel, .sg-tbl td.sg-sel { position: sticky; left: 0; z-index: 1; width: 40px; min-width: 40px; max-width: 40px; padding: 4px 2px; text-align: center; white-space: nowrap; }
 .sg-tbl thead th.sg-sel { z-index: 4; }
 .sg-tbl td.sg-sel { cursor: pointer; user-select: none; }
@@ -576,7 +645,7 @@ function clearColContents() {
 .sg-tbl tbody tr.on > td.sg-sel { background: var(--surface-2); }
 .sg-tbl tbody tr.on > td.sg-sel .sg-idx { color: var(--accent); font-weight: 700; }
 .sg-idx { color: var(--text-faint); font-size: 11px; display: block; }
-.sg-tbl th.sg-key, .sg-tbl td.sg-key { position: sticky; left: 40px; z-index: 1; width: 120px; min-width: 120px; }
+.sg-tbl th.sg-key, .sg-tbl td.sg-key { position: sticky; z-index: 1; width: 90px; min-width: 90px; }
 .sg-tbl thead th.sg-key { z-index: 4; }
 /* 单元格 */
 .sg-cell { position: relative; padding: 0; cursor: cell; user-select: none; }
@@ -584,7 +653,7 @@ function clearColContents() {
 .sg-handle { position: absolute; right: -2px; bottom: -2px; width: 6px; height: 6px; background: var(--accent); border: 1px solid var(--bg); cursor: crosshair; z-index: 6; }
 .sg-cell.fillp { outline: 1px dashed var(--accent); outline-offset: -1px; }
 .sg-v { display: block; padding: 4px 6px; min-width: 76px; min-height: 22px; overflow: hidden; text-overflow: ellipsis; }
-.sg-key .sg-v { min-width: 108px; }
+.sg-key .sg-v { min-width: 78px; }
 .sg-v.mono { font-family: var(--font-mono); }
 .sg-cell.sel { background: color-mix(in srgb, var(--accent) 12%, var(--bg)); }
 .sg-cell.focus { outline: 2px solid var(--accent); outline-offset: -2px; }

@@ -1,5 +1,5 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 
 // 基带参数面板 —— 严格照搬小程序基带卡片：DVB/MODCOD 快选、Eb/N₀⇄Es/N₀ 切换（带换算）、
 // 频谱效率⇄帧效率切换、实时载波带宽/符号率（可编辑反算信息速率）。
@@ -77,23 +77,49 @@ function applyModcod(e) {
   props.form.noiseRatioMode = mc.noiseRatioMode
 }
 
-// —— 实时载波带宽 / 符号率（可编辑反算 infoRate）——
-const symbolRate = computed(() => {
+// —— 实时码片速率 / 符号率 / 载波带宽（可编辑反算 infoRate）——
+// 换算链与引擎 linkCalculator.js 完全一致：
+// infoRate → carrierRate(÷fec÷rs) → chipRate(×m，码片速率) → symbolRate(÷调制因子) → carrierBW(×滚降)
+const carrierRate = computed(() => {
   const info = num(props.form.infoRate, NaN)
   if (isNaN(info)) return NaN
-  return info * mV.value / (fecV.value * rsV.value * modFactor.value)
+  return info / fecV.value / rsV.value
 })
+const chipRate = computed(() => (isNaN(carrierRate.value) ? NaN : carrierRate.value * mV.value))
+const symbolRate = computed(() => (isNaN(chipRate.value) ? NaN : chipRate.value / modFactor.value))
 const carrierBW = computed(() => (isNaN(symbolRate.value) ? NaN : symbolRate.value * bwV.value))
 const fmt = (v) => (isNaN(v) ? '--' : (Math.round(v * 1000) / 1000).toString())
-function onSymbolInput(e) {
-  const sr = parseFloat(e.target.value); if (isNaN(sr)) return
-  props.form.infoRate = String(Math.round(sr * fecV.value * rsV.value * modFactor.value / mV.value * 1000) / 1000)
+
+// 信息速率是唯一真实存储字段，码片速率/符号率/载波带宽都是按当前调制/FEC/扩频/滚降反推的视角。
+// 问题：若只在编辑那一刻反算一次 infoRate，后续再改调制方式等参数，infoRate 不变但乘数变了，
+// 三个派生量会一起跟着漂移——包括用户刚刚手动定下来的那个值，体验上像是“白改了”。
+// 改法：记下用户最近编辑的是哪一个字段（锚点）和它当时的目标值；调制/FEC/扩频/滚降任何一个变化时，
+// 都按锚点的目标值反解 infoRate，使锚点字段保持不变，其余字段顺着联动——而不是死守 infoRate 不变。
+const rateAnchor = ref('info')   // 'info' | 'chip' | 'symbol' | 'bw'
+const anchorValue = ref(null)
+function infoRateFor(which, v) {
+  const fec = fecV.value, rs = rsV.value, mf = modFactor.value, m = mV.value, bw = bwV.value
+  if (which === 'chip') return v / m * fec * rs
+  if (which === 'symbol') return v * mf / m * fec * rs
+  if (which === 'bw') return (v / bw) * mf / m * fec * rs
+  return null
 }
-function onBwInput(e) {
-  const cb = parseFloat(e.target.value); if (isNaN(cb)) return
-  const sr = cb / bwV.value
-  props.form.infoRate = String(Math.round(sr * fecV.value * rsV.value * modFactor.value / mV.value * 1000) / 1000)
+function setAnchor(which, raw) {
+  const v = parseFloat(raw); if (isNaN(v)) return
+  rateAnchor.value = which
+  anchorValue.value = v
+  const ir = infoRateFor(which, v)
+  if (ir != null && !isNaN(ir)) props.form.infoRate = String(Math.round(ir * 1000) / 1000)
 }
+watch([modFactor, fecV, rsV, mV, bwV], () => {
+  if (rateAnchor.value === 'info' || anchorValue.value == null) return
+  const ir = infoRateFor(rateAnchor.value, anchorValue.value)
+  if (ir != null && !isNaN(ir)) props.form.infoRate = String(Math.round(ir * 1000) / 1000)
+})
+function onInfoInput() { rateAnchor.value = 'info' }   // 用户直接改信息速率：信息速率重新成为锚点
+function onChipInput(e) { setAnchor('chip', e.target.value) }
+function onSymbolInput(e) { setAnchor('symbol', e.target.value) }
+function onBwInput(e) { setAnchor('bw', e.target.value) }
 </script>
 
 <template>
@@ -116,7 +142,7 @@ function onBwInput(e) {
     <!-- 第一行 -->
     <div class="bb-grid">
       <label class="bb-f"><span class="bb-l">信息速率 <i>(kbps)</i></span>
-        <input v-model="form.infoRate" class="bb-i mono" placeholder="2048" />
+        <input v-model="form.infoRate" class="bb-i mono" placeholder="2048" @input="onInfoInput" />
       </label>
       <label class="bb-f"><span class="bb-l">调制方式</span>
         <select v-model="form.modulation" class="bb-i">
@@ -153,13 +179,17 @@ function onBwInput(e) {
       </label>
     </div>
 
-    <!-- 实时结果（可编辑反算） -->
+    <!-- 实时结果（可编辑反算，三者与信息速率同一条换算链，编辑任一个即把它设为锚点）——
+         系统余量不在此处：它是批量计算的目标值，不随基带配置走，在 LinkBudgetApp 底部「计算方式」栏统一设置 -->
     <div class="bb-rt">
-      <label class="bb-f"><span class="bb-l">载波带宽 <i>(kHz)</i></span>
-        <input :value="fmt(carrierBW)" class="bb-i mono" @change="onBwInput" />
+      <label class="bb-f"><span class="bb-l">码片速率 <i>(kbps)</i></span>
+        <input :value="fmt(chipRate)" class="bb-i mono" @change="onChipInput" />
       </label>
       <label class="bb-f"><span class="bb-l">符号率 <i>(ksps)</i></span>
         <input :value="fmt(symbolRate)" class="bb-i mono" @change="onSymbolInput" />
+      </label>
+      <label class="bb-f"><span class="bb-l">载波带宽 <i>(kHz)</i></span>
+        <input :value="fmt(carrierBW)" class="bb-i mono" @change="onBwInput" />
       </label>
     </div>
   </div>
@@ -170,7 +200,7 @@ function onBwInput(e) {
 .bb-modcod, .bb-grid, .bb-rt { display: grid; gap: 8px 10px; margin-bottom: 10px; }
 .bb-modcod { grid-template-columns: 1fr 2fr; }
 .bb-grid { grid-template-columns: repeat(4, 1fr); }
-.bb-rt { grid-template-columns: repeat(2, 1fr); padding-top: 8px; border-top: 1px dashed var(--border); }
+.bb-rt { grid-template-columns: repeat(3, 1fr); padding-top: 8px; border-top: 1px dashed var(--border); }
 .bb-f { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .bb-l { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-muted); white-space: nowrap; }
 .bb-l i { color: var(--text-faint); font-style: normal; }
