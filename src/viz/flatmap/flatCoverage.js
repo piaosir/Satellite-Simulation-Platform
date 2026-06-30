@@ -262,9 +262,10 @@ export function createFlatCoverage(canvas) {
     for (let lat = -75; lat <= 75; lat += 15) { const y = PY(lat); ctx.moveTo(x0, y); ctx.lineTo(x1, y) }
     ctx.stroke()
   }
-  function drawPolyline(p, color, width, closed) {
+  function drawPolyline(p, color, width, closed, dash) {
     const kk = k()
     ctx.strokeStyle = color; ctx.lineWidth = width; ctx.lineJoin = 'round'; ctx.lineCap = 'round'
+    if (dash) ctx.setLineDash(dash)
     ctx.beginPath(); let started = false, pwx = 0
     for (let i = 0; i < p.length; i++) {
       const a = p[i], lon = Array.isArray(a) ? a[0] : a.lon, lat = Array.isArray(a) ? a[1] : a.lat
@@ -273,6 +274,7 @@ export function createFlatCoverage(canvas) {
       started ? ctx.lineTo(x, y) : (ctx.moveTo(x, y), started = true); pwx = wx
     }
     ctx.stroke()
+    if (dash) ctx.setLineDash([])
   }
   function drawText(text, lon, lat, px, color, opt) {
     const o = opt || {}
@@ -538,10 +540,10 @@ export function createFlatCoverage(canvas) {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     ctx.save(); ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip()
     drawFieldOverlays()   // GRD 天线名/波束中心/数值标签（覆盖层之上）
-    // 聚焦卫星几何（实时，不入静态快照）：覆盖范围(浅蓝) + 星下点轨迹(金黄)，颜色与 3D 球体同源
+    // 聚焦卫星几何（实时，不入静态快照）：覆盖范围(浅蓝虚线，示意非精确覆盖区) + 星下点轨迹(金黄实线)，颜色与 3D 球体同源
     if (selGeom) {
-      if (selGeom.footprint && selGeom.footprint.length > 1) drawPolyline(selGeom.footprint, '#96d7f0', 1.8)
-      if (selGeom.track && selGeom.track.length > 1) drawPolyline(selGeom.track, '#c2a25e', 2.0)
+      if (selGeom.footprint && selGeom.footprint.length > 1) drawPolyline(selGeom.footprint, '#b8e6fa', 1.8, false, [7, 5])
+      if (selGeom.track && selGeom.track.length > 1) drawPolyline(selGeom.track, '#e8c074', 2.0)
     }
     if (focusSat) drawSatIcon(focusSat.lon, focusSat.lat, sizes.satIcon * scale, '#ffffff')   // 聚焦卫星（最上层，随缩放联动）
     ctx.restore()
@@ -728,8 +730,8 @@ export function createFlatCoverage(canvas) {
       ctx.save(); ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip()
       drawFieldOverlays()
       if (selGeom) {
-        if (selGeom.footprint && selGeom.footprint.length > 1) drawPolyline(selGeom.footprint, '#96d7f0', 1.8)
-        if (selGeom.track && selGeom.track.length > 1) drawPolyline(selGeom.track, '#c2a25e', 2.0)
+        if (selGeom.footprint && selGeom.footprint.length > 1) drawPolyline(selGeom.footprint, '#b8e6fa', 1.8, false, [7, 5])
+        if (selGeom.track && selGeom.track.length > 1) drawPolyline(selGeom.track, '#e8c074', 2.0)
       }
       if (focusSat) drawSatIcon(focusSat.lon, focusSat.lat, sizes.satIcon * scale, '#ffffff')
       ctx.restore()

@@ -1404,7 +1404,7 @@ function focusSubpoint() {
   return { lat: sat.degreesLat(gd.latitude), lon: sat.degreesLong(gd.longitude) }
 }
 // 把聚焦卫星星下点推给 2D 平面图（标注其实时位置）
-function pushFocusSat() { if (flat) flat.setFocusSat(focusSubpoint()) }
+function pushFocusSat() { const p = focusSubpoint(); if (flat) flat.setFocusSat(p); if (scene) scene.setFocusSatLLA(p) }
 
 // 地图右键（3D 球体与 2D 平面图共用）：轨迹描绘中→直接加航点（连续右键描点）；否则→弹出右键菜单。
 // ll：点击处经纬度（点在地球外为 null）；pos：屏幕坐标（菜单定位）。
@@ -1789,7 +1789,7 @@ onBeforeUnmount(() => {
         <div ref="el" class="stage"></div>
         <canvas v-show="flatView" ref="flatCanvas" class="flat"></canvas>
 
-        <!-- 聚焦卫星图例：说明地图上为聚焦星绘制的覆盖范围(蓝)与星下点轨迹(黄)，3D / 2D 同步显示 -->
+        <!-- 聚焦卫星图例：说明地图上为聚焦星绘制的覆盖范围(浅蓝虚线，示意非精确覆盖区)与星下点轨迹(金黄实线)，3D / 2D 同步显示 -->
         <div v-if="selected" class="focus-legend">
           <div class="fl-row"><span class="fl-sw cov"></span>覆盖范围</div>
           <div class="fl-row"><span class="fl-sw trk"></span>星下点轨迹</div>
@@ -2574,8 +2574,8 @@ onBeforeUnmount(() => {
 }
 .fl-row { display: flex; align-items: center; gap: 7px; white-space: nowrap; }
 .fl-sw { width: 18px; height: 0; border-top: 2px solid; flex: none; }
-.fl-sw.cov { border-color: #96d7f0; }
-.fl-sw.trk { border-color: #c2a25e; }
+.fl-sw.cov { border-color: #b8e6fa; border-top-style: dashed; }
+.fl-sw.trk { border-color: #e8c074; }
 .dl-banner { position: absolute; left: 50%; top: 55%; transform: translate(-50%, -50%); width: 420px; max-width: 86%; background: rgba(20,22,28,0.94); border: 1px solid #34384a; border-radius: 6px; padding: 16px 18px; color: #d7dde6; text-align: center; }
 .dl-msg { font-size: 13px; margin-bottom: 12px; color: #f0c674; line-height: 1.5; }
 .dl-row { display: flex; gap: 10px; justify-content: center; }

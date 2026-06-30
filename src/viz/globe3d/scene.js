@@ -630,6 +630,7 @@ export function createGlobeScene(container, quality = {}) {
     const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace
     return t
   }
+  const RING_PX = 26  // 选中环固定屏幕像素大小，与缩放无关
   const ringSpr = new THREE.Sprite(new THREE.SpriteMaterial({ map: makeRingTexture(), depthTest: false, depthWrite: false, transparent: true }))
   ringSpr.renderOrder = 20
   ringSpr.visible = false
@@ -651,11 +652,17 @@ export function createGlobeScene(container, quality = {}) {
   }
   function setGroundTrack(points) {
     disposeLine(trackLine); trackLine = null
-    if (points && points.length) { trackLine = lineFromLLA(points.map((p) => ({ lat: p.lat, lon: p.lon, altKm: LIFT })), 0xc2a25e, 0.85, 1.6); scene.add(trackLine) }
+    if (points && points.length) { trackLine = lineFromLLA(points.map((p) => ({ lat: p.lat, lon: p.lon, altKm: LIFT })), 0xe8c074, 1, 1.6); scene.add(trackLine) }
   }
+  // 覆盖足迹画成虚线：示意性范围（非精确实测覆盖区），与星下点轨迹（实线，真实星下点）区分开。
+  // footprintEllipsoid 固定按 72 段采样且首尾闭合 -> 隔段取一画一，得到 36 段均匀虚线、首尾自然衔接。
   function setFootprint(points) {
     disposeLine(footLine); footLine = null
-    if (points && points.length) { footLine = lineFromLLA(points.map((p) => ({ lat: p.lat, lon: p.lon, altKm: LIFT })), 0x96d7f0, 0.95, 1.6); scene.add(footLine) }
+    if (!points || points.length < 2) return
+    const pts = points.map((p) => llaToVec(p.lat, p.lon, LIFT))
+    const flat = []
+    for (let i = 0; i + 1 < pts.length; i += 2) { const a = pts[i], b = pts[i + 1]; flat.push(a.x, a.y, a.z, b.x, b.y, b.z) }
+    footLine = fatSegments(flat, 0xb8e6fa, 1.6, 1, 4); scene.add(footLine)
   }
   function clearSelectionGeom() { setOrbit(null); setGroundTrack(null); setFootprint(null); setHighlight(null) }
 
@@ -1009,6 +1016,23 @@ export function createGlobeScene(container, quality = {}) {
     img.src = 'data:image/svg+xml;base64,' + btoa(STATION_SVG)
     return stationTex
   }
+
+  // 聚焦卫星图标（与 2D 平面图 drawSatIcon 同款矢量：双侧 3×2 太阳能板 + 中央星体），白色，复用一张贴图
+  const FOCUS_SAT_SVG = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'>" +
+    "<g fill='#ffffff' stroke='rgba(8,12,18,0.92)' stroke-width='4' stroke-linejoin='round' transform='rotate(-20 60 60)'>" +
+    "<rect x='8' y='41' width='10' height='16' rx='3'/><rect x='21' y='41' width='10' height='16' rx='3'/><rect x='34' y='41' width='10' height='16' rx='3'/>" +
+    "<rect x='8' y='63' width='10' height='16' rx='3'/><rect x='21' y='63' width='10' height='16' rx='3'/><rect x='34' y='63' width='10' height='16' rx='3'/>" +
+    "<rect x='76' y='41' width='10' height='16' rx='3'/><rect x='89' y='41' width='10' height='16' rx='3'/><rect x='102' y='41' width='10' height='16' rx='3'/>" +
+    "<rect x='76' y='63' width='10' height='16' rx='3'/><rect x='89' y='63' width='10' height='16' rx='3'/><rect x='102' y='63' width='10' height='16' rx='3'/>" +
+    "<rect x='49' y='35' width='22' height='50' rx='10'/></g></svg>"
+  let focusSatTex = null
+  function focusSatTexture() {
+    if (focusSatTex) return focusSatTex
+    focusSatTex = new THREE.Texture(); focusSatTex.colorSpace = THREE.SRGBColorSpace
+    const img = new Image(); img.onload = () => { focusSatTex.image = img; focusSatTex.needsUpdate = true }
+    img.src = 'data:image/svg+xml;base64,' + btoa(FOCUS_SAT_SVG)
+    return focusSatTex
+  }
   function makeDot(hex) {
     const s = 32, c = document.createElement('canvas'); c.width = c.height = s
     const x = c.getContext('2d')
@@ -1018,8 +1042,20 @@ export function createGlobeScene(container, quality = {}) {
     return new THREE.Sprite(new THREE.SpriteMaterial({ map: t, depthTest: true, depthWrite: false, transparent: true }))
   }
 
-  let markersGroup = null, trajGroup = null
-  function disposeGroup(grp) { if (grp) { grp.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) { lineMats.delete(o.material); if (o.material.map && o.material.map !== stationTex) o.material.map.dispose(); o.material.dispose() } }); scene.remove(grp) } }
+  let markersGroup = null, trajGroup = null, focusSatGroup = null
+  function disposeGroup(grp) { if (grp) { grp.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) { lineMats.delete(o.material); if (o.material.map && o.material.map !== stationTex && o.material.map !== focusSatTex) o.material.map.dispose(); o.material.dispose() } }); scene.remove(grp) } }
+  // 聚焦卫星当前星下点图标（与 2D 同款，固定 30px 基准——与 2D sizes.satIcon 默认值一致，随 3D 缩放联动）；
+  // depthTest 关 + _dir 半球剔除，复用地面站图标同一套策略，转到背面自动隐藏，不会被地球遮挡。
+  const FOCUS_SAT_PX = 30
+  function setFocusSatLLA(p) {
+    disposeGroup(focusSatGroup); focusSatGroup = null
+    if (!p || !Number.isFinite(p.lat) || !Number.isFinite(p.lon)) return
+    const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: focusSatTexture(), depthTest: false, depthWrite: false, transparent: true }))
+    spr.position.copy(llaToVec(p.lat, p.lon, 0).multiplyScalar(1.0012))
+    spr._px = FOCUS_SAT_PX; spr._ar = 1; spr._dir = spr.position.clone().normalize(); spr.renderOrder = 17
+    const g = new THREE.Group(); g.add(spr)
+    focusSatGroup = g; scene.add(g)
+  }
   // 文字标签：depthTest 关 + 半球剔除 -> 不会被地球边缘裁掉一半，背面整体隐藏
   function labelSprite(text, lat, lon, color, centerY, px) {
     const spr = makeCovLabel(text, 0.03, color || '#ffffff')
@@ -1095,7 +1131,7 @@ export function createGlobeScene(container, quality = {}) {
         if (o._px) { const dd = camera.position.distanceTo(o.position); const h = o._px * zoomK * (2 * dd * tanH) / curH; o.scale.set(h * (o._ar || 1), h, 1) }
       }
     }
-    go(markersGroup); go(trajGroup)
+    go(markersGroup); go(trajGroup); go(focusSatGroup)
   }
 
   let satPoints = null
@@ -1195,11 +1231,11 @@ export function createGlobeScene(container, quality = {}) {
     }
     // 卫星点随缩放联动：基准距离上 SAT_POINT_PX，拉近变大、拉远变小；下限 0.5×/上限 4× 钳制保证可见且不过大
     if (satPoints) satPoints.material.size = SAT_POINT_PX * Math.max(0.5, Math.min(4, LABEL_REF_DIST / cur))
-    // 选中环：随缩放均匀联动（默认视角 ~24px，与标记同步放大缩小），背面被地球挡住时隐藏
+    // 选中环：固定屏幕像素大小（不随缩放变化，拉远也能看清选中的是哪颗），背面被地球挡住时隐藏
     if (hlPos) {
       const tanHalf = Math.tan(camera.fov * 0.5 * Math.PI / 180) || 1
       const d = camera.position.distanceTo(hlPos)
-      const sz = 24 * (LABEL_REF_DIST / cur) * (2 * d * tanHalf) / curH
+      const sz = RING_PX * (2 * d * tanHalf) / curH
       ringSpr.position.copy(hlPos)
       ringSpr.scale.set(sz, sz, 1)
       ringSpr.visible = !occludedByGlobe(hlPos)
@@ -1228,7 +1264,7 @@ export function createGlobeScene(container, quality = {}) {
     setOrbit, setGroundTrack, setFootprint, clearSelectionGeom,
     setCoverage, clearCoverage, setCoverageField, patchCoverageLayers, clearCoverageField, setCoverageFieldAlpha, setSatLayer, clearSatLayer, faceLonLat, setProvinces, setProvincesVisible, setCities, setCitiesVisible, setBorderStyle, setNameScale, setLabelStyle, setOceanColor,
     setPixelRatio, setRenderFps, setSphereDetail, setMapDetail,
-    setMarkers, setTrajectories, setOnHover, setOnRightClick, setBeamDragMode, setOnBeamDrag,
+    setMarkers, setTrajectories, setFocusSatLLA, setOnHover, setOnRightClick, setBeamDragMode, setOnBeamDrag,
     faceTo, setAutoRotate, setAutoRotateSpeed, setOnAutoRotateOff, resize, destroy,
     // 缩放进度条接口：getZoom 读当前进度、setZoom 设到进度 t、setOnZoom 注册滚轮缩放回填回调
     getZoom: () => distToT(zoomTarget),
