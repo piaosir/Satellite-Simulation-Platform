@@ -7,6 +7,7 @@ import { zoom } from '../stores/zoom'
 import { effective as displayQuality } from '../stores/displayQuality'
 import { viewPrefs } from '../stores/viewPrefs'
 import { setGrdBridge, clearGrdBridge, fileBridge } from '../stores/fileBridge'
+import { alertMsg, appAlert, closeAlert } from '../stores/alert'
 import { displaySatName } from '../viz/satName.js'
 defineOptions({ inheritAttrs: false })   // 不把父级传入的 title 落到根节点（去掉鼠标悬停的“星座3D”原生提示）
 import { createGlobeScene } from '../viz/globe3d/scene.js'
@@ -114,7 +115,7 @@ function refreshPerf() { if (perfKey.value) perf.compute(grd.getPerfContext(perf
 async function openPerf(sat, a) {
   const key = grd.keyOf(sat.folder, a.name)
   const ok = await grd.ensureAntLoaded(key)
-  if (!ok) { alert('该天线方向图未就绪，无法生成性能表'); return }
+  if (!ok) { appAlert('该天线方向图未就绪，无法生成性能表'); return }
   perfKey.value = key
   perfWinInit()
   refreshPerf()
@@ -175,11 +176,11 @@ function perfDragSplit(e) {
 function perfAddStation() {
   perf.pushUndo()
   const s = perf.addStation(perfNew.value)
-  if (!s) { perf.dropUndo(); alert('请填写有效经纬度'); return }
+  if (!s) { perf.dropUndo(); appAlert('请填写有效经纬度'); return }
   perfNew.value = { country: '', city: '', desig: '', lon: '', lat: '' }
   refreshPerf()
 }
-function perfImportMarkers() { perf.pushUndo(); const n = perf.importFromMarkers(points.value, stations.value); if (!n) { perf.dropUndo(); alert('没有可导入的新标记（点标记/地面站）') } refreshPerf() }
+function perfImportMarkers() { perf.pushUndo(); const n = perf.importFromMarkers(points.value, stations.value); if (!n) { perf.dropUndo(); appAlert('没有可导入的新标记（点标记/地面站）') } refreshPerf() }
 // Excel 式粘贴：在加站区任一输入框 Ctrl+V 整块表格 → 拦截并批量加站（单值粘贴仍走普通输入）
 function perfPaste(e) {
   const text = e.clipboardData ? e.clipboardData.getData('text') : ''
@@ -188,15 +189,15 @@ function perfPaste(e) {
   perf.pushUndo()
   const n = perf.addStationsBulk(text)
   if (n) { perfNew.value = { country: '', city: '', desig: '', lon: '', lat: '' }; refreshPerf() }
-  else { perf.dropUndo(); alert('未识别到经纬度（约定末两列为 经度、纬度，且需为数字）') }
+  else { perf.dropUndo(); appAlert('未识别到经纬度（约定末两列为 经度、纬度，且需为数字）') }
 }
 // 「粘贴」按钮：直接读剪贴板批量加站（需浏览器授权剪贴板读取）
 async function perfPasteBtn() {
   let text = ''
-  try { text = await navigator.clipboard.readText() } catch { alert('无法读取剪贴板，请点输入框后按 Ctrl+V 粘贴'); return }
+  try { text = await navigator.clipboard.readText() } catch { appAlert('无法读取剪贴板，请点输入框后按 Ctrl+V 粘贴'); return }
   perf.pushUndo()
   const n = perf.addStationsBulk(text)
-  if (n) refreshPerf(); else { perf.dropUndo(); alert('剪贴板没有可识别的经纬度数据（约定末两列为 经度、纬度）') }
+  if (n) refreshPerf(); else { perf.dropUndo(); appAlert('剪贴板没有可识别的经纬度数据（约定末两列为 经度、纬度）') }
 }
 // ===== 两张表都用 Excel 式交互（框选 / 键盘导航 / 复制 / 编辑·粘贴·清除）=====
 // 城市输入网格列（可编辑）；行 = perf.stations，行 id 即站点 id。
@@ -251,10 +252,10 @@ function perfCellText(r, c) {
 }
 function perfCopyResult() {
   const cols = perfCols.value, rows = perf.filteredRows.value
-  if (!rows.length) { alert('结果表为空'); return }
+  if (!rows.length) { appAlert('结果表为空'); return }
   const head = cols.map((c) => c.label).join('\t')
   const body = rows.map((r) => cols.map((c) => perfCellText(r, c)).join('\t')).join('\n')
-  if (!perfWriteClipboard(head + '\n' + body)) alert('复制失败，请检查剪贴板权限')
+  if (!perfWriteClipboard(head + '\n' + body)) appAlert('复制失败，请检查剪贴板权限')
 }
 const perfFix = (v, n) => (v == null ? '—' : v.toFixed(n == null ? 2 : n))
 const perfColDef = (k) => perf.colDefs.find((c) => c.key === k)
@@ -870,12 +871,8 @@ function feedFlat() {
   flat.setBorderStyle({ ...borderStyle })
   flat.setLabelStyle({ ...labelStyle })
   flat.setOceanColor(oceanColor.value)
-  flat.setMarkers(
-    points.value.map((p) => ({ lat: p.lat, lon: p.lon, label: fmtLL(p.lat, p.lon), el: fmtElev(p.lat, p.lon) })),
-    stations.value.map((s) => ({ lat: s.lat, lon: s.lon, name: s.name, el: fmtElev(s.lat, s.lon) })),
-    trajectories.value.map((t) => ({ pts: t.pts, kind: t.kind, color: t.kind === 'flight' ? 0x5ad1ff : 0xff6a4a }))
-  )
-  flat.setSizes({ beamFont: beamLabelSize.value, contourFont: contourLabelSize.value, dotSize: boreSize.value, showBore: showBore.value, nameScale: countryNameSize.value, provScale: provNameSize.value, cityScale: cityNameSize.value, ptFont: markPtFont.value, stIcon: stIconSize.value, stFont: stFontSize.value })
+  flat.setMarkers(markerPts(), markerSts(), markerTrs())
+  flat.setSizes({ beamFont: beamLabelSize.value, contourFont: contourLabelSize.value, dotSize: boreSize.value, showBore: showBore.value, nameScale: countryNameSize.value, provScale: provNameSize.value, cityScale: cityNameSize.value, ptFont: markPtFont.value, stIcon: stIconSize.value, stFont: stFontSize.value, ptDot: markPtDot.value, trajDot: trajDotSize.value })
   flat.setGeom(covGeom)
   grd.recompute()   // GRD 覆盖：把当前选中天线的面+线喂给 flat（recompute 同时喂 scene/flat）
   redrawSats()      // 卫星/仰角线图层
@@ -893,22 +890,22 @@ async function getCjkFont() {
   return _cjkFont
 }
 async function saveExport(bytes, defaultName, filters) {
-  if (!(window.api && window.api.exportFile)) { alert('需在 Electron 中运行（npm run dev）'); return }
+  if (!(window.api && window.api.exportFile)) { appAlert('需在 Electron 中运行（npm run dev）'); return }
   const r = await window.api.exportFile({ defaultName, data: bytes, filters })
   // 成功/取消无需提示（已走系统保存对话框，用户自选路径即知结果）；仅失败弹错。
-  if (r && !r.ok && !r.canceled) { const msg = (r && r.error) || '写入失败'; alert('导出失败：' + msg) }
+  if (r && !r.ok && !r.canceled) { const msg = (r && r.error) || '写入失败'; appAlert('导出失败：' + msg) }
 }
 // fmt: 'png2' | 'png4' | 'pdf'。无论当前在 2D 还是 3D 视图，都按 2D 平面图导出整幅世界图。
 // scope: 'world'(整幅世界图，默认) | 'view'(当前视图，所见即所得)。view 模式需在 2D 平面图下，按屏幕缩放/平移出图。
 async function exportMap(fmt, scope) {
   if (exporting.value) return
   const view = scope === 'view'
-  if (view && !flatView.value) { alert('「截图」导出需先切换到 2D 平面图（顶栏「视图」按钮），再框定要导出的范围'); return }
+  if (view && !flatView.value) { appAlert('「截图」导出需先切换到 2D 平面图（顶栏「视图」按钮），再框定要导出的范围'); return }
   exporting.value = true
   try {
     await ensureCovIndex(); if (!covCleared.value) redraw()
     await nextTick()
-    if (!ensureFlat()) { alert('地图渲染器未就绪，请切到 2D 平面图后重试'); return }
+    if (!ensureFlat()) { appAlert('地图渲染器未就绪，请切到 2D 平面图后重试'); return }
     feedFlat()   // resize() 仅首帧 fit，已交互过的缩放/平移会保留 → view 模式即所见即所得
     await nextTick()
     const tag = view ? '截图' : '全球图'
@@ -924,7 +921,7 @@ async function exportMap(fmt, scope) {
       const bytes = await renderFlatPNG(flat, { base: 2400, factor, view })
       await saveExport(bytes, `覆盖图_${tag}_${factor}x.png`, [{ name: 'PNG 图片', extensions: ['png'] }])
     }
-  } catch (e) { console.error('导出失败', e); alert('导出失败：' + ((e && e.message) || e)) }
+  } catch (e) { console.error('导出失败', e); appAlert('导出失败：' + ((e && e.message) || e)) }
   finally { exporting.value = false }
 }
 
@@ -1036,8 +1033,15 @@ function applyDisplayQuality() {
   grd.recompute()   // gridStride 变化 → 覆盖层按新步长重建（无选中层时为空操作）
 }
 function setPtFont(e) { markPtFont.value = Number(e.target.value); syncMarkers() }
+function setPtDot(e) { markPtDot.value = Number(e.target.value); syncMarkers() }
 function setStIcon(e) { stIconSize.value = Number(e.target.value); syncMarkers() }
 function setStFont(e) { stFontSize.value = Number(e.target.value); syncMarkers() }
+function setTrajDot(e) { trajDotSize.value = Number(e.target.value); syncMarkers() }
+function togglePtLabel() { showPtLabel.value = !showPtLabel.value; syncMarkers() }
+function toggleStName() { showStName.value = !showStName.value; syncMarkers() }
+function togglePtLayer() { showPtLayer.value = !showPtLayer.value; syncMarkers() }
+function toggleStLayer() { showStLayer.value = !showStLayer.value; syncMarkers() }
+function toggleTrajLayer() { showTrajLayer.value = !showTrajLayer.value; syncMarkers() }
 function toggleBore() { showBore.value = !showBore.value; redraw() }
 function toggleContourLabels() { showContourLabels.value = !showContourLabels.value; redraw() }
 // 以 (lat0,lon0) 为心、角半径 lambda 的地表小圆 -> [[lon,lat]...]
@@ -1148,7 +1152,7 @@ function startRenameAnt(sat, a) { grdEditAnt.value = grd.keyOf(sat.folder, a.nam
 function commitRenameAnt(sat, a) {
   if (grdEditAnt.value === '') return   // 已提交（blur 与 ✓/回车可能重复触发）→ 跳过
   if (grd.renameAntenna(sat.folder, a.name, grdEditVal.value) === false) {
-    alert('天线名为空或与同星其他天线重名')   // 校验失败 → 保持编辑态，可继续修改
+    appAlert('天线名为空或与同星其他天线重名')   // 校验失败 → 保持编辑态，可继续修改
     return
   }
   grdEditAnt.value = ''
@@ -1187,12 +1191,12 @@ const satModalPos = computed(() => {
 
 const defaultElements = () => ({ altKm: 500, ecc: 0, incl: 53, raan: 0, argp: 0, ma: 0 })
 function defaultSatDraft() {
-  return { folder: null, name: '', lon: 0, lat: 0, altKm: GEO_ALT, color: '', els: '5,10', noradId: null, posMode: 'fixed', elements: defaultElements(), elevWidth: 1.3, elevLabelSize: 13, iconSize: 30, labelSize: 14 }
+  return { folder: null, name: '', lon: 0, lat: 0, altKm: GEO_ALT, color: '#ffffff', els: '5,10', noradId: null, posMode: 'fixed', elements: defaultElements(), elevWidth: 1.3, elevLabelSize: 13, iconSize: 10, labelSize: 4 }
 }
 // hideViz：从文件管理器调起时为 true，隐藏可视化项（图标/字号/仰角线/颜色），其余功能（定位方式/星座关联）一致
 function openAddSat(hideViz = false) { satModal.value = { ...defaultSatDraft(), hideViz }; satPick.value = false; satSearchKw.value = ''; satSearchRes.value = [] }
 // 编辑已有卫星（含预置星）：名称/位置/关联/仰角线/图标与标签大小都可改
-function editSat(node, hideViz = false) { satModal.value = { folder: node.folder, name: node.satName, lon: node.lon, lat: node.lat, altKm: node.altKm, color: node.elevColor, els: node.els, noradId: node.noradId, kind: node.kind, posMode: node.elements ? 'orbit' : 'fixed', elements: node.elements ? { ...node.elements } : defaultElements(), elevWidth: node.elevWidth || 1.3, elevLabelSize: node.elevLabelSize || 13, iconSize: node.iconSize || 30, labelSize: node.labelSize || 14, hideViz }; satPick.value = false; satSearchKw.value = ''; satSearchRes.value = [] }
+function editSat(node, hideViz = false) { satModal.value = { folder: node.folder, name: node.satName, lon: node.lon, lat: node.lat, altKm: node.altKm, color: node.elevColor, els: node.els, noradId: node.noradId, kind: node.kind, posMode: node.elements ? 'orbit' : 'fixed', elements: node.elements ? { ...node.elements } : defaultElements(), elevWidth: node.elevWidth || 1.3, elevLabelSize: node.elevLabelSize || 13, iconSize: node.iconSize || 10, labelSize: node.labelSize || 4, hideViz }; satPick.value = false; satSearchKw.value = ''; satSearchRes.value = [] }
 function closeSatModal() { satModal.value = null; satPick.value = false; satSearchKw.value = ''; satSearchRes.value = [] }
 function applyGeoAlt() { if (satModal.value) satModal.value.altKm = GEO_ALT }   // 一键GEO：轨道高度设为 GEO
 
@@ -1206,12 +1210,12 @@ function saveSatModal() {
   if (orbit) {
     const el = m.elements || {}
     const alt = Number(el.altKm), ecc = Number(el.ecc), incl = Number(el.incl)
-    if (!(alt > 0) || !(ecc >= 0 && ecc < 1) || !(incl >= 0 && incl <= 180)) { alert('轨道根数非法：需 轨道高度>0、0≤偏心率<1、0≤倾角≤180'); return }
+    if (!(alt > 0) || !(ecc >= 0 && ecc < 1) || !(incl >= 0 && incl <= 180)) { appAlert('轨道根数非法：需 轨道高度>0、0≤偏心率<1、0≤倾角≤180'); return }
     elements = { altKm: alt, ecc, incl, raan: Number(el.raan) || 0, argp: Number(el.argp) || 0, ma: Number(el.ma) || 0 }
     let rec; try { rec = elementsToSatrec(elements) } catch { rec = null }
-    if (!rec || rec.error) { alert('该组根数无法构造有效轨道（可能已衰减或超界），请调整'); return }
+    if (!rec || rec.error) { appAlert('该组根数无法构造有效轨道（可能已衰减或超界），请调整'); return }
     const now = calcAt(); const pv = sat.propagate(rec, now)
-    if (!pv || !pv.position) { alert('轨道传播失败，请检查根数'); return }
+    if (!pv || !pv.position) { appAlert('轨道传播失败，请检查根数'); return }
     const gd = sat.eciToGeodetic(pv.position, sat.gstime(now))
     m.lon = sat.degreesLong(gd.longitude); m.lat = sat.degreesLat(gd.latitude); m.altKm = gd.height
   }
@@ -1220,7 +1224,7 @@ function saveSatModal() {
   if (m.folder) {
     // 所有星（含预置）都可改名称/位置/关联/仰角线。预置星 kind 保持 'preset'（仍属平台数据、不在树里删）；
     // 自定义/星座/模拟星按定位方式切换 custom/linked/orbit。是否随时间跟踪由 noradId / elements 决定，与 kind 无关。
-    const patch = { satName: (m.name || '卫星').trim() || '卫星', lon, lat, altKm, noradId: m.noradId || null, elements: orbit ? elements : null, els: m.els || '', elevColor: m.color || '#66ddff', elevWidth: Number(m.elevWidth) || 1.3, elevLabelSize: Number(m.elevLabelSize) || 13, iconSize: Number(m.iconSize) || 30, labelSize: Number(m.labelSize) || 14 }
+    const patch = { satName: (m.name || '卫星').trim() || '卫星', lon, lat, altKm, noradId: m.noradId || null, elements: orbit ? elements : null, els: m.els || '', elevColor: m.color || '#66ddff', elevWidth: Number(m.elevWidth) || 1.3, elevLabelSize: Number(m.elevLabelSize) || 13, iconSize: Number(m.iconSize) || 10, labelSize: Number(m.labelSize) || 4 }
     if (m.kind !== 'preset') patch.kind = m.noradId ? 'linked' : (orbit ? 'orbit' : 'custom')
     grd.updateSatellite(m.folder, patch)
   } else {
@@ -1334,7 +1338,7 @@ function redrawSats() {
       }
     }
     // 卫星名/图标：不依赖仰角值，仅由 labelShow 决定（3D 只画名，2D 画图标+名）
-    if (showLabel) sats.push({ lon: p.lon, lat: p.lat, altKm: p.altKm, name: node.satName, color: colNum, nameColor: color, iconSize: node.iconSize || 30, labelSize: node.labelSize || 14, labelShow: true })
+    if (showLabel) sats.push({ lon: p.lon, lat: p.lat, altKm: p.altKm, name: node.satName, color: colNum, nameColor: color, iconSize: node.iconSize || 10, labelSize: node.labelSize || 4, labelShow: true })
   }
   const spec = (lines.length || sats.length) ? { lines, dots: [], labels, sats } : null
   scene.setSatLayer(spec)
@@ -1351,9 +1355,16 @@ const activeTraj = ref('')         // 当前编辑的轨迹 id
 const ptLat = ref(''), ptLon = ref('')
 const stLat = ref(''), stLon = ref(''), stName = ref('')
 const wpLat = ref(''), wpLon = ref('')
-const markPtFont = ref(14)         // 点标记坐标字号（6–32）
-const stIconSize = ref(32)         // 地面站图标大小（16–60）
-const stFontSize = ref(17)         // 地面站名称字号（6–32）
+const markPtFont = ref(14)         // 点标记坐标字号（1–32）
+const markPtDot = ref(3.5)         // 点标记圆点大小（半径口径，1–12，默认偏小）
+const stIconSize = ref(16)         // 地面站图标大小（5–60，默认 16）
+const stFontSize = ref(17)         // 地面站名称字号（1–32）
+const trajDotSize = ref(2.5)       // 轨迹圆点大小（半径口径，1–10，默认偏小）
+const showPtLabel = ref(false)     // 是否显示点标记坐标文字（默认不显示；圆点不受影响）
+const showStName = ref(false)      // 是否显示地面站名称文字（默认不显示；图标不受影响）
+const showPtLayer = ref(true)      // 点标记图层显隐（小眼睛；隐藏仅停止渲染，数据保留并持久化）
+const showStLayer = ref(true)      // 地面站图层显隐（小眼睛）
+const showTrajLayer = ref(true)    // 航迹图层显隐（小眼睛）
 let mkSeq = 1
 const newId = () => 'm' + Date.now().toString(36) + (mkSeq++)   // 跨会话唯一，避免与已存数据撞 key
 
@@ -1403,6 +1414,7 @@ function ctxAddPoint() { const ll = ctxLL(); if (ll) addPoint(ll.lat, ll.lon); c
 // 加地面站：弹出命名对话框（位置取右键处），确认后入库
 const stPrompt = ref(null)       // { lat, lon } 待命名地面站；null=关闭
 const stPromptName = ref('')
+// 应用内提示弹窗（替代 Electron 原生 alert）：alertMsg/appAlert/closeAlert 见 stores/alert.js（GRD 等组合式同源）。
 function ctxAddStation() { const ll = ctxLL(); if (ll) { stPrompt.value = { lat: ll.lat, lon: ll.lon }; stPromptName.value = '' } closeCtx() }
 function confirmStation() {
   const p = stPrompt.value; if (!p) return
@@ -1422,14 +1434,18 @@ function clearAllCoverage() { if (covApiOk) clearCoverage(); if (grdApiOk) grd.c
 function ctxOpenMarkers() { mkOpen.value = true; closeCtx() }
 function ctxOpenGeo() { geoOpen.value = true; closeCtx() }
 function ctxOpenCovSet() { covSetOpen.value = true; closeCtx() }   // 打开覆盖图显示设置弹窗（GRD 4 + GXT 3，含字号/大小条）
-const markSizes = () => ({ ptFont: markPtFont.value, stIcon: stIconSize.value, stFont: stFontSize.value })
+const markSizes = () => ({ ptFont: markPtFont.value, stIcon: stIconSize.value, stFont: stFontSize.value, ptDot: markPtDot.value, trajDot: trajDotSize.value })
+// 标记载荷构造器：坐标/名称是否带文字由 showPtLabel/showStName 决定（空串=圆点/图标保留、文字隐藏）。
+// pushMarkers 与 feedFlat 共用，避免两处各写一份导致显隐口径不一致。
+// 图层隐藏（小眼睛关）时返回空数组：仅停止渲染，points/stations/trajectories 原始数据不动、照常持久化。
+const markerPts = () => showPtLayer.value ? points.value.map((p) => ({ lat: p.lat, lon: p.lon, label: showPtLabel.value ? fmtLL(p.lat, p.lon) : '', el: fmtElev(p.lat, p.lon) })) : []
+const markerSts = () => showStLayer.value ? stations.value.map((s) => ({ lat: s.lat, lon: s.lon, name: showStName.value ? s.name : '', el: fmtElev(s.lat, s.lon) })) : []
+const markerTrs = () => showTrajLayer.value ? trajectories.value.map((t) => ({ pts: t.pts, kind: t.kind, color: t.kind === 'flight' ? 0x5ad1ff : 0xff6a4a })) : []
 // 仅把标记推送到两个视图（含聚焦卫星仰角），不写入持久化；供时间推进/选星刷新仰角调用
 function pushMarkers() {
   if (!scene) return
-  const pts = points.value.map((p) => ({ lat: p.lat, lon: p.lon, label: fmtLL(p.lat, p.lon), el: fmtElev(p.lat, p.lon) }))
-  const sts = stations.value.map((s) => ({ lat: s.lat, lon: s.lon, name: s.name, el: fmtElev(s.lat, s.lon) }))
-  const trs = trajectories.value.map((t) => ({ pts: t.pts, kind: t.kind, color: t.kind === 'flight' ? 0x5ad1ff : 0xff6a4a }))
-  scene.setMarkers(pts, sts, markSizes()); scene.setTrajectories(trs)
+  const pts = markerPts(), sts = markerSts(), trs = markerTrs()
+  scene.setMarkers(pts, sts, markSizes()); scene.setTrajectories(trs, markSizes())
   if (flat) { flat.setMarkers(pts, sts, trs); flat.setSizes(markSizes()) }
 }
 function syncMarkers() { pushMarkers(); persistMarkers() }
@@ -1529,7 +1545,9 @@ function deserializeCov(items) {
 function snapshot() {
   return {
     nameMode: nameMode.value, countryName: countryNameSize.value, provName: provNameSize.value, cityName: cityNameSize.value, showProvinces: showProvinces.value, showCities: showCities.value, borderStyle: { ...borderStyle }, labelStyle: { ...labelStyle }, oceanColor: oceanColor.value, autoRotate: autoRotate.value, autoRotateSpeed: viewPrefs.autoRotateSpeed, live: live.value, beamLock: beamLock.value,
-    mkPt: markPtFont.value, mkStIcon: stIconSize.value, mkStFont: stFontSize.value,
+    mkPt: markPtFont.value, mkStIcon: stIconSize.value, mkStFont: stFontSize.value, mkPtDot: markPtDot.value, mkTrajDot: trajDotSize.value,
+    mkPtShow: showPtLabel.value, mkStShow: showStName.value,
+    mkPtLayer: showPtLayer.value, mkStLayer: showStLayer.value, mkTrajLayer: showTrajLayer.value,
     covOpen: covOpen.value, mkOpen: mkOpen.value, geoOpen: geoOpen.value,
     grdOpen: grdOpen.value, grd: grd.getState(), perf: perf.getState(),
     cov: {
@@ -1556,9 +1574,16 @@ async function restoreSettings() {
   applyLabelStyle()
   if (typeof s.oceanColor === 'string') setOceanColor(s.oceanColor)
   if (Number.isFinite(s.mkPt)) markPtFont.value = s.mkPt
+  if (Number.isFinite(s.mkPtDot)) markPtDot.value = s.mkPtDot
   if (Number.isFinite(s.mkStIcon)) stIconSize.value = s.mkStIcon
   if (Number.isFinite(s.mkStFont)) stFontSize.value = s.mkStFont
-  syncMarkers()   // 以恢复后的尺寸重建标记
+  if (Number.isFinite(s.mkTrajDot)) trajDotSize.value = s.mkTrajDot
+  if (typeof s.mkPtShow === 'boolean') showPtLabel.value = s.mkPtShow
+  if (typeof s.mkStShow === 'boolean') showStName.value = s.mkStShow
+  if (typeof s.mkPtLayer === 'boolean') showPtLayer.value = s.mkPtLayer
+  if (typeof s.mkStLayer === 'boolean') showStLayer.value = s.mkStLayer
+  if (typeof s.mkTrajLayer === 'boolean') showTrajLayer.value = s.mkTrajLayer
+  syncMarkers()   // 以恢复后的尺寸重建标记（含坐标/名称显隐、各图层显隐）
   if (typeof s.autoRotate === 'boolean') { autoRotate.value = s.autoRotate; scene.setAutoRotate(autoRotate.value) }
   if (Number.isFinite(s.autoRotateSpeed)) { viewPrefs.autoRotateSpeed = s.autoRotateSpeed; scene.setAutoRotateSpeed(s.autoRotateSpeed) }
   if (typeof s.beamLock === 'boolean') beamLock.value = s.beamLock
@@ -1812,7 +1837,7 @@ onBeforeUnmount(() => {
       <div v-if="covOpen" class="cov-side">
         <div class="csh"><span class="csn">GEO 卫星覆盖（GXT）</span>
           <span class="flatbtn" :class="{ on: flatView }" @click="toggleFlat">{{ flatView ? '球体' : '平面图' }}</span>
-          <span class="csx" @click="toggleCoverage">✕</span></div>
+          <button class="winx" type="button" aria-label="关闭" title="关闭" @click="toggleCoverage"><svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true"><path d="M1 1 L11 11 M11 1 L1 11" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/></svg></button></div>
 
         <div class="sec">
           <div class="srow"><label>添加卫星</label>
@@ -1928,7 +1953,7 @@ onBeforeUnmount(() => {
       <div v-if="grdOpen" class="cov-side grd-side">
         <div class="csh"><span class="csn">覆盖分析</span>
           <span class="flatbtn" :class="{ on: flatView }" @click="toggleFlat">{{ flatView ? '球体' : '平面图' }}</span>
-          <span class="csx" @click="toggleGrd">✕</span></div>
+          <button class="winx" type="button" aria-label="关闭" title="关闭" @click="toggleGrd"><svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true"><path d="M1 1 L11 11 M11 1 L1 11" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/></svg></button></div>
 
         <div class="sec">
           <div class="sect"><span>卫星 / 天线</span><span class="lnk" title="添加自定义卫星，或从星座点选/搜索关联卫星" @click="openAddSat">＋ 卫星</span></div>
@@ -2084,7 +2109,7 @@ onBeforeUnmount(() => {
       </div>
 
       <div v-if="geoOpen" class="cov-side geo-side">
-        <div class="csh"><span class="csn">地图设置</span><span class="csx" @click="toggleGeo">✕</span></div>
+        <div class="csh"><span class="csn">地图设置</span><button class="winx" type="button" aria-label="关闭" title="关闭" @click="toggleGeo"><svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true"><path d="M1 1 L11 11 M11 1 L1 11" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/></svg></button></div>
         <div class="sec">
           <div class="sect"><span>大海颜色</span></div>
           <div class="swatches">
@@ -2101,7 +2126,7 @@ onBeforeUnmount(() => {
               <span class="sg" :class="{ on: nameMode === 'off' }" @click="setNameMode('off')">不显示</span>
             </span>
           </div>
-          <div class="srow"><label>名字号</label><input class="rng" type="range" min="0.3" max="2" step="0.05" :value="countryNameSize" @input="setCountryNameSize" /><span class="u">{{ countryNameSize.toFixed(2) }}</span></div>
+          <div class="srow"><label>名字号</label><input class="rng" type="range" min="0.3" max="3" step="0.05" :value="countryNameSize" @input="setCountryNameSize" /><span class="u">{{ countryNameSize.toFixed(2) }}</span></div>
           <div class="srow"><label>名颜色</label><input class="clr" type="color" v-model="labelStyle.countryColor" @input="applyLabelStyle" /><span class="u">{{ labelStyle.countryColor }}</span></div>
           <div class="srow"><label>名透明度</label><input class="rng" type="range" min="0" max="1" step="0.05" v-model.number="labelStyle.countryOpacity" @input="applyLabelStyle" /><span class="u">{{ labelStyle.countryOpacity.toFixed(2) }}</span></div>
           <div class="srow"><label>国界线颜色</label><input class="clr" type="color" v-model="borderStyle.natColor" @input="applyBorderStyle" /><span class="u">{{ borderStyle.natColor }}</span></div>
@@ -2125,7 +2150,7 @@ onBeforeUnmount(() => {
         <div class="sec">
           <div class="sect"><span>中国地级市（中国地级市界）</span></div>
           <label class="chk2"><input type="checkbox" :checked="showCities" @change="toggleCities" /><span>显示中国地级市界 / 地级市名</span></label>
-          <div class="srow"><label>名字号</label><input class="rng" type="range" min="0.15" max="2" step="0.05" :value="cityNameSize" @input="setCityNameSize" /><span class="u">{{ cityNameSize.toFixed(2) }}</span></div>
+          <div class="srow"><label>名字号</label><input class="rng" type="range" min="0.05" max="1.5" step="0.05" :value="cityNameSize" @input="setCityNameSize" /><span class="u">{{ cityNameSize.toFixed(2) }}</span></div>
           <div class="srow"><label>名颜色</label><input class="clr" type="color" v-model="labelStyle.cityColor" @input="applyLabelStyle" /><span class="u">{{ labelStyle.cityColor }}</span></div>
           <div class="srow"><label>名透明度</label><input class="rng" type="range" min="0" max="1" step="0.05" v-model.number="labelStyle.cityOpacity" @input="applyLabelStyle" /><span class="u">{{ labelStyle.cityOpacity.toFixed(2) }}</span></div>
           <div class="srow"><label>市界线颜色</label><input class="clr" type="color" v-model="borderStyle.cityColor" @input="applyBorderStyle" /><span class="u">{{ borderStyle.cityColor }}</span></div>
@@ -2136,26 +2161,29 @@ onBeforeUnmount(() => {
       </div>
 
       <div v-if="mkOpen" class="cov-side mk-side">
-        <div class="csh"><span class="csn">标记</span><span class="csx" @click="toggleMarkers">✕</span></div>
+        <div class="csh"><span class="csn">标记</span><button class="winx" type="button" aria-label="关闭" title="关闭" @click="toggleMarkers"><svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true"><path d="M1 1 L11 11 M11 1 L1 11" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/></svg></button></div>
 
         <div class="sec">
-          <div class="sect"><span>点标记</span></div>
+          <div class="sect"><span>点标记</span><span class="eyebtn" :class="{ off: !showPtLayer }" :title="showPtLayer ? '隐藏点标记（数据保留）' : '显示点标记'" @click="togglePtLayer"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M1 8C3 4.2 13 4.2 15 8C13 11.8 3 11.8 1 8Z" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="8" cy="8" r="2.1" fill="currentColor"/><path v-if="!showPtLayer" d="M3 13 L13 3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></span></div>
           <div class="srow"><label>纬度</label><input class="ci" v-model="ptLat" placeholder="-90 ~ 90" /></div>
           <div class="srow"><label>经度</label><input class="ci" v-model="ptLon" placeholder="-180 ~ 180" /><span class="addb" @click="addPointInput">添加</span></div>
           <div class="tip">右键地图也可直接标点</div>
-          <div class="srow"><label>坐标字号</label><input class="rng" type="range" min="6" max="32" step="1" :value="markPtFont" @input="setPtFont" /><span class="u">{{ markPtFont }}</span></div>
+          <label class="chk2"><input type="checkbox" :checked="showPtLabel" @change="togglePtLabel" /><span>显示坐标</span></label>
+          <div v-if="showPtLabel" class="srow"><label>坐标字号</label><input class="rng" type="range" min="1" max="32" step="1" :value="markPtFont" @input="setPtFont" /><span class="u">{{ markPtFont }}</span></div>
+          <div class="srow"><label>圆点大小</label><input class="rng" type="range" min="1" max="12" step="0.5" :value="markPtDot" @input="setPtDot" /><span class="u">{{ markPtDot }}</span></div>
           <div class="mlist">
             <div v-for="p in points" :key="p.id" class="mrow"><span class="mc">{{ fmtLL(p.lat, p.lon) }}</span><span class="del" @click="removePoint(p.id)">✕</span></div>
           </div>
         </div>
 
         <div class="sec">
-          <div class="sect"><span>地面站</span></div>
+          <div class="sect"><span>地面站</span><span class="eyebtn" :class="{ off: !showStLayer }" :title="showStLayer ? '隐藏地面站（数据保留）' : '显示地面站'" @click="toggleStLayer"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M1 8C3 4.2 13 4.2 15 8C13 11.8 3 11.8 1 8Z" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="8" cy="8" r="2.1" fill="currentColor"/><path v-if="!showStLayer" d="M3 13 L13 3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></span></div>
           <div class="srow"><label>纬度</label><input class="ci" v-model="stLat" placeholder="-90 ~ 90" /></div>
           <div class="srow"><label>经度</label><input class="ci" v-model="stLon" placeholder="-180 ~ 180" /></div>
           <div class="srow"><label>名称</label><input class="ci" v-model="stName" placeholder="如 北京站" /><span class="addb" @click="addStation">添加</span></div>
-          <div class="srow"><label>图标大小</label><input class="rng" type="range" min="16" max="60" step="2" :value="stIconSize" @input="setStIcon" /><span class="u">{{ stIconSize }}</span></div>
-          <div class="srow"><label>名称字号</label><input class="rng" type="range" min="6" max="32" step="1" :value="stFontSize" @input="setStFont" /><span class="u">{{ stFontSize }}</span></div>
+          <div class="srow"><label>图标大小</label><input class="rng" type="range" min="5" max="60" step="1" :value="stIconSize" @input="setStIcon" /><span class="u">{{ stIconSize }}</span></div>
+          <label class="chk2"><input type="checkbox" :checked="showStName" @change="toggleStName" /><span>显示名称</span></label>
+          <div v-if="showStName" class="srow"><label>名称字号</label><input class="rng" type="range" min="1" max="32" step="1" :value="stFontSize" @input="setStFont" /><span class="u">{{ stFontSize }}</span></div>
           <div class="mlist">
             <div v-for="s in stations" :key="s.id" class="mrow">
               <input class="sni" :value="s.name" @input="e => setStationName(s.id, e.target.value)" />
@@ -2165,10 +2193,11 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="sec">
-          <div class="sect"><span>轨迹</span>
+          <div class="sect"><span>轨迹</span><span class="eyebtn" :class="{ off: !showTrajLayer }" :title="showTrajLayer ? '隐藏航迹（数据保留）' : '显示航迹'" @click="toggleTrajLayer"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M1 8C3 4.2 13 4.2 15 8C13 11.8 3 11.8 1 8Z" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="8" cy="8" r="2.1" fill="currentColor"/><path v-if="!showTrajLayer" d="M3 13 L13 3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></span>
             <span class="lnk" @click="newTraj('sea')">+航行</span>
             <span class="lnk" @click="newTraj('flight')">+飞行</span>
           </div>
+          <div class="srow"><label>圆点大小</label><input class="rng" type="range" min="1" max="10" step="0.5" :value="trajDotSize" @input="setTrajDot" /><span class="u">{{ trajDotSize }}</span></div>
           <div v-for="t in trajectories" :key="t.id" class="tcard" :class="{ act: activeTraj === t.id }">
             <div class="trow">
               <span class="tk" :class="t.kind"></span>
@@ -2221,7 +2250,7 @@ onBeforeUnmount(() => {
             <div class="tip2">轨道根数模拟星：星下点 / 覆盖足迹随时间轴 / 实时模式移动（历元取保存时刻）。偏心率&gt;0 时轨道高度按近地点高度计。</div>
           </template>
           <template v-if="!satModal.hideViz">
-            <div class="srow"><label>图标大小</label><input class="rng" type="range" min="10" max="64" step="1" v-model.number="satModal.iconSize" /><span class="u">{{ satModal.iconSize }}</span></div>
+            <div class="srow"><label>图标大小</label><input class="rng" type="range" min="1" max="64" step="1" v-model.number="satModal.iconSize" /><span class="u">{{ satModal.iconSize }}</span></div>
             <div class="srow"><label>卫星名字号</label><input class="rng" type="range" min="1" max="30" step="1" v-model.number="satModal.labelSize" /><span class="u">{{ satModal.labelSize }}</span></div>
 
             <div class="sdiv">仰角线（等仰角环 / 角度标注）</div>
@@ -2261,6 +2290,15 @@ onBeforeUnmount(() => {
           <div class="srow"><label>位置</label><span class="u">{{ fmtLL(stPrompt.lat, stPrompt.lon) }}</span></div>
         </div>
         <div class="sdfoot"><span class="cancel" @click="cancelStation">取消</span><span class="save" @click="confirmStation">添加</span></div>
+      </div>
+    </div>
+
+    <!-- 应用内提示弹窗（替代 Electron 原生 alert，避免关闭后输入框无法聚焦） -->
+    <div v-if="alertMsg" class="sat-mask sat-overlay" @click.self="closeAlert">
+      <div class="sat-dlg al-dlg">
+        <div class="sdh"><span>提示</span><span class="csx" @click="closeAlert">✕</span></div>
+        <div class="sdbody"><p class="al-msg">{{ alertMsg }}</p></div>
+        <div class="sdfoot"><span class="save" @click="closeAlert">确定</span></div>
       </div>
     </div>
 
@@ -2565,14 +2603,17 @@ onBeforeUnmount(() => {
 .row .v i { font-style: normal; color: var(--text-faint); font-size: 10.5px; margin-left: 3px; }
 
 /* 覆盖图：右侧停靠面板（挤压地球，独占右栏） */
-.cov-side { width: 286px; flex: none; border-left: 1px solid var(--border-strong); background: var(--bg); overflow-y: auto; display: flex; flex-direction: column; font-size: 12px; }
-.csh { display: flex; align-items: center; padding: 10px 12px; border-bottom: 1px solid var(--border); }
-.csn { font-family: var(--font-serif); font-size: 14px; }
-.flatbtn { margin-left: 10px; flex: none; border: 1px solid var(--border); padding: 2px 9px; font-size: 11.5px; color: var(--text-muted); cursor: pointer; }
+/* 右侧边栏：与「设置弹窗」一致——surface 底色、统一表头/分区内边距与标题字号 */
+.cov-side { width: 286px; flex: none; border-left: 1px solid var(--border-strong); background: var(--surface); overflow-y: auto; display: flex; flex-direction: column; font-size: 12px; }
+.csh { display: flex; align-items: stretch; border-bottom: 1px solid var(--border); }
+.csn { font-family: var(--font-serif); font-size: 15px; padding: 11px 16px; align-self: center; }
+.flatbtn { align-self: center; margin-left: 10px; flex: none; border: 1px solid var(--border); padding: 2px 9px; font-size: 11.5px; color: var(--text-muted); cursor: pointer; }
 .flatbtn:hover { border-color: var(--accent); color: var(--text); }
 .flatbtn.on { background: var(--accent); color: #fff; border-color: var(--accent); }
-.csx { margin-left: auto; cursor: pointer; color: var(--text-faint); }
-.sec { padding: 10px 12px; border-bottom: 1px solid var(--border); }
+/* 关闭按钮：与「文件管理」一致——Windows 风矩形热区，悬停变红 */
+.winx { width: 44px; margin-left: auto; align-self: stretch; border: 0; background: transparent; color: var(--text-muted); cursor: pointer; display: flex; align-items: center; justify-content: center; transition: background .12s, color .12s; }
+.winx:hover { background: #c42b1c; color: #fff; }
+.sec { padding: 12px 16px; border-bottom: 1px solid var(--border); }
 .srow { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 .srow:last-child { margin-bottom: 0; }
 .srow label { color: var(--text-muted); width: 36px; flex: none; }
@@ -2587,6 +2628,10 @@ onBeforeUnmount(() => {
 .nseg .sg + .sg { border-left: 1px solid var(--border); }
 .sect { display: flex; align-items: center; margin-bottom: 6px; color: var(--text-muted); }
 .sect .lnk { margin-left: auto; color: var(--accent); cursor: pointer; font-size: 11.5px; }
+/* 分区标题旁的「小眼睛」显隐开关：睁眼=显示，闭眼（带斜杠/淡出）=隐藏 */
+.eyebtn { display: inline-flex; align-items: center; margin-left: 7px; cursor: pointer; color: var(--text-muted); }
+.eyebtn:hover { color: var(--text); }
+.eyebtn.off { color: var(--text-faint); }
 /* 天线设置区标题：SVG 图标 + 「天线设置」+ 天线名（高区分度） */
 .setsect .ant-svg { width: 14px; height: 14px; color: var(--accent); margin-right: 6px; }
 .setsect .setlbl { color: var(--text); font-weight: 600; }
@@ -2896,6 +2941,10 @@ onBeforeUnmount(() => {
 .sdfoot .cancel { margin-left: auto; color: var(--text-muted); border: 1px solid var(--border); padding: 4px 14px; cursor: pointer; font-size: 12px; }
 .sdfoot .cancel:hover { color: var(--text); }
 .sdfoot .save { background: var(--accent); color: #fff; padding: 4px 18px; cursor: pointer; font-size: 12px; }
+/* 应用内提示弹窗：消息文本 + 右对齐「确定」 */
+.al-dlg { width: 360px; }
+.al-msg { margin: 0; font-size: 13px; line-height: 1.65; color: var(--text); }
+.al-dlg .sdfoot { justify-content: flex-end; }
 .sat-banner { position: absolute; top: 64px; left: 50%; transform: translateX(-50%); z-index: 40; background: var(--surface); border: 1px solid var(--accent); padding: 7px 14px; font-size: 12px; color: var(--text); box-shadow: 0 6px 20px rgba(0,0,0,0.4); }
 .sat-banner .lnk { margin-left: 10px; color: var(--accent); cursor: pointer; }
 .traj-banner { position: absolute; top: 64px; left: 50%; transform: translateX(-50%); z-index: 40; background: var(--surface); border: 1px solid var(--accent); padding: 7px 14px; font-size: 12px; color: var(--text); box-shadow: 0 6px 20px rgba(0,0,0,0.4); }

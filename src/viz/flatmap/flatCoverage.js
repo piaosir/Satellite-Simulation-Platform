@@ -28,9 +28,11 @@ const OCEANS = [
 const OCEAN_FILL = 'rgba(150,195,230,0.92)'
 // 地面站图标（与 3D 同一张 SVG）
 const STATION_SVG = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'>" +
-  "<ellipse cx='32' cy='55' rx='10' ry='2' fill='#000000' opacity='0.22'/>" +
-  "<path d='M25 54 L29 44 M39 54 L35 44' stroke='#46566a' stroke-width='2' stroke-linecap='round' fill='none'/>" +
-  "<path d='M28 44 a 4 4 0 0 1 8 0 z' fill='#46566a'/><rect x='30.5' y='36' width='3' height='6' fill='#46566a'/>" +
+  "<ellipse cx='32' cy='58' rx='12' ry='2' fill='#000000' opacity='0.18'/>" +
+  "<path d='M23 57 L28 43 L36 43 L41 57 Z' fill='#c3c8cd' stroke='#9aa1a8' stroke-width='0.6'/>" +
+  "<path d='M32 57 L36 43 L41 57 Z' fill='#000000' opacity='0.05'/>" +
+  "<ellipse cx='32' cy='43' rx='4' ry='1.5' fill='#dde1e4'/>" +
+  "<rect x='29.8' y='33' width='4.4' height='11' rx='0.9' fill='#b9bec3' stroke='#9aa1a8' stroke-width='0.5'/>" +
   "<g transform='rotate(-26 32 26)'>" +
   "<ellipse cx='32' cy='26' rx='16.5' ry='11' fill='#eef3f7' stroke='#2f3a48' stroke-width='1.3'/>" +
   "<ellipse cx='32' cy='26' rx='16.5' ry='11' fill='none' stroke='#ffffff' stroke-width='0.7' opacity='0.5'/>" +
@@ -97,7 +99,7 @@ export function createFlatCoverage(canvas) {
   let focusSat = null   // 聚焦卫星星下点 { lat, lon }，null 表示无聚焦
   let selGeom = null    // 聚焦卫星几何：{ footprint:[{lat,lon}...], track:[{lat,lon}...] }，与 3D 同源（覆盖范围蓝 + 星下点轨迹黄）
   let satLayer = null   // 卫星/仰角线独立图层 { lines, dots, labels, sats }（与 geom/field 互不干扰）
-  const sizes = { beamFont: 16, contourFont: 12, dotSize: 5, showBore: true, nameScale: 1, provScale: 1, cityScale: 1, ptFont: 14, stIcon: 32, stFont: 17, satIcon: 30 }
+  const sizes = { beamFont: 16, contourFont: 12, dotSize: 5, showBore: true, nameScale: 1, provScale: 1, cityScale: 1, ptFont: 14, stIcon: 32, stFont: 17, satIcon: 30, ptDot: 3.5, trajDot: 2.5 }
 
   // 地面站图标
   const stationImg = new Image(); let stationReady = false
@@ -386,14 +388,17 @@ export function createFlatCoverage(canvas) {
   // GRD 标注层（天线名 / 波束中心点 / 数值标签）：画在填充+等值线之上，随各层 bore/segGroups 数据
   function drawFieldOverlays() {
     const o = fieldOpts
+    // 覆盖分析(GRD)四项注记（天线名/波束中心/峰值/数值）随缩放「克制版」联动：乘 iz=√scale。
+    // scale=1 时即当前大小；放大时缓增（不像 ×scale 那样在 2D 大缩放幅度下膨成过大色块/字）。
+    const iz = Math.sqrt(scale)
     for (const L of fieldLayers) {
-      if (o.showVal) for (const grp of (L.segGroups || [])) { if (grp.txt == null) continue; for (const an of (grp.labels || [])) drawText(String(grp.txt), an[0], an[1], o.valSize || 12, '#ffffff') }
+      if (o.showVal) for (const grp of (L.segGroups || [])) { if (grp.txt == null) continue; for (const an of (grp.labels || [])) drawText(String(grp.txt), an[0], an[1], (o.valSize || 12) * iz, '#ffffff') }
       const b = L.bore; if (!b) continue
-      const br = o.boreSize != null ? o.boreSize : 5
+      const br = (o.boreSize != null ? o.boreSize : 5) * iz
       if (o.showBore) dot(b.lon, b.lat, Math.max(0.3, br), '#ffffff', true)
       // 波束中心峰值 dB：标在中心点下方（2D 无卫星连线）
-      if (o.showPeak && b.peak != null) drawText(b.peak.toFixed(1) + ' dB', b.lon, b.lat, o.peakSize || 12, '#cfd6df', { dy: (o.showBore ? br : 0) + (o.peakSize || 12) * 0.7 + 3 })
-      if (o.showName && L.name) drawText(L.name, b.lon, b.lat, o.nameSize || 16, '#ffffff', { dy: -((o.showBore ? br : 0) + (o.nameSize || 16) * 0.6 + 2) })
+      if (o.showPeak && b.peak != null) { const pf = (o.peakSize || 12) * iz; drawText(b.peak.toFixed(1) + ' dB', b.lon, b.lat, pf, '#cfd6df', { dy: (o.showBore ? br : 0) + pf * 0.7 + 3 * iz }) }
+      if (o.showName && L.name) { const nf = (o.nameSize || 16) * iz; drawText(L.name, b.lon, b.lat, nf, '#ffffff', { dy: -((o.showBore ? br : 0) + nf * 0.6 + 2 * iz) }) }
     }
   }
 
@@ -409,6 +414,15 @@ export function createFlatCoverage(canvas) {
   function drawAboveContent(rx, ry, rw, rh) {
     ctx.save()
     ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip()
+    // 随缩放联动系数：mz=scale（与国家名同率，用于数值/覆盖/卫星层等注记）；scale=1 即当前大小。
+    // iz=√scale 是「克制版」联动：点标记/地面站/航迹这类实心图标若按 mz 满速放大，2D 缩放幅度大(可达60×)会膨成大色块，
+    // 故按 √scale 缓增——仍随缩放变化、scale=1 时不变，但放大时增长更温和、不至于过大。
+    const mz = scale, iz = Math.sqrt(scale)
+    // 与 3D 球体标记观感对齐：3D 的文字/圆点精灵都含画布留白（makeCovLabel 字号50→画布高66；dot 直径18的圆居中于32画布），
+    // 其屏幕尺寸按整张画布计 → 实际可见的字/点偏小。2D 直接按字号/半径作画、无留白，故乘同等系数收小，两视图一致。
+    const MK_FONT_K = 50 / 66      // 文字：3D 实际字高 = 字号 × 50/66 ≈ 0.76
+    const DOT3D_FILL = 18 / 32     // 3D 圆点：实心圆占精灵的比例（其余为留白）
+    const ST_ICON_K = 0.85         // 地面站图标：2D 观感略大于 3D，收一档对齐（经验系数，可微调）
     // 海岸线 + 经纬网画在覆盖填充之上：地理骨架贯穿覆盖区内外，覆盖与底图融为一体（平级），不再像贴纸浮在上面
     drawGrid(); strokeLand()
     // 南海十段线：颜色随中国国土(CHINA)，透明度随省界，线宽=省界×惯例倍数（比省界略粗）
@@ -431,22 +445,23 @@ export function createFlatCoverage(canvas) {
     // 覆盖数据
     if (geom) {
       for (const ln of (geom.lines || [])) if (ln.p && ln.p.length > 1) drawPolyline(ln.p, hex(ln.color), Math.max(0.8, ln.width || 1.6))
-      if (sizes.showBore) for (const d of (geom.dots || [])) dot(d.lon, d.lat, Math.max(1, sizes.dotSize), '#fff')
+      if (sizes.showBore) for (const d of (geom.dots || [])) dot(d.lon, d.lat, Math.max(1, sizes.dotSize) * iz, '#fff')   // GXT 波束中心点：克制版联动
     }
-    // 轨迹
+    // 轨迹（圆点大小可调 sizes.trajDot，按克制版 iz 联动）
+    const trajR = (sizes.trajDot != null ? sizes.trajDot : 2.5) * iz * (DOT3D_FILL * 2.5 / 2)   // 3D 轨迹点 ×2.5，对齐其可见直径
     for (const t of mk.trajectories) {
       if (t.pts && t.pts.length > 1) drawPolyline(t.pts, hex(t.color != null ? t.color : 0xff5a5a), 2.2)
-      for (const p of (t.pts || [])) dot(p.lon, p.lat, 3.2, t.kind === 'flight' ? '#5ad1ff' : '#ff9a5a', true)
+      for (const p of (t.pts || [])) dot(p.lon, p.lat, trajR, t.kind === 'flight' ? '#5ad1ff' : '#ff9a5a', true)
     }
-    // 点标记 + 地面站
-    const si = sizes.stIcon
-    for (const p of mk.points) dot(p.lon, p.lat, 5, '#ffd24a', true)
-    for (const s of mk.stations) { const x = PX(s.lon), y = PY(s.lat); if (stationReady) ctx.drawImage(stationImg, x - si / 2, y - si, si, si); else dot(s.lon, s.lat, 5, '#cfeaff', true) }
+    // 点标记 + 地面站（圆点大小可调 sizes.ptDot、图标 sizes.stIcon，按克制版 iz 联动）
+    const si = sizes.stIcon * iz * ST_ICON_K, ptR = (sizes.ptDot != null ? sizes.ptDot : 3.5) * iz * (DOT3D_FILL * 2.2 / 2)   // 3D 点标记 ×2.2，对齐其可见直径
+    for (const p of mk.points) dot(p.lon, p.lat, ptR, '#ffd24a', true)
+    for (const s of mk.stations) { const x = PX(s.lon), y = PY(s.lat); if (stationReady) ctx.drawImage(stationImg, x - si / 2, y - si, si, si); else dot(s.lon, s.lat, ptR, '#cfeaff', true) }
     // 地名层：字号随缩放联动，且与 3D 球体的「世界尺寸」地名严格一致。
     // 原理：3D 地名是世界尺寸（固定地理度数），其屏幕 px = 地理度数 × 每度像素。2D 同覆盖下每度像素 = k()。
     // 故 2D 字号 = 地理度数 × k()。标定：3D 普通省名 hpx=0.02→1.146°，对应 2D 基准 l.px=15 → 系数 k()/13.1。
     // 这样把"每度像素"折进 zf：font = l.px × 倍率 × (k()/13.1)，与窗口尺寸无关、与 3D 一致。
-    // 标记/波束/数值等注记维持恒定字号（与 3D 一致，不乘 zf）。
+    // 标记/波束/数值/覆盖/卫星层等注记与图标：随缩放联动（乘 mz=scale，scale=1 即当前大小，与国家名同率缩放）。
     const ns = sizes.nameScale || 1, zf = k() / 13.1
     if (nameMode !== 'off') {
       ctx.globalAlpha = labelStyle.countryOpacity
@@ -466,27 +481,29 @@ export function createFlatCoverage(canvas) {
       for (const l of prov.labels) drawText(l.name, l.lon, l.lat, Math.round(l.px * ps * zf), labelStyle.provColor)
       ctx.globalAlpha = 1
     }
-    if (geom) {
-      for (const l of (geom.labels || [])) drawText(l.text, l.lon, l.lat, Math.round((l.hpx || 0.03) * 533), l.color || '#fff')
+    if (geom) {   // GXT 覆盖图标签（波束名/数值）：克制版联动 iz
+      for (const l of (geom.labels || [])) drawText(l.text, l.lon, l.lat, Math.round((l.hpx || 0.03) * 533 * iz), l.color || '#fff')
     }
     for (const p of mk.points) {
-      drawText(p.label, p.lon, p.lat, sizes.ptFont, '#ffffff', { dy: sizes.ptFont * 0.9 + 5 })
-      if (p.el) drawText(p.el, p.lon, p.lat, sizes.ptFont * 0.9, '#cdd6de', { dy: sizes.ptFont * 1.9 + 8 })   // 聚焦卫星仰角：素灰
+      const pf = sizes.ptFont * iz * MK_FONT_K   // 点标记文字：×MK_FONT_K 与 3D 字高对齐（与图标同用克制版 iz）
+      drawText(p.label, p.lon, p.lat, pf, '#ffffff', { dy: pf * 0.9 + 5 * iz })
+      if (p.el) drawText(p.el, p.lon, p.lat, pf * 0.9, '#cdd6de', { dy: pf * 1.9 + 8 * iz })   // 聚焦卫星仰角：素灰
     }
     for (const s of mk.stations) {
-      drawText(s.name, s.lon, s.lat, sizes.stFont, '#cfeaff', { dy: sizes.stFont * 0.5 + 3 })
-      if (s.el) drawText(s.el, s.lon, s.lat, sizes.stFont * 0.9, '#cdd6de', { dy: sizes.stFont * 1.5 + 6 })   // 聚焦卫星仰角：素灰
+      const sf = sizes.stFont * iz * MK_FONT_K   // 地面站文字：×MK_FONT_K 与 3D 字高对齐（与图标同用克制版 iz）
+      drawText(s.name, s.lon, s.lat, sf, '#cfeaff', { dy: sf * 0.5 + 0.5 * iz })
+      if (s.el) drawText(s.el, s.lon, s.lat, sf * 0.9, '#cdd6de', { dy: sf * 1.5 + 3.5 * iz })   // 聚焦卫星仰角：素灰
     }
     // 卫星 / 仰角线独立图层：等仰角线 + 卫星图标 + 名称（在覆盖/标记之上、聚焦图标之下）
     if (satLayer) {
       for (const ln of (satLayer.lines || [])) if (ln.p && ln.p.length > 1) drawPolyline(ln.p, hex(ln.color != null ? ln.color : 0x66ddff), Math.max(0.8, ln.width || 1.4))
-      for (const d of (satLayer.dots || [])) dot(d.lon, d.lat, Math.max(2, d.r != null ? d.r : 4), hex(d.color != null ? d.color : 0xffd27a), true)
-      for (const l of (satLayer.labels || [])) drawText(l.text, l.lon, l.lat, Math.round((l.hpx || 0.026) * 533), l.color || '#fff')
-      for (const s of (satLayer.sats || [])) drawSatIcon(s.lon, s.lat, s.iconSize || sizes.satIcon, hex(s.color != null ? s.color : 0xffd27a))   // 颜色/大小随各星设置
+      for (const d of (satLayer.dots || [])) dot(d.lon, d.lat, Math.max(2, d.r != null ? d.r : 4) * mz, hex(d.color != null ? d.color : 0xffd27a), true)
+      for (const l of (satLayer.labels || [])) drawText(l.text, l.lon, l.lat, Math.round((l.hpx || 0.026) * 533 * mz), l.color || '#fff')
+      for (const s of (satLayer.sats || [])) drawSatIcon(s.lon, s.lat, (s.iconSize || sizes.satIcon || 30) * mz, hex(s.color != null ? s.color : 0xffd27a))   // 颜色/大小随各星设置
       for (const s of (satLayer.sats || [])) {
         if (!s.name || s.lon == null || s.lat == null || s.labelShow === false) continue
-        const ls = s.labelSize || 14
-        drawText(s.name, s.lon, s.lat, ls, hex(s.color != null ? s.color : 0xffd27a), { dy: -((s.iconSize || sizes.satIcon || 30) * 0.5 + ls * 0.6) })
+        const ls = (s.labelSize || 14) * mz
+        drawText(s.name, s.lon, s.lat, ls, hex(s.color != null ? s.color : 0xffd27a), { dy: -((s.iconSize || sizes.satIcon || 30) * mz * 0.5 + ls * 0.6) })
       }
     }
     ctx.restore()
@@ -526,7 +543,7 @@ export function createFlatCoverage(canvas) {
       if (selGeom.footprint && selGeom.footprint.length > 1) drawPolyline(selGeom.footprint, '#96d7f0', 1.8)
       if (selGeom.track && selGeom.track.length > 1) drawPolyline(selGeom.track, '#c2a25e', 2.0)
     }
-    if (focusSat) drawSatIcon(focusSat.lon, focusSat.lat, sizes.satIcon, '#ffffff')   // 聚焦卫星（最上层）
+    if (focusSat) drawSatIcon(focusSat.lon, focusSat.lat, sizes.satIcon * scale, '#ffffff')   // 聚焦卫星（最上层，随缩放联动）
     ctx.restore()
   }
 
@@ -714,7 +731,7 @@ export function createFlatCoverage(canvas) {
         if (selGeom.footprint && selGeom.footprint.length > 1) drawPolyline(selGeom.footprint, '#96d7f0', 1.8)
         if (selGeom.track && selGeom.track.length > 1) drawPolyline(selGeom.track, '#c2a25e', 2.0)
       }
-      if (focusSat) drawSatIcon(focusSat.lon, focusSat.lat, sizes.satIcon, '#ffffff')
+      if (focusSat) drawSatIcon(focusSat.lon, focusSat.lat, sizes.satIcon * scale, '#ffffff')
       ctx.restore()
       ctx = SV.ctx; dpr = SV.dpr; cw = SV.cw; ch = SV.ch; base = SV.base; scale = SV.scale; tx = SV.tx; ty = SV.ty; textFont = SV.font; compat = false
       staticValid = false; requestDraw()

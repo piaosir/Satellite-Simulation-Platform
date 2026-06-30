@@ -2,6 +2,7 @@
 // 与具体数据解耦——行/列/取值/写值全部由 cfg 注入；同一份逻辑可挂在「城市输入」（可编辑）与「性能结果」（只读）两张表上。
 // 选区 = 锚点(ar,ac) → 活动格(ri,ci) 构成的矩形（ri=行下标，ci=列下标，均以 cfg.rows()/cfg.cols() 的当前顺序计）。
 import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
+import { appAlert } from '../../stores/alert.js'   // 应用内提示，替代会夺焦点的原生 alert
 
 export function useGridSelect(cfg) {
   // cfg:
@@ -102,7 +103,7 @@ export function useGridSelect(cfg) {
   async function doPaste() {
     if (cfg.readOnly) return
     let text = ''
-    try { text = await navigator.clipboard.readText() } catch { alert('无法读取剪贴板，请用「粘贴」按钮'); return }
+    try { text = await navigator.clipboard.readText() } catch { appAlert('无法读取剪贴板，请用「粘贴」按钮'); return }
     if (!text || !text.trim()) return
     cfg.pushUndo && cfg.pushUndo()
     const rc = rect.value, rows = cfg.rows(), c = cfg.cols()[rc.c0]

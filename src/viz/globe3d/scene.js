@@ -351,6 +351,10 @@ export function createGlobeScene(container, quality = {}) {
   // near 0.1：最近可视面距相机 0.15 不裁切。far 120：覆盖拉远到 maxDistance(50) + 大轨道半径(GEO≈6.6/HEO 更大)，避免远端轨道被远裁剪面切掉露出黑底
   const camera = new THREE.PerspectiveCamera(42, w / h, 0.1, 120)
   camera.position.copy(llaToVec(36, 104, 0).multiplyScalar(3.0))   // 默认以中国（约 104°E, 36°N）为中心
+  // 标记/标签「随缩放联动」的基准相机距离：在此距离上标记=其设定的当前像素大小（≈默认贴合视角），
+  // 拉近变大、拉远变小，与国家名/省名等世界尺寸地名同步缩放（取默认初始距离 3.0）。
+  const LABEL_REF_DIST = 3.0
+  const SAT_POINT_PX = 3.2   // 卫星点基准像素（基准距离上的屏幕大小，逐帧按缩放联动）
 
   const controls = new OrbitControls(camera, renderer.domElement)
   controls.enableDamping = true
@@ -986,9 +990,11 @@ export function createGlobeScene(container, quality = {}) {
 
   // 地面站图标（J4：精致立体卡塞格伦天线——淡填充碟面 + 边缘高光 + 四脚馈源 + 叉臂座架 + 落影），共用一张贴图
   const STATION_SVG = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'>" +
-    "<ellipse cx='32' cy='55' rx='10' ry='2' fill='#000000' opacity='0.22'/>" +
-    "<path d='M25 54 L29 44 M39 54 L35 44' stroke='#46566a' stroke-width='2' stroke-linecap='round' fill='none'/>" +
-    "<path d='M28 44 a 4 4 0 0 1 8 0 z' fill='#46566a'/><rect x='30.5' y='36' width='3' height='6' fill='#46566a'/>" +
+    "<ellipse cx='32' cy='58' rx='12' ry='2' fill='#000000' opacity='0.18'/>" +
+    "<path d='M23 57 L28 43 L36 43 L41 57 Z' fill='#c3c8cd' stroke='#9aa1a8' stroke-width='0.6'/>" +
+    "<path d='M32 57 L36 43 L41 57 Z' fill='#000000' opacity='0.05'/>" +
+    "<ellipse cx='32' cy='43' rx='4' ry='1.5' fill='#dde1e4'/>" +
+    "<rect x='29.8' y='33' width='4.4' height='11' rx='0.9' fill='#b9bec3' stroke='#9aa1a8' stroke-width='0.5'/>" +
     "<g transform='rotate(-26 32 26)'>" +
     "<ellipse cx='32' cy='26' rx='16.5' ry='11' fill='#eef3f7' stroke='#2f3a48' stroke-width='1.3'/>" +
     "<ellipse cx='32' cy='26' rx='16.5' ry='11' fill='none' stroke='#ffffff' stroke-width='0.7' opacity='0.5'/>" +
@@ -1027,18 +1033,23 @@ export function createGlobeScene(container, quality = {}) {
   // points:[{lat,lon,label?}]  stations:[{lat,lon,name?}]  sizes:{ptFont,stIcon,stFont}
   function setMarkers(points, stations, sizes) {
     const sz = sizes || {}, ptFont = sz.ptFont || 14, stIcon = sz.stIcon || 32, stFont = sz.stFont || 17
+    // 点标记圆点直径：用 2D 半径口径 sz.ptDot（默认 3.5）×2.2 换算到 3D 屏幕像素，保持与 2D 观感一致、可调
+    const ptDotPx = (sz.ptDot != null ? sz.ptDot : 3.5) * 2.2
     disposeGroup(markersGroup); markersGroup = null
     const g = new THREE.Group()
     for (const p of (points || [])) {
-      const dot = makeDot('#ffd24a'); dot.position.copy(llaToVec(p.lat, p.lon, 0).multiplyScalar(1.0012)); dot._px = 11; dot._ar = 1; dot.renderOrder = 15; g.add(dot)
+      const dot = makeDot('#ffd24a'); dot.position.copy(llaToVec(p.lat, p.lon, 0).multiplyScalar(1.0012)); dot._px = ptDotPx; dot._ar = 1; dot.renderOrder = 15; g.add(dot)
       if (p.label) g.add(labelSprite(p.label, p.lat, p.lon, '#ffffff', -0.35, ptFont))   // 坐标：白字
       if (p.el) g.add(labelSprite(p.el, p.lat, p.lon, '#cdd6de', 1.35, ptFont * 0.9))     // 聚焦卫星仰角：素灰，标记下方
     }
     for (const s of (stations || [])) {
-      const st = new THREE.Sprite(new THREE.SpriteMaterial({ map: stationTexture(), depthTest: true, depthWrite: false, transparent: true }))
-      st.position.copy(llaToVec(s.lat, s.lon, 0).multiplyScalar(1.0012)); st.center.set(0.5, 0); st._px = stIcon; st._ar = 1; st.renderOrder = 15; g.add(st)
-      if (s.name) g.add(labelSprite(s.name, s.lat, s.lon, '#cfeaff', 1.05, stFont))   // 名称紧贴地面站图标下方
-      if (s.el) g.add(labelSprite(s.el, s.lat, s.lon, '#cdd6de', 2.1, stFont * 0.9))   // 聚焦卫星仰角：素灰，名称下方
+      // 关闭深度测试 + 半球剔除（_dir）：与文字标签同策略。地面站图标是「从地表立起」的精灵，开 depthTest 时
+      // 整张图按锚点(地表)深度参与测试，低视角/近地平边缘处上半部分会被更近的地球曲面截断遮挡。改为始终完整浮于
+      // 地表之上，转到背面时由 rescaleMarkers 按 _dir 自动隐藏/淡出（不会透出地球背面的站点）。
+      const st = new THREE.Sprite(new THREE.SpriteMaterial({ map: stationTexture(), depthTest: false, depthWrite: false, transparent: true }))
+      st.position.copy(llaToVec(s.lat, s.lon, 0).multiplyScalar(1.0012)); st.center.set(0.5, 0); st._px = stIcon; st._ar = 1; st._dir = st.position.clone().normalize(); st.renderOrder = 15; g.add(st)
+      if (s.name) g.add(labelSprite(s.name, s.lat, s.lon, '#cfeaff', 0.82, stFont))   // 名称紧贴地面站底座下方
+      if (s.el) g.add(labelSprite(s.el, s.lat, s.lon, '#cdd6de', 1.87, stFont * 0.9))   // 聚焦卫星仰角：素灰，名称下方
     }
     markersGroup = g; scene.add(g)
   }
@@ -1048,8 +1059,9 @@ export function createGlobeScene(container, quality = {}) {
     const s = Math.sin(ang)
     return a.clone().multiplyScalar(Math.sin((1 - t) * ang) / s).add(b.clone().multiplyScalar(Math.sin(t * ang) / s))
   }
-  // list:[{pts:[{lat,lon}], color, kind}]
-  function setTrajectories(list) {
+  // list:[{pts:[{lat,lon}], color, kind}]；sizes.trajDot 控制轨迹圆点大小（2D 半径口径，×2.5 换算到 3D 屏幕像素）
+  function setTrajectories(list, sizes) {
+    const trajDotPx = ((sizes && sizes.trajDot != null) ? sizes.trajDot : 2.5) * 2.5
     disposeGroup(trajGroup); trajGroup = null
     const g = new THREE.Group()
     for (const tr of (list || [])) {
@@ -1061,14 +1073,17 @@ export function createGlobeScene(container, quality = {}) {
         for (let s = 0; s <= steps; s++) verts.push(slerp(a, b, s / steps).multiplyScalar(1.002))
       }
       if (verts.length > 1) g.add(fatStrip(verts, tr.color != null ? tr.color : 0xff5a5a, 2.2, 0.95, 7))
-      for (const p of pts) { const dot = makeDot(tr.kind === 'flight' ? '#5ad1ff' : '#ff9a5a'); dot.position.copy(llaToVec(p.lat, p.lon, 0).multiplyScalar(1.002)); dot._px = 8; dot._ar = 1; dot.renderOrder = 15; g.add(dot) }
+      for (const p of pts) { const dot = makeDot(tr.kind === 'flight' ? '#5ad1ff' : '#ff9a5a'); dot.position.copy(llaToVec(p.lat, p.lon, 0).multiplyScalar(1.002)); dot._px = trajDotPx; dot._ar = 1; dot.renderOrder = 15; g.add(dot) }
     }
     trajGroup = g; scene.add(g)
   }
-  // 标记/轨迹精灵每帧反缩放成固定屏幕尺寸；带 _dir 的文字标签做半球剔除（避免被地球裁切）
+  // 标记/轨迹精灵每帧随缩放「均匀」联动：屏幕像素 = 设定像素 × zoomK，zoomK = 基准距离/相机到目标距离。
+  // 默认视角(相机距=LABEL_REF_DIST) zoomK=1 → 即其设定的原始像素大小；拉近 zoomK>1 变大、拉远变小，与地名同步。
+  // 用「相机→目标」统一系数（而非各标记自身距离）→ 全部标记同屏幕大小，不再近大远小。带 _dir 的文字做半球剔除。
   function rescaleMarkers() {
     const tanH = Math.tan(camera.fov * 0.5 * Math.PI / 180) || 1
     const cd = camera.position.clone().normalize()
+    const zoomK = LABEL_REF_DIST / camera.position.distanceTo(controls.target)
     const go = (grp) => {
       if (!grp) return
       for (const o of grp.children) {
@@ -1077,7 +1092,7 @@ export function createGlobeScene(container, quality = {}) {
           if (dot <= 0.05) { o.visible = false; continue }
           o.visible = true; o.material.opacity = dot >= 0.22 ? 1 : (dot - 0.05) / 0.17
         }
-        if (o._px) { const dd = camera.position.distanceTo(o.position); const h = o._px * (2 * dd * tanH) / curH; o.scale.set(h * (o._ar || 1), h, 1) }
+        if (o._px) { const dd = camera.position.distanceTo(o.position); const h = o._px * zoomK * (2 * dd * tanH) / curH; o.scale.set(h * (o._ar || 1), h, 1) }
       }
     }
     go(markersGroup); go(trajGroup)
@@ -1093,8 +1108,9 @@ export function createGlobeScene(container, quality = {}) {
     }
     const geo = new THREE.BufferGeometry()
     geo.setAttribute('position', new THREE.BufferAttribute(arr, 3))
-    // 固定屏幕尺寸（不随距离缩小）：拉远地球变小时卫星仍清晰可见、可点
-    satPoints = new THREE.Points(geo, new THREE.PointsMaterial({ color: 0x9fd0ef, size: 3.2, sizeAttenuation: false }))
+    // 卫星点：随缩放联动（基准距离上 SAT_POINT_PX 像素，拉近变大、拉远变小，见 loop 内逐帧更新 size）；
+    // 拾取命中半径独立按距离折算固定 ~14px（见 pointerup），故缩小后仍可点。下限钳制保证拉远不至于消失。
+    satPoints = new THREE.Points(geo, new THREE.PointsMaterial({ color: 0x9fd0ef, size: SAT_POINT_PX, sizeAttenuation: false }))
     scene.add(satPoints)
   }
   function setHighlight(vec) { hlPos = vec ? vec.clone() : null; if (!hlPos) ringSpr.visible = false }
@@ -1177,11 +1193,13 @@ export function createGlobeScene(container, quality = {}) {
       zoomDir.copy(camera.position).sub(controls.target).normalize()
       camera.position.copy(controls.target).addScaledVector(zoomDir, next)
     }
-    // 选中环：固定屏幕直径 ~24px，背面被地球挡住时隐藏
+    // 卫星点随缩放联动：基准距离上 SAT_POINT_PX，拉近变大、拉远变小；下限 0.5×/上限 4× 钳制保证可见且不过大
+    if (satPoints) satPoints.material.size = SAT_POINT_PX * Math.max(0.5, Math.min(4, LABEL_REF_DIST / cur))
+    // 选中环：随缩放均匀联动（默认视角 ~24px，与标记同步放大缩小），背面被地球挡住时隐藏
     if (hlPos) {
       const tanHalf = Math.tan(camera.fov * 0.5 * Math.PI / 180) || 1
       const d = camera.position.distanceTo(hlPos)
-      const sz = 24 * (2 * d * tanHalf) / curH
+      const sz = 24 * (LABEL_REF_DIST / cur) * (2 * d * tanHalf) / curH
       ringSpr.position.copy(hlPos)
       ringSpr.scale.set(sz, sz, 1)
       ringSpr.visible = !occludedByGlobe(hlPos)

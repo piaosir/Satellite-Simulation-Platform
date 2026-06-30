@@ -7,6 +7,7 @@ import { antennaBasis, antennaBasisAzEl, dirToAzEl, azElGround, surfaceAzEl, pro
 import { schemeColorsRGB, rgbCss, cssRgb } from './colormap.js'
 import { RS_GEO, A, geodeticToEcef, isoElevationContourAt } from '../wgs84.js'
 import { effective as displayQuality } from '../../stores/displayQuality.js'
+import { appAlert } from '../../stores/alert.js'   // 应用内提示，替代会夺焦点的原生 alert
 
 const H = RS_GEO - A
 const GEO_ALT = 35786              // GEO 轨道高度 km（预置星默认）：NASA 标称值（22,236 mi）
@@ -217,10 +218,11 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
   }
 
   // ===== 卫星节点：增/删/改 + 仰角线属性 =====
+  // 轮转取色：卫星颜色默认已改为白色，下列暂保留备用（当前未调用）；如需恢复彩色，把 normPreset/addSatellite 的 '#ffffff' 改回 nextElevColor() 即可
   let _colorSeq = 0
   const nextElevColor = () => SAT_PALETTE[_colorSeq++ % SAT_PALETTE.length]
-  // 预置星（index）补齐统一节点字段：GEO 定点(lon,0,GEO_ALT)、缺省仰角线（关闭）
-  const normPreset = (s) => ({ ...s, kind: 'preset', lat: 0, altKm: GEO_ALT, noradId: null, els: '5,10', elevColor: nextElevColor(), elevShow: false, elevWidth: 1.3, elevLabelSize: 13, iconSize: 30, labelSize: 14, labelShow: false })
+  // 预置星（index）补齐统一节点字段：GEO 定点(lon,0,GEO_ALT)、仰角线默认关、卫星名默认开、颜色默认白
+  const normPreset = (s) => ({ ...s, kind: 'preset', lat: 0, altKm: GEO_ALT, noradId: null, els: '5,10', elevColor: '#ffffff', elevShow: false, elevWidth: 1.3, elevLabelSize: 13, iconSize: 10, labelSize: 4, labelShow: true })
   // 同名加点号去重，作为节点唯一 key（folder）
   function genFolder(name) {
     const base = (name || '卫星').trim() || '卫星'
@@ -239,9 +241,9 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
       noradId: draft.noradId || null,
       elements: draft.elements || null,
       els: draft.els != null ? draft.els : '5,10',
-      elevColor: draft.color || nextElevColor(), elevShow: false, elevWidth: Number(draft.elevWidth) || 1.3,
+      elevColor: draft.color || '#ffffff', elevShow: false, elevWidth: Number(draft.elevWidth) || 1.3,
       elevLabelSize: Number(draft.elevLabelSize) || 13,
-      iconSize: Number(draft.iconSize) || 30, labelSize: Number(draft.labelSize) || 14, labelShow: true,
+      iconSize: Number(draft.iconSize) || 10, labelSize: Number(draft.labelSize) || 4, labelShow: true,
       antennas: []
     }
     sats.value = [...sats.value, node]
@@ -637,14 +639,14 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
   }
   async function importGrd(target) {
     const sat = target || targetSat()
-    if (!sat) { alert('请先选择一颗卫星'); return }
+    if (!sat) { appAlert('请先选择一颗卫星'); return }
     loading.value = true
     try {
       const res = await window.api.coverageGrd.open()
       if (!res || res.canceled) return
       // 多选：每个文件 = 一个天线。兼容旧返回（单文件 {base,text}）。
       const files = res.files || (res.text ? [{ base: res.base, text: res.text }] : [])
-      if (!files.length) { alert('读取失败：' + (res.error || '空文件')); return }
+      if (!files.length) { appAlert('读取失败：' + (res.error || '空文件')); return }
       const errs = []
       let lastKey = null, lastPeak = null
       for (const f of files) {
@@ -674,7 +676,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
         recompute()
         const sc = getScene(); if (sc && lastPeak) sc.faceLonLat(lastPeak[0], lastPeak[1])
       }
-      if (errs.length) alert('部分文件导入失败：\n' + errs.join('\n'))
+      if (errs.length) appAlert('部分文件导入失败：\n' + errs.join('\n'))
     } finally { loading.value = false }
   }
 
@@ -747,7 +749,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
           if (!ss.kind || ss.kind === 'preset') continue   // 预置星已不在 index（如已删/改版）→ 跳过
           node = { folder: ss.folder, satName: ss.satName || '卫星', kind: ss.kind, antennas: [],
             lon: ss.lon, lat: ss.lat, altKm: ss.altKm, noradId: ss.noradId || null, elements: ss.elements || null,
-            els: '5,10', elevColor: nextElevColor(), elevShow: false, elevWidth: 1.3, elevLabelSize: 13, iconSize: 30, labelSize: 14, labelShow: true }
+            els: '5,10', elevColor: '#ffffff', elevShow: false, elevWidth: 1.3, elevLabelSize: 13, iconSize: 10, labelSize: 4, labelShow: true }
           sats.value = [...sats.value, node]
         }
         if (ss.satName) node.satName = ss.satName

@@ -16,9 +16,13 @@ if (!SvgContext.prototype.__perfPatched) {
   const origMoveTo = P.moveTo, origBeginPath = P.beginPath
   P.beginPath = function () { origBeginPath.call(this); this.__hasMove = false }
   P.moveTo = function (x, y) { origMoveTo.call(this, x, y); this.__hasMove = true }
+  // 子路径未起头（无前置 moveTo，如 arc/dot 内部直接 lineTo 起笔）时，须按原版 svgcanvas 语义补一个 M——
+  // 否则 arc() 先调的 lineTo(起点) 被吞掉，只剩 'A' 弧命令成废路径 → 导出 PDF 里所有圆点(dot/arc)消失。
   P.lineTo = function (x, y) {
     this.__currentPosition = { x: x, y: y }
-    if (this.__hasMove) { const p = this.__matrixTransform(x, y); this.__addPathCommand('L ' + p.x + ' ' + p.y) }
+    const p = this.__matrixTransform(x, y)
+    if (this.__hasMove) { this.__addPathCommand('L ' + p.x + ' ' + p.y) }
+    else { this.__addPathCommand('M ' + p.x + ' ' + p.y); this.__hasMove = true }
   }
   P.__perfPatched = true
 }

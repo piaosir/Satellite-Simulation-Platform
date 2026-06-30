@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref, defineAsyncComponent } from 'vue'
+import { computed, ref, watch, defineAsyncComponent } from 'vue'
 import { useNavStore } from './stores/nav'
 import { cursor } from './stores/cursor'
 import { view } from './stores/view'
@@ -29,7 +29,10 @@ const ISL = defineAsyncComponent(() => import('./pages/ISL.vue'))
 const nav = useNavStore()
 const viewMenu = ref(false)
 const expMenu = ref(false)        // 「导出图」下拉
-const expScope = ref('view')      // 导出范围默认「截图」(当前视图，所见即所得)；'world'=整幅世界图
+// 导出范围：记忆用户上次选择（'world'=整幅世界图，默认；'view'=截图，当前视图所见即所得）
+const EXP_SCOPE_KEY = 'exp-scope'
+const expScope = ref((() => { try { const v = localStorage.getItem(EXP_SCOPE_KEY); return v === 'view' || v === 'world' ? v : 'world' } catch { return 'world' } })())
+watch(expScope, (v) => { try { localStorage.setItem(EXP_SCOPE_KEY, v) } catch { /* ignore */ } })
 const calcMenu = ref(false)       // 「计算」下拉
 const settingsOpen = ref(false)
 const fileOpen = ref(false)
@@ -61,15 +64,15 @@ const currentLabel = computed(
     <header class="topbar">
       <span class="brand">卫星仿真平台</span>
       <nav class="menu">
-        <span class="setbtn" @click="fileOpen = true">文件</span>
+        <span class="navbtn" @click="fileOpen = true">文件</span>
         <span class="vwrap">
-          <span class="setbtn" :class="{ on: calcMenu }" @click.stop="calcMenu = !calcMenu">计算 ▾</span>
+          <span class="navbtn" :class="{ on: calcMenu }" @click.stop="calcMenu = !calcMenu">计算 ▾</span>
           <div v-if="calcMenu" class="vmenu calcmenu">
             <div class="vitem" @click="openLinkBudget"><span class="vico">▤</span>地球静止轨道卫星（GEO）链路预算</div>
           </div>
         </span>
         <span class="vwrap">
-          <span class="vbtn" :class="{ on: viewMenu }" @click.stop="viewMenu = !viewMenu">视图 · {{ view.flat ? '2D 平面' : '3D 球体' }} ▾</span>
+          <span class="navbtn" :class="{ on: viewMenu }" @click.stop="viewMenu = !viewMenu">视图 · {{ view.flat ? '2D 平面' : '3D 球体' }} ▾</span>
           <div v-if="viewMenu" class="vmenu">
             <div class="vitem" :class="{ sel: !view.flat }" @click="pickView(false)">
               <span class="ck">{{ !view.flat ? '✓' : '' }}</span><span class="vico">◐</span>3D 球体
@@ -79,10 +82,10 @@ const currentLabel = computed(
             </div>
           </div>
         </span>
-        <span v-if="covNav.grdAvail" class="covbtn" :class="{ on: covNav.grdOpen }" @click="covNav.toggleGrd && covNav.toggleGrd()">覆盖分析</span>
-        <span v-if="covNav.covAvail" class="covbtn" :class="{ on: covNav.covOpen }" @click="covNav.toggleCov && covNav.toggleCov()">覆盖图（GXT）</span>
+        <span v-if="covNav.grdAvail" class="navbtn" :class="{ on: covNav.grdOpen }" @click="covNav.toggleGrd && covNav.toggleGrd()">覆盖分析</span>
+        <span v-if="covNav.covAvail" class="navbtn" :class="{ on: covNav.covOpen }" @click="covNav.toggleCov && covNav.toggleCov()">覆盖图（GXT）</span>
         <span v-if="covNav.exportAvail" class="vwrap">
-          <span class="covbtn" :class="{ on: expMenu }" @click.stop="expMenu = !expMenu">导出 ▾</span>
+          <span class="navbtn" :class="{ on: expMenu }" @click.stop="expMenu = !expMenu">导出 ▾</span>
           <div v-if="expMenu" class="vmenu exp-menu">
             <div class="vscope" @click.stop>
               <span class="vsp" :class="{ on: expScope === 'world' }" @click="expScope = 'world'">全球图</span>
@@ -93,7 +96,7 @@ const currentLabel = computed(
             <div class="vitem" @click="doExport('pdf')"><span class="vico">▤</span>矢量 PDF</div>
           </div>
         </span>
-        <span class="setbtn" @click="settingsOpen = true">设置</span>
+        <span class="navbtn" @click="settingsOpen = true">设置</span>
       </nav>
       <div v-if="viewMenu || expMenu || calcMenu" class="vmask" @click="viewMenu = false; expMenu = false; calcMenu = false"></div>
     </header>
@@ -135,17 +138,13 @@ const currentLabel = computed(
   border-bottom: 1px solid var(--border); flex: none;
 }
 .brand { font-family: var(--font-serif); font-size: 15px; letter-spacing: .4px; }
-.menu { display: flex; align-items: center; gap: 18px; color: var(--text-muted); font-size: 12.5px; }
-.setbtn { cursor: pointer; }
-.setbtn:hover, .setbtn.on { color: var(--text); }
+.menu { display: flex; align-items: center; gap: 10px; color: var(--text-muted); font-size: 12.5px; }
 .vwrap { position: relative; }
-.vbtn { cursor: pointer; border: 1px solid var(--border); padding: 2px 10px; border-radius: 2px; }
-.vbtn:hover { color: var(--text); border-color: var(--accent); }
-.vbtn.on { color: var(--text); border-color: var(--accent); }
-.covbtn { cursor: pointer; border: 1px solid var(--border); padding: 2px 10px; border-radius: 2px; transition: color .12s, background .12s, border-color .12s; }
-.covbtn:hover { color: var(--text); border-color: var(--accent); }
-.covbtn.on { color: var(--bg); background: var(--accent); border-color: var(--accent); font-weight: 600; }
-.covbtn.on:hover { color: var(--bg); }
+/* 顶栏 7 个按钮统一样式：常态描边 → 悬停描边变强调色 → 选中/展开填充强调色 */
+.navbtn { cursor: pointer; border: 1px solid var(--border); padding: 2px 10px; border-radius: 2px; color: var(--text-muted); transition: color .12s, background .12s, border-color .12s; }
+.navbtn:hover { color: var(--text); border-color: var(--accent); }
+.navbtn.on { color: var(--bg); background: var(--accent); border-color: var(--accent); font-weight: 600; }
+.navbtn.on:hover { color: var(--bg); }
 .vmenu {
   position: absolute; top: calc(100% + 6px); left: 0; z-index: 100; min-width: 132px;
   background: var(--surface); border: 1px solid var(--border-strong);
