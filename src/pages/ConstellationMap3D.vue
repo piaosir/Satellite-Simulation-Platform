@@ -9,6 +9,8 @@ import { viewPrefs } from '../stores/viewPrefs'
 import { setGrdBridge, clearGrdBridge, fileBridge } from '../stores/fileBridge'
 import { alertMsg, appAlert, closeAlert } from '../stores/alert'
 import { displaySatName } from '../viz/satName.js'
+import { serializeGxt } from '../viz/gxt/serialize.js'
+import { serializeKml } from '../viz/kml/serialize.js'
 defineOptions({ inheritAttrs: false })   // 不把父级传入的 title 落到根节点（去掉鼠标悬停的“星座3D”原生提示）
 import { createGlobeScene } from '../viz/globe3d/scene.js'
 import { createFlatCoverage } from '../viz/flatmap/flatCoverage.js'
@@ -895,10 +897,28 @@ async function saveExport(bytes, defaultName, filters) {
   // 成功/取消无需提示（已走系统保存对话框，用户自选路径即知结果）；仅失败弹错。
   if (r && !r.ok && !r.canceled) { const msg = (r && r.error) || '写入失败'; appAlert('导出失败：' + msg) }
 }
-// fmt: 'png2' | 'png4' | 'pdf'。无论当前在 2D 还是 3D 视图，都按 2D 平面图导出整幅世界图。
+// fmt: 'png2' | 'png4' | 'pdf' | 'gxt' | 'kml'。无论当前在 2D 还是 3D 视图，都按 2D 平面图导出整幅世界图。
 // scope: 'world'(整幅世界图，默认) | 'view'(当前视图，所见即所得)。view 模式需在 2D 平面图下，按屏幕缩放/平移出图。
+// gxt/kml 是数据导出（当前画面绘制的覆盖等值线，GXT+GRD 来源，同 collectGxt），与 scope 无关。
 async function exportMap(fmt, scope) {
   if (exporting.value) return
+  if (fmt === 'gxt' || fmt === 'kml') {
+    exporting.value = true
+    try {
+      const beams = collectGxt()
+      if (!beams || !beams.length) { appAlert('当前画面没有可导出的覆盖等值线'); return }
+      if (fmt === 'gxt') {
+        // 多波束合并为一个多 diagram GXT：逐波束 serialize 后拼接（每波束独立 COHeader 区块）
+        const blocks = beams.map((b, i) => serializeGxt({ ...b, beamId: b.name || (i + 1) }))
+        await saveExport(blocks.join('\r\n'), '当前覆盖.gxt', [{ name: 'GXT 等值线', extensions: ['gxt'] }])
+      } else {
+        const text = serializeKml(beams, { name: '当前覆盖' })
+        await saveExport(text, '当前覆盖.kml', [{ name: 'KML', extensions: ['kml'] }])
+      }
+    } catch (e) { console.error('导出失败', e); appAlert('导出失败：' + ((e && e.message) || e)) }
+    finally { exporting.value = false }
+    return
+  }
   const view = scope === 'view'
   if (view && !flatView.value) { appAlert('「截图」导出需先切换到 2D 平面图（顶栏「视图」按钮），再框定要导出的范围'); return }
   exporting.value = true

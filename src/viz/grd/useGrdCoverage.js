@@ -498,7 +498,9 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
         const segs = geo.lines[i]
         const labels = []
         if (withLabels) for (const loop of stitchLoops(segs)) { if (loop.length >= 4) labels.push(loopTop(loop)) }
-        return { segs, color: x.lineColor, width: cfg.lineWidth, txt: cfg.ctype === 'rel' ? String(x.v) : x.abs.toFixed(1), labels }
+        // txt 与「电平」输入框原值（x.v = L.v）完全一致，不做小数位裁剪——绝对模式下 x.abs 恒等于 x.v，
+        // 之前用 toFixed(1) 会把用户输入的更高精度电平（如 42.567）显示成 42.6，与输入框对不上。
+        return { segs, color: x.lineColor, width: cfg.lineWidth, txt: String(x.v), labels }
       }).filter((g) => g.segs.length)
       : []
     // 波束中心 = 当前场的峰值点（随指向/拖拽实时变化）；波束名标签贴在此处，并向所属卫星连线

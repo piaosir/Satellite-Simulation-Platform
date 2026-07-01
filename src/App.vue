@@ -94,6 +94,9 @@ const currentLabel = computed(
             <div class="vitem" @click="doExport('png2')"><span class="vico">▦</span>高清 PNG · 2×</div>
             <div class="vitem" @click="doExport('png4')"><span class="vico">▦</span>高清 PNG · 4×</div>
             <div class="vitem" @click="doExport('pdf')"><span class="vico">▤</span>矢量 PDF</div>
+            <div class="vsep"></div>
+            <div class="vitem" @click="doExport('gxt')" title="把当前画面绘制的覆盖等值线导出为 GXT 文件"><span class="vico">◈</span>当前覆盖 · GXT</div>
+            <div class="vitem" @click="doExport('kml')" title="把当前画面绘制的覆盖等值线导出为 Google KML 文件"><span class="vico">◈</span>当前覆盖 · KML</div>
           </div>
         </span>
         <span class="navbtn" @click="settingsOpen = true">设置</span>
@@ -152,6 +155,7 @@ const currentLabel = computed(
 }
 .exp-menu { min-width: 248px; }
 .vscope { display: flex; gap: 4px; padding: 2px 3px 6px; border-bottom: 1px solid var(--border); margin-bottom: 3px; }
+.vsep { height: 1px; background: var(--border); margin: 4px 2px; }
 .vsp { flex: 1; text-align: center; cursor: pointer; padding: 3px 6px; border-radius: 2px; font-size: 12px; color: var(--text-muted); border: 1px solid var(--border); }
 .vsp:hover { color: var(--text); border-color: var(--accent); }
 .vsp.on { color: var(--bg); background: var(--accent); border-color: var(--accent); font-weight: 600; }
