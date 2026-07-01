@@ -6,5 +6,8 @@ release/
 .DS_Store
 .vite/
 
+# Claude Code 本地调试配置（预览用 dev server 启动项等），不进仓库
+.claude/
+
 # 在线分享凭证（含密钥，不进仓库；随安装包打包）
 electron/services/shareConfig.js
