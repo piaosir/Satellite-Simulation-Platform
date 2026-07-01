@@ -313,7 +313,11 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
       if (autoSelect && sats.value.length) {
         expanded.value[sats.value[0].folder] = true
         const a0 = sats.value[0].antennas[0]
-        if (a0) await setActive(sats.value[0], a0)
+        if (a0) {
+          const key = await ensureLoaded(sats.value[0].folder, a0)   // 初次打开默认显示第一颗天线（此后编辑不再顺带改显示）
+          if (!selected.value.includes(key)) selected.value = [...selected.value, key]
+          await setActive(sats.value[0], a0)
+        }
       }
     } catch (e) { console.error('coverageGrd index 失败', e) }
   }
@@ -355,12 +359,11 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
     return key
   }
 
-  // 点击天线名 → 设为聚焦（并确保选中）
+  // 点击天线名 → 仅设为聚焦/编辑对象，不改变其显示状态（显示与否只由勾选框 toggleAnt 控制，两者解耦）
   async function setActive(sat, a) {
     loading.value = true
     try {
       const key = await ensureLoaded(sat.folder, a)
-      if (!selected.value.includes(key)) selected.value = [...selected.value, key]
       active.value = key
       const c = cache.get(key)
       // beamsToPlot 越界保护（如旧存档波束数变化）：过滤掉不存在的波束。空保持空（= 不绘制任何波束）。
@@ -543,7 +546,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
   // 拖拽热路径：只重算【聚焦天线】这一层，并只补丁【当前可见视图】（2D 或 3D，由 isFlat 决定）。
   // 其余天线层不变（拖拽不改它们的投影），另一视图在拖拽结束时由 recompute 一次性补齐 → 每帧工作量大幅下降。
   function recomputeActive() {
-    if (!active.value) return
+    if (!active.value || !selected.value.includes(active.value)) return   // 未勾选显示的天线，编辑/拖拽时也不上图
     const layers = buildLayer(active.value, s.showVal)
     const opts = fieldOpts()
     if (isFlat()) { const fl = getFlat(); if (fl) fl.patchField(layers, opts) }

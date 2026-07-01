@@ -191,7 +191,11 @@ const antByKey = (key) => {
   return a ? { node: grdSat.value, ant: a, cfg: grdCfgs[key] } : null
 }
 let _grdT = null
+// 回填前若本就「无未保存改动」，回填后把基线推进到回填结果——否则实时星/GRD 自动重算出
+// 的新值（非用户操作）会被指纹判定为改动，弹出误报的「未保存，是否保存？」。
+// 若回填前已有用户自己的改动（isDirty 为真），则不触碰基线，改动仍会被正确提示保存。
 async function refreshGrdFill() {
+  const wasClean = !isDirty()
   // 卫星EIRP 天线 → 各收信站经纬度取最大 Parameter，回填 rxEIRP（一次 IPC 批量采样全部站点）
   const eirp = antByKey(grdSel.eirpKey)
   if (eirp && rxStations.length) {
@@ -206,15 +210,20 @@ async function refreshGrdFill() {
     const vals = await sampleAntennaParams(gt.node, gt.ant, gt.cfg, pts)
     txStations.forEach((tx, i) => { if (vals && vals[i] != null) tx.G_Ts = String(vals[i]) })
   }
+  if (wasClean) setBaseline()
 }
 function scheduleGrdFill() { clearTimeout(_grdT); _grdT = setTimeout(refreshGrdFill, 300) }
 // 链路窗口为单例复用：每次切到「卫星」模块时刷新卫星树，纳入此后在「星座3D」新导入的 GRD 天线。
 // 若当前选中的卫星/天线已不在新树中则清空选择。
 function reloadSatTree() {
+  const wasClean = !isDirty()
   const t = loadSatTree(); satTree.value = t.sats; grdCfgs = t.cfgs
   const cur = satTree.value.find((s) => s.folder === grdSel.satFolder)
   if (grdSel.satFolder && !cur) { grdSel.satFolder = ''; grdSel.eirpKey = ''; grdSel.gtKey = '' }
   else if (cur) { satForm.satelliteName = cur.satName; satForm.orbitPosition = String(cur.lon) }   // 实时星：导入/进入卫星模块时取新位置
+  // 实时星取新位置是系统自动同步，不算用户改动；若之前本就无未保存改动，基线随之推进，
+  // 避免仅仅切到「卫星」模块或点「刷新」就被指纹判定为「未保存」。
+  if (wasClean) setBaseline()
 }
 watch(activeModule, (m) => { if (m === 'sat') reloadSatTree() })
 
