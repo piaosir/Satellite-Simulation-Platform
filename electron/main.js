@@ -79,6 +79,41 @@ function createLinkBudgetWindow() {
   return win
 }
 
+// 日凌预报：独立 BrowserWindow，单例复用（与链路预算工作台同模式）。
+let _soWin = null
+function createSunOutageWindow() {
+  if (_soWin && !_soWin.isDestroyed()) {
+    if (_soWin.isMinimized()) _soWin.restore()
+    _soWin.focus()
+    return _soWin
+  }
+  const win = new BrowserWindow({
+    width: 1240,
+    height: 840,
+    minWidth: 980,
+    minHeight: 640,
+    title: '日凌预报 · GEO',
+    backgroundColor: '#ffffff',
+    autoHideMenuBar: true,
+    webPreferences: {
+      preload: join(__dirname, '../preload/preload.js'),
+      contextIsolation: true,
+      sandbox: false
+    }
+  })
+  if (process.env['ELECTRON_RENDERER_URL']) {
+    win.loadURL(process.env['ELECTRON_RENDERER_URL'] + '/suntool.html')
+  } else {
+    win.loadFile(join(__dirname, '../renderer/suntool.html'))
+  }
+  win.webContents.on('before-input-event', (e, input) => {
+    if (input.type === 'keyDown' && input.key === 'F12') { win.webContents.toggleDevTools(); e.preventDefault() }
+  })
+  win.on('closed', () => { _soWin = null })
+  _soWin = win
+  return win
+}
+
 app.whenReady().then(() => {
   const root = app.getAppPath()
   const storage = require(join(root, 'electron/services/storage'))
@@ -90,7 +125,7 @@ app.whenReady().then(() => {
   // GRD 取值服务（与 coverageGrd 共享导入目录）：链路预算逐站取值在主进程完成
   const grd = require(join(root, 'electron/services/grd'))(join(app.getPath('userData'), 'coverage-grd-imported'))
   const { register } = require(join(root, 'electron/ipc/register'))
-  register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget: createLinkBudgetWindow, grd })
+  register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget: createLinkBudgetWindow, openSunOutage: createSunOutageWindow, grd })
 
   // 加载 ITU 全精度数据（降雨率 P.837 / 海拔 P.1511 / 水汽 P.836 / 云 P.840）→ 注入计算内核，
   // 与小程序口径完全一致（小程序为云端下载，桌面端从本地 resources/itu 同步加载）。

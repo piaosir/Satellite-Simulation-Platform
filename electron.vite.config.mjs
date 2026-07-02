@@ -37,7 +37,8 @@ export default defineConfig({
       rollupOptions: {
         input: {
           index: resolve('src/index.html'),
-          linkbudget: resolve('src/linkbudget.html')
+          linkbudget: resolve('src/linkbudget.html'),
+          suntool: resolve('src/suntool.html')
         }
       }
     },

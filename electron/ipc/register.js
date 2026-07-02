@@ -3,7 +3,7 @@ const fs = require('fs')
 const createOmm = require('../services/omm')
 
 // 注册所有 IPC 处理器。core 为返回引擎实例的函数（延迟解析）。
-function register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget, grd }) {
+function register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget, openSunOutage, grd }) {
   const omm = createOmm(core)
   ipcMain.handle('omm:load', (_e, group, online) => omm.load(group, online))
   ipcMain.handle('omm:positions', (_e, group, iso) => omm.positions(group, iso))
@@ -123,6 +123,73 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
 
   // 打开「GEO 链路预算」独立工作台窗口（单例，由 main 注入创建函数）
   ipcMain.handle('linkbudget:open', () => { if (openLinkBudget) openLinkBudget(); return true })
+
+  // ---- 日凌预报（独立窗口 + 计算 + Word/ICS 导出）----
+  ipcMain.handle('suntool:open', () => { if (openSunOutage) openSunOutage(); return true })
+  ipcMain.handle('sunoutage:compute', (_e, p) => {
+    try { return core().calculateSunOutage(p || {}) }
+    catch (err) { return { error: true, message: err.message || String(err) } }
+  })
+  // Word 报告：payload = { result, station:{name,lat,lon}, satellite:{name,lon}, tz:'bjt'|'utc' }
+  ipcMain.handle('sunoutage:exportWord', async (e, payload) => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    const { canceled, filePath } = await dialog.showSaveDialog(win, {
+      defaultPath: (payload && payload.defaultName) || '日凌预报报告.docx',
+      filters: [{ name: 'Word 文档', extensions: ['docx'] }]
+    })
+    if (canceled || !filePath) return { ok: false, canceled: true }
+    try {
+      const buf = await report.buildSunOutageWord(payload || {})
+      fs.writeFileSync(filePath, Buffer.from(buf))
+      return { ok: true, filePath }
+    } catch (err) {
+      const busy = err && (err.code === 'EBUSY' || err.code === 'EPERM' || err.code === 'EACCES')
+      return { ok: false, error: busy ? '文件可能正被其他程序打开（如 Word），请关闭后重试' : (err.message || String(err)) }
+    }
+  })
+  // ICS 日历：事件时刻恒用 UTC（导入方自动换算本地时区）；SUMMARY 附北京时峰值便于值班速读。
+  ipcMain.handle('sunoutage:exportIcs', async (e, payload) => {
+    const { result, station = {}, satellite = {} } = payload || {}
+    const days = (result && result.dailyResults) || []
+    if (!days.length) return { ok: false, error: '无日凌事件可导出' }
+    const satName = satellite.name || `${satellite.lon}°E`
+    const stnName = station.name || '地球站'
+    const yearStr = String(result.equinoxDate || '').slice(0, 4)
+    const events = days.map((d) => ({
+      // UID 含 星-站-日期：同一事件重复导入时日历自动更新而非重复
+      uid: `so-${satellite.lon}E-${Number(station.lat).toFixed(2)}N-${Number(station.lon).toFixed(2)}E-${d.date}@satsim-platform`,
+      date: d.date, start: d.startTimeUTC, end: d.endTimeUTC,
+      summary: `日凌 ${satName} @ ${stnName} · 峰值${d.peakTimeBJT}(北京时) · -${d.peakCNdeg}dB`,
+      description: [
+        `卫星: ${satName}（${satellite.lon}°E）`,
+        `地球站: ${stnName}（${station.lat}, ${station.lon}）· 方位 ${result.satAz}° 仰角 ${result.satEl}°`,
+        `窗口(UTC): ${d.startTimeUTC} ~ ${d.endTimeUTC}（峰值 ${d.peakTimeUTC}）`,
+        `窗口(北京时): ${d.startTimeBJT} ~ ${d.endTimeBJT}（峰值 ${d.peakTimeBJT}）`,
+        `时长: ${d.durationStr} · 峰值 C/N 恶化: ${d.peakCNdeg} dB · 强度: ${d.intensity}`,
+        `判据: C/N 恶化 ≥ ${result.model ? result.model.degThreshold : '—'} dB · 频率 ${result.frequency} GHz · 口径 ${result.model ? result.model.diameter : '—'} m`,
+        `由 卫星仿真平台 生成`
+      ].join('\n'),
+      location: stnName,
+      categories: ['日凌', 'SUN OUTAGE'],
+      alarms: [
+        { minutesBefore: 1440, description: `明日日凌：${satName} @ ${stnName}` },
+        { minutesBefore: 30, description: `30 分钟后日凌开始：${satName} @ ${stnName}` }
+      ]
+    }))
+    const ics = core().buildIcs({ name: `日凌预报 ${satName} @ ${stnName} · ${result.seasonName}${yearStr}`, events })
+    const win = BrowserWindow.fromWebContents(e.sender)
+    const { canceled, filePath } = await dialog.showSaveDialog(win, {
+      defaultPath: (payload && payload.defaultName) || `日凌预报_${satName}_${stnName}_${yearStr}${result.seasonName}.ics`,
+      filters: [{ name: 'iCalendar 日历', extensions: ['ics'] }]
+    })
+    if (canceled || !filePath) return { ok: false, canceled: true }
+    try {
+      fs.writeFileSync(filePath, ics, 'utf8')
+      return { ok: true, filePath, count: events.length }
+    } catch (err) {
+      return { ok: false, error: err.message || String(err) }
+    }
+  })
 
   // ---- 本地存储 ----
   ipcMain.handle('store:history:list', () => storage.listHistory())

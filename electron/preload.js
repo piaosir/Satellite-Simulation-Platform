@@ -18,6 +18,12 @@ contextBridge.exposeInMainWorld('api', {
     exportExcel: (payload) => ipcRenderer.invoke('linkbudget:exportExcel', payload),
     openConfig: () => ipcRenderer.invoke('linkbudget:openConfig')
   },
+  sunOutage: {
+    open: () => ipcRenderer.invoke('suntool:open'),
+    compute: (p) => ipcRenderer.invoke('sunoutage:compute', p),
+    exportWord: (payload) => ipcRenderer.invoke('sunoutage:exportWord', payload),
+    exportIcs: (payload) => ipcRenderer.invoke('sunoutage:exportIcs', payload)
+  },
   app: {
     deviceId: () => ipcRenderer.invoke('app:deviceId')
   },

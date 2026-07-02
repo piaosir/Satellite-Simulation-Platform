@@ -11,6 +11,9 @@ const waterVaporGrid = require('./data/waterVaporGrid.js');
 const cloudParamsGrid = require('./data/cloudParamsGrid.js');
 const cities = require('./utils/cities.js');
 const constants = require('./utils/constants.js');
+const sunOutage = require('./utils/sunOutageCalculator.js');
+const icsBuilder = require('./utils/icsBuilder.js');
+const eventWindows = require('./utils/eventWindows.js');
 
 // 基带选项（调制 / FEC / DVB 标准 / 各 MODCOD 预设表），供基带面板的下拉与快选用。
 function basebandOptions() {
@@ -94,6 +97,12 @@ module.exports = {
   searchCities: cities.searchCities,
   // 基带选项（调制/FEC/DVB/MODCOD）
   basebandOptions,
+  // 日凌预报（v5 物理恶化门限判据）+ ICS 日历构建
+  calculateSunOutage: sunOutage.calculateSunOutage,
+  sunOutageBands: sunOutage.BAND_PARAMS,
+  buildIcs: icsBuilder.buildIcs,
+  // 通用事件窗口求解器（日凌先行验证；后续 Access/ISL 复用）
+  findWindows: eventWindows.findWindows,
   rainRate,
   elevation,
   // 命名空间，便于按需取用其余导出

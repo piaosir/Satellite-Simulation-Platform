@@ -1,16 +1,37 @@
 /**
- * 日凌（Sun Outage）计算器 v4
- * 第一性原理 ECEF 向量法
+ * 日凌（Sun Outage）计算器 v5
+ * 第一性原理 ECEF 向量法 + 物理恶化门限定窗
  *
- * 核心思路：直接在 ECEF（地心地固）坐标系中用三维向量计算
- * 太阳方向与卫星方向的夹角，不经过方位角/仰角中间变量。
- *
+ * 几何（v4 原样保留，峰值时刻由它决定）：
  * - 地球站位置：WGS84 大地坐标 → ECEF
  * - GEO 卫星位置：轨道经度 → ECEF
  * - 太阳方向：太阳 RA/Dec (TT) + GAST (UT) → ECEF 单位向量
  * - 角间距：两个方向向量的点积取反余弦
  * - 无 Az/El 中间步骤，无坐标系混用风险
+ *
+ * 定窗判据（v5 重写）：v4 用几何锥角（半波束宽+太阳视半径，且波束宽取 ~107λ/D
+ * 的经验放大值）——判据不物理，中断时长无法对标验证。v5 改为 C/N 恶化门限：
+ *   θ_B  = 70λ/D（真实 3dB 波束宽）
+ *   ΔT(θ) = T_sun · K(θ)   K = 太阳均匀盘 × 高斯主瓣的精确卷积（v5.1）
+ *     轴上闭式：K(0) = 1 − exp(−ln2·θ_d²/θ_B²)（θ_d 当日太阳视直径；
+ *               小口径极限 → (θ_d/θ_B)²·ln2 级填充因子；大口径极限 → 1 封顶）
+ *     离轴：K(θ) = 2a·e^{−aθ²}∫₀^{θ_d/2} r·e^{−ar²}·I₀(2arθ)dr，a=4ln2/θ_B²
+ *           （Simpson + 指数缩放 I₀，θ=0 时与闭式解一致，用作自检）
+ *   D(θ) = 10·lg(1 + ΔT(θ)/T_sys)          C/N 恶化 dB
+ *   窗口 = { t : D(θ(t)) ≥ D_th }，D_th 用户可选（默认 1 dB，行业预报惯例口径）
+ * D 对 θ 单调递减 → 逐日二分反解门限角 θ_th，交给通用事件求根器精炼边界。
+ *
+ * 太阳亮温 T_sun（v5.1，替代按频段写死的静态值）：
+ *   锚点用每日实测太阳射电流量指数 F10.7（2.8GHz 全日面流量，1 sfu=1e-22 W/m²/Hz，
+ *   NOAA SWPC 发布）：T_b(2.8) = S·λ²/(2k·Ω_d)，Ω_d 取当日太阳视直径的立体角——
+ *   与耦合计算共用同一盘径，小源区流量守恒（盘径选取误差自相抵消）。
+ *   频谱外推：T_b(f) = 6000 + (T_b(2.8) − 6000)·(2.8/f)^1.8，光球层floor 6000K，
+ *   指数 1.8 拟合公开静太阳测量（10.7GHz≈1e4 K、5GHz≈2e4 K、30GHz+→光球层），
+ *   适用 3~50 GHz。F10.7 默认 120（周期均值；深谷~70，峰年可达 200+）。
+ *   仍可传 solarTemp 直接覆盖（如需对齐第三方工具口径）。
  */
+
+var findWindows = require('./eventWindows.js').findWindows;
 
 const PI = Math.PI;
 const RAD = PI / 180;
@@ -27,7 +48,10 @@ const E2_WGS = 2 * F_WGS - F_WGS * F_WGS;       // 第一偏心率平方
 // GEO 轨道：a = 42164.17 km（含地球自转）
 const R_GEO = 42164.17;
 
-// 频段参数：频率 GHz、太阳噪温 K（静态太阳，ITU-R S.733）、典型系统噪温 K
+// 频段参数：频率 GHz、典型系统噪温 K（晴空，天线+LNA，供未填 T_sys 时兜底——
+// T_sys 本质是用户站的属性，精确计算应填实测值或由 G/T 反推）。
+// solarTemp 为 v4/v5 的静态太阳遗留值，v5.1 起引擎默认改用 F10.7 连续模型，
+// 仅当调用方显式传 solarTemp 时才使用外部值；此表数值保留供参考/对齐旧口径。
 const BAND_PARAMS = {
   'C':     { freq: 3.95,  solarTemp: 42000, sysTemp: 65  },
   'Ku':    { freq: 12.50, solarTemp: 12000, sysTemp: 150 },
@@ -457,21 +481,91 @@ function sepAtSec(dayJD, sec, stn, satU, dT, latD, lonD) {
   return { sep: sep, up: up };
 }
 
-/** 二分精炼边界（1 秒精度） */
-function refine(dayJD, inSec, outSec, thresh, stn, satU, dT, latD, lonD) {
-  var lo = Math.min(inSec, outSec);
-  var hi = Math.max(inSec, outSec);
-  while (hi - lo > 1) {
-    var mid = (lo + hi) >> 1;
-    var r = sepAtSec(dayJD, mid, stn, satU, dT, latD, lonD);
-    var inside = r.sep < thresh && r.up;
-    if (inSec < outSec) {            // refine END boundary
-      if (inside) lo = mid; else hi = mid;
-    } else {                          // refine START boundary
-      if (inside) hi = mid; else lo = mid;
-    }
+/* ============================================================
+ * 恶化模型（v5.1：精确盘卷积 + F10.7 太阳亮温）
+ * ============================================================ */
+
+var LN2_4 = 4 * Math.LN2;
+var KB = 1.380649e-23;      // 玻尔兹曼常数 J/K（SI 定义值）
+var SFU = 1e-22;            // 1 sfu = 1e-22 W/m²/Hz
+var F_REF = 2.8;            // F10.7 测量频率 GHz（10.7cm）
+var T_FLOOR = 6000;         // 光球层亮温 floor K（高频极限）
+var SPEC_ALPHA = 1.8;       // 频谱指数：拟合公开静太阳测量（10.7GHz≈1e4K、5GHz≈2e4K），适用 3~50GHz
+var F107_DEFAULT = 120;     // F10.7 默认值（太阳周期长期均值；深谷≈70，峰年可达 200+）
+
+/** I₀(x)·e^{−x}（Abramowitz & Stegun 9.8.1/9.8.2 多项式近似，指数缩放防溢出） */
+function i0e(x) {
+  var ax = Math.abs(x);
+  if (ax < 3.75) {
+    var t = x / 3.75; t *= t;
+    var I0 = 1 + t * (3.5156229 + t * (3.0899424 + t * (1.2067492 + t * (0.2659732 + t * (0.0360768 + t * 0.0045813)))));
+    return I0 * Math.exp(-ax);
   }
-  return inSec < outSec ? lo : hi;
+  var u = 3.75 / ax;
+  return (0.39894228 + u * (0.01328592 + u * (0.00225319 + u * (-0.00157565 + u * (0.00916281 + u * (-0.02057706 + u * (0.02635537 + u * (-0.01647633 + u * 0.00392377)))))))) / Math.sqrt(ax);
+}
+
+/**
+ * 偏轴 θ 处「太阳均匀盘 × 高斯主瓣」的精确耦合系数 K(θ)∈(0,1)：
+ *   K(θ) = 2a·∫₀^{θd/2} r·exp(−a(r−θ)²)·[I₀(2arθ)e^{−2arθ}] dr，a = 4ln2/θ_B²
+ * θ=0 有闭式 1−exp(−a·(θd/2)²)（积分退化，兼作数值实现的自检基准）。
+ * Simpson 48 段对这种光滑核精度远超需求（<1e-6 相对误差）。
+ */
+function couplingAt(thetaDeg, thetaB, thetaD) {
+  var a = LN2_4 / (thetaB * thetaB);
+  var rd = thetaD / 2;
+  if (thetaDeg === 0) return 1 - Math.exp(-a * rd * rd);
+  var n = 48, h = rd / n, s = 0;
+  for (var i = 0; i <= n; i++) {
+    var r = i * h;
+    var d = r - thetaDeg;
+    var v = r * Math.exp(-a * d * d) * i0e(2 * a * r * thetaDeg);
+    s += (i === 0 || i === n) ? v : (i % 2 ? 4 * v : 2 * v);
+  }
+  return 2 * a * s * h / 3;
+}
+
+/**
+ * 太阳亮温 K（全日面均匀盘等效）：
+ *   T_b(2.8GHz) = F10.7·sfu·λ²/(2k·Ω_d) —— 由当日太阳视直径的立体角换算，
+ *   与耦合计算共用同一盘径 → 小源区 ΔT∝流量，盘径选取误差自相抵消；
+ *   T_b(f) = 6000 + (T_b(2.8)−6000)·(2.8/f)^1.8 谱外推。
+ */
+function solarTempAt(freqGHz, f107, sunDiamDeg) {
+  var th = sunDiamDeg * RAD;
+  var omega = Math.PI / 4 * th * th;                 // 均匀盘立体角 sr
+  var lam = 0.299792458 / F_REF;                     // 2.8GHz 波长 m
+  var t28 = f107 * SFU * lam * lam / (2 * KB * omega);
+  return T_FLOOR + Math.max(0, t28 - T_FLOOR) * Math.pow(F_REF / freqGHz, SPEC_ALPHA);
+}
+
+/**
+ * 按当日太阳视半径构建恶化模型。
+ * @returns { thetaB 3dB波束宽°, thetaD 太阳视直径°, Tb 太阳亮温K,
+ *            dTmax 主轴对准温升K, dTth 门限温升K, thetaTh 门限角°(≤0 表示当日峰值恶化不足门限) }
+ */
+function outageModel(freqGHz, diameterM, sysTemp, solarTemp, degThresholdDb, sunRadDeg) {
+  var thetaB = 20.98547 / (freqGHz * diameterM);   // 70λ/D（λ=0.2998/f m）
+  var thetaD = 2 * sunRadDeg;
+  var dTmax = solarTemp * couplingAt(0, thetaB, thetaD);
+  var dTth = sysTemp * (Math.pow(10, degThresholdDb / 10) - 1);
+  var thetaTh = -1;
+  if (dTth < dTmax) {
+    // K(θ) 单调递减 → 二分反解门限角；上界处 K 已高斯衰减到远低于任何门限
+    var lo = 0, hi = 6 * thetaB + thetaD;
+    while (hi - lo > 1e-5) {
+      var mid = (lo + hi) / 2;
+      if (solarTemp * couplingAt(mid, thetaB, thetaD) > dTth) lo = mid; else hi = mid;
+    }
+    thetaTh = (lo + hi) / 2;
+  }
+  return { thetaB: thetaB, thetaD: thetaD, Tb: solarTemp, dTmax: dTmax, dTth: dTth, thetaTh: thetaTh };
+}
+
+/** 偏轴角 sep(°) 处的 C/N 恶化 (dB) */
+function degradationAt(sepDeg, model, sysTemp) {
+  var dT = model.Tb * couplingAt(sepDeg, model.thetaB, model.thetaD);
+  return 10 * Math.log10(1 + dT / sysTemp);
 }
 
 /* ============================================================
@@ -482,16 +576,18 @@ function calculateSunOutage(params) {
   var diameter = params.diameter, year = params.year;
   var season = params.season, band = params.band;
   var customFreq = params.customFreq;
-  var cnThreshold = params.cnThreshold || 0;
 
   var bi = BAND_PARAMS[band] || BAND_PARAMS['Ku'];
   var freq = customFreq || bi.freq;
-  var solarTemp = bi.solarTemp;
-  var sysTemp = bi.sysTemp;
+  var sysTemp = params.sysTemp > 0 ? Number(params.sysTemp) : bi.sysTemp;
+  // 太阳亮温：显式 solarTemp 覆盖 > F10.7 连续模型（默认 F10.7=120，随当日太阳视直径逐日换算）
+  var solarTempOverride = params.solarTemp > 0 ? Number(params.solarTemp) : null;
+  var f107 = params.f107 > 0 ? Number(params.f107) : F107_DEFAULT;
+  // 定窗判据：C/N 恶化门限 dB（默认 1 dB，行业预报惯例口径）。
+  // 旧参数 cnThreshold 曾是"峰值恶化过滤器"，语义保留为额外过滤（通常不再需要）。
+  var degTh = params.degThreshold > 0 ? Number(params.degThreshold) : 1.0;
+  var cnFilter = params.cnThreshold || 0;
   var dT = deltaT(year);
-
-  // 天线 3dB 波束宽度 (~117λ/D)
-  var beamW = 32 / (freq * diameter);
 
   // ECEF 常量（不随时间变化）
   var stn = stnXYZ(lat, lon);
@@ -512,6 +608,12 @@ function calculateSunOutage(params) {
   var equinoxDateStr = fmtDate(eqD.y, eqD.m, eqD.d);
   var eqDayJD = Math.floor(eqJDut - 0.5) + 0.5;
 
+  // 分点日正午的模型快照（供汇总显示：3dB 波束宽 / 门限角 / 主轴对准恶化上限）
+  var midSun = solarPosition(eqDayJD + 0.5 + dT / SECONDS_PER_DAY);
+  var midSunRad = 0.26656 / midSun.R;
+  var midTsun = solarTempOverride != null ? solarTempOverride : solarTempAt(freq, f107, 2 * midSunRad);
+  var midModel = outageModel(freq, diameter, sysTemp, midTsun, degTh, midSunRad);
+
   var scanDays = 30;
   var dailyResults = [];
   var peakIdx = null, maxDurSec = 0;
@@ -523,61 +625,48 @@ function calculateSunOutage(params) {
     var noonJDE = dayJD + 0.5 + dT / SECONDS_PER_DAY;
     var noonSun = solarPosition(noonJDE);
     var sunRad = 0.26656 / noonSun.R;       // 度
-    var thresh = beamW / 2 + sunRad;
+    var tSun = solarTempOverride != null ? solarTempOverride : solarTempAt(freq, f107, 2 * sunRad);
+    var model = outageModel(freq, diameter, sysTemp, tSun, degTh, sunRad);
+    if (model.thetaTh <= 0) continue;   // 当日即使主轴对准，恶化也不足门限 → 无事件
 
-    // ──── 粗扫 15 秒步长 ────
-    var SCAN_STEP = 15;
-    var csStep = -1, ceStep = -1, cpStep = -1, minSep = 999;
-    for (var s = 0; s < 86400; s += SCAN_STEP) {
-      var jdUT = dayJD + s * JD_SEC;
-      var sd = sunDir(jdUT, dT);
-      if (!sunUp(lat, lon, sd.d)) continue;
-      var sep = vecAngle(satU, sd.d);
-      if (sep < thresh) {
-        if (csStep < 0) csStep = s;
-        ceStep = s;
-      }
-      if (sep < minSep) { minSep = sep; cpStep = s; }
-    }
-    if (csStep < 0) continue;
-
-    // ──── 秒级精炼 ────
-    var sOut = Math.max(0, csStep - SCAN_STEP);
-    var sIn  = csStep;
-    var pStart = refine(dayJD, sIn, sOut, thresh, stn, satU, dT, lat, lon);
-
-    var eIn  = ceStep;
-    var eOut = Math.min(86399, ceStep + SCAN_STEP);
-    var pEnd = refine(dayJD, eIn, eOut, thresh, stn, satU, dT, lat, lon);
-
-    // 峰值逐秒搜索
-    var pkSec = cpStep, pkSep = minSep;
-    var ps = Math.max(0, cpStep - SCAN_STEP);
-    var pe = Math.min(86399, cpStep + SCAN_STEP);
-    for (var s = ps; s <= pe; s++) {
-      var r = sepAtSec(dayJD, s, stn, satU, dT, lat, lon);
-      if (r.up && r.sep < pkSep) { pkSep = r.sep; pkSec = s; }
+    // 事件求根：f(s) = θ_th − 夹角(s)，>0 在窗口内；太阳在地平线下 → NaN（窗口外）
+    var fDay = (function (jd, th) {
+      return function (s) {
+        var r = sepAtSec(jd, s, stn, satU, dT, lat, lon);
+        return r.up ? th - r.sep : NaN;
+      };
+    })(dayJD, model.thetaTh);
+    var wins = findWindows(fDay, 0, 86399, { coarseStep: 15, tol: 0.5 });
+    if (!wins.length) continue;
+    // GEO 日凌每天至多一个真窗口；防御性取峰值最深的那个
+    var w = wins[0];
+    for (var wi = 1; wi < wins.length; wi++) {
+      if (wins[wi].peak && (!w.peak || wins[wi].peak.value > w.peak.value)) w = wins[wi];
     }
 
-    // C/N 恶化
-    var ratio = sunRad / (beamW / 2);
-    var offAxis = Math.pow(10, -12 * Math.pow(pkSep / beamW, 2) / 10);
-    var dTs = solarTemp * ratio * ratio * offAxis;
-    var cn = 10 * Math.log10(1 + dTs / sysTemp);
-    if (cn < cnThreshold) continue;
-
+    var pStart = Math.round(w.start);
+    var pEnd = Math.round(w.end);
     var dur = pEnd - pStart;
     if (dur <= 0) continue;
-    var dd = jdToDate(dayJD);
+    var pkSec = w.peak ? Math.round(w.peak.t) : Math.round((pStart + pEnd) / 2);
+    var pkSep = w.peak ? Math.max(0, model.thetaTh - w.peak.value) : model.thetaTh;
+    var cn = degradationAt(pkSep, model, sysTemp);
+    if (cn < cnFilter) continue;
 
+    var dd = jdToDate(dayJD);
+    // 北京时日期：UTC 时刻 +8h 跨日则记为次日（中国站日凌在 UTC 白天，一般不跨）
+    var bjtShift = (pStart + 28800) >= SECONDS_PER_DAY ? 1 : 0;
+    var bd = bjtShift ? jdToDate(dayJD + 1) : dd;
+
+    // 强度按峰值恶化分级：≥10dB 深度中断（链路必然失锁）、3~10dB 显著、其余轻度
     var intensity, intensityClass;
-    var halfBeam = beamW / 2;
-    if (pkSep <= halfBeam * 0.5) { intensity = '高'; intensityClass = 'so-intensity-high'; }
-    else if (pkSep <= halfBeam) { intensity = '中'; intensityClass = 'so-intensity-mid'; }
+    if (cn >= 10) { intensity = '高'; intensityClass = 'so-intensity-high'; }
+    else if (cn >= 3) { intensity = '中'; intensityClass = 'so-intensity-mid'; }
     else { intensity = '低'; intensityClass = 'so-intensity-low'; }
 
     var rec = {
       date:           fmtDate(dd.y, dd.m, dd.d),
+      dateBJT:        fmtDate(bd.y, bd.m, bd.d),
       startTimeUTC:   secStr(pStart),
       endTimeUTC:     secStr(pEnd),
       peakTimeUTC:    secStr(pkSec),
@@ -588,6 +677,7 @@ function calculateSunOutage(params) {
       durationStr:    fmtDur(dur),
       peakSeparation: Number(pkSep.toFixed(3)),
       peakCNdeg:      Number(cn.toFixed(2)),
+      thresholdDeg:   Number(model.thetaTh.toFixed(3)),
       intensity:      intensity,
       intensityClass: intensityClass,
       isPeak:         false
@@ -603,8 +693,8 @@ function calculateSunOutage(params) {
     error: false,
     seasonName:     seasonName,
     equinoxDate:    equinoxDateStr,
-    beamWidth:      Number(beamW.toFixed(3)),
-    thresholdAngle: Number((beamW / 2 + 0.267).toFixed(3)),
+    beamWidth:      Number(midModel.thetaB.toFixed(3)),          // 真实 3dB 波束宽 70λ/D
+    thresholdAngle: Number(Math.max(0, midModel.thetaTh).toFixed(3)),  // 分点日门限角
     satAz:          Number(ae.az.toFixed(2)),
     satEl:          Number(ae.el.toFixed(2)),
     frequency:      freq,
@@ -614,7 +704,19 @@ function calculateSunOutage(params) {
     maxDurationSec: maxDurSec,
     maxDurationStr: fmtDur(maxDurSec),
     peakRecord:     peakIdx !== null ? dailyResults[peakIdx] : null,
-    dailyResults:   dailyResults
+    dailyResults:   dailyResults,
+    // 模型快照（报告"模型假设"块 / UI 汇总用）
+    model: {
+      degThreshold:  degTh,
+      sysTemp:       sysTemp,
+      solarTemp:     Math.round(midTsun),                                    // 分点日实际采用的太阳亮温
+      solarTempSource: solarTempOverride != null ? 'manual' : 'f107',
+      f107:          solarTempOverride != null ? null : f107,
+      diameter:      diameter,
+      beamWidth3dB:  Number(midModel.thetaB.toFixed(3)),
+      sunDiameter:   Number(midModel.thetaD.toFixed(3)),
+      boresightDeg:  Number(degradationAt(0, midModel, sysTemp).toFixed(2))  // 主轴对准恶化上限
+    }
   };
 }
 
@@ -661,5 +763,8 @@ function fmtDate(y, m, d) {
 
 module.exports = {
   calculateSunOutage: calculateSunOutage,
-  BAND_PARAMS: BAND_PARAMS
+  BAND_PARAMS: BAND_PARAMS,
+  // v5.1 模型内核单独导出（测试互验 / UI 预览用）
+  solarTempAt: solarTempAt,
+  couplingAt: couplingAt
 };

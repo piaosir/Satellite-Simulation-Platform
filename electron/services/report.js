@@ -331,4 +331,80 @@ async function buildLinkBudgetExcel(payload) {
   return wb.xlsx.writeBuffer()
 }
 
-module.exports = { buildWord, buildExcel, buildLinkBudgetExcel, ROWS }
+// ===== 日凌预报报告（Word，交付级）=====
+// payload: { result: calculateSunOutage 返回值, station:{name,lat,lon}, satellite:{name,lon}, tz:'bjt'|'utc' }
+// 布局：标题 → 参数/模型信息块（键值两列）→ 逐日事件表（三线表）→ 方法学脚注。
+// 时标由 tz 决定（默认北京时，表头注明；UTC 时刻在 ICS 日历中恒有）。
+
+function soKV(k, v) {
+  return new TableRow({ children: [
+    new TableCell({ width: { size: 30, type: WidthType.PERCENTAGE }, children: [new Paragraph({ children: [new TextRun({ text: String(k), size: 18, color: '666666' })] })] }),
+    new TableCell({ width: { size: 70, type: WidthType.PERCENTAGE }, children: [new Paragraph({ children: [new TextRun({ text: String(v), size: 18 })] })] })
+  ] })
+}
+function soTd(text, opts) {
+  opts = opts || {}
+  return new TableCell({ children: [new Paragraph({
+    alignment: opts.align === 'right' ? AlignmentType.RIGHT : opts.align === 'center' ? AlignmentType.CENTER : AlignmentType.LEFT,
+    children: [new TextRun({ text: String(text), bold: !!opts.bold, size: 18 })]
+  })] })
+}
+
+async function buildSunOutageWord(payload) {
+  const { result: r = {}, station = {}, satellite = {}, tz = 'bjt' } = payload
+  const m = r.model || {}
+  const isBjt = tz !== 'utc'
+  const tzLabel = isBjt ? '北京时 (UTC+8)' : 'UTC'
+  const fmtLL = (lat, lon) => `${Math.abs(lat).toFixed(4)}°${lat >= 0 ? 'N' : 'S'}, ${Math.abs(lon).toFixed(4)}°${lon >= 0 ? 'E' : 'W'}`
+
+  const info = new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows: [
+    soKV('地球站', `${station.name || '—'}（${fmtLL(Number(station.lat) || 0, Number(station.lon) || 0)}）`),
+    soKV('卫星', `${satellite.name || '—'} · 轨位 ${satellite.lon}°E`),
+    soKV('指向', `方位 ${r.satAz}° · 仰角 ${r.satEl}°`),
+    soKV('频率 / 口径', `${r.frequency} GHz · ${m.diameter} m（3dB 波束宽 ${m.beamWidth3dB}°）`),
+    soKV('判据', `C/N 恶化 ≥ ${m.degThreshold} dB（T_sys = ${m.sysTemp} K，T_sun = ${m.solarTemp} K${m.solarTempSource === 'manual' ? '·手动指定' : `·由 F10.7=${m.f107} 推算`}）`),
+    soKV('分点', `${r.seasonName} ${r.equinoxDate} · 主轴对准恶化上限 ${m.boresightDeg} dB`),
+    soKV('事件概况', `${r.startDate} ~ ${r.endDate} 共 ${r.totalDays} 天 · 单日最长 ${r.maxDurationStr}`),
+    soKV('时标', tzLabel),
+    soKV('生成时间', new Date().toLocaleString())
+  ] })
+
+  const header = new TableRow({ children: [
+    soTd('序号', { bold: true, align: 'center' }), soTd('日期', { bold: true }),
+    soTd('开始', { bold: true, align: 'right' }), soTd('峰值', { bold: true, align: 'right' }),
+    soTd('结束', { bold: true, align: 'right' }), soTd('时长', { bold: true, align: 'right' }),
+    soTd('峰值恶化 (dB)', { bold: true, align: 'right' }), soTd('强度', { bold: true, align: 'center' })
+  ] })
+  const body = (r.dailyResults || []).map((d, i) => new TableRow({ children: [
+    soTd(i + 1, { align: 'center' }),
+    soTd((isBjt ? d.dateBJT : d.date) + (d.isPeak ? ' ★' : ''), { bold: !!d.isPeak }),
+    soTd(isBjt ? d.startTimeBJT : d.startTimeUTC, { align: 'right' }),
+    soTd(isBjt ? d.peakTimeBJT : d.peakTimeUTC, { align: 'right', bold: !!d.isPeak }),
+    soTd(isBjt ? d.endTimeBJT : d.endTimeUTC, { align: 'right' }),
+    soTd(d.durationStr, { align: 'right' }),
+    soTd(d.peakCNdeg, { align: 'right' }),
+    soTd(d.intensity, { align: 'center' })
+  ] }))
+
+  const doc = new Document({ sections: [{ children: [
+    new Paragraph({ text: '日凌预报报告', heading: HeadingLevel.HEADING_1 }),
+    new Paragraph({ children: [new TextRun({
+      text: `${satellite.name || ''} ${satellite.lon}°E → ${station.name || ''} · ${r.seasonName} ${String(r.equinoxDate || '').slice(0, 4)}`,
+      size: 20, color: '444444'
+    })] }),
+    new Paragraph({ text: '' }),
+    info,
+    new Paragraph({ text: '' }),
+    new Paragraph({ children: [new TextRun({ text: `逐日日凌窗口（时标：${tzLabel}，★ 为最长日）`, bold: true, size: 20 })] }),
+    new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows: [header, ...body] }),
+    new Paragraph({ text: '' }),
+    new Paragraph({ children: [new TextRun({
+      text: '方法：太阳视位置 VSOP87+IAU1980 章动（黄经精度 ≈1″）；窗口判据为 C/N 恶化门限——太阳均匀盘（当日视直径）与天线高斯主瓣（3dB 波束宽 70λ/D）作精确卷积得 ΔT(θ)，D(θ)=10lg(1+ΔT/T_sys)≥门限即计入窗口。太阳亮温由太阳射电流量指数 F10.7（2.8GHz 实测，NOAA SWPC 每日发布）锚定、按 (2.8/f)^1.8 谱外推（光球层 6000K floor）。采用当日实测 F10.7 与本站实测 T_sys 时峰值恶化不确定度约 ±1dB；起止时刻对噪温仅对数敏感（±数十秒）。',
+      size: 16, color: '999999'
+    })] }),
+    new Paragraph({ children: [new TextRun({ text: '强度分级：高 ≥10dB（链路失锁）· 中 3~10dB · 低 <3dB。', size: 16, color: '999999' })] })
+  ] }] })
+  return Packer.toBuffer(doc)
+}
+
+module.exports = { buildWord, buildExcel, buildLinkBudgetExcel, buildSunOutageWord, ROWS }

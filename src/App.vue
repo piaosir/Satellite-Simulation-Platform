@@ -37,8 +37,9 @@ const calcMenu = ref(false)       // 「计算」下拉
 const settingsOpen = ref(false)
 const fileOpen = ref(false)
 function doExport(fmt) { expMenu.value = false; if (covNav.exportMap) covNav.exportMap(fmt, expScope.value) }
-// 计算菜单项 → 打开独立链路预算工作台窗口（目前仅 GEO）
+// 计算菜单项 → 打开独立工作台窗口（GEO 链路预算 / 日凌预报）
 function openLinkBudget() { calcMenu.value = false; window.api?.linkBudget?.open?.() }
+function openSunOutage() { calcMenu.value = false; window.api?.sunOutage?.open?.() }
 // MSAA 是 WebGL 上下文创建期参数，运行时不可改 → 把它并入当前页 key，切换 MSAA 时重挂载页面（一瞬重渲）。
 // 页面状态由各自的本地缓存（reactive watch 持续保存）在重挂载时恢复，无感。
 const pageKey = computed(() => `${nav.current}-msaa${displayQuality.value.msaa !== false ? 1 : 0}`)
@@ -69,6 +70,7 @@ const currentLabel = computed(
           <span class="navbtn" :class="{ on: calcMenu }" @click.stop="calcMenu = !calcMenu">计算 ▾</span>
           <div v-if="calcMenu" class="vmenu calcmenu">
             <div class="vitem" @click="openLinkBudget"><span class="vico">▤</span>地球静止轨道卫星（GEO）链路预算</div>
+            <div class="vitem" @click="openSunOutage"><span class="vico">☀</span>日凌预报（GEO）</div>
           </div>
         </span>
         <span class="vwrap">
