@@ -234,10 +234,17 @@ async function multipartUpload(file) {
   }
 }
 
-// 只上传与自动更新相关的文件（不传 portable 等无关产物）
-const files = readdirSync(RELEASE_DIR).filter(
-  (f) => f === 'latest.yml' || /-Setup\.exe$/.test(f) || /-Setup\.exe\.blockmap$/.test(f)
-)
+// 只上传与自动更新相关的文件（不传 portable 等无关产物）。
+// 安装包/blockmap 还要求文件名包含当前 package.json 版本号：release/ 目录不会在构建前自动清空，
+// 若目录里残留着上一次（旧版本号）的 Setup.exe，正则若不带版本号会把新旧两个版本都上传到 COS。
+const { version } = JSON.parse(readFileSync(resolve('package.json'), 'utf8'))
+const setupRe = new RegExp(`-${version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-Setup\\.exe(\\.blockmap)?$`)
+const allFiles = readdirSync(RELEASE_DIR)
+const files = allFiles.filter((f) => f === 'latest.yml' || setupRe.test(f))
+const skipped = allFiles.filter((f) => /-Setup\.exe(\.blockmap)?$/.test(f) && !setupRe.test(f))
+if (skipped.length) {
+  console.warn(`⚠️  忽略 release/ 下 ${skipped.length} 个非当前版本（${version}）的安装包，未上传：\n  ${skipped.join('\n  ')}`)
+}
 if (files.length === 0) {
   console.error('release/ 下没找到 latest.yml / *-Setup.exe，先运行 npm run dist')
   process.exit(1)
