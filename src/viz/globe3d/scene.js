@@ -11,6 +11,7 @@ import topo from './data/countries-10m.json'
 import NAMES from './data/country-names-zh.json'
 import { CHINA_IDS, NO_LABEL_IDS } from './cnClaims.js'
 import { NANHAI_DASHES, NANHAI_WIDTH_MUL, NANHAI_MIN_WIDTH } from '../nanhaiDashes.js'
+import { CHINA, ARCTIC_ISLAND_LAT, landColors, setLandPalette } from '../landPalette.js'
 import { antarcticaFillRings } from './antarctica.js'
 
 const RE = 6371
@@ -36,16 +37,8 @@ function llaToVec(latDeg, lonDeg, altKm) {
   )
 }
 
-const LAND = ['#8fa89b', '#b0a98f', '#9fb0c0', '#c0a99f', '#a9b08f', '#9f9fb0', '#b8a0a0', '#90b0a8', '#b0b090', '#a0a8b8', '#bca890', '#98a0a8']
-// 定向覆盖（按 ISO 数字码）：指定国家固定取莫兰迪色板内某成员，覆盖默认的 idx 循环色，保持整体协调。
-const LAND_OVERRIDE = { '840': '#9fb0c0', '566': '#8fa89b' }   // 美国偏蓝、尼日利亚偏绿
+// 陆地配色（LAND/CHINA/ICE/基调方案/逐国覆盖）统一收拢到 ../landPalette.js（与 2D 平面图共用单一来源）
 const OCEAN = '#15426b'
-const CHINA = '#b85a52'   // 中国底色：降低饱和度的砖红（原 #c62f2f 太炸眼）
-const ICE = '#edf2f6'     // 极地冰盖：白色填充（格陵兰 304、南极 010）
-const ICE_IDS = new Set(['304', '010'])
-// 北极岛屿冰盖：质心纬度 ≥ ARCTIC_ISLAND_LAT 的「整块多边形」染冰白（格陵兰/加拿大北极群岛/俄罗斯北极诸岛/斯瓦尔巴等离散海岛）；
-// 各大陆与阿拉斯加/冰岛（质心 <65°）保持普通陆地色。不再按纬度逐顶点渐变。
-const ARCTIC_ISLAND_LAT = 70
 
 function centroidLonLat(geom) {
   const polys = geom.type === 'Polygon' ? [geom.coordinates] : geom.coordinates
@@ -141,7 +134,7 @@ function buildLandMesh(features) {
     // 南极洲：海岸线收口到南极点直接三角化（替代普通 addPolygon + −82° 极冠）。
     // 修复 50m 本土不填充（其本土被编码为退化外环+海岸线洞，earcut 得 0），并消除 −82° 极冠对海洋的污染与接缝。
     if (id === '010') {
-      col.set(ICE)
+      col.set(landColors(id, idx).base)   // 南极洲：默认冰白，可被逐国覆盖改色
       for (const ring of antarcticaFillRings(f)) {
         const flat = []
         for (const p of ring) { flat.push(p[0], p[1]) }
@@ -153,13 +146,14 @@ function buildLandMesh(features) {
       }
       return
     }
-    const baseCol = CHINA_IDS.has(id) ? CHINA : ICE_IDS.has(id) ? ICE : (LAND_OVERRIDE[id] || LAND[idx % LAND.length])
+    const { base, arctic } = landColors(id, idx)
     const polys = g.type === 'Polygon' ? [g.coordinates] : g.coordinates
     // 北极岛屿（多边形质心纬度 ≥ ARCTIC_ISLAND_LAT）整块染冰白：格陵兰本就冰白；
     // 加拿大北极群岛、俄罗斯北极诸岛、斯瓦尔巴等离散海岛 → 冰白；各大陆/阿拉斯加/冰岛(质心<65°) → 普通陆地。
+    // 用户逐国设色时 arctic=用户色（整国一色，见 landPalette.js）。
     for (const rings of polys) {
       const o = rings[0]; let sy = 0; for (const p of o) sy += p[1]
-      col.set((sy / o.length) >= ARCTIC_ISLAND_LAT ? ICE : baseCol)
+      col.set((sy / o.length) >= ARCTIC_ISLAND_LAT ? arctic : base)
       addPolygon(rings)
     }
   })
@@ -531,6 +525,13 @@ export function createGlobeScene(container, quality = {}) {
     disposeFatLine(coastBorders)
     coastBorders = fatSegments(buildBorders(feats, mapThin), borderCfg.natColor, borderCfg.natWidth, borderCfg.natOpacity, 6.5)
     scene.add(coastBorders)
+  }
+  // 大地颜色（基调方案 + 逐国覆盖，与 2D 平面图同步）：写入公共色板状态后重建陆地三角网。
+  // 颜色烘焙在顶点色里，改色必须重建；仅用户在设置面板操作时触发，代价可接受。
+  function setLandColors(s) {
+    setLandPalette(s)
+    scene.remove(landMesh); landMesh.geometry.dispose(); landMesh.material.dispose()
+    landMesh = buildLandMesh(features); scene.add(landMesh)
   }
 
   // 中国省界 + 省名（按需由上层注入数据）
@@ -930,11 +931,15 @@ export function createGlobeScene(container, quality = {}) {
     }
     for (const d of (spec.dots || [])) {
       const dot = new THREE.Mesh(new THREE.SphereGeometry(d.r || 0.009, 12, 12), new THREE.MeshBasicMaterial({ color: d.color != null ? d.color : 0xffd27a }))
-      dot.position.copy(llaToVec(d.lat, d.lon, 0).multiplyScalar(1.0014)); dot.renderOrder = 11; g.add(dot)
+      dot.position.copy(llaToVec(d.lat, d.lon, 0).multiplyScalar(1.002)); dot.renderOrder = 11; g.add(dot)   // 1.002：抬离陆地面(1.0004)，斜视角不被地表吃掉
     }
     for (const l of (spec.labels || [])) {
       const spr = makeCovLabel(l.text, l.hpx, l.color)
-      spr.position.copy(llaToVec(l.lat, l.lon, l.alt != null ? l.alt : 60)); spr.renderOrder = 12; g.add(spr)
+      spr.position.copy(llaToVec(l.lat, l.lon, l.alt != null ? l.alt : 60)); spr.renderOrder = 12
+      // top：关深度测试（不被球面裁切/遮挡）+ _dir 半球剔除（转到背面由 updateLabels 淡出隐藏），
+      // 与国家名/标记文字同一套策略；未标 top 的（如仰角线角度标注）维持原有开深度测试行为。
+      if (l.top) { spr.material.depthTest = false; spr._dir = spr.position.clone().normalize() }
+      g.add(spr)
     }
     // 卫星名：显示仰角线的卫星，在其真实位置（轨道高度处）画名称（颜色随该星仰角线色）；不画星点本体
     for (const s of (spec.sats || [])) {
@@ -1211,8 +1216,9 @@ export function createGlobeScene(container, quality = {}) {
   }
   function updateLabels() {
     camDir.copy(camera.position).normalize()
-    const cull = (grp) => { if (!grp || !grp.visible) return; for (const s of grp.children) fadeLabel(s, s._dir.dot(camDir)) }
+    const cull = (grp) => { if (!grp || !grp.visible) return; for (const s of grp.children) if (s._dir) fadeLabel(s, s._dir.dot(camDir)) }
     cull(labelsZh); cull(labelsEn); cull(oceanZh); cull(oceanEn); cull(provinceLabels); cull(cityLabels)
+    cull(satLayerGroup)   // 卫星/仰角线/Polygon 独立图层里带 _dir 的标签（如 Polygon 名称数值）：同样近地平淡出、背面隐藏
   }
 
   const zoomDir = new THREE.Vector3()
@@ -1262,7 +1268,7 @@ export function createGlobeScene(container, quality = {}) {
   return {
     setSatellites, setLabelMode, setHighlight, setHighlightLLA, setOnPick,
     setOrbit, setGroundTrack, setFootprint, clearSelectionGeom,
-    setCoverage, clearCoverage, setCoverageField, patchCoverageLayers, clearCoverageField, setCoverageFieldAlpha, setSatLayer, clearSatLayer, faceLonLat, setProvinces, setProvincesVisible, setCities, setCitiesVisible, setBorderStyle, setNameScale, setLabelStyle, setOceanColor,
+    setCoverage, clearCoverage, setCoverageField, patchCoverageLayers, clearCoverageField, setCoverageFieldAlpha, setSatLayer, clearSatLayer, faceLonLat, setProvinces, setProvincesVisible, setCities, setCitiesVisible, setBorderStyle, setNameScale, setLabelStyle, setOceanColor, setLandColors,
     setPixelRatio, setRenderFps, setSphereDetail, setMapDetail,
     setMarkers, setTrajectories, setFocusSatLLA, setOnHover, setOnRightClick, setBeamDragMode, setOnBeamDrag,
     faceTo, setAutoRotate, setAutoRotateSpeed, setOnAutoRotateOff, resize, destroy,

@@ -6,15 +6,10 @@ import topo from '../globe3d/data/countries-10m.json'
 import NAMES from '../globe3d/data/country-names-zh.json'
 import { CHINA_IDS, NO_LABEL_IDS } from '../globe3d/cnClaims.js'
 import { NANHAI_DASHES, NANHAI_WIDTH_MUL, NANHAI_MIN_WIDTH } from '../nanhaiDashes.js'
+// 陆地配色（LAND/CHINA/ICE/基调方案/逐国覆盖）统一收拢到 ../landPalette.js（与 3D 球体共用单一来源）
+import { CHINA, ARCTIC_ISLAND_LAT, landColors, setLandPalette } from '../landPalette.js'
 
-const LAND = ['#8fa89b', '#b0a98f', '#9fb0c0', '#c0a99f', '#a9b08f', '#9f9fb0', '#b8a0a0', '#90b0a8', '#b0b090', '#a0a8b8', '#bca890', '#98a0a8']
-// 定向覆盖（与 3D 球体同步）：指定国家固定取莫兰迪色板内某成员，覆盖默认 idx 循环色。
-const LAND_OVERRIDE = { '840': '#9fb0c0', '566': '#8fa89b' }   // 美国偏蓝、尼日利亚偏绿
-const OCEAN = '#15426b', CHINA = '#b85a52', ICE = '#edf2f6'
-const ICE_IDS = new Set(['304', '010'])
-// 北极岛屿冰盖：多边形质心纬度 ≥ ARCTIC_ISLAND_LAT 的整块染冰白（格陵兰/加拿大北极群岛/俄罗斯北极诸岛/斯瓦尔巴等）；
-// 各大陆与冰岛(质心<65°)保持普通陆地色。与 3D 球体同口径，不再纬度渐变。
-const ARCTIC_ISLAND_LAT = 70
+const OCEAN = '#15426b'
 // 南极极冠：南极洲数据止于约 -85°，极点处留有空洞，补到 -90°。
 const SOUTH_CAP_LAT = -82
 const BORDER = '#5b7088', GRID = 'rgba(255,255,255,0.12)', PROV = '#9aa3b0', BG = '#070b12'
@@ -130,7 +125,7 @@ export function createFlatCoverage(canvas) {
     feats.forEach((f, idx) => {
       if (!f.geometry) return
       const id = String(f.id)
-      const fill = CHINA_IDS.has(id) ? CHINA : ICE_IDS.has(id) ? ICE : (LAND_OVERRIDE[id] || LAND[idx % LAND.length])
+      const { base: fill, arctic } = landColors(id, idx)
       const polys = f.geometry.type === 'Polygon' ? [f.geometry.coordinates] : f.geometry.coordinates
       const shapes = [], iceShapes = []   // 普通陆地色 / 北极岛屿冰白（按多边形质心纬度分流）
       for (const rings of polys) {
@@ -150,7 +145,7 @@ export function createFlatCoverage(canvas) {
         ;((sy / o.length) >= ARCTIC_ISLAND_LAT ? iceShapes : shapes).push(shape)
       }
       if (shapes.length) land.push({ shapes, fill })
-      if (iceShapes.length) land.push({ shapes: iceShapes, fill: ICE })
+      if (iceShapes.length) land.push({ shapes: iceShapes, fill: arctic })   // 逐国设色时 arctic=用户色（整国一色）
       // 国家名
       if (NO_LABEL_IDS.has(id) || seenLabel.has(id)) return
       const rec = NAMES[id]; let zh = rec ? rec[0] : null
@@ -229,12 +224,12 @@ export function createFlatCoverage(canvas) {
     }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.globalAlpha = 1
   }
-  // 南极极冠：补 SOUTH_CAP_LAT 以南的中央空洞（南极洲本就 ICE 白，无缝衔接）。
+  // 南极极冠：补 SOUTH_CAP_LAT 以南的中央空洞（取南极洲当前填色——默认冰白，被逐国设色时随用户色，无缝衔接）。
   // 北极岛屿改由 buildBaseGeo 按「多边形整块」染冰白（与 3D 同口径），不再有北极纬度渐变，故此处只剩南极极冠。
   function drawIceCaps() {
     const kk = k(), x0 = PX(LON0), w = 360 * kk
     const yCap = PY(SOUTH_CAP_LAT)
-    ctx.fillStyle = ICE; ctx.fillRect(x0, yCap, w, PY(-90) - yCap)
+    ctx.fillStyle = landColors('010', 0).base; ctx.fillRect(x0, yCap, w, PY(-90) - yCap)
   }
   // 卫星图标（矢量复刻聚焦卫星 SVG：双侧 3×2 太阳能板 + 中央星体）。按 color 填充、size 缩放。
   // 仰角线卫星与聚焦卫星共用此函数 —— 平面图上卫星统一为同一枚图标，颜色随各自设置。
@@ -499,7 +494,8 @@ export function createFlatCoverage(canvas) {
     // 卫星 / 仰角线独立图层：等仰角线 + 卫星图标 + 名称（在覆盖/标记之上、聚焦图标之下）
     if (satLayer) {
       for (const ln of (satLayer.lines || [])) if (ln.p && ln.p.length > 1) drawPolyline(ln.p, hex(ln.color != null ? ln.color : 0x66ddff), Math.max(0.8, ln.width || 1.4))
-      for (const d of (satLayer.dots || [])) dot(d.lon, d.lat, Math.max(2, d.r != null ? d.r : 4) * mz, hex(d.color != null ? d.color : 0xffd27a), true)
+      // d.px：屏幕恒定像素半径（Polygon 顶点手柄，不随缩放变大）；否则沿用世界联动尺寸
+      for (const d of (satLayer.dots || [])) dot(d.lon, d.lat, d.px != null ? Math.max(1, d.px) : Math.max(2, d.r != null ? d.r : 4) * mz, hex(d.color != null ? d.color : 0xffd27a), true)
       for (const l of (satLayer.labels || [])) drawText(l.text, l.lon, l.lat, Math.round((l.hpx || 0.026) * 750 * zf), l.color || '#fff')   // 世界尺寸字号：与 3D makeCovLabel 同源（套用地名标定 hpx0.02↔px15，zf=k()/13.1），2D/3D 一致
       for (const s of (satLayer.sats || [])) drawSatIcon(s.lon, s.lat, (s.iconSize || sizes.satIcon || 30) * mz, hex(s.color != null ? s.color : 0xffd27a))   // 颜色/大小随各星设置
       for (const s of (satLayer.sats || [])) {
@@ -571,16 +567,75 @@ export function createFlatCoverage(canvas) {
   }
   let dragging = false, lx = 0, ly = 0
   let beamDragMode = false, onBeamDrag = null, beamDragging = false   // 拖拽波束（不平移地图）
+  // 顶点编辑（Polygon 调整顶点 / 整体拖动）：editVerts={ pts:[[lon,lat],...], px, move }。
+  //  - move=false：按下命中半径内的顶点即拖动该点（回调 onVertexDrag(index, lonlat, 'start'|'move'|'end')）；
+  //  - move=true：按下落在多边形内部即整体拖动（回调 onPolyMove(dlon, dlat, 'start'|'move'|'end')，增量制）。
+  // 未命中则照常平移地图。
+  let editVerts = null, onVertexDrag = null, vertDragging = -1
+  let onPolyMove = null, moveDragging = false, moveLast = null
+  function vertexAt(clientX, clientY) {
+    if (!editVerts || !editVerts.pts || !editVerts.pts.length) return -1
+    const r = canvas.getBoundingClientRect()
+    const mx = clientX - r.left, my = clientY - r.top
+    let best = -1, bd = Math.max(7, (editVerts.px || 3) + 5)   // 命中半径：顶点半径+5px、下限 7px
+    editVerts.pts.forEach((p, i) => {
+      const d = Math.hypot(PX(p[0]) - mx, PY(p[1]) - my)
+      if (d < bd) { bd = d; best = i }
+    })
+    return best
+  }
+  // 屏幕坐标是否落在编辑多边形内（射线法，投影后逐边判交）
+  function pointInEditPoly(clientX, clientY) {
+    if (!editVerts || !editVerts.pts || editVerts.pts.length < 3) return false
+    const r = canvas.getBoundingClientRect()
+    const mx = clientX - r.left, my = clientY - r.top
+    const pts = editVerts.pts; let inside = false
+    for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+      const xi = PX(pts[i][0]), yi = PY(pts[i][1]), xj = PX(pts[j][0]), yj = PY(pts[j][1])
+      if ((yi > my) !== (yj > my) && mx < (xj - xi) * (my - yi) / (yj - yi) + xi) inside = !inside
+    }
+    return inside
+  }
   function onDown(e) {
+    if (editVerts && e.button === 0) {
+      if (editVerts.move) {
+        if (pointInEditPoly(e.clientX, e.clientY)) {
+          moveDragging = true; canvas.setPointerCapture(e.pointerId)
+          moveLast = screenToLonLat(e.clientX, e.clientY)
+          if (onPolyMove) onPolyMove(0, 0, 'start')
+          return
+        }
+      } else {
+        const vi = vertexAt(e.clientX, e.clientY)
+        if (vi >= 0) { vertDragging = vi; canvas.setPointerCapture(e.pointerId); const ll = screenToLonLat(e.clientX, e.clientY); if (ll && onVertexDrag) onVertexDrag(vi, ll, 'start'); return }
+      }
+    }
     if (beamDragMode && e.button === 0) { beamDragging = true; canvas.setPointerCapture(e.pointerId); const ll = screenToLonLat(e.clientX, e.clientY); if (ll && onBeamDrag) onBeamDrag(ll, 'start'); return }
     dragging = true; lx = e.clientX; ly = e.clientY; canvas.setPointerCapture(e.pointerId); canvas.style.cursor = 'grabbing'
   }
   function onMove(e) {
-    if (beamDragging) { const ll = screenToLonLat(e.clientX, e.clientY); if (ll && onBeamDrag) onBeamDrag(ll, 'move') }
+    if (moveDragging) {
+      const ll = screenToLonLat(e.clientX, e.clientY)
+      if (ll && moveLast && onPolyMove) {
+        let dlon = ll.lon - moveLast.lon; dlon = ((dlon + 540) % 360) - 180   // 跨 ±180° 取短路增量
+        onPolyMove(dlon, ll.lat - moveLast.lat, 'move'); moveLast = ll
+      }
+    }
+    else if (vertDragging >= 0) { const ll = screenToLonLat(e.clientX, e.clientY); if (ll && onVertexDrag) onVertexDrag(vertDragging, ll, 'move') }
+    else if (beamDragging) { const ll = screenToLonLat(e.clientX, e.clientY); if (ll && onBeamDrag) onBeamDrag(ll, 'move') }
     else if (dragging) { tx += e.clientX - lx; ty += e.clientY - ly; lx = e.clientX; ly = e.clientY; invalidateStatic(); requestDraw() }
+    else if (editVerts) {   // 悬停提示：可拖顶点 / 可拖多边形内部
+      canvas.style.cursor = (editVerts.move ? pointInEditPoly(e.clientX, e.clientY) : vertexAt(e.clientX, e.clientY) >= 0) ? 'move' : 'grab'
+    }
     if (onHover) onHover(screenToLonLat(e.clientX, e.clientY))   // 实时经纬度（拖拽时也更新）
   }
-  function onUp() { if (beamDragging && onBeamDrag) onBeamDrag(null, 'end'); dragging = false; beamDragging = false; canvas.style.cursor = beamDragMode ? 'move' : 'grab' }
+  function onUp() {
+    if (vertDragging >= 0 && onVertexDrag) onVertexDrag(null, null, 'end')
+    if (moveDragging && onPolyMove) onPolyMove(0, 0, 'end')
+    if (beamDragging && onBeamDrag) onBeamDrag(null, 'end')
+    dragging = false; beamDragging = false; vertDragging = -1; moveDragging = false; moveLast = null
+    canvas.style.cursor = beamDragMode ? 'move' : 'grab'
+  }
   function onLeave() { onUp(); if (onHover) onHover(null) }       // 移出地图：清空读数
   function onDbl() { fit(); invalidateStatic(); requestDraw(); if (onZoom) onZoom(scaleToT()) }
   // 屏幕坐标 -> 经纬度（投影逆运算）；超出地图范围返回 null
@@ -654,6 +709,8 @@ export function createFlatCoverage(canvas) {
     setLabelStyle(s) { Object.assign(labelStyle, s || {}); invalidateStatic(); requestDraw() },
     // 大海填充色（与 3D 同步，限蓝色系）
     setOceanColor(c) { if (c) { oceanColor = c; invalidateStatic(); requestDraw() } },
+    // 大地颜色（基调方案 + 逐国覆盖，与 3D 同步）：写入公共色板状态后重建陆地 Path2D 并重绘静态层
+    setLandColors(s) { setLandPalette(s); buildBaseGeo(featCache[mapDetail0] || featCache['10m'], mapThin); invalidateStatic(); requestDraw() },
     setOnRightClick(fn) { onRightClick = fn },
     setOnHover(fn) { onHover = fn },
     // 缩放进度条接口：getZoom 读当前进度、setZoom 设到进度 t、setOnZoom 注册滚轮缩放回填回调
@@ -686,6 +743,11 @@ export function createFlatCoverage(canvas) {
     },
     setBeamDragMode(v) { beamDragMode = !!v; beamDragging = false; canvas.style.cursor = v ? 'move' : 'grab' },
     setOnBeamDrag(fn) { onBeamDrag = fn },
+    // Polygon 顶点编辑/整体拖动：v={ pts:[[lon,lat],...], px 顶点半径, move 整体拖动模式 } 开启
+    // （pts 传引用，外部改动即时生效）；null 关闭
+    setEditVerts(v) { editVerts = (v && v.pts) ? v : null; vertDragging = -1; moveDragging = false; moveLast = null; if (!editVerts) canvas.style.cursor = beamDragMode ? 'move' : 'grab' },
+    setOnVertexDrag(fn) { onVertexDrag = fn },
+    setOnPolyMove(fn) { onPolyMove = fn },
     setMarkers(points, stations, trajectories) { mk = { points: points || [], stations: stations || [], trajectories: trajectories || [] }; invalidateStatic(); requestDraw() },
     setFocusSat(p) { focusSat = (p && Number.isFinite(p.lat) && Number.isFinite(p.lon)) ? { lat: p.lat, lon: p.lon } : null; requestDraw() },   // 聚焦星每帧实时绘制，不在快照内
     setSelGeom(g) { selGeom = g || null; requestDraw() },   // 聚焦卫星几何（覆盖范围 + 星下点轨迹），随时间实时，不入快照

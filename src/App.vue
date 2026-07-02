@@ -85,6 +85,7 @@ const currentLabel = computed(
           </div>
         </span>
         <span v-if="covNav.grdAvail" class="navbtn" :class="{ on: covNav.grdOpen }" @click="covNav.toggleGrd && covNav.toggleGrd()">覆盖分析</span>
+        <span v-if="covNav.polyAvail" class="navbtn" :class="{ on: covNav.polyOpen }" @click="covNav.togglePoly && covNav.togglePoly()">Polygon</span>
         <span v-if="covNav.covAvail" class="navbtn" :class="{ on: covNav.covOpen }" @click="covNav.toggleCov && covNav.toggleCov()">覆盖图（GXT）</span>
         <span v-if="covNav.exportAvail" class="vwrap">
           <span class="navbtn" :class="{ on: expMenu }" @click.stop="expMenu = !expMenu">导出 ▾</span>

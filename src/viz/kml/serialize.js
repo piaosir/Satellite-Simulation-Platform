@@ -21,6 +21,51 @@ function ringCoords(pts) {
   return all.map((p) => `${Number(p[0]).toFixed(6)},${Number(p[1]).toFixed(6)},0`).join(' ')
 }
 
+// Polygon（协调区多边形）导出：polys=[{ name, value, color:'#rrggbb', pts:[[lon,lat]...] }]。
+// 每个多边形一个 Placemark：名称+数值进 name/description（数值含义与单位由协调材料约定，软件不做定义），
+// 按多边形自身颜色描边 + 浅填充。忽略顶点数 <3 的记录。
+export function serializePolysKml(polys = [], opts = {}) {
+  const docName = opts.name || 'Polygon'
+  const out = [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<kml xmlns="http://www.opengis.net/kml/2.2">',
+    '<Document>',
+    `<name>${esc(docName)}</name>`
+  ]
+  polys.forEach((pg, i) => {
+    const pts = pg && pg.pts
+    if (!pts || pts.length < 3) return
+    const m = /^#?([0-9a-fA-F]{6})$/.exec(String(pg.color || ''))
+    const rgb = m ? m[1].toLowerCase() : 'ff5a5a'
+    const hasVal = pg.value != null && String(pg.value).trim() !== ''
+    const name = [pg.name, hasVal ? pg.value : ''].filter((x) => x != null && String(x).trim() !== '').join('：')
+    out.push(
+      `<Style id="pg${i}">`,
+      `<LineStyle><color>${kmlColor(rgb, 'ff')}</color><width>2</width></LineStyle>`,
+      `<PolyStyle><color>${kmlColor(rgb, '33')}</color><fill>1</fill><outline>1</outline></PolyStyle>`,
+      '</Style>',
+      '<Placemark>',
+      `<name>${esc(name || 'Polygon')}</name>`
+    )
+    const desc = []
+    if (hasVal) desc.push('数值：' + pg.value)
+    if (pg.satName != null && String(pg.satName).trim() !== '') desc.push('卫星：' + pg.satName)
+    if (pg.satLon != null && String(pg.satLon).trim() !== '') desc.push('轨道位置：' + pg.satLon + '°E')
+    if (desc.length) out.push(`<description>${esc(desc.join('　'))}</description>`)
+    out.push(
+      `<styleUrl>#pg${i}</styleUrl>`,
+      '<Polygon>',
+      '<tessellate>1</tessellate>',
+      '<altitudeMode>clampToGround</altitudeMode>',
+      '<outerBoundaryIs><LinearRing><coordinates>', ringCoords(pts), '</coordinates></LinearRing></outerBoundaryIs>',
+      '</Polygon>',
+      '</Placemark>'
+    )
+  })
+  out.push('</Document>', '</kml>')
+  return out.join('\r\n')
+}
+
 export function serializeKml(beams = [], opts = {}) {
   const docName = opts.name || '覆盖图'
   const styleDefs = []

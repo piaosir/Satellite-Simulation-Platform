@@ -6,9 +6,9 @@ import { reactive } from 'vue'
 //  - grdOpen/covOpen：面板开关（3D 页用 toRef 直接读写，顶栏据此高亮）
 //  - toggleGrd/toggleCov：切换回调（由 3D 页注入；含懒加载等逻辑）
 export const covNav = reactive({
-  grdAvail: false, covAvail: false,
-  grdOpen: false, covOpen: false,
-  toggleGrd: null, toggleCov: null,
+  grdAvail: false, covAvail: false, polyAvail: false,
+  grdOpen: false, covOpen: false, polyOpen: false,
+  toggleGrd: null, toggleCov: null, togglePoly: null,
   // 导出入口（顶栏「导出图」）：在 3D 页注册 exportMap('png2'|'png4'|'pdf')，离开页面复位
   exportAvail: false, exportMap: null
 })

@@ -10,10 +10,13 @@ import { setGrdBridge, clearGrdBridge, fileBridge } from '../stores/fileBridge'
 import { alertMsg, appAlert, closeAlert } from '../stores/alert'
 import { displaySatName } from '../viz/satName.js'
 import { serializeGxt } from '../viz/gxt/serialize.js'
-import { serializeKml } from '../viz/kml/serialize.js'
+import { serializeKml, serializePolysKml } from '../viz/kml/serialize.js'
 defineOptions({ inheritAttrs: false })   // 不把父级传入的 title 落到根节点（去掉鼠标悬停的“星座3D”原生提示）
 import { createGlobeScene } from '../viz/globe3d/scene.js'
 import { createFlatCoverage } from '../viz/flatmap/flatCoverage.js'
+import NAMES_ZH from '../viz/globe3d/data/country-names-zh.json'
+import { LAND as LAND_MORANDI, LAND_UNIFORMS } from '../viz/landPalette.js'
+import { countryAt, currentLandColor } from '../viz/globe3d/countryPick.js'
 import { useGrdCoverage } from '../viz/grd/useGrdCoverage.js'
 import { usePerfTable } from '../viz/grd/usePerfTable.js'
 import { useGridSelect } from '../viz/grd/useGridSelect.js'
@@ -293,6 +296,29 @@ const labelStyle = reactive({ countryColor: '#eef2f6', countryOpacity: 1.0, prov
 // 蓝色系：深→浅，兼顾鲜艳/中性/低饱和；第 2 项 #15426b 为默认深蓝，末项 #92b6e4 取自 SATSOFT 浅蓝海面
 const OCEAN_BLUES = ['#0d2b4d', '#15426b', '#1b5a8c', '#1e6fa8', '#2a85c4', '#3d7ba6', '#5b7f9e', '#92b6e4']
 const oceanColor = ref('#92b6e4')
+// 大地颜色：基调方案（'morandi' 杂色循环 | '#rrggbb' 统一单色，预设见 landPalette.LAND_UNIFORMS，首个为 SATSOFT 米绿）
+// + 逐国覆盖（优先级最高，含中国/冰盖），同时作用于 3D 球体与平面图
+const landScheme = ref('morandi')
+const landOverrides = reactive({})   // ISO 数字码 → '#rrggbb'
+const landQuery = ref('')            // 逐国设色搜索框
+const landPick = ref(null)           // 当前选中国家 { id, zh }
+const HEX6 = /^#[0-9a-fA-F]{6}$/
+// 可搜索国家列表（台湾并入中国不单列；中国/朝鲜/韩国用通称，与建图口径一致）
+const COUNTRY_ZH = Object.keys(NAMES_ZH).filter((id) => id !== '158')
+  .map((id) => ({ id, zh: id === '156' ? '中国' : id === '408' ? '朝鲜' : id === '410' ? '韩国' : NAMES_ZH[id][0] }))
+  .sort((a, b) => a.zh.localeCompare(b.zh, 'zh-Hans-CN'))
+const landHits = computed(() => {
+  const q = landQuery.value.trim()
+  if (!q || (landPick.value && landPick.value.zh === q)) return []
+  return COUNTRY_ZH.filter((c) => c.zh.includes(q)).slice(0, 10)
+})
+// 选中国家取色器预填：已覆盖→覆盖色；统一基调→基调色；莫兰迪→该国当前实际循环色
+const landPickColor = computed(() => {
+  const p = landPick.value
+  if (!p) return '#e4eccf'
+  return landOverrides[p.id] || (landScheme.value !== 'morandi' ? landScheme.value : currentLandColor(p.id))
+})
+const landOvList = computed(() => Object.entries(landOverrides).map(([id, color]) => ({ id, color, zh: (COUNTRY_ZH.find((c) => c.id === id) || {}).zh || id })))
 const covStatus = ref('')
 const covLegend = ref([])         // [{ name, mode, gmin, gmax, type, solid }]
 let covLoaded = false
@@ -855,6 +881,8 @@ function ensureFlat() {
     flat = createFlatCoverage(flatCanvas.value)
     flat.setRenderScale(displayQuality.value.pixelRatio); flat.setMapDetail(displayQuality.value.mapDetail, displayQuality.value.mapThin)
     flat.setOnRightClick(onMapRightClick); flat.setOnHover((ll) => { cursor.ll = ll }); flat.setOnBeamDrag(grd.beamDrag); flat.setBeamDragMode(grd.dragBore.value)
+    flat.setOnVertexDrag(onPolyVertexDrag)   // Polygon 调整顶点：拖动单个顶点
+    flat.setOnPolyMove(onPolyMoveDrag)       // Polygon 整体拖动：按住内部平移全部顶点
     flat.setOnZoom((t) => { if (flatView.value) { zoom.value = t; saveView() } })
     flatCanvas.value.addEventListener('pointerup', saveView)   // 平移结束保存视图（平移中心）
   }
@@ -877,7 +905,8 @@ function feedFlat() {
   flat.setSizes({ beamFont: beamLabelSize.value, contourFont: contourLabelSize.value, dotSize: boreSize.value, showBore: showBore.value, nameScale: countryNameSize.value, provScale: provNameSize.value, cityScale: cityNameSize.value, ptFont: markPtFont.value, stIcon: stIconSize.value, stFont: stFontSize.value, ptDot: markPtDot.value, trajDot: trajDotSize.value })
   flat.setGeom(covGeom)
   grd.recompute()   // GRD 覆盖：把当前选中天线的面+线喂给 flat（recompute 同时喂 scene/flat）
-  redrawSats()      // 卫星/仰角线图层
+  redrawSats()      // 卫星/仰角线图层（含 Polygon）
+  syncPolyEdit()    // Polygon 调点态（切入平面图时接上顶点拖拽）
   pushFocusSat()    // 聚焦卫星位置
   pushSelGeomFlat() // 聚焦卫星覆盖范围 + 星下点轨迹
 }
@@ -1045,6 +1074,19 @@ function applyBorderStyle() { const s = { ...borderStyle }; if (scene) scene.set
 function applyLabelStyle() { const s = { ...labelStyle }; if (scene) scene.setLabelStyle(s); if (flat) flat.setLabelStyle(s) }
 // 大海颜色 → 3D 与平面图。
 function setOceanColor(c) { oceanColor.value = c; if (scene) scene.setOceanColor(c); if (flat) flat.setOceanColor(c) }
+// 大地颜色 → 3D 与平面图（写公共色板状态 + 两端重建陆地）。3D 重建三角网有数百 ms 量级，
+// 取色器拖动会连发 input → 防抖合并；色块点击/删除等一次性操作立即执行（now=true）。
+let landTimer = 0
+function applyLandColors(now) {
+  const s = { scheme: landScheme.value, overrides: { ...landOverrides } }
+  if (landTimer) clearTimeout(landTimer)
+  landTimer = setTimeout(() => { landTimer = 0; if (scene) scene.setLandColors(s); if (flat) flat.setLandColors(s) }, now ? 0 : 200)
+}
+function setLandScheme(v) { if (v === 'morandi' || HEX6.test(v)) { landScheme.value = v; applyLandColors(true) } }
+function pickLandCountry(c) { landPick.value = { id: c.id, zh: c.zh }; landQuery.value = c.zh }
+function setLandCountryColor(id, color) { if (HEX6.test(color)) { landOverrides[id] = color; applyLandColors() } }
+function removeLandCountryColor(id) { delete landOverrides[id]; applyLandColors(true) }
+function clearLandOverrides() { for (const k of Object.keys(landOverrides)) delete landOverrides[k]; applyLandColors(true) }
 // 显示画质（全局档位）→ 应用到 3D / 2D / 覆盖网格。msaa 不在此（需重建上下文，由 3D 视图按 key 重挂载切换）。
 function applyDisplayQuality() {
   const q = displayQuality.value
@@ -1156,6 +1198,224 @@ function collectGxt() {
   }
   if (grd && grd.exportContours) { try { out.push(...grd.exportContours()) } catch (e) { console.warn('GRD 导出等值线失败', e) } }
   return out
+}
+
+// ===================== Polygon（协调区多边形，仿 SATSOFT Polygon Editor 精简版） =====================
+// 频率协调常用做法：画一个多边形圈定区域，对整个区域标一个数值（通常为功率谱密度，数值含义与单位由
+// 协调材料约定，软件不做定义）。绘制交互与轨迹一致：「＋ 绘制」后右键地图连续加顶点（3D / 2D 均可），
+// 顶部横幅「完成」闭合。多边形挂在卫星/仰角线独立图层（redrawSats）：3D/2D/高清导出图均可见，
+// 且不受覆盖图「清除绘制」影响。数据存 localStorage（与标记同策略），导出走现有 GXT/KML 序列化器。
+const POLY_KEY = 'globe3d/polygons'
+const POLY_COLORS = ['#e05252', '#3f7fd0', '#2f9e63', '#c78a2d', '#8a5fc9', '#2ba0a8']
+const polys = ref([])           // [{ id, name, value, color, width, show, pts:[[lon,lat],...] }]
+const polyDrawId = ref('')      // 正在绘制（右键加顶点）的多边形 id；''=不在绘制态
+const polyEditId = ref('')      // 正在调整顶点（平面图拖动顶点）的多边形 id；与绘制/拖动态互斥
+const polyMoveId = ref('')      // 正在整体拖动（平面图按住多边形内部拖）的多边形 id；与绘制/调整态互斥
+const polyVertsOpen = ref('')   // 展开「顶点表」的多边形 id
+const polyDotSize = ref(2.5)    // 顶点圆点半径（屏幕 px，绘制/调点时显示）
+const polyOffAmt = ref(0.5)     // 「扩大/缩小」幅度（度，纬度当量）
+const polyOpen = toRef(covNav, 'polyOpen')   // 右侧 Polygon 面板开关；与顶栏按钮共用 covNav store
+const curPoly = () => polys.value.find((p) => p.id === polyDrawId.value)
+const curEditPoly = () => polys.value.find((p) => p.id === polyEditId.value)
+const curMovePoly = () => polys.value.find((p) => p.id === polyMoveId.value)
+const closeRing = (pts) => { const f = pts[0], l = pts[pts.length - 1]; return (f[0] === l[0] && f[1] === l[1]) ? pts : [...pts, f] }
+const polyCentroid = (pts) => { let sx = 0, sy = 0; for (const p of pts) { sx += p[0]; sy += p[1] } return [sx / pts.length, sy / pts.length] }
+// 折线加密：相邻顶点间按 ≤step 度步长线性插值（经度取短路方向，输出不回卷、由渲染器自行归一）。
+// 2D 等距圆柱投影下插值点共线、视觉不变；3D 上让长边贴球面走——否则两远顶点间的直线弦会切入
+// 地球内部，被深度测试遮挡（即「多边形在 3D 视图被地球模型挡住」的根源）。
+const densifyDeg = (pts, step = 1) => {
+  if (!pts || pts.length < 2) return pts
+  const out = [pts[0]]
+  for (let i = 1; i < pts.length; i++) {
+    const a = out[out.length - 1], b = pts[i]
+    let dlon = b[0] - a[0]; dlon = ((dlon % 360) + 540) % 360 - 180
+    const dlat = b[1] - a[1]
+    const n = Math.max(1, Math.ceil(Math.max(Math.abs(dlon), Math.abs(dlat)) / step))
+    for (let j = 1; j <= n; j++) out.push([a[0] + dlon * j / n, a[1] + dlat * j / n])
+  }
+  return out
+}
+function togglePolyPanel() {
+  polyOpen.value = !polyOpen.value
+  if (!polyOpen.value) { polyEditStop(); polyMoveStop() }   // 关面板即退出调整/拖动（绘制态保留：横幅上有完成/取消）
+}
+function persistPolys() { try { localStorage.setItem(POLY_KEY, JSON.stringify({ polys: polys.value, dotSize: polyDotSize.value, offAmt: polyOffAmt.value })) } catch { /* ignore */ } }
+function loadPolys() {
+  try {
+    const d = JSON.parse(localStorage.getItem(POLY_KEY) || 'null')
+    const list = Array.isArray(d) ? d : (d && Array.isArray(d.polys) ? d.polys : null)   // 旧格式为裸数组，兼容
+    if (list) polys.value = list.filter((p) => p && p.id && Array.isArray(p.pts))
+    if (d && !Array.isArray(d)) {
+      if (Number.isFinite(d.dotSize)) polyDotSize.value = d.dotSize
+      if (Number.isFinite(Number(d.offAmt))) polyOffAmt.value = d.offAmt
+    }
+  } catch { /* ignore */ }
+}
+function polyRefresh() { redrawSats(); syncPolyEdit(); persistPolys() }
+function polyStartDraw() {
+  polyEditStop(); polyMoveStop()   // 与调整/拖动态互斥
+  const n = polys.value.length + 1
+  const pg = { id: 'pg' + Date.now().toString(36) + n, name: 'Polygon ' + n, value: '', satName: '', satLon: '', color: POLY_COLORS[(n - 1) % POLY_COLORS.length], width: 2, show: true, pts: [] }
+  polys.value.push(pg); polyDrawId.value = pg.id
+}
+function polyContinue(pg) { polyEditStop(); polyMoveStop(); pg.show = true; polyDrawId.value = pg.id; polyRefresh() }
+function polyUndo() { const pg = curPoly(); if (pg && pg.pts.length) { pg.pts.pop(); polyRefresh() } }
+function polyDone() {
+  const pg = curPoly(); if (!pg) { polyDrawId.value = ''; return }
+  if (pg.pts.length < 3) { appAlert('多边形至少需要 3 个顶点：右键地图连续加点'); return }
+  polyDrawId.value = ''; polyRefresh()
+}
+function polyCancel() {
+  const pg = curPoly(); polyDrawId.value = ''
+  if (pg && pg.pts.length < 3) polys.value.splice(polys.value.indexOf(pg), 1)   // 未成形的直接丢弃
+  polyRefresh()
+}
+function removePoly(pg) {
+  if (polyDrawId.value === pg.id) polyDrawId.value = ''
+  if (polyEditId.value === pg.id) polyEditId.value = ''
+  if (polyMoveId.value === pg.id) polyMoveId.value = ''
+  const i = polys.value.indexOf(pg); if (i >= 0) polys.value.splice(i, 1)
+  polyRefresh()
+}
+function togglePoly(pg) {
+  pg.show = !(pg.show !== false)
+  if (!pg.show) { if (polyEditId.value === pg.id) polyEditId.value = ''; if (polyMoveId.value === pg.id) polyMoveId.value = '' }
+  polyRefresh()
+}
+// ---- 调整顶点（仿 SATSOFT：选中多边形后直接拖动顶点）。在 2D 平面图进行，进入时自动切换视图 ----
+function polyEditToggle(pg) {
+  if (polyEditId.value === pg.id) { polyEditStop(); return }
+  if (polyDrawId.value) polyCancel()   // 与绘制态互斥
+  polyMoveId.value = ''                // 与整体拖动互斥
+  polyEditId.value = pg.id; pg.show = true
+  if (!view.flat) view.flat = true     // 切到平面图（applyFlat→feedFlat 会同步编辑态到渲染器）
+  polyRefresh()
+}
+function polyEditStop() { if (polyEditId.value) { polyEditId.value = ''; polyRefresh() } }
+// ---- 整体拖动（仿 SATSOFT：按住多边形内部整体平移）。同样在 2D 平面图进行 ----
+function polyMoveToggle(pg) {
+  if (polyMoveId.value === pg.id) { polyMoveStop(); return }
+  if (polyDrawId.value) polyCancel()   // 与绘制态互斥
+  polyEditId.value = ''                // 与调整顶点互斥
+  polyMoveId.value = pg.id; pg.show = true
+  if (!view.flat) view.flat = true
+  polyRefresh()
+}
+function polyMoveStop() { if (polyMoveId.value) { polyMoveId.value = ''; polyRefresh() } }
+// 把当前编辑/拖动多边形的顶点（传引用，拖动实时生效）喂给平面渲染器做命中/拖拽
+function syncPolyEdit() {
+  if (!flat) return
+  const pg = curEditPoly() || curMovePoly()
+  flat.setEditVerts(pg ? { pts: pg.pts, px: polyDotSize.value, move: !!curMovePoly() } : null)
+}
+// 顶点拖拽回调：'move' 只改点+重绘（与平移同频，不写盘），'end' 统一持久化
+function onPolyVertexDrag(vi, ll, phase) {
+  const pg = curEditPoly(); if (!pg) return
+  if (phase === 'end') { persistPolys(); return }
+  if (vi == null || !ll || vi < 0 || vi >= pg.pts.length) return
+  pg.pts[vi] = [ll.lon, ll.lat]
+  redrawSats()
+}
+// 整体拖动回调（增量制）：'move' 全顶点平移+重绘，'end' 统一持久化
+function onPolyMoveDrag(dlon, dlat, phase) {
+  const pg = curMovePoly(); if (!pg) return
+  if (phase === 'end') { persistPolys(); return }
+  if (!dlon && !dlat) return
+  for (const q of pg.pts) { q[0] += dlon; q[1] = clamp(q[1] + dlat, -89.9, 89.9) }
+  redrawSats()
+}
+// ---- 复制多边形（仿 SATSOFT Copy）：副本整体偏移一点便于分辨，并直接进入整体拖动模式好摆放 ----
+function polyCopy(pg) {
+  const n = polys.value.length + 1
+  const cp = {
+    id: 'pg' + Date.now().toString(36) + n,
+    name: (pg.name || 'Polygon') + ' 副本',
+    value: pg.value, satName: pg.satName || '', satLon: pg.satLon || '',
+    color: POLY_COLORS[(n - 1) % POLY_COLORS.length], width: pg.width || 2, show: true,
+    pts: pg.pts.map((p) => [p[0] + 3, clamp(p[1] - 3, -89.9, 89.9)])
+  }
+  polys.value.push(cp)
+  polyMoveToggle(cp)   // 内含 polyRefresh + 持久化
+}
+// ---- 扩大 / 缩小（仿 SATSOFT Expand/Shrink：按幅度外扩/内收一圈，生成新多边形，原多边形保留） ----
+// 平面近似：经度按质心纬度 cos 修正后，各顶点沿相邻两边外法线的角平分线偏移 d 度（纬度当量）；
+// 直边处即垂直偏移 d，尖角处米特长度封顶 5|d| 防爆冲。d>0 外扩、d<0 内收。
+function offsetPolyPts(pts, d) {
+  const n = pts.length; if (n < 3) return null
+  const lat0 = pts.reduce((s, p) => s + p[1], 0) / n
+  const cl = Math.max(0.2, Math.cos(lat0 * DEG))
+  const P = pts.map((p) => [p[0] * cl, p[1]])
+  let A = 0; for (let i = 0; i < n; i++) { const a = P[i], b = P[(i + 1) % n]; A += a[0] * b[1] - b[0] * a[1] }
+  const sgn = A >= 0 ? 1 : -1   // 顶点绕向：CCW 时外法线在行进方向右侧，CW 反之
+  const norm = (a, b) => { const dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy) || 1e-9; return [sgn * dy / L, -sgn * dx / L] }
+  const out = []
+  for (let i = 0; i < n; i++) {
+    const p0 = P[(i - 1 + n) % n], p1 = P[i], p2 = P[(i + 1) % n]
+    const n1 = norm(p0, p1), n2 = norm(p1, p2)
+    const ux = n1[0] + n2[0], uy = n1[1] + n2[1], uu = ux * ux + uy * uy
+    let ox, oy
+    if (uu < 1e-9) { ox = n1[0] * d; oy = n1[1] * d }   // 180° 折返边：退化为单边法线
+    else { const m = 2 * d / uu; ox = ux * m; oy = uy * m }
+    const L = Math.hypot(ox, oy), cap = Math.abs(d) * 5
+    if (L > cap) { ox *= cap / L; oy *= cap / L }
+    out.push([(p1[0] + ox) / cl, clamp(p1[1] + oy, -89.9, 89.9)])
+  }
+  return out
+}
+function polyOffset(pg, sign) {
+  const amt = Math.abs(Number(polyOffAmt.value))
+  if (!amt || !Number.isFinite(amt)) { appAlert('请先在「扩/缩幅度」里填一个大于 0 的度数'); return }
+  if (pg.pts.length < 3) { appAlert('该多边形还未成形（至少 3 个顶点），不能扩/缩'); return }
+  const pts = offsetPolyPts(pg.pts, amt * sign)
+  if (!pts) return
+  const n = polys.value.length + 1
+  polys.value.push({
+    id: 'pg' + Date.now().toString(36) + n,
+    name: `${pg.name || 'Polygon'}${sign > 0 ? '+' : '-'}${amt}°`,
+    value: pg.value, satName: pg.satName || '', satLon: pg.satLon || '',
+    color: POLY_COLORS[(n - 1) % POLY_COLORS.length], width: pg.width || 2, show: true, pts
+  })
+  polyRefresh()
+}
+// 顶点表（仿 SATSOFT Table Edit）：文本框逐行「经度, 纬度」，失焦提交，整体校验通过才写回
+const polyVertsText = (pg) => pg.pts.map((p) => `${(+p[0]).toFixed(3)}, ${(+p[1]).toFixed(3)}`).join('\n')
+function polyVertsEdit(pg, e) {
+  const pts = []
+  for (const raw of String(e.target.value).split(/\r?\n/)) {
+    const s = raw.trim(); if (!s) continue
+    const m = s.split(/[,;，；\s]+/).map(Number)
+    if (m.length < 2 || !Number.isFinite(m[0]) || !Number.isFinite(m[1]) || Math.abs(m[0]) > 360 || Math.abs(m[1]) > 90) { appAlert('顶点格式有误：每行一个顶点「经度, 纬度」（度），如 116.4, 39.9'); return }
+    pts.push([m[0], m[1]])
+  }
+  if (pts.length < 3) { appAlert('多边形至少需要 3 个顶点'); return }
+  pg.pts = pts; polyRefresh()
+}
+// 导出显示中的多边形：GXT=一个 diagram、每个多边形一条闭合等值线（等值线值=该多边形的数值）；
+// KML=每个多边形一个 Placemark（保留名称/数值/颜色）。均复用统一的系统保存对话框。
+async function exportPolys(fmt) {
+  const list = polys.value.filter((pg) => pg.show !== false && pg.pts.length >= 3)
+  if (!list.length) { appAlert('没有可导出的多边形：先「＋ 绘制」一个（至少 3 个顶点，且处于显示状态）'); return }
+  try {
+    if (fmt === 'gxt') {
+      // 按「卫星名 + 轨道位置」分组：每组一个 diagram（GeoMain 的 sat_name/long_nom 取该组卫星信息），
+      // 组内每个多边形一条闭合等值线。未填卫星信息的归入 sat_name=Polygon / long_nom=0 一组。
+      const groups = new Map()
+      for (const pg of list) {
+        const key = `${(pg.satName || '').trim()}|${(pg.satLon || '').toString().trim()}`
+        if (!groups.has(key)) groups.set(key, [])
+        groups.get(key).push(pg)
+      }
+      const blocks = [...groups.values()].map((gs) => {
+        const g0 = gs[0], lonN = Number(g0.satLon)
+        const contours = gs.map((pg) => { const v = Number(pg.value); return { g: Number.isFinite(v) ? v : 0, p: closeRing(pg.pts) } })
+        return serializeGxt({ lon: Number.isFinite(lonN) ? lonN : 0, satName: (g0.satName || '').trim() || 'Polygon', beamId: 'Polygon', emiRcp: 'E', bore: [], contours })
+      })
+      await saveExport(blocks.join('\r\n'), '协调区多边形.gxt', [{ name: 'GXT 等值线', extensions: ['gxt'] }])
+    } else {
+      const text = serializePolysKml(list, { name: '协调区多边形' })
+      await saveExport(text, '协调区多边形.kml', [{ name: 'KML', extensions: ['kml'] }])
+    }
+  } catch (e) { console.error('导出失败', e); appAlert('导出失败：' + ((e && e.message) || e)) }
 }
 
 // ===================== 仰角线（卫星属性，挂在 GRD 卫星树的每个卫星上） =====================
@@ -1335,7 +1595,7 @@ function pickSatSearch(r) { pickEntryIntoModal(r.en); satSearchKw.value = ''; sa
 // 重绘仰角线独立图层（3D + 平面图共用同一 spec）；遍历卫星树每个点亮的卫星
 function redrawSats() {
   if (!scene) return
-  const lines = [], labels = [], sats = []
+  const lines = [], labels = [], sats = [], dots = []
   for (const node of grdSats.value) {
     // 两项相互独立：卫星名（图标/名称）由 labelShow 控；等仰角线由 elevShow 控且需填仰角值。
     const showLabel = node.labelShow !== false
@@ -1368,7 +1628,22 @@ function redrawSats() {
     // 卫星名/图标：不依赖仰角值，仅由 labelShow 决定（3D 只画名，2D 画图标+名）
     if (showLabel) sats.push({ lon: p.lon, lat: p.lat, altKm: p.altKm, name: node.satName, color: colNum, nameColor: color, iconSize: node.iconSize || 10, labelSize: node.labelSize || 4, labelShow: true })
   }
-  const spec = (lines.length || sats.length) ? { lines, dots: [], labels, sats } : null
+  // Polygon（协调区多边形）：挂同一独立图层，3D/2D 同步显示，不受覆盖图「清除绘制」影响。
+  // 闭合环在此手动补首点并传 closed:false（2D 按折线画、不自动闭合；3D 亦无需重复闭合）。
+  // 绘制/调点中的多边形画顶点圆点（px=屏幕恒定像素、r=3D 球面尺寸，大小随「顶点大小」设置）；
+  // 闭合后在顶点均值处标「名称 数值」。
+  for (const pg of polys.value) {
+    const drawing = pg.id === polyDrawId.value, editing = pg.id === polyEditId.value || pg.id === polyMoveId.value
+    if (!drawing && !editing && (pg.show === false || pg.pts.length < 3)) continue
+    const colNum = cssToHex(pg.color)
+    const ring = drawing ? pg.pts : closeRing(pg.pts)
+    if (ring.length >= 2) lines.push({ p: densifyDeg(ring), color: colNum, width: pg.width || 2, opacity: 0.95, closed: false })
+    if (drawing || editing) for (const q of pg.pts) dots.push({ lon: q[0], lat: q[1], color: colNum, px: polyDotSize.value, r: polyDotSize.value * 0.0018 })
+    const txt = [pg.name, pg.value].filter((x) => x != null && String(x).trim() !== '').join('  ')
+    // top:true → 3D 里该标签关深度测试+半球剔除（不被地球模型裁切，转到背面才隐藏）
+    if (!drawing && txt && pg.pts.length >= 3) { const c = polyCentroid(pg.pts); labels.push({ lon: c[0], lat: c[1], text: txt, hpx: 16 / 533, color: pg.color, alt: 40, top: true }) }
+  }
+  const spec = (lines.length || sats.length || dots.length) ? { lines, dots, labels, sats } : null
   scene.setSatLayer(spec)
   if (flat) flat.setSatLayer(spec)
 }
@@ -1431,6 +1706,8 @@ function pushFocusSat() { const p = focusSubpoint(); if (flat) flat.setFocusSat(
 const ctxMenu = ref(null)        // { x, y, ll } 右键菜单状态（null=隐藏）
 const covSetOpen = ref(false)    // 「覆盖图设置」弹窗开关
 function onMapRightClick(ll, pos) {
+  const pg = curPoly()
+  if (pg) { if (ll) { pg.pts.push([ll.lon, ll.lat]); polyRefresh() } return }   // Polygon 绘制中：连续加顶点，不弹菜单
   const t = curTraj()
   if (t) { if (ll) { t.pts.push({ lat: ll.lat, lon: ll.lon }); syncMarkers() } return }   // 描绘中：连续加点，不弹菜单
   ctxMenu.value = { x: pos ? pos.x : 0, y: pos ? pos.y : 0, ll: ll || null }
@@ -1457,10 +1734,20 @@ function endTraj() { activeTraj.value = '' }
 function clearPoints() { points.value = []; syncMarkers(); closeCtx() }
 function clearStations() { stations.value = []; syncMarkers(); closeCtx() }
 function clearTrajs() { trajectories.value = []; activeTraj.value = ''; syncMarkers(); closeCtx() }
+function ctxClearPolys() { polys.value = []; polyDrawId.value = ''; polyEditId.value = ''; polyMoveId.value = ''; polyVertsOpen.value = ''; polyRefresh(); closeCtx() }
 function clearAllMk() { clearAllMarkers(); closeCtx() }
 function clearAllCoverage() { if (covApiOk) clearCoverage(); if (grdApiOk) grd.clearDrawing(); closeCtx() }
 function ctxOpenMarkers() { mkOpen.value = true; closeCtx() }
 function ctxOpenGeo() { geoOpen.value = true; closeCtx() }
+// 右键处命中国家（点在多边形内判定）→ 打开地图设置并选中该国进入逐国设色
+function ctxSetLandColor() {
+  const ll = ctxLL(); closeCtx()
+  if (!ll) return
+  const c = countryAt(ll.lon, ll.lat)
+  if (!c || !c.zh) { appAlert('该位置不在陆地国家范围内'); return }
+  geoOpen.value = true
+  pickLandCountry(c)
+}
 function ctxOpenCovSet() { covSetOpen.value = true; closeCtx() }   // 打开覆盖图显示设置弹窗（GRD 4 + GXT 3，含字号/大小条）
 const markSizes = () => ({ ptFont: markPtFont.value, stIcon: stIconSize.value, stFont: stFontSize.value, ptDot: markPtDot.value, trajDot: trajDotSize.value })
 // 标记载荷构造器：坐标/名称是否带文字由 showPtLabel/showStName 决定（空串=圆点/图标保留、文字隐藏）。
@@ -1572,11 +1859,11 @@ function deserializeCov(items) {
 }
 function snapshot() {
   return {
-    nameMode: nameMode.value, countryName: countryNameSize.value, provName: provNameSize.value, cityName: cityNameSize.value, showProvinces: showProvinces.value, showCities: showCities.value, borderStyle: { ...borderStyle }, labelStyle: { ...labelStyle }, oceanColor: oceanColor.value, autoRotate: autoRotate.value, autoRotateSpeed: viewPrefs.autoRotateSpeed, live: live.value, beamLock: beamLock.value,
+    nameMode: nameMode.value, countryName: countryNameSize.value, provName: provNameSize.value, cityName: cityNameSize.value, showProvinces: showProvinces.value, showCities: showCities.value, borderStyle: { ...borderStyle }, labelStyle: { ...labelStyle }, oceanColor: oceanColor.value, landScheme: landScheme.value, landOverrides: { ...landOverrides }, autoRotate: autoRotate.value, autoRotateSpeed: viewPrefs.autoRotateSpeed, live: live.value, beamLock: beamLock.value,
     mkPt: markPtFont.value, mkStIcon: stIconSize.value, mkStFont: stFontSize.value, mkPtDot: markPtDot.value, mkTrajDot: trajDotSize.value,
     mkPtShow: showPtLabel.value, mkStShow: showStName.value,
     mkPtLayer: showPtLayer.value, mkStLayer: showStLayer.value, mkTrajLayer: showTrajLayer.value,
-    covOpen: covOpen.value, mkOpen: mkOpen.value, geoOpen: geoOpen.value,
+    covOpen: covOpen.value, mkOpen: mkOpen.value, geoOpen: geoOpen.value, polyOpen: polyOpen.value,
     grdOpen: grdOpen.value, grd: grd.getState(), perf: perf.getState(),
     cov: {
       items: serializeCov(), cleared: covCleared.value,
@@ -1601,6 +1888,12 @@ async function restoreSettings() {
   if (s.labelStyle && typeof s.labelStyle === 'object') Object.assign(labelStyle, s.labelStyle)
   applyLabelStyle()
   if (typeof s.oceanColor === 'string') setOceanColor(s.oceanColor)
+  // 大地颜色：基调 + 逐国覆盖。默认态（morandi 且无覆盖）不触发陆地重建，避免启动白做一次
+  if (s.landScheme === 'morandi' || (typeof s.landScheme === 'string' && HEX6.test(s.landScheme))) landScheme.value = s.landScheme
+  if (s.landOverrides && typeof s.landOverrides === 'object') {
+    for (const [k, v] of Object.entries(s.landOverrides)) if (typeof v === 'string' && HEX6.test(v)) landOverrides[k] = v
+  }
+  if (landScheme.value !== 'morandi' || Object.keys(landOverrides).length) applyLandColors(true)
   if (Number.isFinite(s.mkPt)) markPtFont.value = s.mkPt
   if (Number.isFinite(s.mkPtDot)) markPtDot.value = s.mkPtDot
   if (Number.isFinite(s.mkStIcon)) stIconSize.value = s.mkStIcon
@@ -1617,6 +1910,7 @@ async function restoreSettings() {
   if (typeof s.beamLock === 'boolean') beamLock.value = s.beamLock
   if (typeof s.mkOpen === 'boolean') mkOpen.value = s.mkOpen
   if (typeof s.geoOpen === 'boolean') geoOpen.value = s.geoOpen
+  if (typeof s.polyOpen === 'boolean') polyOpen.value = s.polyOpen
   if (s.showProvinces) {
     showProvinces.value = true
     try { const mod = await import('../viz/globe3d/data/china-provinces.json'); provincesData = mod.default || mod; scene.setProvinces(provincesData); scene.setProvincesVisible(true); provincesLoaded = true } catch { /* ignore */ }
@@ -1680,6 +1974,7 @@ onMounted(async () => {
   // 顶栏「视图」按钮右侧的覆盖图入口：注册可用性与切换回调（按钮渲染在 App.vue，状态走 covNav store）
   covNav.grdAvail = grdApiOk; covNav.covAvail = covApiOk
   covNav.toggleGrd = toggleGrd; covNav.toggleCov = toggleCoverage
+  covNav.polyAvail = true; covNav.togglePoly = togglePolyPanel   // Polygon 面板（纯本地功能，不依赖 IPC）
   covNav.exportAvail = true; covNav.exportMap = exportMap   // 顶栏「导出图」入口（高清 PNG / 矢量 PDF）
   scene = createGlobeScene(el.value, { ...displayQuality.value })
   scene.setAutoRotate(autoRotate.value)
@@ -1716,6 +2011,7 @@ onMounted(async () => {
   // 用户在文件管理器导入/删除 GXT → 重新合并 covSats，使覆盖图(GXT)面板可选用新库
   watch(() => fileBridge.libraryTick, () => { if (covLoaded) mergeUserGxt() })
   loadMarkers(); syncMarkers()
+  loadPolys()   // Polygon（协调区多边形）：随后 redrawSats() 一并绘制
   ro = new ResizeObserver(() => { if (scene) scene.resize(); if (flat && flatView.value) flat.resize() }); ro.observe(el.value)
 
   // 恢复上次分组 + 选中星
@@ -1740,8 +2036,9 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   // 离开 3D 页：复位顶栏覆盖图入口（按钮随之隐藏），并关掉面板镜像状态
   covNav.grdAvail = false; covNav.covAvail = false; covNav.toggleGrd = null; covNav.toggleCov = null
+  covNav.polyAvail = false; covNav.togglePoly = null
   covNav.exportAvail = false; covNav.exportMap = null
-  covNav.grdOpen = false; covNav.covOpen = false
+  covNav.grdOpen = false; covNav.covOpen = false; covNav.polyOpen = false
   zoom.avail = false; zoom.apply = null   // 复位底部状态栏缩放进度条
   if (_viewSaveTimer) { clearTimeout(_viewSaveTimer); _viewSaveTimer = null }
   if (el.value) el.value.removeEventListener('pointerup', saveView)
@@ -1978,6 +2275,65 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
+      <!-- Polygon 独立面板（顶栏「Polygon」按钮，覆盖分析右侧）：协调区多边形的绘制 / 调点 / 扩缩 / 导出 -->
+      <div v-if="polyOpen" class="cov-side poly-side">
+        <div class="csh"><span class="csn">Polygon</span>
+          <span class="flatbtn" :class="{ on: flatView }" @click="toggleFlat">{{ flatView ? '球体' : '平面图' }}</span>
+          <button class="winx" type="button" aria-label="关闭" title="关闭" @click="togglePolyPanel"><svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true"><path d="M1 1 L11 11 M11 1 L1 11" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/></svg></button></div>
+
+        <div class="sec">
+          <div class="sect"><span>协调区多边形</span><span class="lnk" @click="polyStartDraw">＋ 绘制</span></div>
+          <div v-if="!polys.length && !polyDrawId" class="tip">画一个多边形圈定协调区域，给区域标一个数值（如谱密度，数值含义与单位不做定义），可导出 GXT / KML。点「＋ 绘制」后在地图上右键连续加顶点（3D / 平面图均可）。</div>
+          <div v-for="pg in polys" :key="pg.id" class="plg" :class="{ act: polyDrawId === pg.id || polyEditId === pg.id || polyMoveId === pg.id }">
+            <div class="plgr">
+              <input type="checkbox" :checked="pg.show !== false" title="在地图上显示 / 隐藏该多边形" @change="togglePoly(pg)" />
+              <input class="plgn" v-model="pg.name" placeholder="名称" @change="polyRefresh" />
+              <input class="clr plgc" type="color" v-model="pg.color" title="线条颜色" @input="polyRefresh" />
+              <span class="ic del" title="删除该多边形" @click="removePoly(pg)">✕</span>
+            </div>
+            <div class="plgr">
+              <span class="plgl">数值</span>
+              <input class="plgv" v-model="pg.value" placeholder="如 -50" title="该区域标注的数值（如谱密度，单位不做定义）；导出 GXT 时作为该多边形等值线的值" @change="polyRefresh" />
+              <span class="plgl">轨位</span>
+              <input class="plgv" v-model="pg.satLon" placeholder="如 110.5" title="关联卫星轨道位置（东经为正，如 110.5 / -30）：导出 GXT 时写入 long_nom（GXT 必要信息）" @change="polyRefresh" />
+              <span class="plgu">°E</span>
+            </div>
+            <div class="plgr">
+              <span class="plgl">卫星</span>
+              <input class="plgn" v-model="pg.satName" placeholder="关联卫星名称" title="关联卫星名称：导出 GXT 时写入 sat_name（GXT 必要信息）" @change="polyRefresh" />
+            </div>
+            <div class="plgops">
+              <span class="opb" :class="{ on: polyEditId === pg.id }" title="在平面图上直接拖动顶点调整位置" @click="polyEditToggle(pg)">{{ polyEditId === pg.id ? '完成调整' : '调整顶点' }}</span>
+              <span class="opb" :class="{ on: polyMoveId === pg.id }" title="在平面图上按住多边形内部整体平移" @click="polyMoveToggle(pg)">{{ polyMoveId === pg.id ? '完成拖动' : '整体拖动' }}</span>
+              <span v-if="polyDrawId !== pg.id" class="opb" title="继续在地图上右键加顶点" @click="polyContinue(pg)">继续绘制</span>
+              <span class="opb" title="复制出一个相同的多边形（整体偏移一点便于分辨），并直接进入整体拖动模式摆放" @click="polyCopy(pg)">复制多边形</span>
+              <span class="opb" title="按下方「扩/缩幅度」外扩一圈，生成新多边形（原多边形保留）" @click="polyOffset(pg, 1)">扩大多边形</span>
+              <span class="opb" title="按下方「扩/缩幅度」内收一圈，生成新多边形（原多边形保留）" @click="polyOffset(pg, -1)">缩小多边形</span>
+              <span class="opb" :class="{ on: polyVertsOpen === pg.id }" title="按坐标查看 / 编辑顶点" @click="polyVertsOpen = polyVertsOpen === pg.id ? '' : pg.id">顶点表格</span>
+            </div>
+            <div class="plgr sub">
+              <span class="plgl">线粗</span>
+              <input class="rng plgw" type="range" min="0.6" max="5" step="0.2" :value="pg.width" @input="e => { pg.width = Number(e.target.value); polyRefresh() }" />
+              <span class="u">{{ pg.width }}</span>
+              <span class="plgi">{{ pg.pts.length }} 个顶点</span>
+            </div>
+            <textarea v-if="polyVertsOpen === pg.id" class="plgta" :value="polyVertsText(pg)" spellcheck="false" placeholder="每行一个顶点：经度, 纬度" @change="polyVertsEdit(pg, $event)"></textarea>
+          </div>
+        </div>
+
+        <div class="sec">
+          <div class="sect"><span>显示与操作</span></div>
+          <div class="srow"><label>顶点大小</label><input class="rng" type="range" min="1" max="8" step="0.5" :value="polyDotSize" @input="e => { polyDotSize = Number(e.target.value); polyRefresh() }" /><span class="u">{{ polyDotSize }}</span></div>
+          <div class="srow"><label>扩/缩幅度</label><input class="ci" v-model="polyOffAmt" placeholder="如 0.5" @change="persistPolys" /><span class="u">°</span></div>
+          <div class="tip">顶点圆点在绘制 / 调整顶点 / 整体拖动时显示；「扩大多边形 / 缩小多边形」按上方幅度（度）整体偏移一圈生成新多边形（原多边形保留）。</div>
+        </div>
+
+        <div class="csfoot">
+          <span class="expb2" title="显示中的多边形导出为 GXT（每个多边形一条闭合等值线，值=数值栏）" @click="exportPolys('gxt')">导出 GXT</span>
+          <span class="expb2" title="显示中的多边形导出为 KML（保留名称 / 数值 / 颜色）" @click="exportPolys('kml')">导出 KML</span>
+        </div>
+      </div>
+
       <div v-if="grdOpen" class="cov-side grd-side">
         <div class="csh"><span class="csn">覆盖分析</span>
           <span class="flatbtn" :class="{ on: flatView }" @click="toggleFlat">{{ flatView ? '球体' : '平面图' }}</span>
@@ -2149,6 +2505,32 @@ onBeforeUnmount(() => {
             <span v-for="c in OCEAN_BLUES" :key="c" class="sw" :class="{ on: oceanColor === c }" :style="{ background: c }" :title="c" @click="setOceanColor(c)"></span>
           </div>
           <div class="tip">海洋底色限蓝色系，同时作用于 3D 球体与平面图。</div>
+        </div>
+        <div class="sec">
+          <div class="sect"><span>大地颜色</span></div>
+          <div class="swatches">
+            <span class="sw swmix" :class="{ on: landScheme === 'morandi' }" title="莫兰迪杂色（默认）" @click="setLandScheme('morandi')"></span>
+            <span v-for="c in LAND_UNIFORMS" :key="c" class="sw" :class="{ on: landScheme === c }" :style="{ background: c }" :title="c" @click="setLandScheme(c)"></span>
+          </div>
+          <div class="srow"><label>自定义底色</label><input class="clr" type="color" :value="landScheme === 'morandi' ? '#e4eccf' : landScheme" @change="setLandScheme($event.target.value)" /><span class="u">{{ landScheme === 'morandi' ? '杂色' : landScheme }}</span></div>
+          <div class="tip">首格为莫兰迪杂色（默认，中国砖红、冰盖冰白）；其余为统一单色（首个取 SATSOFT 米绿，全部陆地含中国/冰盖一律随基调）。同时作用于 3D 与平面图。</div>
+          <div class="bsub"><span>逐国设色（优先于基调；也可右键地图选国）</span></div>
+          <div class="srow"><label>国家</label><input class="ci" v-model="landQuery" placeholder="输入中文名搜索" /></div>
+          <div class="mlist" v-if="landHits.length">
+            <div v-for="c in landHits" :key="c.id" class="mrow rowlk" @click="pickLandCountry(c)"><span class="mc">{{ c.zh }}</span></div>
+          </div>
+          <template v-if="landPick">
+            <div class="srow"><label>{{ landPick.zh }}</label><input class="clr" type="color" :value="landPickColor" @input="setLandCountryColor(landPick.id, $event.target.value)" /><span class="u">{{ landPickColor }}</span></div>
+            <div class="swatches">
+              <span v-for="c in LAND_MORANDI" :key="c" class="sw" :class="{ on: landOverrides[landPick.id] === c }" :style="{ background: c }" :title="c" @click="setLandCountryColor(landPick.id, c)"></span>
+            </div>
+          </template>
+          <template v-if="landOvList.length">
+            <div class="mlist">
+              <div v-for="o in landOvList" :key="o.id" class="mrow"><span class="swd" :style="{ background: o.color }"></span><span class="mc rowlk" @click="pickLandCountry(o)">{{ o.zh }}</span><span class="del" @click="removeLandCountryColor(o.id)">✕</span></div>
+            </div>
+            <div class="bsub"><span class="lnk" @click="clearLandOverrides">全部恢复默认</span></div>
+          </template>
         </div>
         <div class="sec">
           <div class="sect"><span>国家（国界）</span></div>
@@ -2341,6 +2723,26 @@ onBeforeUnmount(() => {
       <span class="lnk" @click="endTraj">结束</span>
     </div>
 
+    <!-- Polygon 绘制横幅：绘制中提示右键加顶点，「完成」闭合成多边形 -->
+    <div v-if="polyDrawId" class="traj-banner">
+      正在绘制 Polygon「{{ curPoly() ? curPoly().name : '' }}」 · 右键地图连续加顶点（至少 3 点）
+      <span class="lnk" @click="polyUndo">撤销上点</span>
+      <span class="lnk" @click="polyDone">完成</span>
+      <span class="lnk" @click="polyCancel">取消</span>
+    </div>
+
+    <!-- Polygon 调整顶点横幅：拖动地图上的顶点圆点调整位置 -->
+    <div v-if="polyEditId" class="traj-banner">
+      正在调整「{{ curEditPoly() ? curEditPoly().name : '' }}」顶点 · 在平面图上拖动圆点改位置
+      <span class="lnk" @click="polyEditStop">完成</span>
+    </div>
+
+    <!-- Polygon 整体拖动横幅：按住多边形内部平移整个多边形 -->
+    <div v-if="polyMoveId" class="traj-banner">
+      正在整体拖动「{{ curMovePoly() ? curMovePoly().name : '' }}」 · 在平面图上按住多边形内部拖动
+      <span class="lnk" @click="polyMoveStop">完成</span>
+    </div>
+
     <!-- 地图右键上下文菜单（3D / 平面图共用）；点击空白处或再次右键关闭 -->
     <template v-if="ctxMenu">
       <div class="ctx-mask" @click="closeCtx" @contextmenu.prevent="closeCtx"></div>
@@ -2349,10 +2751,12 @@ onBeforeUnmount(() => {
         <div class="ctx-item" :class="{ dis: !ctxMenu.ll }" @click="ctxAddStation">添加地面站（当前经纬度）</div>
         <div class="ctx-item" :class="{ dis: !ctxMenu.ll }" @click="ctxStartTraj('sea')">添加航行轨迹</div>
         <div class="ctx-item" :class="{ dis: !ctxMenu.ll }" @click="ctxStartTraj('flight')">添加飞行轨迹</div>
+        <div class="ctx-item" :class="{ dis: !ctxMenu.ll }" @click="ctxSetLandColor">设置此国大地颜色</div>
         <div class="ctx-sep"></div>
         <div class="ctx-item" @click="clearPoints">清除点标记</div>
         <div class="ctx-item" @click="clearStations">清除地面站</div>
         <div class="ctx-item" @click="clearTrajs">清除航迹</div>
+        <div class="ctx-item" @click="ctxClearPolys">清除 Polygon</div>
         <div class="ctx-item" @click="clearAllMk">清除所有标记</div>
         <div v-if="grdApiOk || covApiOk" class="ctx-item" @click="clearAllCoverage">清除所有覆盖图</div>
         <div class="ctx-sep"></div>
@@ -2888,6 +3292,9 @@ onBeforeUnmount(() => {
 .sw { width: 24px; height: 24px; border-radius: 3px; border: 1px solid var(--border); cursor: pointer; box-sizing: border-box; }
 .sw:hover { border-color: var(--accent); }
 .sw.on { border: 2px solid var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.sw.swmix { background: conic-gradient(#8fa89b 0 25%, #9fb0c0 0 50%, #c0a99f 0 75%, #b0a98f 0); }
+.swd { flex: none; width: 14px; height: 14px; border-radius: 3px; border: 1px solid var(--border); }
+.rowlk { cursor: pointer; }
 .srow .u { min-width: 18px; text-align: right; }
 .bsub { display: flex; align-items: center; gap: 8px; margin: 7px 0 4px; color: var(--text-muted); font-size: 11.5px; }
 .bsub .lnk { color: var(--accent); cursor: pointer; font-size: 11.5px; }
@@ -2906,6 +3313,30 @@ onBeforeUnmount(() => {
 .legend .lsw { width: 22px; height: 10px; flex: none; border: 1px solid var(--border); }
 .legend .lbar2 { width: 56px; height: 10px; flex: none; border: 1px solid var(--border); background: linear-gradient(to right, hsl(240,90%,55%), hsl(120,90%,55%), hsl(0,90%,55%)); }
 .legend .lsc2 { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-muted); flex: none; }
+/* Polygon（协调区多边形）卡片 */
+.plg { border: 1px solid var(--border); padding: 7px 8px; margin-top: 8px; }
+.plg.act { border-color: var(--accent); box-shadow: inset 2px 0 0 var(--accent); }
+.plgr { display: flex; align-items: center; gap: 6px; }
+.plgr + .plgr, .plgr + .plgops, .plgops + .plgr { margin-top: 6px; }
+.plgr.sub { color: var(--text-muted); font-size: 11.5px; }
+.plgr.sub .u { flex: none; color: var(--text-faint); font-size: 11px; min-width: 20px; }
+.plgl { flex: none; width: 26px; color: var(--text-muted); font-size: 11px; text-align: justify; text-align-last: justify; }
+.plgu { flex: none; color: var(--text-faint); font-size: 11px; }
+.plgn { flex: 1; min-width: 0; border: 1px solid var(--border); background: var(--bg); padding: 2px 6px; font-size: 11.5px; color: var(--text); outline: none; }
+.plgv { flex: 1; min-width: 0; border: 1px solid var(--border); background: var(--bg); padding: 2px 6px; font-size: 11.5px; color: var(--text); outline: none; font-family: var(--font-mono); }
+.plgn:focus, .plgv:focus { border-color: var(--accent); }
+.plgc { flex: none; width: 26px; }
+.plgi { flex: none; margin-left: auto; color: var(--text-faint); font-size: 11px; }
+.plgw { flex: 1; min-width: 0; }
+/* 操作按钮组（全称小按钮，自动换行） */
+.plgops { display: flex; flex-wrap: wrap; gap: 5px; }
+.opb { flex: none; border: 1px solid var(--border); color: var(--text-muted); padding: 2px 8px; cursor: pointer; font-size: 11px; border-radius: 2px; transition: color .12s, border-color .12s; }
+.opb:hover { border-color: var(--accent); color: var(--text); }
+.opb.on { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.plgta { display: block; width: 100%; box-sizing: border-box; margin-top: 6px; min-height: 84px; resize: vertical; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-family: var(--font-mono); font-size: 11px; padding: 4px 6px; outline: none; }
+.plgta:focus { border-color: var(--accent); }
+.expb2 { flex: 1; text-align: center; border: 1px solid var(--border); color: var(--text-muted); padding: 3px 0; cursor: pointer; font-size: 11.5px; }
+.expb2:hover { border-color: var(--accent); color: var(--text); }
 .csfoot { margin-top: auto; display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--border); }
 .cst { font-size: 11px; color: var(--text-faint); }
 .cclr { margin-left: auto; font-size: 11.5px; color: var(--text-muted); border: 1px solid var(--border); padding: 3px 10px; cursor: pointer; }
