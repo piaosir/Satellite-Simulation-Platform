@@ -1245,6 +1245,13 @@ function loadPolys() {
     const d = JSON.parse(localStorage.getItem(POLY_KEY) || 'null')
     const list = Array.isArray(d) ? d : (d && Array.isArray(d.polys) ? d.polys : null)   // 旧格式为裸数组，兼容
     if (list) polys.value = list.filter((p) => p && p.id && Array.isArray(p.pts))
+    // 旧数据补默认：填充（开、色随线色、18% 不透明）与中央标注字号（16px）
+    for (const p of polys.value) {
+      if (p.fillOn === undefined) p.fillOn = true
+      if (!p.fillColor) p.fillColor = p.color
+      if (!Number.isFinite(Number(p.fillOp))) p.fillOp = 0.18
+      if (!Number.isFinite(Number(p.labelSize))) p.labelSize = 16
+    }
     if (d && !Array.isArray(d)) {
       if (Number.isFinite(d.dotSize)) polyDotSize.value = d.dotSize
       if (Number.isFinite(Number(d.offAmt))) polyOffAmt.value = d.offAmt
@@ -1252,10 +1259,16 @@ function loadPolys() {
   } catch { /* ignore */ }
 }
 function polyRefresh() { redrawSats(); syncPolyEdit(); persistPolys() }
+// 改线色：填充色若未单独设置（仍与线色一致）则跟着走，设置过就各改各的
+function polySetColor(pg, v) {
+  if (!pg.fillColor || pg.fillColor === pg.color) pg.fillColor = v
+  pg.color = v; polyRefresh()
+}
 function polyStartDraw() {
   polyEditStop(); polyMoveStop()   // 与调整/拖动态互斥
   const n = polys.value.length + 1
-  const pg = { id: 'pg' + Date.now().toString(36) + n, name: 'Polygon ' + n, value: '', satName: '', satLon: '', color: POLY_COLORS[(n - 1) % POLY_COLORS.length], width: 2, show: true, pts: [] }
+  const c = POLY_COLORS[(n - 1) % POLY_COLORS.length]
+  const pg = { id: 'pg' + Date.now().toString(36) + n, name: 'Polygon ' + n, value: '', satName: '', satLon: '', color: c, fillOn: true, fillColor: c, fillOp: 0.18, width: 2, labelSize: 16, show: true, pts: [] }
   polys.value.push(pg); polyDrawId.value = pg.id
 }
 function polyContinue(pg) { polyEditStop(); polyMoveStop(); pg.show = true; polyDrawId.value = pg.id; polyRefresh() }
@@ -1327,11 +1340,15 @@ function onPolyMoveDrag(dlon, dlat, phase) {
 // ---- 复制多边形（仿 SATSOFT Copy）：副本整体偏移一点便于分辨，并直接进入整体拖动模式好摆放 ----
 function polyCopy(pg) {
   const n = polys.value.length + 1
+  const c = POLY_COLORS[(n - 1) % POLY_COLORS.length]
+  const trackFill = !pg.fillColor || pg.fillColor === pg.color   // 填充色随线色 → 副本也随新线色
   const cp = {
     id: 'pg' + Date.now().toString(36) + n,
     name: (pg.name || 'Polygon') + ' 副本',
     value: pg.value, satName: pg.satName || '', satLon: pg.satLon || '',
-    color: POLY_COLORS[(n - 1) % POLY_COLORS.length], width: pg.width || 2, show: true,
+    color: c, fillOn: pg.fillOn !== false, fillColor: trackFill ? c : pg.fillColor,
+    fillOp: Number.isFinite(Number(pg.fillOp)) ? pg.fillOp : 0.18,
+    width: pg.width || 2, labelSize: pg.labelSize || 16, show: true,
     pts: pg.pts.map((p) => [p[0] + 3, clamp(p[1] - 3, -89.9, 89.9)])
   }
   polys.value.push(cp)
@@ -1369,11 +1386,15 @@ function polyOffset(pg, sign) {
   const pts = offsetPolyPts(pg.pts, amt * sign)
   if (!pts) return
   const n = polys.value.length + 1
+  const c = POLY_COLORS[(n - 1) % POLY_COLORS.length]
+  const trackFill = !pg.fillColor || pg.fillColor === pg.color
   polys.value.push({
     id: 'pg' + Date.now().toString(36) + n,
     name: `${pg.name || 'Polygon'}${sign > 0 ? '+' : '-'}${amt}°`,
     value: pg.value, satName: pg.satName || '', satLon: pg.satLon || '',
-    color: POLY_COLORS[(n - 1) % POLY_COLORS.length], width: pg.width || 2, show: true, pts
+    color: c, fillOn: pg.fillOn !== false, fillColor: trackFill ? c : pg.fillColor,
+    fillOp: Number.isFinite(Number(pg.fillOp)) ? pg.fillOp : 0.18,
+    width: pg.width || 2, labelSize: pg.labelSize || 16, show: true, pts
   })
   polyRefresh()
 }
@@ -1595,7 +1616,7 @@ function pickSatSearch(r) { pickEntryIntoModal(r.en); satSearchKw.value = ''; sa
 // 重绘仰角线独立图层（3D + 平面图共用同一 spec）；遍历卫星树每个点亮的卫星
 function redrawSats() {
   if (!scene) return
-  const lines = [], labels = [], sats = [], dots = []
+  const lines = [], labels = [], sats = [], dots = [], fills = []
   for (const node of grdSats.value) {
     // 两项相互独立：卫星名（图标/名称）由 labelShow 控；等仰角线由 elevShow 控且需填仰角值。
     const showLabel = node.labelShow !== false
@@ -1637,13 +1658,20 @@ function redrawSats() {
     if (!drawing && !editing && (pg.show === false || pg.pts.length < 3)) continue
     const colNum = cssToHex(pg.color)
     const ring = drawing ? pg.pts : closeRing(pg.pts)
-    if (ring.length >= 2) lines.push({ p: densifyDeg(ring), color: colNum, width: pg.width || 2, opacity: 0.95, closed: false })
+    // under:true → 2D 平面图把边线画在国界/地名之下（与 GRD 等值线同层级）；3D 侧 renderOrder 6 < 国界 6.5 本就如此
+    if (ring.length >= 2) lines.push({ p: densifyDeg(ring), color: colNum, width: pg.width || 2, opacity: 0.95, closed: false, under: true })
+    // 区域填充：传未闭合原始顶点（3D earcut 三角化贴球、2D Path2D closePath），绘制中也实时预览；
+    // 不透明度 0 视同关闭，跳过网格构建
+    if (pg.fillOn !== false && pg.pts.length >= 3) {
+      const op = Number.isFinite(Number(pg.fillOp)) ? Number(pg.fillOp) : 0.18
+      if (op > 0) fills.push({ p: pg.pts, color: cssToHex(pg.fillColor || pg.color), opacity: op })
+    }
     if (drawing || editing) for (const q of pg.pts) dots.push({ lon: q[0], lat: q[1], color: colNum, px: polyDotSize.value, r: polyDotSize.value * 0.0018 })
     const txt = [pg.name, pg.value].filter((x) => x != null && String(x).trim() !== '').join('  ')
-    // top:true → 3D 里该标签关深度测试+半球剔除（不被地球模型裁切，转到背面才隐藏）
-    if (!drawing && txt && pg.pts.length >= 3) { const c = polyCentroid(pg.pts); labels.push({ lon: c[0], lat: c[1], text: txt, hpx: 16 / 533, color: pg.color, alt: 40, top: true }) }
+    // top:true → 3D 里该标签关深度测试+半球剔除（不被地球模型裁切，转到背面才隐藏）；字号随各多边形 labelSize
+    if (!drawing && txt && pg.pts.length >= 3) { const c = polyCentroid(pg.pts); labels.push({ lon: c[0], lat: c[1], text: txt, hpx: (Number(pg.labelSize) || 16) / 533, color: pg.color, alt: 40, top: true }) }
   }
-  const spec = (lines.length || sats.length || dots.length) ? { lines, dots, labels, sats } : null
+  const spec = (lines.length || sats.length || dots.length || fills.length) ? { lines, dots, labels, sats, fills } : null
   scene.setSatLayer(spec)
   if (flat) flat.setSatLayer(spec)
 }
@@ -2285,37 +2313,41 @@ onBeforeUnmount(() => {
           <div class="sect"><span>协调区多边形</span><span class="lnk" @click="polyStartDraw">＋ 绘制</span></div>
           <div v-if="!polys.length && !polyDrawId" class="tip">画一个多边形圈定协调区域，给区域标一个数值（如谱密度，数值含义与单位不做定义），可导出 GXT / KML。点「＋ 绘制」后在地图上右键连续加顶点（3D / 平面图均可）。</div>
           <div v-for="pg in polys" :key="pg.id" class="plg" :class="{ act: polyDrawId === pg.id || polyEditId === pg.id || polyMoveId === pg.id }">
-            <div class="plgr">
+            <div class="plgh">
               <input type="checkbox" :checked="pg.show !== false" title="在地图上显示 / 隐藏该多边形" @change="togglePoly(pg)" />
-              <input class="plgn" v-model="pg.name" placeholder="名称" @change="polyRefresh" />
-              <input class="clr plgc" type="color" v-model="pg.color" title="线条颜色" @input="polyRefresh" />
+              <input class="clr plgc" type="color" :value="pg.color" title="线条颜色（填充色未单独调过时跟随线色）" @input="polySetColor(pg, $event.target.value)" />
+              <input class="plgn plgnm" v-model="pg.name" placeholder="名称" @change="polyRefresh" />
+              <span class="plgi">{{ pg.pts.length }} 点</span>
               <span class="ic del" title="删除该多边形" @click="removePoly(pg)">✕</span>
             </div>
-            <div class="plgr">
-              <span class="plgl">数值</span>
-              <input class="plgv" v-model="pg.value" placeholder="如 -50" title="该区域标注的数值（如谱密度，单位不做定义）；导出 GXT 时作为该多边形等值线的值" @change="polyRefresh" />
-              <span class="plgl">轨位</span>
-              <input class="plgv" v-model="pg.satLon" placeholder="如 110.5" title="关联卫星轨道位置（东经为正，如 110.5 / -30）：导出 GXT 时写入 long_nom（GXT 必要信息）" @change="polyRefresh" />
-              <span class="plgu">°E</span>
+            <div class="plgg">
+              <label class="plgf"><span class="plgl">数值</span><input class="plgv" v-model="pg.value" placeholder="如 -50" title="该区域标注的数值（如谱密度，单位不做定义）；导出 GXT 时作为该多边形等值线的值" @change="polyRefresh" /></label>
+              <label class="plgf"><span class="plgl">轨位</span><input class="plgv" v-model="pg.satLon" placeholder="如 110.5" title="关联卫星轨道位置（东经为正，如 110.5 / -30）：导出 GXT 时写入 long_nom（GXT 必要信息）" @change="polyRefresh" /><span class="plgu">°E</span></label>
+              <label class="plgf w2"><span class="plgl">卫星</span><input class="plgn" v-model="pg.satName" placeholder="关联卫星名称" title="关联卫星名称：导出 GXT 时写入 sat_name（GXT 必要信息）" @change="polyRefresh" /></label>
             </div>
-            <div class="plgr">
-              <span class="plgl">卫星</span>
-              <input class="plgn" v-model="pg.satName" placeholder="关联卫星名称" title="关联卫星名称：导出 GXT 时写入 sat_name（GXT 必要信息）" @change="polyRefresh" />
+            <div class="plgr sub">
+              <span class="plgl">填充</span>
+              <input type="checkbox" :checked="pg.fillOn !== false" title="显示 / 隐藏区域填充" @change="pg.fillOn = !(pg.fillOn !== false); polyRefresh()" />
+              <input class="clr plgc" type="color" :value="pg.fillColor || pg.color" title="填充颜色（默认跟随线色，单独调过后各改各的）" @input="pg.fillColor = $event.target.value; polyRefresh()" />
+              <input class="rng" type="range" min="0" max="1" step="0.01" :value="pg.fillOp != null ? pg.fillOp : 0.18" title="填充不透明度（0%＝透明）。与 GRD 覆盖重叠处只显示覆盖颜色，Polygon 在该处仅保留边线" @input="e => { pg.fillOp = Number(e.target.value); polyRefresh() }" />
+              <span class="u pct">{{ Math.round((pg.fillOp != null ? pg.fillOp : 0.18) * 100) }}%</span>
+            </div>
+            <div class="plgr sub">
+              <span class="plgl">线粗</span>
+              <input class="rng" type="range" min="0.2" max="8" step="0.2" :value="pg.width" @input="e => { pg.width = Number(e.target.value); polyRefresh() }" />
+              <span class="u">{{ pg.width }}</span>
+              <span class="plgl">字号</span>
+              <input class="rng" type="range" min="2" max="40" step="1" :value="pg.labelSize || 16" title="中央「名称 数值」标注字号（3D / 平面图同步）" @input="e => { pg.labelSize = Number(e.target.value); polyRefresh() }" />
+              <span class="u">{{ pg.labelSize || 16 }}</span>
             </div>
             <div class="plgops">
               <span class="opb" :class="{ on: polyEditId === pg.id }" title="在平面图上直接拖动顶点调整位置" @click="polyEditToggle(pg)">{{ polyEditId === pg.id ? '完成调整' : '调整顶点' }}</span>
               <span class="opb" :class="{ on: polyMoveId === pg.id }" title="在平面图上按住多边形内部整体平移" @click="polyMoveToggle(pg)">{{ polyMoveId === pg.id ? '完成拖动' : '整体拖动' }}</span>
-              <span v-if="polyDrawId !== pg.id" class="opb" title="继续在地图上右键加顶点" @click="polyContinue(pg)">继续绘制</span>
-              <span class="opb" title="复制出一个相同的多边形（整体偏移一点便于分辨），并直接进入整体拖动模式摆放" @click="polyCopy(pg)">复制多边形</span>
-              <span class="opb" title="按下方「扩/缩幅度」外扩一圈，生成新多边形（原多边形保留）" @click="polyOffset(pg, 1)">扩大多边形</span>
-              <span class="opb" title="按下方「扩/缩幅度」内收一圈，生成新多边形（原多边形保留）" @click="polyOffset(pg, -1)">缩小多边形</span>
+              <span class="opb" :class="{ on: polyDrawId === pg.id }" title="继续在地图上右键加顶点" @click="polyDrawId === pg.id ? null : polyContinue(pg)">{{ polyDrawId === pg.id ? '绘制中…' : '继续绘制' }}</span>
               <span class="opb" :class="{ on: polyVertsOpen === pg.id }" title="按坐标查看 / 编辑顶点" @click="polyVertsOpen = polyVertsOpen === pg.id ? '' : pg.id">顶点表格</span>
-            </div>
-            <div class="plgr sub">
-              <span class="plgl">线粗</span>
-              <input class="rng plgw" type="range" min="0.6" max="5" step="0.2" :value="pg.width" @input="e => { pg.width = Number(e.target.value); polyRefresh() }" />
-              <span class="u">{{ pg.width }}</span>
-              <span class="plgi">{{ pg.pts.length }} 个顶点</span>
+              <span class="opb" title="复制出一个相同的多边形（整体偏移一点便于分辨），并直接进入整体拖动模式摆放" @click="polyCopy(pg)">复制</span>
+              <span class="opb" title="按下方「扩/缩幅度」外扩一圈，生成新多边形（原多边形保留）" @click="polyOffset(pg, 1)">扩大</span>
+              <span class="opb" title="按下方「扩/缩幅度」内收一圈，生成新多边形（原多边形保留）" @click="polyOffset(pg, -1)">缩小</span>
             </div>
             <textarea v-if="polyVertsOpen === pg.id" class="plgta" :value="polyVertsText(pg)" spellcheck="false" placeholder="每行一个顶点：经度, 纬度" @change="polyVertsEdit(pg, $event)"></textarea>
           </div>
@@ -2323,9 +2355,9 @@ onBeforeUnmount(() => {
 
         <div class="sec">
           <div class="sect"><span>显示与操作</span></div>
-          <div class="srow"><label>顶点大小</label><input class="rng" type="range" min="1" max="8" step="0.5" :value="polyDotSize" @input="e => { polyDotSize = Number(e.target.value); polyRefresh() }" /><span class="u">{{ polyDotSize }}</span></div>
+          <div class="srow"><label>顶点大小</label><input class="rng" type="range" min="1" max="12" step="0.5" :value="polyDotSize" @input="e => { polyDotSize = Number(e.target.value); polyRefresh() }" /><span class="u">{{ polyDotSize }}</span></div>
           <div class="srow"><label>扩/缩幅度</label><input class="ci" v-model="polyOffAmt" placeholder="如 0.5" @change="persistPolys" /><span class="u">°</span></div>
-          <div class="tip">顶点圆点在绘制 / 调整顶点 / 整体拖动时显示；「扩大多边形 / 缩小多边形」按上方幅度（度）整体偏移一圈生成新多边形（原多边形保留）。</div>
+          <div class="tip">顶点圆点在绘制 / 调整顶点 / 整体拖动时显示；「扩大 / 缩小」按上方幅度（度）整体偏移一圈生成新多边形（原多边形保留）。</div>
         </div>
 
         <div class="csfoot">
@@ -2992,6 +3024,9 @@ onBeforeUnmount(() => {
 .body { flex: 1; min-height: 0; display: flex; }
 .stage-wrap { flex: 1; min-width: 0; position: relative; }
 .stage { width: 100%; height: 100%; background: #070b12; }
+/* 3D canvas 尺寸完全交给 CSS（renderer.setSize 已传 updateStyle=false 不写内联 px），
+   渲染分辨率与布局解耦，避免内联像素值参与布局形成 resize 振荡 */
+.stage :deep(canvas) { width: 100%; height: 100%; display: block; }
 .flat { position: absolute; inset: 0; width: 100%; height: 100%; background: #0b1a2b; }
 /* 聚焦卫星图例（左下，3D/2D 共用）：色条对应地图上实际绘制的覆盖范围线与星下点轨迹线 */
 .focus-legend {
@@ -3313,26 +3348,33 @@ onBeforeUnmount(() => {
 .legend .lsw { width: 22px; height: 10px; flex: none; border: 1px solid var(--border); }
 .legend .lbar2 { width: 56px; height: 10px; flex: none; border: 1px solid var(--border); background: linear-gradient(to right, hsl(240,90%,55%), hsl(120,90%,55%), hsl(0,90%,55%)); }
 .legend .lsc2 { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-muted); flex: none; }
-/* Polygon（协调区多边形）卡片 */
-.plg { border: 1px solid var(--border); padding: 7px 8px; margin-top: 8px; }
+/* Polygon（协调区多边形）卡片：题头条（勾选/线色/名称/顶点数/删除）+ 两列信息栅格 + 样式滑杆 + 4列等宽操作网格 */
+.plg { border: 1px solid var(--border); border-radius: 4px; margin-top: 8px; padding: 0 9px 9px; background: color-mix(in srgb, var(--surface) 55%, transparent); }
 .plg.act { border-color: var(--accent); box-shadow: inset 2px 0 0 var(--accent); }
+.plgh { display: flex; align-items: center; gap: 6px; margin: 0 -9px 8px; padding: 6px 9px; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--bg) 60%, transparent); border-radius: 3px 3px 0 0; }
+.plgh .plgnm { border-color: transparent; background: transparent; font-weight: 600; font-size: 12px; }
+.plgh .plgnm:hover { border-color: var(--border); }
+.plgh .plgnm:focus { border-color: var(--accent); background: var(--bg); }
+.plgi { flex: none; color: var(--text-faint); font-size: 10.5px; font-family: var(--font-mono); border: 1px solid var(--border); border-radius: 8px; padding: 0 7px; line-height: 15px; white-space: nowrap; }
+.plgg { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; }
+.plgf { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.plgf.w2 { grid-column: 1 / -1; }
 .plgr { display: flex; align-items: center; gap: 6px; }
-.plgr + .plgr, .plgr + .plgops, .plgops + .plgr { margin-top: 6px; }
+.plgg + .plgr, .plgr + .plgr, .plgr + .plgops, .plgops + .plgr, .plgg + .plgops { margin-top: 7px; }
 .plgr.sub { color: var(--text-muted); font-size: 11.5px; }
-.plgr.sub .u { flex: none; color: var(--text-faint); font-size: 11px; min-width: 20px; }
+.plgr.sub .u { flex: none; color: var(--text-faint); font-size: 11px; min-width: 20px; text-align: right; font-family: var(--font-mono); }
+.plgr.sub .u.pct { min-width: 30px; }
 .plgl { flex: none; width: 26px; color: var(--text-muted); font-size: 11px; text-align: justify; text-align-last: justify; }
 .plgu { flex: none; color: var(--text-faint); font-size: 11px; }
-.plgn { flex: 1; min-width: 0; border: 1px solid var(--border); background: var(--bg); padding: 2px 6px; font-size: 11.5px; color: var(--text); outline: none; }
-.plgv { flex: 1; min-width: 0; border: 1px solid var(--border); background: var(--bg); padding: 2px 6px; font-size: 11.5px; color: var(--text); outline: none; font-family: var(--font-mono); }
+.plgn { flex: 1; min-width: 0; border: 1px solid var(--border); background: var(--bg); padding: 2px 6px; font-size: 11.5px; color: var(--text); outline: none; border-radius: 2px; }
+.plgv { flex: 1; min-width: 0; border: 1px solid var(--border); background: var(--bg); padding: 2px 6px; font-size: 11.5px; color: var(--text); outline: none; font-family: var(--font-mono); border-radius: 2px; }
 .plgn:focus, .plgv:focus { border-color: var(--accent); }
 .plgc { flex: none; width: 26px; }
-.plgi { flex: none; margin-left: auto; color: var(--text-faint); font-size: 11px; }
-.plgw { flex: 1; min-width: 0; }
-/* 操作按钮组（全称小按钮，自动换行） */
-.plgops { display: flex; flex-wrap: wrap; gap: 5px; }
-.opb { flex: none; border: 1px solid var(--border); color: var(--text-muted); padding: 2px 8px; cursor: pointer; font-size: 11px; border-radius: 2px; transition: color .12s, border-color .12s; }
+/* 操作按钮组：4 列等宽网格（上排编辑态、下排生成类），整齐对位 */
+.plgops { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; }
+.opb { text-align: center; border: 1px solid var(--border); color: var(--text-muted); padding: 3px 0; cursor: pointer; font-size: 11px; border-radius: 2px; white-space: nowrap; transition: color .12s, border-color .12s, background .12s; }
 .opb:hover { border-color: var(--accent); color: var(--text); }
-.opb.on { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.opb.on { border-color: color-mix(in srgb, var(--accent) 60%, transparent); color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); font-weight: 600; }
 .plgta { display: block; width: 100%; box-sizing: border-box; margin-top: 6px; min-height: 84px; resize: vertical; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-family: var(--font-mono); font-size: 11px; padding: 4px 6px; outline: none; }
 .plgta:focus { border-color: var(--accent); }
 .expb2 { flex: 1; text-align: center; border: 1px solid var(--border); color: var(--text-muted); padding: 3px 0; cursor: pointer; font-size: 11.5px; }

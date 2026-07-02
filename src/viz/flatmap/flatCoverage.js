@@ -493,7 +493,8 @@ export function createFlatCoverage(canvas) {
     }
     // 卫星 / 仰角线独立图层：等仰角线 + 卫星图标 + 名称（在覆盖/标记之上、聚焦图标之下）
     if (satLayer) {
-      for (const ln of (satLayer.lines || [])) if (ln.p && ln.p.length > 1) drawPolyline(ln.p, hex(ln.color != null ? ln.color : 0x66ddff), Math.max(0.8, ln.width || 1.4))
+      // under:true 的线（Polygon 边线）已随 drawSatFills 画在 below/above 之间，这里跳过
+      for (const ln of (satLayer.lines || [])) if (!ln.under && ln.p && ln.p.length > 1) drawPolyline(ln.p, hex(ln.color != null ? ln.color : 0x66ddff), Math.max(0.2, ln.width || 1.4))   // 下限 0.2：跟随 Polygon 线粗滑杆最小档
       // d.px：屏幕恒定像素半径（Polygon 顶点手柄，不随缩放变大）；否则沿用世界联动尺寸
       for (const d of (satLayer.dots || [])) dot(d.lon, d.lat, d.px != null ? Math.max(1, d.px) : Math.max(2, d.r != null ? d.r : 4) * mz, hex(d.color != null ? d.color : 0xffd27a), true)
       for (const l of (satLayer.labels || [])) drawText(l.text, l.lon, l.lat, Math.round((l.hpx || 0.026) * 750 * zf), l.color || '#fff')   // 世界尺寸字号：与 3D makeCovLabel 同源（套用地名标定 hpx0.02↔px15，zf=k()/13.1），2D/3D 一致
@@ -521,16 +522,69 @@ export function createFlatCoverage(canvas) {
     aboveCtx.setTransform(1, 0, 0, 1, 0, 0); aboveCtx.clearRect(0, 0, bw, bh); aboveCtx.drawImage(canvas, 0, 0)
   }
 
+  // Polygon 区域填充：画在 GRD 覆盖场之前（叠加规则 2D/3D 统一：叠加区只显示覆盖图颜色，
+  // Polygon 在该处只剩边线——边线由 drawSatPolyLines 画在覆盖之后）。100% 不透明也不遮国界/地名
+  // （above 层在其后）。填充用世界度坐标（x=WXN 就近解缠, y=90-lat），±360 环绕副本各填一份
+  // （跨东经 180° 无缝），调用方已裁剪到地图矩形。实时走 Path2D + 变换矩阵；导出 compat 模式
+  // （svgcanvas 忽略 Path2D）改屏幕坐标子路径回放，与陆地/覆盖填充同策略。
+  function drawSatFills() {
+    if (!satLayer) return
+    const kk = k()
+    ctx.save()
+    for (const f of (satLayer.fills || [])) {
+      if (!f.p || f.p.length < 3) continue
+      const W = []
+      let prev = WXN(f.p[0][0]), lo = prev, hi = prev
+      W.push([prev, 90 - f.p[0][1]])
+      for (let i = 1; i < f.p.length; i++) {
+        let wx = WXN(f.p[i][0])
+        while (wx - prev > 180) wx -= 360
+        while (wx - prev < -180) wx += 360
+        if (wx < lo) lo = wx
+        if (wx > hi) hi = wx
+        W.push([wx, 90 - f.p[i][1]]); prev = wx
+      }
+      let path = null
+      if (!compat) {
+        path = new Path2D()
+        path.moveTo(W[0][0], W[0][1])
+        for (let i = 1; i < W.length; i++) path.lineTo(W[i][0], W[i][1])
+        path.closePath()
+      }
+      ctx.fillStyle = hex(f.color); ctx.globalAlpha = f.opacity != null ? f.opacity : 0.18
+      for (const s of [-360, 0, 360]) {
+        if (hi + s < 0 || lo + s > 360) continue   // 该副本完全在地图外 → 跳过
+        if (compat) {
+          ctx.beginPath()
+          ctx.moveTo((W[0][0] + s) * kk + tx, W[0][1] * kk + ty)
+          for (let i = 1; i < W.length; i++) ctx.lineTo((W[i][0] + s) * kk + tx, W[i][1] * kk + ty)
+          ctx.closePath(); ctx.fill()
+        } else {
+          ctx.save(); ctx.translate(tx + s * kk, ty); ctx.scale(kk, kk); ctx.fill(path); ctx.restore()
+        }
+      }
+    }
+    ctx.restore()
+  }
+  // Polygon 边线（under:true 的线）：画在 GRD 覆盖之后（叠加区仍可见）、above 层之前（被国界/地名
+  // 压在下面）；其余卫星层线（仰角线等）仍在 above 层
+  function drawSatPolyLines() {
+    if (!satLayer) return
+    for (const ln of (satLayer.lines || [])) if (ln.under && ln.p && ln.p.length > 1) drawPolyline(ln.p, hex(ln.color != null ? ln.color : 0x66ddff), Math.max(0.2, ln.width || 1.4))
+  }
+
   function draw() {
     if (cw < 2 || ch < 2 || !belowCanvas) return
     if (!staticValid) { renderStaticLayers(); staticValid = true }
     const bw = belowCanvas.width, bh = belowCanvas.height
     const rx = PX(LON0), ry = PY(90), rw = 360 * k(), rh = 180 * k()
-    // 复合：blit below（不透明）→ 覆盖填充/线（夹在中间）→ blit above（透明）→ 覆盖标注 → 聚焦星
+    // 复合：blit below（不透明）→ Polygon 填充 + 覆盖填充/线（夹在中间）→ blit above（透明）→ 覆盖标注 → 聚焦星
     ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, bw, bh); ctx.drawImage(belowCanvas, 0, 0)
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     ctx.save(); ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip()
-    drawField()   // GRD 覆盖填充面 + 等值线（在底图之上、标注之下）
+    drawSatFills()       // Polygon 区域填充（覆盖场之下：叠加区只显示覆盖图颜色）
+    drawField()          // GRD 覆盖填充面 + 等值线（在底图/Polygon 填充之上、标注之下）
+    drawSatPolyLines()   // Polygon 边线（覆盖之上、国界/地名之下：叠加区仍见边线）
     ctx.restore()
     ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.drawImage(aboveCanvas, 0, 0)
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
@@ -787,7 +841,7 @@ export function createFlatCoverage(canvas) {
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
       if (o.background !== false) { ctx.fillStyle = BG; ctx.fillRect(0, 0, cw, ch) }
       drawBelowContent(rx, ry, rw, rh)
-      ctx.save(); ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip(); drawField(); ctx.restore()
+      ctx.save(); ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip(); drawSatFills(); drawField(); drawSatPolyLines(); ctx.restore()
       drawAboveContent(rx, ry, rw, rh)
       ctx.save(); ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip()
       drawFieldOverlays()

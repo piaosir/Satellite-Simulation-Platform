@@ -49,7 +49,7 @@ onMounted(load)
 </template>
 
 <style scoped>
-.hist { padding: 20px 24px; }
+.hist { padding: 20px 24px; height: 100%; overflow-y: auto; }   /* 外层 .content 已 overflow:hidden，滚动由页内承担 */
 .head { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; }
 .head h2 { font-size: 18px; }
 .head button { border: 1px solid var(--border); background: var(--bg); padding: 3px 10px; cursor: pointer; }

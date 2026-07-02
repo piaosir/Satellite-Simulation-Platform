@@ -205,6 +205,8 @@ watch(() => [s.boreLon, s.boreLat, s.yaw], () => { reproject(); recompute() })
 .grd { display: flex; height: 100%; min-height: 0; }
 .maparea { flex: 1; min-width: 0; position: relative; background: #070b12; }
 .globe, .flat { position: absolute; inset: 0; width: 100%; height: 100%; }
+/* 3D canvas 尺寸交给 CSS（setSize 传 updateStyle=false 不写内联 px），与渲染分辨率解耦 */
+.globe :deep(canvas) { width: 100%; height: 100%; display: block; }
 .panel { width: 290px; flex: none; overflow-y: auto; background: var(--surface); border-left: 1px solid var(--border); padding: 6px 0; }
 .sec { padding: 8px 12px; border-bottom: 1px solid var(--border); }
 .title { font-family: var(--font-serif); font-size: 13px; color: var(--text); margin-bottom: 7px; }

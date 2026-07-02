@@ -47,7 +47,7 @@ onMounted(load)
 </template>
 
 <style scoped>
-.set { padding: 20px 24px; max-width: 560px; }
+.set { padding: 20px 24px; max-width: 560px; height: 100%; overflow-y: auto; }   /* 外层 .content 已 overflow:hidden，滚动由页内承担 */
 .set h2 { font-size: 18px; margin-bottom: 16px; }
 .row { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
 .row label { width: 110px; color: var(--text-muted); font-size: 12.5px; }

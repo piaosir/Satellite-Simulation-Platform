@@ -14,7 +14,7 @@ defineProps({ title: { type: String, default: '' } })
 </template>
 
 <style scoped>
-.ph { padding: 40px 32px; color: var(--text-muted); }
+.ph { padding: 40px 32px; color: var(--text-muted); height: 100%; overflow-y: auto; }
 .ph h2 { font-size: 18px; color: var(--text); margin-bottom: 10px; }
 .ph p { margin: 6px 0; }
 .hint { max-width: 520px; line-height: 1.7; color: var(--text-faint); font-size: 12.5px; }

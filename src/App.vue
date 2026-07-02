@@ -189,7 +189,10 @@ const currentLabel = computed(
 }
 .mark { width: 14px; text-align: center; color: var(--text-faint); }
 .navitem.active .mark { color: var(--text); }
-.content { flex: 1; min-width: 0; overflow: auto; }
+/* overflow 必须为 hidden：地图页 height:100% 从不滚动，若为 auto，窗口化时亚像素溢出
+   会触发滚动条出现→内容区变窄→canvas 重设尺寸→溢出消失→滚动条消失…形成持续抖动回路。
+   需要滚动的页面（配置管理/历史记录等）由其内部容器自行 overflow-y: auto。 */
+.content { flex: 1; min-width: 0; overflow: hidden; }
 .statusbar {
   display: flex; align-items: center; gap: 18px; height: 26px;
   padding: 0 14px; background: var(--surface);

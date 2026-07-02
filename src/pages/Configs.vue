@@ -50,7 +50,7 @@ onMounted(load)
 </template>
 
 <style scoped>
-.cfg { padding: 20px 24px; }
+.cfg { padding: 20px 24px; height: 100%; overflow-y: auto; }   /* 外层 .content 已 overflow:hidden，滚动由页内承担 */
 .cfg h2 { font-size: 18px; }
 .hint { color: var(--text-faint); font-size: 12.5px; margin: 6px 0 16px; }
 .add { display: flex; gap: 10px; margin-bottom: 16px; }

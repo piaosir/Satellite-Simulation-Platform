@@ -335,7 +335,9 @@ export function createGlobeScene(container, quality = {}) {
   // 用标准深度缓冲（保证 MSAA 抗锯齿生效，线条不闪）。各贴地线层用 depthWrite=false + renderOrder
   // 分层，避免互相 z-fighting，故不再需要对数深度缓冲（它会让 gl_FragDepth 失效从而破坏 MSAA）。
   const renderer = new THREE.WebGLRenderer({ antialias: quality.msaa !== false, powerPreference: 'high-performance' })
-  renderer.setSize(w, h)
+  // updateStyle=false：不往 canvas 写内联 px 尺寸，CSS 100% 由容器控制。若写内联 px，
+  // 亚像素舍入会反过来撑大布局，与外层滚动条形成「量尺寸→写尺寸」振荡回路（窗口化抖动）。
+  renderer.setSize(w, h, false)
   // 清晰度：渲染分辨率倍率，封顶为「物理像素密度 × SS_CAP」（capPixelRatio）。运行时可经 setPixelRatio 热切。
   renderer.setPixelRatio(capPixelRatio(pixelRatio))
   container.appendChild(renderer.domElement)
@@ -477,7 +479,7 @@ export function createGlobeScene(container, quality = {}) {
     if (!Number.isFinite(n)) return
     pixelRatio = Math.max(0.25, Math.min(n, 4))   // 保留「用户请求值」备查
     renderer.setPixelRatio(capPixelRatio(pixelRatio))   // 实际渲染倍率按物理像素封顶
-    renderer.setSize(curW, curH)                 // 重设尺寸使新 DPR 生效
+    renderer.setSize(curW, curH, false)          // 重设尺寸使新 DPR 生效；false：不写内联样式，见构造处注释
     for (const m of lineMats) m.resolution.set(curW, curH)
   }
   // 渲染帧率上限（0=每帧不限；30/60=节流省电）。在 loop 中据此跳帧。
@@ -912,7 +914,8 @@ export function createGlobeScene(container, quality = {}) {
 
   // ===================== 卫星 / 仰角线（独立图层：等仰角线 + 星下点 + 星点，与 GXT/GRD 覆盖互不干扰） =====================
   // spec: { lines:[{p:[[lon,lat]...], color, width?, opacity?, closed?}], dots:[{lon,lat,color?,r?}],
-  //         labels:[{lon,lat,text,hpx?,color?,alt?}], sats:[{lon,lat,altKm,name,color?}] }
+  //         labels:[{lon,lat,text,hpx?,color?,alt?}], sats:[{lon,lat,altKm,name,color?}],
+  //         fills:[{p:[[lon,lat]...]（未闭合外环）, color, opacity}]（Polygon 区域填充） }
   let satLayerGroup = null
   function clearSatLayer() {
     if (!satLayerGroup) return
@@ -923,6 +926,45 @@ export function createGlobeScene(container, quality = {}) {
     clearSatLayer()
     if (!spec) return
     const g = new THREE.Group()
+    // Polygon 区域填充：lon/lat 平面 earcut 三角化，再按最长边二分递归细分贴球——大三角形的平面弦
+    // 会切入地球内部被深度测试吃掉（与折线 densify 同一问题）。细分中点取 lon/lat 线性中点，与边界线
+    // densifyDeg 的线性插值几何一致。
+    for (const f of (spec.fills || [])) {
+      if (!f.p || f.p.length < 3) continue
+      const ring = unwrapRing(f.p)
+      const flat = []
+      for (const q of ring) flat.push(q[0], q[1])
+      const idx = earcut(flat, [])
+      if (!idx.length) continue
+      const pos = []
+      // 半径 1.00075 + 最长边 ≤2°：2° 弦的最大下垂 ≈R·θ²/8≈1.5e-4，最低点 1.0006 仍高于陆地面(1.0004)不被吃；
+      // 又低于本层线(1.0008)。
+      const push = (q) => { const v = llaToVec(q[1], q[0], 0).multiplyScalar(1.00075); pos.push(v.x, v.y, v.z) }
+      const e2 = (u, w) => { const dx = u[0] - w[0], dy = u[1] - w[1]; return dx * dx + dy * dy }
+      const mid = (u, w) => [(u[0] + w[0]) / 2, (u[1] + w[1]) / 2]
+      const sub = (a, b, c, depth) => {
+        const ab = e2(a, b), bc = e2(b, c), ca = e2(c, a), mx = Math.max(ab, bc, ca)
+        if (depth >= 14 || mx <= 4) { push(a); push(b); push(c); return }   // 最长边 ≤2°
+        if (mx === ab) { const m = mid(a, b); sub(a, m, c, depth + 1); sub(m, b, c, depth + 1) }
+        else if (mx === bc) { const m = mid(b, c); sub(b, m, a, depth + 1); sub(m, c, a, depth + 1) }
+        else { const m = mid(c, a); sub(c, m, b, depth + 1); sub(m, a, b, depth + 1) }
+      }
+      for (let t = 0; t < idx.length; t += 3) {
+        const i0 = idx[t] * 2, i1 = idx[t + 1] * 2, i2 = idx[t + 2] * 2
+        sub([flat[i0], flat[i0 + 1]], [flat[i1], flat[i1 + 1]], [flat[i2], flat[i2 + 1]], 0)
+      }
+      const geo = new THREE.BufferGeometry()
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3))
+      // 与 GRD 覆盖的叠加规则（2D/3D 统一）：填充画在覆盖场之前（renderOrder 4 < 覆盖 5）——
+      // 叠加区只显示覆盖图颜色，Polygon 在该处只剩边线（边线 renderOrder 6 始终在覆盖之上）。
+      // 半径 1.00075 仅为高于陆地面不被地形吃掉；混合先后由 renderOrder 决定，与半径无关（均不写深度）。
+      const op = Math.max(0, Math.min(1, f.opacity != null ? f.opacity : 0.18))
+      const mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+        color: f.color != null ? f.color : 0x66ddff, transparent: true, opacity: op, side: THREE.DoubleSide, depthWrite: false
+      }))
+      mesh.renderOrder = 4
+      g.add(mesh)
+    }
     for (const ln of (spec.lines || [])) {
       if (!ln.p || ln.p.length < 2) continue
       const pts = ln.p.map(([lon, lat]) => llaToVec(lat, lon, 0).multiplyScalar(1.0008))
@@ -1256,7 +1298,7 @@ export function createGlobeScene(container, quality = {}) {
     const ww = container.clientWidth, hh = container.clientHeight
     if (!ww || !hh) return
     curW = ww; curH = hh
-    camera.aspect = ww / hh; camera.updateProjectionMatrix(); renderer.setSize(ww, hh)
+    camera.aspect = ww / hh; camera.updateProjectionMatrix(); renderer.setSize(ww, hh, false)   // false：不写内联样式，见构造处注释
     for (const m of lineMats) m.resolution.set(ww, hh)   // 粗线宽度依赖分辨率
     renderer.render(scene, camera)   // 立即补画一帧，避免 setSize 清空缓冲后等到下帧才重绘 → 黑一下
   }
