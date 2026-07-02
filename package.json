@@ -12,7 +12,7 @@
     "smoke": "node packages/core/smoke-test.js",
     "test": "node packages/core/test/accuracy.test.js",
     "verify:services": "node scripts/verify-services.js",
-    "dist": "electron-vite build && electron-builder --win && node scripts/publish-cos.mjs",
+    "dist": "node -e \"require('fs').rmSync('release',{recursive:true,force:true})\" && electron-vite build && electron-builder --win && node scripts/publish-cos.mjs",
     "publish:cos": "node scripts/publish-cos.mjs"
   },
   "dependencies": {
