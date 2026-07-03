@@ -1,5 +1,6 @@
 <script setup>
 import { reactive, ref, onMounted } from 'vue'
+import { theme, setTheme } from '../stores/theme'
 
 const hasApi = typeof window !== 'undefined' && !!window.api
 const form = reactive({ amapKey: '', units: 'metric', noiseRatioMode: 'ebno' })
@@ -22,6 +23,14 @@ onMounted(load)
 <template>
   <div class="set">
     <h2>设置</h2>
+    <div class="row">
+      <label>外观</label>
+      <select :value="theme.mode" @change="setTheme($event.target.value)">
+        <option value="system">跟随系统</option>
+        <option value="light">浅色</option>
+        <option value="dark">深色</option>
+      </select>
+    </div>
     <div v-if="!hasApi" class="empty">需在 Electron 中运行。</div>
     <template v-else>
       <div class="row">

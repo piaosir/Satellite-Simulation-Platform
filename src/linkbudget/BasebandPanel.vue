@@ -1,5 +1,6 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
+import Icon from '../components/Icon.vue'
 
 // 基带参数面板 —— 严格照搬小程序基带卡片：DVB/MODCOD 快选、Eb/N₀⇄Es/N₀ 切换（带换算）、
 // 频谱效率⇄帧效率切换、实时载波带宽/符号率（可编辑反算信息速率）。
@@ -154,7 +155,7 @@ function onBwInput(e) { setAnchor('bw', e.target.value) }
       </label>
       <label class="bb-f"><span class="bb-l">
           {{ form.noiseRatioMode === 'ebno' ? 'Eb/N₀' : 'Es/N₀' }}门限 <i>(dB)</i>
-          <button class="bb-tg" title="Eb/N₀ ⇄ Es/N₀" @click.prevent="toggleEbno">⇄</button>
+          <button class="bb-tg" title="Eb/N₀ ⇄ Es/N₀" @click.prevent="toggleEbno"><Icon name="arrow-left-right" :size="11" /></button>
         </span>
         <input v-model="form.ebno" class="bb-i mono" placeholder="5.50" />
       </label>
@@ -173,7 +174,7 @@ function onBwInput(e) { setAnchor('bw', e.target.value) }
       </label>
       <label class="bb-f"><span class="bb-l">
           {{ form.rsCodeMode === 'spectral' ? '频谱效率' : '帧效率' }}<i v-if="form.rsCodeMode === 'spectral'"> (bps/Hz)</i>
-          <button class="bb-tg" title="频谱效率 ⇄ 帧效率" @click.prevent="toggleRsCode">⇄</button>
+          <button class="bb-tg" title="频谱效率 ⇄ 帧效率" @click.prevent="toggleRsCode"><Icon name="arrow-left-right" :size="11" /></button>
         </span>
         <input v-model="rsCodeDisplay" class="bb-i mono" :placeholder="form.rsCodeMode === 'spectral' ? '0.9216' : '188/204'" />
       </label>

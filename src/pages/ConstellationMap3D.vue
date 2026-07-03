@@ -11,6 +11,7 @@ import { alertMsg, appAlert, closeAlert } from '../stores/alert'
 import { displaySatName } from '../viz/satName.js'
 import { serializeGxt } from '../viz/gxt/serialize.js'
 import { serializeKml, serializePolysKml } from '../viz/kml/serialize.js'
+import Icon from '../components/Icon.vue'
 defineOptions({ inheritAttrs: false })   // 不把父级传入的 title 落到根节点（去掉鼠标悬停的“星座3D”原生提示）
 import { createGlobeScene } from '../viz/globe3d/scene.js'
 import { createFlatCoverage } from '../viz/flatmap/flatCoverage.js'
@@ -2086,7 +2087,7 @@ onBeforeUnmount(() => {
       </select>
       <div class="search">
         <input :value="keyword" placeholder="搜索卫星名 / 编号" @input="onSearch" />
-        <span v-if="keyword" class="clr" @click="clearSearch">✕</span>
+        <span v-if="keyword" class="clr" @click="clearSearch"><Icon name="x" :size="11" /></span>
         <div v-if="searchResults.length" class="panel">
           <div v-for="item in searchResults" :key="item.noradId" class="item" @click="pickResult(item)">
             <div class="nm">{{ item.name }}</div>
@@ -2123,7 +2124,7 @@ onBeforeUnmount(() => {
           <span class="bl">波束角</span>
           <input class="bi" :value="beam" :placeholder="beamAuto || '自动'" @input="onBeam" />
           <span class="bu">°</span>
-          <span class="lock" :class="{ on: beamLock }" @click="toggleBeamLock">{{ beamLock ? '🔒' : '🔓' }}</span>
+          <span class="lock" :class="{ on: beamLock }" @click="toggleBeamLock"><Icon :name="beamLock ? 'lock' : 'lock-open'" :size="12" /></span>
         </template>
         <span v-else class="hint">点击卫星设置波束角</span>
       </span>
@@ -2151,9 +2152,9 @@ onBeforeUnmount(() => {
 
         <div v-if="selected" class="card" :class="{ collapsed: cardCollapsed }">
           <div class="ch" :title="cardCollapsed ? '展开' : '收起'" @click="cardCollapsed = !cardCollapsed">
-            <span class="cc" :class="{ col: cardCollapsed }">▾</span>
+            <span class="cc" :class="{ col: cardCollapsed }"><Icon name="chevron-down" :size="11" /></span>
             <span class="cn" :title="selected.name">{{ selected.name }}</span>
-            <span class="cx" @click.stop="closeCard">✕</span>
+            <span class="cx" @click.stop="closeCard"><Icon name="x" :size="12" /></span>
           </div>
           <div v-show="!cardCollapsed" class="cbody">
           <div class="cmeta">
@@ -2211,8 +2212,8 @@ onBeforeUnmount(() => {
               <span class="sg" :class="{ on: it.type === 'EIRP' }" @click="setItemType(it, 'EIRP')">EIRP</span>
               <span class="sg" :class="{ on: it.type === 'GT' }" @click="setItemType(it, 'GT')">G/T</span>
             </span>
-            <span class="ic" title="定位" @click="focusCovSat(it)">◎</span>
-            <span class="ic del" title="移除该星" @click="removeCovSat(it)">✕</span>
+            <span class="ic" title="定位" @click="focusCovSat(it)"><Icon name="crosshair" :size="12" /></span>
+            <span class="ic del" title="移除该星" @click="removeCovSat(it)"><Icon name="x" :size="11" /></span>
           </div>
           <div class="srow"><label>频段</label>
             <select :value="it.band" @change="e => onItemBand(it, e)">
@@ -2225,7 +2226,7 @@ onBeforeUnmount(() => {
           <div v-for="(ba, bi) in it.batches" :key="ba.id" class="batch">
             <div class="bah">
               <input class="bnm" :value="ba.name" :placeholder="'批次' + (bi + 1)" @input="e => setBatchName(it, ba, e)" />
-              <span class="ic del" title="删除批次" @click="removeBatch(it, ba)">✕</span>
+              <span class="ic del" title="删除批次" @click="removeBatch(it, ba)"><Icon name="x" :size="11" /></span>
             </div>
 
             <div class="bsub">波束
@@ -2276,7 +2277,7 @@ onBeforeUnmount(() => {
               <div class="srow"><label>线粗</label><input class="rng" type="range" min="0.6" max="5" step="0.2" :value="ba.width" @input="e => onBatchWidth(it, ba, e)" /><span class="u">{{ ba.width }}</span></div>
             </template>
           </div>
-          <div class="addbatch" @click="addBatch(it)">＋ 新建批次</div>
+          <div class="addbatch" @click="addBatch(it)"><Icon name="plus" :size="11" /> 新建批次</div>
         </div>
 
         <div class="sec">
@@ -2310,7 +2311,7 @@ onBeforeUnmount(() => {
           <button class="winx" type="button" aria-label="关闭" title="关闭" @click="togglePolyPanel"><svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true"><path d="M1 1 L11 11 M11 1 L1 11" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/></svg></button></div>
 
         <div class="sec">
-          <div class="sect"><span>协调区多边形</span><span class="lnk" @click="polyStartDraw">＋ 绘制</span></div>
+          <div class="sect"><span>协调区多边形</span><span class="lnk" @click="polyStartDraw"><Icon name="plus" :size="11" /> 绘制</span></div>
           <div v-if="!polys.length && !polyDrawId" class="tip">画一个多边形圈定协调区域，给区域标一个数值（如谱密度，数值含义与单位不做定义），可导出 GXT / KML。点「＋ 绘制」后在地图上右键连续加顶点（3D / 平面图均可）。</div>
           <div v-for="pg in polys" :key="pg.id" class="plg" :class="{ act: polyDrawId === pg.id || polyEditId === pg.id || polyMoveId === pg.id }">
             <div class="plgh">
@@ -2318,7 +2319,7 @@ onBeforeUnmount(() => {
               <input class="clr plgc" type="color" :value="pg.color" title="线条颜色（填充色未单独调过时跟随线色）" @input="polySetColor(pg, $event.target.value)" />
               <input class="plgn plgnm" v-model="pg.name" placeholder="名称" @change="polyRefresh" />
               <span class="plgi">{{ pg.pts.length }} 点</span>
-              <span class="ic del" title="删除该多边形" @click="removePoly(pg)">✕</span>
+              <span class="ic del" title="删除该多边形" @click="removePoly(pg)"><Icon name="x" :size="11" /></span>
             </div>
             <div class="plgg">
               <label class="plgf"><span class="plgl">数值</span><input class="plgv" v-model="pg.value" placeholder="如 -50" title="该区域标注的数值（如谱密度，单位不做定义）；导出 GXT 时作为该多边形等值线的值" @change="polyRefresh" /></label>
@@ -2372,27 +2373,34 @@ onBeforeUnmount(() => {
           <button class="winx" type="button" aria-label="关闭" title="关闭" @click="toggleGrd"><svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true"><path d="M1 1 L11 11 M11 1 L1 11" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/></svg></button></div>
 
         <div class="sec">
-          <div class="sect"><span>卫星 / 天线</span><span class="lnk" title="添加自定义卫星，或从星座点选/搜索关联卫星" @click="openAddSat">＋ 卫星</span></div>
+          <div class="sect"><span>卫星 / 天线</span><span class="lnk" title="添加自定义卫星，或从星座点选/搜索关联卫星" @click="openAddSat"><Icon name="plus" :size="11" /> 卫星</span></div>
           <div class="gtree">
             <template v-for="sat in grdSats" :key="sat.folder">
               <div class="gsat" :class="{ exp: grd.isExpanded(sat.folder) }">
-                <i class="tri" :class="{ open: grd.isExpanded(sat.folder) }" @click="grd.toggleExpand(sat.folder)">▸</i>
+                <i class="tri" :class="{ open: grd.isExpanded(sat.folder) }" @click="grd.toggleExpand(sat.folder)"><Icon name="chevron-right" :size="10" /></i>
                 <input type="checkbox" class="gck" :checked="grd.satState(sat) === 'all'" :indeterminate="grd.satState(sat) === 'some'" :disabled="!sat.antennas.length" :title="sat.antennas.length ? '全选 / 全不选该星天线' : '该星暂无天线'" @change="grd.toggleSatAll(sat)" />
-                <svg class="gsvg sat-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                  <path d="M13 7 9 3 5 7l4 4" /><path d="m17 11 4 4-4 4-4-4" /><path d="m8 12 4 4 6-6-4-4Z" /><path d="m16 8 3-3" /><path d="M9 21a6 6 0 0 0-6-6" />
+                <!-- 卫星：与链路预算工作台模块图标同款几何（两翼 3×2 太阳能板 + 中央星体，整体 -20°） -->
+                <svg class="gsvg sat-svg" viewBox="0 0 120 120" fill="currentColor" aria-hidden="true">
+                  <g transform="rotate(-20 60 60)">
+                    <rect x="8" y="41" width="10" height="16" rx="3" /><rect x="21" y="41" width="10" height="16" rx="3" /><rect x="34" y="41" width="10" height="16" rx="3" />
+                    <rect x="8" y="63" width="10" height="16" rx="3" /><rect x="21" y="63" width="10" height="16" rx="3" /><rect x="34" y="63" width="10" height="16" rx="3" />
+                    <rect x="76" y="41" width="10" height="16" rx="3" /><rect x="89" y="41" width="10" height="16" rx="3" /><rect x="102" y="41" width="10" height="16" rx="3" />
+                    <rect x="76" y="63" width="10" height="16" rx="3" /><rect x="89" y="63" width="10" height="16" rx="3" /><rect x="102" y="63" width="10" height="16" rx="3" />
+                    <rect x="49" y="35" width="22" height="50" rx="10" />
+                  </g>
                 </svg>
                 <span class="gsname" @click="grd.toggleExpand(sat.folder)" :title="sat.satName">{{ sat.satName }}<em v-if="sat.antennas.length">{{ sat.antennas.length }}</em><i v-if="sat.elements" class="simtag" title="轨道根数模拟星：星下点随时间移动">轨</i></span>
                 <span class="sacts">
-                  <span class="ic" title="导入 GRD：在该星下新建天线" @click.stop="grd.importGrd(sat)">＋</span>
-                  <span class="ic" title="编辑卫星 / 仰角线 / 颜色" @click.stop="editSat(sat)">✎</span>
-                  <span class="ic del" title="删除卫星（含其天线）" @click.stop="removeSat(sat)">✕</span>
+                  <span class="ic" title="导入 GRD：在该星下新建天线" @click.stop="grd.importGrd(sat)"><Icon name="plus" :size="11" /></span>
+                  <span class="ic" title="编辑卫星 / 仰角线 / 颜色" @click.stop="editSat(sat)"><Icon name="pencil" :size="11" /></span>
+                  <span class="ic del" title="删除卫星（含其天线）" @click.stop="removeSat(sat)"><Icon name="x" :size="11" /></span>
                 </span>
               </div>
               <!-- 卫星名 / 仰角线 开关（卫星属性）：卫星名下方独立一行，收起时仍显示；仰角值/颜色在「✎」里编辑 -->
               <div class="elacts">
                 <span class="dotc" :style="{ background: sat.elevColor }" title="该星颜色（仰角线 / 卫星名），在「✎」里改"></span>
-                <span class="elbtn" :class="{ on: sat.labelShow !== false }" title="在地图上显示/隐藏该卫星（3D 名称、平面图标 + 名称）" @click.stop="toggleSatLabel(sat)">{{ sat.labelShow !== false ? '✓ ' : '' }}卫星名</span>
-                <span class="elbtn" :class="{ on: sat.elevShow }" title="显示/隐藏等仰角线（需先在「✎」里填仰角值，如 5,10）" @click.stop="toggleSatElev(sat)">{{ sat.elevShow ? '✓ ' : '' }}仰角线</span>
+                <span class="elbtn" :class="{ on: sat.labelShow !== false }" title="在地图上显示/隐藏该卫星（3D 名称、平面图标 + 名称）" @click.stop="toggleSatLabel(sat)"><Icon v-if="sat.labelShow !== false" name="check" :size="10" />卫星名</span>
+                <span class="elbtn" :class="{ on: sat.elevShow }" title="显示/隐藏等仰角线（需先在「✎」里填仰角值，如 5,10）" @click.stop="toggleSatElev(sat)"><Icon v-if="sat.elevShow" name="check" :size="10" />仰角线</span>
               </div>
               <div v-if="grd.isExpanded(sat.folder)" class="gbody">
                 <div v-if="!sat.antennas.length" class="gant noant">暂无天线 — 点上方「＋」导入 GRD</div>
@@ -2409,14 +2417,14 @@ onBeforeUnmount(() => {
                   </span>
                   <template v-if="grdEditAnt === grd.keyOf(sat.folder, a.name)">
                     <input class="aname-in" v-model="grdEditVal" @click.stop @keydown.enter="commitRenameAnt(sat, a)" @blur="commitRenameAnt(sat, a)" />
-                    <span class="ic ok" title="确认重命名" @mousedown.prevent @click.stop="commitRenameAnt(sat, a)">✓</span>
+                    <span class="ic ok" title="确认重命名" @mousedown.prevent @click.stop="commitRenameAnt(sat, a)"><Icon name="check" :size="11" /></span>
                   </template>
                   <template v-else>
                     <span class="aname" title="双击重命名" @dblclick.stop="startRenameAnt(sat, a)">{{ a.name }}</span>
                     <span v-if="grd.isActive(sat.folder, a.name)" class="afoc">编辑中</span>
                     <span class="sacts">
-                      <span class="ic" title="重命名天线" @click.stop="startRenameAnt(sat, a)">✎</span>
-                      <span class="ic del" title="删除天线" @click.stop="grd.removeAntenna(sat.folder, a.name)">✕</span>
+                      <span class="ic" title="重命名天线" @click.stop="startRenameAnt(sat, a)"><Icon name="pencil" :size="11" /></span>
+                      <span class="ic del" title="删除天线" @click.stop="grd.removeAntenna(sat.folder, a.name)"><Icon name="x" :size="11" /></span>
                     </span>
                   </template>
                 </div>
@@ -2473,9 +2481,9 @@ onBeforeUnmount(() => {
                 <input class="lvclr" type="color" title="线色" :value="grdLvHex(L.lineColor)" @input="e => setLineColor(i, e)" />
                 <input class="lvval" type="number" step="0.5" v-model.number.lazy="L.v" />
                 <span class="lvabs">{{ (grdS.ctype === 'rel' ? (grd.antMeta().peakDb + L.v) : L.v).toFixed(1) }}</span>
-                <span class="ic del" title="删除该档" @click="grd.removeLevel(i)">✕</span>
+                <span class="ic del" title="删除该档" @click="grd.removeLevel(i)"><Icon name="x" :size="11" /></span>
               </div>
-              <div class="glvadd" @click="grd.addLevel()">＋ 添加电平</div>
+              <div class="glvadd" @click="grd.addLevel()"><Icon name="plus" :size="11" /> 添加电平</div>
             </div>
             <div class="srow"><label>线宽</label><input class="rng" type="range" min="0.5" max="4" step="0.1" v-model.number="grdS.lineWidth" /><span class="u">{{ grdS.lineWidth.toFixed(1) }}</span></div>
           </div>
@@ -2489,7 +2497,7 @@ onBeforeUnmount(() => {
 
           <div class="sec">
             <div class="sect"><span>天线 boresight</span>
-              <span class="lnk" :class="{ on: grd.dragBore.value }" title="开启后在地图上拖动可平移波束中心" @click="grd.setDragBore(!grd.dragBore.value)">{{ grd.dragBore.value ? '✓ 拖拽波束' : '拖拽波束' }}</span>
+              <span class="lnk" :class="{ on: grd.dragBore.value }" title="开启后在地图上拖动可平移波束中心" @click="grd.setDragBore(!grd.dragBore.value)"><Icon v-if="grd.dragBore.value" name="check" :size="10" /> 拖拽波束</span>
             </div>
             <div class="srow"><label>类型</label>
               <select v-model="grdS.boreType">
@@ -2559,7 +2567,7 @@ onBeforeUnmount(() => {
           </template>
           <template v-if="landOvList.length">
             <div class="mlist">
-              <div v-for="o in landOvList" :key="o.id" class="mrow"><span class="swd" :style="{ background: o.color }"></span><span class="mc rowlk" @click="pickLandCountry(o)">{{ o.zh }}</span><span class="del" @click="removeLandCountryColor(o.id)">✕</span></div>
+              <div v-for="o in landOvList" :key="o.id" class="mrow"><span class="swd" :style="{ background: o.color }"></span><span class="mc rowlk" @click="pickLandCountry(o)">{{ o.zh }}</span><span class="del" @click="removeLandCountryColor(o.id)"><Icon name="x" :size="11" /></span></div>
             </div>
             <div class="bsub"><span class="lnk" @click="clearLandOverrides">全部恢复默认</span></div>
           </template>
@@ -2619,7 +2627,7 @@ onBeforeUnmount(() => {
           <div v-if="showPtLabel" class="srow"><label>坐标字号</label><input class="rng" type="range" min="1" max="32" step="1" :value="markPtFont" @input="setPtFont" /><span class="u">{{ markPtFont }}</span></div>
           <div class="srow"><label>圆点大小</label><input class="rng" type="range" min="1" max="12" step="0.5" :value="markPtDot" @input="setPtDot" /><span class="u">{{ markPtDot }}</span></div>
           <div class="mlist">
-            <div v-for="p in points" :key="p.id" class="mrow"><span class="mc">{{ fmtLL(p.lat, p.lon) }}</span><span class="del" @click="removePoint(p.id)">✕</span></div>
+            <div v-for="p in points" :key="p.id" class="mrow"><span class="mc">{{ fmtLL(p.lat, p.lon) }}</span><span class="del" @click="removePoint(p.id)"><Icon name="x" :size="11" /></span></div>
           </div>
         </div>
 
@@ -2634,7 +2642,7 @@ onBeforeUnmount(() => {
           <div class="mlist">
             <div v-for="s in stations" :key="s.id" class="mrow">
               <input class="sni" :value="s.name" @input="e => setStationName(s.id, e.target.value)" />
-              <span class="mc2">{{ fmtLL(s.lat, s.lon) }}</span><span class="del" @click="removeStation(s.id)">✕</span>
+              <span class="mc2">{{ fmtLL(s.lat, s.lon) }}</span><span class="del" @click="removeStation(s.id)"><Icon name="x" :size="11" /></span>
             </div>
           </div>
         </div>
@@ -2650,10 +2658,10 @@ onBeforeUnmount(() => {
               <span class="tk" :class="t.kind"></span>
               <input class="tni" :value="t.name" @input="e => setTrajName(t.id, e.target.value)" />
               <span class="tsel" :class="{ on: activeTraj === t.id }" @click="activeTraj = t.id">{{ activeTraj === t.id ? '编辑中' : '编辑' }}</span>
-              <span class="del" @click="removeTraj(t.id)">✕</span>
+              <span class="del" @click="removeTraj(t.id)"><Icon name="x" :size="11" /></span>
             </div>
             <div class="twp">
-              <span v-for="(p, i) in t.pts" :key="i" class="wp">{{ p.lat.toFixed(1) }},{{ p.lon.toFixed(1) }}<span class="wdel" @click="removeWaypoint(t, i)">×</span></span>
+              <span v-for="(p, i) in t.pts" :key="i" class="wp">{{ p.lat.toFixed(1) }},{{ p.lon.toFixed(1) }}<span class="wdel" @click="removeWaypoint(t, i)"><Icon name="x" :size="10" /></span></span>
               <span v-if="!t.pts.length" class="empty">无航点</span>
             </div>
           </div>
@@ -2674,7 +2682,7 @@ onBeforeUnmount(() => {
     <!-- hideViz（从文件管理器调起）：浮到文件管理器之上与之共存（提升 z-index 并改 fixed 定位） -->
     <div v-if="satModal && !satPick" class="sat-mask" :class="{ 'sat-overlay': satModal.hideViz }">
       <div class="sat-dlg">
-        <div class="sdh"><span>{{ satModal.folder ? '编辑卫星' : '添加卫星' }}</span><span class="csx" @click="closeSatModal">✕</span></div>
+        <div class="sdh"><span>{{ satModal.folder ? '编辑卫星' : '添加卫星' }}</span><span class="csx" @click="closeSatModal"><Icon name="x" :size="12" /></span></div>
         <div class="sdbody">
           <div class="sdiv">卫星（图标 / 卫星名）</div>
           <div class="srow"><label>名称</label><input class="ci" v-model="satModal.name" placeholder="卫星名称" /></div>
@@ -2731,7 +2739,7 @@ onBeforeUnmount(() => {
     <!-- 添加地面站命名对话框（右键菜单触发，位置取右键处） -->
     <div v-if="stPrompt" class="sat-mask">
       <div class="sat-dlg st-dlg">
-        <div class="sdh"><span>添加地面站</span><span class="csx" @click="cancelStation">✕</span></div>
+        <div class="sdh"><span>添加地面站</span><span class="csx" @click="cancelStation"><Icon name="x" :size="12" /></span></div>
         <div class="sdbody">
           <div class="srow"><label>名称</label><input class="ci" v-model="stPromptName" placeholder="如 北京站" autofocus @keyup.enter="confirmStation" /></div>
           <div class="srow"><label>位置</label><span class="u">{{ fmtLL(stPrompt.lat, stPrompt.lon) }}</span></div>
@@ -2743,7 +2751,7 @@ onBeforeUnmount(() => {
     <!-- 应用内提示弹窗（替代 Electron 原生 alert，避免关闭后输入框无法聚焦） -->
     <div v-if="alertMsg" class="sat-mask sat-overlay" @click.self="closeAlert">
       <div class="sat-dlg al-dlg">
-        <div class="sdh"><span>提示</span><span class="csx" @click="closeAlert">✕</span></div>
+        <div class="sdh"><span>提示</span><span class="csx" @click="closeAlert"><Icon name="x" :size="12" /></span></div>
         <div class="sdbody"><p class="al-msg">{{ alertMsg }}</p></div>
         <div class="sdfoot"><span class="save" @click="closeAlert">确定</span></div>
       </div>
@@ -2801,7 +2809,7 @@ onBeforeUnmount(() => {
     <!-- 覆盖图显示设置弹窗（GRD 4 项 + GXT 3 项，含字号/大小调节条） -->
     <div v-if="covSetOpen" class="sat-mask">
       <div class="sat-dlg">
-        <div class="sdh"><span>覆盖图显示设置</span><span class="csx" @click="covSetOpen = false">✕</span></div>
+        <div class="sdh"><span>覆盖图显示设置</span><span class="csx" @click="covSetOpen = false"><Icon name="x" :size="12" /></span></div>
         <div class="sdbody">
           <template v-if="grdApiOk">
             <div class="sect"><span>覆盖分析</span></div>
@@ -2835,17 +2843,17 @@ onBeforeUnmount(() => {
         <span class="perf-t">性能指标表
           <em v-if="perf.ctxInfo.value">· {{ perf.ctxInfo.value.satName }} / {{ perf.ctxInfo.value.antName }} · {{ perf.ctxInfo.value.beams }} 波束</em>
         </span>
-        <span class="csx" @click="closePerf">✕</span>
+        <span class="csx" @click="closePerf"><Icon name="x" :size="12" /></span>
       </div>
 
       <!-- 上：城市输入区（第一步——输入城市列表；每个经纬度 = 一行城市，不随波束膨胀） -->
       <section class="perf-input" :style="{ height: perfInputH + 'px' }">
         <div class="pin-h">
           <span class="pin-t">城市输入</span>
-          <span class="ptb" :class="{ dis: !perf.canUndo.value }" title="撤销 (Ctrl+Z)" @click="perfUndo">↶</span>
-          <span class="ptb" :class="{ dis: !perf.canRedo.value }" title="重做 (Ctrl+Y)" @click="perfRedo">↷</span>
-          <span class="ptb" title="把地图上的点标记 / 地面站导入为城市" @click="perfImportMarkers">⭳ 从标记导入</span>
-          <span class="ptb" title="从剪贴板粘贴表格（末两列=经度、纬度，可含 国家/城市/代号）批量添加" @click="perfPasteBtn">📋 粘贴</span>
+          <span class="ptb" :class="{ dis: !perf.canUndo.value }" title="撤销 (Ctrl+Z)" @click="perfUndo"><Icon name="undo-2" :size="12" /></span>
+          <span class="ptb" :class="{ dis: !perf.canRedo.value }" title="重做 (Ctrl+Y)" @click="perfRedo"><Icon name="redo-2" :size="12" /></span>
+          <span class="ptb" title="把地图上的点标记 / 地面站导入为城市" @click="perfImportMarkers"><Icon name="import" :size="12" /> 从标记导入</span>
+          <span class="ptb" title="从剪贴板粘贴表格（末两列=经度、纬度，可含 国家/城市/代号）批量添加" @click="perfPasteBtn"><Icon name="clipboard" :size="12" /> 粘贴</span>
           <span class="ptb" title="清空城市列表" @click="perfClearStations">清空</span>
           <span class="perf-cnt">{{ perf.stations.value.length }} 城市</span>
         </div>
@@ -2868,7 +2876,7 @@ onBeforeUnmount(() => {
                          @blur="perfInGrid.commitEdit" @paste="perfInGrid.cellPaste($event, s, c.key)" />
                   <template v-else>{{ s[c.key] || '' }}</template>
                 </td>
-                <td class="td-act"><span class="del" title="删除该城市" @click="perfDelStation(s.id)">✕</span></td>
+                <td class="td-act"><span class="del" title="删除该城市" @click="perfDelStation(s.id)"><Icon name="x" :size="11" /></span></td>
               </tr>
               <!-- 末行：新增（可在任一格 Ctrl+V 粘贴整块表格批量添加；不参与框选） -->
               <tr class="pin-add" @paste="perfPaste" title="可从 Excel 复制后在此 Ctrl+V 批量粘贴（末两列=经度、纬度）">
@@ -2877,7 +2885,7 @@ onBeforeUnmount(() => {
                 <td><input v-model="perfNew.desig" placeholder="代号" @keydown.enter="perfAddStation" /></td>
                 <td class="n"><input class="n" v-model="perfNew.lon" placeholder="经度" @keydown.enter="perfAddStation" /></td>
                 <td class="n"><input class="n" v-model="perfNew.lat" placeholder="纬度" @keydown.enter="perfAddStation" /></td>
-                <td class="act"><span class="ptb add" title="新增城市 (Enter)" @click="perfAddStation">＋</span></td>
+                <td class="act"><span class="ptb add" title="新增城市 (Enter)" @click="perfAddStation"><Icon name="plus" :size="12" /></span></td>
               </tr>
             </tbody>
           </table>
@@ -2894,8 +2902,8 @@ onBeforeUnmount(() => {
           <label class="pr-cov"><input type="checkbox" v-model="perfOpts.filterOn" title="仅列方向性≥阈值（覆盖该城市）的波束" /> 仅覆盖波束</label>
           <label class="pr-cov" :class="{ dis: !perfOpts.filterOn }">阈值<input class="ci" type="number" step="0.5" v-model.number="perfOpts.minDir" :disabled="!perfOpts.filterOn" /><span class="u">dB</span></label>
           <input class="perf-q" v-model="perf.query.value" placeholder="查询：国家 / 城市 / 代号" />
-          <span class="ptb" title="复制整张结果表（含表头，TSV，可粘进 Excel）" @click="perfCopyResult">⧉ 复制全表</span>
-          <span class="ptb" :class="{ on: perfOptsOpen }" title="显示列 / 计算口径 / 指向误差" @click="perfOptsOpen = !perfOptsOpen">⚙ 选项…</span>
+          <span class="ptb" title="复制整张结果表（含表头，TSV，可粘进 Excel）" @click="perfCopyResult"><Icon name="copy" :size="11" /> 复制全表</span>
+          <span class="ptb" :class="{ on: perfOptsOpen }" title="显示列 / 计算口径 / 指向误差" @click="perfOptsOpen = !perfOptsOpen"><Icon name="settings" :size="11" /> 选项…</span>
           <span class="perf-cnt">{{ perf.filteredRows.value.length }} 行</span>
         </div>
         <!-- 只读 Excel 网格：拖拽框选 / Shift 扩选 / 方向键导航 / Ctrl+A 全选 / Ctrl+C 复制选区（不可编辑） -->
@@ -2936,7 +2944,7 @@ onBeforeUnmount(() => {
     <!-- 性能表选项弹窗（对标 SATSOFT Performance Table Options）：显示列 / 过滤 / 波束类型 / 计算口径 / 指向误差 -->
     <div v-if="perfOptsOpen && perfOpts" class="sat-mask perf-opt-mask" @click.self="perfOptsOpen = false">
       <div class="perf-opt-dlg">
-        <div class="sdh"><span>性能表选项<em v-if="perf.ctxInfo.value"> · {{ perf.ctxInfo.value.antName }}</em></span><span class="csx" @click="perfOptsOpen = false">✕</span></div>
+        <div class="sdh"><span>性能表选项<em v-if="perf.ctxInfo.value"> · {{ perf.ctxInfo.value.antName }}</em></span><span class="csx" @click="perfOptsOpen = false"><Icon name="x" :size="12" /></span></div>
         <div class="perf-opt-body">
           <!-- 左：显示列 -->
           <section class="po-card po-cols">
@@ -3055,12 +3063,12 @@ onBeforeUnmount(() => {
   box-shadow: 0 12px 32px rgba(0,0,0,0.45);
 }
 .ch { display: flex; align-items: flex-start; gap: 8px; cursor: pointer; }
-.cc { flex: none; align-self: center; color: var(--text-faint); font-size: 10px; line-height: 1; transition: transform .15s; }
+.cc { flex: none; align-self: center; display: inline-flex; align-items: center; color: var(--text-faint); font-size: 10px; line-height: 1; transition: transform .15s; }
 .cc.col { transform: rotate(-90deg); }
 .ch:hover .cc { color: var(--text); }
 .cn { flex: 1 1 auto; min-width: 0; font-family: var(--font-serif); font-size: 15px; line-height: 1.3; overflow-wrap: anywhere; }
 .card.collapsed .cn { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.cx { flex: none; cursor: pointer; color: var(--text-faint); line-height: 1.2; }
+.cx { flex: none; display: inline-flex; align-items: center; cursor: pointer; color: var(--text-faint); line-height: 1.2; }
 .cx:hover { color: var(--text); }
 .cmeta { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
 .badge { font-family: var(--font-mono); font-size: 10.5px; padding: 1px 6px; border: 1px solid var(--border); color: var(--text-muted); }
@@ -3123,16 +3131,16 @@ onBeforeUnmount(() => {
 /* GRD 工程树：卫星 → 天线（二级层次，竖向引导线 + 统一缩进） */
 .gtree { margin-top: 6px; max-height: clamp(280px, 48vh, 620px); overflow-y: auto; }
 /* 卫星行（节点头） */
-.gsat { display: flex; align-items: center; gap: 6px; padding: 4px 4px 4px 2px; color: var(--text); font-size: 12px; border-radius: 3px; }
+.gsat { display: flex; align-items: center; gap: 6px; padding: 4px 4px 4px 2px; color: var(--text); font-size: 13px; border-radius: 3px; }
 .gsat:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
-.gsat .tri { font-style: normal; flex: none; width: 12px; text-align: center; color: var(--text-faint); font-size: 9px; cursor: pointer; transition: transform .12s; }
+.gsat .tri { font-style: normal; flex: none; width: 12px; display: inline-flex; align-items: center; justify-content: center; color: var(--text-faint); font-size: 9px; cursor: pointer; transition: transform .12s; }
 .gsat .tri.open { transform: rotate(90deg); }
 .gsat .gsname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
 .gsat .gsname:hover { color: var(--accent); }
 .gsat .gsname em { font-style: normal; margin-left: 5px; color: var(--text-faint); font-family: var(--font-mono); font-size: 10.5px; }
 .gsat .gsname .simtag { font-style: normal; margin-left: 5px; padding: 0 4px; border: 1px solid var(--accent); border-radius: 2px; color: var(--accent); font-size: 10px; vertical-align: middle; }
 .gsvg { flex: none; width: 14px; height: 14px; }
-.gsat .sat-svg { color: #000; opacity: .92; }
+.gsat .sat-svg { width: 18px; height: 18px; color: var(--text); opacity: .92; }   /* 跟随主题文字色；18px 比默认 .gsvg 大一档，14px 下看不出卫星轮廓 */
 .gant .ant-btn { display: flex; align-items: center; justify-content: center; flex: none; width: 18px; height: 18px; margin: -2px 0; border-radius: 3px; transition: background .12s; }
 .gant .ant-btn:hover { background: color-mix(in srgb, var(--accent) 18%, transparent); }
 .gant .ant-svg { width: 13px; height: 13px; color: var(--text-faint); transition: color .12s; }
@@ -3265,7 +3273,7 @@ onBeforeUnmount(() => {
 .gant:hover { color: var(--text); background: color-mix(in srgb, var(--text) 6%, transparent); }
 .gant.on { color: var(--text); }                                                                          /* 已选中=绘制中 */
 .gant.foc { color: var(--text); background: color-mix(in srgb, var(--accent) 14%, transparent); box-shadow: inset 2px 0 0 var(--accent); font-weight: 600; }   /* 聚焦=编辑中 */
-.gant .aname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gant .aname { flex: 1; min-width: 0; white-space: normal; overflow-wrap: break-word; word-break: break-word; line-height: 1.35; }   /* 天线名显示全，过长换行不截断 */
 .gant .aname-in { flex: 1; min-width: 0; border: 1px solid var(--accent); background: var(--bg); padding: 1px 5px; font-size: 11.5px; color: var(--text); outline: none; }
 .gant .afoc { flex: none; font-size: 9.5px; font-weight: 600; letter-spacing: .3px; color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent); border-radius: 8px; padding: 0 5px; line-height: 14px; }
 .gant.noant { color: var(--text-faint); font-style: italic; cursor: default; padding-left: 6px; }
@@ -3418,7 +3426,7 @@ onBeforeUnmount(() => {
 /* 卫星显示开关（卫星名下方独立一行，收起仍显示）：色点 + 卫星名/仰角线（切换） */
 .elacts { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: 1px 0 5px; padding-left: 24px; }
 .elacts .dotc { margin-right: 0; }
-.elacts .elbtn { flex: none; cursor: pointer; font-size: 10.5px; padding: 1.5px 8px; border: 1px solid var(--border); border-radius: 9px; color: var(--text-muted); white-space: nowrap; transition: color .12s, border-color .12s, background .12s; }
+.elacts .elbtn { flex: none; display: inline-flex; align-items: center; gap: 3px; cursor: pointer; font-size: 10.5px; padding: 1.5px 8px; border: 1px solid var(--border); border-radius: 9px; color: var(--text-muted); white-space: nowrap; transition: color .12s, border-color .12s, background .12s; }
 .elacts .elbtn:hover { color: var(--text); border-color: var(--text-faint); }
 .elacts .elbtn.on { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 55%, transparent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
 .elacts .elbtn.act:hover { color: var(--accent); border-color: var(--accent); }

@@ -3,6 +3,7 @@ import { ref, shallowRef, reactive, computed, onMounted, nextTick, watch } from 
 import { SAT_FIELDS, CARRIER_FIELDS, TX_FIELDS, RX_FIELDS, defaultsFor, buildParams } from './params.js'
 import { loadSatTree, sampleAntennaParams } from './grdParam.js'
 import { encodeShare, decodeShare, configFileText } from './shareCode.js'
+import Icon from '../components/Icon.vue'
 import StationGrid from './StationGrid.vue'
 import BasebandPanel from './BasebandPanel.vue'
 import SatellitePanel from './SatellitePanel.vue'
@@ -707,14 +708,14 @@ onMounted(async () => {
       </button>
       <span class="lb-spacer"></span>
       <span class="lb-note" v-if="notice">{{ notice }}</span>
-      <span class="lb-hint" v-if="!api">⚠ 引擎需在 Electron 中运行</span>
+      <span class="lb-hint" v-if="!api"><Icon name="alert-triangle" :size="12" /> 引擎需在 Electron 中运行</span>
     </header>
 
     <div class="lb-body">
       <!-- ① 配置列表（可向左收起） -->
       <aside class="lb-col lb-configs" :class="{ collapsed: configsCollapsed }">
         <button v-if="configsCollapsed" class="lb-cfg-expand" title="展开配置列表" @click="configsCollapsed = false">
-          <span class="lb-cfg-chev">›</span><span class="lb-cfg-expand-t">配置列表</span>
+          <span class="lb-cfg-chev"><Icon name="chevron-right" :size="14" /></span><span class="lb-cfg-expand-t">配置列表</span>
         </button>
         <template v-else>
         <div class="lb-col-hd">
@@ -724,7 +725,7 @@ onMounted(async () => {
             <button class="lb-mini lb-mini-ico" :title="activeId ? '保存修改到当前配置' : '保存为新配置'" :disabled="!api" @click="saveCurrent">
               <svg viewBox="0 0 16 16" class="lb-ico-svg"><path d="M2.5 2.5h8l3 3v8h-11z" /><path d="M5 2.5v4h5v-4" /><rect x="5" y="9" width="6" height="4.5" /></svg>
             </button>
-            <button class="lb-mini" title="添加空白配置" :disabled="!api" @click="addBlankConfig">＋</button>
+            <button class="lb-mini lb-mini-ico" title="添加空白配置" :disabled="!api" @click="addBlankConfig"><Icon name="plus" :size="13" /></button>
           </span>
         </div>
         <div class="lb-col-bd" tabindex="0" @keydown="onCfgKey" @contextmenu="openCtx($event, null)">
@@ -736,7 +737,7 @@ onMounted(async () => {
                 <input v-if="editing.id === c.id" v-model="editing.name" class="lb-cfg-rename" @click.stop
                        @keyup.enter="commitRename" @keyup.esc="cancelRename" @blur="commitRename" />
                 <span v-else class="lb-cfg-nm">{{ c.name }}</span>
-                <button class="lb-cfg-ico del" title="删除配置" @click.stop="removeConfig(c.id, $event)">×</button>
+                <button class="lb-cfg-ico del" title="删除配置" @click.stop="removeConfig(c.id, $event)"><Icon name="x" :size="12" /></button>
               </li>
             </ul>
           </template>
@@ -771,7 +772,7 @@ onMounted(async () => {
               <span class="mod-t">{{ m.label }}</span>
               <span v-if="m.key === 'tx' || m.key === 'rx'" class="mod-n">{{ moduleCount(m.key) }}</span>
             </button>
-            <span v-if="i < MODULES.length - 1" class="mod-wire">›</span>
+            <span v-if="i < MODULES.length - 1" class="mod-wire"><Icon name="chevron-right" :size="12" /></span>
           </template>
         </div>
 
@@ -783,7 +784,7 @@ onMounted(async () => {
             <div class="bb-toolbar">
               <span class="bb-count">{{ basebandConfigs.length }} 份基带配置</span>
               <span class="lb-spacer"></span>
-              <button class="lb-mini" title="新增配置" @click="addBasebandConfig">＋ 新增配置</button>
+              <button class="lb-mini" title="新增配置" @click="addBasebandConfig"><Icon name="plus" :size="12" /> 新增配置</button>
             </div>
             <p class="bb-tip">载波由发信站调制器产生，与发信站绑定：「发信站群」表的「基带配置」列为每个发信站单独选择使用哪一份，同一份可被多个发信站共用。</p>
             <div class="bb-cards">
@@ -791,7 +792,7 @@ onMounted(async () => {
                 <div class="bb-card-hd">
                   <input v-model="cfg.name" class="bb-card-name" placeholder="配置名称" />
                   <span class="lb-spacer"></span>
-                  <button class="lb-mini" title="复制此配置" @click="duplicateBasebandConfig(cfg)">⧉ 复制</button>
+                  <button class="lb-mini" title="复制此配置" @click="duplicateBasebandConfig(cfg)"><Icon name="copy" :size="12" /> 复制</button>
                   <button class="lb-mini" title="删除此配置" :disabled="basebandConfigs.length <= 1" @click="removeBasebandConfig(cfg)">删除</button>
                 </div>
                 <div class="bb-card-bd"><BasebandPanel :form="cfg.form" :options="basebandOpts" /></div>
@@ -1039,9 +1040,7 @@ onMounted(async () => {
   /* 统一圆角尺度 */
   --r-ctl: 2px; --r-box: 3px; --r-modal: 4px;
 }
-@media (prefers-color-scheme: dark) {
-  .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c08079; }
-}
+html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c08079; }
 
 .lb-topbar { display: flex; align-items: center; gap: 10px; height: 32px; flex: none; padding: 0 14px; background: var(--surface); border-bottom: 1px solid var(--border); }
 .lb-brand { font-family: var(--font-serif); font-size: 13px; letter-spacing: .5px; line-height: 1; }
@@ -1053,7 +1052,7 @@ onMounted(async () => {
 .lb-refresh.spin .lb-refresh-svg { animation: lb-spin .7s linear infinite; transform-origin: 50% 50%; }
 @keyframes lb-spin { to { transform: rotate(360deg); } }
 .lb-spacer { flex: 1; }
-.lb-hint { color: var(--warn); font-size: 11px; }
+.lb-hint { color: var(--warn); font-size: 11px; display: inline-flex; align-items: center; gap: 4px; }
 .lb-note { color: var(--ok); font-size: 11px; max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .lb-body { flex: 1; display: flex; min-height: 0; }
@@ -1063,7 +1062,7 @@ onMounted(async () => {
 .lb-configs.collapsed { width: 26px; min-width: 26px; }
 .lb-cfg-hd-t { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lb-cfg-collapse { flex: none; padding: 3px 5px; }
-.lb-cfg-chev { font-size: 14px; line-height: 1; }
+.lb-cfg-chev { font-size: 14px; line-height: 1; display: inline-flex; align-items: center; }
 /* 收起态：整列变成一根可点击竖条 */
 .lb-cfg-expand { width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 10px 0; cursor: pointer; background: var(--surface); color: var(--text-muted); border: 0; }
 .lb-cfg-expand:hover { color: var(--text); background: var(--surface-2); }
@@ -1076,7 +1075,7 @@ onMounted(async () => {
 .lb-col-bd { flex: 1; overflow: auto; padding: 12px; }
 .lb-lang-sel { font: inherit; font-size: 11px; text-transform: none; letter-spacing: normal; line-height: 1; padding: 3px 6px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl); }
 .lb-lang-sel:focus { outline: none; border-color: var(--accent); }
-.lb-mini { font: inherit; font-size: 11px; line-height: 1; padding: 3px 8px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl); }
+.lb-mini { font: inherit; font-size: 11px; line-height: 1; padding: 3px 8px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl); display: inline-flex; align-items: center; justify-content: center; gap: 4px; }
 .lb-mini:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
 .lb-mini:disabled { opacity: .45; cursor: not-allowed; }
 .lb-empty, .lb-placeholder { color: var(--text-faint); font-size: 12px; text-align: center; line-height: 1.7; }
@@ -1086,7 +1085,7 @@ onMounted(async () => {
 .lb-cfg-list li:hover { background: var(--surface-2); color: var(--text); }
 .lb-cfg-list li.on { background: var(--surface-2); color: var(--text); box-shadow: inset 2px 0 0 var(--accent); }
 .lb-cfg-nm { flex: 1; min-width: 0; overflow-wrap: anywhere; line-height: 1.35; }
-.lb-cfg-ico { flex: none; font: inherit; font-size: 13px; line-height: 1; padding: 0 4px; cursor: pointer; background: transparent; color: var(--text-faint); border: 0; border-radius: var(--r-ctl); opacity: 0; }
+.lb-cfg-ico { flex: none; font: inherit; font-size: 13px; line-height: 1; padding: 0 4px; cursor: pointer; background: transparent; color: var(--text-faint); border: 0; border-radius: var(--r-ctl); opacity: 0; display: inline-flex; align-items: center; }
 .lb-cfg-list li:hover .lb-cfg-ico { opacity: 1; }
 .lb-cfg-ico:hover { color: var(--text); }
 .lb-cfg-ico.del:hover { color: var(--danger); }
@@ -1152,7 +1151,7 @@ onMounted(async () => {
 .mod-t { font-size: 12px; font-weight: 600; }
 .mod-n { font-family: var(--font-mono); font-size: 11px; min-width: 17px; text-align: center; padding: 1px 4px; border-radius: var(--r-ctl); background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); }
 .mod.on .mod-n { background: var(--bg); color: var(--text); }
-.mod-wire { color: var(--text-faint); font-size: 12px; padding: 0 1px; }
+.mod-wire { color: var(--text-faint); font-size: 12px; padding: 0 1px; display: inline-flex; align-items: center; }
 
 .lb-edit { flex: 1; min-height: 0; overflow: auto; padding: 12px; }
 .form { max-width: 420px; }

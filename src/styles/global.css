@@ -1,4 +1,6 @@
-/* 期刊风/仪器化主题：黑白灰 + 衬线标题 + 等宽数字。浅色为主，自动适配深色。 */
+/* 期刊风/仪器化主题：黑白灰 + 衬线标题 + 等宽数字。浅色为主。
+   深色由 stores/theme.js 解析（跟随系统/浅色/深色）后写入 <html data-theme="dark"> 触发，
+   不再直接依赖 prefers-color-scheme（手动选择时需要覆盖系统偏好）。 */
 :root {
   --bg: #ffffff;
   --surface: #f7f7f5;
@@ -17,21 +19,19 @@
   --font-mono: "Cascadia Code", Consolas, "SF Mono", "Roboto Mono", monospace;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #1c1c1a;
-    --surface: #232321;
-    --surface-2: #2a2a27;
-    --text: #ececea;
-    --text-muted: #a4a49e;
-    --text-faint: #74746f;
-    --border: #34342f;
-    --border-strong: #45453f;
-    --accent: #ececea;
-    --ok: #4caf82;
-    --warn: #d8a73a;
-    --danger: #e26a6a;
-  }
+:root[data-theme="dark"] {
+  --bg: #1c1c1a;
+  --surface: #232321;
+  --surface-2: #2a2a27;
+  --text: #ececea;
+  --text-muted: #a4a49e;
+  --text-faint: #74746f;
+  --border: #34342f;
+  --border-strong: #45453f;
+  --accent: #ececea;
+  --ok: #4caf82;
+  --warn: #d8a73a;
+  --danger: #e26a6a;
 }
 
 * { box-sizing: border-box; }

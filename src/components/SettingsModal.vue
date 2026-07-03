@@ -2,6 +2,15 @@
 import { computed } from 'vue'
 import { quality, effective, setTier, setField, setMapLevel, currentMapLevelIndex, TIERS, FIELD_OPTS, MAP_LEVELS } from '../stores/displayQuality'
 import { viewPrefs } from '../stores/viewPrefs'
+import { theme, setTheme } from '../stores/theme'
+import Icon from './Icon.vue'
+
+// 外观：跟随系统 / 浅色 / 深色
+const THEME_OPTS = [
+  { key: 'system', label: '跟随系统', icon: 'monitor' },
+  { key: 'light', label: '浅色', icon: 'sun' },
+  { key: 'dark', label: '深色', icon: 'moon' }
+]
 
 const emit = defineEmits(['close'])
 
@@ -27,10 +36,20 @@ const speedPct = computed({
     <div class="dlg" role="dialog" aria-modal="true">
       <header class="dhd">
         <span class="dt">设置</span>
-        <span class="x" @click="emit('close')">✕</span>
+        <span class="x" @click="emit('close')"><Icon name="x" :size="14" /></span>
       </header>
 
       <div class="body">
+        <!-- 外观 -->
+        <section class="sec">
+          <div class="shd">外观</div>
+          <div class="tiers">
+            <button v-for="t in THEME_OPTS" :key="t.key" class="tier ttheme" :class="{ on: theme.mode === t.key }" @click="setTheme(t.key)">
+              <Icon :name="t.icon" :size="13" />{{ t.label }}
+            </button>
+          </div>
+        </section>
+
         <!-- 显示设置 -->
         <section class="sec">
           <div class="shd">显示设置</div>
@@ -107,7 +126,7 @@ const speedPct = computed({
   background: var(--surface); border: 1px solid var(--border-strong); border-radius: 4px; box-shadow: 0 12px 40px rgba(0,0,0,0.5); }
 .dhd { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid var(--border); }
 .dt { font-family: var(--font-serif); font-size: 15px; }
-.x { cursor: pointer; color: var(--text-muted); padding: 2px 6px; }
+.x { cursor: pointer; color: var(--text-muted); padding: 2px 6px; display: inline-flex; align-items: center; }
 .x:hover { color: var(--text); }
 .body { padding: 14px 16px; overflow: auto; }
 .sec { margin-bottom: 18px; }
@@ -115,6 +134,7 @@ const speedPct = computed({
 .tiers { display: flex; gap: 6px; flex-wrap: wrap; }
 .tier { flex: 1; min-width: 64px; padding: 7px 0; cursor: pointer; font-size: 13px; color: var(--text-muted);
   background: var(--bg); border: 1px solid var(--border); border-radius: 3px; transition: all .12s; }
+.tier.ttheme { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
 .tier:hover { color: var(--text); border-color: var(--accent); }
 .tier.on { color: var(--bg); background: var(--accent); border-color: var(--accent); font-weight: 600; }
 .tip { font-size: 11.5px; color: var(--text-faint); margin: 8px 0 12px; }

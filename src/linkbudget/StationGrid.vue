@@ -1,5 +1,6 @@
 <script setup>
 import { ref, reactive, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
+import Icon from '../components/Icon.vue'
 import { defaultsFor } from './params.js'
 
 // 发信/收信站群 Excel 式电子表格：单元格框选（拖拽）、Ctrl+C/Ctrl+V 复制粘贴（TSV）、
@@ -515,15 +516,15 @@ function clearColContents() {
     <div class="sg-bar">
       <span class="sg-count">{{ stations.length }} 个{{ label }}<template v-if="selectedRows.length"> · 选中 {{ selectedRows.length }} 行</template></span>
       <span class="sg-sp"></span>
-      <button class="sg-btn" @click="addRow">＋ 增加</button>
-      <button class="sg-btn" @click="openImport">⇩ 导入</button>
+      <button class="sg-btn" @click="addRow"><Icon name="plus" :size="12" /> 增加</button>
+      <button class="sg-btn" @click="openImport"><Icon name="import" :size="12" /> 导入</button>
       <button class="sg-btn" :disabled="!selectedRows.length" @click="openBatch">批量设值</button>
       <button class="sg-btn" :disabled="!selectedRows.length" @click="removeSelected">删除选中</button>
       <button class="sg-btn" :disabled="!stations.length" @click="clearAll">清空</button>
-      <button class="sg-btn" :disabled="!undoStack.length" title="撤销" @click="undo">↶</button>
-      <button class="sg-btn" :disabled="!redoStack.length" title="重做" @click="redo">↷</button>
-      <button class="sg-btn" :disabled="!canMoveUp" title="上移一行（Alt+↑）" @click="moveUp">↑ 上移</button>
-      <button class="sg-btn" :disabled="!canMoveDown" title="下移一行（Alt+↓）" @click="moveDown">↓ 下移</button>
+      <button class="sg-btn" :disabled="!undoStack.length" title="撤销" @click="undo"><Icon name="undo-2" :size="12" /></button>
+      <button class="sg-btn" :disabled="!redoStack.length" title="重做" @click="redo"><Icon name="redo-2" :size="12" /></button>
+      <button class="sg-btn" :disabled="!canMoveUp" title="上移一行（Alt+↑）" @click="moveUp"><Icon name="arrow-up" :size="12" /> 上移</button>
+      <button class="sg-btn" :disabled="!canMoveDown" title="下移一行（Alt+↓）" @click="moveDown"><Icon name="arrow-down" :size="12" /> 下移</button>
       <button v-if="hiddenCols.length" class="sg-btn" :title="'已隐藏 ' + hiddenCols.length + ' 列，点击全部显示'" @click="unhideAll">显示隐藏列 ({{ hiddenCols.length }})</button>
     </div>
 
@@ -626,7 +627,7 @@ function clearColContents() {
 .sg-bar { display: flex; align-items: center; gap: 6px; padding: 6px 2px 8px; flex: none; flex-wrap: wrap; }
 .sg-count { font-size: 12px; color: var(--text-muted); }
 .sg-sp { flex: 1; }
-.sg-btn { font: inherit; font-size: 12px; padding: 4px 9px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
+.sg-btn { font: inherit; font-size: 12px; padding: 4px 9px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); display: inline-flex; align-items: center; justify-content: center; gap: 4px; }
 .sg-btn:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
 .sg-btn:disabled { opacity: .4; cursor: not-allowed; }
 .sg-btn.primary { background: var(--accent); color: var(--bg); border-color: var(--accent); }

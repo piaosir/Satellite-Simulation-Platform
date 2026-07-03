@@ -3,6 +3,7 @@ import { reactive, ref, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import pageDef from '../viz/constellation/page.js'
 import { makeWx, runPage } from '../compat/wx.js'
 import { parseOMMCsv } from '../viz/constellation/tle.js'
+import Icon from '../components/Icon.vue'
 
 const root = ref(null)
 const canvas = ref(null)
@@ -88,7 +89,7 @@ onBeforeUnmount(() => { inst && inst.onUnload && inst.onUnload() })
         <div class="search">
           <input :value="d.keyword" placeholder="搜索卫星名 / 编号"
                  @input="e => call('onSearchInput', { detail: { value: e.target.value } })" />
-          <span v-if="d.keyword" class="clr" @click="call('clearSearch')">✕</span>
+          <span v-if="d.keyword" class="clr" @click="call('clearSearch')"><Icon name="x" :size="11" /></span>
         </div>
       </div>
 
@@ -116,7 +117,7 @@ onBeforeUnmount(() => { inst && inst.onUnload && inst.onUnload() })
           <input class="bi" :value="d.beam" :placeholder="d.beamAuto || '自动'"
                  @input="e => call('onBeamInput', { detail: { value: e.target.value } })" />
           <span class="bu">°</span>
-          <span class="lock" :class="{ on: d.beamLock }" @click="call('toggleBeamLock')">{{ d.beamLock ? '🔒' : '🔓' }}</span>
+          <span class="lock" :class="{ on: d.beamLock }" @click="call('toggleBeamLock')"><Icon :name="d.beamLock ? 'lock' : 'lock-open'" :size="12" /></span>
         </template>
         <span v-else class="hint">点击卫星设置波束角</span>
         <div class="toggles">
@@ -165,7 +166,7 @@ onBeforeUnmount(() => { inst && inst.onUnload && inst.onUnload() })
       <div class="ch">
         <span class="cn">{{ d.selected.name }}</span>
         <span v-if="d.selected.slot" class="cs">{{ d.selected.slot }}</span>
-        <span class="cx" @click="call('closeCard')">✕</span>
+        <span class="cx" @click="call('closeCard')"><Icon name="x" :size="12" /></span>
       </div>
       <div class="cg">
         <div class="kv"><span class="k">NORAD</span><span class="v">{{ d.selected.noradId }}</span></div>
@@ -233,7 +234,7 @@ onBeforeUnmount(() => { inst && inst.onUnload && inst.onUnload() })
 .ch { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 .cn { font-family: var(--font-serif); font-size: 14px; }
 .cs { font-size: 11px; color: var(--text-muted); }
-.cx { margin-left: auto; cursor: pointer; color: var(--text-faint); }
+.cx { margin-left: auto; cursor: pointer; color: var(--text-faint); display: inline-flex; align-items: center; }
 .cg { display: grid; grid-template-columns: 1fr 1fr; gap: 5px 12px; font-size: 11.5px; }
 .kv { display: flex; justify-content: space-between; gap: 6px; }
 .kv.wide { grid-column: 1 / 3; }

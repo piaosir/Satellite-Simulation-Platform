@@ -284,8 +284,8 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   // 管理员身份硬编码（不开放修改，避免他人冒充）：派生ID → 固定标识。
   // 加 master2/master3：在那台机器上跑一次、看软件左下「我的ID」显示的派生ID，填进此表再发版即可。
   const ADMIN_IDS = {
-    '2E314A3754': 'master1'      // 开发者本机（MAC 84:9e:56:77:52:9d）
-    // '<机器2派生ID>': 'master2',
+    '2E314A3754': 'master1',     // 开发者笔记本（MAC 84:9e:56:77:52:9d）
+    '731D97DD7B': 'master2'      // 开发者台式机（MAC 50:eb:f6:eb:83:02）
     // '<机器3派生ID>': 'master3'
   }
   ipcMain.handle('app:deviceId', () => {

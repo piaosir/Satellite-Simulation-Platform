@@ -8,6 +8,7 @@ import { zoom } from './stores/zoom'
 import { effective as displayQuality } from './stores/displayQuality'
 import SettingsModal from './components/SettingsModal.vue'
 import FileManager from './components/FileManager.vue'
+import Icon from './components/Icon.vue'
 
 // 底部状态栏缩放进度条：拖动/按钮 → 设回当前活动地图（zoom.apply）；地图滚轮缩放回填 zoom.value。
 const onZoomInput = (e) => { const t = Number(e.target.value); if (zoom.apply) zoom.apply(t) }
@@ -67,20 +68,20 @@ const currentLabel = computed(
       <nav class="menu">
         <span class="navbtn" @click="fileOpen = true">文件</span>
         <span class="vwrap">
-          <span class="navbtn" :class="{ on: calcMenu }" @click.stop="calcMenu = !calcMenu">计算 ▾</span>
+          <span class="navbtn" :class="{ on: calcMenu }" @click.stop="calcMenu = !calcMenu">计算<Icon class="chev" name="chevron-down" :size="12" /></span>
           <div v-if="calcMenu" class="vmenu calcmenu">
-            <div class="vitem" @click="openLinkBudget"><span class="vico">▤</span>地球静止轨道卫星（GEO）链路预算</div>
-            <div class="vitem" @click="openSunOutage"><span class="vico">☀</span>日凌预报（GEO）</div>
+            <div class="vitem" @click="openLinkBudget"><span class="vico"><Icon name="satellite-dish" :size="13" /></span>地球静止轨道卫星（GEO）链路预算</div>
+            <div class="vitem" @click="openSunOutage"><span class="vico"><Icon name="sun" :size="13" /></span>日凌预报（GEO）</div>
           </div>
         </span>
         <span class="vwrap">
-          <span class="navbtn" :class="{ on: viewMenu }" @click.stop="viewMenu = !viewMenu">视图 · {{ view.flat ? '2D 平面' : '3D 球体' }} ▾</span>
+          <span class="navbtn" :class="{ on: viewMenu }" @click.stop="viewMenu = !viewMenu">视图 · {{ view.flat ? '2D 平面' : '3D 球体' }}<Icon class="chev" name="chevron-down" :size="12" /></span>
           <div v-if="viewMenu" class="vmenu">
             <div class="vitem" :class="{ sel: !view.flat }" @click="pickView(false)">
-              <span class="ck">{{ !view.flat ? '✓' : '' }}</span><span class="vico">◐</span>3D 球体
+              <span class="ck"><Icon v-if="!view.flat" name="check" :size="12" /></span><span class="vico"><Icon name="globe" :size="13" /></span>3D 球体
             </div>
             <div class="vitem" :class="{ sel: view.flat }" @click="pickView(true)">
-              <span class="ck">{{ view.flat ? '✓' : '' }}</span><span class="vico">▦</span>2D 平面图
+              <span class="ck"><Icon v-if="view.flat" name="check" :size="12" /></span><span class="vico"><Icon name="map" :size="13" /></span>2D 平面图
             </div>
           </div>
         </span>
@@ -88,18 +89,18 @@ const currentLabel = computed(
         <span v-if="covNav.polyAvail" class="navbtn" :class="{ on: covNav.polyOpen }" @click="covNav.togglePoly && covNav.togglePoly()">Polygon</span>
         <span v-if="covNav.covAvail" class="navbtn" :class="{ on: covNav.covOpen }" @click="covNav.toggleCov && covNav.toggleCov()">覆盖图（GXT）</span>
         <span v-if="covNav.exportAvail" class="vwrap">
-          <span class="navbtn" :class="{ on: expMenu }" @click.stop="expMenu = !expMenu">导出 ▾</span>
+          <span class="navbtn" :class="{ on: expMenu }" @click.stop="expMenu = !expMenu">导出<Icon class="chev" name="chevron-down" :size="12" /></span>
           <div v-if="expMenu" class="vmenu exp-menu">
             <div class="vscope" @click.stop>
               <span class="vsp" :class="{ on: expScope === 'world' }" @click="expScope = 'world'">全球图</span>
               <span class="vsp" :class="{ on: expScope === 'view' }" @click="expScope = 'view'">截图</span>
             </div>
-            <div class="vitem" @click="doExport('png2')"><span class="vico">▦</span>高清 PNG · 2×</div>
-            <div class="vitem" @click="doExport('png4')"><span class="vico">▦</span>高清 PNG · 4×</div>
-            <div class="vitem" @click="doExport('pdf')"><span class="vico">▤</span>矢量 PDF</div>
+            <div class="vitem" @click="doExport('png2')"><span class="vico"><Icon name="image" :size="13" /></span>高清 PNG · 2×</div>
+            <div class="vitem" @click="doExport('png4')"><span class="vico"><Icon name="image" :size="13" /></span>高清 PNG · 4×</div>
+            <div class="vitem" @click="doExport('pdf')"><span class="vico"><Icon name="file-text" :size="13" /></span>矢量 PDF</div>
             <div class="vsep"></div>
-            <div class="vitem" @click="doExport('gxt')" title="把当前画面绘制的覆盖等值线导出为 GXT 文件"><span class="vico">◈</span>当前覆盖 · GXT</div>
-            <div class="vitem" @click="doExport('kml')" title="把当前画面绘制的覆盖等值线导出为 Google KML 文件"><span class="vico">◈</span>当前覆盖 · KML</div>
+            <div class="vitem" @click="doExport('gxt')" title="把当前画面绘制的覆盖等值线导出为 GXT 文件"><span class="vico"><Icon name="layers" :size="13" /></span>当前覆盖 · GXT</div>
+            <div class="vitem" @click="doExport('kml')" title="把当前画面绘制的覆盖等值线导出为 Google KML 文件"><span class="vico"><Icon name="layers" :size="13" /></span>当前覆盖 · KML</div>
           </div>
         </span>
         <span class="navbtn" @click="settingsOpen = true">设置</span>
@@ -119,15 +120,15 @@ const currentLabel = computed(
     <footer class="statusbar">
       <span v-if="zoom.avail" class="zoomctl" title="地图缩放（拖动精细调节，滚轮亦可）">
         <span class="zlbl">缩放</span>
-        <button class="zbtn" title="缩小" @click="stepZoom(-0.01)">－</button>
+        <button class="zbtn" title="缩小" @click="stepZoom(-0.01)"><Icon name="minus" :size="11" /></button>
         <input class="zrange" type="range" min="0" max="1" step="0.001" :value="zoom.value" @input="onZoomInput" />
-        <button class="zbtn" title="放大" @click="stepZoom(0.01)">＋</button>
+        <button class="zbtn" title="放大" @click="stepZoom(0.01)"><Icon name="plus" :size="11" /></button>
         <span class="zpct">{{ Math.round(zoom.value * 100) }}%</span>
       </span>
       <span>当前：{{ currentLabel }}</span>
       <span class="grow">
         <span v-if="cursor.ll" class="coord">
-          <svg class="cur" viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path d="M5 2.5 L5 19.5 L9.3 15.4 L12 21.4 L14.5 20.2 L11.9 14.4 L17.5 14 Z" fill="currentColor" stroke="rgba(0,0,0,0.55)" stroke-width="1" stroke-linejoin="round"/></svg>
+          <Icon class="cur" name="crosshair" :size="12" />
           {{ fmtCoord(cursor.ll) }}
         </span>
       </span>
@@ -147,10 +148,12 @@ const currentLabel = computed(
 .menu { display: flex; align-items: center; gap: 10px; color: var(--text-muted); font-size: 12.5px; }
 .vwrap { position: relative; }
 /* 顶栏 7 个按钮统一样式：常态描边 → 悬停描边变强调色 → 选中/展开填充强调色 */
-.navbtn { cursor: pointer; border: 1px solid var(--border); padding: 2px 10px; border-radius: 2px; color: var(--text-muted); transition: color .12s, background .12s, border-color .12s; }
+.navbtn { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; border: 1px solid var(--border); padding: 2px 10px; border-radius: 2px; color: var(--text-muted); transition: color .12s, background .12s, border-color .12s; }
 .navbtn:hover { color: var(--text); border-color: var(--accent); }
 .navbtn.on { color: var(--bg); background: var(--accent); border-color: var(--accent); font-weight: 600; }
 .navbtn.on:hover { color: var(--bg); }
+.navbtn .chev { color: var(--text-faint); margin-left: 1px; }
+.navbtn:hover .chev, .navbtn.on .chev { color: inherit; }
 .vmenu {
   position: absolute; top: calc(100% + 6px); left: 0; z-index: 100; min-width: 132px;
   background: var(--surface); border: 1px solid var(--border-strong);
@@ -165,8 +168,8 @@ const currentLabel = computed(
 .vitem { display: flex; align-items: center; gap: 7px; padding: 6px 9px; cursor: pointer; color: var(--text-muted); font-size: 12.5px; }
 .vitem:hover { background: var(--bg); color: var(--text); }
 .vitem.sel { color: var(--text); }
-.vitem .ck { width: 12px; color: var(--accent); }
-.vitem .vico { width: 14px; text-align: center; color: var(--text-faint); }
+.vitem .ck { width: 12px; display: inline-flex; color: var(--accent); }
+.vitem .vico { width: 14px; display: inline-flex; justify-content: center; color: var(--text-faint); }
 .calcmenu .vitem { white-space: nowrap; }
 .vitem.sel .vico { color: var(--accent); }
 .vmask { position: fixed; inset: 0; z-index: 99; }
@@ -205,7 +208,7 @@ const currentLabel = computed(
 /* 缩放进度条：拖动精细调节，±按钮步进，右侧百分比 */
 .zoomctl { display: inline-flex; align-items: center; gap: 7px; }
 .zoomctl .zlbl { color: var(--text-faint); }
-.zoomctl .zbtn { width: 16px; height: 16px; line-height: 14px; text-align: center; padding: 0; border: 1px solid var(--border); background: var(--bg); color: var(--text-muted); cursor: pointer; border-radius: 2px; font-size: 12px; }
+.zoomctl .zbtn { width: 16px; height: 16px; display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 1px solid var(--border); background: var(--bg); color: var(--text-muted); cursor: pointer; border-radius: 2px; }
 .zoomctl .zbtn:hover { color: var(--text); border-color: var(--accent); }
 .zoomctl .zrange { width: 120px; height: 3px; cursor: pointer; accent-color: var(--accent); }
 .zoomctl .zpct { width: 34px; text-align: right; font-family: var(--font-mono); color: var(--text-muted); }

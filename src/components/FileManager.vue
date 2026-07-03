@@ -4,6 +4,7 @@ import { fileBridge, bumpLibrary } from '../stores/fileBridge'
 import { parseGxt, metaFromName } from '../viz/gxt/parse.js'
 import { serializeGxt } from '../viz/gxt/serialize.js'
 import { displaySatName } from '../viz/satName.js'
+import Icon from './Icon.vue'
 
 const emit = defineEmits(['close'])
 const api = typeof window !== 'undefined' ? window.api : null
@@ -285,7 +286,7 @@ onMounted(() => { loadOmm(); loadGxt(); loadPreset() })
       <header class="dhd">
         <span class="dt">文件管理</span>
         <button class="winx" type="button" aria-label="关闭" title="关闭" @click="emit('close')">
-          <svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true"><path d="M1 1 L11 11 M11 1 L1 11" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/></svg>
+          <Icon name="x" :size="11" />
         </button>
       </header>
 
@@ -323,7 +324,7 @@ onMounted(() => { loadOmm(); loadGxt(); loadPreset() })
             <div v-if="!grdApi" class="empty-hint">GRD 数据随「星座地图 3D」加载——请切换到该页面后再来管理。</div>
             <template v-else>
               <div class="addbar sub">
-                <button class="mini imp" @click="openAddGrdSat">＋ 添加卫星</button>
+                <button class="mini imp" @click="openAddGrdSat"><Icon name="plus" :size="12" /> 添加卫星</button>
                 <span class="dimnote">支持固定经纬度 / 轨道根数定位</span>
               </div>
               <div v-if="!grdSats.length" class="empty-hint">暂无卫星。可点「添加卫星」新建一颗，或为卫星导入 GRD。</div>
@@ -334,7 +335,7 @@ onMounted(() => { loadOmm(); loadGxt(); loadPreset() })
                     <span class="tcount">{{ grdLonText(sat) }}{{ sat.antennas.length }} 天线</span>
                     <span class="trops">
                       <button class="mini" @click="openEditGrdSat(sat)">编辑</button>
-                      <button class="mini" @click="importGrd(sat)">＋ 导入 GRD</button>
+                      <button class="mini" @click="importGrd(sat)"><Icon name="plus" :size="12" /> 导入 GRD</button>
                       <button class="mini del" @click="removeGrdSat(sat)">删除星</button>
                     </span>
                   </div>
@@ -342,7 +343,7 @@ onMounted(() => { loadOmm(); loadGxt(); loadPreset() })
                     <template v-if="grdAntEdit === grdKeyOf(sat, a)">
                       <input class="ci wide" v-model="grdAntVal" @keydown.enter="commitRenameGrdAnt(sat, a)" @keydown.esc="cancelRenameGrdAnt" />
                       <span class="trops">
-                        <button class="mini imp" @mousedown.prevent @click="commitRenameGrdAnt(sat, a)">✓ 确定</button>
+                        <button class="mini imp" @mousedown.prevent @click="commitRenameGrdAnt(sat, a)"><Icon name="check" :size="12" /> 确定</button>
                         <button class="mini ghost" @click="cancelRenameGrdAnt">取消</button>
                       </span>
                     </template>
@@ -376,18 +377,18 @@ onMounted(() => { loadOmm(); loadGxt(); loadPreset() })
               <span class="dimnote">或手动建：</span>
               <input class="ci" v-model="newSat.name" placeholder="卫星名" @keydown.enter="addGxtSat" />
               <input class="ci nar" v-model="newSat.lon" placeholder="经度°E" @keydown.enter="addGxtSat" />
-              <button class="mini ghost" @click="addGxtSat">＋ 空卫星</button>
+              <button class="mini ghost" @click="addGxtSat"><Icon name="plus" :size="12" /> 空卫星</button>
             </div>
 
             <div v-if="!allSats.length" class="empty-hint">暂无覆盖数据。可新建卫星并导入 GXT。</div>
             <div v-else class="tree">
               <div v-for="sat in allSats" :key="sat.key" class="tnode">
                 <div class="trow sat clk" @click="toggleSat(sat.key)">
-                  <span class="tw">{{ gxtExpanded[sat.key] ? '▾' : '▸' }}</span>
+                  <span class="tw"><Icon :name="gxtExpanded[sat.key] ? 'chevron-down' : 'chevron-right'" :size="12" /></span>
                   <span class="tname">{{ sat.name }}</span>
                   <span class="tcount">{{ (sat.lon != null ? sat.lon + '°E · ' : '') }}{{ sat.beams.length }} 波束</span>
                   <span class="trops" @click.stop>
-                    <button class="mini" @click="openAddBeam(sat)">＋ 波束</button>
+                    <button class="mini" @click="openAddBeam(sat)"><Icon name="plus" :size="12" /> 波束</button>
                     <button class="mini del" @click="removeGxtSat(sat)">删除星</button>
                   </span>
                 </div>
@@ -465,6 +466,7 @@ onMounted(() => { loadOmm(); loadGxt(); loadPreset() })
 .badge.off { color: var(--text-faint); }
 /* 统一低调描边按钮（去掉满屏亮色实心），主次靠位置与标签区分 */
 .mini { padding: 3px 10px; margin-left: 6px; cursor: pointer; font-size: 11.5px; border-radius: 2px;
+  display: inline-flex; align-items: center; justify-content: center; gap: 4px;
   background: var(--bg); border: 1px solid var(--border); color: var(--text-muted); transition: color .12s, border-color .12s; }
 .mini:hover { color: var(--text); border-color: var(--accent); }
 .mini:disabled { opacity: .4; cursor: not-allowed; }
@@ -486,7 +488,7 @@ onMounted(() => { loadOmm(); loadGxt(); loadPreset() })
 .noant { padding: 8px 22px; font-size: 11.5px; color: var(--text-faint); }
 .trow.sat.clk { cursor: pointer; }
 .trow.sat.clk:hover { background: var(--surface); }
-.tw { width: 12px; text-align: center; color: var(--text-faint); font-size: 10px; flex: none; }
+.tw { width: 12px; display: inline-flex; align-items: center; justify-content: center; color: var(--text-faint); flex: none; }
 .addbar, .addbeam { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
 .addbar.sub { margin-top: -4px; margin-bottom: 14px; }
 .mini.imp { margin-left: 0; color: var(--accent); border-color: var(--accent); padding: 4px 14px; }

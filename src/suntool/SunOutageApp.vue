@@ -3,6 +3,7 @@
 // 本组件只负责参数采集与结果展示；导出 Word / ICS 走 sunoutage:* IPC。
 import { ref, shallowRef, reactive, computed, watch } from 'vue'
 import { SAT_PRESETS } from '../linkbudget/satPresets.js'
+import Icon from '../components/Icon.vue'
 
 const api = typeof window !== 'undefined' && window.api ? window.api.sunOutage : null
 const cityApi = typeof window !== 'undefined' && window.api ? window.api.linkBudget : null
@@ -263,7 +264,7 @@ const dEnd = (d) => (isBjt.value ? d.endTimeBJT : d.endTimeUTC)
             <tbody>
               <tr v-for="(d, i) in days" :key="d.date" :class="{ peak: d.isPeak }">
                 <td class="c mono">{{ i + 1 }}</td>
-                <td class="mono">{{ dDate(d) }}<span v-if="d.isPeak" class="star" title="最长日"> ★</span></td>
+                <td class="mono">{{ dDate(d) }}<span v-if="d.isPeak" class="star" title="最长日"> <Icon name="star" :size="10" /></span></td>
                 <td class="r mono">{{ dStart(d) }}</td>
                 <td class="r mono strong">{{ dPeak(d) }}</td>
                 <td class="r mono">{{ dEnd(d) }}</td>
