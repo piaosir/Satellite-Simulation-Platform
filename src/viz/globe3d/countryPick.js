@@ -25,16 +25,23 @@ function init() {
   })
 }
 
-// 环上点经度 → 以 ref 为原点的 (-180, 180] 窗口
+// 经度差 → (-180, 180] 内的最短夹角（带符号）
 const dlon = (l, ref) => ((l - ref + 540) % 360 + 360) % 360 - 180
-// 多边形（外环+洞）偶奇判定：对所有环统一计「向 +x 的水平射线」交叉数
+// 多边形（外环+洞）偶奇判定：对所有环统一计「向 +x 的水平射线」交叉数。
+// 环上各点先转成以 ref 为锚点的「连续展开」本地 x：逐点用与上一点的最短夹角累加，而非各自独立对 ref 取模。
+// 若各点独立取模（如 dlon(p, ref)），当测试点的对跖经线正好穿过该国国土时（如堪萨斯↔中国西部），
+// 环会被人为切成跳变的两段，导致射线交叉数算错、误判成一个毫不相关的国家（北美/南美 vs 亚洲互为对跖，故此前只有它们会错）。
 function hitPolygon(rings, lon, lat) {
   let inside = false
   for (const ring of rings) {
-    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const n = ring.length
+    const xs = new Array(n)
+    xs[0] = dlon(ring[0][0], lon)
+    for (let k = 1; k < n; k++) xs[k] = xs[k - 1] + dlon(ring[k][0], ring[k - 1][0])
+    for (let i = 0, j = n - 1; i < n; j = i++) {
       const yi = ring[i][1], yj = ring[j][1]
       if ((yi > lat) === (yj > lat)) continue
-      const xi = dlon(ring[i][0], lon), xj = dlon(ring[j][0], lon)
+      const xi = xs[i], xj = xs[j]
       if (xi + (lat - yi) / (yj - yi) * (xj - xi) > 0) inside = !inside
     }
   }

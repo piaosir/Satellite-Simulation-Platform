@@ -1752,6 +1752,16 @@ function onMapRightClick(ll, pos) {
   const t = curTraj()
   if (t) { if (ll) { t.pts.push({ lat: ll.lat, lon: ll.lon }); syncMarkers() } return }   // 描绘中：连续加点，不弹菜单
   ctxMenu.value = { x: pos ? pos.x : 0, y: pos ? pos.y : 0, ll: ll || null }
+  nextTick(clampCtxMenu)   // 按菜单实际渲染尺寸夹紧到视口内：靠右/靠下边缘右键时不再被裁掉一截
+}
+const ctxMenuEl = ref(null)   // 右键菜单 DOM（量实际宽高用）
+function clampCtxMenu() {
+  const el = ctxMenuEl.value, m = ctxMenu.value
+  if (!el || !m) return
+  const r = el.getBoundingClientRect(), pad = 4
+  const x = Math.max(pad, Math.min(m.x, window.innerWidth - r.width - pad))
+  const y = Math.max(pad, Math.min(m.y, window.innerHeight - r.height - pad))
+  if (x !== m.x || y !== m.y) ctxMenu.value = { ...m, x, y }
 }
 function closeCtx() { ctxMenu.value = null }
 const ctxLL = () => ctxMenu.value && ctxMenu.value.ll
@@ -2817,7 +2827,7 @@ onBeforeUnmount(() => {
     <!-- 地图右键上下文菜单（3D / 平面图共用）；点击空白处或再次右键关闭 -->
     <template v-if="ctxMenu">
       <div class="ctx-mask" @click="closeCtx" @contextmenu.prevent="closeCtx"></div>
-      <div class="ctx-menu" :style="{ left: ctxMenu.x + 'px', top: ctxMenu.y + 'px' }">
+      <div ref="ctxMenuEl" class="ctx-menu" :style="{ left: ctxMenu.x + 'px', top: ctxMenu.y + 'px' }">
         <div class="ctx-item" :class="{ dis: !ctxMenu.ll }" @click="ctxAddPoint">添加点标记（当前经纬度）</div>
         <div class="ctx-item" :class="{ dis: !ctxMenu.ll }" @click="ctxAddStation">添加地面站（当前经纬度）</div>
         <div class="ctx-item" :class="{ dis: !ctxMenu.ll }" @click="ctxStartTraj('sea')">添加航行轨迹</div>
@@ -3521,7 +3531,7 @@ onBeforeUnmount(() => {
 
 /* 地图右键上下文菜单 */
 .ctx-mask { position: fixed; inset: 0; z-index: 60; }
-.ctx-menu { position: fixed; z-index: 61; min-width: 190px; background: var(--surface); border: 1px solid var(--border-strong); box-shadow: 0 8px 24px rgba(0,0,0,0.45); padding: 4px; font-size: 12px; color: var(--text); }
+.ctx-menu { position: fixed; z-index: 61; min-width: 190px; max-height: calc(100vh - 8px); overflow-y: auto; background: var(--surface); border: 1px solid var(--border-strong); box-shadow: 0 8px 24px rgba(0,0,0,0.45); padding: 4px; font-size: 12px; color: var(--text); }
 .ctx-item { padding: 6px 12px; cursor: pointer; white-space: nowrap; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .ctx-item:hover { background: var(--bg); color: var(--accent); }
 .ctx-item.dis, .ctx-item.dis:hover { color: var(--text-muted); opacity: 0.45; cursor: default; background: none; }
