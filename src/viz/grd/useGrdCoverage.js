@@ -222,7 +222,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
   let _colorSeq = 0
   const nextElevColor = () => SAT_PALETTE[_colorSeq++ % SAT_PALETTE.length]
   // 预置星（index）补齐统一节点字段：GEO 定点(lon,0,GEO_ALT)、仰角线默认关、卫星名默认开、颜色默认白
-  const normPreset = (s) => ({ ...s, kind: 'preset', lat: 0, altKm: GEO_ALT, noradId: null, els: '5,10', elevColor: '#ffffff', elevShow: false, elevWidth: 1.3, elevLabelSize: 18, iconSize: 10, labelSize: 4, labelShow: true })
+  const normPreset = (s) => ({ ...s, kind: 'preset', lat: 0, altKm: GEO_ALT, noradId: null, els: '5,10', elevColor: '#ffffff', elevShow: false, elevWidth: 1.3, elevLabelSize: 18, iconSize: 30, labelSize: 9, iconShow: true, labelShow: true })
   // 同名加点号去重，作为节点唯一 key（folder）
   function genFolder(name) {
     const base = (name || '卫星').trim() || '卫星'
@@ -243,7 +243,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
       els: draft.els != null ? draft.els : '5,10',
       elevColor: draft.color || '#ffffff', elevShow: false, elevWidth: Number(draft.elevWidth) || 1.3,
       elevLabelSize: Number(draft.elevLabelSize) || 18,
-      iconSize: Number(draft.iconSize) || 10, labelSize: Number(draft.labelSize) || 4, labelShow: true,
+      iconSize: Number(draft.iconSize) || 30, labelSize: Number(draft.labelSize) || 9, iconShow: draft.iconShow !== false, labelShow: true,
       antennas: []
     }
     sats.value = [...sats.value, node]

@@ -462,7 +462,7 @@ export function createFlatCoverage(canvas) {
     // 故 2D 字号 = 地理度数 × k()。标定：3D 普通省名 hpx=0.02→1.146°，对应 2D 基准 l.px=15 → 系数 k()/13.1。
     // 这样把"每度像素"折进 zf：font = l.px × 倍率 × (k()/13.1)，与窗口尺寸无关、与 3D 一致。
     // 标记/波束/数值/覆盖/卫星层等注记文字：随缩放联动（乘 mz=scale，scale=1 即当前大小，与国家名同率缩放）；
-    // 卫星图标本身按克制版 iz 联动（同地面站/点标记），避免大缩放下比 3D 观感膨大。
+    // 卫星图标改按 mz 联动（与卫星名标签同率缩放，避免图标/标签缩放不一致），不同于地面站/点标记的克制版 iz。
     const ns = sizes.nameScale || 1, zf = k() / 13.1
     if (nameMode !== 'off') {
       ctx.globalAlpha = labelStyle.countryOpacity
@@ -502,11 +502,12 @@ export function createFlatCoverage(canvas) {
       // d.px：屏幕恒定像素半径（Polygon 顶点手柄，不随缩放变大）；否则沿用世界联动尺寸
       for (const d of (satLayer.dots || [])) dot(d.lon, d.lat, d.px != null ? Math.max(1, d.px) : Math.max(2, d.r != null ? d.r : 4) * mz, hex(d.color != null ? d.color : 0xffd27a), true)
       for (const l of (satLayer.labels || [])) drawText(l.text, l.lon, l.lat, Math.round((l.hpx || 0.026) * 750 * zf), l.color || '#fff')   // 世界尺寸字号：与 3D makeCovLabel 同源（套用地名标定 hpx0.02↔px15，zf=k()/13.1），2D/3D 一致
-      for (const s of (satLayer.sats || [])) drawSatIcon(s.lon, s.lat, (s.iconSize || sizes.satIcon || 30) * iz * SAT_ICON_K, hex(s.color != null ? s.color : 0xffd27a))   // 颜色/大小随各星设置；图标按克制版 iz 联动 + SAT_ICON_K 对齐 3D 观感
+      for (const s of (satLayer.sats || [])) { if (s.lon == null || s.lat == null || s.iconShow === false) continue; drawSatIcon(s.lon, s.lat, (s.iconSize || sizes.satIcon || 30) * mz * SAT_ICON_K, hex(s.color != null ? s.color : 0xffd27a)) }   // 颜色/大小随各星设置；图标按 mz 联动，与卫星名标签同率缩放；iconShow 单独控制显隐
       for (const s of (satLayer.sats || [])) {
         if (!s.name || s.lon == null || s.lat == null || s.labelShow === false) continue
-        const ls = (s.labelSize || 14) * mz
-        drawText(s.name, s.lon, s.lat, ls, hex(s.color != null ? s.color : 0xffd27a), { dy: -((s.iconSize || sizes.satIcon || 30) * iz * SAT_ICON_K * 0.5 + ls * 0.6) })
+        const ls = (s.labelSize || 9) * mz
+        // 名称紧贴图标：间隙=0，只留图标半高的偏移（无图标时名称直接锚在星位置）
+        drawText(s.name, s.lon, s.lat, ls, hex(s.color != null ? s.color : 0xffd27a), { dy: -(s.iconShow !== false ? (s.iconSize || sizes.satIcon || 30) * mz * SAT_ICON_K * 0.5 : 0) })
       }
     }
     ctx.restore()
@@ -608,7 +609,7 @@ export function createFlatCoverage(canvas) {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     ctx.save(); ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip()
     drawFieldOverlays()   // GRD 天线名/波束中心/数值标签（覆盖层之上）
-    if (focusSat) drawSatIcon(focusSat.lon, focusSat.lat, sizes.satIcon * Math.sqrt(scale) * SAT_ICON_K, '#ffffff')   // 聚焦卫星（最上层，克制版联动 + SAT_ICON_K，与卫星图标同率、和 3D 观感对齐）
+    if (focusSat) drawSatIcon(focusSat.lon, focusSat.lat, sizes.satIcon * scale * SAT_ICON_K, '#ffffff')   // 聚焦卫星（最上层，与卫星图标同率、按 mz 联动）
     ctx.restore()
   }
 

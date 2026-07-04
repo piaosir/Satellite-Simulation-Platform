@@ -986,7 +986,7 @@ export function createGlobeScene(container, quality = {}) {
     // 卫星名：显示仰角线的卫星，在其真实位置（轨道高度处）画名称（颜色随该星仰角线色）；不画星点本体
     for (const s of (spec.sats || [])) {
       if (s.lon == null || !Number.isFinite(s.lat) || !s.name || s.labelShow === false) continue
-      const spr = makeCovLabel(s.name, (s.labelSize || 14) / 533, s.nameColor)
+      const spr = makeCovLabel(s.name, (s.labelSize || 9) / 533, s.nameColor)
       spr.position.copy(llaToVec(s.lat, s.lon, s.altKm != null ? s.altKm : 35786)); spr.renderOrder = 14; g.add(spr)
     }
     satLayerGroup = g; scene.add(g)
