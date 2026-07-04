@@ -1,5 +1,6 @@
 <script setup>
 import { reactive, ref, computed, onMounted, watch } from 'vue'
+import { logMsg } from '../stores/log'
 
 const hasApi = typeof window !== 'undefined' && !!window.api
 
@@ -89,6 +90,7 @@ const toastMsg = ref('')
 let toastT
 function toast(m) {
   toastMsg.value = m
+  logMsg(`链路预算：${m}`)
   clearTimeout(toastT)
   toastT = setTimeout(() => (toastMsg.value = ''), 2800)
 }

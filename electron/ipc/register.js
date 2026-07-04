@@ -3,7 +3,7 @@ const fs = require('fs')
 const createOmm = require('../services/omm')
 
 // 注册所有 IPC 处理器。core 为返回引擎实例的函数（延迟解析）。
-function register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget, openSunOutage, grd }) {
+function register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget, openSunOutage, grd, confirmCloseLinkBudget }) {
   const omm = createOmm(core)
   ipcMain.handle('omm:load', (_e, group, online) => omm.load(group, online))
   ipcMain.handle('omm:positions', (_e, group, iso) => omm.positions(group, iso))
@@ -123,6 +123,8 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
 
   // 打开「GEO 链路预算」独立工作台窗口（单例，由 main 注入创建函数）
   ipcMain.handle('linkbudget:open', () => { if (openLinkBudget) openLinkBudget(); return true })
+  // 关窗守卫：渲染进程问过用户「配置存了没」（取消/不保存/保存）并按需存盘后，调这个才真正关闭窗口
+  ipcMain.handle('linkbudget:confirmClose', () => { if (confirmCloseLinkBudget) confirmCloseLinkBudget(); return true })
 
   // ---- 日凌预报（独立窗口 + 计算 + Word/ICS 导出）----
   ipcMain.handle('suntool:open', () => { if (openSunOutage) openSunOutage(); return true })
@@ -278,6 +280,9 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
       return { ok: false, error: busy ? '文件可能正被其他程序打开（如 Excel），请关闭后重试' : (err.message || String(err)) }
     }
   })
+
+  // ---- 应用版本（帮助 → 关于 对话框显示）----
+  ipcMain.handle('app:version', () => require('electron').app.getVersion())
 
   // ---- 设备 ID（按本机 MAC 派生的稳定短码，作为「用户 ID」用于配置分享）----
   // 取所有非内网物理网卡 MAC 排序后 sha256，取前 10 位 hex 大写；落盘 settings 保证跨网卡变化也稳定。

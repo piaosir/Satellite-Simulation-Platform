@@ -7,6 +7,8 @@ import { zoom } from '../stores/zoom'
 import { effective as displayQuality } from '../stores/displayQuality'
 import { viewPrefs } from '../stores/viewPrefs'
 import { setGrdBridge, clearGrdBridge, fileBridge } from '../stores/fileBridge'
+import { shellUi } from '../stores/shellUi'
+import { logMsg } from '../stores/log'
 import { alertMsg, appAlert, closeAlert } from '../stores/alert'
 import { displaySatName } from '../viz/satName.js'
 import { serializeGxt } from '../viz/gxt/serialize.js'
@@ -56,6 +58,7 @@ const DEG = Math.PI / 180
 const STORE_KEY = 'constellation3d/selection'
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v))
 
+const g3el = ref(null)             // 本页根节点（position:relative 定位参照系，性能表浮窗默认坐标据此计算）
 const el = ref(null)
 const fileInput = ref(null)
 const flatCanvas = ref(null)       // 平面覆盖图 canvas
@@ -86,7 +89,6 @@ const cardCollapsed = ref(false)   // 信息卡收起/展开（点标题栏切�
 const beam = ref('')
 const beamAuto = ref('')
 const beamLock = ref(false)
-const geoOpen = ref(false)         // 地名设置面板开关
 const apiOk = typeof window !== 'undefined' && !!(window.api && window.api.omm)
 const covApiOk = typeof window !== 'undefined' && !!(window.api && window.api.coverage)
 const grdApiOk = typeof window !== 'undefined' && !!(window.api && window.api.coverageGrd)
@@ -128,9 +130,16 @@ async function openPerf(sat, a) {
 }
 function closePerf() { perfKey.value = '' }
 // ===== 浮窗拖拽：移动（标题栏）/ 缩放（右下角）/ 分隔（中缝）。统一一个临时 window 监听会话 =====
+// 浮窗定位以 .g3（本页根，position:relative）为参照系，而非整个浏览器窗口：
+// .g3 只是主内容区（活动栏/侧栏/菜单栏/工具栏/状态栏均不在其内），用 window.innerWidth/innerHeight
+// 算出的默认坐标会偏出 .g3 实际可视范围（尤其侧栏展开时），窗口对不上地图区、甚至被裁掉一截。
+function g3Size() {
+  const r = g3el.value
+  return r ? { w: r.clientWidth, h: r.clientHeight } : { w: window.innerWidth, h: window.innerHeight }
+}
 function perfWinInit() {
   if (perfWin.value.init) return
-  const vw = window.innerWidth, vh = window.innerHeight
+  const { w: vw, h: vh } = g3Size()
   const w = Math.min(760, vw - 48), h = Math.min(Math.round(vh * 0.74), vh - 48)
   perfWin.value = { x: Math.max(12, vw - w - 24), y: Math.max(12, Math.round(vh * 0.12)), w, h, init: true }
   perfInputH.value = Math.min(190, Math.round(h * 0.34))
@@ -146,8 +155,8 @@ function perfDragMove(e) {
   e.preventDefault()
   const sx = e.clientX, sy = e.clientY, o = { ...perfWin.value }
   perfDragSession((ev) => {
-    const vw = window.innerWidth, vh = window.innerHeight
-    const x = Math.max(-o.w + 96, Math.min(vw - 48, o.x + (ev.clientX - sx)))   // 不让完全拖出视口
+    const { w: vw, h: vh } = g3Size()
+    const x = Math.max(-o.w + 96, Math.min(vw - 48, o.x + (ev.clientX - sx)))   // 不让完全拖出 .g3 可视范围
     const y = Math.max(0, Math.min(vh - 32, o.y + (ev.clientY - sy)))
     perfWin.value = { ...perfWin.value, x, y }
   })
@@ -160,7 +169,7 @@ function perfDragResize(e, dir = 'se') {
   const minW = 380, minH = 260
   const E = dir.includes('e'), W = dir.includes('w'), S = dir.includes('s'), N = dir.includes('n')
   perfDragSession((ev) => {
-    const vw = window.innerWidth, vh = window.innerHeight
+    const { w: vw, h: vh } = g3Size()
     let x = o.x, y = o.y, w = o.w, h = o.h
     const dx = ev.clientX - sx, dy = ev.clientY - sy
     if (E) w = Math.max(minW, Math.min(o.w + dx, vw - o.x - 6))
@@ -587,6 +596,7 @@ function ingest(sats, payloadGroup, fetchedAt) {
   dataTime.value = fetchedAt ? fmtDate(new Date(fetchedAt)) : '—'
   rebuildRenderSet()
   status.value = entries.length ? '' : '无有效卫星'
+  if (entries.length) logMsg(`${payloadGroup === 'import' ? '导入文件' : (GROUP_LABEL[payloadGroup] || '星座')}：加载 ${entries.length} 颗卫星（星历 ${dataTime.value}）`)
   // 跨分组/恢复选中：按 NORAD 定位
   if (pendingNorad) {
     const e = entries.find((x) => String(x.noradId) === String(pendingNorad))
@@ -927,7 +937,7 @@ async function saveExport(bytes, defaultName, filters) {
   // 成功/取消无需提示（已走系统保存对话框，用户自选路径即知结果）；仅失败弹错。
   if (r && !r.ok && !r.canceled) { const msg = (r && r.error) || '写入失败'; appAlert('导出失败：' + msg) }
 }
-// fmt: 'png2' | 'png4' | 'pdf' | 'gxt' | 'kml'。无论当前在 2D 还是 3D 视图，都按 2D 平面图导出整幅世界图。
+// fmt: 'png2' | 'png4' | 'png6' | 'pdf' | 'gxt' | 'kml'。无论当前在 2D 还是 3D 视图，都按 2D 平面图导出整幅世界图。
 // scope: 'world'(整幅世界图，默认) | 'view'(当前视图，所见即所得)。view 模式需在 2D 平面图下，按屏幕缩放/平移出图。
 // gxt/kml 是数据导出（当前画面绘制的覆盖等值线，GXT+GRD 来源，同 collectGxt），与 scope 无关。
 async function exportMap(fmt, scope) {
@@ -967,7 +977,7 @@ async function exportMap(fmt, scope) {
       const bytes = await renderFlatPDF(flat, { base: 2400, fontBase64, view })
       await saveExport(bytes, `覆盖图_${tag}.pdf`, [{ name: 'PDF 矢量图', extensions: ['pdf'] }])
     } else {
-      const factor = fmt === 'png4' ? 4 : 2
+      const factor = fmt === 'png6' ? 6 : fmt === 'png4' ? 4 : 2
       const bytes = await renderFlatPNG(flat, { base: 2400, factor, view })
       await saveExport(bytes, `覆盖图_${tag}_${factor}x.png`, [{ name: 'PNG 图片', extensions: ['png'] }])
     }
@@ -1679,7 +1689,6 @@ function redrawSats() {
 
 // ===================== 标记 / 地面站 / 轨迹 =====================
 const MK_KEY = 'globe3d/markers'
-const mkOpen = ref(false)
 const points = ref([])             // [{id,lat,lon}]
 const stations = ref([])           // [{id,lat,lon,name}]
 const trajectories = ref([])       // [{id,name,kind,pts:[{lat,lon}]}]
@@ -1766,15 +1775,15 @@ function clearTrajs() { trajectories.value = []; activeTraj.value = ''; syncMark
 function ctxClearPolys() { polys.value = []; polyDrawId.value = ''; polyEditId.value = ''; polyMoveId.value = ''; polyVertsOpen.value = ''; polyRefresh(); closeCtx() }
 function clearAllMk() { clearAllMarkers(); closeCtx() }
 function clearAllCoverage() { if (covApiOk) clearCoverage(); if (grdApiOk) grd.clearDrawing(); closeCtx() }
-function ctxOpenMarkers() { mkOpen.value = true; closeCtx() }
-function ctxOpenGeo() { geoOpen.value = true; closeCtx() }
+function ctxOpenMarkers() { shellUi.side = 'markers'; closeCtx() }
+function ctxOpenGeo() { shellUi.side = 'geo'; closeCtx() }
 // 右键处命中国家（点在多边形内判定）→ 打开地图设置并选中该国进入逐国设色
 function ctxSetLandColor() {
   const ll = ctxLL(); closeCtx()
   if (!ll) return
   const c = countryAt(ll.lon, ll.lat)
   if (!c || !c.zh) { appAlert('该位置不在陆地国家范围内'); return }
-  geoOpen.value = true
+  shellUi.side = 'geo'
   pickLandCountry(c)
 }
 function ctxOpenCovSet() { covSetOpen.value = true; closeCtx() }   // 打开覆盖图显示设置弹窗（GRD 4 + GXT 3，含字号/大小条）
@@ -1802,8 +1811,6 @@ function loadMarkers() {
     if (d) { points.value = d.points || []; stations.value = d.stations || []; trajectories.value = d.trajectories || [] }
   } catch { /* ignore */ }
 }
-function toggleMarkers() { mkOpen.value = !mkOpen.value }
-function toggleGeo() { geoOpen.value = !geoOpen.value }
 
 function addPoint(lat, lon, face) {
   if (!validLat(lat) || !validLon(lon)) return
@@ -1850,8 +1857,10 @@ const timeLabel = () => {
 function saveSelection() {
   try { localStorage.setItem(STORE_KEY, JSON.stringify({ groupIndex: groupIndex.value, selNorad: selEntry ? String(selEntry.noradId) : '' })) } catch { /* ignore */ }
 }
-function onGroup(e) {
-  groupIndex.value = Number(e.target.value); clearSearch()
+// 资源管理器「星座」树行点击切换分组（原顶栏下拉已并入树）
+function pickGroup(i) {
+  if (!Number.isInteger(i) || i < 0 || i >= GROUPS.length || i === groupIndex.value) return
+  groupIndex.value = i; clearSearch()
   loadGroup(); saveSelection()
 }
 
@@ -1892,7 +1901,7 @@ function snapshot() {
     mkPt: markPtFont.value, mkStIcon: stIconSize.value, mkStFont: stFontSize.value, mkPtDot: markPtDot.value, mkTrajDot: trajDotSize.value,
     mkPtShow: showPtLabel.value, mkStShow: showStName.value,
     mkPtLayer: showPtLayer.value, mkStLayer: showStLayer.value, mkTrajLayer: showTrajLayer.value,
-    covOpen: covOpen.value, mkOpen: mkOpen.value, geoOpen: geoOpen.value, polyOpen: polyOpen.value,
+    covOpen: covOpen.value, polyOpen: polyOpen.value,
     grdOpen: grdOpen.value, grd: grd.getState(), perf: perf.getState(),
     cov: {
       items: serializeCov(), cleared: covCleared.value,
@@ -1937,8 +1946,6 @@ async function restoreSettings() {
   if (typeof s.autoRotate === 'boolean') { autoRotate.value = s.autoRotate; scene.setAutoRotate(autoRotate.value) }
   if (Number.isFinite(s.autoRotateSpeed)) { viewPrefs.autoRotateSpeed = s.autoRotateSpeed; scene.setAutoRotateSpeed(s.autoRotateSpeed) }
   if (typeof s.beamLock === 'boolean') beamLock.value = s.beamLock
-  if (typeof s.mkOpen === 'boolean') mkOpen.value = s.mkOpen
-  if (typeof s.geoOpen === 'boolean') geoOpen.value = s.geoOpen
   if (typeof s.polyOpen === 'boolean') polyOpen.value = s.polyOpen
   if (s.showProvinces) {
     showProvinces.value = true
@@ -2005,6 +2012,13 @@ onMounted(async () => {
   covNav.toggleGrd = toggleGrd; covNav.toggleCov = toggleCoverage
   covNav.polyAvail = true; covNav.togglePoly = togglePolyPanel   // Polygon 面板（纯本地功能，不依赖 IPC）
   covNav.exportAvail = true; covNav.exportMap = exportMap   // 顶栏「导出图」入口（高清 PNG / 矢量 PDF）
+  watch(status, (v) => { if (v) logMsg(v) })   // 加载进度/失败信息落日志窗格
+  // 活动栏切换侧栏视图 → 首次进入时懒加载对应面板内容（复用原 toggle* 的索引加载/重绘逻辑）
+  watch(() => shellUi.side, (s) => {
+    if (s === 'gxt' && !covOpen.value) toggleCoverage()
+    else if (s === 'antenna' && !grdOpen.value) toggleGrd()
+    else if (s === 'poly' && !polyOpen.value) togglePolyPanel()
+  }, { immediate: true })
   scene = createGlobeScene(el.value, { ...displayQuality.value })
   scene.setAutoRotate(autoRotate.value)
   scene.setLabelMode(nameMode.value)
@@ -2079,57 +2093,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="g3">
-    <div class="bar">
-      <span class="t">星座地图 · 3D</span>
-      <select :value="groupIndex" @change="onGroup">
-        <option v-for="(g, i) in GROUPS" :key="g.key" :value="i">{{ g.label }}</option>
-      </select>
-      <div class="search">
-        <input :value="keyword" placeholder="搜索卫星名 / 编号" @input="onSearch" />
-        <span v-if="keyword" class="clr" @click="clearSearch"><Icon name="x" :size="11" /></span>
-        <div v-if="searchResults.length" class="panel">
-          <div v-for="item in searchResults" :key="item.noradId" class="item" @click="pickResult(item)">
-            <div class="nm">{{ item.name }}</div>
-            <div class="sub">{{ item.groupLabel }} · NORAD {{ item.noradId }}<span v-if="item.slot"> · {{ item.slot }}</span></div>
-          </div>
-        </div>
-      </div>
-      <span class="mini" :class="{ on: autoRotate }" @click="toggleRotate">{{ autoRotate ? '旋转中' : '旋转停' }}</span>
-      <span class="mini" :class="{ on: live }" @click="toggleLive">{{ live ? '实时开' : '实时关' }}</span>
-      <span class="mini" :class="{ on: mkOpen }" @click="toggleMarkers">标记</span>
-      <span class="mini" :class="{ on: geoOpen }" @click="toggleGeo">地图设置</span>
-      <span class="meta">在轨 {{ satCount }}<template v-if="shownCount && shownCount < satCount"> · 渲染 {{ shownCount }}</template>
-        <template v-if="dataTime"> · OMM {{ dataTime }}</template>
-        <template v-if="status"> · {{ status }}</template></span>
-    </div>
-
-    <div class="tl">
-      <div class="tb-track" ref="track" :class="{ dis: live }" @mousedown="trackDown">
-        <span v-for="t in timeTicks" :key="'k' + t.min" class="tb-tick" :style="{ left: t.min / 14.4 + '%' }"></span>
-        <div class="tb-bar"><div class="tb-fill" :style="{ width: timePct + '%' }"></div></div>
-        <div class="tb-knob" :style="{ left: timePct + '%' }"></div>
-        <span v-for="t in timeTicks" :key="'m' + t.min" class="tb-mark" :style="tickStyle(t.min)">{{ t.label }}</span>
-      </div>
-      <span class="tlab">{{ timeLabel() }}</span>
-      <span class="st" :class="{ dis: live }" @click="step(-60)">−1h</span>
-      <span class="st" :class="{ dis: live }" @click="step(-10)">−10m</span>
-      <span class="st" :class="{ dis: live }" @click="step(-1)">−1m</span>
-      <span class="st" :class="{ dis: live || !timeOffset }" @click="resetTime">此刻</span>
-      <span class="st" :class="{ dis: live }" @click="step(1)">+1m</span>
-      <span class="st" :class="{ dis: live }" @click="step(10)">+10m</span>
-      <span class="st" :class="{ dis: live }" @click="step(60)">+1h</span>
-      <span class="beamc">
-        <template v-if="selected">
-          <span class="bl">波束角</span>
-          <input class="bi" :value="beam" :placeholder="beamAuto || '自动'" @input="onBeam" />
-          <span class="bu">°</span>
-          <span class="lock" :class="{ on: beamLock }" @click="toggleBeamLock"><Icon :name="beamLock ? 'lock' : 'lock-open'" :size="12" /></span>
-        </template>
-        <span v-else class="hint">点击卫星设置波束角</span>
-      </span>
-    </div>
-
+  <div class="g3" ref="g3el">
     <div class="body">
       <div class="stage-wrap">
         <div ref="el" class="stage"></div>
@@ -2188,11 +2152,45 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <div v-if="covOpen" class="cov-side">
-        <div class="csh"><span class="csn">GEO 卫星覆盖（GXT）</span>
-          <span class="flatbtn" :class="{ on: flatView }" @click="toggleFlat">{{ flatView ? '球体' : '平面图' }}</span>
-          <button class="winx" type="button" aria-label="关闭" title="关闭" @click="toggleCoverage"><svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true"><path d="M1 1 L11 11 M11 1 L1 11" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/></svg></button></div>
+      <!-- 侧栏视图（Teleport 到 App.vue #side-view）：活动栏图标切换，同屏只显示一个视图（v-show），
+           标题显示在侧栏头部（App.vue），面板懒加载由 shellUi.side 的 watcher 触发原 toggle* -->
+      <Teleport v-if="shellUi.side" to="#side-view">
+        <!-- 星座：卫星搜索 + 旋转/实时开关 + 在轨/OMM 状态 + 分组列表 -->
+        <div v-show="shellUi.side === 'constellation'" class="sview">
+          <div class="ptool">
+            <div class="search">
+              <input :value="keyword" placeholder="搜索卫星名 / 编号" @input="onSearch" />
+              <span v-if="keyword" class="clr" @click="clearSearch"><Icon name="x" :size="11" /></span>
+              <div v-if="searchResults.length" class="panel">
+                <div v-for="item in searchResults" :key="item.noradId" class="item" @click="pickResult(item)">
+                  <div class="nm">{{ item.name }}</div>
+                  <div class="sub">{{ item.groupLabel }} · NORAD {{ item.noradId }}<span v-if="item.slot"> · {{ item.slot }}</span></div>
+                </div>
+              </div>
+            </div>
+            <div class="pchips">
+              <span class="mini" :class="{ on: autoRotate }" @click="toggleRotate">{{ autoRotate ? '旋转中' : '旋转停' }}</span>
+              <span class="mini" :class="{ on: live }" @click="toggleLive">{{ live ? '实时开' : '实时关' }}</span>
+            </div>
+            <div class="pstat">在轨 {{ satCount }}<template v-if="shownCount && shownCount < satCount"> · 渲染 {{ shownCount }}</template>
+              <template v-if="dataTime"> · OMM {{ dataTime }}</template>
+              <template v-if="status"> · {{ status }}</template></div>
+          </div>
+          <div class="pgl">
+            <div
+              v-for="(g, i) in GROUPS" :key="g.key"
+              class="grprow" :class="{ sel: i === groupIndex }"
+              @click="pickGroup(i)"
+            >
+              <span class="pgico"><Icon name="satellite" :size="12" /></span>
+              <span class="pgn">{{ g.label }}</span>
+            </div>
+          </div>
+        </div>
 
+        <!-- 覆盖图（GXT） -->
+        <div v-show="shellUi.side === 'gxt'" class="sview">
+        <div v-if="covOpen" class="cov-side docked">
         <div class="sec">
           <div class="srow"><label>添加卫星</label>
             <select :value="covAddSel" @change="e => { covAddSel = e.target.value; addCovSat() }">
@@ -2274,7 +2272,7 @@ onBeforeUnmount(() => {
               </div>
 
               <!-- 线粗细（批次统一） -->
-              <div class="srow"><label>线粗</label><input class="rng" type="range" min="0.6" max="5" step="0.2" :value="ba.width" @input="e => onBatchWidth(it, ba, e)" /><span class="u">{{ ba.width }}</span></div>
+              <div class="srow"><label>线粗</label><input class="rng" type="range" min="0.6" max="8" step="0.2" :value="ba.width" @input="e => onBatchWidth(it, ba, e)" /><span class="u">{{ ba.width }}</span></div>
             </template>
           </div>
           <div class="addbatch" @click="addBatch(it)"><Icon name="plus" :size="11" /> 新建批次</div>
@@ -2302,14 +2300,12 @@ onBeforeUnmount(() => {
           <span v-if="covStatus" class="cst">{{ covStatus }}</span>
           <span class="cclr" @click="clearCoverage">清除绘制</span>
         </div>
-      </div>
+        </div>
+        </div>
 
-      <!-- Polygon 独立面板（顶栏「Polygon」按钮，覆盖分析右侧）：协调区多边形的绘制 / 调点 / 扩缩 / 导出 -->
-      <div v-if="polyOpen" class="cov-side poly-side">
-        <div class="csh"><span class="csn">Polygon</span>
-          <span class="flatbtn" :class="{ on: flatView }" @click="toggleFlat">{{ flatView ? '球体' : '平面图' }}</span>
-          <button class="winx" type="button" aria-label="关闭" title="关闭" @click="togglePolyPanel"><svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true"><path d="M1 1 L11 11 M11 1 L1 11" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/></svg></button></div>
-
+        <!-- Polygon：协调区多边形的绘制 / 调点 / 扩缩 / 导出 -->
+        <div v-show="shellUi.side === 'poly'" class="sview">
+        <div v-if="polyOpen" class="cov-side poly-side docked">
         <div class="sec">
           <div class="sect"><span>协调区多边形</span><span class="lnk" @click="polyStartDraw"><Icon name="plus" :size="11" /> 绘制</span></div>
           <div v-if="!polys.length && !polyDrawId" class="tip">画一个多边形圈定协调区域，给区域标一个数值（如谱密度，数值含义与单位不做定义），可导出 GXT / KML。点「＋ 绘制」后在地图上右键连续加顶点（3D / 平面图均可）。</div>
@@ -2365,13 +2361,12 @@ onBeforeUnmount(() => {
           <span class="expb2" title="显示中的多边形导出为 GXT（每个多边形一条闭合等值线，值=数值栏）" @click="exportPolys('gxt')">导出 GXT</span>
           <span class="expb2" title="显示中的多边形导出为 KML（保留名称 / 数值 / 颜色）" @click="exportPolys('kml')">导出 KML</span>
         </div>
-      </div>
+        </div>
+        </div>
 
-      <div v-if="grdOpen" class="cov-side grd-side">
-        <div class="csh"><span class="csn">覆盖分析</span>
-          <span class="flatbtn" :class="{ on: flatView }" @click="toggleFlat">{{ flatView ? '球体' : '平面图' }}</span>
-          <button class="winx" type="button" aria-label="关闭" title="关闭" @click="toggleGrd"><svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true"><path d="M1 1 L11 11 M11 1 L1 11" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/></svg></button></div>
-
+        <!-- 卫星天线树（覆盖分析 GRD）：卫星 → 天线 → 性能指标表 -->
+        <div v-show="shellUi.side === 'antenna'" class="sview">
+        <div v-if="grdOpen" class="cov-side grd-side docked">
         <div class="sec">
           <div class="sect"><span>卫星 / 天线</span><span class="lnk" title="添加自定义卫星，或从星座点选/搜索关联卫星" @click="openAddSat"><Icon name="plus" :size="11" /> 卫星</span></div>
           <div class="gtree">
@@ -2390,17 +2385,16 @@ onBeforeUnmount(() => {
                   </g>
                 </svg>
                 <span class="gsname" @click="grd.toggleExpand(sat.folder)" :title="sat.satName">{{ sat.satName }}<em v-if="sat.antennas.length">{{ sat.antennas.length }}</em><i v-if="sat.elements" class="simtag" title="轨道根数模拟星：星下点随时间移动">轨</i></span>
+                <!-- 显示开关（卫星名 / 仰角线）：图标按钮，色随该星颜色（在「✎」里改），与右侧操作图标以竖线分组 -->
+                <span class="sdisp">
+                  <span class="ic" :class="{ on: sat.labelShow !== false }" title="在地图上显示/隐藏该卫星（3D 名称、平面图标 + 名称）" @click.stop="toggleSatLabel(sat)"><Icon :name="sat.labelShow !== false ? 'eye' : 'eye-off'" :size="12" /></span>
+                  <span class="ic" :class="{ on: sat.elevShow }" :style="sat.elevShow ? { color: sat.elevColor } : {}" title="显示/隐藏等仰角线（需先在「✎」里填仰角值，如 5,10）" @click.stop="toggleSatElev(sat)"><Icon name="angle" :size="12" /></span>
+                </span>
                 <span class="sacts">
                   <span class="ic" title="导入 GRD：在该星下新建天线" @click.stop="grd.importGrd(sat)"><Icon name="plus" :size="11" /></span>
                   <span class="ic" title="编辑卫星 / 仰角线 / 颜色" @click.stop="editSat(sat)"><Icon name="pencil" :size="11" /></span>
                   <span class="ic del" title="删除卫星（含其天线）" @click.stop="removeSat(sat)"><Icon name="x" :size="11" /></span>
                 </span>
-              </div>
-              <!-- 卫星名 / 仰角线 开关（卫星属性）：卫星名下方独立一行，收起时仍显示；仰角值/颜色在「✎」里编辑 -->
-              <div class="elacts">
-                <span class="dotc" :style="{ background: sat.elevColor }" title="该星颜色（仰角线 / 卫星名），在「✎」里改"></span>
-                <span class="elbtn" :class="{ on: sat.labelShow !== false }" title="在地图上显示/隐藏该卫星（3D 名称、平面图标 + 名称）" @click.stop="toggleSatLabel(sat)"><Icon v-if="sat.labelShow !== false" name="check" :size="10" />卫星名</span>
-                <span class="elbtn" :class="{ on: sat.elevShow }" title="显示/隐藏等仰角线（需先在「✎」里填仰角值，如 5,10）" @click.stop="toggleSatElev(sat)"><Icon v-if="sat.elevShow" name="check" :size="10" />仰角线</span>
               </div>
               <div v-if="grd.isExpanded(sat.folder)" class="gbody">
                 <div v-if="!sat.antennas.length" class="gant noant">暂无天线 — 点上方「＋」导入 GRD</div>
@@ -2485,7 +2479,7 @@ onBeforeUnmount(() => {
               </div>
               <div class="glvadd" @click="grd.addLevel()"><Icon name="plus" :size="11" /> 添加电平</div>
             </div>
-            <div class="srow"><label>线宽</label><input class="rng" type="range" min="0.5" max="4" step="0.1" v-model.number="grdS.lineWidth" /><span class="u">{{ grdS.lineWidth.toFixed(1) }}</span></div>
+            <div class="srow"><label>线宽</label><input class="rng" type="range" min="0.5" max="8" step="0.1" v-model.number="grdS.lineWidth" /><span class="u">{{ grdS.lineWidth.toFixed(1) }}</span></div>
           </div>
 
           <div class="sec">
@@ -2535,10 +2529,12 @@ onBeforeUnmount(() => {
           <span v-if="grdLoading" class="cst">载入中…</span>
           <span class="cclr" title="清空地图上的填充/等值线/仰角线，保留各天线设置与卫星列表" @click="grdClearDrawing">清除绘图</span>
         </div>
-      </div>
+        </div>
+        </div>
 
-      <div v-if="geoOpen" class="cov-side geo-side">
-        <div class="csh"><span class="csn">地图设置</span><button class="winx" type="button" aria-label="关闭" title="关闭" @click="toggleGeo"><svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true"><path d="M1 1 L11 11 M11 1 L1 11" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/></svg></button></div>
+        <!-- 地图设置：海陆配色 / 国界省界市界 / 名称标注 -->
+        <div v-show="shellUi.side === 'geo'" class="sview">
+        <div class="cov-side geo-side docked">
         <div class="sec">
           <div class="sect"><span>大海颜色</span></div>
           <div class="swatches">
@@ -2585,7 +2581,7 @@ onBeforeUnmount(() => {
           <div class="srow"><label>名颜色</label><input class="clr" type="color" v-model="labelStyle.countryColor" @input="applyLabelStyle" /><span class="u">{{ labelStyle.countryColor }}</span></div>
           <div class="srow"><label>名透明度</label><input class="rng" type="range" min="0" max="1" step="0.05" v-model.number="labelStyle.countryOpacity" @input="applyLabelStyle" /><span class="u">{{ labelStyle.countryOpacity.toFixed(2) }}</span></div>
           <div class="srow"><label>国界线颜色</label><input class="clr" type="color" v-model="borderStyle.natColor" @input="applyBorderStyle" /><span class="u">{{ borderStyle.natColor }}</span></div>
-          <div class="srow"><label>国界线粗</label><input class="rng" type="range" min="0.1" max="4" step="0.1" v-model.number="borderStyle.natWidth" @input="applyBorderStyle" /><span class="u">{{ borderStyle.natWidth.toFixed(1) }}</span></div>
+          <div class="srow"><label>国界线粗</label><input class="rng" type="range" min="0.1" max="8" step="0.1" v-model.number="borderStyle.natWidth" @input="applyBorderStyle" /><span class="u">{{ borderStyle.natWidth.toFixed(1) }}</span></div>
           <div class="srow"><label>国界透明度</label><input class="rng" type="range" min="0" max="1" step="0.05" v-model.number="borderStyle.natOpacity" @input="applyBorderStyle" /><span class="u">{{ borderStyle.natOpacity.toFixed(2) }}</span></div>
           <div class="tip">国家名含海岸线/国境线；大洋名维持固有蓝，不随国家名色改。同时作用于 3D 与平面图。</div>
         </div>
@@ -2597,7 +2593,7 @@ onBeforeUnmount(() => {
           <div class="srow"><label>名颜色</label><input class="clr" type="color" v-model="labelStyle.provColor" @input="applyLabelStyle" /><span class="u">{{ labelStyle.provColor }}</span></div>
           <div class="srow"><label>名透明度</label><input class="rng" type="range" min="0" max="1" step="0.05" v-model.number="labelStyle.provOpacity" @input="applyLabelStyle" /><span class="u">{{ labelStyle.provOpacity.toFixed(2) }}</span></div>
           <div class="srow"><label>省界线颜色</label><input class="clr" type="color" v-model="borderStyle.provColor" @input="applyBorderStyle" /><span class="u">{{ borderStyle.provColor }}</span></div>
-          <div class="srow"><label>省界线粗</label><input class="rng" type="range" min="0.1" max="4" step="0.1" v-model.number="borderStyle.provWidth" @input="applyBorderStyle" /><span class="u">{{ borderStyle.provWidth.toFixed(1) }}</span></div>
+          <div class="srow"><label>省界线粗</label><input class="rng" type="range" min="0.1" max="8" step="0.1" v-model.number="borderStyle.provWidth" @input="applyBorderStyle" /><span class="u">{{ borderStyle.provWidth.toFixed(1) }}</span></div>
           <div class="srow"><label>省界透明度</label><input class="rng" type="range" min="0" max="1" step="0.05" v-model.number="borderStyle.provOpacity" @input="applyBorderStyle" /><span class="u">{{ borderStyle.provOpacity.toFixed(2) }}</span></div>
           <div class="tip">需勾选「显示中国省界」后可见；线宽为屏幕像素，缩放时恒定。</div>
         </div>
@@ -2609,15 +2605,16 @@ onBeforeUnmount(() => {
           <div class="srow"><label>名颜色</label><input class="clr" type="color" v-model="labelStyle.cityColor" @input="applyLabelStyle" /><span class="u">{{ labelStyle.cityColor }}</span></div>
           <div class="srow"><label>名透明度</label><input class="rng" type="range" min="0" max="1" step="0.05" v-model.number="labelStyle.cityOpacity" @input="applyLabelStyle" /><span class="u">{{ labelStyle.cityOpacity.toFixed(2) }}</span></div>
           <div class="srow"><label>市界线颜色</label><input class="clr" type="color" v-model="borderStyle.cityColor" @input="applyBorderStyle" /><span class="u">{{ borderStyle.cityColor }}</span></div>
-          <div class="srow"><label>市界线粗</label><input class="rng" type="range" min="0.05" max="2" step="0.05" v-model.number="borderStyle.cityWidth" @input="applyBorderStyle" /><span class="u">{{ borderStyle.cityWidth.toFixed(2) }}</span></div>
+          <div class="srow"><label>市界线粗</label><input class="rng" type="range" min="0.05" max="8" step="0.05" v-model.number="borderStyle.cityWidth" @input="applyBorderStyle" /><span class="u">{{ borderStyle.cityWidth.toFixed(2) }}</span></div>
           <div class="srow"><label>市界透明度</label><input class="rng" type="range" min="0" max="1" step="0.05" v-model.number="borderStyle.cityOpacity" @input="applyBorderStyle" /><span class="u">{{ borderStyle.cityOpacity.toFixed(2) }}</span></div>
           <div class="tip">需勾选「显示中国地级市界」后可见；画在省界之下，线粗可低至 0.05 以适配密集网格与小空间。</div>
         </div>
-      </div>
+        </div>
+        </div>
 
-      <div v-if="mkOpen" class="cov-side mk-side">
-        <div class="csh"><span class="csn">标记</span><button class="winx" type="button" aria-label="关闭" title="关闭" @click="toggleMarkers"><svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true"><path d="M1 1 L11 11 M11 1 L1 11" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/></svg></button></div>
-
+        <!-- 标记：点标记 / 地面站 / 轨迹 -->
+        <div v-show="shellUi.side === 'markers'" class="sview">
+        <div class="cov-side mk-side docked">
         <div class="sec">
           <div class="sect"><span>点标记</span><span class="eyebtn" :class="{ off: !showPtLayer }" :title="showPtLayer ? '隐藏点标记（数据保留）' : '显示点标记'" @click="togglePtLayer"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M1 8C3 4.2 13 4.2 15 8C13 11.8 3 11.8 1 8Z" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="8" cy="8" r="2.1" fill="currentColor"/><path v-if="!showPtLayer" d="M3 13 L13 3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></span></div>
           <div class="srow"><label>纬度</label><input class="ci" v-model="ptLat" placeholder="-90 ~ 90" /></div>
@@ -2675,7 +2672,36 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="csfoot"><span class="cclr" @click="clearAllMarkers">清空全部</span></div>
+        </div>
+        </div>
+      </Teleport>
+    </div>
+
+    <!-- 时间控制条：地图时间轴 + 波束角（归属地图，置于地图正下方） -->
+    <div class="tl bottom">
+      <div class="tb-track" ref="track" :class="{ dis: live }" @mousedown="trackDown">
+        <span v-for="t in timeTicks" :key="'k' + t.min" class="tb-tick" :style="{ left: t.min / 14.4 + '%' }"></span>
+        <div class="tb-bar"><div class="tb-fill" :style="{ width: timePct + '%' }"></div></div>
+        <div class="tb-knob" :style="{ left: timePct + '%' }"></div>
+        <span v-for="t in timeTicks" :key="'m' + t.min" class="tb-mark" :style="tickStyle(t.min)">{{ t.label }}</span>
       </div>
+      <span class="tlab">{{ timeLabel() }}</span>
+      <span class="st" :class="{ dis: live }" @click="step(-60)">−1h</span>
+      <span class="st" :class="{ dis: live }" @click="step(-10)">−10m</span>
+      <span class="st" :class="{ dis: live }" @click="step(-1)">−1m</span>
+      <span class="st" :class="{ dis: live || !timeOffset }" @click="resetTime">此刻</span>
+      <span class="st" :class="{ dis: live }" @click="step(1)">+1m</span>
+      <span class="st" :class="{ dis: live }" @click="step(10)">+10m</span>
+      <span class="st" :class="{ dis: live }" @click="step(60)">+1h</span>
+      <span class="beamc">
+        <template v-if="selected">
+          <span class="bl">波束角</span>
+          <input class="bi" :value="beam" :placeholder="beamAuto || '自动'" @input="onBeam" />
+          <span class="bu">°</span>
+          <span class="lock" :class="{ on: beamLock }" @click="toggleBeamLock"><Icon :name="beamLock ? 'lock' : 'lock-open'" :size="12" /></span>
+        </template>
+        <span v-else class="hint">点击卫星设置波束角</span>
+      </span>
     </div>
 
     <!-- 卫星编辑弹窗（单独对话框）；点选模式下折叠为顶部横幅，便于点击地图上的卫星 -->
@@ -2710,7 +2736,7 @@ onBeforeUnmount(() => {
 
             <div class="sdiv">仰角线（等仰角环 / 角度标注）</div>
             <div class="srow"><label>仰角值</label><input class="ci" v-model="satModal.els" placeholder="如 5,10,20（0=地平）" /><span class="u">°</span></div>
-            <div class="srow"><label>线粗</label><input class="rng" type="range" min="0.5" max="4" step="0.1" v-model.number="satModal.elevWidth" /><span class="u">{{ (satModal.elevWidth || 1.3).toFixed(1) }}</span></div>
+            <div class="srow"><label>线粗</label><input class="rng" type="range" min="0.5" max="8" step="0.1" v-model.number="satModal.elevWidth" /><span class="u">{{ (satModal.elevWidth || 1.3).toFixed(1) }}</span></div>
             <div class="srow"><label>标注字号</label><input class="rng" type="range" min="1" max="35" step="1" v-model.number="satModal.elevLabelSize" /><span class="u">{{ satModal.elevLabelSize || 18 }}</span></div>
 
             <div class="sdiv">颜色（仰角线与卫星名共用）</div>
@@ -3027,6 +3053,8 @@ onBeforeUnmount(() => {
 .tl .bu { color: var(--text-muted); }
 .tl .lock { cursor: pointer; }
 .tl .hint { color: var(--text-faint); }
+/* 时间控制条置于地图正下方：分隔线换到上缘 */
+.tl.bottom { border-bottom: 0; border-top: 1px solid var(--border); }
 .mini { padding: 3px 10px; border: 1px solid var(--border); cursor: pointer; color: var(--text-muted); font-size: 12px; }
 .mini.on { color: var(--text); border-color: var(--accent); }
 .body { flex: 1; min-height: 0; display: flex; }
@@ -3085,6 +3113,26 @@ onBeforeUnmount(() => {
 /* 覆盖图：右侧停靠面板（挤压地球，独占右栏） */
 /* 右侧边栏：与「设置弹窗」一致——surface 底色、统一表头/分区内边距与标题字号 */
 .cov-side { width: 286px; flex: none; border-left: 1px solid var(--border-strong); background: var(--surface); overflow-y: auto; display: flex; flex-direction: column; font-size: 12px; }
+
+/* ===== 侧栏视图（Teleport 到 App.vue #side-view；活动栏切换，同屏只显示一个） ===== */
+.sview { display: flex; flex-direction: column; min-height: 0; }
+/* 星座视图工具块：卫星搜索 + 旋转/实时开关 + 在轨/OMM 状态行 */
+.ptool { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+.ptool .search input { width: 100%; box-sizing: border-box; }
+.ptool .search .panel { width: 100%; }
+.pchips { display: flex; gap: 6px; }
+.pchips .mini { flex: 1; text-align: center; padding: 3px 0; }
+.pstat { color: var(--text-faint); font-size: 11px; line-height: 1.5; }
+/* 星座分组列表（grprow 而非 pgrow：后者是 GXT 逐档色行的既有类名，避免撞名） */
+.pgl { padding: 4px 0 8px; }
+.grprow { display: flex; align-items: center; gap: 7px; padding: 4px 12px; font-size: 12.5px; color: var(--text-muted); cursor: pointer; white-space: nowrap; }
+.grprow:hover { background: var(--surface-2); color: var(--text); }
+.grprow.sel { background: var(--accent); color: var(--bg); }
+.grprow .pgico { flex: none; display: inline-flex; color: var(--text-faint); }
+.grprow:hover .pgico, .grprow.sel .pgico { color: inherit; }
+.grprow .pgn { overflow: hidden; text-overflow: ellipsis; }
+/* 面板停靠形态：占满侧栏宽度、去左缘边框，滚动交给侧栏整体 */
+.cov-side.docked { width: auto; border-left: 0; overflow: visible; }
 .csh { display: flex; align-items: stretch; border-bottom: 1px solid var(--border); }
 .csn { font-family: var(--font-serif); font-size: 15px; padding: 11px 16px; align-self: center; }
 .flatbtn { align-self: center; margin-left: 10px; flex: none; border: 1px solid var(--border); padding: 2px 9px; font-size: 11.5px; color: var(--text-muted); cursor: pointer; }
@@ -3096,7 +3144,8 @@ onBeforeUnmount(() => {
 .sec { padding: 12px 16px; border-bottom: 1px solid var(--border); }
 .srow { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 .srow:last-child { margin-bottom: 0; }
-.srow label { color: var(--text-muted); width: 36px; flex: none; }
+/* 固定宽度需能容纳最长标签（如「升交点赤经」5 字）且不换行，原 36px 对 3 字以上标签会折行、拖乱整排对齐 */
+.srow label { color: var(--text-muted); width: 70px; flex: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .srow select, .srow .ci { flex: 1; min-width: 0; border: 1px solid var(--border); background: var(--bg); padding: 3px 6px; font-size: 12px; outline: none; color: var(--text); }
 .srow .ci:disabled { background: var(--surface); color: var(--text-faint); cursor: not-allowed; border-style: dashed; }
 .srow .u { color: var(--text-muted); }
@@ -3112,7 +3161,9 @@ onBeforeUnmount(() => {
 .eyebtn { display: inline-flex; align-items: center; margin-left: 7px; cursor: pointer; color: var(--text-muted); }
 .eyebtn:hover { color: var(--text); }
 .eyebtn.off { color: var(--text-faint); }
-/* 天线设置区标题：SVG 图标 + 「天线设置」+ 天线名（高区分度） */
+/* 天线设置区标题：撑满分区宽度的标题条（Blender Properties / VS Code 面板头同款），
+   与其余 .sect 的纯文字小标题区分开，明确「以下均为当前聚焦天线的属性」 */
+.setsect { margin: -12px -16px 10px; padding: 9px 16px; background: var(--surface-2); border-bottom: 1px solid var(--border); }
 .setsect .ant-svg { width: 14px; height: 14px; color: var(--accent); margin-right: 6px; }
 .setsect .setlbl { color: var(--text); font-weight: 600; }
 .setsect .setname { margin-left: 6px; color: var(--accent); font-weight: 600; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -3141,6 +3192,11 @@ onBeforeUnmount(() => {
 .gsat .gsname .simtag { font-style: normal; margin-left: 5px; padding: 0 4px; border: 1px solid var(--accent); border-radius: 2px; color: var(--accent); font-size: 10px; vertical-align: middle; }
 .gsvg { flex: none; width: 14px; height: 14px; }
 .gsat .sat-svg { width: 18px; height: 18px; color: var(--text); opacity: .92; }   /* 跟随主题文字色；18px 比默认 .gsvg 大一档，14px 下看不出卫星轮廓 */
+/* 卫星行显示开关（卫星名 / 仰角线）：图标按钮，与 .sacts 操作图标以竖线分组，语汇同 .gant .ant-btn（hover 底色淡入） */
+.sdisp { flex: none; display: flex; align-items: center; gap: 1px; margin-left: 4px; padding-left: 6px; border-left: 1px solid var(--border); }
+.sdisp .ic { display: flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 3px; color: var(--text-faint); opacity: .55; cursor: pointer; transition: opacity .12s, color .12s, background .12s; }
+.sdisp .ic:hover { opacity: 1; color: var(--text); background: color-mix(in srgb, var(--text) 8%, transparent); }
+.sdisp .ic.on { opacity: 1; color: var(--accent); }
 .gant .ant-btn { display: flex; align-items: center; justify-content: center; flex: none; width: 18px; height: 18px; margin: -2px 0; border-radius: 3px; transition: background .12s; }
 .gant .ant-btn:hover { background: color-mix(in srgb, var(--accent) 18%, transparent); }
 .gant .ant-svg { width: 13px; height: 13px; color: var(--text-faint); transition: color .12s; }
@@ -3417,19 +3473,10 @@ onBeforeUnmount(() => {
 .twp .wdel { margin-left: 4px; cursor: pointer; color: var(--text-faint); }
 .twp .wdel:hover { color: #e26a6a; }
 
-/* 仰角线（卫星属性）子分区 */
-.dotc { flex: none; width: 10px; height: 10px; border-radius: 50%; border: 1px solid rgba(255,255,255,0.4); }
 .lnknm { cursor: pointer; }
 .lnknm:hover { color: var(--accent); }
 .tip2 { color: var(--text-faint); font-size: 11px; line-height: 1.6; }
 .tip2 .lnk { margin-left: 6px; color: var(--accent); cursor: pointer; }
-/* 卫星显示开关（卫星名下方独立一行，收起仍显示）：色点 + 卫星名/仰角线（切换） */
-.elacts { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: 1px 0 5px; padding-left: 24px; }
-.elacts .dotc { margin-right: 0; }
-.elacts .elbtn { flex: none; display: inline-flex; align-items: center; gap: 3px; cursor: pointer; font-size: 10.5px; padding: 1.5px 8px; border: 1px solid var(--border); border-radius: 9px; color: var(--text-muted); white-space: nowrap; transition: color .12s, border-color .12s, background .12s; }
-.elacts .elbtn:hover { color: var(--text); border-color: var(--text-faint); }
-.elacts .elbtn.on { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 55%, transparent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
-.elacts .elbtn.act:hover { color: var(--accent); border-color: var(--accent); }
 
 /* 卫星编辑弹窗 */
 .sat-mask { position: absolute; inset: 0; background: rgba(4,8,14,0.55); display: flex; align-items: center; justify-content: center; z-index: 40; }

@@ -28,14 +28,20 @@ if (!SvgContext.prototype.__perfPatched) {
 }
 
 // 高清 PNG：factor=像素倍率。view=true 时按当前屏幕视图(所见即所得)出图，逻辑尺寸取屏幕 cw×ch；
-// 否则整幅世界图，base=逻辑宽度（地图 2:1）。返回 PNG 字节（Uint8Array）。
+// 否则整幅世界图：逻辑尺寸取屏幕上整幅世界图 fit 后的大小（fittedWorldSize），仅把像素倍率补足到
+// base×factor 的输出分辨率 → 恒定屏幕 px 的线宽/图标/注记与软件里整幅图完全同比例（所见即所得）。
+// 返回 PNG 字节（Uint8Array）。
 export async function renderFlatPNG(flat, { base = 2000, factor = 2, view = false } = {}) {
-  let W, H
+  let W, H, ps = factor
   if (view) { const v = flat.viewportSize(); W = Math.max(1, Math.round(v.w)); H = Math.max(1, Math.round(v.h)) }
-  else { W = base; H = Math.round(base / 2) }
+  else {
+    const f = flat.fittedWorldSize && flat.fittedWorldSize()
+    if (f) { W = f.w; H = f.h; ps = (base * factor) / W }   // 输出位图仍为 base×factor 宽
+    else { W = base; H = Math.round(base / 2) }             // 画布未就绪的兜底：按名义尺寸出图
+  }
   const cv = document.createElement('canvas')
-  cv.width = W * factor; cv.height = H * factor
-  flat.exportRender(cv.getContext('2d'), { width: W, height: H, pixelScale: factor, view })
+  cv.width = Math.round(W * ps); cv.height = Math.round(H * ps)
+  flat.exportRender(cv.getContext('2d'), { width: W, height: H, pixelScale: ps, view })
   const blob = await new Promise((res, rej) => cv.toBlob((b) => b ? res(b) : rej(new Error('toBlob 失败')), 'image/png'))
   return new Uint8Array(await blob.arrayBuffer())
 }
@@ -45,7 +51,11 @@ export async function renderFlatPNG(flat, { base = 2000, factor = 2, view = fals
 export async function renderFlatPDF(flat, { base = 2000, fontBase64 = null, view = false } = {}) {
   let W, H
   if (view) { const v = flat.viewportSize(); W = Math.max(1, Math.round(v.w)); H = Math.max(1, Math.round(v.h)) }
-  else { W = base; H = Math.round(base / 2) }
+  else {
+    // 整幅世界图：页面逻辑尺寸取屏幕 fit 大小（同 PNG，所见即所得）；矢量图与分辨率无关，页面 pt 数只是名义大小
+    const f = flat.fittedWorldSize && flat.fittedWorldSize()
+    if (f) { W = f.w; H = f.h } else { W = base; H = Math.round(base / 2) }
+  }
   const t = (typeof performance !== 'undefined' ? () => performance.now() : () => Date.now())
   const log = (label, ms) => console.log('[PDF导出] ' + label + ': ' + ms.toFixed(0) + 'ms')
   let t0 = t()

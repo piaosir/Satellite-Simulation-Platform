@@ -16,7 +16,10 @@ contextBridge.exposeInMainWorld('api', {
     baseband: () => ipcRenderer.invoke('link:baseband'),
     waterfall: (ctx) => ipcRenderer.invoke('link:waterfall', ctx),
     exportExcel: (payload) => ipcRenderer.invoke('linkbudget:exportExcel', payload),
-    openConfig: () => ipcRenderer.invoke('linkbudget:openConfig')
+    openConfig: () => ipcRenderer.invoke('linkbudget:openConfig'),
+    // 关窗守卫：主进程拦截原生关闭动作后转发此事件；渲染进程问完用户再调 confirmClose() 才真正关闭
+    onCloseRequested: (cb) => ipcRenderer.on('linkbudget:closeRequested', cb),
+    confirmClose: () => ipcRenderer.invoke('linkbudget:confirmClose')
   },
   sunOutage: {
     open: () => ipcRenderer.invoke('suntool:open'),
@@ -25,7 +28,8 @@ contextBridge.exposeInMainWorld('api', {
     exportIcs: (payload) => ipcRenderer.invoke('sunoutage:exportIcs', payload)
   },
   app: {
-    deviceId: () => ipcRenderer.invoke('app:deviceId')
+    deviceId: () => ipcRenderer.invoke('app:deviceId'),
+    version: () => ipcRenderer.invoke('app:version')
   },
   share: {
     configured: () => ipcRenderer.invoke('share:configured'),

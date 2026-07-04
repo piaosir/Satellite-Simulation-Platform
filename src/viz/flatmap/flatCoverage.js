@@ -67,6 +67,8 @@ export function createFlatCoverage(canvas) {
   // 改为「子路径回放」（moveTo/lineTo），实时绘制仍走 Path2D 缓存（更快）。compat 同时用于离屏高清 PNG，
   // 保证 PNG 与 PDF 完全一致。textFont：导出可指定字体族名（PDF 用注册名匹配嵌入的中文字体）。
   let compat = false
+  // 导出（PNG/PDF）物理分辨率远高于屏幕，文字描边按同一相对粗细在高清大图上观感发粗 → 导出时额外收细。
+  const EXPORT_STROKE_K = 0.6
   let textFont = '"Microsoft YaHei", sans-serif'
   // 渲染分辨率倍率（与 3D 同一画质档位）：null=跟随系统 DPR；否则为请求倍率，但封顶为「物理像素密度 × SS_CAP」。
   // 超出物理像素的超采样屏幕无法显示、纯耗 GPU，封顶后对画质无影响（与 3D 球体同策略，见 globe3d/scene.js）。
@@ -95,6 +97,7 @@ export function createFlatCoverage(canvas) {
   let selGeom = null    // 聚焦卫星几何：{ footprint:[{lat,lon}...], track:[{lat,lon}...] }，与 3D 同源（覆盖范围蓝 + 星下点轨迹黄）
   let satLayer = null   // 卫星/仰角线独立图层 { lines, dots, labels, sats }（与 geom/field 互不干扰）
   const sizes = { beamFont: 16, contourFont: 12, dotSize: 5, showBore: true, nameScale: 1, provScale: 1, cityScale: 1, ptFont: 14, stIcon: 32, stFont: 17, satIcon: 30, ptDot: 3.5, trajDot: 2.5 }
+  const SAT_ICON_K = 0.85   // 卫星图标：同地面站 ST_ICON_K，2D 观感偏大于 3D，收一档对齐（经验系数，可微调）
 
   // 地面站图标
   const stationImg = new Image(); let stationReady = false
@@ -279,7 +282,8 @@ export function createFlatCoverage(canvas) {
     // 文字描边套色(casing)：沿字形勾一圈与底色同调的窄边，把字从背景里「切」出来——专业制图标准，不用底色色块
     // 粗细 = px*strokeScale（默认 0.14），下限 strokeMin（默认 1.5）；地级市名传更细值（尽量细但保留）
     const sScale = o.strokeScale != null ? o.strokeScale : 0.14, sMin = o.strokeMin != null ? o.strokeMin : 1.5
-    const lw = Math.max(sMin, px * sScale)
+    const ek = compat ? EXPORT_STROKE_K : 1
+    const lw = Math.max(sMin * ek, px * sScale * ek)
     if (lw > 0) { ctx.lineJoin = 'round'; ctx.miterLimit = 2; ctx.lineWidth = lw; ctx.strokeStyle = 'rgba(6,11,18,0.82)'; ctx.strokeText(text, x, y) }
     ctx.fillStyle = color; ctx.fillText(text, x, y)
   }
@@ -407,7 +411,8 @@ export function createFlatCoverage(canvas) {
     drawLand(); drawIceCaps()
     ctx.restore()
   }
-  // field 之上的标注（省界/覆盖数据/轨迹/标记/国家名/卫星层）。透明背景，叠在覆盖填充之上。
+  // field 之上的标注（省界/标记/国家名/卫星层点标注等）。透明背景，叠在覆盖填充之上。
+  // 各类数据线（GXT 波束线/仰角线/轨迹线/聚焦卫星线）不在此层——见 drawDataLines（压在国界省界之下）。
   function drawAboveContent(rx, ry, rw, rh) {
     ctx.save()
     ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip()
@@ -439,15 +444,13 @@ export function createFlatCoverage(canvas) {
       for (const ring of prov.borders) drawPolyline(ring, borderStyle.provColor, borderStyle.provWidth)
       ctx.globalAlpha = 1
     }
-    // 覆盖数据
+    // 覆盖数据标注（GXT 波束线本体已移入 drawDataLines：与 GRD 等值线/Polygon 边线同层、压在国界省界之下）
     if (geom) {
-      for (const ln of (geom.lines || [])) if (ln.p && ln.p.length > 1) drawPolyline(ln.p, hex(ln.color), Math.max(0.8, ln.width || 1.6))
       if (sizes.showBore) for (const d of (geom.dots || [])) dot(d.lon, d.lat, Math.max(1, sizes.dotSize) * iz, '#fff')   // GXT 波束中心点：克制版联动
     }
-    // 轨迹（圆点大小可调 sizes.trajDot，按克制版 iz 联动）
+    // 轨迹圆点（折线本体已移入 drawDataLines；圆点大小可调 sizes.trajDot，按克制版 iz 联动）
     const trajR = (sizes.trajDot != null ? sizes.trajDot : 2.5) * iz * (DOT3D_FILL * 2.5 / 2)   // 3D 轨迹点 ×2.5，对齐其可见直径
     for (const t of mk.trajectories) {
-      if (t.pts && t.pts.length > 1) drawPolyline(t.pts, hex(t.color != null ? t.color : 0xff5a5a), 2.2)
       for (const p of (t.pts || [])) dot(p.lon, p.lat, trajR, t.kind === 'flight' ? '#5ad1ff' : '#ff9a5a', true)
     }
     // 点标记 + 地面站（圆点大小可调 sizes.ptDot、图标 sizes.stIcon，按克制版 iz 联动）
@@ -458,7 +461,8 @@ export function createFlatCoverage(canvas) {
     // 原理：3D 地名是世界尺寸（固定地理度数），其屏幕 px = 地理度数 × 每度像素。2D 同覆盖下每度像素 = k()。
     // 故 2D 字号 = 地理度数 × k()。标定：3D 普通省名 hpx=0.02→1.146°，对应 2D 基准 l.px=15 → 系数 k()/13.1。
     // 这样把"每度像素"折进 zf：font = l.px × 倍率 × (k()/13.1)，与窗口尺寸无关、与 3D 一致。
-    // 标记/波束/数值/覆盖/卫星层等注记与图标：随缩放联动（乘 mz=scale，scale=1 即当前大小，与国家名同率缩放）。
+    // 标记/波束/数值/覆盖/卫星层等注记文字：随缩放联动（乘 mz=scale，scale=1 即当前大小，与国家名同率缩放）；
+    // 卫星图标本身按克制版 iz 联动（同地面站/点标记），避免大缩放下比 3D 观感膨大。
     const ns = sizes.nameScale || 1, zf = k() / 13.1
     if (nameMode !== 'off') {
       ctx.globalAlpha = labelStyle.countryOpacity
@@ -475,7 +479,7 @@ export function createFlatCoverage(canvas) {
     if (provVisible && prov) {
       const ps = sizes.provScale || 1
       ctx.globalAlpha = labelStyle.provOpacity
-      for (const l of prov.labels) drawText(l.name, l.lon, l.lat, Math.round(l.px * ps * zf), labelStyle.provColor)
+      for (const l of prov.labels) drawText(l.name, l.lon, l.lat, Math.round(l.px * ps * zf), labelStyle.provColor, { strokeScale: 0.09, strokeMin: 1.0 })
       ctx.globalAlpha = 1
     }
     if (geom) {   // GXT 覆盖图标签（波束名/数值）：克制版联动 iz
@@ -493,16 +497,16 @@ export function createFlatCoverage(canvas) {
     }
     // 卫星 / 仰角线独立图层：等仰角线 + 卫星图标 + 名称（在覆盖/标记之上、聚焦图标之下）
     if (satLayer) {
-      // under:true 的线（Polygon 边线）已随 drawSatFills 画在 below/above 之间，这里跳过
-      for (const ln of (satLayer.lines || [])) if (!ln.under && ln.p && ln.p.length > 1) drawPolyline(ln.p, hex(ln.color != null ? ln.color : 0x66ddff), Math.max(0.2, ln.width || 1.4))   // 下限 0.2：跟随 Polygon 线粗滑杆最小档
+      // 卫星层所有线（Polygon 边线随 drawSatPolyLines、仰角线等随 drawDataLines）均画在 below/above 之间
+      // → 压在国界/省界/地名之下，与之共存；这里只画点/标签/卫星图标
       // d.px：屏幕恒定像素半径（Polygon 顶点手柄，不随缩放变大）；否则沿用世界联动尺寸
       for (const d of (satLayer.dots || [])) dot(d.lon, d.lat, d.px != null ? Math.max(1, d.px) : Math.max(2, d.r != null ? d.r : 4) * mz, hex(d.color != null ? d.color : 0xffd27a), true)
       for (const l of (satLayer.labels || [])) drawText(l.text, l.lon, l.lat, Math.round((l.hpx || 0.026) * 750 * zf), l.color || '#fff')   // 世界尺寸字号：与 3D makeCovLabel 同源（套用地名标定 hpx0.02↔px15，zf=k()/13.1），2D/3D 一致
-      for (const s of (satLayer.sats || [])) drawSatIcon(s.lon, s.lat, (s.iconSize || sizes.satIcon || 30) * mz, hex(s.color != null ? s.color : 0xffd27a))   // 颜色/大小随各星设置
+      for (const s of (satLayer.sats || [])) drawSatIcon(s.lon, s.lat, (s.iconSize || sizes.satIcon || 30) * iz * SAT_ICON_K, hex(s.color != null ? s.color : 0xffd27a))   // 颜色/大小随各星设置；图标按克制版 iz 联动 + SAT_ICON_K 对齐 3D 观感
       for (const s of (satLayer.sats || [])) {
         if (!s.name || s.lon == null || s.lat == null || s.labelShow === false) continue
         const ls = (s.labelSize || 14) * mz
-        drawText(s.name, s.lon, s.lat, ls, hex(s.color != null ? s.color : 0xffd27a), { dy: -((s.iconSize || sizes.satIcon || 30) * mz * 0.5 + ls * 0.6) })
+        drawText(s.name, s.lon, s.lat, ls, hex(s.color != null ? s.color : 0xffd27a), { dy: -((s.iconSize || sizes.satIcon || 30) * iz * SAT_ICON_K * 0.5 + ls * 0.6) })
       }
     }
     ctx.restore()
@@ -567,10 +571,23 @@ export function createFlatCoverage(canvas) {
     ctx.restore()
   }
   // Polygon 边线（under:true 的线）：画在 GRD 覆盖之后（叠加区仍可见）、above 层之前（被国界/地名
-  // 压在下面）；其余卫星层线（仰角线等）仍在 above 层
+  // 压在下面）
   function drawSatPolyLines() {
     if (!satLayer) return
     for (const ln of (satLayer.lines || [])) if (ln.under && ln.p && ln.p.length > 1) drawPolyline(ln.p, hex(ln.color != null ? ln.color : 0x66ddff), Math.max(0.2, ln.width || 1.4))
+  }
+  // 数据线统一层（GXT 波束线 / 仰角线等卫星层线 / 轨迹折线 / 聚焦卫星足迹与轨迹）：与 GRD 等值线、
+  // Polygon 边线同一画法同一层——画在覆盖之上、above 快照（国界/省界/市界/地名）之下 → 与国界省界共存，
+  // 边界压在线上仍清晰可见。各线的圆点/标签仍留在 above 层或顶层（属标注，不遮边界线）。
+  function drawDataLines() {
+    if (geom) for (const ln of (geom.lines || [])) if (ln.p && ln.p.length > 1) drawPolyline(ln.p, hex(ln.color), Math.max(0.2, ln.width || 1.6))
+    for (const t of mk.trajectories) if (t.pts && t.pts.length > 1) drawPolyline(t.pts, hex(t.color != null ? t.color : 0xff5a5a), 2.2)
+    if (satLayer) for (const ln of (satLayer.lines || [])) if (!ln.under && ln.p && ln.p.length > 1) drawPolyline(ln.p, hex(ln.color != null ? ln.color : 0x66ddff), Math.max(0.2, ln.width || 1.4))   // 下限 0.2：跟随 Polygon 线粗滑杆最小档
+    // 聚焦卫星几何（实时，不入快照）：覆盖范围(浅蓝虚线，示意非精确覆盖区) + 星下点轨迹(金黄实线)，颜色与 3D 球体同源
+    if (selGeom) {
+      if (selGeom.footprint && selGeom.footprint.length > 1) drawPolyline(selGeom.footprint, '#b8e6fa', 1.8, false, [7, 5])
+      if (selGeom.track && selGeom.track.length > 1) drawPolyline(selGeom.track, '#e8c074', 2.0)
+    }
   }
 
   function draw() {
@@ -585,17 +602,13 @@ export function createFlatCoverage(canvas) {
     drawSatFills()       // Polygon 区域填充（覆盖场之下：叠加区只显示覆盖图颜色）
     drawField()          // GRD 覆盖填充面 + 等值线（在底图/Polygon 填充之上、标注之下）
     drawSatPolyLines()   // Polygon 边线（覆盖之上、国界/地名之下：叠加区仍见边线）
+    drawDataLines()      // 波束线/仰角线/轨迹线/聚焦卫星线（同上：覆盖之上、国界省界之下，与边界共存）
     ctx.restore()
     ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.drawImage(aboveCanvas, 0, 0)
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     ctx.save(); ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip()
     drawFieldOverlays()   // GRD 天线名/波束中心/数值标签（覆盖层之上）
-    // 聚焦卫星几何（实时，不入静态快照）：覆盖范围(浅蓝虚线，示意非精确覆盖区) + 星下点轨迹(金黄实线)，颜色与 3D 球体同源
-    if (selGeom) {
-      if (selGeom.footprint && selGeom.footprint.length > 1) drawPolyline(selGeom.footprint, '#b8e6fa', 1.8, false, [7, 5])
-      if (selGeom.track && selGeom.track.length > 1) drawPolyline(selGeom.track, '#e8c074', 2.0)
-    }
-    if (focusSat) drawSatIcon(focusSat.lon, focusSat.lat, sizes.satIcon * scale, '#ffffff')   // 聚焦卫星（最上层，随缩放联动）
+    if (focusSat) drawSatIcon(focusSat.lon, focusSat.lat, sizes.satIcon * Math.sqrt(scale) * SAT_ICON_K, '#ffffff')   // 聚焦卫星（最上层，克制版联动 + SAT_ICON_K，与卫星图标同率、和 3D 观感对齐）
     ctx.restore()
   }
 
@@ -822,6 +835,9 @@ export function createFlatCoverage(canvas) {
     reset() { fit(); invalidateStatic(); requestDraw() },
     // 当前屏幕视图的逻辑尺寸（CSS px）：供「所见即所得」导出按当前画面比例/范围出图
     viewportSize: () => ({ w: cw, h: ch }),
+    // 整幅世界图在当前屏幕画布上 fit 后的逻辑尺寸（CSS px，严格 2:1）：全球图导出以此为逻辑大小、
+    // 只提像素倍率 → 恒定屏幕 px 的线宽/图标/注记与在屏整幅图完全同比例（所见即所得）。画布未就绪返回 null。
+    fittedWorldSize() { const sb = Math.min(cw / 360, ch / 180); return (cw > 50 && ch > 50) ? { w: 360 * sb, h: 180 * sb } : null },
     // 导出平面图到任意 2D 上下文：离屏高清 canvas → PNG；svgcanvas → SVG/PDF。
     // opts: { width, height, pixelScale=1, background=true, fontFamily, view=false }。
     //   view=false：整幅世界图，fit 一次性绘制；view=true：所见即所得，按当前屏幕缩放/平移出图。绘后恢复在屏视图。
@@ -841,15 +857,11 @@ export function createFlatCoverage(canvas) {
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
       if (o.background !== false) { ctx.fillStyle = BG; ctx.fillRect(0, 0, cw, ch) }
       drawBelowContent(rx, ry, rw, rh)
-      ctx.save(); ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip(); drawSatFills(); drawField(); drawSatPolyLines(); ctx.restore()
+      ctx.save(); ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip(); drawSatFills(); drawField(); drawSatPolyLines(); drawDataLines(); ctx.restore()
       drawAboveContent(rx, ry, rw, rh)
       ctx.save(); ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip()
       drawFieldOverlays()
-      if (selGeom) {
-        if (selGeom.footprint && selGeom.footprint.length > 1) drawPolyline(selGeom.footprint, '#b8e6fa', 1.8, false, [7, 5])
-        if (selGeom.track && selGeom.track.length > 1) drawPolyline(selGeom.track, '#e8c074', 2.0)
-      }
-      if (focusSat) drawSatIcon(focusSat.lon, focusSat.lat, sizes.satIcon * scale, '#ffffff')
+      if (focusSat) drawSatIcon(focusSat.lon, focusSat.lat, sizes.satIcon * Math.sqrt(scale) * SAT_ICON_K, '#ffffff')
       ctx.restore()
       ctx = SV.ctx; dpr = SV.dpr; cw = SV.cw; ch = SV.ch; base = SV.base; scale = SV.scale; tx = SV.tx; ty = SV.ty; textFont = SV.font; compat = false
       staticValid = false; requestDraw()

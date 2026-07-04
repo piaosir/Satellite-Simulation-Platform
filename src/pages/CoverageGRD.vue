@@ -179,7 +179,7 @@ watch(() => [s.boreLon, s.boreLat, s.yaw], () => { reproject(); recompute() })
         </label>
         <label class="row" v-if="s.ctype === 'rel'"><span>电平(dB)</span><input v-model="s.relText" /></label>
         <label class="row" v-else><span>电平(dB)</span><input v-model="s.absText" /></label>
-        <label class="row"><span>线宽</span><input type="range" min="0.5" max="3" step="0.1" v-model.number="s.lineWidth" /><b>{{ s.lineWidth.toFixed(1) }}</b></label>
+        <label class="row"><span>线宽</span><input type="range" min="0.5" max="8" step="0.1" v-model.number="s.lineWidth" /><b>{{ s.lineWidth.toFixed(1) }}</b></label>
       </div>
 
       <div class="sec">

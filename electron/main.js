@@ -46,6 +46,7 @@ function createWindow() {
 
 // 链路预算工作台：独立 BrowserWindow（原生最大化/最小化/缩放），单例复用。
 let _lbWin = null
+let _lbAllowClose = false   // 关窗守卫放行标志：默认 false→拦截 close 转问渲染进程；渲染进程确认后置 true 才真正关
 function createLinkBudgetWindow() {
   if (_lbWin && !_lbWin.isDestroyed()) {
     if (_lbWin.isMinimized()) _lbWin.restore()
@@ -74,9 +75,22 @@ function createLinkBudgetWindow() {
   win.webContents.on('before-input-event', (e, input) => {
     if (input.type === 'keyDown' && input.key === 'F12') { win.webContents.toggleDevTools(); e.preventDefault() }
   })
+  // 关窗前先拦一次，转问渲染进程「配置存了没」：渲染进程用与内部切换配置同一套「取消/不保存/保存」
+  // 弹窗（见 LinkBudgetApp.vue 的 guardedLeave）问过用户、按需存盘后，回调 confirmCloseLinkBudget()
+  // 才真正关闭；没有未保存改动时渲染进程会立即回调，观感上仍是秒关。
+  _lbAllowClose = false
+  win.on('close', (e) => {
+    if (_lbAllowClose) return
+    e.preventDefault()
+    win.webContents.send('linkbudget:closeRequested')
+  })
   win.on('closed', () => { _lbWin = null })
   _lbWin = win
   return win
+}
+function confirmCloseLinkBudget() {
+  _lbAllowClose = true
+  if (_lbWin && !_lbWin.isDestroyed()) _lbWin.close()
 }
 
 // 日凌预报：独立 BrowserWindow，单例复用（与链路预算工作台同模式）。
@@ -125,7 +139,7 @@ app.whenReady().then(() => {
   // GRD 取值服务（与 coverageGrd 共享导入目录）：链路预算逐站取值在主进程完成
   const grd = require(join(root, 'electron/services/grd'))(join(app.getPath('userData'), 'coverage-grd-imported'))
   const { register } = require(join(root, 'electron/ipc/register'))
-  register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget: createLinkBudgetWindow, openSunOutage: createSunOutageWindow, grd })
+  register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget: createLinkBudgetWindow, openSunOutage: createSunOutageWindow, grd, confirmCloseLinkBudget })
 
   // 加载 ITU 全精度数据（降雨率 P.837 / 海拔 P.1511 / 水汽 P.836 / 云 P.840）→ 注入计算内核，
   // 与小程序口径完全一致（小程序为云端下载，桌面端从本地 resources/itu 同步加载）。

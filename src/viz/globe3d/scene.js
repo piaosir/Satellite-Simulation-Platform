@@ -20,7 +20,7 @@ const RE = 6371
 // 超出物理像素的超采样屏幕根本无法显示，纯属浪费 GPU——裁掉它对画质无影响（MSAA 仍负责边缘抗锯齿）。
 // 低端办公机多为 DPR=1，由此把默认/高档位的 2~3× 超采样压到 ≤1.5×，片元着色负载按面积平方下降（≈省一半到四分之三）。
 // HiDPI 屏（DPR≥1.5）取 min 后仍按原生密度渲染，保持锐利、不降画质。需要更多超采样可调大 SS_CAP。
-const SS_CAP = 1.5
+const SS_CAP = 2
 function capPixelRatio(n) {
   const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) || 1
   return Math.max(0.25, Math.min(n, dpr * SS_CAP, 4))
@@ -414,7 +414,7 @@ export function createGlobeScene(container, quality = {}) {
   scene.add(landMesh)
 
   // 矢量国界/海岸线 + 矢量经纬网：粗线，放大/高分辨率下都锐利清晰
-  // 经纬网 / 海岸线 渲染序高于覆盖填充(5)+等值线(6)、低于数据叠加(轨迹7/点/标注)：
+  // 经纬网 / 海岸线 渲染序高于覆盖填充(5)+各类数据线(等值线/波束线/仰角线/轨迹线，统一 6)、低于点/标注：
   // 地理骨架贯穿覆盖区之上 → 覆盖与底图融为一体（平级），不再像贴纸浮在地图上面。depthWrite=false，纯绘制顺序。
   scene.add(fatSegments(buildGraticule(), 0xffffff, 0.8, 0.12, 6.3))
   // 国界/海岸线：保留材质引用，供 setBorderStyle 运行时改线宽/颜色/透明度；setMapDetail 时重建
@@ -646,7 +646,7 @@ export function createGlobeScene(container, quality = {}) {
   function disposeLine(l) { if (l) { scene.remove(l); l.geometry.dispose(); if (l.material) { lineMats.delete(l.material); l.material.dispose() } } }
   function lineFromLLA(points, color, opacity, width) {
     const pts = points.map((p) => llaToVec(p.lat, p.lon, p.altKm || 0))
-    return fatStrip(pts, color, width || 1.4, opacity, 4)
+    return fatStrip(pts, color, width || 1.4, opacity, 6)   // 与 GRD 等值线/Polygon 线同层(6)：覆盖填充(5)之上、国界省界(6.5+)之下
   }
   const LIFT = 12  // 轨迹/足迹抬离地表 ~12km，避免与球面 z-fighting
   function setOrbit(points) {
@@ -665,7 +665,7 @@ export function createGlobeScene(container, quality = {}) {
     const pts = points.map((p) => llaToVec(p.lat, p.lon, LIFT))
     const flat = []
     for (let i = 0; i + 1 < pts.length; i += 2) { const a = pts[i], b = pts[i + 1]; flat.push(a.x, a.y, a.z, b.x, b.y, b.z) }
-    footLine = fatSegments(flat, 0xb8e6fa, 1.6, 1, 4); scene.add(footLine)
+    footLine = fatSegments(flat, 0xb8e6fa, 1.6, 1, 6); scene.add(footLine)   // 与 GRD 等值线/Polygon 线同层(6)
   }
   function clearSelectionGeom() { setOrbit(null); setGroundTrack(null); setFootprint(null); setHighlight(null) }
 
@@ -1155,7 +1155,7 @@ export function createGlobeScene(container, quality = {}) {
         const steps = Math.max(2, Math.ceil(a.angleTo(b) / (2 * Math.PI / 180)))
         for (let s = 0; s <= steps; s++) verts.push(slerp(a, b, s / steps).multiplyScalar(1.002))
       }
-      if (verts.length > 1) g.add(fatStrip(verts, tr.color != null ? tr.color : 0xff5a5a, 2.2, 0.95, 7))
+      if (verts.length > 1) g.add(fatStrip(verts, tr.color != null ? tr.color : 0xff5a5a, 2.2, 0.95, 6))   // 与 GRD 等值线/Polygon 线同层(6)：压在国界(6.5)/省界(6.6)之下，与边界共存
       for (const p of pts) { const dot = makeDot(tr.kind === 'flight' ? '#5ad1ff' : '#ff9a5a'); dot.position.copy(llaToVec(p.lat, p.lon, 0).multiplyScalar(1.002)); dot._px = trajDotPx; dot._ar = 1; dot.renderOrder = 15; g.add(dot) }
     }
     trajGroup = g; scene.add(g)

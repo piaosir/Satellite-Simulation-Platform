@@ -695,6 +695,11 @@ onMounted(async () => {
   try { deviceId.value = (api && await api.app.deviceId()) || '' } catch (e) { deviceId.value = '' }
   try { shareConfigured.value = !!(api && await api.share.configured()) } catch (e) { shareConfigured.value = false }
   refreshReadonly()
+  // 关窗守卫：主进程拦截原生关闭动作后转发到这里，复用与内部切换配置同一套「取消/不保存/保存」
+  // 弹窗（guardedLeave/isDirty），答完（或本就无未保存改动）才回调 confirmClose() 真正关闭窗口。
+  api?.linkBudget?.onCloseRequested?.(async () => {
+    if (await guardedLeave()) api.linkBudget.confirmClose()
+  })
 })
 </script>
 

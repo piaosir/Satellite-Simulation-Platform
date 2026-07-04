@@ -4,13 +4,15 @@ import { fileBridge, bumpLibrary } from '../stores/fileBridge'
 import { parseGxt, metaFromName } from '../viz/gxt/parse.js'
 import { serializeGxt } from '../viz/gxt/serialize.js'
 import { displaySatName } from '../viz/satName.js'
+import { logMsg } from '../stores/log'
 import Icon from './Icon.vue'
 
 const emit = defineEmits(['close'])
 const api = typeof window !== 'undefined' ? window.api : null
 const tab = ref('omm')
 const msg = ref('')
-function flash(t) { msg.value = t; setTimeout(() => { if (msg.value === t) msg.value = '' }, 4000) }
+// 面板内瞬时提示 + 落底部日志窗格（两者共用同一份文案，覆盖本文件全部 30 处导入/导出/删除反馈，无需逐处补记）
+function flash(t) { msg.value = t; logMsg(`文件管理：${t}`, /失败/.test(t) ? 'warn' : 'info'); setTimeout(() => { if (msg.value === t) msg.value = '' }, 4000) }
 
 // 应用内确认弹窗（替代原生 confirm）：Electron 的原生 confirm/alert 关闭后会打断渲染进程焦点，
 // 导致之后输入框点击聚焦失灵（最小化再恢复才好）。改用 Promise 化的内嵌弹窗，彻底规避。
