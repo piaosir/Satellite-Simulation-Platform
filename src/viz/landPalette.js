@@ -16,13 +16,15 @@ export const ARCTIC_ISLAND_LAT = 70
 
 // 统一单色基调预设（地图设置「大地颜色」色块顺序即此）：首个为 SATSOFT 米绿，其余为纸图系浅色
 export const LAND_UNIFORMS = ['#e4eccf', '#e8e0c9', '#dcd6c0', '#ccd6c0', '#d6cfc4', '#ccd2d8', '#f0ead9']
+// 默认基调：统一米黄（LAND_UNIFORMS[1]）。改默认时须与 ConstellationMap3D 的 landScheme 初值联动（同一常量）
+export const LAND_DEFAULT = '#e8e0c9'
 
 const HEX6 = /^#[0-9a-fA-F]{6}$/
-let scheme = 'morandi'   // 'morandi' 或 '#rrggbb'（统一单色）
+let scheme = LAND_DEFAULT   // 'morandi' 或 '#rrggbb'（统一单色）
 let overrides = {}       // 逐国覆盖：ISO 数字码 → '#rrggbb'（台湾并入中国，键统一为 '156'）
 
 export function setLandPalette(s) {
-  scheme = (s && (s.scheme === 'morandi' || HEX6.test(s.scheme))) ? s.scheme : 'morandi'
+  scheme = (s && (s.scheme === 'morandi' || HEX6.test(s.scheme))) ? s.scheme : LAND_DEFAULT
   overrides = {}
   if (s && s.overrides && typeof s.overrides === 'object') {
     for (const [id, c] of Object.entries(s.overrides)) if (HEX6.test(c)) overrides[id] = c

@@ -743,7 +743,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
     const satsState = sats.value.map((s) => ({
       folder: s.folder, kind: s.kind, satName: s.satName,
       lon: s.lon, lat: s.lat, altKm: s.altKm, noradId: s.noradId, elements: s.elements || null,
-      els: s.els, elevColor: s.elevColor, elevShow: s.elevShow, elevWidth: s.elevWidth, elevLabelSize: s.elevLabelSize, iconSize: s.iconSize, labelSize: s.labelSize, labelShow: s.labelShow !== false,
+      els: s.els, elevColor: s.elevColor, elevShow: s.elevShow, elevWidth: s.elevWidth, elevLabelSize: s.elevLabelSize, iconSize: s.iconSize, labelSize: s.labelSize, labelShow: s.labelShow !== false, iconShow: s.iconShow !== false,
       antennas: s.antennas.filter((a) => a.imported && a.file).map((a) => ({
         name: a.name, file: a.file, type: a.type || '', band: a.band || '', beams: a.beams, peakDb: a.peakDb, peak: a.peak,
         satLon: a.satLon, satLat: a.satLat, satAlt: a.satAlt, imported: true
@@ -765,7 +765,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
           if (!ss.kind || ss.kind === 'preset') continue   // 预置星已不在 index（如已删/改版）→ 跳过
           node = { folder: ss.folder, satName: ss.satName || '卫星', kind: ss.kind, antennas: [],
             lon: ss.lon, lat: ss.lat, altKm: ss.altKm, noradId: ss.noradId || null, elements: ss.elements || null,
-            els: '5,10', elevColor: '#ffffff', elevShow: false, elevWidth: 1.3, elevLabelSize: 18, iconSize: 10, labelSize: 4, labelShow: true }
+            els: '5,10', elevColor: '#ffffff', elevShow: false, elevWidth: 1.3, elevLabelSize: 18, iconSize: 10, labelSize: 4, labelShow: true, iconShow: true }
           sats.value = [...sats.value, node]
         }
         if (ss.satName) node.satName = ss.satName
@@ -774,6 +774,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
         if (Number.isFinite(ss.iconSize)) node.iconSize = ss.iconSize
         if (Number.isFinite(ss.labelSize)) node.labelSize = ss.labelSize
         if (typeof ss.labelShow === 'boolean') node.labelShow = ss.labelShow
+        if (typeof ss.iconShow === 'boolean') node.iconShow = ss.iconShow
         if (Number.isFinite(ss.lon)) node.lon = ss.lon
         if (Number.isFinite(ss.lat)) node.lat = ss.lat
         if (Number.isFinite(ss.altKm)) node.altKm = ss.altKm

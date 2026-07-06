@@ -18,7 +18,7 @@ defineOptions({ inheritAttrs: false })   // 不把父级传入的 title 落到�
 import { createGlobeScene } from '../viz/globe3d/scene.js'
 import { createFlatCoverage } from '../viz/flatmap/flatCoverage.js'
 import NAMES_ZH from '../viz/globe3d/data/country-names-zh.json'
-import { LAND as LAND_MORANDI, LAND_UNIFORMS } from '../viz/landPalette.js'
+import { LAND as LAND_MORANDI, LAND_UNIFORMS, LAND_DEFAULT } from '../viz/landPalette.js'
 import { countryAt, currentLandColor } from '../viz/globe3d/countryPick.js'
 import { useGrdCoverage } from '../viz/grd/useGrdCoverage.js'
 import { usePerfTable } from '../viz/grd/usePerfTable.js'
@@ -71,12 +71,13 @@ const satCount = ref(0)     // 该组卫星总数
 const shownCount = ref(0)   // 实际渲染点数
 const dataTime = ref('')
 const live = ref(false)     // 实时刷新（与 2D 默认一致：关）
+const nowTick = ref(0)      // 实时模式下每秒自增：驱动时间条上的系统时钟标签
 const autoRotate = toRef(viewPrefs, 'autoRotate')   // 自转开关：以 viewPrefs 为单一真相（设置弹窗共享）
-const nameMode = ref('en')   // 国名：'zh' | 'en' | 'off'
-const showProvinces = ref(false)
+const nameMode = ref('off')   // 国名：'zh' | 'en' | 'off'（默认不显示）
+const showProvinces = ref(false)   // 显示中国省界/省名（默认关；勾选或存档恢复后经 ensureProvinces 加载数据）
 let provincesLoaded = false
 let provincesData = null
-const showCities = ref(false)   // 显示中国地级市界 / 地级市名
+const showCities = ref(false)   // 显示中国地级市界 / 地级市名（默认关）
 let citiesLoaded = false
 let citiesData = null
 const timeOffset = ref(0)   // 分钟，0~1440（未来 24h）
@@ -85,10 +86,12 @@ const keyword = ref('')
 const searchResults = ref([])
 const selected = ref(null)
 const cardCollapsed = ref(false)   // 信息卡收起/展开（点标题栏切换）
-// 波束角
+// 覆盖圈定义（常驻时间条，未聚焦卫星时置灰）：按「波束角」(星上全锥角) 或「最低仰角」(地面站约束) 二选一
+const fpMode = ref('beam')     // 'beam' | 'elev'
 const beam = ref('')
 const beamAuto = ref('')
 const beamLock = ref(false)
+const elevMin = ref('')        // 最低仰角（度，空=0°地平线）
 const apiOk = typeof window !== 'undefined' && !!(window.api && window.api.omm)
 const covApiOk = typeof window !== 'undefined' && !!(window.api && window.api.coverage)
 const grdApiOk = typeof window !== 'undefined' && !!(window.api && window.api.coverageGrd)
@@ -298,21 +301,21 @@ const showBore = ref(true)        // 波束中心点
 const boreSize = ref(5)           // 波束中心点大小（1–12，映射球半径）
 const showContourLabels = ref(false) // 等值线数值标签
 const contourLabelSize = ref(12)  // 数值标签字号（2–20）
-const countryNameSize = ref(1.1)  // 国家名/大洋名字号倍率（0.6–2.0）
-const provNameSize = ref(0.55)    // 省名字号倍率（0.6–2.0）
-const cityNameSize = ref(0.5)     // 地级市名字号倍率（小空间，默认偏小）
+const countryNameSize = ref(1.0)  // 国家名/大洋名字号倍率（0.6–2.0）
+const provNameSize = ref(0.6)     // 省名字号倍率（0.6–2.0）
+const cityNameSize = ref(0.2)     // 地级市名字号倍率（小空间，默认偏小）
 // 国界(海岸线)/省界/地级市界线样式：线宽 px / 颜色 / 透明度，同时作用于 3D 与平面图
 // 地级市界默认更细更淡（线粗支持到 0.05），层级上从属于省界
-const borderStyle = reactive({ natColor: '#000000', natWidth: 0.2, natOpacity: 1.0, provColor: '#000000', provWidth: 0.3, provOpacity: 1.0, cityColor: '#6b7280', cityWidth: 0.12, cityOpacity: 0.7 })
+const borderStyle = reactive({ natColor: '#a8a8a8', natWidth: 0.5, natOpacity: 1.0, provColor: '#878787', provWidth: 0.5, provOpacity: 0.7, cityColor: '#6b7280', cityWidth: 0.5, cityOpacity: 0.15 })
 // 地名颜色/透明度：国家名 与 省名 与 地级市名 分开（大洋名维持固有蓝），同时作用于 3D 与平面图
-const labelStyle = reactive({ countryColor: '#eef2f6', countryOpacity: 1.0, provColor: '#f6fa00', provOpacity: 1.0, cityColor: '#9aa3b0', cityOpacity: 1.0 })
+const labelStyle = reactive({ countryColor: '#ffffff', countryOpacity: 1.0, provColor: '#f6fa00', provOpacity: 0.25, cityColor: '#9aa3b0', cityOpacity: 0.25 })
 // 大海颜色（限蓝色系预设），同时作用于 3D 球体与平面图底色
-// 蓝色系：深→浅，兼顾鲜艳/中性/低饱和；第 2 项 #15426b 为默认深蓝，末项 #92b6e4 取自 SATSOFT 浅蓝海面
+// 蓝色系：深→浅，兼顾鲜艳/中性/低饱和；第 5 项 #2a85c4 为默认，末项 #92b6e4 取自 SATSOFT 浅蓝海面
 const OCEAN_BLUES = ['#0d2b4d', '#15426b', '#1b5a8c', '#1e6fa8', '#2a85c4', '#3d7ba6', '#5b7f9e', '#92b6e4']
-const oceanColor = ref('#92b6e4')
+const oceanColor = ref('#2a85c4')
 // 大地颜色：基调方案（'morandi' 杂色循环 | '#rrggbb' 统一单色，预设见 landPalette.LAND_UNIFORMS，首个为 SATSOFT 米绿）
-// + 逐国覆盖（优先级最高，含中国/冰盖），同时作用于 3D 球体与平面图
-const landScheme = ref('morandi')
+// + 逐国覆盖（优先级最高，含中国/冰盖），同时作用于 3D 球体与平面图。默认统一米黄（与 landPalette 模块默认一致）
+const landScheme = ref(LAND_DEFAULT)
 const landOverrides = reactive({})   // ISO 数字码 → '#rrggbb'
 const landQuery = ref('')            // 逐国设色搜索框
 const landPick = ref(null)           // 当前选中国家 { id, zh }
@@ -504,7 +507,9 @@ function pushSelGeomFlat() {
   if (flat) flat.setSelGeom(selEntry ? { track: selTrack, footprint: selFootprint } : null)
 }
 
-// 覆盖足迹圈：与 2D 同一套几何（全波束角 B，半角 η=B/2；地心半角 λ=arcsin(r/RE·sinη)−η，夹断到 ε=0 上限）
+// 覆盖足迹圈，两种定义方式（fpMode）：
+//   beam — 与 2D 同一套几何（全波束角 B，半角 η=B/2；地心半角 λ=arcsin(r/RE·sinη)−η，夹断到 ε=0 上限）
+//   elev — 按地面最低仰角画等仰角环（0°=可见地平，与 beam 模式空值时的上限同界）
 function buildFootprint(rec, now, gmstNow) {
   const pv = sat.propagate(rec, now)
   if (!pv || !pv.position) { scene.setFootprint(null); selFootprint = null; pushSelGeomFlat(); return }
@@ -512,26 +517,34 @@ function buildFootprint(rec, now, gmstNow) {
   const lat0 = sat.degreesLat(gd.latitude), lon0 = sat.degreesLong(gd.longitude), h = gd.height
   scene.setHighlightLLA({ lat: lat0, lon: lon0, altKm: h })
   if (!(h > 0)) { scene.setFootprint(null); selFootprint = null; pushSelGeomFlat(); return }
-  const r = RE + h
-  const etaMax = Math.asin(clamp(RE / r, -1, 1))
-  const bMaxDeg = 2 * etaMax / DEG
-
-  const raw = parseFloat(beam.value)
-  let bDeg, clampText = null
-  if (!(raw > 0)) bDeg = bMaxDeg
-  else if (raw > bMaxDeg) { bDeg = bMaxDeg; clampText = bMaxDeg.toFixed(1) }
-  else bDeg = raw
-
-  const eta = (bDeg / 2) * DEG
   const ecf = sat.eciToEcf(pv.position, gmstNow)   // 卫星 ECEF(km)，按 WGS84 椭球求足迹边
-  const fp = W.footprintEllipsoid([ecf.x, ecf.y, ecf.z], eta, 72)
+
+  let fp = null
+  if (fpMode.value === 'elev') {
+    const raw = parseFloat(elevMin.value)
+    const el = raw >= 0 && raw < 90 ? raw : 0
+    const ring = W.isoElevationContourAt([ecf.x, ecf.y, ecf.z], el, 120)
+    fp = ring ? ring.map(([lon, lat]) => ({ lat, lon })) : null
+  } else {
+    const r = RE + h
+    const etaMax = Math.asin(clamp(RE / r, -1, 1))
+    const bMaxDeg = 2 * etaMax / DEG
+
+    const raw = parseFloat(beam.value)
+    let bDeg, clampText = null
+    if (!(raw > 0)) bDeg = bMaxDeg
+    else if (raw > bMaxDeg) { bDeg = bMaxDeg; clampText = bMaxDeg.toFixed(1) }
+    else bDeg = raw
+
+    fp = W.footprintEllipsoid([ecf.x, ecf.y, ecf.z], (bDeg / 2) * DEG, 72)
+
+    // placeholder 常显 ε=0 上限；用户超限回写夹断值（锁定态不回写）
+    const autoText = bMaxDeg.toFixed(1)
+    if (autoText !== beamAuto.value) beamAuto.value = autoText
+    if (clampText != null && !beamLock.value && clampText !== beam.value) beam.value = clampText
+  }
   scene.setFootprint(fp)
   selFootprint = fp; pushSelGeomFlat()   // 同步到 2D 平面图
-
-  // placeholder 常显 ε=0 上限；用户超限回写夹断值（锁定态不回写）
-  const autoText = bMaxDeg.toFixed(1)
-  if (autoText !== beamAuto.value) beamAuto.value = autoText
-  if (clampText != null && !beamLock.value && clampText !== beam.value) beam.value = clampText
 }
 
 // 以 (lat0,lon0) 为心、地心半角 lambda 的地表小圆 -> 经纬度点列
@@ -568,6 +581,7 @@ function rebuildRenderSet() {
 // 时间推进 / 实时刷新：只重算渲染集位置（不重建集合），并刷新选中几何/信息卡
 function refreshPositions() {
   if (!scene) return
+  if (live.value) nowTick.value++   // 驱动时间条实时时钟逐秒刷新
   if (curKey() === 'none' || !renderEntries.length) { scene.setSatellites([]); shownCount.value = 0; pushFocusSat(); if (hasLinkedElev()) redrawSats(); grd.tickLive(); return }
   const now = calcAt(), gmst = sat.gstime(now)
   const positions = []
@@ -746,13 +760,21 @@ function clearSearch() { keyword.value = ''; searchResults.value = [] }
 function pickResult(item) { searchResults.value = []; keyword.value = ''; selectSat(item.en, true) }
 function closeCard() { selEntry = null; selected.value = null; resetBeam(); scene && scene.clearSelectionGeom(); selTrack = selFootprint = null; pushSelGeomFlat(); pushMarkers(); pushFocusSat(); saveSelection() }
 
-// ===================== 波束角 =====================
-function resetBeam() { if (!beamLock.value) beam.value = ''; beamAuto.value = '' }
-function onBeam(e) {
-  beam.value = e.target.value
-  if (selEntry) { const now = calcAt(); buildFootprint(selEntry.rec, now, sat.gstime(now)) }
-}
+// ===================== 覆盖圈（波束角 / 最低仰角） =====================
+// 波束角/最低仰角是用户设置：控件常驻、换星不清空手填值；仅清与所选星绑定的上限占位。
+// 锁定含义收敛为「超出该星上限时不回写夹断值」。
+function resetBeam() { beamAuto.value = '' }
+function refreshFootprint() { if (selEntry) { const now = calcAt(); buildFootprint(selEntry.rec, now, sat.gstime(now)) } }
+function onBeam(e) { beam.value = e.target.value; refreshFootprint() }
+function onElevMin(e) { elevMin.value = e.target.value; refreshFootprint() }
+function setFpMode(m) { if (fpMode.value !== m) { fpMode.value = m; refreshFootprint() } }
 function toggleBeamLock() { beamLock.value = !beamLock.value }
+// 聚焦图例文案：标注当前覆盖圈的定义方式与取值，截图脱离 UI 也自明
+const fpLegend = computed(() => {
+  if (fpMode.value === 'elev') { const v = parseFloat(elevMin.value); return `覆盖范围 · 最低仰角 ${v >= 0 && v < 90 ? v : 0}°` }
+  const b = beam.value || beamAuto.value
+  return b ? `覆盖范围 · 波束角 ${b}°` : '覆盖范围'
+})
 
 // ===================== 时间轴 =====================
 const track = ref(null)
@@ -773,9 +795,9 @@ function trackToMin(clientX) {
   const r = track.value.getBoundingClientRect()
   return Math.round(clamp01((clientX - r.left) / r.width) * 1440)
 }
-// 拖拽/点击时间轴（监听挂 document，移出轨道仍连续）
+// 拖拽/点击时间轴（监听挂 document，移出轨道仍连续）；实时中照常可拖，applyTime 会静默退出实时
 function trackDown(e) {
-  if (live.value || !track.value) return
+  if (!track.value) return
   applyTime(trackToMin(e.clientX))
   const move = (ev) => applyTime(trackToMin(ev.clientX))
   const up = () => { document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up) }
@@ -790,13 +812,13 @@ function step(min) { applyTime((timeOffset.value || 0) + min) }
 function resetTime() { if (!timeOffset.value && !live.value) return; baseTime = Date.now(); applyTime(0) }
 function toggleLive() {
   live.value = !live.value
-  if (live.value) { if (!timer) timer = setInterval(refreshPositions, 1000); refreshPositions() }
-  else { if (timer) { clearInterval(timer); timer = null } baseTime = Date.now(); timeOffset.value = 0; timePct.value = 0; refreshPositions() }
+  if (live.value) { timeOffset.value = 0; timePct.value = 0; if (!timer) timer = setInterval(refreshPositions, 1000); refreshPositions() }   // 进实时：滑块归位「此刻」
+  else { if (timer) { clearInterval(timer); timer = null } baseTime = Date.now(); timeOffset.value = 0; timePct.value = 0; refreshPositions() }   // 退实时：冻结在当前时刻
 }
 function toggleRotate() { autoRotate.value = !autoRotate.value; scene && scene.setAutoRotate(autoRotate.value) }
 function setNameMode(m) { nameMode.value = m; scene && scene.setLabelMode(m); if (flat) flat.setNameMode(m) }
-async function toggleProvinces() {
-  showProvinces.value = !showProvinces.value
+// 省界/市界：按开关加载数据（一次）并套用可见性。开关切换与「默认开启的无存档首启」共用同一路径
+async function ensureProvinces() {
   if (showProvinces.value && !provincesLoaded) {
     try { const mod = await import('../viz/globe3d/data/china-provinces.json'); provincesData = mod.default || mod; scene && scene.setProvinces(provincesData); if (flat) flat.setProvinces(provincesData); provincesLoaded = true }
     catch (e) { /* 省界数据缺失 */ }
@@ -804,8 +826,7 @@ async function toggleProvinces() {
   scene && scene.setProvincesVisible(showProvinces.value)
   if (flat) flat.setProvincesVisible(showProvinces.value)
 }
-async function toggleCities() {
-  showCities.value = !showCities.value
+async function ensureCities() {
   if (showCities.value && !citiesLoaded) {
     try { const mod = await import('../viz/globe3d/data/china-cities.json'); citiesData = mod.default || mod; scene && scene.setCities(citiesData); if (flat) flat.setCities(citiesData); citiesLoaded = true }
     catch (e) { /* 地级市数据缺失 */ }
@@ -814,6 +835,8 @@ async function toggleCities() {
   if (flat) flat.setCitiesVisible(showCities.value)
   applyNameScale()   // 套用当前地级市名字号（首次加载后生效）
 }
+async function toggleProvinces() { showProvinces.value = !showProvinces.value; await ensureProvinces() }
+async function toggleCities() { showCities.value = !showCities.value; await ensureCities() }
 
 // ===================== 覆盖图 =====================
 let _presetCovSats = []   // 预置覆盖索引（只读）；用户 GXT 库与之合并成 covSats
@@ -1862,13 +1885,16 @@ function setTrajName(id, v) { const t = trajectories.value.find((x) => x.id === 
 function removeTraj(id) { trajectories.value = trajectories.value.filter((t) => t.id !== id); if (activeTraj.value === id) activeTraj.value = ''; syncMarkers() }
 function clearAllMarkers() { points.value = []; stations.value = []; trajectories.value = []; activeTraj.value = ''; syncMarkers() }
 
-const timeLabel = () => {
-  if (live.value) return '实时'
-  if (!timeOffset.value) return '此刻'
+// 时间读数（双行定宽块，DAW 范式：主行=时刻/偏移量，副行=日期时间；tabular-nums 防拖动抖动）
+const timeParts = computed(() => {
+  const p = (n) => String(n).padStart(2, '0')
+  if (live.value) { void nowTick.value; const d = new Date(); return { m: `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`, s: `${p(d.getMonth() + 1)}-${p(d.getDate())} 实时` } }
+  const d = calcAt()
+  const dt = `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+  if (!timeOffset.value) return { m: '此刻', s: dt }
   const oh = Math.floor(timeOffset.value / 60), om = timeOffset.value % 60
-  const d = calcAt(), p = (n) => String(n).padStart(2, '0')
-  return `+${oh}h${p(om)}m · ${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
-}
+  return { m: `+${oh}h${p(om)}m`, s: dt }
+})
 
 // ===================== 持久化（记住分组 + 选中星） =====================
 function saveSelection() {
@@ -1914,7 +1940,7 @@ function deserializeCov(items) {
 }
 function snapshot() {
   return {
-    nameMode: nameMode.value, countryName: countryNameSize.value, provName: provNameSize.value, cityName: cityNameSize.value, showProvinces: showProvinces.value, showCities: showCities.value, borderStyle: { ...borderStyle }, labelStyle: { ...labelStyle }, oceanColor: oceanColor.value, landScheme: landScheme.value, landOverrides: { ...landOverrides }, autoRotate: autoRotate.value, autoRotateSpeed: viewPrefs.autoRotateSpeed, live: live.value, beamLock: beamLock.value,
+    nameMode: nameMode.value, countryName: countryNameSize.value, provName: provNameSize.value, cityName: cityNameSize.value, showProvinces: showProvinces.value, showCities: showCities.value, borderStyle: { ...borderStyle }, labelStyle: { ...labelStyle }, oceanColor: oceanColor.value, landScheme: landScheme.value, landOverrides: { ...landOverrides }, autoRotate: autoRotate.value, autoRotateSpeed: viewPrefs.autoRotateSpeed, live: live.value, beamLock: beamLock.value, fpMode: fpMode.value, beam: beam.value, elevMin: elevMin.value,
     mkPt: markPtFont.value, mkStIcon: stIconSize.value, mkStFont: stFontSize.value, mkPtDot: markPtDot.value, mkTrajDot: trajDotSize.value,
     mkPtShow: showPtLabel.value, mkStShow: showStName.value,
     mkPtLayer: showPtLayer.value, mkStLayer: showStLayer.value, mkTrajLayer: showTrajLayer.value,
@@ -1943,12 +1969,12 @@ async function restoreSettings() {
   if (s.labelStyle && typeof s.labelStyle === 'object') Object.assign(labelStyle, s.labelStyle)
   applyLabelStyle()
   if (typeof s.oceanColor === 'string') setOceanColor(s.oceanColor)
-  // 大地颜色：基调 + 逐国覆盖。默认态（morandi 且无覆盖）不触发陆地重建，避免启动白做一次
+  // 大地颜色：基调 + 逐国覆盖。默认态（LAND_DEFAULT 且无覆盖）不触发陆地重建，避免启动白做一次
   if (s.landScheme === 'morandi' || (typeof s.landScheme === 'string' && HEX6.test(s.landScheme))) landScheme.value = s.landScheme
   if (s.landOverrides && typeof s.landOverrides === 'object') {
     for (const [k, v] of Object.entries(s.landOverrides)) if (typeof v === 'string' && HEX6.test(v)) landOverrides[k] = v
   }
-  if (landScheme.value !== 'morandi' || Object.keys(landOverrides).length) applyLandColors(true)
+  if (landScheme.value !== LAND_DEFAULT || Object.keys(landOverrides).length) applyLandColors(true)
   if (Number.isFinite(s.mkPt)) markPtFont.value = s.mkPt
   if (Number.isFinite(s.mkPtDot)) markPtDot.value = s.mkPtDot
   if (Number.isFinite(s.mkStIcon)) stIconSize.value = s.mkStIcon
@@ -1963,16 +1989,13 @@ async function restoreSettings() {
   if (typeof s.autoRotate === 'boolean') { autoRotate.value = s.autoRotate; scene.setAutoRotate(autoRotate.value) }
   if (Number.isFinite(s.autoRotateSpeed)) { viewPrefs.autoRotateSpeed = s.autoRotateSpeed; scene.setAutoRotateSpeed(s.autoRotateSpeed) }
   if (typeof s.beamLock === 'boolean') beamLock.value = s.beamLock
+  if (s.fpMode === 'elev') fpMode.value = 'elev'
+  if (typeof s.beam === 'string') beam.value = s.beam
+  if (typeof s.elevMin === 'string') elevMin.value = s.elevMin
   if (typeof s.polyOpen === 'boolean') polyOpen.value = s.polyOpen
-  if (s.showProvinces) {
-    showProvinces.value = true
-    try { const mod = await import('../viz/globe3d/data/china-provinces.json'); provincesData = mod.default || mod; scene.setProvinces(provincesData); scene.setProvincesVisible(true); provincesLoaded = true } catch { /* ignore */ }
-  }
-  if (s.showCities) {
-    showCities.value = true
-    try { const mod = await import('../viz/globe3d/data/china-cities.json'); citiesData = mod.default || mod; scene.setCities(citiesData); scene.setCitiesVisible(true); citiesLoaded = true } catch { /* ignore */ }
-    scene.setNameScale(countryNameSize.value, provNameSize.value, cityNameSize.value)
-  }
+  // 省界/市界开关：默认开，存档里的显式 false 也要恢复；数据加载统一走挂载尾部的 ensureProvinces/ensureCities
+  if (typeof s.showProvinces === 'boolean') showProvinces.value = s.showProvinces
+  if (typeof s.showCities === 'boolean') showCities.value = s.showCities
   if (s.live) { live.value = true; if (!timer) timer = setInterval(refreshPositions, 1000) }
   const c = s.cov
   if (c && Array.isArray(c.items) && c.items.length) {
@@ -2083,6 +2106,7 @@ onMounted(async () => {
   } catch { /* ignore */ }
 
   await restoreSettings()   // 恢复全部选项/设置（无感）
+  await ensureProvinces(); await ensureCities()   // 按恢复后的省/市界开关加载数据并套用可见性（restoreSettings 只回填开关）
   loadGroup()
   ensureSearchPool()   // 后台构建全量搜索库（当日缓存命中则很快），与当前分组无关
   redrawSats()   // 恢复后立即绘制自定义卫星（关联卫星待 loadGroup 完成由 refreshPositions 跟踪）
@@ -2119,7 +2143,7 @@ onBeforeUnmount(() => {
 
         <!-- 聚焦卫星图例：说明地图上为聚焦星绘制的覆盖范围(浅蓝虚线，示意非精确覆盖区)与星下点轨迹(金黄实线)，3D / 2D 同步显示 -->
         <div v-if="selected" class="focus-legend">
-          <div class="fl-row"><span class="fl-sw cov"></span>覆盖范围</div>
+          <div class="fl-row"><span class="fl-sw cov"></span>{{ fpLegend }}</div>
           <div class="fl-row"><span class="fl-sw trk"></span>星下点轨迹</div>
         </div>
 
@@ -2690,30 +2714,42 @@ onBeforeUnmount(() => {
       </Teleport>
     </div>
 
-    <!-- 时间控制条：地图时间轴 + 波束角（归属地图，置于地图正下方） -->
+    <!-- 时间控制条：地图时间轴 + 实时徽标 + 覆盖圈定义（归属地图，置于地图正下方） -->
+    <!-- 交互范式（YouTube LIVE / Cesium SYSTEM_CLOCK）：实时中时间轴与步进照常可用，操作即静默退出实时；徽标一键回实时 -->
     <div class="tl bottom">
-      <div class="tb-track" ref="track" :class="{ dis: live }" @mousedown="trackDown">
+      <div class="tb-track" ref="track" @mousedown="trackDown">
         <span v-for="t in timeTicks" :key="'k' + t.min" class="tb-tick" :style="{ left: t.min / 14.4 + '%' }"></span>
         <div class="tb-bar"><div class="tb-fill" :style="{ width: timePct + '%' }"></div></div>
-        <div class="tb-knob" :style="{ left: timePct + '%' }"></div>
+        <div class="tb-knob" :class="{ lv: live }" :style="{ left: timePct + '%' }"></div>
         <span v-for="t in timeTicks" :key="'m' + t.min" class="tb-mark" :style="tickStyle(t.min)">{{ t.label }}</span>
       </div>
-      <span class="tlab">{{ timeLabel() }}</span>
-      <span class="st" :class="{ dis: live }" @click="step(-60)">−1h</span>
-      <span class="st" :class="{ dis: live }" @click="step(-10)">−10m</span>
-      <span class="st" :class="{ dis: live }" @click="step(-1)">−1m</span>
-      <span class="st" :class="{ dis: live || !timeOffset }" @click="resetTime">此刻</span>
-      <span class="st" :class="{ dis: live }" @click="step(1)">+1m</span>
-      <span class="st" :class="{ dis: live }" @click="step(10)">+10m</span>
-      <span class="st" :class="{ dis: live }" @click="step(60)">+1h</span>
+      <span class="vsep"></span>
+      <span class="live-btn" :class="{ on: live }" :title="live ? '实时中（跟随系统时间）· 点击停在当前时刻' : '回到实时（跟随系统时间）'" @click="toggleLive"><span class="ldot"></span>实时</span>
+      <span class="tlab2"><span class="t1">{{ timeParts.m }}</span><span class="t2">{{ timeParts.s }}</span></span>
+      <span class="stg" role="group">
+        <span class="st" @click="step(-60)">−1h</span>
+        <span class="st" @click="step(-10)">−10m</span>
+        <span class="st" @click="step(-1)">−1m</span>
+        <span class="st now" :class="{ dis: !live && !timeOffset }" title="回到当前时刻（静止）" @click="resetTime">此刻</span>
+        <span class="st" @click="step(1)">+1m</span>
+        <span class="st" @click="step(10)">+10m</span>
+        <span class="st" @click="step(60)">+1h</span>
+      </span>
+      <span class="vsep"></span>
       <span class="beamc">
-        <template v-if="selected">
-          <span class="bl">波束角</span>
-          <input class="bi" :value="beam" :placeholder="beamAuto || '自动'" @input="onBeam" />
+        <span class="seg fpseg">
+          <span class="sg" :class="{ on: fpMode === 'beam' }" title="按星上波束角（全锥角）画覆盖圈" @click="setFpMode('beam')">波束角</span>
+          <span class="sg" :class="{ on: fpMode === 'elev' }" title="按地面最低仰角画覆盖圈（0°=地平线）" @click="setFpMode('elev')">最低仰角</span>
+        </span>
+        <template v-if="fpMode === 'beam'">
+          <input class="bi" :disabled="!selected" :value="beam" :placeholder="selected ? (beamAuto || '自动') : '—'" :title="selected ? '波束全锥角，空=对地全视场' : '点击卫星后生效'" @input="onBeam" />
           <span class="bu">°</span>
-          <span class="lock" :class="{ on: beamLock }" @click="toggleBeamLock"><Icon :name="beamLock ? 'lock' : 'lock-open'" :size="12" /></span>
+          <span class="lock" :class="{ on: beamLock }" title="锁定：超出该星上限时不回写夹断值" @click="toggleBeamLock"><Icon :name="beamLock ? 'lock' : 'lock-open'" :size="12" /></span>
         </template>
-        <span v-else class="hint">点击卫星设置波束角</span>
+        <template v-else>
+          <input class="bi" :disabled="!selected" :value="elevMin" :placeholder="selected ? '0' : '—'" :title="selected ? '最低仰角，0°=地平线' : '点击卫星后生效'" @input="onElevMin" />
+          <span class="bu">°</span>
+        </template>
       </span>
     </div>
 
@@ -3072,26 +3108,51 @@ onBeforeUnmount(() => {
 .search .nm { font-size: 12.5px; }
 .search .sub { color: var(--text-faint); font-size: 11px; }
 .meta { margin-left: auto; color: var(--text-faint); }
-.tl { display: flex; align-items: center; gap: 12px; padding: 7px 16px 9px; border-bottom: 1px solid var(--border); flex: none; font-size: 11.5px; }
+.tl { display: flex; align-items: center; gap: 10px; padding: 7px 14px 9px; border-bottom: 1px solid var(--border); flex: none; font-size: 11.5px; }
 /* 时间轴（同小程序样式）：自绘轨道 + 进度 + 圆点滑块 + 文字刻度 */
 .tb-track { position: relative; flex: 1; min-width: 180px; height: 30px; cursor: pointer; }
-.tb-track.dis { opacity: 0.45; pointer-events: none; }
 .tb-bar { position: absolute; left: 0; right: 0; top: 9px; height: 3px; border-radius: 2px; background: var(--border-strong); }
 .tb-fill { height: 100%; border-radius: 2px; background: var(--accent); }
 .tb-knob { position: absolute; top: 4.5px; width: 12px; height: 12px; border-radius: 50%; background: var(--accent); transform: translateX(-50%); box-shadow: 0 0 0 2px var(--bg); }
+.tb-knob.lv { background: #e05252; }
 .tb-tick { position: absolute; top: 6px; width: 1px; height: 9px; background: var(--border-strong); transform: translateX(-50%); }
 .tb-mark { position: absolute; top: 17px; font-family: var(--font-mono); font-size: 10px; line-height: 1; color: var(--text-faint); white-space: nowrap; pointer-events: none; }
-.tlab { font-family: var(--font-mono); min-width: 150px; color: var(--text-muted); }
-.tl .st { padding: 2px 8px; border: 1px solid var(--border); cursor: pointer; color: var(--text-muted); }
-.tl .st.dis { opacity: 0.4; pointer-events: none; }
-.tl .beamc { display: inline-flex; align-items: center; gap: 6px; margin-left: 6px; flex: none; }
-.tl .bl { color: var(--text-muted); }
-.tl .bi { width: 56px; border: 0; border-bottom: 1px solid var(--border-strong); background: transparent; outline: none; color: var(--text); font-size: 11.5px; }
+/* 组间分隔：主要靠间距，仅在语义跨度最大的两处放 16px 细竖线（不通高，视觉轻） */
+.tl .vsep { width: 1px; height: 16px; background: var(--border-strong); flex: none; }
+/* 时间读数：双行定宽块（主行=时刻/偏移量，副行=日期时间），tabular-nums + min-width，拖动不抖、不参与伸缩 */
+.tlab2 { display: inline-flex; flex-direction: column; justify-content: center; min-width: 70px; flex: none; font-family: var(--font-mono); font-variant-numeric: tabular-nums; line-height: 1.25; }
+.tlab2 .t1 { font-size: 12px; color: var(--text); white-space: nowrap; }
+.tlab2 .t2 { font-size: 9.5px; color: var(--text-faint); white-space: nowrap; }
+/* 步进按钮组：共享外框 + 内部 1px 分隔线（segmented group，替代七个独立小边框） */
+.tl .stg { display: inline-flex; align-items: stretch; border: 1px solid var(--border); flex: none; }
+.tl .stg .st { padding: 4px 7px; cursor: pointer; color: var(--text-muted); font-size: 11px; line-height: 1; white-space: nowrap; user-select: none; }
+.tl .stg .st + .st { border-left: 1px solid var(--border); }
+.tl .stg .st:hover { background: var(--surface); color: var(--text); }
+.tl .stg .st.now { color: var(--text); }
+.tl .stg .st.dis { opacity: 0.4; pointer-events: none; }
+/* 实时徽标（YouTube LIVE 范式）：红=跟随系统时间（点击停在当前时刻），灰=点击一键回实时 */
+.tl .live-btn { display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px; border: 1px solid var(--border); cursor: pointer; color: var(--text-muted); user-select: none; flex: none; white-space: nowrap; }
+.tl .live-btn:hover { border-color: var(--border-strong); color: var(--text); }
+.tl .live-btn .ldot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-faint); flex: none; }
+.tl .live-btn.on { color: #e05252; border-color: color-mix(in srgb, #e05252 55%, transparent); }
+.tl .live-btn.on .ldot { background: #e05252; animation: live-pulse 1.6s ease-in-out infinite; }
+@keyframes live-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(224, 82, 82, 0.4); } 50% { box-shadow: 0 0 0 4px rgba(224, 82, 82, 0); } }
+.tl .beamc { display: inline-flex; align-items: center; gap: 5px; flex: none; }
+.tl .fpseg .sg { padding: 3px 7px; font-size: 11px; line-height: 1; white-space: nowrap; }
+.tl .bi { width: 42px; border: 0; border-bottom: 1px solid var(--border-strong); background: transparent; outline: none; color: var(--text); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.tl .bi:disabled { opacity: 0.4; cursor: not-allowed; border-bottom-color: var(--border); }
 .tl .bu { color: var(--text-muted); }
-.tl .lock { cursor: pointer; }
-.tl .hint { color: var(--text-faint); }
+.tl .lock { cursor: pointer; display: inline-flex; align-items: center; }
 /* 时间控制条置于地图正下方：分隔线换到上缘 */
-.tl.bottom { border-bottom: 0; border-top: 1px solid var(--border); }
+.tl.bottom { border-bottom: 0; border-top: 1px solid var(--border); container-type: inline-size; }
+/* 窄容器（侧栏挤压）优雅降级：收紧内边距/竖线/时间轴下限，保证「最低仰角」输入始终可见 */
+@container (max-width: 880px) {
+  .tl .vsep { display: none; }
+  .tl .tb-track { min-width: 130px; }
+  .tl .stg .st { padding: 4px 5px; }
+  .tl .fpseg .sg { padding: 3px 5px; }
+  .tl .bi { width: 36px; }
+}
 .mini { padding: 3px 10px; border: 1px solid var(--border); cursor: pointer; color: var(--text-muted); font-size: 12px; }
 .mini.on { color: var(--text); border-color: var(--accent); }
 .body { flex: 1; min-height: 0; display: flex; }
