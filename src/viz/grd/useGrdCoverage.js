@@ -63,14 +63,18 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
   // jet 配色按值自动分配（填充色与线色默认同色，可分别改）。
   function defaultLevels(peakDb) {
     const abs = Number.isFinite(peakDb)
-    const lv = [-1, -2, -3, -4, -5].map((v) => ({ v: abs ? +(peakDb + v).toFixed(2) : v, color: '', lineColor: '' }))
+    const lv = [-1, -2, -3, -4, -5].map((v) => ({ v: abs ? +(peakDb + v).toFixed(2) : v, color: '', lineColor: '', locked: false, lineSet: false }))
     recolorList(lv); return lv
   }
-  // 按值升序分配 jet 色（外圈冷、内圈热），填充色 + 线色一并重置
+  // 按值升序分配 jet 色（外圈冷、内圈热）。locked 标记「用户手动配过色」的档：整档锁定，填充与线色
+  // 都不再被 jet 重配（记忆到用户下次再改，增删档不抹手动色）。lineSet 表示线色已单独设定（改填充时不跟随）。
   function recolorList(lv) {
     const n = lv.length; if (!n) return
     const cols = schemeColorsRGB('jet', n)
-    lv.map((_, i) => i).sort((a, b) => lv[a].v - lv[b].v).forEach((idx, rank) => { const css = rgbCss(cols[rank]); lv[idx].color = css; lv[idx].lineColor = css })
+    lv.map((_, i) => i).sort((a, b) => lv[a].v - lv[b].v).forEach((idx, rank) => {
+      if (lv[idx].locked) return
+      const css = rgbCss(cols[rank]); lv[idx].color = css; lv[idx].lineColor = css
+    })
   }
 
   const s = reactive({
@@ -95,12 +99,19 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
     return { lon: s.boreLon == null ? m.satLon : s.boreLon, lat: s.boreLat || 0 }
   }
 
-  // 加一档：沿现有方向延伸 1 dB，再整体 jet 重新配色
+  // 加一档（电平值一律取整数）：
+  //  · 无档时——绝对模式从「峰值减1向下取整」起，相对模式从 −1 起（相对峰值）；
+  //  · 只有一档时——取「上一档减1向下取整」；
+  //  · 多档时——沿最后两档趋势方向再走 1 dB（其余同旧逻辑），结果取整。
+  // 之后整体 jet 重新配色（locked 手动配色档不受影响）。
   function addLevel() {
     const lv = s.levels
-    const dir = lv.length >= 2 ? (Math.sign(lv[lv.length - 1].v - lv[lv.length - 2].v) || (s.ctype === 'rel' ? -1 : 1)) : (s.ctype === 'rel' ? -1 : 1)
-    const base = lv.length ? lv[lv.length - 1].v : (s.ctype === 'rel' ? 0 : 50)
-    lv.push({ v: +(base + dir * STEP).toFixed(2), color: '', lineColor: '' })
+    const m = antMeta(), peak = m ? m.peakDb : NaN
+    let v
+    if (!lv.length) v = s.ctype === 'rel' ? -1 : (Number.isFinite(peak) ? Math.floor(peak) - 1 : 50)
+    else if (lv.length === 1) v = Math.floor(lv[0].v) - 1
+    else { const dir = Math.sign(lv[lv.length - 1].v - lv[lv.length - 2].v) || (s.ctype === 'rel' ? -1 : 1); v = Math.floor(lv[lv.length - 1].v) + dir * STEP }
+    lv.push({ v, color: '', lineColor: '', locked: false, lineSet: false })
     recolorList(lv)
   }
   function removeLevel(i) { s.levels.splice(i, 1); recolorList(s.levels) }
@@ -108,7 +119,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
   // 每个天线的独立设置（数据库）：除等仰角线(全局参考线)外的全部绘制设置都按天线保存，
   // 切换聚焦时载入该天线设置、编辑时回存，只有用户改动才变。bore 指向同样并入。
   const PA = ['ctype', 'pol', 'gainOffset', 'pathLoss', 'fill', 'line', 'lineWidth', 'alpha', 'boreType', 'boreLon', 'boreLat', 'boreAz', 'boreEl', 'yaw']
-  const copyLevels = (lv) => lv.map((L) => ({ v: L.v, color: L.color, lineColor: L.lineColor }))
+  const copyLevels = (lv) => lv.map((L) => ({ v: L.v, color: L.color, lineColor: L.lineColor, locked: !!L.locked, lineSet: !!L.lineSet }))
   function defaultSettings(satLon, satLat = 0, peakDb) {
     return { ctype: 'abs', pol: 'RSS', gainOffset: 0, pathLoss: 'none', fill: false, line: true, lineWidth: 1.6, alpha: 0.78,
       boreType: 'azel', boreLon: satLon == null ? null : satLon, boreLat: satLat || 0, boreAz: 0, boreEl: 0, yaw: 0, beamsToPlot: [0], beamNames: {}, levels: defaultLevels(peakDb) }

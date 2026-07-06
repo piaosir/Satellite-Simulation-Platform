@@ -284,8 +284,10 @@ watch(() => perf.optsByAnt.value, () => refreshPerf(), { deep: true })
 watch(() => [grdS.pol, grdS.gainOffset, grdS.pathLoss, grdS.ctype, grdS.beamsToPlot], () => { if (perfKey.value === grd.active.value) refreshPerf() }, { deep: true })
 // 电平颜色 css(rgb) -> #hex（供 <input type=color>）；setLevelColor 反向写回
 function grdLvHex(css) { const m = /(\d+)\D+(\d+)\D+(\d+)/.exec(css || ''); if (!m) return '#ffffff'; const h = (n) => (+n).toString(16).padStart(2, '0'); return '#' + h(m[1]) + h(m[2]) + h(m[3]) }
-function setLevelColor(i, e) { const x = e.target.value; grdS.levels[i].color = `rgb(${parseInt(x.slice(1, 3), 16)},${parseInt(x.slice(3, 5), 16)},${parseInt(x.slice(5, 7), 16)})` }
-function setLineColor(i, e) { const x = e.target.value; grdS.levels[i].lineColor = `rgb(${parseInt(x.slice(1, 3), 16)},${parseInt(x.slice(3, 5), 16)},${parseInt(x.slice(5, 7), 16)})` }
+// 改填充色：线色未单独设过时跟随填充一同改（默认二者同色）；整档 locked，此后增删档不再自动改（记忆到再改）
+function setLevelColor(i, e) { const x = e.target.value; const css = `rgb(${parseInt(x.slice(1, 3), 16)},${parseInt(x.slice(3, 5), 16)},${parseInt(x.slice(5, 7), 16)})`; const L = grdS.levels[i]; L.color = css; if (!L.lineSet) L.lineColor = css; L.locked = true }
+// 改线色：线色转为独立设定（lineSet），之后不再跟随填充；整档 locked
+function setLineColor(i, e) { const x = e.target.value; const css = `rgb(${parseInt(x.slice(1, 3), 16)},${parseInt(x.slice(3, 5), 16)},${parseInt(x.slice(5, 7), 16)})`; const L = grdS.levels[i]; L.lineColor = css; L.lineSet = true; L.locked = true }
 const covSats = ref([])           // 索引：[{folder,displayName,satName,lon,beams:[{band,beam,type,gains,file}...]}]
 const covItems = ref([])          // 已添加卫星（两级结构）
 const covCleared = ref(false)      // 「清除绘制」后置位：保留 covItems 但暂不绘制，避免切视图/重开面板时 GXT 覆盖自行复现（再次 redraw 即解除）。入 snapshot 持久化，使「清除后效果」跨重启保留

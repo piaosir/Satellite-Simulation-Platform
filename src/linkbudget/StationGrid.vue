@@ -1,10 +1,17 @@
+<script>
+// 行 _id 生成器放模块级：组件切换标签会 v-if 卸载/重挂载，若计数器写在 <script setup> 内则每次归零，
+// 新行 _id（'r1','r2'…）便和数组里保留的旧行撞车 → :key 重复 → Vue 带 key 的 diff 错乱（幽灵行/选区
+// 错位，即“0 个发信站却仍显示数据行、暂无发信站与数据行并存”的现象）。模块级计数器全局单调、跨挂载不重置。
+let _rowSeq = 1
+</script>
+
 <script setup>
 import { ref, reactive, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import Icon from '../components/Icon.vue'
 import { defaultsFor } from './params.js'
 
-// 发信/收信站群 Excel 式电子表格：单元格框选（拖拽）、Ctrl+C/Ctrl+V 复制粘贴（TSV）、
-// 双击整列填充、增删行（按城市表顺序取名）、多选行批量删除/设值、清空、撤销/重做、逐行选址。
+// 发信/收信站群 Excel 式电子表格：单元格框选（拖拽）、Ctrl+C/X/V 复制/剪切/粘贴（TSV，序号列选中时按整行）、
+// 填充柄向下填充、「＋增加」在聚焦行下方插入行、多选行批量删除/设值、清空、撤销/重做、逐行选址、点列头选整列。
 const props = defineProps({
   stations: { type: Array, required: true },
   fields: { type: Array, required: true },
@@ -18,7 +25,6 @@ const props = defineProps({
   selectOptions: { type: Object, default: () => ({}) } // { 字段key: [选项…] }，覆盖该 select 字段的静态 options（用于运行时动态选项，如基带配置库）
 })
 
-let _seq = 1
 const root = ref(null)
 const nameKey = computed(() => (props.fields.find((f) => f.city) || {}).key)
 const lonKey = computed(() => (props.fields.find((f) => /longitude/i.test(f.key)) || {}).key)
@@ -127,22 +133,17 @@ const selectedRows = computed(() => props.stations.filter((s) => sel.value[s._id
 const allSelected = computed(() => props.stations.length > 0 && props.stations.every((s) => sel.value[s._id]))
 function toggleAll() { const v = !allSelected.value; const m = {}; if (v) for (const s of props.stations) m[s._id] = true; sel.value = m }
 
-// —— 增删行（按城市表顺序取名）——
-function cityForIndex(i) { return props.cities.length ? props.cities[i % props.cities.length] : null }
-function makeRow(city) {
-  const row = defaultsFor(props.fields); row._id = 'r' + (_seq++)
-  if (city) {
-    if (nameKey.value) row[nameKey.value] = city.name
-    if (lonKey.value) row[lonKey.value] = String(city.lon)
-    if (latKey.value) row[latKey.value] = String(city.lat)
-  }
-  return row
-}
+// —— 增删行 ——
+// 新行＝纯空行（各列留空，不带 北京/默认口径 等默认值，由用户自行填写或粘贴）；_id 由模块级计数器保证全局唯一。
+function makeRow() { const row = {}; for (const f of props.fields) row[f.key] = ''; row._id = 'r' + (_rowSeq++); return row }
+// 「＋ 增加」：Excel 式在当前聚焦行的下方插入一行（纯空行，不再按城市表循环取名）；表为空时作为第一行。
+// 焦点落到新行的「地面站位置」列，便于直接键入站名。
 function addRow() {
+  const at = props.stations.length ? Math.min(props.stations.length, range.fr + 1) : 0
   pushUndo()
-  const row = makeRow(cityForIndex(props.stations.length))
-  props.stations.push(row)
-  if (props.autoGeo && cityForIndex(props.stations.length - 1)) props.autoGeo(row)
+  props.stations.splice(at, 0, makeRow())
+  sel.value = {}
+  setFocus(at, cityFieldIdx.value >= 0 ? cityFieldIdx.value : firstVisSelCol(), false)
 }
 function removeRow(i) { pushUndo(); const id = props.stations[i]._id; props.stations.splice(i, 1); delete sel.value[id] }
 function removeSelected() {
@@ -177,7 +178,8 @@ function focusGrid() { nextTick(() => root.value && root.value.focus()) }
 function onDown(r, c, e) {
   if (isEditing(r, c)) return
   e.preventDefault()
-  editing.value = null
+  if (editing.value) endEdit()          // 点击其它格＝提交当前编辑（归一化/城市联动照跑），与 Excel 一致
+  if (!e.shiftKey) sel.value = {}        // 普通点击收起整行勾选，选区归一（避免单元格选区与整行勾选并存）
   setFocus(r, c, e.shiftKey)
   dragging = true
   focusGrid()
@@ -188,14 +190,14 @@ function onEnter(r, c) {
 }
 function onUp() {
   if (fill.active) { fill.active = false; applyFill() }
-  dragging = false; rowDragging = false
+  dragging = false; rowDragging = false; colDragging = false
   stopAutoScroll()
 }
 
 // 拖拽（框选/填充/选行）到容器边缘时自动滚动，使底部滚动条跟随
 let scrollRAF = null, scrollVX = 0, scrollVY = 0
 function onDragMove(e) {
-  if (!(dragging || fill.active || rowDragging)) { stopAutoScroll(); return }
+  if (!(dragging || fill.active || rowDragging || colDragging)) { stopAutoScroll(); return }
   const el = root.value; if (!el) return
   const r = el.getBoundingClientRect(), edge = 36
   scrollVX = e.clientX > r.right - edge ? 16 : (e.clientX < r.left + edge ? -16 : 0)
@@ -204,7 +206,7 @@ function onDragMove(e) {
 }
 function autoScrollTick() {
   const el = root.value
-  if (!el || !(dragging || fill.active || rowDragging) || (!scrollVX && !scrollVY)) { scrollRAF = null; return }
+  if (!el || !(dragging || fill.active || rowDragging || colDragging) || (!scrollVX && !scrollVY)) { scrollRAF = null; return }
   el.scrollLeft += scrollVX; el.scrollTop += scrollVY
   scrollRAF = requestAnimationFrame(autoScrollTick)
 }
@@ -212,20 +214,47 @@ function stopAutoScroll() { scrollVX = scrollVY = 0; if (scrollRAF) { cancelAnim
 
 // —— 序号列：点击/长按拖拽框选行 ——
 let rowDragging = false, rowAnchor = 0
+let colDragging = false, colAnchor = 0
 function selectRowRange(a, b) {
   const lo = Math.min(a, b), hi = Math.max(a, b), m = {}
   for (let r = lo; r <= hi; r++) m[props.stations[r]._id] = true
   sel.value = m
 }
+// 整行勾选(sel)后把单元格选区(range)同步铺到这些行的全部列——这样 Ctrl+C/X/V、Delete 等快捷键都按整行生效
+// （否则它们只认单元格选区，会对上一次遗留的某个格误操作）。与右键 onIdxContext 已有的做法一致。
+function syncRangeToRows() { const idx = selectedRowIdx(); if (idx.length) selectFullRows(idx[0], idx[idx.length - 1]) }
 function onRowDown(i, e) {
   e.preventDefault()
-  if (e.ctrlKey || e.metaKey) { sel.value = { ...sel.value, [props.stations[i]._id]: !sel.value[props.stations[i]._id] }; return }
-  rowAnchor = i; rowDragging = true
-  if (e.shiftKey) selectRowRange(0, i)
-  else sel.value = { [props.stations[i]._id]: true }
+  if (editing.value) endEdit()
+  if (e.ctrlKey || e.metaKey) {   // Ctrl+点：增/减单行（离散多选）
+    sel.value = { ...sel.value, [props.stations[i]._id]: !sel.value[props.stations[i]._id] }
+    rowAnchor = i; syncRangeToRows(); focusGrid(); return
+  }
+  rowDragging = true
+  if (e.shiftKey) selectRowRange(rowAnchor, i)     // Shift：从锚点行扩展（与 Excel 一致），不改锚点
+  else { rowAnchor = i; sel.value = { [props.stations[i]._id]: true } }
+  syncRangeToRows(); focusGrid()
+}
+function onRowEnter(i) { if (rowDragging) { selectRowRange(rowAnchor, i); syncRangeToRows() } }
+
+// —— 列头：点击/拖拽选整列（与 Excel 一致；序号列与只读列不参与）——
+function selectCols(a, b) {
+  const lo = Math.min(a, b), hi = Math.max(a, b), last = Math.max(0, props.stations.length - 1)
+  sel.value = {}
+  range.ar = last; range.ac = lo; range.fr = 0; range.fc = hi   // 铺满整列：锚点底行、焦点顶行
+}
+function onHeaderDown(c, e) {
+  e.preventDefault()
+  if (editing.value) endEdit()
+  if (!props.stations.length) return
+  colDragging = true
+  if (e.shiftKey) selectCols(colAnchor, c)
+  else { colAnchor = c; selectCols(c, c) }
   focusGrid()
 }
-function onRowEnter(i) { if (rowDragging) selectRowRange(rowAnchor, i) }
+function onHeaderEnter(c) { if (colDragging) selectCols(colAnchor, c) }
+// 列头高亮：当前选区铺满全部行且覆盖该列时（点列头/Ctrl+A/Ctrl+Space 都会命中）
+const colHeadSel = (c) => props.stations.length > 0 && r0.value === 0 && r1.value === props.stations.length - 1 && c >= c0.value && c <= c1.value
 
 // —— Excel 填充柄（选区右下角黑色方块）：拖动/双击向下填充【整个选区的列】，按选中行循环复制，与 Excel 一致 ——
 const fill = reactive({ active: false, r0: 0, r1: 0, c0: 0, c1: 0, toR: 0 })
@@ -269,7 +298,11 @@ function startEdit(r, c, ch) {
   editing.value = { r, c, typed: ch != null }
   nextTick(() => {
     const el = root.value && root.value.querySelector('.sg-cell.editing input, .sg-cell.editing select')
-    if (el) { el.focus(); if (!ch && el.select) el.select() }
+    if (!el) return
+    el.focus()
+    // F2/双击（无 ch）：光标置于文本末尾而非全选，键入为「插入」而非「整体替换」（与 Excel 一致）；
+    // 直接键入（有 ch）：已用该字符覆盖，保持不全选。
+    if (ch == null && el.setSelectionRange) { const n = el.value ? el.value.length : 0; try { el.setSelectionRange(n, n) } catch (e) { /* select 无此法 */ } }
   })
 }
 function endEdit() {
@@ -282,14 +315,22 @@ function endEdit() {
       // 名称真的改动且命中城市库 → 带入经纬度，并联动 autoGeo 重算降雨/海拔
       if (row[f.key] !== _editOrig && applyCityByName(row) && props.autoGeo) props.autoGeo(row)
     } else if (f && props.autoGeo && (f.key === lonKey.value || f.key === latKey.value)) {
-      props.autoGeo(row)
+      if (row[f.key] !== _editOrig) props.autoGeo(row)   // 仅坐标真的改动才重算降雨/海拔，避免 Enter/Tab 掠过未改坐标时清掉手改值
     }
   }
   editing.value = null; _editOrig = null; focusGrid()
 }
+// Esc 取消编辑：还原编辑前的值，不提交、不做归一化/城市联动（与 Excel 一致）
+function cancelEdit() {
+  if (editing.value) {
+    const { r, c } = editing.value; const f = props.fields[c]
+    if (f) props.stations[r][f.key] = _editOrig
+  }
+  editing.value = null; _editOrig = null; focusGrid()
+}
 function onEditKey(e) {
-  if (e.key === 'Enter') { endEdit(); setFocus(range.fr + 1, range.fc); e.preventDefault() }
-  else if (e.key === 'Escape') { endEdit(); e.preventDefault() }
+  if (e.key === 'Enter') { endEdit(); setFocus(range.fr + (e.shiftKey ? -1 : 1), range.fc); e.preventDefault() }   // Shift+Enter 上移
+  else if (e.key === 'Escape') { cancelEdit(); e.preventDefault() }
   else if (e.key === 'Tab') { endEdit(); setFocus(range.fr, visColAfter(range.fc, e.shiftKey ? -1 : 1)); e.preventDefault() }
   e.stopPropagation()
 }
@@ -313,39 +354,77 @@ async function pasteRange() {
   if (!text) return
   const rows = text.replace(/\r/g, '').split('\n'); if (rows.length && rows[rows.length - 1] === '') rows.pop()
   const grid = rows.map((r) => r.split('\t'))
-  pushUndo()
+  if (!grid.length) return
+  const gR = grid.length, gC = grid[0].length
   const sr = r0.value, sc = c0.value
-  for (let i = 0; i < grid.length; i++) {
+  // Excel 平铺：目标选区比剪贴板大、且行列都是整数倍时，把源块循环铺满整个选区（如复制 1 格铺满一片）
+  const selR = r1.value - r0.value + 1, selC = c1.value - c0.value + 1
+  const tile = (selR > gR || selC > gC) && selR % gR === 0 && selC % gC === 0
+  const outR = tile ? selR : gR, outC = tile ? selC : gC
+  pushUndo()
+  for (let i = 0; i < outR; i++) {
     const r = sr + i
-    if (r >= props.stations.length) props.stations.push(makeRow(cityForIndex(props.stations.length)))
-    for (let j = 0; j < grid[i].length; j++) {
+    if (r >= props.stations.length) props.stations.push(makeRow())
+    for (let j = 0; j < outC; j++) {
       const c = sc + j
+      const src = grid[i % gR][j % gC]
+      if (src === undefined) continue
       if (c < nColSel.value && !isRO(c)) {
         const f = props.fields[c]
-        props.stations[r][f.key] = isLatLonKey(f.key) ? clampLatLon(grid[i][j]) : normalizeFieldValue(f, grid[i][j])
+        props.stations[r][f.key] = isLatLonKey(f.key) ? clampLatLon(src) : normalizeFieldValue(f, src)
       }
     }
   }
   range.ar = sr; range.ac = sc
-  range.fr = Math.min(props.stations.length - 1, sr + grid.length - 1)
-  range.fc = Math.min(nColSel.value - 1, sc + (grid[0] ? grid[0].length - 1 : 0))
+  range.fr = Math.min(props.stations.length - 1, sr + outR - 1)
+  range.fc = Math.min(nColSel.value - 1, sc + outC - 1)
 }
+
+// —— 整行复制/剪切：当「序号列选中了整行」时，Ctrl+C/X 跨全部列作用于这些整行 ——
+function fullRowTSV(i) { const row = []; for (let c = 0; c < nColSel.value; c++) row.push(cellText(props.stations[i], c) ?? ''); return row.join('\t') }
+function copyRows(idx) { try { navigator.clipboard.writeText(idx.map(fullRowTSV).join('\n')) } catch (e) { /* ignore */ } }
+function cutRows(idx) {
+  copyRows(idx)                                   // 整行剪切＝移动语义：复制后删除这些行（可 Ctrl+V 到别处；可撤销）
+  const set = new Set(idx.map((i) => props.stations[i]._id))
+  pushUndo()
+  for (let i = props.stations.length - 1; i >= 0; i--) if (set.has(props.stations[i]._id)) props.stations.splice(i, 1)
+  sel.value = {}
+  if (props.stations.length) setFocus(Math.min(idx[0], props.stations.length - 1), firstVisSelCol(), false)
+}
+// 复制/剪切统一入口：序号列选中整行时按整行、否则按单元格选区——键盘 Ctrl+C/X 与右键菜单共用，口径一致
+function smartCopy() { const ri = selectedRowIdx(); ri.length ? copyRows(ri) : copyRange() }
+function smartCut() { const ri = selectedRowIdx(); ri.length ? cutRows(ri) : cutRange() }
+// 单元格导航（方向键/Enter/Tab/Home/End/翻页）收起整行勾选，回到单选，与 Excel 一致
+function collapseRowSel() { if (selectedRows.value.length) sel.value = {} }
 
 function onKey(e) {
   if (editing.value) return
+  if (e.isComposing || e.keyCode === 229) return   // 输入法（中文）组字中：交给 IME，勿吞首字/误触发覆盖编辑
   if (!props.stations.length) return
   const mod = e.ctrlKey || e.metaKey
   if (mod && (e.key === 'z' || e.key === 'Z')) { if (e.shiftKey) redo(); else undo(); e.preventDefault(); return }
   if (mod && (e.key === 'y' || e.key === 'Y')) { redo(); e.preventDefault(); return }
-  if (mod && (e.key === 'c' || e.key === 'C')) { copyRange(); e.preventDefault(); return }
+  if (mod && (e.key === 'c' || e.key === 'C')) { smartCopy(); e.preventDefault(); return }
+  if (mod && (e.key === 'x' || e.key === 'X')) { smartCut(); e.preventDefault(); return }
   if (mod && (e.key === 'v' || e.key === 'V')) { pasteRange(); e.preventDefault(); return }
-  if (mod && (e.key === 'a' || e.key === 'A')) { range.ar = 0; range.ac = firstVisSelCol(); range.fr = props.stations.length - 1; range.fc = lastVisSelCol(); e.preventDefault(); return }
+  if (mod && (e.key === 'a' || e.key === 'A')) { sel.value = {}; range.ar = 0; range.ac = firstVisSelCol(); range.fr = props.stations.length - 1; range.fc = lastVisSelCol(); e.preventDefault(); return }
+  if (mod && e.key === 'Home') { collapseRowSel(); setFocus(0, firstVisSelCol(), e.shiftKey); e.preventDefault(); return }
+  if (mod && e.key === 'End') { collapseRowSel(); setFocus(props.stations.length - 1, lastVisSelCol(), e.shiftKey); e.preventDefault(); return }
+  if (mod && e.key === ' ') { selectCols(c0.value, c1.value); e.preventDefault(); return }   // Ctrl+Space：选中当前选区跨过的整列
   if (mod) return
-  if (e.key === 'Enter' || e.key === 'F2') { startEdit(range.fr, range.fc); e.preventDefault(); return }
+  if (e.key === 'F2') { startEdit(range.fr, range.fc); e.preventDefault(); return }
+  if (e.key === 'Enter') { collapseRowSel(); setFocus(range.fr + (e.shiftKey ? -1 : 1), range.fc); e.preventDefault(); return }   // Excel：Enter 下移、Shift+Enter 上移（编辑用 F2/双击/直接键入）
+  if (e.key === 'Tab') { collapseRowSel(); setFocus(range.fr, visColAfter(range.fc, e.shiftKey ? -1 : 1)); e.preventDefault(); return }
   if (e.key === 'Delete' || e.key === 'Backspace') { clearSel(); e.preventDefault(); return }
+  if (e.key === 'Home') { collapseRowSel(); setFocus(range.fr, firstVisSelCol(), e.shiftKey); e.preventDefault(); return }
+  if (e.key === 'End') { collapseRowSel(); setFocus(range.fr, lastVisSelCol(), e.shiftKey); e.preventDefault(); return }
+  if (e.key === 'PageUp' || e.key === 'PageDown') { collapseRowSel(); const PAGE = 12; setFocus(range.fr + (e.key === 'PageUp' ? -PAGE : PAGE), range.fc, e.shiftKey); e.preventDefault(); return }
+  if (e.shiftKey && e.key === ' ') {   // Shift+Space：把当前选区所在行选为整行
+    selectFullRows(r0.value, r1.value); const m = {}; for (let r = r0.value; r <= r1.value; r++) m[props.stations[r]._id] = true; sel.value = m; e.preventDefault(); return
+  }
   if (e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) { moveRows(e.key === 'ArrowUp' ? -1 : 1); e.preventDefault(); return }
   const arrow = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1] }[e.key]
-  if (arrow) { setFocus(range.fr + arrow[0], arrow[1] ? visColAfter(range.fc, arrow[1]) : range.fc, e.shiftKey); e.preventDefault(); return }
+  if (arrow) { collapseRowSel(); setFocus(range.fr + arrow[0], arrow[1] ? visColAfter(range.fc, arrow[1]) : range.fc, e.shiftKey); e.preventDefault(); return }
   if (e.key.length === 1) { startEdit(range.fr, range.fc, e.key); e.preventDefault() }
 }
 
@@ -403,7 +482,7 @@ function doImport() {
   if (!chosen.length) { imp.open = false; return }
   pushUndo()
   for (const it of chosen) {
-    const row = defaultsFor(props.fields); row._id = 'r' + (_seq++)
+    const row = defaultsFor(props.fields); row._id = 'r' + (_rowSeq++)
     if (nameKey.value) row[nameKey.value] = it.name
     if (lonKey.value && it.lon != null) row[lonKey.value] = clampLatLon(it.lon)
     if (latKey.value && it.lat != null) row[latKey.value] = clampLatLon(it.lat)
@@ -455,7 +534,7 @@ function targetRowIdx() {
 }
 function insertRowsAt(at, count) {
   pushUndo()
-  const rows = []; for (let k = 0; k < count; k++) rows.push(makeRow(null))   // 默认值新行（与「＋ 增加」一致）
+  const rows = []; for (let k = 0; k < count; k++) rows.push(makeRow())   // 纯空行（与「＋ 增加」一致）
   props.stations.splice(at, 0, ...rows)
   sel.value = {}; selectFullRows(at, at + count - 1)
 }
@@ -467,7 +546,10 @@ function deleteCtxRows() {
   pushUndo()
   for (const i of idx) { const s = props.stations[i]; if (s) { delete sel.value[s._id]; props.stations.splice(i, 1) } }
   sel.value = {}
-  if (props.stations.length) setFocus(Math.min(idx[idx.length - 1], props.stations.length - 1), range.fc, false)
+  if (props.stations.length) {   // 删完让选区落在下方接替的整行上（保持整行语义，连续删除体验连贯）
+    const at = Math.min(idx[idx.length - 1], props.stations.length - 1)
+    selectFullRows(at, at); sel.value = { [props.stations[at]._id]: true }
+  }
 }
 
 // —— 行上移/下移（整行顺序交换）：行集 = 已勾选行，否则单元格选区所在行；须连续 ——
@@ -533,7 +615,8 @@ function clearColContents() {
         <thead>
           <tr>
             <th class="sg-sel"><input type="checkbox" :checked="allSelected" @change="toggleAll" /></th>
-            <th v-for="({ f, c }) in visFields" :key="f.key" :class="{ 'sg-key': isKeyCol(c) }" :style="isKeyCol(c) ? keyColStyle(c) : null" :title="f.label">
+            <th v-for="({ f, c }) in visFields" :key="f.key" class="sg-hcol" :class="{ 'sg-key': isKeyCol(c), colsel: colHeadSel(c) }" :style="isKeyCol(c) ? keyColStyle(c) : null" :title="f.label"
+                @mousedown.left="onHeaderDown(c, $event)" @mouseenter="onHeaderEnter(c)">
               {{ f.label }}<i v-if="f.unit"> ({{ f.unit }})</i>
             </th>
             <th v-if="roLabel" class="sg-ro">{{ roLabel }}<i v-if="roUnit"> ({{ roUnit }})</i></th>
@@ -602,8 +685,8 @@ function clearColContents() {
     <!-- 右键菜单（Excel 式） -->
     <div v-if="menu.open" class="sg-ctx-mask" @click="menu.open = false" @contextmenu.prevent="menu.open = false">
       <div class="sg-ctx" :style="{ left: menu.x + 'px', top: menu.y + 'px' }" @click.stop @contextmenu.stop.prevent>
-        <button class="sg-ctx-i" @click="menuDo(copyRange)"><span>复制</span><kbd>Ctrl+C</kbd></button>
-        <button class="sg-ctx-i" @click="menuDo(cutRange)"><span>剪切</span><kbd>Ctrl+X</kbd></button>
+        <button class="sg-ctx-i" @click="menuDo(smartCopy)"><span>复制</span><kbd>Ctrl+C</kbd></button>
+        <button class="sg-ctx-i" @click="menuDo(smartCut)"><span>剪切</span><kbd>Ctrl+X</kbd></button>
         <button class="sg-ctx-i" @click="menuDo(pasteRange)"><span>粘贴</span><kbd>Ctrl+V</kbd></button>
         <button class="sg-ctx-i" @click="menuDo(clearSel)"><span>清除内容</span><kbd>Del</kbd></button>
         <div class="sg-ctx-sep"></div>
@@ -636,6 +719,9 @@ function clearColContents() {
 .sg-tbl { border-collapse: separate; border-spacing: 0; font-size: 12px; white-space: nowrap; }
 .sg-tbl th, .sg-tbl td { border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); background: var(--bg); box-sizing: border-box; }
 .sg-tbl th { position: sticky; top: 0; z-index: 2; padding: 5px 8px; font-weight: 600; color: var(--text-muted); text-align: left; background: var(--surface-2); }
+.sg-tbl th.sg-hcol { cursor: pointer; }
+.sg-tbl th.sg-hcol:hover { color: var(--text); }
+.sg-tbl th.colsel { background: color-mix(in srgb, var(--accent) 24%, var(--surface-2)); color: var(--text); }
 .sg-tbl th i { color: var(--text-faint); font-style: normal; font-weight: 400; }
 .sg-tbl tbody tr.on > td { background: var(--surface-2); }
 /* 冻结：选择列(固定 40px) + 名称区(从首列冻结到城市/名称字段，可能不止 1 列，left 由 keyColStyle() 按列动态算) */
