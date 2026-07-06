@@ -66,7 +66,7 @@ const flatView = ref(false)        // 平面图 / 球体 切换
 let flat = null                    // 平面渲染器实例
 let covGeom = { lines: [], dots: [], labels: [], sats: [] }   // 覆盖几何（3D 与 平面图共用）
 const groupIndex = ref(DEFAULT_GROUP)
-const status = ref('')          // 卫星加载状态（无星时驱动「重试下载 / 导入 TLE」横幅）；导出反馈不走此处，避免误触横幅
+const status = ref('')          // 卫星加载状态：仅显示在左侧星座面板 pstat 行（后台静默加载，不再弹中央横幅）；导出反馈不走此处
 const satCount = ref(0)     // 该组卫星总数
 const shownCount = ref(0)   // 实际渲染点数
 const dataTime = ref('')
@@ -125,6 +125,7 @@ async function openPerf(sat, a) {
   const ok = await grd.ensureAntLoaded(key)
   if (!ok) { appAlert('该天线方向图未就绪，无法生成性能表'); return }
   perfKey.value = key
+  perf.beamQuery.value = ''   // 新表：清空波束筛选搜索词（波束数/含义随天线变）
   perfWinInit()
   refreshPerf()
 }
@@ -196,6 +197,7 @@ function perfAddStation() {
   refreshPerf()
 }
 function perfImportMarkers() { perf.pushUndo(); const n = perf.importFromMarkers(points.value, stations.value); if (!n) { perf.dropUndo(); appAlert('没有可导入的新标记（点标记/地面站）') } refreshPerf() }
+function perfImportTrajs() { perf.pushUndo(); const n = perf.importFromTrajectories(trajectories.value); if (!n) { perf.dropUndo(); appAlert('没有可导入的新航点（航迹为空或已全部导入）') } refreshPerf() }
 // Excel 式粘贴：在加站区任一输入框 Ctrl+V 整块表格 → 拦截并批量加站（单值粘贴仍走普通输入）
 function perfPaste(e) {
   const text = e.clipboardData ? e.clipboardData.getData('text') : ''
@@ -2025,6 +2027,7 @@ onMounted(async () => {
   covNav.toggleGrd = toggleGrd; covNav.toggleCov = toggleCoverage
   covNav.polyAvail = true; covNav.togglePoly = togglePolyPanel   // Polygon 面板（纯本地功能，不依赖 IPC）
   covNav.exportAvail = true; covNav.exportMap = exportMap   // 顶栏「导出图」入口（高清 PNG / 矢量 PDF）
+  covNav.importTle = pickFile   // 「文件」菜单「导入 TLE 文件(CSV)」入口（离线兜底，原弹窗移除后改走菜单）
   watch(status, (v) => { if (v) logMsg(v) })   // 加载进度/失败信息落日志窗格
   // 活动栏切换侧栏视图 → 首次进入时懒加载对应面板内容（复用原 toggle* 的索引加载/重绘逻辑）
   watch(() => shellUi.side, (s) => {
@@ -2093,7 +2096,7 @@ onBeforeUnmount(() => {
   // 离开 3D 页：复位顶栏覆盖图入口（按钮随之隐藏），并关掉面板镜像状态
   covNav.grdAvail = false; covNav.covAvail = false; covNav.toggleGrd = null; covNav.toggleCov = null
   covNav.polyAvail = false; covNav.togglePoly = null
-  covNav.exportAvail = false; covNav.exportMap = null
+  covNav.exportAvail = false; covNav.exportMap = null; covNav.importTle = null
   covNav.grdOpen = false; covNav.covOpen = false; covNav.polyOpen = false
   zoom.avail = false; zoom.apply = null   // 复位底部状态栏缩放进度条
   if (_viewSaveTimer) { clearTimeout(_viewSaveTimer); _viewSaveTimer = null }
@@ -2118,14 +2121,9 @@ onBeforeUnmount(() => {
           <div class="fl-row"><span class="fl-sw trk"></span>星下点轨迹</div>
         </div>
 
-        <div v-if="!satCount && status && !exporting" class="dl-banner">
-          <div class="dl-msg">{{ status }}</div>
-          <div class="dl-row">
-            <button @click="loadGroup">重试下载</button>
-            <button @click="pickFile">导入 TLE 文件(CSV)</button>
-          </div>
-          <input ref="fileInput" type="file" accept=".csv,.txt" style="display:none" @change="onFile" />
-        </div>
+        <!-- 本地 TLE/OMM CSV 导入的隐藏文件选择器；由「文件」菜单经 covNav.importTle 触发。
+             （原「加载全部卫星 N/M …」中央弹窗已移除：数据本就后台异步加载，进度/报错见左侧星座面板 pstat 行。） -->
+        <input ref="fileInput" type="file" accept=".csv,.txt" style="display:none" @change="onFile" />
 
         <div v-if="selected" class="card" :class="{ collapsed: cardCollapsed }">
           <div class="ch" :title="cardCollapsed ? '展开' : '收起'" @click="cardCollapsed = !cardCollapsed">
@@ -2894,6 +2892,7 @@ onBeforeUnmount(() => {
           <span class="ptb" :class="{ dis: !perf.canUndo.value }" title="撤销 (Ctrl+Z)" @click="perfUndo"><Icon name="undo-2" :size="12" /></span>
           <span class="ptb" :class="{ dis: !perf.canRedo.value }" title="重做 (Ctrl+Y)" @click="perfRedo"><Icon name="redo-2" :size="12" /></span>
           <span class="ptb" title="把地图上的点标记 / 地面站导入为城市" @click="perfImportMarkers"><Icon name="import" :size="12" /> 从标记导入</span>
+          <span class="ptb" title="把地图上的航迹航点导入为城市（每个航点一行，城市名取「航迹名#序号」）" @click="perfImportTrajs"><Icon name="import" :size="12" /> 导入航迹</span>
           <span class="ptb" title="从剪贴板粘贴表格（末两列=经度、纬度，可含 国家/城市/代号）批量添加" @click="perfPasteBtn"><Icon name="clipboard" :size="12" /> 粘贴</span>
           <span class="ptb" title="清空城市列表" @click="perfClearStations">清空</span>
           <span class="perf-cnt">{{ perf.stations.value.length }} 城市</span>
@@ -3004,6 +3003,27 @@ onBeforeUnmount(() => {
 
           <!-- 右：计算设置 -->
           <div class="po-right">
+            <!-- 波束筛选（复用卫星天线树同款「搜索+全选+勾选列表」模块）：默认全选=不筛选，仅勾选的波束进表 -->
+            <section v-if="perf.ctxBeams.value.length > 1" class="po-card">
+              <div class="po-ct">波束筛选</div>
+              <input class="ci bq" :value="perf.beamQuery.value" placeholder="搜索：波束名，或序号 1-62、1,3,5、1-10,20-30" @input="e => perf.beamQuery.value = e.target.value" />
+              <div class="bplist">
+                <label class="brow ball">
+                  <input type="checkbox" :checked="perf.filteredAllOn(perfOpts)" :indeterminate="perf.filteredAnyOn(perfOpts) && !perf.filteredAllOn(perfOpts)" @change="perf.selectFiltered(perfOpts, !perf.filteredAllOn(perfOpts))" />
+                  <span class="balln">{{ perf.beamQuery.value.trim() ? '(全选搜索结果)' : '(全选)' }}</span>
+                  <span class="bpk">{{ perf.beamSelCount(perfOpts) }}/{{ perf.ctxBeams.value.length }}</span>
+                </label>
+                <label v-for="b in perf.filteredBeams()" :key="b.bi" class="brow" :class="{ on: perf.beamOn(perfOpts, b.bi) }">
+                  <input type="checkbox" :checked="perf.beamOn(perfOpts, b.bi)" @change="perf.toggleBeam(perfOpts, b.bi)" />
+                  <span class="bseq">{{ b.bi + 1 }}</span>
+                  <span class="pbnm" :title="b.name">{{ b.name }}</span>
+                  <span class="bpk">{{ b.peakDb == null ? '—' : b.peakDb.toFixed(1) }}</span>
+                </label>
+                <div v-if="!perf.filteredBeams().length" class="empty">无匹配波束</div>
+              </div>
+              <div class="po-note">默认全选（不筛选，与原行为一致）；仅勾选的波束参与本表取值，未选波束整列不出现。</div>
+            </section>
+
             <section class="po-card">
               <div class="po-ct">过滤</div>
               <label class="po-chk"><input type="checkbox" v-model="perfOpts.filterOn" /><span>剔除低于最低方向性的记录</span></label>
@@ -3091,11 +3111,6 @@ onBeforeUnmount(() => {
 .fl-sw { width: 18px; height: 0; border-top: 2px solid; flex: none; }
 .fl-sw.cov { border-color: #b8e6fa; border-top-style: dashed; }
 .fl-sw.trk { border-color: #e8c074; }
-.dl-banner { position: absolute; left: 50%; top: 55%; transform: translate(-50%, -50%); width: 420px; max-width: 86%; background: rgba(20,22,28,0.94); border: 1px solid #34384a; border-radius: 6px; padding: 16px 18px; color: #d7dde6; text-align: center; }
-.dl-msg { font-size: 13px; margin-bottom: 12px; color: #f0c674; line-height: 1.5; }
-.dl-row { display: flex; gap: 10px; justify-content: center; }
-.dl-row button { border: 1px solid #4a5168; background: #1c2230; color: #d7dde6; padding: 6px 14px; cursor: pointer; border-radius: 4px; font-size: 12.5px; }
-.dl-row button:hover { border-color: #6b7490; }
 .card {
   position: absolute; right: 14px; top: 14px; width: 256px;
   max-height: calc(100% - 28px); overflow-y: auto;
@@ -3309,12 +3324,12 @@ onBeforeUnmount(() => {
 
 /* 性能表选项弹窗 */
 .sat-mask.perf-opt-mask { z-index: 70; }   /* 提高特异性压过 .sat-mask(z40)，高于性能表浮窗(z60)避免被遮挡 */
-.perf-opt-dlg { width: 620px; max-width: calc(100% - 32px); max-height: 88%; display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 8px; box-shadow: 0 16px 48px rgba(0, 0, 0, .55); }
+.perf-opt-dlg { width: 700px; max-width: calc(100% - 32px); max-height: 88%; display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 8px; box-shadow: 0 16px 48px rgba(0, 0, 0, .55); }
 .perf-opt-dlg .sdh em { font-style: normal; font-family: var(--font-mono); font-size: 11.5px; color: var(--text-faint); }
 .perf-opt-body { display: flex; gap: 12px; padding: 12px; overflow: auto; align-items: stretch; }
 .po-card { border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; background: color-mix(in srgb, var(--text) 2.5%, transparent); }
 .po-ct { font-size: 11px; font-weight: 600; color: var(--text-muted); letter-spacing: .3px; margin-bottom: 6px; padding-bottom: 4px; border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent); }
-.po-cols { flex: 0 0 196px; display: flex; flex-direction: column; }
+.po-cols { flex: 0 0 280px; display: flex; flex-direction: column; }
 .po-scroll { flex: 1; overflow: auto; display: grid; grid-template-columns: 1fr 1fr; gap: 0 10px; align-content: start; }
 .po-grp { display: contents; }
 .po-gt { grid-column: 1 / -1; font-size: 10px; color: var(--text-faint); margin: 6px 0 1px; letter-spacing: .5px; }
@@ -3380,6 +3395,9 @@ onBeforeUnmount(() => {
 .brow .bnm-in:focus { border-color: var(--accent); background: var(--bg); color: var(--text); }
 .brow .bseq { flex: none; min-width: 20px; text-align: right; color: var(--text-faint); font-family: var(--font-mono); font-size: 10.5px; }
 .brow .bpk { flex: none; color: var(--text-faint); font-family: var(--font-mono); font-size: 10.5px; }
+/* 性能表波束筛选：只读波束名（不可编辑，带省略号）——区别于卫星天线树里可改名的 .bnm-in */
+.brow .pbnm { flex: 1; min-width: 0; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.brow.on .pbnm { color: var(--text); }
 /* Excel 式「(全选)」主行：置顶 sticky、随列表滚动常驻；三态复选框（全/半/无） */
 .brow.ball { position: sticky; top: 0; z-index: 1; background: var(--bg); border-bottom: 1px solid var(--border); }
 .brow.ball + .brow { border-top: 0; }

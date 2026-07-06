@@ -10,5 +10,7 @@ export const covNav = reactive({
   grdOpen: false, covOpen: false, polyOpen: false,
   toggleGrd: null, toggleCov: null, togglePoly: null,
   // 导出入口（顶栏「导出图」）：在 3D 页注册 exportMap('png2'|'png4'|'png6'|'pdf')，离开页面复位
-  exportAvail: false, exportMap: null
+  exportAvail: false, exportMap: null,
+  // 导入 TLE 入口（「文件」菜单）：3D 页注册 importTle() 打开本地 CSV 选择器（原「加载」弹窗移除后的离线兜底），离开页面复位
+  importTle: null
 })

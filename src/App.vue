@@ -102,6 +102,7 @@ const stepZoom = (d) => { const t = Math.max(0, Math.min(1, zoom.value + d)); if
 const menus = computed(() => [
   { key: 'file', label: '文件', items: [
     { label: '文件管理…', icon: 'folder-open', hint: '管理 GRD / GXT 覆盖文件库（导入 / 导出 / 删除）', run: () => { fileOpen.value = true } },
+    { label: '导入 TLE 文件(CSV)…', icon: 'import', disabled: !covNav.importTle, hint: '从本地 CSV（CelesTrak「FORMAT=csv」的 OMM 文件）导入卫星星历，离线/连不上 celestrak 时用', run: () => covNav.importTle?.() },
     { sep: true },
     { label: '退出', icon: 'log-out', hint: '关闭主窗口', run: () => window.close() }
   ] },

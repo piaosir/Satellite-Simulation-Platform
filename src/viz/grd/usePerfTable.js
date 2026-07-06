@@ -54,7 +54,8 @@ function defaultOpts() {
     // 故一个经纬度不再因多波束而膨胀成大量行——单波束→1 行，重叠区→数行（对标 SATSOFT）。
     filterOn: true, minDir: 50,                  // 过滤：低于最低方向性的记录不显示
     sameAsAnt: true, pol: 'RSS', unit: 'dB', pathLoss: 'none', gainOffset: 0,   // 参数计算口径
-    pointAz: 0, pointEl: 0, pointYaw: 0           // 指向误差：方位/俯仰/偏航各自半幅(°)，完全自定 → Min/Max Pointing（误差区恒按椭圆算）
+    pointAz: 0, pointEl: 0, pointYaw: 0,          // 指向误差：方位/俯仰/偏航各自半幅(°)，完全自定 → Min/Max Pointing（误差区恒按椭圆算）
+    beamSel: null                                 // 波束筛选：null=全部波束（默认，等同不筛选）；否则=选中的 bi 数组，仅这些波束进表
   }
 }
 
@@ -62,6 +63,8 @@ export function usePerfTable() {
   const stations = ref([])     // 共享站点库 [{ id, country, city, desig, lon, lat }]
   const rows = ref([])         // 当前天线的计算结果（compute 填充）
   const ctxInfo = ref(null)    // { satName, antName, beams }
+  const ctxBeams = ref([])     // 当前天线全部波束 [{ bi, name, peakDb }]（compute 填充）——供选项面板「波束筛选」列表
+  const beamQuery = ref('')    // 波束筛选搜索词（瞬态，不存盘；开表/切表时清空）
   const query = ref('')        // 表内查询（国家/城市/代号）
   const optsByAnt = ref({})    // 天线 key → 选项（独立保存）
   const hidden = ref({})       // 已手动隐藏的行 id（站#波束）→ true；行为派生数据，仅内存态不存盘
@@ -163,6 +166,23 @@ export function usePerfTable() {
     return add.length
   }
 
+  // 从地图航迹导入：每个航点 → 一座城市，城市名取「航迹名#序号」。±1e-4 去重（重复导入自动跳过）。返回新增条数。
+  function importFromTrajectories(trajectories = []) {
+    const exists = (lon, lat) => stations.value.some((s) => Math.abs(s.lon - lon) < 1e-4 && Math.abs(s.lat - lat) < 1e-4)
+    const add = []
+    for (const t of trajectories) {
+      const nm = ((t && t.name) || '航迹').trim() || '航迹'
+      const pts = (t && t.pts) || []
+      pts.forEach((p, j) => {
+        const lon = num(p.lon), lat = num(p.lat)
+        if (lon == null || lat == null || exists(lon, lat)) return
+        add.push({ id: newId(), country: '', city: nm + '#' + (j + 1), desig: '', lon, lat })
+      })
+    }
+    if (add.length) stations.value = [...stations.value, ...add]
+    return add.length
+  }
+
   // ===== 逐站取值 =====
   // 指向误差 → 增益波动（物理最准：在误差区上【真实重采样方向图取极值】，非一阶线性化）。
   // 线性化(旧法)在峰值附近梯度→0 会误判 Min≈Max≈base，漏掉「偏指必掉增益」的二阶跌落，且强制对称；
@@ -215,8 +235,10 @@ export function usePerfTable() {
   }
 
   function compute(ctx, opts) {
-    if (!ctx) { rows.value = []; ctxInfo.value = null; return }
+    if (!ctx) { rows.value = []; ctxInfo.value = null; ctxBeams.value = []; return }
     const o = opts || defaultOpts()
+    ctxBeams.value = ctx.beams.map((b) => ({ bi: b.bi, name: b.name, peakDb: b.peakDb }))   // 供选项面板波束筛选列表（含波束名/峰值）
+    const beamAllow = Array.isArray(o.beamSel) ? new Set(o.beamSel) : null                  // null=全部波束（默认，不筛选）；否则仅这些 bi 进表
     const st = ctx.settings, same = o.sameAsAnt, igrid = ctx.igrid, icomp = ctx.icomp, basis = ctx.basis, meta = ctx.meta
     const polD = same ? st.pol : o.pol
     const dirOpts = { pol: polD, gainOffset: 0, pathLoss: 'none' }                                        // 纯方向性
@@ -231,6 +253,7 @@ export function usePerfTable() {
     stations.value.forEach((s, si) => {
       const geo = wantGeo ? dirToAzEl(meta.satLon, meta.satLat || 0, meta.satAlt, s.lon, s.lat) : null
       for (const bm of ctx.beams) {
+        if (beamAllow && !beamAllow.has(bm.bi)) continue                                     // 波束筛选：未选中的波束不进表
         const d = sampleBeamAt(bm.beam, igrid, basis, s.lon, s.lat, want('ar') ? { ...dirOpts, wantComp: true } : dirOpts)
         const dir = d ? d.db : null
         if (o.filterOn && (dir == null || dir < o.minDir)) continue                                       // 最低方向性过滤
@@ -290,10 +313,59 @@ export function usePerfTable() {
     }
   }
 
+  // ===== 波束筛选（选项面板；默认 beamSel=null 即全部波束 = 不筛选，与旧行为一致）=====
+  // 纯序号语法（"1-62"/"1,3,5"/"1-10,20-30"）→ 1-based 序号集合，否则 null（当作波束名文字搜索）
+  function parseBeamSeq(q) {
+    const set = new Set()
+    for (const part of q.split(/[,，\s]+/)) {
+      if (!part) continue
+      const m = part.match(/^(\d+)\s*[-~]\s*(\d+)$/)
+      if (m) { const a = +m[1], b = +m[2]; for (let i = Math.min(a, b); i <= Math.max(a, b); i++) set.add(i) }
+      else if (/^\d+$/.test(part)) set.add(+part)
+      else return null
+    }
+    return set.size ? set : null
+  }
+  // 按搜索词过滤波束：序号语法按 1-based 序号(bi+1)，否则按波束名（大小写不敏感）。空词=全部。
+  function filteredBeams() {
+    const all = ctxBeams.value
+    const q = beamQuery.value.trim()
+    if (!q) return all
+    const seq = parseBeamSeq(q)
+    if (seq) return all.filter((b) => seq.has(b.bi + 1))
+    const ql = q.toLowerCase()
+    return all.filter((b) => String(b.name).toLowerCase().includes(ql))
+  }
+  const allBi = () => ctxBeams.value.map((b) => b.bi)
+  const beamOn = (o, bi) => !o || o.beamSel == null || o.beamSel.includes(bi)   // beamSel=null 视为全选
+  const beamSelCount = (o) => (!o || o.beamSel == null) ? ctxBeams.value.length : o.beamSel.length
+  // Excel「(全选)」三态：作用于当前筛选结果——全部已选 / 部分(半选) / 全未选
+  const filteredAllOn = (o) => { const f = filteredBeams(); return f.length > 0 && f.every((b) => beamOn(o, b.bi)) }
+  const filteredAnyOn = (o) => filteredBeams().some((b) => beamOn(o, b.bi))
+  // 规整：选中集 == 全集 → 回退 null（默认/不筛选，存盘更干净）；否则升序数组
+  function normSel(arr) {
+    const all = allBi(); const s = new Set(arr)
+    if (all.length && all.every((i) => s.has(i))) return null
+    return [...s].sort((a, b) => a - b)
+  }
+  const materialize = (o) => (o.beamSel == null ? allBi() : o.beamSel.slice())   // 从 null(全集) 起做增删
+  function toggleBeam(o, bi) {
+    if (!o) return
+    const s = new Set(materialize(o)); s.has(bi) ? s.delete(bi) : s.add(bi)
+    o.beamSel = normSel([...s])
+  }
+  function selectFiltered(o, on) {   // 「(全选)/(全选搜索结果)」：对当前筛选结果批量增删
+    if (!o) return
+    const ids = filteredBeams().map((b) => b.bi), s = new Set(materialize(o))
+    if (on) ids.forEach((i) => s.add(i)); else ids.forEach((i) => s.delete(i))
+    o.beamSel = normSel([...s])
+  }
+
   return {
     stations, rows, filteredRows, ctxInfo, query, optsByAnt, canUndo, canRedo,
     colDefs: COL_DEFS, colGroups: COL_GROUPS, getOpts, visibleColumns,
-    addStation, updateStation, removeStation, removeRow, clearStations, addStationsBulk, pasteBlock, importFromMarkers,
+    addStation, updateStation, removeStation, removeRow, clearStations, addStationsBulk, pasteBlock, importFromMarkers, importFromTrajectories,
+    ctxBeams, beamQuery, filteredBeams, beamOn, beamSelCount, filteredAllOn, filteredAnyOn, toggleBeam, selectFiltered,
     pushUndo, dropUndo, undo, redo, compute, getState, restoreState
   }
 }
