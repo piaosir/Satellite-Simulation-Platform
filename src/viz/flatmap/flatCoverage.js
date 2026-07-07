@@ -93,8 +93,8 @@ export function createFlatCoverage(canvas) {
   let labelStyle = { countryColor: '#eef2f6', countryOpacity: 1, provColor: '#ffe6a8', provOpacity: 1, cityColor: '#cdd6e0', cityOpacity: 1 }
   let oceanColor = OCEAN   // 大海填充色（可调，限蓝色系），与 3D 球体同步
   let mk = { points: [], stations: [], trajectories: [] }
-  let focusSat = null   // 聚焦卫星星下点 { lat, lon }，null 表示无聚焦
-  let selGeom = null    // 聚焦卫星几何：{ footprint:[{lat,lon}...], track:[{lat,lon}...] }，与 3D 同源（覆盖范围蓝 + 星下点轨迹黄）
+  let focusSats = []    // 聚焦卫星星下点列表 [{ lat, lon }...]（多选=每颗各一个图标，同款同大小，不分主次）
+  let selGeomList = []  // 聚焦卫星几何列表 [{ footprint:[{lat,lon}...], track:[{lat,lon}...] }...]，与 3D 同源（覆盖范围蓝 + 星下点轨迹黄，多颗同时叠画）
   let satLayer = null   // 卫星/仰角线独立图层 { lines, dots, labels, sats }（与 geom/field 互不干扰）
   const sizes = { beamFont: 16, contourFont: 12, dotSize: 5, showBore: true, nameScale: 1, provScale: 1, cityScale: 1, ptFont: 14, stIcon: 32, stFont: 17, satIcon: 30, ptDot: 3.5, trajDot: 2.5 }
   const SAT_ICON_K = 0.85   // 卫星图标：同地面站 ST_ICON_K，2D 观感偏大于 3D，收一档对齐（经验系数，可微调）
@@ -584,10 +584,10 @@ export function createFlatCoverage(canvas) {
     if (geom) for (const ln of (geom.lines || [])) if (ln.p && ln.p.length > 1) drawPolyline(ln.p, hex(ln.color), Math.max(0.2, ln.width || 1.6))
     for (const t of mk.trajectories) if (t.pts && t.pts.length > 1) drawPolyline(t.pts, hex(t.color != null ? t.color : 0xff5a5a), 2.2)
     if (satLayer) for (const ln of (satLayer.lines || [])) if (!ln.under && ln.p && ln.p.length > 1) drawPolyline(ln.p, hex(ln.color != null ? ln.color : 0x66ddff), Math.max(0.2, ln.width || 1.4))   // 下限 0.2：跟随 Polygon 线粗滑杆最小档
-    // 聚焦卫星几何（实时，不入快照）：覆盖范围(浅蓝虚线，示意非精确覆盖区) + 星下点轨迹(金黄实线)，颜色与 3D 球体同源
-    if (selGeom) {
-      if (selGeom.footprint && selGeom.footprint.length > 1) drawPolyline(selGeom.footprint, '#b8e6fa', 1.8, false, [7, 5])
-      if (selGeom.track && selGeom.track.length > 1) drawPolyline(selGeom.track, '#e8c074', 2.0)
+    // 聚焦卫星几何（实时，不入快照）：覆盖范围(浅蓝虚线，示意非精确覆盖区) + 星下点轨迹(金黄实线)，颜色与 3D 球体同源；多选=每颗都画，固定原色不按星变色
+    for (const g of selGeomList) {
+      if (g.footprint && g.footprint.length > 1) drawPolyline(g.footprint, '#b8e6fa', 1.8, false, [7, 5])
+      if (g.track && g.track.length > 1) drawPolyline(g.track, '#e8c074', 2.0)
     }
   }
 
@@ -609,7 +609,7 @@ export function createFlatCoverage(canvas) {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     ctx.save(); ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip()
     drawFieldOverlays()   // GRD 天线名/波束中心/数值标签（覆盖层之上）
-    if (focusSat) drawSatIcon(focusSat.lon, focusSat.lat, sizes.satIcon * scale * SAT_ICON_K, '#ffffff')   // 聚焦卫星（最上层，与卫星图标同率、按 mz 联动）
+    for (const p of focusSats) drawSatIcon(p.lon, p.lat, sizes.satIcon * scale * SAT_ICON_K, '#ffffff')   // 聚焦卫星（最上层，与卫星图标同率、按 mz 联动；多选=每颗各一个图标）
     ctx.restore()
   }
 
@@ -817,8 +817,10 @@ export function createFlatCoverage(canvas) {
     setOnVertexDrag(fn) { onVertexDrag = fn },
     setOnPolyMove(fn) { onPolyMove = fn },
     setMarkers(points, stations, trajectories) { mk = { points: points || [], stations: stations || [], trajectories: trajectories || [] }; invalidateStatic(); requestDraw() },
-    setFocusSat(p) { focusSat = (p && Number.isFinite(p.lat) && Number.isFinite(p.lon)) ? { lat: p.lat, lon: p.lon } : null; requestDraw() },   // 聚焦星每帧实时绘制，不在快照内
-    setSelGeom(g) { selGeom = g || null; requestDraw() },   // 聚焦卫星几何（覆盖范围 + 星下点轨迹），随时间实时，不入快照
+    // p：单个 {lat,lon} 或数组，兼容旧单选调用；聚焦星每帧实时绘制，不在快照内
+    setFocusSat(p) { focusSats = (Array.isArray(p) ? p : (p ? [p] : [])).filter((q) => q && Number.isFinite(q.lat) && Number.isFinite(q.lon)); requestDraw() },
+    // g：单个 {footprint,track} 或数组（多选=每颗都画），随时间实时，不入快照
+    setSelGeom(g) { selGeomList = Array.isArray(g) ? g.filter(Boolean) : (g ? [g] : []); requestDraw() },
     setSatLayer(spec) { satLayer = spec; invalidateStatic(); requestDraw() },
     resize() {
       const w = canvas.clientWidth || canvas.parentElement?.clientWidth || 0, h = canvas.clientHeight || canvas.parentElement?.clientHeight || 0
@@ -862,7 +864,7 @@ export function createFlatCoverage(canvas) {
       drawAboveContent(rx, ry, rw, rh)
       ctx.save(); ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip()
       drawFieldOverlays()
-      if (focusSat) drawSatIcon(focusSat.lon, focusSat.lat, sizes.satIcon * Math.sqrt(scale) * SAT_ICON_K, '#ffffff')
+      for (const p of focusSats) drawSatIcon(p.lon, p.lat, sizes.satIcon * Math.sqrt(scale) * SAT_ICON_K, '#ffffff')
       ctx.restore()
       ctx = SV.ctx; dpr = SV.dpr; cw = SV.cw; ch = SV.ch; base = SV.base; scale = SV.scale; tx = SV.tx; ty = SV.ty; textFont = SV.font; compat = false
       staticValid = false; requestDraw()

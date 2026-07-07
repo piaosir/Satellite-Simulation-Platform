@@ -667,7 +667,30 @@ export function createGlobeScene(container, quality = {}) {
     for (let i = 0; i + 1 < pts.length; i += 2) { const a = pts[i], b = pts[i + 1]; flat.push(a.x, a.y, a.z, b.x, b.y, b.z) }
     footLine = fatSegments(flat, 0xb8e6fa, 1.6, 1, 6); scene.add(footLine)   // 与 GRD 等值线/Polygon 线同层(6)
   }
-  function clearSelectionGeom() { setOrbit(null); setGroundTrack(null); setFootprint(null); setHighlight(null) }
+  // 多选：一组卫星各自的轨道圈/星下点轨迹/覆盖足迹（按各自颜色），primary 更亮更粗。
+  let selSetGroup = null
+  function disposeSelSet() {
+    if (!selSetGroup) return
+    for (const l of selSetGroup.children) { l.geometry.dispose(); if (l.material) { lineMats.delete(l.material); l.material.dispose() } }
+    scene.remove(selSetGroup); selSetGroup = null
+  }
+  function setSelectionSet(items) {
+    disposeSelSet()
+    if (!items || !items.length) return
+    selSetGroup = new THREE.Group()
+    for (const it of items) {
+      // 轨道圈/星下点轨迹(金)/覆盖足迹(青) 都用与单选时相同的固定原色，多颗同时叠画；primary 仅加粗加亮以区分聚焦星（不用变色）
+      if (it.orbit && it.orbit.length) selSetGroup.add(lineFromLLA(it.orbit, 0x6f9fc8, it.primary ? 0.9 : 0.5, it.primary ? 1.9 : 1.2))
+      if (it.track && it.track.length) selSetGroup.add(lineFromLLA(it.track.map((p) => ({ lat: p.lat, lon: p.lon, altKm: LIFT })), 0xe8c074, 1, 1.6))
+      if (it.footprint && it.footprint.length > 1) {
+        const pts = it.footprint.map((p) => llaToVec(p.lat, p.lon, LIFT)); const flat = []
+        for (let i = 0; i + 1 < pts.length; i += 2) { const a = pts[i], b = pts[i + 1]; flat.push(a.x, a.y, a.z, b.x, b.y, b.z) }
+        selSetGroup.add(fatSegments(flat, 0xb8e6fa, 1.6, 1, 6))
+      }
+    }
+    scene.add(selSetGroup)
+  }
+  function clearSelectionGeom() { setOrbit(null); setGroundTrack(null); setFootprint(null); setHighlight(null); disposeSelSet() }
 
   // 旋转相机使指定方向正对视图（搜索定位时用），保持当前距离
   function faceTo(vec) {
@@ -1094,13 +1117,18 @@ export function createGlobeScene(container, quality = {}) {
   // 聚焦卫星当前星下点图标（与 2D 同款，固定 30px 基准——与 2D sizes.satIcon 默认值一致，随 3D 缩放联动）；
   // depthTest 关 + _dir 半球剔除，复用地面站图标同一套策略，转到背面自动隐藏，不会被地球遮挡。
   const FOCUS_SAT_PX = 30
+  // p：单个 {lat,lon} 或数组（多选时每颗聚焦星各画一个图标，同款同大小，聚焦星区分靠轨道加粗+高亮环，图标本身不再分主次）
   function setFocusSatLLA(p) {
     disposeGroup(focusSatGroup); focusSatGroup = null
-    if (!p || !Number.isFinite(p.lat) || !Number.isFinite(p.lon)) return
-    const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: focusSatTexture(), depthTest: false, depthWrite: false, transparent: true }))
-    spr.position.copy(llaToVec(p.lat, p.lon, 0).multiplyScalar(1.0012))
-    spr._px = FOCUS_SAT_PX; spr._ar = 1; spr._dir = spr.position.clone().normalize(); spr.renderOrder = 17
-    const g = new THREE.Group(); g.add(spr)
+    const list = (Array.isArray(p) ? p : (p ? [p] : [])).filter((q) => q && Number.isFinite(q.lat) && Number.isFinite(q.lon))
+    if (!list.length) return
+    const g = new THREE.Group()
+    for (const q of list) {
+      const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: focusSatTexture(), depthTest: false, depthWrite: false, transparent: true }))
+      spr.position.copy(llaToVec(q.lat, q.lon, 0).multiplyScalar(1.0012))
+      spr._px = FOCUS_SAT_PX; spr._ar = 1; spr._dir = spr.position.clone().normalize(); spr.renderOrder = 17
+      g.add(spr)
+    }
     focusSatGroup = g; scene.add(g)
   }
   // 文字标签：depthTest 关 + 半球剔除 -> 不会被地球边缘裁掉一半，背面整体隐藏
@@ -1182,7 +1210,9 @@ export function createGlobeScene(container, quality = {}) {
   }
 
   let satPoints = null
-  function setSatellites(positions) {
+  // positions: [{lat,lon,altKm}]；colors（可选）: Float32Array 长度 = positions.length*3 的逐点 RGB(0..1)。
+  // 传 colors 时启用逐点顶点色（自定义星座按面/按星座上色）；不传则沿用统一的默认星点色。
+  function setSatellites(positions, colors) {
     if (satPoints) { scene.remove(satPoints); satPoints.geometry.dispose(); satPoints.material.dispose() }
     const arr = new Float32Array(positions.length * 3)
     for (let i = 0; i < positions.length; i++) {
@@ -1191,9 +1221,15 @@ export function createGlobeScene(container, quality = {}) {
     }
     const geo = new THREE.BufferGeometry()
     geo.setAttribute('position', new THREE.BufferAttribute(arr, 3))
+    const useColors = colors && colors.length === positions.length * 3
+    if (useColors) geo.setAttribute('color', new THREE.BufferAttribute(colors instanceof Float32Array ? colors : Float32Array.from(colors), 3))
     // 卫星点：随缩放联动（基准距离上 SAT_POINT_PX 像素，拉近变大、拉远变小，见 loop 内逐帧更新 size）；
     // 拾取命中半径独立按距离折算固定 ~14px（见 pointerup），故缩小后仍可点。下限钳制保证拉远不至于消失。
-    satPoints = new THREE.Points(geo, new THREE.PointsMaterial({ color: 0x9fd0ef, size: SAT_POINT_PX, sizeAttenuation: false }))
+    // vertexColors 时基色取白（three.js 用材质色乘顶点色），逐点色即最终色；否则用统一的默认星点色。
+    const mat = useColors
+      ? new THREE.PointsMaterial({ size: SAT_POINT_PX, sizeAttenuation: false, vertexColors: true })
+      : new THREE.PointsMaterial({ color: 0x9fd0ef, size: SAT_POINT_PX, sizeAttenuation: false })
+    satPoints = new THREE.Points(geo, mat)
     scene.add(satPoints)
   }
   function setHighlight(vec) { hlPos = vec ? vec.clone() : null; if (!hlPos) ringSpr.visible = false }
@@ -1243,7 +1279,8 @@ export function createGlobeScene(container, quality = {}) {
       if (occludedByGlobe(hit.point)) continue
       if (!best || hit.distanceToRay < best.distanceToRay) best = hit
     }
-    if (best) onPick(best.index, best.point); else onPick(-1, null)
+    const addToSel = e.ctrlKey || e.metaKey || e.shiftKey   // 按住 Ctrl/Cmd/Shift 点选=加入多选
+    if (best) onPick(best.index, best.point, addToSel); else onPick(-1, null, addToSel)
   })
 
   const camDir = new THREE.Vector3()
@@ -1309,7 +1346,7 @@ export function createGlobeScene(container, quality = {}) {
 
   return {
     setSatellites, setLabelMode, setHighlight, setHighlightLLA, setOnPick,
-    setOrbit, setGroundTrack, setFootprint, clearSelectionGeom,
+    setOrbit, setGroundTrack, setFootprint, setSelectionSet, clearSelectionGeom,
     setCoverage, clearCoverage, setCoverageField, patchCoverageLayers, clearCoverageField, setCoverageFieldAlpha, setSatLayer, clearSatLayer, faceLonLat, setProvinces, setProvincesVisible, setCities, setCitiesVisible, setBorderStyle, setNameScale, setLabelStyle, setOceanColor, setLandColors,
     setPixelRatio, setRenderFps, setSphereDetail, setMapDetail,
     setMarkers, setTrajectories, setFocusSatLLA, setOnHover, setOnRightClick, setBeamDragMode, setOnBeamDrag,

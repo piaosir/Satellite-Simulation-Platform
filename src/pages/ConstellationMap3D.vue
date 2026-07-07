@@ -27,6 +27,8 @@ import sat from '../viz/constellation/satellite.js'
 import { sampleOrbitAdaptive } from '../viz/constellation/adaptiveSample.js'
 import * as W from '../viz/wgs84.js'
 import { parseOMMCsv, fetchGroupLiveOrSup } from '../viz/constellation/tle.js'
+import { useCustomConstellations } from '../viz/constellation/useCustomConstellations.js'
+import { walkerCode, orbitPeriodMin, validateWalker } from '../viz/constellation/walker.js'
 
 // 分组与「星座地图」(2D) 完全一致：同一份列表 / 顺序 / 默认「中国星网」。
 const GROUPS = [
@@ -436,7 +438,96 @@ function gainSwatchCss(ba, g) {
 let scene = null
 let entries = []        // 全部 {rec, name, noradId, group}
 let renderEntries = []  // 有效卫星集，与点云顺序一致
-let selEntry = null
+let selEntry = null       // 主选中（primary/active）：详情展开、beam 输入、跟随定位都作用于它
+let selEntries = []        // 多选集合（含 primary）；裸点选=替换，Ctrl/Cmd/Shift 点选=增减
+// 选中几何配色：自定义星用自身颜色，普通星按选中序取调色板
+const SEL_PALETTE = [0xffd27a, 0x6f9fc8, 0x7cff8a, 0xff6fae, 0xc78bff, 0xff9f1c, 0x5ad1ff, 0x9be15a]
+function selColorHex(e, idx) {
+  if (e && e.color) return (Math.round(e.color[0] * 255) << 16) | (Math.round(e.color[1] * 255) << 8) | Math.round(e.color[2] * 255)
+  return SEL_PALETTE[idx % SEL_PALETTE.length]
+}
+const selHexCss = (e, idx) => '#' + (selColorHex(e, idx) >>> 0).toString(16).padStart(6, '0')
+const selList = ref([])   // 多选卡片列表（响应式）
+// 每颗一行 mini-card（色点+名称+类型+关键指标），active=primary
+function buildSelList() {
+  selList.value = selEntries.map((e, idx) => {
+    const c = cardFor(e) || {}
+    return { idx, color: selHexCss(e, idx), active: e === selEntry, name: e.name, noradId: e.noradId, kind: c.kind || '', alt: c.alt || '—', incl: c.incl || '—' }
+  })
+}
+
+// ===================== 自定义星座（仿 STK Walker 生成器） =====================
+// 合成星并入点云叠加显示：其 entries 追加进 renderEntries，即自动获得星点渲染 / 点选 / 选中轨道·星下点·足迹。
+const DEFAULT_SAT_RGB = [0x9f / 255, 0xd0 / 255, 0xef / 255]   // 默认星点色（与统一材质 0x9fd0ef 一致）
+let renderHasColor = false     // 渲染集是否含逐点色（有可见自定义星座时为真 → 传 colors 给 setSatellites）
+const customConst = useCustomConstellations(() => rebuildRenderSet())
+const customList = customConst.list
+const soloConst = ref(null)   // 当前「单独显示」的自定义星座 id（行高亮）
+
+// 生成/编辑向导草稿（null=关闭）
+const constModal = ref(null)
+function defaultConstDraft() {
+  return { id: null, name: '自定义星座', pattern: 'delta', T: 24, P: 6, F: 1, incl: 53, shape: 'circ', perigeeKm: 550, apogeeKm: 550, argp: 0, raan0: 0, m0: 0, color: '#4dabf7', colorByPlane: true }
+}
+function openConstWizard(cfg) {
+  if (cfg) constModal.value = { ...defaultConstDraft(), id: cfg.id, name: cfg.name, color: cfg.color, colorByPlane: cfg.colorByPlane !== false, ...cfg.params }
+  else constModal.value = defaultConstDraft()
+}
+function closeConstWizard() {
+  const editId = constModal.value && constModal.value.id
+  constModal.value = null   // 触发 watch：撤预览 + 重建
+  if (editId) nextTick(() => rebindSelection('cc_' + editId))   // 编辑现有星座取消：选中重绑回原版
+}
+// 草稿 → 生成参数（校验后调用）
+function draftParams(m) {
+  return {
+    pattern: m.pattern, T: Math.round(+m.T) || 1, P: Math.max(1, Math.round(+m.P) || 1), F: Math.round(+m.F) || 0,
+    incl: +m.incl || 0, shape: m.shape, perigeeKm: +m.perigeeKm || 0,
+    apogeeKm: m.shape === 'ellip' ? (+m.apogeeKm || +m.perigeeKm || 0) : (+m.perigeeKm || 0),
+    argp: +m.argp || 0, raan0: +m.raan0 || 0, m0: +m.m0 || 0, name: m.name
+  }
+}
+function saveConstWizard() {
+  const m = constModal.value; if (!m) return
+  const v = validateWalker(m)
+  if (!v.ok) { appAlert(v.errs.join('；')); return }
+  customConst.setPreview(null)   // 撤实时预览，避免与提交版本重叠
+  const draft = { name: m.name, params: draftParams(m), color: m.color, colorByPlane: m.colorByPlane !== false }
+  let id = m.id
+  if (m.id) customConst.update(m.id, draft); else { const cfg = customConst.add(draft); id = cfg.id }
+  rebindSelection('cc_' + id)   // 选中的预览星重绑到提交版本，卡片/覆盖/星下点/轨迹不断
+  constModal.value = null
+}
+// 编辑器打开时：参数变动实时预览到地球（防抖 140ms；非法参数撤预览）。关闭时撤预览。
+let _cpvTimer = null
+watch(constModal, (m) => {
+  if (_cpvTimer) { clearTimeout(_cpvTimer); _cpvTimer = null }
+  if (!m) { customConst.setPreview(null); rebuildRenderSet(); return }
+  _cpvTimer = setTimeout(() => {
+    _cpvTimer = null
+    const cur = constModal.value; if (!cur) return
+    if (!validateWalker(cur).ok) { customConst.setPreview(null); rebuildRenderSet(); return }
+    customConst.setPreview({ id: cur.id, name: cur.name, color: cur.color, colorByPlane: cur.colorByPlane !== false, params: draftParams(cur) })
+    rebuildRenderSet()
+    rebindSelection('cc___preview__')   // 选中该星座的星 → 随参数实时更新覆盖/星下点/轨迹/卡片
+  }, 140)
+}, { deep: true })
+// 向导实时预览：每面数 / 面间相位 / Walker 码 / 周期 / 校验提示
+const constDerived = computed(() => {
+  const m = constModal.value; if (!m) return null
+  const T = Math.round(+m.T) || 0, P = m.pattern === 'plane' ? 1 : Math.max(1, Math.round(+m.P) || 1), F = Math.round(+m.F) || 0
+  const S = Math.floor(T / P) || 0
+  const v = validateWalker(m)
+  return { S, total: m.pattern === 'plane' ? T : P * S, phase: (T ? F * 360 / T : 0).toFixed(1), code: walkerCode(m), periodMin: orbitPeriodMin(m).toFixed(1), warns: v.warns, errs: v.errs }
+})
+const ccCode = (c) => walkerCode(c.params)
+// 点击自定义星座行 → 单独显示该星座（内置组切「无」，仅该星座可见）
+function showConstAlone(c) {
+  const noneIdx = GROUPS.findIndex((g) => g.key === 'none')
+  if (noneIdx >= 0 && groupIndex.value !== noneIdx) pickGroup(noneIdx)   // 切「无」（会清 soloConst 高亮）
+  soloConst.value = c.id
+  customConst.showOnly(c.id)   // 仅该星座可见 → persist + 重建渲染集
+}
 const baseTime = ref(Date.now())   // 时间轴锚点：冻结时不变，实时时每 tick 跟随系统时钟
 let timer = null, ro = null, trackRo = null
 let pendingNorad = null, pendingNoFace = false
@@ -467,7 +558,7 @@ function cardFor(e) {
   else if (meanKm > 2000) kind = 'MEO'
   const isGeo = (e.group || curKey()) === 'geo'
   return {
-    name: e.name, noradId: e.noradId, group: GROUP_LABEL[e.group] || GROUP_LABEL[curKey()] || '', kind,
+    name: e.name, noradId: e.noradId, group: e.groupLabel || GROUP_LABEL[e.group] || GROUP_LABEL[curKey()] || '', kind,
     slot: isGeo ? fmtSlot(sat.degreesLong(gd.longitude)) : '',
     alt: gd.height.toFixed(0), lat: sat.degreesLat(gd.latitude).toFixed(2), lon: sat.degreesLong(gd.longitude).toFixed(2),
     incl: (rec.inclo / DEG).toFixed(2), ecc: rec.ecco.toFixed(5), period: periodMin.toFixed(1),
@@ -479,71 +570,72 @@ function cardFor(e) {
 }
 
 // ===================== 选中几何：轨道圈 / 星下点轨迹 / 覆盖足迹 =====================
+// 为所有选中星各画一组轨道圈/星下点轨迹/覆盖足迹；星下点轨迹/覆盖足迹固定原色多颗叠画，轨道圈固定原色仅 primary 加粗加亮区分聚焦星。
 function buildSelectedGeometry() {
-  if (!selEntry || !scene) return
-  const rec = selEntry.rec
+  if (!scene) return
+  if (!selEntries.length) { scene.clearSelectionGeom(); selGeomAll = []; pushSelGeomFlat(); return }
   const now = calcAt(), gmstNow = sat.gstime(now)
-  const periodMin = (2 * Math.PI) / rec.no
-
-  // 一个周期自适应采样（大椭圆轨道近地点段自动加密，近圆轨道等价于均匀 120 点），轨道圈与轨迹共用
-  const samples = sampleOrbitAdaptive(rec, now, periodMin)
-  // 轨道圈：统一用 now 的 gmst 冻结成当前朝向
-  const orbit = samples.map((s) => {
-    const gd = sat.eciToGeodetic(s.pv.position, gmstNow)
-    return { lat: sat.degreesLat(gd.latitude), lon: sat.degreesLong(gd.longitude), altKm: gd.height }
+  const items = []
+  selGeomAll = []
+  selEntries.forEach((e) => {
+    const rec = e.rec
+    const periodMin = (2 * Math.PI) / rec.no
+    // 一个周期自适应采样（大椭圆近地点段自动加密），轨道圈与轨迹共用
+    const samples = sampleOrbitAdaptive(rec, now, periodMin)
+    const orbit = samples.map((s) => {
+      const gd = sat.eciToGeodetic(s.pv.position, gmstNow)
+      return { lat: sat.degreesLat(gd.latitude), lon: sat.degreesLong(gd.longitude), altKm: gd.height }
+    })
+    const track = samples.map((s) => ({ lat: s.lat, lon: s.lon }))
+    const primary = e === selEntry
+    const fp = footprintFor(rec, now, gmstNow, primary)   // primary 顺带更新高亮环 + beam ε=0 上限占位
+    selGeomAll.push({ track, footprint: fp })              // 全体几何缓存供 2D 平面图（每颗都画，非仅主星）
+    items.push({ orbit, track, footprint: fp, primary })
   })
-  // 星下点轨迹：逐时刻 gmst -> 真实地表轨迹
-  const track = samples.map((s) => ({ lat: s.lat, lon: s.lon }))
-  scene.setOrbit(orbit)
-  scene.setGroundTrack(track)
-  selTrack = track            // 缓存星下点轨迹，供 2D 平面图同步绘制
-  buildFootprint(rec, now, gmstNow)
+  scene.setSelectionSet(items)
+  pushSelGeomFlat()
 }
 
-// 聚焦卫星几何缓存（推 2D 平面图：覆盖范围 + 星下点轨迹，与 3D 同源）；无聚焦为 null
-let selTrack = null, selFootprint = null
+// 聚焦卫星几何缓存列表（推 2D 平面图：覆盖范围 + 星下点轨迹，与 3D 同源，多选=每颗都缓存）
+let selGeomAll = []
 function pushSelGeomFlat() {
-  if (flat) flat.setSelGeom(selEntry ? { track: selTrack, footprint: selFootprint } : null)
+  if (flat) flat.setSelGeom(selGeomAll)
 }
 
 // 覆盖足迹圈，两种定义方式（fpMode）：
 //   beam — 与 2D 同一套几何（全波束角 B，半角 η=B/2；地心半角 λ=arcsin(r/RE·sinη)−η，夹断到 ε=0 上限）
 //   elev — 按地面最低仰角画等仰角环（0°=可见地平，与 beam 模式空值时的上限同界）
-function buildFootprint(rec, now, gmstNow) {
+// 返回该星覆盖足迹点列（或 null）；primary=true 时顺带更新高亮环与 beam ε=0 上限占位。纯函数，不直接改场景足迹层（由 setSelectionSet 统一绘制）。
+function footprintFor(rec, now, gmstNow, primary) {
   const pv = sat.propagate(rec, now)
-  if (!pv || !pv.position) { scene.setFootprint(null); selFootprint = null; pushSelGeomFlat(); return }
+  if (!pv || !pv.position) { if (primary) scene.setHighlightLLA(null); return null }
   const gd = sat.eciToGeodetic(pv.position, gmstNow)
   const lat0 = sat.degreesLat(gd.latitude), lon0 = sat.degreesLong(gd.longitude), h = gd.height
-  scene.setHighlightLLA({ lat: lat0, lon: lon0, altKm: h })
-  if (!(h > 0)) { scene.setFootprint(null); selFootprint = null; pushSelGeomFlat(); return }
+  if (primary) scene.setHighlightLLA({ lat: lat0, lon: lon0, altKm: h })
+  if (!(h > 0)) return null
   const ecf = sat.eciToEcf(pv.position, gmstNow)   // 卫星 ECEF(km)，按 WGS84 椭球求足迹边
-
-  let fp = null
   if (fpMode.value === 'elev') {
     const raw = parseFloat(elevMin.value)
     const el = raw >= 0 && raw < 90 ? raw : 0
     const ring = W.isoElevationContourAt([ecf.x, ecf.y, ecf.z], el, 120)
-    fp = ring ? ring.map(([lon, lat]) => ({ lat, lon })) : null
-  } else {
-    const r = RE + h
-    const etaMax = Math.asin(clamp(RE / r, -1, 1))
-    const bMaxDeg = 2 * etaMax / DEG
-
-    const raw = parseFloat(beam.value)
-    let bDeg, clampText = null
-    if (!(raw > 0)) bDeg = bMaxDeg
-    else if (raw > bMaxDeg) { bDeg = bMaxDeg; clampText = bMaxDeg.toFixed(1) }
-    else bDeg = raw
-
-    fp = W.footprintEllipsoid([ecf.x, ecf.y, ecf.z], (bDeg / 2) * DEG, 72)
-
+    return ring ? ring.map(([lon, lat]) => ({ lat, lon })) : null
+  }
+  const r = RE + h
+  const etaMax = Math.asin(clamp(RE / r, -1, 1))
+  const bMaxDeg = 2 * etaMax / DEG
+  const raw = parseFloat(beam.value)
+  let bDeg, clampText = null
+  if (!(raw > 0)) bDeg = bMaxDeg
+  else if (raw > bMaxDeg) { bDeg = bMaxDeg; clampText = bMaxDeg.toFixed(1) }
+  else bDeg = raw
+  const fp = W.footprintEllipsoid([ecf.x, ecf.y, ecf.z], (bDeg / 2) * DEG, 72)
+  if (primary) {
     // placeholder 常显 ε=0 上限；用户超限回写夹断值（锁定态不回写）
     const autoText = bMaxDeg.toFixed(1)
     if (autoText !== beamAuto.value) beamAuto.value = autoText
     if (clampText != null && !beamLock.value && clampText !== beam.value) beam.value = clampText
   }
-  scene.setFootprint(fp)
-  selFootprint = fp; pushSelGeomFlat()   // 同步到 2D 平面图
+  return fp
 }
 
 // 以 (lat0,lon0) 为心、地心半角 lambda 的地表小圆 -> 经纬度点列
@@ -572,7 +664,9 @@ function rebuildRenderSet() {
   for (const e of entries) {
     try { const pv = sat.propagate(e.rec, now); if (pv && pv.position) valid.push(e) } catch { /* skip */ }
   }
-  renderEntries = valid
+  const custom = customConst.entriesForRender()   // 自定义星座合成星追加在真实星之后（点云索引对齐 renderEntries）
+  renderEntries = custom.length ? valid.concat(custom) : valid
+  renderHasColor = custom.length > 0
   satCount.value = entries.length
   refreshPositions()
 }
@@ -582,20 +676,27 @@ function refreshPositions() {
   if (!scene) return
   nowStamp.value = Date.now()                                          // 「此刻」红标记参考
   if (live.value) { nowTick.value++; baseTime.value = nowStamp.value }  // 实时：时钟自增 + 锚点随系统时钟滑动
-  if (curKey() === 'none' || !renderEntries.length) { scene.setSatellites([]); shownCount.value = 0; pushFocusSat(); if (hasLinkedElev()) redrawSats(); grd.tickLive(); return }
+  // renderEntries 已含可见自定义星座（即使内置组选「无」也可能非空），故只按空判断，不再短路 'none'
+  if (!renderEntries.length) { scene.setSatellites([]); shownCount.value = 0; pushFocusSat(); if (hasLinkedElev()) redrawSats(); grd.tickLive(); return }
   const now = calcAt(), gmst = sat.gstime(now)
-  const positions = []
-  for (const e of renderEntries) {
+  const n = renderEntries.length
+  const positions = new Array(n)
+  const colors = renderHasColor ? new Float32Array(n * 3) : null   // 有自定义星座时逐点上色（真实星取默认色）
+  for (let k = 0; k < n; k++) {
+    const e = renderEntries[k]
+    let pos
     try {
       const pv = sat.propagate(e.rec, now)
-      if (pv && pv.position) { const gd = sat.eciToGeodetic(pv.position, gmst); positions.push({ lat: sat.degreesLat(gd.latitude), lon: sat.degreesLong(gd.longitude), altKm: gd.height }) }
-      else positions.push({ lat: 0, lon: 0, altKm: -RE })   // 占位，保持索引对齐（落到地心不可见）
-    } catch { positions.push({ lat: 0, lon: 0, altKm: -RE }) }
+      if (pv && pv.position) { const gd = sat.eciToGeodetic(pv.position, gmst); pos = { lat: sat.degreesLat(gd.latitude), lon: sat.degreesLong(gd.longitude), altKm: gd.height } }
+      else pos = { lat: 0, lon: 0, altKm: -RE }   // 占位，保持索引对齐（落到地心不可见）
+    } catch { pos = { lat: 0, lon: 0, altKm: -RE } }
+    positions[k] = pos
+    if (colors) { const c = e.color || DEFAULT_SAT_RGB; colors[k * 3] = c[0]; colors[k * 3 + 1] = c[1]; colors[k * 3 + 2] = c[2] }
   }
-  scene.setSatellites(positions)
-  shownCount.value = renderEntries.length
+  scene.setSatellites(positions, colors)
+  shownCount.value = n
   if (selEntry) {
-    const c = cardFor(selEntry); if (c) selected.value = c; buildSelectedGeometry()
+    const c = cardFor(selEntry); if (c) selected.value = c; buildSelectedGeometry(); buildSelList()
     if (points.value.length || stations.value.length) pushMarkers()   // 随卫星移动刷新标记仰角
   }
   pushFocusSat()   // 同步 2D 平面图上聚焦卫星实时位置
@@ -627,11 +728,11 @@ function ingest(sats, payloadGroup, fetchedAt) {
 async function loadGroup() {
   if (!apiOk) { status.value = '需在 Electron 中运行（npm run dev）'; return }
   const g = GROUPS[groupIndex.value]
-  resetBeam(); selEntry = null; selected.value = null; scene && scene.clearSelectionGeom(); selTrack = selFootprint = null; pushSelGeomFlat()
+  resetBeam(); selEntries = []; selEntry = null; selected.value = null; selList.value = []; scene && scene.clearSelectionGeom(); selGeomAll = []; pushSelGeomFlat()
   // 「无」：不加载/不传播/不渲染任何卫星，省 SGP4 与点渲染开销（覆盖图、地球照常）
   if (g.key === 'none') {
-    entries = []; renderEntries = []; satCount.value = 0; shownCount.value = 0
-    if (scene) scene.setSatellites([])
+    entries = []; satCount.value = 0
+    rebuildRenderSet()   // 仅渲染可见的自定义星座（若有），否则清空点云
     status.value = ''; dataTime.value = '—'
     redrawSats()   // 无星座时自定义卫星照常绘制（关联卫星回退到存储位置）
     return
@@ -717,26 +818,65 @@ async function ensureSearchPool() {
 }
 const searchSource = () => (poolReady && searchPool.length ? searchPool : entries)
 
-function selectSat(e, face) {
-  selEntry = e
-  resetBeam()
-  const c = cardFor(e); if (c) selected.value = c
-  buildSelectedGeometry()
-  pushMarkers()   // 聚焦后立即在标记上显示仰角
-  pushFocusSat()  // 2D 平面图标注聚焦卫星位置
-  if (face && scene) {
-    const now = calcAt(), gmst = sat.gstime(now)
-    const pv = sat.propagate(e.rec, now)
-    if (pv && pv.position) {
-      const gd = sat.eciToGeodetic(pv.position, gmst)
-      const lat = sat.degreesLat(gd.latitude), lon = sat.degreesLong(gd.longitude)
-      const phi = (90 - lat) * Math.PI / 180, theta = (lon + 180) * Math.PI / 180
-      // 与场景 llaToVec 同向的单位方向；faceTo 内部会归一化
-      scene.faceTo({ x: -Math.sin(phi) * Math.cos(theta), y: Math.cos(phi), z: Math.sin(phi) * Math.sin(theta) })
-      autoRotate.value = false
-    }
+function selectSat(e, face, additive) {
+  if (additive && selEntries.length) {
+    const i = selEntries.indexOf(e)
+    if (i >= 0) { selEntries.splice(i, 1); if (selEntry === e) selEntry = selEntries[selEntries.length - 1] || null }   // 再点=移出
+    else { selEntries.push(e); selEntry = e }                                                                          // 加入并设为主选
+  } else {
+    selEntries = [e]; selEntry = e                                                                                     // 裸点选=替换
   }
+  if (!selEntry) { closeCard(); return }
+  if (!additive) resetBeam()
+  refreshSelection()
+  if (face && scene) faceEntry(selEntry)
   saveSelection()
+}
+// 刷新主选卡片 + 全体几何 + 多选列表 + 标记 + 2D 聚焦
+function refreshSelection() {
+  const c = cardFor(selEntry); if (c) selected.value = c
+  buildSelectedGeometry()
+  buildSelList()
+  pushMarkers()
+  pushFocusSat()
+}
+// 旋转地球使某星正对视图
+function faceEntry(e) {
+  const now = calcAt(), gmst = sat.gstime(now)
+  const pv = sat.propagate(e.rec, now)
+  if (!pv || !pv.position) return
+  const gd = sat.eciToGeodetic(pv.position, gmst)
+  const lat = sat.degreesLat(gd.latitude), lon = sat.degreesLong(gd.longitude)
+  const phi = (90 - lat) * Math.PI / 180, theta = (lon + 180) * Math.PI / 180
+  scene.faceTo({ x: -Math.sin(phi) * Math.cos(theta), y: Math.cos(phi), z: Math.sin(phi) * Math.sin(theta) })
+  autoRotate.value = false
+}
+// 卡片 mini-row：设为主选 / 移出
+function setPrimary(row) { const e = selEntries[row.idx]; if (!e || e === selEntry) return; selEntry = e; refreshSelection(); saveSelection() }
+function removeSel(row) {
+  const e = selEntries[row.idx]; if (!e) return
+  selEntries.splice(row.idx, 1)
+  if (selEntry === e) selEntry = selEntries[selEntries.length - 1] || null
+  if (!selEntry) { closeCard(); return }
+  refreshSelection(); saveSelection()
+}
+// 编辑星座实时预览/提交/取消后：把仍指向旧对象的选中项按名字重绑到 renderEntries 里的新对象（覆盖/星下点/轨迹/卡片随之同步）
+function rebindSelection(preferGroup) {
+  if (!selEntries.length) return
+  let changed = false
+  const next = []
+  for (const e of selEntries) {
+    if (!e.group || e.group.indexOf('cc') !== 0) { next.push(e); continue }   // 只重绑自定义星座/预览星
+    if (renderEntries.includes(e)) { next.push(e); continue }                  // 对象仍在场=无需重绑
+    const m = renderEntries.find((x) => x.group === preferGroup && x.name === e.name)
+           || renderEntries.find((x) => x.group && x.group.indexOf('cc') === 0 && x.name === e.name)
+    if (m) { if (selEntry === e) selEntry = m; next.push(m); changed = true }
+    else if (selEntry === e) selEntry = null                                   // 该槽位已不存在
+  }
+  selEntries = next
+  if (!selEntries.length) { closeCard(); return }
+  if (!selEntry || !selEntries.includes(selEntry)) selEntry = selEntries[selEntries.length - 1]
+  if (changed) refreshSelection()
 }
 
 function onSearch(e) {
@@ -758,13 +898,13 @@ function onSearch(e) {
 }
 function clearSearch() { keyword.value = ''; searchResults.value = [] }
 function pickResult(item) { searchResults.value = []; keyword.value = ''; selectSat(item.en, true) }
-function closeCard() { selEntry = null; selected.value = null; resetBeam(); scene && scene.clearSelectionGeom(); selTrack = selFootprint = null; pushSelGeomFlat(); pushMarkers(); pushFocusSat(); saveSelection() }
+function closeCard() { selEntries = []; selEntry = null; selected.value = null; selList.value = []; resetBeam(); scene && scene.clearSelectionGeom(); selGeomAll = []; pushSelGeomFlat(); pushMarkers(); pushFocusSat(); saveSelection() }
 
 // ===================== 覆盖圈（波束角 / 最低仰角） =====================
 // 波束角/最低仰角是用户设置：控件常驻、换星不清空手填值；仅清与所选星绑定的上限占位。
 // 锁定含义收敛为「超出该星上限时不回写夹断值」。
 function resetBeam() { beamAuto.value = '' }
-function refreshFootprint() { if (selEntry) { const now = calcAt(); buildFootprint(selEntry.rec, now, sat.gstime(now)) } }
+function refreshFootprint() { if (selEntries.length) buildSelectedGeometry() }   // beam/仰角改动 → 重算全体足迹
 function onBeam(e) { beam.value = e.target.value; refreshFootprint() }
 function onElevMin(e) { elevMin.value = e.target.value; refreshFootprint() }
 // 波束全锥角 B(°) ↔ 最低仰角 ε(°)：同一覆盖圈的两种参数化，由卫星高度 h 唯一对应。
@@ -1881,17 +2021,21 @@ function satElevAt(lat, lon) {
 // 标签用仰角文本：未聚焦返回空串（地平线以下显示负值即标识不可见）
 const fmtElev = (lat, lon) => { const e = satElevAt(lat, lon); return e == null ? '' : `仰角 ${e.toFixed(1)}°` }
 
-// 聚焦卫星实时星下点；无聚焦/不可解算返回 null
-function focusSubpoint() {
-  if (!selEntry) return null
-  const now = calcAt()
-  const pv = sat.propagate(selEntry.rec, now)
-  if (!pv || !pv.position) return null
-  const gd = sat.eciToGeodetic(pv.position, sat.gstime(now))
-  return { lat: sat.degreesLat(gd.latitude), lon: sat.degreesLong(gd.longitude) }
+// 全部聚焦卫星的实时星下点列表（多选=每颗一个，同款图标不分主次；主次区分靠轨道加粗+高亮环）
+function focusSubpoints() {
+  if (!selEntries.length) return []
+  const now = calcAt(), gmst = sat.gstime(now)
+  const out = []
+  for (const e of selEntries) {
+    const pv = sat.propagate(e.rec, now)
+    if (!pv || !pv.position) continue
+    const gd = sat.eciToGeodetic(pv.position, gmst)
+    out.push({ lat: sat.degreesLat(gd.latitude), lon: sat.degreesLong(gd.longitude) })
+  }
+  return out
 }
-// 把聚焦卫星星下点推给 2D 平面图（标注其实时位置）
-function pushFocusSat() { const p = focusSubpoint(); if (flat) flat.setFocusSat(p); if (scene) scene.setFocusSatLLA(p) }
+// 把全部聚焦卫星星下点推给 2D/3D（标注各自实时位置）
+function pushFocusSat() { const list = focusSubpoints(); if (flat) flat.setFocusSat(list); if (scene) scene.setFocusSatLLA(list) }
 
 // 地图右键（3D 球体与 2D 平面图共用）：轨迹描绘中→直接加航点（连续右键描点）；否则→弹出右键菜单。
 // ll：点击处经纬度（点在地球外为 null）；pos：屏幕坐标（菜单定位）。
@@ -2028,6 +2172,7 @@ function saveSelection() {
 // 资源管理器「星座」树行点击切换分组（原顶栏下拉已并入树）
 function pickGroup(i) {
   if (!Number.isInteger(i) || i < 0 || i >= GROUPS.length || i === groupIndex.value) return
+  soloConst.value = null   // 选内置组 → 清除自定义星座的单独显示高亮
   groupIndex.value = i; clearSearch()
   loadGroup(); saveSelection()
 }
@@ -2193,12 +2338,12 @@ onMounted(async () => {
   scene.setLabelStyle({ ...labelStyle })
   scene.setOceanColor(oceanColor.value)
   scene.setOnAutoRotateOff(() => { autoRotate.value = false })
-  scene.setOnPick((index) => {
+  scene.setOnPick((index, point, additive) => {
     // 从星座点选模式：命中的星填入卫星编辑弹窗，不改变当前选中星
     if (satPick.value && satModal.value) { if (index >= 0) { const en = renderEntries[index]; if (en) pickEntryIntoModal(en) } return }
-    if (index < 0) { closeCard(); return }
+    if (index < 0) { if (!additive) closeCard(); return }   // 点空白=清空（按住修饰键点空白不清空）
     const en = renderEntries[index]; if (!en) return
-    selectSat(en, false)
+    selectSat(en, false, additive)   // 裸点=替换聚焦；Ctrl/Cmd/Shift 点=加入/移出多选
   })
   // 鼠标实时经纬度（底部状态栏显示）+ 右键标点/加航点
   scene.setOnHover((ll) => { cursor.ll = ll })
@@ -2234,6 +2379,7 @@ onMounted(async () => {
 
   await restoreSettings()   // 恢复全部选项/设置（无感）
   await ensureProvinces(); await ensureCities()   // 按恢复后的省/市界开关加载数据并套用可见性（restoreSettings 只回填开关）
+  customConst.load()   // 恢复自定义星座（按参数重建合成星，随后由 loadGroup→rebuildRenderSet 一并渲染）
   loadGroup()
   ensureSearchPool()   // 后台构建全量搜索库（当日缓存命中则很快），与当前分组无关
   redrawSats()   // 恢复后立即绘制自定义卫星（关联卫星待 loadGroup 完成由 refreshPositions 跟踪）
@@ -2281,8 +2427,19 @@ onBeforeUnmount(() => {
         <div v-if="selected" class="card" :class="{ collapsed: cardCollapsed }">
           <div class="ch" :title="cardCollapsed ? '展开' : '收起'" @click="cardCollapsed = !cardCollapsed">
             <span class="cc" :class="{ col: cardCollapsed }"><Icon name="chevron-down" :size="11" /></span>
-            <span class="cn" :title="selected.name">{{ selected.name }}</span>
-            <span class="cx" @click.stop="closeCard"><Icon name="x" :size="12" /></span>
+            <span class="cn" :title="selList.length > 1 ? '' : selected.name">{{ selList.length > 1 ? (selList.length + ' 颗聚焦') : selected.name }}</span>
+            <span class="cx" :title="selList.length > 1 ? '全部取消' : '取消聚焦'" @click.stop="closeCard"><Icon name="x" :size="12" /></span>
+          </div>
+          <!-- 多选：mini-card 列表（点行=设为主选看详情，×=移出）；单选时不显示，直接看详情 -->
+          <div v-show="!cardCollapsed && selList.length > 1" class="msel">
+            <div v-for="s in selList" :key="s.idx" class="mrow" :class="{ active: s.active }" @click="setPrimary(s)">
+              <span class="mdot" :style="{ background: s.color }"></span>
+              <div class="mmain">
+                <div class="mr1"><span class="mnm" :title="s.name">{{ s.name }}</span><span class="mkind">{{ s.kind }}</span></div>
+                <div class="msub">{{ s.noradId }} · {{ s.alt }}km · {{ s.incl }}°</div>
+              </div>
+              <span class="mx" title="移出该星" @click.stop="removeSel(s)"><Icon name="x" :size="10" /></span>
+            </div>
           </div>
           <div v-show="!cardCollapsed" class="cbody">
           <div class="cmeta">
@@ -2339,7 +2496,67 @@ onBeforeUnmount(() => {
            标题显示在侧栏头部（App.vue），面板懒加载由 shellUi.side 的 watcher 触发原 toggle* -->
       <Teleport v-if="shellUi.side" to="#side-view">
         <!-- 星座：卫星搜索 + 旋转/实时开关 + 在轨/OMM 状态 + 分组列表 -->
-        <div v-show="shellUi.side === 'constellation'" class="sview">
+        <div v-show="shellUi.side === 'constellation'" class="sview" :class="{ editing: constModal }">
+          <!-- 生成/编辑器内联面板：编辑器打开时侧栏切为此面板，地图保持可见 + 实时预览（仿 KeepTrack 停靠式） -->
+          <div v-if="constModal" class="cedit">
+            <div class="cehd">
+              <span class="ceback" @click="closeConstWizard"><Icon name="chevron-left" :size="13" /> 返回</span>
+              <span class="cetitle">{{ constModal.id ? '编辑星座' : '生成星座' }}</span>
+              <span class="celive" title="改动实时预览到地球">● 实时</span>
+            </div>
+            <div class="cebody">
+              <div class="cef"><label>名称</label><input class="ci" v-model="constModal.name" placeholder="星座名称" /></div>
+              <div class="cef"><label>构型</label>
+                <span class="seg3">
+                  <span :class="{ on: constModal.pattern === 'delta' }" @click="constModal.pattern = 'delta'">Delta</span>
+                  <span :class="{ on: constModal.pattern === 'star' }" @click="constModal.pattern = 'star'">Star</span>
+                  <span :class="{ on: constModal.pattern === 'plane' }" @click="constModal.pattern = 'plane'">单面</span>
+                </span>
+              </div>
+
+              <div class="cesec">Walker 构型</div>
+              <div class="cetpf">
+                <div><small>总数 T</small><input class="ci" type="number" min="1" step="1" v-model.number="constModal.T" /></div>
+                <div v-if="constModal.pattern !== 'plane'"><small>面数 P</small><input class="ci" type="number" min="1" step="1" v-model.number="constModal.P" /></div>
+                <div v-if="constModal.pattern !== 'plane'"><small>相位 F</small><input class="ci" type="number" min="0" step="1" v-model.number="constModal.F" /></div>
+              </div>
+              <div class="cef"><label>倾角</label><input class="ci" type="number" step="0.1" v-model.number="constModal.incl" /><span class="u">°</span></div>
+
+              <div class="cesec">轨道</div>
+              <div class="cef"><label>形状</label>
+                <span class="seg3">
+                  <span :class="{ on: constModal.shape === 'circ' }" @click="constModal.shape = 'circ'">圆</span>
+                  <span :class="{ on: constModal.shape === 'ellip' }" @click="constModal.shape = 'ellip'">椭圆</span>
+                </span>
+              </div>
+              <div class="cefv"><label>{{ constModal.shape === 'ellip' ? '近地点高度' : '轨道高度' }}</label><div class="ceinp"><input class="ci" type="number" step="10" v-model.number="constModal.perigeeKm" /><span class="u">km</span></div></div>
+              <template v-if="constModal.shape === 'ellip'">
+                <div class="cefv"><label>远地点高度</label><div class="ceinp"><input class="ci" type="number" step="10" v-model.number="constModal.apogeeKm" /><span class="u">km</span></div></div>
+                <div class="cefv"><label>近地点幅角</label><div class="ceinp"><input class="ci" type="number" step="1" v-model.number="constModal.argp" /><span class="u">°</span></div></div>
+              </template>
+
+              <div class="cesec">相位与指向</div>
+              <div class="cetpf">
+                <div><small>RAAN 起始</small><input class="ci" type="number" step="1" v-model.number="constModal.raan0" /></div>
+                <div><small>初始相位 M₀</small><input class="ci" type="number" step="1" v-model.number="constModal.m0" /></div>
+              </div>
+
+              <div class="cesec">外观</div>
+              <label class="chk2"><input type="checkbox" v-model="constModal.colorByPlane" /><span>按轨道面配色</span></label>
+              <div v-if="!constModal.colorByPlane" class="cef"><label>颜色</label><input class="clr" type="color" v-model="constModal.color" /></div>
+
+              <div v-if="constDerived" class="ceread">
+                <div class="crcode">{{ constDerived.code }}</div>
+                <div class="crsub">共 {{ constDerived.total }} 颗<template v-if="constModal.pattern !== 'plane'"> · 每面 {{ constDerived.S }} · 面间 {{ constDerived.phase }}°</template> · 周期 {{ constDerived.periodMin }} min</div>
+                <div v-if="constDerived.warns.length" class="crwarn">{{ constDerived.warns.join('；') }}</div>
+              </div>
+            </div>
+            <div class="cefoot">
+              <span class="cancel" @click="closeConstWizard">取消</span>
+              <span class="save" @click="saveConstWizard">{{ constModal.id ? '更新' : '生成' }}</span>
+            </div>
+          </div>
+          <template v-else>
           <div class="ptool">
             <div class="search">
               <input :value="keyword" placeholder="搜索卫星名 / 编号" @input="onSearch" />
@@ -2369,6 +2586,20 @@ onBeforeUnmount(() => {
               <span class="pgn">{{ g.label }}</span>
             </div>
           </div>
+          <!-- 自定义星座（仿 STK Walker 生成器）：星点 + 轨道圈叠加显示 -->
+          <div class="ccsec">
+            <div class="cchd"><span>自定义星座</span><span class="lnk" @click="openConstWizard()"><Icon name="plus" :size="11" /> 生成</span></div>
+            <div v-if="!customList.length" class="cctip">按 Walker 参数生成自定义星座，叠加为星点 + 轨道圈，可点选查看单星轨道 / 星下点 / 覆盖圈。</div>
+            <div v-for="c in customList" :key="c.id" class="ccrow" :class="{ off: c.visible === false, sel: c.id === soloConst }" title="点击单独显示该星座" @click="showConstAlone(c)">
+              <span class="ccdot" :style="{ background: c.color }"></span>
+              <span class="ccnm" :title="c.name">{{ c.name }}</span>
+              <span class="cccode">{{ ccCode(c) }}</span>
+              <span class="ccic" :title="c.visible === false ? '显示' : '隐藏'" @click.stop="customConst.toggle(c.id)"><Icon :name="c.visible === false ? 'eye-off' : 'eye'" :size="12" /></span>
+              <span class="ccic" title="编辑" @click.stop="openConstWizard(c)"><Icon name="pencil" :size="11" /></span>
+              <span class="ccic del" title="删除" @click.stop="customConst.remove(c.id)"><Icon name="trash" :size="11" /></span>
+            </div>
+          </div>
+          </template>
         </div>
 
         <!-- 覆盖图（GXT） -->
@@ -2953,6 +3184,7 @@ onBeforeUnmount(() => {
         <div class="sdfoot"><span class="cancel" @click="closeSatModal">取消</span><span class="save" @click="saveSatModal">保存</span></div>
       </div>
     </div>
+    <!-- 星座生成/编辑器已内联到左侧「星座」侧栏（见 .cedit），不再用居中弹窗（可对着地图实时调整） -->
     <div v-if="satModal && satPick" class="sat-banner">
       点选模式：点击地图上的卫星填入位置{{ flatView ? '（平面图无星点，请切回球体或用搜索）' : '' }}
       <span class="lnk" @click="satPick = false">完成 / 取消</span>
@@ -3339,6 +3571,20 @@ onBeforeUnmount(() => {
 .card.collapsed .cn { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cx { flex: none; display: inline-flex; align-items: center; cursor: pointer; color: var(--text-faint); line-height: 1.2; }
 .cx:hover { color: var(--text); }
+/* 多选 mini-card 列表（master–detail：点行=设为主选看详情，×=移出，active 高亮） */
+.msel { display: flex; flex-direction: column; gap: 4px; margin-top: 9px; max-height: 230px; overflow-y: auto; }
+.mrow { display: flex; align-items: center; gap: 7px; padding: 5px 6px; border: 1px solid var(--border); border-left: 3px solid transparent; cursor: pointer; }
+.mrow:hover { background: color-mix(in srgb, var(--surface-2) 70%, transparent); }
+.mrow.active { border-left-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.mrow .mdot { flex: none; width: 9px; height: 9px; border-radius: 50%; }
+.mrow .mmain { flex: 1; min-width: 0; }
+.mrow .mr1 { display: flex; align-items: baseline; gap: 6px; }
+.mrow .mnm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--text); }
+.mrow .mkind { flex: none; font-size: 9.5px; color: var(--accent); border: 1px solid var(--accent); padding: 0 4px; }
+.mrow .msub { font-family: var(--font-mono); font-size: 10px; color: var(--text-faint); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mrow .mx { flex: none; display: inline-flex; align-items: center; color: var(--text-faint); opacity: 0; cursor: pointer; }
+.mrow:hover .mx { opacity: 1; }
+.mrow .mx:hover { color: #ff6b6b; }
 .cmeta { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
 .badge { font-family: var(--font-mono); font-size: 10.5px; padding: 1px 6px; border: 1px solid var(--border); color: var(--text-muted); }
 .badge.kind { color: var(--accent); border-color: var(--accent); }
@@ -3381,6 +3627,66 @@ onBeforeUnmount(() => {
 .grprow .pgico { flex: none; display: inline-flex; color: var(--text-faint); }
 .grprow:hover .pgico, .grprow.sel .pgico { color: inherit; }
 .grprow .pgn { overflow: hidden; text-overflow: ellipsis; }
+/* 自定义星座（仿 STK Walker 生成器）：侧栏区 + 列表 */
+.ccsec { border-top: 1px solid var(--border); margin-top: 4px; padding-top: 4px; }
+.cchd { display: flex; align-items: center; justify-content: space-between; padding: 4px 12px; font-size: 11.5px; color: var(--text-muted); }
+.cchd .lnk { cursor: pointer; color: var(--accent); display: inline-flex; align-items: center; gap: 3px; }
+.cctip { padding: 2px 12px 6px; font-size: 11px; color: var(--text-faint); line-height: 1.5; }
+.ccrow { display: flex; align-items: center; gap: 6px; padding: 4px 12px; font-size: 12px; color: var(--text-muted); }
+.ccrow:hover { background: var(--surface-2); color: var(--text); }
+.ccrow.off { opacity: 0.5; }
+.ccrow.sel { background: var(--accent); color: var(--bg); }
+.ccrow.sel .cccode { color: var(--bg); opacity: 0.75; }
+.ccrow.sel .ccic { color: var(--bg); }
+.ccrow .ccdot { flex: none; width: 8px; height: 8px; border-radius: 50%; }
+.ccrow .ccnm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ccrow .cccode { flex: none; font-size: 10.5px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+.ccrow .ccic { flex: none; display: inline-flex; cursor: pointer; color: var(--text-faint); padding: 1px; }
+.ccrow .ccic:hover { color: var(--text); }
+.ccrow .ccic.del:hover { color: #ff6b6b; }
+/* 向导：预设条 + 汇总 */
+.ccpreset { display: flex; flex-wrap: wrap; gap: 4px; margin: 2px 0; }
+.ccpz { border: 1px solid var(--border); color: var(--text-muted); padding: 2px 7px; font-size: 11px; cursor: pointer; border-radius: 3px; }
+.ccpz:hover { border-color: var(--accent); color: var(--text); }
+.ccsum { margin-top: 10px; padding: 7px 9px; background: var(--surface-2); font-size: 11.5px; color: var(--text-muted); }
+.ccsum .cccode { color: var(--accent); font-weight: 600; }
+/* 内联生成/编辑面板（停靠式，地图保持可见 + 实时预览）；短标签左置、长标签上置，避免截断 */
+.sview.editing { flex: 1; min-height: 0; }
+.cedit { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.cehd { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border); flex: none; }
+.cehd .ceback { display: inline-flex; align-items: center; gap: 1px; color: var(--text-muted); cursor: pointer; font-size: 12px; }
+.cehd .ceback:hover { color: var(--text); }
+.cehd .cetitle { font-size: 12.5px; color: var(--text); font-weight: 600; }
+.cehd .celive { margin-left: auto; font-size: 10px; color: var(--accent); letter-spacing: .3px; }
+.cebody { flex: 1; min-height: 0; overflow-y: auto; padding: 10px 12px; }
+.cesec { margin: 13px 0 8px; padding-top: 9px; border-top: 1px solid var(--border); color: var(--text-muted); font-size: 11px; }
+.cef { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.cef > label { width: 40px; flex: none; color: var(--text-muted); font-size: 12px; }
+.cef > .ci { flex: 1; min-width: 0; border: 1px solid var(--border); background: var(--bg); padding: 4px 7px; font-size: 12px; color: var(--text); outline: none; }
+.cef > .u { flex: none; width: 16px; color: var(--text-muted); font-size: 11px; }
+.cef > .clr { flex: 1; height: 24px; }
+.cefv { margin-bottom: 8px; }
+.cefv > label { display: block; color: var(--text-muted); font-size: 11.5px; margin-bottom: 3px; }
+.cefv .ceinp { display: flex; align-items: center; gap: 6px; }
+.cefv .ceinp > .ci { flex: 1; min-width: 0; border: 1px solid var(--border); background: var(--bg); padding: 4px 7px; font-size: 12px; color: var(--text); outline: none; }
+.cefv .ceinp > .u { flex: none; color: var(--text-muted); font-size: 11px; }
+.cetpf { display: flex; gap: 8px; margin-bottom: 8px; }
+.cetpf > div { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.cetpf small { color: var(--text-muted); font-size: 10.5px; }
+.cetpf .ci { width: 100%; box-sizing: border-box; border: 1px solid var(--border); background: var(--bg); padding: 4px 6px; font-size: 12px; color: var(--text); outline: none; }
+.seg3 { display: flex; flex: 1; }
+.seg3 > span { flex: 1; text-align: center; border: 1px solid var(--border); border-left-width: 0; padding: 4px 0; cursor: pointer; font-size: 12px; color: var(--text-muted); }
+.seg3 > span:first-child { border-left-width: 1px; }
+.seg3 > span.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+.seg3 > span:hover:not(.on) { color: var(--text); }
+.ceread { margin-top: 13px; padding: 8px 10px; background: var(--surface-2); }
+.ceread .crcode { color: var(--accent); font-weight: 600; font-size: 13px; font-variant-numeric: tabular-nums; }
+.ceread .crsub { color: var(--text-muted); font-size: 11px; margin-top: 3px; line-height: 1.5; }
+.ceread .crwarn { color: #e0a030; font-size: 11px; margin-top: 4px; line-height: 1.5; }
+.cefoot { display: flex; gap: 10px; padding: 10px 12px; border-top: 1px solid var(--border); flex: none; }
+.cefoot .cancel { margin-left: auto; color: var(--text-muted); border: 1px solid var(--border); padding: 4px 14px; cursor: pointer; font-size: 12px; }
+.cefoot .cancel:hover { color: var(--text); }
+.cefoot .save { background: var(--accent); color: #fff; padding: 4px 18px; cursor: pointer; font-size: 12px; }
 /* 面板停靠形态：占满侧栏宽度、去左缘边框，滚动交给侧栏整体 */
 .cov-side.docked { width: auto; border-left: 0; overflow: visible; }
 .csh { display: flex; align-items: stretch; border-bottom: 1px solid var(--border); }
