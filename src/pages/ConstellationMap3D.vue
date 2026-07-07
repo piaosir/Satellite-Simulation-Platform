@@ -24,6 +24,7 @@ import { useGrdCoverage } from '../viz/grd/useGrdCoverage.js'
 import { usePerfTable } from '../viz/grd/usePerfTable.js'
 import { useGridSelect } from '../viz/grd/useGridSelect.js'
 import sat from '../viz/constellation/satellite.js'
+import { sampleOrbitAdaptive } from '../viz/constellation/adaptiveSample.js'
 import * as W from '../viz/wgs84.js'
 import { parseOMMCsv, fetchGroupLiveOrSup } from '../viz/constellation/tle.js'
 
@@ -80,8 +81,11 @@ let provincesData = null
 const showCities = ref(false)   // 显示中国地级市界 / 地级市名（默认关）
 let citiesLoaded = false
 let citiesData = null
-const timeOffset = ref(0)   // 分钟，0~1440（未来 24h）
-const timePct = ref(0)
+const timeOffset = ref(0)        // 分钟：游标(查看时刻)相对锚点的偏移，可负=过去
+const windowMin = ref(4320)      // 可见时间窗跨度(分钟)，用户可配(预设下拉/滚轮缩放)，持久化
+const winStartMin = ref(-1080)   // 窗口左边缘相对锚点的偏移(分钟)，负=含过去；= -PAST_FRAC*windowMin
+const trackWidthPx = ref(600)    // 时间轴轨道像素宽(ResizeObserver 驱动，供刻度自适应)
+const nowStamp = ref(Date.now()) // 真实当前时刻(每次刷新更新)，用于「此刻」红标记
 const keyword = ref('')
 const searchResults = ref([])
 const selected = ref(null)
@@ -433,11 +437,11 @@ let scene = null
 let entries = []        // 全部 {rec, name, noradId, group}
 let renderEntries = []  // 有效卫星集，与点云顺序一致
 let selEntry = null
-let baseTime = Date.now()
-let timer = null, ro = null
+const baseTime = ref(Date.now())   // 时间轴锚点：冻结时不变，实时时每 tick 跟随系统时钟
+let timer = null, ro = null, trackRo = null
 let pendingNorad = null, pendingNoFace = false
 
-function calcAt() { return live.value ? new Date() : new Date(baseTime + timeOffset.value * 60000) }
+function calcAt() { return live.value ? new Date() : new Date(baseTime.value + timeOffset.value * 60000) }
 
 const curKey = () => GROUPS[groupIndex.value].key
 const fmtSlot = (lonDeg) => { const v = ((lonDeg % 360) + 540) % 360 - 180; return `${Math.abs(v).toFixed(1)}°${v >= 0 ? 'E' : 'W'}` }
@@ -479,24 +483,17 @@ function buildSelectedGeometry() {
   if (!selEntry || !scene) return
   const rec = selEntry.rec
   const now = calcAt(), gmstNow = sat.gstime(now)
-  const periodMin = (2 * Math.PI) / rec.no, N = 120
+  const periodMin = (2 * Math.PI) / rec.no
 
-  // 轨道圈：一个周期内逐点，统一用 now 的 gmst 冻结成当前朝向
-  const orbit = []
-  for (let k = 0; k <= N; k++) {
-    const t = new Date(now.getTime() + (k / N) * periodMin * 60000)
-    const pv = sat.propagate(rec, t)
-    if (pv && pv.position) { const gd = sat.eciToGeodetic(pv.position, gmstNow); orbit.push({ lat: sat.degreesLat(gd.latitude), lon: sat.degreesLong(gd.longitude), altKm: gd.height }) }
-  }
+  // 一个周期自适应采样（大椭圆轨道近地点段自动加密，近圆轨道等价于均匀 120 点），轨道圈与轨迹共用
+  const samples = sampleOrbitAdaptive(rec, now, periodMin)
+  // 轨道圈：统一用 now 的 gmst 冻结成当前朝向
+  const orbit = samples.map((s) => {
+    const gd = sat.eciToGeodetic(s.pv.position, gmstNow)
+    return { lat: sat.degreesLat(gd.latitude), lon: sat.degreesLong(gd.longitude), altKm: gd.height }
+  })
   // 星下点轨迹：逐时刻 gmst -> 真实地表轨迹
-  const track = []
-  for (let k = 0; k <= N; k++) {
-    const t = new Date(now.getTime() + (k / N) * periodMin * 60000)
-    const pv = sat.propagate(rec, t)
-    if (!pv || !pv.position) continue
-    const gd = sat.eciToGeodetic(pv.position, sat.gstime(t))
-    track.push({ lat: sat.degreesLat(gd.latitude), lon: sat.degreesLong(gd.longitude) })
-  }
+  const track = samples.map((s) => ({ lat: s.lat, lon: s.lon }))
   scene.setOrbit(orbit)
   scene.setGroundTrack(track)
   selTrack = track            // 缓存星下点轨迹，供 2D 平面图同步绘制
@@ -583,7 +580,8 @@ function rebuildRenderSet() {
 // 时间推进 / 实时刷新：只重算渲染集位置（不重建集合），并刷新选中几何/信息卡
 function refreshPositions() {
   if (!scene) return
-  if (live.value) nowTick.value++   // 驱动时间条实时时钟逐秒刷新
+  nowStamp.value = Date.now()                                          // 「此刻」红标记参考
+  if (live.value) { nowTick.value++; baseTime.value = nowStamp.value }  // 实时：时钟自增 + 锚点随系统时钟滑动
   if (curKey() === 'none' || !renderEntries.length) { scene.setSatellites([]); shownCount.value = 0; pushFocusSat(); if (hasLinkedElev()) redrawSats(); grd.tickLive(); return }
   const now = calcAt(), gmst = sat.gstime(now)
   const positions = []
@@ -769,7 +767,41 @@ function resetBeam() { beamAuto.value = '' }
 function refreshFootprint() { if (selEntry) { const now = calcAt(); buildFootprint(selEntry.rec, now, sat.gstime(now)) } }
 function onBeam(e) { beam.value = e.target.value; refreshFootprint() }
 function onElevMin(e) { elevMin.value = e.target.value; refreshFootprint() }
-function setFpMode(m) { if (fpMode.value !== m) { fpMode.value = m; refreshFootprint() } }
+// 波束全锥角 B(°) ↔ 最低仰角 ε(°)：同一覆盖圈的两种参数化，由卫星高度 h 唯一对应。
+//   sin(B/2) = (RE/r)·cos ε，r=RE+h；B/2 ≥ asin(RE/r)（地平）时 ε=0。切换定义方式时按此换算，覆盖圈不变。
+function selAltKm() {
+  if (!selEntry) return null
+  const now = calcAt(); const pv = sat.propagate(selEntry.rec, now)
+  if (!pv || !pv.position) return null
+  const gd = sat.eciToGeodetic(pv.position, sat.gstime(now))
+  return gd.height > 0 ? gd.height : null
+}
+function beamToElevDeg(Bdeg, h) {
+  const x = ((RE + h) / RE) * Math.sin((Bdeg / 2) * DEG)
+  return x >= 1 ? 0 : Math.acos(clamp(x, -1, 1)) / DEG          // 达/超地平 → ε=0
+}
+function elevToBeamDeg(eDeg, h) {
+  return 2 * Math.asin(clamp((RE / (RE + h)) * Math.cos(eDeg * DEG), -1, 1)) / DEG
+}
+// 切换波束角/最低仰角：用聚焦星当前高度把当前值换算到另一参数，二者始终描述同一覆盖圈
+function setFpMode(m) {
+  if (fpMode.value === m) return
+  const h = selAltKm()
+  if (h != null) {
+    const bMax = 2 * Math.asin(clamp(RE / (RE + h), -1, 1)) / DEG
+    if (m === 'elev') {
+      const b = parseFloat(beam.value)
+      const Bdeg = b > 0 ? Math.min(b, bMax) : bMax             // beam 空=对地全视场=地平
+      elevMin.value = beamToElevDeg(Bdeg, h).toFixed(1)
+    } else {
+      const ev = parseFloat(elevMin.value)
+      const e = ev >= 0 && ev < 90 ? ev : 0
+      beam.value = e <= 0 ? '' : elevToBeamDeg(e, h).toFixed(1)  // ε=0 → 全视场，回落到「自动」空值
+    }
+  }
+  fpMode.value = m
+  refreshFootprint()
+}
 function toggleBeamLock() { beamLock.value = !beamLock.value }
 // 聚焦图例文案：标注当前覆盖圈的定义方式与取值，截图脱离 UI 也自明
 const fpLegend = computed(() => {
@@ -780,42 +812,127 @@ const fpLegend = computed(() => {
 
 // ===================== 时间轴 =====================
 const track = ref(null)
-// 文字刻度（0~1440 分钟＝未来 24h）：与小程序时间轴一致的整点标记
-const timeTicks = [
-  { min: 0, label: '此刻' },
-  { min: 360, label: '+6h' },
-  { min: 720, label: '+12h' },
-  { min: 1080, label: '+18h' },
-  { min: 1440, label: '+24h' }
-]
-// 刻度文字定位：首尾贴边、其余居中，避免溢出轨道两端
-function tickStyle(min) {
-  const tf = min === 0 ? 'translateX(0)' : min === 1440 ? 'translateX(-100%)' : 'translateX(-50%)'
-  return { left: min / 14.4 + '%', transform: tf }
+// —— 可配置时间窗 + 自适应刻度尺（参考 Cesium Timeline / DAW scrubber）——
+const PAST_FRAC = 0.25                                   // 窗口内展示的「过去」占比（可回看过去）
+const WIN_MIN = 10, WIN_MAX = 43200                      // 跨度上下限：10min ~ 30 天
+const WINDOW_PRESETS = [{ v: 360, l: '6h' }, { v: 720, l: '12h' }, { v: 1440, l: '24h' }, { v: 4320, l: '3d' }, { v: 10080, l: '7d' }]   // 时间窗预设
+const NICE = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 14400, 21600, 43200, 86400, 172800, 345600, 604800]   // 「整齐」刻度阶梯(秒)
+const _mod = (x, y) => x - y * Math.round(x / y)
+function fmtTick(ms, wMin) {
+  const d = new Date(ms), p = (n) => String(n).padStart(2, '0')
+  const mid = d.getHours() === 0 && d.getMinutes() === 0 && d.getSeconds() === 0
+  if (wMin > 5760) return `${p(d.getMonth() + 1)}-${p(d.getDate())}`                                                           // >4 天：只显日期
+  if (wMin > 120) return mid ? `${p(d.getMonth() + 1)}-${p(d.getDate())}` : `${p(d.getHours())}:${p(d.getMinutes())}`          // 2h~4 天：整日显日期，否则 HH:MM
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`                                                        // ≤2h：HH:MM:SS
 }
+// 自适应刻度：日历阶梯 + 每~80px 一主刻度 + 对齐整点整日 + 主/次两级 + 标签防重叠（左→右贪心抽稀）
+function computeTicks(anchorMs, wStart, wMin, trackPx) {
+  const span = wMin * 60, leftMs = anchorMs + wStart * 60000
+  const d = new Date(leftMs), epoch = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() / 1000   // 以左边缘所在日午夜为对齐基准
+  const start = leftMs / 1000 - epoch, end = start + span
+  const ideal = span / Math.max(1, trackPx / 80)
+  const main = NICE.find((s) => s >= ideal) || NICE[NICE.length - 1]
+  const mi = NICE.indexOf(main)
+  let sub = 0
+  for (let i = mi - 1; i >= 0; i--) if (Math.abs(_mod(main, NICE[i])) < 1e-6) { sub = NICE[i]; break }
+  const pxOf = (t) => trackPx * (t - start) / span
+  const minor = [], major = [], labels = []
+  for (let t = Math.ceil(start / main) * main; t <= end + 1e-6; t += main) {
+    major.push({ x: pxOf(t) }); labels.push({ x: pxOf(t), label: fmtTick((epoch + t) * 1000, wMin) })
+  }
+  if (sub && trackPx * (sub / span) >= 6) {
+    for (let t = Math.ceil(start / sub) * sub; t <= end + 1e-6; t += sub) { if (Math.abs(_mod(t, main)) < 1e-6) continue; minor.push({ x: pxOf(t) }) }
+  }
+  const outL = []; let lastRight = -1e9
+  for (const l of labels) {
+    const w = l.label.length * 6.6
+    if (l.x - w / 2 > lastRight) {
+      lastRight = l.x - w / 2 + w + 6
+      outL.push({ x: l.x, label: l.label, align: l.x < w / 2 ? 'translateX(0)' : l.x > trackPx - w / 2 ? 'translateX(-100%)' : 'translateX(-50%)' })
+    }
+  }
+  return { minor, major, labels: outL }
+}
+const ticks = computed(() => { void nowTick.value; return computeTicks(baseTime.value, winStartMin.value, windowMin.value, trackWidthPx.value) })
+const winEndMin = computed(() => winStartMin.value + windowMin.value)
+const timePct = computed(() => clamp((timeOffset.value - winStartMin.value) / windowMin.value, 0, 1) * 100)   // 游标位置(%)
+const nowPct = computed(() => { void nowTick.value; return ((nowStamp.value - baseTime.value) / 60000 - winStartMin.value) / windowMin.value * 100 })
+const nowInWin = computed(() => !live.value && nowPct.value >= 0 && nowPct.value <= 100)   // 实时时游标即此刻，不另画红线
+const isCustomWindow = computed(() => !WINDOW_PRESETS.some((w) => w.v === windowMin.value))
+function fmtSpan(min) {
+  if (min >= 1440) { const d = Math.floor(min / 1440), rh = Math.round((min - d * 1440) / 60); return rh ? `${d}d${rh}h` : `${d}d` }
+  const h = Math.floor(min / 60), m = min % 60; return h ? (m ? `${h}h${m}m` : `${h}h`) : `${m}m`
+}
+const customWinLabel = computed(() => fmtSpan(windowMin.value))
+
+// 悬停幽灵线 + 时间气泡（落点前先预览该处对应时间）
+const hoverShow = ref(false), hoverX = ref(0), hoverLabel = ref('')
+function onHover(e) {
+  if (!track.value) return
+  const r = track.value.getBoundingClientRect(), x = clamp(e.clientX - r.left, 0, r.width), f = r.width ? x / r.width : 0
+  const dd = new Date(baseTime.value + (winStartMin.value + f * windowMin.value) * 60000), p = (n) => String(n).padStart(2, '0')
+  hoverX.value = x; hoverLabel.value = `${p(dd.getMonth() + 1)}-${p(dd.getDate())} ${p(dd.getHours())}:${p(dd.getMinutes())}:${p(dd.getSeconds())}`; hoverShow.value = true
+}
+function onLeave() { hoverShow.value = false }
+
 function trackToMin(clientX) {
   const r = track.value.getBoundingClientRect()
-  return Math.round(clamp01((clientX - r.left) / r.width) * 1440)
+  return Math.round(winStartMin.value + clamp01((clientX - r.left) / r.width) * windowMin.value)
 }
-// 拖拽/点击时间轴（监听挂 document，移出轨道仍连续）；实时中照常可拖，applyTime 会静默退出实时
+// 拖动游标(查看时刻)；pointer 监听挂 document，移出轨道仍连续；实时中照常可拖，applyTime 会静默退出实时
 function trackDown(e) {
   if (!track.value) return
+  track.value.focus()
   applyTime(trackToMin(e.clientX))
   const move = (ev) => applyTime(trackToMin(ev.clientX))
-  const up = () => { document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up) }
-  document.addEventListener('mousemove', move); document.addEventListener('mouseup', up)
+  const up = () => { document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', up) }
+  document.addEventListener('pointermove', move); document.addEventListener('pointerup', up)
 }
 function applyTime(v) {
-  timeOffset.value = clamp(v, 0, 1440); timePct.value = timeOffset.value / 1440 * 100
-  if (live.value) { live.value = false; if (timer) { clearInterval(timer); timer = null } baseTime = Date.now() }
+  timeOffset.value = clamp(v, winStartMin.value, winEndMin.value)
+  if (live.value) { live.value = false; if (timer) { clearInterval(timer); timer = null } baseTime.value = Date.now() }
   refreshPositions()
 }
 function step(min) { applyTime((timeOffset.value || 0) + min) }
-function resetTime() { if (!timeOffset.value && !live.value) return; baseTime = Date.now(); applyTime(0) }
+// 键盘(role=slider)：←→步进(Shift 大步)，PageUp/Down ±1h，Home/End 跳窗口两端
+function onTrackKey(e) {
+  let h = true
+  if (e.key === 'ArrowLeft') step(e.shiftKey ? -60 : -1)
+  else if (e.key === 'ArrowRight') step(e.shiftKey ? 60 : 1)
+  else if (e.key === 'PageDown') step(-60)
+  else if (e.key === 'PageUp') step(60)
+  else if (e.key === 'Home') applyTime(winStartMin.value)
+  else if (e.key === 'End') applyTime(winEndMin.value)
+  else h = false
+  if (h) e.preventDefault()
+}
+// 滚轮缩放跨度：以光标处时间为锚保持不动（实时态则保持「此刻」居 PAST_FRAC 处）
+function onWheel(e) {
+  if (!track.value || !e.deltaY) return
+  const r = track.value.getBoundingClientRect(), f = clamp01((e.clientX - r.left) / r.width)
+  const cursorOff = winStartMin.value + f * windowMin.value
+  windowMin.value = Math.round(clamp(windowMin.value * (e.deltaY > 0 ? 1.15 : 1 / 1.15), WIN_MIN, WIN_MAX))
+  winStartMin.value = live.value ? -Math.round(PAST_FRAC * windowMin.value) : Math.round(cursorOff - f * windowMin.value)
+  timeOffset.value = clamp(timeOffset.value, winStartMin.value, winEndMin.value)
+  saveSettings(); refreshPositions()
+}
+// 预设/自定义跨度：窗口居中重置（含 PAST_FRAC 过去），游标夹入新范围
+function setWindow(min) {
+  windowMin.value = clamp(Math.round(min), WIN_MIN, WIN_MAX)
+  winStartMin.value = -Math.round(PAST_FRAC * windowMin.value)
+  timeOffset.value = clamp(timeOffset.value, winStartMin.value, winEndMin.value)
+  saveSettings(); refreshPositions()
+}
+function resetTime() {
+  if (!timeOffset.value && !live.value) return
+  baseTime.value = Date.now(); winStartMin.value = -Math.round(PAST_FRAC * windowMin.value); applyTime(0)
+}
 function toggleLive() {
   live.value = !live.value
-  if (live.value) { timeOffset.value = 0; timePct.value = 0; if (!timer) timer = setInterval(refreshPositions, 1000); refreshPositions() }   // 进实时：滑块归位「此刻」
-  else { if (timer) { clearInterval(timer); timer = null } baseTime = Date.now(); timeOffset.value = 0; timePct.value = 0; refreshPositions() }   // 退实时：冻结在当前时刻
+  winStartMin.value = -Math.round(PAST_FRAC * windowMin.value); timeOffset.value = 0; baseTime.value = Date.now()
+  if (live.value) { if (!timer) timer = setInterval(refreshPositions, 1000) }
+  else if (timer) { clearInterval(timer); timer = null }
+  refreshPositions()
 }
 function toggleRotate() { autoRotate.value = !autoRotate.value; scene && scene.setAutoRotate(autoRotate.value) }
 function setNameMode(m) { nameMode.value = m; scene && scene.setLabelMode(m); if (flat) flat.setNameMode(m) }
@@ -1579,19 +1696,24 @@ function removeSat(node) { grd.removeSatellite(node.folder); redrawSats() }
 
 // ===== 轨道根数模拟星：用经典根数自建 satrec，复用 SGP4 引擎自行解算（不并入真实星座 entries）=====
 const MU = 398600.4418   // 地球引力常数 km^3/s^2
-// 经典轨道根数 → satrec（复用 omm2satrec；历元取当前时刻）。elements 角度单位 °，altKm 视作近地点高度（圆轨道 e=0 即轨道高度）。
+// 星座共享历元：整个会话固定一个历元锚点，所有轨道根数模拟星都用它（不再逐星取 new Date()）。
+//   SGP4 里平近点角/RAAN 从各星自身历元起算；逐星历元差 Δt 会给相对相位注入 n·Δt（550km 处约 0.06°/s，
+//   1 分钟差≈3.8°、1 小时差≈228°，Walker 相对相位即被破坏）。全星共享同一历元 → 相对相位/相对 RAAN 精确保持，
+//   绝对值取什么无所谓（整座星座只是刚性同步旋转）。刻意独立于 baseTime（后者进出实时会被重置）。
+const SIM_EPOCH = new Date().toISOString()
+// 经典轨道根数 → satrec（复用 omm2satrec；历元取共享锚点 SIM_EPOCH）。elements 角度单位 °，altKm 视作近地点高度（圆轨道 e=0 即轨道高度）。
 function elementsToSatrec(el) {
   const ecc = Math.max(0, Math.min(0.999, Number(el.ecc) || 0))
   const a = (RE + (Number(el.altKm) || 0)) / (1 - ecc)   // 半长轴：a=(RE+hp)/(1-e)
   const n = Math.sqrt(MU / (a * a * a))                  // 平均运动 rad/s
   const meanMotion = 86400 * n / (2 * Math.PI)           // rev/day（omm2satrec 所需）
   return sat.omm2satrec({
-    noradId: 'SIM', epoch: new Date().toISOString(),
+    noradId: 'SIM', epoch: SIM_EPOCH,
     meanMotion, ecc, incl: Number(el.incl) || 0, raan: Number(el.raan) || 0,
     argp: Number(el.argp) || 0, ma: Number(el.ma) || 0, bstar: 0, mdot: 0, mddot: 0
   })
 }
-// 模拟星 satrec 缓存：根数签名不变则复用（历元随之冻结 → 同一会话内相位连续；改根数/重载时重建）
+// 模拟星 satrec 缓存：根数签名不变则复用（改根数触发重建，但历元仍取共享 SIM_EPOCH，相位不跳变）
 const customSatrecs = new Map()   // folder -> { sig, rec }
 function orbitSatrec(node) {
   const sig = JSON.stringify(node.elements)
@@ -1894,8 +2016,9 @@ const timeParts = computed(() => {
   const d = calcAt()
   const dt = `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
   if (!timeOffset.value) return { m: '此刻', s: dt }
-  const oh = Math.floor(timeOffset.value / 60), om = timeOffset.value % 60
-  return { m: `+${oh}h${p(om)}m`, s: dt }
+  const sgn = timeOffset.value < 0 ? '−' : '+', mm = Math.abs(timeOffset.value)
+  const oh = Math.floor(mm / 60), om = mm % 60
+  return { m: `${sgn}${oh}h${p(om)}m`, s: dt }
 })
 
 // ===================== 持久化（记住分组 + 选中星） =====================
@@ -1942,7 +2065,7 @@ function deserializeCov(items) {
 }
 function snapshot() {
   return {
-    nameMode: nameMode.value, countryName: countryNameSize.value, provName: provNameSize.value, cityName: cityNameSize.value, showProvinces: showProvinces.value, showCities: showCities.value, borderStyle: { ...borderStyle }, labelStyle: { ...labelStyle }, oceanColor: oceanColor.value, landScheme: landScheme.value, landOverrides: { ...landOverrides }, autoRotate: autoRotate.value, autoRotateSpeed: viewPrefs.autoRotateSpeed, live: live.value, beamLock: beamLock.value, fpMode: fpMode.value, beam: beam.value, elevMin: elevMin.value,
+    nameMode: nameMode.value, countryName: countryNameSize.value, provName: provNameSize.value, cityName: cityNameSize.value, showProvinces: showProvinces.value, showCities: showCities.value, borderStyle: { ...borderStyle }, labelStyle: { ...labelStyle }, oceanColor: oceanColor.value, landScheme: landScheme.value, landOverrides: { ...landOverrides }, autoRotate: autoRotate.value, autoRotateSpeed: viewPrefs.autoRotateSpeed, live: live.value, beamLock: beamLock.value, fpMode: fpMode.value, beam: beam.value, elevMin: elevMin.value, windowMin: windowMin.value,
     mkPt: markPtFont.value, mkStIcon: stIconSize.value, mkStFont: stFontSize.value, mkPtDot: markPtDot.value, mkTrajDot: trajDotSize.value,
     mkPtShow: showPtLabel.value, mkStShow: showStName.value,
     mkPtLayer: showPtLayer.value, mkStLayer: showStLayer.value, mkTrajLayer: showTrajLayer.value,
@@ -1994,6 +2117,7 @@ async function restoreSettings() {
   if (s.fpMode === 'elev') fpMode.value = 'elev'
   if (typeof s.beam === 'string') beam.value = s.beam
   if (typeof s.elevMin === 'string') elevMin.value = s.elevMin
+  if (Number.isFinite(s.windowMin)) { windowMin.value = clamp(Math.round(s.windowMin), WIN_MIN, WIN_MAX); winStartMin.value = -Math.round(PAST_FRAC * windowMin.value) }
   if (typeof s.polyOpen === 'boolean') polyOpen.value = s.polyOpen
   // 省界/市界开关：默认开，存档里的显式 false 也要恢复；数据加载统一走挂载尾部的 ensureProvinces/ensureCities
   if (typeof s.showProvinces === 'boolean') showProvinces.value = s.showProvinces
@@ -2099,6 +2223,7 @@ onMounted(async () => {
   loadMarkers(); syncMarkers()
   loadPolys()   // Polygon（协调区多边形）：随后 redrawSats() 一并绘制
   ro = new ResizeObserver(() => { if (scene) scene.resize(); if (flat && flatView.value) flat.resize() }); ro.observe(el.value)
+  if (track.value) { trackWidthPx.value = track.value.clientWidth || 600; trackRo = new ResizeObserver(() => { if (track.value) trackWidthPx.value = track.value.clientWidth || trackWidthPx.value }); trackRo.observe(track.value) }   // 轨道宽 → 刻度自适应
 
   // 恢复上次分组 + 选中星
   try {
@@ -2132,7 +2257,7 @@ onBeforeUnmount(() => {
   if (flatCanvas.value) flatCanvas.value.removeEventListener('pointerup', saveView)
 
   clearGrdBridge()   // 离开 3D 页：注销文件管理器对活树/导出器的引用
-  cursor.ll = null; if (timer) clearInterval(timer); if (ro) ro.disconnect(); if (flat) flat.destroy(); if (scene) { scene.clearCoverage(); scene.destroy() }
+  cursor.ll = null; if (timer) clearInterval(timer); if (ro) ro.disconnect(); if (trackRo) trackRo.disconnect(); if (flat) flat.destroy(); if (scene) { scene.clearCoverage(); scene.destroy() }
 })
 </script>
 
@@ -2173,6 +2298,25 @@ onBeforeUnmount(() => {
             <div class="row"><span class="k">海拔高度</span><span class="v">{{ selected.alt }}<i>km</i></span></div>
             <div class="row"><span class="k">对地速度</span><span class="v">{{ selected.speedRel }}<i>km/s</i></span></div>
             <div class="row"><span class="k">惯性速度</span><span class="v">{{ selected.speedAbs }}<i>km/s</i></span></div>
+          </div>
+
+          <div class="csec">覆盖圈</div>
+          <div class="covdef">
+            <span class="seg sm" role="group" aria-label="覆盖圈定义">
+              <span class="sg" :class="{ on: fpMode === 'beam' }" title="按星上波束角（全锥角）画覆盖圈" @click="setFpMode('beam')">波束角</span>
+              <span class="sg" :class="{ on: fpMode === 'elev' }" title="按地面最低仰角画覆盖圈（0°=地平线）" @click="setFpMode('elev')">最低仰角</span>
+            </span>
+            <span class="covin">
+              <template v-if="fpMode === 'beam'">
+                <input class="covi" :value="beam" :placeholder="beamAuto || '自动'" title="波束全锥角，空=对地全视场" @input="onBeam" />
+                <span class="covu">°</span>
+                <span class="covlock" :class="{ on: beamLock }" :title="beamLock ? '已锁定：超出该星上限不夹断' : '锁定：超出该星上限时不回写夹断值'" @click="toggleBeamLock"><Icon :name="beamLock ? 'lock' : 'lock-open'" :size="12" /></span>
+              </template>
+              <template v-else>
+                <input class="covi" :value="elevMin" placeholder="0" title="最低仰角，0°=地平线" @input="onElevMin" />
+                <span class="covu">°</span>
+              </template>
+            </span>
           </div>
 
           <div class="csec">轨道根数（开普勒）</div>
@@ -2721,40 +2865,37 @@ onBeforeUnmount(() => {
     <!-- 时间控制条：地图时间轴 + 实时徽标 + 覆盖圈定义（归属地图，置于地图正下方） -->
     <!-- 交互范式（YouTube LIVE / Cesium SYSTEM_CLOCK）：实时中时间轴与步进照常可用，操作即静默退出实时；徽标一键回实时 -->
     <div class="tl bottom">
-      <div class="tb-track" ref="track" @mousedown="trackDown">
-        <span v-for="t in timeTicks" :key="'k' + t.min" class="tb-tick" :style="{ left: t.min / 14.4 + '%' }"></span>
-        <div class="tb-bar"><div class="tb-fill" :style="{ width: timePct + '%' }"></div></div>
-        <div class="tb-knob" :class="{ lv: live }" :style="{ left: timePct + '%' }"></div>
-        <span v-for="t in timeTicks" :key="'m' + t.min" class="tb-mark" :style="tickStyle(t.min)">{{ t.label }}</span>
-      </div>
-      <span class="vsep"></span>
-      <span class="live-btn" :class="{ on: live }" :title="live ? '实时中（跟随系统时间）· 点击停在当前时刻' : '回到实时（跟随系统时间）'" @click="toggleLive"><span class="ldot"></span>实时</span>
-      <span class="tlab2"><span class="t1">{{ timeParts.m }}</span><span class="t2">{{ timeParts.s }}</span></span>
-      <span class="stg" role="group">
-        <span class="st" @click="step(-60)">−1h</span>
-        <span class="st" @click="step(-10)">−10m</span>
-        <span class="st" @click="step(-1)">−1m</span>
-        <span class="st now" :class="{ dis: !live && !timeOffset }" title="回到当前时刻（静止）" @click="resetTime">此刻</span>
-        <span class="st" @click="step(1)">+1m</span>
-        <span class="st" @click="step(10)">+10m</span>
-        <span class="st" @click="step(60)">+1h</span>
-      </span>
-      <span class="vsep"></span>
-      <span class="beamc">
-        <span class="seg fpseg">
-          <span class="sg" :class="{ on: fpMode === 'beam' }" title="按星上波束角（全锥角）画覆盖圈" @click="setFpMode('beam')">波束角</span>
-          <span class="sg" :class="{ on: fpMode === 'elev' }" title="按地面最低仰角画覆盖圈（0°=地平线）" @click="setFpMode('elev')">最低仰角</span>
+      <div class="tl-grp">
+        <span class="live-btn" :class="{ on: live }" :title="live ? '实时中（跟随系统时间）· 点击停在当前时刻' : '回到实时（跟随系统时间）'" @click="toggleLive"><span class="ldot"></span>实时</span>
+        <span class="seg sm wseg" role="group" aria-label="时间窗跨度" title="可见时间窗跨度（可回看过去 · 滚轮缩放）">
+          <span v-for="w in WINDOW_PRESETS" :key="w.v" class="sg" :class="{ on: windowMin === w.v }" @click="setWindow(w.v)">{{ w.l }}</span>
+          <span v-if="isCustomWindow" class="sg on cust" title="滚轮缩放得到的自定义跨度">{{ customWinLabel }}</span>
         </span>
-        <template v-if="fpMode === 'beam'">
-          <input class="bi" :disabled="!selected" :value="beam" :placeholder="selected ? (beamAuto || '自动') : '—'" :title="selected ? '波束全锥角，空=对地全视场' : '点击卫星后生效'" @input="onBeam" />
-          <span class="bu">°</span>
-          <span class="lock" :class="{ on: beamLock }" title="锁定：超出该星上限时不回写夹断值" @click="toggleBeamLock"><Icon :name="beamLock ? 'lock' : 'lock-open'" :size="12" /></span>
-        </template>
-        <template v-else>
-          <input class="bi" :disabled="!selected" :value="elevMin" :placeholder="selected ? '0' : '—'" :title="selected ? '最低仰角，0°=地平线' : '点击卫星后生效'" @input="onElevMin" />
-          <span class="bu">°</span>
-        </template>
-      </span>
+      </div>
+      <div class="tb-track" ref="track" tabindex="0" role="slider" aria-label="仿真时间游标"
+           :aria-valuemin="winStartMin" :aria-valuemax="winEndMin" :aria-valuenow="timeOffset" :aria-valuetext="timeParts.s"
+           @pointerdown="trackDown" @wheel.prevent="onWheel" @keydown="onTrackKey" @pointermove="onHover" @pointerleave="onLeave">
+        <div class="tb-base"></div>
+        <div v-for="(t, i) in ticks.minor" :key="'n' + i" class="tb-t min" :style="{ left: t.x + 'px' }"></div>
+        <div v-for="(t, i) in ticks.major" :key="'j' + i" class="tb-t maj" :style="{ left: t.x + 'px' }"></div>
+        <div v-for="(t, i) in ticks.labels" :key="'l' + i" class="tb-lab" :style="{ left: t.x + 'px', transform: t.align }">{{ t.label }}</div>
+        <div v-if="nowInWin" class="tb-now" :style="{ left: nowPct + '%' }"><span class="tag">此刻</span></div>
+        <div class="tb-ph" :class="{ lv: live }" :style="{ left: timePct + '%' }"><span class="hd"></span></div>
+        <div v-show="hoverShow" class="tb-ghost" :style="{ left: hoverX + 'px' }"></div>
+        <div v-show="hoverShow" class="tb-tip" :style="{ left: hoverX + 'px' }">{{ hoverLabel }}</div>
+      </div>
+      <div class="tl-grp">
+        <span class="tlab2"><span class="t1">{{ timeParts.m }}</span><span class="t2">{{ timeParts.s }}</span></span>
+        <span class="stg" role="group">
+          <span class="st" @click="step(-60)" title="后退 1 小时">−1h</span>
+          <span class="st" @click="step(-10)">−10m</span>
+          <span class="st" @click="step(-1)">−1m</span>
+          <span class="st now" :class="{ dis: !live && !timeOffset }" title="回到当前时刻" @click="resetTime">此刻</span>
+          <span class="st" @click="step(1)">+1m</span>
+          <span class="st" @click="step(10)">+10m</span>
+          <span class="st" @click="step(60)" title="前进 1 小时">+1h</span>
+        </span>
+      </div>
     </div>
 
     <!-- 卫星编辑弹窗（单独对话框）；点选模式下折叠为顶部横幅，便于点击地图上的卫星 -->
@@ -3111,50 +3252,54 @@ onBeforeUnmount(() => {
 .search .nm { font-size: 12.5px; }
 .search .sub { color: var(--text-faint); font-size: 11px; }
 .meta { margin-left: auto; color: var(--text-faint); }
-.tl { display: flex; align-items: center; gap: 10px; padding: 7px 14px 9px; border-bottom: 1px solid var(--border); flex: none; font-size: 11.5px; }
-/* 时间轴（同小程序样式）：自绘轨道 + 进度 + 圆点滑块 + 文字刻度 */
-.tb-track { position: relative; flex: 1; min-width: 180px; height: 30px; cursor: pointer; }
-.tb-bar { position: absolute; left: 0; right: 0; top: 9px; height: 3px; border-radius: 2px; background: var(--border-strong); }
-.tb-fill { height: 100%; border-radius: 2px; background: var(--accent); }
-.tb-knob { position: absolute; top: 4.5px; width: 12px; height: 12px; border-radius: 50%; background: var(--accent); transform: translateX(-50%); box-shadow: 0 0 0 2px var(--bg); }
-.tb-knob.lv { background: #e05252; }
-.tb-tick { position: absolute; top: 6px; width: 1px; height: 9px; background: var(--border-strong); transform: translateX(-50%); }
-.tb-mark { position: absolute; top: 17px; font-family: var(--font-mono); font-size: 10px; line-height: 1; color: var(--text-faint); white-space: nowrap; pointer-events: none; }
-/* 组间分隔：主要靠间距，仅在语义跨度最大的两处放 16px 细竖线（不通高，视觉轻） */
-.tl .vsep { width: 1px; height: 16px; background: var(--border-strong); flex: none; }
+.tl { display: flex; align-items: center; gap: 14px; padding: 6px 12px; border-bottom: 1px solid var(--border); flex: none; font-size: 11.5px; }
+/* 时间轴（专业刻度尺）：基线尺 + 主/次两级刻度 + 游标针(顶部握柄) + 悬停幽灵线 + 独立「此刻」标记 */
+.tb-track { position: relative; flex: 1; min-width: 180px; height: 34px; cursor: pointer; outline: none; }
+.tb-base { position: absolute; left: 0; right: 0; bottom: 3px; height: 1px; background: var(--border-strong); }
+.tb-t { position: absolute; bottom: 3px; width: 1px; transform: translateX(-0.5px); }
+.tb-t.maj { height: 11px; background: var(--text-muted); }
+.tb-t.min { height: 6px; background: var(--border-strong); }
+.tb-lab { position: absolute; top: 0; font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 10px; line-height: 1; color: var(--text-faint); white-space: nowrap; pointer-events: none; }
+.tb-ph { position: absolute; top: 0; bottom: 3px; width: 1.5px; transform: translateX(-0.75px); background: var(--accent); pointer-events: none; }
+.tb-ph .hd { position: absolute; top: -1px; left: 50%; transform: translateX(-50%); width: 0; height: 0; border-left: 4px solid transparent; border-right: 4px solid transparent; border-top: 6px solid var(--accent); }
+.tb-ph.lv { background: #e05252; }
+.tb-ph.lv .hd { border-top-color: #e05252; }
+.tb-now { position: absolute; top: 12px; bottom: 3px; width: 1px; transform: translateX(-0.5px); background: #e05252; pointer-events: none; }
+.tb-now .tag { position: absolute; top: -11px; left: 50%; transform: translateX(-50%); font-family: var(--font-mono); font-size: 10px; color: #e05252; white-space: nowrap; }
+.tb-ghost { position: absolute; top: 10px; bottom: 3px; width: 1px; transform: translateX(-0.5px); background: var(--text-faint); opacity: 0.5; pointer-events: none; }
+.tb-tip { position: absolute; top: -2px; transform: translate(-50%, -100%); background: var(--bg); border: 1px solid var(--border-strong); border-radius: 4px; padding: 1px 5px; font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 10px; color: var(--text); white-space: nowrap; pointer-events: none; z-index: 3; }
+/* 时间条分区（左：实时+跨度 / 中：刻度尺 flex:1 / 右：读数+步进）——留白分组，不用竖线堆砌 */
+.tl-grp { display: inline-flex; align-items: center; gap: 8px; flex: none; }
+.tl .wseg { font-family: var(--font-mono); }
+.tl .wseg .sg.cust { cursor: default; }
 /* 时间读数：双行定宽块（主行=时刻/偏移量，副行=日期时间），tabular-nums + min-width，拖动不抖、不参与伸缩 */
 .tlab2 { display: inline-flex; flex-direction: column; justify-content: center; min-width: 70px; flex: none; font-family: var(--font-mono); font-variant-numeric: tabular-nums; line-height: 1.25; }
 .tlab2 .t1 { font-size: 12px; color: var(--text); white-space: nowrap; }
 .tlab2 .t2 { font-size: 9.5px; color: var(--text-faint); white-space: nowrap; }
-/* 步进按钮组：共享外框 + 内部 1px 分隔线（segmented group，替代七个独立小边框） */
-.tl .stg { display: inline-flex; align-items: stretch; border: 1px solid var(--border); flex: none; }
-.tl .stg .st { padding: 4px 7px; cursor: pointer; color: var(--text-muted); font-size: 11px; line-height: 1; white-space: nowrap; user-select: none; }
-.tl .stg .st + .st { border-left: 1px solid var(--border); }
-.tl .stg .st:hover { background: var(--surface); color: var(--text); }
+/* 步进按钮组：共享外框(0.5px+圆角) + 内部细分隔线；hover 中性叠加(非 accent)、100ms 跟手 */
+.tl .stg { display: inline-flex; align-items: stretch; border: 0.5px solid var(--border); border-radius: 4px; overflow: hidden; flex: none; }
+.tl .stg .st { padding: 4px 7px; cursor: pointer; color: var(--text-muted); font-size: 11px; line-height: 1; white-space: nowrap; user-select: none; transition: background .12s ease, color .12s ease; }
+.tl .stg .st + .st { border-left: 0.5px solid var(--border); }
+.tl .stg .st:hover { background: color-mix(in srgb, var(--text) 8%, transparent); color: var(--text); }
+.tl .stg .st:active { background: color-mix(in srgb, var(--text) 14%, transparent); }
 .tl .stg .st.now { color: var(--text); }
-.tl .stg .st.dis { opacity: 0.4; pointer-events: none; }
-/* 实时徽标（YouTube LIVE 范式）：红=跟随系统时间（点击停在当前时刻），灰=点击一键回实时 */
-.tl .live-btn { display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px; border: 1px solid var(--border); cursor: pointer; color: var(--text-muted); user-select: none; flex: none; white-space: nowrap; }
+.tl .stg .st.dis { color: var(--text-faint); pointer-events: none; }
+/* 实时徽标：红=跟随系统时间(点击停在当前时刻)、灰=点击回实时；红仅此一处语义 */
+.tl .live-btn { display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px; border: 0.5px solid var(--border); border-radius: 4px; cursor: pointer; color: var(--text-muted); user-select: none; flex: none; white-space: nowrap; transition: color .12s ease, border-color .12s ease; }
 .tl .live-btn:hover { border-color: var(--border-strong); color: var(--text); }
 .tl .live-btn .ldot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-faint); flex: none; }
 .tl .live-btn.on { color: #e05252; border-color: color-mix(in srgb, #e05252 55%, transparent); }
-.tl .live-btn.on .ldot { background: #e05252; animation: live-pulse 1.6s ease-in-out infinite; }
+.tl .live-btn.on .ldot { background: #e05252; animation: live-pulse 2s ease-in-out infinite; }
 @keyframes live-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(224, 82, 82, 0.4); } 50% { box-shadow: 0 0 0 4px rgba(224, 82, 82, 0); } }
-.tl .beamc { display: inline-flex; align-items: center; gap: 5px; flex: none; }
-.tl .fpseg .sg { padding: 3px 7px; font-size: 11px; line-height: 1; white-space: nowrap; }
-.tl .bi { width: 42px; border: 0; border-bottom: 1px solid var(--border-strong); background: transparent; outline: none; color: var(--text); font-size: 11.5px; font-variant-numeric: tabular-nums; }
-.tl .bi:disabled { opacity: 0.4; cursor: not-allowed; border-bottom-color: var(--border); }
-.tl .bu { color: var(--text-muted); }
-.tl .lock { cursor: pointer; display: inline-flex; align-items: center; }
 /* 时间控制条置于地图正下方：分隔线换到上缘 */
-.tl.bottom { border-bottom: 0; border-top: 1px solid var(--border); container-type: inline-size; }
+.tl.bottom { border-bottom: 0; border-top: 1px solid var(--border); background: var(--surface); container-type: inline-size; }
 /* 窄容器（侧栏挤压）优雅降级：收紧内边距/竖线/时间轴下限，保证「最低仰角」输入始终可见 */
 @container (max-width: 880px) {
-  .tl .vsep { display: none; }
+  .tl { gap: 10px; }
+  .tl-grp { gap: 6px; }
   .tl .tb-track { min-width: 130px; }
+  .tl .tb-t.min { display: none; }
   .tl .stg .st { padding: 4px 5px; }
-  .tl .fpseg .sg { padding: 3px 5px; }
-  .tl .bi { width: 36px; }
 }
 .mini { padding: 3px 10px; border: 1px solid var(--border); cursor: pointer; color: var(--text-muted); font-size: 12px; }
 .mini.on { color: var(--text); border-color: var(--accent); }
@@ -3205,6 +3350,15 @@ onBeforeUnmount(() => {
 .row .k em { font-style: italic; font-family: var(--font-serif); color: var(--accent); margin-left: 3px; font-size: 12.5px; }
 .row .v { font-family: var(--font-mono); color: var(--text); white-space: nowrap; text-align: right; }
 .row .v i { font-style: normal; color: var(--text-faint); font-size: 10.5px; margin-left: 3px; }
+/* 卡片「覆盖圈」小节：分段(波束角/最低仰角) + 数值输入 + ° 后缀 + 锁 */
+.covdef { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.covin { display: inline-flex; align-items: center; gap: 4px; flex: none; }
+.covi { width: 52px; border: 0; border-bottom: 1px solid var(--border-strong); background: transparent; outline: none; color: var(--text); font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 12px; text-align: right; padding: 1px 0; }
+.covi:focus { border-bottom-color: var(--accent); }
+.covu { color: var(--text-faint); font-size: 11px; }
+.covlock { cursor: pointer; display: inline-flex; align-items: center; color: var(--text-faint); transition: color .12s ease; }
+.covlock:hover { color: var(--text-muted); }
+.covlock.on { color: var(--accent); }
 
 /* 覆盖图：右侧停靠面板（挤压地球，独占右栏） */
 /* 右侧边栏：与「设置弹窗」一致——surface 底色、统一表头/分区内边距与标题字号 */

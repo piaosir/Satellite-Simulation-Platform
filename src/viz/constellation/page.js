@@ -6,6 +6,7 @@
 // 卫星 ECI 先经 eciToEcf(gmstNow) 转到地固系，再 ecef[x,y,z] -> render[x, z, -y]，与海岸线天然对齐。
 
 import sat from './satellite.js';
+import { sampleOrbitAdaptive } from './adaptiveSample.js';
 import COASTLINE from './coastline-lo.js';            // 海岸线 ~10.5k（= ISL 1:50m）
 import * as tleStore from './tle.js';                 // 桌面端 TLE 层（直连 CelesTrak，无云存储）
 import * as W from '../wgs84.js';                     // WGS84 几何（足迹圈按椭球求边）
@@ -637,26 +638,18 @@ const PAGE = {
     const rec = this._recs[idx];
     if (!rec) return;
     const periodMin = (2 * Math.PI) / rec.no; // rec.no: rad/min
-    const N = 120;
 
-    // 轨道圈线：一个周期内逐点，全部用 now 时刻的 gmst 旋转 -> 冻结成当前时刻的轨道环
-    const orbit = [];
-    for (let k = 0; k <= N; k++) {
-      const t = new Date(now.getTime() + (k / N) * periodMin * 60000);
-      const pv = sat.propagate(rec, t);
-      if (pv && pv.position) orbit.push(ecefToRender(sat.eciToEcf(pv.position, gmstNow)));
-    }
+    // 一个周期自适应采样（大椭圆轨道近地点段自动加密，近圆轨道等价于均匀 120 点），轨道圈与轨迹共用
+    const samples = sampleOrbitAdaptive(rec, now, periodMin);
+
+    // 轨道圈线：全部用 now 时刻的 gmst 旋转 -> 冻结成当前时刻的轨道环
+    const orbit = samples.map((s) => ecefToRender(sat.eciToEcf(s.pv.position, gmstNow)));
 
     // 星下点轨迹：逐时刻 gmst -> 真实地表轨迹（贴地表 RE）
-    const track = [];
-    for (let k = 0; k <= N; k++) {
-      const t = new Date(now.getTime() + (k / N) * periodMin * 60000);
-      const pv = sat.propagate(rec, t);
-      if (!pv || !pv.position) continue;
-      const gd = sat.eciToGeodetic(pv.position, sat.gstime(t));
-      const lat = gd.latitude, lon = gd.longitude, cl = Math.cos(lat);
-      track.push([RE * cl * Math.cos(lon), RE * Math.sin(lat), -RE * cl * Math.sin(lon)]);
-    }
+    const track = samples.map((s) => {
+      const lat = s.gd.latitude, lon = s.gd.longitude, cl = Math.cos(lat);
+      return [RE * cl * Math.cos(lon), RE * Math.sin(lat), -RE * cl * Math.sin(lon)];
+    });
 
     // 覆盖足迹圈：按用户波束角重算（设置 this._selPos / this._selFootprint）
     this._buildFootprint(rec, now, gmstNow);
