@@ -125,19 +125,39 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
       boreType: 'azel', boreLon: satLon == null ? null : satLon, boreLat: satLat || 0, boreAz: 0, boreEl: 0, yaw: 0, beamsToPlot: [0], beamNames: {}, levels: defaultLevels(peakDb) }
   }
   function applySettings(cfg) { if (!cfg) return; for (const k of PA) s[k] = cfg[k]; s.levels = copyLevels(cfg.levels || defaultLevels()); s.beamsToPlot = (cfg.beamsToPlot || []).slice(); s.beamNames = { ...(cfg.beamNames || {}) } }
-  // 设置序列化（深拷贝 levels/beamsToPlot/beamNames），供 getState 回存每个天线
-  function serializeCfg(st) { return { ...st, levels: copyLevels(st.levels || []), beamsToPlot: (st.beamsToPlot || [0]).slice(), beamNames: { ...(st.beamNames || {}) } } }
+  // 设置序列化（深拷贝 levels/beamsToPlot/beamNames/keptSets），供 getState 回存每个天线
+  function serializeCfg(st) { return { ...st, levels: copyLevels(st.levels || []), beamsToPlot: (st.beamsToPlot || [0]).slice(), beamNames: { ...(st.beamNames || {}) }, keptSets: Array.isArray(st.keptSets) ? st.keptSets.slice() : null } }
   // 把存档 cfg 合到该天线一份完整 settings（缺省字段以 meta 默认补齐）
   function mergeCfg(meta, cfg) {
     return { ...defaultSettings(meta.satLon, meta.satLat || 0, meta.peakDb), ...cfg,
       levels: cfg.levels ? copyLevels(cfg.levels) : defaultLevels(meta.peakDb),
-      beamsToPlot: (cfg.beamsToPlot || []).slice(), beamNames: { ...(cfg.beamNames || {}) } }
+      beamsToPlot: (cfg.beamsToPlot || []).slice(), beamNames: { ...(cfg.beamNames || {}) },
+      keptSets: Array.isArray(cfg.keptSets) ? cfg.keptSets.slice() : null }
+  }
+  // 载入时按存档的「保留波束」裁剪 c.beams（波束删除功能持久化）：keptSets = 存活波束在【原始 GRD set 顺序】
+  // 里的下标（升序）。此刻 c.beams 是刚从原始 GRD 全量重建（原始 set 顺序），据此过滤即还原删除后的紧凑波束
+  // 数组；之后 beamsToPlot/beamNames 都以紧凑下标存取，与裁剪结果一一对应。单波束/无删除记录不动。
+  function applyKeptSets(c) {
+    const keep = c.settings && c.settings.keptSets
+    if (!Array.isArray(keep) || !keep.length) return       // 无删除记录：全量保留
+    if (keep.length >= (c.beams || []).length) return       // 无需裁剪（已全量或数不符，兜底不动）
+    const kept = keep.map((i) => c.beams[i]).filter(Boolean)
+    if (!kept.length || kept.length === c.beams.length) return
+    c.beams = kept
+    c.meta.beams = kept.length
+    const best = kept.reduce((a, b) => (b.peakDb > a.peakDb ? b : a), kept[0])
+    c.meta.peakDb = best.peakDb; if (best.peak) c.meta.peak = best.peak
+    const node = sats.value.find((x) => x.folder === c.meta.folder)
+    const a = node && node.antennas.find((x) => x.name === c.meta.name)
+    if (a) { a.beams = kept.length; a.peakDb = best.peakDb; if (best.peak) a.peak = best.peak }
+    beamsRev.value++   // 若该天线正被面板展示，波束列表随裁剪即时刷新
   }
   // 天线一经加载即套用其待恢复设置（若有），并移出 pending（此后由 cache 接管、getState 从 cache 取最新）
   function applyPendingCfg(key) {
     const cfg = pendingCfgs.get(key); if (!cfg) return
     const c = cache.get(key); if (!c || !c.meta) return
     c.settings = mergeCfg(c.meta, cfg)
+    applyKeptSets(c)   // 先按存档「保留波束」裁剪 c.beams，再据裁剪后的波束数做越界保护
     const nb = (c.beams || []).length
     c.settings.beamsToPlot = (c.settings.beamsToPlot || []).filter((i) => i < nb)   // 波束数变化越界保护
     pendingCfgs.delete(key)
@@ -161,8 +181,11 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
   const beamsCount = () => { const m = antMeta(); return m ? m.beams : 0 }
   const toF32 = (a) => Float32Array.from(a, (v) => (v == null ? NaN : v))
 
-  // 波束名：自定义优先，否则默认「波束 N」（单波束天线退回天线名）。地图标注与选波束列表共用。
-  const defBeamName = (c, bi) => (c.beams.length > 1 ? `波束 ${bi + 1}` : (c.meta && c.meta.name) || `波束 ${bi + 1}`)
+  // 波束的【原始序号】（0-based，原始 GRD set 顺序）：删过波束后由 keptSets 映射，否则=紧凑下标。
+  // 波束号/默认名永久绑定原始序号——删除波束不重排、不改名（命名对用户是身份标识）。
+  const origIdx = (c, bi) => { const k = c.settings && c.settings.keptSets; return (Array.isArray(k) && k[bi] != null) ? k[bi] : bi }
+  // 波束名：自定义优先，否则默认「波束 N」（N=原始序号+1；未删过的单波束天线退回天线名）。地图标注与选波束列表共用。
+  const defBeamName = (c, bi) => ((c.beams.length > 1 || Array.isArray(c.settings && c.settings.keptSets)) ? `波束 ${origIdx(c, bi) + 1}` : (c.meta && c.meta.name) || `波束 ${bi + 1}`)
   const beamName = (c, bi) => { const o = c.settings && c.settings.beamNames; return (o && o[bi]) || defBeamName(c, bi) }
   // 重命名聚焦天线的第 i 个波束：写入响应式 s.beamNames（空/同默认=清除回退默认），回存并重绘。
   function renameBeam(i, name) {
@@ -175,10 +198,20 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
   }
 
   // ===== Beams To Plot（SATSOFT 多选波束）：作用于聚焦天线，共用其同一套电平/极化设置 =====
-  // 聚焦天线已载入的波束列表（{ i, label, peakDb }）；单波束天线返回 1 项。label 用波束名（可编辑）。
+  // 波束删除计数器：cache 非响应式，删除波束后靠它驱动模板重取 activeBeams()（列表/波束数 v-if 即时刷新）
+  const beamsRev = ref(0)
+  // 波束列表是否显示：多波束，或删过波束（keptSets 存在）。删到只剩 1 个也保持显示——
+  // 剩下的波束仍需改名、且要能看到其原始序号/名称；真正的单波束天线（从未删过）照旧不显示。
+  const beamListOn = () => {
+    void beamsRev.value
+    const c = cache.get(active.value)
+    return !!(c && c.beams && (c.beams.length > 1 || Array.isArray(c.settings && c.settings.keptSets)))
+  }
+  // 聚焦天线已载入的波束列表（{ i 紧凑下标, seq 原始波束号(1-based，删除不重排), label, peakDb }）；单波束天线返回 1 项。label 用波束名（可编辑）。
   const activeBeams = () => {
+    void beamsRev.value   // 建立响应式依赖（见上）
     const c = cache.get(active.value); if (!c || !c.beams) return []
-    return c.beams.map((b, i) => ({ i, label: (s.beamNames && s.beamNames[i]) || defBeamName(c, i), peakDb: b.peakDb }))
+    return c.beams.map((b, i) => ({ i, seq: origIdx(c, i) + 1, label: (s.beamNames && s.beamNames[i]) || defBeamName(c, i), peakDb: b.peakDb }))
   }
   const isBeamOn = (i) => s.beamsToPlot.includes(i)
   function toggleBeam(i) {
@@ -207,13 +240,13 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
     }
     return set.size ? set : null
   }
-  // 按查询过滤聚焦天线波束：序号语法按 1-based 序号(i+1)，否则按波束名文字（大小写不敏感）。空查询=全部。
+  // 按查询过滤聚焦天线波束：序号语法按【原始波束号】seq（删除波束后不重排），否则按波束名文字（大小写不敏感）。空查询=全部。
   function filteredBeams() {
     const all = activeBeams()
     const q = beamQuery.value.trim()
     if (!q) return all
     const seq = parseSeqSet(q)
-    if (seq) return all.filter((b) => seq.has(b.i + 1))
+    if (seq) return all.filter((b) => seq.has(b.seq))
     const ql = q.toLowerCase()
     return all.filter((b) => String(b.label).toLowerCase().includes(ql))
   }
@@ -226,6 +259,60 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
     const set = new Set(s.beamsToPlot)
     if (on) ids.forEach((i) => set.add(i)); else ids.forEach((i) => set.delete(i))
     s.beamsToPlot = [...set].sort((a, b) => a - b)
+  }
+
+  // ===== 波束删除：从聚焦天线永久移除若干波束（本地存档持久化，可重新导入原 GRD 恢复）=====
+  // UI 入口：波束行尾小×（单个删除）/「(全选)」行小×（删除全部勾选波束）。
+  // delSet：要删除的【紧凑下标】集合。裁剪 c.beams，并把 beamsToPlot/beamNames/keptSets 全部重映射到新紧凑
+  // 下标，同步 meta / 卫星树节点的波束数与峰值，回存后重绘。至少保留 1 个波束。
+  function deleteBeamsByIndex(delSet) {
+    const c = cache.get(active.value); if (!c || !c.beams) return
+    const n = c.beams.length
+    const keepIdx = []
+    for (let i = 0; i < n; i++) if (!delSet.has(i)) keepIdx.push(i)
+    if (keepIdx.length === n) return                                  // 没选中任何要删的波束
+    if (!keepIdx.length) { appAlert('至少保留一个波束'); return }
+    // keptSets：当前紧凑下标 → 原始 GRD set 下标（首次删除前视作恒等映射）。删除后据此重建，供重载复原。
+    const oldKept = (Array.isArray(c.settings.keptSets) && c.settings.keptSets.length === n)
+      ? c.settings.keptSets : Array.from({ length: n }, (_, i) => i)
+    const pos = new Map(); keepIdx.forEach((oi, ni) => pos.set(oi, ni))   // 旧紧凑下标 → 新紧凑下标
+    const newBeams = keepIdx.map((i) => c.beams[i])
+    const newKept = keepIdx.map((i) => oldKept[i])
+    const oldNames = c.settings.beamNames || {}
+    const newNames = {}
+    for (const k in oldNames) { const oi = +k; if (pos.has(oi)) newNames[pos.get(oi)] = oldNames[k] }
+    let newPlot = (c.settings.beamsToPlot || []).filter((i) => pos.has(i)).map((i) => pos.get(i)).sort((a, b) => a - b)
+    if (newBeams.length === 1) newPlot = [0]     // 只剩单波束：默认绘制它（列表仍显示，可改名/看原始序号，也可取消勾选）
+    // 落库：c.beams / keptSets / meta / 树节点
+    c.beams = newBeams
+    c.settings.keptSets = newKept
+    c.meta.beams = newBeams.length
+    const best = newBeams.reduce((a, b) => (b.peakDb > a.peakDb ? b : a), newBeams[0])
+    c.meta.peakDb = best.peakDb; if (best.peak) c.meta.peak = best.peak
+    const [folder, nm] = active.value.split('|')
+    const node = sats.value.find((x) => x.folder === folder)
+    const a = node && node.antennas.find((x) => x.name === nm)
+    if (a) { a.beams = newBeams.length; a.peakDb = best.peakDb; if (best.peak) a.peak = best.peak }
+    sats.value = [...sats.value]                 // 触发卫星树响应式刷新（波束数/峰值）
+    // 同步面板反应式状态 → 回存 → 重绘（_muteSync 避免赋值途中被 watcher 提前回存）
+    _muteSync = true; s.beamNames = { ...newNames }; s.beamsToPlot = newPlot.slice(); _muteSync = false
+    persistActive()
+    beamsRev.value++   // 驱动波束列表/波束数即时刷新（cache 非响应式）
+    recompute()   // 筛选词保留：filteredBeams 按新列表自动刷新，便于连续删除
+  }
+  // 单个删除（波束行尾小×）
+  function deleteBeam(i) {
+    const c = cache.get(active.value); if (!c || !c.beams) return
+    if (c.beams.length <= 1) { appAlert('至少保留一个波束'); return }
+    deleteBeamsByIndex(new Set([i]))
+  }
+  // 删除全部勾选波束（「(全选)」行小×）：不能删空，至少保留一个。
+  function deleteCheckedBeams() {
+    const c = cache.get(active.value); if (!c || !c.beams) return
+    const del = new Set(s.beamsToPlot)
+    if (!del.size) return
+    if (del.size >= c.beams.length) { appAlert('不能删除全部波束，至少保留一个'); return }
+    deleteBeamsByIndex(del)
   }
 
   // ===== 卫星节点：增/删/改 + 仰角线属性 =====
@@ -835,9 +922,10 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
       key, igrid: c.meta.igrid, icomp: c.meta.icomp, basis, meta: c.meta, settings: c.settings,
       satNo: satIdx + 1, antNo: antIdx + 1,
       satName: (node && node.satName) || c.meta.sat || '', antName: key.split('|')[1],
-      // 性能表列【整张 GRD 的全部波束】（所有 set），不受「Beams To Plot」绘制选择影响；
+      // 性能表列【该天线现存的全部波束】（已删除的波束不再进表），不受「Beams To Plot」绘制选择影响；
       // 取值口径/指向仍跟随天线设置。覆盖该城市的波束由 filterOn(minDir) 过滤后显示（SATSOFT 口径）。
-      beams: c.beams.map((bm, bi) => ({ bi, name: beamName(c, bi), peakDb: bm.peakDb, beam: bm }))
+      // seq = 原始波束号（1-based，删除波束后不重排），与覆盖面板波束列表同一口径。
+      beams: c.beams.map((bm, bi) => ({ bi, seq: origIdx(c, bi) + 1, name: beamName(c, bi), peakDb: bm.peakDb, beam: bm }))
     }
   }
 
@@ -905,8 +993,9 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
   return {
     sats, expanded, selected, active, loading, s,
     keyOf, isSelected, isActive, isExpanded, antMeta, activeName, beamsCount, satState, dragBore, boreGround,
-    activeBeams, isBeamOn, toggleBeam, setAllBeams, allBeamsOn, renameBeam,
+    activeBeams, beamListOn, isBeamOn, toggleBeam, setAllBeams, allBeamsOn, renameBeam,
     beamQuery, setBeamQuery, filteredBeams, filteredAllOn, filteredAnyOn, selectFiltered,
+    deleteBeam, deleteCheckedBeams,
     loadIndex, setActive, toggleAnt, toggleSatAll, toggleExpand, addLevel, removeLevel, importGrd,
     addSatellite, updateSatellite, removeSatellite, removeAntenna, renameAntenna, setElev,
     setDragBore, beamDrag, getState, restoreState, recompute, clearAll, clearDrawing,

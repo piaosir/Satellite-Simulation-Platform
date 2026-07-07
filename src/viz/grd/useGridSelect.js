@@ -16,6 +16,7 @@ export function useGridSelect(cfg) {
   //   onPasteAppend?:(text) => number   无选区/空表时的整块追加，返回新增行数
   //   onClear?:  (cells:{rowId,key}[])  批量清空（已先 pushUndo）
   //   pushUndo? / dropUndo? / refresh?  撤销快照 / 撤回空操作快照 / 变更后重算
+  //   undo? / redo?                     Ctrl+Z / Ctrl+Y(Ctrl+Shift+Z) 的处理（外部负责恢复+重算）
   const sel = ref({ ar: -1, ac: -1, ri: -1, ci: -1 })
   const edit = ref({ ri: -1, ci: -1 })
   const editSeed = ref(null)              // 键入进入编辑的首字符（null=保留原值并全选）
@@ -32,7 +33,14 @@ export function useGridSelect(cfg) {
   const isEdit = (ri, ci) => edit.value.ri === ri && edit.value.ci === ci
   const colEditable = (c) => !cfg.readOnly && !!c && c.editable !== false
 
-  function focusGrid() { const el = bodyEl.value; if (el) el.focus() }
+  // 容器内的独立表单控件（加站行输入框等，非本网格的单元格编辑器）：事件不接管，否则会抢焦点/劫持按键
+  const foreignControl = (e) => {
+    const t = e && e.target, tag = t && t.tagName
+    return (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') && t !== editEl.value
+  }
+  // 编辑中不抢焦点：容器 @click 会在点击编辑 input 内部（移动光标）时冒泡到这里，若照常 focus 容器
+  // 会令 input blur → 误提交退出编辑（Excel 里点击单元格编辑器内部只是移动光标）。
+  function focusGrid(e) { if (edit.value.ri >= 0 || foreignControl(e)) return; const el = bodyEl.value; if (el) el.focus() }
   function setSel(ri, ci, extend) { const s = sel.value; sel.value = extend && s.ar >= 0 ? { ar: s.ar, ac: s.ac, ri, ci } : { ar: ri, ac: ci, ri, ci } }
   function cellDown(e, ri, ci) {
     if (isEdit(ri, ci)) return                        // 正在编辑此格 → 交给 input
@@ -111,44 +119,73 @@ export function useGridSelect(cfg) {
     const n = (anchorId && c && cfg.onPasteBlock) ? cfg.onPasteBlock(anchorId, c.key, text) : (cfg.onPasteAppend ? cfg.onPasteAppend(text) : 0)
     if (n) { cfg.refresh && cfg.refresh() } else { cfg.dropUndo && cfg.dropUndo() }
   }
-  // 编辑中 input 内 Ctrl+V：整块→以该格定位填充（单值走普通输入）
+  // 编辑中 input 内 Ctrl+V：多格块（含制表符/换行，即来自 Excel 的多单元格复制）→ 以该格定位填充；
+  // 其余（含逗号的普通文本如 "Washington, DC"）与 Excel 一致，按字面粘进单元格。
   function cellPaste(e, r, key) {
     if (cfg.readOnly || !cfg.onPasteBlock) return
     const text = e.clipboardData ? e.clipboardData.getData('text') : ''
-    if (!text || !/[\t\n,]/.test(text.trim())) return
+    if (!text || !/[\t\n]/.test(text.trim())) return
     e.preventDefault()
     cfg.pushUndo && cfg.pushUndo()
     const n = cfg.onPasteBlock(r ? r.id : null, key, text)
     if (n) { cfg.refresh && cfg.refresh() } else { cfg.dropUndo && cfg.dropUndo() }
   }
   function gridKey(e) {
-    if (edit.value.ri >= 0) {                          // 编辑态：仅接管提交/取消/跳格
-      if (e.key === 'Enter') { e.preventDefault(); commitEdit(); move(1, 0); focusGrid() }
+    if (foreignControl(e)) return   // 加站行等独立输入框内的按键：交还给输入框本身
+    const ctrl = e.ctrlKey || e.metaKey
+    if (edit.value.ri >= 0) {                          // 编辑态：提交/取消/跳格；其余键交给 input（含原生撤销/粘贴）
+      if (e.key === 'Enter') { e.preventDefault(); commitEdit(); move(e.shiftKey ? -1 : 1, 0); focusGrid() }
       else if (e.key === 'Escape') { e.preventDefault(); cancelEdit() }
       else if (e.key === 'Tab') { e.preventDefault(); commitEdit(); move(0, e.shiftKey ? -1 : 1); focusGrid() }
+      else if (editSeed.value != null && e.key.startsWith('Arrow')) {
+        // Excel「键入模式」（直接键入进入编辑）：方向键=提交并移动；F2/双击进入的「编辑模式」方向键仍移光标
+        e.preventDefault(); commitEdit()
+        move(e.key === 'ArrowUp' ? -1 : e.key === 'ArrowDown' ? 1 : 0, e.key === 'ArrowLeft' ? -1 : e.key === 'ArrowRight' ? 1 : 0)
+        focusGrid()
+      }
       return
     }
-    const ctrl = e.ctrlKey || e.metaKey
     if (ctrl && (e.key === 'c' || e.key === 'C')) { e.preventDefault(); copySel(); return }
     if (ctrl && (e.key === 'a' || e.key === 'A')) { e.preventDefault(); const nr = cfg.rows().length, nc = cfg.cols().length; if (nr && nc) sel.value = { ar: 0, ac: 0, ri: nr - 1, ci: nc - 1 }; return }
     if (!cfg.readOnly && ctrl && (e.key === 'x' || e.key === 'X')) { e.preventDefault(); copySel(); clearRange(); return }
     if (!cfg.readOnly && ctrl && (e.key === 'v' || e.key === 'V')) { e.preventDefault(); doPaste(); return }
+    if (cfg.undo && ctrl && !e.shiftKey && (e.key === 'z' || e.key === 'Z')) { e.preventDefault(); cfg.undo(); return }
+    if (cfg.redo && ctrl && (e.key === 'y' || e.key === 'Y' || (e.shiftKey && (e.key === 'z' || e.key === 'Z')))) { e.preventDefault(); cfg.redo(); return }
     const { ri, ci } = sel.value; if (ri < 0) return
-    const ext = e.shiftKey
+    const ext = e.shiftKey, J = ctrl ? Infinity : 1    // Ctrl+方向键 = 跳到边缘（对标 Excel Ctrl+Arrow）
     switch (e.key) {
-      case 'ArrowUp': e.preventDefault(); move(-1, 0, ext); break
-      case 'ArrowDown': e.preventDefault(); move(1, 0, ext); break
-      case 'ArrowLeft': e.preventDefault(); move(0, -1, ext); break
-      case 'ArrowRight': e.preventDefault(); move(0, 1, ext); break
-      case 'Enter': e.preventDefault(); move(1, 0, false); break
+      case 'ArrowUp': e.preventDefault(); move(-J, 0, ext); break
+      case 'ArrowDown': e.preventDefault(); move(J, 0, ext); break
+      case 'ArrowLeft': e.preventDefault(); move(0, -J, ext); break
+      case 'ArrowRight': e.preventDefault(); move(0, J, ext); break
+      case 'Home': e.preventDefault(); if (ctrl) setSel(0, 0, ext); else setSel(ri, 0, ext); break
+      case 'End': { e.preventDefault(); const nr = cfg.rows().length, nc = cfg.cols().length; if (nr && nc) { if (ctrl) setSel(nr - 1, nc - 1, ext); else setSel(ri, nc - 1, ext) } break }
+      case 'Enter': e.preventDefault(); move(ext ? -1 : 1, 0, false); break
       case 'Tab': e.preventDefault(); move(0, ext ? -1 : 1, false); break
       case 'F2': if (!cfg.readOnly) { e.preventDefault(); tryEdit(ri, ci, null) } break
-      case 'Delete': case 'Backspace': if (!cfg.readOnly) { e.preventDefault(); clearRange() } break
-      default: if (!cfg.readOnly && e.key.length === 1 && !ctrl && !e.altKey) { e.preventDefault(); tryEdit(ri, ci, e.key) }
+      case 'Delete': if (!cfg.readOnly) { e.preventDefault(); clearRange() } break
+      case 'Backspace': if (!cfg.readOnly) { e.preventDefault(); tryEdit(ri, ci, '') } break   // Excel：Backspace=清空活动格并进入编辑
+      default:
+        if (cfg.readOnly || ctrl || e.altKey) return
+        if (e.key.length === 1) { e.preventDefault(); tryEdit(ri, ci, e.key) }
+        // 输入法（中文等）键入：keydown 为 Process/isComposing，不带可见字符 → 以空种子进入编辑，
+        // 让后续按键落在 input 里由 IME 正常组字（不 preventDefault，避免打断输入法）。
+        else if (e.key === 'Process' || e.isComposing) tryEdit(ri, ci, '')
     }
   }
-  // 进入编辑后聚焦 input：键入进入→光标末尾；F2/双击进入→全选
-  watch(() => edit.value, (v) => { if (v.ri >= 0) nextTick(() => { const el = editEl.value; if (el) { el.focus(); if (editSeed.value == null) el.select() } }) })
+  // 进入编辑后初始化 input：值在此【一次性命令式】写入，模板不得绑 :value——单向绑定会在组件任意
+  // 重渲染（实时时钟每秒都在触发）时把绑定值刷回 DOM，吞掉正在键入的内容。键入进入→光标末尾；F2/双击进入→全选。
+  watch(() => edit.value, (v) => {
+    if (v.ri < 0) return
+    nextTick(() => {
+      const el = editEl.value; if (!el) return
+      const r = cfg.rows()[v.ri], c = cfg.cols()[v.ci]
+      el.value = editSeed.value != null ? String(editSeed.value) : (r && c ? rawText(r, c) : '')
+      el.focus()
+      if (editSeed.value == null) el.select()
+      else { const n = el.value.length; el.setSelectionRange(n, n) }
+    })
+  })
   onMounted(() => window.addEventListener('mouseup', up))
   onBeforeUnmount(() => window.removeEventListener('mouseup', up))
 

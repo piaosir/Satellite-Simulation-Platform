@@ -256,6 +256,44 @@ const core = computed(() => (sel.value && !sel.value.error ? sel.value.data : nu
 const barW = (v) => { const n = parseFloat(v); return (isNaN(n) ? 0 : Math.min(100, Math.max(0, n))) + '%' }
 const barClass = (v) => { const n = parseFloat(v); return n > 100 ? 'danger' : (n > 80 ? 'warn' : 'normal') }
 
+// —— 容量汇总（独立模块）——
+// 汇总本批次所有已成功计算的链路：总带宽 = Σ 各链路载波带宽；总容量 = Σ 各链路容量。
+// 单链路容量 = 频谱效率 η(bps/Hz) × 载波带宽 B(kHz) = 容量(kbps)；各链路基带配置可不同（η 各异），
+// 故逐链路相乘再求和，而非用单一 η 乘总带宽。engine 已按链路输出 allocBandwidthResult / spectralEfficiencyResult。
+const capacitySummary = computed(() => {
+  const done = links.value.filter((l) => l && l.data && !l.error)
+  let bwKHz = 0, capKbps = 0
+  for (const l of done) {
+    const bw = parseFloat(l.data.allocBandwidthResult)       // 载波带宽 kHz
+    const eta = parseFloat(l.data.spectralEfficiencyResult)  // 频谱效率 bps/Hz
+    if (isFinite(bw)) bwKHz += bw
+    if (isFinite(bw) && isFinite(eta)) capKbps += eta * bw   // 容量 kbps
+  }
+  return {
+    count: done.length,
+    failed: links.value.length - done.length,
+    bwKHz, capKbps,
+    avgEff: bwKHz > 0 ? capKbps / bwKHz : 0   // 带宽加权平均频谱效率 bps/Hz
+  }
+})
+// 自适应单位：容量 kbps→Mbps→Gbps；带宽 kHz→MHz→GHz
+function fmtCapacity(kbps) {
+  const n = Number(kbps)
+  if (!isFinite(n) || n <= 0) return { v: '0', u: 'kbps' }
+  if (n >= 1e6) return { v: (n / 1e6).toFixed(3), u: 'Gbps' }
+  if (n >= 1e3) return { v: (n / 1e3).toFixed(3), u: 'Mbps' }
+  return { v: n.toFixed(n >= 100 ? 1 : 2), u: 'kbps' }
+}
+function fmtBandwidth(khz) {
+  const n = Number(khz)
+  if (!isFinite(n) || n <= 0) return { v: '0', u: 'kHz' }
+  if (n >= 1e6) return { v: (n / 1e6).toFixed(3), u: 'GHz' }
+  if (n >= 1e3) return { v: (n / 1e3).toFixed(3), u: 'MHz' }
+  return { v: n.toFixed(n >= 100 ? 1 : 3), u: 'kHz' }
+}
+const capMain = computed(() => fmtCapacity(capacitySummary.value.capKbps))
+const bwMain = computed(() => fmtBandwidth(capacitySummary.value.bwKHz))
+
 async function compute() {
   if (!api) { error.value = '引擎需在 Electron 中运行（npm run dev）'; return }
   if (!txStations.length || !rxStations.length) { error.value = '请至少各添加一个发信站和收信站'; return }
@@ -850,6 +888,22 @@ onMounted(async () => {
           <div v-if="error" class="lb-err">{{ error }}</div>
           <div v-else-if="!links.length" class="lb-placeholder">填写参数后点击「计算」<br />生成链路结果</div>
           <template v-else>
+            <!-- 容量汇总（独立模块）：汇总本批次全部已计算链路的总带宽与总容量（自适应单位）-->
+            <div v-if="capacitySummary.count" class="cap-sum">
+              <div class="cap-sum-hd">
+                <span class="cap-sum-t">容量汇总</span>
+                <span class="cap-sum-n">{{ capacitySummary.count }} 条链路<template v-if="capacitySummary.failed"> · {{ capacitySummary.failed }} 条失败已排除</template></span>
+              </div>
+              <div class="cap-sum-main">
+                <span class="cap-sum-ml">总容量</span>
+                <span class="cap-sum-big">{{ capMain.v }}<i>{{ capMain.u }}</i></span>
+              </div>
+              <div class="cap-sum-sub">
+                <div class="cap-sum-item"><span class="cap-sum-l">总带宽</span><span class="cap-sum-v">{{ bwMain.v }} <i>{{ bwMain.u }}</i></span></div>
+                <div class="cap-sum-item"><span class="cap-sum-l">平均频谱效率</span><span class="cap-sum-v">{{ capacitySummary.avgEff.toFixed(3) }} <i>bps/Hz</i></span></div>
+              </div>
+            </div>
+
             <!-- 常规计算（默认）：按序号 1↔1 配对的结果列表，点选查看瀑布 -->
             <div v-if="resultPairMode === 'sequential' && links.length > 1" class="seq-wrap">
               <div class="mtx-ctl">
@@ -1248,4 +1302,19 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .core-bar-fill.normal { background: var(--ok); }
 .core-bar-fill.warn { background: var(--warn); }
 .core-bar-fill.danger { background: var(--danger); }
+
+/* 容量汇总（独立模块）：批量链路的总带宽 / 总容量，置于结果区顶部，accent 左边框自成一块 */
+.cap-sum { margin-bottom: 14px; padding: 11px 13px; border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: var(--r-box); background: var(--surface); }
+.cap-sum-hd { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.cap-sum-t { font-size: 11px; font-weight: 600; letter-spacing: 1px; text-transform: uppercase; color: var(--text-muted); }
+.cap-sum-n { font-size: 11px; color: var(--text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cap-sum-main { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding-bottom: 9px; border-bottom: 1px dashed var(--border); }
+.cap-sum-ml { font-size: 12px; color: var(--text-muted); flex: none; }
+.cap-sum-big { font-family: var(--font-mono); font-size: 24px; font-weight: 700; line-height: 1; color: var(--accent); text-align: right; overflow: hidden; text-overflow: ellipsis; }
+.cap-sum-big i { font-size: 12px; font-weight: 600; font-style: normal; margin-left: 4px; color: var(--text-muted); }
+.cap-sum-sub { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 16px; margin-top: 8px; }
+.cap-sum-item { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; min-width: 0; }
+.cap-sum-l { font-size: 12px; color: var(--text-muted); flex: none; }
+.cap-sum-v { font-family: var(--font-mono); font-size: 13px; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; }
+.cap-sum-v i { font-size: 11px; font-weight: 400; font-style: normal; color: var(--text-faint); }
 </style>

@@ -6,7 +6,8 @@ import { sampleBeamAt, perturbSpacecraft, dirToAzEl, axialRatioDb } from './cove
 
 let _seq = 1
 const newId = () => 'st' + Date.now().toString(36) + (_seq++)
-const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null }
+// 空串/空白必须判 null：Number('')===0，否则 Excel 复制块里的空单元格会把经纬度悄悄写成 0
+const num = (v) => { if (v == null || String(v).trim() === '') return null; const n = Number(v); return Number.isFinite(n) ? n : null }
 
 // 全列定义（顺序即列序）。num=右对齐数字列，fix=小数位。默认显示集见 defaultOpts。
 const COL_DEFS = [
@@ -77,21 +78,70 @@ export function usePerfTable() {
   const visibleColumns = (o) => COL_DEFS.filter((c) => o && o.cols && o.cols[c.key])
 
   // ===== 站点库 CRUD =====
-  function addStation(p = {}) {
-    const lon = num(p.lon), lat = num(p.lat)
-    if (lon == null || lat == null) return null
-    const s = { id: newId(), country: (p.country || '').trim(), city: (p.city || '').trim(), desig: (p.desig || '').trim(), lon, lat }
-    stations.value = [...stations.value, s]
+  // 经纬度写入：合法数字→写入；空串→清空(null，该行暂不参与取值)；非数字文本→保留原值（坐标列不存文本）
+  function setCoord(s, key, val) {
+    const v = num(val)
+    if (v != null) s[key] = v
+    else if (String(val == null ? '' : val).trim() === '') s[key] = null
+  }
+  // Excel/链路预算式「增加行」：在 at 处插入一行空站（经纬度留空，填好后才参与取值）。返回新站。
+  function addEmptyStation(at) {
+    const s = { id: newId(), country: '', city: '', desig: '', lon: null, lat: null }
+    const list = [...stations.value]
+    const i = (at == null || at < 0 || at > list.length) ? list.length : at
+    list.splice(i, 0, s)
+    stations.value = list
     return s
   }
   function updateStation(id, patch) {
     const s = stations.value.find((x) => x.id === id); if (!s) return
-    if ('lon' in patch) { const v = num(patch.lon); if (v != null) s.lon = v }
-    if ('lat' in patch) { const v = num(patch.lat); if (v != null) s.lat = v }
+    if ('lon' in patch) setCoord(s, 'lon', patch.lon)
+    if ('lat' in patch) setCoord(s, 'lat', patch.lat)
     for (const k of ['country', 'city', 'desig']) if (k in patch) s[k] = String(patch[k] == null ? '' : patch[k])
     stations.value = [...stations.value]
   }
   function removeStation(id) { stations.value = stations.value.filter((x) => x.id !== id) }
+
+  // ===== 城市名 → 经纬度自动补全（与 GEO 链路预算 StationGrid.applyCityByName 同口径）=====
+  // 城市库（约 360 座国内城市）由页面在打开性能表时经 IPC 载入并 setCities 注入；键=城市名（去空白、小写）。
+  const cityGeo = new Map()   // 归一名 → { lon, lat }；非响应式，仅供查表
+  function setCities(list) {
+    cityGeo.clear()
+    for (const c of (list || [])) {
+      if (!c || c.name == null) continue
+      const lon = num(c.lon), lat = num(c.lat)
+      if (lon == null || lat == null) continue
+      cityGeo.set(String(c.name).trim().toLowerCase(), { lon, lat })
+    }
+  }
+  // 命中即填：站点的城市名精确命中城市库 → 写入其经纬度（覆盖原值，与链路预算一致）。返回是否命中。
+  // 仅供「单格编辑城市名」路径调用（见 onEdit）；粘贴/批量导入不触发，避免覆盖随行粘贴的经纬度。
+  function applyCityGeo(id) {
+    if (!cityGeo.size) return false
+    const s = stations.value.find((x) => x.id === id); if (!s) return false
+    const name = String(s.city == null ? '' : s.city).trim()
+    if (!name) return false
+    const hit = cityGeo.get(name.toLowerCase())
+    if (!hit) return false
+    s.lon = hit.lon; s.lat = hit.lat
+    stations.value = [...stations.value]
+    return true
+  }
+  // 城市库晚于用户输入到达时的一次性补扫：城市库（IPC 异步）载入前若已键入城市名，applyCityGeo 因表空而落空，
+  // 之后重键同名又不触发（值未变）。故 setCities 后调此补扫，为「经纬度仍空」且城市名命中的行补填。返回补填行数。
+  // 只填经纬度为空的行 → 幂等，且不覆盖随行粘贴/导入的经纬度（保持「粘贴不自动补全」不变式）。
+  function applyCityGeoAll() {
+    if (!cityGeo.size) return 0
+    let n = 0
+    for (const s of stations.value) {
+      if (Number.isFinite(s.lon) && Number.isFinite(s.lat)) continue
+      const name = String(s.city == null ? '' : s.city).trim(); if (!name) continue
+      const hit = cityGeo.get(name.toLowerCase()); if (!hit) continue
+      s.lon = hit.lon; s.lat = hit.lat; n++
+    }
+    if (n) stations.value = [...stations.value]
+    return n
+  }
 
   // ===== 撤销/重做（以站点库为唯一数据源，行是派生的；调用方在每次用户操作前 pushUndo 一次）=====
   const undoStack = [], redoStack = []
@@ -129,13 +179,15 @@ export function usePerfTable() {
 
   // Excel 式「定位粘贴」：以选中单元格为左上锚点，粘贴块按列向右、按行向下填充，
   // 超出现有站点的行自动新建。startKey 决定起始列，列序固定见 EDIT_COLS。
+  // 切列只认制表符（与 Excel 完全一致）——含逗号的单元格值（如 "Washington, DC"）不会被误拆；
+  // CSV 逗号格式仍由「粘贴」按钮/追加导入（parsePasted）支持。
   const EDIT_COLS = ['country', 'city', 'desig', 'lon', 'lat']
   function parseGrid(text) {
     return String(text || '').split(/\r?\n/).filter((l) => l.trim() !== '')
-      .map((l) => (l.includes('\t') ? l.split('\t') : l.split(',')).map((x) => x.trim()))
+      .map((l) => l.split('\t').map((x) => x.trim()))
   }
   function setStationCell(s, key, val) {
-    if (key === 'lon' || key === 'lat') { const v = num(val); if (v != null) s[key] = v }
+    if (key === 'lon' || key === 'lat') setCoord(s, key, val)
     else s[key] = String(val == null ? '' : val)
   }
   function pasteBlock(startId, startKey, text) {
@@ -146,7 +198,7 @@ export function usePerfTable() {
     if (idx < 0) idx = list.length
     grid.forEach((cells, ri) => {
       let s = list[idx + ri]
-      if (!s) { s = { id: newId(), country: '', city: '', desig: '', lon: 0, lat: 0 }; list[idx + ri] = s }
+      if (!s) { s = { id: newId(), country: '', city: '', desig: '', lon: null, lat: null }; list[idx + ri] = s }
       cells.forEach((val, ci) => { const key = EDIT_COLS[c0 + ci]; if (key) setStationCell(s, key, val) })
     })
     stations.value = list.filter(Boolean)
@@ -237,7 +289,7 @@ export function usePerfTable() {
   function compute(ctx, opts) {
     if (!ctx) { rows.value = []; ctxInfo.value = null; ctxBeams.value = []; return }
     const o = opts || defaultOpts()
-    ctxBeams.value = ctx.beams.map((b) => ({ bi: b.bi, name: b.name, peakDb: b.peakDb }))   // 供选项面板波束筛选列表（含波束名/峰值）
+    ctxBeams.value = ctx.beams.map((b) => ({ bi: b.bi, seq: b.seq || b.bi + 1, name: b.name, peakDb: b.peakDb }))   // 供选项面板波束筛选列表（含波束名/峰值）；seq=原始波束号（删除波束后不重排）
     const beamAllow = Array.isArray(o.beamSel) ? new Set(o.beamSel) : null                  // null=全部波束（默认，不筛选）；否则仅这些 bi 进表
     const st = ctx.settings, same = o.sameAsAnt, igrid = ctx.igrid, icomp = ctx.icomp, basis = ctx.basis, meta = ctx.meta
     const polD = same ? st.pol : o.pol
@@ -251,6 +303,7 @@ export function usePerfTable() {
 
     const out = []; let no = 1
     stations.value.forEach((s, si) => {
+      if (!Number.isFinite(s.lon) || !Number.isFinite(s.lat)) return   // 空行/经纬度未填全：不参与取值（行号 stationNo 仍按输入区行计）
       const geo = wantGeo ? dirToAzEl(meta.satLon, meta.satLat || 0, meta.satAlt, s.lon, s.lat) : null
       for (const bm of ctx.beams) {
         if (beamAllow && !beamAllow.has(bm.bi)) continue                                     // 波束筛选：未选中的波束不进表
@@ -274,7 +327,7 @@ export function usePerfTable() {
         out.push({
           id: s.id + '#' + bm.bi, no: no++,
           satNo: ctx.satNo, satName: ctx.satName, antNo: ctx.antNo, antName: ctx.antName,
-          beamNo: bm.bi + 1, stationNo: si + 1,
+          beamNo: bm.seq || bm.bi + 1, stationNo: si + 1,   // 波束号=原始 GRD 序号（删除波束后不重排）
           country: s.country, city: s.city, desig: s.desig, lon: s.lon, lat: s.lat,
           scAz: geo ? geo.az : null, scEl: geo ? geo.el : null, u: d ? d.u : null, v: d ? d.v : null,
           dir, param: param == null ? null : unitOf(param), minPt: pt.min, maxPt: pt.max, xpol, slope, ar,
@@ -305,7 +358,7 @@ export function usePerfTable() {
   function restoreState(st) {
     if (!st) return
     clearHistory()
-    if (Array.isArray(st.stations)) stations.value = st.stations.map((s) => ({ id: newId(), country: s.country || '', city: s.city || '', desig: s.desig || '', lon: num(s.lon) || 0, lat: num(s.lat) || 0 }))
+    if (Array.isArray(st.stations)) stations.value = st.stations.map((s) => ({ id: newId(), country: s.country || '', city: s.city || '', desig: s.desig || '', lon: num(s.lon), lat: num(s.lat) }))
     if (st.optsByAnt && typeof st.optsByAnt === 'object') {
       const m = {}
       for (const k of Object.keys(st.optsByAnt)) m[k] = { ...defaultOpts(), ...st.optsByAnt[k], cols: { ...defaultOpts().cols, ...(st.optsByAnt[k].cols || {}) } }
@@ -332,7 +385,7 @@ export function usePerfTable() {
     const q = beamQuery.value.trim()
     if (!q) return all
     const seq = parseBeamSeq(q)
-    if (seq) return all.filter((b) => seq.has(b.bi + 1))
+    if (seq) return all.filter((b) => seq.has(b.seq || b.bi + 1))   // 序号语法按原始波束号（与覆盖面板同口径）
     const ql = q.toLowerCase()
     return all.filter((b) => String(b.name).toLowerCase().includes(ql))
   }
@@ -364,7 +417,8 @@ export function usePerfTable() {
   return {
     stations, rows, filteredRows, ctxInfo, query, optsByAnt, canUndo, canRedo,
     colDefs: COL_DEFS, colGroups: COL_GROUPS, getOpts, visibleColumns,
-    addStation, updateStation, removeStation, removeRow, clearStations, addStationsBulk, pasteBlock, importFromMarkers, importFromTrajectories,
+    addEmptyStation, updateStation, removeStation, removeRow, clearStations, addStationsBulk, pasteBlock, importFromMarkers, importFromTrajectories,
+    setCities, applyCityGeo, applyCityGeoAll,
     ctxBeams, beamQuery, filteredBeams, beamOn, beamSelCount, filteredAllOn, filteredAnyOn, toggleBeam, selectFiltered,
     pushUndo, dropUndo, undo, redo, compute, getState, restoreState
   }

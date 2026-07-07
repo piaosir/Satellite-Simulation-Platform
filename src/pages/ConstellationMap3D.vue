@@ -113,7 +113,6 @@ async function toggleGrd() {
 // ===================== 性能指标表（SATSOFT Performance Table，第 1 期）=====================
 const perf = usePerfTable()
 const perfKey = ref('')                 // 当前打开表的天线 key（''=关闭）；每个天线一张独立表
-const perfNew = ref({ country: '', city: '', desig: '', lon: '', lat: '' })   // 手动加站输入
 const perfOptsOpen = ref(false)         // 「性能表选项」弹窗开关
 // 浮窗几何（可拖拽移动 / 右下角缩放）+ 中缝分隔（城市输入区高度，px）。首次打开按视口初始化一次。
 const perfWin = ref({ x: 0, y: 0, w: 760, h: 560, init: false })
@@ -129,8 +128,17 @@ async function openPerf(sat, a) {
   if (!ok) { appAlert('该天线方向图未就绪，无法生成性能表'); return }
   perfKey.value = key
   perf.beamQuery.value = ''   // 新表：清空波束筛选搜索词（波束数/含义随天线变）
+  ensurePerfCities()          // 载入城市库（供城市名→经纬度自动补全）；只载一次
   perfWinInit()
   refreshPerf()
+}
+// 城市库（约 360 座国内城市，与 GEO 链路预算共用同一 IPC 源）：首次开表时按需载入并注入 perf。
+let _perfCitiesLoaded = false
+async function ensurePerfCities() {
+  if (_perfCitiesLoaded) return
+  _perfCitiesLoaded = true
+  try { const c = window.api && window.api.linkBudget && await window.api.linkBudget.cities(); if (c && c.length) { perf.setCities(c); if (perf.applyCityGeoAll()) refreshPerf() } }
+  catch { _perfCitiesLoaded = false }   // 载入失败（无 IPC 等）→ 允许下次开表重试；自动补全暂不可用
 }
 function closePerf() { perfKey.value = '' }
 // ===== 浮窗拖拽：移动（标题栏）/ 缩放（右下角）/ 分隔（中缝）。统一一个临时 window 监听会话 =====
@@ -192,29 +200,20 @@ function perfDragSplit(e) {
     perfInputH.value = Math.max(64, Math.min(perfWin.value.h - 140, o + (ev.clientY - sy)))
   })
 }
-function perfAddStation() {
+// Excel/链路预算式「＋ 增加」：在选中行下方插入一行空行（无选中则末尾），选区落到新行首列，直接键入或粘贴
+function perfAddRow() {
   perf.pushUndo()
-  const s = perf.addStation(perfNew.value)
-  if (!s) { perf.dropUndo(); appAlert('请填写有效经纬度'); return }
-  perfNew.value = { country: '', city: '', desig: '', lon: '', lat: '' }
-  refreshPerf()
+  const ri = perfInGrid.sel.value.ri
+  const at = ri >= 0 ? ri + 1 : perf.stations.value.length
+  perf.addEmptyStation(at)
+  nextTick(() => { perfInGrid.sel.value = { ar: at, ac: 0, ri: at, ci: 0 }; perfInGrid.focusGrid() })
 }
 function perfImportMarkers() { perf.pushUndo(); const n = perf.importFromMarkers(points.value, stations.value); if (!n) { perf.dropUndo(); appAlert('没有可导入的新标记（点标记/地面站）') } refreshPerf() }
 function perfImportTrajs() { perf.pushUndo(); const n = perf.importFromTrajectories(trajectories.value); if (!n) { perf.dropUndo(); appAlert('没有可导入的新航点（航迹为空或已全部导入）') } refreshPerf() }
-// Excel 式粘贴：在加站区任一输入框 Ctrl+V 整块表格 → 拦截并批量加站（单值粘贴仍走普通输入）
-function perfPaste(e) {
-  const text = e.clipboardData ? e.clipboardData.getData('text') : ''
-  if (!text || !/[\t\n,]/.test(text.trim())) return
-  e.preventDefault()
-  perf.pushUndo()
-  const n = perf.addStationsBulk(text)
-  if (n) { perfNew.value = { country: '', city: '', desig: '', lon: '', lat: '' }; refreshPerf() }
-  else { perf.dropUndo(); appAlert('未识别到经纬度（约定末两列为 经度、纬度，且需为数字）') }
-}
 // 「粘贴」按钮：直接读剪贴板批量加站（需浏览器授权剪贴板读取）
 async function perfPasteBtn() {
   let text = ''
-  try { text = await navigator.clipboard.readText() } catch { appAlert('无法读取剪贴板，请点输入框后按 Ctrl+V 粘贴'); return }
+  try { text = await navigator.clipboard.readText() } catch { appAlert('无法读取剪贴板，请检查剪贴板权限'); return }
   perf.pushUndo()
   const n = perf.addStationsBulk(text)
   if (n) refreshPerf(); else { perf.dropUndo(); appAlert('剪贴板没有可识别的经纬度数据（约定末两列为 经度、纬度）') }
@@ -233,11 +232,14 @@ const perfInGrid = useGridSelect({
   rows: () => perf.stations.value,
   cols: () => perfInCols,
   cellText: (r, c) => { const v = r[c.key]; return v == null ? '' : String(v) },
-  onEdit: (id, key, val) => perf.updateStation(id, { [key]: val }),
+  // 编辑城市名后，若精确命中城市库 → 自动补全经纬度（与 GEO 链路预算一致）。commitEdit 仅在值真正改变时才调 onEdit，
+  // 故只有城市名确有变动才会触发补全；且与前面的 pushUndo 同属一次撤销（一次 Ctrl+Z 同时还原城市名与经纬度）。
+  onEdit: (id, key, val) => { perf.updateStation(id, { [key]: val }); if (key === 'city') perf.applyCityGeo(id) },
   onPasteBlock: (anchorId, startKey, text) => perf.pasteBlock(anchorId, startKey, text),
   onPasteAppend: (text) => perf.addStationsBulk(text),
   onClear: (cells) => cells.forEach(({ rowId, key }) => perf.updateStation(rowId, { [key]: '' })),
-  pushUndo: () => perf.pushUndo(), dropUndo: () => perf.dropUndo(), refresh: () => refreshPerf()
+  pushUndo: () => perf.pushUndo(), dropUndo: () => perf.dropUndo(), refresh: () => refreshPerf(),
+  undo: () => perfUndo(), redo: () => perfRedo()   // 表内 Ctrl+Z / Ctrl+Y（与工具栏按钮同源）
 })
 // 下：性能结果（只读）——框选 + 复制 + 键盘导航；行 = filteredRows。
 const perfResGrid = useGridSelect({
@@ -2480,7 +2482,7 @@ onBeforeUnmount(() => {
               <span class="setlbl">天线设置</span><span class="setname" :title="grd.activeName()">{{ grd.activeName() }}</span>
               <span v-if="grd.selected.value.length > 1" class="editing" title="多选时设置只作用于聚焦（编辑中）天线，各天线独立保存">仅编辑聚焦天线</span>
             </div>
-            <template v-if="grd.activeBeams().length > 1">
+            <template v-if="grd.beamListOn()">
               <div class="sect" style="margin-top:2px"><span>Beams To Plot · {{ grd.activeBeams().length }} 波束</span></div>
               <input class="ci bq" :value="grd.beamQuery.value" placeholder="搜索：波束名，或序号 1-62、1,3,5、1-10,20-30" @input="e => grd.setBeamQuery(e.target.value)" />
               <div class="bplist">
@@ -2488,12 +2490,14 @@ onBeforeUnmount(() => {
                   <input type="checkbox" :checked="grd.filteredAllOn()" :indeterminate="grd.filteredAnyOn() && !grd.filteredAllOn()" @change="grd.selectFiltered(!grd.filteredAllOn())" />
                   <span class="balln">{{ grd.beamQuery.value.trim() ? '(全选搜索结果)' : '(全选)' }}</span>
                   <span class="bpk">{{ grdS.beamsToPlot.length }}/{{ grd.activeBeams().length }}</span>
+                  <span v-if="grdS.beamsToPlot.length && grd.activeBeams().length > 1" class="ic del" :title="`删除勾选的 ${grdS.beamsToPlot.length} 个波束（可重新导入原 GRD 恢复）`" @click.stop.prevent="grd.deleteCheckedBeams()"><Icon name="x" :size="11" /></span>
                 </label>
-                <label v-for="b in grd.filteredBeams()" :key="b.i" class="brow" :class="{ on: grd.isBeamOn(b.i) }">
+                <label v-for="b in grd.filteredBeams()" :key="b.seq" class="brow" :class="{ on: grd.isBeamOn(b.i) }">
                   <input type="checkbox" :checked="grd.isBeamOn(b.i)" @change="grd.toggleBeam(b.i)" />
-                  <span class="bseq">{{ b.i + 1 }}</span>
+                  <span class="bseq">{{ b.seq }}</span>
                   <input class="bnm-in" :value="b.label" title="编辑波束名（地图标注同步用此名）" @click.stop @keydown.enter="e => e.target.blur()" @change="e => grd.renameBeam(b.i, e.target.value)" />
-                  <span class="bpk">{{ b.peakDb.toFixed(1) }}</span>
+                  <span v-if="grd.activeBeams().length > 1" class="ic del" :title="`删除该波束（峰值 ${b.peakDb.toFixed(1)} dB，可重新导入原 GRD 恢复）`" @click.stop.prevent="grd.deleteBeam(b.i)"><Icon name="x" :size="11" /></span>
+                  <span v-else class="bpk" :title="`峰值 ${b.peakDb.toFixed(1)} dB`">{{ b.peakDb.toFixed(1) }}</span>
                 </label>
                 <div v-if="!grd.filteredBeams().length" class="empty">无匹配波束</div>
               </div>
@@ -2929,6 +2933,7 @@ onBeforeUnmount(() => {
           <span class="pin-t">城市输入</span>
           <span class="ptb" :class="{ dis: !perf.canUndo.value }" title="撤销 (Ctrl+Z)" @click="perfUndo"><Icon name="undo-2" :size="12" /></span>
           <span class="ptb" :class="{ dis: !perf.canRedo.value }" title="重做 (Ctrl+Y)" @click="perfRedo"><Icon name="redo-2" :size="12" /></span>
+          <span class="ptb" title="在选中行下方增加一行（直接在表格里键入或粘贴）" @click="perfAddRow"><Icon name="plus" :size="12" /> 增加</span>
           <span class="ptb" title="把地图上的点标记 / 地面站导入为城市" @click="perfImportMarkers"><Icon name="import" :size="12" /> 从标记导入</span>
           <span class="ptb" title="把地图上的航迹航点导入为城市（每个航点一行，城市名取「航迹名#序号」）" @click="perfImportTrajs"><Icon name="import" :size="12" /> 导入航迹</span>
           <span class="ptb" title="从剪贴板粘贴表格（末两列=经度、纬度，可含 国家/城市/代号）批量添加" @click="perfPasteBtn"><Icon name="clipboard" :size="12" /> 粘贴</span>
@@ -2949,21 +2954,19 @@ onBeforeUnmount(() => {
                 <td v-for="(c, ci) in perfInCols" :key="c.key"
                     :class="{ n: c.num, ed: true, sel: perfInGrid.inSel(ri, ci), active: perfInGrid.isActive(ri, ci), editing: perfInGrid.isEdit(ri, ci) }"
                     @mousedown="perfInGrid.cellDown($event, ri, ci)" @mouseenter="perfInGrid.cellEnter(ri, ci)" @dblclick="perfInGrid.tryEdit(ri, ci, null)">
-                  <input v-if="perfInGrid.isEdit(ri, ci)" :ref="el => perfInGrid.editEl.value = el" class="pcell" :class="{ n: c.num }"
-                         :value="perfInGrid.editSeed.value != null ? perfInGrid.editSeed.value : (s[c.key] == null ? '' : s[c.key])"
-                         @blur="perfInGrid.commitEdit" @paste="perfInGrid.cellPaste($event, s, c.key)" />
-                  <template v-else>{{ s[c.key] || '' }}</template>
+                  <!-- 值由 useGridSelect 进入编辑时一次性写入（不绑 :value——实时时钟每秒重渲染会把绑定值刷回，吞掉正在键入的内容）。
+                       隐形占位 span 保留原文本撑住列宽（input 固有宽度会把 auto 布局的列撑开/缩水），input 绝对定位覆盖其上。 -->
+                  <template v-if="perfInGrid.isEdit(ri, ci)">
+                    <span class="pcell-ghost">{{ s[c.key] == null ? '' : s[c.key] }}</span>
+                    <input :ref="el => perfInGrid.editEl.value = el" class="pcell" :class="{ n: c.num }"
+                           @blur="perfInGrid.commitEdit" @paste="perfInGrid.cellPaste($event, s, c.key)" />
+                  </template>
+                  <template v-else>{{ s[c.key] == null ? '' : s[c.key] }}</template>
                 </td>
                 <td class="td-act"><span class="del" title="删除该城市" @click="perfDelStation(s.id)"><Icon name="x" :size="11" /></span></td>
               </tr>
-              <!-- 末行：新增（可在任一格 Ctrl+V 粘贴整块表格批量添加；不参与框选） -->
-              <tr class="pin-add" @paste="perfPaste" title="可从 Excel 复制后在此 Ctrl+V 批量粘贴（末两列=经度、纬度）">
-                <td><input v-model="perfNew.country" placeholder="国家" @keydown.enter="perfAddStation" /></td>
-                <td><input v-model="perfNew.city" placeholder="城市" @keydown.enter="perfAddStation" /></td>
-                <td><input v-model="perfNew.desig" placeholder="代号" @keydown.enter="perfAddStation" /></td>
-                <td class="n"><input class="n" v-model="perfNew.lon" placeholder="经度" @keydown.enter="perfAddStation" /></td>
-                <td class="n"><input class="n" v-model="perfNew.lat" placeholder="纬度" @keydown.enter="perfAddStation" /></td>
-                <td class="act"><span class="ptb add" title="新增城市 (Enter)" @click="perfAddStation"><Icon name="plus" :size="12" /></span></td>
+              <tr v-if="!perf.stations.value.length">
+                <td class="pin-empty" :colspan="perfInCols.length + 1">暂无城市——点「增加」逐行键入，或复制 Excel 区域后 Ctrl+V / 点「粘贴」批量添加</td>
               </tr>
             </tbody>
           </table>
@@ -3051,9 +3054,9 @@ onBeforeUnmount(() => {
                   <span class="balln">{{ perf.beamQuery.value.trim() ? '(全选搜索结果)' : '(全选)' }}</span>
                   <span class="bpk">{{ perf.beamSelCount(perfOpts) }}/{{ perf.ctxBeams.value.length }}</span>
                 </label>
-                <label v-for="b in perf.filteredBeams()" :key="b.bi" class="brow" :class="{ on: perf.beamOn(perfOpts, b.bi) }">
+                <label v-for="b in perf.filteredBeams()" :key="b.seq" class="brow" :class="{ on: perf.beamOn(perfOpts, b.bi) }">
                   <input type="checkbox" :checked="perf.beamOn(perfOpts, b.bi)" @change="perf.toggleBeam(perfOpts, b.bi)" />
-                  <span class="bseq">{{ b.bi + 1 }}</span>
+                  <span class="bseq">{{ b.seq }}</span>
                   <span class="pbnm" :title="b.name">{{ b.name }}</span>
                   <span class="bpk">{{ b.peakDb == null ? '—' : b.peakDb.toFixed(1) }}</span>
                 </label>
@@ -3341,14 +3344,7 @@ onBeforeUnmount(() => {
 .pr-t em { margin-left: 4px; font-style: normal; font-size: 10px; font-weight: 400; color: var(--text-faint); border: 1px solid var(--border); border-radius: 6px; padding: 0 5px; }
 .pin-body { flex: 1; overflow: auto; outline: none; }
 /* 新增行（不参与框选）：常驻输入框 */
-.perf-tbl tr.pin-add td { padding: 0; cursor: default; }
-.perf-tbl tr.pin-add td input { width: 100%; box-sizing: border-box; border: 1px solid transparent; background: transparent; color: var(--text); font: inherit; font-size: 11.5px; padding: 3px 8px; outline: none; }
-.perf-tbl tr.pin-add td input.n { text-align: right; font-family: var(--font-mono); }
-.perf-tbl tr.pin-add td input:hover { border-color: var(--border); }
-.perf-tbl tr.pin-add td input:focus { border-color: var(--accent); background: var(--bg); }
-.perf-tbl tr.pin-add td input::placeholder { color: var(--text-faint); }
-.perf-tbl tr.pin-add:hover { background: none; }
-.perf-tbl tr.pin-add .ptb.add { display: inline-block; padding: 0 6px; line-height: 18px; }
+.perf-tbl td.pin-empty { padding: 14px 12px; text-align: center; color: var(--text-faint); cursor: default; }
 
 /* —— 下：只读性能结果表 —— */
 .perf-result { flex: 1; min-height: 0; display: flex; flex-direction: column; }
@@ -3375,9 +3371,13 @@ onBeforeUnmount(() => {
 .perf-tbl.grid td.sel { background: color-mix(in srgb, var(--accent) 16%, transparent); }
 .perf-tbl.grid tr.out td.sel { background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .perf-tbl.grid td.active { box-shadow: inset 0 0 0 2px var(--accent); }
-.perf-tbl.grid td.editing { padding: 0; box-shadow: inset 0 0 0 2px var(--accent); }
+.perf-tbl.grid td.editing { padding: 0; box-shadow: inset 0 0 0 2px var(--accent); position: relative; }
 .perf-tbl.grid td.ed { color: var(--text); }
-.pcell { width: 100%; box-sizing: border-box; border: none; background: var(--bg); color: inherit; font: inherit; padding: 3px 8px; outline: none; }
+/* 隐形占位：原文本照常占位撑住列宽/行高（input 固有宽度否则会把 auto 布局的列撑开），内边距与普通单元格一致 */
+.pcell-ghost { visibility: hidden; display: block; padding: 3px 8px; }
+.pcell-ghost:empty::before { content: '\00a0'; }   /* 空格占位保住行高（空单元格编辑时无文本行盒） */
+/* 编辑框覆盖在占位之上，不参与表格布局 → 键入任意长度列宽不动（超长部分在框内滚动，与 Excel 视觉一致） */
+.pcell { position: absolute; inset: 0; width: 100%; height: 100%; box-sizing: border-box; border: none; background: var(--bg); color: inherit; font: inherit; padding: 3px 8px; outline: none; }
 .pcell.n { text-align: right; font-family: var(--font-mono); }
 .perf-tbl .td-act, .perf-tbl .th-act { width: 22px; text-align: center; }
 .perf-tbl .td-act { cursor: default; }
