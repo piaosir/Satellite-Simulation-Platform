@@ -272,10 +272,18 @@ function fillDownTo(r0_, r1_, c0_, c1_, toR) {
   if (hi < lo) return
   pushUndo()
   const srcN = r1_ - r0_ + 1
-  for (let c = c0_; c <= c1_; c++) {
-    if (isRO(c)) continue
-    const key = props.fields[c].key
-    for (let r = lo; r <= hi; r++) props.stations[r][key] = props.stations[r0_ + ((r - lo) % srcN)][key]
+  for (let r = lo; r <= hi; r++) {
+    const row = props.stations[r]; const srcRow = props.stations[r0_ + ((r - lo) % srcN)]
+    let coordChanged = false           // 填充改动了经纬度 → 联动 autoGeo（与粘贴/单格编辑口径一致）
+    const filledAuto = new Set()       // 填充已显式带入的降雨/海拔列：重算时跳过，不覆盖填充值
+    for (let c = c0_; c <= c1_; c++) {
+      if (isRO(c)) continue
+      const f = props.fields[c]; const v = srcRow[f.key]
+      if (isLatLonKey(f.key) && row[f.key] !== v) coordChanged = true
+      if (f.auto && String(v == null ? '' : v).trim() !== '') filledAuto.add(f.key)
+      row[f.key] = v
+    }
+    if (coordChanged && props.autoGeo) props.autoGeo(row, filledAuto)
   }
   range.ar = r0_; range.ac = c0_; range.fr = hi; range.fc = c1_
 }
@@ -365,15 +373,22 @@ async function pasteRange() {
   for (let i = 0; i < outR; i++) {
     const r = sr + i
     if (r >= props.stations.length) props.stations.push(makeRow())
+    const row = props.stations[r]
+    let coordChanged = false           // 该行经纬度被粘贴改动 → 联动 autoGeo 重算降雨/海拔（与单格编辑口径一致）
+    const pastedAuto = new Set()       // 粘贴已显式带入的降雨/海拔列（如整行复制）：重算时跳过，不覆盖粘贴值
     for (let j = 0; j < outC; j++) {
       const c = sc + j
       const src = grid[i % gR][j % gC]
       if (src === undefined) continue
       if (c < nColSel.value && !isRO(c)) {
         const f = props.fields[c]
-        props.stations[r][f.key] = isLatLonKey(f.key) ? clampLatLon(src) : normalizeFieldValue(f, src)
+        const v = isLatLonKey(f.key) ? clampLatLon(src) : normalizeFieldValue(f, src)
+        if (isLatLonKey(f.key) && row[f.key] !== v) coordChanged = true
+        if (f.auto && String(v == null ? '' : v).trim() !== '') pastedAuto.add(f.key)
+        row[f.key] = v
       }
     }
+    if (coordChanged && props.autoGeo) props.autoGeo(row, pastedAuto)
   }
   range.ar = sr; range.ac = sc
   range.fr = Math.min(props.stations.length - 1, sr + outR - 1)
@@ -495,7 +510,16 @@ function doImport() {
 // —— 批量设值（选中行）——
 const batch = reactive({ open: false, key: '', value: '' })
 function openBatch() { if (!selectedRows.value.length) return; batch.key = props.fields[0].key; batch.value = ''; batch.open = true }
-function doBatch() { pushUndo(); const v = normalizeFieldValue(batchField.value, batch.value); for (const s of selectedRows.value) s[batch.key] = v; batch.open = false }
+function doBatch() {
+  pushUndo()
+  const v = isLatLonKey(batch.key) ? clampLatLon(batch.value) : normalizeFieldValue(batchField.value, batch.value)
+  for (const s of selectedRows.value) {
+    const coordChanged = isLatLonKey(batch.key) && s[batch.key] !== v
+    s[batch.key] = v
+    if (coordChanged && props.autoGeo) props.autoGeo(s)   // 批量设经纬度同样联动重算降雨/海拔
+  }
+  batch.open = false
+}
 const batchField = computed(() => props.fields.find((f) => f.key === batch.key) || props.fields[0])
 
 // ============ 右键菜单（Excel 式）：复制/剪切/粘贴/清除内容 · 插入/删除行 · 隐藏列/清除整列 ============

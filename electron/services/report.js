@@ -131,10 +131,13 @@ const STR = {
     bwUsage: '带宽占用 (%)', pwUsage: '功率占用 (%)',
     upCN: '上行 C/N (dB)', downCN: '下行 C/N (dB)', totalCN: '合计 C/N (dB)', thresholdCN: '门限 C/N (dB)',
     ebno: 'Eb/N₀ (dB)', esno: 'Es/N₀ (dB)', psd: '载波功率谱密度 (dBW/Hz)', avail: '系统可用度 (%)',
+    specEff: '频谱效率 (bps/Hz)', capacity: '容量 (Mbps)',
     status: '合格', statusOk: '是', statusBad: '否', statusErr: '错误',
     pairSeq: '常规计算（1↔1）', pairMatrix: '矩阵计算（m×n）',
     subtitle: (sat, band, mode, pair, date) => `卫星 ${sat} · 频段 ${band} · 计算方式 ${mode} · 配对方式 ${pair} · ${date}`,
     calcFailed: '计算失败：',
+    capHeader: (n, failed) => `容量汇总（${n} 条链路${failed ? ` · ${failed} 条失败已排除` : ''}）`,
+    totalCap: '总容量', totalBw: '总带宽', avgEff: '平均频谱效率',
     param: '参数', uplink: '上行', downlink: '下行', total: '合计', value: '数值', unit: '单位'
   },
   en: {
@@ -144,10 +147,13 @@ const STR = {
     bwUsage: 'Bandwidth Usage Ratio (%)', pwUsage: 'Power Usage Ratio (%)',
     upCN: 'Uplink C/N (dB)', downCN: 'Downlink C/N (dB)', totalCN: 'Combined C/N (dB)', thresholdCN: 'Threshold C/N (dB)',
     ebno: 'Eb/N₀ (dB)', esno: 'Es/N₀ (dB)', psd: 'Satellite PSD (dBW/Hz)', avail: 'System Availability (%)',
+    specEff: 'Spectral Efficiency (bps/Hz)', capacity: 'Capacity (Mbps)',
     status: 'Status', statusOk: 'Pass', statusBad: 'Fail', statusErr: 'Error',
     pairSeq: 'Sequential (1:1)', pairMatrix: 'Full Matrix (m×n)',
     subtitle: (sat, band, mode, pair, date) => `Satellite ${sat} · Band ${band} · Calculation Mode: ${mode} · Pairing: ${pair} · ${date}`,
     calcFailed: 'Calculation Failed: ',
+    capHeader: (n, failed) => `Capacity Summary (${n} link${n > 1 ? 's' : ''}${failed ? `, ${failed} failed excluded` : ''})`,
+    totalCap: 'Total Capacity', totalBw: 'Total Bandwidth', avgEff: 'Average Spectral Efficiency',
     param: 'Parameter', uplink: 'Uplink', downlink: 'Downlink', total: 'Total', value: 'Value', unit: 'Unit'
   }
 }
@@ -168,6 +174,29 @@ function numOrText(v) {
   return Number.isFinite(n) && String(v).trim() !== '' ? n : v
 }
 
+// 单链路容量 kbps = 频谱效率 η(bps/Hz) × 载波带宽 B(kHz)——与工作台结果区「容量汇总」同口径
+function capKbpsOf(d) {
+  if (!d) return NaN
+  const bw = parseFloat(d.allocBandwidthResult)
+  const eta = parseFloat(d.spectralEfficiencyResult)
+  return (isFinite(bw) && isFinite(eta)) ? eta * bw : NaN
+}
+// 汇总块自适应单位（与工作台 UI 同规则）：容量 kbps→Mbps→Gbps；带宽 kHz→MHz→GHz
+function fmtCapText(kbps) {
+  const n = Number(kbps)
+  if (!isFinite(n) || n <= 0) return '0 kbps'
+  if (n >= 1e6) return (n / 1e6).toFixed(3) + ' Gbps'
+  if (n >= 1e3) return (n / 1e3).toFixed(3) + ' Mbps'
+  return n.toFixed(n >= 100 ? 1 : 2) + ' kbps'
+}
+function fmtBwText(khz) {
+  const n = Number(khz)
+  if (!isFinite(n) || n <= 0) return '0 kHz'
+  if (n >= 1e6) return (n / 1e6).toFixed(3) + ' GHz'
+  if (n >= 1e3) return (n / 1e3).toFixed(3) + ' MHz'
+  return n.toFixed(n >= 100 ? 1 : 3) + ' kHz'
+}
+
 // 链路汇总的"参数行"：矩阵显示全部指标 ∪ 结果卡片全部字段。每行一个参数，纵向排列——
 // 这样每条链路占一整列，从上往下读完一列就是这条链路的完整结果，跟下面单链路详细计算结果表
 // （参数纵向列在左、数值在右）是同一种阅读方式，多条链路时天然变成左右并排的对比表。
@@ -179,6 +208,8 @@ function summaryRows(t) {
     { label: t.linkMargin, get: (l) => val(l.data, 'linkmargin') },
     { label: t.allocBw, get: (l) => val(l.data, 'allocBandwidthResult') },
     { label: t.powerBw, get: (l) => val(l.data, 'PowerBWResult') },
+    { label: t.specEff, get: (l) => val(l.data, 'spectralEfficiencyResult') },
+    { label: t.capacity, get: (l) => { const k = capKbpsOf(l.data); return isFinite(k) ? (k / 1000).toFixed(3) : '—' } },
     { label: t.bwUsage, get: (l) => val(l.data, 'bandwidthUsageRatio') },
     { label: t.pwUsage, get: (l) => val(l.data, 'powerUsageRatio') },
     { label: t.upCN, get: (l) => val(l.data, 'uplinkCN') },
@@ -242,6 +273,36 @@ function buildSummarySheet(wb, links, params, meta, t, isSequential) {
     r++
   })
   if (rows.length) setRowBorder(ws, r - 1, 1, ncol, { bottom: MED })
+  // 容量汇总（与工作台结果区同口径）：总带宽 = Σ 载波带宽，总容量 = Σ(η×B) 逐链路相乘再求和，
+  // 平均频谱效率 = 总容量/总带宽（带宽加权）；失败链路排除并在标题注明。
+  const done = links.filter((l) => l.data && !l.error)
+  if (done.length) {
+    let bwKHz = 0, capKbps = 0
+    for (const l of done) {
+      const bw = parseFloat(l.data.allocBandwidthResult)
+      if (isFinite(bw)) bwKHz += bw
+      const k = capKbpsOf(l.data)
+      if (isFinite(k)) capKbps += k
+    }
+    r++
+    ws.mergeCells(r, 1, r, ncol)
+    const hd = ws.getCell(r, 1); hd.value = t.capHeader(done.length, links.length - done.length)
+    hd.font = { name: CJK, size: 11, bold: true }; hd.alignment = { vertical: 'middle', horizontal: 'left' }
+    setRowBorder(ws, r, 1, ncol, { bottom: THIN }); ws.getRow(r).height = 22; r++
+    const capRows = [
+      [t.totalCap, fmtCapText(capKbps)],
+      [t.totalBw, fmtBwText(bwKHz)],
+      [t.avgEff, bwKHz > 0 ? (capKbps / bwKHz).toFixed(3) + ' bps/Hz' : '—']
+    ]
+    for (const [label, value] of capRows) {
+      const lc = ws.getCell(r, 1); lc.value = label
+      lc.font = { name: CJK, size: 10 }; lc.alignment = { vertical: 'middle', horizontal: 'left' }
+      const vc = ws.getCell(r, 2); vc.value = value
+      vc.font = { name: FNT, size: 10, bold: true }; vc.alignment = { vertical: 'middle', horizontal: 'right' }
+      ws.getRow(r).height = 19; r++
+    }
+    setRowBorder(ws, r - 1, 1, ncol, { bottom: MED })
+  }
   ws.columns = [{ width: 24 }, ...links.map(() => ({ width: 15 }))]
 }
 

@@ -93,6 +93,8 @@ const METRIC_OPTIONS = [
   { key: 'auto', label: '自动' },
   { key: 'linkmargin', label: '链路余量 (dB)' },
   { key: 'paRecommendation', label: '功放功率 (W)' },
+  { key: 'capacityMbps', label: '容量 (Mbps)' },
+  { key: 'spectralEfficiencyResult', label: '频谱效率 (bps/Hz)' },
   { key: 'carrierTotalCN', label: '合计 C/N (dB)' },
   { key: 'ebnoActualResult', label: 'Eb/N₀ (dB)' },
   { key: 'esnoActualResult', label: 'Es/N₀ (dB)' },
@@ -113,6 +115,10 @@ function cellMetric(l) {
   if (!l) return ''
   if (l.error) return '✕'
   if (metricKey.value === 'auto') return l.metric
+  if (metricKey.value === 'capacityMbps') {   // 派生指标：引擎结果里没有现成字段，由 η×B 换算
+    const kbps = capacityKbpsOf(l.data)
+    return isFinite(kbps) ? (kbps / 1000).toFixed(3) : '—'
+  }
   const v = l.data ? l.data[metricKey.value] : undefined
   return (v === undefined || v === null || v === '') ? '—' : v
 }
@@ -260,14 +266,21 @@ const barClass = (v) => { const n = parseFloat(v); return n > 100 ? 'danger' : (
 // 汇总本批次所有已成功计算的链路：总带宽 = Σ 各链路载波带宽；总容量 = Σ 各链路容量。
 // 单链路容量 = 频谱效率 η(bps/Hz) × 载波带宽 B(kHz) = 容量(kbps)；各链路基带配置可不同（η 各异），
 // 故逐链路相乘再求和，而非用单一 η 乘总带宽。engine 已按链路输出 allocBandwidthResult / spectralEfficiencyResult。
+// capacityKbpsOf 是单链路口径的唯一出处：列表/矩阵「容量」指标、容量汇总都从这里换算。
+function capacityKbpsOf(d) {
+  if (!d) return NaN
+  const bw = parseFloat(d.allocBandwidthResult)       // 载波带宽 kHz
+  const eta = parseFloat(d.spectralEfficiencyResult)  // 频谱效率 bps/Hz
+  return (isFinite(bw) && isFinite(eta)) ? eta * bw : NaN   // 容量 kbps
+}
 const capacitySummary = computed(() => {
   const done = links.value.filter((l) => l && l.data && !l.error)
   let bwKHz = 0, capKbps = 0
   for (const l of done) {
-    const bw = parseFloat(l.data.allocBandwidthResult)       // 载波带宽 kHz
-    const eta = parseFloat(l.data.spectralEfficiencyResult)  // 频谱效率 bps/Hz
+    const bw = parseFloat(l.data.allocBandwidthResult)
     if (isFinite(bw)) bwKHz += bw
-    if (isFinite(bw) && isFinite(eta)) capKbps += eta * bw   // 容量 kbps
+    const kbps = capacityKbpsOf(l.data)
+    if (isFinite(kbps)) capKbps += kbps
   }
   return {
     count: done.length,
@@ -358,21 +371,22 @@ function selectLink(ti, ri) {
 }
 
 // —— 经纬度 → 降雨率/海拔自动填（与小程序一致；选址或改经纬度触发，逐站）——
-async function fillGeoRow(row, lonK, latK, rainK, elevK) {
+// skip：粘贴/填充已显式带入的降雨/海拔列（整行复制场景），重算时跳过不覆盖
+async function fillGeoRow(row, lonK, latK, rainK, elevK, skip) {
   if (!api) return
   const lat = parseFloat(row[latK]); const lon = parseFloat(row[lonK])
   if (isNaN(lat) || isNaN(lon)) return
   try {
     const g = await api.linkBudget.geoFill(lat, lon)
     if (!g) return
-    if (g.rainRate !== null && g.rainRate !== undefined) row[rainK] = String(g.rainRate)
-    if (g.altitude !== null && g.altitude !== undefined) row[elevK] = String(g.altitude)
+    if (g.rainRate !== null && g.rainRate !== undefined && !(skip && skip.has(rainK))) row[rainK] = String(g.rainRate)
+    if (g.altitude !== null && g.altitude !== undefined && !(skip && skip.has(elevK))) row[elevK] = String(g.altitude)
   } catch (e) { /* 保留原值 */ }
 }
 // 城市关键词检索（城市名 / 省份 / 拼音缩写）——交给引擎 core.searchCities（与小程序口径一致）
 const citySearch = (q) => (api ? api.linkBudget.searchCities(q) : Promise.resolve([]))
-const autoGeoTx = (row) => fillGeoRow(row, 'longitude', 'latitude', 'rainRate', 'altitude')
-const autoGeoRx = (row) => fillGeoRow(row, 'rxLongitude', 'rxLatitude', 'rxRainRate', 'rxAltitude')
+const autoGeoTx = (row, skip) => fillGeoRow(row, 'longitude', 'latitude', 'rainRate', 'altitude', skip)
+const autoGeoRx = (row, skip) => fillGeoRow(row, 'rxLongitude', 'rxLatitude', 'rxRainRate', 'rxAltitude', skip)
 
 // —— Phase 4：配置持久化（含卫星 / EIRP·GT 天线匹配选择）——
 // ① 整盘工作台状态序列化（卫星/基带参数、发收信站群、计算方式、GRD 匹配选择、矩阵显示）。
