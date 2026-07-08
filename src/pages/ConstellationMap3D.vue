@@ -2526,45 +2526,45 @@ onBeforeUnmount(() => {
               <span class="celive" title="改动实时预览到地球">● 实时</span>
             </div>
             <div class="cebody">
-              <div class="cef"><label>名称</label><input class="ci" v-model="constModal.name" placeholder="星座名称" /></div>
-              <div class="cef"><label>构型</label>
+              <div class="cef"><label>星座名称</label><input class="ci" v-model="constModal.name" placeholder="星座名称" /></div>
+              <div class="cef"><label>星座构型</label>
                 <span class="seg3">
                   <span :class="{ on: constModal.pattern === 'delta' }" @click="constModal.pattern = 'delta'">Delta</span>
                   <span :class="{ on: constModal.pattern === 'star' }" @click="constModal.pattern = 'star'">Star</span>
-                  <span :class="{ on: constModal.pattern === 'plane' }" @click="constModal.pattern = 'plane'">单面</span>
+                  <span :class="{ on: constModal.pattern === 'plane' }" @click="constModal.pattern = 'plane'">单轨道面</span>
                 </span>
               </div>
 
-              <div class="cesec">Walker 构型</div>
+              <div class="cesec">Walker 构型参数 (i : T/P/F)</div>
               <div class="cetpf">
-                <div><small>总数 T</small><input class="ci" type="number" min="1" step="1" v-model.number="constModal.T" /></div>
-                <div v-if="constModal.pattern !== 'plane'"><small>面数 P</small><input class="ci" type="number" min="1" step="1" v-model.number="constModal.P" /></div>
-                <div v-if="constModal.pattern !== 'plane'"><small>相位 F</small><input class="ci" type="number" min="0" step="1" v-model.number="constModal.F" /></div>
+                <div><small>卫星总数 T</small><input class="ci" type="number" min="1" step="1" v-model.number="constModal.T" /></div>
+                <div v-if="constModal.pattern !== 'plane'"><small>轨道面数 P</small><input class="ci" type="number" min="1" step="1" v-model.number="constModal.P" /></div>
+                <div v-if="constModal.pattern !== 'plane'"><small>相位因子 F</small><input class="ci" type="number" min="0" step="1" v-model.number="constModal.F" /></div>
               </div>
-              <div class="cef"><label>倾角</label><input class="ci" type="number" step="0.1" v-model.number="constModal.incl" /><span class="u">°</span></div>
+              <div class="cef"><label>轨道倾角 i</label><input class="ci" type="number" step="0.1" v-model.number="constModal.incl" /><span class="u">°</span></div>
 
-              <div class="cesec">轨道</div>
-              <div class="cef"><label>形状</label>
+              <div class="cesec">轨道尺寸与形状</div>
+              <div class="cef"><label>轨道形状</label>
                 <span class="seg3">
-                  <span :class="{ on: constModal.shape === 'circ' }" @click="constModal.shape = 'circ'">圆</span>
-                  <span :class="{ on: constModal.shape === 'ellip' }" @click="constModal.shape = 'ellip'">椭圆</span>
+                  <span :class="{ on: constModal.shape === 'circ' }" @click="constModal.shape = 'circ'">圆轨道</span>
+                  <span :class="{ on: constModal.shape === 'ellip' }" @click="constModal.shape = 'ellip'">椭圆轨道</span>
                 </span>
               </div>
-              <div class="cefv"><label>{{ constModal.shape === 'ellip' ? '近地点高度' : '轨道高度' }}</label><div class="ceinp"><input class="ci" type="number" step="10" v-model.number="constModal.perigeeKm" /><span class="u">km</span></div></div>
+              <div class="cefv"><label>{{ constModal.shape === 'ellip' ? '近地点高度 hₚ' : '轨道高度 h' }}</label><div class="ceinp"><input class="ci" type="number" step="10" v-model.number="constModal.perigeeKm" /><span class="u">km</span></div></div>
               <template v-if="constModal.shape === 'ellip'">
-                <div class="cefv"><label>远地点高度</label><div class="ceinp"><input class="ci" type="number" step="10" v-model.number="constModal.apogeeKm" /><span class="u">km</span></div></div>
-                <div class="cefv"><label>近地点幅角</label><div class="ceinp"><input class="ci" type="number" step="1" v-model.number="constModal.argp" /><span class="u">°</span></div></div>
+                <div class="cefv"><label>远地点高度 hₐ</label><div class="ceinp"><input class="ci" type="number" step="10" v-model.number="constModal.apogeeKm" /><span class="u">km</span></div></div>
+                <div class="cefv"><label>近地点幅角 ω</label><div class="ceinp"><input class="ci" type="number" step="1" v-model.number="constModal.argp" /><span class="u">°</span></div></div>
               </template>
 
-              <div class="cesec">相位与指向</div>
+              <div class="cesec">星座定向与初始相位</div>
               <div class="cetpf">
-                <div><small>RAAN 起始</small><input class="ci" type="number" step="1" v-model.number="constModal.raan0" /></div>
-                <div><small>初始相位 M₀</small><input class="ci" type="number" step="1" v-model.number="constModal.m0" /></div>
+                <div><small>升交点赤经 Ω₀</small><input class="ci" type="number" step="1" v-model.number="constModal.raan0" /></div>
+                <div><small>初始平近点角 M₀</small><input class="ci" type="number" step="1" v-model.number="constModal.m0" /></div>
               </div>
 
-              <div class="cesec">外观</div>
+              <div class="cesec">显示外观</div>
               <label class="chk2"><input type="checkbox" v-model="constModal.colorByPlane" /><span>按轨道面配色</span></label>
-              <div v-if="!constModal.colorByPlane" class="cef"><label>颜色</label><input class="clr" type="color" v-model="constModal.color" /></div>
+              <div v-if="!constModal.colorByPlane" class="cef"><label>标识颜色</label><input class="clr" type="color" v-model="constModal.color" /></div>
 
               <div v-if="constDerived" class="ceread">
                 <div class="crcode">{{ constDerived.code }}</div>
@@ -3682,7 +3682,7 @@ onBeforeUnmount(() => {
 .cebody { flex: 1; min-height: 0; overflow-y: auto; padding: 10px 12px; }
 .cesec { margin: 13px 0 8px; padding-top: 9px; border-top: 1px solid var(--border); color: var(--text-muted); font-size: 11px; }
 .cef { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-.cef > label { width: 40px; flex: none; color: var(--text-muted); font-size: 12px; }
+.cef > label { width: 68px; flex: none; color: var(--text-muted); font-size: 12px; }
 .cef > .ci { flex: 1; min-width: 0; border: 1px solid var(--border); background: var(--bg); padding: 4px 7px; font-size: 12px; color: var(--text); outline: none; }
 .cef > .u { flex: none; width: 16px; color: var(--text-muted); font-size: 11px; }
 .cef > .clr { flex: 1; height: 24px; }
