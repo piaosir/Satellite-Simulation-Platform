@@ -102,6 +102,20 @@ export function useCustomConstellations(onChange) {
   // 某座星座的卫星数（向导/列表显示用）
   function count(cfg) { return build(cfg).length }
 
+  // 全部星座（含隐藏）的合成星，供「搜索 / 关联解算」用——与显隐无关、不含实时预览星。
+  // 复用 build 的签名缓存：命中即拼接现成 entries，不重新生成。
+  function catalog() {
+    const out = []
+    for (const cfg of list.value) for (const e of build(cfg)) out.push(e)
+    return out
+  }
+  // 按 NORAD 号在全部星座（含隐藏）里找合成星；供关联卫星按号实时解算位置（关联不因显隐中断）。
+  function findByNorad(noradId) {
+    const id = String(noradId)
+    for (const cfg of list.value) for (const e of build(cfg)) if (String(e.noradId) === id) return e
+    return null
+  }
+
   function persist() {
     try {
       localStorage.setItem(STORE_KEY, JSON.stringify({
@@ -161,5 +175,5 @@ export function useCustomConstellations(onChange) {
     preview.value = { editId: draft.id || null, cfg: normalize({ ...draft, id: '__preview__', noradBase: PREVIEW_BASE }) }
   }
 
-  return { list, add, update, remove, toggle, showOnly, setPreview, count, entriesForRender, load, PLANE_PALETTE }
+  return { list, add, update, remove, toggle, showOnly, setPreview, count, entriesForRender, catalog, findByNorad, load, PLANE_PALETTE }
 }

@@ -649,6 +649,9 @@ export function createGlobeScene(container, quality = {}) {
     return fatStrip(pts, color, width || 1.4, opacity, 6)   // 与 GRD 等值线/Polygon 线同层(6)：覆盖填充(5)之上、国界省界(6.5+)之下
   }
   const LIFT = 12  // 轨迹/足迹抬离地表 ~12km，避免与球面 z-fighting
+  // 选中星「在轨点」大号圆点屏幕像素：略大于星点云(SAT_POINT_PX≈3.2)，压在细轨道之上、落在高亮环内；primary 更大一档
+  const SEL_DOT_PX = 11
+  const SEL_DOT_PX_PRIMARY = 13
   function setOrbit(points) {
     disposeLine(orbitLine); orbitLine = null
     if (points && points.length) { orbitLine = lineFromLLA(points, 0x6f9fc8, 0.75, 1.5); scene.add(orbitLine) }
@@ -668,27 +671,40 @@ export function createGlobeScene(container, quality = {}) {
     footLine = fatSegments(flat, 0xb8e6fa, 1.6, 1, 6); scene.add(footLine)   // 与 GRD 等值线/Polygon 线同层(6)
   }
   // 多选：一组卫星各自的轨道圈/星下点轨迹/覆盖足迹（按各自颜色），primary 更亮更粗。
-  let selSetGroup = null
+  let selSetGroup = null, selDotGroup = null   // selDotGroup：选中星「在轨点」大号圆点层（压在细轨道之上，随缩放联动）
   function disposeSelSet() {
-    if (!selSetGroup) return
-    for (const l of selSetGroup.children) { l.geometry.dispose(); if (l.material) { lineMats.delete(l.material); l.material.dispose() } }
-    scene.remove(selSetGroup); selSetGroup = null
+    if (selSetGroup) {
+      for (const l of selSetGroup.children) { l.geometry.dispose(); if (l.material) { lineMats.delete(l.material); l.material.dispose() } }
+      scene.remove(selSetGroup); selSetGroup = null
+    }
+    disposeGroup(selDotGroup); selDotGroup = null   // 精灵点用 disposeGroup（连同 canvas 贴图一起释放）
   }
   function setSelectionSet(items) {
     disposeSelSet()
     if (!items || !items.length) return
     selSetGroup = new THREE.Group()
+    const dotG = new THREE.Group()
     for (const it of items) {
       // 轨道圈/星下点轨迹(金)/覆盖足迹(青) 都用与单选时相同的固定原色，多颗同时叠画；primary 仅加粗加亮以区分聚焦星（不用变色）
-      if (it.orbit && it.orbit.length) selSetGroup.add(lineFromLLA(it.orbit, 0x6f9fc8, it.primary ? 0.9 : 0.5, it.primary ? 1.9 : 1.2))
+      // 轨道线宽收细（primary 1.3 / 其余 1.0）：与选中星「在轨点」大号圆点配合，点更醒目、线不再吃掉点
+      if (it.orbit && it.orbit.length) selSetGroup.add(lineFromLLA(it.orbit, 0x6f9fc8, it.primary ? 0.9 : 0.5, it.primary ? 1.3 : 1.0))
       if (it.track && it.track.length) selSetGroup.add(lineFromLLA(it.track.map((p) => ({ lat: p.lat, lon: p.lon, altKm: LIFT })), 0xe8c074, 1, 1.6))
       if (it.footprint && it.footprint.length > 1) {
         const pts = it.footprint.map((p) => llaToVec(p.lat, p.lon, LIFT)); const flat = []
         for (let i = 0; i + 1 < pts.length; i += 2) { const a = pts[i], b = pts[i + 1]; flat.push(a.x, a.y, a.z, b.x, b.y, b.z) }
         selSetGroup.add(fatSegments(flat, 0xb8e6fa, 1.6, 1, 6))
       }
+      // 选中星「在轨点」：在卫星真实在轨位置画大号圆点，跟随星点原色。renderOrder 7 > 轨道线 6 → 同深度时点画在线之上，不被细轨道盖住；
+      // makeDot 自带 depthTest 开 → 背面星点仍由不透明地球深度天然剔除（绝不能关 depthTest）。随缩放联动见 rescaleMarkers。
+      if (it.satPos && Number.isFinite(it.satPos.lat) && Number.isFinite(it.satPos.lon)) {
+        const dot = makeDot(it.satPos.color || '#9fd0ef')
+        dot.position.copy(llaToVec(it.satPos.lat, it.satPos.lon, it.satPos.altKm || 0))
+        dot._px = it.primary ? SEL_DOT_PX_PRIMARY : SEL_DOT_PX; dot._ar = 1; dot.renderOrder = 7
+        dotG.add(dot)
+      }
     }
     scene.add(selSetGroup)
+    if (dotG.children.length) { selDotGroup = dotG; scene.add(selDotGroup) }
   }
   function clearSelectionGeom() { setOrbit(null); setGroundTrack(null); setFootprint(null); setHighlight(null); disposeSelSet() }
 
@@ -1151,7 +1167,7 @@ export function createGlobeScene(container, quality = {}) {
     for (const p of (points || [])) {
       const dot = makeDot('#ffd24a'); dot.position.copy(llaToVec(p.lat, p.lon, 0).multiplyScalar(1.0012)); dot._px = ptDotPx; dot._ar = 1; dot.renderOrder = 15; g.add(dot)
       if (p.label) g.add(labelSprite(p.label, p.lat, p.lon, '#ffffff', -0.35, ptFont))   // 坐标：白字
-      if (p.el) g.add(labelSprite(p.el, p.lat, p.lon, '#cdd6de', 1.35, ptFont * 0.9))     // 聚焦卫星仰角：素灰，标记下方
+      if (p.el) g.add(labelSprite(p.el, p.lat, p.lon, '#ffffff', 1.35, ptFont * 0.9))     // 聚焦卫星仰角：亮白，标记下方
     }
     for (const s of (stations || [])) {
       // 关闭深度测试 + 半球剔除（_dir）：与文字标签同策略。地面站图标是「从地表立起」的精灵，开 depthTest 时
@@ -1159,8 +1175,8 @@ export function createGlobeScene(container, quality = {}) {
       // 地表之上，转到背面时由 rescaleMarkers 按 _dir 自动隐藏/淡出（不会透出地球背面的站点）。
       const st = new THREE.Sprite(new THREE.SpriteMaterial({ map: stationTexture(), depthTest: false, depthWrite: false, transparent: true }))
       st.position.copy(llaToVec(s.lat, s.lon, 0).multiplyScalar(1.0012)); st.center.set(0.5, 0); st._px = stIcon; st._ar = 1; st._dir = st.position.clone().normalize(); st.renderOrder = 15; g.add(st)
-      if (s.name) g.add(labelSprite(s.name, s.lat, s.lon, '#cfeaff', 0.82, stFont))   // 名称紧贴地面站底座下方
-      if (s.el) g.add(labelSprite(s.el, s.lat, s.lon, '#cdd6de', 1.87, stFont * 0.9))   // 聚焦卫星仰角：素灰，名称下方
+      if (s.name) g.add(labelSprite(s.name, s.lat, s.lon, '#ffffff', 0.82, stFont))   // 名称紧贴地面站底座下方：亮白
+      if (s.el) g.add(labelSprite(s.el, s.lat, s.lon, '#ffffff', 1.87, stFont * 0.9))   // 聚焦卫星仰角：亮白，名称下方
     }
     markersGroup = g; scene.add(g)
   }
@@ -1206,7 +1222,7 @@ export function createGlobeScene(container, quality = {}) {
         if (o._px) { const dd = camera.position.distanceTo(o.position); const h = o._px * zoomK * (2 * dd * tanH) / curH; o.scale.set(h * (o._ar || 1), h, 1) }
       }
     }
-    go(markersGroup); go(trajGroup); go(focusSatGroup)
+    go(markersGroup); go(trajGroup); go(focusSatGroup); go(selDotGroup)   // selDotGroup：选中星在轨点随缩放联动（无 _dir，靠 depthTest 挡背面）
   }
 
   let satPoints = null

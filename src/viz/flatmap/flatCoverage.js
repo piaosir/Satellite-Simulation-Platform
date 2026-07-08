@@ -488,12 +488,12 @@ export function createFlatCoverage(canvas) {
     for (const p of mk.points) {
       const pf = sizes.ptFont * iz * MK_FONT_K   // 点标记文字：×MK_FONT_K 与 3D 字高对齐（与图标同用克制版 iz）
       drawText(p.label, p.lon, p.lat, pf, '#ffffff', { dy: pf * 0.9 + 5 * iz })
-      if (p.el) drawText(p.el, p.lon, p.lat, pf * 0.9, '#cdd6de', { dy: pf * 1.9 + 8 * iz })   // 聚焦卫星仰角：素灰
+      if (p.el) drawText(p.el, p.lon, p.lat, pf * 0.9, '#ffffff', { dy: pf * 1.9 + 8 * iz })   // 聚焦卫星仰角：亮白
     }
     for (const s of mk.stations) {
       const sf = sizes.stFont * iz * MK_FONT_K   // 地面站文字：×MK_FONT_K 与 3D 字高对齐（与图标同用克制版 iz）
-      drawText(s.name, s.lon, s.lat, sf, '#cfeaff', { dy: sf * 0.5 + 0.5 * iz })
-      if (s.el) drawText(s.el, s.lon, s.lat, sf * 0.9, '#cdd6de', { dy: sf * 1.5 + 3.5 * iz })   // 聚焦卫星仰角：素灰
+      drawText(s.name, s.lon, s.lat, sf, '#ffffff', { dy: sf * 0.5 + 0.5 * iz })
+      if (s.el) drawText(s.el, s.lon, s.lat, sf * 0.9, '#ffffff', { dy: sf * 1.5 + 3.5 * iz })   // 聚焦卫星仰角：亮白
     }
     // 卫星 / 仰角线独立图层：等仰角线 + 卫星图标 + 名称（在覆盖/标记之上、聚焦图标之下）
     if (satLayer) {
@@ -609,7 +609,7 @@ export function createFlatCoverage(canvas) {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     ctx.save(); ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip()
     drawFieldOverlays()   // GRD 天线名/波束中心/数值标签（覆盖层之上）
-    for (const p of focusSats) drawSatIcon(p.lon, p.lat, sizes.satIcon * scale * SAT_ICON_K, '#ffffff')   // 聚焦卫星（最上层，与卫星图标同率、按 mz 联动；多选=每颗各一个图标）
+    for (const p of focusSats) drawSatIcon(p.lon, p.lat, sizes.satIcon * Math.sqrt(scale) * SAT_ICON_K, '#ffffff')   // 聚焦卫星（最上层）：按 iz=√scale 克制联动（与 2D 导出/地面站/航迹一致，防止高倍放大时膨大、更贴 3D）；多选=每颗各一个图标
     ctx.restore()
   }
 

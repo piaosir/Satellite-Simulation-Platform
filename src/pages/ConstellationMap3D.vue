@@ -459,6 +459,8 @@ function buildSelList() {
 // ===================== 自定义星座（仿 STK Walker 生成器） =====================
 // 合成星并入点云叠加显示：其 entries 追加进 renderEntries，即自动获得星点渲染 / 点选 / 选中轨道·星下点·足迹。
 const DEFAULT_SAT_RGB = [0x9f / 255, 0xd0 / 255, 0xef / 255]   // 默认星点色（与统一材质 0x9fd0ef 一致）
+// 星点原色 → '#rrggbb'（自定义星用自身色，普通星用默认色）；供选中星「在轨点」大号圆点跟随星点原色
+const satDotHex = (e) => { const c = (e && e.color) || DEFAULT_SAT_RGB; const h = (n) => Math.max(0, Math.min(255, Math.round(n * 255))).toString(16).padStart(2, '0'); return '#' + h(c[0]) + h(c[1]) + h(c[2]) }
 let renderHasColor = false     // 渲染集是否含逐点色（有可见自定义星座时为真 → 传 colors 给 setSatellites）
 const customConst = useCustomConstellations(() => rebuildRenderSet())
 const customList = customConst.list
@@ -589,8 +591,17 @@ function buildSelectedGeometry() {
     const track = samples.map((s) => ({ lat: s.lat, lon: s.lon }))
     const primary = e === selEntry
     const fp = footprintFor(rec, now, gmstNow, primary)   // primary 顺带更新高亮环 + beam ε=0 上限占位
+    // 选中星当前在轨位置：供 3D 在该处画大号「在轨点」（跟随星点原色，压在细轨道之上）
+    let satPos = null
+    try {
+      const pvNow = sat.propagate(rec, now)
+      if (pvNow && pvNow.position) {
+        const gdN = sat.eciToGeodetic(pvNow.position, gmstNow)
+        satPos = { lat: sat.degreesLat(gdN.latitude), lon: sat.degreesLong(gdN.longitude), altKm: gdN.height, color: satDotHex(e) }
+      }
+    } catch { satPos = null }
     selGeomAll.push({ track, footprint: fp })              // 全体几何缓存供 2D 平面图（每颗都画，非仅主星）
-    items.push({ orbit, track, footprint: fp, primary })
+    items.push({ orbit, track, footprint: fp, primary, satPos })
   })
   scene.setSelectionSet(items)
   pushSelGeomFlat()
@@ -816,7 +827,13 @@ async function ensureSearchPool() {
     if (pool.length) { searchPool = pool; poolReady = true }
   } catch { /* 离线/失败：回退当前组 */ } finally { poolLoading = false }
 }
-const searchSource = () => (poolReady && searchPool.length ? searchPool : entries)
+// 全量目录（或当前组）+ 自定义星座合成星（含隐藏，见「隐藏也算数」）。自定义星放最前，
+// 确保在结果条数上限内一定先被扫到、搜得到；号段 900000+ 与真实目录不撞。
+const searchSource = () => {
+  const base = poolReady && searchPool.length ? searchPool : entries
+  const cc = customConst.catalog()
+  return cc.length ? cc.concat(base) : base
+}
 
 function selectSat(e, face, additive) {
   if (additive && selEntries.length) {
@@ -888,10 +905,10 @@ function onSearch(e) {
   const src = searchSource(), out = []
   for (let i = 0; i < src.length && out.length < 40; i++) {
     const en = src[i]
-    if (en.name.toLowerCase().includes(kw) || String(en.noradId).includes(kw)) {
+    if (en.name.toLowerCase().includes(kw) || String(en.noradId).includes(kw) || (en.groupLabel && en.groupLabel.toLowerCase().includes(kw))) {   // 自定义星座另按星座名(groupLabel)命中→列出全部成员
       let slot = ''
       if (geo) { const pv = sat.propagate(en.rec, now); if (pv && pv.position) slot = fmtSlot(sat.degreesLong(sat.eciToGeodetic(pv.position, gmst).longitude)) }
-      out.push({ en, name: en.name, noradId: en.noradId, groupLabel: GROUP_LABEL[en.group] || GROUP_LABEL[curKey()] || '', slot })
+      out.push({ en, name: en.name, noradId: en.noradId, groupLabel: en.groupLabel || GROUP_LABEL[en.group] || GROUP_LABEL[curKey()] || '', slot })
     }
   }
   searchResults.value = out
@@ -1866,7 +1883,7 @@ function orbitSatrec(node) {
 // 当前生效位置：星座关联星按 calcAt() 实时解算；轨道根数模拟星按自建 satrec 解算；否则取节点存储值
 function satLivePos(node) {
   if (node.noradId) {
-    const en = entries.find((x) => String(x.noradId) === String(node.noradId)) || searchPool.find((x) => String(x.noradId) === String(node.noradId))
+    const en = entries.find((x) => String(x.noradId) === String(node.noradId)) || searchPool.find((x) => String(x.noradId) === String(node.noradId)) || customConst.findByNorad(node.noradId)   // 自定义星座合成星(含隐藏)：关联后按合成星历实时跟踪
     if (en) { const now = calcAt(); const pv = sat.propagate(en.rec, now); if (pv && pv.position) { const gd = sat.eciToGeodetic(pv.position, sat.gstime(now)); return { lon: sat.degreesLong(gd.longitude), lat: sat.degreesLat(gd.latitude), altKm: gd.height } } }
   } else if (node.elements) {
     try { const now = calcAt(); const pv = sat.propagate(orbitSatrec(node), now); if (pv && pv.position) { const gd = sat.eciToGeodetic(pv.position, sat.gstime(now)); return { lon: sat.degreesLong(gd.longitude), lat: sat.degreesLat(gd.latitude), altKm: gd.height } } } catch { /* 根数异常 → 回退静态值 */ }
@@ -1911,7 +1928,7 @@ function onSatSearch(e) {
   const src = searchSource(), out = []
   for (let i = 0; i < src.length && out.length < 30; i++) {
     const en = src[i]
-    if (en.name.toLowerCase().includes(kw) || String(en.noradId).includes(kw)) out.push({ en, name: en.name, noradId: en.noradId, groupLabel: GROUP_LABEL[en.group] || GROUP_LABEL[curKey()] || '' })
+    if (en.name.toLowerCase().includes(kw) || String(en.noradId).includes(kw) || (en.groupLabel && en.groupLabel.toLowerCase().includes(kw))) out.push({ en, name: en.name, noradId: en.noradId, groupLabel: en.groupLabel || GROUP_LABEL[en.group] || GROUP_LABEL[curKey()] || '' })
   }
   satSearchRes.value = out
 }
@@ -2008,15 +2025,19 @@ const fmtLL = (lat, lon) => `${Math.abs(lon).toFixed(2)}°${lon >= 0 ? 'E' : 'W'
 const validLat = (v) => Number.isFinite(v) && v >= -90 && v <= 90
 const validLon = (v) => Number.isFinite(v) && v >= -180 && v <= 180
 
-// 当前聚焦卫星相对地面点(lat,lon)的仰角；未聚焦或不可解算时返回 null
+// 聚焦卫星相对地面点(lat,lon)的仰角；多选时取全部聚焦星中的最大仰角（即最「可见」/最高那颗）。未聚焦或全部不可解算时返回 null
 function satElevAt(lat, lon) {
-  if (!selEntry) return null
-  const now = calcAt()
-  const pv = sat.propagate(selEntry.rec, now)
-  if (!pv || !pv.position) return null
-  const ecf = sat.eciToEcf(pv.position, sat.gstime(now))
-  const look = sat.ecfToLookAngles({ longitude: lon * DEG, latitude: lat * DEG, height: 0 }, ecf)
-  return look.elevation / DEG
+  if (!selEntries.length) return null
+  const now = calcAt(), gmst = sat.gstime(now)
+  const gs = { longitude: lon * DEG, latitude: lat * DEG, height: 0 }
+  let best = null
+  for (const e of selEntries) {
+    const pv = sat.propagate(e.rec, now)
+    if (!pv || !pv.position) continue
+    const el = sat.ecfToLookAngles(gs, sat.eciToEcf(pv.position, gmst)).elevation / DEG
+    if (best == null || el > best) best = el
+  }
+  return best
 }
 // 标签用仰角文本：未聚焦返回空串（地平线以下显示负值即标识不可见）
 const fmtElev = (lat, lon) => { const e = satElevAt(lat, lon); return e == null ? '' : `仰角 ${e.toFixed(1)}°` }
