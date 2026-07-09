@@ -1072,10 +1072,17 @@ export function createGlobeScene(container, quality = {}) {
   function setOnRightClick(fn) { onRightClick = fn }
   // 拖拽波束模式：左键拖动地球时不旋转，改为回调经纬度（拖动 boresight）
   let beamDragMode = false, onBeamDrag = null, beamDragging = false
-  function setBeamDragMode(v) { beamDragMode = !!v; controls.enableRotate = !beamDragMode; if (!v) beamDragging = false; renderer.domElement.style.cursor = beamDragMode ? 'move' : '' }
+  // 协调区多边形 hold-to-draw：绘制态下左键按住沿路径拖动，按屏幕像素阈值连续加点（同样不旋转地球）。右键加点仍并存。
+  let polyDrawMode = false, onPolyDraw = null, polyDrawing = false, drawLX = 0, drawLY = 0
+  const POLY_DRAW_MIN2 = 14 * 14   // 相邻加点最小屏幕间距²（px）
+  const updateRotate = () => { controls.enableRotate = !(beamDragMode || polyDrawMode) }   // 拖波束/绘制态均停旋转
+  function setBeamDragMode(v) { beamDragMode = !!v; if (!v) beamDragging = false; updateRotate(); renderer.domElement.style.cursor = beamDragMode ? 'move' : (polyDrawMode ? 'crosshair' : '') }
   function setOnBeamDrag(fn) { onBeamDrag = fn }
+  function setPolyDrawMode(v) { polyDrawMode = !!v; polyDrawing = false; updateRotate(); renderer.domElement.style.cursor = polyDrawMode ? 'crosshair' : (beamDragMode ? 'move' : '') }
+  function setOnPolyDraw(fn) { onPolyDraw = fn }
   renderer.domElement.addEventListener('pointermove', (e) => {
     if (beamDragging) { const ll = pickGlobeOrLimb(e.clientX, e.clientY); if (ll && onBeamDrag) onBeamDrag(ll, 'move') }
+    if (polyDrawing) { const dx = e.clientX - drawLX, dy = e.clientY - drawLY; if (dx * dx + dy * dy >= POLY_DRAW_MIN2) { drawLX = e.clientX; drawLY = e.clientY; const ll = pickGlobe(e.clientX, e.clientY); if (ll && onPolyDraw) onPolyDraw(ll, 'move') } }
     if (onHover) onHover(pickGlobe(e.clientX, e.clientY))
   })
   renderer.domElement.addEventListener('pointerleave', () => { if (onHover) onHover(null) })
@@ -1274,8 +1281,10 @@ export function createGlobeScene(container, quality = {}) {
   renderer.domElement.addEventListener('pointerdown', (e) => {
     downX = e.clientX; downY = e.clientY
     if (beamDragMode && e.button === 0) { beamDragging = true; const ll = pickGlobeOrLimb(e.clientX, e.clientY); if (ll && onBeamDrag) onBeamDrag(ll, 'start') }
+    else if (polyDrawMode && e.button === 0) { polyDrawing = true; drawLX = e.clientX; drawLY = e.clientY; try { renderer.domElement.setPointerCapture(e.pointerId) } catch { /* ignore */ } const ll = pickGlobe(e.clientX, e.clientY); if (ll && onPolyDraw) onPolyDraw(ll, 'start') }
   })
   renderer.domElement.addEventListener('pointerup', (e) => {
+    if (polyDrawing) { polyDrawing = false; if (onPolyDraw) onPolyDraw(null, 'end'); return }   // 绘制笔画结束，不当作选星
     if (beamDragging) { beamDragging = false; if (onBeamDrag) onBeamDrag(null, 'end'); return }   // 拖波束结束，不当作选星
     if (e.button !== 0) return   // 仅左键当作选星；右键（标点）/中键不改变聚焦
     // 拖动（旋转）-> 停自转、不当作点击
@@ -1365,7 +1374,7 @@ export function createGlobeScene(container, quality = {}) {
     setOrbit, setGroundTrack, setFootprint, setSelectionSet, clearSelectionGeom,
     setCoverage, clearCoverage, setCoverageField, patchCoverageLayers, clearCoverageField, setCoverageFieldAlpha, setSatLayer, clearSatLayer, faceLonLat, setProvinces, setProvincesVisible, setCities, setCitiesVisible, setBorderStyle, setNameScale, setLabelStyle, setOceanColor, setLandColors,
     setPixelRatio, setRenderFps, setSphereDetail, setMapDetail,
-    setMarkers, setTrajectories, setFocusSatLLA, setOnHover, setOnRightClick, setBeamDragMode, setOnBeamDrag,
+    setMarkers, setTrajectories, setFocusSatLLA, setOnHover, setOnRightClick, setBeamDragMode, setOnBeamDrag, setPolyDrawMode, setOnPolyDraw,
     faceTo, setAutoRotate, setAutoRotateSpeed, setOnAutoRotateOff, resize, destroy,
     // 缩放进度条接口：getZoom 读当前进度、setZoom 设到进度 t、setOnZoom 注册滚轮缩放回填回调
     getZoom: () => distToT(zoomTarget),

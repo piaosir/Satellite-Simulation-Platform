@@ -82,6 +82,8 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
     ctype: 'abs', levels: defaultLevels(),
     pol: 'RSS', gainOffset: 0, pathLoss: 'none',
     boreType: 'azel', boreLon: null, boreLat: 0, boreAz: 0, boreEl: 0, yaw: 0,
+    boreLock: true,     // 指向锁定（默认开）：卫星移动时 boresight 钉在地面目标不动（天线重新指向）；关则随星下点平移
+
     beamsToPlot: [0],   // 多波束 GRD：要绘制的波束序号（SATSOFT「Beams To Plot」多选；共用本天线同一套电平/极化设置）
     beamNames: {},      // 波束序号 → 自定义波束名（空=用默认「波束 N」）。地图标注与选波束列表均用此名，不再用天线名+波束名
     // 全局显示选项（与 GXT 一致；不随聚焦天线切换，对所有选中天线生效）：天线名 / 波束中心 / 波束中心峰值 / 数值标签
@@ -118,11 +120,11 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
 
   // 每个天线的独立设置（数据库）：除等仰角线(全局参考线)外的全部绘制设置都按天线保存，
   // 切换聚焦时载入该天线设置、编辑时回存，只有用户改动才变。bore 指向同样并入。
-  const PA = ['ctype', 'pol', 'gainOffset', 'pathLoss', 'fill', 'line', 'lineWidth', 'alpha', 'boreType', 'boreLon', 'boreLat', 'boreAz', 'boreEl', 'yaw']
+  const PA = ['ctype', 'pol', 'gainOffset', 'pathLoss', 'fill', 'line', 'lineWidth', 'alpha', 'boreType', 'boreLon', 'boreLat', 'boreAz', 'boreEl', 'yaw', 'boreLock']
   const copyLevels = (lv) => lv.map((L) => ({ v: L.v, color: L.color, lineColor: L.lineColor, locked: !!L.locked, lineSet: !!L.lineSet }))
   function defaultSettings(satLon, satLat = 0, peakDb) {
     return { ctype: 'abs', pol: 'RSS', gainOffset: 0, pathLoss: 'none', fill: false, line: true, lineWidth: 1.6, alpha: 0.78,
-      boreType: 'azel', boreLon: satLon == null ? null : satLon, boreLat: satLat || 0, boreAz: 0, boreEl: 0, yaw: 0, beamsToPlot: [0], beamNames: {}, levels: defaultLevels(peakDb) }
+      boreType: 'azel', boreLon: satLon == null ? null : satLon, boreLat: satLat || 0, boreAz: 0, boreEl: 0, yaw: 0, boreLock: true, beamsToPlot: [0], beamNames: {}, levels: defaultLevels(peakDb) }
   }
   function applySettings(cfg) { if (!cfg) return; for (const k of PA) s[k] = cfg[k]; s.levels = copyLevels(cfg.levels || defaultLevels()); s.beamsToPlot = (cfg.beamsToPlot || []).slice(); s.beamNames = { ...(cfg.beamNames || {}) } }
   // 设置序列化（深拷贝 levels/beamsToPlot/beamNames/keptSets），供 getState 回存每个天线
@@ -672,8 +674,16 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
     const oLon = c.meta.satLon, oLat = c.meta.satLat || 0, oAlt = c.meta.satAlt || 0
     if (Math.abs(p.lon - oLon) < 1e-6 && Math.abs((p.lat || 0) - oLat) < 1e-6 && Math.abs((p.altKm || 0) - oAlt) < 1e-3) return false
     const b = c.settings
-    // geo 模式：指向随星下点平移（保留地面目标的相对偏置）。azel 模式：az/el 相对天底，星动时自动跟随，无需平移。
-    if (b.boreType !== 'azel') {
+    const locked = b.boreLock !== false   // 默认锁定：boresight 钉在地面目标，卫星动→天线重新指向，足迹中心不动
+    if (locked) {
+      // 锁定：geo 指向保持不动（不随星平移，basis 随新星位重算 → 天线自动重新指向同一地面点）。
+      // azel 指向若有地面落点则钉成 geo（默认星下点 azel(0,0) 也就此锁定在初始目标）；越地平的深空指向无地面点可钉 → 保持 azel。
+      if (b.boreType === 'azel') {
+        const g = azElGround(oLon, oLat, oAlt, b.boreAz || 0, b.boreEl || 0)
+        if (g) { b.boreType = 'geo'; b.boreLon = +g.lon.toFixed(4); b.boreLat = +g.lat.toFixed(4) }
+      }
+    } else if (b.boreType !== 'azel') {
+      // 不锁定（跟随卫星）：geo 指向随星下点平移，保留地面目标的相对偏置。azel 相对天底，星动自动跟随，无需平移。
       let dLon = p.lon - oLon; while (dLon > 180) dLon -= 360; while (dLon < -180) dLon += 360
       const bl = (b.boreLon == null ? oLon : b.boreLon) + dLon
       b.boreLon = +(((bl % 360) + 540) % 360 - 180).toFixed(4)
@@ -681,7 +691,8 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
     }
     c.meta.satLon = p.lon; c.meta.satLat = p.lat || 0; c.meta.satAlt = p.altKm
     for (const bm of c.beams) bm._projKey = null   // 标记投影过期 → 下次按热区盒重投影（只重算绘制中的波束）
-    if (key === active.value && b.boreType !== 'azel') { _muteSync = true; s.boreLon = b.boreLon; s.boreLat = b.boreLat; _muteSync = false }
+    // 同步聚焦天线面板（锁定钉点 azel→geo、或不锁定平移都可能改了 boreType/lon/lat）；值未变则赋值为空操作、不触发指向 watch。
+    if (key === active.value) { _muteSync = true; s.boreType = b.boreType; if (b.boreType !== 'azel') { s.boreLon = b.boreLon; s.boreLat = b.boreLat } _muteSync = false }
     return true
   }
   // 实时跟踪：linked 星随星历/时间轴移动 → 平移各选中天线的覆盖投影。
@@ -983,6 +994,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
     if (nt === 'azel') { const ae = dirToAzEl(m.satLon, m.satLat || 0, m.satAlt, s.boreLon == null ? m.satLon : s.boreLon, s.boreLat || 0); _muteSync = true; s.boreAz = +ae.az.toFixed(3); s.boreEl = +ae.el.toFixed(3); _muteSync = false }
     else { const g = azElGround(m.satLon, m.satLat || 0, m.satAlt, s.boreAz || 0, s.boreEl || 0); if (g) { _muteSync = true; s.boreLon = +g.lon.toFixed(4); s.boreLat = +g.lat.toFixed(4); _muteSync = false } }
   })
+  watch(() => s.boreLock, () => persistActive())   // 指向锁定开关：回存到聚焦天线设置（不改画面，下次卫星移动/编辑星位时生效）
   // 指向变化（geo 的 lon/lat 或 azel 的 az/el，含 yaw/类型）：reproject 只重投影聚焦天线；拖拽中走单层+单视图快路径，否则全量。
   watch(() => [s.boreLon, s.boreLat, s.boreAz, s.boreEl, s.yaw, s.boreType], () => {
     reproject(); _dragging ? recomputeActive() : recompute()

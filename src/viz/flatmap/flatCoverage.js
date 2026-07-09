@@ -635,6 +635,10 @@ export function createFlatCoverage(canvas) {
   }
   let dragging = false, lx = 0, ly = 0
   let beamDragMode = false, onBeamDrag = null, beamDragging = false   // 拖拽波束（不平移地图）
+  // 协调区多边形 hold-to-draw：绘制态下左键按住沿路径拖动，按屏幕像素阈值连续加点（不平移地图）。
+  // 回调 onPolyDraw(lonlat, 'start'|'move'|'end')；右键加点（onRightClick）仍并存。
+  let polyDrawMode = false, onPolyDraw = null, polyDrawing = false, drawLX = 0, drawLY = 0
+  const POLY_DRAW_MIN2 = 14 * 14   // 相邻加点最小屏幕间距²（px）：按住走一段才落一个点
   // 顶点编辑（Polygon 调整顶点 / 整体拖动）：editVerts={ pts:[[lon,lat],...], px, move }。
   //  - move=false：按下命中半径内的顶点即拖动该点（回调 onVertexDrag(index, lonlat, 'start'|'move'|'end')）；
   //  - move=true：按下落在多边形内部即整体拖动（回调 onPolyMove(dlon, dlat, 'start'|'move'|'end')，增量制）。
@@ -678,6 +682,12 @@ export function createFlatCoverage(canvas) {
         if (vi >= 0) { vertDragging = vi; canvas.setPointerCapture(e.pointerId); const ll = screenToLonLat(e.clientX, e.clientY); if (ll && onVertexDrag) onVertexDrag(vi, ll, 'start'); return }
       }
     }
+    if (polyDrawMode && e.button === 0) {   // 绘制态：左键按住起笔，沿路径连续加点
+      polyDrawing = true; canvas.setPointerCapture(e.pointerId)
+      drawLX = e.clientX; drawLY = e.clientY
+      const ll = screenToLonLat(e.clientX, e.clientY); if (ll && onPolyDraw) onPolyDraw(ll, 'start')
+      return
+    }
     if (beamDragMode && e.button === 0) { beamDragging = true; canvas.setPointerCapture(e.pointerId); const ll = screenToLonLat(e.clientX, e.clientY); if (ll && onBeamDrag) onBeamDrag(ll, 'start'); return }
     dragging = true; lx = e.clientX; ly = e.clientY; canvas.setPointerCapture(e.pointerId); canvas.style.cursor = 'grabbing'
   }
@@ -691,6 +701,10 @@ export function createFlatCoverage(canvas) {
     }
     else if (vertDragging >= 0) { const ll = screenToLonLat(e.clientX, e.clientY); if (ll && onVertexDrag) onVertexDrag(vertDragging, ll, 'move') }
     else if (beamDragging) { const ll = screenToLonLat(e.clientX, e.clientY); if (ll && onBeamDrag) onBeamDrag(ll, 'move') }
+    else if (polyDrawing) {   // 绘制态：光标每移过阈值距离落一个点
+      const dx = e.clientX - drawLX, dy = e.clientY - drawLY
+      if (dx * dx + dy * dy >= POLY_DRAW_MIN2) { drawLX = e.clientX; drawLY = e.clientY; const ll = screenToLonLat(e.clientX, e.clientY); if (ll && onPolyDraw) onPolyDraw(ll, 'move') }
+    }
     else if (dragging) { tx += e.clientX - lx; ty += e.clientY - ly; lx = e.clientX; ly = e.clientY; invalidateStatic(); requestDraw() }
     else if (editVerts) {   // 悬停提示：可拖顶点 / 可拖多边形内部
       canvas.style.cursor = (editVerts.move ? pointInEditPoly(e.clientX, e.clientY) : vertexAt(e.clientX, e.clientY) >= 0) ? 'move' : 'grab'
@@ -701,8 +715,9 @@ export function createFlatCoverage(canvas) {
     if (vertDragging >= 0 && onVertexDrag) onVertexDrag(null, null, 'end')
     if (moveDragging && onPolyMove) onPolyMove(0, 0, 'end')
     if (beamDragging && onBeamDrag) onBeamDrag(null, 'end')
-    dragging = false; beamDragging = false; vertDragging = -1; moveDragging = false; moveLast = null
-    canvas.style.cursor = beamDragMode ? 'move' : 'grab'
+    if (polyDrawing && onPolyDraw) onPolyDraw(null, 'end')
+    dragging = false; beamDragging = false; vertDragging = -1; moveDragging = false; moveLast = null; polyDrawing = false
+    canvas.style.cursor = polyDrawMode ? 'crosshair' : (beamDragMode ? 'move' : 'grab')
   }
   function onLeave() { onUp(); if (onHover) onHover(null) }       // 移出地图：清空读数
   function onDbl() { fit(); invalidateStatic(); requestDraw(); if (onZoom) onZoom(scaleToT()) }
@@ -809,8 +824,11 @@ export function createFlatCoverage(canvas) {
       buildBaseGeo(feats, t)
       invalidateStatic(); requestDraw()
     },
-    setBeamDragMode(v) { beamDragMode = !!v; beamDragging = false; canvas.style.cursor = v ? 'move' : 'grab' },
+    setBeamDragMode(v) { beamDragMode = !!v; beamDragging = false; canvas.style.cursor = polyDrawMode ? 'crosshair' : (v ? 'move' : 'grab') },
     setOnBeamDrag(fn) { onBeamDrag = fn },
+    // 协调区多边形 hold-to-draw 模式：开启后左键按住沿路径连续加点
+    setPolyDrawMode(v) { polyDrawMode = !!v; polyDrawing = false; canvas.style.cursor = v ? 'crosshair' : (beamDragMode ? 'move' : 'grab') },
+    setOnPolyDraw(fn) { onPolyDraw = fn },
     // Polygon 顶点编辑/整体拖动：v={ pts:[[lon,lat],...], px 顶点半径, move 整体拖动模式 } 开启
     // （pts 传引用，外部改动即时生效）；null 关闭
     setEditVerts(v) { editVerts = (v && v.pts) ? v : null; vertDragging = -1; moveDragging = false; moveLast = null; if (!editVerts) canvas.style.cursor = beamDragMode ? 'move' : 'grab' },

@@ -293,6 +293,11 @@ const perfColNa = (k) => { const c = perfColDef(k); return !!(c && c.na) }
 watch(() => perf.stations.value, () => refreshPerf(), { deep: true })
 watch(() => perf.optsByAnt.value, () => refreshPerf(), { deep: true })
 watch(() => [grdS.pol, grdS.gainOffset, grdS.pathLoss, grdS.ctype, grdS.beamsToPlot], () => { if (perfKey.value === grd.active.value) refreshPerf() }, { deep: true })
+// 拖拽波束/改指向时性能表随图实时刷新（取值依赖指向推出的 basis）。boresight 每帧变 → rAF 合帧，一帧最多重算一次，
+// 避免逐帧全量取值（每站×每波束，含 Min/Max Pointing 的椭圆扫描）把主线程打满。仅当该表正是聚焦天线才刷。
+let _perfDragRaf = 0
+function scheduleRefreshPerf() { if (_perfDragRaf) return; _perfDragRaf = requestAnimationFrame(() => { _perfDragRaf = 0; refreshPerf() }) }
+watch(() => [grdS.boreType, grdS.boreLon, grdS.boreLat, grdS.boreAz, grdS.boreEl, grdS.yaw], () => { if (perfKey.value && perfKey.value === grd.active.value) scheduleRefreshPerf() })
 // 电平颜色 css(rgb) -> #hex（供 <input type=color>）；setLevelColor 反向写回
 function grdLvHex(css) { const m = /(\d+)\D+(\d+)\D+(\d+)/.exec(css || ''); if (!m) return '#ffffff'; const h = (n) => (+n).toString(16).padStart(2, '0'); return '#' + h(m[1]) + h(m[2]) + h(m[3]) }
 // 改填充色：线色未单独设过时跟随填充一同改（默认二者同色）；整档 locked，此后增删档不再自动改（记忆到再改）
@@ -1197,6 +1202,7 @@ function ensureFlat() {
     flat.setOnRightClick(onMapRightClick); flat.setOnHover((ll) => { cursor.ll = ll }); flat.setOnBeamDrag(grd.beamDrag); flat.setBeamDragMode(grd.dragBore.value)
     flat.setOnVertexDrag(onPolyVertexDrag)   // Polygon 调整顶点：拖动单个顶点
     flat.setOnPolyMove(onPolyMoveDrag)       // Polygon 整体拖动：按住内部平移全部顶点
+    flat.setOnPolyDraw(onPolyDraw); flat.setPolyDrawMode(!!polyDrawId.value)   // Polygon 绘制：左键按住沿路径连续加点
     flat.setOnZoom((t) => { if (flatView.value) { zoom.value = t; saveView() } })
     flatCanvas.value.addEventListener('pointerup', saveView)   // 平移结束保存视图（平移中心）
   }
@@ -1651,6 +1657,17 @@ function onPolyMoveDrag(dlon, dlat, phase) {
   for (const q of pg.pts) { q[0] += dlon; q[1] = clamp(q[1] + dlat, -89.9, 89.9) }
   redrawSats()
 }
+// hold-to-draw 回调：渲染器已按屏幕像素阈值节流上报（起笔/沿路径/收笔），页面每次追加一个顶点。
+// 'move' 只 redrawSats 实时预览（不落盘，避免高频写 localStorage）；'end' 统一持久化。与右键连续加点并存。
+function onPolyDraw(ll, phase) {
+  const pg = curPoly(); if (!pg) return
+  if (phase === 'end') { if (pg.pts.length) persistPolys(); return }
+  if (!ll) return
+  pg.pts.push([ll.lon, ll.lat])
+  redrawSats()
+}
+// 绘制态开关同步到两个渲染器：进入绘制→左键按住可沿路径连续加点（hold-to-draw）；退出→恢复平移/旋转
+watch(polyDrawId, (id) => { const on = !!id; if (flat) flat.setPolyDrawMode(on); if (scene) scene.setPolyDrawMode(on) })
 // ---- 复制多边形（仿 SATSOFT Copy）：副本整体偏移一点便于分辨，并直接进入整体拖动模式好摆放 ----
 function polyCopy(pg) {
   const n = polys.value.length + 1
@@ -2370,6 +2387,7 @@ onMounted(async () => {
   scene.setOnHover((ll) => { cursor.ll = ll })
   scene.setOnRightClick(onMapRightClick)
   scene.setOnBeamDrag(grd.beamDrag)   // 拖拽波束（GRD boresight 中心）
+  scene.setOnPolyDraw(onPolyDraw); scene.setPolyDrawMode(!!polyDrawId.value)   // Polygon 绘制：左键按住沿路径连续加点
   // 缩放进度条（底部状态栏）：注册当前页缩放能力，球体滚轮缩放回填进度条 + 记忆
   scene.setOnZoom((t) => { if (!flatView.value) { zoom.value = t; saveView() } })
   if (savedView.globe) scene.setView(savedView.globe)   // 恢复上次球体视图（朝向+缩放）
@@ -2743,7 +2761,7 @@ onBeforeUnmount(() => {
         <div v-if="polyOpen" class="cov-side poly-side docked">
         <div class="sec">
           <div class="sect"><span>协调区多边形</span><span class="lnk" @click="polyStartDraw"><Icon name="plus" :size="11" /> 绘制</span></div>
-          <div v-if="!polys.length && !polyDrawId" class="tip">画一个多边形圈定协调区域，给区域标一个数值（如谱密度，数值含义与单位不做定义），可导出 GXT / KML。点「＋ 绘制」后在地图上右键连续加顶点（3D / 平面图均可）。</div>
+          <div v-if="!polys.length && !polyDrawId" class="tip">画一个多边形圈定协调区域，给区域标一个数值（如谱密度，数值含义与单位不做定义），可导出 GXT / KML。点「＋ 绘制」后在地图上右键连续加顶点，或按住左键沿路径拖动连续加点（3D / 平面图均可）。</div>
           <div v-for="pg in polys" :key="pg.id" class="plg" :class="{ act: polyDrawId === pg.id || polyEditId === pg.id || polyMoveId === pg.id }">
             <div class="plgh">
               <input type="checkbox" :checked="pg.show !== false" title="在地图上显示 / 隐藏该多边形" @change="togglePoly(pg)" />
@@ -2928,6 +2946,7 @@ onBeforeUnmount(() => {
 
           <div class="sec">
             <div class="sect"><span>天线 boresight</span>
+              <span class="lnk" :class="{ on: grdS.boreLock }" :title="grdS.boreLock ? '已锁定：卫星移动时 boresight 钉在地面目标不动（天线重新指向）。点此改为随星平移' : '未锁定：boresight 随卫星平移（足迹跟随星下点）。点此锁定在地面目标'" @click="grdS.boreLock = !grdS.boreLock"><Icon :name="grdS.boreLock ? 'lock' : 'lock-open'" :size="10" /> {{ grdS.boreLock ? '已锁定' : '锁定' }}</span>
               <span class="lnk" :class="{ on: grd.dragBore.value }" title="开启后在地图上拖动可平移波束中心" @click="grd.setDragBore(!grd.dragBore.value)"><Icon v-if="grd.dragBore.value" name="check" :size="10" /> 拖拽波束</span>
             </div>
             <div class="srow"><label>类型</label>
@@ -3240,7 +3259,7 @@ onBeforeUnmount(() => {
 
     <!-- Polygon 绘制横幅：绘制中提示右键加顶点，「完成」闭合成多边形 -->
     <div v-if="polyDrawId" class="traj-banner">
-      正在绘制 Polygon「{{ curPoly() ? curPoly().name : '' }}」 · 右键地图连续加顶点（至少 3 点）
+      正在绘制 Polygon「{{ curPoly() ? curPoly().name : '' }}」 · 右键地图连续加顶点，或按住左键沿路径拖动连续加点（至少 3 点）
       <span class="lnk" @click="polyUndo">撤销上点</span>
       <span class="lnk" @click="polyDone">完成</span>
       <span class="lnk" @click="polyCancel">取消</span>
