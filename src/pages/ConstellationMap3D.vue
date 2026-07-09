@@ -304,6 +304,14 @@ function grdLvHex(css) { const m = /(\d+)\D+(\d+)\D+(\d+)/.exec(css || ''); if (
 function setLevelColor(i, e) { const x = e.target.value; const css = `rgb(${parseInt(x.slice(1, 3), 16)},${parseInt(x.slice(3, 5), 16)},${parseInt(x.slice(5, 7), 16)})`; const L = grdS.levels[i]; L.color = css; if (!L.lineSet) L.lineColor = css; L.locked = true }
 // 改线色：线色转为独立设定（lineSet），之后不再跟随填充；整档 locked
 function setLineColor(i, e) { const x = e.target.value; const css = `rgb(${parseInt(x.slice(1, 3), 16)},${parseInt(x.slice(3, 5), 16)},${parseInt(x.slice(5, 7), 16)})`; const L = grdS.levels[i]; L.lineColor = css; L.lineSet = true; L.locked = true }
+// GRD 天线指向模式（STK 口径）：底层仍是 boreType+boreLock，这里做单一「模式」表示层（读写委托给 useGrdCoverage）
+const boreMode = computed({ get: () => grd.boreModeOf(), set: (m) => grd.setBoreMode(m) })
+const BORE_MODE_HINT = {
+  target: '目标跟踪 Targeted：boresight 钉住固定经纬点，卫星移动时天线重新指向、足迹中心不动（STK Targeted）',
+  groundtrack: '星下点跟随 Ground-track：足迹随星下点平移、保持相对经纬偏置（卫星动则足迹跟着走）',
+  fixed: '本体固定 Fixed：相对天底固定 Az/El，卫星移动时足迹随之扫过地面（STK Fixed）',
+  nadir: '天底 Nadir：boresight 恒指星下点（Az=El=0，本体固定的特例）'
+}
 const covSats = ref([])           // 索引：[{folder,displayName,satName,lon,beams:[{band,beam,type,gains,file}...]}]
 const covItems = ref([])          // 已添加卫星（两级结构）
 const covCleared = ref(false)      // 「清除绘制」后置位：保留 covItems 但暂不绘制，避免切视图/重开面板时 GXT 覆盖自行复现（再次 redraw 即解除）。入 snapshot 持久化，使「清除后效果」跨重启保留
@@ -2946,13 +2954,14 @@ onBeforeUnmount(() => {
 
           <div class="sec">
             <div class="sect"><span>天线 boresight</span>
-              <span class="lnk" :class="{ on: grdS.boreLock }" :title="grdS.boreLock ? '已锁定：卫星移动时 boresight 钉在地面目标不动（天线重新指向）。点此改为随星平移' : '未锁定：boresight 随卫星平移（足迹跟随星下点）。点此锁定在地面目标'" @click="grdS.boreLock = !grdS.boreLock"><Icon :name="grdS.boreLock ? 'lock' : 'lock-open'" :size="10" /> {{ grdS.boreLock ? '已锁定' : '锁定' }}</span>
               <span class="lnk" :class="{ on: grd.dragBore.value }" title="开启后在地图上拖动可平移波束中心" @click="grd.setDragBore(!grd.dragBore.value)"><Icon v-if="grd.dragBore.value" name="check" :size="10" /> 拖拽波束</span>
             </div>
-            <div class="srow"><label>类型</label>
-              <select v-model="grdS.boreType">
-                <option value="geo">经纬度 (Lon/Lat, Rot)</option>
-                <option value="azel">方位/俯仰 (Az/El, Rot)</option>
+            <div class="srow"><label>指向模式</label>
+              <select v-model="boreMode">
+                <option value="target">目标跟踪 Targeted</option>
+                <option value="groundtrack">星下点跟随 Ground-track</option>
+                <option value="fixed">本体固定 Fixed (Az/El)</option>
+                <option value="nadir">天底 Nadir</option>
               </select>
             </div>
             <template v-if="grdS.boreType === 'geo'">
@@ -2964,6 +2973,7 @@ onBeforeUnmount(() => {
               <div class="srow"><label>俯仰 El</label><input class="ci" type="number" step="0.5" v-model.number="grdS.boreEl" /><span class="u">°</span></div>
             </template>
             <div class="srow"><label>旋转 Rot</label><input class="ci" type="number" step="1" v-model.number="grdS.yaw" /><span class="u">°</span></div>
+            <div class="tip">{{ BORE_MODE_HINT[boreMode] }}</div>
             <div class="tip"><template v-if="grd.boreGround()">指向 {{ grd.boreGround().lon.toFixed(2) }}°E, {{ grd.boreGround().lat.toFixed(2) }}°N</template><template v-else>指向深空（越过地平）</template>（默认星下点 {{ grd.antMeta().satLon }}°）· 峰值 {{ grd.antMeta().peakDb }}dB @ {{ grd.antMeta().peak[0] }},{{ grd.antMeta().peak[1] }}</div>
           </div>
 

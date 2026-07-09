@@ -1,7 +1,7 @@
 // 覆盖图（GRD）逻辑 —— SATSOFT 模型：卫星 → 天线（命名覆盖）。支持多选卫星/天线。
 // 选中的天线各成一层渲染到星座3D 的 scene/flat（独立图层）：所有选中天线画等值线；
 // 当前聚焦(active)天线额外画分带填充。计算核心 src/viz/grd/{parse,coverage,colormap}.js。
-import { ref, reactive, watch } from 'vue'
+import { ref, reactive, watch, nextTick } from 'vue'
 import { parseGrd } from './parse.js'
 import { antennaBasis, antennaBasisAzEl, dirToAzEl, azElGround, surfaceAzEl, projectGrid, fieldDb, bandGeometry, stitchLoops } from './coverage.js'
 import { schemeColorsRGB, rgbCss, cssRgb } from './colormap.js'
@@ -99,6 +99,26 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
     const m = antMeta(); if (!m) return null
     if (s.boreType === 'azel') return azElGround(m.satLon, m.satLat || 0, m.satAlt, s.boreAz || 0, s.boreEl || 0)
     return { lon: s.boreLon == null ? m.satLon : s.boreLon, lat: s.boreLat || 0 }
+  }
+  // 指向模式（STK 口径）＝ 底层 boreType(geo/azel)+boreLock 两字段的规范组合，UI 只暴露单一「模式」：
+  //   目标跟踪 Targeted     = geo + 锁定：boresight 钉住固定经纬点，星动天线重指向、足迹中心不动（STK Targeted + Tracking Boresight）
+  //   星下点跟随 Ground-track = geo + 不锁定：足迹随星下点平移、保持相对经纬偏置（本平台自有模式，STK 无对应项）
+  //   本体固定 Fixed        = azel(不锁定)：相对天底固定 Az/El，星动足迹随之扫过地面（STK Fixed）
+  //   天底 Nadir            = azel(不锁定) 且 Az=El=0：boresight 恒指星下点（Fixed 的特例）
+  function boreModeOf() {
+    if (s.boreType === 'azel') return (!s.boreAz && !s.boreEl) ? 'nadir' : 'fixed'
+    return s.boreLock !== false ? 'target' : 'groundtrack'
+  }
+  // 切模式只改这两字段：boreType 变化交给既有 watch(s.boreType) 无缝换算当前指向（geo↔azel 不跳变）。
+  // Nadir 需把 Az/El 归零、覆盖换算结果，故在 nextTick（换算 watch 冲刷之后）再置 0；持久化同样延到换算完成后，避免存到中间态。
+  function setBoreMode(mode) {
+    if (!antMeta()) return
+    if (mode === 'target') { s.boreType = 'geo'; s.boreLock = true }
+    else if (mode === 'groundtrack') { s.boreType = 'geo'; s.boreLock = false }
+    else if (mode === 'fixed') { s.boreType = 'azel'; s.boreLock = false }
+    else if (mode === 'nadir') { s.boreType = 'azel'; s.boreLock = false }
+    else return
+    nextTick(() => { if (mode === 'nadir') { s.boreAz = 0; s.boreEl = 0 } persistActive() })
   }
 
   // 加一档（电平值一律取整数）：
@@ -1004,7 +1024,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
 
   return {
     sats, expanded, selected, active, loading, s,
-    keyOf, isSelected, isActive, isExpanded, antMeta, activeName, beamsCount, satState, dragBore, boreGround,
+    keyOf, isSelected, isActive, isExpanded, antMeta, activeName, beamsCount, satState, dragBore, boreGround, boreModeOf, setBoreMode,
     activeBeams, beamListOn, isBeamOn, toggleBeam, setAllBeams, allBeamsOn, renameBeam,
     beamQuery, setBeamQuery, filteredBeams, filteredAllOn, filteredAnyOn, selectFiltered,
     deleteBeam, deleteCheckedBeams,

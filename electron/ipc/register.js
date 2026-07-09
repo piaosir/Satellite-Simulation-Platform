@@ -2,8 +2,59 @@ const { ipcMain, dialog, BrowserWindow } = require('electron')
 const fs = require('fs')
 const createOmm = require('../services/omm')
 
+// NGSO 导出：把平台精确几何（轨道根数 / 最差互视时刻 / 互视窗口）整理成一段瀑布（cols:1），
+// 并入详细计算结果表，使 Excel 与结果界面几何口径一致。
+function _fmtInstantUTC(iso) {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return String(iso)
+  const p = (n) => String(n).padStart(2, '0')
+  return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())} UTC`
+}
+function ngsoGeometrySegment(geom, lang) {
+  const w = geom.worst || {}, el = geom.elements || {}, win = geom.window || {}
+  const en = lang === 'en'
+  const n = (v, p = 2) => (v == null || !isFinite(v)) ? '—' : Number(v).toFixed(p)
+  const T = en
+    ? { title: 'Satellite Geometry (Platform SGP4 · Dual-Station Mutual-Visibility Worst Case)', worstTime: 'Worst Mutual-Visibility Instant', win: 'Mutual-Visibility Window (AOS→LOS)', dur: 'Window Duration', upElev: 'Uplink Elevation', dnElev: 'Downlink Elevation', upSlant: 'Uplink Slant Range', dnSlant: 'Downlink Slant Range', upAz: 'Uplink Azimuth', dnAz: 'Downlink Azimuth', delay: 'One-Way Link Delay', vInert: 'Orbital Velocity (Inertial)', vGround: 'Ground-Relative Velocity', dopUp: 'Max Doppler (Uplink)', dopDn: 'Max Doppler (Downlink)', a: 'Semi-major Axis a', e: 'Eccentricity e', i: 'Inclination i', raan: 'RAAN Ω', argp: 'Arg. of Perigee ω', ma: 'Mean Anomaly M', mm: 'Mean Motion n', period: 'Orbital Period T', peri: 'Perigee Altitude', apo: 'Apogee Altitude', norad: 'Satellite (NORAD)' }
+    : { title: '卫星几何（平台 SGP4 · 双站互视最差几何）', worstTime: '最差互视时刻', win: '互视窗口（AOS→LOS）', dur: '互视窗口时长', upElev: '上行仰角', dnElev: '下行仰角', upSlant: '上行斜距', dnSlant: '下行斜距', upAz: '上行方位角', dnAz: '下行方位角', delay: '单程链路时延', vInert: '轨道速度（惯性系）', vGround: '相对地面速度', dopUp: '最大多普勒（上行）', dopDn: '最大多普勒（下行）', a: '半长轴 a', e: '偏心率 e', i: '倾角 i', raan: '升交点赤经 Ω', argp: '近地点幅角 ω', ma: '平近点角 M', mm: '平均运动 n', period: '轨道周期 T', peri: '近地点高度', apo: '远地点高度', norad: '卫星编号 (NORAD)' }
+  const row = (label, val, unit, kind) => ({ sign: '', label, up: val, unit: unit || '', kind: kind || 'ref' })
+  const contLabel = en ? 'Continuously visible (GEO/static)' : '两站持续可见（静止/GEO）'
+  const manualLabel = en ? 'Manual virtual circular orbit (closed-form worst, no ephemeris)' : '手动虚拟圆轨道（闭式最差，无星历/时窗）'
+  const manual = !!geom.manual
+  const title = manual ? (en ? 'Satellite Geometry (Manual Virtual Circular Orbit · Closed-form Worst Case)' : '卫星几何（手动虚拟圆轨道 · 球形闭式最差）') : T.title
+  const rows = [
+    row(T.worstTime, manual ? manualLabel : (win.continuous ? contLabel : _fmtInstantUTC(w.timeISO)), '', 'sub'),
+    row(T.win, manual ? manualLabel : (win.continuous ? contLabel : `${_fmtInstantUTC(win.aosISO)} → ${_fmtInstantUTC(win.losISO)}`), ''),
+    row(T.dur, (manual || win.continuous) ? '—' : n(win.durationMin), 'min'),
+    row(T.upElev, n(w.up && w.up.elevDeg), '°'),
+    row(T.dnElev, n(w.dn && w.dn.elevDeg), '°'),
+    row(T.upSlant, n(w.up && w.up.slantKm), 'km'),
+    row(T.dnSlant, n(w.dn && w.dn.slantKm), 'km'),
+    row(T.upAz, n(w.up && w.up.azDeg), '°'),
+    row(T.dnAz, n(w.dn && w.dn.azDeg), '°'),
+    row(T.delay, n(w.oneWayDelayMs, 3), 'ms'),
+    row(T.vInert, n(w.speedInertialKmS, 3), 'km/s'),
+    row(T.vGround + (geom.dopplerEstimate ? (en ? ' (est.)' : '（估算）') : ''), n(w.speedGroundRelKmS, 3), 'km/s'),
+    row(T.dopUp + (geom.dopplerEstimate ? (en ? ' (est., closed-form)' : '（估算·闭式）') : (en ? ' (in-window SGP4)' : '（窗口内 SGP4）')), n(w.maxDopplerUpHz != null ? w.maxDopplerUpHz / 1000 : null, 3), 'kHz'),
+    row(T.dopDn + (geom.dopplerEstimate ? (en ? ' (est., closed-form)' : '（估算·闭式）') : (en ? ' (in-window SGP4)' : '（窗口内 SGP4）')), n(w.maxDopplerDnHz != null ? w.maxDopplerDnHz / 1000 : null, 3), 'kHz'),
+    row(T.a, n(el.a, 3), 'km', 'sub'),
+    row(T.e, n(el.e, 6), ''),
+    row(T.i, n(el.iDeg, 4), '°'),
+    row(T.raan, n(el.raanDeg, 4), '°'),
+    row(T.argp, n(el.argpDeg, 4), '°'),
+    row(T.ma, n(el.maDeg, 4), '°'),
+    row(T.mm, n(el.meanMotionRevDay, 6), 'rev/day'),
+    row(T.period, n(el.periodMin, 3), 'min'),
+    row(T.peri, n(el.perigeeAltKm, 1), 'km'),
+    row(T.apo, n(el.apogeeAltKm, 1), 'km')
+  ]
+  if (el.satnum) rows.push(row(T.norad, String(el.satnum), ''))
+  return { title, cols: 1, rows }
+}
+
 // 注册所有 IPC 处理器。core 为返回引擎实例的函数（延迟解析）。
-function register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget, openSunOutage, grd, confirmCloseLinkBudget }) {
+function register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget, openSunOutage, grd, confirmCloseLinkBudget, openNgso, confirmCloseNgso }) {
   const omm = createOmm(core)
   ipcMain.handle('omm:load', (_e, group, online) => omm.load(group, online))
   ipcMain.handle('omm:positions', (_e, group, iso) => omm.positions(group, iso))
@@ -111,6 +162,16 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   ipcMain.handle('link:waterfall', (_e, ctx) => core().buildWaterfallSegments(ctx || {}))
   // 计算方式求解（在主进程内迭代求解功带平衡 / 反推余量，避免大量 IPC 往返）
   ipcMain.handle('link:computeMode', (_e, s, l, opt) => core().computeLinkMode(s || {}, l || {}, opt || {}))
+  // NGSO 计算方式求解（同四种方式，切 NGSO 引擎，强制 ISL 跳数=0）
+  ipcMain.handle('link:computeModeNGSO', (_e, s, l, opt) =>
+    core().computeLinkModeNGSO
+      ? core().computeLinkModeNGSO(s || {}, l || {}, opt || {})
+      : { success: false, message: 'NGSO 引擎未加载' })
+  // NGSO 站星几何求解（SGP4 双站互视最差几何 + 轨道根数 + 最近最差时刻/互视窗口）
+  ipcMain.handle('link:ngsoGeometry', (_e, opt) =>
+    core().solveNgsoMutualWorstCase
+      ? core().solveNgsoMutualWorstCase(opt || {})
+      : { feasible: false, reason: 'NGSO 几何求解器未加载' })
   // 经纬度 → 降雨率/海拔自动填值（与小程序口径一致）
   ipcMain.handle('link:geoFill', (_e, lat, lon) => core().geoAutoFill(parseFloat(lat), parseFloat(lon)))
   // GRD 天线逐站取值（多波束最大 Parameter）：解析+采样在主进程，渲染端只收发 dB 数字
@@ -125,6 +186,10 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   ipcMain.handle('linkbudget:open', () => { if (openLinkBudget) openLinkBudget(); return true })
   // 关窗守卫：渲染进程问过用户「配置存了没」（取消/不保存/保存）并按需存盘后，调这个才真正关闭窗口
   ipcMain.handle('linkbudget:confirmClose', () => { if (confirmCloseLinkBudget) confirmCloseLinkBudget(); return true })
+
+  // 打开「NGSO 链路预算」独立工作台窗口（单例，由 main 注入创建函数）
+  ipcMain.handle('ngso:open', () => { if (openNgso) openNgso(); return true })
+  ipcMain.handle('ngso:confirmClose', () => { if (confirmCloseNgso) confirmCloseNgso(); return true })
 
   // ---- 日凌预报（独立窗口 + 计算 + Word/ICS 导出）----
   ipcMain.handle('suntool:open', () => { if (openSunOutage) openSunOutage(); return true })
@@ -265,11 +330,16 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
       // 为每条链路构建七段瀑布（与 UI 瀑布同源 buildWaterfallSegments）→「详细计算结果」分表
       // lang 跟随导出语言选择（中/英），与链路汇总表的中英文口径保持一致
       const exportLang = (payload && payload.lang === 'en') ? 'en' : 'zh'
+      const orbitType = (payload && payload.orbitType === 'NGSO') ? 'NGSO' : 'GEO'
       const links = (payload && payload.links) || []
       for (const l of links) {
         if (l && l.data) {
-          try { l.segments = core().buildWaterfallSegments({ results: l.data, lang: exportLang, orbitType: 'GEO', txLocation: String(l.txName || ''), rxLocation: String(l.rxName || '') }) }
+          try { l.segments = core().buildWaterfallSegments({ results: l.data, lang: exportLang, orbitType, txLocation: String(l.txName || ''), rxLocation: String(l.rxName || '') }) }
           catch (e) { l.segments = [] }
+          // NGSO：把平台精确几何（轨道根数 / 最差互视时刻 / 互视窗口）作为附加段并入详细表
+          if (orbitType === 'NGSO' && l.geom && l.geom.feasible) {
+            try { l.segments = (l.segments || []).concat([ngsoGeometrySegment(l.geom, exportLang)]) } catch (e) { /* ignore */ }
+          }
         }
       }
       const buf = await report.buildLinkBudgetExcel(payload || {})

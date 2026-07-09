@@ -5,6 +5,7 @@
 const geo = require('./utils/linkCalculator.js');
 const waterfall = require('./utils/waterfallBuilder.js');
 const modeSolver = require('./utils/modeSolver.js');
+const ngsoGeometry = require('./utils/ngsoGeometry.js');
 const rainRate = require('./utils/rainRate.js');
 const elevation = require('./utils/elevation.js');
 const waterVaporGrid = require('./data/waterVaporGrid.js');
@@ -88,6 +89,11 @@ module.exports = {
   buildLinkSummary: waterfall.buildLinkSummary,
   // 计算方式求解（设置余量 / 设置瓦数 / 功带平衡 / 超发功带平衡）
   computeLinkMode: modeSolver.computeLinkMode,
+  // NGSO 计算方式求解（同四种方式，切 NGSO 引擎，强制 ISL 跳数=0）
+  computeLinkModeNGSO: modeSolver.computeLinkModeNGSO,
+  // NGSO 站星几何求解（SGP4 双站互视最差几何 + 轨道根数 + 时刻/时窗），供结果几何区用平台精确几何
+  ngsoGeometry,
+  solveNgsoMutualWorstCase: ngsoGeometry.solveMutualWorstCase,
   // 经纬度 → 降雨率 / 海拔自动填值（与小程序口径一致）
   geoAutoFill,
   loadFullPrecisionData,

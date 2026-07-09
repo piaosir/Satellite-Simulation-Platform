@@ -7,11 +7,19 @@
 //   overbalance 超发功带平衡：平衡余量 + 超发 x dB（功放超发 x dB ⇒ 余量同抬 x dB，自动）
 
 const { calculateLinkBudget } = require('./linkCalculator.js');
+// NGSO 引擎独立加载并容错（其依赖在个别环境可能加载异常，不应连累 GEO 主链路）
+let calculateLinkBudgetNGSO = null;
+try { calculateLinkBudgetNGSO = require('./linkCalculatorNGSO.js').calculateLinkBudget; }
+catch (e) { /* NGSO 引擎不可用时 computeLinkModeNGSO 会返回明确报错 */ }
+
+// 当前求解使用的引擎（GEO 默认）。所有 calcWithMargin/findBalanceMargin/findMarginByPower
+// 都经此间接调用，实现「同一套四种计算方式逻辑，GEO/NGSO 共用」。
+let ENGINE = calculateLinkBudget;
 
 // 以指定余量执行一次计算（高精度字符串传 margin，保留完整精度）
 function calcWithMargin(satParams, inputs, margin) {
   const m = typeof margin === 'number' ? margin.toFixed(10) : String(margin);
-  return calculateLinkBudget(satParams, Object.assign({}, inputs, { margin: m }));
+  return ENGINE(satParams, Object.assign({}, inputs, { margin: m }));
 }
 
 // 功带平衡：二分搜索使分配带宽与功率带宽差异最小的余量
@@ -63,7 +71,7 @@ function computeLinkMode(satParams, inputs, opt) {
   const mode = opt.mode || 'margin';
 
   if (mode === 'margin') {
-    const final = calculateLinkBudget(satParams, inputs);
+    const final = ENGINE(satParams, inputs);
     if (!final.success) return final;
     return { success: true, data: final.data, resolvedMargin: parseFloat(final.data.marginResult), mode };
   }
@@ -93,4 +101,20 @@ function computeLinkMode(satParams, inputs, opt) {
   return { success: true, data: final.data, resolvedMargin, mode };
 }
 
-module.exports = { computeLinkMode, findBalanceMargin, findMarginByPower };
+// NGSO「计算方式」求解器：复用上面全部四种方式逻辑，仅切换引擎为 NGSO，
+// 并永久将星间链路跳数强制为 0（NGSO 预算模块已删除 ISL）。
+function computeLinkModeNGSO(satParams, inputs, opt) {
+  if (!calculateLinkBudgetNGSO) {
+    return { success: false, message: 'NGSO 引擎不可用（linkCalculatorNGSO 加载失败）' };
+  }
+  const sp = Object.assign({}, satParams || {}, { islHops: 0 });
+  const prev = ENGINE;
+  ENGINE = calculateLinkBudgetNGSO;
+  try {
+    return computeLinkMode(sp, inputs || {}, opt || {});
+  } finally {
+    ENGINE = prev; // 复位，保证 GEO 调用不受影响
+  }
+}
+
+module.exports = { computeLinkMode, computeLinkModeNGSO, findBalanceMargin, findMarginByPower };

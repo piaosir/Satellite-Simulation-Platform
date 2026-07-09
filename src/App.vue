@@ -63,8 +63,9 @@ function doExport(fmt) {
   covNav.exportMap(fmt, expScope.value)
 }
 
-// 计算菜单项 → 打开独立工作台窗口（GEO 链路预算 / 日凌预报）
+// 计算菜单项 → 打开独立工作台窗口（GEO 链路预算 / NGSO 链路预算 / 日凌预报）
 function openLinkBudget() { window.api?.linkBudget?.open?.() }
+function openNgso() { window.api?.ngso?.open?.() }
 function openSunOutage() { window.api?.sunOutage?.open?.() }
 
 function pickView(flat) {
@@ -108,6 +109,7 @@ const menus = computed(() => [
   ] },
   { key: 'calc', label: '计算', items: [
     { label: '地球静止轨道卫星（GEO）链路预算', icon: 'calculator', hint: '打开链路预算工作台（独立窗口）', run: openLinkBudget },
+    { label: '非地球静止轨道卫星（NGSO）链路预算', icon: 'calculator', hint: '打开 NGSO 链路预算工作台（独立窗口）', run: openNgso },
     { label: '日凌预报（GEO）', icon: 'sun', hint: '打开日凌预报（独立窗口）', run: openSunOutage }
   ] },
   { key: 'view', label: '视图', items: [
@@ -145,6 +147,7 @@ const toolButtons = computed(() => [
   { icon: 'folder-open', tip: '文件管理', run: () => { fileOpen.value = true } },
   { sep: true },
   { icon: 'calculator', tip: 'GEO 链路预算', run: openLinkBudget },
+  { icon: 'calculator', tip: 'NGSO 链路预算', run: openNgso },
   { icon: 'sun', tip: '日凌预报（GEO）', run: openSunOutage },
   { sep: true },
   { icon: 'globe', tip: '3D 球体视图', on: !view.flat, run: () => pickView(false) },

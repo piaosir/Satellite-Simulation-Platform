@@ -93,6 +93,52 @@ function confirmCloseLinkBudget() {
   if (_lbWin && !_lbWin.isDestroyed()) _lbWin.close()
 }
 
+// NGSO 链路预算工作台：独立 BrowserWindow，单例复用（与 GEO 链路预算同模式）。
+let _ngsoWin = null
+let _ngsoAllowClose = false
+function createNgsoWindow() {
+  if (_ngsoWin && !_ngsoWin.isDestroyed()) {
+    if (_ngsoWin.isMinimized()) _ngsoWin.restore()
+    _ngsoWin.focus()
+    return _ngsoWin
+  }
+  const win = new BrowserWindow({
+    width: 1440,
+    height: 900,
+    minWidth: 1100,
+    minHeight: 720,
+    title: 'NGSO 链路预算',
+    backgroundColor: '#ffffff',
+    autoHideMenuBar: true,
+    webPreferences: {
+      preload: join(__dirname, '../preload/preload.js'),
+      contextIsolation: true,
+      sandbox: false
+    }
+  })
+  if (process.env['ELECTRON_RENDERER_URL']) {
+    win.loadURL(process.env['ELECTRON_RENDERER_URL'] + '/ngso.html')
+  } else {
+    win.loadFile(join(__dirname, '../renderer/ngso.html'))
+  }
+  win.webContents.on('before-input-event', (e, input) => {
+    if (input.type === 'keyDown' && input.key === 'F12') { win.webContents.toggleDevTools(); e.preventDefault() }
+  })
+  _ngsoAllowClose = false
+  win.on('close', (e) => {
+    if (_ngsoAllowClose) return
+    e.preventDefault()
+    win.webContents.send('ngso:closeRequested')
+  })
+  win.on('closed', () => { _ngsoWin = null })
+  _ngsoWin = win
+  return win
+}
+function confirmCloseNgso() {
+  _ngsoAllowClose = true
+  if (_ngsoWin && !_ngsoWin.isDestroyed()) _ngsoWin.close()
+}
+
 // 日凌预报：独立 BrowserWindow，单例复用（与链路预算工作台同模式）。
 let _soWin = null
 function createSunOutageWindow() {
@@ -139,7 +185,7 @@ app.whenReady().then(() => {
   // GRD 取值服务（与 coverageGrd 共享导入目录）：链路预算逐站取值在主进程完成
   const grd = require(join(root, 'electron/services/grd'))(join(app.getPath('userData'), 'coverage-grd-imported'))
   const { register } = require(join(root, 'electron/ipc/register'))
-  register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget: createLinkBudgetWindow, openSunOutage: createSunOutageWindow, grd, confirmCloseLinkBudget })
+  register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget: createLinkBudgetWindow, openSunOutage: createSunOutageWindow, grd, confirmCloseLinkBudget, openNgso: createNgsoWindow, confirmCloseNgso })
 
   // 加载 ITU 全精度数据（降雨率 P.837 / 海拔 P.1511 / 水汽 P.836 / 云 P.840）→ 注入计算内核，
   // 与小程序口径完全一致（小程序为云端下载，桌面端从本地 resources/itu 同步加载）。

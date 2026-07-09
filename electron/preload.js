@@ -9,6 +9,9 @@ contextBridge.exposeInMainWorld('api', {
     open: () => ipcRenderer.invoke('linkbudget:open'),
     compute: (s, l) => ipcRenderer.invoke('link:compute', s, l),
     computeMode: (s, l, opt) => ipcRenderer.invoke('link:computeMode', s, l, opt),
+    // NGSO：计算方式求解（切 NGSO 引擎、强制 ISL=0）+ 站星互视最差几何求解
+    computeModeNGSO: (s, l, opt) => ipcRenderer.invoke('link:computeModeNGSO', s, l, opt),
+    ngsoGeometry: (opt) => ipcRenderer.invoke('link:ngsoGeometry', opt),
     geoFill: (lat, lon) => ipcRenderer.invoke('link:geoFill', lat, lon),
     grdSample: (req) => ipcRenderer.invoke('link:grdSample', req),
     cities: () => ipcRenderer.invoke('link:cities'),
@@ -20,6 +23,12 @@ contextBridge.exposeInMainWorld('api', {
     // 关窗守卫：主进程拦截原生关闭动作后转发此事件；渲染进程问完用户再调 confirmClose() 才真正关闭
     onCloseRequested: (cb) => ipcRenderer.on('linkbudget:closeRequested', cb),
     confirmClose: () => ipcRenderer.invoke('linkbudget:confirmClose')
+  },
+  // NGSO 链路预算独立窗口的开窗/关窗守卫（计算/几何/导出/城市等能力复用上面的 linkBudget.*）
+  ngso: {
+    open: () => ipcRenderer.invoke('ngso:open'),
+    onCloseRequested: (cb) => ipcRenderer.on('ngso:closeRequested', cb),
+    confirmClose: () => ipcRenderer.invoke('ngso:confirmClose')
   },
   sunOutage: {
     open: () => ipcRenderer.invoke('suntool:open'),
