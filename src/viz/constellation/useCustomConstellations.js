@@ -2,7 +2,7 @@
 // 只负责“产出可渲染的 entries”，渲染/点选/选中几何全部复用星座3D 页现成的点云管线
 //   （entries → scene.setSatellites → renderEntries[index] 命中 → selectSat 画轨道/星下点/足迹）。
 // 每颗星是一组经典平根数，经 elementsToSatrec（复用 omm2satrec）转真实 SGP4 satrec；
-// 整座星座共享同一历元 SIM_EPOCH → 相对相位/相对 RAAN 精确保持（与页面轨道根数模拟星同理）。
+// 整座星座共享同一场景历元 scenarioEpoch（可设/持久化）→ 相对相位/相对 RAAN 精确保持、定向跨会话稳定。
 import { ref } from 'vue'
 import sat from './satellite.js'
 import { generateConstellation } from './walker.js'
@@ -10,8 +10,12 @@ import { generateConstellation } from './walker.js'
 const RE = 6378.137
 const MU = 398600.4418
 const STORE_KEY = 'constellation3d/customConsts'
-// 共享历元锚点：本会话固定一个，整座星座刚性同步旋转（绝对值无所谓，见页面 SIM_EPOCH 说明）
-const SIM_EPOCH = new Date().toISOString()
+// 场景历元（STK Scenario Epoch 口径）：全部自定义星座共用的固定参考历元。默认取“当前时刻”并持久化，可在面板设定。
+// 取固定值（而非每次渲染都 new Date()）→ 星座在地球上的定向跨会话稳定，不随“打开软件的时刻”漂移
+// （旧实现每次 new Date()：同一 Ω₀ 每次开软件按 Ω₀−GMST(当次开机时刻) 落地，落在不同经度，看着像“赤经不对”）。
+// RAAN 仍是真惯性升交点赤经（相对春分点/TEME），与真实 TLE/星历同一参考、可直接对应；
+// 渲染时在此历元上叠加时间轴偏移即可向后推演预测（见页面 ccTimeAt）。默认取“当前时刻”→ 贴近真实星历便于同历元比对。
+const defaultEpoch = () => new Date().toISOString()
 // 合成 NORAD 号段：从 900000 起，每座星座占一段（明显区别于真实目录星，避免撞号）
 const NORAD_BASE = 900000
 const NORAD_STEP = 10000
@@ -25,14 +29,14 @@ const hexToRgb = (hex) => {
   return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255]
 }
 
-// 经典轨道根数 → satrec（复用 omm2satrec；历元取共享锚点）。altKm=近地点高度，e=0 即圆轨道高度。
-function elementsToSatrec(el) {
+// 经典轨道根数 → satrec（复用 omm2satrec；历元取共享场景历元 epoch）。altKm=近地点高度，e=0 即圆轨道高度。
+function elementsToSatrec(el, epoch) {
   const ecc = Math.max(0, Math.min(0.999, Number(el.ecc) || 0))
   const a = (RE + (Number(el.altKm) || 0)) / (1 - ecc)          // a=(RE+hp)/(1−e)
   const n = Math.sqrt(MU / (a * a * a))                          // 平均运动 rad/s
   const meanMotion = 86400 * n / (2 * Math.PI)                   // rev/day（omm2satrec 所需）
   return sat.omm2satrec({
-    noradId: 'SIM', epoch: SIM_EPOCH, meanMotion, ecc,
+    noradId: 'SIM', epoch: epoch || defaultEpoch(), meanMotion, ecc,
     incl: Number(el.incl) || 0, raan: Number(el.raan) || 0,
     argp: Number(el.argp) || 0, ma: Number(el.ma) || 0, bstar: 0, mdot: 0, mddot: 0
   })
@@ -57,6 +61,7 @@ function normalize(c) {
 // onChange：任何增删改/显隐后回调页面重建渲染集（rebuildRenderSet）
 export function useCustomConstellations(onChange) {
   const list = ref([])              // [{ id, name, params, color, colorByPlane, visible, noradBase }]
+  const scenarioEpoch = ref(defaultEpoch())   // 场景历元（全自定义星座共用，持久化）；首次=当前时刻，可在面板设定
   const built = new Map()           // id → { sig, entries }
   let _top = NORAD_BASE             // 下一座星座的 NORAD 号段基址
   const preview = ref(null)         // 实时预览 { editId, cfg }（不持久化）：编辑器打开时随参数刷新
@@ -77,7 +82,7 @@ export function useCustomConstellations(onChange) {
     for (let i = 0; i < sats.length; i++) {
       const s = sats[i]
       let rec
-      try { rec = elementsToSatrec(s.elements) } catch { rec = null }
+      try { rec = elementsToSatrec(s.elements, scenarioEpoch.value) } catch { rec = null }
       if (!rec || rec.error) continue
       const rgb = cfg.colorByPlane ? hexToRgb(PLANE_PALETTE[s.plane % PLANE_PALETTE.length]) : cRgb
       entries.push({ rec, name: s.name, noradId: String(base + i), group: 'cc_' + cfg.id, groupLabel: cfg.name, color: rgb, plane: s.plane })
@@ -116,10 +121,20 @@ export function useCustomConstellations(onChange) {
     return null
   }
 
+  // 设定共享场景历元：作废全部合成 satrec（历元变→根数历元变）→ 重建 → 持久化 → 通知页面重渲染
+  function setScenarioEpoch(iso) {
+    const v = iso && !isNaN(Date.parse(iso)) ? new Date(iso).toISOString() : defaultEpoch()
+    if (v === scenarioEpoch.value) return
+    scenarioEpoch.value = v
+    built.clear()   // 历元变 → 全部合成 satrec 作废，下次 build 按新历元重建（sig 不含历元，故须显式清）
+    persist(); notify()
+  }
+
   function persist() {
     try {
       localStorage.setItem(STORE_KEY, JSON.stringify({
         top: _top,
+        epoch: scenarioEpoch.value,
         items: list.value.map((c) => ({ id: c.id, name: c.name, params: c.params, color: c.color, colorByPlane: c.colorByPlane, visible: c.visible, noradBase: c.noradBase }))
       }))
     } catch { /* 存储失败不影响功能 */ }
@@ -132,6 +147,9 @@ export function useCustomConstellations(onChange) {
       if (blob && Array.isArray(blob.items)) {
         list.value = blob.items.map(normalize)
         _top = Number.isFinite(blob.top) ? blob.top : (NORAD_BASE + list.value.length * NORAD_STEP)
+        // 场景历元：有则用持久化值；旧数据无此字段 → 冻结“当前时刻”为历元并回写（一次性迁移，此后稳定）
+        if (blob.epoch && !isNaN(Date.parse(blob.epoch))) scenarioEpoch.value = new Date(blob.epoch).toISOString()
+        else { scenarioEpoch.value = defaultEpoch(); persist() }
       }
     } catch { /* 读失败按空处理 */ }
   }
@@ -175,5 +193,5 @@ export function useCustomConstellations(onChange) {
     preview.value = { editId: draft.id || null, cfg: normalize({ ...draft, id: '__preview__', noradBase: PREVIEW_BASE }) }
   }
 
-  return { list, add, update, remove, toggle, showOnly, setPreview, count, entriesForRender, catalog, findByNorad, load, PLANE_PALETTE }
+  return { list, scenarioEpoch, setScenarioEpoch, add, update, remove, toggle, showOnly, setPreview, count, entriesForRender, catalog, findByNorad, load, PLANE_PALETTE }
 }

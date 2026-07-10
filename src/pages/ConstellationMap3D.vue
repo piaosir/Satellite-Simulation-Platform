@@ -548,6 +548,20 @@ let timer = null, ro = null, trackRo = null
 let pendingNorad = null, pendingNoFace = false
 
 function calcAt() { return live.value ? new Date() : new Date(baseTime.value + timeOffset.value * 60000) }
+// —— 自定义星座（合成星）场景历元锚定（STK 口径）——
+// 合成星锚在固定共享场景历元（customConst.scenarioEpoch，可设/持久化）：其在地球上的定向跨会话稳定（不随“打开软件的时刻”漂移）；
+// RAAN 仍是真惯性升交点赤经（与真实 TLE/星历同参考、可对应）。时间轴偏移(timeOffset)仍作用其上→可向后推演预测。
+// 真实目录星仍按实际观测时刻 calcAt() 解算；合成星 = 场景历元 + 同一时间轴偏移。二者共用同一 timeOffset。
+const isCustomEntry = (e) => !!(e && e.group && e.group.indexOf('cc') === 0)   // 合成星 group='cc_<id>'（真实组均不以 cc 开头）
+// 合成星生效时刻 = 场景历元 + 当前时间轴偏移(now−baseTime)；历元由 customConst.scenarioEpoch 提供（可设、持久化、共用）
+function ccTimeAt(now) { now = now || calcAt(); return new Date(Date.parse(customConst.scenarioEpoch.value) + (now.getTime() - baseTime.value)) }
+// 场景历元编辑：<input datetime-local> 走本地时刻，内部存 ISO(UTC)；改动即重建全部合成星并按名重绑当前选中
+const scenarioEpochLocal = computed({
+  get: () => { const d = new Date(customConst.scenarioEpoch.value); if (isNaN(d)) return ''; const p = (n) => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}` },
+  set: (v) => applyScenarioEpoch(new Date(v))
+})
+function applyScenarioEpoch(d) { if (!d || isNaN(d)) return; customConst.setScenarioEpoch(d.toISOString()); rebindSelection('') }
+function scenarioEpochNow() { applyScenarioEpoch(new Date()) }
 
 const curKey = () => GROUPS[groupIndex.value].key
 const fmtSlot = (lonDeg) => { const v = ((lonDeg % 360) + 540) % 360 - 180; return `${Math.abs(v).toFixed(1)}°${v >= 0 ? 'E' : 'W'}` }
@@ -555,7 +569,7 @@ const fmtDate = (d) => { const p = (n) => String(n).padStart(2, '0'); return `${
 
 // ===================== 信息卡（字段/顺序与 2D 完全一致） =====================
 function cardFor(e) {
-  const now = calcAt(), gmst = sat.gstime(now)
+  const now = isCustomEntry(e) ? ccTimeAt() : calcAt(), gmst = sat.gstime(now)   // 合成星按场景历元解算
   const pv = sat.propagate(e.rec, now)
   if (!pv || !pv.position) return null
   const gd = sat.eciToGeodetic(pv.position, gmst), v = pv.velocity, r = pv.position
@@ -590,26 +604,28 @@ function buildSelectedGeometry() {
   if (!scene) return
   if (!selEntries.length) { scene.clearSelectionGeom(); selGeomAll = []; pushSelGeomFlat(); return }
   const now = calcAt(), gmstNow = sat.gstime(now)
+  const ccNow = ccTimeAt(now), ccGmstNow = sat.gstime(ccNow)   // 合成星按场景历元解算（跨会话稳定）
   const items = []
   selGeomAll = []
   selEntries.forEach((e) => {
     const rec = e.rec
+    const cc = isCustomEntry(e), t = cc ? ccNow : now, g = cc ? ccGmstNow : gmstNow
     const periodMin = (2 * Math.PI) / rec.no
     // 一个周期自适应采样（大椭圆近地点段自动加密），轨道圈与轨迹共用
-    const samples = sampleOrbitAdaptive(rec, now, periodMin)
+    const samples = sampleOrbitAdaptive(rec, t, periodMin)
     const orbit = samples.map((s) => {
-      const gd = sat.eciToGeodetic(s.pv.position, gmstNow)
+      const gd = sat.eciToGeodetic(s.pv.position, g)
       return { lat: sat.degreesLat(gd.latitude), lon: sat.degreesLong(gd.longitude), altKm: gd.height }
     })
     const track = samples.map((s) => ({ lat: s.lat, lon: s.lon }))
     const primary = e === selEntry
-    const fp = footprintFor(rec, now, gmstNow, primary)   // primary 顺带更新高亮环 + beam ε=0 上限占位
+    const fp = footprintFor(rec, t, g, primary)   // primary 顺带更新高亮环 + beam ε=0 上限占位
     // 选中星当前在轨位置：供 3D 在该处画大号「在轨点」（跟随星点原色，压在细轨道之上）
     let satPos = null
     try {
-      const pvNow = sat.propagate(rec, now)
+      const pvNow = sat.propagate(rec, t)
       if (pvNow && pvNow.position) {
-        const gdN = sat.eciToGeodetic(pvNow.position, gmstNow)
+        const gdN = sat.eciToGeodetic(pvNow.position, g)
         satPos = { lat: sat.degreesLat(gdN.latitude), lon: sat.degreesLong(gdN.longitude), altKm: gdN.height, color: satDotHex(e) }
       }
     } catch { satPos = null }
@@ -703,15 +719,17 @@ function refreshPositions() {
   // renderEntries 已含可见自定义星座（即使内置组选「无」也可能非空），故只按空判断，不再短路 'none'
   if (!renderEntries.length) { scene.setSatellites([]); shownCount.value = 0; pushFocusSat(); if (hasLinkedElev()) redrawSats(); grd.tickLive(); return }
   const now = calcAt(), gmst = sat.gstime(now)
+  const ccNow = ccTimeAt(now), ccGmst = sat.gstime(ccNow)   // 合成星按固定场景历元解算（跨会话稳定）
   const n = renderEntries.length
   const positions = new Array(n)
   const colors = renderHasColor ? new Float32Array(n * 3) : null   // 有自定义星座时逐点上色（真实星取默认色）
   for (let k = 0; k < n; k++) {
     const e = renderEntries[k]
+    const cc = isCustomEntry(e), t = cc ? ccNow : now, g = cc ? ccGmst : gmst
     let pos
     try {
-      const pv = sat.propagate(e.rec, now)
-      if (pv && pv.position) { const gd = sat.eciToGeodetic(pv.position, gmst); pos = { lat: sat.degreesLat(gd.latitude), lon: sat.degreesLong(gd.longitude), altKm: gd.height } }
+      const pv = sat.propagate(e.rec, t)
+      if (pv && pv.position) { const gd = sat.eciToGeodetic(pv.position, g); pos = { lat: sat.degreesLat(gd.latitude), lon: sat.degreesLong(gd.longitude), altKm: gd.height } }
       else pos = { lat: 0, lon: 0, altKm: -RE }   // 占位，保持索引对齐（落到地心不可见）
     } catch { pos = { lat: 0, lon: 0, altKm: -RE } }
     positions[k] = pos
@@ -872,7 +890,7 @@ function refreshSelection() {
 }
 // 旋转地球使某星正对视图
 function faceEntry(e) {
-  const now = calcAt(), gmst = sat.gstime(now)
+  const now = isCustomEntry(e) ? ccTimeAt() : calcAt(), gmst = sat.gstime(now)   // 合成星按场景历元定位朝向
   const pv = sat.propagate(e.rec, now)
   if (!pv || !pv.position) return
   const gd = sat.eciToGeodetic(pv.position, gmst)
@@ -920,7 +938,7 @@ function onSearch(e) {
     const en = src[i]
     if (en.name.toLowerCase().includes(kw) || String(en.noradId).includes(kw) || (en.groupLabel && en.groupLabel.toLowerCase().includes(kw))) {   // 自定义星座另按星座名(groupLabel)命中→列出全部成员
       let slot = ''
-      if (geo) { const pv = sat.propagate(en.rec, now); if (pv && pv.position) slot = fmtSlot(sat.degreesLong(sat.eciToGeodetic(pv.position, gmst).longitude)) }
+      if (geo) { const t = isCustomEntry(en) ? ccTimeAt() : now, g = isCustomEntry(en) ? sat.gstime(t) : gmst; const pv = sat.propagate(en.rec, t); if (pv && pv.position) slot = fmtSlot(sat.degreesLong(sat.eciToGeodetic(pv.position, g).longitude)) }
       out.push({ en, name: en.name, noradId: en.noradId, groupLabel: en.groupLabel || GROUP_LABEL[en.group] || GROUP_LABEL[curKey()] || '', slot })
     }
   }
@@ -941,7 +959,7 @@ function onElevMin(e) { elevMin.value = e.target.value; refreshFootprint() }
 //   sin(B/2) = (RE/r)·cos ε，r=RE+h；B/2 ≥ asin(RE/r)（地平）时 ε=0。切换定义方式时按此换算，覆盖圈不变。
 function selAltKm() {
   if (!selEntry) return null
-  const now = calcAt(); const pv = sat.propagate(selEntry.rec, now)
+  const now = isCustomEntry(selEntry) ? ccTimeAt() : calcAt(); const pv = sat.propagate(selEntry.rec, now)
   if (!pv || !pv.position) return null
   const gd = sat.eciToGeodetic(pv.position, sat.gstime(now))
   return gd.height > 0 ? gd.height : null
@@ -1909,7 +1927,7 @@ function orbitSatrec(node) {
 function satLivePos(node) {
   if (node.noradId) {
     const en = entries.find((x) => String(x.noradId) === String(node.noradId)) || searchPool.find((x) => String(x.noradId) === String(node.noradId)) || customConst.findByNorad(node.noradId)   // 自定义星座合成星(含隐藏)：关联后按合成星历实时跟踪
-    if (en) { const now = calcAt(); const pv = sat.propagate(en.rec, now); if (pv && pv.position) { const gd = sat.eciToGeodetic(pv.position, sat.gstime(now)); return { lon: sat.degreesLong(gd.longitude), lat: sat.degreesLat(gd.latitude), altKm: gd.height } } }
+    if (en) { const now = isCustomEntry(en) ? ccTimeAt() : calcAt(); const pv = sat.propagate(en.rec, now); if (pv && pv.position) { const gd = sat.eciToGeodetic(pv.position, sat.gstime(now)); return { lon: sat.degreesLong(gd.longitude), lat: sat.degreesLat(gd.latitude), altKm: gd.height } } }
   } else if (node.elements) {
     try { const now = calcAt(); const pv = sat.propagate(orbitSatrec(node), now); if (pv && pv.position) { const gd = sat.eciToGeodetic(pv.position, sat.gstime(now)); return { lon: sat.degreesLong(gd.longitude), lat: sat.degreesLat(gd.latitude), altKm: gd.height } } } catch { /* 根数异常 → 回退静态值 */ }
   }
@@ -2054,12 +2072,14 @@ const validLon = (v) => Number.isFinite(v) && v >= -180 && v <= 180
 function satElevAt(lat, lon) {
   if (!selEntries.length) return null
   const now = calcAt(), gmst = sat.gstime(now)
+  const ccNow = ccTimeAt(now), ccGmst = sat.gstime(ccNow)   // 合成星按场景历元解算
   const gs = { longitude: lon * DEG, latitude: lat * DEG, height: 0 }
   let best = null
   for (const e of selEntries) {
-    const pv = sat.propagate(e.rec, now)
+    const cc = isCustomEntry(e), t = cc ? ccNow : now, g = cc ? ccGmst : gmst
+    const pv = sat.propagate(e.rec, t)
     if (!pv || !pv.position) continue
-    const el = sat.ecfToLookAngles(gs, sat.eciToEcf(pv.position, gmst)).elevation / DEG
+    const el = sat.ecfToLookAngles(gs, sat.eciToEcf(pv.position, g)).elevation / DEG
     if (best == null || el > best) best = el
   }
   return best
@@ -2071,11 +2091,13 @@ const fmtElev = (lat, lon) => { const e = satElevAt(lat, lon); return e == null 
 function focusSubpoints() {
   if (!selEntries.length) return []
   const now = calcAt(), gmst = sat.gstime(now)
+  const ccNow = ccTimeAt(now), ccGmst = sat.gstime(ccNow)   // 合成星按场景历元解算
   const out = []
   for (const e of selEntries) {
-    const pv = sat.propagate(e.rec, now)
+    const cc = isCustomEntry(e), t = cc ? ccNow : now, g = cc ? ccGmst : gmst
+    const pv = sat.propagate(e.rec, t)
     if (!pv || !pv.position) continue
-    const gd = sat.eciToGeodetic(pv.position, gmst)
+    const gd = sat.eciToGeodetic(pv.position, g)
     out.push({ lat: sat.degreesLat(gd.latitude), lon: sat.degreesLong(gd.longitude) })
   }
   return out
@@ -2636,6 +2658,11 @@ onBeforeUnmount(() => {
           <!-- 自定义星座（仿 STK Walker 生成器）：星点 + 轨道圈叠加显示 -->
           <div class="ccsec">
             <div class="cchd"><span>自定义星座</span><span class="lnk" @click="openConstWizard()"><Icon name="plus" :size="11" /> 生成</span></div>
+            <div class="ccep" title="全部自定义星座共用的固定「场景历元」（STK Scenario Epoch）。星座定向以此为准 → 跨会话稳定不漂；拖时间轴仍从此历元向后推演。默认取当前时刻（贴近真实星历，便于同历元比对）。RAAN 仍是惯性升交点赤经，与真实 TLE 同参考。">
+              <label>场景历元</label>
+              <input class="ci" type="datetime-local" v-model="scenarioEpochLocal" />
+              <span class="lnk" title="取当前时刻为场景历元" @click="scenarioEpochNow">当前</span>
+            </div>
             <div v-if="!customList.length" class="cctip">按 Walker 参数生成自定义星座，叠加为星点 + 轨道圈，可点选查看单星轨道 / 星下点 / 覆盖圈。</div>
             <div v-for="c in customList" :key="c.id" class="ccrow" :class="{ off: c.visible === false, sel: c.id === soloConst }" title="点击单独显示该星座" @click="showConstAlone(c)">
               <span class="ccdot" :style="{ background: c.color }"></span>
@@ -3682,6 +3709,10 @@ onBeforeUnmount(() => {
 .cchd { display: flex; align-items: center; justify-content: space-between; padding: 4px 12px; font-size: 11.5px; color: var(--text-muted); }
 .cchd .lnk { cursor: pointer; color: var(--accent); display: inline-flex; align-items: center; gap: 3px; }
 .cctip { padding: 2px 12px 6px; font-size: 11px; color: var(--text-faint); line-height: 1.5; }
+.ccep { display: flex; align-items: center; gap: 6px; padding: 2px 12px 6px; }
+.ccep > label { flex: none; font-size: 11px; color: var(--text-muted); }
+.ccep > .ci { flex: 1; min-width: 0; border: 1px solid var(--border); background: var(--bg); padding: 3px 6px; font-size: 11px; color: var(--text); outline: none; }
+.ccep > .lnk { flex: none; cursor: pointer; color: var(--accent); font-size: 11px; }
 .ccrow { display: flex; align-items: center; gap: 6px; padding: 4px 12px; font-size: 12px; color: var(--text-muted); }
 .ccrow:hover { background: var(--surface-2); color: var(--text); }
 .ccrow.off { opacity: 0.5; }
