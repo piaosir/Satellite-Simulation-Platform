@@ -473,8 +473,33 @@ function buildSelList() {
 // 合成星并入点云叠加显示：其 entries 追加进 renderEntries，即自动获得星点渲染 / 点选 / 选中轨道·星下点·足迹。
 const DEFAULT_SAT_RGB = [0x9f / 255, 0xd0 / 255, 0xef / 255]   // 默认星点色（与统一材质 0x9fd0ef 一致）
 // 星点原色 → '#rrggbb'（自定义星用自身色，普通星用默认色）；供选中星「在轨点」大号圆点跟随星点原色
-const satDotHex = (e) => { const c = (e && e.color) || DEFAULT_SAT_RGB; const h = (n) => Math.max(0, Math.min(255, Math.round(n * 255))).toString(16).padStart(2, '0'); return '#' + h(c[0]) + h(c[1]) + h(c[2]) }
-let renderHasColor = false     // 渲染集是否含逐点色（有可见自定义星座时为真 → 传 colors 给 setSatellites）
+const satDotHex = (e) => { const c = (e && e.color) || (e && groupRgb(e.group)) || DEFAULT_SAT_RGB; const h = (n) => Math.max(0, Math.min(255, Math.round(n * 255))).toString(16).padStart(2, '0'); return '#' + h(c[0]) + h(c[1]) + h(c[2]) }
+let renderHasColor = false     // 渲染集是否含逐点色（有可见自定义星座或分组配色覆盖时为真 → 传 colors 给 setSatellites）
+// —— 在轨现实星座「星点颜色」：按分组可改、可复位、持久化 ——
+// 每个内置分组一条覆盖色；缺省=默认蓝。'none' 无星、'all' 由各星自身分组着色（故此二者不设独立色）。
+const DEFAULT_SAT_HEX = '#9fd0ef'   // 与 DEFAULT_SAT_RGB / 统一材质 0x9fd0ef 一致
+const groupColors = reactive({})    // 分组 key -> '#rrggbb'
+const groupColorable = (key) => key !== 'none' && key !== 'all'
+const groupColorHex = (key) => groupColors[key] || DEFAULT_SAT_HEX
+const hasGroupColorOverrides = () => Object.keys(groupColors).length > 0
+// '#rrggbb' -> [r,g,b] 0..1（供逐点顶点色）；无有效覆盖返回 null → 该星走默认色
+function groupRgb(key) {
+  const hex = groupColors[key]
+  if (!hex || !HEX6.test(hex)) return null
+  return [parseInt(hex.slice(1, 3), 16) / 255, parseInt(hex.slice(3, 5), 16) / 255, parseInt(hex.slice(5, 7), 16) / 255]
+}
+// 渲染集是否需逐点色 = 含自定义星 或 存在分组配色覆盖
+function recalcHasColor() { renderHasColor = renderEntries.some(isCustomEntry) || hasGroupColorOverrides() }
+function setGroupColor(key, hex) {
+  if (!groupColorable(key) || !HEX6.test(hex)) return
+  groupColors[key] = hex.toLowerCase()
+  recalcHasColor(); refreshPositions()   // 无需重建集合，仅重算逐点色并重绘
+}
+function resetGroupColor(key) {
+  if (!(key in groupColors)) return
+  delete groupColors[key]
+  recalcHasColor(); refreshPositions()
+}
 const customConst = useCustomConstellations(() => rebuildRenderSet())
 const customList = customConst.list
 const soloConst = ref(null)   // 当前「单独显示」的自定义星座 id（行高亮）
@@ -706,7 +731,7 @@ function rebuildRenderSet() {
   }
   const custom = customConst.entriesForRender()   // 自定义星座合成星追加在真实星之后（点云索引对齐 renderEntries）
   renderEntries = custom.length ? valid.concat(custom) : valid
-  renderHasColor = custom.length > 0
+  renderHasColor = custom.length > 0 || hasGroupColorOverrides()
   satCount.value = entries.length
   refreshPositions()
 }
@@ -733,7 +758,7 @@ function refreshPositions() {
       else pos = { lat: 0, lon: 0, altKm: -RE }   // 占位，保持索引对齐（落到地心不可见）
     } catch { pos = { lat: 0, lon: 0, altKm: -RE } }
     positions[k] = pos
-    if (colors) { const c = e.color || DEFAULT_SAT_RGB; colors[k * 3] = c[0]; colors[k * 3 + 1] = c[1]; colors[k * 3 + 2] = c[2] }
+    if (colors) { const c = e.color || groupRgb(e.group) || DEFAULT_SAT_RGB; colors[k * 3] = c[0]; colors[k * 3 + 1] = c[1]; colors[k * 3 + 2] = c[2] }
   }
   scene.setSatellites(positions, colors)
   shownCount.value = n
@@ -2278,7 +2303,7 @@ function deserializeCov(items) {
 }
 function snapshot() {
   return {
-    nameMode: nameMode.value, countryName: countryNameSize.value, provName: provNameSize.value, cityName: cityNameSize.value, showProvinces: showProvinces.value, showCities: showCities.value, borderStyle: { ...borderStyle }, labelStyle: { ...labelStyle }, oceanColor: oceanColor.value, landScheme: landScheme.value, landOverrides: { ...landOverrides }, autoRotate: autoRotate.value, autoRotateSpeed: viewPrefs.autoRotateSpeed, live: live.value, beamLock: beamLock.value, fpMode: fpMode.value, beam: beam.value, elevMin: elevMin.value, windowMin: windowMin.value,
+    nameMode: nameMode.value, countryName: countryNameSize.value, provName: provNameSize.value, cityName: cityNameSize.value, showProvinces: showProvinces.value, showCities: showCities.value, borderStyle: { ...borderStyle }, labelStyle: { ...labelStyle }, oceanColor: oceanColor.value, landScheme: landScheme.value, landOverrides: { ...landOverrides }, groupColors: { ...groupColors }, autoRotate: autoRotate.value, autoRotateSpeed: viewPrefs.autoRotateSpeed, live: live.value, beamLock: beamLock.value, fpMode: fpMode.value, beam: beam.value, elevMin: elevMin.value, windowMin: windowMin.value,
     mkPt: markPtFont.value, mkStIcon: stIconSize.value, mkStFont: stFontSize.value, mkPtDot: markPtDot.value, mkTrajDot: trajDotSize.value,
     mkPtShow: showPtLabel.value, mkStShow: showStName.value,
     mkPtLayer: showPtLayer.value, mkStLayer: showStLayer.value, mkTrajLayer: showTrajLayer.value,
@@ -2313,6 +2338,10 @@ async function restoreSettings() {
     for (const [k, v] of Object.entries(s.landOverrides)) if (typeof v === 'string' && HEX6.test(v)) landOverrides[k] = v
   }
   if (landScheme.value !== LAND_DEFAULT || Object.keys(landOverrides).length) applyLandColors(true)
+  // 在轨现实星座分组配色（renderHasColor 由随后 loadGroup→rebuildRenderSet 一并算入）
+  if (s.groupColors && typeof s.groupColors === 'object') {
+    for (const [k, v] of Object.entries(s.groupColors)) if (groupColorable(k) && typeof v === 'string' && HEX6.test(v)) groupColors[k] = v.toLowerCase()
+  }
   if (Number.isFinite(s.mkPt)) markPtFont.value = s.mkPt
   if (Number.isFinite(s.mkPtDot)) markPtDot.value = s.mkPtDot
   if (Number.isFinite(s.mkStIcon)) stIconSize.value = s.mkStIcon
@@ -2653,6 +2682,13 @@ onBeforeUnmount(() => {
             >
               <span class="pgico"><Icon name="satellite" :size="12" /></span>
               <span class="pgn">{{ g.label }}</span>
+              <template v-if="groupColorable(g.key)">
+                <span v-if="groupColors[g.key]" class="pgrst" title="恢复默认星点色" @click.stop="resetGroupColor(g.key)"><Icon name="x" :size="10" /></span>
+                <label class="pgclr" :title="'星点颜色（' + groupColorHex(g.key) + '）'" @click.stop>
+                  <span class="pgsw" :style="{ background: groupColorHex(g.key) }"></span>
+                  <input type="color" :value="groupColorHex(g.key)" @input="e => setGroupColor(g.key, e.target.value)" />
+                </label>
+              </template>
             </div>
           </div>
           <!-- 自定义星座（仿 STK Walker 生成器）：星点 + 轨道圈叠加显示 -->
@@ -3703,7 +3739,15 @@ onBeforeUnmount(() => {
 .grprow.sel { background: var(--accent); color: var(--bg); }
 .grprow .pgico { flex: none; display: inline-flex; color: var(--text-faint); }
 .grprow:hover .pgico, .grprow.sel .pgico { color: inherit; }
-.grprow .pgn { overflow: hidden; text-overflow: ellipsis; }
+.grprow .pgn { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+/* 星点颜色：小色块（覆盖原生取色器）+ 悬停复位×（仅有覆盖色时出现） */
+.grprow .pgclr { position: relative; flex: none; width: 14px; height: 14px; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
+.grprow .pgclr input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; padding: 0; border: 0; opacity: 0; cursor: pointer; }
+.grprow .pgsw { width: 11px; height: 11px; border-radius: 3px; box-sizing: border-box; border: 1px solid rgba(0,0,0,.3); box-shadow: 0 0 0 1px rgba(255,255,255,.35); }
+.grprow .pgrst { flex: none; display: inline-flex; padding: 0 1px; color: var(--text-faint); cursor: pointer; opacity: 0; }
+.grprow:hover .pgrst { opacity: 1; }
+.grprow .pgrst:hover { color: #ff6b6b; }
+.grprow.sel .pgrst { color: var(--bg); opacity: .85; }
 /* 自定义星座（仿 STK Walker 生成器）：侧栏区 + 列表 */
 .ccsec { border-top: 1px solid var(--border); margin-top: 4px; padding-top: 4px; }
 .cchd { display: flex; align-items: center; justify-content: space-between; padding: 4px 12px; font-size: 11.5px; color: var(--text-muted); }

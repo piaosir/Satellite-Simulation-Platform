@@ -138,7 +138,32 @@ const STR = {
     calcFailed: '计算失败：',
     capHeader: (n, failed) => `容量汇总（${n} 条链路${failed ? ` · ${failed} 条失败已排除` : ''}）`,
     totalCap: '总容量', totalBw: '总带宽', avgEff: '平均频谱效率',
-    param: '参数', uplink: '上行', downlink: '下行', total: '合计', value: '数值', unit: '单位'
+    param: '参数', uplink: '上行', downlink: '下行', total: '合计', value: '数值', unit: '单位',
+    geo: {
+      sheetName: '几何关系',
+      title: 'NGSO 卫星—地球站几何关系报告',
+      subtitle: (sat, band, prop, date) => `卫星 ${sat} · 频段 ${band} · 传播器 ${prop} · ${date}`,
+      attrHead: '场景与轨道属性',
+      kSat: '卫星', kProp: '传播器', kFrame: '坐标系', kEpoch: '场景历元 t0', kHorizon: '搜索时窗', kTimeSys: '时标',
+      frameVal: 'TEME（轨道传播）· WGS84 椭球（站址）', timeSysVal: 'UTCG（协调世界时·格里高利）',
+      elemHead: '轨道根数', elemStatic: '历元静态', elemVirtual: '虚拟圆轨道',
+      a: '半长轴 a', e: '偏心率 e', i: '倾角 i', raan: '升交点赤经 Ω', argp: '近地点幅角 ω', ma: '平近点角 M',
+      mm: '平均运动 n', period: '轨道周期 T', peri: '近地点高度', apo: '远地点高度', norad: '卫星编号 (NORAD)',
+      accHead: '互视访问窗口（两站同刻可见）',
+      accNo: '#', accLink: '链路', accPair: '发信站 → 收信站',
+      accStart: '起始 (UTCG)', accStop: '结束 (UTCG)', accDur: '持续 (min)', accTypical: '典型时刻 t* (UTCG)',
+      accClip: ' (clipped)',
+      accNA: '手动 / 静态轨道：几何为历元无关的最差工况或星下点静态几何，无时间访问窗口。',
+      aerHead: '站星几何（斜距 / 仰角 / 覆盖）',
+      aerLink: '链路', aerDir: '方向', aerStn: '地球站', aerLat: '纬度 (°)', aerLon: '经度 (°)', aerMinEl: '最低仰角 (°)',
+      aerEl: '仰角 (°)', aerRange: '斜距 (km)', aerSatAlt: '卫星高度 (km)', aerHalf: '覆盖半角 (°)', aerCovR: '覆盖半径 (km)', aerPass: '过境时长 (min)',
+      dirUp: '↑ 上行', dirDn: '↓ 下行', resident: '∞',
+      dynHead: '卫星运动与多普勒',
+      dynLink: '链路', dynVi: '轨道速度·惯性 (km/s)', dynVg: '相对地面速度 (km/s)',
+      dynDu: '上行多普勒 (kHz)', dynDd: '下行多普勒 (kHz)', dynDelay: '单程时延 (ms)', dynEst: ' ·估算',
+      infeasHead: '不可行链路', infeasReason: '原因',
+      foot: '几何口径：选星取单一典型时刻 t*（SGP4/SDP4 同一物理瞬间，两站同刻可见、仰角尽量贴近各自最低）；手动圆轨道取每站「≥ 自身最低仰角」处的最大斜距（闭式球面）。覆盖半角 λ = arccos((Re/r)·cosε) − ε，覆盖半径 = Re·λ，过境时长 = 2λ/|ω_s − ω_E·cos i|。Re = 6378.137 km，μ = 398600.4418 km³/s²。'
+    }
   },
   en: {
     reportTitle: 'GEO Link Budget Results', sheetSummary: 'Link Summary',
@@ -154,7 +179,32 @@ const STR = {
     calcFailed: 'Calculation Failed: ',
     capHeader: (n, failed) => `Capacity Summary (${n} link${n > 1 ? 's' : ''}${failed ? `, ${failed} failed excluded` : ''})`,
     totalCap: 'Total Capacity', totalBw: 'Total Bandwidth', avgEff: 'Average Spectral Efficiency',
-    param: 'Parameter', uplink: 'Uplink', downlink: 'Downlink', total: 'Total', value: 'Value', unit: 'Unit'
+    param: 'Parameter', uplink: 'Uplink', downlink: 'Downlink', total: 'Total', value: 'Value', unit: 'Unit',
+    geo: {
+      sheetName: 'Geometry',
+      title: 'NGSO Satellite–Facility Geometry Report',
+      subtitle: (sat, band, prop, date) => `Satellite ${sat} · Band ${band} · Propagator ${prop} · ${date}`,
+      attrHead: 'Scenario & Orbit Attributes',
+      kSat: 'Satellite', kProp: 'Propagator', kFrame: 'Coordinate Frame', kEpoch: 'Scenario Epoch t0', kHorizon: 'Search Horizon', kTimeSys: 'Time System',
+      frameVal: 'TEME (orbit) · WGS84 ellipsoid (facility)', timeSysVal: 'UTCG (UTC · Gregorian)',
+      elemHead: 'Orbital Elements', elemStatic: 'Epoch', elemVirtual: 'Virtual Circular',
+      a: 'Semi-major Axis a', e: 'Eccentricity e', i: 'Inclination i', raan: 'RAAN Ω', argp: 'Arg. of Perigee ω', ma: 'Mean Anomaly M',
+      mm: 'Mean Motion n', period: 'Orbital Period T', peri: 'Perigee Altitude', apo: 'Apogee Altitude', norad: 'Satellite (NORAD)',
+      accHead: 'Mutual-Visibility Access (Both Stations Simultaneously Visible)',
+      accNo: '#', accLink: 'Link', accPair: 'Tx → Rx',
+      accStart: 'Start (UTCG)', accStop: 'Stop (UTCG)', accDur: 'Duration (min)', accTypical: 'Typical Instant t* (UTCG)',
+      accClip: ' (clipped)',
+      accNA: 'Manual / static orbit: epoch-independent worst-case or sub-satellite static geometry — no time-domain access window.',
+      aerHead: 'Satellite Geometry (Range / Elevation / Coverage)',
+      aerLink: 'Link', aerDir: 'Dir', aerStn: 'Facility', aerLat: 'Lat (°)', aerLon: 'Lon (°)', aerMinEl: 'Min El (°)',
+      aerEl: 'Elevation (°)', aerRange: 'Range (km)', aerSatAlt: 'Sat Alt (km)', aerHalf: 'Cov. Half-Angle (°)', aerCovR: 'Cov. Radius (km)', aerPass: 'Max Pass (min)',
+      dirUp: '↑ Up', dirDn: '↓ Dn', resident: '∞',
+      dynHead: 'Satellite Dynamics & Doppler',
+      dynLink: 'Link', dynVi: 'Orbital Vel · Inertial (km/s)', dynVg: 'Ground-Relative Vel (km/s)',
+      dynDu: 'Uplink Doppler (kHz)', dynDd: 'Downlink Doppler (kHz)', dynDelay: 'One-Way Delay (ms)', dynEst: ' · est.',
+      infeasHead: 'Infeasible Links', infeasReason: 'Reason',
+      foot: "Geometry basis: selected satellites use a single typical instant t* (same physical SGP4/SDP4 moment, both stations visible with elevations near their minimums); manual circular orbits use each station's max slant range at its own min elevation (closed-form spherical). Coverage half-angle λ = arccos((Re/r)·cosε) − ε, coverage radius = Re·λ, max pass = 2λ/|ω_s − ω_E·cos i|. Re = 6378.137 km, μ = 398600.4418 km³/s²."
+    }
   }
 }
 const strFor = (lang) => (lang === 'en' ? STR.en : STR.zh)
@@ -364,8 +414,206 @@ function writeLinkDetailSheet(ws, link, t) {
   }
 }
 
+// UTCG 时标（STK 口径）：把 ISO 时刻格式化为「1 Jul 2026 00:12:34.567」（英文月缩写，毫秒三位），
+// 无论中/英文导出均用此格式——「对标 STK」即以其 UTCG 时间表述为准。
+const UTCG_MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+function utcg(iso) {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return '—'
+  const p = (n, w) => String(n).padStart(w || 2, '0')
+  return `${d.getUTCDate()} ${UTCG_MON[d.getUTCMonth()]} ${d.getUTCFullYear()} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}.${p(d.getUTCMilliseconds(), 3)}`
+}
+
+// 传播器/几何算法名本地化：SGP4/SDP4 通用；手动/静态的中文名在英文导出时译出。
+function propLabel(method, lang) {
+  if (lang !== 'en') return method || '—'
+  return ({ '闭式球面': 'Closed-form spherical', '静态几何': 'Static geometry' })[method] || method || '—'
+}
+
+// ③ NGSO 几何关系（STK 版式，单独一张 sheet；仅 orbitType==='NGSO' 生成）。
+// 把 NGSO 特色几何量——互视访问窗口、时变斜距/仰角、卫星高度、覆盖半角/半径、过境时长、
+// 轨道速度、多普勒、单程时延、轨道根数——从平台单一真值源（ngsoGeometry：选星=典型时刻 t*，
+// 手动=闭式球面，静止/快照=静态几何）汇总为对标 STK 的报告表。轨道根数在多链路间共享（同一卫星），
+// 故只列一次；t*/互视窗/斜距/高度等随站对不同而逐链路列出。station 经纬/最低仰角由 txGeo/rxGeo 透传。
+function buildNgsoGeometrySheet(wb, links, params, meta, lang) {
+  if (!links || !links.length) return
+  const g = strFor(lang).geo
+  const NCOL = 12
+  const ws = wb.addWorksheet(g.sheetName, { views: [{ showGridLines: false }] })
+  ws.columns = [{ width: 6 }, { width: 15 }, { width: 20 }, { width: 16 }, { width: 16 }, { width: 13 },
+    { width: 16 }, { width: 13 }, { width: 13 }, { width: 14 }, { width: 13 }, { width: 13 }]
+  let r = 1
+
+  // —— 单元格辅助 ——
+  const num = (rr, c, x, dp, bold) => {
+    const cell = ws.getCell(rr, c); const v = (x == null || !isFinite(x)) ? null : Number(x)
+    cell.value = v == null ? '—' : v
+    if (v != null) cell.numFmt = dp > 0 ? '0.' + '0'.repeat(dp) : '0'
+    cell.font = { name: FNT, size: 10, bold: !!bold }; cell.alignment = { horizontal: 'right', vertical: 'middle' }
+  }
+  const str = (rr, c, text, align, o) => {
+    o = o || {}; const cell = ws.getCell(rr, c)
+    cell.value = text == null ? '' : text
+    cell.font = { name: o.font || CJK, size: o.size || 10, bold: !!o.bold, color: o.color ? { argb: o.color } : undefined }
+    cell.alignment = { horizontal: align || 'left', vertical: 'middle', wrapText: !!o.wrap }
+  }
+  const section = (text, span) => {
+    ws.mergeCells(r, 1, r, span); const cell = ws.getCell(r, 1)
+    cell.value = text; cell.font = { name: CJK, bold: true, size: 12 }; cell.alignment = { horizontal: 'left', vertical: 'middle' }
+    ws.getRow(r).height = 24; r++
+  }
+  const thead = (labels) => {
+    labels.forEach((lb, i) => str(r, i + 1, lb, i === 0 ? 'left' : 'center', { bold: true, size: 9, wrap: true }))
+    setRowBorder(ws, r, 1, labels.length, { top: MED, bottom: THIN }); ws.getRow(r).height = 30; r++
+  }
+  const kv = (label, value, unit, valFont) => {
+    ws.mergeCells(r, 1, r, 2); str(r, 1, label, 'left', { size: 10 })
+    ws.mergeCells(r, 3, r, 5); str(r, 3, value, 'left', { size: 10, font: valFont || FNT })
+    str(r, 6, unit || '', 'left', { size: 9, font: FNT, color: 'FF555555' })
+    ws.getRow(r).height = 18; r++
+  }
+  const kvNum = (label, v, dp, unit) => {
+    ws.mergeCells(r, 1, r, 2); str(r, 1, label, 'left', { size: 10 })
+    ws.mergeCells(r, 3, r, 5); num(r, 3, v, dp)
+    str(r, 6, unit || '', 'left', { size: 9, font: FNT, color: 'FF555555' })
+    ws.getRow(r).height = 18; r++
+  }
+
+  // 参考几何（共享轨道根数 / 传播器 / 场景历元）：优先取首个可行链路
+  const refLink = links.find((l) => l.geom && l.geom.feasible) || links.find((l) => l.geom) || null
+  const refGeom = refLink ? refLink.geom : null
+  const propName = refGeom ? propLabel(refGeom.method, lang) : '—'
+  const paren = lang === 'en' ? [' (', ')'] : ['（', '）']
+
+  // —— 标题 + 副标题 ——
+  ws.mergeCells(r, 1, r, NCOL)
+  const tc = ws.getCell(r, 1); tc.value = g.title
+  tc.font = { name: CJK, bold: true, size: 15 }; tc.alignment = { horizontal: 'left', vertical: 'middle' }; ws.getRow(r).height = 28; r++
+  ws.mergeCells(r, 1, r, NCOL)
+  const sc = ws.getCell(r, 1)
+  sc.value = g.subtitle(params.satelliteName || '—', params.frequencyBand || '—', propName, new Date().toLocaleString())
+  sc.font = { name: CJK, size: 10, color: { argb: 'FF666666' } }; sc.alignment = { horizontal: 'left', vertical: 'middle' }; ws.getRow(r).height = 18; r++
+  r++
+
+  // —— 场景与轨道属性（全局属性，STK 口径）——
+  section(g.attrHead, 6)
+  const coupledLinks = links.filter((l) => l.geom && l.geom.feasible && l.geom.coupled)
+  const cgSearch = coupledLinks.length ? coupledLinks[0].geom.search : null
+  kv(g.kSat, params.satelliteName || '—', '', CJK)
+  kv(g.kProp, propName, '')
+  kv(g.kFrame, g.frameVal, '', CJK)
+  if (cgSearch) {
+    kv(g.kEpoch, utcg(cgSearch.t0ISO), 'UTCG')
+    kv(g.kHorizon, cgSearch.horizonHours != null ? String(cgSearch.horizonHours) : '—', 'h')
+  }
+  kv(g.kTimeSys, g.timeSysVal, '', CJK)
+  r++
+
+  // —— 轨道根数（同一卫星，多链路共享，只列一次）——
+  if (refGeom && refGeom.elements) {
+    const el = refGeom.elements
+    section(`${g.elemHead}${paren[0]}${el.satnum == null ? g.elemVirtual : g.elemStatic}${paren[1]}`, 6)
+    kvNum(g.a, el.a, 3, 'km'); kvNum(g.e, el.e, 6, ''); kvNum(g.i, el.iDeg, 4, '°')
+    kvNum(g.raan, el.raanDeg, 4, '°'); kvNum(g.argp, el.argpDeg, 4, '°'); kvNum(g.ma, el.maDeg, 4, '°')
+    kvNum(g.mm, el.meanMotionRevDay, 6, 'rev/day'); kvNum(g.period, el.periodMin, 3, 'min')
+    kvNum(g.peri, el.perigeeAltKm, 1, 'km'); kvNum(g.apo, el.apogeeAltKm, 1, 'km')
+    if (el.satnum) kv(g.norad, String(el.satnum), '')
+    r++
+  }
+
+  // —— 互视访问窗口（STK Access 版式；仅选星耦合几何有时域窗）——
+  const feasLinks = links.filter((l) => l.geom && l.geom.feasible)
+  section(g.accHead, 7)
+  if (coupledLinks.length) {
+    thead([g.accNo, g.accLink, g.accPair, g.accStart, g.accStop, g.accDur, g.accTypical])
+    coupledLinks.forEach((l, idx) => {
+      const s = l.geom.search || {}, w = s.mutualWindow || {}
+      str(r, 1, String(idx + 1), 'center', { font: FNT, size: 10 })
+      str(r, 2, l.coord, 'center', { font: FNT, size: 10 })
+      str(r, 3, `${l.txName || ''} → ${l.rxName || ''}`, 'left', { size: 10, wrap: true })
+      str(r, 4, utcg(w.startISO), 'center', { font: FNT, size: 9, wrap: true })
+      str(r, 5, utcg(w.endISO) + (w.clipped ? g.accClip : ''), 'center', { font: FNT, size: 9, wrap: true })
+      num(r, 6, w.durationMin, 2)
+      str(r, 7, utcg(s.typicalISO), 'center', { font: FNT, size: 9, wrap: true })
+      ws.getRow(r).height = 26; r++
+    })
+    setRowBorder(ws, r - 1, 1, 7, { bottom: MED })
+  } else if (feasLinks.length) {
+    ws.mergeCells(r, 1, r, NCOL); str(r, 1, g.accNA, 'left', { size: 10, color: 'FF666666', wrap: true }); ws.getRow(r).height = 20; r++
+  }
+  r++
+
+  // —— 站星几何（斜距 / 仰角 / 覆盖；每链路 上行·下行 两行）——
+  if (feasLinks.length) {
+    section(g.aerHead, NCOL)
+    thead([g.aerLink, g.aerDir, g.aerStn, g.aerLat, g.aerLon, g.aerMinEl, g.aerEl, g.aerRange, g.aerSatAlt, g.aerHalf, g.aerCovR, g.aerPass])
+    feasLinks.forEach((l) => {
+      const w = l.geom.worst || {}
+      const dirs = [
+        { dir: g.dirUp, geo: l.txGeo || {}, side: w.up || {}, name: l.txName },
+        { dir: g.dirDn, geo: l.rxGeo || {}, side: w.dn || {}, name: l.rxName }
+      ]
+      dirs.forEach((d, ri) => {
+        str(r, 1, ri === 0 ? l.coord : '', 'center', { font: FNT, size: 10 })
+        str(r, 2, d.dir, 'center', { size: 9, color: 'FF1A1A1A' })
+        str(r, 3, d.geo.name || d.name || '', 'left', { size: 10, wrap: true })
+        num(r, 4, d.geo.lat, 4); num(r, 5, d.geo.lon, 4); num(r, 6, d.geo.minEl, 2)
+        num(r, 7, d.side.elevDeg, 2); num(r, 8, d.side.slantKm, 2); num(r, 9, d.side.altKm, 1)
+        num(r, 10, d.side.coverageHalfAngleDeg, 3); num(r, 11, d.side.coverageRadiusKm, 1)
+        if (d.side.maxPassMin == null) str(r, 12, g.resident, 'right', { font: FNT, size: 9, color: 'FF888888' })
+        else num(r, 12, d.side.maxPassMin, 2)
+        ws.getRow(r).height = 18; r++
+      })
+    })
+    setRowBorder(ws, r - 1, 1, NCOL, { bottom: MED })
+    r++
+
+    // —— 卫星运动与多普勒 ——
+    const anyEst = feasLinks.some((l) => l.geom.dopplerEstimate)
+    section(g.dynHead, 6)
+    thead([g.dynLink, g.dynVi, g.dynVg + (anyEst ? g.dynEst : ''), g.dynDu + (anyEst ? g.dynEst : ''), g.dynDd + (anyEst ? g.dynEst : ''), g.dynDelay])
+    feasLinks.forEach((l) => {
+      const w = l.geom.worst || {}
+      str(r, 1, l.coord, 'center', { font: FNT, size: 10 })
+      num(r, 2, w.speedInertialKmS, 3)
+      num(r, 3, w.speedGroundRelKmS, 3)
+      num(r, 4, w.maxDopplerUpHz != null ? w.maxDopplerUpHz / 1000 : null, 3)
+      num(r, 5, w.maxDopplerDnHz != null ? w.maxDopplerDnHz / 1000 : null, 3)
+      num(r, 6, w.oneWayDelayMs, 3)
+      ws.getRow(r).height = 18; r++
+    })
+    setRowBorder(ws, r - 1, 1, 6, { bottom: MED })
+    r++
+  }
+
+  // —— 不可行链路（列出原因，避免几何表里被静默漏掉）——
+  const infeas = links.filter((l) => l.geom && !l.geom.feasible)
+  if (infeas.length) {
+    section(g.infeasHead, NCOL)
+    str(r, 1, g.accLink, 'center', { bold: true, size: 9 })
+    ws.mergeCells(r, 2, r, 3); str(r, 2, g.accPair, 'left', { bold: true, size: 9 })
+    ws.mergeCells(r, 4, r, NCOL); str(r, 4, g.infeasReason, 'left', { bold: true, size: 9 })
+    setRowBorder(ws, r, 1, NCOL, { top: MED, bottom: THIN }); ws.getRow(r).height = 20; r++
+    infeas.forEach((l) => {
+      str(r, 1, l.coord, 'center', { font: FNT, size: 10 })
+      ws.mergeCells(r, 2, r, 3); str(r, 2, `${l.txName || ''} → ${l.rxName || ''}`, 'left', { size: 10, wrap: true })
+      ws.mergeCells(r, 4, r, NCOL); str(r, 4, l.geom.reason || '—', 'left', { size: 10, color: 'FF666666', wrap: true })
+      ws.getRow(r).height = 20; r++
+    })
+    setRowBorder(ws, r - 1, 1, NCOL, { bottom: MED })
+    r++
+  }
+
+  // —— 方法学脚注 ——
+  ws.mergeCells(r, 1, r, NCOL)
+  const fc = ws.getCell(r, 1); fc.value = g.foot
+  fc.font = { name: CJK, size: 9, color: { argb: 'FF999999' } }; fc.alignment = { horizontal: 'left', vertical: 'top', wrapText: true }
+  ws.getRow(r).height = 48
+}
+
 async function buildLinkBudgetExcel(payload) {
-  const { links = [], params = {}, meta = {}, lang = 'zh', pairMode = 'matrix' } = payload
+  const { links = [], params = {}, meta = {}, lang = 'zh', pairMode = 'matrix', orbitType = 'GEO' } = payload
   const t = strFor(lang)
   const isSequential = pairMode === 'sequential'
   const enriched = links.map((l) => ({ ...l, coord: 'T' + ((l.ti || 0) + 1) + 'R' + ((l.ri || 0) + 1) }))
@@ -373,6 +621,9 @@ async function buildLinkBudgetExcel(payload) {
   wb.creator = lang === 'en' ? 'GEO Satellite Link Budget Workbench' : '卫星链路预算工作台'; wb.created = new Date()
 
   buildSummarySheet(wb, enriched, params, meta, t, isSequential)
+
+  // NGSO：紧随汇总表后单立「几何关系」sheet（STK 版式），把 NGSO 特色几何量集中呈现
+  if (orbitType === 'NGSO') buildNgsoGeometrySheet(wb, enriched, params, meta, lang)
 
   // 详细计算结果：每条链路一个 sheet，表名 = 坐标 + 发信站-收信站（去重、截断 31 字符）
   const used = {}

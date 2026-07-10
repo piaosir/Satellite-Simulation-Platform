@@ -2,49 +2,6 @@ const { ipcMain, dialog, BrowserWindow } = require('electron')
 const fs = require('fs')
 const createOmm = require('../services/omm')
 
-// NGSO 导出：把平台精确几何（选星=单一典型时刻 t* 站星几何；手动=最差工况 / 轨道根数）整理成一段瀑布
-// （cols:1），并入详细计算结果表，使 Excel 与结果界面几何口径一致。选星判据=同一 t* 两站同时可见、
-// 仰角尽量贴近各自最低仰角；手动闭式=每站「≥ 自身最低仰角」下的最大斜距；算法(method)随几何标注。
-function ngsoGeometrySegment(geom, lang) {
-  const w = geom.worst || {}, el = geom.elements || {}
-  const en = lang === 'en'
-  const cp = !!geom.coupled  // 选星=单一典型时刻 t*；手动闭式=最差工况
-  const n = (v, p = 2) => (v == null || !isFinite(v)) ? '—' : Number(v).toFixed(p)
-  const T = en
-    ? { title: cp ? 'Satellite Geometry (Typical Instant t* · Both Stations, Elevations Near Their Minimums)' : 'Satellite Geometry (Worst Case · Per-Station Min-Elevation Max-Slant)', method: 'Algorithm', typical: 'Typical Instant t* (UTC)', upElev: 'Uplink Elevation', dnElev: 'Downlink Elevation', upSlant: cp ? 'Uplink Slant Range (t*)' : 'Uplink Slant Range (max)', dnSlant: cp ? 'Downlink Slant Range (t*)' : 'Downlink Slant Range (max)', upAlt: cp ? 'Sat Altitude (t*)' : 'Sat Altitude (uplink worst)', dnAlt: cp ? 'Sat Altitude (t*)' : 'Sat Altitude (downlink worst)', delay: 'One-Way Link Delay', vInert: 'Orbital Velocity (Inertial)', vGround: 'Ground-Relative Velocity', dopUp: cp ? 'Doppler (t*, Uplink)' : 'Max Doppler (Uplink)', dopDn: cp ? 'Doppler (t*, Downlink)' : 'Max Doppler (Downlink)', a: 'Semi-major Axis a', e: 'Eccentricity e', i: 'Inclination i', raan: 'RAAN Ω', argp: 'Arg. of Perigee ω', ma: 'Mean Anomaly M', mm: 'Mean Motion n', period: 'Orbital Period T', peri: 'Perigee Altitude', apo: 'Apogee Altitude', norad: 'Satellite (NORAD)' }
-    : { title: cp ? '卫星几何（单一典型时刻 t* · 两站同刻，仰角贴近各自最低）' : '卫星几何（最差工况 · 每站最低仰角处最大斜距）', method: '几何算法', typical: '典型时刻 t*（UTC）', upElev: '上行仰角', dnElev: '下行仰角', upSlant: cp ? '上行斜距（t*）' : '上行斜距（最大）', dnSlant: cp ? '下行斜距（t*）' : '下行斜距（最大）', upAlt: cp ? '卫星高度（t*）' : '卫星高度（上行最差）', dnAlt: cp ? '卫星高度（t*）' : '卫星高度（下行最差）', delay: '单程链路时延', vInert: '轨道速度（惯性系）', vGround: '相对地面速度', dopUp: cp ? '多普勒（典型时刻·上行）' : '最大多普勒（上行）', dopDn: cp ? '多普勒（典型时刻·下行）' : '最大多普勒（下行）', a: '半长轴 a', e: '偏心率 e', i: '倾角 i', raan: '升交点赤经 Ω', argp: '近地点幅角 ω', ma: '平近点角 M', mm: '平均运动 n', period: '轨道周期 T', peri: '近地点高度', apo: '远地点高度', norad: '卫星编号 (NORAD)' }
-  const row = (label, val, unit, kind) => ({ sign: '', label, up: val, unit: unit || '', kind: kind || 'ref' })
-  const dopTag = geom.dopplerEstimate ? (en ? ' (est., closed-form)' : '（估算·闭式）') : (' (' + (geom.method || '') + ')')
-  const typicalStr = (cp && geom.search && geom.search.typicalISO) ? String(geom.search.typicalISO).replace('T', ' ').replace(/\..*$/, '') : null
-  const rows = [
-    row(T.method, geom.method || '—', '', 'sub'),
-    ...(typicalStr ? [row(T.typical, typicalStr, '')] : []),
-    row(T.upElev, n(w.up && w.up.elevDeg), '°'),
-    row(T.dnElev, n(w.dn && w.dn.elevDeg), '°'),
-    row(T.upSlant, n(w.up && w.up.slantKm), 'km'),
-    row(T.dnSlant, n(w.dn && w.dn.slantKm), 'km'),
-    row(T.upAlt, n(w.up && w.up.altKm, 1), 'km'),
-    row(T.dnAlt, n(w.dn && w.dn.altKm, 1), 'km'),
-    row(T.delay, n(w.oneWayDelayMs, 3), 'ms'),
-    row(T.vInert, n(w.speedInertialKmS, 3), 'km/s'),
-    row(T.vGround + (geom.dopplerEstimate ? (en ? ' (est.)' : '（估算）') : ''), n(w.speedGroundRelKmS, 3), 'km/s'),
-    row(T.dopUp + dopTag, n(w.maxDopplerUpHz != null ? w.maxDopplerUpHz / 1000 : null, 3), 'kHz'),
-    row(T.dopDn + dopTag, n(w.maxDopplerDnHz != null ? w.maxDopplerDnHz / 1000 : null, 3), 'kHz'),
-    row(T.a, n(el.a, 3), 'km', 'sub'),
-    row(T.e, n(el.e, 6), ''),
-    row(T.i, n(el.iDeg, 4), '°'),
-    row(T.raan, n(el.raanDeg, 4), '°'),
-    row(T.argp, n(el.argpDeg, 4), '°'),
-    row(T.ma, n(el.maDeg, 4), '°'),
-    row(T.mm, n(el.meanMotionRevDay, 6), 'rev/day'),
-    row(T.period, n(el.periodMin, 3), 'min'),
-    row(T.peri, n(el.perigeeAltKm, 1), 'km'),
-    row(T.apo, n(el.apogeeAltKm, 1), 'km')
-  ]
-  if (el.satnum) rows.push(row(T.norad, String(el.satnum), ''))
-  return { title: T.title, cols: 1, rows }
-}
-
 // 注册所有 IPC 处理器。core 为返回引擎实例的函数（延迟解析）。
 function register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget, openSunOutage, grd, confirmCloseLinkBudget, openNgso, confirmCloseNgso }) {
   const omm = createOmm(core)
@@ -336,10 +293,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
         if (l && l.data) {
           try { l.segments = core().buildWaterfallSegments({ results: l.data, lang: exportLang, orbitType, txLocation: String(l.txName || ''), rxLocation: String(l.rxName || '') }) }
           catch (e) { l.segments = [] }
-          // NGSO：把平台精确几何（轨道根数 / 最差互视时刻 / 互视窗口）作为附加段并入详细表
-          if (orbitType === 'NGSO' && l.geom && l.geom.feasible) {
-            try { l.segments = (l.segments || []).concat([ngsoGeometrySegment(l.geom, exportLang)]) } catch (e) { /* ignore */ }
-          }
+          // NGSO 几何不再逐条附到详细表——已单立「几何关系」sheet（STK 版式，见 report.buildNgsoGeometrySheet）集中呈现
         }
       }
       const buf = await report.buildLinkBudgetExcel(payload || {})

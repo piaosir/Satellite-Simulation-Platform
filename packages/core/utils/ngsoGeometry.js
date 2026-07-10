@@ -210,8 +210,12 @@ function visMetricsFor(rKm, minElevDeg, inclDeg, aKm) {
   const ratio = Math.min(1, Math.max(-1, (RE_KM / rKm) * Math.cos(eps)));
   const lam = Math.max(0, Math.acos(ratio) - eps);                 // 覆盖地心半角 (rad)
   const omegaS = Math.sqrt(MU / (aKm * aKm * aKm));                // 轨道角速度 (rad/s)
-  const omegaRel = Math.abs(omegaS - OMEGA_E * Math.cos((Number(inclDeg) || 0) * DEG));
-  const passMin = omegaRel > 1e-9 ? (2 * lam / omegaRel) / 60 : Infinity;
+  const omegaRel = Math.abs(omegaS - OMEGA_E * Math.cos((Number(inclDeg) || 0) * DEG));  // 星下点相对地面漂移率
+  // 常驻可见（∞）判据：ω_rel < 2% 地球自转率 → 地面轨迹漂移极慢（GEO/近静止/低倾角 GSO），对可见站等效常驻。
+  // 用「同步性比例」而非绝对小量（旧 1e-9 太紧，真实 GEO 因不完全同步残留 ω_rel≈1e-8 会被误判为~9 年的有限过境）。
+  // cos i 项已让高倾角同步轨道（如 Tundra/QZSS i≈63°：纬度大幅摆动、确会落下）获得大 ω_rel → 仍为有限过境。
+  const SYNC_TOL = 0.02 * OMEGA_E;
+  const passMin = omegaRel > SYNC_TOL ? (2 * lam / omegaRel) / 60 : Infinity;
   return {
     coverageHalfAngleDeg: lam * RAD,
     coverageRadiusKm: RE_KM * lam,

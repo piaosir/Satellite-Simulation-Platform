@@ -333,7 +333,8 @@ function mergePlatformGeometry(d, geom) {
   }
   if (el && el.periodMin != null) { d.orbitPeriodUpResult = el.periodMin.toFixed(2); d.orbitPeriodDownResult = d.orbitPeriodUpResult }
   // 覆盖地心半角 / 地面覆盖半径 / 天顶过境最大时长——单一真值源（用卫星真实倾角，替代旧引擎里 50° 默认）
-  const fmtPass = (m) => (m == null || !isFinite(m)) ? '常驻可见(∞)' : Number(m).toFixed(2)
+  // 常驻可见（GEO/严格 ω_s≈ω_E）→ ∞（语言中立，专业；与几何卡 gPass、Excel 几何表同口径）
+  const fmtPass = (m) => (m == null || !isFinite(m)) ? '∞' : Number(m).toFixed(2)
   if (w.up.coverageHalfAngleDeg != null) {
     d.coverageHalfAngleUpResult = w.up.coverageHalfAngleDeg.toFixed(2)
     d.coverageRadiusUpResult = w.up.coverageRadiusKm.toFixed(1)
@@ -424,34 +425,33 @@ function localOffsetLabel() {
   const m = Math.abs(off) % 60
   return 'UTC' + sign + h + (m ? ':' + String(m).padStart(2, '0') : '')
 }
-const tzSuffix = computed(() => (tzMode.value === 'utc' ? 'UTC' : localOffsetLabel()))
-// 时刻格式化：按 mode 输出 UTC 或本地（不带时区词，时区由旁边角标标注）
+// UTCG 时标（对标 STK）：UTC 模式标 'UTCG'，本地模式标运行机偏移
+const tzSuffix = computed(() => (tzMode.value === 'utc' ? 'UTCG' : localOffsetLabel()))
+// 时刻格式化（STK UTCG 版式）：D Mon YYYY HH:MM:SS.mmm，按 mode 取 UTC 或本地字段（时区由区头角标标注）
+const UTCG_MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 function fmtInstant(iso, mode) {
   if (!iso) return '—'
   const d = new Date(iso)
   if (isNaN(d.getTime())) return String(iso)
-  const p = (n) => String(n).padStart(2, '0')
-  return mode === 'local'
-    ? `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
-    : `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`
+  const loc = mode === 'local'
+  const p = (n, w = 2) => String(n).padStart(w, '0')
+  const D = loc ? d.getDate() : d.getUTCDate()
+  const MO = loc ? d.getMonth() : d.getUTCMonth()
+  const Y = loc ? d.getFullYear() : d.getUTCFullYear()
+  const H = loc ? d.getHours() : d.getUTCHours()
+  const MI = loc ? d.getMinutes() : d.getUTCMinutes()
+  const S = loc ? d.getSeconds() : d.getUTCSeconds()
+  const MS = loc ? d.getMilliseconds() : d.getUTCMilliseconds()
+  return `${D} ${UTCG_MON[MO]} ${Y} ${p(H)}:${p(MI)}:${p(S)}.${p(MS, 3)}`
 }
-// 互视窗口格式化：起止（时:分:秒，按 mode）+ 时长；本地换算跨日标 (+1d)，被搜索时窗截断标「截断」
-function fmtWindow(w, mode) {
-  if (!w || !w.startISO || !w.endISO) return '—'
-  const ds = new Date(w.startISO), de = new Date(w.endISO)
-  if (isNaN(ds.getTime()) || isNaN(de.getTime())) return '—'
-  const local = mode === 'local'
-  const p = (n) => String(n).padStart(2, '0')
-  const hms = (d) => local
-    ? `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
-    : `${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`
-  const dur = (w.durationMin == null || !isFinite(w.durationMin)) ? '—' : (w.durationMin >= 60 ? (w.durationMin / 60).toFixed(2) + ' h' : w.durationMin.toFixed(1) + ' min')
-  const dayA = local ? ds.toDateString() : `${ds.getUTCFullYear()}-${ds.getUTCMonth()}-${ds.getUTCDate()}`
-  const dayB = local ? de.toDateString() : `${de.getUTCFullYear()}-${de.getUTCMonth()}-${de.getUTCDate()}`
-  const nx = dayA !== dayB ? ' (+1d)' : ''
-  return `${hms(ds)} ~ ${hms(de)}${nx} · ${dur}${w.clipped ? ' · 截断' : ''}`
+// 互视窗口持续时长：min，≥60 折算 h
+function fmtDur(min) {
+  if (min == null || !isFinite(min)) return '—'
+  return min >= 60 ? (min / 60).toFixed(2) + ' h' : min.toFixed(1) + ' min'
 }
 const g2 = (n, p = 2) => (n == null || !isFinite(n)) ? '—' : Number(n).toFixed(p)
+// 过境时长（几何卡）：GEO/常驻可见 → ∞（与瀑布 fmtPass、Excel 几何表同口径）
+const gPass = (m) => (m == null || !isFinite(m)) ? '∞' : Number(m).toFixed(2)
 const barW = (v) => { const n = parseFloat(v); return (isNaN(n) ? 0 : Math.min(100, Math.max(0, n))) + '%' }
 const barClass = (v) => { const n = parseFloat(v); return n > 100 ? 'danger' : (n > 80 ? 'warn' : 'normal') }
 
@@ -1019,11 +1019,17 @@ async function exportExcel() {
         mode: (calcModeInfo && (en ? calcModeInfo.enLabel : calcModeInfo.label)) || resultMode.value,
         pairMode: (pairModeInfo && (en ? pairModeInfo.enLabel : pairModeInfo.label)) || resultPairMode.value
       },
-      links: links.value.map((l) => ({
-        ti: l.ti, ri: l.ri, txName: l.txName, rxName: l.rxName, ok: !!l.ok, error: l.error || '',
-        data: l.data ? JSON.parse(JSON.stringify(l.data)) : null,
-        geom: l.geom ? JSON.parse(JSON.stringify(l.geom)) : null   // NGSO 平台几何（轨道根数/最差互视时刻/互视窗口）→ 导出几何段
-      }))
+      links: links.value.map((l) => {
+        // 站址经纬/最低仰角随链路透传 → 「几何关系」sheet 按 STK 口径标注发/收地球站坐标
+        const tx = txStations[l.ti] || {}, rx = rxStations[l.ri] || {}
+        return {
+          ti: l.ti, ri: l.ri, txName: l.txName, rxName: l.rxName, ok: !!l.ok, error: l.error || '',
+          data: l.data ? JSON.parse(JSON.stringify(l.data)) : null,
+          geom: l.geom ? JSON.parse(JSON.stringify(l.geom)) : null,  // NGSO 平台几何（轨道根数/典型时刻 t*/互视窗口/覆盖）→ 几何关系 sheet
+          txGeo: { name: l.txName, lat: parseFloat(tx.latitude), lon: parseFloat(tx.longitude), altM: parseFloat(tx.altitude) || 0, minEl: parseFloat(tx.minElevation) || 0 },
+          rxGeo: { name: l.rxName, lat: parseFloat(rx.rxLatitude), lon: parseFloat(rx.rxLongitude), altM: parseFloat(rx.rxAltitude) || 0, minEl: parseFloat(rx.rxMinElevation) || 0 }
+        }
+      })
     }
     const r = await api.linkBudget.exportExcel(payload)
     if (r && r.ok) toast('已导出：' + r.filePath)
@@ -1310,10 +1316,19 @@ onMounted(async () => {
                 </div>
 
                 <div class="geo-body">
-                  <div class="geo-sec">站星几何<span class="geo-sec-x">{{ geom.coupled ? '典型时刻 t*' : '最差工况' }}</span></div>
-                  <div v-if="geom.coupled && geom.search && geom.search.typicalISO" class="geo-trow"><span class="geo-l" title="所有几何量取自这一物理瞬间；扫描锚点为卫星历元/场景历元。此刻两站同时可见、仰角尽量贴近各自最低仰角（通常一站正压最低、另一站略高）。在「星座3D」页把时间设到此刻即可与地图核对">典型时刻 t*</span><span class="geo-time">{{ fmtInstant(geom.search.typicalISO, tzMode) }}<i>{{ tzSuffix }}</i></span></div>
-                  <div v-if="geom.coupled && geom.search && geom.search.mutualWindow" class="geo-trow"><span class="geo-l" title="发信站与收信站同时满足各自最低仰角的时段（含 t* 的那次过境）——即两站可经该星建链的时间窗口范围">两站互视窗口</span><span class="geo-time">{{ fmtWindow(geom.search.mutualWindow, tzMode) }}<i>{{ tzSuffix }}</i></span></div>
+                  <!-- 互视访问（选星耦合：场景历元 t0 / 典型时刻 t* / 两站互视窗口起止·持续，STK UTCG 时标）-->
+                  <template v-if="geom.coupled && geom.search">
+                    <div class="geo-sec">互视访问<span class="geo-sec-x">{{ tzMode === 'utc' ? 'UTCG' : tzSuffix }}</span></div>
+                    <div v-if="geom.search.t0ISO" class="geo-trow"><span class="geo-l" title="SGP4/SDP4 扫描的锚点历元（卫星历元 / 场景历元）——对标 STK 场景历元">场景历元 t0</span><span class="geo-time">{{ fmtInstant(geom.search.t0ISO, tzMode) }}</span></div>
+                    <div v-if="geom.search.typicalISO" class="geo-trow"><span class="geo-l" title="所有几何量取自这一物理瞬间；此刻两站同时可见、仰角尽量贴近各自最低仰角（通常一站正压最低、另一站略高）。在「星座3D」页把时间设到此刻即可与地图核对">典型时刻 t*</span><span class="geo-time">{{ fmtInstant(geom.search.typicalISO, tzMode) }}</span></div>
+                    <template v-if="geom.search.mutualWindow">
+                      <div class="geo-trow"><span class="geo-l" title="发信站与收信站同时满足各自最低仰角的时段（含 t* 的那次过境）——即两站可经该星建链的时间窗口范围">互视窗口 · 起始</span><span class="geo-time">{{ fmtInstant(geom.search.mutualWindow.startISO, tzMode) }}</span></div>
+                      <div class="geo-trow"><span class="geo-l">互视窗口 · 结束</span><span class="geo-time">{{ fmtInstant(geom.search.mutualWindow.endISO, tzMode) }}<span v-if="geom.search.mutualWindow.clipped" class="geo-clip" title="窗口被搜索时窗边界切断，非完整过境">clipped</span></span></div>
+                      <div class="geo-trow"><span class="geo-l">互视窗口 · 持续</span><span class="geo-time">{{ fmtDur(geom.search.mutualWindow.durationMin) }}</span></div>
+                    </template>
+                  </template>
 
+                  <div class="geo-sec">站星几何<span class="geo-sec-x">{{ geom.coupled ? '典型时刻 t*' : '最差工况' }}</span></div>
                   <div class="geo-duo">
                     <span class="geo-duh"></span>
                     <span class="geo-duh geo-up">↑ 上行</span>
@@ -1327,6 +1342,15 @@ onMounted(async () => {
                     <span class="geo-l" :title="geom.coupled ? 't* 该刻卫星高度（同一瞬间，上下行相同）' : ''">卫星高度<i>km</i></span>
                     <span class="geo-vu">{{ g2(geom.worst.up.altKm, 1) }}</span>
                     <span class="geo-vd">{{ g2(geom.worst.dn.altKm, 1) }}</span>
+                    <span class="geo-l" title="覆盖地心半角 λ = arccos((Re/r)·cosε) − ε（该仰角门限下卫星对地心张成的地面覆盖带半角）">覆盖地心半角<i>°</i></span>
+                    <span class="geo-vu">{{ g2(geom.worst.up.coverageHalfAngleDeg) }}</span>
+                    <span class="geo-vd">{{ g2(geom.worst.dn.coverageHalfAngleDeg) }}</span>
+                    <span class="geo-l" title="地面覆盖半径 = Re·λ（星下点到覆盖带边缘的地表大圆弧长）">地面覆盖半径<i>km</i></span>
+                    <span class="geo-vu">{{ g2(geom.worst.up.coverageRadiusKm, 1) }}</span>
+                    <span class="geo-vd">{{ g2(geom.worst.dn.coverageRadiusKm, 1) }}</span>
+                    <span class="geo-l" title="最大过境时长(天顶) = 2λ/|ω_s − ω_E·cos i|；GEO / 严格常驻可见为 ∞">最大过境时长<i>min</i></span>
+                    <span class="geo-vu" :class="{ 'geo-inf': geom.worst.up.maxPassMin == null }">{{ gPass(geom.worst.up.maxPassMin) }}</span>
+                    <span class="geo-vd" :class="{ 'geo-inf': geom.worst.dn.maxPassMin == null }">{{ gPass(geom.worst.dn.maxPassMin) }}</span>
                   </div>
 
                   <div class="geo-row"><span class="geo-l">单程链路时延</span><span class="geo-v">{{ g2(geom.worst.oneWayDelayMs, 3) }}<i>ms</i></span></div>
@@ -1730,6 +1754,7 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .geo-l i { font-style: normal; font-size: 10px; color: var(--text-faint); margin-left: 4px; letter-spacing: .2px; }
 .geo-v, .geo-time { font-family: var(--font-mono); font-size: 12px; font-weight: 600; color: var(--text); text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .geo-v i, .geo-time i { font-style: normal; font-weight: 500; color: var(--text-faint); margin-left: 5px; }
+.geo-clip { font-family: var(--font-mono); font-size: 9px; font-weight: 700; letter-spacing: .4px; color: var(--text-faint); margin-left: 7px; padding: 1px 5px; border: 1px solid var(--border); border-radius: 999px; vertical-align: 1px; }
 .geo-v-updn { display: inline-flex; gap: 11px; }
 .geo-v-updn .up { color: var(--up); }
 .geo-v-updn .dn { color: var(--dn); }
@@ -1741,6 +1766,8 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .geo-duh.geo-up { color: var(--up); }
 .geo-duh.geo-dn { color: var(--dn); }
 .geo-vu, .geo-vd { font-family: var(--font-mono); font-size: 12px; font-weight: 600; color: var(--text); text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* 常驻可见 ∞：等宽 12px 下符号偏小，单独放大（不加粗，字重同其它数值）*/
+.geo-vu.geo-inf, .geo-vd.geo-inf { font-size: 18px; line-height: 1; }
 
 .geo-note { padding: 10px 12px; font-size: 11px; color: var(--text-muted); line-height: 1.6; font-family: inherit; font-weight: 400; }
 .core-barrow { display: flex; flex-direction: column; }
