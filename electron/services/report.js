@@ -393,9 +393,29 @@ async function buildLinkBudgetExcel(payload) {
 }
 
 // ===== 日凌预报报告（Word，交付级）=====
-// payload: { result: calculateSunOutage 返回值, station:{name,lat,lon}, satellite:{name,lon}, tz:'bjt'|'utc' }
+// payload: { result: calculateSunOutage 返回值, station:{name,lat,lon}, satellite:{name,lon}, tz:'local'|'utc' }
 // 布局：标题 → 参数/模型信息块（键值两列）→ 逐日事件表（三线表）→ 方法学脚注。
-// 时标由 tz 决定（默认北京时，表头注明；UTC 时刻在 ICS 日历中恒有）。
+// 时标由 tz 决定（默认本地=运行机时区，由 UTC 时刻换算，表头注明偏移；UTC 时刻在 ICS 日历中恒有）。
+
+// 本地时刻：按地球站经度推算整点时区 round(经度/15)h，据 UTC 瞬间平移（随站点位置变化）
+function soOffMinFromLon(lon) {
+  const l = Number(lon)
+  return isFinite(l) ? Math.round(l / 15) * 60 : 0
+}
+function soLocalOf(dateUTC, hmsUTC, offMin) {
+  const dt = new Date(`${dateUTC}T${hmsUTC}Z`)
+  if (isNaN(dt.getTime())) return { date: dateUTC, time: hmsUTC }
+  dt.setTime(dt.getTime() + (offMin || 0) * 60000)
+  const p = (n) => String(n).padStart(2, '0')
+  return {
+    date: `${dt.getUTCFullYear()}-${p(dt.getUTCMonth() + 1)}-${p(dt.getUTCDate())}`,
+    time: `${p(dt.getUTCHours())}:${p(dt.getUTCMinutes())}:${p(dt.getUTCSeconds())}`
+  }
+}
+function soLocalTzLabel(offMin) {
+  const h = (offMin || 0) / 60
+  return h === 0 ? 'UTC' : 'UTC' + (h > 0 ? '+' : '−') + Math.abs(h)
+}
 
 function soKV(k, v) {
   return new TableRow({ children: [
@@ -412,10 +432,11 @@ function soTd(text, opts) {
 }
 
 async function buildSunOutageWord(payload) {
-  const { result: r = {}, station = {}, satellite = {}, tz = 'bjt' } = payload
+  const { result: r = {}, station = {}, satellite = {}, tz = 'local' } = payload
   const m = r.model || {}
-  const isBjt = tz !== 'utc'
-  const tzLabel = isBjt ? '北京时 (UTC+8)' : 'UTC'
+  const isLocal = tz !== 'utc'
+  const staOffMin = soOffMinFromLon(station.lon)
+  const tzLabel = isLocal ? `本地时 (${soLocalTzLabel(staOffMin)})` : 'UTC'
   const fmtLL = (lat, lon) => `${Math.abs(lat).toFixed(4)}°${lat >= 0 ? 'N' : 'S'}, ${Math.abs(lon).toFixed(4)}°${lon >= 0 ? 'E' : 'W'}`
 
   const info = new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows: [
@@ -438,10 +459,10 @@ async function buildSunOutageWord(payload) {
   ] })
   const body = (r.dailyResults || []).map((d, i) => new TableRow({ children: [
     soTd(i + 1, { align: 'center' }),
-    soTd((isBjt ? d.dateBJT : d.date) + (d.isPeak ? ' ★' : ''), { bold: !!d.isPeak }),
-    soTd(isBjt ? d.startTimeBJT : d.startTimeUTC, { align: 'right' }),
-    soTd(isBjt ? d.peakTimeBJT : d.peakTimeUTC, { align: 'right', bold: !!d.isPeak }),
-    soTd(isBjt ? d.endTimeBJT : d.endTimeUTC, { align: 'right' }),
+    soTd((isLocal ? soLocalOf(d.date, d.startTimeUTC, staOffMin).date : d.date) + (d.isPeak ? ' ★' : ''), { bold: !!d.isPeak }),
+    soTd(isLocal ? soLocalOf(d.date, d.startTimeUTC, staOffMin).time : d.startTimeUTC, { align: 'right' }),
+    soTd(isLocal ? soLocalOf(d.date, d.peakTimeUTC, staOffMin).time : d.peakTimeUTC, { align: 'right', bold: !!d.isPeak }),
+    soTd(isLocal ? soLocalOf(d.date, d.endTimeUTC, staOffMin).time : d.endTimeUTC, { align: 'right' }),
     soTd(d.durationStr, { align: 'right' }),
     soTd(d.peakCNdeg, { align: 'right' }),
     soTd(d.intensity, { align: 'center' })

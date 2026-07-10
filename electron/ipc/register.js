@@ -2,42 +2,34 @@ const { ipcMain, dialog, BrowserWindow } = require('electron')
 const fs = require('fs')
 const createOmm = require('../services/omm')
 
-// NGSO 导出：把平台精确几何（轨道根数 / 最差互视时刻 / 互视窗口）整理成一段瀑布（cols:1），
-// 并入详细计算结果表，使 Excel 与结果界面几何口径一致。
-function _fmtInstantUTC(iso) {
-  if (!iso) return '—'
-  const d = new Date(iso)
-  if (isNaN(d.getTime())) return String(iso)
-  const p = (n) => String(n).padStart(2, '0')
-  return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())} UTC`
-}
+// NGSO 导出：把平台精确几何（选星=单一典型时刻 t* 站星几何；手动=最差工况 / 轨道根数）整理成一段瀑布
+// （cols:1），并入详细计算结果表，使 Excel 与结果界面几何口径一致。选星判据=同一 t* 两站同时可见、
+// 仰角尽量贴近各自最低仰角；手动闭式=每站「≥ 自身最低仰角」下的最大斜距；算法(method)随几何标注。
 function ngsoGeometrySegment(geom, lang) {
-  const w = geom.worst || {}, el = geom.elements || {}, win = geom.window || {}
+  const w = geom.worst || {}, el = geom.elements || {}
   const en = lang === 'en'
+  const cp = !!geom.coupled  // 选星=单一典型时刻 t*；手动闭式=最差工况
   const n = (v, p = 2) => (v == null || !isFinite(v)) ? '—' : Number(v).toFixed(p)
   const T = en
-    ? { title: 'Satellite Geometry (Platform SGP4 · Dual-Station Mutual-Visibility Worst Case)', worstTime: 'Worst Mutual-Visibility Instant', win: 'Mutual-Visibility Window (AOS→LOS)', dur: 'Window Duration', upElev: 'Uplink Elevation', dnElev: 'Downlink Elevation', upSlant: 'Uplink Slant Range', dnSlant: 'Downlink Slant Range', upAz: 'Uplink Azimuth', dnAz: 'Downlink Azimuth', delay: 'One-Way Link Delay', vInert: 'Orbital Velocity (Inertial)', vGround: 'Ground-Relative Velocity', dopUp: 'Max Doppler (Uplink)', dopDn: 'Max Doppler (Downlink)', a: 'Semi-major Axis a', e: 'Eccentricity e', i: 'Inclination i', raan: 'RAAN Ω', argp: 'Arg. of Perigee ω', ma: 'Mean Anomaly M', mm: 'Mean Motion n', period: 'Orbital Period T', peri: 'Perigee Altitude', apo: 'Apogee Altitude', norad: 'Satellite (NORAD)' }
-    : { title: '卫星几何（平台 SGP4 · 双站互视最差几何）', worstTime: '最差互视时刻', win: '互视窗口（AOS→LOS）', dur: '互视窗口时长', upElev: '上行仰角', dnElev: '下行仰角', upSlant: '上行斜距', dnSlant: '下行斜距', upAz: '上行方位角', dnAz: '下行方位角', delay: '单程链路时延', vInert: '轨道速度（惯性系）', vGround: '相对地面速度', dopUp: '最大多普勒（上行）', dopDn: '最大多普勒（下行）', a: '半长轴 a', e: '偏心率 e', i: '倾角 i', raan: '升交点赤经 Ω', argp: '近地点幅角 ω', ma: '平近点角 M', mm: '平均运动 n', period: '轨道周期 T', peri: '近地点高度', apo: '远地点高度', norad: '卫星编号 (NORAD)' }
+    ? { title: cp ? 'Satellite Geometry (Typical Instant t* · Both Stations, Elevations Near Their Minimums)' : 'Satellite Geometry (Worst Case · Per-Station Min-Elevation Max-Slant)', method: 'Algorithm', typical: 'Typical Instant t* (UTC)', upElev: 'Uplink Elevation', dnElev: 'Downlink Elevation', upSlant: cp ? 'Uplink Slant Range (t*)' : 'Uplink Slant Range (max)', dnSlant: cp ? 'Downlink Slant Range (t*)' : 'Downlink Slant Range (max)', upAlt: cp ? 'Sat Altitude (t*)' : 'Sat Altitude (uplink worst)', dnAlt: cp ? 'Sat Altitude (t*)' : 'Sat Altitude (downlink worst)', delay: 'One-Way Link Delay', vInert: 'Orbital Velocity (Inertial)', vGround: 'Ground-Relative Velocity', dopUp: cp ? 'Doppler (t*, Uplink)' : 'Max Doppler (Uplink)', dopDn: cp ? 'Doppler (t*, Downlink)' : 'Max Doppler (Downlink)', a: 'Semi-major Axis a', e: 'Eccentricity e', i: 'Inclination i', raan: 'RAAN Ω', argp: 'Arg. of Perigee ω', ma: 'Mean Anomaly M', mm: 'Mean Motion n', period: 'Orbital Period T', peri: 'Perigee Altitude', apo: 'Apogee Altitude', norad: 'Satellite (NORAD)' }
+    : { title: cp ? '卫星几何（单一典型时刻 t* · 两站同刻，仰角贴近各自最低）' : '卫星几何（最差工况 · 每站最低仰角处最大斜距）', method: '几何算法', typical: '典型时刻 t*（UTC）', upElev: '上行仰角', dnElev: '下行仰角', upSlant: cp ? '上行斜距（t*）' : '上行斜距（最大）', dnSlant: cp ? '下行斜距（t*）' : '下行斜距（最大）', upAlt: cp ? '卫星高度（t*）' : '卫星高度（上行最差）', dnAlt: cp ? '卫星高度（t*）' : '卫星高度（下行最差）', delay: '单程链路时延', vInert: '轨道速度（惯性系）', vGround: '相对地面速度', dopUp: cp ? '多普勒（典型时刻·上行）' : '最大多普勒（上行）', dopDn: cp ? '多普勒（典型时刻·下行）' : '最大多普勒（下行）', a: '半长轴 a', e: '偏心率 e', i: '倾角 i', raan: '升交点赤经 Ω', argp: '近地点幅角 ω', ma: '平近点角 M', mm: '平均运动 n', period: '轨道周期 T', peri: '近地点高度', apo: '远地点高度', norad: '卫星编号 (NORAD)' }
   const row = (label, val, unit, kind) => ({ sign: '', label, up: val, unit: unit || '', kind: kind || 'ref' })
-  const contLabel = en ? 'Continuously visible (GEO/static)' : '两站持续可见（静止/GEO）'
-  const manualLabel = en ? 'Manual virtual circular orbit (closed-form worst, no ephemeris)' : '手动虚拟圆轨道（闭式最差，无星历/时窗）'
-  const manual = !!geom.manual
-  const title = manual ? (en ? 'Satellite Geometry (Manual Virtual Circular Orbit · Closed-form Worst Case)' : '卫星几何（手动虚拟圆轨道 · 球形闭式最差）') : T.title
+  const dopTag = geom.dopplerEstimate ? (en ? ' (est., closed-form)' : '（估算·闭式）') : (' (' + (geom.method || '') + ')')
+  const typicalStr = (cp && geom.search && geom.search.typicalISO) ? String(geom.search.typicalISO).replace('T', ' ').replace(/\..*$/, '') : null
   const rows = [
-    row(T.worstTime, manual ? manualLabel : (win.continuous ? contLabel : _fmtInstantUTC(w.timeISO)), '', 'sub'),
-    row(T.win, manual ? manualLabel : (win.continuous ? contLabel : `${_fmtInstantUTC(win.aosISO)} → ${_fmtInstantUTC(win.losISO)}`), ''),
-    row(T.dur, (manual || win.continuous) ? '—' : n(win.durationMin), 'min'),
+    row(T.method, geom.method || '—', '', 'sub'),
+    ...(typicalStr ? [row(T.typical, typicalStr, '')] : []),
     row(T.upElev, n(w.up && w.up.elevDeg), '°'),
     row(T.dnElev, n(w.dn && w.dn.elevDeg), '°'),
     row(T.upSlant, n(w.up && w.up.slantKm), 'km'),
     row(T.dnSlant, n(w.dn && w.dn.slantKm), 'km'),
-    row(T.upAz, n(w.up && w.up.azDeg), '°'),
-    row(T.dnAz, n(w.dn && w.dn.azDeg), '°'),
+    row(T.upAlt, n(w.up && w.up.altKm, 1), 'km'),
+    row(T.dnAlt, n(w.dn && w.dn.altKm, 1), 'km'),
     row(T.delay, n(w.oneWayDelayMs, 3), 'ms'),
     row(T.vInert, n(w.speedInertialKmS, 3), 'km/s'),
     row(T.vGround + (geom.dopplerEstimate ? (en ? ' (est.)' : '（估算）') : ''), n(w.speedGroundRelKmS, 3), 'km/s'),
-    row(T.dopUp + (geom.dopplerEstimate ? (en ? ' (est., closed-form)' : '（估算·闭式）') : (en ? ' (in-window SGP4)' : '（窗口内 SGP4）')), n(w.maxDopplerUpHz != null ? w.maxDopplerUpHz / 1000 : null, 3), 'kHz'),
-    row(T.dopDn + (geom.dopplerEstimate ? (en ? ' (est., closed-form)' : '（估算·闭式）') : (en ? ' (in-window SGP4)' : '（窗口内 SGP4）')), n(w.maxDopplerDnHz != null ? w.maxDopplerDnHz / 1000 : null, 3), 'kHz'),
+    row(T.dopUp + dopTag, n(w.maxDopplerUpHz != null ? w.maxDopplerUpHz / 1000 : null, 3), 'kHz'),
+    row(T.dopDn + dopTag, n(w.maxDopplerDnHz != null ? w.maxDopplerDnHz / 1000 : null, 3), 'kHz'),
     row(T.a, n(el.a, 3), 'km', 'sub'),
     row(T.e, n(el.e, 6), ''),
     row(T.i, n(el.iDeg, 4), '°'),
@@ -50,7 +42,7 @@ function ngsoGeometrySegment(geom, lang) {
     row(T.apo, n(el.apogeeAltKm, 1), 'km')
   ]
   if (el.satnum) rows.push(row(T.norad, String(el.satnum), ''))
-  return { title, cols: 1, rows }
+  return { title: T.title, cols: 1, rows }
 }
 
 // 注册所有 IPC 处理器。core 为返回引擎实例的函数（延迟解析）。
@@ -167,7 +159,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     core().computeLinkModeNGSO
       ? core().computeLinkModeNGSO(s || {}, l || {}, opt || {})
       : { success: false, message: 'NGSO 引擎未加载' })
-  // NGSO 站星几何求解（SGP4 双站互视最差几何 + 轨道根数 + 最近最差时刻/互视窗口）
+  // NGSO 站星几何求解（选星=SGP4/SDP4 单一典型时刻 t* 几何；手动=闭式球面最差 + 轨道根数）
   ipcMain.handle('link:ngsoGeometry', (_e, opt) =>
     core().solveNgsoMutualWorstCase
       ? core().solveNgsoMutualWorstCase(opt || {})
@@ -214,7 +206,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
       return { ok: false, error: busy ? '文件可能正被其他程序打开（如 Word），请关闭后重试' : (err.message || String(err)) }
     }
   })
-  // ICS 日历：事件时刻恒用 UTC（导入方自动换算本地时区）；SUMMARY 附北京时峰值便于值班速读。
+  // ICS 日历：事件时刻恒用 UTC（导入方自动换算本地时区）；SUMMARY 附本地峰值便于值班速读。
   ipcMain.handle('sunoutage:exportIcs', async (e, payload) => {
     const { result, station = {}, satellite = {} } = payload || {}
     const days = (result && result.dailyResults) || []
@@ -222,16 +214,22 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     const satName = satellite.name || `${satellite.lon}°E`
     const stnName = station.name || '地球站'
     const yearStr = String(result.equinoxDate || '').slice(0, 4)
+    // 本地时刻：按地球站经度推算整点时区 round(经度/15)h，据 UTC 瞬间平移
+    const p2 = (n) => String(n).padStart(2, '0')
+    const staOffMin = (() => { const l = Number(station.lon); return isFinite(l) ? Math.round(l / 15) * 60 : 0 })()
+    const locTime = (dateUTC, hms) => { const dt = new Date(`${dateUTC}T${hms}Z`); if (isNaN(dt.getTime())) return hms; dt.setTime(dt.getTime() + staOffMin * 60000); return `${p2(dt.getUTCHours())}:${p2(dt.getUTCMinutes())}:${p2(dt.getUTCSeconds())}` }
+    const offH = staOffMin / 60
+    const tzLbl = offH === 0 ? 'UTC' : 'UTC' + (offH > 0 ? '+' : '−') + Math.abs(offH)
     const events = days.map((d) => ({
       // UID 含 星-站-日期：同一事件重复导入时日历自动更新而非重复
       uid: `so-${satellite.lon}E-${Number(station.lat).toFixed(2)}N-${Number(station.lon).toFixed(2)}E-${d.date}@satsim-platform`,
       date: d.date, start: d.startTimeUTC, end: d.endTimeUTC,
-      summary: `日凌 ${satName} @ ${stnName} · 峰值${d.peakTimeBJT}(北京时) · -${d.peakCNdeg}dB`,
+      summary: `日凌 ${satName} @ ${stnName} · 峰值${locTime(d.date, d.peakTimeUTC)}(本地) · -${d.peakCNdeg}dB`,
       description: [
         `卫星: ${satName}（${satellite.lon}°E）`,
         `地球站: ${stnName}（${station.lat}, ${station.lon}）· 方位 ${result.satAz}° 仰角 ${result.satEl}°`,
         `窗口(UTC): ${d.startTimeUTC} ~ ${d.endTimeUTC}（峰值 ${d.peakTimeUTC}）`,
-        `窗口(北京时): ${d.startTimeBJT} ~ ${d.endTimeBJT}（峰值 ${d.peakTimeBJT}）`,
+        `窗口(本地 ${tzLbl}): ${locTime(d.date, d.startTimeUTC)} ~ ${locTime(d.date, d.endTimeUTC)}（峰值 ${locTime(d.date, d.peakTimeUTC)}）`,
         `时长: ${d.durationStr} · 峰值 C/N 恶化: ${d.peakCNdeg} dB · 强度: ${d.intensity}`,
         `判据: C/N 恶化 ≥ ${result.model ? result.model.degThreshold : '—'} dB · 频率 ${result.frequency} GHz · 口径 ${result.model ? result.model.diameter : '—'} m`,
         `由 卫星仿真平台 生成`
@@ -267,6 +265,8 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   ipcMain.handle('store:config:save', (_e, c) => storage.saveConfig(c))
   ipcMain.handle('store:config:delete', (_e, id) => storage.deleteConfig(id))
   ipcMain.handle('store:config:reorder', (_e, ids) => storage.reorderConfigs(ids))
+  ipcMain.handle('store:config:move', (_e, { id, parentId, anchorId, position }) => storage.moveItem(id, parentId, anchorId, position))
+  ipcMain.handle('store:config:deleteFolder', (_e, id) => storage.deleteFolder(id))
   ipcMain.handle('store:settings:get', () => storage.getSettings())
   ipcMain.handle('store:settings:set', (_e, s) => storage.setSettings(s))
 

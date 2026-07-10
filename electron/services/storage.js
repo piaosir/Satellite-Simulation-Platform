@@ -69,6 +69,48 @@ function reorderConfigs(ids) {
   write('configs.json', ordered)
   return ordered
 }
+// 归一化父级：缺省/null/undefined 一律视作 null（根）
+function pid(x) { return x && x.parentId != null ? x.parentId : null }
+// 收集某项的全部后代 id（沿 parentId 子树，含该项自身）
+function subtreeIds(list, id) {
+  const set = new Set([id])
+  let grew = true
+  while (grew) { grew = false; for (const c of list) { if (c.parentId != null && set.has(c.parentId) && !set.has(c.id)) { set.add(c.id); grew = true } } }
+  return set
+}
+// 锚点式移动配置/文件夹：把 id 项挪到 anchorId 之 before/after（同级），或放入 parentId 文件夹内(position='inside')。
+// 单次读-改-写原子落盘；因数组相对序即同级序，紧贴锚点插入即保证顺序正确、其余组不动。
+function moveItem(id, parentId, anchorId, position) {
+  const list = listConfigs()
+  const it = list.find((c) => c.id === id)
+  if (!it) return list
+  const anchor = anchorId ? list.find((c) => c.id === anchorId) : null
+  const newParent = position === 'inside' ? (parentId != null ? parentId : null) : (anchor ? pid(anchor) : (parentId != null ? parentId : null))
+  // 环路兜底：文件夹不能移进它自己的子孙（含自身）
+  if (it.type === 'folder' && newParent != null && subtreeIds(list, id).has(newParent)) return list
+  const rest = list.filter((c) => c.id !== id)
+  it.parentId = newParent
+  let insertAt
+  if (position !== 'inside' && anchor) {
+    const ai = rest.findIndex((c) => c.id === anchorId)
+    insertAt = ai < 0 ? rest.length : (position === 'before' ? ai : ai + 1)
+  } else {
+    // inside / 无锚点：追加到同父组末尾（保持文件夹内新入项排在后面）
+    let last = -1
+    for (let i = 0; i < rest.length; i++) if (pid(rest[i]) === newParent) last = i
+    insertAt = last < 0 ? rest.length : last + 1
+  }
+  rest.splice(insertAt, 0, it)
+  write('configs.json', rest)
+  return rest
+}
+// 级联删除文件夹及其全部后代（沿 parentId 子树）；返回被删 id 数组。普通配置传入亦可（等价单删）。
+function deleteFolder(id) {
+  const list = listConfigs()
+  const removed = subtreeIds(list, id)
+  write('configs.json', list.filter((c) => !removed.has(c.id)))
+  return Array.from(removed)
+}
 
 // ---- 应用设置 ----
 function getSettings() { return read('settings.json', {}) }
@@ -80,7 +122,7 @@ function setSettings(patch) {
 
 module.exports = {
   listHistory, addHistory, deleteHistory, clearHistory,
-  listConfigs, saveConfig, deleteConfig, reorderConfigs,
+  listConfigs, saveConfig, deleteConfig, reorderConfigs, moveItem, deleteFolder,
   getSettings, setSettings,
   _dir: dir
 }

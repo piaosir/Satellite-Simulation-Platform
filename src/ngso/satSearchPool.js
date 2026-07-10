@@ -43,24 +43,28 @@ function fromOmm(s, groupLabel) {
 }
 
 // 自定义星座单星（经典六根数）→ 池记录（type:'elements'）
-function fromCustom(satObj, noradId, constName) {
+// epoch=星座场景历元 scenarioEpoch（与星座3D 页同源）：RAAN/MA 依此历元设计，必须一路透传到 buildSatrec，
+// 否则退回「当前时刻」为历元 → 自定义星地固指向逐会话漂移、与 3D 页不一致（详见 useCustomConstellations 注释）。
+function fromCustom(satObj, noradId, constName, epoch) {
   const el = satObj.elements || {}
   const ecc = Math.max(0, Math.min(0.999, Number(el.ecc) || 0))
   const a = (RE + (Number(el.altKm) || 0)) / (1 - ecc)          // a=(RE+近地点高度)/(1−e)，与 elementsToSatrec 一致
   const meanMotion = 86400 * Math.sqrt(MU / (a * a * a)) / TWO_PI
   return {
     name: satObj.name, noradId: String(noradId), incl: String(el.incl), meanMotion: meanMotion.toFixed(6), ecc: String(ecc),
-    orbitType: 'elements',
+    orbitType: 'elements', epoch: epoch || null,
     elements: { altKm: Number(el.altKm) || 0, ecc, incl: Number(el.incl) || 0, raan: Number(el.raan) || 0, argp: Number(el.argp) || 0, ma: Number(el.ma) || 0 },
     ...apoPeri(a, ecc), groupLabel: '自定义 · ' + constName, custom: true
   }
 }
 
-// 读本地自定义星座（与星座3D 页同键、同 walker 生成逻辑），返回 { sats, names }
+// 读本地自定义星座（与星座3D 页同键、同 walker 生成逻辑），返回 { sats, names, epoch }
+// blob.epoch 为共享场景历元（scenarioEpoch）：透传给每颗合成星，供 NGSO 几何按设计历元求解。
 export function loadCustomSats() {
   let blob = null
-  try { blob = JSON.parse(localStorage.getItem(CUSTOM_KEY) || 'null') } catch { return { sats: [], names: [] } }
-  if (!blob || !Array.isArray(blob.items)) return { sats: [], names: [] }
+  try { blob = JSON.parse(localStorage.getItem(CUSTOM_KEY) || 'null') } catch { return { sats: [], names: [], epoch: null } }
+  if (!blob || !Array.isArray(blob.items)) return { sats: [], names: [], epoch: null }
+  const epoch = (blob.epoch && !isNaN(Date.parse(blob.epoch))) ? new Date(blob.epoch).toISOString() : null
   const sats = [], names = []
   let base = NORAD_BASE
   for (const c of blob.items) {
@@ -69,10 +73,10 @@ export function loadCustomSats() {
     const b = Number.isFinite(c.noradBase) ? c.noradBase : base
     let gen = []
     try { gen = generateConstellation(c.params || {}) } catch { gen = [] }
-    for (let i = 0; i < gen.length; i++) sats.push(fromCustom(gen[i], b + i, name))
+    for (let i = 0; i < gen.length; i++) sats.push(fromCustom(gen[i], b + i, name, epoch))
     base += NORAD_STEP
   }
-  return { sats, names }
+  return { sats, names, epoch }
 }
 
 // 构建完整候选池。返回 { all, real, custom, customNames }（自定义排前，便于优先命中）。

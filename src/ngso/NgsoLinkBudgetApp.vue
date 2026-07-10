@@ -5,6 +5,7 @@ import { loadSatTree, sampleAntennaParams } from './grdParam.js'
 import { encodeShare, decodeShare, configFileText } from './shareCode.js'
 import { findPoolByNorad } from './satSearchPool.js'
 import Icon from '../components/Icon.vue'
+import ConfigTree from '../components/ConfigTree.vue'
 import StationGrid from './StationGrid.vue'
 import BasebandPanel from './BasebandPanel.vue'
 import NgsoSatellitePanel from './NgsoSatellitePanel.vue'
@@ -13,11 +14,31 @@ import WaterfallTable from './WaterfallTable.vue'
 const api = typeof window !== 'undefined' ? window.api : null
 
 // 配置列表（Phase 4）：命名配置持久化到 userData/configs.json（store.config.*）。CRUD 见下方 Phase 4 区。
+// 列表已升级为「多级文件夹树」：configs 里同时含配置项与文件夹项 { type:'folder',name,parentId,orbitType:'NGSO' }。
 const configs = ref([])
 const activeId = ref(null)
+// 展开的文件夹 id 集合（响应式 Set，跨会话记忆，ngso 命名空间）
+const expandedFolders = ref(new Set(JSON.parse(localStorage.getItem('ngso/expandedFolders') || '[]')))
+function persistExpanded() { try { localStorage.setItem('ngso/expandedFolders', JSON.stringify([...expandedFolders.value])) } catch (e) { /* ignore */ } }
+function toggleFolder(f) { const s = new Set(expandedFolders.value); if (s.has(f.id)) s.delete(f.id); else s.add(f.id); expandedFolders.value = s; persistExpanded() }
 // 配置列表可向左收起（记住状态）
 const configsCollapsed = ref(localStorage.getItem('ngso/configsCollapsed') === '1')
 watch(configsCollapsed, (v) => { try { localStorage.setItem('ngso/configsCollapsed', v ? '1' : '0') } catch (e) { /* ignore */ } })
+// 配置栏宽度可拖拽调整（记住），应对多级文件夹深缩进后名称显示不全
+const CFG_W_MIN = 180, CFG_W_MAX = 520
+const configsWidth = ref(Math.min(CFG_W_MAX, Math.max(CFG_W_MIN, Number(localStorage.getItem('ngso/configsWidth')) || 210)))
+const configsResizing = ref(false)
+function startResizeConfigs(e) {
+  const startX = e.clientX, startW = configsWidth.value
+  configsResizing.value = true; document.body.style.cursor = 'col-resize'; document.body.style.userSelect = 'none'
+  const move = (ev) => { configsWidth.value = Math.min(CFG_W_MAX, Math.max(CFG_W_MIN, startW + (ev.clientX - startX))) }
+  const up = () => {
+    configsResizing.value = false; document.body.style.cursor = ''; document.body.style.userSelect = ''
+    window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up)
+    try { localStorage.setItem('ngso/configsWidth', String(configsWidth.value)) } catch (e2) { /* ignore */ }
+  }
+  window.addEventListener('mousemove', move); window.addEventListener('mouseup', up)
+}
 
 // —— 共享参数（卫星）与多站（发信站群 / 收信站群）——
 const satForm = reactive(defaultsFor(SAT_FIELDS))
@@ -210,33 +231,38 @@ const satSelected = computed(() => ngsoSat.mode !== 'manual' && !!ngsoSat.orbit)
 const geoHorizonHours = ref(Number(localStorage.getItem('ngso/horizonHours')) || 24)
 watch(geoHorizonHours, (v) => { try { localStorage.setItem('ngso/horizonHours', String(v)) } catch (e) { /* ignore */ } })
 
-// 天线树节点 → 轨道 spec（异步，可能要联网反解 NORAD）：
-//   ① 节点带 NORAD → 到「搜索卫星」同一份共享候选池（findPoolByNorad，见 satSearchPool.js）反解真实轨道根数——
-//      树导入与搜索**读同一份池**，同一颗星在两处必然算出同一个几何（此前各自独立拉取分组，曾出现过不一致）；
-//   ② 节点自带 OMM/经典六根数 → 直接用；
-//   ③ 都没有（仅星下点快照，如 GEO 预置星）→ 用当前星下点做静止/快照几何（对 GEO 严格成立）。
+// 天线树节点 → 轨道 spec（异步，可能要联网反解 NORAD）。按 node.kind 分派，**只有真·静止星才走 GEO 静态几何**：
+//   ① 节点带 NORAD（kind:'linked'）→ 到「搜索卫星」同一份共享候选池（findPoolByNorad）反解真实轨道根数——
+//      树导入与搜索读同一份池，同一颗星两处几何一致。查不到（离线/不在 active 目录）→ 报因，不伪造 GEO。
+//   ② 节点自带 OMM / 经典六根数（kind:'orbit'）→ 直接用真实轨道；
+//   ③ 仅星下点快照：**只有 GEO 预置星('preset')与用户手放的固定点('custom')**才按真实星下点经纬高做静止几何
+//      （这两类本就无轨道运动，静止几何是正确口径）；对「本应在动」的星绝不默认 GEO 静止解。
 async function treeNodeOrbit(node) {
   if (!node) return null
+  const kind = node.kind || ''
   if (node.noradId != null) {
     const rec = await findPoolByNorad(node.noradId)
     if (rec) {
       if (rec.orbitType === 'elements' && rec.elements) {
         const e = rec.elements
-        return { type: 'elements', altKm: Number(e.altKm) || 0, ecc: Number(e.ecc) || 0, incl: Number(e.incl) || 0, raan: Number(e.raan) || 0, argp: Number(e.argp) || 0, ma: Number(e.ma) || 0, noradId: rec.noradId }
+        return { type: 'elements', altKm: Number(e.altKm) || 0, ecc: Number(e.ecc) || 0, incl: Number(e.incl) || 0, raan: Number(e.raan) || 0, argp: Number(e.argp) || 0, ma: Number(e.ma) || 0, epoch: rec.epoch || null, noradId: rec.noradId }
       }
       return { type: 'omm', name: rec.name, noradId: rec.noradId, epoch: rec.epoch, meanMotion: rec.meanMotion, ecc: rec.ecc, incl: rec.incl, raan: rec.raan, argp: rec.argp, ma: rec.ma, bstar: rec.bstar, mdot: rec.mdot, mddot: rec.mddot }
     }
+    // 关联星但星历库暂时查不到——不静默按 GEO 静止星处理，明确报因
+    return { type: 'unresolved', noradId: node.noradId, reason: `关联星（NORAD ${node.noradId}）暂未在星历库解析到，无法确定其轨道（可能离线或本地缓存缺失）。请联网后在「搜索卫星」按 NORAD 重选，或改用手动轨道高度+倾角。` }
   }
   if (node.omm && node.omm.meanMotion) return Object.assign({ type: 'omm' }, node.omm)
   const el = node.elements
   if (el && el.altKm != null) {
-    return { type: 'elements', altKm: Number(el.altKm), ecc: Number(el.ecc) || 0, incl: Number(el.incl) || 0, raan: Number(el.raan) || 0, argp: Number(el.argp) || 0, ma: Number(el.ma) || 0, noradId: node.noradId }
+    return { type: 'elements', altKm: Number(el.altKm), ecc: Number(el.ecc) || 0, incl: Number(el.incl) || 0, raan: Number(el.raan) || 0, argp: Number(el.argp) || 0, ma: Number(el.ma) || 0, epoch: node.epoch || null, noradId: node.noradId }
   }
-  // 兜底：仅有星下点快照（GEO 预置星等静止星，无根数无 NORAD）——保留真实经纬度做静态几何，不用假圆轨道反推错经度。
-  if (node.altKm != null) {
+  // 仅 GEO 预置星 / 用户固定点（无轨道运动）→ 真实星下点静止几何；kind 缺省（旧数据）也归此类兼容。
+  if ((kind === 'preset' || kind === 'custom' || !kind) && node.altKm != null) {
     return { type: 'snapshot', lonDeg: Number(node.lon) || 0, latDeg: Number(node.lat) || 0, altKm: Number(node.altKm) || 0, noradId: node.noradId }
   }
-  return null
+  // 「本应在动」的星（linked/orbit）却拿不到轨道根数——报因而非默认 GEO 静止
+  return { type: 'unresolved', noradId: node.noradId, reason: `卫星「${node.satName || node.folder}」缺少可用轨道根数，无法确定其轨道。请在「星座3D」页为其补充轨道根数（关联 NORAD 或填经典六根数），或改用手动轨道高度+倾角。` }
 }
 // 频段 → 上下行频率（GHz），供几何求解算多普勒
 const upFreqGHz = () => parseFloat(satForm.centerFrequency) || 14.25
@@ -274,7 +300,7 @@ function pickSearchSat(rec) {
   ngsoSat.mode = 'search'; ngsoSat.name = rec.name; ngsoSat.noradId = rec.noradId || null
   if (rec.orbitType === 'elements' && rec.elements) {
     const e = rec.elements
-    ngsoSat.orbit = { type: 'elements', altKm: Number(e.altKm) || 0, ecc: Number(e.ecc) || 0, incl: Number(e.incl) || 0, raan: Number(e.raan) || 0, argp: Number(e.argp) || 0, ma: Number(e.ma) || 0, noradId: rec.noradId }
+    ngsoSat.orbit = { type: 'elements', altKm: Number(e.altKm) || 0, ecc: Number(e.ecc) || 0, incl: Number(e.incl) || 0, raan: Number(e.raan) || 0, argp: Number(e.argp) || 0, ma: Number(e.ma) || 0, epoch: rec.epoch || null, noradId: rec.noradId }
   } else {
     // 仅取 SGP4 所需 OMM 字段，剥离候选池的显示字段（apogeeKm/groupLabel/altName…）
     ngsoSat.orbit = { type: 'omm', name: rec.name, noradId: rec.noradId, epoch: rec.epoch, meanMotion: rec.meanMotion, ecc: rec.ecc, incl: rec.incl, raan: rec.raan, argp: rec.argp, ma: rec.ma, bstar: rec.bstar, mdot: rec.mdot, mddot: rec.mddot }
@@ -291,13 +317,11 @@ function clearSatSelection() { ngsoSat.mode = 'manual'; ngsoSat.orbit = null; ng
 const _C_KMS = 299792.458
 function mergePlatformGeometry(d, geom) {
   const w = geom.worst, el = geom.elements
-  const fx = (v, p = 2) => (v == null || !isFinite(v)) ? null : Number(v).toFixed(p)
   d.slantRangeResult = w.up.slantKm.toFixed(2); d.rxSlantRangeResult = w.dn.slantKm.toFixed(2)
   d.elevationResult = w.up.elevDeg.toFixed(2); d.rxElevationResult = w.dn.elevDeg.toFixed(2)
-  // 方位角：手动虚拟轨道缺相位 → null，不覆盖引擎占位值
-  if (fx(w.up.azDeg) != null) d.azimuthResult = fx(w.up.azDeg)
-  if (fx(w.dn.azDeg) != null) d.rxAzimuthResult = fx(w.dn.azDeg)
-  if (w.subPoint) { d.orbitAltitudeResult = w.subPoint.altKm.toFixed(1); d.orbitAltitudeUpResult = d.orbitAltitudeResult }
+  // 卫星高度：选星取典型时刻 t* 同一瞬间的高度（上下行相同）；手动圆轨道两站也相同
+  if (w.up.altKm != null) d.orbitAltitudeUpResult = w.up.altKm.toFixed(1)
+  if (w.dn.altKm != null) d.orbitAltitudeResult = w.dn.altKm.toFixed(1)
   if (w.speedInertialKmS != null) { d.orbitVelocityResult = w.speedInertialKmS.toFixed(3); d.orbitVelocityUpResult = d.orbitVelocityResult }
   if (w.speedGroundRelKmS != null) { d.groundRelVelResult = w.speedGroundRelKmS.toFixed(3); d.groundRelVelUpResult = d.groundRelVelResult }
   if (w.maxDopplerUpHz != null) d.maxDopplerUplinkResult = (w.maxDopplerUpHz / 1000).toFixed(3)
@@ -308,6 +332,18 @@ function mergePlatformGeometry(d, geom) {
     d.linkDelayDownResult = (w.dn.slantKm / _C_KMS * 1000).toFixed(3)
   }
   if (el && el.periodMin != null) { d.orbitPeriodUpResult = el.periodMin.toFixed(2); d.orbitPeriodDownResult = d.orbitPeriodUpResult }
+  // 覆盖地心半角 / 地面覆盖半径 / 天顶过境最大时长——单一真值源（用卫星真实倾角，替代旧引擎里 50° 默认）
+  const fmtPass = (m) => (m == null || !isFinite(m)) ? '常驻可见(∞)' : Number(m).toFixed(2)
+  if (w.up.coverageHalfAngleDeg != null) {
+    d.coverageHalfAngleUpResult = w.up.coverageHalfAngleDeg.toFixed(2)
+    d.coverageRadiusUpResult = w.up.coverageRadiusKm.toFixed(1)
+    d.maxPassDurationUpResult = fmtPass(w.up.maxPassMin)
+  }
+  if (w.dn.coverageHalfAngleDeg != null) {
+    d.coverageHalfAngleDownResult = w.dn.coverageHalfAngleDeg.toFixed(2)
+    d.coverageRadiusDownResult = w.dn.coverageRadiusKm.toFixed(1)
+    d.maxPassDurationDownResult = fmtPass(w.dn.maxPassMin)
+  }
 }
 let _grdT = null
 // 回填前若本就「无未保存改动」，回填后把基线推进到回填结果——否则实时星/GRD 自动重算出
@@ -373,15 +409,47 @@ const sel = computed(() => links.value[selected.value] || null)
 const core = computed(() => (sel.value && !sel.value.error ? sel.value.data : null))
 // 平台精确几何（选星时由 SGP4 双站互视最差几何求得；含轨道根数 / 最差互视时刻 / 互视窗口）
 const geom = computed(() => (sel.value ? sel.value.geom : null))
-// 时刻格式化：UTC + 本地时间（结果文字表述完整精准，标注时区）
-function fmtInstant(iso) {
+// 站星几何时标：UTC / 本地可切换（默认 UTC；本地取运行机时区）
+const tzMode = ref('utc')   // 'utc' | 'local'
+// 几何卡片是否含时刻字段（仅选星耦合模式给出典型时刻/互视窗口），无则不显示时区切换
+const geoHasTimes = computed(() => {
+  const g = geom.value
+  return !!(g && g.coupled && g.search && (g.search.typicalISO || g.search.mutualWindow))
+})
+// 本地时区标签：按运行机偏移给出 UTC±H(:MM)，随时刻旁的时区角标显示
+function localOffsetLabel() {
+  const off = -new Date().getTimezoneOffset()
+  const sign = off >= 0 ? '+' : '−'
+  const h = Math.floor(Math.abs(off) / 60)
+  const m = Math.abs(off) % 60
+  return 'UTC' + sign + h + (m ? ':' + String(m).padStart(2, '0') : '')
+}
+const tzSuffix = computed(() => (tzMode.value === 'utc' ? 'UTC' : localOffsetLabel()))
+// 时刻格式化：按 mode 输出 UTC 或本地（不带时区词，时区由旁边角标标注）
+function fmtInstant(iso, mode) {
   if (!iso) return '—'
   const d = new Date(iso)
   if (isNaN(d.getTime())) return String(iso)
   const p = (n) => String(n).padStart(2, '0')
-  const utc = `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())} UTC`
-  const loc = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())} 本地`
-  return `${utc}（${loc}）`
+  return mode === 'local'
+    ? `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+    : `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`
+}
+// 互视窗口格式化：起止（时:分:秒，按 mode）+ 时长；本地换算跨日标 (+1d)，被搜索时窗截断标「截断」
+function fmtWindow(w, mode) {
+  if (!w || !w.startISO || !w.endISO) return '—'
+  const ds = new Date(w.startISO), de = new Date(w.endISO)
+  if (isNaN(ds.getTime()) || isNaN(de.getTime())) return '—'
+  const local = mode === 'local'
+  const p = (n) => String(n).padStart(2, '0')
+  const hms = (d) => local
+    ? `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+    : `${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`
+  const dur = (w.durationMin == null || !isFinite(w.durationMin)) ? '—' : (w.durationMin >= 60 ? (w.durationMin / 60).toFixed(2) + ' h' : w.durationMin.toFixed(1) + ' min')
+  const dayA = local ? ds.toDateString() : `${ds.getUTCFullYear()}-${ds.getUTCMonth()}-${ds.getUTCDate()}`
+  const dayB = local ? de.toDateString() : `${de.getUTCFullYear()}-${de.getUTCMonth()}-${de.getUTCDate()}`
+  const nx = dayA !== dayB ? ' (+1d)' : ''
+  return `${hms(ds)} ~ ${hms(de)}${nx} · ${dur}${w.clipped ? ' · 截断' : ''}`
 }
 const g2 = (n, p = 2) => (n == null || !isFinite(n)) ? '—' : Number(n).toFixed(p)
 const barW = (v) => { const n = parseFloat(v); return (isNaN(n) ? 0 : Math.min(100, Math.max(0, n))) + '%' }
@@ -458,17 +526,21 @@ async function compute() {
       const txName = tx.earthStationLocation || ('发' + (ti + 1))
       const rxName = rx.rxEarthStationLocation || ('收' + (ri + 1))
 
-      // —— 几何：选星→平台 SGP4 双站互视最差几何（回喂斜距）；未选星→引擎球形闭式（轨道高度+最低仰角）——
+      // —— 几何：选星→平台 SGP4 单一典型时刻 t* 几何（两站同刻·仰角贴近各自最低，回喂斜距）；未选星→引擎球形闭式（轨道高度+最低仰角）——
       let geom = null
       if (satSelected.value) {
+        // 自定义(elements)星：t0 锚到轨道场景历元 scenarioEpoch（= orbitSpec.epoch），与星座3D 页一致、跨会话可复现；
+        // 真实目录星(omm 带真实历元)不传 t0ISO → 几何求解器默认锚到该星自身历元（确定性、可复现，且 TLE 在
+        // 历元附近精度最高），而非非确定性的 wall-clock now()。圆轨道走闭式与 t0 无关。
+        const t0ISO = (orbitSpec && orbitSpec.type === 'elements' && orbitSpec.epoch) ? orbitSpec.epoch : null
         geom = await api.linkBudget.ngsoGeometry({
           orbit: orbitSpec,
           tx: { lonDeg: parseFloat(tx.longitude), latDeg: parseFloat(tx.latitude), altKm: (parseFloat(tx.altitude) || 0) / 1000, minElevDeg: parseFloat(tx.minElevation) || 0, freqGHz: upFreqGHz() },
           rx: { lonDeg: parseFloat(rx.rxLongitude), latDeg: parseFloat(rx.rxLatitude), altKm: (parseFloat(rx.rxAltitude) || 0) / 1000, minElevDeg: parseFloat(rx.rxMinElevation) || 0, freqGHz: dnFreqGHz() },
-          horizonHours: geoHorizonHours.value
+          t0ISO, horizonHours: geoHorizonHours.value
         })
         if (geom && geom.feasible) {
-          // 回喂 t* 时刻的实际斜距与实际仰角（非仅最低仰角门限）——最差时刻两站中通常仅一站压在最低仰角，
+          // 回喂典型时刻 t* 的实际斜距与实际仰角（非仅最低仰角门限）——该刻两站中通常仅一站压在最低仰角，
           // 另一站实际仰角更高，大气/降雨斜路径须按各自实际仰角算，才与斜距口径自洽。
           linkParams.distanceMode = 'slantRange'; linkParams.slantRange = geom.worst.up.slantKm; linkParams.minElevation = geom.worst.up.elevDeg
           linkParams.rxDistanceMode = 'slantRange'; linkParams.rxSlantRange = geom.worst.dn.slantKm; linkParams.rxMinElevation = geom.worst.dn.elevDeg
@@ -479,19 +551,19 @@ async function compute() {
         }
       } else {
         // 手动模式：虚拟圆轨道（轨道高度+倾角）→ 球形闭式最差几何 + 虚拟轨道根数（35786/0 即 GEO）。
-        // 每站按自身最低仰角取最差斜距；几何卡展示虚拟根数，与选星两类统一。
+        // 每站按自身最低仰角取最差斜距；带上站址纬度 → 闭式判「纬度 vs 倾角」可见性（如赤道轨道看不到高纬站）。
         geom = await api.linkBudget.ngsoGeometry({
           orbit: { type: 'circular', altKm: parseFloat(satForm.orbitAltitude) || 0, inclDeg: parseFloat(satForm.orbitInclination) || 0 },
-          tx: { minElevDeg: parseFloat(tx.minElevation) || 0, freqGHz: upFreqGHz() },
-          rx: { minElevDeg: parseFloat(rx.rxMinElevation) || 0, freqGHz: dnFreqGHz() }
+          tx: { latDeg: parseFloat(tx.latitude), minElevDeg: parseFloat(tx.minElevation) || 0, freqGHz: upFreqGHz() },
+          rx: { latDeg: parseFloat(rx.rxLatitude), minElevDeg: parseFloat(rx.rxMinElevation) || 0, freqGHz: dnFreqGHz() }
         })
         if (geom && geom.feasible) {
           linkParams.distanceMode = 'slantRange'; linkParams.slantRange = geom.worst.up.slantKm; linkParams.minElevation = geom.worst.up.elevDeg
           linkParams.rxDistanceMode = 'slantRange'; linkParams.rxSlantRange = geom.worst.dn.slantKm; linkParams.rxMinElevation = geom.worst.dn.elevDeg
         } else {
-          // 兜底：直接让引擎按轨道高度 + 最低仰角闭式取斜距
-          linkParams.distanceMode = 'altitude'; linkParams.rxDistanceMode = 'altitude'
-          linkParams.orbitAltitude = satForm.orbitAltitude; linkParams.rxOrbitAltitude = satForm.orbitAltitude
+          // 手动几何不可行（轨道高度≤0 / 站址纬度超出轨道覆盖带）→ 明确报错，不再用兜底假高度静默算出误导结果
+          out.push({ ti, ri, txName, rxName, data: null, margin: '—', metric: '—', error: (geom && geom.reason) || '手动轨道几何不可行', geom })
+          continue
         }
       }
 
@@ -615,8 +687,22 @@ watch([satForm, basebandConfigs, txStations, rxStations, calcMode, targetPowerW,
 
 // —— 命名配置 CRUD ——
 // 注意：Electron 不支持 window.prompt（静默返回 null → 之前「保存不了」的根因）。改用应用内命名弹窗。
-// 只列 NGSO 配置（state.orbitType==='NGSO'）：与 GEO 链路预算共用配置存储，按体制过滤避免串号误导入。
-async function loadConfigs() { try { const all = (api && await api.store.listConfigs()) || []; configs.value = all.filter((c) => c && c.state && c.state.orbitType === 'NGSO') } catch (e) { configs.value = [] } }
+// 与 GEO 共用 configs.json：按体制过滤——文件夹按顶层 orbitType，配置按 state.orbitType。
+// 关键：文件夹项无 state，必须按 type 判定，否则旧的「c.state.orbitType」过滤会把 NGSO 文件夹全滤掉。
+async function loadConfigs() {
+  try {
+    const all = (api && await api.store.listConfigs()) || []
+    configs.value = all.filter((it) => it && ((it.type === 'folder') ? (it.orbitType === 'NGSO') : (it.state && it.state.orbitType === 'NGSO')))
+  } catch (e) { configs.value = [] }
+  pruneExpanded()
+}
+// 剪除已不存在的文件夹 id，防展开集无限膨胀
+function pruneExpanded() {
+  const ids = new Set(configs.value.filter((c) => c.type === 'folder').map((c) => c.id))
+  let changed = false
+  for (const id of [...expandedFolders.value]) if (!ids.has(id)) { expandedFolders.value.delete(id); changed = true }
+  if (changed) persistExpanded()
+}
 function defaultCfgName() { return (satForm.satelliteName ? satForm.satelliteName + ' ' : '') + `链路 ${nTx.value}×${nRx.value}` }
 // 命名弹窗：保存为新配置
 const cfgDlg = reactive({ open: false, name: '' })
@@ -632,7 +718,7 @@ async function confirmCfgDlg() {
 const editing = reactive({ id: null, name: '' })
 function startRename(c) {
   editing.id = c.id; editing.name = c.name
-  nextTick(() => { const el = document.querySelector('.lb-cfg-rename'); if (el) { el.focus(); el.select() } })
+  nextTick(() => { const el = document.querySelector('.lb-tree-rename'); if (el) { el.focus(); el.select() } })
 }
 function cancelRename() { editing.id = null }
 async function commitRename() {
@@ -640,8 +726,8 @@ async function commitRename() {
   const c = configs.value.find((x) => x.id === id)
   const nm = (editing.name || '').trim()
   editing.id = null
-  // 深拷 state：configs 取出的是 Vue 响应式 Proxy，直接经 IPC 会报「An object could not be cloned」
-  if (c && nm && nm !== c.name) { await api.store.saveConfig({ id: c.id, name: nm, state: JSON.parse(JSON.stringify(c.state)) }); await loadConfigs(); toast('已改名：' + nm) }
+  // 只传 { id, name }：saveConfig 做 merge，既不动 state/parentId，又对文件夹（无 state）通用，且规避 Proxy 克隆报错
+  if (c && nm && nm !== c.name) { await api.store.saveConfig({ id: c.id, name: nm }); await loadConfigs(); toast('已改名：' + nm) }
 }
 async function updateConfig() {
   if (!api || !activeId.value) return
@@ -672,6 +758,46 @@ async function removeConfig(id, e) {
   if (cfgClip.value && cfgClip.value.id === id) cfgClip.value = null
   await loadConfigs()
 }
+
+// —— 文件夹（分组）——
+// 通用确认弹窗（Electron 渲染进程无原生 confirm）
+const confirmDlg = reactive({ open: false, msg: '' })
+let _confirmResolve = null
+function askConfirm(msg) { confirmDlg.msg = msg; confirmDlg.open = true; return new Promise((res) => { _confirmResolve = res }) }
+function answerConfirm(ok) { confirmDlg.open = false; const r = _confirmResolve; _confirmResolve = null; if (r) r(ok) }
+// 新建文件夹：parentId 为空=根，否则建在该文件夹下；建后自动展开并进入改名（orbitType 标 NGSO）
+async function addFolder(parentId = null) {
+  if (!api) { toast('需在 Electron 中运行'); return }
+  const item = await api.store.saveConfig({ type: 'folder', name: uniqueCfgName('新建文件夹'), parentId: parentId || null, orbitType: 'NGSO' })
+  if (parentId) { expandedFolders.value.add(parentId) }
+  if (item && item.id) expandedFolders.value.add(item.id)
+  persistExpanded()
+  await loadConfigs()
+  if (item && item.id) startRename(item)
+}
+// 拖拽/粘贴移动：纯元数据操作，不载入、不走 guardedLeave（parentId 不入指纹，脏态与 baseline 不受影响）
+async function onMove(payload) {
+  if (!api || !payload || !payload.dragId) return
+  await api.store.moveItem({ id: payload.dragId, parentId: payload.parentId, anchorId: payload.anchorId, position: payload.position })
+  if (payload.position === 'inside' && payload.parentId) { expandedFolders.value.add(payload.parentId); persistExpanded() }
+  await loadConfigs()
+}
+// 删除文件夹（级联删子项）：非空先确认，并清掉受影响的 activeId/baseline/剪贴板/展开态
+async function removeFolder(folder) {
+  if (!api || !folder) return
+  const hasChildren = configs.value.some((c) => c.parentId === folder.id)
+  if (hasChildren && !(await askConfirm(`删除文件夹「${folder.name}」及其中全部子项？此操作不可撤销。`))) return
+  const removed = (await api.store.deleteFolder(folder.id)) || [folder.id]
+  const rset = new Set(removed)
+  if (activeId.value && rset.has(activeId.value)) { activeId.value = null; activeBaseline = '' }
+  if (cfgClip.value && rset.has(cfgClip.value.id)) cfgClip.value = null
+  for (const id of removed) expandedFolders.value.delete(id)
+  persistExpanded()
+  await loadConfigs()
+  toast('已删除文件夹：' + folder.name)
+}
+// 列表项删除分发：文件夹级联删除，配置单删
+function onDeleteItem(item) { if (!item) return; if (item.type === 'folder') removeFolder(item); else removeConfig(item.id) }
 // 默认（空白）配置内容
 function blankState() {
   return {
@@ -689,36 +815,38 @@ function uniqueCfgName(base) {
   if (!names.has(base)) return base
   let i = 2; while (names.has(base + ' ' + i)) i++; return base + ' ' + i
 }
-// ＋ / 右键「添加空白配置」：新建一份默认参数配置并载入
-async function addBlankConfig() {
+// ＋ / 右键「添加空白配置」：新建一份默认参数配置并载入（parentId 非空=建在该文件夹内）
+async function addBlankConfig(parentId = null) {
   if (!api) { toast('需在 Electron 中运行'); return }
   if (!(await guardedLeave())) return
   const state = blankState()
-  const item = await api.store.saveConfig({ name: uniqueCfgName('新配置'), state })
+  const item = await api.store.saveConfig({ name: uniqueCfgName('新配置'), state, parentId: parentId || null })
+  if (parentId) { expandedFolders.value.add(parentId); persistExpanded() }
   await loadConfigs()
   if (item && item.id) { activeId.value = item.id; applyState(state); setBaseline() }
   toast('已添加空白配置')
 }
 
 // —— 配置 复制 / 剪切 / 粘贴（含 Ctrl+C/X/V）——
+// 剪贴板仅对「配置」（文件夹的移动/归并走拖拽或右键「粘贴到此文件夹」）——文件夹无 state，克隆会炸。
 const cfgClip = shallowRef(null)   // { mode:'copy'|'cut', id, name, state }；shallowRef 避免 state 被再代理
-function copyConfig(c) { if (!c) return; cfgClip.value = { mode: 'copy', id: c.id, name: c.name, state: JSON.parse(JSON.stringify(c.state)) }; toast('已复制：' + c.name) }
-function cutConfig(c) { if (!c) return; cfgClip.value = { mode: 'cut', id: c.id, name: c.name, state: JSON.parse(JSON.stringify(c.state)) }; toast('已剪切：' + c.name + '（粘贴以换位置）') }
-// 粘贴：复制=生成副本；剪切=移动原配置。targetId 为空=放到末尾，否则放到该配置之后。
-async function pasteConfig(targetId) {
+function copyConfig(c) { if (!c || c.type === 'folder') return; cfgClip.value = { mode: 'copy', id: c.id, name: c.name, state: JSON.parse(JSON.stringify(c.state)) }; toast('已复制：' + c.name) }
+function cutConfig(c) { if (!c || c.type === 'folder') return; cfgClip.value = { mode: 'cut', id: c.id, name: c.name, state: JSON.parse(JSON.stringify(c.state)) }; toast('已剪切：' + c.name + '（粘贴以换位置）') }
+// 粘贴：复制=生成副本；剪切=移动原配置。into=true 且目标是文件夹 → 放入其内；否则放到目标之后；无目标=根末尾。
+async function pasteConfig(targetId, into = false) {
   const clip = cfgClip.value; if (!clip || !api) return
   let movingId
   if (clip.mode === 'copy') { const item = await api.store.saveConfig({ name: uniqueCfgName(clip.name + ' 副本'), state: JSON.parse(JSON.stringify(clip.state)) }); movingId = item && item.id }
   else movingId = clip.id
-  await loadConfigs()
   if (movingId) {
-    const ids = configs.value.map((c) => c.id).filter((id) => id !== movingId)
-    const idx = (targetId && targetId !== movingId) ? ids.indexOf(targetId) : ids.length - 1
-    ids.splice(idx + 1, 0, movingId)
-    await api.store.reorderConfigs(ids)
-    await loadConfigs()
+    const target = (targetId && targetId !== movingId) ? configs.value.find((c) => c.id === targetId) : null
+    if (into && target && target.type === 'folder') await api.store.moveItem({ id: movingId, parentId: target.id, anchorId: null, position: 'inside' })
+    else if (target) await api.store.moveItem({ id: movingId, parentId: null, anchorId: target.id, position: 'after' })
+    else await api.store.moveItem({ id: movingId, parentId: null, anchorId: null, position: 'inside' })
+    if (into && target && target.type === 'folder') { expandedFolders.value.add(target.id); persistExpanded() }
   }
   if (clip.mode === 'cut') cfgClip.value = null
+  await loadConfigs()
   toast('已粘贴')
 }
 // 配置面板内的 Ctrl+C/X/V（作用于当前聚焦配置；编辑/输入框中不拦截）
@@ -737,6 +865,7 @@ function onCfgKey(e) {
 // —— 右键菜单 ——
 const ctxMenu = reactive({ open: false, x: 0, y: 0, configId: null })
 const ctxConfig = computed(() => (ctxMenu.configId ? configs.value.find((c) => c.id === ctxMenu.configId) : null))
+const ctxIsFolder = computed(() => !!(ctxConfig.value && ctxConfig.value.type === 'folder'))
 function openCtx(e, c) {
   e.preventDefault()
   ctxMenu.configId = c ? c.id : null
@@ -945,8 +1074,8 @@ onMounted(async () => {
     </header>
 
     <div class="lb-body">
-      <!-- ① 配置列表（可向左收起） -->
-      <aside class="lb-col lb-configs" :class="{ collapsed: configsCollapsed }">
+      <!-- ① 配置列表（可向左收起 / 可拖拽调宽） -->
+      <aside class="lb-col lb-configs" :class="{ collapsed: configsCollapsed, resizing: configsResizing }" :style="configsCollapsed ? null : { width: configsWidth + 'px' }">
         <button v-if="configsCollapsed" class="lb-cfg-expand" title="展开配置列表" @click="configsCollapsed = false">
           <span class="lb-cfg-chev"><Icon name="chevron-right" :size="14" /></span><span class="lb-cfg-expand-t">配置列表</span>
         </button>
@@ -958,25 +1087,24 @@ onMounted(async () => {
             <button class="lb-mini lb-mini-ico" :title="activeId ? '保存修改到当前配置' : '保存为新配置'" :disabled="!api" @click="saveCurrent">
               <svg viewBox="0 0 16 16" class="lb-ico-svg"><path d="M2.5 2.5h8l3 3v8h-11z" /><path d="M5 2.5v4h5v-4" /><rect x="5" y="9" width="6" height="4.5" /></svg>
             </button>
-            <button class="lb-mini lb-mini-ico" title="添加空白配置" :disabled="!api" @click="addBlankConfig"><Icon name="plus" :size="13" /></button>
+            <button class="lb-mini lb-mini-ico" title="新建文件夹" :disabled="!api" @click="addFolder(null)"><Icon name="folder-plus" :size="13" /></button>
+            <button class="lb-mini lb-mini-ico" title="添加空白配置" :disabled="!api" @click="addBlankConfig(null)"><Icon name="plus" :size="13" /></button>
           </span>
         </div>
         <div class="lb-col-bd" tabindex="0" @keydown="onCfgKey" @contextmenu="openCtx($event, null)">
-          <div v-if="!configs.length" class="lb-empty">暂无配置<br />点击 ＋ 添加空白配置</div>
-          <template v-else>
-            <ul class="lb-cfg-list">
-              <li v-for="c in configs" :key="c.id" :class="{ on: c.id === activeId, cut: cfgClip && cfgClip.mode === 'cut' && cfgClip.id === c.id }"
-                  @click="editing.id === c.id ? null : selectConfig(c)" @dblclick="startRename(c)" @contextmenu.stop="openCtx($event, c)" :title="c.name">
-                <input v-if="editing.id === c.id" v-model="editing.name" class="lb-cfg-rename" @click.stop
-                       @keyup.enter="commitRename" @keyup.esc="cancelRename" @blur="commitRename" />
-                <span v-else class="lb-cfg-nm">{{ c.name }}</span>
-                <button class="lb-cfg-ico del" title="删除配置" @click.stop="removeConfig(c.id, $event)"><Icon name="x" :size="12" /></button>
-              </li>
-            </ul>
-          </template>
+          <ConfigTree
+            :items="configs" :active-id="activeId" :editing-id="editing.id" :editing-name="editing.name"
+            :expanded="expandedFolders"
+            :cut-id="cfgClip && cfgClip.mode === 'cut' ? cfgClip.id : null"
+            @select="selectConfig" @toggle="toggleFolder" @delete="onDeleteItem" @move="onMove"
+            @add-folder="addFolder" @add-config="addBlankConfig" @context="openCtx"
+            @rename-start="startRename" @rename-input="editing.name = $event" @rename-commit="commitRename" @rename-cancel="cancelRename"
+          />
         </div>
         <div v-if="deviceId" class="lb-myid" :title="'本机用户 ID（用于在线分享）'">我的ID：<b>{{ deviceId }}</b></div>
         </template>
+        <!-- 右缘拖拽调宽手柄（独立元素，不参与上面的 v-if/v-else 链）-->
+        <div v-if="!configsCollapsed" class="lb-cfg-resizer" title="拖动调整配置栏宽度" @mousedown.prevent="startResizeConfigs"></div>
       </aside>
 
       <!-- ② 链路模块 + 参数（合并） -->
@@ -1168,49 +1296,64 @@ onMounted(async () => {
                 <div class="core-row"><span class="core-l">门限C/N</span><span class="core-v">{{ core.thresholdCN }} dB</span></div>
               </div>
 
-              <!-- 平台精确几何：SGP4 双站互视最差（选星） / 静止持续可见（GEO） / 手动虚拟圆轨道闭式最差 -->
+              <!-- 平台精确几何：选星=单一典型时刻 t*(SGP4/SDP4，两站同刻·仰角尽量贴近各自最低)；手动圆轨道=闭式球面(每站各自最低仰角) -->
               <div v-if="geom && geom.feasible" class="geo-card">
-                <div class="geo-hd">卫星几何（平台精确 · {{ geom.manual ? '手动虚拟圆轨道·球形闭式最差' : (geom.window.continuous ? '静止/持续可见' : 'SGP4 双站互视最差几何') }}）</div>
-                <div class="geo-sec">{{ geom.manual ? '最差工况（虚拟轨道）' : (geom.window.continuous ? '可见工况' : '最差互视工况') }}</div>
-                <template v-if="geom.manual">
-                  <div class="geo-row"><span class="geo-l">几何口径</span><span class="geo-v">各站按自身最低仰角取最差斜距（虚拟圆轨道，无具体星历/时窗）</span></div>
-                </template>
-                <template v-else-if="geom.window.continuous">
-                  <div class="geo-row"><span class="geo-l">可见性</span><span class="geo-v">两站持续可见（{{ geom.static ? '静止/GEO 星，几何时不变' : '搜索时窗内恒可见' }}）</span></div>
-                  <div class="geo-row"><span class="geo-l">几何参考时刻</span><span class="geo-v">{{ fmtInstant(geom.worst.timeISO) }}</span></div>
-                </template>
-                <template v-else>
-                  <div class="geo-row"><span class="geo-l" title="搜索时窗内比较全部互视过境（两站同时 ≥ 各自最低仰角），取路径损耗最大（斜距最大）的一次——全时段最坏，非仅最近一次过境">最差互视时刻</span><span class="geo-v">{{ fmtInstant(geom.worst.timeISO) }}</span></div>
-                  <div class="geo-row"><span class="geo-l">最差过境窗口（AOS→LOS）</span><span class="geo-v">{{ fmtInstant(geom.window.aosISO) }} → {{ fmtInstant(geom.window.losISO) }}</span></div>
-                  <div class="geo-row"><span class="geo-l">该窗口时长</span><span class="geo-v">{{ g2(geom.window.durationMin) }} min</span></div>
-                </template>
-                <div class="geo-sec">站星几何（上行 / 下行）</div>
-                <div class="geo-row"><span class="geo-l" title="两站同时满足各自「最低仰角」门限下的最差工况仰角（= 门限值附近，恒可见轨道如 GEO 通常明显高于门限）">对卫星仰角（最差工况）</span><span class="geo-v">上 {{ g2(geom.worst.up.elevDeg) }}° · 下 {{ g2(geom.worst.dn.elevDeg) }}°</span></div>
-                <div class="geo-row"><span class="geo-l">星地斜距</span><span class="geo-v">上 {{ g2(geom.worst.up.slantKm) }} · 下 {{ g2(geom.worst.dn.slantKm) }} km</span></div>
-                <div v-if="geom.worst.up.azDeg != null" class="geo-row"><span class="geo-l">对卫星方位角</span><span class="geo-v">上 {{ g2(geom.worst.up.azDeg) }}° · 下 {{ g2(geom.worst.dn.azDeg) }}°</span></div>
-                <div class="geo-row"><span class="geo-l">单程链路时延</span><span class="geo-v">{{ g2(geom.worst.oneWayDelayMs, 3) }} ms</span></div>
-                <div class="geo-sec">卫星运动</div>
-                <div v-if="geom.worst.subPoint" class="geo-row"><span class="geo-l">星下点（经/纬/高）</span><span class="geo-v">{{ g2(geom.worst.subPoint.lonDeg, 3) }}°E, {{ g2(geom.worst.subPoint.latDeg, 3) }}°N, {{ g2(geom.worst.subPoint.altKm, 1) }} km</span></div>
-                <div class="geo-row"><span class="geo-l">轨道速度（惯性系）</span><span class="geo-v">{{ g2(geom.worst.speedInertialKmS, 3) }} km/s</span></div>
-                <div v-if="geom.worst.speedGroundRelKmS != null" class="geo-row"><span class="geo-l">相对地面速度{{ geom.dopplerEstimate ? '（估算）' : '' }}</span><span class="geo-v">{{ g2(geom.worst.speedGroundRelKmS, 3) }} km/s</span></div>
-                <div v-if="geom.worst.maxDopplerUpHz != null" class="geo-row"><span class="geo-l" :title="geom.dopplerEstimate ? '手动圆轨道无相位/时序，无法做 SGP4 range-rate，此为闭式估算：f·v_radial/c' : 'SGP4 沿互视窗口逐点求 ECEF 斜距变化率（含地球自转）取窗口内最大幅值'">最大多普勒频移{{ geom.dopplerEstimate ? '（估算·闭式）' : '（窗口内 SGP4）' }}</span><span class="geo-v">上 ±{{ g2(geom.worst.maxDopplerUpHz / 1000, 3) }} · 下 ±{{ g2(geom.worst.maxDopplerDnHz / 1000, 3) }} kHz</span></div>
-                <div class="geo-sec">卫星轨道根数{{ geom.manual ? '（虚拟圆轨道）' : '（历元）' }}</div>
-                <div class="geo-row"><span class="geo-l">半长轴 a</span><span class="geo-v">{{ g2(geom.elements.a, 3) }} km</span></div>
-                <div class="geo-row"><span class="geo-l">偏心率 e</span><span class="geo-v">{{ g2(geom.elements.e, 6) }}</span></div>
-                <div class="geo-row"><span class="geo-l">倾角 i</span><span class="geo-v">{{ g2(geom.elements.iDeg, 4) }}°</span></div>
-                <div class="geo-row"><span class="geo-l">升交点赤经 Ω</span><span class="geo-v">{{ g2(geom.elements.raanDeg, 4) }}°</span></div>
-                <div class="geo-row"><span class="geo-l">近地点幅角 ω</span><span class="geo-v">{{ g2(geom.elements.argpDeg, 4) }}°</span></div>
-                <div class="geo-row"><span class="geo-l">平近点角 M</span><span class="geo-v">{{ g2(geom.elements.maDeg, 4) }}°</span></div>
-                <div class="geo-row"><span class="geo-l">平均运动 n</span><span class="geo-v">{{ g2(geom.elements.meanMotionRevDay, 6) }} rev/day</span></div>
-                <div class="geo-row"><span class="geo-l">轨道周期 T</span><span class="geo-v">{{ g2(geom.elements.periodMin, 3) }} min</span></div>
-                <div class="geo-row"><span class="geo-l">近地点 / 远地点高度</span><span class="geo-v">{{ g2(geom.elements.perigeeAltKm, 1) }} / {{ g2(geom.elements.apogeeAltKm, 1) }} km</span></div>
-                <div v-if="geom.elements.satnum" class="geo-row"><span class="geo-l">卫星编号 (NORAD)</span><span class="geo-v">{{ geom.elements.satnum }}</span></div>
+                <div class="geo-top">
+                  <div class="geo-title">
+                    <span class="geo-tt">卫星几何</span>
+                    <span class="geo-badge" title="平台精确传播器：satellite.js 统一 SGP4/SDP4，225 min 自动切深空">{{ geom.method }}</span>
+                  </div>
+                  <div v-if="geoHasTimes" class="geo-tz" role="group" aria-label="时区切换" title="切换典型时刻 / 互视窗口的时标（UTC 或运行机本地时区）">
+                    <button type="button" class="geo-tzb" :class="{ on: tzMode === 'utc' }" @click="tzMode = 'utc'">UTC</button>
+                    <button type="button" class="geo-tzb" :class="{ on: tzMode === 'local' }" @click="tzMode = 'local'">本地</button>
+                  </div>
+                </div>
+
+                <div class="geo-body">
+                  <div class="geo-sec">站星几何<span class="geo-sec-x">{{ geom.coupled ? '典型时刻 t*' : '最差工况' }}</span></div>
+                  <div v-if="geom.coupled && geom.search && geom.search.typicalISO" class="geo-trow"><span class="geo-l" title="所有几何量取自这一物理瞬间；扫描锚点为卫星历元/场景历元。此刻两站同时可见、仰角尽量贴近各自最低仰角（通常一站正压最低、另一站略高）。在「星座3D」页把时间设到此刻即可与地图核对">典型时刻 t*</span><span class="geo-time">{{ fmtInstant(geom.search.typicalISO, tzMode) }}<i>{{ tzSuffix }}</i></span></div>
+                  <div v-if="geom.coupled && geom.search && geom.search.mutualWindow" class="geo-trow"><span class="geo-l" title="发信站与收信站同时满足各自最低仰角的时段（含 t* 的那次过境）——即两站可经该星建链的时间窗口范围">两站互视窗口</span><span class="geo-time">{{ fmtWindow(geom.search.mutualWindow, tzMode) }}<i>{{ tzSuffix }}</i></span></div>
+
+                  <div class="geo-duo">
+                    <span class="geo-duh"></span>
+                    <span class="geo-duh geo-up">↑ 上行</span>
+                    <span class="geo-duh geo-dn">↓ 下行</span>
+                    <span class="geo-l" :title="geom.coupled ? '同一典型时刻 t* 两站各自对卫星的仰角：两站同时可见、都尽量贴近各自最低仰角（通常一站正压最低、另一站略高）' : '各站在「≥ 自身最低仰角」约束下的最差工况仰角（圆轨道=最低仰角门限）'">对卫星仰角<i>°</i></span>
+                    <span class="geo-vu">{{ g2(geom.worst.up.elevDeg) }}</span>
+                    <span class="geo-vd">{{ g2(geom.worst.dn.elevDeg) }}</span>
+                    <span class="geo-l" :title="geom.coupled ? 't* 该刻两站各自的星地斜距（同一物理瞬间）' : '仰角约束下的最大星地斜距（各站独立取，最坏几何）'">星地斜距<i>km</i></span>
+                    <span class="geo-vu">{{ g2(geom.worst.up.slantKm) }}</span>
+                    <span class="geo-vd">{{ g2(geom.worst.dn.slantKm) }}</span>
+                    <span class="geo-l" :title="geom.coupled ? 't* 该刻卫星高度（同一瞬间，上下行相同）' : ''">卫星高度<i>km</i></span>
+                    <span class="geo-vu">{{ g2(geom.worst.up.altKm, 1) }}</span>
+                    <span class="geo-vd">{{ g2(geom.worst.dn.altKm, 1) }}</span>
+                  </div>
+
+                  <div class="geo-row"><span class="geo-l">单程链路时延</span><span class="geo-v">{{ g2(geom.worst.oneWayDelayMs, 3) }}<i>ms</i></span></div>
+
+                  <div class="geo-sec">卫星运动</div>
+                  <div v-if="geom.worst.speedInertialKmS != null" class="geo-row"><span class="geo-l">轨道速度<i>惯性系</i></span><span class="geo-v">{{ g2(geom.worst.speedInertialKmS, 3) }}<i>km/s</i></span></div>
+                  <div v-if="geom.worst.speedGroundRelKmS != null" class="geo-row"><span class="geo-l">相对地面速度<i v-if="geom.dopplerEstimate">估算</i></span><span class="geo-v">{{ g2(geom.worst.speedGroundRelKmS, 3) }}<i>km/s</i></span></div>
+                  <div v-if="geom.worst.maxDopplerUpHz != null" class="geo-row"><span class="geo-l" :title="geom.dopplerEstimate ? '圆轨道无相位，闭式估算 f·v_radial/c' : (geom.coupled ? (geom.method + ' 取典型时刻 t* 该刻 ECEF 斜距变化率（含地球自转）；t* 多在低仰角、range-rate 近峰值') : (geom.method + ' 沿星历求 ECEF 斜距变化率（含地球自转）'))">{{ geom.coupled ? '多普勒频移' : '最大多普勒' }}<i>{{ geom.dopplerEstimate ? '估算·kHz' : 'kHz' }}</i></span><span class="geo-v geo-v-updn"><b class="up">↑ ±{{ g2(geom.worst.maxDopplerUpHz / 1000, 3) }}</b><b class="dn">↓ ±{{ g2(geom.worst.maxDopplerDnHz / 1000, 3) }}</b></span></div>
+
+                  <div class="geo-sec">卫星轨道根数<span class="geo-sec-x">{{ geom.elements && geom.elements.satnum == null ? '虚拟圆轨道' : '历元' }}</span></div>
+                  <div class="geo-row"><span class="geo-l">半长轴 a</span><span class="geo-v">{{ g2(geom.elements.a, 3) }}<i>km</i></span></div>
+                  <div class="geo-row"><span class="geo-l">偏心率 e</span><span class="geo-v">{{ g2(geom.elements.e, 6) }}</span></div>
+                  <div class="geo-row"><span class="geo-l">倾角 i</span><span class="geo-v">{{ g2(geom.elements.iDeg, 4) }}<i>°</i></span></div>
+                  <div class="geo-row"><span class="geo-l">升交点赤经 Ω</span><span class="geo-v">{{ g2(geom.elements.raanDeg, 4) }}<i>°</i></span></div>
+                  <div class="geo-row"><span class="geo-l">近地点幅角 ω</span><span class="geo-v">{{ g2(geom.elements.argpDeg, 4) }}<i>°</i></span></div>
+                  <div class="geo-row"><span class="geo-l">平近点角 M</span><span class="geo-v">{{ g2(geom.elements.maDeg, 4) }}<i>°</i></span></div>
+                  <div class="geo-row"><span class="geo-l">平均运动 n</span><span class="geo-v">{{ g2(geom.elements.meanMotionRevDay, 6) }}<i>rev/day</i></span></div>
+                  <div class="geo-row"><span class="geo-l">轨道周期 T</span><span class="geo-v">{{ g2(geom.elements.periodMin, 3) }}<i>min</i></span></div>
+                  <div class="geo-row"><span class="geo-l">近地点 / 远地点高度</span><span class="geo-v">{{ g2(geom.elements.perigeeAltKm, 1) }} / {{ g2(geom.elements.apogeeAltKm, 1) }}<i>km</i></span></div>
+                  <div v-if="geom.elements.satnum" class="geo-row"><span class="geo-l">卫星编号 (NORAD)</span><span class="geo-v">{{ geom.elements.satnum }}</span></div>
+                </div>
               </div>
               <div v-else-if="geom && !geom.feasible" class="geo-card geo-note">
-                几何提示：{{ geom.reason }}。可增大搜索时窗、改选卫星，或取消选星改用手动轨道高度 + 最低仰角（球形闭式最差几何）。
+                几何提示：{{ geom.reason }}。可增大搜索时窗、改选卫星，或取消选星改用手动轨道高度 + 最低仰角（闭式球面最差几何）。
               </div>
               <div v-else class="geo-card geo-note">
-                当前为手动轨道模式：几何由球形闭式最差几何给出（轨道高度 + 各站最低仰角，Re=6378.137 km），斜距/仰角见下方瀑布表。选星（天线树导入 / 搜索卫星）后此处显示 SGP4 双站互视最差几何、卫星轨道根数与最近最差互视时刻/窗口。
+                当前为手动轨道模式：几何按「每站自身最低仰角处的最大斜距」闭式球面给出（轨道高度 + 各站最低仰角，Re=6378.137 km），斜距/仰角见下方瀑布表。选星后此处显示所选星的最差工况几何（圆轨道走闭式球面、偏心/HEO 走 SGP4/SDP4）与轨道根数。
               </div>
 
               <WaterfallTable :segments="segments" />
@@ -1223,7 +1366,14 @@ onMounted(async () => {
     <!-- 配置右键菜单 -->
     <div v-if="ctxMenu.open" class="lb-ctx-mask" @click="ctxMenu.open = false" @contextmenu.prevent="ctxMenu.open = false">
       <div class="lb-ctx" :style="{ left: ctxMenu.x + 'px', top: ctxMenu.y + 'px' }" @click.stop>
-        <template v-if="ctxConfig">
+        <template v-if="ctxIsFolder">
+          <button class="lb-ctx-i" @click="ctxDo(() => startRename(ctxConfig))">重命名</button>
+          <button class="lb-ctx-i" @click="ctxDo(() => addFolder(ctxMenu.configId))">新建子文件夹</button>
+          <button class="lb-ctx-i" @click="ctxDo(() => addBlankConfig(ctxMenu.configId))">在此新建配置</button>
+          <button v-if="cfgClip" class="lb-ctx-i" @click="ctxDo(() => pasteConfig(ctxMenu.configId, true))">粘贴到此文件夹</button>
+          <button class="lb-ctx-i danger" @click="ctxDo(() => removeFolder(ctxConfig))">删除文件夹（含子项）</button>
+        </template>
+        <template v-else-if="ctxConfig">
           <button class="lb-ctx-i" @click="ctxDo(() => startRename(ctxConfig))">重命名</button>
           <button class="lb-ctx-i" @click="ctxDo(() => copyConfig(ctxConfig))">复制</button>
           <button class="lb-ctx-i" @click="ctxDo(() => cutConfig(ctxConfig))">剪切</button>
@@ -1231,7 +1381,8 @@ onMounted(async () => {
           <button class="lb-ctx-i danger" @click="ctxDo(() => removeConfig(ctxConfig.id))">删除</button>
         </template>
         <template v-else>
-          <button class="lb-ctx-i" @click="ctxDo(addBlankConfig)">添加空白配置</button>
+          <button class="lb-ctx-i" @click="ctxDo(() => addFolder(null))">新建文件夹</button>
+          <button class="lb-ctx-i" @click="ctxDo(() => addBlankConfig(null))">添加空白配置</button>
           <button class="lb-ctx-i" :disabled="!api" @click="ctxDo(openSaveDlg)">保存当前为新配置</button>
           <button v-if="cfgClip" class="lb-ctx-i" @click="ctxDo(() => pasteConfig(null))">粘贴{{ cfgClip.mode === 'cut' ? '（移动到末尾）' : '' }}</button>
         </template>
@@ -1263,6 +1414,18 @@ onMounted(async () => {
           <button class="lb-mini" @click="leaveAnswer('cancel')">取消</button>
           <button class="lb-mini" @click="leaveAnswer('discard')">不保存</button>
           <button class="lb-mini primary" @click="leaveAnswer('save')">保存</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 通用确认弹窗（删除文件夹等）-->
+    <div v-if="confirmDlg.open" class="lb-mask" @click="answerConfirm(false)">
+      <div class="lb-dlg" @click.stop>
+        <div class="lb-dlg-hd">确认</div>
+        <div class="lb-dlg-bd"><div class="lb-share-row">{{ confirmDlg.msg }}</div></div>
+        <div class="lb-dlg-ft">
+          <button class="lb-mini" @click="answerConfirm(false)">取消</button>
+          <button class="lb-mini primary" @click="answerConfirm(true)">确定</button>
         </div>
       </div>
     </div>
@@ -1335,10 +1498,12 @@ onMounted(async () => {
   background: var(--bg); color: var(--text); font-family: var(--font-sans);
   /* 降饱和的语义色（更接近灰，避免红绿黄过艳） */
   --ok: #4a7a62; --warn: #8a7038; --danger: #9c5751;
+  /* 上行/下行分列的克制冷暖角标色（仅用于图例与箭头，数值仍取中性 text） */
+  --up: #3f6d8c; --dn: #97672f;
   /* 统一圆角尺度 */
   --r-ctl: 2px; --r-box: 3px; --r-modal: 4px;
 }
-html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c08079; }
+html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c08079; --up: #82a9c6; --dn: #c9a26a; }
 
 .lb-topbar { display: flex; align-items: center; gap: 10px; height: 32px; flex: none; padding: 0 14px; background: var(--surface); border-bottom: 1px solid var(--border); }
 .lb-brand { font-family: var(--font-serif); font-size: 13px; letter-spacing: .5px; line-height: 1; }
@@ -1356,9 +1521,17 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .lb-body { flex: 1; display: flex; min-height: 0; }
 .lb-col { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--border); }
 .lb-col:last-child { border-right: none; }
-.lb-configs { width: 190px; flex: none; transition: width .15s ease; }
+.lb-configs { width: 210px; flex: none; position: relative; transition: width .15s ease; }
 .lb-configs.collapsed { width: 26px; min-width: 26px; }
-.lb-cfg-hd-t { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lb-configs.resizing { transition: none; user-select: none; }
+/* 右缘拖拽手柄：调整配置栏宽度 */
+.lb-cfg-resizer { position: absolute; top: 0; right: 0; width: 6px; height: 100%; cursor: col-resize; z-index: 6; }
+.lb-cfg-resizer:hover, .lb-configs.resizing .lb-cfg-resizer { background: var(--accent); opacity: .35; }
+/* 配置栏表头更紧凑，给「配置列表」标题留足空间 */
+.lb-configs .lb-col-hd { padding: 0 8px; gap: 6px; }
+/* 细滚动条：树可横向滚动看全名，且尽量不与右缘拖拽手柄抢占 */
+.lb-configs .lb-col-bd { padding: 10px 8px; scrollbar-width: thin; }
+.lb-cfg-hd-t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lb-cfg-collapse { flex: none; padding: 3px 5px; }
 .lb-cfg-chev { font-size: 14px; line-height: 1; display: inline-flex; align-items: center; }
 /* 收起态：整列变成一根可点击竖条 */
@@ -1401,9 +1574,9 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .lb-cfg-rename { flex: 1; min-width: 0; font: inherit; font-size: 12px; padding: 2px 5px; background: var(--bg); color: var(--text); border: 1px solid var(--accent); border-radius: var(--r-ctl); }
 .lb-cfg-rename:focus { outline: none; }
 .lb-cfg-hint { padding: 2px 6px 8px; font-size: 11px; color: var(--text-faint); line-height: 1.5; }
-.lb-cfg-acts { display: flex; gap: 4px; }
+.lb-cfg-acts { display: flex; gap: 3px; }
 .lb-cfg-acts i { font-style: normal; }
-.lb-mini-ico { display: inline-flex; align-items: center; justify-content: center; padding: 3px 7px; }
+.lb-mini-ico { display: inline-flex; align-items: center; justify-content: center; padding: 3px 5px; }
 .lb-ico-svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.2; stroke-linejoin: round; }
 .lb-myid { flex: none; display: flex; align-items: center; gap: 4px; padding: 6px 12px; font-size: 11px; color: var(--text-muted); border-top: 1px solid var(--border); background: var(--surface); white-space: nowrap; overflow: hidden; }
 .lb-myid b { font-family: var(--font-mono); color: var(--text); letter-spacing: .5px; overflow: hidden; text-overflow: ellipsis; }
@@ -1535,14 +1708,41 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .core-v { font-family: var(--font-mono); font-size: 13px; font-weight: 600; color: var(--text); text-align: right; overflow: hidden; text-overflow: ellipsis; }
 .core-v.danger { color: var(--danger); }
 /* 平台精确几何卡 */
-.geo-card { margin-bottom: 14px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--r-box); background: var(--surface); }
-.geo-hd { font-size: 12px; font-weight: 700; color: var(--text); margin-bottom: 6px; }
-.geo-sec { font-size: 11px; font-weight: 600; color: var(--accent); margin: 8px 0 3px; padding-top: 6px; border-top: 1px dashed var(--border); }
-.geo-sec:first-of-type { border-top: none; padding-top: 0; }
-.geo-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 2px 0; }
-.geo-l { font-size: 12px; color: var(--text-muted); flex-shrink: 0; }
-.geo-v { font-family: var(--font-mono); font-size: 12px; font-weight: 600; color: var(--text); text-align: right; }
-.geo-note { font-size: 11px; color: var(--text-muted); line-height: 1.6; font-family: inherit; font-weight: 400; }
+/* 站星几何卡片：浅色仪器风。顶栏放标题+传播器徽章+UTC/本地切换；正文上行/下行分列对齐。 */
+.geo-card { margin-bottom: 14px; border: 1px solid var(--border); border-radius: var(--r-box); background: var(--surface); overflow: hidden; }
+.geo-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 12px; background: var(--surface-2); border-bottom: 1px solid var(--border); }
+.geo-title { display: flex; align-items: baseline; gap: 7px; min-width: 0; }
+.geo-tt { font-size: 12px; font-weight: 700; letter-spacing: .3px; color: var(--text); }
+.geo-badge { flex: none; align-self: center; font-family: var(--font-mono); font-size: 10px; font-weight: 700; letter-spacing: .5px; line-height: 1; padding: 2px 7px; border-radius: 999px; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border-strong); }
+.geo-tz { display: inline-flex; flex: none; border: 1px solid var(--border-strong); border-radius: var(--r-ctl); overflow: hidden; }
+.geo-tzb { font: inherit; font-size: 11px; line-height: 1; padding: 3px 9px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 0; }
+.geo-tzb + .geo-tzb { border-left: 1px solid var(--border); }
+.geo-tzb:hover:not(.on) { color: var(--text); }
+.geo-tzb.on { background: var(--accent); color: var(--bg); font-weight: 600; }
+
+.geo-body { padding: 5px 12px 10px; }
+.geo-sec { display: flex; align-items: baseline; gap: 7px; font-size: 11px; font-weight: 600; color: var(--accent); margin: 11px 0 4px; padding-top: 8px; border-top: 1px dashed var(--border); letter-spacing: .3px; }
+.geo-sec:first-child { border-top: none; padding-top: 0; margin-top: 3px; }
+.geo-sec-x { font-weight: 400; font-size: 10px; color: var(--text-faint); letter-spacing: .2px; }
+
+.geo-row, .geo-trow { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 2.5px 0; }
+.geo-l { font-size: 12px; color: var(--text-muted); min-width: 0; }
+.geo-l i { font-style: normal; font-size: 10px; color: var(--text-faint); margin-left: 4px; letter-spacing: .2px; }
+.geo-v, .geo-time { font-family: var(--font-mono); font-size: 12px; font-weight: 600; color: var(--text); text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.geo-v i, .geo-time i { font-style: normal; font-weight: 500; color: var(--text-faint); margin-left: 5px; }
+.geo-v-updn { display: inline-flex; gap: 11px; }
+.geo-v-updn .up { color: var(--up); }
+.geo-v-updn .dn { color: var(--dn); }
+
+/* 核心几何三行：标签 + 上行 + 下行三列对齐，值取中性色，靠图例色区分方向 */
+.geo-duo { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: baseline; column-gap: 16px; row-gap: 3px; margin: 4px 0 2px; }
+.geo-duo .geo-l { grid-column: 1; }
+.geo-duh { font-size: 10px; font-weight: 600; letter-spacing: .3px; text-align: right; color: var(--text-faint); padding-bottom: 1px; }
+.geo-duh.geo-up { color: var(--up); }
+.geo-duh.geo-dn { color: var(--dn); }
+.geo-vu, .geo-vd { font-family: var(--font-mono); font-size: 12px; font-weight: 600; color: var(--text); text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+.geo-note { padding: 10px 12px; font-size: 11px; color: var(--text-muted); line-height: 1.6; font-family: inherit; font-weight: 400; }
 .core-barrow { display: flex; flex-direction: column; }
 .core-barrow .core-row { padding-bottom: 2px; }
 .core-bar { width: 100%; height: 3px; background: var(--surface-2); border-radius: 1px; overflow: hidden; }

@@ -125,6 +125,10 @@ export function buildParams(satForm, carrierForm, txStation, rxStation) {
   const gtRef = parseFloat(satParams.sfdGtRef)
   const sfd = parseFloat(satParams.sfdRef)
   if (gtRef && !isNaN(gtRef) && !isNaN(sfd)) satParams.sfdRef = sfd + gtRef
+  // 单颗弯管卫星只有一个轨道高度：镜像给收信站侧（引擎 up/down 分设 orbitAltitude / rxOrbitAltitude）。
+  // 只读列 EIRP/G-T 走闭式几何（altitude 模式）时，收信站才有高度可解斜距；否则引擎 RX 侧无高度可用而抛错。
+  // 主计算随后用注入的 rxSlantRange（slantRange 模式）覆盖，此镜像值被忽略，互不影响。
+  if (linkParams.orbitAltitude != null && linkParams.rxOrbitAltitude == null) linkParams.rxOrbitAltitude = linkParams.orbitAltitude
   // 返回纯对象（剥离任何 Vue 响应式代理，否则经 Electron IPC 结构化克隆会报 “could not be cloned”）
   return { satParams: JSON.parse(JSON.stringify(satParams)), linkParams: JSON.parse(JSON.stringify(linkParams)) }
 }

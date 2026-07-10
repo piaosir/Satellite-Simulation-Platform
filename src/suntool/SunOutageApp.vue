@@ -114,8 +114,17 @@ async function compute() {
 }
 
 // —— 时标与导出 ——
-const tz = ref('bjt')   // 'bjt' | 'utc'
-const isBjt = computed(() => tz.value === 'bjt')
+const tz = ref('local')   // 'local'（按地球站经度推算时区）| 'utc'
+const isLocal = computed(() => tz.value === 'local')
+// 地球站本地时区：按经度推算整点偏移 round(经度/15)h（随站点位置变化，非本机时区）
+const staOffsetMin = computed(() => {
+  const lon = num(form.lon)
+  return isFinite(lon) ? Math.round(lon / 15) * 60 : 0
+})
+const localTz = computed(() => {
+  const h = staOffsetMin.value / 60
+  return h === 0 ? 'UTC' : 'UTC' + (h > 0 ? '+' : '−') + Math.abs(h)
+})
 const status = ref('')
 
 const seasonCN = computed(() => (form.season === 'vernal' ? '春分' : '秋分'))
@@ -147,10 +156,21 @@ async function exportIcs() {
 // —— 展示辅助 ——
 const days = computed(() => (result.value && result.value.dailyResults) || [])
 const model = computed(() => (result.value && result.value.model) || {})
-const dDate = (d) => (isBjt.value ? d.dateBJT : d.date)
-const dStart = (d) => (isBjt.value ? d.startTimeBJT : d.startTimeUTC)
-const dPeak = (d) => (isBjt.value ? d.peakTimeBJT : d.peakTimeUTC)
-const dEnd = (d) => (isBjt.value ? d.endTimeBJT : d.endTimeUTC)
+// 本地时刻：把引擎的 UTC 日期+时刻组成瞬间，按地球站整点时区平移（自动含跨日）
+function shiftParts(dateUTC, hmsUTC, offMin) {
+  const d = new Date(`${dateUTC}T${hmsUTC}Z`)
+  if (isNaN(d.getTime())) return { date: dateUTC, time: hmsUTC }
+  d.setTime(d.getTime() + offMin * 60000)
+  const p = (n) => String(n).padStart(2, '0')
+  return {
+    date: `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}`,
+    time: `${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`
+  }
+}
+const dDate = (d) => (isLocal.value ? shiftParts(d.date, d.startTimeUTC, staOffsetMin.value).date : d.date)
+const dStart = (d) => (isLocal.value ? shiftParts(d.date, d.startTimeUTC, staOffsetMin.value).time : d.startTimeUTC)
+const dPeak = (d) => (isLocal.value ? shiftParts(d.date, d.peakTimeUTC, staOffsetMin.value).time : d.peakTimeUTC)
+const dEnd = (d) => (isLocal.value ? shiftParts(d.date, d.endTimeUTC, staOffsetMin.value).time : d.endTimeUTC)
 </script>
 
 <template>
@@ -158,9 +178,9 @@ const dEnd = (d) => (isBjt.value ? d.endTimeBJT : d.endTimeUTC)
     <header class="topbar">
       <span class="brand">日凌预报 · GEO</span>
       <span class="grow"></span>
-      <span class="tzsel" title="逐日表与 Word 报告的时标（ICS 日历恒用 UTC，导入后由日历软件自动换算本地时间）">
-        <button class="tzbtn" :class="{ on: isBjt }" @click="tz = 'bjt'">北京时</button>
-        <button class="tzbtn" :class="{ on: !isBjt }" @click="tz = 'utc'">UTC</button>
+      <span class="tzsel" :title="`逐日表与 Word 报告的时标（本地=按地球站经度推算 ${localTz}，随站点位置变化；ICS 日历恒用 UTC，导入后由日历软件自动换算本地时间）`">
+        <button class="tzbtn" :class="{ on: isLocal }" @click="tz = 'local'">本地</button>
+        <button class="tzbtn" :class="{ on: !isLocal }" @click="tz = 'utc'">UTC</button>
       </span>
       <button class="act" :disabled="!result || !days.length" @click="exportWord">导出 Word</button>
       <button class="act" :disabled="!result || !days.length" @click="exportIcs" title="RFC 5545 iCalendar，Outlook / Google / Apple 日历直接导入，含提前 1 天与 30 分钟提醒">导出 ICS 日历</button>
@@ -256,7 +276,7 @@ const dEnd = (d) => (isBjt.value ? d.endTimeBJT : d.endTimeUTC)
           <table class="tbl">
             <thead>
               <tr>
-                <th class="c">#</th><th>日期（{{ isBjt ? '北京时' : 'UTC' }}）</th>
+                <th class="c">#</th><th>日期（{{ isLocal ? '本地 ' + localTz : 'UTC' }}）</th>
                 <th class="r">开始</th><th class="r">峰值</th><th class="r">结束</th>
                 <th class="r">时长</th><th class="r">峰值恶化 dB</th><th class="c">强度</th>
               </tr>

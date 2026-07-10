@@ -21,7 +21,7 @@ const props = defineProps({
   onClear: { type: Function, required: true },       // () => void
   onHorizon: { type: Function, required: true }      // (hours) => void
 })
-const HORIZONS = [{ v: 6, l: '6 小时' }, { v: 12, l: '12 小时' }, { v: 24, l: '24 小时' }, { v: 72, l: '3 天' }, { v: 168, l: '7 天' }]
+const HORIZONS = [{ v: 6, l: '6 小时' }, { v: 12, l: '12 小时' }, { v: 24, l: '24 小时' }, { v: 48, l: '2 天' }, { v: 72, l: '3 天' }, { v: 120, l: '5 天' }, { v: 168, l: '7 天' }, { v: 336, l: '14 天' }, { v: 720, l: '30 天' }]
 
 // 取星模式分段控件：tree / search（切换时清空另一模式的选择）
 const mode = ref(props.ngsoSat.mode === 'search' ? 'search' : 'tree')
@@ -49,6 +49,7 @@ const customNames = ref([])     // 本地自定义星座名（提示可搜）
 const loading = ref(false)
 const loadErr = ref('')
 const kw = ref('')
+const listOpen = ref(false)     // 搜索结果下拉是否展开（选中/失焦后收起，避免「收不回去」）
 async function ensurePool() {
   if (pool.value || loading.value) return
   loading.value = true; loadErr.value = ''
@@ -80,8 +81,9 @@ const searchRes = computed(() => {
   }
   return out
 })
-function onSearchFocus() { ensurePool() }
-function pickSearch(rec) { props.onPickSearch(rec); kw.value = rec.name }
+function onSearchFocus() { ensurePool(); listOpen.value = true }
+function onSearchBlur() { setTimeout(() => { listOpen.value = false }, 150) }  // 延时让列表项 click 先触发
+function pickSearch(rec) { props.onPickSearch(rec); kw.value = rec.name; listOpen.value = false }
 // 选中卫星轨道形状（近/远地点/偏心率/周期）——椭圆/HEO 单一「轨道高度」不足以表达，此处补全
 const orbitShape = computed(() => {
   const o = props.ngsoSat && props.ngsoSat.orbit
@@ -164,31 +166,29 @@ const rows = computed(() => {
     <!-- ② 搜索卫星 -->
     <div v-else class="sp-grd">
       <label class="pf"><span class="pf-l">搜索卫星</span>
-        <input v-model="kw" class="pf-i" placeholder="名称 / NORAD 号，如 STARLINK / 44713" @focus="onSearchFocus" />
+        <input v-model="kw" class="pf-i" placeholder="名称 / NORAD 号，如 STARLINK / 44713" @focus="onSearchFocus" @click="listOpen = true" @input="listOpen = true" @blur="onSearchBlur" />
         <i class="pf-u"></i>
       </label>
       <div v-if="loading" class="sp-tip">正在加载星历（CelesTrak 全域 + 导航星常用名 + 本地自定义星座）…</div>
       <div v-else-if="loadErr" class="sp-tip sp-err">{{ loadErr }}</div>
-      <div v-else-if="kw && !searchRes.length" class="sp-tip">无匹配卫星</div>
-      <ul v-else-if="searchRes.length" class="sp-list">
-        <li v-for="r in searchRes" :key="r.noradId" :class="{ on: ngsoSat.noradId === r.noradId }" @click="pickSearch(r)">
-          <span class="sp-li-n">
-            {{ r.name }}
-            <em v-if="r.custom" class="sp-badge sp-badge-cc">自定义</em>
-            <em v-else-if="r.groupLabel" class="sp-badge">{{ r.groupLabel }}</em>
-            <em v-if="(+r.ecc) >= 0.1" class="sp-badge sp-badge-heo">HEO e={{ (+r.ecc).toFixed(2) }}</em>
-          </span>
-          <span class="sp-li-i">
-            {{ r.custom ? '合成' : 'NORAD' }} {{ r.noradId }} · i={{ (+r.incl).toFixed(1) }}° ·
-            <template v-if="(+r.ecc) >= 0.01">近{{ Math.round(r.perigeeKm) }}/远{{ Math.round(r.apogeeKm) }}km</template>
-            <template v-else>h≈{{ Math.round(r.perigeeKm) }}km</template>
-          </span>
-        </li>
-      </ul>
-      <div class="sp-tip">
-        搜索名称/NORAD号/星座（如 <b>GPS</b>、<b>北斗</b>、<b>MOLNIYA</b>）。仅导入轨道根数（EIRP/G/T 请手填），斜距按轨道自动算。
-        <template v-if="customNames.length"><br>本地自定义星座（可直接搜）：{{ customNames.join('、') }}</template>
-      </div>
+      <template v-else-if="listOpen">
+        <div v-if="kw && !searchRes.length" class="sp-tip">无匹配卫星</div>
+        <ul v-else-if="searchRes.length" class="sp-list">
+          <li v-for="r in searchRes" :key="r.noradId" :class="{ on: ngsoSat.noradId === r.noradId }" @mousedown.prevent="pickSearch(r)">
+            <span class="sp-li-n">
+              {{ r.name }}
+              <em v-if="r.custom" class="sp-badge sp-badge-cc">自定义</em>
+              <em v-else-if="r.groupLabel" class="sp-badge">{{ r.groupLabel }}</em>
+              <em v-if="(+r.ecc) >= 0.1" class="sp-badge sp-badge-heo">HEO e={{ (+r.ecc).toFixed(2) }}</em>
+            </span>
+            <span class="sp-li-i">
+              {{ r.custom ? '合成' : 'NORAD' }} {{ r.noradId }} · i={{ (+r.incl).toFixed(1) }}° ·
+              <template v-if="(+r.ecc) >= 0.01">近{{ Math.round(r.perigeeKm) }}/远{{ Math.round(r.apogeeKm) }}km</template>
+              <template v-else>h≈{{ Math.round(r.perigeeKm) }}km</template>
+            </span>
+          </li>
+        </ul>
+      </template>
     </div>
 
     <!-- 当前选星摘要 + 互视最差几何搜索时窗 -->
@@ -200,7 +200,6 @@ const rows = computed(() => {
       <div v-if="orbitShape" class="sp-shape">
         <template v-if="orbitShape.elliptical">
           <b class="sp-heo">椭圆/HEO</b> · 近地点 {{ fmtKm(orbitShape.perigeeKm) }} km · 远地点 {{ fmtKm(orbitShape.apogeeKm) }} km · e={{ orbitShape.ecc.toFixed(3) }} · 周期 {{ orbitShape.periodMin.toFixed(0) }} min
-          <div class="sp-tip">最差几何取互视窗口内斜距最大处（通常近远地点附近），非单一圆轨道高度——SGP4 全轨道精确解算。</div>
         </template>
         <template v-else>
           圆轨道高度 ≈ {{ fmtKm(orbitShape.perigeeKm) }} km · 周期 {{ orbitShape.periodMin.toFixed(0) }} min

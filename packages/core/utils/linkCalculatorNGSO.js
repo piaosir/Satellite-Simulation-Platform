@@ -308,20 +308,23 @@ function altitudeFromSlantRange(slantRangeKm, elevationDeg) {
  * @param {number|string} slantRangeInput 用户输入的斜距(km)
  * @param {number|string} altitudeInput 用户输入的轨道高度(km)
  * @param {number} elevationDeg 最低仰角(°)
- * @param {number} defaultAltitude 缺省轨道高度
  * @returns {number} 斜距 (km)
  */
-function resolveNgsoSlantRange(mode, slantRangeInput, altitudeInput, elevationDeg, defaultAltitude = 1200) {
+function resolveNgsoSlantRange(mode, slantRangeInput, altitudeInput, elevationDeg) {
+  const d = parseFloat(slantRangeInput);
+  const h = parseFloat(altitudeInput);
+  const dOk = !isNaN(d) && isFinite(d) && d > 0;
+  const hOk = !isNaN(h) && isFinite(h) && h > 0;
   if (mode === 'slantRange') {
-    const d = parseFloat(slantRangeInput);
-    if (!isNaN(d) && isFinite(d) && d > 0) return d;
-    // 回退：按缺省高度+当前仰角推算
-    return slantRangeFromAltitude(defaultAltitude, elevationDeg);
+    if (dOk) return d;
+    if (hOk) return slantRangeFromAltitude(h, elevationDeg); // 斜距缺失但有轨道高度 → 由高度换算
+    // 斜距与轨道高度均无效：不再静默替换为缺省 1200km 假高度（会掩盖退化输入、算出误导结果），显式报错
+    throw new Error('星地斜距无效（且无有效轨道高度可换算）：请检查斜距 / 轨道高度输入');
   }
   // altitude 模式
-  const h = parseFloat(altitudeInput);
-  const hUse = (!isNaN(h) && isFinite(h) && h > 0) ? h : defaultAltitude;
-  return slantRangeFromAltitude(hUse, elevationDeg);
+  if (hOk) return slantRangeFromAltitude(h, elevationDeg);
+  if (dOk) return d; // 高度缺失但直接给了斜距 → 用之
+  throw new Error('轨道高度无效（且无有效斜距）：请检查轨道高度 / 斜距输入');
 }
 
 /**
@@ -451,12 +454,6 @@ function performCalculations(satParams, inputs) {
   const deltaTheta = satParams.deltaTheta !== undefined && satParams.deltaTheta !== '' && satParams.deltaTheta !== null
     ? parseFloat(satParams.deltaTheta) 
     : 3; // 度 - 角度偏差
-
-  // ============ NGSO 专属：轨道倾角 ============
-  // 轨道倾角影响地球自转对多普勒频移的贡献分量：v_E_eff = ω_E·r·cos(i)
-  // i=0°(赤道轨道)：地球自转贡献最大；i=90°(极轨道)：地球自转不参与多普勒
-  const orbitInclination = (satParams.orbitInclination !== undefined && satParams.orbitInclination !== '' && satParams.orbitInclination !== null)
-    ? parseFloat(satParams.orbitInclination) : 50; // 度，默认 50°
 
   // ============ NGSO 专属：星间链路(ISL) 参数 ============
   // cIsl: ISL SNR (dB，解调带宽内，用户输入）；计算时内部转换为 C/T (dBW/K)
@@ -639,8 +636,7 @@ function performCalculations(satParams, inputs) {
     distanceMode,
     inputs.slantRange,
     inputs.orbitAltitude,
-    elevation,
-    1200
+    elevation
   );
 
   // 上行自由空间损耗
@@ -668,8 +664,7 @@ function performCalculations(satParams, inputs) {
     rxDistanceMode,
     inputs.rxSlantRange,
     inputs.rxOrbitAltitude,
-    rxElevation,
-    1200
+    rxElevation
   );
 
   // 下行自由空间损耗
@@ -1792,82 +1787,11 @@ function performCalculations(satParams, inputs) {
   // 上/下行单程传播时延（分列展示，上下行星地斜距不同 → 时延可不同）
   results.linkDelayUpResult = (slantRange / 299792.458 * 1000).toFixed(1);     // ms，上行段传播时延
   results.linkDelayDownResult = (rxSlantRange / 299792.458 * 1000).toFixed(1); // ms，下行段传播时延
-  // 最大多普勒频移（NGSO专属，上下行独立计算）
-  // 公式：f_d_max = f_c/c · |v_sat − ω_E·r·cos(i)| · Re·cos(ε_min) / r
-  //   v_sat = sqrt(μ/r)：惯性系轨道速度
-  //   ω_E·r·cos(i)：星下点随地球自转的共转线速度在轨道平面内的有效分量
-  //     （i=0° 顺行赤道轨道时为 ω_E·r；i=90° 极轨时为 0）。务必用轨道半径 r，非地球半径 Re。
-  //   Re·cos(ε_min)/r：最低仰角处的几何投影系数（由正弦定理 sinγ=Re·cosε/r 推导）
-  // 同步轨道校验：i=0、h=35786km 时 v_sat=√(μ/r)=ω_E·r（地球同步定义）→ 相对速度=0 → 多普勒=0。
-  // 倾角修正说明：对于倾角 i 的圆形轨道，地球自转对相对切向速度的贡献乘以 cos(i)；
-  //   非赤道倾斜轨道 (i≠0) 抵消量更小，实际多普勒比同高度赤道轨道更大。
-  // 参考：Maral & Bousquet "Satellite Communications Systems" 5th Ed §5.1；ITU-R S.1711
-  const MU_EARTH = 3.986004418e5; // km³/s²（WGS-84）
-  const RE_KM = 6378.137;         // km（WGS-84）
-  const C_KM_S = 299792.458;      // km/s
-  const OMEGA_E = 7.2921150e-5;   // rad/s（WGS-84）
-  const inclRad = orbitInclination * Math.PI / 180; // 轨道倾角（弧度）
+  // 轨道力学几何量（轨道高度/惯性速度/相对地面速度/最大多普勒/轨道周期/覆盖半角/覆盖半径/过境时长）
+  // 已由单一真值源 packages/core/utils/ngsoGeometry.js 严格计算（SGP4/SDP4 真实星历 + 真实倾角 +
+  // WGS84 地心半径 + max|range-rate| 多普勒），并在 NgsoLinkBudgetApp 的 mergePlatformGeometry 里覆盖进结果。
+  // 此处不再用「斜距反算高度 + 圆轨道假设 + 50°默认倾角」重复计算（那会与真值源口径不一致、对偏心/HEO 失真）。
 
-  // ── 上行链路 ──
-  const h_tx = altitudeFromSlantRange(slantRange, elevation);
-  const r_tx = RE_KM + h_tx;
-  const v_sat_tx = Math.sqrt(MU_EARTH / r_tx);
-  // 相对地面运动速度 = |v_sat − ω_E·r·cos(i)|：卫星相对随地球自转参考系的切向速度。
-  //   注意此处必须用轨道半径 r（星下点共转线速度 ω_E·r），而非地球半径 RE。
-  //   地球同步轨道(i=0, r=r_GEO)时 v_sat=ω_E·r → 相对速度=0 → 多普勒=0。
-  const v_ground_tx = Math.abs(v_sat_tx - OMEGA_E * r_tx * Math.cos(inclRad));
-  const v_radial_tx = v_ground_tx * RE_KM * Math.cos(elevation * Math.PI / 180) / r_tx;
-  const maxDopplerUplink = v_radial_tx / C_KM_S * uplinkFrequency * 1e6;   // kHz
-
-  // ── 下行链路 ──
-  const h_rx = altitudeFromSlantRange(rxSlantRange, rxElevation);
-  const r_rx = RE_KM + h_rx;
-  const v_sat_rx = Math.sqrt(MU_EARTH / r_rx);
-  const v_ground_rx = Math.abs(v_sat_rx - OMEGA_E * r_rx * Math.cos(inclRad));
-  const v_radial_rx = v_ground_rx * RE_KM * Math.cos(rxElevation * Math.PI / 180) / r_rx;
-  const maxDopplerDownlink = v_radial_rx / C_KM_S * downlinkFrequency * 1e6; // kHz
-
-  results.orbitAltitudeResult = h_rx.toFixed(1);      // km，下行链路轨道高度
-  results.orbitVelocityResult = v_sat_rx.toFixed(3);  // km/s，下行惯性系轨道速度
-  results.orbitAltitudeUpResult = h_tx.toFixed(1);     // km，上行链路轨道高度
-  results.orbitVelocityUpResult = v_sat_tx.toFixed(3); // km/s，上行惯性系轨道速度
-  results.groundRelVelResult = v_ground_rx.toFixed(3);   // km/s，下行相对地面运动速度
-  results.groundRelVelUpResult = v_ground_tx.toFixed(3); // km/s，上行相对地面运动速度
-  results.maxDopplerUplinkResult = maxDopplerUplink.toFixed(1);   // kHz
-  results.maxDopplerDownlinkResult = maxDopplerDownlink.toFixed(1); // kHz
-
-  // ============ 可见性几何（NGSO 专属，纯轨道几何，严格有据；上下行各自计算，可不同）============
-  // 参考：Maral & Bousquet "Satellite Communications Systems" 5th Ed §2/§5；Wertz, SMAD（几何）
-  //   轨道周期    P = 2π·√(r³/μ)
-  //   覆盖地心半角 λ = arccos( (Re/r)·cos ε_min ) − ε_min   （地面站最低仰角 ε_min 处的中心角）
-  //   地面覆盖半径 = Re·λ（大圆弧长，sub-satellite 点到 ε_min 边界）
-  //   最大过境时长 = 2λ / |ω_s − ω_E·cos(i)|（天顶过境，卫星相对地面扫过中心角 2λ）
-  //     ω_s = √(μ/r³) 轨道角速度；ω_E·cos(i) 地球自转在轨道平面内的有效分量。
-  //     顺行轨道地球自转使过境变长；同步轨道(ω_s→ω_E·cos i)时相对角速度→0 即常驻可见(∞)。
-  //     ※ 不可用 2λ/ω_s（忽略地球自转）——该近似仅 LEO 成立，MEO 误差~25%、GEO 完全失真。
-  // 上行用(r_tx, elevation)、下行用(r_rx, rxElevation)分别计算——上下行轨道高度/仰角可不同，结果可不同。
-  // 注：重访周期 / 可见卫星数需星座规模（轨道面数、每面卫星数），工具无此输入 → 不臆造。
-  const visMetrics = (r, epsDeg) => {
-    const eps = epsDeg * Math.PI / 180;
-    const omegaS = Math.sqrt(MU_EARTH / Math.pow(r, 3));          // rad/s 轨道角速度
-    const P = 2 * Math.PI / omegaS;                              // s 轨道周期
-    const lam = Math.acos((RE_KM / r) * Math.cos(eps)) - eps;    // rad 覆盖地心半角
-    const omegaRel = Math.abs(omegaS - OMEGA_E * Math.cos(inclRad)); // rad/s 相对地面过顶角速度
-    const passMin = omegaRel > 1e-7 ? (2 * lam / omegaRel) / 60 : Infinity; // min（≈0 即同步常驻可见）
-    return { periodMin: P / 60, halfAngleDeg: lam * 180 / Math.PI, radiusKm: RE_KM * lam, passMin };
-  };
-  const fmtPass = (m) => isFinite(m) ? m.toFixed(2) : '常驻可见(∞)';
-  const visUp = visMetrics(r_tx, elevation);
-  const visDown = visMetrics(r_rx, rxElevation);
-  results.orbitPeriodUpResult = visUp.periodMin.toFixed(2);
-  results.orbitPeriodDownResult = visDown.periodMin.toFixed(2);
-  results.coverageHalfAngleUpResult = visUp.halfAngleDeg.toFixed(2);
-  results.coverageHalfAngleDownResult = visDown.halfAngleDeg.toFixed(2);
-  results.coverageRadiusUpResult = visUp.radiusKm.toFixed(1);
-  results.coverageRadiusDownResult = visDown.radiusKm.toFixed(1);
-  results.maxPassDurationUpResult = fmtPass(visUp.passMin);
-  results.maxPassDurationDownResult = fmtPass(visDown.passMin);
-  
   // 通信参数
   results.uplinkFrequencyResult = uplinkFrequency.toFixed(2);
   results.downlinkFrequencyResult = downlinkFrequency.toFixed(2);
@@ -2533,17 +2457,25 @@ function calculateRainXPD_P618_14(Ap, freq, tauDeg, elevDeg, p) {
   const theta = Math.min(Math.max(elevDeg, 0), 60);
   const D2R = CONSTANTS.PI / 180;
 
-  // Step 1: 频率相关项 Cf = 30·log f （6 ≤ f ≤ 55 GHz）
-  const Cf = 30 * Math.log10(freq);
+  // Step 1: 频率相关项 Cf —— ITU-R P.618-14 §4.1 Step 1，按频段分三式（与 GEO linkCalculator.js 对齐）
+  //   6 ≤ f < 9 :  60·log f − 28.3
+  //   9 ≤ f < 36:  26·log f + 4.1
+  //   36 ≤ f ≤ 55: 35.9·log f − 11.3
+  let Cf;
+  if (freq < 9)        Cf = 60 * Math.log10(freq) - 28.3;
+  else if (freq < 36)  Cf = 26 * Math.log10(freq) + 4.1;
+  else                 Cf = 35.9 * Math.log10(freq) - 11.3;
 
-  // Step 2: 降雨衰减相关项 CA = V(f)·log(Ap)
-  //   V(f) = 12.8·f^0.19   (6 ≤ f ≤ 9 GHz)
-  //   V(f) = 22.6          (9 < f ≤ 36 GHz)
-  //   V(f) = 13.0·f^0.19   (36 < f ≤ 55 GHz)
+  // Step 2: 降雨衰减相关项 CA = V(f)·log(Ap) —— ITU-R P.618-14 §4.1 Step 2，按频段分四式
+  //   6 ≤ f < 9 :  V = 30.8·f^(−0.21)
+  //   9 ≤ f < 20:  V = 12.8·f^0.19
+  //   20 ≤ f < 40: V = 22.6
+  //   40 ≤ f ≤ 55: V = 13.0·f^0.15
   let Vf;
-  if (freq <= 9)        Vf = 12.8 * Math.pow(freq, 0.19);
-  else if (freq <= 36)  Vf = 22.6;
-  else                  Vf = 13.0 * Math.pow(freq, 0.19);
+  if (freq < 9)        Vf = 30.8 * Math.pow(freq, -0.21);
+  else if (freq < 20)  Vf = 12.8 * Math.pow(freq, 0.19);
+  else if (freq < 40)  Vf = 22.6;
+  else                 Vf = 13.0 * Math.pow(freq, 0.15);
   const CA = Vf * Math.log10(Ap);
 
   // Step 3: 极化改善因子 Cτ = -10·log[1 - 0.484·(1 + cos4τ)]
@@ -2553,10 +2485,13 @@ function calculateRainXPD_P618_14(Ap, freq, tauDeg, elevDeg, p) {
   // Step 4: 仰角相关项 Cθ = -40·log(cosθ) （θ ≤ 60°）
   const Ctheta = -40 * Math.log10(Math.cos(theta * D2R));
 
-  // Step 5: 雨滴倾角分布相关项 Cσ = 0.0053·σ²
-  //   σ 为雨滴倾角分布的有效标准差（度），对 1%/0.1%/0.01%/0.001%
-  //   分别取 0/5/10/15 度，即 σ = -5·log10(p)（p ≥ 1% 时取 0）
-  const sigma = Math.max(0, -5 * Math.log10(p));
+  // Step 5: 雨滴倾角分布相关项 Cσ = 0.0053·σ² —— ITU-R P.618-14 §4.1 Step 5，σ 按时间百分比离散取值
+  //   σ(°)：p≤0.001%→15；p≤0.01%→10；p≤0.1%→5；其余→0（旧实现误用连续 −5·log10(p)）
+  let sigma;
+  if (p <= 0.001)      sigma = 15;
+  else if (p <= 0.01)  sigma = 10;
+  else if (p <= 0.1)   sigma = 5;
+  else                 sigma = 0;
   const Csigma = 0.0053 * sigma * sigma;
 
   // Step 6: 降雨去极化 XPDrain = Cf - CA + Cτ + Cθ + Cσ （dB）

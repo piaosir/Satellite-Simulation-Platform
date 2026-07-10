@@ -7,7 +7,9 @@ const newName = ref('')
 
 async function load() {
   if (!hasApi) return
-  rows.value = await window.api.store.listConfigs()
+  // 与链路预算共用 configs.json，其中含「文件夹」分组项（type==='folder'）；本页只管配置预设，过滤掉文件夹，
+  // 也避免此页无级联删除时误删文件夹造成子项成孤儿。
+  rows.value = (await window.api.store.listConfigs()).filter((r) => r && r.type !== 'folder')
 }
 async function add() {
   const name = newName.value.trim()

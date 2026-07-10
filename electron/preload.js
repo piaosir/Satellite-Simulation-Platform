@@ -55,6 +55,8 @@ contextBridge.exposeInMainWorld('api', {
     saveConfig: (c) => ipcRenderer.invoke('store:config:save', c),
     deleteConfig: (id) => ipcRenderer.invoke('store:config:delete', id),
     reorderConfigs: (ids) => ipcRenderer.invoke('store:config:reorder', ids),
+    moveItem: (payload) => ipcRenderer.invoke('store:config:move', payload),
+    deleteFolder: (id) => ipcRenderer.invoke('store:config:deleteFolder', id),
     getSettings: () => ipcRenderer.invoke('store:settings:get'),
     setSettings: (s) => ipcRenderer.invoke('store:settings:set', s)
   },
