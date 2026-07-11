@@ -1015,16 +1015,15 @@ onMounted(async () => {
             <div v-else-if="activeModule === 'rx'" class="tx-wrap">
               <div class="tx-optbar">
                 <span class="tx-optl">工作点 G/T</span>
-                <span class="tx-opttip">收信站 G/T 由天线口径/效率 + 天线噪温 + 接收机噪温 + 馈线损耗按引擎口径算得（含精确雨致 G/T 劣化）；末列「收信站 G/T」为随参数实时更新的晴空 G/T 只读预览。</span>
+                <span class="tx-opttip">收信站 G/T 由天线口径/效率 + 天线噪温 + 接收机噪温 + 馈线损耗按引擎口径算得（含精确雨致 G/T 劣化）；末列「G/T」为随参数实时更新的晴空 G/T 只读预览。</span>
               </div>
-              <StationGrid :stations="rxStations" :fields="RX_FIELDS" :cities="cities" :city-search="citySearch" label="收信站" :auto-geo="autoGeoRx" ro-label="收信站 G/T" ro-unit="dB/K" :ro-values="rxGtValues" :select-options="{ basebandId: basebandSelectOptions, satelliteId: satSelectOptions }" />
+              <StationGrid :stations="rxStations" :fields="RX_FIELDS" :cities="cities" :city-search="citySearch" label="收信站" :auto-geo="autoGeoRx" ro-label="G/T" ro-unit="dB/K" :ro-values="rxGtValues" :select-options="{ basebandId: basebandSelectOptions, satelliteId: satSelectOptions }" />
             </div>
             <div v-else-if="activeModule === 'isl'" class="tx-wrap">
               <p class="isl-tip">星间链路：<b>发射卫星 → 接收卫星</b>（两星均选自「卫星群」）。几何由两星轨道严格求解（双 SGP4 传播 + 地球临边遮挡）取最差星间距离与互视可见度；发射 EIRP 在发射卫星、接收 G/T 在接收卫星。<b>选真实卫星</b>几何才严谨；两颗同参数手动圆轨道相位缺省相同会重合报错。</p>
               <StationGrid :stations="islLinks" :fields="ISL_FIELDS" :cities="cities" :city-search="citySearch" label="星间链路" :show-import="false" :select-options="{ basebandId: basebandSelectOptions, txSatelliteId: satSelectOptions, rxSatelliteId: satSelectOptions }" />
             </div>
             <div v-else-if="activeModule === 'laser'" class="tx-wrap">
-              <p class="isl-tip">激光星间链路（<b>相干 DP-QPSK</b>）：<b>发射卫星 → 接收卫星</b>（两星选自「卫星群」）。<b>第一性原理光学预算</b>：P_rx = 发射光功率 + 望远镜增益(20·lg πD/λ) − 自由空间损耗(20·lg 4πd/λ) − 光学损耗 − 指向损耗；灵敏度以「光子/bit」反推所需接收功率 P_req；<b>给定速率 → 链路余量</b>。空间对空间无雨/无大气。默认参数锚定成熟星间激光终端（Mynaric CONDOR Mk3 级 90mm/36dBm/1550nm + 相干 DP-QPSK 灵敏度）。⚠️「捕获不确定锥」1mrad 是粗捕获口径，非通信窄光束（µrad 级）指向精度——后者才进指向损耗。</p>
               <StationGrid :stations="laserLinks" :fields="LASER_FIELDS" :cities="cities" :city-search="citySearch" label="激光星间链路" :show-import="false" :select-options="{ txSatelliteId: satSelectOptions, rxSatelliteId: satSelectOptions }" />
             </div>
             <div v-else-if="activeModule === 'carrier'" class="bb-wrap">
