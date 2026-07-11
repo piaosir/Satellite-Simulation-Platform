@@ -20,8 +20,9 @@ export function useGridSelect(cfg) {
   const sel = ref({ ar: -1, ac: -1, ri: -1, ci: -1 })
   const edit = ref({ ri: -1, ci: -1 })
   const editSeed = ref(null)              // 键入进入编辑的首字符（null=保留原值并全选）
-  const editEl = ref(null)                // 编辑中 input 的 DOM
-  const bodyEl = ref(null)                // 网格容器（接收键盘/复制焦点）
+  const editTyped = ref(false)            // 本次编辑由「键入/输入法就地」进入（input 里已有内容，watch 不得重置/全选）
+  const editEl = ref(null)                // 活动格常驻捕获输入框的 DOM（导航态透明覆盖、编辑态可见；输入法首字母就落在它上）
+  const bodyEl = ref(null)                // 网格容器（只读表/无捕获框时的后备键盘焦点持有者）
   let dragging = false
 
   const rect = computed(() => {
@@ -38,9 +39,13 @@ export function useGridSelect(cfg) {
     const t = e && e.target, tag = t && t.tagName
     return (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') && t !== editEl.value
   }
-  // 编辑中不抢焦点：容器 @click 会在点击编辑 input 内部（移动光标）时冒泡到这里，若照常 focus 容器
-  // 会令 input blur → 误提交退出编辑（Excel 里点击单元格编辑器内部只是移动光标）。
-  function focusGrid(e) { if (edit.value.ri >= 0 || foreignControl(e)) return; const el = bodyEl.value; if (el) el.focus() }
+  // 焦点优先落在活动格的常驻捕获输入框（导航/编辑共用同一 <input>）——这样中文输入法从首个拼音字母起就有真实可编辑目标，
+  // 不再吞首字母。点击编辑器内部：foreignControl 放行（t===editEl 返回 false），此处再 focus 同一元素无 blur、不会误提交。
+  // 只读表 / RO 等无捕获框的格退回容器本身。
+  function focusGrid(e) {
+    if (foreignControl(e)) return
+    nextTick(() => { const el = editEl.value; if (el) el.focus(); else if (bodyEl.value) bodyEl.value.focus() })
+  }
   function setSel(ri, ci, extend) { const s = sel.value; sel.value = extend && s.ar >= 0 ? { ar: s.ar, ac: s.ac, ri, ci } : { ar: ri, ac: ci, ri, ci } }
   function cellDown(e, ri, ci) {
     if (isEdit(ri, ci)) return                        // 正在编辑此格 → 交给 input
@@ -50,10 +55,25 @@ export function useGridSelect(cfg) {
   }
   function cellEnter(ri, ci) { if (dragging) setSel(ri, ci, true) }
   function up() { dragging = false }
-  function tryEdit(ri, ci, seed) {
+  function tryEdit(ri, ci, seed) {   // F2/双击/Backspace 进入：由 watch 用 seed/原值重置 input（键入进入走 beginActiveEdit，不经此）
     const c = cfg.cols()[ci]; if (!colEditable(c)) return
-    sel.value = { ar: ri, ac: ci, ri, ci }; editSeed.value = seed; edit.value = { ri, ci }
+    sel.value = { ar: ri, ac: ci, ri, ci }; editSeed.value = seed; editTyped.value = false; edit.value = { ri, ci }
   }
+  // 键入/输入法在活动格常驻捕获框内直接开始编辑：input 里已落有首字母/组字内容，故置 editTyped 让 watch 不重置、不全选。
+  function beginActiveEdit() {
+    const { ri, ci } = sel.value
+    if (ri < 0 || edit.value.ri >= 0 || cfg.readOnly) return false
+    const c = cfg.cols()[ci]; if (!colEditable(c)) return false
+    // editTyped 让 watch 不重置 input（保留已键入内容）；editSeed 置非空('' 而非 null) 只为标记「键入进入=Excel 回车模式」
+    // → 编辑中按方向键＝提交并移动（F2/双击的 null 则方向键移光标）。'' 不会被写进 input：watch 因 editTyped 提前返回。
+    editTyped.value = true; editSeed.value = ''; edit.value = { ri, ci }
+    return true
+  }
+  function onActiveCompStart() { beginActiveEdit() }
+  function onActiveInput(e) { if (edit.value.ri < 0 && !beginActiveEdit()) e.target.value = '' }
+  function onActiveBlur() { if (edit.value.ri >= 0) commitEdit() }   // 失焦提交；导航态失焦不处理
+  function onActivePaste(e, r, key) { if (edit.value.ri < 0) { e.preventDefault(); return } cellPaste(e, r, key) }   // 导航态整块粘贴交给 gridKey.doPaste
+  function onActiveClip(e) { if (edit.value.ri < 0) e.preventDefault() }   // 导航态屏蔽原生复制/剪切，交给 gridKey 的整块逻辑
   function rawText(r, c) { const v = cfg.cellRaw ? cfg.cellRaw(r, c) : r[c.key]; return v == null ? '' : String(v) }
   function commitEdit() {
     const { ri, ci } = edit.value; if (ri < 0) return
@@ -62,9 +82,10 @@ export function useGridSelect(cfg) {
     if (el && r && c && el.value !== rawText(r, c)) {   // 仅值确实变化才记撤销
       cfg.pushUndo && cfg.pushUndo(); cfg.onEdit && cfg.onEdit(r.id, c.key, el.value)
     }
+    if (el) el.value = ''   // 复位捕获框为空 → 回到导航态，下次「键入即替换」（值靠 ghost span 显示）
     cfg.refresh && cfg.refresh()
   }
-  function cancelEdit() { edit.value = { ri: -1, ci: -1 }; editSeed.value = null; focusGrid() }
+  function cancelEdit() { const el = editEl.value; if (el) el.value = ''; edit.value = { ri: -1, ci: -1 }; editSeed.value = null; focusGrid() }
   function move(dr, dc, extend) {
     const nr = cfg.rows().length, nc = cfg.cols().length; if (!nr || !nc) return
     let ri = sel.value.ri < 0 ? 0 : sel.value.ri, ci = sel.value.ci < 0 ? 0 : sel.value.ci
@@ -132,6 +153,7 @@ export function useGridSelect(cfg) {
   }
   function gridKey(e) {
     if (foreignControl(e)) return   // 加站行等独立输入框内的按键：交还给输入框本身
+    if (e.isComposing || e.keyCode === 229) return   // 输入法组字中：放行——导航态让首字母落进捕获框，编辑态让 Enter/Esc 去确认/取消候选（勿提交单元格）
     const ctrl = e.ctrlKey || e.metaKey
     if (edit.value.ri >= 0) {                          // 编辑态：提交/取消/跳格；其余键交给 input（含原生撤销/粘贴）
       if (e.key === 'Enter') { e.preventDefault(); commitEdit(); move(e.shiftKey ? -1 : 1, 0); focusGrid() }
@@ -165,18 +187,16 @@ export function useGridSelect(cfg) {
       case 'F2': if (!cfg.readOnly) { e.preventDefault(); tryEdit(ri, ci, null) } break
       case 'Delete': if (!cfg.readOnly) { e.preventDefault(); clearRange() } break
       case 'Backspace': if (!cfg.readOnly) { e.preventDefault(); tryEdit(ri, ci, '') } break   // Excel：Backspace=清空活动格并进入编辑
-      default:
-        if (cfg.readOnly || ctrl || e.altKey) return
-        if (e.key.length === 1) { e.preventDefault(); tryEdit(ri, ci, e.key) }
-        // 输入法（中文等）键入：keydown 为 Process/isComposing，不带可见字符 → 以空种子进入编辑，
-        // 让后续按键落在 input 里由 IME 正常组字（不 preventDefault，避免打断输入法）。
-        else if (e.key === 'Process' || e.isComposing) tryEdit(ri, ci, '')
+      default: break
+        // 可见字符 / 输入法：不在此合成编辑、不 preventDefault——放行让按键自然落进活动格那个已获焦的常驻捕获框，
+        // 由其 @input/@compositionstart（onActiveInput/onActiveCompStart）就地进入编辑。这样中文输入法从第一个拼音字母起就有真实 <input> 目标，不吞首字母。
     }
   }
   // 进入编辑后初始化 input：值在此【一次性命令式】写入，模板不得绑 :value——单向绑定会在组件任意
   // 重渲染（实时时钟每秒都在触发）时把绑定值刷回 DOM，吞掉正在键入的内容。键入进入→光标末尾；F2/双击进入→全选。
   watch(() => edit.value, (v) => {
     if (v.ri < 0) return
+    if (editTyped.value) { editTyped.value = false; return }   // 键入/输入法就地进入：input 里已有刚键入内容，勿重置/全选（否则清掉正在组字的拼音）
     nextTick(() => {
       const el = editEl.value; if (!el) return
       const r = cfg.rows()[v.ri], c = cfg.cols()[v.ci]
@@ -186,11 +206,18 @@ export function useGridSelect(cfg) {
       else { const n = el.value.length; el.setSelectionRange(n, n) }
     })
   })
+  // 活动格变化（键盘导航 / 鼠标框选）后把焦点移到新活动格的常驻捕获框，让输入法始终有真实编辑目标；编辑中不抢焦点。
+  // 只读表 / 无捕获框的格退回容器本身，保证导航链不断。
+  watch(() => [sel.value.ri, sel.value.ci], () => {
+    if (edit.value.ri >= 0) return
+    nextTick(() => { const el = editEl.value; if (el) el.focus(); else if (bodyEl.value) bodyEl.value.focus() })
+  })
   onMounted(() => window.addEventListener('mouseup', up))
   onBeforeUnmount(() => window.removeEventListener('mouseup', up))
 
   return {
     sel, edit, editSeed, editEl, bodyEl, rect, inSel, isActive, isEdit, colEditable,
-    focusGrid, cellDown, cellEnter, tryEdit, commitEdit, cancelEdit, gridKey, cellPaste, copySel, doPaste, clearRange
+    focusGrid, cellDown, cellEnter, tryEdit, commitEdit, cancelEdit, gridKey, cellPaste, copySel, doPaste, clearRange,
+    onActiveInput, onActiveCompStart, onActiveBlur, onActivePaste, onActiveClip
   }
 }

@@ -3,7 +3,7 @@ const fs = require('fs')
 const createOmm = require('../services/omm')
 
 // 注册所有 IPC 处理器。core 为返回引擎实例的函数（延迟解析）。
-function register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget, openSunOutage, grd, confirmCloseLinkBudget, openNgso, confirmCloseNgso }) {
+function register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget, openSunOutage, grd, confirmCloseLinkBudget, openNgso, confirmCloseNgso, openRegen, confirmCloseRegen }) {
   const omm = createOmm(core)
   ipcMain.handle('omm:load', (_e, group, online) => omm.load(group, online))
   ipcMain.handle('omm:positions', (_e, group, iso) => omm.positions(group, iso))
@@ -116,11 +116,36 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     core().computeLinkModeNGSO
       ? core().computeLinkModeNGSO(s || {}, l || {}, opt || {})
       : { success: false, message: 'NGSO 引擎未加载' })
+  // 再生式上行计算方式求解（设置余量 / 设置功放；合计 C/N = 上行 C/(N+I)；复用 NGSO 几何）
+  ipcMain.handle('link:computeRegenUplink', (_e, s, l, opt) =>
+    core().computeRegenUplinkMode
+      ? core().computeRegenUplinkMode(s || {}, l || {}, opt || {})
+      : { success: false, message: '再生式引擎未加载' })
+  // 再生式下行计算方式求解（给定工作点 G/T / 目标余量；合计 C/N = 下行 C/(N+I)；复用 NGSO 几何）
+  ipcMain.handle('link:computeRegenDownlink', (_e, s, l, opt) =>
+    core().computeRegenDownlinkMode
+      ? core().computeRegenDownlinkMode(s || {}, l || {}, opt || {})
+      : { success: false, message: '再生式引擎未加载' })
+  // 再生式星间计算（发射卫星 EIRP / 接收卫星 G/T；合计 C/N = 星间单跳 C/N）
+  ipcMain.handle('link:computeRegenIsl', (_e, s, l, opt) =>
+    core().computeRegenIslMode
+      ? core().computeRegenIslMode(s || {}, l || {}, opt || {})
+      : { success: false, message: '再生式引擎未加载' })
+  // 星间链路(ISL)两星几何求解（双 SGP4 + 地球临边遮挡 → 最差星间距离 + 互视可见度 + 访问窗口）
+  ipcMain.handle('link:islGeometry', (_e, opt) =>
+    core().solveIslWorstCase
+      ? core().solveIslWorstCase(opt || {})
+      : { feasible: false, reason: '星间几何求解器未加载' })
   // NGSO 站星几何求解（选星=SGP4/SDP4 单一典型时刻 t* 几何；手动=闭式球面最差 + 轨道根数）
   ipcMain.handle('link:ngsoGeometry', (_e, opt) =>
     core().solveNgsoMutualWorstCase
       ? core().solveNgsoMutualWorstCase(opt || {})
       : { feasible: false, reason: 'NGSO 几何求解器未加载' })
+  // 单站访问窗口（再生式几何：时窗内满足最低仰角及以上的全部过境）
+  ipcMain.handle('link:accessWindows', (_e, opt) =>
+    core().solveAccessWindows
+      ? core().solveAccessWindows(opt || {})
+      : { feasible: false, reason: '访问窗口求解器未加载', windows: [] })
   // 经纬度 → 降雨率/海拔自动填值（与小程序口径一致）
   ipcMain.handle('link:geoFill', (_e, lat, lon) => core().geoAutoFill(parseFloat(lat), parseFloat(lon)))
   // GRD 天线逐站取值（多波束最大 Parameter）：解析+采样在主进程，渲染端只收发 dB 数字
@@ -128,7 +153,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   // 城市列表（选址用）
   ipcMain.handle('link:cities', () => core().listCities())
   ipcMain.handle('link:searchCities', (_e, kw) => core().searchCities(String(kw == null ? '' : kw), {}))
-  // 基带选项（调制/FEC/DVB/MODCOD）
+  // 载波信号选项（调制/FEC/DVB/MODCOD）
   ipcMain.handle('link:baseband', () => core().basebandOptions())
 
   // 打开「GEO 链路预算」独立工作台窗口（单例，由 main 注入创建函数）
@@ -139,6 +164,10 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   // 打开「NGSO 链路预算」独立工作台窗口（单例，由 main 注入创建函数）
   ipcMain.handle('ngso:open', () => { if (openNgso) openNgso(); return true })
   ipcMain.handle('ngso:confirmClose', () => { if (confirmCloseNgso) confirmCloseNgso(); return true })
+
+  // 打开「再生式链路预算」独立工作台窗口（单例，由 main 注入创建函数）
+  ipcMain.handle('regen:open', () => { if (openRegen) openRegen(); return true })
+  ipcMain.handle('regen:confirmClose', () => { if (confirmCloseRegen) confirmCloseRegen(); return true })
 
   // ---- 日凌预报（独立窗口 + 计算 + Word/ICS 导出）----
   ipcMain.handle('suntool:open', () => { if (openSunOutage) openSunOutage(); return true })
@@ -287,7 +316,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
       // 为每条链路构建七段瀑布（与 UI 瀑布同源 buildWaterfallSegments）→「详细计算结果」分表
       // lang 跟随导出语言选择（中/英），与链路汇总表的中英文口径保持一致
       const exportLang = (payload && payload.lang === 'en') ? 'en' : 'zh'
-      const orbitType = (payload && payload.orbitType === 'NGSO') ? 'NGSO' : 'GEO'
+      const orbitType = (payload && (payload.orbitType === 'NGSO' || payload.orbitType === 'REGEN')) ? payload.orbitType : 'GEO'
       const links = (payload && payload.links) || []
       for (const l of links) {
         if (l && l.data) {

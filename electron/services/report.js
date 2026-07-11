@@ -130,7 +130,7 @@ const STR = {
     linkMargin: '链路余量 (dB)', allocBw: '载波带宽 (kHz)', powerBw: '功率带宽 (kHz)',
     bwUsage: '带宽占用 (%)', pwUsage: '功率占用 (%)',
     upCN: '上行 C/N (dB)', downCN: '下行 C/N (dB)', totalCN: '合计 C/N (dB)', thresholdCN: '门限 C/N (dB)',
-    ebno: 'Eb/N₀ (dB)', esno: 'Es/N₀ (dB)', psd: '载波功率谱密度 (dBW/Hz)', avail: '系统可用度 (%)',
+    ebno: 'Eb/N₀ (dB)', esno: 'Es/N₀ (dB)', psd: '载波功率谱密度 (dBW/Hz)', avail: '系统可用度 (%)', availUp: '上行可用度 (%)',
     specEff: '频谱效率 (bps/Hz)', capacity: '容量 (Mbps)',
     status: '合格', statusOk: '是', statusBad: '否', statusErr: '错误',
     pairSeq: '常规计算（1↔1）', pairMatrix: '矩阵计算（m×n）',
@@ -171,7 +171,7 @@ const STR = {
     linkMargin: 'Link Margin (dB)', allocBw: 'Allocated Bandwidth (kHz)', powerBw: 'Power Bandwidth (kHz)',
     bwUsage: 'Bandwidth Usage Ratio (%)', pwUsage: 'Power Usage Ratio (%)',
     upCN: 'Uplink C/N (dB)', downCN: 'Downlink C/N (dB)', totalCN: 'Combined C/N (dB)', thresholdCN: 'Threshold C/N (dB)',
-    ebno: 'Eb/N₀ (dB)', esno: 'Es/N₀ (dB)', psd: 'Satellite PSD (dBW/Hz)', avail: 'System Availability (%)',
+    ebno: 'Eb/N₀ (dB)', esno: 'Es/N₀ (dB)', psd: 'Satellite PSD (dBW/Hz)', avail: 'System Availability (%)', availUp: 'Uplink Availability (%)',
     specEff: 'Spectral Efficiency (bps/Hz)', capacity: 'Capacity (Mbps)',
     status: 'Status', statusOk: 'Pass', statusBad: 'Fail', statusErr: 'Error',
     pairSeq: 'Sequential (1:1)', pairMatrix: 'Full Matrix (m×n)',
@@ -250,7 +250,9 @@ function fmtBwText(khz) {
 // 链路汇总的"参数行"：矩阵显示全部指标 ∪ 结果卡片全部字段。每行一个参数，纵向排列——
 // 这样每条链路占一整列，从上往下读完一列就是这条链路的完整结果，跟下面单链路详细计算结果表
 // （参数纵向列在左、数值在右）是同一种阅读方式，多条链路时天然变成左右并排的对比表。
-function summaryRows(t) {
+function summaryRows(t, orbitType) {
+  // 再生式上下行解耦：系统可用度 = 上行可用度，汇总列头据此改标（GEO/NGSO 仍为联合系统可用度）
+  const availLabel = orbitType === 'REGEN' ? t.availUp : t.avail
   return [
     { label: t.paRecW, get: (l) => val(l.data, 'paRecommendation') },
     { label: t.paRecDbw, get: (l) => val(l.data, 'paRecommendationdBResult') },
@@ -269,7 +271,7 @@ function summaryRows(t) {
     { label: t.ebno, get: (l) => val(l.data, 'ebnoActualResult') },
     { label: t.esno, get: (l) => val(l.data, 'esnoActualResult') },
     { label: t.psd, get: (l) => val(l.data, 'satellitePSDResult') },
-    { label: t.avail, get: (l) => val(l.data, 'systemAvailabilityResult') },
+    { label: availLabel, get: (l) => val(l.data, 'systemAvailabilityResult') },
     { label: t.status, get: (l) => (l.error ? t.statusErr : (l.ok ? t.statusOk : t.statusBad)), text: true }
   ]
 }
@@ -285,8 +287,8 @@ const labelWithSign = (row) => (row.sign ? row.sign + ' ' : '') + (row.label || 
 
 // ① 链路汇总（纵向：参数名在左侧纵列，每条链路占一列；常规计算/矩阵计算共用同一种纵向布局，
 // 仅列头标识不同——常规计算 #序号，矩阵计算坐标 T#R#）
-function buildSummarySheet(wb, links, params, meta, t, isSequential) {
-  const rows = summaryRows(t)
+function buildSummarySheet(wb, links, params, meta, t, isSequential, orbitType) {
+  const rows = summaryRows(t, orbitType)
   const ncol = 1 + links.length
   const ws = wb.addWorksheet(t.sheetSummary, { views: [{ showGridLines: false, state: 'frozen', xSplit: 1, ySplit: 4 }] })
   ws.mergeCells(1, 1, 1, ncol)
@@ -620,7 +622,7 @@ async function buildLinkBudgetExcel(payload) {
   const wb = new ExcelJS.Workbook()
   wb.creator = lang === 'en' ? 'GEO Satellite Link Budget Workbench' : '卫星链路预算工作台'; wb.created = new Date()
 
-  buildSummarySheet(wb, enriched, params, meta, t, isSequential)
+  buildSummarySheet(wb, enriched, params, meta, t, isSequential, orbitType)
 
   // NGSO：紧随汇总表后单立「几何关系」sheet（STK 版式），把 NGSO 特色几何量集中呈现
   if (orbitType === 'NGSO') buildNgsoGeometrySheet(wb, enriched, params, meta, lang)

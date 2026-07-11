@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { BAND_FREQ, BAND_LABEL } from './satPresets.js'
 import { ensureSearchPool } from './satSearchPool.js'
+import { classifyOrbit, orbitRegimeLabel } from '../shared/orbitClass.js'
 
 // NGSO 卫星模块：两种取星模式（互斥）——
 //  ① 天线树导入：从「星座3D」页导入的 GRD 卫星树选星 → 给「卫星EIRP / 卫星G/T」匹配天线，
@@ -23,14 +24,11 @@ const props = defineProps({
 })
 const HORIZONS = [{ v: 6, l: '6 小时' }, { v: 12, l: '12 小时' }, { v: 24, l: '24 小时' }, { v: 48, l: '2 天' }, { v: 72, l: '3 天' }, { v: 120, l: '5 天' }, { v: 168, l: '7 天' }, { v: 336, l: '14 天' }, { v: 720, l: '30 天' }]
 
-// 取星模式分段控件：tree / search（切换时清空另一模式的选择）
+// 取星模式分段控件：tree / search。仅切换「正在看哪个选星器」，不动已选卫星——
+// 单一 active 卫星（ngsoSat）在两标签页间保留，来回切换不再清缓存；只有在另一标签页里
+// 真正另选一颗星才替换（互斥由 pick 时各自清理保证：选搜索星会清 grdSel，选树星会清搜索态）。
 const mode = ref(props.ngsoSat.mode === 'search' ? 'search' : 'tree')
-function switchMode(m) {
-  if (mode.value === m) return
-  mode.value = m
-  props.onClear()
-  if (m === 'search') { props.sel.satFolder = ''; props.sel.eirpKey = ''; props.sel.gtKey = '' }
-}
+function switchMode(m) { if (mode.value === m) return; mode.value = m }
 
 // —— ① 天线树 ——
 const curSat = computed(() => props.satTree.find((s) => s.folder === props.sel.satFolder) || null)
@@ -79,12 +77,13 @@ const searchRes = computed(() => {
       out.push(s); if (out.length >= 60) break
     }
   }
-  return out
+  return out.map((s) => ({ ...s, _regime: regimeOf(s) }))
 })
 function onSearchFocus() { ensurePool(); listOpen.value = true }
 function onSearchBlur() { setTimeout(() => { listOpen.value = false }, 150) }  // 延时让列表项 click 先触发
 function pickSearch(rec) { props.onPickSearch(rec); kw.value = rec.name; listOpen.value = false }
-// 选中卫星轨道形状（近/远地点/偏心率/周期）——椭圆/HEO 单一「轨道高度」不足以表达，此处补全
+// 选中卫星轨道形状（近/远地点/偏心率/周期 + 严谨区制 GEO/IGSO/MEO/LEO/HEO）——
+// 单一「轨道高度」不足以表达椭圆轨道，且区制须按 a/e/i/周期 严谨判定（见 shared/orbitClass.js）。
 const orbitShape = computed(() => {
   const o = props.ngsoSat && props.ngsoSat.orbit
   if (!o) return null
@@ -95,8 +94,16 @@ const orbitShape = computed(() => {
   else if (o.type === 'snapshot' || o.type === 'circular') { return null }
   if (!a) return null
   const nRadS = Math.sqrt(MU / (a * a * a))
-  return { apogeeKm: a * (1 + e) - RE, perigeeKm: a * (1 - e) - RE, ecc: e, periodMin: (2 * Math.PI) / (nRadS * 60), elliptical: e >= 0.01 }
+  const periodMin = (2 * Math.PI) / (nRadS * 60)
+  const perigeeKm = a * (1 - e) - RE, apogeeKm = a * (1 + e) - RE
+  const regime = classifyOrbit({ aKm: a, e, inclDeg: Number(o.incl) || 0, perigeeAltKm: perigeeKm, apogeeAltKm: apogeeKm, periodMin })
+  return { apogeeKm, perigeeKm, ecc: e, periodMin, elliptical: e >= 0.01, regime, regimeZh: orbitRegimeLabel(regime) }
 })
+// 搜索结果单星的严谨区制（供列表徽标）——由平均运动反推周期，配合 e/i/近远地点判定。
+function regimeOf(r) {
+  const mm = Number(r.meanMotion) || 0
+  return classifyOrbit({ e: Number(r.ecc) || 0, inclDeg: Number(r.incl) || 0, perigeeAltKm: Number(r.perigeeKm), apogeeAltKm: Number(r.apogeeKm), periodMin: mm > 0 ? 1440 / mm : NaN })
+}
 const fmtKm = (v) => (v == null ? '—' : Math.round(v).toLocaleString('en-US'))
 
 // 选完工作频段，上/下行频率跟随预设变
@@ -179,7 +186,7 @@ const rows = computed(() => {
               {{ r.name }}
               <em v-if="r.custom" class="sp-badge sp-badge-cc">自定义</em>
               <em v-else-if="r.groupLabel" class="sp-badge">{{ r.groupLabel }}</em>
-              <em v-if="(+r.ecc) >= 0.1" class="sp-badge sp-badge-heo">HEO e={{ (+r.ecc).toFixed(2) }}</em>
+              <em v-if="r._regime && r._regime !== 'LEO'" class="sp-badge" :class="'sp-rg-' + r._regime">{{ r._regime }}</em>
             </span>
             <span class="sp-li-i">
               {{ r.custom ? '合成' : 'NORAD' }} {{ r.noradId }} · i={{ (+r.incl).toFixed(1) }}° ·
@@ -193,16 +200,17 @@ const rows = computed(() => {
 
     <!-- 当前选星摘要 + 互视最差几何搜索时窗 -->
     <div v-if="satSelected" class="sp-sel">
-      <div>已选卫星：<b>{{ ngsoSat.name || form.satelliteName }}</b>
+      <div>已选卫星：<b class="sp-name" title="可框选复制此卫星名">{{ ngsoSat.name || form.satelliteName }}</b>
         <span v-if="ngsoSat.noradId">（NORAD {{ ngsoSat.noradId }}）</span>
         · 轨道高度/倾角已由所选卫星自动确定
       </div>
       <div v-if="orbitShape" class="sp-shape">
+        <b class="sp-regime" :class="'sp-rg-' + orbitShape.regime" :title="orbitShape.regimeZh">{{ orbitShape.regime }}</b>
         <template v-if="orbitShape.elliptical">
-          <b class="sp-heo">椭圆/HEO</b> · 近地点 {{ fmtKm(orbitShape.perigeeKm) }} km · 远地点 {{ fmtKm(orbitShape.apogeeKm) }} km · e={{ orbitShape.ecc.toFixed(3) }} · 周期 {{ orbitShape.periodMin.toFixed(0) }} min
+          · 近地点 {{ fmtKm(orbitShape.perigeeKm) }} km · 远地点 {{ fmtKm(orbitShape.apogeeKm) }} km · e={{ orbitShape.ecc.toFixed(3) }} · 周期 {{ orbitShape.periodMin.toFixed(0) }} min
         </template>
         <template v-else>
-          圆轨道高度 ≈ {{ fmtKm(orbitShape.perigeeKm) }} km · 周期 {{ orbitShape.periodMin.toFixed(0) }} min
+          · 圆轨道高度 ≈ {{ fmtKm(orbitShape.perigeeKm) }} km · e={{ orbitShape.ecc.toFixed(3) }} · 周期 {{ orbitShape.periodMin.toFixed(0) }} min
         </template>
       </div>
       <label class="sp-hz">互视最差几何搜索时窗
@@ -249,10 +257,22 @@ const rows = computed(() => {
 .sp-li-i { display: block; font-size: 10px; color: var(--text-faint); font-family: var(--font-mono); }
 .sp-badge { display: inline-block; font-size: 9px; font-style: normal; padding: 0 5px; margin-left: 5px; border-radius: 8px; background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); vertical-align: middle; }
 .sp-badge-cc { background: var(--accent); color: #fff; border-color: var(--accent); }
-.sp-badge-heo { background: #f59f0022; color: #d98600; border-color: #f59f0055; }
+/* 轨道区制徽标配色（列表）：GEO 绿 / IGSO 青 / MEO 蓝 / HEO 琥珀（LEO 不显示徽标） */
+.sp-badge.sp-rg-GEO { background: #16a34a1a; color: #16a34a; border-color: #16a34a55; }
+.sp-badge.sp-rg-IGSO { background: #0d94881a; color: #0d9488; border-color: #0d948855; }
+.sp-badge.sp-rg-MEO { background: #2563eb1a; color: #2563eb; border-color: #2563eb55; }
+.sp-badge.sp-rg-HEO { background: #f59f0022; color: #d98600; border-color: #f59f0055; }
 .sp-sel { font-size: 11px; color: var(--text-muted); background: var(--surface); border-radius: 3px; padding: 6px 8px; margin-bottom: 10px; }
+/* 卫星名可框选复制（覆盖全局 user-select:none），文本光标作可选的提示 —— 方便用户复制去改名 */
+.sp-name { user-select: text; -webkit-user-select: text; cursor: text; }
 .sp-shape { margin-top: 4px; padding-top: 4px; border-top: 1px dashed var(--border); }
-.sp-heo { color: #d98600; }
+/* 轨道区制标签（选星摘要）配色 */
+.sp-regime { font-weight: 700; }
+.sp-regime.sp-rg-GEO { color: #16a34a; }
+.sp-regime.sp-rg-IGSO { color: #0d9488; }
+.sp-regime.sp-rg-MEO { color: #2563eb; }
+.sp-regime.sp-rg-LEO { color: var(--text-muted); }
+.sp-regime.sp-rg-HEO { color: #d98600; }
 .sp-hz { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--border); }
 .sp-hz-i { font: inherit; font-size: 11px; padding: 2px 6px; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 2px; }
 .sp-hz-t { color: var(--text-faint); }

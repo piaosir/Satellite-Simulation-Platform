@@ -50,11 +50,11 @@ export const FIELD_GROUPS = [
   {
     key: 'uplink', title: '上行 · 发信站', icon: 'up',
     fields: [
-      // 载波由发信站调制器产生（卫星只是弯管转发），故基带配置与发信站绑定而非收信站；放在表格最前一列
+      // 载波由发信站调制器产生（卫星只是弯管转发），故载波信号配置与发信站绑定而非收信站；放在表格最前一列
       // （StationGrid 把 fields[0] 当冻结的“关键列”处理）。target:'meta' 为 UI 专用字段，不进引擎参数
-      // （见 buildParams 的过滤）。options 为空，实际选项由 LinkBudgetApp 按当前基带配置库动态生成并
+      // （见 buildParams 的过滤）。options 为空，实际选项由 LinkBudgetApp 按当前载波信号配置库动态生成并
       // 通过 StationGrid 的 select-options 注入。
-      { key: 'basebandId', label: '基带配置', type: 'select', options: [], def: '', target: 'meta' },
+      { key: 'basebandId', label: '载波信号配置', type: 'select', options: [], def: '', target: 'meta' },
       { key: 'earthStationLocation', label: '地面站位置', type: 'text', def: '北京', target: 'link', city: 'tx' },
       { key: 'longitude', label: '经度', unit: '°E', type: 'num', def: '116.4074', target: 'link' },
       { key: 'latitude', label: '纬度', unit: '°N', type: 'num', def: '39.9042', target: 'link' },
@@ -94,7 +94,7 @@ export const FIELD_GROUPS = [
 // 扁平字段表
 export const ALL_FIELDS = FIELD_GROUPS.flatMap((g) => g.fields)
 
-// 按模块取字段：4 模块 = 发信站群(uplink) / 卫星(sat) / 收信站群(downlink) / 基带(carrier)
+// 按模块取字段：4 模块 = 发信站群(uplink) / 卫星(sat) / 收信站群(downlink) / 载波信号(carrier)
 const _grp = (k) => FIELD_GROUPS.find((g) => g.key === k).fields
 export const CARRIER_FIELDS = _grp('carrier')
 export const SAT_FIELDS = _grp('sat')

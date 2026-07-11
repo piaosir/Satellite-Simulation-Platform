@@ -22,7 +22,8 @@ const props = defineProps({
   roUnit: { type: String, default: '' },
   roValues: { type: Object, default: () => ({}) },  // { _id: 计算值 }，计算后回填
   citySearch: { type: Function, default: null },     // (关键词)→Promise<城市[]>：支持城市名/省份/拼音缩写检索
-  selectOptions: { type: Object, default: () => ({}) } // { 字段key: [选项…] }，覆盖该 select 字段的静态 options（用于运行时动态选项，如基带配置库）
+  selectOptions: { type: Object, default: () => ({}) }, // { 字段key: [选项…] }，覆盖该 select 字段的静态 options（用于运行时动态选项，如载波信号配置库）
+  showImport: { type: Boolean, default: true }        // 导入城市库/点标记/地面站/航迹——纯地理点导入；星间链路（星→星，无经纬度）表关掉
 })
 
 const root = ref(null)
@@ -30,10 +31,11 @@ const nameKey = computed(() => (props.fields.find((f) => f.city) || {}).key)
 const lonKey = computed(() => (props.fields.find((f) => /longitude/i.test(f.key)) || {}).key)
 const latKey = computed(() => (props.fields.find((f) => /latitude/i.test(f.key)) || {}).key)
 const nCol = computed(() => props.fields.length)
-// 冻结列：从第一列起，一直冻结到「名称/城市」字段（含）为止——例如发信站表把「基带配置」放在
-// 「地面站位置」前面，两列都需要冻结；收信站表只有「地面站位置」一列，冻结数即为 1。
+// 冻结列：优先取字段显式 frozen 标记的「前缀连续段」长度（列与城市字段位置解耦，可任意调列序仍固定冻结几列）；
+// 无 frozen 标记时回退旧启发式——从第一列起冻结到「名称/城市」字段（含）为止。
 const cityFieldIdx = computed(() => props.fields.findIndex((f) => f.city))
-const frozenCount = computed(() => (cityFieldIdx.value >= 0 ? cityFieldIdx.value + 1 : 1))
+const frozenPrefix = computed(() => { let n = 0; for (const f of props.fields) { if (f.frozen) n++; else break } return n })
+const frozenCount = computed(() => (frozenPrefix.value > 0 ? frozenPrefix.value : (cityFieldIdx.value >= 0 ? cityFieldIdx.value + 1 : 1)))
 const KEY_COL_W = 90   // 冻结列统一窄宽度（原 120/108，缩窄）
 const isKeyCol = (c) => c < frozenCount.value
 function keyColStyle(c) { return { left: (40 + c * KEY_COL_W) + 'px' } }
@@ -69,8 +71,8 @@ function visColAfter(c, dir) {
 // 取单元格文本（复制用）：只读列取其计算值；select 字段取显示名（而非内部存值 id）——这样复制出去
 // 看到的就是名字，粘贴回来时 normalizeFieldValue() 也能按名字正确匹配回对应选项，名字和值的口径统一。
 function cellText(s, c) { return isRO(c) ? (props.roValues[s._id] != null ? props.roValues[s._id] : '') : displayValue(s, props.fields[c]) }
-// select 字段选项：优先用父组件传入的动态选项（如基带配置库），否则用字段静态 options。
-// 选项元素可以是普通字符串，也可以是 { value, label }（用于值与显示名不同，如基带配置 id→名称）。
+// select 字段选项：优先用父组件传入的动态选项（如载波信号配置库），否则用字段静态 options。
+// 选项元素可以是普通字符串，也可以是 { value, label }（用于值与显示名不同，如载波信号配置 id→名称）。
 function fieldOptions(f) { return props.selectOptions[f.key] || f.options || [] }
 const optVal = (o) => (o && typeof o === 'object') ? o.value : o
 const optLabel = (o) => (o && typeof o === 'object') ? o.label : o
@@ -83,7 +85,7 @@ function displayValue(s, f) {
   return hit ? optLabel(hit) : s[f.key]
 }
 // 写入 select 字段时做一次归一化：粘贴/批量设值/直接键入这些路径拿到的是「自由文本」，
-// 用户很可能填的是看到的显示名（如基带配置名）而不是内部存值(id)——原样存进去会匹配不上任何选项，
+// 用户很可能填的是看到的显示名（如载波信号配置名）而不是内部存值(id)——原样存进去会匹配不上任何选项，
 // 表现为「只认下拉框选的，手动打/粘贴名字不算数」。这里按显示名兜底换算成正确的存值；
 // 已经是合法存值、或非 select 字段，原样返回。
 function normalizeFieldValue(f, raw) {
@@ -173,7 +175,10 @@ function setFocus(r, c, extend) {
   range.fr = r; range.fc = c
   if (!extend) { range.ar = r; range.ac = c }
 }
-function focusGrid() { nextTick(() => root.value && root.value.focus()) }
+// 聚焦格的常驻捕获输入框（导航/编辑共用同一个真实 <input>，见模板 .sg-cap）：焦点始终落在它上，
+// 中文输入法从首个拼音字母起就有真实可编辑目标，不再吞首字母。RO 列等无捕获框的格退回聚焦容器本身。
+function capEl() { return root.value ? root.value.querySelector('input.sg-cap') : null }
+function focusGrid() { nextTick(() => { const el = capEl(); if (el) el.focus(); else if (root.value) root.value.focus() }) }
 
 function onDown(r, c, e) {
   if (isEditing(r, c)) return
@@ -296,21 +301,25 @@ function onFillDbl(e) {
 }
 
 let _editOrig = null   // 进入编辑时的原值：用于判断名称是否真的改动（避免无改动失焦时误覆盖经纬度）
-function startEdit(r, c, ch) {
+// F2/双击进入编辑：select 字段弹原生下拉；其余字段把原值带入常驻捕获框、光标置末尾（插入而非整体替换，与 Excel 一致）。
+// 直接键入/输入法进入编辑不走这里——它们由 .sg-cap 的 @input/@compositionstart（onCapInput/onCapCompStart）就地翻成编辑态，
+// 使中文输入法从第一个拼音字母起就落在真实 <input> 内，不丢首字母。
+function startEdit(r, c) {
   if (isRO(c)) return   // 只读列不可编辑
   const f = props.fields[c]
   _editOrig = props.stations[r][f.key]
-  if (ch != null) props.stations[r][f.key] = ch
-  // typed=true（直接键入触发）：select 字段改渲染成文本输入框，而不是弹出原生下拉框；
-  // 失焦时 endEdit() 会把键入的文本按显示名归一化回合法存值。双击/Enter/F2（ch 为空）仍走原生下拉选择。
-  editing.value = { r, c, typed: ch != null }
+  editing.value = { r, c, typed: false }
   nextTick(() => {
-    const el = root.value && root.value.querySelector('.sg-cell.editing input, .sg-cell.editing select')
+    if (f.type === 'select') {   // select 双击/F2：原生下拉选择
+      const el = root.value && root.value.querySelector('.sg-cell.editing select')
+      if (el) el.focus()
+      return
+    }
+    const el = capEl()
     if (!el) return
+    el.value = _editOrig == null ? '' : String(_editOrig)   // 带出原值供编辑
     el.focus()
-    // F2/双击（无 ch）：光标置于文本末尾而非全选，键入为「插入」而非「整体替换」（与 Excel 一致）；
-    // 直接键入（有 ch）：已用该字符覆盖，保持不全选。
-    if (ch == null && el.setSelectionRange) { const n = el.value ? el.value.length : 0; try { el.setSelectionRange(n, n) } catch (e) { /* select 无此法 */ } }
+    if (el.setSelectionRange) { const n = el.value.length; try { el.setSelectionRange(n, n) } catch (e) { /* ignore */ } }
   })
 }
 function endEdit() {
@@ -326,7 +335,9 @@ function endEdit() {
       if (row[f.key] !== _editOrig) props.autoGeo(row)   // 仅坐标真的改动才重算降雨/海拔，避免 Enter/Tab 掠过未改坐标时清掉手改值
     }
   }
-  editing.value = null; _editOrig = null; focusGrid()
+  editing.value = null; _editOrig = null
+  const el = capEl(); if (el) el.value = ''   // 复位捕获框为空，供下次「键入即替换」
+  focusGrid()
 }
 // Esc 取消编辑：还原编辑前的值，不提交、不做归一化/城市联动（与 Excel 一致）
 function cancelEdit() {
@@ -334,14 +345,45 @@ function cancelEdit() {
     const { r, c } = editing.value; const f = props.fields[c]
     if (f) props.stations[r][f.key] = _editOrig
   }
-  editing.value = null; _editOrig = null; focusGrid()
+  editing.value = null; _editOrig = null
+  const el = capEl(); if (el) el.value = ''
+  focusGrid()
 }
-function onEditKey(e) {
+// 常驻捕获框 / 原生下拉的键盘处理。导航态（未进入编辑）不接管——交还冒泡给容器 onKey 做方向/命令键；
+// 编辑态才处理提交/取消/跳格。组字中（isComposing/229）一律放行，让 Enter/Esc 去确认/取消输入法候选，勿误提交单元格。
+function onCapKey(e) {
+  if (!editing.value) return
+  if (e.isComposing || e.keyCode === 229) return
   if (e.key === 'Enter') { endEdit(); setFocus(range.fr + (e.shiftKey ? -1 : 1), range.fc); e.preventDefault() }   // Shift+Enter 上移
   else if (e.key === 'Escape') { cancelEdit(); e.preventDefault() }
   else if (e.key === 'Tab') { endEdit(); setFocus(range.fr, visColAfter(range.fc, e.shiftKey ? -1 : 1)); e.preventDefault() }
   e.stopPropagation()
 }
+// 在聚焦格里开始键入 / 输入法组字：把常驻捕获框就地翻成编辑态（首字母已落在真实 input 内，输入法不丢字）。
+// 首次进入时记下原值 _editOrig（供名称→城市 / 经纬度→autoGeo 的改动判定）；捕获框进入编辑前为空 → 键入即替换。
+function beginCapEdit(r, c) {
+  if (editing.value || isRO(c)) return
+  _editOrig = props.stations[r][props.fields[c].key]
+  editing.value = { r, c, typed: true }
+}
+function onCapCompStart(r, c) { beginCapEdit(r, c) }
+function onCapInput(e, r, c) {
+  beginCapEdit(r, c)
+  if (editing.value) props.stations[r][props.fields[c].key] = e.target.value
+}
+function onCapBlur() {
+  if (!editing.value) return                                     // 导航态失焦：不处理
+  const f = props.fields[editing.value.c]
+  // 双击/F2 编辑 select 时编辑器会从本捕获框切换成原生 <select>，导致本框失焦——但编辑并未结束，
+  // 勿在此提交（否则原生下拉刚出现就被 endEdit 关掉＝“选不了”）；交给 <select> 自己的 @blur / Enter 提交。
+  if (f && f.type === 'select' && !editing.value.typed) return
+  endEdit()                                                      // 文本编辑失焦提交（与 Excel 一致）
+}
+// 导航态下捕获框已获焦：屏蔽它的原生复制/剪切/粘贴，交回 onKey 的整块（多格/整行）剪贴板逻辑，避免与之双写或落进单格；
+// 编辑态放行 → 单元格内文本正常复制/粘贴。
+function onCapClip(e) { if (!editing.value) e.preventDefault() }
+// 容器（RO 列等无捕获框时的后备焦点持有者）意外获得焦点 → 转交给捕获框，保证输入法有真实编辑目标
+function onRootFocus() { if (editing.value) return; const el = capEl(); if (el) el.focus() }
 
 function clearSel() {
   pushUndo()
@@ -440,8 +482,16 @@ function onKey(e) {
   if (e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) { moveRows(e.key === 'ArrowUp' ? -1 : 1); e.preventDefault(); return }
   const arrow = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1] }[e.key]
   if (arrow) { collapseRowSel(); setFocus(range.fr + arrow[0], arrow[1] ? visColAfter(range.fc, arrow[1]) : range.fc, e.shiftKey); e.preventDefault(); return }
-  if (e.key.length === 1) { startEdit(range.fr, range.fc, e.key); e.preventDefault() }
+  // 可见字符 / 输入法：不在此合成编辑，也不 preventDefault——放行让按键自然落进聚焦格里那个已获焦的常驻捕获框 .sg-cap，
+  // 由其 @input/@compositionstart 就地进入编辑。这样中文输入法组字从第一个字母起就有真实目标，不再吞首字母。
 }
+
+// 聚焦格变化（键盘导航 / 鼠标框选 / 增行 / 粘贴 / 填充 / 移动行等任意来源）后，把键盘焦点移到新聚焦格的常驻捕获框，
+// 让输入法始终有真实编辑目标；编辑中不抢焦点。RO 列等无捕获框的格退回容器本身，保证导航链不断。
+watch(() => [range.fr, range.fc], () => {
+  if (editing.value) return
+  nextTick(() => { const el = capEl(); if (el) el.focus(); else if (root.value) root.value.focus() })
+})
 
 onMounted(() => { window.addEventListener('mouseup', onUp); window.addEventListener('mousemove', onDragMove) })
 onBeforeUnmount(() => { window.removeEventListener('mouseup', onUp); window.removeEventListener('mousemove', onDragMove); stopAutoScroll() })
@@ -623,7 +673,7 @@ function clearColContents() {
       <span class="sg-count">{{ stations.length }} 个{{ label }}<template v-if="selectedRows.length"> · 选中 {{ selectedRows.length }} 行</template></span>
       <span class="sg-sp"></span>
       <button class="sg-btn" @click="addRow"><Icon name="plus" :size="12" /> 增加</button>
-      <button class="sg-btn" @click="openImport"><Icon name="import" :size="12" /> 导入</button>
+      <button v-if="showImport" class="sg-btn" @click="openImport"><Icon name="import" :size="12" /> 导入</button>
       <button class="sg-btn" :disabled="!selectedRows.length" @click="openBatch">批量设值</button>
       <button class="sg-btn" :disabled="!selectedRows.length" @click="removeSelected">删除选中</button>
       <button class="sg-btn" :disabled="!stations.length" @click="clearAll">清空</button>
@@ -634,7 +684,7 @@ function clearColContents() {
       <button v-if="hiddenCols.length" class="sg-btn" :title="'已隐藏 ' + hiddenCols.length + ' 列，点击全部显示'" @click="unhideAll">显示隐藏列 ({{ hiddenCols.length }})</button>
     </div>
 
-    <div ref="root" class="sg-scroll" tabindex="0" @keydown="onKey">
+    <div ref="root" class="sg-scroll" tabindex="0" @keydown="onKey" @focus="onRootFocus">
       <table class="sg-tbl">
         <thead>
           <tr>
@@ -653,11 +703,22 @@ function clearColContents() {
                 class="sg-cell" :class="{ 'sg-key': isKeyCol(c), sel: inSel(i, c), focus: isFocus(i, c), editing: isEditing(i, c), fillp: inFill(i, c) }"
                 :style="isKeyCol(c) ? keyColStyle(c) : null"
                 @mousedown.left="onDown(i, c, $event)" @mouseenter="onEnter(i, c)" @dblclick="startEdit(i, c)" @contextmenu.prevent="onCellContext(i, c, $event)">
-              <template v-if="isEditing(i, c)">
-                <select v-if="f.type === 'select' && !editing.typed" v-model="s[f.key]" class="sg-i" @blur="endEdit" @keydown="onEditKey">
+              <!-- select 双击/F2 → 原生下拉。收起用 @change（选中即提交并收起）而非 @blur：原生下拉在 Windows/Electron 下
+                   「弹出即触发 <select> 失焦」，若用 @blur→endEdit 会在选中前就卸载 <select>，把这次选择丢掉 → 表现为
+                   「选了一个选项却跳回第一项」。@change 触发时值已由 v-model 写入，收起是安全的；点其它格 / Tab·Enter·Esc 另有收起路径。 -->
+              <template v-if="isEditing(i, c) && f.type === 'select' && !editing.typed">
+                <select v-model="s[f.key]" class="sg-i" @change="endEdit" @keydown="onCapKey">
                   <option v-for="o in fieldOptions(f)" :key="optVal(o)" :value="optVal(o)">{{ optLabel(o) }}</option>
                 </select>
-                <input v-else v-model="s[f.key]" class="sg-i" :class="{ mono: f.type === 'num' }" @blur="endEdit" @keydown="onEditKey" />
+              </template>
+              <!-- 聚焦格常驻捕获输入框：导航态透明覆盖在值上（pointer-events:none 让鼠标框选穿透 td），
+                   键入/输入法组字即翻成可见编辑框——中文输入法从首字母起就落在真实 <input>，不吞首字母。 -->
+              <template v-else-if="isFocus(i, c)">
+                <input class="sg-cap" :class="{ editing: isEditing(i, c), mono: f.type === 'num' }" tabindex="-1"
+                       @input="onCapInput($event, i, c)" @compositionstart="onCapCompStart(i, c)"
+                       @keydown="onCapKey" @blur="onCapBlur"
+                       @copy="onCapClip" @cut="onCapClip" @paste="onCapClip" />
+                <span class="sg-v" :class="{ mono: f.type === 'num' }">{{ displayValue(s, f) }}</span>
               </template>
               <span v-else class="sg-v" :class="{ mono: f.type === 'num' }">{{ displayValue(s, f) }}</span>
               <span v-if="isFillAnchor(i, c) && !isEditing(i, c)" class="sg-handle" title="拖动/双击向下填充" @mousedown.left.stop.prevent="onFillDown" @dblclick.stop="onFillDbl"></span>
@@ -668,7 +729,7 @@ function clearColContents() {
               <span v-if="isFillAnchor(i, fields.length)" class="sg-handle" title="拖动/双击向下填充" @mousedown.left.stop.prevent="onFillDown" @dblclick.stop="onFillDbl"></span>
             </td>
           </tr>
-          <tr v-if="!stations.length"><td :colspan="visColCount" class="sg-empty">暂无{{ label }}，点「＋ 增加」或「⇩ 导入」</td></tr>
+          <tr v-if="!stations.length"><td :colspan="visColCount" class="sg-empty">暂无{{ label }}，点「＋ 增加」<template v-if="showImport">或「⇩ 导入」</template></td></tr>
         </tbody>
       </table>
     </div>
@@ -772,6 +833,12 @@ function clearColContents() {
 .sg-i { width: 100%; font: inherit; font-size: 12px; padding: 3px 5px; border: 0; background: var(--surface); color: var(--text); }
 .sg-i.mono { font-family: var(--font-mono); }
 .sg-i:focus { outline: none; }
+/* 聚焦格常驻捕获输入框：始终存在并持有键盘/输入法焦点。导航态透明覆盖在值上、pointer-events:none 让鼠标框选穿透到 td；
+   一旦键入/输入法组字即翻成不透明可见编辑框。核心作用：中文输入法从第一个拼音字母起就有真实 <input> 目标，不再吞首字母。 */
+.sg-cap { position: absolute; inset: 0; width: 100%; height: 100%; box-sizing: border-box; margin: 0; border: 0; padding: 4px 6px; font: inherit; font-size: 12px; line-height: normal; background: transparent; color: transparent; caret-color: transparent; pointer-events: none; z-index: 3; }
+.sg-cap.mono { font-family: var(--font-mono); }
+.sg-cap:focus { outline: none; }
+.sg-cap.editing { background: var(--surface); color: var(--text); caret-color: var(--text); pointer-events: auto; z-index: 5; }
 .sg-act { position: sticky; right: 0; z-index: 1; white-space: nowrap; padding: 0 4px; text-align: center; width: 86px; min-width: 86px; }
 .sg-tbl thead th.sg-act { z-index: 4; }
 .sg-mini { font: inherit; font-size: 11px; padding: 2px 6px; margin: 2px 1px; cursor: pointer; background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }

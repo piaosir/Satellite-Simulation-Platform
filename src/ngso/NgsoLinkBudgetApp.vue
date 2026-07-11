@@ -1,7 +1,7 @@
 <script setup>
 import { ref, shallowRef, reactive, computed, onMounted, nextTick, watch } from 'vue'
 import { SAT_FIELDS, CARRIER_FIELDS, TX_FIELDS, RX_FIELDS, defaultsFor, buildParams } from './ngsoParams.js'
-import { loadSatTree, sampleAntennaParams } from './grdParam.js'
+import { loadSatTree, sampleAntennaParams, sampleAntennaParam } from './grdParam.js'
 import { encodeShare, decodeShare, configFileText } from './shareCode.js'
 import { findPoolByNorad } from './satSearchPool.js'
 import Icon from '../components/Icon.vue'
@@ -44,10 +44,10 @@ function startResizeConfigs(e) {
 const satForm = reactive(defaultsFor(SAT_FIELDS))
 const basebandOpts = ref({})
 
-// —— 基带配置库（Phase 6）：载波由发信站调制器产生，故与发信站绑定（非收信站）——
+// —— 载波信号配置库（Phase 6）：载波由发信站调制器产生，故与发信站绑定（非收信站）——
 // 每份配置 = 引擎参数(CARRIER_FIELDS，含系统余量) + UI 态(门限模式/频谱效率模式/DVB/MODCOD)。
-// 「基带」模块以多张卡片同时展示/编辑全部配置（不再是单一表单+下拉切换）。
-// 发信站表新增「基带配置」列选择使用哪一份；同一配置可被多个发信站共用，未选(空)即用第一份。
+// 「载波信号」模块以多张卡片同时展示/编辑全部配置（不再是单一表单+下拉切换）。
+// 发信站表新增「载波信号配置」列选择使用哪一份；同一配置可被多个发信站共用，未选(空)即用第一份。
 let _bbSeq = 1
 function makeBasebandConfig(name) { return { id: 'bb' + (_bbSeq++), name, form: { ...defaultsFor(CARRIER_FIELDS), rsCodeMode: 'fraction', dvbStandard: 'custom', modcodIndex: -1 } } }
 const basebandConfigs = reactive([makeBasebandConfig('默认')])
@@ -72,9 +72,9 @@ const newStation = (fields) => { const r = defaultsFor(fields); r._id = 's' + (_
 const txStations = reactive([newStation(TX_FIELDS)])
 const rxStations = reactive([newStation(RX_FIELDS)])
 
-// —— 点击式 4 模块 ——（基带与发信站绑定，排在发信站左边）
+// —— 点击式 4 模块 ——（载波信号与发信站绑定，排在发信站左边）
 const MODULES = [
-  { key: 'carrier', label: '基带', icon: 'wave' },
+  { key: 'carrier', label: '载波信号', icon: 'wave' },
   { key: 'tx', label: '发信站群', icon: 'up' },
   { key: 'sat', label: '卫星', icon: 'sat' },
   { key: 'rx', label: '收信站群', icon: 'down' }
@@ -93,7 +93,7 @@ const calcMode = ref('margin')
 const targetPowerW = ref('')
 const overDb = ref('0')
 // 系统余量是「设置余量」模式的批量目标值，与 targetPowerW/overDb 同性质——批量计算的统一目标，
-// 不随某份基带配置走（载波本身不需要知道你想算多少余量，那是计算策略的事）。
+// 不随某份载波信号配置走（载波本身不需要知道你想算多少余量，那是计算策略的事）。
 const targetMarginDb = ref('3.00')
 
 // —— 链路配对方式：常规计算(按序号 1↔1，默认) / 矩阵计算(m×n 全配对) ——
@@ -221,6 +221,9 @@ const antByKey = (key) => {
   const a = grdSat.value.antennas.find((x) => x.name === name)
   return a ? { node: grdSat.value, ant: a, cfg: grdCfgs[key] } : null
 }
+// 记录每个站上一次「自动回填」的 EIRP/G·T 值（键 = 站 _id）——用于区分自动值与用户手改值：
+// 当前单元格 === 记录值 → 仍为自动，主计算会按该行 t* 逐链路精确重采覆盖；不等 → 用户手改，保留其值。
+const grdAutoFilled = { eirp: {}, gt: {} }
 
 // —— NGSO 卫星几何来源 ——
 // mode: 'manual'（手动填轨道高度/倾角）| 'tree'（天线树导入的星，可导入 EIRP/GT + 轨道）| 'search'（搜索卫星，仅轨道根数，不导 EIRP/GT）
@@ -347,24 +350,59 @@ function mergePlatformGeometry(d, geom) {
   }
 }
 let _grdT = null
+// 搜索时窗起点 t0：统一锚到「计算此刻」的墙钟绝对时（与再生式模块同口径，不再锚场景/TLE 历元）。
+// 卫星仍按 SGP4 从各自设计历元（elements=场景历元 / omm=该星自身历元）正推到此刻，同属墙钟系 → t* 仍是绝对时、
+// 可与星座3D 星下点对表（见 geoHasTimes 上方注释）。传入批级 t0ISO 令同批各链路起点一致；未传则各自取此刻。
+function searchT0ISO() { return new Date().toISOString() }
+// 选星（tree/search，真实轨道根数）→ 平台 SGP4 双站互视最差几何。与主计算 compute() 的「选星分支」
+// 同口径（均锚计算此刻墙钟·同时窗长），抽出复用：既供主计算逐链路求 t*，也供 refreshGrdFill 求「代表性 t* 星下点」。
+// 手动圆轨道(circular)不走这里（无相位、无单一时刻，也不导入天线）；未选星返回 null。
+async function solveSelectedGeom(tx, rx, t0ISO) {
+  if (!api || !satSelected.value || !ngsoSat.orbit) return null
+  const orbitSpec = JSON.parse(JSON.stringify(ngsoSat.orbit))
+  return await api.linkBudget.ngsoGeometry({
+    orbit: orbitSpec,
+    tx: { lonDeg: parseFloat(tx.longitude), latDeg: parseFloat(tx.latitude), altKm: (parseFloat(tx.altitude) || 0) / 1000, minElevDeg: parseFloat(tx.minElevation) || 0, freqGHz: upFreqGHz() },
+    rx: { lonDeg: parseFloat(rx.rxLongitude), latDeg: parseFloat(rx.rxLatitude), altKm: (parseFloat(rx.rxAltitude) || 0) / 1000, minElevDeg: parseFloat(rx.rxMinElevation) || 0, freqGHz: dnFreqGHz() },
+    t0ISO: t0ISO || searchT0ISO(), horizonHours: geoHorizonHours.value
+  })
+}
 // 回填前若本就「无未保存改动」，回填后把基线推进到回填结果——否则实时星/GRD 自动重算出
 // 的新值（非用户操作）会被指纹判定为改动，弹出误报的「未保存，是否保存？」。
 // 若回填前已有用户自己的改动（isDirty 为真），则不触碰基线，改动仍会被正确提示保存。
+//
+// 采样卫星位置口径：EIRP/G·T 反映「卫星在某位置时对地面站的天线增益」，随卫星移动而变。为与性能指标表
+// 的最差工况一致，站表这一列取【主链路(首发×首收)的 t* 星下点】作为卫星位置采样（代表性显示值）；
+// 主计算 compute() 再对每条链路各自的 t* 逐行精确重采（见其中的 override）。选星不可行/未选星 → 回退
+// 天线快照位置（原行为）。用户手改过的单元格予以保留（不被自动值覆盖）。
 async function refreshGrdFill() {
   const wasClean = !isDirty()
+  // 主链路 t* 星下点作为代表性采样位置（一次几何求解，全站共用；批量 IPC 采样保持单次）
+  let satOv = null
+  if (satSelected.value && txStations.length && rxStations.length) {
+    try { const g = await solveSelectedGeom(txStations[0], rxStations[0]); if (g && g.feasible && g.subSat) satOv = { lon: g.subSat.lonDeg, lat: g.subSat.latDeg, alt: g.subSat.altKm } } catch (e) { /* 回退快照位置 */ }
+  }
+  // 单元格是否被用户手改（相对上次自动值）——手改则保留，不覆盖
+  const isManual = (map, id, cur) => map[id] != null && String(cur) !== String(map[id])
   // 卫星EIRP 天线 → 各收信站经纬度取最大 Parameter，回填 rxEIRP（一次 IPC 批量采样全部站点）
   const eirp = antByKey(grdSel.eirpKey)
   if (eirp && rxStations.length) {
     const pts = rxStations.map((rx) => ({ lon: parseFloat(rx.rxLongitude), lat: parseFloat(rx.rxLatitude) }))
-    const vals = await sampleAntennaParams(eirp.node, eirp.ant, eirp.cfg, pts)
-    rxStations.forEach((rx, i) => { if (vals && vals[i] != null) rx.rxEIRP = String(vals[i]) })
+    const vals = await sampleAntennaParams(eirp.node, eirp.ant, eirp.cfg, pts, satOv)
+    rxStations.forEach((rx, i) => {
+      if (!(vals && vals[i] != null) || isManual(grdAutoFilled.eirp, rx._id, rx.rxEIRP)) return
+      rx.rxEIRP = String(vals[i]); grdAutoFilled.eirp[rx._id] = String(vals[i])
+    })
   }
   // 卫星G/T 天线 → 各发信站经纬度取最大 Parameter，回填 G_Ts
   const gt = antByKey(grdSel.gtKey)
   if (gt && txStations.length) {
     const pts = txStations.map((tx) => ({ lon: parseFloat(tx.longitude), lat: parseFloat(tx.latitude) }))
-    const vals = await sampleAntennaParams(gt.node, gt.ant, gt.cfg, pts)
-    txStations.forEach((tx, i) => { if (vals && vals[i] != null) tx.G_Ts = String(vals[i]) })
+    const vals = await sampleAntennaParams(gt.node, gt.ant, gt.cfg, pts, satOv)
+    txStations.forEach((tx, i) => {
+      if (!(vals && vals[i] != null) || isManual(grdAutoFilled.gt, tx._id, tx.G_Ts)) return
+      tx.G_Ts = String(vals[i]); grdAutoFilled.gt[tx._id] = String(vals[i])
+    })
   }
   if (wasClean) setBaseline()
 }
@@ -383,7 +421,7 @@ async function reloadSatTree() {
 }
 watch(activeModule, (m) => { if (m === 'sat') reloadSatTree() })
 
-// 顶栏「刷新」：重新拉取主窗口的最新设置（GRD 卫星树/各天线设置/实时星位 + 城市库/基带选项），并按最新数据重算
+// 顶栏「刷新」：重新拉取主窗口的最新设置（GRD 卫星树/各天线设置/实时星位 + 城市库/载波信号选项），并按最新数据重算
 const refreshing = ref(false)
 async function refreshLatest() {
   refreshing.value = true
@@ -410,13 +448,16 @@ const sel = computed(() => links.value[selected.value] || null)
 const core = computed(() => (sel.value && !sel.value.error ? sel.value.data : null))
 // 平台精确几何（选星时由 SGP4 双站互视最差几何求得；含轨道根数 / 最差互视时刻 / 互视窗口）
 const geom = computed(() => (sel.value ? sel.value.geom : null))
-// 站星几何时标：UTC / 本地可切换（默认 UTC；本地取运行机时区）
-const tzMode = ref('utc')   // 'utc' | 'local'
+// 站星几何时标：UTC / 本地 / 北京 可切换（默认 UTC 对标 STK；本地取运行机时区；北京=UTC+8 便于国内核对）
+const tzMode = ref('utc')   // 'utc' | 'local' | 'beijing'
 // 几何卡片是否含时刻字段（仅选星耦合模式给出典型时刻/互视窗口），无则不显示时区切换
 const geoHasTimes = computed(() => {
   const g = geom.value
   return !!(g && g.coupled && g.search && (g.search.typicalISO || g.search.mutualWindow))
 })
+// 典型时刻 t* 一律是墙钟绝对时，可直接对表：自定义星座（elements）几何锚在场景历元，得到 t*=场景历元+Δ 的绝对时刻，
+// 而星座3D 已让合成星按墙钟从场景历元正向传播（此刻=真实当前时刻、非场景历元），二者同属墙钟系 → 把时间轴设到 t*
+// 即与地图星下点吻合，和真实目录星完全一致，无需再做「自场景历元偏移」的换算（旧时间模型下才需要）。
 // 本地时区标签：按运行机偏移给出 UTC±H(:MM)，随时刻旁的时区角标显示
 function localOffsetLabel() {
   const off = -new Date().getTimezoneOffset()
@@ -425,15 +466,17 @@ function localOffsetLabel() {
   const m = Math.abs(off) % 60
   return 'UTC' + sign + h + (m ? ':' + String(m).padStart(2, '0') : '')
 }
-// UTCG 时标（对标 STK）：UTC 模式标 'UTCG'，本地模式标运行机偏移
-const tzSuffix = computed(() => (tzMode.value === 'utc' ? 'UTCG' : localOffsetLabel()))
-// 时刻格式化（STK UTCG 版式）：D Mon YYYY HH:MM:SS.mmm，按 mode 取 UTC 或本地字段（时区由区头角标标注）
+// 时标角标：UTC→'UTCG'（对标 STK）、北京→'UTC+8'、本地→运行机偏移
+const tzSuffix = computed(() => (tzMode.value === 'utc' ? 'UTCG' : tzMode.value === 'beijing' ? 'UTC+8' : localOffsetLabel()))
+// 时刻格式化（STK UTCG 版式）：D Mon YYYY HH:MM:SS.mmm，按 mode 取 UTC / 本地 / 北京(UTC+8) 字段（时区由区头角标标注）
 const UTCG_MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 function fmtInstant(iso, mode) {
   if (!iso) return '—'
-  const d = new Date(iso)
-  if (isNaN(d.getTime())) return String(iso)
+  const d0 = new Date(iso)
+  if (isNaN(d0.getTime())) return String(iso)
   const loc = mode === 'local'
+  // 北京=UTC+8（无夏令时）：整体 +8h 后读 UTC 字段即得北京本地表示；UTC/本地不偏移
+  const d = mode === 'beijing' ? new Date(d0.getTime() + 8 * 3600000) : d0
   const p = (n, w = 2) => String(n).padStart(w, '0')
   const D = loc ? d.getDate() : d.getUTCDate()
   const MO = loc ? d.getMonth() : d.getUTCMonth()
@@ -457,7 +500,7 @@ const barClass = (v) => { const n = parseFloat(v); return n > 100 ? 'danger' : (
 
 // —— 容量汇总（独立模块）——
 // 汇总本批次所有已成功计算的链路：总带宽 = Σ 各链路载波带宽；总容量 = Σ 各链路容量。
-// 单链路容量 = 频谱效率 η(bps/Hz) × 载波带宽 B(kHz) = 容量(kbps)；各链路基带配置可不同（η 各异），
+// 单链路容量 = 频谱效率 η(bps/Hz) × 载波带宽 B(kHz) = 容量(kbps)；各链路载波信号配置可不同（η 各异），
 // 故逐链路相乘再求和，而非用单一 η 乘总带宽。engine 已按链路输出 allocBandwidthResult / spectralEfficiencyResult。
 // capacityKbpsOf 是单链路口径的唯一出处：列表/矩阵「容量」指标、容量汇总都从这里换算。
 function capacityKbpsOf(d) {
@@ -507,8 +550,6 @@ async function compute() {
   try {
     const mode = calcMode.value
     const opt = { mode, powerW: targetPowerW.value, overDb: overDb.value }
-    // 轨道 spec 剥离 Vue 响应式代理（ngsoSat 为 reactive，直接经 IPC 结构化克隆会报「could not be cloned」）
-    const orbitSpec = ngsoSat.orbit ? JSON.parse(JSON.stringify(ngsoSat.orbit)) : null
     const out = []
     // 链路配对集合：常规计算按序号 1↔1（min(发,收) 条）；矩阵计算 m×n 全配对
     const pairs = []
@@ -518,27 +559,21 @@ async function compute() {
     } else {
       for (let ti = 0; ti < txStations.length; ti++) for (let ri = 0; ri < rxStations.length; ri++) pairs.push([ti, ri])
     }
+    const geomT0ISO = searchT0ISO()   // 本批统一搜索时窗起点：计算此刻墙钟（同批各链路 t0 一致）
     for (const [ti, ri] of pairs) {
       const tx = txStations[ti], rx = rxStations[ri]
       const bbForm = resolveBaseband(tx.basebandId).form
       const { satParams, linkParams } = buildParams(satForm, bbForm, tx, rx)
-      linkParams.margin = targetMarginDb.value   // 系统余量是批量目标值，不随基带配置走
+      linkParams.margin = targetMarginDb.value   // 系统余量是批量目标值，不随载波信号配置走
       const txName = tx.earthStationLocation || ('发' + (ti + 1))
       const rxName = rx.rxEarthStationLocation || ('收' + (ri + 1))
 
       // —— 几何：选星→平台 SGP4 单一典型时刻 t* 几何（两站同刻·仰角贴近各自最低，回喂斜距）；未选星→引擎球形闭式（轨道高度+最低仰角）——
       let geom = null
       if (satSelected.value) {
-        // 自定义(elements)星：t0 锚到轨道场景历元 scenarioEpoch（= orbitSpec.epoch），与星座3D 页一致、跨会话可复现；
-        // 真实目录星(omm 带真实历元)不传 t0ISO → 几何求解器默认锚到该星自身历元（确定性、可复现，且 TLE 在
-        // 历元附近精度最高），而非非确定性的 wall-clock now()。圆轨道走闭式与 t0 无关。
-        const t0ISO = (orbitSpec && orbitSpec.type === 'elements' && orbitSpec.epoch) ? orbitSpec.epoch : null
-        geom = await api.linkBudget.ngsoGeometry({
-          orbit: orbitSpec,
-          tx: { lonDeg: parseFloat(tx.longitude), latDeg: parseFloat(tx.latitude), altKm: (parseFloat(tx.altitude) || 0) / 1000, minElevDeg: parseFloat(tx.minElevation) || 0, freqGHz: upFreqGHz() },
-          rx: { lonDeg: parseFloat(rx.rxLongitude), latDeg: parseFloat(rx.rxLatitude), altKm: (parseFloat(rx.rxAltitude) || 0) / 1000, minElevDeg: parseFloat(rx.rxMinElevation) || 0, freqGHz: dnFreqGHz() },
-          t0ISO, horizonHours: geoHorizonHours.value
-        })
+        // 选星→平台 SGP4 双站互视单一典型时刻 t*（t0/时窗口径见 solveSelectedGeom：统一锚计算此刻墙钟、
+        // 与再生式同口径；每次计算随当前时刻推移，非逐次复现；圆轨道走闭式与 t0 无关）。
+        geom = await solveSelectedGeom(tx, rx, geomT0ISO)
         if (geom && geom.feasible) {
           // 回喂典型时刻 t* 的实际斜距与实际仰角（非仅最低仰角门限）——该刻两站中通常仅一站压在最低仰角，
           // 另一站实际仰角更高，大气/降雨斜路径须按各自实际仰角算，才与斜距口径自洽。
@@ -564,6 +599,24 @@ async function compute() {
           // 手动几何不可行（轨道高度≤0 / 站址纬度超出轨道覆盖带）→ 明确报错，不再用兜底假高度静默算出误导结果
           out.push({ ti, ri, txName, rxName, data: null, margin: '—', metric: '—', error: (geom && geom.reason) || '手动轨道几何不可行', geom })
           continue
+        }
+      }
+
+      // —— 卫星 EIRP/G·T 逐链路对齐 t*：天线导入时，把卫星置于【本条链路自己的 t* 星下点】重采天线增益，
+      // 令该行的卫星EIRP(→下行)/卫星G·T(→上行) 与该行斜距/FSL/C·N 取自同一物理瞬间（用户口径）。
+      // 仅覆盖仍为「自动值」的单元格；用户手改过的（当前值≠上次自动值）保留其手填值。快照/静态星 subSat
+      // 为固定星下点，覆盖后与静态几何同刻自洽。geom.subSat 缺省（手动圆轨道等）则不覆盖，沿用站表值。
+      if (geom && geom.feasible && geom.subSat) {
+        const satOv = { lon: geom.subSat.lonDeg, lat: geom.subSat.latDeg, alt: geom.subSat.altKm }
+        const eirpAnt = antByKey(grdSel.eirpKey)
+        if (eirpAnt && !(grdAutoFilled.eirp[rx._id] != null && String(rx.rxEIRP) !== String(grdAutoFilled.eirp[rx._id]))) {
+          const v = await sampleAntennaParam(eirpAnt.node, eirpAnt.ant, eirpAnt.cfg, parseFloat(rx.rxLongitude), parseFloat(rx.rxLatitude), satOv)
+          if (v != null) linkParams.rxEIRP = String(v)
+        }
+        const gtAnt = antByKey(grdSel.gtKey)
+        if (gtAnt && !(grdAutoFilled.gt[tx._id] != null && String(tx.G_Ts) !== String(grdAutoFilled.gt[tx._id]))) {
+          const v = await sampleAntennaParam(gtAnt.node, gtAnt.ant, gtAnt.cfg, parseFloat(tx.longitude), parseFloat(tx.latitude), satOv)
+          if (v != null) linkParams.G_Ts = String(v)
         }
       }
 
@@ -628,7 +681,7 @@ const autoGeoTx = (row, skip) => fillGeoRow(row, 'longitude', 'latitude', 'rainR
 const autoGeoRx = (row, skip) => fillGeoRow(row, 'rxLongitude', 'rxLatitude', 'rxRainRate', 'rxAltitude', skip)
 
 // —— Phase 4：配置持久化（含卫星 / EIRP·GT 天线匹配选择）——
-// ① 整盘工作台状态序列化（卫星/基带参数、发收信站群、计算方式、GRD 匹配选择、矩阵显示）。
+// ① 整盘工作台状态序列化（卫星/载波信号参数、发收信站群、计算方式、GRD 匹配选择、矩阵显示）。
 // ② 自动保存「上次会话」到 localStorage：关掉再开窗口即原样恢复（卫星/天线选择不丢）。
 // ③ 命名配置（配置列表）走 store.config.* 持久化到 userData/configs.json，可多套切换。
 const STATE_KEY = 'ngso/last'
@@ -657,7 +710,7 @@ function applyState(st) {
       form: { ...defaultsFor(CARRIER_FIELDS), rsCodeMode: 'fraction', dvbStandard: 'custom', modcodIndex: -1, ...c.form }
     })))
   } else if (st.carrierForm) {
-    // 旧版单一基带表单（升级前保存的配置）：包成一份「默认」配置迁移
+    // 旧版单一载波信号表单（升级前保存的配置）：包成一份「默认」配置迁移
     basebandConfigs.splice(0, basebandConfigs.length, {
       id: 'bb' + (_bbSeq++), name: '默认',
       form: { ...defaultsFor(CARRIER_FIELDS), rsCodeMode: 'fraction', dvbStandard: 'custom', modcodIndex: -1, ...st.carrierForm }
@@ -668,7 +721,7 @@ function applyState(st) {
   if (st.calcMode) calcMode.value = st.calcMode
   if (st.targetPowerW != null) targetPowerW.value = st.targetPowerW
   if (st.overDb != null) overDb.value = st.overDb
-  // 系统余量：新字段优先；否则从旧存档兜底取（曾短暂挂在 carrierForm.margin / 基带配置卡片里）
+  // 系统余量：新字段优先；否则从旧存档兜底取（曾短暂挂在 carrierForm.margin / 载波信号配置卡片里）
   if (st.targetMarginDb != null) targetMarginDb.value = st.targetMarginDb
   else if (st.carrierForm && st.carrierForm.margin != null) targetMarginDb.value = st.carrierForm.margin
   else if (basebandConfigs[0] && basebandConfigs[0].form.margin != null) targetMarginDb.value = basebandConfigs[0].form.margin
@@ -1149,11 +1202,11 @@ onMounted(async () => {
           <StationGrid v-else-if="activeModule === 'rx'" :stations="rxStations" :fields="RX_FIELDS" :cities="cities" :city-search="citySearch" label="收信站" :auto-geo="autoGeoRx" ro-label="工作点G/T" ro-unit="dB/K" :ro-values="rxGt" />
           <div v-else-if="activeModule === 'carrier'" class="bb-wrap">
             <div class="bb-toolbar">
-              <span class="bb-count">{{ basebandConfigs.length }} 份基带配置</span>
+              <span class="bb-count">{{ basebandConfigs.length }} 份载波信号配置</span>
               <span class="lb-spacer"></span>
               <button class="lb-mini" title="新增配置" @click="addBasebandConfig"><Icon name="plus" :size="12" /> 新增配置</button>
             </div>
-            <p class="bb-tip">载波由发信站调制器产生，与发信站绑定：「发信站群」表的「基带配置」列为每个发信站单独选择使用哪一份，同一份可被多个发信站共用。</p>
+            <p class="bb-tip">载波由发信站调制器产生，与发信站绑定：「发信站群」表的「载波信号配置」列为每个发信站单独选择使用哪一份，同一份可被多个发信站共用。</p>
             <div class="bb-cards">
               <div v-for="cfg in basebandConfigs" :key="cfg.id" class="bb-card">
                 <div class="bb-card-hd">
@@ -1309,18 +1362,19 @@ onMounted(async () => {
                     <span class="geo-tt">卫星几何</span>
                     <span class="geo-badge" title="平台精确传播器：satellite.js 统一 SGP4/SDP4，225 min 自动切深空">{{ geom.method }}</span>
                   </div>
-                  <div v-if="geoHasTimes" class="geo-tz" role="group" aria-label="时区切换" title="切换典型时刻 / 互视窗口的时标（UTC 或运行机本地时区）">
+                  <div v-if="geoHasTimes" class="geo-tz" role="group" aria-label="时区切换" title="切换典型时刻 / 互视窗口的时标（UTC / 运行机本地 / 北京 UTC+8）">
                     <button type="button" class="geo-tzb" :class="{ on: tzMode === 'utc' }" @click="tzMode = 'utc'">UTC</button>
                     <button type="button" class="geo-tzb" :class="{ on: tzMode === 'local' }" @click="tzMode = 'local'">本地</button>
+                    <button type="button" class="geo-tzb" :class="{ on: tzMode === 'beijing' }" @click="tzMode = 'beijing'">北京</button>
                   </div>
                 </div>
 
                 <div class="geo-body">
-                  <!-- 互视访问（选星耦合：场景历元 t0 / 典型时刻 t* / 两站互视窗口起止·持续，STK UTCG 时标）-->
+                  <!-- 互视访问（选星耦合：典型时刻 t* / 两站互视窗口起止·持续，STK UTCG 时标）-->
                   <template v-if="geom.coupled && geom.search">
                     <div class="geo-sec">互视访问<span class="geo-sec-x">{{ tzMode === 'utc' ? 'UTCG' : tzSuffix }}</span></div>
-                    <div v-if="geom.search.t0ISO" class="geo-trow"><span class="geo-l" title="SGP4/SDP4 扫描的锚点历元（卫星历元 / 场景历元）——对标 STK 场景历元">场景历元 t0</span><span class="geo-time">{{ fmtInstant(geom.search.t0ISO, tzMode) }}</span></div>
-                    <div v-if="geom.search.typicalISO" class="geo-trow"><span class="geo-l" title="所有几何量取自这一物理瞬间；此刻两站同时可见、仰角尽量贴近各自最低仰角（通常一站正压最低、另一站略高）。在「星座3D」页把时间设到此刻即可与地图核对">典型时刻 t*</span><span class="geo-time">{{ fmtInstant(geom.search.typicalISO, tzMode) }}</span></div>
+                    <div v-if="geom.search.typicalISO" class="geo-trow"><span class="geo-l" title="所有几何量取自这一物理瞬间；此刻两站同时可见、仰角尽量贴近各自最低仰角（通常一站正压最低、另一站略高）。t* 为墙钟绝对时——在「星座3D」页把时间轴设到此刻，即可与地图星下点直接核对（自定义星座同理：合成星已按场景历元正向传播到时间轴时刻，无需偏移换算）。">典型时刻 t*</span><span class="geo-time">{{ fmtInstant(geom.search.typicalISO, tzMode) }}</span></div>
+                    <div v-if="geom.search.subSatLonDeg != null" class="geo-trow"><span class="geo-l" title="t* 该刻卫星星下点（经纬）。导入卫星天线时，卫星EIRP/G·T 即把卫星置于此位置对各站取天线增益，与本行斜距/FSL/C·N 同一瞬间">t* 星下点</span><span class="geo-time">{{ g2(geom.search.subSatLonDeg, 3) }}°E, {{ g2(geom.search.subSatLatDeg, 3) }}°N</span></div>
                     <template v-if="geom.search.mutualWindow">
                       <div class="geo-trow"><span class="geo-l" title="发信站与收信站同时满足各自最低仰角的时段（含 t* 的那次过境）——即两站可经该星建链的时间窗口范围">互视窗口 · 起始</span><span class="geo-time">{{ fmtInstant(geom.search.mutualWindow.startISO, tzMode) }}</span></div>
                       <div class="geo-trow"><span class="geo-l">互视窗口 · 结束</span><span class="geo-time">{{ fmtInstant(geom.search.mutualWindow.endISO, tzMode) }}<span v-if="geom.search.mutualWindow.clipped" class="geo-clip" title="窗口被搜索时窗边界切断，非完整过境">clipped</span></span></div>
@@ -1650,7 +1704,7 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 
 .lb-edit { flex: 1; min-height: 0; overflow: auto; padding: 12px; }
 .form { max-width: 420px; }
-/* 基带配置库：工具条 + 多张卡片同时展示/编辑 */
+/* 载波信号配置库：工具条 + 多张卡片同时展示/编辑 */
 .bb-wrap { max-width: 620px; }
 .bb-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
 .bb-count { font-size: 12px; color: var(--text-muted); }

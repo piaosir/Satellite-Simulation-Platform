@@ -11,7 +11,15 @@ contextBridge.exposeInMainWorld('api', {
     computeMode: (s, l, opt) => ipcRenderer.invoke('link:computeMode', s, l, opt),
     // NGSO：计算方式求解（切 NGSO 引擎、强制 ISL=0）+ 站星互视最差几何求解
     computeModeNGSO: (s, l, opt) => ipcRenderer.invoke('link:computeModeNGSO', s, l, opt),
+    // 再生式上行：计算方式求解（合计 C/N = 上行 C/(N+I)）+ 复用 NGSO 站星几何
+    computeRegenUplink: (s, l, opt) => ipcRenderer.invoke('link:computeRegenUplink', s, l, opt),
+    // 再生式下行：计算方式求解（合计 C/N = 下行 C/(N+I)；工作点 = 收信站 G/T）+ 复用 NGSO 站星几何
+    computeRegenDownlink: (s, l, opt) => ipcRenderer.invoke('link:computeRegenDownlink', s, l, opt),
+    // 再生式星间：计算（合计 C/N = 星间单跳 C/N；发射卫星 EIRP + 接收卫星 G/T）+ 两星几何求解
+    computeRegenIsl: (s, l, opt) => ipcRenderer.invoke('link:computeRegenIsl', s, l, opt),
+    islGeometry: (opt) => ipcRenderer.invoke('link:islGeometry', opt),
     ngsoGeometry: (opt) => ipcRenderer.invoke('link:ngsoGeometry', opt),
+    accessWindows: (opt) => ipcRenderer.invoke('link:accessWindows', opt),
     geoFill: (lat, lon) => ipcRenderer.invoke('link:geoFill', lat, lon),
     grdSample: (req) => ipcRenderer.invoke('link:grdSample', req),
     cities: () => ipcRenderer.invoke('link:cities'),
@@ -29,6 +37,12 @@ contextBridge.exposeInMainWorld('api', {
     open: () => ipcRenderer.invoke('ngso:open'),
     onCloseRequested: (cb) => ipcRenderer.on('ngso:closeRequested', cb),
     confirmClose: () => ipcRenderer.invoke('ngso:confirmClose')
+  },
+  // 再生式链路预算独立窗口的开窗/关窗守卫（计算复用 linkBudget.computeRegenUplink / 几何复用 ngsoGeometry）
+  regen: {
+    open: () => ipcRenderer.invoke('regen:open'),
+    onCloseRequested: (cb) => ipcRenderer.on('regen:closeRequested', cb),
+    confirmClose: () => ipcRenderer.invoke('regen:confirmClose')
   },
   sunOutage: {
     open: () => ipcRenderer.invoke('suntool:open'),

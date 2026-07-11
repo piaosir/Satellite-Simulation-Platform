@@ -29,6 +29,7 @@ import * as W from '../viz/wgs84.js'
 import { parseOMMCsv, fetchGroupLiveOrSup } from '../viz/constellation/tle.js'
 import { useCustomConstellations } from '../viz/constellation/useCustomConstellations.js'
 import { walkerCode, orbitPeriodMin, validateWalker } from '../viz/constellation/walker.js'
+import { classifyOrbit } from '../shared/orbitClass.js'
 
 // 分组与「星座地图」(2D) 完全一致：同一份列表 / 顺序 / 默认「中国星网」。
 const GROUPS = [
@@ -573,13 +574,16 @@ let timer = null, ro = null, trackRo = null
 let pendingNorad = null, pendingNoFace = false
 
 function calcAt() { return live.value ? new Date() : new Date(baseTime.value + timeOffset.value * 60000) }
-// —— 自定义星座（合成星）场景历元锚定（STK 口径）——
-// 合成星锚在固定共享场景历元（customConst.scenarioEpoch，可设/持久化）：其在地球上的定向跨会话稳定（不随“打开软件的时刻”漂移）；
-// RAAN 仍是真惯性升交点赤经（与真实 TLE/星历同参考、可对应）。时间轴偏移(timeOffset)仍作用其上→可向后推演预测。
-// 真实目录星仍按实际观测时刻 calcAt() 解算；合成星 = 场景历元 + 同一时间轴偏移。二者共用同一 timeOffset。
+// —— 自定义星座（合成星）时间模型（STK 口径）——
+// 场景历元（customConst.scenarioEpoch，可设/持久化，默认当天 08:00）只作各合成星 satrec 的【固定设计历元】：
+// 定 RAAN/MA 的惯性参考、跨会话稳定（RAAN 仍是真惯性升交点赤经，与真实 TLE/星历同参考）。
+// 合成星与真实目录星【完全一样】按真实墙钟时刻 calcAt() 正向传播 —— 即从场景历元正向推算到时间轴当前时刻的
+// 真实状态（STK：Scenario Epoch 定义星座 → 动画时刻正向演化）。故时间轴「此刻」＝真实当前时刻，显示的是
+// 「场景历元建立的星座传播到此刻」的状态；绝对时刻在合成星 / 真实星 / NGSO 典型时刻之间同属一个（墙钟）系、
+// 可直接互相对照（NGSO 典型时刻 t* 直接设进时间轴即与地图星下点吻合，不再需要场景历元偏移换算）。
 const isCustomEntry = (e) => !!(e && e.group && e.group.indexOf('cc') === 0)   // 合成星 group='cc_<id>'（真实组均不以 cc 开头）
-// 合成星生效时刻 = 场景历元 + 当前时间轴偏移(now−baseTime)；历元由 customConst.scenarioEpoch 提供（可设、持久化、共用）
-function ccTimeAt(now) { now = now || calcAt(); return new Date(Date.parse(customConst.scenarioEpoch.value) + (now.getTime() - baseTime.value)) }
+// 合成星传播时刻 = 墙钟当前时刻 calcAt()（与真实星同系）；设计历元固定在各星 satrec 内部（=场景历元），此处不再重锚。
+function ccTimeAt(now) { return now || calcAt() }
 // 场景历元编辑：<input datetime-local> 走本地时刻，内部存 ISO(UTC)；改动即重建全部合成星并按名重绑当前选中
 const scenarioEpochLocal = computed({
   get: () => { const d = new Date(customConst.scenarioEpoch.value); if (isNaN(d)) return ''; const p = (n) => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}` },
@@ -605,11 +609,8 @@ function cardFor(e) {
   const periodMin = (2 * Math.PI) / rec.no            // 轨道周期(min)
   const meanMotion = rec.no * 1440 / (2 * Math.PI)    // 平均运动(rev/day)
   const apoKm = rec.alta * RE, perKm = rec.altp * RE, meanKm = (apoKm + perKm) / 2
-  // 轨道类型判定
-  let kind = 'LEO'
-  if (rec.ecco > 0.2) kind = 'HEO'
-  else if (meanKm > 30000) kind = ((rec.inclo / DEG) < 10 ? 'GEO' : 'IGSO')
-  else if (meanKm > 2000) kind = 'MEO'
+  // 轨道区制判定（GEO/IGSO/MEO/LEO/HEO）——严谨口径见 shared/orbitClass.js（先偏心率→再同步周期→高度带）
+  const kind = classifyOrbit({ aKm: RE + meanKm, e: rec.ecco, inclDeg: rec.inclo / DEG, perigeeAltKm: perKm, apogeeAltKm: apoKm, periodMin })
   const isGeo = (e.group || curKey()) === 'geo'
   return {
     name: e.name, noradId: e.noradId, group: e.groupLabel || GROUP_LABEL[e.group] || GROUP_LABEL[curKey()] || '', kind,
@@ -2694,7 +2695,7 @@ onBeforeUnmount(() => {
           <!-- 自定义星座（仿 STK Walker 生成器）：星点 + 轨道圈叠加显示 -->
           <div class="ccsec">
             <div class="cchd"><span>自定义星座</span><span class="lnk" @click="openConstWizard()"><Icon name="plus" :size="11" /> 生成</span></div>
-            <div class="ccep" title="全部自定义星座共用的固定「场景历元」（STK Scenario Epoch）。星座定向以此为准 → 跨会话稳定不漂；拖时间轴仍从此历元向后推演。默认取当前时刻（贴近真实星历，便于同历元比对）。RAAN 仍是惯性升交点赤经，与真实 TLE 同参考。">
+            <div class="ccep" title="全部自定义星座共用的「场景历元」（STK Scenario Epoch）。星座定向以此为准；拖时间轴仍从此历元向后推演。默认取电脑当天 08:00，每天自动更新；当天若手动改过则当天以手动值为准（次日回到该日 08:00）。RAAN 仍是惯性升交点赤经，与真实 TLE 同参考。">
               <label>场景历元</label>
               <input class="ci" type="datetime-local" v-model="scenarioEpochLocal" />
               <span class="lnk" title="取当前时刻为场景历元" @click="scenarioEpochNow">当前</span>
@@ -3440,12 +3441,15 @@ onBeforeUnmount(() => {
                 <td v-for="(c, ci) in perfInCols" :key="c.key"
                     :class="{ n: c.num, ed: true, sel: perfInGrid.inSel(ri, ci), active: perfInGrid.isActive(ri, ci), editing: perfInGrid.isEdit(ri, ci) }"
                     @mousedown="perfInGrid.cellDown($event, ri, ci)" @mouseenter="perfInGrid.cellEnter(ri, ci)" @dblclick="perfInGrid.tryEdit(ri, ci, null)">
-                  <!-- 值由 useGridSelect 进入编辑时一次性写入（不绑 :value——实时时钟每秒重渲染会把绑定值刷回，吞掉正在键入的内容）。
-                       隐形占位 span 保留原文本撑住列宽（input 固有宽度会把 auto 布局的列撑开/缩水），input 绝对定位覆盖其上。 -->
-                  <template v-if="perfInGrid.isEdit(ri, ci)">
+                  <!-- 活动格常驻捕获输入框：始终存在并持有键盘/输入法焦点。导航态透明覆盖在 ghost 值上、pointer-events:none 让鼠标框选穿透；
+                       键入/输入法组字即翻成不透明可见编辑框——中文输入法从第一个拼音字母起就落在真实 <input>，不吞首字母。
+                       ghost span 显示当前值并撑住列宽；值由 useGridSelect 命令式写入（不绑 :value——实时时钟每秒重渲染会把绑定值刷回，吞掉正在键入内容）。 -->
+                  <template v-if="perfInGrid.isActive(ri, ci) && perfInGrid.colEditable(c)">
                     <span class="pcell-ghost">{{ s[c.key] == null ? '' : s[c.key] }}</span>
-                    <input :ref="el => perfInGrid.editEl.value = el" class="pcell" :class="{ n: c.num }"
-                           @blur="perfInGrid.commitEdit" @paste="perfInGrid.cellPaste($event, s, c.key)" />
+                    <input :ref="el => perfInGrid.editEl.value = el" class="pcell" :class="{ n: c.num, editing: perfInGrid.isEdit(ri, ci) }" tabindex="-1"
+                           @input="perfInGrid.onActiveInput" @compositionstart="perfInGrid.onActiveCompStart"
+                           @blur="perfInGrid.onActiveBlur" @paste="perfInGrid.onActivePaste($event, s, c.key)"
+                           @copy="perfInGrid.onActiveClip" @cut="perfInGrid.onActiveClip" />
                   </template>
                   <template v-else>{{ s[c.key] == null ? '' : s[c.key] }}</template>
                 </td>
@@ -3956,13 +3960,17 @@ onBeforeUnmount(() => {
 .perf-tbl.grid td.sel { background: color-mix(in srgb, var(--accent) 16%, transparent); }
 .perf-tbl.grid tr.out td.sel { background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .perf-tbl.grid td.active { box-shadow: inset 0 0 0 2px var(--accent); }
-.perf-tbl.grid td.editing { padding: 0; box-shadow: inset 0 0 0 2px var(--accent); position: relative; }
+/* 可编辑表的活动格（含编辑态）内边距归零并 relative，交给 ghost 撑内边距、由绝对定位的捕获框铺满；只读表(.ro)活动格保持常规内边距 */
+.perf-tbl.grid:not(.ro) td.active, .perf-tbl.grid td.editing { padding: 0; position: relative; }
+.perf-tbl.grid td.editing { box-shadow: inset 0 0 0 2px var(--accent); }
 .perf-tbl.grid td.ed { color: var(--text); }
-/* 隐形占位：原文本照常占位撑住列宽/行高（input 固有宽度否则会把 auto 布局的列撑开），内边距与普通单元格一致 */
-.pcell-ghost { visibility: hidden; display: block; padding: 3px 8px; }
-.pcell-ghost:empty::before { content: '\00a0'; }   /* 空格占位保住行高（空单元格编辑时无文本行盒） */
-/* 编辑框覆盖在占位之上，不参与表格布局 → 键入任意长度列宽不动（超长部分在框内滚动，与 Excel 视觉一致） */
-.pcell { position: absolute; inset: 0; width: 100%; height: 100%; box-sizing: border-box; border: none; background: var(--bg); color: inherit; font: inherit; padding: 3px 8px; outline: none; }
+/* ghost 显示活动格当前值并撑住列宽/行高（捕获框绝对定位不参与布局，否则 input 固有宽度会把 auto 布局的列撑开）；内边距与普通单元格一致 */
+.pcell-ghost { display: block; padding: 3px 8px; }
+.pcell-ghost:empty::before { content: '\00a0'; }   /* 空格占位保住行高（空单元格无文本行盒） */
+/* 捕获/编辑框覆盖在 ghost 之上，不参与表格布局 → 键入任意长度列宽不动（超长部分在框内滚动，与 Excel 视觉一致）。
+   导航态透明 + pointer-events:none：只露出下面的 ghost 值、鼠标框选穿透到 td；输入法/键入时翻成 .editing 不透明可交互。 */
+.pcell { position: absolute; inset: 0; width: 100%; height: 100%; box-sizing: border-box; border: none; background: transparent; color: transparent; caret-color: transparent; font: inherit; padding: 3px 8px; outline: none; pointer-events: none; }
+.pcell.editing { background: var(--bg); color: inherit; caret-color: auto; pointer-events: auto; }
 .pcell.n { text-align: right; font-family: var(--font-mono); }
 .perf-tbl .td-act, .perf-tbl .th-act { width: 22px; text-align: center; }
 .perf-tbl .td-act { cursor: default; }

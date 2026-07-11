@@ -230,8 +230,14 @@ function sampleMax(loaded, sat, cfg, lon, lat) {
     ? antennaBasisAzEl(satLon, satLat, satAlt, c.boreAz || 0, c.boreEl || 0, c.yaw || 0)
     : antennaBasis(satLon, c.boreLon == null ? satLon : c.boreLon, c.boreLat || 0, c.yaw || 0, satLat, satAlt);
   const par = { pol: c.pol || 'RSS', gainOffset: Number(c.gainOffset) || 0, pathLoss: c.pathLoss || 'none' };
+  // 波束删除对齐：cfg.keptSets = 存活波束在【原始 GRD set 顺序】里的下标（升序）。本模块 loaded.beams 由
+  // buildBin 按原始 set 顺序落盘，故下标一一对应。只在【存活波束】里取最大 → 与「星座3D 性能指标表」一致
+  //（其 ctx.beams 已按 keptSets 裁剪）。无删除记录（keptSets 非数组或已覆盖全部）→ 用全部波束（旧行为）。
+  const all = loaded.beams;
+  const keep = Array.isArray(c.keptSets) ? c.keptSets : null;
+  const beams = (keep && keep.length < all.length) ? keep.map((i) => all[i]).filter(Boolean) : all;
   let best = null;
-  for (const bm of loaded.beams) {
+  for (const bm of beams) {
     const db = sampleBeamAt(bm, loaded.igrid, basis, lon, lat, par);
     if (db == null) continue;
     if (best == null || db > best) best = db;

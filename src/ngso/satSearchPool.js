@@ -13,6 +13,7 @@
 
 import { fetchGroupLiveOrSup } from '../viz/constellation/tle.js'
 import { generateConstellation } from '../viz/constellation/walker.js'
+import { resolveScenarioEpoch } from '../viz/constellation/useCustomConstellations.js'
 
 const RE = 6378.137
 const MU = 398600.4418
@@ -43,8 +44,8 @@ function fromOmm(s, groupLabel) {
 }
 
 // 自定义星座单星（经典六根数）→ 池记录（type:'elements'）
-// epoch=星座场景历元 scenarioEpoch（与星座3D 页同源）：RAAN/MA 依此历元设计，必须一路透传到 buildSatrec，
-// 否则退回「当前时刻」为历元 → 自定义星地固指向逐会话漂移、与 3D 页不一致（详见 useCustomConstellations 注释）。
+// epoch=星座场景历元 scenarioEpoch（与星座3D 页同源、按 resolveScenarioEpoch 同规则解析）：RAAN/MA 依此历元设计，
+// 必须一路透传到 buildSatrec，否则历元不一致 → 自定义星地固指向与 3D 页不一致（详见 useCustomConstellations 注释）。
 function fromCustom(satObj, noradId, constName, epoch) {
   const el = satObj.elements || {}
   const ecc = Math.max(0, Math.min(0.999, Number(el.ecc) || 0))
@@ -59,12 +60,13 @@ function fromCustom(satObj, noradId, constName, epoch) {
 }
 
 // 读本地自定义星座（与星座3D 页同键、同 walker 生成逻辑），返回 { sats, names, epoch }
-// blob.epoch 为共享场景历元（scenarioEpoch）：透传给每颗合成星，供 NGSO 几何按设计历元求解。
+// epoch=共享场景历元：由 resolveScenarioEpoch 按「每天更新」规则解析（默认当天 08:00，当天人为改过则用人为值），
+// 与 3D 页同源同规则 → 透传给每颗合成星，供 NGSO 几何按同一设计历元求解、跨窗口一致。
 export function loadCustomSats() {
   let blob = null
   try { blob = JSON.parse(localStorage.getItem(CUSTOM_KEY) || 'null') } catch { return { sats: [], names: [], epoch: null } }
   if (!blob || !Array.isArray(blob.items)) return { sats: [], names: [], epoch: null }
-  const epoch = (blob.epoch && !isNaN(Date.parse(blob.epoch))) ? new Date(blob.epoch).toISOString() : null
+  const epoch = resolveScenarioEpoch(blob)
   const sats = [], names = []
   let base = NORAD_BASE
   for (const c of blob.items) {

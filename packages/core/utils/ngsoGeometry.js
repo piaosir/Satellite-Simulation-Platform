@@ -20,6 +20,7 @@
 //   多普勒（选星）取 t* 该刻 |range-rate|（含地球自转）；无 t0ISO 时锚星历元(可复现)。
 
 const sat = require('../vendor/satellite.js');
+const { findWindows } = require('./eventWindows.js');
 
 // —— 几何权威常量（与 wgs84.js / walker.js / useCustomConstellations 同源）——
 const RE_KM = 6378.137;          // WGS84 赤道半径 Re
@@ -306,6 +307,8 @@ function solveStaticGeometry(opts) {
   const visD = visMetricsFor(r, rxMin, Math.abs(latDeg), r);
   return {
     feasible: true, method, static: true, dopplerEstimate: false,
+    // 静止/快照星的星下点恒定 → 天线增益采样即用此固定位置（与静态几何同刻，无时变）。
+    subSat: { lonDeg, latDeg, altKm },
     worst: {
       up: { elevDeg: up.elevDeg, slantKm: up.slantKm, altKm, ...visU },
       dn: { elevDeg: dn.elevDeg, slantKm: dn.slantKm, altKm, ...visD },
@@ -463,6 +466,9 @@ function coupledTypicalMoment(satrec, tx, rx, opts) {
   const visD = visMetricsFor(rKm, rxMin, stat.iDeg, stat.a);
   return {
     feasible: true, method, dopplerEstimate: false, coupled: true,
+    // t* 该刻的星下点（经纬高）——链路预算把卫星置于此位置采样天线增益(EIRP/G·T)，
+    // 使导入的卫星 EIRP/G·T 与本行斜距/FSL/C·N 取自同一物理瞬间（对齐性能指标表）。
+    subSat: sp ? { lonDeg: sp.lonDeg, latDeg: sp.latDeg, altKm: sp.altKm } : null,
     worst: {
       up: { elevDeg: best.u.elevDeg, slantKm: best.u.slantKm, altKm, ...visU },
       dn: { elevDeg: best.v.elevDeg, slantKm: best.v.slantKm, altKm, ...visD },
@@ -475,6 +481,7 @@ function coupledTypicalMoment(satrec, tx, rx, opts) {
       t0ISO: t0.toISOString(), horizonHours, stepSec: stepMs / 1000,
       t0Source: opts.t0ISO ? 'explicit' : 'epoch',
       typicalISO: d.toISOString(),
+      subSatLonDeg: sp ? sp.lonDeg : null, subSatLatDeg: sp ? sp.latDeg : null,
       txElevExcessDeg: best.u.elevDeg - txMin, rxElevExcessDeg: best.v.elevDeg - rxMin,
       mutualWindow
     }
@@ -514,9 +521,253 @@ function solveMutualWorstCase(opts) {
   return coupledTypicalMoment(satrec, tx, rx, opts);
 }
 
+// ============================================================================
+// 9. 单站访问窗口（Access）——时窗内满足最低仰角及以上的【全部】过境时间窗
+// ============================================================================
+// 对「满足最低仰角及以上」用通用窗口求解器 findWindows：f(t)=仰角−最低仰角，>0 即在窗口内。
+// 选星（真实星历 omm/elements/tle）→ 逐个真实过境；手动圆轨道（circular）→ 合成虚拟 OMM 传播，
+// 得示意过境（节律/时长真实，绝对时刻因 RAAN/MA/历元取默认而仅供示意，representative=true）；
+// 静止/快照星（snapshot）→ 可见则整时窗为一个常驻窗口。
+// opts = { orbit, station:{lonDeg,latDeg,altKm,minElevDeg,freqGHz}, t0ISO?, horizonHours? }
+function solveAccessWindows(opts) {
+  opts = opts || {};
+  const o = opts.orbit || {};
+  const st = opts.station || {};
+  const minEl = Math.max(0, Number(st.minElevDeg) || 0);
+  const station = { lonDeg: Number(st.lonDeg) || 0, latDeg: Number(st.latDeg) || 0, altKm: Number(st.altKm) || 0 };
+  const horizonHours = Number(opts.horizonHours) > 0 ? Number(opts.horizonHours) : 24;
+
+  if (o.type === 'unresolved') return { feasible: false, reason: o.reason || '所选卫星轨道未能解析，无法确定其几何', windows: [] };
+
+  // 快照/静止星：仰角恒定 → 可见则整时窗为一个常驻窗口
+  if (o.type === 'snapshot') {
+    const satEcef = geodeticToEcef(Number(o.lonDeg) || 0, Number(o.latDeg) || 0, Math.max(0, Number(o.altKm) || 0));
+    const obs = { longitude: station.lonDeg * DEG, latitude: station.latDeg * DEG, height: station.altKm };
+    const la = sat.ecfToLookAngles(obs, satEcef);
+    const el = la.elevation * RAD;
+    const t0 = opts.t0ISO ? new Date(opts.t0ISO) : new Date();
+    if (el < minEl - 1e-6) return { feasible: false, method: '静态几何', reason: `星下点(${Number(o.lonDeg).toFixed(1)}°E) 对该站仰角 ${el.toFixed(1)}° < 最低 ${minEl}°`, windows: [] };
+    return {
+      feasible: true, method: '静态几何', persistent: true,
+      windows: [{ startISO: t0.toISOString(), endISO: new Date(t0.getTime() + horizonHours * 3600000).toISOString(), durationMin: horizonHours * 60, peakElevDeg: el, peakISO: t0.toISOString(), peakSlantKm: la.rangeSat, maxSlantKm: la.rangeSat, clipped: true }],
+      totalWindows: 1, totalDurationMin: horizonHours * 60,
+      search: { t0ISO: t0.toISOString(), horizonHours, minElevDeg: minEl }
+    };
+  }
+
+  // 建 satrec：circular 合成虚拟 OMM；elements/omm/tle 直接建
+  let satrec, method, representative = false;
+  if (o.type === 'circular') {
+    const altKm = Math.max(0, Number(o.altKm) || 0), inclDeg = Number(o.inclDeg) || 0;
+    if (!(altKm > 0)) return { feasible: false, method: '闭式球面', reason: '轨道高度无效（需 > 0 km）', windows: [] };
+    const a = RE_KM + altKm;
+    const meanMotion = 86400 * Math.sqrt(MU / (a * a * a)) / (2 * Math.PI);
+    try { satrec = buildSatrec({ type: 'omm', meanMotion, ecc: 0, incl: inclDeg, raan: 0, argp: 0, ma: 0, epoch: opts.t0ISO || new Date().toISOString() }); }
+    catch (e) { return { feasible: false, reason: '虚拟圆轨道构建失败：' + e.message, windows: [] }; }
+    method = '闭式球面'; representative = true;
+  } else {
+    try { satrec = buildSatrec(o); } catch (e) { return { feasible: false, reason: '轨道根数无效：' + e.message, windows: [] }; }
+    if (satrec.error && satrec.error !== 0) return { feasible: false, reason: 'SGP4 初始化失败（error=' + satrec.error + '）', windows: [] };
+    method = propagatorLabel(satrec);
+  }
+
+  const stat = staticElements(satrec);
+  const t0 = opts.t0ISO ? new Date(opts.t0ISO)
+    : new Date((satrec.jdsatepoch + (satrec.jdsatepochF || 0) - 2440587.5) * 86400000);
+  const startS = t0.getTime() / 1000, endS = startS + horizonHours * 3600;
+  const elAt = (ts) => { const la = lookAngles(satrec, station, new Date(ts * 1000)); return la ? la.elevDeg : NaN; };
+  const f = (ts) => { const e = elAt(ts); return isFinite(e) ? e - minEl : NaN; };
+  // 粗扫步长：周期 1/200 与 60s 取较小（既能抓住 LEO 短过境、又封顶总传播次数）
+  const periodSec = stat.periodMin * 60;
+  const coarse = Math.max(5, Math.min(periodSec / 200, 60));
+  const raw = findWindows(f, startS, endS, { coarseStep: coarse, tol: 1, findPeak: true });
+  const windows = raw.map((w) => {
+    const peakT = w.peak ? w.peak.t : (w.start + w.end) / 2;
+    const peakLa = lookAngles(satrec, station, new Date(peakT * 1000));
+    const startLa = lookAngles(satrec, station, new Date(w.start * 1000));
+    const endLa = lookAngles(satrec, station, new Date(w.end * 1000));
+    const edgeSlant = Math.max(startLa ? startLa.slantKm : 0, endLa ? endLa.slantKm : 0);
+    const clipped = (w.start <= startS + 1e-3) || (w.end >= endS - 1e-3);
+    return {
+      startISO: new Date(w.start * 1000).toISOString(),
+      endISO: new Date(w.end * 1000).toISOString(),
+      durationMin: (w.end - w.start) / 60,
+      peakElevDeg: peakLa ? peakLa.elevDeg : (w.peak ? w.peak.value + minEl : null),
+      peakISO: new Date(peakT * 1000).toISOString(),
+      peakSlantKm: peakLa ? peakLa.slantKm : null,
+      maxSlantKm: edgeSlant || null,
+      clipped
+    };
+  });
+  const totalDurationMin = windows.reduce((s, w) => s + w.durationMin, 0);
+  return {
+    feasible: windows.length > 0, method, representative,
+    reason: windows.length ? '' : `搜索时窗 ${horizonHours}h 内该站对卫星始终低于最低仰角 ${minEl}°（|纬度| 可能超出轨道覆盖带，或需增大搜索时窗）`,
+    windows, totalWindows: windows.length, totalDurationMin,
+    elements: stat,
+    search: { t0ISO: t0.toISOString(), horizonHours, minElevDeg: minEl, representative }
+  };
+}
+
+// ============================================================================
+// 10. 星间链路(ISL)两星几何：双 SGP4 传播 → ECEF，地球临边遮挡 + 最差星间距离 + 互视窗口
+// ============================================================================
+// 严谨口径：两星位置全在 ECEF（地心）系算——星间距离/遮挡/掠地高度与惯性系严格等价（刚性旋转保距），
+// 距离变化率用中心差分（帧无关）。可见性 = LOS 线段最近地心距 ≥ RE + 大气余量（微波须清过大气）。
+// 最差工况 = 互视样本中【最大星间距离】（最大 FSL → 最差 C/N）。系统可用度 = 互视样本占比。
+// 手动圆轨道相位缺省 = 0：两同参数星退化为重合（星间距离≈0），明确报因，引导选真实卫星。
+// opts = { orbitA(发射), orbitB(接收), t0ISO?, horizonHours?, freqGHz?(多普勒), atmMarginKm? }
+
+// 某端点在 date 的 ECEF 位置（km）。node: { kind:'sat', satrec } | { kind:'snapshot', ecef(时不变) }
+function _islPosEcefAt(node, date) {
+  if (node.kind === 'snapshot') return node.ecef;
+  const pv = propagateAt(node.satrec, date);
+  if (!pv) return null;
+  const ecf = sat.eciToEcf(pv.position, sat.gstime(date));
+  return { x: ecf.x, y: ecf.y, z: ecf.z };
+}
+
+// LOS 段几何（ECEF，km）：星间距离 + 线段对地心最近距离。遮挡 ⇔ 最近点落在两星之间(0<t<1)且离地心 < R_block。
+function _islLos(pA, pB, blockRadiusKm) {
+  const dx = pB.x - pA.x, dy = pB.y - pA.y, dz = pB.z - pA.z;
+  const seg2 = dx * dx + dy * dy + dz * dz;
+  const rangeKm = Math.sqrt(seg2);
+  const t = seg2 > 0 ? -(pA.x * dx + pA.y * dy + pA.z * dz) / seg2 : -1;
+  let minCenterKm;
+  if (t > 0 && t < 1) {
+    const cx = pA.x + t * dx, cy = pA.y + t * dy, cz = pA.z + t * dz;
+    minCenterKm = Math.sqrt(cx * cx + cy * cy + cz * cz);   // 垂足离地心
+  } else {
+    minCenterKm = Math.min(Math.hypot(pA.x, pA.y, pA.z), Math.hypot(pB.x, pB.y, pB.z)); // 垂足在段外 → 取端点（卫星本身，远高于地面）
+  }
+  return { rangeKm, minCenterKm, visible: minCenterKm >= blockRadiusKm };
+}
+
+// 建 ISL 端点：satrec（elements/omm/tle/circular 合成）或 snapshot（固定 ECEF）。失败带 reason。
+function _islNode(orbit) {
+  const o = orbit || {};
+  if (o.type === 'unresolved') return { reason: o.reason || '所选卫星轨道未能解析，无法确定其几何' };
+  if (o.type === 'snapshot') {
+    const ecef = geodeticToEcef(Number(o.lonDeg) || 0, Number(o.latDeg) || 0, Math.max(0, Number(o.altKm) || 0));
+    return { node: { kind: 'snapshot', ecef }, method: '静态几何', representative: false, elements: null };
+  }
+  if (o.type === 'circular') {
+    const altKm = Math.max(0, Number(o.altKm) || 0), inclDeg = Number(o.inclDeg) || 0;
+    if (!(altKm > 0)) return { reason: '轨道高度无效（需 > 0 km）' };
+    const a = RE_KM + altKm;
+    const meanMotion = 86400 * Math.sqrt(MU / (a * a * a)) / (2 * Math.PI);
+    let satrec;
+    try { satrec = buildSatrec({ type: 'omm', meanMotion, ecc: 0, incl: inclDeg, raan: Number(o.raanDeg) || 0, argp: 0, ma: Number(o.maDeg) || 0, epoch: o.epoch || new Date().toISOString() }); }
+    catch (e) { return { reason: '虚拟圆轨道构建失败：' + e.message }; }
+    return { node: { kind: 'sat', satrec }, method: '闭式球面', representative: true, elements: staticElements(satrec) };
+  }
+  let satrec;
+  try { satrec = buildSatrec(o); } catch (e) { return { reason: '轨道根数无效：' + e.message }; }
+  if (satrec.error && satrec.error !== 0) return { reason: 'SGP4 初始化失败（error=' + satrec.error + '）' };
+  return { node: { kind: 'sat', satrec }, method: propagatorLabel(satrec), representative: false, elements: staticElements(satrec) };
+}
+
+function solveIslWorstCase(opts) {
+  opts = opts || {};
+  const A = _islNode(opts.orbitA), B = _islNode(opts.orbitB);
+  if (A.reason) return { feasible: false, reason: '发射卫星：' + A.reason };
+  if (B.reason) return { feasible: false, reason: '接收卫星：' + B.reason };
+  const horizonHours = Number(opts.horizonHours) > 0 ? Number(opts.horizonHours) : 24;
+  const atmMarginKm = Number(opts.atmMarginKm) >= 0 ? Number(opts.atmMarginKm) : 100;
+  const blockRadiusKm = RE_KM + atmMarginKm;
+  const freqGHz = Number(opts.freqGHz) > 0 ? Number(opts.freqGHz) : 23;
+  const representative = A.representative || B.representative;
+  const method = representative ? '闭式球面·示意' : (A.method + '↔' + B.method);
+
+  const epochOf = (nd) => (nd.node.kind === 'sat' && nd.node.satrec) ? new Date((nd.node.satrec.jdsatepoch + (nd.node.satrec.jdsatepochF || 0) - 2440587.5) * 86400000) : null;
+  const t0 = opts.t0ISO ? new Date(opts.t0ISO) : (epochOf(A) || epochOf(B) || new Date());
+  const startS = t0.getTime() / 1000, endS = startS + horizonHours * 3600;
+  const perMin = Math.min(A.elements ? A.elements.periodMin : 1440, B.elements ? B.elements.periodMin : 1440);
+  const stepSec = Math.max(2, Math.min((perMin * 60) / 200, 30));
+
+  const sampleAt = (ts) => {
+    const d = new Date(ts * 1000);
+    const pA = _islPosEcefAt(A.node, d), pB = _islPosEcefAt(B.node, d);
+    if (!pA || !pB) return null;
+    const los = _islLos(pA, pB, blockRadiusKm);
+    return { pA, pB, ...los };
+  };
+
+  // 扫描：互视样本取最大 range 为最差；统计可见占比
+  let worst = null, minR = Infinity, nVis = 0, nTot = 0;
+  for (let ts = startS; ts <= endS + 1e-6; ts += stepSec) {
+    const s = sampleAt(ts); if (!s) continue;
+    nTot++;
+    if (!s.visible) continue;
+    nVis++;
+    if (s.rangeKm < minR) minR = s.rangeKm;
+    if (!worst || s.rangeKm > worst.rangeKm) worst = { s, ts };
+  }
+  const windowMinutes = horizonHours * 60;
+  const visibleFrac = nTot > 0 ? nVis / nTot : 0;
+
+  if (!worst) {
+    return {
+      feasible: false, method, representative,
+      reason: `搜索时窗 ${horizonHours}h 内两星从不互视（LOS 始终被地球遮挡；可增大搜索时窗、调整轨道或减小大气余量 ${atmMarginKm}km）`,
+      visibility: { visibleFrac: 0, visibleMinutes: 0, windowMinutes },
+      search: { t0ISO: t0.toISOString(), horizonHours, stepSec, atmMarginKm, blockRadiusKm, freqGHz }
+    };
+  }
+  if (worst.s.rangeKm < 1) {
+    return {
+      feasible: false, method: '闭式球面·示意', representative: true,
+      reason: '两星几何重合（星间距离≈0）：手动圆轨道相位缺省相同。请改选两颗真实卫星，或使两星轨道（相位/升交点/高度）不同。',
+      visibility: { visibleFrac, visibleMinutes: visibleFrac * windowMinutes, windowMinutes },
+      search: { t0ISO: t0.toISOString(), horizonHours, stepSec, atmMarginKm, blockRadiusKm, freqGHz }
+    };
+  }
+
+  // 最差刻派生量：距离变化率（中心差分）→ 多普勒、地心夹角、两星高度、掠地高度、时延
+  const W = worst.s;
+  const sPlus = sampleAt(worst.ts + 1), sMinus = sampleAt(worst.ts - 1);
+  const rangeRateKmS = (sPlus && sMinus) ? (sPlus.rangeKm - sMinus.rangeKm) / 2 : 0;
+  const maxDopplerHz = Math.abs(rangeRateKmS) / C_KM_S * (freqGHz * 1e9);
+  const rA = Math.hypot(W.pA.x, W.pA.y, W.pA.z), rB = Math.hypot(W.pB.x, W.pB.y, W.pB.z);
+  const cosC = Math.max(-1, Math.min(1, (W.pA.x * W.pB.x + W.pA.y * W.pB.y + W.pA.z * W.pB.z) / (rA * rB)));
+  const worstMetrics = {
+    rangeKm: W.rangeKm, minRangeKm: (minR === Infinity ? null : minR),
+    txAltKm: rA - RE_KM, rxAltKm: rB - RE_KM,
+    grazAltKm: W.minCenterKm - RE_KM,
+    centralAngleDeg: Math.acos(cosC) * RAD,
+    rangeRateKmS, maxDopplerHz,
+    oneWayDelayMs: W.rangeKm / C_KM_S * 1000,
+    worstISO: new Date(worst.ts * 1000).toISOString()
+  };
+
+  // 互视访问窗口：f(t) = 最近点离地心 − R_block（>0 可见）
+  const fVis = (ts) => { const s = sampleAt(ts); return s ? (s.minCenterKm - blockRadiusKm) : NaN; };
+  const raw = findWindows(fVis, startS, endS, { coarseStep: stepSec, tol: 1, findPeak: false });
+  const windows = raw.map((w) => {
+    let wMax = 0;
+    for (let ts = w.start; ts <= w.end; ts += stepSec) { const s = sampleAt(ts); if (s && s.visible && s.rangeKm > wMax) wMax = s.rangeKm; }
+    return {
+      startISO: new Date(w.start * 1000).toISOString(), endISO: new Date(w.end * 1000).toISOString(),
+      durationMin: (w.end - w.start) / 60, maxRangeKm: wMax || null,
+      clipped: (w.start <= startS + 1e-3) || (w.end >= endS - 1e-3)
+    };
+  });
+  const totalVisibleMin = windows.reduce((s, w) => s + w.durationMin, 0);
+
+  return {
+    feasible: true, method, representative,
+    worst: worstMetrics,
+    visibility: { visibleFrac, visibleMinutes: visibleFrac * windowMinutes, windowMinutes, totalWindows: windows.length, totalVisibleMin, windows, persistent: windows.length === 1 && windows[0].clipped && visibleFrac > 0.999 },
+    elements: { tx: A.elements, rx: B.elements },
+    search: { t0ISO: t0.toISOString(), horizonHours, stepSec, atmMarginKm, blockRadiusKm, freqGHz, t0Source: opts.t0ISO ? 'explicit' : 'epoch', representative }
+  };
+}
+
 module.exports = {
   RE_KM, MU, OMEGA_E, C_KM_S, ECC_CIRCULAR_TOL,
   buildSatrec,
+  solveAccessWindows,
+  solveIslWorstCase,
   propagatorLabel,
   lookAngles,
   subPoint,

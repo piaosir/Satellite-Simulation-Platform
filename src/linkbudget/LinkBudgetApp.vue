@@ -44,10 +44,10 @@ function startResizeConfigs(e) {
 const satForm = reactive(defaultsFor(SAT_FIELDS))
 const basebandOpts = ref({})
 
-// —— 基带配置库（Phase 6）：载波由发信站调制器产生，故与发信站绑定（非收信站）——
+// —— 载波信号配置库（Phase 6）：载波由发信站调制器产生，故与发信站绑定（非收信站）——
 // 每份配置 = 引擎参数(CARRIER_FIELDS，含系统余量) + UI 态(门限模式/频谱效率模式/DVB/MODCOD)。
-// 「基带」模块以多张卡片同时展示/编辑全部配置（不再是单一表单+下拉切换）。
-// 发信站表新增「基带配置」列选择使用哪一份；同一配置可被多个发信站共用，未选(空)即用第一份。
+// 「载波信号」模块以多张卡片同时展示/编辑全部配置（不再是单一表单+下拉切换）。
+// 发信站表新增「载波信号配置」列选择使用哪一份；同一配置可被多个发信站共用，未选(空)即用第一份。
 let _bbSeq = 1
 function makeBasebandConfig(name) { return { id: 'bb' + (_bbSeq++), name, form: { ...defaultsFor(CARRIER_FIELDS), rsCodeMode: 'fraction', dvbStandard: 'custom', modcodIndex: -1 } } }
 const basebandConfigs = reactive([makeBasebandConfig('默认')])
@@ -72,9 +72,9 @@ const newStation = (fields) => { const r = defaultsFor(fields); r._id = 's' + (_
 const txStations = reactive([newStation(TX_FIELDS)])
 const rxStations = reactive([newStation(RX_FIELDS)])
 
-// —— 点击式 4 模块 ——（基带与发信站绑定，排在发信站左边）
+// —— 点击式 4 模块 ——（载波信号与发信站绑定，排在发信站左边）
 const MODULES = [
-  { key: 'carrier', label: '基带', icon: 'wave' },
+  { key: 'carrier', label: '载波信号', icon: 'wave' },
   { key: 'tx', label: '发信站群', icon: 'up' },
   { key: 'sat', label: '卫星', icon: 'sat' },
   { key: 'rx', label: '收信站群', icon: 'down' }
@@ -93,7 +93,7 @@ const calcMode = ref('margin')
 const targetPowerW = ref('')
 const overDb = ref('0')
 // 系统余量是「设置余量」模式的批量目标值，与 targetPowerW/overDb 同性质——批量计算的统一目标，
-// 不随某份基带配置走（载波本身不需要知道你想算多少余量，那是计算策略的事）。
+// 不随某份载波信号配置走（载波本身不需要知道你想算多少余量，那是计算策略的事）。
 const targetMarginDb = ref('3.00')
 
 // —— 链路配对方式：常规计算(按序号 1↔1，默认) / 矩阵计算(m×n 全配对) ——
@@ -256,7 +256,7 @@ function reloadSatTree() {
 }
 watch(activeModule, (m) => { if (m === 'sat') reloadSatTree() })
 
-// 顶栏「刷新」：重新拉取主窗口的最新设置（GRD 卫星树/各天线设置/实时星位 + 城市库/基带选项），并按最新数据重算
+// 顶栏「刷新」：重新拉取主窗口的最新设置（GRD 卫星树/各天线设置/实时星位 + 城市库/载波信号选项），并按最新数据重算
 const refreshing = ref(false)
 async function refreshLatest() {
   refreshing.value = true
@@ -286,7 +286,7 @@ const barClass = (v) => { const n = parseFloat(v); return n > 100 ? 'danger' : (
 
 // —— 容量汇总（独立模块）——
 // 汇总本批次所有已成功计算的链路：总带宽 = Σ 各链路载波带宽；总容量 = Σ 各链路容量。
-// 单链路容量 = 频谱效率 η(bps/Hz) × 载波带宽 B(kHz) = 容量(kbps)；各链路基带配置可不同（η 各异），
+// 单链路容量 = 频谱效率 η(bps/Hz) × 载波带宽 B(kHz) = 容量(kbps)；各链路载波信号配置可不同（η 各异），
 // 故逐链路相乘再求和，而非用单一 η 乘总带宽。engine 已按链路输出 allocBandwidthResult / spectralEfficiencyResult。
 // capacityKbpsOf 是单链路口径的唯一出处：列表/矩阵「容量」指标、容量汇总都从这里换算。
 function capacityKbpsOf(d) {
@@ -348,7 +348,7 @@ async function compute() {
     for (const [ti, ri] of pairs) {
       const bbForm = resolveBaseband(txStations[ti].basebandId).form
       const { satParams, linkParams } = buildParams(satForm, bbForm, txStations[ti], rxStations[ri])
-      linkParams.margin = targetMarginDb.value   // 系统余量是批量目标值，不随基带配置走
+      linkParams.margin = targetMarginDb.value   // 系统余量是批量目标值，不随载波信号配置走
       const txName = txStations[ti].earthStationLocation || ('发' + (ti + 1))
       const rxName = rxStations[ri].rxEarthStationLocation || ('收' + (ri + 1))
       const r = await api.linkBudget.computeMode(satParams, linkParams, opt)
@@ -411,7 +411,7 @@ const autoGeoTx = (row, skip) => fillGeoRow(row, 'longitude', 'latitude', 'rainR
 const autoGeoRx = (row, skip) => fillGeoRow(row, 'rxLongitude', 'rxLatitude', 'rxRainRate', 'rxAltitude', skip)
 
 // —— Phase 4：配置持久化（含卫星 / EIRP·GT 天线匹配选择）——
-// ① 整盘工作台状态序列化（卫星/基带参数、发收信站群、计算方式、GRD 匹配选择、矩阵显示）。
+// ① 整盘工作台状态序列化（卫星/载波信号参数、发收信站群、计算方式、GRD 匹配选择、矩阵显示）。
 // ② 自动保存「上次会话」到 localStorage：关掉再开窗口即原样恢复（卫星/天线选择不丢）。
 // ③ 命名配置（配置列表）走 store.config.* 持久化到 userData/configs.json，可多套切换。
 const STATE_KEY = 'linkbudget/last'
@@ -438,7 +438,7 @@ function applyState(st) {
       form: { ...defaultsFor(CARRIER_FIELDS), rsCodeMode: 'fraction', dvbStandard: 'custom', modcodIndex: -1, ...c.form }
     })))
   } else if (st.carrierForm) {
-    // 旧版单一基带表单（升级前保存的配置）：包成一份「默认」配置迁移
+    // 旧版单一载波信号表单（升级前保存的配置）：包成一份「默认」配置迁移
     basebandConfigs.splice(0, basebandConfigs.length, {
       id: 'bb' + (_bbSeq++), name: '默认',
       form: { ...defaultsFor(CARRIER_FIELDS), rsCodeMode: 'fraction', dvbStandard: 'custom', modcodIndex: -1, ...st.carrierForm }
@@ -449,7 +449,7 @@ function applyState(st) {
   if (st.calcMode) calcMode.value = st.calcMode
   if (st.targetPowerW != null) targetPowerW.value = st.targetPowerW
   if (st.overDb != null) overDb.value = st.overDb
-  // 系统余量：新字段优先；否则从旧存档兜底取（曾短暂挂在 carrierForm.margin / 基带配置卡片里）
+  // 系统余量：新字段优先；否则从旧存档兜底取（曾短暂挂在 carrierForm.margin / 载波信号配置卡片里）
   if (st.targetMarginDb != null) targetMarginDb.value = st.targetMarginDb
   else if (st.carrierForm && st.carrierForm.margin != null) targetMarginDb.value = st.carrierForm.margin
   else if (basebandConfigs[0] && basebandConfigs[0].form.margin != null) targetMarginDb.value = basebandConfigs[0].form.margin
@@ -466,12 +466,13 @@ watch([satForm, basebandConfigs, txStations, rxStations, calcMode, targetPowerW,
 
 // —— 命名配置 CRUD ——
 // 注意：Electron 不支持 window.prompt（静默返回 null → 之前「保存不了」的根因）。改用应用内命名弹窗。
-// 与 NGSO 共用 configs.json：按体制过滤——文件夹按顶层 orbitType，配置按 state.orbitType。
-// 顺带修正历史遗留：GEO 列表此前不过滤会错显 NGSO 配置，这里排除 state.orbitType==='NGSO' 的项。
+// 与 NGSO / 再生式共用 configs.json：按体制过滤——文件夹按顶层 orbitType，配置按 state.orbitType。
+// GEO 是历史默认体制：老配置无 orbitType 字段，故 GEO 用「白名单」——只收「无 orbitType（遗留 GEO）
+// 或显式 GEO」的项。切忌用「排除 NGSO」式黑名单：每新增一种体制（如 REGEN）都会漏网串到 GEO 列表。
 async function loadConfigs() {
   try {
     const all = (api && await api.store.listConfigs()) || []
-    configs.value = all.filter((it) => (it.type === 'folder') ? (it.orbitType === 'GEO') : (!it.state || it.state.orbitType !== 'NGSO'))
+    configs.value = all.filter((it) => (it.type === 'folder') ? (it.orbitType === 'GEO') : (!it.state || !it.state.orbitType || it.state.orbitType === 'GEO'))
   } catch (e) { configs.value = [] }
   pruneExpanded()
 }
@@ -918,11 +919,11 @@ onMounted(async () => {
           <StationGrid v-else-if="activeModule === 'rx'" :stations="rxStations" :fields="RX_FIELDS" :cities="cities" :city-search="citySearch" label="收信站" :auto-geo="autoGeoRx" ro-label="G/T" ro-unit="dB/K" :ro-values="rxGt" />
           <div v-else-if="activeModule === 'carrier'" class="bb-wrap">
             <div class="bb-toolbar">
-              <span class="bb-count">{{ basebandConfigs.length }} 份基带配置</span>
+              <span class="bb-count">{{ basebandConfigs.length }} 份载波信号配置</span>
               <span class="lb-spacer"></span>
               <button class="lb-mini" title="新增配置" @click="addBasebandConfig"><Icon name="plus" :size="12" /> 新增配置</button>
             </div>
-            <p class="bb-tip">载波由发信站调制器产生，与发信站绑定：「发信站群」表的「基带配置」列为每个发信站单独选择使用哪一份，同一份可被多个发信站共用。</p>
+            <p class="bb-tip">载波由发信站调制器产生，与发信站绑定：「发信站群」表的「载波信号配置」列为每个发信站单独选择使用哪一份，同一份可被多个发信站共用。</p>
             <div class="bb-cards">
               <div v-for="cfg in basebandConfigs" :key="cfg.id" class="bb-card">
                 <div class="bb-card-hd">
@@ -1335,7 +1336,7 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 
 .lb-edit { flex: 1; min-height: 0; overflow: auto; padding: 12px; }
 .form { max-width: 420px; }
-/* 基带配置库：工具条 + 多张卡片同时展示/编辑 */
+/* 载波信号配置库：工具条 + 多张卡片同时展示/编辑 */
 .bb-wrap { max-width: 620px; }
 .bb-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
 .bb-count { font-size: 12px; color: var(--text-muted); }

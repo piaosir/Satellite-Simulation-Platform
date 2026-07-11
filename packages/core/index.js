@@ -16,7 +16,7 @@ const sunOutage = require('./utils/sunOutageCalculator.js');
 const icsBuilder = require('./utils/icsBuilder.js');
 const eventWindows = require('./utils/eventWindows.js');
 
-// 基带选项（调制 / FEC / DVB 标准 / 各 MODCOD 预设表），供基带面板的下拉与快选用。
+// 载波信号选项（调制 / FEC / DVB 标准 / 各 MODCOD 预设表），供载波信号面板的下拉与快选用。
 function basebandOptions() {
   return {
     modulation: constants.MODULATION_OPTIONS,
@@ -70,6 +70,14 @@ try {
   console.warn('[satlink-core] NGSO 引擎延迟加载：', e.message);
 }
 
+// 再生式链路预算引擎（v1：再生式上行）——复用 NGSO 上行物理量，把合计重标为上行 C/(N+I)。
+let regen = null;
+try {
+  regen = require('./utils/linkCalculatorRegen.js');
+} catch (e) {
+  console.warn('[satlink-core] 再生式引擎加载失败：', e.message);
+}
+
 // SGP4/SDP4 轨道传播（vendored satellite-js），供星座地图/星间链路使用。
 let sgp4 = null;
 try {
@@ -91,9 +99,19 @@ module.exports = {
   computeLinkMode: modeSolver.computeLinkMode,
   // NGSO 计算方式求解（同四种方式，切 NGSO 引擎，强制 ISL 跳数=0）
   computeLinkModeNGSO: modeSolver.computeLinkModeNGSO,
+  // 再生式上行计算方式求解（设置余量 / 设置功放；合计 C/N = 上行 C/(N+I)）
+  computeRegenUplinkMode: regen && regen.computeRegenUplinkMode,
+  // 再生式下行计算方式求解（给定工作点 G/T / 目标余量；合计 C/N = 下行 C/(N+I)）
+  computeRegenDownlinkMode: regen && regen.computeRegenDownlinkMode,
+  // 再生式星间计算（发射卫星 EIRP / 接收卫星 G/T；合计 C/N = 星间单跳 C/N；几何最差距离注入）
+  computeRegenIslMode: regen && regen.computeRegenIslMode,
   // NGSO 站星几何求解（SGP4 双站互视最差几何 + 轨道根数 + 时刻/时窗），供结果几何区用平台精确几何
   ngsoGeometry,
   solveNgsoMutualWorstCase: ngsoGeometry.solveMutualWorstCase,
+  // 星间链路(ISL)两星几何：双 SGP4 + 地球临边遮挡 → 最差星间距离 + 互视可见度 + 访问窗口
+  solveIslWorstCase: ngsoGeometry.solveIslWorstCase,
+  // 单站访问窗口（满足最低仰角及以上的全部过境时间窗），供再生式几何关系区
+  solveAccessWindows: ngsoGeometry.solveAccessWindows,
   // 经纬度 → 降雨率 / 海拔自动填值（与小程序口径一致）
   geoAutoFill,
   loadFullPrecisionData,
@@ -101,7 +119,7 @@ module.exports = {
   listCities: cities.getAllCities,
   // 城市关键词检索：支持 城市名 / 省份名(含别名) / 拼音首字母缩写（与小程序口径一致）
   searchCities: cities.searchCities,
-  // 基带选项（调制/FEC/DVB/MODCOD）
+  // 载波信号选项（调制/FEC/DVB/MODCOD）
   basebandOptions,
   // 日凌预报（v5 物理恶化门限判据）+ ICS 日历构建
   calculateSunOutage: sunOutage.calculateSunOutage,

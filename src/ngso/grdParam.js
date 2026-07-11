@@ -44,8 +44,14 @@ export function loadSatTree() {
   return { sats, cfgs: (grd && grd.cfgs) || {} }
 }
 
-// 把天线的卫星几何（实时星优先）整理成主进程采样所需的 sat 对象。
-function satOf(node, ant) {
+// 把天线的卫星几何整理成主进程采样所需的 sat 对象。
+// satOverride（{lon,lat,alt}）非空时优先——链路预算传入「最差工况 t* 星下点」，令天线增益
+// (EIRP/G·T) 与性能指标表取自同一物理瞬间；缺省才回退天线快照/实时星位（导入时那一刻的位置）。
+function satOf(node, ant, satOverride) {
+  const o = satOverride
+  if (o && Number.isFinite(Number(o.lon))) {
+    return { lon: Number(o.lon), lat: Number(o.lat) || 0, alt: Number.isFinite(Number(o.alt)) ? Number(o.alt) : (node.altKm || GEO_ALT) }
+  }
   return {
     lon: Number.isFinite(ant.satLon) ? ant.satLon : node.lon,
     lat: Number.isFinite(ant.satLat) ? ant.satLat : (node.lat || 0),
@@ -55,11 +61,21 @@ function satOf(node, ant) {
 
 // 对外：取某天线在【一批】经纬度上的「多波束最大 Parameter」（绝对 dB）。
 // 解析+采样在主进程完成，一次 IPC 处理所有站点；返回与 points 等长同序的 (number|null)[]。
-export async function sampleAntennaParams(node, ant, cfg, points) {
+// satOverride（{lon,lat,alt}）非空时以该卫星位置采样（最差工况 t* 星下点），否则用天线快照位置。
+export async function sampleAntennaParams(node, ant, cfg, points, satOverride) {
   const pts = points || []
   if (!api || !node || !ant || !ant.file) return pts.map(() => null)
   try {
-    const vals = await api.linkBudget.grdSample({ file: ant.file, sat: satOf(node, ant), cfg: cfg || {}, points: pts })
+    // IPC 载荷必须是可结构化克隆的纯数据：cfg 可能是 Vue 响应式代理（如 regen 把天线设置放在 ref 里，
+    // 读到的是 reactive proxy），直接过 IPC 会报「An object could not be cloned」，整次采样落空返 null。
+    // 这里统一把 cfg / points 转成纯对象再发（sat 由 satOf 返回的字面量本就是纯数据）。
+    const req = {
+      file: String(ant.file),
+      sat: satOf(node, ant, satOverride),
+      cfg: cfg ? JSON.parse(JSON.stringify(cfg)) : {},
+      points: pts.map((p) => ({ lon: Number(p.lon), lat: Number(p.lat) }))
+    }
+    const vals = await api.linkBudget.grdSample(req)
     return Array.isArray(vals) ? vals : pts.map(() => null)
   } catch (e) {
     console.warn('GRD 采样失败', ant.file, e)
@@ -67,8 +83,8 @@ export async function sampleAntennaParams(node, ant, cfg, points) {
   }
 }
 
-// 单点便捷封装（保留旧调用点兼容）。
-export async function sampleAntennaParam(node, ant, cfg, lon, lat) {
-  const [v] = await sampleAntennaParams(node, ant, cfg, [{ lon, lat }])
+// 单点便捷封装（保留旧调用点兼容）。satOverride 透传给批量版。
+export async function sampleAntennaParam(node, ant, cfg, lon, lat, satOverride) {
+  const [v] = await sampleAntennaParams(node, ant, cfg, [{ lon, lat }], satOverride)
   return v == null ? null : v
 }

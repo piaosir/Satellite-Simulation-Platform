@@ -2,10 +2,10 @@
 import { computed, ref, watch } from 'vue'
 import Icon from '../components/Icon.vue'
 
-// 基带参数面板 —— 严格照搬小程序基带卡片：DVB/MODCOD 快选、Eb/N₀⇄Es/N₀ 切换（带换算）、
+// 载波信号参数面板 —— 严格照搬小程序载波信号卡片：DVB/MODCOD 快选、Eb/N₀⇄Es/N₀ 切换（带换算）、
 // 频谱效率⇄帧效率切换、实时载波带宽/符号率（可编辑反算信息速率）。
 const props = defineProps({
-  form: { type: Object, required: true },   // 共享基带参数（含 noiseRatioMode / rsCodeMode / dvbStandard / modcodIndex）
+  form: { type: Object, required: true },   // 共享载波信号参数（含 noiseRatioMode / rsCodeMode / dvbStandard / modcodIndex）
   options: { type: Object, default: () => ({}) }
 })
 
@@ -181,7 +181,7 @@ function onBwInput(e) { setAnchor('bw', e.target.value) }
     </div>
 
     <!-- 实时结果（可编辑反算，三者与信息速率同一条换算链，编辑任一个即把它设为锚点）——
-         系统余量不在此处：它是批量计算的目标值，不随基带配置走，在 LinkBudgetApp 底部「计算方式」栏统一设置 -->
+         系统余量不在此处：它是批量计算的目标值，不随载波信号配置走，在 LinkBudgetApp 底部「计算方式」栏统一设置 -->
     <div class="bb-rt">
       <label class="bb-f"><span class="bb-l">码片速率 <i>(kbps)</i></span>
         <input :value="fmt(chipRate)" class="bb-i mono" @change="onChipInput" />

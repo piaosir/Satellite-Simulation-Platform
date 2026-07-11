@@ -2,7 +2,7 @@
 // 只负责“产出可渲染的 entries”，渲染/点选/选中几何全部复用星座3D 页现成的点云管线
 //   （entries → scene.setSatellites → renderEntries[index] 命中 → selectSat 画轨道/星下点/足迹）。
 // 每颗星是一组经典平根数，经 elementsToSatrec（复用 omm2satrec）转真实 SGP4 satrec；
-// 整座星座共享同一场景历元 scenarioEpoch（可设/持久化）→ 相对相位/相对 RAAN 精确保持、定向跨会话稳定。
+// 整座星座共享同一场景历元 scenarioEpoch（可设/持久化）→ 相对相位/相对 RAAN 精确保持；历元默认锚在当天 08:00（每天更新）。
 import { ref } from 'vue'
 import sat from './satellite.js'
 import { generateConstellation } from './walker.js'
@@ -10,12 +10,22 @@ import { generateConstellation } from './walker.js'
 const RE = 6378.137
 const MU = 398600.4418
 const STORE_KEY = 'constellation3d/customConsts'
-// 场景历元（STK Scenario Epoch 口径）：全部自定义星座共用的固定参考历元。默认取“当前时刻”并持久化，可在面板设定。
-// 取固定值（而非每次渲染都 new Date()）→ 星座在地球上的定向跨会话稳定，不随“打开软件的时刻”漂移
-// （旧实现每次 new Date()：同一 Ω₀ 每次开软件按 Ω₀−GMST(当次开机时刻) 落地，落在不同经度，看着像“赤经不对”）。
+// 场景历元（STK Scenario Epoch 口径）：全部自定义星座共用的参考历元。默认=电脑「当天 08:00」，每天自动更新；
+// 若当天曾人为修改，则当天以人为值为准（次日再回到该日 08:00）。取当天固定值（而非每次渲染都 new Date()）→
+// 星座在地球上的定向本会话内稳定，不随“打开软件的时刻”秒级漂移；跨天则统一锚在当天 08:00，便于按日复现。
 // RAAN 仍是真惯性升交点赤经（相对春分点/TEME），与真实 TLE/星历同一参考、可直接对应；
-// 渲染时在此历元上叠加时间轴偏移即可向后推演预测（见页面 ccTimeAt）。默认取“当前时刻”→ 贴近真实星历便于同历元比对。
-const defaultEpoch = () => new Date().toISOString()
+// 渲染时在此历元上叠加时间轴偏移即可向后推演预测（见页面 ccTimeAt）。
+// 本地日期串 YYYY-MM-DD（判定「人为修改是否发生在今天」）
+const localDayStr = (d) => { const p = (n) => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}` }
+// 电脑「当天 08:00」的 ISO（本地时区）
+const today8am = () => { const d = new Date(); d.setHours(8, 0, 0, 0); return d.toISOString() }
+const defaultEpoch = () => today8am()
+// 从持久化 blob 解析「本次应生效」的场景历元（每天更新规则）：默认=当天 08:00；
+// 若 blob.manualDay===今天 → 用 blob.epoch（当天的人为值）。纯函数，供 3D 页与 NGSO 窗口同规则读取 → 跨窗口一致。
+export function resolveScenarioEpoch(blob) {
+  if (blob && blob.manualDay === localDayStr(new Date()) && blob.epoch && !isNaN(Date.parse(blob.epoch))) return new Date(blob.epoch).toISOString()
+  return today8am()
+}
 // 合成 NORAD 号段：从 900000 起，每座星座占一段（明显区别于真实目录星，避免撞号）
 const NORAD_BASE = 900000
 const NORAD_STEP = 10000
@@ -61,9 +71,10 @@ function normalize(c) {
 // onChange：任何增删改/显隐后回调页面重建渲染集（rebuildRenderSet）
 export function useCustomConstellations(onChange) {
   const list = ref([])              // [{ id, name, params, color, colorByPlane, visible, noradBase }]
-  const scenarioEpoch = ref(defaultEpoch())   // 场景历元（全自定义星座共用，持久化）；首次=当前时刻，可在面板设定
+  const scenarioEpoch = ref(defaultEpoch())   // 场景历元（全自定义星座共用，持久化）；默认=电脑当天 08:00，可在面板设定
   const built = new Map()           // id → { sig, entries }
   let _top = NORAD_BASE             // 下一座星座的 NORAD 号段基址
+  let manualDay = null              // 最近一次人为设定发生的本地日 YYYY-MM-DD；等于今天 → 当天以人为值为准，不被「当天 08:00」覆盖
   const preview = ref(null)         // 实时预览 { editId, cfg }（不持久化）：编辑器打开时随参数刷新
   const PREVIEW_BASE = NORAD_BASE + 90 * NORAD_STEP   // 预览专用 NORAD 号段，避开已建星座
 
@@ -121,13 +132,16 @@ export function useCustomConstellations(onChange) {
     return null
   }
 
-  // 设定共享场景历元：作废全部合成 satrec（历元变→根数历元变）→ 重建 → 持久化 → 通知页面重渲染
+  // 设定共享场景历元（面板手动改 / 点「当前」时调用）：作废全部合成 satrec → 重建 → 持久化 → 通知页面重渲染
   function setScenarioEpoch(iso) {
     const v = iso && !isNaN(Date.parse(iso)) ? new Date(iso).toISOString() : defaultEpoch()
-    if (v === scenarioEpoch.value) return
-    scenarioEpoch.value = v
-    built.clear()   // 历元变 → 全部合成 satrec 作废，下次 build 按新历元重建（sig 不含历元，故须显式清）
-    persist(); notify()
+    manualDay = localDayStr(new Date())   // 标记「今天人为设定过」→ 当天以此为准，不被「当天 08:00」默认覆盖
+    if (v !== scenarioEpoch.value) {
+      scenarioEpoch.value = v
+      built.clear()   // 历元变 → 全部合成 satrec 作废，下次 build 按新历元重建（sig 不含历元，故须显式清）
+      notify()
+    }
+    persist()   // 值变或不变都落盘（至少记下今天的 manualDay）
   }
 
   function persist() {
@@ -135,6 +149,7 @@ export function useCustomConstellations(onChange) {
       localStorage.setItem(STORE_KEY, JSON.stringify({
         top: _top,
         epoch: scenarioEpoch.value,
+        manualDay,   // 人为设定日（YYYY-MM-DD）：resolveScenarioEpoch 据此判定「当天以人为值为准」
         items: list.value.map((c) => ({ id: c.id, name: c.name, params: c.params, color: c.color, colorByPlane: c.colorByPlane, visible: c.visible, noradBase: c.noradBase }))
       }))
     } catch { /* 存储失败不影响功能 */ }
@@ -147,9 +162,11 @@ export function useCustomConstellations(onChange) {
       if (blob && Array.isArray(blob.items)) {
         list.value = blob.items.map(normalize)
         _top = Number.isFinite(blob.top) ? blob.top : (NORAD_BASE + list.value.length * NORAD_STEP)
-        // 场景历元：有则用持久化值；旧数据无此字段 → 冻结“当前时刻”为历元并回写（一次性迁移，此后稳定）
-        if (blob.epoch && !isNaN(Date.parse(blob.epoch))) scenarioEpoch.value = new Date(blob.epoch).toISOString()
-        else { scenarioEpoch.value = defaultEpoch(); persist() }
+        // 场景历元「每天更新」：默认=电脑当天 08:00；当天曾人为修改(manualDay===今天)则沿用持久化人为值。
+        // 非人为日（含旧数据/跨天）→ 回写当天 08:00 历元并清掉过期 manualDay，使 3D 页与 NGSO 窗口按日一致。
+        manualDay = (blob.manualDay === localDayStr(new Date())) ? blob.manualDay : null
+        scenarioEpoch.value = resolveScenarioEpoch(blob)
+        if (!manualDay) persist()
       }
     } catch { /* 读失败按空处理 */ }
   }

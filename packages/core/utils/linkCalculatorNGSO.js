@@ -1455,18 +1455,10 @@ function performCalculations(satParams, inputs) {
   // 使用每载波占用的卫星EIRP
   const satellitePSD = transponderOutputEIRP - 10 * Math.log10(allocBandwidth * 1000);
   
-  // ============ 卫星到地面的PFD计算 ============
-  // PFD (功率通量密度) = EIRP - 10*log10(4*π*d²) 单位: dBW/m²
-  // 其中 d 是斜距（米）
-  // 这是一个与频率无关的物理量，只取决于EIRP和距离
-  // 注意：不应使用FSL，因为FSL包含了频率项（用于计算接收功率）
-  // PFD可以进一步减去大气和云衰减以得到地面实际功率通量密度
-  const satelliteActualEIRP = eirpPerCarrier; // 使用载波占用的卫星EIRP
-  const rxSlantRangeMeters = rxSlantRange * 1000; // 下行斜距转换为米
-  // PFD = EIRP - 10*log10(4*π*d²) = EIRP - 10*log10(4π) - 20*log10(d)
-  const spreadingLoss = 10 * Math.log10(4 * CONSTANTS.PI) + 20 * Math.log10(rxSlantRangeMeters);
-  const satellitePFD = satelliteActualEIRP - spreadingLoss - downlinkAtmosphericAttenuation - 
-                       downlinkCloudAttenuation; // PFD到达地面（不含雨衰）
+  // ============ 卫星到地面 PFD ============
+  // 统一由级联段的 arrivalPFDAtGround 给出（= 到达地面载波电平 C + 10·lg(4π/λ²)，
+  // 与下行功率链逐行自洽、含实际大气与雨衰/其他损耗，且用正确的下行每载波 EIRP transponderOutputEIRP）。
+  // 不再单独计算晴空口径的 satellitePFD（旧实现误用了上行口径 eirpPerCarrier），避免同名两值。
   
   // ============ ITU RR Article 21 PFD限制计算 ============
   // 根据国际电联无线电规则第21条计算地面PFD限制
@@ -1752,8 +1744,7 @@ function performCalculations(satParams, inputs) {
   }
   results.actualDownlinkCT = actualDownlinkCT.toFixed(2); // 载波下行C/T
   results.actualDownlinkCN0 = (actualDownlinkCT + 228.6).toFixed(2); // 载波下行C/N₀
-  results.satellitePFD = satellitePFD.toFixed(2);
-  results.arrivalPFDAtGroundResult = arrivalPFDAtGround.toFixed(2); // 实际到达地面通量密度（到达地面载波电平+下行单位面积增益）
+  results.arrivalPFDAtGroundResult = arrivalPFDAtGround.toFixed(2); // 卫星到地面 PFD（实际到达）：到达地面载波电平 + 10·lg(4π/λ²)，与下行功率链自洽
   results.ituPfdLimit4kHz = ituPfdLimit4kHz.toFixed(2); // ITU PFD限制(dBW/m²/4kHz)
   results.ituPfdLimitPerM2 = ituPfdLimitPerM2.toFixed(2); // ITU PFD限制(转换到载波带宽)
   results.ituPfdRefBandwidth = ituPfdRefBandwidth; // ITU参考带宽
@@ -1765,12 +1756,12 @@ function performCalculations(satParams, inputs) {
   results.systemNoiseTempDbResult = systemNoiseTempDb.toFixed(2);
   results.gOverTeResult = gOverTe.toFixed(2);
   results.gOverTdegradationResult = gOverTdegradation.toFixed(2);
-  results.rxFeederLossResult = rxFeederLoss.toFixed(1);
+  results.rxFeederLossResult = rxFeederLoss.toFixed(2);
   results.rxSidelobeGainResult = (rxAntennaGain - ISO).toFixed(2); // 接收旁瓣增益
   
   // 卫星参数
   results.orbitPositionResult = orbitPosition;
-  results.EIRPsResult = EIRPs.toFixed(1);
+  results.EIRPsResult = EIRPs.toFixed(2);
   results.satellitePSDResult = satellitePSD.toFixed(3);
   results.SFDsResult = SFDs.toFixed(2);
   results.satelliteGTResult = G_Ts.toFixed(2); // 卫星接收 G/T (dB/K)，上行 C/T 转换用
