@@ -127,6 +127,35 @@ export const FIELD_GROUPS = [
       { key: 'islMiscLoss', label: '综合损耗', tip: '指向/极化/馈线等未单列损耗之综合（dB）', unit: 'dB', type: 'num', def: '1', target: 'sat' },
       { key: 'islAtmMargin', label: '大气余量', tip: 'LOS 视线须高出地表的余量（km）：微波须清过大气；0=纯几何视线（仅避开固体地球）', unit: 'km', type: 'num', def: '100', target: 'geom' }
     ]
+  },
+  {
+    // 星间激光链路群（简化版，按 MathWorks Satcom Toolbox 官方光学 ISL 示例重构）：发射卫星 → 接收卫星，两星均选自「卫星群」。
+    //   接收光功率  P_rx[dBm] = P_tx + OE_tx + OE_rx + G_tx + G_rx − LP_tx − LP_rx − L_PS − L_other
+    //     望远镜增益 G  = 10·lg((π·D/λ)²)；光学效率 OE = 10·lg(η)；指向损耗 LP = 4.3429·(π·D/λ)²·θ²（θ=rad）；
+    //     自由空间损耗 L_PS = 20·lg(4π·d/λ)（d = 几何最差星间距离，真空段无大气/雨/云）。
+    //   链路余量 LM = P_rx − P_req（P_req = 接收机灵敏度/所需接收功率，用户输入）。
+    //   软件只套用上式，各输入值由用户给定；不做 C/N₀·Eb/N₀·光子/bit·指向抖动衰落等派生。
+    //   几何复用 solveIslWorstCase（双 SGP4 + 地球临边遮挡）；可用度 = 几何互视占比（空间对空间无雨）。
+    //   除 meta（选星）与 geom（大气余量，仅喂几何）外，所有字段扁平进 laserParams 交光学引擎。
+    //   依据：https://www.mathworks.com/help/satcom/ug/optical_satellite_communication_link_budget_analysis.html
+    key: 'laser', title: '星间激光链路群', icon: 'laser',
+    fields: [
+      { key: 'txSatelliteId', label: '发射卫星', type: 'select', options: [], def: '', target: 'meta', frozen: true },
+      { key: 'rxSatelliteId', label: '接收卫星', type: 'select', options: [], def: '', target: 'meta', frozen: true },
+      // —— MathWorks 功率链输入项（软件只套公式，值由用户给定）——
+      { key: 'txPowerDbm', label: '发射光功率 P_tx', tip: '发射光功率 P_tx（dBm；30=1W、33=2W、36=4W）', unit: 'dBm', type: 'num', def: '30', target: 'laser' },
+      { key: 'wavelengthNm', label: '波长 λ', tip: '工作波长 λ（nm）；决定望远镜增益与自由空间损耗', unit: 'nm', type: 'num', def: '1550', target: 'laser' },
+      { key: 'txApertureMm', label: '发射口径 D_tx', tip: '发射望远镜口径 D_tx（mm）；增益 G_tx = 10·lg((π·D/λ)²)', unit: 'mm', type: 'num', def: '80', target: 'laser' },
+      { key: 'rxApertureMm', label: '接收口径 D_rx', tip: '接收望远镜口径 D_rx（mm）；增益 G_rx = 10·lg((π·D/λ)²)', unit: 'mm', type: 'num', def: '80', target: 'laser' },
+      { key: 'txOpticsEff', label: '发射光学效率 η_tx', tip: '发射光学效率 η_tx ∈ (0,1]；OE_tx = 10·lg(η)。MathWorks 缺省 0.8（=−0.97dB）', unit: '', type: 'num', def: '0.8', target: 'laser' },
+      { key: 'rxOpticsEff', label: '接收光学效率 η_rx', tip: '接收光学效率 η_rx ∈ (0,1]；OE_rx = 10·lg(η)。MathWorks 缺省 0.8', unit: '', type: 'num', def: '0.8', target: 'laser' },
+      { key: 'txPointingErrUrad', label: '发射指向误差', tip: '发射静态指向误差 θ（µrad）；指向损耗 LP_tx = 4.3429·(π·D/λ)²·θ²。MathWorks 缺省 1µrad', unit: 'µrad', type: 'num', def: '1', target: 'laser' },
+      { key: 'rxPointingErrUrad', label: '接收指向误差', tip: '接收静态指向误差 θ（µrad）；指向损耗 LP_rx = 4.3429·(π·D/λ)²·θ²', unit: 'µrad', type: 'num', def: '1', target: 'laser' },
+      { key: 'rxSensitivityDbm', label: '接收机灵敏度 P_req', tip: '所需接收功率 P_req（dBm）；链路余量 = P_rx − P_req。MathWorks 示例：−35.5dBm@10Gbps OOK BER 1e-12', unit: 'dBm', type: 'num', def: '-35.5', target: 'laser' },
+      { key: 'otherLossDb', label: '其他损耗 L', tip: '附加/未细分损耗 L（dB，正值，可选；截图公式末的 −L 项）', unit: 'dB', type: 'num', def: '0', target: 'laser' },
+      // —— 几何（仅喂几何求解，不进功率链）——
+      { key: 'islAtmMargin', label: '大气余量', tip: 'LOS 视线须高出地表的余量（km）：激光光路须清过大气（湍流/吸收）；0=纯几何视线（仅避开固体地球）。仅喂几何求解，判两星互视遮挡', unit: 'km', type: 'num', def: '100', target: 'geom' }
+    ]
   }
 ]
 
@@ -137,6 +166,7 @@ export const SAT_FIELDS = _grp('sat')
 export const TX_FIELDS = _grp('uplink')
 export const RX_FIELDS = _grp('downlink')
 export const ISL_FIELDS = _grp('isl')
+export const LASER_FIELDS = _grp('laser')
 
 export { defaultsFor }
 
@@ -323,4 +353,21 @@ export function buildRegenIslParams(txSatForm, carrierForm, islLink) {
   const gtRef = parseFloat(satParams.sfdGtRef); const sfd = parseFloat(satParams.sfdRef)
   if (gtRef && !isNaN(gtRef) && !isNaN(sfd)) satParams.sfdRef = sfd + gtRef
   return { satParams: JSON.parse(JSON.stringify(satParams)), linkParams: JSON.parse(JSON.stringify(linkParams)) }
+}
+
+// ==================== 再生式星间激光链路（相干 DP-QPSK）====================
+// 组装单条激光星间链路的扁平入参 laserParams（交自研光学引擎 computeRegenLaserIslMode）。
+// 与微波 ISL 不同：不复用 NGSO RF 引擎，无 satParams/linkParams 之分——所有光学/调制/指向字段扁平入参。
+// 星间激光无速率/带宽概念，灵敏度直接由接收机灵敏度 P_req(dBm) 给定（不挂 RF 载波信号库）。
+// islHopDistance（几何最差距离）由主计算按几何求解后注入。
+export function buildRegenLaserParams(txSatForm, laserLink) {
+  const lp = {}
+  // 激光字段：除 meta（选星）与 geom（大气余量，仅喂几何）外全部扁平入参（P_tx/口径/光学效率/指向误差/灵敏度 P_req 等）
+  for (const f of LASER_FIELDS) {
+    if (f.target === 'meta' || f.target === 'geom') continue
+    lp[f.key] = laserLink[f.key]
+  }
+  // 发射卫星标注（仅展示）
+  if (txSatForm) lp.satelliteName = txSatForm.satelliteName
+  return JSON.parse(JSON.stringify(lp))
 }

@@ -841,6 +841,7 @@ function createBuilder(ctx) {
   // 重标为对应单向口径；此处按 d.linkType 选上行或下行构建器。
   b.buildRegen = function () {
     if (results && results.linkType === 'downlink') return b.buildRegenDownlink();
+    if (results && results.linkType === 'laser') return b.buildRegenLaser();
     if (results && results.linkType === 'isl') return b.buildRegenIsl();
     return b.buildRegenUplink();
   };
@@ -1131,7 +1132,7 @@ function createBuilder(ctx) {
       ['地心夹角', 'islCentralAngleResult', '°'],
       ['LOS 掠地高度', 'islGrazAltResult', 'km'],
       ['单程时延', 'islDelayResult', 'ms'],
-      ['距离变化率', 'islRangeRateResult', 'km/s'],
+      ['最大距离变化率', 'islRangeRateResult', 'km/s'],
       ['最大多普勒', 'islDopplerResult', 'kHz'],
       ['互视可见度', 'islVisibleFracResult', '%']
     ]));
@@ -1162,6 +1163,65 @@ function createBuilder(ctx) {
       ['年中断(小时)', 'interruptionHours', 'h'],
       ['发射卫星 EIRP', 'islRfEirpResult', 'dBW'],
       ['接收卫星 G/T', 'islRfGtResult', 'dB/K']
+    ]));
+
+    return segs;
+  };
+
+  // 再生式星间激光（MathWorks 简化功率链）瀑布：终端参数 → 星间几何 → 光学功率链级联 → 可用度（无雨=互视）。
+  //   P_rx = P_tx + OE_tx + OE_rx + G_tx + G_rx − LP_tx − LP_rx − L_PS − L_other；余量 = P_rx − P_req。
+  b.buildRegenLaser = function () {
+    const r = results;
+    if (r.linkmargin === undefined) return [];
+    const segs = [];
+
+    // ① 激光终端参数（链路级，单列）
+    segs.push(b._refSeg('激光终端参数', [
+      ['波长 λ', 'laserWavelengthResult', 'nm'],
+      ['发射光功率 P_tx', 'laserTxPowerResult', 'dBm'],
+      ['发射口径 D_tx', 'laserTxApertureResult', 'mm'],
+      ['接收口径 D_rx', 'laserRxApertureResult', 'mm'],
+      ['发射指向误差', 'laserPointErrTxResult', 'µrad'],
+      ['接收指向误差', 'laserPointErrRxResult', 'µrad'],
+      ['接收机灵敏度 P_req', 'laserPreqResult', 'dBm']
+    ]));
+
+    // ② 星间几何（最差工况，单列）——双 SGP4 + 地球临边遮挡
+    segs.push(b._refSeg('星间几何（最差工况）', [
+      ['星间距离(最差)', 'laserDistResult', 'km'],
+      ['发射卫星高度', 'islTxAltResult', 'km'],
+      ['接收卫星高度', 'islRxAltResult', 'km'],
+      ['地心夹角', 'islCentralAngleResult', '°'],
+      ['LOS 掠地高度', 'islGrazAltResult', 'km'],
+      ['单程时延', 'islDelayResult', 'ms'],
+      ['最大距离变化率', 'islRangeRateResult', 'km/s'],
+      ['相干多普勒 Δf', 'laserDopplerResult', 'GHz'],
+      ['互视可见度', 'islVisibleFracResult', '%']
+    ]));
+
+    // ③ 激光链路预算级联（MathWorks 简化，单列）：P_tx + OE + G − LP − L_PS = P_rx；− P_req = 余量
+    const C = b._cRow;
+    segs.push(b._cascadeSingleSeg('激光链路预算级联（MathWorks 简化）', [
+      C('base', '发射光功率 P_tx', 'laserTxPowerResult', 'dBm', 'up'),
+      C('loss', '发射光学效率损耗 OE_tx', 'laserOpticsLossTxResult', 'dB', 'up'),
+      C('loss', '接收光学效率损耗 OE_rx', 'laserOpticsLossRxResult', 'dB', 'up'),
+      C('gain', '发射望远镜增益 G_tx', 'laserGTxResult', 'dB', 'up'),
+      C('gain', '接收望远镜增益 G_rx', 'laserGRxResult', 'dB', 'up'),
+      C('loss', '发射指向损耗 LP_tx', 'laserPointLossTxResult', 'dB', 'up'),
+      C('loss', '接收指向损耗 LP_rx', 'laserPointLossRxResult', 'dB', 'up'),
+      C('loss', '自由空间损耗 L_PS', 'laserFslResult', 'dB', 'up'),
+      C('loss', '其他损耗 L', 'laserOtherLossResult', 'dB', 'up'),
+      C('chk', '接收光功率 P_rx', 'laserPrxResult', 'dBm', 'up'),
+      C('ref', '所需接收功率 P_req', 'laserPreqResult', 'dBm', 'up'),
+      C('margin', '链路余量', 'linkmargin', 'dB', 'up')
+    ]));
+
+    // ④ 可用度（激光星间，单列）——无雨：系统可用度 = 互视可见度
+    segs.push(b._refSeg('可用度（激光星间）', [
+      ['互视可见度', 'islVisibleFracResult', '%'],
+      ['系统可用度', 'systemAvailabilityResult', '%'],
+      ['年中断(分钟)', 'interruptionMinutes', 'min'],
+      ['年中断(小时)', 'interruptionHours', 'h']
     ]));
 
     return segs;

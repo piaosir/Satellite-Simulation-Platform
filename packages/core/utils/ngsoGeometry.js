@@ -405,12 +405,18 @@ function coupledTypicalMoment(satrec, tx, rx, opts) {
     return (s.u.elevDeg - txMin) + (s.v.elevDeg - rxMin);
   };
 
-  // 粗扫全时窗，取代价最小（最贴近双站最低仰角）的同一时刻
+  // 粗扫全时窗：取代价最小（最贴近双站最低仰角）的同一时刻 t*；同时 track 各站【全窗口峰值 |range-rate|】
+  //   → 稳定可复现的最大多普勒（峰值径向速率是轨道周期性复现量，与搜索起点 t0 无关，多次计算复现）。
   let best = null, bestCost = Infinity;
+  let maxRRUp = 0, maxRRDn = 0;
   for (let tms = startMs; tms <= endMs; tms += stepMs) {
     const s = sampleAt(tms);
     const c = costOf(s);
     if (c < bestCost) { bestCost = c; best = s; }
+    if (s) {
+      if (s.u.elevDeg >= txMin - EPS) { const rr = Math.abs(rangeRateKmS(s.pv, txEcf, s.d)); if (rr > maxRRUp) maxRRUp = rr; }
+      if (s.v.elevDeg >= rxMin - EPS) { const rr = Math.abs(rangeRateKmS(s.pv, rxEcf, s.d)); if (rr > maxRRDn) maxRRDn = rr; }
+    }
   }
   if (!best) {
     return { feasible: false, method, reason: `搜索时窗 ${horizonHours}h 内发信站与收信站从不曾同时可见（单星无法中继此链路，可增大搜索时窗或改选卫星）`, elements: stat, search: { t0ISO: t0.toISOString(), horizonHours } };
@@ -457,10 +463,10 @@ function coupledTypicalMoment(satrec, tx, rx, opts) {
   const vel = velocities(pv);
   const txFreq = Number(tx.freqGHz) > 0 ? Number(tx.freqGHz) : 14;
   const rxFreq = Number(rx.freqGHz) > 0 ? Number(rx.freqGHz) : 12;
-  // 多普勒取 t* 该刻的 |range-rate| × f/c（含地球自转）——与「所有计算取自典型时刻」口径一致；
-  // 典型时刻多在低仰角（贴近最低仰角）附近，range-rate 本就接近峰值，故也代表该链路的设计多普勒量级。
-  const dopUpHz = Math.abs(rangeRateKmS(pv, txEcf, d)) / C_KM_S * (txFreq * 1e9);
-  const dopDnHz = Math.abs(rangeRateKmS(pv, rxEcf, d)) / C_KM_S * (rxFreq * 1e9);
+  // 多普勒取【全时窗内该站峰值 |range-rate|】× f/c（含地球自转）：峰值径向速率是轨道周期性复现量，
+  // 与搜索起点 t0 无关、多次计算复现；且是该链路会遇到的最大多普勒（设计最坏值），比单取 t* 该刻稳定。
+  const dopUpHz = maxRRUp / C_KM_S * (txFreq * 1e9);
+  const dopDnHz = maxRRDn / C_KM_S * (rxFreq * 1e9);
   // 可见性/过境几何（t* 高度处地心半径、真实倾角与半长轴）——单一真值源
   const visU = visMetricsFor(rKm, txMin, stat.iDeg, stat.a);
   const visD = visMetricsFor(rKm, rxMin, stat.iDeg, stat.a);
@@ -693,15 +699,23 @@ function solveIslWorstCase(opts) {
     return { pA, pB, ...los };
   };
 
-  // 扫描：互视样本取最大 range 为最差；统计可见占比
+  // 扫描：互视样本取【最大 range】为最差 FSL；同时 track 全窗口峰值径向速率（相邻可见样本有限差分）
+  //   → 稳定可复现的最大多普勒。峰值径向速率是轨道周期性复现量，与搜索起点 t0 无关，多次计算复现。
   let worst = null, minR = Infinity, nVis = 0, nTot = 0;
+  let maxAbsRR = 0, rrAtPeak = 0, prevVis = null;
   for (let ts = startS; ts <= endS + 1e-6; ts += stepSec) {
-    const s = sampleAt(ts); if (!s) continue;
+    const s = sampleAt(ts);
+    if (!s) { prevVis = null; continue; }
     nTot++;
-    if (!s.visible) continue;
+    if (!s.visible) { prevVis = null; continue; }
     nVis++;
     if (s.rangeKm < minR) minR = s.rangeKm;
-    if (!worst || s.rangeKm > worst.rangeKm) worst = { s, ts };
+    if (!worst || s.rangeKm > worst.s.rangeKm) worst = { s, ts };   // ← 修复：原误写 worst.rangeKm(undefined) 致锁定首个可见样本
+    if (prevVis) {
+      const dt = ts - prevVis.ts;                                    // 仅相邻可见样本（跨可见性间隙时 prevVis 置空）
+      if (dt > 0) { const rr = (s.rangeKm - prevVis.rangeKm) / dt; if (Math.abs(rr) > maxAbsRR) { maxAbsRR = Math.abs(rr); rrAtPeak = rr; } }
+    }
+    prevVis = { ts, rangeKm: s.rangeKm };
   }
   const windowMinutes = horizonHours * 60;
   const visibleFrac = nTot > 0 ? nVis / nTot : 0;
@@ -723,21 +737,31 @@ function solveIslWorstCase(opts) {
     };
   }
 
-  // 最差刻派生量：距离变化率（中心差分）→ 多普勒、地心夹角、两星高度、掠地高度、时延
+  // 地心夹角/两星高度/掠地高度/时延取自【最大 range】刻；距离变化率/多普勒取【全窗口峰值径向速率】——
+  // 最大 range 处恰是径向距离驻点(dρ/dt≈0)，不能在该刻取多普勒（会近零且随采样漂移）；峰值径向速率稳定可复现。
   const W = worst.s;
-  const sPlus = sampleAt(worst.ts + 1), sMinus = sampleAt(worst.ts - 1);
-  const rangeRateKmS = (sPlus && sMinus) ? (sPlus.rangeKm - sMinus.rangeKm) / 2 : 0;
-  const maxDopplerHz = Math.abs(rangeRateKmS) / C_KM_S * (freqGHz * 1e9);
+  const rangeRateKmS = rrAtPeak;                              // 窗口内峰值径向速率(km/s，带符号)
+  const maxDopplerHz = maxAbsRR / C_KM_S * (freqGHz * 1e9);   // 峰值多普勒(Hz)
   const rA = Math.hypot(W.pA.x, W.pA.y, W.pA.z), rB = Math.hypot(W.pB.x, W.pB.y, W.pB.z);
   const cosC = Math.max(-1, Math.min(1, (W.pA.x * W.pB.x + W.pA.y * W.pB.y + W.pA.z * W.pB.z) / (rA * rB)));
+  // 各星速度（worst 刻）：惯性系 + 相对地面（Earth-relative），复用 velocities(pv)；snapshot 无 satrec → null
+  const worstDate = new Date(worst.ts * 1000);
+  const _spd = (nd) => {
+    if (!(nd.node.kind === 'sat' && nd.node.satrec)) return { speedInertial: null, speedGroundRel: null };
+    const pv = propagateAt(nd.node.satrec, worstDate);
+    return pv ? velocities(pv) : { speedInertial: null, speedGroundRel: null };
+  };
+  const spdA = _spd(A), spdB = _spd(B);
   const worstMetrics = {
     rangeKm: W.rangeKm, minRangeKm: (minR === Infinity ? null : minR),
     txAltKm: rA - RE_KM, rxAltKm: rB - RE_KM,
+    txSpeedKmS: spdA.speedInertial, rxSpeedKmS: spdB.speedInertial,
+    txGroundSpeedKmS: spdA.speedGroundRel, rxGroundSpeedKmS: spdB.speedGroundRel,
     grazAltKm: W.minCenterKm - RE_KM,
     centralAngleDeg: Math.acos(cosC) * RAD,
     rangeRateKmS, maxDopplerHz,
     oneWayDelayMs: W.rangeKm / C_KM_S * 1000,
-    worstISO: new Date(worst.ts * 1000).toISOString()
+    worstISO: worstDate.toISOString()
   };
 
   // 互视访问窗口：f(t) = 最近点离地心 − R_block（>0 可见）

@@ -1,6 +1,6 @@
 <script setup>
 import { ref, shallowRef, reactive, computed, onMounted, nextTick, watch } from 'vue'
-import { SAT_FIELDS, CARRIER_FIELDS, TX_FIELDS, RX_FIELDS, ISL_FIELDS, defaultsFor, buildRegenParams, buildRegenDownlinkParams, buildRegenIslParams, eirpToPowerW, powerWToEirp, rxGtFromNoise } from './regenParams.js'
+import { SAT_FIELDS, CARRIER_FIELDS, TX_FIELDS, RX_FIELDS, ISL_FIELDS, LASER_FIELDS, defaultsFor, buildRegenParams, buildRegenDownlinkParams, buildRegenIslParams, buildRegenLaserParams, eirpToPowerW, powerWToEirp, rxGtFromNoise } from './regenParams.js'
 import { loadSatTree } from '../ngso/grdParam.js'
 import { encodeShare, decodeShare, configFileText } from '../ngso/shareCode.js'
 import Icon from '../components/Icon.vue'
@@ -39,7 +39,8 @@ function startResizeConfigs(e) {
 const LINK_MODES = [
   { key: 'uplink', label: '再生式上行', ready: true, tip: '地面站 → 星上再生解调；链路总 C/N = 上行 C/(N+I)' },
   { key: 'downlink', label: '再生式下行（广播）', ready: true, tip: '星上再生 → 地面站接收；链路总 C/N = 下行 C/(N+I)' },
-  { key: 'isl', label: '星间链路（微波）', ready: true, tip: '发射卫星 → 接收卫星，两星微波直连；几何严格（双 SGP4 + 地球临边遮挡）；合计 C/N = 星间单跳 C/N' }
+  { key: 'isl', label: '星间链路（微波）', ready: true, tip: '发射卫星 → 接收卫星，两星微波直连；几何严格（双 SGP4 + 地球临边遮挡）；合计 C/N = 星间单跳 C/N' },
+  { key: 'laser', label: '星间链路（激光）', ready: true, tip: '发射卫星 → 接收卫星，相干 DP-QPSK 激光直连；第一性原理光学预算（P_rx 链 + 光子/bit 灵敏度）；给定速率 → 链路余量；完整可用度（指向抖动+建链+相干多普勒+太阳规避）' }
 ]
 const linkMode = ref('uplink')
 
@@ -137,6 +138,8 @@ const rxGtValues = computed(() => {
 
 // ============ 星间链路群（再生式微波 ISL）============
 const islLinks = reactive([newStation(ISL_FIELDS)])
+// ============ 星间激光链路群（再生式激光 / 相干 DP-QPSK）============
+const laserLinks = reactive([newStation(LASER_FIELDS)])
 // 某卫星配置 → 轨道来源 spec（选星→真实星历；未选→手动圆轨道）。上/下/星间共用。
 function orbitSpecOf(sat) {
   const ns = sat && sat.ngsoSat
@@ -160,6 +163,19 @@ function mergeIslGeometry(d, geo) {
   d.islDopplerResult = (w.maxDopplerHz / 1000).toFixed(2)
   d.islVisibleFracResult = (geo.visibility.visibleFrac * 100).toFixed(2)
 }
+// 激光星间几何注入（复用 ISL 几何字段：瀑布/结果卡共用；多普勒此时为光频 Δf，单位 GHz）
+function mergeLaserGeometry(d, geo) {
+  const w = geo.worst
+  d.islRfDistResult = w.rangeKm.toFixed(1)
+  d.islTxAltResult = w.txAltKm.toFixed(1)
+  d.islRxAltResult = w.rxAltKm.toFixed(1)
+  d.islCentralAngleResult = w.centralAngleDeg.toFixed(2)
+  d.islGrazAltResult = w.grazAltKm.toFixed(1)
+  d.islDelayResult = w.oneWayDelayMs.toFixed(2)
+  d.islRangeRateResult = w.rangeRateKmS.toFixed(4)
+  d.laserDistResult = w.rangeKm.toFixed(1)              // 覆盖引擎占位距离 → 几何最差距离
+  d.islVisibleFracResult = (geo.visibility.visibleFrac * 100).toFixed(2)
+}
 
 // 顶栏「刷新」：重新拉取主窗口的最新设置（GRD 卫星树 + 城市库/载波信号选项）。
 // 与 GEO refreshLatest 同口径（去掉 GEO 特有的实时星位/只读 EIRP·G·T 扇出）。
@@ -179,17 +195,20 @@ const MODULES = computed(() => {
   const carrier = { key: 'carrier', label: '载波信号', icon: 'wave' }
   const sat = { key: 'sat', label: '卫星群', icon: 'sat' }
   // 顺序随信号流向：上行 地面站→星（发信站在前）；下行 星→地面站、星间 星→星（卫星群在前）
+  if (linkMode.value === 'laser') return [sat, { key: 'laser', label: '星间激光链路群', icon: 'laser' }]
   if (linkMode.value === 'isl') return [carrier, sat, { key: 'isl', label: '星间链路群', icon: 'isl' }]
   if (linkMode.value === 'downlink') return [carrier, sat, { key: 'rx', label: '收信站群', icon: 'down' }]
   return [carrier, { key: 'tx', label: '发信站群', icon: 'up' }, sat]
 })
 const activeModule = ref('tx')
-const moduleCount = (k) => (k === 'tx' ? txStations.length : k === 'rx' ? rxStations.length : k === 'isl' ? islLinks.length : k === 'sat' ? satConfigs.length : basebandConfigs.length)
+const moduleCount = (k) => (k === 'tx' ? txStations.length : k === 'rx' ? rxStations.length : k === 'isl' ? islLinks.length : k === 'laser' ? laserLinks.length : k === 'sat' ? satConfigs.length : basebandConfigs.length)
 watch(activeModule, (m) => { if (m === 'sat') reloadSatTree() })
 // 切换体制：站群/链路群模块随之切换（tx↔rx↔isl），保持「站群」标签聚焦；列表指标若不在新体制选项内则回退链路余量
 watch(linkMode, (lm) => {
-  const stationMod = lm === 'isl' ? 'isl' : lm === 'downlink' ? 'rx' : 'tx'
-  if (['tx', 'rx', 'isl'].includes(activeModule.value)) activeModule.value = stationMod
+  const stationMod = lm === 'laser' ? 'laser' : lm === 'isl' ? 'isl' : lm === 'downlink' ? 'rx' : 'tx'
+  // 若当前编辑模块不在新体制的模块集内（如激光无「载波信号」模块），回落到该体制的站群/链路群模块
+  const modKeys = lm === 'laser' ? ['sat', 'laser'] : lm === 'isl' ? ['carrier', 'sat', 'isl'] : lm === 'downlink' ? ['carrier', 'sat', 'rx'] : ['carrier', 'tx', 'sat']
+  if (!modKeys.includes(activeModule.value)) activeModule.value = stationMod
   if (!METRIC_OPTIONS.value.some((m) => m.key === metricKey.value)) metricKey.value = 'linkmargin'
   // 上/下行/星间三种口径的链路条数与结果列头都不同，旧体制的结果表不再适用——切换即清空，
   // 避免「上行结果套着下行列头」的串味显示（用户须在新体制下重新点算）。
@@ -239,7 +258,18 @@ const METRIC_OPTIONS_ISL = [
   { key: 'islRfEirpResult', label: '发射 EIRP (dBW)' },
   { key: 'islVisibleFracResult', label: '互视可见度 (%)' }
 ]
-const METRIC_OPTIONS = computed(() => (linkMode.value === 'isl' ? METRIC_OPTIONS_ISL : linkMode.value === 'downlink' ? METRIC_OPTIONS_DN : METRIC_OPTIONS_UP))
+const METRIC_OPTIONS_LASER = [
+  { key: 'linkmargin', label: '链路余量 (dB)' },
+  { key: 'laserPrxResult', label: '接收光功率 (dBm)' },
+  { key: 'laserPreqResult', label: '所需接收功率 (dBm)' },
+  { key: 'laserFslResult', label: '自由空间损耗 (dB)' },
+  { key: 'laserGTxResult', label: '发射增益 (dBi)' },
+  { key: 'laserDistResult', label: '星间距离 (km)' },
+  { key: 'laserDopplerResult', label: '相干多普勒 (GHz)' },
+  { key: 'islVisibleFracResult', label: '互视可见度 (%)' },
+  { key: 'systemAvailabilityResult', label: '系统可用度 (%)' }
+]
+const METRIC_OPTIONS = computed(() => (linkMode.value === 'laser' ? METRIC_OPTIONS_LASER : linkMode.value === 'isl' ? METRIC_OPTIONS_ISL : linkMode.value === 'downlink' ? METRIC_OPTIONS_DN : METRIC_OPTIONS_UP))
 const metricKey = ref('linkmargin')
 const metricLabel = computed(() => METRIC_OPTIONS.value.find((m) => m.key === metricKey.value)?.label || '')
 function parseMetricLabel(label) { const m = /^(.*?)\s*\(([^)]+)\)$/.exec(label || ''); return m ? { title: m[1], unit: m[2] } : { title: label || '', unit: '' } }
@@ -256,14 +286,14 @@ const selected = ref(0)
 const segments = ref([])
 const computing = ref(false)
 const error = ref('')
-const nLinks = computed(() => (linkMode.value === 'isl' ? islLinks.length : linkMode.value === 'downlink' ? rxStations.length : txStations.length))
+const nLinks = computed(() => (linkMode.value === 'laser' ? laserLinks.length : linkMode.value === 'isl' ? islLinks.length : linkMode.value === 'downlink' ? rxStations.length : txStations.length))
 // 链路方向标签：上行=站→星，下行=星→站，星间=发射星→接收星（txName=发射星, satName=接收星）
 function pairLabel(l) {
   if (!l) return ''
   return linkMode.value === 'downlink' ? `${l.satName} → ${l.txName}` : `${l.txName} → ${l.satName}`
 }
 // 体制短标签（上行/下行/星间）与逐条量词
-const modeLabel = computed(() => (linkMode.value === 'isl' ? '星间' : linkMode.value === 'downlink' ? '下行' : '上行'))
+const modeLabel = computed(() => (linkMode.value === 'laser' ? '激光星间' : linkMode.value === 'isl' ? '星间' : linkMode.value === 'downlink' ? '下行' : '上行'))
 
 // ============ 平台精确几何覆盖引擎几何量 ============
 const _C_KMS = 299792.458
@@ -337,6 +367,7 @@ const islGeo = computed(() => (sel.value ? sel.value.islGeo : null))
 // ============ 计算（逐发信站一条上行链路；工作点给定 → 求余量）============
 async function compute() {
   if (!api) { error.value = '引擎需在 Electron 中运行（npm run dev）'; return }
+  if (linkMode.value === 'laser') return computeLaser()
   if (linkMode.value === 'isl') return computeIsl()
   const isDown = linkMode.value === 'downlink'
   const stations = isDown ? rxStations : txStations
@@ -467,6 +498,54 @@ async function computeIsl() {
   }
 }
 
+// 再生式激光星间：逐条激光链路（发射卫星 → 接收卫星）。几何复用两星互视最差距离/可见度；
+// 链路预算走第一性原理光学预算（P_rx 链 + 光子/bit 灵敏度）；给定速率 → 链路余量。
+async function computeLaser() {
+  if (!laserLinks.length) { error.value = '请至少添加一条激光星间链路'; return }
+  if (!satConfigs.length) { error.value = '请至少添加一颗卫星'; return }
+  computing.value = true; error.value = ''
+  try {
+    const out = []
+    const t0ISO = searchT0ISO()
+    for (let ti = 0; ti < laserLinks.length; ti++) {
+      const link = laserLinks[ti]
+      const txSat = resolveSatellite(link.txSatelliteId)
+      const rxSat = resolveSatellite(link.rxSatelliteId)
+      const txName = (txSat && (txSat.form.satelliteName || txSat.name)) || '发射星'
+      const rxName = (rxSat && (rxSat.form.satelliteName || rxSat.name)) || '接收星'
+      const orbitA = orbitSpecOf(txSat), orbitB = orbitSpecOf(rxSat)
+      // 光频（GHz）= c/λ：喂几何求解器使 maxDopplerHz 为相干光多普勒
+      const lambdaNm = parseFloat(link.wavelengthNm) || 1550
+      const optFreqGHz = 2.99792458e8 / lambdaNm    // = c[m/s]/λ[nm] → GHz（c/λ 的 GHz 数值）
+      const am = parseFloat(link.islAtmMargin); const atmMarginKm = isNaN(am) ? 100 : am
+      // 两星几何（双 SGP4 + 地球临边遮挡 → 最差星间距离 + 互视可见度 + 访问窗口）
+      const geo = await api.linkBudget.islGeometry({ orbitA, orbitB, t0ISO, horizonHours: geoHorizonHours.value, freqGHz: optFreqGHz, atmMarginKm })
+      if (!(geo && geo.feasible)) {
+        out.push({ ti, txName, satName: rxName, data: null, margin: '—', metric: '—', error: (geo && geo.reason) || '两星几何不可行/时窗内不互视', geom: null, islGeo: geo, access: null }); continue
+      }
+      const laserParams = buildRegenLaserParams(txSat.form, link)
+      laserParams.islHopDistance = geo.worst.rangeKm          // 几何最差距离注入
+      const visPct = (geo.visibility.visibleFrac || 0) * 100
+      const r = await api.linkBudget.computeRegenLaser(laserParams, { visibilityPct: visPct, rangeRateKmS: geo.worst.rangeRateKmS })
+      if (r && r.success) {
+        const d = r.data
+        mergeLaserGeometry(d, geo)
+        const m = parseFloat(d.linkmargin)
+        out.push({ ti, txName, satName: rxName, data: d, geom: null, islGeo: geo, access: null, margin: d.linkmargin, metric: d.linkmargin, ok: !isNaN(m) && m >= 0, totalCN: d.carrierTotalCN, thresholdCN: d.thresholdCN, avail: d.systemAvailabilityResult })
+      } else {
+        out.push({ ti, txName, satName: rxName, data: null, margin: '—', metric: '—', error: (r && r.message) || '失败', geom: null, islGeo: geo, access: null })
+      }
+    }
+    links.value = out
+    selected.value = 0
+    await loadWaterfall()
+  } catch (e) {
+    error.value = String(e)
+  } finally {
+    computing.value = false
+  }
+}
+
 async function loadWaterfall() {
   const l = sel.value
   if (!l || !l.data) { segments.value = []; return }
@@ -506,6 +585,7 @@ function serializeState() {
     tx: txStations.map(({ _id, ...r }) => r),
     rx: rxStations.map(({ _id, ...r }) => r),
     isl: islLinks.map(({ _id, ...r }) => r),
+    laser: laserLinks.map(({ _id, ...r }) => r),
     opMode: opMode.value, geoHorizonHours: geoHorizonHours.value,
     metricKey: metricKey.value, activeModule: activeModule.value
   }
@@ -536,6 +616,15 @@ function applyState(st) {
   if (Array.isArray(st.rx) && st.rx.length) rxStations.splice(0, rxStations.length, ...st.rx.map((r) => ({ ...defaultsFor(RX_FIELDS), ...r, _id: 's' + (_sid++) })))
   // 星间链路群：旧配置无 isl 字段 → 保留默认一条
   if (Array.isArray(st.isl) && st.isl.length) islLinks.splice(0, islLinks.length, ...st.isl.map((r) => ({ ...defaultsFor(ISL_FIELDS), ...r, _id: 's' + (_sid++) })))
+  // 激光星间链路群：旧配置无 laser 字段 → 保留默认一条；只保留当前字段键（清除旧速率/调制/BER 等已删字段的惰性残留）
+  if (Array.isArray(st.laser) && st.laser.length) {
+    const lkeys = LASER_FIELDS.map((f) => f.key)
+    laserLinks.splice(0, laserLinks.length, ...st.laser.map((r) => {
+      const o = { ...defaultsFor(LASER_FIELDS), _id: 's' + (_sid++) }
+      for (const k of lkeys) if (r[k] !== undefined) o[k] = r[k]
+      return o
+    }))
+  }
   if (st.opMode) opMode.value = st.opMode
   if (st.geoHorizonHours != null) geoHorizonHours.value = Number(st.geoHorizonHours) || 24
   if (st.metricKey) metricKey.value = st.metricKey
@@ -543,7 +632,7 @@ function applyState(st) {
 }
 let _stateT = null
 function scheduleSaveState() { clearTimeout(_stateT); _stateT = setTimeout(() => { try { localStorage.setItem(STATE_KEY, JSON.stringify({ ...serializeState(), activeId: activeId.value })) } catch (e) { /* ignore */ } }, 600) }
-watch([satConfigs, basebandConfigs, txStations, rxStations, islLinks, opMode, geoHorizonHours, metricKey, activeModule, linkMode, hiddenModes, activeId], scheduleSaveState, { deep: true })
+watch([satConfigs, basebandConfigs, txStations, rxStations, islLinks, laserLinks, opMode, geoHorizonHours, metricKey, activeModule, linkMode, hiddenModes, activeId], scheduleSaveState, { deep: true })
 
 async function loadConfigs() {
   try {
@@ -558,7 +647,7 @@ function pruneExpanded() {
   for (const id of [...expandedFolders.value]) if (!ids.has(id)) { expandedFolders.value.delete(id); changed = true }
   if (changed) persistExpanded()
 }
-function defaultCfgName() { const s = satConfigs[0] && satConfigs[0].form.satelliteName; const kind = linkMode.value === 'isl' ? '再生星间' : linkMode.value === 'downlink' ? '再生下行' : '再生上行'; const unit = linkMode.value === 'isl' ? '条' : '站'; return (s ? s + ' ' : '') + `${kind} ${nLinks.value} ${unit}` }
+function defaultCfgName() { const s = satConfigs[0] && satConfigs[0].form.satelliteName; const kind = linkMode.value === 'laser' ? '再生激光星间' : linkMode.value === 'isl' ? '再生星间' : linkMode.value === 'downlink' ? '再生下行' : '再生上行'; const unit = (linkMode.value === 'isl' || linkMode.value === 'laser') ? '条' : '站'; return (s ? s + ' ' : '') + `${kind} ${nLinks.value} ${unit}` }
 const cfgDlg = reactive({ open: false, name: '' })
 function openSaveDlg() { if (!api) { toast('保存需在 Electron 中运行'); return } cfgDlg.name = defaultCfgName(); cfgDlg.open = true }
 async function confirmCfgDlg() {
@@ -629,6 +718,7 @@ function blankState() {
     tx: [defaultsFor(TX_FIELDS)],
     rx: [defaultsFor(RX_FIELDS)],
     isl: [defaultsFor(ISL_FIELDS)],
+    laser: [defaultsFor(LASER_FIELDS)],
     opMode: 'eirp', geoHorizonHours: 24, metricKey: 'linkmargin', activeModule: 'tx'
   }
 }
@@ -690,7 +780,7 @@ async function importConfigs(items) {
   return items.length
 }
 function fingerprintOf(s) {
-  return JSON.stringify({ satConfigs: s.satConfigs, basebandConfigs: s.basebandConfigs, tx: s.tx, rx: s.rx, isl: s.isl, opMode: s.opMode, geoHorizonHours: s.geoHorizonHours, linkMode: s.linkMode, hiddenModes: s.hiddenModes })
+  return JSON.stringify({ satConfigs: s.satConfigs, basebandConfigs: s.basebandConfigs, tx: s.tx, rx: s.rx, isl: s.isl, laser: s.laser, opMode: s.opMode, geoHorizonHours: s.geoHorizonHours, linkMode: s.linkMode, hiddenModes: s.hiddenModes })
 }
 function fingerprint() { return fingerprintOf(serializeState()) }
 let activeBaseline = ''
@@ -881,7 +971,7 @@ onMounted(async () => {
           </div>
         </div>
 
-        <template v-if="linkMode === 'uplink' || linkMode === 'downlink' || linkMode === 'isl'">
+        <template v-if="linkMode === 'uplink' || linkMode === 'downlink' || linkMode === 'isl' || linkMode === 'laser'">
           <div class="mods">
             <template v-for="(m, i) in MODULES" :key="m.key">
               <button class="mod" :class="{ on: activeModule === m.key }" @click="activeModule = m.key">
@@ -899,6 +989,7 @@ onMounted(async () => {
                     <template v-if="m.icon === 'up'"><line x1="10" y1="17" x2="10" y2="4" /><path d="M5.5,8.5 L10,4 L14.5,8.5" /></template>
                     <template v-else-if="m.icon === 'down'"><line x1="10" y1="3" x2="10" y2="16" /><path d="M5.5,11.5 L10,16 L14.5,11.5" /></template>
                     <template v-else-if="m.icon === 'isl'"><circle cx="5" cy="6" r="2.3" /><circle cx="15" cy="14" r="2.3" /><line x1="6.9" y1="7.5" x2="13.1" y2="12.5" /></template>
+                    <template v-else-if="m.icon === 'laser'"><circle cx="4" cy="6" r="2.1" /><circle cx="16" cy="14" r="2.1" /><line x1="5.7" y1="7.4" x2="14.3" y2="12.6" stroke-dasharray="1.4 1.4" /><line x1="5.7" y1="6.2" x2="14.3" y2="11.4" opacity="0.45" /><line x1="5.7" y1="8.6" x2="14.3" y2="13.8" opacity="0.45" /></template>
                     <template v-else><path d="M2,10 Q5,2 8,10 T14,10 T20,10" /></template>
                   </svg>
                 </span>
@@ -931,6 +1022,10 @@ onMounted(async () => {
             <div v-else-if="activeModule === 'isl'" class="tx-wrap">
               <p class="isl-tip">星间链路：<b>发射卫星 → 接收卫星</b>（两星均选自「卫星群」）。几何由两星轨道严格求解（双 SGP4 传播 + 地球临边遮挡）取最差星间距离与互视可见度；发射 EIRP 在发射卫星、接收 G/T 在接收卫星。<b>选真实卫星</b>几何才严谨；两颗同参数手动圆轨道相位缺省相同会重合报错。</p>
               <StationGrid :stations="islLinks" :fields="ISL_FIELDS" :cities="cities" :city-search="citySearch" label="星间链路" :show-import="false" :select-options="{ basebandId: basebandSelectOptions, txSatelliteId: satSelectOptions, rxSatelliteId: satSelectOptions }" />
+            </div>
+            <div v-else-if="activeModule === 'laser'" class="tx-wrap">
+              <p class="isl-tip">激光星间链路（<b>相干 DP-QPSK</b>）：<b>发射卫星 → 接收卫星</b>（两星选自「卫星群」）。<b>第一性原理光学预算</b>：P_rx = 发射光功率 + 望远镜增益(20·lg πD/λ) − 自由空间损耗(20·lg 4πd/λ) − 光学损耗 − 指向损耗；灵敏度以「光子/bit」反推所需接收功率 P_req；<b>给定速率 → 链路余量</b>。空间对空间无雨/无大气。默认参数锚定成熟星间激光终端（Mynaric CONDOR Mk3 级 90mm/36dBm/1550nm + 相干 DP-QPSK 灵敏度）。⚠️「捕获不确定锥」1mrad 是粗捕获口径，非通信窄光束（µrad 级）指向精度——后者才进指向损耗。</p>
+              <StationGrid :stations="laserLinks" :fields="LASER_FIELDS" :cities="cities" :city-search="citySearch" label="激光星间链路" :show-import="false" :select-options="{ txSatelliteId: satSelectOptions, rxSatelliteId: satSelectOptions }" />
             </div>
             <div v-else-if="activeModule === 'carrier'" class="bb-wrap">
               <div class="bb-toolbar">
@@ -1007,7 +1102,7 @@ onMounted(async () => {
           <div v-if="error" class="lb-err">{{ error }}</div>
           <div v-else-if="!links.length" class="lb-placeholder">填写参数后点击「计算」<br />生成再生式{{ modeLabel }}链路结果</div>
           <template v-else>
-            <div v-if="capacitySummary.count" class="cap-sum">
+            <div v-if="capacitySummary.count && linkMode !== 'laser'" class="cap-sum">
               <div class="cap-sum-hd">
                 <span class="cap-sum-t">容量汇总</span>
                 <span class="cap-sum-n">{{ capacitySummary.count }} 条链路<template v-if="capacitySummary.failed"> · {{ capacitySummary.failed }} 条失败已排除</template></span>
@@ -1043,7 +1138,17 @@ onMounted(async () => {
 
             <div v-if="sel && sel.error" class="lb-err">链路 {{ pairLabel(sel) }} 计算失败：{{ sel.error }}</div>
             <template v-else-if="core">
-              <div v-if="core.linkType === 'isl'" class="core-card">
+              <div v-if="core.linkType === 'laser'" class="core-card">
+                <div class="core-row"><span class="core-l">链路余量</span><span class="core-v" :class="{ danger: +core.linkmargin < 0 }">{{ core.linkmargin }} dB</span></div>
+                <div class="core-row"><span class="core-l">接收光功率 P_rx</span><span class="core-v">{{ core.laserPrxResult }} dBm</span></div>
+                <div class="core-row"><span class="core-l">所需接收功率 P_req</span><span class="core-v">{{ core.laserPreqResult }} dBm</span></div>
+                <div class="core-row"><span class="core-l">自由空间损耗 L_PS</span><span class="core-v">{{ core.laserFslResult }} dB</span></div>
+                <div class="core-row"><span class="core-l">发射增益 G_tx</span><span class="core-v">{{ core.laserGTxResult }} dBi</span></div>
+                <div class="core-row"><span class="core-l">接收增益 G_rx</span><span class="core-v">{{ core.laserGRxResult }} dBi</span></div>
+                <div class="core-row"><span class="core-l">星间距离(最差)</span><span class="core-v">{{ core.laserDistResult }} km</span></div>
+                <div class="core-row"><span class="core-l">互视可见度</span><span class="core-v">{{ core.laserVisibleFracResult }} %</span></div>
+              </div>
+              <div v-else-if="core.linkType === 'isl'" class="core-card">
                 <div class="core-row"><span class="core-l">链路余量</span><span class="core-v" :class="{ danger: +core.linkmargin < 0 }">{{ core.linkmargin }} dB</span></div>
                 <div class="core-row"><span class="core-l">星间 C/N</span><span class="core-v">{{ core.carrierTotalCN }} dB</span></div>
                 <div class="core-row"><span class="core-l">门限 C/N</span><span class="core-v">{{ core.thresholdCN }} dB</span></div>
@@ -1087,14 +1192,16 @@ onMounted(async () => {
                   </div>
                 </div>
                 <div class="geo-body">
+                  <div v-if="islGeo.worst.worstISO && !islGeo.representative" class="geo-row"><span class="geo-l" title="所有几何量取自这一物理瞬间（互视样本中星间距离最大 → 最差 FSL）">最差时刻 t*</span><span class="geo-v" style="white-space:normal">{{ fmtInstant(islGeo.worst.worstISO, tzMode) }}</span></div>
                   <div class="geo-row"><span class="geo-l">星间距离(最差)<i>km</i></span><span class="geo-v">{{ g2(islGeo.worst.rangeKm, 1) }}</span></div>
                   <div class="geo-row"><span class="geo-l">最近星间距离<i>km</i></span><span class="geo-v">{{ g2(islGeo.worst.minRangeKm, 1) }}</span></div>
                   <div class="geo-row"><span class="geo-l">发射/接收卫星高度<i>km</i></span><span class="geo-v">{{ g2(islGeo.worst.txAltKm, 1) }} / {{ g2(islGeo.worst.rxAltKm, 1) }}</span></div>
                   <div class="geo-row"><span class="geo-l">地心夹角<i>°</i></span><span class="geo-v">{{ g2(islGeo.worst.centralAngleDeg) }}</span></div>
                   <div class="geo-row"><span class="geo-l">LOS 掠地高度<i>km</i></span><span class="geo-v">{{ g2(islGeo.worst.grazAltKm, 1) }}</span></div>
                   <div class="geo-row"><span class="geo-l">单程链路时延<i>ms</i></span><span class="geo-v">{{ g2(islGeo.worst.oneWayDelayMs, 3) }}</span></div>
-                  <div class="geo-row"><span class="geo-l">距离变化率<i>km/s</i></span><span class="geo-v">{{ g2(islGeo.worst.rangeRateKmS, 4) }}</span></div>
-                  <div class="geo-row"><span class="geo-l">最大多普勒<i>kHz</i></span><span class="geo-v">±{{ g2(islGeo.worst.maxDopplerHz / 1000, 3) }}</span></div>
+                  <div class="geo-row"><span class="geo-l" title="全搜索时窗内两星径向相对速度的峰值（决定最大多普勒）；轨道周期性复现量，与搜索起点无关，多次计算复现">最大距离变化率<i>km/s</i></span><span class="geo-v">{{ g2(islGeo.worst.rangeRateKmS, 4) }}</span></div>
+                  <div v-if="linkMode === 'laser'" class="geo-row"><span class="geo-l">相干多普勒 Δf<i>GHz</i></span><span class="geo-v">±{{ g2(islGeo.worst.maxDopplerHz / 1e9, 3) }}</span></div>
+                  <div v-else class="geo-row"><span class="geo-l">最大多普勒<i>kHz</i></span><span class="geo-v">±{{ g2(islGeo.worst.maxDopplerHz / 1000, 3) }}</span></div>
 
                   <div class="geo-sec">互视可见度<span class="geo-sec-x">LOS 须清过地表 + 大气余量 {{ islGeo.search.atmMarginKm }}km</span></div>
                   <div class="acc-sum">
@@ -1108,6 +1215,32 @@ onMounted(async () => {
                       <span class="acc-c2 mono">{{ fmtInstant(w.startISO, tzMode) }}<em v-if="w.clipped" class="acc-clip" title="窗口被搜索时窗边界截断">clip</em></span>
                       <span class="acc-c3 mono">{{ fmtDur(w.durationMin) }}</span>
                       <span class="acc-c4 mono">{{ g2(w.maxRangeKm, 0) }}</span>
+                    </div>
+                  </div>
+
+                  <!-- 两星轨道与运动（合并入星间几何卡，发射 / 接收两列，NGSO 式分节）-->
+                  <div class="geo-sec" v-if="islGeo.elements && (islGeo.elements.tx || islGeo.elements.rx)">两星轨道与运动<span class="geo-sec-x">发射 / 接收各一列</span></div>
+                  <div v-if="islGeo.elements && (islGeo.elements.tx || islGeo.elements.rx)" class="geo-2col">
+                    <div v-for="side in [{ k: 'tx', name: sel.txName, alt: islGeo.worst.txAltKm, spd: islGeo.worst.txSpeedKmS, gspd: islGeo.worst.txGroundSpeedKmS, el: islGeo.elements.tx }, { k: 'rx', name: sel.satName, alt: islGeo.worst.rxAltKm, spd: islGeo.worst.rxSpeedKmS, gspd: islGeo.worst.rxGroundSpeedKmS, el: islGeo.elements.rx }]" :key="side.k" class="geo-col">
+                      <div class="geo-col-hd" :class="side.k">{{ side.k === 'tx' ? '发射卫星' : '接收卫星' }}<em>{{ side.name }}</em></div>
+                      <template v-if="side.el">
+                        <div class="geo-sec">卫星运动</div>
+                        <div class="geo-row"><span class="geo-l">轨道速度<i>惯性系</i></span><span class="geo-v">{{ g2(side.spd, 3) }}<i>km/s</i></span></div>
+                        <div v-if="side.gspd != null" class="geo-row"><span class="geo-l">相对地面速度</span><span class="geo-v">{{ g2(side.gspd, 3) }}<i>km/s</i></span></div>
+                        <div class="geo-row"><span class="geo-l">卫星高度<i>km</i></span><span class="geo-v">{{ g2(side.alt, 1) }}</span></div>
+                        <div class="geo-sec">卫星轨道根数<span class="geo-sec-x">{{ side.el.satnum == null ? '虚拟圆轨道' : '历元' }}</span></div>
+                        <div class="geo-row"><span class="geo-l">半长轴 a</span><span class="geo-v">{{ g2(side.el.a, 3) }}<i>km</i></span></div>
+                        <div class="geo-row"><span class="geo-l">偏心率 e</span><span class="geo-v">{{ g2(side.el.e, 6) }}</span></div>
+                        <div class="geo-row"><span class="geo-l">倾角 i</span><span class="geo-v">{{ g2(side.el.iDeg, 4) }}<i>°</i></span></div>
+                        <div class="geo-row"><span class="geo-l">升交点赤经 Ω</span><span class="geo-v">{{ g2(side.el.raanDeg, 4) }}<i>°</i></span></div>
+                        <div class="geo-row"><span class="geo-l">近地点幅角 ω</span><span class="geo-v">{{ g2(side.el.argpDeg, 4) }}<i>°</i></span></div>
+                        <div class="geo-row"><span class="geo-l">平近点角 M</span><span class="geo-v">{{ g2(side.el.maDeg, 4) }}<i>°</i></span></div>
+                        <div class="geo-row"><span class="geo-l">平均运动 n</span><span class="geo-v">{{ g2(side.el.meanMotionRevDay, 6) }}<i>rev/day</i></span></div>
+                        <div class="geo-row"><span class="geo-l">轨道周期 T</span><span class="geo-v">{{ g2(side.el.periodMin, 3) }}<i>min</i></span></div>
+                        <div class="geo-row"><span class="geo-l">近/远地点高度</span><span class="geo-v">{{ g2(side.el.perigeeAltKm, 1) }} / {{ g2(side.el.apogeeAltKm, 1) }}<i>km</i></span></div>
+                        <div v-if="side.el.satnum" class="geo-row"><span class="geo-l">卫星编号 (NORAD)</span><span class="geo-v">{{ side.el.satnum }}</span></div>
+                      </template>
+                      <div v-else class="geo-col-na">静态几何（无轨道根数）</div>
                     </div>
                   </div>
                 </div>
@@ -1514,6 +1647,14 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .geo-tzb:hover:not(.on) { color: var(--text); }
 .geo-tzb.on { background: var(--accent); color: var(--bg); font-weight: 600; }
 .geo-body { padding: 5px 12px 10px; }
+.geo-2col { display: grid; grid-template-columns: 1fr 1fr; gap: 0 18px; }
+.geo-col { min-width: 0; }
+.geo-col-hd { display: flex; align-items: baseline; gap: 6px; font-size: 12px; font-weight: 700; padding: 3px 0 5px; border-bottom: 2px solid var(--border-strong); margin-bottom: 2px; }
+.geo-col-hd.tx { color: var(--accent); border-bottom-color: var(--accent); }
+.geo-col-hd.rx { color: #16a34a; border-bottom-color: #16a34a; }
+.geo-col-hd em { font-style: normal; font-weight: 500; font-size: 11px; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.geo-col-na { font-size: 12px; color: var(--text-faint); padding: 12px 0; }
+.geo-col .geo-sec:first-of-type { border-top: none; padding-top: 3px; margin-top: 4px; }
 .geo-sec { display: flex; align-items: baseline; gap: 7px; font-size: 11px; font-weight: 600; color: var(--accent); margin: 11px 0 4px; padding-top: 8px; border-top: 1px dashed var(--border); letter-spacing: .3px; }
 .geo-sec-x { font-weight: 400; font-size: 10px; color: var(--text-faint); letter-spacing: .2px; }
 .geo-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 2.5px 0; }
@@ -1522,6 +1663,10 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .geo-v { font-family: var(--font-mono); font-size: 12px; font-weight: 600; color: var(--text); text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .geo-v i { font-style: normal; font-weight: 500; color: var(--text-faint); margin-left: 5px; }
 .geo-v.geo-inf { font-size: 18px; line-height: 1; }
+.geo-v.danger { color: var(--danger); }
+.geo-row.hi { background: var(--bg-soft, rgba(127,127,127,.06)); margin: 0 -6px; padding: 2.5px 6px; border-radius: 4px; }
+.geo-row.hi .geo-l { color: var(--text); font-weight: 600; }
+.geo-row.hi .geo-v { font-size: 12.5px; }
 .geo-note { padding: 10px 12px; font-size: 11px; color: var(--text-muted); line-height: 1.6; font-family: inherit; font-weight: 400; }
 
 /* 访问窗口列表 */

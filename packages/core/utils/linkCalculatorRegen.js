@@ -362,4 +362,114 @@ function computeRegenIslMode(satParams, inputs, opt) {
   return { success: true, data: d, mode: 'isl', resolvedMargin: _num(d.linkmargin) };
 }
 
-module.exports = { computeRegenUplinkMode, computeRegenDownlinkMode, computeRegenIslMode };
+// ==================== 再生式星间链路（激光 / MathWorks 简化功率链）====================
+// 依据：MathWorks Satellite Communications Toolbox — Optical Satellite Communication Link Budget Analysis
+//   https://www.mathworks.com/help/satcom/ug/optical_satellite_communication_link_budget_analysis.html
+// 空间对空间真空路径（无大气/雨/云/闪烁）。接收光功率 dB 加性链（与官方示例同构）：
+//   P_rx[dBm] = P_tx + OE_tx + OE_rx + G_tx + G_rx − LP_tx − LP_rx − L_PS − L_other
+//     望远镜增益   G    = 10·lg((π·D/λ)²)              （D 与 λ 同单位[m]）
+//     光学效率     OE   = 10·lg(η)                     （η∈(0,1]，负 dB）
+//     指向损耗     LP   = 4.3429·(π·D/λ)²·θ²           （θ = 静态指向误差 rad；MathWorks 口径）
+//     自由空间损耗 L_PS = 20·lg(4π·d/λ)                （d = 几何最差星间距离）
+//   链路余量  LM = P_rx − P_req                        （P_req = 接收机灵敏度/所需接收功率 dBm，用户输入）
+// 简化版：软件只套用上式，各输入值由用户给定；不做 C/N₀·Eb/N₀·光子/bit·指向抖动衰落等派生。
+// 可用度（无雨）：系统可用度 = 几何互视占比（唯一稳态中断 = 丢 LOS）。
+
+function _lnum(v, d) { const n = parseFloat(v); return (isFinite(n)) ? n : d; }
+
+// 再生式激光星间计算（MathWorks 简化功率链）。params 为扁平激光入参（见 regenParams.buildRegenLaserParams）；
+// params.islHopDistance（km，几何最差距离）由主计算注入。
+// opt: { visibilityPct（互视占比%）, rangeRateKmS（几何最差刻距离变化率，仅用于多普勒展示）}
+// 返回 { success, data, mode:'laser', resolvedMargin }。
+function computeRegenLaserIslMode(params, opt) {
+  opt = opt || {};
+  const p = params || {};
+  const dKm = _lnum(p.islHopDistance, NaN);            // 几何最差星间距离(km)
+  if (!(dKm > 0)) return { success: false, message: '星间距离无效（几何未注入 islHopDistance）' };
+
+  // —— MathWorks 功率链入参 ——
+  const lambdaNm = _lnum(p.wavelengthNm, 1550);
+  const lambda = lambdaNm * 1e-9;                       // m
+  const d = dKm * 1000;                                 // m
+  const pTxDbm = _lnum(p.txPowerDbm, 30);               // 发射光功率 P_tx dBm
+  const dTx = _lnum(p.txApertureMm, 80) / 1000;         // 发射口径 m
+  const dRx = _lnum(p.rxApertureMm, 80) / 1000;         // 接收口径 m
+  const etaTx = _lnum(p.txOpticsEff, 0.8);              // 发射光学效率 (0,1]
+  const etaRx = _lnum(p.rxOpticsEff, 0.8);              // 接收光学效率 (0,1]
+  const thTxRad = _lnum(p.txPointingErrUrad, 1) * 1e-6; // 发射指向误差 rad
+  const thRxRad = _lnum(p.rxPointingErrUrad, 1) * 1e-6; // 接收指向误差 rad
+  const pReqDbm = _lnum(p.rxSensitivityDbm, -35.5);     // 接收机灵敏度 P_req dBm
+  const otherLoss = _lnum(p.otherLossDb, 0);            // 其他损耗 L dB(>0)
+  // —— 展示/可用度入参 ——
+  const visPct = _lnum(opt.visibilityPct, NaN);
+  const rangeRateKmS = _lnum(opt.rangeRateKmS, NaN);
+
+  if (!(dTx > 0) || !(dRx > 0) || !(lambda > 0)) return { success: false, message: '口径/波长参数无效' };
+  if (!(etaTx > 0 && etaTx <= 1) || !(etaRx > 0 && etaRx <= 1)) return { success: false, message: '光学效率须 ∈ (0,1]' };
+
+  // —— 望远镜增益（线性 g=(πD/λ)²，dB=10·lg(g)）——
+  const gTxLin = Math.pow(Math.PI * dTx / lambda, 2);
+  const gRxLin = Math.pow(Math.PI * dRx / lambda, 2);
+  const gTx = 10 * Math.log10(gTxLin);
+  const gRx = 10 * Math.log10(gRxLin);
+  // —— 光学效率（负 dB）——
+  const oeTx = 10 * Math.log10(etaTx);
+  const oeRx = 10 * Math.log10(etaRx);
+  // —— 指向损耗（MathWorks：LP = 4.3429·g·θ²，正 dB）——
+  const lpTx = 4.3429 * gTxLin * thTxRad * thTxRad;
+  const lpRx = 4.3429 * gRxLin * thRxRad * thRxRad;
+  // —— 自由空间损耗 ——
+  const lfs = 20 * Math.log10(4 * Math.PI * d / lambda);
+  // —— 接收光功率 & 链路余量 ——
+  const pRxDbm = pTxDbm + oeTx + oeRx + gTx + gRx - lpTx - lpRx - lfs - otherLoss;
+  const margin = pRxDbm - pReqDbm;
+
+  // —— 系统可用度 = 几何互视占比（无雨）——
+  const visFrac = isFinite(visPct) ? Math.max(0, Math.min(100, visPct)) / 100 : 1;
+  const sysAvailPct = visFrac * 100;
+  const interruptionMinutes = (1 - visFrac) * 365.25 * 24 * 60;
+  // —— 相干多普勒 Δf = v_r/λ（仅展示，简化版不据此判合格）——
+  let dopplerGHz = NaN;
+  if (isFinite(rangeRateKmS)) dopplerGHz = Math.abs(rangeRateKmS * 1000 / lambda) / 1e9;
+
+  const data = {
+    regenerative: true, linkType: 'laser',
+    // 通用字段（供逐条汇总/结果卡 danger 判定复用）
+    thresholdCN: pReqDbm.toFixed(2),          // 所需接收功率 P_req(dBm)
+    carrierTotalCN: pRxDbm.toFixed(2),        // 接收光功率 P_rx(dBm)
+    linkmargin: margin.toFixed(2), marginResult: margin.toFixed(2),
+    // 激光链路预算逐项（MathWorks 简化功率链）
+    laserWavelengthResult: lambdaNm.toFixed(0),
+    laserDistResult: dKm.toFixed(1),
+    laserTxPowerResult: pTxDbm.toFixed(2),
+    laserTxApertureResult: (dTx * 1000).toFixed(0),
+    laserRxApertureResult: (dRx * 1000).toFixed(0),
+    laserOeTxResult: oeTx.toFixed(2),
+    laserOeRxResult: oeRx.toFixed(2),
+    laserOpticsLossTxResult: (-oeTx).toFixed(2),   // 光学效率损耗（正 dB = −OE）供瀑布/结果卡展示
+    laserOpticsLossRxResult: (-oeRx).toFixed(2),
+    laserGTxResult: gTx.toFixed(2),
+    laserGRxResult: gRx.toFixed(2),
+    laserFslResult: lfs.toFixed(2),
+    laserPointLossTxResult: lpTx.toFixed(3),
+    laserPointLossRxResult: lpRx.toFixed(3),
+    laserPointErrTxResult: (thTxRad * 1e6).toFixed(2),
+    laserPointErrRxResult: (thRxRad * 1e6).toFixed(2),
+    laserOtherLossResult: otherLoss.toFixed(2),
+    laserPrxResult: pRxDbm.toFixed(2),
+    laserPreqResult: pReqDbm.toFixed(2),
+    // 可用度（无雨 = 几何互视）
+    laserVisibleFracResult: isFinite(visPct) ? visPct.toFixed(2) : '',
+    systemAvailabilityResult: sysAvailPct.toFixed(5),
+    uplinkAvailabilityResult: sysAvailPct.toFixed(5),
+    downlinkAvailabilityResult: sysAvailPct.toFixed(5),
+    interruptionMinutes: interruptionMinutes.toFixed(2),
+    interruptionHours: (interruptionMinutes / 60).toFixed(2),
+    laserDopplerResult: isFinite(dopplerGHz) ? dopplerGHz.toFixed(3) : '',
+    // 清空上/下行展示字段（激光星间不参与）
+    uplinkCN: '', downlinkCN: ''
+  };
+  return { success: true, data, mode: 'laser', resolvedMargin: margin };
+}
+
+module.exports = { computeRegenUplinkMode, computeRegenDownlinkMode, computeRegenIslMode, computeRegenLaserIslMode };

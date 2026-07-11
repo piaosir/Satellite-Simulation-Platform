@@ -105,6 +105,8 @@ module.exports = {
   computeRegenDownlinkMode: regen && regen.computeRegenDownlinkMode,
   // 再生式星间计算（发射卫星 EIRP / 接收卫星 G/T；合计 C/N = 星间单跳 C/N；几何最差距离注入）
   computeRegenIslMode: regen && regen.computeRegenIslMode,
+  // 再生式星间激光计算（第一性原理光学预算：发射光功率/望远镜增益/光学FSL/指向 → P_rx；光子/bit 灵敏度 → 余量）
+  computeRegenLaserIslMode: regen && regen.computeRegenLaserIslMode,
   // NGSO 站星几何求解（SGP4 双站互视最差几何 + 轨道根数 + 时刻/时窗），供结果几何区用平台精确几何
   ngsoGeometry,
   solveNgsoMutualWorstCase: ngsoGeometry.solveMutualWorstCase,

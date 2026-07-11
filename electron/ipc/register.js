@@ -131,6 +131,11 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     core().computeRegenIslMode
       ? core().computeRegenIslMode(s || {}, l || {}, opt || {})
       : { success: false, message: '再生式引擎未加载' })
+  // 再生式星间激光计算（MathWorks 简化功率链 P_rx=P_tx+OE+G−LP−L_PS；余量=P_rx−P_req）
+  ipcMain.handle('link:computeRegenLaser', (_e, p, opt) =>
+    core().computeRegenLaserIslMode
+      ? core().computeRegenLaserIslMode(p || {}, opt || {})
+      : { success: false, message: '再生式引擎未加载' })
   // 星间链路(ISL)两星几何求解（双 SGP4 + 地球临边遮挡 → 最差星间距离 + 互视可见度 + 访问窗口）
   ipcMain.handle('link:islGeometry', (_e, opt) =>
     core().solveIslWorstCase

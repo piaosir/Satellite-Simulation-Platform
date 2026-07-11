@@ -17,6 +17,8 @@ contextBridge.exposeInMainWorld('api', {
     computeRegenDownlink: (s, l, opt) => ipcRenderer.invoke('link:computeRegenDownlink', s, l, opt),
     // 再生式星间：计算（合计 C/N = 星间单跳 C/N；发射卫星 EIRP + 接收卫星 G/T）+ 两星几何求解
     computeRegenIsl: (s, l, opt) => ipcRenderer.invoke('link:computeRegenIsl', s, l, opt),
+    // 再生式星间激光：第一性原理光学预算（P_rx 链 + 光子/bit 灵敏度）；几何复用 islGeometry（传光频算相干多普勒）
+    computeRegenLaser: (p, opt) => ipcRenderer.invoke('link:computeRegenLaser', p, opt),
     islGeometry: (opt) => ipcRenderer.invoke('link:islGeometry', opt),
     ngsoGeometry: (opt) => ipcRenderer.invoke('link:ngsoGeometry', opt),
     accessWindows: (opt) => ipcRenderer.invoke('link:accessWindows', opt),
