@@ -313,7 +313,7 @@ function performCalculations(satParams, inputs) {
   const EIRPs = pickNum(inputs.rxEIRP, 46); // dBW - 卫星下行EIRP
   const G_Ts = pickNum(inputs.G_Ts, 2); // dB/K - 卫星G/T
   const SFDref = (satParams.sfdRef !== '' && satParams.sfdRef !== null && satParams.sfdRef !== undefined)
-    ? parseFloat(satParams.sfdRef) : -82; // dBW/m² - SFD参考值
+    ? parseFloat(satParams.sfdRef) : -84; // dBW/m² - SFD参考值（空回退对齐字段默认 -84）
   
   // ============ 通信参数 ============
   const infoRate = pickNum(inputs.infoRate, 2048); // kbps - 信息速率
@@ -331,7 +331,7 @@ function performCalculations(satParams, inputs) {
   // 噪声比模式：支持 'ebno' 或 'esno'
   const noiseRatioMode = inputs.noiseRatioMode || 'ebno';
   const inputNoiseRatio = inputs.ebno !== '' && inputs.ebno !== null && inputs.ebno !== undefined
-    ? parseFloat(inputs.ebno) : 5.0; // dB - 输入的噪声比值
+    ? parseFloat(inputs.ebno) : 5.5; // dB - 输入的噪声比值（空回退对齐字段默认 5.50）
   
   // 修复：正确处理 margin = 0 的情况
   const margin = (inputs.margin !== '' && inputs.margin !== null && inputs.margin !== undefined)
@@ -343,11 +343,11 @@ function performCalculations(satParams, inputs) {
     ? parseFloat(inputs.longitude) : 116.4074;
   const earthLat = (inputs.latitude !== '' && inputs.latitude !== null && inputs.latitude !== undefined)
     ? parseFloat(inputs.latitude) : 39.9042;
-  const antennaDiameter = pickNum(inputs.antennaDiameter, 7.3); // meters
+  const antennaDiameter = pickNum(inputs.antennaDiameter, 6.2); // meters（空回退对齐字段默认 6.2）
   const antennaEfficiency = pickNum(inputs.antennaEfficiency, 65) / 100;
   const feederLoss = inputs.feederLoss !== undefined && inputs.feederLoss !== '' && inputs.feederLoss !== null
-    ? parseFloat(inputs.feederLoss) 
-    : 0.2; // dB (支持输入0)
+    ? parseFloat(inputs.feederLoss)
+    : 3.5; // dB (支持输入0；空回退对齐字段默认 3.5)
   const uplinkAvailability = (inputs.uplinkAvailability !== '' && inputs.uplinkAvailability !== null && inputs.uplinkAvailability !== undefined)
     ? parseFloat(inputs.uplinkAvailability) : 99.90; // %
   const rainRate = parseFloat(inputs.rainRate) || 0; // mm/h
@@ -359,7 +359,7 @@ function performCalculations(satParams, inputs) {
     ? parseFloat(inputs.rxLongitude) : 116.4074;
   const rxLatitude = (inputs.rxLatitude !== '' && inputs.rxLatitude !== null && inputs.rxLatitude !== undefined)
     ? parseFloat(inputs.rxLatitude) : 39.9042;
-  const rxAntennaDiameter = pickNum(inputs.rxAntennaDiameter, 1.2); // meters
+  const rxAntennaDiameter = pickNum(inputs.rxAntennaDiameter, 3.7); // meters（空回退对齐字段默认 3.7）
   const rxAntennaEfficiency = pickNum(inputs.rxAntennaEfficiency, 65) / 100;
   const rxFeederLoss = inputs.rxFeederLoss !== undefined && inputs.rxFeederLoss !== '' && inputs.rxFeederLoss !== null
     ? parseFloat(inputs.rxFeederLoss) 
@@ -379,8 +379,8 @@ function performCalculations(satParams, inputs) {
   
   // 干扰因子 - 从卫星参数中读取 (支持输入0)
   const deltaTheta = satParams.deltaTheta !== undefined && satParams.deltaTheta !== '' && satParams.deltaTheta !== null
-    ? parseFloat(satParams.deltaTheta) 
-    : 3; // 度 - 角度偏差
+    ? parseFloat(satParams.deltaTheta)
+    : 2.5; // 度 - 角度偏差（空回退对齐字段默认 2.5）
   const aciUplinkFactor = satParams.aciUplinkFactor !== undefined && satParams.aciUplinkFactor !== '' && satParams.aciUplinkFactor !== null
     ? parseFloat(satParams.aciUplinkFactor) 
     : 30; // dB

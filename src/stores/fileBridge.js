@@ -14,9 +14,12 @@ export const fileBridge = shallowReactive({
   // 文件管理器据此复用覆盖分析「原版」卫星弹窗（含星座关联/地图点选），改星后重绘场景。
   grdActions: null,
   libraryTick: 0,
-  liveTick: 0   // 3D 页实时刷新关联星位置时自增，驱动文件管理器 GRD 树行经度跟随实时
+  liveTick: 0,   // 3D 页实时刷新关联星位置时自增，驱动文件管理器 GRD 树行经度跟随实时
+  customSatTick: 0,   // 自定义卫星库（文件管理导入 OMM/TLE）变更后自增，提示 3D 页重载 custom 分组 + 刷新搜索库
+  customConst: null   // 3D 页注入的活「自定义星座」实例（useCustomConstellations），供文件管理改名等直接联动
 })
 
 export function setGrdBridge(grdApi, collectGxt, actions) { fileBridge.grd = grdApi; fileBridge.collectGxt = collectGxt || null; fileBridge.grdActions = actions || null }
 export function clearGrdBridge() { fileBridge.grd = null; fileBridge.collectGxt = null; fileBridge.grdActions = null }
 export function bumpLibrary() { fileBridge.libraryTick++ }
+export function bumpCustomSats() { fileBridge.customSatTick++ }

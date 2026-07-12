@@ -139,6 +139,12 @@ const STR = {
     capHeader: (n, failed) => `容量汇总（${n} 条链路${failed ? ` · ${failed} 条失败已排除` : ''}）`,
     totalCap: '总容量', totalBw: '总带宽', avgEff: '平均频谱效率',
     param: '参数', uplink: '上行', downlink: '下行', total: '合计', value: '数值', unit: '单位',
+    // 再生式各体制汇总表专属列头（上行/下行/星间微波/星间激光按信号流向裁剪，避免整列空白）
+    satGtDn: '收信站 G/T (dB/K)', satEirpDn: '卫星下行 EIRP (dBW)', availDown: '下行可用度 (%)',
+    islFreq: '星间频率 (GHz)', islDist: '星间距离 (km)', islTxEirp: '发射卫星 EIRP (dBW)',
+    islRxGt: '接收卫星 G/T (dB/K)', islCN: '星间 C/N (dB)', islVis: '互视可见度 (%)', availSys: '系统可用度 (%)',
+    laserDist: '星间距离 (km)', laserTxPower: '发射光功率 (dBm)', laserPrx: '接收光功率 (dBm)',
+    laserPreq: '所需接收功率 (dBm)', laserDoppler: '相干多普勒 (GHz)', dataRate: '信息速率 (kbps)',
     geo: {
       sheetName: '几何关系',
       title: 'NGSO 卫星—地球站几何关系报告',
@@ -180,6 +186,12 @@ const STR = {
     capHeader: (n, failed) => `Capacity Summary (${n} link${n > 1 ? 's' : ''}${failed ? `, ${failed} failed excluded` : ''})`,
     totalCap: 'Total Capacity', totalBw: 'Total Bandwidth', avgEff: 'Average Spectral Efficiency',
     param: 'Parameter', uplink: 'Uplink', downlink: 'Downlink', total: 'Total', value: 'Value', unit: 'Unit',
+    // Per-scheme regenerative summary column heads (trimmed by signal flow to avoid all-blank columns)
+    satGtDn: 'Rx Station G/T (dB/K)', satEirpDn: 'Sat Downlink EIRP (dBW)', availDown: 'Downlink Availability (%)',
+    islFreq: 'ISL Frequency (GHz)', islDist: 'Inter-Sat Range (km)', islTxEirp: 'Tx Sat EIRP (dBW)',
+    islRxGt: 'Rx Sat G/T (dB/K)', islCN: 'ISL C/N (dB)', islVis: 'Mutual Visibility (%)', availSys: 'System Availability (%)',
+    laserDist: 'Inter-Sat Range (km)', laserTxPower: 'Tx Optical Power (dBm)', laserPrx: 'Rx Optical Power (dBm)',
+    laserPreq: 'Required Rx Power (dBm)', laserDoppler: 'Coherent Doppler (GHz)', dataRate: 'Information Rate (kbps)',
     geo: {
       sheetName: 'Geometry',
       title: 'NGSO Satellite–Facility Geometry Report',
@@ -208,6 +220,71 @@ const STR = {
   }
 }
 const strFor = (lang) => (lang === 'en' ? STR.en : STR.zh)
+
+// 再生式「几何关系」sheet 专属文案（复用 STR.geo 的属性/根数/AER/多普勒列头，仅补再生式特有措辞）：
+// 地面—空间（上行/下行）与 空间—空间（星间微波/激光）两套版式各取所需。
+const RGEO = {
+  zh: {
+    groundTitle: (isUp) => `再生式${isUp ? '上行' : '下行'} 卫星—地球站 几何关系报告`,
+    spaceTitle: (isLaser) => `再生式星间链路（${isLaser ? '激光' : '微波'}） 两星几何关系报告`,
+    subGround: (sat, band, prop, date) => `卫星 ${sat} · 频段 ${band} · 传播器 ${prop} · ${date}`,
+    subSpace: (grp, extra, prop, date) => `卫星群 ${grp} · ${extra} · 传播器 ${prop} · ${date}`,
+    staUp: '发信站', staDn: '收信站', station: '地球站',
+    frameGround: 'TEME（轨道传播）· WGS84 椭球（站址）', frameSpace: 'TEME（轨道传播）· ECEF 地心（星间几何）',
+    // 地面—空间：访问窗口 / AER / 多普勒
+    accHead: '访问窗口（满足最低仰角的全部过境）',
+    accNo: '#', accLink: '链路', accStart: '起始 (UTCG)', accStop: '结束 (UTCG)', accDur: '持续 (min)',
+    accPeakEl: '峰值仰角 (°)', accPeakRange: '峰值斜距 (km)', accPeak: '峰值时刻 (UTCG)',
+    accNAg: '手动圆轨道 / 静态星：几何为历元无关最差工况或星下点静态几何，无时间访问窗口。',
+    aerHead: '站星几何（最差工况：斜距 / 仰角 / 覆盖）',
+    dynHead: '卫星运动与多普勒', dynSat: '卫星', dynDop: '最大多普勒 (kHz)', dynDelay: '单程时延 (ms)',
+    // 空间—空间：属性 / 两星根数 / 互视窗 / 最差几何 / 两星运动
+    kAtm: '大气余量', kBlock: 'LOS 遮挡半径 R_block', kIslFreq: '星间频率', kLambda: '波长 λ',
+    elem2Head: '两星轨道根数', endTx: '发射星', endRx: '接收星', end: '端', sat: '卫星',
+    pairArrow: (a, b) => `${a} → ${b}`,
+    mAccHead: '互视访问窗口（两星同刻互视）', mAccPair: '发射星 → 接收星', mAccMaxR: '窗口最大距离 (km)',
+    mAccNA: '手动圆轨道 / 快照星：几何为历元无关最差工况，无时间访问窗口。',
+    worstHead: '星间几何（最差工况）', wPair: '发射星 → 接收星', wRange: '星间距离 (km)',
+    wTxAlt: '发射星高度 (km)', wRxAlt: '接收星高度 (km)', wCentral: '地心夹角 (°)', wGraz: 'LOS 掠地高度 (km)',
+    wDelay: '单程时延 (ms)', wRR: '距离变化率 (km/s)', wDopRf: '最大多普勒 (kHz)', wDopOpt: '相干多普勒 Δf (GHz)', wVis: '互视可见度 (%)',
+    dyn2Head: '两星运动（惯性系 / 相对地面速度）', dTxVi: '发射星·惯性 (km/s)', dRxVi: '接收星·惯性 (km/s)',
+    dTxVg: '发射星·对地 (km/s)', dRxVg: '接收星·对地 (km/s)', dRR: '距离变化率 (km/s)',
+    a: '半长轴 a (km)', e: '偏心率 e', i: '倾角 i (°)', raan: 'Ω (°)', period: '周期 T (min)',
+    peri: '近地点 (km)', apo: '远地点 (km)', norad: 'NORAD',
+    footGround: '几何口径：选星取单一典型时刻 t*（SGP4/SDP4 同一物理瞬间，站星仰角贴近最低仰角）；手动圆轨道取「≥ 最低仰角」处的最大斜距（闭式球面）；静态星取星下点固定几何。覆盖半角 λ = arccos((Re/r)·cosε) − ε，覆盖半径 = Re·λ，过境时长 = 2λ/|ω_s − ω_E·cos i|。多普勒取全时窗峰值径向速率 × f/c。Re = 6378.137 km。',
+    footSpace: '几何口径：双星各自 SGP4/SDP4 传播至 ECEF，星间距离/掠地/夹角取互视样本中最大星间距离（最大 FSL → 最差工况）；距离变化率取全时窗峰值（中心差分，帧无关）。互视判据：LOS 线段最近地心距 ≥ Re + 大气余量（R_block）。微波多普勒 = |ṙ|·f/c；激光相干多普勒 Δf = |ṙ|·c/λ ÷ ... 取光频 c/λ 折算。Re = 6378.137 km。'
+  },
+  en: {
+    groundTitle: (isUp) => `Regenerative ${isUp ? 'Uplink' : 'Downlink'} Satellite–Facility Geometry Report`,
+    spaceTitle: (isLaser) => `Regenerative Inter-Satellite (${isLaser ? 'Laser' : 'Microwave'}) Two-Body Geometry Report`,
+    subGround: (sat, band, prop, date) => `Satellite ${sat} · Band ${band} · Propagator ${prop} · ${date}`,
+    subSpace: (grp, extra, prop, date) => `Constellation ${grp} · ${extra} · Propagator ${prop} · ${date}`,
+    staUp: 'Tx Station', staDn: 'Rx Station', station: 'Facility',
+    frameGround: 'TEME (orbit) · WGS84 ellipsoid (facility)', frameSpace: 'TEME (orbit) · ECEF geocentric (inter-sat)',
+    accHead: 'Access Windows (All Passes Above Min Elevation)',
+    accNo: '#', accLink: 'Link', accStart: 'Start (UTCG)', accStop: 'Stop (UTCG)', accDur: 'Duration (min)',
+    accPeakEl: 'Peak El (°)', accPeakRange: 'Peak Range (km)', accPeak: 'Peak Instant (UTCG)',
+    accNAg: 'Manual circular / static satellite: epoch-independent worst-case or sub-satellite static geometry — no time-domain access window.',
+    aerHead: 'Satellite Geometry (Worst Case: Range / Elevation / Coverage)',
+    dynHead: 'Satellite Dynamics & Doppler', dynSat: 'Satellite', dynDop: 'Max Doppler (kHz)', dynDelay: 'One-Way Delay (ms)',
+    kAtm: 'Atmospheric Margin', kBlock: 'LOS Block Radius R_block', kIslFreq: 'ISL Frequency', kLambda: 'Wavelength λ',
+    elem2Head: 'Two-Body Orbital Elements', endTx: 'Tx Sat', endRx: 'Rx Sat', end: 'End', sat: 'Satellite',
+    pairArrow: (a, b) => `${a} → ${b}`,
+    mAccHead: 'Mutual-Visibility Access (Both Satellites Simultaneously Visible)', mAccPair: 'Tx Sat → Rx Sat', mAccMaxR: 'Window Max Range (km)',
+    mAccNA: 'Manual circular / snapshot satellite: epoch-independent worst-case — no time-domain access window.',
+    worstHead: 'Inter-Satellite Geometry (Worst Case)', wPair: 'Tx Sat → Rx Sat', wRange: 'Inter-Sat Range (km)',
+    wTxAlt: 'Tx Sat Alt (km)', wRxAlt: 'Rx Sat Alt (km)', wCentral: 'Geocentric Angle (°)', wGraz: 'LOS Graze Alt (km)',
+    wDelay: 'One-Way Delay (ms)', wRR: 'Range Rate (km/s)', wDopRf: 'Max Doppler (kHz)', wDopOpt: 'Coherent Doppler Δf (GHz)', wVis: 'Mutual Visibility (%)',
+    dyn2Head: 'Two-Body Dynamics (Inertial / Ground-Relative Velocity)', dTxVi: 'Tx · Inertial (km/s)', dRxVi: 'Rx · Inertial (km/s)',
+    dTxVg: 'Tx · Ground (km/s)', dRxVg: 'Rx · Ground (km/s)', dRR: 'Range Rate (km/s)',
+    a: 'Semi-major a (km)', e: 'Ecc. e', i: 'Incl. i (°)', raan: 'Ω (°)', period: 'Period T (min)',
+    peri: 'Perigee (km)', apo: 'Apogee (km)', norad: 'NORAD',
+    footGround: 'Geometry basis: selected satellites use a single typical instant t* (same SGP4/SDP4 moment, elevation near min); manual circular orbits use max slant range at min elevation (closed-form spherical); static satellites use fixed sub-satellite geometry. Coverage half-angle λ = arccos((Re/r)·cosε) − ε, radius = Re·λ, max pass = 2λ/|ω_s − ω_E·cos i|. Doppler = window-peak range rate × f/c. Re = 6378.137 km.',
+    footSpace: 'Geometry basis: each satellite propagated by SGP4/SDP4 to ECEF; inter-sat range / graze / angle taken at the max inter-sat range among mutually visible samples (max FSL → worst case); range rate is the window peak (central difference, frame-independent). Visibility: LOS segment min geocentric distance ≥ Re + atmospheric margin (R_block). Microwave Doppler = |ṙ|·f/c; laser coherent Doppler Δf uses optical frequency c/λ. Re = 6378.137 km.'
+  }
+}
+const rgeoFor = (lang) => (lang === 'en' ? RGEO.en : RGEO.zh)
+
 function setRowBorder(ws, rowNumber, fromCol, toCol, edges) {
   for (let c = fromCol; c <= toCol; c++) {
     const cell = ws.getCell(rowNumber, c)
@@ -247,10 +324,57 @@ function fmtBwText(khz) {
   return n.toFixed(n >= 100 ? 1 : 3) + ' kHz'
 }
 
+// 容量列（Mbps）：η(bps/Hz)×B(kHz) → Mbps；无带宽/效率则 '—'
+const capMbpsCell = (l) => { const k = capKbpsOf(l.data); return isFinite(k) ? (k / 1000).toFixed(3) : '—' }
+const statusCell = (t) => ({ label: t.status, get: (l) => (l.error ? t.statusErr : (l.ok ? t.statusOk : t.statusBad)), text: true })
+
+// 再生式四体制各自的汇总参数行（按信号流向裁剪：只列该体制真正有值的指标，读表不见整列空白）。
+// 上行=功放/EIRP·上行C/N·上行可用度；下行=收信站G/T·下行C/N·卫星EIRP；星间微波=星间频率/距离·EIRP·G/T·星间C/N·互视；
+// 星间激光=光功率链 P_tx/P_rx/P_req·相干多普勒·互视（无载波带宽/门限C/N口径）。
+function regenSummaryRows(t, regenMode) {
+  const R = (label, key) => ({ label, get: (l) => val(l.data, key) })
+  if (regenMode === 'downlink') return [
+    R(t.satGtDn, 'gOverTeResult'), R(t.linkMargin, 'linkmargin'),
+    R(t.allocBw, 'allocBandwidthResult'), R(t.specEff, 'spectralEfficiencyResult'),
+    { label: t.capacity, get: capMbpsCell },
+    R(t.downCN, 'carrierTotalCN'), R(t.thresholdCN, 'thresholdCN'),
+    R(t.ebno, 'ebnoActualResult'), R(t.esno, 'esnoActualResult'),
+    R(t.psd, 'satellitePSDResult'), R(t.satEirpDn, 'EIRPsResult'),
+    R(t.availDown, 'systemAvailabilityResult'), statusCell(t)
+  ]
+  if (regenMode === 'isl') return [
+    R(t.islFreq, 'islRfFreqResult'), R(t.islDist, 'islRfDistResult'),
+    R(t.islTxEirp, 'islRfEirpResult'), R(t.islRxGt, 'islRfGtResult'),
+    R(t.linkMargin, 'linkmargin'), R(t.allocBw, 'allocBandwidthResult'),
+    R(t.specEff, 'spectralEfficiencyResult'), { label: t.capacity, get: capMbpsCell },
+    R(t.islCN, 'carrierTotalCN'), R(t.thresholdCN, 'thresholdCN'),
+    R(t.ebno, 'ebnoActualResult'), R(t.esno, 'esnoActualResult'),
+    R(t.islVis, 'islVisibleFracResult'), R(t.availSys, 'systemAvailabilityResult'), statusCell(t)
+  ]
+  if (regenMode === 'laser') return [
+    R(t.laserDist, 'laserDistResult'), R(t.laserTxPower, 'laserTxPowerResult'),
+    R(t.laserPrx, 'laserPrxResult'), R(t.laserPreq, 'laserPreqResult'),
+    R(t.linkMargin, 'linkmargin'), R(t.laserDoppler, 'laserDopplerResult'),
+    R(t.islVis, 'islVisibleFracResult'), R(t.availSys, 'systemAvailabilityResult'), statusCell(t)
+  ]
+  // 默认：再生式上行
+  return [
+    R(t.paRecW, 'paRecommendation'), R(t.paRecDbw, 'paRecommendationdBResult'),
+    R(t.paActW, 'selectedPowerWResult'), R(t.linkMargin, 'linkmargin'),
+    R(t.allocBw, 'allocBandwidthResult'), R(t.specEff, 'spectralEfficiencyResult'),
+    { label: t.capacity, get: capMbpsCell },
+    R(t.upCN, 'carrierTotalCN'), R(t.thresholdCN, 'thresholdCN'),
+    R(t.ebno, 'ebnoActualResult'), R(t.esno, 'esnoActualResult'),
+    R(t.psd, 'stationPSDResult'), R(t.availUp, 'systemAvailabilityResult'), statusCell(t)
+  ]
+}
+
 // 链路汇总的"参数行"：矩阵显示全部指标 ∪ 结果卡片全部字段。每行一个参数，纵向排列——
 // 这样每条链路占一整列，从上往下读完一列就是这条链路的完整结果，跟下面单链路详细计算结果表
 // （参数纵向列在左、数值在右）是同一种阅读方式，多条链路时天然变成左右并排的对比表。
-function summaryRows(t, orbitType) {
+function summaryRows(t, orbitType, regenMode) {
+  // 再生式四体制各自裁剪汇总列（按信号流向只列有效指标，避免上/下/星间口径混列的整列空白）
+  if (orbitType === 'REGEN') return regenSummaryRows(t, regenMode)
   // 再生式上下行解耦：系统可用度 = 上行可用度，汇总列头据此改标（GEO/NGSO 仍为联合系统可用度）
   const availLabel = orbitType === 'REGEN' ? t.availUp : t.avail
   return [
@@ -287,8 +411,8 @@ const labelWithSign = (row) => (row.sign ? row.sign + ' ' : '') + (row.label || 
 
 // ① 链路汇总（纵向：参数名在左侧纵列，每条链路占一列；常规计算/矩阵计算共用同一种纵向布局，
 // 仅列头标识不同——常规计算 #序号，矩阵计算坐标 T#R#）
-function buildSummarySheet(wb, links, params, meta, t, isSequential, orbitType) {
-  const rows = summaryRows(t, orbitType)
+function buildSummarySheet(wb, links, params, meta, t, isSequential, orbitType, regenMode) {
+  const rows = summaryRows(t, orbitType, regenMode)
   const ncol = 1 + links.length
   const ws = wb.addWorksheet(t.sheetSummary, { views: [{ showGridLines: false, state: 'frozen', xSplit: 1, ySplit: 4 }] })
   ws.mergeCells(1, 1, 1, ncol)
@@ -327,8 +451,9 @@ function buildSummarySheet(wb, links, params, meta, t, isSequential, orbitType) 
   if (rows.length) setRowBorder(ws, r - 1, 1, ncol, { bottom: MED })
   // 容量汇总（与工作台结果区同口径）：总带宽 = Σ 载波带宽，总容量 = Σ(η×B) 逐链路相乘再求和，
   // 平均频谱效率 = 总容量/总带宽（带宽加权）；失败链路排除并在标题注明。
+  // 再生式激光星间无载波带宽/频谱效率口径（给定速率的光学功率预算），容量汇总恒为 0 → 直接略去。
   const done = links.filter((l) => l.data && !l.error)
-  if (done.length) {
+  if (done.length && regenMode !== 'laser') {
     let bwKHz = 0, capKbps = 0
     for (const l of done) {
       const bw = parseFloat(l.data.allocBandwidthResult)
@@ -614,18 +739,361 @@ function buildNgsoGeometrySheet(wb, links, params, meta, lang) {
   ws.getRow(r).height = 48
 }
 
+// ============================================================================
+// 再生式「几何关系」sheet（STK 三线表版式）——四体制分两族：
+//   地面—空间（上行/下行）：站星 AER + 访问窗口 + 轨道根数 + 卫星运动/多普勒
+//   空间—空间（星间微波/激光）：两星互视几何（最差工况）+ 互视窗 + 两星根数 + 两星运动
+// 单独成 sheet 集中呈现几何（详情表仍保留瀑布式几何段，两者并存，与 NGSO 版式一致）。
+// ============================================================================
+// 几何 sheet 通用写入器：内含行指针 r，封装 STK 版式三线表小工具（数字/文本/分节/表头/键值/标题/脚注）。
+function makeGeoWriter(ws, ncol) {
+  const w = { ws, r: 1, ncol }
+  w.num = (c, x, dp, bold) => {
+    const cell = ws.getCell(w.r, c); const v = (x == null || !isFinite(x)) ? null : Number(x)
+    cell.value = v == null ? '—' : v
+    if (v != null) cell.numFmt = dp > 0 ? '0.' + '0'.repeat(dp) : '0'
+    cell.font = { name: FNT, size: 10, bold: !!bold }; cell.alignment = { horizontal: 'right', vertical: 'middle' }
+  }
+  w.str = (c, text, align, o) => {
+    o = o || {}; const cell = ws.getCell(w.r, c)
+    cell.value = text == null ? '' : text
+    cell.font = { name: o.font || CJK, size: o.size || 10, bold: !!o.bold, color: o.color ? { argb: o.color } : undefined }
+    cell.alignment = { horizontal: align || 'left', vertical: 'middle', wrapText: !!o.wrap }
+  }
+  w.section = (text, span) => {
+    ws.mergeCells(w.r, 1, w.r, span || ncol); const cell = ws.getCell(w.r, 1)
+    cell.value = text; cell.font = { name: CJK, bold: true, size: 12 }; cell.alignment = { horizontal: 'left', vertical: 'middle' }
+    ws.getRow(w.r).height = 24; w.r++
+  }
+  w.thead = (labels) => {
+    labels.forEach((lb, i) => w.str(i + 1, lb, i === 0 ? 'left' : 'center', { bold: true, size: 9, wrap: true }))
+    setRowBorder(ws, w.r, 1, labels.length, { top: MED, bottom: THIN }); ws.getRow(w.r).height = 30; w.r++
+  }
+  w.kv = (label, value, unit, valFont) => {
+    ws.mergeCells(w.r, 1, w.r, 2); w.str(1, label, 'left', { size: 10 })
+    ws.mergeCells(w.r, 3, w.r, 5); w.str(3, value, 'left', { size: 10, font: valFont || FNT })
+    w.str(6, unit || '', 'left', { size: 9, font: FNT, color: 'FF555555' })
+    ws.getRow(w.r).height = 18; w.r++
+  }
+  w.kvNum = (label, v, dp, unit) => {
+    ws.mergeCells(w.r, 1, w.r, 2); w.str(1, label, 'left', { size: 10 })
+    ws.mergeCells(w.r, 3, w.r, 5); w.num(3, v, dp)
+    w.str(6, unit || '', 'left', { size: 9, font: FNT, color: 'FF555555' })
+    ws.getRow(w.r).height = 18; w.r++
+  }
+  w.title = (title, subtitle) => {
+    ws.mergeCells(w.r, 1, w.r, ncol)
+    const tc = ws.getCell(w.r, 1); tc.value = title
+    tc.font = { name: CJK, bold: true, size: 15 }; tc.alignment = { horizontal: 'left', vertical: 'middle' }; ws.getRow(w.r).height = 28; w.r++
+    ws.mergeCells(w.r, 1, w.r, ncol)
+    const sc = ws.getCell(w.r, 1); sc.value = subtitle
+    sc.font = { name: CJK, size: 10, color: { argb: 'FF666666' } }; sc.alignment = { horizontal: 'left', vertical: 'middle' }; ws.getRow(w.r).height = 18; w.r++
+    w.r++
+  }
+  w.foot = (text) => {
+    ws.mergeCells(w.r, 1, w.r, ncol)
+    const fc = ws.getCell(w.r, 1); fc.value = text
+    fc.font = { name: CJK, size: 9, color: { argb: 'FF999999' } }; fc.alignment = { horizontal: 'left', vertical: 'top', wrapText: true }
+    ws.getRow(w.r).height = 56; w.r++
+  }
+  w.rowEnd = (span) => setRowBorder(ws, w.r - 1, 1, span || ncol, { bottom: MED })
+  w.gap = () => { w.r++ }
+  return w
+}
+
+// —— 地面—空间几何（再生式上行 / 下行）——单站每链路，direction 决定取 up/dn 侧几何与上/下行多普勒。
+function buildRegenGroundGeometrySheet(wb, links, params, meta, lang, direction) {
+  if (!links || !links.length) return
+  const g = strFor(lang).geo, rg = rgeoFor(lang)
+  const isUp = direction !== 'downlink'
+  const sideKey = isUp ? 'up' : 'dn'
+  const dopKey = isUp ? 'maxDopplerUpHz' : 'maxDopplerDnHz'
+  const staRole = isUp ? rg.staUp : rg.staDn
+  const NCOL = 11
+  const ws = wb.addWorksheet(g.sheetName, { views: [{ showGridLines: false }] })
+  ws.columns = [{ width: 6 }, { width: 18 }, { width: 14 }, { width: 14 }, { width: 13 }, { width: 13 }, { width: 14 }, { width: 13 }, { width: 13 }, { width: 14 }, { width: 13 }]
+  const W = makeGeoWriter(ws, NCOL)
+  // 链路编号取「全链路数组中的稳定序号」（与汇总表 #N 一致），各表统一引用 l._no —— 避免各表按各自
+  // 过滤子集(feas/withAcc/infeas)重新从 1 计数造成同一链路跨表串号、可行/不可行编号相撞。
+  links.forEach((l, i) => { l._no = i + 1 })
+  const feas = links.filter((l) => l.geom && l.geom.feasible)
+  const refGeom = (feas[0] && feas[0].geom) || (links.find((l) => l.geom) || {}).geom || null
+  const propName = refGeom ? propLabel(refGeom.method, lang) : '—'
+  const paren = lang === 'en' ? [' (', ')'] : ['（', '）']
+
+  W.title(rg.groundTitle(isUp), rg.subGround(params.satelliteName || '—', params.frequencyBand || '—', propName, new Date().toLocaleString()))
+
+  // 场景与轨道属性
+  W.section(g.attrHead, 6)
+  const search = refGeom ? refGeom.search : null
+  W.kv(g.kProp, propName, '')
+  W.kv(g.kFrame, rg.frameGround, '', CJK)
+  if (search) { W.kv(g.kEpoch, utcg(search.t0ISO), 'UTCG'); W.kv(g.kHorizon, search.horizonHours != null ? String(search.horizonHours) : '—', 'h') }
+  W.kv(g.kTimeSys, g.timeSysVal, '', CJK)
+  W.gap()
+
+  // 轨道根数（按卫星去重：单星→键值块；多星→逐星一行表）
+  const elemMap = new Map()
+  for (const l of feas) {
+    if (!l.geom.elements) continue
+    const key = (l.satName || '') + '|' + (l.geom.elements.satnum == null ? '' : l.geom.elements.satnum)
+    if (!elemMap.has(key)) elemMap.set(key, { name: l.satName || params.satelliteName || '—', el: l.geom.elements })
+  }
+  const elemList = [...elemMap.values()]
+  if (elemList.length === 1) {
+    const el = elemList[0].el
+    W.section(`${g.elemHead}${paren[0]}${el.satnum == null ? g.elemVirtual : g.elemStatic}${paren[1]}`, 6)
+    W.kvNum(g.a, el.a, 3, 'km'); W.kvNum(g.e, el.e, 6, ''); W.kvNum(g.i, el.iDeg, 4, '°')
+    W.kvNum(g.raan, el.raanDeg, 4, '°'); W.kvNum(g.argp, el.argpDeg, 4, '°'); W.kvNum(g.ma, el.maDeg, 4, '°')
+    W.kvNum(g.mm, el.meanMotionRevDay, 6, 'rev/day'); W.kvNum(g.period, el.periodMin, 3, 'min')
+    W.kvNum(g.peri, el.perigeeAltKm, 1, 'km'); W.kvNum(g.apo, el.apogeeAltKm, 1, 'km')
+    if (el.satnum) W.kv(g.norad, String(el.satnum), '')
+    W.gap()
+  } else if (elemList.length > 1) {
+    W.section(g.elemHead, NCOL)
+    W.thead([rg.sat, rg.a, rg.e, rg.i, rg.raan, rg.period, rg.peri, rg.apo, rg.norad])
+    elemList.forEach((it) => {
+      const el = it.el
+      W.str(1, it.name, 'left', { size: 10, wrap: true })
+      W.num(2, el.a, 3); W.num(3, el.e, 6); W.num(4, el.iDeg, 4); W.num(5, el.raanDeg, 4)
+      W.num(6, el.periodMin, 3); W.num(7, el.perigeeAltKm, 1); W.num(8, el.apogeeAltKm, 1)
+      W.str(9, el.satnum == null ? '—' : String(el.satnum), 'right', { font: FNT, size: 10 })
+      ws.getRow(W.r).height = 18; W.r++
+    })
+    W.rowEnd(9); W.gap()
+  }
+
+  // 访问窗口（满足最低仰角的全部过境；无窗则示意几何注记）
+  const withAcc = feas.filter((l) => l.access && Array.isArray(l.access.windows) && l.access.windows.length)
+  W.section(rg.accHead, 9)
+  if (withAcc.length) {
+    W.thead([rg.accNo, rg.accLink, rg.station, rg.accStart, rg.accStop, rg.accDur, rg.accPeakEl, rg.accPeakRange, rg.accPeak])
+    let n = 0
+    withAcc.forEach((l, li) => {
+      const wins = l.access.windows.slice(0, 12)
+      wins.forEach((wd) => {
+        n++
+        W.str(1, String(n), 'center', { font: FNT, size: 10 })
+        W.str(2, '#' + l._no, 'center', { font: FNT, size: 10 })
+        W.str(3, (l.staGeo && l.staGeo.name) || l.satName || '', 'left', { size: 10, wrap: true })
+        W.str(4, utcg(wd.startISO), 'center', { font: FNT, size: 9, wrap: true })
+        W.str(5, utcg(wd.endISO) + (wd.clipped ? g.accClip : ''), 'center', { font: FNT, size: 9, wrap: true })
+        W.num(6, wd.durationMin, 2); W.num(7, wd.peakElevDeg, 2); W.num(8, wd.peakSlantKm, 1)
+        W.str(9, utcg(wd.peakISO), 'center', { font: FNT, size: 9, wrap: true })
+        ws.getRow(W.r).height = 26; W.r++
+      })
+    })
+    W.rowEnd(9)
+  } else if (feas.length) {
+    ws.mergeCells(W.r, 1, W.r, NCOL); W.str(1, rg.accNAg, 'left', { size: 10, color: 'FF666666', wrap: true }); ws.getRow(W.r).height = 20; W.r++
+  }
+  W.gap()
+
+  // 站星几何（最差工况：斜距 / 仰角 / 覆盖）
+  if (feas.length) {
+    W.section(rg.aerHead, NCOL)
+    W.thead([g.aerLink, rg.station, g.aerLat, g.aerLon, g.aerMinEl, g.aerEl, g.aerRange, g.aerSatAlt, g.aerHalf, g.aerCovR, g.aerPass])
+    feas.forEach((l, li) => {
+      const side = (l.geom.worst && l.geom.worst[sideKey]) || {}
+      const sta = l.staGeo || {}
+      W.str(1, '#' + l._no, 'center', { font: FNT, size: 10 })
+      W.str(2, sta.name || l.satName || '', 'left', { size: 10, wrap: true })
+      W.num(3, sta.lat, 4); W.num(4, sta.lon, 4); W.num(5, sta.minEl, 2)
+      W.num(6, side.elevDeg, 2); W.num(7, side.slantKm, 2); W.num(8, side.altKm, 1)
+      W.num(9, side.coverageHalfAngleDeg, 3); W.num(10, side.coverageRadiusKm, 1)
+      if (side.maxPassMin == null) W.str(11, g.resident, 'right', { font: FNT, size: 9, color: 'FF888888' })
+      else W.num(11, side.maxPassMin, 2)
+      ws.getRow(W.r).height = 18; W.r++
+    })
+    W.rowEnd(NCOL); W.gap()
+
+    // 卫星运动与多普勒
+    const anyEst = feas.some((l) => l.geom.dopplerEstimate)
+    W.section(rg.dynHead, 6)
+    W.thead([g.aerLink, rg.dynSat, g.dynVi, g.dynVg + (anyEst ? g.dynEst : ''), rg.dynDop + (anyEst ? g.dynEst : ''), rg.dynDelay])
+    feas.forEach((l, li) => {
+      const wrs = l.geom.worst || {}
+      W.str(1, '#' + l._no, 'center', { font: FNT, size: 10 })
+      W.str(2, l.satName || params.satelliteName || '', 'left', { size: 10, wrap: true })
+      W.num(3, wrs.speedInertialKmS, 3); W.num(4, wrs.speedGroundRelKmS, 3)
+      W.num(5, wrs[dopKey] != null ? wrs[dopKey] / 1000 : null, 3); W.num(6, wrs.oneWayDelayMs, 3)
+      ws.getRow(W.r).height = 18; W.r++
+    })
+    W.rowEnd(6); W.gap()
+  }
+
+  // 不可行链路
+  const infeas = links.filter((l) => l.geom && !l.geom.feasible)
+  if (infeas.length) {
+    W.section(g.infeasHead, NCOL)
+    W.str(1, g.accLink, 'center', { bold: true, size: 9 })
+    ws.mergeCells(W.r, 2, W.r, 3); W.str(2, rg.station, 'left', { bold: true, size: 9 })
+    ws.mergeCells(W.r, 4, W.r, NCOL); W.str(4, g.infeasReason, 'left', { bold: true, size: 9 })
+    setRowBorder(ws, W.r, 1, NCOL, { top: MED, bottom: THIN }); ws.getRow(W.r).height = 20; W.r++
+    infeas.forEach((l, li) => {
+      W.str(1, '#' + l._no, 'center', { font: FNT, size: 10 })
+      ws.mergeCells(W.r, 2, W.r, 3); W.str(2, (l.staGeo && l.staGeo.name) || l.satName || '', 'left', { size: 10, wrap: true })
+      ws.mergeCells(W.r, 4, W.r, NCOL); W.str(4, (l.geom && l.geom.reason) || '—', 'left', { size: 10, color: 'FF666666', wrap: true })
+      ws.getRow(W.r).height = 20; W.r++
+    })
+    W.rowEnd(NCOL); W.gap()
+  }
+
+  W.foot(rg.footGround)
+}
+
+// —— 空间—空间几何（再生式星间微波 / 激光）——每链路两星（发射星→接收星）互视最差工况。
+function buildRegenSpaceGeometrySheet(wb, links, params, meta, lang, isLaser) {
+  if (!links || !links.length) return
+  const g = strFor(lang).geo, rg = rgeoFor(lang)
+  const NCOL = 12
+  const ws = wb.addWorksheet(g.sheetName, { views: [{ showGridLines: false }] })
+  ws.columns = [{ width: 6 }, { width: 22 }, { width: 16 }, { width: 13 }, { width: 13 }, { width: 12 }, { width: 13 }, { width: 12 }, { width: 14 }, { width: 15 }, { width: 13 }, { width: 12 }]
+  const W = makeGeoWriter(ws, NCOL)
+  // 链路编号取全链路数组稳定序号（与汇总表 #N 一致），各表统一引用 l._no，避免跨表串号/编号相撞。
+  links.forEach((l, i) => { l._no = i + 1 })
+  const feas = links.filter((l) => l.islGeo && l.islGeo.feasible)
+  const ref = (feas[0] && feas[0].islGeo) || (links.find((l) => l.islGeo) || {}).islGeo || null
+  const propName = ref ? (lang === 'en' ? (ref.method || '—') : (ref.method || '—')) : '—'
+  const rs = ref ? ref.search : null
+  const extra = isLaser
+    ? `${rg.kLambda} ${rs && rs.freqGHz ? (2.99792458e8 / rs.freqGHz).toFixed(0) : '—'} nm`
+    : `${rg.kIslFreq} ${rs && rs.freqGHz ? rs.freqGHz : '—'} GHz`
+
+  W.title(rg.spaceTitle(isLaser), rg.subSpace(params.satelliteName || '—', extra, propName, new Date().toLocaleString()))
+
+  // 场景与几何属性
+  W.section(g.attrHead, 6)
+  W.kv(g.kProp, propName, '')
+  W.kv(g.kFrame, rg.frameSpace, '', CJK)
+  if (rs) {
+    W.kv(g.kEpoch, utcg(rs.t0ISO), 'UTCG')
+    W.kv(g.kHorizon, rs.horizonHours != null ? String(rs.horizonHours) : '—', 'h')
+    W.kvNum(rg.kAtm, rs.atmMarginKm, 1, 'km'); W.kvNum(rg.kBlock, rs.blockRadiusKm, 1, 'km')
+    if (isLaser) W.kvNum(rg.kLambda, rs.freqGHz ? 2.99792458e8 / rs.freqGHz : null, 0, 'nm')
+    else W.kvNum(rg.kIslFreq, rs.freqGHz, 3, 'GHz')
+  }
+  W.kv(g.kTimeSys, g.timeSysVal, '', CJK)
+  W.gap()
+
+  // 两星轨道根数（每链路两行：发射星 / 接收星）
+  W.section(rg.elem2Head, NCOL)
+  W.thead([g.aerLink, rg.end, rg.sat, rg.a, rg.e, rg.i, rg.raan, rg.period, rg.peri, rg.apo, rg.norad])
+  feas.forEach((l, li) => {
+    const ends = [
+      { tag: rg.endTx, el: l.islGeo.elements && l.islGeo.elements.tx, name: l.txName },
+      { tag: rg.endRx, el: l.islGeo.elements && l.islGeo.elements.rx, name: l.rxName }
+    ]
+    ends.forEach((en, ri) => {
+      const el = en.el || {}
+      W.str(1, ri === 0 ? '#' + l._no : '', 'center', { font: FNT, size: 10 })
+      W.str(2, en.tag, 'center', { size: 9, color: 'FF1A1A1A' })
+      W.str(3, en.name || '', 'left', { size: 10, wrap: true })
+      W.num(4, el.a, 3); W.num(5, el.e, 6); W.num(6, el.iDeg, 4); W.num(7, el.raanDeg, 4)
+      W.num(8, el.periodMin, 3); W.num(9, el.perigeeAltKm, 1); W.num(10, el.apogeeAltKm, 1)
+      W.str(11, el.satnum == null ? '—' : String(el.satnum), 'right', { font: FNT, size: 10 })
+      ws.getRow(W.r).height = 18; W.r++
+    })
+  })
+  if (feas.length) W.rowEnd(NCOL)
+  W.gap()
+
+  // 互视访问窗口
+  const withWin = feas.filter((l) => l.islGeo.visibility && Array.isArray(l.islGeo.visibility.windows) && l.islGeo.visibility.windows.length)
+  W.section(rg.mAccHead, 7)
+  if (withWin.length) {
+    W.thead([rg.accNo, g.aerLink, rg.mAccPair, rg.accStart, rg.accStop, rg.accDur, rg.mAccMaxR])
+    let n = 0
+    withWin.forEach((l, li) => {
+      l.islGeo.visibility.windows.slice(0, 12).forEach((wd) => {
+        n++
+        W.str(1, String(n), 'center', { font: FNT, size: 10 })
+        W.str(2, '#' + l._no, 'center', { font: FNT, size: 10 })
+        W.str(3, rg.pairArrow(l.txName || '', l.rxName || ''), 'left', { size: 10, wrap: true })
+        W.str(4, utcg(wd.startISO), 'center', { font: FNT, size: 9, wrap: true })
+        W.str(5, utcg(wd.endISO) + (wd.clipped ? g.accClip : ''), 'center', { font: FNT, size: 9, wrap: true })
+        W.num(6, wd.durationMin, 2); W.num(7, wd.maxRangeKm, 1)
+        ws.getRow(W.r).height = 26; W.r++
+      })
+    })
+    W.rowEnd(7)
+  } else if (feas.length) {
+    ws.mergeCells(W.r, 1, W.r, NCOL); W.str(1, rg.mAccNA, 'left', { size: 10, color: 'FF666666', wrap: true }); ws.getRow(W.r).height = 20; W.r++
+  }
+  W.gap()
+
+  // 星间几何（最差工况）
+  if (feas.length) {
+    W.section(rg.worstHead, NCOL)
+    W.thead([g.aerLink, rg.wPair, rg.wRange, rg.wTxAlt, rg.wRxAlt, rg.wCentral, rg.wGraz, rg.wDelay, rg.wRR, isLaser ? rg.wDopOpt : rg.wDopRf, rg.wVis])
+    feas.forEach((l, li) => {
+      const wrs = l.islGeo.worst || {}
+      const vis = l.islGeo.visibility || {}
+      W.str(1, '#' + l._no, 'center', { font: FNT, size: 10 })
+      W.str(2, rg.pairArrow(l.txName || '', l.rxName || ''), 'left', { size: 10, wrap: true })
+      W.num(3, wrs.rangeKm, 1); W.num(4, wrs.txAltKm, 1); W.num(5, wrs.rxAltKm, 1)
+      W.num(6, wrs.centralAngleDeg, 3); W.num(7, wrs.grazAltKm, 1); W.num(8, wrs.oneWayDelayMs, 3)
+      W.num(9, wrs.rangeRateKmS, 4)
+      W.num(10, wrs.maxDopplerHz != null ? (isLaser ? wrs.maxDopplerHz / 1e9 : wrs.maxDopplerHz / 1000) : null, isLaser ? 3 : 2)
+      W.num(11, vis.visibleFrac != null ? vis.visibleFrac * 100 : null, 2)
+      ws.getRow(W.r).height = 18; W.r++
+    })
+    W.rowEnd(NCOL); W.gap()
+
+    // 两星运动（惯性系 / 相对地面速度）
+    W.section(rg.dyn2Head, 6)
+    W.thead([g.aerLink, rg.dTxVi, rg.dRxVi, rg.dTxVg, rg.dRxVg, rg.dRR])
+    feas.forEach((l, li) => {
+      const wrs = l.islGeo.worst || {}
+      W.str(1, '#' + l._no, 'center', { font: FNT, size: 10 })
+      W.num(2, wrs.txSpeedKmS, 3); W.num(3, wrs.rxSpeedKmS, 3)
+      W.num(4, wrs.txGroundSpeedKmS, 3); W.num(5, wrs.rxGroundSpeedKmS, 3); W.num(6, wrs.rangeRateKmS, 4)
+      ws.getRow(W.r).height = 18; W.r++
+    })
+    W.rowEnd(6); W.gap()
+  }
+
+  // 不可行链路
+  const infeas = links.filter((l) => l.islGeo && !l.islGeo.feasible)
+  if (infeas.length) {
+    W.section(g.infeasHead, NCOL)
+    W.str(1, g.accLink, 'center', { bold: true, size: 9 })
+    ws.mergeCells(W.r, 2, W.r, 4); W.str(2, rg.mAccPair, 'left', { bold: true, size: 9 })
+    ws.mergeCells(W.r, 5, W.r, NCOL); W.str(5, g.infeasReason, 'left', { bold: true, size: 9 })
+    setRowBorder(ws, W.r, 1, NCOL, { top: MED, bottom: THIN }); ws.getRow(W.r).height = 20; W.r++
+    infeas.forEach((l, li) => {
+      W.str(1, '#' + l._no, 'center', { font: FNT, size: 10 })
+      ws.mergeCells(W.r, 2, W.r, 4); W.str(2, rg.pairArrow(l.txName || '', l.rxName || ''), 'left', { size: 10, wrap: true })
+      ws.mergeCells(W.r, 5, W.r, NCOL); W.str(5, (l.islGeo && l.islGeo.reason) || '—', 'left', { size: 10, color: 'FF666666', wrap: true })
+      ws.getRow(W.r).height = 20; W.r++
+    })
+    W.rowEnd(NCOL); W.gap()
+  }
+
+  W.foot(rg.footSpace)
+}
+
+// 再生式几何 sheet 分派：上行/下行→地面-空间；星间微波/激光→空间-空间。
+function buildRegenGeometrySheet(wb, links, params, meta, lang, regenMode) {
+  if (regenMode === 'isl') return buildRegenSpaceGeometrySheet(wb, links, params, meta, lang, false)
+  if (regenMode === 'laser') return buildRegenSpaceGeometrySheet(wb, links, params, meta, lang, true)
+  return buildRegenGroundGeometrySheet(wb, links, params, meta, lang, regenMode === 'downlink' ? 'downlink' : 'uplink')
+}
+
 async function buildLinkBudgetExcel(payload) {
-  const { links = [], params = {}, meta = {}, lang = 'zh', pairMode = 'matrix', orbitType = 'GEO' } = payload
+  const { links = [], params = {}, meta = {}, lang = 'zh', pairMode = 'matrix', orbitType = 'GEO', regenMode = 'uplink' } = payload
   const t = strFor(lang)
   const isSequential = pairMode === 'sequential'
   const enriched = links.map((l) => ({ ...l, coord: 'T' + ((l.ti || 0) + 1) + 'R' + ((l.ri || 0) + 1) }))
   const wb = new ExcelJS.Workbook()
   wb.creator = lang === 'en' ? 'GEO Satellite Link Budget Workbench' : '卫星链路预算工作台'; wb.created = new Date()
 
-  buildSummarySheet(wb, enriched, params, meta, t, isSequential, orbitType)
+  buildSummarySheet(wb, enriched, params, meta, t, isSequential, orbitType, regenMode)
 
-  // NGSO：紧随汇总表后单立「几何关系」sheet（STK 版式），把 NGSO 特色几何量集中呈现
+  // 紧随汇总表后单立「几何关系」sheet（STK 版式），把体制特色几何量集中呈现。
+  // NGSO：站星平台几何；再生式四体制：上/下行=地面-空间站星几何，星间微波/激光=空间-空间两星几何。
   if (orbitType === 'NGSO') buildNgsoGeometrySheet(wb, enriched, params, meta, lang)
+  else if (orbitType === 'REGEN') buildRegenGeometrySheet(wb, enriched, params, meta, lang, regenMode)
 
   // 详细计算结果：每条链路一个 sheet，表名 = 坐标 + 发信站-收信站（去重、截断 31 字符）
   const used = {}

@@ -82,6 +82,17 @@ function displayValue(s, f) {
   const hit = fieldOptions(f).find((o) => optVal(o) === v)
   return hit ? optLabel(hit) : s[f.key]
 }
+// 单元格留空时「浅显示」的默认值（占位提示，对标 Handsontable placeholder + placeholderCellClassName）：
+// 值真为空且该字段有非空默认值时返回其显示文本，否则 ''。params.js 的 f.def 即引擎 pickNum 的「空→默认」
+// 回退值（口径严格对齐），故这里显示的就是留空实际会按之计算的值——让用户一眼看到默认，不必去猜。
+// 灰字仅为提示、非真实数据：复制/导出仍取空（cellText 走 displayValue，与 Excel 占位一致）。
+function ghost(s, f) {
+  const v = s[f.key]
+  if (v != null && String(v).trim() !== '') return ''
+  if (f.def == null || f.def === '') return ''
+  if (f.type === 'select') { const hit = fieldOptions(f).find((o) => optVal(o) === f.def); return hit ? optLabel(hit) : f.def }
+  return f.def
+}
 // 写入 select 字段时做一次归一化：粘贴/批量设值/直接键入这些路径拿到的是「自由文本」，
 // 用户很可能填的是看到的显示名（如载波信号配置名）而不是内部存值(id)——原样存进去会匹配不上任何选项，
 // 表现为「只认下拉框选的，手动打/粘贴名字不算数」。这里按显示名兜底换算成正确的存值；
@@ -305,14 +316,10 @@ let _editOrig = null   // 进入编辑时的原值：用于判断名称是否真
 function startEdit(r, c) {
   if (isRO(c)) return   // 只读列不可编辑
   const f = props.fields[c]
+  if (f.type === 'select') { openDropdown(r, c); return }   // select：委托自建下拉列表（替代原生 <select>）
   _editOrig = props.stations[r][f.key]
   editing.value = { r, c, typed: false }
   nextTick(() => {
-    if (f.type === 'select') {   // select 双击/F2：原生下拉选择
-      const el = root.value && root.value.querySelector('.sg-cell.editing select')
-      if (el) el.focus()
-      return
-    }
     const el = capEl()
     if (!el) return
     el.value = _editOrig == null ? '' : String(_editOrig)   // 带出原值供编辑
@@ -321,6 +328,7 @@ function startEdit(r, c) {
   })
 }
 function endEdit() {
+  closeDropdown()
   if (editing.value) {
     const { r, c } = editing.value
     const f = props.fields[c]
@@ -339,6 +347,7 @@ function endEdit() {
 }
 // Esc 取消编辑：还原编辑前的值，不提交、不做归一化/城市联动（与 Excel 一致）
 function cancelEdit() {
+  closeDropdown()
   if (editing.value) {
     const { r, c } = editing.value; const f = props.fields[c]
     if (f) props.stations[r][f.key] = _editOrig
@@ -352,6 +361,7 @@ function cancelEdit() {
 function onCapKey(e) {
   if (!editing.value) return
   if (e.isComposing || e.keyCode === 229) return
+  if (dd.open) { onDropdownKey(e); e.stopPropagation(); return }   // 下拉列表打开中：键盘交给列表模型（上下移高亮/Enter·Tab 提交/Esc 取消/字符前缀跳转）
   if (e.key === 'Enter') { endEdit(); setFocus(range.fr + (e.shiftKey ? -1 : 1), range.fc); e.preventDefault() }   // Shift+Enter 上移
   else if (e.key === 'Escape') { cancelEdit(); e.preventDefault() }
   else if (e.key === 'Tab') { endEdit(); setFocus(range.fr, visColAfter(range.fc, e.shiftKey ? -1 : 1)); e.preventDefault() }
@@ -364,17 +374,23 @@ function beginCapEdit(r, c) {
   _editOrig = props.stations[r][props.fields[c].key]
   editing.value = { r, c, typed: true }
 }
-function onCapCompStart(r, c) { beginCapEdit(r, c) }
+function onCapCompStart(r, c) {
+  if (props.fields[c].type === 'select') { if (!dd.open) openDropdown(r, c); return }   // select：组字即开组合框（输入用于过滤）
+  beginCapEdit(r, c)
+}
 function onCapInput(e, r, c) {
+  const f = props.fields[c]
+  if (f.type === 'select') {   // select＝组合框：输入即开列表并作为过滤词（不写行，提交时才落值）
+    if (!dd.open) openDropdown(r, c, e.target.value)
+    else { dd.query = e.target.value; dd.active = 0 }
+    return
+  }
   beginCapEdit(r, c)
   if (editing.value) props.stations[r][props.fields[c].key] = e.target.value
 }
 function onCapBlur() {
   if (!editing.value) return                                     // 导航态失焦：不处理
-  const f = props.fields[editing.value.c]
-  // 双击/F2 编辑 select 时编辑器会从本捕获框切换成原生 <select>，导致本框失焦——但编辑并未结束，
-  // 勿在此提交（否则原生下拉刚出现就被 endEdit 关掉＝“选不了”）；交给 <select> 自己的 @blur / Enter 提交。
-  if (f && f.type === 'select' && !editing.value.typed) return
+  if (dd.open) return                                            // 下拉列表打开中：失焦由 onDocDown 统一裁决（点列表内选项已用 mousedown.prevent 保住焦点，不算失焦）
   endEdit()                                                      // 文本编辑失焦提交（与 Excel 一致）
 }
 // 导航态下捕获框已获焦：屏蔽它的原生复制/剪切/粘贴，交回 onKey 的整块（多格/整行）剪贴板逻辑，避免与之双写或落进单格；
@@ -382,6 +398,125 @@ function onCapBlur() {
 function onCapClip(e) { if (!editing.value) e.preventDefault() }
 // 容器（RO 列等无捕获框时的后备焦点持有者）意外获得焦点 → 转交给捕获框，保证输入法有真实编辑目标
 function onRootFocus() { if (editing.value) return; const el = capEl(); if (el) el.focus() }
+
+// ============ 自建下拉编辑器（select 字段）：替换原生 <select> ============
+// 为什么弃用原生 <select>：其下拉是 Chromium/OS 级弹层，几何在 .sg-scroll 滚动 + sticky 表头 + 冻结列 + Windows
+// 分数缩放(1.25/1.5)/zoomFactor 下「绘制」与「命中测试」按不同取整对齐，行高仅 ~18px 时错位≥一行 → 点「卫星2」却
+// 命中上一行「卫星1」；且错选发生在原生弹层内、任何 JS 事件之前，@change/@blur 只能读到已错的值，无从拦截（历史两次修补皆治标）。
+// 自建 DOM 列表：每个选项是真实节点、各自 @mousedown.prevent 提交自身绑定的值——点谁提交谁，与网格同一坐标系，结构上根除错位。
+// 列表 Teleport 到 body 脱离滚动裁剪与 sticky 层叠；fixed + 编辑格实时 rect 定位；键盘焦点始终留在 .sg-cap（不移入列表，消除「弹出即失焦」）。
+// 对标 AG Grid richSelect / Handsontable autocomplete / Univer / x-spreadsheet / Radix / Headless UI——均不用原生 <select>。
+// 组合框（select＝可选可输入）：dd.query 为输入过滤词。单点选择走列表、批量录入走打字，两者兼得。
+const dd = reactive({ open: false, r: -1, c: -1, active: -1, flip: false, style: {}, query: '' })
+const ddEl = ref(null)
+const ddField = computed(() => (dd.c >= 0 && dd.c < props.fields.length ? props.fields[dd.c] : null))
+const ddOptions = computed(() => (ddField.value ? fieldOptions(ddField.value) : []))
+// 过滤：按输入词对显示名/存值做「包含」匹配（忽略大小写）；空输入=全表。
+const ddFiltered = computed(() => {
+  const all = ddOptions.value
+  const q = (dd.query || '').trim().toLowerCase()
+  if (!q) return all
+  return all.filter((o) => String(optLabel(o)).toLowerCase().includes(q) || String(optVal(o)).toLowerCase().includes(q))
+})
+// 当前存值（列表打钩/预高亮用）：null/undefined 归一为 '' 以匹配「（默认）」项
+const ddCurrent = computed(() => {
+  if (dd.r < 0 || dd.c < 0 || !props.stations[dd.r]) return ''
+  const v = props.stations[dd.r][props.fields[dd.c].key]
+  return v == null ? '' : v
+})
+
+// seed：以某初值打开（打字/组字进入时把已输入内容带进过滤框）；无 seed=纯选择打开，输入框空、占位显示当前值、全表并高亮当前项。
+function openDropdown(r, c, seed) {
+  if (isRO(c)) return
+  const f = props.fields[c]
+  if (!f || f.type !== 'select') return
+  if (editing.value && !(editing.value.r === r && editing.value.c === c)) endEdit()
+  _editOrig = props.stations[r][f.key]
+  editing.value = { r, c, typed: false }
+  setFocus(r, c, false)   // 确保编辑格==聚焦格：组合框输入靠本格的 .sg-cap，二者必须重合（editing 先置好，watch 不会抢焦）
+  const cur = props.stations[r][f.key] == null ? '' : props.stations[r][f.key]
+  dd.r = r; dd.c = c; dd.open = true; dd.flip = false
+  dd.query = seed == null ? '' : String(seed)
+  const all = fieldOptions(f)
+  dd.active = dd.query ? 0 : Math.max(0, all.findIndex((o) => optVal(o) === cur))   // 空输入预高亮当前值；打字则高亮首个匹配
+  window.addEventListener('scroll', onDropdownReflow, true)   // capture：接住 .sg-scroll 容器不冒泡的滚动
+  window.addEventListener('resize', onDropdownReflow)
+  window.addEventListener('mousedown', onDocDown, true)
+  nextTick(() => {
+    const el = capEl()
+    if (el) { el.value = dd.query; el.focus(); if (el.setSelectionRange) { const n = el.value.length; try { el.setSelectionRange(n, n) } catch (e) { /* ignore */ } } }
+    positionDropdown(); scrollActive()
+  })
+}
+function closeDropdown() {
+  if (!dd.open) return
+  dd.open = false; dd.r = dd.c = dd.active = -1; dd.style = {}; dd.query = ''
+  window.removeEventListener('scroll', onDropdownReflow, true)
+  window.removeEventListener('resize', onDropdownReflow)
+  window.removeEventListener('mousedown', onDocDown, true)
+}
+// 从编辑格实时 rect 定位（fixed=视口坐标，天然免疫 scrollLeft/Top 与 sticky 偏移，勿手动加 scrollTop）；下方空间不足且上方够则上翻并夹高
+function positionDropdown() {
+  const cell = root.value && root.value.querySelector('.sg-cell.editing')
+  const pop = ddEl.value
+  if (!cell || !pop) return
+  const cr = cell.getBoundingClientRect(), gap = 2, vh = window.innerHeight, ph = pop.offsetHeight
+  let top = cr.bottom + gap, flip = false
+  if (top + ph > vh - 8 && cr.top - gap - ph > 8) { top = cr.top - gap - ph; flip = true }
+  const maxH = Math.max(72, Math.round(flip ? (cr.top - gap - 8) : (vh - top - 8)))
+  dd.flip = flip
+  dd.style = { left: Math.round(cr.left) + 'px', top: Math.round(top) + 'px', minWidth: Math.round(cr.width) + 'px', maxHeight: maxH + 'px' }
+}
+// 网格滚动/窗口变化：重定位；编辑格被滚出可视网格 → 放弃本次编辑（还原原值）收起，避免把半截输入误提交
+function onDropdownReflow() {
+  if (!dd.open) return
+  const cell = root.value && root.value.querySelector('.sg-cell.editing')
+  if (!cell || !root.value) { cancelEdit(); return }
+  const cr = cell.getBoundingClientRect(), sr = root.value.getBoundingClientRect()
+  if (cr.bottom < sr.top || cr.top > sr.bottom || cr.right < sr.left || cr.left > sr.right) { cancelEdit(); return }
+  positionDropdown()
+}
+// 文档级按下（capture 先于 td/caret 的 mousedown）：点在列表内或当前编辑格内交给各自 handler；点其它处＝提交当前解析值收起
+function onDocDown(e) {
+  if (!dd.open) return
+  if (ddEl.value && ddEl.value.contains(e.target)) return
+  const cell = root.value && root.value.querySelector('.sg-cell.editing')
+  if (cell && cell.contains(e.target)) return
+  commitDropdown(ddCommitValue())
+}
+function onCaretDown(r, c) {
+  if (dd.open && dd.r === r && dd.c === c) { commitDropdown(ddCommitValue()); return }   // 再点当前 caret＝提交并收起
+  if (editing.value) endEdit()
+  sel.value = {}
+  setFocus(r, c, false)
+  openDropdown(r, c)
+}
+function onOptDown(o) { commitDropdown(optVal(o)) }   // 点选项：提交该选项自身绑定的值（点谁提交谁）
+// 提交解析：优先取当前高亮的过滤项；无过滤项（打了字但无匹配）则把输入文本按显示名兜底归一为存值（支持自由录入）。
+function ddCommitValue() {
+  const filtered = ddFiltered.value
+  if (filtered.length && dd.active >= 0 && dd.active < filtered.length) return optVal(filtered[dd.active])
+  return normalizeFieldValue(props.fields[dd.c], dd.query == null ? '' : dd.query)
+}
+function commitDropdown(val) {
+  if (dd.r >= 0 && dd.c >= 0) props.stations[dd.r][props.fields[dd.c].key] = val
+  endEdit()   // 归一化（合法存值原样）+清编辑态+关弹层+回焦捕获框
+}
+function scrollActive() {
+  nextTick(() => { const el = ddEl.value; if (!el) return; const a = el.querySelector('.sg-opt.active'); if (a && a.scrollIntoView) a.scrollIntoView({ block: 'nearest' }) })
+}
+// 列表键盘模型（自持，跨浏览器/Electron 一致）：上下移高亮；Enter/Tab 提交并按网格约定移动焦点；Esc 取消还原；
+// 可打印字符/Backspace/左右键不拦截 → 落进 .sg-cap 输入框驱动过滤（@input→onCapInput 更新 dd.query）；空输入时 Home/End 跳首末项。
+function onDropdownKey(e) {
+  const opts = ddFiltered.value, n = opts.length
+  if (e.key === 'ArrowDown') { if (n) dd.active = Math.min(n - 1, dd.active + 1); scrollActive(); e.preventDefault(); return }
+  if (e.key === 'ArrowUp') { if (n) dd.active = Math.max(0, dd.active - 1); scrollActive(); e.preventDefault(); return }
+  if (e.key === 'Home' && !dd.query) { if (n) dd.active = 0; scrollActive(); e.preventDefault(); return }
+  if (e.key === 'End' && !dd.query) { if (n) dd.active = n - 1; scrollActive(); e.preventDefault(); return }
+  if (e.key === 'Enter') { props.stations[dd.r][props.fields[dd.c].key] = ddCommitValue(); const fr = range.fr, fc = range.fc; endEdit(); setFocus(fr + (e.shiftKey ? -1 : 1), fc); e.preventDefault(); return }
+  if (e.key === 'Tab') { props.stations[dd.r][props.fields[dd.c].key] = ddCommitValue(); const fr = range.fr, fc = range.fc; endEdit(); setFocus(fr, visColAfter(fc, e.shiftKey ? -1 : 1)); e.preventDefault(); return }
+  if (e.key === 'Escape') { cancelEdit(); e.preventDefault(); return }
+}
 
 function clearSel() {
   pushUndo()
@@ -492,7 +627,7 @@ watch(() => [range.fr, range.fc], () => {
 })
 
 onMounted(() => { window.addEventListener('mouseup', onUp); window.addEventListener('mousemove', onDragMove) })
-onBeforeUnmount(() => { window.removeEventListener('mouseup', onUp); window.removeEventListener('mousemove', onDragMove); stopAutoScroll() })
+onBeforeUnmount(() => { window.removeEventListener('mouseup', onUp); window.removeEventListener('mousemove', onDragMove); stopAutoScroll(); closeDropdown() })
 
 // —— 导入（城市库 / 点标记 / 地面站 / 航迹）——
 // 点标记/地面站/航迹来自主窗口 localStorage('globe3d/markers')（同源共享，无需 IPC）。
@@ -701,24 +836,25 @@ function clearColContents() {
                 class="sg-cell" :class="{ 'sg-key': isKeyCol(c), sel: inSel(i, c), focus: isFocus(i, c), editing: isEditing(i, c), fillp: inFill(i, c) }"
                 :style="isKeyCol(c) ? keyColStyle(c) : null"
                 @mousedown.left="onDown(i, c, $event)" @mouseenter="onEnter(i, c)" @dblclick="startEdit(i, c)" @contextmenu.prevent="onCellContext(i, c, $event)">
-              <!-- select 双击/F2 → 原生下拉。收起用 @change（选中即提交并收起）而非 @blur：原生下拉在 Windows/Electron 下
-                   「弹出即触发 <select> 失焦」，若用 @blur→endEdit 会在选中前就卸载 <select>，把这次选择丢掉 → 表现为
-                   「选了一个选项却跳回第一项」。@change 触发时值已由 v-model 写入，收起是安全的；点其它格 / Tab·Enter·Esc 另有收起路径。 -->
-              <template v-if="isEditing(i, c) && f.type === 'select' && !editing.typed">
-                <select v-model="s[f.key]" class="sg-i" @change="endEdit" @keydown="onCapKey">
-                  <option v-for="o in fieldOptions(f)" :key="optVal(o)" :value="optVal(o)">{{ optLabel(o) }}</option>
-                </select>
-              </template>
               <!-- 聚焦格常驻捕获输入框：导航态透明覆盖在值上（pointer-events:none 让鼠标框选穿透 td），
-                   键入/输入法组字即翻成可见编辑框——中文输入法从首字母起就落在真实 <input>，不吞首字母。 -->
-              <template v-else-if="isFocus(i, c)">
-                <input class="sg-cap" :class="{ editing: isEditing(i, c), mono: f.type === 'num' }" tabindex="-1"
+                   键入/输入法组字即翻成可见编辑框——中文输入法从首字母起就落在真实 <input>，不吞首字母。
+                   select 字段：编辑态不套 editing 皮肤（保持透明导航态），选择改由自建下拉列表(sg-dd)承接，
+                   绕开原生 <select> 弹层在滚动/sticky/冻结列 + Windows 分数缩放下的「点谁选上一个」坐标错位。 -->
+              <template v-if="isFocus(i, c)">
+                <input class="sg-cap" :class="{ editing: isEditing(i, c), combo: f.type === 'select', mono: f.type === 'num' }" tabindex="-1"
+                       :placeholder="!isEditing(i, c) ? '' : (f.type === 'select' ? (displayValue(s, f) || ghost(s, f) || '输入或选择…') : ghost(s, f))"
                        @input="onCapInput($event, i, c)" @compositionstart="onCapCompStart(i, c)"
                        @keydown="onCapKey" @blur="onCapBlur"
                        @copy="onCapClip" @cut="onCapClip" @paste="onCapClip" />
-                <span class="sg-v" :class="{ mono: f.type === 'num' }">{{ displayValue(s, f) }}</span>
+                <span v-if="!(isEditing(i, c) && f.type === 'select')" class="sg-v" :class="{ mono: f.type === 'num', 'has-caret': f.type === 'select', ph: ghost(s, f) }">{{ ghost(s, f) || displayValue(s, f) }}</span>
+                <span v-if="f.type === 'select'" class="sg-caret" :class="{ open: isEditing(i, c) }"
+                      @mousedown.left.stop.prevent="onCaretDown(i, c)"><Icon name="chevron-down" :size="12" /></span>
               </template>
-              <span v-else class="sg-v" :class="{ mono: f.type === 'num' }">{{ displayValue(s, f) }}</span>
+              <template v-else>
+                <span class="sg-v" :class="{ mono: f.type === 'num', 'has-caret': f.type === 'select', ph: ghost(s, f) }">{{ ghost(s, f) || displayValue(s, f) }}</span>
+                <span v-if="f.type === 'select'" class="sg-caret"
+                      @mousedown.left.stop.prevent="onCaretDown(i, c)"><Icon name="chevron-down" :size="12" /></span>
+              </template>
               <span v-if="isFillAnchor(i, c) && !isEditing(i, c)" class="sg-handle" title="拖动/双击向下填充" @mousedown.left.stop.prevent="onFillDown" @dblclick.stop="onFillDbl"></span>
             </td>
             <td v-if="roLabel" class="sg-ro mono sg-cell" :class="{ sel: inSel(i, fields.length), focus: isFocus(i, fields.length), fillp: inFill(i, fields.length) }"
@@ -758,7 +894,11 @@ function clearColContents() {
         <div class="sg-box-hd">批量设值（应用到选中的 {{ selectedRows.length }} 行）</div>
         <div class="sg-batch">
           <select v-model="batch.key" class="sg-search"><option v-for="f in fields" :key="f.key" :value="f.key">{{ f.label }}</option></select>
-          <select v-if="batchField.type === 'select'" v-model="batch.value" class="sg-search"><option v-for="o in fieldOptions(batchField)" :key="optVal(o)" :value="optVal(o)">{{ optLabel(o) }}</option></select>
+          <!-- select 字段的批量值：可打字筛选（datalist）也可下拉选，输入显示名即可，doBatch 里 normalizeFieldValue 归一为存值 -->
+          <template v-if="batchField.type === 'select'">
+            <input v-model="batch.value" class="sg-search" list="sg-batch-opts" placeholder="输入或选择…（可打字筛选）" autocomplete="off" />
+            <datalist id="sg-batch-opts"><option v-for="o in fieldOptions(batchField)" :key="optVal(o)" :value="optLabel(o)" /></datalist>
+          </template>
           <input v-else v-model="batch.value" class="sg-search" :placeholder="'值（' + (batchField.unit || '') + '）'" />
         </div>
         <div class="sg-box-ft"><button class="sg-btn" @click="batch.open = false">取消</button><button class="sg-btn primary" @click="doBatch">应用</button></div>
@@ -785,6 +925,21 @@ function clearColContents() {
         <button class="sg-ctx-i" @click="menuDo(clearColContents)">清除整列内容</button>
       </div>
     </div>
+
+    <!-- 自建下拉编辑器：DOM 选项列表 + Teleport 到 body（脱离 .sg-scroll 溢出裁剪与 sticky/冻结列层叠上下文）。
+         每个选项各自绑定其值并 @mousedown.prevent 提交——点谁提交谁，从结构上根除原生 <select> 弹层坐标错位「点卫星2却选中卫星1」。 -->
+    <Teleport to="body">
+      <div v-if="dd.open" ref="ddEl" class="sg-dd" :class="{ flip: dd.flip }" :style="dd.style" role="listbox" @contextmenu.prevent>
+        <div v-for="(o, oi) in ddFiltered" :key="optVal(o)" class="sg-opt"
+             :class="{ active: oi === dd.active, sel: optVal(o) === ddCurrent }"
+             role="option" :aria-selected="optVal(o) === ddCurrent"
+             @mousedown.left.prevent="onOptDown(o)" @mouseenter="dd.active = oi">
+          <Icon class="sg-opt-ck" name="check" :size="12" />
+          <span class="sg-opt-lb">{{ optLabel(o) }}</span>
+        </div>
+        <div v-if="!ddFiltered.length" class="sg-opt sg-opt-empty">{{ ddOptions.length ? '无匹配 · 回车录入「' + dd.query + '」' : '无选项' }}</div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -825,6 +980,8 @@ function clearColContents() {
 .sg-v { display: block; padding: 4px 6px; min-width: 76px; min-height: 22px; overflow: hidden; text-overflow: ellipsis; }
 .sg-key .sg-v { min-width: 78px; }
 .sg-v.mono { font-family: var(--font-mono); }
+/* 留空单元格「浅显示」默认值（占位提示，非真实输入）——比正常内容更淡，用户一眼可辨 */
+.sg-v.ph { color: var(--text-faint); opacity: .7; }
 .sg-cell.sel { background: color-mix(in srgb, var(--accent) 12%, var(--bg)); }
 .sg-cell.focus { outline: 2px solid var(--accent); outline-offset: -2px; }
 .sg-tbl tbody tr.on > td.sg-cell.sel { background: color-mix(in srgb, var(--accent) 16%, var(--surface-2)); }
@@ -837,6 +994,7 @@ function clearColContents() {
 .sg-cap.mono { font-family: var(--font-mono); }
 .sg-cap:focus { outline: none; }
 .sg-cap.editing { background: var(--surface); color: var(--text); caret-color: var(--text); pointer-events: auto; z-index: 5; }
+.sg-cap.editing::placeholder { color: var(--text-faint); opacity: .7; }   /* 编辑空格时输入框内仍浅显默认值，键入即消 */
 .sg-act { position: sticky; right: 0; z-index: 1; white-space: nowrap; padding: 0 4px; text-align: center; width: 86px; min-width: 86px; }
 .sg-tbl thead th.sg-act { z-index: 4; }
 .sg-mini { font: inherit; font-size: 11px; padding: 2px 6px; margin: 2px 1px; cursor: pointer; background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
@@ -882,4 +1040,23 @@ function clearColContents() {
 .sg-ctx-i.danger:hover { color: var(--danger); }
 .sg-ctx-i kbd { font: inherit; font-size: 10px; color: var(--text-faint); background: var(--surface-2); border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; }
 .sg-ctx-sep { height: 1px; margin: 4px 6px; background: var(--border); }
+
+/* select 单元格下拉指示 chevron：单击即开的热区，pointer-events 高于透明捕获框(.sg-cap z3) */
+.sg-caret { position: absolute; right: 2px; top: 50%; transform: translateY(-50%); display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 18px; color: var(--text-faint); cursor: pointer; z-index: 6; pointer-events: auto; transition: transform .12s, color .12s; }
+.sg-cell:hover .sg-caret, .sg-cell.focus .sg-caret { color: var(--text-muted); }
+.sg-caret.open { color: var(--accent); transform: translateY(-50%) scaleY(-1); }
+.sg-v.has-caret { padding-right: 18px; }
+.sg-cap.combo { padding-right: 20px; }   /* 组合框输入：右留位给 chevron，打字不压住箭头 */
+/* 自建下拉列表（Teleport 到 body，fixed 定位；层级高于 sticky 表头/冻结列 z4，低于模态遮罩 z200） */
+.sg-dd { position: fixed; z-index: 250; min-width: 96px; max-height: 320px; padding: 3px; overflow-y: auto; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-box, 3px); box-shadow: 0 6px 20px rgba(0,0,0,.22); font-size: 12px; }
+.sg-dd.flip { box-shadow: 0 -6px 20px rgba(0,0,0,.22); }
+.sg-opt { display: flex; align-items: center; gap: 6px; padding: 5px 8px; cursor: pointer; border-radius: var(--r-ctl, 2px); color: var(--text); white-space: nowrap; user-select: none; }
+.sg-opt:hover { background: var(--surface-2); }
+.sg-opt.active { background: color-mix(in srgb, var(--accent) 16%, var(--bg)); }
+.sg-opt.sel { color: var(--accent); font-weight: 600; }
+.sg-opt-ck { flex: none; width: 12px; color: var(--accent); }
+.sg-opt:not(.sel) .sg-opt-ck { visibility: hidden; }   /* 占位对齐，未选中项留白 */
+.sg-opt-lb { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.sg-opt-empty { color: var(--text-faint); cursor: default; justify-content: center; }
+.sg-opt-empty:hover { background: transparent; }
 </style>

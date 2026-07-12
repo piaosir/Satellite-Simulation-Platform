@@ -1,10 +1,20 @@
 const { ipcMain, dialog, BrowserWindow } = require('electron')
 const fs = require('fs')
 const createOmm = require('../services/omm')
+const createCustomSats = require('../services/customSats')
 
 // 注册所有 IPC 处理器。core 为返回引擎实例的函数（延迟解析）。
 function register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget, openSunOutage, grd, confirmCloseLinkBudget, openNgso, confirmCloseNgso, openRegen, confirmCloseRegen }) {
   const omm = createOmm(core)
+  const customSats = createCustomSats(core)
+
+  // 主窗口自定义标题栏：主题切换时把原生窗口控制按钮（Windows 覆盖式）的配色跟到当前主题。
+  // 非覆盖式窗口（如各链路预算独立窗口）无 setTitleBarOverlay，静默忽略。
+  ipcMain.handle('window:setOverlay', (e, opt) => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    if (!win || typeof win.setTitleBarOverlay !== 'function') return false
+    try { win.setTitleBarOverlay(opt); return true } catch { return false }
+  })
   ipcMain.handle('omm:load', (_e, group, online) => omm.load(group, online))
   ipcMain.handle('omm:positions', (_e, group, iso) => omm.positions(group, iso))
   ipcMain.handle('omm:csv', (_e, group, opts) => omm.fetchCsv(group, opts))
@@ -36,6 +46,60 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     try { fs.writeFileSync(filePath, r.text); return { ok: true, filePath } }
     catch (err) { return { ok: false, error: err.message || String(err) } }
   })
+
+  // ---- 文件管理：自定义卫星星历库（逐条配置：每个导入文件一组，各自导出/删除）----
+  ipcMain.handle('omm:customList', () => customSats.list())
+  // 3D 地图分组 / 搜索池加载用：全部组扁平化为一份 OMM CSV（{text, fetchedAt} 或 null，绝不联网）
+  ipcMain.handle('omm:customCsv', () => customSats.raw())
+  // 删除 / 改名某个导入组
+  ipcMain.handle('omm:customRemove', (_e, groupId) => customSats.removeGroup(groupId))
+  ipcMain.handle('omm:customRename', (_e, groupId, name) => customSats.renameGroup(groupId, name))
+  // 导入星历（可多选）：每个文件 = 一个命名组（同名替换），自动识别 OMM CSV / TLE。
+  ipcMain.handle('omm:customImport', async (e) => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+      title: '导入星历（OMM CSV / TLE，可多选，每文件一组）', properties: ['openFile', 'multiSelections'],
+      filters: [
+        { name: 'OMM / TLE 星历 (*.csv, *.tle, *.txt)', extensions: ['csv', 'tle', 'txt'] },
+        { name: '所有文件', extensions: ['*'] }
+      ]
+    })
+    if (canceled || !filePaths || !filePaths.length) return { canceled: true }
+    const path = require('path')
+    const acc = { ok: true, groups: 0, sats: 0, replaced: 0, invalid: 0, errors: [], warnings: [] }
+    for (const fp of filePaths) {
+      const base = path.basename(fp).replace(/\.(csv|tle|txt)$/i, '')
+      let text
+      try { text = fs.readFileSync(fp, 'utf8') } catch (err) { acc.errors.push(path.basename(fp) + '：读取失败 ' + (err.message || err)); continue }
+      const r = customSats.importFile(base, text)
+      if (!r.ok) { acc.errors.push(path.basename(fp) + '：' + (r.error || '导入失败')); continue }
+      acc.groups += 1; acc.sats += r.group.count; acc.replaced += r.replaced ? 1 : 0; acc.invalid += r.invalid || 0
+      if (r.errors && r.errors.length) acc.errors.push(...r.errors)
+      if (r.warnings && r.warnings.length) acc.warnings.push(...r.warnings)
+    }
+    return acc
+  })
+  // 导出某个导入组为 OMM CSV（文件历元）
+  ipcMain.handle('omm:customExportGroup', async (e, groupId, defaultName) => {
+    const text = customSats.recordsCsv(customSats.groupRecords(groupId))
+    if (!text) return { ok: false, error: '该组无卫星可导出' }
+    return saveCsv(e, (defaultName || '导入组') + '_OMM.csv', text)
+  })
+  // 导出任意 OMM 记录为 CSV（自建星座展开记录由渲染进程传入，场景历元）
+  ipcMain.handle('omm:exportOmmCsv', async (e, records, defaultName) => {
+    const text = customSats.recordsCsv(records)
+    if (!text) return { ok: false, error: '无可导出的星历记录' }
+    return saveCsv(e, (defaultName || '自定义星历') + '_OMM.csv', text)
+  })
+  async function saveCsv(e, defaultName, text) {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    const { canceled, filePath } = await dialog.showSaveDialog(win, {
+      defaultPath: defaultName, filters: [{ name: 'CSV 文件', extensions: ['csv'] }]
+    })
+    if (canceled || !filePath) return { ok: false, canceled: true }
+    try { fs.writeFileSync(filePath, text); return { ok: true, filePath } }
+    catch (err) { return { ok: false, error: err.message || String(err) } }
+  }
 
   // ---- 文件管理：用户 GXT 覆盖库（卫星 → 波束 → GXT）----
   if (coverageGxt) {

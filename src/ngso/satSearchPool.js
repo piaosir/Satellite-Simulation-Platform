@@ -11,7 +11,7 @@
 //     epoch?/raan?/argp?/ma?/bstar?/mdot?/mddot? (omm), elements?{altKm,ecc,incl,raan,argp,ma} (custom),
 //     apogeeKm, perigeeKm, groupLabel, custom? }
 
-import { fetchGroupLiveOrSup } from '../viz/constellation/tle.js'
+import { fetchGroupLiveOrSup, parseOMMCsv } from '../viz/constellation/tle.js'
 import { generateConstellation } from '../viz/constellation/walker.js'
 import { resolveScenarioEpoch } from '../viz/constellation/useCustomConstellations.js'
 
@@ -59,6 +59,20 @@ function fromCustom(satObj, noradId, constName, epoch) {
   }
 }
 
+// 读本地自定义卫星库（文件管理导入的 OMM/TLE，主进程持久化为一份 OMM CSV）→ 池记录（orbitType 'omm'）。
+// 与真实目录星同一 schema/同一 SGP4 通路（fromOmm → buildSatrec type:'omm'）；导入星历【保留文件内历元】，
+// 与内置真实组同口径。（自建 Walker 星座才用场景历元，见 loadCustomSats。）
+async function loadCustomOmmSats() {
+  try {
+    const api = (typeof window !== 'undefined') && window.api
+    if (!api || !api.omm || !api.omm.customCsv) return []
+    const raw = await api.omm.customCsv()
+    const text = raw && raw.text
+    if (!text) return []
+    return parseOMMCsv(text).map((s) => fromOmm(s, '自定义卫星'))
+  } catch { return [] }
+}
+
 // 读本地自定义星座（与星座3D 页同键、同 walker 生成逻辑），返回 { sats, names, epoch }
 // epoch=共享场景历元：由 resolveScenarioEpoch 按「每天更新」规则解析（默认当天 08:00，当天人为改过则用人为值），
 // 与 3D 页同源同规则 → 透传给每颗合成星，供 NGSO 几何按同一设计历元求解、跨窗口一致。
@@ -102,9 +116,16 @@ export async function buildSearchPool() {
       map.set(id, rec)
     }
   }
+  // 自定义卫星库（文件管理导入的 OMM/TLE）：以用户库为准覆盖同号目录星（用户明确添加，优先级最高）。
+  const customOmm = await loadCustomOmmSats()
+  for (const c of customOmm) map.set(String(c.noradId), c)
   const real = Array.from(map.values())
   const { sats: custom, names: customNames } = loadCustomSats()
-  return { all: custom.concat(real), real, custom, customNames }
+  // 排序：自定义卫星（OMM 库 + Walker 星座）置顶，确保结果条数上限内先被扫到、搜得到；
+  // 从 real 剔除已并入的自定义 OMM 星，避免同一颗出现两次。
+  const customIds = new Set(customOmm.map((c) => String(c.noradId)))
+  const realTail = real.filter((r) => !customIds.has(String(r.noradId)))
+  return { all: custom.concat(customOmm, realTail), real, custom, customNames }
 }
 
 // 单例缓存：天线树选星（按 NORAD 反解真实轨道）与「搜索卫星」面板必须读**同一份**候选池，

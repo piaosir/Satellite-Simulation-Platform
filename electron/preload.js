@@ -56,6 +56,10 @@ contextBridge.exposeInMainWorld('api', {
     deviceId: () => ipcRenderer.invoke('app:deviceId'),
     version: () => ipcRenderer.invoke('app:version')
   },
+  // 主窗口自定义标题栏：把原生窗口控制按钮（Windows 覆盖式）的配色更新为当前主题色
+  win: {
+    setOverlay: (opt) => ipcRenderer.invoke('window:setOverlay', opt)
+  },
   share: {
     configured: () => ipcRenderer.invoke('share:configured'),
     send: (recipientId, payload) => ipcRenderer.invoke('share:send', recipientId, payload),
@@ -88,7 +92,15 @@ contextBridge.exposeInMainWorld('api', {
     csv: (group, opts) => ipcRenderer.invoke('omm:csv', group, opts),
     list: () => ipcRenderer.invoke('omm:list'),
     import: (key) => ipcRenderer.invoke('omm:import', key),
-    export: (key) => ipcRenderer.invoke('omm:export', key)
+    export: (key) => ipcRenderer.invoke('omm:export', key),
+    // 自定义卫星库（导入 OMM CSV / TLE，合并去重后持久化为一份 OMM CSV，贯通 3D 分组与搜索池）
+    customList: () => ipcRenderer.invoke('omm:customList'),
+    customCsv: () => ipcRenderer.invoke('omm:customCsv'),
+    customImport: () => ipcRenderer.invoke('omm:customImport'),
+    customRemove: (groupId) => ipcRenderer.invoke('omm:customRemove', groupId),
+    customRename: (groupId, name) => ipcRenderer.invoke('omm:customRename', groupId, name),
+    customExportGroup: (groupId, defaultName) => ipcRenderer.invoke('omm:customExportGroup', groupId, defaultName),
+    exportOmmCsv: (records, defaultName) => ipcRenderer.invoke('omm:exportOmmCsv', records, defaultName)
   },
   coverage: {
     index: () => ipcRenderer.invoke('coverage:index'),

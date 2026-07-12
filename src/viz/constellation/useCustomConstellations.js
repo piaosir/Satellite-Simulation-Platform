@@ -212,3 +212,64 @@ export function useCustomConstellations(onChange) {
 
   return { list, scenarioEpoch, setScenarioEpoch, add, update, remove, toggle, showOnly, setPreview, count, entriesForRender, catalog, findByNorad, load, PLANE_PALETTE }
 }
+
+/* ===================== 只读读取（供「文件管理 · 星历」镜像展示 / 导出，无需实例化 composable） ===================== */
+// 读本地自定义星座库 → 每座概览 [{ id, name, incl, count, color }]（count=按参数生成的卫星数）。
+export function readCustomConstellationSummary() {
+  try {
+    const blob = JSON.parse(localStorage.getItem(STORE_KEY) || 'null')
+    if (!blob || !Array.isArray(blob.items)) return []
+    return blob.items.map((c) => {
+      let count = 0
+      try { count = generateConstellation(c.params || {}).length } catch { count = 0 }
+      return { id: c.id, name: (c.name || '自定义星座').trim() || '自定义星座', incl: Number(c.params && c.params.incl) || 0, count, color: c.color || '#4dabf7' }
+    })
+  } catch { return [] }
+}
+
+// 改名（回退用：3D 页未挂载、拿不到活实例时，直接改 localStorage；下次进图 load() 读到新名）。
+// 3D 页已挂载时应优先走活实例 customConst.update(id,{name})（会失效 build 缓存 + 重渲染），见 fileBridge.customConst。
+export function renameCustomConstellation(id, name) {
+  try {
+    const blob = JSON.parse(localStorage.getItem(STORE_KEY) || 'null')
+    if (!blob || !Array.isArray(blob.items)) return false
+    const it = blob.items.find((c) => c.id === id)
+    if (!it) return false
+    it.name = (name || '自定义星座').trim() || '自定义星座'
+    localStorage.setItem(STORE_KEY, JSON.stringify(blob))
+    return true
+  } catch { return false }
+}
+
+// 自定义星座 → 展开为 OMM 记录（历元 = 场景历元，与渲染/搜索同口径）供「导出星历」。
+// onlyId 给定时只导该座；否则全部。经典六根数 → OMM：meanMotion 由 a=(RE+近地点高度)/(1−e) 反算，
+// 与 elementsToSatrec / satSearchPool.fromCustom 一致。
+export function customConstellationsToOmmRecords(onlyId) {
+  try {
+    const blob = JSON.parse(localStorage.getItem(STORE_KEY) || 'null')
+    if (!blob || !Array.isArray(blob.items)) return []
+    const epoch = resolveScenarioEpoch(blob)
+    const out = []
+    let base = NORAD_BASE
+    for (const c of blob.items) {
+      const b = Number.isFinite(c.noradBase) ? c.noradBase : base
+      if (onlyId && c.id !== onlyId) { base += NORAD_STEP; continue }
+      let gen = []
+      try { gen = generateConstellation(c.params || {}) } catch { gen = [] }
+      for (let i = 0; i < gen.length; i++) {
+        const el = gen[i].elements || {}
+        const ecc = Math.max(0, Math.min(0.999, Number(el.ecc) || 0))
+        const a = (RE + (Number(el.altKm) || 0)) / (1 - ecc)
+        const meanMotion = 86400 * Math.sqrt(MU / (a * a * a)) / (2 * Math.PI)
+        out.push({
+          name: gen[i].name, noradId: String(b + i), objectId: '', epoch,
+          meanMotion: meanMotion.toFixed(8), ecc: String(ecc), incl: String(Number(el.incl) || 0),
+          raan: String(Number(el.raan) || 0), argp: String(Number(el.argp) || 0), ma: String(Number(el.ma) || 0),
+          bstar: '0', mdot: '0', mddot: '0'
+        })
+      }
+      base += NORAD_STEP
+    }
+    return out
+  } catch { return [] }
+}

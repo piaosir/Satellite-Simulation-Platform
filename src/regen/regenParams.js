@@ -64,7 +64,7 @@ export const FIELD_GROUPS = [
       { key: 'uplinkAvailability', label: '可用度', unit: '%', type: 'num', def: '99.90', target: 'link' },
       { key: 'uplinkPowerControl', label: 'UPC', type: 'select', options: ['否', '是', '自定义'], def: '否', target: 'link' },
       { key: 'upcValue', label: 'UPC值', unit: 'dB', type: 'num', def: '0', target: 'link' },
-      { key: 'paBackoff', label: '功放回退', unit: 'dB', type: 'num', def: '5', target: 'link' },
+      { key: 'paBackoff', label: '功放回退', unit: 'dB', type: 'num', def: '0', target: 'link' },
       { key: 'feederLoss', label: '馈线损耗', unit: 'dB', type: 'num', def: '3.5', target: 'link' },
       { key: 'uplinkOtherLoss', label: '综合损耗', tip: '综合损耗：指向/极化/天线罩/接头等未单列损耗之综合', unit: 'dB', type: 'num', def: '0.3', target: 'link' },
       // 上行干扰四项（原在「卫星与转发器」，再生式移入发信站逐站配置；target:'sat' → 送 satParams）
@@ -259,7 +259,7 @@ const UP_SAT_DEFAULTS = {
 const UP_LINK_DEFAULTS = {
   antennaDiameter: '6.2', antennaEfficiency: '65', G_Ts: '2',
   uplinkAvailability: '99.90', uplinkPowerControl: '否', upcValue: '0',
-  paBackoff: '5', feederLoss: '3.5', uplinkOtherLoss: '0.3'
+  paBackoff: '0', feederLoss: '3.5', uplinkOtherLoss: '0.3'
 }
 
 // 组装单条再生式下行链路的 { satParams, linkParams }：某颗卫星(satForm) + 某份载波信号(carrierForm) + 某收信站(rxStation)。

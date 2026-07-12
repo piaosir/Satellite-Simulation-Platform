@@ -30,10 +30,13 @@ ok('上行FSL > 下行FSL(上行频率更高)', parseFloat(r.uplinkFSLResult) > 
 const sub = core.calculateSatelliteAngle(0, 110.5, 110.5)
 approx('星下点正下方仰角≈90°', sub.elevation, 90, 1.0)
 
-// 链路预算回归基线（锁定当前实现，防回归）
-approx('合成 C/N 回归', r.carrierTotalCN, 9.41, 0.05)
-approx('上行 C/N 回归', r.uplinkCN, 17.45, 0.05)
-approx('下行 C/N 回归', r.downlinkCN, 10.15, 0.05)
+// 链路预算回归基线（锁定当前实现，防回归）。
+// 2026-07 重锁：本用例以空 linkParams 调引擎，走的是「空值回退默认」路径。已把回退常数对齐字段默认
+// （发信站口径 7.3→6.2m、馈线 0.2→3.5dB、收信站口径 1.2→3.7m、SFDref -82→-84 等），故此默认配置下
+// 上行 C/N 随发信站口径变小+馈线加大而降、下行 C/N 随收信站口径变大而升，基线相应更新。
+approx('合成 C/N 回归', r.carrierTotalCN, 9.91, 0.05)
+approx('上行 C/N 回归', r.uplinkCN, 12.86, 0.05)
+approx('下行 C/N 回归', r.downlinkCN, 12.97, 0.05)
 approx('链路余量回归', r.linkmargin, 3.0, 0.01)
 
 ok('NGSO 引擎可用', typeof core.calculateLinkBudgetNGSO === 'function')

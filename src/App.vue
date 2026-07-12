@@ -6,11 +6,13 @@ import { view } from './stores/view'
 import { covNav } from './stores/coveragePanels'
 import { zoom } from './stores/zoom'
 import { shellUi as ui, toggleUi } from './stores/shellUi'
+import { theme } from './stores/theme'
 import { logStore, logMsg, clearLog } from './stores/log'
 import { effective as displayQuality } from './stores/displayQuality'
 import SettingsModal from './components/SettingsModal.vue'
 import FileManager from './components/FileManager.vue'
 import Icon from './components/Icon.vue'
+import logoUrl from './assets/linklab-avatar-dark.png'
 import LinkBudget from './pages/LinkBudget.vue'
 import Configs from './pages/Configs.vue'
 import History from './pages/History.vue'
@@ -169,9 +171,22 @@ watch(() => logStore.items.length, () => {
 })
 
 function onKey(e) { if (e.key === 'Escape') { openMenu.value = ''; hint.value = '' } }
+
+// 自定义标题栏：把原生窗口控制按钮（Windows 覆盖式）的配色同步到当前主题，避免暗色下亮色三键突兀。
+// 直接读 --surface/--text，主题色一改这里自动跟随，无需在两处维护色值。
+function syncTitleOverlay() {
+  if (!window.api?.win?.setOverlay) return
+  const cs = getComputedStyle(document.documentElement)
+  const color = cs.getPropertyValue('--surface').trim()
+  const symbolColor = cs.getPropertyValue('--text').trim()
+  if (color && symbolColor) window.api.win.setOverlay({ color, symbolColor })
+}
+watch(() => theme.resolved, () => nextTick(syncTitleOverlay))
+
 onMounted(() => {
   window.addEventListener('keydown', onKey)
   window.api?.app?.version?.().then((v) => { appVersion.value = v || '' }).catch(() => { /* 浏览器直跑无 IPC */ })
+  syncTitleOverlay()
   logMsg('卫星仿真平台就绪')
 })
 onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
@@ -181,7 +196,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   <div class="shell">
     <!-- ① 菜单栏：经典文字菜单（点击展开，展开后悬停切换，Esc/点空白收起） -->
     <header class="menubar">
-      <span class="brand">卫星仿真平台</span>
+      <img class="brand" :src="logoUrl" alt="卫星仿真平台" title="卫星仿真平台" draggable="false" />
       <nav class="menus">
         <span v-for="m in menus" :key="m.key" class="mwrap">
           <span
@@ -312,11 +327,21 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 
 /* ===== ① 菜单栏 ===== */
 .menubar {
-  position: relative; display: flex; align-items: stretch; gap: 10px; height: 30px;
+  position: relative; display: flex; align-items: stretch; gap: 10px; height: 32px;
   padding: 0 10px 0 12px; background: var(--surface);
   border-bottom: 1px solid var(--border); flex: none;
+  /* 自定义标题栏：整条即窗口拖拽区（双击最大化由原生 WCO 处理）；
+     右侧留出 Windows 原生窗口控制按钮（覆盖式）宽度，菜单永不被三键遮挡。
+     env(titlebar-area-width) 仅在启用 titleBarOverlay 时存在，回退 100vw → 右内边距归零（浏览器直跑无碍）。 */
+  -webkit-app-region: drag;
+  padding-right: calc(10px + 100vw - env(titlebar-area-width, 100vw));
 }
-.brand { align-self: center; font-family: var(--font-serif); font-size: 14px; letter-spacing: .4px; padding-right: 6px; }
+/* 可交互元素排除出拖拽区，否则点击会被窗口拖拽吞掉（品牌名留作拖拽把手，不排除）。 */
+.mtitle, .mpanel, .vmask { -webkit-app-region: no-drag; }
+/* 品牌 = LOGO（原文字标题已并入原生标题栏并删除，避免与窗口标题重复）。
+   logo.png 为深色墨稿：浅色主题直用；深色主题反相为浅色，避免深底不可见。 */
+.brand { align-self: center; height: 20px; width: auto; padding-right: 8px; display: block; user-select: none; -webkit-user-drag: none; }
+:root[data-theme='dark'] .brand { filter: invert(1) brightness(1.06); }
 .menus { display: flex; align-items: stretch; }
 .mwrap { position: relative; display: flex; }
 .mtitle { display: flex; align-items: center; padding: 0 11px; font-size: 12.5px; color: var(--text); cursor: default; }

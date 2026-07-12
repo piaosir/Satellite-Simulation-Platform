@@ -23,6 +23,14 @@ function createWindow() {
     title: '卫星仿真平台',
     backgroundColor: '#ffffff',
     autoHideMenuBar: true,
+    // 自定义标题栏（VS Code 范式）：隐藏原生标题栏，仅保留 Windows 右上角原生窗口控制按钮（覆盖式）。
+    // 应用把品牌名 + 菜单栏画进这条同一行 → 消除「原生标题栏 + 菜单栏」两行冗余（同名两次）。
+    // 配色初值 = 浅色主题 --surface/--text；主题切换时渲染进程经 window:setOverlay 实时更新。
+    titleBarStyle: 'hidden',
+    // height 比菜单栏矮 1px：菜单栏 32px(border-box) 的底边框落在最后一行 y=31，
+    // 覆盖式窗口控制区若也高 32 会盖住该行 → 菜单/工具栏之间的分隔线右段被三键区吃掉。
+    // 缩到 31 只覆盖 y=0..30，底边框整行外露，分隔线贯通到右边缘（三键仅矮 1px，无感）。
+    titleBarOverlay: { color: '#f7f7f5', symbolColor: '#1a1a1a', height: 31 },
     webPreferences: {
       preload: join(__dirname, '../preload/preload.js'),
       contextIsolation: true,

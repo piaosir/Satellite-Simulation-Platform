@@ -1,6 +1,7 @@
 <script setup>
 import { ref, shallowRef, reactive, computed, onMounted, nextTick, watch } from 'vue'
 import { SAT_FIELDS, CARRIER_FIELDS, TX_FIELDS, RX_FIELDS, ISL_FIELDS, LASER_FIELDS, defaultsFor, buildRegenParams, buildRegenDownlinkParams, buildRegenIslParams, buildRegenLaserParams, eirpToPowerW, powerWToEirp, rxGtFromNoise } from './regenParams.js'
+import { stableStringify } from '../shared/configDirty.js'
 import { loadSatTree } from '../ngso/grdParam.js'
 import { encodeShare, decodeShare, configFileText } from '../ngso/shareCode.js'
 import Icon from '../components/Icon.vue'
@@ -780,7 +781,7 @@ async function importConfigs(items) {
   return items.length
 }
 function fingerprintOf(s) {
-  return JSON.stringify({ satConfigs: s.satConfigs, basebandConfigs: s.basebandConfigs, tx: s.tx, rx: s.rx, isl: s.isl, laser: s.laser, opMode: s.opMode, geoHorizonHours: s.geoHorizonHours, linkMode: s.linkMode, hiddenModes: s.hiddenModes })
+  return stableStringify({ satConfigs: s.satConfigs, basebandConfigs: s.basebandConfigs, tx: s.tx, rx: s.rx, isl: s.isl, laser: s.laser, opMode: s.opMode, geoHorizonHours: s.geoHorizonHours, linkMode: s.linkMode, hiddenModes: s.hiddenModes })
 }
 function fingerprint() { return fingerprintOf(serializeState()) }
 let activeBaseline = ''
@@ -857,23 +858,44 @@ async function exportExcel() {
   try {
     const en = exportLang.value === 'en'
     const mode = linkMode.value
-    const isDown = mode === 'downlink', isIsl = mode === 'isl'
+    const isDown = mode === 'downlink', isIsl = mode === 'isl', isLaser = mode === 'laser'
+    const isSpace = isIsl || isLaser   // 空间-空间体制（星间微波/激光）：几何走两星 islGeo，无地球站
     const satName = (satConfigs[0] && satConfigs[0].form.satelliteName) || (en ? 'Results' : '结果')
-    const nmeta = isIsl
-      ? { title: en ? 'Regenerative Inter-Satellite Link Budget' : '再生式星间链路预算结果', mode: en ? 'Given EIRP/GT + rigorous geometry' : '给定 EIRP/G-T + 严格几何', pairMode: en ? 'Per-link ISL' : '逐条星间' }
-      : isDown
-        ? { title: en ? 'Regenerative Downlink Link Budget' : '再生式下行链路预算结果', mode: en ? 'Given G/T operating point' : '给定工作点 G/T', pairMode: en ? 'Per-station downlink' : '逐站下行' }
-        : { title: en ? 'Regenerative Uplink Link Budget' : '再生式上行链路预算结果', mode: en ? 'Given operating point' : '给定工作点', pairMode: en ? 'Per-station uplink' : '逐站上行' }
-    const enName = isIsl ? 'Regen_ISL' : isDown ? 'Regen_Downlink' : 'Regen_Uplink'
-    const zhName = isIsl ? '再生式星间链路预算' : isDown ? '再生式下行链路预算' : '再生式上行链路预算'
+    const nmeta = isLaser
+      ? { title: en ? 'Regenerative Laser Inter-Satellite Link Budget' : '再生式激光星间链路预算结果', mode: en ? 'Given rate + optical power budget' : '给定速率 + 光学功率预算', pairMode: en ? 'Per-link laser ISL' : '逐条激光星间' }
+      : isIsl
+        ? { title: en ? 'Regenerative Inter-Satellite Link Budget' : '再生式星间链路预算结果', mode: en ? 'Given EIRP/GT + rigorous geometry' : '给定 EIRP/G-T + 严格几何', pairMode: en ? 'Per-link ISL' : '逐条星间' }
+        : isDown
+          ? { title: en ? 'Regenerative Downlink Link Budget' : '再生式下行链路预算结果', mode: en ? 'Given G/T operating point' : '给定工作点 G/T', pairMode: en ? 'Per-station downlink' : '逐站下行' }
+          : { title: en ? 'Regenerative Uplink Link Budget' : '再生式上行链路预算结果', mode: en ? 'Given operating point' : '给定工作点', pairMode: en ? 'Per-station uplink' : '逐站上行' }
+    const enName = isLaser ? 'Regen_Laser_ISL' : isIsl ? 'Regen_ISL' : isDown ? 'Regen_Downlink' : 'Regen_Uplink'
+    const zhName = isLaser ? '再生式激光星间链路预算' : isIsl ? '再生式星间链路预算' : isDown ? '再生式下行链路预算' : '再生式上行链路预算'
+    const clone = (o) => (o ? JSON.parse(JSON.stringify(o)) : null)
+    // 站址透传（上行取发信站、下行取收信站）→「几何关系」sheet 按 STK 口径标注地球站坐标/最低仰角
+    const staGeoOf = (l) => {
+      if (isSpace) return null
+      if (isDown) { const st = rxStations[l.ti] || {}; return { name: l.txName, lat: parseFloat(st.rxLatitude), lon: parseFloat(st.rxLongitude), altM: parseFloat(st.rxAltitude) || 0, minEl: parseFloat(st.rxMinElevation) || 0 } }
+      const st = txStations[l.ti] || {}; return { name: l.txName, lat: parseFloat(st.latitude), lon: parseFloat(st.longitude), altM: parseFloat(st.altitude) || 0, minEl: parseFloat(st.minElevation) || 0 }
+    }
     const payload = {
-      orbitType: 'REGEN',
+      orbitType: 'REGEN', regenMode: mode,
       defaultName: en ? `${enName}_${satName.replace(/[^\w-]+/g, '_')}.xlsx` : `${zhName}_${satName.replace(/[\\/:*?"<>|]/g, '_')}.xlsx`,
       lang: exportLang.value, pairMode: 'sequential',
       params: { satelliteName: satName, frequencyBand: (satConfigs[0] && satConfigs[0].form.frequencyBand) || '' },
       meta: nmeta,
       // 上行：发信站→卫星；下行：卫星→收信站；星间：发射星→接收星（l.txName=地面站/发射星, l.satName=卫星/接收星）
-      links: links.value.map((l) => ({ ti: l.ti, ri: 0, txName: isDown ? l.satName : l.txName, rxName: isDown ? l.txName : l.satName, ok: !!l.ok, error: l.error || '', data: l.data ? JSON.parse(JSON.stringify(l.data)) : null, geom: l.geom ? JSON.parse(JSON.stringify(l.geom)) : null }))
+      // 几何上下文分两族：地面-空间(上/下行)传 geom+access+staGeo+satName；空间-空间(星间/激光)传 islGeo
+      links: links.value.map((l) => ({
+        ti: l.ti, ri: 0,
+        txName: isDown ? l.satName : l.txName, rxName: isDown ? l.txName : l.satName,
+        ok: !!l.ok, error: l.error || '',
+        data: clone(l.data),
+        geom: clone(l.geom),          // 站星几何（上行/下行）
+        islGeo: clone(l.islGeo),      // 两星几何（星间微波/激光）
+        access: clone(l.access),      // 单站访问窗口（上行/下行）
+        staGeo: staGeoOf(l),          // 地球站坐标（上行/下行）
+        satName: l.satName            // 卫星名（几何 sheet 轨道根数/多普勒表标注）
+      }))
     }
     const r = await api.linkBudget.exportExcel(payload)
     if (r && r.ok) toast('已导出：' + r.filePath)
@@ -892,7 +914,11 @@ onMounted(async () => {
     if (raw) {
       const st = JSON.parse(raw)
       const c = st.activeId && configs.value.find((x) => x.id === st.activeId)
-      if (c) { applyState(st); activeId.value = c.id; activeBaseline = fingerprintOf(c.state) }
+      // 基线取「规整后的已存配置」：先 applyState(c.state) 走一遍与实时相同的规整管线再 setBaseline，
+      // 而非直接指纹原始 c.state——否则旧版本配置一打开就因补默认/裁字段被误判「已改」。
+      // 随后 applyState(st) 恢复上次会话（可能含未保存编辑）：若 st 与已存配置一致则判定干净、不误报；
+      // 若确有未保存改动，实时指纹与基线不同，仍会正确提示保存。
+      if (c) { activeId.value = c.id; applyState(c.state); setBaseline(); applyState(st) }
     }
   } catch (e) { /* ignore */ }
   try { deviceId.value = (api && await api.app.deviceId()) || '' } catch (e) { deviceId.value = '' }
@@ -1192,15 +1218,15 @@ onMounted(async () => {
                 </div>
                 <div class="geo-body">
                   <div v-if="islGeo.worst.worstISO && !islGeo.representative" class="geo-row"><span class="geo-l" title="所有几何量取自这一物理瞬间（互视样本中星间距离最大 → 最差 FSL）">最差时刻 t*</span><span class="geo-v" style="white-space:normal">{{ fmtInstant(islGeo.worst.worstISO, tzMode) }}</span></div>
-                  <div class="geo-row"><span class="geo-l">星间距离(最差)<i>km</i></span><span class="geo-v">{{ g2(islGeo.worst.rangeKm, 1) }}</span></div>
-                  <div class="geo-row"><span class="geo-l">最近星间距离<i>km</i></span><span class="geo-v">{{ g2(islGeo.worst.minRangeKm, 1) }}</span></div>
-                  <div class="geo-row"><span class="geo-l">发射/接收卫星高度<i>km</i></span><span class="geo-v">{{ g2(islGeo.worst.txAltKm, 1) }} / {{ g2(islGeo.worst.rxAltKm, 1) }}</span></div>
-                  <div class="geo-row"><span class="geo-l">地心夹角<i>°</i></span><span class="geo-v">{{ g2(islGeo.worst.centralAngleDeg) }}</span></div>
-                  <div class="geo-row"><span class="geo-l">LOS 掠地高度<i>km</i></span><span class="geo-v">{{ g2(islGeo.worst.grazAltKm, 1) }}</span></div>
-                  <div class="geo-row"><span class="geo-l">单程链路时延<i>ms</i></span><span class="geo-v">{{ g2(islGeo.worst.oneWayDelayMs, 3) }}</span></div>
-                  <div class="geo-row"><span class="geo-l" title="全搜索时窗内两星径向相对速度的峰值（决定最大多普勒）；轨道周期性复现量，与搜索起点无关，多次计算复现">最大距离变化率<i>km/s</i></span><span class="geo-v">{{ g2(islGeo.worst.rangeRateKmS, 4) }}</span></div>
-                  <div v-if="linkMode === 'laser'" class="geo-row"><span class="geo-l">相干多普勒 Δf<i>GHz</i></span><span class="geo-v">±{{ g2(islGeo.worst.maxDopplerHz / 1e9, 3) }}</span></div>
-                  <div v-else class="geo-row"><span class="geo-l">最大多普勒<i>kHz</i></span><span class="geo-v">±{{ g2(islGeo.worst.maxDopplerHz / 1000, 3) }}</span></div>
+                  <div class="geo-row"><span class="geo-l">星间距离(最差)</span><span class="geo-v">{{ g2(islGeo.worst.rangeKm, 1) }}<i>km</i></span></div>
+                  <div class="geo-row"><span class="geo-l">最近星间距离</span><span class="geo-v">{{ g2(islGeo.worst.minRangeKm, 1) }}<i>km</i></span></div>
+                  <div class="geo-row"><span class="geo-l">发射/接收卫星高度</span><span class="geo-v">{{ g2(islGeo.worst.txAltKm, 1) }} / {{ g2(islGeo.worst.rxAltKm, 1) }}<i>km</i></span></div>
+                  <div class="geo-row"><span class="geo-l">地心夹角</span><span class="geo-v">{{ g2(islGeo.worst.centralAngleDeg) }}<i>°</i></span></div>
+                  <div class="geo-row"><span class="geo-l">LOS 掠地高度</span><span class="geo-v">{{ g2(islGeo.worst.grazAltKm, 1) }}<i>km</i></span></div>
+                  <div class="geo-row"><span class="geo-l">单程链路时延</span><span class="geo-v">{{ g2(islGeo.worst.oneWayDelayMs, 3) }}<i>ms</i></span></div>
+                  <div class="geo-row"><span class="geo-l" title="全搜索时窗内两星径向相对速度的峰值（决定最大多普勒）；轨道周期性复现量，与搜索起点无关，多次计算复现">最大距离变化率</span><span class="geo-v">{{ g2(islGeo.worst.rangeRateKmS, 4) }}<i>km/s</i></span></div>
+                  <div v-if="linkMode === 'laser'" class="geo-row"><span class="geo-l">相干多普勒 Δf</span><span class="geo-v">±{{ g2(islGeo.worst.maxDopplerHz / 1e9, 3) }}<i>GHz</i></span></div>
+                  <div v-else class="geo-row"><span class="geo-l">最大多普勒</span><span class="geo-v">±{{ g2(islGeo.worst.maxDopplerHz / 1000, 3) }}<i>kHz</i></span></div>
 
                   <div class="geo-sec">互视可见度<span class="geo-sec-x">LOS 须清过地表 + 大气余量 {{ islGeo.search.atmMarginKm }}km</span></div>
                   <div class="acc-sum">
@@ -1213,7 +1239,7 @@ onMounted(async () => {
                       <span class="acc-c1">{{ wi + 1 }}</span>
                       <span class="acc-c2 mono">{{ fmtInstant(w.startISO, tzMode) }}<em v-if="w.clipped" class="acc-clip" title="窗口被搜索时窗边界截断">clip</em></span>
                       <span class="acc-c3 mono">{{ fmtDur(w.durationMin) }}</span>
-                      <span class="acc-c4 mono">{{ g2(w.maxRangeKm, 0) }}</span>
+                      <span class="acc-c4 mono">{{ g2(w.maxRangeKm, 0) }} km</span>
                     </div>
                   </div>
 
@@ -1226,7 +1252,7 @@ onMounted(async () => {
                         <div class="geo-sec">卫星运动</div>
                         <div class="geo-row"><span class="geo-l">轨道速度<i>惯性系</i></span><span class="geo-v">{{ g2(side.spd, 3) }}<i>km/s</i></span></div>
                         <div v-if="side.gspd != null" class="geo-row"><span class="geo-l">相对地面速度</span><span class="geo-v">{{ g2(side.gspd, 3) }}<i>km/s</i></span></div>
-                        <div class="geo-row"><span class="geo-l">卫星高度<i>km</i></span><span class="geo-v">{{ g2(side.alt, 1) }}</span></div>
+                        <div class="geo-row"><span class="geo-l">卫星高度</span><span class="geo-v">{{ g2(side.alt, 1) }}<i>km</i></span></div>
                         <div class="geo-sec">卫星轨道根数<span class="geo-sec-x">{{ side.el.satnum == null ? '虚拟圆轨道' : '历元' }}</span></div>
                         <div class="geo-row"><span class="geo-l">半长轴 a</span><span class="geo-v">{{ g2(side.el.a, 3) }}<i>km</i></span></div>
                         <div class="geo-row"><span class="geo-l">偏心率 e</span><span class="geo-v">{{ g2(side.el.e, 6) }}</span></div>
@@ -1284,18 +1310,18 @@ onMounted(async () => {
                   </div>
                 </div>
                 <div class="geo-body">
-                  <div class="geo-row"><span class="geo-l">对卫星仰角<i>°</i></span><span class="geo-v">{{ g2(geom.worst.up.elevDeg) }}</span></div>
-                  <div class="geo-row"><span class="geo-l">星地斜距<i>km</i></span><span class="geo-v">{{ g2(geom.worst.up.slantKm) }}</span></div>
-                  <div class="geo-row"><span class="geo-l">卫星高度<i>km</i></span><span class="geo-v">{{ g2(geom.worst.up.altKm, 1) }}</span></div>
-                  <div class="geo-row"><span class="geo-l">覆盖地心半角<i>°</i></span><span class="geo-v">{{ g2(geom.worst.up.coverageHalfAngleDeg) }}</span></div>
-                  <div class="geo-row"><span class="geo-l">地面覆盖半径<i>km</i></span><span class="geo-v">{{ g2(geom.worst.up.coverageRadiusKm, 1) }}</span></div>
-                  <div class="geo-row"><span class="geo-l">最大过境时长<i>min</i></span><span class="geo-v" :class="{ 'geo-inf': geom.worst.up.maxPassMin == null }">{{ gPass(geom.worst.up.maxPassMin) }}</span></div>
-                  <div class="geo-row"><span class="geo-l">单程链路时延<i>ms</i></span><span class="geo-v">{{ g2(geom.worst.oneWayDelayMs, 3) }}</span></div>
+                  <div class="geo-row"><span class="geo-l">对卫星仰角</span><span class="geo-v">{{ g2(geom.worst.up.elevDeg) }}<i>°</i></span></div>
+                  <div class="geo-row"><span class="geo-l">星地斜距</span><span class="geo-v">{{ g2(geom.worst.up.slantKm) }}<i>km</i></span></div>
+                  <div class="geo-row"><span class="geo-l">卫星高度</span><span class="geo-v">{{ g2(geom.worst.up.altKm, 1) }}<i>km</i></span></div>
+                  <div class="geo-row"><span class="geo-l">覆盖地心半角</span><span class="geo-v">{{ g2(geom.worst.up.coverageHalfAngleDeg) }}<i>°</i></span></div>
+                  <div class="geo-row"><span class="geo-l">地面覆盖半径</span><span class="geo-v">{{ g2(geom.worst.up.coverageRadiusKm, 1) }}<i>km</i></span></div>
+                  <div class="geo-row"><span class="geo-l">最大过境时长</span><span class="geo-v" :class="{ 'geo-inf': geom.worst.up.maxPassMin == null }">{{ gPass(geom.worst.up.maxPassMin) }}<i v-if="geom.worst.up.maxPassMin != null">min</i></span></div>
+                  <div class="geo-row"><span class="geo-l">单程链路时延</span><span class="geo-v">{{ g2(geom.worst.oneWayDelayMs, 3) }}<i>ms</i></span></div>
 
                   <div class="geo-sec">卫星运动</div>
                   <div v-if="geom.worst.speedInertialKmS != null" class="geo-row"><span class="geo-l">轨道速度<i>惯性系</i></span><span class="geo-v">{{ g2(geom.worst.speedInertialKmS, 3) }}<i>km/s</i></span></div>
                   <div v-if="geom.worst.speedGroundRelKmS != null" class="geo-row"><span class="geo-l">相对地面速度<i v-if="geom.dopplerEstimate">估算</i></span><span class="geo-v">{{ g2(geom.worst.speedGroundRelKmS, 3) }}<i>km/s</i></span></div>
-                  <div v-if="geom.worst.maxDopplerUpHz != null" class="geo-row"><span class="geo-l">上行多普勒<i>{{ geom.dopplerEstimate ? '估算·kHz' : 'kHz' }}</i></span><span class="geo-v">±{{ g2(geom.worst.maxDopplerUpHz / 1000, 3) }}</span></div>
+                  <div v-if="geom.worst.maxDopplerUpHz != null" class="geo-row"><span class="geo-l">上行多普勒<i v-if="geom.dopplerEstimate">估算</i></span><span class="geo-v">±{{ g2(geom.worst.maxDopplerUpHz / 1000, 3) }}<i>kHz</i></span></div>
 
                   <div class="geo-sec">卫星轨道根数<span class="geo-sec-x">{{ geom.elements && geom.elements.satnum == null ? '虚拟圆轨道' : '历元' }}</span></div>
                   <div class="geo-row"><span class="geo-l">半长轴 a</span><span class="geo-v">{{ g2(geom.elements.a, 3) }}<i>km</i></span></div>

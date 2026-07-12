@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed, onMounted, nextTick } from 'vue'
-import { fileBridge, bumpLibrary } from '../stores/fileBridge'
+import { fileBridge, bumpLibrary, bumpCustomSats } from '../stores/fileBridge'
+import { readCustomConstellationSummary, customConstellationsToOmmRecords, renameCustomConstellation } from '../viz/constellation/useCustomConstellations.js'
 import { parseGxt, metaFromName } from '../viz/gxt/parse.js'
 import { serializeGxt } from '../viz/gxt/serialize.js'
 import { displaySatName } from '../viz/satName.js'
@@ -40,6 +41,10 @@ const OMM_LABELS = {
 const ommRows = ref([])
 const ommBusy = ref('')
 async function loadOmm() { try { ommRows.value = api?.omm?.list ? await api.omm.list() : [] } catch { ommRows.value = [] } }
+// 该组是否有可用数据（用户缓存或内置快照）；兼容旧主进程仅返回 exists 的情形。
+const ommAvail = (row) => row.source ? row.source !== 'none' : !!row.exists
+// 状态徽标：已缓存（用户联网下载）/ 内置（软件自带兜底快照）/ 未下载。
+const ommStatus = (row) => (row.source === 'cache' || (!row.source && row.exists)) ? '已缓存' : (row.source === 'bundled' ? '内置' : '未下载')
 async function importOmm(row) {
   if (!api?.omm?.import) return
   ommBusy.value = row.key
@@ -56,6 +61,95 @@ async function exportOmm(row) {
   if (r && r.canceled) return
   if (r && r.ok) flash('已导出：' + r.filePath)
   else flash('导出失败：' + ((r && r.error) || '未知错误'))
+}
+
+/* ---- 自定义卫星（逐条配置：各自导入/导出/删除，无全局合并）----
+   两类条目、与「星座地图 3D」星座列表同源：
+   ① 自建星座（Walker，localStorage）——历元=场景历元；只读镜像(在「星座3D」增删)，可逐座导出星历；
+   ② 导入组（每个导入的 OMM/TLE 文件 = 一组，主进程 custom.json）——历元=文件内；可逐组导出/删除。
+   两类都并入地图「自定义卫星」分组与链路预算搜索池。 */
+const customGroups = ref([])        // 导入组 [{ id, name, importedAt, format, count, sats:[...] }]
+const customConsts = ref([])        // 自建星座概览 [{ id, name, incl, count, color }]
+const customBusy = ref(false)
+const hasCustomAny = computed(() => customGroups.value.length > 0 || customConsts.value.length > 0)
+async function loadCustomGroups() { try { const r = api?.omm?.customList ? await api.omm.customList() : null; customGroups.value = (r && r.groups) || [] } catch { customGroups.value = [] } }
+function loadCustomConsts() { try { customConsts.value = readCustomConstellationSummary() } catch { customConsts.value = [] } }
+// 汇总导入结果 → 一句反馈
+function summarizeImport(r) {
+  const parts = []
+  if (r.groups) parts.push(`${r.groups} 组 / ${r.sats} 颗`)
+  if (r.replaced) parts.push(`替换 ${r.replaced}`)
+  if (r.invalid) parts.push(`无效 ${r.invalid}`)
+  let msg = parts.length ? parts.join(' · ') : '无变化'
+  const errs = (r.errors || []).filter(Boolean)
+  const warns = (r.warnings || []).filter(Boolean)
+  if (warns.length) msg += `；${warns.length} 条告警`
+  if (errs.length) msg += `；${errs.length} 条失败：${errs[0]}${errs.length > 1 ? ' …' : ''}`
+  return msg
+}
+async function importCustom() {
+  if (!api?.omm?.customImport) return
+  customBusy.value = true
+  try {
+    const r = await api.omm.customImport()
+    if (r && r.canceled) return
+    if (r && r.ok) { flash('导入星历：' + summarizeImport(r)); await loadCustomGroups(); bumpCustomSats() }
+    else flash('导入失败：' + ((r && r.error) || '未知错误'))
+  } finally { customBusy.value = false }
+}
+async function removeCustomGroup(g) {
+  if (!(await ask(`删除导入组「${g.name}」（${g.count} 颗）？`))) return
+  await api.omm.customRemove(g.id); await loadCustomGroups(); bumpCustomSats()
+  flash(`已删除导入组「${g.name}」`)
+}
+// 逐组导出（导入组：文件历元）
+async function exportGroup(g) {
+  if (!api?.omm?.customExportGroup) return
+  const r = await api.omm.customExportGroup(g.id, g.name)
+  if (r && r.canceled) return
+  if (r && r.ok) flash('已导出：' + r.filePath)
+  else flash('导出失败：' + ((r && r.error) || '未知错误'))
+}
+// 逐座导出（自建星座：场景历元，展开为 OMM 记录传给主进程序列化保存）
+async function exportConstellation(c) {
+  if (!api?.omm?.exportOmmCsv) return
+  let recs = []
+  try { recs = customConstellationsToOmmRecords(c.id) } catch { recs = [] }
+  if (!recs.length) { flash('该星座无可导出的卫星'); return }
+  const r = await api.omm.exportOmmCsv(recs, c.name)
+  if (r && r.canceled) return
+  if (r && r.ok) flash('已导出：' + r.filePath)
+  else flash('导出失败：' + ((r && r.error) || '未知错误'))
+}
+const fmtGroupMeta = (g) => `${g.count} 颗 · ${g.format === 'tle' ? 'TLE' : 'OMM'} · ${fmtTime(g.importedAt)}`
+
+// —— 逐条改名（自建星座 + 导入组，点名称/「改名」进入编辑，✓/回车提交，Esc 取消）——
+const custEdit = ref('')   // 正在改名的行键：'k'+星座id / 'g'+组id
+const custVal = ref('')
+const custInput = ref(null)
+const setCustInput = (el) => { custInput.value = el }
+async function startRenameCust(key, name) {
+  custEdit.value = key; custVal.value = name
+  await nextTick(); if (custInput.value && custInput.value.focus) { custInput.value.focus(); custInput.value.select && custInput.value.select() }
+}
+function cancelRenameCust() { custEdit.value = '' }
+async function commitRenameCust() {
+  const key = custEdit.value, name = custVal.value.trim()
+  if (!key) return
+  if (!name) { flash('名称不能为空'); return }
+  if (key[0] === 'k') {          // 自建星座：优先走活实例（失效缓存+重渲染），否则回退改 localStorage
+    const id = key.slice(1)
+    const cc = fileBridge.customConst
+    if (cc && cc.update) cc.update(id, { name }); else renameCustomConstellation(id, name)
+    loadCustomConsts(); bumpCustomSats()
+  } else if (key[0] === 'g') {   // 导入组
+    const id = key.slice(1)
+    const r = await api.omm.customRename(id, name)
+    if (!(r && r.ok)) { flash('改名失败：' + ((r && r.error) || '未知')); return }
+    await loadCustomGroups(); bumpCustomSats()
+  }
+  custEdit.value = ''
+  flash('已改名为「' + name + '」')
 }
 
 /* ===================== ② GRD（镜像 3D 页活树）===================== */
@@ -279,7 +373,7 @@ async function exportCurrentGxt() {
   else if (save && save.error) flash('导出失败：' + save.error)
 }
 
-onMounted(() => { loadOmm(); loadGxt(); loadPreset() })
+onMounted(() => { loadOmm(); loadCustomGroups(); loadCustomConsts(); loadGxt(); loadPreset() })
 </script>
 
 <template>
@@ -302,18 +396,69 @@ onMounted(() => { loadOmm(); loadGxt(); loadPreset() })
         <div class="pane">
           <!-- ① OMM -->
           <section v-if="tab === 'omm'">
-            <p class="lead">每个星座组对应一份 CelesTrak OMM(CSV) 缓存，可导入本地文件替换、或导出当前缓存。替换后该星座按你的文件渲染。</p>
+            <!-- 自定义卫星：逐条配置，各自导出/删除。自建星座(场景历元，只读镜像) + 导入组(文件历元) -->
+            <div class="secbar">
+              <span class="sect">自定义卫星</span>
+              <span class="spacer"></span>
+              <button class="mini imp" :disabled="customBusy" @click="importCustom">{{ customBusy ? '导入中…' : '导入星历' }}</button>
+            </div>
+            <div class="clist">
+              <!-- ① 自建星座（Walker，历元=场景历元）：只读镜像，在「星座3D」增删；可逐座导出/改名 -->
+              <div v-if="customConsts.length" class="csub">自建星座 · {{ customConsts.length }} 座 · 场景历元</div>
+              <div v-for="c in customConsts" :key="'k' + c.id" class="crow">
+                <span class="cdot" :style="{ background: c.color }"></span>
+                <template v-if="custEdit === 'k' + c.id">
+                  <input class="ci cnmedit" :ref="setCustInput" v-model="custVal" @keydown.enter="commitRenameCust" @keydown.esc="cancelRenameCust" />
+                  <span class="cops">
+                    <button class="mini imp" @mousedown.prevent @click="commitRenameCust">确定</button>
+                    <button class="mini ghost" @click="cancelRenameCust">取消</button>
+                  </span>
+                </template>
+                <template v-else>
+                  <span class="cnm rn" title="点击改名" @click="startRenameCust('k' + c.id, c.name)">{{ c.name }}</span>
+                  <span class="cmeta">{{ c.incl.toFixed(1) }}° · {{ c.count }} 颗</span>
+                  <span class="cops">
+                    <button class="mini ghost" @click="exportConstellation(c)">导出</button>
+                    <span class="cro">在「星座3D」管理</span>
+                  </span>
+                </template>
+              </div>
+              <!-- ② 导入组（每个 OMM/TLE 文件一组，历元=文件内）：逐组导出/删除/改名 -->
+              <div v-if="customGroups.length" class="csub">导入组 · {{ customGroups.length }} 组 · 文件历元</div>
+              <div v-for="g in customGroups" :key="'g' + g.id" class="crow">
+                <span class="cdot imp"></span>
+                <template v-if="custEdit === 'g' + g.id">
+                  <input class="ci cnmedit" :ref="setCustInput" v-model="custVal" @keydown.enter="commitRenameCust" @keydown.esc="cancelRenameCust" />
+                  <span class="cops">
+                    <button class="mini imp" @mousedown.prevent @click="commitRenameCust">确定</button>
+                    <button class="mini ghost" @click="cancelRenameCust">取消</button>
+                  </span>
+                </template>
+                <template v-else>
+                  <span class="cnm rn" title="点击改名" @click="startRenameCust('g' + g.id, g.name)">{{ g.name }}</span>
+                  <span class="cmeta">{{ fmtGroupMeta(g) }}</span>
+                  <span class="cops">
+                    <button class="mini ghost" @click="exportGroup(g)">导出</button>
+                    <button class="mini del" @click="removeCustomGroup(g)">删除</button>
+                  </span>
+                </template>
+              </div>
+              <div v-if="!hasCustomAny" class="cempty">暂无自定义卫星 — 点「导入星历」加载 OMM CSV / TLE（每文件成一组，支持一文件多星、Alpha-5 编号），或在「星座地图 3D」用 Walker 生成器自建星座。</div>
+            </div>
+
+            <div class="secbar top"><span class="sect">内置星座组</span></div>
+            <p class="lead">每组对应一份 CelesTrak OMM(CSV)。软件已内置一份最新快照作兜底——无网设备也能看到星座；联网时自动改用更新的一版。可导入本地文件替换、或导出当前数据。</p>
             <table class="tbl">
               <thead><tr><th>星座组</th><th>卫星数</th><th>更新时间</th><th>状态</th><th></th></tr></thead>
               <tbody>
                 <tr v-for="row in ommRows" :key="row.key">
                   <td class="nm">{{ OMM_LABELS[row.key] || row.key }}</td>
-                  <td>{{ row.exists ? row.count : '—' }}</td>
+                  <td>{{ ommAvail(row) ? row.count : '—' }}</td>
                   <td class="dim">{{ fmtTime(row.mtime) }}</td>
-                  <td><span class="badge" :class="{ off: !row.exists }">{{ row.exists ? '已缓存' : '未下载' }}</span></td>
+                  <td><span class="badge" :class="{ off: !ommAvail(row), bundled: row.source === 'bundled' }">{{ ommStatus(row) }}</span></td>
                   <td class="ops">
                     <button class="mini" :disabled="ommBusy === row.key" @click="importOmm(row)">{{ ommBusy === row.key ? '导入中…' : '导入替换' }}</button>
-                    <button class="mini ghost" :disabled="!row.exists" @click="exportOmm(row)">导出</button>
+                    <button class="mini ghost" :disabled="!ommAvail(row)" @click="exportOmm(row)">导出</button>
                   </td>
                 </tr>
               </tbody>
@@ -466,6 +611,8 @@ onMounted(() => { loadOmm(); loadGxt(); loadPreset() })
 .tbl td.ops { text-align: right; white-space: nowrap; }
 .badge { font-size: 11px; padding: 1px 7px; border-radius: 2px; border: 1px solid var(--border); background: transparent; color: var(--text-muted); }
 .badge.off { color: var(--text-faint); }
+/* 内置兜底快照：区别于「已缓存」（用户联网数据），用低调蓝调描边表示软件自带 */
+.badge.bundled { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
 /* 统一低调描边按钮（去掉满屏亮色实心），主次靠位置与标签区分 */
 .mini { padding: 3px 10px; margin-left: 6px; cursor: pointer; font-size: 11.5px; border-radius: 2px;
   display: inline-flex; align-items: center; justify-content: center; gap: 4px;
@@ -518,4 +665,25 @@ onMounted(() => { loadOmm(); loadGxt(); loadPreset() })
 .dft .msg { flex: 1; font-size: 12px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dft button { padding: 6px 18px; cursor: pointer; border-radius: 2px; font-size: 12.5px; }
 .ok { background: var(--accent); border: 1px solid var(--accent); color: var(--bg); }
+/* 自定义卫星：轻量分区（与星座列表同风格），非大块卡片 */
+.secbar { display: flex; align-items: center; gap: 8px; padding-bottom: 6px; margin-bottom: 8px; border-bottom: 1px solid var(--border); }
+.secbar.top { margin-top: 18px; }
+.sect { font-size: 12.5px; color: var(--text); font-weight: 600; }
+.sctag { font-size: 11px; color: var(--text-faint); }
+.secbar .mini { margin-left: 0; }
+.clist { display: flex; flex-direction: column; }
+.csub { font-size: 11px; color: var(--text-faint); padding: 8px 4px 4px; letter-spacing: .02em; }
+.crow { display: flex; align-items: center; gap: 8px; padding: 6px 4px; border-bottom: 1px solid var(--border); }
+.crow:last-child { border-bottom: 0; }
+.cdot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none; opacity: .85; }
+.cdot.imp { background: var(--text-muted); }
+.cnm { font-size: 12.5px; color: var(--text); font-weight: 500; flex: none; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cnm.rn { cursor: pointer; }
+.cnm.rn:hover { color: var(--accent); }
+.ci.cnmedit { width: 200px; flex: none; padding: 3px 8px; }
+.cmeta { font-size: 11.5px; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cops { margin-left: auto; flex: none; display: flex; align-items: center; gap: 2px; }
+.cops .mini { margin-left: 4px; padding: 2px 9px; }
+.cro { font-size: 10.5px; color: var(--text-faint); opacity: .8; margin-left: 6px; }
+.cempty { padding: 12px 4px; font-size: 11.5px; color: var(--text-faint); line-height: 1.6; }
 </style>

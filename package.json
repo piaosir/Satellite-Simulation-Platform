@@ -1,6 +1,6 @@
 {
   "name": "satellite-sim-platform",
-  "version": "1.2.12-1",
+  "version": "1.2.12",
   "description": "卫星仿真平台 — 桌面端卫星链路预算与可视化（Electron + Vue3 + Cesium + SQLite）",
   "author": "",
   "license": "MIT",
@@ -12,6 +12,7 @@
     "smoke": "node packages/core/smoke-test.js",
     "test": "node packages/core/test/accuracy.test.js",
     "verify:services": "node scripts/verify-services.js",
+    "omm:snapshot": "node scripts/fetch-omm-snapshot.mjs",
     "dist": "node -e \"require('fs').rmSync('release',{recursive:true,force:true})\" && electron-vite build && electron-builder --win && node scripts/publish-cos.mjs",
     "publish:cos": "node scripts/publish-cos.mjs"
   },

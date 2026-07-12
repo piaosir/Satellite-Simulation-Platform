@@ -3,6 +3,7 @@ import { ref, shallowRef, reactive, computed, onMounted, nextTick, watch } from 
 import { SAT_FIELDS, CARRIER_FIELDS, TX_FIELDS, RX_FIELDS, defaultsFor, buildParams } from './params.js'
 import { loadSatTree, sampleAntennaParams } from './grdParam.js'
 import { encodeShare, decodeShare, configFileText } from './shareCode.js'
+import { stableStringify } from '../shared/configDirty.js'
 import Icon from '../components/Icon.vue'
 import ConfigTree from '../components/ConfigTree.vue'
 import StationGrid from './StationGrid.vue'
@@ -444,8 +445,10 @@ function applyState(st) {
       form: { ...defaultsFor(CARRIER_FIELDS), rsCodeMode: 'fraction', dvbStandard: 'custom', modcodIndex: -1, ...st.carrierForm }
     })
   }
-  if (Array.isArray(st.tx) && st.tx.length) txStations.splice(0, txStations.length, ...st.tx.map((r) => ({ ...r, _id: 's' + (_sid++) })))
-  if (Array.isArray(st.rx) && st.rx.length) rxStations.splice(0, rxStations.length, ...st.rx.map((r) => ({ ...r, _id: 's' + (_sid++) })))
+  // 回填字段默认：旧配置缺某个（后加的）字段 → 显示其默认值（与基带库一致），空格不再算出界面上没有的数；
+  // 已保存的显式空值('')仍覆盖默认 → 用户手动清空的格子保持空（不被默认回填）。
+  if (Array.isArray(st.tx) && st.tx.length) txStations.splice(0, txStations.length, ...st.tx.map((r) => ({ ...defaultsFor(TX_FIELDS), ...r, _id: 's' + (_sid++) })))
+  if (Array.isArray(st.rx) && st.rx.length) rxStations.splice(0, rxStations.length, ...st.rx.map((r) => ({ ...defaultsFor(RX_FIELDS), ...r, _id: 's' + (_sid++) })))
   if (st.calcMode) calcMode.value = st.calcMode
   if (st.targetPowerW != null) targetPowerW.value = st.targetPowerW
   if (st.overDb != null) overDb.value = st.overDb
@@ -671,7 +674,7 @@ async function importConfigs(items) {
 // —— 改动检测 + 离开提示 + 恢复默认 ——
 // 指纹只取「配置内容」字段（不含 activeModule/metricKey 等视图态），避免切模块/换矩阵指标误判为改动。
 function fingerprintOf(s) {
-  return JSON.stringify({ satForm: s.satForm, basebandConfigs: s.basebandConfigs, tx: s.tx, rx: s.rx, calcMode: s.calcMode, targetPowerW: s.targetPowerW, overDb: s.overDb, targetMarginDb: s.targetMarginDb, linkPairMode: s.linkPairMode, grdSel: s.grdSel })
+  return stableStringify({ satForm: s.satForm, basebandConfigs: s.basebandConfigs, tx: s.tx, rx: s.rx, calcMode: s.calcMode, targetPowerW: s.targetPowerW, overDb: s.overDb, targetMarginDb: s.targetMarginDb, linkPairMode: s.linkPairMode, grdSel: s.grdSel })
 }
 function fingerprint() { return fingerprintOf(serializeState()) }
 let activeBaseline = ''
@@ -822,7 +825,10 @@ onMounted(async () => {
     if (raw) {
       const st = JSON.parse(raw)
       const c = st.activeId && configs.value.find((x) => x.id === st.activeId)
-      if (c) { applyState(st); activeId.value = c.id; activeBaseline = fingerprintOf(c.state) }
+      // 基线取「规整后的已存配置」：先 applyState(c.state) 走一遍与实时相同的规整管线再 setBaseline，
+      // 而非直接指纹原始 c.state——否则旧版本配置一打开就因补默认/裁字段被误判「已改」。
+      // 随后 applyState(st) 恢复上次会话（可能含未保存编辑）：一致则判干净、不误报；确有改动仍正确提示。
+      if (c) { activeId.value = c.id; applyState(c.state); setBaseline(); applyState(st) }
     }
   } catch (e) { /* 损坏忽略 */ }
   try { deviceId.value = (api && await api.app.deviceId()) || '' } catch (e) { deviceId.value = '' }

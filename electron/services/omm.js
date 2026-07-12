@@ -3,6 +3,7 @@
 const https = require('https')
 const fs = require('fs')
 const path = require('path')
+const zlib = require('zlib')
 
 // 内置样例 TLE（保证完全离线也能渲染星座）：ISS、两颗 Starlink、一颗 GEO。
 const SAMPLE = `ISS (ZARYA)
@@ -12,10 +13,10 @@ STARLINK-1007
 1 44713U 19074A   24001.50000000  .00002182  00000-0  16717-3 0  9001
 2 44713  53.0540 200.0000 0001423  90.0000 270.0000 15.06000000000000
 STARLINK-1130
-1 44937U 20001A    24001.50000000  .00001500  00000-0  12000-3 0  9002
+1 44937U 20001A   24001.50000000  .00001500  00000-0  12000-3 0  9002
 2 44937  53.0530 280.0000 0001500  80.0000 280.0000 15.06000000000000
 DEMO-GEO
-1 40000U 14001A    24001.50000000  .00000000  00000-0  00000-0 0  9003
+1 40000U 14001A   24001.50000000  .00000000  00000-0  00000-0 0  9003
 2 40000   0.0300  95.0000 0002000  90.0000 270.0000  1.00270000000000`
 
 const CELESTRAK = (group) =>
@@ -134,6 +135,47 @@ module.exports = function createOmm(getCore) {
   // 缓存文件的写入时间 = 该份数据真正从官网下载落盘的时刻 → 作为“OMM 下载时间”回传（离线复用旧缓存时即旧时间）。
   const cacheMtime = (cf) => { try { return fs.statSync(cf).mtime.toISOString() } catch { return null } }
 
+  // ---- 内置 OMM 兜底快照（resources/omm，随安装包分发，见 scripts/fetch-omm-snapshot.mjs）----
+  // 无网设备也能看到星座；有更新（今日缓存 / 联网 / 更新的用户缓存）一律优先，见 offlineBest。
+  // 打包后位于 app.asar 内，Electron 已给 fs 打补丁可直接读；测试环境用 SATSIM_OMM_BUNDLE_DIR 覆盖目录。
+  function bundledDir() {
+    if (process.env.SATSIM_OMM_BUNDLE_DIR) return process.env.SATSIM_OMM_BUNDLE_DIR
+    try { return path.join(require('electron').app.getAppPath(), 'resources', 'omm') } catch { return null }
+  }
+  let _manifest   // 惰性读一次；undefined=未读、null=无
+  function bundledManifest() {
+    if (_manifest !== undefined) return _manifest
+    _manifest = null
+    const d = bundledDir()
+    if (d) { try { _manifest = JSON.parse(fs.readFileSync(path.join(d, 'manifest.json'), 'utf8')) } catch {} }
+    return _manifest
+  }
+  // 读内置快照某组 → { text, time, count } 或 null。优先 .csv.gz（gzip），兼容明文 .csv。time=该组快照生成时间。
+  function readBundled(key) {
+    const d = bundledDir()
+    if (!d) return null
+    const man = bundledManifest()
+    const g = man && man.groups && man.groups[key]
+    const time = (g && g.generatedAt) || (man && man.generatedAt) || null
+    try { const gz = path.join(d, `csv_${key}.csv.gz`); if (fs.existsSync(gz)) { const t = zlib.gunzipSync(fs.readFileSync(gz)).toString('utf8'); if (valid(t)) return { text: t, time, count: (g && g.count) || csvCount(t) } } } catch {}
+    try { const t = fs.readFileSync(path.join(d, `csv_${key}.csv`), 'utf8'); if (valid(t)) return { text: t, time, count: csvCount(t) } } catch {}
+    return null
+  }
+  // 离线兜底：在「用户缓存」与「内置快照」间取更新的一版（有更新用更新）。返回 { text, fetchedAt, source } 或 null。
+  function offlineBest(key) {
+    const cf = csvCacheFile(key)
+    let cache = null
+    try { const c = fs.readFileSync(cf, 'utf8'); if (valid(c)) cache = { text: c, fetchedAt: cacheMtime(cf), source: 'cache' } } catch {}
+    const b = readBundled(key)
+    const bundled = b ? { text: b.text, fetchedAt: b.time, source: 'bundled' } : null
+    if (cache && bundled) {
+      const ct = Date.parse(cache.fetchedAt || 0) || 0
+      const bt = Date.parse(bundled.fetchedAt || 0) || 0
+      return bt > ct ? bundled : cache   // 内置快照比用户缓存新则用内置，否则用用户缓存
+    }
+    return cache || bundled || null
+  }
+
   // 取某组 OMM CSV：返回 { text, fetchedAt }。fetchedAt 恒为缓存文件 mtime（= 该数据实际从 CelesTrak 下载落盘的时间），
   // 而非“此刻”——这样复用今日/旧缓存时显示的也是真实下载时间。本地有“今天”的缓存 → 直接用（一天一次）；
   // 否则联网（主端点重试3次→补充端点重试2次）→ 命中落盘；再失败回退任意本地缓存（离线优先）。
@@ -142,9 +184,10 @@ module.exports = function createOmm(getCore) {
     const cf = csvCacheFile(key)
     // 一天一次：缓存文件是今天写的就直接用，不再联网
     try { const st = fs.statSync(cf); if (isToday(st.mtime)) { const c = fs.readFileSync(cf, 'utf8'); if (valid(c)) { console.log('[omm] 用今日缓存:', key); return { text: c, fetchedAt: st.mtime.toISOString() } } } } catch {}
-    // 仅取缓存（启动即时渲染用）：有旧缓存即返回，绝不联网；无缓存返回 null 交调用方处理
+    // 仅取缓存（启动即时渲染用）：不联网，取「用户缓存 / 内置快照」更新的一版；都无 → null 交调用方后台联网。
     if (opts.cacheOnly) {
-      try { const c = fs.readFileSync(cf, 'utf8'); if (valid(c)) { console.log('[omm] cacheOnly 命中旧缓存:', key); return { text: c, fetchedAt: cacheMtime(cf) } } } catch {}
+      const best = offlineBest(key)
+      if (best) { console.log('[omm] cacheOnly 命中:', key, best.source); return { text: best.text, fetchedAt: best.fetchedAt } }
       return null
     }
     console.log('[omm] fetchCsv 开始:', key, '->', csvUrl(key))
@@ -155,27 +198,37 @@ module.exports = function createOmm(getCore) {
       for (let i = 0; i < 2 && !valid(text); i++) text = await httpGetText(supCsvUrl(key))
     }
     if (valid(text)) { console.log('[omm] fetchCsv 成功:', key, text.length, 'bytes'); try { fs.writeFileSync(cf, text) } catch {} ; return { text, fetchedAt: cacheMtime(cf) || new Date().toISOString() } }
-    try { const c = fs.readFileSync(cf, 'utf8'); if (valid(c)) { console.log('[omm] 用本地缓存:', key); return { text: c, fetchedAt: cacheMtime(cf) } } } catch {}
+    // 联网失败 → 离线兜底：用户缓存 / 内置快照，取更新的一版（有更新用更新，无网设备靠内置快照兜底）。
+    const best = offlineBest(key)
+    if (best) { console.log('[omm] 联网失败，离线兜底:', key, best.source); return { text: best.text, fetchedAt: best.fetchedAt } }
     console.error('[omm] fetchCsv 彻底失败:', key)
-    throw new Error('celestrak.org 不可达且无本地缓存（国内访问该站通常需系统代理/VPN）')
+    throw new Error('celestrak.org 不可达，且无本地缓存与内置快照（国内访问该站通常需系统代理/VPN）')
   }
 
   // ---- 文件管理：各星座组 OMM(CSV) 缓存的列举 / 导入替换 / 读出导出 ----
   // CSV 数据行数（OMM CSV 首行为表头）：粗略卫星数。
   const csvCount = (t) => { if (!t) return 0; const n = t.split(/\r?\n/).filter((l) => l.trim().length).length; return Math.max(0, n - 1) }
-  // 列出全部内置组及其缓存元信息（文件名/是否存在/更新时间/卫星数）。
+  // 列出全部内置组及其可用性（source: 'cache' 用户缓存 / 'bundled' 内置快照 / 'none' 无）。
+  // 无用户缓存时回落到内置快照的统计，让文件管理如实显示「内置」可用、可导出（离线设备也能看到有数据）。
   function listCsv() {
     return Object.keys(GROUP_QUERY).map((key) => {
       const cf = csvCacheFile(key)
-      let exists = false, mtime = null, count = 0
-      try { const st = fs.statSync(cf); exists = true; mtime = st.mtime.toISOString(); count = csvCount(fs.readFileSync(cf, 'utf8')) } catch {}
-      return { key, file: `csv_${key}.csv`, exists, mtime, count }
+      let exists = false, mtime = null, count = 0, source = 'none'
+      try { const st = fs.statSync(cf); exists = true; source = 'cache'; mtime = st.mtime.toISOString(); count = csvCount(fs.readFileSync(cf, 'utf8')) } catch {}
+      if (!exists) {
+        const b = readBundled(key)
+        if (b) { source = 'bundled'; count = b.count || 0; mtime = b.time || null }
+      }
+      return { key, file: `csv_${key}.csv`, exists, source, mtime, count }
     })
   }
-  // 读出某组缓存 CSV 原文（导出用）；无缓存返回 null。
+  // 读出某组 CSV 原文（导出用）：优先用户缓存，无则回落内置快照；都无返回 null。
   function readCsvRaw(key) {
     if (!GROUP_QUERY[key]) throw new Error('unknown group: ' + key)
-    try { return { text: fs.readFileSync(csvCacheFile(key), 'utf8'), file: `csv_${key}.csv` } } catch { return null }
+    try { return { text: fs.readFileSync(csvCacheFile(key), 'utf8'), file: `csv_${key}.csv` } } catch {}
+    const b = readBundled(key)
+    if (b) return { text: b.text, file: `csv_${key}.csv`, bundled: true }
+    return null
   }
   // 导入并替换某组 OMM CSV：校验为 CelesTrak OMM（含 MEAN_MOTION 表头），写入缓存覆盖，使该星座改用用户文件渲染。
   function writeCsvRaw(key, text) {

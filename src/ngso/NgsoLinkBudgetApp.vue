@@ -4,6 +4,7 @@ import { SAT_FIELDS, CARRIER_FIELDS, TX_FIELDS, RX_FIELDS, defaultsFor, buildPar
 import { loadSatTree, sampleAntennaParams, sampleAntennaParam } from './grdParam.js'
 import { encodeShare, decodeShare, configFileText } from './shareCode.js'
 import { findPoolByNorad } from './satSearchPool.js'
+import { stableStringify } from '../shared/configDirty.js'
 import Icon from '../components/Icon.vue'
 import ConfigTree from '../components/ConfigTree.vue'
 import StationGrid from './StationGrid.vue'
@@ -716,8 +717,10 @@ function applyState(st) {
       form: { ...defaultsFor(CARRIER_FIELDS), rsCodeMode: 'fraction', dvbStandard: 'custom', modcodIndex: -1, ...st.carrierForm }
     })
   }
-  if (Array.isArray(st.tx) && st.tx.length) txStations.splice(0, txStations.length, ...st.tx.map((r) => ({ ...r, _id: 's' + (_sid++) })))
-  if (Array.isArray(st.rx) && st.rx.length) rxStations.splice(0, rxStations.length, ...st.rx.map((r) => ({ ...r, _id: 's' + (_sid++) })))
+  // 回填字段默认：旧配置缺某个（后加的）字段 → 显示其默认值（与基带库/再生式一致），空格不再算出界面上没有的数；
+  // 已保存的显式空值('')仍覆盖默认 → 用户手动清空的格子保持空（不被默认回填）。
+  if (Array.isArray(st.tx) && st.tx.length) txStations.splice(0, txStations.length, ...st.tx.map((r) => ({ ...defaultsFor(TX_FIELDS), ...r, _id: 's' + (_sid++) })))
+  if (Array.isArray(st.rx) && st.rx.length) rxStations.splice(0, rxStations.length, ...st.rx.map((r) => ({ ...defaultsFor(RX_FIELDS), ...r, _id: 's' + (_sid++) })))
   if (st.calcMode) calcMode.value = st.calcMode
   if (st.targetPowerW != null) targetPowerW.value = st.targetPowerW
   if (st.overDb != null) overDb.value = st.overDb
@@ -946,7 +949,7 @@ async function importConfigs(items) {
 // —— 改动检测 + 离开提示 + 恢复默认 ——
 // 指纹只取「配置内容」字段（不含 activeModule/metricKey 等视图态），避免切模块/换矩阵指标误判为改动。
 function fingerprintOf(s) {
-  return JSON.stringify({ satForm: s.satForm, basebandConfigs: s.basebandConfigs, tx: s.tx, rx: s.rx, calcMode: s.calcMode, targetPowerW: s.targetPowerW, overDb: s.overDb, targetMarginDb: s.targetMarginDb, linkPairMode: s.linkPairMode, grdSel: s.grdSel })
+  return stableStringify({ satForm: s.satForm, basebandConfigs: s.basebandConfigs, tx: s.tx, rx: s.rx, calcMode: s.calcMode, targetPowerW: s.targetPowerW, overDb: s.overDb, targetMarginDb: s.targetMarginDb, linkPairMode: s.linkPairMode, grdSel: s.grdSel })
 }
 function fingerprint() { return fingerprintOf(serializeState()) }
 let activeBaseline = ''
@@ -1105,7 +1108,10 @@ onMounted(async () => {
     if (raw) {
       const st = JSON.parse(raw)
       const c = st.activeId && configs.value.find((x) => x.id === st.activeId)
-      if (c) { applyState(st); activeId.value = c.id; activeBaseline = fingerprintOf(c.state) }
+      // 基线取「规整后的已存配置」：先 applyState(c.state) 走一遍与实时相同的规整管线再 setBaseline，
+      // 而非直接指纹原始 c.state——否则旧版本配置一打开就因补默认/裁字段被误判「已改」。
+      // 随后 applyState(st) 恢复上次会话（可能含未保存编辑）：一致则判干净、不误报；确有改动仍正确提示。
+      if (c) { activeId.value = c.id; applyState(c.state); setBaseline(); applyState(st) }
     }
   } catch (e) { /* 损坏忽略 */ }
   try { deviceId.value = (api && await api.app.deviceId()) || '' } catch (e) { deviceId.value = '' }
@@ -1387,24 +1393,24 @@ onMounted(async () => {
                     <span class="geo-duh"></span>
                     <span class="geo-duh geo-up">↑ 上行</span>
                     <span class="geo-duh geo-dn">↓ 下行</span>
-                    <span class="geo-l" :title="geom.coupled ? '同一典型时刻 t* 两站各自对卫星的仰角：两站同时可见、都尽量贴近各自最低仰角（通常一站正压最低、另一站略高）' : '各站在「≥ 自身最低仰角」约束下的最差工况仰角（圆轨道=最低仰角门限）'">对卫星仰角<i>°</i></span>
-                    <span class="geo-vu">{{ g2(geom.worst.up.elevDeg) }}</span>
-                    <span class="geo-vd">{{ g2(geom.worst.dn.elevDeg) }}</span>
-                    <span class="geo-l" :title="geom.coupled ? 't* 该刻两站各自的星地斜距（同一物理瞬间）' : '仰角约束下的最大星地斜距（各站独立取，最坏几何）'">星地斜距<i>km</i></span>
-                    <span class="geo-vu">{{ g2(geom.worst.up.slantKm) }}</span>
-                    <span class="geo-vd">{{ g2(geom.worst.dn.slantKm) }}</span>
-                    <span class="geo-l" :title="geom.coupled ? 't* 该刻卫星高度（同一瞬间，上下行相同）' : ''">卫星高度<i>km</i></span>
-                    <span class="geo-vu">{{ g2(geom.worst.up.altKm, 1) }}</span>
-                    <span class="geo-vd">{{ g2(geom.worst.dn.altKm, 1) }}</span>
-                    <span class="geo-l" title="覆盖地心半角 λ = arccos((Re/r)·cosε) − ε（该仰角门限下卫星对地心张成的地面覆盖带半角）">覆盖地心半角<i>°</i></span>
-                    <span class="geo-vu">{{ g2(geom.worst.up.coverageHalfAngleDeg) }}</span>
-                    <span class="geo-vd">{{ g2(geom.worst.dn.coverageHalfAngleDeg) }}</span>
-                    <span class="geo-l" title="地面覆盖半径 = Re·λ（星下点到覆盖带边缘的地表大圆弧长）">地面覆盖半径<i>km</i></span>
-                    <span class="geo-vu">{{ g2(geom.worst.up.coverageRadiusKm, 1) }}</span>
-                    <span class="geo-vd">{{ g2(geom.worst.dn.coverageRadiusKm, 1) }}</span>
-                    <span class="geo-l" title="最大过境时长(天顶) = 2λ/|ω_s − ω_E·cos i|；GEO / 严格常驻可见为 ∞">最大过境时长<i>min</i></span>
-                    <span class="geo-vu" :class="{ 'geo-inf': geom.worst.up.maxPassMin == null }">{{ gPass(geom.worst.up.maxPassMin) }}</span>
-                    <span class="geo-vd" :class="{ 'geo-inf': geom.worst.dn.maxPassMin == null }">{{ gPass(geom.worst.dn.maxPassMin) }}</span>
+                    <span class="geo-l" :title="geom.coupled ? '同一典型时刻 t* 两站各自对卫星的仰角：两站同时可见、都尽量贴近各自最低仰角（通常一站正压最低、另一站略高）' : '各站在「≥ 自身最低仰角」约束下的最差工况仰角（圆轨道=最低仰角门限）'">对卫星仰角</span>
+                    <span class="geo-vu">{{ g2(geom.worst.up.elevDeg) }}<i>°</i></span>
+                    <span class="geo-vd">{{ g2(geom.worst.dn.elevDeg) }}<i>°</i></span>
+                    <span class="geo-l" :title="geom.coupled ? 't* 该刻两站各自的星地斜距（同一物理瞬间）' : '仰角约束下的最大星地斜距（各站独立取，最坏几何）'">星地斜距</span>
+                    <span class="geo-vu">{{ g2(geom.worst.up.slantKm) }}<i>km</i></span>
+                    <span class="geo-vd">{{ g2(geom.worst.dn.slantKm) }}<i>km</i></span>
+                    <span class="geo-l" :title="geom.coupled ? 't* 该刻卫星高度（同一瞬间，上下行相同）' : ''">卫星高度</span>
+                    <span class="geo-vu">{{ g2(geom.worst.up.altKm, 1) }}<i>km</i></span>
+                    <span class="geo-vd">{{ g2(geom.worst.dn.altKm, 1) }}<i>km</i></span>
+                    <span class="geo-l" title="覆盖地心半角 λ = arccos((Re/r)·cosε) − ε（该仰角门限下卫星对地心张成的地面覆盖带半角）">覆盖地心半角</span>
+                    <span class="geo-vu">{{ g2(geom.worst.up.coverageHalfAngleDeg) }}<i>°</i></span>
+                    <span class="geo-vd">{{ g2(geom.worst.dn.coverageHalfAngleDeg) }}<i>°</i></span>
+                    <span class="geo-l" title="地面覆盖半径 = Re·λ（星下点到覆盖带边缘的地表大圆弧长）">地面覆盖半径</span>
+                    <span class="geo-vu">{{ g2(geom.worst.up.coverageRadiusKm, 1) }}<i>km</i></span>
+                    <span class="geo-vd">{{ g2(geom.worst.dn.coverageRadiusKm, 1) }}<i>km</i></span>
+                    <span class="geo-l" title="最大过境时长(天顶) = 2λ/|ω_s − ω_E·cos i|；GEO / 严格常驻可见为 ∞">最大过境时长</span>
+                    <span class="geo-vu" :class="{ 'geo-inf': geom.worst.up.maxPassMin == null }">{{ gPass(geom.worst.up.maxPassMin) }}<i v-if="geom.worst.up.maxPassMin != null">min</i></span>
+                    <span class="geo-vd" :class="{ 'geo-inf': geom.worst.dn.maxPassMin == null }">{{ gPass(geom.worst.dn.maxPassMin) }}<i v-if="geom.worst.dn.maxPassMin != null">min</i></span>
                   </div>
 
                   <div class="geo-row"><span class="geo-l">单程链路时延</span><span class="geo-v">{{ g2(geom.worst.oneWayDelayMs, 3) }}<i>ms</i></span></div>
@@ -1412,7 +1418,7 @@ onMounted(async () => {
                   <div class="geo-sec">卫星运动</div>
                   <div v-if="geom.worst.speedInertialKmS != null" class="geo-row"><span class="geo-l">轨道速度<i>惯性系</i></span><span class="geo-v">{{ g2(geom.worst.speedInertialKmS, 3) }}<i>km/s</i></span></div>
                   <div v-if="geom.worst.speedGroundRelKmS != null" class="geo-row"><span class="geo-l">相对地面速度<i v-if="geom.dopplerEstimate">估算</i></span><span class="geo-v">{{ g2(geom.worst.speedGroundRelKmS, 3) }}<i>km/s</i></span></div>
-                  <div v-if="geom.worst.maxDopplerUpHz != null" class="geo-row"><span class="geo-l" :title="geom.dopplerEstimate ? '圆轨道无相位，闭式估算 f·v_radial/c' : (geom.coupled ? (geom.method + ' 取典型时刻 t* 该刻 ECEF 斜距变化率（含地球自转）；t* 多在低仰角、range-rate 近峰值') : (geom.method + ' 沿星历求 ECEF 斜距变化率（含地球自转）'))">{{ geom.coupled ? '多普勒频移' : '最大多普勒' }}<i>{{ geom.dopplerEstimate ? '估算·kHz' : 'kHz' }}</i></span><span class="geo-v geo-v-updn"><b class="up">↑ ±{{ g2(geom.worst.maxDopplerUpHz / 1000, 3) }}</b><b class="dn">↓ ±{{ g2(geom.worst.maxDopplerDnHz / 1000, 3) }}</b></span></div>
+                  <div v-if="geom.worst.maxDopplerUpHz != null" class="geo-duo geo-duo-tight"><span class="geo-l" :title="geom.dopplerEstimate ? '圆轨道无相位，闭式估算 f·v_radial/c' : (geom.coupled ? (geom.method + ' 取典型时刻 t* 该刻 ECEF 斜距变化率（含地球自转）；t* 多在低仰角、range-rate 近峰值') : (geom.method + ' 沿星历求 ECEF 斜距变化率（含地球自转）'))">{{ geom.coupled ? '多普勒频移' : '最大多普勒' }}<i v-if="geom.dopplerEstimate">估算</i></span><span class="geo-vu">±{{ g2(geom.worst.maxDopplerUpHz / 1000, 3) }}<i>kHz</i></span><span class="geo-vd">±{{ g2(geom.worst.maxDopplerDnHz / 1000, 3) }}<i>kHz</i></span></div>
 
                   <div class="geo-sec">卫星轨道根数<span class="geo-sec-x">{{ geom.elements && geom.elements.satnum == null ? '虚拟圆轨道' : '历元' }}</span></div>
                   <div class="geo-row"><span class="geo-l">半长轴 a</span><span class="geo-v">{{ g2(geom.elements.a, 3) }}<i>km</i></span></div>
@@ -1815,11 +1821,14 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 
 /* 核心几何三行：标签 + 上行 + 下行三列对齐，值取中性色，靠图例色区分方向 */
 .geo-duo { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: baseline; column-gap: 16px; row-gap: 3px; margin: 4px 0 2px; }
+/* 多普勒行复用双列格与站星几何列对齐，但夹在卫星运动的单列行之间，去掉分节块专用的上下外边距，回归 geo-row 行距 */
+.geo-duo.geo-duo-tight { margin: 2.5px 0; }
 .geo-duo .geo-l { grid-column: 1; }
 .geo-duh { font-size: 10px; font-weight: 600; letter-spacing: .3px; text-align: right; color: var(--text-faint); padding-bottom: 1px; }
 .geo-duh.geo-up { color: var(--up); }
 .geo-duh.geo-dn { color: var(--dn); }
 .geo-vu, .geo-vd { font-family: var(--font-mono); font-size: 12px; font-weight: 600; color: var(--text); text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.geo-vu i, .geo-vd i { font-style: normal; font-weight: 500; color: var(--text-faint); margin-left: 4px; }
 /* 常驻可见 ∞：等宽 12px 下符号偏小，单独放大（不加粗，字重同其它数值）*/
 .geo-vu.geo-inf, .geo-vd.geo-inf { font-size: 18px; line-height: 1; }
 

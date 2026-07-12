@@ -1,0 +1,108 @@
+{
+  "generatedAt": "2026-07-12T09:26:22.212Z",
+  "note": "内置 OMM 兜底快照（CelesTrak GP CSV）",
+  "groups": {
+    "starlink": {
+      "count": 10737,
+      "bytes": 1614368,
+      "gzBytes": 530078,
+      "generatedAt": "2026-07-12T09:26:22.212Z"
+    },
+    "oneweb": {
+      "count": 651,
+      "bytes": 96262,
+      "gzBytes": 31675,
+      "generatedAt": "2026-07-12T09:26:22.212Z"
+    },
+    "kuiper": {
+      "count": 393,
+      "bytes": 58427,
+      "gzBytes": 20058,
+      "generatedAt": "2026-07-12T09:26:22.212Z"
+    },
+    "gps": {
+      "count": 32,
+      "bytes": 4847,
+      "gzBytes": 1978,
+      "generatedAt": "2026-07-12T09:26:22.212Z"
+    },
+    "beidou": {
+      "count": 53,
+      "bytes": 7776,
+      "gzBytes": 2989,
+      "generatedAt": "2026-07-12T09:26:22.212Z"
+    },
+    "galileo": {
+      "count": 32,
+      "bytes": 4879,
+      "gzBytes": 1844,
+      "generatedAt": "2026-07-12T09:26:22.212Z"
+    },
+    "qianfan": {
+      "count": 200,
+      "bytes": 29384,
+      "gzBytes": 10192,
+      "generatedAt": "2026-07-12T09:26:22.212Z"
+    },
+    "guowang": {
+      "count": 173,
+      "bytes": 26809,
+      "gzBytes": 8584,
+      "generatedAt": "2026-07-12T09:26:22.212Z"
+    },
+    "geo": {
+      "count": 572,
+      "bytes": 76931,
+      "gzBytes": 28408,
+      "generatedAt": "2026-07-12T09:26:22.212Z"
+    },
+    "glonass": {
+      "count": 28,
+      "bytes": 4218,
+      "gzBytes": 1716,
+      "generatedAt": "2026-07-12T09:26:22.212Z"
+    },
+    "o3b": {
+      "count": 30,
+      "bytes": 4226,
+      "gzBytes": 1596,
+      "generatedAt": "2026-07-12T09:26:22.212Z"
+    },
+    "iridium": {
+      "count": 80,
+      "bytes": 11879,
+      "gzBytes": 4097,
+      "generatedAt": "2026-07-12T09:26:22.212Z"
+    },
+    "globalstar": {
+      "count": 28,
+      "bytes": 4447,
+      "gzBytes": 1708,
+      "generatedAt": "2026-07-12T09:26:22.212Z"
+    },
+    "stations": {
+      "count": 23,
+      "bytes": 3638,
+      "gzBytes": 1339,
+      "generatedAt": "2026-07-12T09:26:22.212Z"
+    },
+    "planet": {
+      "count": 124,
+      "bytes": 18574,
+      "gzBytes": 6769,
+      "generatedAt": "2026-07-12T09:26:22.212Z"
+    },
+    "spire": {
+      "count": 73,
+      "bytes": 11410,
+      "gzBytes": 4688,
+      "generatedAt": "2026-07-12T09:26:22.212Z"
+    },
+    "active": {
+      "count": 15987,
+      "bytes": 2378994,
+      "gzBytes": 823148,
+      "generatedAt": "2026-07-12T09:26:22.212Z"
+    }
+  }
+}

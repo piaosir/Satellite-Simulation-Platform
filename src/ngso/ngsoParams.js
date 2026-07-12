@@ -69,7 +69,7 @@ export const FIELD_GROUPS = [
       { key: 'uplinkAvailability', label: '可用度', unit: '%', type: 'num', def: '99.90', target: 'link' },
       { key: 'uplinkPowerControl', label: 'UPC', type: 'select', options: ['否', '是', '自定义'], def: '否', target: 'link' },
       { key: 'upcValue', label: 'UPC值', unit: 'dB', type: 'num', def: '0', target: 'link' },
-      { key: 'paBackoff', label: '功放回退', unit: 'dB', type: 'num', def: '5', target: 'link' },
+      { key: 'paBackoff', label: '功放回退', unit: 'dB', type: 'num', def: '0', target: 'link' },
       { key: 'feederLoss', label: '馈线损耗', unit: 'dB', type: 'num', def: '3.5', target: 'link' },
       { key: 'uplinkOtherLoss', label: '综合损耗', tip: '综合损耗：指向/极化/天线罩/接头等未单列损耗之综合（原「其他损耗」）', unit: 'dB', type: 'num', def: '0.3', target: 'link' }
     ]

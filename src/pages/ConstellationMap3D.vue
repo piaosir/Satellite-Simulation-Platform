@@ -6,7 +6,7 @@ import { covNav } from '../stores/coveragePanels'
 import { zoom } from '../stores/zoom'
 import { effective as displayQuality } from '../stores/displayQuality'
 import { viewPrefs } from '../stores/viewPrefs'
-import { setGrdBridge, clearGrdBridge, fileBridge } from '../stores/fileBridge'
+import { setGrdBridge, clearGrdBridge, fileBridge, bumpCustomSats } from '../stores/fileBridge'
 import { shellUi } from '../stores/shellUi'
 import { logMsg } from '../stores/log'
 import { alertMsg, appAlert, closeAlert } from '../stores/alert'
@@ -35,6 +35,7 @@ import { classifyOrbit } from '../shared/orbitClass.js'
 const GROUPS = [
   { key: 'none', label: '无（不渲染星座）' },
   { key: 'all', label: '全部卫星' },
+  { key: 'custom', label: '自定义卫星' },
   { key: 'gps', label: 'GPS' },
   { key: 'glonass', label: 'GLONASS' },
   { key: 'beidou', label: '北斗' },
@@ -64,7 +65,6 @@ const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v))
 
 const g3el = ref(null)             // 本页根节点（position:relative 定位参照系，性能表浮窗默认坐标据此计算）
 const el = ref(null)
-const fileInput = ref(null)
 const flatCanvas = ref(null)       // 平面覆盖图 canvas
 const flatView = ref(false)        // 平面图 / 球体 切换
 let flat = null                    // 平面渲染器实例
@@ -504,6 +504,14 @@ function resetGroupColor(key) {
 const customConst = useCustomConstellations(() => rebuildRenderSet())
 const customList = customConst.list
 const soloConst = ref(null)   // 当前「单独显示」的自定义星座 id（行高亮）
+// 导入组卫星数（文件管理 custom.json 的权威计数）：挂载/导入/删除时刷新。与自建星座 customList 一起决定
+// 「自定义卫星」分组是否有数据——无数据则不在星座列表里出现（与文件管理「暂无自定义卫星」一致，文件管理为权威）。
+const customImportCount = ref(0)
+async function refreshCustomImportCount() {
+  try { const r = (apiOk && window.api.omm.customList) ? await window.api.omm.customList() : null; customImportCount.value = (r && r.count) || 0 }
+  catch { customImportCount.value = 0 }
+}
+const hasCustomData = computed(() => customList.value.length > 0 || customImportCount.value > 0)
 
 // 生成/编辑向导草稿（null=关闭）
 const constModal = ref(null)
@@ -811,6 +819,17 @@ async function loadGroup() {
     catch (e) { status.value = `${g.label} 获取失败：${(e && e.message) || '网络不可达'}` }
     return
   }
+  // 「自定义卫星」：读本地库 OMM CSV（文件管理导入的 OMM/TLE），永不联网。导入的星历【保留文件内历元】，
+  // 与内置真实组同口径按各自历元正向传播到此刻（自建星座才用场景历元，二者互不影响）。
+  if (g.key === 'custom') {
+    try {
+      const rawC = await window.api.omm.customCsv()
+      const sats = rawC && rawC.text ? parseOMMCsv(rawC.text) : []
+      if (sats.length) { ingest(sats, 'custom', (rawC && rawC.fetchedAt) || new Date().toISOString()); status.value = '' }
+      else { entries = []; rebuildRenderSet(); redrawSats(); dataTime.value = '—'; status.value = '暂无自定义卫星——请在「文件管理 · 星历」导入 OMM / TLE' }
+    } catch (e) { entries = []; rebuildRenderSet(); status.value = '自定义卫星读取失败：' + ((e && e.message) || e) }
+    return
+  }
   // 单组星历：缓存优先即时渲染 + 后台静默联网刷新（无网/慢网也不卡住进软件）
   let shown = false
   try {
@@ -831,7 +850,7 @@ async function loadGroup() {
 // silent=true：后台构建全量搜索库用，不写主状态栏
 async function loadUniverse(silent) {
   const setS = (t) => { if (!silent) status.value = t }
-  const keys = GROUPS.filter((g) => g.key !== 'all' && g.key !== 'other' && g.key !== 'none').map((g) => g.key)
+  const keys = GROUPS.filter((g) => !['all', 'other', 'none', 'custom'].includes(g.key)).map((g) => g.key)
   let done = 0
   setS(`加载全部卫星 0/${keys.length + 1} …`)
   const tick = () => { done++; setS(`加载全部卫星 ${done}/${keys.length + 1} …`) }
@@ -851,6 +870,12 @@ async function loadUniverse(silent) {
   try { const ap = await fetchGroupLiveOrSup('active'); active = ap.sats; if (ap.fetchedAt) fetchedAts.push(ap.fetchedAt) } catch { /* ignore */ }
   tick()
   for (const s of active) if (!universe.has(s.noradId)) universe.set(s.noradId, s)
+  // 本地自定义卫星库并入全集（永不联网）：以用户库为准覆盖同号目录星，归入 'custom' 组；保留文件内历元。
+  try {
+    const rawC = await window.api.omm.customCsv()
+    const cs = rawC && rawC.text ? parseOMMCsv(rawC.text) : []
+    for (const s of cs) { universe.set(s.noradId, s); groupOf.set(s.noradId, 'custom') }
+  } catch { /* 无自定义库：忽略 */ }
   // 归类：在已知分组里的标该组，其余标“其他”
   for (const s of universe.values()) s._group = groupOf.get(s.noradId) || 'other'
   // 合并视图的下载时间：取各组最新一份（无则 null → 调用方回退 now）
@@ -2261,7 +2286,8 @@ const timeParts = computed(() => {
 
 // ===================== 持久化（记住分组 + 选中星） =====================
 function saveSelection() {
-  try { localStorage.setItem(STORE_KEY, JSON.stringify({ groupIndex: groupIndex.value, selNorad: selEntry ? String(selEntry.noradId) : '' })) } catch { /* ignore */ }
+  // 分组按 key 持久化（groupIndex 仅作旧版兼容读取）：GROUPS 增删项后不再错位。
+  try { localStorage.setItem(STORE_KEY, JSON.stringify({ groupKey: GROUPS[groupIndex.value] ? GROUPS[groupIndex.value].key : '', groupIndex: groupIndex.value, selNorad: selEntry ? String(selEntry.noradId) : '' })) } catch { /* ignore */ }
 }
 // 资源管理器「星座」树行点击切换分组（原顶栏下拉已并入树）
 function pickGroup(i) {
@@ -2402,17 +2428,27 @@ async function restoreSettings() {
   }
 }
 
-// ===================== TLE 文件导入（兜底） =====================
-function pickFile() { fileInput.value && fileInput.value.click() }
-function onFile(e) {
-  const f = e.target.files && e.target.files[0]; if (!f) return
-  const reader = new FileReader()
-  reader.onload = () => {
-    const sats = parseOMMCsv(String(reader.result || ''))
-    if (sats.length) ingest(sats, 'import', new Date().toISOString())
-    else status.value = '文件解析失败：请用 CelesTrak「FORMAT=csv」的 OMM 文件'
-  }
-  reader.readAsText(f); e.target.value = ''
+// ===================== 导入星历（TLE / OMM CSV）=====================
+// 「文件」菜单「导入 TLE 文件(CSV)」：与「文件管理 · 星历」的「导入星历」同一持久化通路——原生选文件 →
+// 主进程 customSats.importFile 校验去重后落库 custom.json（每文件一组）。这样导入的星历既进「自定义卫星」
+// 分组与搜索池，也能在文件管理里查看/改名/导出/删除。（旧路径只临时 ingest 到场景不落库，故文件管理看不到，
+// 且只认 OMM CSV 不认真正的 TLE；改走此通路后两者一并修复。）
+async function importTleToLibrary() {
+  if (!apiOk || !window.api.omm.customImport) { status.value = '需在 Electron 中运行（npm run dev）'; return }
+  let r
+  try { r = await window.api.omm.customImport() } catch (e) { status.value = '导入失败：' + ((e && e.message) || e); return }
+  if (!r || r.canceled) return
+  if (!r.ok) { status.value = '导入失败：' + (r.error || '未知错误'); return }
+  const parts = []
+  if (r.groups) parts.push(`${r.groups} 组 / ${r.sats} 颗`)
+  if (r.replaced) parts.push(`替换 ${r.replaced}`)
+  if (r.invalid) parts.push(`无效 ${r.invalid}`)
+  const errs = (r.errors || []).filter(Boolean)
+  logMsg(`导入星历：${parts.length ? parts.join(' · ') : '无变化'}${errs.length ? `；${errs.length} 条失败：${errs[0]}` : ''}`, errs.length ? 'warn' : 'info')
+  // 切到「自定义卫星」分组立即可见（保留旧路径导入即见的体验）；bumpCustomSats 同步刷新文件管理 + 搜索池。
+  const ci = GROUPS.findIndex((g) => g.key === 'custom')
+  if (ci >= 0) pickGroup(ci)
+  bumpCustomSats()
 }
 
 onMounted(async () => {
@@ -2421,8 +2457,15 @@ onMounted(async () => {
   covNav.toggleGrd = toggleGrd; covNav.toggleCov = toggleCoverage
   covNav.polyAvail = true; covNav.togglePoly = togglePolyPanel   // Polygon 面板（纯本地功能，不依赖 IPC）
   covNav.exportAvail = true; covNav.exportMap = exportMap   // 顶栏「导出图」入口（高清 PNG / 矢量 PDF）
-  covNav.importTle = pickFile   // 「文件」菜单「导入 TLE 文件(CSV)」入口（离线兜底，原弹窗移除后改走菜单）
+  covNav.importTle = importTleToLibrary   // 「文件」菜单「导入 TLE 文件(CSV)」入口 → 落库自定义卫星（贯通文件管理/搜索池）
   watch(status, (v) => { if (v) logMsg(v) })   // 加载进度/失败信息落日志窗格
+  // 文件管理导入/删除自定义卫星 → 若正看 custom/all/other 分组则重载；并重建全量搜索库纳入新星。
+  watch(() => fileBridge.customSatTick, () => {
+    const k = curKey()
+    if (k === 'custom' || k === 'all' || k === 'other') loadGroup()
+    poolReady = false; ensureSearchPool()
+    refreshCustomImportCount()   // 导入组增删 → 刷新权威计数（决定「自定义卫星」分组显隐）
+  })
   // 活动栏切换侧栏视图 → 首次进入时懒加载对应面板内容（复用原 toggle* 的索引加载/重绘逻辑）
   watch(() => shellUi.side, (s) => {
     if (s === 'gxt' && !covOpen.value) toggleCoverage()
@@ -2462,6 +2505,7 @@ onMounted(async () => {
     openEditSat: (folder) => { const n = grdSats.value.find((s) => s.folder === folder); if (n) editSat(n, true) },
     livePos: (folder) => { const n = grdSats.value.find((s) => s.folder === folder); return n ? satLivePos(n) : null }   // 实时星下点（文件管理器树行经度用）
   })
+  fileBridge.customConst = customConst   // 注入活「自定义星座」实例：文件管理改名等直接联动（改缓存失效+重渲染）
   // 用户在文件管理器导入/删除 GXT → 重新合并 covSats，使覆盖图(GXT)面板可选用新库
   watch(() => fileBridge.libraryTick, () => { if (covLoaded) mergeUserGxt() })
   loadMarkers(); syncMarkers()
@@ -2472,13 +2516,20 @@ onMounted(async () => {
   // 恢复上次分组 + 选中星
   try {
     const saved = JSON.parse(localStorage.getItem(STORE_KEY) || 'null')
-    if (saved && Number.isInteger(saved.groupIndex) && saved.groupIndex >= 0 && saved.groupIndex < GROUPS.length) groupIndex.value = saved.groupIndex
+    if (saved) {
+      let gi = -1
+      if (saved.groupKey) gi = GROUPS.findIndex((g) => g.key === saved.groupKey)   // 优先按 key 恢复（抗增删错位）
+      // 旧版仅存 groupIndex：本次在索引 2 处插入了「自定义卫星」，旧索引 ≥2 需 +1 精确还原原选择
+      else if (Number.isInteger(saved.groupIndex)) gi = saved.groupIndex >= 2 ? saved.groupIndex + 1 : saved.groupIndex
+      if (gi >= 0 && gi < GROUPS.length) groupIndex.value = gi
+    }
     if (saved && saved.selNorad) { pendingNorad = saved.selNorad; pendingNoFace = true }
   } catch { /* ignore */ }
 
   await restoreSettings()   // 恢复全部选项/设置（无感）
   await ensureProvinces(); await ensureCities()   // 按恢复后的省/市界开关加载数据并套用可见性（restoreSettings 只回填开关）
   customConst.load()   // 恢复自定义星座（按参数重建合成星，随后由 loadGroup→rebuildRenderSet 一并渲染）
+  refreshCustomImportCount()   // 权威导入组计数（决定「自定义卫星」分组是否在星座列表出现）
   loadGroup()
   ensureSearchPool()   // 后台构建全量搜索库（当日缓存命中则很快），与当前分组无关
   redrawSats()   // 恢复后立即绘制自定义卫星（关联卫星待 loadGroup 完成由 refreshPositions 跟踪）
@@ -2502,6 +2553,7 @@ onBeforeUnmount(() => {
   if (flatCanvas.value) flatCanvas.value.removeEventListener('pointerup', saveView)
 
   clearGrdBridge()   // 离开 3D 页：注销文件管理器对活树/导出器的引用
+  fileBridge.customConst = null
   cursor.ll = null; if (timer) clearInterval(timer); if (ro) ro.disconnect(); if (trackRo) trackRo.disconnect(); if (flat) flat.destroy(); if (scene) { scene.clearCoverage(); scene.destroy() }
 })
 </script>
@@ -2518,10 +2570,6 @@ onBeforeUnmount(() => {
           <div class="fl-row"><span class="fl-sw cov"></span>{{ fpLegend }}</div>
           <div class="fl-row"><span class="fl-sw trk"></span>星下点轨迹</div>
         </div>
-
-        <!-- 本地 TLE/OMM CSV 导入的隐藏文件选择器；由「文件」菜单经 covNav.importTle 触发。
-             （原「加载全部卫星 N/M …」中央弹窗已移除：数据本就后台异步加载，进度/报错见左侧星座面板 pstat 行。） -->
-        <input ref="fileInput" type="file" accept=".csv,.txt" style="display:none" @change="onFile" />
 
         <div v-if="selected" class="card" :class="{ collapsed: cardCollapsed }">
           <div class="ch" :title="cardCollapsed ? '展开' : '收起'" @click="cardCollapsed = !cardCollapsed">
@@ -2676,8 +2724,11 @@ onBeforeUnmount(() => {
               <template v-if="status"> · {{ status }}</template></div>
           </div>
           <div class="pgl">
+            <template v-for="(g, i) in GROUPS" :key="g.key">
+            <!-- 「自定义卫星」分组数据驱动：无自定义卫星（导入组 + 自建星座皆空）时不显示，与文件管理一致；
+                 但当前若正选中它则保留一行（避免选中项被隐藏成孤儿态）。其余内置组恒显示。 -->
             <div
-              v-for="(g, i) in GROUPS" :key="g.key"
+              v-if="g.key !== 'custom' || hasCustomData || i === groupIndex"
               class="grprow" :class="{ sel: i === groupIndex }"
               @click="pickGroup(i)"
             >
@@ -2691,6 +2742,7 @@ onBeforeUnmount(() => {
                 </label>
               </template>
             </div>
+            </template>
           </div>
           <!-- 自定义星座（仿 STK Walker 生成器）：星点 + 轨道圈叠加显示 -->
           <div class="ccsec">
