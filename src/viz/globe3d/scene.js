@@ -807,40 +807,82 @@ export function createGlobeScene(container, quality = {}) {
     return { geo, mat, mesh, posArr: null, colArr: null, idxArr: null, vcap: 0, icap: 0 }
   }
   const D2R_ = Math.PI / 180
-  // fillBands=[{color:[r,g,b], verts:Float64Array[x,y,...], counts:Int32Array(各多边形顶点数)}]（bandGeometry 扁平输出，零分配）
+  // 覆盖填充面片贴球细分：lon/lat 平面上的大三角形直接投到球面会塌成弦、切入不透明地球被深度剔除 → 3D 上
+  // 表现为覆盖区里的斜向条纹（2D 平面图无深度/无球面，不受影响）。与陆地 buildLandMesh / Polygon 填充同口径：
+  // 逐三角按最长边 >2° 二分细分后再投球面，使填充紧贴球面、任意图层抬升(li)下都不下沉。栈式 DFS 零分配。
+  const _COV_MAXSEG2 = 4                     // 最长边阈值（度²）：≤2°；2° 弦下垂≈1.5e-4 < 填充抬升(≥6e-4)，不被地球吃
+  const _covSub = new Float64Array(7 * 256)  // 细分 DFS 栈：每三角 7 float（ax,ay,bx,by,cx,cy,depth）
+  // fillBands=[{color:[r,g,b], verts:Float64Array[x,y,...], counts:Int32Array(各多边形顶点数)}]（bandGeometry 扁平输出，零分配）。
+  // 细分后叶三角输出【独立顶点】（不共享，索引顺序递增）；顶点数与数据相关 → 先数一遍精确定容量再写入
+  // （两趟细分极廉价，远小于逐帧投影开销；持久缓冲仅在不足时 ×2 扩容，拖拽热路径不每帧重分配）。
   function updateFill(fm, fillBands, alpha, lift) {
-    let nv = 0, ni = 0
-    for (const fb of fillBands) { nv += fb.verts.length >> 1; const cs = fb.counts; for (let j = 0; j < cs.length; j++) ni += (cs[j] - 2) * 3 }
     if (alpha != null) fm.mat.opacity = alpha
-    if (!nv) { fm.mesh.visible = false; if (fm.geo.index) fm.geo.setDrawRange(0, 0); return }
+    const St = _covSub
+    let n = 0, triN = 0, cr = 0, cg = 0, cb = 0
+    let pos = null, col = null, idx = null
+    const emitVert = (lon, lat) => {   // 内联 llaToVec(lat,lon,0)*lift（球半径 1）→ 免逐顶点 Vector3 分配
+      const phi = (90 - lat) * D2R_, theta = (lon + 180) * D2R_, sp = Math.sin(phi), o3 = n * 3
+      pos[o3] = -lift * sp * Math.cos(theta); pos[o3 + 1] = lift * Math.cos(phi); pos[o3 + 2] = lift * sp * Math.sin(theta)
+      col[o3] = cr; col[o3 + 1] = cg; col[o3 + 2] = cb; idx[n] = n; n++
+    }
+    const countLeaf = () => { triN++ }
+    const emitLeaf = (ax, ay, bx, by, cx, cy) => { emitVert(ax, ay); emitVert(bx, by); emitVert(cx, cy) }
+    // 逐三角最长边二分到 ≤2°，对每个叶三角调 leaf(ax,ay,bx,by,cx,cy)。栈满/超深兜底为不细分（图面退化不崩）。
+    const subdivide = (ax, ay, bx, by, cx, cy, leaf) => {
+      let sp = 0
+      St[sp++] = ax; St[sp++] = ay; St[sp++] = bx; St[sp++] = by; St[sp++] = cx; St[sp++] = cy; St[sp++] = 0
+      while (sp > 0) {
+        const d = St[--sp], Cy = St[--sp], Cx = St[--sp], By = St[--sp], Bx = St[--sp], Ay = St[--sp], Ax = St[--sp]
+        const ab = (Ax - Bx) * (Ax - Bx) + (Ay - By) * (Ay - By)
+        const bc = (Bx - Cx) * (Bx - Cx) + (By - Cy) * (By - Cy)
+        const ca = (Cx - Ax) * (Cx - Ax) + (Cy - Ay) * (Cy - Ay)
+        const mx = ab > bc ? (ab > ca ? ab : ca) : (bc > ca ? bc : ca)
+        if (d >= 14 || mx <= _COV_MAXSEG2 || sp + 14 > St.length) { leaf(Ax, Ay, Bx, By, Cx, Cy); continue }
+        if (mx === ab) {
+          const mX = (Ax + Bx) * 0.5, mY = (Ay + By) * 0.5
+          St[sp++] = Ax; St[sp++] = Ay; St[sp++] = mX; St[sp++] = mY; St[sp++] = Cx; St[sp++] = Cy; St[sp++] = d + 1
+          St[sp++] = mX; St[sp++] = mY; St[sp++] = Bx; St[sp++] = By; St[sp++] = Cx; St[sp++] = Cy; St[sp++] = d + 1
+        } else if (mx === bc) {
+          const mX = (Bx + Cx) * 0.5, mY = (By + Cy) * 0.5
+          St[sp++] = Bx; St[sp++] = By; St[sp++] = mX; St[sp++] = mY; St[sp++] = Ax; St[sp++] = Ay; St[sp++] = d + 1
+          St[sp++] = mX; St[sp++] = mY; St[sp++] = Cx; St[sp++] = Cy; St[sp++] = Ax; St[sp++] = Ay; St[sp++] = d + 1
+        } else {
+          const mX = (Cx + Ax) * 0.5, mY = (Cy + Ay) * 0.5
+          St[sp++] = Cx; St[sp++] = Cy; St[sp++] = mX; St[sp++] = mY; St[sp++] = Bx; St[sp++] = By; St[sp++] = d + 1
+          St[sp++] = mX; St[sp++] = mY; St[sp++] = Ax; St[sp++] = Ay; St[sp++] = Bx; St[sp++] = By; St[sp++] = d + 1
+        }
+      }
+    }
+    // 一趟遍历：扇形三角化每个多边形，逐三角细分后交 leaf（count/emit 复用；color 逐 band 设，count 趟无害）。
+    const run = (leaf) => {
+      for (const fb of fillBands) {
+        cr = fb.color[0] / 255; cg = fb.color[1] / 255; cb = fb.color[2] / 255
+        const verts = fb.verts, counts = fb.counts
+        let vi = 0
+        for (let j = 0; j < counts.length; j++) {
+          const plen = counts[j]
+          const a0x = verts[vi * 2], a0y = verts[vi * 2 + 1]
+          for (let q = 1; q < plen - 1; q++) {
+            subdivide(a0x, a0y, verts[(vi + q) * 2], verts[(vi + q) * 2 + 1], verts[(vi + q + 1) * 2], verts[(vi + q + 1) * 2 + 1], leaf)
+          }
+          vi += plen
+        }
+      }
+    }
+    triN = 0; run(countLeaf)                  // 第一趟：数叶三角，精确定容量
+    if (!triN) { fm.mesh.visible = false; if (fm.geo.index) fm.geo.setDrawRange(0, 0); return }
     fm.mesh.visible = true
-    if (nv > fm.vcap) {   // 扩容：×2 预留，避免拖拽中频繁重分配
-      fm.vcap = nv * 2
+    const needV = triN * 3
+    if (needV > fm.vcap) {                     // 扩容：×2 预留，避免拖拽中频繁重分配
+      fm.vcap = needV * 2
       fm.posArr = new Float32Array(fm.vcap * 3); fm.colArr = new Float32Array(fm.vcap * 3)
       fm.geo.setAttribute('position', new THREE.BufferAttribute(fm.posArr, 3))
       fm.geo.setAttribute('color', new THREE.BufferAttribute(fm.colArr, 3))
+      fm.icap = fm.vcap; fm.idxArr = new Uint32Array(fm.icap); fm.geo.setIndex(new THREE.BufferAttribute(fm.idxArr, 1))
     }
-    if (ni > fm.icap) { fm.icap = ni * 2; fm.idxArr = new Uint32Array(fm.icap); fm.geo.setIndex(new THREE.BufferAttribute(fm.idxArr, 1)) }
-    const pos = fm.posArr, col = fm.colArr, idx = fm.idxArr
-    let n = 0, ii = 0
-    for (const fb of fillBands) {
-      const cr = fb.color[0] / 255, cg = fb.color[1] / 255, cb = fb.color[2] / 255
-      const verts = fb.verts, counts = fb.counts
-      let vi = 0
-      for (let j = 0; j < counts.length; j++) {
-        const plen = counts[j], start = n
-        for (let q = 0; q < plen; q++) {   // 内联 llaToVec(lat,lon,0)*lift（r=1）→ 免逐顶点 Vector3 分配
-          const lon = verts[(vi + q) * 2], lat = verts[(vi + q) * 2 + 1]
-          const phi = (90 - lat) * D2R_, theta = (lon + 180) * D2R_, sp = Math.sin(phi)
-          const o3 = n * 3
-          pos[o3] = -lift * sp * Math.cos(theta); pos[o3 + 1] = lift * Math.cos(phi); pos[o3 + 2] = lift * sp * Math.sin(theta)
-          col[o3] = cr; col[o3 + 1] = cg; col[o3 + 2] = cb; n++
-        }
-        for (let i = 1; i < plen - 1; i++) { idx[ii++] = start; idx[ii++] = start + i; idx[ii++] = start + i + 1 }   // 扇形三角化
-        vi += plen
-      }
-    }
-    fm.geo.setDrawRange(0, ii)
+    pos = fm.posArr; col = fm.colArr; idx = fm.idxArr
+    n = 0; run(emitLeaf)                       // 第二趟：写顶点/颜色/顺序索引
+    fm.geo.setDrawRange(0, n)
     fm.geo.attributes.position.needsUpdate = true
     fm.geo.attributes.color.needsUpdate = true
     fm.geo.index.needsUpdate = true
