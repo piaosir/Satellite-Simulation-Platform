@@ -54,6 +54,9 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
   const loading = ref(false)
   let loaded = false
   const cache = new Map()           // key → { meta, P1, P2, proj }
+  // 数值标签拖拽用（声明前置，供 buildLayer/buildBeamLayer 捕获引用；逻辑见文件后段 setDragLabel/labelDrag）
+  let _dragLabels = []              // 聚焦天线当前可拖标签 [{ levelIdx, loop, anchor }]（recompute 按 showVal 捕获）
+  let _dragCapture = null           // 捕获缓冲：仅在构建聚焦天线层期间非空
   // 已存档但尚未加载到 cache 的天线设置（key → cfg）：恢复时从存档灌入，天线一经 ensureLoaded 即套用并移出。
   // 作用：清除绘图(selected 清空)/未绘制的天线，其设置依旧随 getState 回存到本地，不丢失（后续改数据库的过渡形态）。
   const pendingCfgs = new Map()
@@ -63,7 +66,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
   // jet 配色按值自动分配（填充色与线色默认同色，可分别改）。
   function defaultLevels(peakDb) {
     const abs = Number.isFinite(peakDb)
-    const lv = [-1, -2, -3, -4, -5].map((v) => ({ v: abs ? +(peakDb + v).toFixed(2) : v, color: '', lineColor: '', locked: false, lineSet: false }))
+    const lv = [-1, -2, -3, -4, -5].map((v) => ({ v: abs ? +(peakDb + v).toFixed(2) : v, name: '', labelT: null, color: '', lineColor: '', locked: false, lineSet: false }))
     recolorList(lv); return lv
   }
   // 按值升序分配 jet 色（外圈冷、内圈热）。locked 标记「用户手动配过色」的档：整档锁定，填充与线色
@@ -133,7 +136,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
     if (!lv.length) v = s.ctype === 'rel' ? -1 : (Number.isFinite(peak) ? Math.floor(peak) - 1 : 50)
     else if (lv.length === 1) v = Math.floor(lv[0].v) - 1
     else { const dir = Math.sign(lv[lv.length - 1].v - lv[lv.length - 2].v) || (s.ctype === 'rel' ? -1 : 1); v = Math.floor(lv[lv.length - 1].v) + dir * STEP }
-    lv.push({ v, color: '', lineColor: '', locked: false, lineSet: false })
+    lv.push({ v, name: '', labelT: null, color: '', lineColor: '', locked: false, lineSet: false })
     recolorList(lv)
   }
   function removeLevel(i) { s.levels.splice(i, 1); recolorList(s.levels) }
@@ -141,7 +144,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
   // 每个天线的独立设置（数据库）：除等仰角线(全局参考线)外的全部绘制设置都按天线保存，
   // 切换聚焦时载入该天线设置、编辑时回存，只有用户改动才变。bore 指向同样并入。
   const PA = ['ctype', 'pol', 'gainOffset', 'pathLoss', 'fill', 'line', 'lineWidth', 'alpha', 'boreType', 'boreLon', 'boreLat', 'boreAz', 'boreEl', 'yaw', 'boreLock']
-  const copyLevels = (lv) => lv.map((L) => ({ v: L.v, color: L.color, lineColor: L.lineColor, locked: !!L.locked, lineSet: !!L.lineSet }))
+  const copyLevels = (lv) => lv.map((L) => ({ v: L.v, name: L.name || '', labelT: (L.labelT == null ? null : L.labelT), color: L.color, lineColor: L.lineColor, locked: !!L.locked, lineSet: !!L.lineSet }))
   function defaultSettings(satLon, satLat = 0, peakDb) {
     return { ctype: 'abs', pol: 'RSS', gainOffset: 0, pathLoss: 'none', fill: false, line: true, lineWidth: 1.6, alpha: 0.78,
       boreType: 'azel', boreLon: satLon == null ? null : satLon, boreLat: satLat || 0, boreAz: 0, boreEl: 0, yaw: 0, boreLock: true, beamsToPlot: [0], beamNames: {}, levels: defaultLevels(peakDb) }
@@ -579,13 +582,49 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
     for (const bi of plot) { const beam = c.beams[bi]; if (beam) syncBeamProj(c, beam, c.settings, (c.settings.pathLoss === 'none' && beam._fld) ? beam._fld.field : null) }
   }
 
-  function absLevels(peak, cfg) { return cfg.levels.map((L) => ({ abs: cfg.ctype === 'rel' ? peak + L.v : L.v, v: L.v, color: L.color, lineColor: L.lineColor })) }
+  function absLevels(peak, cfg) { return cfg.levels.map((L, idx) => ({ idx, abs: cfg.ctype === 'rel' ? peak + L.v : L.v, v: L.v, name: L.name || '', labelT: (L.labelT == null ? null : L.labelT), color: L.color, lineColor: L.lineColor })) }
 
-  // 一条等值线（点链）的最上端点（纬度最大）：作数值标签锚点，与 GXT「每条等值线取 top 标一次」一致
+  // 一条等值线（点链）的最上端点（纬度最大）：数值标签【默认】锚点，与 GXT「每条等值线取 top 标一次」一致
   function loopTop(pts) {
     let best = pts[0]
     for (const p of pts) if (p[1] > best[1]) best = p
     return best
+  }
+  // ===== 数值标签沿等值线拖动：把标签位置存成「沿环弧长的比例 t∈[0,1)」，几何每帧重算也始终贴在线上 =====
+  // 经度差（跨 ±180 取最短）：环点用经纬度平面近似度量（覆盖等值线是局部区域，够用）。
+  const dLon = (a, b) => { let d = a - b; while (d > 180) d -= 360; while (d < -180) d += 360; return d }
+  // 环总弧长（度，经纬度平面近似）
+  function loopLen(loop) {
+    let s2 = 0
+    for (let i = 1; i < loop.length; i++) { const dx = dLon(loop[i][0], loop[i - 1][0]), dy = loop[i][1] - loop[i - 1][1]; s2 += Math.hypot(dx, dy) }
+    return s2
+  }
+  // 环上「弧长比例 t」处的点 [lon,lat]（越界 t 环绕；退化环回退 loopTop）
+  function loopPointAtFraction(loop, t) {
+    const total = loopLen(loop); if (!(total > 0) || loop.length < 2) return loopTop(loop)
+    const target = (((t % 1) + 1) % 1) * total
+    let acc = 0
+    for (let i = 1; i < loop.length; i++) {
+      const dx = dLon(loop[i][0], loop[i - 1][0]), dy = loop[i][1] - loop[i - 1][1], seg = Math.hypot(dx, dy)
+      if (acc + seg >= target) { const f = seg > 0 ? (target - acc) / seg : 0; return [wrap180(loop[i - 1][0] + dx * f), loop[i - 1][1] + dy * f] }
+      acc += seg
+    }
+    return loop[loop.length - 1]
+  }
+  // 点 p={lon,lat} 到环的最近投影所对应的「弧长比例 t」（拖拽时把指针吸附到线上）
+  function nearestFractionOnLoop(loop, p) {
+    const total = loopLen(loop); if (!(total > 0) || loop.length < 2) return 0
+    let best = Infinity, bestAcc = 0, acc = 0
+    for (let i = 1; i < loop.length; i++) {
+      const ax = loop[i - 1][0], ay = loop[i - 1][1], dx = dLon(loop[i][0], ax), dy = loop[i][1] - ay, seg2 = dx * dx + dy * dy
+      let f = seg2 > 0 ? (dLon(p.lon, ax) * dx + (p.lat - ay) * dy) / seg2 : 0
+      f = Math.max(0, Math.min(1, f))
+      const ex = dLon(p.lon, ax + dx * f), ey = p.lat - (ay + dy * f), d2 = ex * ex + ey * ey
+      if (d2 < best) { best = d2; bestAcc = acc + Math.hypot(dx, dy) * f }
+      acc += Math.hypot(dx, dy)
+    }
+    // 夹到 <1：开口环（被地平/热区盒裁断）投影到末端时比例会恰为 1，而 loopPointAtFraction 对 t=1 取模回到环首 → 标签瞬移。
+    return Math.min(bestAcc / total, 0.999999)
   }
   // 单个波束 → 一个子图层（分带填充 + 等值线 + 波束中心）。相对峰值模式按【该波束自身峰值】算电平
   // （HTS 多点波束各自的 −3dB 圈），绝对模式所有波束共用同一绝对 dB。
@@ -614,16 +653,26 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
     const geo = need ? bandGeometry({ lon: beam.proj.lon, lat: beam.proj.lat, vis: beam.proj.vis, db: field.db, NX: beam.proj.NX, NY: beam.proj.NY }, asc.map((x) => x.abs), cfg.fill, box, cfg.fill ? satHull(c) : null, displayQuality.value.gridStride) : null
     // 分带填充：每档一个颜色 + 该档环带多边形（升序，逐层从外到内绘制，非嵌套→无重叠透明叠加）
     const fillBands = cfg.fill && geo ? asc.map((x, i) => ({ color: cssRgb(x.color), verts: geo.fills[i].verts, counts: geo.fills[i].counts })).filter((b) => b.counts.length) : null
-    // 等值线：每档一组线段（= 填充相邻档公共边）；数值标签按拼环后每条取最上端点。
-    // 标签仅在「显示数值」开启时才拼环求锚点——关闭时跳过 stitchLoops，拖拽时省一笔。
+    // 等值线：每档一组线段（= 填充相邻档公共边）；数值标签锚点：该档拖过（labelT 非空）则按弧长比例取点，
+    // 否则默认取环最上端点。标签仅在「显示数值」开启时才拼环求锚点——关闭时跳过 stitchLoops，拖拽时省一笔。
     const segGroups = cfg.line && geo
       ? asc.map((x, i) => {
         const segs = geo.lines[i]
         const labels = []
-        if (withLabels) for (const loop of stitchLoops(segs)) { if (loop.length >= 4) labels.push(loopTop(loop)) }
-        // txt 与「电平」输入框原值（x.v = L.v）完全一致，不做小数位裁剪——绝对模式下 x.abs 恒等于 x.v，
-        // 之前用 toFixed(1) 会把用户输入的更高精度电平（如 42.567）显示成 42.6，与输入框对不上。
-        return { segs, color: x.lineColor, width: cfg.lineWidth, txt: String(x.v), labels }
+        if (withLabels) for (const loop of stitchLoops(segs)) {
+          if (loop.length < 4) continue
+          // 默认锚点：单档取环最上端点(顶部，旧行为不变)；多档时按档序沿环错开 (i+0.5)/n，避免同心环各档
+          // 标签都堆在顶端叠成一列（看着像「统一」、还分不开）——错开后各档天然散开、可分别就近抓取拖动。
+          const t0 = asc.length > 1 ? (i + 0.5) / asc.length : null
+          const anchor = (x.labelT != null) ? loopPointAtFraction(loop, x.labelT)
+            : (t0 != null ? loopPointAtFraction(loop, t0) : loopTop(loop))
+          labels.push(anchor)
+          if (_dragCapture) _dragCapture.push({ levelIdx: x.idx, loop, anchor })   // 聚焦天线：供数值标签拖拽就近锁定 + 沿环投影
+        }
+        // txt：该档【自定义名称】优先（电平表灰色列可改名），为空则回退电平值 x.v = L.v。
+        // 数值回退不做小数位裁剪——绝对模式下 x.abs 恒等于 x.v，之前用 toFixed(1) 会把用户输入的
+        // 更高精度电平（如 42.567）显示成 42.6，与输入框对不上。
+        return { segs, color: x.lineColor, width: cfg.lineWidth, txt: (x.name || String(x.v)), labels }
       }).filter((g) => g.segs.length)
       : []
     // 波束中心 = 当前场的峰值点（随指向/拖拽实时变化）；波束名标签贴在此处，并向所属卫星连线
@@ -643,7 +692,10 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
     const node = sats.value.find((x) => x.folder === key.split('|')[0])
     const satShown = !node || node.labelShow !== false
     const plot = (cfg.beamsToPlot || []).filter((i) => i < c.beams.length)   // 全未选 → 不绘制任何波束
-    return plot.map((bi) => {
+    // 仅聚焦天线 + 显示数值标签时，捕获各档各环的可拖标签（锚点+环+原档下标），供 labelDrag 就近锁定/投影
+    const capturing = withLabels && key === active.value
+    if (capturing) _dragCapture = []
+    const out = plot.map((bi) => {
       // 投影同步在 buildBeamLayer 内用新场完成（覆盖 reproject 未触及/新勾选的波束，且按热区盒裁剪）
       // 标注一律用波束名（自定义或默认「波束 N」）—— 不再用「天线名+波束名」形式
       const L = buildBeamLayer(c, cfg, c.beams[bi], beamName(c, bi), withLabels)
@@ -651,6 +703,8 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
       if (L.bore) L.bore.satShown = satShown
       return L
     })
+    if (capturing) { _dragLabels = _dragCapture; _dragCapture = null }
+    return out
   }
 
   const fieldOpts = () => ({ alpha: s.alpha, showBore: s.showBore, boreSize: s.boreSize, showName: s.showName, nameSize: s.nameSize, showPeak: s.showPeak, peakSize: s.peakSize, showVal: s.showVal, valSize: s.valSize })
@@ -817,8 +871,39 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
   // 拖拽波束：在方向(az/el)空间相对拖动。地表经纬度在地平附近非单调（过地平会回折，导致"拖不到地平线"），
   // 故改用「光标方向(夹到地平)的 az/el」做增量 → 单调、可一路拖到地平线；落在可见地表时松手转回 geo 便于精调。
   const dragBore = ref(false)
-  function setDragBore(v) { dragBore.value = !!v; const sc = getScene(), fl = getFlat(); if (sc) sc.setBeamDragMode(dragBore.value); if (fl) fl.setBeamDragMode(dragBore.value) }
+  function setDragBore(v) {
+    dragBore.value = !!v
+    if (dragBore.value && dragLabel.value) setDragLabel(false)   // 与拖标签互斥（左键拖动只能干一件事）
+    const sc = getScene(), fl = getFlat(); if (sc) sc.setBeamDragMode(dragBore.value); if (fl) fl.setBeamDragMode(dragBore.value)
+  }
   let _drag = null, _dragRaf = 0, _dragLL = null, _dragging = false
+
+  // ===== 数值标签拖拽：开模式后在地图上拖动数值标签，沿其所在等值线滑动（模式式，与拖波束互斥）=====
+  // （_dragLabels/_dragCapture 已在顶部前置声明，供 buildLayer 捕获）
+  const dragLabel = ref(false)
+  let _dragLbl = null    // 本次拖拽锁定的标签（起拖就近锁定，整程用它的 loop 投影，跟手且稳定）
+  function setDragLabel(v) {
+    dragLabel.value = !!v
+    if (dragLabel.value && dragBore.value) setDragBore(false)   // 互斥
+    const sc = getScene(), fl = getFlat(); if (sc) sc.setLabelDragMode(dragLabel.value); if (fl) fl.setLabelDragMode(dragLabel.value)
+  }
+  // 指针经纬度 → 平面近似距离²（找最近标签用）
+  const ll2d = (ll, p) => { const dx = dLon(ll.lon, p[0]) * Math.cos(ll.lat * Math.PI / 180), dy = ll.lat - p[1]; return dx * dx + dy * dy }
+  function labelDrag(ll, phase) {
+    if (phase === 'end') { if (_dragLbl) persistActive(); _dragLbl = null; return }
+    if (!ll) return
+    if (phase === 'start') {
+      _dragLbl = null
+      let best = Infinity
+      for (const e of _dragLabels) { const d = ll2d(ll, e.anchor); if (d < best) { best = d; _dragLbl = e } }
+      return
+    }
+    // move：把指针吸附到锁定标签所在环 → 弧长比例 t → 写回该档 labelT（该档所有环的标签同步到比例 t）
+    if (!_dragLbl) return
+    const L = s.levels[_dragLbl.levelIdx]; if (!L) return
+    L.labelT = nearestFractionOnLoop(_dragLbl.loop, ll)
+    scheduleRecomputeActive()   // 跟手：只重算聚焦层 + 补当前视图（labelT 变更同源触发 watch(s.levels) 亦会回存）
+  }
   const curAzEl = (m, lon, lat) => surfaceAzEl(m.satLon, m.satLat || 0, m.satAlt, lon, lat)
   function beamDrag(ll, phase) {
     if (phase === 'end') {   // 松手：退出拖拽态；boresight 落在可见地表则转回 geo（面板便于精调），地平外保持 azel
@@ -1021,6 +1106,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
   })
   // 全局显示选项（天线名/波束中心/数值标签开关与字号）：仅影响标注层，重绘即可（不回存到天线设置）
   watch(() => [s.showName, s.nameSize, s.showBore, s.boreSize, s.showPeak, s.peakSize, s.showVal, s.valSize], () => recompute())
+  watch(() => s.showVal, (v) => { if (!v && dragLabel.value) setDragLabel(false) })   // 关掉数值标签即退出标签拖拽模式（无标签可拖）
 
   return {
     sats, expanded, selected, active, loading, s,
@@ -1030,7 +1116,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
     deleteBeam, deleteCheckedBeams,
     loadIndex, setActive, toggleAnt, toggleSatAll, toggleExpand, addLevel, removeLevel, importGrd,
     addSatellite, updateSatellite, removeSatellite, removeAntenna, renameAntenna, setElev,
-    setDragBore, beamDrag, getState, restoreState, recompute, clearAll, clearDrawing,
+    setDragBore, beamDrag, dragLabel, setDragLabel, labelDrag, getState, restoreState, recompute, clearAll, clearDrawing,
     setLivePos, tickLive, getPerfContext, ensureAntLoaded, exportContours
   }
 }

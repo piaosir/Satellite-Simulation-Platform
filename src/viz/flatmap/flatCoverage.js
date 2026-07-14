@@ -635,6 +635,7 @@ export function createFlatCoverage(canvas) {
   }
   let dragging = false, lx = 0, ly = 0
   let beamDragMode = false, onBeamDrag = null, beamDragging = false   // 拖拽波束（不平移地图）
+  let labelDragMode = false, onLabelDrag = null, labelDragging = false   // 拖拽等值线数值标签（沿线滑动，不平移地图）
   // 协调区多边形 hold-to-draw：绘制态下左键按住沿路径拖动，按屏幕像素阈值连续加点（不平移地图）。
   // 回调 onPolyDraw(lonlat, 'start'|'move'|'end')；右键加点（onRightClick）仍并存。
   let polyDrawMode = false, onPolyDraw = null, polyDrawing = false, drawLX = 0, drawLY = 0
@@ -689,6 +690,7 @@ export function createFlatCoverage(canvas) {
       return
     }
     if (beamDragMode && e.button === 0) { beamDragging = true; canvas.setPointerCapture(e.pointerId); const ll = screenToLonLat(e.clientX, e.clientY); if (ll && onBeamDrag) onBeamDrag(ll, 'start'); return }
+    if (labelDragMode && e.button === 0) { labelDragging = true; canvas.setPointerCapture(e.pointerId); const ll = screenToLonLat(e.clientX, e.clientY); if (ll && onLabelDrag) onLabelDrag(ll, 'start'); return }
     dragging = true; lx = e.clientX; ly = e.clientY; canvas.setPointerCapture(e.pointerId); canvas.style.cursor = 'grabbing'
   }
   function onMove(e) {
@@ -701,6 +703,7 @@ export function createFlatCoverage(canvas) {
     }
     else if (vertDragging >= 0) { const ll = screenToLonLat(e.clientX, e.clientY); if (ll && onVertexDrag) onVertexDrag(vertDragging, ll, 'move') }
     else if (beamDragging) { const ll = screenToLonLat(e.clientX, e.clientY); if (ll && onBeamDrag) onBeamDrag(ll, 'move') }
+    else if (labelDragging) { const ll = screenToLonLat(e.clientX, e.clientY); if (ll && onLabelDrag) onLabelDrag(ll, 'move') }
     else if (polyDrawing) {   // 绘制态：光标每移过阈值距离落一个点
       const dx = e.clientX - drawLX, dy = e.clientY - drawLY
       if (dx * dx + dy * dy >= POLY_DRAW_MIN2) { drawLX = e.clientX; drawLY = e.clientY; const ll = screenToLonLat(e.clientX, e.clientY); if (ll && onPolyDraw) onPolyDraw(ll, 'move') }
@@ -715,9 +718,10 @@ export function createFlatCoverage(canvas) {
     if (vertDragging >= 0 && onVertexDrag) onVertexDrag(null, null, 'end')
     if (moveDragging && onPolyMove) onPolyMove(0, 0, 'end')
     if (beamDragging && onBeamDrag) onBeamDrag(null, 'end')
+    if (labelDragging && onLabelDrag) onLabelDrag(null, 'end')
     if (polyDrawing && onPolyDraw) onPolyDraw(null, 'end')
-    dragging = false; beamDragging = false; vertDragging = -1; moveDragging = false; moveLast = null; polyDrawing = false
-    canvas.style.cursor = polyDrawMode ? 'crosshair' : (beamDragMode ? 'move' : 'grab')
+    dragging = false; beamDragging = false; labelDragging = false; vertDragging = -1; moveDragging = false; moveLast = null; polyDrawing = false
+    canvas.style.cursor = polyDrawMode ? 'crosshair' : ((beamDragMode || labelDragMode) ? 'move' : 'grab')
   }
   function onLeave() { onUp(); if (onHover) onHover(null) }       // 移出地图：清空读数
   function onDbl() { fit(); invalidateStatic(); requestDraw(); if (onZoom) onZoom(scaleToT()) }
@@ -824,8 +828,10 @@ export function createFlatCoverage(canvas) {
       buildBaseGeo(feats, t)
       invalidateStatic(); requestDraw()
     },
-    setBeamDragMode(v) { beamDragMode = !!v; beamDragging = false; canvas.style.cursor = polyDrawMode ? 'crosshair' : (v ? 'move' : 'grab') },
+    setBeamDragMode(v) { beamDragMode = !!v; beamDragging = false; canvas.style.cursor = polyDrawMode ? 'crosshair' : ((v || labelDragMode) ? 'move' : 'grab') },
     setOnBeamDrag(fn) { onBeamDrag = fn },
+    setLabelDragMode(v) { labelDragMode = !!v; labelDragging = false; canvas.style.cursor = polyDrawMode ? 'crosshair' : ((v || beamDragMode) ? 'move' : 'grab') },
+    setOnLabelDrag(fn) { onLabelDrag = fn },
     // 协调区多边形 hold-to-draw 模式：开启后左键按住沿路径连续加点
     setPolyDrawMode(v) { polyDrawMode = !!v; polyDrawing = false; canvas.style.cursor = v ? 'crosshair' : (beamDragMode ? 'move' : 'grab') },
     setOnPolyDraw(fn) { onPolyDraw = fn },

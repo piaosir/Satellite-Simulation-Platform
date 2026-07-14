@@ -23,6 +23,7 @@ import { countryAt, currentLandColor } from '../viz/globe3d/countryPick.js'
 import { useGrdCoverage } from '../viz/grd/useGrdCoverage.js'
 import { usePerfTable } from '../viz/grd/usePerfTable.js'
 import { useGridSelect } from '../viz/grd/useGridSelect.js'
+import { useMarkerTable } from '../viz/markers/useMarkerTable.js'
 import sat from '../viz/constellation/satellite.js'
 import { sampleOrbitAdaptive } from '../viz/constellation/adaptiveSample.js'
 import * as W from '../viz/wgs84.js'
@@ -1277,7 +1278,8 @@ function ensureFlat() {
     flat = createFlatCoverage(flatCanvas.value)
     flat.setRenderScale(displayQuality.value.pixelRatio); flat.setMapDetail(displayQuality.value.mapDetail, displayQuality.value.mapThin)
     flat.setOnRightClick(onMapRightClick); flat.setOnHover((ll) => { cursor.ll = ll }); flat.setOnBeamDrag(grd.beamDrag); flat.setBeamDragMode(grd.dragBore.value)
-    flat.setOnVertexDrag(onPolyVertexDrag)   // Polygon 调整顶点：拖动单个顶点
+    flat.setOnLabelDrag(grd.labelDrag); flat.setLabelDragMode(grd.dragLabel.value)   // 拖拽等值线数值标签（沿线滑动）
+    flat.setOnVertexDrag(onVertexDrag)   // 拖动单个顶点/标记点（Polygon 调点 或 标记「调整点位置」，分发）
     flat.setOnPolyMove(onPolyMoveDrag)       // Polygon 整体拖动：按住内部平移全部顶点
     flat.setOnPolyDraw(onPolyDraw); flat.setPolyDrawMode(!!polyDrawId.value)   // Polygon 绘制：左键按住沿路径连续加点
     flat.setOnZoom((t) => { if (flatView.value) { zoom.value = t; saveView() } })
@@ -1303,7 +1305,7 @@ function feedFlat() {
   flat.setGeom(covGeom)
   grd.recompute()   // GRD 覆盖：把当前选中天线的面+线喂给 flat（recompute 同时喂 scene/flat）
   redrawSats()      // 卫星/仰角线图层（含 Polygon）
-  syncPolyEdit()    // Polygon 调点态（切入平面图时接上顶点拖拽）
+  syncEdit()        // 调点态（Polygon / 标记「调整点位置」）：切入平面图时接上拖拽
   pushFocusSat()    // 聚焦卫星位置
   pushSelGeomFlat() // 聚焦卫星覆盖范围 + 星下点轨迹
 }
@@ -1655,20 +1657,20 @@ function loadPolys() {
     }
   } catch { /* ignore */ }
 }
-function polyRefresh() { redrawSats(); syncPolyEdit(); persistPolys() }
+function polyRefresh() { redrawSats(); syncEdit(); persistPolys() }
 // 改线色：填充色若未单独设置（仍与线色一致）则跟着走，设置过就各改各的
 function polySetColor(pg, v) {
   if (!pg.fillColor || pg.fillColor === pg.color) pg.fillColor = v
   pg.color = v; polyRefresh()
 }
 function polyStartDraw() {
-  polyEditStop(); polyMoveStop()   // 与调整/拖动态互斥
+  mkEditStop(); polyEditStop(); polyMoveStop()   // 与标记「调整点位置」/调整/拖动态互斥
   const n = polys.value.length + 1
   const c = POLY_COLORS[(n - 1) % POLY_COLORS.length]
   const pg = { id: 'pg' + Date.now().toString(36) + n, name: 'Polygon ' + n, value: '', satName: '', satLon: '', color: c, fillOn: true, fillColor: c, fillOp: 0.18, width: 2, labelSize: 16, show: true, pts: [] }
   polys.value.push(pg); polyDrawId.value = pg.id
 }
-function polyContinue(pg) { polyEditStop(); polyMoveStop(); pg.show = true; polyDrawId.value = pg.id; polyRefresh() }
+function polyContinue(pg) { mkEditStop(); polyEditStop(); polyMoveStop(); pg.show = true; polyDrawId.value = pg.id; polyRefresh() }
 function polyUndo() { const pg = curPoly(); if (pg && pg.pts.length) { pg.pts.pop(); polyRefresh() } }
 function polyDone() {
   const pg = curPoly(); if (!pg) { polyDrawId.value = ''; return }
@@ -1695,6 +1697,7 @@ function togglePoly(pg) {
 // ---- 调整顶点（仿 SATSOFT：选中多边形后直接拖动顶点）。在 2D 平面图进行，进入时自动切换视图 ----
 function polyEditToggle(pg) {
   if (polyEditId.value === pg.id) { polyEditStop(); return }
+  mkEditStop()                         // 与标记「调整点位置」互斥
   if (polyDrawId.value) polyCancel()   // 与绘制态互斥
   polyMoveId.value = ''                // 与整体拖动互斥
   polyEditId.value = pg.id; pg.show = true
@@ -1705,6 +1708,7 @@ function polyEditStop() { if (polyEditId.value) { polyEditId.value = ''; polyRef
 // ---- 整体拖动（仿 SATSOFT：按住多边形内部整体平移）。同样在 2D 平面图进行 ----
 function polyMoveToggle(pg) {
   if (polyMoveId.value === pg.id) { polyMoveStop(); return }
+  mkEditStop()                         // 与标记「调整点位置」互斥
   if (polyDrawId.value) polyCancel()   // 与绘制态互斥
   polyEditId.value = ''                // 与调整顶点互斥
   polyMoveId.value = pg.id; pg.show = true
@@ -1712,13 +1716,22 @@ function polyMoveToggle(pg) {
   polyRefresh()
 }
 function polyMoveStop() { if (polyMoveId.value) { polyMoveId.value = ''; polyRefresh() } }
-// 把当前编辑/拖动多边形的顶点（传引用，拖动实时生效）喂给平面渲染器做命中/拖拽
-function syncPolyEdit() {
+// 把当前可拖拽的顶点/标记点（传引用，拖动实时生效）喂给平面渲染器做命中/拖拽。
+// 「调整点位置」的标记/地面站/航迹优先；否则回退到 Polygon 调点/整体拖动。三者互斥，共用同一 editVerts 槽。
+function syncEdit() {
   if (!flat) return
+  const mt = mkEditTarget()
+  if (mt) { mkEditPts = mt.src.map((p) => [p.lon, p.lat]); flat.setEditVerts({ pts: mkEditPts, px: MK_HANDLE_PX, move: false }); return }
+  mkEditPts = null
   const pg = curEditPoly() || curMovePoly()
   flat.setEditVerts(pg ? { pts: pg.pts, px: polyDotSize.value, move: !!curMovePoly() } : null)
 }
-// 顶点拖拽回调：'move' 只改点+重绘（与平移同频，不写盘），'end' 统一持久化
+// 顶点拖拽回调分发：处于「调整点位置」时改标记，否则改 Polygon 顶点
+function onVertexDrag(vi, ll, phase) {
+  if (mkEditId.value) { onMkVertexDrag(vi, ll, phase); return }
+  onPolyVertexDrag(vi, ll, phase)
+}
+// Polygon 顶点拖拽：'move' 只改点+重绘（与平移同频，不写盘），'end' 统一持久化
 function onPolyVertexDrag(vi, ll, phase) {
   const pg = curEditPoly(); if (!pg) return
   if (phase === 'end') { persistPolys(); return }
@@ -1865,6 +1878,36 @@ function commitRenameAnt(sat, a) {
     return
   }
   grdEditAnt.value = ''
+}
+
+// 波束名内联重命名：草稿缓冲，防止实时重渲染（nowTick/星动每秒自增触发整组件重渲染）时
+// Vue 强制回写 <input> 的 value 吞掉未提交的输入。grdEditBeam 存正在编辑波束的 "active天线key#紧凑下标"，
+// grdEditBeamVal 为输入框草稿；@input 即时写草稿 → 每次重渲染的 :value 都取草稿=已输入内容 → 不再被吞。
+// （对照天线名 grdEditAnt/grdEditVal 同款；波束名的提交仍走 grd.renameBeam，失焦/回车落库。）
+const grdEditBeam = ref('')
+const grdEditBeamVal = ref('')
+const beamEditKey = (b) => grd.active.value + '#' + b.i
+function startRenameBeam(b) { grdEditBeam.value = beamEditKey(b); grdEditBeamVal.value = b.label }
+function inputRenameBeam(b, v) { grdEditBeam.value = beamEditKey(b); grdEditBeamVal.value = v }
+function commitRenameBeam(b) {
+  if (grdEditBeam.value === '') return   // 已提交（blur 与回车可能重复触发）→ 跳过
+  if (grdEditBeamVal.value !== b.label) grd.renameBeam(b.i, grdEditBeamVal.value)   // 未改名则跳过，省一次 live 冗余重绘
+  grdEditBeam.value = ''; grdEditBeamVal.value = ''
+}
+
+// 电平档「灰色列」内联改名：空=显示电平值（默认），填=显示自定义名（等值线数值标签同步用此名）。
+// 同波束名走草稿缓冲防每秒重渲染吞字：grdEditLv 存正在编辑的档下标(String)，grdEditLvVal 为草稿。
+const grdEditLv = ref('')
+const grdEditLvVal = ref('')
+// 某档默认灰字（无自定义名时）＝该档在地图上的数值标签文字，与 buildBeamLayer 的 txt=String(x.v) 一致（所见即所得）。
+function lvDefaultText(L) { return String(L.v) }
+function startRenameLv(i, L) { grdEditLv.value = String(i); grdEditLvVal.value = L.name || '' }
+function inputRenameLv(i, v) { grdEditLv.value = String(i); grdEditLvVal.value = v }
+function commitRenameLv(i) {
+  if (grdEditLv.value === '') return   // 已提交（blur 与回车可能重复触发）→ 跳过
+  const L = grdS.levels[i]; const nm = grdEditLvVal.value.trim()
+  if (L && nm !== (L.name || '')) L.name = nm   // 未改则跳过（改 levels 会触发 watch(s.levels) 回存+重绘）
+  grdEditLv.value = ''; grdEditLvVal.value = ''
 }
 
 // 仰角线显示开关（仰角值/颜色在卫星「✎」弹窗里编辑）
@@ -2087,6 +2130,9 @@ function redrawSats() {
     // top:true → 3D 里该标签关深度测试+半球剔除（不被地球模型裁切，转到背面才隐藏）；字号随各多边形 labelSize
     if (!drawing && txt && pg.pts.length >= 3) { const c = polyCentroid(pg.pts); labels.push({ lon: c[0], lat: c[1], text: txt, hpx: (Number(pg.labelSize) || 16) / 533, color: pg.color, alt: 40, top: true }) }
   }
+  // 「调整点位置」：在被编辑的标记/地面站/航迹各点上叠一圈可拖拽手柄圆环（屏幕恒定像素，仅平面图交互）
+  const mkT = mkEditTarget()
+  if (mkT) for (const p of mkT.src) { if (Number.isFinite(p.lat) && Number.isFinite(p.lon)) dots.push({ lon: p.lon, lat: p.lat, color: mkT.color, px: MK_HANDLE_PX, r: MK_HANDLE_PX * 0.0018 }) }
   const spec = (lines.length || sats.length || dots.length || fills.length) ? { lines, dots, labels, sats, fills } : null
   scene.setSatLayer(spec)
   if (flat) flat.setSatLayer(spec)
@@ -2111,11 +2157,15 @@ const showStName = ref(false)      // 是否显示地面站名称文字（默认
 const showPtLayer = ref(true)      // 点标记图层显隐（小眼睛；隐藏仅停止渲染，数据保留并持久化）
 const showStLayer = ref(true)      // 地面站图层显隐（小眼睛）
 const showTrajLayer = ref(true)    // 航迹图层显隐（小眼睛）
+// 「调整点位置」（仿 Polygon 调点）：在平面图上拖动圆点改坐标。'points'|'stations'|轨迹id，''=关闭；同一时刻仅一层可调、并与 Polygon 各态互斥。
+const mkEditId = ref('')
+const MK_HANDLE_PX = 5             // 可拖拽手柄圆环半径（屏幕恒定像素，比默认圆点略大便于抓取）
+let mkEditPts = null              // 喂给 editVerts 的 [lon,lat] 快照（与 src 同序；拖动时原地更新以保持命中同步）
 let mkSeq = 1
 const newId = () => 'm' + Date.now().toString(36) + (mkSeq++)   // 跨会话唯一，避免与已存数据撞 key
 
 // 经度在前、纬度在后，保留两位小数
-const fmtLL = (lat, lon) => `${Math.abs(lon).toFixed(2)}°${lon >= 0 ? 'E' : 'W'}, ${Math.abs(lat).toFixed(2)}°${lat >= 0 ? 'N' : 'S'}`
+const fmtLL = (lat, lon) => (lat == null || lon == null || !Number.isFinite(lat) || !Number.isFinite(lon)) ? '—' : `${Math.abs(lon).toFixed(2)}°${lon >= 0 ? 'E' : 'W'}, ${Math.abs(lat).toFixed(2)}°${lat >= 0 ? 'N' : 'S'}`
 const validLat = (v) => Number.isFinite(v) && v >= -90 && v <= 90
 const validLon = (v) => Number.isFinite(v) && v >= -180 && v <= 180
 
@@ -2196,9 +2246,9 @@ function cancelStation() { stPrompt.value = null; stPromptName.value = '' }
 function ctxStartTraj(kind) { newTraj(kind); const ll = ctxLL(); if (ll) { const t = curTraj(); if (t) { t.pts.push({ lat: ll.lat, lon: ll.lon }); syncMarkers() } } closeCtx() }
 function endTraj() { activeTraj.value = '' }
 // —— 清除（右键菜单平铺项）——
-function clearPoints() { points.value = []; syncMarkers(); closeCtx() }
-function clearStations() { stations.value = []; syncMarkers(); closeCtx() }
-function clearTrajs() { trajectories.value = []; activeTraj.value = ''; syncMarkers(); closeCtx() }
+function clearPoints() { if (mkEditId.value === 'points') mkEditId.value = ''; points.value = []; syncMarkers(); closeCtx() }
+function clearStations() { if (mkEditId.value === 'stations') mkEditId.value = ''; stations.value = []; syncMarkers(); closeCtx() }
+function clearTrajs() { if (mkEditId.value && mkEditId.value !== 'points' && mkEditId.value !== 'stations') mkEditId.value = ''; trajectories.value = []; activeTraj.value = ''; mkTrajId.value = ''; syncMarkers(); closeCtx() }
 function ctxClearPolys() { polys.value = []; polyDrawId.value = ''; polyEditId.value = ''; polyMoveId.value = ''; polyVertsOpen.value = ''; polyRefresh(); closeCtx() }
 function clearAllMk() { clearAllMarkers(); closeCtx() }
 function clearAllCoverage() { if (covApiOk) clearCoverage(); if (grdApiOk) grd.clearDrawing(); closeCtx() }
@@ -2218,9 +2268,11 @@ const markSizes = () => ({ ptFont: markPtFont.value, stIcon: stIconSize.value, s
 // 标记载荷构造器：坐标/名称是否带文字由 showPtLabel/showStName 决定（空串=圆点/图标保留、文字隐藏）。
 // pushMarkers 与 feedFlat 共用，避免两处各写一份导致显隐口径不一致。
 // 图层隐藏（小眼睛关）时返回空数组：仅停止渲染，points/stations/trajectories 原始数据不动、照常持久化。
-const markerPts = () => showPtLayer.value ? points.value.map((p) => ({ lat: p.lat, lon: p.lon, label: showPtLabel.value ? fmtLL(p.lat, p.lon) : '', el: fmtElev(p.lat, p.lon) })) : []
-const markerSts = () => showStLayer.value ? stations.value.map((s) => ({ lat: s.lat, lon: s.lon, name: showStName.value ? s.name : '', el: fmtElev(s.lat, s.lon) })) : []
-const markerTrs = () => showTrajLayer.value ? trajectories.value.map((t) => ({ pts: t.pts, kind: t.kind, color: t.kind === 'flight' ? 0x5ad1ff : 0xff6a4a })) : []
+// finite 守卫：批量表格里坐标可能暂空(null)——只渲染坐标齐全的点/站/航点，避免 NaN 画到画布
+const finLL = (p) => Number.isFinite(p.lat) && Number.isFinite(p.lon)
+const markerPts = () => showPtLayer.value ? points.value.filter(finLL).map((p) => ({ lat: p.lat, lon: p.lon, label: showPtLabel.value ? fmtLL(p.lat, p.lon) : '', el: fmtElev(p.lat, p.lon) })) : []
+const markerSts = () => showStLayer.value ? stations.value.filter(finLL).map((s) => ({ lat: s.lat, lon: s.lon, name: showStName.value ? s.name : '', el: fmtElev(s.lat, s.lon) })) : []
+const markerTrs = () => showTrajLayer.value ? trajectories.value.map((t) => ({ pts: (t.pts || []).filter(finLL), kind: t.kind, color: t.kind === 'flight' ? 0x5ad1ff : 0xff6a4a })) : []
 // 仅把标记推送到两个视图（含聚焦卫星仰角），不写入持久化；供时间推进/选星刷新仰角调用
 function pushMarkers() {
   if (!scene) return
@@ -2228,7 +2280,46 @@ function pushMarkers() {
   scene.setMarkers(pts, sts, markSizes()); scene.setTrajectories(trs, markSizes())
   if (flat) { flat.setMarkers(pts, sts, trs); flat.setSizes(markSizes()) }
 }
-function syncMarkers() { pushMarkers(); persistMarkers() }
+function syncMarkers() { pushMarkers(); persistMarkers(); syncEdit() }   // syncEdit：增删/改名后重建可拖拽快照（无编辑态时无副作用）
+// ---- 调整点位置（点标记 / 地面站 / 航迹航点：拖动圆点改坐标，仿 Polygon 调点，2D 平面图进行） ----
+// 当前可调图层：{ kind, src:[{lat,lon,...}], color }；src 为活动数组引用（拖动直接改数据）
+function mkEditTarget() {
+  const id = mkEditId.value; if (!id) return null
+  if (id === 'points') return { kind: 'points', src: points.value, color: 0xffd27a }
+  if (id === 'stations') return { kind: 'stations', src: stations.value, color: 0x5ad1ff }
+  const t = trajectories.value.find((x) => x.id === id)
+  if (t) return { kind: 'traj', src: t.pts, color: t.kind === 'flight' ? 0x5ad1ff : 0xff6a4a }
+  return null
+}
+const mkEditLabel = computed(() => {
+  const id = mkEditId.value; if (!id) return ''
+  if (id === 'points') return '点标记'
+  if (id === 'stations') return '地面站'
+  const t = trajectories.value.find((x) => x.id === id)
+  return t ? `航迹「${t.name || ''}」` : ''
+})
+function mkRefresh() { pushMarkers(); redrawSats(); syncEdit() }   // 重画标记（移动点）+ 手柄 + 重建命中快照；不写盘（拖动 end 时统一持久化）
+function mkEditToggle(key) {
+  if (mkEditId.value === key) { mkEditStop(); return }
+  if (key !== 'points' && key !== 'stations' && !trajectories.value.some((t) => t.id === key)) return
+  polyEditStop(); polyMoveStop(); if (polyDrawId.value) polyCancel()   // 与 Polygon 各态互斥（共用 editVerts 槽）
+  if (key === 'points') showPtLayer.value = true
+  else if (key === 'stations') showStLayer.value = true
+  else showTrajLayer.value = true
+  mkEditId.value = key
+  if (!view.flat) view.flat = true     // 拖点在平面图进行（applyFlat→feedFlat 会同步编辑态到渲染器）
+  mkRefresh()
+}
+function mkEditStop() { if (mkEditId.value) { mkEditId.value = ''; mkEditPts = null; mkRefresh() } }
+// 拖动某点：'move' 改坐标 + 实时重绘（不写盘），'end' 统一持久化
+function onMkVertexDrag(vi, ll, phase) {
+  const t = mkEditTarget(); if (!t) return
+  if (phase === 'end') { persistMarkers(); return }
+  if (vi == null || !ll || vi < 0 || vi >= t.src.length) return
+  const p = t.src[vi]; p.lat = clamp(ll.lat, -90, 90); p.lon = ll.lon
+  if (mkEditPts && mkEditPts[vi]) { mkEditPts[vi][0] = p.lon; mkEditPts[vi][1] = p.lat }   // 同步快照，保持后续命中一致
+  pushMarkers(); redrawSats()
+}
 function persistMarkers() {
   try { localStorage.setItem(MK_KEY, JSON.stringify({ points: points.value, stations: stations.value, trajectories: trajectories.value })) } catch { /* ignore */ }
 }
@@ -2269,8 +2360,146 @@ function addWaypoint() {
 }
 function removeWaypoint(t, i) { t.pts.splice(i, 1); syncMarkers() }
 function setTrajName(id, v) { const t = trajectories.value.find((x) => x.id === id); if (t) { t.name = v; persistMarkers() } }
-function removeTraj(id) { trajectories.value = trajectories.value.filter((t) => t.id !== id); if (activeTraj.value === id) activeTraj.value = ''; syncMarkers() }
-function clearAllMarkers() { points.value = []; stations.value = []; trajectories.value = []; activeTraj.value = ''; syncMarkers() }
+function removeTraj(id) { if (mkEditId.value === id) mkEditId.value = ''; if (mkTrajId.value === id) mkTrajId.value = ''; trajectories.value = trajectories.value.filter((t) => t.id !== id); if (activeTraj.value === id) activeTraj.value = ''; syncMarkers() }
+function clearAllMarkers() { mkEditId.value = ''; points.value = []; stations.value = []; trajectories.value = []; activeTraj.value = ''; mkTrajId.value = ''; syncMarkers() }
+
+// ===================== 标记批量表格（Excel 模块，仿链路预算性能表：独立浮窗 + Excel 网格 + 批量粘贴/导入）=====================
+const mkTable = useMarkerTable({ points, stations, trajectories, newId, sync: syncMarkers })
+const mkTableOpen = ref(false)                 // 浮窗开关
+const mkTab = ref('points')                    // 当前分页：points | stations | traj
+const mkTrajId = ref('')                       // 航迹分页当前编辑的航迹 id
+const mkWin = ref({ x: 0, y: 0, w: 620, h: 460, init: false })
+const mkCurTraj = () => trajectories.value.find((t) => t.id === mkTrajId.value)
+// 三张网格列定义（末两列恒为 经度、纬度，供批量粘贴按「末两列=坐标」约定解析）
+const mkPtCols = [{ key: 'lon', label: '经度', num: true }, { key: 'lat', label: '纬度', num: true }]
+const mkStCols = [{ key: 'name', label: '名称' }, { key: 'lon', label: '经度', num: true }, { key: 'lat', label: '纬度', num: true }]
+const mkWpCols = [{ key: 'lon', label: '经度', num: true }, { key: 'lat', label: '纬度', num: true }]
+const mkCellText = (r, c) => { const v = r[c.key]; return v == null ? '' : String(v) }
+// 点标记网格（可编辑：单格改 / 区域粘贴 / 清除，均落到 points，syncMarkers 实时推图+落盘）
+const mkPtGrid = useGridSelect({
+  rows: () => points.value, cols: () => mkPtCols, cellText: mkCellText,
+  onEdit: (id, key, val) => mkTable.ptLayer.update(id, { [key]: val }),
+  onPasteBlock: (a, k, t) => mkTable.ptLayer.pasteBlock(a, k, t),
+  onPasteAppend: (t) => mkTable.ptLayer.pasteAppend(t),
+  onClear: (cells) => cells.forEach(({ rowId, key }) => mkTable.ptLayer.update(rowId, { [key]: '' })),
+  pushUndo: () => mkTable.pushUndo(), dropUndo: () => mkTable.dropUndo(), refresh: () => syncMarkers(),
+  undo: () => mkUndo(), redo: () => mkRedo()
+})
+const mkStGrid = useGridSelect({
+  rows: () => stations.value, cols: () => mkStCols, cellText: mkCellText,
+  onEdit: (id, key, val) => mkTable.stLayer.update(id, { [key]: val }),
+  onPasteBlock: (a, k, t) => mkTable.stLayer.pasteBlock(a, k, t),
+  onPasteAppend: (t) => mkTable.stLayer.pasteAppend(t),
+  onClear: (cells) => cells.forEach(({ rowId, key }) => mkTable.stLayer.update(rowId, { [key]: '' })),
+  pushUndo: () => mkTable.pushUndo(), dropUndo: () => mkTable.dropUndo(), refresh: () => syncMarkers(),
+  undo: () => mkUndo(), redo: () => mkRedo()
+})
+const mkWpGrid = useGridSelect({
+  rows: () => { const t = mkCurTraj(); return t ? t.pts : [] }, cols: () => mkWpCols, cellText: mkCellText,
+  onEdit: (id, key, val) => mkTable.wpUpdate(mkTrajId.value, id, { [key]: val }),
+  onPasteBlock: (a, k, t) => mkTable.wpPasteBlock(mkTrajId.value, a, k, t),
+  onPasteAppend: (t) => mkTable.wpPasteAppend(mkTrajId.value, t),
+  onClear: (cells) => cells.forEach(({ rowId, key }) => mkTable.wpUpdate(mkTrajId.value, rowId, { [key]: '' })),
+  pushUndo: () => mkTable.pushUndo(), dropUndo: () => mkTable.dropUndo(), refresh: () => syncMarkers(),
+  undo: () => mkUndo(), redo: () => mkRedo()
+})
+const mkCurGrid = () => mkTab.value === 'stations' ? mkStGrid : mkTab.value === 'traj' ? mkWpGrid : mkPtGrid
+// 三分页（点标记/地面站/航迹航点）：v-for 稳定 key 渲染各自网格，v-show 切换显示（实例常驻，选区/编辑态各自保留）
+const mkPanes = computed(() => [
+  { tab: 'points', grid: mkPtGrid, cols: mkPtCols, rows: points.value },
+  { tab: 'stations', grid: mkStGrid, cols: mkStCols, rows: stations.value },
+  { tab: 'traj', grid: mkWpGrid, cols: mkWpCols, rows: mkCurTraj() ? mkCurTraj().pts : [] }
+])
+const mkCount = computed(() => mkTab.value === 'stations' ? stations.value.length : mkTab.value === 'traj' ? (mkCurTraj() ? mkCurTraj().pts.length : 0) : points.value.length)
+function mkWinInit() {
+  if (mkWin.value.init) return
+  const { w: vw, h: vh } = g3Size()
+  const w = Math.min(620, vw - 48), h = Math.min(Math.round(vh * 0.62), vh - 48)
+  mkWin.value = { x: Math.max(12, Math.round((vw - w) / 2)), y: Math.max(12, Math.round(vh * 0.16)), w, h, init: true }
+}
+function openMkTable(tab) {
+  mkTable.ensureWaypointIds()   // 老航点补稳定 id（网格定位用）
+  mkSetTab(tab || mkTab.value)
+  mkTable.clearHistory()
+  mkWinInit(); mkTableOpen.value = true
+}
+function closeMkTable() { mkTableOpen.value = false }
+function mkSetTab(tab) {
+  mkTab.value = tab
+  if (tab === 'traj' && !mkCurTraj()) mkTrajId.value = trajectories.value.length ? trajectories.value[0].id : ''
+}
+function mkUndo() { mkTable.undo() }   // undo/redo 内部已 sync
+function mkRedo() { mkTable.redo() }
+// 「＋ 增加」：选中行下方插一行空行（无选中则末尾），选区落到新行首列，直接键入或粘贴
+function mkAddRow() {
+  const g = mkCurGrid(), ri = g.sel.value.ri
+  const listLen = () => mkTab.value === 'traj' ? (mkCurTraj() ? mkCurTraj().pts.length : 0) : (mkTab.value === 'stations' ? stations.value.length : points.value.length)
+  const at = ri >= 0 ? ri + 1 : listLen()
+  mkTable.pushUndo()
+  if (mkTab.value === 'traj') {
+    if (!mkCurTraj()) { mkTable.dropUndo(); appAlert('请先选择或新建一条航迹'); return }
+    mkTable.wpAddRow(mkTrajId.value, at)
+  } else {
+    (mkTab.value === 'stations' ? mkTable.stLayer : mkTable.ptLayer).addRow(at)
+  }
+  syncMarkers()
+  nextTick(() => { g.sel.value = { ar: at, ac: 0, ri: at, ci: 0 }; g.focusGrid() })
+}
+// 「粘贴」：读剪贴板批量追加（约定末两列 = 经度、纬度，前面文本列依次为 名称等）
+async function mkPaste() {
+  let text = ''
+  try { text = await navigator.clipboard.readText() } catch { appAlert('无法读取剪贴板，请检查剪贴板权限'); return }
+  mkTable.pushUndo()
+  let n = 0
+  if (mkTab.value === 'traj') { if (!mkCurTraj()) { mkTable.dropUndo(); appAlert('请先选择或新建一条航迹'); return } n = mkTable.wpPasteAppend(mkTrajId.value, text) }
+  else if (mkTab.value === 'stations') n = mkTable.stLayer.pasteAppend(text)
+  else n = mkTable.ptLayer.pasteAppend(text)
+  if (n) syncMarkers(); else { mkTable.dropUndo(); appAlert('剪贴板没有可识别的经纬度数据（约定末两列为 经度、纬度）') }
+}
+function mkClear() {
+  mkTable.pushUndo()
+  if (mkTab.value === 'traj') { if (!mkCurTraj() || !mkCurTraj().pts.length) { mkTable.dropUndo(); return } mkTable.wpClear(mkTrajId.value) }
+  else if (mkTab.value === 'stations') { if (!stations.value.length) { mkTable.dropUndo(); return } mkTable.stLayer.clear() }
+  else { if (!points.value.length) { mkTable.dropUndo(); return } mkTable.ptLayer.clear() }
+  syncMarkers()
+}
+function mkDelRow(id) {
+  mkTable.pushUndo()
+  if (mkTab.value === 'traj') mkTable.wpRemove(mkTrajId.value, id)
+  else if (mkTab.value === 'stations') mkTable.stLayer.remove(id)
+  else mkTable.ptLayer.remove(id)
+  syncMarkers()
+}
+function mkNewTraj(kind) { mkTable.pushUndo(); newTraj(kind); mkTrajId.value = activeTraj.value; syncMarkers() }
+// 浮窗拖拽/缩放（复用性能表的会话与坐标系换算 g3Size / perfDragSession）
+function mkDragMove(e) {
+  if (e.button !== 0 || (e.target.closest && e.target.closest('.csx, .ptb, .mk-tab, .mk-trajchip, input, select, label'))) return
+  e.preventDefault()
+  const sx = e.clientX, sy = e.clientY, o = { ...mkWin.value }
+  perfDragSession((ev) => {
+    const { w: vw, h: vh } = g3Size()
+    const x = Math.max(-o.w + 96, Math.min(vw - 48, o.x + (ev.clientX - sx)))
+    const y = Math.max(0, Math.min(vh - 32, o.y + (ev.clientY - sy)))
+    mkWin.value = { ...mkWin.value, x, y }
+  })
+}
+function mkDragResize(e, dir = 'se') {
+  if (e.button !== 0) return
+  e.preventDefault(); e.stopPropagation()
+  const sx = e.clientX, sy = e.clientY, o = { ...mkWin.value }
+  const minW = 320, minH = 220
+  const E = dir.includes('e'), W = dir.includes('w'), S = dir.includes('s'), N = dir.includes('n')
+  perfDragSession((ev) => {
+    const { w: vw, h: vh } = g3Size()
+    let x = o.x, y = o.y, w = o.w, h = o.h
+    const dx = ev.clientX - sx, dy = ev.clientY - sy
+    if (E) w = Math.max(minW, Math.min(o.w + dx, vw - o.x - 6))
+    if (S) h = Math.max(minH, Math.min(o.h + dy, vh - o.y - 6))
+    if (W) { const right = o.x + o.w; x = Math.max(6, Math.min(o.x + dx, right - minW)); w = right - x }
+    if (N) { const bottom = o.y + o.h; y = Math.max(0, Math.min(o.y + dy, bottom - minH)); h = bottom - y }
+    mkWin.value = { ...mkWin.value, x, y, w, h }
+  })
+}
 
 // 时间读数（双行定宽块，DAW 范式：主行=时刻/偏移量，副行=日期时间；tabular-nums 防拖动抖动）
 const timeParts = computed(() => {
@@ -2490,6 +2719,7 @@ onMounted(async () => {
   scene.setOnHover((ll) => { cursor.ll = ll })
   scene.setOnRightClick(onMapRightClick)
   scene.setOnBeamDrag(grd.beamDrag)   // 拖拽波束（GRD boresight 中心）
+  scene.setOnLabelDrag(grd.labelDrag); scene.setLabelDragMode(grd.dragLabel.value)   // 拖拽等值线数值标签（沿线滑动）
   scene.setOnPolyDraw(onPolyDraw); scene.setPolyDrawMode(!!polyDrawId.value)   // Polygon 绘制：左键按住沿路径连续加点
   // 缩放进度条（底部状态栏）：注册当前页缩放能力，球体滚轮缩放回填进度条 + 记忆
   scene.setOnZoom((t) => { if (!flatView.value) { zoom.value = t; saveView() } })
@@ -3033,7 +3263,7 @@ onBeforeUnmount(() => {
                 <label v-for="b in grd.filteredBeams()" :key="b.seq" class="brow" :class="{ on: grd.isBeamOn(b.i) }">
                   <input type="checkbox" :checked="grd.isBeamOn(b.i)" @change="grd.toggleBeam(b.i)" />
                   <span class="bseq">{{ b.seq }}</span>
-                  <input class="bnm-in" :value="b.label" title="编辑波束名（地图标注同步用此名）" @click.stop @keydown.enter="e => e.target.blur()" @change="e => grd.renameBeam(b.i, e.target.value)" />
+                  <input class="bnm-in" :value="grdEditBeam === grd.active.value + '#' + b.i ? grdEditBeamVal : b.label" title="编辑波束名（地图标注同步用此名）" @click.stop @focus="startRenameBeam(b)" @input="e => inputRenameBeam(b, e.target.value)" @keydown.enter="e => e.target.blur()" @blur="commitRenameBeam(b)" />
                   <span v-if="grd.activeBeams().length > 1" class="ic del" :title="`删除该波束（峰值 ${b.peakDb.toFixed(1)} dB，可重新导入原 GRD 恢复）`" @click.stop.prevent="grd.deleteBeam(b.i)"><Icon name="x" :size="11" /></span>
                   <span v-else class="bpk" :title="`峰值 ${b.peakDb.toFixed(1)} dB`">{{ b.peakDb.toFixed(1) }}</span>
                 </label>
@@ -3053,7 +3283,11 @@ onBeforeUnmount(() => {
                 <input class="lvclr" type="color" title="填充色" :value="grdLvHex(L.color)" @input="e => setLevelColor(i, e)" />
                 <input class="lvclr" type="color" title="线色" :value="grdLvHex(L.lineColor)" @input="e => setLineColor(i, e)" />
                 <input class="lvval" type="number" step="0.5" v-model.number.lazy="L.v" />
-                <span class="lvabs">{{ (grdS.ctype === 'rel' ? (grd.antMeta().peakDb + L.v) : L.v).toFixed(1) }}</span>
+                <input class="lvabs lvname" :class="{ named: !!L.name }"
+                  :value="grdEditLv === String(i) ? grdEditLvVal : (L.name || lvDefaultText(L))"
+                  :title="L.name ? '自定义名称（等值线数值标签用此名，清空恢复电平值）' : '点击自定义名称（默认显示电平值，作等值线数值标签）'"
+                  @click.stop @focus="startRenameLv(i, L)" @input="e => inputRenameLv(i, e.target.value)"
+                  @keydown.enter="e => e.target.blur()" @blur="commitRenameLv(i)" />
                 <span class="ic del" title="删除该档" @click="grd.removeLevel(i)"><Icon name="x" :size="11" /></span>
               </div>
               <div class="glvadd" @click="grd.addLevel()"><Icon name="plus" :size="11" /> 添加电平</div>
@@ -3096,14 +3330,17 @@ onBeforeUnmount(() => {
           <div class="sec">
             <div class="sect"><span>显示选项</span><span class="editing" title="对所有选中天线生效">全局</span></div>
             <label class="chk2"><input type="checkbox" v-model="grdS.showName" /><span>显示天线名</span></label>
-            <div v-if="grdS.showName" class="srow"><label>字号</label><input class="rng" type="range" min="2" max="32" step="0.5" v-model.number="grdS.nameSize" /><span class="u">{{ grdS.nameSize }}</span></div>
+            <div v-if="grdS.showName" class="srow"><label>字号</label><input class="rng" type="range" min="0.5" max="32" step="0.5" v-model.number="grdS.nameSize" /><span class="u">{{ grdS.nameSize }}</span></div>
             <label class="chk2"><input type="checkbox" v-model="grdS.showBore" /><span>显示波束中心</span></label>
             <div v-if="grdS.showBore" class="srow"><label>大小</label><input class="rng" type="range" min="0.5" max="12" step="0.5" v-model.number="grdS.boreSize" /><span class="u">{{ grdS.boreSize }}</span></div>
             <label class="chk2"><input type="checkbox" v-model="grdS.showPeak" /><span>显示波束中心峰值</span></label>
-            <div v-if="grdS.showPeak" class="srow"><label>字号</label><input class="rng" type="range" min="2" max="30" step="0.5" v-model.number="grdS.peakSize" /><span class="u">{{ grdS.peakSize }}</span></div>
+            <div v-if="grdS.showPeak" class="srow"><label>字号</label><input class="rng" type="range" min="0.5" max="30" step="0.5" v-model.number="grdS.peakSize" /><span class="u">{{ grdS.peakSize }}</span></div>
             <label class="chk2"><input type="checkbox" v-model="grdS.showVal" /><span>显示数值标签</span></label>
-            <div v-if="grdS.showVal" class="srow"><label>字号</label><input class="rng" type="range" min="2" max="30" step="0.5" v-model.number="grdS.valSize" /><span class="u">{{ grdS.valSize }}</span></div>
-            <div class="tip">数值标签按各天线「电平」档显示（相对峰值模式标档值，绝对模式标绝对 dB），需开启「显示等值线」。</div>
+            <div v-if="grdS.showVal" class="srow"><label>字号</label><input class="rng" type="range" min="0.5" max="30" step="0.5" v-model.number="grdS.valSize" /><span class="u">{{ grdS.valSize }}</span></div>
+            <div v-if="grdS.showVal" class="srow" style="justify-content:flex-start">
+              <span class="lnk" :class="{ on: grd.dragLabel.value }" title="开启后在地图上按住拖动数值标签，可沿等值线滑动其位置（松手保存；再点关闭）" @click="grd.setDragLabel(!grd.dragLabel.value)"><Icon v-if="grd.dragLabel.value" name="check" :size="10" /> 拖动标签位置</span>
+            </div>
+            <div class="tip">数值标签文字取「电平」表灰色列（默认电平值，可改为自定义名）；开启「拖动标签位置」后可在图上把标签沿等值线拖动。需开启「显示等值线」。</div>
           </div>
         </template>
 
@@ -3198,7 +3435,7 @@ onBeforeUnmount(() => {
         <div v-show="shellUi.side === 'markers'" class="sview">
         <div class="cov-side mk-side docked">
         <div class="sec">
-          <div class="sect"><span>点标记</span><span class="eyebtn" :class="{ off: !showPtLayer }" :title="showPtLayer ? '隐藏点标记（数据保留）' : '显示点标记'" @click="togglePtLayer"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M1 8C3 4.2 13 4.2 15 8C13 11.8 3 11.8 1 8Z" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="8" cy="8" r="2.1" fill="currentColor"/><path v-if="!showPtLayer" d="M3 13 L13 3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></span></div>
+          <div class="sect"><span>点标记</span><span class="eyebtn" :class="{ off: !showPtLayer }" :title="showPtLayer ? '隐藏点标记（数据保留）' : '显示点标记'" @click="togglePtLayer"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M1 8C3 4.2 13 4.2 15 8C13 11.8 3 11.8 1 8Z" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="8" cy="8" r="2.1" fill="currentColor"/><path v-if="!showPtLayer" d="M3 13 L13 3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></span><span class="lnk" title="打开点标记批量表格（Excel：增删改 / 批量粘贴导入）" @click="openMkTable('points')">表格</span><span v-if="points.length" class="lnk" :class="{ on: mkEditId === 'points' }" :title="mkEditId === 'points' ? '完成，退出拖动' : '在平面图上拖动圆点调整点标记位置'" @click="mkEditToggle('points')">{{ mkEditId === 'points' ? '完成调整' : '调整位置' }}</span></div>
           <div class="srow"><label>纬度</label><input class="ci" v-model="ptLat" placeholder="-90 ~ 90" /></div>
           <div class="srow"><label>经度</label><input class="ci" v-model="ptLon" placeholder="-180 ~ 180" /><span class="addb" @click="addPointInput">添加</span></div>
           <div class="tip">右键地图也可直接标点</div>
@@ -3211,7 +3448,7 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="sec">
-          <div class="sect"><span>地面站</span><span class="eyebtn" :class="{ off: !showStLayer }" :title="showStLayer ? '隐藏地面站（数据保留）' : '显示地面站'" @click="toggleStLayer"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M1 8C3 4.2 13 4.2 15 8C13 11.8 3 11.8 1 8Z" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="8" cy="8" r="2.1" fill="currentColor"/><path v-if="!showStLayer" d="M3 13 L13 3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></span></div>
+          <div class="sect"><span>地面站</span><span class="eyebtn" :class="{ off: !showStLayer }" :title="showStLayer ? '隐藏地面站（数据保留）' : '显示地面站'" @click="toggleStLayer"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M1 8C3 4.2 13 4.2 15 8C13 11.8 3 11.8 1 8Z" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="8" cy="8" r="2.1" fill="currentColor"/><path v-if="!showStLayer" d="M3 13 L13 3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></span><span class="lnk" title="打开地面站批量表格（Excel：增删改 / 批量粘贴导入）" @click="openMkTable('stations')">表格</span><span v-if="stations.length" class="lnk" :class="{ on: mkEditId === 'stations' }" :title="mkEditId === 'stations' ? '完成，退出拖动' : '在平面图上拖动图标调整地面站位置'" @click="mkEditToggle('stations')">{{ mkEditId === 'stations' ? '完成调整' : '调整位置' }}</span></div>
           <div class="srow"><label>纬度</label><input class="ci" v-model="stLat" placeholder="-90 ~ 90" /></div>
           <div class="srow"><label>经度</label><input class="ci" v-model="stLon" placeholder="-180 ~ 180" /></div>
           <div class="srow"><label>名称</label><input class="ci" v-model="stName" placeholder="如 北京站" /><span class="addb" @click="addStation">添加</span></div>
@@ -3228,6 +3465,7 @@ onBeforeUnmount(() => {
 
         <div class="sec">
           <div class="sect"><span>轨迹</span><span class="eyebtn" :class="{ off: !showTrajLayer }" :title="showTrajLayer ? '隐藏航迹（数据保留）' : '显示航迹'" @click="toggleTrajLayer"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M1 8C3 4.2 13 4.2 15 8C13 11.8 3 11.8 1 8Z" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="8" cy="8" r="2.1" fill="currentColor"/><path v-if="!showTrajLayer" d="M3 13 L13 3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></span>
+            <span class="lnk" title="打开航迹批量表格（Excel：逐航迹增删改航点 / 批量粘贴导入）" @click="openMkTable('traj')">表格</span>
             <span class="lnk" @click="newTraj('sea')">+航行</span>
             <span class="lnk" @click="newTraj('flight')">+飞行</span>
           </div>
@@ -3237,10 +3475,11 @@ onBeforeUnmount(() => {
               <span class="tk" :class="t.kind"></span>
               <input class="tni" :value="t.name" @input="e => setTrajName(t.id, e.target.value)" />
               <span class="tsel" :class="{ on: activeTraj === t.id }" @click="activeTraj = t.id">{{ activeTraj === t.id ? '编辑中' : '编辑' }}</span>
+              <span v-if="t.pts.length" class="tsel" :class="{ on: mkEditId === t.id }" :title="mkEditId === t.id ? '完成，退出拖动' : '在平面图上拖动航点圆点调整位置'" @click="mkEditToggle(t.id)">{{ mkEditId === t.id ? '完成' : '调点' }}</span>
               <span class="del" @click="removeTraj(t.id)"><Icon name="x" :size="11" /></span>
             </div>
             <div class="twp">
-              <span v-for="(p, i) in t.pts" :key="i" class="wp">{{ p.lat.toFixed(1) }},{{ p.lon.toFixed(1) }}<span class="wdel" @click="removeWaypoint(t, i)"><Icon name="x" :size="10" /></span></span>
+              <span v-for="(p, i) in t.pts" :key="i" class="wp">{{ p.lat == null ? '—' : p.lat.toFixed(1) }},{{ p.lon == null ? '—' : p.lon.toFixed(1) }}<span class="wdel" @click="removeWaypoint(t, i)"><Icon name="x" :size="10" /></span></span>
               <span v-if="!t.pts.length" class="empty">无航点</span>
             </div>
           </div>
@@ -3403,6 +3642,12 @@ onBeforeUnmount(() => {
       <span class="lnk" @click="polyMoveStop">完成</span>
     </div>
 
+    <!-- 标记「调整点位置」横幅：拖动平面图上的圆点改坐标（点标记 / 地面站 / 航迹航点共用） -->
+    <div v-if="mkEditId" class="traj-banner">
+      正在调整{{ mkEditLabel }}位置 · 在平面图上拖动圆点改坐标
+      <span class="lnk" @click="mkEditStop">完成</span>
+    </div>
+
     <!-- 地图右键上下文菜单（3D / 平面图共用）；点击空白处或再次右键关闭 -->
     <template v-if="ctxMenu">
       <div class="ctx-mask" @click="closeCtx" @contextmenu.prevent="closeCtx"></div>
@@ -3434,13 +3679,13 @@ onBeforeUnmount(() => {
           <template v-if="grdApiOk">
             <div class="sect"><span>覆盖分析</span></div>
             <label class="chk2"><input type="checkbox" v-model="grdS.showName" /><span>显示天线名</span></label>
-            <div v-if="grdS.showName" class="srow"><label>字号</label><input class="rng" type="range" min="2" max="32" step="0.5" v-model.number="grdS.nameSize" /><span class="u">{{ grdS.nameSize }}</span></div>
+            <div v-if="grdS.showName" class="srow"><label>字号</label><input class="rng" type="range" min="0.5" max="32" step="0.5" v-model.number="grdS.nameSize" /><span class="u">{{ grdS.nameSize }}</span></div>
             <label class="chk2"><input type="checkbox" v-model="grdS.showBore" /><span>显示波束中心</span></label>
             <div v-if="grdS.showBore" class="srow"><label>大小</label><input class="rng" type="range" min="0.5" max="12" step="0.5" v-model.number="grdS.boreSize" /><span class="u">{{ grdS.boreSize }}</span></div>
             <label class="chk2"><input type="checkbox" v-model="grdS.showPeak" /><span>显示波束中心峰值</span></label>
-            <div v-if="grdS.showPeak" class="srow"><label>字号</label><input class="rng" type="range" min="2" max="30" step="0.5" v-model.number="grdS.peakSize" /><span class="u">{{ grdS.peakSize }}</span></div>
+            <div v-if="grdS.showPeak" class="srow"><label>字号</label><input class="rng" type="range" min="0.5" max="30" step="0.5" v-model.number="grdS.peakSize" /><span class="u">{{ grdS.peakSize }}</span></div>
             <label class="chk2"><input type="checkbox" v-model="grdS.showVal" /><span>显示数值标签</span></label>
-            <div v-if="grdS.showVal" class="srow"><label>字号</label><input class="rng" type="range" min="2" max="30" step="0.5" v-model.number="grdS.valSize" /><span class="u">{{ grdS.valSize }}</span></div>
+            <div v-if="grdS.showVal" class="srow"><label>字号</label><input class="rng" type="range" min="0.5" max="30" step="0.5" v-model.number="grdS.valSize" /><span class="u">{{ grdS.valSize }}</span></div>
           </template>
           <template v-if="covApiOk">
             <div class="sect"><span>覆盖图（GXT）</span></div>
@@ -3562,6 +3807,78 @@ onBeforeUnmount(() => {
       <div class="prh prh-ne" @mousedown="perfDragResize($event, 'ne')"></div>
       <div class="prh prh-sw" @mousedown="perfDragResize($event, 'sw')"></div>
       <div class="perf-rsz" title="拖拽缩放窗口" @mousedown="perfDragResize($event, 'se')"></div>
+    </div>
+
+    <!-- 标记批量表格（Excel 模块，仿性能表浮窗）：点标记 / 地面站 / 航迹 三分页，Excel 式框选·键盘导航·复制·编辑·区域粘贴，支持批量导入 -->
+    <div v-if="mkTableOpen" class="perf-win mk-win" :style="{ left: mkWin.x + 'px', top: mkWin.y + 'px', width: mkWin.w + 'px', height: mkWin.h + 'px' }">
+      <div class="perf-h" @mousedown="mkDragMove">
+        <span class="perf-t">标记批量表格</span>
+        <span class="mk-tabs">
+          <span class="mk-tab" :class="{ on: mkTab === 'points' }" @click="mkSetTab('points')">点标记</span>
+          <span class="mk-tab" :class="{ on: mkTab === 'stations' }" @click="mkSetTab('stations')">地面站</span>
+          <span class="mk-tab" :class="{ on: mkTab === 'traj' }" @click="mkSetTab('traj')">航迹</span>
+        </span>
+        <span class="csx" @click="closeMkTable"><Icon name="x" :size="12" /></span>
+      </div>
+
+      <!-- 工具栏：撤销/重做/增加/粘贴/清空；航迹分页额外显示航迹选择条 + 新建 -->
+      <div class="pin-h mk-toolbar">
+        <span class="ptb" :class="{ dis: !mkTable.canUndo.value }" title="撤销 (Ctrl+Z)" @click="mkUndo"><Icon name="undo-2" :size="12" /></span>
+        <span class="ptb" :class="{ dis: !mkTable.canRedo.value }" title="重做 (Ctrl+Y)" @click="mkRedo"><Icon name="redo-2" :size="12" /></span>
+        <span class="ptb" title="在选中行下方增加一行（直接键入或粘贴）" @click="mkAddRow"><Icon name="plus" :size="12" /> 增加</span>
+        <span class="ptb" title="从剪贴板批量追加（约定末两列 = 经度、纬度；地面站首列可为名称）" @click="mkPaste"><Icon name="clipboard" :size="12" /> 粘贴</span>
+        <span class="ptb" title="清空当前分页列表" @click="mkClear">清空</span>
+        <template v-if="mkTab === 'traj'">
+          <span class="mk-sep"></span>
+          <span v-for="t in trajectories" :key="t.id" class="mk-trajchip" :class="{ on: mkTrajId === t.id, flight: t.kind === 'flight', sea: t.kind !== 'flight' }" :title="t.kind === 'flight' ? '飞行航迹' : '航行航迹'" @click="mkTrajId = t.id">{{ t.name || '航迹' }}</span>
+          <span class="ptb" title="新建航行航迹" @click="mkNewTraj('sea')"><Icon name="plus" :size="12" /> 航行</span>
+          <span class="ptb" title="新建飞行航迹" @click="mkNewTraj('flight')"><Icon name="plus" :size="12" /> 飞行</span>
+        </template>
+        <span class="perf-cnt">{{ mkCount }} 行</span>
+      </div>
+
+      <!-- Excel 网格：三分页各一张，v-show 切换（实例常驻，选区/编辑态各自保留）。拖拽框选 / Shift 扩选 / 方向键导航 / Ctrl+C 复制 / 双击·键入编辑 / Ctrl+V 区域粘贴 / Del 清除 -->
+      <template v-for="p in mkPanes" :key="p.tab">
+        <div v-show="mkTab === p.tab" class="pin-body mk-body" :ref="el => p.grid.bodyEl.value = el" tabindex="0" @keydown="p.grid.gridKey" @click="p.grid.focusGrid">
+          <table class="perf-tbl grid">
+            <thead>
+              <tr>
+                <th v-for="c in p.cols" :key="c.key" :class="{ n: c.num }">{{ c.label }}</th>
+                <th class="th-act"></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(r, ri) in p.rows" :key="r.id">
+                <td v-for="(c, ci) in p.cols" :key="c.key"
+                    :class="{ n: c.num, ed: true, sel: p.grid.inSel(ri, ci), active: p.grid.isActive(ri, ci), editing: p.grid.isEdit(ri, ci) }"
+                    @mousedown="p.grid.cellDown($event, ri, ci)" @mouseenter="p.grid.cellEnter(ri, ci)" @dblclick="p.grid.tryEdit(ri, ci, null)">
+                  <template v-if="p.grid.isActive(ri, ci) && p.grid.colEditable(c)">
+                    <span class="pcell-ghost">{{ r[c.key] == null ? '' : r[c.key] }}</span>
+                    <input :ref="el => p.grid.editEl.value = el" class="pcell" :class="{ n: c.num, editing: p.grid.isEdit(ri, ci) }" tabindex="-1"
+                           @input="p.grid.onActiveInput" @compositionstart="p.grid.onActiveCompStart"
+                           @blur="p.grid.onActiveBlur" @paste="p.grid.onActivePaste($event, r, c.key)"
+                           @copy="p.grid.onActiveClip" @cut="p.grid.onActiveClip" />
+                  </template>
+                  <template v-else>{{ r[c.key] == null ? '' : r[c.key] }}</template>
+                </td>
+                <td class="td-act"><span class="del" title="删除该行" @click="mkDelRow(r.id)"><Icon name="x" :size="11" /></span></td>
+              </tr>
+              <tr v-if="!p.rows.length">
+                <td class="pin-empty" :colspan="p.cols.length + 1">{{ p.tab === 'traj' && !mkCurTraj() ? '请在上方选择或新建一条航迹' : '暂无数据 —— 点「增加」逐行键入，或复制 Excel 区域后点「粘贴」批量导入' }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </template>
+
+      <div class="prh prh-n" @mousedown="mkDragResize($event, 'n')"></div>
+      <div class="prh prh-s" @mousedown="mkDragResize($event, 's')"></div>
+      <div class="prh prh-w" @mousedown="mkDragResize($event, 'w')"></div>
+      <div class="prh prh-e" @mousedown="mkDragResize($event, 'e')"></div>
+      <div class="prh prh-nw" @mousedown="mkDragResize($event, 'nw')"></div>
+      <div class="prh prh-ne" @mousedown="mkDragResize($event, 'ne')"></div>
+      <div class="prh prh-sw" @mousedown="mkDragResize($event, 'sw')"></div>
+      <div class="perf-rsz" title="拖拽缩放窗口" @mousedown="mkDragResize($event, 'se')"></div>
     </div>
 
     <!-- 性能表选项弹窗（对标 SATSOFT Performance Table Options）：显示列 / 过滤 / 波束类型 / 计算口径 / 指向误差 -->
@@ -3894,6 +4211,7 @@ onBeforeUnmount(() => {
 .nseg .sg + .sg { border-left: 1px solid var(--border); }
 .sect { display: flex; align-items: center; margin-bottom: 6px; color: var(--text-muted); }
 .sect .lnk { margin-left: auto; color: var(--accent); cursor: pointer; font-size: 11.5px; }
+.sect .lnk.on { font-weight: 600; text-decoration: underline; }
 /* 分区标题旁的「小眼睛」显隐开关：睁眼=显示，闭眼（带斜杠/淡出）=隐藏 */
 .eyebtn { display: inline-flex; align-items: center; margin-left: 7px; cursor: pointer; color: var(--text-muted); }
 .eyebtn:hover { color: var(--text); }
@@ -3961,6 +4279,20 @@ onBeforeUnmount(() => {
 .ptb.on { color: var(--accent); border-color: var(--accent); }
 .perf-q { flex: 1; min-width: 110px; border: 1px solid var(--border); background: var(--bg); padding: 2px 8px; font-size: 11.5px; color: var(--text); border-radius: 4px; outline: none; }
 .perf-cnt { font-size: 10.5px; color: var(--text-faint); font-family: var(--font-mono); white-space: nowrap; }
+
+/* —— 标记批量表格浮窗（复用 perf-win 骨架，加分页 tab / 航迹选择条；正文 3 张网格 v-show 切换） —— */
+.mk-win { z-index: 61; }
+.mk-tabs { display: inline-flex; border: 1px solid var(--border); border-radius: 5px; overflow: hidden; flex: none; }
+.mk-tab { padding: 2px 12px; font-size: 11.5px; color: var(--text-muted); cursor: pointer; user-select: none; }
+.mk-tab + .mk-tab { border-left: 1px solid var(--border); }
+.mk-tab:hover { color: var(--text); }
+.mk-tab.on { background: var(--accent); color: #fff; }
+.mk-toolbar .mk-sep { width: 1px; align-self: stretch; margin: 2px 3px; background: var(--border); }
+.mk-trajchip { font-size: 11px; color: var(--text-muted); border: 1px solid var(--border); border-left-width: 3px; border-radius: 4px; padding: 1px 8px; cursor: pointer; white-space: nowrap; max-width: 130px; overflow: hidden; text-overflow: ellipsis; }
+.mk-trajchip:hover { color: var(--text); }
+.mk-trajchip.sea { border-left-color: #ff6a4a; }
+.mk-trajchip.flight { border-left-color: #5ad1ff; }
+.mk-trajchip.on { color: var(--text); background: color-mix(in srgb, var(--accent) 14%, transparent); border-color: var(--accent); }
 
 /* —— 上：城市输入区（高度由 JS 控制，可经中缝拖拽） —— */
 .perf-input { flex: none; display: flex; flex-direction: column; min-height: 0; }
@@ -4088,6 +4420,11 @@ onBeforeUnmount(() => {
 .glvrow .lvclr { width: 20px; height: 18px; padding: 0; border: 1px solid var(--border); background: none; cursor: pointer; flex: none; }
 .glvrow .lvval { width: 66px; flex: none; background: var(--bg); border: 1px solid var(--border); color: var(--text); font-size: 11.5px; padding: 2px 6px; font-family: var(--font-mono); }
 .glvrow .lvabs { flex: 1; color: var(--text-faint); font-family: var(--font-mono); font-size: 11px; }
+/* 电平灰色列改可编辑名：默认透明看似纯文字，hover/focus 现边框；有自定义名时字色转常规、示意已命名 */
+.glvrow .lvname { min-width: 0; border: 1px solid transparent; background: transparent; padding: 2px 5px; border-radius: 2px; outline: none; }
+.glvrow .lvname:hover { border-color: var(--border); }
+.glvrow .lvname:focus { border-color: var(--accent); background: var(--bg); color: var(--text); }
+.glvrow .lvname.named { color: var(--text); }
 .glvrow .ic.del { cursor: pointer; color: var(--text-faint); }
 .glvrow .ic.del:hover { color: #d66; }
 .glvadd { padding: 4px 7px; text-align: center; color: var(--text-muted); cursor: pointer; font-size: 11.5px; border-top: 1px solid var(--border); }
