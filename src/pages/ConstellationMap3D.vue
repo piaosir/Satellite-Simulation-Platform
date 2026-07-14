@@ -1832,6 +1832,21 @@ function polyVertsEdit(pg, e) {
   if (pts.length < 3) { appAlert('多边形至少需要 3 个顶点'); return }
   pg.pts = pts; polyRefresh()
 }
+// 复制顶点为「两列」：逐行 经度<Tab>纬度——粘到 Excel / 表格会自动落进经度、纬度两个单元格（普通逗号复制只会挤进一格）。
+function copyPolyVerts(pg) {
+  if (!pg.pts.length) { appAlert('该多边形还没有顶点'); return }
+  const text = pg.pts.map((p) => `${(+p[0]).toFixed(3)}\t${(+p[1]).toFixed(3)}`).join('\n')
+  perfWriteClipboard(text)
+}
+// 文本框框选复制：把选中内容每行的「经度, 纬度」逗号分隔改写成 Tab（两列）写入剪贴板——显示仍是逗号（好读），
+// 复制出去即两列，粘到 Excel 自动分成经度/纬度两列。未选中则走默认复制。
+function onVertsCopy(e) {
+  const ta = e.target
+  const sel = ta.value.substring(ta.selectionStart, ta.selectionEnd)
+  if (!sel || !e.clipboardData) return
+  const two = sel.split(/\r?\n/).map((line) => line.replace(/\s*,\s*/, '\t')).join('\n')
+  e.clipboardData.setData('text/plain', two); e.preventDefault()
+}
 // 导出显示中的多边形：GXT=一个 diagram、每个多边形一条闭合等值线（等值线值=该多边形的数值）；
 // KML=每个多边形一个 Placemark（保留名称/数值/颜色）。均复用统一的系统保存对话框。
 async function exportPolys(fmt) {
@@ -3153,7 +3168,10 @@ onBeforeUnmount(() => {
               <span class="opb" title="按下方「扩/缩幅度」外扩一圈，生成新多边形（原多边形保留）" @click="polyOffset(pg, 1)">扩大</span>
               <span class="opb" title="按下方「扩/缩幅度」内收一圈，生成新多边形（原多边形保留）" @click="polyOffset(pg, -1)">缩小</span>
             </div>
-            <textarea v-if="polyVertsOpen === pg.id" class="plgta" :value="polyVertsText(pg)" spellcheck="false" placeholder="每行一个顶点：经度, 纬度" @change="polyVertsEdit(pg, $event)"></textarea>
+            <div v-if="polyVertsOpen === pg.id" class="plgvt">
+              <textarea class="plgta" :value="polyVertsText(pg)" spellcheck="false" placeholder="每行一个顶点：经度, 纬度" @copy="onVertsCopy" @change="polyVertsEdit(pg, $event)"></textarea>
+              <span class="plgcp" title="复制全部顶点为两列（经度 ⇥ 纬度）——粘到 Excel / 表格自动分成经度、纬度两列" @click="copyPolyVerts(pg)"><Icon name="copy" :size="11" /> 复制两列</span>
+            </div>
           </div>
         </div>
 
@@ -4519,6 +4537,11 @@ onBeforeUnmount(() => {
 .opb.on { border-color: color-mix(in srgb, var(--accent) 60%, transparent); color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); font-weight: 600; }
 .plgta { display: block; width: 100%; box-sizing: border-box; margin-top: 6px; min-height: 84px; resize: vertical; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-family: var(--font-mono); font-size: 11px; padding: 4px 6px; outline: none; }
 .plgta:focus { border-color: var(--accent); }
+/* 顶点表：文本框 + 右下「复制两列」按钮（Tab 分隔，粘到 Excel 自动分成经度/纬度两列） */
+.plgvt { margin-top: 6px; display: flex; flex-direction: column; }
+.plgvt .plgta { margin-top: 0; }
+.plgcp { align-self: flex-end; display: inline-flex; align-items: center; gap: 4px; margin-top: 5px; padding: 2px 9px; border: 1px solid var(--border); border-radius: 2px; color: var(--text-muted); font-size: 11px; cursor: pointer; white-space: nowrap; }
+.plgcp:hover { border-color: var(--accent); color: var(--text); }
 .expb2 { flex: 1; text-align: center; border: 1px solid var(--border); color: var(--text-muted); padding: 3px 0; cursor: pointer; font-size: 11.5px; }
 .expb2:hover { border-color: var(--accent); color: var(--text); }
 .csfoot { margin-top: auto; display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--border); }
