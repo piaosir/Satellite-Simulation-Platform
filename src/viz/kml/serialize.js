@@ -21,39 +21,35 @@ function ringCoords(pts) {
   return all.map((p) => `${Number(p[0]).toFixed(6)},${Number(p[1]).toFixed(6)},0`).join(' ')
 }
 
-// Polygon（协调区多边形）导出：polys=[{ name, value, color:'#rrggbb', pts:[[lon,lat]...] }]。
+// Polygon（协调区多边形）→「样式定义 + Placemark 列表」片段。polys=[{ name, value, color:'#rrggbb', pts:[[lon,lat]...] }]。
+// idPrefix 让 combined 场景（与覆盖等值线同 Document）样式 id 不与覆盖档位样式撞车。
 // 每个多边形一个 Placemark：名称+数值进 name/description（数值含义与单位由协调材料约定，软件不做定义），
 // 按多边形自身颜色描边 + 浅填充。忽略顶点数 <3 的记录。
-export function serializePolysKml(polys = [], opts = {}) {
-  const docName = opts.name || 'Polygon'
-  const out = [
-    '<?xml version="1.0" encoding="UTF-8"?>',
-    '<kml xmlns="http://www.opengis.net/kml/2.2">',
-    '<Document>',
-    `<name>${esc(docName)}</name>`
-  ]
-  polys.forEach((pg, i) => {
+function polyFragment(polys = [], idPrefix = 'pg') {
+  const styleDefs = [], placemarks = []
+  ;(polys || []).forEach((pg, i) => {
     const pts = pg && pg.pts
     if (!pts || pts.length < 3) return
+    const sid = idPrefix + i
     const m = /^#?([0-9a-fA-F]{6})$/.exec(String(pg.color || ''))
     const rgb = m ? m[1].toLowerCase() : 'ff5a5a'
     const hasVal = pg.value != null && String(pg.value).trim() !== ''
     const name = [pg.name, hasVal ? pg.value : ''].filter((x) => x != null && String(x).trim() !== '').join('：')
-    out.push(
-      `<Style id="pg${i}">`,
+    styleDefs.push(
+      `<Style id="${sid}">`,
       `<LineStyle><color>${kmlColor(rgb, 'ff')}</color><width>2</width></LineStyle>`,
       `<PolyStyle><color>${kmlColor(rgb, '33')}</color><fill>1</fill><outline>1</outline></PolyStyle>`,
-      '</Style>',
-      '<Placemark>',
-      `<name>${esc(name || 'Polygon')}</name>`
+      '</Style>'
     )
     const desc = []
     if (hasVal) desc.push('数值：' + pg.value)
     if (pg.satName != null && String(pg.satName).trim() !== '') desc.push('卫星：' + pg.satName)
     if (pg.satLon != null && String(pg.satLon).trim() !== '') desc.push('轨道位置：' + pg.satLon + '°E')
-    if (desc.length) out.push(`<description>${esc(desc.join('　'))}</description>`)
-    out.push(
-      `<styleUrl>#pg${i}</styleUrl>`,
+    placemarks.push(
+      '<Placemark>',
+      `<name>${esc(name || 'Polygon')}</name>`,
+      ...(desc.length ? [`<description>${esc(desc.join('　'))}</description>`] : []),
+      `<styleUrl>#${sid}</styleUrl>`,
       '<Polygon>',
       '<tessellate>1</tessellate>',
       '<altitudeMode>clampToGround</altitudeMode>',
@@ -62,8 +58,22 @@ export function serializePolysKml(polys = [], opts = {}) {
       '</Placemark>'
     )
   })
-  out.push('</Document>', '</kml>')
-  return out.join('\r\n')
+  return { styleDefs, placemarks }
+}
+
+// Polygon 单独导出：每个多边形一个 Placemark（保留名称/数值/颜色），直接挂在 Document 下。
+export function serializePolysKml(polys = [], opts = {}) {
+  const { styleDefs, placemarks } = polyFragment(polys)
+  return [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<kml xmlns="http://www.opengis.net/kml/2.2">',
+    '<Document>',
+    `<name>${esc(opts.name || 'Polygon')}</name>`,
+    ...styleDefs,
+    ...placemarks,
+    '</Document>',
+    '</kml>'
+  ].join('\r\n')
 }
 
 export function serializeKml(beams = [], opts = {}) {
@@ -134,6 +144,10 @@ export function serializeKml(beams = [], opts = {}) {
     satFolders.push('<Folder>', `<name>${esc(satName)}</name>`, ...beamFolders, '</Folder>')
   }
 
+  // 协调区多边形（可选）：与覆盖等值线合到同一 Document，按各自颜色/名称渲染（所见即所得）。
+  const pf = polyFragment(opts.polys || [], 'pg')
+  const polyFolderLines = pf.placemarks.length ? ['<Folder>', '<name>协调区多边形</name>', ...pf.placemarks, '</Folder>'] : []
+
   const out = [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<kml xmlns="http://www.opengis.net/kml/2.2">',
@@ -141,7 +155,9 @@ export function serializeKml(beams = [], opts = {}) {
     `<name>${esc(docName)}</name>`,
     '<Style id="boreStyle"><IconStyle><Icon><href>http://maps.google.com/mapfiles/kml/shapes/target.png</href></Icon></IconStyle></Style>',
     ...styleDefs,
+    ...pf.styleDefs,
     ...satFolders,
+    ...polyFolderLines,
     '</Document>',
     '</kml>'
   ]

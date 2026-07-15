@@ -456,6 +456,10 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     ipcMain.handle('share:delete', async (_e, myId, id) => {
       try { return await share.remove(myId, id) } catch (err) { return { ok: false, error: err.message || String(err) } }
     })
+    // 发送到小程序：上传当前绘制状态快照到 COS gxt/<key>.json，返回 { ok, key }
+    ipcMain.handle('share:gxtSnapshot', async (_e, payload) => {
+      try { return await share.putSnapshot(payload) } catch (err) { return { ok: false, error: err.message || String(err) } }
+    })
   }
 }
 

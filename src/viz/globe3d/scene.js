@@ -1375,8 +1375,9 @@ export function createGlobeScene(container, quality = {}) {
   }
 
   const zoomDir = new THREE.Vector3()
-  let raf = 0, lastFrameT = 0
+  let raf = 0, lastFrameT = 0, running = true
   function loop(now) {
+    if (!running) return   // 已暂停（切到 2D 平面图）：停掉 rAF 链，不再空转渲染被盖住的球面
     raf = requestAnimationFrame(loop)
     // 帧率上限（省电）：未到间隔则跳过本帧的更新与渲染（留 1ms 余量避免临界抖动）
     if (fpsCap > 0) { if (now && (now - lastFrameT) < (1000 / fpsCap - 1)) return; lastFrameT = now || 0 }
@@ -1404,6 +1405,10 @@ export function createGlobeScene(container, quality = {}) {
     renderer.render(scene, camera)
   }
   loop()
+  // 渲染循环暂停/恢复（切 2D/3D 时由页面调用）：切到 2D 平面图后 3D 画布被盖住，仍每帧渲染整球
+  // + 覆盖大网格纯属浪费主线程/GPU，还拖慢 2D。pause 停掉 rAF 链；resume 立即补画一帧并续帧。
+  function pause() { if (!running) return; running = false; cancelAnimationFrame(raf); raf = 0 }
+  function resume() { if (running) return; running = true; loop() }
 
   function resize() {
     const ww = container.clientWidth, hh = container.clientHeight
@@ -1424,7 +1429,7 @@ export function createGlobeScene(container, quality = {}) {
     setCoverage, clearCoverage, setCoverageField, patchCoverageLayers, clearCoverageField, setCoverageFieldAlpha, setSatLayer, clearSatLayer, faceLonLat, setProvinces, setProvincesVisible, setCities, setCitiesVisible, setBorderStyle, setNameScale, setLabelStyle, setOceanColor, setLandColors,
     setPixelRatio, setRenderFps, setSphereDetail, setMapDetail,
     setMarkers, setTrajectories, setFocusSatLLA, setOnHover, setOnRightClick, setBeamDragMode, setOnBeamDrag, setLabelDragMode, setOnLabelDrag, setPolyDrawMode, setOnPolyDraw,
-    faceTo, setAutoRotate, setAutoRotateSpeed, setOnAutoRotateOff, resize, destroy,
+    faceTo, setAutoRotate, setAutoRotateSpeed, setOnAutoRotateOff, resize, pause, resume, destroy,
     // 缩放进度条接口：getZoom 读当前进度、setZoom 设到进度 t、setOnZoom 注册滚轮缩放回填回调
     getZoom: () => distToT(zoomTarget),
     setZoom: (t) => { zoomTarget = Math.max(controls.minDistance, Math.min(controls.maxDistance, tToDist(t))) },

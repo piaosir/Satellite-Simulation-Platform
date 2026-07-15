@@ -6,10 +6,18 @@
 //       放在 electron/services/shareConfig.js（已 gitignore，随安装包打进 electron/**）。缺失则未配置。
 // 零三方 SDK：内置 https + crypto 自算 q-sign 签名（与 scripts/publish-cos.mjs 同法，扩展支持 query 参与签名）。
 const https = require('https')
-const { createHmac, createHash, randomUUID } = require('crypto')
+const { createHmac, createHash, randomUUID, randomBytes } = require('crypto')
 
 let cfg = null
 try { cfg = require('./shareConfig.js') } catch (e) { cfg = null }   // 运行时可选；不存在=未配置（不影响打包）
+// 开发兜底：无 shareConfig.js 时，复用发布用的 COS 环境变量（COS_SECRET_ID/KEY/BUCKET/REGION，见 scripts/publish-cos.mjs），
+// 免得开发机再单独放一份密钥。打包给终端用户的机器无这些环境变量，仍走 shareConfig.js。
+if (!(cfg && cfg.secretId && cfg.secretKey && cfg.bucket && cfg.region)) {
+  const e = process.env
+  if (e.COS_SECRET_ID && e.COS_SECRET_KEY && e.COS_BUCKET && e.COS_REGION) {
+    cfg = { secretId: e.COS_SECRET_ID, secretKey: e.COS_SECRET_KEY, bucket: e.COS_BUCKET, region: e.COS_REGION, prefix: (cfg && cfg.prefix) || 'share' }
+  }
+}
 
 const sha1 = (s) => createHash('sha1').update(s).digest('hex')
 const hmac = (key, s) => createHmac('sha1', key).update(s).digest('hex')
@@ -108,6 +116,26 @@ async function inbox(myId) {
   return { ok: true, items }
 }
 
+// ============ 发送到小程序：把「当前绘制状态」快照 PUT 到 COS updates/gxt/<密钥>.json ============
+// 模型：PUT updates/gxt/<key>.json（JSON 快照），返回短密钥供小程序输入。放在发布用的 updates/ 前缀下——
+//       该前缀本就可写（发布凭证）且匿名可读（自动更新器要能匿名拉取），故零额外控制台配置；密钥即凭证，
+//       小程序云函数据「内置基址 + 密钥」直链拉取。复用 inbox 同一套 COS q-sign 签名（authorization/request）。
+const GXT_PREFIX = 'updates/gxt'                          // 复用 updates/ 前缀（已可写 + 已公读），免配 CAM/桶策略
+const KEY_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'   // 去掉易混字符 I L O 0 1（用户手输密钥）
+function genKey(len = 8) {
+  const bytes = randomBytes(len)
+  let s = ''
+  for (let i = 0; i < len; i++) s += KEY_ALPHABET[bytes[i] % KEY_ALPHABET.length]
+  return s
+}
+async function putSnapshot(payload) {
+  if (!configured()) throw new Error('发送到小程序未配置（缺少 COS 凭证：shareConfig.js 或 COS_SECRET_ID 等环境变量）')
+  if (!payload || typeof payload !== 'object') throw new Error('快照内容为空')
+  const key = genKey(8)
+  await request('PUT', encPath(`${GXT_PREFIX}/${key}.json`), { body: JSON.stringify(payload) })
+  return { ok: true, key }
+}
+
 // 接收/忽略后从我的信箱移除该条（读改写）
 async function remove(myId, msgId) {
   if (!configured()) throw new Error('在线分享未配置')
@@ -118,4 +146,4 @@ async function remove(myId, msgId) {
   return { ok: true }
 }
 
-module.exports = () => ({ configured, send, inbox, remove })
+module.exports = () => ({ configured, send, inbox, remove, putSnapshot })

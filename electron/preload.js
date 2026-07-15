@@ -64,7 +64,9 @@ contextBridge.exposeInMainWorld('api', {
     configured: () => ipcRenderer.invoke('share:configured'),
     send: (recipientId, payload) => ipcRenderer.invoke('share:send', recipientId, payload),
     inbox: (myId) => ipcRenderer.invoke('share:inbox', myId),
-    remove: (myId, id) => ipcRenderer.invoke('share:delete', myId, id)
+    remove: (myId, id) => ipcRenderer.invoke('share:delete', myId, id),
+    // 发送到小程序：把当前绘制状态快照上传 COS，返回可在小程序输入的短密钥
+    gxtSnapshot: (payload) => ipcRenderer.invoke('share:gxtSnapshot', payload)
   },
   store: {
     listHistory: () => ipcRenderer.invoke('store:history:list'),

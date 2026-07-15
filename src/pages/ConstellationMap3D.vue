@@ -12,7 +12,7 @@ import { logMsg } from '../stores/log'
 import { alertMsg, appAlert, closeAlert } from '../stores/alert'
 import { displaySatName } from '../viz/satName.js'
 import { serializeGxt } from '../viz/gxt/serialize.js'
-import { serializeKml, serializePolysKml } from '../viz/kml/serialize.js'
+import { serializeKml } from '../viz/kml/serialize.js'
 import Icon from '../components/Icon.vue'
 defineOptions({ inheritAttrs: false })   // 不把父级传入的 title 落到根节点（去掉鼠标悬停的“星座3D”原生提示）
 import { createGlobeScene } from '../viz/globe3d/scene.js'
@@ -1261,8 +1261,9 @@ function toggleFlat() { view.flat = !view.flat }
 watch(() => view.flat, (v) => applyFlat(v))
 async function applyFlat(v) {
   flatView.value = v
-  // 切回 3D：补齐 3D 覆盖层。编辑电平时只 patch 了当前可见视图（recomputeActive），另一视图需在此一次性重算。
-  if (!v) { if (grdOpen.value) grd.recompute(); pushZoom(); return }
+  // 切回 3D：先恢复 3D 渲染循环（切 2D 时已暂停），再补齐 3D 覆盖层。
+  // 编辑电平时只 patch 了当前可见视图（recomputeActive），另一视图需在此一次性重算。
+  if (!v) { scene && scene.resume(); if (grdOpen.value) grd.recompute(); pushZoom(); return }
   await ensureCovIndex(); if (!covCleared.value) redraw()   // 已清除则切平面图不复现覆盖（covGeom 保持为空）
   await nextTick()
   if (ensureFlat()) {
@@ -1270,6 +1271,7 @@ async function applyFlat(v) {
     // 首次进入平面图时恢复上次视图（缩放+平移中心）；之后切换保持当前，不再覆盖
     if (!viewRestoredFlat) { viewRestoredFlat = true; if (savedView.flat) flat.setView(savedView.flat) }
     pushZoom()
+    scene && scene.pause()   // 平面图已就绪并盖住球面 → 暂停 3D 渲染循环，2D 不再被空转的 3D 拖慢
   }
 }
 // 平面渲染器：按需创建（绑定交互回调）。返回实例（flatCanvas 未就绪时返回 null）。
@@ -1312,6 +1314,18 @@ function feedFlat() {
 
 // ===================== 覆盖图导出（高清 PNG / 矢量 PDF，统一走 2D 平面图） =====================
 const exporting = ref(false)
+// 发送到小程序：上传中态 + 密钥展示弹窗
+const sendingMiniapp = ref(false)
+const miniappKey = ref('')
+const miniappKeyOpen = ref(false)
+const keyCopied = ref(false)
+// 密钥展示为 XXXX-XXXX（更易手输）；小程序侧会去掉分隔符归一
+const formatKey = (k) => (k ? String(k).replace(/(.{4})(.{4})/, '$1-$2') : '')
+function copyMiniappKey() {
+  if (!miniappKey.value) return
+  keyCopied.value = perfWriteClipboard(formatKey(miniappKey.value))
+  if (!keyCopied.value) appAlert('复制失败，请手动记录密钥')
+}
 let _cjkFont   // undefined=未取；string=base64；null=无可用中文字体
 async function getCjkFont() {
   if (_cjkFont !== undefined) return _cjkFont
@@ -1330,23 +1344,8 @@ async function saveExport(bytes, defaultName, filters) {
 // gxt/kml 是数据导出（当前画面绘制的覆盖等值线，GXT+GRD 来源，同 collectGxt），与 scope 无关。
 async function exportMap(fmt, scope) {
   if (exporting.value) return
-  if (fmt === 'gxt' || fmt === 'kml') {
-    exporting.value = true
-    try {
-      const beams = collectGxt()
-      if (!beams || !beams.length) { appAlert('当前画面没有可导出的覆盖等值线'); return }
-      if (fmt === 'gxt') {
-        // 多波束合并为一个多 diagram GXT：逐波束 serialize 后拼接（每波束独立 COHeader 区块）
-        const blocks = beams.map((b, i) => serializeGxt({ ...b, beamId: b.name || (i + 1) }))
-        await saveExport(blocks.join('\r\n'), '当前覆盖.gxt', [{ name: 'GXT 等值线', extensions: ['gxt'] }])
-      } else {
-        const text = serializeKml(beams, { name: '当前覆盖' })
-        await saveExport(text, '当前覆盖.kml', [{ name: 'KML', extensions: ['kml'] }])
-      }
-    } catch (e) { console.error('导出失败', e); appAlert('导出失败：' + ((e && e.message) || e)) }
-    finally { exporting.value = false }
-    return
-  }
+  // 数据导出（GXT/KML）统一走 exportDrawn：覆盖等值线 + 协调区多边形一起导（所见即所得），与 scope 无关。
+  if (fmt === 'gxt' || fmt === 'kml') { return exportDrawn(fmt) }
   const view = scope === 'view'
   if (view && !flatView.value) { appAlert('「截图」导出需先切换到 2D 平面图（顶栏「视图」按钮），再框定要导出的范围'); return }
   exporting.value = true
@@ -1599,6 +1598,116 @@ function collectGxt() {
   return out
 }
 
+// 显示中的协调区多边形 → 与 collectGxt 同形的「波束」列表（按卫星名+轨位分组，组内每多边形一条闭合等值线，值=数值栏）。
+// 用于把多边形并入统一 GXT 导出（每组一个 diagram，GeoMain 取该组卫星信息）。
+function collectPolyBeams() {
+  const list = polys.value.filter((pg) => pg.show !== false && pg.pts && pg.pts.length >= 3)
+  if (!list.length) return []
+  const groups = new Map()
+  for (const pg of list) {
+    const key = `${(pg.satName || '').trim()}|${(pg.satLon || '').toString().trim()}`
+    if (!groups.has(key)) groups.set(key, [])
+    groups.get(key).push(pg)
+  }
+  return [...groups.values()].map((gs) => {
+    const g0 = gs[0], lonN = Number(g0.satLon)
+    const contours = gs.map((pg) => { const v = Number(pg.value); return { g: Number.isFinite(v) ? v : 0, p: closeRing(pg.pts) } })
+    return { name: 'Polygon', satName: (g0.satName || '').trim() || 'Polygon', lon: Number.isFinite(lonN) ? lonN : 0, bore: [], contours, emiRcp: 'E' }
+  })
+}
+
+// 统一数据导出（所见即所得）：把当前画面绘制的一切——覆盖等值线（GXT/GRD 来源）+ 协调区多边形——合成一份 GXT/KML。
+// GXT：覆盖波束 + 多边形组各自一个 diagram，拼接为多 diagram 文件。KML：覆盖等值线按档位渐变、多边形按各自颜色，同一 Document。
+async function exportDrawn(fmt) {
+  if (exporting.value) return
+  const covBeams = collectGxt()
+  const polyList = polys.value.filter((pg) => pg.show !== false && pg.pts && pg.pts.length >= 3)
+  const polyBeams = collectPolyBeams()
+  if (!covBeams.length && !polyBeams.length) { appAlert('当前画面没有可导出的覆盖等值线或协调区多边形'); return }
+  exporting.value = true
+  try {
+    if (fmt === 'gxt') {
+      const blocks = [...covBeams, ...polyBeams].map((b, i) => serializeGxt({ ...b, beamId: b.name || (i + 1) }))
+      await saveExport(blocks.join('\r\n'), '当前绘制.gxt', [{ name: 'GXT 等值线', extensions: ['gxt'] }])
+    } else {
+      const text = serializeKml(covBeams, { name: '当前绘制', polys: polyList })
+      await saveExport(text, '当前绘制.kml', [{ name: 'KML', extensions: ['kml'] }])
+    }
+  } catch (e) { console.error('导出失败', e); appAlert('导出失败：' + ((e && e.message) || e)) }
+  finally { exporting.value = false }
+}
+
+// 采集「当前绘制状态」为发送到小程序的快照 JSON：覆盖层（每条等值线烘入 #RRGGBB 配色 + 频段/类型，
+// 与 redraw 同口径的批次归一化）+ 协调区多边形（绕过 GXT、保真名称/数值/线色/填充）。
+// 小程序据 coverage.beams 就地建「卫星→频段→波束→EIRP/GT」索引重绘，零配色/分档逻辑。
+function buildMiniappSnapshot() {
+  const beams = []
+  for (const it of covItems.value) {
+    const idx = idxOf(it.folder); if (!idx) continue
+    const rowById = new Map(beamRowsOf(it).map((r) => [r.id, r]))
+    for (const ba of it.batches) {
+      const eff = batchEffGains(ba)
+      const datas = []
+      for (const id of ba.beams) {
+        const r = rowById.get(id); if (!r) continue
+        const d = covCache[r.file]; if (!d) continue
+        datas.push({ r, d })
+      }
+      // 批次生效增益档极值（与 redraw 一致），供 contourColor 渐变归一
+      const allG = []
+      for (const { d } of datas) for (const c of d.contours) if (eff.has(c.g)) allG.push(c.g)
+      const gmin = allG.length ? Math.min(...allG) : 0, gmax = allG.length ? Math.max(...allG) : 1
+      for (const { r, d } of datas) {
+        const contours = []
+        for (const c of d.contours) {
+          if (!eff.has(c.g)) continue
+          contours.push({ g: c.g, color: hexToCss(contourColor(ba, c.g, gmin, gmax)), p: c.p })
+        }
+        if (!contours.length) continue
+        beams.push({ satName: idx.displayName, lon: idx.lon, band: r.band || '', beam: r.beam || '', type: it.type || 'EIRP', emiRcp: 'E', bore: d.bore || [], contours })
+      }
+    }
+  }
+  // GRD 来源（天线方向图覆盖）：无频段/类型，按 EIRP 归桶、按本波束增益档做同款渐变配色
+  if (grd && grd.exportContours) {
+    try {
+      for (const b of grd.exportContours()) {
+        const gs = (b.contours || []).map((c) => c.g)
+        const gmin = gs.length ? Math.min(...gs) : 0, gmax = gs.length ? Math.max(...gs) : 1
+        const contours = (b.contours || []).map((c) => ({ g: c.g, color: hexToCss(gainHex(gmax > gmin ? (c.g - gmin) / (gmax - gmin) : 1)), p: c.p })).filter((c) => c.p && c.p.length >= 2)
+        if (!contours.length) continue
+        beams.push({ satName: b.satName || '', lon: b.lon, band: '', beam: b.name || '', type: 'EIRP', emiRcp: 'E', bore: b.bore || [], contours })
+      }
+    } catch (e) { console.warn('GRD 快照采集失败', e) }
+  }
+  const polygons = polys.value.filter((pg) => pg.show !== false && pg.pts && pg.pts.length >= 3).map((pg) => ({
+    name: pg.name || '', value: (pg.value != null ? String(pg.value) : ''),
+    satName: pg.satName || '', satLon: (pg.satLon != null ? String(pg.satLon) : ''),
+    color: pg.color || '#3b82f6', fillOn: pg.fillOn !== false, fillColor: pg.fillColor || pg.color || '#3b82f6',
+    fillOp: (typeof pg.fillOp === 'number' ? pg.fillOp : 0.18), labelSize: pg.labelSize || 16,
+    pts: pg.pts.map((p) => [p[0], p[1]])   // 拷成纯数组：pg.pts 是 Vue 响应式 Proxy，直接进 IPC 会被 V8 ValueSerializer 拒绝（An object could not be cloned）
+  }))
+  // 自动命名：不同卫星名去重拼接（无覆盖层时退化为多边形/默认名），供小程序端列表展示
+  const satNames = [...new Set(beams.map((b) => b.satName).filter(Boolean))]
+  const name = satNames.length ? satNames.join('、') : (polygons.length ? '协调区多边形' : '覆盖快照')
+  return { app: 'satsim', kind: 'gxt-snapshot', v: 1, name, createdAt: Date.now(), coverage: { beams }, polygons }
+}
+
+// 发送到小程序：构建快照 → 上传 COS → 弹窗展示可输入的短密钥。覆盖层与多边形共用（一份快照含两层）。
+async function sendToMiniapp() {
+  if (sendingMiniapp.value) return
+  if (!(window.api && window.api.share && window.api.share.gxtSnapshot)) { appAlert('需在 Electron 中运行（npm run dev）'); return }
+  sendingMiniapp.value = true
+  try {
+    const snap = buildMiniappSnapshot()
+    if (!snap.coverage.beams.length && !snap.polygons.length) { appAlert('当前画面没有可发送的覆盖等值线或多边形'); return }
+    const r = await window.api.share.gxtSnapshot(snap)
+    if (r && r.ok && r.key) { miniappKey.value = r.key; keyCopied.value = false; miniappKeyOpen.value = true }
+    else { appAlert('发送失败：' + ((r && r.error) || '未知错误')) }
+  } catch (e) { console.error('发送到小程序失败', e); appAlert('发送失败：' + ((e && e.message) || e)) }
+  finally { sendingMiniapp.value = false }
+}
+
 // ===================== Polygon（协调区多边形，仿 SATSOFT Polygon Editor 精简版） =====================
 // 频率协调常用做法：画一个多边形圈定区域，对整个区域标一个数值（通常为功率谱密度，数值含义与单位由
 // 协调材料约定，软件不做定义）。绘制交互与轨迹一致：「＋ 绘制」后右键地图连续加顶点（3D / 2D 均可），
@@ -1618,7 +1727,15 @@ const curPoly = () => polys.value.find((p) => p.id === polyDrawId.value)
 const curEditPoly = () => polys.value.find((p) => p.id === polyEditId.value)
 const curMovePoly = () => polys.value.find((p) => p.id === polyMoveId.value)
 const closeRing = (pts) => { const f = pts[0], l = pts[pts.length - 1]; return (f[0] === l[0] && f[1] === l[1]) ? pts : [...pts, f] }
-const polyCentroid = (pts) => { let sx = 0, sy = 0; for (const p of pts) { sx += p[0]; sy += p[1] } return [sx / pts.length, sy / pts.length] }
+// 顶点均值作标签锚点。经度须跨 ±180° 短路展开后再平均——否则多边形骑跨东经 180° 时（部分顶点 ≈+180、部分 ≈−180）
+// 直接算术平均会落到 ≈0°（地球背面），标签「乱飞」。以首点为基准把各经度展开到其 ±180° 邻域，平均后再归一回 [−180,180]。
+const polyCentroid = (pts) => {
+  const ref = pts[0][0]
+  let sx = 0, sy = 0
+  for (const p of pts) { let d = p[0] - ref; d = ((d % 360) + 540) % 360 - 180; sx += ref + d; sy += p[1] }
+  let lon = sx / pts.length; lon = ((lon % 360) + 540) % 360 - 180
+  return [lon, sy / pts.length]
+}
 // 折线加密：相邻顶点间按 ≤step 度步长线性插值（经度取短路方向，输出不回卷、由渲染器自行归一）。
 // 2D 等距圆柱投影下插值点共线、视觉不变；3D 上让长边贴球面走——否则两远顶点间的直线弦会切入
 // 地球内部，被深度测试遮挡（即「多边形在 3D 视图被地球模型挡住」的根源）。
@@ -1847,33 +1964,8 @@ function onVertsCopy(e) {
   const two = sel.split(/\r?\n/).map((line) => line.replace(/\s*,\s*/, '\t')).join('\n')
   e.clipboardData.setData('text/plain', two); e.preventDefault()
 }
-// 导出显示中的多边形：GXT=一个 diagram、每个多边形一条闭合等值线（等值线值=该多边形的数值）；
-// KML=每个多边形一个 Placemark（保留名称/数值/颜色）。均复用统一的系统保存对话框。
-async function exportPolys(fmt) {
-  const list = polys.value.filter((pg) => pg.show !== false && pg.pts.length >= 3)
-  if (!list.length) { appAlert('没有可导出的多边形：先「＋ 绘制」一个（至少 3 个顶点，且处于显示状态）'); return }
-  try {
-    if (fmt === 'gxt') {
-      // 按「卫星名 + 轨道位置」分组：每组一个 diagram（GeoMain 的 sat_name/long_nom 取该组卫星信息），
-      // 组内每个多边形一条闭合等值线。未填卫星信息的归入 sat_name=Polygon / long_nom=0 一组。
-      const groups = new Map()
-      for (const pg of list) {
-        const key = `${(pg.satName || '').trim()}|${(pg.satLon || '').toString().trim()}`
-        if (!groups.has(key)) groups.set(key, [])
-        groups.get(key).push(pg)
-      }
-      const blocks = [...groups.values()].map((gs) => {
-        const g0 = gs[0], lonN = Number(g0.satLon)
-        const contours = gs.map((pg) => { const v = Number(pg.value); return { g: Number.isFinite(v) ? v : 0, p: closeRing(pg.pts) } })
-        return serializeGxt({ lon: Number.isFinite(lonN) ? lonN : 0, satName: (g0.satName || '').trim() || 'Polygon', beamId: 'Polygon', emiRcp: 'E', bore: [], contours })
-      })
-      await saveExport(blocks.join('\r\n'), '协调区多边形.gxt', [{ name: 'GXT 等值线', extensions: ['gxt'] }])
-    } else {
-      const text = serializePolysKml(list, { name: '协调区多边形' })
-      await saveExport(text, '协调区多边形.kml', [{ name: 'KML', extensions: ['kml'] }])
-    }
-  } catch (e) { console.error('导出失败', e); appAlert('导出失败：' + ((e && e.message) || e)) }
-}
+// Polygon 面板「导出 GXT / KML」：与顶栏「导出」菜单同一功能——覆盖等值线 + 协调区多边形一起导（所见即所得）。
+const exportPolys = (fmt) => exportDrawn(fmt)
 
 // ===================== 仰角线（卫星属性，挂在 GRD 卫星树的每个卫星上） =====================
 // 仰角线是卫星属性、不是天线：每个卫星节点(grd.sats)自带 { els, elevColor, elevShow }。
@@ -2701,6 +2793,7 @@ onMounted(async () => {
   covNav.toggleGrd = toggleGrd; covNav.toggleCov = toggleCoverage
   covNav.polyAvail = true; covNav.togglePoly = togglePolyPanel   // Polygon 面板（纯本地功能，不依赖 IPC）
   covNav.exportAvail = true; covNav.exportMap = exportMap   // 顶栏「导出图」入口（高清 PNG / 矢量 PDF）
+  covNav.sendMiniapp = sendToMiniapp   // 顶栏「导出」菜单「发送到小程序」入口（覆盖层 + 多边形一份快照）
   covNav.importTle = importTleToLibrary   // 「文件」菜单「导入 TLE 文件(CSV)」入口 → 落库自定义卫星（贯通文件管理/搜索池）
   watch(status, (v) => { if (v) logMsg(v) })   // 加载进度/失败信息落日志窗格
   // 文件管理导入/删除自定义卫星 → 若正看 custom/all/other 分组则重载；并重建全量搜索库纳入新星。
@@ -2790,7 +2883,7 @@ onBeforeUnmount(() => {
   // 离开 3D 页：复位顶栏覆盖图入口（按钮随之隐藏），并关掉面板镜像状态
   covNav.grdAvail = false; covNav.covAvail = false; covNav.toggleGrd = null; covNav.toggleCov = null
   covNav.polyAvail = false; covNav.togglePoly = null
-  covNav.exportAvail = false; covNav.exportMap = null; covNav.importTle = null
+  covNav.exportAvail = false; covNav.exportMap = null; covNav.importTle = null; covNav.sendMiniapp = null
   covNav.grdOpen = false; covNav.covOpen = false; covNav.polyOpen = false
   zoom.avail = false; zoom.apply = null   // 复位底部状态栏缩放进度条
   if (_viewSaveTimer) { clearTimeout(_viewSaveTimer); _viewSaveTimer = null }
@@ -3127,7 +3220,10 @@ onBeforeUnmount(() => {
 
         <!-- Polygon：协调区多边形的绘制 / 调点 / 扩缩 / 导出 -->
         <div v-show="shellUi.side === 'poly'" class="sview">
-        <div v-if="polyOpen" class="cov-side poly-side docked">
+        <!-- 内容渲染直接跟活动栏 side 走（与外层标题/侧栏同源），不再依赖 polyOpen：后者存于另一份快照，
+             与 shellUi.side 分处不同 localStorage，restoreSettings 会用旧快照的 false 覆盖活动栏刚打开的状态，
+             导致侧栏有「Polygon（协调区）」标题却空白（偶发）。side==='poly' 即应显示，二者本就等价。 -->
+        <div v-if="shellUi.side === 'poly'" class="cov-side poly-side docked">
         <div class="sec">
           <div class="sect"><span>协调区多边形</span><span class="lnk" @click="polyStartDraw"><Icon name="plus" :size="11" /> 绘制</span></div>
           <div v-if="!polys.length && !polyDrawId" class="tip">画一个多边形圈定协调区域，给区域标一个数值（如谱密度，数值含义与单位不做定义），可导出 GXT / KML。点「＋ 绘制」后在地图上右键连续加顶点，或按住左键沿路径拖动连续加点（3D / 平面图均可）。</div>
@@ -3183,8 +3279,9 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="csfoot">
-          <span class="expb2" title="显示中的多边形导出为 GXT（每个多边形一条闭合等值线，值=数值栏）" @click="exportPolys('gxt')">导出 GXT</span>
-          <span class="expb2" title="显示中的多边形导出为 KML（保留名称 / 数值 / 颜色）" @click="exportPolys('kml')">导出 KML</span>
+          <span class="expb2" title="把当前绘制的覆盖等值线 + 协调区多边形一起导出为 GXT（所见即所得；多边形每个一条闭合等值线，值=数值栏）" @click="exportPolys('gxt')">导出 GXT</span>
+          <span class="expb2" title="把当前绘制的覆盖等值线 + 协调区多边形一起导出为 KML（所见即所得；覆盖按档位渐变，多边形保留各自名称/数值/颜色）" @click="exportPolys('kml')">导出 KML</span>
+          <span class="expb2" title="把当前绘制（覆盖等值线 + 显示中的多边形）作为一份快照发送到小程序，生成导入密钥" @click="sendToMiniapp">发送到小程序</span>
         </div>
         </div>
         </div>
@@ -3631,6 +3728,19 @@ onBeforeUnmount(() => {
         <div class="sdh"><span>提示</span><span class="csx" @click="closeAlert"><Icon name="x" :size="12" /></span></div>
         <div class="sdbody"><p class="al-msg">{{ alertMsg }}</p></div>
         <div class="sdfoot"><span class="save" @click="closeAlert">确定</span></div>
+      </div>
+    </div>
+
+    <!-- 发送到小程序成功：展示可输入的密钥（供微信小程序「卫星覆盖」导入本次绘制） -->
+    <div v-if="miniappKeyOpen" class="sat-mask sat-overlay" @click.self="miniappKeyOpen = false">
+      <div class="sat-dlg al-dlg">
+        <div class="sdh"><span>已发送到小程序</span><span class="csx" @click="miniappKeyOpen = false"><Icon name="x" :size="12" /></span></div>
+        <div class="sdbody">
+          <p class="al-msg">在微信小程序「卫星覆盖」里输入下面的密钥，即可导入本次绘制的覆盖等值线与协调区多边形：</p>
+          <div class="ma-key">{{ formatKey(miniappKey) }}</div>
+          <p class="al-msg ma-key-tip">密钥仅对应本次绘制内容；重新发送会生成新密钥。</p>
+        </div>
+        <div class="sdfoot"><span class="save ghost" @click="copyMiniappKey">{{ keyCopied ? '已复制 ✓' : '复制密钥' }}</span><span class="save" @click="miniappKeyOpen = false">完成</span></div>
       </div>
     </div>
 
@@ -4610,6 +4720,10 @@ onBeforeUnmount(() => {
 .al-dlg { width: 360px; }
 .al-msg { margin: 0; font-size: 13px; line-height: 1.65; color: var(--text); }
 .al-dlg .sdfoot { justify-content: flex-end; }
+/* 发送到小程序：密钥展示 */
+.ma-key { margin: 12px 0 6px; text-align: center; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 26px; font-weight: 700; letter-spacing: 3px; color: var(--accent); user-select: all; }
+.ma-key-tip { font-size: 11px; color: var(--text-muted); margin-top: 6px; }
+.sdfoot .save.ghost { background: transparent; color: var(--text); border: 1px solid var(--border); }
 .sat-banner { position: absolute; top: 64px; left: 50%; transform: translateX(-50%); z-index: 40; background: var(--surface); border: 1px solid var(--accent); padding: 7px 14px; font-size: 12px; color: var(--text); box-shadow: 0 6px 20px rgba(0,0,0,0.4); }
 .sat-banner .lnk { margin-left: 10px; color: var(--accent); cursor: pointer; }
 .traj-banner { position: absolute; top: 64px; left: 50%; transform: translateX(-50%); z-index: 40; background: var(--surface); border: 1px solid var(--accent); padding: 7px 14px; font-size: 12px; color: var(--text); box-shadow: 0 6px 20px rgba(0,0,0,0.4); }

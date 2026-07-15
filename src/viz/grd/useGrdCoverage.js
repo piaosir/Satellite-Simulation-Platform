@@ -34,7 +34,9 @@ function satHull(c) {
   const key = lon + ',' + lat + ',' + alt
   if (c._hull && c._hull.key === key) return c._hull.hull
   let hull = null
-  const arc = isoElevationContourAt(geodeticToEcef(lon, lat, alt), 0, 120)
+  // 采样点数 = 地平弧凸包顶点数：越地平的填充三角形按 clipToHull 裁到此环，环越密 → 每个碎多边形顶点越多、
+  // Canvas2D 填充 tessellation 越贵。80 点在外缘平滑度与填充成本间折中（比原 120 点省约 1.5×，外缘无肉眼可见棱角）。
+  const arc = isoElevationContourAt(geodeticToEcef(lon, lat, alt), 0, 80)
   if (arc && arc.length >= 3) {
     const ring = convexHullCCW(arc.map((p) => [wrap180(p[0] - lon), p[1]]))
     if (ring.length >= 3) hull = { ring, satLon: lon }
