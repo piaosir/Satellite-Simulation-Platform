@@ -1077,7 +1077,12 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
             if (loop.length >= 4) contours.push({ g: cfg.ctype === 'rel' ? x.v : +x.abs.toFixed(2), p: loop.map((p) => [+p[0].toFixed(3), +p[1].toFixed(3)]) })
           }
         })
-        if (contours.length) out.push({ name: beamName(c, bi), satName: (node && node.satName) || c.meta.sat || '', lon: c.meta.satLon, bore: c.meta.peak ? [c.meta.peak] : [], contours })
+        // 波束中心 = 当前场的峰值点，与 buildBeamLayer 画面显示同源（随指向拖拽/极化/增益实时变化）。
+        // 不用载入时烘焙的 c.meta.peak——那是天线级最佳波束的初始峰值：拖拽指向后过时，多波束时全部波束被写成同一点。
+        const pk = (Number.isFinite(beam.proj.lon[field.maxIdx]) && Number.isFinite(beam.proj.lat[field.maxIdx]))
+          ? [+beam.proj.lon[field.maxIdx].toFixed(4), +beam.proj.lat[field.maxIdx].toFixed(4)]
+          : (beam.peak || c.meta.peak || null)
+        if (contours.length) out.push({ name: beamName(c, bi), satName: (node && node.satName) || c.meta.sat || '', lon: c.meta.satLon, bore: pk ? [pk] : [], contours })
       }
     }
     return out

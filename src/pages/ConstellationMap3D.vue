@@ -2356,7 +2356,14 @@ function endTraj() { activeTraj.value = '' }
 function clearPoints() { if (mkEditId.value === 'points') mkEditId.value = ''; points.value = []; syncMarkers(); closeCtx() }
 function clearStations() { if (mkEditId.value === 'stations') mkEditId.value = ''; stations.value = []; syncMarkers(); closeCtx() }
 function clearTrajs() { if (mkEditId.value && mkEditId.value !== 'points' && mkEditId.value !== 'stations') mkEditId.value = ''; trajectories.value = []; activeTraj.value = ''; mkTrajId.value = ''; syncMarkers(); closeCtx() }
-function ctxClearPolys() { polys.value = []; polyDrawId.value = ''; polyEditId.value = ''; polyMoveId.value = ''; polyVertsOpen.value = ''; polyRefresh(); closeCtx() }
+// 隐藏所有 Polygon（不删除）：与逐个 togglePoly 同口径批量置 show=false，数据保留在 polys/localStorage，
+// 可在 Polygon 面板重新逐个勾选显示。绘制中若有未成形多边形（<3 点）随 polyCancel 丢弃。
+function ctxClearPolys() {
+  if (polyDrawId.value) polyCancel()   // 结束绘制态（未成形的直接丢弃）
+  polyEditId.value = ''; polyMoveId.value = ''; polyVertsOpen.value = ''
+  for (const pg of polys.value) pg.show = false
+  polyRefresh(); closeCtx()
+}
 function clearAllMk() { clearAllMarkers(); closeCtx() }
 function clearAllCoverage() { if (covApiOk) clearCoverage(); if (grdApiOk) grd.clearDrawing(); closeCtx() }
 function ctxOpenMarkers() { shellUi.side = 'markers'; closeCtx() }
@@ -3789,7 +3796,7 @@ onBeforeUnmount(() => {
         <div class="ctx-item" @click="clearPoints">清除点标记</div>
         <div class="ctx-item" @click="clearStations">清除地面站</div>
         <div class="ctx-item" @click="clearTrajs">清除航迹</div>
-        <div class="ctx-item" @click="ctxClearPolys">清除 Polygon</div>
+        <div class="ctx-item" @click="ctxClearPolys">隐藏所有 Polygon</div>
         <div class="ctx-item" @click="clearAllMk">清除所有标记</div>
         <div v-if="grdApiOk || covApiOk" class="ctx-item" @click="clearAllCoverage">清除所有覆盖图</div>
         <div class="ctx-sep"></div>
