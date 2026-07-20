@@ -28,7 +28,7 @@ onMounted(load)
       <h2>历史记录</h2>
       <button v-if="rows.length" @click="clearAll">清空</button>
     </div>
-    <div v-if="!hasApi" class="empty">需在 Electron 中运行。</div>
+    <div v-if="!hasApi" class="empty">需在桌面客户端中运行。</div>
     <div v-else-if="!rows.length" class="empty">暂无记录。在「链路预算」页计算后点「保存到历史」。</div>
     <table v-else>
       <thead>

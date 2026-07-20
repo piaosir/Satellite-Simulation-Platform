@@ -121,7 +121,7 @@ onBeforeUnmount(() => { inst && inst.onUnload && inst.onUnload() })
         </template>
         <span v-else class="hint">点击卫星设置波束角</span>
         <div class="toggles">
-          <span class="mini" :class="{ on: d.autoRotate }" @click="call('toggleRotate')">{{ d.autoRotate ? '旋转中' : '旋转停' }}</span>
+          <span class="mini" :class="{ on: d.autoRotate }" @click="call('toggleRotate')">{{ d.autoRotate ? '旋转中' : '已停止' }}</span>
           <span class="mini" :class="{ on: d.liveRefresh }" @click="call('toggleRefresh')">{{ d.liveRefresh ? '实时开' : '实时关' }}</span>
         </div>
       </div>
@@ -143,12 +143,12 @@ onBeforeUnmount(() => { inst && inst.onUnload && inst.onUnload() })
         <div class="dl-msg">{{ d.statusText || '尚无卫星数据' }}</div>
         <div class="dl-row">
           <button @click="retry">重试下载</button>
-          <button @click="pickFile">导入 TLE 文件(CSV)</button>
+          <button @click="pickFile">导入 TLE 文件（CSV）</button>
         </div>
-        <div class="dl-diag">桥接 window.api：<b :class="apiOk ? 'ok' : 'bad'">{{ apiOk ? '正常' : '缺失（preload 未生效）' }}</b></div>
-        <div class="dl-tip">国内若连不上 celestrak.org：浏览器打开
+        <div class="dl-diag">客户端桥接：<b :class="apiOk ? 'ok' : 'bad'">{{ apiOk ? '正常' : '未生效' }}</b></div>
+        <div class="dl-tip">国内若无法连接 celestrak.org：浏览器打开
           <code>celestrak.org/NORAD/elements/gp.php?GROUP=starlink&FORMAT=csv</code>
-          另存为 .csv 后点「导入」。</div>
+          另存为 .csv 后点击「导入」。</div>
         <input ref="fileInput" type="file" accept=".csv,.txt" style="display:none" @change="onFile" />
       </div>
       <div class="meta">

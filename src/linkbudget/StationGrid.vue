@@ -31,7 +31,7 @@ const lonKey = computed(() => (props.fields.find((f) => /longitude/i.test(f.key)
 const latKey = computed(() => (props.fields.find((f) => /latitude/i.test(f.key)) || {}).key)
 const nCol = computed(() => props.fields.length)
 // 冻结列：从第一列起，一直冻结到「名称/城市」字段（含）为止——例如发信站表把「载波信号配置」放在
-// 「地面站位置」前面，两列都需要冻结；收信站表只有「地面站位置」一列，冻结数即为 1。
+// 「地球站位置」前面，两列都需要冻结；收信站表只有「地球站位置」一列，冻结数即为 1。
 const cityFieldIdx = computed(() => props.fields.findIndex((f) => f.city))
 const frozenCount = computed(() => (cityFieldIdx.value >= 0 ? cityFieldIdx.value + 1 : 1))
 const KEY_COL_W = 90   // 冻结列统一窄宽度（原 120/108，缩窄）
@@ -116,7 +116,7 @@ function clampLatLon(val) {
   return Number.isFinite(n) ? String(Number(n.toFixed(LATLON_DECIMALS))) : val
 }
 
-// 地面站名称命中城市库（按城市名精确匹配，忽略首尾空格/大小写）→ 自动带入该城市经纬度。
+// 地球站名称命中城市库（按城市名精确匹配，忽略首尾空格/大小写）→ 自动带入该城市经纬度。
 // 返回是否命中（命中后由调用方联动 autoGeo 补降雨/海拔）。
 function applyCityByName(row) {
   if (!nameKey.value || !props.cities.length) return false
@@ -148,7 +148,7 @@ function toggleAll() { const v = !allSelected.value; const m = {}; if (v) for (c
 // 新行＝纯空行（各列留空，不带 北京/默认口径 等默认值，由用户自行填写或粘贴）；_id 由模块级计数器保证全局唯一。
 function makeRow() { const row = {}; for (const f of props.fields) row[f.key] = ''; row._id = 'r' + (_rowSeq++); return row }
 // 「＋ 增加」：Excel 式在当前聚焦行的下方插入一行（纯空行，不再按城市表循环取名）；表为空时作为第一行。
-// 焦点落到新行的「地面站位置」列，便于直接键入站名。
+// 焦点落到新行的「地球站位置」列，便于直接键入站名。
 function addRow() {
   const at = props.stations.length ? Math.min(props.stations.length, range.fr + 1) : 0
   pushUndo()
@@ -629,12 +629,12 @@ watch(() => [range.fr, range.fc], () => {
 onMounted(() => { window.addEventListener('mouseup', onUp); window.addEventListener('mousemove', onDragMove) })
 onBeforeUnmount(() => { window.removeEventListener('mouseup', onUp); window.removeEventListener('mousemove', onDragMove); stopAutoScroll(); closeDropdown() })
 
-// —— 导入（城市库 / 点标记 / 地面站 / 航迹）——
-// 点标记/地面站/航迹来自主窗口 localStorage('globe3d/markers')（同源共享，无需 IPC）。
+// —— 导入（城市库 / 点标记 / 地球站 / 航迹）——
+// 点标记/地球站/航迹来自主窗口 localStorage('globe3d/markers')（同源共享，无需 IPC）。
 const IMPORT_SOURCES = [
   { key: 'city', label: '城市库' },
   { key: 'point', label: '点标记' },
-  { key: 'station', label: '地面站' },
+  { key: 'station', label: '地球站' },
   { key: 'traj', label: '航迹' }
 ]
 const imp = reactive({ open: false, source: 'city', query: '', picked: {} })
@@ -645,7 +645,7 @@ const impItems = computed(() => {
   if (imp.source === 'city') return props.cities.map((c) => ({ id: cityId(c), name: c.name, lon: c.lon, lat: c.lat }))
   const mk = readMarkers()
   if (imp.source === 'point') return (mk.points || []).map((p, i) => ({ id: p.id || 'p' + i, name: '点标记' + (i + 1), lon: p.lon, lat: p.lat }))
-  if (imp.source === 'station') return (mk.stations || []).map((s, i) => ({ id: s.id || 's' + i, name: s.name || ('地面站' + (i + 1)), lon: s.lon, lat: s.lat }))
+  if (imp.source === 'station') return (mk.stations || []).map((s, i) => ({ id: s.id || 's' + i, name: s.name || ('地球站' + (i + 1)), lon: s.lon, lat: s.lat }))
   if (imp.source === 'traj') { const out = []; for (const t of (mk.trajectories || [])) (t.pts || []).forEach((p, j) => out.push({ id: (t.id || 't') + '_' + j, name: (t.name || '航迹') + '#' + (j + 1), lon: p.lon, lat: p.lat })); return out }
   return []
 })
@@ -814,7 +814,7 @@ function clearColContents() {
       <button class="sg-btn" :disabled="!redoStack.length" title="重做" @click="redo"><Icon name="redo-2" :size="12" /></button>
       <button class="sg-btn" :disabled="!canMoveUp" title="上移一行（Alt+↑）" @click="moveUp"><Icon name="arrow-up" :size="12" /> 上移</button>
       <button class="sg-btn" :disabled="!canMoveDown" title="下移一行（Alt+↓）" @click="moveDown"><Icon name="arrow-down" :size="12" /> 下移</button>
-      <button v-if="hiddenCols.length" class="sg-btn" :title="'已隐藏 ' + hiddenCols.length + ' 列，点击全部显示'" @click="unhideAll">显示隐藏列 ({{ hiddenCols.length }})</button>
+      <button v-if="hiddenCols.length" class="sg-btn" :title="'已隐藏 ' + hiddenCols.length + ' 列，点击全部显示'" @click="unhideAll">显示隐藏列（{{ hiddenCols.length }}）</button>
     </div>
 
     <div ref="root" class="sg-scroll" tabindex="0" @keydown="onKey" @focus="onRootFocus">
@@ -863,12 +863,12 @@ function clearColContents() {
               <span v-if="isFillAnchor(i, fields.length)" class="sg-handle" title="拖动/双击向下填充" @mousedown.left.stop.prevent="onFillDown" @dblclick.stop="onFillDbl"></span>
             </td>
           </tr>
-          <tr v-if="!stations.length"><td :colspan="visColCount" class="sg-empty">暂无{{ label }}，点「＋ 增加」或「⇩ 导入」</td></tr>
+          <tr v-if="!stations.length"><td :colspan="visColCount" class="sg-empty">暂无{{ label }}，点击「＋ 增加」或「⇩ 导入」</td></tr>
         </tbody>
       </table>
     </div>
 
-    <!-- 导入（城市库 / 点标记 / 地面站 / 航迹）——多选 -->
+    <!-- 导入（城市库 / 点标记 / 地球站 / 航迹）——多选 -->
     <div v-if="imp.open" class="sg-mask" @click="imp.open = false">
       <div class="sg-box" @click.stop>
         <div class="sg-box-hd">导入{{ label }}</div>
@@ -882,7 +882,7 @@ function clearColContents() {
             <input type="checkbox" :checked="!!imp.picked[it.id]" @change="imp.picked = { ...imp.picked, [it.id]: !imp.picked[it.id] }" />
             <span class="sg-impn">{{ it.name }}</span><span class="mono sg-ll">{{ it.lon }}°E  {{ it.lat }}°N</span>
           </label>
-          <div v-if="!impResults.length" class="sg-empty">无可导入项{{ imp.source !== 'city' ? '（请先在地图上标记点/地面站/航迹）' : '' }}</div>
+          <div v-if="!impResults.length" class="sg-empty">无可导入项{{ imp.source !== 'city' ? '（请先在地图上标记点/地球站/航迹）' : '' }}</div>
         </div>
         <div class="sg-box-ft"><button class="sg-btn" @click="imp.open = false">取消</button><button class="sg-btn primary" @click="doImport">导入选中</button></div>
       </div>
@@ -894,9 +894,9 @@ function clearColContents() {
         <div class="sg-box-hd">批量设值（应用到选中的 {{ selectedRows.length }} 行）</div>
         <div class="sg-batch">
           <select v-model="batch.key" class="sg-search"><option v-for="f in fields" :key="f.key" :value="f.key">{{ f.label }}</option></select>
-          <!-- select 字段的批量值：可打字筛选（datalist）也可下拉选，输入显示名即可，doBatch 里 normalizeFieldValue 归一为存值 -->
+          <!-- select 字段的批量值：可输入筛选（datalist）也可下拉选，输入显示名即可，doBatch 里 normalizeFieldValue 归一为存值 -->
           <template v-if="batchField.type === 'select'">
-            <input v-model="batch.value" class="sg-search" list="sg-batch-opts" placeholder="输入或选择…（可打字筛选）" autocomplete="off" />
+            <input v-model="batch.value" class="sg-search" list="sg-batch-opts" placeholder="输入或选择…（可输入筛选）" autocomplete="off" />
             <datalist id="sg-batch-opts"><option v-for="o in fieldOptions(batchField)" :key="optVal(o)" :value="optLabel(o)" /></datalist>
           </template>
           <input v-else v-model="batch.value" class="sg-search" :placeholder="'值（' + (batchField.unit || '') + '）'" />

@@ -2,7 +2,7 @@
 // 几何全程 WGS84，复用 src/viz/wgs84.js。填充面着色(L2a) 在渲染层做。
 // 见 docs/GRD导入与覆盖可视化设计.md（性能分层 §4、面+线 §5）。
 
-import { geodeticToEcef, ecefToGeodetic, rayEllipsoid, rayEllipsoidMargin, A, E2, RS_GEO } from '../wgs84.js'
+import { geodeticToEcef, ecefToGeodetic, geodeticUp, rayEllipsoid, rayEllipsoidMargin, A, E2, RS_GEO } from '../wgs84.js'
 
 const D2R = Math.PI / 180, H = RS_GEO - A
 const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
@@ -116,6 +116,21 @@ export function dirToAzEl(satLon, satLat, altKm, lon, lat) {
   const w = nrm(sub(geodeticToEcef(lon, lat, 0), nb.S))
   const dx = dt(w, nb.x), dy = dt(w, nb.y), dz = dt(w, nb.z)
   return { az: Math.atan2(-dx, Math.hypot(dy, dz)) * R2D, el: Math.atan2(dy, dz) * R2D }
+}
+// 地球站(lon,lat) 看卫星的当地地平坐标：方位角 az（自正北顺时针 0–360°）、仰角 el（当地水平面以上，度）。
+// 用地球站当地 ENU 系（geodeticUp=大地天顶）；与 dirToAzEl（卫星看地面点）互为对偶。
+// el<0 表示卫星在该站地平线以下（不可见）；GEO 时 satAlt 传轨道高度，与本文件其它几何同口径。
+export function groundLookAngles(satLon, satLat, altKm, lon, lat) {
+  const G = geodeticToEcef(lon, lat, 0)                                  // 地球站 ECEF
+  const S = geodeticToEcef(satLon, satLat || 0, altKm)                   // 卫星 ECEF
+  const up = geodeticUp(lon, lat)                                        // 当地天顶（大地法线，单位矢量）
+  const east = [-Math.sin(lon * D2R), Math.cos(lon * D2R), 0]            // 当地正东（单位矢量）
+  const north = crs(up, east)                                           // 右手 ENU：E×N=U ⇒ N=U×E
+  const d = sub(S, G), dl = Math.hypot(d[0], d[1], d[2]) || 1            // 站→星 视线矢量
+  const de = dt(d, east), dn = dt(d, north), du = dt(d, up)
+  let az = Math.atan2(de, dn) * R2D; if (az < 0) az += 360               // 自正北顺时针
+  const el = Math.asin(Math.max(-1, Math.min(1, du / dl))) * R2D         // 仰角（<0=地平线下）
+  return { az, el }
 }
 // 地表点(lon,lat) → 朝它的 boresight az/el，但把方向夹在可见圆盘内（越地平的点夹到地平切向）。
 // 拖拽用：地表经纬度在地平附近映射非单调（过地平会回折），改用"夹到地平的方向"后单调，可一路拖到地平线。

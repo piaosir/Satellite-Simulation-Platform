@@ -1155,7 +1155,7 @@ export function createGlobeScene(container, quality = {}) {
   renderer.domElement.addEventListener('pointerleave', () => { if (onHover) onHover(null) })
   renderer.domElement.addEventListener('contextmenu', (e) => { e.preventDefault(); if (onRightClick) onRightClick(pickGlobe(e.clientX, e.clientY), { x: e.clientX, y: e.clientY }) })
 
-  // 地面站图标（J4：精致立体卡塞格伦天线——淡填充碟面 + 边缘高光 + 四脚馈源 + 叉臂座架 + 落影），共用一张贴图
+  // 地球站图标（J4：精致立体卡塞格伦天线——淡填充碟面 + 边缘高光 + 四脚馈源 + 叉臂座架 + 落影），共用一张贴图
   const STATION_SVG = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'>" +
     "<ellipse cx='32' cy='58' rx='12' ry='2' fill='#000000' opacity='0.18'/>" +
     "<path d='M23 57 L28 43 L36 43 L41 57 Z' fill='#c3c8cd' stroke='#9aa1a8' stroke-width='0.6'/>" +
@@ -1205,7 +1205,7 @@ export function createGlobeScene(container, quality = {}) {
   let markersGroup = null, trajGroup = null, focusSatGroup = null
   function disposeGroup(grp) { if (grp) { grp.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) { lineMats.delete(o.material); if (o.material.map && o.material.map !== stationTex && o.material.map !== focusSatTex) o.material.map.dispose(); o.material.dispose() } }); scene.remove(grp) } }
   // 聚焦卫星当前星下点图标（与 2D 同款，固定 30px 基准——与 2D sizes.satIcon 默认值一致，随 3D 缩放联动）；
-  // depthTest 关 + _dir 半球剔除，复用地面站图标同一套策略，转到背面自动隐藏，不会被地球遮挡。
+  // depthTest 关 + _dir 半球剔除，复用地球站图标同一套策略，转到背面自动隐藏，不会被地球遮挡。
   const FOCUS_SAT_PX = 30
   // p：单个 {lat,lon} 或数组（多选时每颗聚焦星各画一个图标，同款同大小，聚焦星区分靠轨道加粗+高亮环，图标本身不再分主次）
   function setFocusSatLLA(p) {
@@ -1244,12 +1244,12 @@ export function createGlobeScene(container, quality = {}) {
       if (p.el) g.add(labelSprite(p.el, p.lat, p.lon, '#ffffff', 1.35, ptFont * 0.9))     // 聚焦卫星仰角：亮白，标记下方
     }
     for (const s of (stations || [])) {
-      // 关闭深度测试 + 半球剔除（_dir）：与文字标签同策略。地面站图标是「从地表立起」的精灵，开 depthTest 时
+      // 关闭深度测试 + 半球剔除（_dir）：与文字标签同策略。地球站图标是「从地表立起」的精灵，开 depthTest 时
       // 整张图按锚点(地表)深度参与测试，低视角/近地平边缘处上半部分会被更近的地球曲面截断遮挡。改为始终完整浮于
       // 地表之上，转到背面时由 rescaleMarkers 按 _dir 自动隐藏/淡出（不会透出地球背面的站点）。
       const st = new THREE.Sprite(new THREE.SpriteMaterial({ map: stationTexture(), depthTest: false, depthWrite: false, transparent: true }))
       st.position.copy(llaToVec(s.lat, s.lon, 0).multiplyScalar(1.0012)); st.center.set(0.5, 0); st._px = stIcon; st._ar = 1; st._dir = st.position.clone().normalize(); st.renderOrder = 15; g.add(st)
-      if (s.name) g.add(labelSprite(s.name, s.lat, s.lon, '#ffffff', 0.82, stFont))   // 名称紧贴地面站底座下方：亮白
+      if (s.name) g.add(labelSprite(s.name, s.lat, s.lon, '#ffffff', 0.82, stFont))   // 名称紧贴地球站底座下方：亮白
       if (s.el) g.add(labelSprite(s.el, s.lat, s.lon, '#ffffff', 1.87, stFont * 0.9))   // 聚焦卫星仰角：亮白，名称下方
     }
     markersGroup = g; scene.add(g)

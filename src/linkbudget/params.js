@@ -55,7 +55,7 @@ export const FIELD_GROUPS = [
       // （见 buildParams 的过滤）。options 为空，实际选项由 LinkBudgetApp 按当前载波信号配置库动态生成并
       // 通过 StationGrid 的 select-options 注入。
       { key: 'basebandId', label: '载波信号配置', type: 'select', options: [], def: '', target: 'meta' },
-      { key: 'earthStationLocation', label: '地面站位置', type: 'text', def: '北京', target: 'link', city: 'tx' },
+      { key: 'earthStationLocation', label: '地球站位置', type: 'text', def: '北京', target: 'link', city: 'tx' },
       { key: 'longitude', label: '经度', unit: '°E', type: 'num', def: '116.4074', target: 'link' },
       { key: 'latitude', label: '纬度', unit: '°N', type: 'num', def: '39.9042', target: 'link' },
       { key: 'altitude', label: '海拔', unit: 'm', type: 'num', def: '47', target: 'link', auto: 'elev' },
@@ -74,7 +74,7 @@ export const FIELD_GROUPS = [
   {
     key: 'downlink', title: '下行 · 收信站', icon: 'down',
     fields: [
-      { key: 'rxEarthStationLocation', label: '地面站位置', type: 'text', def: '北京', target: 'link', city: 'rx' },
+      { key: 'rxEarthStationLocation', label: '地球站位置', type: 'text', def: '北京', target: 'link', city: 'rx' },
       { key: 'rxLongitude', label: '经度', unit: '°E', type: 'num', def: '116.4074', target: 'link' },
       { key: 'rxLatitude', label: '纬度', unit: '°N', type: 'num', def: '39.9042', target: 'link' },
       { key: 'rxAltitude', label: '海拔', unit: 'm', type: 'num', def: '47', target: 'link', auto: 'elev' },

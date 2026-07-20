@@ -31,7 +31,7 @@ onMounted(load)
         <option value="dark">深色</option>
       </select>
     </div>
-    <div v-if="!hasApi" class="empty">需在 Electron 中运行。</div>
+    <div v-if="!hasApi" class="empty">需在桌面客户端中运行。</div>
     <template v-else>
       <div class="row">
         <label>高德地图 key</label>
@@ -43,7 +43,7 @@ onMounted(load)
       </div>
       <div class="row">
         <label>噪声比模式</label>
-        <select v-model="form.noiseRatioMode"><option value="ebno">Eb/N0</option><option value="esno">Es/N0</option></select>
+        <select v-model="form.noiseRatioMode"><option value="ebno">Eb/N₀</option><option value="esno">Es/N₀</option></select>
       </div>
       <div class="row">
         <label></label>

@@ -183,7 +183,7 @@ function onBwInput(e) { setAnchor('bw', e.target.value) }
     <!-- 实时结果（可编辑反算，三者与信息速率同一条换算链，编辑任一个即把它设为锚点）——
          系统余量不在此处：它是批量计算的目标值，不随载波信号配置走，在 LinkBudgetApp 底部「计算方式」栏统一设置 -->
     <div class="bb-rt">
-      <label class="bb-f"><span class="bb-l">码片速率 <i>(kbps)</i></span>
+      <label class="bb-f"><span class="bb-l">码片速率 <i>(kcps)</i></span>
         <input :value="fmt(chipRate)" class="bb-i mono" @change="onChipInput" />
       </label>
       <label class="bb-f"><span class="bb-l">符号率 <i>(ksps)</i></span>

@@ -84,7 +84,7 @@ const num = (v) => { const n = parseFloat(v); return Number.isFinite(n) ? n : Na
 
 async function compute() {
   error.value = ''
-  if (!api) { error.value = '引擎需在 Electron 中运行（npm run dev）'; return }
+  if (!api) { error.value = '引擎需在桌面客户端中运行'; return }
   const lat = num(form.lat), lon = num(form.lon), satLon = num(form.satLon)
   const dia = num(form.diameter), freq = num(form.freq), degTh = num(form.degThreshold)
   const year = parseInt(form.year, 10)

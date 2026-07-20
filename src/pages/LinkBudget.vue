@@ -26,7 +26,7 @@ const computing = ref(false)
 
 async function compute() {
   if (!hasApi) {
-    error.value = '引擎需在 Electron 中运行（npm run dev）'
+    error.value = '引擎需在桌面客户端中运行'
     return
   }
   computing.value = true
@@ -152,7 +152,7 @@ onMounted(compute)
         <label><span>降雨率</span><input class="mono" v-model="form.rainRate" /><i>mm/h</i></label>
         <label><span>下行 EIRP</span><input class="mono" v-model="form.rxEIRP" /><i>dBW</i></label>
         <label><span>卫星 G/T</span><input class="mono" v-model="form.G_Ts" /><i>dB/K</i></label>
-        <label><span>门限 Eb/N0</span><input class="mono" v-model="form.ebno" /><i>dB</i></label>
+        <label><span>门限 Eb/N₀</span><input class="mono" v-model="form.ebno" /><i>dB</i></label>
         <label><span>链路余量</span><input class="mono" v-model="form.margin" /><i>dB</i></label>
       </div>
 

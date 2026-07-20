@@ -1,4 +1,4 @@
-// 标记批量表格（Excel 模块）数据模型：点标记 / 地面站 / 航迹航点三套可编辑网格的增删改 + 批量粘贴 + 撤销重做。
+// 标记批量表格（Excel 模块）数据模型：点标记 / 地球站 / 航迹航点三套可编辑网格的增删改 + 批量粘贴 + 撤销重做。
 // 与「链路预算性能表」同款交互内核（useGridSelect），此处只提供数据侧 CRUD/解析——渲染/命中/键盘交给 useGridSelect。
 // 三套数据仍是页面里的 points / stations / trajectories 三个 ref（本模块受注入的引用，改后调 sync 落盘+推图）。
 import { ref } from 'vue'
@@ -42,12 +42,12 @@ export function useMarkerTable({ points, stations, trajectories, newId, sync }) 
   function redo() { if (!redoStack.length) return false; undoStack.push(_snap()); _apply(redoStack.pop()); _flags(); sync(); return true }
   function clearHistory() { undoStack.length = 0; redoStack.length = 0; _flags() }
 
-  // ===== 通用行操作工厂（点标记 / 地面站共用；航迹航点因嵌套单列另写）=====
+  // ===== 通用行操作工厂（点标记 / 地球站共用；航迹航点因嵌套单列另写）=====
   // cols：该网格列 key 顺序（末尾恒为 'lon','lat'）；makeEmpty：新建一行空对象；setCell：写一格。
   function makeLayer(getList, setList, cols, makeEmpty, setCell) {
     // 追加式批量（无选区/空表）：每行一条，约定【末两列=经度、纬度】，之前的文本列依次填非坐标列。末两列非数字的行跳过。
     function pasteAppend(text) {
-      const textCols = cols.slice(0, cols.length - 2)   // 坐标之外的文本列（点标记为空、地面站为['name']）
+      const textCols = cols.slice(0, cols.length - 2)   // 坐标之外的文本列（点标记为空、地球站为['name']）
       const add = []
       for (const line of String(text || '').split(/\r?\n/)) {
         const t = line.trim(); if (!t) continue
@@ -102,7 +102,7 @@ export function useMarkerTable({ points, stations, trajectories, newId, sync }) 
     (r, k, v) => setCoord(r, k, v)   // 点标记全是坐标列
   )
 
-  // ---- 地面站：列 [名称, 经度, 纬度] ----
+  // ---- 地球站：列 [名称, 经度, 纬度] ----
   const ST_COLS = ['name', 'lon', 'lat']
   const stLayer = makeLayer(
     () => stations.value, (a) => { stations.value = a }, ST_COLS,

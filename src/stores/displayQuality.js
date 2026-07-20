@@ -1,6 +1,6 @@
 import { reactive, computed, watch } from 'vue'
 
-// 全局显示画质（游戏式档位）：低/中/高/超高/原画/自定义，作用于 3D 球体 + 2D 平面（星座图 / 覆盖分析 / GXT 共用同一引擎）。
+// 全局显示画质（游戏式档位）：低/中/高/超高/极致/自定义，作用于 3D 球体 + 2D 平面（星座图 / 覆盖分析 / GXT 共用同一引擎）。
 // 每个档位预设下列底层可调项；选「自定义」时各项解锁手调。改任意项自动落到「自定义」。
 //  - pixelRatio  渲染分辨率倍率（= THREE 的 setPixelRatio；UI 以 % 显示，100%=1×）。头号性能杠杆，热切无缝。
 //  - mapDetail   底图几何精度：'10m'(精细) | '50m'(粗)。换 topojson 源，重建陆地网格+边界线。
@@ -19,7 +19,7 @@ const PRESETS = {
 }
 export const TIERS = [
   { key: 'low', label: '低' }, { key: 'mid', label: '中' }, { key: 'high', label: '高' },
-  { key: 'ultra', label: '超高' }, { key: 'native', label: '原画' }, { key: 'custom', label: '自定义' }
+  { key: 'ultra', label: '超高' }, { key: 'native', label: '极致' }, { key: 'custom', label: '自定义' }
 ]
 // 底图精细化「档位」（由 50m/10m 两套 topojson + 顶点抽稀阈值 thin 组合出多级，粗→细）。
 // 单一下拉选择，内部同时落 mapDetail(数据源) 与 mapThin(抽稀阈值，度)。各档位粗→细顺序排列。

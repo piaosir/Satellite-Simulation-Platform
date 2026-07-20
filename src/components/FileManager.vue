@@ -465,7 +465,7 @@ onMounted(() => { loadOmm(); loadCustomGroups(); loadCustomConsts(); loadGxt(); 
             </div>
 
             <div class="secbar top"><span class="sect">内置星座组</span></div>
-            <p class="lead">每组对应一份 CelesTrak OMM(CSV)。软件已内置一份最新快照作兜底——无网设备也能看到星座；联网时自动改用更新的一版。可导入本地文件替换、或导出当前数据。</p>
+            <p class="lead">每组对应一份 CelesTrak OMM（CSV）。软件已内置一份最新快照，无网络时也能查看星座；联网时自动改用更新的一版。可导入本地文件替换、或导出当前数据。</p>
             <table class="tbl">
               <thead><tr><th>星座组</th><th>卫星数</th><th>更新时间</th><th>状态</th><th></th></tr></thead>
               <tbody>
@@ -501,7 +501,7 @@ onMounted(() => { loadOmm(); loadCustomGroups(); loadCustomConsts(); loadGxt(); 
                     <span class="trops">
                       <button class="mini" @click="openEditGrdSat(sat)">编辑</button>
                       <button class="mini" @click="importGrd(sat)"><Icon name="plus" :size="12" /> 导入 GRD</button>
-                      <button class="mini del" @click="removeGrdSat(sat)">删除星</button>
+                      <button class="mini del" @click="removeGrdSat(sat)">删除卫星</button>
                     </span>
                   </div>
                   <div v-for="a in sat.antennas" :key="a.name" class="trow ant">
@@ -531,7 +531,7 @@ onMounted(() => { loadOmm(); loadCustomGroups(); loadCustomConsts(); loadGxt(); 
 
           <!-- ③ GXT -->
           <section v-else-if="tab === 'gxt'">
-            <p class="lead">卫星 → 波束 → GXT 文件。直接「导入 GXT 文件」可多选一批，按文件名（卫星_频段_波束_类型）自动归类建星建波束；导入后能在 3D 页「覆盖图(GXT)」面板选用绘制。软件自带的默认覆盖只读、可导出。</p>
+            <p class="lead">卫星 → 波束 → GXT 文件。直接「导入 GXT 文件」可多选一批，按文件名（卫星_频段_波束_类型）自动归类建立卫星与波束；导入后能在 3D 页「覆盖图（GXT）」面板选用绘制。软件自带的默认覆盖只读、可导出。</p>
 
             <div class="addbar">
               <button class="mini imp" @click="importGxtBatch">导入 GXT 文件…</button>
@@ -540,10 +540,10 @@ onMounted(() => { loadOmm(); loadCustomGroups(); loadCustomConsts(); loadGxt(); 
               <button class="mini ghost" :disabled="!canExportCurrent" title="把 3D 页当前绘制的覆盖（GXT/GRD 来源）转为 GXT 文件导出" @click="exportCurrentGxt">当前覆盖转为 GXT 导出</button>
             </div>
             <div class="addbar sub">
-              <span class="dimnote">或手动建：</span>
+              <span class="dimnote">或手动新建：</span>
               <input class="ci" v-model="newSat.name" placeholder="卫星名" @keydown.enter="addGxtSat" />
               <input class="ci nar" v-model="newSat.lon" placeholder="经度°E" @keydown.enter="addGxtSat" />
-              <button class="mini ghost" @click="addGxtSat"><Icon name="plus" :size="12" /> 空卫星</button>
+              <button class="mini ghost" @click="addGxtSat"><Icon name="plus" :size="12" /> 空白卫星</button>
             </div>
 
             <div v-if="!allSats.length" class="empty-hint">暂无覆盖数据。可新建卫星并导入 GXT。</div>
@@ -555,7 +555,7 @@ onMounted(() => { loadOmm(); loadCustomGroups(); loadCustomConsts(); loadGxt(); 
                   <span class="tcount">{{ (sat.lon != null ? sat.lon + '°E · ' : '') }}{{ sat.beams.length }} 波束</span>
                   <span class="trops" @click.stop>
                     <button class="mini" @click="openAddBeam(sat)"><Icon name="plus" :size="12" /> 波束</button>
-                    <button class="mini del" @click="removeGxtSat(sat)">删除星</button>
+                    <button class="mini del" @click="removeGxtSat(sat)">删除卫星</button>
                   </span>
                 </div>
                 <template v-if="gxtExpanded[sat.key]">

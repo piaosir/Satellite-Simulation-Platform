@@ -166,7 +166,7 @@ const rows = computed(() => {
           </label>
           <div class="sp-tip">匹配后按站经纬度自动回填：收信站「卫星EIRP」、发信站「卫星G/T」（多波束取 Parameter 最大者）；斜距按所选卫星轨道自动计算。</div>
         </template>
-        <div v-else class="sp-tip">该卫星未导入天线，仅作轨道来源：斜距按其轨道自动计算，EIRP/G/T 请在发/收信站手填。</div>
+        <div v-else class="sp-tip">该卫星未导入天线，仅作轨道来源：斜距按其轨道自动计算，EIRP/G/T 请在发/收信站手动输入。</div>
       </template>
     </div>
 

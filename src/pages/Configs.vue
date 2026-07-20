@@ -30,7 +30,7 @@ onMounted(load)
   <div class="cfg">
     <h2>配置管理</h2>
     <p class="hint">保存常用参数预设（GEO/NGSO 模板）。链路预算页可一键载入。</p>
-    <div v-if="!hasApi" class="empty">需在 Electron 中运行。</div>
+    <div v-if="!hasApi" class="empty">需在桌面客户端中运行。</div>
     <template v-else>
       <div class="add">
         <input v-model="newName" placeholder="新建预设名称，如「GEO Ku 标准站」" @keyup.enter="add" />

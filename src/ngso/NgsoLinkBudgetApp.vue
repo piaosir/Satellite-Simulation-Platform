@@ -86,7 +86,7 @@ const moduleCount = (k) => (k === 'tx' ? txStations.length : k === 'rx' ? rxStat
 // —— 计算方式 ——（enLabel 供导出 Excel 选英文时用，措辞对齐链路预算工程惯用语）
 const CALC_MODES = [
   { key: 'margin', label: '设置余量', enLabel: 'Fixed Margin', tip: '输入余量 → 算功放功率' },
-  { key: 'power', label: '设置功放大小', enLabel: 'Fixed PA Power', tip: '输入功放功率(W) → 反推余量' },
+  { key: 'power', label: '设置功放功率', enLabel: 'Fixed PA Power', tip: '输入功放功率(W) → 反推余量' },
   { key: 'balance', label: '功带平衡', enLabel: 'Power-Bandwidth Balance', tip: '自动求功带平衡点的余量' },
   { key: 'overbalance', label: '功带平衡下超发', enLabel: 'Power-Bandwidth Balance with Overdrive', tip: '相对功带平衡超发 x dB → 自动算余量' }
 ]
@@ -372,7 +372,7 @@ async function solveSelectedGeom(tx, rx, t0ISO) {
 // 的新值（非用户操作）会被指纹判定为改动，弹出误报的「未保存，是否保存？」。
 // 若回填前已有用户自己的改动（isDirty 为真），则不触碰基线，改动仍会被正确提示保存。
 //
-// 采样卫星位置口径：EIRP/G·T 反映「卫星在某位置时对地面站的天线增益」，随卫星移动而变。为与性能指标表
+// 采样卫星位置口径：EIRP/G·T 反映「卫星在某位置时对地球站的天线增益」，随卫星移动而变。为与性能指标表
 // 的最差工况一致，站表这一列取【主链路(首发×首收)的 t* 星下点】作为卫星位置采样（代表性显示值）；
 // 主计算 compute() 再对每条链路各自的 t* 逐行精确重采（见其中的 override）。选星不可行/未选星 → 回退
 // 天线快照位置（原行为）。用户手改过的单元格予以保留（不被自动值覆盖）。
@@ -545,7 +545,7 @@ const capMain = computed(() => fmtCapacity(capacitySummary.value.capKbps))
 const bwMain = computed(() => fmtBandwidth(capacitySummary.value.bwKHz))
 
 async function compute() {
-  if (!api) { error.value = '引擎需在 Electron 中运行（npm run dev）'; return }
+  if (!api) { error.value = '引擎需在桌面客户端中运行'; return }
   if (!txStations.length || !rxStations.length) { error.value = '请至少各添加一个发信站和收信站'; return }
   computing.value = true; error.value = ''
   try {
@@ -795,7 +795,7 @@ function pruneExpanded() {
 function defaultCfgName() { return (satForm.satelliteName ? satForm.satelliteName + ' ' : '') + `链路 ${nTx.value}×${nRx.value}` }
 // 命名弹窗：保存为新配置
 const cfgDlg = reactive({ open: false, name: '' })
-function openSaveDlg() { if (!api) { toast('保存需在 Electron 中运行'); return } cfgDlg.name = defaultCfgName(); cfgDlg.open = true }
+function openSaveDlg() { if (!api) { toast('保存需在桌面客户端中运行'); return } cfgDlg.name = defaultCfgName(); cfgDlg.open = true }
 async function confirmCfgDlg() {
   const name = (cfgDlg.name || '').trim()
   if (!name) { toast('请输入配置名称'); return }
@@ -827,7 +827,7 @@ async function updateConfig() {
 }
 // 存盘按钮：有当前配置则更新，否则保存为新（两个按钮都能把现有配置存下来）
 async function saveCurrent() {
-  if (!api) { toast('保存需在 Electron 中运行'); return }
+  if (!api) { toast('保存需在桌面客户端中运行'); return }
   if (activeId.value) await updateConfig()
   else openSaveDlg()
 }
@@ -856,7 +856,7 @@ function askConfirm(msg) { confirmDlg.msg = msg; confirmDlg.open = true; return 
 function answerConfirm(ok) { confirmDlg.open = false; const r = _confirmResolve; _confirmResolve = null; if (r) r(ok) }
 // 新建文件夹：parentId 为空=根，否则建在该文件夹下；建后自动展开并进入改名（orbitType 标 NGSO）
 async function addFolder(parentId = null) {
-  if (!api) { toast('需在 Electron 中运行'); return }
+  if (!api) { toast('需在桌面客户端中运行'); return }
   const item = await api.store.saveConfig({ type: 'folder', name: uniqueCfgName('新建文件夹'), parentId: parentId || null, orbitType: 'NGSO' })
   if (parentId) { expandedFolders.value.add(parentId) }
   if (item && item.id) expandedFolders.value.add(item.id)
@@ -906,7 +906,7 @@ function uniqueCfgName(base) {
 }
 // ＋ / 右键「添加空白配置」：新建一份默认参数配置并载入（parentId 非空=建在该文件夹内）
 async function addBlankConfig(parentId = null) {
-  if (!api) { toast('需在 Electron 中运行'); return }
+  if (!api) { toast('需在桌面客户端中运行'); return }
   if (!(await guardedLeave())) return
   const state = blankState()
   const item = await api.store.saveConfig({ name: uniqueCfgName('新配置'), state, parentId: parentId || null })
@@ -965,7 +965,7 @@ function openCtx(e, c) {
 function ctxDo(fn) { ctxMenu.open = false; fn() }
 // 导入一批分享来的配置（[{name,state}]）→ 各存为新配置；末条载入工作台
 async function importConfigs(items) {
-  if (!api) { toast('导入需在 Electron 中运行'); return 0 }
+  if (!api) { toast('导入需在桌面客户端中运行'); return 0 }
   let last = null
   for (const it of items) {
     // 深拷成纯对象：收件箱来的 it.state 是 Vue 响应式 Proxy，直接经 IPC 传给 saveConfig 会报「An object could not be cloned」
@@ -1088,7 +1088,7 @@ const exporting = ref(false)
 const exportLang = ref(localStorage.getItem('ngso/exportLang') || 'zh')
 watch(exportLang, (v) => { try { localStorage.setItem('ngso/exportLang', v) } catch (e) { /* ignore */ } })
 async function exportExcel() {
-  if (!api) { error.value = '导出需在 Electron 中运行'; return }
+  if (!api) { error.value = '导出需在桌面客户端中运行'; return }
   if (!links.value.length) { toast('请先点「计算」生成结果'); return }
   exporting.value = true
   try {
@@ -1168,7 +1168,7 @@ onMounted(async () => {
       </button>
       <span class="lb-spacer"></span>
       <span class="lb-note" v-if="notice">{{ notice }}</span>
-      <span class="lb-hint" v-if="!api"><Icon name="alert-triangle" :size="12" /> 引擎需在 Electron 中运行</span>
+      <span class="lb-hint" v-if="!api"><Icon name="alert-triangle" :size="12" /> 引擎需在桌面客户端中运行</span>
     </header>
 
     <div class="lb-body">
@@ -1565,7 +1565,7 @@ onMounted(async () => {
           <textarea class="lb-area" :value="shareDlg.code" readonly rows="3" @focus="$event.target.select()"></textarea>
           <div class="lb-share-acts">
             <button class="lb-mini primary" @click="copyShareCode">复制分享码</button>
-            <button class="lb-mini" @click="exportConfigFile">导出为文件(.lbcfg)</button>
+            <button class="lb-mini" @click="exportConfigFile">导出为文件（.lbcfg）</button>
             <button class="lb-mini" @click="importConfigFile">从文件导入</button>
           </div>
           <label class="lb-share-l">导入：粘贴分享码后点「导入」</label>
@@ -1597,7 +1597,7 @@ onMounted(async () => {
               </li>
             </ul>
           </template>
-          <div v-else class="lb-share-note">在线分享未配置：需在 electron/services/shareConfig.js 填入仅授权 share/* 的 COS 子账号密钥（见 shareConfig.example.js）。配置后即可按用户ID收发。当前可先用「线下分享码」即时分享。</div>
+          <div v-else class="lb-share-note">在线分享功能尚未配置；当前可先用「线下分享码」即时分享。</div>
         </div>
 
         <div class="lb-dlg-ft">

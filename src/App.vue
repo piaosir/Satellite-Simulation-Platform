@@ -40,9 +40,9 @@ const sideViews = computed(() => [
   { key: 'constellation', label: '星座', icon: 'satellite', disabled: !pageReady.value, hint: '星座分组与卫星搜索' },
   { key: 'antenna', label: '覆盖分析', icon: 'satellite-dish', disabled: !covNav.grdAvail, hint: '卫星 → 天线 → 覆盖范围 / 性能指标表（GRD）' },
   { key: 'poly', label: 'Polygon（协调区）', icon: 'hexagon', disabled: !covNav.polyAvail, hint: '协调区多边形：绘制 / 调点 / 扩缩 / 导出' },
-  { key: 'beams', label: '波束合成', icon: 'radio', disabled: !covNav.grdAvail, hint: '多馈源反射面 / 赋形反射面：设参数 → 点图放置轮廓 → 生成方向图天线（SATSOFT 同款）' },
+  { key: 'beams', label: '波束合成', icon: 'radio', disabled: !covNav.grdAvail, hint: '多馈源反射面 / 赋形反射面：设参数 → 点图放置轮廓 → 生成方向图天线' },
   { key: 'gxt', label: '卫星覆盖等值线', icon: 'waves', disabled: !covNav.covAvail, hint: 'GEO 卫星覆盖等值线（GXT 库）' },
-  { key: 'markers', label: '标记', icon: 'map-pin', disabled: !pageReady.value, hint: '点标记 / 地面站 / 轨迹' },
+  { key: 'markers', label: '标记', icon: 'map-pin', disabled: !pageReady.value, hint: '点标记 / 地球站 / 轨迹' },
   { key: 'geo', label: '地图设置', icon: 'sliders-horizontal', disabled: !pageReady.value, hint: '海陆配色 / 国界省界 / 名称标注' }
 ])
 const sideTitle = computed(() => sideViews.value.find((v) => v.key === ui.side)?.label || '')
@@ -114,7 +114,7 @@ const stepZoom = (d) => { const t = Math.max(0, Math.min(1, zoom.value + d)); if
 const menus = computed(() => [
   { key: 'file', label: '文件', items: [
     { label: '文件管理…', icon: 'folder-open', hint: '管理 GRD / GXT 覆盖文件库（导入 / 导出 / 删除）', run: () => { fileOpen.value = true } },
-    { label: '导入 TLE 文件(CSV)…', icon: 'import', disabled: !covNav.importTle, hint: '从本地 CSV（CelesTrak「FORMAT=csv」的 OMM 文件）导入卫星星历，离线/连不上 celestrak 时用', run: () => covNav.importTle?.() },
+    { label: '导入 TLE 文件（CSV）…', icon: 'import', disabled: !covNav.importTle, hint: '从本地 CSV（CelesTrak「FORMAT=csv」的 OMM 文件）导入卫星星历，离线或无法连接 CelesTrak 时使用', run: () => covNav.importTle?.() },
     { sep: true },
     { label: '退出', icon: 'log-out', hint: '关闭主窗口', run: () => window.close() }
   ] },

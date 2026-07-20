@@ -56,11 +56,11 @@ const speedPct = computed({
           <div class="tiers">
             <button v-for="t in TIERS" :key="t.key" class="tier" :class="{ on: quality.tier === t.key }" @click="setTier(t.key)">{{ t.label }}</button>
           </div>
-          <p class="tip">原画为可达最高画质；改动任意项将切换为「自定义」。</p>
+          <p class="tip">「极致」为可达的最高画质；改动任意项将切换为「自定义」。</p>
 
           <div class="grid">
             <label class="frow">
-              <span class="fn">渲染分辨率<em>超采样倍率，性能头号杠杆</em></span>
+              <span class="fn">渲染分辨率<em>超采样倍率，对性能影响最大</em></span>
               <select :value="eff.pixelRatio" @change="onPick('pixelRatio', $event)">
                 <option v-for="o in optsOf('pixelRatio')" :key="o.label" :value="o.v">{{ o.label }}</option>
               </select>
@@ -90,7 +90,7 @@ const speedPct = computed({
               </select>
             </label>
             <div class="frow">
-              <span class="fn">MSAA 抗锯齿<em>切换后 3D 视图会重渲一次</em></span>
+              <span class="fn">MSAA 抗锯齿<em>切换后 3D 视图会重新渲染一次</em></span>
               <span class="sw" :class="{ on: msaaOn }" @click="toggleMsaa"><i></i></span>
             </div>
           </div>

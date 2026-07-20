@@ -2,7 +2,7 @@
 // 站点库与地图标记解耦（可一键导入标记）；每个天线一张表，且每张表的选项独立保存（optsByAnt）。
 // 取值内核见 src/viz/grd/coverage.js：sampleBeamAt（反向采样方向图）、tiltBasis（指向误差扫描）。
 import { ref, computed } from 'vue'
-import { sampleBeamAt, perturbSpacecraft, dirToAzEl, axialRatioDb } from './coverage.js'
+import { sampleBeamAt, perturbSpacecraft, dirToAzEl, groundLookAngles, axialRatioDb } from './coverage.js'
 
 let _seq = 1
 const newId = () => 'st' + Date.now().toString(36) + (_seq++)
@@ -23,8 +23,10 @@ const COL_DEFS = [
   { key: 'desig', label: '代号', w: 72 },
   { key: 'lon', label: '经度', w: 128, num: true, fix: 2 },
   { key: 'lat', label: '纬度', w: 128, num: true, fix: 2 },
-  { key: 'scAz', label: 'S/C Az', w: 64, num: true, fix: 2 },
-  { key: 'scEl', label: 'S/C El', w: 64, num: true, fix: 2 },
+  { key: 'scAz', label: 'S/C Az', w: 64, num: true, fix: 2, tip: '卫星（航天器）天线系下、指向该地面点的方位角（boresight=星下点为 0）' },
+  { key: 'scEl', label: 'S/C El', w: 64, num: true, fix: 2, tip: '卫星（航天器）天线系下、指向该地面点的俯仰角（boresight=星下点为 0）' },
+  { key: 'gsAz', label: 'G/S Az', w: 64, num: true, fix: 2, tip: '地球站看卫星的方位角（自正北顺时针 0–360°）' },
+  { key: 'gsEl', label: 'G/S El', w: 64, num: true, fix: 2, tip: '地球站看卫星的仰角（当地水平面以上；<0 表示卫星在地平线下不可见）' },
   { key: 'u', label: 'u', w: 62, num: true, fix: 4 },
   { key: 'v', label: 'v', w: 62, num: true, fix: 4 },
   { key: 'dir', label: 'Dir(dB)', w: 74, num: true, fix: 2 },
@@ -40,7 +42,7 @@ const COL_DEFS = [
 const COL_GROUPS = [
   { title: '标识', keys: ['satNo', 'satName', 'antNo', 'antName', 'beamNo', 'stationNo'] },
   { title: '站点', keys: ['country', 'city', 'desig', 'lon', 'lat'] },
-  { title: '几何', keys: ['scAz', 'scEl', 'u', 'v'] },
+  { title: '几何', keys: ['scAz', 'scEl', 'gsAz', 'gsEl', 'u', 'v'] },
   { title: '性能', keys: ['dir', 'param', 'minPt', 'maxPt', 'xpol', 'slope', 'ar'] }
 ]
 
@@ -48,7 +50,7 @@ function defaultOpts() {
   const cols = {}
   for (const c of COL_DEFS) cols[c.key] = false
   // 默认列对标 SATSOFT 只读性能表：No / Beam No / City / Desig / Lon / Lat / Dir / Parameter / Min·Max Pointing
-  for (const k of ['no', 'beamNo', 'city', 'desig', 'lon', 'lat', 'dir', 'param', 'minPt', 'maxPt']) cols[k] = true
+  for (const k of ['no', 'beamNo', 'city', 'desig', 'lon', 'lat', 'gsAz', 'gsEl', 'dir', 'param', 'minPt', 'maxPt']) cols[k] = true
   return {
     cols,
     // 覆盖过滤默认开：结果表只列「覆盖该城市的波束」（方向性≥阈值）。城市仍完整保留在上方输入区，
@@ -208,11 +210,11 @@ export function usePerfTable() {
   // 仅隐藏当前行（站×波束），不影响同站其他波束行；id 稳定 → recompute 后仍生效。
   function removeRow(id) { if (id != null) hidden.value = { ...hidden.value, [id]: true } }
 
-  // 从地图标记导入：地面站 name → 城市；点标记 → 仅经纬度。±1e-4 去重。返回新增条数。
+  // 从地图标记导入：地球站 name → 城市；点标记 → 仅经纬度。±1e-4 去重。返回新增条数。
   function importFromMarkers(points = [], mkStations = []) {
     const exists = (lon, lat) => stations.value.some((s) => Math.abs(s.lon - lon) < 1e-4 && Math.abs(s.lat - lat) < 1e-4)
     const add = []
-    for (const p of mkStations) { const lon = num(p.lon), lat = num(p.lat); if (lon == null || lat == null || exists(lon, lat)) continue; add.push({ id: newId(), country: '', city: (p.name || '').trim() || '地面站', desig: '', lon, lat }) }
+    for (const p of mkStations) { const lon = num(p.lon), lat = num(p.lat); if (lon == null || lat == null || exists(lon, lat)) continue; add.push({ id: newId(), country: '', city: (p.name || '').trim() || '地球站', desig: '', lon, lat }) }
     for (const p of points) { const lon = num(p.lon), lat = num(p.lat); if (lon == null || lat == null || exists(lon, lat)) continue; add.push({ id: newId(), country: '', city: '', desig: '', lon, lat }) }
     if (add.length) stations.value = [...stations.value, ...add]
     return add.length
@@ -297,7 +299,7 @@ export function usePerfTable() {
     const parOpts = { pol: polD, gainOffset: same ? st.gainOffset : o.gainOffset, pathLoss: same ? st.pathLoss : o.pathLoss }  // 参数口径
     const rel = same && st.ctype === 'rel'
     const want = (k) => o.cols[k]
-    const wantPt = want('minPt') || want('maxPt'), wantGeo = want('scAz') || want('scEl')
+    const wantPt = want('minPt') || want('maxPt'), wantGeo = want('scAz') || want('scEl'), wantGS = want('gsAz') || want('gsEl')
     // Parameter 单位换算（仅自定义口径时生效；Same as Antenna 恒为 dB）
     const unitOf = (db) => (same || o.unit === 'dB') ? db : (o.unit === 'power' ? Math.pow(10, db / 10) : Math.pow(10, db / 20))
 
@@ -305,6 +307,7 @@ export function usePerfTable() {
     stations.value.forEach((s, si) => {
       if (!Number.isFinite(s.lon) || !Number.isFinite(s.lat)) return   // 空行/经纬度未填全：不参与取值（行号 stationNo 仍按输入区行计）
       const geo = wantGeo ? dirToAzEl(meta.satLon, meta.satLat || 0, meta.satAlt, s.lon, s.lat) : null
+      const gls = wantGS ? groundLookAngles(meta.satLon, meta.satLat || 0, meta.satAlt, s.lon, s.lat) : null   // 地球站看卫星的方位/仰角
       for (const bm of ctx.beams) {
         if (beamAllow && !beamAllow.has(bm.bi)) continue                                     // 波束筛选：未选中的波束不进表
         const d = sampleBeamAt(bm.beam, igrid, basis, s.lon, s.lat, want('ar') ? { ...dirOpts, wantComp: true } : dirOpts)
@@ -329,7 +332,8 @@ export function usePerfTable() {
           satNo: ctx.satNo, satName: ctx.satName, antNo: ctx.antNo, antName: ctx.antName,
           beamNo: bm.seq || bm.bi + 1, stationNo: si + 1,   // 波束号=原始 GRD 序号（删除波束后不重排）
           country: s.country, city: s.city, desig: s.desig, lon: s.lon, lat: s.lat,
-          scAz: geo ? geo.az : null, scEl: geo ? geo.el : null, u: d ? d.u : null, v: d ? d.v : null,
+          scAz: geo ? geo.az : null, scEl: geo ? geo.el : null,
+          gsAz: gls ? gls.az : null, gsEl: gls ? gls.el : null, u: d ? d.u : null, v: d ? d.v : null,
           dir, param: param == null ? null : unitOf(param), minPt: pt.min, maxPt: pt.max, xpol, slope, ar,
           inPattern: d != null
         })

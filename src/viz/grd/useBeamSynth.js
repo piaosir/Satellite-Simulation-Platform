@@ -489,7 +489,7 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
       placing.value = false
       if (!h) return
       h.lon = +ll.lon.toFixed(4); h.lat = +ll.lat.toFixed(4)
-      status.value = `峰点已设为 ${h.lon}°E, ${h.lat}°N —— 目标引导；实际峰值落点由物理合成决定，生成后如实报告`
+      status.value = `峰点已设为 ${h.lon}°E, ${h.lat}°N —— 目标引导；实际峰值落点由物理合成决定，生成后据实给出实际峰值`
       refresh()
       return
     }
@@ -543,7 +543,7 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
     if (!pos) { appAlert('请先选择卫星'); return }
     if (!curSetting.value) { appAlert('请先添加一个波束设置'); return }
     const sp = Number(curSetting.value.spacing)                      // 间距现为每设置（＝该设置波束宽 Auto）
-    if (!(sp > 0)) { appAlert('间距无效：请填一个大于 0 的度数（Auto = 波束宽度）'); return }
+    if (!(sp > 0)) { appAlert('间距无效：须为大于 0 的角度值（Auto = 波束宽度）'); return }
     const centers = hexFillCenters({ satLon: pos.lon, satLat: pos.lat || 0, altKm: pos.altKm, polyPts: pg.pts, spacing: sp })
     if (!centers.length) { appAlert('该 Polygon 内没有布下任何波束中心：间距可能大于区域尺寸'); return }
     const aw = activeWidth()
@@ -563,7 +563,7 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
     const pos = satPos()
     if (!pos) { appAlert('请先选择卫星'); return }
     const valid = beams.value.filter((b) => Number.isFinite(b.lon) && Number.isFinite(b.lat) && b.thX > 0 && b.thY > 0)
-    if (valid.length < 2) { appAlert('至少需要 2 个波束才能做频率配色：先放置或蜂窝布满/批量表格添加'); return }
+    if (valid.length < 2) { appAlert('至少需要 2 个波束才能进行频率配色：先放置或蜂窝布满/批量表格添加'); return }
     const nodes = valid.map((b) => { const a = dirToAzEl(pos.lon, pos.lat || 0, pos.altKm, b.lon, b.lat); return { az: a.az, el: a.el, r: (b.thX + b.thY) / 4 } })
     const k = Math.max(2, Math.min(FC_PALETTE.length, Number(p.fcN) || 4))
     const r = colorFreqPlan(nodes, k)
@@ -571,7 +571,7 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
     valid.forEach((b, i) => { b.fc = r.colors[i] })
     p.fcShow = true
     status.value = r.conflicts
-      ? `频率配色：${k} 色下仍有 ${r.conflicts} 对相邻同色 —— 该布局 ${k} 色不够，试试更多颜色数或加大波束间距`
+      ? `频率配色：${k} 色下仍有 ${r.conflicts} 对相邻同色 —— 该布局 ${k} 色不足，可增加颜色数或加大波束间距`
       : `频率配色完成：${valid.length} 个波束 · ${k} 色，相邻波束互不同色（拖拽微调后可重新分配）`
     refresh()
   }

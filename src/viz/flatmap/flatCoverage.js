@@ -21,7 +21,7 @@ const OCEANS = [
 ]
 // 大洋名描边色（与 3D 同：斜体浅蓝）
 const OCEAN_FILL = 'rgba(150,195,230,0.92)'
-// 地面站图标（与 3D 同一张 SVG）
+// 地球站图标（与 3D 同一张 SVG）
 const STATION_SVG = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'>" +
   "<ellipse cx='32' cy='58' rx='12' ry='2' fill='#000000' opacity='0.18'/>" +
   "<path d='M23 57 L28 43 L36 43 L41 57 Z' fill='#c3c8cd' stroke='#9aa1a8' stroke-width='0.6'/>" +
@@ -97,9 +97,9 @@ export function createFlatCoverage(canvas) {
   let selGeomList = []  // 聚焦卫星几何列表 [{ footprint:[{lat,lon}...], track:[{lat,lon}...] }...]，与 3D 同源（覆盖范围蓝 + 星下点轨迹黄，多颗同时叠画）
   let satLayer = null   // 卫星/仰角线独立图层 { lines, dots, labels, sats }（与 geom/field 互不干扰）
   const sizes = { beamFont: 16, contourFont: 12, dotSize: 5, showBore: true, nameScale: 1, provScale: 1, cityScale: 1, ptFont: 14, stIcon: 32, stFont: 17, satIcon: 30, ptDot: 3.5, trajDot: 2.5 }
-  const SAT_ICON_K = 0.85   // 卫星图标：同地面站 ST_ICON_K，2D 观感偏大于 3D，收一档对齐（经验系数，可微调）
+  const SAT_ICON_K = 0.85   // 卫星图标：同地球站 ST_ICON_K，2D 观感偏大于 3D，收一档对齐（经验系数，可微调）
 
-  // 地面站图标
+  // 地球站图标
   const stationImg = new Image(); let stationReady = false
   stationImg.onload = () => { stationReady = true; invalidateStatic(); requestDraw() }
   stationImg.src = 'data:image/svg+xml;base64,' + btoa(STATION_SVG)
@@ -420,14 +420,14 @@ export function createFlatCoverage(canvas) {
     ctx.save()
     ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip()
     // 随缩放联动系数：mz=scale（与国家名同率，用于数值/覆盖/卫星层等注记）；scale=1 即当前大小。
-    // iz=√scale 是「克制版」联动：点标记/地面站/航迹这类实心图标若按 mz 满速放大，2D 缩放幅度大(可达60×)会膨成大色块，
+    // iz=√scale 是「克制版」联动：点标记/地球站/航迹这类实心图标若按 mz 满速放大，2D 缩放幅度大(可达60×)会膨成大色块，
     // 故按 √scale 缓增——仍随缩放变化、scale=1 时不变，但放大时增长更温和、不至于过大。
     const mz = scale, iz = Math.sqrt(scale)
     // 与 3D 球体标记观感对齐：3D 的文字/圆点精灵都含画布留白（makeCovLabel 字号50→画布高66；dot 直径18的圆居中于32画布），
     // 其屏幕尺寸按整张画布计 → 实际可见的字/点偏小。2D 直接按字号/半径作画、无留白，故乘同等系数收小，两视图一致。
     const MK_FONT_K = 50 / 66      // 文字：3D 实际字高 = 字号 × 50/66 ≈ 0.76
     const DOT3D_FILL = 18 / 32     // 3D 圆点：实心圆占精灵的比例（其余为留白）
-    const ST_ICON_K = 0.85         // 地面站图标：2D 观感略大于 3D，收一档对齐（经验系数，可微调）
+    const ST_ICON_K = 0.85         // 地球站图标：2D 观感略大于 3D，收一档对齐（经验系数，可微调）
     // 海岸线 + 经纬网画在覆盖填充之上：地理骨架贯穿覆盖区内外，覆盖与底图融为一体（平级），不再像贴纸浮在上面
     drawGrid(); strokeLand()
     // 南海十段线：颜色随中国国土(CHINA)，透明度随省界，线宽=省界×惯例倍数（比省界略粗）
@@ -456,7 +456,7 @@ export function createFlatCoverage(canvas) {
     for (const t of mk.trajectories) {
       for (const p of (t.pts || [])) dot(p.lon, p.lat, trajR, t.kind === 'flight' ? '#5ad1ff' : '#ff9a5a', true)
     }
-    // 点标记 + 地面站（圆点大小可调 sizes.ptDot、图标 sizes.stIcon，按克制版 iz 联动）
+    // 点标记 + 地球站（圆点大小可调 sizes.ptDot、图标 sizes.stIcon，按克制版 iz 联动）
     const si = sizes.stIcon * iz * ST_ICON_K, ptR = (sizes.ptDot != null ? sizes.ptDot : 3.5) * iz * (DOT3D_FILL * 2.2 / 2)   // 3D 点标记 ×2.2，对齐其可见直径
     for (const p of mk.points) dot(p.lon, p.lat, ptR, '#ffd24a', true)
     for (const s of mk.stations) { const x = PX(s.lon), y = PY(s.lat); if (stationReady) ctx.drawImage(stationImg, x - si / 2, y - si, si, si); else dot(s.lon, s.lat, ptR, '#cfeaff', true) }
@@ -465,7 +465,7 @@ export function createFlatCoverage(canvas) {
     // 故 2D 字号 = 地理度数 × k()。标定：3D 普通省名 hpx=0.02→1.146°，对应 2D 基准 l.px=15 → 系数 k()/13.1。
     // 这样把"每度像素"折进 zf：font = l.px × 倍率 × (k()/13.1)，与窗口尺寸无关、与 3D 一致。
     // 标记/波束/数值/覆盖/卫星层等注记文字：随缩放联动（乘 mz=scale，scale=1 即当前大小，与国家名同率缩放）；
-    // 卫星图标改按 mz 联动（与卫星名标签同率缩放，避免图标/标签缩放不一致），不同于地面站/点标记的克制版 iz。
+    // 卫星图标改按 mz 联动（与卫星名标签同率缩放，避免图标/标签缩放不一致），不同于地球站/点标记的克制版 iz。
     const ns = sizes.nameScale || 1, zf = k() / 13.1
     if (nameMode !== 'off') {
       ctx.globalAlpha = labelStyle.countryOpacity
@@ -494,7 +494,7 @@ export function createFlatCoverage(canvas) {
       if (p.el) drawText(p.el, p.lon, p.lat, pf * 0.9, '#ffffff', { dy: pf * 1.9 + 8 * iz })   // 聚焦卫星仰角：亮白
     }
     for (const s of mk.stations) {
-      const sf = sizes.stFont * iz * MK_FONT_K   // 地面站文字：×MK_FONT_K 与 3D 字高对齐（与图标同用克制版 iz）
+      const sf = sizes.stFont * iz * MK_FONT_K   // 地球站文字：×MK_FONT_K 与 3D 字高对齐（与图标同用克制版 iz）
       drawText(s.name, s.lon, s.lat, sf, '#ffffff', { dy: sf * 0.5 + 0.5 * iz })
       if (s.el) drawText(s.el, s.lon, s.lat, sf * 0.9, '#ffffff', { dy: sf * 1.5 + 3.5 * iz })   // 聚焦卫星仰角：亮白
     }
@@ -623,7 +623,7 @@ export function createFlatCoverage(canvas) {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     ctx.save(); ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip()
     drawFieldOverlays()   // GRD 天线名/波束中心/数值标签（覆盖层之上）
-    for (const p of focusSats) drawSatIcon(p.lon, p.lat, sizes.satIcon * Math.sqrt(scale) * SAT_ICON_K, '#ffffff')   // 聚焦卫星（最上层）：按 iz=√scale 克制联动（与 2D 导出/地面站/航迹一致，防止高倍放大时膨大、更贴 3D）；多选=每颗各一个图标
+    for (const p of focusSats) drawSatIcon(p.lon, p.lat, sizes.satIcon * Math.sqrt(scale) * SAT_ICON_K, '#ffffff')   // 聚焦卫星（最上层）：按 iz=√scale 克制联动（与 2D 导出/地球站/航迹一致，防止高倍放大时膨大、更贴 3D）；多选=每颗各一个图标
     ctx.restore()
   }
 

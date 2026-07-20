@@ -38,8 +38,8 @@ function startResizeConfigs(e) {
 
 // ============ 再生式体制：上行（v1）/ 下行（广播）/ 星间链路 ============
 const LINK_MODES = [
-  { key: 'uplink', label: '再生式上行', ready: true, tip: '地面站 → 星上再生解调；链路总 C/N = 上行 C/(N+I)' },
-  { key: 'downlink', label: '再生式下行（广播）', ready: true, tip: '星上再生 → 地面站接收；链路总 C/N = 下行 C/(N+I)' },
+  { key: 'uplink', label: '再生式上行', ready: true, tip: '地球站 → 星上再生解调；链路总 C/N = 上行 C/(N+I)' },
+  { key: 'downlink', label: '再生式下行（广播）', ready: true, tip: '星上再生 → 地球站接收；链路总 C/N = 下行 C/(N+I)' },
   { key: 'isl', label: '星间链路（微波）', ready: true, tip: '发射卫星 → 接收卫星，两星微波直连；几何严格（双 SGP4 + 地球临边遮挡）；合计 C/N = 星间单跳 C/N' },
   { key: 'laser', label: '星间链路（激光）', ready: true, tip: '发射卫星 → 接收卫星，相干 DP-QPSK 激光直连；第一性原理光学预算（P_rx 链 + 光子/bit 灵敏度）；给定速率 → 链路余量；完整可用度（指向抖动+建链+相干多普勒+太阳规避）' }
 ]
@@ -63,7 +63,7 @@ function restoreMode(m) {
   if (m && m.ready) linkMode.value = m.key                                          // 恢复即聚焦，让用户看到它回来了
 }
 
-// ============ 卫星群（每颗 NGSO 式：搜索/天线树选星，无 EIRP 匹配；卫星 G/T 由发信站逐站手填）============
+// ============ 卫星群（每颗 NGSO 式：搜索/天线树选星，无 EIRP 匹配；卫星 G/T 由发信站逐站手动输入）============
 let _satSeq = 1
 function makeSatConfig(name) { return { id: 'sat' + (_satSeq++), name, form: { ...defaultsFor(SAT_FIELDS) }, ngsoSat: { mode: 'manual', orbit: null, name: '', noradId: null, folder: '' } } }
 const satConfigs = reactive([makeSatConfig('卫星1')])
@@ -98,12 +98,12 @@ let _sid = 1
 const newStation = (fields) => { const r = defaultsFor(fields); r._id = 's' + (_sid++); return r }
 const txStations = reactive([newStation(TX_FIELDS)])
 
-// —— 工作点列：EIRP(dBW) ⇄ 功放大小(W) 切换（换算保持物理工作点不变）——
+// —— 工作点列：EIRP(dBW) ⇄ 功放功率(W) 切换（换算保持物理工作点不变）——
 const opMode = ref(localStorage.getItem('regen/opMode') === 'power' ? 'power' : 'eirp')
 watch(opMode, (v) => { try { localStorage.setItem('regen/opMode', v) } catch (e) { /* ignore */ } })
 // 传给 StationGrid 的字段：工作点列 label/unit 随 opMode 动态改
 const txFieldsView = computed(() => TX_FIELDS.map((f) => f.key === 'opPoint'
-  ? { ...f, label: opMode.value === 'power' ? '功放大小' : '工作点EIRP', unit: opMode.value === 'power' ? 'W' : 'dBW' }
+  ? { ...f, label: opMode.value === 'power' ? '功放功率' : '工作点EIRP', unit: opMode.value === 'power' ? 'W' : 'dBW' }
   : f))
 function fmtOp(n, isW) { if (!isFinite(n)) return ''; return isW ? String(Math.round(n * 1000) / 1000) : String(Math.round(n * 100) / 100) }
 function setOpMode(m) {
@@ -195,7 +195,7 @@ async function refreshLatest() {
 const MODULES = computed(() => {
   const carrier = { key: 'carrier', label: '载波信号', icon: 'wave' }
   const sat = { key: 'sat', label: '卫星群', icon: 'sat' }
-  // 顺序随信号流向：上行 地面站→星（发信站在前）；下行 星→地面站、星间 星→星（卫星群在前）
+  // 顺序随信号流向：上行 地球站→星（发信站在前）；下行 星→地球站、星间 星→星（卫星群在前）
   if (linkMode.value === 'laser') return [sat, { key: 'laser', label: '星间激光链路群', icon: 'laser' }]
   if (linkMode.value === 'isl') return [carrier, sat, { key: 'isl', label: '星间链路群', icon: 'isl' }]
   if (linkMode.value === 'downlink') return [carrier, sat, { key: 'rx', label: '收信站群', icon: 'down' }]
@@ -367,7 +367,7 @@ const islGeo = computed(() => (sel.value ? sel.value.islGeo : null))
 
 // ============ 计算（逐发信站一条上行链路；工作点给定 → 求余量）============
 async function compute() {
-  if (!api) { error.value = '引擎需在 Electron 中运行（npm run dev）'; return }
+  if (!api) { error.value = '引擎需在桌面客户端中运行'; return }
   if (linkMode.value === 'laser') return computeLaser()
   if (linkMode.value === 'isl') return computeIsl()
   const isDown = linkMode.value === 'downlink'
@@ -416,7 +416,7 @@ async function compute() {
         continue
       }
 
-      // ===== 再生式上行：地面站 → 星上再生解调；工作点 = 发射 EIRP/功放 =====
+      // ===== 再生式上行：地球站 → 星上再生解调；工作点 = 发射 EIRP/功放 =====
       const txName = st.earthStationLocation || ('发' + (ti + 1))
       const { satParams, linkParams } = buildRegenParams(sat.form, bbForm, st)
       const powerW = stationPowerW(st, sat.form)
@@ -650,7 +650,7 @@ function pruneExpanded() {
 }
 function defaultCfgName() { const s = satConfigs[0] && satConfigs[0].form.satelliteName; const kind = linkMode.value === 'laser' ? '再生激光星间' : linkMode.value === 'isl' ? '再生星间' : linkMode.value === 'downlink' ? '再生下行' : '再生上行'; const unit = (linkMode.value === 'isl' || linkMode.value === 'laser') ? '条' : '站'; return (s ? s + ' ' : '') + `${kind} ${nLinks.value} ${unit}` }
 const cfgDlg = reactive({ open: false, name: '' })
-function openSaveDlg() { if (!api) { toast('保存需在 Electron 中运行'); return } cfgDlg.name = defaultCfgName(); cfgDlg.open = true }
+function openSaveDlg() { if (!api) { toast('保存需在桌面客户端中运行'); return } cfgDlg.name = defaultCfgName(); cfgDlg.open = true }
 async function confirmCfgDlg() {
   const name = (cfgDlg.name || '').trim()
   if (!name) { toast('请输入配置名称'); return }
@@ -672,7 +672,7 @@ async function updateConfig() {
   await api.store.saveConfig({ id: c.id, name: c.name, state: serializeState() })
   setBaseline(); await loadConfigs(); toast('已保存修改到：' + c.name)
 }
-async function saveCurrent() { if (!api) { toast('保存需在 Electron 中运行'); return } if (activeId.value) await updateConfig(); else openSaveDlg() }
+async function saveCurrent() { if (!api) { toast('保存需在桌面客户端中运行'); return } if (activeId.value) await updateConfig(); else openSaveDlg() }
 function applyConfig(c) { if (!c) return; activeId.value = c.id; applyState(c.state); setBaseline() }
 async function selectConfig(c) { if (!c || c.id === activeId.value) return; if (!(await guardedLeave())) return; applyConfig(c) }
 async function removeConfig(id, e) {
@@ -687,7 +687,7 @@ let _confirmResolve = null
 function askConfirm(msg) { confirmDlg.msg = msg; confirmDlg.open = true; return new Promise((res) => { _confirmResolve = res }) }
 function answerConfirm(ok) { confirmDlg.open = false; const r = _confirmResolve; _confirmResolve = null; if (r) r(ok) }
 async function addFolder(parentId = null) {
-  if (!api) { toast('需在 Electron 中运行'); return }
+  if (!api) { toast('需在桌面客户端中运行'); return }
   const item = await api.store.saveConfig({ type: 'folder', name: uniqueCfgName('新建文件夹'), parentId: parentId || null, orbitType: 'REGEN' })
   if (parentId) expandedFolders.value.add(parentId)
   if (item && item.id) expandedFolders.value.add(item.id)
@@ -725,7 +725,7 @@ function blankState() {
 }
 function uniqueCfgName(base) { const names = new Set(configs.value.map((c) => c.name)); if (!names.has(base)) return base; let i = 2; while (names.has(base + ' ' + i)) i++; return base + ' ' + i }
 async function addBlankConfig(parentId = null) {
-  if (!api) { toast('需在 Electron 中运行'); return }
+  if (!api) { toast('需在桌面客户端中运行'); return }
   if (!(await guardedLeave())) return
   const state = blankState()
   const item = await api.store.saveConfig({ name: uniqueCfgName('新配置'), state, parentId: parentId || null })
@@ -768,7 +768,7 @@ const ctxIsFolder = computed(() => !!(ctxConfig.value && ctxConfig.value.type ==
 function openCtx(e, c) { e.preventDefault(); ctxMenu.configId = c ? c.id : null; ctxMenu.x = Math.min(e.clientX, window.innerWidth - 170); ctxMenu.y = Math.min(e.clientY, window.innerHeight - 230); ctxMenu.open = true }
 function ctxDo(fn) { ctxMenu.open = false; fn() }
 async function importConfigs(items) {
-  if (!api) { toast('导入需在 Electron 中运行'); return 0 }
+  if (!api) { toast('导入需在桌面客户端中运行'); return 0 }
   let last = null
   for (const it of items) {
     const state = JSON.parse(JSON.stringify(it.state))
@@ -852,7 +852,7 @@ const exporting = ref(false)
 const exportLang = ref(localStorage.getItem('regen/exportLang') || 'zh')
 watch(exportLang, (v) => { try { localStorage.setItem('regen/exportLang', v) } catch (e) { /* ignore */ } })
 async function exportExcel() {
-  if (!api) { error.value = '导出需在 Electron 中运行'; return }
+  if (!api) { error.value = '导出需在桌面客户端中运行'; return }
   if (!links.value.length) { toast('请先点「计算」生成结果'); return }
   exporting.value = true
   try {
@@ -883,7 +883,7 @@ async function exportExcel() {
       lang: exportLang.value, pairMode: 'sequential',
       params: { satelliteName: satName, frequencyBand: (satConfigs[0] && satConfigs[0].form.frequencyBand) || '' },
       meta: nmeta,
-      // 上行：发信站→卫星；下行：卫星→收信站；星间：发射星→接收星（l.txName=地面站/发射星, l.satName=卫星/接收星）
+      // 上行：发信站→卫星；下行：卫星→收信站；星间：发射星→接收星（l.txName=地球站/发射星, l.satName=卫星/接收星）
       // 几何上下文分两族：地面-空间(上/下行)传 geom+access+staGeo+satName；空间-空间(星间/激光)传 islGeo
       links: links.value.map((l) => ({
         ti: l.ti, ri: 0,
@@ -937,7 +937,7 @@ onMounted(async () => {
       </button>
       <span class="lb-spacer"></span>
       <span class="lb-note" v-if="notice">{{ notice }}</span>
-      <span class="lb-hint" v-if="!api"><Icon name="alert-triangle" :size="12" /> 引擎需在 Electron 中运行</span>
+      <span class="lb-hint" v-if="!api"><Icon name="alert-triangle" :size="12" /> 引擎需在桌面客户端中运行</span>
     </header>
 
     <div class="lb-body">
@@ -1032,7 +1032,7 @@ onMounted(async () => {
                 <span class="tx-optl">工作点</span>
                 <div class="seg">
                   <button class="seg-i" :class="{ on: opMode === 'eirp' }" title="按工作点 EIRP(dBW) 输入" @click="setOpMode('eirp')">EIRP (dBW)</button>
-                  <button class="seg-i" :class="{ on: opMode === 'power' }" title="按功放大小(W) 输入（与 EIRP 自动换算）" @click="setOpMode('power')">功放 (W)</button>
+                  <button class="seg-i" :class="{ on: opMode === 'power' }" title="按功放功率(W) 输入（与 EIRP 自动换算）" @click="setOpMode('power')">功放 (W)</button>
                 </div>
                 <span class="tx-opttip">给定每站工作点 → 计算上行余量；切换即按各站天线/馈线/回退换算，保持物理工作点不变。</span>
               </div>
@@ -1077,7 +1077,7 @@ onMounted(async () => {
                 <span class="lb-spacer"></span>
                 <button class="lb-mini" title="新增卫星" @click="addSatConfig"><Icon name="plus" :size="12" /> 新增卫星</button>
               </div>
-              <p class="bb-tip">卫星群：每颗卫星一份配置，支持「搜索卫星 / 天线树导入」选星定轨道。「发信站群」表的「卫星」列为每站选择上行到哪颗星；卫星 G/T 在该表逐站手填（同一颗星服务不同站因波束位置不同而 G/T 各异）。</p>
+              <p class="bb-tip">卫星群：每颗卫星一份配置，支持「搜索卫星 / 天线树导入」选星定轨道。「发信站群」表的「卫星」列为每站选择上行到哪颗星；卫星 G/T 在该表逐站手动输入（同一颗星服务不同站因波束位置不同而 G/T 各异）。</p>
               <div class="bb-cards">
                 <div v-for="cfg in satConfigs" :key="cfg.id" class="bb-card">
                   <div class="bb-card-hd">
@@ -1104,12 +1104,6 @@ onMounted(async () => {
             <button class="lb-calc" :disabled="computing" @click="compute">{{ computing ? '计算中…' : `计算（${nLinks} 条${modeLabel}链路）` }}</button>
           </div>
         </template>
-
-        <div v-else class="rl-todo">
-          <Icon name="alert-triangle" :size="20" />
-          <div class="rl-todo-t">{{ LINK_MODES.find((m) => m.key === linkMode)?.label }} — 开发中</div>
-          <div class="rl-todo-s">当前版本先实现「再生式上行」。切回上方「再生式上行」即可使用。</div>
-        </div>
       </section>
 
       <!-- ③ 结果区 -->
@@ -1170,7 +1164,7 @@ onMounted(async () => {
                 <div class="core-row"><span class="core-l">自由空间损耗 L_PS</span><span class="core-v">{{ core.laserFslResult }} dB</span></div>
                 <div class="core-row"><span class="core-l">发射增益 G_tx</span><span class="core-v">{{ core.laserGTxResult }} dBi</span></div>
                 <div class="core-row"><span class="core-l">接收增益 G_rx</span><span class="core-v">{{ core.laserGRxResult }} dBi</span></div>
-                <div class="core-row"><span class="core-l">星间距离(最差)</span><span class="core-v">{{ core.laserDistResult }} km</span></div>
+                <div class="core-row"><span class="core-l">星间距离（最差）</span><span class="core-v">{{ core.laserDistResult }} km</span></div>
                 <div class="core-row"><span class="core-l">互视可见度</span><span class="core-v">{{ core.laserVisibleFracResult }} %</span></div>
               </div>
               <div v-else-if="core.linkType === 'isl'" class="core-card">
@@ -1179,7 +1173,7 @@ onMounted(async () => {
                 <div class="core-row"><span class="core-l">门限 C/N</span><span class="core-v">{{ core.thresholdCN }} dB</span></div>
                 <div class="core-row"><span class="core-l">发射 EIRP</span><span class="core-v">{{ core.islRfEirpResult }} dBW</span></div>
                 <div class="core-row"><span class="core-l">接收 G/T</span><span class="core-v">{{ core.islRfGtResult }} dB/K</span></div>
-                <div class="core-row"><span class="core-l">星间距离(最差)</span><span class="core-v">{{ core.islRfDistResult }} km</span></div>
+                <div class="core-row"><span class="core-l">星间距离（最差）</span><span class="core-v">{{ core.islRfDistResult }} km</span></div>
                 <div class="core-row"><span class="core-l">互视可见度</span><span class="core-v">{{ core.islVisibleFracResult }} %</span></div>
                 <div class="core-row"><span class="core-l">误码率</span><span class="core-v">{{ core.berResult }}</span></div>
               </div>
@@ -1218,7 +1212,7 @@ onMounted(async () => {
                 </div>
                 <div class="geo-body">
                   <div v-if="islGeo.worst.worstISO && !islGeo.representative" class="geo-row"><span class="geo-l" title="所有几何量取自这一物理瞬间（互视样本中星间距离最大 → 最差 FSL）">最差时刻 t*</span><span class="geo-v" style="white-space:normal">{{ fmtInstant(islGeo.worst.worstISO, tzMode) }}</span></div>
-                  <div class="geo-row"><span class="geo-l">星间距离(最差)</span><span class="geo-v">{{ g2(islGeo.worst.rangeKm, 1) }}<i>km</i></span></div>
+                  <div class="geo-row"><span class="geo-l">星间距离（最差）</span><span class="geo-v">{{ g2(islGeo.worst.rangeKm, 1) }}<i>km</i></span></div>
                   <div class="geo-row"><span class="geo-l">最近星间距离</span><span class="geo-v">{{ g2(islGeo.worst.minRangeKm, 1) }}<i>km</i></span></div>
                   <div class="geo-row"><span class="geo-l">发射/接收卫星高度</span><span class="geo-v">{{ g2(islGeo.worst.txAltKm, 1) }} / {{ g2(islGeo.worst.rxAltKm, 1) }}<i>km</i></span></div>
                   <div class="geo-row"><span class="geo-l">地心夹角</span><span class="geo-v">{{ g2(islGeo.worst.centralAngleDeg) }}<i>°</i></span></div>
@@ -1428,7 +1422,7 @@ onMounted(async () => {
           <textarea class="lb-area" :value="shareDlg.code" readonly rows="3" @focus="$event.target.select()"></textarea>
           <div class="lb-share-acts">
             <button class="lb-mini primary" @click="copyShareCode">复制分享码</button>
-            <button class="lb-mini" @click="exportConfigFile">导出为文件(.lbcfg)</button>
+            <button class="lb-mini" @click="exportConfigFile">导出为文件（.lbcfg）</button>
             <button class="lb-mini" @click="importConfigFile">从文件导入</button>
           </div>
           <label class="lb-share-l">导入：粘贴分享码后点「导入」</label>
@@ -1459,7 +1453,7 @@ onMounted(async () => {
               </li>
             </ul>
           </template>
-          <div v-else class="lb-share-note">在线分享未配置：需在 electron/services/shareConfig.js 填入仅授权 share/* 的 COS 子账号密钥。当前可先用「线下分享码」即时分享。</div>
+          <div v-else class="lb-share-note">在线分享功能尚未配置；当前可先用「线下分享码」即时分享。</div>
         </div>
         <div class="lb-dlg-ft"><button class="lb-mini" @click="shareDlg.open = false">关闭</button></div>
       </div>

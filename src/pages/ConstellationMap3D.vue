@@ -98,7 +98,7 @@ const keyword = ref('')
 const searchResults = ref([])
 const selected = ref(null)
 const cardCollapsed = ref(false)   // 信息卡收起/展开（点标题栏切换）
-// 覆盖圈定义（常驻时间条，未聚焦卫星时置灰）：按「波束角」(星上全锥角) 或「最低仰角」(地面站约束) 二选一
+// 覆盖圈定义（常驻时间条，未聚焦卫星时置灰）：按「波束角」(星上全锥角) 或「最低仰角」(地球站约束) 二选一
 const fpMode = ref('beam')     // 'beam' | 'elev'
 const beam = ref('')
 const beamAuto = ref('')
@@ -225,7 +225,7 @@ function perfAddRow() {
   perf.addEmptyStation(at)
   nextTick(() => { perfInGrid.sel.value = { ar: at, ac: 0, ri: at, ci: 0 }; perfInGrid.focusGrid() })
 }
-function perfImportMarkers() { perf.pushUndo(); const n = perf.importFromMarkers(points.value, stations.value); if (!n) { perf.dropUndo(); appAlert('没有可导入的新标记（点标记/地面站）') } refreshPerf() }
+function perfImportMarkers() { perf.pushUndo(); const n = perf.importFromMarkers(points.value, stations.value); if (!n) { perf.dropUndo(); appAlert('没有可导入的新标记（点标记/地球站）') } refreshPerf() }
 function perfImportTrajs() { perf.pushUndo(); const n = perf.importFromTrajectories(trajectories.value); if (!n) { perf.dropUndo(); appAlert('没有可导入的新航点（航迹为空或已全部导入）') } refreshPerf() }
 // 「粘贴」按钮：直接读剪贴板批量加站（需浏览器授权剪贴板读取）
 async function perfPasteBtn() {
@@ -318,8 +318,8 @@ function setLineColor(i, e) { const x = e.target.value; const css = `rgb(${parse
 // GRD 天线指向模式（STK 口径）：底层仍是 boreType+boreLock，这里做单一「模式」表示层（读写委托给 useGrdCoverage）
 const boreMode = computed({ get: () => grd.boreModeOf(), set: (m) => grd.setBoreMode(m) })
 const BORE_MODE_HINT = {
-  target: '目标跟踪 Targeted：boresight 钉住固定经纬点，卫星移动时天线重新指向、足迹中心不动（STK Targeted）',
-  groundtrack: '星下点跟随 Ground-track：足迹随星下点平移、保持相对经纬偏置（卫星动则足迹跟着走）',
+  target: '目标跟踪 Targeted：boresight 锁定固定经纬点，卫星移动时天线重新指向、足迹中心不动（STK Targeted）',
+  groundtrack: '星下点跟随 Ground-track：足迹随星下点平移、保持相对经纬偏置（STK Ground-track）',
   fixed: '本体固定 Fixed：相对天底固定 Az/El，卫星移动时足迹随之扫过地面（STK Fixed）',
   nadir: '天底 Nadir：boresight 恒指星下点（Az=El=0，本体固定的特例）'
 }
@@ -813,7 +813,7 @@ function ingest(sats, payloadGroup, fetchedAt) {
 }
 
 async function loadGroup() {
-  if (!apiOk) { status.value = '需在 Electron 中运行（npm run dev）'; return }
+  if (!apiOk) { status.value = '需在桌面客户端中运行'; return }
   const g = GROUPS[groupIndex.value]
   resetBeam(); selEntries = []; selEntry = null; selected.value = null; selList.value = []; scene && scene.clearSelectionGeom(); selGeomAll = []; pushSelGeomFlat()
   // 「无」：不加载/不传播/不渲染任何卫星，省 SGP4 与点渲染开销（覆盖图、地球照常）
@@ -1011,7 +1011,7 @@ function pickResult(item) { searchResults.value = []; keyword.value = ''; select
 function closeCard() { selEntries = []; selEntry = null; selected.value = null; selList.value = []; resetBeam(); scene && scene.clearSelectionGeom(); selGeomAll = []; pushSelGeomFlat(); pushMarkers(); pushFocusSat(); saveSelection() }
 
 // ===================== 覆盖圈（波束角 / 最低仰角） =====================
-// 波束角/最低仰角是用户设置：控件常驻、换星不清空手填值；仅清与所选星绑定的上限占位。
+// 波束角/最低仰角是用户设置：控件常驻、换星不清空手动输入值；仅清与所选星绑定的上限占位。
 // 锁定含义收敛为「超出该星上限时不回写夹断值」。
 function resetBeam() { beamAuto.value = '' }
 function refreshFootprint() { if (selEntries.length) buildSelectedGeometry() }   // beam/仰角改动 → 重算全体足迹
@@ -1389,7 +1389,7 @@ async function getCjkFont() {
   return _cjkFont
 }
 async function saveExport(bytes, defaultName, filters) {
-  if (!(window.api && window.api.exportFile)) { appAlert('需在 Electron 中运行（npm run dev）'); return }
+  if (!(window.api && window.api.exportFile)) { appAlert('需在桌面客户端中运行'); return }
   const r = await window.api.exportFile({ defaultName, data: bytes, filters })
   // 成功/取消无需提示（已走系统保存对话框，用户自选路径即知结果）；仅失败弹错。
   if (r && !r.ok && !r.canceled) { const msg = (r && r.error) || '写入失败'; appAlert('导出失败：' + msg) }
@@ -1751,7 +1751,7 @@ function buildMiniappSnapshot() {
 // 发送到小程序：构建快照 → 上传 COS → 弹窗展示可输入的短密钥。覆盖层与多边形共用（一份快照含两层）。
 async function sendToMiniapp() {
   if (sendingMiniapp.value) return
-  if (!(window.api && window.api.share && window.api.share.gxtSnapshot)) { appAlert('需在 Electron 中运行（npm run dev）'); return }
+  if (!(window.api && window.api.share && window.api.share.gxtSnapshot)) { appAlert('需在桌面客户端中运行'); return }
   sendingMiniapp.value = true
   try {
     const snap = buildMiniappSnapshot()
@@ -1891,7 +1891,7 @@ function polyMoveToggle(pg) {
 }
 function polyMoveStop() { if (polyMoveId.value) { polyMoveId.value = ''; polyRefresh() } }
 // 把当前可拖拽的顶点/标记点（传引用，拖动实时生效）喂给平面渲染器做命中/拖拽。
-// 「调整点位置」的标记/地面站/航迹优先；否则回退到 Polygon 调点/整体拖动。三者互斥，共用同一 editVerts 槽。
+// 「调整点位置」的标记/地球站/航迹优先；否则回退到 Polygon 调点/整体拖动。三者互斥，共用同一 editVerts 槽。
 function syncEdit() {
   if (!flat) return
   const mt = mkEditTarget()
@@ -2071,7 +2071,7 @@ function makeImportedPoly(r, n) {
 // Polygon 面板「导入」：原生框选 .gxt / .kml → 解析为协调区多边形，追加到列表（不覆盖已有）。
 // GXT：每条等值线 = 一个多边形（值=gain，卫星/轨位取 GeoMain）；KML：每个 <Polygon> = 一个多边形（尽量还原名称/数值/颜色）。
 async function importPolys() {
-  if (!(window.api && window.api.poly && window.api.poly.open)) { appAlert('需在 Electron 中运行（npm run dev）'); return }
+  if (!(window.api && window.api.poly && window.api.poly.open)) { appAlert('需在桌面客户端中运行'); return }
   let res
   try { res = await window.api.poly.open() } catch (e) { appAlert('导入失败：' + ((e && e.message) || e)); return }
   if (!res || res.canceled) return
@@ -2424,7 +2424,7 @@ const satSearchKw = ref('')
 const satSearchRes = ref([])
 const liveTick = ref(0)   // 每次 refreshPositions 自增：驱动关联星编辑弹窗的经纬度/高度随星历实时刷新
 
-// 编辑弹窗里展示的位置：关联星按星历实时解算（随 liveTick / 时间轴更新），否则取草稿手填值
+// 编辑弹窗里展示的位置：关联星按星历实时解算（随 liveTick / 时间轴更新），否则取草稿手动输入值
 const satModalPos = computed(() => {
   const m = satModal.value
   if (!m) return { lon: 0, lat: 0, altKm: 0 }
@@ -2647,7 +2647,7 @@ function redrawSats() {
   if (sk) { if (sk.lines) lines.push(...sk.lines); if (sk.dots) dots.push(...sk.dots); if (sk.labels) labels.push(...sk.labels); if (sk.fills) fills.push(...sk.fills) }
   // 波束合成「调整中心」/「删除波束」：在各波束中心叠可点击手柄圆环（与标记/Polygon 调点同款，平面图交互；调整=轮廓色，删除=警示红）
   if ((bs.adjusting.value || bs.deleting.value) && bs.open.value) for (const b of bs.beams.value) { if (Number.isFinite(b.lat) && Number.isFinite(b.lon)) dots.push({ lon: b.lon, lat: b.lat, color: bs.deleting.value ? 0xe05252 : (cssToHex(bs.p.skColor) || 0x5ad1ff), px: MK_HANDLE_PX, r: MK_HANDLE_PX * 0.0018 }) }
-  // 「调整点位置」：在被编辑的标记/地面站/航迹各点上叠一圈可拖拽手柄圆环（屏幕恒定像素，仅平面图交互）
+  // 「调整点位置」：在被编辑的标记/地球站/航迹各点上叠一圈可拖拽手柄圆环（屏幕恒定像素，仅平面图交互）
   const mkT = mkEditTarget()
   if (mkT) for (const p of mkT.src) { if (Number.isFinite(p.lat) && Number.isFinite(p.lon)) dots.push({ lon: p.lon, lat: p.lat, color: mkT.color, px: MK_HANDLE_PX, r: MK_HANDLE_PX * 0.0018 }) }
   const spec = (lines.length || sats.length || dots.length || fills.length) ? { lines, dots, labels, sats, fills } : null
@@ -2658,7 +2658,7 @@ function redrawSats() {
   if (flat) flat.setSatLayer(spec)
 }
 
-// ===================== 标记 / 地面站 / 轨迹 =====================
+// ===================== 标记 / 地球站 / 轨迹 =====================
 const MK_KEY = 'globe3d/markers'
 const points = ref([])             // [{id,lat,lon}]
 const stations = ref([])           // [{id,lat,lon,name}]
@@ -2671,13 +2671,13 @@ const stLat = ref(''), stLon = ref(''), stName = ref('')
 const wpLat = ref(''), wpLon = ref('')
 const markPtFont = ref(14)         // 点标记坐标字号（1–32）
 const markPtDot = ref(3.5)         // 点标记圆点大小（半径口径，1–12，默认偏小）
-const stIconSize = ref(16)         // 地面站图标大小（5–60，默认 16）
-const stFontSize = ref(17)         // 地面站名称字号（1–32）
+const stIconSize = ref(16)         // 地球站图标大小（5–60，默认 16）
+const stFontSize = ref(17)         // 地球站名称字号（1–32）
 const trajDotSize = ref(2.5)       // 轨迹圆点大小（半径口径，1–10，默认偏小）
 const showPtLabel = ref(false)     // 是否显示点标记坐标文字（默认不显示；圆点不受影响）
-const showStName = ref(false)      // 是否显示地面站名称文字（默认不显示；图标不受影响）
+const showStName = ref(false)      // 是否显示地球站名称文字（默认不显示；图标不受影响）
 const showPtLayer = ref(true)      // 点标记图层显隐（小眼睛；隐藏仅停止渲染，数据保留并持久化）
-const showStLayer = ref(true)      // 地面站图层显隐（小眼睛）
+const showStLayer = ref(true)      // 地球站图层显隐（小眼睛）
 const showTrajLayer = ref(true)    // 航迹图层显隐（小眼睛）
 // 「调整点位置」（仿 Polygon 调点）：在平面图上拖动圆点改坐标。'points'|'stations'|轨迹id，''=关闭；同一时刻仅一层可调、并与 Polygon 各态互斥。
 const mkEditId = ref('')
@@ -2755,14 +2755,14 @@ function closeCtx() { ctxMenu.value = null }
 const ctxLL = () => ctxMenu.value && ctxMenu.value.ll
 // —— 菜单动作（均在当前右键经纬度处执行）——
 function ctxAddPoint() { const ll = ctxLL(); if (ll) addPoint(ll.lat, ll.lon); closeCtx() }
-// 加地面站：弹出命名对话框（位置取右键处），确认后入库
-const stPrompt = ref(null)       // { lat, lon } 待命名地面站；null=关闭
+// 加地球站：弹出命名对话框（位置取右键处），确认后入库
+const stPrompt = ref(null)       // { lat, lon } 待命名地球站；null=关闭
 const stPromptName = ref('')
 // 应用内提示弹窗（替代 Electron 原生 alert）：alertMsg/appAlert/closeAlert 见 stores/alert.js（GRD 等组合式同源）。
 function ctxAddStation() { const ll = ctxLL(); if (ll) { stPrompt.value = { lat: ll.lat, lon: ll.lon }; stPromptName.value = '' } closeCtx() }
 function confirmStation() {
   const p = stPrompt.value; if (!p) return
-  stations.value.push({ id: newId(), lat: p.lat, lon: p.lon, name: (stPromptName.value || '').trim() || '地面站' })
+  stations.value.push({ id: newId(), lat: p.lat, lon: p.lon, name: (stPromptName.value || '').trim() || '地球站' })
   syncMarkers(); stPrompt.value = null; stPromptName.value = ''
 }
 function cancelStation() { stPrompt.value = null; stPromptName.value = '' }
@@ -2819,7 +2819,7 @@ function pushMarkers() {
   if (flat) { flat.setMarkers(pts, sts, trs); flat.setSizes(markSizes()) }
 }
 function syncMarkers() { pushMarkers(); persistMarkers(); syncEdit() }   // syncEdit：增删/改名后重建可拖拽快照（无编辑态时无副作用）
-// ---- 调整点位置（点标记 / 地面站 / 航迹航点：拖动圆点改坐标，仿 Polygon 调点，2D 平面图进行） ----
+// ---- 调整点位置（点标记 / 地球站 / 航迹航点：拖动圆点改坐标，仿 Polygon 调点，2D 平面图进行） ----
 // 当前可调图层：{ kind, src:[{lat,lon,...}], color }；src 为活动数组引用（拖动直接改数据）
 function mkEditTarget() {
   const id = mkEditId.value; if (!id) return null
@@ -2832,7 +2832,7 @@ function mkEditTarget() {
 const mkEditLabel = computed(() => {
   const id = mkEditId.value; if (!id) return ''
   if (id === 'points') return '点标记'
-  if (id === 'stations') return '地面站'
+  if (id === 'stations') return '地球站'
   const t = trajectories.value.find((x) => x.id === id)
   return t ? `航迹「${t.name || ''}」` : ''
 })
@@ -2879,7 +2879,7 @@ function removePoint(id) { points.value = points.value.filter((p) => p.id !== id
 function addStation() {
   const lat = parseFloat(stLat.value), lon = parseFloat(stLon.value)
   if (!validLat(lat) || !validLon(lon)) return
-  stations.value.push({ id: newId(), lat, lon, name: (stName.value || '').trim() || '地面站' })
+  stations.value.push({ id: newId(), lat, lon, name: (stName.value || '').trim() || '地球站' })
   stLat.value = ''; stLon.value = ''; stName.value = ''; syncMarkers()
 }
 function setStationName(id, v) { const s = stations.value.find((x) => x.id === id); if (s) { s.name = v; syncMarkers() } }
@@ -2944,7 +2944,7 @@ const mkWpGrid = useGridSelect({
   undo: () => mkUndo(), redo: () => mkRedo()
 })
 const mkCurGrid = () => mkTab.value === 'stations' ? mkStGrid : mkTab.value === 'traj' ? mkWpGrid : mkPtGrid
-// 三分页（点标记/地面站/航迹航点）：v-for 稳定 key 渲染各自网格，v-show 切换显示（实例常驻，选区/编辑态各自保留）
+// 三分页（点标记/地球站/航迹航点）：v-for 稳定 key 渲染各自网格，v-show 切换显示（实例常驻，选区/编辑态各自保留）
 const mkPanes = computed(() => [
   { tab: 'points', grid: mkPtGrid, cols: mkPtCols, rows: points.value },
   { tab: 'stations', grid: mkStGrid, cols: mkStCols, rows: stations.value },
@@ -3205,7 +3205,7 @@ async function restoreSettings() {
 // 分组与搜索池，也能在文件管理里查看/改名/导出/删除。（旧路径只临时 ingest 到场景不落库，故文件管理看不到，
 // 且只认 OMM CSV 不认真正的 TLE；改走此通路后两者一并修复。）
 async function importTleToLibrary() {
-  if (!apiOk || !window.api.omm.customImport) { status.value = '需在 Electron 中运行（npm run dev）'; return }
+  if (!apiOk || !window.api.omm.customImport) { status.value = '需在桌面客户端中运行'; return }
   let r
   try { r = await window.api.omm.customImport() } catch (e) { status.value = '导入失败：' + ((e && e.message) || e); return }
   if (!r || r.canceled) return
@@ -3381,7 +3381,7 @@ onBeforeUnmount(() => {
           <div class="csec">实时状态</div>
           <div class="rows">
             <div class="row"><span class="k">星下点</span><span class="v">{{ selected.lat }}°, {{ selected.lon }}°</span></div>
-            <div class="row"><span class="k">海拔高度</span><span class="v">{{ selected.alt }}<i>km</i></span></div>
+            <div class="row"><span class="k">轨道高度</span><span class="v">{{ selected.alt }}<i>km</i></span></div>
             <div class="row"><span class="k">对地速度</span><span class="v">{{ selected.speedRel }}<i>km/s</i></span></div>
             <div class="row"><span class="k">惯性速度</span><span class="v">{{ selected.speedAbs }}<i>km/s</i></span></div>
           </div>
@@ -3396,7 +3396,7 @@ onBeforeUnmount(() => {
               <template v-if="fpMode === 'beam'">
                 <input class="covi" :value="beam" :placeholder="beamAuto || '自动'" title="波束全锥角，空=对地全视场" @input="onBeam" />
                 <span class="covu">°</span>
-                <span class="covlock" :class="{ on: beamLock }" :title="beamLock ? '已锁定：超出该星上限不夹断' : '锁定：超出该星上限时不回写夹断值'" @click="toggleBeamLock"><Icon :name="beamLock ? 'lock' : 'lock-open'" :size="12" /></span>
+                <span class="covlock" :class="{ on: beamLock }" :title="beamLock ? '已锁定：超出该星上限不截断' : '锁定：超出该星上限时不回写截断值'" @click="toggleBeamLock"><Icon :name="beamLock ? 'lock' : 'lock-open'" :size="12" /></span>
               </template>
               <template v-else>
                 <input class="covi" :value="elevMin" placeholder="0" title="最低仰角，0°=地平线" @input="onElevMin" />
@@ -3498,7 +3498,7 @@ onBeforeUnmount(() => {
               </div>
             </div>
             <div class="pchips">
-              <span class="mini" :class="{ on: autoRotate }" @click="toggleRotate">{{ autoRotate ? '旋转中' : '旋转停' }}</span>
+              <span class="mini" :class="{ on: autoRotate }" @click="toggleRotate">{{ autoRotate ? '旋转中' : '已停止' }}</span>
               <span class="mini" :class="{ on: live }" @click="toggleLive">{{ live ? '实时开' : '实时关' }}</span>
             </div>
             <div class="pstat">在轨 {{ satCount }}<template v-if="shownCount && shownCount < satCount"> · 渲染 {{ shownCount }}</template>
@@ -4027,7 +4027,7 @@ onBeforeUnmount(() => {
             <input class="ci" type="number" step="0.05" :disabled="bs.curSetting.value.fdDriver !== 'feedspacing'" v-model.number="bs.curSetting.value.feedSpacingWl" /><span class="u">WL</span>
           </div>
           <div class="srow"><label>馈源直径</label>
-            <label class="chk-in" title="Auto＝馈源直径 = 馈源间距（多馈源刚好铺满不交叠）；取消可手填——馈源直径是控制口径效率的核心：越大→边缘照射越低（更聚焦）→溢出越小、效率越高"><input type="checkbox" :checked="bs.curSetting.value.feedDiaAuto !== false" @change="bs.curSetting.value.feedDiaAuto = $event.target.checked" /><span>Auto</span></label>
+            <label class="chk-in" title="Auto＝馈源直径 = 馈源间距（多馈源刚好铺满不交叠）；取消可手动输入——馈源直径是控制口径效率的核心：越大→边缘照射越低（更聚焦）→溢出越小、效率越高"><input type="checkbox" :checked="bs.curSetting.value.feedDiaAuto !== false" @change="bs.curSetting.value.feedDiaAuto = $event.target.checked" /><span>Auto</span></label>
             <input class="ci" type="number" step="0.05" :disabled="bs.curSetting.value.feedDiaAuto !== false" v-model.number="bs.curSetting.value.feedDiaWl" /><span class="u">WL</span>
           </div>
           <div v-if="bs.curSetting.value.feedDiaAuto === false && bs.refl.value && bs.refl.value.ok && Number(bs.curSetting.value.feedDiaWl) > bs.refl.value.feedSpacingWl + 1e-4" class="tip warn">⚠ 馈源直径 &gt; 馈源间距（{{ bsFmt(bs.refl.value.feedSpacingWl, 2) }} WL）：多馈源会交叠。单波束效率读数仍有效；多波束请加大波束间距或减小直径。</div>
@@ -4072,7 +4072,7 @@ onBeforeUnmount(() => {
               <span class="opb" title="清空本组所有已放置波束（可撤销：批量表格 Ctrl+Z）" @click="bs.clearBeams">清空</span>
               <span class="opb danger" :class="{ on: bs.deleting.value }" title="开启后在地图上点击波束中心即可删除该波束，可连续点删多个（误删可点上方「撤销」）；再点关闭" @click="bsDeleteToggle">{{ bs.deleting.value ? '删除中…点击波束' : '删除波束' }}</span>
             </div>
-            <label class="chk2"><input type="checkbox" v-model="bs.p.snapTangent" /><span>相切吸附（点击/拖拽贴边自动相切，SATSOFT 手感）</span></label>
+            <label class="chk2"><input type="checkbox" v-model="bs.p.snapTangent" /><span>相切吸附（点击/拖拽贴边自动相切，与 SATSOFT 一致）</span></label>
             <div class="bs-hex">
               <label>蜂窝布满</label>
               <select :value="bs.p.polyId" @change="e => bs.p.polyId = e.target.value">
@@ -4082,7 +4082,7 @@ onBeforeUnmount(() => {
               <span class="opb sm" title="在所选 Polygon 内按间距六角布满（用激活设置的宽度）" @click="bs.hexFill">布满</span>
             </div>
             <div class="srow" v-if="bs.curSetting.value"><label>波束间距</label>
-              <label class="chk-in" title="Auto＝波束间距 = 该设置的波束宽度 θ3dB（相邻波束 −3.01 dB 交叠）；取消可手填。间距下沉到每个波束设置（随其口径/波束宽变），故此处读写激活设置、Auto 显示实时算出值"><input type="checkbox" :checked="bs.curSetting.value.autoSpacing !== false" @change="bs.curSetting.value.autoSpacing = $event.target.checked" /><span>Auto</span></label>
+              <label class="chk-in" title="Auto＝波束间距 = 该设置的波束宽度 θ3dB（相邻波束 −3.01 dB 交叠）；取消可手动输入。间距下沉到每个波束设置（随其口径/波束宽变），故此处读写激活设置、Auto 显示实时算出值"><input type="checkbox" :checked="bs.curSetting.value.autoSpacing !== false" @change="bs.curSetting.value.autoSpacing = $event.target.checked" /><span>Auto</span></label>
               <input class="ci" type="number" step="0.1" :disabled="bs.curSetting.value.autoSpacing !== false" v-model.number="bs.curSetting.value.spacing" /><span class="u">°</span>
             </div>
             <div v-if="bs.beams.value.length > 60" class="tip">共 <b>{{ bs.beams.value.length }}</b> 个波束——列表过长已折叠，用「删除波束」在地图上点选删除，或「批量表格」批量查看 / 编辑 / 删除。</div>
@@ -4115,7 +4115,7 @@ onBeforeUnmount(() => {
               <template v-if="bs.p.skNumShow">
                 <div class="srow"><label>编号字号</label>
                   <span class="seg sm">
-                    <span class="sg" :class="{ on: bs.p.skNumMode === 'auto' }" title="随各波束在图上的大小自动取字号：编号始终装在波束里，缩放联动，过小自动隐藏（不再糊成一片）" @click="bs.p.skNumMode = 'auto'">自适应</span>
+                    <span class="sg" :class="{ on: bs.p.skNumMode === 'auto' }" title="随各波束在图上的大小自动取字号：编号始终装在波束里，缩放联动，过小自动隐藏（避免相互重叠）" @click="bs.p.skNumMode = 'auto'">自适应</span>
                     <span class="sg" :class="{ on: bs.p.skNumMode === 'fixed' }" title="固定基准字号（世界尺寸，随地图缩放联动；与 Polygon 标签同口径）" @click="bs.p.skNumMode = 'fixed'">固定</span>
                   </span>
                   <input v-if="bs.p.skNumMode === 'auto'" class="ci sm" type="number" step="10" min="30" max="300" v-model.number="bs.p.skNumScale" /><span v-if="bs.p.skNumMode === 'auto'" class="u">%</span>
@@ -4190,7 +4190,7 @@ onBeforeUnmount(() => {
               </select>
             </div>
             <div class="srow"><label>偏置净空/D</label><input class="ci" type="number" step="0.05" min="-0.5" v-model.number="bs.p.offsetClr" title="偏置净空占口径直径的比例：0=贴轴偏置，-0.5=正馈（对称抛物面）" /></div>
-            <div class="bs-read"><span title="口径效率＝照射锥度效率×溢出效率，由馈源锥度定死（不再自由输入）；欧姆/表面残差当理想≈1">口径效率 <b>{{ bsFmt(bs.shapedEff.value, 1) }}</b>%</span><span>成分波束 3dB 宽 <b>{{ bsFmt(bs.shapedTheta3.value, 3) }}</b>°</span></div>
+            <div class="bs-read"><span title="口径效率＝照射锥度效率×溢出效率，由馈源锥度决定（不可手动输入）；欧姆/表面残差当理想≈1">口径效率 <b>{{ bsFmt(bs.shapedEff.value, 1) }}</b>%</span><span>成分波束 3dB 宽 <b>{{ bsFmt(bs.shapedTheta3.value, 3) }}</b>°</span></div>
             <div class="bs-refl" v-html="bsReflSvg"></div>
             <div class="bs-reflbar">
               <span class="pgb" @click="bsReflView = bsReflView === 1 ? 2 : 1">◀</span>
@@ -4210,7 +4210,8 @@ onBeforeUnmount(() => {
                   <input type="checkbox" :checked="bs.p.polyIds.includes(pg.id)" @change="bs.togglePoly(pg.id)" />
                   <span class="bs-pnm">{{ pg.name || 'Polygon' }}</span>
                 </label>
-                <input class="bs-pval" type="number" step="0.5" :value="pg.value" @change="setPolyVal(pg, $event.target.value)" placeholder="覆盖值" title="该区目标电平（覆盖值 dB）。嵌套时内圈填高、外圈填低 → 内强外弱锥度；留空则该区随全局。" />
+                <!-- 用 v-model.lazy（非单向 :value）：本组件实时态每秒重渲染，单向 :value 会在 change(失焦)提交前把正在输入的值刷回原值 → 输不进去；v-model 聚焦时不回写 DOM，change 时经 setPolyVal 读 DOM 值落库/重绘 -->
+                <input class="bs-pval" type="number" step="0.5" v-model.lazy="pg.value" @change="setPolyVal(pg, $event.target.value)" placeholder="覆盖值" title="该区目标电平（覆盖值 dB）。嵌套时内圈填高、外圈填低 → 内强外弱锥度；留空则该区随全局。" />
                 <span class="bs-pvu">dB</span>
               </div>
             </div>
@@ -4348,7 +4349,7 @@ onBeforeUnmount(() => {
         </div>
         </div>
 
-        <!-- 标记：点标记 / 地面站 / 轨迹 -->
+        <!-- 标记：点标记 / 地球站 / 轨迹 -->
         <div v-show="shellUi.side === 'markers'" class="sview">
         <div class="cov-side mk-side docked">
         <div class="sec">
@@ -4367,7 +4368,7 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="sec">
-          <div class="sect acc" :class="{ open: isSecOpen('mk-stations') }" @click="toggleSec('mk-stations')"><Icon :name="isSecOpen('mk-stations') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>地面站</span><span class="eyebtn" :class="{ off: !showStLayer }" :title="showStLayer ? '隐藏地面站（数据保留）' : '显示地面站'" @click.stop="toggleStLayer"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M1 8C3 4.2 13 4.2 15 8C13 11.8 3 11.8 1 8Z" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="8" cy="8" r="2.1" fill="currentColor"/><path v-if="!showStLayer" d="M3 13 L13 3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></span><span class="lnk" title="打开地面站批量表格（Excel：增删改 / 批量粘贴导入）" @click.stop="openMkTable('stations')">表格</span><span v-if="stations.length" class="lnk" :class="{ on: mkEditId === 'stations' }" :title="mkEditId === 'stations' ? '完成，退出拖动' : '在平面图上拖动图标调整地面站位置'" @click.stop="mkEditToggle('stations')">{{ mkEditId === 'stations' ? '完成调整' : '调整位置' }}</span></div>
+          <div class="sect acc" :class="{ open: isSecOpen('mk-stations') }" @click="toggleSec('mk-stations')"><Icon :name="isSecOpen('mk-stations') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>地球站</span><span class="eyebtn" :class="{ off: !showStLayer }" :title="showStLayer ? '隐藏地球站（数据保留）' : '显示地球站'" @click.stop="toggleStLayer"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M1 8C3 4.2 13 4.2 15 8C13 11.8 3 11.8 1 8Z" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="8" cy="8" r="2.1" fill="currentColor"/><path v-if="!showStLayer" d="M3 13 L13 3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></span><span class="lnk" title="打开地球站批量表格（Excel：增删改 / 批量粘贴导入）" @click.stop="openMkTable('stations')">表格</span><span v-if="stations.length" class="lnk" :class="{ on: mkEditId === 'stations' }" :title="mkEditId === 'stations' ? '完成，退出拖动' : '在平面图上拖动图标调整地球站位置'" @click.stop="mkEditToggle('stations')">{{ mkEditId === 'stations' ? '完成调整' : '调整位置' }}</span></div>
           <template v-if="isSecOpen('mk-stations')">
           <div class="srow"><label>纬度</label><input class="ci" v-model="stLat" placeholder="-90 ~ 90" /></div>
           <div class="srow"><label>经度</label><input class="ci" v-model="stLon" placeholder="-180 ~ 180" /></div>
@@ -4470,9 +4471,9 @@ onBeforeUnmount(() => {
             <span class="pmode" :class="{ on: satModal.posMode === 'orbit' }" @click="satModal.posMode = 'orbit'">轨道根数</span>
           </div>
           <template v-if="satModal.posMode !== 'orbit' || satModal.noradId">
-            <div class="srow"><label>经度</label><input class="ci" type="number" step="0.1" :value="satModalPos.lon" @input="satModal.lon = Number($event.target.value)" :disabled="!!satModal.noradId" :title="satModal.noradId ? '已关联星座卫星，位置随星历实时解算，不可手填' : ''" /><span class="u">°E</span></div>
-            <div class="srow"><label>纬度</label><input class="ci" type="number" step="0.1" :value="satModalPos.lat" @input="satModal.lat = Number($event.target.value)" :disabled="!!satModal.noradId" :title="satModal.noradId ? '已关联星座卫星，位置随星历实时解算，不可手填' : ''" /><span class="u">°N</span></div>
-            <div class="srow"><label>轨道高度</label><input class="ci" type="number" step="100" :value="satModalPos.altKm" @input="satModal.altKm = Number($event.target.value)" :disabled="!!satModal.noradId" :title="satModal.noradId ? '已关联星座卫星，位置随星历实时解算，不可手填' : ''" /><span class="u">km</span><span v-if="!satModal.noradId" class="geobtn" title="设为标准 GEO 轨道高度 35786km（NASA 标称值）" @click="applyGeoAlt">一键GEO</span></div>
+            <div class="srow"><label>经度</label><input class="ci" type="number" step="0.1" :value="satModalPos.lon" @input="satModal.lon = Number($event.target.value)" :disabled="!!satModal.noradId" :title="satModal.noradId ? '已关联星座卫星，位置随星历实时解算，不可手动输入' : ''" /><span class="u">°E</span></div>
+            <div class="srow"><label>纬度</label><input class="ci" type="number" step="0.1" :value="satModalPos.lat" @input="satModal.lat = Number($event.target.value)" :disabled="!!satModal.noradId" :title="satModal.noradId ? '已关联星座卫星，位置随星历实时解算，不可手动输入' : ''" /><span class="u">°N</span></div>
+            <div class="srow"><label>轨道高度</label><input class="ci" type="number" step="100" :value="satModalPos.altKm" @input="satModal.altKm = Number($event.target.value)" :disabled="!!satModal.noradId" :title="satModal.noradId ? '已关联星座卫星，位置随星历实时解算，不可手动输入' : ''" /><span class="u">km</span><span v-if="!satModal.noradId" class="geobtn" title="设为标准 GEO 轨道高度 35786km（NASA 标称值）" @click="applyGeoAlt">一键GEO</span></div>
           </template>
           <template v-else>
             <div class="srow"><label>轨道高度</label><input class="ci" type="number" step="50" v-model.number="satModal.elements.altKm" /><span class="u">km</span></div>
@@ -4538,10 +4539,10 @@ onBeforeUnmount(() => {
       <span class="lnk" @click="satPick = false">完成 / 取消</span>
     </div>
 
-    <!-- 添加地面站命名对话框（右键菜单触发，位置取右键处） -->
+    <!-- 添加地球站命名对话框（右键菜单触发，位置取右键处） -->
     <div v-if="stPrompt" class="sat-mask">
       <div class="sat-dlg st-dlg">
-        <div class="sdh"><span>添加地面站</span><span class="csx" @click="cancelStation"><Icon name="x" :size="12" /></span></div>
+        <div class="sdh"><span>添加地球站</span><span class="csx" @click="cancelStation"><Icon name="x" :size="12" /></span></div>
         <div class="sdbody">
           <div class="srow"><label>名称</label><input class="ci" v-model="stPromptName" placeholder="如 北京站" autofocus @keyup.enter="confirmStation" /></div>
           <div class="srow"><label>位置</label><span class="u">{{ fmtLL(stPrompt.lat, stPrompt.lon) }}</span></div>
@@ -4599,7 +4600,7 @@ onBeforeUnmount(() => {
       <span class="lnk" @click="polyMoveStop">完成</span>
     </div>
 
-    <!-- 标记「调整点位置」横幅：拖动平面图上的圆点改坐标（点标记 / 地面站 / 航迹航点共用） -->
+    <!-- 标记「调整点位置」横幅：拖动平面图上的圆点改坐标（点标记 / 地球站 / 航迹航点共用） -->
     <div v-if="mkEditId" class="traj-banner">
       正在调整{{ mkEditLabel }}位置 · 在平面图上拖动圆点改坐标
       <span class="lnk" @click="mkEditStop">完成</span>
@@ -4610,14 +4611,14 @@ onBeforeUnmount(() => {
       <div class="ctx-mask" @click="closeCtx" @contextmenu.prevent="closeCtx"></div>
       <div ref="ctxMenuEl" class="ctx-menu" :style="{ left: ctxMenu.x + 'px', top: ctxMenu.y + 'px' }">
         <div class="ctx-item" :class="{ dis: !ctxMenu.ll }" @click="ctxAddPoint">添加点标记（当前经纬度）</div>
-        <div class="ctx-item" :class="{ dis: !ctxMenu.ll }" @click="ctxAddStation">添加地面站（当前经纬度）</div>
+        <div class="ctx-item" :class="{ dis: !ctxMenu.ll }" @click="ctxAddStation">添加地球站（当前经纬度）</div>
         <div class="ctx-item" :class="{ dis: !ctxMenu.ll }" @click="ctxStartTraj('sea')">添加航行轨迹</div>
         <div class="ctx-item" :class="{ dis: !ctxMenu.ll }" @click="ctxStartTraj('flight')">添加飞行轨迹</div>
         <div class="ctx-item" :class="{ dis: !ctxMenu.ll }" @click="ctxStartPoly">绘制 Polygon（协调区）</div>
         <div class="ctx-item" :class="{ dis: !ctxMenu.ll }" @click="ctxSetLandColor">设置此国大地颜色</div>
         <div class="ctx-sep"></div>
         <div class="ctx-item" @click="clearPoints">清除点标记</div>
-        <div class="ctx-item" @click="clearStations">清除地面站</div>
+        <div class="ctx-item" @click="clearStations">清除地球站</div>
         <div class="ctx-item" @click="clearTrajs">清除航迹</div>
         <div class="ctx-item" @click="ctxClearPolys">隐藏所有 Polygon</div>
         <div class="ctx-item" @click="clearAllMk">清除所有标记</div>
@@ -4676,7 +4677,7 @@ onBeforeUnmount(() => {
           <span class="ptb" :class="{ dis: !perf.canUndo.value }" title="撤销 (Ctrl+Z)" @click="perfUndo"><Icon name="undo-2" :size="12" /></span>
           <span class="ptb" :class="{ dis: !perf.canRedo.value }" title="重做 (Ctrl+Y)" @click="perfRedo"><Icon name="redo-2" :size="12" /></span>
           <span class="ptb" title="在选中行下方增加一行（直接在表格里键入或粘贴）" @click="perfAddRow"><Icon name="plus" :size="12" /> 增加</span>
-          <span class="ptb" title="把地图上的点标记 / 地面站导入为城市" @click="perfImportMarkers"><Icon name="import" :size="12" /> 从标记导入</span>
+          <span class="ptb" title="把地图上的点标记 / 地球站导入为城市" @click="perfImportMarkers"><Icon name="import" :size="12" /> 从标记导入</span>
           <span class="ptb" title="把地图上的航迹航点导入为城市（每个航点一行，城市名取「航迹名#序号」）" @click="perfImportTrajs"><Icon name="import" :size="12" /> 导入航迹</span>
           <span class="ptb" title="从剪贴板粘贴表格（末两列=经度、纬度，可含 国家/城市/代号）批量添加" @click="perfPasteBtn"><Icon name="clipboard" :size="12" /> 粘贴</span>
           <span class="ptb" title="清空城市列表" @click="perfClearStations">清空</span>
@@ -4737,7 +4738,7 @@ onBeforeUnmount(() => {
           <table class="perf-tbl grid ro">
             <thead>
               <tr>
-                <th v-for="c in perfCols" :key="c.key" :style="{ width: c.w + 'px' }" :class="{ n: c.num }" :title="c.na ? '本数据仅含功率（无相位），AR 暂不可算' : ''">{{ c.label }}<em v-if="c.na">*</em></th>
+                <th v-for="c in perfCols" :key="c.key" :style="{ width: c.w + 'px' }" :class="{ n: c.num }" :title="c.na ? '本数据仅含功率（无相位），AR 暂不可算' : (c.tip || '')">{{ c.label }}<em v-if="c.na">*</em></th>
               </tr>
             </thead>
             <tbody>
@@ -4749,7 +4750,7 @@ onBeforeUnmount(() => {
                   <template v-else>{{ r[c.key] || '' }}</template>
                 </td>
               </tr>
-              <tr v-if="!perf.stations.value.length"><td :colspan="perfCols.length" class="perf-empty">先在上方「城市输入」添加城市（手填 / 从标记导入 / 粘贴）</td></tr>
+              <tr v-if="!perf.stations.value.length"><td :colspan="perfCols.length" class="perf-empty">先在上方「城市输入」添加城市（手动输入 / 从标记导入 / 粘贴）</td></tr>
               <tr v-else-if="!perf.filteredRows.value.length"><td :colspan="perfCols.length" class="perf-empty">没有波束覆盖这些城市 — 可调低覆盖阈值或取消「仅覆盖波束」</td></tr>
             </tbody>
           </table>
@@ -4767,13 +4768,13 @@ onBeforeUnmount(() => {
       <div class="perf-rsz" title="拖拽缩放窗口" @mousedown="perfDragResize($event, 'se')"></div>
     </div>
 
-    <!-- 标记批量表格（Excel 模块，仿性能表浮窗）：点标记 / 地面站 / 航迹 三分页，Excel 式框选·键盘导航·复制·编辑·区域粘贴，支持批量导入 -->
+    <!-- 标记批量表格（Excel 模块，仿性能表浮窗）：点标记 / 地球站 / 航迹 三分页，Excel 式框选·键盘导航·复制·编辑·区域粘贴，支持批量导入 -->
     <div v-if="mkTableOpen" class="perf-win mk-win" :style="{ left: mkWin.x + 'px', top: mkWin.y + 'px', width: mkWin.w + 'px', height: mkWin.h + 'px' }">
       <div class="perf-h" @mousedown="mkDragMove">
         <span class="perf-t">标记批量表格</span>
         <span class="mk-tabs">
           <span class="mk-tab" :class="{ on: mkTab === 'points' }" @click="mkSetTab('points')">点标记</span>
-          <span class="mk-tab" :class="{ on: mkTab === 'stations' }" @click="mkSetTab('stations')">地面站</span>
+          <span class="mk-tab" :class="{ on: mkTab === 'stations' }" @click="mkSetTab('stations')">地球站</span>
           <span class="mk-tab" :class="{ on: mkTab === 'traj' }" @click="mkSetTab('traj')">航迹</span>
         </span>
         <span class="csx" @click="closeMkTable"><Icon name="x" :size="12" /></span>
@@ -4784,7 +4785,7 @@ onBeforeUnmount(() => {
         <span class="ptb" :class="{ dis: !mkTable.canUndo.value }" title="撤销 (Ctrl+Z)" @click="mkUndo"><Icon name="undo-2" :size="12" /></span>
         <span class="ptb" :class="{ dis: !mkTable.canRedo.value }" title="重做 (Ctrl+Y)" @click="mkRedo"><Icon name="redo-2" :size="12" /></span>
         <span class="ptb" title="在选中行下方增加一行（直接键入或粘贴）" @click="mkAddRow"><Icon name="plus" :size="12" /> 增加</span>
-        <span class="ptb" title="从剪贴板批量追加（约定末两列 = 经度、纬度；地面站首列可为名称）" @click="mkPaste"><Icon name="clipboard" :size="12" /> 粘贴</span>
+        <span class="ptb" title="从剪贴板批量追加（约定末两列 = 经度、纬度；地球站首列可为名称）" @click="mkPaste"><Icon name="clipboard" :size="12" /> 粘贴</span>
         <span class="ptb" title="清空当前分页列表" @click="mkClear">清空</span>
         <template v-if="mkTab === 'traj'">
           <span class="mk-sep"></span>

@@ -46,10 +46,10 @@ export const FIELD_GROUPS = [
     // + 上行干扰四项（原在卫星侧，现逐站配置）。
     key: 'uplink', title: '发信站群', icon: 'up',
     fields: [
-      // 冻结列（frozen:true）：载波信号配置 · 地面站位置 · 卫星 三列固定不随横向滚动。
-      // 地面站位置在前、卫星在后（收信站群仍为旧序），三列均显式冻结，故与城市字段位置无关，恒冻结三列。
+      // 冻结列（frozen:true）：载波信号配置 · 地球站位置 · 卫星 三列固定不随横向滚动。
+      // 地球站位置在前、卫星在后（收信站群仍为旧序），三列均显式冻结，故与城市字段位置无关，恒冻结三列。
       { key: 'basebandId', label: '载波信号配置', type: 'select', options: [], def: '', target: 'meta', frozen: true },
-      { key: 'earthStationLocation', label: '地面站位置', type: 'text', def: '北京', target: 'link', city: 'tx', frozen: true },
+      { key: 'earthStationLocation', label: '地球站位置', type: 'text', def: '北京', target: 'link', city: 'tx', frozen: true },
       { key: 'satelliteId', label: '卫星', type: 'select', options: [], def: '', target: 'meta', frozen: true },
       { key: 'longitude', label: '经度', unit: '°E', type: 'num', def: '116.4074', target: 'link' },
       { key: 'latitude', label: '纬度', unit: '°N', type: 'num', def: '39.9042', target: 'link' },
@@ -74,11 +74,11 @@ export const FIELD_GROUPS = [
       { key: 'hpaIntermodFactor', label: 'HPA C/IM', tip: '高功放载波/互调比 (HPA Intermodulation)', unit: 'dB', type: 'num', def: '24', target: 'sat', intf: true },
       // 卫星 G/T（再生式改为逐发信站取值）：同一颗星服务不同站因波束位置不同而 G/T 各异——故 G/T 是
       // 「卫星×发信站」配对量，落在发信站逐站手填。
-      { key: 'G_Ts', label: '卫星G/T', tip: '卫星接收品质因数 G/T（dB/K），按本站对该卫星的波束位置手填。', unit: 'dB/K', type: 'num', def: '2', target: 'link' }
+      { key: 'G_Ts', label: '卫星G/T', tip: '卫星接收品质因数 G/T（dB/K），按本站对该卫星的波束位置手动输入。', unit: 'dB/K', type: 'num', def: '2', target: 'link' }
     ]
   },
   {
-    // 收信站群（再生式下行）：星上再生 → 地面站接收。发信站群的下行镜像：
+    // 收信站群（再生式下行）：星上再生 → 地球站接收。发信站群的下行镜像：
     //   · 工作点=「收信站 G/T」，由天线口径/效率 + 天线噪温 + 接收机噪温 + 馈线损耗按引擎口径算出
     //     （不再支持「直接输入设备 G/T」——设备 G/T 系统噪温未知，无法自洽推出雨致 G/T 劣化）。
     //   · 上行干扰四项换成下行干扰四项（C/ACI·C/ASI·C/XPI·C/IM，target:'sat'）。
@@ -87,7 +87,7 @@ export const FIELD_GROUPS = [
     fields: [
       { key: 'basebandId', label: '载波信号配置', type: 'select', options: [], def: '', target: 'meta' },
       { key: 'satelliteId', label: '卫星', type: 'select', options: [], def: '', target: 'meta' },
-      { key: 'rxEarthStationLocation', label: '地面站位置', type: 'text', def: '北京', target: 'link', city: 'rx' },
+      { key: 'rxEarthStationLocation', label: '地球站位置', type: 'text', def: '北京', target: 'link', city: 'rx' },
       { key: 'rxLongitude', label: '经度', unit: '°E', type: 'num', def: '116.4074', target: 'link' },
       { key: 'rxLatitude', label: '纬度', unit: '°N', type: 'num', def: '39.9042', target: 'link' },
       { key: 'rxMinElevation', label: '最低仰角', tip: '收信站对卫星的最低工作仰角，决定最差几何（斜距最大）', unit: '°', type: 'num', def: '10', target: 'link' },
@@ -108,7 +108,7 @@ export const FIELD_GROUPS = [
       { key: 'xpdrIntermodFactor', label: '下行C/IM', tip: '卫星下行载波/互调比 (Intermodulation)', unit: 'dB', type: 'num', def: '21', target: 'sat', intf: true },
       // 卫星下行 EIRP（再生式改为逐收信站取值）：同一颗星服务不同站因波束位置不同而 EIRP 各异——故是
       // 「卫星×收信站」配对量，落在收信站逐站手填。
-      { key: 'rxEIRP', label: '卫星EIRP', tip: '卫星下行 EIRP（dBW），按本站对该卫星的波束位置手填。', unit: 'dBW', type: 'num', def: '46', target: 'link' }
+      { key: 'rxEIRP', label: '卫星EIRP', tip: '卫星下行 EIRP（dBW），按本站对该卫星的波束位置手动输入。', unit: 'dBW', type: 'num', def: '46', target: 'link' }
     ]
   },
   {

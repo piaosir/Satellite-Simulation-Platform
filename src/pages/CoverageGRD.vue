@@ -160,7 +160,7 @@ watch(() => [s.boreLon, s.boreLat, s.yaw], () => { reproject(); recompute() })
             <span class="bp">{{ b.peakDb }}dB</span>
           </button>
         </div>
-        <div v-if="beam" class="meta">峰值 {{ beam.meta.peakDb }} dB @ {{ beam.meta.peak[0] }}, {{ beam.meta.peak[1] }} · igrid{{ beam.meta.igrid }} · {{ beam.meta.grid.NX }}×{{ beam.meta.grid.NY }}</div>
+        <div v-if="beam" class="meta">峰值 {{ beam.meta.peakDb }} dB @ {{ beam.meta.peak[0] }}, {{ beam.meta.peak[1] }} · {{ beam.meta.grid.NX }}×{{ beam.meta.grid.NY }}</div>
       </div>
 
       <div class="sec">
@@ -177,8 +177,8 @@ watch(() => [s.boreLon, s.boreLat, s.yaw], () => { reproject(); recompute() })
         <label class="row"><span>类型</span>
           <select v-model="s.ctype"><option value="rel">相对峰值</option><option value="abs">绝对值</option></select>
         </label>
-        <label class="row" v-if="s.ctype === 'rel'"><span>电平(dB)</span><input v-model="s.relText" /></label>
-        <label class="row" v-else><span>电平(dB)</span><input v-model="s.absText" /></label>
+        <label class="row" v-if="s.ctype === 'rel'"><span>电平（dB）</span><input v-model="s.relText" /></label>
+        <label class="row" v-else><span>电平（dB）</span><input v-model="s.absText" /></label>
         <label class="row"><span>线宽</span><input type="range" min="0.5" max="8" step="0.1" v-model.number="s.lineWidth" /><b>{{ s.lineWidth.toFixed(1) }}</b></label>
       </div>
 
@@ -186,15 +186,15 @@ watch(() => [s.boreLon, s.boreLat, s.yaw], () => { reproject(); recompute() })
         <div class="title">参数</div>
         <label class="row"><span>增益偏置</span><input type="number" step="0.5" v-model.number="s.gainOffset" /><b>dB</b></label>
         <label class="row"><span>极化</span><select v-model="s.pol"><option>P1</option><option>P2</option><option>RSS</option><option>P1/P2</option><option>P2/P1</option></select></label>
-        <label class="row"><span>路径损耗</span><select v-model="s.pathLoss"><option value="none">无</option><option value="relative">相对(h/Rs)²</option><option value="absolute">通量密度</option></select></label>
+        <label class="row"><span>路径损耗</span><select v-model="s.pathLoss"><option value="none">无</option><option value="relative">相对（h/Rs）²</option><option value="absolute">通量密度</option></select></label>
       </div>
 
       <div class="sec">
         <div class="title">指向（默认星下点）</div>
-        <label class="row"><span>boresight 经</span><input type="number" step="0.5" v-model.number="s.boreLon" /></label>
-        <label class="row"><span>boresight 纬</span><input type="number" step="0.5" v-model.number="s.boreLat" /></label>
-        <label class="row"><span>yaw</span><input type="number" step="1" v-model.number="s.yaw" /></label>
-        <div class="meta">改指向触发重投影(L0)。星下点 = {{ beam ? beam.meta.satLon : '-' }}°E</div>
+        <label class="row"><span>视轴经度</span><input type="number" step="0.5" v-model.number="s.boreLon" /></label>
+        <label class="row"><span>视轴纬度</span><input type="number" step="0.5" v-model.number="s.boreLat" /></label>
+        <label class="row"><span>偏航</span><input type="number" step="1" v-model.number="s.yaw" /></label>
+        <div class="meta">改指向触发重投影。星下点 = {{ beam ? beam.meta.satLon : '-' }}°E</div>
       </div>
       <div v-if="loading" class="loading">载入中…</div>
     </aside>

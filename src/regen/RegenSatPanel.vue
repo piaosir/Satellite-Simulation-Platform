@@ -5,7 +5,7 @@ import { ensureSearchPool, findPoolByNorad } from '../ngso/satSearchPool.js'
 import { classifyOrbit, orbitRegimeLabel } from '../shared/orbitClass.js'
 
 // 再生式「卫星群」单份配置的参数面板 —— 和 NGSO 一样支持「搜索卫星 / 天线树导入」选星定轨道。
-// 【不做 EIRP 匹配】；卫星 G/T 不在此面板取值——它是「卫星×发信站」配对量，由各发信站在「发信站群」表逐站手填。
+// 【不做 EIRP 匹配】；卫星 G/T 不在此面板取值——它是「卫星×发信站」配对量，由各发信站在「发信站群」表逐站手动输入。
 // 每份卫星配置各自持有 form（频段/极化/轨道，不含 G/T）与 ngsoSat（轨道来源，tree 模式记 folder），本组件按引用就地改写。
 const props = defineProps({
   form: { type: Object, required: true },              // 卫星参数（satelliteName / 频段 / 上行频率极化 / 轨道高度倾角）
@@ -188,7 +188,7 @@ const rows = computed(() => {
         <i class="pf-u"></i>
       </label>
       <div v-if="!satTree.length" class="rsp-tip">卫星树为空：请先在「星座3D」页导入卫星（作轨道来源），或改用「搜索卫星」。</div>
-      <div v-else class="rsp-tip">取所选卫星轨道用于几何求解（斜距/仰角/访问窗口）；卫星 G/T 在「发信站群」表逐站手填。</div>
+      <div v-else class="rsp-tip">取所选卫星轨道用于几何求解（斜距/仰角/访问窗口）；卫星 G/T 在「发信站群」表逐站手动输入。</div>
     </div>
 
     <!-- ② 搜索卫星 -->
