@@ -24,6 +24,10 @@ export function useGridSelect(cfg) {
   const editEl = ref(null)                // 活动格常驻捕获输入框的 DOM（导航态透明覆盖、编辑态可见；输入法首字母就落在它上）
   const bodyEl = ref(null)                // 网格容器（只读表/无捕获框时的后备键盘焦点持有者）
   let dragging = false
+  // 拖拽框选时的边缘自动滚动：鼠标接近容器上/下(或左/右)边缘 → 用 rAF 持续滚动容器，让选区能延伸到
+  // 当前视口外的行/列。容器随之滚动后，新进入指针下的单元格会触发原生 mouseenter → cellEnter 扩选（Chromium/Electron
+  // 会在滚动导致指针下元素变化时补发 mouseover/enter，即便鼠标静止），故此处只管滚动、选区扩展仍走既有 cellEnter 链路。
+  let pointerX = 0, pointerY = 0, autoRAF = 0
 
   const rect = computed(() => {
     const s = sel.value
@@ -52,9 +56,35 @@ export function useGridSelect(cfg) {
     e.preventDefault()
     if (edit.value.ri >= 0) commitEdit()
     setSel(ri, ci, e.shiftKey); dragging = !e.shiftKey; focusGrid()
+    if (dragging) { pointerX = e.clientX; pointerY = e.clientY; window.addEventListener('mousemove', onDragMove) }   // 拖拽期间跟踪指针，驱动边缘自动滚动
   }
   function cellEnter(ri, ci) { if (dragging) setSel(ri, ci, true) }
-  function up() { dragging = false }
+  // 边缘自动滚动一帧：按指针距上下左右边缘的深度决定滚动速度，越靠边越快；仍在边缘带内则继续下一帧（指针静止也持续滚）。
+  function edgeAutoScroll() {
+    autoRAF = 0
+    if (!dragging) return
+    const el = bodyEl.value; if (!el) return
+    const r = el.getBoundingClientRect(), EDGE = 26, MAX = 20
+    let dx = 0, dy = 0
+    if (pointerY < r.top + EDGE) dy = -Math.ceil((r.top + EDGE - pointerY) / EDGE * MAX)
+    else if (pointerY > r.bottom - EDGE) dy = Math.ceil((pointerY - (r.bottom - EDGE)) / EDGE * MAX)
+    if (pointerX < r.left + EDGE) dx = -Math.ceil((r.left + EDGE - pointerX) / EDGE * MAX)
+    else if (pointerX > r.right - EDGE) dx = Math.ceil((pointerX - (r.right - EDGE)) / EDGE * MAX)
+    if (dy) el.scrollTop += dy
+    if (dx) el.scrollLeft += dx
+    if (dragging && (dx || dy)) autoRAF = requestAnimationFrame(edgeAutoScroll)
+  }
+  function onDragMove(e) {
+    if (!dragging) return
+    pointerX = e.clientX; pointerY = e.clientY
+    if (!autoRAF) autoRAF = requestAnimationFrame(edgeAutoScroll)
+  }
+  function stopDrag() {
+    dragging = false
+    window.removeEventListener('mousemove', onDragMove)
+    if (autoRAF) { cancelAnimationFrame(autoRAF); autoRAF = 0 }
+  }
+  function up() { stopDrag() }
   function tryEdit(ri, ci, seed) {   // F2/双击/Backspace 进入：由 watch 用 seed/原值重置 input（键入进入走 beginActiveEdit，不经此）
     const c = cfg.cols()[ci]; if (!colEditable(c)) return
     sel.value = { ar: ri, ac: ci, ri, ci }; editSeed.value = seed; editTyped.value = false; edit.value = { ri, ci }
@@ -210,10 +240,15 @@ export function useGridSelect(cfg) {
   // 只读表 / 无捕获框的格退回容器本身，保证导航链不断。
   watch(() => [sel.value.ri, sel.value.ci], () => {
     if (edit.value.ri >= 0) return
-    nextTick(() => { const el = editEl.value; if (el) el.focus(); else if (bodyEl.value) bodyEl.value.focus() })
+    nextTick(() => {
+      const el = editEl.value; if (el) el.focus(); else if (bodyEl.value) bodyEl.value.focus()
+      // 键盘导航 / Shift 扩选：把活动格滚入可视区（拖拽框选不在此处理——交给 edgeAutoScroll，避免与之打架）。
+      // 只读表无捕获框，focus 落在容器不会带出活动格，故这里显式滚动；可编辑表 focus input 通常已带出，这步兜底/无害。
+      if (!dragging && bodyEl.value) { const cell = bodyEl.value.querySelector('td.active'); if (cell && cell.scrollIntoView) cell.scrollIntoView({ block: 'nearest', inline: 'nearest' }) }
+    })
   })
   onMounted(() => window.addEventListener('mouseup', up))
-  onBeforeUnmount(() => window.removeEventListener('mouseup', up))
+  onBeforeUnmount(() => { window.removeEventListener('mouseup', up); stopDrag() })
 
   return {
     sel, edit, editSeed, editEl, bodyEl, rect, inSel, isActive, isEdit, colEditable,

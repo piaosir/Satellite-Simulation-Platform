@@ -131,6 +131,12 @@ async function toggleGrd() {
 const perf = usePerfTable()
 const perfKey = ref('')                 // 当前打开表的天线 key（''=关闭）；每个天线一张独立表
 const perfOptsOpen = ref(false)         // 「性能表选项」弹窗开关
+const perfGrpOpen = ref(false)          // 「城市组」管理弹窗开关
+const perfGroupSel = ref('')            // 城市输入区工具栏「城市组」下拉当前值（=最近载入的组 id，''=未选）
+const perfNewGrpName = ref('')          // 新建城市组的名称输入
+const perfGrpRenameId = ref('')         // 正在重命名的城市组 id（''=无）
+const perfGrpRenameVal = ref('')        // 重命名输入值
+const perfGrpDelId = ref('')            // 待确认删除的城市组 id（两步删除防误删；''=无）
 // 浮窗几何（可拖拽移动 / 右下角缩放）+ 中缝分隔（城市输入区高度，px）。首次打开按视口初始化一次。
 const perfWin = ref({ x: 0, y: 0, w: 760, h: 560, init: false })
 const perfInputH = ref(190)
@@ -235,14 +241,54 @@ async function perfPasteBtn() {
   const n = perf.addStationsBulk(text)
   if (n) refreshPerf(); else { perf.dropUndo(); appAlert('剪贴板没有可识别的经纬度数据（约定末两列为 经度、纬度）') }
 }
+// ===== 城市组：把当前城市列表存成命名预设，选组即载入（替换）并重算结果，供不同天线复用 =====
+function perfOpenGroups() { perfGrpDelId.value = ''; perfGrpRenameId.value = ''; perfNewGrpName.value = ''; perfGrpOpen.value = true }
+function perfCreateGroup() {
+  if (!perf.stations.value.length) { appAlert('当前城市列表为空，先添加城市再存为组'); return }
+  const id = perf.addCityGroup(perfNewGrpName.value)
+  if (id) { perfNewGrpName.value = ''; perfGroupSel.value = id }
+}
+function perfLoadGroup(g) {
+  if (!g) return
+  perf.pushUndo()
+  const n = perf.loadCityGroup(g.id)
+  perfGroupSel.value = g.id
+  refreshPerf()
+  if (!n) appAlert('该城市组为空')
+}
+// 工具栏下拉：选中某组即载入（替换当前列表，可撤销）
+function perfLoadGroupSel() {
+  const g = perfGroupSel.value ? perf.cityGroups.value.find((x) => x.id === perfGroupSel.value) : null
+  if (g) perfLoadGroup(g)
+}
+function perfAppendGroup(g) {
+  if (!g) return
+  perf.pushUndo()
+  const n = perf.appendCityGroup(g.id)
+  if (n) refreshPerf(); else { perf.dropUndo(); appAlert('该组城市已全部在当前列表中（按坐标去重）') }
+}
+function perfOverwriteGroup(g) {
+  if (!g) return
+  if (!perf.stations.value.length) { appAlert('当前城市列表为空，无法覆盖'); return }
+  perf.overwriteCityGroup(g.id)
+}
+function perfStartRenameGroup(g) { perfGrpDelId.value = ''; perfGrpRenameId.value = g.id; perfGrpRenameVal.value = g.name }
+function perfCommitRenameGroup(g) { if (perf.renameCityGroup(g.id, perfGrpRenameVal.value)) perfGrpRenameId.value = '' }
+// 两步删除：首次点击进入「确认」态，再点一次才真正删除，避免误删已精心整理的城市组
+function perfDeleteGroup(g) {
+  if (perfGrpDelId.value !== g.id) { perfGrpDelId.value = g.id; return }
+  perf.removeCityGroup(g.id)
+  if (perfGroupSel.value === g.id) perfGroupSel.value = ''
+  perfGrpDelId.value = ''
+}
 // ===== 两张表都用 Excel 式交互（框选 / 键盘导航 / 复制 / 编辑·粘贴·清除）=====
 // 城市输入网格列（可编辑）；行 = perf.stations，行 id 即站点 id。
 const perfInCols = [
   { key: 'country', label: '国家' },
   { key: 'city', label: '城市' },
   { key: 'desig', label: '代号' },
-  { key: 'lon', label: '经度', num: true },
-  { key: 'lat', label: '纬度', num: true }
+  { key: 'lon', label: '经度', num: true, unit: '°E' },
+  { key: 'lat', label: '纬度', num: true, unit: '°N' }
 ]
 // 上：城市输入（可编辑）——单格编辑/区域粘贴/清除均落到站点库，深 watch 自动重算结果表。
 const perfInGrid = useGridSelect({
@@ -292,17 +338,32 @@ function perfCellText(r, c) {
 function perfCopyResult() {
   const cols = perfCols.value, rows = perf.filteredRows.value
   if (!rows.length) { appAlert('结果表为空'); return }
-  const head = cols.map((c) => c.label).join('\t')
+  const head = cols.map((c) => { const u = perfColUnit(c); return c.label + (u ? '(' + u + ')' : '') }).join('\t')   // 复制表头带单位，与显示一致
   const body = rows.map((r) => cols.map((c) => perfCellText(r, c)).join('\t')).join('\n')
   if (!perfWriteClipboard(head + '\n' + body)) appAlert('复制失败，请检查剪贴板权限')
 }
 const perfFix = (v, n) => (v == null ? '—' : v.toFixed(n == null ? 2 : n))
 const perfColDef = (k) => perf.colDefs.find((c) => c.key === k)
-const perfColLabel = (k) => { const c = perfColDef(k); return c ? c.label : k }
+// 列单位：param（Parameter）随参数计算口径动态——dB / 功率 / 电压（与选项弹窗单位切换同口径，Same as Antenna 恒 dB）；
+// 其余列取列定义里的静态 unit（经纬度/角度 °、dir/xpol/slope/ar/min·maxPt 等 dB/…）。无量纲列（u/v）返回空。
+function perfColUnit(c) {
+  if (!c) return ''
+  if (c.key === 'param') {
+    const o = perfOpts.value
+    if (!o || o.sameAsAnt || o.unit === 'dB') return 'dB'
+    return o.unit === 'power' ? '功率' : o.unit === 'voltage' ? '电压' : 'dB'
+  }
+  return c.unit || ''
+}
+const perfColLabel = (k) => { const c = perfColDef(k); if (!c) return k; return c.label + (c.unit ? '(' + c.unit + ')' : '') }   // 选项弹窗列名带（静态）单位
 const perfColNa = (k) => { const c = perfColDef(k); return !!(c && c.na) }
+// 逃生口：把当前天线的表选项重置为出厂默认（列/口径/指向误差/波束筛选）——继承机制不合意时一键回默认
+function perfResetOpts() { if (!perfKey.value) return; perf.resetOpts(perfKey.value); perf.beamQuery.value = ''; refreshPerf() }
 // 站点库 / 天线设置（极化/增益/路损/相对绝对）/ 选中波束 / 表选项 变化 → 表重算（仅表开启时）
 watch(() => perf.stations.value, () => refreshPerf(), { deep: true })
 watch(() => perf.optsByAnt.value, () => refreshPerf(), { deep: true })
+// 记住当前表的列/口径/指向误差设置，作为「下一个新天线」的默认模板 → 换天线不必重设（beamSel 在 rememberOpts 内已剔除，不跨天线继承）
+watch(perfOpts, () => { if (perfKey.value) perf.rememberOpts(perfKey.value) }, { deep: true })
 watch(() => [grdS.pol, grdS.gainOffset, grdS.pathLoss, grdS.ctype, grdS.beamsToPlot], () => { if (perfKey.value === grd.active.value) refreshPerf() }, { deep: true })
 // 拖拽波束/改指向时性能表随图实时刷新（取值依赖指向推出的 basis）。boresight 每帧变 → rAF 合帧，一帧最多重算一次，
 // 避免逐帧全量取值（每站×每波束，含 Min/Max Pointing 的椭圆扫描）把主线程打满。仅当该表正是聚焦天线才刷。
@@ -4681,6 +4742,12 @@ onBeforeUnmount(() => {
           <span class="ptb" title="把地图上的航迹航点导入为城市（每个航点一行，城市名取「航迹名#序号」）" @click="perfImportTrajs"><Icon name="import" :size="12" /> 导入航迹</span>
           <span class="ptb" title="从剪贴板粘贴表格（末两列=经度、纬度，可含 国家/城市/代号）批量添加" @click="perfPasteBtn"><Icon name="clipboard" :size="12" /> 粘贴</span>
           <span class="ptb" title="清空城市列表" @click="perfClearStations">清空</span>
+          <span class="pin-sep"></span>
+          <select class="pin-gsel" v-model="perfGroupSel" @change="perfLoadGroupSel" title="选择一个已存的城市组即载入（替换当前城市列表）进行查询">
+            <option value="">载入城市组…</option>
+            <option v-for="g in perf.cityGroups.value" :key="g.id" :value="g.id">{{ g.name }}（{{ g.cities.length }}）</option>
+          </select>
+          <span class="ptb" title="城市组：把当前城市列表存为新组，或重命名 / 覆盖 / 删除已有组" @click="perfOpenGroups"><Icon name="layers" :size="12" /> 城市组…</span>
           <span class="perf-cnt">{{ perf.stations.value.length }} 城市</span>
         </div>
         <!-- Excel 式网格：拖拽框选 / Shift 扩选 / 方向键导航 / Ctrl+C 复制 / 双击·键入编辑 / Ctrl+V 区域粘贴 / Del 清除 -->
@@ -4688,7 +4755,7 @@ onBeforeUnmount(() => {
           <table class="perf-tbl grid">
             <thead>
               <tr>
-                <th v-for="c in perfInCols" :key="c.key" :class="{ n: c.num }">{{ c.label }}</th>
+                <th v-for="c in perfInCols" :key="c.key" :class="{ n: c.num }">{{ c.label }}<i v-if="c.unit" class="cu">({{ c.unit }})</i></th>
                 <th class="th-act"></th>
               </tr>
             </thead>
@@ -4738,7 +4805,7 @@ onBeforeUnmount(() => {
           <table class="perf-tbl grid ro">
             <thead>
               <tr>
-                <th v-for="c in perfCols" :key="c.key" :style="{ width: c.w + 'px' }" :class="{ n: c.num }" :title="c.na ? '本数据仅含功率（无相位），AR 暂不可算' : (c.tip || '')">{{ c.label }}<em v-if="c.na">*</em></th>
+                <th v-for="c in perfCols" :key="c.key" :style="{ width: c.w + 'px' }" :class="{ n: c.num }" :title="c.na ? '本数据仅含功率（无相位），AR 暂不可算' : (c.tip || '')">{{ c.label }}<i v-if="perfColUnit(c)" class="cu">({{ perfColUnit(c) }})</i><em v-if="c.na">*</em></th>
               </tr>
             </thead>
             <tbody>
@@ -4957,7 +5024,41 @@ onBeforeUnmount(() => {
             </section>
           </div>
         </div>
-        <div class="sdfoot"><span class="save" @click="perfOptsOpen = false">完成</span></div>
+        <div class="sdfoot"><span class="save ghost po-reset" title="把当前天线的表选项恢复为出厂默认（列 / 口径 / 指向误差 / 波束筛选）" @click="perfResetOpts">恢复默认</span><span class="save" @click="perfOptsOpen = false">完成</span></div>
+      </div>
+    </div>
+
+    <!-- 城市组管理弹窗：把当前城市列表存成命名预设，随时载入(替换)/追加/覆盖/重命名/删除；组随页面快照存盘、跨天线共享 -->
+    <div v-if="perfGrpOpen" class="sat-mask perf-grp-mask" @click.self="perfGrpOpen = false">
+      <div class="sat-dlg grp-dlg">
+        <div class="sdh"><span>城市组</span><span class="csx" @click="perfGrpOpen = false"><Icon name="x" :size="12" /></span></div>
+        <div class="sdbody">
+          <p class="grp-hint">把「城市输入」当前的城市列表存成命名组，之后可一键载入不同城市组进行查询。城市组在所有天线的性能表间共享。</p>
+          <div class="grp-save">
+            <input class="grp-name" v-model="perfNewGrpName" :placeholder="'新组名称（默认：城市组 ' + (perf.cityGroups.value.length + 1) + '）'" @keydown.enter="perfCreateGroup" />
+            <span class="save" :class="{ dis: !perf.stations.value.length }" @click="perfCreateGroup">存当前 {{ perf.stations.value.length }} 城市为新组</span>
+          </div>
+          <div class="grp-list">
+            <div v-for="g in perf.cityGroups.value" :key="g.id" class="grp-row" :class="{ cur: perfGroupSel === g.id }">
+              <template v-if="perfGrpRenameId === g.id">
+                <input class="grp-name f1" v-model="perfGrpRenameVal" @keydown.enter="perfCommitRenameGroup(g)" @keydown.esc="perfGrpRenameId = ''" />
+                <span class="gic ok" title="确认重命名" @click="perfCommitRenameGroup(g)"><Icon name="check" :size="12" /></span>
+                <span class="gic" title="取消" @click="perfGrpRenameId = ''"><Icon name="x" :size="12" /></span>
+              </template>
+              <template v-else>
+                <span class="grp-nm" :title="g.name">{{ g.name }}</span>
+                <span class="grp-cnt">{{ g.cities.length }} 城市</span>
+                <span class="gbtn" title="载入：用此组城市替换当前列表（可撤销）" @click="perfLoadGroup(g)">载入</span>
+                <span class="gbtn" title="追加此组城市到当前列表（按坐标去重）" @click="perfAppendGroup(g)">追加</span>
+                <span class="gbtn" title="用当前城市列表覆盖此组" @click="perfOverwriteGroup(g)">覆盖</span>
+                <span class="gic" title="重命名" @click="perfStartRenameGroup(g)"><Icon name="pencil" :size="12" /></span>
+                <span class="gic del" :class="{ warn: perfGrpDelId === g.id }" :title="perfGrpDelId === g.id ? '再点一次确认删除' : '删除此组'" @click="perfDeleteGroup(g)"><Icon name="trash" :size="12" /></span>
+              </template>
+            </div>
+            <div v-if="!perf.cityGroups.value.length" class="grp-empty">还没有城市组。在上方输入名称，点「存当前…为新组」即可创建。</div>
+          </div>
+        </div>
+        <div class="sdfoot"><span class="save" @click="perfGrpOpen = false">完成</span></div>
       </div>
     </div>
   </div>
@@ -5477,6 +5578,9 @@ onBeforeUnmount(() => {
 .perf-tbl th.n, .perf-tbl td.n { text-align: right; font-family: var(--font-mono); }
 .perf-tbl td { color: var(--text); }
 .perf-tbl th em { color: var(--text-faint); font-style: normal; }
+/* 表头单位小字（经纬度/角度 °、dB 等）：弱化淡灰、比列名略小，紧跟列名 */
+.perf-tbl th .cu { font-style: normal; color: var(--text-faint); font-weight: 400; font-size: .9em; margin-left: 2px; }
+.perf-tbl th.n .cu { font-family: var(--font-mono); }
 .perf-tbl tbody tr:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
 .perf-tbl tr.out td { color: var(--text-faint); }
 .perf-empty { text-align: center !important; color: var(--text-faint); padding: 18px !important; font-style: italic; }
@@ -5508,6 +5612,7 @@ onBeforeUnmount(() => {
 .sat-mask.perf-opt-mask { z-index: 70; }   /* 提高特异性压过 .sat-mask(z40)，高于性能表浮窗(z60)避免被遮挡 */
 .perf-opt-dlg { width: 700px; max-width: calc(100% - 32px); max-height: 88%; display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 8px; box-shadow: 0 16px 48px rgba(0, 0, 0, .55); }
 .perf-opt-dlg .sdh em { font-style: normal; font-family: var(--font-mono); font-size: 11.5px; color: var(--text-faint); }
+.perf-opt-dlg .sdfoot .po-reset { margin-right: auto; }   /* 「恢复默认」推到左端，「完成」留在右端 */
 .perf-opt-body { display: flex; gap: 12px; padding: 12px; overflow: auto; align-items: stretch; }
 .po-card { border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; background: color-mix(in srgb, var(--text) 2.5%, transparent); }
 .po-ct { font-size: 11px; font-weight: 600; color: var(--text-muted); letter-spacing: .3px; margin-bottom: 6px; padding-bottom: 4px; border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent); }
@@ -5532,6 +5637,34 @@ onBeforeUnmount(() => {
 .po-row select { flex: 1; min-width: 0; border: 1px solid var(--border); background: var(--bg); padding: 2px 6px; font-size: 12px; color: var(--text); border-radius: 4px; }
 .po-row .u { flex: none; color: var(--text-faint); font-size: 11px; }
 .po-row .seg, .po-card > .seg { flex: 1; }
+
+/* —— 城市输入区工具栏：城市组下拉 + 分隔条 —— */
+.pin-sep { flex: none; width: 1px; align-self: stretch; margin: 2px 2px; background: var(--border); }
+.pin-gsel { flex: none; max-width: 168px; border: 1px solid var(--border); background: var(--bg); padding: 2px 6px; font-size: 11.5px; color: var(--text); border-radius: 4px; outline: none; cursor: pointer; }
+.pin-gsel:hover { border-color: var(--accent); }
+/* —— 城市组管理弹窗 —— */
+.sat-mask.perf-grp-mask { z-index: 70; }   /* 压过性能表浮窗(z60)，避免被遮挡 */
+.grp-dlg { width: 460px; max-width: calc(100% - 32px); }
+.grp-hint { margin: 0 0 10px; font-size: 11.5px; line-height: 1.6; color: var(--text-muted); }
+.grp-save { display: flex; align-items: center; gap: 8px; padding-bottom: 10px; margin-bottom: 8px; border-bottom: 1px solid var(--border); }
+.grp-name { flex: 1; min-width: 0; border: 1px solid var(--border); background: var(--bg); padding: 4px 8px; font-size: 12px; color: var(--text); border-radius: 4px; outline: none; }
+.grp-name:focus { border-color: var(--accent); }
+.grp-save .save { flex: none; background: var(--accent); color: #fff; padding: 4px 12px; cursor: pointer; font-size: 11.5px; border-radius: 4px; white-space: nowrap; }
+.grp-save .save.dis { opacity: .45; pointer-events: none; }
+.grp-list { max-height: 300px; overflow-y: auto; }
+.grp-row { display: flex; align-items: center; gap: 6px; padding: 5px 4px; border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent); }
+.grp-row.cur { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.grp-nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--text); }
+.grp-cnt { flex: none; font-size: 10.5px; color: var(--text-faint); font-family: var(--font-mono); }
+.grp-row .gbtn { flex: none; font-size: 11px; color: var(--text-muted); border: 1px solid var(--border); border-radius: 4px; padding: 1px 7px; cursor: pointer; white-space: nowrap; }
+.grp-row .gbtn:hover { color: var(--text); border-color: var(--accent); }
+.grp-row .gic { flex: none; display: inline-flex; align-items: center; color: var(--text-faint); cursor: pointer; padding: 1px 2px; }
+.grp-row .gic:hover { color: var(--text); }
+.grp-row .gic.ok:hover { color: var(--accent); }
+.grp-row .gic.del:hover { color: #ff6a6a; }
+.grp-row .gic.del.warn { color: #ff6a6a; }
+.grp-empty { padding: 18px 8px; text-align: center; font-size: 11.5px; color: var(--text-faint); font-style: italic; }
+
 .gck { flex: none; width: 12px; height: 12px; margin: 0; cursor: pointer; accent-color: var(--accent); }
 .gck:disabled { opacity: .35; cursor: not-allowed; }
 /* 展开后的子级容器：左侧一条淡引导线统辖「卫星显示开关 + 天线列表」，缩进统一 */

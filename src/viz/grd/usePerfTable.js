@@ -6,8 +6,16 @@ import { sampleBeamAt, perturbSpacecraft, dirToAzEl, groundLookAngles, axialRati
 
 let _seq = 1
 const newId = () => 'st' + Date.now().toString(36) + (_seq++)
+// 中文输入法在全角标点模式下会把「-」输成全角减号「－」(U+FF0D)、句点输成「．」，而数字仍是半角——
+// Number() 只认半角，Number('－75')=NaN 会让负数经纬度（西经/南纬）被静默吞掉（症状：正数能填、负数不识别）。
+// 故解析前先把全角数字/减号/句点等常见变体归一到半角。
+const toHalf = (s) => String(s)
+  .replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))   // 全角数字 ０-９ → 0-9
+  .replace(/[－−–—―﹣]/g, '-')                             // 全角/数学/破折 减号 → -
+  .replace(/＋/g, '+')                                                             // 全角 ＋ → +
+  .replace(/[．。]/g, '.')                                                     // 全角句点 ．/ 中文句号 。 → .
 // 空串/空白必须判 null：Number('')===0，否则 Excel 复制块里的空单元格会把经纬度悄悄写成 0
-const num = (v) => { if (v == null || String(v).trim() === '') return null; const n = Number(v); return Number.isFinite(n) ? n : null }
+const num = (v) => { if (v == null) return null; const s = toHalf(v).trim(); if (s === '') return null; const n = Number(s); return Number.isFinite(n) ? n : null }
 
 // 全列定义（顺序即列序）。num=右对齐数字列，fix=小数位。默认显示集见 defaultOpts。
 const COL_DEFS = [
@@ -21,21 +29,22 @@ const COL_DEFS = [
   { key: 'country', label: '国家', w: 76 },
   { key: 'city', label: '城市', w: 88 },
   { key: 'desig', label: '代号', w: 72 },
-  { key: 'lon', label: '经度', w: 128, num: true, fix: 2 },
-  { key: 'lat', label: '纬度', w: 128, num: true, fix: 2 },
-  { key: 'scAz', label: 'S/C Az', w: 64, num: true, fix: 2, tip: '卫星（航天器）天线系下、指向该地面点的方位角（boresight=星下点为 0）' },
-  { key: 'scEl', label: 'S/C El', w: 64, num: true, fix: 2, tip: '卫星（航天器）天线系下、指向该地面点的俯仰角（boresight=星下点为 0）' },
-  { key: 'gsAz', label: 'G/S Az', w: 64, num: true, fix: 2, tip: '地球站看卫星的方位角（自正北顺时针 0–360°）' },
-  { key: 'gsEl', label: 'G/S El', w: 64, num: true, fix: 2, tip: '地球站看卫星的仰角（当地水平面以上；<0 表示卫星在地平线下不可见）' },
-  { key: 'u', label: 'u', w: 62, num: true, fix: 4 },
-  { key: 'v', label: 'v', w: 62, num: true, fix: 4 },
-  { key: 'dir', label: 'Dir(dB)', w: 74, num: true, fix: 2 },
-  { key: 'param', label: 'Parameter', w: 84, num: true, fix: 2 },
-  { key: 'minPt', label: 'Min Pointing', w: 92, num: true, fix: 2 },
-  { key: 'maxPt', label: 'Max Pointing', w: 92, num: true, fix: 2 },
-  { key: 'xpol', label: 'Xpol C/I(dB)', w: 92, num: true, fix: 2 },
-  { key: 'slope', label: 'Slope(dB/°)', w: 86, num: true, fix: 2 },
-  { key: 'ar', label: 'AR(dB)', w: 70, num: true, fix: 2 }   // 由复场相位算；预置烘焙天线无相位 → 显示 —
+  { key: 'lon', label: '经度', w: 128, num: true, fix: 2, unit: '°E', tip: '东经为正，负值表示西经' },
+  { key: 'lat', label: '纬度', w: 128, num: true, fix: 2, unit: '°N', tip: '北纬为正，负值表示南纬' },
+  { key: 'scAz', label: 'S/C Az', w: 64, num: true, fix: 2, unit: '°', tip: '卫星（航天器）天线系下、指向该地面点的方位角（boresight=星下点为 0）' },
+  { key: 'scEl', label: 'S/C El', w: 64, num: true, fix: 2, unit: '°', tip: '卫星（航天器）天线系下、指向该地面点的俯仰角（boresight=星下点为 0）' },
+  { key: 'gsAz', label: 'G/S Az', w: 64, num: true, fix: 2, unit: '°', tip: '地球站看卫星的方位角（自正北顺时针 0–360°）' },
+  { key: 'gsEl', label: 'G/S El', w: 64, num: true, fix: 2, unit: '°', tip: '地球站看卫星的仰角（当地水平面以上；<0 表示卫星在地平线下不可见）' },
+  { key: 'u', label: 'u', w: 62, num: true, fix: 4 },                    // 方向余弦，无量纲
+  { key: 'v', label: 'v', w: 62, num: true, fix: 4 },                    // 方向余弦，无量纲
+  // dir/xpol/slope/ar 的单位从 label 内联改为 unit 字段（单一来源，供表头/复制/选项弹窗统一渲染）
+  { key: 'dir', label: 'Dir', w: 74, num: true, fix: 2, unit: 'dB' },
+  { key: 'param', label: 'Parameter', w: 84, num: true, fix: 2, unit: 'dB' },   // 单位随口径动态（dB/功率/电压），见组件 perfColUnit
+  { key: 'minPt', label: 'Min Pointing', w: 92, num: true, fix: 2, unit: 'dB' },
+  { key: 'maxPt', label: 'Max Pointing', w: 92, num: true, fix: 2, unit: 'dB' },
+  { key: 'xpol', label: 'Xpol C/I', w: 92, num: true, fix: 2, unit: 'dB' },
+  { key: 'slope', label: 'Slope', w: 86, num: true, fix: 2, unit: 'dB/°' },
+  { key: 'ar', label: 'AR', w: 70, num: true, fix: 2, unit: 'dB' }   // 由复场相位算；预置烘焙天线无相位 → 显示 —
 ]
 
 // 列分组（仅供选项弹窗排版）
@@ -71,11 +80,31 @@ export function usePerfTable() {
   const query = ref('')        // 表内查询（国家/城市/代号）
   const optsByAnt = ref({})    // 天线 key → 选项（独立保存）
   const hidden = ref({})       // 已手动隐藏的行 id（站#波束）→ true；行为派生数据，仅内存态不存盘
+  const cityGroups = ref([])   // 城市组（命名预设列表）：[{ id, name, cities:[{country,city,desig,lon,lat}] }]；全表共享、随页面快照存盘
 
+  // 「记住上次选择」模板：新天线首次打开表时，用它初始化选项（列/过滤/口径/指向误差），而不是每次回到固定默认——减少逐天线重设。
+  // beamSel（波束筛选）不入模板：波束因天线而异，继承会张冠李戴，新表恒为「全部波束」。随页面快照持久化。
+  let optsTemplate = null
+  function cloneOpts(o) { return JSON.parse(JSON.stringify(o)) }
+  function newOptsFromTemplate() {
+    const base = defaultOpts()
+    if (!optsTemplate) return base
+    return { ...base, ...cloneOpts(optsTemplate), cols: { ...base.cols, ...(optsTemplate.cols || {}) }, beamSel: null }
+  }
   function getOpts(key) {
     if (!key) return defaultOpts()
-    if (!optsByAnt.value[key]) optsByAnt.value[key] = defaultOpts()
+    if (!optsByAnt.value[key]) optsByAnt.value[key] = newOptsFromTemplate()
     return optsByAnt.value[key]
+  }
+  // 把某天线当前选项记成模板（供下一个新天线继承）。beamSel 剔除。页面在选项变化时调用。
+  function rememberOpts(key) {
+    const o = key && optsByAnt.value[key]; if (!o) return
+    optsTemplate = cloneOpts({ ...o, beamSel: null })
+  }
+  // 逃生口：把某天线选项重置为出厂默认（选项弹窗「恢复默认」按钮）。
+  function resetOpts(key) {
+    if (!key) return
+    optsByAnt.value = { ...optsByAnt.value, [key]: defaultOpts() }
   }
   const visibleColumns = (o) => COL_DEFS.filter((c) => o && o.cols && o.cols[c.key])
 
@@ -209,6 +238,49 @@ export function usePerfTable() {
   function clearStations() { stations.value = []; hidden.value = {} }
   // 仅隐藏当前行（站×波束），不影响同站其他波束行；id 稳定 → recompute 后仍生效。
   function removeRow(id) { if (id != null) hidden.value = { ...hidden.value, [id]: true } }
+
+  // ===== 城市组（把当前城市列表存成命名预设，随时载入/追加/覆盖，供不同天线的性能表复用）=====
+  const gid = () => 'cg' + Date.now().toString(36) + (_seq++)
+  const snapCities = () => stations.value.map((s) => ({ country: s.country || '', city: s.city || '', desig: s.desig || '', lon: s.lon, lat: s.lat }))
+  const findGroup = (id) => cityGroups.value.find((x) => x.id === id) || null
+  // 存当前城市列表为新组。空列表不存（返回 null）；名称去空白，空名给默认名。返回新组 id。
+  function addCityGroup(name) {
+    if (!stations.value.length) return null
+    const nm = String(name == null ? '' : name).trim() || ('城市组 ' + (cityGroups.value.length + 1))
+    const g = { id: gid(), name: nm, cities: snapCities() }
+    cityGroups.value = [...cityGroups.value, g]
+    return g.id
+  }
+  function renameCityGroup(id, name) {
+    const nm = String(name == null ? '' : name).trim(); if (!nm) return false
+    const g = findGroup(id); if (!g) return false
+    g.name = nm; cityGroups.value = [...cityGroups.value]; return true
+  }
+  function overwriteCityGroup(id) {
+    const g = findGroup(id); if (!g) return false
+    g.cities = snapCities(); cityGroups.value = [...cityGroups.value]; return true
+  }
+  function removeCityGroup(id) { cityGroups.value = cityGroups.value.filter((x) => x.id !== id) }
+  // 载入组 = 用该组城市替换当前列表（新建行 id）。调用方负责 pushUndo（一次 Ctrl+Z 可还原）。返回载入的城市数。
+  function loadCityGroup(id) {
+    const g = findGroup(id); if (!g) return 0
+    stations.value = (g.cities || []).map((c) => ({ id: newId(), country: c.country || '', city: c.city || '', desig: c.desig || '', lon: num(c.lon), lat: num(c.lat) }))
+    hidden.value = {}
+    return stations.value.length
+  }
+  // 追加组到当前列表：有坐标的行按 ±1e-4 去重（与从标记导入同口径），无坐标的行（仅城市名）一律追加。调用方负责 pushUndo。返回新增数。
+  function appendCityGroup(id) {
+    const g = findGroup(id); if (!g) return 0
+    const exists = (lon, lat) => stations.value.some((s) => Number.isFinite(s.lon) && Number.isFinite(s.lat) && Math.abs(s.lon - lon) < 1e-4 && Math.abs(s.lat - lat) < 1e-4)
+    const add = []
+    for (const c of (g.cities || [])) {
+      const lon = num(c.lon), lat = num(c.lat)
+      if (lon != null && lat != null && exists(lon, lat)) continue
+      add.push({ id: newId(), country: c.country || '', city: c.city || '', desig: c.desig || '', lon, lat })
+    }
+    if (add.length) stations.value = [...stations.value, ...add]
+    return add.length
+  }
 
   // 从地图标记导入：地球站 name → 城市；点标记 → 仅经纬度。±1e-4 去重。返回新增条数。
   function importFromMarkers(points = [], mkStations = []) {
@@ -356,7 +428,9 @@ export function usePerfTable() {
   function getState() {
     return {
       stations: stations.value.map((s) => ({ country: s.country, city: s.city, desig: s.desig, lon: s.lon, lat: s.lat })),
-      optsByAnt: JSON.parse(JSON.stringify(optsByAnt.value))
+      optsByAnt: JSON.parse(JSON.stringify(optsByAnt.value)),
+      optsTemplate: optsTemplate ? cloneOpts(optsTemplate) : null,
+      cityGroups: cityGroups.value.map((g) => ({ name: g.name, cities: (g.cities || []).map((c) => ({ country: c.country, city: c.city, desig: c.desig, lon: c.lon, lat: c.lat })) }))
     }
   }
   function restoreState(st) {
@@ -368,6 +442,15 @@ export function usePerfTable() {
       for (const k of Object.keys(st.optsByAnt)) m[k] = { ...defaultOpts(), ...st.optsByAnt[k], cols: { ...defaultOpts().cols, ...(st.optsByAnt[k].cols || {}) } }
       optsByAnt.value = m
     }
+    optsTemplate = (st.optsTemplate && typeof st.optsTemplate === 'object')
+      ? { ...defaultOpts(), ...st.optsTemplate, cols: { ...defaultOpts().cols, ...(st.optsTemplate.cols || {}) }, beamSel: null }
+      : null
+    cityGroups.value = Array.isArray(st.cityGroups)
+      ? st.cityGroups.filter((g) => g && Array.isArray(g.cities)).map((g) => ({
+          id: gid(), name: String(g.name || '城市组'),
+          cities: g.cities.map((c) => ({ country: c.country || '', city: c.city || '', desig: c.desig || '', lon: num(c.lon), lat: num(c.lat) }))
+        }))
+      : []
   }
 
   // ===== 波束筛选（选项面板；默认 beamSel=null 即全部波束 = 不筛选，与旧行为一致）=====
@@ -420,9 +503,10 @@ export function usePerfTable() {
 
   return {
     stations, rows, filteredRows, ctxInfo, query, optsByAnt, canUndo, canRedo,
-    colDefs: COL_DEFS, colGroups: COL_GROUPS, getOpts, visibleColumns,
+    colDefs: COL_DEFS, colGroups: COL_GROUPS, getOpts, visibleColumns, rememberOpts, resetOpts,
     addEmptyStation, updateStation, removeStation, removeRow, clearStations, addStationsBulk, pasteBlock, importFromMarkers, importFromTrajectories,
     setCities, applyCityGeo, applyCityGeoAll,
+    cityGroups, addCityGroup, renameCityGroup, overwriteCityGroup, removeCityGroup, loadCityGroup, appendCityGroup,
     ctxBeams, beamQuery, filteredBeams, beamOn, beamSelCount, filteredAllOn, filteredAnyOn, toggleBeam, selectFiltered,
     pushUndo, dropUndo, undo, redo, compute, getState, restoreState
   }
