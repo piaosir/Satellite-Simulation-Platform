@@ -569,74 +569,107 @@ async function compute() {
       const txName = tx.earthStationLocation || ('发' + (ti + 1))
       const rxName = rx.rxEarthStationLocation || ('收' + (ri + 1))
 
-      // —— 几何：选星→平台 SGP4 单一典型时刻 t* 几何（两站同刻·仰角贴近各自最低，回喂斜距）；未选星→引擎球形闭式（轨道高度+最低仰角）——
-      let geom = null
+      // —— 几何：选星→平台 SGP4 互视窗内【多候选几何】(两端+内部+几何t*)，逐候选跑真实链路预算取“余量最差”者；
+      //    未选星→引擎球形闭式（单候选）。要点：几何最差(仰角)≠链路最差——弯管总 C/N=1/(1/CNup+1/CNdn)
+      //    被【弱侧】主导，t* 仅按“仰角和最小”选一个窗口边缘，会漏掉“瓶颈站压最低仰角”的另一边缘工况；
+      //    故遍历候选、按当前计算方式取最差（见 ngsoGeometry.coupledTypicalMoment 返回的 candidates）。
+      let geom = null, candList = null
       if (satSelected.value) {
-        // 选星→平台 SGP4 双站互视单一典型时刻 t*（t0/时窗口径见 solveSelectedGeom：统一锚计算此刻墙钟、
-        // 与再生式同口径；每次计算随当前时刻推移，非逐次复现；圆轨道走闭式与 t0 无关）。
+        // 选星→平台 SGP4 双站互视（t0/时窗口径见 solveSelectedGeom：统一锚计算此刻墙钟、与再生式同口径）。
         geom = await solveSelectedGeom(tx, rx, geomT0ISO)
-        if (geom && geom.feasible) {
-          // 回喂典型时刻 t* 的实际斜距与实际仰角（非仅最低仰角门限）——该刻两站中通常仅一站压在最低仰角，
-          // 另一站实际仰角更高，大气/降雨斜路径须按各自实际仰角算，才与斜距口径自洽。
-          linkParams.distanceMode = 'slantRange'; linkParams.slantRange = geom.worst.up.slantKm; linkParams.minElevation = geom.worst.up.elevDeg
-          linkParams.rxDistanceMode = 'slantRange'; linkParams.rxSlantRange = geom.worst.dn.slantKm; linkParams.rxMinElevation = geom.worst.dn.elevDeg
-        } else {
+        if (!(geom && geom.feasible)) {
           // 时窗内两站不同时可见：本条链路单星无法建链
           out.push({ ti, ri, txName, rxName, data: null, margin: '—', metric: '—', error: (geom && geom.reason) || '两站不互视', geom })
           continue
         }
+        candList = (geom.candidates && geom.candidates.length) ? geom.candidates : [geom]
       } else {
-        // 手动模式：虚拟圆轨道（轨道高度+倾角）→ 球形闭式最差几何 + 虚拟轨道根数（35786/0 即 GEO）。
+        // 手动模式：虚拟圆轨道（轨道高度+倾角）→ 球形闭式最差几何（单候选，每站各自最低仰角，无 subSat）。
         // 每站按自身最低仰角取最差斜距；带上站址纬度 → 闭式判「纬度 vs 倾角」可见性（如赤道轨道看不到高纬站）。
         geom = await api.linkBudget.ngsoGeometry({
           orbit: { type: 'circular', altKm: parseFloat(satForm.orbitAltitude) || 0, inclDeg: parseFloat(satForm.orbitInclination) || 0 },
           tx: { latDeg: parseFloat(tx.latitude), minElevDeg: parseFloat(tx.minElevation) || 0, freqGHz: upFreqGHz() },
           rx: { latDeg: parseFloat(rx.rxLatitude), minElevDeg: parseFloat(rx.rxMinElevation) || 0, freqGHz: dnFreqGHz() }
         })
-        if (geom && geom.feasible) {
-          linkParams.distanceMode = 'slantRange'; linkParams.slantRange = geom.worst.up.slantKm; linkParams.minElevation = geom.worst.up.elevDeg
-          linkParams.rxDistanceMode = 'slantRange'; linkParams.rxSlantRange = geom.worst.dn.slantKm; linkParams.rxMinElevation = geom.worst.dn.elevDeg
-        } else {
+        if (!(geom && geom.feasible)) {
           // 手动几何不可行（轨道高度≤0 / 站址纬度超出轨道覆盖带）→ 明确报错，不再用兜底假高度静默算出误导结果
           out.push({ ti, ri, txName, rxName, data: null, margin: '—', metric: '—', error: (geom && geom.reason) || '手动轨道几何不可行', geom })
           continue
         }
+        candList = [geom]
       }
 
-      // —— 卫星 EIRP/G·T 逐链路对齐 t*：天线导入时，把卫星置于【本条链路自己的 t* 星下点】重采天线增益，
-      // 令该行的卫星EIRP(→下行)/卫星G·T(→上行) 与该行斜距/FSL/C·N 取自同一物理瞬间（用户口径）。
-      // 仅覆盖仍为「自动值」的单元格；用户手改过的（当前值≠上次自动值）保留其手填值。快照/静态星 subSat
-      // 为固定星下点，覆盖后与静态几何同刻自洽。geom.subSat 缺省（手动圆轨道等）则不覆盖，沿用站表值。
-      if (geom && geom.feasible && geom.subSat) {
-        const satOv = { lon: geom.subSat.lonDeg, lat: geom.subSat.latDeg, alt: geom.subSat.altKm }
+      // 卫星 EIRP/G·T 随星下点变——按【给定候选】星下点重采增益写入该候选的 linkParams 副本；
+      // 仅覆盖仍为「自动值」的单元格，用户手改过的（当前值≠上次自动值）保留其值；无 subSat（手动圆轨道）不采。
+      const resampleAntennas = async (lp, subSat) => {
+        if (!subSat) return
+        const satOv = { lon: subSat.lonDeg, lat: subSat.latDeg, alt: subSat.altKm }
         const eirpAnt = antByKey(grdSel.eirpKey)
         if (eirpAnt && !(grdAutoFilled.eirp[rx._id] != null && String(rx.rxEIRP) !== String(grdAutoFilled.eirp[rx._id]))) {
           const v = await sampleAntennaParam(eirpAnt.node, eirpAnt.ant, eirpAnt.cfg, parseFloat(rx.rxLongitude), parseFloat(rx.rxLatitude), satOv)
-          if (v != null) linkParams.rxEIRP = String(v)
+          if (v != null) lp.rxEIRP = String(v)
         }
         const gtAnt = antByKey(grdSel.gtKey)
         if (gtAnt && !(grdAutoFilled.gt[tx._id] != null && String(tx.G_Ts) !== String(grdAutoFilled.gt[tx._id]))) {
           const v = await sampleAntennaParam(gtAnt.node, gtAnt.ant, gtAnt.cfg, parseFloat(tx.longitude), parseFloat(tx.latitude), satOv)
-          if (v != null) linkParams.G_Ts = String(v)
+          if (v != null) lp.G_Ts = String(v)
         }
       }
 
-      const r = await api.linkBudget.computeModeNGSO(satParams, linkParams, opt)
-      if (r && r.success) {
-        const d = r.data
-        if (geom && geom.feasible) mergePlatformGeometry(d, geom)   // 用平台精确几何覆盖引擎几何量 + 补充轨道根数/时刻/时窗
-        const m = parseFloat(d.linkmargin)
-        const pUse = parseFloat(d.powerUsageRatio); const bUse = parseFloat(d.bandwidthUsageRatio)
-        // 合格判定：设置余量模式看资源是否够（功率/带宽占用 ≤100%）；其它模式看余量 ≥0
-        const ok = mode === 'margin' ? (!(pUse > 100) && !(bUse > 100)) : (!isNaN(m) && m >= 0)
-        out.push({
-          ti, ri, txName, rxName, data: d, geom, margin: d.linkmargin, powerW: d.paRecommendation,
-          metric: mode === 'margin' ? d.paRecommendation : d.linkmargin, ok,
-          totalCN: d.carrierTotalCN, thresholdCN: d.thresholdCN, avail: d.systemAvailabilityResult
-        })
+      // 逐候选选“链路最差”几何。要点：本 NGSO 引擎是“给定余量→反解功放”的模型，达成余量被钉在目标值、
+      //   对几何不敏感；几何只体现为【所需资源】，且上下行是两套口径——上行受限=所需功放(paDb)随上行 FSL 增，
+      //   下行受限=转发器功率占用(pUse)随下行 FSL 增，二者在互视窗两端各自达峰。故：
+      //   ① 排序统一用 margin 口径（最差几何=需资源最多者，与显示口径无关）跑各候选，顺带取达成上/下行 C/N；
+      //   ② 瓶颈侧 = 全窗口【平均达成 C/N 更低】的一侧（弱侧主导总 C/N；取均值稳，不受 t* 落哪端影响）；
+      //   ③ 越大越差：下行瓶颈看 pUse、上行瓶颈看 paDb（各自单调于该侧 FSL＋星下点增益，已 Node 双向验证）；
+      //   ④ 最差候选再按用户当前计算方式出最终结果。单候选（手动圆轨道/快照星）直接算，跳过排序。
+      let worstCand = null, worstLp = null, worstData = null
+      if (candList.length === 1) {
+        worstCand = candList[0]
+        worstLp = Object.assign({}, linkParams)
+        worstLp.distanceMode = 'slantRange'; worstLp.slantRange = worstCand.worst.up.slantKm; worstLp.minElevation = worstCand.worst.up.elevDeg
+        worstLp.rxDistanceMode = 'slantRange'; worstLp.rxSlantRange = worstCand.worst.dn.slantKm; worstLp.rxMinElevation = worstCand.worst.dn.elevDeg
+        await resampleAntennas(worstLp, worstCand.subSat)
       } else {
-        out.push({ ti, ri, txName, rxName, data: null, margin: '—', metric: '—', error: (r && r.message) || '失败', geom })
+        const rankOpt = { mode: 'margin' }
+        const rows = []
+        for (const cand of candList) {
+          const lp = Object.assign({}, linkParams)
+          lp.distanceMode = 'slantRange'; lp.slantRange = cand.worst.up.slantKm; lp.minElevation = cand.worst.up.elevDeg
+          lp.rxDistanceMode = 'slantRange'; lp.rxSlantRange = cand.worst.dn.slantKm; lp.rxMinElevation = cand.worst.dn.elevDeg
+          await resampleAntennas(lp, cand.subSat)
+          const rr = await api.linkBudget.computeModeNGSO(satParams, lp, rankOpt)
+          if (!(rr && rr.success)) continue
+          const dd = rr.data
+          rows.push({ cand, lp, data: dd, paDb: parseFloat(dd.paRecommendationdBResult), pUse: parseFloat(dd.powerUsageRatio), upCN: parseFloat(dd.uplinkCN), dnCN: parseFloat(dd.downlinkCN) })
+        }
+        if (!rows.length) { out.push({ ti, ri, txName, rxName, data: null, margin: '—', metric: '—', error: '链路预算计算失败', geom }); continue }
+        const meanOf = (f) => rows.reduce((s, x) => s + (isFinite(f(x)) ? f(x) : 0), 0) / rows.length
+        const bottleneck = meanOf((x) => x.dnCN) < meanOf((x) => x.upCN) ? 'down' : 'up'
+        const badnessOf = (x) => bottleneck === 'down' ? (isFinite(x.pUse) ? x.pUse : Infinity) : (isFinite(x.paDb) ? x.paDb : Infinity)
+        let wr = rows[0]
+        for (const x of rows) if (badnessOf(x) > badnessOf(wr)) wr = x
+        worstCand = wr.cand; worstLp = wr.lp
+        if (mode === 'margin') worstData = wr.data   // 用户口径即 margin → 直接复用排序结果，省一次计算
       }
+      if (!worstData) {
+        const r = await api.linkBudget.computeModeNGSO(satParams, worstLp, opt)
+        if (!(r && r.success)) { out.push({ ti, ri, txName, rxName, data: null, margin: '—', metric: '—', error: (r && r.message) || '失败', geom }); continue }
+        worstData = r.data
+      }
+
+      const d = worstData
+      const worstGeom = worstCand
+      mergePlatformGeometry(d, worstGeom)   // 报告“链路最差”候选的几何（斜距/星下点/时刻/时窗）
+      const m = parseFloat(d.linkmargin)
+      const pUse = parseFloat(d.powerUsageRatio); const bUse = parseFloat(d.bandwidthUsageRatio)
+      // 合格判定：设置余量模式看资源是否够（功率/带宽占用 ≤100%）；其它模式看余量 ≥0
+      const ok = mode === 'margin' ? (!(pUse > 100) && !(bUse > 100)) : (!isNaN(m) && m >= 0)
+      out.push({
+        ti, ri, txName, rxName, data: d, geom: worstGeom, margin: d.linkmargin, powerW: d.paRecommendation,
+        metric: mode === 'margin' ? d.paRecommendation : d.linkmargin, ok,
+        totalCN: d.carrierTotalCN, thresholdCN: d.thresholdCN, avail: d.systemAvailabilityResult
+      })
     }
     resultMode.value = mode
     resultPairMode.value = linkPairMode.value

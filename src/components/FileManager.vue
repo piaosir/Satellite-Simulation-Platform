@@ -4,6 +4,8 @@ import { fileBridge, bumpLibrary, bumpCustomSats } from '../stores/fileBridge'
 import { readCustomConstellationSummary, customConstellationsToOmmRecords, renameCustomConstellation } from '../viz/constellation/useCustomConstellations.js'
 import { parseGxt, metaFromName } from '../viz/gxt/parse.js'
 import { serializeGxt } from '../viz/gxt/serialize.js'
+import { grdToStkAzEl } from '../viz/grd/stkPattern.js'
+import { repackGrdCommonGrid } from '../viz/grd/synth.js'
 import { displaySatName } from '../viz/satName.js'
 import { logMsg } from '../stores/log'
 import Icon from './Icon.vue'
@@ -197,8 +199,24 @@ async function exportGrdAnt(a) {
   if (!a.imported || !a.file) { flash('预置天线无原始 GRD 可导出'); return }
   try {
     const r = await api.coverageGrd.raw(a.file)
-    const save = await api.exportFile({ defaultName: `${a.name}.grd`, data: toBytes(r.text), filters: [{ name: 'GRASP 网格', extensions: ['grd'] }] })
+    // 合成的多馈源 .grd 各波束用各自小窗口，SATSOFT 会把全部波束摆到波束1处（见 repackGrdCommonGrid 注释）。
+    // 导出前重打包到公共网格（各波束落真实位置）；仅对本平台合成件(含 SYNTHMETA)生效，真实导入件原样导出。
+    let text = r.text
+    if (text && text.includes('SYNTHMETA')) { try { text = repackGrdCommonGrid(text) } catch (err) { console.warn('公共网格重打包失败，导出原始多窗口 .grd', err) } }
+    const save = await api.exportFile({ defaultName: `${a.name}.grd`, data: toBytes(text), filters: [{ name: 'GRASP 网格', extensions: ['grd'] }] })
     if (save && save.ok) flash('已导出：' + save.filePath)
+    else if (save && save.error) flash('导出失败：' + save.error)
+  } catch (e) { flash('导出失败：' + (e.message || e)) }
+}
+// 导出为 STK 外部天线方向图（AzElPattern，增益 dBi）：解析 GRD → az/el 增益网格 → STK ASCII。
+// 多波束合成为最大值包络（STK 每文件只读一个方向图）。文件为纯 ASCII，扩展名用 STK 常见的 .txt。
+async function exportGrdAntStk(a) {
+  if (!a.imported || !a.file) { flash('预置天线无原始 GRD 可导出'); return }
+  try {
+    const r = await api.coverageGrd.raw(a.file)
+    const stk = grdToStkAzEl(r.text, { name: a.name })
+    const save = await api.exportFile({ defaultName: `${a.name}_STK.txt`, data: toBytes(stk.text), filters: [{ name: 'STK 外部天线方向图', extensions: ['txt', 'pattern', 'ant'] }, { name: '所有文件', extensions: ['*'] }] })
+    if (save && save.ok) flash(`已导出 STK 方向图（${stk.nx}×${stk.ny} · ${stk.nBeams} 波束 · 峰值 ${stk.peakDbi.toFixed(1)} dBi）：` + save.filePath)
     else if (save && save.error) flash('导出失败：' + save.error)
   } catch (e) { flash('导出失败：' + (e.message || e)) }
 }
@@ -499,7 +517,8 @@ onMounted(() => { loadOmm(); loadCustomGroups(); loadCustomConsts(); loadGxt(); 
                       <span class="tmeta">{{ a.beams }} 波束 · {{ a.imported ? '导入' : '预置' }}<template v-if="a.peakDb != null"> · 峰值 {{ Number(a.peakDb).toFixed(1) }} dB</template></span>
                       <span class="trops">
                         <button class="mini ghost" @click="startRenameGrdAnt(sat, a)">改名</button>
-                        <button class="mini ghost" :disabled="!a.imported" @click="exportGrdAnt(a)">导出</button>
+                        <button class="mini ghost" :disabled="!a.imported" title="导出原始 GRASP ASCII 网格" @click="exportGrdAnt(a)">导出 GRD</button>
+                        <button class="mini ghost" :disabled="!a.imported" title="导出为 STK 外部天线方向图（AzElPattern，增益 dBi）" @click="exportGrdAntStk(a)">导出 STK</button>
                         <button class="mini del" @click="removeGrdAnt(sat, a)">删除</button>
                       </span>
                     </template>

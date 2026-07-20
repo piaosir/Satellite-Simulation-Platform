@@ -133,5 +133,9 @@ contextBridge.exposeInMainWorld('api', {
     attach: (satId, beamId, payload) => ipcRenderer.invoke('coverageGxt:attach', satId, beamId, payload),
     importBatch: (items) => ipcRenderer.invoke('coverageGxt:importBatch', items)
   },
+  // 协调区 Polygon：原生框选 .gxt / .kml → 读原文交渲染进程解析导入
+  poly: {
+    open: () => ipcRenderer.invoke('poly:open')
+  },
   platform: process.platform
 })

@@ -31,6 +31,10 @@ const DEG = Math.PI / 180;
 const RAD = 180 / Math.PI;
 const XPDOTP = 1440 / (2 * Math.PI); // rev/day ↔ rad/min
 const ECC_CIRCULAR_TOL = 1e-3;   // e < 此值视为圆轨道 → 走闭式球面（与时间/历元无关）
+// 互视窗内“余量最差”候选几何的内部采样点数（两窗口边缘 + 几何 t* 之外，再等分插 N 个内点）。
+// 几何最差(仰角)≠链路最差(总C/N被弱侧主导)：两端捕捉“瓶颈站压最低仰角”的两种边缘工况，内点是对
+// 降雨等非凸衰减的稳健兜底（晴空/FSL 主导时最差必在边缘，内点不改结果、仅多几次评估）。调大更稳、更慢。
+const CAND_INTERIOR = 3;
 
 // ============================================================================
 // 1. satrec 构建：OMM 记录 / TLE 双行 / 经典六根数 三种来源
@@ -455,43 +459,69 @@ function coupledTypicalMoment(satrec, tx, rx, opts) {
     durationMin: (winEnd - winStart) / 60000, clipped: winClipped
   };
 
-  // t* 该刻的完整状态：同一瞬间两站高度相同；速度/多普勒取该刻真值
-  const d = best.d, pv = best.pv;
-  const sp = subPoint(satrec, d);
-  const altKm = sp ? sp.altKm : stat.apogeeAltKm;
-  const rKm = RE_KM + altKm;
-  const vel = velocities(pv);
+  // 某时刻的完整几何快照生成器：给定 tms → 该刻两站斜距/仰角/高度/速度/时延 + 星下点 + 覆盖几何。
+  // 多普勒对所有候选统一取【全时窗峰值 |range-rate|】（轨道周期性复现量，与取哪个瞬间无关，稳定可复现）。
+  // 用它既生成几何最差 t* 的默认返回，又生成互视窗多候选（供上层做“余量最差”判定）。
   const txFreq = Number(tx.freqGHz) > 0 ? Number(tx.freqGHz) : 14;
   const rxFreq = Number(rx.freqGHz) > 0 ? Number(rx.freqGHz) : 12;
-  // 多普勒取【全时窗内该站峰值 |range-rate|】× f/c（含地球自转）：峰值径向速率是轨道周期性复现量，
-  // 与搜索起点 t0 无关、多次计算复现；且是该链路会遇到的最大多普勒（设计最坏值），比单取 t* 该刻稳定。
   const dopUpHz = maxRRUp / C_KM_S * (txFreq * 1e9);
   const dopDnHz = maxRRDn / C_KM_S * (rxFreq * 1e9);
-  // 可见性/过境几何（t* 高度处地心半径、真实倾角与半长轴）——单一真值源
-  const visU = visMetricsFor(rKm, txMin, stat.iDeg, stat.a);
-  const visD = visMetricsFor(rKm, rxMin, stat.iDeg, stat.a);
-  return {
-    feasible: true, method, dopplerEstimate: false, coupled: true,
-    // t* 该刻的星下点（经纬高）——链路预算把卫星置于此位置采样天线增益(EIRP/G·T)，
-    // 使导入的卫星 EIRP/G·T 与本行斜距/FSL/C·N 取自同一物理瞬间（对齐性能指标表）。
-    subSat: sp ? { lonDeg: sp.lonDeg, latDeg: sp.latDeg, altKm: sp.altKm } : null,
-    worst: {
-      up: { elevDeg: best.u.elevDeg, slantKm: best.u.slantKm, altKm, ...visU },
-      dn: { elevDeg: best.v.elevDeg, slantKm: best.v.slantKm, altKm, ...visD },
-      speedInertialKmS: vel.speedInertial, speedGroundRelKmS: vel.speedGroundRel,
-      maxDopplerUpHz: dopUpHz, maxDopplerDnHz: dopDnHz,
-      oneWayDelayMs: (best.u.slantKm + best.v.slantKm) / C_KM_S * 1000
-    },
-    elements: stat,
-    search: {
-      t0ISO: t0.toISOString(), horizonHours, stepSec: stepMs / 1000,
-      t0Source: opts.t0ISO ? 'explicit' : 'epoch',
-      typicalISO: d.toISOString(),
-      subSatLonDeg: sp ? sp.lonDeg : null, subSatLatDeg: sp ? sp.latDeg : null,
-      txElevExcessDeg: best.u.elevDeg - txMin, rxElevExcessDeg: best.v.elevDeg - rxMin,
-      mutualWindow
-    }
+  const snapshotAt = (tms) => {
+    const s = sampleAt(tms);
+    if (!s || s.u.elevDeg < txMin - EPS || s.v.elevDeg < rxMin - EPS) return null;
+    const sp = subPoint(satrec, s.d);
+    const altKm = sp ? sp.altKm : stat.apogeeAltKm;
+    const rKm = RE_KM + altKm;
+    const vel = velocities(s.pv);
+    const visU = visMetricsFor(rKm, txMin, stat.iDeg, stat.a);
+    const visD = visMetricsFor(rKm, rxMin, stat.iDeg, stat.a);
+    return {
+      feasible: true, method, dopplerEstimate: false, coupled: true,
+      // 该刻的星下点（经纬高）——链路预算把卫星置于此位置采样天线增益(EIRP/G·T)，
+      // 使导入的卫星 EIRP/G·T 与本候选斜距/FSL/C·N 取自同一物理瞬间。
+      subSat: sp ? { lonDeg: sp.lonDeg, latDeg: sp.latDeg, altKm: sp.altKm } : null,
+      worst: {
+        up: { elevDeg: s.u.elevDeg, slantKm: s.u.slantKm, altKm, ...visU },
+        dn: { elevDeg: s.v.elevDeg, slantKm: s.v.slantKm, altKm, ...visD },
+        speedInertialKmS: vel.speedInertial, speedGroundRelKmS: vel.speedGroundRel,
+        maxDopplerUpHz: dopUpHz, maxDopplerDnHz: dopDnHz,
+        oneWayDelayMs: (s.u.slantKm + s.v.slantKm) / C_KM_S * 1000
+      },
+      elements: stat,
+      search: {
+        t0ISO: t0.toISOString(), horizonHours, stepSec: stepMs / 1000,
+        t0Source: opts.t0ISO ? 'explicit' : 'epoch',
+        typicalISO: s.d.toISOString(),
+        subSatLonDeg: sp ? sp.lonDeg : null, subSatLatDeg: sp ? sp.latDeg : null,
+        txElevExcessDeg: s.u.elevDeg - txMin, rxElevExcessDeg: s.v.elevDeg - rxMin,
+        mutualWindow
+      }
+    };
   };
+
+  // 默认返回 = 几何最差 t*（按仰角几何选定；向后兼容：几何卡 / 再生式 / refreshGrdFill 仍读它）。
+  const result = snapshotAt(best.tms);
+  if (!result) {
+    return { feasible: false, method, reason: '典型时刻几何解算失败', elements: stat, search: { t0ISO: t0.toISOString(), horizonHours } };
+  }
+
+  // ★ 候选几何集 result.candidates：几何最差 t* 只按“仰角和最小”选一个窗口边缘，但弯管链路总 C/N =
+  //   1/(1/CN_up+1/CN_down) 被【弱侧】主导，真正最差取决于“哪个站是瓶颈”，而非纯几何。故在互视窗
+  //   【两端 + 内部等分点 + 几何 t*】各生成一份完整几何，交由上层逐候选跑真实链路预算、按当前计算方式
+  //   取“余量最差”者（见 NgsoLinkBudgetApp.compute）。两端捕捉两种“瓶颈站压最低仰角”边缘工况；
+  //   晴空/FSL 主导时最差必在边缘（凸性），内部点是对降雨等非凸衰减的稳健兜底。
+  const candInstants = [];
+  const addInstant = (tms) => {
+    if (!(tms >= winStart - 1 && tms <= winEnd + 1)) return;
+    if (candInstants.some((t) => Math.abs(t - tms) < 500)) return;
+    candInstants.push(tms);
+  };
+  addInstant(winStart); addInstant(winEnd); addInstant(best.tms);
+  for (let i = 1; i <= CAND_INTERIOR; i++) addInstant(winStart + (winEnd - winStart) * i / (CAND_INTERIOR + 1));
+  candInstants.sort((a, b) => a - b);
+  const candidates = candInstants.map(snapshotAt).filter(Boolean);
+  result.candidates = candidates.length ? candidates : [snapshotAt(best.tms)].filter(Boolean);
+  return result;
 }
 
 // ============================================================================

@@ -85,7 +85,7 @@ export function createFlatCoverage(canvas) {
   let geom = null
   let fieldLayers = [], fieldAlpha = 0.8   // GRD 覆盖多层（每层=一个天线：分带填充 Path2D + 逐档等值线，独立于 geom）
   // GRD 全局标注选项（与 3D 同步）：天线名 / 波束中心 / 数值标签
-  let fieldOpts = { showName: true, nameSize: 16, showBore: true, boreSize: 5, showPeak: false, peakSize: 12, showVal: false, valSize: 12 }
+  let fieldOpts = { showName: true, nameSize: 16, showBore: true, boreSize: 0.5, showPeak: false, peakSize: 5, showVal: false, valSize: 12 }
   let nameMode = 'off', provVisible = false, prov = null, cityVisible = false, city = null
   // 国界(海岸线)/省界/地级市界线样式：线宽为恒定屏幕 px、颜色十六进制、透明度 0–1（与 3D 同步）
   let borderStyle = { natColor: BORDER, natWidth: 0.8, natOpacity: 1.0, provColor: PROV, provWidth: 1.2, provOpacity: 0.8, cityColor: '#b6bcc6', cityWidth: 0.5, cityOpacity: 0.6 }
@@ -389,17 +389,20 @@ export function createFlatCoverage(canvas) {
   // GRD 标注层（天线名 / 波束中心点 / 数值标签）：画在填充+等值线之上，随各层 bore/segGroups 数据
   function drawFieldOverlays() {
     const o = fieldOpts
-    // 覆盖分析(GRD)四项注记（天线名/波束中心/峰值/数值）随缩放「克制版」联动：乘 iz=√scale。
-    // scale=1 时即当前大小；放大时缓增（不像 ×scale 那样在 2D 大缩放幅度下膨成过大色块/字）。
-    const iz = Math.sqrt(scale)
+    // 覆盖分析(GRD)注记：圆点(波束中心)按「克制版」iz=√scale 联动；文字(天线名/峰值/数值)按【世界尺寸】联动。
+    // 文字为何用世界尺寸：3D 侧这三种标签都由 makeCovLabel(hpx=字号/533) 生成 = 世界尺寸精灵（随缩放线性变化、含每度像素）。
+    // 旧实现 2D 文字用「字号 × iz」——既非世界尺寸律(iz=√scale)、又漏掉每度像素 base → 切到 3D 后 2D 明显偏大(默认视角约 2.6×)。
+    // 改为与 3D 同源：2D 世界尺寸 px = hpx × 750 × zf(=k()/13.1)，与卫星层数值标签(line 509)、地名标定(line 462)完全一致，两视图恒同大。
+    const iz = Math.sqrt(scale), zf = k() / 13.1
+    const covFont = (size) => Math.round(size / 533 * 750 * zf)   // 字号(valSize/peakSize/nameSize) → 2D 世界尺寸 px，与 3D makeCovLabel(字号/533) 一致
     for (const L of fieldLayers) {
-      if (o.showVal) for (const grp of (L.segGroups || [])) { if (grp.txt == null) continue; for (const an of (grp.labels || [])) drawText(String(grp.txt), an[0], an[1], (o.valSize || 12) * iz, '#ffffff') }
+      if (o.showVal) for (const grp of (L.segGroups || [])) { if (grp.txt == null) continue; for (const an of (grp.labels || [])) drawText(String(grp.txt), an[0], an[1], covFont(o.valSize || 12), '#ffffff') }
       const b = L.bore; if (!b) continue
-      const br = (o.boreSize != null ? o.boreSize : 5) * iz
+      const br = (o.boreSize != null ? o.boreSize : 0.5) * iz
       if (o.showBore) dot(b.lon, b.lat, Math.max(0.3, br), '#ffffff', true)
       // 波束中心峰值 dB：标在中心点下方（2D 无卫星连线）
-      if (o.showPeak && b.peak != null) { const pf = (o.peakSize || 12) * iz; drawText(b.peak.toFixed(1) + ' dB', b.lon, b.lat, pf, '#cfd6df', { dy: (o.showBore ? br : 0) + pf * 0.7 + 3 * iz }) }
-      if (o.showName && L.name) { const nf = (o.nameSize || 16) * iz; drawText(L.name, b.lon, b.lat, nf, '#ffffff', { dy: -((o.showBore ? br : 0) + nf * 0.6 + 2 * iz) }) }
+      if (o.showPeak && b.peak != null) { const pf = covFont(o.peakSize || 5); drawText(b.peak.toFixed(2) + ' dB', b.lon, b.lat, pf, '#cfd6df', { dy: (o.showBore ? br : 0) + pf * 0.35 + 1.5 * iz }) }
+      if (o.showName && L.name) { const nf = covFont(o.nameSize || 16); drawText(L.name, b.lon, b.lat, nf, '#ffffff', { dy: -((o.showBore ? br : 0) + nf * 0.6 + 2 * iz) }) }
     }
   }
 
@@ -500,8 +503,19 @@ export function createFlatCoverage(canvas) {
       // 卫星层所有线（Polygon 边线随 drawSatPolyLines、仰角线等随 drawDataLines）均画在 below/above 之间
       // → 压在国界/省界/地名之下，与之共存；这里只画点/标签/卫星图标
       // d.px：屏幕恒定像素半径（Polygon 顶点手柄，不随缩放变大）；否则沿用世界联动尺寸
-      for (const d of (satLayer.dots || [])) dot(d.lon, d.lat, d.px != null ? Math.max(1, d.px) : Math.max(2, d.r != null ? d.r : 4) * mz, hex(d.color != null ? d.color : 0xffd27a), true)
-      for (const l of (satLayer.labels || [])) drawText(l.text, l.lon, l.lat, Math.round((l.hpx || 0.026) * 750 * zf), l.color || '#fff')   // 世界尺寸字号：与 3D makeCovLabel 同源（套用地名标定 hpx0.02↔px15，zf=k()/13.1），2D/3D 一致
+      for (const d of (satLayer.dots || [])) {
+        const dx = PX(d.lon), dy2 = PY(d.lat)   // 视口外剔除：波束合成大群（数百点）放大后大多在屏外，逐点画纯浪费
+        if (dx < -24 || dx > cw + 24 || dy2 < -24 || dy2 > ch + 24) continue
+        dot(d.lon, d.lat, d.px != null ? Math.max(1, d.px) : Math.max(2, d.r != null ? d.r : 4) * mz, hex(d.color != null ? d.color : 0xffd27a), true)
+      }
+      for (const l of (satLayer.labels || [])) {   // 世界尺寸字号：与 3D makeCovLabel 同源（套用地名标定 hpx0.02↔px15，zf=k()/13.1），2D/3D 一致
+        const px = Math.round((l.hpx || 0.026) * 750 * zf)
+        if (l.cullPx && px < l.cullPx) continue    // 自适应编号：小于可读下限的糊点直接不画（缩小看大群时天量文字全免）
+        const lx2 = PX(l.lon), ly2 = PY(l.lat)
+        const mw = px * (String(l.text == null ? '' : l.text).length * 0.4 + 1)
+        if (lx2 < -mw || lx2 > cw + mw || ly2 < -px || ly2 > ch + px) continue   // 视口外剔除（含文字宽裕量）
+        drawText(l.text, l.lon, l.lat, px, l.color || '#fff')
+      }
       for (const s of (satLayer.sats || [])) { if (s.lon == null || s.lat == null || s.iconShow === false) continue; drawSatIcon(s.lon, s.lat, (s.iconSize || sizes.satIcon || 30) * mz * SAT_ICON_K, hex(s.color != null ? s.color : 0xffd27a)) }   // 颜色/大小随各星设置；图标按 mz 联动，与卫星名标签同率缩放；iconShow 单独控制显隐
       for (const s of (satLayer.sats || [])) {
         if (!s.name || s.lon == null || s.lat == null || s.labelShow === false) continue
@@ -646,6 +660,8 @@ export function createFlatCoverage(canvas) {
   // 未命中则照常平移地图。
   let editVerts = null, onVertexDrag = null, vertDragging = -1
   let onPolyMove = null, moveDragging = false, moveLast = null
+  // 放置模式（波束合成）：左键点击落点（按下武装 → 拖过阈值解除=平移 → 原地抬起触发 onPlace）
+  let placeMode = false, onPlace = null, placeArmed = false, placeSX = 0, placeSY = 0
   function vertexAt(clientX, clientY) {
     if (!editVerts || !editVerts.pts || !editVerts.pts.length) return -1
     const r = canvas.getBoundingClientRect()
@@ -691,9 +707,15 @@ export function createFlatCoverage(canvas) {
     }
     if (beamDragMode && e.button === 0) { beamDragging = true; canvas.setPointerCapture(e.pointerId); const ll = screenToLonLat(e.clientX, e.clientY); if (ll && onBeamDrag) onBeamDrag(ll, 'start'); return }
     if (labelDragMode && e.button === 0) { labelDragging = true; canvas.setPointerCapture(e.pointerId); const ll = screenToLonLat(e.clientX, e.clientY); if (ll && onLabelDrag) onLabelDrag(ll, 'start'); return }
+    if (placeMode && e.button === 0) { placeArmed = true; placeSX = e.clientX; placeSY = e.clientY }   // 武装放置（不 return：拖动仍平移）
+    // 仅左键平移并夺指针捕获。右键/中键只用于 contextmenu（Polygon 加点 / 右键菜单）——若在此为右键 setPointerCapture，
+    // 其 pointerup 会被 preventDefault 的 contextmenu 手势吞掉（Chromium 行为），捕获永不释放，此后点任何输入框都被
+    // canvas 截走 → 「画完 Polygon 后输入框不能聚焦」。故非左键直接返回，绝不捕获。
+    if (e.button !== 0) return
     dragging = true; lx = e.clientX; ly = e.clientY; canvas.setPointerCapture(e.pointerId); canvas.style.cursor = 'grabbing'
   }
   function onMove(e) {
+    if (placeArmed && Math.abs(e.clientX - placeSX) + Math.abs(e.clientY - placeSY) > 6) placeArmed = false   // 拖过阈值 → 是平移不是点击
     if (moveDragging) {
       const ll = screenToLonLat(e.clientX, e.clientY)
       if (ll && moveLast && onPolyMove) {
@@ -709,21 +731,27 @@ export function createFlatCoverage(canvas) {
       if (dx * dx + dy * dy >= POLY_DRAW_MIN2) { drawLX = e.clientX; drawLY = e.clientY; const ll = screenToLonLat(e.clientX, e.clientY); if (ll && onPolyDraw) onPolyDraw(ll, 'move') }
     }
     else if (dragging) { tx += e.clientX - lx; ty += e.clientY - ly; lx = e.clientX; ly = e.clientY; invalidateStatic(); requestDraw() }
-    else if (editVerts) {   // 悬停提示：可拖顶点 / 可拖多边形内部
-      canvas.style.cursor = (editVerts.move ? pointInEditPoly(e.clientX, e.clientY) : vertexAt(e.clientX, e.clientY) >= 0) ? 'move' : 'grab'
+    else if (editVerts) {   // 悬停提示：可拖顶点 / 可拖多边形内部（cursor 可覆盖命中态提示，如删除模式用 'pointer' 而非 'move'）
+      canvas.style.cursor = (editVerts.move ? pointInEditPoly(e.clientX, e.clientY) : vertexAt(e.clientX, e.clientY) >= 0) ? (editVerts.cursor || 'move') : 'grab'
     }
     if (onHover) onHover(screenToLonLat(e.clientX, e.clientY))   // 实时经纬度（拖拽时也更新）
   }
-  function onUp() {
+  function onUp(e) {
+    if (placeArmed) { placeArmed = false; const ll = screenToLonLat(placeSX, placeSY); if (ll && onPlace) onPlace(ll) }   // 原地抬起 = 点击放置
     if (vertDragging >= 0 && onVertexDrag) onVertexDrag(null, null, 'end')
     if (moveDragging && onPolyMove) onPolyMove(0, 0, 'end')
     if (beamDragging && onBeamDrag) onBeamDrag(null, 'end')
     if (labelDragging && onLabelDrag) onLabelDrag(null, 'end')
     if (polyDrawing && onPolyDraw) onPolyDraw(null, 'end')
     dragging = false; beamDragging = false; labelDragging = false; vertDragging = -1; moveDragging = false; moveLast = null; polyDrawing = false
-    canvas.style.cursor = polyDrawMode ? 'crosshair' : ((beamDragMode || labelDragMode) ? 'move' : 'grab')
+    canvas.style.cursor = (polyDrawMode || placeMode) ? 'crosshair' : ((beamDragMode || labelDragMode) ? 'move' : 'grab')
+    // 显式释放指针捕获（不只依赖 pointerup 的隐式释放）：pointercancel / 抬起点在画布外等边角情形下隐式释放可能不发生，
+    // 残留捕获会把之后所有点击截给 canvas，导致输入框点不进。有 e.pointerId 就按其释放，无（onLeave 调用）则整体兜底。
+    try {
+      if (e && e.pointerId != null) { if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId) }
+    } catch { /* ignore */ }
   }
-  function onLeave() { onUp(); if (onHover) onHover(null) }       // 移出地图：清空读数
+  function onLeave() { placeArmed = false; onUp(); if (onHover) onHover(null) }       // 移出地图：清空读数（放置武装作废，避免离屏误落点）
   function onDbl() { fit(); invalidateStatic(); requestDraw(); if (onZoom) onZoom(scaleToT()) }
   // 屏幕坐标 -> 经纬度（投影逆运算）；超出地图范围返回 null
   function screenToLonLat(clientX, clientY) {
@@ -735,10 +763,12 @@ export function createFlatCoverage(canvas) {
   }
   let onRightClick = null, onHover = null
   function onCtx(e) { e.preventDefault(); if (onRightClick) onRightClick(screenToLonLat(e.clientX, e.clientY), { x: e.clientX, y: e.clientY }) }
+  // 放置模式（波束合成）：左键「点击」（按下→未拖动→抬起）回调 onPlace(ll)；拖动仍平移地图。
   canvas.addEventListener('wheel', onWheel, { passive: false })
   canvas.addEventListener('pointerdown', onDown)
   canvas.addEventListener('pointermove', onMove)
   canvas.addEventListener('pointerup', onUp)
+  canvas.addEventListener('pointercancel', onUp)   // 指针被系统取消（如触控/被抢占）：同样跑清理，释放捕获、复位拖拽状态
   canvas.addEventListener('pointerleave', onLeave)
   canvas.addEventListener('dblclick', onDbl)
   canvas.addEventListener('contextmenu', onCtx)
@@ -807,6 +837,14 @@ export function createFlatCoverage(canvas) {
     // 完整视图记忆：缩放 scale + 画面中心的「世界坐标」(cx=lon-LON0, cy=90-lat)。
     // 用世界中心点而非 tx/ty → 窗口尺寸变化后仍能复原到同一地理中心。setView 需在 resize 后调用（base 已就绪）。
     getView() { const kk = k(); return { scale, cx: (cw / 2 - tx) / kk, cy: (ch / 2 - ty) / kk } },
+    // 键盘方向键：把视窗中心按屏幕像素平移（dxPx 右为正 → 中心东移，dyPx 下为正 → 中心南移）。
+    // tx/ty 为 CSS 像素平移量（与鼠标拖拽同一坐标系），故与缩放无关：每次移动固定屏幕距离。
+    panByPixels(dxPx, dyPx) {
+      const dx = Number.isFinite(dxPx) ? dxPx : 0, dy = Number.isFinite(dyPx) ? dyPx : 0
+      if (!dx && !dy) return
+      tx -= dx; ty -= dy
+      invalidateStatic(); requestDraw()
+    },
     setView(v) {
       if (!v || !Number.isFinite(v.scale)) return
       scale = clamp(v.scale, SMIN, SMAX)
@@ -837,8 +875,20 @@ export function createFlatCoverage(canvas) {
     setOnPolyDraw(fn) { onPolyDraw = fn },
     // Polygon 顶点编辑/整体拖动：v={ pts:[[lon,lat],...], px 顶点半径, move 整体拖动模式 } 开启
     // （pts 传引用，外部改动即时生效）；null 关闭
-    setEditVerts(v) { editVerts = (v && v.pts) ? v : null; vertDragging = -1; moveDragging = false; moveLast = null; if (!editVerts) canvas.style.cursor = beamDragMode ? 'move' : 'grab' },
+    setEditVerts(v) {
+      const nv = (v && v.pts) ? v : null
+      // 拖拽进行中被重新喂入（外部数据变动重建了顶点快照——如波束合成「调整中心」拖动时，深监听会 redrawSats+syncEdit
+      // 逐帧回刷 editVerts）：若新旧顶点数一致，保住当前拖拽索引/整体拖动态，别把正在进行的拖动掐断，否则按住只跳一下
+      // 就断、无法连续调整。仅在清空 / 切换到不同长度的编辑目标时才复位拖拽状态。
+      const keepDrag = !!nv && !!editVerts && (vertDragging >= 0 || moveDragging) && nv.pts.length === editVerts.pts.length
+      editVerts = nv
+      if (!keepDrag) { vertDragging = -1; moveDragging = false; moveLast = null }
+      if (!editVerts) canvas.style.cursor = placeMode ? 'crosshair' : (beamDragMode ? 'move' : 'grab')
+    },
     setOnVertexDrag(fn) { onVertexDrag = fn },
+    // 放置模式（波束合成）：左键点击落点；拖动仍平移
+    setPlaceMode(v) { placeMode = !!v; placeArmed = false; canvas.style.cursor = placeMode ? 'crosshair' : (polyDrawMode ? 'crosshair' : ((beamDragMode || labelDragMode) ? 'move' : 'grab')) },
+    setOnPlace(fn) { onPlace = fn },
     setOnPolyMove(fn) { onPolyMove = fn },
     setMarkers(points, stations, trajectories) { mk = { points: points || [], stations: stations || [], trajectories: trajectories || [] }; invalidateStatic(); requestDraw() },
     // p：单个 {lat,lon} 或数组，兼容旧单选调用；聚焦星每帧实时绘制，不在快照内
@@ -896,7 +946,7 @@ export function createFlatCoverage(canvas) {
     destroy() {
       if (rafId) cancelAnimationFrame(rafId)
       canvas.removeEventListener('wheel', onWheel); canvas.removeEventListener('pointerdown', onDown); canvas.removeEventListener('pointermove', onMove)
-      canvas.removeEventListener('pointerup', onUp); canvas.removeEventListener('pointerleave', onLeave); canvas.removeEventListener('dblclick', onDbl)
+      canvas.removeEventListener('pointerup', onUp); canvas.removeEventListener('pointercancel', onUp); canvas.removeEventListener('pointerleave', onLeave); canvas.removeEventListener('dblclick', onDbl)
       canvas.removeEventListener('contextmenu', onCtx)
     }
   }

@@ -716,6 +716,21 @@ export function createGlobeScene(container, quality = {}) {
     controls.autoRotate = false
     controls.update()
   }
+  // 键盘方向键：绕地心步进旋转（dAz 水平/经向、dPol 垂直/纬向，弧度）。保持相机距离，
+  // 关自转并经 stopAutoRotate 同步按钮态；phi 夹在两极附近避免翻面。与 faceTo 一样直接改相机位后 update()。
+  const _rotSph = new THREE.Spherical()
+  const _rotOff = new THREE.Vector3()
+  function rotateBy(dAz, dPol) {
+    if (!dAz && !dPol) return
+    _rotOff.copy(camera.position).sub(controls.target)
+    _rotSph.setFromVector3(_rotOff)
+    _rotSph.theta += (dAz || 0)
+    _rotSph.phi = Math.max(1e-4, Math.min(Math.PI - 1e-4, _rotSph.phi + (dPol || 0)))
+    _rotOff.setFromSpherical(_rotSph)
+    camera.position.copy(controls.target).add(_rotOff)
+    stopAutoRotate()
+    controls.update()
+  }
   function setAutoRotate(v) { controls.autoRotate = !!v }
   function setAutoRotateSpeed(v) { if (Number.isFinite(v)) controls.autoRotateSpeed = v }
   function setOnAutoRotateOff(fn) { onAutoRotateOff = fn }
@@ -922,14 +937,14 @@ export function createGlobeScene(container, quality = {}) {
       if (o.showBore) {
         // 连线(卫星↔波束中心)仅当该卫星「卫星名」也显示时才画（3D 专属，2D 无连线）
         if (b.satShown) out.push(fatStrip([llaToVec(b.satLat || 0, b.satLon, b.satAlt || 35786), anchor], 0xffb14a, 1.0, 0.3, 5))
-        const dotR = (o.boreSize || 5) * 0.0014
+        const dotR = (o.boreSize || 0.5) * 0.0014
         const dot = new THREE.Mesh(new THREE.SphereGeometry(dotR, 12, 12), new THREE.MeshBasicMaterial({ color: 0xffffff }))
         dot.position.copy(anchor); dot.renderOrder = 11; out.push(dot)
       }
       // 波束中心峰值 dB：中心点【下方】，中性次级色（弱于波束名，做读数，不再用卡通暖黄）
       if (o.showPeak && b.peak != null) {
-        const spr = makeCovLabel(b.peak.toFixed(1) + ' dB', (o.peakSize || 12) / 533, '#cfd6df')
-        spr.center.set(0.5, 1.35); spr.position.copy(labelAnchor); spr.renderOrder = 12; out.push(spr)
+        const spr = makeCovLabel(b.peak.toFixed(2) + ' dB', (o.peakSize || 5) / 533, '#cfd6df')
+        spr.center.set(0.5, 1.15); spr.position.copy(labelAnchor); spr.renderOrder = 12; out.push(spr)
       }
       // 波束名：中心点【上方】
       if (o.showName && L.name) {
@@ -1118,13 +1133,18 @@ export function createGlobeScene(container, quality = {}) {
   let labelDragMode = false, onLabelDrag = null, labelDragging = false
   // 协调区多边形 hold-to-draw：绘制态下左键按住沿路径拖动，按屏幕像素阈值连续加点（同样不旋转地球）。右键加点仍并存。
   let polyDrawMode = false, onPolyDraw = null, polyDrawing = false, drawLX = 0, drawLY = 0
+  // 放置模式（波束合成）：左键点击（未拖动）在球面落点回调 onPlace(ll)；拖动仍旋转地球
+  let placeMode = false, onPlace = null
   const POLY_DRAW_MIN2 = 14 * 14   // 相邻加点最小屏幕间距²（px）
   const updateRotate = () => { controls.enableRotate = !(beamDragMode || labelDragMode || polyDrawMode) }   // 拖波束/拖标签/绘制态均停旋转
   function setBeamDragMode(v) { beamDragMode = !!v; if (!v) beamDragging = false; updateRotate(); renderer.domElement.style.cursor = beamDragMode ? 'move' : (labelDragMode ? 'move' : (polyDrawMode ? 'crosshair' : '')) }
   function setOnBeamDrag(fn) { onBeamDrag = fn }
   function setLabelDragMode(v) { labelDragMode = !!v; if (!v) labelDragging = false; updateRotate(); renderer.domElement.style.cursor = labelDragMode ? 'move' : (beamDragMode ? 'move' : (polyDrawMode ? 'crosshair' : '')) }
   function setOnLabelDrag(fn) { onLabelDrag = fn }
-  function setPolyDrawMode(v) { polyDrawMode = !!v; polyDrawing = false; updateRotate(); renderer.domElement.style.cursor = polyDrawMode ? 'crosshair' : (beamDragMode ? 'move' : '') }
+  function setPolyDrawMode(v) { polyDrawMode = !!v; polyDrawing = false; updateRotate(); renderer.domElement.style.cursor = polyDrawMode ? 'crosshair' : (beamDragMode ? 'move' : (placeMode ? 'crosshair' : '')) }
+  // 放置模式（波束合成）：不停旋转（拖动仍导航），仅把「无拖动的左键点击」变为落点
+  function setPlaceMode(v) { placeMode = !!v; renderer.domElement.style.cursor = placeMode ? 'crosshair' : (polyDrawMode ? 'crosshair' : ((beamDragMode || labelDragMode) ? 'move' : '')) }
+  function setOnPlace(fn) { onPlace = fn }
   function setOnPolyDraw(fn) { onPolyDraw = fn }
   renderer.domElement.addEventListener('pointermove', (e) => {
     if (beamDragging) { const ll = pickGlobeOrLimb(e.clientX, e.clientY); if (ll && onBeamDrag) onBeamDrag(ll, 'move') }
@@ -1332,12 +1352,14 @@ export function createGlobeScene(container, quality = {}) {
     else if (polyDrawMode && e.button === 0) { polyDrawing = true; drawLX = e.clientX; drawLY = e.clientY; try { renderer.domElement.setPointerCapture(e.pointerId) } catch { /* ignore */ } const ll = pickGlobe(e.clientX, e.clientY); if (ll && onPolyDraw) onPolyDraw(ll, 'start') }
   })
   renderer.domElement.addEventListener('pointerup', (e) => {
-    if (polyDrawing) { polyDrawing = false; if (onPolyDraw) onPolyDraw(null, 'end'); return }   // 绘制笔画结束，不当作选星
+    if (polyDrawing) { polyDrawing = false; try { renderer.domElement.releasePointerCapture(e.pointerId) } catch { /* ignore */ } if (onPolyDraw) onPolyDraw(null, 'end'); return }   // 绘制笔画结束（显式释放捕获，勿只靠隐式）；不当作选星
     if (beamDragging) { beamDragging = false; if (onBeamDrag) onBeamDrag(null, 'end'); return }   // 拖波束结束，不当作选星
     if (labelDragging) { labelDragging = false; if (onLabelDrag) onLabelDrag(null, 'end'); return }   // 拖标签结束，不当作选星
     if (e.button !== 0) return   // 仅左键当作选星；右键（标点）/中键不改变聚焦
     // 拖动（旋转）-> 停自转、不当作点击
     if (Math.abs(e.clientX - downX) + Math.abs(e.clientY - downY) > 6) { stopAutoRotate(); return }
+    // 放置模式：左键点击 = 在球面落点放置（波束合成），不当作选星
+    if (placeMode) { const ll = pickGlobe(e.clientX, e.clientY); if (ll && onPlace) onPlace(ll); return }
     if (!satPoints || !onPick) return
     const r = renderer.domElement.getBoundingClientRect()
     const v = new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1)
@@ -1355,6 +1377,11 @@ export function createGlobeScene(container, quality = {}) {
     }
     const addToSel = e.ctrlKey || e.metaKey || e.shiftKey   // 按住 Ctrl/Cmd/Shift 点选=加入多选
     if (best) onPick(best.index, best.point, addToSel); else onPick(-1, null, addToSel)
+  })
+  // 指针被取消（触控/系统抢占）：复位绘制笔画并释放捕获，避免残留捕获截走之后的点击（输入框点不进）。
+  renderer.domElement.addEventListener('pointercancel', (e) => {
+    if (polyDrawing) { polyDrawing = false; if (onPolyDraw) onPolyDraw(null, 'end') }
+    try { renderer.domElement.releasePointerCapture(e.pointerId) } catch { /* ignore */ }
   })
 
   const camDir = new THREE.Vector3()
@@ -1428,8 +1455,8 @@ export function createGlobeScene(container, quality = {}) {
     setOrbit, setGroundTrack, setFootprint, setSelectionSet, clearSelectionGeom,
     setCoverage, clearCoverage, setCoverageField, patchCoverageLayers, clearCoverageField, setCoverageFieldAlpha, setSatLayer, clearSatLayer, faceLonLat, setProvinces, setProvincesVisible, setCities, setCitiesVisible, setBorderStyle, setNameScale, setLabelStyle, setOceanColor, setLandColors,
     setPixelRatio, setRenderFps, setSphereDetail, setMapDetail,
-    setMarkers, setTrajectories, setFocusSatLLA, setOnHover, setOnRightClick, setBeamDragMode, setOnBeamDrag, setLabelDragMode, setOnLabelDrag, setPolyDrawMode, setOnPolyDraw,
-    faceTo, setAutoRotate, setAutoRotateSpeed, setOnAutoRotateOff, resize, pause, resume, destroy,
+    setMarkers, setTrajectories, setFocusSatLLA, setOnHover, setOnRightClick, setBeamDragMode, setOnBeamDrag, setLabelDragMode, setOnLabelDrag, setPolyDrawMode, setOnPolyDraw, setPlaceMode, setOnPlace,
+    faceTo, rotateBy, setAutoRotate, setAutoRotateSpeed, setOnAutoRotateOff, resize, pause, resume, destroy,
     // 缩放进度条接口：getZoom 读当前进度、setZoom 设到进度 t、setOnZoom 注册滚轮缩放回填回调
     getZoom: () => distToT(zoomTarget),
     setZoom: (t) => { zoomTarget = Math.max(controls.minDistance, Math.min(controls.maxDistance, tToDist(t))) },

@@ -344,6 +344,29 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     }
   })
 
+  // ---- 协调区 Polygon 导入（原生框选 .gxt / .kml，多选）→ 逐个读原文返回渲染进程解析 ----
+  // KML 含中文名/描述按 UTF-8 读；GXT 为 ASCII/latin1（sat_name 可能含 latin1 高位字符）按 latin1 读。
+  ipcMain.handle('poly:open', async (e) => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+      title: '导入协调区多边形（GXT / KML，可多选）', properties: ['openFile', 'multiSelections'],
+      filters: [
+        { name: '多边形 (*.gxt, *.kml)', extensions: ['gxt', 'kml'] },
+        { name: 'GXT 等值线 (*.gxt)', extensions: ['gxt'] },
+        { name: 'KML (*.kml)', extensions: ['kml'] },
+        { name: '所有文件', extensions: ['*'] }
+      ]
+    })
+    if (canceled || !filePaths || !filePaths.length) return { canceled: true }
+    const path = require('path')
+    const files = filePaths.map((fp) => {
+      const ext = path.extname(fp).slice(1).toLowerCase()
+      try { return { base: path.basename(fp), ext, text: fs.readFileSync(fp, ext === 'kml' ? 'utf8' : 'latin1') } }
+      catch (err) { return { base: path.basename(fp), ext, error: err.message } }
+    })
+    return { canceled: false, files }
+  })
+
   // ---- 读取系统中文字体（供矢量 PDF 嵌入；jsPDF 仅支持单面 TTF，不支持 TTC）----
   // 按候选顺序返回首个存在的单面 TTF 的 base64；找不到返回 ok:false（PDF 则退化为无中文字体）。
   ipcMain.handle('font:cjk', () => {
