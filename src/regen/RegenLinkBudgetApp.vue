@@ -2,6 +2,7 @@
 import { ref, shallowRef, reactive, computed, onMounted, nextTick, watch } from 'vue'
 import { SAT_FIELDS, CARRIER_FIELDS, TX_FIELDS, RX_FIELDS, ISL_FIELDS, LASER_FIELDS, defaultsFor, buildRegenParams, buildRegenDownlinkParams, buildRegenIslParams, buildRegenLaserParams, eirpToPowerW, powerWToEirp, rxGtFromNoise } from './regenParams.js'
 import { stableStringify } from '../shared/configDirty.js'
+import { pf } from '../shared/num.js'   // 全角容错 parseFloat：手填圆轨道高度/倾角（经 sat 面板，不过 StationGrid 归一）也能吃全角数字
 import { loadSatTree } from '../ngso/grdParam.js'
 import { encodeShare, decodeShare, configFileText } from '../ngso/shareCode.js'
 import Icon from '../components/Icon.vue'
@@ -146,7 +147,7 @@ function orbitSpecOf(sat) {
   const ns = sat && sat.ngsoSat
   const selectedStar = ns && ns.mode !== 'manual' && ns.orbit
   return selectedStar ? JSON.parse(JSON.stringify(ns.orbit))
-    : { type: 'circular', altKm: parseFloat(sat.form.orbitAltitude) || 0, inclDeg: parseFloat(sat.form.orbitInclination) || 0 }
+    : { type: 'circular', altKm: pf(sat.form.orbitAltitude) || 0, inclDeg: pf(sat.form.orbitInclination) || 0 }
 }
 // 搜索时窗起点 t0：不再锚各星 TLE/场景历元，一律锚到「计算此刻」的墙钟绝对时（用户口径「从当前时间开始」扫描）。
 // 每次计算前取一次、整批共用 → 同一张表内上下行/星间各行起点严格一致；轨道仍按 SGP4 从各自历元正推到该时刻（同属墙钟系）。
@@ -387,7 +388,7 @@ async function compute() {
       const ns = sat.ngsoSat
       const selectedStar = ns && ns.mode !== 'manual' && ns.orbit
       const orbitSpec = selectedStar ? JSON.parse(JSON.stringify(ns.orbit))
-        : { type: 'circular', altKm: parseFloat(sat.form.orbitAltitude) || 0, inclDeg: parseFloat(sat.form.orbitInclination) || 0 }
+        : { type: 'circular', altKm: pf(sat.form.orbitAltitude) || 0, inclDeg: pf(sat.form.orbitInclination) || 0 }
 
       if (isDown) {
         // ===== 再生式下行：星上再生 → 收信站接收；工作点 = 收信站 G/T =====
@@ -443,8 +444,12 @@ async function compute() {
         out.push({ ti, txName, satName, data: null, margin: '—', metric: '—', error: (r && r.message) || '失败', geom: geo, access: acc })
       }
     }
+    const prevSel = sel.value
     links.value = out
-    selected.value = 0
+    // 计算后保持当前查看位置（按原发/收下标对定位；配对数变化则夹取原下标），不再跳回第一条
+    let keepIdx = prevSel ? out.findIndex((l) => l.ti === prevSel.ti && l.ri === prevSel.ri) : -1
+    if (keepIdx < 0) keepIdx = Math.min(selected.value, out.length - 1)
+    selected.value = keepIdx < 0 ? 0 : keepIdx
     await loadWaterfall()
   } catch (e) {
     error.value = String(e)
@@ -489,8 +494,12 @@ async function computeIsl() {
         out.push({ ti, txName, satName: rxName, data: null, margin: '—', metric: '—', error: (r && r.message) || '失败', geom: null, islGeo: geo, access: null })
       }
     }
+    const prevSel = sel.value
     links.value = out
-    selected.value = 0
+    // 计算后保持当前查看位置（按原发/收下标对定位；配对数变化则夹取原下标），不再跳回第一条
+    let keepIdx = prevSel ? out.findIndex((l) => l.ti === prevSel.ti && l.ri === prevSel.ri) : -1
+    if (keepIdx < 0) keepIdx = Math.min(selected.value, out.length - 1)
+    selected.value = keepIdx < 0 ? 0 : keepIdx
     await loadWaterfall()
   } catch (e) {
     error.value = String(e)
@@ -537,8 +546,12 @@ async function computeLaser() {
         out.push({ ti, txName, satName: rxName, data: null, margin: '—', metric: '—', error: (r && r.message) || '失败', geom: null, islGeo: geo, access: null })
       }
     }
+    const prevSel = sel.value
     links.value = out
-    selected.value = 0
+    // 计算后保持当前查看位置（按原发/收下标对定位；配对数变化则夹取原下标），不再跳回第一条
+    let keepIdx = prevSel ? out.findIndex((l) => l.ti === prevSel.ti && l.ri === prevSel.ri) : -1
+    if (keepIdx < 0) keepIdx = Math.min(selected.value, out.length - 1)
+    selected.value = keepIdx < 0 ? 0 : keepIdx
     await loadWaterfall()
   } catch (e) {
     error.value = String(e)

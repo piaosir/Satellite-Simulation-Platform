@@ -355,6 +355,17 @@ async function compute() {
       const r = await api.linkBudget.computeMode(satParams, linkParams, opt)
       if (r && r.success) {
         const d = r.data
+        // 负仰角（卫星在地平线下、几何上不可见）→ 与 NGSO/再生式的 feasible 门控同口径：硬拦截，不出预算数字、判不可行。
+        // 收发双站都要判（validateElevation 对 <0 返回 {valid:false,'卫星不可见'}，已在 d.elevationValidation/rxElevationValidation）。
+        const txBad = d.elevationValidation && d.elevationValidation.valid === false
+        const rxBad = d.rxElevationValidation && d.rxElevationValidation.valid === false
+        if (txBad || rxBad) {
+          const parts = []
+          if (txBad) parts.push('发信站仰角 ' + d.elevationResult + '°')
+          if (rxBad) parts.push('收信站仰角 ' + d.rxElevationResult + '°')
+          out.push({ ti, ri, txName, rxName, data: null, margin: '—', metric: '—', error: '卫星不可见（' + parts.join('，') + '）' })
+          continue
+        }
         const m = parseFloat(d.linkmargin)
         const pUse = parseFloat(d.powerUsageRatio); const bUse = parseFloat(d.bandwidthUsageRatio)
         // 合格判定：设置余量模式看资源是否够（功率/带宽占用 ≤100%）；其它模式看余量 ≥0
@@ -370,8 +381,12 @@ async function compute() {
     }
     resultMode.value = mode
     resultPairMode.value = linkPairMode.value
+    const prevSel = sel.value
     links.value = out
-    selected.value = 0
+    // 计算后保持当前查看位置（按原发/收下标对定位；配对数变化则夹取原下标），不再跳回第一条
+    let keepIdx = prevSel ? out.findIndex((l) => l.ti === prevSel.ti && l.ri === prevSel.ri) : -1
+    if (keepIdx < 0) keepIdx = Math.min(selected.value, out.length - 1)
+    selected.value = keepIdx < 0 ? 0 : keepIdx
     await loadWaterfall()
   } catch (e) {
     error.value = String(e)

@@ -9,6 +9,9 @@
 // 每个字段 target：'sat'→satParams，'link'→linkParams，'meta'→仅 UI（载波信号/卫星 id，不进引擎）。
 
 import { defaultsFor } from '../ngso/ngsoParams.js'
+import { halfStr, pf } from '../shared/num.js'   // 全角减号/数字归一到半角，避免负数（经纬度/EIRP/SFDref 等）被引擎 Number()/parseFloat() 吞掉
+// 数值字段（type:'num'）先归一全角→半角再入参；文本/select 原样（勿改站名等）
+const putNum = (obj, f, v) => { obj[f.key] = f.type === 'num' ? halfStr(v) : v }
 
 export const FIELD_GROUPS = [
   {
@@ -54,13 +57,13 @@ export const FIELD_GROUPS = [
       { key: 'longitude', label: '经度', unit: '°E', type: 'num', def: '116.4074', target: 'link' },
       { key: 'latitude', label: '纬度', unit: '°N', type: 'num', def: '39.9042', target: 'link' },
       { key: 'minElevation', label: '最低仰角', tip: '发信站对卫星的最低工作仰角，决定最差几何（斜距最大）', unit: '°', type: 'num', def: '10', target: 'link' },
-      { key: 'altitude', label: '海拔', unit: 'm', type: 'num', def: '47', target: 'link', auto: 'elev' },
+      { key: 'altitude', label: '海拔', unit: 'm', type: 'num', def: '0', target: 'link', auto: 'elev' },
       { key: 'antennaDiameter', label: '天线口径', unit: 'm', type: 'num', def: '6.2', target: 'link' },
       { key: 'antennaEfficiency', label: '天线效率', unit: '%', type: 'num', def: '65', target: 'link' },
       // 工作点：可编辑，可在「工作点EIRP(dBW)」与「功放大小(W)」间切换换算（label/unit 由 UI 按 opMode 动态改；
       // target:'op' 不直接进引擎——UI 换算成功放 W 后走 power 模式）。
       { key: 'opPoint', label: '工作点EIRP', unit: 'dBW', type: 'num', def: '50', target: 'op' },
-      { key: 'rainRate', label: 'R0.01%', unit: 'mm/h', type: 'num', def: '46.167', target: 'link', auto: 'rain' },
+      { key: 'rainRate', label: 'R0.01%', unit: 'mm/h', type: 'num', def: '0', target: 'link', auto: 'rain' },
       { key: 'uplinkAvailability', label: '可用度', unit: '%', type: 'num', def: '99.90', target: 'link' },
       { key: 'uplinkPowerControl', label: 'UPC', type: 'select', options: ['否', '是', '自定义'], def: '否', target: 'link' },
       { key: 'upcValue', label: 'UPC值', unit: 'dB', type: 'num', def: '0', target: 'link' },
@@ -91,14 +94,14 @@ export const FIELD_GROUPS = [
       { key: 'rxLongitude', label: '经度', unit: '°E', type: 'num', def: '116.4074', target: 'link' },
       { key: 'rxLatitude', label: '纬度', unit: '°N', type: 'num', def: '39.9042', target: 'link' },
       { key: 'rxMinElevation', label: '最低仰角', tip: '收信站对卫星的最低工作仰角，决定最差几何（斜距最大）', unit: '°', type: 'num', def: '10', target: 'link' },
-      { key: 'rxAltitude', label: '海拔', unit: 'm', type: 'num', def: '47', target: 'link', auto: 'elev' },
+      { key: 'rxAltitude', label: '海拔', unit: 'm', type: 'num', def: '0', target: 'link', auto: 'elev' },
       // —— 工作点 G/T：天线 + 噪温 + 馈线 → 引擎按 gOverTe = 天线增益 − 系统噪温dB − 馈线损耗 算 G/T（含精确雨致 G/T 劣化）——
       { key: 'rxAntennaDiameter', label: '天线口径', unit: 'm', type: 'num', def: '3.7', target: 'link' },
       { key: 'rxAntennaEfficiency', label: '天线效率', unit: '%', type: 'num', def: '65', target: 'link' },
       { key: 'rxAntennaNoiseTemp', label: '天线噪温', unit: 'K', type: 'num', def: '35', target: 'link' },
       { key: 'rxReceiverNoiseTemp', label: '接收机噪温', unit: 'K', type: 'num', def: '75', target: 'link' },
       { key: 'rxFeederLoss', label: '馈线损耗', unit: 'dB', type: 'num', def: '0.2', target: 'link' },
-      { key: 'rxRainRate', label: 'R0.01%', unit: 'mm/h', type: 'num', def: '46.167', target: 'link', auto: 'rain' },
+      { key: 'rxRainRate', label: 'R0.01%', unit: 'mm/h', type: 'num', def: '0', target: 'link', auto: 'rain' },
       { key: 'rxDownlinkAvailability', label: '可用度', unit: '%', type: 'num', def: '99.90', target: 'link' },
       { key: 'downlinkOtherLoss', label: '综合损耗', tip: '综合损耗：指向/极化/天线罩/接头等未单列损耗之综合', unit: 'dB', type: 'num', def: '0.3', target: 'link' },
       // 下行干扰四项（原在「卫星与转发器」，再生式移入收信站逐站配置；target:'sat' → 送 satParams）
@@ -188,15 +191,14 @@ export function buildRegenParams(satForm, carrierForm, txStation) {
   const satParams = {}
   const linkParams = {}
   // 卫星群字段按 target 分流
-  for (const f of SAT_FIELDS) (f.target === 'link' ? linkParams : satParams)[f.key] = satForm[f.key]
+  for (const f of SAT_FIELDS) putNum(f.target === 'link' ? linkParams : satParams, f, satForm[f.key])
   // 载波
-  for (const f of CARRIER_FIELDS) linkParams[f.key] = carrierForm[f.key]
+  for (const f of CARRIER_FIELDS) putNum(linkParams, f, carrierForm[f.key])
   // 发信站：uplink 链路字段 → linkParams；上行干扰(target:'sat') → satParams；
   // meta(载波信号/卫星 id) 与 op(工作点) 不进引擎（工作点由 UI 换算成功放 W 后走 power 模式）
   for (const f of TX_FIELDS) {
     if (f.target === 'meta' || f.target === 'op') continue
-    if (f.target === 'sat') satParams[f.key] = txStation[f.key]
-    else linkParams[f.key] = txStation[f.key]
+    putNum(f.target === 'sat' ? satParams : linkParams, f, txStation[f.key])
   }
   // 下行/转发器占位（引擎需完整入参；再生口径相消）
   Object.assign(satParams, DL_SAT_DEFAULTS)
@@ -222,27 +224,27 @@ export function buildRegenParams(satForm, carrierForm, txStation) {
 // 频率取该发信站所选卫星的上行中心频率。
 const _C_LIGHT = 0.299792458   // GHz·m（λ = c/f）
 export function txAntennaGainDbi(diameterM, effPct, freqGHz) {
-  const D = parseFloat(diameterM); const eff = parseFloat(effPct); const f = parseFloat(freqGHz)
+  const D = pf(diameterM); const eff = pf(effPct); const f = pf(freqGHz)
   if (!(D > 0) || !(eff > 0) || !(f > 0)) return NaN
   const lambda = _C_LIGHT / f
   return 20 * Math.log10(Math.PI * D / lambda) + 10 * Math.log10(eff / 100)
 }
 // 工作点EIRP(dBW) → 功放大小(W)。station 提供 antennaDiameter/antennaEfficiency/feederLoss/paBackoff，satForm 提供 centerFrequency。
 export function eirpToPowerW(eirpDbw, station, satForm) {
-  const eirp = parseFloat(eirpDbw); if (isNaN(eirp)) return NaN
+  const eirp = pf(eirpDbw); if (isNaN(eirp)) return NaN
   const g = txAntennaGainDbi(station.antennaDiameter, station.antennaEfficiency, satForm.centerFrequency)
-  const feeder = parseFloat(station.feederLoss) || 0
-  const backoff = parseFloat(station.paBackoff) || 0
+  const feeder = pf(station.feederLoss) || 0
+  const backoff = pf(station.paBackoff) || 0
   if (isNaN(g)) return NaN
   const paDbw = (eirp - g + feeder) + backoff       // 功放建议功率(dBW)
   return Math.pow(10, paDbw / 10)
 }
 // 功放大小(W) → 工作点EIRP(dBW)
 export function powerWToEirp(powerW, station, satForm) {
-  const w = parseFloat(powerW); if (!(w > 0)) return NaN
+  const w = pf(powerW); if (!(w > 0)) return NaN
   const g = txAntennaGainDbi(station.antennaDiameter, station.antennaEfficiency, satForm.centerFrequency)
-  const feeder = parseFloat(station.feederLoss) || 0
-  const backoff = parseFloat(station.paBackoff) || 0
+  const feeder = pf(station.feederLoss) || 0
+  const backoff = pf(station.paBackoff) || 0
   if (isNaN(g)) return NaN
   const selectedPower = 10 * Math.log10(w) - backoff
   return selectedPower + g - feeder
@@ -268,14 +270,13 @@ export function buildRegenDownlinkParams(satForm, carrierForm, rxStation) {
   const satParams = {}
   const linkParams = {}
   // 卫星群字段按 target 分流（含上/下行频率极化、轨道）
-  for (const f of SAT_FIELDS) (f.target === 'link' ? linkParams : satParams)[f.key] = satForm[f.key]
+  for (const f of SAT_FIELDS) putNum(f.target === 'link' ? linkParams : satParams, f, satForm[f.key])
   // 载波
-  for (const f of CARRIER_FIELDS) linkParams[f.key] = carrierForm[f.key]
+  for (const f of CARRIER_FIELDS) putNum(linkParams, f, carrierForm[f.key])
   // 收信站：下行链路字段 → linkParams；下行干扰(target:'sat') → satParams；meta/op 不进引擎
   for (const f of RX_FIELDS) {
     if (f.target === 'meta' || f.target === 'op') continue
-    if (f.target === 'sat') satParams[f.key] = rxStation[f.key]
-    else linkParams[f.key] = rxStation[f.key]
+    putNum(f.target === 'sat' ? satParams : linkParams, f, rxStation[f.key])
   }
   // 上行占位（引擎需完整入参；再生下行只读下行结果，上行相消）
   Object.assign(satParams, UP_SAT_DEFAULTS)
@@ -298,14 +299,14 @@ export function buildRegenDownlinkParams(satForm, carrierForm, rxStation) {
 // —— 收信站工作点换算：G/T ⇄ 噪温模式（与引擎 gOverTe 同口径，下行频率取该站所选卫星的下行频率）——
 // 下行接收天线增益（dBi）
 export function rxAntennaGainDbi(diameterM, effPct, freqGHz) {
-  const D = parseFloat(diameterM); const eff = parseFloat(effPct); const f = parseFloat(freqGHz)
+  const D = pf(diameterM); const eff = pf(effPct); const f = pf(freqGHz)
   if (!(D > 0) || !(eff > 0) || !(f > 0)) return NaN
   const lambda = _C_LIGHT / f
   return 20 * Math.log10(Math.PI * D / lambda) + 10 * Math.log10(eff / 100)
 }
 // 接收系统等效噪声温度 → dBK（与引擎 systemNoiseTempK 同口径：含馈线损耗噪声贡献）
 export function rxSystemNoiseTempDb(antTempK, rxTempK, feederLossDb) {
-  const at = parseFloat(antTempK); const rt = parseFloat(rxTempK); const fl = parseFloat(feederLossDb) || 0
+  const at = pf(antTempK); const rt = pf(rxTempK); const fl = pf(feederLossDb) || 0
   if (isNaN(at) || isNaN(rt)) return NaN
   const fLin = Math.pow(10, fl / 10)
   const Tsys = at / fLin + 290 * (1 - 1 / fLin) + rt
@@ -316,7 +317,7 @@ export function rxSystemNoiseTempDb(antTempK, rxTempK, feederLossDb) {
 export function rxGtFromNoise(station, satForm) {
   const g = rxAntennaGainDbi(station.rxAntennaDiameter, station.rxAntennaEfficiency, satForm && satForm.rxCenterFrequency)
   const tdb = rxSystemNoiseTempDb(station.rxAntennaNoiseTemp, station.rxReceiverNoiseTemp, station.rxFeederLoss)
-  const fl = parseFloat(station.rxFeederLoss) || 0
+  const fl = pf(station.rxFeederLoss) || 0
   if (isNaN(g) || isNaN(tdb)) return NaN
   return g - tdb - fl
 }
@@ -332,9 +333,9 @@ export function buildRegenIslParams(txSatForm, carrierForm, islLink) {
   satParams.satelliteName = txSatForm.satelliteName
   satParams.frequencyBand = txSatForm.frequencyBand
   // 载波（门限/带宽）
-  for (const f of CARRIER_FIELDS) linkParams[f.key] = carrierForm[f.key]
+  for (const f of CARRIER_FIELDS) putNum(linkParams, f, carrierForm[f.key])
   // ISL 四项（target:'sat'）；islAtmMargin(target:'geom') 只喂几何，不进引擎
-  for (const f of ISL_FIELDS) if (f.target === 'sat') satParams[f.key] = islLink[f.key]
+  for (const f of ISL_FIELDS) if (f.target === 'sat') putNum(satParams, f, islLink[f.key])
   satParams.islMode = 'rf'; satParams.islHops = 1
   // 上下行占位（引擎需完整入参才能良定；ISL 只读 islPerHopCN）
   Object.assign(satParams, UP_SAT_DEFAULTS, DL_SAT_DEFAULTS)
@@ -365,7 +366,7 @@ export function buildRegenLaserParams(txSatForm, laserLink) {
   // 激光字段：除 meta（选星）与 geom（大气余量，仅喂几何）外全部扁平入参（P_tx/口径/光学效率/指向误差/灵敏度 P_req 等）
   for (const f of LASER_FIELDS) {
     if (f.target === 'meta' || f.target === 'geom') continue
-    lp[f.key] = laserLink[f.key]
+    putNum(lp, f, laserLink[f.key])
   }
   // 发射卫星标注（仅展示）
   if (txSatForm) lp.satelliteName = txSatForm.satelliteName

@@ -5,6 +5,8 @@
 // 默认值对齐小程序 NGSO 场景（getDefaultSatelliteParams/getDefaultLinkParams 的 NGSO 分支）。
 // 每个字段标注 target：'sat' → satParams，'link' → inputs。auto：'rain'|'elev' 为按经纬度自动填。
 
+import { halfStr } from '../shared/num.js'   // 全角减号/数字归一到半角，避免负数（经纬度/门限/SFDref 等）被引擎 Number() 吞掉
+
 export const FIELD_GROUPS = [
   {
     key: 'carrier', title: '载波与调制', icon: 'wave',
@@ -61,11 +63,11 @@ export const FIELD_GROUPS = [
       { key: 'longitude', label: '经度', unit: '°E', type: 'num', def: '116.4074', target: 'link' },
       { key: 'latitude', label: '纬度', unit: '°N', type: 'num', def: '39.9042', target: 'link' },
       { key: 'minElevation', label: '最低仰角', tip: '发信站对卫星的最低工作仰角，决定最差几何（斜距最大）', unit: '°', type: 'num', def: '10', target: 'link' },
-      { key: 'altitude', label: '海拔', unit: 'm', type: 'num', def: '47', target: 'link', auto: 'elev' },
+      { key: 'altitude', label: '海拔', unit: 'm', type: 'num', def: '0', target: 'link', auto: 'elev' },
       { key: 'antennaDiameter', label: '天线口径', unit: 'm', type: 'num', def: '6.2', target: 'link' },
       { key: 'antennaEfficiency', label: '天线效率', unit: '%', type: 'num', def: '65', target: 'link' },
       { key: 'G_Ts', label: '卫星G/T', unit: 'dB/K', type: 'num', def: '2', target: 'link' },
-      { key: 'rainRate', label: 'R0.01%', unit: 'mm/h', type: 'num', def: '46.167', target: 'link', auto: 'rain' },
+      { key: 'rainRate', label: 'R0.01%', unit: 'mm/h', type: 'num', def: '0', target: 'link', auto: 'rain' },
       { key: 'uplinkAvailability', label: '可用度', unit: '%', type: 'num', def: '99.90', target: 'link' },
       { key: 'uplinkPowerControl', label: 'UPC', type: 'select', options: ['否', '是', '自定义'], def: '否', target: 'link' },
       { key: 'upcValue', label: 'UPC值', unit: 'dB', type: 'num', def: '0', target: 'link' },
@@ -81,13 +83,13 @@ export const FIELD_GROUPS = [
       { key: 'rxLongitude', label: '经度', unit: '°E', type: 'num', def: '116.4074', target: 'link' },
       { key: 'rxLatitude', label: '纬度', unit: '°N', type: 'num', def: '39.9042', target: 'link' },
       { key: 'rxMinElevation', label: '最低仰角', tip: '收信站对卫星的最低工作仰角，决定最差几何（斜距最大）', unit: '°', type: 'num', def: '10', target: 'link' },
-      { key: 'rxAltitude', label: '海拔', unit: 'm', type: 'num', def: '47', target: 'link', auto: 'elev' },
+      { key: 'rxAltitude', label: '海拔', unit: 'm', type: 'num', def: '0', target: 'link', auto: 'elev' },
       { key: 'rxAntennaDiameter', label: '天线口径', unit: 'm', type: 'num', def: '3.7', target: 'link' },
       { key: 'rxAntennaEfficiency', label: '天线效率', unit: '%', type: 'num', def: '65', target: 'link' },
       { key: 'rxEIRP', label: '卫星EIRP', unit: 'dBW', type: 'num', def: '46', target: 'link' },
       { key: 'rxAntennaNoiseTemp', label: '天线噪温', unit: 'K', type: 'num', def: '35', target: 'link' },
       { key: 'rxReceiverNoiseTemp', label: '接收机噪温', unit: 'K', type: 'num', def: '75', target: 'link' },
-      { key: 'rxRainRate', label: 'R0.01%', unit: 'mm/h', type: 'num', def: '46.167', target: 'link', auto: 'rain' },
+      { key: 'rxRainRate', label: 'R0.01%', unit: 'mm/h', type: 'num', def: '0', target: 'link', auto: 'rain' },
       { key: 'rxDownlinkAvailability', label: '可用度', unit: '%', type: 'num', def: '99.90', target: 'link' },
       { key: 'rxFeederLoss', label: '馈线损耗', unit: 'dB', type: 'num', def: '0.2', target: 'link' },
       { key: 'downlinkOtherLoss', label: '综合损耗', tip: '综合损耗：指向/极化/天线罩/接头等未单列损耗之综合（原「其他损耗」）', unit: 'dB', type: 'num', def: '0.3', target: 'link' }
@@ -117,11 +119,13 @@ export function defaultsFor(fields) {
 export function buildParams(satForm, carrierForm, txStation, rxStation) {
   const satParams = {}
   const linkParams = {}
+  // 数值字段（type:'num'）先归一全角→半角再入参（防中文输入法全角减号令引擎 Number() 解析失败）；文本/select 原样
+  const put = (obj, f, v) => { obj[f.key] = f.type === 'num' ? halfStr(v) : v }
   // 卫星模块字段按 target 分流：'sat' → satParams；'link'（如上/下行频率，全站共享）→ linkParams
-  for (const f of SAT_FIELDS) (f.target === 'link' ? linkParams : satParams)[f.key] = satForm[f.key]
-  for (const f of CARRIER_FIELDS) linkParams[f.key] = carrierForm[f.key]
-  for (const f of TX_FIELDS) if (f.target !== 'meta') linkParams[f.key] = txStation[f.key]
-  for (const f of RX_FIELDS) linkParams[f.key] = rxStation[f.key]
+  for (const f of SAT_FIELDS) put(f.target === 'link' ? linkParams : satParams, f, satForm[f.key])
+  for (const f of CARRIER_FIELDS) put(linkParams, f, carrierForm[f.key])
+  for (const f of TX_FIELDS) if (f.target !== 'meta') put(linkParams, f, txStation[f.key])
+  for (const f of RX_FIELDS) put(linkParams, f, rxStation[f.key])
   const gtRef = parseFloat(satParams.sfdGtRef)
   const sfd = parseFloat(satParams.sfdRef)
   if (gtRef && !isNaN(gtRef) && !isNaN(sfd)) satParams.sfdRef = sfd + gtRef
@@ -146,7 +150,7 @@ export function splitForm(form) {
   const satParams = {}
   const linkParams = {}
   for (const fld of ALL_FIELDS) {
-    const v = form[fld.key]
+    const v = fld.type === 'num' ? halfStr(form[fld.key]) : form[fld.key]   // 数值字段归一全角→半角
     if (fld.target === 'sat') satParams[fld.key] = v
     else linkParams[fld.key] = v
   }

@@ -9,6 +9,7 @@ let _rowSeq = 1
 import { ref, reactive, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import Icon from '../components/Icon.vue'
 import { defaultsFor } from './params.js'
+import { toHalf, halfStr } from '../shared/num.js'   // 数字列输入/粘贴归一全角→半角，避免全角减号令负数经纬度等被吞
 
 // 发信/收信站群 Excel 式电子表格：单元格框选（拖拽）、Ctrl+C/X/V 复制/剪切/粘贴（TSV，序号列选中时按整行）、
 // 填充柄向下填充、「＋增加」在聚焦行下方插入行、多选行批量删除/设值、清空、撤销/重做、逐行选址、点列头选整列。
@@ -112,7 +113,7 @@ const isLatLonKey = (key) => key === lonKey.value || key === latKey.value
 function clampLatLon(val) {
   const s = String(val == null ? '' : val).trim()
   if (s === '') return s
-  const n = Number(s)
+  const n = Number(toHalf(s))                                                        // 全角减号/数字归一，负数经纬度可解
   return Number.isFinite(n) ? String(Number(n.toFixed(LATLON_DECIMALS))) : val
 }
 
@@ -386,7 +387,8 @@ function onCapInput(e, r, c) {
     return
   }
   beginCapEdit(r, c)
-  if (editing.value) props.stations[r][props.fields[c].key] = e.target.value
+  // 数字列即时归一全角→半角（尤其全角减号－ U+FF0D），使存值恒为半角 → 经纬度/增益等负数不被 Number() 吞；文本列原样
+  if (editing.value) props.stations[r][f.key] = f.type === 'num' ? halfStr(e.target.value) : e.target.value
 }
 function onCapBlur() {
   if (!editing.value) return                                     // 导航态失焦：不处理

@@ -5,6 +5,7 @@ import { loadSatTree, sampleAntennaParams, sampleAntennaParam } from './grdParam
 import { encodeShare, decodeShare, configFileText } from './shareCode.js'
 import { findPoolByNorad } from './satSearchPool.js'
 import { stableStringify } from '../shared/configDirty.js'
+import { pf } from '../shared/num.js'   // 全角容错 parseFloat：手填圆轨道高度/倾角（经 sat 面板，不过 StationGrid 归一）也能吃全角数字
 import Icon from '../components/Icon.vue'
 import ConfigTree from '../components/ConfigTree.vue'
 import StationGrid from './StationGrid.vue'
@@ -587,7 +588,7 @@ async function compute() {
         // 手动模式：虚拟圆轨道（轨道高度+倾角）→ 球形闭式最差几何（单候选，每站各自最低仰角，无 subSat）。
         // 每站按自身最低仰角取最差斜距；带上站址纬度 → 闭式判「纬度 vs 倾角」可见性（如赤道轨道看不到高纬站）。
         geom = await api.linkBudget.ngsoGeometry({
-          orbit: { type: 'circular', altKm: parseFloat(satForm.orbitAltitude) || 0, inclDeg: parseFloat(satForm.orbitInclination) || 0 },
+          orbit: { type: 'circular', altKm: pf(satForm.orbitAltitude) || 0, inclDeg: pf(satForm.orbitInclination) || 0 },
           tx: { latDeg: parseFloat(tx.latitude), minElevDeg: parseFloat(tx.minElevation) || 0, freqGHz: upFreqGHz() },
           rx: { latDeg: parseFloat(rx.rxLatitude), minElevDeg: parseFloat(rx.rxMinElevation) || 0, freqGHz: dnFreqGHz() }
         })
@@ -673,8 +674,12 @@ async function compute() {
     }
     resultMode.value = mode
     resultPairMode.value = linkPairMode.value
+    const prevSel = sel.value
     links.value = out
-    selected.value = 0
+    // 计算后保持当前查看位置（按原发/收下标对定位；配对数变化则夹取原下标），不再跳回第一条
+    let keepIdx = prevSel ? out.findIndex((l) => l.ti === prevSel.ti && l.ri === prevSel.ri) : -1
+    if (keepIdx < 0) keepIdx = Math.min(selected.value, out.length - 1)
+    selected.value = keepIdx < 0 ? 0 : keepIdx
     await loadWaterfall()
   } catch (e) {
     error.value = String(e)
