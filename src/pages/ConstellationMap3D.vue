@@ -25,6 +25,7 @@ import { LAND as LAND_MORANDI, LAND_UNIFORMS, LAND_DEFAULT } from '../viz/landPa
 import { countryAt, currentLandColor } from '../viz/globe3d/countryPick.js'
 import { useGrdCoverage } from '../viz/grd/useGrdCoverage.js'
 import { useBeamSynth } from '../viz/grd/useBeamSynth.js'
+import { useVisibility, orbitClass } from '../viz/vis/useVisibility.js'
 import { usePerfTable } from '../viz/grd/usePerfTable.js'
 import { useGridSelect } from '../viz/grd/useGridSelect.js'
 import { useMarkerTable } from '../viz/markers/useMarkerTable.js'
@@ -33,6 +34,7 @@ import { sampleOrbitAdaptive } from '../viz/constellation/adaptiveSample.js'
 import * as W from '../viz/wgs84.js'
 import { parseOMMCsv, fetchGroupLiveOrSup } from '../viz/constellation/tle.js'
 import { useCustomConstellations } from '../viz/constellation/useCustomConstellations.js'
+import { useSatGroups } from '../viz/constellation/useSatGroups.js'
 import { walkerCode, orbitPeriodMin, validateWalker } from '../viz/constellation/walker.js'
 import { classifyOrbit } from '../shared/orbitClass.js'
 
@@ -122,6 +124,53 @@ const grdOpen = toRef(covNav, 'grdOpen')   // GRD 覆盖面板开关；与顶栏
 // polys/satLivePos 在下方定义 → 用 getter 传入避免 TDZ（仅运行时调用）。
 // refresh：草图轮廓变化 → 重画卫星层（含 sketchSpec）+ 同步拖拽手柄。
 const bs = useBeamSynth({ grd, getPolys: () => polys.value, livePos: (n) => satLivePos(n), appAlert, refresh: () => { redrawSats(); syncEdit() } })
+
+// 可见性分析（复刻 STK Access / Coverage）：选目标（站/点/航迹/Polygon）→ 仰角门限 → 算可见卫星。
+// 宿主能力全经 getter/箭头注入（避免 TDZ；stations/points/renderEntries 等在下方定义，仅运行时调用）。
+const vis = useVisibility({
+  getStations: () => stations.value, getPoints: () => points.value, getTrajectories: () => trajectories.value,
+  getPolys: () => polys.value, getRenderEntries: () => renderEntries,
+  calcAt: () => calcAt(), ccTimeAt: (t) => ccTimeAt(t), isCustomEntry: (e) => isCustomEntry(e),
+  refresh: () => { redrawSats(); commitGeometry() }
+})
+// 可见性分析：可见星复用「聚焦特效」立体呈现——在轨道高度的绿点(satPos) + 目标→星视线斜线(2 点 orbit 走 lineFromLLA，
+// 尊重每端高度)，经 scene.setSelectionSet 画（唯一能在轨道高度画卫星点的通道）。
+// 只「算」不「推」：返回 { items(在轨点+视线), subs(星下点图标，各自带 px/colorHex) }，由 commitGeometry 与聚焦星几何合并后一次性提交，
+// 二者共用同一 replace-all 通道却互不覆盖——可见性模式下聚焦某星，其星下点/轨迹/足迹照常显示、随时间轴移动。
+function computeVisibilityGeometry() {
+  if (!scene || !vis.open.value) return { items: [], subs: [] }
+  const rs = vis.results.value, tp = vis.targetPoints()
+  if (!rs.length || !tp.length) return { items: [], subs: [] }
+  const tgt = tp[0]
+  const hid = String(vis.hoveredId.value || '')
+  const icm = /^#?([0-9a-f]{6})$/i.exec(String(vis.iconColor.value || '')), icNum = icm ? parseInt(icm[1], 16) : 0x4caf82
+  const subPx = (Number(vis.iconSize.value) || 12) * 1.6   // 3D 星下点图标：大小×1.6对齐屏幕像素、颜色随面板（与 2D 一致）
+  const items = [], subs = []
+  for (const r of rs) {
+    if (!Number.isFinite(r.subLon) || !Number.isFinite(r.subLat)) continue
+    const hot = hid && String(r.noradId) === hid
+    items.push({
+      satPos: { lat: r.subLat, lon: r.subLon, altKm: r.altKm, color: hot ? '#efeae0' : (vis.iconColor.value || '#4caf82') },
+      orbit: [{ lat: tgt.lat, lon: tgt.lon, altKm: 0 }, { lat: r.subLat, lon: r.subLon, altKm: r.altKm }],
+      primary: hot
+    })
+    subs.push({ lat: r.subLat, lon: r.subLon, px: subPx, colorHex: icNum })
+  }
+  return { items, subs }
+}
+// 可见性分析目标下拉：值形如 'kind|id'（kind ∈ station|point|traj|poly）→ 拆给 vis.setTarget
+function visPickTarget(v) {
+  const s = String(v == null ? '' : v), i = s.indexOf('|')
+  if (i < 0) { vis.setTarget('', ''); return }
+  vis.setTarget(s.slice(0, i), s.slice(i + 1))
+}
+// 仰角门限输入：允许临时清空（显示空、按 0° 算），非法输入保持原值——不卡在空/NaN
+function visSetElev(v) { vis.minElev.value = (v === '' || v == null) ? '' : (Number.isFinite(Number(v)) ? Number(v) : vis.minElev.value) }
+// 方位角 → 八向罗盘文本
+const VIS_DIRS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']
+function visCompass(az) { const a = ((Number(az) % 360) + 360) % 360; return VIS_DIRS[Math.round(a / 45) % 8] }
+// 分钟 → 简短时长文本（如 2h15m / 45m）
+function visDur(min) { const m = Math.max(0, Math.round(Number(min) || 0)); const h = Math.floor(m / 60), mm = m % 60; return h ? h + 'h' + (mm < 10 ? '0' : '') + mm + 'm' : mm + 'm' }
 async function toggleGrd() {
   grdOpen.value = !grdOpen.value
   if (grdOpen.value) { await grd.loadIndex(); grd.recompute(); redrawSats() }
@@ -576,6 +625,13 @@ function resetGroupColor(key) {
 const customConst = useCustomConstellations(() => rebuildRenderSet())
 const customList = customConst.list
 const soloConst = ref(null)   // 当前「单独显示」的自定义星座 id（行高亮）
+// 「卫星组」：保存的命名卫星子集（来自筛选结果 / Ctrl 多选），可在星座列表下方重新显示
+const satGroups = useSatGroups()
+const satGrpRenameId = ref('')   // 正在行内重命名的组 id（''=无）
+const satGrpRenameVal = ref('')  // 重命名输入值
+const satGrpDelId = ref('')      // 待确认删除的组 id（两步删除防误删；''=无）
+const satGrpRenameEl = ref(null)  // 重命名输入框 DOM（保存后自动聚焦选中）
+const setRenameEl = (el) => { if (el) satGrpRenameEl.value = el }   // 函数式 template ref：只在挂载时记录，卸载(null)不清
 // 导入组卫星数（文件管理 custom.json 的权威计数）：挂载/导入/删除时刷新。与自建星座 customList 一起决定
 // 「自定义卫星」分组是否有数据——无数据则不在星座列表里出现（与文件管理「暂无自定义卫星」一致，文件管理为权威）。
 const customImportCount = ref(0)
@@ -706,13 +762,14 @@ function cardFor(e) {
 
 // ===================== 选中几何：轨道圈 / 星下点轨迹 / 覆盖足迹 =====================
 // 为所有选中星各画一组轨道圈/星下点轨迹/覆盖足迹；星下点轨迹/覆盖足迹固定原色多颗叠画，轨道圈固定原色仅 primary 加粗加亮区分聚焦星。
-function buildSelectedGeometry() {
-  if (!scene) return
-  if (!selEntries.length) { scene.clearSelectionGeom(); selGeomAll = []; pushSelGeomFlat(); return }
+// 只「算」不「推」：返回选中星 3D items（轨道/轨迹/足迹/在轨点），并写入 selGeomAll(2D) 与副作用（primary 高亮环 / beam 夹断）。
+// 实际提交交由 commitGeometry 与可见性叠加层合并（二者共用 setSelectionSet / setFocusSatLLA replace-all 通道，故必须一次性喂）。
+function computeSelectedGeometry() {
+  selGeomAll = []
+  if (!scene || !selEntries.length) return []
   const now = calcAt(), gmstNow = sat.gstime(now)
   const ccNow = ccTimeAt(now), ccGmstNow = sat.gstime(ccNow)   // 合成星按场景历元解算（跨会话稳定）
   const items = []
-  selGeomAll = []
   selEntries.forEach((e) => {
     const rec = e.rec
     const cc = isCustomEntry(e), t = cc ? ccNow : now, g = cc ? ccGmstNow : gmstNow
@@ -738,7 +795,22 @@ function buildSelectedGeometry() {
     selGeomAll.push({ track, footprint: fp })              // 全体几何缓存供 2D 平面图（每颗都画，非仅主星）
     items.push({ orbit, track, footprint: fp, primary, satPos })
   })
-  scene.setSelectionSet(items)
+  return items
+}
+
+// 统一提交：把「聚焦星几何」与「可见性叠加层」合并后一次性喂给共用的 replace-all 通道
+// （3D setSelectionSet / setFocusSatLLA、2D setFocusSat / setSelGeom），二者可同时呈现、各随时间轴移动。
+// 修复：此前可见性激活时 buildSelectedGeometry / pushFocusSat 被 !vis.open 门控掉、且 buildVisibilityGeometry
+// 无目标时清空整个通道 → 聚焦星星下点/轨迹消失、时间轴推进时不再更新。改为合并提交后二者不再互相覆盖。
+function commitGeometry() {
+  if (!scene) return
+  const selItems = computeSelectedGeometry()
+  if (!selEntries.length) scene.setHighlightLLA(null)   // 无聚焦星：清高亮环（computeSelectedGeometry 空选不经 footprintFor，否则残留）
+  const vg = vis.open.value ? computeVisibilityGeometry() : { items: [], subs: [] }
+  scene.setSelectionSet([...selItems, ...vg.items])
+  const focus = focusSubpoints()                        // 聚焦星星下点（白·默认大小；无选中时为 []）
+  scene.setFocusSatLLA([...focus, ...vg.subs])          // + 可见星星下点（面板色/大小，每点自带 px/colorHex）
+  if (flat) flat.setFocusSat(focus)                     // 2D 聚焦星下点；可见星走 overlaySpec 的 sats（redrawSats）
   pushSelGeomFlat()
 }
 
@@ -806,14 +878,21 @@ function circleLatLon(lat0, lon0, lambda, N) {
 function rebuildRenderSet() {
   if (!scene) return
   const now = calcAt()
+  const filtering = filterEntries.length > 0
+  const base = filtering ? filterEntries : entries   // 搜索筛选态：渲染命中星（跨分组），否则渲染当前分组
   const valid = []
-  for (const e of entries) {
+  for (const e of base) {
     try { const pv = sat.propagate(e.rec, now); if (pv && pv.position) valid.push(e) } catch { /* skip */ }
   }
-  const custom = customConst.entriesForRender()   // 自定义星座合成星追加在真实星之后（点云索引对齐 renderEntries）
-  renderEntries = custom.length ? valid.concat(custom) : valid
-  renderHasColor = custom.length > 0 || hasGroupColorOverrides()
-  satCount.value = entries.length
+  if (filtering) {
+    renderEntries = valid          // 只显示命中星（含命中的自定义星；不再叠加全部自定义星座）
+    renderHasColor = true          // 逐点按各自分组/自定义色上色
+  } else {
+    const custom = customConst.entriesForRender()   // 自定义星座合成星追加在真实星之后（点云索引对齐 renderEntries）
+    renderEntries = custom.length ? valid.concat(custom) : valid
+    renderHasColor = custom.length > 0 || hasGroupColorOverrides()
+  }
+  satCount.value = base.length
   refreshPositions()
 }
 
@@ -823,7 +902,7 @@ function refreshPositions() {
   nowStamp.value = Date.now()                                          // 「此刻」红标记参考
   if (live.value) { nowTick.value++; baseTime.value = nowStamp.value }  // 实时：时钟自增 + 锚点随系统时钟滑动
   // renderEntries 已含可见自定义星座（即使内置组选「无」也可能非空），故只按空判断，不再短路 'none'
-  if (!renderEntries.length) { scene.setSatellites([]); shownCount.value = 0; pushFocusSat(); if (hasLinkedElev()) redrawSats(); grd.tickLive(); return }
+  if (!renderEntries.length) { scene.setSatellites([]); shownCount.value = 0; if (vis.open.value) vis.recompute(); commitGeometry(); if (hasLinkedElev() || vis.open.value) redrawSats(); grd.tickLive(); return }
   const now = calcAt(), gmst = sat.gstime(now)
   const ccNow = ccTimeAt(now), ccGmst = sat.gstime(ccNow)   // 合成星按固定场景历元解算（跨会话稳定）
   const n = renderEntries.length
@@ -843,12 +922,14 @@ function refreshPositions() {
   }
   scene.setSatellites(positions, colors)
   shownCount.value = n
+  if (vis.open.value) vis.recompute()   // 可见性：可见星随时间轴/实时重算（commitGeometry 读取其结果）
   if (selEntry) {
-    const c = cardFor(selEntry); if (c) selected.value = c; buildSelectedGeometry(); buildSelList()
+    const c = cardFor(selEntry); if (c) selected.value = c
+    buildSelList()
     if (points.value.length || stations.value.length) pushMarkers()   // 随卫星移动刷新标记仰角
   }
-  pushFocusSat()   // 同步 2D 平面图上聚焦卫星实时位置
-  if (hasLinkedElev()) redrawSats()   // 星座关联星：仰角线随时间轴/实时跟踪
+  commitGeometry()   // 聚焦星几何 + 可见性叠加层合并提交：二者同时呈现、均随时间轴移动（聚焦星星下点/轨迹不再被可见性覆盖）
+  if (hasLinkedElev() || vis.open.value) redrawSats()   // 星座关联星仰角线 / 可见性目标点：随时间轴/实时跟踪
   if (grd.tickLive(perfKey.value || null).perfMoved) refreshPerf()   // 星动 → GRD 覆盖随时间轴移动；性能指标表也随之重算（取值依赖星位推出的 basis）
   if (satModal.value && satModal.value.noradId) liveTick.value++   // 关联星编辑中：驱动弹窗经纬度/高度刷新
   persistGrdLive()   // 写实时关联星当前星下点到轻量缓存，供链路预算窗口「导入时取新位置」
@@ -876,6 +957,7 @@ function ingest(sats, payloadGroup, fetchedAt) {
 async function loadGroup() {
   if (!apiOk) { status.value = '需在桌面客户端中运行'; return }
   const g = GROUPS[groupIndex.value]
+  filterEntries = []; filterN.value = 0; filterKw.value = ''; filterGroupId.value = ''   // 切分组 → 退出搜索筛选态（含卫星组显示）
   resetBeam(); selEntries = []; selEntry = null; selected.value = null; selList.value = []; scene && scene.clearSelectionGeom(); selGeomAll = []; pushSelGeomFlat()
   // 「无」：不加载/不传播/不渲染任何卫星，省 SGP4 与点渲染开销（覆盖图、地球照常）
   if (g.key === 'none') {
@@ -971,6 +1053,11 @@ async function loadOther() {
 // 不受当前分组（含「无」）限制，全量可搜。失败/未就绪时回退当前组 entries。
 let searchPool = []
 let poolReady = false, poolLoading = false
+let filterEntries = []   // 搜索即筛选的显示集（命中星，跨分组，来自全量池）；非空 → renderEntries 渲染它而非当前分组
+let filterTimer = null   // 输入即筛选的防抖计时器
+const filterN = ref(0)   // 筛选命中数（模板状态提示；0 = 非筛选态）
+const filterKw = ref('')   // 当前筛选词（独立于 keyword —— pickResult 会清 keyword 但筛选仍在，状态条据此显示）
+const filterGroupId = ref('')   // 非空=当前筛选显示集来自某个已存「卫星组」（状态条改标签 + 组列表高亮）；被搜索/换组清掉
 async function ensureSearchPool() {
   if (poolReady || poolLoading || !apiOk) return
   poolLoading = true
@@ -1006,10 +1093,9 @@ function selectSat(e, face, additive) {
 // 刷新主选卡片 + 全体几何 + 多选列表 + 标记 + 2D 聚焦
 function refreshSelection() {
   const c = cardFor(selEntry); if (c) selected.value = c
-  buildSelectedGeometry()
   buildSelList()
   pushMarkers()
-  pushFocusSat()
+  commitGeometry()   // 选中星几何 + 星下点（含可见性叠加层，若开）合并提交
 }
 // 旋转地球使某星正对视图
 function faceEntry(e) {
@@ -1053,6 +1139,8 @@ function rebindSelection(preferGroup) {
 function onSearch(e) {
   keyword.value = e.target.value
   const kw = keyword.value.trim().toLowerCase()
+  if (filterTimer) clearTimeout(filterTimer)
+  filterTimer = setTimeout(() => applyFilter(kw), 250)   // 输入即筛选显示（防抖 250ms；空词恢复分组）
   if (!kw) { searchResults.value = []; return }
   ensureSearchPool()   // 懒加载全量搜索库（幂等）
   const now = new Date(), gmst = sat.gstime(now), geo = curKey() === 'geo'
@@ -1067,15 +1155,89 @@ function onSearch(e) {
   }
   searchResults.value = out
 }
-function clearSearch() { keyword.value = ''; searchResults.value = [] }
+function clearSearch() {
+  keyword.value = ''; searchResults.value = []
+  if (filterTimer) { clearTimeout(filterTimer); filterTimer = null }
+  if (filterEntries.length) { filterEntries = []; filterN.value = 0; filterKw.value = ''; filterGroupId.value = ''; rebuildRenderSet(); redrawSats() }   // 退出筛选态（含卫星组显示）→ 恢复当前分组
+}
+// 搜索即筛选显示：命中星（全量池，跨分组）作为临时显示集渲染到 3D；空词恢复当前分组。可见性分析「当前显示的星」随之变。
+async function applyFilter(kw) {
+  const k = String(kw || '').trim().toLowerCase()
+  if (!k) { if (filterEntries.length) { filterEntries = []; filterN.value = 0; filterKw.value = ''; filterGroupId.value = ''; rebuildRenderSet(); redrawSats() } return }
+  await ensureSearchPool()
+  const src = searchSource(), hit = [], seen = new Set()
+  for (const en of src) {
+    if (!(en.name.toLowerCase().includes(k) || String(en.noradId).includes(k) || (en.groupLabel && en.groupLabel.toLowerCase().includes(k)))) continue
+    const nid = String(en.noradId); if (seen.has(nid)) continue
+    seen.add(nid); hit.push(en)
+  }
+  filterEntries = hit; filterN.value = hit.length; filterKw.value = String(kw).trim(); filterGroupId.value = ''   // 键入关键词 → 退出卫星组显示态
+  rebuildRenderSet(); redrawSats()
+}
 function pickResult(item) { searchResults.value = []; keyword.value = ''; selectSat(item.en, true) }
-function closeCard() { selEntries = []; selEntry = null; selected.value = null; selList.value = []; resetBeam(); scene && scene.clearSelectionGeom(); selGeomAll = []; pushSelGeomFlat(); pushMarkers(); pushFocusSat(); saveSelection() }
+function closeCard() { selEntries = []; selEntry = null; selected.value = null; selList.value = []; resetBeam(); selGeomAll = []; pushMarkers(); commitGeometry(); saveSelection() }   // commitGeometry 清聚焦星几何/星下点；可见性叠加层（若开）保留
+
+// ===================== 卫星组（保存筛选结果 / Ctrl 多选卫星为命名组，可再显示） =====================
+// 存新组后自动进入行内重命名态并聚焦输入框（默认名已填好，用户直接改名或回车确认即可）
+function satGrpFocusRename() { nextTick(() => { try { const el = satGrpRenameEl.value; if (el) { el.focus(); el.select() } } catch { /* ignore */ } }) }
+function satGrpEnterRename(g) { satGrpDelId.value = ''; satGrpRenameId.value = g.id; satGrpRenameVal.value = g.name; satGrpFocusRename() }
+// 把当前筛选显示集存成卫星组（快照命中星的 NORAD + 名称）
+function saveFilterAsGroup() {
+  if (!filterEntries.length) { appAlert('当前没有筛选结果可保存'); return }
+  const sats = filterEntries.map((e) => ({ noradId: e.noradId, name: e.name }))
+  const g = satGroups.add(sats, filterKw.value ? ('筛选 ' + filterKw.value) : '')
+  if (g) { logMsg(`已存为卫星组「${g.name}」：${g.sats.length} 颗`); satGrpEnterRename(g) }
+}
+// 把当前 Ctrl 多选卫星存成卫星组
+function saveSelectionAsGroup() {
+  if (!selEntries.length) { appAlert('当前没有选中的卫星'); return }
+  const sats = selEntries.map((e) => ({ noradId: e.noradId, name: e.name }))
+  const g = satGroups.add(sats, '')
+  if (g) { logMsg(`已存为卫星组「${g.name}」：${g.sats.length} 颗`); satGrpEnterRename(g) }
+}
+// 显示某卫星组：按 NORAD 从全量搜索库解析回可渲染 entries，走「筛选显示」管线渲染（跨分组、点选、覆盖圈、可见性全部照常）
+async function showSatGroup(g) {
+  if (!g) return
+  await ensureSearchPool()
+  const want = new Set((g.sats || []).map((s) => String(s.id)))
+  const src = searchSource(), hit = [], seen = new Set()
+  for (const en of src) {
+    const nid = String(en.noradId)
+    if (want.has(nid) && !seen.has(nid)) { seen.add(nid); hit.push(en) }
+  }
+  if (!hit.length) { appAlert(`「${g.name}」的卫星在当前星历中都未找到（可能未联网加载全量目录，或卫星已退役）`); return }
+  keyword.value = ''; searchResults.value = []
+  if (filterTimer) { clearTimeout(filterTimer); filterTimer = null }
+  filterEntries = hit; filterN.value = hit.length; filterKw.value = g.name; filterGroupId.value = g.id
+  soloConst.value = null
+  rebuildRenderSet(); redrawSats()
+  const miss = want.size - hit.length
+  status.value = miss > 0 ? `卫星组「${g.name}」：显示 ${hit.length} 颗（另有 ${miss} 颗未在当前星历中找到）` : ''
+}
+// 点击组行：已在显示→再点退出（回到当前分组）；否则显示该组
+function toggleSatGroup(g) {
+  satGrpRenameId.value = ''; satGrpDelId.value = ''   // 切换显示 → 收起任何未完成的行内改名/删除确认
+  if (filterGroupId.value === g.id) clearSearch(); else showSatGroup(g)
+}
+function satGrpCommitRename(g) {
+  if (satGroups.rename(g.id, satGrpRenameVal.value)) {
+    if (filterGroupId.value === g.id) filterKw.value = satGrpRenameVal.value.trim() || filterKw.value   // 正在显示的组改名 → 同步状态条标签
+  }
+  satGrpRenameId.value = ''
+}
+// 两步删除：首次点击进入「确认」态，再点一次才真正删除
+function satGrpDelete(g) {
+  if (satGrpDelId.value !== g.id) { satGrpDelId.value = g.id; return }
+  if (filterGroupId.value === g.id) clearSearch()   // 正在显示的组被删 → 退出显示态
+  satGroups.remove(g.id)
+  satGrpDelId.value = ''
+}
 
 // ===================== 覆盖圈（波束角 / 最低仰角） =====================
 // 波束角/最低仰角是用户设置：控件常驻、换星不清空手动输入值；仅清与所选星绑定的上限占位。
 // 锁定含义收敛为「超出该星上限时不回写夹断值」。
 function resetBeam() { beamAuto.value = '' }
-function refreshFootprint() { if (selEntries.length) buildSelectedGeometry() }   // beam/仰角改动 → 重算全体足迹
+function refreshFootprint() { if (selEntries.length) commitGeometry() }   // beam/仰角改动 → 重算全体足迹（含可见性叠加层，若开）
 function onBeam(e) { beam.value = e.target.value; refreshFootprint() }
 function onElevMin(e) { elevMin.value = e.target.value; refreshFootprint() }
 // 波束全锥角 B(°) ↔ 最低仰角 ε(°)：同一覆盖圈的两种参数化，由卫星高度 h 唯一对应。
@@ -1424,8 +1586,7 @@ function feedFlat() {
   grd.recompute()   // GRD 覆盖：把当前选中天线的面+线喂给 flat（recompute 同时喂 scene/flat）
   redrawSats()      // 卫星/仰角线图层（含 Polygon）
   syncEdit()        // 调点态（Polygon / 标记「调整点位置」）：切入平面图时接上拖拽
-  pushFocusSat()    // 聚焦卫星位置
-  pushSelGeomFlat() // 聚焦卫星覆盖范围 + 星下点轨迹
+  commitGeometry()  // 聚焦卫星位置 + 覆盖范围 + 星下点轨迹（含可见性叠加层，若开）
 }
 
 // ===================== 覆盖图导出（高清 PNG / 矢量 PDF，统一走 2D 平面图） =====================
@@ -2242,6 +2403,53 @@ const bsReflSvg = computed(() => {
   }
   return open + s.join('') + '</svg>'
 })
+// —— 相控阵阵面示意图（1/2 阵面正视：Nx×Ny 单元排布；2/2 sin(u,v) 空间 Butler 波束栅）——
+// v-html 内容全部由数值计算生成（无用户字符串），无注入面
+const bsPamView = ref(1)
+const bsPamSvg = computed(() => {
+  const W = 248, H = 168
+  const gp = bs.p
+  const Nx = Math.round(Number(gp.pamNx)), Ny = Math.round(Number(gp.pamNy))
+  const dx = Number(gp.pamDx), dy = Number(gp.pamDy), tri = gp.pamTri === true
+  const open = `<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" font-family="var(--font-mono)">`
+  if (!(Nx > 0) || !(Ny > 0) || !(dx > 0) || !(dy > 0)) return open + `<text x="${W / 2}" y="${H / 2}" text-anchor="middle" fill="var(--text-faint)" font-size="11">阵元数 / 间距无效</text></svg>`
+  const s = []
+  if (bsPamView.value === 1) {
+    // 阵面正视：Nx×Ny 单元格点（矩形或三角错位），间距按 dx:dy 比例；大阵抽样示意
+    const capNx = Math.min(Nx, 16), capNy = Math.min(Ny, 16)
+    const spanX = (capNx - 1) * dx || 1, spanY = (capNy - 1) * dy || 1
+    const sf = Math.min((W - 60) / spanX, (H - 44) / spanY)
+    const ox = W / 2 - sf * spanX / 2, oy = (H - 16) / 2 - sf * spanY / 2 + 6
+    const rEl = Math.max(1.4, Math.min(4, sf * Math.min(dx, dy) * 0.34))
+    for (let j = 0; j < capNy; j++) {
+      const off = (tri && j % 2) ? dx / 2 : 0
+      const nCol = (tri && j % 2) ? capNx - 1 : capNx
+      for (let i = 0; i < nCol; i++) {
+        const cx = ox + sf * (i * dx + off), cy = oy + sf * (j * dy)
+        s.push(`<circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${rEl.toFixed(1)}" fill="#5ad1ff" fill-opacity=".5" stroke="#5ad1ff" stroke-opacity=".85" stroke-width=".8"/>`)
+      }
+    }
+    s.push(`<text x="${W / 2}" y="${H - 4}" text-anchor="middle" fill="var(--text-faint)" font-size="10">${Nx}×${Ny} 单元 · ${dx}×${dy} λ${tri ? ' · 三角晶格' : ''}${(Nx > capNx || Ny > capNy) ? ' （示意）' : ''}</text>`)
+  } else {
+    // sin(u,v) 空间：单位圆（可见区 u²+v²=1）+ Butler 波束峰格点（eq 6.14）
+    const R = Math.min(W, H) / 2 - 18, cx0 = W / 2, cy0 = (H - 12) / 2
+    s.push(`<circle cx="${cx0}" cy="${cy0}" r="${R}" fill="none" stroke="var(--text-muted)" stroke-width="1.1"/>`)
+    s.push(`<line x1="${(cx0 - R).toFixed(1)}" y1="${cy0}" x2="${(cx0 + R).toFixed(1)}" y2="${cy0}" stroke="var(--text-faint)" stroke-opacity=".35"/>`)
+    s.push(`<line x1="${cx0}" y1="${(cy0 - R).toFixed(1)}" x2="${cx0}" y2="${(cy0 + R).toFixed(1)}" stroke="var(--text-faint)" stroke-opacity=".35"/>`)
+    // 大阵抽样：Butler 波束数 = Nx×Ny，上千即 SVG 卡死/OOM → 按步长抽样示意（位置仍用真实 n/m 算，密度不失真）
+    const capN = 32
+    const stN = Math.max(1, Math.ceil(Nx / capN)), stM = Math.max(1, Math.ceil(Ny / capN))
+    for (let n = -Math.floor(Nx / 2); n <= Math.ceil(Nx / 2) - 1; n += stN) {
+      for (let m = -Math.floor(Ny / 2); m <= Math.ceil(Ny / 2) - 1; m += stM) {
+        const u = (2 * n + 1) / (2 * Nx * dx), v = (2 * m + 1) / (2 * Ny * dy)
+        if (u * u + v * v >= 1) continue
+        s.push(`<circle cx="${(cx0 + u * R).toFixed(1)}" cy="${(cy0 - v * R).toFixed(1)}" r="1.9" fill="#f2c14e" fill-opacity=".85"/>`)
+      }
+    }
+    s.push(`<text x="${W / 2}" y="${H - 4}" text-anchor="middle" fill="var(--text-faint)" font-size="10">Butler 波束栅（sin 空间）· Δu = λ/Nd${(stN > 1 || stM > 1) ? '（抽样示意）' : ''}</text>`)
+  }
+  return open + s.join('') + '</svg>'
+})
 // 关闭页面所有绘制/编辑态（供进入波束合成放置/调整前清场）
 function bsStopOtherModes() {
   mkEditStop(); polyEditStop(); polyMoveStop(); if (polyDrawId.value) polyCancel()
@@ -2257,6 +2465,10 @@ watch(() => shellUi.side, async (side) => {
     await grd.loadIndex(false)   // 卫星下拉需要卫星树；不自动改动覆盖显示
     bs.openFor(grd.active.value ? grd.active.value.split('|')[0] : '')
   } else if (bs.open.value) { bs.close(); bsTableOpen.value = false }
+  // 可见性分析：进入即打开（懒计算 + 画叠加层），离开即关闭（撤叠加层）。两态均经 commitGeometry 合并提交，
+  // 聚焦星几何与可见性叠加层各自存续：进入可见性不再抹掉聚焦星，退出可见性聚焦星（若有）自动恢复。
+  if (side === 'vis') { vis.openPanel(); commitGeometry() }
+  else if (vis.open.value) { vis.close(); commitGeometry() }
 }, { immediate: true })
 // 「地图放置」开关：开启即清场并进入右键放置态（与调整互斥）
 function bsPlaceToggle() {
@@ -2706,6 +2918,9 @@ function redrawSats() {
   // 波束合成草图（放置阶段的 3dB 椭圆轮廓 + 中心点 + 编号 + 频率配色填充）：与场合成同一几何链，所见即所得。
   const sk = bs.sketchSpec()
   if (sk) { if (sk.lines) lines.push(...sk.lines); if (sk.dots) dots.push(...sk.dots); if (sk.labels) labels.push(...sk.labels); if (sk.fills) fills.push(...sk.fills) }
+  // 可见性分析叠加层：目标点高亮 + 可见星图标 + 目标→卫星连线（随时间轴实时）
+  const vsk = vis.overlaySpec()
+  if (vsk) { if (vsk.lines) lines.push(...vsk.lines); if (vsk.dots) dots.push(...vsk.dots); if (vsk.labels) labels.push(...vsk.labels); if (vsk.sats) sats.push(...vsk.sats) }
   // 波束合成「调整中心」/「删除波束」：在各波束中心叠可点击手柄圆环（与标记/Polygon 调点同款，平面图交互；调整=轮廓色，删除=警示红）
   if ((bs.adjusting.value || bs.deleting.value) && bs.open.value) for (const b of bs.beams.value) { if (Number.isFinite(b.lat) && Number.isFinite(b.lon)) dots.push({ lon: b.lon, lat: b.lat, color: bs.deleting.value ? 0xe05252 : (cssToHex(bs.p.skColor) || 0x5ad1ff), px: MK_HANDLE_PX, r: MK_HANDLE_PX * 0.0018 }) }
   // 「调整点位置」：在被编辑的标记/地球站/航迹各点上叠一圈可拖拽手柄圆环（屏幕恒定像素，仅平面图交互）
@@ -2787,8 +3002,7 @@ function focusSubpoints() {
   }
   return out
 }
-// 把全部聚焦卫星星下点推给 2D/3D（标注各自实时位置）
-function pushFocusSat() { const list = focusSubpoints(); if (flat) flat.setFocusSat(list); if (scene) scene.setFocusSatLLA(list) }
+// 聚焦星下点的推送已并入 commitGeometry（与可见性叠加层合并到共用 replace-all 通道，避免相互覆盖）。
 
 // 地图右键（3D 球体与 2D 平面图共用）：轨迹描绘中→直接加航点（连续右键描点）；否则→弹出右键菜单。
 // ll：点击处经纬度（点在地球外为 null）；pos：屏幕坐标（菜单定位）。
@@ -3368,6 +3582,7 @@ onMounted(async () => {
   await restoreSettings()   // 恢复全部选项/设置（无感）
   await ensureProvinces(); await ensureCities()   // 按恢复后的省/市界开关加载数据并套用可见性（restoreSettings 只回填开关）
   customConst.load()   // 恢复自定义星座（按参数重建合成星，随后由 loadGroup→rebuildRenderSet 一并渲染）
+  satGroups.load()   // 恢复已存卫星组（仅列表；显示由用户点击组行触发）
   refreshCustomImportCount()   // 权威导入组计数（决定「自定义卫星」分组是否在星座列表出现）
   loadGroup()
   ensureSearchPool()   // 后台构建全量搜索库（当日缓存命中则很快），与当前分组无关
@@ -3549,7 +3764,7 @@ onBeforeUnmount(() => {
           <template v-else>
           <div class="ptool">
             <div class="search">
-              <input :value="keyword" placeholder="搜索卫星名 / 编号" @input="onSearch" />
+              <input :value="keyword" placeholder="搜索名 / 编号（即筛选显示）" @input="onSearch" />
               <span v-if="keyword" class="clr" @click="clearSearch"><Icon name="x" :size="11" /></span>
               <div v-if="searchResults.length" class="panel">
                 <div v-for="item in searchResults" :key="item.noradId" class="item" @click="pickResult(item)">
@@ -3558,11 +3773,23 @@ onBeforeUnmount(() => {
                 </div>
               </div>
             </div>
+            <div v-if="filterN" class="fbar">
+              <span class="fdot"></span>
+              <template v-if="filterGroupId">查看组 <b>{{ filterKw }}</b> · {{ filterN }} 颗</template>
+              <template v-else>已筛选 <b>{{ filterKw }}</b> · 显示 {{ filterN }} 颗</template>
+              <span v-if="!filterGroupId" class="fsave" title="把当前筛选结果存成卫星组（可稍后重新显示）" @click="saveFilterAsGroup"><Icon name="folder-plus" :size="11" /> 存为组</span>
+              <span class="fx" @click="clearSearch">清除</span>
+            </div>
+            <div v-if="selList.length >= 2" class="fbar selbar">
+              <span class="fdot sel"></span>已选 <b>{{ selList.length }}</b> 颗卫星
+              <span class="fsave" title="把选中的卫星存成卫星组（可稍后重新显示）" @click="saveSelectionAsGroup"><Icon name="folder-plus" :size="11" /> 存为组</span>
+              <span class="fx" title="取消全部选择" @click="closeCard">清除</span>
+            </div>
             <div class="pchips">
               <span class="mini" :class="{ on: autoRotate }" @click="toggleRotate">{{ autoRotate ? '旋转中' : '已停止' }}</span>
               <span class="mini" :class="{ on: live }" @click="toggleLive">{{ live ? '实时开' : '实时关' }}</span>
             </div>
-            <div class="pstat">在轨 {{ satCount }}<template v-if="shownCount && shownCount < satCount"> · 渲染 {{ shownCount }}</template>
+            <div class="pstat"><template v-if="filterN">筛选显示 {{ filterN }} 颗（清空搜索恢复）</template><template v-else>在轨 {{ satCount }}<template v-if="shownCount && shownCount < satCount"> · 渲染 {{ shownCount }}</template></template>
               <template v-if="dataTime"> · OMM {{ dataTime }}</template>
               <template v-if="status"> · {{ status }}</template></div>
           </div>
@@ -3586,6 +3813,34 @@ onBeforeUnmount(() => {
               </template>
             </div>
             </template>
+          </div>
+          <!-- 卫星组：保存的命名卫星子集（来自筛选结果 / Ctrl 多选），点击行重新显示；有组才出现 -->
+          <div v-if="satGroups.list.value.length" class="ccsec">
+            <div class="cchd"><span>卫星组</span><span class="ccsub">{{ satGroups.list.value.length }} 组</span></div>
+            <div
+              v-for="g in satGroups.list.value" :key="g.id"
+              class="ccrow sgrow" :class="{ sel: filterGroupId === g.id }"
+              :title="filterGroupId === g.id ? '再次点击退出显示' : ('显示该组的 ' + g.sats.length + ' 颗卫星')"
+              @click="toggleSatGroup(g)"
+            >
+              <template v-if="satGrpRenameId === g.id">
+                <span class="ccic"><Icon name="layers" :size="12" /></span>
+                <input
+                  class="sgnm-in" v-model="satGrpRenameVal" @click.stop
+                  :ref="setRenameEl"
+                  @keydown.enter="satGrpCommitRename(g)" @keydown.esc.stop="satGrpRenameId = ''"
+                />
+                <span class="ccic ok" title="确认重命名" @click.stop="satGrpCommitRename(g)"><Icon name="check" :size="12" /></span>
+                <span class="ccic" title="取消" @click.stop="satGrpRenameId = ''"><Icon name="x" :size="12" /></span>
+              </template>
+              <template v-else>
+                <span class="ccic"><Icon name="layers" :size="12" /></span>
+                <span class="ccnm" :title="g.name">{{ g.name }}</span>
+                <span class="cccode">{{ g.sats.length }} 颗</span>
+                <span class="ccic" title="重命名" @click.stop="satGrpEnterRename(g)"><Icon name="pencil" :size="11" /></span>
+                <span class="ccic del" :class="{ warn: satGrpDelId === g.id }" :title="satGrpDelId === g.id ? '再点一次确认删除' : '删除该组'" @click.stop="satGrpDelete(g)"><Icon name="trash" :size="11" /></span>
+              </template>
+            </div>
           </div>
           <!-- 自定义星座（仿 STK Walker 生成器）：星点 + 轨道圈叠加显示 -->
           <div class="ccsec">
@@ -4013,7 +4268,7 @@ onBeforeUnmount(() => {
           <div v-if="bs.satPos()" class="tip">星下点 {{ bs.satPos().lon.toFixed(2) }}°E{{ Math.abs(bs.satPos().lat || 0) > 0.05 ? ', ' + bs.satPos().lat.toFixed(2) + '°N' : '' }} · 高度 {{ Math.round(bs.satPos().altKm).toLocaleString() }} km。一颗星可挂多个波束组，每组＝一根天线。</div>
           <div class="bs-grps">
             <div v-for="g in bs.groupsForSat.value" :key="g.id" class="bs-grow" :class="{ on: g.id === bs.activeGroupId.value, hid: !g.pinned && g.id !== bs.activeGroupId.value }" @click="bs.selectGroup(g.id)">
-              <span class="bs-gk" :class="g.mode">{{ g.mode === 'gauss' ? '多馈源' : '赋形' }}</span>
+              <span class="bs-gk" :class="g.mode">{{ g.mode === 'pam' ? '相控阵' : g.mode === 'gauss' ? '多馈源' : '赋形' }}</span>
               <span class="bs-gname" :title="g.name">{{ g.name }}</span>
               <span class="bs-gcnt">{{ bs.groupStat(g).n }}{{ bs.groupStat(g).unit }}</span>
               <span class="gic" :title="g.pinned ? '取消常显（切换到其它组编辑时自动隐藏本组草图）' : (g.id === bs.activeGroupId.value ? '常显本组（切换到其它组编辑后仍保留显示，用于比对）' : '仅显示编辑中的组；点击常显本组草图以便和其它组比对')" @click.stop="bs.toggleGroupVisible(g.id)"><Icon :name="(g.pinned || g.id === bs.activeGroupId.value) ? 'eye' : 'eye-off'" :size="12" /></span>
@@ -4025,6 +4280,7 @@ onBeforeUnmount(() => {
           <div class="bs-addrow">
             <span class="opb" :class="{ dis: !grdSats.length }" title="新建多馈源反射面（点/椭圆波束群；一组内可多设置混合宽度，如 0.8+0.9+1.6°）" @click="bsAddGroup('gauss')">＋多馈源组</span>
             <span class="opb" :class="{ dis: !grdSats.length }" title="新建赋形反射面（Polygon 覆盖区并集，馈源阵赋形合成）" @click="bsAddGroup('shaped')">＋赋形组</span>
+            <span class="opb" :class="{ dis: !grdSats.length }" title="新建相控阵（SATSOFT §6.5 PAM：矩形阵 + Butler 矩阵，sinc 波束群，可电扫到任意指向）" @click="bsAddGroup('pam')">＋相控阵组</span>
           </div>
           <div class="bs-navops">
             <span class="opb sm" :class="{ dis: !bs.groupsForSat.value.length }" title="当前卫星下每个组各生成一根天线" @click="bsGenerateAll"><Icon name="check" :size="11" /> 全部生成</span>
@@ -4036,7 +4292,7 @@ onBeforeUnmount(() => {
         <!-- ===== 检查器：选中组的编辑器（类型由节点决定，不再切 tab） ===== -->
         <template v-if="bs.hasGroup.value">
         <div class="sec">
-          <div class="sect"><span>{{ bs.mode.value === 'gauss' ? '多馈源反射面' : '赋形反射面' }}</span></div>
+          <div class="sect"><span>{{ bs.mode.value === 'pam' ? '相控阵' : bs.mode.value === 'gauss' ? '多馈源反射面' : '赋形反射面' }}</span></div>
           <div class="srow"><label>组名</label><input class="ci wide" :value="bs.curName.value" @change="e => bs.renameGroup(bs.activeGroupId.value, e.target.value)" placeholder="天线名（同名再生成即更新；同星不可重名）" /></div>
         </div>
 
@@ -4121,8 +4377,41 @@ onBeforeUnmount(() => {
           </template>
         </div>
 
-        <!-- —— 高斯：放置波束 → 轮廓编号 / 频率计划（后两者折叠） —— -->
-        <template v-if="bs.mode.value === 'gauss'">
+        <!-- 相控阵天线参数（对齐 SATSOFT §6.5 / §6.5.1 对话框）：阵元数 / 间距 / 单元因子 / 晶格 → 波束宽·间距·交叉·栅瓣·方向性 -->
+        <div v-if="bs.mode.value === 'pam'" class="sec">
+          <div class="sect acc" :class="{ open: isSecOpen('bs-pam') }" @click="toggleSec('bs-pam')"><Icon :name="isSecOpen('bs-pam') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>天线参数</span><span class="bs-cnt">相控阵 · Butler 矩阵</span></div>
+          <template v-if="isSecOpen('bs-pam')">
+          <div class="srow"><label>辐射单元数</label><input class="ci" type="number" step="1" min="1" v-model.number="bs.p.pamNx" title="X 向（方位）单元数 Nx" /><span class="u">×</span><input class="ci" type="number" step="1" min="1" v-model.number="bs.p.pamNy" title="Y 向（俯仰）单元数 Ny" /></div>
+          <div class="srow"><label>单元间距</label><input class="ci" type="number" step="0.05" min="0.1" v-model.number="bs.p.pamDx" title="X 向单元间距 dx（波长）" /><span class="u">×</span><input class="ci" type="number" step="0.05" min="0.1" v-model.number="bs.p.pamDy" title="Y 向单元间距 dy（波长）" /><span class="u">λ</span></div>
+          <div class="srow"><label>设计频率</label><input class="ci" type="number" step="0.1" v-model.number="bs.p.pamFGHz" /><span class="u">GHz</span></div>
+          <div class="srow"><label>口径效率</label><input class="ci" type="number" step="1" min="1" max="100" v-model.number="bs.p.pamEff" title="口径效率（%）：50% ≈ 相对满口径 −3dB；补偿阵列损耗等" /><span class="u">%</span></div>
+          <div class="srow"><label>单元因子 R</label><input class="ci" type="number" step="0.1" min="0" v-model.number="bs.p.pamR" title="单元功率方向图 cos^R(θ) 指数（典型 1.0–1.5）：越大扫描增益滚降越快" /><span class="u">cos^R θ</span></div>
+          <label class="chk2"><input type="checkbox" v-model="bs.p.pamTri" /><span>三角晶格（等边 dx=√3/2·dy；Nx 需偶）</span></label>
+          <div v-if="bs.p.pamTri && Math.round(Number(bs.p.pamNx)) % 2 !== 0" class="tip warn">⚠ 三角晶格要求 X 向单元数 Nx 为偶数（手册 §6.5.1）；当前 Nx={{ Math.round(Number(bs.p.pamNx)) }} 为奇数，已按矩形晶格计算。请把 Nx 改为偶数。</div>
+          <label class="chk2"><input type="checkbox" v-model="bs.p.pamElem" /><span>应用单元因子（关闭＝仅看阵因子 / 栅瓣）</span></label>
+          <div class="bs-read2">
+            <span>波束宽 <b>{{ bsFmt(bs.pam.value && bs.pam.value.th3xDeg, 2) }}×{{ bsFmt(bs.pam.value && bs.pam.value.th3yDeg, 2) }}</b>°</span>
+            <span>方向性 <b>{{ bsFmt(bs.pam.value && bs.pam.value.dirDbi, 2) }}</b> dBi</span>
+          </div>
+          <div class="bs-read">
+            <span>波束间距 <b :title="bs.pam.value && !bs.pam.value.beamSpacingXReal ? '波束间距落在 sin 空间外（Δu&gt;1），以方向余弦 u 显示（手册 §6.5.1）' : ''">{{ bs.pam.value && bs.pam.value.beamSpacingXReal ? bsFmt(bs.pam.value.beamSpacingXDeg, 2) + '°' : bsFmt(bs.pam.value && bs.pam.value.beamSpacingXU, 3) + ' u' }}</b> · 交叉 <b>{{ bsFmt(bs.pam.value && bs.pam.value.crossoverDb, 2) }}</b> dB</span>
+            <span>阵尺寸 <b>{{ bsFmt(bs.pam.value && bs.pam.value.arrayDimXm, 2) }}×{{ bsFmt(bs.pam.value && bs.pam.value.arrayDimYm, 2) }}</b> m</span>
+          </div>
+          <div class="bs-read"><span title="第一栅瓣距原点的波束宽数（手册 §6.5.1：distance from origin in beamwidths；合成赋形时可填入 Beamlet Grid 的 Range 字段）">第一栅瓣 <b>{{ bsFmt(bs.pam.value && bs.pam.value.gratingLobeBw, 1) }}</b> 波束宽{{ bs.pam.value && bs.pam.value.gratingInReal ? '（±' + bsFmt(bs.pam.value.gratingLobeDeg, 1) + '° 进实空间）' : '（圈外，安全）' }}</span></div>
+          <div v-if="bs.pam.value && bs.pam.value.gratingInReal" class="tip warn">⚠ 单元间距 ≥ 1λ：栅瓣进入实空间（±{{ bsFmt(bs.pam.value.gratingLobeDeg, 1) }}°），会形成重复波束。减小间距至 &lt;1λ 可消除。</div>
+          <div class="bs-refl" v-html="bsPamSvg"></div>
+          <div class="bs-reflbar">
+            <span class="pgb" @click="bsPamView = bsPamView === 1 ? 2 : 1">◀</span>
+            <span class="bs-reflpg">{{ bsPamView }}/2</span>
+            <span class="pgb" @click="bsPamView = bsPamView === 1 ? 2 : 1">▶</span>
+            <span class="bs-reflcap">{{ bsPamView === 1 ? '阵面正视：单元排布' : 'sin 空间：Butler 波束栅' }}</span>
+          </div>
+          <div class="tip">相控阵＝矩形阵 + Butler 矩阵：波束 ＝ 周期 sinc 阵因子 × 单元因子 cos^R θ（首旁瓣 −13dB）。放置的每个波束由阵面电扫到该指向，扫描损失 / 栅瓣按物理内建；波束宽由阵面定死（≈λ/Nd）。</div>
+          </template>
+        </div>
+
+        <!-- —— 放置波束 → 轮廓编号 / 频率计划（高斯 + 相控阵共用；后两者折叠） —— -->
+        <template v-if="bs.mode.value === 'gauss' || bs.mode.value === 'pam'">
           <div class="sec">
             <div class="sect acc" :class="{ open: isSecOpen('bs-place') }" @click="toggleSec('bs-place')"><Icon :name="isSecOpen('bs-place') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>放置波束</span><span class="bs-cnt">{{ bs.beams.value.length }} 个{{ bs.curSetting.value ? ' · 设置 ' + bs.curSetting.value.name : '' }}</span></div>
             <template v-if="isSecOpen('bs-place')">
@@ -4316,6 +4605,121 @@ onBeforeUnmount(() => {
         <div v-else class="sec">
           <div class="bs-empty2">从上方选择一个波束组进行编辑，或点「＋多馈源组 / ＋赋形组」新建一个。生成的天线挂到该卫星下，由「覆盖分析」视图管理。</div>
         </div>
+
+        </div>
+        </div>
+
+        <!-- 可见性分析（复刻 STK Access / Coverage）：选目标 → 仰角门限 → 卫星集 → 可见卫星清单。
+             P1＝瞬时可见（随时间轴实时）；时段表(Access) / 覆盖热力图(Coverage) 为后续路线图。 -->
+        <div v-show="shellUi.side === 'vis'" class="sview">
+        <div v-if="shellUi.side === 'vis'" class="cov-side vis-side docked">
+
+          <!-- 分析目标 + 参数 -->
+          <div class="sec">
+            <div class="sect"><span>分析目标</span><span v-if="vis.satCount.value" class="vis-cnt" title="卫星集＝当前地图显示的星（在「星座」视图搜索可筛选显示）">卫星集 {{ vis.satCount.value.toLocaleString() }}</span></div>
+            <div class="srow"><label>目标</label>
+              <select :value="vis.targetKind.value + '|' + vis.targetId.value" @change="e => visPickTarget(e.target.value)">
+                <option value="|">（选择地球站 / 点 / Polygon）</option>
+                <optgroup v-if="stations.length" label="地球站">
+                  <option v-for="s in stations" :key="s.id" :value="'station|' + s.id">{{ s.name || '地球站' }} · {{ fmtLL(s.lat, s.lon) }}</option>
+                </optgroup>
+                <optgroup v-if="points.length" label="点标记">
+                  <option v-for="p in points" :key="p.id" :value="'point|' + p.id">{{ fmtLL(p.lat, p.lon) }}</option>
+                </optgroup>
+                <optgroup v-if="polys.length" label="Polygon（质心）">
+                  <option v-for="pg in polys" :key="pg.id" :value="'poly|' + pg.id">{{ pg.name }}</option>
+                </optgroup>
+              </select>
+            </div>
+            <div v-if="!stations.length && !points.length && !polys.length" class="tip">还没有可选目标：去「标记」画一个地球站 / 点，或「Polygon」画一个区域。</div>
+            <div class="srow"><label>仰角门限</label><input class="ci vis-elev" type="number" step="1" min="0" max="89" :value="vis.minElev.value" @input="e => visSetElev(e.target.value)" /><span class="u">°</span><span class="tip inl">≥ 此仰角才算可见 · 卫星集＝当前显示的星</span></div>
+          </div>
+
+          <!-- 可见卫星：瞬时可见（now）/ 时段过境（access）两模式 -->
+          <div class="sec">
+            <div class="sect"><span>可见卫星</span><span class="vis-cnt on">{{ vis.mode.value === 'access' ? (vis.accessResults.value.length + ' 星过境') : (vis.results.value.length + ' 颗') }}</span></div>
+            <div v-if="!vis.hasTarget.value" class="tip">先在上方选一个分析目标。瞬时＝此刻头顶可见的卫星；时段＝未来一段时间的过境窗口（Access）。</div>
+            <template v-else>
+              <div class="seg sm vis-mode">
+                <span class="sg" :class="{ on: vis.mode.value === 'now' }" @click="vis.setMode('now')">瞬时可见</span>
+                <span class="sg" :class="{ on: vis.mode.value === 'access' }" title="未来一段时间内每颗星对目标的过境窗口（Access）" @click="vis.setMode('access')">时段过境</span>
+              </div>
+
+              <!-- 瞬时可见（now）：KPI + 极坐标 sky 图 + 结果表 -->
+              <template v-if="vis.mode.value === 'now'">
+                <div class="vis-sum">
+                  <span>可见 <b>{{ vis.kpi.value.count }}</b> <s>/ {{ vis.satCount.value.toLocaleString() }}</s></span>
+                  <span v-if="vis.kpi.value.top">最高 <b>{{ vis.kpi.value.top.elevDeg.toFixed(1) }}°</b> <em :title="vis.kpi.value.top.name">{{ vis.kpi.value.top.name }}</em></span>
+                  <span v-if="vis.kpi.value.classes.length" class="vis-sumcls"><i v-for="c in vis.kpi.value.classes" :key="c.c">{{ c.c }} {{ c.n }}</i></span>
+                </div>
+                <div v-if="!vis.results.value.length" class="tip">当前时刻门限 {{ vis.minElev.value || 0 }}° 以上没有可见卫星（拖动时间轴，或降低门限试试）。</div>
+                <template v-else>
+                  <div class="srow vis-icrow"><label>图标</label><input class="vis-slider" type="range" min="1" max="24" step="1" :value="vis.iconSize.value" @input="e => vis.iconSize.value = Number(e.target.value)" /><span class="u">{{ vis.iconSize.value }}</span><input class="vis-clr" type="color" :value="vis.iconColor.value" @input="e => vis.iconColor.value = e.target.value" title="星下点图标 / 名字颜色（3D 与 2D 一致）" /><label class="chk-in" title="星多时建议关，避免名字重叠成片"><input type="checkbox" :checked="vis.showName.value" @change="vis.showName.value = $event.target.checked" /><span>名字</span></label></div>
+                  <div v-if="vis.showName.value" class="srow vis-icrow"><label>名字大小</label><input class="vis-slider" type="range" min="1" max="12" step="1" :value="vis.nameSize.value" @input="e => vis.nameSize.value = Number(e.target.value)" /><span class="u">{{ vis.nameSize.value }}</span></div>
+                  <!-- 极坐标 sky 图：一点＝一颗可见星，角向＝方位（正北在上、顺时针），离心＝仰角（天顶在圆心、地平在外圈）；青虚线＝仰角门限 -->
+                  <svg class="vis-sky" viewBox="0 0 100 100" aria-label="天空极坐标图">
+                    <circle class="vis-sky-grid" cx="50" cy="50" r="44" />
+                    <circle class="vis-sky-grid" cx="50" cy="50" r="29.3" />
+                    <circle class="vis-sky-grid" cx="50" cy="50" r="14.7" />
+                    <line class="vis-sky-grid" x1="50" y1="6" x2="50" y2="94" />
+                    <line class="vis-sky-grid" x1="6" y1="50" x2="94" y2="50" />
+                    <circle class="vis-sky-thr" cx="50" cy="50" :r="vis.skyThrR.value" />
+                    <text class="vis-sky-lbl" x="50" y="3.4">N</text>
+                    <text class="vis-sky-lbl" x="96.6" y="50.5">E</text>
+                    <text class="vis-sky-lbl" x="50" y="97.6">S</text>
+                    <text class="vis-sky-lbl" x="3.4" y="50.5">W</text>
+                    <text class="vis-sky-el" x="51.4" y="22">30</text>
+                    <text class="vis-sky-el" x="51.4" y="36.6">60</text>
+                    <circle v-for="p in vis.skyPoints.value" :key="p.noradId" class="vis-sky-dot" :class="{ hi: p.hi, hov: String(vis.hoveredId.value) === String(p.noradId) }" :cx="p.x" :cy="p.y" r="1.7" @mouseenter="vis.setHover(p.noradId)" @mouseleave="vis.setHover('')"><title>{{ p.name }}</title></circle>
+                  </svg>
+                  <div class="vis-lhead">
+                    <span class="vis-lname sortable" :class="{ on: vis.sortKey.value === 'name' }" @click="vis.setSort('name')">卫星</span>
+                    <span class="vis-lc sortable" :class="{ on: vis.sortKey.value === 'class' }" @click="vis.setSort('class')" title="按轨道高度排序">类别</span>
+                    <span class="sortable" :class="{ on: vis.sortKey.value === 'elev' }" @click="vis.setSort('elev')">仰角°</span>
+                    <span class="sortable" :class="{ on: vis.sortKey.value === 'range' }" @click="vis.setSort('range')">斜距km</span>
+                  </div>
+                  <div class="vis-list">
+                    <div v-for="r in vis.sortedResults.value" :key="r.noradId" class="vis-lrow" :class="{ hi: r.elevDeg >= 45, hov: String(vis.hoveredId.value) === String(r.noradId) }" @mouseenter="vis.setHover(r.noradId)" @mouseleave="vis.setHover('')" :title="r.name + ' · #' + r.noradId + ' · 方位 ' + r.azDeg.toFixed(0) + '° ' + visCompass(r.azDeg) + ' · 高度 ' + Math.round(r.altKm).toLocaleString() + ' km'">
+                      <span class="vis-lname">{{ r.name }}</span>
+                      <span class="vis-lc" :class="'oc-' + orbitClass(r.altKm)">{{ orbitClass(r.altKm) }}</span>
+                      <span class="vis-lel">{{ r.elevDeg.toFixed(1) }}<i v-if="r.rising === true" class="vis-ud up" title="上升中">↑</i><i v-else-if="r.rising === false" class="vis-ud dn" title="下降中">↓</i></span>
+                      <span>{{ Math.round(r.rangeKm).toLocaleString() }}</span>
+                    </div>
+                  </div>
+                  <div class="tip">悬停行 / 图上一点 → 三处（图·表·地图）联动高亮。方位见图与行悬停提示，高仰角（≥45°）行加粗。</div>
+                </template>
+              </template>
+
+              <!-- 时段过境（access）：时窗 + 计算 + 甘特 + 过境列表 -->
+              <template v-else>
+                <div class="srow"><label>时窗</label><input class="ci vis-elev" type="number" step="1" min="0.5" max="168" :value="vis.horizonH.value" @input="e => vis.horizonH.value = e.target.value" /><span class="u">小时</span><span class="opb sm" :class="{ dis: vis.accessBusy.value }" title="扫描卫星集在此时窗内对目标的全部过境（卫星越多越慢；上限 400 颗）" @click="vis.computeAccess()">计算过境</span></div>
+                <div v-if="vis.accessBusy.value" class="tip">扫描过境窗口…（卫星越多越慢）</div>
+                <div v-else-if="vis.accessMsg.value" class="tip">{{ vis.accessMsg.value }}</div>
+                <template v-else-if="vis.accessResults.value.length">
+                  <div class="vis-gantt">
+                    <div v-for="s in vis.accessResults.value" :key="s.noradId" class="vis-grow" :class="{ hov: String(vis.hoveredId.value) === String(s.noradId) }" @mouseenter="vis.setHover(s.noradId)" @mouseleave="vis.setHover('')" :title="s.name + ' · ' + s.windows.length + ' 次过境'">
+                      <span class="vis-gname">{{ s.name }}</span>
+                      <span class="vis-gbar">
+                        <i v-for="(w, wi) in s.windows" :key="wi" class="vis-gseg" :class="{ hi: w.peakEl >= 45 }" :style="{ left: (w.startMin / (vis.horizonH.value * 60) * 100) + '%', width: (Math.max(0.6, w.endMin - w.startMin) / (vis.horizonH.value * 60) * 100) + '%' }" :title="'AOS +' + visDur(w.startMin) + ' · 时长 ' + visDur(w.durMin) + ' · 最高 ' + w.peakEl.toFixed(0) + '°'"></i>
+                      </span>
+                    </div>
+                  </div>
+                  <div class="vis-acc-hd"><span class="vis-lname">卫星</span><span>AOS(+)</span><span>时长</span><span>最高°</span></div>
+                  <div class="vis-acc-list">
+                    <template v-for="s in vis.accessResults.value" :key="s.noradId">
+                      <div v-for="(w, wi) in s.windows" :key="s.noradId + '-' + wi" class="vis-acc-row" :class="{ hov: String(vis.hoveredId.value) === String(s.noradId) }" @mouseenter="vis.setHover(s.noradId)" @mouseleave="vis.setHover('')" :title="s.name + ' · 最高在 +' + visDur(w.peakMin) + (w.truncated ? ' · 窗口延伸到时窗末（截断）' : '')">
+                        <span class="vis-lname">{{ s.name }}</span>
+                        <span>+{{ visDur(w.startMin) }}</span>
+                        <span>{{ visDur(w.durMin) }}</span>
+                        <span :class="{ 'oc-hi': w.peakEl >= 45 }">{{ w.peakEl.toFixed(0) }}</span>
+                      </div>
+                    </template>
+                  </div>
+                  <div class="tip">AOS＝升起（相对现在）；甘特条＝时窗内各次过境（绿＝最高仰角 ≥45°）。星多时扫描较慢（有进度）；可缩短时窗、或在「星座」筛选星座加速。</div>
+                </template>
+              </template>
+            </template>
+          </div>
 
         </div>
         </div>
@@ -5211,6 +5615,17 @@ onBeforeUnmount(() => {
 .ptool { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border); }
 .ptool .search input { width: 100%; box-sizing: border-box; }
 .ptool .search .panel { width: 100%; }
+/* 搜索筛选状态条（确认感：小圆点 + 词 + 清除，克制不卡通） */
+.fbar { display: flex; align-items: center; gap: 6px; margin: 2px 0 0; font-size: 11px; color: var(--text-muted); }
+.fbar .fdot { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); flex: none; }
+.fbar b { color: var(--text); font-weight: 600; max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fbar .fx { margin-left: auto; color: var(--text-faint); cursor: pointer; padding: 0 2px; }
+.fbar .fx:hover { color: var(--danger); }
+/* 「存为组」按钮：吃掉右推空间（清除紧随其后，故取消清除自身的 auto） */
+.fbar .fsave { margin-left: auto; display: inline-flex; align-items: center; gap: 3px; color: var(--accent); cursor: pointer; padding: 1px 6px; border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent); border-radius: 4px; white-space: nowrap; }
+.fbar .fsave:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.fbar .fsave ~ .fx { margin-left: 0; }
+.fbar.selbar .fdot.sel { background: var(--accent); }   /* 多选栏用强调色圆点，区别于筛选栏的绿点 */
 .pchips { display: flex; gap: 6px; }
 .pchips .mini { flex: 1; text-align: center; padding: 3px 0; }
 .pstat { color: var(--text-faint); font-size: 11px; line-height: 1.5; }
@@ -5251,6 +5666,12 @@ onBeforeUnmount(() => {
 .ccrow .ccic { flex: none; display: inline-flex; cursor: pointer; color: var(--text-faint); padding: 1px; }
 .ccrow .ccic:hover { color: var(--text); }
 .ccrow .ccic.del:hover { color: #ff6b6b; }
+.ccrow .ccic.ok:hover { color: var(--accent); }
+.ccrow.sel .ccic.del.warn { color: #ffd7d7; }
+/* 卫星组：段头计数 + 行内重命名输入 + 删除确认高亮 */
+.cchd .ccsub { font-size: 10.5px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+.ccrow .ccic.del.warn { color: #ff6b6b; }
+.sgrow .sgnm-in { flex: 1; min-width: 0; border: 1px solid var(--accent); background: var(--bg); color: var(--text); font-size: 12px; padding: 1px 5px; border-radius: 3px; outline: none; }
 /* 向导：预设条 + 汇总 */
 .ccpreset { display: flex; flex-wrap: wrap; gap: 4px; margin: 2px 0; }
 .ccpz { border: 1px solid var(--border); color: var(--text-muted); padding: 2px 7px; font-size: 11px; cursor: pointer; border-radius: 3px; }
@@ -5497,6 +5918,7 @@ onBeforeUnmount(() => {
 .bs-gk { flex: none; font-size: 10px; padding: 1px 5px; border-radius: 3px; color: #fff; letter-spacing: .5px; }
 .bs-gk.gauss { background: #4f8fe8; }
 .bs-gk.shaped { background: #3fb77f; }
+.bs-gk.pam { background: #a06fdc; }
 .bs-gname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
 .bs-grow.on .bs-gname { color: var(--accent); font-weight: 600; }
 .bs-gcnt { flex: none; font-size: 10px; color: var(--text-faint); font-family: var(--font-mono); }
@@ -5522,6 +5944,73 @@ onBeforeUnmount(() => {
 .sect.acc { cursor: pointer; user-select: none; gap: 5px; }
 .sect.acc:hover { color: var(--text); }
 .sect.acc .app-icon { flex: none; color: var(--text-faint); }
+
+/* —— 可见性分析（Access / Coverage）：目标/参数 + KPI 摘要 + 可见星结果表 —— */
+.vis-side .sect .vis-cnt { margin-left: auto; font-size: 10px; color: var(--text-faint); font-family: var(--font-mono); }
+.vis-side .sect .vis-cnt.on { color: var(--ok); }
+.vis-side .tip.inl { display: inline; margin-left: 8px; }
+.vis-side .vis-elev { flex: none; width: 58px; }
+.vis-icrow { align-items: center; gap: 5px; }
+.vis-icrow > label:first-child { flex: none; width: 46px; }
+.vis-icrow .vis-slider { flex: 1; min-width: 30px; }
+.vis-icrow .u { flex: none; min-width: 14px; text-align: right; }
+.vis-clr { flex: none; width: 22px; height: 18px; padding: 0; border: 1px solid var(--border); border-radius: 3px; background: none; cursor: pointer; }
+.vis-icrow .chk-in { flex: none; }
+/* 紧凑摘要（一行内联，去卡片——克制不卡通） */
+.vis-sum { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 14px; margin: 6px 0 7px; font-size: 11px; color: var(--text-faint); }
+.vis-sum b { color: var(--text); font-weight: 600; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.vis-sum s { text-decoration: none; }
+.vis-sum em { font-style: normal; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 96px; display: inline-block; vertical-align: bottom; }
+.vis-sumcls { display: inline-flex; gap: 9px; }
+.vis-sumcls i { font-style: normal; color: var(--text-muted); font-family: var(--font-mono); }
+/* 轨道类别配色（低饱和，纯文字着色、不加边框——去卡通） */
+.oc-LEO { color: #6fb3e0; } .oc-MEO { color: #7fc4a0; } .oc-GEO { color: #d8a73a; } .oc-HEO { color: #c08fd0; }
+/* 极坐标 sky 图：方位=角向、仰角=离心（天顶在圆心、地平在外圈） */
+.vis-sky { display: block; width: 100%; max-width: 188px; margin: 4px auto 8px; }
+.vis-sky-grid { fill: none; stroke: var(--border); stroke-width: 0.4; }
+.vis-sky-thr { fill: none; stroke: var(--ok); stroke-width: 0.5; stroke-dasharray: 2 1.6; opacity: 0.65; }
+.vis-sky-lbl { fill: var(--text-muted); font-size: 5px; text-anchor: middle; dominant-baseline: middle; }
+.vis-sky-el { fill: var(--text-faint); font-size: 3.6px; text-anchor: start; dominant-baseline: middle; }
+.vis-sky-dot { fill: color-mix(in srgb, var(--ok) 78%, transparent); cursor: pointer; transition: fill .1s; }
+.vis-sky-dot.hi { fill: var(--ok); }
+.vis-sky-dot.hov { fill: #efeae0; stroke: var(--ok); stroke-width: 0.6; }
+/* 结果表：4 列（卫星 / 类别 / 仰角 / 斜距）——去方位列(交给 sky 图)、去仰角条(去卡通)，卫星名更宽 */
+.vis-lhead, .vis-lrow { display: grid; grid-template-columns: 1fr 38px 56px 54px; gap: 6px; align-items: center; }
+.vis-lhead { font-size: 10px; color: var(--text-faint); padding: 3px 6px 4px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--surface); z-index: 1; }
+.vis-lhead > span:not(.vis-lname):not(.vis-lc) { text-align: right; }
+.vis-lhead .vis-lc { text-align: center; }
+.vis-lhead .sortable { cursor: pointer; user-select: none; }
+.vis-lhead .sortable:hover { color: var(--text-muted); }
+.vis-lhead .sortable.on { color: var(--ok); }
+.vis-list { max-height: 280px; overflow-y: auto; }
+.vis-lrow { padding: 3px 6px; font-size: 11px; border-bottom: 1px solid color-mix(in srgb, var(--border) 45%, transparent); color: var(--text-muted); }
+.vis-lrow:last-child { border-bottom: none; }
+.vis-lrow.hi { color: var(--text); font-weight: 600; }
+.vis-lrow.hov { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.vis-lrow > span:not(.vis-lname):not(.vis-lc):not(.vis-lel) { text-align: right; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.vis-lname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vis-lc { text-align: center; font-size: 9.5px; }
+.vis-lel { display: flex; align-items: center; justify-content: flex-end; gap: 3px; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.vis-ud { font-style: normal; font-size: 9px; width: 7px; display: inline-block; text-align: center; }
+.vis-ud.up { color: var(--ok); } .vis-ud.dn { color: var(--text-faint); }
+/* ACCESS 时段过境：mode 切换 + 甘特 + 过境列表 */
+.vis-mode { margin: 6px 0; }
+.vis-gantt { margin: 6px 0 4px; display: flex; flex-direction: column; gap: 2px; max-height: 190px; overflow-y: auto; }
+.vis-grow { display: grid; grid-template-columns: 78px 1fr; gap: 6px; align-items: center; font-size: 10.5px; padding: 1px 4px; border-radius: 3px; }
+.vis-grow.hov { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.vis-gname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); }
+.vis-gbar { position: relative; height: 9px; background: color-mix(in srgb, var(--border) 45%, transparent); border-radius: 2px; }
+.vis-gseg { position: absolute; top: 1px; bottom: 1px; min-width: 1.5px; background: color-mix(in srgb, var(--ok) 55%, var(--text-faint)); border-radius: 1px; }
+.vis-gseg.hi { background: var(--ok); }
+.vis-acc-hd, .vis-acc-row { display: grid; grid-template-columns: 1fr 54px 46px 38px; gap: 6px; align-items: center; }
+.vis-acc-hd { font-size: 10px; color: var(--text-faint); padding: 3px 6px 4px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--surface); z-index: 1; }
+.vis-acc-hd > span:not(.vis-lname) { text-align: right; }
+.vis-acc-list { max-height: 220px; overflow-y: auto; }
+.vis-acc-row { padding: 3px 6px; font-size: 11px; border-bottom: 1px solid color-mix(in srgb, var(--border) 45%, transparent); color: var(--text-muted); }
+.vis-acc-row:last-child { border-bottom: none; }
+.vis-acc-row.hov { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.vis-acc-row > span:not(.vis-lname) { text-align: right; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.oc-hi { color: var(--ok); font-weight: 600; }
 
 /* —— 标记批量表格浮窗（复用 perf-win 骨架，加分页 tab / 航迹选择条；正文 3 张网格 v-show 切换） —— */
 .mk-win { z-index: 61; }

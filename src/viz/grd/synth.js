@@ -478,6 +478,165 @@ export function repackGrdCommonGrid(text, { floorDb = -50, cap = 2_000_000, ptsP
   return parts.join('\r\n') + '\r\n'
 }
 
+// ================= 相控阵模型（SATSOFT/PAM Analytic Phased Array，手册 §6.5） =================
+// 矩形阵列 + Butler 矩阵：波束方向图 = 两向【归一化阵因子(Dirichlet 核)】× 单元因子 cos^R(θ)（eq 6.13）。
+// 与反射面档（高斯/赋形）根本不同：sinc 高旁瓣(首瓣 −13dB)、栅瓣(单元间距 d→λ 时进实空间)、
+// 扫描相关增益滚降 cos^R(θ0)（单元因子按【绝对方向】计，电扫离天底越远峰值越低）、波束栅在
+// sin(u,v) 方向余弦空间（Butler 峰间距 Δu=λ/Nd）。u/v = 方向余弦（gridDir(6) 前两分量：
+// u=−sin(az)、v=cos(az)·sin(el)），与下游投影同口径 → 栅瓣/sinc 落在真 sin 空间。
+
+// 归一化阵因子（Dirichlet / 周期 sinc 核）：AF(δu) = sin(N·π·d·δu) / (N·sin(π·d·δu))。
+// δu = u−u0（方向余弦差），d = 单元间距（WL）。主瓣(δu→0)与栅瓣(π·d·δu=mπ)处 0/0 → L'Hôpital 取 |AF|=1。
+export function pamArrayFactor(du, N, dWl) {
+  if (!(N > 0) || !(dWl > 0)) return NaN
+  const x = Math.PI * dWl * du
+  const sx = Math.sin(x)
+  if (Math.abs(sx) < 1e-9) {                          // 主瓣/栅瓣峰：cos(Nx)/cos(x)
+    const cx = Math.cos(x)
+    return Math.abs(cx) < 1e-9 ? 1 : Math.cos(N * x) / cx
+  }
+  return Math.sin(N * x) / (N * sx)
+}
+
+// 阵因子 3dB 半宽（方向余弦 u 空间）：牛顿法解 AF(u_h)=1/√2（eq 6.16）。返回 u_h（半宽）。
+export function pamBeamwidthU(N, dWl) {
+  if (!(N > 1) || !(dWl > 0)) return NaN
+  const target = Math.SQRT1_2
+  let u = 0.4429 / (N * dWl)                           // 均匀线阵 3dB 半宽近似（u 空间）作初值
+  for (let it = 0; it < 60; it++) {
+    const f = pamArrayFactor(u, N, dWl) - target
+    const h = Math.max(1e-8, u * 1e-4)
+    const df = (pamArrayFactor(u + h, N, dWl) - pamArrayFactor(u - h, N, dWl)) / (2 * h)
+    if (!(Math.abs(df) > 1e-12)) break
+    let un = u - f / df
+    if (!(un > 0)) un = u / 2                          // 越界回拉
+    if (Math.abs(un - u) < 1e-13) { u = un; break }
+    u = un
+  }
+  return u
+}
+
+// 单波束方向图场幅（相对天底满增益 boresight 峰 ＝1）：eq 6.13。u/v=网格点方向余弦、u0/v0=波束中心方向余弦。
+// 单元因子按【绝对】(1−u²−v²)^(R/4)=cos^(R/2)θ → 电扫波束峰值自动＝cos^(R/2)θ0（扫描损失内建于峰值）。
+// tri=三角晶格（两重叠子阵积，Nx 偶）；elem=应用单元因子。返回值可负（sinc 旁瓣干涉）。
+export function pamField(u, v, u0, v0, { Nx, Ny, dxWl, dyWl, R = 1.2, tri = false, elem = true }) {
+  let af
+  if (tri && Nx % 2 === 0) {                           // 三角晶格：子阵(Nx/2×Ny, x 间距 2dx) × |1+e^{j2π(δu·dx+δv·dy/2)}|/2
+    const afSub = pamArrayFactor(u - u0, Nx / 2, 2 * dxWl) * pamArrayFactor(v - v0, Ny, dyWl)
+    const ph = 2 * Math.PI * ((u - u0) * dxWl + (v - v0) * dyWl / 2)
+    af = afSub * Math.cos(ph / 2)
+  } else {
+    af = pamArrayFactor(u - u0, Nx, dxWl) * pamArrayFactor(v - v0, Ny, dyWl)
+  }
+  if (elem) {
+    const s = 1 - u * u - v * v
+    if (s <= 0) return 0                               // 越单位圆（非传播区）
+    af *= Math.pow(s, R / 4)                           // 绝对 cos^(R/2)θ：扫描损失内建于峰值
+  }
+  return af
+}
+
+// 相控阵读数（逐字段对齐 §6.5.1 对话框）：类比 solveReflector。默认 eff=100（手册「usually set to 1.0」）。
+// 返回 {ok, th3xDeg, th3yDeg, beamSpacing{XDeg,YDeg,XU,YU,XReal,YReal}, crossoverDb, arrayDim*m,
+//   gratingLobeBw（距原点波束宽数，供 Range 字段）, gratingLobeDeg, gratingInReal, dirDbi, lam}。
+export function solvePam({ fGHz, Nx, Ny, dxWl, dyWl, R = 1.2, eff = 100, tri = false }) {
+  const nx = Math.round(Nx), ny = Math.round(Ny)
+  if (!(fGHz > 0) || !(nx > 0) || !(ny > 0) || !(dxWl > 0) || !(dyWl > 0)) return { ok: false }
+  const lam = 0.299792458 / fGHz
+  const R2D = 180 / Math.PI
+  // 3dB 波束宽（boresight）：牛顿解阵因子半宽 → θ3 = 2·asin(u_h)
+  const uhx = pamBeamwidthU(nx, dxWl), uhy = pamBeamwidthU(ny, dyWl)
+  const th3x = 2 * Math.asin(Math.min(1, uhx)) * R2D
+  const th3y = 2 * Math.asin(Math.min(1, uhy)) * R2D
+  // 波束间距（手册 §6.5.1）：sinθ = Δu = λ/Nd。实空间（Δu≤1）显示角度；落在 sin 空间外则显示 u 值（Δu）。
+  const duX = 1 / (nx * dxWl), duY = 1 / (ny * dyWl)
+  const bsXReal = duX <= 1, bsYReal = duY <= 1
+  const bsX = bsXReal ? Math.asin(duX) * R2D : NaN
+  const bsY = bsYReal ? Math.asin(duY) * R2D : NaN
+  // 交叉电平（eq 6.15）：sin(π/2)/[N·sin(π/2N)]，大 N → 2/π ≈ −3.92 dB
+  const cross = 20 * Math.log10(1 / (nx * Math.sin(Math.PI / (2 * nx))))
+  // 阵物理尺寸（m）与峰值方向性（boresight）：D0 = 4πA/λ²·eff，A=Nx·Ny·dx·dy·λ² → 4π·Nx·Ny·dxWl·dyWl·eff
+  const dimX = nx * dxWl * lam, dimY = ny * dyWl * lam
+  const dirDbi = 10 * Math.log10(4 * Math.PI * nx * ny * dxWl * dyWl * (eff / 100))
+  // 第一栅瓣（手册 §6.5.1）：栅瓣在 sin 空间 u=1/d。报【距原点的波束宽数】（"distance from origin in
+  // beamwidths"，供填 Beamlet Grid 的 Range）= (1/d)/波束宽(u 空间 2·u_h)；d≥1 时另给进实空间的角度。
+  const glBwX = uhx > 0 ? (1 / dxWl) / (2 * uhx) : Infinity
+  const glBwY = uhy > 0 ? (1 / dyWl) / (2 * uhy) : Infinity
+  const gratingLobeBw = Math.min(glBwX, glBwY)
+  const dMax = Math.max(dxWl, dyWl)
+  const glDeg = dMax >= 1 ? Math.asin(1 / dMax) * R2D : NaN
+  // 无栅瓣可扫范围（手册 §6.5.1）：扫到 sinθ_scan=1/d−1 时首栅瓣进实空间（u=u0−1/d 触及 −1）。
+  //   d≤0.5 → 1/d−1≥1 恒无栅瓣，满半球可扫（封顶 90°）；0.5<d<1 → asin(1/d−1)；d≥1 → 天底已有栅瓣，0°。
+  const scanArg = 1 / dMax - 1
+  const scanMaxDeg = scanArg >= 1 ? 90 : scanArg > 0 ? Math.asin(scanArg) * R2D : 0
+  return {
+    ok: true, lam, th3xDeg: th3x, th3yDeg: th3y, th3Deg: Math.max(th3x, th3y),
+    beamSpacingXDeg: bsX, beamSpacingYDeg: bsY, beamSpacingXU: duX, beamSpacingYU: duY, beamSpacingXReal: bsXReal, beamSpacingYReal: bsYReal,
+    crossoverDb: cross, arrayDimXm: dimX, arrayDimYm: dimY,
+    gratingLobeBw, gratingLobeDeg: glDeg, gratingInReal: Number.isFinite(glDeg), scanMaxDeg, dirDbi
+  }
+}
+
+// Butler 波束栅中心（方向余弦 u/v）：u0=(2n+1)/(2·Nx·dxWl)（eq 6.14），n∈[−Nx/2, Nx/2−1]。供 snap 参考。
+export function butlerCenters(pam) {
+  const nx = Math.round(pam.Nx), ny = Math.round(pam.Ny), dx = Number(pam.dxWl), dy = Number(pam.dyWl)
+  if (!(nx > 0) || !(ny > 0) || !(dx > 0) || !(dy > 0)) return []
+  const us = [], vs = []
+  for (let k = -Math.floor(nx / 2); k <= Math.ceil(nx / 2) - 1; k++) us.push((2 * k + 1) / (2 * nx * dx))
+  for (let k = -Math.floor(ny / 2); k <= Math.ceil(ny / 2) - 1; k++) vs.push((2 * k + 1) / (2 * ny * dy))
+  const out = []
+  for (const u of us) for (const v of vs) if (u * u + v * v < 1) out.push([u, v])
+  return out
+}
+
+// 相控阵点波束群 → GRD 文本（类比 buildGaussGrd）。beams: [{az,el}]（相对星下点，dirToAzEl 口径；
+// 波束可任意指向＝电扫）。逐波束在 (az,el) 子窗口写 pamField 场；峰值方向性＝solvePam.dirDbi（电扫
+// 损失内建于场幅）。窗口半宽 span×波束宽（含首/次 sinc 旁瓣）。写 icomp=3 co/cx（分量1=√P，下游 P1=共极化）。
+// pam: {Nx,Ny,dxWl,dyWl,R,tri,elem,eff,fGHz}。
+export function buildPamGrd({ satName = '', satLon, satLat = 0, altKm, pam, beams, floorDb = -50 }) {
+  const n = beams.length
+  if (!n) throw new Error('没有波束：请先在地图上放置波束')
+  const sol = solvePam(pam)
+  if (!sol.ok) throw new Error('相控阵参数无效：请检查阵元数 / 间距 / 频率')
+  const th3 = Math.max(sol.th3xDeg, sol.th3yDeg, 1e-3)
+  const peakDbi = sol.dirDbi
+  const res = n <= 4 ? 121 : n <= 16 ? 95 : n <= 48 ? 71 : n <= 120 ? 55 : n <= 400 ? 41 : 31
+  const span = 4.0                                     // 窗口半宽 = 4×波束宽（含首/次 sinc 旁瓣）
+  const head = []
+  const sn = asciiSafe(satName)
+  head.push(`SatSim synthesized pattern (Phased array model)${sn ? ' - ' + sn : ''}. Sat. lon=${(+satLon).toFixed(2)}, lat=${(+(satLat || 0)).toFixed(2)}, height=${Math.round(altKm)} km, beams=${n}`)
+  head.push(`SYNTHMETA ${JSON.stringify({ kind: 'pam', satLon: +(+satLon).toFixed(4), satLat: +(+(satLat || 0)).toFixed(4), altKm: Math.round(altKm), Nx: Math.round(pam.Nx), Ny: Math.round(pam.Ny), dxWl: +pam.dxWl, dyWl: +pam.dyWl, R: +pam.R, tri: !!pam.tri, dirDbi: +peakDbi.toFixed(2), nBeams: n })}`)
+  head.push('++++')
+  head.push('1')
+  head.push(` ${n} 3 2 6`)
+  for (let i = 0; i < n; i++) head.push('  0  0')
+  const parts = [head.join('\r\n')]
+  const zero = fexp(0)
+  for (const b of beams) {
+    const d0 = gridDir(6, b.az, b.el)                  // 波束中心方向余弦
+    const u0 = d0[0], v0 = d0[1]
+    const XS = b.az - span * th3, XE = b.az + span * th3, YS = b.el - span * th3, YE = b.el + span * th3
+    const dx = (XE - XS) / (res - 1), dy = (YE - YS) / (res - 1)
+    const L = new Array(res * res + 2)
+    L[0] = ` ${fexp(XS)} ${fexp(YS)} ${fexp(XE)} ${fexp(YE)}`
+    L[1] = ` ${res} ${res} 0`
+    let k = 2
+    for (let row = 0; row < res; row++) {
+      const el = YS + dy * row
+      for (let col = 0; col < res; col++) {
+        const az = XS + dx * col
+        const dd = gridDir(6, az, el)
+        const val = pamField(dd[0], dd[1], u0, v0, pam)
+        let rel = 20 * Math.log10(Math.abs(val) + 1e-12)
+        if (!(rel > floorDb)) rel = floorDb
+        L[k++] = ` ${fexp(Math.pow(10, (peakDbi + rel) / 20))} ${zero} ${zero} ${zero}`
+      }
+    }
+    parts.push(L.join('\r\n'))
+  }
+  return parts.join('\r\n') + '\r\n'
+}
+
 // ================= Polygon → 赋形波束 GRD 文本（SATSOFT 式真实合成） =================
 // 与 TICRA SATSOFT「Beamlet Grid + Station Grid」同构的三件套（复激励 minimax）：
 //   ① 波束栅（beamlet grid ＝ 自由度）：覆盖区 az/el 平面铺【规则】六角波束栅，间距 s≈θ3、外扩

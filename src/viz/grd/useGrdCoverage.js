@@ -365,6 +365,40 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
   const nextElevColor = () => SAT_PALETTE[_colorSeq++ % SAT_PALETTE.length]
   // 预置星（index）补齐统一节点字段：GEO 定点(lon,0,GEO_ALT)、仰角线默认关、卫星名默认开、颜色默认白
   const normPreset = (s) => ({ ...s, kind: 'preset', lat: 0, altKm: GEO_ALT, noradId: null, els: '5,10', elevColor: '#ffffff', elevShow: false, elevWidth: 1.3, elevLabelSize: 18, iconSize: 10, labelSize: 4, iconShow: true, labelShow: true })
+
+  // ===== 用户自定义卫星持久化（localStorage）=====
+  // 覆盖分析里【添加的卫星】(custom/linked/orbit/elevline，非磁盘 index 的 preset) 只在内存 → 关闭重开丢失，
+  // 且依赖它的波束合成组会成孤儿。存 localStorage：只存节点基本信息（不含天线——天线走磁盘 .grd + index() 重建）。
+  // preset 星（loadIndex 从磁盘 index 重建）不存，避免与 index 重复；恢复时用户星与 index 星按 folder 去重合并（index 优先）。
+  const SATS_KEY = 'globe3d/grdSats'
+  const SAT_FIELDS = ['folder', 'satName', 'kind', 'lon', 'lat', 'altKm', 'noradId', 'elements', 'els',
+    'elevColor', 'elevShow', 'elevWidth', 'elevLabelSize', 'iconSize', 'labelSize', 'iconShow', 'labelShow']
+  const bareSat = (s) => { const o = {}; for (const k of SAT_FIELDS) o[k] = s[k]; return o }
+  function persistSats() {
+    try { localStorage.setItem(SATS_KEY, JSON.stringify(sats.value.filter((s) => s && s.kind && s.kind !== 'preset').map(bareSat))) } catch { /* ignore */ }
+  }
+  // 从 localStorage 恢复用户星，合并进 sats（按 folder 去重：磁盘 index 星优先/带天线，本地星补齐缺失的）
+  function restoreSats() {
+    let arr = null
+    try { arr = JSON.parse(localStorage.getItem(SATS_KEY) || '[]') } catch { /* ignore */ }
+    if (!Array.isArray(arr) || !arr.length) return
+    const have = new Set(sats.value.map((s) => s.folder))
+    const add = []
+    for (const s of arr) {
+      if (!s || !s.folder || have.has(s.folder)) continue
+      have.add(s.folder)
+      add.push({
+        folder: s.folder, satName: s.satName || '卫星', kind: s.kind || 'custom',
+        lon: Number(s.lon) || 0, lat: Number(s.lat) || 0, altKm: Number(s.altKm) || GEO_ALT,
+        noradId: s.noradId || null, elements: s.elements || null, els: s.els != null ? s.els : '5,10',
+        elevColor: s.elevColor || '#ffffff', elevShow: !!s.elevShow, elevWidth: Number(s.elevWidth) || 1.3,
+        elevLabelSize: Number(s.elevLabelSize) || 18, iconSize: Number(s.iconSize) || 10, labelSize: Number(s.labelSize) || 4,
+        iconShow: s.iconShow !== false, labelShow: s.labelShow !== false, antennas: []
+      })
+    }
+    if (add.length) { sats.value = [...sats.value, ...add]; for (const s of add) expanded.value = { ...expanded.value, [s.folder]: true } }
+  }
+
   // 同名加点号去重，作为节点唯一 key（folder）
   function genFolder(name) {
     const base = (name || '卫星').trim() || '卫星'
@@ -390,6 +424,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
     }
     sats.value = [...sats.value, node]
     expanded.value = { ...expanded.value, [folder]: true }
+    persistSats()
     return node
   }
   // 独立仰角线：与「卫星」脱钩的最小节点——只画等仰角环，不显示图标/卫星名，不挂天线。
@@ -408,6 +443,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
       antennas: []
     }
     sats.value = [...sats.value, node]
+    persistSats()
     return node
   }
   function updateSatellite(folder, patch) {
@@ -416,6 +452,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
     const moved = ('lon' in patch && Number(patch.lon) !== n.lon) || ('lat' in patch && Number(patch.lat) !== n.lat) || ('altKm' in patch && Number(patch.altKm) !== n.altKm) || ('elements' in patch)
     Object.assign(n, patch)
     if (moved) reprojectSat(folder)
+    persistSats()
   }
   const setElev = (folder, patch) => updateSatellite(folder, patch)   // 仅改仰角线属性（els/elevColor/elevShow）
   // 删卫星：连带清掉其天线的选中/缓存（预置星也可删——仅本会话，重载后随 index 复现）
@@ -430,6 +467,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
     }
     sats.value = sats.value.filter((x) => x.folder !== folder)
     if (!active.value) { active.value = selected.value[0] || ''; loadActive() }
+    persistSats()
     recompute()
   }
   // 删天线：从该星移除，并清掉其选中/聚焦/缓存
@@ -469,6 +507,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
     try {
       const idx = await window.api.coverageGrd.index()
       sats.value = (((idx && idx.satellites) || [])).map(normPreset)
+      restoreSats()   // 合并 localStorage 里的用户自定义星（磁盘 index 之外的），按 folder 去重
       loaded = true
       if (autoSelect && sats.value.length) {
         expanded.value[sats.value[0].folder] = true

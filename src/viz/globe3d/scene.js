@@ -1208,15 +1208,21 @@ export function createGlobeScene(container, quality = {}) {
   // depthTest 关 + _dir 半球剔除，复用地球站图标同一套策略，转到背面自动隐藏，不会被地球遮挡。
   const FOCUS_SAT_PX = 30
   // p：单个 {lat,lon} 或数组（多选时每颗聚焦星各画一个图标，同款同大小，聚焦星区分靠轨道加粗+高亮环，图标本身不再分主次）
-  function setFocusSatLLA(p) {
+  // sizePx/colorHex 为全局默认（旧调用签名）；单点可用 q.px / q.colorHex 覆盖 —— 供聚焦星下点(白·30)
+  // 与可见性可见星星下点(面板色·滑块大小)在同一 replace-all 通道里混绘（各自样式，互不覆盖）。
+  function setFocusSatLLA(p, sizePx, colorHex) {
     disposeGroup(focusSatGroup); focusSatGroup = null
     const list = (Array.isArray(p) ? p : (p ? [p] : [])).filter((q) => q && Number.isFinite(q.lat) && Number.isFinite(q.lon))
     if (!list.length) return
+    const pxG = Number(sizePx) > 0 ? Number(sizePx) : FOCUS_SAT_PX   // 可选大小（可见性分析按其滑块传入；默认 30 = 聚焦星）
+    const tintG = Number.isFinite(colorHex) ? colorHex : 0xffffff    // 可选染色（白=纹理原色；可见性传图标色 → 与 2D 一致）
     const g = new THREE.Group()
     for (const q of list) {
-      const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: focusSatTexture(), depthTest: false, depthWrite: false, transparent: true }))
+      const px = Number(q.px) > 0 ? Number(q.px) : pxG                       // 单点大小覆盖
+      const tint = Number.isFinite(q.colorHex) ? q.colorHex : tintG          // 单点染色覆盖
+      const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: focusSatTexture(), color: tint, depthTest: false, depthWrite: false, transparent: true }))
       spr.position.copy(llaToVec(q.lat, q.lon, 0).multiplyScalar(1.0012))
-      spr._px = FOCUS_SAT_PX; spr._ar = 1; spr._dir = spr.position.clone().normalize(); spr.renderOrder = 17
+      spr._px = px; spr._ar = 1; spr._dir = spr.position.clone().normalize(); spr.renderOrder = 17
       g.add(spr)
     }
     focusSatGroup = g; scene.add(g)

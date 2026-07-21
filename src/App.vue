@@ -41,6 +41,7 @@ const sideViews = computed(() => [
   { key: 'antenna', label: '覆盖分析', icon: 'satellite-dish', disabled: !covNav.grdAvail, hint: '卫星 → 天线 → 覆盖范围 / 性能指标表（GRD）' },
   { key: 'poly', label: 'Polygon（协调区）', icon: 'hexagon', disabled: !covNav.polyAvail, hint: '协调区多边形：绘制 / 调点 / 扩缩 / 导出' },
   { key: 'beams', label: '波束合成', icon: 'radio', disabled: !covNav.grdAvail, hint: '多馈源反射面 / 赋形反射面：设参数 → 点图放置轮廓 → 生成方向图天线' },
+  { key: 'vis', label: '可见性分析', icon: 'eye', disabled: !pageReady.value, hint: '选目标（地球站 / 点 / 航迹 / Polygon）→ 设仰角门限 → 算可见卫星（复刻 STK Access / Coverage）' },
   { key: 'gxt', label: '卫星覆盖等值线', icon: 'waves', disabled: !covNav.covAvail, hint: 'GEO 卫星覆盖等值线（GXT 库）' },
   { key: 'markers', label: '标记', icon: 'map-pin', disabled: !pageReady.value, hint: '点标记 / 地球站 / 轨迹' },
   { key: 'geo', label: '地图设置', icon: 'sliders-horizontal', disabled: !pageReady.value, hint: '海陆配色 / 国界省界 / 名称标注' }

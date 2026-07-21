@@ -10,7 +10,7 @@
 // 生成：generateGroup 经 synth.js 产标准 GRD → grd.importSynthGrd 入树（同名替换＝更新），此后与导入
 //   GRD 天线完全同构（拖拽指向/性能表/导出链全通）。草图独立持久化 localStorage（v2 嵌套，含旧档迁移）。
 import { ref, reactive, computed, watch } from 'vue'
-import { theta3dbFromAperture, shapedTheta3db, shapedApertureEff, feedGeom, crossoverDb, polysUnionPeak, buildGaussGrd, buildShapedGrd, beamSketchRing, hexFillCenters, snapTangentAzEl, colorFreqPlan, solveReflector } from './synth.js'
+import { theta3dbFromAperture, shapedTheta3db, shapedApertureEff, feedGeom, crossoverDb, polysUnionPeak, buildGaussGrd, buildShapedGrd, beamSketchRing, hexFillCenters, snapTangentAzEl, colorFreqPlan, solveReflector, solvePam, buildPamGrd } from './synth.js'
 import { dirToAzEl, azElGround } from './coverage.js'
 
 const KEY = 'globe3d/beamSynth'
@@ -50,14 +50,16 @@ const DEFAULT_P = {
   simSame: true, fSim: 14.25,                    // 仿真频率（=方向图计算频率）；默认同设计频率 fGHz
   pol: 'linX',                                   // 极化类型 'linX'|'linY'|'rhcp'|'lhcp'（记入 SYNTHMETA；不改功率方向图）
   offsetClr: 0.2,                                // 偏置净空/D（0=贴轴，-0.5=正馈）——几何/馈源直径读数
-  hotspots: []                                   // 峰点引导（连续目标场）[{id,lon,lat,boost,width}]：boost=目标增量dB，width=坡宽°(空=θ3)
+  hotspots: [],                                  // 峰点引导（连续目标场）[{id,lon,lat,boost,width}]：boost=目标增量dB，width=坡宽°(空=θ3)
+  // —— 相控阵（PAM，SATSOFT §6.5）组级参数：矩形阵 Nx×Ny 单元 · 间距 dx/dy(WL) · 单元因子 cos^R · 三角晶格 ——
+  pamNx: 8, pamNy: 8, pamDx: 0.6, pamDy: 0.6, pamR: 1.2, pamElem: true, pamTri: false, pamEff: 100, pamFGHz: 20
 }
 const freshP = () => ({ ...DEFAULT_P, polyIds: [], hotspots: [] })
 // 高斯档「反射面参数」键：下沉到每个波束设置（每设置 = 一套独立反射面 → 各自波束宽/效率/方向性）。
 // 组级 p 只留显示/频率计划（skColor/fc*/polyId/snapTangent）与赋形档参数（taper/polyIds/hotspots/shapedMode）。
 const RP_KEYS = ['fGHz', 'antD', 'eff', 'apDriver', 'bw3', 'fdDriver', 'feedSpacingWl', 'feedModel', 'feedDiaAuto', 'feedDiaWl', 'foc', 'offsetClr', 'pol', 'simSame', 'fSim', 'autoSpacing', 'spacing']
 const pickRP = (src) => { const o = {}; for (const k of RP_KEYS) o[k] = (src && src[k] !== undefined) ? src[k] : DEFAULT_P[k]; return o }
-const defName = (m) => (m === 'shaped' ? '赋形反射面' : '多馈源反射面')
+const defName = (m) => (m === 'pam' ? '相控阵' : m === 'shaped' ? '赋形反射面' : '多馈源反射面')
 // 大圆距离（km）：峰点引导 —— 实际峰值落点与引导点的偏差报告
 const gcKm = (lo1, la1, lo2, la2) => {
   const d2r = Math.PI / 180, dLa = (la2 - la1) * d2r, dLo = (lo2 - lo1) * d2r
@@ -96,7 +98,7 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
   const curSetting = computed(() => settings.value.find((s) => s.id === activeSettingId.value) || settings.value[0] || null)
   const groupsForSat = computed(() => groups.value.filter((g) => g.satFolder === satFolder.value))
   // 当前星下参与草图渲染的组（仅高斯有轮廓）：默认只画激活组，避免多组同屏乱——想对照时手动「常显」(pinned) 该组
-  const visibleGroups = () => groups.value.filter((g) => g.satFolder === satFolder.value && g.mode === 'gauss' && (g.id === activeGroupId.value || g.pinned))
+  const visibleGroups = () => groups.value.filter((g) => g.satFolder === satFolder.value && (g.mode === 'gauss' || g.mode === 'pam') && (g.id === activeGroupId.value || g.pinned))
   // 激活组的整星编号偏移＝同星、更靠前的可见高斯组的波束总数
   const beamNumOffset = computed(() => {
     let off = 0
@@ -108,7 +110,7 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
   })
   // 组徽标统计（激活组取活动镜像的实时数，兄弟组取其存储数）
   function groupStat(g) {
-    if (g.mode === 'gauss') { const n = g.id === activeGroupId.value ? beams.value.length : (g.beams ? g.beams.length : 0); return { n, unit: '波束' } }
+    if (g.mode === 'gauss' || g.mode === 'pam') { const n = g.id === activeGroupId.value ? beams.value.length : (g.beams ? g.beams.length : 0); return { n, unit: '波束' } }
     const ids = g.id === activeGroupId.value ? p.polyIds : (g.p && g.p.polyIds ? g.p.polyIds : [])
     return { n: Array.isArray(ids) ? ids.length : 0, unit: '区' }
   }
@@ -132,6 +134,10 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
   const dirDbi = computed(() => { const r = refl.value; return r && r.ok ? r.dirDbi : NaN })
   const crossX = computed(() => { const s = curSetting.value; return s ? crossoverDb(Number(s.spacing), Number(s.thX)) : NaN })
   const crossY = computed(() => { const s = curSetting.value; return s ? crossoverDb(Number(s.spacing), Number(s.thY)) : NaN })
+  // ---- 相控阵（PAM，SATSOFT §6.5）：阵面参数（组级 p）→ solvePam 读数（波束宽/间距/交叉/栅瓣/方向性/可扫范围）----
+  const pamOf = (gp) => solvePam({ fGHz: Number(gp.pamFGHz), Nx: Number(gp.pamNx), Ny: Number(gp.pamNy), dxWl: Number(gp.pamDx), dyWl: Number(gp.pamDy), R: Number(gp.pamR), eff: Number(gp.pamEff), tri: gp.pamTri === true })
+  const pam = computed(() => (mode.value === 'pam' ? pamOf(p) : { ok: false }))
+  const pamTheta = computed(() => { const v = pam.value; return v && v.ok ? { x: v.th3xDeg, y: v.th3yDeg } : { x: NaN, y: NaN } })
   // 赋形：仿真频率 → 成分波束宽 θ3=k(|锥度|)·λ/D
   const shapedTheta3 = computed(() => shapedTheta3db(shapedSimF.value, Number(p.antD), Number(p.taper)))
   // 赋形口径效率（照射×溢出，由馈源锥度定死）：只读读数 + 生成定标用（不再自由输入）
@@ -201,6 +207,15 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
     const s = curSetting.value
     if (s && s.autoSpacing !== false && Number.isFinite(Number(s.thX))) s.spacing = Number(s.thX)
   }, { immediate: true, flush: 'sync' })
+  // 相控阵：阵面参数变→波束宽变→同步所有波束的 thX/thY（草图轮廓跟随；生成时用 solvePam 精确值不读此）。
+  function syncPamWidths() {
+    if (_loading || mode.value !== 'pam') return
+    const t = pamTheta.value
+    if (!(t.x > 0 && t.y > 0)) return
+    const wx = +t.x.toFixed(4), wy = +t.y.toFixed(4)
+    for (const b of beams.value) if (b.thX !== wx || b.thY !== wy) { b.thX = wx; b.thY = wy; b._ring = null }
+  }
+  watch(pamTheta, syncPamWidths, { flush: 'sync' })
   // 「新勾选带数值 Polygon → 自动切 value 口径」的逻辑放在 togglePoly（用户动作里），不用 watcher。
 
   // ---- 持久化（草图独立于覆盖树，v2 嵌套）----
@@ -227,7 +242,7 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
     try {
       if (!g) { beams.value = []; settings.value = []; activeSettingId.value = null; return }
       satFolder.value = g.satFolder || ''
-      mode.value = g.mode === 'shaped' ? 'shaped' : 'gauss'
+      mode.value = (g.mode === 'shaped' || g.mode === 'pam') ? g.mode : 'gauss'
       curName.value = g.name || defName(mode.value)
       const gp = g.p || {}, fp = freshP()
       // 组里【存了】的键照抄（含 null）；没存的键（旧档升级）回落新鲜默认——绝不保留上一组的活动镜像残值（跨组泄漏）
@@ -245,6 +260,7 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
     syncWidths()
     // Auto 间距兜底：hydrate 期间 _loading 掐断了同步 watcher（flush:'sync'），收尾把每个设置的「波束间距」同步到其宽度 θ3dB。
     for (const s of settings.value) if (s.autoSpacing !== false && Number.isFinite(Number(s.thX))) s.spacing = Number(s.thX)
+    syncPamWidths()   // 相控阵：装载组时把波束宽对齐到阵面 θ3（_loading 期 watcher 被掐断）
   }
   function persist() {
     if (_loading || _drag) return
@@ -266,7 +282,7 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
       const d = JSON.parse(raw || 'null')
       if (d && typeof d === 'object' && d.v >= 2 && Array.isArray(d.groups)) {
         groups.value = d.groups.map((g) => {
-          const gmode = g.mode === 'shaped' ? 'shaped' : 'gauss'
+          const gmode = (g.mode === 'shaped' || g.mode === 'pam') ? g.mode : 'gauss'
           const gp = { ...freshP(), ...(g.p || {}) }
           let settings = Array.isArray(g.settings) ? g.settings : []
           // 迁移：老 gauss 设置（无反射面参数）→ 从组 p 补齐一套反射面（旧组单反射面→各设置同参，用户可再改）
@@ -339,7 +355,7 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
     return { id: newId('st'), name: '设置1', thX: w, thY: w, rot: 0, color: SETTING_CSS[0], ...rp }
   }
   function addGroup(m) {
-    const mm = m === 'shaped' ? 'shaped' : 'gauss'
+    const mm = (m === 'shaped' || m === 'pam') ? m : 'gauss'
     commitActive()
     const folder = satFolder.value || (grd.sats.value[0] ? grd.sats.value[0].folder : '')
     const g = { id: newId('bg'), satFolder: folder, mode: mm, name: uniqueGroupName(defName(mm), folder), pinned: false, p: freshP(), settings: [], activeSettingId: null, beams: [] }
@@ -448,14 +464,23 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
   // ---- 放置 / 调整 / 蜂窝布满 ----
   function openFor(folder) {
     commitActive()
-    // 优先保住已有草稿：目标卫星有组、或当前无任何组时才切到 folder，否则停留在激活组的卫星
+    // 优先恢复【上次保存的选择】：activeGroupId 已由 load() 从 localStorage 恢复。只要激活组仍有效
+    // （其卫星还在覆盖分析里），就保持它——波束合成记住自己的卫星 + 波束组，不被覆盖分析的当前卫星覆盖。
+    const g = curGroup.value
+    if (g && grd.sats.value.some((s) => s.folder === g.satFolder)) {
+      satFolder.value = g.satFolder
+      hydrate(g)
+      status.value = ''; _flags(); open.value = true; refresh()
+      return
+    }
+    // 无有效上次选择（首次 / 激活组或其卫星已删）：用传入 folder（覆盖分析卫星）或第一个卫星兜底，取该卫星首个组
     let target = folder || ''
-    if (folder && !groups.value.some((g) => g.satFolder === folder)) {
-      target = (curGroup.value && curGroup.value.satFolder) || (groups.value[0] && groups.value[0].satFolder) || folder
+    if (folder && !groups.value.some((x) => x.satFolder === folder)) {
+      target = (groups.value[0] && groups.value[0].satFolder) || folder
     }
     if (!target && grd.sats.value.length) target = grd.sats.value[0].folder
     satFolder.value = target
-    const first = groups.value.find((g) => g.satFolder === target) || null
+    const first = groups.value.find((x) => x.satFolder === target) || null
     activeGroupId.value = first ? first.id : null
     hydrate(first)
     status.value = ''
@@ -465,7 +490,10 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
   }
   function close() { open.value = false; placing.value = false; adjusting.value = false; deleting.value = false; refresh() }
 
-  function activeWidth() { const s = curSetting.value; return { thX: s ? Number(s.thX) || 1 : 1, thY: s ? Number(s.thY) || 1 : 1, rot: s ? Number(s.rot) || 0 : 0, id: s ? s.id : null } }
+  function activeWidth() {
+    if (mode.value === 'pam') { const t = pamTheta.value; return { thX: t.x > 0 ? t.x : 1, thY: t.y > 0 ? t.y : 1, rot: 0, id: null } }
+    const s = curSetting.value; return { thX: s ? Number(s.thX) || 1 : 1, thY: s ? Number(s.thY) || 1 : 1, rot: s ? Number(s.rot) || 0 : 0, id: s ? s.id : null }
+  }
   // SATSOFT 式相切吸附：地面经纬 → 方向空间贴边相切 → 映射回地面。
   function snapGround(lon, lat, exclude, band) {
     const pos = satPos()
@@ -493,8 +521,8 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
       refresh()
       return
     }
-    if (mode.value !== 'gauss') return
-    if (!curSetting.value) { appAlert('请先添加一个波束设置'); return }
+    if (mode.value !== 'gauss' && mode.value !== 'pam') return
+    if (mode.value === 'gauss' && !curSetting.value) { appAlert('请先添加一个波束设置'); return }
     const aw = activeWidth()
     const s = snapGround(+ll.lon.toFixed(4), +ll.lat.toFixed(4), null, null)
     pushUndo()
@@ -541,15 +569,20 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
     if (!pg) { appAlert('请先在下拉框选择一个 Polygon（需 ≥3 顶点，可在 Polygon 面板绘制）'); return }
     const pos = satPos()
     if (!pos) { appAlert('请先选择卫星'); return }
-    if (!curSetting.value) { appAlert('请先添加一个波束设置'); return }
-    const sp = Number(curSetting.value.spacing)                      // 间距现为每设置（＝该设置波束宽 Auto）
+    if (mode.value === 'gauss' && !curSetting.value) { appAlert('请先添加一个波束设置'); return }
+    // 间距：高斯＝当前设置的波束间距（Auto=波束宽）；相控阵＝Butler 波束间距（λ/Nd）
+    const sp = mode.value === 'pam'
+      ? (pam.value && pam.value.ok ? Math.max(pam.value.beamSpacingXDeg || 0, pam.value.beamSpacingYDeg || 0) : NaN)
+      : Number(curSetting.value.spacing)
     if (!(sp > 0)) { appAlert('间距无效：须为大于 0 的角度值（Auto = 波束宽度）'); return }
     const centers = hexFillCenters({ satLon: pos.lon, satLat: pos.lat || 0, altKm: pos.altKm, polyPts: pg.pts, spacing: sp })
     if (!centers.length) { appAlert('该 Polygon 内没有布下任何波束中心：间距可能大于区域尺寸'); return }
     const aw = activeWidth()
     pushUndo()
     for (const c of centers) beams.value.push({ id: newId('bs'), lon: c.lon, lat: c.lat, thX: aw.thX, thY: aw.thY, rot: aw.rot, settingId: aw.id })
-    status.value = `蜂窝布满：新增 ${centers.length} 个波束（间距 ${sp}° · 设置「${curSetting.value.name}」）`
+    status.value = mode.value === 'pam'
+      ? `蜂窝布满：新增 ${centers.length} 个波束（Butler 间距 ${sp.toFixed(2)}°）`
+      : `蜂窝布满：新增 ${centers.length} 个波束（间距 ${sp}° · 设置「${curSetting.value.name}」）`
     refresh()
   }
 
@@ -767,6 +800,22 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
           : ''
         status.value = `已生成赋形天线「${name}」：${head} · ${r.nBeams} 支成分波束激励优化${taper} · 峰值 ${r.peakDbi.toFixed(1)} · 区域内 ≥${r.value.toFixed(1)}（边界即等值线）${paNote} · 平顶纹波 ±${r.rippleDb.toFixed(1)} dB · Ω=${r.omegaDeg2.toFixed(2)} deg²${pkNote}${r.warn ? ' —— ' + r.warn : ''}`
       }
+    } else if (g.mode === 'pam') {
+      // 相控阵点波束群（SATSOFT §6.5）：每波束 → (az,el) 电扫指向，buildPamGrd 逐波束写 pamField 场（sinc 旁瓣/栅瓣/扫描损失内建）
+      const valid = (g.beams || []).filter((b) => Number.isFinite(b.lon) && Number.isFinite(b.lat))
+      if (!valid.length) { appAlert(`组「${name}」还没有波束：开启「地图放置」，或用蜂窝布满 / 批量表格添加`); return null }
+      const gp = g.p
+      const pamCfg = { Nx: Number(gp.pamNx), Ny: Number(gp.pamNy), dxWl: Number(gp.pamDx), dyWl: Number(gp.pamDy), R: Number(gp.pamR), tri: gp.pamTri === true, elem: gp.pamElem !== false, eff: Number(gp.pamEff), fGHz: Number(gp.pamFGHz) }
+      const sol = solvePam(pamCfg)
+      if (!sol.ok) { appAlert('相控阵参数无效：请检查阵元数 / 间距 / 频率'); return null }
+      const beamsAe = valid.map((b) => { const ae = dirToAzEl(pos.lon, pos.lat || 0, pos.altKm, b.lon, b.lat); return { az: ae.az, el: ae.el } })
+      const text = buildPamGrd({ satName: node.satName, satLon: pos.lon, satLat: pos.lat || 0, altKm: pos.altKm, pam: pamCfg, beams: beamsAe })
+      key = await grd.importSynthGrd(node.folder, name, text, { ctype: 'rel', levels: [-3] })
+      if (key) {
+        g._genName = name
+        const gl = sol.gratingInReal ? ` · ⚠ 栅瓣 @±${sol.gratingLobeDeg.toFixed(1)}°` : ''
+        status.value = `已生成相控阵天线「${name}」：${valid.length} 个波束 · 阵 ${pamCfg.Nx}×${pamCfg.Ny} 单元（${pamCfg.dxWl}×${pamCfg.dyWl} λ）· 波束宽 ${sol.th3xDeg.toFixed(2)}°×${sol.th3yDeg.toFixed(2)}° · 峰值 ${sol.dirDbi.toFixed(1)} dBi · 交叉 ${sol.crossoverDb.toFixed(1)} dB · 可扫 ±${sol.scanMaxDeg.toFixed(0)}°${gl}`
+      }
     }
     return key
   }
@@ -847,7 +896,7 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
     open, mode, satFolder, placing, adjusting, deleting, beams, settings, activeSettingId, status, p, curName,
     groups, activeGroupId, curGroup, curSetting, hasGroup, groupsForSat, beamNumOffset, groupStat,
     thetaAuto, dirDbi, crossX, crossY, shapedTheta3, shapedEff, shapedPeak, togglePoly,
-    shapedSimF, shapedRefl, refl,
+    shapedSimF, shapedRefl, refl, pam,
     satNode, satNodeOf, satPos, openFor, close, placeAt, dragBeam, removeBeam, removeBeamAt, clearBeams, hexFill, sketchSpec,
     hotPickId, addHotspot, removeHotspot, pickHotspot,
     addGroup, removeGroup, renameGroup, duplicateGroup, toggleGroupVisible, selectGroup, setSat,
