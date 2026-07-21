@@ -1096,6 +1096,23 @@ let filterTimer = null   // 输入即筛选的防抖计时器
 const filterN = ref(0)   // 筛选命中数（模板状态提示；0 = 非筛选态）
 const filterKw = ref('')   // 当前筛选词（独立于 keyword —— pickResult 会清 keyword 但筛选仍在，状态条据此显示）
 const filterGroupId = ref('')   // 非空=当前筛选显示集来自某个已存「卫星组」（状态条改标签 + 组列表高亮）；被搜索/换组清掉
+// 卫星集「具体是谁」标签：给可见性分析「分析目标」区显式点出正在分析哪些星——口径与 rebuildRenderSet 完全一致：
+//   搜索/卫星组筛选态优先（filterN>0）；否则=内置分组（非「无」）+ 全部可见自定义星座（可叠加，故可能多来源）。
+// 用于让用户一眼知道 238 颗到底是 Starlink / 某自定义星座 / 某卫星组 / 搜索结果，而非只看到裸数字。
+const satSetLabel = computed(() => {
+  if (filterN.value > 0) {
+    return filterGroupId.value
+      ? { kind: '卫星组', name: filterKw.value || '未命名组' }
+      : { kind: '搜索', name: filterKw.value || '关键词' }
+  }
+  const g = GROUPS[groupIndex.value]
+  const names = []
+  if (g && g.key !== 'none') names.push(g.label)         // 「无（不渲染星座）」不计入——它没有真实星
+  for (const c of customConst.list.value) if (c.visible !== false) names.push(c.name)
+  if (!names.length) return { kind: '', name: '无' }
+  if (names.length === 1) return { kind: (g && g.key === 'none') ? '自定义星座' : '星座', name: names[0] }
+  return { kind: '混合', name: names.join(' + ') }        // 内置组叠加自定义星座 / 多座自定义星座并显
+})
 async function ensureSearchPool() {
   if (poolReady || poolLoading || !apiOk) return
   poolLoading = true
@@ -2658,6 +2675,28 @@ function bsCopyFreqPlan() {
     bsFreqCopyTmr = setTimeout(() => { bsFreqCopied.value = false }, 1600)
   } else appAlert('复制失败，请检查剪贴板权限')
 }
+// —— 相控阵赋形：星上激励指令表（测控上注 BFN）——
+const bsPamExcitShown = computed(() => { const e = bs.pamExcit.value; return e && e.groupId === bs.activeGroupId.value ? e : null })
+const bsPamExcitCopied = ref(false)
+let bsPamExcitTmr = null
+function bsPamExcitCopy() {
+  const e = bsPamExcitShown.value
+  if (!e || !e.rows.length) { appAlert('还没有激励指令：请先生成相控阵赋形天线'); return }
+  const head = ['端口#', '指向经度', '指向纬度', '方位az°', '俯仰el°', '幅度dB(rel BFN)', '相位°', '功率占比%'].join('\t')
+  const body = e.rows.map((r) => [r.port, r.lon, r.lat, r.az, r.el, r.ampDb, r.phaseDeg, r.powPct].join('\t')).join('\n')
+  if (perfWriteClipboard(head + '\n' + body)) {
+    bsPamExcitCopied.value = true
+    if (bsPamExcitTmr) clearTimeout(bsPamExcitTmr)
+    bsPamExcitTmr = setTimeout(() => { bsPamExcitCopied.value = false }, 1600)
+  } else appAlert('复制失败，请检查剪贴板权限')
+}
+function bsExportPamExcit() {
+  const csv = bs.pamExcitCsv()
+  if (!csv) { appAlert('还没有激励指令：请先生成相控阵赋形天线'); return }
+  const e = bsPamExcitShown.value
+  const nm = (e && e.name ? e.name : '相控阵赋形').replace(/[\\/:*?"<>|]/g, '_')
+  saveExport(csv, `星上激励指令_${nm}.csv`, [{ name: 'CSV（Excel 可打开）', extensions: ['csv'] }])
+}
 function bsTblDragMove(e) {
   if (e.button !== 0 || (e.target.closest && e.target.closest('.csx, .ptb, input, select, label'))) return
   e.preventDefault()
@@ -3861,7 +3900,7 @@ onBeforeUnmount(() => {
                  但当前若正选中它则保留一行（避免选中项被隐藏成孤儿态）。其余内置组恒显示。 -->
             <div
               v-if="g.key !== 'custom' || hasCustomData || i === groupIndex"
-              class="grprow" :class="{ sel: i === groupIndex }"
+              class="grprow" :class="{ sel: i === groupIndex && !filterN }"
               @click="pickGroup(i)"
             >
               <span class="pgico"><Icon name="satellite" :size="12" /></span>
@@ -4441,6 +4480,16 @@ onBeforeUnmount(() => {
           </template>
         </div>
 
+        <!-- 相控阵覆盖方式：点波束群（放置电扫波束）/ 赋形覆盖（Butler beamlet minimax → 星上激励指令） -->
+        <div v-if="bs.mode.value === 'pam'" class="sec">
+          <div class="srow"><label>覆盖方式</label>
+            <span class="seg sm">
+              <span class="sg" :class="{ on: bs.p.pamCover !== 'shaped' }" title="点/多波束群：在地图上放置电扫波束（每波束由阵面 Butler 电扫到该指向，sinc 旁瓣/栅瓣/扫描损失内建）" @click="bs.p.pamCover = 'spot'">点波束群</span>
+              <span class="sg" :class="{ on: bs.p.pamCover === 'shaped' }" title="赋形覆盖：Polygon 覆盖区 → Butler beamlet minimax 合成赋形等值线，产出测控上注星上波束成形网络（BFN）的激励指令（SATSOFT §6.5 + §8/§9/§10）" @click="bs.p.pamCover = 'shaped'">赋形覆盖</span>
+            </span>
+          </div>
+        </div>
+
         <!-- 相控阵天线参数（对齐 SATSOFT §6.5 / §6.5.1 对话框）：阵元数 / 间距 / 单元因子 / 晶格 → 波束宽·间距·交叉·栅瓣·方向性 -->
         <div v-if="bs.mode.value === 'pam'" class="sec">
           <div class="sect acc" :class="{ open: isSecOpen('bs-pam') }" @click="toggleSec('bs-pam')"><Icon :name="isSecOpen('bs-pam') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>天线参数</span><span class="bs-cnt">相控阵 · Butler 矩阵</span></div>
@@ -4470,12 +4519,11 @@ onBeforeUnmount(() => {
             <span class="pgb" @click="bsPamView = bsPamView === 1 ? 2 : 1">▶</span>
             <span class="bs-reflcap">{{ bsPamView === 1 ? '阵面正视：单元排布' : 'sin 空间：Butler 波束栅' }}</span>
           </div>
-          <div class="tip">相控阵＝矩形阵 + Butler 矩阵：波束 ＝ 周期 sinc 阵因子 × 单元因子 cos^R θ（首旁瓣 −13dB）。放置的每个波束由阵面电扫到该指向，扫描损失 / 栅瓣按物理内建；波束宽由阵面定死（≈λ/Nd）。</div>
           </template>
         </div>
 
-        <!-- —— 放置波束 → 轮廓编号 / 频率计划（高斯 + 相控阵共用；后两者折叠） —— -->
-        <template v-if="bs.mode.value === 'gauss' || bs.mode.value === 'pam'">
+        <!-- —— 放置波束 → 轮廓编号 / 频率计划（高斯 + 相控阵点波束群共用；后两者折叠） —— -->
+        <template v-if="bs.mode.value === 'gauss' || (bs.mode.value === 'pam' && bs.p.pamCover !== 'shaped')">
           <div class="sec">
             <div class="sect acc" :class="{ open: isSecOpen('bs-place') }" @click="toggleSec('bs-place')"><Icon :name="isSecOpen('bs-place') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>放置波束</span><span class="bs-cnt">{{ bs.beams.value.length }} 个{{ bs.curSetting.value ? ' · 设置 ' + bs.curSetting.value.name : '' }}</span></div>
             <template v-if="isSecOpen('bs-place')">
@@ -4581,8 +4629,82 @@ onBeforeUnmount(() => {
           </div>
         </template>
 
+        <!-- —— 相控阵赋形：覆盖区域（Polygon + Use Polygon Labels）→ 生成后出星上激励指令（测控上注 BFN） —— -->
+        <template v-if="bs.mode.value === 'pam' && bs.p.pamCover === 'shaped'">
+          <div class="sec">
+            <div class="sect acc" :class="{ open: isSecOpen('bs-pcov') }" @click="toggleSec('bs-pcov')"><Icon :name="isSecOpen('bs-pcov') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>覆盖区域</span><span v-if="bs.p.polyIds.length" class="bs-cnt">{{ bs.p.polyIds.length }} 个</span></div>
+            <template v-if="isSecOpen('bs-pcov')">
+            <div v-if="polys.length" class="bs-plist">
+              <div v-for="pg in polys" :key="pg.id" class="bs-prow">
+                <label class="bs-pchk" :title="(pg.name || 'Polygon') + '（' + pg.pts.length + '点）'">
+                  <input type="checkbox" :checked="bs.p.polyIds.includes(pg.id)" @change="bs.togglePoly(pg.id)" />
+                  <span class="bs-pnm">{{ pg.name || 'Polygon' }}</span>
+                </label>
+              </div>
+            </div>
+            <div v-if="!polys.length" class="tip">还没有 Polygon —— 到活动栏「Polygon（协调区）」视图先画一个区域。</div>
+            <div v-else class="tip">所选 Polygon 并集为覆盖区（可多选，含不连续区域）；增益按阵面物理算出。</div>
+            </template>
+          </div>
+
+          <!-- 峰值点（局部增强/压低）：正=增强、负=压低；宽度下限=阵面波束宽 θ3 -->
+          <div class="sec">
+            <div class="sect acc" :class="{ open: isSecOpen('bs-phot') }" @click="toggleSec('bs-phot')"><Icon :name="isSecOpen('bs-phot') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>峰值点</span><span v-if="(bs.p.hotspots || []).length" class="bs-cnt">{{ bs.p.hotspots.length }} 处</span></div>
+            <template v-if="isSecOpen('bs-phot')">
+            <div v-if="(bs.p.hotspots || []).length" class="bs-hshead"><span></span><span>经度°</span><span>纬度°</span><span>增量dB</span><span>宽度°</span><span></span><span></span></div>
+            <div v-for="(h, hi) in (bs.p.hotspots || [])" :key="h.id" class="bs-hsrow">
+              <span class="bs-hsn">P{{ hi + 1 }}</span>
+              <input class="ci" type="number" step="0.1" v-model.number="h.lon" placeholder="经°" title="峰值点经度（°E，东经正）" />
+              <input class="ci" type="number" step="0.1" v-model.number="h.lat" placeholder="纬°" title="峰值点纬度（°N，北纬正）" />
+              <input class="ci" type="number" step="0.5" v-model.number="h.boost" placeholder="dB" title="目标增量（dB）：正=局部增强（能量向此集中），负=局部压低/挖坑；0/空=不生效。相控阵宽波束下有物理上限，生成后据实报告实现量。" />
+              <input class="ci" type="number" step="0.1" min="0" v-model.number="h.width" placeholder="1" :title="'目标坡半高全宽（°）＝预览环大小（所见即所得），默认 1、留空取 1。注意：阵面波束宽 θ3≈' + bsFmt(bs.hotTheta3.value, 1) + '° 是物理分辨率——填得比 θ3 小，实际效果仍会扩散到约 θ3（生成后据实报告实现量）'" />
+              <span class="hic" :class="{ on: bs.placing.value && bs.hotPickId.value === h.id }" title="地图拾取该峰值点位置（左键/右键点地图；再点取消）" @click="bsPickHotspot(h.id)"><Icon name="crosshair" :size="12" /></span>
+              <span class="hic hdel" title="删除该峰值点" @click="bs.removeHotspot(h.id)"><Icon name="x" :size="11" /></span>
+            </div>
+            <span class="opb" title="添加一个峰值点并进入地图拾取" @click="bsAddHotspot"><Icon name="plus" :size="11" /> 添加峰值点</span>
+            <div class="tip">局部增益特征受阵面波束宽 θ3 约束（θ3 越小越锐）；生成后报告各点实测实现量。</div>
+            </template>
+          </div>
+
+          <!-- 星上激励指令表（测控上注）：生成后可见 -->
+          <div class="sec" v-if="bsPamExcitShown">
+            <div class="sect acc" :class="{ open: isSecOpen('bs-excit') }" @click="toggleSec('bs-excit')"><Icon :name="isSecOpen('bs-excit') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>星上激励指令</span><span class="bs-cnt">{{ bsPamExcitShown.rows.length }} 端口</span></div>
+            <template v-if="isSecOpen('bs-excit')">
+              <div class="bs-read2">
+                <span>峰值 <b>{{ bsFmt(bsPamExcitShown.peakDbi, 2) }}</b> dBi</span>
+                <span>物理增益 <b>{{ bsFmt(bsPamExcitShown.physPeakDbi, 2) }}</b> dBi</span>
+                <span>电扫 <b>{{ bsFmt(bsPamExcitShown.scanDeg, 1) }}</b>°</span>
+              </div>
+              <div class="bs-read"><span>边缘 <b>{{ bsFmt(bsPamExcitShown.value, 1) }}</b> dBi</span><span v-if="bsPamExcitShown.hotReport && bsPamExcitShown.hotReport.length" title="各峰值点实测抬升 / 请求增量（相控阵宽波束有物理上限，欠额见状态栏告警）">峰值点实现 <b>{{ bsPamExcitShown.hotReport.map(x => '+' + x.got + '/' + x.req).join(' · ') }}</b> dB</span></div>
+              <div class="bs-excbar">
+                <span class="bs-fpcp" :class="{ ok: bsPamExcitCopied }" title="复制激励指令表（Tab 分隔，粘进 Excel 自动分列）" @click="bsPamExcitCopy"><Icon :name="bsPamExcitCopied ? 'check' : 'copy'" :size="11" /> {{ bsPamExcitCopied ? '已复制 ✓' : '复制表格' }}</span>
+                <span class="opb sm" title="导出 CSV（UTF-8 BOM，Excel 直接打开）供测控上注星上 BFN" @click="bsExportPamExcit"><Icon name="download" :size="11" /> 导出 CSV</span>
+              </div>
+              <!-- 真 <table>：可直接鼠标框选任意行列 → Ctrl+C，浏览器按 TSV 复制，粘进 Excel 自动分列 -->
+              <div class="bs-exctbl">
+                <table class="bs-exctable">
+                  <thead><tr><th>端口#</th><th>指向经°</th><th>指向纬°</th><th>方位az°</th><th>俯仰el°</th><th>幅度dB</th><th>相位°</th><th>功率%</th></tr></thead>
+                  <tbody>
+                    <tr v-for="r in bsPamExcitShown.rows" :key="r.port">
+                      <td>{{ r.port }}</td>
+                      <td>{{ r.lon != null ? r.lon.toFixed(2) : '' }}</td>
+                      <td>{{ r.lat != null ? r.lat.toFixed(2) : '' }}</td>
+                      <td>{{ r.az }}</td>
+                      <td>{{ r.el }}</td>
+                      <td>{{ r.ampDb.toFixed(1) }}</td>
+                      <td>{{ r.phaseDeg }}</td>
+                      <td>{{ r.powPct.toFixed(1) }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="tip">幅度＝相对 BFN 输入功率（SATSOFT §10.3）；相位 0/180°＝实激励。有源孔径（T/R 增益补偿）下任意激励不损天线增益（§6.5/§10.6.1）。</div>
+            </template>
+          </div>
+        </template>
+
         <!-- —— Polygon 赋形：反射面模型（对齐 SATSOFT Shaped Reflector Model 对话框）→ 覆盖区域 → 波束中心 —— -->
-        <template v-else-if="bs.mode.value === 'shaped'">
+        <template v-if="bs.mode.value === 'shaped'">
           <div class="sec">
             <div class="sect acc" :class="{ open: isSecOpen('bs-refl') }" @click="toggleSec('bs-refl')"><Icon :name="isSecOpen('bs-refl') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>反射面模型</span><span class="bs-cnt">单偏置反射面</span></div>
             <template v-if="isSecOpen('bs-refl')">
@@ -4624,37 +4746,28 @@ onBeforeUnmount(() => {
                   <input type="checkbox" :checked="bs.p.polyIds.includes(pg.id)" @change="bs.togglePoly(pg.id)" />
                   <span class="bs-pnm">{{ pg.name || 'Polygon' }}</span>
                 </label>
-                <!-- 用 v-model.lazy（非单向 :value）：本组件实时态每秒重渲染，单向 :value 会在 change(失焦)提交前把正在输入的值刷回原值 → 输不进去；v-model 聚焦时不回写 DOM，change 时经 setPolyVal 读 DOM 值落库/重绘 -->
-                <input class="bs-pval" type="number" step="0.5" v-model.lazy="pg.value" @change="setPolyVal(pg, $event.target.value)" placeholder="覆盖值" title="该区目标电平（覆盖值 dB）。嵌套时内圈填高、外圈填低 → 内强外弱锥度；留空则该区随全局。" />
-                <span class="bs-pvu">dB</span>
               </div>
             </div>
             <div v-if="!polys.length" class="tip">还没有 Polygon —— 到活动栏「Polygon（协调区）」视图先画一个区域。</div>
-            <template v-else>
-              <div class="srow" style="margin-top:2px"><label>电平口径</label>
-                <span class="seg sm">
-                  <span class="sg" :class="{ on: bs.p.shapedMode !== 'physical' }" title="按覆盖值：各 Polygon「数值」= 该区绝对电平（如 EIRP dBW / 增益 dBi），边界锚 = 最低覆盖值" @click="bs.p.shapedMode = 'value'">按覆盖值</span>
-                  <span class="sg" :class="{ on: bs.p.shapedMode === 'physical' }" title="按天线增益：绝对电平由合成方向图立体角积分算真实方向性 D=eff·4π·P̂max/∫P̂dΩ（dBi）；Polygon 数值只提供分区相对锥度" @click="bs.p.shapedMode = 'physical'">按天线增益</span>
-                </span>
-              </div>
-            </template>
+            <div v-else class="tip">所选 Polygon 并集为覆盖区（可多选，含不连续区域）；增益按口径物理算出（∫P̂dΩ 定标）。</div>
             </template>
           </div>
 
           <div class="sec">
-            <div class="sect acc" :class="{ open: isSecOpen('bs-hot') }" @click="toggleSec('bs-hot')"><Icon :name="isSecOpen('bs-hot') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>峰点引导</span><span v-if="(bs.p.hotspots || []).length" class="bs-cnt">{{ bs.p.hotspots.length }} 处</span></div>
+            <div class="sect acc" :class="{ open: isSecOpen('bs-hot') }" @click="toggleSec('bs-hot')"><Icon :name="isSecOpen('bs-hot') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>峰值点</span><span v-if="(bs.p.hotspots || []).length" class="bs-cnt">{{ bs.p.hotspots.length }} 处</span></div>
             <template v-if="isSecOpen('bs-hot')">
             <div v-if="(bs.p.hotspots || []).length" class="bs-hshead"><span></span><span>经度°</span><span>纬度°</span><span>增量dB</span><span>宽度°</span><span></span><span></span></div>
             <div v-for="(h, hi) in (bs.p.hotspots || [])" :key="h.id" class="bs-hsrow">
               <span class="bs-hsn">P{{ hi + 1 }}</span>
-              <input class="ci" type="number" step="0.1" v-model.number="h.lon" placeholder="经°" title="峰点经度（°E，东经正）" />
-              <input class="ci" type="number" step="0.1" v-model.number="h.lat" placeholder="纬°" title="峰点纬度（°N，北纬正）" />
-              <input class="ci" type="number" step="0.5" v-model.number="h.boost" placeholder="dB" title="目标增量（dB，叠加在所在分区目标上）：正=热点（能量向此集中），负=局部压低；0/空=不生效" />
-              <input class="ci" type="number" step="0.1" min="0" v-model.number="h.width" :placeholder="bsFmt(bs.shapedTheta3.value, 2)" :title="'目标坡半高全宽（°）。物理下限=口径分辨率 θ3=' + bsFmt(bs.shapedTheta3.value, 3) + '°：留空取 θ3，填小会被收紧到 θ3'" />
-              <span class="hic" :class="{ on: bs.placing.value && bs.hotPickId.value === h.id }" title="地图拾取该峰点位置（左键/右键点地图；再点取消）" @click="bsPickHotspot(h.id)"><Icon name="crosshair" :size="12" /></span>
-              <span class="hic hdel" title="删除该峰点" @click="bs.removeHotspot(h.id)"><Icon name="x" :size="11" /></span>
+              <input class="ci" type="number" step="0.1" v-model.number="h.lon" placeholder="经°" title="峰值点经度（°E，东经正）" />
+              <input class="ci" type="number" step="0.1" v-model.number="h.lat" placeholder="纬°" title="峰值点纬度（°N，北纬正）" />
+              <input class="ci" type="number" step="0.5" v-model.number="h.boost" placeholder="dB" title="目标增量（dB）：正=局部增强（能量向此集中），负=局部压低/挖坑；0/空=不生效。生成后据实报告实现量。" />
+              <input class="ci" type="number" step="0.1" min="0" v-model.number="h.width" placeholder="1" :title="'目标坡半高全宽（°）＝预览环大小（所见即所得），默认 1、留空取 1。注意：成分波束宽 θ3≈' + bsFmt(bs.hotTheta3.value, 2) + '° 是口径物理分辨率——填得比 θ3 小，实际效果仍会扩散到约 θ3（生成后据实报告实现量）'" />
+              <span class="hic" :class="{ on: bs.placing.value && bs.hotPickId.value === h.id }" title="地图拾取该峰值点位置（左键/右键点地图；再点取消）" @click="bsPickHotspot(h.id)"><Icon name="crosshair" :size="12" /></span>
+              <span class="hic hdel" title="删除该峰值点" @click="bs.removeHotspot(h.id)"><Icon name="x" :size="11" /></span>
             </div>
-            <span class="opb" title="添加一个峰点并进入地图拾取" @click="bsAddHotspot"><Icon name="plus" :size="11" /> 添加峰点</span>
+            <span class="opb" title="添加一个峰值点并进入地图拾取" @click="bsAddHotspot"><Icon name="plus" :size="11" /> 添加峰值点</span>
+            <div class="tip">局部增益特征受成分波束宽 θ3 约束；生成后报告各点实测实现量。</div>
             </template>
           </div>
         </template>
@@ -4680,7 +4793,16 @@ onBeforeUnmount(() => {
 
           <!-- 分析目标 + 参数 -->
           <div class="sec">
-            <div class="sect"><span>分析目标</span><span v-if="vis.satCount.value" class="vis-cnt" title="卫星集＝当前地图显示的星（在「星座」视图搜索可筛选显示）">卫星集 {{ vis.satCount.value.toLocaleString() }}</span></div>
+            <div class="sect"><span>分析目标</span></div>
+            <!-- 卫星集＝正在分析哪些星：显式点出来源（星座 / 自定义星座 / 卫星组 / 搜索）+ 名称 + 颗数，避免只看到裸数字。
+                 在「星座」视图切换分组 / 搜索 / 显示卫星组即改变本集；覆盖模式同样以此集撒网格。 -->
+            <div class="srow vis-satset"><label>卫星集</label>
+              <span class="vis-satset-val" :title="'当前分析的卫星＝地图上显示的星。在「星座」视图切换分组 / 搜索 / 显示卫星组来改变。'">
+                <span v-if="satSetLabel.kind" class="vis-satset-kind">{{ satSetLabel.kind }}</span>
+                <b>{{ satSetLabel.name }}</b>
+                <s>{{ (vis.satCount.value || 0).toLocaleString() }} 颗</s>
+              </span>
+            </div>
             <div v-if="vis.mode.value !== 'coverage'" class="srow"><label>目标</label>
               <select :value="vis.targetKind.value + '|' + vis.targetId.value" @change="e => visPickTarget(e.target.value)">
                 <option value="|">（选择地球站 / 点 / Polygon）</option>
@@ -4696,7 +4818,7 @@ onBeforeUnmount(() => {
               </select>
             </div>
             <div v-if="vis.mode.value !== 'coverage' && !stations.length && !points.length && !polys.length" class="tip">还没有可选目标：去「标记」画一个地球站 / 点，或「Polygon」画一个区域。</div>
-            <div class="srow"><label>仰角门限</label><input class="ci vis-elev" type="number" step="1" min="0" max="89" :value="vis.minElev.value" @input="e => visSetElev(e.target.value)" /><span class="u">°</span><span class="tip inl">≥ 此仰角算可见 / 被覆盖 · 卫星集＝当前显示的星</span></div>
+            <div class="srow"><label>仰角门限</label><input class="ci vis-elev" type="number" step="1" min="0" max="89" :value="vis.minElev.value" @input="e => visSetElev(e.target.value)" /><span class="u">°</span><span class="tip inl">≥ 此仰角算可见 / 被覆盖</span></div>
           </div>
 
           <!-- 可见卫星 / 覆盖：瞬时可见（now）/ 时段过境（access）/ 覆盖（coverage）三模式（复刻 STK Access / Coverage）-->
@@ -6032,6 +6154,16 @@ onBeforeUnmount(() => {
 .bs-fpr .c-ll { flex: 1; min-width: 0; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .bs-fpr .c-th { flex: none; color: var(--text-faint); white-space: nowrap; }
 .bs-fpr .c-th em { font-style: normal; }
+/* 相控阵赋形：星上激励指令表 */
+.bs-excbar { display: flex; gap: 6px; align-items: center; margin: 6px 0 5px; }
+.bs-exctbl { max-height: 220px; overflow: auto; border: 1px solid var(--border); border-radius: 4px; }
+/* 真 <table>：支持鼠标框选任意行列 → Ctrl+C（浏览器原生按 TSV 复制，粘进 Excel 自动分列） */
+.bs-exctable { border-collapse: collapse; width: 100%; font-size: 10.5px; font-family: var(--font-mono); }
+.bs-exctable th, .bs-exctable td { padding: 2px 7px; text-align: right; white-space: nowrap; border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent); }
+.bs-exctable tbody tr:last-child td { border-bottom: none; }
+.bs-exctable thead th { position: sticky; top: 0; background: var(--panel, var(--bg)); color: var(--text-faint); font-weight: normal; z-index: 1; }
+.bs-exctable td:first-child { color: var(--accent); }
+.bs-exctable tbody tr:hover td { background: color-mix(in srgb, var(--accent) 8%, transparent); }
 /* —— 导航器：波束组列表 + 新建/工具行 —— */
 .bs-grps { display: flex; flex-direction: column; gap: 2px; margin: 6px 0 5px; max-height: 190px; overflow-y: auto; }
 .bs-grow { display: flex; align-items: center; gap: 6px; padding: 4px 6px; border: 1px solid var(--border); border-radius: 4px; cursor: pointer; font-size: 11.5px; }
@@ -6071,6 +6203,11 @@ onBeforeUnmount(() => {
 /* —— 可见性分析（Access / Coverage）：目标/参数 + KPI 摘要 + 可见星结果表 —— */
 .vis-side .sect .vis-cnt { margin-left: auto; font-size: 10px; color: var(--text-faint); font-family: var(--font-mono); }
 .vis-side .sect .vis-cnt.on { color: var(--ok); }
+/* 卫星集读数行：来源类型标签（星座 / 自定义星座 / 卫星组 / 搜索）+ 名称（长则省略）+ 颗数，与「目标」「仰角门限」同为分析设定行 */
+.vis-satset .vis-satset-val { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; font-size: 11.5px; }
+.vis-satset-kind { flex: none; font-size: 9.5px; line-height: 1.6; color: var(--text-faint); background: var(--surface-2); border: 1px solid var(--border); padding: 0 5px; white-space: nowrap; }
+.vis-satset-val b { flex: 1; min-width: 0; color: var(--text); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vis-satset-val s { flex: none; text-decoration: none; color: var(--text-faint); font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 .vis-side .tip.inl { display: inline; margin-left: 8px; }
 .vis-side .vis-elev { flex: none; width: 58px; }
 .vis-icrow { align-items: center; gap: 5px; }
@@ -6117,7 +6254,18 @@ onBeforeUnmount(() => {
 .vis-ud { font-style: normal; font-size: 9px; width: 7px; display: inline-block; text-align: center; }
 .vis-ud.up { color: var(--ok); } .vis-ud.dn { color: var(--text-faint); }
 /* ACCESS 时段过境：mode 切换 + 甘特 + 过境列表 */
-.vis-mode { margin: 6px 0; }
+.vis-mode { margin: 8px 0; }
+/* 三模式切换（瞬时可见 / 时段过境 / 覆盖）：等宽分段控件——锐边仪器风 + 凹槽轨道 + 活动段实色填充。
+   ① 等宽 flex:1 铺满面板宽度（原为内容宽、左侧挤成一坨）；② 轨道给 --surface 凹槽感、活动段 --accent 实填；
+   ③ 活动段文字用 var(--bg) 而非写死 #fff——深色主题 accent≈白，写死白字=白底白字看不见；
+   ④ 非活动段悬停给反馈；⑤ 段间加 1px 分隔线，紧邻活动块的分隔线转透明使实色边缘干净。
+   仅作用于本控件：.seg.sm 复用面广，用 .seg.sm.vis-mode 提高特指度收窄作用域，不动通用 .seg。 */
+.seg.sm.vis-mode { background: var(--surface); border-color: var(--border); }
+.seg.sm.vis-mode .sg { flex: 1; text-align: center; padding: 4px 6px; font-size: 11.5px; color: var(--text-muted); transition: background .12s ease, color .12s ease; }
+.seg.sm.vis-mode .sg + .sg { border-left: 1px solid var(--border); }
+.seg.sm.vis-mode .sg:hover:not(.on) { background: var(--surface-2); color: var(--text); }
+.seg.sm.vis-mode .sg.on { background: var(--accent); color: var(--bg); font-weight: 600; }
+.seg.sm.vis-mode .sg.on, .seg.sm.vis-mode .sg.on + .sg { border-left-color: transparent; }
 .vis-side .u.nw { flex: none; white-space: nowrap; }        /* 「小时」等单位不换行 */
 .acc-exp { margin-top: -3px; }                              /* 导出行紧跟时窗行 */
 .vis-gantt { margin: 6px 0 4px; display: flex; flex-direction: column; gap: 2px; max-height: 190px; overflow-y: auto; }

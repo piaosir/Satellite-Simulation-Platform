@@ -17,7 +17,7 @@
 // 以【相对星下点的 az/el】编码在各自 set 的 XS..XE 子窗口（与真实 HTS 多波束 GRD 同构）。
 // 场写入 icomp=3（Ludwig-3 co/cx）：分量1 = √P（实部）、其余 0 → P1=|c1|²=共极化，
 // 下游 RSS/P1 取值、复场 bicubic 插值（性能表）全部自然成立。
-import { antennaBasis, gridDir, project, dirToAzEl, azElGround } from './coverage.js'
+import { antennaBasis, gridDir, invGridDir, project, dirToAzEl, azElGround } from './coverage.js'
 import { parseGrd } from './parse.js'
 
 const D2R = Math.PI / 180
@@ -815,6 +815,9 @@ function buildStations(geo, metas, maxTarget, th, spacing, omegaDeg2, hots) {
     }
   }
   for (const q of thin(supPts, 3500)) push(q[0], q[1], 2)
+  // 峰值点强制站点：在每个覆盖区内峰值点位置加一个 contour 站点（走 push → clsOf 区域目标 + hotBump 满 boost）。
+  // 保证【宽度小于站点栅间距的峰值点】也有靶子——否则窄峰值点落在站点之间被漏掉、生成后无效果。
+  if (hots) for (const h of hots) if (geo.signedDist(h.az, h.el) >= 0) push(h.az, h.el, 0)
   return { X, Y, KIND, TDB, HB, n: X.length }
 }
 
@@ -850,7 +853,7 @@ export function buildShapedGrd({ satName = '', satLon, satLat = 0, altKm, polysP
     const boost = Number(h.boostDb)
     if (!Number.isFinite(boost) || boost === 0) continue
     const ae = dirToAzEl(satLon, satLat || 0, altKm, h.lon, h.lat)
-    hots.push({ az: ae.az, el: ae.el, boost, w: Math.max(Number(h.widthDeg) > 0 ? Number(h.widthDeg) : th, th) })
+    hots.push({ az: ae.az, el: ae.el, boost, w: Number(h.widthDeg) > 0 ? Number(h.widthDeg) : 1 })
   }
   const cl = (v, lo, hi) => Math.max(lo, Math.min(hi, v))
   const [bx0, by0, bx1, by1] = geo.bbox
@@ -1078,6 +1081,22 @@ export function buildShapedGrd({ satName = '', satLon, satLat = 0, altKm, polysP
   const outMed = outRel.length ? outRel[Math.floor(outRel.length / 2)] : relMin
   const edgeVal = mode === 'value' ? covValue : peakDbi + outMed
   const covMin = peakDbi + relMin                  // 覆盖区（含边界）绝对最低点，如实回报
+  // 峰值点实现度（口径分辨率 → 局部峰有上限）：实测各正峰点相对【基底覆盖中位电平】的抬升 vs 请求增量。
+  const hotReport = []
+  let hotGap = 0
+  if (hots.some((h) => h.boost > 0)) {
+    const covRel = []
+    for (let m = 0; m < M; m++) { if (kind[m] !== 0 || hb[m] > 0.5) continue; const [fr, fi] = fld(bRe, bIm, m); covRel.push(20 * Math.log10(Math.max(Math.hypot(fr, fi), 1e-8) / Fmax)) }
+    covRel.sort((a, b) => a - b)
+    const baseRel = covRel.length ? covRel[Math.floor(covRel.length / 2)] : relMin
+    const sampF = (az, el) => { const c = cl(Math.round((az - XS) / dx), 0, NX - 1), rr = cl(Math.round((el - YS) / dy), 0, NY - 1); return F[rr * NX + c] }
+    for (const h of hots) {
+      if (!(h.boost > 0)) continue
+      const got = 20 * Math.log10(Math.max(sampF(h.az, h.el), 1e-8) / Fmax) - baseRel
+      hotReport.push({ req: +h.boost.toFixed(1), got: +got.toFixed(1) })
+      if (h.boost - got > hotGap) hotGap = h.boost - got
+    }
+  }
   // ⑥ 写 GRD（与高斯档同构：icomp3/ncomp2/igrid6；分量1 = 场幅 |f|·S ≥0，P1=c1²=|f|²·S² 即共极化功率）
   const S = Math.pow(10, peakDbi / 20) / Fmax
   const fAmp = Math.pow(10, (peakDbi + floorDb) / 20)
@@ -1109,7 +1128,351 @@ export function buildShapedGrd({ satName = '', satLon, satLat = 0, altKm, polysP
   else if (cornerDip > 2.5) warn = `个别边角凹陷至 ${covMin.toFixed(1)}（低于保证值 ${cornerDip.toFixed(1)} dB）—— 细部小于口径分辨率 θ3=${th.toFixed(2)}°，加大口径可贴合`
   const hotOut = hots.filter((h) => geo.signedDist(h.az, h.el) < 0).length
   if (hotOut) warn = (warn ? warn + '；' : '') + `${hotOut} 个峰点在覆盖区外 —— 目标场只作用于覆盖区内/边界站点，区外峰点基本无效（请移入 Polygon）`
-  return { text: head.join('\r\n') + '\r\n' + L.join('\r\n') + '\r\n', value: edgeVal, peakDbi, physPeakDbi, paDb, covMin, omegaDeg2, nBeams: N, rippleDb: rippleBest / 2, nx: NX, ny: NY, warn, peakAt }
+  if (hotGap > 1.5) warn = (warn ? warn + '；' : '') + `峰值点最大欠额 ${hotGap.toFixed(1)} dB（波束宽 θ3=${th.toFixed(2)}° 造不出更锐的局部峰——加大口径，或把峰点宽度放大到 ≥2·θ3）`
+  return { text: head.join('\r\n') + '\r\n' + L.join('\r\n') + '\r\n', value: edgeVal, peakDbi, physPeakDbi, paDb, covMin, omegaDeg2, nBeams: N, rippleDb: rippleBest / 2, nx: NX, ny: NY, warn, peakAt, hotReport }
+}
+
+// ================= 相控阵赋形（SATSOFT §6.5 Butler beamlet + §8/§9/§10 minimax 优化器） =================
+// 与反射面赋形（buildShapedGrd）复用【同一套站点栅 + Use Polygon Labels + minimax 复激励 Cholesky】优化器
+// （手册明确 PAM 用同一优化器把 Butler beamlet 合成赋形等值线），仅两处换成相控阵物理：
+//   ① 成分波束（beamlet）：反射面高斯馈源 → 【Butler 正交波束】pamField（Dirichlet 阵因子 × cos^R 单元因子，
+//      首旁瓣 −13dB / 栅瓣 / 电扫增益滚降）。
+//   ② 布放：az/el 六角格 → 【Butler 格点 snap】u0=(2n+1)/(2Nx·dx)（sin/(u,v) 方向余弦空间，手册 §6.5/§8）。
+// 物理产物 = 各 Butler 端口的【复激励系数】——手册 p126「幅度以 dB 相对波束成形网络(BFN)输入功率给出」+ 相位，
+// 即【测控操作员上注星上 BFN 的波束成形指令集】；单模优化激励非正交、靠有源孔径 T/R 模块增益补偿（手册 p130）不损增益。
+// 两处工程差异（手册 §6.5.1/§8）：
+//   · sinc 高旁瓣 + 栅瓣 → 反射面档的 −50dB 稀疏截断失效 → 【满装配】（每站点见全部 Butler 端口）；
+//   · 单元因子 cos^R(θ) 按【绝对】(u,v) 作用于合成场（不随 beamlet 平移）→ 电扫增益滚降天然内建于场幅。
+
+// Butler 波束栅布放（snap 到 Butler 格点）：覆盖区（含外扩 marginBw 个波束宽一圈，手册 §8「Expand Coverage by
+// Beamwidths」默认 1）内的 Butler 端口。u0=(2n+1)/(2Nx·dx)、v0=(2m+1)/(2Ny·dy)（eq 6.14）；(u0,v0)→(az,el)
+// 用 invGridDir(6) 反查以测覆盖归属。返回 { ports:[{n,m,u0,v0,az,el}], spacingDeg }（spacingDeg=Butler 波束间距，供站点密度）。
+export function layoutButlerBeamlets(geo, pam, th, marginBw = 1.0) {
+  const nx = Math.round(pam.Nx), ny = Math.round(pam.Ny), dx = Number(pam.dxWl), dy = Number(pam.dyWl)
+  const out = []
+  const sol = solvePam(pam)
+  const spacingDeg = sol.ok ? Math.max(sol.beamSpacingXReal ? sol.beamSpacingXDeg : th, sol.beamSpacingYReal ? sol.beamSpacingYDeg : th, th * 0.5) : th
+  if (!(nx > 0) || !(ny > 0) || !(dx > 0) || !(dy > 0)) return { ports: out, spacingDeg }
+  const mo = marginBw * th
+  const ns = [], ms = []
+  for (let k = -Math.floor(nx / 2); k <= Math.ceil(nx / 2) - 1; k++) ns.push(k)
+  for (let k = -Math.floor(ny / 2); k <= Math.ceil(ny / 2) - 1; k++) ms.push(k)
+  const mk = (n, m) => {                              // Butler 端口 (n,m) → {n,m,u0,v0,az,el}（越单位圆返回 null）
+    const u0 = (2 * n + 1) / (2 * nx * dx), v0 = (2 * m + 1) / (2 * ny * dy)
+    const s = 1 - u0 * u0 - v0 * v0
+    if (s <= 0) return null
+    const ae = invGridDir(6, u0, v0, Math.sqrt(s))
+    return ae ? { n, m, u0, v0, az: ae[0], el: ae[1] } : null
+  }
+  for (const n of ns) for (const m of ms) { const p = mk(n, m); if (p && geo.signedDist(p.az, p.el) >= -mo) out.push(p) }
+  if (!out.length) {                                 // 覆盖区小于 Butler 波束间距 → 取最近覆盖质心的端口兜底（准单波束）
+    const [x0, y0, x1, y1] = geo.bbox
+    const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2
+    let best = null, bd = Infinity
+    for (const n of ns) for (const m of ms) { const p = mk(n, m); if (!p) continue; const d = (p.az - cx) ** 2 + (p.el - cy) ** 2; if (d < bd) { bd = d; best = p } }
+    if (best) out.push(best)
+  }
+  return { ports: out, spacingDeg }
+}
+
+const NMAX_PAM = 144                               // Butler 端口上限（激励指令规模 + 优化器 O(N²) 装配规模）；超限空间抽稀 + 告警
+const MAXPROD_PAM = 8e7                             // 法矩阵装配 O(M·N²)/轮 计算量守卫；超限抽稀站点保持空间均匀
+
+// 相控阵赋形波束群 → GRD 文本 + 星上激励指令。覆盖区＝polysPts 并集（无覆盖值；增益恒由阵面物理算出）。
+// 塑形＝hotspots 峰值点（[{lon,lat,boostDb,widthDeg}]，正=局部增强 / 负=局部压低），与 buildShapedGrd 同源
+// （连续目标场 + 闭环自适应抬坡：量测真实出图场、反复抬坡把峰点拱到阵面分辨率允许的最大——补偿宽波束的裙边抬升）。
+// pam={Nx,Ny,dxWl,dyWl,R,tri,elem,eff,fGHz}。（polyTargets/mode/value 保留兼容，前端已恒走 physical + 峰值点。）
+// 返回 { text, value, peakDbi, physPeakDbi, paDb, covMin, omegaDeg2, nBeams(端口数), rippleDb, nx, ny, warn,
+//        peakAt, scanDeg(峰值电扫角), excit:[{port,n,m,u0,v0,az,el,lon,lat,ampDb,phaseDeg,powPct}] }。
+export function buildPamShapedGrd({ satName = '', satLon, satLat = 0, altKm, polysPts, polyTargets = null, hotspots = null, pam, mode = 'value', value = null, floorDb = -50, marginBw = 1.0 }) {
+  const sol = solvePam(pam)
+  if (!sol.ok) throw new Error('相控阵参数无效：请检查阵元数 / 间距 / 频率')
+  if (mode !== 'physical' && !Number.isFinite(value)) throw new Error('覆盖值无效：请填写区域内的电平（dB）')
+  const R = Number(pam.R) || 0
+  const th = Math.max(sol.th3xDeg, sol.th3yDeg, 1e-3)
+  // —— 多边形分类（与 buildShapedGrd 完全同款：base / iso / 面积升序 / Use Polygon Labels）——
+  const projected = (polysPts || []).map((p, i) => ({ V: projPolyAzEl(satLon, satLat, altKm, p), t: polyTargets && Number.isFinite(Number(polyTargets[i])) ? Number(polyTargets[i]) : NaN })).filter((o) => o.V)
+  if (!projected.length) throw new Error('Polygon 无效：每个至少需要 3 个顶点')
+  const areaOf = (V) => { let a = 0; for (let i = 0; i < V.length; i++) { const p = V[i], q = V[(i + 1) % V.length]; a += p[0] * q[1] - q[0] * p[1] } return Math.abs(a) / 2 }
+  const metas = projected.map((o) => ({ V: o.V, value: o.t, area: areaOf(o.V), iso: false }))
+  const finiteM = metas.filter((m) => Number.isFinite(m.value))
+  const base = finiteM.length ? finiteM.reduce((a, b) => (b.area > a.area ? b : a)).value : NaN
+  for (const m of metas) m.iso = Number.isFinite(base) && Number.isFinite(m.value) && m.value < base - 0.01
+  metas.sort((a, b) => a.area - b.area)              // 最小/最具体在前 → 首个包含者胜
+  const contourVals = metas.filter((m) => !m.iso && Number.isFinite(m.value)).map((m) => m.value)
+  const maxTarget = contourVals.length ? Math.max(...contourVals) : NaN
+  const covValue = contourVals.length ? Math.min(...contourVals) : value
+  const polys = metas.map((m) => m.V)
+  const geo = unionGeom(polys)
+  const [bx0, by0, bx1, by1] = geo.bbox
+  const cl = (v, lo, hi) => Math.max(lo, Math.min(hi, v))
+  // 并集立体角（网格计数，重叠不重复计）：报表 + 站点密度参考
+  let omegaDeg2 = 0
+  {
+    const G = 140, gx = (bx1 - bx0) / G, gy = (by1 - by0) / G
+    let cnt = 0
+    for (let r = 0; r < G; r++) for (let c = 0; c < G; c++) if (geo.inside(bx0 + (c + 0.5) * gx, by0 + (r + 0.5) * gy)) cnt++
+    omegaDeg2 = (cnt / (G * G)) * (bx1 - bx0) * (by1 - by0)
+  }
+  // ① Butler 波束栅（自由度＝被激励的端口）
+  const lb = layoutButlerBeamlets(geo, pam, th, marginBw)
+  let ports = lb.ports
+  const spacing = lb.spacingDeg
+  if (!ports.length) throw new Error('覆盖区内没有 Butler 波束端口：请检查阵面参数 / 覆盖区')
+  let portWarn = ''
+  if (ports.length > NMAX_PAM) {                     // 端口过多（阵大/覆盖广）→ 空间抽稀 + 告警（激励指令为近似）
+    const st = Math.ceil(ports.length / NMAX_PAM)
+    portWarn = `Butler 端口 ${ports.length} 超上限 ${NMAX_PAM}，已抽稀至约 ${Math.ceil(ports.length / st)}（阵面过大/覆盖过广，激励指令为近似——减小阵元数或缩小覆盖区）`
+    ports = ports.filter((_, i) => i % st === 0)
+  }
+  const N = ports.length
+  const allIdx = Array.from({ length: N }, (_, i) => i)
+  // 峰值点 → 方向空间（宽度下限＝阵面分辨率 θ3，口径造不出更细的目标特征）；boost=0/坐标非法的行剔除
+  const hots = []
+  for (const h of (hotspots || [])) {
+    if (!h || !Number.isFinite(h.lon) || !Number.isFinite(h.lat)) continue
+    const boost = Number(h.boostDb)
+    if (!Number.isFinite(boost) || boost === 0) continue
+    const ae = dirToAzEl(satLon, satLat || 0, altKm, h.lon, h.lat)
+    hots.push({ az: ae.az, el: ae.el, boost, w: Number(h.widthDeg) > 0 ? Number(h.widthDeg) : 1 })
+  }
+  // ② 站点栅（靶子）：复用 buildStations（与反射面赋形同款）；hots=峰值点连续目标场（正增强/负压低）
+  const smp = buildStations(geo, metas, maxTarget, th, spacing, omegaDeg2, hots)
+  // ③ 满装配：每站点见全部 Butler 端口（sinc 旁瓣/栅瓣不可截断）。contour/边界站点若无端口在 reach 内 → 亚分辨率剔除。
+  const reachPam = 1.3 * spacing
+  const nbOf = [], gOf = [], kind = [], tdb = [], hb = []
+  let unreach = 0, covCnt = 0
+  for (let j = 0; j < smp.n; j++) {
+    if (smp.KIND[j] !== 2) {
+      let dmin = Infinity
+      for (const pt of ports) { const dd = (smp.X[j] - pt.az) ** 2 + (smp.Y[j] - pt.el) ** 2; if (dd < dmin) dmin = dd }
+      if (dmin > reachPam * reachPam) { unreach++; continue }
+      covCnt++
+    }
+    const um = gridDir(6, smp.X[j], smp.Y[j])         // 站点方向余弦
+    const g = new Float64Array(N)
+    for (let i = 0; i < N; i++) g[i] = pamField(um[0], um[1], ports[i].u0, ports[i].v0, pam)
+    nbOf.push(allIdx); gOf.push(g); kind.push(smp.KIND[j]); tdb.push(smp.TDB[j]); hb.push(smp.HB[j])
+  }
+  // 计算量守卫：法矩阵装配 O(M·N²)/轮 → 超 MAXPROD 时按空间均匀抽稀站点
+  if (nbOf.length * N * N > MAXPROD_PAM) {
+    const keep = Math.max(400, Math.floor(MAXPROD_PAM / (N * N))), st = Math.ceil(nbOf.length / keep)
+    const fnb = [], fg = [], fk = [], ft = [], fh = []
+    for (let j = 0; j < nbOf.length; j++) if (j % st === 0) { fnb.push(nbOf[j]); fg.push(gOf[j]); fk.push(kind[j]); ft.push(tdb[j]); fh.push(hb[j]) }
+    nbOf.length = 0; gOf.length = 0; kind.length = 0; tdb.length = 0; hb.length = 0
+    nbOf.push(...fnb); gOf.push(...fg); kind.push(...fk); tdb.push(...ft); hb.push(...fh)
+  }
+  const M = nbOf.length
+  const tAmp = new Float64Array(M)
+  for (let m = 0; m < M; m++) tAmp[m] = Math.pow(10, tdb[m] / 20)
+  // ④ 复激励交替相位 IRLS minimax（与 buildShapedGrd 同款；gᵢ=pamField 实 → 法矩阵实对称、仅右端复 → 同一
+  //    Cholesky 解 Re/Im 两路；实高斯型 basis 令虚部恒 0 → 激励为实（相位 0/180°），对齐 SATSOFT 单模「Uniform,
+  //    zero phase」初值。区内/边界 meet-or-exceed、界外压制、相对残差权重、20 分位归一、IRLS 升权最差站）——
+  const wRe = new Float64Array(N), wIm = new Float64Array(N)
+  const rho = new Float64Array(M)
+  for (let m = 0; m < M; m++) rho[m] = kind[m] === 0 ? 1 : kind[m] === 1 ? 2 : 0.12
+  const dRe = new Float64Array(M), dIm = new Float64Array(M)
+  const fld = (wr, wi, m) => { let fr = 0, fi = 0; const nb = nbOf[m], g = gOf[m]; for (let a = 0; a < nb.length; a++) { const w = nb[a]; fr += wr[w] * g[a]; fi += wi[w] * g[a] } return [fr, fi] }
+  let bRe = null, bIm = null, scoreBest = Infinity, rippleBest = 0
+  const runIters = (iters) => {
+  for (let it = 0; it < iters && M; it++) {
+    for (let m = 0; m < M; m++) { if (kind[m] === 2) { dRe[m] = 0; dIm[m] = 0; continue } const fr = fld(wRe, wIm, m)[0]; dRe[m] = fr > tAmp[m] ? fr : tAmp[m]; dIm[m] = 0 }
+    const A0 = new Float64Array(N * N), BR = new Float64Array(N), BI = new Float64Array(N)
+    for (let m = 0; m < M; m++) {
+      const nb = nbOf[m], g = gOf[m], r = rho[m] / (tAmp[m] * tAmp[m]), L = nb.length
+      for (let a = 0; a < L; a++) { const ia = nb[a], gar = g[a] * r, row = ia * N; BR[ia] += gar * dRe[m]; BI[ia] += gar * dIm[m]; for (let b = 0; b < L; b++) A0[row + nb[b]] += gar * g[b] }
+    }
+    let trace = 0
+    for (let i = 0; i < N; i++) trace += A0[i * N + i]
+    let lam = Math.max(1e-12, 1e-6 * trace / N), Lm = null
+    for (let k = 0; k < 5 && !Lm; k++, lam *= 30) { const C = A0.slice(); for (let i = 0; i < N; i++) C[i * N + i] += lam; if (cholFactor(C, N)) Lm = C }
+    if (!Lm) break
+    const xr = cholSolveL(Lm, Array.from(BR), N)
+    const xi = cholSolveL(Lm, Array.from(BI), N)
+    const vAll = new Float64Array(M), covMar = []
+    for (let m = 0; m < M; m++) { const [fr, fi] = fld(xr, xi, m); vAll[m] = Math.hypot(fr, fi); if (kind[m] !== 2) covMar.push(vAll[m] / tAmp[m]) }
+    covMar.sort((a, b) => a - b)
+    const med = covMar.length ? covMar[Math.floor(covMar.length * 0.2)] : 1
+    const sc = med > 1e-9 ? 1 / med : 1
+    for (let i = 0; i < N; i++) { xr[i] *= sc; xi[i] *= sc }
+    let dMax = -Infinity, dMin = Infinity, bShort = 0, sMax = -Infinity
+    for (let m = 0; m < M; m++) {
+      const adb = 20 * Math.log10(Math.max(vAll[m] * sc, 1e-8))
+      const mar = kind[m] === 2 ? adb : adb - tdb[m]
+      vAll[m] = mar
+      if (kind[m] === 0) { if (mar > dMax) dMax = mar; if (mar < dMin) dMin = mar }
+      else if (kind[m] === 1) { const s = Math.max(0, -mar); if (s > bShort) bShort = s }
+      else if (mar - SUP_DB > sMax) sMax = mar - SUP_DB
+    }
+    const ripple = dMin < Infinity ? dMax - dMin : 0
+    const worstShort = Math.max(0, -dMin)
+    const score = worstShort * 3 + 0.8 * bShort + 0.5 * Math.max(0, sMax)
+    if (score < scoreBest) { scoreBest = score; bRe = xr.slice(); bIm = xi.slice(); rippleBest = ripple }
+    wRe.set(xr); wIm.set(xi)
+    if (it === iters - 1) break
+    for (let m = 0; m < M; m++) {
+      if (kind[m] === 2) { rho[m] = cl(rho[m] * Math.exp(0.3 * (vAll[m] - SUP_DB)), 0.02, 20); continue }
+      const short = Math.max(0, -vAll[m])
+      rho[m] = cl(rho[m] * Math.exp(0.8 * short - 0.12), kind[m] === 1 ? 0.3 : 0.2, 90)
+    }
+  }
+  }
+  runIters(N > 250 ? 16 : 24)
+  if (!bRe) { bRe = new Float64Array(N).fill(1); bIm = new Float64Array(N) }
+  // ⑤ 出图网格几何：并集外接盒 + 滚降边距；格距 θ3/7，总量 ≤13 万点自适应放粗
+  const margin = 3 * spacing + th
+  const XS = bx0 - margin, XE = bx1 + margin, YS = by0 - margin, YE = by1 + margin
+  const cell = th / 7
+  let NX = cl(Math.ceil((XE - XS) / cell) + 1, 61, 301), NY = cl(Math.ceil((YE - YS) / cell) + 1, 61, 301)
+  if (NX * NY > 130000) { const k = Math.sqrt((NX * NY) / 130000); NX = Math.max(61, Math.round(NX / k)); NY = Math.max(61, Math.round(NY / k)) }
+  const dx = (XE - XS) / (NX - 1), dy = (YE - YS) / (NY - 1)
+  // 合成场（复场幅 |f|，下游只用功率 |f|²）：Σ w_i·pamField（满端口）
+  const computeField = () => {
+    const F = new Float64Array(NX * NY)
+    let Fmax = 0, sumP = 0, kMax = 0
+    for (let row = 0, k = 0; row < NY; row++) {
+      const py = YS + dy * row
+      for (let col = 0; col < NX; col++, k++) {
+        const px = XS + dx * col
+        const d0 = gridDir(6, px, py)
+        let fr = 0, fi = 0
+        for (let i = 0; i < N; i++) { const g = pamField(d0[0], d0[1], ports[i].u0, ports[i].v0, pam); fr += bRe[i] * g; fi += bIm[i] * g }
+        const mag = Math.hypot(fr, fi)
+        F[k] = mag
+        if (mag > Fmax) { Fmax = mag; kMax = k }
+        sumP += mag * mag * Math.cos(px * D2R)           // 立体角权重 dΩ=cos(az)·daz·del（igrid6）
+      }
+    }
+    return { F, Fmax, sumP, kMax }
+  }
+  let { F, Fmax, sumP, kMax } = computeField()
+  if (!(Fmax > 0)) throw new Error('合成场为空：请检查 Polygon 与阵面参数')
+  // 峰值点自适应抬坡（对真实出图场闭环，同 buildShapedGrd）：区内自然超出令静态坡被淹没 → argmax 不在任一正
+  //   boost 峰点核心(0.35w)内 → 按「全场峰 − 峰点场 + 0.4dB 保护带」抬坡热启动续跑（≤3 轮、累计 ≤12dB）。
+  //   相控阵波束宽 → 峰点拱起有物理上限(Butler 端口固定,不能移到峰点)，此环在该上限内尽力抬；到不了则如实欠额。
+  {
+    let maxHB = 0
+    for (let m = 0; m < M; m++) if (hb[m] > maxHB) maxHB = hb[m]
+    let lifted = 0
+    for (let adj = 0; adj < 3 && M && maxHB > 0.2; adj++) {
+      const ax = XS + dx * (kMax % NX), ay = YS + dy * Math.floor(kMax / NX)
+      let hNear = null, dNear = Infinity, fHot = 0
+      for (const h of hots) {
+        if (!(h.boost > 0) || h.az < XS || h.az > XE || h.el < YS || h.el > YE) continue
+        const d = Math.hypot(ax - h.az, ay - h.el)
+        if (d < dNear) { dNear = d; hNear = h }
+        const col = cl(Math.round((h.az - XS) / dx), 0, NX - 1), row = cl(Math.round((h.el - YS) / dy), 0, NY - 1)
+        if (F[row * NX + col] > fHot) fHot = F[row * NX + col]
+      }
+      if (!hNear || dNear <= 0.35 * hNear.w) break     // argmax 已落在峰点核心内
+      const extra = Math.min(12 - lifted, 20 * Math.log10(Fmax / Math.max(fHot, 1e-12)) + 0.4)
+      if (!(extra > 0.05)) break
+      for (let m = 0; m < M; m++) if (hb[m] > 0) { tdb[m] += extra * (hb[m] / maxHB); tAmp[m] = Math.pow(10, tdb[m] / 20) }
+      lifted += extra
+      scoreBest = Infinity; rippleBest = 0             // 目标变了：留优重置（激励/权重热启动续跑）
+      runIters(N > 250 ? 10 : 12)
+      ;({ F, Fmax, sumP, kMax } = computeField())
+    }
+  }
+  const intP = (sumP / (Fmax * Fmax)) * dx * dy * D2R * D2R   // ∫P̂dΩ（合成，cos az 已入）
+  // ⑥ 定标（物理增益恒先算，能量守恒 + 电扫损失）：D = η_ap·4πA/λ²·cos^R(θ0_peak)·Ω1/∫P̂dΩ_composite。
+  //   4πA/λ²=4π·Nx·Ny·dx·dy（=solvePam.dirDbi 去 eff）；Ω1=单支 Butler 波束(取最近峰的端口)在同网格的立体角
+  //   （同模型同截断 → 偏差抵消，单波束覆盖→ Ω1/∫≈1 → D=η·4πA/λ²·cos^R(θ0)，与手册「4πA/λ²·cos^R(θ0)」逐字一致）；
+  //   cos^R(θ0_peak)=w_peak^R（w=方向余弦第三分量=cosθ0，单元因子已折进 Fmax 但被归一化抵消 → 显式乘回电扫损失）。
+  const uPk = gridDir(6, XS + dx * (kMax % NX), YS + dy * Math.floor(kMax / NX))
+  const wPk = Math.max(1e-6, uPk[2])                  // cos θ0_peak
+  // 最近峰的 Butler 端口 → 单支波束 Ω1（同网格积分）
+  let pk = ports[0], pd = Infinity
+  for (const pt of ports) { const dd = (pt.u0 - uPk[0]) ** 2 + (pt.v0 - uPk[1]) ** 2; if (dd < pd) { pd = dd; pk = pt } }
+  let f1max = 0, sum1 = 0
+  for (let row = 0; row < NY; row++) { const py = YS + dy * row; for (let col = 0; col < NX; col++) { const px = XS + dx * col; const d0 = gridDir(6, px, py); const v = Math.abs(pamField(d0[0], d0[1], pk.u0, pk.v0, pam)); if (v > f1max) f1max = v; sum1 += v * v * Math.cos(px * D2R) } }
+  const omega1 = f1max > 0 ? (sum1 / (f1max * f1max)) * dx * dy * D2R * D2R : intP
+  const etaAp = cl(Number(pam.eff), 1, 100) / 100
+  const maxDirLin = 4 * Math.PI * Math.round(pam.Nx) * Math.round(pam.Ny) * Number(pam.dxWl) * Number(pam.dyWl)
+  const scanLoss = pam.elem === false ? 1 : Math.pow(wPk, R)   // cos^R(θ0_peak) 电扫损失（单元因子关闭则无）
+  const physPeakDbi = 10 * Math.log10(Math.max(1e-9, etaAp * maxDirLin * scanLoss * omega1 / intP))
+  // 站点标签锚定（value 模式，同 buildShapedGrd ⑤）：令最差覆盖点≈covValue、内圈按标签更高
+  let relMin = Infinity, minTdb = Infinity
+  for (let m = 0; m < M; m++) if (kind[m] !== 2 && tdb[m] < minTdb) minTdb = tdb[m]
+  if (!Number.isFinite(minTdb)) minTdb = 0
+  const qArr = [], outRel = []
+  for (let m = 0; m < M; m++) {
+    if (kind[m] === 2) continue
+    const [fr, fi] = fld(bRe, bIm, m)
+    const rel = 20 * Math.log10(Math.max(Math.hypot(fr, fi), 1e-8) / Fmax)
+    if (rel < relMin) relMin = rel
+    qArr.push((tdb[m] - minTdb) - rel)
+    if (tdb[m] - minTdb < 0.01) outRel.push(rel)
+  }
+  if (!Number.isFinite(relMin)) relMin = 0
+  qArr.sort((a, b) => a - b); outRel.sort((a, b) => a - b)
+  let peakDbi
+  if (mode === 'physical') peakDbi = physPeakDbi
+  else peakDbi = covValue + (qArr.length ? qArr[Math.floor(qArr.length * 0.92)] : -relMin)
+  const paDb = peakDbi - physPeakDbi
+  const outMed = outRel.length ? outRel[Math.floor(outRel.length / 2)] : relMin
+  const edgeVal = mode === 'value' ? covValue : peakDbi + outMed
+  const covMin = peakDbi + relMin
+  const scanDeg = Math.acos(cl(wPk, -1, 1)) / D2R
+  // 峰值点实现度（相控阵宽波束 → 局部峰有物理上限）：实测各正峰点相对【基底覆盖中位电平】的抬升 vs 请求增量。
+  const hotReport = []
+  let hotGap = 0
+  if (hots.some((h) => h.boost > 0)) {
+    const covRel = []
+    for (let m = 0; m < M; m++) { if (kind[m] !== 0 || hb[m] > 0.5) continue; const [fr, fi] = fld(bRe, bIm, m); covRel.push(20 * Math.log10(Math.max(Math.hypot(fr, fi), 1e-8) / Fmax)) }
+    covRel.sort((a, b) => a - b)
+    const baseRel = covRel.length ? covRel[Math.floor(covRel.length / 2)] : relMin
+    const sampF = (az, el) => { const c = cl(Math.round((az - XS) / dx), 0, NX - 1), r = cl(Math.round((el - YS) / dy), 0, NY - 1); return F[r * NX + c] }
+    for (const h of hots) {
+      if (!(h.boost > 0)) continue
+      const got = 20 * Math.log10(Math.max(sampF(h.az, h.el), 1e-8) / Fmax) - baseRel
+      hotReport.push({ req: +h.boost.toFixed(1), got: +got.toFixed(1) })
+      if (h.boost - got > hotGap) hotGap = h.boost - got
+    }
+  }
+  // ⑦ 星上激励指令（BFN 端口复激励）：功率占比 p_i=|w_i|²/Σ|w_j|²；幅度=10log10(p_i) dB（rel BFN 输入功率，手册 p126）；
+  //   相位=arg(w_i)（实 basis → 0/180°）；端口指向(u0,v0)→(az,el)→地面经纬（供测控可视 / 上注）。
+  let sumW2 = 0
+  for (let i = 0; i < N; i++) sumW2 += bRe[i] * bRe[i] + bIm[i] * bIm[i]
+  if (!(sumW2 > 0)) sumW2 = 1
+  const excit = ports.map((pt, i) => {
+    const w2 = bRe[i] * bRe[i] + bIm[i] * bIm[i]
+    const gr = azElGround(satLon, satLat || 0, altKm, pt.az, pt.el)
+    let ph = Math.atan2(bIm[i], bRe[i]) / D2R
+    if (ph < -179.999) ph = 180
+    return {
+      port: i + 1, n: pt.n, m: pt.m, u0: +pt.u0.toFixed(4), v0: +pt.v0.toFixed(4), az: +pt.az.toFixed(3), el: +pt.el.toFixed(3),
+      lon: gr ? +gr.lon.toFixed(3) : null, lat: gr ? +gr.lat.toFixed(3) : null,
+      ampDb: +(10 * Math.log10(Math.max(w2 / sumW2, 1e-12))).toFixed(2), phaseDeg: +ph.toFixed(1), powPct: +(100 * w2 / sumW2).toFixed(2)
+    }
+  }).sort((a, b) => b.ampDb - a.ampDb)
+  // ⑧ 写 GRD（与高斯/赋形档同构：icomp3/ncomp2/igrid6；分量1=|f|·S）
+  const S = Math.pow(10, peakDbi / 20) / Fmax
+  const fAmp = Math.pow(10, (peakDbi + floorDb) / 20)
+  const peakAt = [XS + dx * (kMax % NX), YS + dy * Math.floor(kMax / NX)]
+  const head = []
+  const sn = asciiSafe(satName)
+  head.push(`SatSim synthesized pattern (SATSOFT-style phased-array contour shaping)${sn ? ' - ' + sn : ''}. Sat. lon=${(+satLon).toFixed(2)}, lat=${(+(satLat || 0)).toFixed(2)}, height=${Math.round(altKm)} km, ports=${N}`)
+  head.push(`SYNTHMETA ${JSON.stringify({ kind: 'pamShaped', satLon: +(+satLon).toFixed(4), satLat: +(+(satLat || 0)).toFixed(4), altKm: Math.round(altKm), Nx: Math.round(pam.Nx), Ny: Math.round(pam.Ny), dxWl: +pam.dxWl, dyWl: +pam.dyWl, R: +pam.R, tri: !!pam.tri, mode, value: +edgeVal.toFixed(2), peak: +peakDbi.toFixed(2), physPeak: +physPeakDbi.toFixed(2), pa: +paDb.toFixed(2), scan: +scanDeg.toFixed(2), nBeams: N, nPolys: polys.length, ...(hots.length ? { hot: hots.length } : {}) })}`)
+  head.push('++++')
+  head.push('1')
+  head.push(' 1 3 2 6')
+  head.push('  0  0')
+  head.push(` ${fexp(XS)} ${fexp(YS)} ${fexp(XE)} ${fexp(YE)}`)
+  head.push(` ${NX} ${NY} 0`)
+  const Lout = new Array(NX * NY)
+  const zero = fexp(0)
+  for (let k = 0; k < NX * NY; k++) { let c = F[k] * S; if (c < fAmp) c = fAmp; Lout[k] = ` ${fexp(c)} ${zero} ${zero} ${zero}` }
+  let warn = portWarn
+  const dropPct = 100 * unreach / Math.max(1, covCnt + unreach)
+  const cornerDip = edgeVal - covMin
+  if (dropPct > 2) warn = (warn ? warn + '；' : '') + `约 ${dropPct.toFixed(0)}% 覆盖细节小于 Butler 波束分辨率 θ3=${th.toFixed(2)}°（加大阵元数可改善）`
+  else if (cornerDip > 2.5) warn = (warn ? warn + '；' : '') + `个别边角凹陷至 ${covMin.toFixed(1)}（低于保证值 ${cornerDip.toFixed(1)} dB）——细部小于阵面分辨率 θ3=${th.toFixed(2)}°`
+  if (sol.gratingInReal) warn = (warn ? warn + '；' : '') + `⚠ 单元间距 ≥1λ：栅瓣进实空间（±${sol.gratingLobeDeg.toFixed(1)}°），出图窗口未含栅瓣（减小间距至 <1λ 可消除）`
+  const hotOut = hots.filter((h) => geo.signedDist(h.az, h.el) < 0).length
+  if (hotOut) warn = (warn ? warn + '；' : '') + `${hotOut} 个峰值点在覆盖区外——目标只作用于覆盖区内，区外峰点基本无效（请移入覆盖区）`
+  if (hotGap > 1.5) warn = (warn ? warn + '；' : '') + `峰值点最大欠额 ${hotGap.toFixed(1)} dB（阵面波束宽 θ3=${th.toFixed(2)}° 造不出更锐的局部峰——加大阵元数 / 减小间距，或把峰点宽度放大到 ≥2·θ3）`
+  return { text: head.join('\r\n') + '\r\n' + Lout.join('\r\n') + '\r\n', value: edgeVal, peakDbi, physPeakDbi, paDb, covMin, omegaDeg2, nBeams: N, rippleDb: rippleBest / 2, nx: NX, ny: NY, warn, peakAt, scanDeg, excit, hotReport }
 }
 
 // ================= 草图几何（放置阶段的轮廓预览，与场合成同一几何链 → 所见即所得） =================
