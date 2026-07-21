@@ -4,9 +4,11 @@
 // 纯几何在 visibility.js；本层只做编排与宿主接线，宿主能力全经参数注入。
 //
 // 交付节奏：P1 = 瞬时可见（本文件）。P2 时段表 / P3 覆盖热力图 复用同一「选目标 → 算仰角」地基。
-import { ref, computed, watch } from 'vue'
+import { ref, shallowRef, computed, watch } from 'vue'
 import sat from '../constellation/satellite.js'
 import { computeVisibility, accessWindows, orbitCanReach, ringCentroid } from './visibility.js'
+import { makeCoverageGrid, createCoverageRun, buildCoverageFillBands, estimateCoverageWork, fomMeta, COVERAGE_FOMS } from './coverageGrid.js'
+import { schemeColorsRGB } from '../grd/colormap.js'
 
 const KEY = 'globe3d/visibility'
 
@@ -22,8 +24,9 @@ export const orbitClass = (altKm) => (!Number.isFinite(altKm) ? '—' : altKm < 
 
 export function useVisibility({
   getStations, getPoints, getTrajectories, getPolys, getRenderEntries,
-  calcAt, ccTimeAt, isCustomEntry, refresh
+  calcAt, ccTimeAt, isCustomEntry, refresh, drawCov, setCovAlpha
 }) {
+  const clampN = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v)
   const open = ref(false)
   const minElev = ref(5)             // 仰角门限（度）
   const targetKind = ref('')         // 'station' | 'point' | 'traj' | 'poly'
@@ -41,6 +44,20 @@ export function useVisibility({
   const accessResults = ref([])      // 过境窗口 [{noradId,name,group,windows}]
   const accessBusy = ref(false)
   const accessMsg = ref('')
+  // ==================== 覆盖分析（Coverage / FOM）——「覆盖」模式（复刻 STK Coverage，与 access 同级）====================
+  const covRegionKind = ref('global')   // 区域：'global' 全球 | 'bounds' 自定义边界 | 'poly' Polygon 区域
+  const covLatMin = ref(-60), covLatMax = ref(60), covLonMin = ref(-180), covLonMax = ref(180)
+  const covPolyId = ref('')             // poly 区域选中的 Polygon id
+  const covStep = ref(5)                // 网格步长（度）
+  const covHorizonH = ref(6)            // 分析时窗（小时）——覆盖计算重，默认比 access 短
+  const covSample = ref(60)             // 时间采样步长（秒）
+  const covFom = ref('percent')         // 当前显示的 FOM
+  const covScheme = ref('turbo')        // 配色方案
+  const covAlpha = ref(0.82)            // 热力图透明度
+  const covBands = ref(12)              // 分带档数
+  const covBusy = ref(false)
+  const covMsg = ref('')
+  const covData = shallowRef(null)      // 结果：{ N, cells, step, T, sampleSec, minElevDeg, satActive, fom:{...} }（重数据，整体替换、不深度响应）
 
   // ---- 目标点集归约（站/点=1 个；航迹=点串；Polygon=质心）----
   function targetPoints() {
@@ -62,6 +79,7 @@ export function useVisibility({
     if (!open.value) { results.value = []; satCount.value = 0; return }
     const src = getRenderEntries() || []
     satCount.value = src.length
+    if (mode.value === 'coverage') { results.value = []; return }   // 覆盖模式只看热力图，不算/不画逐星可见标记
     const tp = targetPoints()
     if (!tp.length || !src.length) { results.value = []; return }
     const now = calcAt(), gmst = sat.gstime(now)
@@ -99,7 +117,7 @@ export function useVisibility({
   // 地图叠加：目标点（贴地青点）+ 可见星星下点（2D 平面图画卫星图标；3D 因 setSatLayer 不画图标 → 只在 hover 时出名字）。
   // 3D 的在轨立体点 + 目标→星视线斜线由宿主 computeVisibilityGeometry/commitGeometry 走 setSelectionSet 另画（setSatLayer 画不出在轨高度）。
   function overlaySpec() {
-    if (!open.value) return null
+    if (!open.value || mode.value === 'coverage') return null   // 覆盖模式：只留热力图，不画目标点/可见星标记
     const dots = [], sats = []
     for (const t of targetPoints()) dots.push({ lon: t.lon, lat: t.lat, color: TARGET_HEX, px: TARGET_PX, r: TARGET_PX * 0.0018 })
     const hid = String(hoveredId.value || '')
@@ -152,16 +170,114 @@ export function useVisibility({
     }
     setTimeout(stepFn, 20)
   }
-  function setMode(m) { mode.value = m === 'access' ? 'access' : 'now' }
+  function setMode(m) { mode.value = (m === 'access' || m === 'coverage') ? m : 'now'; recompute(); drawCovNow(); refresh(); persist() }
+
+  // ---- 覆盖分析（Coverage / FOM）：撒网格 → 对每胞元跑资产集可见性 → 汇成 FOM → 分帧异步（进度+取消）→ 热力图 ----
+  const COV_MAX_WORK = 2.5e8   // 散射法计算量上限（≈传播×10 + 扫描）：超过请缩小（防冻结）。~对应上千万次传播、几十秒封顶
+  let _covToken = 0
+  function covRegionValue() {
+    const kind = covRegionKind.value
+    if (kind === 'bounds') return { kind: 'bounds', latMin: Number(covLatMin.value), latMax: Number(covLatMax.value), lonMin: Number(covLonMin.value), lonMax: Number(covLonMax.value) }
+    if (kind === 'poly') {
+      const pg = (getPolys() || []).find((x) => x.id === covPolyId.value)
+      const pts = pg && Array.isArray(pg.pts) ? pg.pts.map((q) => (Array.isArray(q) ? [q[0], q[1]] : [q.lon, q.lat])).filter((q) => Number.isFinite(q[0]) && Number.isFinite(q[1])) : null
+      return pts && pts.length >= 3 ? { kind: 'poly', poly: pts } : { kind: 'global' }
+    }
+    return { kind: 'global' }
+  }
+  const covDomain = (d, meta) => (meta.fixedDomain ? meta.fixedDomain : null)
+  const covBandsFor = (meta) => (meta.binary ? 2 : (Number(covBands.value) || 12))
+  function covLayer() {
+    const d = covData.value
+    if (!d) return null
+    const meta = fomMeta(covFom.value), values = d.fom[covFom.value]
+    if (!values) return null
+    const { fillBands, lo, hi } = buildCoverageFillBands({ cells: d.cells, step: d.step }, values, { scheme: covScheme.value, bands: covBandsFor(meta), domain: covDomain(d, meta), zeroTransparent: meta.zeroTransparent })
+    return { id: 'covfom', name: 'Coverage', fillBands, alpha: Number(covAlpha.value) || 0.82, lo, hi, unit: meta.unit }
+  }
+  // 依当前模式/数据把热力图画上（或清掉）——统一出口，随算随画、切模式即显隐
+  function drawCovNow() {
+    if (!drawCov) return
+    drawCov((open.value && mode.value === 'coverage' && covData.value) ? covLayer() : null)
+  }
+  function computeCoverage() {
+    const region = covRegionValue()
+    const grid = makeCoverageGrid(region, Number(covStep.value) || 5)
+    if (!grid.cells.length) { covData.value = null; covMsg.value = '该区域没有网格胞元（检查边界 / Polygon）'; drawCovNow(); return }
+    const srcAll = getRenderEntries() || []
+    if (!srcAll.length) { covData.value = null; covMsg.value = '卫星集为空（在「星座」视图搜索显示卫星）'; drawCovNow(); return }
+    const me = Number(minElev.value) || 0
+    const horizonSec = clampN(Number(covHorizonH.value) || 6, 0.1, 168) * 3600
+    const sampleSec = clampN(Number(covSample.value) || 60, 5, 600)
+    const T0 = Math.floor(horizonSec / sampleSec) + 1
+    if (estimateCoverageWork(grid.cells.length, srcAll.length, horizonSec, sampleSec) > COV_MAX_WORK) {
+      covData.value = null
+      covMsg.value = `计算量过大（${grid.cells.length.toLocaleString()} 格 × ${srcAll.length.toLocaleString()} 星 × ${T0.toLocaleString()} 采样）——请增大网格步长 / 缩短时窗 / 增大采样步长，或在「星座」筛选卫星`
+      drawCovNow(); return
+    }
+    covBusy.value = true; covData.value = null; covMsg.value = `覆盖计算… 0 / ${T0}`; drawCovNow()
+    const token = ++_covToken
+    const now = calcAt(), ccNow = ccTimeAt(now)
+    const ents = srcAll.map((e) => ({ rec: e.rec, name: e.name, noradId: e.noradId, group: e.group, _cc: !!isCustomEntry(e) }))
+    let run
+    try { run = createCoverageRun(ents, grid, { now, ccNow }, { horizonSec, minElevDeg: me, sampleSec }) } catch (e) { covBusy.value = false; covMsg.value = '计算失败：' + ((e && e.message) || e); return }
+    const T = run.T, perSample = Math.max(1, grid.cells.length * Math.max(1, run.activeCount))
+    const BATCH = clampN(Math.round(3e6 / perSample), 1, 60)
+    const stepFn = () => {
+      if (token !== _covToken) return   // 已被新一次计算 / 取消作废
+      let done
+      try { done = run.stepBatch(BATCH) } catch (e) { covBusy.value = false; covMsg.value = '计算失败：' + ((e && e.message) || e); return }
+      if (done < T) { covMsg.value = `覆盖计算… ${done} / ${T}`; setTimeout(stepFn, 0) }
+      else {
+        covData.value = run.finalize(); covBusy.value = false
+        covMsg.value = covData.value.satActive ? '' : '卫星集里没有轨道能覆盖该区域的星'
+        drawCovNow()
+      }
+    }
+    setTimeout(stepFn, 20)
+  }
+  function cancelCoverage() { _covToken++; covBusy.value = false; covMsg.value = '' }
+  // 图例 / KPI（随 FOM/配色/数据变，不触发重算）
+  const covLegend = computed(() => {
+    const d = covData.value
+    if (!d) return null
+    const meta = fomMeta(covFom.value), values = d.fom[covFom.value], dom = covDomain(d, meta)
+    let lo, hi
+    if (dom) { lo = dom[0]; hi = dom[1] } else {
+      lo = Infinity; hi = -Infinity
+      for (let i = 0; i < d.N; i++) { const v = values[i]; if (v !== v) continue; if (meta.zeroTransparent && v <= 1e-9) continue; if (v < lo) lo = v; if (v > hi) hi = v }
+      if (!(lo <= hi)) { lo = 0; hi = 1 }
+    }
+    if (hi <= lo) hi = lo + 1
+    const bands = covBandsFor(meta)
+    return { lo, hi, bands, colors: schemeColorsRGB(covScheme.value, bands), unit: meta.unit, label: meta.label, time: !!meta.time }
+  })
+  const covKpi = computed(() => {
+    const d = covData.value
+    if (!d) return null
+    const meta = fomMeta(covFom.value), values = d.fom[covFom.value], simple = d.fom.simple, cells = d.cells
+    let wCov = 0, wTot = 0, mn = Infinity, mx = -Infinity, sum = 0, cnt = 0
+    for (let i = 0; i < d.N; i++) {
+      const w = Math.cos(cells[i].lat * Math.PI / 180)
+      wTot += w; if (simple[i] > 0) wCov += w
+      const v = values[i]; if (v !== v) continue
+      if (meta.zeroTransparent && v <= 1e-9) continue
+      if (v < mn) mn = v; if (v > mx) mx = v; sum += v; cnt++
+    }
+    return { coverPct: wTot > 0 ? wCov / wTot * 100 : 0, min: cnt ? mn : 0, max: cnt ? mx : 0, mean: cnt ? sum / cnt : 0, cells: d.N, unit: meta.unit, label: meta.label }
+  })
 
   // ---- 生命周期 ----
-  function openPanel() { open.value = true; load(); recompute(); refresh() }
-  function close() { open.value = false; hoveredId.value = ''; refresh() }
+  function openPanel() { open.value = true; load(); recompute(); refresh(); drawCovNow() }
+  function close() { open.value = false; hoveredId.value = ''; _covToken++; covBusy.value = false; if (drawCov) drawCov(null); refresh() }
 
   watch([minElev, targetKind, targetId], () => { recompute(); refresh(); persist() })
   watch([iconSize, showName, nameSize, iconColor], () => { refresh(); persist() })   // 星下点样式变：只重绘（不重算）+ 存
+  watch([covFom, covScheme, covBands], () => { drawCovNow(); persist() })            // 换指标/配色/档数：只重建热力图（不重算）
+  watch(covAlpha, () => { if (setCovAlpha) setCovAlpha(Number(covAlpha.value) || 0.82); persist() })
+  watch([covRegionKind, covLatMin, covLatMax, covLonMin, covLonMax, covPolyId, covStep, covHorizonH, covSample], () => persist())   // 区域/参数变：仅存（需手动点「计算」）
 
-  // ---- 持久化（目标选择 + 门限 + 排序）----
+  // ---- 持久化（目标选择 + 门限 + 排序 + 覆盖分析参数）----
   let _loaded = false
   function load() {
     if (_loaded) return
@@ -177,11 +293,38 @@ export function useVisibility({
         if (typeof d.showName === 'boolean') showName.value = d.showName
         if (Number.isFinite(d.nameSize)) nameSize.value = d.nameSize
         if (typeof d.iconColor === 'string' && /^#[0-9a-f]{6}$/i.test(d.iconColor)) iconColor.value = d.iconColor
+        if (['now', 'access', 'coverage'].includes(d.mode)) mode.value = d.mode   // 记住上次模式（别每次都回瞬时可见）
+        const c = d.cov
+        if (c && typeof c === 'object') {
+          if (['global', 'bounds', 'poly'].includes(c.regionKind)) covRegionKind.value = c.regionKind
+          if (Number.isFinite(c.latMin)) covLatMin.value = c.latMin
+          if (Number.isFinite(c.latMax)) covLatMax.value = c.latMax
+          if (Number.isFinite(c.lonMin)) covLonMin.value = c.lonMin
+          if (Number.isFinite(c.lonMax)) covLonMax.value = c.lonMax
+          if (typeof c.polyId === 'string') covPolyId.value = c.polyId
+          if (Number.isFinite(c.step)) covStep.value = c.step
+          if (Number.isFinite(c.horizonH)) covHorizonH.value = c.horizonH
+          if (Number.isFinite(c.sample)) covSample.value = c.sample
+          if (COVERAGE_FOMS.some((f) => f.key === c.fom)) covFom.value = c.fom
+          if (typeof c.scheme === 'string') covScheme.value = c.scheme
+          if (Number.isFinite(c.alpha)) covAlpha.value = c.alpha
+          if (Number.isFinite(c.bands)) covBands.value = c.bands
+        }
       }
     } catch { /* ignore */ }
   }
   function persist() {
-    try { localStorage.setItem(KEY, JSON.stringify({ minElev: Number(minElev.value) || 0, targetKind: targetKind.value, targetId: targetId.value, sortKey: sortKey.value, iconSize: Number(iconSize.value) || 12, showName: !!showName.value, nameSize: Number(nameSize.value) || 10, iconColor: iconColor.value })) } catch { /* ignore */ }
+    try {
+      localStorage.setItem(KEY, JSON.stringify({
+        minElev: Number(minElev.value) || 0, targetKind: targetKind.value, targetId: targetId.value, sortKey: sortKey.value, mode: mode.value,
+        iconSize: Number(iconSize.value) || 12, showName: !!showName.value, nameSize: Number(nameSize.value) || 10, iconColor: iconColor.value,
+        cov: {
+          regionKind: covRegionKind.value, latMin: Number(covLatMin.value), latMax: Number(covLatMax.value), lonMin: Number(covLonMin.value), lonMax: Number(covLonMax.value),
+          polyId: covPolyId.value, step: Number(covStep.value) || 5, horizonH: Number(covHorizonH.value) || 6, sample: Number(covSample.value) || 60,
+          fom: covFom.value, scheme: covScheme.value, alpha: Number(covAlpha.value) || 0.82, bands: Number(covBands.value) || 12
+        }
+      }))
+    } catch { /* ignore */ }
   }
 
   return {
@@ -189,6 +332,10 @@ export function useVisibility({
     hasTarget, satCount, kpi, skyPoints, skyThrR,
     mode, horizonH, accessResults, accessBusy, accessMsg, computeAccess, setMode,
     iconSize, showName, nameSize, iconColor,
+    // 覆盖分析（Coverage）
+    covRegionKind, covLatMin, covLatMax, covLonMin, covLonMax, covPolyId, covStep, covHorizonH, covSample,
+    covFom, covScheme, covAlpha, covBands, covBusy, covMsg, covData, covLegend, covKpi,
+    computeCoverage, cancelCoverage, covFoms: COVERAGE_FOMS,
     targetPoints, recompute, overlaySpec, setHover, setTarget, setSort, openPanel, close
   }
 }

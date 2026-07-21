@@ -806,6 +806,27 @@ export function createGlobeScene(container, quality = {}) {
     disposeCovGroup(covFieldGroup)
     scene.remove(covFieldGroup); covFieldGroup = null; covLayers = new Map()
   }
+
+  // ===== STK Coverage 覆盖分析【专用通道】：独立于 GRD 覆盖场(setCoverageField/covFieldGroup)，互不覆写。=====
+  // 一张 FOM 分带热力图（各胞元四角多边形上色），复用 makeFill/updateFill（贴球细分 + 持久缓冲）。
+  // 静态快照：随算随画、不随时间轴每帧重建。renderOrder 略低于 GRD 覆盖(5) → 二者同显时 GRD 天线足迹在其上。
+  let covGridGroup = null, covGridFill = null
+  function clearCovGrid() {
+    if (!covGridGroup) return
+    disposeCovGroup(covGridGroup); scene.remove(covGridGroup); covGridGroup = null; covGridFill = null
+  }
+  function setCovGrid(layer, opts) {
+    clearCovGrid()
+    if (!layer || !layer.fillBands || !layer.fillBands.length) return
+    const alpha = opts && opts.alpha != null ? opts.alpha : 0.82
+    const g = new THREE.Group()
+    covGridFill = makeFill(alpha)
+    covGridFill.mesh.renderOrder = 4.9
+    updateFill(covGridFill, layer.fillBands, alpha, 1.00058)
+    g.add(covGridFill.mesh)
+    covGridGroup = g; scene.add(g)
+  }
+  function setCovGridAlpha(a) { if (covGridFill) covGridFill.mat.opacity = a }
   // 分带填充：与 2D 同源——直接用 bandGeometry 逐三角形切出的各档环带多边形（lon/lat）构网格。
   // 每个凸多边形扇形三角化，顶点色 = 该档颜色 → 填充边界即等值线、精确重合，无毛刺。地平/接缝裁剪
   // 已在 bandGeometry 内完成（多边形已切在 0°仰角线内、跨缝已解缠），无需再在着色器里 discard。
@@ -1459,7 +1480,7 @@ export function createGlobeScene(container, quality = {}) {
   return {
     setSatellites, setLabelMode, setHighlight, setHighlightLLA, setOnPick,
     setOrbit, setGroundTrack, setFootprint, setSelectionSet, clearSelectionGeom,
-    setCoverage, clearCoverage, setCoverageField, patchCoverageLayers, clearCoverageField, setCoverageFieldAlpha, setSatLayer, clearSatLayer, faceLonLat, setProvinces, setProvincesVisible, setCities, setCitiesVisible, setBorderStyle, setNameScale, setLabelStyle, setOceanColor, setLandColors,
+    setCoverage, clearCoverage, setCoverageField, patchCoverageLayers, clearCoverageField, setCoverageFieldAlpha, setCovGrid, clearCovGrid, setCovGridAlpha, setSatLayer, clearSatLayer, faceLonLat, setProvinces, setProvincesVisible, setCities, setCitiesVisible, setBorderStyle, setNameScale, setLabelStyle, setOceanColor, setLandColors,
     setPixelRatio, setRenderFps, setSphereDetail, setMapDetail,
     setMarkers, setTrajectories, setFocusSatLLA, setOnHover, setOnRightClick, setBeamDragMode, setOnBeamDrag, setLabelDragMode, setOnLabelDrag, setPolyDrawMode, setOnPolyDraw, setPlaceMode, setOnPlace,
     faceTo, rotateBy, setAutoRotate, setAutoRotateSpeed, setOnAutoRotateOff, resize, pause, resume, destroy,

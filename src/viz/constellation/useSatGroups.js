@@ -74,7 +74,27 @@ export function useSatGroups() {
     const s = normSats(sats); if (!s.length) return false
     g.sats = s; list.value = [...list.value]; persist(); return true
   }
+  // 向组【追加】卫星（按 NORAD 去重，只加新的）。sats=[{noradId,name}] 或 [{id,name}]。返回实际新增数。
+  function append(id, sats) {
+    const g = find(id); if (!g) return 0
+    const add = normSats(sats); if (!add.length) return 0
+    const have = new Set(g.sats.map((s) => s.id))
+    const fresh = add.filter((s) => !have.has(s.id))
+    if (!fresh.length) return 0
+    g.sats = [...g.sats, ...fresh]; list.value = [...list.value]; persist(); return fresh.length
+  }
+  // 从组【移除】指定 NORAD 卫星。ids=[noradId...]。返回实际移除数。
+  function removeSats(id, ids) {
+    const g = find(id); if (!g) return 0
+    const kill = new Set((ids || []).map((x) => String(x == null ? '' : x).trim()).filter(Boolean))
+    if (!kill.size) return 0
+    const before = g.sats.length
+    g.sats = g.sats.filter((s) => !kill.has(s.id))
+    const removed = before - g.sats.length
+    if (removed) { list.value = [...list.value]; persist() }
+    return removed
+  }
   function remove(id) { list.value = list.value.filter((g) => g.id !== id); persist() }
 
-  return { list, load, persist, find, add, rename, overwrite, remove }
+  return { list, load, persist, find, add, rename, overwrite, append, removeSats, remove }
 }

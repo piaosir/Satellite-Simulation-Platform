@@ -131,14 +131,23 @@ const vis = useVisibility({
   getStations: () => stations.value, getPoints: () => points.value, getTrajectories: () => trajectories.value,
   getPolys: () => polys.value, getRenderEntries: () => renderEntries,
   calcAt: () => calcAt(), ccTimeAt: (t) => ccTimeAt(t), isCustomEntry: (e) => isCustomEntry(e),
-  refresh: () => { redrawSats(); commitGeometry() }
+  refresh: () => { redrawSats(); commitGeometry() },
+  // 覆盖分析 FOM 热力图【专用通道】：spec={id,fillBands,alpha} 画到 3D 球 + 2D 平面图；spec=null 清除（互不干扰 GRD 覆盖）。
+  drawCov: (spec) => {
+    if (spec && spec.fillBands && spec.fillBands.length) {
+      const layer = { id: spec.id, fillBands: spec.fillBands }, opts = { alpha: spec.alpha }
+      if (scene) scene.setCovGrid(layer, opts)
+      if (flat) flat.setCovGrid(layer, opts)
+    } else { if (scene) scene.clearCovGrid(); if (flat) flat.clearCovGrid() }
+  },
+  setCovAlpha: (a) => { if (scene) scene.setCovGridAlpha(a); if (flat) flat.setCovGridAlpha(a) }
 })
 // 可见性分析：可见星复用「聚焦特效」立体呈现——在轨道高度的绿点(satPos) + 目标→星视线斜线(2 点 orbit 走 lineFromLLA，
 // 尊重每端高度)，经 scene.setSelectionSet 画（唯一能在轨道高度画卫星点的通道）。
 // 只「算」不「推」：返回 { items(在轨点+视线), subs(星下点图标，各自带 px/colorHex) }，由 commitGeometry 与聚焦星几何合并后一次性提交，
 // 二者共用同一 replace-all 通道却互不覆盖——可见性模式下聚焦某星，其星下点/轨迹/足迹照常显示、随时间轴移动。
 function computeVisibilityGeometry() {
-  if (!scene || !vis.open.value) return { items: [], subs: [] }
+  if (!scene || !vis.open.value || vis.mode.value === 'coverage') return { items: [], subs: [] }
   const rs = vis.results.value, tp = vis.targetPoints()
   if (!rs.length || !tp.length) return { items: [], subs: [] }
   const tgt = tp[0]
@@ -171,6 +180,34 @@ const VIS_DIRS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']
 function visCompass(az) { const a = ((Number(az) % 360) + 360) % 360; return VIS_DIRS[Math.round(a / 45) % 8] }
 // 分钟 → 简短时长文本（如 2h15m / 45m）
 function visDur(min) { const m = Math.max(0, Math.round(Number(min) || 0)); const h = Math.floor(m / 60), mm = m % 60; return h ? h + 'h' + (mm < 10 ? '0' : '') + mm + 'm' : mm + 'm' }
+// 覆盖分析 FOM 读数格式化（时间类=整数分钟；≥100 取整；近整数取整；否则一位小数）
+function covFmt(v, leg) {
+  if (v == null || !Number.isFinite(v)) return '—'
+  if (leg && leg.time) return Math.round(v).toLocaleString()
+  if (Math.abs(v) >= 100) return Math.round(v).toLocaleString()
+  if (Math.abs(v - Math.round(v)) < 1e-6) return String(Math.round(v))
+  return v.toFixed(1)
+}
+// 图例色带某档的值区间（鼠标悬停显示）：[lo+i/bands·跨度, lo+(i+1)/bands·跨度]
+function covBandLabel(i, leg) {
+  if (!leg) return ''
+  const span = leg.hi - leg.lo, a = leg.lo + span * i / leg.bands, b = leg.lo + span * (i + 1) / leg.bands
+  return covFmt(a, leg) + ' ~ ' + covFmt(b, leg) + (leg.unit ? ' ' + leg.unit : '')
+}
+// 时段过境（Access）导出 CSV（UTF-8 BOM，Excel 可直接打开）：每行一次过境，绝对 UTC + 相对分钟。
+function exportAccessExcel() {
+  const rows = vis.accessResults.value
+  if (!rows || !rows.length) { appAlert('先点「计算过境」生成结果'); return }
+  const esc = (s) => { s = String(s == null ? '' : s); return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s }
+  const isoM = (ms) => new Date(ms).toISOString().replace('T', ' ').slice(0, 19)
+  const lines = [['卫星', 'NORAD', '过境#', 'AOS(+分)', 'AOS(UTC)', 'LOS(UTC)', '时长(分)', '最高仰角(°)', '峰值(+分)', '截断'].join(',')]
+  for (const s of rows) for (let i = 0; i < s.windows.length; i++) {
+    const w = s.windows[i]
+    lines.push([esc(s.name), esc(s.noradId), i + 1, w.startMin.toFixed(2), isoM(w.startMs), isoM(w.endMs), w.durMin.toFixed(2), w.peakEl.toFixed(2), w.peakMin.toFixed(2), w.truncated ? '是' : ''].join(','))
+  }
+  const tgt = vis.targetKind.value === 'station' ? ((stations.value.find((x) => x.id === vis.targetId.value) || {}).name || '地球站') : (vis.targetKind.value || '目标')
+  saveExport('﻿' + lines.join('\r\n'), `过境窗口_${String(tgt).replace(/[\\/:*?"<>|]/g, '_')}.csv`, [{ name: 'CSV（Excel 可打开）', extensions: ['csv'] }])
+}
 async function toggleGrd() {
   grdOpen.value = !grdOpen.value
   if (grdOpen.value) { await grd.loadIndex(); grd.recompute(); redrawSats() }
@@ -674,6 +711,7 @@ function saveConstWizard() {
   if (m.id) customConst.update(m.id, draft); else { const cfg = customConst.add(draft); id = cfg.id }
   rebindSelection('cc_' + id)   // 选中的预览星重绑到提交版本，卡片/覆盖/星下点/轨迹不断
   constModal.value = null
+  if (!m.id) showConstAlone({ id })   // 新建星座：生成后单独显示（与「选哪个看哪个」一致，不叠加内置组）；编辑则保持当前显示
 }
 // 编辑器打开时：参数变动实时预览到地球（防抖 140ms；非法参数撤预览）。关闭时撤预览。
 let _cpvTimer = null
@@ -1194,6 +1232,29 @@ function saveSelectionAsGroup() {
   const sats = selEntries.map((e) => ({ noradId: e.noradId, name: e.name }))
   const g = satGroups.add(sats, '')
   if (g) { logMsg(`已存为卫星组「${g.name}」：${g.sats.length} 颗`); satGrpEnterRename(g) }
+}
+// 当前「选中的卫星」→ [{noradId,name}]：Ctrl 多选 / 单个聚焦星皆可（selEntries 两种情形都含）
+function selSatsForGroup() {
+  return (selEntries || []).filter((e) => e && e.noradId != null).map((e) => ({ noradId: e.noradId, name: e.name }))
+}
+// 把当前选中的卫星【加入】某组（去重追加）。来源优先：Ctrl/点选的选中集；否则用当前搜索筛选结果（批量加）。
+function addSelToGroup(g) {
+  let sats = selSatsForGroup()
+  if (!sats.length && filterEntries.length && filterGroupId.value !== g.id) sats = filterEntries.map((e) => ({ noradId: e.noradId, name: e.name }))
+  if (!sats.length) { appAlert('先选中卫星（点选一颗 / 按住 Ctrl 多选），或搜索出结果再加入'); return }
+  const n = satGroups.append(g.id, sats)
+  const gg = satGroups.find(g.id)
+  logMsg(n ? `已加入 ${n} 颗到卫星组「${g.name}」（去重后共 ${gg ? gg.sats.length : '?'} 颗）` : `所选卫星都已在「${g.name}」中`)
+  if (n && filterGroupId.value === g.id && gg) showSatGroup(gg)   // 正在看这组 → 刷新显示纳入新星
+}
+// 把当前选中的卫星【移出】某组（一般用于正在显示的组：点该组显示 → Ctrl 选要删的星 → 移出）
+function removeSelFromGroup(g) {
+  const ids = selSatsForGroup().map((s) => s.noradId)
+  if (!ids.length) { appAlert('先选中要移出的卫星（点该组显示后，Ctrl 选中组内的星）'); return }
+  const n = satGroups.removeSats(g.id, ids)
+  const gg = satGroups.find(g.id)
+  logMsg(n ? `已从卫星组「${g.name}」移出 ${n} 颗（剩 ${gg ? gg.sats.length : '?'} 颗）` : '所选卫星不在该组中')
+  if (n && filterGroupId.value === g.id) { (gg && gg.sats.length) ? showSatGroup(gg) : clearSearch() }
 }
 // 显示某卫星组：按 NORAD 从全量搜索库解析回可渲染 entries，走「筛选显示」管线渲染（跨分组、点选、覆盖圈、可见性全部照常）
 async function showSatGroup(g) {
@@ -3336,7 +3397,8 @@ function saveSelection() {
 // 资源管理器「星座」树行点击切换分组（原顶栏下拉已并入树）
 function pickGroup(i) {
   if (!Number.isInteger(i) || i < 0 || i >= GROUPS.length || i === groupIndex.value) return
-  soloConst.value = null   // 选内置组 → 清除自定义星座的单独显示高亮
+  soloConst.value = null            // 选内置组 → 清除自定义星座的单独显示高亮
+  customConst.showOnly(null)        // 并隐藏全部自定义星座：选哪个看哪个，内置组不再叠加自定义星座（如需叠加对比，用列表行内「眼睛」单独开）
   groupIndex.value = i; clearSearch()
   loadGroup(); saveSelection()
 }
@@ -3837,6 +3899,8 @@ onBeforeUnmount(() => {
                 <span class="ccic"><Icon name="layers" :size="12" /></span>
                 <span class="ccnm" :title="g.name">{{ g.name }}</span>
                 <span class="cccode">{{ g.sats.length }} 颗</span>
+                <span v-if="selList.length || (filterN && !filterGroupId)" class="ccic add" :title="'把当前' + (selList.length ? ('选中的 ' + selList.length) : ('筛选的 ' + filterN)) + ' 颗卫星加入本组（去重追加）'" @click.stop="addSelToGroup(g)"><Icon name="plus" :size="13" /></span>
+                <span v-if="selList.length && filterGroupId === g.id" class="ccic del" :title="'把选中的 ' + selList.length + ' 颗从本组移出'" @click.stop="removeSelFromGroup(g)"><Icon name="minus" :size="13" /></span>
                 <span class="ccic" title="重命名" @click.stop="satGrpEnterRename(g)"><Icon name="pencil" :size="11" /></span>
                 <span class="ccic del" :class="{ warn: satGrpDelId === g.id }" :title="satGrpDelId === g.id ? '再点一次确认删除' : '删除该组'" @click.stop="satGrpDelete(g)"><Icon name="trash" :size="11" /></span>
               </template>
@@ -4617,7 +4681,7 @@ onBeforeUnmount(() => {
           <!-- 分析目标 + 参数 -->
           <div class="sec">
             <div class="sect"><span>分析目标</span><span v-if="vis.satCount.value" class="vis-cnt" title="卫星集＝当前地图显示的星（在「星座」视图搜索可筛选显示）">卫星集 {{ vis.satCount.value.toLocaleString() }}</span></div>
-            <div class="srow"><label>目标</label>
+            <div v-if="vis.mode.value !== 'coverage'" class="srow"><label>目标</label>
               <select :value="vis.targetKind.value + '|' + vis.targetId.value" @change="e => visPickTarget(e.target.value)">
                 <option value="|">（选择地球站 / 点 / Polygon）</option>
                 <optgroup v-if="stations.length" label="地球站">
@@ -4631,22 +4695,23 @@ onBeforeUnmount(() => {
                 </optgroup>
               </select>
             </div>
-            <div v-if="!stations.length && !points.length && !polys.length" class="tip">还没有可选目标：去「标记」画一个地球站 / 点，或「Polygon」画一个区域。</div>
-            <div class="srow"><label>仰角门限</label><input class="ci vis-elev" type="number" step="1" min="0" max="89" :value="vis.minElev.value" @input="e => visSetElev(e.target.value)" /><span class="u">°</span><span class="tip inl">≥ 此仰角才算可见 · 卫星集＝当前显示的星</span></div>
+            <div v-if="vis.mode.value !== 'coverage' && !stations.length && !points.length && !polys.length" class="tip">还没有可选目标：去「标记」画一个地球站 / 点，或「Polygon」画一个区域。</div>
+            <div class="srow"><label>仰角门限</label><input class="ci vis-elev" type="number" step="1" min="0" max="89" :value="vis.minElev.value" @input="e => visSetElev(e.target.value)" /><span class="u">°</span><span class="tip inl">≥ 此仰角算可见 / 被覆盖 · 卫星集＝当前显示的星</span></div>
           </div>
 
-          <!-- 可见卫星：瞬时可见（now）/ 时段过境（access）两模式 -->
+          <!-- 可见卫星 / 覆盖：瞬时可见（now）/ 时段过境（access）/ 覆盖（coverage）三模式（复刻 STK Access / Coverage）-->
           <div class="sec">
-            <div class="sect"><span>可见卫星</span><span class="vis-cnt on">{{ vis.mode.value === 'access' ? (vis.accessResults.value.length + ' 星过境') : (vis.results.value.length + ' 颗') }}</span></div>
-            <div v-if="!vis.hasTarget.value" class="tip">先在上方选一个分析目标。瞬时＝此刻头顶可见的卫星；时段＝未来一段时间的过境窗口（Access）。</div>
-            <template v-else>
-              <div class="seg sm vis-mode">
-                <span class="sg" :class="{ on: vis.mode.value === 'now' }" @click="vis.setMode('now')">瞬时可见</span>
-                <span class="sg" :class="{ on: vis.mode.value === 'access' }" title="未来一段时间内每颗星对目标的过境窗口（Access）" @click="vis.setMode('access')">时段过境</span>
-              </div>
+            <div class="sect"><span>{{ vis.mode.value === 'coverage' ? '覆盖网格' : '可见卫星' }}</span><span class="vis-cnt on">{{ vis.mode.value === 'coverage' ? (vis.covData.value ? (vis.covKpi.value ? vis.covKpi.value.coverPct.toFixed(0) + '% 覆盖' : '') : (vis.covBusy.value ? '计算中' : '未计算')) : (vis.mode.value === 'access' ? (vis.accessResults.value.length + ' 星过境') : (vis.results.value.length + ' 颗')) }}</span></div>
+            <div class="seg sm vis-mode">
+              <span class="sg" :class="{ on: vis.mode.value === 'now' }" @click="vis.setMode('now')">瞬时可见</span>
+              <span class="sg" :class="{ on: vis.mode.value === 'access' }" title="未来一段时间内每颗星对目标的过境窗口（Access）" @click="vis.setMode('access')">时段过境</span>
+              <span class="sg" :class="{ on: vis.mode.value === 'coverage' }" title="STK Coverage：区域撒网格 → 每胞元覆盖性能指标(FOM) → 热力图" @click="vis.setMode('coverage')">覆盖</span>
+            </div>
 
-              <!-- 瞬时可见（now）：KPI + 极坐标 sky 图 + 结果表 -->
-              <template v-if="vis.mode.value === 'now'">
+            <!-- 瞬时可见（now）：KPI + 极坐标 sky 图 + 结果表 -->
+            <template v-if="vis.mode.value === 'now'">
+              <div v-if="!vis.hasTarget.value" class="tip">先在上方选一个分析目标（瞬时＝此刻头顶可见的卫星）。</div>
+              <template v-else>
                 <div class="vis-sum">
                   <span>可见 <b>{{ vis.kpi.value.count }}</b> <s>/ {{ vis.satCount.value.toLocaleString() }}</s></span>
                   <span v-if="vis.kpi.value.top">最高 <b>{{ vis.kpi.value.top.elevDeg.toFixed(1) }}°</b> <em :title="vis.kpi.value.top.name">{{ vis.kpi.value.top.name }}</em></span>
@@ -4689,10 +4754,14 @@ onBeforeUnmount(() => {
                   <div class="tip">悬停行 / 图上一点 → 三处（图·表·地图）联动高亮。方位见图与行悬停提示，高仰角（≥45°）行加粗。</div>
                 </template>
               </template>
+            </template>
 
-              <!-- 时段过境（access）：时窗 + 计算 + 甘特 + 过境列表 -->
+            <!-- 时段过境（access）：时窗 + 计算 + 甘特 + 过境列表 -->
+            <template v-else-if="vis.mode.value === 'access'">
+              <div v-if="!vis.hasTarget.value" class="tip">先在上方选一个分析目标（时段＝未来一段时间对它的过境窗口 Access）。</div>
               <template v-else>
-                <div class="srow"><label>时窗</label><input class="ci vis-elev" type="number" step="1" min="0.5" max="168" :value="vis.horizonH.value" @input="e => vis.horizonH.value = e.target.value" /><span class="u">小时</span><span class="opb sm" :class="{ dis: vis.accessBusy.value }" title="扫描卫星集在此时窗内对目标的全部过境（卫星越多越慢；上限 400 颗）" @click="vis.computeAccess()">计算过境</span></div>
+                <div class="srow"><label>时窗</label><input class="ci vis-elev" type="number" step="1" min="0.5" max="168" :value="vis.horizonH.value" @input="e => vis.horizonH.value = e.target.value" /><span class="u nw">小时</span><span class="opb sm" :class="{ dis: vis.accessBusy.value }" title="扫描卫星集在此时窗内对目标的全部过境（卫星越多越慢；上限 400 颗）" @click="vis.computeAccess()">计算过境</span></div>
+                <div v-if="vis.accessResults.value.length && !vis.accessBusy.value" class="srow acc-exp"><span class="opb sm" title="导出全部过境窗口为 CSV（Excel 可直接打开）" @click="exportAccessExcel()">导出 Excel</span><span class="tip inl">{{ vis.accessResults.value.reduce((n, s) => n + s.windows.length, 0) }} 次过境 → CSV</span></div>
                 <div v-if="vis.accessBusy.value" class="tip">扫描过境窗口…（卫星越多越慢）</div>
                 <div v-else-if="vis.accessMsg.value" class="tip">{{ vis.accessMsg.value }}</div>
                 <template v-else-if="vis.accessResults.value.length">
@@ -4717,6 +4786,58 @@ onBeforeUnmount(() => {
                   </div>
                   <div class="tip">AOS＝升起（相对现在）；甘特条＝时窗内各次过境（绿＝最高仰角 ≥45°）。星多时扫描较慢（有进度）；可缩短时窗、或在「星座」筛选星座加速。</div>
                 </template>
+              </template>
+            </template>
+
+            <!-- 覆盖（coverage）：区域网格 → FOM 热力图（复刻 STK Coverage）-->
+            <template v-else>
+              <div class="srow"><label>区域</label>
+                <select :value="vis.covRegionKind.value" @change="e => vis.covRegionKind.value = e.target.value">
+                  <option value="global">全球</option>
+                  <option value="bounds">自定义边界</option>
+                  <option value="poly" :disabled="!polys.length">Polygon 区域</option>
+                </select>
+              </div>
+              <template v-if="vis.covRegionKind.value === 'bounds'">
+                <div class="srow"><label>纬度</label><input class="ci cov-b" type="number" step="1" :value="vis.covLatMin.value" @input="e => vis.covLatMin.value = e.target.value" /><span class="u">~</span><input class="ci cov-b" type="number" step="1" :value="vis.covLatMax.value" @input="e => vis.covLatMax.value = e.target.value" /><span class="u">°N</span></div>
+                <div class="srow"><label>经度</label><input class="ci cov-b" type="number" step="1" :value="vis.covLonMin.value" @input="e => vis.covLonMin.value = e.target.value" /><span class="u">~</span><input class="ci cov-b" type="number" step="1" :value="vis.covLonMax.value" @input="e => vis.covLonMax.value = e.target.value" /><span class="u">°E</span></div>
+              </template>
+              <div v-else-if="vis.covRegionKind.value === 'poly'" class="srow"><label>选择</label>
+                <select :value="vis.covPolyId.value" @change="e => vis.covPolyId.value = e.target.value">
+                  <option value="">（选择 Polygon）</option>
+                  <option v-for="pg in polys" :key="pg.id" :value="pg.id">{{ pg.name }}</option>
+                </select>
+              </div>
+              <div class="srow"><label>网格步长</label><input class="ci cov-num" type="number" step="0.5" min="0.5" max="30" title="网格胞元间隔（度）：越小越细越慢" :value="vis.covStep.value" @input="e => vis.covStep.value = e.target.value" /><span class="u">°</span></div>
+              <div class="srow"><label>时窗</label><input class="ci cov-num" type="number" step="1" min="0.5" max="168" :value="vis.covHorizonH.value" @input="e => vis.covHorizonH.value = e.target.value" /><span class="u">小时</span></div>
+              <div class="srow"><label>采样</label><input class="ci cov-num" type="number" step="10" min="10" max="600" title="时间步长（秒）：采样数=时窗÷步长，越大越快；覆盖统计 30–120s 足够" :value="vis.covSample.value" @input="e => vis.covSample.value = e.target.value" /><span class="u">秒</span></div>
+              <div class="srow"><span class="opb sm" :title="vis.covBusy.value ? '点击取消当前计算' : '撒网格 → 对每胞元跑资产集(当前显示的星)覆盖 → FOM 热力图（网格越细 / 星越多越慢）'" @click="vis.covBusy.value ? vis.cancelCoverage() : vis.computeCoverage()">{{ vis.covBusy.value ? '取消' : '计算覆盖' }}</span><span v-if="vis.covMsg.value" class="tip inl cov-msg">{{ vis.covMsg.value }}</span></div>
+              <template v-if="vis.covData.value">
+                <div class="srow"><label>指标</label>
+                  <select :value="vis.covFom.value" @change="e => vis.covFom.value = e.target.value">
+                    <option v-for="f in vis.covFoms" :key="f.key" :value="f.key">{{ f.label }}</option>
+                  </select>
+                </div>
+                <div class="srow"><label>配色</label>
+                  <select class="cov-scheme" :value="vis.covScheme.value" @change="e => vis.covScheme.value = e.target.value">
+                    <option value="turbo">Turbo</option>
+                    <option value="jet">Jet</option>
+                    <option value="viridis">Viridis</option>
+                    <option value="inferno">Inferno</option>
+                    <option value="gray">Gray</option>
+                  </select>
+                </div>
+                <div class="srow"><label>透明度</label><input class="vis-slider cov-alpha" type="range" min="0.1" max="1" step="0.02" :value="vis.covAlpha.value" @input="e => vis.covAlpha.value = Number(e.target.value)" title="覆盖网格透明度（拖动即时生效）" /><span class="u">{{ Math.round(vis.covAlpha.value * 100) }}%</span></div>
+                <div v-if="vis.covLegend.value" class="cov-legend">
+                  <div class="cov-legbar"><i v-for="(c, ci) in vis.covLegend.value.colors" :key="ci" :style="{ background: 'rgb(' + c[0] + ',' + c[1] + ',' + c[2] + ')' }" :title="covBandLabel(ci, vis.covLegend.value)"></i></div>
+                  <div class="cov-legsc"><span>{{ covFmt(vis.covLegend.value.lo, vis.covLegend.value) }}</span><b :title="vis.covLegend.value.label">{{ vis.covLegend.value.label }}{{ vis.covLegend.value.unit ? ' · ' + vis.covLegend.value.unit : '' }}</b><span>{{ covFmt(vis.covLegend.value.hi, vis.covLegend.value) }}</span></div>
+                </div>
+                <div v-if="vis.covKpi.value" class="vis-sum cov-kpi">
+                  <span>区域覆盖率 <b>{{ vis.covKpi.value.coverPct.toFixed(1) }}%</b> <s>（按纬度余弦加权）</s></span>
+                  <span>{{ vis.covKpi.value.label }} 极值 <b>{{ covFmt(vis.covKpi.value.min, vis.covLegend.value) }}</b> ~ <b>{{ covFmt(vis.covKpi.value.max, vis.covLegend.value) }}</b> {{ vis.covLegend.value ? vis.covLegend.value.unit : '' }}</span>
+                  <span class="vis-sumcls"><s>网格 {{ vis.covKpi.value.cells.toLocaleString() }} 点</s></span>
+                </div>
+                <div class="tip">色阶＝{{ vis.covLegend.value ? vis.covLegend.value.label : '' }}（冷→热）。资产集＝当前显示的卫星；结果为【计算时刻起 {{ vis.covHorizonH.value }} 小时】时窗内的静态统计快照，不随时间轴联动。切换指标 / 配色即时重绘，无需重新计算。</div>
               </template>
             </template>
           </div>
@@ -5666,6 +5787,8 @@ onBeforeUnmount(() => {
 .ccrow .ccic { flex: none; display: inline-flex; cursor: pointer; color: var(--text-faint); padding: 1px; }
 .ccrow .ccic:hover { color: var(--text); }
 .ccrow .ccic.del:hover { color: #ff6b6b; }
+.ccrow .ccic.add { color: var(--ok); }
+.ccrow.sel .ccic.add { color: var(--bg); }
 .ccrow .ccic.ok:hover { color: var(--accent); }
 .ccrow.sel .ccic.del.warn { color: #ffd7d7; }
 /* 卫星组：段头计数 + 行内重命名输入 + 删除确认高亮 */
@@ -5995,10 +6118,12 @@ onBeforeUnmount(() => {
 .vis-ud.up { color: var(--ok); } .vis-ud.dn { color: var(--text-faint); }
 /* ACCESS 时段过境：mode 切换 + 甘特 + 过境列表 */
 .vis-mode { margin: 6px 0; }
+.vis-side .u.nw { flex: none; white-space: nowrap; }        /* 「小时」等单位不换行 */
+.acc-exp { margin-top: -3px; }                              /* 导出行紧跟时窗行 */
 .vis-gantt { margin: 6px 0 4px; display: flex; flex-direction: column; gap: 2px; max-height: 190px; overflow-y: auto; }
-.vis-grow { display: grid; grid-template-columns: 78px 1fr; gap: 6px; align-items: center; font-size: 10.5px; padding: 1px 4px; border-radius: 3px; }
+.vis-grow { display: grid; grid-template-columns: 78px 1fr; gap: 6px; align-items: center; font-size: 10.5px; padding: 2px 4px; border-radius: 3px; }
 .vis-grow.hov { background: color-mix(in srgb, var(--accent) 14%, transparent); }
-.vis-gname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); }
+.vis-gname { min-width: 0; overflow-wrap: anywhere; word-break: break-word; line-height: 1.25; color: var(--text-muted); }
 .vis-gbar { position: relative; height: 9px; background: color-mix(in srgb, var(--border) 45%, transparent); border-radius: 2px; }
 .vis-gseg { position: absolute; top: 1px; bottom: 1px; min-width: 1.5px; background: color-mix(in srgb, var(--ok) 55%, var(--text-faint)); border-radius: 1px; }
 .vis-gseg.hi { background: var(--ok); }
@@ -6011,6 +6136,19 @@ onBeforeUnmount(() => {
 .vis-acc-row.hov { background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .vis-acc-row > span:not(.vis-lname) { text-align: right; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 .oc-hi { color: var(--ok); font-weight: 600; }
+/* —— 覆盖分析（Coverage / FOM）：区域边界输入 + 配色 + 图例 + KPI —— */
+.cov-num { flex: none; width: 100px; }
+.cov-b { flex: none; width: 62px; }
+.cov-scheme { flex: none; width: 96px; }
+.cov-alpha { flex: 1; min-width: 40px; }
+.cov-msg { color: var(--warn); }
+.cov-legend { margin: 7px 0 6px; }
+.cov-legbar { display: flex; height: 11px; border-radius: 3px; overflow: hidden; border: 1px solid var(--border); }
+.cov-legbar i { flex: 1 1 0; cursor: help; }
+.cov-legsc { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; margin-top: 3px; font-size: 10px; color: var(--text-faint); }
+.cov-legsc span { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.cov-legsc b { color: var(--text-muted); font-weight: 600; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cov-kpi { margin-top: 5px; }
 
 /* —— 标记批量表格浮窗（复用 perf-win 骨架，加分页 tab / 航迹选择条；正文 3 张网格 v-show 切换） —— */
 .mk-win { z-index: 61; }

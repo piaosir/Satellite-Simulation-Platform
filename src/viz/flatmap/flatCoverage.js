@@ -84,6 +84,7 @@ export function createFlatCoverage(canvas) {
   let cw = 1, ch = 1, base = 1, scale = 1, tx = 0, ty = 0
   let geom = null
   let fieldLayers = [], fieldAlpha = 0.8   // GRD 覆盖多层（每层=一个天线：分带填充 Path2D + 逐档等值线，独立于 geom）
+  let covGridLayers = [], covGridAlpha = 0.82   // STK Coverage 覆盖分析【专用通道】：FOM 分带热力图（各胞元四角），独立于 GRD 覆盖场
   // GRD 全局标注选项（与 3D 同步）：天线名 / 波束中心 / 数值标签
   let fieldOpts = { showName: true, nameSize: 16, showBore: true, boreSize: 0.5, showPeak: false, peakSize: 5, showVal: false, valSize: 12 }
   let nameMode = 'off', provVisible = false, prov = null, cityVisible = false, city = null
@@ -386,6 +387,24 @@ export function createFlatCoverage(canvas) {
     }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
   }
+  // STK Coverage FOM 热力图填充：与 drawField 填充同款（缓存的世界坐标 Path2D + setTransform + ±360 环绕视口裁剪），
+  // 用独立 covGridLayers / covGridAlpha，画在 GRD 覆盖场【之下】（叠加时 GRD 天线足迹在其上）。无等值线。
+  function drawCovGrid() {
+    if (!covGridLayers.length) return
+    const kk = k()
+    const wl = -tx / kk, wr = (cw - tx) / kk
+    ctx.save(); ctx.globalAlpha = covGridAlpha
+    for (const L of covGridLayers) {
+      if (!L.fillPaths || !L.fillPaths.length) continue
+      for (const off of [-360, 0, 360]) {
+        if (L.bounds && (L.bounds.hi + off < wl || L.bounds.lo + off > wr)) continue
+        ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * (tx + off * kk), dpr * ty)
+        if (compat) for (const fb of (L.fillBands || [])) { ctx.fillStyle = 'rgb(' + fb.color[0] + ',' + fb.color[1] + ',' + fb.color[2] + ')'; traceFillBand(fb); ctx.fill() }
+        else for (const fb of L.fillPaths) { ctx.fillStyle = fb.color; ctx.fill(fb.path) }
+      }
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.globalAlpha = 1; ctx.restore()
+  }
   // GRD 标注层（天线名 / 波束中心点 / 数值标签）：画在填充+等值线之上，随各层 bore/segGroups 数据
   function drawFieldOverlays() {
     const o = fieldOpts
@@ -615,6 +634,7 @@ export function createFlatCoverage(canvas) {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     ctx.save(); ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip()
     drawSatFills()       // Polygon 区域填充（覆盖场之下：叠加区只显示覆盖图颜色）
+    drawCovGrid()        // STK Coverage FOM 热力图（Polygon 填充之上、GRD 覆盖场之下）
     drawField()          // GRD 覆盖填充面 + 等值线（在底图/Polygon 填充之上、标注之下）
     drawSatPolyLines()   // Polygon 边线（覆盖之上、国界/地名之下：叠加区仍见边线）
     drawDataLines()      // 波束线/仰角线/轨迹线/聚焦卫星线（同上：覆盖之上、国界省界之下，与边界共存）
@@ -814,6 +834,14 @@ export function createFlatCoverage(canvas) {
       requestDraw()
     },
     setFieldAlpha(a) { fieldAlpha = a; requestDraw() },   // 仅覆盖层透明度，静态快照不变
+    // STK Coverage 覆盖分析【专用通道】：layer={fillBands:[{color:[r,g,b],verts,counts}]}, opts={alpha}。整体替换（单层）。
+    setCovGrid(layer, opts) {
+      covGridLayers = (layer && layer.fillBands && layer.fillBands.length) ? [{ ...layer, fillPaths: buildFillPaths(layer.fillBands), bounds: layerBounds(layer) }] : []
+      if (opts && opts.alpha != null) covGridAlpha = opts.alpha
+      requestDraw()
+    },
+    clearCovGrid() { covGridLayers = []; requestDraw() },
+    setCovGridAlpha(a) { covGridAlpha = a; requestDraw() },
     setSizes(s) { Object.assign(sizes, s || {}); invalidateStatic(); requestDraw() },
     setNameMode(m) { nameMode = m; invalidateStatic(); requestDraw() },
     setProvinces,
@@ -934,7 +962,7 @@ export function createFlatCoverage(canvas) {
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
       if (o.background !== false) { ctx.fillStyle = BG; ctx.fillRect(0, 0, cw, ch) }
       drawBelowContent(rx, ry, rw, rh)
-      ctx.save(); ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip(); drawSatFills(); drawField(); drawSatPolyLines(); drawDataLines(); ctx.restore()
+      ctx.save(); ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip(); drawSatFills(); drawCovGrid(); drawField(); drawSatPolyLines(); drawDataLines(); ctx.restore()
       drawAboveContent(rx, ry, rw, rh)
       ctx.save(); ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip()
       drawFieldOverlays()
