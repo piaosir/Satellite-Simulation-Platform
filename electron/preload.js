@@ -116,7 +116,9 @@ contextBridge.exposeInMainWorld('api', {
     customRemove: (groupId) => ipcRenderer.invoke('omm:customRemove', groupId),
     customRename: (groupId, name) => ipcRenderer.invoke('omm:customRename', groupId, name),
     customExportGroup: (groupId, defaultName) => ipcRenderer.invoke('omm:customExportGroup', groupId, defaultName),
-    exportOmmCsv: (records, defaultName) => ipcRenderer.invoke('omm:exportOmmCsv', records, defaultName)
+    exportOmmCsv: (records, defaultName) => ipcRenderer.invoke('omm:exportOmmCsv', records, defaultName),
+    // 星历取数链路的操作明细（主进程广播）→ 底部「日志」窗格；{ text, level }
+    onLog: (cb) => ipcRenderer.on('omm:log', (_e, p) => cb(p))
   },
   coverage: {
     index: () => ipcRenderer.invoke('coverage:index'),

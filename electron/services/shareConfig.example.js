@@ -14,12 +14,19 @@
 //          "statement": [{
 //            "effect": "allow",
 //            "action": ["name/cos:PutObject", "name/cos:GetObject"],
-//            "resource": ["qcs::cos:ap-beijing:uid/1385987144:update-1385987144/share/*"]
+//            "resource": [
+//              "qcs::cos:ap-beijing:uid/1385987144:update-1385987144/share/*",
+//              "qcs::cos:ap-beijing:uid/1385987144:update-1385987144/omm/*"
+//            ]
 //          }]
 //        }
+//      其中 omm/* 是【星历众包云镜像】（electron/services/ommCloud.js）复用同一把密钥：
+//      用户直连 CelesTrak 成功后把当天星历回传到 omm/csv_<组>.csv.gz，屏蔽 celestrak 的用户从这里取。
+//      下载走桶的「公有读」，不签名、不需要权限；所以这里只多给一个 PutObject 即可。
+//      不加也不会报错——回传拿到 403 后静默跳过，云镜像退化为「只有开发者 seed 的那份」。
 //   4. 把 SecretId/SecretKey 填到下面，另存为 shareConfig.js。
 //
-// 安全说明：该密钥随客户端分发，务必【权限最小化】——只给 share/* 前缀的对象读写，别给整桶或其它桶。
+// 安全说明：该密钥随客户端分发，务必【权限最小化】——只给 share/* 与 omm/* 前缀的对象读写，别给整桶或其它桶。
 module.exports = {
   secretId: '',                 // CAM 子账号 SecretId
   secretKey: '',                // CAM 子账号 SecretKey

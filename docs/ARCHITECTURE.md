@@ -9,7 +9,10 @@
 - **离线优先**：除以下两处外，全部功能离线可用：
   - 高德地图瓦片（卫星覆盖图）
   - CelesTrak OMM/TLE 抓取（星座地图 / 星间链路）
-  - OMM 抓不到时回退本地上次缓存，保证离线承诺成立。
+  - OMM 取数链路（逐级兜底，任一级成立即止，全程不打扰用户）：
+    今日本地缓存 → CelesTrak 直连（主端点 ×3 → 补充端点 ×2）→ 众包云镜像（腾讯云 COS，
+    见 `electron/services/ommCloud.js`）→ 本地旧缓存 / 随包内置快照（`resources/omm`）。
+    直连成功的用户会把当天星历 best-effort 回传云镜像，供屏蔽 celestrak 的网络兜底下载。
 - **本地化存储**：原 CloudBase 云存储全部改为本地（SQLite + JSON）。
 - **数据全精度**：不再受小程序 20MB 包体限制，ITU-R 数据 / 地形 / 海岸线全精度内置。
 - **已砍功能**：AR 对星（ar-align）整页移除。
@@ -41,12 +44,12 @@
 主进程 Main (Node.js) —— 本地能力
   ├─ storage   : SQLite（history / configs）+ JSON（settings / cache）
   ├─ report    : docx / exceljs / pdfkit（原云函数代码直接搬）
-  ├─ omm       : CelesTrak 抓取 + 本地磁盘缓存（原 fetchTLE 逻辑）
+  ├─ omm       : CelesTrak 抓取 + 本地磁盘缓存 + 众包云镜像兜底（原 fetchTLE 逻辑）
   ├─ dataPacks : 读本地 ITU-R .bin / 全精度 topo / 海岸线
   └─ dialog    : 原生保存/打开文件框
 
 本地资源：ITU-R 全套 .bin + 全精度 topo + 海岸线/国界
-联网仅两处：高德地图瓦片 + CelesTrak OMM
+联网仅两处：高德地图瓦片 + CelesTrak OMM（含腾讯云 COS 众包镜像兜底 / 自动更新 / 在线分享）
 ```
 
 ## 4. satlink-core（纯 JS 引擎，packages/core）

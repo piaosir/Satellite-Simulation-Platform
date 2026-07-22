@@ -4,6 +4,9 @@ const https = require('https')
 const fs = require('fs')
 const path = require('path')
 const zlib = require('zlib')
+const ommCloud = require('./ommCloud')   // 众包云镜像（腾讯云 COS）：屏蔽 celestrak 的网络靠它兜底
+const log = require('./ommLog')          // 取数链路的操作明细 → 主进程 console + 底部「日志」窗格
+const { fmtBytes, fmtSec, fmtTime } = log
 
 // 内置样例 TLE（保证完全离线也能渲染星座）：ISS、两颗 Starlink、一颗 GEO。
 const SAMPLE = `ISS (ZARYA)
@@ -34,6 +37,16 @@ const GROUP_QUERY = {
 const SUP_FILE = { starlink: 'starlink', oneweb: 'oneweb', kuiper: 'kuiper', planet: 'planet', iridium: 'iridium', gps: 'gps' }
 const csvUrl = (k) => `https://celestrak.org/NORAD/elements/gp.php?${GROUP_QUERY[k]}&FORMAT=csv`
 const supCsvUrl = (k) => `https://celestrak.org/NORAD/elements/supplemental/sup-gp.php?FILE=${SUP_FILE[k]}&FORMAT=csv`
+
+// 日志用中文分组名（与 src/pages/ConstellationMap3D.vue 的 GROUPS 标签逐字一致，改一处要同步）
+const GROUP_LABEL = {
+  starlink: 'Starlink', oneweb: 'OneWeb', kuiper: 'Kuiper', gps: 'GPS', beidou: '北斗', galileo: 'Galileo',
+  qianfan: '千帆星座', guowang: '中国星网', geo: 'GEO', glonass: 'GLONASS', o3b: 'O3b', iridium: '铱星',
+  globalstar: 'Globalstar', stations: '空间站', planet: 'Planet', spire: 'Spire', active: '全部在轨'
+}
+const GL = (k) => GROUP_LABEL[k] || k
+// 数据来源在日志里的统一叫法（offlineBest 的 source）
+const SRC_NAME = { cache: '本地历史缓存', bundled: '随安装包内置的星历快照' }
 
 module.exports = function createOmm(getCore) {
   const groups = {} // group -> [{ name, satrec }]
@@ -93,8 +106,12 @@ module.exports = function createOmm(getCore) {
     return { group, count: parse(group, text), source }
   }
 
+  // 返回 { text, why }：text 为正文（失败时 null），why 为失败原因短语，直接进日志给用户看
+  // （HTTP 403「数据未更新」是 CelesTrak 对重复请求的常规响应，单独措辞，避免被误读为故障）。
   function httpGetText(url) {
     return new Promise((resolve) => {
+      const fail = (why) => resolve({ text: null, why })
+      const httpWhy = (code) => (code === 403 ? 'HTTP 403 · 该数据自上次下载后未更新或被限流' : `HTTP ${code}`)
       let net = null
       try { net = require('electron').net } catch {}
       // 优先用 Electron net：走 Chromium 网络栈，遵循系统代理/VPN —— 国内访问 celestrak 的关键。
@@ -104,26 +121,26 @@ module.exports = function createOmm(getCore) {
         req.setHeader('User-Agent', 'satsim-desktop')
         req.on('response', (res) => {
           if (res.statusCode !== 200) {
-            console.warn('[omm] net HTTP', res.statusCode, url)
-            res.on('data', () => {}); res.on('end', () => resolve(null)); return
+            done = true
+            res.on('data', () => {}); res.on('end', () => fail(httpWhy(res.statusCode))); return
           }
           res.on('data', (c) => (buf += c))
-          res.on('end', () => { done = true; resolve(buf) })
+          res.on('end', () => { done = true; resolve({ text: buf, why: '' }) })
         })
-        req.on('error', (e) => { console.warn('[omm] net error:', e.message, '|', url); resolve(null) })
-        setTimeout(() => { if (!done) { try { req.abort() } catch {} ; console.warn('[omm] net timeout |', url); resolve(null) } }, 30000)
-        try { req.end() } catch (e) { console.warn('[omm] net end err', e.message); resolve(null) }
+        req.on('error', (e) => { done = true; fail('连接失败 · ' + (e.message || e)) })
+        setTimeout(() => { if (!done) { try { req.abort() } catch {} ; fail('连接超时 30s') } }, 30000)
+        try { req.end() } catch (e) { done = true; fail('请求发起失败 · ' + e.message) }
         return
       }
       // 回退：Node https（仅用于无 Electron 的测试环境，不走系统代理）。
       const req = https.get(url, { timeout: 30000, headers: { 'User-Agent': 'satsim-desktop' } }, (res) => {
-        if (res.statusCode !== 200) { res.resume(); return resolve(null) }
+        if (res.statusCode !== 200) { res.resume(); return fail(httpWhy(res.statusCode)) }
         let buf = ''
         res.on('data', (c) => (buf += c))
-        res.on('end', () => resolve(buf))
+        res.on('end', () => resolve({ text: buf, why: '' }))
       })
-      req.on('error', () => resolve(null))
-      req.on('timeout', () => { req.destroy(); resolve(null) })
+      req.on('error', (e) => fail('连接失败 · ' + (e.message || e)))
+      req.on('timeout', () => { req.destroy(); fail('连接超时 30s') })
     })
   }
 
@@ -178,31 +195,71 @@ module.exports = function createOmm(getCore) {
 
   // 取某组 OMM CSV：返回 { text, fetchedAt }。fetchedAt 恒为缓存文件 mtime（= 该数据实际从 CelesTrak 下载落盘的时间），
   // 而非“此刻”——这样复用今日/旧缓存时显示的也是真实下载时间。本地有“今天”的缓存 → 直接用（一天一次）；
-  // 否则联网（主端点重试3次→补充端点重试2次）→ 命中落盘；再失败回退任意本地缓存（离线优先）。
+  // 否则联网（主端点重试3次→补充端点重试2次）→ 命中落盘 + 众包回传云镜像；
+  // 直连全失败 → 云镜像（腾讯云 COS，别人今天传上去的那份；国内不被墙）→ 本地缓存 / 内置快照（离线优先）。
   async function fetchCsv(key, opts = {}) {
     if (!GROUP_QUERY[key]) throw new Error('unknown group: ' + key)
     const cf = csvCacheFile(key)
+    const tag = `星历「${GL(key)}」：`   // 日志前缀，全链路统一，便于按星座检索
     // 一天一次：缓存文件是今天写的就直接用，不再联网
-    try { const st = fs.statSync(cf); if (isToday(st.mtime)) { const c = fs.readFileSync(cf, 'utf8'); if (valid(c)) { console.log('[omm] 用今日缓存:', key); return { text: c, fetchedAt: st.mtime.toISOString() } } } } catch {}
+    try {
+      const st = fs.statSync(cf)
+      if (isToday(st.mtime)) {
+        const c = fs.readFileSync(cf, 'utf8')
+        if (valid(c)) {
+          log.emit(`${tag}命中当日本地缓存 —— ${csvCount(c)} 颗 · ${fmtBytes(c.length)} · 数据时间 ${fmtTime(st.mtime)}`)
+          return { text: c, fetchedAt: st.mtime.toISOString() }
+        }
+      }
+    } catch {}
     // 仅取缓存（启动即时渲染用）：不联网，取「用户缓存 / 内置快照」更新的一版；都无 → null 交调用方后台联网。
     if (opts.cacheOnly) {
       const best = offlineBest(key)
-      if (best) { console.log('[omm] cacheOnly 命中:', key, best.source); return { text: best.text, fetchedAt: best.fetchedAt } }
+      if (best) {
+        log.emit(`${tag}先以${SRC_NAME[best.source]}即时渲染（${csvCount(best.text)} 颗 · 数据时间 ${fmtTime(best.fetchedAt)}），随后后台联网刷新`)
+        return { text: best.text, fetchedAt: best.fetchedAt }
+      }
       return null
     }
-    console.log('[omm] fetchCsv 开始:', key, '->', csvUrl(key))
-    let text = null
-    for (let i = 0; i < 3 && !valid(text); i++) text = await httpGetText(csvUrl(key))
+
+    const t0 = Date.now()
+    log.emit(`${tag}本地无当日数据，开始连接 CelesTrak 主端点（gp.php · ${GROUP_QUERY[key]}）`)
+    let text = null, why = ''
+    let tries = 0
+    for (let i = 0; i < 3 && !valid(text); i++) { tries++; const r = await httpGetText(csvUrl(key)); text = r.text; why = r.why }
+    if (!valid(text)) log.emit(`${tag}CelesTrak 主端点 ${tries} 次尝试均失败（${why || '返回内容非有效 OMM'}）`, 'warn')
     if (!valid(text) && SUP_FILE[key]) {
-      console.log('[omm] 主端点失败，转补充端点:', supCsvUrl(key))
-      for (let i = 0; i < 2 && !valid(text); i++) text = await httpGetText(supCsvUrl(key))
+      let supTries = 0
+      log.emit(`${tag}转 CelesTrak 补充星历端点（sup-gp.php · FILE=${SUP_FILE[key]}，与主端点限流独立）`)
+      for (let i = 0; i < 2 && !valid(text); i++) { supTries++; const r = await httpGetText(supCsvUrl(key)); text = r.text; why = r.why }
+      if (!valid(text)) log.emit(`${tag}CelesTrak 补充端点 ${supTries} 次尝试均失败（${why || '返回内容非有效 OMM'}）`, 'warn')
     }
-    if (valid(text)) { console.log('[omm] fetchCsv 成功:', key, text.length, 'bytes'); try { fs.writeFileSync(cf, text) } catch {} ; return { text, fetchedAt: cacheMtime(cf) || new Date().toISOString() } }
-    // 联网失败 → 离线兜底：用户缓存 / 内置快照，取更新的一版（有更新用更新，无网设备靠内置快照兜底）。
+    if (valid(text)) {
+      try { fs.writeFileSync(cf, text) } catch (e) { log.emit(`${tag}缓存写入失败（${e.message}），本次数据仅在内存中`, 'warn') }
+      log.emit(`${tag}CelesTrak 直连获取成功 —— ${csvCount(text)} 颗 · ${fmtBytes(text.length)} · 耗时 ${fmtSec(Date.now() - t0)}，已写入本地缓存`)
+      // 众包：本机拿到了新数据 → best-effort 回传云镜像（云端那份还够新则自动跳过），供屏蔽 celestrak 的用户兜底。
+      // 不 await：上传慢/失败都不该拖住星座渲染。
+      ommCloud.maybeUpload(key, text, GL(key)).catch(() => {})
+      return { text, fetchedAt: cacheMtime(cf) || new Date().toISOString() }
+    }
+    // 直连失败 → 云镜像兜底。先算本地最优，把它的时间交给云端做闸门：云端不比本地新就不下载（省流量，也不用旧盖新）。
     const best = offlineBest(key)
-    if (best) { console.log('[omm] 联网失败，离线兜底:', key, best.source); return { text: best.text, fetchedAt: best.fetchedAt } }
-    console.error('[omm] fetchCsv 彻底失败:', key)
-    throw new Error('celestrak.org 不可达，且无本地缓存与内置快照（国内访问该站通常需系统代理/VPN）')
+    const cloud = await ommCloud.download(key, { newerThan: best && best.fetchedAt, label: GL(key) })
+    if (cloud) {
+      // 落盘缓存，并把 mtime 改成云端那份的上传时间：既让「今日缓存」判据成立（当天不再反复联网），
+      // 界面显示的「OMM 下载时间」也如实反映数据自身的时间，而不是本机取回的此刻。
+      let cached = true
+      try { fs.writeFileSync(cf, cloud.text); const t = new Date(cloud.fetchedAt); fs.utimesSync(cf, t, t) } catch { cached = false }
+      log.emit(`${tag}改用云镜像数据 —— ${csvCount(cloud.text)} 颗 · 数据时间 ${fmtTime(cloud.fetchedAt)} · 全程耗时 ${fmtSec(Date.now() - t0)}${cached ? '，已写入本地缓存' : ''}`)
+      return { text: cloud.text, fetchedAt: cloud.fetchedAt }
+    }
+    // 云镜像也拿不到 → 静默回落本地：用户缓存 / 内置快照，取更新的一版（无网设备靠内置快照兜底）。
+    if (best) {
+      log.emit(`${tag}联网与云镜像均不可用，回落${SRC_NAME[best.source]} —— ${csvCount(best.text)} 颗 · 数据时间 ${fmtTime(best.fetchedAt)}（星历越旧，轨道位置误差越大）`, 'warn')
+      return { text: best.text, fetchedAt: best.fetchedAt }
+    }
+    log.emit(`${tag}获取失败 —— CelesTrak、云镜像、本地缓存、内置快照四路均不可用`, 'error')
+    throw new Error('celestrak.org 与云镜像均不可达，且无本地缓存与内置快照')
   }
 
   // ---- 文件管理：各星座组 OMM(CSV) 缓存的列举 / 导入替换 / 读出导出 ----

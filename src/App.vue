@@ -197,6 +197,12 @@ function syncTitleOverlay() {
 }
 watch(() => theme.resolved, () => nextTick(syncTitleOverlay))
 
+// 星历取数链路跑在主进程（CelesTrak 直连 / 云镜像兜底 / 众包回传），把它的操作明细接进日志窗格，
+// 让「这批星历到底哪来的、为什么走了兜底」在界面上可自证，而不是只留在用户看不到的主进程 console 里。
+// 【必须在 setup 阶段订阅，不能放进 onMounted】：Vue 里子组件的 onMounted 先于父组件执行，
+// 而星座页一挂载就发起取数 —— 订阅晚一步，开头几行（如「命中当日本地缓存」）就丢了。
+window.api?.omm?.onLog?.((p) => logMsg(p && p.text, (p && p.level) || 'info'))
+
 onMounted(() => {
   window.addEventListener('keydown', onKey)
   window.api?.app?.version?.().then((v) => { appVersion.value = v || '' }).catch(() => { /* 浏览器直跑无 IPC */ })
@@ -448,6 +454,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 }
 .ln { white-space: nowrap; color: var(--text-muted); }
 .ln.warn { color: var(--warn); }
+.ln.error { color: var(--danger); }
 .ln.dim { color: var(--text-faint); }
 .ln .ts { color: var(--text-faint); margin-right: 9px; }
 
