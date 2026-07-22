@@ -6494,7 +6494,10 @@ onBeforeUnmount(() => {
 .glvadd { padding: 4px 7px; text-align: center; color: var(--text-muted); cursor: pointer; font-size: 11.5px; border-top: 1px solid var(--border); }
 .glvadd:hover { color: var(--accent); background: var(--bg); }
 /* Beams To Plot 多波束多选列表（SATSOFT 风格） */
-.bplist { border: 1px solid var(--border); border-radius: 2px; margin-top: 5px; max-height: 132px; overflow-y: auto; }
+/* 列表高度：原 132px 只露 ~5 行，几十个波束时勾选/改名要一直小幅滚动，难操作 → 放到 300px（~12 行）。
+   仍是 max-height：波束少时照常按内容收缩，不留空框；右下角可竖向拖拽压扁，给下方「电平」等设置让位。
+   同一类名亦用于性能表设置窗的「波束筛选」，两处一并加长。 */
+.bplist { border: 1px solid var(--border); border-radius: 2px; margin-top: 5px; max-height: 300px; min-height: 48px; overflow-y: auto; resize: vertical; }
 .brow { display: flex; align-items: center; gap: 6px; padding: 2px 7px; cursor: pointer; font-size: 11.5px; }
 .brow + .brow { border-top: 1px solid var(--border); }
 .brow:hover { background: var(--bg); }
