@@ -40,7 +40,8 @@ export default defineConfig({
           linkbudget: resolve('src/linkbudget.html'),
           ngso: resolve('src/ngso.html'),
           regen: resolve('src/regen.html'),
-          suntool: resolve('src/suntool.html')
+          suntool: resolve('src/suntool.html'),
+          rain: resolve('src/rain.html')
         }
       }
     },

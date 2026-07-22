@@ -79,6 +79,7 @@ function openLinkBudget() { window.api?.linkBudget?.open?.() }
 function openNgso() { window.api?.ngso?.open?.() }
 function openRegen() { window.api?.regen?.open?.() }
 function openSunOutage() { window.api?.sunOutage?.open?.() }
+function openRain() { window.api?.rainAttenuation?.open?.() }
 
 function pickView(flat) {
   if (view.flat === flat) return
@@ -123,7 +124,8 @@ const menus = computed(() => [
     { label: '地球静止轨道卫星（GEO）链路预算', icon: 'calculator', hint: '打开链路预算工作台（独立窗口）', run: openLinkBudget },
     { label: '非地球静止轨道卫星（NGSO）链路预算', icon: 'square-function', hint: '打开 NGSO 链路预算工作台（独立窗口）', run: openNgso },
     { label: '再生式链路预算', icon: 'cpu', hint: '打开再生式链路预算工作台（再生式上行 / 下行 / 星间链路，独立窗口）', run: openRegen },
-    { label: '日凌预报（GEO）', icon: 'sun', hint: '打开日凌预报（独立窗口）', run: openSunOutage }
+    { label: '日凌预报（GEO）', icon: 'sun', hint: '打开日凌预报（独立窗口）', run: openSunOutage },
+    { label: '雨衰计算', icon: 'cloud-rain', hint: '打开雨衰计算（独立窗口，通用于各类卫星）', run: openRain }
   ] },
   { key: 'view', label: '视图', items: [
     { label: '3D 球体', icon: 'globe', check: !view.flat, hint: '三维地球视图', run: () => pickView(false) },
@@ -165,6 +167,7 @@ const toolButtons = computed(() => [
   { icon: 'square-function', tip: 'NGSO 链路预算', run: openNgso },
   { icon: 'cpu', tip: '再生式链路预算', run: openRegen },
   { icon: 'sun', tip: '日凌预报（GEO）', run: openSunOutage },
+  { icon: 'cloud-rain', tip: '雨衰计算', run: openRain },
   { sep: true },
   { icon: 'globe', tip: '3D 球体视图', on: !view.flat, run: () => pickView(false) },
   { icon: 'map', tip: '2D 平面图视图', on: view.flat, run: () => pickView(true) },

@@ -52,6 +52,20 @@ contextBridge.exposeInMainWorld('api', {
     exportWord: (payload) => ipcRenderer.invoke('sunoutage:exportWord', payload),
     exportIcs: (payload) => ipcRenderer.invoke('sunoutage:exportIcs', payload)
   },
+  // 雨衰计算独立窗口（通用于各类卫星）：批量/单算例/曲线计算 + Excel 导出；
+  // 经纬度自动填(降雨率/海拔)与城市选址复用链路预算的 link:* 通道；PNG 导出走通用 exportFile。
+  rainAttenuation: {
+    open: () => ipcRenderer.invoke('rain:open'),
+    compute: (p) => ipcRenderer.invoke('rain:compute', p),
+    computeBatch: (cases) => ipcRenderer.invoke('rain:computeBatch', cases),
+    sweep: (p, axis, range) => ipcRenderer.invoke('rain:sweep', p, axis, range),
+    exportExcel: (payload) => ipcRenderer.invoke('rain:exportExcel', payload),
+    geoFill: (lat, lon) => ipcRenderer.invoke('link:geoFill', lat, lon),
+    cities: () => ipcRenderer.invoke('link:cities'),
+    searchCities: (kw) => ipcRenderer.invoke('link:searchCities', kw),
+    onCloseRequested: (cb) => ipcRenderer.on('rain:closeRequested', cb),
+    confirmClose: () => ipcRenderer.invoke('rain:confirmClose')
+  },
   app: {
     deviceId: () => ipcRenderer.invoke('app:deviceId'),
     version: () => ipcRenderer.invoke('app:version')

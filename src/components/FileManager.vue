@@ -69,7 +69,8 @@ async function exportOmm(row) {
    两类条目、与「星座地图 3D」星座列表同源：
    ① 自建星座（Walker，localStorage）——历元=场景历元；只读镜像(在「星座3D」增删)，可逐座导出星历；
    ② 导入组（每个导入的 OMM/TLE 文件 = 一组，主进程 custom.json）——历元=文件内；可逐组导出/删除。
-   两类都并入地图「自定义卫星」分组与链路预算搜索池。 */
+   两类都并入链路预算搜索池；但地图「自定义卫星」分组只含 ②（导入库），① 在星座列表下方「自定义星座」
+   区独立显隐（该分组只读 omm.customCsv，自建星座不在其中）。 */
 const customGroups = ref([])        // 导入组 [{ id, name, importedAt, format, count, sats:[...] }]
 const customConsts = ref([])        // 自建星座概览 [{ id, name, incl, count, color }]
 const customBusy = ref(false)

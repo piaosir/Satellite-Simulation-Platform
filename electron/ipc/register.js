@@ -4,7 +4,7 @@ const createOmm = require('../services/omm')
 const createCustomSats = require('../services/customSats')
 
 // 注册所有 IPC 处理器。core 为返回引擎实例的函数（延迟解析）。
-function register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget, openSunOutage, grd, confirmCloseLinkBudget, openNgso, confirmCloseNgso, openRegen, confirmCloseRegen }) {
+function register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget, openSunOutage, grd, confirmCloseLinkBudget, openNgso, confirmCloseNgso, openRegen, confirmCloseRegen, openRain, confirmCloseRain }) {
   const omm = createOmm(core)
   const customSats = createCustomSats(core)
 
@@ -237,6 +237,42 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   // 打开「再生式链路预算」独立工作台窗口（单例，由 main 注入创建函数）
   ipcMain.handle('regen:open', () => { if (openRegen) openRegen(); return true })
   ipcMain.handle('regen:confirmClose', () => { if (confirmCloseRegen) confirmCloseRegen(); return true })
+
+  // ---- 雨衰计算（独立窗口 · 通用于各类卫星 · 批量/单算例/曲线计算 + Excel 导出）----
+  ipcMain.handle('rain:open', () => { if (openRain) openRain(); return true })
+  ipcMain.handle('rain:confirmClose', () => { if (confirmCloseRain) confirmCloseRain(); return true })
+  // 单算例（详情面板/兜底）
+  ipcMain.handle('rain:compute', (_e, p) => {
+    try { return core().calculateRainAttenuation(p || {}) }
+    catch (err) { return { error: true, message: err.message || String(err) } }
+  })
+  // 批量（一次 IPC 算完整表，避免逐行往返）
+  ipcMain.handle('rain:computeBatch', (_e, cases) => {
+    try { return (Array.isArray(cases) ? cases : []).map((c) => core().calculateRainAttenuation(c || {})) }
+    catch (err) { return { error: true, message: err.message || String(err) } }
+  })
+  // 曲线扫描（雨衰 vs 可用度/频率/降雨率），供交互式坐标系绘制
+  ipcMain.handle('rain:sweep', (_e, p, axis, range) => {
+    try { return core().sweepRainAttenuation(p || {}, axis, range || {}) }
+    catch (err) { return { axis, points: [], error: true, message: err.message || String(err) } }
+  })
+  // 批量结果 Excel 导出（批量结果 sheet + 每算例详情 sheet）
+  ipcMain.handle('rain:exportExcel', async (e, payload) => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    const { canceled, filePath } = await dialog.showSaveDialog(win, {
+      defaultPath: (payload && payload.defaultName) || '雨衰计算结果.xlsx',
+      filters: [{ name: 'Excel 工作簿', extensions: ['xlsx'] }]
+    })
+    if (canceled || !filePath) return { ok: false, canceled: true }
+    try {
+      const buf = await report.buildRainAttenuationExcel(payload || {})
+      fs.writeFileSync(filePath, Buffer.from(buf))
+      return { ok: true, filePath }
+    } catch (err) {
+      const busy = err && (err.code === 'EBUSY' || err.code === 'EPERM' || err.code === 'EACCES')
+      return { ok: false, error: busy ? '文件可能正被其他程序打开（如 Excel），请关闭后重试' : (err.message || String(err)) }
+    }
+  })
 
   // ---- 日凌预报（独立窗口 + 计算 + Word/ICS 导出）----
   ipcMain.handle('suntool:open', () => { if (openSunOutage) openSunOutage(); return true })

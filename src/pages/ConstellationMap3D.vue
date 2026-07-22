@@ -669,14 +669,18 @@ const satGrpRenameVal = ref('')  // 重命名输入值
 const satGrpDelId = ref('')      // 待确认删除的组 id（两步删除防误删；''=无）
 const satGrpRenameEl = ref(null)  // 重命名输入框 DOM（保存后自动聚焦选中）
 const setRenameEl = (el) => { if (el) satGrpRenameEl.value = el }   // 函数式 template ref：只在挂载时记录，卸载(null)不清
-// 导入组卫星数（文件管理 custom.json 的权威计数）：挂载/导入/删除时刷新。与自建星座 customList 一起决定
-// 「自定义卫星」分组是否有数据——无数据则不在星座列表里出现（与文件管理「暂无自定义卫星」一致，文件管理为权威）。
+// 导入组卫星数（文件管理 custom.json 的权威计数）：挂载/导入/删除时刷新。单独决定「自定义卫星」分组
+// 是否有数据——无导入星历则不在星座列表里出现（文件管理是导入库的唯一权威）。
+// 【勿把自建星座 customList 并进来】：该分组 loadGroup 只读 omm.customCsv()（=导入库），自建 Walker 星座
+// 只存 localStorage、从不进 custom.json，且 pickGroup 选内置组时会 showOnly(null) 隐藏全部自建星座 ——
+// 一旦并入，生成一座星座就会多出一行点开必空（还提示「暂无自定义卫星」）的孤儿分组。自建星座在下方
+// 「自定义星座」区独立管理与显隐，不占内置组列表的行。
 const customImportCount = ref(0)
 async function refreshCustomImportCount() {
   try { const r = (apiOk && window.api.omm.customList) ? await window.api.omm.customList() : null; customImportCount.value = (r && r.count) || 0 }
   catch { customImportCount.value = 0 }
 }
-const hasCustomData = computed(() => customList.value.length > 0 || customImportCount.value > 0)
+const hasCustomData = computed(() => customImportCount.value > 0)
 
 // 生成/编辑向导草稿（null=关闭）
 const constModal = ref(null)
@@ -739,7 +743,10 @@ const ccCode = (c) => walkerCode(c.params)
 // 点击自定义星座行 → 单独显示该星座（内置组切「无」，仅该星座可见）
 function showConstAlone(c) {
   const noneIdx = GROUPS.findIndex((g) => g.key === 'none')
-  if (noneIdx >= 0 && groupIndex.value !== noneIdx) pickGroup(noneIdx)   // 切「无」（会清 soloConst 高亮）
+  // 必须先退出筛选态（搜索 / 卫星组显示）：筛选态下 rebuildRenderSet 只渲染命中星、不叠加自定义星座，
+  // 不清就会「点了没反应」。pickGroup 内部会 clearSearch，但已在「无」时它早退（i===groupIndex）什么都不做 —— 故 else 补清。
+  if (noneIdx >= 0 && groupIndex.value !== noneIdx) pickGroup(noneIdx)   // 切「无」（会清 soloConst 高亮 + 清筛选）
+  else clearSearch()
   soloConst.value = c.id
   customConst.showOnly(c.id)   // 仅该星座可见 → persist + 重建渲染集
 }
@@ -3435,7 +3442,13 @@ function saveSelection() {
 }
 // 资源管理器「星座」树行点击切换分组（原顶栏下拉已并入树）
 function pickGroup(i) {
-  if (!Number.isInteger(i) || i < 0 || i >= GROUPS.length || i === groupIndex.value) return
+  if (!Number.isInteger(i) || i < 0 || i >= GROUPS.length) return
+  if (i === groupIndex.value) {
+    // 筛选态（搜索命中 / 卫星组显示）下所有内置组行都不高亮（sel 带 !filterN），用户回点「当前这一组」
+    // 意在退出筛选回到该组；直接早退会点了没反应。分组数据仍在 entries 里，只需退筛选、无需重载。
+    if (filterEntries.length) { soloConst.value = null; customConst.showOnly(null); clearSearch() }
+    return
+  }
   soloConst.value = null            // 选内置组 → 清除自定义星座的单独显示高亮
   customConst.showOnly(null)        // 并隐藏全部自定义星座：选哪个看哪个，内置组不再叠加自定义星座（如需叠加对比，用列表行内「眼睛」单独开）
   groupIndex.value = i; clearSearch()
@@ -3896,7 +3909,8 @@ onBeforeUnmount(() => {
           </div>
           <div class="pgl">
             <template v-for="(g, i) in GROUPS" :key="g.key">
-            <!-- 「自定义卫星」分组数据驱动：无自定义卫星（导入组 + 自建星座皆空）时不显示，与文件管理一致；
+            <!-- 「自定义卫星」分组数据驱动：无导入星历（文件管理 custom.json 为空）时不显示，与该分组实际
+                 加载的内容（omm.customCsv）对齐；自建星座不计入（见 hasCustomData 注释）。
                  但当前若正选中它则保留一行（避免选中项被隐藏成孤儿态）。其余内置组恒显示。 -->
             <div
               v-if="g.key !== 'custom' || hasCustomData || i === groupIndex"
@@ -4841,7 +4855,7 @@ onBeforeUnmount(() => {
                 </div>
                 <div v-if="!vis.results.value.length" class="tip">当前时刻门限 {{ vis.minElev.value || 0 }}° 以上没有可见卫星（拖动时间轴，或降低门限试试）。</div>
                 <template v-else>
-                  <div class="srow vis-icrow"><label>图标</label><input class="vis-slider" type="range" min="1" max="24" step="1" :value="vis.iconSize.value" @input="e => vis.iconSize.value = Number(e.target.value)" /><span class="u">{{ vis.iconSize.value }}</span><input class="vis-clr" type="color" :value="vis.iconColor.value" @input="e => vis.iconColor.value = e.target.value" title="星下点图标 / 名字颜色（3D 与 2D 一致）" /><label class="chk-in" title="星多时建议关，避免名字重叠成片"><input type="checkbox" :checked="vis.showName.value" @change="vis.showName.value = $event.target.checked" /><span>名字</span></label></div>
+                  <div class="srow vis-icrow"><label>图标</label><input class="vis-slider" type="range" min="5" max="36" step="1" :value="vis.iconSize.value" @input="e => vis.iconSize.value = Number(e.target.value)" /><span class="u">{{ vis.iconSize.value }}</span><input class="vis-clr" type="color" :value="vis.iconColor.value" @input="e => vis.iconColor.value = e.target.value" title="星下点图标 / 名字颜色（3D 与 2D 一致）" /><label class="chk-in" title="星多时建议关，避免名字重叠成片"><input type="checkbox" :checked="vis.showName.value" @change="vis.showName.value = $event.target.checked" /><span>名字</span></label></div>
                   <div v-if="vis.showName.value" class="srow vis-icrow"><label>名字大小</label><input class="vis-slider" type="range" min="1" max="12" step="1" :value="vis.nameSize.value" @input="e => vis.nameSize.value = Number(e.target.value)" /><span class="u">{{ vis.nameSize.value }}</span></div>
                   <!-- 极坐标 sky 图：一点＝一颗可见星，角向＝方位（正北在上、顺时针），离心＝仰角（天顶在圆心、地平在外圈）；青虚线＝仰角门限 -->
                   <svg class="vis-sky" viewBox="0 0 100 100" aria-label="天空极坐标图">
@@ -4933,7 +4947,7 @@ onBeforeUnmount(() => {
               <div class="srow"><label>网格步长</label><input class="ci cov-num" type="number" step="0.5" min="0.5" max="30" title="网格胞元间隔（度）：越小越细越慢" :value="vis.covStep.value" @input="e => vis.covStep.value = e.target.value" /><span class="u">°</span></div>
               <div class="srow"><label>时窗</label><input class="ci cov-num" type="number" step="1" min="0.5" max="168" :value="vis.covHorizonH.value" @input="e => vis.covHorizonH.value = e.target.value" /><span class="u">小时</span></div>
               <div class="srow"><label>采样</label><input class="ci cov-num" type="number" step="10" min="10" max="600" title="时间步长（秒）：采样数=时窗÷步长，越大越快；覆盖统计 30–120s 足够" :value="vis.covSample.value" @input="e => vis.covSample.value = e.target.value" /><span class="u">秒</span></div>
-              <div class="srow"><span class="opb sm" :title="vis.covBusy.value ? '点击取消当前计算' : '撒网格 → 对每胞元跑资产集(当前显示的星)覆盖 → FOM 热力图（网格越细 / 星越多越慢）'" @click="vis.covBusy.value ? vis.cancelCoverage() : vis.computeCoverage()">{{ vis.covBusy.value ? '取消' : '计算覆盖' }}</span><span v-if="vis.covMsg.value" class="tip inl cov-msg">{{ vis.covMsg.value }}</span></div>
+              <div class="srow"><span class="opb sm" :title="vis.covBusy.value ? '点击取消当前计算' : '撒网格 → 对每胞元跑资产集(当前显示的星)覆盖 → FOM 热力图（网格越细 / 星越多越慢）'" @click="vis.covBusy.value ? vis.cancelCoverage() : vis.computeCoverage()">{{ vis.covBusy.value ? '取消' : '计算覆盖' }}</span><span v-if="vis.covData.value && !vis.covBusy.value" class="opb sm" title="清除覆盖热力图（保留区域/网格/时窗等参数，可重新计算）" @click="vis.clearCoverage()">清除覆盖</span><span v-if="vis.covMsg.value" class="tip inl cov-msg">{{ vis.covMsg.value }}</span></div>
               <template v-if="vis.covData.value">
                 <div class="srow"><label>指标</label>
                   <select :value="vis.covFom.value" @change="e => vis.covFom.value = e.target.value">

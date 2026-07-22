@@ -2376,18 +2376,28 @@ function getCoefficients(freq, pol, elevationDeg) {
 /**
  * 计算单路径降雨衰减 - 完全按照 index.html 实现
  */
-function calculateSinglePathRainAttenuation(R001, freq, pol, latitude, longitude, orbitPos, altitude) {
+function calculateSinglePathRainAttenuation(R001, freq, pol, latitude, longitude, orbitPos, altitude, elevOverride) {
   if (R001 === 0 || R001 === null || R001 === undefined) {
     return { A001: 0, hR: 0 };
   }
-  
-  // 步骤 1: 计算卫星仰角
-  const earthLatRad = latitude * CONSTANTS.PI / 180;
-  const deltaLonRad_elev = (orbitPos - longitude) * CONSTANTS.PI / 180;
-  const cosTerm_elev = Math.cos(earthLatRad) * Math.cos(deltaLonRad_elev);
-  const denominator = Math.sqrt(Math.max(1e-10, 1 - Math.pow(cosTerm_elev, 2))); // 防止除零
-  const elevationRad = Math.atan((cosTerm_elev - 0.15127) / denominator);
-  const elevationDeg = elevationRad * 180 / CONSTANTS.PI;
+
+  // 步骤 1: 确定链路仰角
+  //   - 给定 elevOverride（雨衰工具的通用几何，面向任意轨道卫星，仰角为直接输入）→ 直接采用，
+  //     不依赖 GEO 定点经度；
+  //   - 否则由 GEO 定点经度 orbitPos 反算（链路预算原路径，传 7 参时行为完全不变）。
+  let elevationDeg, elevationRad;
+  if (elevOverride !== undefined && elevOverride !== null && isFinite(elevOverride)) {
+    // 限幅 0~90°（与 linkCalculatorNGSO.js 的同名函数保持逐字一致，防两份副本漂移）
+    elevationDeg = Math.max(0, Math.min(90, Number(elevOverride)));
+    elevationRad = elevationDeg * CONSTANTS.PI / 180;
+  } else {
+    const earthLatRad = latitude * CONSTANTS.PI / 180;
+    const deltaLonRad_elev = (orbitPos - longitude) * CONSTANTS.PI / 180;
+    const cosTerm_elev = Math.cos(earthLatRad) * Math.cos(deltaLonRad_elev);
+    const denominator = Math.sqrt(Math.max(1e-10, 1 - Math.pow(cosTerm_elev, 2))); // 防止除零
+    elevationRad = Math.atan((cosTerm_elev - 0.15127) / denominator);
+    elevationDeg = elevationRad * 180 / CONSTANTS.PI;
+  }
   
   // 步骤 2: 查询零度等温线高度（ITU-R P.839-4 数据库）
   const h0 = getIsothermHeight(latitude, longitude);
@@ -2490,5 +2500,13 @@ function calculateSatelliteAngle(userLat, userLon, satLon) {
 
 module.exports = {
   calculateLinkBudget,
-  calculateSatelliteAngle
+  calculateSatelliteAngle,
+  // ↓ 雨衰计算工具（通用，面向所有种类卫星）复用的纯物理函数。加法式导出，链路预算行为完全不变。
+  calculateSinglePathRainAttenuation, // P.618-14 单路径雨衰 A(0.01%)（第8参 elevOverride 可注入仰角）
+  scaleRainAttenP618_14,              // A(0.01%) → 目标时间百分比 p 的雨衰
+  calculateRainXPD_P618_14,           // 雨致去极化 XPD
+  calculateAtmosphericAttenuation,    // P.676 大气气体吸收
+  calculateCloudAttenuation,          // P.840-9 云衰减
+  calculateScintillationFading,       // 对流层闪烁衰落
+  calculatePolarizationAngle          // 极化偏转角（供 XPD 的 τ 计算）
 };

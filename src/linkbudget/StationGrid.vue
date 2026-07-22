@@ -23,8 +23,13 @@ const props = defineProps({
   roUnit: { type: String, default: '' },
   roValues: { type: Object, default: () => ({}) },  // { _id: 计算值 }，计算后回填
   citySearch: { type: Function, default: null },     // (关键词)→Promise<城市[]>：支持城市名/省份/拼音缩写检索
-  selectOptions: { type: Object, default: () => ({}) } // { 字段key: [选项…] }，覆盖该 select 字段的静态 options（用于运行时动态选项，如载波信号配置库）
+  selectOptions: { type: Object, default: () => ({}) }, // { 字段key: [选项…] }，覆盖该 select 字段的静态 options（用于运行时动态选项，如载波信号配置库）
+  // 动态只读字段（按字段 key）：这些字段**可选中/可复制但不可编辑**（雨衰计算的结果列 / GEO 模式的
+  // 仰角 / 自动降雨模型的 R0.01）。加法式：不传即空数组，链路预算 GEO/NGSO/Regen 行为完全不变。
+  readonlyKeys: { type: Array, default: () => [] }
 })
+// 某列是否只读（按字段 key 判定，动态）
+const isReadonlyCol = (c) => { const f = props.fields[c]; return !!(f && props.readonlyKeys.includes(f.key)) }
 
 const root = ref(null)
 const nameKey = computed(() => (props.fields.find((f) => f.city) || {}).key)
@@ -292,7 +297,7 @@ function fillDownTo(r0_, r1_, c0_, c1_, toR) {
     let coordChanged = false           // 填充改动了经纬度 → 联动 autoGeo（与粘贴/单格编辑口径一致）
     const filledAuto = new Set()       // 填充已显式带入的降雨/海拔列：重算时跳过，不覆盖填充值
     for (let c = c0_; c <= c1_; c++) {
-      if (isRO(c)) continue
+      if (isRO(c) || isReadonlyCol(c)) continue
       const f = props.fields[c]; const v = srcRow[f.key]
       if (isLatLonKey(f.key) && row[f.key] !== v) coordChanged = true
       if (f.auto && String(v == null ? '' : v).trim() !== '') filledAuto.add(f.key)
@@ -315,7 +320,7 @@ let _editOrig = null   // 进入编辑时的原值：用于判断名称是否真
 // 直接键入/输入法进入编辑不走这里——它们由 .sg-cap 的 @input/@compositionstart（onCapInput/onCapCompStart）就地翻成编辑态，
 // 使中文输入法从第一个拼音字母起就落在真实 <input> 内，不丢首字母。
 function startEdit(r, c) {
-  if (isRO(c)) return   // 只读列不可编辑
+  if (isRO(c) || isReadonlyCol(c)) return   // 只读列 / 只读字段不可编辑
   const f = props.fields[c]
   if (f.type === 'select') { openDropdown(r, c); return }   // select：委托自建下拉列表（替代原生 <select>）
   _editOrig = props.stations[r][f.key]
@@ -376,10 +381,12 @@ function beginCapEdit(r, c) {
   editing.value = { r, c, typed: true }
 }
 function onCapCompStart(r, c) {
+  if (isReadonlyCol(c)) return   // 只读字段：忽略输入法组字
   if (props.fields[c].type === 'select') { if (!dd.open) openDropdown(r, c); return }   // select：组字即开组合框（输入用于过滤）
   beginCapEdit(r, c)
 }
 function onCapInput(e, r, c) {
+  if (isReadonlyCol(c)) { e.target.value = ''; return }   // 只读字段：不接受键入
   const f = props.fields[c]
   if (f.type === 'select') {   // select＝组合框：输入即开列表并作为过滤词（不写行，提交时才落值）
     if (!dd.open) openDropdown(r, c, e.target.value)
@@ -487,6 +494,7 @@ function onDocDown(e) {
   commitDropdown(ddCommitValue())
 }
 function onCaretDown(r, c) {
+  if (isReadonlyCol(c)) return   // 只读 select 字段：不弹下拉
   if (dd.open && dd.r === r && dd.c === c) { commitDropdown(ddCommitValue()); return }   // 再点当前 caret＝提交并收起
   if (editing.value) endEdit()
   sel.value = {}
@@ -557,7 +565,7 @@ async function pasteRange() {
       const c = sc + j
       const src = grid[i % gR][j % gC]
       if (src === undefined) continue
-      if (c < nColSel.value && !isRO(c)) {
+      if (c < nColSel.value && !isRO(c) && !isReadonlyCol(c)) {
         const f = props.fields[c]
         const v = isLatLonKey(f.key) ? clampLatLon(src) : normalizeFieldValue(f, src)
         if (isLatLonKey(f.key) && row[f.key] !== v) coordChanged = true
@@ -696,6 +704,7 @@ function doImport() {
 const batch = reactive({ open: false, key: '', value: '' })
 function openBatch() { if (!selectedRows.value.length) return; batch.key = props.fields[0].key; batch.value = ''; batch.open = true }
 function doBatch() {
+  if (props.readonlyKeys.includes(batch.key)) { batch.open = false; return }   // 只读字段：批量设值无效
   pushUndo()
   const v = isLatLonKey(batch.key) ? clampLatLon(batch.value) : normalizeFieldValue(batchField.value, batch.value)
   for (const s of selectedRows.value) {
@@ -835,7 +844,7 @@ function clearColContents() {
           <tr v-for="(s, i) in stations" :key="s._id || i" :class="{ on: sel[s._id] }">
             <td class="sg-sel" :title="'拖拽序号可框选行 · 右键插入/删除行'" @mousedown.left="onRowDown(i, $event)" @mouseenter="onRowEnter(i)" @contextmenu.prevent="onIdxContext(i, $event)"><span class="sg-idx">{{ i + 1 }}</span></td>
             <td v-for="({ f, c }) in visFields" :key="f.key"
-                class="sg-cell" :class="{ 'sg-key': isKeyCol(c), sel: inSel(i, c), focus: isFocus(i, c), editing: isEditing(i, c), fillp: inFill(i, c) }"
+                class="sg-cell" :class="{ 'sg-key': isKeyCol(c), 'ro-field': isReadonlyCol(c), sel: inSel(i, c), focus: isFocus(i, c), editing: isEditing(i, c), fillp: inFill(i, c) }"
                 :style="isKeyCol(c) ? keyColStyle(c) : null"
                 @mousedown.left="onDown(i, c, $event)" @mouseenter="onEnter(i, c)" @dblclick="startEdit(i, c)" @contextmenu.prevent="onCellContext(i, c, $event)">
               <!-- 聚焦格常驻捕获输入框：导航态透明覆盖在值上（pointer-events:none 让鼠标框选穿透 td），
@@ -843,7 +852,7 @@ function clearColContents() {
                    select 字段：编辑态不套 editing 皮肤（保持透明导航态），选择改由自建下拉列表(sg-dd)承接，
                    绕开原生 <select> 弹层在滚动/sticky/冻结列 + Windows 分数缩放下的「点谁选上一个」坐标错位。 -->
               <template v-if="isFocus(i, c)">
-                <input class="sg-cap" :class="{ editing: isEditing(i, c), combo: f.type === 'select', mono: f.type === 'num' }" tabindex="-1"
+                <input class="sg-cap" :class="{ editing: isEditing(i, c), combo: f.type === 'select', mono: f.type === 'num' }" tabindex="-1" :readonly="isReadonlyCol(c)"
                        :placeholder="!isEditing(i, c) ? '' : (f.type === 'select' ? (displayValue(s, f) || ghost(s, f) || '输入或选择…') : ghost(s, f))"
                        @input="onCapInput($event, i, c)" @compositionstart="onCapCompStart(i, c)"
                        @keydown="onCapKey" @blur="onCapBlur"
@@ -1010,6 +1019,11 @@ function clearColContents() {
 /* 只读列可框选/复制：选中高亮（基样式更具体，需在此覆写） */
 .sg-tbl td.sg-ro.sel { background: color-mix(in srgb, var(--accent) 12%, var(--surface)); }
 .sg-tbl tbody tr.on > td.sg-ro.sel { background: color-mix(in srgb, var(--accent) 16%, var(--surface-2)); }
+/* 只读字段单元格 ro-field：可选中/可复制但不可编辑（雨衰结果列 / GEO仰角 / 自动降雨率）。
+   淡底 + 默认光标区分于可编辑格；选中态仍以强调色高亮以便复制。 */
+.sg-tbl td.sg-cell.ro-field { background: color-mix(in srgb, var(--surface-2) 55%, var(--surface)); color: var(--text-muted); cursor: default; }
+.sg-tbl td.sg-cell.ro-field.sel { background: color-mix(in srgb, var(--accent) 14%, var(--surface)); color: var(--text); }
+.sg-cap[readonly] { cursor: default; }
 .sg-hint { flex: none; margin: 6px 2px 0; font-size: 11px; color: var(--text-faint); }
 
 .sg-mask { position: fixed; inset: 0; z-index: 200; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.28); }

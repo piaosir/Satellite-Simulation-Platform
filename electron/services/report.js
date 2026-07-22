@@ -1210,4 +1210,149 @@ async function buildSunOutageWord(payload) {
   return Packer.toBuffer(doc)
 }
 
-module.exports = { buildWord, buildExcel, buildLinkBudgetExcel, buildSunOutageWord, ROWS }
+// ============================ 雨衰计算 批量结果 Excel（通用，面向各类卫星）============================
+// payload：{ direction:'down'|'up', rainModel:'auto'|'manual', rows:[算例输入行], results:[core 结果] }。
+// Sheet1「雨衰批量结果」= 每行一个算例（输入 + 计算结果就地并排）；每算例再出一张 SatMaster 版详情表。
+const POL_CN = { V: '垂直 (V)', H: '水平 (H)', C: '圆极化 (C)', RHCP: '右旋圆极化 (RHCP)', LHCP: '左旋圆极化 (LHCP)' }
+function rainDetailRows(r, row, down) {
+  const f = (v, d = 2) => (v == null || !Number.isFinite(+v)) ? '—' : (+v).toFixed(d)
+  return [
+    ['输入参数', null, null],
+    ['地球站', row.stationName || '—', ''],
+    ['纬度', f(r.lat, 4), '°'],
+    ['经度', f(r.lon, 4), '°'],
+    ['海拔', (row.altitude === '' || row.altitude == null) ? 0 : row.altitude, 'm'],
+    ['GEO 轨位', r.satLon != null ? f(r.satLon, 2) : '—', r.satLon != null ? '°E' : ''],
+    ['频率', f(r.freq, 3), 'GHz'],
+    ['极化', POL_CN[r.polDisplay] || POL_CN[r.pol] || r.polDisplay || r.pol || '—', ''],
+    ['R0.01% 降雨率', f(r.rainRate, 3), 'mm/h'],
+    ['年可用度', f(r.availability, 3), '%'],
+    ['系统噪温（晴空）', down ? f(r.systemNoiseTemp, 0) : '—', down ? 'K' : ''],
+    ['馈线损耗', down ? f(r.feederLoss, 2) : '—', down ? 'dB' : ''],
+    ['链路方向', down ? '下行' : '上行', ''],
+    ['卫星视角', null, null],
+    ['仰角', f(r.elevation, 2), '°'],
+    ['方位角', r.azimuth != null ? f(r.azimuth, 2) : '—', r.azimuth != null ? '°' : ''],
+    ['星地斜距', r.slantRange != null ? f(r.slantRange, 2) : '—', r.slantRange != null ? 'km' : ''],
+    ['降雨高度 hR', f(r.rainHeight, 3), 'km'],
+    ['传播结果', null, null],
+    ['气体吸收 (P.676)', f(r.gasAtten, 2), 'dB'],
+    ['对流层闪烁', f(r.scintillation, 2), 'dB'],
+    ['云衰减 (P.840-9)', f(r.cloudAtten, 2), 'dB'],
+    ['雨衰 (P.618-14)', f(r.rainAtten, 2), 'dB'],
+    ['合计衰减（气体+云+雨）', f(r.totalAtten, 2), 'dB'],
+    ['降雨噪声致 G/T 衰减', down ? f(r.gtDegradation, 2) : '—', down ? 'dB' : ''],
+    ['下行链路劣化 DND', down ? f(r.dnd, 2) : '—', down ? 'dB' : ''],
+    ['雨致去极化 XPD', f(r.rainXPD, 2), 'dB'],
+    ['年不可用时长', f(r.downtimeYear, 2), 'h'],
+    ['最坏月可用度', f(r.worstMonthAvail, 3), '%'],
+    ['最坏月不可用时长', f(r.downtimeWorstMonth, 2), 'h']
+  ]
+}
+async function buildRainAttenuationExcel(payload) {
+  const { direction = 'down', rainModel = 'auto', orbitMode = 'geo', rows = [], results = [] } = payload || {}
+  const down = direction !== 'up'
+  const wb = new ExcelJS.Workbook()
+  wb.creator = '卫星仿真平台'; wb.created = new Date()
+
+  // —— Sheet 1：批量结果（每行一个算例）——
+  const ws = wb.addWorksheet('雨衰批量结果', { views: [{ showGridLines: false, state: 'frozen', ySplit: 4, xSplit: 1 }] })
+  const round2 = (v) => (typeof v === 'number' && Number.isFinite(v)) ? Math.round(v * 100) / 100 : v
+  const cols = [
+    { k: 'stationName', h: '地球站', w: 14, text: true },
+    { k: 'latitude', h: '纬度(°)', w: 10 },
+    { k: 'longitude', h: '经度(°)', w: 10 },
+    { k: 'altitude', h: '海拔(m)', w: 9 },
+    { k: '_elev', h: '仰角(°)', w: 9 },
+    { k: '_satLon', h: 'GEO轨位(°E)', w: 12 },
+    { k: 'frequency', h: '频率(GHz)', w: 10 },
+    { k: 'polarization', h: '极化', w: 7, text: true },
+    { k: '_rain', h: 'R0.01(mm/h)', w: 12 },
+    { k: 'availability', h: '可用度(%)', w: 10 },
+    { k: 'systemNoiseTemp', h: '系统噪温(K)', w: 11 },
+    { k: 'gasAtten', h: '气体(dB)', w: 9, res: true },
+    { k: 'cloudAtten', h: '云衰(dB)', w: 9, res: true },
+    { k: 'rainAtten', h: '雨衰(dB)', w: 9, res: true },
+    { k: 'totalAtten', h: '合计(dB)', w: 9, res: true },
+    { k: 'gtDegradation', h: 'G/T衰减(dB)', w: 11, res: true, dl: true },
+    { k: 'rainXPD', h: '雨致XPD(dB)', w: 11, res: true },
+    { k: 'downtimeYear', h: '年停时(h)', w: 10, res: true },
+    { k: 'downtimeWorstMonth', h: '最坏月停时(h)', w: 13, res: true }
+  ]
+  const ncol = cols.length
+  ws.mergeCells(1, 1, 1, ncol)
+  const tt = ws.getCell(1, 1); tt.value = '雨衰计算结果'; tt.font = { name: CJK, size: 15, bold: true }; tt.alignment = { horizontal: 'center' }
+  ws.mergeCells(2, 1, 2, ncol)
+  const st = ws.getCell(2, 1)
+  st.value = `轨道：${orbitMode === 'ngso' ? 'NGSO（仰角输入）' : 'GEO（轨位算仰角）'}　·　链路方向：${down ? '下行' : '上行'}　·　降雨模型：${rainModel === 'auto' ? 'ITU-R P.837 自动' : '手动'}　·　共 ${rows.length} 个算例`
+  st.font = { name: CJK, size: 10, color: { argb: 'FF666666' } }; st.alignment = { horizontal: 'center' }
+  const hr = 4
+  cols.forEach((c, i) => {
+    const cell = ws.getCell(hr, i + 1)
+    cell.value = c.h; cell.font = { name: CJK, size: 10, bold: true }
+    cell.alignment = { horizontal: 'center', wrapText: true }
+    ws.getColumn(i + 1).width = c.w
+  })
+  setRowBorder(ws, hr, 1, ncol, { top: MED, bottom: THIN })
+  rows.forEach((row, ri) => {
+    const r = results[ri] || {}
+    const rowNo = hr + 1 + ri
+    cols.forEach((c, ci) => {
+      const cell = ws.getCell(rowNo, ci + 1)
+      let v
+      if (c.res) { v = r.error ? '✕' : round2(r[c.k]); if (c.dl && !down) v = '—' }
+      else if (c.k === '_elev') v = (r.elevation != null ? round2(r.elevation) : row.elevation)
+      else if (c.k === '_satLon') v = (r.satLon != null ? r.satLon : '—')   // NGSO / 纯仰角：无 GEO 轨位
+      else if (c.k === '_rain') v = (r.rainRate != null ? round2(r.rainRate) : row.rainRate)
+      else v = row[c.k]
+      cell.value = c.text ? (v == null ? '' : v) : numOrText(v)
+      cell.font = { name: c.text ? CJK : FNT, size: 10 }
+      cell.alignment = { horizontal: c.text ? 'left' : 'right' }
+    })
+  })
+  if (rows.length) setRowBorder(ws, hr + rows.length, 1, ncol, { bottom: MED })
+
+  // —— 每算例详情 sheet（SatMaster 三段版式）——
+  const used = {}
+  rows.forEach((row, ri) => {
+    const r = results[ri]; if (!r || r.error) return
+    const base = String(row.stationName || ('算例' + (ri + 1))).replace(/[\\/?*[\]:]/g, ' ').slice(0, 24)
+    let name = ((ri + 1) + ' ' + base).slice(0, 31); let k = 2
+    while (used[name]) { name = ((ri + 1) + ' ' + base).slice(0, 28) + '~' + k; k++ }
+    used[name] = true
+    const ds = wb.addWorksheet(name, { views: [{ showGridLines: false }] })
+    ds.getColumn(1).width = 26; ds.getColumn(2).width = 18; ds.getColumn(3).width = 8
+    ds.mergeCells(1, 1, 1, 3)
+    const dt = ds.getCell(1, 1)
+    dt.value = '雨衰详细计算结果 · ' + (row.stationName || ('算例' + (ri + 1)))
+    dt.font = { name: CJK, size: 13, bold: true }; dt.alignment = { horizontal: 'left' }
+    let rn = 3
+    for (const [label, value, unit] of rainDetailRows(r, row, down)) {
+      if (value === null && unit === null) {
+        ds.mergeCells(rn, 1, rn, 3)
+        const c = ds.getCell(rn, 1); c.value = label; c.font = { name: CJK, size: 10, bold: true }
+        c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF2F2F2' } }
+        setRowBorder(ds, rn, 1, 3, { top: THIN, bottom: HAIR }); rn++; continue
+      }
+      const a = ds.getCell(rn, 1); a.value = label; a.font = { name: CJK, size: 10 }
+      const b = ds.getCell(rn, 2); b.value = numOrText(value); b.font = { name: FNT, size: 10 }; b.alignment = { horizontal: 'right' }
+      const u = ds.getCell(rn, 3); u.value = unit; u.font = { name: CJK, size: 9, color: { argb: 'FF888888' } }
+      rn++
+    }
+    setRowBorder(ds, rn - 1, 1, 3, { bottom: MED })
+    // 口径说明（避免读者把 DND 和合计衰减混起来）
+    rn += 1
+    ds.mergeCells(rn, 1, rn, 3)
+    const nt = ds.getCell(rn, 1)
+    nt.value = down
+      ? 'DND = (雨衰+云衰) + 降雨噪声致 G/T 衰减。降雨噪声按 雨+云、T_mr=275 K、经馈线折算；气体不计入（晴空已含、不构成劣化），闪烁不计入（折射，不辐射噪声）。'
+      : '上行不计降雨噪声：G/T 衰减与 DND 为下行专属。'
+    nt.font = { name: CJK, size: 9, color: { argb: 'FF888888' } }
+    nt.alignment = { wrapText: true, vertical: 'top' }
+    ds.getRow(rn).height = 32
+  })
+
+  return wb.xlsx.writeBuffer()
+}
+
+module.exports = { buildWord, buildExcel, buildLinkBudgetExcel, buildSunOutageWord, buildRainAttenuationExcel, ROWS }

@@ -237,6 +237,8 @@ export function useVisibility({
     setTimeout(stepFn, 20)
   }
   function cancelCoverage() { _covToken++; covBusy.value = false; covMsg.value = '' }
+  // 清除覆盖：作废在算的 + 丢结果 + 抹热力图（保留区域/网格/时窗等参数，可重新计算）
+  function clearCoverage() { _covToken++; covBusy.value = false; covData.value = null; covMsg.value = ''; drawCovNow() }
   // 图例 / KPI（随 FOM/配色/数据变，不触发重算）
   const covLegend = computed(() => {
     const d = covData.value
@@ -335,7 +337,7 @@ export function useVisibility({
     // 覆盖分析（Coverage）
     covRegionKind, covLatMin, covLatMax, covLonMin, covLonMax, covPolyId, covStep, covHorizonH, covSample,
     covFom, covScheme, covAlpha, covBands, covBusy, covMsg, covData, covLegend, covKpi,
-    computeCoverage, cancelCoverage, covFoms: COVERAGE_FOMS,
+    computeCoverage, cancelCoverage, clearCoverage, covFoms: COVERAGE_FOMS,
     targetPoints, recompute, overlaySpec, setHover, setTarget, setSort, openPanel, close
   }
 }

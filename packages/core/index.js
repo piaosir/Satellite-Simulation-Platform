@@ -15,6 +15,7 @@ const constants = require('./utils/constants.js');
 const sunOutage = require('./utils/sunOutageCalculator.js');
 const icsBuilder = require('./utils/icsBuilder.js');
 const eventWindows = require('./utils/eventWindows.js');
+const rainAttenuation = require('./utils/rainAttenuation.js');
 
 // 载波信号选项（调制 / FEC / DVB 标准 / 各 MODCOD 预设表），供载波信号面板的下拉与快选用。
 function basebandOptions() {
@@ -129,6 +130,10 @@ module.exports = {
   buildIcs: icsBuilder.buildIcs,
   // 通用事件窗口求解器（日凌先行验证；后续 Access/ISL 复用）
   findWindows: eventWindows.findWindows,
+  // 雨衰计算（通用，面向所有种类卫星；仰角直接驱动，复用 ITU-R 传播模型）
+  calculateRainAttenuation: rainAttenuation.calculateRainAttenuation,
+  sweepRainAttenuation: rainAttenuation.sweepRainAttenuation,
+  rainAttenuation,
   rainRate,
   elevation,
   // 命名空间，便于按需取用其余导出

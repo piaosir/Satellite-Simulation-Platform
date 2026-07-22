@@ -1,7 +1,7 @@
 /*
  * satellite.js v7.0.1 (MIT License) — https://github.com/shashwatak/satellite-js
  * Vendored CommonJS bundle for WeChat Mini Program (esbuild, pure-JS SGP4/SDP4, no wasm).
- * Exports: twoline2satrec, omm2satrec, propagate, gstime, eciToGeodetic, degreesLat, degreesLong, eciToEcf, ecfToLookAngles.
+ * Exports: twoline2satrec, omm2satrec, propagate, sgp4, gstime, eciToGeodetic, degreesLat, degreesLong, eciToEcf, ecfToLookAngles.
  */
 "use strict";
 var __defProp = Object.defineProperty;
@@ -32,6 +32,7 @@ __export(wxentry_exports, {
   eciToGeodetic: () => eciToGeodetic,
   gstime: () => gstime,
   propagate: () => propagate,
+  sgp4: () => sgp4,
   twoline2satrec: () => twoline2satrec,
   omm2satrec: () => omm2satrec
 });
