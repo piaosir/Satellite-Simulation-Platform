@@ -669,6 +669,23 @@ const satGrpRenameVal = ref('')  // 重命名输入值
 const satGrpDelId = ref('')      // 待确认删除的组 id（两步删除防误删；''=无）
 const satGrpRenameEl = ref(null)  // 重命名输入框 DOM（保存后自动聚焦选中）
 const setRenameEl = (el) => { if (el) satGrpRenameEl.value = el }   // 函数式 template ref：只在挂载时记录，卸载(null)不清
+// 「卫星组管理器」弹窗：组的完整增删改查。侧栏那套（存为组 / +加入 / -移出）依赖「当前渲染集 + 当前选中集」，
+// 只能在星已经渲染出来时操作；管理器改为直接对【全量目录】和【组成员表】操作，与渲染态解耦：
+// 新建空组 → 多次搜索累积勾选 → 一次性加入 → 组内逐颗/批量移出，全程不必先把星显示出来。
+const sgmOpen = ref(false)        // 弹窗开关
+const sgmId = ref('')             // 右栏正在编辑的组 id
+const sgmNameVal = ref('')        // 组名输入（v-model；本页每秒重渲染，可编辑输入框不能用单向 :value）
+const sgmNameEl = ref(null)       // 组名输入框 DOM（新建组后自动聚焦）
+const sgmKw = ref('')             // 「搜索添加」关键词
+const sgmRes = ref([])            // 搜索结果 [{ id, name, groupLabel }]
+const sgmPick = ref([])           // 待加入暂存区 [{ id, name }]：跨多次搜索累积，点「加入本组」才落盘
+const sgmSel = ref([])            // 成员表勾选的 NORAD（批量移出用）
+const sgmMemKw = ref('')          // 成员表内过滤词
+const sgmDelId = ref('')          // 组删除两步确认
+const sgmBusy = ref(false)        // 搜索中（首次要拉全量目录）
+const sgmPool = ref(new Map())    // NORAD -> 分组标签：打开时按当前星历快照，供成员表标注归属 / 是否还在星历里
+let sgmTimer = null               // 搜索防抖
+const SGM_MAX = 300               // 搜索结果条数上限（侧栏下拉是 40，管理器要能一次全选一批故放宽）
 // 导入组卫星数（文件管理 custom.json 的权威计数）：挂载/导入/删除时刷新。单独决定「自定义卫星」分组
 // 是否有数据——无导入星历则不在星座列表里出现（文件管理是导入库的唯一权威）。
 // 【勿把自建星座 customList 并进来】：该分组 loadGroup 只读 omm.customCsv()（=导入库），自建 Walker 星座
@@ -1283,6 +1300,7 @@ function removeSelFromGroup(g) {
 // 显示某卫星组：按 NORAD 从全量搜索库解析回可渲染 entries，走「筛选显示」管线渲染（跨分组、点选、覆盖圈、可见性全部照常）
 async function showSatGroup(g) {
   if (!g) return
+  if (!(g.sats || []).length) { appAlert(`卫星组「${g.name}」还没有卫星——点该组行的「管理」图标，在管理器里搜索添加。`); return }
   await ensureSearchPool()
   const want = new Set((g.sats || []).map((s) => String(s.id)))
   const src = searchSource(), hit = [], seen = new Set()
@@ -1316,6 +1334,139 @@ function satGrpDelete(g) {
   if (filterGroupId.value === g.id) clearSearch()   // 正在显示的组被删 → 退出显示态
   satGroups.remove(g.id)
   satGrpDelId.value = ''
+}
+// 搜索结果行的「+」：加入/移出选中集且【不清搜索框】，于是可以「搜 A → +、搜 B → +、…」把跨关键词的
+// 卫星攒到一个选中集里，再点选中栏的「存为组」一次成组。裸点结果行仍是原行为（替换选中并转到该星）。
+function toggleResultSel(item) { selectSat(item.en, false, true) }
+const selNorads = computed(() => new Set(selList.value.map((s) => String(s.noradId))))
+
+// ===================== 卫星组管理器（新建 / 改名 / 复制 / 删除 + 搜索添加 + 成员移出） =====================
+const sgmCur = computed(() => satGroups.list.value.find((g) => g.id === sgmId.value) || null)
+const sgmPickIds = computed(() => new Set(sgmPick.value.map((s) => s.id)))
+const sgmMemIds = computed(() => new Set((sgmCur.value ? sgmCur.value.sats : []).map((s) => s.id)))
+const sgmSelIds = computed(() => new Set(sgmSel.value))
+// 成员表：组里存的是 { NORAD, 名称 } 快照，故即使卫星已不在当前星历（未联网/已退役）也照样列得出来，
+// 只是标注「未在当前星历」——查/删不依赖星历，避免「看不见就管不了」。
+const sgmMembers = computed(() => {
+  const g = sgmCur.value; if (!g) return []
+  const k = sgmMemKw.value.trim().toLowerCase(), pool = sgmPool.value
+  return g.sats
+    .filter((s) => !k || (s.name || '').toLowerCase().includes(k) || s.id.includes(k))
+    .map((s) => ({ id: s.id, name: s.name || ('NORAD ' + s.id), groupLabel: pool.get(s.id) || '', inPool: pool.has(s.id) }))
+})
+// 打开时按当前星历快照一份 NORAD→分组标签（成员表标注用；不做响应式跟随，够用且不拖慢）
+async function sgmSnapPool() {
+  await ensureSearchPool()
+  const m = new Map()
+  for (const en of searchSource()) { const nid = String(en.noradId); if (!m.has(nid)) m.set(nid, en.groupLabel || GROUP_LABEL[en.group] || '') }
+  sgmPool.value = m
+}
+function openSatGrpMgr(g) {
+  sgmDelId.value = ''; sgmKw.value = ''; sgmRes.value = []; sgmPick.value = []; sgmSel.value = []; sgmMemKw.value = ''
+  const want = (g && g.id) || sgmId.value
+  const hit = satGroups.list.value.find((x) => x.id === want) || satGroups.list.value[0] || null
+  sgmId.value = hit ? hit.id : ''
+  sgmNameVal.value = hit ? hit.name : ''
+  sgmOpen.value = true
+  sgmSnapPool()
+}
+function closeSatGrpMgr() { sgmOpen.value = false; if (sgmTimer) { clearTimeout(sgmTimer); sgmTimer = null } }
+function sgmFocusName() { nextTick(() => { try { const el = sgmNameEl.value; if (el) { el.focus(); el.select() } } catch { /* ignore */ } }) }
+watch(sgmId, (id) => { const g = satGroups.find(id); sgmNameVal.value = g ? g.name : '' })
+function sgmPickGroup(g) {
+  if (sgmId.value === g.id) return
+  sgmId.value = g.id; sgmSel.value = []; sgmMemKw.value = ''; sgmDelId.value = ''
+}
+function sgmNew() {
+  const g = satGroups.create('')
+  sgmId.value = g.id; sgmSel.value = []; sgmMemKw.value = ''; sgmDelId.value = ''
+  logMsg(`已新建空卫星组「${g.name}」`)
+  sgmFocusName()
+}
+function sgmCommitName() {
+  const g = sgmCur.value; if (!g) return
+  if (satGroups.rename(g.id, sgmNameVal.value) && filterGroupId.value === g.id) filterKw.value = g.name   // 正在显示的组改名 → 同步状态条标签
+}
+function sgmDup(g) {
+  const c = satGroups.duplicate(g.id)
+  if (c) { sgmId.value = c.id; sgmSel.value = []; sgmMemKw.value = ''; logMsg(`已复制卫星组「${g.name}」→「${c.name}」`) }
+}
+function sgmDel(g) {
+  if (sgmDelId.value !== g.id) { sgmDelId.value = g.id; return }
+  if (filterGroupId.value === g.id) clearSearch()
+  satGroups.remove(g.id)
+  sgmDelId.value = ''
+  if (sgmId.value === g.id) { const f = satGroups.list.value[0]; sgmId.value = f ? f.id : ''; sgmSel.value = []; sgmMemKw.value = '' }
+}
+// 「搜索添加」：直接搜全量在轨目录（跨分组，与地图上显示的是哪一组无关）
+function sgmOnSearch() {
+  if (sgmTimer) { clearTimeout(sgmTimer); sgmTimer = null }
+  const k = sgmKw.value.trim()
+  if (!k) { sgmRes.value = []; sgmBusy.value = false; return }
+  sgmBusy.value = true
+  sgmTimer = setTimeout(async () => {
+    sgmTimer = null
+    try {
+      await ensureSearchPool()
+      if (!sgmPool.value.size) await sgmSnapPool()
+      if (sgmKw.value.trim() !== k) return   // 等待期间用户又改了词 → 本次结果作废
+      const kk = k.toLowerCase(), out = [], seen = new Set()
+      for (const en of searchSource()) {
+        if (out.length >= SGM_MAX) break
+        if (!(en.name.toLowerCase().includes(kk) || String(en.noradId).includes(kk) || (en.groupLabel && en.groupLabel.toLowerCase().includes(kk)))) continue
+        const nid = String(en.noradId); if (seen.has(nid)) continue
+        seen.add(nid); out.push({ id: nid, name: en.name, groupLabel: en.groupLabel || GROUP_LABEL[en.group] || '' })
+      }
+      sgmRes.value = out
+    } finally { if (sgmKw.value.trim() === k) sgmBusy.value = false }
+  }, 220)
+}
+function sgmTogglePick(it) {
+  const i = sgmPick.value.findIndex((s) => s.id === it.id)
+  if (i >= 0) sgmPick.value.splice(i, 1)
+  else sgmPick.value.push({ id: it.id, name: it.name })
+}
+function sgmPickAllRes() {
+  const have = sgmPickIds.value, mem = sgmMemIds.value, add = []
+  for (const it of sgmRes.value) if (!have.has(it.id) && !mem.has(it.id)) add.push({ id: it.id, name: it.name })
+  if (add.length) sgmPick.value = [...sgmPick.value, ...add]
+}
+function sgmAddPick() {
+  const g = sgmCur.value
+  if (!g) { appAlert('先在左侧新建或选中一个卫星组'); return }
+  if (!sgmPick.value.length) { appAlert('先勾选要加入的卫星（可多次换词搜索，勾选会累积）'); return }
+  const n = satGroups.append(g.id, sgmPick.value)
+  logMsg(n ? `已加入 ${n} 颗到卫星组「${g.name}」（去重后共 ${g.sats.length} 颗）` : `勾选的卫星都已在「${g.name}」中`)
+  sgmPick.value = []
+  if (n && filterGroupId.value === g.id) showSatGroup(g)   // 正在看这组 → 刷新显示纳入新星
+}
+function sgmToggleMem(id) {
+  const i = sgmSel.value.indexOf(id)
+  if (i >= 0) sgmSel.value.splice(i, 1); else sgmSel.value.push(id)
+}
+// 全选/反选：只针对当前过滤后可见的成员
+function sgmToggleMemAll() {
+  const vis = sgmMembers.value.map((m) => m.id)
+  if (!vis.length) return
+  const on = new Set(sgmSel.value)
+  const allOn = vis.every((id) => on.has(id))
+  if (allOn) { const kill = new Set(vis); sgmSel.value = sgmSel.value.filter((id) => !kill.has(id)) }
+  else { vis.forEach((id) => on.add(id)); sgmSel.value = [...on] }
+}
+function sgmRemoveMem(ids) {
+  const g = sgmCur.value; if (!g) return
+  const kill = (ids || []).filter(Boolean)
+  if (!kill.length) { appAlert('先勾选要移出的卫星'); return }
+  const n = satGroups.removeSats(g.id, kill)
+  const killSet = new Set(kill)
+  sgmSel.value = sgmSel.value.filter((id) => !killSet.has(id))
+  logMsg(n ? `已从卫星组「${g.name}」移出 ${n} 颗（剩 ${g.sats.length} 颗）` : '所选卫星不在该组中')
+  if (n && filterGroupId.value === g.id) { g.sats.length ? showSatGroup(g) : clearSearch() }
+}
+function sgmShow() {
+  const g = sgmCur.value; if (!g) return
+  if (!g.sats.length) { appAlert('该组还没有卫星，先在上面「搜索添加」里加几颗'); return }
+  closeSatGrpMgr(); showSatGroup(g)
 }
 
 // ===================== 覆盖圈（波束角 / 最低仰角） =====================
@@ -3881,9 +4032,17 @@ onBeforeUnmount(() => {
               <input :value="keyword" placeholder="搜索名 / 编号（即筛选显示）" @input="onSearch" />
               <span v-if="keyword" class="clr" @click="clearSearch"><Icon name="x" :size="11" /></span>
               <div v-if="searchResults.length" class="panel">
-                <div v-for="item in searchResults" :key="item.noradId" class="item" @click="pickResult(item)">
-                  <div class="nm">{{ item.name }}</div>
-                  <div class="sub">{{ item.groupLabel }} · NORAD {{ item.noradId }}<span v-if="item.slot"> · {{ item.slot }}</span></div>
+                <div v-for="item in searchResults" :key="item.noradId" class="item" :class="{ picked: selNorads.has(String(item.noradId)) }" @click="pickResult(item)">
+                  <div class="itx">
+                    <div class="nm">{{ item.name }}</div>
+                    <div class="sub">{{ item.groupLabel }} · NORAD {{ item.noradId }}<span v-if="item.slot"> · {{ item.slot }}</span></div>
+                  </div>
+                  <!-- 「+」＝加入选中集但不清搜索框：换关键词再点「+」可跨多次搜索攒出一批，再「存为组」 -->
+                  <span
+                    class="ipk"
+                    :title="selNorads.has(String(item.noradId)) ? '已在选中集中，点击移出' : '加入选中集（可继续换词搜索累积，之后点「存为组」）'"
+                    @click.stop="toggleResultSel(item)"
+                  ><Icon :name="selNorads.has(String(item.noradId)) ? 'check' : 'plus'" :size="12" /></span>
                 </div>
               </div>
             </div>
@@ -3894,7 +4053,8 @@ onBeforeUnmount(() => {
               <span v-if="!filterGroupId" class="fsave" title="把当前筛选结果存成卫星组（可稍后重新显示）" @click="saveFilterAsGroup"><Icon name="folder-plus" :size="11" /> 存为组</span>
               <span class="fx" @click="clearSearch">清除</span>
             </div>
-            <div v-if="selList.length >= 2" class="fbar selbar">
+            <!-- 一颗也算数：单颗选中同样要能「存为组」（此前 ≥2 才出条，导致单星无法建组） -->
+            <div v-if="selList.length" class="fbar selbar">
               <span class="fdot sel"></span>已选 <b>{{ selList.length }}</b> 颗卫星
               <span class="fsave" title="把选中的卫星存成卫星组（可稍后重新显示）" @click="saveSelectionAsGroup"><Icon name="folder-plus" :size="11" /> 存为组</span>
               <span class="fx" title="取消全部选择" @click="closeCard">清除</span>
@@ -3929,9 +4089,17 @@ onBeforeUnmount(() => {
             </div>
             </template>
           </div>
-          <!-- 卫星组：保存的命名卫星子集（来自筛选结果 / Ctrl 多选），点击行重新显示；有组才出现 -->
-          <div v-if="satGroups.list.value.length" class="ccsec">
-            <div class="cchd"><span>卫星组</span><span class="ccsub">{{ satGroups.list.value.length }} 组</span></div>
+          <!-- 卫星组：保存的命名卫星子集，点击行重新显示。恒显示（含零组）——空态下也要有「新建 / 管理」入口，
+               否则第一个组只能从筛选栏 / 选中栏诞生，没星可选时就无从下手。 -->
+          <div class="ccsec">
+            <div class="cchd"><span>卫星组</span>
+              <span class="cchr">
+                <span v-if="satGroups.list.value.length" class="ccsub">{{ satGroups.list.value.length }} 组</span>
+                <span class="lnk" title="新建一个空组，然后在管理器里搜索添加卫星" @click="openSatGrpMgr(); sgmNew()"><Icon name="plus" :size="11" /> 新建</span>
+                <span class="lnk" title="打开卫星组管理器：新建 / 改名 / 复制 / 删除 · 搜索添加卫星 · 逐颗或批量移出" @click="openSatGrpMgr()"><Icon name="sliders-horizontal" :size="11" /> 管理</span>
+              </span>
+            </div>
+            <div v-if="!satGroups.list.value.length" class="cctip">把常用卫星存成命名组，之后一键重新显示。点「新建」建组后在管理器里搜索添加；也可在地图上点选卫星（按住 Ctrl 多选）后点上方「存为组」。</div>
             <div
               v-for="g in satGroups.list.value" :key="g.id"
               class="ccrow sgrow" :class="{ sel: filterGroupId === g.id }"
@@ -3954,6 +4122,7 @@ onBeforeUnmount(() => {
                 <span class="cccode">{{ g.sats.length }} 颗</span>
                 <span v-if="selList.length || (filterN && !filterGroupId)" class="ccic add" :title="'把当前' + (selList.length ? ('选中的 ' + selList.length) : ('筛选的 ' + filterN)) + ' 颗卫星加入本组（去重追加）'" @click.stop="addSelToGroup(g)"><Icon name="plus" :size="13" /></span>
                 <span v-if="selList.length && filterGroupId === g.id" class="ccic del" :title="'把选中的 ' + selList.length + ' 颗从本组移出'" @click.stop="removeSelFromGroup(g)"><Icon name="minus" :size="13" /></span>
+                <span class="ccic" title="管理成员：搜索添加 / 逐颗移出（不必先把星显示出来）" @click.stop="openSatGrpMgr(g)"><Icon name="sliders-horizontal" :size="11" /></span>
                 <span class="ccic" title="重命名" @click.stop="satGrpEnterRename(g)"><Icon name="pencil" :size="11" /></span>
                 <span class="ccic del" :class="{ warn: satGrpDelId === g.id }" :title="satGrpDelId === g.id ? '再点一次确认删除' : '删除该组'" @click.stop="satGrpDelete(g)"><Icon name="trash" :size="11" /></span>
               </template>
@@ -5273,6 +5442,87 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
+    <!-- 卫星组管理器：左＝组列表（新建/复制/删除），右＝当前组（改名 + 搜索添加 + 成员表移出）。
+         与地图渲染态解耦：不必先把卫星显示出来，直接搜全量目录勾选入组；组成员是 {NORAD,名称} 快照，
+         即使卫星已不在当前星历也列得出来、删得掉。 -->
+    <div v-if="sgmOpen" class="sat-mask sat-overlay" @click.self="closeSatGrpMgr">
+      <div class="sat-dlg sgm-dlg">
+        <div class="sdh"><span>卫星组管理</span><span class="csx" @click="closeSatGrpMgr"><Icon name="x" :size="12" /></span></div>
+        <div class="sgm-body">
+          <div class="sgm-left">
+            <div class="sgm-lt">全部组 <em>{{ satGroups.list.value.length }}</em>
+              <span class="lnk" title="新建一个空组" @click="sgmNew"><Icon name="plus" :size="11" /> 新建</span>
+            </div>
+            <div class="sgm-glist">
+              <div v-if="!satGroups.list.value.length" class="sgm-empty">还没有卫星组，点上方「新建」。</div>
+              <div
+                v-for="g in satGroups.list.value" :key="g.id"
+                class="sgm-grow" :class="{ cur: g.id === sgmId }"
+                @click="sgmPickGroup(g)"
+              >
+                <span class="gnm" :title="g.name">{{ g.name }}</span>
+                <span class="gcnt">{{ g.sats.length }}</span>
+                <span class="gic" title="复制该组（含成员）" @click.stop="sgmDup(g)"><Icon name="copy" :size="11" /></span>
+                <span class="gic del" :class="{ warn: sgmDelId === g.id }" :title="sgmDelId === g.id ? '再点一次确认删除' : '删除该组'" @click.stop="sgmDel(g)"><Icon name="trash" :size="11" /></span>
+              </div>
+            </div>
+          </div>
+
+          <div class="sgm-right">
+            <template v-if="sgmCur">
+              <div class="sgm-name">
+                <label>组名</label>
+                <input class="ci" ref="sgmNameEl" v-model="sgmNameVal" placeholder="卫星组名称" @input="sgmCommitName" @blur="sgmNameVal = (sgmCur ? sgmCur.name : '')" />
+                <span class="gbtn" title="在地图上显示该组的卫星" @click="sgmShow"><Icon name="eye" :size="11" /> 显示</span>
+              </div>
+
+              <div class="sgm-sec">搜索添加 <em>换关键词继续搜，勾选会累积</em></div>
+              <div class="sgm-srch">
+                <input class="ci" v-model="sgmKw" placeholder="卫星名 / NORAD 编号 / 星座名，如 starlink、48274" @input="sgmOnSearch" />
+                <span v-if="sgmRes.length" class="gbtn" title="把当前结果里未入组的全部勾上" @click="sgmPickAllRes">全选结果</span>
+              </div>
+              <div class="sgm-reslist">
+                <div v-if="sgmBusy" class="sgm-empty">搜索中…（首次需加载全量在轨目录）</div>
+                <div v-else-if="!sgmKw.trim()" class="sgm-empty">输入关键词搜索全量在轨目录（跨分组，与地图当前显示哪一组无关）。</div>
+                <div v-else-if="!sgmRes.length" class="sgm-empty">没有匹配的卫星。</div>
+                <label v-for="it in sgmRes" :key="it.id" class="sgm-ck" :class="{ dim: sgmMemIds.has(it.id) }">
+                  <!-- 已在组内 → 禁用且不显勾（勾选集是跨组暂存的，切组后可能含本组已有星，避免显示成「已勾选」误导） -->
+                  <input type="checkbox" :checked="!sgmMemIds.has(it.id) && sgmPickIds.has(it.id)" :disabled="sgmMemIds.has(it.id)" @change="sgmTogglePick(it)" />
+                  <span class="cn" :title="it.name">{{ it.name }}</span>
+                  <em>{{ it.groupLabel }} · {{ it.id }}</em>
+                  <b v-if="sgmMemIds.has(it.id)">已在组内</b>
+                </label>
+              </div>
+              <div class="sgm-pickbar">
+                <span>已勾选 <b>{{ sgmPick.length }}</b> 颗</span>
+                <span v-if="sgmPick.length" class="lnk" @click="sgmPick = []">清空勾选</span>
+                <span class="save" :class="{ dis: !sgmPick.length }" @click="sgmAddPick"><Icon name="plus" :size="11" /> 加入本组</span>
+              </div>
+
+              <div class="sgm-sec">组内卫星 <em>{{ sgmCur.sats.length }} 颗</em></div>
+              <div class="sgm-memtool">
+                <input class="ci" v-model="sgmMemKw" placeholder="在组内过滤…" />
+                <span class="gbtn" @click="sgmToggleMemAll">全选 / 反选</span>
+                <span class="gbtn danger" :class="{ dis: !sgmSel.length }" @click="sgmRemoveMem(sgmSel)"><Icon name="minus" :size="11" /> 移出所选{{ sgmSel.length ? (' ' + sgmSel.length) : '' }}</span>
+              </div>
+              <div class="sgm-memlist">
+                <div v-if="!sgmCur.sats.length" class="sgm-empty">该组还没有卫星，用上面的「搜索添加」加入。</div>
+                <div v-else-if="!sgmMembers.length" class="sgm-empty">没有匹配的成员。</div>
+                <label v-for="m in sgmMembers" :key="m.id" class="sgm-ck">
+                  <input type="checkbox" :checked="sgmSelIds.has(m.id)" @change="sgmToggleMem(m.id)" />
+                  <span class="cn" :title="m.name">{{ m.name }}</span>
+                  <em :class="{ miss: !m.inPool }">{{ m.inPool ? m.groupLabel : '未在当前星历' }} · {{ m.id }}</em>
+                  <span class="gic del" title="从本组移出" @click.stop.prevent="sgmRemoveMem([m.id])"><Icon name="x" :size="11" /></span>
+                </label>
+              </div>
+            </template>
+            <div v-else class="sgm-empty big">左侧还没有卫星组。点「新建」创建一个，再在这里搜索卫星加入。</div>
+          </div>
+        </div>
+        <div class="sdfoot"><span class="save" @click="closeSatGrpMgr">完成</span></div>
+      </div>
+    </div>
+
     <!-- 应用内提示弹窗（替代 Electron 原生 alert，避免关闭后输入框无法聚焦） -->
     <div v-if="alertMsg" class="sat-mask sat-overlay" @click.self="closeAlert">
       <div class="sat-dlg al-dlg">
@@ -5735,10 +5985,15 @@ onBeforeUnmount(() => {
 .search .clr { position: absolute; right: 5px; top: 50%; transform: translateY(-50%); display: flex; align-items: center; justify-content: center; width: 16px; height: 16px; font-size: 11px; line-height: 1; cursor: pointer; color: var(--text-faint); }
 .search .clr:hover { color: var(--text); }
 .search .panel { position: absolute; top: 28px; left: 0; width: 260px; max-height: 260px; overflow: auto; background: var(--bg); border: 1px solid var(--border-strong); z-index: 5; }
-.search .item { padding: 6px 10px; border-bottom: 1px solid var(--border); cursor: pointer; }
+.search .item { display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-bottom: 1px solid var(--border); cursor: pointer; }
 .search .item:hover { background: var(--surface); }
-.search .nm { font-size: 12.5px; }
+.search .itx { flex: 1; min-width: 0; }
+.search .nm { font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .search .sub { color: var(--text-faint); font-size: 11px; }
+/* 结果行「+」：加入选中集而不清搜索框（跨多次搜索攒一批，再「存为组」）；已在集中时显示 ✓ */
+.search .ipk { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; border: 1px solid var(--border); border-radius: 4px; color: var(--text-faint); }
+.search .ipk:hover { border-color: var(--accent); color: var(--accent); }
+.search .item.picked .ipk { border-color: var(--accent); background: var(--accent); color: #fff; }
 .meta { margin-left: auto; color: var(--text-faint); }
 .tl { display: flex; align-items: center; gap: 14px; padding: 6px 12px; border-bottom: 1px solid var(--border); flex: none; font-size: 11.5px; }
 /* 时间轴（专业刻度尺）：基线尺 + 主/次两级刻度 + 游标针(顶部握柄) + 悬停幽灵线 + 独立「此刻」标记 */
@@ -5927,8 +6182,9 @@ onBeforeUnmount(() => {
 .ccrow.sel .ccic.add { color: var(--bg); }
 .ccrow .ccic.ok:hover { color: var(--accent); }
 .ccrow.sel .ccic.del.warn { color: #ffd7d7; }
-/* 卫星组：段头计数 + 行内重命名输入 + 删除确认高亮 */
+/* 卫星组：段头计数 + 新建/管理入口 + 行内重命名输入 + 删除确认高亮 */
 .cchd .ccsub { font-size: 10.5px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+.cchd .cchr { display: flex; align-items: center; gap: 9px; }
 .ccrow .ccic.del.warn { color: #ff6b6b; }
 .sgrow .sgnm-in { flex: 1; min-width: 0; border: 1px solid var(--accent); background: var(--bg); color: var(--text); font-size: 12px; padding: 1px 5px; border-radius: 3px; outline: none; }
 /* 向导：预设条 + 汇总 */
@@ -6657,6 +6913,54 @@ onBeforeUnmount(() => {
 .sdfoot .cancel { margin-left: auto; color: var(--text-muted); border: 1px solid var(--border); padding: 4px 14px; cursor: pointer; font-size: 12px; }
 .sdfoot .cancel:hover { color: var(--text); }
 .sdfoot .save { background: var(--accent); color: #fff; padding: 4px 18px; cursor: pointer; font-size: 12px; }
+/* —— 卫星组管理器：左＝组列表，右＝改名 + 搜索添加 + 成员表 —— */
+.sgm-dlg { width: 780px; max-width: calc(100% - 32px); height: 76vh; max-height: 660px; overflow: hidden; }
+.sgm-body { flex: 1; min-height: 0; display: flex; }
+.sgm-left { flex: 0 0 200px; min-width: 0; display: flex; flex-direction: column; border-right: 1px solid var(--border); }
+.sgm-lt { display: flex; align-items: center; gap: 6px; padding: 8px 10px; font-size: 11.5px; color: var(--text-muted); border-bottom: 1px solid var(--border); flex: none; }
+.sgm-lt em { font-style: normal; color: var(--text-faint); font-family: var(--font-mono); }
+.sgm-lt .lnk { margin-left: auto; display: inline-flex; align-items: center; gap: 2px; color: var(--accent); cursor: pointer; }
+.sgm-glist { flex: 1; min-height: 0; overflow-y: auto; }
+.sgm-grow { display: flex; align-items: center; gap: 6px; padding: 6px 10px; font-size: 12px; color: var(--text-muted); cursor: pointer; border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent); }
+.sgm-grow:hover { background: var(--surface-2); color: var(--text); }
+.sgm-grow.cur { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--text); }
+.sgm-grow .gnm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sgm-grow .gcnt { flex: none; font-size: 10.5px; color: var(--text-faint); font-family: var(--font-mono); }
+.sgm-grow .gic { flex: none; display: inline-flex; color: var(--text-faint); cursor: pointer; padding: 1px; opacity: 0; }
+.sgm-grow:hover .gic, .sgm-grow.cur .gic { opacity: 1; }
+.sgm-grow .gic:hover { color: var(--text); }
+.sgm-grow .gic.del:hover, .sgm-grow .gic.del.warn { color: #ff6a6a; }
+.sgm-right { flex: 1; min-width: 0; display: flex; flex-direction: column; padding: 10px 12px; overflow: hidden; }
+.sgm-name { display: flex; align-items: center; gap: 8px; flex: none; }
+.sgm-name > label { flex: none; font-size: 11.5px; color: var(--text-muted); }
+.sgm-sec { flex: none; margin: 11px 0 5px; font-size: 11px; color: var(--text-muted); }
+.sgm-sec em { font-style: normal; color: var(--text-faint); }
+.sgm-srch, .sgm-memtool { display: flex; align-items: center; gap: 6px; flex: none; }
+.sgm-right .ci { flex: 1; min-width: 0; border: 1px solid var(--border); background: var(--bg); padding: 4px 8px; font-size: 12px; color: var(--text); border-radius: 4px; outline: none; }
+.sgm-right .ci:focus { border-color: var(--accent); }
+.sgm-right .gbtn { flex: none; font-size: 11px; color: var(--text-muted); border: 1px solid var(--border); border-radius: 4px; padding: 3px 8px; cursor: pointer; white-space: nowrap; display: inline-flex; align-items: center; gap: 3px; }
+.sgm-right .gbtn:hover { color: var(--text); border-color: var(--accent); }
+.sgm-right .gbtn.danger:hover { color: #ff6a6a; border-color: #ff6a6a; }
+.sgm-right .gbtn.dis, .sgm-pickbar .save.dis { opacity: .4; pointer-events: none; }
+.sgm-reslist { flex: 1 1 42%; min-height: 76px; overflow-y: auto; margin-top: 6px; border: 1px solid var(--border); border-radius: 4px; }
+.sgm-memlist { flex: 1 1 58%; min-height: 76px; overflow-y: auto; margin-top: 6px; border: 1px solid var(--border); border-radius: 4px; }
+.sgm-ck { display: flex; align-items: center; gap: 7px; padding: 4px 8px; font-size: 11.5px; color: var(--text); cursor: pointer; border-bottom: 1px solid color-mix(in srgb, var(--border) 45%, transparent); }
+.sgm-ck:hover { background: var(--surface-2); }
+.sgm-ck input { flex: none; accent-color: var(--accent); }
+.sgm-ck .cn { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sgm-ck em { flex: none; font-style: normal; color: var(--text-faint); font-family: var(--font-mono); font-size: 10.5px; }
+.sgm-ck em.miss { color: #d9a441; }
+.sgm-ck b { flex: none; font-weight: 400; font-size: 10px; color: var(--accent); }
+.sgm-ck.dim { color: var(--text-faint); }
+.sgm-ck .gic { flex: none; display: inline-flex; color: var(--text-faint); cursor: pointer; padding: 1px; }
+.sgm-ck .gic.del:hover { color: #ff6a6a; }
+.sgm-pickbar { display: flex; align-items: center; gap: 10px; flex: none; margin-top: 6px; font-size: 11.5px; color: var(--text-muted); }
+.sgm-pickbar b { color: var(--text); }
+.sgm-pickbar .lnk { color: var(--accent); cursor: pointer; }
+.sgm-pickbar .save { margin-left: auto; display: inline-flex; align-items: center; gap: 3px; background: var(--accent); color: #fff; padding: 3px 12px; border-radius: 4px; cursor: pointer; font-size: 11.5px; }
+.sgm-empty { padding: 12px 10px; font-size: 11px; color: var(--text-faint); line-height: 1.6; }
+.sgm-empty.big { margin: auto; text-align: center; max-width: 300px; }
+.sgm-dlg .sdfoot { justify-content: flex-end; flex: none; }
 /* 应用内提示弹窗：消息文本 + 右对齐「确定」 */
 .al-dlg { width: 360px; }
 .al-msg { margin: 0; font-size: 13px; line-height: 1.65; color: var(--text); }

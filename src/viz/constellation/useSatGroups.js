@@ -53,15 +53,40 @@ export function useSatGroups() {
 
   const find = (id) => list.value.find((g) => g.id === id) || null
 
+  // 未占用的默认组名（删过组后仍不重名）
+  function nextName() {
+    const used = new Set(list.value.map((g) => g.name))
+    let i = list.value.length + 1
+    while (used.has('卫星组 ' + i)) i++
+    return '卫星组 ' + i
+  }
+
   // 存一批卫星为新组。sats=[{noradId,name}] 或 [{id,name}]；空集合不存（返回 null）。返回新组对象。
   function add(sats, name) {
     const s = normSats(sats)
     if (!s.length) return null
-    const nm = String(name == null ? '' : name).trim() || ('卫星组 ' + (list.value.length + 1))
+    const nm = String(name == null ? '' : name).trim() || nextName()
     const g = normalize({ name: nm, sats: s })
     list.value = [...list.value, g]
     persist()
     return g
+  }
+  // 建【空组】：add 有意拒绝空集合（防止误存），而「先建组、再搜索逐颗添加」的流程必须能先有个空壳。
+  function create(name) {
+    const g = normalize({ name: String(name == null ? '' : name).trim() || nextName(), sats: [] })
+    list.value = [...list.value, g]
+    persist()
+    return g
+  }
+  // 复制一组（含成员），插在原组之后
+  function duplicate(id) {
+    const g = find(id); if (!g) return null
+    const c = normalize({ name: g.name + ' 副本', color: g.color, sats: g.sats.map((s) => ({ id: s.id, name: s.name })) })
+    const next = [...list.value]
+    next.splice(list.value.findIndex((x) => x.id === id) + 1, 0, c)
+    list.value = next
+    persist()
+    return c
   }
   function rename(id, name) {
     const nm = String(name == null ? '' : name).trim(); if (!nm) return false
@@ -96,5 +121,5 @@ export function useSatGroups() {
   }
   function remove(id) { list.value = list.value.filter((g) => g.id !== id); persist() }
 
-  return { list, load, persist, find, add, rename, overwrite, append, removeSats, remove }
+  return { list, load, persist, find, add, create, duplicate, rename, overwrite, append, removeSats, remove }
 }

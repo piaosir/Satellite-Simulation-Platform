@@ -106,11 +106,13 @@ module.exports = function createOmm(getCore) {
     return { group, count: parse(group, text), source }
   }
 
-  // 返回 { text, why }：text 为正文（失败时 null），why 为失败原因短语，直接进日志给用户看
+  // 返回 { text, why, kind }：text 为正文（失败时 null），why 为失败原因短语，直接进日志给用户看
   // （HTTP 403「数据未更新」是 CelesTrak 对重复请求的常规响应，单独措辞，避免被误读为故障）。
+  // kind 区分失败层级，供熔断判据用：'net'=连接层失败（超时/连不上，站点根本不可达）、
+  // 'http'=有 HTTP 响应但非 200（说明网络是通的，只是被限流/无更新）、''=成功。
   function httpGetText(url) {
     return new Promise((resolve) => {
-      const fail = (why) => resolve({ text: null, why })
+      const fail = (why, kind) => resolve({ text: null, why, kind: kind || 'net' })
       const httpWhy = (code) => (code === 403 ? 'HTTP 403 · 该数据自上次下载后未更新或被限流' : `HTTP ${code}`)
       let net = null
       try { net = require('electron').net } catch {}
@@ -122,10 +124,10 @@ module.exports = function createOmm(getCore) {
         req.on('response', (res) => {
           if (res.statusCode !== 200) {
             done = true
-            res.on('data', () => {}); res.on('end', () => fail(httpWhy(res.statusCode))); return
+            res.on('data', () => {}); res.on('end', () => fail(httpWhy(res.statusCode), 'http')); return
           }
           res.on('data', (c) => (buf += c))
-          res.on('end', () => { done = true; resolve({ text: buf, why: '' }) })
+          res.on('end', () => { done = true; resolve({ text: buf, why: '', kind: '' }) })
         })
         req.on('error', (e) => { done = true; fail('连接失败 · ' + (e.message || e)) })
         setTimeout(() => { if (!done) { try { req.abort() } catch {} ; fail('连接超时 30s') } }, 30000)
@@ -134,10 +136,10 @@ module.exports = function createOmm(getCore) {
       }
       // 回退：Node https（仅用于无 Electron 的测试环境，不走系统代理）。
       const req = https.get(url, { timeout: 30000, headers: { 'User-Agent': 'satsim-desktop' } }, (res) => {
-        if (res.statusCode !== 200) { res.resume(); return fail(httpWhy(res.statusCode)) }
+        if (res.statusCode !== 200) { res.resume(); return fail(httpWhy(res.statusCode), 'http') }
         let buf = ''
         res.on('data', (c) => (buf += c))
-        res.on('end', () => resolve({ text: buf, why: '' }))
+        res.on('end', () => resolve({ text: buf, why: '', kind: '' }))
       })
       req.on('error', (e) => fail('连接失败 · ' + (e.message || e)))
       req.on('timeout', () => { req.destroy(); fail('连接超时 30s') })
@@ -192,19 +194,67 @@ module.exports = function createOmm(getCore) {
     }
     return cache || bundled || null
   }
+  // 本机是否已有可回落的数据（用户缓存 / 内置快照）——只做存在性探测，不读正文
+  // （active 组明文约 5MB，判据用不着解压整份，别在直连成功的路径上白读盘）。
+  function hasBundled(key) {
+    const d = bundledDir(); if (!d) return false
+    try { if (fs.existsSync(path.join(d, `csv_${key}.csv.gz`))) return true } catch {}
+    try { return fs.existsSync(path.join(d, `csv_${key}.csv`)) } catch { return false }
+  }
+  function hasLocal(key) {
+    try { if (fs.statSync(csvCacheFile(key)).size > 0) return true } catch {}
+    return hasBundled(key)
+  }
+
+  // ---- 「今天已试过直连」记账 + 会话级熔断：CelesTrak 被墙时不再每次启动重付超时 ----
+  // 病灶：能让缓存 mtime 变成「今天」（从而命中一天一次的缓存闸门）的只有两条路——直连成功、或云镜像那份
+  // 恰好是今天上传的。而云镜像只有直连得通的用户才刷得动，直连被墙的机器一旦碰上「当天没人刷新镜像」，
+  // fetchCsv 的失败/回落路径【不写盘也不留痕】，于是每次启动都把 17 组 × 3~5 次 30s 超时重付一遍，
+  // 拿回来的还是同一份旧数据 —— 表现就是「反复加载且慢」。
+  // 对策：另记一份「今天已完整试过直连」的标记。命中时【只跳过 CelesTrak 两级】，云镜像照常查
+  // （一次 HEAD，国内毫秒级）——既不重付超时，也不牺牲「别人下午把镜像刷新了本机也能拿到」。
+  const attemptFile = () => path.join(cacheDir(), 'celestrak-attempt.json')
+  let _attempts   // { group: ISO }；惰性读一次，之后内存为准、写穿到盘
+  function attempts() {
+    if (_attempts) return _attempts
+    _attempts = {}
+    try { const o = JSON.parse(fs.readFileSync(attemptFile(), 'utf8')); if (o && typeof o === 'object') _attempts = o } catch {}
+    return _attempts
+  }
+  const triedToday = (key) => { const t = attempts()[key]; return !!t && isToday(t) }
+  function markTried(keys) {
+    const a = attempts(), now = new Date().toISOString()
+    for (const k of [].concat(keys)) a[k] = now
+    try { fs.writeFileSync(attemptFile(), JSON.stringify(a)) } catch { /* 记不上账只是退化回原行为，不影响取数 */ }
+  }
+
+  // 会话级熔断：连续 BREAK_AT 次「连接层」失败（超时 / 连不上 = 站点根本不可达）→ 本次运行剩余分组
+  // 直接跳到云镜像，不再逐组重试。HTTP 有响应（含 403 限流）说明网络是通的 → 立即复位。
+  // 熔断触发时把全部分组一并记账：这就是「今天直连不通」的证据，下次启动直接走云镜像，不必再花一轮探测。
+  // 仅内存态 + 当日记账，重启软件的次日会重新探测（网络环境可能已变）。
+  const BREAK_AT = 3
+  let _netFails = 0, _breakerOpen = false
+  function noteNet(kind) {
+    if (kind !== 'net') { _netFails = 0; _breakerOpen = false; return }   // 只要有 HTTP 响应就说明通
+    if (++_netFails < BREAK_AT || _breakerOpen) return
+    _breakerOpen = true
+    markTried(Object.keys(GROUP_QUERY))
+    log.emit(`星历：CelesTrak 连续 ${_netFails} 次连接层失败，判定本机当前网络不可达 —— 本次运行剩余分组直接走云镜像，今日不再重试直连（重启软件的次日会重新探测）`, 'warn')
+  }
 
   // 取某组 OMM CSV：返回 { text, fetchedAt }。fetchedAt 恒为缓存文件 mtime（= 该数据实际从 CelesTrak 下载落盘的时间），
   // 而非“此刻”——这样复用今日/旧缓存时显示的也是真实下载时间。本地有“今天”的缓存 → 直接用（一天一次）；
   // 否则联网（主端点重试3次→补充端点重试2次）→ 命中落盘 + 众包回传云镜像；
   // 直连全失败 → 云镜像（腾讯云 COS，别人今天传上去的那份；国内不被墙）→ 本地缓存 / 内置快照（离线优先）。
-  async function fetchCsv(key, opts = {}) {
+  async function fetchCsvOnce(key, opts = {}) {
     if (!GROUP_QUERY[key]) throw new Error('unknown group: ' + key)
     const cf = csvCacheFile(key)
     const tag = `星历「${GL(key)}」：`   // 日志前缀，全链路统一，便于按星座检索
+    if (opts.force) { _netFails = 0; _breakerOpen = false }   // 用户显式刷新：清熔断、绕过所有闸门，硬走一遍全链路
     // 一天一次：缓存文件是今天写的就直接用，不再联网
     try {
-      const st = fs.statSync(cf)
-      if (isToday(st.mtime)) {
+      const st = opts.force ? null : fs.statSync(cf)
+      if (st && isToday(st.mtime)) {
         const c = fs.readFileSync(cf, 'utf8')
         if (valid(c)) {
           log.emit(`${tag}命中当日本地缓存 —— ${csvCount(c)} 颗 · ${fmtBytes(c.length)} · 数据时间 ${fmtTime(st.mtime)}`)
@@ -223,16 +273,29 @@ module.exports = function createOmm(getCore) {
     }
 
     const t0 = Date.now()
-    log.emit(`${tag}本地无当日数据，开始连接 CelesTrak 主端点（gp.php · ${GROUP_QUERY[key]}）`)
+    // 本机有没有可回落的数据（只探文件存在，不读正文）：没有就必须硬试到底，否则首启即离线的用户永远拿不到星历。
+    const local = hasLocal(key)
+    // 跳过 CelesTrak 直连的两种情形（都【只跳直连】，云镜像与本地回落照常）：
+    //   ① 熔断：本次运行已判定 CelesTrak 连接层不可达；② 今天已完整试过一轮直连（当时没拿到更新数据）。
+    const skipDirect = !opts.force && local && (_breakerOpen || triedToday(key))
+    // 熔断中断重试的前提也是「有本地兜底」——无兜底时哪怕已判定不可达也要把 3 次机会用完。
+    const bail = () => _breakerOpen && local && !opts.force
     let text = null, why = ''
-    let tries = 0
-    for (let i = 0; i < 3 && !valid(text); i++) { tries++; const r = await httpGetText(csvUrl(key)); text = r.text; why = r.why }
-    if (!valid(text)) log.emit(`${tag}CelesTrak 主端点 ${tries} 次尝试均失败（${why || '返回内容非有效 OMM'}）`, 'warn')
-    if (!valid(text) && SUP_FILE[key]) {
-      let supTries = 0
-      log.emit(`${tag}转 CelesTrak 补充星历端点（sup-gp.php · FILE=${SUP_FILE[key]}，与主端点限流独立）`)
-      for (let i = 0; i < 2 && !valid(text); i++) { supTries++; const r = await httpGetText(supCsvUrl(key)); text = r.text; why = r.why }
-      if (!valid(text)) log.emit(`${tag}CelesTrak 补充端点 ${supTries} 次尝试均失败（${why || '返回内容非有效 OMM'}）`, 'warn')
+    if (skipDirect) {
+      log.emit(`${tag}${_breakerOpen ? '本次运行已判定 CelesTrak 不可达' : '今天已完整试过 CelesTrak 直连'}，跳过直连，直接查云镜像`)
+    } else {
+      log.emit(`${tag}本地无当日数据，开始连接 CelesTrak 主端点（gp.php · ${GROUP_QUERY[key]}）`)
+      let tries = 0
+      for (let i = 0; i < 3 && !valid(text) && !bail(); i++) { tries++; const r = await httpGetText(csvUrl(key)); text = r.text; why = r.why; noteNet(r.kind) }
+      if (!valid(text)) log.emit(`${tag}CelesTrak 主端点 ${tries} 次尝试均失败（${why || '返回内容非有效 OMM'}）`, 'warn')
+      // 补充端点同样在 celestrak.org：熔断已开（=根本连不上）时再试 2×30s 是纯浪费，直接跳过
+      if (!valid(text) && !bail() && SUP_FILE[key]) {
+        let supTries = 0
+        log.emit(`${tag}转 CelesTrak 补充星历端点（sup-gp.php · FILE=${SUP_FILE[key]}，与主端点限流独立）`)
+        for (let i = 0; i < 2 && !valid(text) && !bail(); i++) { supTries++; const r = await httpGetText(supCsvUrl(key)); text = r.text; why = r.why; noteNet(r.kind) }
+        if (!valid(text)) log.emit(`${tag}CelesTrak 补充端点 ${supTries} 次尝试均失败（${why || '返回内容非有效 OMM'}）`, 'warn')
+      }
+      markTried(key)   // 无论结果：本组今天已完整试过直连 —— 下次启动不再重付这段超时（次日自动过期）
     }
     if (valid(text)) {
       try { fs.writeFileSync(cf, text) } catch (e) { log.emit(`${tag}缓存写入失败（${e.message}），本次数据仅在内存中`, 'warn') }
@@ -242,9 +305,9 @@ module.exports = function createOmm(getCore) {
       ommCloud.maybeUpload(key, text, GL(key)).catch(() => {})
       return { text, fetchedAt: cacheMtime(cf) || new Date().toISOString() }
     }
-    // 直连失败 → 云镜像兜底。先算本地最优，把它的时间交给云端做闸门：云端不比本地新就不下载（省流量，也不用旧盖新）。
+    // 直连失败/被跳过 → 云镜像兜底。先算本地最优，把它的时间交给云端做闸门：云端不比本地新就不下载（省流量，也不用旧盖新）。
     const best = offlineBest(key)
-    const cloud = await ommCloud.download(key, { newerThan: best && best.fetchedAt, label: GL(key) })
+    const cloud = await ommCloud.download(key, { newerThan: opts.force ? null : (best && best.fetchedAt), label: GL(key) })
     if (cloud) {
       // 落盘缓存，并把 mtime 改成云端那份的上传时间：既让「今日缓存」判据成立（当天不再反复联网），
       // 界面显示的「OMM 下载时间」也如实反映数据自身的时间，而不是本机取回的此刻。
@@ -260,6 +323,20 @@ module.exports = function createOmm(getCore) {
     }
     log.emit(`${tag}获取失败 —— CelesTrak、云镜像、本地缓存、内置快照四路均不可用`, 'error')
     throw new Error('celestrak.org 与云镜像均不可达，且无本地缓存与内置快照')
+  }
+
+  // ---- 并发去重：同一分组的同一种请求在飞行中时，后来者直接搭车，不再各跑一遍完整瀑布 ----
+  // 启动时渲染进程的 loadGroup()（当前分组）与 ensureSearchPool()→loadUniverse()（全部 17 组）几乎同时发起，
+  // 默认组 geo 会被并发要两次；切「全部卫星」/「其他」时又各来一轮。没有这层，同一组就会并行跑两遍
+  // 3~5 次 30s 超时 + 两次云镜像 HEAD/GET + 两次写同一个缓存文件。
+  const _inflight = new Map()
+  function fetchCsv(key, opts = {}) {
+    const k = `${key}|${opts.cacheOnly ? 'c' : 'n'}${opts.force ? 'f' : ''}`   // cacheOnly 是另一种语义（不联网），不与联网请求合并
+    const hit = _inflight.get(k)
+    if (hit) return hit
+    const p = fetchCsvOnce(key, opts).finally(() => { _inflight.delete(k) })
+    _inflight.set(k, p)
+    return p
   }
 
   // ---- 文件管理：各星座组 OMM(CSV) 缓存的列举 / 导入替换 / 读出导出 ----
