@@ -16,6 +16,7 @@ const sunOutage = require('./utils/sunOutageCalculator.js');
 const icsBuilder = require('./utils/icsBuilder.js');
 const eventWindows = require('./utils/eventWindows.js');
 const rainAttenuation = require('./utils/rainAttenuation.js');
+const ngsoElevStats = require('./utils/ngsoElevStats.js');
 
 // 载波信号选项（调制 / FEC / DVB 标准 / 各 MODCOD 预设表），供载波信号面板的下拉与快选用。
 function basebandOptions() {
@@ -134,6 +135,7 @@ module.exports = {
   calculateRainAttenuation: rainAttenuation.calculateRainAttenuation,
   sweepRainAttenuation: rainAttenuation.sweepRainAttenuation,
   rainAttenuation,
+  ngsoElevStats,   // ITU-R P.618-14 §8 非静止轨道长期统计（仰角分布 + 等效仰角）
   rainRate,
   elevation,
   // 命名空间，便于按需取用其余导出

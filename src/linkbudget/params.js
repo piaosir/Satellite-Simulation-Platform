@@ -23,6 +23,39 @@ export const FIELD_GROUPS = [
     ]
   },
   {
+    // 地球站库：每份配置 = 一种站型的收发射频参数（side:'common' 收发共用 / side:'tx' 发射链 / side:'rx' 接收链）。
+    // 一份配置 = 一座站 = 一面天线：口径收发共用（side:'common'，rxKey 标注收侧引擎键名——组装时发信站的
+    // 口径写 antennaDiameter、收信站的口径写 rxAntennaDiameter），天线效率随收发频段不同而分设。
+    // 站表（发/收信站群）只留站址信息 + 「地球站配置」选择列；字段 key 与引擎入参一致（与旧站表列同名），
+    // buildParams 按行所选配置并入 linkParams，引擎口径不变。
+    key: 'station', title: '地球站', icon: 'dish',
+    fields: [
+      { key: 'antennaDiameter', rxKey: 'rxAntennaDiameter', label: '天线口径', tip: '收发共用同一面天线：口径一致（天线效率按收发频段分设）', side: 'common', unit: 'm', type: 'num', def: '6.2', target: 'link' },
+      { key: 'antennaEfficiency', label: '天线效率', side: 'tx', unit: '%', type: 'num', def: '65', target: 'link' },
+      { key: 'paBackoff', label: '功放回退', side: 'tx', unit: 'dB', type: 'num', def: '0', target: 'link' },
+      { key: 'feederLoss', label: '馈线损耗', side: 'tx', unit: 'dB', type: 'num', def: '3.5', target: 'link' },
+      { key: 'uplinkPowerControl', label: 'UPC', tip: '上行功率控制 (Uplink Power Control)', side: 'tx', type: 'select', options: ['否', '是', '自定义'], def: '否', target: 'link' },
+      { key: 'upcValue', label: 'UPC值', tip: '仅「UPC = 自定义」时生效', side: 'tx', unit: 'dB', type: 'num', def: '0', target: 'link' },
+      { key: 'uplinkOtherLoss', label: '其他损耗', tip: '指向/极化/天线罩/接头等未单列损耗之综合', side: 'tx', unit: 'dB', type: 'num', def: '0.3', target: 'link' },
+      // 上行干扰四项（原在「卫星与转发器」，随站型入库：取决于站的天线旁瓣/极化性能与所处干扰环境；
+      // target:'sat' → 组装时仍送 satParams，引擎口径不变）
+      { key: 'aciUplinkFactor', label: '上行C/ACI', tip: '上行载波/邻道干扰比 (Adjacent Channel Interference)', side: 'tx', unit: 'dB', type: 'num', def: '30', target: 'sat', intf: true },
+      { key: 'adjUplinkFactor', label: '上行C/ASI', tip: '上行载波/邻星干扰比 (Adjacent Satellite Interference)', side: 'tx', unit: 'dB', type: 'num', def: '25', target: 'sat', intf: true },
+      { key: 'xpolUplinkFactor', label: '上行C/XPI', tip: '上行载波/交叉极化干扰比 (Cross-Polarization Interference)', side: 'tx', unit: 'dB', type: 'num', def: '26', target: 'sat', intf: true },
+      { key: 'hpaIntermodFactor', label: 'HPA C/IM', tip: '高功放载波/互调比 (HPA Intermodulation)——发信站功放硬件属性', side: 'tx', unit: 'dB', type: 'num', def: '24', target: 'sat', intf: true },
+      { key: 'rxAntennaEfficiency', label: '天线效率', side: 'rx', unit: '%', type: 'num', def: '65', target: 'link' },
+      { key: 'rxAntennaNoiseTempMode', label: '天线噪温模式', tip: '自动 = 按 ITU-R P.618-14 §3 由晴空大气衰减与链路仰角实时求取天空噪温（+25 K 地面拾取常数），忽略「天线噪温」手填值；自定义 = 用「天线噪温」数值。', side: 'rx', type: 'select', options: ['自动', '自定义'], def: '自动', target: 'link' },
+      { key: 'rxAntennaNoiseTemp', label: '天线噪温', tip: '天线噪声温度（K）；仅「天线噪温模式 = 自定义」时生效', side: 'rx', unit: 'K', type: 'num', def: '35', target: 'link' },
+      { key: 'rxReceiverNoiseTemp', label: '接收机噪温', side: 'rx', unit: 'K', type: 'num', def: '75', target: 'link' },
+      { key: 'rxFeederLoss', label: '馈线损耗', side: 'rx', unit: 'dB', type: 'num', def: '0.2', target: 'link' },
+      { key: 'downlinkOtherLoss', label: '其他损耗', tip: '指向/极化/天线罩/接头等未单列损耗之综合', side: 'rx', unit: 'dB', type: 'num', def: '0.3', target: 'link' },
+      // 下行干扰三项（原在「卫星与转发器」，随站型入库；Tpdr. C/IM 为转发器硬件属性仍留卫星侧）
+      { key: 'aciDownlinkFactor', label: '下行C/ACI', tip: '下行载波/邻道干扰比 (Adjacent Channel Interference)', side: 'rx', unit: 'dB', type: 'num', def: '30', target: 'sat', intf: true },
+      { key: 'adjDownlinkFactor', label: '下行C/ASI', tip: '下行载波/邻星干扰比 (Adjacent Satellite Interference)', side: 'rx', unit: 'dB', type: 'num', def: '25', target: 'sat', intf: true },
+      { key: 'xpolDownlinkFactor', label: '下行C/XPI', tip: '下行载波/交叉极化干扰比 (Cross-Polarization Interference)', side: 'rx', unit: 'dB', type: 'num', def: '26', target: 'sat', intf: true }
+    ]
+  },
+  {
     key: 'sat', title: '卫星与转发器', icon: 'sat',
     fields: [
       { key: 'satelliteName', label: '卫星名称', type: 'text', def: 'Satellite', target: 'sat' },
@@ -38,14 +71,8 @@ export const FIELD_GROUPS = [
       { key: 'deltaTheta', label: '邻星离轴角', tip: '相邻卫星离轴角', unit: '°', type: 'num', def: '2.5', target: 'sat' },
       { key: 'BOi', label: 'Tpdr. IBO', tip: '转发器输入回退 (Input Back-Off)', unit: 'dB', type: 'num', def: '6', target: 'sat' },
       { key: 'BOo', label: 'Tpdr. OBO', tip: '转发器输出回退 (Output Back-Off)', unit: 'dB', type: 'num', def: '3', target: 'sat' },
-      // 干扰系数：按上下行分左右各四组（上行在左、下行在右），逐行成对显示
-      { key: 'aciUplinkFactor', label: '上行C/ACI', tip: '上行载波/邻道干扰比 (Adjacent Channel Interference)', unit: 'dB', type: 'num', def: '30', target: 'sat', pair: 'aci' },
-      { key: 'aciDownlinkFactor', label: '下行C/ACI', tip: '下行载波/邻道干扰比', unit: 'dB', type: 'num', def: '30', target: 'sat', pair: 'aci' },
-      { key: 'adjUplinkFactor', label: '上行C/ASI', tip: '上行载波/邻星干扰比 (Adjacent Satellite Interference)', unit: 'dB', type: 'num', def: '25', target: 'sat', pair: 'asi' },
-      { key: 'adjDownlinkFactor', label: '下行C/ASI', tip: '下行载波/邻星干扰比', unit: 'dB', type: 'num', def: '25', target: 'sat', pair: 'asi' },
-      { key: 'xpolUplinkFactor', label: '上行C/XPI', tip: '上行载波/交叉极化干扰比 (Cross-Polarization Interference)', unit: 'dB', type: 'num', def: '26', target: 'sat', pair: 'xpi' },
-      { key: 'xpolDownlinkFactor', label: '下行C/XPI', tip: '下行载波/交叉极化干扰比', unit: 'dB', type: 'num', def: '26', target: 'sat', pair: 'xpi' },
-      { key: 'hpaIntermodFactor', label: 'HPA C/IM', tip: '高功放载波/互调比 (HPA Intermodulation)', unit: 'dB', type: 'num', def: '24', target: 'sat', pair: 'im' },
+      // 干扰系数已随站型迁入「地球站」库（上行四项入发射链、下行三项入接收链，见 station 组）；
+      // 仅转发器互调留此——它是星上转发器的硬件属性，不随地球站走。
       { key: 'xpdrIntermodFactor', label: 'Tpdr. C/IM', tip: '转发器载波/互调比 (Transponder Intermodulation)', unit: 'dB', type: 'num', def: '21', target: 'sat', pair: 'im' }
     ]
   },
@@ -57,38 +84,29 @@ export const FIELD_GROUPS = [
       // （见 buildParams 的过滤）。options 为空，实际选项由 LinkBudgetApp 按当前载波信号配置库动态生成并
       // 通过 StationGrid 的 select-options 注入。
       { key: 'basebandId', label: '载波信号配置', type: 'select', options: [], def: '', target: 'meta' },
+      // 地球站配置（射频站型）：发射链参数由所选配置提供（见 station 组）；options 由 App 按地球站库动态注入
+      { key: 'stationId', label: '地球站配置', type: 'select', options: [], def: '', target: 'meta' },
       { key: 'earthStationLocation', label: '地球站位置', type: 'text', def: '北京', target: 'link', city: 'tx' },
       { key: 'longitude', label: '经度', unit: '°E', type: 'num', def: '116.4074', target: 'link' },
       { key: 'latitude', label: '纬度', unit: '°N', type: 'num', def: '39.9042', target: 'link' },
       { key: 'altitude', label: '海拔', unit: 'm', type: 'num', def: '0', target: 'link', auto: 'elev' },
-      { key: 'antennaDiameter', label: '天线口径', unit: 'm', type: 'num', def: '6.2', target: 'link' },
-      { key: 'antennaEfficiency', label: '天线效率', unit: '%', type: 'num', def: '65', target: 'link' },
-      { key: 'G_Ts', label: '卫星G/T', unit: 'dB/K', type: 'num', def: '2', target: 'link' },
+      { key: 'G_Ts', label: '卫星G/T', tip: '卫星接收品质因数 G/T（随波束位置随站而异的「卫星×发信站」配对量，故留在站表；可由 GRD 天线匹配自动回填）', unit: 'dB/K', type: 'num', def: '2', target: 'link' },
       { key: 'rainRate', label: 'R0.01%', unit: 'mm/h', type: 'num', def: '0', target: 'link', auto: 'rain' },
-      { key: 'uplinkAvailability', label: '可用度', unit: '%', type: 'num', def: '99.90', target: 'link' },
-      { key: 'uplinkPowerControl', label: 'UPC', type: 'select', options: ['否', '是', '自定义'], def: '否', target: 'link' },
-      { key: 'upcValue', label: 'UPC值', unit: 'dB', type: 'num', def: '0', target: 'link' },
-      { key: 'paBackoff', label: '功放回退', unit: 'dB', type: 'num', def: '0', target: 'link' },
-      { key: 'feederLoss', label: '馈线损耗', unit: 'dB', type: 'num', def: '3.5', target: 'link' },
-      { key: 'uplinkOtherLoss', label: '其他损耗', unit: 'dB', type: 'num', def: '0.3', target: 'link' }
+      { key: 'uplinkAvailability', label: '可用度', unit: '%', type: 'num', def: '99.90', target: 'link' }
     ]
   },
   {
     key: 'downlink', title: '下行 · 收信站', icon: 'down',
     fields: [
+      // 地球站配置（射频站型）：接收链参数由所选配置提供（见 station 组）
+      { key: 'stationId', label: '地球站配置', type: 'select', options: [], def: '', target: 'meta' },
       { key: 'rxEarthStationLocation', label: '地球站位置', type: 'text', def: '北京', target: 'link', city: 'rx' },
       { key: 'rxLongitude', label: '经度', unit: '°E', type: 'num', def: '116.4074', target: 'link' },
       { key: 'rxLatitude', label: '纬度', unit: '°N', type: 'num', def: '39.9042', target: 'link' },
       { key: 'rxAltitude', label: '海拔', unit: 'm', type: 'num', def: '0', target: 'link', auto: 'elev' },
-      { key: 'rxAntennaDiameter', label: '天线口径', unit: 'm', type: 'num', def: '3.7', target: 'link' },
-      { key: 'rxAntennaEfficiency', label: '天线效率', unit: '%', type: 'num', def: '65', target: 'link' },
-      { key: 'rxEIRP', label: '卫星EIRP', unit: 'dBW', type: 'num', def: '46', target: 'link' },
-      { key: 'rxAntennaNoiseTemp', label: '天线噪温', unit: 'K', type: 'num', def: '35', target: 'link' },
-      { key: 'rxReceiverNoiseTemp', label: '接收机噪温', unit: 'K', type: 'num', def: '75', target: 'link' },
+      { key: 'rxEIRP', label: '卫星EIRP', tip: '卫星下行 EIRP（随波束位置随站而异的「卫星×收信站」配对量，故留在站表；可由 GRD 天线匹配自动回填）', unit: 'dBW', type: 'num', def: '46', target: 'link' },
       { key: 'rxRainRate', label: 'R0.01%', unit: 'mm/h', type: 'num', def: '0', target: 'link', auto: 'rain' },
-      { key: 'rxDownlinkAvailability', label: '可用度', unit: '%', type: 'num', def: '99.90', target: 'link' },
-      { key: 'rxFeederLoss', label: '馈线损耗', unit: 'dB', type: 'num', def: '0.2', target: 'link' },
-      { key: 'downlinkOtherLoss', label: '其他损耗', unit: 'dB', type: 'num', def: '0.3', target: 'link' }
+      { key: 'rxDownlinkAvailability', label: '可用度', unit: '%', type: 'num', def: '99.90', target: 'link' }
     ]
   }
 ]
@@ -96,12 +114,16 @@ export const FIELD_GROUPS = [
 // 扁平字段表
 export const ALL_FIELDS = FIELD_GROUPS.flatMap((g) => g.fields)
 
-// 按模块取字段：4 模块 = 发信站群(uplink) / 卫星(sat) / 收信站群(downlink) / 载波信号(carrier)
+// 按模块取字段：5 模块 = 载波信号(carrier) / 地球站库(station) / 发信站群(uplink) / 卫星(sat) / 收信站群(downlink)
 const _grp = (k) => FIELD_GROUPS.find((g) => g.key === k).fields
 export const CARRIER_FIELDS = _grp('carrier')
 export const SAT_FIELDS = _grp('sat')
-export const TX_FIELDS = _grp('uplink')   // 每个发信站一行（含上行链路参数）
-export const RX_FIELDS = _grp('downlink') // 每个收信站一行（含下行链路参数）
+export const TX_FIELDS = _grp('uplink')   // 每个发信站一行（站址 + 配置选择列）
+export const RX_FIELDS = _grp('downlink') // 每个收信站一行（站址 + 配置选择列）
+export const ES_FIELDS = _grp('station')  // 地球站库：一份配置的全部收发射频字段
+export const ES_COMMON_FIELDS = ES_FIELDS.filter((f) => f.side === 'common')   // 收发共用（天线口径；rxKey=收侧引擎键）
+export const ES_TX_FIELDS = ES_FIELDS.filter((f) => f.side === 'tx')   // 发射链（发信站引用）
+export const ES_RX_FIELDS = ES_FIELDS.filter((f) => f.side === 'rx')   // 接收链（收信站引用）
 
 // 给定字段集生成默认对象
 export function defaultsFor(fields) {
@@ -110,9 +132,12 @@ export function defaultsFor(fields) {
   return o
 }
 
-// 组装单条链路的 { satParams, linkParams }：卫星+载波共享，叠加某发信站(tx)与某收信站(rx)。
+// 组装单条链路的 { satParams, linkParams }：卫星+载波共享，叠加某发信站(tx)与某收信站(rx)，
+// 以及两行各自选用的地球站配置表单（txEs 供发射链字段、rxEs 供接收链字段；缺省用库默认值）。
 // 引擎入口换算 有效sfdRef = sfdRef + sfdGtRef（与小程序 _engineSatParams 一致）。
-export function buildParams(satForm, carrierForm, txStation, rxStation) {
+export function buildParams(satForm, carrierForm, txStation, rxStation, txEs, rxEs) {
+  if (!txEs) txEs = { ...defaultsFor(ES_COMMON_FIELDS), ...defaultsFor(ES_TX_FIELDS) }
+  if (!rxEs) rxEs = { ...defaultsFor(ES_COMMON_FIELDS), ...defaultsFor(ES_RX_FIELDS) }
   const satParams = {}
   const linkParams = {}
   // 数值字段（type:'num'）先归一全角→半角再入参（防中文输入法全角减号令引擎 Number() 解析失败）；文本/select 原样（勿改站名等）
@@ -120,8 +145,13 @@ export function buildParams(satForm, carrierForm, txStation, rxStation) {
   // 卫星模块字段按 target 分流：'sat' → satParams；'link'（如上/下行频率，全站共享）→ linkParams
   for (const f of SAT_FIELDS) put(f.target === 'link' ? linkParams : satParams, f, satForm[f.key])
   for (const f of CARRIER_FIELDS) put(linkParams, f, carrierForm[f.key])
+  // 收发共用字段（天线口径）：发射链取发信站所选配置、接收链取收信站所选配置（各站各自的那面天线）
+  for (const f of ES_COMMON_FIELDS) { put(linkParams, f, txEs[f.key]); if (f.rxKey) put(linkParams, { ...f, key: f.rxKey }, rxEs[f.key]) }
+  // 发/收链字段按 target 分流：干扰项(target:'sat') → satParams，其余 → linkParams
+  for (const f of ES_TX_FIELDS) put(f.target === 'sat' ? satParams : linkParams, f, txEs[f.key])
+  for (const f of ES_RX_FIELDS) put(f.target === 'sat' ? satParams : linkParams, f, rxEs[f.key])
   for (const f of TX_FIELDS) if (f.target !== 'meta') put(linkParams, f, txStation[f.key])
-  for (const f of RX_FIELDS) put(linkParams, f, rxStation[f.key])
+  for (const f of RX_FIELDS) if (f.target !== 'meta') put(linkParams, f, rxStation[f.key])
   const gtRef = parseFloat(satParams.sfdGtRef)
   const sfd = parseFloat(satParams.sfdRef)
   if (gtRef && !isNaN(gtRef) && !isNaN(sfd)) satParams.sfdRef = sfd + gtRef

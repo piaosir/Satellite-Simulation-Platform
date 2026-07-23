@@ -645,7 +645,7 @@ function performCalculations(satParams, inputs) {
   );
 
   // ============ 云衰减计算 (ITU-R P.840-9) ============
-  // 第三参数为超越概率 p（=100-可用度）；p≤5% 时 L 封顶在 5% 值，p=0(可用度100%)按晴天返回0
+  // 第三参数为超越概率 p（=100-可用度）；p<1% 时 L 封顶在 1% 值，p=0(可用度100%)按晴天返回0
   const uplinkCloudAttenuation = calculateCloudAttenuation(uplinkFrequency, elevation, 100 - uplinkAvailability, earthLat, earthLon);
   const downlinkCloudAttenuation = calculateCloudAttenuation(downlinkFrequency, rxElevation, 100 - rxdownlinkAvailability, rxLatitude, rxLongitude);
 
@@ -685,13 +685,25 @@ function performCalculations(satParams, inputs) {
   }
 
   // ============ 噪声温度计算 ============
+  // —— 天线噪声温度：'自动' 模式按 ITU-R P.618-14 §3 式(69)(70) 由晴空大气衰减与链路仰角求取 ——
+  //   T_ant = T_mr·(1−10^(−Ag/10)) + 2.7·10^(−Ag/10) + T_ground
+  //   T_mr = 275 K（介质辐射温度缺省）；Ag = 下行大气气体衰减（已按链路仰角算得——NGSO §8 统计口径
+  //   下即等效仰角，天空亮温随仰角自动变化：低仰角穿大气厚→天空亮→噪温高）；2.7 K = 宇宙微波背景；
+  //   T_ground = 25 K（地面溢出/旁瓣拾取工程常数——使自动值在 GEO 典型仰角回落到传统缺省 35/30 K
+  //   附近，新旧口径连续）。雨的噪声抬升不在此处——由下方「雨致 G/T 劣化」单独计入（云仍不计，与
+  //   功率链既有口径一致）。模式字段缺省/未传 = 自定义（手填数值），既有配置与回归基线不受影响。
+  const antennaNoiseTempAuto = inputs.rxAntennaNoiseTempMode === '自动' || inputs.rxAntennaNoiseTempMode === 'auto';
+  const _skyLin = Math.pow(10, -downlinkAtmosphericAttenuation / 10);
+  const autoAntennaNoiseTemp = 275 * (1 - _skyLin) + 2.7 * _skyLin + 25;
+  const antennaNoiseTempEff = antennaNoiseTempAuto ? autoAntennaNoiseTemp : antennaNoiseTemp;
+
   // 降雨噪声温度
   const rainNoiseTemp = 273.15 * (1 - 1 / Math.pow(10, downlinkRainAttenuation / 10));
-  
+
   // 接收系统等效噪声温度
   const feederLossLinear = Math.pow(10, rxFeederLoss / 10);
-  const systemNoiseTempK = (antennaNoiseTemp / feederLossLinear) + 
-                           290 * (1 - 1 / feederLossLinear) + 
+  const systemNoiseTempK = (antennaNoiseTempEff / feederLossLinear) +
+                           290 * (1 - 1 / feederLossLinear) +
                            receiverNoiseTemp;
   const systemNoiseTempDb = 10 * Math.log10(systemNoiseTempK);
   
@@ -1543,7 +1555,9 @@ function performCalculations(satParams, inputs) {
   results.ituPfdLimitPerM2 = ituPfdLimitPerM2.toFixed(2); // ITU PFD限制(转换到载波带宽)
   results.ituPfdRefBandwidth = ituPfdRefBandwidth; // ITU参考带宽
   // 噪声温度
-  results.antennaNoiseTempResult = antennaNoiseTemp;
+  // 天线噪温：自动模式回报实际所用值（§3 算得），并附模式标注供瀑布/详情区分
+  results.antennaNoiseTempResult = antennaNoiseTempAuto ? +antennaNoiseTempEff.toFixed(2) : antennaNoiseTemp;
+  results.antennaNoiseTempModeResult = antennaNoiseTempAuto ? '自动' : '自定义';
   results.receiverNoiseTempResult = receiverNoiseTemp;
   results.rainNoiseTempResult = rainNoiseTemp.toFixed(2);
   results.systemNoiseTempKResult = systemNoiseTempK.toFixed(2);
@@ -1753,8 +1767,9 @@ function calculateScintillationFading(frequencyGHz, elevationDeg, antennaDiamete
 
   // Step 7: a(p)（公式48），p = 超越概率%
   const p = 100 - availability;
-  if (p < 0.01 || p > 50) return 0; // 超出适用范围
-  const logP = Math.log10(p);
+  if (p > 50) return 0;              // p>50% 超出适用范围（可用度过低，闪烁统计无意义）
+  const pEff = Math.max(p, 0.01);    // p<0.01% 钳位到公式(48)有效域下界（而非返 0——避免可用度>99.99% 时闪烁项凭空消失）
+  const logP = Math.log10(pEff);
   const a_p = -0.061 * Math.pow(logP, 3) + 0.072 * Math.pow(logP, 2) - 1.71 * logP + 3.0;
 
   // Step 8: 闪烁衰减（公式49）
@@ -1999,7 +2014,7 @@ function calculateAtmosphericAttenuation(frequencyGHz, elevationDeg, Ps, Ts, rho
     elevationDeg = undefined;
   }
 
-  // 默认大气参数：气压/温度取 ITU-R P.835-6 标准参考大气，水汽密度取 10 g/m³（偏保守工程默认值，SatMaster 等商业软件惯例；ITU-R P.835 标准参考值为 7.5 g/m³）
+  // 默认大气参数：气压/温度取 ITU-R P.835-6 标准参考大气，水汽密度兜底取 20 g/m³（偏保守工程默认值；实际调用均传入 P.836 地图值，此缺省仅在未传参时生效。ITU-R P.835 标准参考值为 7.5 g/m³）
   if (!Ps   || !isFinite(Ps))    Ps    = 1013.25; // hPa
   if (!Ts   || !isFinite(Ts))    Ts    = 288.15;  // K
   if (rhoWs == null || !isFinite(rhoWs)) rhoWs = 20.0;   // g/m³

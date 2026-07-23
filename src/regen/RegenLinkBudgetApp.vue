@@ -1,14 +1,17 @@
 <script setup>
 import { ref, shallowRef, reactive, computed, onMounted, nextTick, watch } from 'vue'
-import { SAT_FIELDS, CARRIER_FIELDS, TX_FIELDS, RX_FIELDS, ISL_FIELDS, LASER_FIELDS, defaultsFor, buildRegenParams, buildRegenDownlinkParams, buildRegenIslParams, buildRegenLaserParams, eirpToPowerW, powerWToEirp, rxGtFromNoise } from './regenParams.js'
+import { SAT_FIELDS, CARRIER_FIELDS, TX_FIELDS, RX_FIELDS, ISL_FIELDS, LASER_FIELDS, ES_FIELDS, ES_COMMON_FIELDS, ES_TX_FIELDS, ES_RX_FIELDS, defaultsFor, buildRegenParams, buildRegenDownlinkParams, buildRegenIslParams, buildRegenLaserParams, eirpToPowerW, rxGtFromNoise } from './regenParams.js'
 import { stableStringify } from '../shared/configDirty.js'
 import { pf } from '../shared/num.js'   // 全角容错 parseFloat：手填圆轨道高度/倾角（经 sat 面板，不过 StationGrid 归一）也能吃全角数字
+import { s8LinkParams } from '../shared/s8Params.js'   // ITU-R P.618-14 §8 统计口径参数组装 + 适用性门控
+import { migrateLegacyEs } from '../shared/esMigrate.js'
 import { loadSatTree } from '../ngso/grdParam.js'
 import { encodeShare, decodeShare, configFileText } from '../ngso/shareCode.js'
 import Icon from '../components/Icon.vue'
 import ConfigTree from '../components/ConfigTree.vue'
 import StationGrid from '../ngso/StationGrid.vue'
 import BasebandPanel from '../ngso/BasebandPanel.vue'
+import EarthStationPanel from '../components/EarthStationPanel.vue'
 import RegenSatPanel from './RegenSatPanel.vue'
 import WaterfallTable from '../ngso/WaterfallTable.vue'
 
@@ -94,33 +97,30 @@ function addBasebandConfig() { basebandConfigs.push(makeBasebandConfig('配置' 
 function duplicateBasebandConfig(cfg) { basebandConfigs.push({ id: 'bb' + (_bbSeq++), name: cfg.name + ' 副本', form: JSON.parse(JSON.stringify(cfg.form)) }) }
 function removeBasebandConfig(cfg) { if (basebandConfigs.length <= 1) return; const i = basebandConfigs.findIndex((c) => c.id === cfg.id); if (i >= 0) basebandConfigs.splice(i, 1) }
 
+// ============ 地球站配置库 ============
+// 每份配置 = 一种站型的收发射频参数（发射链/接收链分列，再生式含逐站型干扰项，字段见 regenParams.js station 组）。
+// 发/收信站表各有「地球站配置」列（stationId）选择套用哪一份：发信站取发射参数（含工作点换算所需天线/馈线/回退）、
+// 收信站取接收参数（工作点 G/T 的构成量）；站表本身只留站址信息与逐站配对量（卫星G/T·EIRP）。
+let _esSeq = 1
+function makeEsConfig(name) { return { id: 'es' + (_esSeq++), name, form: { ...defaultsFor(ES_FIELDS) } } }
+const esConfigs = reactive([makeEsConfig('默认')])
+function resolveEs(id) {
+  if (!id) return esConfigs[0]
+  return esConfigs.find((c) => c.id === id) || esConfigs.find((c) => c.name === id) || esConfigs[0]
+}
+const esSelectOptions = computed(() => [{ value: '', label: '（默认）' }, ...esConfigs.map((c) => ({ value: c.id, label: c.name }))])
+function addEsConfig() { esConfigs.push(makeEsConfig('站型' + (esConfigs.length + 1))) }
+function duplicateEsConfig(cfg) { esConfigs.push({ id: 'es' + (_esSeq++), name: cfg.name + ' 副本', form: JSON.parse(JSON.stringify(cfg.form)) }) }
+function removeEsConfig(cfg) { if (esConfigs.length <= 1) return; const i = esConfigs.findIndex((c) => c.id === cfg.id); if (i >= 0) esConfigs.splice(i, 1) }
+
 // ============ 发信站群 ============
 let _sid = 1
 const newStation = (fields) => { const r = defaultsFor(fields); r._id = 's' + (_sid++); return r }
 const txStations = reactive([newStation(TX_FIELDS)])
 
-// —— 工作点列：EIRP(dBW) ⇄ 功放功率(W) 切换（换算保持物理工作点不变）——
-const opMode = ref(localStorage.getItem('regen/opMode') === 'power' ? 'power' : 'eirp')
-watch(opMode, (v) => { try { localStorage.setItem('regen/opMode', v) } catch (e) { /* ignore */ } })
-// 传给 StationGrid 的字段：工作点列 label/unit 随 opMode 动态改
-const txFieldsView = computed(() => TX_FIELDS.map((f) => f.key === 'opPoint'
-  ? { ...f, label: opMode.value === 'power' ? '功放功率' : '工作点EIRP', unit: opMode.value === 'power' ? 'W' : 'dBW' }
-  : f))
-function fmtOp(n, isW) { if (!isFinite(n)) return ''; return isW ? String(Math.round(n * 1000) / 1000) : String(Math.round(n * 100) / 100) }
-function setOpMode(m) {
-  if (m === opMode.value) return
-  for (const tx of txStations) {
-    const v = parseFloat(tx.opPoint); if (isNaN(v)) continue
-    const sat = resolveSatellite(tx.satelliteId); if (!sat) continue
-    const conv = (opMode.value === 'eirp' && m === 'power') ? eirpToPowerW(v, tx, sat.form) : powerWToEirp(v, tx, sat.form)
-    if (isFinite(conv)) tx.opPoint = fmtOp(conv, m === 'power')
-  }
-  opMode.value = m
-}
-// 某发信站的工作点 → 引擎 power 模式所需功放 W
-function stationPowerW(tx, satForm) {
-  return opMode.value === 'power' ? parseFloat(tx.opPoint) : eirpToPowerW(tx.opPoint, tx, satForm)
-}
+// 工作点（功放/余量）已随站型移入「地球站配置」发射参数（opCalcMode/opPowerW/opMargin）：
+// 设置功放 → 引擎 power 模式算余量；设置余量 → 引擎 margin 模式反解所需功放。
+// 原「工作点列 EIRP⇄W 切换」随之退役——EIRP 仍可在结果指标「地球站 EIRP」查看。
 
 // ============ 收信站群（再生式下行）============
 // 工作点 G/T 恒由天线口径/效率 + 天线噪温 + 接收机噪温 + 馈线损耗按引擎口径算得
@@ -132,7 +132,7 @@ const rxGtValues = computed(() => {
   const m = {}
   for (const rx of rxStations) {
     const sat = resolveSatellite(rx.satelliteId)
-    const gt = sat ? rxGtFromNoise(rx, sat.form) : NaN
+    const gt = sat ? rxGtFromNoise(resolveEs(rx.stationId).form, sat.form) : NaN   // 接收链参数取自该站所选地球站配置
     m[rx._id] = isFinite(gt) ? (Math.round(gt * 100) / 100).toFixed(2) : ''
   }
   return m
@@ -192,24 +192,26 @@ async function refreshLatest() {
   } finally { refreshing.value = false }
 }
 
-// ============ 编辑模块：载波信号 / 发信站群 / 卫星群 ============
+// ============ 编辑模块：配置库（载波信号 / 地球站 / 卫星群）在左，链路构成表（站群/链路群）在右 ============
 const MODULES = computed(() => {
-  const carrier = { key: 'carrier', label: '载波信号', icon: 'wave' }
-  const sat = { key: 'sat', label: '卫星群', icon: 'sat' }
-  // 顺序随信号流向：上行 地球站→星（发信站在前）；下行 星→地球站、星间 星→星（卫星群在前）
+  const carrier = { key: 'carrier', label: '载波信号', icon: 'wave', lib: true }
+  const station = { key: 'station', label: '地球站', icon: 'dish', lib: true }
+  const sat = { key: 'sat', label: '卫星群', icon: 'sat', lib: true }
+  // 再生式的载波/地球站/卫星群全是「被表按行引用」的配置库（lib:true，模块栏与链路构成表之间画分隔线）；
+  // 星间两种体制无地面站，不列地球站库
   if (linkMode.value === 'laser') return [sat, { key: 'laser', label: '星间激光链路群', icon: 'laser' }]
   if (linkMode.value === 'isl') return [carrier, sat, { key: 'isl', label: '星间链路群', icon: 'isl' }]
-  if (linkMode.value === 'downlink') return [carrier, sat, { key: 'rx', label: '收信站群', icon: 'down' }]
-  return [carrier, { key: 'tx', label: '发信站群', icon: 'up' }, sat]
+  if (linkMode.value === 'downlink') return [carrier, station, sat, { key: 'rx', label: '收信站群', icon: 'down' }]
+  return [carrier, station, sat, { key: 'tx', label: '发信站群', icon: 'up' }]
 })
 const activeModule = ref('tx')
-const moduleCount = (k) => (k === 'tx' ? txStations.length : k === 'rx' ? rxStations.length : k === 'isl' ? islLinks.length : k === 'laser' ? laserLinks.length : k === 'sat' ? satConfigs.length : basebandConfigs.length)
+const moduleCount = (k) => (k === 'tx' ? txStations.length : k === 'rx' ? rxStations.length : k === 'isl' ? islLinks.length : k === 'laser' ? laserLinks.length : k === 'sat' ? satConfigs.length : k === 'station' ? esConfigs.length : basebandConfigs.length)
 watch(activeModule, (m) => { if (m === 'sat') reloadSatTree() })
 // 切换体制：站群/链路群模块随之切换（tx↔rx↔isl），保持「站群」标签聚焦；列表指标若不在新体制选项内则回退链路余量
 watch(linkMode, (lm) => {
   const stationMod = lm === 'laser' ? 'laser' : lm === 'isl' ? 'isl' : lm === 'downlink' ? 'rx' : 'tx'
   // 若当前编辑模块不在新体制的模块集内（如激光无「载波信号」模块），回落到该体制的站群/链路群模块
-  const modKeys = lm === 'laser' ? ['sat', 'laser'] : lm === 'isl' ? ['carrier', 'sat', 'isl'] : lm === 'downlink' ? ['carrier', 'sat', 'rx'] : ['carrier', 'tx', 'sat']
+  const modKeys = lm === 'laser' ? ['sat', 'laser'] : lm === 'isl' ? ['carrier', 'sat', 'isl'] : lm === 'downlink' ? ['carrier', 'station', 'sat', 'rx'] : ['carrier', 'station', 'sat', 'tx']
   if (!modKeys.includes(activeModule.value)) activeModule.value = stationMod
   if (!METRIC_OPTIONS.value.some((m) => m.key === metricKey.value)) metricKey.value = 'linkmargin'
   // 上/下行/星间三种口径的链路条数与结果列头都不同，旧体制的结果表不再适用——切换即清空，
@@ -393,7 +395,7 @@ async function compute() {
       if (isDown) {
         // ===== 再生式下行：星上再生 → 收信站接收；工作点 = 收信站 G/T =====
         const rxName = st.rxEarthStationLocation || ('收' + (ti + 1))
-        const { satParams, linkParams } = buildRegenDownlinkParams(sat.form, bbForm, st)
+        const { satParams, linkParams } = buildRegenDownlinkParams(sat.form, bbForm, st, resolveEs(st.stationId).form)
         const freqGHz = parseFloat(sat.form.rxCenterFrequency) || 12.5   // 下行频率（几何多普勒/FSL）
         const stationGeo = { lonDeg: parseFloat(st.rxLongitude), latDeg: parseFloat(st.rxLatitude), altKm: (parseFloat(st.rxAltitude) || 0) / 1000, minElevDeg: parseFloat(st.rxMinElevation) || 0, freqGHz }
         const geo = await api.linkBudget.ngsoGeometry({ orbit: orbitSpec, tx: stationGeo, rx: stationGeo, t0ISO, horizonHours: geoHorizonHours.value })
@@ -403,6 +405,8 @@ async function compute() {
         // 下行几何注入（单站：收=发，up/dn 同值）
         linkParams.rxDistanceMode = 'slantRange'; linkParams.rxSlantRange = geo.worst.dn.slantKm; linkParams.rxMinElevation = geo.worst.dn.elevDeg
         linkParams.distanceMode = 'slantRange'; linkParams.slantRange = geo.worst.dn.slantKm; linkParams.minElevation = geo.worst.dn.elevDeg
+        // §8 统计口径（仅下行侧；最低仰角取收信站门限字段，非最差瞬时仰角；不适用时为空对象=原口径）
+        Object.assign(linkParams, s8LinkParams(geo, { minElevDn: st.rxMinElevation }))
         let acc = null
         try { acc = await api.linkBudget.accessWindows({ orbit: orbitSpec, station: stationGeo, t0ISO, horizonHours: geoHorizonHours.value }) } catch (e) { acc = null }
         const r = await api.linkBudget.computeRegenDownlink(satParams, linkParams, { mode: 'power' })
@@ -417,12 +421,21 @@ async function compute() {
         continue
       }
 
-      // ===== 再生式上行：地球站 → 星上再生解调；工作点 = 发射 EIRP/功放 =====
+      // ===== 再生式上行：地球站 → 星上再生解调；工作点随站型（地球站配置）——
+      //       设置功放 → power 模式（给定功放算余量）；设置余量 → margin 模式（给定目标余量反解所需功放）=====
       const txName = st.earthStationLocation || ('发' + (ti + 1))
-      const { satParams, linkParams } = buildRegenParams(sat.form, bbForm, st)
-      const powerW = stationPowerW(st, sat.form)
-      if (!(powerW > 0)) {
-        out.push({ ti, txName, satName, data: null, margin: '—', metric: '—', error: '工作点无效（EIRP/功放 需可解析为正功率）', geom: null, access: null }); continue
+      const es = resolveEs(st.stationId).form
+      const { satParams, linkParams } = buildRegenParams(sat.form, bbForm, st, es)
+      let copt
+      if (es.opCalcMode === '设置余量') {
+        linkParams.margin = String(es.opMargin == null ? '' : es.opMargin).trim() || '3'   // 引擎 margin 模式目标余量（空按 3 dB）
+        copt = { mode: 'margin' }
+      } else {
+        const powerW = parseFloat(es.opPowerW)
+        if (!(powerW > 0)) {
+          out.push({ ti, txName, satName, data: null, margin: '—', metric: '—', error: '工作点无效（地球站配置的「功放功率」需为正数）', geom: null, access: null }); continue
+        }
+        copt = { mode: 'power', powerW }
       }
       const freqGHz = parseFloat(sat.form.centerFrequency) || 14.25
       const stationGeo = { lonDeg: parseFloat(st.longitude), latDeg: parseFloat(st.latitude), altKm: (parseFloat(st.altitude) || 0) / 1000, minElevDeg: parseFloat(st.minElevation) || 0, freqGHz }
@@ -432,9 +445,11 @@ async function compute() {
       }
       linkParams.distanceMode = 'slantRange'; linkParams.slantRange = geo.worst.up.slantKm; linkParams.minElevation = geo.worst.up.elevDeg
       linkParams.rxDistanceMode = 'slantRange'; linkParams.rxSlantRange = geo.worst.up.slantKm; linkParams.rxMinElevation = geo.worst.up.elevDeg
+      // §8 统计口径（仅上行侧；最低仰角取发信站门限字段，非最差瞬时仰角；不适用时为空对象=原口径）
+      Object.assign(linkParams, s8LinkParams(geo, { minElevUp: st.minElevation }))
       let acc = null
       try { acc = await api.linkBudget.accessWindows({ orbit: orbitSpec, station: stationGeo, t0ISO, horizonHours: geoHorizonHours.value }) } catch (e) { acc = null }
-      const r = await api.linkBudget.computeRegenUplink(satParams, linkParams, { mode: 'power', powerW })
+      const r = await api.linkBudget.computeRegenUplink(satParams, linkParams, copt)
       if (r && r.success) {
         const d = r.data
         mergePlatformGeometry(d, geo)
@@ -596,11 +611,12 @@ function serializeState() {
     hiddenModes: [...hiddenModes.value],
     satConfigs: satConfigs.map((c) => ({ id: c.id, name: c.name, form: { ...c.form }, ngsoSat: { mode: c.ngsoSat.mode, orbit: c.ngsoSat.orbit ? JSON.parse(JSON.stringify(c.ngsoSat.orbit)) : null, name: c.ngsoSat.name, noradId: c.ngsoSat.noradId, folder: c.ngsoSat.folder || '' } })),
     basebandConfigs: basebandConfigs.map((c) => ({ id: c.id, name: c.name, form: { ...c.form } })),
+    esConfigs: esConfigs.map((c) => ({ id: c.id, name: c.name, form: { ...c.form } })),
     tx: txStations.map(({ _id, ...r }) => r),
     rx: rxStations.map(({ _id, ...r }) => r),
     isl: islLinks.map(({ _id, ...r }) => r),
     laser: laserLinks.map(({ _id, ...r }) => r),
-    opMode: opMode.value, geoHorizonHours: geoHorizonHours.value,
+    geoHorizonHours: geoHorizonHours.value,
     metricKey: metricKey.value, activeModule: activeModule.value
   }
 }
@@ -624,10 +640,75 @@ function applyState(st) {
       form: { ...defaultsFor(CARRIER_FIELDS), rsCodeMode: 'fraction', dvbStandard: 'custom', modcodIndex: -1, ...c.form }
     })))
   }
+  // —— 地球站库：新存档直接用；旧存档（站表逐行携带射频/干扰参数）→ 同值合并迁移成配置库（见 esMigrate.js）——
+  // id 必须确定性生成（迁移 'esm'+序、无 id 存档按位置 'esb'+下标）：同一份内容反复 applyState 得到同一批 id，
+  // 否则基线与会话恢复两次迁移的 id 不同 → 指纹恒不等 → 旧配置一打开就误报「未保存修改」。
+  // 新建配置走 makeEsConfig 的 'es'+自增号，与上述前缀不撞。
+  let esList = (Array.isArray(st.esConfigs) && st.esConfigs.length) ? st.esConfigs : null
+  let txRows = Array.isArray(st.tx) ? st.tx : null
+  let rxRows = Array.isArray(st.rx) ? st.rx : null
+  // 过渡版存档（库已建，但口径仍收发各一份 / 工作点仍在行上）：把配置值按侧展开回行上重走统一迁移，
+  // 使「口径收发共用 + 同口径配对 + 工作点入库」新规则一并生效（两侧数值逐键保留，仅重新分组命名）
+  if (esList && (
+    esList.some((c) => c && c.form && c.form.rxAntennaDiameter !== undefined && String(c.form.rxAntennaDiameter) !== String(c.form.antennaDiameter)) ||
+    (txRows || []).some((r) => r && r.opPoint !== undefined)
+  )) {
+    const byId = new Map(esList.map((c) => [c.id, c]))
+    const cfgOf = (r) => ((r && r.stationId && byId.get(r.stationId)) || esList[0])
+    txRows = (txRows || []).map((r) => {
+      const c = cfgOf(r); if (!c || !c.form) return r
+      const o = { ...r }
+      if (c.form.antennaDiameter !== undefined) o.antennaDiameter = c.form.antennaDiameter
+      for (const f of ES_TX_FIELDS) if (c.form[f.key] !== undefined) o[f.key] = c.form[f.key]
+      return o
+    })
+    rxRows = (rxRows || []).map((r) => {
+      const c = cfgOf(r); if (!c || !c.form) return r
+      const o = { ...r }
+      const rd = c.form.rxAntennaDiameter !== undefined ? c.form.rxAntennaDiameter : c.form.antennaDiameter
+      if (rd !== undefined) o.rxAntennaDiameter = rd
+      for (const f of ES_RX_FIELDS) if (c.form[f.key] !== undefined) o[f.key] = c.form[f.key]
+      return o
+    })
+    esList = null
+  }
+  // 旧行工作点换算：opPoint（旧全局 opMode='eirp' 存 EIRP dBW / ='power' 存功放 W）→ 功放功率 opPowerW(W)，
+  // 随站型入库。EIRP→W 用该行自身的旧射频参数（天线/馈线/回退——迁移前仍在行上）与所选卫星上行频率换算，
+  // 物理工作点不变；无法解析（空/异常）留空 → 计算时按「工作点无效」提示。
+  if (!esList && txRows && txRows.some((r) => r && r.opPoint !== undefined)) {
+    const wasEirp = st.opMode !== 'power'
+    txRows = txRows.map((r) => {
+      if (!r || r.opPoint === undefined) return r
+      const { opPoint, ...rest } = r
+      let w = ''
+      const v = parseFloat(opPoint)
+      if (isFinite(v)) {
+        const sat = resolveSatellite(r.satelliteId)
+        const conv = wasEirp ? eirpToPowerW(v, r, sat ? sat.form : {}) : v
+        if (isFinite(conv) && conv > 0) w = String(Math.round(conv * 1000) / 1000)
+      }
+      return { ...rest, opPowerW: w }
+    })
+  }
+  if (!esList) {
+    let _mn = 0
+    const mig = migrateLegacyEs({ txRows: txRows || [], rxRows: rxRows || [], esTxFields: ES_TX_FIELDS, esRxFields: ES_RX_FIELDS, esCommonFields: ES_COMMON_FIELDS, makeId: () => 'esm' + (++_mn) })
+    if (mig) { esList = mig.esConfigs; txRows = mig.txRows; rxRows = mig.rxRows }
+  }
+  if (esList) {
+    // 载入的配置自带 'es数字' id（如分享而来）：把自增序号顶到已见最大号之后，防后续新建配置撞号
+    for (const c of esList) { const m = /^es(\d+)$/.exec(c.id || ''); if (m) _esSeq = Math.max(_esSeq, Number(m[1]) + 1) }
+    esConfigs.splice(0, esConfigs.length, ...esList.map((c, i) => ({
+      id: c.id || ('esb' + i), name: c.name || '站型',
+      form: { ...defaultsFor(ES_FIELDS), ...c.form }
+    })))
+  } else {
+    esConfigs.splice(0, esConfigs.length, makeEsConfig('默认'))   // 无存档也无旧行可迁：回落一份默认
+  }
   // 合并 TX 默认：旧配置（G/T 尚在卫星侧时保存）的发信站行缺 G_Ts，按默认补齐，避免下沉后该列为空
-  if (Array.isArray(st.tx) && st.tx.length) txStations.splice(0, txStations.length, ...st.tx.map((r) => ({ ...defaultsFor(TX_FIELDS), ...r, _id: 's' + (_sid++) })))
+  if (txRows && txRows.length) txStations.splice(0, txStations.length, ...txRows.map((r) => ({ ...defaultsFor(TX_FIELDS), ...r, _id: 's' + (_sid++) })))
   // 收信站群：旧配置（仅上行）无 rx 字段 → 保留默认一站，避免下行模式空表
-  if (Array.isArray(st.rx) && st.rx.length) rxStations.splice(0, rxStations.length, ...st.rx.map((r) => ({ ...defaultsFor(RX_FIELDS), ...r, _id: 's' + (_sid++) })))
+  if (rxRows && rxRows.length) rxStations.splice(0, rxStations.length, ...rxRows.map((r) => ({ ...defaultsFor(RX_FIELDS), ...r, _id: 's' + (_sid++) })))
   // 星间链路群：旧配置无 isl 字段 → 保留默认一条
   if (Array.isArray(st.isl) && st.isl.length) islLinks.splice(0, islLinks.length, ...st.isl.map((r) => ({ ...defaultsFor(ISL_FIELDS), ...r, _id: 's' + (_sid++) })))
   // 激光星间链路群：旧配置无 laser 字段 → 保留默认一条；只保留当前字段键（清除旧速率/调制/BER 等已删字段的惰性残留）
@@ -639,14 +720,13 @@ function applyState(st) {
       return o
     }))
   }
-  if (st.opMode) opMode.value = st.opMode
   if (st.geoHorizonHours != null) geoHorizonHours.value = Number(st.geoHorizonHours) || 24
   if (st.metricKey) metricKey.value = st.metricKey
   if (st.activeModule) activeModule.value = st.activeModule
 }
 let _stateT = null
 function scheduleSaveState() { clearTimeout(_stateT); _stateT = setTimeout(() => { try { localStorage.setItem(STATE_KEY, JSON.stringify({ ...serializeState(), activeId: activeId.value })) } catch (e) { /* ignore */ } }, 600) }
-watch([satConfigs, basebandConfigs, txStations, rxStations, islLinks, laserLinks, opMode, geoHorizonHours, metricKey, activeModule, linkMode, hiddenModes, activeId], scheduleSaveState, { deep: true })
+watch([satConfigs, basebandConfigs, esConfigs, txStations, rxStations, islLinks, laserLinks, geoHorizonHours, metricKey, activeModule, linkMode, hiddenModes, activeId], scheduleSaveState, { deep: true })
 
 async function loadConfigs() {
   try {
@@ -729,11 +809,12 @@ function blankState() {
     orbitType: 'REGEN', linkMode: 'uplink', hiddenModes: [],
     satConfigs: [{ name: '卫星1', form: { ...defaultsFor(SAT_FIELDS) }, ngsoSat: { mode: 'manual', orbit: null, name: '', noradId: null, folder: '' } }],
     basebandConfigs: [{ name: '默认', form: { ...defaultsFor(CARRIER_FIELDS), rsCodeMode: 'fraction', dvbStandard: 'custom', modcodIndex: -1 } }],
+    esConfigs: [{ name: '默认', form: { ...defaultsFor(ES_FIELDS) } }],
     tx: [defaultsFor(TX_FIELDS)],
     rx: [defaultsFor(RX_FIELDS)],
     isl: [defaultsFor(ISL_FIELDS)],
     laser: [defaultsFor(LASER_FIELDS)],
-    opMode: 'eirp', geoHorizonHours: 24, metricKey: 'linkmargin', activeModule: 'tx'
+    geoHorizonHours: 24, metricKey: 'linkmargin', activeModule: 'tx'
   }
 }
 function uniqueCfgName(base) { const names = new Set(configs.value.map((c) => c.name)); if (!names.has(base)) return base; let i = 2; while (names.has(base + ' ' + i)) i++; return base + ' ' + i }
@@ -794,7 +875,7 @@ async function importConfigs(items) {
   return items.length
 }
 function fingerprintOf(s) {
-  return stableStringify({ satConfigs: s.satConfigs, basebandConfigs: s.basebandConfigs, tx: s.tx, rx: s.rx, isl: s.isl, laser: s.laser, opMode: s.opMode, geoHorizonHours: s.geoHorizonHours, linkMode: s.linkMode, hiddenModes: s.hiddenModes })
+  return stableStringify({ satConfigs: s.satConfigs, basebandConfigs: s.basebandConfigs, esConfigs: s.esConfigs, tx: s.tx, rx: s.rx, isl: s.isl, laser: s.laser, geoHorizonHours: s.geoHorizonHours, linkMode: s.linkMode, hiddenModes: s.hiddenModes })
 }
 function fingerprint() { return fingerprintOf(serializeState()) }
 let activeBaseline = ''
@@ -1027,6 +1108,7 @@ onMounted(async () => {
                   <svg v-else viewBox="0 0 20 20" class="mic">
                     <template v-if="m.icon === 'up'"><line x1="10" y1="17" x2="10" y2="4" /><path d="M5.5,8.5 L10,4 L14.5,8.5" /></template>
                     <template v-else-if="m.icon === 'down'"><line x1="10" y1="3" x2="10" y2="16" /><path d="M5.5,11.5 L10,16 L14.5,11.5" /></template>
+                    <template v-else-if="m.icon === 'dish'"><path d="M3.3,8.3 a6.1,6.1 0 0 0 8.4,8.4 Z" /><line x1="7.5" y1="12.5" x2="10" y2="10" /><path d="M14.2,10.8 a5,5 0 0 0 -5,-5" /><path d="M17.5,10.8 a8.3,8.3 0 0 0 -8.3,-8.3" /></template>
                     <template v-else-if="m.icon === 'isl'"><circle cx="5" cy="6" r="2.3" /><circle cx="15" cy="14" r="2.3" /><line x1="6.9" y1="7.5" x2="13.1" y2="12.5" /></template>
                     <template v-else-if="m.icon === 'laser'"><circle cx="4" cy="6" r="2.1" /><circle cx="16" cy="14" r="2.1" /><line x1="5.7" y1="7.4" x2="14.3" y2="12.6" stroke-dasharray="1.4 1.4" /><line x1="5.7" y1="6.2" x2="14.3" y2="11.4" opacity="0.45" /><line x1="5.7" y1="8.6" x2="14.3" y2="13.8" opacity="0.45" /></template>
                     <template v-else><path d="M2,10 Q5,2 8,10 T14,10 T20,10" /></template>
@@ -1035,7 +1117,10 @@ onMounted(async () => {
                 <span class="mod-t">{{ m.label }}</span>
                 <span class="mod-n">{{ moduleCount(m.key) }}</span>
               </button>
-              <span v-if="i < MODULES.length - 1" class="mod-wire"><Icon name="chevron-right" :size="12" /></span>
+              <!-- 模块连接件：库↔库=留空隙；库→链路构成表=分隔线；其余=流向箭头 -->
+              <span v-if="i < MODULES.length - 1 && m.lib && MODULES[i + 1].lib" class="mod-gap"></span>
+              <span v-else-if="i < MODULES.length - 1 && m.lib" class="mod-sep" title="左：配置库（表按行引用）｜右：链路构成"></span>
+              <span v-else-if="i < MODULES.length - 1" class="mod-wire"><Icon name="chevron-right" :size="12" /></span>
             </template>
           </div>
 
@@ -1043,20 +1128,16 @@ onMounted(async () => {
             <div v-if="activeModule === 'tx'" class="tx-wrap">
               <div class="tx-optbar">
                 <span class="tx-optl">工作点</span>
-                <div class="seg">
-                  <button class="seg-i" :class="{ on: opMode === 'eirp' }" title="按工作点 EIRP(dBW) 输入" @click="setOpMode('eirp')">EIRP (dBW)</button>
-                  <button class="seg-i" :class="{ on: opMode === 'power' }" title="按功放功率(W) 输入（与 EIRP 自动换算）" @click="setOpMode('power')">功放 (W)</button>
-                </div>
-                <span class="tx-opttip">给定每站工作点 → 计算上行余量；切换即按各站天线/馈线/回退换算，保持物理工作点不变。</span>
+                <span class="tx-opttip">功放与余量随站型设置——在各站所选「地球站配置」的发射参数中：<b>设置功放</b>（给定功放功率 → 算上行余量）或<b>设置余量</b>（给定目标余量 → 反解所需功放，见结果指标「功放功率」）。</span>
               </div>
-              <StationGrid :stations="txStations" :fields="txFieldsView" :cities="cities" :city-search="citySearch" label="发信站" :auto-geo="autoGeoTx" :select-options="{ basebandId: basebandSelectOptions, satelliteId: satSelectOptions }" />
+              <StationGrid :stations="txStations" :fields="TX_FIELDS" :cities="cities" :city-search="citySearch" label="发信站" :auto-geo="autoGeoTx" :select-options="{ basebandId: basebandSelectOptions, stationId: esSelectOptions, satelliteId: satSelectOptions }" />
             </div>
             <div v-else-if="activeModule === 'rx'" class="tx-wrap">
               <div class="tx-optbar">
                 <span class="tx-optl">工作点 G/T</span>
-                <span class="tx-opttip">收信站 G/T 由天线口径/效率 + 天线噪温 + 接收机噪温 + 馈线损耗按引擎口径算得（含精确雨致 G/T 劣化）；末列「G/T」为随参数实时更新的晴空 G/T 只读预览。</span>
+                <span class="tx-opttip">收信站 G/T 由所选「地球站配置」的接收参数（天线口径/效率 + 天线噪温 + 接收机噪温 + 馈线损耗）按引擎口径算得（含精确雨致 G/T 劣化）；末列「G/T」为随参数实时更新的晴空 G/T 只读预览（按「天线噪温」手填值近似——「天线噪温模式=自动」时最终以计算结果为准，天空噪温随链路仰角实时求取）。</span>
               </div>
-              <StationGrid :stations="rxStations" :fields="RX_FIELDS" :cities="cities" :city-search="citySearch" label="收信站" :auto-geo="autoGeoRx" ro-label="G/T" ro-unit="dB/K" :ro-values="rxGtValues" :select-options="{ basebandId: basebandSelectOptions, satelliteId: satSelectOptions }" />
+              <StationGrid :stations="rxStations" :fields="RX_FIELDS" :cities="cities" :city-search="citySearch" label="收信站" :auto-geo="autoGeoRx" ro-label="G/T" ro-unit="dB/K" :ro-values="rxGtValues" :select-options="{ basebandId: basebandSelectOptions, stationId: esSelectOptions, satelliteId: satSelectOptions }" />
             </div>
             <div v-else-if="activeModule === 'isl'" class="tx-wrap">
               <p class="isl-tip">星间链路：<b>发射卫星 → 接收卫星</b>（两星均选自「卫星群」）。几何由两星轨道严格求解（双 SGP4 传播 + 地球临边遮挡）取最差星间距离与互视可见度；发射 EIRP 在发射卫星、接收 G/T 在接收卫星。<b>选真实卫星</b>几何才严谨；两颗同参数手动圆轨道相位缺省相同会重合报错。</p>
@@ -1064,6 +1145,25 @@ onMounted(async () => {
             </div>
             <div v-else-if="activeModule === 'laser'" class="tx-wrap">
               <StationGrid :stations="laserLinks" :fields="LASER_FIELDS" :cities="cities" :city-search="citySearch" label="激光星间链路" :show-import="false" :select-options="{ txSatelliteId: satSelectOptions, rxSatelliteId: satSelectOptions }" />
+            </div>
+            <div v-else-if="activeModule === 'station'" class="bb-wrap es-wrap">
+              <div class="bb-toolbar">
+                <span class="bb-count">{{ esConfigs.length }} 份地球站配置</span>
+                <span class="lb-spacer"></span>
+                <button class="lb-mini" title="新增配置" @click="addEsConfig"><Icon name="plus" :size="12" /> 新增配置</button>
+              </div>
+              <p class="bb-tip">每份地球站配置 = 一种站型：收发共用的天线口径 + 发射链 / 接收链参数（效率按频段分设，含干扰项与再生上行工作点——设置功放→算余量 / 设置余量→反解功放）。「发信站群 / 收信站群」表的「地球站配置」列为每行选择套用哪一份：发信站取发射参数、收信站取接收参数（工作点 G/T 由此算出），同一份可被多行乃至收发两侧共用；站表只留站址信息与逐站配对量（卫星G/T·EIRP）。</p>
+              <div class="bb-cards">
+                <div v-for="cfg in esConfigs" :key="cfg.id" class="bb-card">
+                  <div class="bb-card-hd">
+                    <input v-model="cfg.name" class="bb-card-name" placeholder="配置名称" />
+                    <span class="lb-spacer"></span>
+                    <button class="lb-mini" title="复制此配置" @click="duplicateEsConfig(cfg)"><Icon name="copy" :size="12" /> 复制</button>
+                    <button class="lb-mini" title="删除此配置" :disabled="esConfigs.length <= 1" @click="removeEsConfig(cfg)">删除</button>
+                  </div>
+                  <div class="bb-card-bd"><EarthStationPanel :form="cfg.form" :common-fields="ES_COMMON_FIELDS" :tx-fields="ES_TX_FIELDS" :rx-fields="ES_RX_FIELDS" /></div>
+                </div>
+              </div>
             </div>
             <div v-else-if="activeModule === 'carrier'" class="bb-wrap">
               <div class="bb-toolbar">
@@ -1599,6 +1699,8 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .mod-n { font-family: var(--font-mono); font-size: 11px; min-width: 17px; text-align: center; padding: 1px 4px; border-radius: var(--r-ctl); background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); }
 .mod.on .mod-n { background: var(--bg); color: var(--text); }
 .mod-wire { color: var(--text-faint); font-size: 12px; padding: 0 1px; display: inline-flex; align-items: center; }
+.mod-gap { width: 4px; flex: none; }
+.mod-sep { width: 1px; height: 22px; flex: none; background: var(--border-strong); margin: 0 8px; }
 
 .lb-edit { flex: 1; min-height: 0; overflow: auto; padding: 12px; }
 .tx-wrap { display: flex; flex-direction: column; height: 100%; min-height: 0; }
@@ -1608,6 +1710,7 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .isl-tip { font-size: 11px; color: var(--text-faint); line-height: 1.6; margin: 0 0 8px; flex: none; }
 .isl-tip b { color: var(--text-muted); font-weight: 600; }
 .bb-wrap { max-width: 620px; }
+.es-wrap { max-width: 780px; }   /* 地球站库：发射/接收两栏并排，比载波卡片宽 */
 .bb-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
 .bb-count { font-size: 12px; color: var(--text-muted); }
 .bb-tip { font-size: 11px; color: var(--text-faint); line-height: 1.6; margin: 0 0 10px; }

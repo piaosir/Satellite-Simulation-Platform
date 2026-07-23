@@ -6,6 +6,10 @@
 //     SFD / G/Tref / IBO / OBO / 转发器带宽 及全部下行/转发器项；
 //   · 全部干扰项删除；其中「上行干扰项」(C/ACI · C/ASI · C/XPI · HPA C/IM) 移入发信站列表逐站配置。
 //   · 卫星 G/T 从卫星移到发信站——G/T 随波束位置随站而异，是「卫星×发信站」配对量，由各发信站手填（见 uplink 组 G_Ts）。
+// 默认值 = MEO Ku 预设（2026-07 起，替换原「GEO Ku 弯管大站」失真口径——那套全默认会跑出 C/N≈58 dB）：
+//   轨道 8000 km/45°；卫星点波束 G/T 10 dB/K；再生上/下行地面端统一 2.4 m 用户站（工作点 EIRP 42 dBW
+//   ≈0.2W 功放@2.4m）；下行「卫星EIRP」25 dBW 为**该载波**的下行 EIRP（再生直发口径，非整波束饱和值）。
+//   只影响新建配置初始值；已保存配置不受影响。
 // 每个字段 target：'sat'→satParams，'link'→linkParams，'meta'→仅 UI（载波信号/卫星 id，不进引擎）。
 
 import { defaultsFor } from '../ngso/ngsoParams.js'
@@ -40,78 +44,92 @@ export const FIELD_GROUPS = [
       // 下行频率/极化：再生式下行模式用（上行模式忽略）。一颗星天然有上/下行两套频率极化，故并入卫星群。
       { key: 'rxCenterFrequency', label: '下行频率', tip: '下行中心频率（再生式下行用）', unit: 'GHz', type: 'num', def: '12.5', target: 'link', pair: 'dn' },
       { key: 'downlinkPolarization', label: '下行极化', tip: '下行极化方式（再生式下行用）', type: 'select', options: ['V', 'H', 'L', 'R'], def: 'H', target: 'link', pair: 'dn' },
-      { key: 'orbitAltitude', label: '轨道高度', tip: '圆轨道高度；选星（搜索/天线树）后由所选卫星轨道自动确定', unit: 'km', type: 'num', def: '1145', target: 'link', pair: 'orbit' },
-      { key: 'orbitInclination', label: '轨道倾角', tip: '轨道倾角；选星后由所选卫星轨道根数自动确定', unit: '°', type: 'num', def: '53', target: 'sat', pair: 'orbit' }
+      { key: 'orbitAltitude', label: '轨道高度', tip: '圆轨道高度；选星（搜索/天线树）后由所选卫星轨道自动确定', unit: 'km', type: 'num', def: '8000', target: 'link', pair: 'orbit' },
+      { key: 'orbitInclination', label: '轨道倾角', tip: '轨道倾角；选星后由所选卫星轨道根数自动确定', unit: '°', type: 'num', def: '45', target: 'sat', pair: 'orbit' }
     ]
   },
   {
-    // 发信站群：NGSO 上行站字段 + 「卫星」列（选用哪颗星）+ 卫星G/T（逐站手填）
-    // + 上行干扰四项（原在卫星侧，现逐站配置）。
+    // 地球站库：每份配置 = 一种站型的收发射频参数（side:'common' 收发共用 / side:'tx' 发射链 / side:'rx' 接收链），
+    // 再生式的逐站干扰项（intf:true）随站型走：C/ACI·C/ASI·C/XPI·C/IM 本质由站的天线旁瓣/极化性能
+    // 与所处干扰环境决定，同一站型可复用。target:'sat' 的干扰字段组装时送 satParams（与旧站表口径一致）。
+    // 一份配置 = 一座站 = 一面天线：口径收发共用（rxKey 标注收侧引擎键名），效率随收发频段分设。
+    // 站表（发/收信站群）只留站址信息 + 「地球站配置」选择列。
+    key: 'station', title: '地球站', icon: 'dish',
+    fields: [
+      { key: 'antennaDiameter', rxKey: 'rxAntennaDiameter', label: '天线口径', tip: '收发共用同一面天线：口径一致（天线效率按收发频段分设）。MEO 预设 2.4 m：用户/物联站典型口径（关口站另配 4.5~7.3 m 并相应上调工作点）', side: 'common', unit: 'm', type: 'num', def: '2.4', target: 'link' },
+      { key: 'antennaEfficiency', label: '天线效率', side: 'tx', unit: '%', type: 'num', def: '65', target: 'link' },
+      { key: 'paBackoff', label: '功放回退', side: 'tx', unit: 'dB', type: 'num', def: '0', target: 'link' },
+      { key: 'feederLoss', label: '馈线损耗', tip: 'MEO 预设 0.5 dB：2.4 m 用户站短馈线（大关口站长波导才是 3 dB 量级）', side: 'tx', unit: 'dB', type: 'num', def: '0.5', target: 'link' },
+      { key: 'uplinkPowerControl', label: 'UPC', tip: '上行功率控制 (Uplink Power Control)', side: 'tx', type: 'select', options: ['否', '是', '自定义'], def: '否', target: 'link' },
+      { key: 'upcValue', label: 'UPC值', tip: '仅「UPC = 自定义」时生效', side: 'tx', unit: 'dB', type: 'num', def: '0', target: 'link' },
+      { key: 'uplinkOtherLoss', label: '综合损耗', tip: '综合损耗：指向/极化/天线罩/接头等未单列损耗之综合', side: 'tx', unit: 'dB', type: 'num', def: '0.3', target: 'link' },
+      // —— 工作点（再生上行的功放与余量，随站型入库；target:'op' 不进 linkParams，由 App 按模式送引擎）——
+      //   设置功放：给定功放功率(W) → 引擎 power 模式算上行余量；
+      //   设置余量：给定系统余量(dB) → 引擎 margin 模式反解所需功放（结果见「功放功率」指标）。
+      //   showIf 按模式只显示对应数值框（EarthStationPanel 通用支持）。
+      { key: 'opCalcMode', label: '工作点', tip: '设置功放 = 给定功放功率算上行余量；设置余量 = 给定目标余量反解所需功放（功放建议见结果）', side: 'tx', type: 'select', options: ['设置功放', '设置余量'], def: '设置功放', target: 'op' },
+      { key: 'opPowerW', label: '功放功率', tip: '功放输出功率（W）；MEO 预设 0.2 W ≈ 2.4 m 站工作点 EIRP 42 dBW（馈线 0.5 dB）。仅「工作点 = 设置功放」时生效', side: 'tx', unit: 'W', type: 'num', def: '0.2', target: 'op', showIf: (f) => f.opCalcMode !== '设置余量' },
+      { key: 'opMargin', label: '系统余量', tip: '目标上行链路余量（dB）；仅「工作点 = 设置余量」时生效，引擎按之反解所需功放', side: 'tx', unit: 'dB', type: 'num', def: '3.00', target: 'op', showIf: (f) => f.opCalcMode === '设置余量' },
+      // 上行干扰四项（原逐发信站列，现随站型入库；target:'sat' → 送 satParams）
+      { key: 'aciUplinkFactor', label: '上行C/ACI', tip: '上行载波/邻道干扰比 (Adjacent Channel Interference)', side: 'tx', unit: 'dB', type: 'num', def: '30', target: 'sat', intf: true },
+      { key: 'adjUplinkFactor', label: '上行C/ASI', tip: '上行载波/邻星干扰比 (Adjacent Satellite Interference)', side: 'tx', unit: 'dB', type: 'num', def: '25', target: 'sat', intf: true },
+      { key: 'xpolUplinkFactor', label: '上行C/XPI', tip: '上行载波/交叉极化干扰比 (Cross-Polarization Interference)', side: 'tx', unit: 'dB', type: 'num', def: '26', target: 'sat', intf: true },
+      { key: 'hpaIntermodFactor', label: 'HPA C/IM', tip: '高功放载波/互调比 (HPA Intermodulation)', side: 'tx', unit: 'dB', type: 'num', def: '24', target: 'sat', intf: true },
+      // —— 接收链（工作点 G/T 的构成量）：天线（口径共用公共字段）+ 噪温 + 馈线 → 引擎按 gOverTe = 天线增益 − 系统噪温dB − 馈线损耗 算 G/T（含精确雨致 G/T 劣化）——
+      { key: 'rxAntennaEfficiency', label: '天线效率', side: 'rx', unit: '%', type: 'num', def: '65', target: 'link' },
+      { key: 'rxAntennaNoiseTempMode', label: '天线噪温模式', tip: '自动 = 按 ITU-R P.618-14 §3 由晴空大气衰减与链路仰角实时求取天空噪温（+25 K 地面拾取常数；NGSO §8 口径下随等效仰角变化），忽略「天线噪温」手填值；自定义 = 用「天线噪温」数值。', side: 'rx', type: 'select', options: ['自动', '自定义'], def: '自动', target: 'link' },
+      { key: 'rxAntennaNoiseTemp', label: '天线噪温', tip: '天线噪声温度（K）；仅「天线噪温模式 = 自定义」时生效', side: 'rx', unit: 'K', type: 'num', def: '35', target: 'link' },
+      { key: 'rxReceiverNoiseTemp', label: '接收机噪温', side: 'rx', unit: 'K', type: 'num', def: '75', target: 'link' },
+      { key: 'rxFeederLoss', label: '馈线损耗', side: 'rx', unit: 'dB', type: 'num', def: '0.2', target: 'link' },
+      { key: 'downlinkOtherLoss', label: '综合损耗', tip: '综合损耗：指向/极化/天线罩/接头等未单列损耗之综合', side: 'rx', unit: 'dB', type: 'num', def: '0.3', target: 'link' },
+      // 下行干扰四项（原逐收信站列，现随站型入库；target:'sat' → 送 satParams）
+      { key: 'aciDownlinkFactor', label: '下行C/ACI', tip: '下行载波/邻道干扰比 (Adjacent Channel Interference)', side: 'rx', unit: 'dB', type: 'num', def: '30', target: 'sat', intf: true },
+      { key: 'adjDownlinkFactor', label: '下行C/ASI', tip: '下行载波/邻星干扰比 (Adjacent Satellite Interference)', side: 'rx', unit: 'dB', type: 'num', def: '25', target: 'sat', intf: true },
+      { key: 'xpolDownlinkFactor', label: '下行C/XPI', tip: '下行载波/交叉极化干扰比 (Cross-Polarization Interference)', side: 'rx', unit: 'dB', type: 'num', def: '26', target: 'sat', intf: true },
+      { key: 'xpdrIntermodFactor', label: '下行C/IM', tip: '卫星下行载波/互调比 (Intermodulation)', side: 'rx', unit: 'dB', type: 'num', def: '21', target: 'sat', intf: true }
+    ]
+  },
+  {
+    // 发信站群：站址列 + 「载波信号 / 地球站配置 / 卫星」三个选择列 + 工作点 + 卫星G/T（逐站手填）。
+    // 发射链射频参数（天线/功放/馈线/UPC/干扰）由所选「地球站配置」提供（见 station 组）。
     key: 'uplink', title: '发信站群', icon: 'up',
     fields: [
-      // 冻结列（frozen:true）：载波信号配置 · 地球站位置 · 卫星 三列固定不随横向滚动。
-      // 地球站位置在前、卫星在后（收信站群仍为旧序），三列均显式冻结，故与城市字段位置无关，恒冻结三列。
+      // 冻结列（frozen:true）：载波信号配置 · 地球站配置 · 地球站位置 · 卫星 四列固定不随横向滚动。
       { key: 'basebandId', label: '载波信号配置', type: 'select', options: [], def: '', target: 'meta', frozen: true },
+      { key: 'stationId', label: '地球站配置', type: 'select', options: [], def: '', target: 'meta', frozen: true },
       { key: 'earthStationLocation', label: '地球站位置', type: 'text', def: '北京', target: 'link', city: 'tx', frozen: true },
       { key: 'satelliteId', label: '卫星', type: 'select', options: [], def: '', target: 'meta', frozen: true },
       { key: 'longitude', label: '经度', unit: '°E', type: 'num', def: '116.4074', target: 'link' },
       { key: 'latitude', label: '纬度', unit: '°N', type: 'num', def: '39.9042', target: 'link' },
       { key: 'minElevation', label: '最低仰角', tip: '发信站对卫星的最低工作仰角，决定最差几何（斜距最大）', unit: '°', type: 'num', def: '10', target: 'link' },
       { key: 'altitude', label: '海拔', unit: 'm', type: 'num', def: '0', target: 'link', auto: 'elev' },
-      { key: 'antennaDiameter', label: '天线口径', unit: 'm', type: 'num', def: '6.2', target: 'link' },
-      { key: 'antennaEfficiency', label: '天线效率', unit: '%', type: 'num', def: '65', target: 'link' },
-      // 工作点：可编辑，可在「工作点EIRP(dBW)」与「功放大小(W)」间切换换算（label/unit 由 UI 按 opMode 动态改；
-      // target:'op' 不直接进引擎——UI 换算成功放 W 后走 power 模式）。
-      { key: 'opPoint', label: '工作点EIRP', unit: 'dBW', type: 'num', def: '50', target: 'op' },
+      // 工作点（功放/余量）已随站型移入「地球站配置」发射参数（opCalcMode/opPowerW/opMargin，见 station 组）
       { key: 'rainRate', label: 'R0.01%', unit: 'mm/h', type: 'num', def: '0', target: 'link', auto: 'rain' },
       { key: 'uplinkAvailability', label: '可用度', unit: '%', type: 'num', def: '99.90', target: 'link' },
-      { key: 'uplinkPowerControl', label: 'UPC', type: 'select', options: ['否', '是', '自定义'], def: '否', target: 'link' },
-      { key: 'upcValue', label: 'UPC值', unit: 'dB', type: 'num', def: '0', target: 'link' },
-      { key: 'paBackoff', label: '功放回退', unit: 'dB', type: 'num', def: '0', target: 'link' },
-      { key: 'feederLoss', label: '馈线损耗', unit: 'dB', type: 'num', def: '3.5', target: 'link' },
-      { key: 'uplinkOtherLoss', label: '综合损耗', tip: '综合损耗：指向/极化/天线罩/接头等未单列损耗之综合', unit: 'dB', type: 'num', def: '0.3', target: 'link' },
-      // 上行干扰四项（原在「卫星与转发器」，再生式移入发信站逐站配置；target:'sat' → 送 satParams）
-      { key: 'aciUplinkFactor', label: '上行C/ACI', tip: '上行载波/邻道干扰比 (Adjacent Channel Interference)', unit: 'dB', type: 'num', def: '30', target: 'sat', intf: true },
-      { key: 'adjUplinkFactor', label: '上行C/ASI', tip: '上行载波/邻星干扰比 (Adjacent Satellite Interference)', unit: 'dB', type: 'num', def: '25', target: 'sat', intf: true },
-      { key: 'xpolUplinkFactor', label: '上行C/XPI', tip: '上行载波/交叉极化干扰比 (Cross-Polarization Interference)', unit: 'dB', type: 'num', def: '26', target: 'sat', intf: true },
-      { key: 'hpaIntermodFactor', label: 'HPA C/IM', tip: '高功放载波/互调比 (HPA Intermodulation)', unit: 'dB', type: 'num', def: '24', target: 'sat', intf: true },
-      // 卫星 G/T（再生式改为逐发信站取值）：同一颗星服务不同站因波束位置不同而 G/T 各异——故 G/T 是
-      // 「卫星×发信站」配对量，落在发信站逐站手填。
-      { key: 'G_Ts', label: '卫星G/T', tip: '卫星接收品质因数 G/T（dB/K），按本站对该卫星的波束位置手动输入。', unit: 'dB/K', type: 'num', def: '2', target: 'link' }
+      // 卫星 G/T（再生式逐发信站取值）：同一颗星服务不同站因波束位置不同而 G/T 各异——「卫星×发信站」
+      // 配对量，故留在站表逐站手填（不入地球站库）。
+      { key: 'G_Ts', label: '卫星G/T', tip: '卫星接收品质因数 G/T（dB/K），按本站对该卫星的波束位置手动输入。MEO 预设 10 dB/K（MEO Ku 点波束量级）。', unit: 'dB/K', type: 'num', def: '10', target: 'link' }
     ]
   },
   {
-    // 收信站群（再生式下行）：星上再生 → 地球站接收。发信站群的下行镜像：
-    //   · 工作点=「收信站 G/T」，由天线口径/效率 + 天线噪温 + 接收机噪温 + 馈线损耗按引擎口径算出
-    //     （不再支持「直接输入设备 G/T」——设备 G/T 系统噪温未知，无法自洽推出雨致 G/T 劣化）。
-    //   · 上行干扰四项换成下行干扰四项（C/ACI·C/ASI·C/XPI·C/IM，target:'sat'）。
-    //   · 「卫星G/T」换成「卫星EIRP」（下行直发，再生无转发器回退）——同一颗星服务不同站因波束位置不同而 EIRP 各异，逐站手填（target:'link'）。
+    // 收信站群（再生式下行）：站址列 + 三个选择列 + 卫星EIRP（逐站手填）。
+    // 接收链射频参数（天线/噪温/馈线/干扰）由所选「地球站配置」提供，工作点 G/T 由其按引擎口径算出
+    // （不再支持「直接输入设备 G/T」——设备 G/T 系统噪温未知，无法自洽推出雨致 G/T 劣化）。
     key: 'downlink', title: '收信站群', icon: 'down',
     fields: [
       { key: 'basebandId', label: '载波信号配置', type: 'select', options: [], def: '', target: 'meta' },
+      { key: 'stationId', label: '地球站配置', type: 'select', options: [], def: '', target: 'meta' },
       { key: 'satelliteId', label: '卫星', type: 'select', options: [], def: '', target: 'meta' },
       { key: 'rxEarthStationLocation', label: '地球站位置', type: 'text', def: '北京', target: 'link', city: 'rx' },
       { key: 'rxLongitude', label: '经度', unit: '°E', type: 'num', def: '116.4074', target: 'link' },
       { key: 'rxLatitude', label: '纬度', unit: '°N', type: 'num', def: '39.9042', target: 'link' },
       { key: 'rxMinElevation', label: '最低仰角', tip: '收信站对卫星的最低工作仰角，决定最差几何（斜距最大）', unit: '°', type: 'num', def: '10', target: 'link' },
       { key: 'rxAltitude', label: '海拔', unit: 'm', type: 'num', def: '0', target: 'link', auto: 'elev' },
-      // —— 工作点 G/T：天线 + 噪温 + 馈线 → 引擎按 gOverTe = 天线增益 − 系统噪温dB − 馈线损耗 算 G/T（含精确雨致 G/T 劣化）——
-      { key: 'rxAntennaDiameter', label: '天线口径', unit: 'm', type: 'num', def: '3.7', target: 'link' },
-      { key: 'rxAntennaEfficiency', label: '天线效率', unit: '%', type: 'num', def: '65', target: 'link' },
-      { key: 'rxAntennaNoiseTemp', label: '天线噪温', unit: 'K', type: 'num', def: '35', target: 'link' },
-      { key: 'rxReceiverNoiseTemp', label: '接收机噪温', unit: 'K', type: 'num', def: '75', target: 'link' },
-      { key: 'rxFeederLoss', label: '馈线损耗', unit: 'dB', type: 'num', def: '0.2', target: 'link' },
       { key: 'rxRainRate', label: 'R0.01%', unit: 'mm/h', type: 'num', def: '0', target: 'link', auto: 'rain' },
       { key: 'rxDownlinkAvailability', label: '可用度', unit: '%', type: 'num', def: '99.90', target: 'link' },
-      { key: 'downlinkOtherLoss', label: '综合损耗', tip: '综合损耗：指向/极化/天线罩/接头等未单列损耗之综合', unit: 'dB', type: 'num', def: '0.3', target: 'link' },
-      // 下行干扰四项（原在「卫星与转发器」，再生式移入收信站逐站配置；target:'sat' → 送 satParams）
-      { key: 'aciDownlinkFactor', label: '下行C/ACI', tip: '下行载波/邻道干扰比 (Adjacent Channel Interference)', unit: 'dB', type: 'num', def: '30', target: 'sat', intf: true },
-      { key: 'adjDownlinkFactor', label: '下行C/ASI', tip: '下行载波/邻星干扰比 (Adjacent Satellite Interference)', unit: 'dB', type: 'num', def: '25', target: 'sat', intf: true },
-      { key: 'xpolDownlinkFactor', label: '下行C/XPI', tip: '下行载波/交叉极化干扰比 (Cross-Polarization Interference)', unit: 'dB', type: 'num', def: '26', target: 'sat', intf: true },
-      { key: 'xpdrIntermodFactor', label: '下行C/IM', tip: '卫星下行载波/互调比 (Intermodulation)', unit: 'dB', type: 'num', def: '21', target: 'sat', intf: true },
-      // 卫星下行 EIRP（再生式改为逐收信站取值）：同一颗星服务不同站因波束位置不同而 EIRP 各异——故是
-      // 「卫星×收信站」配对量，落在收信站逐站手填。
-      { key: 'rxEIRP', label: '卫星EIRP', tip: '卫星下行 EIRP（dBW），按本站对该卫星的波束位置手动输入。', unit: 'dBW', type: 'num', def: '46', target: 'link' }
+      // 卫星下行 EIRP（再生式逐收信站取值）：同一颗星服务不同站因波束位置不同而 EIRP 各异——
+      // 「卫星×收信站」配对量，故留在站表逐站手填。
+      { key: 'rxEIRP', label: '卫星EIRP', tip: '该载波的卫星下行 EIRP（dBW，再生直发口径），按本站对该卫星的波束位置手动输入。MEO 预设 25 dBW（2 Mbps 级载波量级；整波束饱和值填此处会把 C/N 推到 50+ dB 的不物理区）。', unit: 'dBW', type: 'num', def: '25', target: 'link' }
     ]
   },
   {
@@ -170,6 +188,10 @@ export const TX_FIELDS = _grp('uplink')
 export const RX_FIELDS = _grp('downlink')
 export const ISL_FIELDS = _grp('isl')
 export const LASER_FIELDS = _grp('laser')
+export const ES_FIELDS = _grp('station')  // 地球站库：一份配置的全部收发射频字段
+export const ES_COMMON_FIELDS = ES_FIELDS.filter((f) => f.side === 'common')   // 收发共用（天线口径；rxKey=收侧引擎键）
+export const ES_TX_FIELDS = ES_FIELDS.filter((f) => f.side === 'tx')   // 发射链（发信站引用，含工作点 target:'op'）
+export const ES_RX_FIELDS = ES_FIELDS.filter((f) => f.side === 'rx')   // 接收链（收信站引用）
 
 export { defaultsFor }
 
@@ -186,16 +208,25 @@ const DL_LINK_DEFAULTS = {
   rxFeederLoss: '0.2', downlinkOtherLoss: '0.3'
 }
 
-// 组装单条再生式上行链路的 { satParams, linkParams }：某颗卫星(satForm) + 某份载波信号(carrierForm) + 某发信站(txStation)。
-export function buildRegenParams(satForm, carrierForm, txStation) {
+// 组装单条再生式上行链路的 { satParams, linkParams }：某颗卫星(satForm) + 某份载波信号(carrierForm)
+// + 某发信站(txStation) + 该站所选地球站配置(esForm，发射链射频参数；缺省用库默认值)。
+export function buildRegenParams(satForm, carrierForm, txStation, esForm) {
+  if (!esForm) esForm = { ...defaultsFor(ES_COMMON_FIELDS), ...defaultsFor(ES_TX_FIELDS) }
   const satParams = {}
   const linkParams = {}
   // 卫星群字段按 target 分流
   for (const f of SAT_FIELDS) putNum(f.target === 'link' ? linkParams : satParams, f, satForm[f.key])
   // 载波
   for (const f of CARRIER_FIELDS) putNum(linkParams, f, carrierForm[f.key])
-  // 发信站：uplink 链路字段 → linkParams；上行干扰(target:'sat') → satParams；
-  // meta(载波信号/卫星 id) 与 op(工作点) 不进引擎（工作点由 UI 换算成功放 W 后走 power 模式）
+  // 地球站配置：公共（天线口径）+ 发射链（效率/功放/馈线/UPC）→ linkParams；上行干扰(target:'sat') → satParams；
+  // 工作点(target:'op'，opCalcMode/opPowerW/opMargin) 不进引擎——App 按模式换成 power/margin 计算方式
+  for (const f of ES_COMMON_FIELDS) putNum(linkParams, f, esForm[f.key])
+  for (const f of ES_TX_FIELDS) {
+    if (f.target === 'op') continue
+    putNum(f.target === 'sat' ? satParams : linkParams, f, esForm[f.key])
+  }
+  // 发信站：站址等 uplink 链路字段 → linkParams；
+  // meta(载波信号/地球站配置/卫星 id) 与 op(工作点) 不进引擎（工作点由 UI 换算成功放 W 后走 power 模式）
   for (const f of TX_FIELDS) {
     if (f.target === 'meta' || f.target === 'op') continue
     putNum(f.target === 'sat' ? satParams : linkParams, f, txStation[f.key])
@@ -221,7 +252,8 @@ export function buildRegenParams(satForm, carrierForm, txStation) {
 
 // —— 工作点换算：工作点EIRP(dBW) ⇄ 功放大小(W)（与引擎口径一致，已对表验证）——
 // 引擎：txAntennaGain = 20lg(πD/λ) + 10lg(η)，stationEIRP = 功放dBW − 功放回退 + 天线增益 − 馈线损耗。
-// 频率取该发信站所选卫星的上行中心频率。
+// 频率取该发信站所选卫星的上行中心频率；station 参数传该站所选「地球站配置」表单
+// （antennaDiameter/antennaEfficiency/feederLoss/paBackoff 均已移入地球站库）。
 const _C_LIGHT = 0.299792458   // GHz·m（λ = c/f）
 export function txAntennaGainDbi(diameterM, effPct, freqGHz) {
   const D = pf(diameterM); const eff = pf(effPct); const f = pf(freqGHz)
@@ -264,16 +296,24 @@ const UP_LINK_DEFAULTS = {
   paBackoff: '0', feederLoss: '3.5', uplinkOtherLoss: '0.3'
 }
 
-// 组装单条再生式下行链路的 { satParams, linkParams }：某颗卫星(satForm) + 某份载波信号(carrierForm) + 某收信站(rxStation)。
-// 收信站 G/T 由天线/噪温/馈线走引擎原生 gOverTe（含精确雨致 G/T 劣化）；卫星下行 EIRP(rxEIRP,target:'link') 直发（再生无转发器回退）。
-export function buildRegenDownlinkParams(satForm, carrierForm, rxStation) {
+// 组装单条再生式下行链路的 { satParams, linkParams }：某颗卫星(satForm) + 某份载波信号(carrierForm)
+// + 某收信站(rxStation) + 该站所选地球站配置(esForm，接收链射频参数；缺省用库默认值)。
+// 收信站 G/T 由配置的天线/噪温/馈线走引擎原生 gOverTe（含精确雨致 G/T 劣化）；卫星下行 EIRP(rxEIRP,target:'link') 直发（再生无转发器回退）。
+export function buildRegenDownlinkParams(satForm, carrierForm, rxStation, esForm) {
+  if (!esForm) esForm = { ...defaultsFor(ES_COMMON_FIELDS), ...defaultsFor(ES_RX_FIELDS) }
   const satParams = {}
   const linkParams = {}
   // 卫星群字段按 target 分流（含上/下行频率极化、轨道）
   for (const f of SAT_FIELDS) putNum(f.target === 'link' ? linkParams : satParams, f, satForm[f.key])
   // 载波
   for (const f of CARRIER_FIELDS) putNum(linkParams, f, carrierForm[f.key])
-  // 收信站：下行链路字段 → linkParams；下行干扰(target:'sat') → satParams；meta/op 不进引擎
+  // 地球站配置：公共（天线口径 → 收侧引擎键 rxKey）+ 接收链（效率/噪温/馈线）→ linkParams；下行干扰(target:'sat') → satParams
+  for (const f of ES_COMMON_FIELDS) if (f.rxKey) putNum(linkParams, { ...f, key: f.rxKey }, esForm[f.key])
+  for (const f of ES_RX_FIELDS) {
+    if (f.target === 'op') continue
+    putNum(f.target === 'sat' ? satParams : linkParams, f, esForm[f.key])
+  }
+  // 收信站：站址等下行链路字段 → linkParams；meta 不进引擎
   for (const f of RX_FIELDS) {
     if (f.target === 'meta' || f.target === 'op') continue
     putNum(f.target === 'sat' ? satParams : linkParams, f, rxStation[f.key])
@@ -296,7 +336,8 @@ export function buildRegenDownlinkParams(satForm, carrierForm, rxStation) {
   return { satParams: JSON.parse(JSON.stringify(satParams)), linkParams: JSON.parse(JSON.stringify(linkParams)) }
 }
 
-// —— 收信站工作点换算：G/T ⇄ 噪温模式（与引擎 gOverTe 同口径，下行频率取该站所选卫星的下行频率）——
+// —— 收信站工作点换算：G/T ⇄ 噪温模式（与引擎 gOverTe 同口径，下行频率取该站所选卫星的下行频率；
+//    station 参数传该站所选「地球站配置」表单——接收链天线/噪温/馈线字段均已移入地球站库）——
 // 下行接收天线增益（dBi）
 export function rxAntennaGainDbi(diameterM, effPct, freqGHz) {
   const D = pf(diameterM); const eff = pf(effPct); const f = pf(freqGHz)
@@ -314,8 +355,10 @@ export function rxSystemNoiseTempDb(antTempK, rxTempK, feederLossDb) {
 }
 // 噪温模式 → 设备 G/T（dB/K）：G/T = 天线增益 − 系统噪温dB − 馈线损耗（严格对齐引擎 gOverTe）。
 // 收信站群「收信站 G/T」只读列的实时预览取值即由此算得。
+// 口径取公共字段 antennaDiameter（收发共用一面天线）；旧调用兜底读 rxAntennaDiameter。
 export function rxGtFromNoise(station, satForm) {
-  const g = rxAntennaGainDbi(station.rxAntennaDiameter, station.rxAntennaEfficiency, satForm && satForm.rxCenterFrequency)
+  const dia = (station.antennaDiameter !== undefined && station.antennaDiameter !== '') ? station.antennaDiameter : station.rxAntennaDiameter
+  const g = rxAntennaGainDbi(dia, station.rxAntennaEfficiency, satForm && satForm.rxCenterFrequency)
   const tdb = rxSystemNoiseTempDb(station.rxAntennaNoiseTemp, station.rxReceiverNoiseTemp, station.rxFeederLoss)
   const fl = pf(station.rxFeederLoss) || 0
   if (isNaN(g) || isNaN(tdb)) return NaN

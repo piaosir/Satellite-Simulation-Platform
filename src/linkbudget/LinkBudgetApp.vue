@@ -1,13 +1,15 @@
 <script setup>
 import { ref, shallowRef, reactive, computed, onMounted, nextTick, watch } from 'vue'
-import { SAT_FIELDS, CARRIER_FIELDS, TX_FIELDS, RX_FIELDS, defaultsFor, buildParams } from './params.js'
+import { SAT_FIELDS, CARRIER_FIELDS, TX_FIELDS, RX_FIELDS, ES_FIELDS, ES_COMMON_FIELDS, ES_TX_FIELDS, ES_RX_FIELDS, defaultsFor, buildParams } from './params.js'
 import { loadSatTree, sampleAntennaParams } from './grdParam.js'
 import { encodeShare, decodeShare, configFileText } from './shareCode.js'
 import { stableStringify } from '../shared/configDirty.js'
+import { migrateLegacyEs } from '../shared/esMigrate.js'
 import Icon from '../components/Icon.vue'
 import ConfigTree from '../components/ConfigTree.vue'
 import StationGrid from './StationGrid.vue'
 import BasebandPanel from './BasebandPanel.vue'
+import EarthStationPanel from '../components/EarthStationPanel.vue'
 import SatellitePanel from './SatellitePanel.vue'
 import WaterfallTable from './WaterfallTable.vue'
 
@@ -68,20 +70,49 @@ function removeBasebandConfig(cfg) {
   const idx = basebandConfigs.findIndex((c) => c.id === cfg.id)
   if (idx >= 0) basebandConfigs.splice(idx, 1)
 }
+// —— 地球站配置库：每份配置 = 一种站型的收发射频参数（公共天线口径 + 发射链/接收链分列，字段见 params.js station 组）。
+// 发/收信站表各有「地球站配置」列（stationId）选择套用哪一份：发信站取发射参数、收信站取接收参数，
+// 同一份可被多行乃至收发两侧共用；站表本身只留站址（经纬度等）信息。
+let _esSeq = 1
+function makeEsConfig(name, diameter) {
+  const c = { id: 'es' + (_esSeq++), name, form: { ...defaultsFor(ES_FIELDS) } }
+  if (diameter) c.form.antennaDiameter = diameter
+  return c
+}
+// 默认库：口径收发共用（一份配置=一面天线）后，经典「6.2 m 发 / 3.7 m 收」基线拆成两份站型——
+// 发信站默认引用第一份（关口站），收信站默认引用第二份（干线站，见下方 rxStations 初始化），默认算例数值与旧版一致
+const esConfigs = reactive([makeEsConfig('关口站 6.2m'), makeEsConfig('干线站 3.7m', '3.7')])
+// 按 id 解析（名称兜底匹配防御旧数据/自由录入）；未选(空)即用第一份
+function resolveEs(id) {
+  if (!id) return esConfigs[0]
+  return esConfigs.find((c) => c.id === id) || esConfigs.find((c) => c.name === id) || esConfigs[0]
+}
+const esSelectOptions = computed(() => [{ value: '', label: '（默认）' }, ...esConfigs.map((c) => ({ value: c.id, label: c.name }))])
+function addEsConfig() { esConfigs.push(makeEsConfig('站型' + (esConfigs.length + 1))) }
+function duplicateEsConfig(cfg) { esConfigs.push({ id: 'es' + (_esSeq++), name: cfg.name + ' 副本', form: JSON.parse(JSON.stringify(cfg.form)) }) }
+function removeEsConfig(cfg) {
+  if (esConfigs.length <= 1) return
+  const idx = esConfigs.findIndex((c) => c.id === cfg.id)
+  if (idx >= 0) esConfigs.splice(idx, 1)
+}
+
 let _sid = 1
 const newStation = (fields) => { const r = defaultsFor(fields); r._id = 's' + (_sid++); return r }
 const txStations = reactive([newStation(TX_FIELDS)])
 const rxStations = reactive([newStation(RX_FIELDS)])
+rxStations[0].stationId = esConfigs[1].id   // 默认收信站引用「干线站 3.7m」（发信站空引用=第一份关口站）
 
-// —— 点击式 4 模块 ——（载波信号与发信站绑定，排在发信站左边）
+// —— 点击式 5 模块 —— 左段 = 配置库（载波信号 / 地球站，lib:true，被站表按行引用），
+// 右段 = 链路构成（发信站群 → 卫星 → 收信站群，按信号流向排布）；两段间模块栏画分隔线。
 const MODULES = [
-  { key: 'carrier', label: '载波信号', icon: 'wave' },
+  { key: 'carrier', label: '载波信号', icon: 'wave', lib: true },
+  { key: 'station', label: '地球站', icon: 'dish', lib: true },
   { key: 'tx', label: '发信站群', icon: 'up' },
   { key: 'sat', label: '卫星', icon: 'sat' },
   { key: 'rx', label: '收信站群', icon: 'down' }
 ]
 const activeModule = ref('tx')
-const moduleCount = (k) => (k === 'tx' ? txStations.length : k === 'rx' ? rxStations.length : 0)
+const moduleCount = (k) => (k === 'tx' ? txStations.length : k === 'rx' ? rxStations.length : k === 'carrier' ? basebandConfigs.length : k === 'station' ? esConfigs.length : 0)
 
 // —— 计算方式 ——（enLabel 供导出 Excel 选英文时用，措辞对齐链路预算工程惯用语）
 const CALC_MODES = [
@@ -195,15 +226,15 @@ async function refreshReadonly() {
   // 只读列保留两位小数（无法解析则原样保留）
   const fix2 = (v) => { const n = parseFloat(v); return isNaN(n) ? v : n.toFixed(2) }
   for (const tx of txStations) {
-    try { const { satParams, linkParams } = buildParams(satForm, resolveBaseband(tx.basebandId).form, tx, rx0); linkParams.margin = targetMarginDb.value; const r = await api.linkBudget.computeMode(satParams, linkParams, opt); if (r && r.success) te[tx._id] = fix2(r.data.stationEIRPResult) } catch (e) { /* skip */ }
+    try { const { satParams, linkParams } = buildParams(satForm, resolveBaseband(tx.basebandId).form, tx, rx0, resolveEs(tx.stationId).form, resolveEs(rx0.stationId).form); linkParams.margin = targetMarginDb.value; const r = await api.linkBudget.computeMode(satParams, linkParams, opt); if (r && r.success) te[tx._id] = fix2(r.data.stationEIRPResult) } catch (e) { /* skip */ }
   }
   for (const rx of rxStations) {
-    try { const { satParams, linkParams } = buildParams(satForm, resolveBaseband(tx0.basebandId).form, tx0, rx); linkParams.margin = targetMarginDb.value; const r = await api.linkBudget.computeMode(satParams, linkParams, gtOpt); if (r && r.success) rg[rx._id] = fix2(r.data.gOverTeResult) } catch (e) { /* skip */ }
+    try { const { satParams, linkParams } = buildParams(satForm, resolveBaseband(tx0.basebandId).form, tx0, rx, resolveEs(tx0.stationId).form, resolveEs(rx.stationId).form); linkParams.margin = targetMarginDb.value; const r = await api.linkBudget.computeMode(satParams, linkParams, gtOpt); if (r && r.success) rg[rx._id] = fix2(r.data.gOverTeResult) } catch (e) { /* skip */ }
   }
   txEirp.value = te; rxGt.value = rg
 }
 function scheduleReadonly() { if (_suppressRO) return; clearTimeout(_roT); _roT = setTimeout(refreshReadonly, 350) }
-watch([satForm, basebandConfigs, txStations, rxStations, calcMode, targetPowerW, overDb, targetMarginDb], scheduleReadonly, { deep: true })
+watch([satForm, basebandConfigs, esConfigs, txStations, rxStations, calcMode, targetPowerW, overDb, targetMarginDb], scheduleReadonly, { deep: true })
 
 // —— GRD 卫星树 + 天线匹配（Phase 3）——
 // 卫星树来自「星座3D」页持久化（localStorage globe3d/settings.grd，同源共享）。选星后给
@@ -348,7 +379,8 @@ async function compute() {
     }
     for (const [ti, ri] of pairs) {
       const bbForm = resolveBaseband(txStations[ti].basebandId).form
-      const { satParams, linkParams } = buildParams(satForm, bbForm, txStations[ti], rxStations[ri])
+      const { satParams, linkParams } = buildParams(satForm, bbForm, txStations[ti], rxStations[ri],
+        resolveEs(txStations[ti].stationId).form, resolveEs(rxStations[ri].stationId).form)
       linkParams.margin = targetMarginDb.value   // 系统余量是批量目标值，不随载波信号配置走
       const txName = txStations[ti].earthStationLocation || ('发' + (ti + 1))
       const rxName = rxStations[ri].rxEarthStationLocation || ('收' + (ri + 1))
@@ -439,6 +471,7 @@ function serializeState() {
   return {
     satForm: { ...satForm },
     basebandConfigs: basebandConfigs.map((c) => ({ id: c.id, name: c.name, form: { ...c.form } })),
+    esConfigs: esConfigs.map((c) => ({ id: c.id, name: c.name, form: { ...c.form } })),
     tx: txStations.map(({ _id, ...r }) => r), rx: rxStations.map(({ _id, ...r }) => r),
     calcMode: calcMode.value, targetPowerW: targetPowerW.value, overDb: overDb.value, targetMarginDb: targetMarginDb.value,
     linkPairMode: linkPairMode.value,
@@ -447,7 +480,8 @@ function serializeState() {
 }
 function applyState(st) {
   if (!st || typeof st !== 'object') return
-  if (st.satForm) Object.assign(satForm, st.satForm)
+  // 干扰项已迁入地球站库：旧存档卫星表单里的干扰键不再进 satForm（其值由下方地球站库块回填进各站型）
+  if (st.satForm) { const sf = { ...st.satForm }; for (const f of ES_FIELDS) if (f.intf) delete sf[f.key]; Object.assign(satForm, sf) }
   if (Array.isArray(st.basebandConfigs) && st.basebandConfigs.length) {
     basebandConfigs.splice(0, basebandConfigs.length, ...st.basebandConfigs.map((c) => ({
       id: c.id || ('bb' + (_bbSeq++)), name: c.name || '配置',
@@ -460,10 +494,61 @@ function applyState(st) {
       form: { ...defaultsFor(CARRIER_FIELDS), rsCodeMode: 'fraction', dvbStandard: 'custom', modcodIndex: -1, ...st.carrierForm }
     })
   }
+  // —— 地球站库：新存档直接用；旧存档（站表逐行携带射频参数）→ 同值合并迁移成配置库（见 esMigrate.js）——
+  // id 必须确定性生成（迁移 'esm'+序、无 id 存档按位置 'esb'+下标）：同一份内容反复 applyState 得到同一批 id，
+  // 否则基线与会话恢复两次迁移的 id 不同 → 指纹恒不等 → 旧配置一打开就误报「未保存修改」。
+  // 新建配置走 makeEsConfig 的 'es'+自增号，与上述前缀不撞。
+  let esList = (Array.isArray(st.esConfigs) && st.esConfigs.length) ? st.esConfigs : null
+  let txRows = Array.isArray(st.tx) ? st.tx : null
+  let rxRows = Array.isArray(st.rx) ? st.rx : null
+  // 过渡版存档（库已建但口径仍收发各一份，rxAntennaDiameter≠antennaDiameter）：把配置值按侧展开回行上
+  // 重走统一迁移，使「口径收发共用 + 同口径配对」新规则生效（两侧数值逐键保留，仅重新分组命名）
+  if (esList && esList.some((c) => c && c.form && c.form.rxAntennaDiameter !== undefined && String(c.form.rxAntennaDiameter) !== String(c.form.antennaDiameter))) {
+    const byId = new Map(esList.map((c) => [c.id, c]))
+    const cfgOf = (r) => ((r && r.stationId && byId.get(r.stationId)) || esList[0])
+    txRows = (txRows || []).map((r) => {
+      const c = cfgOf(r); if (!c || !c.form) return r
+      const o = { ...r }
+      if (c.form.antennaDiameter !== undefined) o.antennaDiameter = c.form.antennaDiameter
+      for (const f of ES_TX_FIELDS) if (c.form[f.key] !== undefined) o[f.key] = c.form[f.key]
+      return o
+    })
+    rxRows = (rxRows || []).map((r) => {
+      const c = cfgOf(r); if (!c || !c.form) return r
+      const o = { ...r }
+      const rd = c.form.rxAntennaDiameter !== undefined ? c.form.rxAntennaDiameter : c.form.antennaDiameter
+      if (rd !== undefined) o.rxAntennaDiameter = rd
+      for (const f of ES_RX_FIELDS) if (c.form[f.key] !== undefined) o[f.key] = c.form[f.key]
+      return o
+    })
+    esList = null
+  }
+  let esFromMigration = false
+  if (!esList) {
+    let _mn = 0
+    const mig = migrateLegacyEs({ txRows: txRows || [], rxRows: rxRows || [], esTxFields: ES_TX_FIELDS, esRxFields: ES_RX_FIELDS, esCommonFields: ES_COMMON_FIELDS, makeId: () => 'esm' + (++_mn) })
+    if (mig) { esList = mig.esConfigs; txRows = mig.txRows; rxRows = mig.rxRows; esFromMigration = true }
+  }
+  if (esList) {
+    // 载入的配置自带 'es数字' id（如分享而来）：把自增序号顶到已见最大号之后，防后续新建配置撞号
+    for (const c of esList) { const m = /^es(\d+)$/.exec(c.id || ''); if (m) _esSeq = Math.max(_esSeq, Number(m[1]) + 1) }
+    esConfigs.splice(0, esConfigs.length, ...esList.map((c, i) => {
+      const form = { ...defaultsFor(ES_FIELDS), ...c.form }
+      // 干扰项随站型入库：旧存档值在卫星表单(st.satForm)——迁移场景一律以旧全局值回填（全库同值，
+      // 与旧「卫星级干扰」口径一致）；新库存档仅补缺（不覆盖用户已按站型分设的值）
+      if (st.satForm) for (const f of ES_FIELDS) {
+        if (!f.intf || st.satForm[f.key] === undefined) continue
+        if (esFromMigration || !c.form || c.form[f.key] === undefined) form[f.key] = st.satForm[f.key]
+      }
+      return { id: c.id || ('esb' + i), name: c.name || '站型', form }
+    }))
+  } else {
+    esConfigs.splice(0, esConfigs.length, makeEsConfig('关口站 6.2m'), makeEsConfig('干线站 3.7m', '3.7'))   // 无存档也无旧行可迁：回落默认库
+  }
   // 回填字段默认：旧配置缺某个（后加的）字段 → 显示其默认值（与基带库一致），空格不再算出界面上没有的数；
   // 已保存的显式空值('')仍覆盖默认 → 用户手动清空的格子保持空（不被默认回填）。
-  if (Array.isArray(st.tx) && st.tx.length) txStations.splice(0, txStations.length, ...st.tx.map((r) => ({ ...defaultsFor(TX_FIELDS), ...r, _id: 's' + (_sid++) })))
-  if (Array.isArray(st.rx) && st.rx.length) rxStations.splice(0, rxStations.length, ...st.rx.map((r) => ({ ...defaultsFor(RX_FIELDS), ...r, _id: 's' + (_sid++) })))
+  if (txRows && txRows.length) txStations.splice(0, txStations.length, ...txRows.map((r) => ({ ...defaultsFor(TX_FIELDS), ...r, _id: 's' + (_sid++) })))
+  if (rxRows && rxRows.length) rxStations.splice(0, rxStations.length, ...rxRows.map((r) => ({ ...defaultsFor(RX_FIELDS), ...r, _id: 's' + (_sid++) })))
   if (st.calcMode) calcMode.value = st.calcMode
   if (st.targetPowerW != null) targetPowerW.value = st.targetPowerW
   if (st.overDb != null) overDb.value = st.overDb
@@ -480,7 +565,7 @@ let _stateT = null
 // 「上次会话」存盘要带上 activeId：否则重开窗口时配置列表没有任何一项被聚焦，
 // 但工作区却显示着上次的内容，看起来像是内容跟列表对不上号（用户反馈的困惑点）。
 function scheduleSaveState() { clearTimeout(_stateT); _stateT = setTimeout(() => { try { localStorage.setItem(STATE_KEY, JSON.stringify({ ...serializeState(), activeId: activeId.value })) } catch (e) { /* 配额满等忽略 */ } }, 600) }
-watch([satForm, basebandConfigs, txStations, rxStations, calcMode, targetPowerW, overDb, targetMarginDb, linkPairMode, grdSel, metricKey, activeModule, activeId], scheduleSaveState, { deep: true })
+watch([satForm, basebandConfigs, esConfigs, txStations, rxStations, calcMode, targetPowerW, overDb, targetMarginDb, linkPairMode, grdSel, metricKey, activeModule, activeId], scheduleSaveState, { deep: true })
 
 // —— 命名配置 CRUD ——
 // 注意：Electron 不支持 window.prompt（静默返回 null → 之前「保存不了」的根因）。改用应用内命名弹窗。
@@ -601,7 +686,11 @@ function blankState() {
   return {
     satForm: defaultsFor(SAT_FIELDS),
     basebandConfigs: [{ name: '默认', form: { ...defaultsFor(CARRIER_FIELDS), rsCodeMode: 'fraction', dvbStandard: 'custom', modcodIndex: -1 } }],
-    tx: [defaultsFor(TX_FIELDS)], rx: [defaultsFor(RX_FIELDS)],
+    esConfigs: [
+      { id: 'es1', name: '关口站 6.2m', form: { ...defaultsFor(ES_FIELDS) } },
+      { id: 'es2', name: '干线站 3.7m', form: { ...defaultsFor(ES_FIELDS), antennaDiameter: '3.7' } }
+    ],
+    tx: [defaultsFor(TX_FIELDS)], rx: [{ ...defaultsFor(RX_FIELDS), stationId: 'es2' }],
     calcMode: 'margin', targetPowerW: '', overDb: '0', targetMarginDb: '3.00', linkPairMode: 'sequential',
     grdSel: { satFolder: '', eirpKey: '', gtKey: '' }, metricKey: 'auto', activeModule: 'tx'
   }
@@ -689,7 +778,7 @@ async function importConfigs(items) {
 // —— 改动检测 + 离开提示 + 恢复默认 ——
 // 指纹只取「配置内容」字段（不含 activeModule/metricKey 等视图态），避免切模块/换矩阵指标误判为改动。
 function fingerprintOf(s) {
-  return stableStringify({ satForm: s.satForm, basebandConfigs: s.basebandConfigs, tx: s.tx, rx: s.rx, calcMode: s.calcMode, targetPowerW: s.targetPowerW, overDb: s.overDb, targetMarginDb: s.targetMarginDb, linkPairMode: s.linkPairMode, grdSel: s.grdSel })
+  return stableStringify({ satForm: s.satForm, basebandConfigs: s.basebandConfigs, esConfigs: s.esConfigs, tx: s.tx, rx: s.rx, calcMode: s.calcMode, targetPowerW: s.targetPowerW, overDb: s.overDb, targetMarginDb: s.targetMarginDb, linkPairMode: s.linkPairMode, grdSel: s.grdSel })
 }
 function fingerprint() { return fingerprintOf(serializeState()) }
 let activeBaseline = ''
@@ -924,20 +1013,24 @@ onMounted(async () => {
                 <svg v-else viewBox="0 0 20 20" class="mic">
                   <template v-if="m.icon === 'up'"><line x1="10" y1="17" x2="10" y2="4" /><path d="M5.5,8.5 L10,4 L14.5,8.5" /></template>
                   <template v-else-if="m.icon === 'down'"><line x1="10" y1="3" x2="10" y2="16" /><path d="M5.5,11.5 L10,16 L14.5,11.5" /></template>
+                  <template v-else-if="m.icon === 'dish'"><path d="M3.3,8.3 a6.1,6.1 0 0 0 8.4,8.4 Z" /><line x1="7.5" y1="12.5" x2="10" y2="10" /><path d="M14.2,10.8 a5,5 0 0 0 -5,-5" /><path d="M17.5,10.8 a8.3,8.3 0 0 0 -8.3,-8.3" /></template>
                   <template v-else><path d="M2,10 Q5,2 8,10 T14,10 T20,10" /></template>
                 </svg>
               </span>
               <span class="mod-t">{{ m.label }}</span>
-              <span v-if="m.key === 'tx' || m.key === 'rx'" class="mod-n">{{ moduleCount(m.key) }}</span>
+              <span v-if="moduleCount(m.key)" class="mod-n">{{ moduleCount(m.key) }}</span>
             </button>
-            <span v-if="i < MODULES.length - 1" class="mod-wire"><Icon name="chevron-right" :size="12" /></span>
+            <!-- 模块连接件：库↔库=留空隙；库→链路构成=分隔线；链路构成之间=流向箭头 -->
+            <span v-if="i < MODULES.length - 1 && m.lib && MODULES[i + 1].lib" class="mod-gap"></span>
+            <span v-else-if="i < MODULES.length - 1 && m.lib" class="mod-sep" title="左：配置库（站表按行引用）｜右：链路构成"></span>
+            <span v-else-if="i < MODULES.length - 1" class="mod-wire"><Icon name="chevron-right" :size="12" /></span>
           </template>
         </div>
 
         <!-- 选中模块的编辑器 -->
         <div class="lb-edit">
-          <StationGrid v-if="activeModule === 'tx'" :stations="txStations" :fields="TX_FIELDS" :cities="cities" :city-search="citySearch" label="发信站" :auto-geo="autoGeoTx" ro-label="EIRP" ro-unit="dBW" :ro-values="txEirp" :select-options="{ basebandId: basebandSelectOptions }" />
-          <StationGrid v-else-if="activeModule === 'rx'" :stations="rxStations" :fields="RX_FIELDS" :cities="cities" :city-search="citySearch" label="收信站" :auto-geo="autoGeoRx" ro-label="G/T" ro-unit="dB/K" :ro-values="rxGt" />
+          <StationGrid v-if="activeModule === 'tx'" :stations="txStations" :fields="TX_FIELDS" :cities="cities" :city-search="citySearch" label="发信站" :auto-geo="autoGeoTx" ro-label="EIRP" ro-unit="dBW" :ro-values="txEirp" :select-options="{ basebandId: basebandSelectOptions, stationId: esSelectOptions }" />
+          <StationGrid v-else-if="activeModule === 'rx'" :stations="rxStations" :fields="RX_FIELDS" :cities="cities" :city-search="citySearch" label="收信站" :auto-geo="autoGeoRx" ro-label="G/T" ro-unit="dB/K" :ro-values="rxGt" :select-options="{ stationId: esSelectOptions }" />
           <div v-else-if="activeModule === 'carrier'" class="bb-wrap">
             <div class="bb-toolbar">
               <span class="bb-count">{{ basebandConfigs.length }} 份载波信号配置</span>
@@ -954,6 +1047,25 @@ onMounted(async () => {
                   <button class="lb-mini" title="删除此配置" :disabled="basebandConfigs.length <= 1" @click="removeBasebandConfig(cfg)">删除</button>
                 </div>
                 <div class="bb-card-bd"><BasebandPanel :form="cfg.form" :options="basebandOpts" /></div>
+              </div>
+            </div>
+          </div>
+          <div v-else-if="activeModule === 'station'" class="bb-wrap es-wrap">
+            <div class="bb-toolbar">
+              <span class="bb-count">{{ esConfigs.length }} 份地球站配置</span>
+              <span class="lb-spacer"></span>
+              <button class="lb-mini" title="新增配置" @click="addEsConfig"><Icon name="plus" :size="12" /> 新增配置</button>
+            </div>
+            <p class="bb-tip">每份地球站配置 = 一种站型：收发共用的天线口径 + 发射链 / 接收链参数（效率按频段分设，含干扰项；转发器互调 Tpdr. C/IM 属星上硬件，仍在「卫星」模块）。「发信站群 / 收信站群」表的「地球站配置」列为每行选择套用哪一份：发信站取发射参数、收信站取接收参数，同一份可被多行乃至收发两侧共用；站表只留地球站位置（经纬度等）与逐站配对量。</p>
+            <div class="bb-cards">
+              <div v-for="cfg in esConfigs" :key="cfg.id" class="bb-card">
+                <div class="bb-card-hd">
+                  <input v-model="cfg.name" class="bb-card-name" placeholder="配置名称" />
+                  <span class="lb-spacer"></span>
+                  <button class="lb-mini" title="复制此配置" @click="duplicateEsConfig(cfg)"><Icon name="copy" :size="12" /> 复制</button>
+                  <button class="lb-mini" title="删除此配置" :disabled="esConfigs.length <= 1" @click="removeEsConfig(cfg)">删除</button>
+                </div>
+                <div class="bb-card-bd"><EarthStationPanel :form="cfg.form" :common-fields="ES_COMMON_FIELDS" :tx-fields="ES_TX_FIELDS" :rx-fields="ES_RX_FIELDS" /></div>
               </div>
             </div>
           </div>
@@ -1354,11 +1466,14 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .mod-n { font-family: var(--font-mono); font-size: 11px; min-width: 17px; text-align: center; padding: 1px 4px; border-radius: var(--r-ctl); background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); }
 .mod.on .mod-n { background: var(--bg); color: var(--text); }
 .mod-wire { color: var(--text-faint); font-size: 12px; padding: 0 1px; display: inline-flex; align-items: center; }
+.mod-gap { width: 4px; flex: none; }
+.mod-sep { width: 1px; height: 22px; flex: none; background: var(--border-strong); margin: 0 8px; }
 
 .lb-edit { flex: 1; min-height: 0; overflow: auto; padding: 12px; }
 .form { max-width: 420px; }
 /* 载波信号配置库：工具条 + 多张卡片同时展示/编辑 */
 .bb-wrap { max-width: 620px; }
+.es-wrap { max-width: 780px; }   /* 地球站库：发射/接收两栏并排，比载波卡片宽 */
 .bb-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
 .bb-count { font-size: 12px; color: var(--text-muted); }
 .bb-tip { font-size: 11px; color: var(--text-faint); line-height: 1.6; margin: 0 0 10px; }

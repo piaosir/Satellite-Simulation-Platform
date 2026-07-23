@@ -12,12 +12,89 @@ const geo = require('./linkCalculator.js');
 const { CONSTANTS } = require('./constants.js');
 const { getRhoWs } = require('../data/waterVaporGrid.js');   // ITU-R P.836-6 地面水汽密度
 const rainRate = require('./rainRate.js');                    // ITU-R P.837 降雨率查表（0.01%）
+const s8 = require('./ngsoElevStats.js');                     // ITU-R P.618-14 §8 非静止轨道长期统计
 
 const D2R = Math.PI / 180;
 const HOURS_PER_YEAR = 8766;   // 365.25 d × 24 h（与 SatMaster「Link downtime」口径一致）
 const TMR = 275;               // 介质辐射温度 Tmr (K)，ITU-R P.618 降雨天空噪声
 
 function num(v, d) { const n = parseFloat(v); return Number.isFinite(n) ? n : (d === undefined ? NaN : d); }
+
+// —— A(0.01%) 记忆表 ——
+// §8 求和要对几十个仰角增量反复取值，而 A(0.01%) 只跟（站址/频率/极化/海拔/R0.01/仰角）有关、
+// 与时间百分比 p 无关。缓存它，可用度/频率轴扫描时只有首点付全价。
+const _a001Memo = new Map();
+function a001At(st, elevDeg) {
+  const key = st.memoKey + '|' + Math.round(elevDeg * 1000);
+  let v = _a001Memo.get(key);
+  if (v === undefined) {
+    v = geo.calculateSinglePathRainAttenuation(st.R001, st.freq, st.pol, st.lat, st.lon, null, st.altKm, elevDeg).A001;
+    if (_a001Memo.size > 50000) _a001Memo.clear();
+    _a001Memo.set(key, v);
+  }
+  return v;
+}
+
+// —— §8 两级缓存 ——
+// 曲线扫描（可用度/频率/降雨率轴，120 点）逐点几何完全相同：
+//   _distMemo  仰角分布（4096×~80 次 acos，~4ms/次）按「站纬+轨道三要素+箱宽」缓存；
+//   _s8CtxMemo 求解插值表（每箱 64 点 ln A–ln p）按「气象 memoKey + 几何」缓存——表与目标 p 无关，
+//              可用度轴扫描时 120 个点共用同一张表。
+const _distMemo = new Map();
+const _s8CtxMemo = new Map();
+
+/**
+ * NGSO 统计口径：由圆轨道几何按 ITU-R P.618-14 §8 求「等效仰角」。
+ * @returns {object} { elevEq, info } 或 { error, message }
+ */
+function ngsoEquivalentElevation(st, opt) {
+  const dKey = [st.lat, opt.orbitAltKm, opt.inclDeg, opt.minElevDeg, opt.binDeg || 1].join(',');
+  let dist = _distMemo.get(dKey);
+  if (!dist) {
+    dist = s8.circularElevDistribution({
+      latDeg: st.lat, altKm: opt.orbitAltKm, inclDeg: opt.inclDeg,
+      minElevDeg: opt.minElevDeg, binDeg: opt.binDeg
+    });
+    if (_distMemo.size > 200) _distMemo.clear();
+    _distMemo.set(dKey, dist);
+  }
+  if (dist.error) return { error: true, message: dist.message };
+  if (!(dist.visFrac > 0) || !dist.bins.length) {
+    return { error: true, message: `轨道（高度 ${opt.orbitAltKm} km / 倾角 ${opt.inclDeg}°）对本站在最低仰角 ${opt.minElevDeg}° 上始终不可见` };
+  }
+
+  const base = {
+    visFrac: dist.visFrac, minElevDeg: dist.minElevDeg, maxElevDeg: dist.maxElevDeg,
+    binDeg: dist.binDeg, binCount: dist.bins.length,
+    orbitAltKm: opt.orbitAltKm, inclDeg: opt.inclDeg
+  };
+
+  // 退化情形：无降雨（R0.01%=0）或可用度 100%（p=0）时，§8 加权无对象可加权 —— 退回最低仰角并
+  // 标记，避免静默给出一个凭空的仰角（雨衰本来就是 0，其余项按最低仰角取保守值）。
+  if (!(st.R001 > 0) || !(opt.p > 0)) {
+    const why = !(st.R001 > 0) ? 'norain' : 'clearsky';
+    return { elevEq: dist.minElevDeg, info: Object.assign({ degenerate: why, elevEq: dist.minElevDeg, atten: 0, attenAtMinElev: 0, clamped: false }, base) };
+  }
+
+  const cKey = st.memoKey + '||' + dKey;
+  let ctx = _s8CtxMemo.get(cKey);
+  if (!ctx) { ctx = {}; if (_s8CtxMemo.size > 300) _s8CtxMemo.clear(); _s8CtxMemo.set(cKey, ctx); }
+
+  const sol = s8.solveP618S8({
+    bins: dist.bins, p: opt.p, minElevDeg: dist.minElevDeg, cache: ctx,
+    attenAt: (elevDeg, pPct) => geo.scaleRainAttenP618_14(a001At(st, elevDeg), pPct, st.lat, elevDeg)
+  });
+  if (sol.error) return { error: true, message: sol.message };
+
+  return {
+    elevEq: sol.elevEq,
+    info: Object.assign({
+      elevEq: sol.elevEq, atten: sol.atten, attenAtMinElev: sol.attenAtMinElev,
+      overestimateAtMinElev: sol.attenAtMinElev - sol.atten,
+      clamped: sol.clamped, argminDeg: sol.argminDeg, degenerate: sol.degenerate || null
+    }, base)
+  };
+}
 
 // GEO 定点经度 → 站心仰角（signed，与 calculateSinglePathRainAttenuation 内部同式）
 function geoElevation(lat, lon, satLon) {
@@ -36,6 +113,34 @@ function geoSlantRange(lat, lon, satLon) {
   const Re = CONSTANTS.EARTH_RADIUS;
   const Ro = CONSTANTS.EARTH_RADIUS + CONSTANTS.SATELLITE_ALTITUDE;
   return Math.sqrt(Re * Re + Ro * Ro - 2 * Re * Ro * cosT);
+}
+
+/**
+ * §8 等效仰角求解 —— 供链路预算引擎（linkCalculatorNGSO / 再生式）复用的独立入口。
+ * 与本模块 NGSO 统计口径完全同源（同一套解析仰角分布 + §8 求和 + 记忆表），保证
+ * 「雨衰计算器」与「链路预算」两处算出的等效仰角 bit 级一致。
+ * 注：内部衰减函数取自 linkCalculator.js（GEO 引擎），与 linkCalculatorNGSO.js 的同名
+ * 函数逐字一致（已 diff 核对），故等效仰角注回 NGSO 引擎后单仰角复算严格自洽。
+ *
+ * @param {object} q  { lat, lon, freq(GHz), pol('V'|'H'|'C'), altKm(站址海拔km),
+ *                      R001(mm/h), orbitAltKm, inclDeg, minElevDeg, p(超越概率%), binDeg? }
+ * @returns {object} { elevEq, info } 或 { error, message }
+ */
+function s8EquivalentElevation(q) {
+  q = q || {};
+  const altKm = Number.isFinite(q.altKm) ? q.altKm : 0;
+  const R001 = Number.isFinite(q.R001) ? Math.max(0, q.R001) : 0;
+  const st = {
+    lat: q.lat, lon: q.lon, freq: q.freq, pol: String(q.pol || 'C').toUpperCase(), altKm, R001,
+    memoKey: [q.lat, q.lon, q.freq, String(q.pol || 'C').toUpperCase(), altKm, R001].join(',')
+  };
+  if (!Number.isFinite(st.lat) || !Number.isFinite(st.freq) || st.freq <= 0) {
+    return { error: true, message: '缺少站址纬度或有效频率' };
+  }
+  return ngsoEquivalentElevation(st, {
+    orbitAltKm: q.orbitAltKm, inclDeg: q.inclDeg, minElevDeg: q.minElevDeg,
+    p: q.p, binDeg: q.binDeg
+  });
 }
 
 /**
@@ -72,28 +177,18 @@ function calculateRainAttenuation(p) {
   const satLon = (p.satLon === '' || p.satLon === null || p.satLon === undefined) ? null : num(p.satLon);
   const hasGeo = satLon !== null && Number.isFinite(satLon);
 
+  // NGSO 统计口径（ITU-R P.618-14 §8）：仰角不再是一个输入数，而是由「轨道高度 + 倾角 + 最低仰角」
+  // 的长期仰角分布加权反解出的等效仰角。
+  const ngsoStat = !!p.ngsoStat;
+  const orbitAltKm = num(p.orbitAltKm);
+  const inclDeg = num(p.inclDeg);
+  const minElevDeg = num(p.minElevDeg);
+
   if (!Number.isFinite(lat) || !Number.isFinite(lon)) return { error: true, message: '缺少经纬度' };
   if (!Number.isFinite(freq) || freq <= 0) return { error: true, message: '缺少有效频率' };
 
-  // —— 仰角：优先直接输入；否则由 GEO satLon 反算。方位/斜距仅 GEO 便捷路径给出 ——
-  let elevation = num(p.elevation);
-  let azimuth = null, slantRange = null;
-  if (hasGeo) {
-    try { azimuth = geo.calculateSatelliteAngle(lat, lon, satLon).azimuth; } catch (e) { azimuth = null; }
-    if (!Number.isFinite(elevation)) elevation = geoElevation(lat, lon, satLon);
-    slantRange = geoSlantRange(lat, lon, satLon);
-  }
-  if (!Number.isFinite(elevation)) {
-    return { error: true, message: '缺少仰角（直接填仰角，或填 GEO 轨位自动换算）' };
-  }
-  if (elevation <= 0) {
-    return { error: true, message: '卫星在地平线以下（仰角 ' + elevation.toFixed(1) + '°）', elevation };
-  }
-  if (elevation > 90) {
-    return { error: true, message: '仰角需在 0~90° 之间（当前 ' + elevation.toFixed(1) + '°）', elevation };
-  }
-
   // —— 降雨率 R0.01%（mm/h）：0/空 → 按 ITU-R P.837 查表；扫描降雨率轴时原样使用 ——
+  // 前置于仰角求解：§8 加权要先知道降雨率才能算各仰角增量的衰减。
   let R001 = num(p.rainRate);
   let rainAuto = false;
   if (p.rainRateExact) {
@@ -104,6 +199,41 @@ function calculateRainAttenuation(p) {
 
   const pct = 100 - availability;   // 时间百分比 p(%)
   const unavail = pct / 100;
+
+  // —— 仰角：优先直接输入；否则由 GEO satLon 反算。方位/斜距仅 GEO 便捷路径给出 ——
+  let elevation = num(p.elevation);
+  let azimuth = null, slantRange = null;
+  if (hasGeo) {
+    try { azimuth = geo.calculateSatelliteAngle(lat, lon, satLon).azimuth; } catch (e) { azimuth = null; }
+    if (!Number.isFinite(elevation)) elevation = geoElevation(lat, lon, satLon);
+    slantRange = geoSlantRange(lat, lon, satLon);
+  }
+
+  // —— NGSO：§8 等效仰角覆盖直接输入的仰角 ——
+  let s8Info = null;
+  if (ngsoStat) {
+    const miss = !Number.isFinite(orbitAltKm) || orbitAltKm <= 0 ? '轨道高度'
+      : !Number.isFinite(inclDeg) ? '轨道倾角'
+      : !Number.isFinite(minElevDeg) ? '最低仰角' : null;
+    if (miss) return { error: true, message: `缺少${miss}（NGSO 统计口径需要 轨道高度 / 轨道倾角 / 最低仰角）` };
+    const st = { lat, lon, freq, pol, altKm, R001, memoKey: [lat, lon, freq, pol, altKm, R001].join(',') };
+    const r8 = ngsoEquivalentElevation(st, {
+      orbitAltKm, inclDeg, minElevDeg, p: pct, binDeg: num(p.s8BinDeg, 1)
+    });
+    if (r8.error) return { error: true, message: r8.message };
+    elevation = r8.elevEq;
+    s8Info = r8.info;
+  }
+
+  if (!Number.isFinite(elevation)) {
+    return { error: true, message: '缺少仰角（直接填仰角，或填 GEO 轨位自动换算）' };
+  }
+  if (elevation <= 0) {
+    return { error: true, message: '卫星在地平线以下（仰角 ' + elevation.toFixed(1) + '°）', elevation };
+  }
+  if (elevation > 90) {
+    return { error: true, message: '仰角需在 0~90° 之间（当前 ' + elevation.toFixed(1) + '°）', elevation };
+  }
 
   // —— 雨衰：A(0.01%) → 目标 p%（第 8 参注入仰角，几何与轨道类型解耦）——
   const rp = geo.calculateSinglePathRainAttenuation(R001, freq, pol, lat, lon, null, altKm, elevation);
@@ -160,8 +290,9 @@ function calculateRainAttenuation(p) {
   const downtimeWorstMonth = (pw / 100) * (HOURS_PER_YEAR / 12);
 
   return {
-    // 回显输入 / 几何
+    // 回显输入 / 几何（NGSO 统计口径下 elevation = §8 等效仰角，s8 给出其来源与诊断量）
     lat, lon, elevation, azimuth, slantRange, satLon: hasGeo ? satLon : null,
+    s8: s8Info,
     freq, pol, polDisplay, diameter, efficiency, availability, systemNoiseTemp, feederLoss, direction,
     rainRate: R001, rainRateAuto: rainAuto, rainHeight, tau,
     // 传播结果
@@ -190,7 +321,11 @@ function sweepRainAttenuation(p, axis, range) {
     if (axis === 'availability') q.availability = x;
     else if (axis === 'frequency') q.freq = x;
     else if (axis === 'rainRate') { q.rainRate = x; q.rainRateExact = true; }
-    else if (axis === 'elevation') q.elevation = x;   // 直接扫仰角（GEO 也用 x 覆盖轨位反算值）
+    else if (axis === 'elevation') {
+      // 直接扫仰角（GEO 也用 x 覆盖轨位反算值）。仰角轴与 §8 等效仰角互斥——扫的就是「单仰角下
+      // 雨衰随仰角怎么变」，故本轴关掉 NGSO 统计口径，否则 x 会被 §8 解出的等效仰角原样盖掉。
+      q.elevation = x; q.ngsoStat = false; q.satLon = undefined;
+    }
     const r = calculateRainAttenuation(q);
     const y = (r && !r.error && Number.isFinite(r.rainAtten)) ? r.rainAtten : null;
     points.push({ x, y });
@@ -198,4 +333,4 @@ function sweepRainAttenuation(p, axis, range) {
   return { axis, points };
 }
 
-module.exports = { calculateRainAttenuation, sweepRainAttenuation };
+module.exports = { calculateRainAttenuation, sweepRainAttenuation, s8EquivalentElevation };

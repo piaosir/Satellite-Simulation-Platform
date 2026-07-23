@@ -1216,13 +1216,35 @@ async function buildSunOutageWord(payload) {
 const POL_CN = { V: '垂直 (V)', H: '水平 (H)', C: '圆极化 (C)', RHCP: '右旋圆极化 (RHCP)', LHCP: '左旋圆极化 (LHCP)' }
 function rainDetailRows(r, row, down) {
   const f = (v, d = 2) => (v == null || !Number.isFinite(+v)) ? '—' : (+v).toFixed(d)
+  const s = r.s8 || null   // NGSO 统计口径（ITU-R P.618-14 §8）
+  // 卫星视角段：NGSO 展开 §8 的分箱/加权诊断，GEO 保持原样
+  const lookRows = s ? [
+    ['卫星视角（ITU-R P.618-14 §8）', null, null],
+    ['最低工作仰角', f(s.minElevDeg, 2), '°'],
+    ['可达最高仰角', f(s.maxElevDeg, 2), '°'],
+    ['卫星可见时间占比', f(s.visFrac * 100, 3), '%'],
+    ['仰角增量宽度', f(s.binDeg, 1), '°'],
+    ['仰角增量个数', s.binCount, ''],
+    ['§8 等效仰角', f(r.elevation, 2), '°'],
+    ['雨衰 @ 最低仰角', f(s.attenAtMinElev, 2), 'dB'],
+    ['§8 加权后修正', s.degenerate ? '—' : ('−' + f(s.overestimateAtMinElev, 2)), s.degenerate ? '' : 'dB'],
+    ['降雨高度 hR', f(r.rainHeight, 3), 'km']
+  ] : [
+    ['卫星视角', null, null],
+    ['仰角', f(r.elevation, 2), '°'],
+    ['方位角', r.azimuth != null ? f(r.azimuth, 2) : '—', r.azimuth != null ? '°' : ''],
+    ['星地斜距', r.slantRange != null ? f(r.slantRange, 2) : '—', r.slantRange != null ? 'km' : ''],
+    ['降雨高度 hR', f(r.rainHeight, 3), 'km']
+  ]
   return [
     ['输入参数', null, null],
     ['地球站', row.stationName || '—', ''],
     ['纬度', f(r.lat, 4), '°'],
     ['经度', f(r.lon, 4), '°'],
     ['海拔', (row.altitude === '' || row.altitude == null) ? 0 : row.altitude, 'm'],
-    ['GEO 轨位', r.satLon != null ? f(r.satLon, 2) : '—', r.satLon != null ? '°E' : ''],
+    ...(s
+      ? [['轨道高度（近圆）', f(s.orbitAltKm, 0), 'km'], ['轨道倾角', f(s.inclDeg, 2), '°']]
+      : [['GEO 轨位', r.satLon != null ? f(r.satLon, 2) : '—', r.satLon != null ? '°E' : '']]),
     ['频率', f(r.freq, 3), 'GHz'],
     ['极化', POL_CN[r.polDisplay] || POL_CN[r.pol] || r.polDisplay || r.pol || '—', ''],
     ['R0.01% 降雨率', f(r.rainRate, 3), 'mm/h'],
@@ -1230,11 +1252,7 @@ function rainDetailRows(r, row, down) {
     ['系统噪温（晴空）', down ? f(r.systemNoiseTemp, 0) : '—', down ? 'K' : ''],
     ['馈线损耗', down ? f(r.feederLoss, 2) : '—', down ? 'dB' : ''],
     ['链路方向', down ? '下行' : '上行', ''],
-    ['卫星视角', null, null],
-    ['仰角', f(r.elevation, 2), '°'],
-    ['方位角', r.azimuth != null ? f(r.azimuth, 2) : '—', r.azimuth != null ? '°' : ''],
-    ['星地斜距', r.slantRange != null ? f(r.slantRange, 2) : '—', r.slantRange != null ? 'km' : ''],
-    ['降雨高度 hR', f(r.rainHeight, 3), 'km'],
+    ...lookRows,
     ['传播结果', null, null],
     ['气体吸收 (P.676)', f(r.gasAtten, 2), 'dB'],
     ['对流层闪烁', f(r.scintillation, 2), 'dB'],
@@ -1258,13 +1276,15 @@ async function buildRainAttenuationExcel(payload) {
   // —— Sheet 1：批量结果（每行一个算例）——
   const ws = wb.addWorksheet('雨衰批量结果', { views: [{ showGridLines: false, state: 'frozen', ySplit: 4, xSplit: 1 }] })
   const round2 = (v) => (typeof v === 'number' && Number.isFinite(v)) ? Math.round(v * 100) / 100 : v
+  const isNgso = orbitMode === 'ngso'
+  // 几何输入已上提为全局（工具栏）→ 写进副标题；表内只留每站的仰角结果列
+  const geomCols = [isNgso ? { k: '_elev', h: '§8等效仰角(°)', w: 13 } : { k: '_elev', h: '仰角(°)', w: 9 }]
   const cols = [
     { k: 'stationName', h: '地球站', w: 14, text: true },
     { k: 'latitude', h: '纬度(°)', w: 10 },
     { k: 'longitude', h: '经度(°)', w: 10 },
     { k: 'altitude', h: '海拔(m)', w: 9 },
-    { k: '_elev', h: '仰角(°)', w: 9 },
-    { k: '_satLon', h: 'GEO轨位(°E)', w: 12 },
+    ...geomCols,
     { k: 'frequency', h: '频率(GHz)', w: 10 },
     { k: 'polarization', h: '极化', w: 7, text: true },
     { k: '_rain', h: 'R0.01(mm/h)', w: 12 },
@@ -1284,7 +1304,15 @@ async function buildRainAttenuationExcel(payload) {
   const tt = ws.getCell(1, 1); tt.value = '雨衰计算结果'; tt.font = { name: CJK, size: 15, bold: true }; tt.alignment = { horizontal: 'center' }
   ws.mergeCells(2, 1, 2, ncol)
   const st = ws.getCell(2, 1)
-  st.value = `轨道：${orbitMode === 'ngso' ? 'NGSO（仰角输入）' : 'GEO（轨位算仰角）'}　·　链路方向：${down ? '下行' : '上行'}　·　降雨模型：${rainModel === 'auto' ? 'ITU-R P.837 自动' : '手动'}　·　共 ${rows.length} 个算例`
+  // 全局几何：优先 payload.geom（新导出）；缺则从首个成功结果兜底（r.s8 / r.satLon）
+  const gm = (payload && payload.geom) || {}
+  const firstOk = results.find((x) => x && !x.error) || {}
+  const s8i = firstOk.s8 || {}
+  const gv = (v, d) => (v == null || !Number.isFinite(+v)) ? '—' : (+v).toFixed(d)
+  const geomTxt = isNgso
+    ? `NGSO 近圆 ${gv(gm.orbitAltKm != null ? gm.orbitAltKm : s8i.orbitAltKm, 0)} km · 倾角 ${gv(gm.inclDeg != null ? gm.inclDeg : s8i.inclDeg, 1)}° · 最低仰角 ${gv(gm.minElevDeg != null ? gm.minElevDeg : s8i.minElevDeg, 1)}°（ITU-R P.618-14 §8 仰角加权 → 等效仰角）`
+    : `GEO ${gv(gm.satLon != null ? gm.satLon : firstOk.satLon, 1)}°E（轨位算仰角）`
+  st.value = `轨道：${geomTxt}　·　链路方向：${down ? '下行' : '上行'}　·　降雨模型：${rainModel === 'auto' ? 'ITU-R P.837 自动' : '手动'}　·　共 ${rows.length} 个算例`
   st.font = { name: CJK, size: 10, color: { argb: 'FF666666' } }; st.alignment = { horizontal: 'center' }
   const hr = 4
   cols.forEach((c, i) => {
@@ -1302,7 +1330,6 @@ async function buildRainAttenuationExcel(payload) {
       let v
       if (c.res) { v = r.error ? '✕' : round2(r[c.k]); if (c.dl && !down) v = '—' }
       else if (c.k === '_elev') v = (r.elevation != null ? round2(r.elevation) : row.elevation)
-      else if (c.k === '_satLon') v = (r.satLon != null ? r.satLon : '—')   // NGSO / 纯仰角：无 GEO 轨位
       else if (c.k === '_rain') v = (r.rainRate != null ? round2(r.rainRate) : row.rainRate)
       else v = row[c.k]
       cell.value = c.text ? (v == null ? '' : v) : numOrText(v)
@@ -1344,12 +1371,17 @@ async function buildRainAttenuationExcel(payload) {
     rn += 1
     ds.mergeCells(rn, 1, rn, 3)
     const nt = ds.getCell(rn, 1)
-    nt.value = down
+    const dndNote = down
       ? 'DND = (雨衰+云衰) + 降雨噪声致 G/T 衰减。降雨噪声按 雨+云、T_mr=275 K、经馈线折算；气体不计入（晴空已含、不构成劣化），闪烁不计入（折射，不辐射噪声）。'
       : '上行不计降雨噪声：G/T 衰减与 DND 为下行专属。'
+    // NGSO 口径说明：等效仰角不是「某一时刻的仰角」，务必写清，否则读者会当成瞬时几何
+    const s8Note = r.s8
+      ? 'NGSO 口径（ITU-R P.618-14 §8）：仰角范围按增量分箱，各增量的可见时间占比 × 该仰角下的超越时间占比再求和；等效仰角 = 使单仰角法给出同一雨衰的仰角，非任何瞬时几何。统计口径为卫星可服务期间。气体/云/闪烁/XPD/降雨噪温按该等效仰角求值（雨衰等效，属工程近似）。仰角分布为近圆轨道解析式，不适用于大偏心率轨道。\n'
+      : ''
+    nt.value = s8Note + dndNote
     nt.font = { name: CJK, size: 9, color: { argb: 'FF888888' } }
     nt.alignment = { wrapText: true, vertical: 'top' }
-    ds.getRow(rn).height = 32
+    ds.getRow(rn).height = r.s8 ? 78 : 32
   })
 
   return wb.xlsx.writeBuffer()

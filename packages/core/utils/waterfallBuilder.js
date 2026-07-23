@@ -57,6 +57,7 @@ const WF_DICT = {
   '星地距离': 'Slant Range',
   // —— 传播损耗 ——
   '自由空间损耗': 'Free Space Loss',
+  '等效仰角 P.618§8': 'Equivalent Elevation P.618 §8',
   '大气衰减 P.676': 'Atmospheric Attenuation P.676',
   '雨衰 P.618': 'Rain Attenuation P.618',
   '云衰 P.840': 'Cloud Attenuation P.840',
@@ -628,8 +629,11 @@ function createBuilder(ctx) {
     segs.push(geoSeg);
 
     // ③ 传播损耗（上行 / 下行 双列）
+    // 「等效仰角 P.618§8」：§8 统计口径启用侧显示雨/气/云/闪烁所用的等效仰角（FSL 仍为最差瞬时
+    // 几何仰角，见「对卫星仰角」行）；未启用时字段为空串，_dualSeg 自动滤行。
     segs.push(b._dualSeg('传播损耗（上行 / 下行）', [
       ['自由空间损耗', 'uplinkFSLResult', 'downlinkFSLResult', 'dB'],
+      ['等效仰角 P.618§8', 'uplinkS8ElevResult', 'downlinkS8ElevResult', '°'],
       ['大气衰减 P.676', 'uplinkAtmosphericAttenuationResult', 'downlinkAtmosphericAttenuationResult', 'dB'],
       ['雨衰 P.618', 'uplinkRainAttenuation', 'downlinkRainAttenuationResult', 'dB'],
       ['云衰 P.840', 'uplinkCloudAttenuation', 'downlinkCloudAttenuation', 'dB'],
@@ -895,9 +899,10 @@ function createBuilder(ctx) {
     geoSeg.rows.unshift({ key: '城市', kind: 'ref', sign: '', label: b._t('城市'), up: b._disp(txLocation), down: '', total: '', unit: '', cum: '' });
     segs.push(geoSeg);
 
-    // ③ 传播损耗（上行，单列）
+    // ③ 传播损耗（上行，单列）。「等效仰角 P.618§8」仅 §8 统计口径启用时出现（空串自动滤行）
     segs.push(b._refSeg('传播损耗（上行）', [
       ['自由空间损耗', 'uplinkFSLResult', 'dB'],
+      ['等效仰角 P.618§8', 'uplinkS8ElevResult', '°'],
       ['大气衰减 P.676', 'uplinkAtmosphericAttenuationResult', 'dB'],
       ['雨衰 P.618', 'uplinkRainAttenuation', 'dB'],
       ['云衰 P.840', 'uplinkCloudAttenuation', 'dB'],
@@ -1022,9 +1027,10 @@ function createBuilder(ctx) {
     geoSeg.rows.unshift({ key: '城市', kind: 'ref', sign: '', label: b._t('城市'), up: b._disp(txLocation), down: '', total: '', unit: '', cum: '' });
     segs.push(geoSeg);
 
-    // ③ 传播损耗（下行，单列）
+    // ③ 传播损耗（下行，单列）。「等效仰角 P.618§8」仅 §8 统计口径启用时出现（空串自动滤行）
     segs.push(b._refSeg('传播损耗（下行）', [
       ['自由空间损耗', 'downlinkFSLResult', 'dB'],
+      ['等效仰角 P.618§8', 'downlinkS8ElevResult', '°'],
       ['大气衰减 P.676', 'downlinkAtmosphericAttenuationResult', 'dB'],
       ['雨衰 P.618', 'downlinkRainAttenuationResult', 'dB'],
       ['云衰 P.840', 'downlinkCloudAttenuation', 'dB'],

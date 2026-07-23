@@ -2,6 +2,11 @@
 // NGSO（非地球静止轨道）卫星链路本地计算模块
 const { P676_PART1 } = require('./p676Data.js');
 const CLOUD_GRID = require('../data/cloudParamsGrid.js'); // ITU-R P.840-9 Lred 对数正态参数地图
+// ITU-R P.618-14 §8 等效仰角求解器（与独立雨衰计算器同源同缓存；其内部衰减函数取自
+// linkCalculator.js，与本文件同名函数逐字一致，故等效仰角注回后单仰角复算严格自洽）。
+// 容错加载：缺失时 s8Mode 自动降级为原单仰角口径。
+let rainStat = null;
+try { rainStat = require('./rainAttenuation.js'); } catch (e) { /* 保持 null */ }
 const { getRhoWs } = require('../data/waterVaporGrid.js'); // ITU-R P.836-6 地面水汽密度地图
 // 基于 linkCalculator.js，针对 NGSO 链路做了以下调整：
 // 1. 绕过 GEO 专属的轨位/几何计算，直接使用用户输入的最低仰角
@@ -677,7 +682,44 @@ function performCalculations(satParams, inputs) {
   
   // 接收天线半功率波束宽度
   const theta3 = 70 * rxWavelength / rxAntennaDiameter;
-  
+
+  // ============ §8 统计口径（ITU-R P.618-14 §8，选配开关）============
+  // 非静止轨道的仰角随时间变化，P.618-14 §1 h)/§2 明确要求按 §8 计入仰角变化。把「最低/最差
+  // 仰角」同时用于 FSL 几何和雨/气/云/闪烁统计，等于假设卫星永远停在最低仰角再取该仰角下的
+  // p% 衰减 ——「最坏几何 × 最坏气象」双重最坏（低纬多雨站 + 高可用度下可高估十几 dB）。
+  // 启用条件：inputs.s8Mode + s8OrbitAltKm/s8InclDeg（轨道）+ s8MinElevUp/s8MinElevDn（各站
+  // 最低工作仰角，即门限仰角而非候选瞬时仰角）。启用后：
+  //   · 传播统计量（雨/气/云/闪烁/XPD 及其派生的雨噪温、G/T 劣化、UPC 补偿）改按「§8 等效
+  //     仰角」求值——等效仰角 = 使单仰角 ITU 方法在同一超越概率下给出与 §8 逐仰角增量加权
+  //     求和相同衰减的仰角（求解器 rainAttenuation.s8EquivalentElevation，与雨衰计算器同源）；
+  //   · FSL / 斜距 / 时延等确定几何量仍用注入的最差瞬时几何（保守设计点，二者正交）。
+  // 缺参 / 求解失败 / 退化（无雨、可用度 100%、p>5% 出 ITU 有效域等）时该侧静默回退原单仰角
+  // 口径，诊断随结果返回（uplinkS8 / downlinkS8）。默认关闭：所有既有调用路径行为不变。
+  const s8Mode = inputs.s8Mode === true || inputs.s8Mode === 1 || inputs.s8Mode === '1' || inputs.s8Mode === 'true';
+  const s8OrbitAltKm = parseFloat(inputs.s8OrbitAltKm);
+  const s8InclDeg = parseFloat(inputs.s8InclDeg);
+  const s8MinElevUp = parseFloat(inputs.s8MinElevUp);
+  const s8MinElevDn = parseFloat(inputs.s8MinElevDn);
+  let s8Up = null, s8Dn = null;
+  let uplinkPropElev = elevation, downlinkPropElev = rxElevation;
+  if (s8Mode && rainStat && isFinite(s8OrbitAltKm) && s8OrbitAltKm > 0 && isFinite(s8InclDeg)) {
+    const solveSide = (lat, lon, freq, pol, altKm, R001, minElevDeg, availPct) => {
+      if (!isFinite(minElevDeg)) return null;
+      try {
+        return rainStat.s8EquivalentElevation({
+          lat, lon, freq, pol, altKm, R001,
+          orbitAltKm: s8OrbitAltKm, inclDeg: s8InclDeg, minElevDeg,
+          p: 100 - availPct
+        });
+      } catch (e) { return { error: true, message: String((e && e.message) || e) }; }
+    };
+    s8Up = solveSide(earthLat, earthLon, uplinkFrequency, uplinkPolarization, altitude, rainRate, s8MinElevUp, uplinkAvailability);
+    s8Dn = solveSide(rxLatitude, rxLongitude, downlinkFrequency, downlinkPolarization, rxAltitude, rxRainRate, s8MinElevDn, rxdownlinkAvailability);
+    // 仅「非退化的成功解」才覆盖统计仰角——退化（无雨/晴空/衰减为 0）时雨衰本就为 0，保持原口径
+    if (s8Up && !s8Up.error && s8Up.info && !s8Up.info.degenerate) uplinkPropElev = s8Up.elevEq;
+    if (s8Dn && !s8Dn.error && s8Dn.info && !s8Dn.info.degenerate) downlinkPropElev = s8Dn.elevEq;
+  }
+
   // ============ 大气衰减计算 (ITU-R P.676-13) ============
   // 三个气象参数均按地理位置修正：
   //   Ps  — P.835-6 标准大气公式，按站址海拔 h(km) 修正：Ps = 1013.25×(1−6.5h/288.15)^5.2561
@@ -691,30 +733,30 @@ function performCalculations(satParams, inputs) {
   const downlinkTs    = Math.max(200, (Math.abs(rxLatitude) < 22 ? 300.4 : Math.abs(rxLatitude) < 45 ? 283.1 : 272.4) - 6.5 * rxAltitude);
   const downlinkRhoWs = getRhoWs(rxLatitude, rxLongitude, rxdownlinkAvailability < 100);
 
-  const uplinkAtmosphericAttenuation   = calculateAtmosphericAttenuation(uplinkFrequency,   elevation,  uplinkPs,   uplinkTs,   uplinkRhoWs);
-  const downlinkAtmosphericAttenuation = calculateAtmosphericAttenuation(downlinkFrequency, rxElevation, downlinkPs, downlinkTs, downlinkRhoWs);
+  const uplinkAtmosphericAttenuation   = calculateAtmosphericAttenuation(uplinkFrequency,   uplinkPropElev,   uplinkPs,   uplinkTs,   uplinkRhoWs);
+  const downlinkAtmosphericAttenuation = calculateAtmosphericAttenuation(downlinkFrequency, downlinkPropElev, downlinkPs, downlinkTs, downlinkRhoWs);
   
   // ============ 降雨衰减计算 ============
   // 上行降雨衰减
   const uplinkUnavailability = uplinkAvailability / 100;
   // 雨衰直接传入具体频率（P.838 系数由 interpolateP838 插值），不再四舍五入到整数频点
   const { A001, hR: uplinkRainHeight } = calculateSinglePathRainAttenuation(
-    rainRate, uplinkFrequency, uplinkPolarization, earthLat, earthLon, orbitPosition, altitude, elevation
+    rainRate, uplinkFrequency, uplinkPolarization, earthLat, earthLon, orbitPosition, altitude, uplinkPropElev
   );
-  
+
   // ITU-R P.618-14 公式(8) 换算到目标可用度（p=0 即可用度100% 返回0，即晴天）
   const uplinkRainAttenuation = scaleRainAttenP618_14(
-    A001, (1 - uplinkUnavailability) * 100, earthLat, elevation
+    A001, (1 - uplinkUnavailability) * 100, earthLat, uplinkPropElev
   );
-  
+
   // 下行降雨衰减
   const { A001: downlinkA001, hR: downlinkRainHeight } = calculateSinglePathRainAttenuation(
-    rxRainRate, downlinkFrequency, downlinkPolarization, 
-    rxLatitude, rxLongitude, orbitPosition, rxAltitude, rxElevation
+    rxRainRate, downlinkFrequency, downlinkPolarization,
+    rxLatitude, rxLongitude, orbitPosition, rxAltitude, downlinkPropElev
   );
-  
+
   const downlinkRainAttenuation = scaleRainAttenP618_14(
-    downlinkA001, (1 - rxDownlinkAvailability) * 100, rxLatitude, rxElevation
+    downlinkA001, (1 - rxDownlinkAvailability) * 100, rxLatitude, downlinkPropElev
   );
   
   // ============ 降雨去极化 XPD 计算 (ITU-R P.618-14 §4.1) ============
@@ -729,20 +771,20 @@ function performCalculations(satParams, inputs) {
 
   // 雨致 XPD（与同极化降雨衰减取同一时间百分比 p = 100 - 可用度）
   const uplinkRainXPD = calculateRainXPD_P618_14(
-    uplinkRainAttenuation, uplinkFrequency, uplinkXpdTau, elevation, (1 - uplinkUnavailability) * 100
+    uplinkRainAttenuation, uplinkFrequency, uplinkXpdTau, uplinkPropElev, (1 - uplinkUnavailability) * 100
   );
   const downlinkRainXPD = calculateRainXPD_P618_14(
-    downlinkRainAttenuation, downlinkFrequency, downlinkXpdTau, rxElevation, (1 - rxDownlinkAvailability) * 100
+    downlinkRainAttenuation, downlinkFrequency, downlinkXpdTau, downlinkPropElev, (1 - rxDownlinkAvailability) * 100
   );
   
   // ============ 云衰减计算 (ITU-R P.840-9) ============
-  // 第三参数为超越概率 p（=100-可用度）；p≤5% 时 L 封顶在 5% 值，p=0(可用度100%)按晴天返回0
-  const uplinkCloudAttenuation = calculateCloudAttenuation(uplinkFrequency, elevation, 100 - uplinkAvailability, earthLat, earthLon);
-  const downlinkCloudAttenuation = calculateCloudAttenuation(downlinkFrequency, rxElevation, 100 - rxdownlinkAvailability, rxLatitude, rxLongitude);
+  // 第三参数为超越概率 p（=100-可用度）；p<1% 时 L 封顶在 1% 值，p=0(可用度100%)按晴天返回0
+  const uplinkCloudAttenuation = calculateCloudAttenuation(uplinkFrequency, uplinkPropElev, 100 - uplinkAvailability, earthLat, earthLon);
+  const downlinkCloudAttenuation = calculateCloudAttenuation(downlinkFrequency, downlinkPropElev, 100 - rxdownlinkAvailability, rxLatitude, rxLongitude);
 
   // ============ 闪烁衰减计算 (ITU-R P.618-14 §2.4.1) ============
-  const uplinkScintillation = calculateScintillationFading(uplinkFrequency, elevation, antennaDiameter, uplinkAvailability, antennaEfficiency);
-  const downlinkScintillation = calculateScintillationFading(downlinkFrequency, rxElevation, rxAntennaDiameter, rxdownlinkAvailability, rxAntennaEfficiency);
+  const uplinkScintillation = calculateScintillationFading(uplinkFrequency, uplinkPropElev, antennaDiameter, uplinkAvailability, antennaEfficiency);
+  const downlinkScintillation = calculateScintillationFading(downlinkFrequency, downlinkPropElev, rxAntennaDiameter, rxdownlinkAvailability, rxAntennaEfficiency);
 
   // ============ 总衰减合并 (ITU-R P.618-14 §2.5 公式65/66/67/68) ============
   // p = 超越概率（不可用概率），%
@@ -776,13 +818,25 @@ function performCalculations(satParams, inputs) {
   }
 
   // ============ 噪声温度计算 ============
+  // —— 天线噪声温度：'自动' 模式按 ITU-R P.618-14 §3 式(69)(70) 由晴空大气衰减与链路仰角求取 ——
+  //   T_ant = T_mr·(1−10^(−Ag/10)) + 2.7·10^(−Ag/10) + T_ground
+  //   T_mr = 275 K（介质辐射温度缺省）；Ag = 下行大气气体衰减（已按链路仰角算得——NGSO §8 统计口径
+  //   下即等效仰角，天空亮温随仰角自动变化：低仰角穿大气厚→天空亮→噪温高）；2.7 K = 宇宙微波背景；
+  //   T_ground = 25 K（地面溢出/旁瓣拾取工程常数——使自动值在 GEO 典型仰角回落到传统缺省 35/30 K
+  //   附近，新旧口径连续）。雨的噪声抬升不在此处——由下方「雨致 G/T 劣化」单独计入（云仍不计，与
+  //   功率链既有口径一致）。模式字段缺省/未传 = 自定义（手填数值），既有配置与回归基线不受影响。
+  const antennaNoiseTempAuto = inputs.rxAntennaNoiseTempMode === '自动' || inputs.rxAntennaNoiseTempMode === 'auto';
+  const _skyLin = Math.pow(10, -downlinkAtmosphericAttenuation / 10);
+  const autoAntennaNoiseTemp = 275 * (1 - _skyLin) + 2.7 * _skyLin + 25;
+  const antennaNoiseTempEff = antennaNoiseTempAuto ? autoAntennaNoiseTemp : antennaNoiseTemp;
+
   // 降雨噪声温度
   const rainNoiseTemp = 273.15 * (1 - 1 / Math.pow(10, downlinkRainAttenuation / 10));
-  
+
   // 接收系统等效噪声温度
   const feederLossLinear = Math.pow(10, rxFeederLoss / 10);
-  const systemNoiseTempK = (antennaNoiseTemp / feederLossLinear) + 
-                           290 * (1 - 1 / feederLossLinear) + 
+  const systemNoiseTempK = (antennaNoiseTempEff / feederLossLinear) +
+                           290 * (1 - 1 / feederLossLinear) +
                            receiverNoiseTemp;
   const systemNoiseTempDb = 10 * Math.log10(systemNoiseTempK);
   
@@ -1647,6 +1701,26 @@ function performCalculations(satParams, inputs) {
   results.uplinkFSLResult = uplinkFSL.toFixed(2);
   results.uplinkRainAttenuation = uplinkRainAttenuation.toFixed(2);
   results.uplinkRainHeightResult = uplinkRainHeight.toFixed(3);
+  // ============ §8 统计口径诊断（未启用 / 该侧未求解时为 null）============
+  // applied=true 时，本侧雨/气/云/闪烁/XPD 按 elevEq（§8 等效仰角）求值；FSL/斜距仍为最差瞬时几何。
+  const s8Diag = (r, minElevInput) => {
+    if (!r) return null;
+    if (r.error) return { applied: false, error: r.message || '求解失败', minElevDeg: isFinite(minElevInput) ? minElevInput : null };
+    const i = r.info || {};
+    return {
+      applied: !i.degenerate, degenerate: i.degenerate || null,
+      elevEq: r.elevEq, atten: i.atten, attenAtMinElev: i.attenAtMinElev,
+      overestimateAtMinElev: i.overestimateAtMinElev,
+      visFrac: i.visFrac, minElevDeg: i.minElevDeg, maxElevDeg: i.maxElevDeg,
+      clamped: !!i.clamped, orbitAltKm: i.orbitAltKm, inclDeg: i.inclDeg
+    };
+  };
+  results.s8Mode = s8Mode;
+  results.uplinkS8 = s8Diag(s8Up, s8MinElevUp);
+  results.downlinkS8 = s8Diag(s8Dn, s8MinElevDn);
+  // 瀑布/详情展示用：§8 生效侧的等效仰角（未生效为空串，展示层按空隐藏）
+  results.uplinkS8ElevResult = (s8Up && !s8Up.error && s8Up.info && !s8Up.info.degenerate) ? s8Up.elevEq.toFixed(2) : '';
+  results.downlinkS8ElevResult = (s8Dn && !s8Dn.error && s8Dn.info && !s8Dn.info.degenerate) ? s8Dn.elevEq.toFixed(2) : '';
   // 上行降雨去极化 XPD (ITU-R P.618-14 §4.1)，无降雨时显示'-'
   results.uplinkRainXPDResult = isFinite(uplinkRainXPD) ? uplinkRainXPD.toFixed(2) : '-';
   results.effectiveXpolUplinkFactorResult = effectiveXpolUplinkFactor.toFixed(2);
@@ -1749,7 +1823,9 @@ function performCalculations(satParams, inputs) {
   results.ituPfdLimitPerM2 = ituPfdLimitPerM2.toFixed(2); // ITU PFD限制(转换到载波带宽)
   results.ituPfdRefBandwidth = ituPfdRefBandwidth; // ITU参考带宽
   // 噪声温度
-  results.antennaNoiseTempResult = antennaNoiseTemp;
+  // 天线噪温：自动模式回报实际所用值（§3 算得），并附模式标注供瀑布/详情区分
+  results.antennaNoiseTempResult = antennaNoiseTempAuto ? +antennaNoiseTempEff.toFixed(2) : antennaNoiseTemp;
+  results.antennaNoiseTempModeResult = antennaNoiseTempAuto ? '自动' : '自定义';
   results.receiverNoiseTempResult = receiverNoiseTemp;
   results.rainNoiseTempResult = rainNoiseTemp.toFixed(2);
   results.systemNoiseTempKResult = systemNoiseTempK.toFixed(2);
@@ -1964,8 +2040,9 @@ function calculateScintillationFading(frequencyGHz, elevationDeg, antennaDiamete
 
   // Step 7: a(p)（公式48），p = 超越概率%
   const p = 100 - availability;
-  if (p < 0.01 || p > 50) return 0; // 超出适用范围
-  const logP = Math.log10(p);
+  if (p > 50) return 0;              // p>50% 超出适用范围（可用度过低，闪烁统计无意义）
+  const pEff = Math.max(p, 0.01);    // p<0.01% 钳位到公式(48)有效域下界（而非返 0——避免可用度>99.99% 时闪烁项凭空消失）
+  const logP = Math.log10(pEff);
   const a_p = -0.061 * Math.pow(logP, 3) + 0.072 * Math.pow(logP, 2) - 1.71 * logP + 3.0;
 
   // Step 8: 闪烁衰减（公式49）
@@ -2209,7 +2286,7 @@ function calculateAtmosphericAttenuation(frequencyGHz, elevationDeg, Ps, Ts, rho
     elevationDeg = undefined;
   }
 
-  // 默认大气参数：气压/温度取 ITU-R P.835-6 标准参考大气，水汽密度取 10 g/m³（偏保守工程默认值，SatMaster 等商业软件惯例；ITU-R P.835 标准参考值为 7.5 g/m³）
+  // 默认大气参数：气压/温度取 ITU-R P.835-6 标准参考大气，水汽密度兜底取 20 g/m³（偏保守工程默认值；实际调用均传入 P.836 地图值，此缺省仅在未传参时生效。ITU-R P.835 标准参考值为 7.5 g/m³）
   if (!Ps   || !isFinite(Ps))    Ps    = 1013.25;
   if (!Ts   || !isFinite(Ts))    Ts    = 288.15;
   if (rhoWs == null || !isFinite(rhoWs)) rhoWs = 20.0;  // g/m³
