@@ -152,8 +152,12 @@ function regimeOf(r) {
 }
 const fmtKm = (v) => (v == null ? '—' : Math.round(v).toLocaleString('en-US'))
 
-// 选完工作频段，上行频率跟随预设变
-watch(() => props.form.frequencyBand, (band) => { const f = BAND_FREQ[band]; if (f) props.form.centerFrequency = String(f.up) })
+// 选完工作频段，上/下行频率跟随预设变（与 GSO/NGSO 一致；仍可手改）
+watch(() => props.form.frequencyBand, (band) => {
+  const f = BAND_FREQ[band]; if (!f) return
+  props.form.centerFrequency = String(f.up)
+  props.form.rxCenterFrequency = String(f.dn)
+})
 const bandLabel = (o) => BAND_LABEL[o] || o
 const isAutoField = (key) => satSelected.value && (key === 'orbitAltitude' || key === 'orbitInclination')
 
@@ -233,24 +237,24 @@ const rows = computed(() => {
       </div>
     </div>
 
-    <!-- 卫星参数表单（选星后轨道高度/倾角只读「自动」）-->
-    <div class="form">
-      <div v-for="(row, ri) in rows" :key="ri" class="rsp-row2" :class="{ pair: row.length === 2 }">
-        <label v-for="f in row" :key="f.key" class="pf">
-          <span class="pf-l" :title="f.tip || f.label">{{ f.label }}</span>
-          <select v-if="f.type === 'select'" v-model="form[f.key]" class="pf-i">
+    <!-- 卫星参数：自适应多列密排（选星后轨道高度/倾角只读「自动」；br 令上/下行干扰各自另起一行）-->
+    <div class="rsp-fields">
+      <template v-for="f in fields" :key="f.key">
+        <span v-if="f.br" class="rsp-break" aria-hidden="true"></span>
+        <label class="rsp-f" :title="f.tip || f.label">
+          <span class="rsp-l">{{ f.label }}<i v-if="f.unit || isAutoField(f.key)"> ({{ isAutoField(f.key) ? '自动' : f.unit }})</i></span>
+          <select v-if="f.type === 'select'" v-model="form[f.key]" class="rsp-i">
             <option v-for="o in f.options" :key="o" :value="o">{{ f.key === 'frequencyBand' ? bandLabel(o) : o }}</option>
           </select>
-          <input v-else v-model="form[f.key]" class="pf-i mono" :class="{ auto: isAutoField(f.key) }" :readonly="isAutoField(f.key)" :placeholder="f.ph || ''" />
-          <i class="pf-u">{{ isAutoField(f.key) ? '自动' : (f.unit || '') }}</i>
+          <input v-else v-model="form[f.key]" class="rsp-i mono" :class="{ auto: isAutoField(f.key) }" :readonly="isAutoField(f.key)" :placeholder="f.ph || ''" />
         </label>
-      </div>
+      </template>
     </div>
   </div>
 </template>
 
 <style scoped>
-.rsp { max-width: 520px; }
+.rsp { max-width: 940px; }
 .rsp-modes { display: flex; align-items: center; gap: 6px; margin-bottom: 10px; }
 .rsp-seg { font-size: 12px; padding: 4px 12px; border: 1px solid var(--border); background: var(--bg); color: var(--text-muted); border-radius: 3px; cursor: pointer; }
 .rsp-seg.on { background: var(--accent); color: #fff; border-color: var(--accent); }
@@ -285,11 +289,19 @@ const rows = computed(() => {
 .rsp-regime.rsp-rg-MEO { color: #2563eb; }
 .rsp-regime.rsp-rg-LEO { color: var(--text-muted); }
 .rsp-regime.rsp-rg-HEO { color: #d98600; }
-.rsp-row2 { margin-bottom: 6px; }
-.rsp-row2.pair { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-.rsp-row2 .pf { margin-bottom: 0; }
-.rsp-row2.pair .pf { grid-template-columns: 96px 110px 30px; }
-.pf { display: grid; grid-template-columns: 96px 110px 36px; align-items: center; gap: 6px; margin-bottom: 6px; }
+/* 参数密排网格（与 GEO/NGSO 卫星面板同款） */
+.rsp-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 7px 11px; }
+/* 整行占位：令下一字段另起一行（上/下行干扰分行用）；零高度，仅靠栅格行距形成一点间隔，不加边框/底色 */
+.rsp-break { grid-column: 1 / -1; height: 0; }
+.rsp-f { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.rsp-l { font-size: 12px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rsp-l i { color: var(--text-faint); font-style: normal; }
+.rsp-i { font: inherit; font-size: 12px; padding: 4px 7px; width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
+.rsp-i:focus { outline: none; border-color: var(--accent); }
+.rsp-i.mono { font-family: var(--font-mono); }
+.rsp-i.auto { background: var(--surface); color: var(--text-muted); cursor: not-allowed; }
+/* 取星区（树/搜索）沿用 pf 行式，仅放宽选择列 */
+.pf { display: grid; grid-template-columns: 96px minmax(180px, 320px) 30px; align-items: center; gap: 6px; margin-bottom: 6px; }
 .pf-l { font-size: 12px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pf-i { font: inherit; font-size: 12px; padding: 4px 7px; width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 2px; }
 .pf-i:focus { outline: none; border-color: var(--accent); }

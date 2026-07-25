@@ -14,26 +14,38 @@
 
 import { halfStr } from '../shared/num.js'
 
-// 字段字典
+// 字段字典（group：两层表头的列组，与链路表同一套分区语言 —— 见 GRID_GROUPS）
 const F = {
-  stationName: { key: 'stationName', label: '地球站', type: 'text', def: '北京', city: true },
-  longitude: { key: 'longitude', label: '经度', unit: '°E', type: 'num', def: '116.4074' },
-  latitude: { key: 'latitude', label: '纬度', unit: '°N', type: 'num', def: '39.9042' },
-  altitude: { key: 'altitude', label: '海拔', unit: 'm', type: 'num', def: '0', auto: 'elev' },
-  frequency: { key: 'frequency', label: '频率', unit: 'GHz', type: 'num', def: '12.5' },
-  polarization: { key: 'polarization', label: '极化', type: 'select', options: ['V', 'H', 'RHCP', 'LHCP'], def: 'RHCP' },
-  antennaDiameter: { key: 'antennaDiameter', label: '天线口径', unit: 'm', type: 'num', def: '3.7' },
-  antennaEfficiency: { key: 'antennaEfficiency', label: '天线效率', unit: '%', type: 'num', def: '60' },
-  availability: { key: 'availability', label: '可用度', unit: '%', type: 'num', def: '99.9' },
-  rainRate: { key: 'rainRate', label: 'R0.01%', unit: 'mm/h', type: 'num', def: '0', auto: 'rain' },
-  systemNoiseTemp: { key: 'systemNoiseTemp', label: '系统噪温', unit: 'K', type: 'num', def: '120' },
+  stationName: { key: 'stationName', label: '地球站', type: 'text', def: '北京', city: true, group: 'site' },
+  longitude: { key: 'longitude', label: '经度', unit: '°E', type: 'num', def: '116.4074', group: 'site' },
+  latitude: { key: 'latitude', label: '纬度', unit: '°N', type: 'num', def: '39.9042', group: 'site' },
+  altitude: { key: 'altitude', label: '海拔', unit: 'm', type: 'num', def: '0', auto: 'elev', group: 'site' },
+  frequency: { key: 'frequency', label: '频率', unit: 'GHz', type: 'num', def: '12.5', group: 'rf' },
+  polarization: { key: 'polarization', label: '极化', type: 'select', options: ['V', 'H', 'RHCP', 'LHCP'], def: 'RHCP', group: 'rf' },
+  antennaDiameter: { key: 'antennaDiameter', label: '天线口径', unit: 'm', type: 'num', def: '3.7', group: 'rf' },
+  antennaEfficiency: { key: 'antennaEfficiency', label: '天线效率', unit: '%', type: 'num', def: '60', group: 'rf' },
+  availability: { key: 'availability', label: '可用度', unit: '%', type: 'num', def: '99.9', group: 'met' },
+  rainRate: { key: 'rainRate', label: 'R0.01%', unit: 'mm/h', type: 'num', def: '0', auto: 'rain', group: 'met' },
+  systemNoiseTemp: { key: 'systemNoiseTemp', label: '系统噪温', unit: 'K', type: 'num', def: '120', group: 'rx' },
   // 天空噪声须经馈线衰减才到接收机参考点 → 降雨噪声 ÷ 馈线线性损耗（与晴空噪温折算自洽）。填 0 = 不折算（SatMaster 口径）
-  feederLoss: { key: 'feederLoss', label: '馈线损耗', unit: 'dB', type: 'num', def: '0.2' }
+  feederLoss: { key: 'feederLoss', label: '馈线损耗', unit: 'dB', type: 'num', def: '0.2', group: 'rx' }
 }
 
-// 计算结果字段（只读并入表尾；result:true 供样式/序列化剥离）
+// 两层表头的列组（对齐链路表「发信站 / 收信站 / 计算结果」的分区口径）：
+// 分区不填底色，靠组末列的加深格线（--lb-rule）区分 —— 见 lbworkbench.css 里的说明
+export const GRID_GROUPS = [
+  { key: 'site', label: '站址' },
+  { key: 'rf', label: '射频' },
+  { key: 'met', label: '气象' },
+  { key: 'rx', label: '接收' },
+  { key: 'res', label: '计算结果' }
+]
+
+// 计算结果字段（入表尾）。ro:true = StationGrid 的「计算列」：值不存行数据、显示/复制一律取
+// extraValues 映射（{行_id: {列key: 值}}）。这样结果不进撤销快照、不惊动存档/脏检/过期 watcher，
+// 也不会因插行/删行/上下移动而与算例串位（与链路预算结果列同口径）。result:true 供序列化剥离旧存档。
 const RESULT_FIELDS = [
-  { key: 'rainAtten', label: '雨衰', unit: 'dB', type: 'num', def: '', result: true }
+  { key: 'rainAtten', label: '雨衰', unit: 'dB', type: 'num', def: '', result: true, ro: true, group: 'res' }
 ]
 export const RESULT_KEYS = RESULT_FIELDS.map((f) => f.key)
 
@@ -60,14 +72,29 @@ export function rainFields() {
 // 全部字段键——默认行 / 序列化用
 const ALL_KEYS = rainFields().map((f) => f.key)
 
-// 默认行对象
+// 默认行对象（结果列是计算列、不存行数据 → 不进默认行）
 export function defaultRow() {
   const o = {}
-  for (const f of rainFields()) o[f.key] = f.def
+  for (const f of rainFields()) if (!f.result) o[f.key] = f.def
   return o
 }
 
-// 行对象 → core.calculateRainAttenuation 入参。数值字段先经 halfStr 归一（防全角减号吞负数）。
+// 留空列的回退值：与 StationGrid 灰字占位（f.def）严格同一口径 —— 表里灰着显示的那个值，
+// 就是留空时真正拿去计算的值。缺了这层，新增的空行会因「引擎自己的另一套默认」算出别的数
+// （频率/经纬度更是直接报错 ✕），而表里却灰字写着 12.5 GHz / 北京坐标，看着就怪。
+const DEFAULTS = Object.fromEntries(rainFields().filter((f) => !f.result).map((f) => [f.key, f.def]))
+const pick = (row, key) => { const v = row[key]; return (v == null || String(v).trim() === '') ? DEFAULTS[key] : v }
+
+// 行对象 → 实际入算的行（留空列填上默认值）。导出 Excel 用：表里灰着显示、按之计算的值，
+// 报表里也要照实写出来，否则「输入列空着、结果列却有数」自相矛盾。
+export function effectiveRow(row) {
+  const o = { ...row }
+  for (const k in DEFAULTS) o[k] = pick(row, k)
+  return o
+}
+
+// 行对象 → core.calculateRainAttenuation 入参。数值字段先经 halfStr 归一（防全角减号吞负数）；
+// 留空的列按 f.def 回退（见 DEFAULTS/pick，与表内灰字占位同口径）。
 // opts：{ direction:'up'|'down', orbitMode:'geo'|'ngso', satLon, orbitAltKm, inclDeg, minElevDeg, elevation? }
 //   几何是全局参数（工具栏），从 opts 注入：GEO 传 satLon（引擎自动换算仰角）；NGSO 传 ngsoStat +
 //   轨道三要素，引擎按 ITU-R P.618-14 §8 反解等效仰角。
@@ -75,7 +102,8 @@ export function defaultRow() {
 export function buildRainCase(row, opts) {
   opts = opts || {}
   const n = (v) => { const x = parseFloat(halfStr(v)); return Number.isFinite(x) ? x : undefined }
-  const polRaw = String(row.polarization || 'RHCP').toUpperCase()
+  const p = (key) => n(pick(row, key))          // 数值列：留空 → 按该列默认值（同表内灰字占位）
+  const polRaw = String(pick(row, 'polarization') || 'RHCP').toUpperCase()
   const pol = (polRaw === 'RHCP' || polRaw === 'LHCP' || polRaw === 'C') ? 'C' : polRaw   // 圆极化统一按 C 送引擎
   const ngso = opts.orbitMode === 'ngso'
   const satLon = ngso ? undefined : n(opts.satLon)
@@ -84,21 +112,21 @@ export function buildRainCase(row, opts) {
     orbitAltKm: ngso ? n(opts.orbitAltKm) : undefined,
     inclDeg: ngso ? n(opts.inclDeg) : undefined,
     minElevDeg: ngso ? n(opts.minElevDeg) : undefined,
-    stationName: row.stationName,
-    lat: n(row.latitude),
-    lon: n(row.longitude),
-    altitude: n(row.altitude),
+    stationName: pick(row, 'stationName'),
+    lat: p('latitude'),
+    lon: p('longitude'),
+    altitude: p('altitude'),
     elevation: n(opts.elevation),
     satLon,
-    freq: n(row.frequency),
+    freq: p('frequency'),
     pol,
     polDisplay: polRaw,
-    diameter: n(row.antennaDiameter),
-    efficiency: n(row.antennaEfficiency),
-    availability: n(row.availability),
-    rainRate: n(row.rainRate),
-    systemNoiseTemp: n(row.systemNoiseTemp),
-    feederLoss: n(row.feederLoss),
+    diameter: p('antennaDiameter'),
+    efficiency: p('antennaEfficiency'),
+    availability: p('availability'),
+    rainRate: p('rainRate'),
+    systemNoiseTemp: p('systemNoiseTemp'),
+    feederLoss: p('feederLoss'),
     direction: opts.direction === 'up' ? 'up' : 'down'
   }
 }

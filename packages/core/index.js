@@ -17,6 +17,10 @@ const icsBuilder = require('./utils/icsBuilder.js');
 const eventWindows = require('./utils/eventWindows.js');
 const rainAttenuation = require('./utils/rainAttenuation.js');
 const ngsoElevStats = require('./utils/ngsoElevStats.js');
+const adaptiveUnits = require('./utils/adaptiveUnits.js');
+const envField = require('./utils/envField.js');
+const linkSweep = require('./utils/linkSweep.js');
+const lbOutputDefs = require('./utils/lbOutputDefs.js');
 
 // 载波信号选项（调制 / FEC / DVB 标准 / 各 MODCOD 预设表），供载波信号面板的下拉与快选用。
 function basebandOptions() {
@@ -97,6 +101,14 @@ module.exports = {
   // 链路瀑布表数据构建（GEO/NGSO 共用，供结果区与专业版导出口径一致）
   buildWaterfallSegments: waterfall.buildWaterfallSegments,
   buildLinkSummary: waterfall.buildLinkSummary,
+  // 显示单位自适应（W→mW/kW、kHz→MHz、dBW→dBm 等；报告汇总表按行共选单位用）
+  adaptiveUnits,
+  // 参数扫描（y = f(x)：选一个入参当自变量逐点重跑引擎）+ 可绘输出量清单
+  sweepLink: linkSweep.sweepLink,
+  // 二维参数扫描（设计空间图：x×y 平面上逐格重跑，出等值线与可行域）
+  sweepLink2D: linkSweep.sweepLink2D,
+  linkSweep,
+  lbOutputDefs,
   // 计算方式求解（设置余量 / 设置瓦数 / 功带平衡 / 超发功带平衡）
   computeLinkMode: modeSolver.computeLinkMode,
   // NGSO 计算方式求解（同四种方式，切 NGSO 引擎，强制 ISL 跳数=0）
@@ -112,6 +124,8 @@ module.exports = {
   // NGSO 站星几何求解（SGP4 双站互视最差几何 + 轨道根数 + 时刻/时窗），供结果几何区用平台精确几何
   ngsoGeometry,
   solveNgsoMutualWorstCase: ngsoGeometry.solveMutualWorstCase,
+  // 批量：同一颗星/同一时窗下的多条链路一次求解（各站对共享 SGP4 粗扫，结果与逐条求解逐位一致）
+  solveNgsoMutualWorstCaseBatch: ngsoGeometry.solveMutualWorstCaseBatch,
   // 星间链路(ISL)两星几何：双 SGP4 + 地球临边遮挡 → 最差星间距离 + 互视可见度 + 访问窗口
   solveIslWorstCase: ngsoGeometry.solveIslWorstCase,
   // 单站访问窗口（满足最低仰角及以上的全部过境时间窗），供再生式几何关系区
@@ -138,6 +152,10 @@ module.exports = {
   ngsoElevStats,   // ITU-R P.618-14 §8 非静止轨道长期统计（仰角分布 + 等效仰角）
   rainRate,
   elevation,
+  // 环境场图层（主窗口「环境场」视图）：整张等经纬栅格一次取回，取值与上面各引擎同源
+  envFieldDefs: () => envField.FIELD_DEFS,
+  sampleEnvField: envField.sampleField,
+  envPointValue: envField.pointValue,
   // 命名空间，便于按需取用其余导出
   geo,
   ngso,

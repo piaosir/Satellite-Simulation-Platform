@@ -75,7 +75,10 @@ function circularElevDistribution(opt) {
   const minElevDeg = Math.max(0, Math.min(89, Number(opt.minElevDeg) || 0));
 
   const rho = RE_KM / (RE_KM + altKm);
-  const phi = latDeg * D2R;
+  // 站址大地纬度 → 地心纬度（与 ngsoGeometry.geocentricLatDeg 同式）：星下点纬度 ψ 是地心量，
+  // 球面三角须同口径（大地/地心差最大 0.19°@45° 纬度，LEO 低仰角端折仰角偏差 ~0.5°）
+  const F2 = (6356.7523142 / RE_KM) * (6356.7523142 / RE_KM); // (1−e²) = (b/a)²
+  const phi = Math.atan(F2 * Math.tan(latDeg * D2R));
   const sinPhi = Math.sin(phi), cosPhi = Math.cos(phi);
   const sinI = Math.abs(Math.sin(inclDeg * D2R));
 

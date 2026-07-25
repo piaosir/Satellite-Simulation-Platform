@@ -112,6 +112,18 @@ function deleteFolder(id) {
   return Array.from(removed)
 }
 
+// ---- 链路预算全局资源库（地球站/卫星/载波，按体制命名空间 geo/ngso/regen 各一套）----
+// 库脱离场景配置全局存放：场景（configs.json 里的 state）只存站址行 + 库条目 id 引用。
+// 整个命名空间整读整写（库条目量级为个位数到几十，无需增量接口）；write 已原子落盘带 .bak。
+function getLibrary(ns) { const all = read('library.json', {}); return (ns && all[ns]) || null }
+function saveLibrary(ns, data) {
+  if (!ns) return false
+  const all = read('library.json', {})
+  all[ns] = data
+  write('library.json', all)
+  return true
+}
+
 // ---- 应用设置 ----
 function getSettings() { return read('settings.json', {}) }
 function setSettings(patch) {
@@ -123,6 +135,7 @@ function setSettings(patch) {
 module.exports = {
   listHistory, addHistory, deleteHistory, clearHistory,
   listConfigs, saveConfig, deleteConfig, reorderConfigs, moveItem, deleteFolder,
+  getLibrary, saveLibrary,
   getSettings, setSettings,
   _dir: dir
 }

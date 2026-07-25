@@ -1,9 +1,11 @@
 <script setup>
 // 地球站配置面板（GEO / NGSO / 再生式链路预算共用）：一份配置 = 一种站型的收发射频参数。
-// 顶部为「公共参数」条（收发共用同一面天线的量，如天线口径——口径收发一致，效率按收发频段分设），
-// 下方「发射参数 / 接收参数」两栏分列——对应一座站的上行发射链（天线效率/功放/馈线/UPC/工作点）与
-// 下行接收链（天线效率/噪温/馈线）。字段集由各模块 params.js 的 ES_COMMON_FIELDS / ES_TX_FIELDS /
-// ES_RX_FIELDS 提供（三模块字段略有差异，如再生式含干扰项 intf:true 子区与工作点 showIf 条件显隐），
+// 顶部为「主参数」条：收发共用字段（side:'common'，如天线口径——口径收发一致，效率按收发频段分设）
+// 外加各链路标了 hero 的关键指标（如功放功率）——这几项最能定性一份站型，故放大加重排在最前，
+// 并在标签后缀归属小标（收发共用 / 发射链 / 接收链），免得放大后看不出功放只属发射链。
+// 下方「发射参数 / 接收参数」两栏分列余下字段——对应一座站的上行发射链（天线效率/回退/馈线/UPC）
+// 与下行接收链（天线效率/噪温/馈线）。字段集由各模块 params.js 的 ES_COMMON_FIELDS / ES_TX_FIELDS /
+// ES_RX_FIELDS 提供（三模块字段略有差异；频率/极化与干扰项均在卫星侧，不在本库），
 // 本组件只按字段声明通用渲染，不掺业务逻辑。
 import { computed } from 'vue'
 
@@ -11,29 +13,39 @@ const props = defineProps({
   form: { type: Object, required: true },      // 该份配置的表单（公共/发/收字段合在一个对象里，key 与引擎入参一致）
   txFields: { type: Array, required: true },   // 发射链字段声明
   rxFields: { type: Array, required: true },   // 接收链字段声明
-  commonFields: { type: Array, default: () => [] }   // 收发共用字段声明（如天线口径）
+  commonFields: { type: Array, default: () => [] }    // 收发共用字段声明（如天线口径）
 })
 
-// showIf 条件显隐（如再生式工作点：设置功放→显功放功率、设置余量→显系统余量）；访问 form 值自动建立响应追踪
+// showIf 条件显隐（字段声明可挂条件函数，如按模式显隐工作点）；访问 form 值自动建立响应追踪
 const vis = (fields) => fields.filter((f) => !f.showIf || f.showIf(props.form))
+// hero 字段（如功放功率）保持原 side 声明不变（引擎组装/迁移一律按 side 走），仅渲染位置提到顶部条
 const sections = computed(() => [
-  { key: 'tx', title: '发射参数', sub: '发信站引用', main: vis(props.txFields).filter((f) => !f.intf), intf: vis(props.txFields).filter((f) => f.intf) },
-  { key: 'rx', title: '接收参数', sub: '收信站引用', main: vis(props.rxFields).filter((f) => !f.intf), intf: vis(props.rxFields).filter((f) => f.intf) }
+  { key: 'tx', title: '发射参数', sub: '发信站引用', main: vis(props.txFields).filter((f) => !f.hero) },
+  { key: 'rx', title: '接收参数', sub: '收信站引用', main: vis(props.rxFields).filter((f) => !f.hero) }
 ])
-const commonVis = computed(() => vis(props.commonFields))
+const heroVis = computed(() => [
+  ...vis(props.commonFields),
+  ...vis(props.txFields).filter((f) => f.hero),
+  ...vis(props.rxFields).filter((f) => f.hero)
+])
+const SIDE_TAG = { common: '收发共用', tx: '发射链', rx: '接收链' }
+const sideTag = (f) => SIDE_TAG[f.side] || ''
 </script>
 
 <template>
   <div class="es-box">
-    <div v-if="commonVis.length" class="es-common">
-      <label v-for="f in commonVis" :key="f.key" class="es-f" :title="f.tip || ''">
-        <span class="es-l">{{ f.label }}<i v-if="f.unit"> ({{ f.unit }})</i></span>
-        <select v-if="f.type === 'select'" v-model="form[f.key]" class="es-i">
-          <option v-for="o in f.options" :key="o" :value="o">{{ o }}</option>
-        </select>
-        <input v-else v-model="form[f.key]" class="es-i mono" :placeholder="f.def" />
+    <div v-if="heroVis.length" class="es-common">
+      <label v-for="f in heroVis" :key="f.key" class="es-f es-f-big" :title="f.tip || ''">
+        <span class="es-l">{{ f.label }}<i v-if="sideTag(f)" class="es-tag">{{ sideTag(f) }}</i></span>
+        <span class="es-ibox">
+          <select v-if="f.type === 'select'" v-model="form[f.key]" class="es-i">
+            <option v-for="o in f.options" :key="o" :value="o">{{ o }}</option>
+          </select>
+          <input v-else v-model="form[f.key]" class="es-i mono" :placeholder="f.def" />
+          <i v-if="f.unit" class="es-u">{{ f.unit }}</i>
+        </span>
       </label>
-      <span class="es-common-note">收发共用同一面天线：口径一致，效率/馈线等按收发链分设</span>
+      <span class="es-common-note">天线收发共用同一面：口径一致，效率/馈线等按收发链分设</span>
     </div>
     <div class="es">
       <template v-for="(s, si) in sections" :key="s.key">
@@ -56,15 +68,6 @@ const commonVis = computed(() => vis(props.commonFields))
               <input v-else v-model="form[f.key]" class="es-i mono" :placeholder="f.def" />
             </label>
           </div>
-          <div v-if="s.intf.length" class="es-intf">
-            <span class="es-intf-t">干扰项</span>
-            <div class="es-grid">
-              <label v-for="f in s.intf" :key="f.key" class="es-f" :title="f.tip || ''">
-                <span class="es-l">{{ f.label }}<i v-if="f.unit"> ({{ f.unit }})</i></span>
-                <input v-model="form[f.key]" class="es-i mono" :placeholder="f.def" />
-              </label>
-            </div>
-          </div>
         </section>
       </template>
     </div>
@@ -72,10 +75,19 @@ const commonVis = computed(() => vis(props.commonFields))
 </template>
 
 <style scoped>
-.es-common { display: grid; grid-template-columns: 1fr 1fr 2fr; gap: 8px 10px; align-items: end; margin-bottom: 10px; padding-bottom: 9px; border-bottom: 1px dashed var(--border); }
-.es-common-note { grid-column: -2 / -1; font-size: 11px; color: var(--text-faint); line-height: 1.5; padding-bottom: 3px; }
-.es { display: flex; gap: 14px; align-items: stretch; }
-.es-side { flex: 1; min-width: 0; }
+/* 主参数条：一份配置的定性指标（口径 + 功放功率）——放大加重，一眼可读可改；归属小标贴在标签后 */
+.es-common { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 6px 18px; margin-bottom: 12px; padding-bottom: 11px; border-bottom: 1px dashed var(--border); }
+.es-common-note { flex: 1 1 200px; min-width: 170px; font-size: 11px; color: var(--text-faint); line-height: 1.5; padding-bottom: 5px; }
+.es-f-big { flex: 0 0 auto; gap: 4px; }
+.es-f-big .es-l { font-size: 12px; font-weight: 600; color: var(--text); letter-spacing: .3px; }
+.es-tag { margin-left: 6px; font-size: 11px; font-weight: 400; font-style: normal; letter-spacing: 0; color: var(--text-faint); }
+/* 输入 + 单位后缀：单位挪出标签贴在框右侧，读数区留给数字本身 */
+.es-ibox { display: flex; align-items: baseline; gap: 6px; }
+.es-f-big .es-i { font-size: 19px; font-weight: 600; line-height: 1.25; padding: 4px 10px; width: 132px; text-align: right; letter-spacing: .5px; }
+.es-f-big select.es-i { text-align: left; }
+.es-u { font-size: 12px; color: var(--text-muted); font-style: normal; }
+.es { display: flex; gap: 14px; align-items: stretch; flex-wrap: wrap; }   /* 窄容器（库主从视图右栏）下发/收两栏自动上下堆叠 */
+.es-side { flex: 1; min-width: 280px; }
 .es-div { width: 1px; flex: none; background: var(--border); }
 .es-hd { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
 .es-arrow { width: 13px; height: 13px; flex: none; fill: none; stroke: var(--text-muted); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
@@ -88,6 +100,4 @@ const commonVis = computed(() => vis(props.commonFields))
 .es-i { font: inherit; font-size: 12px; padding: 4px 7px; width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
 .es-i:focus { outline: none; border-color: var(--accent); }
 .es-i.mono { font-family: var(--font-mono); }
-.es-intf { margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--border); }
-.es-intf-t { display: block; font-size: 11px; color: var(--text-faint); margin-bottom: 6px; }
 </style>

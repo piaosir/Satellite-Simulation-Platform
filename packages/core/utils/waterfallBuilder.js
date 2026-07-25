@@ -13,6 +13,8 @@
 //   }
 // buildLinkSummary(results, meta) → 链路总览关键指标（供多链路专业版报告首页对比表）
 
+const adaptiveUnits = require('./adaptiveUnits.js');
+
 // ============ 链路瀑布表中英文翻译字典 ============
 // 标题、参数标签、特殊单位的中→英映射；未命中的键原样返回（如 dB、GHz 等通用单位）
 const WF_DICT = {
@@ -21,7 +23,7 @@ const WF_DICT = {
   '几何与天线（上行 / 下行）': 'Geometry & Antenna (Up / Down)',
   '传播损耗（上行 / 下行）': 'Propagation Loss (Up / Down)',
   '卫星与转发器': 'Satellite & Transponder',
-  '旁瓣·功率谱·增益与噪声': 'Sidelobe · PSD · Gain & Noise',
+  '功率谱·增益与噪声': 'PSD · Gain & Noise',
   '链路预算级联（上行 / 下行 / 合计）': 'Link Budget Cascade (Up / Down / Total)',
   '可用度与资源': 'Availability & Resources',
   // —— 载波与调制 ——
@@ -60,6 +62,7 @@ const WF_DICT = {
   '等效仰角 P.618§8': 'Equivalent Elevation P.618 §8',
   '大气衰减 P.676': 'Atmospheric Attenuation P.676',
   '雨衰 P.618': 'Rain Attenuation P.618',
+  '上行雨衰': 'Uplink Rain Attenuation',   // 主导降雨场景下计入下行列的那笔残余上行雨衰
   '云衰 P.840': 'Cloud Attenuation P.840',
   '其他损耗': 'Other Losses',
   '总衰减': 'Total Attenuation',
@@ -99,6 +102,7 @@ const WF_DICT = {
   '天线噪声温度': 'Antenna Noise Temperature',
   '接收机噪声温度': 'Receiver Noise Temperature',
   '雨噪声温度': 'Rain Noise Temperature',
+  '云噪声温度': 'Cloud Noise Temperature',
   '系统噪声温度': 'System Noise Temperature',
   '系统噪声温度(dB)': 'System Noise Temperature (dB)',
   // —— 链路预算级联 ——
@@ -138,7 +142,6 @@ const WF_DICT = {
   '下行可用度': 'Downlink Availability',
   '年中断(分钟)': 'Annual Outage (min)',
   '年中断(小时)': 'Annual Outage (h)',
-  '转发器受限因素': 'Transponder Limited By',
   '最大载波数': 'Max Carrier Count',
   '带宽占用比': 'Bandwidth Usage Ratio',
   '功率占用比': 'Power Usage Ratio',
@@ -219,6 +222,47 @@ const WF_DICT = {
   '天线噪温': 'Antenna Noise Temp',
   '接收机噪温': 'Receiver Noise Temp',
   '下行 C/N（再生·合计）': 'Downlink C/N (Regenerative Total)',
+  // —— 再生式星间（微波 ISL）——
+  '星间几何（最差工况）': 'Inter-Satellite Geometry (Worst Case)',
+  '星间频率': 'ISL Frequency',
+  '星间距离(最差)': 'ISL Distance (Worst Case)',
+  '发射卫星高度': 'Tx Satellite Altitude',
+  '接收卫星高度': 'Rx Satellite Altitude',
+  '地心夹角': 'Earth-Central Angle',
+  'LOS 掠地高度': 'LOS Grazing Altitude',
+  '单程时延': 'One-way Delay',
+  '最大距离变化率': 'Max Range Rate',
+  '互视可见度': 'Mutual Visibility',
+  '链路预算级联（再生式星间）': 'Link Budget Cascade (Regenerative ISL)',
+  '发射卫星 EIRP': 'Tx Satellite EIRP',
+  '接收卫星 G/T': 'Rx Satellite G/T',
+  '综合损耗': 'Miscellaneous Loss',
+  '星间 C/T': 'ISL C/T',
+  '星间 C/N₀': 'ISL C/N₀',
+  '星间 C/N': 'ISL C/N',
+  '可用度与资源（星间）': 'Availability & Resources (ISL)',
+  // —— 再生式星间（激光 ISL，MathWorks 简化功率链）——
+  '激光终端参数': 'Laser Terminal Parameters',
+  '波长 λ': 'Wavelength λ',
+  '发射光功率 P_tx': 'Tx Optical Power P_tx',
+  '发射口径 D_tx': 'Tx Aperture D_tx',
+  '接收口径 D_rx': 'Rx Aperture D_rx',
+  '发射指向误差': 'Tx Pointing Error',
+  '接收指向误差': 'Rx Pointing Error',
+  '接收机灵敏度 P_req': 'Receiver Sensitivity P_req',
+  '相干多普勒 Δf': 'Coherent Doppler Δf',
+  '激光链路预算级联（MathWorks 简化）': 'Laser Link Budget Cascade (MathWorks Simplified)',
+  '发射光学效率损耗 OE_tx': 'Tx Optical Efficiency Loss OE_tx',
+  '接收光学效率损耗 OE_rx': 'Rx Optical Efficiency Loss OE_rx',
+  '发射望远镜增益 G_tx': 'Tx Telescope Gain G_tx',
+  '接收望远镜增益 G_rx': 'Rx Telescope Gain G_rx',
+  '发射指向损耗 LP_tx': 'Tx Pointing Loss LP_tx',
+  '接收指向损耗 LP_rx': 'Rx Pointing Loss LP_rx',
+  '自由空间损耗 L_PS': 'Free Space Loss L_PS',
+  '其他损耗 L': 'Other Losses L',
+  '接收光功率 P_rx': 'Rx Optical Power P_rx',
+  '所需接收功率 P_req': 'Required Rx Power P_req',
+  '可用度（激光星间）': 'Availability (Laser ISL)',
   // —— 特殊单位 ——
   '米': 'm'
 };
@@ -311,6 +355,8 @@ function createBuilder(ctx) {
 
   // 级联段（三列：上行 / 下行 / 合计）：沿功率链单一 running 累加，
   // 回填无引擎字段的计算检查点（到达卫星 / 转发器输出 / 到达地面电平），再剔除空 ref/kpi 行。
+  // 出参带 role:'cascade' —— 段的语义标记（不影响 title/cols/rows 口径，报表导出忽略之）：
+  // 前端「详细预算」据此把级联主段单独提到文档顶部与图表区并排，其余段铺底（WaterfallTable 的 pick）。
   b._cascadeTriSeg = function (title, rows) {
     let running = null;
     rows.forEach((row) => {
@@ -331,7 +377,7 @@ function createBuilder(ctx) {
     const hasVal = (v) => v !== '' && v !== '—';
     const kept = rows.filter((row) =>
       (row.kind !== 'ref' && row.kind !== 'kpi') || hasVal(row.up) || hasVal(row.down) || hasVal(row.total));
-    return { title: b._t(title), cols: 3, rows: kept };
+    return { title: b._t(title), cols: 3, rows: kept, role: 'cascade' };
   };
 
   // 单列级联段（再生式上行：仅上行链，无下行/合计）：沿功率链单一 running 累加，
@@ -353,7 +399,7 @@ function createBuilder(ctx) {
     });
     const hasVal = (v) => v !== '' && v !== '—';
     const kept = rows.filter((row) => (row.kind !== 'ref' && row.kind !== 'kpi') || hasVal(row.up));
-    return { title: b._t(title), cols: 1, rows: kept };
+    return { title: b._t(title), cols: 1, rows: kept, role: 'cascade' };   // role 同 _cascadeTriSeg
   };
 
   // 双列段（上行 / 下行）：list 为 [label, upKey, downKey, unit]，上下行皆空则剔除
@@ -443,24 +489,21 @@ function createBuilder(ctx) {
       ['卫星功率谱密度', 'satellitePSDResult', 'dBW/Hz']
     ]));
 
-    // ⑤ 旁瓣·功率谱·增益与噪声（单列）
-    segs.push(b._refSeg('旁瓣·功率谱·增益与噪声', [
+    // ⑤ 功率谱·增益与噪声（单列）——邻星旁瓣/离轴各行（旁瓣发射增益·EIRP·PSD、ITU旁瓣PSD建议、接收旁瓣增益）
+    //    随「邻星离轴角」输入一并移除（这些基于 deltaTheta + ITU-R S.465 的邻星隔离分析，不参与 C/N 级联）。
+    segs.push(b._refSeg('功率谱·增益与噪声', [
       ['功放建议功率(W)', 'paRecommendation', 'W'],
-      ['旁瓣发射增益', 'txSidelobeGainResult', 'dBi'],
-      ['旁瓣 EIRP', 'txSidelobeEIRPResult', 'dBW'],
-      ['旁瓣功率谱密度', 'txSidelobePSDResult', 'dBW/Hz'],
       ['地球站功率谱密度', 'stationPSDResult', 'dBW/Hz'],
-      ['ITU 旁瓣 PSD 建议值', 'ituPsdLimitHz', 'dBW/Hz'],
       ['到达卫星通量密度（晴天）', 'PFDcResult', 'dBW/m²'],
       ['卫星到地面 PFD', 'arrivalPFDAtGroundResult', 'dBW/m²'],
       ['ITU PFD 限值', 'ituPfdLimitPerM2', 'dBW/m²'],
-      ['接收旁瓣增益', 'rxSidelobeGainResult', 'dBi'],
       ['接收馈线损耗', 'rxFeederLossResult', 'dB'],
       ['G/T', 'gOverTeResult', 'dB/K'],
       ['G/T 劣化', 'gOverTdegradationResult', 'dB'],
       ['天线噪声温度', 'antennaNoiseTempResult', 'K'],
       ['接收机噪声温度', 'receiverNoiseTempResult', 'K'],
       ['雨噪声温度', 'rainNoiseTempResult', 'K'],
+      ['云噪声温度', 'cloudNoiseTempResult', 'K'],
       ['系统噪声温度', 'systemNoiseTempKResult', 'K'],
       ['系统噪声温度(dB)', 'systemNoiseTempDbResult', 'dBK']
     ]));
@@ -490,7 +533,12 @@ function createBuilder(ctx) {
     const cDn = num('transponderOutputEIRP') - num('downlinkFSLResult') - num('downlinkAtmosphericAttenuationResult')
       - dnRainEff - num('downlinkCloudAttenuation') - num('downlinkMiscLossResult');
     const dnThermalCN = cDn + num('gOverTeResult') + KB - noiseBW;
-    const dnIntfLoss = dnThermalCN - dnGtDegEff - num('downlinkCN');
+    // 下行干扰损失：取引擎真实四路干扰并联值（按主导场景口径），不再从反解 downlinkCN 取残差——
+    // 残差在「上行主导 + UPC 未全补偿」时会把上行残余雨衰错计入本行（ACI/ASI/XPI/IM 标签失真可达数 dB）。
+    const dnIntfLoss = num('downlinkInterferenceLossResult');
+    // 残差扣除真实干扰后的剩余 = 经弯管转嫁到下行侧资源账的上行残余雨衰（UPC 未补偿部分；
+    // 下行主导 / UPC 全补偿时 ≈ 0）。按构造闭合，保证「下行 C/N」检查点逐行加得通。
+    const dnResidualRain = (dnThermalCN - dnGtDegEff - num('downlinkCN')) - dnIntfLoss;
     segs.push(b._cascadeTriSeg('链路预算级联（上行 / 下行 / 合计）', [
       // —— 上行：地球站 → 到达卫星 → C/T → C/N₀ → C/N ——
       C('base', '功放建议功率', 'paRecommendationdBResult', 'dBW', 'up'),
@@ -535,6 +583,9 @@ function createBuilder(ctx) {
       C('loss', '载波噪声带宽 10·lgB', noiseBW, 'dB', 'down'),
       C('chk', '下行 C/N（热噪声）', null, 'dB', 'down'),
       C('loss', '下行干扰损失 ACI/ASI/XPI/IM', dnIntfLoss, 'dB', 'down'),
+      ...(isFinite(dnResidualRain) && Math.abs(dnResidualRain) >= 0.005
+        ? [C('loss', '上行雨衰', dnResidualRain, 'dB', 'down')]
+        : []),
       C('sub', '下行 C/N', null, 'dB', 'down'),
       // —— 合成与余量：上行 ⊕ 下行（噪声并联）= 合计 ——
       T('kpi', 'C/N（合成）', 'uplinkCN', 'downlinkCN', 'carrierTotalCN', 'dB'),
@@ -549,7 +600,6 @@ function createBuilder(ctx) {
       ['下行可用度', 'downlinkAvailabilityResult', '%'],
       ['年中断(分钟)', 'interruptionMinutes', 'min'],
       ['年中断(小时)', 'interruptionHours', 'h'],
-      ['转发器受限因素', 'transponderLimitedBy', ''],
       ['最大载波数', 'maxCarrierCount', ''],
       ['带宽占用比', 'bandwidthUsageRatio', '%'],
       ['功率占用比', 'powerUsageRatio', '%'],
@@ -675,6 +725,7 @@ function createBuilder(ctx) {
       ['天线噪声温度', 'antennaNoiseTempResult', 'K'],
       ['接收机噪声温度', 'receiverNoiseTempResult', 'K'],
       ['雨噪声温度', 'rainNoiseTempResult', 'K'],
+      ['云噪声温度', 'cloudNoiseTempResult', 'K'],
       ['系统噪声温度', 'systemNoiseTempKResult', 'K'],
       ['系统噪声温度(dB)', 'systemNoiseTempDbResult', 'dBK']
     ]));
@@ -698,7 +749,12 @@ function createBuilder(ctx) {
     const cDn = num('transponderOutputEIRP') - num('downlinkFSLResult') - num('downlinkAtmosphericAttenuationResult')
       - dnRainEff - num('downlinkCloudAttenuation') - num('downlinkMiscLossResult');
     const dnThermalCN = cDn + num('gOverTeResult') + KB - noiseBW;
-    const dnIntfLoss = dnThermalCN - dnGtDegEff - num('downlinkCN');
+    // 下行干扰损失：取引擎真实四路干扰并联值（按主导场景口径），不再从反解 downlinkCN 取残差——
+    // 残差在「上行主导 + UPC 未全补偿」时会把上行残余雨衰错计入本行（ACI/ASI/XPI/IM 标签失真可达数 dB）。
+    const dnIntfLoss = num('downlinkInterferenceLossResult');
+    // 残差扣除真实干扰后的剩余 = 经弯管转嫁到下行侧资源账的上行残余雨衰（UPC 未补偿部分；
+    // 下行主导 / UPC 全补偿时 ≈ 0）。按构造闭合，保证「下行 C/N」检查点逐行加得通（含 ISL 场景）。
+    const dnResidualRain = (dnThermalCN - dnGtDegEff - num('downlinkCN')) - dnIntfLoss;
 
     const cascadeRows = [
       // —— 上行：地球站 → 到达卫星 → C/T → C/N₀ → C/N ——
@@ -744,6 +800,9 @@ function createBuilder(ctx) {
       C('loss', '载波噪声带宽 10·lgB', noiseBW, 'dB', 'down'),
       C('chk', '下行 C/N（热噪声）', null, 'dB', 'down'),
       C('loss', '下行干扰损失 ACI/ASI/XPI/IM', dnIntfLoss, 'dB', 'down'),
+      ...(isFinite(dnResidualRain) && Math.abs(dnResidualRain) >= 0.005
+        ? [C('loss', '上行雨衰', dnResidualRain, 'dB', 'down')]
+        : []),
       C('sub', '下行 C/N', null, 'dB', 'down')
     ];
     // —— 星间链路 ISL 并入「上行侧」：弯管端到端落地前噪声逐段累加，上行 C/N ⊕ ISL = 有效上行 C/N ——
@@ -826,7 +885,6 @@ function createBuilder(ctx) {
       ['下行可用度', 'downlinkAvailabilityResult', '%'],
       ['年中断(分钟)', 'interruptionMinutes', 'min'],
       ['年中断(小时)', 'interruptionHours', 'h'],
-      ['转发器受限因素', 'transponderLimitedBy', ''],
       ['最大载波数', 'maxCarrierCount', ''],
       ['带宽占用比', 'bandwidthUsageRatio', '%'],
       ['功率占用比', 'powerUsageRatio', '%'],
@@ -1236,11 +1294,15 @@ function createBuilder(ctx) {
   return b;
 }
 
-// 构建链路瀑布 segments（路由：按轨道/体制类型分派到 GEO / NGSO / 再生式 专属构建器）
+// 构建链路瀑布 segments（路由：按轨道/体制类型分派到 GEO / NGSO / 再生式 专属构建器）。
+// 出口统一过显示单位自适应（W→mW/kW、kHz→MHz、独立行 dBW→dBm 等；级联算式行不动），
+// UI 瀑布 / TSV 复制 / Excel 详表同源同口径。
 function buildWaterfallSegments(ctx) {
   const builder = createBuilder(ctx || {});
-  if (ctx && ctx.orbitType === 'REGEN') return builder.buildRegen();
-  return (ctx && ctx.orbitType === 'NGSO') ? builder.buildNGSO() : builder.buildGEO();
+  let segs;
+  if (ctx && ctx.orbitType === 'REGEN') segs = builder.buildRegen();
+  else segs = (ctx && ctx.orbitType === 'NGSO') ? builder.buildNGSO() : builder.buildGEO();
+  return adaptiveUnits.adaptSegments(segs);
 }
 
 // 链路总览关键指标（多链路专业版报告首页对比表用）：值为引擎展示字符串，单位由报告端补

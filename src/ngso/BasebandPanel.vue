@@ -1,9 +1,10 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import Icon from '../components/Icon.vue'
+import { checkNtnBandwidth } from '../shared/ntnLimits.js'
 
 // 载波信号参数面板 —— 严格照搬小程序载波信号卡片：DVB/MODCOD 快选、Eb/N₀⇄Es/N₀ 切换（带换算）、
-// 频谱效率⇄帧效率切换、实时载波带宽/符号率（可编辑反算信息速率）。
+// 频谱效率⇄帧效率切换、速率换算链（信息速率/码片速率/符号率/载波带宽，编辑任一个反算其余）。
 const props = defineProps({
   form: { type: Object, required: true },   // 共享载波信号参数（含 noiseRatioMode / rsCodeMode / dvbStandard / modcodIndex）
   options: { type: Object, default: () => ({}) }
@@ -78,7 +79,7 @@ function applyModcod(e) {
   props.form.noiseRatioMode = mc.noiseRatioMode
 }
 
-// —— 实时码片速率 / 符号率 / 载波带宽（可编辑反算 infoRate）——
+// —— 速率换算链：信息速率 / 码片速率 / 符号率 / 载波带宽（四者并列，编辑任一个反算其余）——
 // 换算链与引擎 linkCalculator.js 完全一致：
 // infoRate → carrierRate(÷fec÷rs) → chipRate(×m，码片速率) → symbolRate(÷调制因子) → carrierBW(×滚降)
 const carrierRate = computed(() => {
@@ -117,6 +118,12 @@ watch([modFactor, fecV, rsV, mV, bwV], () => {
   const ir = infoRateFor(rateAnchor.value, anchorValue.value)
   if (ir != null && !isNaN(ir)) props.form.infoRate = String(Math.round(ir * 1000) / 1000)
 })
+// —— 3GPP NTN 载波带宽合规提示 ——
+// 选了 3GPP 体制（NB-IoT NTN / NR-NTN）时，标准把「信道带宽」枚举死了几档：超出上限红字告警，
+// 未超则灰字说明当前载波需占用哪一档信道带宽。DVB 各体制不判（其带宽按转发器切片自由定）。
+// 限值与出处见 shared/ntnLimits.js。
+const ntnBw = computed(() => checkNtnBandwidth(props.form.dvbStandard, carrierBW.value))
+
 function onInfoInput() { rateAnchor.value = 'info' }   // 用户直接改信息速率：信息速率重新成为锚点
 function onChipInput(e) { setAnchor('chip', e.target.value) }
 function onSymbolInput(e) { setAnchor('symbol', e.target.value) }
@@ -140,11 +147,9 @@ function onBwInput(e) { setAnchor('bw', e.target.value) }
       </label>
     </div>
 
-    <!-- 第一行 -->
+    <!-- 调制编码与门限（速率不在此处，见下方换算链）——
+         两列排布时左右自然成对：调制⇄FEC、门限⇄误码率、滚降⇄帧效率 -->
     <div class="bb-grid">
-      <label class="bb-f"><span class="bb-l">信息速率 <i>(kbps)</i></span>
-        <input v-model="form.infoRate" class="bb-i mono" placeholder="2048" @input="onInfoInput" />
-      </label>
       <label class="bb-f"><span class="bb-l">调制方式</span>
         <select v-model="form.modulation" class="bb-i">
           <option v-for="o in modOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
@@ -159,15 +164,8 @@ function onBwInput(e) { setAnchor('bw', e.target.value) }
         </span>
         <input v-model="form.ebno" class="bb-i mono" placeholder="5.50" />
       </label>
-    </div>
-
-    <!-- 第二行 -->
-    <div class="bb-grid">
       <label class="bb-f"><span class="bb-l">误码率 <i>(1×10⁻ⁿ)</i></span>
         <input v-model="form.ber" class="bb-i mono" placeholder="7" />
-      </label>
-      <label class="bb-f"><span class="bb-l">扩频增益</span>
-        <input v-model="form.m" class="bb-i mono" placeholder="1.00" />
       </label>
       <label class="bb-f"><span class="bb-l">滚降系数 <i>(1+α)</i></span>
         <input v-model="form.bandwidthFactor" class="bb-i mono" placeholder="1.20" />
@@ -178,21 +176,34 @@ function onBwInput(e) { setAnchor('bw', e.target.value) }
         </span>
         <input v-model="rsCodeDisplay" class="bb-i mono" :placeholder="form.rsCodeMode === 'spectral' ? '0.9216' : '188/204'" />
       </label>
+      <label class="bb-f"><span class="bb-l">扩频增益</span>
+        <input v-model="form.m" class="bb-i mono" placeholder="1.00" />
+      </label>
     </div>
 
-    <!-- 实时结果（可编辑反算，三者与信息速率同一条换算链，编辑任一个即把它设为锚点）——
+    <!-- 速率换算链（信息速率 → 码片速率 → 符号率 → 载波带宽）：四者同一条链上的不同视角，编辑任一个
+         即把它设为锚点、其余三个跟着算；正常色的那个＝当前锚点，退一档的＝由它算出来的。
          系统余量不在此处：它是批量计算的目标值，不随载波信号配置走，在 LinkBudgetApp 底部「计算方式」栏统一设置 -->
     <div class="bb-rt">
+      <label class="bb-f"><span class="bb-l">信息速率 <i>(kbps)</i></span>
+        <input v-model="form.infoRate" class="bb-i mono" :class="{ 'bb-anch': rateAnchor === 'info' }" placeholder="2048" @input="onInfoInput" />
+      </label>
       <label class="bb-f"><span class="bb-l">码片速率 <i>(kcps)</i></span>
-        <input :value="fmt(chipRate)" class="bb-i mono" @change="onChipInput" />
+        <input :value="fmt(chipRate)" class="bb-i mono" :class="{ 'bb-anch': rateAnchor === 'chip' }" @change="onChipInput" />
       </label>
       <label class="bb-f"><span class="bb-l">符号率 <i>(ksps)</i></span>
-        <input :value="fmt(symbolRate)" class="bb-i mono" @change="onSymbolInput" />
+        <input :value="fmt(symbolRate)" class="bb-i mono" :class="{ 'bb-anch': rateAnchor === 'symbol' }" @change="onSymbolInput" />
       </label>
       <label class="bb-f"><span class="bb-l">载波带宽 <i>(kHz)</i></span>
-        <input :value="fmt(carrierBW)" class="bb-i mono" @change="onBwInput" />
+        <input :value="fmt(carrierBW)" class="bb-i mono" :class="{ 'bb-anch': rateAnchor === 'bw', 'bb-over': ntnBw && ntnBw.level === 'over' }" @change="onBwInput" />
       </label>
     </div>
+
+    <!-- 3GPP NTN 信道带宽合规提示（仅 3GPP 体制出现） -->
+    <p v-if="ntnBw" class="bb-ntn" :class="{ over: ntnBw.level === 'over' }">
+      <Icon v-if="ntnBw.level === 'over'" name="alert-triangle" :size="11" />
+      <span>{{ ntnBw.text }}</span>
+    </p>
   </div>
 </template>
 
@@ -201,14 +212,21 @@ function onBwInput(e) { setAnchor('bw', e.target.value) }
 .bb-modcod, .bb-grid, .bb-rt { display: grid; gap: 8px 10px; margin-bottom: 10px; }
 .bb-modcod { grid-template-columns: 1fr 2fr; }
 .bb-grid { grid-template-columns: repeat(4, 1fr); }
-.bb-rt { grid-template-columns: repeat(3, 1fr); padding-top: 8px; border-top: 1px dashed var(--border); }
+.bb-rt { grid-template-columns: repeat(4, 1fr); padding-top: 8px; border-top: 1px dashed var(--border); }
 .bb-f { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .bb-l { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-muted); white-space: nowrap; }
 .bb-l i { color: var(--text-faint); font-style: normal; }
 .bb-i { font: inherit; font-size: 12px; padding: 4px 7px; width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
 .bb-i:focus { outline: none; border-color: var(--accent); }
 .bb-i.mono { font-family: var(--font-mono); }
-.bb-rt .bb-i { background: var(--surface); }
+/* 速率链：非锚点＝由锚点算出来的，退一档；锚点＝用户钉住的那个，正常色 */
+.bb-rt .bb-i { background: var(--surface); color: var(--text-muted); }
+.bb-rt .bb-i.bb-anch { color: var(--text); }
+/* 3GPP NTN 信道带宽提示：正常灰字说明占哪一档，超限转红并给输入框描红边 */
+.bb-rt .bb-i.bb-over { color: var(--danger); border-color: var(--danger); }
+.bb-ntn { display: flex; align-items: flex-start; gap: 5px; margin: -4px 0 0; font-size: 11px; line-height: 1.55; color: var(--text-faint); }
+.bb-ntn.over { color: var(--danger); }
+.bb-ntn :deep(svg) { flex: none; margin-top: 2px; }
 .bb-tg { font: inherit; font-size: 11px; line-height: 1; padding: 1px 4px; cursor: pointer; background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
 .bb-tg:hover { color: var(--text); border-color: var(--border-strong); }
 </style>

@@ -1,31 +1,51 @@
 <script setup>
 // 链路瀑布表渲染：直接吃 core.buildWaterfallSegments 输出的 segments[]，
 // 与原仓库结果详情页/专业版导出同一口径（逐行可手算）。
-defineProps({ segments: { type: Array, default: () => [] } })
+// ※ 与 ngso/WaterfallTable.vue 为镜像文件，改动须手工同步。
+import { computed } from 'vue'
+import { lbDocT } from '../shared/lbDocI18n.js'
+
+const props = defineProps({
+  segments: { type: Array, default: () => [] },
+  // 渲染哪一部分（「详细预算」三段式排版用）：
+  //   'all'     全部段，按 core 原序（TSV/报表口径，默认）
+  //   'cascade' 只渲染级联主段（core 打了 role:'cascade'）——文档顶部主角，与图表区并排
+  //   'rest'    渲染除级联外的参考段——铺底整幅段带（每段自适宽，见 lbworkbench.css .lbx-doc-ref）
+  // 段序与内容不改，纯挑段渲染；导出/TSV 仍走完整 segments。
+  pick: { type: String, default: 'all' },
+  // 报表语言（功能区「语言」）：段标题/行标签/单位在 core 取数时就按语言翻好了
+  // （waterfallBuilder 的 WF_DICT），表里只剩这三个列头要自己换
+  lang: { type: String, default: 'zh' }
+})
+const t = computed(() => lbDocT(props.lang))
+const isCascade = (seg) => !!seg && seg.role === 'cascade'
+const shown = computed(() => (
+  props.pick === 'cascade' ? props.segments.filter(isCascade)
+    : props.pick === 'rest' ? props.segments.filter((s) => !isCascade(s))
+      : props.segments
+))
 </script>
 
 <template>
   <div class="wf">
-    <div v-for="(seg, si) in segments" :key="si" class="wf-seg">
+    <!-- seg-cols{n}：段级列数标记，供参考段带的 subgrid 父网格按列数取模板（lbworkbench.css） -->
+    <div v-for="(seg, si) in shown" :key="si" class="wf-seg" :class="'seg-cols' + seg.cols">
       <div class="wf-title">{{ seg.title }}</div>
 
       <div v-if="seg.cols >= 2" class="wf-row wf-head" :class="'cols' + seg.cols">
         <span class="wf-sign"></span>
         <span class="wf-l"></span>
-        <span class="wf-c">上行</span>
-        <span class="wf-c">下行</span>
-        <span v-if="seg.cols === 3" class="wf-c">合计</span>
+        <span class="wf-c">{{ t('上行') }}</span>
+        <span class="wf-c">{{ t('下行') }}</span>
+        <span v-if="seg.cols === 3" class="wf-c">{{ t('合计') }}</span>
         <span class="wf-u"></span>
       </div>
 
       <div v-for="(row, ri) in seg.rows" :key="ri" class="wf-row" :class="['cols' + seg.cols, 'k-' + row.kind]">
         <span class="wf-sign">{{ row.sign }}</span>
         <span class="wf-l">{{ row.label }}</span>
-        <template v-if="seg.cols === 1">
-          <span class="wf-c">{{ row.up }}</span>
-        </template>
-        <template v-else>
-          <span class="wf-c">{{ row.up }}</span>
+        <span class="wf-c">{{ row.up }}</span>
+        <template v-if="seg.cols >= 2">
           <span class="wf-c">{{ row.down }}</span>
           <span v-if="seg.cols === 3" class="wf-c">{{ row.total }}</span>
         </template>
@@ -36,37 +56,45 @@ defineProps({ segments: { type: Array, default: () => [] } })
 </template>
 
 <style scoped>
-.wf { display: flex; flex-direction: column; gap: 14px; }
-.wf-seg { border: 1px solid var(--border); border-radius: var(--r-box, 3px); overflow: hidden; }
+/* 三线表（booktabs）：题注下顶线、列头下栏目线、段末底线；行间无框线无底色填充，
+   小节/结论行（k-sub / k-kpi / k-margin）以细辅助线 + 加粗分层。字体继承工作台衬线栈
+   （TNR 数字字面等宽，右对齐天然成列），字号吃 --lb-fs（功能区「字号」组可调）。
+   ※ 与 ngso/WaterfallTable.vue 为镜像文件，改动须手工同步。 */
+.wf { display: flex; flex-direction: column; gap: 12px; font-size: var(--lb-fs, 11px); }
+.wf-seg { border-bottom: 2px solid var(--lb-rule-strong); padding-bottom: 1px; }
 .wf-title {
-  padding: 6px 10px; font-size: 12px; font-weight: 600; color: var(--text);
-  background: var(--surface-2); border-bottom: 1px solid var(--border);
+  padding: 2px 1px 3px; font-size: calc(var(--lb-fs, 11px) + 1px); font-weight: 700; color: var(--text);
+  border-bottom: 2px solid var(--lb-rule-strong);
 }
-.wf-row {
-  display: grid; align-items: center; gap: 6px;
-  padding: 4px 10px; font-size: 12px; border-top: 1px solid var(--border);
-}
-.wf-row:first-of-type { border-top: none; }
-.wf-row.cols1 { grid-template-columns: 14px 1fr auto 52px; }
-.wf-row.cols2 { grid-template-columns: 14px 1.4fr 1fr 1fr 52px; }
-.wf-row.cols3 { grid-template-columns: 14px 1.4fr 1fr 1fr 1fr 52px; }
-.wf-sign { color: var(--text-faint); font-family: var(--font-mono); text-align: center; }
-.wf-l { color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.wf-c { font-family: var(--font-mono); text-align: right; color: var(--text); }
-.wf-u { color: var(--text-faint); font-size: 11px; }
+.wf-row { display: grid; align-items: baseline; gap: 8px; padding: 1px 2px; line-height: 1.5; }
+.wf-row:not(.wf-head):hover { background: var(--surface); }
+/* 列宽：标签列吃剩余宽度（minmax(0,3fr) 保证它先长、被挤时先让），数值列按内容需要钉死下限
+   —— 4.9em ≈ 「−112.422」这类最长值的宽度（TNR 数字半角 0.5em），用 em 随 --lb-fs 同步缩放。
+   数值列不用裸 1fr：窄栏下 fr 会把数值压到 min-content，而每行各自成 grid（列宽逐行独算），
+   一旦触到 min-content 就逐行不等宽、数值列排成锯齿；minmax 下限是定值，逐行必然对齐。
+   标签仍放不下时靠 .wf-l 折行显示全，不再切字（原 1.4fr + 省略号会把长标签截成「Recommended P…」）。 */
+.wf-row.cols1 { grid-template-columns: 13px 1fr auto 48px; }
+.wf-row.cols2 { grid-template-columns: 13px minmax(0, 3fr) minmax(4.9em, 1fr) minmax(4.9em, 1fr) 48px; }
+.wf-row.cols3 { grid-template-columns: 13px minmax(0, 3fr) minmax(4.9em, 1fr) minmax(4.9em, 1fr) minmax(4.9em, 1fr) 48px; }
+.wf-sign { color: var(--text-faint); text-align: center; }
+/* 标签一律显示全：折行而非省略号（align-items:baseline → 数值与首行基线对齐，仍逐行可读）。
+   break-word 兜底「ACI/ASI/XPI/IM」这类无空格长串。 */
+.wf-l { color: var(--text-muted); overflow-wrap: break-word; }
+.wf-c { text-align: right; color: var(--text); font-variant-numeric: tabular-nums; }
+.wf-u { color: var(--text-faint); font-size: calc(var(--lb-fs, 11px) - 1px); }
 
-/* 表头 */
-.wf-head { background: var(--bg); border-top: none; }
-.wf-head .wf-c { color: var(--text-faint); font-family: var(--font-sans); font-size: 11px; }
+/* 列头行（上行/下行/合计）：栏目线，无底色 */
+.wf-head { border-bottom: 1px solid var(--lb-rule); }
+.wf-head .wf-c { color: var(--text-muted); font-size: calc(var(--lb-fs, 11px) - 1px); font-weight: 600; }
 
-/* 行类型着色 */
-.k-gain .wf-sign, .k-gain .wf-c { color: var(--ok); }
-.k-loss .wf-sign, .k-loss .wf-c { color: var(--danger); }
-.k-sub, .k-chk { background: var(--surface); font-weight: 600; }
+/* 行类型：增益/损耗只染符号列（数值守中性墨色，纯数字口径）；小节行细线分层 */
+.k-gain .wf-sign { color: var(--ok); font-weight: 700; }
+.k-loss .wf-sign { color: var(--danger); font-weight: 700; }
+.k-sub, .k-chk { font-weight: 600; border-top: 1px solid var(--lb-rule-soft); }
 .k-sub .wf-l, .k-chk .wf-l { color: var(--text); font-weight: 600; }
-.k-kpi { background: var(--surface-2); font-weight: 600; }
+.k-kpi { font-weight: 600; border-top: 1px solid var(--lb-rule-soft); }
 .k-kpi .wf-l { color: var(--text); }
-.k-margin { background: var(--surface-2); font-weight: 700; }
+.k-margin { font-weight: 700; border-top: 1px solid var(--lb-rule); }
 .k-margin .wf-l { color: var(--text); }
 .k-margin .wf-c { color: var(--text); }
 </style>

@@ -34,9 +34,12 @@ approx('星下点正下方仰角≈90°', sub.elevation, 90, 1.0)
 // 2026-07 重锁：本用例以空 linkParams 调引擎，走的是「空值回退默认」路径。已把回退常数对齐字段默认
 // （发信站口径 7.3→6.2m、馈线 0.2→3.5dB、收信站口径 1.2→3.7m、SFDref -82→-84 等），故此默认配置下
 // 上行 C/N 随发信站口径变小+馈线加大而降、下行 C/N 随收信站口径变大而升，基线相应更新。
+// 2026-07-25 再锁：科学性修正——云噪声温度按吸收/辐射自洽计入系统噪温（默认场景 ΔT≈20.4 K，
+// G/T 降 ~0.68 dB → 分配口径下 上行 C/N 12.86→12.99、下行 12.97→12.84）；雨噪介质温度 273.15→275 K。
+// 合成 C/N 与链路余量为目标值构造，不随链路参数变，保持不动。
 approx('合成 C/N 回归', r.carrierTotalCN, 9.91, 0.05)
-approx('上行 C/N 回归', r.uplinkCN, 12.86, 0.05)
-approx('下行 C/N 回归', r.downlinkCN, 12.97, 0.05)
+approx('上行 C/N 回归', r.uplinkCN, 12.99, 0.05)
+approx('下行 C/N 回归', r.downlinkCN, 12.84, 0.05)
 approx('链路余量回归', r.linkmargin, 3.0, 0.01)
 
 ok('NGSO 引擎可用', typeof core.calculateLinkBudgetNGSO === 'function')

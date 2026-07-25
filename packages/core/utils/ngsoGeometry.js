@@ -36,6 +36,24 @@ const ECC_CIRCULAR_TOL = 1e-3;   // e < 此值视为圆轨道 → 走闭式球�
 // 降雨等非凸衰减的稳健兜底（晴空/FSL 主导时最差必在边缘，内点不改结果、仅多几次评估）。调大更稳、更慢。
 const CAND_INTERIOR = 3;
 
+// 批量求解时跨站对共享的粗扫样本缓存上限（每条约 200 B：Date + 位置/速度 + GMST + ECEF）。
+// 24h/1.85s 步长的 LEO 一轮约 4.7 万点 ≈ 10 MB，够一批共用；超上限即停止缓存（只失速度不失正确性）。
+const SCAN_CACHE_CAP = 120000;
+// 粗扫会话：同一 (轨道, t0, 时窗长) 的连续单条请求也共享采样（整表逐行求几何、再生式逐站求几何
+// 都是这个形状）。键一变即整体丢弃；空闲超时后释放内存。缓存的是纯函数值 —— 只影响快慢，不影响结果。
+const SCAN_SESSION_TTL_MS = 60000;
+let _scanSession = null;
+function scanSessionCache(key) {
+  if (!_scanSession || _scanSession.key !== key) _scanSession = { key, cache: new Map(), timer: null };
+  if (typeof setTimeout === 'function') {
+    if (_scanSession.timer && typeof clearTimeout === 'function') clearTimeout(_scanSession.timer);
+    const t = setTimeout(() => { _scanSession = null; }, SCAN_SESSION_TTL_MS);
+    if (t && typeof t.unref === 'function') t.unref();   // 不因这个计时器吊住进程
+    _scanSession.timer = t;
+  }
+  return _scanSession.cache;
+}
+
 // ============================================================================
 // 1. satrec 构建：OMM 记录 / TLE 双行 / 经典六根数 三种来源
 // ============================================================================
@@ -98,16 +116,25 @@ function propagateAt(satrec, date) {
   return pv;
 }
 
-function lookAnglesFromPv(pv, station, date) {
-  const gmst = sat.gstime(date);
-  const ecf = sat.eciToEcf(pv.position, gmst);
-  const obs = { longitude: station.lonDeg * DEG, latitude: station.latDeg * DEG, height: Number(station.altKm) || 0 };
+// 站址观测点（弧度）——同一个站在扫描循环里每样本都要用，值恒定，故可一次算好复用。
+function obsOf(station) {
+  return { longitude: station.lonDeg * DEG, latitude: station.latDeg * DEG, height: Number(station.altKm) || 0 };
+}
+
+// 已有「卫星 ECEF + 站址观测点」时的视角换算。卫星 ECEF 只与时刻有关、与站无关，
+// 故多站共用同一份（sat.eciToEcf 是纯函数，同入参必同出参，共用与各算一遍逐位相同）。
+function lookAnglesFromEcf(ecf, obs) {
   const la = sat.ecfToLookAngles(obs, ecf);
   return {
     elevDeg: la.elevation * RAD,
     azDeg: ((la.azimuth * RAD) % 360 + 360) % 360,
     slantKm: la.rangeSat
   };
+}
+
+function lookAnglesFromPv(pv, station, date) {
+  const gmst = sat.gstime(date);
+  return lookAnglesFromEcf(sat.eciToEcf(pv.position, gmst), obsOf(station));
 }
 
 function lookAngles(satrec, station, date) {
@@ -178,9 +205,11 @@ function dopplerHz(satrec, station, date, freqGHz, dtSec) {
 // 视线斜距变化率 range-rate（km/s，+ = 远离）：由 ECEF 状态矢量解析求得，含地球自转，
 // 复用 propagate 返回的 velocity，无需额外传播 → 可在扫描循环里逐样本求真正的最大多普勒。
 // v_ecef = R(gmst)·v_eci − ω×r_ecef；range-rate = (Δr·v_ecef)/|Δr|，Δr = 卫星ECEF − 站址ECEF。
-function rangeRateKmS(pv, obsEcf, date) {
-  const gmst = sat.gstime(date);
-  const r = sat.eciToEcf(pv.position, gmst);
+// pre = { gmst, ecf }：调用方（扫描循环）已按本时刻算好的 GMST 与卫星 ECEF，直接复用可省一次
+// gstime(含 jday)+一次 eciToEcf；不传则照旧自行求，两条路取值逐位相同。
+function rangeRateKmS(pv, obsEcf, date, pre) {
+  const gmst = pre ? pre.gmst : sat.gstime(date);
+  const r = pre ? pre.ecf : sat.eciToEcf(pv.position, gmst);
   const v = sat.eciToEcf(pv.velocity, gmst);
   const vx = v.x + OMEGA_E * r.y;   // −ω×r 的 x 分量为 +ω·r_y
   const vy = v.y - OMEGA_E * r.x;   // −ω×r 的 y 分量为 −ω·r_x
@@ -215,10 +244,13 @@ function visMetricsFor(rKm, minElevDeg, inclDeg, aKm) {
   const ratio = Math.min(1, Math.max(-1, (RE_KM / rKm) * Math.cos(eps)));
   const lam = Math.max(0, Math.acos(ratio) - eps);                 // 覆盖地心半角 (rad)
   const omegaS = Math.sqrt(MU / (aKm * aKm * aKm));                // 轨道角速度 (rad/s)
-  const omegaRel = Math.abs(omegaS - OMEGA_E * Math.cos((Number(inclDeg) || 0) * DEG));  // 星下点相对地面漂移率
+  // 星下点相对地面角速率 = 矢量差模 √(ωs²+ωE²−2·ωs·ωE·cos i)（赤道处精确；i=0 退化为 |ωs−ωE|）。
+  // 原标量投影 |ωs−ωE·cos i| 恒 ≤ 矢量差，在高倾角近同步轨道（Tundra/QZSS i≈63°）会虚高过境时长 ~1.9×。
+  const cosI = Math.cos((Number(inclDeg) || 0) * DEG);
+  const omegaRel = Math.sqrt(omegaS * omegaS + OMEGA_E * OMEGA_E - 2 * omegaS * OMEGA_E * cosI);
   // 常驻可见（∞）判据：ω_rel < 2% 地球自转率 → 地面轨迹漂移极慢（GEO/近静止/低倾角 GSO），对可见站等效常驻。
   // 用「同步性比例」而非绝对小量（旧 1e-9 太紧，真实 GEO 因不完全同步残留 ω_rel≈1e-8 会被误判为~9 年的有限过境）。
-  // cos i 项已让高倾角同步轨道（如 Tundra/QZSS i≈63°：纬度大幅摆动、确会落下）获得大 ω_rel → 仍为有限过境。
+  // 矢量差已让高倾角同步轨道（纬度大幅摆动、确会落下）获得大 ω_rel → 仍为有限过境。
   const SYNC_TOL = 0.02 * OMEGA_E;
   const passMin = omegaRel > SYNC_TOL ? (2 * lam / omegaRel) / 60 : Infinity;
   return {
@@ -350,7 +382,10 @@ function closedFormWorst(altKm, inclDeg, tx, rx, elements, opts) {
   const txFreq = Number(tx.freqGHz) > 0 ? Number(tx.freqGHz) : 14;
   const rxFreq = Number(rx.freqGHz) > 0 ? Number(rx.freqGHz) : 12;
   const vSat = Math.sqrt(MU / a);
-  const vGround = Math.abs(vSat - OMEGA_E * a * Math.cos((Number(inclDeg) || 0) * DEG));
+  // 相对地面速度 = 矢量差模（与 visMetricsFor 的 ω_rel 同口径；原标量差在高倾角近同步轨道偏低 ~2×）
+  const vEq = OMEGA_E * a;
+  const vCosI = Math.cos((Number(inclDeg) || 0) * DEG);
+  const vGround = Math.sqrt(vSat * vSat + vEq * vEq - 2 * vSat * vEq * vCosI);
   const dopEst = (elevDeg, freqGHz) => (vGround * RE_KM * Math.cos(elevDeg * DEG) / a) / C_KM_S * (freqGHz * 1e9);
   // 可见性/过境几何（单一真值源，用真实倾角）——供瀑布表覆盖半角/半径/过境时长
   const visU = visMetricsFor(a, up.minEl, inclDeg, a);
@@ -396,12 +431,31 @@ function coupledTypicalMoment(satrec, tx, rx, opts) {
   const txEcf = geodeticToEcef(tx.lonDeg, tx.latDeg, tx.altKm);
   const rxEcf = geodeticToEcef(rx.lonDeg, rx.latDeg, rx.altKm);
   const EPS = 1e-6;
-  // 单刻采样：两站仰角/斜距；null 表示传播失败
-  const sampleAt = (tms) => {
+  const txObs = obsOf(tx), rxObs = obsOf(rx);   // 站址观测点恒定，循环外一次算好
+  // —— 逐样本的「与站无关」部分：传播 + GMST + 卫星 ECEF ——
+  // 同一时刻两站算的是同一个 gstime(d) 和同一个 eciToEcf(pv.position, gmst)，从前各算两遍；
+  // 现在一遍算好两站共用（纯函数同入参同出参，逐位相同）。
+  // opts.scanCache（Map: tms → state）：同一颗星、同一时窗下多条链路（多站对）批量求解时，
+  // 采样时刻完全相同 → SGP4 传播这部分可跨站对复用（见 solveMutualWorstCaseBatch）。
+  const scanCache = (opts.scanCache instanceof Map) ? opts.scanCache : null;
+  const stateAt = (tms) => {
+    if (scanCache) { const hit = scanCache.get(tms); if (hit !== undefined) return hit; }
     const d = new Date(tms);
     const pv = propagateAt(satrec, d);
-    if (!pv) return null;
-    return { tms, d, pv, u: lookAnglesFromPv(pv, tx, d), v: lookAnglesFromPv(pv, rx, d) };
+    let st = null;
+    if (pv) {
+      const gmst = sat.gstime(d);
+      st = { d, pv, gmst, ecf: sat.eciToEcf(pv.position, gmst) };
+    }
+    if (scanCache && scanCache.size < SCAN_CACHE_CAP) scanCache.set(tms, st);
+    return st;
+  };
+  // 单刻采样：两站仰角/斜距；null 表示传播失败
+  const sampleAt = (tms) => {
+    const st = stateAt(tms);
+    if (!st) return null;
+    return { tms, d: st.d, pv: st.pv, gmst: st.gmst, ecf: st.ecf,
+      u: lookAnglesFromEcf(st.ecf, txObs), v: lookAnglesFromEcf(st.ecf, rxObs) };
   };
   // 代价：两站同时可见时 = 两站仰角超出各自最低仰角之和（越小越贴近双站最低仰角）；否则 +∞（不可用）
   const costOf = (s) => {
@@ -418,8 +472,8 @@ function coupledTypicalMoment(satrec, tx, rx, opts) {
     const c = costOf(s);
     if (c < bestCost) { bestCost = c; best = s; }
     if (s) {
-      if (s.u.elevDeg >= txMin - EPS) { const rr = Math.abs(rangeRateKmS(s.pv, txEcf, s.d)); if (rr > maxRRUp) maxRRUp = rr; }
-      if (s.v.elevDeg >= rxMin - EPS) { const rr = Math.abs(rangeRateKmS(s.pv, rxEcf, s.d)); if (rr > maxRRDn) maxRRDn = rr; }
+      if (s.u.elevDeg >= txMin - EPS) { const rr = Math.abs(rangeRateKmS(s.pv, txEcf, s.d, s)); if (rr > maxRRUp) maxRRUp = rr; }
+      if (s.v.elevDeg >= rxMin - EPS) { const rr = Math.abs(rangeRateKmS(s.pv, rxEcf, s.d, s)); if (rr > maxRRDn) maxRRDn = rr; }
     }
   }
   if (!best) {
@@ -554,7 +608,38 @@ function solveMutualWorstCase(opts) {
   }
   // 选星（真实星历，含近圆）一律走「单一典型时刻」耦合扫描：同一物理瞬间 t*、两站仰角尽量贴近各自最低仰角。
   // 近圆真实星不再走历元无关闭式（那是两站各自最低仰角、非同一瞬间）——用户口径为单一共同时刻。
+  // 未显式传 scanCache（即非批量入口）时挂上会话缓存：连续同星同时窗的请求共享粗扫采样。
+  if (!(opts.scanCache instanceof Map)) {
+    const key = JSON.stringify([o, opts.t0ISO || null, opts.horizonHours || null]);
+    opts = Object.assign({}, opts, { scanCache: scanSessionCache(key) });
+  }
   return coupledTypicalMoment(satrec, tx, rx, opts);
+}
+
+// ——— 批量：同一颗星 + 同一时窗下的多条链路（多站对）———
+// 链路预算一次「计算」是整表逐行求几何，各行的星、t0、时窗长都一样，只有站对不同。而粗扫里最贵的
+// 那部分（SGP4 传播 + GMST + 卫星 ECEF，占 CPU 采样约四成）只与时刻有关、与站无关 —— 逐行各扫一遍
+// 等于把同一批 4.7 万次传播重复 N 遍。故本入口让同批各站对共享一份采样缓存：传播只做一遍，
+// 各站对仍各自做自己的 lookAngles / 代价比较 / 细化 / 候选集。
+//
+// ★ 逐位等价：缓存的是纯函数（同 satrec 同时刻 → 同结果）的返回值，各站对拿到的数与自己单独算完全相同；
+//   本函数返回的数组与「逐个调用 solveMutualWorstCase」逐位一致，仅少算重复的中间量。
+// opts = { orbit, pairs:[{tx,rx}], t0ISO?, horizonHours? }
+function solveMutualWorstCaseBatch(opts) {
+  opts = opts || {};
+  const pairs = Array.isArray(opts.pairs) ? opts.pairs : [];
+  if (!pairs.length) return [];
+  // 只有「选星（真实星历）」分支才走共享粗扫；快照/圆轨道是闭式，无扫描可共享（照常逐对算）。
+  const o = opts.orbit || {};
+  const shared = (o.type !== 'unresolved' && o.type !== 'snapshot' && o.type !== 'circular') ? new Map() : null;
+  const base = Object.assign({}, opts);
+  delete base.pairs;
+  return pairs.map((p) => {
+    const one = Object.assign({}, base, { tx: (p && p.tx) || {}, rx: (p && p.rx) || {} });
+    if (shared) one.scanCache = shared;
+    try { return solveMutualWorstCase(one); }
+    catch (e) { return { feasible: false, reason: '几何解算失败：' + (e && e.message ? e.message : String(e)) }; }
+  });
 }
 
 // ============================================================================
@@ -684,8 +769,10 @@ function _islNode(orbit) {
   const o = orbit || {};
   if (o.type === 'unresolved') return { reason: o.reason || '所选卫星轨道未能解析，无法确定其几何' };
   if (o.type === 'snapshot') {
-    const ecef = geodeticToEcef(Number(o.lonDeg) || 0, Number(o.latDeg) || 0, Math.max(0, Number(o.altKm) || 0));
-    return { node: { kind: 'snapshot', ecef }, method: '静态几何', representative: false, elements: null };
+    const lonDeg = Number(o.lonDeg) || 0, latDeg = Number(o.latDeg) || 0, altKm = Math.max(0, Number(o.altKm) || 0);
+    const ecef = geodeticToEcef(lonDeg, latDeg, altKm);
+    // sub：该端点的星下点（时不变）。快照星本就以经纬高给定，原样留着供链路视图定位。
+    return { node: { kind: 'snapshot', ecef, sub: { lonDeg, latDeg, altKm } }, method: '静态几何', representative: false, elements: null };
   }
   if (o.type === 'circular') {
     const altKm = Math.max(0, Number(o.altKm) || 0), inclDeg = Number(o.inclDeg) || 0;
@@ -782,9 +869,16 @@ function solveIslWorstCase(opts) {
     return pv ? velocities(pv) : { speedInertial: null, speedGroundRel: null };
   };
   const spdA = _spd(A), spdB = _spd(B);
+  // 最差刻两星的星下点（经纬高）——链路视图把两星摆到这里，与本行 range/掠地高度同一瞬间。
+  const _sub = (nd) => {
+    if (nd.node.kind === 'snapshot') return nd.node.sub || null;
+    const sp = subPoint(nd.node.satrec, worstDate);
+    return sp ? { lonDeg: sp.lonDeg, latDeg: sp.latDeg, altKm: sp.altKm } : null;
+  };
   const worstMetrics = {
     rangeKm: W.rangeKm, minRangeKm: (minR === Infinity ? null : minR),
     txAltKm: rA - RE_KM, rxAltKm: rB - RE_KM,
+    txSub: _sub(A), rxSub: _sub(B),
     txSpeedKmS: spdA.speedInertial, rxSpeedKmS: spdB.speedInertial,
     txGroundSpeedKmS: spdA.speedGroundRel, rxGroundSpeedKmS: spdB.speedGroundRel,
     grazAltKm: W.minCenterKm - RE_KM,
@@ -836,5 +930,6 @@ module.exports = {
   closedFormWorst,
   coupledTypicalMoment,
   solveStaticGeometry,
-  solveMutualWorstCase
+  solveMutualWorstCase,
+  solveMutualWorstCaseBatch
 };

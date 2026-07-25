@@ -1,0 +1,376 @@
+/* 链路预算工作台（GEO / NGSO / 再生式三窗口共用）——「全链路单页」布局的公共样式。
+   配合 LbSection（分节壳）/ LbLibrary（资源库主从视图）使用；lbx- 前缀为新布局专用类，
+   末尾少量 .lb-shell 前缀选择器用于覆写各 App 内遗留 scoped 规则（specificity 高一级）。 */
+
+/* —— 报表排版体系（v1.4.3）——
+   全窗衬线栈：Times New Roman（西文/数字，字面天然等宽对齐）+ 宋体（中文回落），对齐工程报告排版；
+   该栈自 styles/global.css 的 --font-serif 而来（全软件同一套字体），此处保留 --lb-serif 别名。
+   --lb-fs 为数据区基准字号（链路表 / 详细预算 / 容量汇总），功能区「字号」组可调（8–20px，
+   shared/lbFont.js 在 <html> 上写行内变量覆盖此默认值，localStorage 三窗共享）。
+   三线表（booktabs）：顶线/底线 --lb-rule-strong、栏目线 --lb-rule、段内辅助线 --lb-rule-soft，
+   由 --text 混色而来 → 明暗主题自动取墨色。计算结果一律三线式：无竖线、无底色填充，靠横线与字重分层。 */
+:root {
+  --lb-fs: 11px;
+  --lb-serif: var(--font-serif);
+  --lb-rule-strong: color-mix(in srgb, var(--text) 84%, var(--bg));
+  --lb-rule: color-mix(in srgb, var(--text) 42%, var(--bg));
+  --lb-rule-soft: color-mix(in srgb, var(--text) 15%, var(--bg));
+  --lb-bar: #3f6d8c;   /* 数据条（占用类结果列的比例填充）：克制冷色，与 NGSO 上行角标同源 */
+  /* 占用条四档色阶（阈值 25/50/75%，冷→暖单向渐进；lv4 与 --danger 同族，>100% 的 st-bad 天然并档） */
+  --lb-lv1: #3f6d8c;   /* ≤25%  板岩蓝 */
+  --lb-lv2: #2f7d62;   /* ≤50%  松绿 */
+  --lb-lv3: #9a6a00;   /* ≤75%  琥珀 */
+  --lb-lv4: #a32d2d;   /* >75%  砖红 */
+}
+html[data-theme='dark'] {
+  --lb-bar: #82a9c6;
+  --lb-lv1: #82a9c6; --lb-lv2: #5cbf94; --lb-lv3: #d8a73a; --lb-lv4: #e26a6a;
+}
+
+/* —— 未保存脏点：挂在功能区「保存」大按钮右上角（v1.4.4 顶栏撤销后唯一落点） —— */
+.lbx-dirty { width: 6px; height: 6px; flex: none; border-radius: 50%; background: var(--warn); }
+.lbr-big .lbx-dirty { position: absolute; top: 3px; right: 3px; }
+
+/* —— 功能区（MATLAB App 工具条式）：分组大按钮 + 组内小表单 + 组名注脚，组间竖分隔线 —— */
+.lbr { display: flex; align-items: stretch; flex: none; padding: 2px 6px 0; background: var(--surface); border-bottom: 1px solid var(--border-strong); overflow-x: auto; overflow-y: hidden; }
+.lbr-g { display: flex; flex-direction: column; flex: none; padding: 2px 7px 0; border-right: 1px solid var(--border); }
+.lbr-items { flex: 1; display: flex; align-items: center; gap: 2px; min-height: 46px; }
+.lbr-cap { flex: none; text-align: center; font-size: 10px; letter-spacing: 2px; color: var(--text-faint); padding: 1px 0 2px; white-space: nowrap; }
+.lbr-big {
+  position: relative;   /* 「保存」按钮右上角的未保存脏点（.lbx-dirty）定位基准 */
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+  min-width: 46px; height: 44px; padding: 3px 8px; cursor: pointer; font: inherit; font-size: 11px; line-height: 1;
+  color: var(--text-muted); background: transparent; border: 1px solid transparent; border-radius: var(--r-ctl, 2px); white-space: nowrap;
+}
+.lbr-big:hover:not(:disabled) { color: var(--text); background: var(--bg); border-color: var(--border); }
+.lbr-big:disabled { opacity: .45; cursor: not-allowed; }
+.lbr-big.on { color: var(--text); background: var(--surface-2); border-color: var(--border-strong); box-shadow: inset 0 -2px 0 var(--accent); }
+.lbr-big.primary { color: var(--accent); font-weight: 600; }
+.lbr-big .lbr-svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.3; stroke-linecap: round; stroke-linejoin: round; }
+.lbr-big .lbr-svg.fill { fill: currentColor; stroke: none; }
+/* 组内小表单（对齐 MATLAB SIMULATE 组的时间字段）：2-3 行「标签+控件」竖排 */
+.lbr-form { display: flex; flex-direction: column; justify-content: center; gap: 2px; padding: 0 3px; }
+.lbr-form label { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--text-muted); white-space: nowrap; }
+.lbr-form label > span:first-child { min-width: 26px; }
+.lbr-form select, .lbr-form input { font: inherit; font-size: 11px; padding: 1px 4px; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
+.lbr-form select:focus, .lbr-form input:focus { outline: none; border-color: var(--accent); }
+.lbr-form input { width: 58px; font-family: var(--font-mono); }
+.lbr-form input:disabled { color: var(--text-faint); background: var(--surface-2); }
+.lbr-form .lbr-u { color: var(--text-faint); font-size: 10.5px; }
+/* 功能区右缘状态位（达标徽章 / 输入已变） */
+.lbr-status { display: flex; align-items: center; gap: 8px; margin-left: auto; padding: 0 6px; }
+/* 资源库子导航按钮（段选式方角，用于左侧栏 .lb-lib-tabs） */
+.lbx-subtab {
+  display: inline-flex; align-items: baseline; gap: 5px; padding: 3px 10px; cursor: pointer; font: inherit;
+  font-size: 12px; font-weight: 600; background: var(--bg); color: var(--text-muted);
+  border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); white-space: nowrap;
+}
+.lbx-subtab:hover { color: var(--text); border-color: var(--border-strong); }
+.lbx-subtab.on { background: var(--surface-2); color: var(--text); border-color: var(--border-strong); box-shadow: inset 0 -2px 0 var(--accent); }
+.lbx-subtab .lbx-tab-n { color: var(--text-faint); }
+
+/* —— 资源库视图（v1.4.5：左侧栏的第二个视图，与「配置列表」二选一，VS Code 活动栏范式）——
+   左侧栏一次只显示一个视图（同屏一个上下文）；工作台常驻主区，不再有「工作台」页签。
+   窄区排布：子导航一行 + LbLibrary 竖排（上列表/下编辑器），底部一行全局库提示。 */
+.lb-lib { background: var(--bg); }
+.lb-lib .lb-col-hd { padding: 0 6px 0 10px; gap: 6px; }
+.lb-lib-tabs { display: flex; align-items: center; gap: 2px; flex: none; padding: 4px 6px; background: var(--surface); border-bottom: 1px solid var(--border); }
+.lb-lib-tabs .lbx-subtab { flex: 1; justify-content: center; padding: 2px 4px; font-size: 11.5px; }
+.lb-libpane { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.lb-lib-foot { flex: none; padding: 3px 10px 4px; font-size: 10.5px; line-height: 1.4; color: var(--text-faint); background: var(--surface); border-top: 1px solid var(--border); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* —— 侧栏＝参数检查器（对齐 MATLAB Property Inspector / Blender 属性面板）——
+   目标：高信息密度 + 可扫读。三件事：① 多列栅格按宽度自动降列；② 每个参数压成一条 21px 的
+   「标签 … 数值」行，行间发丝线（表感，眼睛沿右缘数值列往下扫）；③ 输入框去框（hover/focus 才显边），
+   把原本一堵框墙还原成读数表。带 .lb-shell 前缀凑够三级特异度，压过各 Panel 的 scoped 规则。 */
+.lb-shell .lb-libpane :is(.es-grid, .es-common, .bb-grid, .bb-modcod, .bb-rt, .sp-fields, .rsp-fields) {
+  grid-template-columns: repeat(auto-fill, minmax(196px, 1fr)); gap: 0 18px; margin-bottom: 8px;
+}
+.lb-shell .lb-libpane .es-common-note { grid-column: 1 / -1; font-size: 10.5px; line-height: 1.45; padding: 3px 0 0; }
+/* 公共参数条的「主参数」（天线口径）：一份配置 = 一面天线，口径是认站型的第一眼信息（列表摘要也按它报），
+   故在密排读数表里破一次例——横排单列、大号读数、边框常显（其余参数仍是无框读数行，见下方 .es-i 规则）。 */
+.lb-shell .lb-libpane .es-common { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 4px 14px; }
+.lb-shell .lb-libpane .es-f-big { flex: 0 0 auto; min-height: 0; padding: 1px 0 0; border-bottom: none; gap: 3px; }
+.lb-shell .lb-libpane .es-f-big .es-l { font-size: 12px; font-weight: 600; color: var(--text); }
+.lb-shell .lb-libpane .es-f-big .es-i { width: 100px; font-size: 17px; padding: 3px 8px; background: var(--bg); border-color: var(--border); }
+.lb-shell .lb-libpane .es-f-big .es-i:focus { border-color: var(--accent); }
+/* 发/收两栏：默认宽度（460px）下并排成两张读数表（中缝竖线分隔），拖窄到放不下才上下堆叠 */
+.lb-shell .lb-libpane .es { gap: 12px; }
+.lb-shell .lb-libpane .es-side { min-width: 186px; }
+.lb-shell .lb-libpane .pf { grid-template-columns: 76px minmax(0, 1fr) 28px; margin-bottom: 4px; }   /* NGSO/再生式「搜索卫星」取星器 */
+/* 参数行：定高密排 + 行间发丝线（栅格多列时天然形成并排两张读数表） */
+.lb-shell .lb-libpane :is(.es-f, .bb-f, .sp-f, .rsp-f) {
+  min-height: 21px; padding: 0; gap: 6px; border-bottom: 1px solid var(--lb-rule-soft);
+}
+.lb-shell .lb-libpane :is(.es-l, .bb-l, .sp-l, .rsp-l) { font-size: 11.5px; line-height: 1.25; }
+/* 数值：右对齐无框，hover/focus 才浮出边框——密排下框线是噪声，数值本身才是信息 */
+.lb-shell .lb-libpane :is(.es-i, .bb-i, .sp-i, .rsp-i) {
+  width: 104px; font-size: 11.5px; padding: 2px 4px; background: transparent; border-color: transparent;
+}
+.lb-shell .lb-libpane :is(.es-i, .bb-i, .sp-i, .rsp-i):hover { background: var(--bg); border-color: var(--border); }
+.lb-shell .lb-libpane :is(.es-i, .bb-i, .sp-i, .rsp-i):focus { background: var(--bg); border-color: var(--accent); }
+.lb-shell .lb-libpane :is(select.es-i, select.bb-i, select.sp-i, select.rsp-i) { width: 118px; }
+.lb-shell .lb-libpane .bb-rt .bb-i { background: transparent; color: var(--text-muted); }        /* 速率链非锚点＝算出来的：退一档 */
+.lb-shell .lb-libpane .bb-rt .bb-i.bb-anch { color: var(--text); }                               /* 锚点＝用户钉住的那个（含信息速率） */
+/* 分组标题（发射参数 / 接收参数）：小号字距题头 + 题线，节省纵向空间又分得开 */
+.lb-shell .lb-libpane .es-hd { gap: 5px; margin: 6px 0 3px; padding-bottom: 2px; border-bottom: 1px solid var(--lb-rule); }
+.lb-shell .lb-libpane .es-hd-t { font-size: 11.5px; letter-spacing: 1px; }
+.lb-shell .lb-libpane .es-hd-s { display: none; }       /* 「发信站引用」注脚：侧栏里让位给数据 */
+.lb-shell .lb-libpane :is(.es-common, .bb-modcod) { padding-bottom: 4px; margin-bottom: 6px; }
+.lb-shell .lb-libpane .bb-rt { padding-top: 5px; }
+/* 条目列表：两行行（名称 + mono 摘要）压到 ~30px，一屏多看几条 */
+.lb-shell .lb-libpane .lbl-row { padding: 3px 8px 3px 9px; }
+.lb-shell .lb-libpane .lbl-nm { font-size: 11.5px; padding-right: 32px; }
+.lb-shell .lb-libpane .lbl-sum { font-size: 10px; }
+.lb-shell .lb-libpane .lbl-row-acts { top: 4px; }
+.lb-shell .lb-libpane .lbl-add { padding: 4px; margin: 4px 6px; }
+.lb-shell .lb-libpane .lbl-ed-hd { padding: 4px 8px; gap: 4px; }
+
+/* —— 分节流（报告式文档流）：白底、节间距分章，节头即三线题注（样式在 LbSection.vue），
+   不再用灰槽+面板边的停靠皮。 —— */
+.lbx-flow.lbx-cards { padding: 8px 14px 20px; display: flex; flex-direction: column; gap: 18px; background: var(--bg); }
+/* 计数（子导航等）：纯 mono 文本 */
+.lbx-tab-n { font-family: var(--font-mono); font-size: 10.5px; line-height: 1; color: var(--text-faint); }
+
+/* —— 检查器式表单行（MATLAB Property Inspector）：标签左、数值右对齐 ——
+   工作台分节流（.lbx-flow）与资源库侧栏（.lb-libpane）同一套排版：:is() 取两者中最高特异度
+   （均为单类），与原先 .lb-shell .lbx-flow 两级链等价，不改变对各 Panel scoped 规则的覆写关系。 */
+.lb-shell :is(.lbx-flow, .lb-libpane) :is(.es-f, .bb-f, .sp-f, .rsp-f) {
+  flex-direction: row; align-items: center; justify-content: space-between; gap: 8px; padding: 1px 0;
+}
+.lb-shell :is(.lbx-flow, .lb-libpane) :is(.es-l, .bb-l, .sp-l, .rsp-l) { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lb-shell :is(.lbx-flow, .lb-libpane) :is(.es-i, .bb-i, .sp-i, .rsp-i) { width: 112px; flex: none; text-align: right; }
+.lb-shell :is(.lbx-flow, .lb-libpane) :is(select.es-i, select.bb-i, select.sp-i, select.rsp-i) { text-align: left; }
+.lb-shell .lbx-flow :is(.sp-fields, .rsp-fields) { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 2px 20px; }
+.lb-shell :is(.lbx-flow, .lb-libpane) :is(.es-grid, .bb-grid, .bb-modcod, .bb-rt) { gap: 2px 20px; }
+.lb-shell .lb-libpane :is(.sp-fields, .rsp-fields) { gap: 2px 20px; }
+/* 卫星分区（NGSO「卫星与轨道」）：库单选 + 纯文本摘要一行 */
+.lbx-satrow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; }
+.lbx-satpick { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); }
+.lbx-satpick select {
+  font: inherit; font-size: 12px; font-weight: 600; min-width: 150px; padding: 3px 6px; cursor: pointer;
+  background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px);
+}
+.lbx-satpick select:focus { outline: none; border-color: var(--accent); }
+.lbx-satsum { font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 方向图行的状态标记（未导入 / 与本配置不是同一颗星）：诊断口径，抬到告警色。
+   这行不写说明句——读数自己说话，口径进 title 悬浮 */
+.lbx-satnote.bad { color: var(--danger); }
+
+/* —— 卫星分区横带（GEO「卫星与转发器」）：定义列表式，每行＝左栏名（--lbx-gut 对齐轴）+ 右内容，
+   行间发丝线分章，不用方框/底色（延续三线表语言）。三行：
+     配置   资源库单选 + 星名 + 场景级说明（LinkBudgetApp）
+     转发器 关键参数只读速览（.lbx-kv 读数族，字号随 --lb-fs）
+     方向图 GRD 天线匹配（SatellitePanel 渲染同款 .lbx-satline 行）
+   横排读数取代旧「三列窄栅格 + 长提示句」：右侧不再留大片空白，section 标题所指的转发器参数当场可见。 */
+/* 栏名轴宽随数据区字号缩放（三字栏名 + 字距/余量），否则「字号」调大后栏名会挤出栅格 */
+.lbx-satband { --lbx-gut: calc(var(--lb-fs) * 3 + 12px); }
+.lbx-satline {
+  display: grid; grid-template-columns: var(--lbx-gut) minmax(0, 1fr);
+  align-items: baseline; gap: 3px 12px; padding: 5px 0; border-top: 1px solid var(--lb-rule-soft);
+}
+.lbx-satband > .lbx-satline:first-child { border-top: none; padding-top: 0; }
+.lbx-satgut { font-size: var(--lb-fs); letter-spacing: .5px; color: var(--text-faint); white-space: nowrap; }
+.lbx-satmain { display: flex; align-items: center; flex-wrap: wrap; gap: 5px 14px; min-width: 0; }
+.lbx-satsel {
+  font: inherit; font-size: 12px; font-weight: 600; min-width: 160px; padding: 3px 6px; cursor: pointer;
+  background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px);
+}
+.lbx-satsel:focus { outline: none; border-color: var(--accent); }
+.lbx-satname { font-size: calc(var(--lb-fs) + 2px); font-weight: 700; letter-spacing: .3px; color: var(--text); }
+.lbx-satnote { font-size: calc(var(--lb-fs) - 1px); color: var(--text-faint); white-space: nowrap; }
+/* 只读读数族（标签 + 值 + 单位）：与容量汇总（.lbx-cap-item）同族，字号随数据区 --lb-fs */
+.lbx-satkv { gap: 3px 16px; }
+.lbx-kv { display: inline-flex; align-items: baseline; gap: 4px; }
+.lbx-kv-l { font-size: var(--lb-fs); color: var(--text-muted); }
+.lbx-kv-v { font-size: calc(var(--lb-fs) + 1px); font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
+.lbx-kv-v i { font-size: calc(var(--lb-fs) - 1px); font-weight: 400; font-style: normal; color: var(--text-faint); margin-left: 2px; }
+.lbx-kv-v i.tight { margin-left: 0; }   /* °E 一类单位紧贴数字 */
+/* 结果列选择器（弹出勾选面板，方角紧凑） */
+.lbx-colpick-wrap { position: relative; display: inline-flex; }
+/* 层叠修复：各节头（relative）同为 z-8 的兄弟层叠上下文，按 DOM「后来居上」——后面的节头会盖住
+   前面节头里 z 再高的浮层（结果列面板曾被「详细预算」节头及其控件压住）。面板 v-if 挂载时把
+   宿主节头临时抬到 60（仍低于下拉/弹窗/右键菜单等 200+ 全局层），面板与其遮罩随之压过所有兄弟节头。 */
+.lbx-sec-hd:has(.lbx-colpick) { z-index: 60; }
+.lbx-colpick-mask { position: fixed; inset: 0; z-index: 90; }
+.lbx-colpick {
+  position: absolute; right: 0; top: calc(100% + 3px); z-index: 95; min-width: 180px; max-height: 320px; overflow: auto; overscroll-behavior: contain;
+  padding: 4px; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-box, 3px); box-shadow: 0 5px 16px rgba(0,0,0,.2);
+  display: flex; flex-direction: column;
+}
+.lbx-colpick-i { display: flex; align-items: center; gap: 6px; padding: 3px 6px; font-size: 12px; color: var(--text); cursor: pointer; white-space: nowrap; }
+.lbx-colpick-i:hover { background: var(--surface-2); }
+.lbx-colpick-i i { font-style: normal; color: var(--text-faint); font-size: 11px; }
+/* 链路表结果单元格着色（StationGrid 单元格附加 class，全局规则穿透 scoped） */
+.sg-cell.st-ok .sg-v { color: var(--ok, #4a7a62); font-weight: 600; }
+.sg-cell.st-bad .sg-v { color: var(--danger, #9c5751); font-weight: 600; }
+.sg-cell.st-err .sg-v { color: var(--text-faint); }
+/* 占用类结果列（功率/带宽占用）的比例填充条——单色半透明色块：
+   不描边、不圆角、不渐变、无格底衬色（旧版「水位」双层渐变 + 满量程水槽底色＝整格被染，读数格变色块，已弃）。
+   .sg-fillbar 本体只是与格壁齐平（inset:0）的透明定位容器，格底保持单元格自身底色；
+   ::after＝按 --fill 比例从左壁铺开的一层半透明单色，颜色由网格挂的 lv1..lv4 档位类给出
+   （档位按未封顶的原始占比取，阈值 25/50/75%，见 StationGrid 的 fillLv）。
+   width 带缓动过渡，重算时平滑推移而非跳变。min-width 保证 >0 必可见。
+   条画在格底、值文字抬为 relative 浮于其上；>100% 封顶铺满，整格转红由 st-bad 接手（其档位本就是 lv4）。
+   纯显示层，选中/复制不受影响。 */
+.sg-cell .sg-fillbar { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+.sg-cell .sg-fillbar::after {
+  content: ''; position: absolute; top: 0; bottom: 0; left: 0; width: var(--fill, 0%); min-width: 2px;
+  background: color-mix(in srgb, var(--lb-fill-c, var(--lb-bar, #3f6d8c)) 18%, transparent);
+  transition: width .32s cubic-bezier(.4, 0, .2, 1);
+}
+.sg-cell .sg-fillbar.lv1 { --lb-fill-c: var(--lb-lv1, #3f6d8c); }
+.sg-cell .sg-fillbar.lv2 { --lb-fill-c: var(--lb-lv2, #2f7d62); }
+.sg-cell .sg-fillbar.lv3 { --lb-fill-c: var(--lb-lv3, #9a6a00); }
+.sg-cell .sg-fillbar.lv4 { --lb-fill-c: var(--lb-lv4, #a32d2d); }
+html[data-theme='dark'] .sg-cell .sg-fillbar::after {
+  background: color-mix(in srgb, var(--lb-fill-c, var(--lb-bar, #82a9c6)) 26%, transparent);
+}
+.sg-cell .sg-fillbar ~ .sg-v { position: relative; }
+@media (prefers-reduced-motion: reduce) { .sg-cell .sg-fillbar::after { transition: none; } }
+/* 容量汇总作为链路表分区脚注 */
+.lbx-capfoot { margin-top: 6px; }
+/* —— 详细预算文档区：上排「级联主表 ‖ 图表区」，下排参考段整幅段带 ——
+   瀑布表是按 400–800px 预算文档列设计的密排表（定调基准），全宽拉伸=标签数值两头甩。
+   最早整节走 column-width:520px 自由多栏流，栏宽上不封顶，主角段常掉进右栏中部；
+   改「左轨 + 右栏（图表在上、参考段接在图表下面）」后主角归位，但参考段仍有两笔账没算对：
+     · 右栏被参考段撑到 1500px+，左轨级联只有 ~850px、图表 ~734px —— 级联表底下空出近 600px 死区；
+     · 参考段被 449px 宽的栏摊开，「标签→数值」实测平均隔 255px（最宽 344px），一行两头甩。
+   现行三块：
+     ① .lbx-doc-main  左轨＝级联主表（core 打 role:'cascade' 的段）。级联段动辄 40+ 行、近千像素高，
+                      独占一轨就是一张完整的手算单，不被别的段挤断。
+     ② .lbx-doc-side  右栏＝图表区（LbVizPane：地理场图 + 环境场图，竖排）。与级联表天然等高
+                      （~734 / ~850px），并排即可图表对读；可在功能区「视图 → 图表」整块开关
+                      （关掉时整块不渲染，参考段带由 :has() 兜底补位到级联表右侧，右半边不空着）。
+     ③ .lbx-doc-ref   参考段带＝flex-basis:100% 必换行，独占下一整行横向铺满。实测 1500px 窗口
+                      六张参考表并排成一行：段带高 833→338px，标签数值间距 255→56px。
+     ④ 其余整块（NGSO/再生式的「卫星几何」折叠）flex-basis:100% 独占末行，内部自限宽不拉伸。
+   ①②③ 在 DOM 里位于几何折叠之后（避免大段模板搬迁），靠 flex order 负值视觉提到最前——
+   互相独立、折叠块本身不可聚焦，不产生阅读序/键盘序错位。
+   窄到左轨+右栏放不下时自动换行：级联表一行、图表一行、参考段带照样自己换行。
+
+   尺寸一律用 em（.lbx-doc 把 font-size 钉到 --lb-fs，故 1em = 数据区基准字号）：功能区「字号」组
+   把 --lb-fs 从 8px 调到 20px 时，栏宽/上限同比放大——限的是「标签到数值的字符距离」而非绝对像素。
+   括号内为 --lb-fs=11px 默认档下的实测值。 */
+.lbx-doc { font-size: var(--lb-fs); display: flex; flex-wrap: wrap; align-items: flex-start; gap: 14px 2em; }
+.lbx-doc-main { order: -2; flex: 1 1 28em; max-width: 45em; min-width: 0; }   /* 308 / 495px */
+/* .wf 的容器改写一律带上 .lbx-doc 前缀（3 个类）：WaterfallTable 的 scoped `.wf[data-v-…]` 也是
+   两位特异度，同分时谁后加载谁赢——dev 注入序与打包序不一定一致，加一级把胜负钉死。 */
+.lbx-doc .lbx-doc-main .wf { display: block; }
+.lbx-doc-main .wf-seg { margin-bottom: 0; }
+/* flex-basis 压到 40em（≈440px）：两栏基准合计 68em + 2em 间距 = 70em（默认字号约 770px），
+   常规窗口下「级联表 ‖ 图表」必定并排——这是这一节的主命题，图与表同屏才对得上。
+   多出来的宽度靠 flex-grow 分：左轨吃到 45em 上限就不再长，剩下的全归图表。 */
+.lbx-doc-side { order: -1; flex: 1 1 40em; min-width: 0; display: flex; flex-direction: column; gap: 14px; }
+
+/* 参考段带：order 与右栏同级但 flex-basis:100% → 必定挤到下一行，独占整幅。 */
+.lbx-doc-ref { order: -1; flex: 1 1 100%; min-width: 0; }
+/* 图表关掉时（.lbx-doc-side 整块不渲染）：不必独占整行，回到级联表右侧并排，免得右半边空着。 */
+.lbx-doc:not(:has(.lbx-doc-side)) .lbx-doc-ref { flex: 1 1 26em; }                             /* 286px */
+/* 段带内横向排：各段按 core 原序左起铺开，放不下换行；不拉伸（align-items:flex-start），
+   免得短段被抻到最高段的高度、底线甩出内容之外。 */
+.lbx-doc .lbx-doc-ref .wf { display: flex; flex-direction: row; flex-wrap: wrap; align-items: flex-start; gap: 14px 2.4em; }
+/* 每段自适宽（fit-content）：三线表的线只画到内容宽，行内不再留大片空白。
+   段内 subgrid：父网格给「标签·数值[·数值]·单位·余量」轨，各行 grid-template-columns:subgrid 挂上去，
+   于是整段的数值列跨行对齐（每行各自为政会把数值排成锯齿）；末轨 1fr 吃掉多余宽度，
+   fit-content 量到的就是内容宽本身。参考段（_refSeg/_dualSeg）只有 cols1 / cols2 两种。 */
+.lbx-doc-ref .wf > .wf-seg {
+  margin-bottom: 0; width: fit-content; max-width: 100%;
+  display: grid; grid-template-columns: auto auto auto 1fr; column-gap: 1.2em;
+}
+.lbx-doc-ref .wf > .seg-cols2 { grid-template-columns: auto auto auto auto 1fr; }
+.lbx-doc-ref .wf .wf-title { grid-column: 1 / -1; }
+.lbx-doc-ref .wf-seg > .wf-row.cols1,
+.lbx-doc-ref .wf-seg > .wf-row.cols2 { grid-column: 1 / -1; grid-template-columns: subgrid; column-gap: 1.2em; }
+.lbx-doc-ref .wf .wf-sign { display: none; }        /* 参考段全是 ref 行，符号列恒空，整列收掉 */
+.lbx-doc-ref .wf .wf-l { max-width: 15em; }         /* 超长标签折行显示全，不把整段撑宽 */   /* 165px */
+.lbx-doc > .lbx-fold { flex: 1 1 100%; max-width: 69em; }         /* 几何折叠：独占末行但内容自限宽 */
+/* 计算栏提示（功放取站型）：纯文本 */
+.lbx-run-hint { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
+
+/* —— 模块导航条（scrollspy）：点击滚动定位，不再互斥切换 —— */
+.lbx-nav { display: flex; align-items: center; gap: 2px; flex: none; padding: 6px 10px; background: var(--surface); border-bottom: 1px solid var(--border); overflow-x: auto; }
+.lbx-nav-i {
+  display: flex; align-items: center; gap: 6px; padding: 4px 10px; cursor: pointer; font: inherit;
+  background: transparent; color: var(--text-muted); border: 1px solid transparent; border-radius: var(--r-ctl, 2px); white-space: nowrap;
+}
+.lbx-nav-i:hover { color: var(--text); border-color: var(--border); }
+.lbx-nav-i.on { background: var(--surface-2); color: var(--text); border-color: var(--border); box-shadow: inset 0 -2px 0 var(--accent); }
+.lbx-nav-t { font-size: 12px; font-weight: 600; }
+.lbx-nav-n {
+  font-family: var(--font-mono); font-size: 10.5px; line-height: 1; min-width: 16px; text-align: center; padding: 2px 4px;
+  border-radius: var(--r-ctl, 2px); background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border);
+}
+.lbx-nav-i.on .lbx-nav-n { background: var(--bg); color: var(--text); }
+.lbx-nav-wire { color: var(--text-faint); display: inline-flex; align-items: center; padding: 0 1px; }
+.lbx-nav-sep { width: 1px; height: 20px; flex: none; background: var(--border-strong); margin: 0 8px; }
+.lbx-nav-ico { width: 17px; height: 17px; display: flex; align-items: center; justify-content: center; color: var(--text-faint); }
+.lbx-nav-i.on .lbx-nav-ico { color: var(--text); }
+.lbx-nav-ico .mic { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+.lbx-nav-ico .mic-sat { width: 17px; height: 17px; fill: currentColor; }
+
+/* —— 链路定义滚动面（分节堆叠） —— */
+.lbx-flow { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; background: var(--bg); }
+/* 站表在分节流里按内容自适应高：不封顶、不内滚——加行就把页面撑长，纵向滚动统一由 .lbx-flow 承担
+   （横向仍在 .sg-scroll 内滚：表宽超屏时底部横条 + 表上 Shift+滚轮） */
+.lbx-flow .lbx-grid .sg { height: auto; max-height: none; }
+.lbx-flow .lbx-grid .sg-scroll { min-height: 56px; }
+/* 库编辑面板宽度松绑：主从视图另一侧就这么宽，别再自限 */
+.lbx-flow .lbl-ed-bd .bb, .lb-libpane .lbl-ed-bd .bb,
+.lbx-flow .lbl-ed-bd .es-box, .lb-libpane .lbl-ed-bd .es-box { max-width: none; }
+
+/* （旧底部计算栏已并入功能区「计算」组，样式随之退役） */
+
+/* 「结果已过期」提示（功能区右缘状态位） */
+.lbx-stale { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--warn); white-space: nowrap; text-transform: none; letter-spacing: 0; font-weight: 400; }
+.lbx-stale::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--warn); }
+
+/* 链路表脚注（三线式：外框上下双线、行间细线、无底色，数值加粗衬线）
+   ——上行「容量汇总」本批次总账，下行「本行读数」当前聚焦行的全量结果指标 */
+.lbx-capblk { border-top: 2px solid var(--lb-rule-strong); border-bottom: 2px solid var(--lb-rule-strong); }
+.lbx-capline { display: flex; align-items: baseline; gap: 4px 14px; flex-wrap: wrap; padding: 3px 2px 4px; }
+.lbx-cap-t { font-size: var(--lb-fs); font-weight: 700; letter-spacing: 1px; color: var(--text); }
+.lbx-cap-big { font-size: calc(var(--lb-fs) + 4px); font-weight: 700; line-height: 1; color: var(--text); font-variant-numeric: tabular-nums; }
+.lbx-cap-big i { font-size: var(--lb-fs); font-weight: 600; font-style: normal; margin-left: 3px; color: var(--text-muted); }
+.lbx-cap-item { display: inline-flex; align-items: baseline; gap: 5px; }
+.lbx-cap-l { font-size: var(--lb-fs); color: var(--text-muted); }
+.lbx-cap-v { font-size: calc(var(--lb-fs) + 1px); font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
+.lbx-cap-v i { font-size: calc(var(--lb-fs) - 1px); font-weight: 400; font-style: normal; color: var(--text-faint); margin-left: 2px; }
+.lbx-cap-n { margin-left: auto; font-size: calc(var(--lb-fs) - 1px); color: var(--text-faint); white-space: nowrap; }
+/* 本行读数：与容量汇总同起首（两个四字标签对齐成一列），指标按声明序平铺、超宽自然折行。
+   值比标签重一档、单位退到最轻，密排下仍能一眼分出「哪个数是哪个」；着色口径同结果单元格（负余量/超占用转红）。 */
+.lbx-rowline { display: flex; align-items: baseline; gap: 3px 13px; flex-wrap: wrap; padding: 3px 2px 4px; border-top: 1px solid var(--lb-rule-soft); }
+.lbx-rr-id { font-size: calc(var(--lb-fs) - 1px); color: var(--text-faint); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.lbx-rr-id em { font-style: normal; margin-left: 5px; font-weight: 600; color: var(--text-muted); }
+.lbx-rr-i { display: inline-flex; align-items: baseline; gap: 4px; }
+.lbx-rr-l { font-size: calc(var(--lb-fs) - 1px); color: var(--text-muted); }
+.lbx-rr-v { font-size: var(--lb-fs); font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
+.lbx-rr-v i { font-size: calc(var(--lb-fs) - 1px); font-weight: 400; font-style: normal; color: var(--text-faint); margin-left: 2px; }
+.lbx-rr-v.bad { color: var(--danger, #9c5751); }
+.lbx-rr-err { font-size: var(--lb-fs); color: var(--danger, #9c5751); }
+.lbx-rr-none { font-size: calc(var(--lb-fs) - 1px); color: var(--text-faint); }
+
+/* 文档区折叠小节（卫星几何等）：细头退为带下缘线的题注行，与三线表题注同语言 */
+.lbx-fold { margin-bottom: 10px; }
+.lbx-fold-hd {
+  display: flex; align-items: center; gap: 6px; padding: 2px 1px 3px; cursor: pointer; user-select: none;
+  font-size: var(--lb-fs); font-weight: 700; letter-spacing: .5px; color: var(--text-muted);
+  background: transparent; border: 0; border-bottom: 1px solid var(--lb-rule-soft);
+}
+.lbx-fold-hd:hover { color: var(--text); }
+.lbx-fold-hd .chev { display: inline-flex; transition: transform .12s ease; color: var(--text-faint); }
+.lbx-fold-hd.closed .chev { transform: rotate(-90deg); }
+.lbx-fold-sum { font-size: calc(var(--lb-fs) - 1px); font-weight: 400; color: var(--text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-left: auto; }
+.lbx-fold-bd { margin-top: 6px; }
+
+/* —— 功能区「字号」组（LbFontCtl）：数据区基准字号步进 —— */
+.lbf-btn {
+  font-family: var(--lb-serif); font-size: 11px; line-height: 1; padding: 5px 6px; cursor: pointer;
+  background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px);
+}
+.lbf-btn:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
+.lbf-btn:disabled { opacity: .4; cursor: not-allowed; }
+.lbf-val { min-width: 24px; text-align: center; font-size: 12px; font-weight: 600; color: var(--text); cursor: default; user-select: none; font-variant-numeric: tabular-nums; }
+
+/* 分享码 / 设备ID 等代码型内容原有「真等宽回钉」已撤销：全软件统一 Times New Roman 后不再破例，
+   字距靠 .lb-myid b 的 letter-spacing 与 .lb-area 的 word-break 保证可读可选。 */

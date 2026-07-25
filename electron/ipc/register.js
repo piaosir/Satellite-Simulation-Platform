@@ -162,6 +162,23 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
       })
       return { canceled: false, files }
     })
+    // 链路预算侧导入：同一个文件框，但选完直接在主进程按字节拷进 saveDir，只把文件名回给渲染端。
+    // （链路预算只需主进程按文件采样，不解析原文；避免把上百 MB 文本搬过一趟 IPC）
+    ipcMain.handle('coverageGrd:import', async (e) => {
+      const win = BrowserWindow.fromWebContents(e.sender)
+      const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+        title: '导入 GRD / PAT 方向图（可多选）', properties: ['openFile', 'multiSelections'],
+        filters: [{ name: 'GRASP 网格 (*.grd, *.pat)', extensions: ['grd', 'pat'] }, { name: '所有文件', extensions: ['*'] }]
+      })
+      if (canceled || !filePaths || !filePaths.length) return { canceled: true }
+      const path = require('path')
+      const files = filePaths.map((fp) => {
+        const base = path.basename(fp)
+        try { return { base, file: coverageGrd.copyIn(fp).file } }
+        catch (err) { return { base, error: err.message } }
+      })
+      return { canceled: false, files }
+    })
   }
 
   // ---- 链路计算 ----
@@ -175,6 +192,37 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   ipcMain.handle('link:waterfall', (_e, ctx) => core().buildWaterfallSegments(ctx || {}))
   // 计算方式求解（在主进程内迭代求解功带平衡 / 反推余量，避免大量 IPC 往返）
   ipcMain.handle('link:computeMode', (_e, s, l, opt) => core().computeLinkMode(s || {}, l || {}, opt || {}))
+  // 批量：整表各行一次算完再返回（逐行口径与 link:computeMode 完全一致，只省 IPC 往返）。
+  // 每行可带自己的 satParams / opt（不同卫星、不同功放功率），故传的是 [{ sat, link, opt }] 列表。
+  ipcMain.handle('link:computeModeBatch', (_e, list) => {
+    const arr = Array.isArray(list) ? list : []
+    return arr.map((it) => {
+      try { return core().computeLinkMode((it && it.sat) || {}, (it && it.link) || {}, (it && it.opt) || {}) }
+      catch (err) { return { success: false, message: err.message || String(err) } }
+    })
+  })
+  // 参数扫描（可视化「直角坐标系」的算力层）：整段区间在主进程一次跑完，
+  // 一次往返带回全部可绘输出量，前端换纵轴变量无需重算（同 rain:sweep 的思路）
+  ipcMain.handle('link:sweep', (_e, spec) => {
+    try { return core().sweepLink(spec || {}) }
+    catch (err) { return { xs: [], series: {}, ok: 0, fail: 0, message: err.message || String(err) } }
+  })
+  // 二维参数扫描（设计空间图）：x×y 网格逐格重跑，回全部可绘输出量的场 + 连续可行裕度场。
+  // 场是 Float64Array，走结构化克隆原样过来（切勿在两端 JSON 化：那会把定型数组变成
+  // {"0":…,"1":…} 的键值对象，体积涨十几倍还得在渲染端再转回来）。
+  // 地理场还带「覆盖门 + 方向图联动」（spec.geo）：逐格重采卫星天线增益要读 .grdbin，
+  // 而核心层不碰 fs → 在这里把 GRD 取值服务注入进去（一次批量采完整张网格，不逐格往返）
+  ipcMain.handle('link:sweep2D', (_e, spec) => {
+    const hooks = {
+      samplePattern: (pat, points) => (grd
+        ? grd.sample({ file: pat.file, sat: pat.sat, cfg: pat.cfg, points })
+        : points.map(() => null))
+    }
+    try { return core().sweepLink2D(spec || {}, hooks) }
+    catch (err) { return { xs: [], ys: [], nx: 0, ny: 0, series: {}, feas: new Float64Array(0), ok: 0, fail: 0, masked: 0, message: err.message || String(err) } }
+  })
+  // 可绘输出量清单（扫描器的因变量池，按物理意义分组）
+  ipcMain.handle('link:outputDefs', () => core().lbOutputDefs.OUTPUT_GROUPS)
   // NGSO 计算方式求解（同四种方式，切 NGSO 引擎，强制 ISL 跳数=0）
   ipcMain.handle('link:computeModeNGSO', (_e, s, l, opt) =>
     core().computeLinkModeNGSO
@@ -210,6 +258,23 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     core().solveNgsoMutualWorstCase
       ? core().solveNgsoMutualWorstCase(opt || {})
       : { feasible: false, reason: 'NGSO 几何求解器未加载' })
+  // 批量几何：一次带回整表各链路的几何。同一颗星、同一 t0/时窗下，SGP4 粗扫的传播部分与站址无关，
+  // 主进程内各站对共享一份采样（结果与逐条调用逐位一致），顺带把 N 次 IPC 往返压成 1 次。
+  ipcMain.handle('link:ngsoGeometryBatch', (_e, opt) =>
+    core().solveNgsoMutualWorstCaseBatch
+      ? core().solveNgsoMutualWorstCaseBatch(opt || {})
+      : (((opt && opt.pairs) || []).map(() => ({ feasible: false, reason: 'NGSO 几何求解器未加载' }))))
+  // 批量计算方式求解：一组 linkParams 在主进程内连算完再一次返回（候选几何逐个跑引擎时用），
+  // 逐条口径与 link:computeModeNGSO 完全相同，只省 IPC 往返
+  ipcMain.handle('link:computeModeNGSOBatch', (_e, s, list, opt) => {
+    const fn = core().computeLinkModeNGSO
+    const arr = Array.isArray(list) ? list : []
+    if (!fn) return arr.map(() => ({ success: false, message: 'NGSO 引擎未加载' }))
+    return arr.map((l) => {
+      try { return fn(s || {}, l || {}, opt || {}) }
+      catch (err) { return { success: false, message: err.message || String(err) } }
+    })
+  })
   // 单站访问窗口（再生式几何：时窗内满足最低仰角及以上的全部过境）
   ipcMain.handle('link:accessWindows', (_e, opt) =>
     core().solveAccessWindows
@@ -219,6 +284,8 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   ipcMain.handle('link:geoFill', (_e, lat, lon) => core().geoAutoFill(parseFloat(lat), parseFloat(lon)))
   // GRD 天线逐站取值（多波束最大 Parameter）：解析+采样在主进程，渲染端只收发 dB 数字
   ipcMain.handle('link:grdSample', (_e, req) => (grd ? grd.sample(req || {}) : ((req && req.points) || []).map(() => null)))
+  // GRD 天线概要（波束数/网格）：链路预算导入方向图后填「N 波束」，顺带预编译 .grdbin
+  ipcMain.handle('link:grdMeta', (_e, file) => (grd ? grd.meta(file) : { ok: false, error: 'GRD 服务未加载' }))
   // 城市列表（选址用）
   ipcMain.handle('link:cities', () => core().listCities())
   ipcMain.handle('link:searchCities', (_e, kw) => core().searchCities(String(kw == null ? '' : kw), {}))
@@ -272,6 +339,18 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
       const busy = err && (err.code === 'EBUSY' || err.code === 'EPERM' || err.code === 'EACCES')
       return { ok: false, error: busy ? '文件可能正被其他程序打开（如 Excel），请关闭后重试' : (err.message || String(err)) }
     }
+  })
+
+  // ---- 环境场图层（主窗口「环境场」视图）----
+  // 全精度 ITU 数据只在主进程（启动时注入内核），故整张等经纬栅格在这里生成后一次性回传；
+  // 逐点走 IPC 做整张图要百万次往返，不可行。Float32Array 走结构化克隆，无需序列化成数组。
+  ipcMain.handle('env:defs', () => {
+    try { return core().envFieldDefs() }
+    catch (err) { return { error: true, message: err.message || String(err) } }
+  })
+  ipcMain.handle('env:field', (_e, key, opt) => {
+    try { return core().sampleEnvField(key, opt || {}) }
+    catch (err) { return { error: true, message: err.message || String(err) } }
   })
 
   // ---- 日凌预报（独立窗口 + 计算 + Word/ICS 导出）----
@@ -360,6 +439,8 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   ipcMain.handle('store:config:deleteFolder', (_e, id) => storage.deleteFolder(id))
   ipcMain.handle('store:settings:get', () => storage.getSettings())
   ipcMain.handle('store:settings:set', (_e, s) => storage.setSettings(s))
+  ipcMain.handle('store:library:get', (_e, ns) => storage.getLibrary(ns))
+  ipcMain.handle('store:library:save', (_e, { ns, data }) => storage.saveLibrary(ns, data))
 
   // ---- 通用二进制导出（原生保存对话框 → 写盘）：覆盖图 PNG / 矢量 PDF 等 ----
   // payload: { defaultName, data:ArrayBuffer|Uint8Array, filters:[{name,extensions}] }
@@ -403,18 +484,25 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     return { canceled: false, files }
   })
 
-  // ---- 读取系统中文字体（供矢量 PDF 嵌入；jsPDF 仅支持单面 TTF，不支持 TTC）----
-  // 按候选顺序返回首个存在的单面 TTF 的 base64；找不到返回 ok:false（PDF 则退化为无中文字体）。
-  ipcMain.handle('font:cjk', () => {
+  // ---- 读取系统字体（供矢量 PDF 嵌入；jsPDF 仅支持单面 TTF，不支持 TTC，且按用到的字形子集化，体积可忽略）----
+  // latin：Times New Roman 三面（常规/粗/斜），西文与数字用——与软件界面同字体；
+  // cjk  ：候选里首个存在的单面中文 TTF，中文字形用（TNR 无汉字，PDF 的字体是按「字体资源」而非按字形回落的，
+  //        故必须分两套注册，由导出端逐条文本按有无汉字选面）。
+  // 任一项缺失即为 null：latin 缺则退到 PDF 内建 times（基础 14 字体，观感等同），cjk 缺则中文可能缺字。
+  ipcMain.handle('font:pdf', () => {
     if (process.platform !== 'win32') return { ok: false }
     const path = require('path')
     const dir = path.join(process.env.WINDIR || 'C:\\Windows', 'Fonts')
-    const cands = ['simhei.ttf', 'simkai.ttf', 'simfang.ttf', 'Deng.ttf', 'msyh.ttf', 'simsunb.ttf']
-    for (const f of cands) {
-      const p = path.join(dir, f)
-      try { if (fs.existsSync(p)) return { ok: true, name: f, base64: fs.readFileSync(p).toString('base64') } } catch { /* try next */ }
+    const b64 = (f) => {
+      try { const p = path.join(dir, f); return fs.existsSync(p) ? fs.readFileSync(p).toString('base64') : null }
+      catch { return null }
     }
-    return { ok: false }
+    let cjk = null, cjkName = null
+    for (const f of ['simhei.ttf', 'simkai.ttf', 'simfang.ttf', 'Deng.ttf', 'msyh.ttf', 'simsunb.ttf']) {
+      const d = b64(f)
+      if (d) { cjk = d; cjkName = f; break }
+    }
+    return { ok: true, cjk, cjkName, latin: b64('times.ttf'), latinBold: b64('timesbd.ttf'), latinItalic: b64('timesi.ttf') }
   })
 
   // ---- 报告导出（原生保存对话框 → 写盘）----

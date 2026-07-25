@@ -176,7 +176,7 @@ const dEnd = (d) => (isLocal.value ? shiftParts(d.date, d.endTimeUTC, staOffsetM
 <template>
   <div class="shell" @click="cityOpen = false">
     <header class="topbar">
-      <span class="brand">日凌预报 · GEO</span>
+      <span class="brand">日凌预报 · GSO</span>
       <span class="grow"></span>
       <span class="tzsel" :title="`逐日表与 Word 报告的时标（本地=按地球站经度推算 ${localTz}，随站点位置变化；ICS 日历恒用 UTC，导入后由日历软件自动换算本地时间）`">
         <button class="tzbtn" :class="{ on: isLocal }" @click="tz = 'local'">本地</button>

@@ -65,11 +65,16 @@ export function createFlatCoverage(canvas) {
   let ctx = canvas.getContext('2d')   // 绘制目标上下文：导出时临时切到离屏 canvas / svgcanvas（见 exportRender）
   // 导出兼容模式：svgcanvas/canvas2svg 忽略 Path2D 与 evenodd 入参，故导出时把陆地/覆盖填充/等值线
   // 改为「子路径回放」（moveTo/lineTo），实时绘制仍走 Path2D 缓存（更快）。compat 同时用于离屏高清 PNG，
-  // 保证 PNG 与 PDF 完全一致。textFont：导出可指定字体族名（PDF 用注册名匹配嵌入的中文字体）。
+  // 保证 PNG 与 PDF 完全一致。textFont/textFontLatin：导出可指定字体族名（PDF 用注册名匹配嵌入的中文/西文面）。
   let compat = false
   // 导出（PNG/PDF）物理分辨率远高于屏幕，文字描边按同一相对粗细在高清大图上观感发粗 → 导出时额外收细。
   const EXPORT_STROKE_K = 0.6
-  let textFont = '"Microsoft YaHei", sans-serif'
+  // 与界面同栈（styles/global.css 的 --font-serif 手工镜像）：Times New Roman 打西文，宋体接中文
+  let textFont = '"Times New Roman", Times, "SimSun", "宋体", serif'
+  // 导出 PDF 专用：西文/数字单独的族名。PDF 的字体按资源整体选用、不像浏览器逐字形回落，故拉丁与中文
+  // 各嵌一套，此处按「这条文本里有没有汉字」二选一。null=不分面（屏幕/PNG 走上面的完整回退栈即可）。
+  let textFontLatin = null
+  const CJK_RE = /[⺀-鿿㐀-䶿豈-﫿　-〿＀-￯]/   // 汉字/假名/中文标点/全角
   // 渲染分辨率倍率（与 3D 同一画质档位）：null=跟随系统 DPR；否则为请求倍率，但封顶为「物理像素密度 × SS_CAP」。
   // 超出物理像素的超采样屏幕无法显示、纯耗 GPU，封顶后对画质无影响（与 3D 球体同策略，见 globe3d/scene.js）。
   let renderScale = null
@@ -85,6 +90,10 @@ export function createFlatCoverage(canvas) {
   let geom = null
   let fieldLayers = [], fieldAlpha = 0.8   // GRD 覆盖多层（每层=一个天线：分带填充 Path2D + 逐档等值线，独立于 geom）
   let covGridLayers = [], covGridAlpha = 0.82   // STK Coverage 覆盖分析【专用通道】：FOM 分带热力图（各胞元四角），独立于 GRD 覆盖场
+  // 环境场【专用通道】：一张等经纬位图（ITU 降雨率/零度等温线/海拔…）+ 逐档等值线。
+  // 位图不走分带多边形——连续场用栅格一次 drawImage 即可，缩放平移零成本、也不受多边形数量拖累。
+  let envImg = null, envBBox = null, envAlpha = 0.78, envSmooth = true
+  let envContours = []   // [{ level, text, color, width, lines:[[[lon,lat]...]], labels:[{lon,lat,a}] }]
   // GRD 全局标注选项（与 3D 同步）：天线名 / 波束中心 / 数值标签
   let fieldOpts = { showName: true, nameSize: 16, showBore: true, boreSize: 0.5, showPeak: false, peakSize: 5, showVal: false, valSize: 12 }
   let nameMode = 'off', provVisible = false, prov = null, cityVisible = false, city = null
@@ -278,15 +287,21 @@ export function createFlatCoverage(canvas) {
   function drawText(text, lon, lat, px, color, opt) {
     const o = opt || {}
     const x = PX(lon) + (o.dx || 0), y = PY(lat) + (o.dy || 0)
-    ctx.font = `${o.italic ? 'italic ' : ''}${o.bold ? 'bold ' : ''}${px}px ${textFont}`
+    const fam = (textFontLatin && !CJK_RE.test(text)) ? textFontLatin : textFont
+    ctx.font = `${o.italic ? 'italic ' : ''}${o.bold ? 'bold ' : ''}${px}px ${fam}`
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
     // 文字描边套色(casing)：沿字形勾一圈与底色同调的窄边，把字从背景里「切」出来——专业制图标准，不用底色色块
     // 粗细 = px*strokeScale（默认 0.14），下限 strokeMin（默认 1.5）；地级市名传更细值（尽量细但保留）
     const sScale = o.strokeScale != null ? o.strokeScale : 0.14, sMin = o.strokeMin != null ? o.strokeMin : 1.5
     const ek = compat ? EXPORT_STROKE_K : 1
     const lw = Math.max(sMin * ek, px * sScale * ek)
-    if (lw > 0) { ctx.lineJoin = 'round'; ctx.miterLimit = 2; ctx.lineWidth = lw; ctx.strokeStyle = 'rgba(6,11,18,0.82)'; ctx.strokeText(text, x, y) }
-    ctx.fillStyle = color; ctx.fillText(text, x, y)
+    // o.rot：字随线转（等值线标注用）。转轴放在锚点上，故转后就地画在原点。
+    const rot = o.rot ? o.rot * Math.PI / 180 : 0
+    if (rot) { ctx.save(); ctx.translate(x, y); ctx.rotate(rot) }
+    const tx0 = rot ? 0 : x, ty0 = rot ? 0 : y
+    if (lw > 0) { ctx.lineJoin = 'round'; ctx.miterLimit = 2; ctx.lineWidth = lw; ctx.strokeStyle = 'rgba(6,11,18,0.82)'; ctx.strokeText(text, tx0, ty0) }
+    ctx.fillStyle = color; ctx.fillText(text, tx0, ty0)
+    if (rot) ctx.restore()
   }
   function dot(lon, lat, r, fill, ring) {
     const x = PX(lon), y = PY(lat)
@@ -389,6 +404,52 @@ export function createFlatCoverage(canvas) {
   }
   // STK Coverage FOM 热力图填充：与 drawField 填充同款（缓存的世界坐标 Path2D + setTransform + ±360 环绕视口裁剪），
   // 用独立 covGridLayers / covGridAlpha，画在 GRD 覆盖场【之下】（叠加时 GRD 天线足迹在其上）。无等值线。
+  // 环境场栅格：整张等经纬位图一次 drawImage，按 ±360 环绕补副本（与分带填充同样的三档裁剪）。
+  // 位图边界不受缩放影响 → 放大后看到的是数据本身的格子，不再有矢量层的重建成本。
+  // 矢量 PDF 那条路（svgcanvas）把位图转成 <image>，但不认 globalAlpha —— 直接画会比 PNG 深一截。
+  // 故导出时把整层透明度先烘进一张临时位图，两条导出路径才逐像素一致。缓存随图/透明度失效。
+  let envFade = null, envFadeKey = ''
+  function envImageForDraw() {
+    if (!compat || !(envAlpha < 0.999)) return envImg
+    const key = envImg.width + 'x' + envImg.height + '@' + envAlpha
+    if (envFadeKey !== key) {
+      const c = document.createElement('canvas')
+      c.width = envImg.width; c.height = envImg.height
+      const g = c.getContext('2d'); g.globalAlpha = envAlpha; g.drawImage(envImg, 0, 0)
+      envFade = c; envFadeKey = key
+    }
+    return envFade
+  }
+  function drawEnvRaster() {
+    if (!envImg || !envBBox) return
+    const kk = k(), bb = envBBox
+    const x0 = WXN(bb.lonMin), w = (bb.lonMax - bb.lonMin) * kk
+    const y = PY(bb.latMax), h = (bb.latMax - bb.latMin) * kk
+    const img = envImageForDraw()
+    ctx.save(); ctx.globalAlpha = img === envImg ? envAlpha : 1
+    // 分级填色要看得见硬边界（那条边界就是等值线），故插值开关跟着显示模式走
+    const sm = ctx.imageSmoothingEnabled
+    ctx.imageSmoothingEnabled = envSmooth
+    if ('imageSmoothingQuality' in ctx) ctx.imageSmoothingQuality = 'high'
+    for (const off of [-360, 0, 360]) {
+      const x = (x0 + off) * kk + tx
+      if (x > cw || x + w < 0) continue
+      ctx.drawImage(img, x, y, w, h)
+    }
+    ctx.imageSmoothingEnabled = sm; ctx.globalAlpha = 1; ctx.restore()
+  }
+  // 环境场等值线（+ 沿线数值标注）：画在场之上，仍压在国界/地名之下
+  function drawEnvContours() {
+    if (!envContours.length) return
+    const iz = Math.sqrt(scale)
+    for (const g of envContours) {
+      for (const ln of (g.lines || [])) drawPolyline(ln, g.color, Math.max(0.25, (g.width || 1) / Math.max(1, iz * 0.9)))
+    }
+    for (const g of envContours) {
+      if (!g.text) continue
+      for (const an of (g.labels || [])) drawText(g.text, an.lon, an.lat, Math.max(7, 11 * (k() / 13.1)), g.labelColor || '#ffffff', { rot: an.a, strokeScale: 0.16 })
+    }
+  }
   function drawCovGrid() {
     if (!covGridLayers.length) return
     const kk = k()
@@ -633,6 +694,8 @@ export function createFlatCoverage(canvas) {
     ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, bw, bh); ctx.drawImage(belowCanvas, 0, 0)
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     ctx.save(); ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip()
+    drawEnvRaster()      // ITU 环境场栅格（最底：气象/地形是背景量，谁都压得住它）
+    drawEnvContours()    // 环境场等值线 + 数值标注（紧跟其场，不与覆盖层混层）
     drawSatFills()       // Polygon 区域填充（覆盖场之下：叠加区只显示覆盖图颜色）
     drawCovGrid()        // STK Coverage FOM 热力图（Polygon 填充之上、GRD 覆盖场之下）
     drawField()          // GRD 覆盖填充面 + 等值线（在底图/Polygon 填充之上、标注之下）
@@ -835,6 +898,20 @@ export function createFlatCoverage(canvas) {
     },
     setFieldAlpha(a) { fieldAlpha = a; requestDraw() },   // 仅覆盖层透明度，静态快照不变
     // STK Coverage 覆盖分析【专用通道】：layer={fillBands:[{color:[r,g,b],verts,counts}]}, opts={alpha}。整体替换（单层）。
+    // ---- 环境场（ITU 气象/地形栅格 + 等值线）----
+    // img = 等经纬位图（canvas/ImageBitmap），bbox = 其覆盖的经纬范围；smooth=false 走最近邻（分级填色看硬边界）
+    setEnvRaster(img, opts) {
+      const o = opts || {}
+      envImg = img || null
+      envBBox = img ? (o.bbox || { lonMin: -180, lonMax: 180, latMin: -90, latMax: 90 }) : null
+      if (o.alpha != null) envAlpha = o.alpha
+      if (o.smooth != null) envSmooth = !!o.smooth
+      envFadeKey = ''   // 图变了 → 导出用的烘透明度副本作废
+      requestDraw()
+    },
+    setEnvAlpha(a) { envAlpha = a; envFadeKey = ''; requestDraw() },
+    setEnvContours(groups) { envContours = Array.isArray(groups) ? groups : []; requestDraw() },
+    clearEnv() { envImg = null; envBBox = null; envContours = []; envFadeKey = ''; requestDraw() },
     setCovGrid(layer, opts) {
       covGridLayers = (layer && layer.fillBands && layer.fillBands.length) ? [{ ...layer, fillPaths: buildFillPaths(layer.fillBands), bounds: layerBounds(layer) }] : []
       if (opts && opts.alpha != null) covGridAlpha = opts.alpha
@@ -944,7 +1021,8 @@ export function createFlatCoverage(canvas) {
     // 只提像素倍率 → 恒定屏幕 px 的线宽/图标/注记与在屏整幅图完全同比例（所见即所得）。画布未就绪返回 null。
     fittedWorldSize() { const sb = Math.min(cw / 360, ch / 180); return (cw > 50 && ch > 50) ? { w: 360 * sb, h: 180 * sb } : null },
     // 导出平面图到任意 2D 上下文：离屏高清 canvas → PNG；svgcanvas → SVG/PDF。
-    // opts: { width, height, pixelScale=1, background=true, fontFamily, view=false }。
+    // opts: { width, height, pixelScale=1, background=true, fontFamily, fontFamilyLatin, view=false }。
+    //   fontFamily=中文面族名，fontFamilyLatin=西文面族名（仅 PDF 需分面，见 textFontLatin 注释）。
     //   view=false：整幅世界图，fit 一次性绘制；view=true：所见即所得，按当前屏幕缩放/平移出图。绘后恢复在屏视图。
     // compat=true 走子路径回放（不依赖 Path2D / evenodd 入参）→ PNG 与 PDF 完全一致。
     exportRender(targetCtx, opts) {
@@ -953,22 +1031,23 @@ export function createFlatCoverage(canvas) {
       // 否则：整幅世界图，重置 cw/ch=W/H 后 fit() 一次。
       const viewMode = o.view === true
       const W = o.width || 1600, H = o.height || (W / 2), ps = o.pixelScale || 1
-      const SV = { ctx, dpr, cw, ch, base, scale, tx, ty, font: textFont }
+      const SV = { ctx, dpr, cw, ch, base, scale, tx, ty, font: textFont, fontLatin: textFontLatin }
       ctx = targetCtx; dpr = ps; compat = true
       if (o.fontFamily) textFont = o.fontFamily
+      if (o.fontFamilyLatin) textFontLatin = o.fontFamilyLatin
       if (viewMode) { /* 保留当前屏幕视图（cw/ch/base/scale/tx/ty 不变） */ }
       else { cw = W; ch = H; fit() }
       const rx = PX(LON0), ry = PY(90), rw = 360 * k(), rh = 180 * k()
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
       if (o.background !== false) { ctx.fillStyle = BG; ctx.fillRect(0, 0, cw, ch) }
       drawBelowContent(rx, ry, rw, rh)
-      ctx.save(); ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip(); drawSatFills(); drawCovGrid(); drawField(); drawSatPolyLines(); drawDataLines(); ctx.restore()
+      ctx.save(); ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip(); drawEnvRaster(); drawEnvContours(); drawSatFills(); drawCovGrid(); drawField(); drawSatPolyLines(); drawDataLines(); ctx.restore()
       drawAboveContent(rx, ry, rw, rh)
       ctx.save(); ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip()
       drawFieldOverlays()
       for (const p of focusSats) drawSatIcon(p.lon, p.lat, sizes.satIcon * Math.sqrt(scale) * SAT_ICON_K, '#ffffff')
       ctx.restore()
-      ctx = SV.ctx; dpr = SV.dpr; cw = SV.cw; ch = SV.ch; base = SV.base; scale = SV.scale; tx = SV.tx; ty = SV.ty; textFont = SV.font; compat = false
+      ctx = SV.ctx; dpr = SV.dpr; cw = SV.cw; ch = SV.ch; base = SV.base; scale = SV.scale; tx = SV.tx; ty = SV.ty; textFont = SV.font; textFontLatin = SV.fontLatin; compat = false
       staticValid = false; requestDraw()
     },
     destroy() {

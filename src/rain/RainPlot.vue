@@ -76,7 +76,8 @@ function drawTo(ctx, W, H, forExport) {
   // 导出时字号/线宽/边距整体放大，配合更高 DPI → 报告里清晰
   const FS = forExport ? 15 : 11, FSM = forExport ? 15 : 11, FST = forExport ? 19 : 14
   const LWg = forExport ? 1.2 : 1, LWa = forExport ? 1.8 : 1.2, LWc = forExport ? 3 : 2
-  const font = (px, w) => (w ? w + ' ' : '') + px + 'px "Microsoft YaHei", system-ui, sans-serif'
+  // 与界面同栈（styles/global.css 的 --font-serif 手工镜像）：Times New Roman 打西文，宋体接中文
+  const font = (px, w) => (w ? w + ' ' : '') + px + 'px "Times New Roman", Times, "SimSun", "宋体", serif'
   const mL = forExport ? 68 : 52, mR = forExport ? 22 : 14, mT = forExport ? 46 : 12, mB = forExport ? 54 : 40
   const pw = W - mL - mR, ph = H - mT - mB
   const A = curAxis.value

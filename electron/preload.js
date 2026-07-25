@@ -9,8 +9,17 @@ contextBridge.exposeInMainWorld('api', {
     open: () => ipcRenderer.invoke('linkbudget:open'),
     compute: (s, l) => ipcRenderer.invoke('link:compute', s, l),
     computeMode: (s, l, opt) => ipcRenderer.invoke('link:computeMode', s, l, opt),
+    // 批量版：[{ sat, link, opt }] → 各行结果数组（口径同单条，只把 N 次往返压成 1 次）
+    computeModeBatch: (list) => ipcRenderer.invoke('link:computeModeBatch', list),
+    // 参数扫描（可视化直角坐标系）：一次 IPC 跑完整段区间，回全部可绘输出量
+    sweep: (spec) => ipcRenderer.invoke('link:sweep', spec),
+    // 二维参数扫描（设计空间图）：x×y 网格一次跑完，回各输出量的场与可行裕度场
+    sweep2D: (spec) => ipcRenderer.invoke('link:sweep2D', spec),
+    outputDefs: () => ipcRenderer.invoke('link:outputDefs'),
     // NGSO：计算方式求解（切 NGSO 引擎、强制 ISL=0）+ 站星互视最差几何求解
     computeModeNGSO: (s, l, opt) => ipcRenderer.invoke('link:computeModeNGSO', s, l, opt),
+    // 批量版（整表几何一次求 / 一组候选一次算）：口径与单条完全一致，只把 N 次往返压成 1 次
+    computeModeNGSOBatch: (s, list, opt) => ipcRenderer.invoke('link:computeModeNGSOBatch', s, list, opt),
     // 再生式上行：计算方式求解（合计 C/N = 上行 C/(N+I)）+ 复用 NGSO 站星几何
     computeRegenUplink: (s, l, opt) => ipcRenderer.invoke('link:computeRegenUplink', s, l, opt),
     // 再生式下行：计算方式求解（合计 C/N = 下行 C/(N+I)；工作点 = 收信站 G/T）+ 复用 NGSO 站星几何
@@ -21,9 +30,12 @@ contextBridge.exposeInMainWorld('api', {
     computeRegenLaser: (p, opt) => ipcRenderer.invoke('link:computeRegenLaser', p, opt),
     islGeometry: (opt) => ipcRenderer.invoke('link:islGeometry', opt),
     ngsoGeometry: (opt) => ipcRenderer.invoke('link:ngsoGeometry', opt),
+    ngsoGeometryBatch: (opt) => ipcRenderer.invoke('link:ngsoGeometryBatch', opt),
     accessWindows: (opt) => ipcRenderer.invoke('link:accessWindows', opt),
     geoFill: (lat, lon) => ipcRenderer.invoke('link:geoFill', lat, lon),
     grdSample: (req) => ipcRenderer.invoke('link:grdSample', req),
+    // 导入方向图后取其波束数（并预编译 .grdbin）
+    grdMeta: (file) => ipcRenderer.invoke('link:grdMeta', file),
     cities: () => ipcRenderer.invoke('link:cities'),
     searchCities: (kw) => ipcRenderer.invoke('link:searchCities', kw),
     baseband: () => ipcRenderer.invoke('link:baseband'),
@@ -66,6 +78,11 @@ contextBridge.exposeInMainWorld('api', {
     onCloseRequested: (cb) => ipcRenderer.on('rain:closeRequested', cb),
     confirmClose: () => ipcRenderer.invoke('rain:confirmClose')
   },
+  // 环境场图层（主窗口「环境场」视图）：ITU 环境数据整张等经纬栅格一次取回（Float32Array 直传）
+  env: {
+    defs: () => ipcRenderer.invoke('env:defs'),
+    field: (key, opt) => ipcRenderer.invoke('env:field', key, opt)
+  },
   app: {
     deviceId: () => ipcRenderer.invoke('app:deviceId'),
     version: () => ipcRenderer.invoke('app:version')
@@ -94,14 +111,17 @@ contextBridge.exposeInMainWorld('api', {
     moveItem: (payload) => ipcRenderer.invoke('store:config:move', payload),
     deleteFolder: (id) => ipcRenderer.invoke('store:config:deleteFolder', id),
     getSettings: () => ipcRenderer.invoke('store:settings:get'),
-    setSettings: (s) => ipcRenderer.invoke('store:settings:set', s)
+    setSettings: (s) => ipcRenderer.invoke('store:settings:set', s),
+    // 链路预算全局资源库（地球站/卫星/载波），按体制命名空间 geo/ngso/regen 整读整写
+    getLibrary: (ns) => ipcRenderer.invoke('store:library:get', ns),
+    saveLibrary: (ns, data) => ipcRenderer.invoke('store:library:save', { ns, data })
   },
   report: {
     export: (payload) => ipcRenderer.invoke('report:export', payload)
   },
-  // 覆盖图导出：保存二进制（PNG/PDF）到用户选定路径 / 读取系统中文字体（PDF 嵌入用）
+  // 覆盖图导出：保存二进制（PNG/PDF）到用户选定路径 / 读取系统字体（PDF 嵌入用：TNR 西文 + 中文面）
   exportFile: (payload) => ipcRenderer.invoke('file:save', payload),
-  cjkFont: () => ipcRenderer.invoke('font:cjk'),
+  pdfFonts: () => ipcRenderer.invoke('font:pdf'),
   omm: {
     load: (group, online) => ipcRenderer.invoke('omm:load', group, online),
     positions: (group, iso) => ipcRenderer.invoke('omm:positions', group, iso),
@@ -128,6 +148,8 @@ contextBridge.exposeInMainWorld('api', {
     index: () => ipcRenderer.invoke('coverageGrd:index'),
     get: (file) => ipcRenderer.invoke('coverageGrd:get', file),
     open: () => ipcRenderer.invoke('coverageGrd:open'),
+    // 链路预算侧导入：主进程直接拷贝文件，只回 { base, file }（不搬文本）
+    import: () => ipcRenderer.invoke('coverageGrd:import'),
     save: (name, text) => ipcRenderer.invoke('coverageGrd:save', name, text),
     raw: (file) => ipcRenderer.invoke('coverageGrd:raw', file),
     remove: (file) => ipcRenderer.invoke('coverageGrd:remove', file)

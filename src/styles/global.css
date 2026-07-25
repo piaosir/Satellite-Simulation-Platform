@@ -14,9 +14,12 @@
   --ok: #1d7a52;
   --warn: #9a6a00;
   --danger: #a32d2d;
-  --font-sans: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
-  --font-serif: Georgia, "Times New Roman", "Songti SC", serif;
-  --font-mono: "Cascadia Code", Consolas, "SF Mono", "Roboto Mono", monospace;
+  /* 全窗统一字体：Times New Roman 打西文/数字，宋体接中文回落（与链路预算报表同一套衬线栈，
+     主窗与各工具窗看齐）。TNR 数字字面天然等宽，故 sans / serif / mono 三个语义全指同一栈——
+     原「等宽」处的表格对齐由 font-variant-numeric: tabular-nums 保留。 */
+  --font-serif: "Times New Roman", Times, "SimSun", "宋体", serif;
+  --font-sans: var(--font-serif);
+  --font-mono: var(--font-serif);
 }
 
 :root[data-theme="dark"] {

@@ -70,5 +70,19 @@ module.exports = function createGrd(saveDir) {
     catch (e) { return { ok: false, error: e && e.message }; }
   }
 
-  return { sample, precompile };
+  // 天线概要：波束数（GRD 的 set 数）与网格类型。链路预算导入天线时用来填「N 波束」，
+  // 顺带把 .grdbin 预编译出来（首次采样就不用等解析）。渲染端不必读原始文本。
+  function meta(file) {
+    try {
+      const loaded = loadCached(ensureBin(resolveRaw(file)));
+      const b0 = loaded.beams && loaded.beams[0];
+      return {
+        ok: true, beams: (loaded.beams || []).length,
+        igrid: loaded.igrid, icomp: loaded.icomp, ncomp: loaded.ncomp,
+        grid: b0 ? b0.grid : null
+      };
+    } catch (e) { return { ok: false, error: e && e.message }; }
+  }
+
+  return { sample, precompile, meta };
 };

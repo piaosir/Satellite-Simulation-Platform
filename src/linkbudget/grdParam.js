@@ -6,6 +6,8 @@
 // 增益偏置/极化），但填站值恒取【绝对】口径（rel 显示不影响物理 EIRP/G-T）。
 // 注：GRD 解析+采样已下沉到主进程（electron/services/grd.js + packages/core/utils/grdSampler.js）。
 // 渲染端不再读取/解析 243MB 文本，只通过 IPC 批量收发「经纬度 → dB」。
+import { localTreeNodes } from '../shared/lbGrdImport.js'
+
 const GEO_ALT = 35786   // GEO 标称高度（km），与 useGrdCoverage 预置星一致
 const api = typeof window !== 'undefined' ? window.api : null
 
@@ -36,7 +38,9 @@ export function loadSatTree() {
       }))
     }
   }).filter((s) => s.antennas.length)
-  return { sats, cfgs: (grd && grd.cfgs) || {} }
+  // 本模块（链路预算卫星编辑器「导入方向图」）自己导入的天线，挂在各卫星库条目名下，与上面这棵树并列可选。
+  // 单独存于 lb/grdSats：globe3d/settings 由 3D 页整体快照覆盖式保存，写进去会被抹掉（见 lbGrdImport.js）。
+  return { sats: sats.concat(localTreeNodes().filter((s) => s.antennas.length)), cfgs: (grd && grd.cfgs) || {} }
 }
 
 // 把天线的卫星几何（实时星优先）整理成主进程采样所需的 sat 对象。
@@ -46,6 +50,14 @@ function satOf(node, ant) {
     lat: Number.isFinite(ant.satLat) ? ant.satLat : (node.lat || 0),
     alt: Number.isFinite(ant.satAlt) ? ant.satAlt : (node.altKm || GEO_ALT)
   }
+}
+
+// 对外：把某天线整理成主进程采样所需的一份「取值规格」{ file, sat, cfg }（纯数据，可过 IPC）。
+// 地理图的方向图联动要用它——那边是在主进程里逐格采样，渲染端只递这份规格，不亲自取值
+// （见 LbSpacePane 的 geoSpec 与 core/utils/linkSweep.js 的 spec.geo）。口径与逐站回填一致。
+export function antennaSampleSpec(node, ant, cfg) {
+  if (!node || !ant || !ant.file) return null
+  return { file: String(ant.file), sat: satOf(node, ant), cfg: cfg ? JSON.parse(JSON.stringify(cfg)) : {} }
 }
 
 // 对外：取某天线在【一批】经纬度上的「多波束最大 Parameter」（绝对 dB）。

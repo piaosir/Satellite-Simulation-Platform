@@ -5,6 +5,7 @@ const {
   HeadingLevel, WidthType, AlignmentType, BorderStyle
 } = require('docx')
 const ExcelJS = require('exceljs')
+const adaptiveUnits = require('../../packages/core/utils/adaptiveUnits.js')
 
 // 报告字段表：标签 / 结果键 / 单位
 const ROWS = [
@@ -69,6 +70,7 @@ async function buildWord(payload) {
     return new TableRow({ children: [cell(label, 'left', isSection), cell(val(results, key), 'right'), cell(unit)] })
   })
   const doc = new Document({
+    styles: WORD_STYLES,
     sections: [{
       children: [
         new Paragraph({ text: meta.title || '卫星链路预算报告', heading: HeadingLevel.HEADING_1 }),
@@ -92,17 +94,17 @@ async function buildExcel(payload) {
   const ws = wb.addWorksheet('链路预算')
   ws.mergeCells('A1:C1')
   ws.getCell('A1').value = meta.title || '卫星链路预算报告'
-  ws.getCell('A1').font = { size: 14, bold: true }
+  ws.getCell('A1').font = { name: FNT, size: 14, bold: true }
   ws.getCell('A2').value = `卫星 ${params.satelliteName || '—'} · 频段 ${params.frequencyBand || '—'} · ${new Date().toLocaleString()}`
   ws.addRow([])
   const head = ws.addRow(['环节', '数值', '单位'])
-  head.font = { bold: true }
+  head.font = { name: FNT, bold: true }
   ROWS.forEach(([label, key, unit]) => {
     const row = ws.addRow([label, val(results, key), unit])
-    if (key === null) row.font = { bold: true }
+    row.font = { name: FNT, bold: key === null }
   })
   ws.columns = [{ width: 30 }, { width: 16 }, { width: 12 }]
-  return wb.xlsx.writeBuffer()
+  return applyBookFont(wb).xlsx.writeBuffer()
 }
 
 // ===== 工作台链路结果导出（Phase 5/6）=====
@@ -114,8 +116,44 @@ async function buildExcel(payload) {
 // 1↔1 配对用宽矩阵展示反而大半是空格；纵向列表对两种配对方式都更直观，也更方便排序/筛选。
 // 标签中英文由 lang('zh'|'en') 控制；详细计算结果表的标签翻译表统一在 packages/core 的 waterfallBuilder.js
 // WF_DICT 维护（与结果区实时瀑布同源，避免两处译法不一致），此文件只维护链路汇总表自己的列头/标题译法。
-const FNT = 'Times New Roman'       // 数字/拉丁；中文由 Excel 按字形自动回退
-const CJK = '微软雅黑'               // 中文标签/标题
+// 导出文档字体：与软件界面同一套（西文/数字 Times New Roman，中文回落宋体）。
+// xlsx 的字体名只有一个字段（无「西文/东亚」分栏），故中文单元格也写 Times New Roman——
+// Excel 遇 TNR 里没有的汉字会按字体链接回落到宋体，效果即 TNR + 宋体。CJK 别名保留只为标出
+// 「这格是中文标签」的语义（改回中文专用字体时只需改这一行）。
+const FNT = 'Times New Roman'
+const CJK = FNT
+
+// Word（docx）的字体分「西文 / 东亚」两栏，故按界面同一套栈分别指定：西文 Times New Roman、中文宋体。
+// 正文默认样式 + 各级标题都要指（标题默认吃主题字体 Calibri Light，不覆盖会漏网）。
+const WORD_RUN = { font: { ascii: FNT, hAnsi: FNT, cs: FNT, eastAsia: '宋体' } }
+const WORD_STYLES = {
+  default: {
+    document: { run: WORD_RUN }, title: { run: WORD_RUN },
+    heading1: { run: WORD_RUN }, heading2: { run: WORD_RUN }, heading3: { run: WORD_RUN },
+    heading4: { run: WORD_RUN }, heading5: { run: WORD_RUN }, heading6: { run: WORD_RUN }
+  }
+}
+
+// Excel 兜底：① 给所有没显式设字体的单元格补上 TNR（各表大多逐格设了 name，此处收漏网的默认样式格）；
+// ② 把工作簿主题字体（Excel「正文/标题」的来源，exceljs 硬写 Calibri/Cambria）换成 TNR——空白格与
+// 用户导出后新键入的内容也跟着是 TNR。② 走 exceljs 内部模块，故整段 try 兜底：失败只是默认字体没换，
+// 已写入的单元格字体不受影响。
+function applyBookFont(wb) {
+  try {
+    const theme1 = require('exceljs/lib/xlsx/xml/theme1.js')
+    // 注意：wb.model 的 getter 每次现造一个对象，改它的字段无效——主题存在 wb._themes 上（writer 由此取）
+    wb._themes = { theme1: String(theme1).replace(/<a:latin typeface="(Calibri|Cambria)"\/>/g, `<a:latin typeface="${FNT}"/>`) }
+  } catch (e) { /* exceljs 内部结构变了就跳过，不影响导出 */ }
+  wb.eachSheet((ws) => {
+    ws.eachRow({ includeEmpty: false }, (row) => {
+      row.eachCell({ includeEmpty: false }, (cell) => {
+        const f = cell.font || {}
+        if (f.name !== FNT) cell.font = Object.assign({}, f, { name: FNT })
+      })
+    })
+  })
+  return wb
+}
 const MED = { style: 'medium', color: { argb: 'FF000000' } }
 const THIN = { style: 'thin', color: { argb: 'FF000000' } }
 const HAIR = { style: 'hair', color: { argb: 'FF999999' } }
@@ -132,7 +170,6 @@ const STR = {
     upCN: '上行 C/N (dB)', downCN: '下行 C/N (dB)', totalCN: '合计 C/N (dB)', thresholdCN: '门限 C/N (dB)',
     ebno: 'Eb/N₀ (dB)', esno: 'Es/N₀ (dB)', psd: '载波功率谱密度 (dBW/Hz)', avail: '系统可用度 (%)', availUp: '上行可用度 (%)',
     specEff: '频谱效率 (bps/Hz)', capacity: '容量 (Mbps)',
-    status: '合格', statusOk: '是', statusBad: '否', statusErr: '错误',
     pairSeq: '常规计算（1↔1）', pairMatrix: '矩阵计算（m×n）',
     subtitle: (sat, band, mode, pair, date) => `卫星 ${sat} · 频段 ${band} · 计算方式 ${mode} · 配对方式 ${pair} · ${date}`,
     calcFailed: '计算失败：',
@@ -179,7 +216,6 @@ const STR = {
     upCN: 'Uplink C/N (dB)', downCN: 'Downlink C/N (dB)', totalCN: 'Combined C/N (dB)', thresholdCN: 'Threshold C/N (dB)',
     ebno: 'Eb/N₀ (dB)', esno: 'Es/N₀ (dB)', psd: 'Satellite PSD (dBW/Hz)', avail: 'System Availability (%)', availUp: 'Uplink Availability (%)',
     specEff: 'Spectral Efficiency (bps/Hz)', capacity: 'Capacity (Mbps)',
-    status: 'Status', statusOk: 'Pass', statusBad: 'Fail', statusErr: 'Error',
     pairSeq: 'Sequential (1:1)', pairMatrix: 'Full Matrix (m×n)',
     subtitle: (sat, band, mode, pair, date) => `Satellite ${sat} · Band ${band} · Calculation Mode: ${mode} · Pairing: ${pair} · ${date}`,
     calcFailed: 'Calculation Failed: ',
@@ -326,7 +362,6 @@ function fmtBwText(khz) {
 
 // 容量列（Mbps）：η(bps/Hz)×B(kHz) → Mbps；无带宽/效率则 '—'
 const capMbpsCell = (l) => { const k = capKbpsOf(l.data); return isFinite(k) ? (k / 1000).toFixed(3) : '—' }
-const statusCell = (t) => ({ label: t.status, get: (l) => (l.error ? t.statusErr : (l.ok ? t.statusOk : t.statusBad)), text: true })
 
 // 再生式四体制各自的汇总参数行（按信号流向裁剪：只列该体制真正有值的指标，读表不见整列空白）。
 // 上行=功放/EIRP·上行C/N·上行可用度；下行=收信站G/T·下行C/N·卫星EIRP；星间微波=星间频率/距离·EIRP·G/T·星间C/N·互视；
@@ -340,7 +375,7 @@ function regenSummaryRows(t, regenMode) {
     R(t.downCN, 'carrierTotalCN'), R(t.thresholdCN, 'thresholdCN'),
     R(t.ebno, 'ebnoActualResult'), R(t.esno, 'esnoActualResult'),
     R(t.psd, 'satellitePSDResult'), R(t.satEirpDn, 'EIRPsResult'),
-    R(t.availDown, 'systemAvailabilityResult'), statusCell(t)
+    R(t.availDown, 'systemAvailabilityResult')
   ]
   if (regenMode === 'isl') return [
     R(t.islFreq, 'islRfFreqResult'), R(t.islDist, 'islRfDistResult'),
@@ -349,13 +384,13 @@ function regenSummaryRows(t, regenMode) {
     R(t.specEff, 'spectralEfficiencyResult'), { label: t.capacity, get: capMbpsCell },
     R(t.islCN, 'carrierTotalCN'), R(t.thresholdCN, 'thresholdCN'),
     R(t.ebno, 'ebnoActualResult'), R(t.esno, 'esnoActualResult'),
-    R(t.islVis, 'islVisibleFracResult'), R(t.availSys, 'systemAvailabilityResult'), statusCell(t)
+    R(t.islVis, 'islVisibleFracResult'), R(t.availSys, 'systemAvailabilityResult')
   ]
   if (regenMode === 'laser') return [
     R(t.laserDist, 'laserDistResult'), R(t.laserTxPower, 'laserTxPowerResult'),
     R(t.laserPrx, 'laserPrxResult'), R(t.laserPreq, 'laserPreqResult'),
     R(t.linkMargin, 'linkmargin'), R(t.laserDoppler, 'laserDopplerResult'),
-    R(t.islVis, 'islVisibleFracResult'), R(t.availSys, 'systemAvailabilityResult'), statusCell(t)
+    R(t.islVis, 'islVisibleFracResult'), R(t.availSys, 'systemAvailabilityResult')
   ]
   // 默认：再生式上行
   return [
@@ -365,7 +400,7 @@ function regenSummaryRows(t, regenMode) {
     { label: t.capacity, get: capMbpsCell },
     R(t.upCN, 'carrierTotalCN'), R(t.thresholdCN, 'thresholdCN'),
     R(t.ebno, 'ebnoActualResult'), R(t.esno, 'esnoActualResult'),
-    R(t.psd, 'stationPSDResult'), R(t.availUp, 'systemAvailabilityResult'), statusCell(t)
+    R(t.psd, 'stationPSDResult'), R(t.availUp, 'systemAvailabilityResult')
   ]
 }
 
@@ -395,13 +430,28 @@ function summaryRows(t, orbitType, regenMode) {
     { label: t.ebno, get: (l) => val(l.data, 'ebnoActualResult') },
     { label: t.esno, get: (l) => val(l.data, 'esnoActualResult') },
     { label: t.psd, get: (l) => val(l.data, 'satellitePSDResult') },
-    { label: availLabel, get: (l) => val(l.data, 'systemAvailabilityResult') },
-    { label: t.status, get: (l) => (l.error ? t.statusErr : (l.ok ? t.statusOk : t.statusBad)), text: true }
+    { label: availLabel, get: (l) => val(l.data, 'systemAvailabilityResult') }
   ]
 }
 // 每条链路的列头：常规计算用 #序号，矩阵计算用坐标；第二行换行写发信站→收信站
 function linkColHeader(l, idx, isSequential) {
   return `${isSequential ? '#' + (idx + 1) : l.coord}\n${l.txName || ''} → ${l.rxName || ''}`
+}
+
+// 汇总表显示单位自适应（与 UI 结果列同规则）：从行标签尾部 '(单位)' 识别可缩放量，
+// 每个指标行跨全部链路共选一个档位（W→mW/kW、kHz→MHz/GHz、整行<0dBW→dBm），
+// 重写标签单位并包裹取值函数（数值换算、'—'/文本原样）
+function adaptSummaryUnits(rows, links) {
+  for (const row of rows) {
+    if (row.text) continue
+    const m = /^(.*)\((\S+)\)\s*$/.exec(row.label || '')
+    if (!m) continue
+    const p = adaptiveUnits.pickColumn(links.map((l) => parseFloat(row.get(l))), m[2])
+    if (!p) continue
+    const g = row.get
+    row.get = (l) => { const v = g(l); const n = parseFloat(v); return isFinite(n) ? Number(adaptiveUnits.fmtScaled(p.conv(n))) : v }
+    row.label = m[1] + '(' + p.unit + ')'
+  }
 }
 
 // 瀑布段渲染辅助（与小程序 exportLinkBudget 同口径：黑白三线表）
@@ -413,6 +463,7 @@ const labelWithSign = (row) => (row.sign ? row.sign + ' ' : '') + (row.label || 
 // 仅列头标识不同——常规计算 #序号，矩阵计算坐标 T#R#）
 function buildSummarySheet(wb, links, params, meta, t, isSequential, orbitType, regenMode) {
   const rows = summaryRows(t, orbitType, regenMode)
+  adaptSummaryUnits(rows, links)
   const ncol = 1 + links.length
   const ws = wb.addWorksheet(t.sheetSummary, { views: [{ showGridLines: false, state: 'frozen', xSplit: 1, ySplit: 4 }] })
   ws.mergeCells(1, 1, 1, ncol)
@@ -1110,7 +1161,7 @@ async function buildLinkBudgetExcel(payload) {
     }, t)
   }
 
-  return wb.xlsx.writeBuffer()
+  return applyBookFont(wb).xlsx.writeBuffer()
 }
 
 // ===== 日凌预报报告（Word，交付级）=====
@@ -1189,7 +1240,7 @@ async function buildSunOutageWord(payload) {
     soTd(d.intensity, { align: 'center' })
   ] }))
 
-  const doc = new Document({ sections: [{ children: [
+  const doc = new Document({ styles: WORD_STYLES, sections: [{ children: [
     new Paragraph({ text: '日凌预报报告', heading: HeadingLevel.HEADING_1 }),
     new Paragraph({ children: [new TextRun({
       text: `${satellite.name || ''} ${satellite.lon}°E → ${station.name || ''} · ${r.seasonName} ${String(r.equinoxDate || '').slice(0, 4)}`,
@@ -1384,7 +1435,7 @@ async function buildRainAttenuationExcel(payload) {
     ds.getRow(rn).height = r.s8 ? 78 : 32
   })
 
-  return wb.xlsx.writeBuffer()
+  return applyBookFont(wb).xlsx.writeBuffer()
 }
 
 module.exports = { buildWord, buildExcel, buildLinkBudgetExcel, buildSunOutageWord, buildRainAttenuationExcel, ROWS }

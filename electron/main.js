@@ -66,7 +66,7 @@ function createLinkBudgetWindow() {
     height: 900,
     minWidth: 1100,
     minHeight: 720,
-    title: 'GEO 链路预算',
+    title: 'GSO 透明转发链路预算',
     backgroundColor: '#ffffff',
     autoHideMenuBar: true,
     webPreferences: {
@@ -115,7 +115,7 @@ function createNgsoWindow() {
     height: 900,
     minWidth: 1100,
     minHeight: 720,
-    title: 'NGSO 链路预算',
+    title: 'NGSO 透明转发链路预算',
     backgroundColor: '#ffffff',
     autoHideMenuBar: true,
     webPreferences: {
@@ -161,7 +161,7 @@ function createRegenWindow() {
     height: 900,
     minWidth: 1100,
     minHeight: 720,
-    title: '再生式链路预算',
+    title: '再生处理（OBP）链路预算',
     backgroundColor: '#ffffff',
     autoHideMenuBar: true,
     webPreferences: {
@@ -206,7 +206,7 @@ function createSunOutageWindow() {
     height: 840,
     minWidth: 980,
     minHeight: 640,
-    title: '日凌预报 · GEO',
+    title: '日凌预报 · GSO',
     backgroundColor: '#ffffff',
     autoHideMenuBar: true,
     webPreferences: {

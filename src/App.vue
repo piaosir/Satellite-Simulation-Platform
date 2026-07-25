@@ -44,6 +44,7 @@ const sideViews = computed(() => [
   { key: 'beams', label: '波束合成', icon: 'radio', disabled: !covNav.grdAvail, hint: '多馈源反射面 / 赋形反射面：设参数 → 点图放置轮廓 → 生成方向图天线' },
   { key: 'gxt', label: '卫星覆盖等值线', icon: 'waves', disabled: !covNav.covAvail, hint: 'GEO 卫星覆盖等值线（GXT 库）' },
   { key: 'markers', label: '标记', icon: 'map-pin', disabled: !pageReady.value, hint: '点标记 / 地球站 / 轨迹' },
+  { key: 'env', label: '环境场', icon: 'cloud-rain', disabled: !pageReady.value, hint: 'ITU-R 环境数据场：R0.01% 降雨率 / 0°C 等温线高度 / 雨高 / 海拔 / 水汽密度 / 云液态水（栅格 + 等值线）' },
   { key: 'geo', label: '地图设置', icon: 'sliders-horizontal', disabled: !pageReady.value, hint: '海陆配色 / 国界省界 / 名称标注' }
 ])
 const sideTitle = computed(() => sideViews.value.find((v) => v.key === ui.side)?.label || '')
@@ -121,11 +122,13 @@ const menus = computed(() => [
     { label: '退出', icon: 'log-out', hint: '关闭主窗口', run: () => window.close() }
   ] },
   { key: 'calc', label: '计算', items: [
-    { label: '地球静止轨道卫星（GEO）链路预算', icon: 'calculator', hint: '打开链路预算工作台（独立窗口）', run: openLinkBudget },
-    { label: '非地球静止轨道卫星（NGSO）链路预算', icon: 'square-function', hint: '打开 NGSO 链路预算工作台（独立窗口）', run: openNgso },
-    { label: '再生式链路预算', icon: 'cpu', hint: '打开再生式链路预算工作台（再生式上行 / 下行 / 星间链路，独立窗口）', run: openRegen },
-    { label: '日凌预报（GEO）', icon: 'sun', hint: '打开日凌预报（独立窗口）', run: openSunOutage },
-    { label: '雨衰计算', icon: 'cloud-rain', hint: '打开雨衰计算（独立窗口，通用于各类卫星）', run: openRain }
+    // 链路预算三工作台的专业命名：轨道维度（GSO 对地静止 / NGSO 非对地静止，ITU《无线电规则》口径）×
+    // 转发体制维度（透明弯管转发 / 星上再生处理 OBP）——「GEO/NGSO/再生式」旧并列混淆了两个维度，已更正。
+    { label: 'GSO 透明转发链路预算', icon: 'calculator', hint: '对地静止轨道（GSO）· 透明弯管转发器：打开链路预算工作台（独立窗口）', run: openLinkBudget },
+    { label: 'NGSO 透明转发链路预算', icon: 'square-function', hint: '非对地静止轨道（NGSO，含 LEO/MEO/HEO）· 透明弯管转发器：打开链路预算工作台（独立窗口）', run: openNgso },
+    { label: '再生处理（OBP）链路预算', icon: 'cpu', hint: '星上再生处理转发器：上行 / 下行 / 星间微波 / 星间激光，链路预算解耦（独立窗口）', run: openRegen },
+    { label: '日凌预报（GSO）', icon: 'sun', hint: '打开日凌预报（独立窗口）', run: openSunOutage },
+    { label: '雨衰计算', icon: 'droplets', hint: '打开雨衰计算（独立窗口，通用于各类卫星）', run: openRain }
   ] },
   { key: 'view', label: '视图', items: [
     { label: '3D 球体', icon: 'globe', check: !view.flat, hint: '三维地球视图', run: () => pickView(false) },
@@ -163,11 +166,11 @@ function runItem(it) { if (it.disabled) return; openMenu.value = ''; hint.value 
 const toolButtons = computed(() => [
   { icon: 'folder-open', tip: '文件管理', run: () => { fileOpen.value = true } },
   { sep: true },
-  { icon: 'calculator', tip: 'GEO 链路预算', run: openLinkBudget },
-  { icon: 'square-function', tip: 'NGSO 链路预算', run: openNgso },
-  { icon: 'cpu', tip: '再生式链路预算', run: openRegen },
-  { icon: 'sun', tip: '日凌预报（GEO）', run: openSunOutage },
-  { icon: 'cloud-rain', tip: '雨衰计算', run: openRain },
+  { icon: 'calculator', tip: 'GSO 透明转发链路预算', run: openLinkBudget },
+  { icon: 'square-function', tip: 'NGSO 透明转发链路预算', run: openNgso },
+  { icon: 'cpu', tip: '再生处理（OBP）链路预算', run: openRegen },
+  { icon: 'sun', tip: '日凌预报（GSO）', run: openSunOutage },
+  { icon: 'droplets', tip: '雨衰计算', run: openRain },
   { sep: true },
   { icon: 'globe', tip: '3D 球体视图', on: !view.flat, run: () => pickView(false) },
   { icon: 'map', tip: '2D 平面图视图', on: view.flat, run: () => pickView(true) },
@@ -337,6 +340,12 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
           <button class="zbtn" title="放大" @click="stepZoom(0.01)"><Icon name="plus" :size="10" /></button>
           <span class="zpct">{{ Math.round(zoom.value * 100) }}%</span>
         </span>
+        <!-- 环境场读数：只在图层开着且光标在图上时出现（没有图层时不占位，状态栏不留空格子） -->
+        <span v-if="cursor.env" class="cell envval" :title="`${cursor.env.label}：取自当前环境场栅格（格距 ${cursor.env.step >= 1 ? cursor.env.step.toFixed(0) : cursor.env.step.toFixed(3)}°，双线性）；精确取值以链路预算的逐点查表为准`">
+          <span class="ekey">{{ cursor.env.short }}</span>
+          <span class="cval">{{ cursor.env.text }}</span>
+          <span class="eunit">{{ cursor.env.unit }}</span>
+        </span>
         <span class="cell coord">
           <Icon class="cur" name="cursor-arrow" :size="13" />
           <span class="cval">{{ cursor.ll ? fmtCoord(cursor.ll) : '——°  ——°' }}</span>
@@ -484,6 +493,10 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   border: 1px solid var(--border-strong); background: var(--bg);
   box-shadow: inset 0 1px 2px rgba(0,0,0,0.06); color: var(--text-muted);
 }
+/* 环境场读数格：量名（灰）+ 数值（等宽白）+ 单位（灰），与经纬度格同一档视觉重量 */
+.cell.envval { color: var(--text); gap: 5px; }
+.cell.envval .ekey, .cell.envval .eunit { color: var(--text-faint); font-size: 11px; }
+.cell.envval .cval { font-family: var(--font-mono); font-weight: 600; font-variant-numeric: tabular-nums; }
 .cell.coord { color: var(--text); }
 .cell.coord .cur { flex: none; }
 .cell.coord .cval { font-family: var(--font-mono); font-weight: 600; letter-spacing: .3px; min-width: 150px; }

@@ -7,6 +7,39 @@ const { P676_PART1 } = require('./p676Data.js');
 const CLOUD_GRID = require('../data/cloudParamsGrid.js'); // ITU-R P.840-9 Lred 对数正态参数地图
 const { getRhoWs } = require('../data/waterVaporGrid.js'); // ITU-R P.836-6 地面水汽密度地图
 
+// —— 出参小数位增量 FX ——
+//
+// 本模块的出参一律是 `数.toFixed(n)` 的**字符串**，故每个量都被钉在 10⁻ⁿ 的格子上。
+// 单点计算与报表要的正是这个定位数（可手算、可对表、逐位可复核），但参数扫描要的是场：
+// 跨度只有 0.3 dB 的场（上行 C/N 常如此）被 0.01 dB 的取整压成台阶，等值线只能沿格边走，
+// 画出来是一片直角阶梯——那些直角不是物理，是取整留下的痕迹。
+//
+// 故留一个模块级增量：全文 toFixed(n) 实际按 n + FX 位输出。默认 0，逐位与从前完全相同；
+// 扫描期间由 utils/linkSweep.js 临时置 4，算完立刻复位（try/finally 是硬要求，漏出去会让
+// 界面上的数变成 6 位小数）。它只改出参的位数，不碰任何一步计算。
+let FX = 0;
+
+// —— 调试日志开关 ——
+//
+// 引擎每次调用曾无条件 `console.log('收到的参数:', JSON.stringify(...))` + `console.log('计算完成，结果:', ...)`，
+// 两次全对象序列化（结果对象 172 键 / 5.2 KB）+ 一次 stdout 写 ≈ 0.028 ms/次，占单次引擎调用 0.084 ms 的
+// 三分之一；而「功带平衡」一行要跑 33 次引擎、批量一次上百行 —— 纯打日志就吃掉近半计算时间。
+// 故改为按需开启：设环境变量 SATLINK_DEBUG=1 时才打（且 JSON.stringify 也只在那时才求值）。
+// 只影响日志，不碰任何一步计算。
+const DEBUG_LOG = !!(typeof process !== 'undefined' && process.env && process.env.SATLINK_DEBUG);
+
+/**
+ * 设置出参小数位增量。
+ * @param {number} n 增量位数（夹到 0~8 的整数）
+ * @returns {number} 改动前的值——调用方在 finally 里原样写回即可精确复位（可嵌套）
+ */
+function setOutputPrecisionBoost(n) {
+  const prev = FX;
+  const v = Math.round(Number(n) || 0);
+  FX = v < 0 ? 0 : (v > 8 ? 8 : v);
+  return prev;
+}
+
 /**
  * 解析FEC码率字符串，支持任意形式的分数和小数
  * @param {string|number} fecInput - FEC码率输入（如 "3/4", "11/55", "0.75"）
@@ -74,7 +107,6 @@ const CONSTANTS = {
   LIGHT_SPEED: 299792.458, // 光速 km/s
   EARTH_RADIUS: 6378.137, // 地球平均半径 km
   SATELLITE_ALTITUDE: 35786, // 地球同步卫星高度 km
-  GEO_RADIUS: 42644,
   PI: Math.PI,
   BOLTZMANN: -228.6 // 玻尔兹曼常数 dBW/K/Hz
 };
@@ -158,8 +190,9 @@ const P838_TABLE = {
 };
 
 /**
- * ITU-R S.465-6 地球站天线离轴增益计算
- * 用于频率协调的参考辐射方向图
+ * 地球站天线离轴增益计算 — RR Appendix 8 型参考方向图（29−25·lgφ 旁瓣包络）
+ * 结构为 RR AP8 分段（G1=2+15lg(D/λ)、主瓣抛物线、φr=15.85(D/λ)^-0.6）+ S.580 的 29 系数旁瓣段，
+ * 并非 ITU-R S.465-6 正文（S.465-6 仅 32−25lgφ / −10 两段）。函数名保留 465 仅为兼容既有调用。
  * @param {number} diameter - 天线直径 (m)
  * @param {number} wavelength - 波长 (m)
  * @param {number} efficiency - 天线效率 (0-1)
@@ -189,12 +222,10 @@ function calculateITU465OffAxisGain(diameter, wavelength, efficiency, phi) {
     } else if (phi < phi_r) {
       // 第一旁瓣平台区
       G_phi = G1;
-    } else if (phi < 36) {
-      // 旁瓣衰减区
+    } else if (phi < 36.31) {
+      // 旁瓣衰减区（29−25·lgφ 延续到与 −10 dBi 交点 φ=10^(39/25)≈36.31°，
+      // 原 36°~48° 的 −5 dBi 平台在 S.465/S.580/AP8 任何版本中均无出处，已删除）
       G_phi = 29 - 25 * Math.log10(phi);
-    } else if (phi < 48) {
-      // 过渡区
-      G_phi = -5;
     } else {
       // 远旁瓣区
       G_phi = -10;
@@ -259,20 +290,20 @@ function calculateITU465Isolation(diameter, wavelength, efficiency, phi) {
  */
 function calculateLinkBudget(satParams, linkParams) {
   try {
-    console.log('收到的参数:', JSON.stringify({ satParams, linkParams }));
-    
+    if (DEBUG_LOG) console.log('收到的参数:', JSON.stringify({ satParams, linkParams }));
+
     // 参数验证
     if (!satParams || !linkParams) {
       throw new Error('缺少必需的参数：satParams 或 linkParams');
     }
-    
-    console.log('参数验证通过，开始计算');
-    
+
+    if (DEBUG_LOG) console.log('参数验证通过，开始计算');
+
     // 执行链路计算 - 使用完整算法
     const results = performCalculations(satParams, linkParams);
-    
-    console.log('计算完成，结果:', JSON.stringify(results));
-    
+
+    if (DEBUG_LOG) console.log('计算完成，结果:', JSON.stringify(results));
+
     return {
       success: true,
       data: results
@@ -412,27 +443,10 @@ function performCalculations(satParams, inputs) {
     ? parseFloat(inputs.paBackoff) 
     : 0; // dB - 功放回退 (支持输入0)
   
-  // ============ 精细化损耗参数 ============
-  // 天线指向误差（度）- 用于计算指向损耗
-  const pointingError = inputs.pointingError !== undefined && inputs.pointingError !== '' && inputs.pointingError !== null
-    ? parseFloat(inputs.pointingError)
-    : 0.05; // 默认0.05度
-  
-  // 极化失配损耗（dB）
-  const polarizationLoss = inputs.polarizationLoss !== undefined && inputs.polarizationLoss !== '' && inputs.polarizationLoss !== null
-    ? parseFloat(inputs.polarizationLoss)
-    : 0.1; // 默认0.1 dB
-  
-  // 天线罩损耗（dB）- 按频段默认
-  const radomeLoss = inputs.radomeLoss !== undefined && inputs.radomeLoss !== '' && inputs.radomeLoss !== null
-    ? parseFloat(inputs.radomeLoss)
-    : getDefaultRadomeLoss(parseFloat(inputs.centerFrequency) || 14.25);
-  
-  // 接头/法兰损耗（dB）
-  const connectorLoss = inputs.connectorLoss !== undefined && inputs.connectorLoss !== '' && inputs.connectorLoss !== null
-    ? parseFloat(inputs.connectorLoss)
-    : 0.1; // 默认0.1 dB
-  
+  // （原「精细化损耗参数」pointingError/polarizationLoss/radomeLoss/connectorLoss 已删除：
+  //   四项仅读入并回显、从未参与任何链路计算，前端也无输入 UI，保留会误导使用者以为已计入。
+  //   实际链路中的杂项损耗统一由用户输入的 uplinkOtherLoss/downlinkOtherLoss 承载。）
+
   // ============ 频率参数 ============
   const uplinkFrequency = (inputs.centerFrequency !== '' && inputs.centerFrequency !== null && inputs.centerFrequency !== undefined)
     ? parseFloat(inputs.centerFrequency) : 14.25; // GHz
@@ -467,7 +481,7 @@ function performCalculations(satParams, inputs) {
   
   // 系统可用度
   const rxdownlinkAvailability = rxDownlinkAvailability * 100;
-  const systemAvailability = (uplinkAvailability * rxDownlinkAvailability).toFixed(5);
+  const systemAvailability = (uplinkAvailability * rxDownlinkAvailability).toFixed(5 + FX);
   
   // ============ 调制与带宽计算 ============
   const modulationFactor = MODULATION_FACTORS[modulation] || 2;
@@ -592,7 +606,10 @@ function performCalculations(satParams, inputs) {
   // 三个气象参数均按地理位置修正：
   //   Ps  — P.835-6 标准大气公式，按站址海拔 h(km) 修正：Ps = 1013.25×(1−6.5h/288.15)^5.2561
   //   Ts  — P.835-6 纬度分区参考大气，叠加 6.5 K/km 海拔递减率
-  //   ρ_ws— P.836-6 全球地图，晴天取 RHO_50（年中位数），雨天取 RHO_1
+  //   ρ_ws— P.836-6 全球地图。注意实际打包的是 RHO_90（干端，"晴天"档）与 RHO_10（湿端，"雨天"档），
+  //         并非年中位 RHO_50 / 1% 分位 RHO_1（见 data/waterVaporGrid.js 头注）；P.618 §2.5 严格口径
+  //         p<1% 时 AG 应配 ρ(1%)，用 ρ(10%) 使降雨条件气体衰减低估约 0.1~0.3 dB（Ka 低仰角端更大）。
+  //         如需消除偏差需重打包 RHO_50/RHO_1 地图，此处注释先与数据事实对齐。
   const uplinkPs    = 1013.25 * Math.pow(Math.max(0.01, 1 - 6.5 * altitude / 288.15), 5.2561);
   const uplinkTs    = Math.max(200, (Math.abs(earthLat) < 22 ? 300.4 : Math.abs(earthLat) < 45 ? 283.1 : 272.4) - 6.5 * altitude);
   const uplinkRhoWs = getRhoWs(earthLat, earthLon, uplinkAvailability < 100);
@@ -697,12 +714,18 @@ function performCalculations(satParams, inputs) {
   const autoAntennaNoiseTemp = 275 * (1 - _skyLin) + 2.7 * _skyLin + 25;
   const antennaNoiseTempEff = antennaNoiseTempAuto ? autoAntennaNoiseTemp : antennaNoiseTemp;
 
-  // 降雨噪声温度
-  const rainNoiseTemp = 273.15 * (1 - 1 / Math.pow(10, downlinkRainAttenuation / 10));
+  // 降雨噪声温度（介质辐射温度统一取 P.618-14 §3 推荐值 T_mr = 275 K，与上方自动天线噪温一致）
+  const rainNoiseTemp = 275 * (1 - 1 / Math.pow(10, downlinkRainAttenuation / 10));
 
-  // 接收系统等效噪声温度
+  // 云噪声温度：云衰减已常态计入下行功率链（downlinkCT），按吸收/辐射自洽（基尔霍夫），
+  // 同一吸收介质的热辐射 ΔT = T_mr·(1−10^(−AC/10)) 须同步计入系统噪温（此前只扣 C 不抬 T，口径不自洽）。
+  // 雨噪仍按场景单独计入（gOverTdegradation），与云噪不重复。
+  const cloudNoiseTemp = 275 * (1 - 1 / Math.pow(10, downlinkCloudAttenuation / 10));
+
+  // 接收系统等效噪声温度（云噪经馈线折算，与天线噪温同参考面）
   const feederLossLinear = Math.pow(10, rxFeederLoss / 10);
   const systemNoiseTempK = (antennaNoiseTempEff / feederLossLinear) +
+                           (cloudNoiseTemp / feederLossLinear) +
                            290 * (1 - 1 / feederLossLinear) +
                            receiverNoiseTemp;
   const systemNoiseTempDb = 10 * Math.log10(systemNoiseTempK);
@@ -945,6 +968,14 @@ function performCalculations(satParams, inputs) {
   // 主导场景：上行降雨占主导时，下行按晴空（下行雨衰与 G/T 劣化不参与）；
   //          下行降雨占主导时，下行计入雨衰与 G/T 劣化，上行雨衰按实际值参与。
   const uplinkRainDominant = uplinkPowerRatio > downlinkPowerRatio;
+
+  // 下行干扰损失（真实四路 ACI/ASI/XPI/IM 并联代价，按主导场景取口径）：
+  //   上行主导（下行按晴空）= downlinkCT − downlinkTotalCT；
+  //   下行主导（下行计雨衰与 G/T 劣化；干扰项 C/I 同路径同衰减、不随雨变）= 雨口径热噪 C/T − 雨口径总 C/T。
+  // 供瀑布行级取数——此前瀑布该行由反解 downlinkCN 取残差，会把上行残余雨衰错计入干扰行（标签失真可达数 dB）。
+  const downlinkInterferenceLoss = uplinkRainDominant
+    ? (downlinkCT - downlinkTotalCT)
+    : ((downlinkCT - downlinkRainAttenuation - gOverTdegradation) - rainDownlinkTotalCT);
 
   // 上行：到达卫星载波电平 → 热噪声 C/N（始终含上行雨衰）
   const cLevelAtSatellite = stationEIRP - uplinkFSL - uplinkAtmosphericAttenuation -
@@ -1475,262 +1506,235 @@ function performCalculations(satParams, inputs) {
   };
   
   // 上行站结果
-  results.earthAntennaDiameterResult = antennaDiameter.toFixed(2);
-  results.earthLongitudeResult = earthLon.toFixed(4);
-  results.earthLatitudeResult = earthLat.toFixed(4);
+  results.earthAntennaDiameterResult = antennaDiameter.toFixed(2 + FX);
+  results.earthLongitudeResult = earthLon.toFixed(4 + FX);
+  results.earthLatitudeResult = earthLat.toFixed(4 + FX);
   results.uplinkPolarizationResult = polarizationDisplayMap[uplinkPolarizationDisplay] || uplinkPolarizationDisplay; // 上行极化方式显示值
-  results.elevationResult = elevation.toFixed(2);
+  results.elevationResult = elevation.toFixed(2 + FX);
   results.elevationValidation = txElevationValidation;
-  results.azimuthResult = azimuth.toFixed(2);
+  results.azimuthResult = azimuth.toFixed(2 + FX);
   // 圆极化时极化角显示为'-'
-  results.uplinkPolarizationAngleResult = (uplinkPolarizationDisplay === 'LHCP' || uplinkPolarizationDisplay === 'RHCP') ? '-' : uplinkPolarizationAngle.toFixed(2);
-  results.earthAntennaEfficiencyResult = (antennaEfficiency * 100).toFixed(0); // 回显实际参与计算的效率(对齐下行 rxAntennaEfficiencyResult)
-  results.wavelengthResult = wavelength.toFixed(4);
-  results.beamWidthResult = beamWidth.toFixed(2);
-  results.txAntennaGainResult = txAntennaGain.toFixed(2);
-  results.txSidelobeGainResult = txSidelobeGain.toFixed(2); // 发信站旁瓣发射增益
-  results.txSidelobeEIRPResult = txSidelobeEIRP.toFixed(2); // 发信站旁瓣EIRP
-  results.txSidelobePSDResult = txSidelobePSD.toFixed(3); // 发信站旁瓣功率谱密度
-  results.ituPsdLimit4kHz = ituPsdLimit4kHz.toFixed(2); // ITU功率谱密度门限(dBW/4kHz)
-  results.ituPsdLimitHz = ituPsdLimitHz.toFixed(3); // ITU功率谱密度门限(dBW/Hz)
-  results.feederLossResult = feederLoss.toFixed(2);
-  results.slantRangeResult = slantRange.toFixed(2);
-  results.uplinkFSLResult = uplinkFSL.toFixed(2);
-  results.uplinkRainAttenuation = uplinkRainAttenuation.toFixed(2);
-  results.uplinkRainHeightResult = uplinkRainHeight.toFixed(3);
+  results.uplinkPolarizationAngleResult = (uplinkPolarizationDisplay === 'LHCP' || uplinkPolarizationDisplay === 'RHCP') ? '-' : uplinkPolarizationAngle.toFixed(2 + FX);
+  results.earthAntennaEfficiencyResult = (antennaEfficiency * 100).toFixed(0 + FX); // 回显实际参与计算的效率(对齐下行 rxAntennaEfficiencyResult)
+  results.wavelengthResult = wavelength.toFixed(4 + FX);
+  results.beamWidthResult = beamWidth.toFixed(2 + FX);
+  results.txAntennaGainResult = txAntennaGain.toFixed(2 + FX);
+  results.txSidelobeGainResult = txSidelobeGain.toFixed(2 + FX); // 发信站旁瓣发射增益
+  results.txSidelobeEIRPResult = txSidelobeEIRP.toFixed(2 + FX); // 发信站旁瓣EIRP
+  results.txSidelobePSDResult = txSidelobePSD.toFixed(3 + FX); // 发信站旁瓣功率谱密度
+  results.ituPsdLimit4kHz = ituPsdLimit4kHz.toFixed(2 + FX); // ITU功率谱密度门限(dBW/4kHz)
+  results.ituPsdLimitHz = ituPsdLimitHz.toFixed(3 + FX); // ITU功率谱密度门限(dBW/Hz)
+  results.feederLossResult = feederLoss.toFixed(2 + FX);
+  results.slantRangeResult = slantRange.toFixed(2 + FX);
+  results.uplinkFSLResult = uplinkFSL.toFixed(2 + FX);
+  results.uplinkRainAttenuation = uplinkRainAttenuation.toFixed(2 + FX);
+  results.uplinkRainHeightResult = uplinkRainHeight.toFixed(3 + FX);
   // 上行降雨去极化 XPD (ITU-R P.618-14 §4.1)，无降雨时显示'-'
-  results.uplinkRainXPDResult = isFinite(uplinkRainXPD) ? uplinkRainXPD.toFixed(2) : '-';
-  results.effectiveXpolUplinkFactorResult = effectiveXpolUplinkFactor.toFixed(2);
-  results.uplinkCloudAttenuation = uplinkCloudAttenuation.toFixed(2);
-  results.uplinkAtmosphericAttenuationResult = uplinkAtmosphericAttenuation.toFixed(2);
-  results.uplinkScintillationResult = uplinkScintillation.toFixed(2); // 上行闪烁衰减 AS(p) (dB)
-  results.uplinkTotalAttenuationResult = uplinkTotalAttenuation.toFixed(2); // 上行总衰减 AT(p) ITU-R P.618-14 §2.5
-  results.uplinkCN = uplinkCN.toFixed(2);
-  results.uplinkThermalCN = uplinkThermalCN.toFixed(2); // 上行热噪声 C/N
-  results.uplinkInterferenceCN = uplinkInterferenceCN.toFixed(2); // 上行干扰 C/I（表达为 C/N）
+  results.uplinkRainXPDResult = isFinite(uplinkRainXPD) ? uplinkRainXPD.toFixed(2 + FX) : '-';
+  results.effectiveXpolUplinkFactorResult = effectiveXpolUplinkFactor.toFixed(2 + FX);
+  results.uplinkCloudAttenuation = uplinkCloudAttenuation.toFixed(2 + FX);
+  results.uplinkAtmosphericAttenuationResult = uplinkAtmosphericAttenuation.toFixed(2 + FX);
+  results.uplinkScintillationResult = uplinkScintillation.toFixed(2 + FX); // 上行闪烁衰减 AS(p) (dB)
+  results.uplinkTotalAttenuationResult = uplinkTotalAttenuation.toFixed(2 + FX); // 上行总衰减 AT(p) ITU-R P.618-14 §2.5
+  results.uplinkCN = uplinkCN.toFixed(2 + FX);
+  results.uplinkThermalCN = uplinkThermalCN.toFixed(2 + FX); // 上行热噪声 C/N
+  results.uplinkInterferenceCN = uplinkInterferenceCN.toFixed(2 + FX); // 上行干扰 C/I（表达为 C/N）
   results.uplinkRainDominant = uplinkRainDominant; // 上行降雨是否占主导
-  results.actualUplinkCT = actualUplinkCT.toFixed(2); // 载波上行C/T
-  results.actualUplinkCN0 = (actualUplinkCT + 228.6).toFixed(2); // 载波上行C/N₀
+  results.actualUplinkCT = actualUplinkCT.toFixed(2 + FX); // 载波上行C/T
+  results.actualUplinkCN0 = (actualUplinkCT + 228.6).toFixed(2 + FX); // 载波上行C/N₀
   
-  // 精细化损耗参数
-  results.pointingErrorResult = pointingError.toFixed(3); // 指向误差(度)
-  results.polarizationLossResult = polarizationLoss.toFixed(2); // 极化失配损耗(dB)
-  results.radomeLossResult = radomeLoss.toFixed(2); // 天线罩损耗(dB)
-  results.connectorLossResult = connectorLoss.toFixed(2); // 接头损耗(dB)
-  results.uplinkMiscLossResult = uplinkMiscLoss.toFixed(3); // 上行链路其他损耗(dB) = 其他损耗
-  results.downlinkMiscLossResult = downlinkMiscLoss.toFixed(3); // 下行链路其他损耗(dB) = 其他损耗
+  // 其他损耗（用户输入，实际参与链路计算）
+  results.uplinkMiscLossResult = uplinkMiscLoss.toFixed(3 + FX); // 上行链路其他损耗(dB) = 其他损耗
+  results.downlinkMiscLossResult = downlinkMiscLoss.toFixed(3 + FX); // 下行链路其他损耗(dB) = 其他损耗
   
   // 接收站结果
-  results.rxAntennaDiameterResult = rxAntennaDiameter.toFixed(2);
-  results.rxLongitudeResult = rxLongitude.toFixed(4);
-  results.rxLatitudeResult = rxLatitude.toFixed(4);
+  results.rxAntennaDiameterResult = rxAntennaDiameter.toFixed(2 + FX);
+  results.rxLongitudeResult = rxLongitude.toFixed(4 + FX);
+  results.rxLatitudeResult = rxLatitude.toFixed(4 + FX);
   results.downlinkPolarizationResult = polarizationDisplayMap[downlinkPolarizationDisplay] || downlinkPolarizationDisplay; // 下行极化方式显示值
-  results.rxElevationResult = rxElevation.toFixed(2);
+  results.rxElevationResult = rxElevation.toFixed(2 + FX);
   results.rxElevationValidation = rxElevationValidation;
-  results.rxAzimuthResult = rxAzimuth.toFixed(2);
+  results.rxAzimuthResult = rxAzimuth.toFixed(2 + FX);
   // 圆极化时极化角显示为'-'
-  results.downlinkPolarizationAngleResult = (downlinkPolarizationDisplay === 'LHCP' || downlinkPolarizationDisplay === 'RHCP') ? '-' : downlinkPolarizationAngle.toFixed(2);
-  results.rxAntennaEfficiencyResult = (rxAntennaEfficiency * 100).toFixed(0);
-  results.rxWavelengthResult = rxWavelength.toFixed(4); // 下行波长
-  results.rxAntennaGainResult = rxAntennaGain.toFixed(2);
-  results.theta3 = theta3.toFixed(2);
-  results.rxSlantRangeResult = rxSlantRange.toFixed(2);
-  results.downlinkFSLResult = downlinkFSL.toFixed(2);
-  results.downlinkRainAttenuationResult = downlinkRainAttenuation.toFixed(2);
-  results.downlinkRainHeightResult = downlinkRainHeight.toFixed(3);
+  results.downlinkPolarizationAngleResult = (downlinkPolarizationDisplay === 'LHCP' || downlinkPolarizationDisplay === 'RHCP') ? '-' : downlinkPolarizationAngle.toFixed(2 + FX);
+  results.rxAntennaEfficiencyResult = (rxAntennaEfficiency * 100).toFixed(0 + FX);
+  results.rxWavelengthResult = rxWavelength.toFixed(4 + FX); // 下行波长
+  results.rxAntennaGainResult = rxAntennaGain.toFixed(2 + FX);
+  results.theta3 = theta3.toFixed(2 + FX);
+  results.rxSlantRangeResult = rxSlantRange.toFixed(2 + FX);
+  results.downlinkFSLResult = downlinkFSL.toFixed(2 + FX);
+  results.downlinkRainAttenuationResult = downlinkRainAttenuation.toFixed(2 + FX);
+  results.downlinkRainHeightResult = downlinkRainHeight.toFixed(3 + FX);
   // 下行降雨去极化 XPD (ITU-R P.618-14 §4.1)，无降雨时显示'-'
-  results.downlinkRainXPDResult = isFinite(downlinkRainXPD) ? downlinkRainXPD.toFixed(2) : '-';
-  results.effectiveXpolDownlinkFactorResult = effectiveXpolDownlinkFactor.toFixed(2);
-  results.downlinkCloudAttenuation = downlinkCloudAttenuation.toFixed(2);
-  results.downlinkAtmosphericAttenuationResult = downlinkAtmosphericAttenuation.toFixed(2);
-  results.downlinkScintillationResult = downlinkScintillation.toFixed(2); // 下行闪烁衰减 AS(p) (dB)
-  results.downlinkTotalAttenuationResult = downlinkTotalAttenuation.toFixed(2); // 下行总衰减 AT(p) ITU-R P.618-14 §2.5
-  results.downlinkCN = downlinkCN.toFixed(2);
-  results.downlinkThermalCN = downlinkThermalCN.toFixed(2); // 下行热噪声 C/N
-  results.downlinkInterferenceCN = downlinkInterferenceCN.toFixed(2); // 下行干扰 C/I（表达为 C/N）
-  results.actualDownlinkCT = actualDownlinkCT.toFixed(2); // 载波下行C/T
-  results.actualDownlinkCN0 = (actualDownlinkCT + 228.6).toFixed(2); // 载波下行C/N₀
-  results.arrivalPFDAtGroundResult = arrivalPFDAtGround.toFixed(2); // 卫星到地面 PFD（实际到达）：到达地面载波电平 + 10·lg(4π/λ²)，与下行功率链自洽
-  results.ituPfdLimit4kHz = ituPfdLimit4kHz.toFixed(2); // ITU PFD限制(dBW/m²/4kHz)
-  results.ituPfdLimitPerM2 = ituPfdLimitPerM2.toFixed(2); // ITU PFD限制(转换到载波带宽)
+  results.downlinkRainXPDResult = isFinite(downlinkRainXPD) ? downlinkRainXPD.toFixed(2 + FX) : '-';
+  results.effectiveXpolDownlinkFactorResult = effectiveXpolDownlinkFactor.toFixed(2 + FX);
+  results.downlinkCloudAttenuation = downlinkCloudAttenuation.toFixed(2 + FX);
+  results.downlinkAtmosphericAttenuationResult = downlinkAtmosphericAttenuation.toFixed(2 + FX);
+  results.downlinkScintillationResult = downlinkScintillation.toFixed(2 + FX); // 下行闪烁衰减 AS(p) (dB)
+  results.downlinkTotalAttenuationResult = downlinkTotalAttenuation.toFixed(2 + FX); // 下行总衰减 AT(p) ITU-R P.618-14 §2.5
+  results.downlinkCN = downlinkCN.toFixed(2 + FX);
+  results.downlinkThermalCN = downlinkThermalCN.toFixed(2 + FX); // 下行热噪声 C/N
+  results.downlinkInterferenceCN = downlinkInterferenceCN.toFixed(2 + FX); // 下行干扰 C/I（表达为 C/N）
+  results.actualDownlinkCT = actualDownlinkCT.toFixed(2 + FX); // 载波下行C/T
+  results.actualDownlinkCN0 = (actualDownlinkCT + 228.6).toFixed(2 + FX); // 载波下行C/N₀
+  results.arrivalPFDAtGroundResult = arrivalPFDAtGround.toFixed(2 + FX); // 卫星到地面 PFD（实际到达）：到达地面载波电平 + 10·lg(4π/λ²)，与下行功率链自洽
+  results.ituPfdLimit4kHz = ituPfdLimit4kHz.toFixed(2 + FX); // ITU PFD限制(dBW/m²/4kHz)
+  results.ituPfdLimitPerM2 = ituPfdLimitPerM2.toFixed(2 + FX); // ITU PFD限制(转换到载波带宽)
   results.ituPfdRefBandwidth = ituPfdRefBandwidth; // ITU参考带宽
   // 噪声温度
   // 天线噪温：自动模式回报实际所用值（§3 算得），并附模式标注供瀑布/详情区分
-  results.antennaNoiseTempResult = antennaNoiseTempAuto ? +antennaNoiseTempEff.toFixed(2) : antennaNoiseTemp;
+  results.antennaNoiseTempResult = antennaNoiseTempAuto ? +antennaNoiseTempEff.toFixed(2 + FX) : antennaNoiseTemp;
   results.antennaNoiseTempModeResult = antennaNoiseTempAuto ? '自动' : '自定义';
   results.receiverNoiseTempResult = receiverNoiseTemp;
-  results.rainNoiseTempResult = rainNoiseTemp.toFixed(2);
-  results.systemNoiseTempKResult = systemNoiseTempK.toFixed(2);
-  results.systemNoiseTempDbResult = systemNoiseTempDb.toFixed(2);
-  results.gOverTeResult = gOverTe.toFixed(2);
-  results.gOverTdegradationResult = gOverTdegradation.toFixed(2);
-  results.rxFeederLossResult = rxFeederLoss.toFixed(2);
-  results.rxSidelobeGainResult = (rxAntennaGain - ISO).toFixed(2); // 接收旁瓣增益
+  results.rainNoiseTempResult = rainNoiseTemp.toFixed(2 + FX);
+  results.cloudNoiseTempResult = cloudNoiseTemp.toFixed(2 + FX); // 云噪声温度(K)，随云衰常态计入系统噪温
+  results.systemNoiseTempKResult = systemNoiseTempK.toFixed(2 + FX);
+  results.systemNoiseTempDbResult = systemNoiseTempDb.toFixed(2 + FX);
+  results.gOverTeResult = gOverTe.toFixed(2 + FX);
+  results.gOverTdegradationResult = gOverTdegradation.toFixed(2 + FX);
+  results.rxFeederLossResult = rxFeederLoss.toFixed(2 + FX);
+  results.rxSidelobeGainResult = (rxAntennaGain - ISO).toFixed(2 + FX); // 接收旁瓣增益
   
   // 卫星参数
   results.orbitPositionResult = orbitPosition;
-  results.EIRPsResult = EIRPs.toFixed(2);
-  results.satellitePSDResult = satellitePSD.toFixed(3);
-  results.SFDsResult = SFDs.toFixed(2);
-  results.satelliteGTResult = G_Ts.toFixed(2); // 卫星接收 G/T (dB/K)，上行 C/T 转换用
+  results.EIRPsResult = EIRPs.toFixed(2 + FX);
+  results.satellitePSDResult = satellitePSD.toFixed(3 + FX);
+  results.SFDsResult = SFDs.toFixed(2 + FX);
+  results.satelliteGTResult = G_Ts.toFixed(2 + FX); // 卫星接收 G/T (dB/K)，上行 C/T 转换用
   results.BOiResult = BOi;
   results.BOoResult = BOo;
-  results.antennaGainResult = antennaGain.toFixed(2);
+  results.antennaGainResult = antennaGain.toFixed(2 + FX);
   results.transponderBandwidthResult = transponderBandwidth;
   // 轨道高度（GEO 地球静止轨道固定：35786 km）
-  results.orbitAltitudeResult = CONSTANTS.SATELLITE_ALTITUDE.toFixed(0);
+  results.orbitAltitudeResult = CONSTANTS.SATELLITE_ALTITUDE.toFixed(0 + FX);
   // 链路时延（GEO单程端到端传播时延）
   // τ = (d_up + d_down) / c，d_up/d_down 为上/下行星地斜距(km)，c = 299792.458 km/s
   // 参考：ITU-R S.1711 / Roddy "Satellite Communications" Ch.2
   const linkDelay = (slantRange + rxSlantRange) / 299792.458 * 1000; // ms
-  results.linkDelayResult = linkDelay.toFixed(1);
+  results.linkDelayResult = linkDelay.toFixed(1 + FX);
   
   // 通信参数
-  results.uplinkFrequencyResult = uplinkFrequency.toFixed(2);
-  results.downlinkFrequencyResult = downlinkFrequency.toFixed(2);
+  results.uplinkFrequencyResult = uplinkFrequency.toFixed(2 + FX);
+  results.downlinkFrequencyResult = downlinkFrequency.toFixed(2 + FX);
   // 极化方式显示值已在上方设置（使用 polarizationDisplayMap），此处不再重复赋值
   results.infoRateResult = infoRate;
   results.modulationResult = modulation;
   results.modulationFactorResult = modulationFactor;
   results.berResult = `1×10${superscriptExp}`;
-  results.ebnoResult = ebno.toFixed(2);
-  results.esnoResult = esno.toFixed(2);
+  results.ebnoResult = ebno.toFixed(2 + FX);
+  results.esnoResult = esno.toFixed(2 + FX);
   // 实际 Eb/N₀ / Es/N₀：由实际合成 C/N 折算（门限值 + 链路余量）
-  results.ebnoActualResult = (ebno + linkmargin).toFixed(2);
-  results.esnoActualResult = (esno + linkmargin).toFixed(2);
+  results.ebnoActualResult = (ebno + linkmargin).toFixed(2 + FX);
+  results.esnoActualResult = (esno + linkmargin).toFixed(2 + FX);
   // 帧效率显示：保持原始输入格式（分数或小数）
   results.rsCodeResult = rsCodeOriginal;
   // FEC码率显示：保持原始输入格式（分数或小数）
   results.fecResult = fecOriginal;
-  results.carrierRateResult = carrierRate.toFixed(2);
-  results.ChipRateResult = ChipRate.toFixed(2);
-  results.symbolRateResult = symbolRate.toFixed(2);
+  results.carrierRateResult = carrierRate.toFixed(2 + FX);
+  results.ChipRateResult = ChipRate.toFixed(2 + FX);
+  results.symbolRateResult = symbolRate.toFixed(2 + FX);
   results.allocBandwidthResult = allocBandwidth;
   // 频谱效率 η = R_info(bps) / B_alloc(Hz) = infoRate(kbps) / allocBandwidth(kHz)
   // 参考：ITU-R S.524 、 Pratt 《Satellite Communications》
   const spectralEfficiency = (allocBandwidth > 0) ? (infoRate / allocBandwidth) : 0; // bps/Hz
-  results.spectralEfficiencyResult = spectralEfficiency.toFixed(3);
-  results.noiseBW = noiseBW.toFixed(2);
-  results.RXnoiseBW = RXnoiseBW.toFixed(2);
-  results.marginResult = margin.toFixed(2);
+  results.spectralEfficiencyResult = spectralEfficiency.toFixed(3 + FX);
+  results.noiseBW = noiseBW.toFixed(2 + FX);
+  results.RXnoiseBW = RXnoiseBW.toFixed(2 + FX);
+  results.marginResult = margin.toFixed(2 + FX);
   
   // 可用度
-  results.uplinkAvailabilityResult = uplinkAvailability.toFixed(5);
-  results.downlinkAvailabilityResult = rxdownlinkAvailability.toFixed(5);
+  results.uplinkAvailabilityResult = uplinkAvailability.toFixed(5 + FX);
+  results.downlinkAvailabilityResult = rxdownlinkAvailability.toFixed(5 + FX);
   results.systemAvailabilityResult = systemAvailability;
   // 预计中断时长（基于系统可用度，按年计算）
   const systemUnavailability = (100 - parseFloat(systemAvailability)) / 100;
   const interruptionMinutes = systemUnavailability * 365.25 * 24 * 60;
   const interruptionHours = interruptionMinutes / 60;
-  results.interruptionMinutes = interruptionMinutes.toFixed(2);
-  results.interruptionHours = interruptionHours.toFixed(2);
+  results.interruptionMinutes = interruptionMinutes.toFixed(2 + FX);
+  results.interruptionHours = interruptionHours.toFixed(2 + FX);
   
   // C/T和C/N
-  results.uplinkCTResult = uplinkCT.toFixed(2);
-  results.uplinkCN0Result = (uplinkCT + 228.6).toFixed(2);
-  results.aciUplinkCTResult = aciUplinkCT.toFixed(2);
-  results.aciUplinkCN0Result = (aciUplinkCT + 228.6).toFixed(2);
-  results.adjUplinkCTResult = adjUplinkCT.toFixed(2);
-  results.adjUplinkCN0Result = (adjUplinkCT + 228.6).toFixed(2);
-  results.xpolUplinkCTResult = xpolUplinkCT.toFixed(2);
-  results.xpolUplinkCN0Result = (xpolUplinkCT + 228.6).toFixed(2);
-  results.hpaIntermodCTResult = hpaIntermodCT.toFixed(2);
-  results.hpaIntermodCN0Result = (hpaIntermodCT + 228.6).toFixed(2);
-  results.downlinkCTResult = downlinkCT.toFixed(2);
-  results.downlinkCN0Result = (downlinkCT + 228.6).toFixed(2);
-  results.aciDownlinkCTResult = aciDownlinkCT.toFixed(2);
-  results.aciDownlinkCN0Result = (aciDownlinkCT + 228.6).toFixed(2);
-  results.adjDownlinkCTResult = adjDownlinkCT.toFixed(2);
-  results.adjDownlinkCN0Result = (adjDownlinkCT + 228.6).toFixed(2);
-  results.xpolDownlinkCTResult = xpolDownlinkCT.toFixed(2);
-  results.xpolDownlinkCN0Result = (xpolDownlinkCT + 228.6).toFixed(2);
-  results.xpdrIntermodCTResult = xpdrIntermodCT.toFixed(2);
-  results.xpdrIntermodCN0Result = (xpdrIntermodCT + 228.6).toFixed(2);
-  results.totalCTResult = totalCT.toFixed(2);
-  results.totalCN0Result = (totalCT + 228.6).toFixed(2);
-  results.totalCTRainResult = totalCTRain.toFixed(2);
-  results.totalCN0RainResult = (totalCTRain + 228.6).toFixed(2);
-  results.carrierThresholdCT = carrierThreshold.toFixed(2);
-  results.carrierThresholdCN0 = (carrierThreshold + 228.6).toFixed(2);
-  results.carrierTotalCT = carrierTotalCT.toFixed(2);
-  results.carrierTotalCN0 = (carrierTotalCT + 228.6).toFixed(2);
-  results.carrierTotalCN = carrierTotalCN.toFixed(2);
-  results.thresholdCN = thresholdCN.toFixed(2);
-  results.linkmargin = linkmargin.toFixed(2);
+  results.uplinkCTResult = uplinkCT.toFixed(2 + FX);
+  results.uplinkCN0Result = (uplinkCT + 228.6).toFixed(2 + FX);
+  results.aciUplinkCTResult = aciUplinkCT.toFixed(2 + FX);
+  results.aciUplinkCN0Result = (aciUplinkCT + 228.6).toFixed(2 + FX);
+  results.adjUplinkCTResult = adjUplinkCT.toFixed(2 + FX);
+  results.adjUplinkCN0Result = (adjUplinkCT + 228.6).toFixed(2 + FX);
+  results.xpolUplinkCTResult = xpolUplinkCT.toFixed(2 + FX);
+  results.xpolUplinkCN0Result = (xpolUplinkCT + 228.6).toFixed(2 + FX);
+  results.hpaIntermodCTResult = hpaIntermodCT.toFixed(2 + FX);
+  results.hpaIntermodCN0Result = (hpaIntermodCT + 228.6).toFixed(2 + FX);
+  results.downlinkCTResult = downlinkCT.toFixed(2 + FX);
+  results.downlinkCN0Result = (downlinkCT + 228.6).toFixed(2 + FX);
+  results.aciDownlinkCTResult = aciDownlinkCT.toFixed(2 + FX);
+  results.aciDownlinkCN0Result = (aciDownlinkCT + 228.6).toFixed(2 + FX);
+  results.adjDownlinkCTResult = adjDownlinkCT.toFixed(2 + FX);
+  results.adjDownlinkCN0Result = (adjDownlinkCT + 228.6).toFixed(2 + FX);
+  results.xpolDownlinkCTResult = xpolDownlinkCT.toFixed(2 + FX);
+  results.xpolDownlinkCN0Result = (xpolDownlinkCT + 228.6).toFixed(2 + FX);
+  results.xpdrIntermodCTResult = xpdrIntermodCT.toFixed(2 + FX);
+  results.xpdrIntermodCN0Result = (xpdrIntermodCT + 228.6).toFixed(2 + FX);
+  results.downlinkTotalCTResult = downlinkTotalCT.toFixed(2 + FX); // 下行总C/T（热噪+四路干扰并联）
+  results.downlinkInterferenceLossResult = downlinkInterferenceLoss.toFixed(2 + FX); // 下行真实干扰损失(dB)，按主导场景口径，供瀑布行级取数
+  results.totalCTResult = totalCT.toFixed(2 + FX);
+  results.totalCN0Result = (totalCT + 228.6).toFixed(2 + FX);
+  results.totalCTRainResult = totalCTRain.toFixed(2 + FX);
+  results.totalCN0RainResult = (totalCTRain + 228.6).toFixed(2 + FX);
+  results.carrierThresholdCT = carrierThreshold.toFixed(2 + FX);
+  results.carrierThresholdCN0 = (carrierThreshold + 228.6).toFixed(2 + FX);
+  results.carrierTotalCT = carrierTotalCT.toFixed(2 + FX);
+  results.carrierTotalCN0 = (carrierTotalCT + 228.6).toFixed(2 + FX);
+  results.carrierTotalCN = carrierTotalCN.toFixed(2 + FX);
+  results.thresholdCN = thresholdCN.toFixed(2 + FX);
+  results.linkmargin = linkmargin.toFixed(2 + FX);
   
   
   
   // 链路计算结果
   
-  results.bandwidthUsageRatio = bandwidthUsageRatio.toFixed(3);
-  results.powerUsageRatio = powerUsageRatio.toFixed(3);
+  results.bandwidthUsageRatio = bandwidthUsageRatio.toFixed(3 + FX);
+  results.powerUsageRatio = powerUsageRatio.toFixed(3 + FX);
   results.transponderLimitedBy = transponderLimitedBy;
   results.maxCarrierCount = maxCarrierCount;
-  results.PowerBWResult = PowerBW.toFixed(3);
-  results.selectedPowerResult = selectedPower.toFixed(3);
-  results.selectedPowerWResult = selectedPowerW.toFixed(3);
-  results.paRecommendationdBResult = paRecommendationdB.toFixed(3);
-  results.paRecommendation = paRecommendation.toFixed(3);
-  results.UPCmarginResult = upcMargin.toFixed(2);
-  results.stationEIRPResult = stationEIRP.toFixed(3);
-  results.PFDcResult = PFDc.toFixed(3);
-  results.arrivalPFDAtSatelliteResult = arrivalPFDAtSatellite.toFixed(3); // 实际到达卫星通量密度（载波电平+单位面积增益）
-  results.stationPSDResult = stationPSD.toFixed(3);
-  results.satellitePSDResult = satellitePSD.toFixed(3);
-  results.deltagain = deltagain.toFixed(2);
-  results.transponderCapacity = transponderCapacity.toFixed(3);
-  results.eirpPerCarrier = eirpPerCarrier.toFixed(3);
-  results.uplinkPowerRatioResult = uplinkPowerRatio.toFixed(3);
-  results.downlinkPowerRatioResult = downlinkPowerRatio.toFixed(3);
-  results.downlinkComponentResult = downlinkComponent.toFixed(3);
-  results.RXtransponderCapacityResult = RXtransponderCapacity.toFixed(3);
-  results.RXeirpPerCarrierResult = RXeirpPerCarrier.toFixed(3);
-  results.actualTransponderCapacityResult = actualTransponderCapacity.toFixed(3);
-  results.transponderOutputEIRP = transponderOutputEIRP.toFixed(3);
+  results.PowerBWResult = PowerBW.toFixed(3 + FX);
+  results.selectedPowerResult = selectedPower.toFixed(3 + FX);
+  // 线性瓦数显示：常规值维持 3 位小数；毫瓦级以下改保 4 位有效数字的定点格式（不出科学计数法），
+  // 避免小功率被 toFixed(3) 舍成 0.000（显示单位自适应要靠它换 mW/µW 档）
+  const fmtW = (w) => (!isFinite(w) || w === 0 || Math.abs(w) >= 0.001)
+    ? w.toFixed(3 + FX)
+    : w.toFixed(Math.min(12, 3 - Math.floor(Math.log10(Math.abs(w)))) + FX);
+  results.selectedPowerWResult = fmtW(selectedPowerW);
+  results.paRecommendationdBResult = paRecommendationdB.toFixed(3 + FX);
+  results.paRecommendation = fmtW(paRecommendation);
+  results.UPCmarginResult = upcMargin.toFixed(2 + FX);
+  results.stationEIRPResult = stationEIRP.toFixed(3 + FX);
+  results.PFDcResult = PFDc.toFixed(3 + FX);
+  results.arrivalPFDAtSatelliteResult = arrivalPFDAtSatellite.toFixed(3 + FX); // 实际到达卫星通量密度（载波电平+单位面积增益）
+  results.stationPSDResult = stationPSD.toFixed(3 + FX);
+  results.satellitePSDResult = satellitePSD.toFixed(3 + FX);
+  results.deltagain = deltagain.toFixed(2 + FX);
+  results.transponderCapacity = transponderCapacity.toFixed(3 + FX);
+  results.eirpPerCarrier = eirpPerCarrier.toFixed(3 + FX);
+  results.uplinkPowerRatioResult = uplinkPowerRatio.toFixed(3 + FX);
+  results.downlinkPowerRatioResult = downlinkPowerRatio.toFixed(3 + FX);
+  results.downlinkComponentResult = downlinkComponent.toFixed(3 + FX);
+  results.RXtransponderCapacityResult = RXtransponderCapacity.toFixed(3 + FX);
+  results.RXeirpPerCarrierResult = RXeirpPerCarrier.toFixed(3 + FX);
+  results.actualTransponderCapacityResult = actualTransponderCapacity.toFixed(3 + FX);
+  results.transponderOutputEIRP = transponderOutputEIRP.toFixed(3 + FX);
   
   // 转发器回退 (Transponder Backoff) = 卫星的EIRP - 载波占有的EIRP
   // 使用上行雨情况下的载波占有EIRP
   const transponderBackoff = EIRPs - eirpPerCarrier -BOo;
-  results.transponderBackoffResult = transponderBackoff.toFixed(3);
+  results.transponderBackoffResult = transponderBackoff.toFixed(3 + FX);
 
   
   return results;
 }
 
-/**
- * 获取默认天线罩损耗（根据频率）
- * @param {number} frequencyGHz - 频率 (GHz)
- * @returns {number} 天线罩损耗 (dB)
- */
-function getDefaultRadomeLoss(frequencyGHz) {
-  if (frequencyGHz <= 8) {
-    return 0.05; // C/X频段
-  } else if (frequencyGHz <= 18) {
-    return 0.15; // Ku频段
-  } else if (frequencyGHz <= 32) {
-    return 0.3; // Ka频段
-  } else {
-    return 0.5; // Q/V频段及以上
-  }
-}
-
-/**
- * 计算天线指向损耗
- * 根据高斯天线方向图近似：L_pointing = 12 * (theta_error / theta_3dB)^2
- * @param {number} pointingError - 指向误差角度 (度)
- * @param {number} beamWidth - 天线3dB波束宽度 (度)
- * @returns {number} 指向损耗 (dB)
- */
-function calculatePointingLoss(pointingError, beamWidth) {
-  if (beamWidth <= 0 || pointingError <= 0) {
-    return 0;
-  }
-  const ratio = pointingError / beamWidth;
-  const pointingLoss = 12 * Math.pow(ratio, 2);
-  return Math.min(pointingLoss, 3); // 限制最大3dB，超过说明指向严重偏离
-}
-
-// calculateMiscLossByFrequency 已移除，上下行综合损耗改为使用用户输入的"其他损耗"参数
+// getDefaultRadomeLoss / calculatePointingLoss 已随「精细化损耗参数」一并删除（定义后从未被调用，
+// 对应输入从未参与链路计算）；calculateMiscLossByFrequency 更早已移除。
+// 上下行杂项损耗统一使用用户输入的"其他损耗"参数。
 
 function calculateScintillationFading(frequencyGHz, elevationDeg, antennaDiameter, availability, antennaEfficiency, Nwet) {
   // P.618-14 §2.4.1 适用范围：θ≥5°，4≤f≤55 GHz
@@ -1787,9 +1791,11 @@ function calculatePolarizationAngle(stationLon, stationLat, satLon) {
 }
 
 // ============================================================
-// 大气气体衰减计算 — 严格依据 ITU-R P.676-13 (12/2022)
-// "Attenuation by atmospheric gases and related effects"
-// Annex 2: Approximate estimation of gaseous attenuation
+// 大气气体衰减计算 — 混搭近似实现（非单一版本的严格实现）：
+//   比衰减 γ_o/γ_w — P.676-9/10 Annex 2 旧闭式（式22/23 系列；P.676-11 起该闭式已从建议书删除，
+//                    现行 P.676-13 要求按 Annex 1 逐线求和。旧闭式相对逐线典型偏差 ±5~15%，
+//                    22.235 GHz 水汽线附近约偏低 8%，常用 4~50 GHz 频段 <5%）
+//   等效高度 h_o/h_w — P.676-12/13 Annex 2 新拟合（Part 1 系数表 + 方法1）
 // 适用频率范围: 1 – 350 GHz
 //
 // 关键吸收特征:
@@ -2044,13 +2050,16 @@ function calculateAtmosphericAttenuation(frequencyGHz, elevationDeg, Ps, Ts, rho
     return (Ao + Aw) / Math.sin(elevationDeg * Math.PI / 180);
   }
 
-  // θ < 5°: 球面地球修正（Eq.39）
+  // θ < 5°: 球面地球修正 — 均匀厚度 h 大气层的斜路径长 L = 2h/(√(sin²θ+2h/Re)+sinθ)
+  // （与本文件雨衰 Ls 低仰角分支同式；原 h/√(sin²θ+2h/Re) 形式在 θ→0 时恰为几何路径的一半，
+  //   且在 5° 界面产生"仰角降低衰减反而变小"的非物理跳变，已更正）
   const sinEl = Math.sin(elevationDeg * Math.PI / 180);
   const Re = 8500; // 等效地球半径 (km)
   const hoSafe = Math.max(ho, 0.1);
   const hwSafe = Math.max(hw, 0.1);
-  return Ao / Math.sqrt(sinEl * sinEl + 2 * hoSafe / Re) +
-         Aw / Math.sqrt(sinEl * sinEl + 2 * hwSafe / Re);
+  const pathO = 2 * hoSafe / (Math.sqrt(sinEl * sinEl + 2 * hoSafe / Re) + sinEl);
+  const pathW = 2 * hwSafe / (Math.sqrt(sinEl * sinEl + 2 * hwSafe / Re) + sinEl);
+  return gammaO * pathO + gammaW * pathW;
 }
 
 /**
@@ -2253,6 +2262,15 @@ function scaleRainAttenP618_14(A001, p, latDeg, elevDeg) {
 function calculateRainXPD_P618_14(Ap, freq, tauDeg, elevDeg, p) {
   // 无降雨衰减或参数无效 → 不产生雨致去极化
   if (!(Ap > 0) || !(freq > 0) || !(p > 0)) return Infinity;
+
+  // §4.1 频率下界 6 GHz：4~6 GHz 按 §4.2 半经验频率标度 XPD₂ = XPD₁ − 20·lg(f₂/f₁)
+  // 从域内 6 GHz 换算（直接把 f<6 代入 Cf=60·lgf−28.3 属域外使用，C 频段会低估 XPD ~8 dB）；
+  // f<4 GHz 超出 §4.2 标度下界，返回 Infinity（不计雨致去极化）。
+  if (freq < 4) return Infinity;
+  if (freq < 6) {
+    const xpd6 = calculateRainXPD_P618_14(Ap, 6, tauDeg, elevDeg, p);
+    return isFinite(xpd6) ? xpd6 - 20 * Math.log10(freq / 6) : xpd6;
+  }
 
   // 方法有效仰角范围 θ ≤ 60°，超出则限幅到 60°
   const theta = Math.min(Math.max(elevDeg, 0), 60);
@@ -2484,10 +2502,11 @@ function calculateSinglePathRainAttenuation(R001, freq, pol, latitude, longitude
  */
 function calculateSatelliteAngle(userLat, userLon, satLon) {
   const earthLatRad = userLat * CONSTANTS.PI / 180;
-  
-  // 仰角计算
+
+  // 仰角计算（不取 |cos| —— cosψ<0.1513 时应返回负仰角表示卫星在地平线以下，
+  // 原 Math.abs 会把 |Δlon|>90° 的不可见卫星错报为正仰角；与文内雨衰路径同式一致）
   const deltaLonRad_elev = (satLon - userLon) * CONSTANTS.PI / 180;
-  const cosTerm_elev = Math.abs(Math.cos(earthLatRad) * Math.cos(deltaLonRad_elev));
+  const cosTerm_elev = Math.cos(earthLatRad) * Math.cos(deltaLonRad_elev);
   const elevationRad = Math.atan(
     (cosTerm_elev - 0.15127) / Math.sqrt(1 - Math.pow(cosTerm_elev, 2))
   );
@@ -2516,12 +2535,14 @@ function calculateSatelliteAngle(userLat, userLon, satLon) {
 module.exports = {
   calculateLinkBudget,
   calculateSatelliteAngle,
+  setOutputPrecisionBoost,            // 出参小数位增量（见文件头 FX），仅参数扫描期间临时抬高
   // ↓ 雨衰计算工具（通用，面向所有种类卫星）复用的纯物理函数。加法式导出，链路预算行为完全不变。
   calculateSinglePathRainAttenuation, // P.618-14 单路径雨衰 A(0.01%)（第8参 elevOverride 可注入仰角）
   scaleRainAttenP618_14,              // A(0.01%) → 目标时间百分比 p 的雨衰
   calculateRainXPD_P618_14,           // 雨致去极化 XPD
   calculateAtmosphericAttenuation,    // P.676 大气气体吸收
   calculateCloudAttenuation,          // P.840-9 云衰减
+  cloudLWCFromLognormal,              // P.840-9 对数正态 Lred(p)（环境场图层取同一口径）
   calculateScintillationFading,       // 对流层闪烁衰落
   calculatePolarizationAngle          // 极化偏转角（供 XPD 的 τ 计算）
 };

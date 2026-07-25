@@ -265,11 +265,17 @@ const DVBS2X_MODCOD_TABLE = [
   { label: '256APSK 3/4',   modulation: '256APSK', fec: '3/4',   rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 19.57 }
 ];
 
-// 3GPP NR-NTN MODCOD预设表 (Es/N₀, LDPC, CP-OFDM, bandwidthFactor=1.0)
+// 3GPP NR-NTN MODCOD预设表 (Es/N₀, LDPC, CP-OFDM)
 // 参考标准: 3GPP TS 38.214 V17.x.x Table 5.1.3.1-1 (MCS Index Table 1, 64QAM)
-// MCS调制阶数与目标码率来自TS 38.214 Release 17; Es/N₀门限基于AWGN信道BLER=10%条件
+// MCS调制阶数与目标码率来自TS 38.214 Release 17（MCS 0–28 逐条与标准表一致，2026-07-26 复核）
 // 链路仿真参考: 3GPP TR 38.821 V17.x.x (Non-Terrestrial Networks link budget)
-// rsCode=0.9 综合考虑CP开销(~6.7%)及DMRS/导频开销; bandwidthFactor=1.0(CP-OFDM无滚降滤波器)
+// rsCode=0.9 综合考虑CP开销(~6.7%)及DMRS/导频开销
+// bandwidthFactor=1.1：CP-OFDM 没有滚降滤波器，这一档不是滚降而是【占用带宽→信道带宽】的换算——
+//   NR 的资源块占用约为信道带宽的 90%（如 5 MHz@15 kHz = 25 RB = 4.5 MHz），倒数即 1.11。
+//   故本表算出的「载波带宽」可直接与 TS 38.101-5 的信道带宽档位比较（见 src/shared/ntnLimits.js）。
+// ★ Es/N₀ 门限说明：3GPP 不规定 MCS↔SNR 对照（各家实现不同），本表这一列是 AWGN、BLER=10% 条件下的
+//   仿真取值，属工程预置而非标准值；与星座受限容量相比留有约 2.5~4 dB 余量（高阶 MCS 端偏保守）。
+//   要对特定终端/基带做精确预算时，应以厂家实测曲线覆盖此列。调制方式与码率两列则是标准原值。
 const NR_NTN_MODCOD_TABLE = [
   // ——— QPSK (MCS 0–9) ———
   { label: 'MCS0  QPSK  120/1024', modulation: 'QPSK',  fec: '120/1024', rsCode: '0.9', bandwidthFactor: 1.1, noiseRatioMode: 'esno', threshold: -5.10 },
@@ -305,13 +311,16 @@ const NR_NTN_MODCOD_TABLE = [
   { label: 'MCS28 64QAM 948/1024', modulation: '64QAM', fec: '948/1024', rsCode: '0.9', bandwidthFactor: 1.1, noiseRatioMode: 'esno', threshold: 25.56 }
 ];
 
-// 3GPP NB-IoT NTN MODCOD预设表 (Es/N₀, Turbo码, OFDMA/SC-FDMA, bandwidthFactor=1.0)
+// 3GPP NB-IoT NTN MODCOD预设表 (Es/N₀, Turbo码, OFDMA/SC-FDMA)
 // 参考标准: 3GPP TS 36.213 V17.x.x Table 16.4.1.5.1-1 (NPDSCH MCS, 多载波模式, N_rep=1)
 //           3GPP TR 36.763 V17.x.x (NB-IoT/eMTC NTN 研究项目链路预算)
 // 码率依据: 每子帧可用编码比特数 = (14-3)×12×2 = 264 bits (含DMRS开销扣除)
-// Es/N₀门限: AWGN信道BLER=10%条件下Turbo码仿真结果
+//   各档 fec 为 TBS/264 的约分值（TBS 取标准表 I_SF=0 那一列：16/32/56/72/88/120/176/208，
+//   2026-07-26 复核与 TS 36.213 一致）；TBS 不含 24 bit CRC，故实际编码率略高于标注值。
+// Es/N₀门限: AWGN信道BLER=10%条件下Turbo码仿真结果（同 NR 表，属工程预置而非标准规定值）
 // rsCode=1.0 (NB-IoT无外码; 物理层开销已隐含于fec码率中)
-// bandwidthFactor=1.0 (CP-OFDM/SC-FDMA)
+// bandwidthFactor=1.1：SC-FDMA/OFDMA 无滚降滤波器，这一档是【占用带宽→信道带宽】的换算——
+//   1 个 PRB 占用 180 kHz、落在 200 kHz 信道栅格上，200/180 = 1.11（限值判据见 src/shared/ntnLimits.js）。
 const NB_IOT_NTN_MODCOD_TABLE = [
   // I_TBS=0, TBS=16b/SF:  码率≈1/16, 深度覆盖场景
   { label: 'MCS0  QPSK  1/16 (I_TBS=0)',  modulation: 'QPSK', fec: '1/16', rsCode: '1', bandwidthFactor: 1.1, noiseRatioMode: 'esno', threshold: -8.80 },

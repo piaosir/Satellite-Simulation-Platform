@@ -30,6 +30,25 @@ const modeSolver = require('./modeSolver.js');
 let _calcNGSO = null;
 try { _calcNGSO = require('./linkCalculatorNGSO.js').calculateLinkBudget; } catch (e) { /* 不可用时 computeRegenIslMode 报错 */ }
 
+// —— 出参小数位增量 FX ——（与 linkCalculator.js 同一机制，逐字对齐；改一处务必改另两处）
+//
+// 本模块只负责再生式那几个改写字段，功率链本身来自 NGSO 引擎——故扫描期间两边都要抬，
+// 由 utils/linkSweep.js 一并置 4 并在 finally 里复位。默认 0，逐位与从前完全相同。
+// 详细缘由（取整把小跨度的场压成直角阶梯）见 linkCalculator.js 文件头。
+let FX = 0;
+
+/**
+ * 设置出参小数位增量。
+ * @param {number} n 增量位数（夹到 0~8 的整数）
+ * @returns {number} 改动前的值——调用方在 finally 里原样写回即可精确复位（可嵌套）
+ */
+function setOutputPrecisionBoost(n) {
+  const prev = FX;
+  const v = Math.round(Number(n) || 0);
+  FX = v < 0 ? 0 : (v > 8 ? 8 : v);
+  return prev;
+}
+
 function _num(v) { const n = parseFloat(v); return isNaN(n) ? null : n; }
 
 // 再生式上行干扰的「直接合并」：四路 C/I（dB）在线性域功率相加，返回 Σ 10^(−C/I_i/10)。
@@ -64,27 +83,32 @@ function _reframeUplinkOnly(d, sat) {
   let upCN = _regenUplinkCN(d, sat);
   if (upCN == null) upCN = _num(d.uplinkCN);
   if (upCN != null) {
-    d.uplinkCN = upCN.toFixed(2);
-    d.uplinkWithIslCN = upCN.toFixed(2);   // 再生无 ISL：含 ISL 值退化为 uplinkCN
-    d.carrierTotalCN = upCN.toFixed(2);
+    d.uplinkCN = upCN.toFixed(2 + FX);
+    d.uplinkWithIslCN = upCN.toFixed(2 + FX);   // 再生无 ISL：含 ISL 值退化为 uplinkCN
+    d.carrierTotalCN = upCN.toFixed(2 + FX);
     // 上行干扰等效 C/I（= 直接合并总 C/I），供瀑布「干扰损失」与详情展示
     const intfLin = _regenIntfLinear(d, sat);
-    d.uplinkInterferenceCN = intfLin > 0 ? (-10 * Math.log10(intfLin)).toFixed(2) : '';
+    d.uplinkInterferenceCN = intfLin > 0 ? (-10 * Math.log10(intfLin)).toFixed(2 + FX) : '';
     if (thr != null) {
       const m = upCN - thr;
-      d.linkmargin = m.toFixed(2);
-      d.marginResult = m.toFixed(2);
+      d.linkmargin = m.toFixed(2 + FX);
+      d.marginResult = m.toFixed(2 + FX);
+      // Eb/N₀·Es/N₀ 实际值 = 门限值 + 再生单侧余量（覆盖引擎按弯管合成余量算出的陈旧字段，
+      // 否则表内出现 Eb/N₀ ≠ 门限 Eb/N₀ + 系统余量 的自相矛盾）
+      const ebnoThr = _num(d.ebnoResult), esnoThr = _num(d.esnoResult);
+      if (ebnoThr != null) d.ebnoActualResult = (ebnoThr + m).toFixed(2 + FX);
+      if (esnoThr != null) d.esnoActualResult = (esnoThr + m).toFixed(2 + FX);
     }
   }
   // 再生式：上行与下行彻底解耦，系统可用度就是上行可用度——弯管的「上行×下行」联合可用度
   // （NGSO 引擎默认口径）在再生下不成立，会低估真实可用度，须重标为上行专属并同步中断时长。
   const upAvail = _num(d.uplinkAvailabilityResult);
   if (upAvail != null) {
-    d.systemAvailabilityResult = upAvail.toFixed(5);
+    d.systemAvailabilityResult = upAvail.toFixed(5 + FX);
     const unavail = (100 - upAvail) / 100;
     const interruptionMinutes = unavail * 365.25 * 24 * 60;
-    d.interruptionMinutes = interruptionMinutes.toFixed(2);
-    d.interruptionHours = (interruptionMinutes / 60).toFixed(2);
+    d.interruptionMinutes = interruptionMinutes.toFixed(2 + FX);
+    d.interruptionHours = (interruptionMinutes / 60).toFixed(2 + FX);
   }
   // 下行/转发器在再生口径下不参与——清空展示字段，避免瀑布/汇总误读弯管量
   d.downlinkCN = '';
@@ -225,36 +249,40 @@ function _reframeDownlinkOnly(d, sat, gtEff) {
   const thr = _num(d.thresholdCN);
   // 有效 G/T：引擎 gOverTe（由天线/噪温/馈线算得；gtEff 缺失时兜底用引擎值）
   const gt = (gtEff != null && isFinite(gtEff)) ? gtEff : _num(d.gOverTeResult);
-  if (gt != null) d.gOverTeResult = gt.toFixed(2);   // 回填「实际所用 G/T」，供瀑布/详情展示
+  if (gt != null) d.gOverTeResult = gt.toFixed(2 + FX);   // 回填「实际所用 G/T」，供瀑布/详情展示
   // 下行热噪声 C/N（再生口径重算）。缺关键量时兜底用引擎值。
   let thermal = _regenDownlinkThermalCN(d, gt);
   if (thermal == null) thermal = _num(d.downlinkThermalCN);
   if (thermal != null) {
     const intfLin = _regenDnIntfLinear(d, sat);
     const dnCN = -10 * Math.log10(Math.pow(10, -thermal / 10) + intfLin);
-    d.downlinkThermalCN = thermal.toFixed(2);
-    d.downlinkInterferenceCN = intfLin > 0 ? (-10 * Math.log10(intfLin)).toFixed(2) : '';
-    d.downlinkCN = dnCN.toFixed(2);
-    d.carrierTotalCN = dnCN.toFixed(2);
-    d.uplinkWithIslCN = dnCN.toFixed(2);   // 再生无上行/ISL：退化字段对齐下行合计
+    d.downlinkThermalCN = thermal.toFixed(2 + FX);
+    d.downlinkInterferenceCN = intfLin > 0 ? (-10 * Math.log10(intfLin)).toFixed(2 + FX) : '';
+    d.downlinkCN = dnCN.toFixed(2 + FX);
+    d.carrierTotalCN = dnCN.toFixed(2 + FX);
+    d.uplinkWithIslCN = dnCN.toFixed(2 + FX);   // 再生无上行/ISL：退化字段对齐下行合计
     if (thr != null) {
       const m = dnCN - thr;
-      d.linkmargin = m.toFixed(2);
-      d.marginResult = m.toFixed(2);
+      d.linkmargin = m.toFixed(2 + FX);
+      d.marginResult = m.toFixed(2 + FX);
+      // Eb/N₀·Es/N₀ 实际值 = 门限值 + 再生单侧余量（覆盖引擎弯管口径的陈旧字段，保表内自洽）
+      const ebnoThr = _num(d.ebnoResult), esnoThr = _num(d.esnoResult);
+      if (ebnoThr != null) d.ebnoActualResult = (ebnoThr + m).toFixed(2 + FX);
+      if (esnoThr != null) d.esnoActualResult = (esnoThr + m).toFixed(2 + FX);
     }
   }
   // 卫星功率谱密度 / 到达地面 PFD（再生口径：卫星下行 EIRP 直发）——就地覆盖引擎弯管值（用转发器输出 EIRP 算得，再生不适用）
   const pp = _regenDownlinkPsdPfd(d);
-  if (pp.psd != null && isFinite(pp.psd)) d.satellitePSDResult = pp.psd.toFixed(2);
-  if (pp.pfd != null && isFinite(pp.pfd)) d.arrivalPFDAtGroundResult = pp.pfd.toFixed(2);
+  if (pp.psd != null && isFinite(pp.psd)) d.satellitePSDResult = pp.psd.toFixed(2 + FX);
+  if (pp.pfd != null && isFinite(pp.pfd)) d.arrivalPFDAtGroundResult = pp.pfd.toFixed(2 + FX);
   // 再生式：上行与下行彻底解耦，系统可用度就是下行可用度（弯管的「上行×下行」联合可用度不成立）。
   const dnAvail = _num(d.downlinkAvailabilityResult);
   if (dnAvail != null) {
-    d.systemAvailabilityResult = dnAvail.toFixed(5);
+    d.systemAvailabilityResult = dnAvail.toFixed(5 + FX);
     const unavail = (100 - dnAvail) / 100;
     const interruptionMinutes = unavail * 365.25 * 24 * 60;
-    d.interruptionMinutes = interruptionMinutes.toFixed(2);
-    d.interruptionHours = (interruptionMinutes / 60).toFixed(2);
+    d.interruptionMinutes = interruptionMinutes.toFixed(2 + FX);
+    d.interruptionHours = (interruptionMinutes / 60).toFixed(2 + FX);
   }
   // 上行在再生下行口径下不参与——清空展示字段，避免瀑布/汇总误读弯管量
   d.uplinkCN = '';
@@ -281,8 +309,16 @@ function computeRegenDownlinkMode(satParams, inputs, opt) {
 
   const mode = opt.mode === 'margin' ? 'margin' : 'power';
   if (mode === 'power') {
-    const d = _reframeDownlinkOnly(d0, sp, gtEff);
-    return { success: true, data: d, mode: 'power', resolvedMargin: _num(d.linkmargin), resolvedGT: gtEff };
+    // opt.gtDb：把工作点钉在给定的有效 G/T（晴空口径）上。扫描器恒定钉住工作点时走这里
+    // （见 linkSweep._pinnedOpt）——扫收信站站址时该钉住当前这条链路解出的 G/T，逐格只重算
+    // 传播与几何，否则「设置余量」方式下每格都反解一次所需 G/T，余量恒等于目标，图上看不出
+    // 任何起伏。
+    // 雨致 G/T 劣化不在钉住之列：它由每格的下行雨衰算得，仍逐格生效（见 _regenDownlinkThermalCN）。
+    // 不给则按本站实配 G/T 算可达余量（本方式的原义）。
+    const gtPin = _num(opt.gtDb);
+    const gt = (gtPin != null && isFinite(gtPin)) ? gtPin : gtEff;
+    const d = _reframeDownlinkOnly(d0, sp, gt);
+    return { success: true, data: d, mode: 'power', resolvedMargin: _num(d.linkmargin), resolvedGT: gt };
   }
 
   // margin：目标下行余量 M → 反解所需有效 G/T
@@ -322,12 +358,16 @@ function _reframeIslOnly(d, availPct) {
   const thr = _num(d.thresholdCN);
   const islCN = _num(d.islPerHopCNResult);   // 引擎 rf 口径 ISL 单跳 C/N
   if (islCN != null) {
-    d.carrierTotalCN = islCN.toFixed(2);
-    d.uplinkWithIslCN = islCN.toFixed(2);
+    d.carrierTotalCN = islCN.toFixed(2 + FX);
+    d.uplinkWithIslCN = islCN.toFixed(2 + FX);
     if (thr != null) {
       const m = islCN - thr;
-      d.linkmargin = m.toFixed(2);
-      d.marginResult = m.toFixed(2);
+      d.linkmargin = m.toFixed(2 + FX);
+      d.marginResult = m.toFixed(2 + FX);
+      // Eb/N₀·Es/N₀ 实际值 = 门限值 + ISL 单跳余量（覆盖引擎弯管口径的陈旧字段，保表内自洽）
+      const ebnoThr = _num(d.ebnoResult), esnoThr = _num(d.esnoResult);
+      if (ebnoThr != null) d.ebnoActualResult = (ebnoThr + m).toFixed(2 + FX);
+      if (esnoThr != null) d.esnoActualResult = (esnoThr + m).toFixed(2 + FX);
     }
   }
   // 上/下行在星间口径下不参与——清空展示字段
@@ -336,13 +376,13 @@ function _reframeIslOnly(d, availPct) {
   // 系统可用度 = 互视可见度（ISL 无雨衰，唯一中断来自 LOS 丢失/被地球遮挡）
   if (availPct != null && isFinite(availPct)) {
     const a = Math.max(0, Math.min(100, availPct));
-    d.systemAvailabilityResult = a.toFixed(5);
-    d.uplinkAvailabilityResult = a.toFixed(5);
-    d.downlinkAvailabilityResult = a.toFixed(5);
+    d.systemAvailabilityResult = a.toFixed(5 + FX);
+    d.uplinkAvailabilityResult = a.toFixed(5 + FX);
+    d.downlinkAvailabilityResult = a.toFixed(5 + FX);
     const unavail = (100 - a) / 100;
     const interruptionMinutes = unavail * 365.25 * 24 * 60;
-    d.interruptionMinutes = interruptionMinutes.toFixed(2);
-    d.interruptionHours = (interruptionMinutes / 60).toFixed(2);
+    d.interruptionMinutes = interruptionMinutes.toFixed(2 + FX);
+    d.interruptionHours = (interruptionMinutes / 60).toFixed(2 + FX);
   }
   d.regenerative = true;
   d.linkType = 'isl';
@@ -435,41 +475,44 @@ function computeRegenLaserIslMode(params, opt) {
   const data = {
     regenerative: true, linkType: 'laser',
     // 通用字段（供逐条汇总/结果卡 danger 判定复用）
-    thresholdCN: pReqDbm.toFixed(2),          // 所需接收功率 P_req(dBm)
-    carrierTotalCN: pRxDbm.toFixed(2),        // 接收光功率 P_rx(dBm)
-    linkmargin: margin.toFixed(2), marginResult: margin.toFixed(2),
+    thresholdCN: pReqDbm.toFixed(2 + FX),          // 所需接收功率 P_req(dBm)
+    carrierTotalCN: pRxDbm.toFixed(2 + FX),        // 接收光功率 P_rx(dBm)
+    linkmargin: margin.toFixed(2 + FX), marginResult: margin.toFixed(2 + FX),
     // 激光链路预算逐项（MathWorks 简化功率链）
-    laserWavelengthResult: lambdaNm.toFixed(0),
-    laserDistResult: dKm.toFixed(1),
-    laserTxPowerResult: pTxDbm.toFixed(2),
-    laserTxApertureResult: (dTx * 1000).toFixed(0),
-    laserRxApertureResult: (dRx * 1000).toFixed(0),
-    laserOeTxResult: oeTx.toFixed(2),
-    laserOeRxResult: oeRx.toFixed(2),
-    laserOpticsLossTxResult: (-oeTx).toFixed(2),   // 光学效率损耗（正 dB = −OE）供瀑布/结果卡展示
-    laserOpticsLossRxResult: (-oeRx).toFixed(2),
-    laserGTxResult: gTx.toFixed(2),
-    laserGRxResult: gRx.toFixed(2),
-    laserFslResult: lfs.toFixed(2),
-    laserPointLossTxResult: lpTx.toFixed(3),
-    laserPointLossRxResult: lpRx.toFixed(3),
-    laserPointErrTxResult: (thTxRad * 1e6).toFixed(2),
-    laserPointErrRxResult: (thRxRad * 1e6).toFixed(2),
-    laserOtherLossResult: otherLoss.toFixed(2),
-    laserPrxResult: pRxDbm.toFixed(2),
-    laserPreqResult: pReqDbm.toFixed(2),
+    laserWavelengthResult: lambdaNm.toFixed(0 + FX),
+    laserDistResult: dKm.toFixed(1 + FX),
+    laserTxPowerResult: pTxDbm.toFixed(2 + FX),
+    laserTxApertureResult: (dTx * 1000).toFixed(0 + FX),
+    laserRxApertureResult: (dRx * 1000).toFixed(0 + FX),
+    laserOeTxResult: oeTx.toFixed(2 + FX),
+    laserOeRxResult: oeRx.toFixed(2 + FX),
+    laserOpticsLossTxResult: (-oeTx).toFixed(2 + FX),   // 光学效率损耗（正 dB = −OE）供瀑布/结果卡展示
+    laserOpticsLossRxResult: (-oeRx).toFixed(2 + FX),
+    laserGTxResult: gTx.toFixed(2 + FX),
+    laserGRxResult: gRx.toFixed(2 + FX),
+    laserFslResult: lfs.toFixed(2 + FX),
+    laserPointLossTxResult: lpTx.toFixed(3 + FX),
+    laserPointLossRxResult: lpRx.toFixed(3 + FX),
+    laserPointErrTxResult: (thTxRad * 1e6).toFixed(2 + FX),
+    laserPointErrRxResult: (thRxRad * 1e6).toFixed(2 + FX),
+    laserOtherLossResult: otherLoss.toFixed(2 + FX),
+    laserPrxResult: pRxDbm.toFixed(2 + FX),
+    laserPreqResult: pReqDbm.toFixed(2 + FX),
     // 可用度（无雨 = 几何互视）
-    laserVisibleFracResult: isFinite(visPct) ? visPct.toFixed(2) : '',
-    systemAvailabilityResult: sysAvailPct.toFixed(5),
-    uplinkAvailabilityResult: sysAvailPct.toFixed(5),
-    downlinkAvailabilityResult: sysAvailPct.toFixed(5),
-    interruptionMinutes: interruptionMinutes.toFixed(2),
-    interruptionHours: (interruptionMinutes / 60).toFixed(2),
-    laserDopplerResult: isFinite(dopplerGHz) ? dopplerGHz.toFixed(3) : '',
+    laserVisibleFracResult: isFinite(visPct) ? visPct.toFixed(2 + FX) : '',
+    systemAvailabilityResult: sysAvailPct.toFixed(5 + FX),
+    uplinkAvailabilityResult: sysAvailPct.toFixed(5 + FX),
+    downlinkAvailabilityResult: sysAvailPct.toFixed(5 + FX),
+    interruptionMinutes: interruptionMinutes.toFixed(2 + FX),
+    interruptionHours: (interruptionMinutes / 60).toFixed(2 + FX),
+    laserDopplerResult: isFinite(dopplerGHz) ? dopplerGHz.toFixed(3 + FX) : '',
     // 清空上/下行展示字段（激光星间不参与）
     uplinkCN: '', downlinkCN: ''
   };
   return { success: true, data, mode: 'laser', resolvedMargin: margin };
 }
 
-module.exports = { computeRegenUplinkMode, computeRegenDownlinkMode, computeRegenIslMode, computeRegenLaserIslMode };
+module.exports = {
+  computeRegenUplinkMode, computeRegenDownlinkMode, computeRegenIslMode, computeRegenLaserIslMode,
+  setOutputPrecisionBoost             // 出参小数位增量（见文件头 FX），仅参数扫描期间临时抬高
+};

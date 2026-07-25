@@ -9,35 +9,64 @@ import { classifyOrbit, orbitRegimeLabel } from '../shared/orbitClass.js'
 //     按各发/收信站经纬度取多波束最大 Parameter 回填站表（联动在父组件）；同时用该星轨道自动算斜距。
 //  ② 搜索卫星：按名称/NORAD 检索 CelesTrak OMM 全域 → 选中只带轨道根数（不导 EIRP/GT），自动算斜距。
 // 选星后（任一模式）「轨道高度 / 轨道倾角」只读并显示「自动」（由所选卫星轨道确定）。
+// v1.4.3 起两种取星器都在资源库卫星编辑器里（分段切换，showTree + showSearch + showForm，均为配置级：
+// 天线树导入写该条目的 ngsoSat + grd（方向图匹配），搜索卫星只写 ngsoSat 轨道根数）——轨道来源与方向图
+// 都是卫星库条目的属性，随条目传入；工作台「卫星与轨道」分区只留只读速览行，不再渲染本组件。
 const props = defineProps({
   form: { type: Object, required: true },
   fields: { type: Array, required: true },
   satTree: { type: Array, default: () => [] },       // [{ folder, satName, lon, antennas:[{name,beams}] , elements?, noradId? }]
-  sel: { type: Object, required: true },             // { satFolder, eirpKey, gtKey }（父组件持有）
-  ngsoSat: { type: Object, required: true },         // { mode, orbit, name, noradId }
+  sel: { type: Object, default: () => ({ satFolder: '', eirpKey: '', gtKey: '' }) },   // 库条目的 grd（方向图匹配），本组件就地写入
+  ngsoSat: { type: Object, default: () => ({ mode: 'manual', orbit: null, name: '', noradId: null }) },   // 该卫星的轨道来源（库条目属性）
   satSelected: { type: Boolean, default: false },
-  horizonHours: { type: Number, default: 24 },       // 互视最差几何搜索时窗（小时）
-  onPickTree: { type: Function, required: true },    // (node) => void
-  onPickSearch: { type: Function, required: true },  // (ommRec) => void
-  onClear: { type: Function, required: true },       // () => void
-  onHorizon: { type: Function, required: true }      // (hours) => void
+  onPickTree: { type: Function, default: () => {} },    // (node) => void
+  onPickSearch: { type: Function, default: () => {} },  // (ommRec) => void
+  onClear: { type: Function, default: () => {} },       // () => void
+  // 本模块导入的方向图节点（local:true，只有天线、没有轨道根数）：选中它只改方向图匹配，
+  // 不动本条目的轨道来源（轨道仍由天线树取星/星历检索/手动填决定）。
+  onPickLocal: { type: Function, default: () => {} },   // (node) => void
+  // 「导入方向图」：在本编辑器里直接导入 GRD/PAT 挂到本卫星条目名下（免去先去「星座3D」页导入）
+  onImport: { type: Function, default: null },          // () => Promise<void>
+  onRemoveAnt: { type: Function, default: null },       // () => Promise<void>
+  importing: { type: Boolean, default: false },
+  // 取星器/表单三段独立开关（保留独立开关：便于将来单独嵌用其中一段）
+  showTree: { type: Boolean, default: false },       // 渲染「天线树导入」取星器（选 GRD 卫星 + 匹配 EIRP/G·T 天线）
+  showSearch: { type: Boolean, default: false },     // 渲染「搜索卫星」取星器（仅写轨道根数到该条目）
+  showForm: { type: Boolean, default: true }         // 渲染卫星参数表单
 })
-const HORIZONS = [{ v: 6, l: '6 小时' }, { v: 12, l: '12 小时' }, { v: 24, l: '24 小时' }, { v: 48, l: '2 天' }, { v: 72, l: '3 天' }, { v: 120, l: '5 天' }, { v: 168, l: '7 天' }, { v: 336, l: '14 天' }, { v: 720, l: '30 天' }]
 
-// 取星模式分段控件：tree / search。仅切换「正在看哪个选星器」，不动已选卫星——
-// 单一 active 卫星（ngsoSat）在两标签页间保留，来回切换不再清缓存；只有在另一标签页里
-// 真正另选一颗星才替换（互斥由 pick 时各自清理保证：选搜索星会清 grdSel，选树星会清搜索态）。
+// 取星模式分段控件：tree / search。仅在两种取星都开启时出现（当前工作台只 tree、资源库只 search，
+// 各只用一种，故通常不显分段头）。仅切换「正在看哪个选星器」，不动已选卫星。
 const mode = ref(props.ngsoSat.mode === 'search' ? 'search' : 'tree')
 function switchMode(m) { if (mode.value === m) return; mode.value = m }
+// 库单选切换卫星（satId 变）→ ngsoSat 换成另一条目的对象：分段控件跟随其取星模式（manual 保持当前页签）
+watch(() => props.ngsoSat && props.ngsoSat.mode, (m) => { if (m === 'search' || m === 'tree') mode.value = m })
+// 取星器可见性：两种取星都开启时用分段控件 mode 切换；只开一种时该种恒显（忽略 mode）。
+const anyPicker = computed(() => props.showTree || props.showSearch)
+const showTreePicker = computed(() => props.showTree && (!props.showSearch || mode.value === 'tree'))
+const showSearchPicker = computed(() => props.showSearch && (!props.showTree || mode.value === 'search'))
 
 // —— ① 天线树 ——
 const curSat = computed(() => props.satTree.find((s) => s.folder === props.sel.satFolder) || null)
 const antKey = (a) => (curSat.value ? curSat.value.folder + '|' + a.name : '')
+// 已匹配、但本机卫星树里没有这颗 GRD 卫星（换机器 / 尚未在「星座3D」导入）：保留原值占位显示，
+// 不静默清空——库是全局资产，清掉的匹配无从找回；未命中期间父组件自然不回填（轨道根数仍在 ngsoSat 里）。
+const staleFolder = computed(() => ((props.sel.satFolder && !curSat.value) ? props.sel.satFolder : ''))
 function onPickSat() {
   const s = curSat.value
   props.sel.eirpKey = ''; props.sel.gtKey = ''
-  if (s) props.onPickTree(s); else props.onClear()
+  if (!s) { props.onClear(); return }
+  // local 节点＝本模块导入的方向图，本身不带轨道根数：只接方向图，轨道来源保持不变
+  if (s.local) props.onPickLocal(s); else props.onPickTree(s)
 }
+// 卫星树按来源分两组：星座3D 页导入的（带轨道，可作轨道来源）/ 本模块导入的（只有方向图）
+const treeSats = computed(() => props.satTree.filter((s) => !s.local))
+const localSats = computed(() => props.satTree.filter((s) => s.local))
+const localAnts = computed(() => ((curSat.value && curSat.value.local) ? curSat.value.antennas : []))
+// 取星来源（互斥三选一）：一个卫星条目只认一颗星，轨道与方向图必须出自同一次取星。
+// 只作标签用——真会作废方向图匹配时父组件会弹确认，不再另铺提示句。
+const SRC_LABEL = { tree: '天线树', search: '星历检索', manual: '手动轨道' }
+const srcLabel = computed(() => SRC_LABEL[props.ngsoSat.mode] || SRC_LABEL.manual)
 
 // —— ② 搜索卫星 —— 候选池 = CelesTrak「active」全域 ∪ 友好命名组（GPS/北斗/GLONASS… 常用名可搜）
 // ∪ 本地自定义星座（星座3D Walker 生成器，含椭圆/HEO）。取共享单例（ensureSearchPool，见
@@ -81,7 +110,13 @@ const searchRes = computed(() => {
 })
 function onSearchFocus() { ensurePool(); listOpen.value = true }
 function onSearchBlur() { setTimeout(() => { listOpen.value = false }, 150) }  // 延时让列表项 click 先触发
-function pickSearch(rec) { props.onPickSearch(rec); kw.value = rec.name; listOpen.value = false }
+// 选中后回填搜索框：取实际落到条目上的星名——改用星历检索会作废方向图匹配，父组件可能弹确认，
+// 用户点「取消」时这里就不该留下一个并未选中的星名。
+async function pickSearch(rec) {
+  listOpen.value = false
+  await props.onPickSearch(rec)
+  kw.value = props.ngsoSat.name || ''
+}
 // 选中卫星轨道形状（近/远地点/偏心率/周期 + 严谨区制 GEO/IGSO/MEO/LEO/HEO）——
 // 单一「轨道高度」不足以表达椭圆轨道，且区制须按 a/e/i/周期 严谨判定（见 shared/orbitClass.js）。
 const orbitShape = computed(() => {
@@ -106,7 +141,7 @@ function regimeOf(r) {
 }
 const fmtKm = (v) => (v == null ? '—' : Math.round(v).toLocaleString('en-US'))
 
-// 选完工作频段，上/下行频率跟随预设变
+// 选完工作频段，上/下行频率跟随预设变（与 GEO 窗口一致；仍可手改）
 watch(() => props.form.frequencyBand, (band) => {
   const f = BAND_FREQ[band]; if (!f) return
   props.form.centerFrequency = String(f.up)
@@ -130,24 +165,42 @@ const rows = computed(() => {
 
 <template>
   <div class="sp">
-    <!-- 取星模式 -->
-    <div class="sp-modes">
-      <button class="sp-seg" :class="{ on: mode === 'tree' }" @click="switchMode('tree')">天线树导入</button>
-      <button class="sp-seg" :class="{ on: mode === 'search' }" @click="switchMode('search')">搜索卫星</button>
+    <!-- 取星模式头：两种取星都开启时才显分段切换；只开一种时仅在已选星时显「取消选星」 -->
+    <div v-if="(showTree && showSearch) || (anyPicker && satSelected)" class="sp-modes">
+      <template v-if="showTree && showSearch">
+        <button class="sp-seg" :class="{ on: mode === 'tree' }" @click="switchMode('tree')">天线树导入</button>
+        <button class="sp-seg" :class="{ on: mode === 'search' }" @click="switchMode('search')">搜索卫星</button>
+      </template>
       <span class="sp-flex"></span>
       <button v-if="satSelected" class="sp-clear" title="取消选星，恢复手动填轨道" @click="onClear">✕ 取消选星</button>
     </div>
 
-    <!-- ① 天线树导入 -->
-    <div v-if="mode === 'tree'" class="sp-grd">
+    <!-- ① 天线树导入（资源库卫星编辑器，配置级：写该条目 ngsoSat + grd） -->
+    <div v-if="showTreePicker" class="sp-grd">
       <label class="pf"><span class="pf-l">选择卫星</span>
         <select v-model="sel.satFolder" class="pf-i" @change="onPickSat">
           <option value="" disabled>从卫星树选择…</option>
-          <option v-for="s in satTree" :key="s.folder" :value="s.folder">{{ s.satName }}（{{ s.lon }}°E）</option>
+          <optgroup v-if="treeSats.length" label="星座3D 导入（带轨道，可作轨道来源）">
+            <option v-for="s in treeSats" :key="s.folder" :value="s.folder">{{ s.satName }}（{{ s.lon }}°E）</option>
+          </optgroup>
+          <optgroup v-if="localSats.length" label="本模块导入（仅方向图，不改轨道来源）">
+            <option v-for="s in localSats" :key="s.folder" :value="s.folder">{{ s.satName }}</option>
+          </optgroup>
+          <option v-if="staleFolder" :value="staleFolder">{{ staleFolder }}（未导入）</option>
         </select>
         <i class="pf-u"></i>
       </label>
-      <div v-if="!satTree.length" class="sp-tip">卫星树为空：请先在「星座3D」页导入 GRD 天线</div>
+      <!-- 直接导入：方向图挂在本卫星条目名下（轨道来源另定，见上方分组说明） -->
+      <div v-if="onImport" class="sp-gacts">
+        <button class="sp-gbtn" :disabled="importing"
+                title="直接导入 GRD / PAT 方向图（可多选），挂到本卫星条目名下；一个文件＝一副天线，文件内多个 set＝多波束"
+                @click.prevent="onImport()">{{ importing ? '导入中…' : '＋ 导入方向图' }}</button>
+        <button v-if="onRemoveAnt && localAnts.length" class="sp-gbtn" :disabled="importing"
+                :title="'删除本条目导入的方向图：' + localAnts.map((a) => a.name).join('、')"
+                @click.prevent="onRemoveAnt()">删除方向图</button>
+      </div>
+      <div v-if="staleFolder" class="sp-tip">本机卫星树中没有该 GRD 卫星，匹配已保留：在「星座3D」页导入后自动恢复回填（轨道根数不受影响）</div>
+      <div v-else-if="!satTree.length" class="sp-tip">卫星树为空：点「导入方向图」直接导入，或在「星座3D」页导入 GRD 天线</div>
       <template v-else-if="curSat">
         <template v-if="curSat.antennas.length">
           <label class="pf"><span class="pf-l" title="按各收信站经纬度取该天线多波束最大 Parameter → 卫星EIRP">卫星EIRP 天线</span>
@@ -170,8 +223,8 @@ const rows = computed(() => {
       </template>
     </div>
 
-    <!-- ② 搜索卫星 -->
-    <div v-else class="sp-grd">
+    <!-- ② 搜索卫星（资源库编辑器，配置级） -->
+    <div v-if="showSearchPicker" class="sp-grd">
       <label class="pf"><span class="pf-l">搜索卫星</span>
         <input v-model="kw" class="pf-i" placeholder="名称 / NORAD 号，如 STARLINK / 44713" @focus="onSearchFocus" @click="listOpen = true" @input="listOpen = true" @blur="onSearchBlur" />
         <i class="pf-u"></i>
@@ -198,11 +251,11 @@ const rows = computed(() => {
       </template>
     </div>
 
-    <!-- 当前选星摘要 + 互视最差几何搜索时窗 -->
-    <div v-if="satSelected" class="sp-sel">
+    <!-- 当前选星摘要（互视搜索时窗输入已移到工作台计算栏） -->
+    <div v-if="anyPicker && satSelected" class="sp-sel">
       <div>已选卫星：<b class="sp-name" title="可框选复制此卫星名">{{ ngsoSat.name || form.satelliteName }}</b>
         <span v-if="ngsoSat.noradId">（NORAD {{ ngsoSat.noradId }}）</span>
-        · 轨道高度/倾角已由所选卫星自动确定
+        · 取星来源：{{ srcLabel }} · 轨道高度/倾角已由所选卫星自动确定
       </div>
       <div v-if="orbitShape" class="sp-shape">
         <b class="sp-regime" :class="'sp-rg-' + orbitShape.regime" :title="orbitShape.regimeZh">{{ orbitShape.regime }}</b>
@@ -213,32 +266,26 @@ const rows = computed(() => {
           · 圆轨道高度 ≈ {{ fmtKm(orbitShape.perigeeKm) }} km · e={{ orbitShape.ecc.toFixed(3) }} · 周期 {{ orbitShape.periodMin.toFixed(0) }} min
         </template>
       </div>
-      <label class="sp-hz">互视最差几何搜索时窗
-        <select :value="horizonHours" class="sp-hz-i" @change="onHorizon(Number($event.target.value))">
-          <option v-for="h in HORIZONS" :key="h.v" :value="h.v">{{ h.l }}</option>
-        </select>
-        <span class="sp-hz-t">（从当前时刻起在此时窗内，比较全部互视过境，取最坏一次的工况）</span>
-      </label>
     </div>
 
-    <!-- 卫星参数表单（频率+极化、轨道高度+倾角成对一行；选星后轨道高度/倾角只读「自动」）-->
-    <div class="form">
-      <div v-for="(row, ri) in rows" :key="ri" class="sp-row2" :class="{ pair: row.length === 2 }">
-        <label v-for="f in row" :key="f.key" class="pf">
-          <span class="pf-l" :title="f.tip || f.label">{{ f.label }}</span>
-          <select v-if="f.type === 'select'" v-model="form[f.key]" class="pf-i">
+    <!-- 卫星参数：自适应多列密排（选星后轨道高度/倾角只读「自动」；工作台 show-form=false 不渲染，参数编辑在资源库） -->
+    <div v-if="showForm" class="sp-fields">
+      <template v-for="f in fields" :key="f.key">
+        <span v-if="f.br" class="sp-break" aria-hidden="true"></span>
+        <label class="sp-f" :title="f.tip || f.label">
+          <span class="sp-l">{{ f.label }}<i v-if="f.unit || isAutoField(f.key)"> ({{ isAutoField(f.key) ? '自动' : f.unit }})</i></span>
+          <select v-if="f.type === 'select'" v-model="form[f.key]" class="sp-i">
             <option v-for="o in f.options" :key="o" :value="o">{{ f.key === 'frequencyBand' ? bandLabel(o) : o }}</option>
           </select>
-          <input v-else v-model="form[f.key]" class="pf-i mono" :class="{ auto: isAutoField(f.key) }" :readonly="isAutoField(f.key)" :placeholder="f.ph || ''" />
-          <i class="pf-u">{{ isAutoField(f.key) ? '自动' : (f.unit || '') }}</i>
+          <input v-else v-model="form[f.key]" class="sp-i mono" :class="{ auto: isAutoField(f.key) }" :readonly="isAutoField(f.key)" :placeholder="f.ph || ''" />
         </label>
-      </div>
+      </template>
     </div>
   </div>
 </template>
 
 <style scoped>
-.sp { max-width: 520px; }
+.sp { max-width: 940px; }
 .sp-modes { display: flex; align-items: center; gap: 6px; margin-bottom: 10px; }
 .sp-seg { font-size: 12px; padding: 4px 12px; border: 1px solid var(--border); background: var(--bg); color: var(--text-muted); border-radius: 3px; cursor: pointer; }
 .sp-seg.on { background: var(--accent); color: #fff; border-color: var(--accent); }
@@ -247,6 +294,11 @@ const rows = computed(() => {
 .sp-grd { margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px dashed var(--border); }
 .sp-grd .pf { margin-bottom: 6px; }
 .sp-tip { font-size: 11px; color: var(--text-faint); line-height: 1.5; margin-top: 2px; }
+/* 直接导入 / 删除方向图 */
+.sp-gacts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.sp-gbtn { font: inherit; font-size: 12px; padding: 3px 9px; cursor: pointer; white-space: nowrap; background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 3px); }
+.sp-gbtn:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
+.sp-gbtn:disabled { opacity: .55; cursor: default; }
 .sp-err { color: var(--danger); }
 .sp-list { list-style: none; margin: 4px 0; padding: 0; max-height: 200px; overflow-y: auto; border: 1px solid var(--border); border-radius: 3px; }
 .sp-list li { padding: 5px 8px; cursor: pointer; border-bottom: 1px solid var(--border); }
@@ -273,14 +325,19 @@ const rows = computed(() => {
 .sp-regime.sp-rg-MEO { color: #2563eb; }
 .sp-regime.sp-rg-LEO { color: var(--text-muted); }
 .sp-regime.sp-rg-HEO { color: #d98600; }
-.sp-hz { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--border); }
-.sp-hz-i { font: inherit; font-size: 11px; padding: 2px 6px; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 2px; }
-.sp-hz-t { color: var(--text-faint); }
-.sp-row2 { margin-bottom: 6px; }
-.sp-row2.pair { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-.sp-row2 .pf { margin-bottom: 0; }
-.sp-row2.pair .pf { grid-template-columns: 96px 110px 30px; }
-.pf { display: grid; grid-template-columns: 96px 110px 36px; align-items: center; gap: 6px; margin-bottom: 6px; }
+/* 参数密排网格（与 GEO 卫星面板同款） */
+.sp-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 7px 11px; }
+/* 整行占位：令下一字段另起一行（上/下行干扰分行用）；零高度，仅靠栅格行距形成一点间隔，不加边框/底色 */
+.sp-break { grid-column: 1 / -1; height: 0; }
+.sp-f { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.sp-l { font-size: 12px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sp-l i { color: var(--text-faint); font-style: normal; }
+.sp-i { font: inherit; font-size: 12px; padding: 4px 7px; width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
+.sp-i:focus { outline: none; border-color: var(--accent); }
+.sp-i.mono { font-family: var(--font-mono); }
+.sp-i.auto { background: var(--surface); color: var(--text-muted); cursor: not-allowed; }
+/* 取星区（树/搜索）沿用 pf 行式，仅放宽选择列 */
+.pf { display: grid; grid-template-columns: 96px minmax(180px, 320px) 30px; align-items: center; gap: 6px; margin-bottom: 6px; }
 .pf-l { font-size: 12px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pf-i { font: inherit; font-size: 12px; padding: 4px 7px; width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 2px; }
 .pf-i:focus { outline: none; border-color: var(--accent); }

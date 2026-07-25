@@ -26,6 +26,7 @@ import { countryAt, currentLandColor } from '../viz/globe3d/countryPick.js'
 import { useGrdCoverage } from '../viz/grd/useGrdCoverage.js'
 import { useBeamSynth } from '../viz/grd/useBeamSynth.js'
 import { useVisibility, orbitClass } from '../viz/vis/useVisibility.js'
+import { useEnvField } from '../viz/env/useEnvField.js'
 import { usePerfTable } from '../viz/grd/usePerfTable.js'
 import { useGridSelect } from '../viz/grd/useGridSelect.js'
 import { useMarkerTable } from '../viz/markers/useMarkerTable.js'
@@ -142,6 +143,43 @@ const vis = useVisibility({
   },
   setCovAlpha: (a) => { if (scene) scene.setCovGridAlpha(a); if (flat) flat.setCovGridAlpha(a) }
 })
+
+// 环境场（ITU 降雨率 / 零度等温线高度 / 海拔 / 水汽 / 云液态水）：一张等经纬栅格 +（可选）等值线。
+// 【专用通道】画在最底层（气象/地形是背景量），与覆盖热力图、GRD 覆盖场互不覆写、可同屏共存。
+const env = useEnvField({
+  draw: (spec) => {
+    if (spec && spec.canvas) {
+      const o = { bbox: spec.bbox, alpha: spec.alpha, smooth: spec.smooth }
+      if (scene) scene.setEnvRaster(spec.canvas, o)
+      if (flat) flat.setEnvRaster(spec.canvas, o)
+    } else { if (scene) scene.setEnvRaster(null); if (flat) flat.setEnvRaster(null) }
+  },
+  drawContours: (groups) => { if (scene) scene.setEnvContours(groups); if (flat) flat.setEnvContours(groups) },
+  setAlpha: (a) => { if (scene) scene.setEnvAlpha(a); if (flat) flat.setEnvAlpha(a) }
+})
+// 光标读数：经纬度（状态栏固有）+ 当前环境场值（有图层时才有）
+function onHoverLL(ll) {
+  cursor.ll = ll
+  cursor.env = ll ? env.readAt(ll.lat, ll.lon) : null
+}
+// 陆海掩膜要靠 P.1511 地形数据，未随包分发到位时（打包漏文件）该项不可用，置灰而不是静默失效
+const envMaskAvail = computed(() => !env.field.value || env.field.value.maskAvail !== false)
+// 切到手动值域：先把当前自动值域填进去，用户在这个基础上改，而不是从空白开始猜
+function envManualInit() {
+  const d = env.domain.value
+  if (d && (env.manualLo.value === '' || env.manualHi.value === '')) {
+    env.manualLo.value = String(Number(d[0].toFixed(3)))
+    env.manualHi.value = String(Number(d[1].toFixed(3)))
+  }
+  env.domainMode.value = 'manual'
+}
+// 图例每一格的悬停说明：分级给区间，连续给该处的值
+function envLegTitle(i) {
+  const L = env.legend.value
+  if (!L) return ''
+  if (L.edges) return `${env.fmt(L.edges[i])} ~ ${env.fmt(L.edges[i + 1])} ${L.unit}`
+  return `${env.fmt(L.lo + (L.hi - L.lo) * L.stops[i].u)} ${L.unit}`
+}
 // 可见性分析：可见星复用「聚焦特效」立体呈现——在轨道高度的绿点(satPos) + 目标→星视线斜线(2 点 orbit 走 lineFromLLA，
 // 尊重每端高度)，经 scene.setSelectionSet 画（唯一能在轨道高度画卫星点的通道）。
 // 只「算」不「推」：返回 { items(在轨点+视线), subs(星下点图标，各自带 px/colorHex) }，由 commitGeometry 与聚焦星几何合并后一次性提交，
@@ -1792,7 +1830,7 @@ function ensureFlat() {
   if (!flat && flatCanvas.value) {
     flat = createFlatCoverage(flatCanvas.value)
     flat.setRenderScale(displayQuality.value.pixelRatio); flat.setMapDetail(displayQuality.value.mapDetail, displayQuality.value.mapThin)
-    flat.setOnRightClick(onMapRightClick); flat.setOnHover((ll) => { cursor.ll = ll }); flat.setOnBeamDrag(grd.beamDrag); flat.setBeamDragMode(grd.dragBore.value)
+    flat.setOnRightClick(onMapRightClick); flat.setOnHover(onHoverLL); flat.setOnBeamDrag(grd.beamDrag); flat.setBeamDragMode(grd.dragBore.value)
     flat.setOnLabelDrag(grd.labelDrag); flat.setLabelDragMode(grd.dragLabel.value)   // 拖拽等值线数值标签（沿线滑动）
     flat.setOnVertexDrag(onVertexDrag)   // 拖动单个顶点/标记点（Polygon 调点 或 标记「调整点位置」，分发）
     flat.setOnPolyMove(onPolyMoveDrag)       // Polygon 整体拖动：按住内部平移全部顶点
@@ -1820,6 +1858,7 @@ function feedFlat() {
   flat.setSizes({ beamFont: beamLabelSize.value, contourFont: contourLabelSize.value, dotSize: boreSize.value, showBore: showBore.value, nameScale: countryNameSize.value, provScale: provNameSize.value, cityScale: cityNameSize.value, ptFont: markPtFont.value, stIcon: stIconSize.value, stFont: stFontSize.value, ptDot: markPtDot.value, trajDot: trajDotSize.value })
   flat.setGeom(covGeom)
   grd.recompute()   // GRD 覆盖：把当前选中天线的面+线喂给 flat（recompute 同时喂 scene/flat）
+  env.redraw()      // 环境场：平面图是懒创建的，切过来时把当前图层（栅格+等值线）补喂一份
   redrawSats()      // 卫星/仰角线图层（含 Polygon）
   syncEdit()        // 调点态（Polygon / 标记「调整点位置」）：切入平面图时接上拖拽
   commitGeometry()  // 聚焦卫星位置 + 覆盖范围 + 星下点轨迹（含可见性叠加层，若开）
@@ -1839,12 +1878,12 @@ function copyMiniappKey() {
   keyCopied.value = perfWriteClipboard(formatKey(miniappKey.value))
   if (!keyCopied.value) appAlert('复制失败，请手动记录密钥')
 }
-let _cjkFont   // undefined=未取；string=base64；null=无可用中文字体
-async function getCjkFont() {
-  if (_cjkFont !== undefined) return _cjkFont
-  try { const r = window.api && window.api.cjkFont && await window.api.cjkFont(); _cjkFont = (r && r.ok) ? r.base64 : null }
-  catch { _cjkFont = null }
-  return _cjkFont
+let _pdfFonts   // undefined=未取；对象={cjk,latin,latinBold,latinItalic} 各面缺失为 null；null=取不到
+async function getPdfFonts() {
+  if (_pdfFonts !== undefined) return _pdfFonts
+  try { const r = window.api && window.api.pdfFonts && await window.api.pdfFonts(); _pdfFonts = (r && r.ok) ? r : null }
+  catch { _pdfFonts = null }
+  return _pdfFonts
 }
 async function saveExport(bytes, defaultName, filters) {
   if (!(window.api && window.api.exportFile)) { appAlert('需在桌面客户端中运行'); return }
@@ -1873,8 +1912,8 @@ async function exportMap(fmt, scope) {
     if (fmt === 'pdf') {
       // 矢量 PDF 按「设置」里的底图精度导出（flat 实例已随 displayQuality 同步精度）：
       // 10m 更清晰但点数约 5.5× → 导出更慢、文件更大；如需更快可在设置里调到 50m/110m。
-      const fontBase64 = await getCjkFont()
-      const bytes = await renderFlatPDF(flat, { base: 2400, fontBase64, view })
+      const fonts = await getPdfFonts()
+      const bytes = await renderFlatPDF(flat, { base: 2400, fonts, view })
       await saveExport(bytes, `覆盖图_${tag}.pdf`, [{ name: 'PDF 矢量图', extensions: ['pdf'] }])
     } else {
       const factor = fmt === 'png6' ? 6 : fmt === 'png4' ? 4 : 2
@@ -2705,6 +2744,9 @@ watch(() => shellUi.side, async (side) => {
   // 聚焦星几何与可见性叠加层各自存续：进入可见性不再抹掉聚焦星，退出可见性聚焦星（若有）自动恢复。
   if (side === 'vis') { vis.openPanel(); commitGeometry() }
   else if (vis.open.value) { vis.close(); commitGeometry() }
+  // 环境场：进入即取数并铺图层；离开只收面板不撤图层（气象/地形是底图性质的背景，切走还得看得见）
+  if (side === 'env') env.openPanel()
+  else if (env.open.value) env.close()
 }, { immediate: true })
 // 「地图放置」开关：开启即清场并进入右键放置态（与调整互斥）
 function bsPlaceToggle() {
@@ -3799,7 +3841,7 @@ onMounted(async () => {
     selectSat(en, false, additive)   // 裸点=替换聚焦；Ctrl/Cmd/Shift 点=加入/移出多选
   })
   // 鼠标实时经纬度（底部状态栏显示）+ 右键标点/加航点
-  scene.setOnHover((ll) => { cursor.ll = ll })
+  scene.setOnHover(onHoverLL)
   scene.setOnRightClick(onMapRightClick)
   scene.setOnBeamDrag(grd.beamDrag)   // 拖拽波束（GRD boresight 中心）
   scene.setOnLabelDrag(grd.labelDrag); scene.setLabelDragMode(grd.dragLabel.value)   // 拖拽等值线数值标签（沿线滑动）
@@ -3877,7 +3919,7 @@ onBeforeUnmount(() => {
 
   clearGrdBridge()   // 离开 3D 页：注销文件管理器对活树/导出器的引用
   fileBridge.customConst = null
-  cursor.ll = null; if (timer) clearInterval(timer); if (ro) ro.disconnect(); if (trackRo) trackRo.disconnect(); if (flat) flat.destroy(); if (scene) { scene.clearCoverage(); scene.destroy() }
+  cursor.ll = null; cursor.env = null; if (timer) clearInterval(timer); if (ro) ro.disconnect(); if (trackRo) trackRo.disconnect(); if (flat) flat.destroy(); if (scene) { scene.clearCoverage(); scene.destroy() }
 })
 </script>
 
@@ -5147,6 +5189,92 @@ onBeforeUnmount(() => {
             </template>
           </div>
 
+        </div>
+        </div>
+
+        <!-- 环境场：ITU 气象 / 地形数据场（等经纬栅格 + 等值线），画在所有叠加层最底 -->
+        <div v-show="shellUi.side === 'env'" class="sview">
+        <div v-if="shellUi.side === 'env'" class="cov-side env-side docked">
+          <div class="sec">
+            <div class="sect acc" :class="{ open: isSecOpen('env-src') }" @click="toggleSec('env-src')"><Icon :name="isSecOpen('env-src') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>数据场</span></div>
+            <template v-if="isSecOpen('env-src')">
+              <label class="chk2 env-on"><input type="checkbox" v-model="env.on.value" /><span>在地图上显示环境场</span></label>
+              <div class="srow"><label>字段</label>
+                <select :value="env.key.value" @change="e => env.key.value = e.target.value">
+                  <option v-for="d in env.defs.value" :key="d.key" :value="d.key">{{ d.label }}</option>
+                </select>
+              </div>
+              <div class="srow" v-if="env.fieldOpt.value"><label>{{ env.fieldOpt.value.label }}</label>
+                <select v-if="env.fieldOpt.value.name === 'rainy'" :value="env.optRainy.value" @change="e => env.optRainy.value = Number(e.target.value)">
+                  <option v-for="o in env.fieldOpt.value.values" :key="o.v" :value="o.v">{{ o.label }}</option>
+                </select>
+                <select v-else :value="env.optP.value" @change="e => env.optP.value = Number(e.target.value)">
+                  <option v-for="o in env.fieldOpt.value.values" :key="o.v" :value="o.v">{{ o.label }}</option>
+                </select>
+              </div>
+              <div class="srow"><label>格距</label>
+                <select :value="env.stepDeg.value" @change="e => env.stepDeg.value = Number(e.target.value)" title="出图格距：比数据原生分辨率更细不会有新信息，只会更慢">
+                  <option v-for="s in env.STEPS" :key="s.v" :value="s.v">{{ s.label }}</option>
+                </select>
+              </div>
+              <div class="srow env-src"><span class="tip inl">{{ env.busy.value ? '取数中…' : env.srcNote.value }}</span></div>
+              <div v-if="env.msg.value" class="srow"><span class="tip inl" :class="{ 'cov-msg': env.field.value && (!env.field.value.ready || env.field.value.fallback) }">{{ env.msg.value }}</span></div>
+            </template>
+          </div>
+
+          <div class="sec">
+            <div class="sect acc" :class="{ open: isSecOpen('env-style') }" @click="toggleSec('env-style')"><Icon :name="isSecOpen('env-style') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>配色与值域</span></div>
+            <template v-if="isSecOpen('env-style')">
+              <div class="srow"><label>配色</label>
+                <select class="cov-scheme" :value="env.scheme.value" @change="e => env.scheme.value = e.target.value">
+                  <option v-for="s in env.SCHEMES" :key="s.v" :value="s.v">{{ s.label }}</option>
+                </select>
+                <label class="chk-in" title="色标反向（低值取暖端）"><input type="checkbox" v-model="env.invert.value" /><span>反相</span></label>
+              </div>
+              <div class="srow"><label>填色</label>
+                <span class="seg">
+                  <span class="sg" :class="{ on: env.bands.value === 0 }" title="连续渐变" @click="env.bands.value = 0">连续</span>
+                  <span class="sg" :class="{ on: env.bands.value > 0 }" title="分级填色：档与档之间是硬边界，边界即等值线（工程读图）" @click="env.bands.value = env.bands.value > 0 ? env.bands.value : 8">分级</span>
+                </span>
+                <input v-if="env.bands.value > 0" class="ci cov-num" type="number" min="2" max="24" step="1" :value="env.bands.value" @input="e => env.bands.value = Math.max(2, Math.min(24, Number(e.target.value) || 8))" /><span v-if="env.bands.value > 0" class="u">档</span>
+              </div>
+              <div class="srow"><label>值域</label>
+                <span class="seg">
+                  <span class="sg" :class="{ on: env.domainMode.value === 'p2p98' }" title="按 2%–98% 分位拉伸：长尾场（降雨率）用极值定域会把主区压成一个颜色" @click="env.domainMode.value = 'p2p98'">分位</span>
+                  <span class="sg" :class="{ on: env.domainMode.value === 'minmax' }" title="全域极值" @click="env.domainMode.value = 'minmax'">极值</span>
+                  <span class="sg" :class="{ on: env.domainMode.value === 'manual' }" title="手动指定上下限" @click="envManualInit()">手动</span>
+                </span>
+              </div>
+              <div v-if="env.domainMode.value === 'manual'" class="srow"><label>上下限</label>
+                <input class="ci cov-b" type="number" :value="env.manualLo.value" @input="e => env.manualLo.value = e.target.value" /><span class="u">~</span>
+                <input class="ci cov-b" type="number" :value="env.manualHi.value" @input="e => env.manualHi.value = e.target.value" /><span class="u">{{ env.field.value ? env.field.value.unit : '' }}</span>
+              </div>
+              <div class="srow"><label>透明度</label><input class="vis-slider cov-alpha" type="range" min="0.1" max="1" step="0.02" :value="env.alpha.value" @input="e => env.alpha.value = Number(e.target.value)" title="环境场透明度（拖动即时生效）" /><span class="u">{{ Math.round(env.alpha.value * 100) }}%</span></div>
+              <label class="chk2" :class="{ dis: !envMaskAvail }"><input type="checkbox" :disabled="!envMaskAvail" v-model="env.landOnly.value" /><span>海洋透明（按 P.1511 地形 ≤0 判海）</span></label>
+              <div v-if="env.legend.value" class="cov-legend">
+                <div class="cov-legbar"><i v-for="(s, si) in env.legend.value.stops" :key="si" :style="{ background: s.css }" :title="envLegTitle(si)"></i></div>
+                <div class="cov-legsc"><span>{{ env.fmt(env.legend.value.lo) }}</span><b :title="env.legend.value.label">{{ env.legend.value.label }}{{ env.legend.value.unit ? ' · ' + env.legend.value.unit : '' }}</b><span>{{ env.fmt(env.legend.value.hi) }}</span></div>
+              </div>
+              <div v-if="env.stats.value" class="vis-sum cov-kpi">
+                <span>极值 <b>{{ env.fmt(env.stats.value.min) }}</b> ~ <b>{{ env.fmt(env.stats.value.max) }}</b> {{ env.field.value.unit }}</span>
+                <span>面积加权均值 <b>{{ env.fmt(env.stats.value.mean) }}</b> {{ env.field.value.unit }} <s>（cos φ 加权{{ env.landOnly.value && env.field.value.statsLand ? '，仅陆地' : '' }}）</s></span>
+              </div>
+            </template>
+          </div>
+
+          <div class="sec">
+            <div class="sect acc" :class="{ open: isSecOpen('env-contour', false) }" @click="toggleSec('env-contour', false)"><Icon :name="isSecOpen('env-contour', false) ? 'chevron-down' : 'chevron-right'" :size="12" /><span>等值线</span></div>
+            <template v-if="isSecOpen('env-contour', false)">
+              <label class="chk2"><input type="checkbox" v-model="env.contourOn.value" /><span>画等值线</span></label>
+              <template v-if="env.contourOn.value">
+                <div class="srow"><label>级差</label><input class="ci cov-num" type="number" min="0" step="any" :placeholder="env.field.value && env.field.value.contourStep ? String(env.field.value.contourStep) : '自动'" :value="env.contourStep.value" @input="e => env.contourStep.value = e.target.value" /><span class="u">{{ env.field.value ? env.field.value.unit : '' }}</span></div>
+                <label class="chk2"><input type="checkbox" v-model="env.contourLabel.value" /><span>沿线标数值（仅平面图）</span></label>
+                <div class="tip">共 {{ env.contours.value.length }} 档；线取该档自己的色（压暗一档以便从填充里分出来）。等值线只在当前值域内定级，改值域即改线。</div>
+              </template>
+            </template>
+          </div>
+
+          <div class="tip">ITU-R 环境数据场，取值与链路预算引擎同源（同一套查表插值）——图上的颜色即预算表里那个数。图层画在所有叠加层最底，与覆盖分析 / GRD 覆盖场可同屏共存。鼠标移到图上，状态栏右侧读当前点数值。</div>
         </div>
         </div>
 
@@ -6471,6 +6599,13 @@ onBeforeUnmount(() => {
 .sect.acc .app-icon { flex: none; color: var(--text-faint); }
 
 /* —— 可见性分析（Access / Coverage）：目标/参数 + KPI 摘要 + 可见星结果表 —— */
+/* —— 环境场面板：结构与可见性分析同源，只多一个「显示总开关」和数据源标注行 —— */
+.env-side .tip.inl { display: inline; margin-left: 0; }
+.env-side .env-on { margin-top: 2px; }
+.env-side .env-src { min-height: 16px; }
+.env-side .chk2.dis { opacity: 0.45; cursor: not-allowed; }
+.env-side .cov-num { flex: none; width: 54px; }
+
 .vis-side .sect .vis-cnt { margin-left: auto; font-size: 10px; color: var(--text-faint); font-family: var(--font-mono); }
 .vis-side .sect .vis-cnt.on { color: var(--ok); }
 /* 卫星集读数行：来源类型标签（星座 / 自定义星座 / 卫星组 / 搜索）+ 名称（长则省略）+ 颗数，与「目标」「仰角门限」同为分析设定行 */
@@ -6966,7 +7101,7 @@ onBeforeUnmount(() => {
 .al-msg { margin: 0; font-size: 13px; line-height: 1.65; color: var(--text); }
 .al-dlg .sdfoot { justify-content: flex-end; }
 /* 发送到小程序：密钥展示 */
-.ma-key { margin: 12px 0 6px; text-align: center; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 26px; font-weight: 700; letter-spacing: 3px; color: var(--accent); user-select: all; }
+.ma-key { margin: 12px 0 6px; text-align: center; font-family: var(--font-mono); font-size: 26px; font-weight: 700; letter-spacing: 3px; color: var(--accent); user-select: all; }
 .ma-key-tip { font-size: 11px; color: var(--text-muted); margin-top: 6px; }
 .sdfoot .save.ghost { background: transparent; color: var(--text); border: 1px solid var(--border); }
 .sat-banner { position: absolute; top: 64px; left: 50%; transform: translateX(-50%); z-index: 40; background: var(--surface); border: 1px solid var(--accent); padding: 7px 14px; font-size: 12px; color: var(--text); box-shadow: 0 6px 20px rgba(0,0,0,0.4); }

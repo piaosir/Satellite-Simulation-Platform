@@ -29,6 +29,18 @@ module.exports = function createCoverage(baseDir, saveDir) {
     fs.writeFileSync(path.join(saveDir, fname), String(text == null ? '' : text), 'latin1')
     return { file: fname }
   }
+  // 直接把磁盘上的 .grd 拷进 saveDir（不经渲染进程搬文本）。
+  // 「星座3D」页导入要在渲染端解析出投影/场，故走 open()+save(text)；链路预算只需要主进程按文件采样，
+  // 没有理由把动辄一两百 MB 的文本过一趟 IPC —— 这里按字节拷贝，重名规则与 save 一致。
+  function copyIn(srcPath) {
+    if (!saveDir) throw new Error('未配置导入存储目录')
+    fs.mkdirSync(saveDir, { recursive: true })
+    const cleaned = path.basename(String(srcPath || '')).replace(/\.(grd|pat)$/i, '').replace(/[^\w.\-]+/g, '_').replace(/\.+/g, '.') || 'imported'
+    let fname = cleaned + '.grd', i = 1
+    while (fs.existsSync(path.join(saveDir, fname))) fname = `${cleaned}_${++i}.grd`
+    fs.copyFileSync(srcPath, path.join(saveDir, fname))
+    return { file: fname }
+  }
   // 读回导入的原始 GRD 文本（限定在 saveDir 内，防路径穿越）
   function raw(file) {
     if (!saveDir) throw new Error('未配置导入存储目录')
@@ -46,5 +58,5 @@ module.exports = function createCoverage(baseDir, saveDir) {
     try { fs.unlinkSync(fp) } catch { /* 已不在 */ }
     return { ok: true }
   }
-  return { index, get, save, raw, remove }
+  return { index, get, save, copyIn, raw, remove }
 }

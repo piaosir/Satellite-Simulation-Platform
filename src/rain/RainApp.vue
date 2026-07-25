@@ -1,13 +1,14 @@
 <script setup>
 // 雨衰计算 独立窗口 —— 通用，面向所有种类卫星（仰角驱动）。
-// Excel 式批量计算（每行一算例，计算结果就地进表）+ 右侧单算例细致分析（交互式坐标系 + SatMaster 版详情）。
+// Excel 式批量计算（每行一算例，雨衰以只读计算列进表）+ 右侧单算例细致分析（交互式坐标系 + SatMaster 版详情），
+// 点表格任一行即在右侧细看该算例。算例表与链路预算链路表同一套表格口径（两层表头分区 / 不冻结数据列 / 结果格着色）。
 // 计算在主进程 core.calculateRainAttenuation（复用 ITU-R 传播模型），本组件负责采集/展示/配置持久化。
 import { ref, reactive, shallowRef, computed, watch, nextTick, onMounted } from 'vue'
 import StationGrid from '../linkbudget/StationGrid.vue'   // 通用表格组件（Regen 先例：直接复用）
 import ConfigTree from '../components/ConfigTree.vue'
 import Icon from '../components/Icon.vue'
 import RainPlot from './RainPlot.vue'
-import { rainFields, RESULT_KEYS, LEGACY_KEYS, POL_LABEL, defaultRow, buildRainCase } from './rainParams.js'
+import { rainFields, GRID_GROUPS, RESULT_KEYS, LEGACY_KEYS, POL_LABEL, defaultRow, effectiveRow, buildRainCase } from './rainParams.js'
 import { stableStringify } from '../shared/configDirty.js'
 import { halfStr } from '../shared/num.js'
 
@@ -19,12 +20,8 @@ const direction = ref('down')       // 'down' | 'up'（G/T 衰减 / DND 为下�
 const rainModel = ref('auto')       // 'auto'（经纬度→ITU-R P.837 自动填 R0.01）| 'manual'（手填）
 // 字段集：几何是全局参数、派生结果收进详情 → 两种轨道类型同一套列
 const fields = computed(() => rainFields())
-// 只读字段：结果列恒只读；自动降雨模型 → R0.01 只读
-const readonlyKeys = computed(() => {
-  const ks = RESULT_KEYS.slice()
-  if (rainModel.value === 'auto') ks.push('rainRate')
-  return ks
-})
+// 只读字段：自动降雨模型 → R0.01 只读（结果列由 f.ro 恒只读，不必列在此）
+const readonlyKeys = computed(() => (rainModel.value === 'auto' ? ['rainRate'] : []))
 const geoTip = computed(() => orbitMode.value === 'geo'
   ? 'GEO：填定点轨位（全局，各站共用）→ 各站仰角由经纬度自动换算'
   : 'NGSO：填近圆轨道三要素（全局）→ 按 ITU-R P.618-14 §8「仰角分箱 × 可见时间占比」加权反解各站等效仰角')
@@ -48,51 +45,58 @@ function mkCase(over) { return { ...defaultRow(), ...(over || {}), _id: 'c' + (_
 const cases = reactive([mkCase()])
 
 // —— 计算结果 ——
-const results = shallowRef([])      // 与 cases 同序；主进程返回的纯对象数组（IPC 克隆安全）
+// 按行 _id 存，不按数组下标：算例表可插行/删行/上下移动，下标一变，「results[i] 配 cases[i]」
+// 的对应就整体串位（右侧详情张冠李戴、表内雨衰挂错行）。_id 随行走，增删改序都不会错配。
+// 也不写回行对象（与链路预算结果列同口径）：不进撤销快照、不惊动存档/脏检/过期 watcher。
+const resultById = shallowRef({})    // { 行_id: 主进程返回的纯对象结果（IPC 克隆安全）}
 const computing = ref(false)
-const selectedIdx = ref(0)
+const selectedId = ref(cases[0]._id)  // 右侧「单算例分析」当前所分析的算例 _id
+const hasResults = computed(() => cases.some((c) => resultById.value[c._id]))
 
 const notice = ref('')
 let _noticeT = null
 function toast(msg) { notice.value = msg; clearTimeout(_noticeT); _noticeT = setTimeout(() => (notice.value = ''), 4000) }
 
-// 全局几何变更 → 已出过结果则防抖重算（输入是打字过程，别逐键跑批量计算）。
-// 仰角不再是表内的列，由引擎从全局几何算出、只在详情/导出里露面，故无需前端同步机制。
-let _geomT = null
-function geomChanged() {
-  if (results.value.length) { clearTimeout(_geomT); _geomT = setTimeout(compute, 350) }
-}
-watch(geoSatLon, geomChanged)
-watch(ngsoOrbit, geomChanged)
+// —— 结果过期提示（与链路预算同口径）：出结果后任何计算输入再变化 → 亮「输入已变」提醒重算 ——
+// 不做「打字防抖自动重算」：轨位打到一半就会被当成完整值跑一遍全表，表里数字乱跳、右上角提示乱弹，
+// 而表格内的编辑又从来不自动重算 —— 一半自动一半手动才是这页最别扭的地方。统一成手动重算 + 亮灯。
+const resultsStale = ref(false)
+watch([geoSatLon, ngsoOrbit, rainModel, cases], () => { if (hasResults.value) resultsStale.value = true }, { deep: true })
 
 // —— 城市选址 + 经纬度自动填（复用链路预算 link:* 通道）——
 const cities = ref([])
 async function citySearch(kw) { try { return (api && await api.searchCities(kw)) || [] } catch (e) { return [] } }
-async function autoGeo(row) {
+// skip：粘贴/填充整行时已显式带入的自动列（R0.01 / 海拔）——重算不得覆盖它们（与链路预算同口径）。
+// 少了这层，整行粘贴一进来就把粘贴过来的降雨率/海拔按站址查表冲掉，看着像「粘完自己改了」。
+async function autoGeo(row, skip) {
   if (!api) return
   const lat = parseFloat(halfStr(row.latitude)), lon = parseFloat(halfStr(row.longitude))
   if (!Number.isFinite(lat) || !Number.isFinite(lon)) return
   try {
     const r = await api.geoFill(lat, lon)
     if (!r) return
-    if (r.altitude != null) row.altitude = String(Math.round(r.altitude))
-    if (rainModel.value === 'auto' && r.rainRate != null) row.rainRate = String(Math.round(r.rainRate * 1000) / 1000)
+    if (r.altitude != null && !(skip && skip.has('altitude'))) row.altitude = String(Math.round(r.altitude))
+    if (rainModel.value === 'auto' && r.rainRate != null && !(skip && skip.has('rainRate'))) row.rainRate = String(Math.round(r.rainRate * 1000) / 1000)
   } catch (e) { /* ignore */ }
 }
 
-// —— 计算结果就地回填到行（只读字段，可选中/复制）——
-const fmt = (v, d = 2) => (v == null || !Number.isFinite(+v)) ? '—' : (+v).toFixed(d)
-function writeResults() {
-  const rs = results.value || []
-  cases.forEach((row, i) => {
-    const r = rs[i]
-    for (const k of RESULT_KEYS) {
-      if (!r) { row[k] = ''; continue }
-      if (r.error) { row[k] = '✕'; continue }
-      const v = r[k]
-      row[k] = (v == null || !Number.isFinite(+v)) ? '—' : (+v).toFixed(2)
-    }
-  })
+// —— 表内结果列取值（StationGrid 计算列口径：{ 行_id: { 列key: 值 } }）——
+const extraValues = computed(() => {
+  const out = {}
+  for (const row of cases) {
+    const r = resultById.value[row._id]
+    if (!r) continue
+    const o = {}
+    for (const k of RESULT_KEYS) o[k] = r.error ? '✕' : ((r[k] == null || !Number.isFinite(+r[k])) ? '—' : (+r[k]).toFixed(2))
+    out[row._id] = o
+  }
+  return out
+})
+// 结果列着色：该算例算不出来时标红（保留数值着色与报错诊断，不出文字判定）
+function cellClassFn(f, row) {
+  if (!f.ro) return null
+  const r = resultById.value[row._id]
+  return (r && r.error) ? 'st-bad' : null
 }
 
 // —— 计算（批量，一次 IPC）——
@@ -110,49 +114,64 @@ async function compute() {
   }
   computing.value = true
   try {
+    const ids = cases.map((row) => row._id)          // 先固定本轮行序：await 期间用户可能又增删了行
     const payload = cases.map((row) => buildRainCase(row, caseOpts()))
     const out = await api.computeBatch(payload)
-    results.value = Array.isArray(out) ? out : []
-    writeResults()
-    const errs = results.value.filter((r) => r && r.error).length
-    toast(errs ? `完成，${errs}/${cases.length} 个算例有问题（见表内 ✕）` : `完成，共 ${cases.length} 个算例`)
-  } catch (e) { toast('计算失败：' + (e && e.message ? e.message : e)); results.value = [] }
+    const arr = Array.isArray(out) ? out : []
+    const m = {}
+    ids.forEach((id, i) => { if (arr[i]) m[id] = arr[i] })
+    resultById.value = m
+    resultsStale.value = false
+    const errs = arr.filter((r) => r && r.error).length
+    toast(errs ? `完成，${errs}/${ids.length} 个算例有问题（见表内 ✕）` : `完成，共 ${ids.length} 个算例`)
+  } catch (e) { toast('计算失败：' + (e && e.message ? e.message : e)); resultById.value = {} }
   finally { computing.value = false }
 }
-// 方向切换：下行/上行影响 G/T 衰减列，已算过则自动重算
-watch(direction, () => { if (results.value.length) compute() })
+// 方向切换：下行/上行影响 G/T 衰减列，已算过则自动重算（单击即定，不存在「打一半」的中间态）
+watch(direction, () => { if (hasResults.value) compute() })
 // 轨道类型切换：几何口径变了，已算过则重算
-watch(orbitMode, () => { if (results.value.length) compute() })
+watch(orbitMode, () => { if (hasResults.value) compute() })
 // 降雨模型切到「自动」：把各行 R0.01 按 ITU-R P.837 重新填上（此后只读）
 watch(rainModel, (m) => { if (m === 'auto') cases.forEach((row) => autoGeo(row)) })
 
 // —— 选中算例 → 详情 + 曲线 ——
-watch(() => cases.length, (n) => { if (selectedIdx.value >= n) selectedIdx.value = Math.max(0, n - 1) })
-const selectedResult = computed(() => (results.value || [])[selectedIdx.value] || null)
+// 选中项按 _id 跟随，行被删/被移动都不会跳到别的算例；行没了则退到首行。
+watch(() => cases.map((c) => c._id).join(','), () => {
+  if (!cases.length) { selectedId.value = null; return }
+  if (!cases.some((c) => c._id === selectedId.value)) selectedId.value = cases[0]._id
+})
+const selectedCase = computed(() => cases.find((c) => c._id === selectedId.value) || null)
+const selectedResult = computed(() => (selectedCase.value && resultById.value[selectedCase.value._id]) || null)
+// 点表格任一行（鼠标或键盘导航）→ 右侧分析跟着切到该行，与链路预算表口径一致；表头下拉仍可用，两者同步
+function onRowFocus(i, id) { if (id) selectedId.value = id }
 // 曲线面板入参：把算出的仰角回灌进去，好让「仰角」轴能标出当前取值点（计算时被全局几何覆盖）
 const selectedParams = computed(() => {
-  const row = cases[selectedIdx.value]
+  const row = selectedCase.value
   if (!row) return null
   const r = selectedResult.value
   const elevation = (r && !r.error && Number.isFinite(+r.elevation)) ? +r.elevation : undefined
   return buildRainCase(row, { ...caseOpts(), elevation })
 })
-const selName = (i) => (cases[i] && cases[i].stationName) || ('算例 ' + (i + 1))
+const caseName = (c, i) => (c && c.stationName) || ('算例 ' + (i + 1))
+const selName = computed(() => caseName(selectedCase.value, cases.findIndex((c) => c._id === selectedId.value)))
 
 // SatMaster 版详情三段
 const detail = computed(() => {
-  const r = selectedResult.value, row = cases[selectedIdx.value]
+  const r = selectedResult.value, row = selectedCase.value
   if (!r || r.error || !row) return null
   const f = (v, d = 2, u = '') => (v == null || !Number.isFinite(+v)) ? '—' : ((+v).toFixed(d) + (u ? ' ' + u : ''))
   const down = r.direction === 'down'
   const s = r.s8 || null                     // NGSO 统计口径（ITU-R P.618-14 §8）诊断块
+  // 「输入参数」段回显的是**实际入算的值**：留空列取该列默认（与表内灰字占位同口径），
+  // 故站名/海拔取 buildRainCase 归一后的入参，而不是行里的原始空串。
+  const p = selectedParams.value || {}
   return {
     error: r.error ? (r.message || '计算失败') : '',
     input: [
-      ['地球站', row.stationName || '—'],
+      ['地球站', p.stationName || '—'],
       ['纬度', f(r.lat, 4, '°')],
       ['经度', f(r.lon, 4, '°')],
-      ['海拔', (row.altitude === '' || row.altitude == null) ? '0 m' : (row.altitude + ' m')],
+      ['海拔', f(p.altitude, 0, 'm')],
       s
         ? ['轨道（近圆）', f(s.orbitAltKm, 0, 'km') + ' / 倾角 ' + f(s.inclDeg, 1, '°')]
         : ['GEO 轨位', r.satLon != null ? f(r.satLon, 2, '°E') : '—（直接指定仰角）'],
@@ -201,7 +220,7 @@ const detail = computed(() => {
 // —— Excel 导出 ——
 async function exportExcel() {
   if (!api) { toast('导出需在桌面客户端中运行'); return }
-  if (!results.value.length) { toast('请先计算'); return }
+  if (!hasResults.value) { toast('请先计算'); return }
   try {
     const pf = (v) => { const x = parseFloat(halfStr(v)); return Number.isFinite(x) ? x : null }
     const payload = {
@@ -213,8 +232,9 @@ async function exportExcel() {
       geom: orbitMode.value === 'ngso'
         ? { orbitAltKm: pf(ngsoOrbit.alt), inclDeg: pf(ngsoOrbit.incl), minElevDeg: pf(ngsoOrbit.minEl) }
         : { satLon: pf(geoSatLon.value) },
-      rows: cases.map(({ _id, ...r }) => ({ ...r })),
-      results: JSON.parse(JSON.stringify(results.value))
+      rows: cases.map((c) => { const { _id, ...r } = effectiveRow(c); return r }),
+      // 报表按下标把 rows[i] 与 results[i] 配对 → 这里按当前行序摊平（未算出的行留 null 占位，不串位）
+      results: JSON.parse(JSON.stringify(cases.map((c) => resultById.value[c._id] || null)))
     }
     const r = await api.exportExcel(payload)
     if (r && r.ok) toast('已导出：' + r.filePath)
@@ -242,7 +262,8 @@ function serializeState() {
     satLon: geoSatLon.value,
     orbit: { alt: ngsoOrbit.alt, incl: ngsoOrbit.incl, minEl: ngsoOrbit.minEl },
     cases: cases.map(strip),
-    selectedIdx: selectedIdx.value
+    // 存档里仍按下标记（_id 是会话内的临时键，不入档）
+    selectedIdx: Math.max(0, cases.findIndex((c) => c._id === selectedId.value))
   }
 }
 // 旧存档迁移：几何列曾逐行进表（satLon / orbitAltitude / orbitInclination / minElevation），
@@ -268,18 +289,20 @@ function applyState(st) {
     cases.splice(0, cases.length, ...st.cases.map((r) => {
       const row = { ...defaultRow(), ...r, _id: 'c' + (_cid++) }
       if (String(row.polarization || '').toUpperCase() === 'C') row.polarization = 'RHCP'   // 旧存档圆极化 C → RHCP
-      for (const k of LEGACY_KEYS) delete row[k]
+      for (const k of DROP_KEYS) delete row[k]   // 历史遗留列 + 旧版曾写进行里的结果值（现为计算列）
       return row
     }))
   }
-  if (st.selectedIdx != null) selectedIdx.value = Math.min(st.selectedIdx, Math.max(0, cases.length - 1))
-  results.value = []          // 载入配置后清空旧结果，待重新计算
+  const si = (st.selectedIdx != null) ? Math.min(st.selectedIdx, Math.max(0, cases.length - 1)) : 0
+  selectedId.value = cases[si] ? cases[si]._id : (cases[0] ? cases[0]._id : null)
+  resultById.value = {}       // 载入配置后清空旧结果，待重新计算
+  resultsStale.value = false
 }
 function blankState() { return { orbitType: 'RAIN', orbitMode: 'geo', direction: 'down', rainModel: 'auto', satLon: '130.5', orbit: { alt: '550', incl: '53', minEl: '10' }, cases: [defaultRow()], selectedIdx: 0 } }
 
 let _stateT = null
 function scheduleSaveState() { clearTimeout(_stateT); _stateT = setTimeout(() => { try { localStorage.setItem(STATE_KEY, JSON.stringify({ ...serializeState(), activeId: activeId.value })) } catch (e) { /* ignore */ } }, 600) }
-watch([orbitMode, direction, rainModel, geoSatLon, ngsoOrbit, cases, selectedIdx, activeId], scheduleSaveState, { deep: true })
+watch([orbitMode, direction, rainModel, geoSatLon, ngsoOrbit, cases, selectedId, activeId], scheduleSaveState, { deep: true })
 
 // 指纹（只取内容，不含 selectedIdx 视图态）→ 脏检测（全局几何属内容，计入）
 function fingerprintOf(s) { return stableStringify({ orbitMode: s.orbitMode, direction: s.direction, rainModel: s.rainModel, satLon: s.satLon, orbit: s.orbit, cases: s.cases }) }
@@ -473,15 +496,20 @@ onMounted(async () => {
         </div>
 
         <div class="rain-grid">
+          <!-- 表格口径与链路表统一：两层表头分区（groups）+ 不冻结任何数据列（freeze-keys=false，
+               全列随横滚；原先「地球站」列粘性固定，横滚时与其它列错位、和链路表也不一样） -->
           <StationGrid
-            :stations="cases" :fields="fields" :cities="cities" :city-search="citySearch" :auto-geo="autoGeo"
-            :readonly-keys="readonlyKeys" label="算例"
+            :stations="cases" :fields="fields" :groups="GRID_GROUPS" :freeze-keys="false"
+            :cities="cities" :city-search="citySearch" :auto-geo="autoGeo"
+            :readonly-keys="readonlyKeys" :extra-values="extraValues" :cell-class="cellClassFn" label="算例"
+            @row-focus="onRowFocus"
           />
         </div>
 
         <div class="lb-foot">
-          <span class="rain-foot-desc">每行一个独立算例 · 雨衰就地进表；仰角 / G/T衰减 / 雨致XPD / 合计衰减见右侧详情与 Excel 导出</span>
+          <span class="rain-foot-desc">每行一个独立算例 · 点行即在右侧细看；仰角 / G/T衰减 / 雨致XPD / 合计衰减见右侧详情与 Excel 导出</span>
           <span class="lb-flex"></span>
+          <span v-if="resultsStale && hasResults" class="rain-stale" title="计算输入已被修改，表内雨衰列与右侧详情对应修改前的参数">输入已变</span>
           <button class="lb-calc" :disabled="computing || !cases.length" @click="compute">
             {{ computing ? '计算中…' : ('计算（' + cases.length + ' 个算例）') }}
           </button>
@@ -492,22 +520,26 @@ onMounted(async () => {
       <section class="lb-col lb-result">
         <div class="lb-col-hd">
           <span class="lb-cfg-hd-t">单算例分析</span>
+          <span v-if="resultsStale && hasResults" class="rain-stale" title="计算输入已被修改，以下数值对应修改前的参数">输入已变</span>
           <span class="lb-flex"></span>
-          <select v-model.number="selectedIdx" class="rain-sel" title="选择要细致分析的算例">
-            <option v-for="(c, i) in cases" :key="c._id" :value="i">{{ (i + 1) + ' · ' + selName(i) }}</option>
+          <select v-model="selectedId" class="rain-sel" title="选择要细致分析的算例（点表格中的行亦可）">
+            <option v-for="(c, i) in cases" :key="c._id" :value="c._id">{{ (i + 1) + ' · ' + caseName(c, i) }}</option>
           </select>
-          <button class="lb-mini" :disabled="!results.length" title="导出批量结果 Excel" @click="exportExcel">导出 Excel</button>
+          <button class="lb-mini" :disabled="!hasResults" title="导出批量结果 Excel" @click="exportExcel">导出 Excel</button>
         </div>
         <div class="lb-result-bd">
-          <template v-if="!results.length">
+          <template v-if="!hasResults">
             <div class="rain-ph">点「计算」后，这里显示所选算例的雨衰函数曲线与 SatMaster 版详细结果。</div>
           </template>
           <template v-else-if="selectedResult && selectedResult.error">
             <div class="rain-err">✕ {{ selectedResult.message || '该算例无法计算' }}</div>
           </template>
+          <template v-else-if="!selectedResult">
+            <div class="rain-ph">该算例（{{ selName }}）在上次计算之后才加进来，点「计算」把它一并算上。</div>
+          </template>
           <template v-else-if="detail">
             <!-- 交互式坐标系（在详情上方）-->
-            <RainPlot :params="selectedParams" :result="selectedResult" :station="selName(selectedIdx)" />
+            <RainPlot :params="selectedParams" :result="selectedResult" :station="selName" />
 
             <!-- SatMaster 版详细结果 -->
             <div class="rain-detail">
@@ -579,7 +611,7 @@ onMounted(async () => {
 :root[data-theme="dark"] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c08079; }
 
 .lb-topbar { flex: none; display: flex; align-items: baseline; gap: 10px; padding: 8px 14px; border-bottom: 1px solid var(--border); background: var(--surface); }
-.lb-brand { font-family: Georgia, 'Times New Roman', serif; font-size: 16px; font-weight: 600; }
+.lb-brand { font-family: var(--font-serif); font-size: 16px; font-weight: 600; }
 .lb-sub { font-size: 11px; color: var(--text-faint); }
 .lb-flex { flex: 1 1 auto; }
 .lb-notice { font-size: 12px; color: var(--ok); }
@@ -622,6 +654,10 @@ onMounted(async () => {
 
 .rain-grid { flex: 1 1 auto; min-height: 0; min-width: 0; overflow: hidden; display: flex; padding: 8px; }
 .rain-grid > * { flex: 1 1 auto; min-height: 0; min-width: 0; }
+/* 结果格算不出来时标红：走 lbworkbench.css 的 .sg-cell.st-bad（与链路表同一条规则），此处不再另写 */
+
+/* 「输入已变」小灯：出过结果后又改了计算输入 → 提醒重算（与链路预算同口径） */
+.rain-stale { flex: none; font-size: 11px; padding: 2px 7px; letter-spacing: 0; text-transform: none; color: var(--warn); border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); border-radius: var(--r-ctl); background: color-mix(in srgb, var(--warn) 8%, transparent); }
 
 .lb-foot { flex: none; display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-top: 1px solid var(--border); background: var(--surface); }
 .rain-foot-desc { font-size: 11px; color: var(--text-faint); }

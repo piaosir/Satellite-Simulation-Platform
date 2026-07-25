@@ -10,11 +10,16 @@ import { feature } from 'topojson-client'
 import topo from './data/countries-10m.json'
 import NAMES from './data/country-names-zh.json'
 import { CHINA_IDS, NO_LABEL_IDS } from './cnClaims.js'
+import { ENV_R, envSphereParams } from '../env/envSphere.js'
 import { NANHAI_DASHES, NANHAI_WIDTH_MUL, NANHAI_MIN_WIDTH } from '../nanhaiDashes.js'
 import { CHINA, ARCTIC_ISLAND_LAT, landColors, setLandPalette } from '../landPalette.js'
 import { antarcticaFillRings } from './antarctica.js'
 
 const RE = 6371
+
+// 画布文字（地名/大洋/波束标签）与界面同一字体栈：Times New Roman 打西文，宋体接中文。
+// 与 styles/global.css 的 --font-serif 保持一致（canvas 取不到 CSS 变量，此处手工镜像）。
+const UI_FONT = '"Times New Roman", Times, "SimSun", "宋体", serif'
 
 // 渲染分辨率倍率上限：实际渲染不超过显示器物理像素密度的 SS_CAP 倍。
 // 超出物理像素的超采样屏幕根本无法显示，纯属浪费 GPU——裁掉它对画质无影响（MSAA 仍负责边缘抗锯齿）。
@@ -168,11 +173,11 @@ function makeLabelSprite(text, hpx, fill, strokePx = 4) {
   const pad = 8, fs = 54   // 高分辨率纹理：放大后文字更锐利
   const c = document.createElement('canvas')
   let cx = c.getContext('2d')
-  cx.font = `${fs}px "Microsoft YaHei", sans-serif`
+  cx.font = `${fs}px ${UI_FONT}`
   const w = Math.ceil(cx.measureText(text).width) + pad * 2
   c.width = w; c.height = fs + pad * 2
   cx = c.getContext('2d')
-  cx.font = `${fs}px "Microsoft YaHei", sans-serif`
+  cx.font = `${fs}px ${UI_FONT}`
   cx.textBaseline = 'middle'; cx.textAlign = 'center'
   cx.lineJoin = 'round'; cx.miterLimit = 2
   cx.lineWidth = strokePx; cx.strokeStyle = 'rgba(0,0,0,0.8)'   // 黑色描边(casing)：strokePx 控粗细
@@ -283,7 +288,7 @@ function makeOceanLabel(text) {
   const pad = 10, fs = 40
   const c = document.createElement('canvas')
   let cx = c.getContext('2d')
-  const font = `italic ${fs}px "Microsoft YaHei", sans-serif`
+  const font = `italic ${fs}px ${UI_FONT}`
   cx.font = font
   const w = Math.ceil(cx.measureText(text).width) + pad * 2
   c.width = w; c.height = fs + pad * 2
@@ -739,7 +744,7 @@ export function createGlobeScene(container, quality = {}) {
   let covGroup = null
   // 覆盖用小标签（波束名）：白字描边，depthTest 开 -> 背面被地球遮挡
   function makeCovLabel(text, hpx, color) {
-    const fs = 50, pad = 8, font = `${fs}px "Microsoft YaHei", sans-serif`, c = document.createElement('canvas')
+    const fs = 50, pad = 8, font = `${fs}px ${UI_FONT}`, c = document.createElement('canvas')
     let x = c.getContext('2d'); x.font = font
     c.width = Math.ceil(x.measureText(text).width) + pad * 2; c.height = fs + pad * 2
     x = c.getContext('2d'); x.font = font; x.textBaseline = 'middle'; x.textAlign = 'center'
@@ -827,6 +832,72 @@ export function createGlobeScene(container, quality = {}) {
     covGridGroup = g; scene.add(g)
   }
   function setCovGridAlpha(a) { if (covGridFill) covGridFill.mat.opacity = a }
+
+  // ===== 环境场【专用通道】：一张等经纬贴图（ITU 降雨率/零度等温线/海拔…）+ 逐档等值线 =====
+  // 连续场用贴图而不是分带多边形：一个 draw call、零细分，避开覆盖填充那条球面细分的老性能坑。
+  //
+  // 半径挑在【陆地网格(1.0) 与 岸线/国界(1.0004/1.0005) 之间】：场压住海陆填色，岸线国界仍压在场之上
+  // ——与 2D 侧「地物线在场之上」的制图口径一致。renderOrder 4.5 < 覆盖网格 4.9 < GRD 覆盖 5。
+  //
+  // 贴图定向（phiStart/thetaStart 的推导见 ../env/envSphere.js，那里有对应的离屏单测——
+  //「贴图偏 90°／上下颠倒」在代码里看不出来，只有把球建出来逐点比对才发现得了）。
+  let envMesh = null, envTex = null, envKey = '', envLineGroup = null
+  function clearEnvRaster() {
+    if (envMesh) { scene.remove(envMesh); envMesh.geometry.dispose(); envMesh.material.dispose(); envMesh = null }
+    if (envTex) { envTex.dispose(); envTex = null }
+    envKey = ''
+  }
+  function setEnvRaster(canvas, opts) {
+    const o = opts || {}
+    if (!canvas) { clearEnvRaster(); return }
+    const bb = o.bbox || { lonMin: -180, lonMax: 180, latMin: -90, latMax: 90 }
+    const alpha = o.alpha != null ? o.alpha : 0.78
+    const key = [bb.lonMin, bb.lonMax, bb.latMin, bb.latMax].join(',')
+    if (envMesh && key !== envKey) { scene.remove(envMesh); envMesh.geometry.dispose(); envMesh.material.dispose(); envMesh = null }
+    if (!envMesh) {
+      const P = envSphereParams(bb)
+      const geo = new THREE.SphereGeometry(P.radius, P.widthSeg, P.heightSeg, P.phiStart, P.phiLength, P.thetaStart, P.thetaLength)
+      const mat = new THREE.MeshBasicMaterial({ transparent: true, opacity: alpha, depthWrite: false, side: THREE.FrontSide })
+      envMesh = new THREE.Mesh(geo, mat); envMesh.renderOrder = 4.5; envMesh.frustumCulled = false
+      scene.add(envMesh); envKey = key
+    }
+    if (envTex) envTex.dispose()
+    envTex = new THREE.CanvasTexture(canvas)
+    envTex.colorSpace = THREE.SRGBColorSpace
+    // 分级填色要看得见档与档的硬边界（那条边界就是等值线）→ 放大时用最近邻，否则线性
+    envTex.magFilter = o.smooth === false ? THREE.NearestFilter : THREE.LinearFilter
+    envTex.minFilter = THREE.LinearMipmapLinearFilter
+    envTex.anisotropy = renderer.capabilities.getMaxAnisotropy ? renderer.capabilities.getMaxAnisotropy() : 1
+    envMesh.material.map = envTex
+    envMesh.material.opacity = alpha
+    envMesh.material.needsUpdate = true
+  }
+  function setEnvAlpha(a) { if (envMesh) envMesh.material.opacity = a }
+  // 等值线：与 2D 同一份经纬折线，逐档一个 LineSegments2（整档打包成一条批，几百条线也只一个 draw call）
+  function clearEnvContours() {
+    if (!envLineGroup) return
+    envLineGroup.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) { lineMats.delete(o.material); o.material.dispose() } })
+    scene.remove(envLineGroup); envLineGroup = null
+  }
+  function setEnvContours(groups) {
+    clearEnvContours()
+    if (!groups || !groups.length) return
+    const g = new THREE.Group()
+    for (const grp of groups) {
+      const flat = []
+      for (const ln of (grp.lines || [])) {
+        for (let i = 1; i < ln.length; i++) {
+          const a = llaToVec(ln[i - 1][1], ln[i - 1][0], 0).multiplyScalar(ENV_R + 0.0001)
+          const b = llaToVec(ln[i][1], ln[i][0], 0).multiplyScalar(ENV_R + 0.0001)
+          flat.push(a.x, a.y, a.z, b.x, b.y, b.z)
+        }
+      }
+      if (!flat.length) continue
+      g.add(fatSegments(flat, new THREE.Color(grp.color || '#ffffff'), grp.width || 1, 1, 4.6))
+    }
+    envLineGroup = g; scene.add(g)
+  }
+  function clearEnv() { clearEnvRaster(); clearEnvContours() }
   // 分带填充：与 2D 同源——直接用 bandGeometry 逐三角形切出的各档环带多边形（lon/lat）构网格。
   // 每个凸多边形扇形三角化，顶点色 = 该档颜色 → 填充边界即等值线、精确重合，无毛刺。地平/接缝裁剪
   // 已在 bandGeometry 内完成（多边形已切在 0°仰角线内、跨缝已解缠），无需再在着色器里 discard。
@@ -1473,6 +1544,7 @@ export function createGlobeScene(container, quality = {}) {
     renderer.render(scene, camera)   // 立即补画一帧，避免 setSize 清空缓冲后等到下帧才重绘 → 黑一下
   }
   function destroy() {
+    clearEnv()   // 贴图/几何不随 renderer.dispose 走，显式释放（切页面重挂载时会反复走这里）
     cancelAnimationFrame(raf); controls.dispose(); renderer.dispose()
     if (renderer.domElement.parentNode) renderer.domElement.parentNode.removeChild(renderer.domElement)
   }
@@ -1480,7 +1552,9 @@ export function createGlobeScene(container, quality = {}) {
   return {
     setSatellites, setLabelMode, setHighlight, setHighlightLLA, setOnPick,
     setOrbit, setGroundTrack, setFootprint, setSelectionSet, clearSelectionGeom,
-    setCoverage, clearCoverage, setCoverageField, patchCoverageLayers, clearCoverageField, setCoverageFieldAlpha, setCovGrid, clearCovGrid, setCovGridAlpha, setSatLayer, clearSatLayer, faceLonLat, setProvinces, setProvincesVisible, setCities, setCitiesVisible, setBorderStyle, setNameScale, setLabelStyle, setOceanColor, setLandColors,
+    setCoverage, clearCoverage, setCoverageField, patchCoverageLayers, clearCoverageField, setCoverageFieldAlpha, setCovGrid, clearCovGrid, setCovGridAlpha,
+    setEnvRaster, setEnvAlpha, setEnvContours, clearEnv,
+    setSatLayer, clearSatLayer, faceLonLat, setProvinces, setProvincesVisible, setCities, setCitiesVisible, setBorderStyle, setNameScale, setLabelStyle, setOceanColor, setLandColors,
     setPixelRatio, setRenderFps, setSphereDetail, setMapDetail,
     setMarkers, setTrajectories, setFocusSatLLA, setOnHover, setOnRightClick, setBeamDragMode, setOnBeamDrag, setLabelDragMode, setOnLabelDrag, setPolyDrawMode, setOnPolyDraw, setPlaceMode, setOnPlace,
     faceTo, rotateBy, setAutoRotate, setAutoRotateSpeed, setOnAutoRotateOff, resize, pause, resume, destroy,

@@ -6,7 +6,12 @@ import { jsPDF } from 'jspdf'
 import { svg2pdf } from 'svg2pdf.js'
 import { Context as SvgContext } from 'svgcanvas'
 
-const EXPORT_FONT = 'cjkexport'   // 导出 SVG 的 font-family 与 PDF 内注册的中文字体族名对齐
+// 导出 SVG 的 font-family 与 PDF 内注册的字体族名对齐。PDF 的字体按「资源」整体选用、不像浏览器逐字形回落，
+// 故分两面注册：汉字走嵌入的中文 TTF，西文/数字走嵌入的 Times New Roman（与软件界面同字体）。
+// 拉丁族名后缀 times = PDF 内建基础 14 字体，作 TNR 未嵌入成功时的兜底（观感等同，无需嵌入）。
+const EXPORT_FONT = 'cjkexport'
+const EXPORT_FONT_LATIN = 'tnrexport'
+const LATIN_FALLBACK = 'times'
 
 // 性能补丁（svgcanvas 2.6.0）：其 lineTo 每个点都 indexOf('M') 全串扫描，单条大 path 退化为 O(N²)——
 // 合并后的陆地/海岸线达 10 万+ 点时录制耗时 ~27s。改用布尔标记代替全串扫描，并只做一次矩阵变换，
@@ -46,9 +51,10 @@ export async function renderFlatPNG(flat, { base = 2000, factor = 2, view = fals
   return new Uint8Array(await blob.arrayBuffer())
 }
 
-// 矢量 PDF：svgcanvas 录制 → svg2pdf。fontBase64=中文 TTF 的 base64（来自主进程 window.api.cjkFont）；
-// 缺失时中文将回退为系统默认字体（可能缺字），拉丁字符不受影响。返回 PDF 字节（Uint8Array）。
-export async function renderFlatPDF(flat, { base = 2000, fontBase64 = null, view = false } = {}) {
+// 矢量 PDF：svgcanvas 录制 → svg2pdf。fonts={cjk,latin,latinBold,latinItalic} 各为 TTF 的 base64
+// （来自主进程 window.api.pdfFonts）；cjk 缺失时中文回退系统默认字体（可能缺字），latin 缺失时西文用
+// PDF 内建 times。jsPDF 按用到的字形子集化嵌入，多带一套拉丁面几乎不增体积。返回 PDF 字节（Uint8Array）。
+export async function renderFlatPDF(flat, { base = 2000, fonts = null, view = false } = {}) {
   let W, H
   if (view) { const v = flat.viewportSize(); W = Math.max(1, Math.round(v.w)); H = Math.max(1, Math.round(v.h)) }
   else {
@@ -59,8 +65,12 @@ export async function renderFlatPDF(flat, { base = 2000, fontBase64 = null, view
   const t = (typeof performance !== 'undefined' ? () => performance.now() : () => Date.now())
   const log = (label, ms) => console.log('[PDF导出] ' + label + ': ' + ms.toFixed(0) + 'ms')
   let t0 = t()
+  const f = fonts || {}
+  // 拉丁面族名须在录制前定下（写进 SVG 的 font-family）：嵌到 TNR 就用它，否则退到内建 times。
+  // 两个族名一并写成回退串，粗斜等未注册的字型组合由 svg2pdf 顺位落到 times（它有全部四种字型）。
+  const latinFamily = (f.latin ? EXPORT_FONT_LATIN + ', ' : '') + LATIN_FALLBACK
   const sctx = new SvgContext(W, H)
-  flat.exportRender(sctx, { width: W, height: H, pixelScale: 1, fontFamily: EXPORT_FONT, view })
+  flat.exportRender(sctx, { width: W, height: H, pixelScale: 1, fontFamily: EXPORT_FONT, fontFamilyLatin: latinFamily, view })
   log('exportRender(svgcanvas 录制)', t() - t0); t0 = t()
   let svg = sctx.getSerializedSvg(true)
   log('getSerializedSvg', t() - t0)
@@ -78,11 +88,18 @@ export async function renderFlatPDF(flat, { base = 2000, fontBase64 = null, view
   try {
     t0 = t()
     const doc = new jsPDF({ orientation: 'landscape', unit: 'pt', format: [W, H], compress: true })
-    if (fontBase64) {
-      doc.addFileToVFS('cjk.ttf', fontBase64)
+    if (f.cjk) {
+      doc.addFileToVFS('cjk.ttf', f.cjk)
       doc.addFont('cjk.ttf', EXPORT_FONT, 'normal')
       doc.addFont('cjk.ttf', EXPORT_FONT, 'italic')
       doc.addFont('cjk.ttf', EXPORT_FONT, 'bold')
+    }
+    if (f.latin) {
+      // 粗/斜面缺失时用常规面顶上（宁可字重不对，也不要掉字）
+      const reg = f.latin
+      doc.addFileToVFS('tnr.ttf', reg); doc.addFont('tnr.ttf', EXPORT_FONT_LATIN, 'normal')
+      doc.addFileToVFS('tnr-bd.ttf', f.latinBold || reg); doc.addFont('tnr-bd.ttf', EXPORT_FONT_LATIN, 'bold')
+      doc.addFileToVFS('tnr-it.ttf', f.latinItalic || reg); doc.addFont('tnr-it.ttf', EXPORT_FONT_LATIN, 'italic')
     }
     log('jsPDF 初始化+字体', t() - t0); t0 = t()
     await svg2pdf(svgEl, doc, { x: 0, y: 0, width: W, height: H })
