@@ -487,7 +487,7 @@ onMounted(() => { loadOmm(); loadCustomGroups(); loadCustomConsts(); loadGxt(); 
           <!-- ② GRD -->
           <section v-else-if="tab === 'grd'">
             <p class="lead">卫星 / 天线树（与「星座地图 3D」的覆盖分析共用）。「添加 / 编辑卫星」会在本窗口之上弹出覆盖分析的同一弹窗（定位方式 / 星座关联一应俱全，仅隐藏图标·字号·仰角线·颜色等显示项）。也可导入 GRD 新建天线、重命名、导出原始 GRD。</p>
-            <div v-if="!grdApi" class="empty-hint">GRD 数据随「星座地图 3D」加载——请切换到该页面后再来管理。</div>
+            <div v-if="!grdApi" class="empty-hint">GRD 数据随「星座地图 3D」加载，请切换到该页面后再进行管理。</div>
             <template v-else>
               <div class="addbar sub">
                 <button class="mini imp" @click="openAddGrdSat"><Icon name="plus" :size="12" /> 添加卫星</button>

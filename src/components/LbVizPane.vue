@@ -9,6 +9,7 @@
 // 雨衰与余量，三线表里逐行都列着）。留下的两张竖排，各自答一个表答不了的问题：
 //   地理  站址经纬度铺成平面 + 世界地图底图——这条链路搬到哪儿还成立；
 //   链路  3D 地球上的站-星几何——「仰角 3.2°」是个数，卫星贴着地平线是张图。
+import { ref } from 'vue'
 import LbSpacePane from './LbSpacePane.vue'
 import LbLinkPane from './LbLinkPane.vue'
 
@@ -33,6 +34,31 @@ defineProps({
   showGeo: { type: Boolean, default: true },
   geoSite: { type: String, default: '' }
 })
+
+// —— 报告导出：把这一栏两张图收成图件 ——
+// 上层（各窗 exportReport）逐条链路切换详细预算，切一条就来这里取一次图。图与表同源同刻：
+// 取的是此刻屏幕上这条链路的这两张图，报告里因此不会出现「表是第 3 条、图还是第 2 条」。
+// 画不出来的图不占位（地理场图整片在覆盖外、链路视图缺几何）——没有就是没有。
+const geoRef = ref(null)
+const linkRef = ref(null)
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+async function captureFigures(o) {
+  const { scale = 4, timeoutMs = 120000 } = o || {}
+  const panes = [geoRef.value, linkRef.value].filter(Boolean)
+  for (const p of panes) { try { p.flush() } catch (e) { /* 该图不支持立刻重算即可 */ } }
+  const t0 = Date.now()
+  while (panes.some((p) => !p.ready) && Date.now() - t0 < timeoutMs) await sleep(80)
+  const out = []
+  for (const p of panes) {
+    if (!p.hasFigure) continue
+    let url = ''
+    try { url = await p.pngDataUrl(scale) } catch (e) { url = '' }
+    if (url) out.push({ title: p.figTitle, dataUrl: url })
+  }
+  return out
+}
+defineExpose({ captureFigures })
 </script>
 
 <template>
@@ -42,10 +68,10 @@ defineProps({
          链路视图只回答「这条链路在天上长什么样」，一眼即得，故压扁到 230 px——站-星那一段
          本就被取景甩到画面横向（见 lbglobe 的 frame），扁画幅正合它的形状。
          plot-height 只是「非地理图」的图框高，地理图不走它 -->
-    <LbSpacePane v-if="showGeo" :engine="engine" :params="params" :sweep2D="sweep2D"
+    <LbSpacePane v-if="showGeo" ref="geoRef" :engine="engine" :params="params" :sweep2D="sweep2D"
       :output-defs="outputDefs" :store-key="storeKey" :lang="lang" :unavailable="sweepUnavailable"
       :fixed-site="geoSite" :scene="linkScene" :geo-link="geoLink" :plot-height="320" />
-    <LbLinkPane :scene="linkScene" :store-key="storeKey" :lang="lang" :height="230" />
+    <LbLinkPane ref="linkRef" :scene="linkScene" :store-key="storeKey" :lang="lang" :height="230" />
   </aside>
 </template>
 

@@ -70,14 +70,14 @@ export const FIELD_GROUPS = [
       { key: 'antennaDiameter', rxKey: 'rxAntennaDiameter', label: '天线口径', tip: '收发共用同一面天线：口径一致（天线效率按收发频段分设）。MEO 预设 2.4 m：用户/物联站典型口径（关口站另配 4.5~7.3 m 并相应上调工作点）', side: 'common', unit: 'm', type: 'num', def: '2.4', target: 'link' },
       { key: 'antennaEfficiency', label: '天线效率', side: 'tx', unit: '%', type: 'num', def: '65', target: 'link' },
       { key: 'paBackoff', label: '功放回退', side: 'tx', unit: 'dB', type: 'num', def: '0', target: 'link' },
-      { key: 'feederLoss', label: '馈线损耗', tip: 'MEO 预设 0.5 dB：2.4 m 用户站短馈线（大关口站长波导才是 3 dB 量级）', side: 'tx', unit: 'dB', type: 'num', def: '0.5', target: 'link' },
+      { key: 'feederLoss', label: '馈线损耗', tip: 'MEO 预设 0.5 dB：2.4 m 用户站短馈线（大型关口站长波导为 3 dB 量级）', side: 'tx', unit: 'dB', type: 'num', def: '0.5', target: 'link' },
       { key: 'uplinkPowerControl', label: 'UPC', tip: '上行功率控制 (Uplink Power Control)', side: 'tx', type: 'select', options: ['否', '是', '自定义'], def: '否', target: 'link' },
       { key: 'upcValue', label: 'UPC值', tip: '仅「UPC = 自定义」时生效', side: 'tx', unit: 'dB', type: 'num', def: '0', target: 'link' },
       { key: 'uplinkOtherLoss', label: '综合损耗', tip: '综合损耗：指向/极化/天线罩/接头等未单列损耗之综合', side: 'tx', unit: 'dB', type: 'num', def: '0.3', target: 'link' },
       // —— 工作点（再生上行的功放，随站型入库；target:'op' 不进 linkParams，由 App 换成引擎 power 模式）——
       //   给定功放功率(W) → 引擎 power 模式算上行余量。（已删「设置余量」反解模式，工作点只按功放功率。）
       // hero:true 仅指渲染位置——与口径并列排在配置面板顶部主参数条（功放是站型的另一个定性指标），side 仍为 'tx'。
-      { key: 'opPowerW', label: '功放功率', tip: '功放输出功率（W）；MEO 预设 0.2 W ≈ 2.4 m 站工作点 EIRP 42 dBW（馈线 0.5 dB）。给定功放功率算上行余量。', side: 'tx', hero: true, unit: 'W', type: 'num', def: '0.2', target: 'op' },
+      { key: 'opPowerW', label: '功放功率', tip: '功放输出功率（W）；MEO 预设 0.2 W ≈ 2.4 m 站工作点 EIRP 42 dBW（馈线 0.5 dB）。按给定功放功率计算上行余量。', side: 'tx', hero: true, unit: 'W', type: 'num', def: '0.2', target: 'op' },
       // —— 接收链（工作点 G/T 的构成量）：天线（口径共用公共字段）+ 噪温 + 馈线 → 引擎按 gOverTe = 天线增益 − 系统噪温dB − 馈线损耗 算 G/T（含精确雨致 G/T 劣化）——
       { key: 'rxAntennaEfficiency', label: '天线效率', side: 'rx', unit: '%', type: 'num', def: '65', target: 'link' },
       { key: 'rxAntennaNoiseTempMode', label: '天线噪温模式', tip: '自动 = 按 ITU-R P.618-14 §3 由晴空大气衰减与链路仰角实时求取天空噪温（+25 K 地面拾取常数；NGSO §8 口径下随等效仰角变化），忽略「天线噪温」手填值；自定义 = 用「天线噪温」数值。', side: 'rx', type: 'select', options: ['自动', '自定义'], def: '自动', target: 'link' },
@@ -114,11 +114,14 @@ export const FIELD_GROUPS = [
     // 收信站群（再生式下行）：站址列 + 三个选择列 + 卫星EIRP（逐站手填）。
     // 接收链射频参数（天线/噪温/馈线/干扰）由所选「地球站配置」提供，工作点 G/T 由其按引擎口径算出
     // （不再支持「直接输入设备 G/T」——设备 G/T 系统噪温未知，无法自洽推出雨致 G/T 劣化）。
+    // 列序：「地球站配置」排在站址组之首（不与载波/卫星并列在配置组）——下行的地球站配置就是这座收信站
+    // 的站型（口径/噪温/馈线），与站址同属「这座站」；配置组只留链路两端之外的引用（载波信号 / 卫星）。
+    // 组归属见 RegenLinkBudgetApp 的 _RX_GROUP（stationId → 'geo'）。
     key: 'downlink', title: '收信站群', icon: 'down',
     fields: [
       { key: 'basebandId', label: '载波信号配置', type: 'select', options: [], def: '', target: 'meta' },
-      { key: 'stationId', label: '地球站配置', type: 'select', options: [], def: '', target: 'meta' },
       { key: 'satelliteId', label: '卫星', type: 'select', options: [], def: '', target: 'meta' },
+      { key: 'stationId', label: '地球站配置', type: 'select', options: [], def: '', target: 'meta' },
       { key: 'rxEarthStationLocation', label: '地球站位置', type: 'text', def: '北京', target: 'link', city: 'rx' },
       { key: 'rxLongitude', label: '经度', unit: '°E', type: 'num', def: '116.4074', target: 'link' },
       { key: 'rxLatitude', label: '纬度', unit: '°N', type: 'num', def: '39.9042', target: 'link' },
@@ -128,7 +131,7 @@ export const FIELD_GROUPS = [
       { key: 'rxDownlinkAvailability', label: '可用度', unit: '%', type: 'num', def: '99.90', target: 'link' },
       // 卫星下行 EIRP（再生式逐收信站取值）：同一颗星服务不同站因波束位置不同而 EIRP 各异——
       // 「卫星×收信站」配对量，故留在站表逐站手填。
-      { key: 'rxEIRP', label: '卫星EIRP', tip: '该载波的卫星下行 EIRP（dBW，再生直发口径），按本站对该卫星的波束位置手动输入。MEO 预设 25 dBW（2 Mbps 级载波量级；整波束饱和值填此处会把 C/N 推到 50+ dB 的不物理区）。', unit: 'dBW', type: 'num', def: '25', target: 'link' }
+      { key: 'rxEIRP', label: '卫星EIRP', tip: '该载波的卫星下行 EIRP（dBW，再生直发口径），按本站对该卫星的波束位置手动输入。MEO 预设 25 dBW（2 Mbps 级载波量级；此处填入整波束饱和值将使 C/N 达到 50 dB 以上的非物理区间）。', unit: 'dBW', type: 'num', def: '25', target: 'link' }
     ]
   },
   {
@@ -172,7 +175,7 @@ export const FIELD_GROUPS = [
       { key: 'txPointingErrUrad', label: '发射指向误差', tip: '发射静态指向误差 θ（µrad）；指向损耗 LP_tx = 4.3429·(π·D/λ)²·θ²。MathWorks 缺省 1µrad', unit: 'µrad', type: 'num', def: '1', target: 'laser' },
       { key: 'rxPointingErrUrad', label: '接收指向误差', tip: '接收静态指向误差 θ（µrad）；指向损耗 LP_rx = 4.3429·(π·D/λ)²·θ²', unit: 'µrad', type: 'num', def: '1', target: 'laser' },
       { key: 'rxSensitivityDbm', label: '接收机灵敏度 P_req', tip: '所需接收功率 P_req（dBm）；链路余量 = P_rx − P_req。MathWorks 示例：−35.5dBm@10Gbps OOK BER 1e-12', unit: 'dBm', type: 'num', def: '-35.5', target: 'laser' },
-      { key: 'otherLossDb', label: '其他损耗 L', tip: '附加/未细分损耗 L（dB，正值，可选；截图公式末的 −L 项）', unit: 'dB', type: 'num', def: '0', target: 'laser' },
+      { key: 'otherLossDb', label: '其他损耗 L', tip: '附加/未细分损耗 L（dB，正值，可选；公式末的 −L 项）', unit: 'dB', type: 'num', def: '0', target: 'laser' },
       // —— 几何（仅喂几何求解，不进功率链）——
       { key: 'islAtmMargin', label: '大气余量', tip: 'LOS 视线须高出地表的余量（km）：激光光路须清过大气（湍流/吸收）；0=纯几何视线（仅避开固体地球）。仅喂几何求解，判两星互视遮挡', unit: 'km', type: 'num', def: '100', target: 'geom' }
     ]

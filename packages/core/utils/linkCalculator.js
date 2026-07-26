@@ -2,6 +2,9 @@
 // 卫星链路本地计算模块
 
 const validator = require('./validator.js');
+// 离轴 EIRP 密度掩模（ITU-R S.524-9）单一出处——本文件与 NGSO 引擎共用，勿再各自内联频段表
+const ituPatterns = require('./interference/patterns.js');
+
 const { getIsothermHeight } = require('./isothermHeight.js');
 const { P676_PART1 } = require('./p676Data.js');
 const CLOUD_GRID = require('../data/cloudParamsGrid.js'); // ITU-R P.840-9 Lred 对数正态参数地图
@@ -1016,313 +1019,24 @@ function performCalculations(satParams, inputs) {
   const stationPSD = stationEIRP - 10 * Math.log10(allocBandwidth * 1000);
   
   // ============ ITU-R 功率谱密度门限计算 ============
-  // 根据ITU Radio Regulations Article 21 和 ITU-R S.524-9
-  // 针对GEO FSS卫星地球站的off-axis EIRP功率谱密度最大允许电平
-  // 覆盖55GHz以下全部卫星上行频段
-  
-  const phi = deltaTheta > 0 ? deltaTheta : 3; // 使用邻星轨位差作为离轴角，默认3°
-  let ituPsdLimit4kHz; // ITU要求（统一转换为dBW/4kHz）
-  let ituRefBandwidth; // ITU参考带宽标识
-  
-  // 根据上行频率(GHz)判断适用的ITU-R限值
-  if (uplinkFrequency >= 1.6 && uplinkFrequency < 1.66) {
-    // L频段: 1.6265-1.6605 GHz (移动卫星业务上行)
-    // 参考 ITU-R M.1184, ITU RR Article 21 Table 21-1
-    // 参考带宽4kHz
-    ituRefBandwidth = '4kHz';
-    if (phi < 2.5) {
-      ituPsdLimit4kHz = 33 - 25 * Math.log10(2.5);
-    } else if (phi < 7) {
-      ituPsdLimit4kHz = 33 - 25 * Math.log10(phi);
-    } else if (phi < 9.2) {
-      ituPsdLimit4kHz = 12;
-    } else if (phi < 48) {
-      ituPsdLimit4kHz = 36 - 25 * Math.log10(phi);
-    } else {
-      ituPsdLimit4kHz = -6;
-    }
-  } else if (uplinkFrequency >= 2.5 && uplinkFrequency < 2.69) {
-    // S频段: 2.5-2.69 GHz (广播卫星馈线上行)
-    // 参考 ITU RR Article 21 Table 21-2
-    // 参考带宽4kHz
-    ituRefBandwidth = '4kHz';
-    if (phi < 2.5) {
-      ituPsdLimit4kHz = 34 - 25 * Math.log10(2.5);
-    } else if (phi < 7) {
-      ituPsdLimit4kHz = 34 - 25 * Math.log10(phi);
-    } else if (phi < 9.2) {
-      ituPsdLimit4kHz = 13;
-    } else if (phi < 48) {
-      ituPsdLimit4kHz = 37 - 25 * Math.log10(phi);
-    } else {
-      ituPsdLimit4kHz = -5;
-    }
-  } else if (uplinkFrequency >= 5.091 && uplinkFrequency < 5.25) {
-    // 低C频段(航空移动卫星): 5.091-5.25 GHz
-    // 参考 ITU-R M.1643
-    // 参考带宽4kHz
-    ituRefBandwidth = '4kHz';
-    if (phi < 2.5) {
-      ituPsdLimit4kHz = 34 - 25 * Math.log10(2.5);
-    } else if (phi < 7) {
-      ituPsdLimit4kHz = 25 - 25 * Math.log10(phi);
-    } else if (phi < 9.2) {
-      ituPsdLimit4kHz = 4;
-    } else if (phi < 48) {
-      ituPsdLimit4kHz = 28 - 25 * Math.log10(phi);
-    } else {
-      ituPsdLimit4kHz = -8;
-    }
-  } else if (uplinkFrequency >= 5.85 && uplinkFrequency <= 6.725) {
-    // C频段: 5.850-6.725 GHz (FSS上行)
-    // ITU RR Article 21 Table 21-4A, 参考带宽4kHz
-    ituRefBandwidth = '4kHz';
-    if (phi < 2.5) {
-      ituPsdLimit4kHz = 35 - 25 * Math.log10(2.5);
-    } else if (phi < 7) {
-      ituPsdLimit4kHz = 26 - 25 * Math.log10(phi);
-    } else if (phi < 9.2) {
-      ituPsdLimit4kHz = 5;
-    } else if (phi < 48) {
-      ituPsdLimit4kHz = 29 - 25 * Math.log10(phi);
-    } else {
-      ituPsdLimit4kHz = -7;
-    }
-  } else if (uplinkFrequency >= 7.9 && uplinkFrequency <= 8.4) {
-    // X频段: 7.9-8.4 GHz (政府/军用FSS上行)
-    // 参考 ITU RR Article 21 Table 21-4B, 参考带宽4kHz
-    ituRefBandwidth = '4kHz';
-    if (phi < 2.5) {
-      ituPsdLimit4kHz = 33 - 25 * Math.log10(2.5);
-    } else if (phi < 7) {
-      ituPsdLimit4kHz = 24 - 25 * Math.log10(phi);
-    } else if (phi < 9.2) {
-      ituPsdLimit4kHz = 3;
-    } else if (phi < 48) {
-      ituPsdLimit4kHz = 27 - 25 * Math.log10(phi);
-    } else {
-      ituPsdLimit4kHz = -9;
-    }
-  } else if (uplinkFrequency >= 10.7 && uplinkFrequency < 11.7) {
-    // 扩展X/Ku频段: 10.7-11.7 GHz (用于馈线链路)
-    // 参考 ITU RR Article 21 Table 21-4C, 参考带宽40kHz
-    ituRefBandwidth = '40kHz';
-    let ituLimit40kHz;
-    if (phi < 2.5) {
-      ituLimit40kHz = 38 - 25 * Math.log10(2.5);
-    } else if (phi < 7) {
-      ituLimit40kHz = 38 - 25 * Math.log10(phi);
-    } else if (phi < 9.2) {
-      ituLimit40kHz = 17;
-    } else if (phi < 48) {
-      ituLimit40kHz = 41 - 25 * Math.log10(phi);
-    } else {
-      ituLimit40kHz = -1;
-    }
-    ituPsdLimit4kHz = ituLimit40kHz - 10; // 40kHz转4kHz
-  } else if (uplinkFrequency >= 12.75 && uplinkFrequency < 13.25) {
-    // 扩展Ku频段: 12.75-13.25 GHz
-    // ITU RR Article 21 Table 21-4D, 参考带宽40kHz
-    ituRefBandwidth = '40kHz';
-    let ituLimit40kHz;
-    if (phi < 2.5) {
-      ituLimit40kHz = 39 - 25 * Math.log10(2.5);
-    } else if (phi < 7) {
-      ituLimit40kHz = 39 - 25 * Math.log10(phi);
-    } else if (phi < 9.2) {
-      ituLimit40kHz = 18;
-    } else if (phi < 48) {
-      ituLimit40kHz = 42 - 25 * Math.log10(phi);
-    } else {
-      ituLimit40kHz = 0;
-    }
-    ituPsdLimit4kHz = ituLimit40kHz - 10; // 40kHz转4kHz
-  } else if (uplinkFrequency >= 13.75 && uplinkFrequency <= 14.5) {
-    // Ku频段: 13.75-14.5 GHz (主要FSS上行)
-    // ITU RR Article 21 Table 21-4E, 参考带宽40kHz
-    ituRefBandwidth = '40kHz';
-    let ituLimit40kHz;
-    if (phi < 2.5) {
-      ituLimit40kHz = 39 - 25 * Math.log10(2.5);
-    } else if (phi < 7) {
-      ituLimit40kHz = 39 - 25 * Math.log10(phi);
-    } else if (phi < 9.2) {
-      ituLimit40kHz = 18;
-    } else if (phi < 48) {
-      ituLimit40kHz = 42 - 25 * Math.log10(phi);
-    } else {
-      ituLimit40kHz = 0;
-    }
-    ituPsdLimit4kHz = ituLimit40kHz - 10; // 40kHz转4kHz
-  } else if (uplinkFrequency >= 17.3 && uplinkFrequency < 18.4) {
-    // Ka低频段(BSS馈线): 17.3-18.4 GHz
-    // 参考 ITU RR Article 21 Table 21-4E, 参考带宽40kHz
-    ituRefBandwidth = '40kHz';
-    let ituLimit40kHz;
-    if (phi < 2.5) {
-      ituLimit40kHz = 35 - 25 * Math.log10(2.5);
-    } else if (phi < 7) {
-      ituLimit40kHz = 35 - 25 * Math.log10(phi);
-    } else if (phi < 9.2) {
-      ituLimit40kHz = 14;
-    } else if (phi < 48) {
-      ituLimit40kHz = 38 - 25 * Math.log10(phi);
-    } else {
-      ituLimit40kHz = -4;
-    }
-    ituPsdLimit4kHz = ituLimit40kHz - 10; // 40kHz转4kHz
-  } else if (uplinkFrequency >= 27.5 && uplinkFrequency <= 31.0) {
-    // Ka频段: 27.5-31.0 GHz (FSS上行)
-    // ITU RR Article 21 Table 21-4F/G, 参考带宽40kHz
-    ituRefBandwidth = '40kHz';
-    let ituLimit40kHz;
-    if (phi < 2.0) {
-      ituLimit40kHz = 19 - 25 * Math.log10(2.0);
-    } else if (phi < 7) {
-      ituLimit40kHz = 19 - 25 * Math.log10(phi);
-    } else if (phi < 9.2) {
-      ituLimit40kHz = -2;
-    } else if (phi < 48) {
-      ituLimit40kHz = 22 - 25 * Math.log10(phi);
-    } else {
-      ituLimit40kHz = -10;
-    }
-    ituPsdLimit4kHz = ituLimit40kHz - 10; // 40kHz转4kHz
-  } else if (uplinkFrequency >= 42.5 && uplinkFrequency < 43.5) {
-    // Q频段: 42.5-43.5 GHz (FSS上行)
-    // 参考 ITU-R S.524-9, 参考带宽1MHz
-    ituRefBandwidth = '1MHz';
-    let ituLimit1MHz;
-    if (phi < 2.0) {
-      ituLimit1MHz = 33 - 25 * Math.log10(2.0);
-    } else if (phi < 7) {
-      ituLimit1MHz = 33 - 25 * Math.log10(phi);
-    } else if (phi < 9.2) {
-      ituLimit1MHz = 12;
-    } else if (phi < 48) {
-      ituLimit1MHz = 36 - 25 * Math.log10(phi);
-    } else {
-      ituLimit1MHz = -6;
-    }
-    // 1MHz转4kHz: 10*log10(1000000/4000) = 10*log10(250) ≈ 23.98 dB
-    ituPsdLimit4kHz = ituLimit1MHz - 23.98;
-  } else if (uplinkFrequency >= 47.2 && uplinkFrequency < 50.2) {
-    // V频段: 47.2-50.2 GHz (FSS上行)
-    // 参考 ITU-R S.524-9, 参考带宽1MHz
-    ituRefBandwidth = '1MHz';
-    let ituLimit1MHz;
-    if (phi < 2.0) {
-      ituLimit1MHz = 30 - 25 * Math.log10(2.0);
-    } else if (phi < 7) {
-      ituLimit1MHz = 30 - 25 * Math.log10(phi);
-    } else if (phi < 9.2) {
-      ituLimit1MHz = 9;
-    } else if (phi < 48) {
-      ituLimit1MHz = 33 - 25 * Math.log10(phi);
-    } else {
-      ituLimit1MHz = -9;
-    }
-    // 1MHz转4kHz
-    ituPsdLimit4kHz = ituLimit1MHz - 23.98;
-  } else if (uplinkFrequency >= 50.4 && uplinkFrequency <= 51.4) {
-    // V频段高端: 50.4-51.4 GHz (FSS上行)
-    // 参考 ITU-R S.524-9, 参考带宽1MHz
-    ituRefBandwidth = '1MHz';
-    let ituLimit1MHz;
-    if (phi < 2.0) {
-      ituLimit1MHz = 28 - 25 * Math.log10(2.0);
-    } else if (phi < 7) {
-      ituLimit1MHz = 28 - 25 * Math.log10(phi);
-    } else if (phi < 9.2) {
-      ituLimit1MHz = 7;
-    } else if (phi < 48) {
-      ituLimit1MHz = 31 - 25 * Math.log10(phi);
-    } else {
-      ituLimit1MHz = -11;
-    }
-    // 1MHz转4kHz
-    ituPsdLimit4kHz = ituLimit1MHz - 23.98;
-  } else {
-    // 其他未明确定义的频段：
-    // 根据频率范围选择合适的参考限值
-    if (uplinkFrequency < 3) {
-      // 低于3GHz，参考L/S频段限值
-      ituRefBandwidth = '4kHz';
-      if (phi < 2.5) {
-        ituPsdLimit4kHz = 33 - 25 * Math.log10(2.5);
-      } else if (phi < 7) {
-        ituPsdLimit4kHz = 33 - 25 * Math.log10(phi);
-      } else if (phi < 9.2) {
-        ituPsdLimit4kHz = 12;
-      } else if (phi < 48) {
-        ituPsdLimit4kHz = 36 - 25 * Math.log10(phi);
-      } else {
-        ituPsdLimit4kHz = -6;
-      }
-    } else if (uplinkFrequency < 10) {
-      // 3-10GHz，参考C/X频段限值
-      ituRefBandwidth = '4kHz';
-      if (phi < 2.5) {
-        ituPsdLimit4kHz = 34 - 25 * Math.log10(2.5);
-      } else if (phi < 7) {
-        ituPsdLimit4kHz = 25 - 25 * Math.log10(phi);
-      } else if (phi < 9.2) {
-        ituPsdLimit4kHz = 4;
-      } else if (phi < 48) {
-        ituPsdLimit4kHz = 28 - 25 * Math.log10(phi);
-      } else {
-        ituPsdLimit4kHz = -8;
-      }
-    } else if (uplinkFrequency < 20) {
-      // 10-20GHz，参考Ku频段限值
-      ituRefBandwidth = '40kHz';
-      let ituLimit40kHz;
-      if (phi < 2.5) {
-        ituLimit40kHz = 38 - 25 * Math.log10(2.5);
-      } else if (phi < 7) {
-        ituLimit40kHz = 38 - 25 * Math.log10(phi);
-      } else if (phi < 9.2) {
-        ituLimit40kHz = 17;
-      } else if (phi < 48) {
-        ituLimit40kHz = 41 - 25 * Math.log10(phi);
-      } else {
-        ituLimit40kHz = -1;
-      }
-      ituPsdLimit4kHz = ituLimit40kHz - 10;
-    } else if (uplinkFrequency < 40) {
-      // 20-40GHz，参考Ka频段限值
-      ituRefBandwidth = '40kHz';
-      let ituLimit40kHz;
-      if (phi < 2.0) {
-        ituLimit40kHz = 19 - 25 * Math.log10(2.0);
-      } else if (phi < 7) {
-        ituLimit40kHz = 19 - 25 * Math.log10(phi);
-      } else if (phi < 9.2) {
-        ituLimit40kHz = -2;
-      } else if (phi < 48) {
-        ituLimit40kHz = 22 - 25 * Math.log10(phi);
-      } else {
-        ituLimit40kHz = -10;
-      }
-      ituPsdLimit4kHz = ituLimit40kHz - 10;
-    } else {
-      // 40GHz以上，参考Q/V频段限值
-      ituRefBandwidth = '1MHz';
-      let ituLimit1MHz;
-      if (phi < 2.0) {
-        ituLimit1MHz = 30 - 25 * Math.log10(2.0);
-      } else if (phi < 7) {
-        ituLimit1MHz = 30 - 25 * Math.log10(phi);
-      } else if (phi < 9.2) {
-        ituLimit1MHz = 9;
-      } else if (phi < 48) {
-        ituLimit1MHz = 33 - 25 * Math.log10(phi);
-      } else {
-        ituLimit1MHz = -9;
-      }
-      ituPsdLimit4kHz = ituLimit1MHz - 23.98;
-    }
-  }
+  // 离轴 EIRP 密度上限：单一出处在 utils/interference/patterns.js 的 s524LimitPer4kHz。
+  //
+  // 【2026-07-26 统一】此前本文件与 linkCalculatorNGSO.js 各内联一份 ~300 行的频段 if 链，
+  // 两处 C 频段（5.725–7.075 GHz）均为 26/5/29/−7 —— 与 ITU-R S.524-9 recommends 2 的
+  // 32/11/35/−7 相比，A、平台、B 三项整体低 6 dB。Ku(rec.3.1) 与 Ka(rec.4) 两组本来就对。
+  // 已按建议书订正并把两份表合并到 patterns.js，两个引擎共用，不再各存一份。
+  //
+  // 另：S.524-9 只覆盖 5.725–7.075 / 12.75–13.25 / 13.75–14.5 / 27.5–30 GHz 四段，
+  // 其余频段（X / 10.7–11.7 / 17.3–18.4 / Q / V 等）是按邻近频段外推的工程值，数值沿用未动，
+  // 但 patterns.js 会置 authoritative=false —— 引用时不得标成「ITU-R S.524-9」。
+  //
+  // φ 取邻星轨位差（deltaTheta）作离轴角，缺省 3°，与旧实现一致。
+  const phi = deltaTheta > 0 ? deltaTheta : 3;
+  const _s524 = ituPatterns.s524LimitPer4kHz(phi, uplinkFrequency);
+  const ituPsdLimit4kHz = _s524 ? _s524.limit4kHz : 0;
+  const ituRefBandwidth = _s524
+    ? (_s524.refBwHz === 4e3 ? '4kHz' : _s524.refBwHz === 4e4 ? '40kHz' : '1MHz')
+    : '4kHz';
   
   // 转换为dBW/Hz（统一从4kHz基准转换）
   // 10*log10(4000) ≈ 36.02 dB

@@ -220,9 +220,13 @@ function loadBin(buf) {
   return { igrid: header.igrid, icomp: header.icomp, ncomp: header.ncomp, beams };
 }
 
-// 多波束最大 Parameter（绝对 dB）。口径同 grdParam.ensureAntenna + maxParamAt。域外/不可见返回 null。
-function sampleMax(loaded, sat, cfg, lon, lat) {
-  if (!loaded || !Number.isFinite(lon) || !Number.isFinite(lat)) return null;
+// 采样上下文：把「天线基底 + 取值口径 + 存活波束集」这三件一次算好，供 sampleMax / sampleAll 共用。
+// 逐格采样时（C/CCI 场图动辄几千格）不重复建基底，是这层拆分的全部意义。
+// 波束删除对齐：cfg.keptSets = 存活波束在【原始 GRD set 顺序】里的下标（升序）。本模块 loaded.beams 由
+// buildBin 按原始 set 顺序落盘，故下标一一对应 → 与「星座3D 性能指标表」一致（其 ctx.beams 已按 keptSets 裁剪）。
+// 无删除记录（keptSets 非数组或已覆盖全部）→ 用全部波束（旧行为）。
+function makeSampleCtx(loaded, sat, cfg) {
+  if (!loaded) return null;
   const c = cfg || {}, s = sat || {};
   const satLon = Number(s.lon), satLat = Number(s.lat) || 0, satAlt = Number.isFinite(s.alt) ? Number(s.alt) : H;
   if (!Number.isFinite(satLon)) return null;
@@ -230,19 +234,121 @@ function sampleMax(loaded, sat, cfg, lon, lat) {
     ? antennaBasisAzEl(satLon, satLat, satAlt, c.boreAz || 0, c.boreEl || 0, c.yaw || 0)
     : antennaBasis(satLon, c.boreLon == null ? satLon : c.boreLon, c.boreLat || 0, c.yaw || 0, satLat, satAlt);
   const par = { pol: c.pol || 'RSS', gainOffset: Number(c.gainOffset) || 0, pathLoss: c.pathLoss || 'none' };
-  // 波束删除对齐：cfg.keptSets = 存活波束在【原始 GRD set 顺序】里的下标（升序）。本模块 loaded.beams 由
-  // buildBin 按原始 set 顺序落盘，故下标一一对应。只在【存活波束】里取最大 → 与「星座3D 性能指标表」一致
-  //（其 ctx.beams 已按 keptSets 裁剪）。无删除记录（keptSets 非数组或已覆盖全部）→ 用全部波束（旧行为）。
   const all = loaded.beams;
   const keep = Array.isArray(c.keptSets) ? c.keptSets : null;
-  const beams = (keep && keep.length < all.length) ? keep.map((i) => all[i]).filter(Boolean) : all;
+  const useIdx = (keep && keep.length < all.length) ? keep.filter((i) => all[i]) : all.map((_, i) => i);
+  return { igrid: loaded.igrid, basis, par, beams: useIdx.map((i) => all[i]), beamIdx: useIdx };
+}
+
+// 多波束最大 Parameter（绝对 dB）。口径同 grdParam.ensureAntenna + maxParamAt。域外/不可见返回 null。
+function sampleMax(loaded, sat, cfg, lon, lat) {
+  if (!Number.isFinite(lon) || !Number.isFinite(lat)) return null;
+  const ctx = makeSampleCtx(loaded, sat, cfg);
+  if (!ctx) return null;
+  return sampleMaxCtx(ctx, lon, lat);
+}
+
+function sampleMaxCtx(ctx, lon, lat) {
   let best = null;
-  for (const bm of beams) {
-    const db = sampleBeamAt(bm, loaded.igrid, basis, lon, lat, par);
+  for (const bm of ctx.beams) {
+    const db = sampleBeamAt(bm, ctx.igrid, ctx.basis, lon, lat, ctx.par);
     if (db == null) continue;
     if (best == null || db > best) best = db;
   }
   return best == null ? null : +best.toFixed(2);
 }
 
-module.exports = { parseGrd, buildBin, loadBin, sampleMax };
+/**
+ * 【逐波束】Parameter（绝对 dB），与存活波束一一对应、同序。
+ *
+ * 为什么需要它而 sampleMax 不够：干扰算的是「服务波束 vs 其余同频波束」的比值，
+ * 一个最大值把分母整个丢掉了。C/CCI（同频复用干扰）与逐波束 XPD 都要这份明细。
+ *
+ * 返回 { values:(number|null)[], beamIdx:number[] }——beamIdx 是各值在【原始 GRD set 顺序】
+ * 里的下标，频率复用着色按它索引，别用数组下标（存活波束可能已被裁剪过）。
+ * 整点域外/不可见 → values 全 null。
+ */
+function sampleAll(loaded, sat, cfg, lon, lat) {
+  if (!Number.isFinite(lon) || !Number.isFinite(lat)) return { values: [], beamIdx: [] };
+  const ctx = makeSampleCtx(loaded, sat, cfg);
+  if (!ctx) return { values: [], beamIdx: [] };
+  return { values: sampleAllCtx(ctx, lon, lat), beamIdx: ctx.beamIdx.slice() };
+}
+
+function sampleAllCtx(ctx, lon, lat) {
+  const out = new Array(ctx.beams.length);
+  for (let i = 0; i < ctx.beams.length; i++) {
+    const db = sampleBeamAt(ctx.beams[i], ctx.igrid, ctx.basis, lon, lat, ctx.par);
+    out[i] = db == null ? null : +db.toFixed(2);
+  }
+  return out;
+}
+
+// ===== 共极化分量判定 =====
+//
+// 【别按 icomp 硬判哪个分量是共极化】。实测三份真实 GRD（CS10R 300_X02G icomp=3、
+// EIRP_OK1 icomp=2、to_Bj icomp=2），在各自波束峰值处都是 **P2 远强于 P1**：
+//     300_X02G  10lg(P1)=21.94  10lg(P2)=52.87   → P1/P2 = −30.93 dB
+//     EIRP_OK1  10lg(P1)=23.97  10lg(P2)=67.42   → P1/P2 = −43.45 dB
+// 即这些文件里**第二个分量才是共极化**，与「icomp=3 时分量1=co、分量2=cx」的常见理解相反。
+// 各家工具（TICRA / SATSOFT / 自研导出）写入顺序并不统一，硬按 icomp 判必然踩坑——
+// 表现就是 XPD 取出来是个负数（曾把 −31.35 当成「取值不对」，其实是共极化认反了）。
+//
+// 稳妥判据只有一个：**波束峰值处占优的那个分量就是共极化**。这在物理上无可争议
+// （峰值处交叉极化必远弱于共极化），且与文件怎么写、icomp 标几都无关。
+function coPolIndexOf(beam) {
+  if (beam._coPol === 1 || beam._coPol === 2) return beam._coPol;
+  const n = beam.grid.NX * beam.grid.NY;
+  let best = -1, bi = 0;
+  for (let i = 0; i < n; i++) {
+    const p1 = beam.c1re[i] * beam.c1re[i] + beam.c1im[i] * beam.c1im[i];
+    const p2 = beam.c2re[i] * beam.c2re[i] + beam.c2im[i] * beam.c2im[i];
+    const t = p1 + p2;
+    if (t > best) { best = t; bi = i; }
+  }
+  const p1 = beam.c1re[bi] * beam.c1re[bi] + beam.c1im[bi] * beam.c1im[bi];
+  const p2 = beam.c2re[bi] * beam.c2re[bi] + beam.c2im[bi] * beam.c2im[bi];
+  try { Object.defineProperty(beam, '_coPol', { value: p2 > p1 ? 2 : 1, writable: true, enumerable: false }); }
+  catch (e) { /* 冻结对象：不缓存也能用，只是每次重算 */ }
+  return p2 > p1 ? 2 : 1;
+}
+
+/**
+ * 逐点 XPD（dB）—— 共极化对交叉极化的功率比。
+ *
+ * 与「pol:'P1/P2' 走 sampleMax」的两处关键差别（那条路是错的，已弃用）：
+ *   ① 共极化分量由峰值判定，不假设是 P1（见 coPolIndexOf）；
+ *   ② 取**服务波束**（该点共极化最强的那个）的 XPD，而不是在各波束的比值里取最大——
+ *      后者会挑出一个跟该点实际收哪个波束毫无关系的数。
+ *
+ * @returns {{xpdDb, servingIdx, coPolIndex, coPolDb, xPolDb}|null}
+ *   点在域外 / 卫星不可见 / 交叉极化为 0 → null
+ */
+function sampleXpd(loaded, sat, cfg, lon, lat) {
+  if (!Number.isFinite(lon) || !Number.isFinite(lat)) return null;
+  const ctx = makeSampleCtx(loaded, sat, cfg);
+  if (!ctx) return null;
+  return sampleXpdCtx(ctx, lon, lat);
+}
+
+function sampleXpdCtx(ctx, lon, lat) {
+  let best = null;
+  for (let i = 0; i < ctx.beams.length; i++) {
+    const bm = ctx.beams[i];
+    const ci = coPolIndexOf(bm);
+    const co = sampleBeamAt(bm, ctx.igrid, ctx.basis, lon, lat, { ...ctx.par, pol: ci === 2 ? 'P2' : 'P1' });
+    if (co == null) continue;
+    if (!best || co > best.coPolDb) {
+      const cx = sampleBeamAt(bm, ctx.igrid, ctx.basis, lon, lat, { ...ctx.par, pol: ci === 2 ? 'P1' : 'P2' });
+      best = { servingIdx: ctx.beamIdx[i], coPolIndex: ci, coPolDb: co, xPolDb: cx };
+    }
+  }
+  if (!best || best.xPolDb == null) return null;
+  return { ...best, xpdDb: +(best.coPolDb - best.xPolDb).toFixed(2) };
+}
+
+module.exports = {
+  parseGrd, buildBin, loadBin,
+  sampleMax, sampleAll, sampleXpd,
+  makeSampleCtx, sampleMaxCtx, sampleAllCtx, sampleXpdCtx, coPolIndexOf
+};

@@ -20,12 +20,10 @@ export const LB_DOC_EN = {
   '合计': 'Total',
 
   // —— 图名与题注 ——
-  '地理': 'Geography',
-  '链路': 'Link',
-  '站址经纬度 · 换个地方还成不成立': 'Site coordinates · does the link still close elsewhere',
-  '站星几何 · 这条链路在天上长什么样': 'Station–satellite geometry · what this link looks like in space',
   '地理场图': 'Geographic Field',
   '链路视图': 'Link View',
+  '站址经纬度': 'Site coordinates',
+  '站星几何': 'Station–satellite geometry',
 
   // —— 轴名（地理图四个组合名）——
   '发信站经度': 'Tx Station Longitude',
@@ -44,18 +42,29 @@ export const LB_DOC_EN = {
   '粗 21×21': 'Coarse 21×21',
   '中 31×31': 'Medium 31×31',
   '细 41×41': 'Fine 41×41',
+  // 线密（等值线档位密度）与地图（地物线浓淡）：两组档名都是单字，英文取形容词
+  '线密': 'Contours',
+  '地图': 'Map',
+  '疏': 'Sparse',
+  '中': 'Medium',
+  '密': 'Dense',
+  '很密': 'Densest',
+  '淡': 'Light',
+  '浓': 'Heavy',
   '数据': 'Data',
   '出图': 'Figure',
   '复位': 'Reset',
   ' · 恒定': ' · constant',
 
   // —— 悬停说明与导出对话框的文件类型名 ——
-  '扫哪一端的站址：另一端固定在当前取值': 'Which end of the link to sweep; the other end stays at its current value',
-  '平面上画哪个量的等值线': 'Which quantity to contour on the plane',
-  '网格越密曲线越细腻，代价是逐格重跑一次引擎': 'A denser grid draws finer contours, at the cost of one full engine run per cell',
+  '扫描站址所在端；另一端保持当前取值': 'End of the link whose site is swept; the other end keeps its current value',
+  '等值线所绘物理量': 'Quantity drawn as contours',
+  '网格分辨率：逐格调用一次引擎，分辨率越高耗时越长': 'Grid resolution: one engine call per cell, so higher resolution takes longer',
+  '等值线档位密度（仅影响绘制，不重新计算）': 'Contour level density (drawing only, nothing is recomputed)',
+  '岸线与国界的线条浓淡': 'Weight of the coastline and border lines',
   '回到默认区间': 'Back to the default range',
-  '导出本图背后的网格数据为 CSV（一行一格）': 'Export the grid behind this figure as CSV (one row per cell)',
-  '导出本图为 PNG 图片（4 倍分辨率，可直接放进报告）': 'Export this figure as a PNG image (4× resolution, ready for a report)',
+  '导出网格数据为 CSV（一行一格）': 'Export the grid data as CSV (one row per cell)',
+  '导出为 PNG 图片（4 倍分辨率）': 'Export as a PNG image (4× resolution)',
   'PNG 图片': 'PNG Image',
   'CSV 表格': 'CSV Table',
 
@@ -91,7 +100,8 @@ export const LB_DOC_EN = {
   '扫描中…': 'Sweeping…',
   '格': 'cells',
   '本区间全部不在卫星覆盖内': 'The whole range lies outside satellite coverage',
-  '多因当前计算方式把它钉死了 · 换一个随两轴变化的量或换轴': 'Usually pinned by the current calculation mode · pick a quantity that varies with the axes, or change the axes'
+  '拖动两端设定色标上下限 · 拖动条身整体平移 · 双击恢复自动': 'Drag either end to set the colour limits · drag the bar to shift the window · double-click for auto',
+  '该量多由当前计算方式约束为定值 · 可改选随两轴变化的量或更换轴': 'Usually held constant by the current calculation mode · select a quantity that varies with the axes, or change the axes'
 };
 
 // lang → 翻译函数（中文原文 ⇒ 该语言下的文字）。中文或未命中一律原样返回。

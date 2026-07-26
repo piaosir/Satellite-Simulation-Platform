@@ -2,11 +2,13 @@ const { ipcMain, dialog, BrowserWindow } = require('electron')
 const fs = require('fs')
 const createOmm = require('../services/omm')
 const createCustomSats = require('../services/customSats')
+const createInterference = require('../services/interference')
 
 // 注册所有 IPC 处理器。core 为返回引擎实例的函数（延迟解析）。
-function register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget, openSunOutage, grd, confirmCloseLinkBudget, openNgso, confirmCloseNgso, openRegen, confirmCloseRegen, openRain, confirmCloseRain }) {
+function register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget, openSunOutage, grd, confirmCloseLinkBudget, openNgso, confirmCloseNgso, openRegen, confirmCloseRegen, openRain, confirmCloseRain, openCi }) {
   const omm = createOmm(core)
   const customSats = createCustomSats(core)
+  const interference = createInterference(omm, customSats, core)
 
   // 主窗口自定义标题栏：主题切换时把原生窗口控制按钮（Windows 覆盖式）的配色跟到当前主题。
   // 非覆盖式窗口（如各链路预算独立窗口）无 setTitleBarOverlay，静默忽略。
@@ -286,6 +288,10 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   ipcMain.handle('link:grdSample', (_e, req) => (grd ? grd.sample(req || {}) : ((req && req.points) || []).map(() => null)))
   // GRD 天线概要（波束数/网格）：链路预算导入方向图后填「N 波束」，顺带预编译 .grdbin
   ipcMain.handle('link:grdMeta', (_e, file) => (grd ? grd.meta(file) : { ok: false, error: 'GRD 服务未加载' }))
+  // 干扰分析：逐波束采样（少量站点）与 C/CCI 合成（整张场图，主进程内折成标量再回传）
+  ipcMain.handle('link:grdSampleBeams', (_e, req) => (grd ? grd.sampleBeams(req || {}) : { beamIdx: [], values: ((req && req.points) || []).map(() => []) }))
+  ipcMain.handle('link:grdSampleXpd', (_e, req) => (grd ? grd.sampleXpd(req || {}) : { ok: false, error: 'GRD 服务未加载', values: ((req && req.points) || []).map(() => null) }))
+  ipcMain.handle('link:grdSampleCci', (_e, req) => (grd ? grd.sampleCci(req || {}) : { ok: false, error: 'GRD 服务未加载', cci: ((req && req.points) || []).map(() => null) }))
   // 城市列表（选址用）
   ipcMain.handle('link:cities', () => core().listCities())
   ipcMain.handle('link:searchCities', (_e, kw) => core().searchCities(String(kw == null ? '' : kw), {}))
@@ -307,6 +313,20 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
 
   // ---- 雨衰计算（独立窗口 · 通用于各类卫星 · 批量/单算例/曲线计算 + Excel 导出）----
   ipcMain.handle('rain:open', () => { if (openRain) openRain(); return true })
+  // 干扰分析（C/I）独立窗口：只读消费者——读三库与 GRD，不写回任何库
+  ipcMain.handle('ci:open', () => { if (openCi) openCi(); return true })
+  ipcMain.handle('ci:asi', (_e, req) => interference.asi(req))
+  ipcMain.handle('ci:xpi', (_e, req) => interference.xpi(req))
+  ipcMain.handle('ci:xpiTerm', (_e, req) => interference.xpiTerm(req))
+  ipcMain.handle('ci:cciPoint', (_e, req) => interference.cciPoint(req))
+  ipcMain.handle('ci:ngsoEstimate', (_e, req) => interference.ngsoEstimate(req))
+  // NGSO 扫描是长任务：这里只启动，进度经 ci:ngsoProgress、结果经 ci:ngsoDone 推回发起窗口
+  ipcMain.handle('ci:ngsoStart', (e, req) => interference.ngsoStart(e.sender, req))
+  ipcMain.handle('ci:ngsoCancel', () => interference.ngsoCancel())
+  // 星历接入：邻星搜索（GEO 按星下点经度排）+ 星座组列表/载入（NGSO 选真实星座）
+  ipcMain.handle('ci:groups', () => interference.groups())
+  ipcMain.handle('ci:loadGroup', (_e, g, online, satIds, sats) => interference.loadGroup(g, online, satIds, sats))
+  ipcMain.handle('ci:geoNeighbors', (_e, req) => interference.geoNeighbors(req))
   ipcMain.handle('rain:confirmClose', () => { if (confirmCloseRain) confirmCloseRain(); return true })
   // 单算例（详情面板/兜底）
   ipcMain.handle('rain:compute', (_e, p) => {
@@ -515,41 +535,68 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
       filters: [{ name: fmt === 'excel' ? 'Excel 工作簿' : 'Word 文档', extensions: [ext] }]
     })
     if (canceled || !filePath) return { ok: false, canceled: true }
-    const buf = fmt === 'excel' ? await report.buildExcel(payload) : await report.buildWord(payload)
-    fs.writeFileSync(filePath, Buffer.from(buf))
-    return { ok: true, filePath }
-  })
-
-  // ---- 工作台 m×n 链路矩阵 Excel 导出（Phase 5）----
-  ipcMain.handle('linkbudget:exportExcel', async (e, payload) => {
-    const win = BrowserWindow.fromWebContents(e.sender)
-    const { canceled, filePath } = await dialog.showSaveDialog(win, {
-      defaultPath: (payload && payload.defaultName) || 'GEO链路预算结果.xlsx',
-      filters: [{ name: 'Excel 工作簿', extensions: ['xlsx'] }]
-    })
-    if (canceled || !filePath) return { ok: false, canceled: true }
+    // 与本文件其余导出口同一口径：目标文件被 Word/Excel 打开时 writeFileSync 抛 EBUSY/EPERM，
+    // 不接住就变成 invoke 的 rejection —— 调用端没 catch 就是「点了导出，没文件也没提示」。
     try {
-      // 为每条链路构建七段瀑布（与 UI 瀑布同源 buildWaterfallSegments）→「详细计算结果」分表
-      // lang 跟随导出语言选择（中/英），与链路汇总表的中英文口径保持一致
-      const exportLang = (payload && payload.lang === 'en') ? 'en' : 'zh'
-      const orbitType = (payload && (payload.orbitType === 'NGSO' || payload.orbitType === 'REGEN')) ? payload.orbitType : 'GEO'
-      const links = (payload && payload.links) || []
-      for (const l of links) {
-        if (l && l.data) {
-          try { l.segments = core().buildWaterfallSegments({ results: l.data, lang: exportLang, orbitType, txLocation: String(l.txName || ''), rxLocation: String(l.rxName || '') }) }
-          catch (e) { l.segments = [] }
-          // NGSO 几何不再逐条附到详细表——已单立「几何关系」sheet（STK 版式，见 report.buildNgsoGeometrySheet）集中呈现
-        }
-      }
-      const buf = await report.buildLinkBudgetExcel(payload || {})
+      const buf = fmt === 'excel' ? await report.buildExcel(payload) : await report.buildWord(payload)
       fs.writeFileSync(filePath, Buffer.from(buf))
       return { ok: true, filePath }
     } catch (err) {
       const busy = err && (err.code === 'EBUSY' || err.code === 'EPERM' || err.code === 'EACCES')
-      return { ok: false, error: busy ? '文件可能正被其他程序打开（如 Excel），请关闭后重试' : (err.message || String(err)) }
+      return { ok: false, error: busy ? '文件可能正被其他程序打开（如 Word / Excel），请关闭后重试' : (err.message || String(err)) }
     }
   })
 
+  // ---- 交付级链路预算报告（.xlsx / .pdf，同名同目录）----
+  // 模型由渲染进程按 src/shared/lbReport.js 组装（元信息 / 逐链路结果 / 输入清单 / 图件）；
+  // 瀑布段在此按需补齐（与屏幕「详细预算」同一个 buildWaterfallSegments，且只走一次 IPC）；
+  // 随后补 summary，两种文件共吃同一份模型：Excel 走 exceljs，PDF 走隐藏窗 + printToPDF。
+  ipcMain.handle('report:exportReport', async (e, payload) => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    const model = (payload && payload.model) || {}
+    const ORDER = ['xlsx', 'docx', 'pdf']
+    const formats = ORDER.filter((f) => ((payload && payload.formats) || ['xlsx']).indexOf(f) > -1)
+    if (!formats.length) return { ok: false, error: '未选择任何输出格式' }
+    const EXT = { xlsx: { name: 'Excel 工作簿', extensions: ['xlsx'] }, docx: { name: 'Word 文档', extensions: ['docx'] }, pdf: { name: 'PDF 文档', extensions: ['pdf'] } }
+    const { canceled, filePath } = await dialog.showSaveDialog(win, {
+      title: formats.length > 1 ? '保存报告（同名生成 ' + formats.map((f) => '.' + f).join(' / ') + '）' : '保存报告',
+      defaultPath: ((payload && payload.defaultName) || '链路预算报告') + '.' + formats[0],
+      filters: formats.map((f) => EXT[f])
+    })
+    if (canceled || !filePath) return { ok: false, canceled: true }
+    const stem = filePath.replace(/\.(xlsx|docx|pdf)$/i, '')
+    try {
+      const lang = model.lang === 'en' ? 'en' : 'zh'
+      const orbitType = (model.scheme && model.scheme.orbitType) || 'GEO'
+      for (const l of (model.links || [])) {
+        if (l && l.data && !(l.segments && l.segments.length)) {
+          try { l.segments = core().buildWaterfallSegments({ results: l.data, lang, orbitType, txLocation: String(l.txName || ''), rxLocation: String(l.rxName || '') }) }
+          catch (err) { l.segments = [] }
+        }
+      }
+      report.enrichReportModel(model)
+      const files = []
+      if (formats.indexOf('xlsx') > -1) {
+        const buf = await report.buildReportWorkbook(model)
+        fs.writeFileSync(stem + '.xlsx', Buffer.from(buf))
+        files.push(stem + '.xlsx')
+      }
+      if (formats.indexOf('docx') > -1) {
+        const buf = await require('../services/reportDocx').buildReportDocx(model)
+        fs.writeFileSync(stem + '.docx', Buffer.from(buf))
+        files.push(stem + '.docx')
+      }
+      if (formats.indexOf('pdf') > -1) {
+        const buf = await require('../services/reportPdf').buildReportPdf(model)
+        fs.writeFileSync(stem + '.pdf', Buffer.from(buf))
+        files.push(stem + '.pdf')
+      }
+      return { ok: true, files, filePath: files[0] }
+    } catch (err) {
+      const busy = err && (err.code === 'EBUSY' || err.code === 'EPERM' || err.code === 'EACCES')
+      return { ok: false, error: busy ? '文件可能正被其他程序打开（如 Excel / PDF 阅读器），请关闭后重试' : (err.message || String(err)) }
+    }
+  })
   // ---- 应用版本（帮助 → 关于 对话框显示）----
   ipcMain.handle('app:version', () => require('electron').app.getVersion())
 

@@ -218,6 +218,30 @@ const VIS_DIRS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']
 function visCompass(az) { const a = ((Number(az) % 360) + 360) % 360; return VIS_DIRS[Math.round(a / 45) % 8] }
 // 分钟 → 简短时长文本（如 2h15m / 45m）
 function visDur(min) { const m = Math.max(0, Math.round(Number(min) || 0)); const h = Math.floor(m / 60), mm = m % 60; return h ? h + 'h' + (mm < 10 ? '0' : '') + mm + 'm' : mm + 'm' }
+// 可见性侧栏分节头右侧读数（三模式各一套）。「时间覆盖」是严口径值，两种模式各有算法，定义一律写进 title——
+// 只摆一个孤零零的百分数会被当成松口径的「够不够得着」误读（那是覆盖面积，恒偏大）。
+const visCnt = computed(() => {
+  const m = vis.mode.value
+  if (m === 'coverage') {
+    if (!vis.covData.value) return { text: vis.covBusy.value ? '计算中' : '未计算', title: '' }
+    const k = vis.covKpi.value
+    if (!k) return { text: '', title: '' }
+    return {
+      text: k.timePct.toFixed(0) + '% 时间覆盖',
+      title: `时间覆盖 ${k.timePct.toFixed(2)}%\n＝ 各网格「被覆盖时间占比」按面积（cos φ）加权平均，即区域 × 时窗的时空占比；从不被覆盖的格按 0 计入，不剔除。\n\n最差格 ${k.worstPct.toFixed(2)}% —— 区域内时间覆盖最低的那一点（为 0 说明存在整个时窗都覆盖不到的点）\n覆盖面积 ${k.coverPct.toFixed(2)}% —— 时窗内【曾经】被覆盖过的面积占比（松口径，一格只覆盖 1 个采样也算满，恒 ≥ 时间覆盖）`
+    }
+  }
+  if (m === 'access') {
+    const n = vis.accessResults.value.length
+    if (!n) return { text: '0 星过境', title: '' }
+    const k = vis.accessKpi.value
+    return {
+      text: n + ' 星过境 · ' + k.pct.toFixed(0) + '% 时间覆盖',
+      title: `时间覆盖 ${k.pct.toFixed(2)}%\n＝ ${n} 星共 ${k.passes} 次过境窗口【合并重叠】后的可见时长 ${visDur(k.coveredMin)} ÷ 时窗 ${visDur(k.horizonMin)}。多星同时可见只计一次——不是各次时长求和（求和会重复计数、可超 100%）。\n窗口边界取二分精炼后的 AOS/LOS，被时窗切断的过境只计窗内那一段。\n\n最长中断 ${visDur(k.maxGapMin)}（共 ${k.gapCount} 段，含时窗首尾）`
+    }
+  }
+  return { text: vis.results.value.length + ' 颗', title: '' }
+})
 // 覆盖分析 FOM 读数格式化（时间类=整数分钟；≥100 取整；近整数取整；否则一位小数）
 function covFmt(v, leg) {
   if (v == null || !Number.isFinite(v)) return '—'
@@ -2249,6 +2273,14 @@ function buildMiniappSnapshot() {
 async function sendToMiniapp() {
   if (sendingMiniapp.value) return
   if (!(window.api && window.api.share && window.api.share.gxtSnapshot)) { appAlert('需在桌面客户端中运行'); return }
+  // 先问「配没配」再攒快照：没凭证时上传必然失败，与其让用户等一轮再看到「发送失败」，
+  // 不如一上来就说清是配置问题（凭证随安装包分发，见 electron/services/shareConfig.example.js）
+  try {
+    if (!(await window.api.share.configured())) {
+      appAlert('本机未配置在线分享凭证，无法发送到小程序。\n（该功能需要安装包内置 COS 凭证，请联系软件提供方）')
+      return
+    }
+  } catch (e) { /* configured 本身失败则照常往下走，由上传阶段报错 */ }
   sendingMiniapp.value = true
   try {
     const snap = buildMiniappSnapshot()
@@ -4164,7 +4196,7 @@ onBeforeUnmount(() => {
                 <span class="cccode">{{ g.sats.length }} 颗</span>
                 <span v-if="selList.length || (filterN && !filterGroupId)" class="ccic add" :title="'把当前' + (selList.length ? ('选中的 ' + selList.length) : ('筛选的 ' + filterN)) + ' 颗卫星加入本组（去重追加）'" @click.stop="addSelToGroup(g)"><Icon name="plus" :size="13" /></span>
                 <span v-if="selList.length && filterGroupId === g.id" class="ccic del" :title="'把选中的 ' + selList.length + ' 颗从本组移出'" @click.stop="removeSelFromGroup(g)"><Icon name="minus" :size="13" /></span>
-                <span class="ccic" title="管理成员：搜索添加 / 逐颗移出（不必先把星显示出来）" @click.stop="openSatGrpMgr(g)"><Icon name="sliders-horizontal" :size="11" /></span>
+                <span class="ccic" title="管理成员：搜索添加 / 逐颗移出（无需先在地图上显示）" @click.stop="openSatGrpMgr(g)"><Icon name="sliders-horizontal" :size="11" /></span>
                 <span class="ccic" title="重命名" @click.stop="satGrpEnterRename(g)"><Icon name="pencil" :size="11" /></span>
                 <span class="ccic del" :class="{ warn: satGrpDelId === g.id }" :title="satGrpDelId === g.id ? '再点一次确认删除' : '删除该组'" @click.stop="satGrpDelete(g)"><Icon name="trash" :size="11" /></span>
               </template>
@@ -4334,7 +4366,7 @@ onBeforeUnmount(() => {
             <div class="plgr sub">
               <span class="plgl">填充</span>
               <input type="checkbox" :checked="pg.fillOn !== false" title="显示 / 隐藏区域填充" @change="pg.fillOn = !(pg.fillOn !== false); polyRefresh()" />
-              <input class="clr plgc" type="color" :value="pg.fillColor || pg.color" title="填充颜色（默认跟随线色，单独调过后各改各的）" @input="pg.fillColor = $event.target.value; polyRefresh()" />
+              <input class="clr plgc" type="color" :value="pg.fillColor || pg.color" title="填充颜色（默认跟随线色，单独调整后两者独立）" @input="pg.fillColor = $event.target.value; polyRefresh()" />
               <input class="rng" type="range" min="0" max="1" step="0.01" :value="pg.fillOp != null ? pg.fillOp : 0.18" title="填充不透明度（0%＝透明）。与 GRD 覆盖重叠处只显示覆盖颜色，Polygon 在该处仅保留边线" @input="e => { pg.fillOp = Number(e.target.value); polyRefresh() }" />
               <span class="u pct">{{ Math.round((pg.fillOp != null ? pg.fillOp : 0.18) * 100) }}%</span>
             </div>
@@ -4351,13 +4383,13 @@ onBeforeUnmount(() => {
               <span class="opb" :class="{ on: polyMoveId === pg.id }" title="在平面图上按住多边形内部整体平移" @click="polyMoveToggle(pg)">{{ polyMoveId === pg.id ? '完成拖动' : '整体拖动' }}</span>
               <span class="opb" :class="{ on: polyDrawId === pg.id }" title="继续在地图上右键加顶点" @click="polyDrawId === pg.id ? null : polyContinue(pg)">{{ polyDrawId === pg.id ? '绘制中…' : '继续绘制' }}</span>
               <span class="opb" :class="{ on: polyVertsOpen === pg.id }" title="按坐标查看 / 编辑顶点" @click="polyVertsOpen = polyVertsOpen === pg.id ? '' : pg.id">顶点表格</span>
-              <span class="opb" title="复制出一个相同的多边形（整体偏移一点便于分辨），并直接进入整体拖动模式摆放" @click="polyCopy(pg)">复制</span>
+              <span class="opb" title="复制出一个相同的多边形（整体略作偏移以便分辨），并直接进入整体拖动模式摆放" @click="polyCopy(pg)">复制</span>
               <span class="opb" title="按下方「扩/缩幅度」外扩一圈，生成新多边形（原多边形保留）" @click="polyOffset(pg, 1)">扩大</span>
               <span class="opb" title="按下方「扩/缩幅度」内收一圈，生成新多边形（原多边形保留）" @click="polyOffset(pg, -1)">缩小</span>
             </div>
             <div v-if="polyVertsOpen === pg.id" class="plgvt">
               <textarea class="plgta" :value="polyVertsText(pg)" spellcheck="false" placeholder="每行一个顶点：经度, 纬度" @copy="onVertsCopy" @change="polyVertsEdit(pg, $event)"></textarea>
-              <span class="plgcp" title="复制全部顶点为两列（经度 ⇥ 纬度）——粘到 Excel / 表格自动分成经度、纬度两列" @click="copyPolyVerts(pg)"><Icon name="copy" :size="11" /> 复制两列</span>
+              <span class="plgcp" title="复制全部顶点为两列（经度 ⇥ 纬度）：粘贴至 Excel / 表格自动分为经度、纬度两列" @click="copyPolyVerts(pg)"><Icon name="copy" :size="11" /> 复制两列</span>
             </div>
           </div>
           </template>
@@ -4593,7 +4625,7 @@ onBeforeUnmount(() => {
               <option v-for="st in grdSats" :key="st.folder" :value="st.folder">{{ st.satName }}</option>
             </select>
           </div>
-          <div v-if="bs.satPos()" class="tip">星下点 {{ bs.satPos().lon.toFixed(2) }}°E{{ Math.abs(bs.satPos().lat || 0) > 0.05 ? ', ' + bs.satPos().lat.toFixed(2) + '°N' : '' }} · 高度 {{ Math.round(bs.satPos().altKm).toLocaleString() }} km。一颗星可挂多个波束组，每组＝一根天线。</div>
+          <div v-if="bs.satPos()" class="tip">星下点 {{ bs.satPos().lon.toFixed(2) }}°E{{ Math.abs(bs.satPos().lat || 0) > 0.05 ? ', ' + bs.satPos().lat.toFixed(2) + '°N' : '' }} · 高度 {{ Math.round(bs.satPos().altKm).toLocaleString() }} km。一颗卫星可包含多个波束组，每组对应一根天线。</div>
           <div class="bs-grps">
             <div v-for="g in bs.groupsForSat.value" :key="g.id" class="bs-grow" :class="{ on: g.id === bs.activeGroupId.value, hid: !g.pinned && g.id !== bs.activeGroupId.value }" @click="bs.selectGroup(g.id)">
               <span class="bs-gk" :class="g.mode">{{ g.mode === 'pam' ? '相控阵' : g.mode === 'gauss' ? '多馈源' : '赋形' }}</span>
@@ -4635,7 +4667,7 @@ onBeforeUnmount(() => {
           <template v-if="bs.curSetting.value">
             <div class="srow"><label>设置名</label><input class="ci" :value="bs.curSetting.value.name" @input="e => bs.renameSetting(bs.curSetting.value.id, e.target.value)" /><input class="clr" type="color" :value="bs.curSetting.value.color" title="该波束类型轮廓/中心点颜色" @input="e => bsSetSettingColor(e.target.value)" /><span class="opb sm" :class="{ dis: bs.settings.value.length <= 1 }" title="删除本波束类型" @click="bs.removeSetting(bs.curSetting.value.id)">删除</span></div>
           </template>
-          <div class="tip">每个「波束设置」= 一种波束类型（一套独立反射面）。下面「天线参数」编辑它的口径/馈源 → 决定该类型的波束宽·效率·方向性。一根天线可含多种波束（如点波束 + 区域波束），生成时各波束按自己类型的宽/增益。</div>
+          <div class="tip">每个「波束设置」= 一种波束类型（一套独立反射面）。在「天线参数」中设置其口径/馈源，决定该类型的波束宽·效率·方向性。一根天线可含多种波束（如点波束 + 区域波束），生成时各波束按其所属类型的波束宽/增益计算。</div>
           </template>
         </div>
 
@@ -4795,7 +4827,7 @@ onBeforeUnmount(() => {
               <div class="srow"><label>线型</label>
                 <span class="seg sm">
                   <span class="sg" :class="{ on: !bs.p.skDash }" @click="bs.p.skDash = false">实线</span>
-                  <span class="sg" :class="{ on: bs.p.skDash }" title="虚线轮廓（2D/3D 同款观感；超过 300 个波束时自动退实线保性能）" @click="bs.p.skDash = true">虚线</span>
+                  <span class="sg" :class="{ on: bs.p.skDash }" title="虚线轮廓（2D/3D 一致；波束超过 300 个时自动改用实线以保证性能）" @click="bs.p.skDash = true">虚线</span>
                 </span>
               </div>
               <label class="chk2"><input type="checkbox" v-model="bs.p.skNumShow" /><span>显示波束编号</span></label>
@@ -4837,7 +4869,7 @@ onBeforeUnmount(() => {
               <div v-if="bsFreqRows.length" class="bs-fplist">
                 <div class="bs-fphd">
                   <span>波束信息 <em>{{ bsFreqRows.length }}</em></span>
-                  <span class="bs-fpcp" :class="{ ok: bsFreqCopied }" title="复制全部波束为多列表格（编号 / 频率 / 经度 / 纬度 / 3dB-X / 3dB-Y / 旋转，Tab 分隔）——粘到 Excel 自动分成 7 列" @click="bsCopyFreqPlan"><Icon :name="bsFreqCopied ? 'check' : 'copy'" :size="11" /> {{ bsFreqCopied ? '已复制 ✓' : '复制表格' }}</span>
+                  <span class="bs-fpcp" :class="{ ok: bsFreqCopied }" title="复制全部波束为多列表格（编号 / 频率 / 经度 / 纬度 / 3dB-X / 3dB-Y / 旋转，Tab 分隔）：粘贴至 Excel 自动分为 7 列" @click="bsCopyFreqPlan"><Icon :name="bsFreqCopied ? 'check' : 'copy'" :size="11" /> {{ bsFreqCopied ? '已复制 ✓' : '复制表格' }}</span>
                 </div>
                 <div class="bs-fptbl">
                   <div class="bs-fpr bs-fph"><span class="c-no">#</span><span class="c-fc">频率</span><span class="c-ll">经度, 纬度</span><span class="c-th">3dB°</span></div>
@@ -4848,7 +4880,7 @@ onBeforeUnmount(() => {
                     <span class="c-th">{{ r.thX.toFixed(1) }}×{{ r.thY.toFixed(1) }}<em v-if="r.rot"> ∠{{ r.rot }}</em></span>
                   </div>
                 </div>
-                <div class="tip">「复制表格」把全部 {{ bsFreqRows.length }} 个波束按 7 列（编号 / 频率 / 经度 / 纬度 / 3dB-X / 3dB-Y / 旋转）复制到剪贴板，可直接粘进 Excel。未配色的波束「频率」列留空。</div>
+                <div class="tip">「复制表格」把全部 {{ bsFreqRows.length }} 个波束按 7 列（编号 / 频率 / 经度 / 纬度 / 3dB-X / 3dB-Y / 旋转）复制到剪贴板，可直接粘贴至 Excel。未配色的波束「频率」列留空。</div>
               </div>
             </template>
           </div>
@@ -4867,7 +4899,7 @@ onBeforeUnmount(() => {
                 </label>
               </div>
             </div>
-            <div v-if="!polys.length" class="tip">还没有 Polygon —— 到活动栏「Polygon（协调区）」视图先画一个区域。</div>
+            <div v-if="!polys.length" class="tip">暂无 Polygon：请先在活动栏「Polygon（协调区）」视图中绘制区域。</div>
             <div v-else class="tip">所选 Polygon 并集为覆盖区（可多选，含不连续区域）；增益按阵面物理算出。</div>
             </template>
           </div>
@@ -4881,8 +4913,8 @@ onBeforeUnmount(() => {
               <span class="bs-hsn">P{{ hi + 1 }}</span>
               <input class="ci" type="number" step="0.1" v-model.number="h.lon" placeholder="经°" title="峰值点经度（°E，东经正）" />
               <input class="ci" type="number" step="0.1" v-model.number="h.lat" placeholder="纬°" title="峰值点纬度（°N，北纬正）" />
-              <input class="ci" type="number" step="0.5" v-model.number="h.boost" placeholder="dB" title="目标增量（dB）：正=局部增强（能量向此集中），负=局部压低/挖坑；0/空=不生效。相控阵宽波束下有物理上限，生成后据实报告实现量。" />
-              <input class="ci" type="number" step="0.1" min="0" v-model.number="h.width" placeholder="1" :title="'目标坡半高全宽（°）＝预览环大小（所见即所得），默认 1、留空取 1。注意：阵面波束宽 θ3≈' + bsFmt(bs.hotTheta3.value, 1) + '° 是物理分辨率——填得比 θ3 小，实际效果仍会扩散到约 θ3（生成后据实报告实现量）'" />
+              <input class="ci" type="number" step="0.5" v-model.number="h.boost" placeholder="dB" title="目标增量（dB）：正=局部增强（能量向此集中），负=局部压低；0/空=不生效。相控阵宽波束下有物理上限，生成后据实报告实现量。" />
+              <input class="ci" type="number" step="0.1" min="0" v-model.number="h.width" placeholder="1" :title="'目标坡半高全宽（°）＝预览环大小（所见即所得），默认 1、留空取 1。注意：阵面波束宽 θ3≈' + bsFmt(bs.hotTheta3.value, 1) + '° 是物理分辨率：填入值小于 θ3 时，实际仍扩散至约 θ3（生成后据实报告实现量）'" />
               <span class="hic" :class="{ on: bs.placing.value && bs.hotPickId.value === h.id }" title="地图拾取该峰值点位置（左键/右键点地图；再点取消）" @click="bsPickHotspot(h.id)"><Icon name="crosshair" :size="12" /></span>
               <span class="hic hdel" title="删除该峰值点" @click="bs.removeHotspot(h.id)"><Icon name="x" :size="11" /></span>
             </div>
@@ -4902,7 +4934,7 @@ onBeforeUnmount(() => {
               </div>
               <div class="bs-read"><span>边缘 <b>{{ bsFmt(bsPamExcitShown.value, 1) }}</b> dBi</span><span v-if="bsPamExcitShown.hotReport && bsPamExcitShown.hotReport.length" title="各峰值点实测抬升 / 请求增量（相控阵宽波束有物理上限，欠额见状态栏告警）">峰值点实现 <b>{{ bsPamExcitShown.hotReport.map(x => '+' + x.got + '/' + x.req).join(' · ') }}</b> dB</span></div>
               <div class="bs-excbar">
-                <span class="bs-fpcp" :class="{ ok: bsPamExcitCopied }" title="复制激励指令表（Tab 分隔，粘进 Excel 自动分列）" @click="bsPamExcitCopy"><Icon :name="bsPamExcitCopied ? 'check' : 'copy'" :size="11" /> {{ bsPamExcitCopied ? '已复制 ✓' : '复制表格' }}</span>
+                <span class="bs-fpcp" :class="{ ok: bsPamExcitCopied }" title="复制激励指令表（Tab 分隔，粘贴至 Excel 自动分列）" @click="bsPamExcitCopy"><Icon :name="bsPamExcitCopied ? 'check' : 'copy'" :size="11" /> {{ bsPamExcitCopied ? '已复制 ✓' : '复制表格' }}</span>
                 <span class="opb sm" title="导出 CSV（UTF-8 BOM，Excel 直接打开）供测控上注星上 BFN" @click="bsExportPamExcit"><Icon name="download" :size="11" /> 导出 CSV</span>
               </div>
               <!-- 真 <table>：可直接鼠标框选任意行列 → Ctrl+C，浏览器按 TSV 复制，粘进 Excel 自动分列 -->
@@ -4951,7 +4983,7 @@ onBeforeUnmount(() => {
               </select>
             </div>
             <div class="srow"><label>偏置净空/D</label><input class="ci" type="number" step="0.05" min="-0.5" v-model.number="bs.p.offsetClr" title="偏置净空占口径直径的比例：0=贴轴偏置，-0.5=正馈（对称抛物面）" /></div>
-            <div class="bs-read"><span title="口径效率＝照射锥度效率×溢出效率，由馈源锥度决定（不可手动输入）；欧姆/表面残差当理想≈1">口径效率 <b>{{ bsFmt(bs.shapedEff.value, 1) }}</b>%</span><span>成分波束 3dB 宽 <b>{{ bsFmt(bs.shapedTheta3.value, 3) }}</b>°</span></div>
+            <div class="bs-read"><span title="口径效率＝照射锥度效率×溢出效率，由馈源锥度决定（不可手动输入）；欧姆/表面残差按理想计≈1">口径效率 <b>{{ bsFmt(bs.shapedEff.value, 1) }}</b>%</span><span>成分波束 3dB 宽 <b>{{ bsFmt(bs.shapedTheta3.value, 3) }}</b>°</span></div>
             <div class="bs-refl" v-html="bsReflSvg"></div>
             <div class="bs-reflbar">
               <span class="pgb" @click="bsReflView = bsReflView === 1 ? 2 : 1">◀</span>
@@ -4973,7 +5005,7 @@ onBeforeUnmount(() => {
                 </label>
               </div>
             </div>
-            <div v-if="!polys.length" class="tip">还没有 Polygon —— 到活动栏「Polygon（协调区）」视图先画一个区域。</div>
+            <div v-if="!polys.length" class="tip">暂无 Polygon：请先在活动栏「Polygon（协调区）」视图中绘制区域。</div>
             <div v-else class="tip">所选 Polygon 并集为覆盖区（可多选，含不连续区域）；增益按口径物理算出（∫P̂dΩ 定标）。</div>
             </template>
           </div>
@@ -4986,8 +5018,8 @@ onBeforeUnmount(() => {
               <span class="bs-hsn">P{{ hi + 1 }}</span>
               <input class="ci" type="number" step="0.1" v-model.number="h.lon" placeholder="经°" title="峰值点经度（°E，东经正）" />
               <input class="ci" type="number" step="0.1" v-model.number="h.lat" placeholder="纬°" title="峰值点纬度（°N，北纬正）" />
-              <input class="ci" type="number" step="0.5" v-model.number="h.boost" placeholder="dB" title="目标增量（dB）：正=局部增强（能量向此集中），负=局部压低/挖坑；0/空=不生效。生成后据实报告实现量。" />
-              <input class="ci" type="number" step="0.1" min="0" v-model.number="h.width" placeholder="1" :title="'目标坡半高全宽（°）＝预览环大小（所见即所得），默认 1、留空取 1。注意：成分波束宽 θ3≈' + bsFmt(bs.hotTheta3.value, 2) + '° 是口径物理分辨率——填得比 θ3 小，实际效果仍会扩散到约 θ3（生成后据实报告实现量）'" />
+              <input class="ci" type="number" step="0.5" v-model.number="h.boost" placeholder="dB" title="目标增量（dB）：正=局部增强（能量向此集中），负=局部压低；0/空=不生效。生成后据实报告实现量。" />
+              <input class="ci" type="number" step="0.1" min="0" v-model.number="h.width" placeholder="1" :title="'目标坡半高全宽（°）＝预览环大小（所见即所得），默认 1、留空取 1。注意：成分波束宽 θ3≈' + bsFmt(bs.hotTheta3.value, 2) + '° 是口径物理分辨率：填入值小于 θ3 时，实际仍扩散至约 θ3（生成后据实报告实现量）'" />
               <span class="hic" :class="{ on: bs.placing.value && bs.hotPickId.value === h.id }" title="地图拾取该峰值点位置（左键/右键点地图；再点取消）" @click="bsPickHotspot(h.id)"><Icon name="crosshair" :size="12" /></span>
               <span class="hic hdel" title="删除该峰值点" @click="bs.removeHotspot(h.id)"><Icon name="x" :size="11" /></span>
             </div>
@@ -5022,7 +5054,7 @@ onBeforeUnmount(() => {
             <!-- 卫星集＝正在分析哪些星：显式点出来源（星座 / 自定义星座 / 卫星组 / 搜索）+ 名称 + 颗数，避免只看到裸数字。
                  在「星座」视图切换分组 / 搜索 / 显示卫星组即改变本集；覆盖模式同样以此集撒网格。 -->
             <div class="srow vis-satset"><label>卫星集</label>
-              <span class="vis-satset-val" :title="'当前分析的卫星＝地图上显示的星。在「星座」视图切换分组 / 搜索 / 显示卫星组来改变。'">
+              <span class="vis-satset-val" :title="'当前分析的卫星集＝地图上显示的卫星。可在「星座」视图切换分组 / 搜索 / 显示卫星组以变更本集。'">
                 <span v-if="satSetLabel.kind" class="vis-satset-kind">{{ satSetLabel.kind }}</span>
                 <b>{{ satSetLabel.name }}</b>
                 <s>{{ (vis.satCount.value || 0).toLocaleString() }} 颗</s>
@@ -5042,31 +5074,31 @@ onBeforeUnmount(() => {
                 </optgroup>
               </select>
             </div>
-            <div v-if="vis.mode.value !== 'coverage' && !stations.length && !points.length && !polys.length" class="tip">还没有可选目标：去「标记」画一个地球站 / 点，或「Polygon」画一个区域。</div>
-            <div class="srow"><label>仰角门限</label><input class="ci vis-elev" type="number" step="1" min="0" max="89" :value="vis.minElev.value" @input="e => visSetElev(e.target.value)" /><span class="u">°</span><span class="tip inl">≥ 此仰角算可见 / 被覆盖</span></div>
+            <div v-if="vis.mode.value !== 'coverage' && !stations.length && !points.length && !polys.length" class="tip">暂无可选目标：请在「标记」中绘制地球站 / 点，或在「Polygon」中绘制区域。</div>
+            <div class="srow"><label>仰角门限</label><input class="ci vis-elev" type="number" step="1" min="0" max="89" :value="vis.minElev.value" @input="e => visSetElev(e.target.value)" /><span class="u">°</span><span class="tip inl">≥ 此仰角判为可见 / 被覆盖</span></div>
           </div>
 
           <!-- 可见卫星 / 覆盖：瞬时可见（now）/ 时段过境（access）/ 覆盖（coverage）三模式（复刻 STK Access / Coverage）-->
           <div class="sec">
-            <div class="sect"><span>{{ vis.mode.value === 'coverage' ? '覆盖网格' : '可见卫星' }}</span><span class="vis-cnt on">{{ vis.mode.value === 'coverage' ? (vis.covData.value ? (vis.covKpi.value ? vis.covKpi.value.coverPct.toFixed(0) + '% 覆盖' : '') : (vis.covBusy.value ? '计算中' : '未计算')) : (vis.mode.value === 'access' ? (vis.accessResults.value.length + ' 星过境') : (vis.results.value.length + ' 颗')) }}</span></div>
+            <div class="sect"><span>{{ vis.mode.value === 'coverage' ? '覆盖网格' : '可见卫星' }}</span><span class="vis-cnt on" :title="visCnt.title">{{ visCnt.text }}</span></div>
             <div class="seg sm vis-mode">
               <span class="sg" :class="{ on: vis.mode.value === 'now' }" @click="vis.setMode('now')">瞬时可见</span>
               <span class="sg" :class="{ on: vis.mode.value === 'access' }" title="未来一段时间内每颗星对目标的过境窗口（Access）" @click="vis.setMode('access')">时段过境</span>
-              <span class="sg" :class="{ on: vis.mode.value === 'coverage' }" title="STK Coverage：区域撒网格 → 每胞元覆盖性能指标(FOM) → 热力图" @click="vis.setMode('coverage')">覆盖</span>
+              <span class="sg" :class="{ on: vis.mode.value === 'coverage' }" title="STK Coverage：区域布设网格 → 逐胞元计算覆盖性能指标(FOM) → 热力图" @click="vis.setMode('coverage')">覆盖</span>
             </div>
 
             <!-- 瞬时可见（now）：KPI + 极坐标 sky 图 + 结果表 -->
             <template v-if="vis.mode.value === 'now'">
-              <div v-if="!vis.hasTarget.value" class="tip">先在上方选一个分析目标（瞬时＝此刻头顶可见的卫星）。</div>
+              <div v-if="!vis.hasTarget.value" class="tip">请先在上方选择分析目标（瞬时＝当前时刻可见的卫星）。</div>
               <template v-else>
                 <div class="vis-sum">
                   <span>可见 <b>{{ vis.kpi.value.count }}</b> <s>/ {{ vis.satCount.value.toLocaleString() }}</s></span>
                   <span v-if="vis.kpi.value.top">最高 <b>{{ vis.kpi.value.top.elevDeg.toFixed(1) }}°</b> <em :title="vis.kpi.value.top.name">{{ vis.kpi.value.top.name }}</em></span>
                   <span v-if="vis.kpi.value.classes.length" class="vis-sumcls"><i v-for="c in vis.kpi.value.classes" :key="c.c">{{ c.c }} {{ c.n }}</i></span>
                 </div>
-                <div v-if="!vis.results.value.length" class="tip">当前时刻门限 {{ vis.minElev.value || 0 }}° 以上没有可见卫星（拖动时间轴，或降低门限试试）。</div>
+                <div v-if="!vis.results.value.length" class="tip">当前时刻门限 {{ vis.minElev.value || 0 }}° 以上没有可见卫星（可拖动时间轴或降低门限）。</div>
                 <template v-else>
-                  <div class="srow vis-icrow"><label>图标</label><input class="vis-slider" type="range" min="5" max="36" step="1" :value="vis.iconSize.value" @input="e => vis.iconSize.value = Number(e.target.value)" /><span class="u">{{ vis.iconSize.value }}</span><input class="vis-clr" type="color" :value="vis.iconColor.value" @input="e => vis.iconColor.value = e.target.value" title="星下点图标 / 名字颜色（3D 与 2D 一致）" /><label class="chk-in" title="星多时建议关，避免名字重叠成片"><input type="checkbox" :checked="vis.showName.value" @change="vis.showName.value = $event.target.checked" /><span>名字</span></label></div>
+                  <div class="srow vis-icrow"><label>图标</label><input class="vis-slider" type="range" min="5" max="36" step="1" :value="vis.iconSize.value" @input="e => vis.iconSize.value = Number(e.target.value)" /><span class="u">{{ vis.iconSize.value }}</span><input class="vis-clr" type="color" :value="vis.iconColor.value" @input="e => vis.iconColor.value = e.target.value" title="星下点图标 / 名字颜色（3D 与 2D 一致）" /><label class="chk-in" title="卫星较多时建议关闭，避免名称相互重叠"><input type="checkbox" :checked="vis.showName.value" @change="vis.showName.value = $event.target.checked" /><span>名字</span></label></div>
                   <div v-if="vis.showName.value" class="srow vis-icrow"><label>名字大小</label><input class="vis-slider" type="range" min="1" max="12" step="1" :value="vis.nameSize.value" @input="e => vis.nameSize.value = Number(e.target.value)" /><span class="u">{{ vis.nameSize.value }}</span></div>
                   <!-- 极坐标 sky 图：一点＝一颗可见星，角向＝方位（正北在上、顺时针），离心＝仰角（天顶在圆心、地平在外圈）；青虚线＝仰角门限 -->
                   <svg class="vis-sky" viewBox="0 0 100 100" aria-label="天空极坐标图">
@@ -5105,18 +5137,24 @@ onBeforeUnmount(() => {
 
             <!-- 时段过境（access）：时窗 + 计算 + 甘特 + 过境列表 -->
             <template v-else-if="vis.mode.value === 'access'">
-              <div v-if="!vis.hasTarget.value" class="tip">先在上方选一个分析目标（时段＝未来一段时间对它的过境窗口 Access）。</div>
+              <div v-if="!vis.hasTarget.value" class="tip">请先在上方选择分析目标（时段＝后续时段内对该目标的过境窗口 Access）。</div>
               <template v-else>
                 <div class="srow"><label>时窗</label><input class="ci vis-elev" type="number" step="1" min="0.5" max="168" :value="vis.horizonH.value" @input="e => vis.horizonH.value = e.target.value" /><span class="u nw">小时</span><span class="opb sm" :class="{ dis: vis.accessBusy.value }" title="扫描卫星集在此时窗内对目标的全部过境（卫星越多越慢；上限 400 颗）" @click="vis.computeAccess()">计算过境</span></div>
                 <div v-if="vis.accessResults.value.length && !vis.accessBusy.value" class="srow acc-exp"><span class="opb sm" title="导出全部过境窗口为 CSV（Excel 可直接打开）" @click="exportAccessExcel()">导出 Excel</span><span class="tip inl">{{ vis.accessResults.value.reduce((n, s) => n + s.windows.length, 0) }} 次过境 → CSV</span></div>
-                <div v-if="vis.accessBusy.value" class="tip">扫描过境窗口…（卫星越多越慢）</div>
+                <div v-if="vis.accessBusy.value" class="tip">扫描过境窗口…（卫星越多耗时越长）</div>
                 <div v-else-if="vis.accessMsg.value" class="tip">{{ vis.accessMsg.value }}</div>
                 <template v-else-if="vis.accessResults.value.length">
+                  <!-- 时间覆盖（严口径）：全部窗口合并去重后的可见时长 ÷ 实际时窗；最长中断含时窗首尾 -->
+                  <div class="vis-sum">
+                    <span :title="visCnt.title">时间覆盖 <b>{{ vis.accessKpi.value.pct.toFixed(1) }}%</b> <s>/ {{ visDur(vis.accessKpi.value.horizonMin) }}</s></span>
+                    <span title="合并重叠后的可见总时长（多星同时可见只计一次，非各次时长求和）">合计可视 <b>{{ visDur(vis.accessKpi.value.coveredMin) }}</b></span>
+                    <span :title="'时窗内共 ' + vis.accessKpi.value.gapCount + ' 段无星可见（含时窗首尾）'">最长中断 <b>{{ visDur(vis.accessKpi.value.maxGapMin) }}</b></span>
+                  </div>
                   <div class="vis-gantt">
                     <div v-for="s in vis.accessResults.value" :key="s.noradId" class="vis-grow" :class="{ hov: String(vis.hoveredId.value) === String(s.noradId) }" @mouseenter="vis.setHover(s.noradId)" @mouseleave="vis.setHover('')" :title="s.name + ' · ' + s.windows.length + ' 次过境'">
                       <span class="vis-gname">{{ s.name }}</span>
                       <span class="vis-gbar">
-                        <i v-for="(w, wi) in s.windows" :key="wi" class="vis-gseg" :class="{ hi: w.peakEl >= 45 }" :style="{ left: (w.startMin / (vis.horizonH.value * 60) * 100) + '%', width: (Math.max(0.6, w.endMin - w.startMin) / (vis.horizonH.value * 60) * 100) + '%' }" :title="'AOS +' + visDur(w.startMin) + ' · 时长 ' + visDur(w.durMin) + ' · 最高 ' + w.peakEl.toFixed(0) + '°'"></i>
+                        <i v-for="(w, wi) in s.windows" :key="wi" class="vis-gseg" :class="{ hi: w.peakEl >= 45 }" :style="{ left: (w.startMin / vis.accessKpi.value.horizonMin * 100) + '%', width: (Math.max(0.6, w.endMin - w.startMin) / vis.accessKpi.value.horizonMin * 100) + '%' }" :title="'AOS +' + visDur(w.startMin) + ' · 时长 ' + visDur(w.durMin) + ' · 最高 ' + w.peakEl.toFixed(0) + '°'"></i>
                       </span>
                     </div>
                   </div>
@@ -5131,7 +5169,7 @@ onBeforeUnmount(() => {
                       </div>
                     </template>
                   </div>
-                  <div class="tip">AOS＝升起（相对现在）；甘特条＝时窗内各次过境（绿＝最高仰角 ≥45°）。星多时扫描较慢（有进度）；可缩短时窗、或在「星座」筛选星座加速。</div>
+                  <div class="tip">AOS＝升起（相对现在）；甘特条＝时窗内各次过境（绿＝最高仰角 ≥45°）。时间覆盖＝全部窗口【合并重叠】后的可见时长 ÷ 时窗（多星同时可见只计一次，不是各次时长求和）。卫星较多时扫描较慢（显示进度）；可缩短时窗，或在「星座」中筛选星座以加速。</div>
                 </template>
               </template>
             </template>
@@ -5155,10 +5193,10 @@ onBeforeUnmount(() => {
                   <option v-for="pg in polys" :key="pg.id" :value="pg.id">{{ pg.name }}</option>
                 </select>
               </div>
-              <div class="srow"><label>网格步长</label><input class="ci cov-num" type="number" step="0.5" min="0.5" max="30" title="网格胞元间隔（度）：越小越细越慢" :value="vis.covStep.value" @input="e => vis.covStep.value = e.target.value" /><span class="u">°</span></div>
+              <div class="srow"><label>网格步长</label><input class="ci cov-num" type="number" step="0.5" min="0.5" max="30" title="网格胞元间隔（度）：越小越细，耗时越长" :value="vis.covStep.value" @input="e => vis.covStep.value = e.target.value" /><span class="u">°</span></div>
               <div class="srow"><label>时窗</label><input class="ci cov-num" type="number" step="1" min="0.5" max="168" :value="vis.covHorizonH.value" @input="e => vis.covHorizonH.value = e.target.value" /><span class="u">小时</span></div>
               <div class="srow"><label>采样</label><input class="ci cov-num" type="number" step="10" min="10" max="600" title="时间步长（秒）：采样数=时窗÷步长，越大越快；覆盖统计 30–120s 足够" :value="vis.covSample.value" @input="e => vis.covSample.value = e.target.value" /><span class="u">秒</span></div>
-              <div class="srow"><span class="opb sm" :title="vis.covBusy.value ? '点击取消当前计算' : '撒网格 → 对每胞元跑资产集(当前显示的星)覆盖 → FOM 热力图（网格越细 / 星越多越慢）'" @click="vis.covBusy.value ? vis.cancelCoverage() : vis.computeCoverage()">{{ vis.covBusy.value ? '取消' : '计算覆盖' }}</span><span v-if="vis.covData.value && !vis.covBusy.value" class="opb sm" title="清除覆盖热力图（保留区域/网格/时窗等参数，可重新计算）" @click="vis.clearCoverage()">清除覆盖</span><span v-if="vis.covMsg.value" class="tip inl cov-msg">{{ vis.covMsg.value }}</span></div>
+              <div class="srow"><span class="opb sm" :title="vis.covBusy.value ? '点击取消当前计算' : '布设网格 → 逐胞元计算资产集（当前显示的卫星）覆盖 → FOM 热力图（网格越细、卫星越多耗时越长）'" @click="vis.covBusy.value ? vis.cancelCoverage() : vis.computeCoverage()">{{ vis.covBusy.value ? '取消' : '计算覆盖' }}</span><span v-if="vis.covData.value && !vis.covBusy.value" class="opb sm" title="清除覆盖热力图（保留区域/网格/时窗等参数，可重新计算）" @click="vis.clearCoverage()">清除覆盖</span><span v-if="vis.covMsg.value" class="tip inl cov-msg">{{ vis.covMsg.value }}</span></div>
               <template v-if="vis.covData.value">
                 <div class="srow"><label>指标</label>
                   <select :value="vis.covFom.value" @change="e => vis.covFom.value = e.target.value">
@@ -5180,7 +5218,8 @@ onBeforeUnmount(() => {
                   <div class="cov-legsc"><span>{{ covFmt(vis.covLegend.value.lo, vis.covLegend.value) }}</span><b :title="vis.covLegend.value.label">{{ vis.covLegend.value.label }}{{ vis.covLegend.value.unit ? ' · ' + vis.covLegend.value.unit : '' }}</b><span>{{ covFmt(vis.covLegend.value.hi, vis.covLegend.value) }}</span></div>
                 </div>
                 <div v-if="vis.covKpi.value" class="vis-sum cov-kpi">
-                  <span>区域覆盖率 <b>{{ vis.covKpi.value.coverPct.toFixed(1) }}%</b> <s>（按纬度余弦加权）</s></span>
+                  <span :title="visCnt.title">时间覆盖 <b>{{ vis.covKpi.value.timePct.toFixed(1) }}%</b> <s>（面积加权 · 最差格 {{ vis.covKpi.value.worstPct.toFixed(1) }}%）</s></span>
+                  <span title="时窗内曾被覆盖过的面积占比（松口径：一格只覆盖 1 个采样也算满，恒 ≥ 时间覆盖）">覆盖面积 <b>{{ vis.covKpi.value.coverPct.toFixed(1) }}%</b></span>
                   <span>{{ vis.covKpi.value.label }} 极值 <b>{{ covFmt(vis.covKpi.value.min, vis.covLegend.value) }}</b> ~ <b>{{ covFmt(vis.covKpi.value.max, vis.covLegend.value) }}</b> {{ vis.covLegend.value ? vis.covLegend.value.unit : '' }}</span>
                   <span class="vis-sumcls"><s>网格 {{ vis.covKpi.value.cells.toLocaleString() }} 点</s></span>
                 </div>
@@ -5213,7 +5252,7 @@ onBeforeUnmount(() => {
                 </select>
               </div>
               <div class="srow"><label>格距</label>
-                <select :value="env.stepDeg.value" @change="e => env.stepDeg.value = Number(e.target.value)" title="出图格距：比数据原生分辨率更细不会有新信息，只会更慢">
+                <select :value="env.stepDeg.value" @change="e => env.stepDeg.value = Number(e.target.value)" title="出图格距：细于数据原生分辨率不会增加信息，仅增加耗时">
                   <option v-for="s in env.STEPS" :key="s.v" :value="s.v">{{ s.label }}</option>
                 </select>
               </div>
@@ -5240,7 +5279,7 @@ onBeforeUnmount(() => {
               </div>
               <div class="srow"><label>值域</label>
                 <span class="seg">
-                  <span class="sg" :class="{ on: env.domainMode.value === 'p2p98' }" title="按 2%–98% 分位拉伸：长尾场（降雨率）用极值定域会把主区压成一个颜色" @click="env.domainMode.value = 'p2p98'">分位</span>
+                  <span class="sg" :class="{ on: env.domainMode.value === 'p2p98' }" title="按 2%–98% 分位拉伸：长尾场（降雨率）以极值定域会使主区色差不可分辨" @click="env.domainMode.value = 'p2p98'">分位</span>
                   <span class="sg" :class="{ on: env.domainMode.value === 'minmax' }" title="全域极值" @click="env.domainMode.value = 'minmax'">极值</span>
                   <span class="sg" :class="{ on: env.domainMode.value === 'manual' }" title="手动指定上下限" @click="envManualInit()">手动</span>
                 </span>
@@ -5269,12 +5308,12 @@ onBeforeUnmount(() => {
               <template v-if="env.contourOn.value">
                 <div class="srow"><label>级差</label><input class="ci cov-num" type="number" min="0" step="any" :placeholder="env.field.value && env.field.value.contourStep ? String(env.field.value.contourStep) : '自动'" :value="env.contourStep.value" @input="e => env.contourStep.value = e.target.value" /><span class="u">{{ env.field.value ? env.field.value.unit : '' }}</span></div>
                 <label class="chk2"><input type="checkbox" v-model="env.contourLabel.value" /><span>沿线标数值（仅平面图）</span></label>
-                <div class="tip">共 {{ env.contours.value.length }} 档；线取该档自己的色（压暗一档以便从填充里分出来）。等值线只在当前值域内定级，改值域即改线。</div>
+                <div class="tip">共 {{ env.contours.value.length }} 档；线取该档对应色（压暗一档以便与填充区分）。等值线只在当前值域内定级，改值域即改线。</div>
               </template>
             </template>
           </div>
 
-          <div class="tip">ITU-R 环境数据场，取值与链路预算引擎同源（同一套查表插值）——图上的颜色即预算表里那个数。图层画在所有叠加层最底，与覆盖分析 / GRD 覆盖场可同屏共存。鼠标移到图上，状态栏右侧读当前点数值。</div>
+          <div class="tip">ITU-R 环境数据场，取值与链路预算引擎同源（同一套查表插值）：图上颜色即预算表中的取值。图层画在所有叠加层最底，与覆盖分析 / GRD 覆盖场可同屏共存。鼠标移至图上，状态栏右侧显示当前点数值。</div>
         </div>
         </div>
 
@@ -6035,7 +6074,7 @@ onBeforeUnmount(() => {
                 </label>
                 <div v-if="!perf.filteredBeams().length" class="empty">无匹配波束</div>
               </div>
-              <div class="po-note">默认全选（不筛选，与原行为一致）；仅勾选的波束参与本表取值，未选波束整列不出现。</div>
+              <div class="po-note">默认全选（不筛选）；仅勾选的波束参与本表取值，未选波束整列不出现。</div>
             </section>
 
             <section class="po-card">
@@ -6606,7 +6645,8 @@ onBeforeUnmount(() => {
 .env-side .chk2.dis { opacity: 0.45; cursor: not-allowed; }
 .env-side .cov-num { flex: none; width: 54px; }
 
-.vis-side .sect .vis-cnt { margin-left: auto; font-size: 10px; color: var(--text-faint); font-family: var(--font-mono); }
+/* 分节头读数：加了「x% 时间覆盖」后可能长过标题剩余宽度 → 省略号收边（完整定义在 title 里），不许换行顶开表头 */
+.vis-side .sect .vis-cnt { margin-left: auto; padding-left: 8px; min-width: 0; font-size: 10px; color: var(--text-faint); font-family: var(--font-mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .vis-side .sect .vis-cnt.on { color: var(--ok); }
 /* 卫星集读数行：来源类型标签（星座 / 自定义星座 / 卫星组 / 搜索）+ 名称（长则省略）+ 颗数，与「目标」「仰角门限」同为分析设定行 */
 .vis-satset .vis-satset-val { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; font-size: 11.5px; }

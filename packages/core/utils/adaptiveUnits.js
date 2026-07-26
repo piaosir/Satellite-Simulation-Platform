@@ -57,6 +57,16 @@ function pickColumn(vals, unit) {
 // 是「逐行可手算」的 dB 功率链，检查点换 dBm 会让上下行加减对不上，一律不动。
 const CHAIN_KINDS = { base: 1, gain: 1, loss: 1, sub: 1, chk: 1, margin: 1 };
 const COLS_OF = { 1: ['up'], 2: ['up', 'down'], 3: ['up', 'down', 'total'] };
+// 显示列 → 同行的机读数值字段（waterfallBuilder 挂的 num/numDown/numTotal）。
+// 换档改的是显示串，机读值必须跟着改：不然 -18.393 dBm 的格子背后还挂着 -48.393（dBW 原值），
+// 屏幕与 Excel 就是两套数。一律按换档后的显示串回解，保证两者永远同一个数。
+const NUM_OF = { up: 'num', down: 'numDown', total: 'numTotal' };
+function syncNum(row, c) {
+  const f = NUM_OF[c];
+  if (!f || !Object.prototype.hasOwnProperty.call(row, f)) return;   // 旧记录没有这些字段，不凭空添
+  const n = parseFloat(row[c]);
+  row[f] = isFinite(n) ? n : null;
+}
 
 function adaptSegments(segments) {
   if (!Array.isArray(segments)) return segments;
@@ -71,15 +81,17 @@ function adaptSegments(segments) {
       if (UNIT_INDEX[row.unit]) {
         const p = pickUnit(Math.max.apply(null, nums.map(Math.abs)), row.unit);
         if (!p) continue;
-        for (const c of cols) { const n = parseFloat(row[c]); if (isFinite(n)) row[c] = fmtScaled(n * p.factor); }
-        // 标签里写死的单位后缀跟着换：'功放建议功率(W)' / 'Recommended PA Power (W)' → (mW)
+        for (const c of cols) { const n = parseFloat(row[c]); if (isFinite(n)) { row[c] = fmtScaled(n * p.factor); syncNum(row, c); } }
+        // 标签里写死的单位后缀跟着换：'功放建议值(W)' / 'Recommended PA Value (W)' → (mW)
         if (typeof row.label === 'string' && row.label.indexOf('(' + row.unit + ')') >= 0) {
           row.label = row.label.replace('(' + row.unit + ')', '(' + p.unit + ')');
         }
         row.unit = p.unit;
+        if (row.unitKey) row.unitKey = p.unit;   // 单位原文跟着指向换档后的单位，与 unit 始终同一个
       } else if (row.unit === 'dBW' && !CHAIN_KINDS[row.kind] && Math.max.apply(null, nums) < 0) {
-        for (const c of cols) { const n = parseFloat(row[c]); if (isFinite(n)) row[c] = fmtScaled(n + 30); }
+        for (const c of cols) { const n = parseFloat(row[c]); if (isFinite(n)) { row[c] = fmtScaled(n + 30); syncNum(row, c); } }
         row.unit = 'dBm';
+        if (row.unitKey) row.unitKey = 'dBm';
       }
     }
   }

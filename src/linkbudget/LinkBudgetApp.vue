@@ -3,12 +3,12 @@ import { ref, shallowRef, reactive, computed, onMounted, onBeforeUnmount, nextTi
 import { FIELD_GROUPS, SAT_FIELDS, CARRIER_FIELDS, TX_FIELDS, RX_FIELDS, ES_FIELDS, ES_COMMON_FIELDS, ES_TX_FIELDS, ES_RX_FIELDS, defaultsFor, buildParams } from './params.js'
 import { loadSatTree, sampleAntennaParams, antennaSampleSpec } from './grdParam.js'
 import { importGrdAntennas, removeLocalAntenna, localFolderFor, syncLocalNode } from '../shared/lbGrdImport.js'
-import { encodeShare, decodeShare, configFileText } from './shareCode.js'
+import { resolveRefId } from '../shared/lbShare.js'
 import { stableStringify } from '../shared/configDirty.js'
 import { migrateLegacyEs } from '../shared/esMigrate.js'
 import { pickColumn, fmtScaled } from '../shared/adaptUnits.js'
 import { lbDocT } from '../shared/lbDocI18n.js'
-import { followSatCfgName } from '../shared/satName.js'   // 选星后条目名跟随星名（未被自定义过时），防条目名停在上一颗星
+import { syncAutoNames, adoptAutoFlag, withAutoFlag, isAutoNamed } from '../shared/lbAutoName.js'   // 三库条目自动命名（未被用户改名时，名字随关键参数走）
 import Icon from '../components/Icon.vue'
 import ConfigTree from '../components/ConfigTree.vue'
 import LbSection from '../components/LbSection.vue'
@@ -21,6 +21,9 @@ import WaterfallTable from './WaterfallTable.vue'
 import LbVizPane from '../components/LbVizPane.vue'
 import LbFontCtl from '../components/LbFontCtl.vue'
 import LbCapFoot from '../components/LbCapFoot.vue'
+import LbShareDialog from '../components/LbShareDialog.vue'
+import LbReportDialog from '../components/LbReportDialog.vue'
+import { useLbReport } from '../shared/useLbReport.js'
 import { buildGeoScene } from '../shared/lbLinkScene.js'
 
 const api = typeof window !== 'undefined' ? window.api : null
@@ -77,7 +80,8 @@ const basebandOpts = ref({})
 // 「载波信号」模块以多张卡片同时展示/编辑全部配置（不再是单一表单+下拉切换）。
 // 发信站表新增「载波信号配置」列选择使用哪一份；同一配置可被多个发信站共用，未选(空)即用第一份。
 let _bbSeq = 1
-function makeBasebandConfig(name) { return { id: 'bb' + (_bbSeq++), name, form: { ...defaultsFor(CARRIER_FIELDS), rsCodeMode: 'fraction', dvbStandard: 'custom', modcodIndex: -1 } } }
+// nameAuto：条目名是否还随参数自动生成（见 shared/lbAutoName.js）——不传 name 即新建的空名条目，自动
+function makeBasebandConfig(name) { return withAutoFlag({ id: 'bb' + (_bbSeq++), name: name || '', form: { ...defaultsFor(CARRIER_FIELDS), rsCodeMode: 'fraction', dvbStandard: 'custom', modcodIndex: -1, rateAnchor: 'info', rateAnchorValue: null } }, 'carrier') }
 const basebandConfigs = reactive([makeBasebandConfig('默认')])
 // 按 id 解析；正常路径（下拉选 / 粘贴 / 批量设值）StationGrid 已把存值归一化成合法 id，
 // 这里按名称兜底匹配只是双保险（防御旧数据或遗漏路径）。都没命中则退到第一份默认配置。
@@ -86,9 +90,12 @@ function resolveBaseband(id) {
   return basebandConfigs.find((c) => c.id === id) || basebandConfigs.find((c) => c.name === id) || basebandConfigs[0]
 }
 const basebandSelectOptions = computed(() => [{ value: '', label: '（默认）' }, ...basebandConfigs.map((c) => ({ value: c.id, label: c.name }))])
-function addBasebandConfig() { basebandConfigs.push(makeBasebandConfig('配置' + (basebandConfigs.length + 1))) }
+function addBasebandConfig() { basebandConfigs.push(makeBasebandConfig()); syncAutoNames(basebandConfigs, 'carrier') }
+// 复制：自动命名的条目复制出来仍是自动的（名字由 syncAutoNames 按参数出，重名自动加序号）；
+// 自定义名的条目才带「副本」后缀——那是用户起的名字，复制件跟着它走。
 function duplicateBasebandConfig(cfg) {
-  basebandConfigs.push({ id: 'bb' + (_bbSeq++), name: cfg.name + ' 副本', form: JSON.parse(JSON.stringify(cfg.form)) })
+  basebandConfigs.push({ id: 'bb' + (_bbSeq++), name: cfg.nameAuto ? '' : cfg.name + ' 副本', nameAuto: !!cfg.nameAuto, form: JSON.parse(JSON.stringify(cfg.form)) })
+  syncAutoNames(basebandConfigs, 'carrier')
 }
 function removeBasebandConfig(cfg) { removeLibEntry(basebandConfigs, cfg, 'bb') }
 // —— 地球站库：每份配置 = 一种站型的收发射频参数（公共天线口径 + 发射链/接收链分列，字段见 params.js station 组）。
@@ -96,9 +103,9 @@ function removeBasebandConfig(cfg) { removeLibEntry(basebandConfigs, cfg, 'bb') 
 // 同一份可被多行乃至收发两侧共用；站表本身只留站址（经纬度等）信息。
 let _esSeq = 1
 function makeEsConfig(name, diameter) {
-  const c = { id: 'es' + (_esSeq++), name, form: { ...defaultsFor(ES_FIELDS) } }
+  const c = { id: 'es' + (_esSeq++), name: name || '', form: { ...defaultsFor(ES_FIELDS) } }
   if (diameter) c.form.antennaDiameter = diameter
-  return c
+  return withAutoFlag(c, 'es')
 }
 // 默认库：口径收发共用（一份配置=一面天线）后，经典「6.2 m 发 / 3.7 m 收」基线拆成两份站型——
 // 链路行发端默认引用第一份（关口站）、收端默认引用第二份（干线站，见 newLinkRow），默认算例数值与旧版一致
@@ -109,8 +116,11 @@ function resolveEs(id) {
   return esConfigs.find((c) => c.id === id) || esConfigs.find((c) => c.name === id) || esConfigs[0]
 }
 const esSelectOptions = computed(() => [{ value: '', label: '（默认）' }, ...esConfigs.map((c) => ({ value: c.id, label: c.name }))])
-function addEsConfig() { esConfigs.push(makeEsConfig('站型' + (esConfigs.length + 1))) }
-function duplicateEsConfig(cfg) { esConfigs.push({ id: 'es' + (_esSeq++), name: cfg.name + ' 副本', form: JSON.parse(JSON.stringify(cfg.form)) }) }
+function addEsConfig() { esConfigs.push(makeEsConfig()); syncAutoNames(esConfigs, 'es') }
+function duplicateEsConfig(cfg) {
+  esConfigs.push({ id: 'es' + (_esSeq++), name: cfg.nameAuto ? '' : cfg.name + ' 副本', nameAuto: !!cfg.nameAuto, form: JSON.parse(JSON.stringify(cfg.form)) })
+  syncAutoNames(esConfigs, 'es')
+}
 function removeEsConfig(cfg) { removeLibEntry(esConfigs, cfg, 'es') }
 
 // —— 卫星库（新增，对齐再生式先例）：每份 = 完整空间段参数 + 方向图匹配(grd)；场景级单选（satId），全场景链路共用 ——
@@ -120,7 +130,7 @@ function removeEsConfig(cfg) { removeLibEntry(esConfigs, cfg, 'es') }
 let _satSeq = 1
 const blankGrd = () => ({ satFolder: '', eirpKey: '', gtKey: '' })
 const normGrd = (g) => ({ satFolder: (g && g.satFolder) || '', eirpKey: (g && g.eirpKey) || '', gtKey: (g && g.gtKey) || '' })
-function makeSatConfig(name) { return { id: 'sat' + (_satSeq++), name: name || ('卫星' + _satSeq), form: { ...defaultsFor(SAT_FIELDS) }, grd: blankGrd() } }
+function makeSatConfig(name) { return withAutoFlag({ id: 'sat' + (_satSeq++), name: name || '', form: { ...defaultsFor(SAT_FIELDS) }, grd: blankGrd() }, 'sat') }
 const satConfigs = reactive([makeSatConfig('默认卫星')])
 const satId = ref('')   // 场景选用的卫星库条目（空 = 第一份）
 function resolveSat(id) {
@@ -129,11 +139,11 @@ function resolveSat(id) {
 }
 const curSat = computed(() => resolveSat(satId.value))
 const satSelectOptions = computed(() => satConfigs.map((c) => ({ value: c.id, label: c.name })))
-function addSatConfig() { satConfigs.push(makeSatConfig('卫星' + (satConfigs.length + 1))) }
-// 选星 → 条目名跟随星名（仅当条目名还没被用户自定义过，见 shared/satName.js）：
-// 同一颗星常有多份转发器配置（「CS10R C12B」「CS10R C13B」），自定义的名字一律不动。
-const followName = (cfg, prevSatName, nextSatName) => followSatCfgName(cfg, prevSatName, nextSatName, satConfigs)
-function duplicateSatConfig(cfg) { satConfigs.push({ id: 'sat' + (_satSeq++), name: cfg.name + ' 副本', form: JSON.parse(JSON.stringify(cfg.form)), grd: normGrd(cfg.grd) }) }
+function addSatConfig() { satConfigs.push(makeSatConfig()); syncAutoNames(satConfigs, 'sat') }
+function duplicateSatConfig(cfg) {
+  satConfigs.push({ id: 'sat' + (_satSeq++), name: cfg.nameAuto ? '' : cfg.name + ' 副本', nameAuto: !!cfg.nameAuto, form: JSON.parse(JSON.stringify(cfg.form)), grd: normGrd(cfg.grd) })
+  syncAutoNames(satConfigs, 'sat')
+}
 function removeSatConfig(cfg) { removeLibEntry(satConfigs, cfg, 'sat') }
 
 // —— 库条目删除守卫：被链路行 / 已保存场景引用时先提示引用数 ——
@@ -163,9 +173,9 @@ let _libLoaded = false
 let _libT = null
 function serializeLibrary() {
   return JSON.parse(JSON.stringify({
-    es: esConfigs.map((c) => ({ id: c.id, name: c.name, form: c.form })),
-    carrier: basebandConfigs.map((c) => ({ id: c.id, name: c.name, form: c.form })),
-    sat: satConfigs.map((c) => ({ id: c.id, name: c.name, form: c.form, grd: normGrd(c.grd) })),   // 方向图匹配随条目入库
+    es: esConfigs.map((c) => ({ id: c.id, name: c.name, nameAuto: !!c.nameAuto, form: c.form })),
+    carrier: basebandConfigs.map((c) => ({ id: c.id, name: c.name, nameAuto: !!c.nameAuto, form: c.form })),
+    sat: satConfigs.map((c) => ({ id: c.id, name: c.name, nameAuto: !!c.nameAuto, form: c.form, grd: normGrd(c.grd) })),   // 方向图匹配随条目入库
     seq: { es: _esSeq, bb: _bbSeq, sat: _satSeq }
   }))
 }
@@ -192,21 +202,27 @@ function migrateFreqIntfLib(lib) {
 function applyLibrary(lib) {
   if (!lib) return
   migrateFreqIntfLib(lib)   // 结构迁移（频率/极化 + 干扰上移卫星），保留旧库自定义值；须在补默认值前
-  const fill = (defFields, extra) => (c, i, pfx) => ({ id: c.id || (pfx + (i + 1)), name: c.name || '配置', form: { ...defaultsFor(defFields), ...(extra || null), ...c.form } })
-  if (Array.isArray(lib.es) && lib.es.length) esConfigs.splice(0, esConfigs.length, ...lib.es.map((c, i) => fill(ES_FIELDS)(c, i, 'esb')))
-  if (Array.isArray(lib.carrier) && lib.carrier.length) basebandConfigs.splice(0, basebandConfigs.length, ...lib.carrier.map((c, i) => fill(CARRIER_FIELDS, { rsCodeMode: 'fraction', dvbStandard: 'custom', modcodIndex: -1 })(c, i, 'bbb')))
+  // nameAuto：旧库没存过这一位，按历史默认名推定一次（见 shared/lbAutoName.js 的 adoptAutoFlag）
+  const fill = (defFields, kind, extra) => (c, i, pfx) => ({ id: c.id || (pfx + (i + 1)), name: c.name || '', nameAuto: adoptAutoFlag(kind, c), form: { ...defaultsFor(defFields), ...(extra || null), ...c.form } })
+  if (Array.isArray(lib.es) && lib.es.length) esConfigs.splice(0, esConfigs.length, ...lib.es.map((c, i) => fill(ES_FIELDS, 'es')(c, i, 'esb')))
+  if (Array.isArray(lib.carrier) && lib.carrier.length) basebandConfigs.splice(0, basebandConfigs.length, ...lib.carrier.map((c, i) => fill(CARRIER_FIELDS, 'carrier', { rsCodeMode: 'fraction', dvbStandard: 'custom', modcodIndex: -1, rateAnchor: 'info', rateAnchorValue: null })(c, i, 'bbb')))
   if (Array.isArray(lib.sat) && lib.sat.length) satConfigs.splice(0, satConfigs.length, ...lib.sat.map((c, i) => {
-    const e = fill(SAT_FIELDS)(c, i, 'satb')
+    const e = fill(SAT_FIELDS, 'sat')(c, i, 'satb')
     e.grd = normGrd(c.grd)   // 旧库无 grd → 空匹配（旧场景里的 grdSel 由 applyState 播种，见 adoptSceneGrd）
     return e
   }))
+  syncAutoNames(esConfigs, 'es'); syncAutoNames(basebandConfigs, 'carrier'); syncAutoNames(satConfigs, 'sat')
   if (lib.seq) { _esSeq = Math.max(_esSeq, lib.seq.es || 1); _bbSeq = Math.max(_bbSeq, lib.seq.bb || 1); _satSeq = Math.max(_satSeq, lib.seq.sat || 1) }
   // 兜底回抬序号：防旧库无 seq 时新建条目撞已有 id
   for (const [arr, re, bump] of [[esConfigs, /^es(\d+)$/, (n) => { _esSeq = Math.max(_esSeq, n + 1) }], [basebandConfigs, /^bb(\d+)$/, (n) => { _bbSeq = Math.max(_bbSeq, n + 1) }], [satConfigs, /^sat(\d+)$/, (n) => { _satSeq = Math.max(_satSeq, n + 1) }]]) {
     for (const c of arr) { const m = re.exec(c.id || ''); if (m) bump(Number(m[1])) }
   }
 }
-watch([esConfigs, basebandConfigs, satConfigs], scheduleLibSave, { deep: true })
+// 库一动就：① 未被改名的条目按新参数刷名（幂等，重算一遍就收敛）② 防抖落盘
+watch([esConfigs, basebandConfigs, satConfigs], () => {
+  syncAutoNames(esConfigs, 'es'); syncAutoNames(basebandConfigs, 'carrier'); syncAutoNames(satConfigs, 'sat')
+  scheduleLibSave()
+}, { deep: true, immediate: true })   // immediate：内置默认库（还没载入盘上库时）也先按参数刷一遍名
 
 // —— 内容去重并库（迁移 / 分享导入共用）：同内容复用既有条目 id，异内容新建（名称冲突自动加序号）。
 // 返回 旧id→全局id 映射。两次对同一份旧配置执行得到相同映射（第二次全部命中内容去重）→ 指纹稳定。
@@ -226,6 +242,8 @@ function adoptEntries(arr, entries, makeNew, extraKeys) {
     let nm = e.name || c.name
     if (names().has(nm)) { let i = 2; while (names().has(nm + ' ' + i)) i++; nm = nm + ' ' + i }
     c.name = nm
+    // 并进来的名字是别处的数据，一律钉成自定义（除非对方明确标了「自动」）：不替别人的库改名
+    c.nameAuto = e.nameAuto === true
     c.form = { ...c.form, ...JSON.parse(JSON.stringify(e.form)) }
     if (extraKeys) for (const k of extraKeys) if (e[k] !== undefined) c[k] = JSON.parse(JSON.stringify(e[k]))
     arr.push(c)
@@ -250,24 +268,16 @@ const LIB_TABS = [
   { key: 'carrier', label: '载波', tip: '载波信号库：链路表「载波信号配置」列按行引用' }
 ]
 const libTab = ref('station')
-// 工作台分节折叠（记忆）
-const SEC_KEY = 'linkbudget/secCollapsed2'
-const secCollapsed = reactive({ sat: false, links: false, detail: false, ...(() => { try { return JSON.parse(localStorage.getItem(SEC_KEY) || '{}') } catch (e) { return {} } })() })
-function toggleSec(k) { secCollapsed[k] = !secCollapsed[k]; try { localStorage.setItem(SEC_KEY, JSON.stringify({ ...secCollapsed })) } catch (e) { /* ignore */ } }
 const flowEl = ref(null)
 // 资源库主从视图的当前选中项（会话态，不入存档）
 const selBbId = ref('')
 const selEsId = ref('')
 const selSatId = ref('')
-const bbSummary = (c) => `${c.form.modulation || 'QPSK'} ${c.form.fec || '3/4'} · ${c.form.infoRate || '2048'} kbps`
-const esSummary = (c) => [`${c.form.antennaDiameter || '6.2'} m`, c.form.paPowerW ? `${c.form.paPowerW} W 功放` : ''].filter(Boolean).join(' · ')
-const satLibSummary = (c) => [c.form.frequencyBand ? c.form.frequencyBand + ' 频段' : '', (c.form.centerFrequency || c.form.rxCenterFrequency) ? `${c.form.centerFrequency || '—'}/${c.form.rxCenterFrequency || '—'} GHz` : '', c.form.orbitPosition ? c.form.orbitPosition + '°E' : ''].filter(Boolean).join(' · ')
-const satSummary = computed(() => {
-  const f = curSat.value ? curSat.value.form : {}
-  return [f.satelliteName, f.frequencyBand ? f.frequencyBand + ' 频段' : '',
-    (f.centerFrequency || f.rxCenterFrequency) ? `${f.centerFrequency || '—'}/${f.rxCenterFrequency || '—'} GHz` : '',
-    f.orbitPosition ? f.orbitPosition + '°E' : ''].filter(Boolean).join(' · ')
-})
+// 列表摘要：自动命名的条目其名字就是这几项参数（见 lbAutoName），再报一遍纯属重影 → 只给自定义名的条目报
+const bbSummary = (c) => (isAutoNamed('carrier', c) ? '' : `${c.form.modulation || 'QPSK'} ${c.form.fec || '3/4'} · ${c.form.infoRate || '2048'} kbps`)
+const esSummary = (c) => (isAutoNamed('es', c) ? '' : [`${c.form.antennaDiameter || '6.2'} m`, c.form.paPowerW ? `${c.form.paPowerW} W 功放` : ''].filter(Boolean).join(' · '))
+// 卫星摘要：自动命名时名字已带频段与轨位（见 lbAutoName），这里只补名字里没有的上/下行频率
+const satLibSummary = (c) => [isAutoNamed('sat', c) ? '' : (c.form.frequencyBand ? c.form.frequencyBand + ' 频段' : ''), (c.form.centerFrequency || c.form.rxCenterFrequency) ? `${c.form.centerFrequency || '—'}/${c.form.rxCenterFrequency || '—'} GHz` : '', isAutoNamed('sat', c) ? '' : (c.form.orbitPosition ? c.form.orbitPosition + '°E' : '')].filter(Boolean).join(' · ')
 // 工作台卫星分区第二行「转发器」：关键参数只读速览（横排读数，不可编辑——编辑走节头「编辑参数」进资源库）。
 // 只列空间段定调的那几项：频段/上下行频率极化/轨位（标识）+ SFDref/G/Tref（上行定标）+ 带宽/IBO/OBO/C/IM（转发器工作点）；
 // 干扰系数七项留在资源库编辑器（此处横排会挤成一堵墙）。label 为横排用短名，单位/悬浮说明取自 SAT_FIELDS 口径。
@@ -422,7 +432,7 @@ async function copyWaterfallTsv() {
   const t = lbDocT(reportLang.value)   // 段标题/行标签已随 segments 翻好，列头在此补上
   const lines = []
   for (const seg of segments.value) {
-    lines.push(seg.title)
+    lines.push(seg.no ? '§' + seg.no + '  ' + seg.title : seg.title)   // 章节号与屏幕/Excel 同号同序
     if (seg.cols >= 2) lines.push(['', '', t('上行'), t('下行')].concat(seg.cols === 3 ? [t('合计')] : []).concat(['']).join('\t'))
     for (const r of seg.rows) {
       const cells = [r.sign || '', r.label, r.up]
@@ -900,10 +910,11 @@ function applyState(st) {
   // 内嵌库条目按内容去重并入全局库（adoptEntries 同内容⇒同 id，反复 applyState 映射稳定 → 指纹不误报）；
   // 行引用经映射改写；双表并单表（旧矩阵模式按 m×n 展开，常规按序号配对、短侧末行复用补齐）。
   // ① 载波库（更旧的单一 carrierForm 包成一份）
-  const bbUi = { rsCodeMode: 'fraction', dvbStandard: 'custom', modcodIndex: -1 }
+  const bbUi = { rsCodeMode: 'fraction', dvbStandard: 'custom', modcodIndex: -1, rateAnchor: 'info', rateAnchorValue: null }
+  // nameAuto：旧场景条目名多是「配置1」这类占位名 → 按历史默认名推定，并库后交给自动命名接手
   const bbEntries = (Array.isArray(st.basebandConfigs) && st.basebandConfigs.length)
-    ? st.basebandConfigs.map((c) => ({ id: c.id, name: c.name || '配置', form: { ...defaultsFor(CARRIER_FIELDS), ...bbUi, ...c.form } }))
-    : (st.carrierForm ? [{ id: '__bb0', name: '默认', form: { ...defaultsFor(CARRIER_FIELDS), ...bbUi, ...st.carrierForm } }] : [])
+    ? st.basebandConfigs.map((c) => ({ id: c.id, name: c.name || '配置', nameAuto: adoptAutoFlag('carrier', c), form: { ...defaultsFor(CARRIER_FIELDS), ...bbUi, ...c.form } }))
+    : (st.carrierForm ? [{ id: '__bb0', name: '默认', nameAuto: true, form: { ...defaultsFor(CARRIER_FIELDS), ...bbUi, ...st.carrierForm } }] : [])
   const bbMap = adoptEntries(basebandConfigs, bbEntries, () => makeBasebandConfig('载波'))
   // ② 地球站库：三代结构统一（内嵌库 / 过渡版收发分口径展开重迁 / 行内射频 migrateLegacyEs）
   let esList = (Array.isArray(st.esConfigs) && st.esConfigs.length) ? st.esConfigs : null
@@ -939,7 +950,7 @@ function applyState(st) {
     const form = { ...defaultsFor(ES_FIELDS), ...c.form }
     // 旧全局「设置功放功率」目标值 → 下沉为各站型的功放功率（功放已随站型入库）
     if (st.targetPowerW != null && String(st.targetPowerW).trim() !== '') form.paPowerW = st.targetPowerW
-    return { id: c.id || ('esb' + i), name: c.name || '站型', form }
+    return { id: c.id || ('esb' + i), name: c.name || '站型', nameAuto: adoptAutoFlag('es', c), form }
   })
   const esMap = adoptEntries(esConfigs, esEntries, () => makeEsConfig('站型'))
   // ③ 卫星：旧单一 satForm + 旧场景级 grdSel（方向图匹配）→ 并成一个卫星库条目
@@ -948,7 +959,7 @@ function applyState(st) {
   if (st.satForm) {
     const form = { ...defaultsFor(SAT_FIELDS) }
     for (const f of SAT_FIELDS) if (st.satForm[f.key] !== undefined) form[f.key] = st.satForm[f.key]
-    const satMap = adoptEntries(satConfigs, [{ id: '__sat0', name: form.satelliteName || '卫星', form, grd: normGrd(st.grdSel) }], () => makeSatConfig(), ['grd'])
+    const satMap = adoptEntries(satConfigs, [{ id: '__sat0', name: form.satelliteName || '卫星', nameAuto: true, form, grd: normGrd(st.grdSel) }], () => makeSatConfig(), ['grd'])
     satId.value = satMap.__sat0 || ''
   } else { satId.value = ''; adoptSceneGrd(st.grdSel) }
   // ④ 双表 → 单链路表（行引用经映射改写；收端引用列改名 rxStationId）
@@ -1162,33 +1173,6 @@ function openCtx(e, c) {
   ctxMenu.open = true
 }
 function ctxDo(fn) { ctxMenu.open = false; fn() }
-// 导入一批分享来的配置（[{name,state}]）→ 各存为新配置；末条载入工作台
-async function importConfigs(items) {
-  if (!api) { toast('导入需在桌面客户端中运行'); return 0 }
-  let last = null
-  for (const it of items) {
-    // 深拷成纯对象：收件箱来的 it.state 是 Vue 响应式 Proxy，直接经 IPC 传给 saveConfig 会报「An object could not be cloned」
-    const state = JSON.parse(JSON.stringify(it.state))
-    // v2 分享包携带所引库条目：按内容去重并入本机全局库，行引用改写为本机 id（重复导入不重复建库）
-    if (it.lib && Array.isArray(state.rows)) {
-      const esMap = adoptEntries(esConfigs, it.lib.es, () => makeEsConfig('站型'))
-      const bbMap = adoptEntries(basebandConfigs, it.lib.carrier, () => makeBasebandConfig('载波'))
-      const satMap = adoptEntries(satConfigs, (it.lib.sat || []).map((c) => ({ ...c, grd: normGrd(c.grd) })), () => makeSatConfig(), ['grd'])
-      for (const r of state.rows) {
-        if (r.stationId) r.stationId = esMap[r.stationId] || ''
-        if (r.rxStationId) r.rxStationId = esMap[r.rxStationId] || ''
-        if (r.basebandId) r.basebandId = bbMap[r.basebandId] || ''
-      }
-      if (state.satId) state.satId = satMap[state.satId] || ''
-    }
-    const r = await api.store.saveConfig({ name: it.name || '导入配置', state })
-    if (r) last = { item: r, state }
-  }
-  await loadConfigs()
-  if (last) { if (last.item.id) activeId.value = last.item.id; applyState(last.state); setBaseline() }
-  toast(items.length > 1 ? `已导入 ${items.length} 个配置` : ('已导入配置：' + (items[0] && items[0].name || '')))
-  return items.length
-}
 
 // —— 改动检测 + 离开提示 + 恢复默认 ——
 // 指纹只取「配置内容」字段（不含页签/结果列勾选等视图态），避免切页签/调结果列误判为改动。
@@ -1218,103 +1202,93 @@ async function guardedLeave() {
   return true
 }
 
-// —— 配置分享（线下：分享码 / 文件；线上：按用户ID 走 COS 信箱）——
+// —— 分享 / 导入（弹窗与全部流程在 components/LbShareDialog.vue，三窗共用）——
+// 本窗口只提供「体制适配层」：本机有哪些配置与库、场景引用了哪些条目、并库后怎么改写引用。
 const deviceId = ref('')   // 本机用户ID（按 MAC 派生；管理员机器由主进程硬编码为 master1/2/3，不可改）
 const shareConfigured = ref(false)
-const shareDlg = reactive({ open: false, tab: 'offline', code: '', recip: '', sending: false, loadingInbox: false, inbox: [], inboxMsg: '' })
-// v2 场景只存引用 → 分享时打包所引库条目（含各库第一份=空引用的解析兜底）；旧结构自带内嵌库无需打包
-function libBundleFor(state) {
-  if (!state || !Array.isArray(state.rows)) return null
-  const ids = { es: new Set(), bb: new Set(), sat: new Set() }
-  for (const r of state.rows) { if (r.stationId) ids.es.add(r.stationId); if (r.rxStationId) ids.es.add(r.rxStationId); if (r.basebandId) ids.bb.add(r.basebandId) }
-  if (state.satId) ids.sat.add(state.satId)
-  // 卫星条目连 grd（方向图匹配）一起打包——它是条目内容的一部分（对端 adoptEntries 按 {form,grd} 指纹并库）
-  const pick = (arr, set, withGrd) => arr.filter((c, i) => i === 0 || set.has(c.id))
-    .map((c) => JSON.parse(JSON.stringify(withGrd ? { id: c.id, name: c.name, form: c.form, grd: normGrd(c.grd) } : { id: c.id, name: c.name, form: c.form })))
-  return { es: pick(esConfigs, ids.es), carrier: pick(basebandConfigs, ids.bb), sat: pick(satConfigs, ids.sat, true) }
+const shareOpen = ref(false)
+function openShareDlg() { shareOpen.value = true }
+const packBase = (c) => ({ id: c.id, name: c.name, nameAuto: !!c.nameAuto, form: c.form })
+// 库 spec（口径与 serializeLibrary 一致）。卫星的 sanitize：方向图匹配指向【本机】GRD 天线树节点
+//（grd.satFolder = 'lb:' + 卫星条目 id，见 shared/lbGrdImport.js），原样发过去只会挂到对端另一颗星上，
+// 故打包时一律清空——对端拿到的是「参数与轨位齐全、方向图待自行匹配」这个诚实状态。
+const shareLib = {
+  es: { arr: esConfigs, label: '地球站', keys: [], pack: packBase, makeNew: () => makeEsConfig('站型') },
+  carrier: { arr: basebandConfigs, label: '载波', keys: [], pack: packBase, makeNew: () => makeBasebandConfig('载波') },
+  sat: {
+    arr: satConfigs, label: '卫星', keys: ['grd'],
+    pack: (c) => ({ ...packBase(c), grd: normGrd(c.grd) }),
+    sanitize: (e) => ({ ...e, grd: blankGrd() }),
+    makeNew: () => makeSatConfig()
+  }
 }
-// 分享对象数组：当前聚焦的配置；没有则当前工作参数
-function shareItems() {
-  const c = activeId.value && configs.value.find((x) => x.id === activeId.value)
-  const state = c ? c.state : serializeState()
-  const item = { name: c ? c.name : defaultCfgName(), state }
-  const lib = libBundleFor(state)
-  if (lib) item.lib = lib
-  return [item]
+// 场景引用了哪些库条目（空串 = 用库里第一份，由 resolveRefs 按引擎口径解析）。
+// 旧结构（v1.x 双表 + 内嵌库）自带全部参数，无需闭包——applyState 那条迁移路径会把内嵌库并进来。
+function shareRefsOf(st) {
+  if (!st || !Array.isArray(st.rows)) return { es: [], carrier: [], sat: [] }
+  const es = [], carrier = []
+  for (const r of st.rows) { es.push(r.stationId || '', r.rxStationId || ''); carrier.push(r.basebandId || '') }
+  return { es, carrier, sat: [st.satId || ''] }
 }
-function shareLabel(items) { const n = (items || shareItems()).length; return n > 1 ? `${n} 个配置` : ((items || shareItems())[0].name) }
-function openShareDlg() { const items = shareItems(); shareDlg.code = encodeShare(items); shareDlg.recip = ''; shareDlg.open = true }
-async function copyShareCode() {
-  try { await navigator.clipboard.writeText(shareDlg.code); toast('分享码已复制，可发给对方') }
-  catch (e) { toast('复制失败，请手动选择文本复制') }
+// 打包前把空引用钉成显式 id：'' 的意思是「用库里第一份」，到了对端就成了「用他库里第一份」
+function sharePinRefs(st) {
+  if (!st || !Array.isArray(st.rows)) return st
+  const s = JSON.parse(JSON.stringify(st))
+  for (const r of s.rows) {
+    r.stationId = resolveRefId(esConfigs, r.stationId)
+    r.rxStationId = resolveRefId(esConfigs, r.rxStationId)
+    r.basebandId = resolveRefId(basebandConfigs, r.basebandId)
+  }
+  s.satId = resolveRefId(satConfigs, s.satId)
+  return s
 }
-async function exportConfigFile() {
-  if (!api) return
-  const items = shareItems()
-  const r = await api.exportFile({ defaultName: (shareLabel(items) || '配置').replace(/[\\/:*?"<>|]/g, '_') + '.lbcfg', data: configFileText(items), filters: [{ name: '链路预算配置', extensions: ['lbcfg', 'json'] }] })
-  if (r && r.ok) toast('已导出配置文件：' + r.filePath)
-  else if (r && !r.canceled) toast('导出失败：' + (r.error || ''))
+function shareRemap(state, idMap) {
+  if (!state || !Array.isArray(state.rows)) return
+  for (const r of state.rows) {
+    if (r.stationId) r.stationId = idMap.es[r.stationId] || ''
+    if (r.rxStationId) r.rxStationId = idMap.es[r.rxStationId] || ''
+    if (r.basebandId) r.basebandId = idMap.carrier[r.basebandId] || ''
+  }
+  if (state.satId) state.satId = idMap.sat[state.satId] || ''
 }
-const importText = ref('')
-async function importFromCode() {
-  try { const items = decodeShare(importText.value); await importConfigs(items); shareDlg.open = false; importText.value = '' }
-  catch (e) { toast('解析失败：' + (e.message || e)) }
+const shareCtx = {
+  mod: 'GEO',
+  getConfigs: () => configs.value,
+  getActiveId: () => activeId.value,
+  getDraft: () => ({ name: defaultCfgName(), state: serializeState() }),
+  lib: shareLib,
+  refsOf: shareRefsOf,
+  pinRefs: sharePinRefs,
+  remapState: shareRemap,
+  saveConfig: (payload) => api.store.saveConfig(payload),
+  onImported: async ({ last, plan, idMap }) => {
+    await loadConfigs()
+    if (last) {
+      activeId.value = last.id
+      applyState(last.state)
+      setBaseline()
+      // 新建的文件夹（连同已存在的父级）展开，导进来的配置得看得见落在哪
+      const byId = new Map(configs.value.map((c) => [c.id, c]))
+      const add = []
+      let p = byId.get(last.id) && byId.get(last.id).parentId
+      while (p && byId.has(p)) { add.push(p); p = byId.get(p).parentId }
+      if (add.length) { expandedFolders.value = new Set([...expandedFolders.value, ...add]); persistExpanded() }
+    } else {
+      // 只带资源库的包：直接把侧栏切到资源库并选中新并进来的第一条
+      const first = plan.lib.find((r) => r.action === 'new')
+      if (first) {
+        sideView.value = 'library'
+        libTab.value = first.kind === 'es' ? 'station' : first.kind
+        const nid = idMap[first.kind][first.srcId]
+        if (first.kind === 'es') selEsId.value = nid
+        else if (first.kind === 'sat') selSatId.value = nid
+        else selBbId.value = nid
+      }
+    }
+  }
 }
-async function importFromClipboard() {
-  try { importText.value = await navigator.clipboard.readText() } catch (e) { /* 用户手动粘贴 */ }
-  if (importText.value) importFromCode()
-}
-async function importConfigFile() {
-  if (!api) return
-  const r = await api.linkBudget.openConfig()
-  if (!r || r.canceled) return
-  if (!r.ok) { toast('读取失败：' + (r.error || '')); return }
-  try { const items = decodeShare(r.text); await importConfigs(items); shareDlg.open = false }
-  catch (e) { toast('解析失败：' + (e.message || e)) }
-}
-// 线上：发送给对方用户ID（可一次发多个）
-async function sendOnline() {
-  if (!api || !shareConfigured.value) { toast('在线分享未配置'); return }
-  const rid = (shareDlg.recip || '').trim()
-  if (!rid) { toast('请输入对方用户ID'); return }
-  const items = shareItems()
-  const label = shareLabel(items)
-  // 必须深拷成纯对象：items 里的 config.state 是 Vue 响应式 Proxy，直接经 IPC 结构化克隆会报
-  // 「An object could not be cloned」。
-  const payload = JSON.parse(JSON.stringify({ from: deviceId.value, name: label, items }))
-  shareDlg.sending = true
-  try {
-    const r = await api.share.send(rid, payload)
-    if (r && r.ok) toast(`已发送「${label}」给 ${rid}`)
-    else toast('发送失败：' + ((r && r.error) || '未知错误'))
-  } catch (e) { toast('发送失败：' + (e.message || e)) } finally { shareDlg.sending = false }
-}
-// 线上：拉取我的收件箱
-async function loadInbox() {
-  if (!api || !shareConfigured.value) return
-  shareDlg.loadingInbox = true; shareDlg.inboxMsg = ''
-  try {
-    const r = await api.share.inbox(deviceId.value)
-    if (r && r.ok) { shareDlg.inbox = r.items || []; if (!shareDlg.inbox.length) shareDlg.inboxMsg = '收件箱为空' }
-    else shareDlg.inboxMsg = '获取失败：' + ((r && r.error) || '')
-  } catch (e) { shareDlg.inboxMsg = '获取失败：' + (e.message || e) } finally { shareDlg.loadingInbox = false }
-}
-async function acceptInbox(item) {
-  // 兼容多配置 bundle（items）与旧单条（state）
-  const items = (item.items && item.items.length) ? item.items : (item.state ? [{ name: item.name, state: item.state }] : [])
-  if (items.length) await importConfigs(items)
-  try { await api.share.remove(deviceId.value, item.id) } catch (e) { /* 忽略清理失败 */ }
-  shareDlg.inbox = shareDlg.inbox.filter((x) => x.id !== item.id)
-}
-async function dismissInbox(item) {
-  try { await api.share.remove(deviceId.value, item.id) } catch (e) { /* 忽略 */ }
-  shareDlg.inbox = shareDlg.inbox.filter((x) => x.id !== item.id)
-}
-// 切到线上 tab 自动拉一次收件箱
-watch(() => shareDlg.tab, (t) => { if (t === 'online' && shareConfigured.value) loadInbox() })
 
-// —— Phase 5/6：计算结果 Excel 导出（链路汇总 + 详细计算结果；按当前配对方式/语言选择生成不同版式）——
-const exporting = ref(false)
+// —— 报表语言与报告导出 ——
 // 报表语言：中文 / English（学术英文译法，与瀑布详情表的 WF_DICT 同源）。记住上次选择。
 // 「详细预算」区与导出内容同吃这一个值——屏幕上核对的和交出去的报表得是同一份东西。
 // localStorage 键沿用旧名 exportLang，保住用户已经存下的选择。
@@ -1323,40 +1297,48 @@ watch(reportLang, (v) => {
   try { localStorage.setItem('linkbudget/exportLang', v) } catch (e) { /* ignore */ }
   loadWaterfall()   // 段标题/行标签是 core 取数时按 lang 翻好的，换语言得重取一次
 })
-async function exportExcel() {
-  if (!api) { error.value = '导出需在桌面客户端中运行'; return }
-  if (!links.value.length) { toast('请先点「计算」生成结果'); return }
-  exporting.value = true
-  try {
+// —— 交付级报告导出（Excel 总报告 + 逐链路详情 / PDF 封面+目录+总报告+详情）——
+// 流程在 shared/useLbReport.js（三窗共用），这里只把本窗的数据源接上去。
+const vizRef = ref(null)
+const appVersion = ref('')
+const { reportDlg, openReportDialog, runReport } = useLbReport({
+  api,
+  orbitType: 'GEO',
+  fieldGroups: FIELD_GROUPS,
+  nextTick,
+  links: () => links.value,
+  selected: () => selected.value,
+  setSelected: (i) => { selected.value = i },
+  showViz: () => showViz.value,
+  vizRef: () => vizRef.value,
+  lang: () => reportLang.value,
+  appVersion: () => appVersion.value,
+  paramsFor: (l) => sweepParamsByRow.value[l.rowId] || null,
+  calc: () => {
+    const info = CALC_MODES.find((m) => m.key === resultMode.value)
     const en = reportLang.value === 'en'
-    const calcModeInfo = CALC_MODES.find((m) => m.key === resultMode.value)
-    const satName = curSat.value ? curSat.value.form.satelliteName : ''
-    const payload = {
-      defaultName: en
-        ? `GEO_Link_Budget_${(satName || 'Results').replace(/[^\w-]+/g, '_')}.xlsx`
-        : `GEO链路预算_${(satName || '结果').replace(/[\\/:*?"<>|]/g, '_')}.xlsx`,
-      lang: reportLang.value,
-      pairMode: 'sequential',   // 单一链路表：逐行一条链路（历史字段，恒为 sequential，留作旧档兼容）
-      params: { satelliteName: satName, frequencyBand: curSat.value ? curSat.value.form.frequencyBand : '' },
-      meta: {
-        title: en ? 'GEO Link Budget Results' : 'GEO 链路预算结果',
-        mode: (calcModeInfo && (en ? calcModeInfo.enLabel : calcModeInfo.label)) || resultMode.value,
-        pairMode: en ? 'Per-row links' : '逐行链路'
-      },
-      links: links.value.map((l) => ({
-        ti: l.i, ri: l.i, txName: l.txName, rxName: l.rxName, ok: !!l.ok, error: l.error || '',
-        data: l.data ? JSON.parse(JSON.stringify(l.data)) : null
-      }))
+    return {
+      mode: (info && (en ? info.enLabel : info.label)) || resultMode.value,
+      targetMargin: targetMarginDb.value,
+      overDb: overDb.value,
+      satelliteName: curSat.value ? curSat.value.form.satelliteName : '',
+      frequencyBand: curSat.value ? curSat.value.form.frequencyBand : ''
     }
-    const r = await api.linkBudget.exportExcel(payload)
-    if (r && r.ok) toast('已导出：' + r.filePath)
-    else if (r && !r.canceled) error.value = '导出失败：' + (r.error || '未知错误')
-  } catch (e) { error.value = '导出失败：' + String(e) } finally { exporting.value = false }
-}
+  },
+  defaultName: (en) => {
+    const s = curSat.value ? curSat.value.form.satelliteName : ''
+    return en
+      ? `GEO_Link_Budget_Report_${(s || 'Results').replace(/[^\w-]+/g, '_')}`
+      : `GEO链路预算报告_${(s || '结果').replace(/[\\/:*?"<>|]/g, '_')}`
+  },
+  toast,
+  setError: (m) => { error.value = m }
+})
 
 // 城市库
 const cities = ref([])
 onMounted(async () => {
+  try { appVersion.value = (api && await api.app.version()) || '' } catch (e) { appVersion.value = '' }
   try { cities.value = (api && await api.linkBudget.cities()) || [] } catch (e) { cities.value = [] }
   try { basebandOpts.value = (api && await api.linkBudget.baseband()) || {} } catch (e) { basebandOpts.value = {} }
   // 全局库先于配置载入（场景行引用靠库解析）；库为空 = 首次运行/升级首启 → 保持默认三库、随后落盘
@@ -1437,7 +1419,7 @@ onMounted(async () => {
           </nav>
           <div class="lb-libpane">
             <LbLibrary v-if="libTab === 'station'" v-model="selEsId" layout="column" :items="esConfigs" :summary="esSummary" name-placeholder="站型名称"
-              @add="addEsConfig" @duplicate="duplicateEsConfig" @remove="removeEsConfig">
+              auto-tip="口径与功放" @add="addEsConfig" @duplicate="duplicateEsConfig" @remove="removeEsConfig" @toast="toast">
               <template #editor-actions="{ cfg }">
                 <button class="lb-mini" title="复制此配置" @click="duplicateEsConfig(cfg)"><Icon name="copy" :size="12" /> 复制</button>
                 <button class="lb-mini" title="删除此配置（被引用时提示引用数）" :disabled="esConfigs.length <= 1" @click="removeEsConfig(cfg)">删除</button>
@@ -1445,7 +1427,7 @@ onMounted(async () => {
               <template #default="{ cfg }"><EarthStationPanel :form="cfg.form" :common-fields="ES_COMMON_FIELDS" :tx-fields="ES_TX_FIELDS" :rx-fields="ES_RX_FIELDS" /></template>
             </LbLibrary>
             <LbLibrary v-else-if="libTab === 'sat'" v-model="selSatId" layout="column" :items="satConfigs" :summary="satLibSummary" name-placeholder="卫星名称"
-              @add="addSatConfig" @duplicate="duplicateSatConfig" @remove="removeSatConfig">
+              auto-tip="所选卫星" @add="addSatConfig" @duplicate="duplicateSatConfig" @remove="removeSatConfig" @toast="toast">
               <template #editor-actions="{ cfg }">
                 <button class="lb-mini" title="复制此配置" @click="duplicateSatConfig(cfg)"><Icon name="copy" :size="12" /> 复制</button>
                 <button class="lb-mini" title="删除此配置（被引用时提示引用数）" :disabled="satConfigs.length <= 1" @click="removeSatConfig(cfg)">删除</button>
@@ -1453,11 +1435,10 @@ onMounted(async () => {
               <!-- 方向图匹配（卫星方向图 + EIRP/G·T 天线）是本条目的属性：把卫星树与本条目的 grd 递进去，
                    编辑器就地写 cfg.grd（工作台卫星分区只留只读速览行，见 grdFacts）。 -->
               <template #default="{ cfg }"><SatellitePanel :form="cfg.form" :fields="SAT_FIELDS" :sat-tree="satTree" :sel="cfg.grd"
-                :on-pick="(node, prevName) => followName(cfg, prevName, node.satName)"
                 :on-import="() => importGrdFor(cfg)" :on-remove-ant="() => removeImportedGrd(cfg)" :importing="importingGrd" /></template>
             </LbLibrary>
-            <LbLibrary v-else v-model="selBbId" layout="column" :items="basebandConfigs" :summary="bbSummary"
-              @add="addBasebandConfig" @duplicate="duplicateBasebandConfig" @remove="removeBasebandConfig">
+            <LbLibrary v-else v-model="selBbId" layout="column" :items="basebandConfigs" :summary="bbSummary" name-placeholder="载波名称"
+              auto-tip="速率与调制" @add="addBasebandConfig" @duplicate="duplicateBasebandConfig" @remove="removeBasebandConfig" @toast="toast">
               <template #editor-actions="{ cfg }">
                 <button class="lb-mini" title="复制此配置" @click="duplicateBasebandConfig(cfg)"><Icon name="copy" :size="12" /> 复制</button>
                 <button class="lb-mini" title="删除此配置（被引用时提示引用数）" :disabled="basebandConfigs.length <= 1" @click="removeBasebandConfig(cfg)">删除</button>
@@ -1482,7 +1463,7 @@ onMounted(async () => {
                 <svg viewBox="0 0 16 16" class="lbr-svg"><path d="M2.5 2.5h8l3 3v8h-11z" /><path d="M5 2.5v4h5v-4" /><rect x="5" y="9" width="6" height="4.5" /></svg>
                 保存<span v-if="dirtyFlag" class="lbx-dirty" title="有未保存的修改"></span>
               </button>
-              <button class="lbr-big" :disabled="!api" title="分享 / 导入配置（分享码 / 文件 / 在线）" @click="openShareDlg"><Icon name="external-link" :size="15" />分享</button>
+              <button class="lbr-big" :disabled="!api" title="分享 / 导入：配置（可多选）+ 资源库条目（可多选）——分享码 / 文件 / 发给用户ID" @click="openShareDlg"><Icon name="external-link" :size="15" />分享</button>
               <button class="lbr-big" :class="{ spin: refreshing }" :disabled="!api" title="刷新最新设置（GRD 卫星树 / 天线设置 / 实时星位 等）" @click="refreshLatest">
                 <svg viewBox="0 0 16 16" class="lbr-svg"><path d="M13 8a5 5 0 1 1-1.46-3.54" /><path d="M13 2.6v2.6h-2.6" /></svg>
                 刷新
@@ -1518,7 +1499,7 @@ onMounted(async () => {
           </div>
           <div class="lbr-g">
             <div class="lbr-items">
-              <button class="lbr-big" :disabled="exporting || !links.length" :title="links.length ? '导出 Excel（链路汇总 + 详细计算结果）' : '先计算再导出'" @click="exportExcel"><Icon name="file-down" :size="15" />{{ exporting ? '导出中…' : 'Excel' }}</button>
+              <button class="lbr-big" :disabled="reportDlg.busy || !links.length" :title="links.length ? '生成交付级报告：Excel（总报告 + 逐链路详情）/ PDF（封面 · 目录 · 总报告 · 逐链路详情，含图）' : '先计算再导出'" @click="openReportDialog"><Icon name="file-down" :size="15" />{{ reportDlg.busy ? '生成中…' : '报告' }}</button>
               <button class="lbr-big" :disabled="!segments.length" title="复制当前瀑布表（TSV，可直接粘贴到 Excel / 报告）" @click="copyWaterfallTsv"><Icon name="file-text" :size="15" />TSV</button>
               <div class="lbr-form">
                 <label title="报表语言：「详细预算」区与导出内容一起切换 / Report language: detailed budget & exports"><span>语言</span>
@@ -1538,7 +1519,7 @@ onMounted(async () => {
 
         <!-- 链路工作台：全宽横向分区（卫星 → 链路表 → 详细预算），计算栏吸底 -->
         <div ref="flowEl" class="lbx-flow lbx-cards">
-          <LbSection id="sat" title="卫星与转发器" :summary="secCollapsed.sat ? satSummary : ''" :collapsed="secCollapsed.sat" @toggle="toggleSec('sat')">
+          <LbSection id="sat" title="卫星与转发器">
             <template #actions>
               <button class="lb-mini" title="到资源库编辑当前卫星：方向图天线匹配 + 完整空间段参数" @click="editInLibrary('sat')">编辑参数</button>
             </template>
@@ -1575,14 +1556,14 @@ onMounted(async () => {
                   <span class="lbx-kv" title="卫星G/T 天线：按各发信站经纬度取该天线多波束最大 Parameter，自动回填发信站「卫星G/T」">
                     <span class="lbx-kv-l">G/T 天线</span><span class="lbx-kv-v">{{ grdFacts.gt }}</span>
                   </span>
-                  <span v-if="grdFacts.stale" class="lbx-satnote bad" title="匹配已保留，但本机卫星树中没有这份 GRD 方向图（换机器 / 尚未在「星座3D」页导入）——期间不回填">未导入</span>
-                  <span v-else-if="grdFacts.mismatch" class="lbx-satnote bad" title="所匹配的方向图与本配置的星名/轨位对不上，请核对是不是同一颗星">{{ grdFacts.mismatch }}</span>
+                  <span v-if="grdFacts.stale" class="lbx-satnote bad" title="匹配已保留，但本机卫星树中没有这份 GRD 方向图（更换计算机 / 尚未在「星座3D」页导入）：期间不回填">未导入</span>
+                  <span v-else-if="grdFacts.mismatch" class="lbx-satnote bad" title="所匹配的方向图与本配置的星名/轨位不一致，请核对是否为同一颗卫星">{{ grdFacts.mismatch }}</span>
                 </div>
               </div>
             </div>
           </LbSection>
 
-          <LbSection id="links" title="链路表" :count="linkRows.length" summary="一行一条链路：发端 + 收端 + 库引用 + 结果" :collapsed="secCollapsed.links" @toggle="toggleSec('links')">
+          <LbSection id="links" title="链路表" :count="linkRows.length" summary="一行一条链路：发端 + 收端 + 库引用 + 结果">
             <template #actions>
               <span class="lbx-colpick-wrap">
                 <button class="lb-mini" title="自定义计算结果列（只读，重算即时回填）" @click="colPickOpen = !colPickOpen">结果列 <Icon name="chevron-down" :size="11" /></button>
@@ -1600,19 +1581,20 @@ onMounted(async () => {
                 :cell-sub="cellSubFn" :cell-fill="cellFillFn" :freeze-keys="false"
                 :cities="cities" :city-search="citySearch" label="链路" :auto-geo="autoGeoRow"
                 :select-options="{ basebandId: basebandSelectOptions, stationId: esSelectOptions, rxStationId: esSelectOptions }"
+                :lib-fields="{ basebandId: 'carrier', stationId: 'station', rxStationId: 'station' }" @edit-lib="editInLibrary"
                 @row-focus="onRowFocus" />
             </div>
             <LbCapFoot :cap="capacitySummary" :cap-main="capMain" :bw-main="bwMain" :readout="rowReadout" />
           </LbSection>
 
-          <LbSection id="detail" title="详细预算" :summary="sel && links.length ? `${sel.txName} → ${sel.rxName}` : ''" :collapsed="secCollapsed.detail" @toggle="toggleSec('detail')">
+          <LbSection id="detail" title="详细预算" :summary="sel && links.length ? `${sel.txName} → ${sel.rxName}` : ''">
             <div v-if="error" class="lb-err">{{ error }}</div>
             <div v-else-if="!links.length" class="lb-placeholder">在上方「链路表」逐行核对链路构成<br />点击「计算」（或 Ctrl+Enter）生成预算；点击表格行切换此处的详细预算</div>
             <div v-else-if="sel && sel.error" class="lb-err">链路 {{ sel.txName }} → {{ sel.rxName }} 计算失败：{{ sel.error }}</div>
             <!-- 文档区（样式见 styles/lbworkbench.css）：上排＝级联主表 ‖ 图表区，下排＝参考段整幅段带 -->
             <div v-else-if="core" class="lbx-doc">
               <div class="lbx-doc-main"><WaterfallTable :segments="segments" pick="cascade" :lang="reportLang" /></div>
-              <div v-if="showViz" class="lbx-doc-side"><LbVizPane engine="geo" :params="selParams" :sweep2D="api ? api.linkBudget.sweep2D : null"
+              <div v-if="showViz" class="lbx-doc-side"><LbVizPane ref="vizRef" engine="geo" :params="selParams" :sweep2D="api ? api.linkBudget.sweep2D : null"
                 :output-defs="api ? api.linkBudget.outputDefs : null" :link-scene="linkScene" :geo-link="geoLink"
                 store-key="linkbudget" :lang="reportLang" /></div>
               <div class="lbx-doc-ref"><WaterfallTable :segments="segments" pick="rest" :lang="reportLang" /></div>
@@ -1650,6 +1632,12 @@ onMounted(async () => {
         <button class="lb-ctx-i" @click="ctxDo(() => { sideView = '' })">隐藏配置列表</button>
       </div>
     </div>
+
+    <!-- 导出报告：封面元信息 + 输出格式 + 是否含图（三窗共用组件）-->
+    <LbReportDialog :open="reportDlg.open" :lang="reportLang" orbit-type="GEO"
+      :sat-name="curSat ? curSat.form.satelliteName : ''" :link-count="links.length"
+      :viz-available="showViz" store-key="linkbudget" :busy="reportDlg.busy" :progress="reportDlg.progress"
+      @close="reportDlg.open = false" @submit="runReport" />
 
     <!-- 命名弹窗：保存为新配置（替代 Electron 不支持的 window.prompt）-->
     <div v-if="cfgDlg.open" class="lb-mask" @click="cfgDlg.open = false">
@@ -1691,63 +1679,8 @@ onMounted(async () => {
     </div>
 
 
-    <!-- 分享 / 导入弹窗：线下（分享码 / 文件）+ 线上（按用户ID，开发中）-->
-    <div v-if="shareDlg.open" class="lb-mask" @click="shareDlg.open = false">
-      <div class="lb-dlg lb-dlg-wide" @click.stop>
-        <div class="lb-dlg-hd">配置分享 / 导入<span class="lb-dlg-sp"></span>
-          <span class="lb-dlg-id" v-if="deviceId">我的ID：<b>{{ deviceId }}</b></span>
-        </div>
-        <div class="lb-tabs">
-          <button class="lb-tab" :class="{ on: shareDlg.tab === 'offline' }" @click="shareDlg.tab = 'offline'">线下（分享码 / 文件）</button>
-          <button class="lb-tab" :class="{ on: shareDlg.tab === 'online' }" @click="shareDlg.tab = 'online'">线上（按用户ID）</button>
-        </div>
-
-        <div v-if="shareDlg.tab === 'offline'" class="lb-dlg-bd">
-          <div class="lb-share-row">分享对象：<b>{{ shareLabel() }}</b>（当前聚焦配置 / 工作参数）</div>
-          <label class="lb-share-l">分享码（复制发给对方，对方粘贴即可导入）</label>
-          <textarea class="lb-area" :value="shareDlg.code" readonly rows="3" @focus="$event.target.select()"></textarea>
-          <div class="lb-share-acts">
-            <button class="lb-mini primary" @click="copyShareCode">复制分享码</button>
-            <button class="lb-mini" @click="exportConfigFile">导出为文件（.lbcfg）</button>
-            <button class="lb-mini" @click="importConfigFile">从文件导入</button>
-          </div>
-          <label class="lb-share-l">导入：粘贴分享码后点「导入」</label>
-          <textarea v-model="importText" class="lb-area" rows="3" placeholder="在此粘贴 LBCFG1... 分享码"></textarea>
-          <div class="lb-share-acts">
-            <button class="lb-mini" @click="importFromClipboard">从剪贴板粘贴并导入</button>
-            <button class="lb-mini primary" :disabled="!importText.trim()" @click="importFromCode">导入</button>
-          </div>
-        </div>
-
-        <div v-else class="lb-dlg-bd">
-          <template v-if="shareConfigured">
-            <div class="lb-share-row">把「<b>{{ shareLabel() }}</b>」通过互联网发给对方，只需对方的用户ID。</div>
-            <label class="lb-share-l">对方用户ID</label>
-            <div class="lb-share-acts">
-              <input v-model="shareDlg.recip" class="lb-input" style="flex:1" placeholder="例如 3F9A2C7B10" @keyup.enter="sendOnline" />
-              <button class="lb-mini primary" :disabled="shareDlg.sending || !shareDlg.recip.trim()" @click="sendOnline">{{ shareDlg.sending ? '发送中…' : '发送' }}</button>
-            </div>
-            <div class="lb-inbox-hd">
-              <span>我的收件箱</span>
-              <button class="lb-mini" :disabled="shareDlg.loadingInbox" @click="loadInbox">{{ shareDlg.loadingInbox ? '刷新中…' : '刷新' }}</button>
-            </div>
-            <div v-if="shareDlg.inboxMsg" class="lb-share-l">{{ shareDlg.inboxMsg }}</div>
-            <ul v-if="shareDlg.inbox.length" class="lb-inbox">
-              <li v-for="it in shareDlg.inbox" :key="it.id">
-                <span class="lb-inbox-nm" :title="'来自 ' + (it.from || '未知')">{{ it.name }}<i v-if="it.items && it.items.length > 1"> · {{ it.items.length }} 个</i><i v-if="it.from"> · 来自 {{ it.from }}</i></span>
-                <button class="lb-mini primary" @click="acceptInbox(it)">接收</button>
-                <button class="lb-mini" @click="dismissInbox(it)">忽略</button>
-              </li>
-            </ul>
-          </template>
-          <div v-else class="lb-share-note">在线分享功能尚未配置；当前可先用「线下分享码」即时分享。</div>
-        </div>
-
-        <div class="lb-dlg-ft">
-          <button class="lb-mini" @click="shareDlg.open = false">关闭</button>
-        </div>
-      </div>
-    </div>
+    <!-- 分享 / 导入弹窗（三窗共用组件）：配置多选 + 资源库多选，分享码 / 文件 / 在线三条路共用同一份勾选 -->
+    <LbShareDialog v-model:open="shareOpen" :ctx="shareCtx" :device-id="deviceId" :configured="shareConfigured" @toast="toast" />
   </div>
 </template>
 
@@ -1829,32 +1762,18 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 
 /* 弹窗（命名 / 分享） */
 .lb-mask { position: fixed; inset: 0; z-index: 300; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.28); }
+/* 保留的三个小弹窗：保存为新配置 / 配置已修改 / 确认。
+   分享弹窗自 v1.4.6 起是独立组件（components/LbShareDialog.vue，自带 lbs- 一套样式），
+   原先只服务于它的 lb-tabs / lb-area / lb-inbox 系列 / lb-share-l 等已随之删去。 */
 .lb-dlg { width: 380px; display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-modal); box-shadow: 0 8px 24px rgba(0,0,0,.18); overflow: hidden; }
-.lb-dlg-wide { width: 460px; }
 .lb-dlg-hd { display: flex; align-items: center; gap: 8px; padding: 10px 12px; font-size: 11px; font-weight: 600; letter-spacing: 1px; text-transform: uppercase; color: var(--text-muted); background: var(--surface-2); border-bottom: 1px solid var(--border); }
-.lb-dlg-sp { flex: 1; }
-.lb-dlg-id { font-size: 11px; letter-spacing: normal; text-transform: none; color: var(--text-muted); }
-.lb-dlg-id b { font-family: var(--font-mono); color: var(--text); }
 .lb-dlg-bd { padding: 12px; display: flex; flex-direction: column; gap: 8px; }
 .lb-dlg-ft { display: flex; justify-content: flex-end; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--border); background: var(--surface); }
 .lb-input { font: inherit; font-size: 12px; padding: 6px 9px; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl); }
 .lb-input:focus { outline: none; border-color: var(--accent); }
 .lb-mini.primary { background: var(--accent); color: var(--bg); border-color: var(--accent); }
 .lb-mini.primary:hover:not(:disabled) { opacity: .88; }
-.lb-tabs { display: flex; gap: 4px; padding: 8px 12px 0; }
-.lb-tab { flex: 1; font: inherit; font-size: 12px; padding: 6px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl); }
-.lb-tab.on { background: var(--surface-2); color: var(--text); border-color: var(--border-strong); font-weight: 600; box-shadow: inset 0 -2px 0 var(--accent); }
 .lb-share-row { font-size: 12px; color: var(--text-muted); }
-.lb-share-l { font-size: 11px; color: var(--text-faint); margin-top: 2px; }
-.lb-area { font-family: var(--font-mono); font-size: 11px; padding: 6px 8px; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl); resize: vertical; word-break: break-all; }
-.lb-area:focus { outline: none; border-color: var(--accent); }
-.lb-share-acts { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
-.lb-share-note { font-size: 11px; color: var(--warn); line-height: 1.6; margin-top: 4px; }
-.lb-inbox-hd { display: flex; align-items: center; justify-content: space-between; margin-top: 6px; padding-top: 8px; border-top: 1px dashed var(--border); font-size: 12px; color: var(--text-muted); }
-.lb-inbox { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; max-height: 180px; overflow: auto; }
-.lb-inbox li { display: flex; align-items: center; gap: 6px; padding: 5px 6px; border: 1px solid var(--border); border-radius: var(--r-ctl); font-size: 12px; }
-.lb-inbox-nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.lb-inbox-nm i { color: var(--text-faint); font-style: normal; font-size: 11px; }
 
 /* 分段选择（链路配对等，计算栏用） */
 .seg { display: flex; gap: 2px; }

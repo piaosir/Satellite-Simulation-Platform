@@ -120,7 +120,7 @@ html[data-theme='dark'] {
 .lb-shell .lb-libpane .bb-rt { padding-top: 5px; }
 /* 条目列表：两行行（名称 + mono 摘要）压到 ~30px，一屏多看几条 */
 .lb-shell .lb-libpane .lbl-row { padding: 3px 8px 3px 9px; }
-.lb-shell .lb-libpane .lbl-nm { font-size: 11.5px; padding-right: 32px; }
+.lb-shell .lb-libpane .lbl-nm { font-size: 11.5px; padding-right: 56px; }   /* 让开行内三枚动作钮（复制名称/复制配置/删除） */
 .lb-shell .lb-libpane .lbl-sum { font-size: 10px; }
 .lb-shell .lb-libpane .lbl-row-acts { top: 4px; }
 .lb-shell .lb-libpane .lbl-add { padding: 4px; margin: 4px 6px; }
@@ -267,18 +267,44 @@ html[data-theme='dark'] .sg-cell .sg-fillbar::after {
 .lbx-doc-ref { order: -1; flex: 1 1 100%; min-width: 0; }
 /* 图表关掉时（.lbx-doc-side 整块不渲染）：不必独占整行，回到级联表右侧并排，免得右半边空着。 */
 .lbx-doc:not(:has(.lbx-doc-side)) .lbx-doc-ref { flex: 1 1 26em; }                             /* 286px */
-/* 段带内横向排：各段按 core 原序左起铺开，放不下换行；不拉伸（align-items:flex-start），
-   免得短段被抻到最高段的高度、底线甩出内容之外。 */
-.lbx-doc .lbx-doc-ref .wf { display: flex; flex-direction: row; flex-wrap: wrap; align-items: flex-start; gap: 14px 2.4em; }
-/* 每段自适宽（fit-content）：三线表的线只画到内容宽，行内不再留大片空白。
-   段内 subgrid：父网格给「标签·数值[·数值]·单位·余量」轨，各行 grid-template-columns:subgrid 挂上去，
-   于是整段的数值列跨行对齐（每行各自为政会把数值排成锯齿）；末轨 1fr 吃掉多余宽度，
-   fit-content 量到的就是内容宽本身。参考段（_refSeg/_dualSeg）只有 cols1 / cols2 两种。 */
+/* 段带内＝等宽栏流（v1.4.6）：所有段同宽、竖着流入栏，栏底自然齐平。
+   走到这一版踩过两级台阶，都记在这里，免得再走回去：
+     ① 最早是 flex 自由换行 + 每段 width:fit-content，段宽各随内容 —— 8 个段 8 种宽度、
+        7 个不同左缘，第二行与第一行完全对不上，像随手码的砖墙。
+     ② 改「栏轨定轴 + 双列段跨 2 栏」后左缘是齐了，可 grid 按行排又生出两笔新账：
+        双列段落在不同栏位上（§2 占栏 2-3、§3 与 §5 占栏 1-2），三个段的「上行/下行」列头
+        各在各的位置；每行末尾空栏数还不一样（行 1 空 2 栏、行 2 空 1 栏），右边界成锯齿。
+        再加上行内高度参差留下的洞（§1 下方 80px、§5 下方 120px，大小不一），还是散的。
+   病根是「双列段得占 2 栏」这个前提本身不成立：实测段内容真正需要的宽度，单列段 16.6em、
+   双列段 24.9em —— 双列段跨两条 17em 栏轨（34em+）时，近一半宽度被末轨 1fr 白白吃掉。
+   把栏宽提到 26em，双列段一栏就装得下，于是：
+     · 所有段同宽占 1 栏 —— 左缘右缘全部成列，双列段的「上行/下行」列头永远在同一横向位置。
+     · multi-column 栏流（不是 grid 按行排）—— 段像文字一样竖着流入栏、紧挨着堆，
+       没有「行」也就没有行内高度参差；column-fill 默认 balance，各栏高度自动拉平。
+       阅读序变成报纸式的竖读（§1→§2→§3 在第一栏往下走），章节号 §n 一路连续，不会跟丢。
+     · 栏数由容器宽自己算（26em 是下限），窄到放不下两栏就自然成一栏，不需要任何断点兜底。
+   break-inside:avoid 保证一段不被拦腰断到两栏；段间距走 margin-bottom（栏流里 gap 不生效）。 */
+.lbx-doc .lbx-doc-ref .wf { display: block; columns: 28em; column-gap: 2.4em; }
+.lbx-doc .lbx-doc-ref .wf.wf-en { columns: 32em; }        /* 英文标签长一截，栏宽跟着放宽（见下方标签列） */
+/* 段内 subgrid：父网格给「标签·数值[·数值]·单位·余量」轨，各行 grid-template-columns:subgrid 挂上去，
+   于是整段的数值列跨行对齐（每行各自为政会把数值排成锯齿）。
+   ★ 标签列与数值列都是定值，不用 auto —— 段等宽还不够，auto 会让每段的标签列各按自己最长的
+   标签算宽（实测 64–112px），于是数值列在各段落在不同位置：栏内上下相邻的 §6/§8/§9 数值列
+   差 28px，三个双列段的「上行/下行」列头差 39px，扫读时右边这条数值线是断的。钉死之后
+   全段同轨，整带的数值列才真正连成一条线——工程报表就是沿着这条线往下看的。
+   代价是标签短的行「标签→数值」会拉开一段（原先恒 13px，现在按标签长短在十几到四十几 px 间浮动），
+   这笔买卖划算：读者找的是数值列，不是标签的右缘。
+   10.5em 覆盖中文最长标签「到达通量密度（晴天）」(10.2em)；英文最长的
+   「System Noise Temperature (dB)」一类要到 14.5em，故随 .wf-en 另给一档。
+   4.9em 数值列 ≈「−112.422」这类最长值的宽度（TNR 数字半角 0.5em）；末轨 1fr 吃掉栏里多出来的部分。
+   参考段（_refSeg/_dualSeg）只有 cols1 / cols2 两种。 */
 .lbx-doc-ref .wf > .wf-seg {
-  margin-bottom: 0; width: fit-content; max-width: 100%;
-  display: grid; grid-template-columns: auto auto auto 1fr; column-gap: 1.2em;
+  break-inside: avoid; margin: 0 0 1.6em; min-width: 0;
+  display: grid; grid-template-columns: minmax(0, 10.5em) 4.9em 3.4em 1fr; column-gap: 1.2em;
 }
-.lbx-doc-ref .wf > .seg-cols2 { grid-template-columns: auto auto auto auto 1fr; }
+.lbx-doc-ref .wf > .seg-cols2 { grid-template-columns: minmax(0, 10.5em) 4.9em 4.9em 3.4em 1fr; }
+.lbx-doc-ref .wf.wf-en > .wf-seg { grid-template-columns: minmax(0, 14.5em) 4.9em 3.4em 1fr; }
+.lbx-doc-ref .wf.wf-en > .seg-cols2 { grid-template-columns: minmax(0, 14.5em) 4.9em 4.9em 3.4em 1fr; }
 .lbx-doc-ref .wf .wf-title { grid-column: 1 / -1; }
 .lbx-doc-ref .wf-seg > .wf-row.cols1,
 .lbx-doc-ref .wf-seg > .wf-row.cols2 { grid-column: 1 / -1; grid-template-columns: subgrid; column-gap: 1.2em; }

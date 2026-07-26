@@ -5,6 +5,7 @@
 const fs = require('fs');
 const path = require('path');
 const sampler = require('../../packages/core/utils/grdSampler.js');
+const ciCci = require('../../packages/core/utils/interference/ciCci.js');
 
 // saveDir：用户导入 GRD 的持久化目录（与 coverageGrd 同源，userData/coverage-grd-imported）。
 module.exports = function createGrd(saveDir) {
@@ -64,6 +65,74 @@ module.exports = function createGrd(saveDir) {
     }
   }
 
+  // 逐波束采样：req = { file, sat, cfg, points } → { beamIdx:number[], values:(number|null)[][] }
+  // values[i] 对应 points[i]，内层与 beamIdx 同序。
+  // ⚠️ 消息体随「点数 × 波束数」二次增长——只适合几十个站点。整张场图请走 sampleCci。
+  function sampleBeams(req) {
+    req = req || {};
+    const points = Array.isArray(req.points) ? req.points : [];
+    try {
+      const loaded = loadCached(ensureBin(resolveRaw(req.file)));
+      const ctx = sampler.makeSampleCtx(loaded, req.sat || {}, req.cfg || {});
+      if (!ctx) return { beamIdx: [], values: points.map(() => []) };
+      return {
+        beamIdx: ctx.beamIdx.slice(),
+        values: points.map((p) => {
+          try { return sampler.sampleAllCtx(ctx, Number(p.lon), Number(p.lat)); }
+          catch { return []; }
+        })
+      };
+    } catch (e) {
+      console.warn('[GRD] 逐波束采样失败', req.file, e && e.message);
+      return { beamIdx: [], values: points.map(() => []) };
+    }
+  }
+
+  // 逐点 XPD：共极化分量由波束峰值判定（不按 icomp 硬判），取服务波束的共/交比。
+  // req = { file, sat, cfg, points } → { ok, values:[{xpdDb, servingIdx, coPolIndex, coPolDb, xPolDb}|null] }
+  function sampleXpd(req) {
+    req = req || {};
+    const points = Array.isArray(req.points) ? req.points : [];
+    try {
+      const loaded = loadCached(ensureBin(resolveRaw(req.file)));
+      const ctx = sampler.makeSampleCtx(loaded, req.sat || {}, req.cfg || {});
+      if (!ctx) return { ok: false, error: '天线几何无效', values: points.map(() => null) };
+      return {
+        ok: true,
+        icomp: loaded.icomp,
+        values: points.map((p) => {
+          try { return sampler.sampleXpdCtx(ctx, Number(p.lon), Number(p.lat)); }
+          catch { return null; }
+        })
+      };
+    } catch (e) {
+      console.warn('[GRD] XPD 采样失败', req.file, e && e.message);
+      return { ok: false, error: e && e.message, values: points.map(() => null) };
+    }
+  }
+
+  // C/CCI 同频复用干扰：逐点算完当场折成一个数再回传。
+  //
+  // 为什么必须在主进程合成：一张 C/CCI 场图是几千格 × 几十波束。若把逐波束值搬过 IPC
+  // （5000 格 × 40 波束 = 20 万个数）再在渲染端合成，消息体与序列化开销都是白付的——
+  // 合成只需要一个标量结果。故 ciCci 的求和放这里，IPC 只回长度 = 点数的数组。
+  //
+  // req = { file, sat, cfg, points, colors, coloring, servingIdx, floorDb }
+  function sampleCci(req) {
+    req = req || {};
+    const points = Array.isArray(req.points) ? req.points : [];
+    try {
+      const loaded = loadCached(ensureBin(resolveRaw(req.file)));
+      const r = ciCci.cciOverPoints(sampler, loaded, req.sat || {}, req.cfg || {}, points, {
+        colors: req.colors, coloring: req.coloring, servingIdx: req.servingIdx, floorDb: req.floorDb
+      });
+      return { ok: true, ...r };
+    } catch (e) {
+      console.warn('[GRD] C/CCI 采样失败', req.file, e && e.message);
+      return { ok: false, error: e && e.message, cci: points.map(() => null), serving: points.map(() => null), coloring: {}, colors: req.colors || 4 };
+    }
+  }
+
   // 预编译（可选预热）：仅确保 .grdbin 生成，不采样。
   function precompile(file) {
     try { ensureBin(resolveRaw(file)); return { ok: true }; }
@@ -84,5 +153,5 @@ module.exports = function createGrd(saveDir) {
     } catch (e) { return { ok: false, error: e && e.message }; }
   }
 
-  return { sample, precompile, meta };
+  return { sample, sampleBeams, sampleXpd, sampleCci, precompile, meta };
 };

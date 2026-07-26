@@ -228,6 +228,43 @@ function createSunOutageWindow() {
   return win
 }
 
+// 干扰分析（C/I）：独立 BrowserWindow，单例复用。
+// 不设关窗守卫——本窗口是纯只读计算器（读三库与 GRD、不写回），面板状态自动落 localStorage，
+// 关窗不会丢任何用户数据，弹确认框只是徒增一步。
+let _ciWin = null
+function createCiWindow() {
+  if (_ciWin && !_ciWin.isDestroyed()) {
+    if (_ciWin.isMinimized()) _ciWin.restore()
+    _ciWin.focus()
+    return _ciWin
+  }
+  const win = new BrowserWindow({
+    width: 1560,
+    height: 940,
+    minWidth: 1180,
+    minHeight: 740,
+    title: '干扰分析',
+    backgroundColor: '#ffffff',
+    autoHideMenuBar: true,
+    webPreferences: {
+      preload: join(__dirname, '../preload/preload.js'),
+      contextIsolation: true,
+      sandbox: false
+    }
+  })
+  if (process.env['ELECTRON_RENDERER_URL']) {
+    win.loadURL(process.env['ELECTRON_RENDERER_URL'] + '/ci.html')
+  } else {
+    win.loadFile(join(__dirname, '../renderer/ci.html'))
+  }
+  win.webContents.on('before-input-event', (e, input) => {
+    if (input.type === 'keyDown' && input.key === 'F12') { win.webContents.toggleDevTools(); e.preventDefault() }
+  })
+  win.on('closed', () => { _ciWin = null })
+  _ciWin = win
+  return win
+}
+
 // 雨衰计算：独立 BrowserWindow，单例复用（通用于各类卫星；与链路预算工作台同模式，带关窗守卫）。
 let _rainWin = null
 let _rainAllowClose = false
@@ -285,7 +322,7 @@ app.whenReady().then(() => {
   // GRD 取值服务（与 coverageGrd 共享导入目录）：链路预算逐站取值在主进程完成
   const grd = require(join(root, 'electron/services/grd'))(join(app.getPath('userData'), 'coverage-grd-imported'))
   const { register } = require(join(root, 'electron/ipc/register'))
-  register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget: createLinkBudgetWindow, openSunOutage: createSunOutageWindow, grd, confirmCloseLinkBudget, openNgso: createNgsoWindow, confirmCloseNgso, openRegen: createRegenWindow, confirmCloseRegen, openRain: createRainWindow, confirmCloseRain })
+  register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget: createLinkBudgetWindow, openSunOutage: createSunOutageWindow, grd, confirmCloseLinkBudget, openNgso: createNgsoWindow, confirmCloseNgso, openRegen: createRegenWindow, confirmCloseRegen, openRain: createRainWindow, confirmCloseRain, openCi: createCiWindow })
 
   // 加载 ITU 全精度数据（降雨率 P.837 / 海拔 P.1511 / 水汽 P.836 / 云 P.840）→ 注入计算内核，
   // 与小程序口径完全一致（小程序为云端下载，桌面端从本地 resources/itu 同步加载）。
@@ -310,6 +347,20 @@ app.whenReady().then(() => {
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
+})
+
+// 退出前统一放行四个窗口的关窗守卫。
+// 守卫（_*AllowClose=false → close 时 preventDefault 转问渲染进程）是为「用户点窗口 X」设计的，
+// 但它对 close 事件一视同仁，因此会把整个退出流程也一并拦下：
+//   · Windows 注销 / 关机：退出被 preventDefault 挡住 → 系统等超时后强杀，本来防丢数据反而丢；
+//   · autoUpdater.quitAndInstall()：内部走 app.quit()，被挡住 → 更新装不上且无任何提示。
+// 正常路径不受影响：唯一的主动退出入口是 window-all-closed（见下），此时窗口早已逐个关过、
+// 各自弹过「配置存了没」，走到这里已无窗口可放行 → 本处是纯兜底空转。
+app.on('before-quit', () => {
+  _lbAllowClose = true
+  _ngsoAllowClose = true
+  _regenAllowClose = true
+  _rainAllowClose = true
 })
 
 app.on('window-all-closed', () => {

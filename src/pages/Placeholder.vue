@@ -6,10 +6,6 @@ defineProps({ title: { type: String, default: '' } })
   <div class="ph">
     <h2>{{ title }}</h2>
     <p>该模块待实现。</p>
-    <p class="hint">
-      下一步将接入：星座地图 / 星间链路（CesiumJS 全精度 3D 地球）、覆盖图（高德
-      JsAPI）、配置管理与历史记录（SQLite）。
-    </p>
   </div>
 </template>
 

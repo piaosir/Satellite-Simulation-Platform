@@ -183,6 +183,43 @@ export function accessWindows(entries, targets, times, horizonSec, minElevDeg, o
   return out
 }
 
+// ==================== 时间覆盖（ACCESS 严口径）====================
+// 把 accessWindows 产出的全部过境窗口在【相对时间轴】上合并去重 → 可见总时长 ÷ 时窗 = 时间覆盖百分比。
+// 「严」体现在三条，缺一条数就虚：
+//   ① 合并重叠：多星（或同星多窗）同时可见只计一次。直接把 durMin 求和会重复计数、可以超 100%，那不是覆盖率。
+//   ② 边界取 accessWindows 二分精炼后的 AOS/LOS（≈0.3ms），不用 90s 粗扫格点凑。
+//   ③ 分母取【实际使用的时窗】（调用方 clamp 后的值），窗口一律夹到 [0, horizonMin]——被时窗切断的
+//      过境（truncated）只按落在窗内的那一段计入。
+// 双历元：真实星按 now、合成星按 ccNow 解算，两者的 startMin/endMin 都是「相对各自基准的分钟」，
+// 故在相对轴上合并（与甘特图同一根轴），不混用绝对时刻。
+// 中断（gap）含首尾——与 coverageGrid 的 revisit FOM 同口径：时窗开头/末尾没覆盖也算一段中断。
+// 上界诚实：窗口本身来自 coarseSec 粗扫，完整落在两个粗采样格之间的极短过境会被漏掉（该口径与过境清单一致）。
+// 返回 { pct, coveredMin, horizonMin, maxGapMin, gapCount }
+export function timeCoverage(results, horizonMin) {
+  const H = Number(horizonMin)
+  if (!(H > 0)) return { pct: 0, coveredMin: 0, horizonMin: 0, maxGapMin: 0, gapCount: 0 }
+  const iv = []
+  for (const s of results || []) {
+    for (const w of (s && s.windows) || []) {
+      let a = Number(w.startMin), b = Number(w.endMin)
+      if (!Number.isFinite(a) || !Number.isFinite(b)) continue
+      if (a < 0) a = 0
+      if (b > H) b = H
+      if (b > a) iv.push([a, b])
+    }
+  }
+  iv.sort((p, q) => p[0] - q[0])
+  let cov = 0, maxGap = 0, gapCount = 0, cur = 0   // cur = 已合并到的右端（时间游标）
+  for (let i = 0; i < iv.length; i++) {
+    const a = iv[i][0], b = iv[i][1]
+    if (a > cur) { const g = a - cur; if (g > maxGap) maxGap = g; gapCount++; cur = a }   // (cur,a) 为一段中断
+    if (b > cur) { cov += b - cur; cur = b }                                             // 重叠部分不重复计入
+  }
+  if (cur < H) { const g = H - cur; if (g > maxGap) maxGap = g; gapCount++ }              // 尾段中断
+  const pct = Math.max(0, Math.min(100, cov / H * 100))
+  return { pct, coveredMin: cov, horizonMin: H, maxGapMin: maxGap, gapCount }
+}
+
 // ACCESS 几何粗筛（不传播，纯轨道要素）：星的轨道能否让目标纬度达到 minElev？剔除倾角/高度到不了目标纬度的星。
 // 对密集同倾角星座（Starlink）在中纬目标剔除有限，但对高纬/异倾角目标能砍掉大批，是大集能算的关键第一刀。
 const RE_ORB = 6378.137

@@ -107,10 +107,10 @@ async function compute() {
   const pf = (v) => parseFloat(halfStr(v))
   if (orbitMode.value === 'ngso') {
     if (!(pf(ngsoOrbit.alt) > 0) || !Number.isFinite(pf(ngsoOrbit.incl)) || !Number.isFinite(pf(ngsoOrbit.minEl))) {
-      toast('请先在工具栏填好轨道高度 / 倾角 / 最低仰角'); return
+      toast('请先在工具栏填写轨道高度 / 倾角 / 最低仰角'); return
     }
   } else if (!Number.isFinite(pf(geoSatLon.value))) {
-    toast('请先在工具栏填好 GEO 轨位'); return
+    toast('请先在工具栏填写 GEO 轨位'); return
   }
   computing.value = true
   try {
@@ -123,7 +123,7 @@ async function compute() {
     resultById.value = m
     resultsStale.value = false
     const errs = arr.filter((r) => r && r.error).length
-    toast(errs ? `完成，${errs}/${ids.length} 个算例有问题（见表内 ✕）` : `完成，共 ${ids.length} 个算例`)
+    toast(errs ? `完成，${errs}/${ids.length} 个算例计算失败（见表内 ✕）` : `完成，共 ${ids.length} 个算例`)
   } catch (e) { toast('计算失败：' + (e && e.message ? e.message : e)); resultById.value = {} }
   finally { computing.value = false }
 }
@@ -489,7 +489,7 @@ onMounted(async () => {
             <span class="rain-seg-lb">降雨模型</span>
             <div class="rain-seg">
               <button :class="{ on: rainModel === 'auto' }" title="经纬度→ITU-R P.837 自动取 R0.01" @click="rainModel = 'auto'">ITU-R 自动</button>
-              <button :class="{ on: rainModel === 'manual' }" title="R0.01 由自己手填" @click="rainModel = 'manual'">手动 (mm/h)</button>
+              <button :class="{ on: rainModel === 'manual' }" title="R0.01 手工填写" @click="rainModel = 'manual'">手动 (mm/h)</button>
             </div>
           </div>
           <span class="rain-tip">{{ geoTip }}</span>
@@ -507,7 +507,7 @@ onMounted(async () => {
         </div>
 
         <div class="lb-foot">
-          <span class="rain-foot-desc">每行一个独立算例 · 点行即在右侧细看；仰角 / G/T衰减 / 雨致XPD / 合计衰减见右侧详情与 Excel 导出</span>
+          <span class="rain-foot-desc">每行一个独立算例 · 点击行在右侧查看详情；仰角 / G/T衰减 / 雨致XPD / 合计衰减见右侧详情与 Excel 导出</span>
           <span class="lb-flex"></span>
           <span v-if="resultsStale && hasResults" class="rain-stale" title="计算输入已被修改，表内雨衰列与右侧详情对应修改前的参数">输入已变</span>
           <button class="lb-calc" :disabled="computing || !cases.length" @click="compute">

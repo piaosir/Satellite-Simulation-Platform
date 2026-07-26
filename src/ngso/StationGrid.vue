@@ -24,6 +24,10 @@ const props = defineProps({
   roValues: { type: Object, default: () => ({}) },  // { _id: 计算值 }，计算后回填
   citySearch: { type: Function, default: null },     // (关键词)→Promise<城市[]>：支持城市名/省份/拼音缩写检索
   selectOptions: { type: Object, default: () => ({}) }, // { 字段key: [选项…] }，覆盖该 select 字段的静态 options（用于运行时动态选项，如载波信号库）
+  // 库引用列（{ 字段key: 资源库子栏key }，如 { basebandId: 'carrier', stationId: 'station' }）：这些 select
+  // 列的值是资源库条目 id，格内与下拉项各挂一个「编辑参数」钮，点击 emit('editLib', 子栏key, 条目id)，
+  // 由 App 展开资源库、切到该子栏并选中该条目——与卫星分区节头「编辑参数」同一去处。不传即空表，行为不变。
+  libFields: { type: Object, default: () => ({}) },
   // 动态只读字段（按字段 key）：这些字段**可选中/可复制但不可编辑**（雨衰计算的结果列 / GEO 模式的
   // 仰角 / 自动降雨模型的 R0.01）。加法式：不传即空数组，链路预算 GEO/NGSO/Regen 行为完全不变。
   readonlyKeys: { type: Array, default: () => [] },
@@ -43,7 +47,9 @@ const props = defineProps({
   // 冻结「关键列」（首列起到城市列/frozen前缀的粘性左固定列）。默认 true 保持旧行为；链路表传 false 取消冻结、全列随横滚
   freezeKeys: { type: Boolean, default: true },
 })
-const emit = defineEmits(['rowFocus'])   // (行下标, 行_id)：聚焦行变化（链路表联动详细预算）
+// rowFocus (行下标, 行_id)：聚焦行变化（链路表联动详细预算）
+// editLib (资源库子栏key, 条目id)：库引用列的「编辑参数」钮 → App 导航到资源库该条目
+const emit = defineEmits(['rowFocus', 'editLib'])
 // 某列是否只读（按字段 key 判定，动态；f.ro 计算列恒只读）
 const isReadonlyCol = (c) => { const f = props.fields[c]; return !!(f && (f.ro || props.readonlyKeys.includes(f.key))) }
 // 计算列取值（extraValues 映射）
@@ -146,6 +152,28 @@ function cellText(s, c) { return isRO(c) ? (props.roValues[s._id] != null ? prop
 function fieldOptions(f) { return props.selectOptions[f.key] || f.options || [] }
 const optVal = (o) => (o && typeof o === 'object') ? o.value : o
 const optLabel = (o) => (o && typeof o === 'object') ? o.label : o
+// 该列是否为库引用列 → 返回其资源库子栏 key（'carrier'/'station'/'sat'），否则 null
+const libOf = (f) => (f && f.type === 'select' ? (props.libFields[f.key] || null) : null)
+// 格内「编辑参数」钮：先把焦点落到本格（详细预算随之切到该行），再让 App 导航到资源库的对应条目。
+// 值留空（显示「（默认）」）时传空串——资源库按其自身口径落到首份配置，与引擎「空→第一份」一致。
+function editLibCell(r, c) {
+  const f = props.fields[c]
+  const lib = libOf(f)
+  if (!lib) return
+  if (editing.value) endEdit()
+  setFocus(r, c, false)
+  const v = props.stations[r][f.key]
+  emit('editLib', lib, v == null ? '' : v)
+}
+// 下拉项内「编辑参数」钮：编辑的是该选项对应的条目，**不改变本行选择**（选值仍走点标签本身）
+function editLibOpt(o) {
+  const f = ddField.value
+  const lib = libOf(f)
+  if (!lib) return
+  const v = optVal(o)
+  endEdit()   // 关下拉、收编辑态（select 的 endEdit 只做值归一，本行选择未动）
+  emit('editLib', lib, v == null ? '' : v)
+}
 // 单元格显示值：select 字段按选项表把存值换算成展示名，其余原样。
 // 旧数据（升级前保存、缺该字段）值为 undefined，按空字符串对待以匹配“（默认）”选项。
 function displayValue(s, f) {
@@ -1126,6 +1154,12 @@ function clearColContents() {
                 <span v-if="f.type === 'select'" class="sg-caret"
                       @mousedown.left.stop.prevent="onCaretDown(i, c)"><Icon name="chevron-down" :size="12" /></span>
               </template>
+              <!-- 库引用列（载波信号配置 / 地球站配置 / 卫星）格内「编辑参数」钮：悬停或聚焦本格才现形，
+                   点击直达资源库该条目（与卫星分区节头「编辑参数」同一去处）。悬停才显＝不常占格宽，
+                   现形时是不透明小钮盖住值的尾部（Airtable 展开记录钮的做法），列宽不因它变化。 -->
+              <button v-if="libOf(f)" type="button" class="sg-libed"
+                      :title="'到资源库编辑「' + (displayValue(s, f) || ghost(s, f) || '（默认）') + '」的参数'"
+                      @mousedown.left.stop.prevent @click.stop="editLibCell(i, c)"><Icon name="pencil" :size="10" /></button>
               <!-- 单元格第二行小字（只读）：链路表「地球站配置」下方挂实时 EIRP/G·T。导航态透明捕获框(inset:0)不遮它、编辑 select 时才盖住，均属预期 -->
               <span v-if="cellSub && cellSub(f, s)" class="sg-sub">{{ cellSub(f, s) }}</span>
               <span v-if="isFillAnchor(i, c) && !isEditing(i, c)" class="sg-handle" title="拖动/双击向下填充" @mousedown.left.stop.prevent="onFillDown" @dblclick.stop="onFillDbl"></span>
@@ -1239,6 +1273,10 @@ function clearColContents() {
              @mousedown.left.prevent="onOptDown(o)" @mouseenter="dd.active = oi">
           <Icon class="sg-opt-ck" name="check" :size="12" />
           <span class="sg-opt-lb">{{ optLabel(o) }}</span>
+          <!-- 库引用列：每个选项挂「编辑参数」钮（悬停现形）→ 直达资源库该条目，不改变本行选择。
+               走 mousedown.stop：选项本身用 mousedown 提交选值，不 stop 会先把这项选上 -->
+          <button v-if="libOf(ddField)" type="button" class="sg-opt-ed" :title="'到资源库编辑「' + optLabel(o) + '」的参数（不改变本行选择）'"
+                  @mousedown.left.stop.prevent="editLibOpt(o)"><Icon name="pencil" :size="10" /></button>
         </div>
         <div v-if="!ddFiltered.length" class="sg-opt sg-opt-empty">{{ ddOptions.length ? '无匹配 · 回车录入「' + dd.query + '」' : '无选项' }}</div>
       </div>
@@ -1414,6 +1452,12 @@ function clearColContents() {
 .sg-cell:hover .sg-caret, .sg-cell.focus .sg-caret { color: var(--text-muted); }
 .sg-caret.open { color: var(--accent); transform: translateY(-50%) scaleY(-1); }
 .sg-v.has-caret { padding-right: 18px; }
+/* 库引用列格内「编辑参数」钮：默认隐形且不占位，悬停/聚焦本格才现形——现形时是一枚不透明小钮，
+   浮在值尾部之上（Airtable 悬停「展开记录」钮的做法）。这样列宽与普通 select 列一致，不必为一个
+   偶尔按一次的钮长期让出 16px。竖直上与 chevron 同基线（首行中线），横向排在它左边。 */
+.sg-libed { position: absolute; right: 17px; top: 10px; transform: translateY(-50%); display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; padding: 0; visibility: hidden; cursor: pointer; color: var(--text-faint); background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); box-shadow: 0 1px 3px rgba(0,0,0,.14); z-index: 6; }
+.sg-cell:hover .sg-libed, .sg-cell.focus .sg-libed { visibility: visible; }
+.sg-libed:hover { color: var(--accent); border-color: var(--border-strong); }
 .sg-cap.combo { padding-right: 20px; }   /* 组合框输入：右留位给 chevron，打字不压住箭头 */
 /* 自建下拉列表（Teleport 到 body，fixed 定位；层级高于 sticky 表头/冻结列 z4，低于模态遮罩 z200） */
 /* Teleport 到 body 在 .lb-shell 之外，字体/字号显式跟数据区（衬线栈 + --lb-fs） */
@@ -1426,6 +1470,11 @@ function clearColContents() {
 .sg-opt-ck { flex: none; width: 12px; color: var(--accent); }
 .sg-opt:not(.sel) .sg-opt-ck { visibility: hidden; }   /* 占位对齐，未选中项留白 */
 .sg-opt-lb { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+/* 下拉项内「编辑参数」钮：悬停/高亮该项才现形（与导入面板条目的 ⇄ 钉钮同一手法）。
+   用 visibility 而非 display：位置常驻，列表宽度不随鼠标跳动。 */
+.sg-opt-ed { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; margin-left: 2px; padding: 0; visibility: hidden; cursor: pointer; color: var(--text-faint); background: transparent; border: 1px solid transparent; border-radius: var(--r-ctl, 2px); }
+.sg-opt:hover .sg-opt-ed, .sg-opt.active .sg-opt-ed { visibility: visible; }
+.sg-opt-ed:hover { color: var(--accent); background: var(--bg); border-color: var(--border); }
 .sg-opt-empty { color: var(--text-faint); cursor: default; justify-content: center; }
 .sg-opt-empty:hover { background: transparent; }
 </style>

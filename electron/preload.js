@@ -34,13 +34,16 @@ contextBridge.exposeInMainWorld('api', {
     accessWindows: (opt) => ipcRenderer.invoke('link:accessWindows', opt),
     geoFill: (lat, lon) => ipcRenderer.invoke('link:geoFill', lat, lon),
     grdSample: (req) => ipcRenderer.invoke('link:grdSample', req),
+    // 干扰分析用：逐波束值（少量站点）/ C/CCI 合成（整张场图，主进程内折成标量）
+    grdSampleBeams: (req) => ipcRenderer.invoke('link:grdSampleBeams', req),
+    grdSampleXpd: (req) => ipcRenderer.invoke('link:grdSampleXpd', req),
+    grdSampleCci: (req) => ipcRenderer.invoke('link:grdSampleCci', req),
     // 导入方向图后取其波束数（并预编译 .grdbin）
     grdMeta: (file) => ipcRenderer.invoke('link:grdMeta', file),
     cities: () => ipcRenderer.invoke('link:cities'),
     searchCities: (kw) => ipcRenderer.invoke('link:searchCities', kw),
     baseband: () => ipcRenderer.invoke('link:baseband'),
     waterfall: (ctx) => ipcRenderer.invoke('link:waterfall', ctx),
-    exportExcel: (payload) => ipcRenderer.invoke('linkbudget:exportExcel', payload),
     openConfig: () => ipcRenderer.invoke('linkbudget:openConfig'),
     // 关窗守卫：主进程拦截原生关闭动作后转发此事件；渲染进程问完用户再调 confirmClose() 才真正关闭
     onCloseRequested: (cb) => ipcRenderer.on('linkbudget:closeRequested', cb),
@@ -63,6 +66,28 @@ contextBridge.exposeInMainWorld('api', {
     compute: (p) => ipcRenderer.invoke('sunoutage:compute', p),
     exportWord: (payload) => ipcRenderer.invoke('sunoutage:exportWord', payload),
     exportIcs: (payload) => ipcRenderer.invoke('sunoutage:exportIcs', payload)
+  },
+  // 干扰分析（C/I）独立窗口：C/ASI 邻星 · C/XPI 交叉极化 · C/CCI 同频复用 · NGSO 时变 CDF。
+  // 纯只读——读三库（store.getLibrary）与 GRD（linkBudget.grd*），不写回任何库。
+  // 站址联动 / 城市选址复用链路预算的 link:* 通道；出图走通用 exportFile。
+  interference: {
+    open: () => ipcRenderer.invoke('ci:open'),
+    asi: (req) => ipcRenderer.invoke('ci:asi', req),
+    xpi: (req) => ipcRenderer.invoke('ci:xpi', req),
+    xpiTerm: (req) => ipcRenderer.invoke('ci:xpiTerm', req),
+    cciPoint: (req) => ipcRenderer.invoke('ci:cciPoint', req),
+    // NGSO 时变扫描：start 只负责启动，进度/结果经下面两个订阅推回（长任务不阻塞窗口）
+    ngsoEstimate: (req) => ipcRenderer.invoke('ci:ngsoEstimate', req),
+    ngsoStart: (req) => ipcRenderer.invoke('ci:ngsoStart', req),
+    ngsoCancel: () => ipcRenderer.invoke('ci:ngsoCancel'),
+    onNgsoProgress: (cb) => ipcRenderer.on('ci:ngsoProgress', (_e, p) => cb(p)),
+    onNgsoDone: (cb) => ipcRenderer.on('ci:ngsoDone', (_e, p) => cb(p)),
+    // 星历接入：复用平台既有星座数据，邻星轨位与 NGSO 星座都不必手抄
+    groups: () => ipcRenderer.invoke('ci:groups'),
+    // satIds 仅「我的卫星组」（sg:）需要、sats 仅「自定义星座」（cc:）需要：这两类都存在渲染端
+    // localStorage，主进程看不到，成员 NORAD / 逐颗六根数一律由调用方带上
+    loadGroup: (g, online, satIds, sats) => ipcRenderer.invoke('ci:loadGroup', g, online, satIds, sats),
+    geoNeighbors: (req) => ipcRenderer.invoke('ci:geoNeighbors', req)
   },
   // 雨衰计算独立窗口（通用于各类卫星）：批量/单算例/曲线计算 + Excel 导出；
   // 经纬度自动填(降雨率/海拔)与城市选址复用链路预算的 link:* 通道；PNG 导出走通用 exportFile。
@@ -117,7 +142,14 @@ contextBridge.exposeInMainWorld('api', {
     saveLibrary: (ns, data) => ipcRenderer.invoke('store:library:save', { ns, data })
   },
   report: {
-    export: (payload) => ipcRenderer.invoke('report:export', payload)
+    export: (payload) => ipcRenderer.invoke('report:export', payload),
+    // 交付级链路预算报告：一次调用出 .xlsx / .pdf（同名同目录），模型见 src/shared/lbReport.js
+    exportReport: (payload) => ipcRenderer.invoke('report:exportReport', payload)
+  },
+  // 报告打印页（src/report.html，隐藏窗口）专用：取模型 + 回告排版完成
+  reportPrint: {
+    model: () => ipcRenderer.invoke('report:print:model'),
+    ready: () => ipcRenderer.send('report:print:ready')
   },
   // 覆盖图导出：保存二进制（PNG/PDF）到用户选定路径 / 读取系统字体（PDF 嵌入用：TNR 西文 + 中文面）
   exportFile: (payload) => ipcRenderer.invoke('file:save', payload),

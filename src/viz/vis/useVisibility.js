@@ -6,7 +6,7 @@
 // 交付节奏：P1 = 瞬时可见（本文件）。P2 时段表 / P3 覆盖热力图 复用同一「选目标 → 算仰角」地基。
 import { ref, shallowRef, computed, watch } from 'vue'
 import sat from '../constellation/satellite.js'
-import { computeVisibility, accessWindows, orbitCanReach, ringCentroid } from './visibility.js'
+import { computeVisibility, accessWindows, orbitCanReach, ringCentroid, timeCoverage } from './visibility.js'
 import { makeCoverageGrid, createCoverageRun, buildCoverageFillBands, estimateCoverageWork, fomMeta, COVERAGE_FOMS } from './coverageGrid.js'
 import { schemeColorsRGB } from '../grd/colormap.js'
 
@@ -44,6 +44,7 @@ export function useVisibility({
   const accessResults = ref([])      // 过境窗口 [{noradId,name,group,windows}]
   const accessBusy = ref(false)
   const accessMsg = ref('')
+  const accessHorizonMin = ref(24 * 60)   // 上次计算【实际使用】的时窗（分）——clamp 后的真值，供时间覆盖分母与甘特横轴（不随输入框漂移）
   // ==================== 覆盖分析（Coverage / FOM）——「覆盖」模式（复刻 STK Coverage，与 access 同级）====================
   const covRegionKind = ref('global')   // 区域：'global' 全球 | 'bounds' 自定义边界 | 'poly' Polygon 区域
   const covLatMin = ref(-60), covLatMax = ref(60), covLonMin = ref(-180), covLonMax = ref(180)
@@ -107,6 +108,15 @@ export function useVisibility({
     return { count: rs.length, top: rs[0], classes }
   })
 
+  // ---- ACCESS KPI：时间覆盖（严口径）——全部过境窗口在相对时间轴上【合并去重】后的可见时长 ÷ 实际时窗 ----
+  // 附最长中断（含首尾）与过境计数。纯汇总，随 accessResults 变，不触发重算。
+  const accessKpi = computed(() => {
+    const tc = timeCoverage(accessResults.value, accessHorizonMin.value)
+    let passes = 0
+    for (const s of accessResults.value) passes += (s.windows || []).length
+    return { ...tc, sats: accessResults.value.length, passes }
+  })
+
   // ---- 极坐标 sky 图：方位=角向(自正北顺时针)、仰角=离心(天顶在圆心、地平在外圈)；viewBox 100×100、中心(50,50)、R=44 ----
   const skyPoints = computed(() => results.value.map((r) => {
     const rr = 44 * Math.max(0, 90 - r.elevDeg) / 90, a = r.azDeg * Math.PI / 180
@@ -151,6 +161,7 @@ export function useVisibility({
     const token = ++_accToken
     const now = calcAt(), ccNow = ccTimeAt(now)
     const H = Math.max(0.5, Math.min(168, Number(horizonH.value) || 24)) * 3600
+    accessHorizonMin.value = H / 60   // 钉住本次实际时窗（输入框超范围被 clamp 时，分母/横轴仍与窗口口径一致）
     const ents = src.map((e) => ({ rec: e.rec, name: e.name, noradId: e.noradId, group: e.group, _cc: !!isCustomEntry(e) }))
     const BATCH = 400, out = []
     let i = 0
@@ -254,19 +265,31 @@ export function useVisibility({
     const bands = covBandsFor(meta)
     return { lo, hi, bands, colors: schemeColorsRGB(covScheme.value, bands), unit: meta.unit, label: meta.label, time: !!meta.time }
   })
+  // 覆盖模式 KPI。两个面积加权的百分比，口径必须分清（同为「%」但含义差一个量级）：
+  //   timePct（时间覆盖 · 严口径）= Σ w·percent_i / Σ w —— 每格「被覆盖的时间占比」再按面积加权，
+  //     即整个区域 × 整个时窗的【时空占比】；从不覆盖的格按 0 计入，不剔除。
+  //   coverPct（覆盖面积 · 松口径）= 时窗内【曾经】被覆盖过的面积占比 —— 一格只覆盖了 1 个采样也算满，
+  //     故恒 ≥ timePct，只能回答「够不够得着」，不能当覆盖率用。
+  //   worstPct = 全网格最小的时间覆盖（最差点），最严的那个读数：为 0 说明区域内存在从不被覆盖的点。
+  // 加权用 cos φ（等经纬网格胞元面积 ∝ cos φ）。min/max/mean 仍按【当前选中的 FOM】统计（供图例读数）。
   const covKpi = computed(() => {
     const d = covData.value
     if (!d) return null
-    const meta = fomMeta(covFom.value), values = d.fom[covFom.value], simple = d.fom.simple, cells = d.cells
-    let wCov = 0, wTot = 0, mn = Infinity, mx = -Infinity, sum = 0, cnt = 0
+    const meta = fomMeta(covFom.value), values = d.fom[covFom.value], simple = d.fom.simple, pctF = d.fom.percent, cells = d.cells
+    let wCov = 0, wTot = 0, wTime = 0, worst = Infinity, mn = Infinity, mx = -Infinity, sum = 0, cnt = 0
     for (let i = 0; i < d.N; i++) {
       const w = Math.cos(cells[i].lat * Math.PI / 180)
       wTot += w; if (simple[i] > 0) wCov += w
+      const p = pctF[i]; if (p === p) { wTime += w * p; if (p < worst) worst = p }
       const v = values[i]; if (v !== v) continue
       if (meta.zeroTransparent && v <= 1e-9) continue
       if (v < mn) mn = v; if (v > mx) mx = v; sum += v; cnt++
     }
-    return { coverPct: wTot > 0 ? wCov / wTot * 100 : 0, min: cnt ? mn : 0, max: cnt ? mx : 0, mean: cnt ? sum / cnt : 0, cells: d.N, unit: meta.unit, label: meta.label }
+    return {
+      timePct: wTot > 0 ? wTime / wTot : 0, worstPct: worst < Infinity ? worst : 0,
+      coverPct: wTot > 0 ? wCov / wTot * 100 : 0,
+      min: cnt ? mn : 0, max: cnt ? mx : 0, mean: cnt ? sum / cnt : 0, cells: d.N, unit: meta.unit, label: meta.label
+    }
   })
 
   // ---- 生命周期 ----
@@ -332,7 +355,7 @@ export function useVisibility({
   return {
     open, minElev, targetKind, targetId, results, sortedResults, hoveredId, sortKey,
     hasTarget, satCount, kpi, skyPoints, skyThrR,
-    mode, horizonH, accessResults, accessBusy, accessMsg, computeAccess, setMode,
+    mode, horizonH, accessResults, accessBusy, accessMsg, accessHorizonMin, accessKpi, computeAccess, setMode,
     iconSize, showName, nameSize, iconColor,
     // 覆盖分析（Coverage）
     covRegionKind, covLatMin, covLatMax, covLonMin, covLonMax, covPolyId, covStep, covHorizonH, covSample,

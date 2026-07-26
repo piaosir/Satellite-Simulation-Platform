@@ -86,7 +86,11 @@ const ICONS = {
   // （仅当读不到用户真实 Windows 指针文件、或在浏览器外跑 Electron 时才会显示，见 App.vue cursorIconUrl）
   'cursor-arrow': '<path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z"/><path d="M13 13l6 6"/>',
   // 仰角线：地平线 + 抬升角线 + 圆弧，卫星天线树「仰角线」显隐开关用
-  angle: '<path d="M3 20h18"/><path d="M3 20 16 7"/><path d="M9.5 20a6.5 6.5 0 0 1 1.5-4.2"/>'
+  angle: '<path d="M3 20h18"/><path d="M3 20 16 7"/><path d="M9.5 20a6.5 6.5 0 0 1 1.5-4.2"/>',
+  // 发射塔 + 辐射弧（Lucide「radio-tower」，ISC License）：干扰分析（C/I）入口用。
+  // 与波束合成的 radio 同属「辐射」族（一个源朝两边打 = 旁瓣落进别人主瓣），
+  // 靠塔身的 Λ + 横杆在图形上区分 —— 同 calculator / square-function 的做法。
+  'radio-tower': '<path d="M4.9 16.1C1 12.2 1 5.8 4.9 1.9"/><path d="M7.8 4.7a6.14 6.14 0 0 0-.8 7.5"/><circle cx="12" cy="9" r="2"/><path d="M16.2 4.8c2 2 2.26 5.11.8 7.47"/><path d="M19.1 1.9a9.96 9.96 0 0 1 0 14.1"/><path d="M9.5 18h5"/><path d="m8 22 4-11 4 11"/>'
 }
 export const iconNames = Object.keys(ICONS)
 export default { name: 'AppIcon' }

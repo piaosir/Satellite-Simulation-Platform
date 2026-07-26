@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { BAND_FREQ, BAND_LABEL } from './satPresets.js'
 import { ensureSearchPool } from './satSearchPool.js'
 import { classifyOrbit, orbitRegimeLabel } from '../shared/orbitClass.js'
+import Icon from '../components/Icon.vue'
 
 // NGSO 卫星模块：两种取星模式（互斥）——
 //  ① 天线树导入：从「星座3D」页导入的 GRD 卫星树选星 → 给「卫星EIRP / 卫星G/T」匹配天线，
@@ -194,10 +195,14 @@ const rows = computed(() => {
       <div v-if="onImport" class="sp-gacts">
         <button class="sp-gbtn" :disabled="importing"
                 title="直接导入 GRD / PAT 方向图（可多选），挂到本卫星条目名下；一个文件＝一副天线，文件内多个 set＝多波束"
-                @click.prevent="onImport()">{{ importing ? '导入中…' : '＋ 导入方向图' }}</button>
+                @click.prevent="onImport()">
+          <Icon name="folder-plus" :size="12" /><span>{{ importing ? '导入中…' : '导入方向图' }}</span>
+        </button>
         <button v-if="onRemoveAnt && localAnts.length" class="sp-gbtn" :disabled="importing"
                 :title="'删除本条目导入的方向图：' + localAnts.map((a) => a.name).join('、')"
-                @click.prevent="onRemoveAnt()">删除方向图</button>
+                @click.prevent="onRemoveAnt()">
+          <Icon name="eye-off" :size="12" /><span>删除方向图</span>
+        </button>
       </div>
       <div v-if="staleFolder" class="sp-tip">本机卫星树中没有该 GRD 卫星，匹配已保留：在「星座3D」页导入后自动恢复回填（轨道根数不受影响）</div>
       <div v-else-if="!satTree.length" class="sp-tip">卫星树为空：点「导入方向图」直接导入，或在「星座3D」页导入 GRD 天线</div>
@@ -296,7 +301,7 @@ const rows = computed(() => {
 .sp-tip { font-size: 11px; color: var(--text-faint); line-height: 1.5; margin-top: 2px; }
 /* 直接导入 / 删除方向图 */
 .sp-gacts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
-.sp-gbtn { font: inherit; font-size: 12px; padding: 3px 9px; cursor: pointer; white-space: nowrap; background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 3px); }
+.sp-gbtn { display: inline-flex; align-items: center; gap: 4px; font: inherit; font-size: 12px; padding: 3px 9px; cursor: pointer; white-space: nowrap; background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 3px); }
 .sp-gbtn:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
 .sp-gbtn:disabled { opacity: .55; cursor: default; }
 .sp-err { color: var(--danger); }

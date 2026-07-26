@@ -6,6 +6,8 @@ const path = require('path')
 const zlib = require('zlib')
 const ommCloud = require('./ommCloud')   // 众包云镜像（腾讯云 COS）：屏蔽 celestrak 的网络靠它兜底
 const log = require('./ommLog')          // 取数链路的操作明细 → 主进程 console + 底部「日志」窗格
+// OMM CSV 解析：与渲染端 viz/constellation/tle.js 的 parseOMMCsv 同源同结果，勿另写一份
+const { parseOMMCsv } = require('./customSats')
 const { fmtBytes, fmtSec, fmtTime } = log
 
 // 内置样例 TLE（保证完全离线也能渲染星座）：ISS、两颗 Starlink、一颗 GEO。
@@ -397,5 +399,49 @@ module.exports = function createOmm(getCore) {
     return out
   }
 
-  return { load, positions, fetchCsv, listCsv, readCsvRaw, writeCsvRaw }
+  // 已载入某组的原始 [{name, satrec}]。给主进程内的其他服务用（干扰分析要拿 satrec 做
+  // 逐时刻传播），不经 IPC——satrec 是带函数与内部状态的对象，序列化不过去也不该过去。
+  function peek(group) { return groups[group] || null }
+
+  /**
+   * 按组取 satrec（主进程内用）。
+   *
+   * ⚠️ 别用 load()：那条路读的是 cacheFile(group)（3LE 文本），而整个 app 的星座数据实际走的是
+   * csvCacheFile(group)（CelesTrak OMM CSV）—— 渲染端 viz/constellation/tle.js 调 omm:csv 拿 CSV
+   * 后在渲染端自己建 satrec，主进程的 groups[] 从来不会被填上。更糟的是 load() 取不到缓存时会把
+   * group 改写成 'sample' 再 parse，于是 groups['geo'] 永远是空的——干扰分析首版就栽在这里。
+   *
+   * 本函数走与 app 其余部分同一条数据源：fetchCsv(cacheOnly) → 用户缓存 / 内置快照择新者
+   * （offlineBest），无网也能用；拿不到再按需联网。解析后填进 groups[group]，
+   * 使 peek() 与 positions() 一并可用。
+   *
+   * @returns {Promise<{ok:boolean, count:number, source?:string, fetchedAt?:string, error?:string}>}
+   */
+  async function satrecs(group, opts = {}) {
+    const sgp4 = getCore().sgp4
+    if (!sgp4) return { ok: false, count: 0, error: 'SGP4 引擎未就绪' }
+    if (!GROUP_QUERY[group]) return { ok: false, count: 0, error: '未知星座组：' + group }
+    if (!opts.force && groups[group] && groups[group].length) {
+      return { ok: true, count: groups[group].length, source: 'memory' }
+    }
+    let res = null
+    try { res = await fetchCsv(group, { cacheOnly: true }) } catch (e) { res = null }
+    if (!res && (opts.online || opts.force)) {
+      try { res = await fetchCsv(group, { force: !!opts.force }) } catch (e) { res = null }
+    }
+    const text = res && (typeof res === 'string' ? res : res.text)
+    if (!text) {
+      return { ok: false, count: 0, error: `本地无「${GL(group)}」星历缓存，也没有内置快照 —— 请在主窗口「星座」页加载一次该组，或联网刷新` }
+    }
+    const recs = parseOMMCsv(text)
+    const list = []
+    for (const r of recs) {
+      try { list.push({ name: r.name, satrec: sgp4.omm2satrec(r) }) } catch (e) { /* 坏记录跳过 */ }
+    }
+    if (!list.length) return { ok: false, count: 0, error: '星历解析后为空' }
+    groups[group] = list
+    return { ok: true, count: list.length, source: (res && res.source) || 'cache', fetchedAt: (res && res.fetchedAt) || null }
+  }
+
+  return { load, positions, fetchCsv, listCsv, readCsvRaw, writeCsvRaw, peek, satrecs, hasLocal }
 }

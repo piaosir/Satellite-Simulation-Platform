@@ -244,7 +244,7 @@ const dEnd = (d) => (isLocal.value ? shiftParts(d.date, d.endTimeUTC, staOffsetM
             </span>
           </div>
           <label class="row"><span>自定义 dB</span><input v-model="form.degThreshold" inputmode="decimal" /></label>
-          <label class="row" title="天线系统噪声温度（晴空）：天线噪温 + LNA/LNB 噪温，折算到 LNA 输入端——即 G/T 里的 T。它决定日凌恶化深度，知道本站实测值就填，不知道用默认典型值。">
+          <label class="row" title="天线系统噪声温度（晴空）：天线噪温 + LNA/LNB 噪温，折算到 LNA 输入端，即 G/T 中的 T，决定日凌恶化深度。有本站实测值时填入实测值，否则取默认典型值。">
             <span>T_sys K</span><input v-model="form.sysTemp" :placeholder="`默认 ${bandOf(form.band).sysTemp}（典型值）`" inputmode="decimal" />
           </label>
           <label class="row" title="太阳射电亮温：太阳作为射电源在工作频率上的等效温度。默认值按频率由太阳射电流量模型自动推算（随太阳活动强弱有波动），一般无需修改。">

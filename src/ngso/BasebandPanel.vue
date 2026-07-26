@@ -1,7 +1,8 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, watch } from 'vue'
 import Icon from '../components/Icon.vue'
 import { checkNtnBandwidth } from '../shared/ntnLimits.js'
+import { MOD_FACTORS, parseFrac, rateChain, rateDisplays, infoRateFrom, anchorOf } from '../shared/carrierRate.js'
 
 // 载波信号参数面板 —— 严格照搬小程序载波信号卡片：DVB/MODCOD 快选、Eb/N₀⇄Es/N₀ 切换（带换算）、
 // 频谱效率⇄帧效率切换、速率换算链（信息速率/码片速率/符号率/载波带宽，编辑任一个反算其余）。
@@ -10,14 +11,7 @@ const props = defineProps({
   options: { type: Object, default: () => ({}) }
 })
 
-const MOD_FACTORS = { BPSK: 1, QPSK: 2, '8PSK': 3, '8QAM': 3, '16QAM': 4, '16APSK': 4, '32APSK': 5, '64QAM': 6, '64APSK': 6, '128APSK': 7, '256APSK': 8 }
-function parseFrac(s, def) {
-  if (s === '' || s == null) return def
-  if (typeof s === 'number') return s
-  s = String(s).trim()
-  if (s.includes('/')) { const p = s.split('/'); const a = Number(p[0]); const b = Number(p[1]); return b ? a / b : def }
-  const n = parseFloat(s); return isNaN(n) ? def : n
-}
+// 调制因子/分数解析/换算链都在 shared/carrierRate.js（面板与资源库自动命名共用一份口径）
 const num = (v, d) => { const n = parseFloat(v); return isNaN(n) ? d : n }
 
 const modFactor = computed(() => MOD_FACTORS[props.form.modulation] || 2)
@@ -82,40 +76,30 @@ function applyModcod(e) {
 // —— 速率换算链：信息速率 / 码片速率 / 符号率 / 载波带宽（四者并列，编辑任一个反算其余）——
 // 换算链与引擎 linkCalculator.js 完全一致：
 // infoRate → carrierRate(÷fec÷rs) → chipRate(×m，码片速率) → symbolRate(÷调制因子) → carrierBW(×滚降)
-const carrierRate = computed(() => {
-  const info = num(props.form.infoRate, NaN)
-  if (isNaN(info)) return NaN
-  return info / fecV.value / rsV.value
-})
-const chipRate = computed(() => (isNaN(carrierRate.value) ? NaN : carrierRate.value * mV.value))
-const symbolRate = computed(() => (isNaN(chipRate.value) ? NaN : chipRate.value / modFactor.value))
-const carrierBW = computed(() => (isNaN(symbolRate.value) ? NaN : symbolRate.value * bwV.value))
-const fmt = (v) => (isNaN(v) ? '--' : (Math.round(v * 1000) / 1000).toString())
+const chain = computed(() => rateChain(props.form))
+const carrierBW = computed(() => chain.value.bw)          // NTN 带宽合规提示按真实链算，不取显示值
+const disp = computed(() => rateDisplays(props.form))     // 三个派生框的显示值（锚点那项照用户原值）
 
 // 信息速率是唯一真实存储字段，码片速率/符号率/载波带宽都是按当前调制/FEC/扩频/滚降反推的视角。
 // 问题：若只在编辑那一刻反算一次 infoRate，后续再改调制方式等参数，infoRate 不变但乘数变了，
 // 三个派生量会一起跟着漂移——包括用户刚刚手动定下来的那个值，体验上像是“白改了”。
 // 改法：记下用户最近编辑的是哪一个字段（锚点）和它当时的目标值；调制/FEC/扩频/滚降任何一个变化时，
 // 都按锚点的目标值反解 infoRate，使锚点字段保持不变，其余字段顺着联动——而不是死守 infoRate 不变。
-const rateAnchor = ref('info')   // 'info' | 'chip' | 'symbol' | 'bw'
-const anchorValue = ref(null)
-function infoRateFor(which, v) {
-  const fec = fecV.value, rs = rsV.value, mf = modFactor.value, m = mV.value, bw = bwV.value
-  if (which === 'chip') return v / m * fec * rs
-  if (which === 'symbol') return v * mf / m * fec * rs
-  if (which === 'bw') return (v / bw) * mf / m * fec * rs
-  return null
-}
+// 锚点与其目标值随配置入库（form.rateAnchor / rateAnchorValue，不再是面板局部态）：切走再回来、
+// 重开软件，用户按的还是自己那个口径；条目自动命名也据此报（改带宽就报带宽，见 lbAutoName）。
+const rateAnchor = computed(() => anchorOf(props.form))
 function setAnchor(which, raw) {
   const v = parseFloat(raw); if (isNaN(v)) return
-  rateAnchor.value = which
-  anchorValue.value = v
-  const ir = infoRateFor(which, v)
+  props.form.rateAnchor = which
+  props.form.rateAnchorValue = v
+  const ir = infoRateFrom(props.form, which, v)
   if (ir != null && !isNaN(ir)) props.form.infoRate = String(Math.round(ir * 1000) / 1000)
 }
 watch([modFactor, fecV, rsV, mV, bwV], () => {
-  if (rateAnchor.value === 'info' || anchorValue.value == null) return
-  const ir = infoRateFor(rateAnchor.value, anchorValue.value)
+  const anch = rateAnchor.value
+  const av = props.form.rateAnchorValue
+  if (anch === 'info' || av == null || av === '') return
+  const ir = infoRateFrom(props.form, anch, parseFloat(av))
   if (ir != null && !isNaN(ir)) props.form.infoRate = String(Math.round(ir * 1000) / 1000)
 })
 // —— 3GPP NTN 载波带宽合规提示 ——
@@ -124,7 +108,8 @@ watch([modFactor, fecV, rsV, mV, bwV], () => {
 // 限值与出处见 shared/ntnLimits.js。
 const ntnBw = computed(() => checkNtnBandwidth(props.form.dvbStandard, carrierBW.value))
 
-function onInfoInput() { rateAnchor.value = 'info' }   // 用户直接改信息速率：信息速率重新成为锚点
+// 用户直接改信息速率：信息速率重新成为锚点（它自己就是存储字段，无需另记目标值）
+function onInfoInput() { props.form.rateAnchor = 'info'; props.form.rateAnchorValue = null }
 function onChipInput(e) { setAnchor('chip', e.target.value) }
 function onSymbolInput(e) { setAnchor('symbol', e.target.value) }
 function onBwInput(e) { setAnchor('bw', e.target.value) }
@@ -189,13 +174,13 @@ function onBwInput(e) { setAnchor('bw', e.target.value) }
         <input v-model="form.infoRate" class="bb-i mono" :class="{ 'bb-anch': rateAnchor === 'info' }" placeholder="2048" @input="onInfoInput" />
       </label>
       <label class="bb-f"><span class="bb-l">码片速率 <i>(kcps)</i></span>
-        <input :value="fmt(chipRate)" class="bb-i mono" :class="{ 'bb-anch': rateAnchor === 'chip' }" @change="onChipInput" />
+        <input :value="disp.chip" class="bb-i mono" :class="{ 'bb-anch': rateAnchor === 'chip' }" @change="onChipInput" />
       </label>
       <label class="bb-f"><span class="bb-l">符号率 <i>(ksps)</i></span>
-        <input :value="fmt(symbolRate)" class="bb-i mono" :class="{ 'bb-anch': rateAnchor === 'symbol' }" @change="onSymbolInput" />
+        <input :value="disp.symbol" class="bb-i mono" :class="{ 'bb-anch': rateAnchor === 'symbol' }" @change="onSymbolInput" />
       </label>
       <label class="bb-f"><span class="bb-l">载波带宽 <i>(kHz)</i></span>
-        <input :value="fmt(carrierBW)" class="bb-i mono" :class="{ 'bb-anch': rateAnchor === 'bw', 'bb-over': ntnBw && ntnBw.level === 'over' }" @change="onBwInput" />
+        <input :value="disp.bw" class="bb-i mono" :class="{ 'bb-anch': rateAnchor === 'bw', 'bb-over': ntnBw && ntnBw.level === 'over' }" @change="onBwInput" />
       </label>
     </div>
 

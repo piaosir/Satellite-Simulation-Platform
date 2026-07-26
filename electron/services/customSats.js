@@ -344,3 +344,7 @@ module.exports = function createCustomSats(getCore) {
 
   return { list, raw, importFile, removeGroup, renameGroup, groupRecords, recordsCsv, _parseTleText: parseTleText, _parseOMMCsv: parseOMMCsv }
 }
+
+// OMM CSV 解析器提成模块级静态导出：omm.js 的 satrecs() 也要用，
+// 不该为了一个纯函数去造一个 customSats 实例（那会碰文件系统）。
+module.exports.parseOMMCsv = parseOMMCsv

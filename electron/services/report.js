@@ -6,6 +6,9 @@ const {
 } = require('docx')
 const ExcelJS = require('exceljs')
 const adaptiveUnits = require('../../packages/core/utils/adaptiveUnits.js')
+// 列宽/行高自适应：各表的宽高常数按「常见内容」定，遇到长站名 / 长标签 / 英文导出会被截断，
+// 故写盘前整本过一遍，只把装不下的列与行放大到刚好装下（只增不减，版式不变）。
+const { autofitBook } = require('./reportAutofit')
 
 // 报告字段表：标签 / 结果键 / 单位
 const ROWS = [
@@ -104,18 +107,16 @@ async function buildExcel(payload) {
     row.font = { name: FNT, bold: key === null }
   })
   ws.columns = [{ width: 30 }, { width: 16 }, { width: 12 }]
+  autofitBook(wb)
   return applyBookFont(wb).xlsx.writeBuffer()
 }
 
-// ===== 工作台链路结果导出（Phase 5/6）=====
-// payload: { links:[{ti,ri,txName,rxName,ok,error,metric,data,segments}], pairMode, lang, params, meta }
-// 两类表：① 链路汇总（每条一行，纵向列表——常规计算/矩阵计算共用同一种纵向布局，仅首列「序号」/「坐标」不同；
-//           三线表/Times New Roman/舒朗行距）
-//        ② 详细计算结果：每条链路一个 sheet（七段瀑布，仿小程序专业版，与 UI 瀑布同源），表名=坐标+发信站-收信站。
-// 不再生成"结果矩阵"宽表——多数使用者按行纵向阅读表格，矩阵计算的 m×n 组合已在①里逐行列全，常规计算的
-// 1↔1 配对用宽矩阵展示反而大半是空格；纵向列表对两种配对方式都更直观，也更方便排序/筛选。
-// 标签中英文由 lang('zh'|'en') 控制；详细计算结果表的标签翻译表统一在 packages/core 的 waterfallBuilder.js
-// WF_DICT 维护（与结果区实时瀑布同源，避免两处译法不一致），此文件只维护链路汇总表自己的列头/标题译法。
+// ===== 链路预算工作台的表格件（供交付级报告复用）=====
+// 这一段维护三样东西：链路汇总的指标矩阵（summaryRows / adaptSummaryUnits，横表与纵表都由它转置而来）、
+// 瀑布段的三线表表体（writeSegmentBlocks，与屏幕「详细预算」同一份 segments），以及 NGSO / 再生式的
+// 「几何关系」STK 版式表。报告的装配在文件末尾的 buildReportWorkbook。
+// 标签中英文由 lang('zh'|'en') 控制；瀑布段的标签翻译在 packages/core 的 waterfallBuilder.js 的 WF_DICT
+// （与结果区实时瀑布同源，避免两处译法不一致），此文件只维护汇总/几何表自己的列头译法。
 // 导出文档字体：与软件界面同一套（西文/数字 Times New Roman，中文回落宋体）。
 // xlsx 的字体名只有一个字段（无「西文/东亚」分栏），故中文单元格也写 Times New Roman——
 // Excel 遇 TNR 里没有的汉字会按字体链接回落到宋体，效果即 TNR + 宋体。CJK 别名保留只为标出
@@ -163,15 +164,12 @@ const HAIR = { style: 'hair', color: { argb: 'FF999999' } }
 // 避免同一份工作簿里术语不统一。
 const STR = {
   zh: {
-    reportTitle: 'GEO 链路预算结果', sheetSummary: '链路汇总',
     paRecW: '功放建议 (W)', paRecDbw: '功放建议 (dBW)', paActW: '功放实际输出 (W)',
     linkMargin: '链路余量 (dB)', allocBw: '载波带宽 (kHz)', powerBw: '功率带宽 (kHz)',
     bwUsage: '带宽占用 (%)', pwUsage: '功率占用 (%)',
     upCN: '上行 C/N (dB)', downCN: '下行 C/N (dB)', totalCN: '合计 C/N (dB)', thresholdCN: '门限 C/N (dB)',
     ebno: 'Eb/N₀ (dB)', esno: 'Es/N₀ (dB)', psd: '载波功率谱密度 (dBW/Hz)', avail: '系统可用度 (%)', availUp: '上行可用度 (%)',
     specEff: '频谱效率 (bps/Hz)', capacity: '容量 (Mbps)',
-    pairSeq: '常规计算（1↔1）', pairMatrix: '矩阵计算（m×n）',
-    subtitle: (sat, band, mode, pair, date) => `卫星 ${sat} · 频段 ${band} · 计算方式 ${mode} · 配对方式 ${pair} · ${date}`,
     calcFailed: '计算失败：',
     capHeader: (n, failed) => `容量汇总（${n} 条链路${failed ? ` · ${failed} 条失败已排除` : ''}）`,
     totalCap: '总容量', totalBw: '总带宽', avgEff: '平均频谱效率',
@@ -209,15 +207,12 @@ const STR = {
     }
   },
   en: {
-    reportTitle: 'GEO Link Budget Results', sheetSummary: 'Link Summary',
     paRecW: 'Recommended PA Power (W)', paRecDbw: 'Recommended PA Power (dBW)', paActW: 'Actual PA Output (W)',
     linkMargin: 'Link Margin (dB)', allocBw: 'Allocated Bandwidth (kHz)', powerBw: 'Power Bandwidth (kHz)',
     bwUsage: 'Bandwidth Usage Ratio (%)', pwUsage: 'Power Usage Ratio (%)',
     upCN: 'Uplink C/N (dB)', downCN: 'Downlink C/N (dB)', totalCN: 'Combined C/N (dB)', thresholdCN: 'Threshold C/N (dB)',
     ebno: 'Eb/N₀ (dB)', esno: 'Es/N₀ (dB)', psd: 'Satellite PSD (dBW/Hz)', avail: 'System Availability (%)', availUp: 'Uplink Availability (%)',
     specEff: 'Spectral Efficiency (bps/Hz)', capacity: 'Capacity (Mbps)',
-    pairSeq: 'Sequential (1:1)', pairMatrix: 'Full Matrix (m×n)',
-    subtitle: (sat, band, mode, pair, date) => `Satellite ${sat} · Band ${band} · Calculation Mode: ${mode} · Pairing: ${pair} · ${date}`,
     calcFailed: 'Calculation Failed: ',
     capHeader: (n, failed) => `Capacity Summary (${n} link${n > 1 ? 's' : ''}${failed ? `, ${failed} failed excluded` : ''})`,
     totalCap: 'Total Capacity', totalBw: 'Total Bandwidth', avgEff: 'Average Spectral Efficiency',
@@ -433,11 +428,6 @@ function summaryRows(t, orbitType, regenMode) {
     { label: availLabel, get: (l) => val(l.data, 'systemAvailabilityResult') }
   ]
 }
-// 每条链路的列头：常规计算用 #序号，矩阵计算用坐标；第二行换行写发信站→收信站
-function linkColHeader(l, idx, isSequential) {
-  return `${isSequential ? '#' + (idx + 1) : l.coord}\n${l.txName || ''} → ${l.rxName || ''}`
-}
-
 // 汇总表显示单位自适应（与 UI 结果列同规则）：从行标签尾部 '(单位)' 识别可缩放量，
 // 每个指标行跨全部链路共选一个档位（W→mW/kW、kHz→MHz/GHz、整行<0dBW→dBm），
 // 重写标签单位并包裹取值函数（数值换算、'—'/文本原样）
@@ -457,104 +447,27 @@ function adaptSummaryUnits(rows, links) {
 // 瀑布段渲染辅助（与小程序 exportLinkBudget 同口径：黑白三线表）
 const valueHeaders = (cols, t) => (cols >= 3 ? [t.uplink, t.downlink, t.total] : cols >= 2 ? [t.uplink, t.downlink] : [t.value])
 const rowValues = (row, cols) => (cols >= 3 ? [row.up || '', row.down || '', row.total || ''] : cols >= 2 ? [row.up || '', row.down || ''] : [row.up || ''])
+// 机读数值（waterfallBuilder 在行上挂的 num/numDown/numTotal，严格解析、语言无关）：
+// 有值就直接写数值单元格，免得再去 Number() 反解已格式化的显示串。null＝这一格不是纯数值
+// （'QPSK'、'3/4'、'1×10⁻⁷' 一类），退回 numOrText 走原来的文本/数值判定。
+const rowNums = (row, cols) => (cols >= 3 ? [row.num, row.numDown, row.numTotal] : cols >= 2 ? [row.num, row.numDown] : [row.num])
+// 段题注：core 编好的章节号（§1…§n）随段带出，屏幕「详细预算」区与本表同号同序，
+// 交叉核对时说「§5 第二行」两边都能对上。旧记录/未编号的构建器没有 no，退回纯标题。
+const segCaption = (seg) => (seg && seg.no ? '§' + seg.no + '  ' + (seg.title || '') : (seg && seg.title) || '')
 const labelWithSign = (row) => (row.sign ? row.sign + ' ' : '') + (row.label || '')
 
-// ① 链路汇总（纵向：参数名在左侧纵列，每条链路占一列；常规计算/矩阵计算共用同一种纵向布局，
-// 仅列头标识不同——常规计算 #序号，矩阵计算坐标 T#R#）
-function buildSummarySheet(wb, links, params, meta, t, isSequential, orbitType, regenMode) {
-  const rows = summaryRows(t, orbitType, regenMode)
-  adaptSummaryUnits(rows, links)
-  const ncol = 1 + links.length
-  const ws = wb.addWorksheet(t.sheetSummary, { views: [{ showGridLines: false, state: 'frozen', xSplit: 1, ySplit: 4 }] })
-  ws.mergeCells(1, 1, 1, ncol)
-  const title = ws.getCell(1, 1); title.value = meta.title || t.reportTitle
-  title.font = { name: CJK, size: 15, bold: true }; title.alignment = { vertical: 'middle' }; ws.getRow(1).height = 28
-  ws.mergeCells(2, 1, 2, ncol)
-  const s = ws.getCell(2, 1)
-  s.value = t.subtitle(params.satelliteName || '—', params.frequencyBand || '—', meta.mode || '—', meta.pairMode || (isSequential ? t.pairSeq : t.pairMatrix), new Date().toLocaleString())
-  s.font = { name: CJK, size: 10, color: { argb: 'FF666666' } }; s.alignment = { vertical: 'middle' }; ws.getRow(2).height = 20
-  // 表头（第 4 行）：左上角「参数」+ 每条链路一列
-  const hr = 4
-  const corner = ws.getCell(hr, 1); corner.value = t.param
-  corner.font = { name: CJK, bold: true, size: 10 }; corner.alignment = { vertical: 'middle', horizontal: 'left' }
-  links.forEach((l, idx) => {
-    const cell = ws.getCell(hr, idx + 2)
-    cell.value = linkColHeader(l, idx, isSequential)
-    cell.font = { name: CJK, bold: true, size: 10 }
-    cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true }
-  })
-  setRowBorder(ws, hr, 1, ncol, { top: MED, bottom: THIN }); ws.getRow(hr).height = 34
-  // 数据行：一行一个参数，横向铺开各条链路的值
-  let r = hr + 1
-  rows.forEach((row) => {
-    const lc = ws.getCell(r, 1); lc.value = row.label
-    lc.font = { name: CJK, size: 10 }; lc.alignment = { vertical: 'middle', horizontal: 'left' }
-    links.forEach((l, idx) => {
-      const raw = row.get(l)
-      const cell = ws.getCell(r, idx + 2)
-      cell.value = row.text ? (raw == null ? '' : raw) : numOrText(raw)
-      cell.font = { name: row.text ? CJK : FNT, size: 10 }
-      cell.alignment = { vertical: 'middle', horizontal: row.text ? 'center' : 'right' }
-    })
-    ws.getRow(r).height = 19
-    r++
-  })
-  if (rows.length) setRowBorder(ws, r - 1, 1, ncol, { bottom: MED })
-  // 容量汇总（与工作台结果区同口径）：总带宽 = Σ 载波带宽，总容量 = Σ(η×B) 逐链路相乘再求和，
-  // 平均频谱效率 = 总容量/总带宽（带宽加权）；失败链路排除并在标题注明。
-  // 再生式激光星间无载波带宽/频谱效率口径（给定速率的光学功率预算），容量汇总恒为 0 → 直接略去。
-  const done = links.filter((l) => l.data && !l.error)
-  if (done.length && regenMode !== 'laser') {
-    let bwKHz = 0, capKbps = 0
-    for (const l of done) {
-      const bw = parseFloat(l.data.allocBandwidthResult)
-      if (isFinite(bw)) bwKHz += bw
-      const k = capKbpsOf(l.data)
-      if (isFinite(k)) capKbps += k
-    }
-    r++
-    ws.mergeCells(r, 1, r, ncol)
-    const hd = ws.getCell(r, 1); hd.value = t.capHeader(done.length, links.length - done.length)
-    hd.font = { name: CJK, size: 11, bold: true }; hd.alignment = { vertical: 'middle', horizontal: 'left' }
-    setRowBorder(ws, r, 1, ncol, { bottom: THIN }); ws.getRow(r).height = 22; r++
-    const capRows = [
-      [t.totalCap, fmtCapText(capKbps)],
-      [t.totalBw, fmtBwText(bwKHz)],
-      [t.avgEff, bwKHz > 0 ? (capKbps / bwKHz).toFixed(3) + ' bps/Hz' : '—']
-    ]
-    for (const [label, value] of capRows) {
-      const lc = ws.getCell(r, 1); lc.value = label
-      lc.font = { name: CJK, size: 10 }; lc.alignment = { vertical: 'middle', horizontal: 'left' }
-      const vc = ws.getCell(r, 2); vc.value = value
-      vc.font = { name: FNT, size: 10, bold: true }; vc.alignment = { vertical: 'middle', horizontal: 'right' }
-      ws.getRow(r).height = 19; r++
-    }
-    setRowBorder(ws, r - 1, 1, ncol, { bottom: MED })
-  }
-  ws.columns = [{ width: 24 }, ...links.map(() => ({ width: 15 }))]
-}
-
-// ② 单链路详细计算结果（七段瀑布，仿小程序专业版三线表；标签翻译来自 buildWaterfallSegments 本身）
-function writeLinkDetailSheet(ws, link, t) {
-  const MAXCOL = 5
-  ws.columns = [{ width: 32 }, { width: 16 }, { width: 16 }, { width: 16 }, { width: 10 }]
-  let r = 1
-  ws.mergeCells(r, 1, r, MAXCOL)
-  const tc = ws.getCell(r, 1); tc.value = link.name || ''
-  tc.font = { name: CJK, bold: true, size: 15 }; tc.alignment = { horizontal: 'left', vertical: 'middle' }; ws.getRow(r).height = 28; r++
-  if (link.subtitle) {
-    ws.mergeCells(r, 1, r, MAXCOL)
-    const sub = ws.getCell(r, 1); sub.value = link.subtitle
-    sub.font = { name: CJK, size: 10, color: { argb: 'FF666666' } }; sub.alignment = { horizontal: 'left', vertical: 'middle' }; ws.getRow(r).height = 18; r++
-  }
-  r++
-  for (const seg of (link.segments || [])) {
+// 瀑布段落的表体（题注 + 三线表），从第 r 行起写，返回写完后的下一行。
+// 抽成独立一支供两处调用：旧版「详细计算结果」分表与新版报告的链路详情表——
+// 两处画出来的必须是同一种表，否则同一份数据在两个文件里长得不一样。
+function writeSegmentBlocks(ws, segments, t, startRow) {
+  let r = startRow
+  for (const seg of (segments || [])) {
     if (!seg || !seg.rows || !seg.rows.length) continue
     const cols = seg.cols || 1
     const vh = valueHeaders(cols, t)
     const totalCols = 2 + vh.length
     ws.mergeCells(r, 1, r, totalCols)
-    const cap = ws.getCell(r, 1); cap.value = seg.title || ''
+    const cap = ws.getCell(r, 1); cap.value = segCaption(seg)
     cap.font = { name: CJK, bold: true, size: 12 }; cap.alignment = { horizontal: 'left', vertical: 'middle' }; ws.getRow(r).height = 24; r++
     // 表头
     const headerTexts = [t.param, ...vh, t.unit]
@@ -569,6 +482,7 @@ function writeLinkDetailSheet(ws, link, t) {
     dataRows.forEach((row, ri) => {
       const isLast = ri === dataRows.length - 1
       const vals = rowValues(row, cols)
+      const nums = rowNums(row, cols)
       const strong = ['base', 'sub', 'chk', 'kpi', 'margin'].indexOf(row.kind) > -1
       const sepTop = ['sub', 'margin'].indexOf(row.kind) > -1
       const lc = ws.getCell(r, 1); lc.value = labelWithSign(row)
@@ -576,7 +490,8 @@ function writeLinkDetailSheet(ws, link, t) {
       vals.forEach((v, vi) => {
         const isTotalCol = cols >= 3 && vi === 2
         const cell = ws.getCell(r, 2 + vi)
-        cell.value = numOrText(v)
+        const n = nums[vi]
+        cell.value = (n === null || n === undefined) ? numOrText(v) : n
         cell.font = { name: FNT, size: 10, bold: strong || isTotalCol }; cell.alignment = { horizontal: 'right', vertical: 'middle' }
       })
       const uc = ws.getCell(r, totalCols); uc.value = row.unit || ''
@@ -590,6 +505,7 @@ function writeLinkDetailSheet(ws, link, t) {
     })
     r++
   }
+  return r
 }
 
 // UTCG 时标（STK 口径）：把 ISO 时刻格式化为「1 Jul 2026 00:12:34.567」（英文月缩写，毫秒三位），
@@ -1131,36 +1047,399 @@ function buildRegenGeometrySheet(wb, links, params, meta, lang, regenMode) {
   return buildRegenGroundGeometrySheet(wb, links, params, meta, lang, regenMode === 'downlink' ? 'downlink' : 'uplink')
 }
 
-async function buildLinkBudgetExcel(payload) {
-  const { links = [], params = {}, meta = {}, lang = 'zh', pairMode = 'matrix', orbitType = 'GEO', regenMode = 'uplink' } = payload
+// ============================ 交付级链路预算报告（.xlsx）============================
+// 模型由渲染进程按 src/shared/lbReport.js 组装（元信息 / 逐链路结果 / 瀑布段 / 输入清单 / 图件），
+// 主进程在此补一段 summary（链路汇总的横表与纵表所共用的指标矩阵、容量统计），随后两条渲染路径
+// 共吃这一份模型：本文件出 .xlsx，src/report/* + printToPDF 出 .pdf。
+// summary 由主进程补而不是渲染端自己算——那几张表的列定义、单位自适应与中英译法早已在本文件
+// 维护着（summaryRows / adaptSummaryUnits / STR），往渲染端镜像一份必然漂移。
+//
+// 版式：全篇三线表（booktabs），西文/数字 Times New Roman、中文回落宋体；不写任何达标/判定一类的
+// 文字结论（纯数字口径），读者从数字里读结论。
+
+// 指标矩阵：一行一个指标、跨全部链路取值（单位已按整行共选档位换算好）。
+// 横表（一行一链路）与纵表（一行一指标）是它的两种转置，两张表因此不可能对不上。
+function enrichReportModel(model) {
+  const lang = model.lang === 'en' ? 'en' : 'zh'
   const t = strFor(lang)
-  const isSequential = pairMode === 'sequential'
-  const enriched = links.map((l) => ({ ...l, coord: 'T' + ((l.ti || 0) + 1) + 'R' + ((l.ri || 0) + 1) }))
-  const wb = new ExcelJS.Workbook()
-  wb.creator = lang === 'en' ? 'GEO Satellite Link Budget Workbench' : '卫星链路预算工作台'; wb.created = new Date()
+  const links = model.links || []
+  const orbitType = (model.scheme && model.scheme.orbitType) || 'GEO'
+  const regenMode = (model.scheme && model.scheme.regenMode) || 'uplink'
+  const rows = summaryRows(t, orbitType, regenMode)
+  adaptSummaryUnits(rows, links)
+  const metrics = rows.map((r) => ({ label: r.label, values: links.map((l) => r.get(l)) }))
 
-  buildSummarySheet(wb, enriched, params, meta, t, isSequential, orbitType, regenMode)
+  const done = links.filter((l) => l.data && !l.error)
+  const stats = []
+  if (done.length && regenMode !== 'laser') {
+    let bwKHz = 0, capKbps = 0
+    for (const l of done) {
+      const bw = parseFloat(l.data.allocBandwidthResult)
+      if (isFinite(bw)) bwKHz += bw
+      const k = capKbpsOf(l.data)
+      if (isFinite(k)) capKbps += k
+    }
+    stats.push({ label: t.totalCap, value: fmtCapText(capKbps) })
+    stats.push({ label: t.totalBw, value: fmtBwText(bwKHz) })
+    stats.push({ label: t.avgEff, value: bwKHz > 0 ? (capKbps / bwKHz).toFixed(3) + ' bps/Hz' : '—' })
+  }
+  model.summary = {
+    metrics,
+    stats,
+    statsTitle: done.length ? t.capHeader(done.length, links.length - done.length) : '',
+    doneCount: done.length,
+    failCount: links.length - done.length
+  }
+  return model
+}
 
-  // 紧随汇总表后单立「几何关系」sheet（STK 版式），把体制特色几何量集中呈现。
-  // NGSO：站星平台几何；再生式四体制：上/下行=地面-空间站星几何，星间微波/激光=空间-空间两星几何。
-  if (orbitType === 'NGSO') buildNgsoGeometrySheet(wb, enriched, params, meta, lang)
-  else if (orbitType === 'REGEN') buildRegenGeometrySheet(wb, enriched, params, meta, lang, regenMode)
+// PNG 的宽高：IHDR 就在头 24 字节里（8 字节签名 + 4 长度 + 4 'IHDR' + 4 宽 + 4 高），
+// 无需解码整张图。报告里按版心宽等比缩放贴图要用它。
+function pngSizeOf(dataUrl) {
+  try {
+    const b64 = String(dataUrl).split(',').pop()
+    const buf = Buffer.from(b64.slice(0, 64), 'base64')
+    const w = buf.readUInt32BE(16), h = buf.readUInt32BE(20)
+    return (w > 0 && h > 0) ? { w, h } : null
+  } catch (e) { return null }
+}
 
-  // 详细计算结果：每条链路一个 sheet，表名 = 坐标 + 发信站-收信站（去重、截断 31 字符）
-  const used = {}
-  for (const l of enriched) {
-    let base = `${l.coord} ${l.txName || ''}-${l.rxName || ''}`.replace(/[\\/?*[\]:]/g, ' ').trim().slice(0, 31) || l.coord
-    let name = base, k = 2
-    while (used[name]) name = base.slice(0, 28) + '~' + (k++)
-    used[name] = true
-    const ws = wb.addWorksheet(name, { views: [{ showGridLines: false }] })
-    writeLinkDetailSheet(ws, {
-      name: `${l.coord}　${l.txName || ''} → ${l.rxName || ''}`,
-      subtitle: l.error ? (t.calcFailed + l.error) : t.subtitle(params.satelliteName || '—', params.frequencyBand || '—', meta.mode || '—', meta.pairMode || (isSequential ? t.pairSeq : t.pairMatrix), new Date().toLocaleString()),
-      segments: l.segments || []
-    }, t)
+// —— 模板版式（《文档格式模板（公开）.docx》，参数见 electron/services/reportStyle.js）——
+// 文档类表格照模板：全框线 0.5pt + 表头灰底 BFBFBF 加粗居中；字号 16/14/12/10.5pt 四档。
+// 计算结果（级联/瀑布）表仍是三线表——用户此前定的口径，密排手算单加满网格会压成一堵墙。
+const RSTY = require('./reportStyle').TPL
+const GRIDBOX = { top: THIN, left: THIN, bottom: THIN, right: THIN }
+const HEADFILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF' + RSTY.table.headFill } }
+// 给一片区域打全框线；headRow 那一行另加灰底加粗（模板正文表的样子）
+function gridBox(ws, r1, c1, r2, c2, headRow) {
+  for (let r = r1; r <= r2; r++) {
+    for (let c = c1; c <= c2; c++) {
+      const cell = ws.getCell(r, c)
+      cell.border = Object.assign({}, cell.border, GRIDBOX)
+      if (headRow && r === headRow) {
+        cell.fill = HEADFILL
+        cell.font = Object.assign({}, cell.font, { bold: true })
+        cell.alignment = Object.assign({}, cell.alignment, { horizontal: 'center', vertical: 'middle', wrapText: true })
+      }
+    }
+  }
+}
+
+// 表格式贴图：按目标显示宽等比缩放，返回占掉的行数（Excel 的图浮在格子上，不占行高，
+// 不主动推进行号的话后面的内容会被图压住）。
+const XLS_ROW_PX = 20
+function placeImage(wb, ws, dataUrl, atRow, dispW) {
+  const size = pngSizeOf(dataUrl)
+  if (!size) return 0
+  const w = dispW, h = Math.round(dispW * size.h / size.w)
+  const id = wb.addImage({ base64: dataUrl, extension: 'png' })
+  ws.addImage(id, { tl: { col: 0.15, row: atRow - 0.85 }, ext: { width: w, height: h } })
+  return Math.ceil(h / XLS_ROW_PX) + 1
+}
+
+// —— 主报告表（第一张 sheet）——
+function buildMasterSheet(wb, model, t, L) {
+  const links = model.links || []
+  const sum = model.summary || { metrics: [], stats: [] }
+  const nMetric = sum.metrics.length
+  // 版心列数：本表最宽的一张是「逐参数对照」——一行一个指标、一列一条链路，故右端 = 1 + 链路数
+  // （参考/常数/索引三张都在 8 列以内，另按 refLast 自行收窄）。分节标题与横线按此跨列，
+  // 不能按指标数跨（那是转置前的横表口径，会把横线拉到表格外面去）。
+  const NCOL = Math.max(6, 1 + links.length)
+  const ws = wb.addWorksheet(L.master, { views: [{ showGridLines: false }] })
+  // 列宽只给个起点：第 1 列同时承着指标名 / 常数名 / 序号，宽度由导出前的 autofit 按实际内容定。
+  ws.columns = [{ width: 12 }, { width: 20 }, { width: 20 },
+    ...Array.from({ length: Math.max(3, NCOL - 3) }, () => ({ width: 15 }))]
+  let r = 1
+  const doc = model.doc || {}
+
+  const str = (row, col, text, align, o) => {
+    o = o || {}
+    const c = ws.getCell(row, col)
+    c.value = text == null ? '' : text
+    c.font = { name: o.font || CJK, size: o.size || 10, bold: !!o.bold, color: o.color ? { argb: o.color } : undefined }
+    c.alignment = { horizontal: align || 'left', vertical: 'middle', wrapText: !!o.wrap }
+    return c
+  }
+  const section = (text) => {
+    r++
+    ws.mergeCells(r, 1, r, NCOL)
+    str(r, 1, text, 'left', { bold: true, size: RSTY.size.h2 })   // 模板标题 2：14pt 加粗
+    setRowBorder(ws, r, 1, NCOL, { bottom: THIN })
+    ws.getRow(r).height = 26; r++
+  }
+  // 键值行（模板的两列全框线表：标签列灰底加粗）
+  const kv = (label, value) => {
+    const lc = str(r, 1, label, 'left', { size: RSTY.size.table, bold: true })
+    lc.fill = HEADFILL
+    ws.mergeCells(r, 2, r, Math.min(NCOL, 6))
+    str(r, 2, value, 'left', { size: RSTY.size.table, wrap: true })
+    for (let c = 1; c <= Math.min(NCOL, 6); c++) {
+      const cell = ws.getCell(r, c); cell.border = Object.assign({}, cell.border, GRIDBOX)
+    }
+    ws.getRow(r).height = 19; r++
   }
 
+  // 报告头
+  ws.mergeCells(r, 1, r, NCOL)
+  str(r, 1, doc.title || L.master, 'left', { bold: true, size: 16 })
+  ws.getRow(r).height = 30; r++
+  ws.mergeCells(r, 1, r, NCOL)
+  const schemeText = (model.lang === 'en' ? model.scheme.labelEn : model.scheme.label)
+    + ((model.lang === 'en' ? model.scheme.subLabelEn : model.scheme.subLabel) ? '　·　' + (model.lang === 'en' ? model.scheme.subLabelEn : model.scheme.subLabel) : '')
+  str(r, 1, schemeText, 'left', { size: 10, color: 'FF666666' })
+  ws.getRow(r).height = 18; r++
+
+  // 逐参数对照（纵表：一行一个指标、每条链路一列——多条链路并排比对同一项）
+  section('1　' + L.compare)
+  str(r, 1, L.param, 'left', { bold: true, size: 9 })
+  links.forEach((l, li) => str(r, 2 + li, '#' + (l.no || li + 1) + '\n' + (l.txName || '') + ' → ' + (l.rxName || ''), 'center', { bold: true, size: 9, wrap: true }))
+  const cmpHead = r
+  ws.getRow(r).height = 34; r++
+  sum.metrics.forEach((m) => {
+    str(r, 1, m.label, 'left', { size: 10 })
+    m.values.forEach((v, li) => {
+      const c = ws.getCell(r, 2 + li); c.value = numOrText(v)
+      c.font = { name: FNT, size: 10 }; c.alignment = { horizontal: 'right', vertical: 'middle' }
+    })
+    ws.getRow(r).height = 18; r++
+  })
+  if (nMetric) gridBox(ws, cmpHead, 1, r - 1, 1 + links.length, cmpHead)
+
+  // 容量与统计
+  if (sum.stats.length) {
+    section('2　' + L.capacity)
+    // 题注跨整幅（它是一句话，不是表格的第一列——不跨的话自适应会把第 1 列按这句话的长短撑宽）
+    if (sum.statsTitle) {
+      ws.mergeCells(r, 1, r, NCOL)
+      str(r, 1, sum.statsTitle, 'left', { size: 10, color: 'FF666666' })
+      ws.getRow(r).height = 18; r++
+    }
+    const stHead = r
+    for (const s of sum.stats) {
+      str(r, 1, s.label, 'left', { size: RSTY.size.table })
+      str(r, 2, s.value, 'right', { font: FNT, size: RSTY.size.table, bold: true })
+      ws.getRow(r).height = 19; r++
+    }
+    gridBox(ws, stHead, 1, r - 1, 2)
+  }
+
+  // 计算模型与参考（编号 3：与 Word / PDF 的总报告章节号一一对应，三份文件的「§1 逐参数对照」
+  // 说的必须是同一张表。Excel 专有的「详情索引」是工作簿的导航件，不占章节号，附在最后。）
+  // 三小节：3.1 计算链路与口径（逐段方法学说明）· 3.2 引用建议书与标准 · 3.3 物理常数与基准。
+  const mth = model.method || { basis: [], refGroups: [], constants: [] }
+  const subsec = (text) => {
+    r++
+    ws.mergeCells(r, 1, r, NCOL)
+    str(r, 1, text, 'left', { bold: true, size: RSTY.size.h3 })
+    ws.getRow(r).height = 22; r++
+  }
+  section('3　' + L.refs)
+
+  subsec('3.1　' + L.mBasis)
+  for (const b of mth.basis) {
+    ws.mergeCells(r, 1, r, NCOL)
+    str(r, 1, b.title, 'left', { bold: true, size: RSTY.size.table })
+    ws.getRow(r).height = 18; r++
+    ws.mergeCells(r, 1, r, NCOL)
+    str(r, 1, b.text, 'left', { size: RSTY.size.table, wrap: true })
+    // 说明段的行高交给导出前的 autofit 按最终列宽排版数出来（合并单元格不会自动长高，
+    // 这里只给一个单行的起点）
+    ws.getRow(r).height = 18
+    r += 2
+  }
+
+  subsec('3.2　' + L.mRefs)
+  const refHead = r
+  const refLast = Math.min(NCOL, 8)
+  // 建议书名（英文动辄百来字符）单占一列会被挤成七八行，故名称与用途各占一段：名称 2..refMid、
+  // 用途 refMid+1..refLast，两段宽度相当。
+  const refMid = Math.min(refLast - 1, Math.max(2, Math.round((1 + refLast) / 2)))
+  const refCols = (row) => {
+    if (refMid > 2) ws.mergeCells(row, 2, row, refMid)
+    if (refLast > refMid + 1) ws.mergeCells(row, refMid + 1, row, refLast)
+  }
+  str(r, 1, L.mId, 'left', { bold: true, size: RSTY.size.table })
+  refCols(r)
+  str(r, 2, L.mTitle, 'left', { bold: true, size: RSTY.size.table })
+  str(r, refMid + 1, L.mUse, 'left', { bold: true, size: RSTY.size.table })
+  ws.getRow(r).height = 19; r++
+  for (const g of mth.refGroups) {
+    ws.mergeCells(r, 1, r, refLast)
+    const gc = str(r, 1, g.group, 'left', { bold: true, size: RSTY.size.table })
+    gc.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF2F2F2' } }
+    ws.getRow(r).height = 18; r++
+    for (const ref of g.items) {
+      str(r, 1, ref.id, 'left', { font: FNT, size: RSTY.size.table, wrap: true })
+      refCols(r)
+      str(r, 2, ref.title, 'left', { size: RSTY.size.table, wrap: true })
+      str(r, refMid + 1, ref.use, 'left', { size: RSTY.size.table, color: 'FF333333', wrap: true })
+      ws.getRow(r).height = 30; r++
+    }
+  }
+  gridBox(ws, refHead, 1, r - 1, refLast, refHead)
+
+  subsec('3.3　' + L.mConst)
+  const cHead = r
+  ;[L.param, L.mSymbol, L.mValue, L.unit, L.mSrc].forEach((h, i) => str(r, i + 1, h, i >= 2 && i <= 3 ? 'center' : 'left', { bold: true, size: RSTY.size.table }))
+  ws.getRow(r).height = 19; r++
+  for (const c of mth.constants) {
+    str(r, 1, c.name, 'left', { size: RSTY.size.table })
+    str(r, 2, c.symbol, 'center', { font: FNT, size: RSTY.size.table })
+    str(r, 3, c.value, 'right', { font: FNT, size: RSTY.size.table })
+    str(r, 4, c.unit, 'left', { font: FNT, size: RSTY.size.table })
+    str(r, 5, c.src, 'left', { size: RSTY.size.table, color: 'FF333333', wrap: true })
+    ws.getRow(r).height = 18; r++
+  }
+  gridBox(ws, cHead, 1, r - 1, 5, cHead)
+
+  // 详情索引：点一下跳到该链路的详情表。
+  // 「站对」一栏铺到倒数第二列、跳转链接放末列：站名长起来（尤其英文导出）时，若仍挤在第 2 列，
+  // 自适应会把第 2 列一路撑宽，而上面对照表的数值列正共用着这几列——一张表的长名字不该让另一张表变形。
+  section(L.index)
+  const idxHead = r
+  const idxNameEnd = Math.max(2, NCOL - 1)
+  const idxName = (text, o) => {
+    if (idxNameEnd > 2) ws.mergeCells(r, 2, r, idxNameEnd)
+    str(r, 2, text, 'left', o)
+  }
+  const headOpt = { bold: true, size: RSTY.size.table }
+  str(r, 1, L.no, 'center', headOpt)
+  idxName(L.link, headOpt)
+  str(r, NCOL, L.detail, 'left', headOpt)
+  ws.getRow(r).height = 19; r++
+  links.forEach((l, li) => {
+    str(r, 1, String(l.no || li + 1), 'center', { font: FNT, size: 10 })
+    idxName((l.txName || '') + ' → ' + (l.rxName || ''), { size: 10 })
+    const c = ws.getCell(r, NCOL)
+    c.value = { formula: `HYPERLINK("#'${l.sheetName}'!A1","${(l.sheetName || '').replace(/"/g, '')}")`, result: l.sheetName }
+    c.font = { name: CJK, size: 10, color: { argb: 'FF15619B' }, underline: true }
+    c.alignment = { horizontal: 'left', vertical: 'middle' }
+    ws.getRow(r).height = 19; r++
+  })
+  if (links.length) gridBox(ws, idxHead, 1, r - 1, NCOL, idxHead)
+}
+
+// —— 单链路详情表 ——
+// 自包含：输入参数（可复算）→ 详细计算结果（瀑布三线表）→ 图件。
+// 输入参数只在 Excel 的详情表里全列；PDF 的详情页是屏幕排版的复刻（表 ‖ 图），输入另立附录。
+function writeReportLinkSheet(wb, ws, link, model, t, L) {
+  const MAXCOL = 5
+  ws.columns = [{ width: 32 }, { width: 16 }, { width: 16 }, { width: 16 }, { width: 10 }]
+  let r = 1
+  const str = (row, col, text, align, o) => {
+    o = o || {}
+    const c = ws.getCell(row, col)
+    c.value = text == null ? '' : text
+    c.font = { name: o.font || CJK, size: o.size || 10, bold: !!o.bold, color: o.color ? { argb: o.color } : undefined }
+    c.alignment = { horizontal: align || 'left', vertical: 'middle', wrapText: !!o.wrap }
+  }
+  const section = (text) => {
+    r++
+    ws.mergeCells(r, 1, r, MAXCOL)
+    str(r, 1, text, 'left', { bold: true, size: RSTY.size.h2 })   // 模板标题 2：14pt
+    setRowBorder(ws, r, 1, MAXCOL, { bottom: THIN }); ws.getRow(r).height = 26; r++
+  }
+
+  ws.mergeCells(r, 1, r, MAXCOL)
+  str(r, 1, '#' + link.no + '　' + (link.txName || '') + ' → ' + (link.rxName || ''), 'left', { bold: true, size: 15 })
+  ws.getRow(r).height = 28; r++
+  ws.mergeCells(r, 1, r, MAXCOL)
+  const sub = [(model.calc && model.calc.satelliteName), (model.calc && model.calc.frequencyBand),
+    (model.calc && model.calc.mode), (model.doc && model.doc.docNo)].filter(Boolean).join('　·　')
+  str(r, 1, sub, 'left', { size: 10, color: 'FF666666' }); ws.getRow(r).height = 18; r++
+
+  if (link.error) {
+    r++
+    ws.mergeCells(r, 1, r, MAXCOL)
+    str(r, 1, t.calcFailed + link.error, 'left', { size: 11, color: 'FFB00000', wrap: true })
+    ws.getRow(r).height = 22
+    return
+  }
+
+  // 输入参数
+  if (link.inputs && link.inputs.length) {
+    section(L.inputs)
+    for (const blk of link.inputs) {
+      ws.mergeCells(r, 1, r, 3)
+      str(r, 1, blk.title, 'left', { bold: true, size: RSTY.size.h3 }); ws.getRow(r).height = 22; r++
+      const hb = r
+      str(r, 1, L.param, 'left', { bold: true, size: RSTY.size.table })
+      str(r, 2, L.value, 'right', { bold: true, size: RSTY.size.table })
+      str(r, 3, L.unit, 'left', { bold: true, size: RSTY.size.table })
+      ws.getRow(r).height = 19; r++
+      for (const row of blk.rows) {
+        str(r, 1, row.label, 'left', { size: RSTY.size.table })
+        const vc = ws.getCell(r, 2); vc.value = numOrText(row.value)
+        vc.font = { name: FNT, size: RSTY.size.table }; vc.alignment = { horizontal: 'right', vertical: 'middle' }
+        str(r, 3, row.unit, 'left', { font: FNT, size: RSTY.size.table, color: 'FF333333' })
+        ws.getRow(r).height = 18; r++
+      }
+      gridBox(ws, hb, 1, r - 1, 3, hb)
+      r++
+    }
+  }
+
+  // 详细计算结果（与屏幕「详细预算」同一份 segments）
+  section(L.results)
+  r = writeSegmentBlocks(ws, link.segments, t, r)
+
+  // 图件（4 倍分辨率 PNG，与图上「出图」按钮出的是同一张）
+  const figs = (link.figures || []).filter((f) => f && f.dataUrl)
+  if (figs.length) {
+    section(L.figures)
+    figs.forEach((f, i) => {
+      const cap = model.lang === 'en' ? `Figure ${link.no}-${i + 1}  ${f.title || ''}` : `${L.figure} ${link.no}-${i + 1}　${f.title || ''}`
+      // 图题跨整幅：它是一句话，占着参数列会把参数列按图题长短撑宽
+      ws.mergeCells(r, 1, r, MAXCOL)
+      str(r, 1, cap, 'left', { size: 10, bold: true }); ws.getRow(r).height = 18; r++
+      r += placeImage(wb, ws, f.dataUrl, r, 460)
+      r++
+    })
+  }
+}
+
+// sheet 名：Excel 上限 31 字符，且 : \ / ? * [ ] 不合法；重名自动加尾号
+function sheetNameFor(link, used) {
+  const raw = ('#' + link.no + ' ' + (link.txName || '') + '-' + (link.rxName || ''))
+    .replace(/[\\/?*[\]:']/g, ' ').trim()
+  let base = raw.slice(0, 31) || ('#' + link.no)
+  let name = base, k = 2
+  while (used[name]) name = base.slice(0, 28) + '~' + (k++)
+  used[name] = true
+  return name
+}
+
+async function buildReportWorkbook(model) {
+  const lang = model.lang === 'en' ? 'en' : 'zh'
+  const t = strFor(lang)
+  const L = model.t || {}
+  const links = model.links || []
+  // 几何关系表按「全链路稳定序号」引用链路，与清单/详情表的 #N 同号
+  links.forEach((l, i) => { if (!l.no) l.no = i + 1; l.coord = '#' + l.no })
+  const used = {}
+  links.forEach((l) => { l.sheetName = sheetNameFor(l, used) })
+
+  const wb = new ExcelJS.Workbook()
+  wb.creator = (model.doc && model.doc.org) || (lang === 'en' ? 'Satellite Link Budget Workbench' : '卫星链路预算工作台')
+  wb.title = (model.doc && model.doc.title) || ''
+  wb.created = new Date()
+
+  buildMasterSheet(wb, model, t, L)
+
+  // 几何关系（NGSO / 再生式各自的 STK 版式表，沿用已有构建器）
+  const params = { satelliteName: (model.calc && model.calc.satelliteName) || '', frequencyBand: (model.calc && model.calc.frequencyBand) || '' }
+  const meta = { title: (model.doc && model.doc.title) || '' }
+  const ot = (model.scheme && model.scheme.orbitType) || 'GEO'
+  if (ot === 'NGSO') buildNgsoGeometrySheet(wb, links, params, meta, lang)
+  else if (ot === 'REGEN') buildRegenGeometrySheet(wb, links, params, meta, lang, (model.scheme && model.scheme.regenMode) || 'uplink')
+
+  for (const l of links) {
+    const ws = wb.addWorksheet(l.sheetName, { views: [{ showGridLines: false }] })
+    writeReportLinkSheet(wb, ws, l, model, t, L)
+  }
+  // 列宽 / 行高自适应（放在最后：要按每张表实际写进去的内容量，而不是按写表时的预期）
+  autofitBook(wb, { maxWidth: 56, maxHeight: 260 })
   return applyBookFont(wb).xlsx.writeBuffer()
 }
 
@@ -1438,4 +1717,7 @@ async function buildRainAttenuationExcel(payload) {
   return applyBookFont(wb).xlsx.writeBuffer()
 }
 
-module.exports = { buildWord, buildExcel, buildLinkBudgetExcel, buildSunOutageWord, buildRainAttenuationExcel, ROWS }
+module.exports = {
+  buildWord, buildExcel, buildSunOutageWord, buildRainAttenuationExcel, ROWS,
+  enrichReportModel, buildReportWorkbook
+}

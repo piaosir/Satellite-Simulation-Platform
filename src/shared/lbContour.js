@@ -332,12 +332,21 @@ export function smoothPathD(lines, map, tol) {
  * 沿等值线布标注锚点：位置 + 该处的切向角。
  *
  * 等值线的数值标注是这张图的读数入口——有它，读者不必拿颜色去比对色标条。
- * 三条讲究，都来自纸质等值线图（气象天气图、GMT、MATLAB clabel）的成法：
+ * 五条讲究，都来自纸质等值线图（气象天气图、GMT、MATLAB clabel）的成法：
  *   ① 顺着线走。横平的数字压在一条斜线上，读者得先判断它属于哪条线；顺着线摆，
  *      归属不言自明。角度归化到 ±90° 内，字永远不倒过来；
  *   ② 长线多标几个。一条横贯全图的线只在中间标一次，读者的视线走到两端就断了线索；
  *   ③ 均分而非取中点。落点按弧长等分（(k+½)/n），几条线的标注错开分布，
- *      不会在图心堆成一坨。
+ *      不会在图心堆成一坨；
+ *   ④ **名额轮着分给每一条线**，不是「一条线吃到饱再轮下一条」。一条电平在图上往往是
+ *      十几条互不相连的线（同一条 0 dB 线可以同时出现在华南、台湾以东与南海各处）。
+ *      旧版按长度排序后从最长的那条起、一条线先把 max 个名额占满——于是同电平其余的线
+ *      一个数字也没有，读者面前就是一片「有线无数」的曲线：实测一张地理余量图上
+ *      **62% 的可见等值线不带数字**（其中 level 10 的 3 个名额全落在同一条长线上，
+ *      另外 3 条线全空）。改成轮次分配：每条线各拿到第一个数字之后，才回头给长线补第二个；
+ *   ⑤ 落点被否（贴边 / 撞上别的数字）时**沿线另找一处**，而不是这条线就此作罢。
+ *      旧版一条线只试一个点，撞上就整条线没有数字了——而「不压在工作点上」要的是
+ *      挪开，不是放弃。
  *
  * 标注处的线要断开让位（由渲染层用 mask 做），故这里同时给出角度：断口也得顺着线转。
  *
@@ -345,9 +354,12 @@ export function smoothPathD(lines, map, tol) {
  * @param map    (gi, gj) => [px, py]
  * @param opt    { minLen 线短于此不标 | gap 同线上两标注的最小弧长 | max 本电平最多几个
  *                 tan 求切向的半窗 | pad 离图框的最小距离 | w,h 图框尺寸
- *                 avoid [x, y, r] 避让区（工作点标记）}
+ *                 avoid [x, y, r] 避让区（工作点标记 / 已放下的别的数值）
+ *                 r 本电平自己这些标注的互相避让半径（0 = 不自避让）}
  * @returns Array<{ x, y, a }>  a = 角度（度）
  */
+// 落点被否时沿线退让的档位（占本段弧长的比例）：先段心，再朝两侧逐级挪开
+const LAB_RETRY = [0, 1 / 6, -1 / 6, 1 / 3, -1 / 3, 5 / 12, -5 / 12]
 export function labelAnchors(lines, map, opt) {
   const o = opt || {}
   const minLen = o.minLen > 0 ? o.minLen : 60
@@ -355,9 +367,13 @@ export function labelAnchors(lines, map, opt) {
   const maxN = o.max > 0 ? o.max : 4
   const tan = o.tan > 0 ? o.tan : 8
   const pad = o.pad > 0 ? o.pad : 0
+  const selfR = o.r > 0 ? o.r : 0
   const W = Number.isFinite(o.w) ? o.w : Infinity
   const H = Number.isFinite(o.h) ? o.h : Infinity
-  const av = o.avoid
+  // 避让区：一个圆 [x,y,r]，或一串圆 [[x,y,r], …]（加密之后同一处会挤上好几条线的数值，
+  // 调用方把已经放下的标注一路喂进来，后面的线就绕开它们）。
+  // 复制一份：本电平自己新放下的也要接着往里加（见 selfR），不能改到调用方的数组上去。
+  const av = o.avoid && o.avoid.length ? (Array.isArray(o.avoid[0]) ? o.avoid.slice() : [o.avoid]) : []
   const out = []
   if (!lines || !lines.length) return out
 
@@ -375,21 +391,27 @@ export function labelAnchors(lines, map, opt) {
     const cum = new Float64Array(p.length)
     for (let i = 1; i < p.length; i++) cum[i] = cum[i - 1] + Math.hypot(p[i][0] - p[i - 1][0], p[i][1] - p[i - 1][1])
     const L = cum[p.length - 1]
-    if (L >= minLen) prep.push({ p, cum, L })
+    // want = 这条线自己想要几个数字（够长才重复），落点仍按弧长等分成 want 段、各取段心
+    if (L >= minLen) prep.push({ p, cum, L, want: Math.max(1, Math.min(3, Math.floor(L / gap) + 1)), got: 0 })
   }
-  // 长线优先：名额有限时该给贯穿全图的主线，而不是角落里的碎线
+  // 长线优先：名额有限时该先给贯穿全图的主线，而不是角落里的碎线
   prep.sort((a, b) => b.L - a.L)
 
-  for (const s of prep) {
-    if (out.length >= maxN) break
-    const n = Math.max(1, Math.min(3, Math.floor(s.L / gap) + 1))
-    for (let k = 0; k < n && out.length < maxN; k++) {
-      const t = s.L * (k + 0.5) / n
+  const usable = (c) => {
+    if (!c) return false
+    // 贴边的标注会被图框裁掉半个字，半个数字比没有数字更糟
+    if (c[0] < pad || c[1] < pad || c[0] > W - pad || c[1] > H - pad) return false
+    return !av.some((z) => Math.hypot(c[0] - z[0], c[1] - z[1]) < z[2])
+  }
+  // 在第 k 段（共 want 段）里找一个放得下的落点
+  const anchorIn = (s, k) => {
+    const seg = s.L / s.want
+    const t0 = seg * (k + 0.5)
+    for (const f of LAB_RETRY) {
+      const t = t0 + f * seg
+      if (t < 0 || t > s.L) continue
       const c = ptAtArc(s, t)
-      if (!c) continue
-      // 贴边的标注会被图框裁掉半个字，半个数字比没有数字更糟
-      if (c[0] < pad || c[1] < pad || c[0] > W - pad || c[1] > H - pad) continue
-      if (av && Math.hypot(c[0] - av[0], c[1] - av[1]) < av[2]) continue
+      if (!usable(c)) continue
       // 切向取前后各一段弦（而非相邻两点）：细化网格上相邻点只隔亚像素，
       // 用它定角度会被采样抖动带得乱转
       const a1 = ptAtArc(s, Math.max(0, t - tan))
@@ -400,7 +422,21 @@ export function labelAnchors(lines, map, opt) {
         if (a > 90) a -= 180
         else if (a < -90) a += 180
       }
-      out.push({ x: c[0], y: c[1], a })
+      return { x: c[0], y: c[1], a }
+    }
+    return null
+  }
+
+  // 轮次分配（见 ④）：第 r 轮只给「已放下 r 个、且还想要更多」的线各补一个
+  for (let r = 0; r < 3 && out.length < maxN; r++) {
+    for (const s of prep) {
+      if (out.length >= maxN) break
+      if (s.got !== r || s.want <= r) continue
+      const a = anchorIn(s, r)
+      s.got = r + 1                       // 这一段试过就算走完，下一轮换下一段找（不原地重试）
+      if (!a) continue
+      out.push(a)
+      if (selfR > 0) av.push([a.x, a.y, selfR])
     }
   }
   return out
@@ -596,25 +632,123 @@ function catmull(p0, p1, p2, p3, t) {
   return v < lo ? lo : v > hi ? hi : v
 }
 
+// —— 等值线电平：等间距只在场的取值大致均匀时才够用 ——
+//
+// 等间距电平把线按**值**均匀撒下去，于是每条线之间分到多少「地」，全看场的分布：
+// 一张余量图上，主瓣里那一大片（图上占五成面积、也正是读者真要看的那块）只跨几个 dB，
+// 等间距下拿到一两条线；而覆盖边缘掉下去的长尾跨着几十个 dB，反倒吃掉大半电平表。
+// 读者看到的就是「档位都画在没什么可读的那一侧，最关心的那片里一条线也没有」。
+// 这与色标的自适应展布（见 lbColorScale 的 buildStretch）是同一件事的两面：
+// 视觉资源该按数据的疏密分，不按值域的长短分。
+//
+// 做法是**局部加密**，不是把电平表整个改成分位数：
+//   ① 骨架仍是常规的 nice step（下称 base），全域等间距、临界值仍精确入表——
+//      「线的疏密 = 场的陡缓」这条读图直觉靠它保住，出图与旧图也仍对得上账；
+//   ② 逐带量它占了多少面积，只给超出均摊份额的那几带插入加密线；
+//   ③ 加密线的间距一律是 base 的整数分之一（2/4/5/10），故它们仍是好读的数、
+//      且与 base 线严格对齐——不会出现 11.37 这种电平，也不会出现两套错开的网格。
+// 加密线在图上画得比骨架轻（见 LbSurfacePlot 的 .sf-iso-minor），读者一眼分得出
+// 哪些是全域的骨架、哪些是局部补的细节。
+const SUBDIV = {
+  target: 2,     // 加密后的目标带数 = target × count（每带的均摊面积份额 = 1/(target·count)）
+  maxDiv: 10,    // 单带最多细到 base/10
+  cap: 4         // 电平总数上限 = 2·count + cap
+}
+
 /**
  * 等值线电平选取。
  * 有临界值时把它钉进电平表并以它为对齐基准（临界线必须恰好画在临界值上，
  * 差 0.2 dB 的一条线画在 0 附近，读者会当成可行边界）；否则常规取整。
- * @returns { levels:number[], step:number }
+ * @param samples 升序排好的场值样本；给了就按数据密度局部加密（见上），不给则纯等间距
+ * @returns { levels:number[], step:number, base:number, minor:number[] }
+ *   levels 含加密线（升序）；minor 只列加密出来的那些；step 是最细的间距（供格式化小数位）
  */
-export function contourLevels(min, max, crit, count) {
+export function contourLevels(min, max, crit, count, samples) {
   const n = Math.max(2, count || 8)
-  if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) return { levels: [], step: 0 }
+  if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) return { levels: [], step: 0, base: 0, minor: [] }
   const raw = (max - min) / n
   const exp = Math.floor(Math.log10(raw))
   const f = raw / Math.pow(10, exp)
-  const step = (f < 1.5 ? 1 : f < 3 ? 2 : f < 7 ? 5 : 10) * Math.pow(10, exp)
+  const base = (f < 1.5 ? 1 : f < 3 ? 2 : f < 7 ? 5 : 10) * Math.pow(10, exp)
   const anchor = Number.isFinite(crit) ? crit : 0
-  const k0 = Math.ceil((min - anchor) / step)
-  const k1 = Math.floor((max - anchor) / step)
+  const rnd = (v) => Math.round(v * 1e9) / 1e9
+  const k0 = Math.ceil((min - anchor) / base)
+  const k1 = Math.floor((max - anchor) / base)
   const levels = []
-  for (let k = k0; k <= k1; k++) levels.push(Math.round((anchor + k * step) * 1e9) / 1e9)
-  return { levels, step }
+  for (let k = k0; k <= k1; k++) levels.push(rnd(anchor + k * base))
+  const plain = { levels, step: base, base, minor: [] }
+  if (!samples || samples.length < 64) return plain
+
+  // 域内样本数为分母：域外的值（色标域取 2–98 分位，两头各裁掉一截）本就不画线，
+  // 算进来只会把每带的占比一律稀释、加密判据整体偏松
+  const lower = (v) => { let lo = 0, hi = samples.length; while (lo < hi) { const m = (lo + hi) >> 1; if (samples[m] < v) lo = m + 1; else hi = m } return lo }
+  const tot = lower(max) - lower(min)
+  if (tot < 64) return plain
+  const edges = [min, ...levels.filter((v) => v > min + 1e-9 && v < max - 1e-9), max]
+  if (edges.length < 3) return plain          // 域内一条骨架线都没有，无从谈局部
+
+  // 细分梯度：分完仍要是「好读的数」。base 首位为 2 时不能用 /5（2→0.4），改用 /4
+  const lead = Math.round(base / Math.pow(10, Math.floor(Math.log10(base) + 1e-9)))
+  const DIV = lead === 2 ? [2, 4, 10] : [2, 5, 10]
+  // 一带内 base/d 的倍数（与骨架重合的跳过）
+  const subOf = (a, b, d) => {
+    const out = []
+    if (d <= 1) return out
+    const s = base / d
+    for (let k = Math.floor((a - anchor) / s); k <= Math.ceil((b - anchor) / s); k++) {
+      if (((k % d) + d) % d === 0) continue
+      const v = rnd(anchor + k * s)
+      if (v > a + 1e-9 && v < b - 1e-9) out.push(v)
+    }
+    return out
+  }
+  const share = 1 / (SUBDIV.target * n)
+  const w = [], div = []
+  for (let i = 0; i < edges.length - 1; i++) {
+    const a = edges[i], b = edges[i + 1]
+    const wi = (lower(b) - lower(a)) / tot
+    const need = Math.min(SUBDIV.maxDiv, Math.ceil(wi / share))     // 这一带该切成几份
+    w.push(wi)
+    // 档位取**比例上最接近** need 的那一档（不是「≥need 的最小档」——need=7 时那会取到
+    // base/10，一带里塞 9 条线，比要的多出一半，还把总数顶到封顶去挤别的带）
+    let d = need <= 1 ? 1 : DIV.reduce((best, c) =>
+      Math.abs(Math.log(c / need)) < Math.abs(Math.log(best / need)) ? c : best, DIV[0])
+    // 但档位必须真的插得出线：域两端那两带常常比一整格窄（正值区 [0, +1.6] 碰上
+    // base/2=2.5 就一条也插不进去，读者看到的仍是「最想看的那片里没有线」），故往细里走。
+    // 门限只要 60% —— 要求「一条不少地插满 need−1 条」的话，宽带会被顶到 base/10
+    // 上去（一带塞 9 条），而宽带本就不缺线，缺线的是窄带
+    if (d > 1) {
+      const least = Math.max(1, Math.ceil((need - 1) * 0.6))
+      for (const cand of DIV) {
+        if (cand < d) continue
+        d = cand
+        if (subOf(a, b, cand).length >= least) break
+      }
+    }
+    div.push(d)
+  }
+  // 总数封顶：**逐档降**，每次挑「每条加密线摊到的面积最少」的那一带降一级——
+  // 那是最不划算的一处加密。早先是「面积最小的带整带取消」，可主瓣顶端那种又窄又关键的带
+  // 面积本就不大，一封顶就被整带抹掉，等于专挑读者最想看的地方下手。
+  const extra = () => div.reduce((s, d, i) => s + subOf(edges[i], edges[i + 1], d).length, 0)
+  const maxN = 2 * n + SUBDIV.cap
+  for (let guard = 0; guard < 64 && levels.length + extra() > maxN; guard++) {
+    let pick = -1, worst = Infinity
+    for (let i = 0; i < div.length; i++) {
+      const c = subOf(edges[i], edges[i + 1], div[i]).length
+      if (!c) continue
+      const per = w[i] / c
+      if (per < worst) { worst = per; pick = i }
+    }
+    if (pick < 0) break
+    const k = DIV.indexOf(div[pick])
+    div[pick] = k > 0 ? DIV[k - 1] : 1
+  }
+  const minor = []
+  for (let i = 0; i < div.length; i++) minor.push(...subOf(edges[i], edges[i + 1], div[i]))
+  if (!minor.length) return plain
+  const fine = div.reduce((s, d) => Math.min(s, d > 1 ? base / d : s), base)
+  return { levels: levels.concat(minor).sort((a, b) => a - b), step: fine, base, minor }
 }
 
 // 场的极值（跳过 NaN）；全空返回 null

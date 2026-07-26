@@ -99,24 +99,41 @@ function resetView() { if (globe) globe.resetView() }
 
 // —— 导出 ——
 const exportFile = (typeof window !== 'undefined' && window.api) ? window.api.exportFile : null
+// 取一帧 = 一个 data:image/png URL（snapshot 内部先 syncSprites 再渲染，见 linkGlobe）。
+// 与 exportPng 同一条路径，报告里的图即用户手动导出的那张图。
+function pngDataUrl(scale) {
+  if (!globe || !hasGeom.value) return ''
+  try { return globe.snapshot(scale || 4) } catch (e) { return '' }
+}
 async function exportPng() {
-  if (!exportFile || !globe) return
+  if (!exportFile) return
+  const url = pngDataUrl(4)
+  if (!url) return
   try {
-    const url = globe.snapshot(4)
-    const blob = await (await fetch(url)).blob()
-    const data = new Uint8Array(await blob.arrayBuffer())
+    const data = new Uint8Array(await (await fetch(url)).arrayBuffer())
     await exportFile({ defaultName: t.value('链路视图') + '.png', data, filters: [{ name: t.value('PNG 图片'), extensions: ['png'] }] })
   } catch (e) { /* 用户取消或取帧失败：不出图即可 */ }
 }
+
+// —— 供「报告导出」逐条链路取图 ——
+// 场景是同步 setScene 的，没有异步扫描要等，故 ready 恒真；画不出几何时 hasFigure 为假，
+// 报告里这一条就没有这张图（「没有就是没有」）。
+defineExpose({
+  flush: () => {},
+  ready: computed(() => true),
+  hasFigure: hasGeom,
+  figTitle: computed(() => t.value('链路视图')),
+  pngDataUrl: async (s) => pngDataUrl(s)
+})
 </script>
 
 <template>
   <div class="lk">
     <div class="lk-hd">
-      <b class="lk-name">{{ t('链路') }}</b>
-      <span class="lk-sub">{{ t('站星几何 · 这条链路在天上长什么样') }}</span>
+      <b class="lk-name">{{ t('链路视图') }}</b>
+      <span class="lk-sub">{{ t('站星几何') }}</span>
       <span class="lk-flex"></span>
-      <button class="lk-btn" :title="t('导出本图为 PNG 图片（4 倍分辨率，可直接放进报告）')" @click="exportPng">{{ t('出图') }}</button>
+      <button class="lk-btn" :title="t('导出为 PNG 图片（4 倍分辨率）')" @click="exportPng">{{ t('出图') }}</button>
     </div>
 
     <div class="lk-bar">

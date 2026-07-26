@@ -77,8 +77,10 @@ console.log('=== 显示单位自适应测试 ===\n');
   for (const s of segs) for (const row of s.rows) rows.push(row);
   const bw = rows.find((row) => row.key === '载波带宽');
   ok('GEO 瀑布载波带宽 36000 kHz→36 MHz', bw && bw.unit === 'MHz' && bw.up === '36', bw && `${bw.up} ${bw.unit}`);
-  const pa = rows.find((row) => row.key === '功放建议功率(W)');
-  ok('GEO 瀑布功放 0.5 W→500 mW（标签同步）', pa && pa.unit === 'mW' && pa.up === '500' && pa.label === '功放建议功率(mW)');
+  // v1.4.6 段重整：旧「功率谱·增益与噪声」里的『功放建议功率(W)』与「可用度与资源」里的
+  // 『功放建议值(W)』本是同一个字段（paRecommendation）列了两遍，已合并进 §9 资源占用这一处。
+  const pa = rows.find((row) => row.key === '功放建议值(W)');
+  ok('GEO 瀑布功放 0.5 W→500 mW（标签同步）', pa && pa.unit === 'mW' && pa.up === '500' && pa.label === '功放建议值(mW)');
 }
 
 // ⑤ 引擎小功率精度回归：微瓦级功放不得被 toFixed(3) 舍成 '0.000'（线性值与 dB 侧一致，
@@ -94,10 +96,97 @@ console.log('=== 显示单位自适应测试 ===\n');
   const segs = buildWaterfallSegments({ results: r, lang: 'zh', orbitType: 'GEO' });
   const rows = [];
   for (const s of segs) for (const row of s.rows) rows.push(row);
-  const pa = rows.find((row) => row.key === '功放建议功率(W)');
+  const pa = rows.find((row) => row.key === '功放建议值(W)');
   ok('微瓦级功放瀑布换 µW 档', pa && pa.unit === 'µW' && parseFloat(pa.up) > 1, pa && `${pa.up} ${pa.unit}`);
   const paDbm = rows.find((row) => row.key === '功放实际输出');
   ok('独立行功放实际输出 dBW→dBm', paDbm && paDbm.unit === 'dBm', paDbm && `${paDbm.up} ${paDbm.unit}`);
+
+  // ⑥ 机读数值不变式（报表铺路层）：屏幕显示串与行上挂的 num 必须永远是同一个数。
+  // 这条一挂就说明有人只改了显示层没改 num（换档、回填、格式化都是嫌疑），
+  // 后果是屏幕上核对过的数字与导出的 Excel 对不上——链路预算里这是致命的。
+  const NUMF = { up: 'num', down: 'numDown', total: 'numTotal' };
+  const COLS = { 1: ['up'], 2: ['up', 'down'], 3: ['up', 'down', 'total'] };
+  let bad = null, checked = 0;
+  for (const s of segs) {
+    for (const row of s.rows) {
+      for (const c of (COLS[s.cols] || ['up'])) {
+        const f = NUMF[c];
+        if (!Object.prototype.hasOwnProperty.call(row, f)) continue;
+        const shown = String(row[c] === undefined || row[c] === null ? '' : row[c]).trim();
+        const n = Number(shown);
+        const expect = (shown === '' || shown === '—' || shown === '-' || !Number.isFinite(n)) ? null : n;
+        checked++;
+        if (row[f] !== expect && !bad) bad = `§${s.no} ${s.titleZh} / ${row.key} / ${c}: 显示 "${shown}" vs num ${row[f]}`;
+      }
+    }
+  }
+  ok('显示串与机读 num 逐格一致', !bad, bad || `${checked} 格全对`);
+
+  // ⑦ 工况对照段（晴空 / 降雨 / 雨致代价）——引擎只算降雨一档，晴空档由 builder 按 dB 反推。
+  // 用构造数据精确核对：上行只加雨衰，下行加雨衰 + G/T 劣化，合成以引擎的 carrierTotalCN 为锚、
+  // 只叠加并联式算出的增量（直接拿并联绝对值会与引擎差个舍入尾数，无雨时显示成假台阶 −0.01）。
+  {
+    const par = (a, bb) => -10 * Math.log10(Math.pow(10, -a / 10) + Math.pow(10, -bb / 10));
+    // 下行功率链字段要配齐：GEO 构建器要靠它们反解「转嫁到下行的上行残余雨衰」
+    // （dnResidualRain = 下行热噪声C/N − G/T劣化 − 下行C/N − 下行干扰损失）。缺字段时 null 按 0 参与
+    // 算术，会反解出一个上百 dB 的假残余量。此处配成残余量恰为 0 的一组。
+    const segsW = buildWaterfallSegments({
+      results: {
+        linkmargin: '3.00', thresholdCN: '4.50', RXnoiseBW: '65.00',
+        uplinkCN: '12.00', downlinkCN: '10.00', carrierTotalCN: '7.50',
+        uplinkRainAttenuation: '3.50', downlinkRainAttenuationResult: '7.60',
+        gOverTdegradationResult: '2.90',
+        uplinkPowerRatioResult: '10', downlinkPowerRatioResult: '20',  // 下行主导 → 下行雨衰/劣化计入
+        transponderOutputEIRP: '50.00', downlinkFSLResult: '206.00', gOverTeResult: '12.90',
+        downlinkInterferenceLossResult: '0.00'
+      },
+      lang: 'zh', orbitType: 'GEO'
+    });
+    const w = segsW.find((s) => s.id === 'weather');
+    const row = (label) => w && w.rows.find((x) => x.key === label);
+    ok('工况对照段存在且为双列', !!w && w.cols === 2 && w.heads.join('/') === '晴空/降雨',
+      w && w.cols + ' 列 ' + (w.heads || []).join('/'));
+    const up = row('上行 C/(N+I)'), dn = row('下行 C/(N+I)'), tot = row('合成 C/(N+I)');
+    ok('上行晴空 = 降雨 + 上行雨衰', up && up.up === '15.5' && up.down === '12',
+      up && `${up.up} / ${up.down}`);
+    ok('下行晴空 = 降雨 + 下行雨衰 + G/T 劣化', dn && dn.up === '20.5' && dn.down === '10',
+      dn && `${dn.up} / ${dn.down}`);
+    // 代价明细行落在「降雨」列
+    const cost = (label) => { const x = row(label); return x ? x.down : null; };
+    ok('代价明细逐条列出（上行雨衰 / 下行雨衰 / G-T 劣化）',
+      cost('上行雨衰') === '3.5' && cost('下行雨衰') === '7.6' && cost('G/T 劣化（降雨）') === '2.9',
+      `${cost('上行雨衰')} / ${cost('下行雨衰')} / ${cost('G/T 劣化（降雨）')}`);
+    const expClear = Math.round((7.5 + (par(15.5, 20.5) - par(12, 10))) * 100) / 100;
+    ok('合成晴空以引擎值为锚 + 并联增量', tot && Math.abs(parseFloat(tot.up) - expClear) < 0.011,
+      tot && `${tot.up} vs 期望 ${expClear}`);
+    // 无雨时不得出现「雨致代价 −0.01」这种舍入假台阶
+    const segsDry = buildWaterfallSegments({
+      results: {
+        linkmargin: '3.00', thresholdCN: '4.50', RXnoiseBW: '65.00',
+        uplinkCN: '12.80', downlinkCN: '13.03', carrierTotalCN: '9.91',
+        uplinkRainAttenuation: '0.00', downlinkRainAttenuationResult: '0.00', gOverTdegradationResult: '0.00',
+        uplinkPowerRatioResult: '10', downlinkPowerRatioResult: '20',
+        transponderOutputEIRP: '50.00', downlinkFSLResult: '206.00', gOverTeResult: '5.43',
+        downlinkInterferenceLossResult: '0.00'
+      },
+      lang: 'zh', orbitType: 'GEO'
+    });
+    const wd = segsDry.find((s) => s.id === 'weather');
+    // 无雨：晴空档与降雨档必须逐行相等（并联式重算若不以引擎值为锚，这里会差出 0.01 的假台阶）
+    const bad = wd && wd.rows.filter((x) => x.up !== '' && x.down !== '' && x.up !== x.down);
+    ok('无雨时晴空档与降雨档逐行相等（无舍入假台阶）', bad && bad.length === 0,
+      bad && bad.map((x) => `${x.key}: ${x.up} vs ${x.down}`).join(', '));
+  }
+
+  // 段元数据：报表端按 id / no 认段，不受 lang 影响
+  const ids = segs.map((s) => s.id).join(',');
+  ok('GEO 段序齐全且编号连续',
+    ids === 'carrier,geometry,propagation,satellite,psd,noise,cascade,performance,weather,interference,resources' &&
+    segs.every((s, i) => s.no === i + 1), ids);
+  const en = buildWaterfallSegments({ results: r, lang: 'en', orbitType: 'GEO' });
+  ok('英文报表段 id / 号不变（只有 title 变）',
+    en.map((s) => s.id).join(',') === ids && en[0].title === 'Carrier & Modulation' && en[0].titleZh === '载波与调制参数',
+    en[0].title);
 }
 
 console.log(`\n共 ${pass + fail} 项：PASS ${pass} / FAIL ${fail}`);

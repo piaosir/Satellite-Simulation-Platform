@@ -20,5 +20,24 @@ release/
 .lbntnharness/
 .satpickharness/
 
+# 离屏验证台（地理场图：等值线标注 + 可拖色标条，场为合成值），本地开发用，不进仓库
+.sfharness/
+
+# 离屏验证台（「详细预算」文档区排版核对：真引擎算例 + 新旧排版对照快照，node .wfharness/gen.mjs 重生成）
+.wfharness/
+
+# 离屏验证台（分享 / 导入：两台"机器"并排，A 机勾选出码 → B 机粘码看清单再落盘），本地开发用，不进仓库
+.shareharness/
+
 # 在线分享凭证（含密钥，不进仓库；随安装包打包）
 electron/services/shareConfig.js
+
+# 干扰分析（C/I）UI 验证台：CiApp 挂浏览器里单跑，window.api 由真引擎产出的 fixtures 顶上
+.ciharness/
+
+# 离屏验证台（「导出报告」对话框：点框外不关 / ✕ · 取消 · Esc 才关），本地开发用，不进仓库
+.rdharness/
+
+# 可见性分析「时间覆盖」读数验证台：真 useVisibility + 真 SGP4（星历取 resources/omm），
+# CSS 从 ConstellationMap3D.vue 原文抽注，只用来核对侧栏读数排版；数值正确性归 visTimeCoverage.test.mjs
+.visharness/

@@ -56,14 +56,36 @@ const RES = [
   { n: 41, label: '细 41×41' }
 ]
 
-const DEF_Z = 'linkmargin'
-// 视图限位：整幅世界地图。缩到刚好一整幅就到底，也拖不出界——世界之外没有站址可扫，
-// 再缩下去只是把这幅图摊小、四周围一圈重复的地图与空网格。
+// 等值线的档位密度（= 骨架电平数，图上实际线数还会按数据疏密局部加密，见 lbContour 的
+// contourLevels）。原先固定 8：一张图上合适的线数随场的形状、图框大小与读图目的变化——
+// 看高低趋势时 5 条即足够清晰，要在主瓣里量出零点几 dB 时 8 条尚不足。
+// 固定取值只能折中，故开放为可调项（用户 2026-07-26：「画线密度改为可调整」）。
+const DENSITY = [
+  { n: 5, label: '疏' },
+  { n: 8, label: '中' },
+  { n: 12, label: '密' },
+  { n: 16, label: '很密' }
+]
+// 地物线（岸线 / 国界）的浓淡倍率：α 与线宽同乘一个数（见 LbSurfacePlot 的 mapInk）。
+// 1 = 定标值。给旋钮的缘由同上：找站落在哪个国家时要它压得住，只看场的形状时又嫌它吵。
+const MAPINK = [
+  { k: 0.7, label: '淡' },
+  { k: 1, label: '中' },
+  { k: 1.35, label: '浓' }
+]
+
+// 默认场 = 下行雨衰（收信站侧）：链路搬到别处最先失效的就是这一项，故作为进图第一眼。
+// 扫发信站时它属对端、不在场列表里，退到 ALT_Z（链路余量）。
+const DEF_Z = 'downlinkRainAttenuationResult'
+const ALT_Z = 'linkmargin'
+// 视图限位：整幅世界地图。缩到刚好一整幅即为下界，亦不可拖出边界——世界之外没有站址可扫，
+// 再缩只是把图面摊小、四周围一圈重复的地图与空网格。
 const WORLD = { x0: -180, x1: 180, y0: -90, y1: 90 }
 
 // —— 轴 ——
 // 站址二选一（轴键随之切换）；上层锁定时以锁定值为准，控制条上不再出现这一项。
-const siteSel = ref(load('site', 'tx'))
+// 默认收信站：下行段是余量的常见瓶颈，与默认场（下行雨衰）同侧。
+const siteSel = ref(load('site', 'rx'))
 const locked = computed(() => (props.fixedSite === 'tx' || props.fixedSite === 'rx'))
 const site = computed(() => (locked.value ? props.fixedSite : siteSel.value))
 // 轴名同时是图上的轴标注与导出 CSV 的表头，故在这里就按报表语言定好
@@ -76,8 +98,9 @@ const axes = computed(() => {
 })
 
 const xMin = ref(''), xMax = ref(''), yMin = ref(''), yMax = ref('')
-const res = ref(load('res', 31))
-const levelCount = ref(load('levels', 8))
+const res = ref(load('res', 21))
+const levelCount = ref(load('levels', 5))
+const mapInk = ref(load('mapink', 1.35))
 
 // 默认区间：当前站址周围一个**正方**窗口（整幅世界地图上一条链路只是一个点，铺满全球既慢
 // 又看不出名堂）。两轴同跨 100°——图框的形状由经纬跨度锁死（1°经 = 1°纬，见 LbSurfacePlot
@@ -178,8 +201,11 @@ const flatKeys = computed(() => {
 const result = shallowRef(null)     // 网格是 Float64Array，不要进深响应式（几千个数逐个建代理纯属烧 CPU）
 const running = ref(false)
 const errMsg = ref('')
+// 「已排上队但还没开跑」：入参刚变、正等那 400 ms 防抖的这段时间里 running 仍是 false，而
+// 图上画的还是上一条链路的场。批量出图（报告导出逐条取图）必须能分辨这一刻，否则取到的是前一条的图。
+const pending = ref(false)
 let _t = null, _seq = 0
-function schedule() { clearTimeout(_t); _t = setTimeout(run, 400) }
+function schedule() { pending.value = true; clearTimeout(_t); _t = setTimeout(run, 400) }
 
 // 入参过 IPC 前先脱掉 Vue 的响应式外衣：留底的引擎入参存在 ref 里，取出来是 reactive
 // Proxy，而结构化克隆不认 Proxy（会以「An object could not be cloned.」告败）
@@ -202,11 +228,12 @@ const geoSpec = computed(() => {
 })
 
 async function run() {
-  if (props.unavailable || !props.sweep2D || !props.params) { result.value = null; return }
+  clearTimeout(_t)
+  if (props.unavailable || !props.sweep2D || !props.params) { result.value = null; pending.value = false; return }
   const ax = axes.value
   const x0 = parseFloat(xMin.value), x1 = parseFloat(xMax.value)
   const y0 = parseFloat(yMin.value), y1 = parseFloat(yMax.value)
-  if (!(x1 > x0) || !(y1 > y0)) { errMsg.value = '区间无效（上限须大于下限）'; return }
+  if (!(x1 > x0) || !(y1 > y0)) { errMsg.value = '区间无效（上限须大于下限）'; pending.value = false; return }
   const seq = ++_seq
   running.value = true
   try {
@@ -228,7 +255,7 @@ async function run() {
     if (seq !== _seq) return
     result.value = null
     errMsg.value = (e && e.message) ? e.message : '扫描失败'
-  } finally { if (seq === _seq) running.value = false }
+  } finally { if (seq === _seq) { running.value = false; pending.value = false } }
 }
 // 星位/方向图匹配变了，覆盖圈跟着变 → 与入参同等对待，一起触发重扫
 watch([() => props.params, () => props.scene, () => props.geoLink], schedule, { deep: true })
@@ -239,7 +266,7 @@ watch([xMin, xMax, yMin, yMax, res, site, () => props.engine], schedule)
 // 而 zOptions → availKeys → result 的链条要等 result 声明之后才算得动。
 watch(zOptions, (opts) => {
   if (!opts.length || opts.some((o) => o.key === zKey.value)) return
-  zKey.value = (opts.find((o) => o.key === DEF_Z) || opts[0]).key
+  zKey.value = (opts.find((o) => o.key === DEF_Z) || opts.find((o) => o.key === ALT_Z) || opts[0]).key
 })
 
 // —— 图面数据 ——
@@ -299,16 +326,20 @@ function collectRules() {
 // 少了这一路，出的图就是把一张屏幕分辨率（dpr 1~2）的位图硬撑成 4 倍大——岸线糊成宽边，
 // 正是原先「出图质量太差」的样子。
 const PNG_SCALE = 4
-async function exportPng() {
-  if (!exportFile || !plotEl.value) return
+// 出一张图 = 一个 data:image/png URL。抽出来单独一支是给「报告导出」用的：那边要把
+// 每条链路的这张图收进报告模型，走的必须是与手动「出图」完全相同的一条渲染路径
+// ——报告里的图和用户自己导出来的图，不该是两张不一样的图。
+async function pngDataUrl(scale) {
+  if (!plotEl.value) return ''
+  const s = scale || PNG_SCALE
   const cs = getComputedStyle(document.documentElement)
   const bg = (cs.getPropertyValue('--bg') || '#fff').trim() || '#fff'
   // 空值的自定义属性不能写进声明：`--lb-serif:;` 会让 var(--lb-serif, 回落) 落到「空」
   // 而不是回落值（自定义属性的空值是合法值，不触发 fallback），整幅字体因此失效
   const decl = CSS_VARS.map((v) => [v, (cs.getPropertyValue(v) || '').trim()])
     .filter(([, val]) => val).map(([v, val]) => v + ':' + val).join(';') + ';background:' + bg
-  let src = plotEl.value.exportSvgString(decl, PNG_SCALE)
-  if (!src) return
+  let src = plotEl.value.exportSvgString(decl, s)
+  if (!src) return ''
   // 离开页面就没有外部样式表可依，故把与图有关的规则内联进去
   src = src.replace(/<svg([^>]*)>/, (m, a) => `<svg${a}><style>${collectRules()}</style>`)
   const { w, h } = plotEl.value.svgSize()
@@ -317,16 +348,22 @@ async function exportPng() {
     img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(src)
     await img.decode()
     const cv = document.createElement('canvas')
-    cv.width = Math.max(1, Math.round(w * PNG_SCALE)); cv.height = Math.max(1, Math.round(h * PNG_SCALE))
+    cv.width = Math.max(1, Math.round(w * s)); cv.height = Math.max(1, Math.round(h * s))
     const ctx = cv.getContext('2d')
-    ctx.fillStyle = bg                       // PNG 不留透明底：贴进 Word 会露出下面的东西
+    ctx.fillStyle = bg                       // PNG 不留透明底：贴进报告会露出下面的东西
     ctx.fillRect(0, 0, cv.width, cv.height)
     ctx.drawImage(img, 0, 0, cv.width, cv.height)
-    const blob = await new Promise((res) => cv.toBlob(res, 'image/png'))
-    if (!blob) return
-    const data = new Uint8Array(await blob.arrayBuffer())
+    return cv.toDataURL('image/png')
+  } catch (e) { return '' }                  // 渲染失败：没有这张图即可，不打断上层
+}
+async function exportPng() {
+  if (!exportFile) return
+  const url = await pngDataUrl(PNG_SCALE)
+  if (!url) return
+  try {
+    const data = new Uint8Array(await (await fetch(url)).arrayBuffer())
     await exportFile({ defaultName: figName.value + '.png', data, filters: [{ name: t.value('PNG 图片'), extensions: ['png'] }] })
-  } catch (e) { /* 用户取消或渲染失败：不出图即可 */ }
+  } catch (e) { /* 用户取消即可 */ }
 }
 async function exportCsv() {
   if (!exportFile || !plotEl.value) return
@@ -347,6 +384,7 @@ function load(k, def) {
 function save(k, v) { try { localStorage.setItem(props.storeKey + '/viz/geo/' + k, JSON.stringify(v)) } catch (e) { /* ignore */ } }
 watch(zKey, (v) => save('z', v)); watch(res, (v) => save('res', v))
 watch(levelCount, (v) => save('levels', v))
+watch(mapInk, (v) => save('mapink', v))
 
 onMounted(async () => {
   resetRange()
@@ -356,22 +394,34 @@ onMounted(async () => {
   run()
 })
 onBeforeUnmount(() => clearTimeout(_t))
+
+// —— 供「报告导出」逐条链路取图（见 LbVizPane / 各窗 exportReport）——
+//   flush  跳过 400 ms 防抖立刻重扫：批量取图时每条链路都白等 0.4 s 是纯浪费
+//   ready  这一刻图上画的就是当前入参的场（排队中/扫描中都不算数）
+//   figure 图名与图，题注在报告侧统一编号
+defineExpose({
+  flush: () => run(),
+  ready: computed(() => !pending.value && !running.value),
+  hasFigure: computed(() => !!field.value),
+  figTitle: figName,
+  pngDataUrl
+})
 </script>
 
 <template>
   <div class="sp">
     <!-- 题行：图名 + 一句话用途 + 本图的控制项与导出 -->
     <div class="sp-hd">
-      <b class="sp-name">{{ t('地理') }}</b>
-      <span class="sp-sub">{{ t('站址经纬度 · 换个地方还成不成立') }}</span>
+      <b class="sp-name">{{ t('地理场图') }}</b>
+      <span class="sp-sub">{{ t('站址经纬度') }}</span>
       <span class="sp-flex"></span>
-      <button class="sp-exp" :title="t('导出本图背后的网格数据为 CSV（一行一格）')" @click="exportCsv">{{ t('数据') }}</button>
-      <button class="sp-exp" :title="t('导出本图为 PNG 图片（4 倍分辨率，可直接放进报告）')" @click="exportPng">{{ t('出图') }}</button>
+      <button class="sp-exp" :title="t('导出网格数据为 CSV（一行一格）')" @click="exportCsv">{{ t('数据') }}</button>
+      <button class="sp-exp" :title="t('导出为 PNG 图片（4 倍分辨率）')" @click="exportPng">{{ t('出图') }}</button>
     </div>
 
     <div class="sp-bar">
       <!-- 站址二选一（轴键随之切换）；上层锁定了就不再出现这一项 -->
-      <label v-if="!locked" class="sp-f" :title="t('扫哪一端的站址：另一端固定在当前取值')">
+      <label v-if="!locked" class="sp-f" :title="t('扫描站址所在端；另一端保持当前取值')">
         <span class="sp-l">{{ t('站') }}</span>
         <select v-model="siteSel" class="sp-sel sp-sel-s">
           <option value="tx">{{ t('发信站') }}</option>
@@ -390,7 +440,7 @@ onBeforeUnmount(() => clearTimeout(_t))
         <span class="sp-dash">–</span>
         <input v-model="yMax" class="sp-in" type="number" />
       </span>
-      <label class="sp-f" :title="t('平面上画哪个量的等值线')">
+      <label class="sp-f" :title="t('等值线所绘物理量')">
         <span class="sp-l">{{ t('场') }}</span>
         <!-- 按清单的分组分档（链路质量 / 传播 / 几何 …），组名即「这个量属于链路的哪一段」。
              与本次扫描无关的那一端整组不出现（见 zGroups）；恒定的量留着并标注，不剔除 -->
@@ -402,10 +452,23 @@ onBeforeUnmount(() => clearTimeout(_t))
           </optgroup>
         </select>
       </label>
-      <label class="sp-f" :title="t('网格越密曲线越细腻，代价是逐格重跑一次引擎')">
+      <label class="sp-f" :title="t('网格分辨率：逐格调用一次引擎，分辨率越高耗时越长')">
         <span class="sp-l">{{ t('网格') }}</span>
         <select v-model.number="res" class="sp-sel sp-sel-n">
           <option v-for="r in RES" :key="r.n" :value="r.n">{{ t(r.label) }}</option>
+        </select>
+      </label>
+      <!-- 等值线密度与地物线浓淡：两项都只改画法、不重扫（网格数据一个字不动） -->
+      <label class="sp-f" :title="t('等值线档位密度（仅影响绘制，不重新计算）')">
+        <span class="sp-l">{{ t('线密') }}</span>
+        <select v-model.number="levelCount" class="sp-sel sp-sel-t">
+          <option v-for="d in DENSITY" :key="d.n" :value="d.n">{{ t(d.label) }}</option>
+        </select>
+      </label>
+      <label class="sp-f" :title="t('岸线与国界的线条浓淡')">
+        <span class="sp-l">{{ t('地图') }}</span>
+        <select v-model.number="mapInk" class="sp-sel sp-sel-t">
+          <option v-for="m in MAPINK" :key="m.k" :value="m.k">{{ t(m.label) }}</option>
         </select>
       </label>
       <button class="sp-exp" :title="t('回到默认区间')" @click="resetRange">{{ t('复位') }}</button>
@@ -424,7 +487,7 @@ onBeforeUnmount(() => clearTimeout(_t))
         :x-label="axes.x.label" :x-unit="axes.x.unit" :y-label="axes.y.label" :y-unit="axes.y.unit"
         :z-label="zLabel" :z-unit="zDef.unit"
         :z-crit="Number.isFinite(zDef.crit) ? zDef.crit : null" :z-good="zDef.good || 'above'"
-        :mark-x="markX" :mark-y="markY" :level-count="levelCount"
+        :mark-x="markX" :mark-y="markY" :level-count="levelCount" :map-ink="mapInk"
         basemap palette="turbo" :bounds="WORLD" navigable
         :height="plotHeight" :lang="lang"
         @zoom="onZoom" @reset="resetRange" />
@@ -459,6 +522,8 @@ onBeforeUnmount(() => clearTimeout(_t))
 .sp-sel { cursor: pointer; max-width: 12em; }
 .sp-sel-z { max-width: 13em; }
 .sp-sel-n, .sp-sel-s { max-width: 8em; }
+/* 线密 / 地图：选项只有一两个字，按内容收窄（撑到 8em 会在控制条上白占两格） */
+.sp-sel-t { max-width: 5.6em; }
 .sp-sel:focus, .sp-in:focus { outline: none; border-color: var(--accent); }
 .sp-in { width: 4.4em; text-align: right; font-variant-numeric: tabular-nums; }
 .sp-rng { display: inline-flex; align-items: center; gap: 3px; }

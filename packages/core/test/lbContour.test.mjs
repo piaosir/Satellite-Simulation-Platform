@@ -146,6 +146,78 @@ console.log('=== 设计空间图：等值线与色标测试 ===\n')
   ok('无临界值时按 0 对齐取整', c.levels.every((v) => Math.abs(v / c.step - Math.round(v / c.step)) < 1e-9), `levels=[${c.levels.join(', ')}]`)
 }
 
+// ⑤b 电平表按数据密度局部加密：等间距下，主瓣那片占地五成却只分到一两条线
+{
+  // 余量图的形状：八成格点挤在 5~13 dB，覆盖边缘一路掉到 −35
+  const S = []
+  for (let i = 0; i < 1400; i++) S.push(5 + 8 * (i % 350) / 349)
+  for (let i = 0; i < 350; i++) S.push(5 - 40 * i / 349)
+  S.sort((a, b) => a - b)
+  const dom = [S[Math.round(0.02 * (S.length - 1))], S[Math.round(0.98 * (S.length - 1))]]
+  const flat0 = contourLevels(dom[0], dom[1], null, 8)
+  const adp = contourLevels(dom[0], dom[1], null, 8, S)
+  // 「最挤的一带占了多少地」——治的就是这个数
+  const worst = (lv) => {
+    const e = [dom[0], ...lv.filter((v) => v > dom[0] && v < dom[1]), dom[1]]
+    let m = 0
+    for (let i = 0; i < e.length - 1; i++) m = Math.max(m, S.filter((v) => v >= e[i] && v < e[i + 1]).length / S.length)
+    return m
+  }
+  const w0 = worst(flat0.levels), w1 = worst(adp.levels)
+  ok('最挤的一带被切开', w1 < w0 * 0.6, `${(w0 * 100).toFixed(1)}% → ${(w1 * 100).toFixed(1)}%`)
+  ok('骨架一条不少（等间距那套仍在表里）', flat0.levels.every((v) => adp.levels.includes(v)))
+  ok('加密线都是 base 的整数分之一', adp.minor.every((v) => {
+    const k = v / (adp.base / Math.round(adp.base / adp.step))
+    return Math.abs(k - Math.round(k)) < 1e-9
+  }), `base=${adp.base} 最细=${adp.step} minor=[${adp.minor.join(', ')}]`)
+  ok('加密线不与骨架重合', adp.minor.every((v) => !flat0.levels.includes(v)))
+  ok('电平表升序无重复', adp.levels.every((v, i) => i === 0 || v > adp.levels[i - 1]))
+  ok('总数封顶', adp.levels.length <= 2 * 8 + 4, `${adp.levels.length} 条`)
+  // 加密只发生在数据密的那几带：外围长尾（−35~0）本就没什么可读，不该跟着变密
+  ok('长尾一侧不加密', adp.minor.every((v) => v > 0), `minor=[${adp.minor.join(', ')}]`)
+  // 不给样本 = 原样等间距（既有调用与出图不受影响）
+  ok('不给样本时行为不变', String(contourLevels(dom[0], dom[1], null, 8).levels) === String(flat0.levels) && flat0.minor.length === 0)
+  ok('样本太少时回落等间距', contourLevels(dom[0], dom[1], null, 8, S.slice(0, 40)).minor.length === 0)
+  // 临界值仍是电平表的对齐基准，加密线跟着同一根锚
+  const cr = contourLevels(-6.3, 11.8, 0, 8, S)
+  ok('加密后临界值仍精确入表', cr.levels.some((v) => v === 0))
+  ok('加密线与临界值同锚', cr.minor.every((v) => Math.abs(v / cr.step - Math.round(v / cr.step)) < 1e-9))
+}
+
+// ⑤c 窄带：主瓣顶端那一段常常比一整格还窄（合计 C/N 图上域是 [−23, +1.6]、base=5），
+// 而它正是读者唯一要比较的地方——档位必须细到真的插得进线去
+{
+  const S = []
+  for (let i = 0; i < 300; i++) S.push(0.05 + 1.5 * (i % 150) / 149)      // 主瓣：0~1.6 dB，占 15%
+  for (let i = 0; i < 1700; i++) S.push(-0.5 - 23 * Math.pow(i / 1699, 0.7))
+  S.sort((a, b) => a - b)
+  const dom = [S[Math.round(0.02 * (S.length - 1))], S[Math.round(0.98 * (S.length - 1))]]
+  const L = contourLevels(dom[0], dom[1], null, 8, S)
+  const pos = L.levels.filter((v) => v > 0)
+  ok('比一整格还窄的顶端带也插得出线', pos.length >= 2, `base=${L.base}，正值区电平 [${pos.join(', ')}]`)
+  ok('细到能落进带内（步长小于带宽）', L.step < dom[1] - 0, `最细 ${L.step}，带宽 ${(dom[1] - 0).toFixed(2)}`)
+  ok('总数仍在封顶内', L.levels.length <= 2 * 8 + 4, `${L.levels.length} 条`)
+  // 封顶靠「逐档降」而不是「整带抹掉」：窄而关键的那一带面积本就不大，
+  // 旧法一封顶就专挑它下手
+  ok('封顶不会把窄带整个抹掉', L.levels.filter((v) => v > 0).length > 0)
+}
+
+// ⑤d γ：密集段拿到的色带要**超过**它的面积份额（γ=1 时两者相等）
+{
+  const S = []
+  for (let i = 0; i < 400; i++) S.push(0.05 + 1.5 * (i % 200) / 199)
+  for (let i = 0; i < 1600; i++) S.push(-0.5 - 23 * Math.pow(i / 1599, 0.7))
+  S.sort((a, b) => a - b)
+  const min = S[Math.round(0.02 * (S.length - 1))], max = S[Math.round(0.98 * (S.length - 1))]
+  const stG = buildStretch(S, min, max)                    // 默认 γ
+  const st1 = buildStretch(S, min, max, { gamma: 1 })      // 纯按面积
+  const w = (st) => st(max) - st(0)
+  ok('γ>1 把色带从「反正很差」的一大片挪给主瓣', w(stG) > w(st1) + 0.01,
+    `γ=1 时 ${(w(st1) * 100).toFixed(1)}% → 默认 ${(w(stG) * 100).toFixed(1)}%`)
+  ok('挪归挪，仍受上下界约束（不塌成一色）', st1(min) === 0 && Math.abs(stG(max) - 1) < 1e-9 &&
+    (stG(-10) - stG(min)) > 0.05, `低端一段仍占 ${((stG(-10) - stG(min)) * 100).toFixed(1)}%`)
+}
+
 // ⑥ 双线性取值与极值
 {
   const z = build(3, 3, (i, j) => i + 10 * j)
@@ -252,10 +324,12 @@ console.log('=== 设计空间图：等值线与色标测试 ===\n')
   ok('反向线不把字倒过来', b.length === 1 && Math.abs(b[0].a) < 1e-9, `${b[0] && b[0].a.toFixed(1)}°`)
   // 短线不标：图面全是数字比没有数字更难读
   ok('短线不标', labelAnchors([[[0, 0], [10, 0]]], map, { minLen: 40 }).length === 0)
-  // 避让工作点：数字压在十字上，两样都读不清
+  // 避让工作点：数字压在十字上两样都读不清，故**沿线挪开**——不是整条线就此不标
   const av = labelAnchors(horiz, map, { minLen: 40, gap: 1e9, max: 1, w: 700, h: 400, avoid: [300, 100, 40] })
-  ok('落点撞上工作点时该处不标', av.length === 0, `${av.length} 个`)
-  // 贴边不标：半个数字比没有数字更糟
+  ok('落点撞上工作点时沿线挪开，仍标得出',
+    av.length === 1 && Math.hypot(av[0].x - 300, av[0].y - 100) >= 40,
+    av.length ? `(${av[0].x.toFixed(0)}, ${av[0].y.toFixed(0)})` : '0 个')
+  // 贴边不标：半个数字比没有数字更糟（整条线都贴着边，挪到哪儿都不行）
   const edge = labelAnchors([[[0, 4], [600, 4]]], map, { minLen: 40, gap: 1e9, max: 1, pad: 18, w: 700, h: 400 })
   ok('贴着图框边不标', edge.length === 0, `${edge.length} 个`)
   // 名额有限时给贯穿全图的主线，而不是角落里的碎线
@@ -263,6 +337,32 @@ console.log('=== 设计空间图：等值线与色标测试 ===\n')
   const m2 = labelAnchors(mixed, map, { minLen: 40, gap: 1e9, max: 1, w: 700, h: 400 })
   ok('名额优先给长线', m2.length === 1 && Math.abs(m2[0].y - 50) < 1e-6, `y=${m2[0] && m2[0].y}`)
   ok('无线时返回空', labelAnchors([], map, {}).length === 0)
+
+  // ★ 名额轮着分：一条电平在图上是好几条互不相连的线时，每条都该拿到数字。
+  // 旧版从最长的那条起「一条吃到饱」，长线独占 3 个名额，其余的线一个数字也没有——
+  // 图上于是一片「有线无数」的曲线（实测一张地理余量图 62% 的可见线不带数字）。
+  const many = [
+    [[0, 40], [600, 40]],       // 长线：够重复标 3 个
+    [[0, 120], [600, 120]],
+    [[0, 200], [600, 200]],
+    [[0, 280], [600, 280]]
+  ]
+  const rr = labelAnchors(many, map, { minLen: 40, gap: 250, max: 4, w: 700, h: 400 })
+  const ys = new Set(rr.map((p) => Math.round(p.y)))
+  ok('名额轮着分给每条线（不被最长的那条吃光）', rr.length === 4 && ys.size === 4,
+    `${rr.length} 个，落在 ${ys.size} 条线上：${[...ys].join('/')}`)
+  // 名额富余时，每条线各拿一个之后才回头补重复
+  const rr2 = labelAnchors(many, map, { minLen: 40, gap: 250, max: 8, w: 700, h: 400 })
+  const per = [40, 120, 200, 280].map((y) => rr2.filter((p) => Math.abs(p.y - y) < 1).length)
+  ok('先人手一个，再给长线补重复', per.every((c) => c >= 1) && rr2.length === 8, `每条线 ${per.join('/')} 个`)
+  // 自避让：同一电平自己的几个数字也不能叠在一起
+  const cross = [[[0, 100], [600, 100]], [[300, 0], [300, 400]]]
+  const cr = labelAnchors(cross, map, { minLen: 40, gap: 1e9, max: 4, r: 30, w: 700, h: 400 })
+  let closest = Infinity
+  for (let i = 0; i < cr.length; i++) for (let k = i + 1; k < cr.length; k++) {
+    closest = Math.min(closest, Math.hypot(cr[i].x - cr[k].x, cr[i].y - cr[k].y))
+  }
+  ok('同电平的数字互相让开', cr.length === 2 && closest >= 30, `最近两个相距 ${closest.toFixed(0)}px`)
 }
 
 // ⑧c 块极值裁剪：只是提速手段，出的线必须与不裁剪时逐位相同
@@ -422,17 +522,34 @@ console.log('=== 设计空间图：等值线与色标测试 ===\n')
 {
   const t = buildColorScale({ min: 0, max: 120, crit: 0, good: 'above', dark: false, palette: 'turbo' })
   ok('palette=turbo 压过「有临界值→发散」', t.kind === 'turbo')
-  const lo = t.rgbAt(0), hi = t.rgbAt(120)
-  ok('低端 = Turbo 深紫', lo.join(',') === '48,18,59', lo.join(','))
-  ok('高端 = Turbo 暗红', hi.join(',') === '148,24,17', hi.join(','))
-  // 彩虹型色标的本钱是「层次多」：等距取样两两之间必须都拉得开
-  const seq = [0, 15, 30, 45, 60, 75, 90, 105, 120].map((v) => t.rgbAt(v))
-  let minD = Infinity
-  for (let i = 1; i < seq.length; i++) {
-    const a = rgbToOklab(...seq[i - 1]), b = rgbToOklab(...seq[i])
-    minD = Math.min(minD, Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]))
+  // 锚点看**软化前**那一层（lutInk）：填充另外还要削彩度、朝纸面收明度（见 SOFT），
+  // 拿它去比 Turbo 的原色永远不等——软化正是要让它不等
+  const inkAt = (v) => { const i = t.idxOf(v); return [t.lutInk[i * 3], t.lutInk[i * 3 + 1], t.lutInk[i * 3 + 2]] }
+  ok('软化前低端 = Turbo 深紫', inkAt(0).join(',') === '48,18,59', inkAt(0).join(','))
+  ok('软化前高端 = Turbo 暗红', inkAt(120).join(',') === '148,24,17', inkAt(120).join(','))
+  ok('turbo 的填充被软化过', t.softened === true)
+  // 软化只准朝「淡」走：彩度只减不增，明度朝纸面（亮底）走
+  const chr = (c) => { const l = rgbToOklab(...c); return Math.hypot(l[1], l[2]) }
+  const lum = (c) => rgbToOklab(...c)[0]
+  const pts = [0, 15, 30, 45, 60, 75, 90, 105, 120]
+  ok('填充逐档比软化前淡（彩度只减不增）', pts.every((v) => chr(t.rgbAt(v)) < chr(inkAt(v)) - 1e-6),
+    pts.map((v) => `${chr(t.rgbAt(v)).toFixed(3)}<${chr(inkAt(v)).toFixed(3)}`).join(' '))
+  ok('亮底填充逐档朝纸面提亮', pts.every((v) => lum(t.rgbAt(v)) > lum(inkAt(v)) - 1e-6))
+  // 彩虹型色标的本钱是「层次多」：等距取样两两之间必须都拉得开。
+  // 软化把整层收窄了，故填充这一层的门槛跟着放到 0.04（实测 0.047）——**恰恰因为**填充淡了，
+  // 「分出十几档」这件事才更靠等值线与它的数值标注，而线取的是软化前那一层，原样 0.06 以上。
+  const minGap = (get) => {
+    const seq = pts.map(get)
+    let m = Infinity
+    for (let i = 1; i < seq.length; i++) {
+      const a = rgbToOklab(...seq[i - 1]), b = rgbToOklab(...seq[i])
+      m = Math.min(m, Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]))
+    }
+    return m
   }
-  ok('相邻档拉得开（OKLab 距离 > 0.06）', minD > 0.06, `最小 ${minD.toFixed(3)}`)
+  const minD = minGap((v) => t.rgbAt(v)), minInk = minGap(inkAt)
+  ok('填充相邻档仍拉得开（OKLab 距离 > 0.04）', minD > 0.04, `最小 ${minD.toFixed(3)}`)
+  ok('软化前那一层原样拉得开（> 0.06，等值线取色靠它）', minInk > 0.06, `最小 ${minInk.toFixed(3)}`)
   // 与临界值无关：色标本身仍是从 min 线性铺到 max（临界值只在色标条上标一条线）
   ok('turbo 的中点仍按线性域算', Math.abs(t.midT - 0) < 1e-9, String(t.midT))
   // 恒定场不能拿 Turbo 上任何一档铺满（浓色铺满会被读成「这里真有个极值」）
@@ -478,20 +595,29 @@ console.log('=== 设计空间图：等值线与色标测试 ===\n')
   const a1 = rgbToOklab(...d.rgbAt(4))[0], a2 = rgbToOklab(...d.rgbAt(-4))[0]
   ok('展布后两臂仍等距等深', Math.abs(a1 - a2) < 0.02)
 
-  // 单调色标（turbo）才展布，且色标条按**值**取样，读色比刻度处处对得上
+  // 单调色标（turbo）才展布。色标条的轴 = t（= 颜色的轴），刻度按 tAt 落位：
+  // 于是「条上某处的色」与「刻度指的那个值的色」必须处处是同一个（刻度不等距，颜色均匀）
   const s = buildColorScale({ min: lo, max: hi, dark: false, palette: 'turbo', samples: vals })
   ok('turbo 接受展布', s.adaptive === true)
-  const st = s.stops(21)
-  let barOk = true
-  for (const p of st) {
-    const want = s.cssAt(lo + (hi - lo) * p.t)
-    if (want !== p.css) barOk = false
+  const sameAxis = (sc, a, b) => {
+    const st = sc.stops(256)                       // 与 LUT 同长，取样即精确
+    const at = (t) => st[Math.round(Math.max(0, Math.min(1, t)) * (st.length - 1))].css
+    for (let k = 0; k <= 40; k++) {
+      const v = a + (b - a) * k / 40
+      if (at(sc.tAt(v)) !== sc.cssAt(v)) return false
+    }
+    return true
   }
-  ok('色标条上任一位置的色 = 该位置那个值的色', barOk)
-  // 发散色标两臂不等长时也得对得上（旧版按 t 等分取样，这里会整段错开）
+  ok('色标条上刻度落位与颜色同源（条的轴 = t）', sameAxis(s, lo, hi))
+  const barFrac = s.tAt(q(0.8)) - s.tAt(q(0.2)), valFrac = (q(0.8) - q(0.2)) / (hi - lo)
+  ok('主区在条上占的长度 = 它分到的色带（远大于它的值域宽度）', barFrac > valFrac * 3,
+    `20–80 分位占条 ${(barFrac * 100).toFixed(1)}%，值域只占 ${(valFrac * 100).toFixed(1)}%`)
+  // 发散色标不展布，条上仍是等距刻度；且轴归一到实际用到的那一段
+  // （两臂不等长时低端只到 t=0.25，不归一的话条的下面四分之一会空着）
   const ds = buildColorScale({ min: -6, max: 12, crit: 0, good: 'above', dark: false })
-  ok('两臂不等长的发散色标同样对得上',
-    ds.stops(9).every((p) => p.css === ds.cssAt(-6 + 18 * p.t)))
+  ok('发散色标的条仍是线性轴', sameAxis(ds, -6, 12) &&
+    Math.abs(ds.tAt(3) - 0.5) < 0.01 && ds.tAt(-6) === 0 && ds.tAt(12) === 1,
+    `tAt(-6)=${ds.tAt(-6).toFixed(3)} tAt(3)=${ds.tAt(3).toFixed(3)} tAt(12)=${ds.tAt(12).toFixed(3)}`)
 }
 
 // ⑭ 压在场上的线色：取该电平自己那一档，明度朝有余量的一侧推开
@@ -520,9 +646,13 @@ console.log('=== 设计空间图：等值线与色标测试 ===\n')
   const chroma = (c) => { const l = rgbToOklab(...c); return Math.hypot(l[1], l[2]) }
   const L = (c) => rgbToOklab(...c)[0]
   const q = (a, p) => a[Math.round(p * (a.length - 1))]
+  // 主次分配作用在**软化之前**那一层（软化是整层等价的一道，调不动档与档的轻重），
+  // 故这一节一律拿 lutInk 对比：拿软化后的填充去比「收拢到 FOCUS.midLight」这类绝对量，
+  // 量到的是两道叠加的结果，测不出主次分配本身有没有生效。
+  const inkOf = (sc) => (v) => { const i = sc.idxOf(v); return [sc.lutInk[i * 3], sc.lutInk[i * 3 + 1], sc.lutInk[i * 3 + 2]] }
   // 不分主次时的原始 Turbo 查找表（同一 t 上的色，用来量「削掉了多少」）
   const raw = buildColorScale({ min: 0, max: 1, dark: false, palette: 'turbo' })
-  const rawAt = (i) => [raw.lut[i * 3], raw.lut[i * 3 + 1], raw.lut[i * 3 + 2]]
+  const rawAt = (i) => [raw.lutInk[i * 3], raw.lutInk[i * 3 + 1], raw.lutInk[i * 3 + 2]]
 
   // ① 主体贴着低端 + 长尾甩向高端（功放建议功率图的形状）：热点须落在**高**端
   const up = []
@@ -531,25 +661,36 @@ console.log('=== 设计空间图：等值线与色标测试 ===\n')
   up.sort((a, b) => a - b)
   const lo = q(up, 0.02), hi = q(up, 0.98), med = q(up, 0.5)
   const s = buildColorScale({ min: lo, max: hi, dark: false, palette: 'turbo', samples: up })
+  const sInk = inkOf(s)
   ok('turbo + 样本 → 分主次', s.focused === true)
-  ok('热点端（稀疏长尾那头）一分不削', chroma(s.rgbAt(hi)) >= chroma(rawAt(s.idxOf(hi))) - 1e-9,
-    `${chroma(s.rgbAt(hi)).toFixed(3)} vs ${chroma(rawAt(s.idxOf(hi))).toFixed(3)}`)
-  const cMed = chroma(s.rgbAt(med)), cMedRaw = chroma(rawAt(s.idxOf(med)))
-  ok('主区彩度削掉一大半', cMed < cMedRaw * 0.55, `${cMed.toFixed(3)} vs 原 ${cMedRaw.toFixed(3)}`)
-  ok('主区明度朝中性档收拢', Math.abs(L(s.rgbAt(med)) - 0.74) < Math.abs(L(rawAt(s.idxOf(med))) - 0.74),
-    `${L(s.rgbAt(med)).toFixed(3)} ← ${L(rawAt(s.idxOf(med))).toFixed(3)}`)
-  // 短的那条尾抬不起头：低端也是主区的一部分，不能跟着热点一起浓
-  ok('短尾那头不冒充热点', chroma(s.rgbAt(lo)) < chroma(rawAt(s.idxOf(lo))) * 0.6,
-    `${chroma(s.rgbAt(lo)).toFixed(3)} vs 原 ${chroma(rawAt(s.idxOf(lo))).toFixed(3)}`)
+  ok('热点端（稀疏长尾那头）一分不削', chroma(sInk(hi)) >= chroma(rawAt(s.idxOf(hi))) - 1e-9,
+    `${chroma(sInk(hi)).toFixed(3)} vs ${chroma(rawAt(s.idxOf(hi))).toFixed(3)}`)
+  // 主体段收到 FOCUS.floorS 而不是收到 0：削三成上下，留住段内的层次（见 buildFocus）
+  const cMed = chroma(sInk(med)), cMedRaw = chroma(rawAt(s.idxOf(med)))
+  ok('主区彩度明显削掉', cMed < cMedRaw * 0.75, `${cMed.toFixed(3)} vs 原 ${cMedRaw.toFixed(3)}`)
+  ok('但没削到看不出差别（主体段仍留着层次）', cMed > cMedRaw * 0.3, `${(cMed / cMedRaw * 100).toFixed(0)}% 保留`)
+  ok('主区明度朝中性档收拢', Math.abs(L(sInk(med)) - 0.74) < Math.abs(L(rawAt(s.idxOf(med))) - 0.74),
+    `${L(sInk(med)).toFixed(3)} ← ${L(rawAt(s.idxOf(med))).toFixed(3)}`)
+  // 短的那条尾同样是「离主体远」的一端，一样保持满浓度（FOCUS.floorW=1）。
+  // 早先按尾长比给权重，短尾几乎抬不起头——而一张余量图上的短尾正是主瓣里那片高余量区，
+  // 读者最想看的那块反倒被淡成灰褐（用户 2026-07-26 的反馈）。尾长只说明值域上谁伸得远。
+  ok('短尾那头也保持满浓度', chroma(sInk(lo)) >= chroma(rawAt(s.idxOf(lo))) - 1e-9,
+    `${chroma(sInk(lo)).toFixed(3)} vs 原 ${chroma(rawAt(s.idxOf(lo))).toFixed(3)}`)
+  // 主次分配是**相对**的轻重，软化过的填充上必须照样立得住（否则「整层淡下去」
+  // 就等于把主次一起抹平）
+  ok('填充上主次仍在（主区比热点端淡）', chroma(s.rgbAt(med)) < chroma(s.rgbAt(hi)) * 0.75,
+    `${chroma(s.rgbAt(med)).toFixed(3)} vs ${chroma(s.rgbAt(hi)).toFixed(3)}`)
 
-  // ② 主体在高端 + 长尾掉向低端（C/N、余量图的形状）：热点须自动翻到**低**端
+  // ② 主体在高端 + 长尾掉向低端（C/N、余量图的形状）：两端都浓，淡的是主体那一段
   const dn = up.map((v) => -v)
   dn.sort((a, b) => a - b)
   const dLo = q(dn, 0.02), dHi = q(dn, 0.98), dMed = q(dn, 0.5)
   const d = buildColorScale({ min: dLo, max: dHi, dark: false, palette: 'turbo', samples: dn })
-  ok('长尾在低端时热点翻到低端', chroma(d.rgbAt(dLo)) >= chroma(rawAt(d.idxOf(dLo))) - 1e-9)
-  ok('此时高端（主体）反被削彩', chroma(d.rgbAt(dHi)) < chroma(rawAt(d.idxOf(dHi))) * 0.6)
-  void dMed
+  const dInk = inkOf(d)
+  ok('长尾（低端）一分不削', chroma(dInk(dLo)) >= chroma(rawAt(d.idxOf(dLo))) - 1e-9)
+  ok('主瓣那头（高端）同样不削', chroma(dInk(dHi)) >= chroma(rawAt(d.idxOf(dHi))) - 1e-9)
+  ok('淡下去的是主体附近', chroma(dInk(dMed)) < chroma(rawAt(d.idxOf(dMed))) * 0.75,
+    `${chroma(dInk(dMed)).toFixed(3)} vs 原 ${chroma(rawAt(d.idxOf(dMed))).toFixed(3)}`)
 
   // ③ 对称分布没有单一的「重点」：两端同权，都保持满浓度
   const sym = []
@@ -557,8 +698,9 @@ console.log('=== 设计空间图：等值线与色标测试 ===\n')
   sym.sort((a, b) => a - b)
   const yLo = q(sym, 0.02), yHi = q(sym, 0.98)
   const y = buildColorScale({ min: yLo, max: yHi, dark: false, palette: 'turbo', samples: sym })
-  ok('对称分布两端同权', chroma(y.rgbAt(yLo)) >= chroma(rawAt(y.idxOf(yLo))) - 1e-9 &&
-    chroma(y.rgbAt(yHi)) >= chroma(rawAt(y.idxOf(yHi))) - 1e-9)
+  const yInk = inkOf(y)
+  ok('对称分布两端同权', chroma(yInk(yLo)) >= chroma(rawAt(y.idxOf(yLo))) - 1e-9 &&
+    chroma(yInk(yHi)) >= chroma(rawAt(y.idxOf(yHi))) - 1e-9)
 
   // ④ 门槛与适用面
   ok('样本太少 → 不分主次', buildColorScale({ min: 0, max: 1, dark: false, palette: 'turbo', samples: [0, 0.5, 1] }).focused === false)
@@ -567,7 +709,62 @@ console.log('=== 设计空间图：等值线与色标测试 ===\n')
     buildColorScale({ min: -6, max: 12, crit: 0, good: 'above', dark: false, samples: up }).focused === false)
   // 暗底的「安静」是暗下去：主区明度朝暗档收，不是朝纸白提
   const dk = buildColorScale({ min: lo, max: hi, dark: true, palette: 'turbo', samples: up })
-  ok('暗底主区朝暗档收拢', L(dk.rgbAt(med)) < L(s.rgbAt(med)), `${L(dk.rgbAt(med)).toFixed(3)} < ${L(s.rgbAt(med)).toFixed(3)}`)
+  const dkInk = inkOf(dk)
+  ok('暗底主区朝暗档收拢', L(dkInk(med)) < L(sInk(med)), `${L(dkInk(med)).toFixed(3)} < ${L(sInk(med)).toFixed(3)}`)
+}
+
+// ⑯ 软化（场是地图上的一层淡彩，压在它上面的国界岸线才读得出，见 lbColorScale 的 SOFT）
+{
+  const L = (c) => rgbToOklab(...c)[0]
+  const chroma = (c) => { const l = rgbToOklab(...c); return Math.hypot(l[1], l[2]) }
+  const parse = (css) => css.match(/\d+/g).map(Number)
+  // 半透明的线压在场上，上屏色是「线色与底色按 α 插的值」——故要按 α 合成之后再量落差，
+  // 直接拿线色去比会高估一大截（这正是「中段灰折中」那一代看不见的算法根源）
+  const mix = (hex, a, f) => {
+    const ln = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16))
+    return [0, 1, 2].map((c) => ln[c] * a + f[c] * (1 - a))
+  }
+  const gap = (sc, hex, a) => {
+    let worst = 9
+    for (let i = 0; i < 256; i++) {
+      const f = [sc.lut[i * 3], sc.lut[i * 3 + 1], sc.lut[i * 3 + 2]]
+      worst = Math.min(worst, Math.abs(L(mix(hex, a, f)) - L(f)))
+    }
+    return worst
+  }
+  const smp = []
+  for (let i = 0; i < 1600; i++) smp.push(9 + 4 * (i % 400) / 399)      // 主体挤在 9~13 dB
+  for (let i = 0; i < 400; i++) smp.push(9 - 29 * i / 399)              // 长尾掉到 −20
+  smp.sort((a, b) => a - b)
+  const lt = buildColorScale({ min: -20, max: 13, dark: false, palette: 'turbo', samples: smp })
+  const dk = buildColorScale({ min: -20, max: 13, dark: true, palette: 'turbo', samples: smp })
+  const range = (sc) => { const v = []; for (let i = 0; i < 256; i++) v.push(L([sc.lut[i * 3], sc.lut[i * 3 + 1], sc.lut[i * 3 + 2]])); return [Math.min(...v), Math.max(...v)] }
+  const [lMin, lMax] = range(lt), [dMin, dMax] = range(dk)
+  // 亮底的「淡」是朝纸面提亮，暗底的「淡」是沉下去——同 FOCUS.midLight / midDark 的走向
+  ok('亮底场整层提亮（明度下限抬离深色端）', lMin > 0.45, `L ${lMin.toFixed(3)}~${lMax.toFixed(3)}`)
+  ok('暗底场整层压暗（明度上限压下来）', dMax < 0.65, `L ${dMin.toFixed(3)}~${dMax.toFixed(3)}`)
+  // 地物线是这次软化的目的：亮底配深墨、暗底配白，两处都要立得住（口径见 lbBasemap 的 ①）
+  ok('亮底深墨地物线处处压得住场', gap(lt, '#262c33', 0.62) > 0.12, `国界 α.62 落差下限 ${gap(lt, '#262c33', 0.62).toFixed(3)}`)
+  ok('亮底岸线（更实一档）更清楚', gap(lt, '#262c33', 0.80) > gap(lt, '#262c33', 0.62))
+  ok('亮底白线已经压不住了（故换深墨）', gap(lt, '#ffffff', 0.88) < 0.12, `白 α.88 只剩 ${gap(lt, '#ffffff', 0.88).toFixed(3)}`)
+  ok('暗底仍是白线最好', gap(dk, '#ffffff', 0.72) > 0.25, `白 α.72 落差 ${gap(dk, '#ffffff', 0.72).toFixed(3)}`)
+  // 等值线的明度落差要从**上屏的填充**推开（软化后的那一层）才算得对；色相彩度取软化前，
+  // 否则底一淡线也跟着淡成灰，「带颜色的是数据」这条分野就没了
+  let worstIso = 9, minChr = 9
+  for (const sc of [lt, dk]) {
+    for (let v = -20; v <= 13; v += 0.5) {
+      const f = sc.rgbAt(v), ln = parse(sc.lineCssAt(v))
+      worstIso = Math.min(worstIso, Math.abs(L(ln) - L(f)))
+      minChr = Math.min(minChr, chroma(ln))
+    }
+  }
+  ok('等值线在软化后的场上处处拉得开', worstIso > 0.2, `最小明度差 ${worstIso.toFixed(3)}`)
+  ok('等值线仍带色（不随场一起淡成灰）', minChr > 0.04, `最小彩度 ${minChr.toFixed(3)}`)
+  // 恒定场那一色是纸面灰（不代表数值），软化与它无关
+  ok('恒定场仍退出色标取纸面灰', chroma(lt.flatRgb) < 0.02 && chroma(dk.flatRgb) < 0.02)
+  // 顺序 / 发散色标不软化：它们的「退后」写在色板里（浅端贴纸面、中点无彩），再淡一道会压平
+  ok('顺序色标不软化', buildColorScale({ min: 0, max: 100, dark: false }).softened === false)
+  ok('发散色标不软化', buildColorScale({ min: -6, max: 12, crit: 0, good: 'above', dark: false }).softened === false)
 }
 
 console.log(`\n=== ${pass} passed, ${fail} failed ===`)

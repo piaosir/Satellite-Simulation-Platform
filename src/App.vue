@@ -81,6 +81,7 @@ function openNgso() { window.api?.ngso?.open?.() }
 function openRegen() { window.api?.regen?.open?.() }
 function openSunOutage() { window.api?.sunOutage?.open?.() }
 function openRain() { window.api?.rainAttenuation?.open?.() }
+function openCi() { window.api?.interference?.open?.() }
 
 function pickView(flat) {
   if (view.flat === flat) return
@@ -128,7 +129,8 @@ const menus = computed(() => [
     { label: 'NGSO 透明转发链路预算', icon: 'square-function', hint: '非对地静止轨道（NGSO，含 LEO/MEO/HEO）· 透明弯管转发器：打开链路预算工作台（独立窗口）', run: openNgso },
     { label: '再生处理（OBP）链路预算', icon: 'cpu', hint: '星上再生处理转发器：上行 / 下行 / 星间微波 / 星间激光，链路预算解耦（独立窗口）', run: openRegen },
     { label: '日凌预报（GSO）', icon: 'sun', hint: '打开日凌预报（独立窗口）', run: openSunOutage },
-    { label: '雨衰计算', icon: 'droplets', hint: '打开雨衰计算（独立窗口，通用于各类卫星）', run: openRain }
+    { label: '雨衰计算', icon: 'droplets', hint: '打开雨衰计算（独立窗口，通用于各类卫星）', run: openRain },
+    { label: '干扰分析（C/I）', icon: 'radio-tower', hint: 'C/ASI 邻星 · C/CCI 同频复用 · C/XPI 交叉极化 · NGSO 时变 CDF（独立窗口，只读计算器）', run: openCi }
   ] },
   { key: 'view', label: '视图', items: [
     { label: '3D 球体', icon: 'globe', check: !view.flat, hint: '三维地球视图', run: () => pickView(false) },
@@ -171,6 +173,7 @@ const toolButtons = computed(() => [
   { icon: 'cpu', tip: '再生处理（OBP）链路预算', run: openRegen },
   { icon: 'sun', tip: '日凌预报（GSO）', run: openSunOutage },
   { icon: 'droplets', tip: '雨衰计算', run: openRain },
+  { icon: 'radio-tower', tip: '干扰分析（C/I）', run: openCi },
   { sep: true },
   { icon: 'globe', tip: '3D 球体视图', on: !view.flat, run: () => pickView(false) },
   { icon: 'map', tip: '2D 平面图视图', on: view.flat, run: () => pickView(true) },

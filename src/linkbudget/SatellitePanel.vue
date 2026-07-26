@@ -14,7 +14,6 @@ const props = defineProps({
   fields: { type: Array, required: true },
   satTree: { type: Array, default: () => [] },   // [{ folder, satName, lon, antennas:[{name,beams}] }]
   sel: { type: Object, default: () => ({ satFolder: '', eirpKey: '', gtKey: '' }) },  // 库条目的 grd，本组件就地写入
-  onPick: { type: Function, default: () => {} }, // (node, prevSatName) => void：父组件据此让条目名跟随星名
   // 「导入方向图」：直接在本编辑器里导入 GRD/PAT，挂到本卫星条目名下（免去先去「星座3D」页导入一趟）。
   // 由父组件实现（它知道条目 id / 星位，且导入后要重载卫星树并落匹配），本组件只管按钮与忙态。
   onImport: { type: Function, default: null },
@@ -35,15 +34,12 @@ const localSats = computed(() => props.satTree.filter((s) => s.local))
 const localAnts = computed(() => ((curSat.value && curSat.value.local) ? curSat.value.antennas : []))
 
 // 选星：写入卫星名称/轨道位置；切换卫星时清空已匹配天线（不同星天线不同）。
-// 星名要一并交给父组件（附取星前的旧星名）——库条目名若一直跟着星走，就跟到新星上，
-// 免得条目名停在上一颗星、界面上冒出两个星名。
+// 条目名跟随星名由 satelliteName 这一处写入触发（自动命名，见 shared/lbAutoName.js），此处不另行通知父组件。
 function onPickSat() {
   const s = curSat.value
-  const prevSatName = props.form.satelliteName
   if (s) { props.form.satelliteName = s.satName; props.form.orbitPosition = String(s.lon) }
   props.sel.eirpKey = ''
   props.sel.gtKey = ''
-  if (s) props.onPick(s, prevSatName)
 }
 
 // 选完工作频段，上/下行频率跟随预设变（与小程序一致；仍可手改）

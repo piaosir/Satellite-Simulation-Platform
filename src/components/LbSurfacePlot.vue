@@ -28,7 +28,7 @@ import { niceScale, fmtTick, fmtVal, linScale, isFlatSpan } from '../shared/lbPl
 import { isDark } from '../shared/lbPlotTheme.js'
 import { buildColorScale } from '../shared/lbColorScale.js'
 import { contourSegments, stitchSegments, contourLevels, bilinear, fieldExtent, refineField, dequantize, buildBlocks, smoothPathD, labelAnchors } from '../shared/lbContour.js'
-import { loadBasemap, basemapPaths, OCEAN, LAND, MAP_COAST, MAP_BORDER, WASH } from '../shared/lbBasemap.js'
+import { loadBasemap, basemapPaths, OCEAN, LAND, MAP_COAST, MAP_BORDER, MAP_LW, WASH, scaleInk } from '../shared/lbBasemap.js'
 import { lbDocT } from '../shared/lbDocI18n.js'
 
 const props = defineProps({
@@ -50,6 +50,11 @@ const props = defineProps({
   // 画世界地图底图：仅当两根轴确实是「经度 × 纬度」时才有意义（地理图专用）。
   // 同时把图框锁成 1°经 = 1°纬，见 plotBox。
   basemap: { type: Boolean, default: false },
+  // 地物线（岸线 / 国界）的浓淡倍率：α 与线宽同乘这一个数，不换色相（见 lbBasemap.scaleInk）。
+  // 1 = 定标值（岸线不透明 / 国界 0.85，见 MAP_COAST / MAP_BORDER）。给用户一档旋钮的缘由：
+  // 「地理参照该多重」取决于看图的人在这张图上找什么——找站落在哪个国家时要它压得住，
+  // 只看场的形状时又嫌它吵。定标值只能取一个折中，那就把折中交给用户。
+  mapInk: { type: Number, default: 1 },
   // 色标：'turbo' 强制走 Turbo（地理图），留空则按有无临界值自动选发散/顺序
   palette: { type: String, default: '' },
   // 视图可达的最大范围（地理图 = 整幅世界地图 360°×180°）。给定则缩到「刚好一整幅」为止，
@@ -157,7 +162,11 @@ const barTickText = computed(() => {
   const sc = niceScale(ex[0], ex[1], 5)
   return { items: sc.ticks.filter((t) => t >= ex[0] && t <= ex[1]).map((t) => ({ v: t, text: fmtTick(t, sc.step) })), step: sc.step }
 })
-const barDigits = computed(() => barTickText.value.items.reduce((m, it) => Math.max(m, it.text.length), 1))
+// 拖色标条期间冻住的字数（见「色标条可拖」一节的 barDigitsHold）：右边距按字数留位，
+// 拖过「9.5 → 10.5」这种进位处时若让它缩回去，整幅图会跟着抖一下。故只增不减，松手复零。
+const barDigitsHold = ref(0)
+const barDigits = computed(() => Math.max(barDigitsHold.value,
+  barTickText.value.items.reduce((m, it) => Math.max(m, it.text.length), 1)))
 const barTextX = computed(() => barW.value + fs.value * 0.5)                       // 色标刻度数字起点
 // 竖排单位名：让开数字那一列（旧版只让 0.7em，比字冠还窄，长刻度时单位名压在数字上）
 const barLabX = computed(() => barTextX.value + fs.value * (CH * barDigits.value + AXL_GAP + ROT_ASC))
@@ -358,13 +367,26 @@ const zSorted = computed(() => {
   vals.sort((a, b) => a - b)
   return vals
 })
-const zDomain = computed(() => {
+const zAuto = computed(() => {
   const vals = zSorted.value
   if (!vals) return null
   const q = (p) => vals[Math.min(vals.length - 1, Math.max(0, Math.round(p * (vals.length - 1))))]
   const lo = q(0.02), hi = q(0.98)
   // 分位退化（大片同值）时回落到真实极值，否则色标域会塌成一个点
   return (hi > lo) ? [lo, hi] : [vals[0], vals[vals.length - 1]]
+})
+// 用户在色标条上拖出来的域（见「色标条可拖」一节）。自动的 2–98 分位是个稳妥的默认，
+// 但一张真实的场常常有八成格点挤在色标顶端那一小段里——那时把上限往上一拖，
+// 糊成一色的那片主区里的层次就出来了；反过来把两端收拢，则是把对比度全花在关心的那一段上。
+// 钉住之后跨视图不变（拖着地图重扫、换个区间比对时，两幅图用的是同一把尺）。
+const zManual = ref(null)      // { lo, hi } | null（null = 跟着 2–98 分位走）
+// 换了场变量（或换了语言导致场名变）就撤掉手动域：一把按 dB 余量定的尺子套到「功放功率 W」上毫无意义
+watch(() => props.zLabel + ' ' + props.zUnit, () => { zManual.value = null })
+const zDomain = computed(() => {
+  const a = zAuto.value
+  if (!a) return null
+  const m = zManual.value
+  return m ? [m.lo, m.hi] : a
 })
 // 真实极值是否越过了色标域（越过则在色标条两端画箭头，明示「外面还有更极端的」）
 const zClipped = computed(() => {
@@ -388,15 +410,25 @@ const scale = computed(() => {
 })
 
 // —— 等值线 ——
-const levels = computed(() => {
+// 电平表跟着**数据的疏密**局部加密（见 contourLevels）：等间距下，主瓣里那一大片
+// 只跨几个 dB，分到的线远少于它占的地——读者最关心的那块反而一条线也没有。
+// 骨架（base 的整数倍）仍是全域等间距，加密线画得轻一档（.sf-iso-minor）。
+const levelInfo = computed(() => {
   const ex = zDomain.value
-  if (!ex || flat.value) return []
-  return contourLevels(ex[0], ex[1], Number.isFinite(props.zCrit) ? props.zCrit : null, props.levelCount).levels
+  if (!ex) return { levels: [], step: 1, base: 1, minor: [] }
+  return contourLevels(ex[0], ex[1], Number.isFinite(props.zCrit) ? props.zCrit : null, props.levelCount,
+    flat.value ? null : zSorted.value)
 })
-const levelStep = computed(() => {
-  const ex = zDomain.value
-  return ex ? contourLevels(ex[0], ex[1], Number.isFinite(props.zCrit) ? props.zCrit : null, props.levelCount).step : 1
-})
+const levels = computed(() => (flat.value ? [] : levelInfo.value.levels))
+const levelStep = computed(() => levelInfo.value.step)
+const minorSet = computed(() => new Set(levelInfo.value.minor))
+// 电平标注的小数位按**这一条自己**取。加密后同一张图上会同时出现 5 与 2.5：
+// 一律按最细步长格式化，骨架就成了「5.0」；一律按 base，2.5 会被写成「3」——
+// 数字与它标的那条线对不上，比不标还糟。
+const levelText = (v) => {
+  for (let d = 0; d <= 3; d++) if (Math.abs(v - +v.toFixed(d)) < 1e-9) return fmtTick(v, d ? Math.pow(10, -d) : 1)
+  return fmtTick(v, levelStep.value)
+}
 // —— 工作点 ——
 const markPx = computed(() => {
   if (!ready.value || !Number.isFinite(props.markX) || !Number.isFinite(props.markY)) return null
@@ -444,26 +476,47 @@ const contours = computed(() => {
   const map = (gi, gj) => [gx(gi), gy(gj)]
   const F1 = fs.value
   const mk = markData.value
-  for (const lv of levels.value) {
+  // 布标顺序：骨架先、加密线后。名额与地盘有限时该先满足全域那几条主线
+  // （加密线只在局部补细节，少标一个不伤大局）
+  const ms = minorSet.value
+  const ordered = levels.value.slice().sort((a, b) => (ms.has(a) ? 1 : 0) - (ms.has(b) ? 1 : 0))
+  // 已放下的标注：后面的线绕开它们。加密之后同一处常常挤着好几条线，
+  // 不互相让位的话数字会叠成一团（均匀场左上角实测三条线的数值堆在一小块里）
+  const placed = mk ? [[mk[0], mk[1], F1 * 1.3]] : []
+  for (const lv of ordered) {
     const lines = stitchSegments(contourSegments(F.z, F.nx, F.ny, lv, F.blocks))
     if (!lines.length) continue
     const crit = Number.isFinite(props.zCrit) && Math.abs(lv - props.zCrit) < 1e-9
+    const minor = ms.has(lv)
+    const text = levelText(lv)
+    // 名额按**线条数**给，不是每条电平一个死数。一条电平在图上常常是十几条互不相连的线，
+    // 给 2~3 个死名额等于「只有最长的那两三条带数字，其余的线读者无从知道它是多少」——
+    // 截图里那一片「模糊的场线但没有标记」正是这么来的（实测 62% 的可见线不带数字）。
+    // 上限仍在（加密线 8 / 骨架 12）：真碰上一条电平碎成几十段时，图面不能全变成数字。
+    // 挤不挤得下另有两道闸：够长才进（minLen）、与已放下的数值撞了要挪开（avoid + r）。
+    const nLab = Math.min(minor ? 8 : 12, Math.max(crit ? 4 : minor ? 2 : 3, lines.length))
     const labs = labelAnchors(lines, map, {
-      minLen: F1 * 7,            // 短线不标，免得图面全是数字
-      gap: F1 * 20,              // 一条线上每隔约 20 em 再标一次
-      max: crit ? 4 : 3,         // 临界线是唯一有物理意义的那条，多标一个
+      // 加密线只出现在数据本就密的那一带（那里线本来就挨得近），门槛比骨架高一点、
+      // 重复标得更疏，但**不再是「整条电平只给两个」**
+      minLen: F1 * (minor ? 8 : 7),    // 短线不标，免得图面全是数字
+      gap: F1 * (minor ? 30 : 20),     // 一条线上每隔约 20 em 再标一次
+      max: nLab,
+      r: F1 * (0.75 + 0.28 * text.length),   // 本电平自己这些数字也要互相让开
       tan: F1 * 1.6,
       pad: F1 * 1.6, w: plotW.value, h: plotH.value,
-      avoid: mk ? [mk[0], mk[1], F1 * 1.3] : null    // 数字压在工作点十字上，两样都读不清
-                                                     // （避让半径跟着小十字一起收，别白占图面）
+      avoid: placed.length ? placed : null   // 工作点十字（数字压上去两样都读不清，避让半径
+                                             // 跟着小十字一起收）+ 已放下的其它数值
     })
+    for (const l of labs) placed.push([l.x, l.y, F1 * (0.75 + 0.28 * text.length)])
     // 抽稀容差 0.35 px：与线宽同量级的偏差在纸上看不出，换来的是控制点少一个量级
     out.push({
-      lv, d: smoothPathD(lines, map, 0.35), crit, labs, text: fmtTick(lv, levelStep.value),
+      lv, d: smoothPathD(lines, map, 0.35), crit, minor, labs, text,
       color: props.basemap ? sc.lineCssAt(lv) : null,
       labColor: props.basemap ? sc.labelCssAt(lv) : null
     })
   }
+  // 绘制顺序反过来：加密线在下、骨架在上（重叠处该由骨架压住）
+  out.sort((a, b) => (a.minor ? 0 : 1) - (b.minor ? 0 : 1))
   return out
 })
 // 标注处要把等值线断开让位（纸质等值线图的成法：数字不是「盖」在线上，线是让开的）。
@@ -509,15 +562,17 @@ function sizeCanvas(cv, W, H, dpr) {
 // 底层：海 + 陆 + 洗淡一道（不洗淡的话浅蓝的海与场的蓝端会混作一团，读者分不清一块蓝是
 // 「余量高」还是「这里是海」）。线层：国界与岸线（都是实线），压在场之上。
 //
-// 地物线**一道过**：近白、半透明、发丝粗，不带衬底（见 lbBasemap 的 MAP_*）。
+// 地物线**一道过**：无彩、发丝粗、不带衬底，而且**不半透明**（见 lbBasemap 的 MAP_* 与
+// MAP_LW 的第三代那一段：α 与上屏覆盖率是同一笔账里的两个因子，dpr=1 时 0.6 px 的线被
+// 抗锯齿摊掉一半，再乘 0.62 的 α 就只剩三成——那正是「地理参照太淡」的病根）。
 // 衬底那条路走到头了：先是「暗衬底 + 浅线芯」，等值线又反过来配白衬底去压过它，
 // 结果每条线都镶着一圈相反色的边，整幅图的墨全花在边上（用户原话「信息堆在一起、
 // 可读性极差」）。线要退后靠的是少给墨，不是再加一层边去撑。
-// 地理参照与数据的分野改由**颜色语言**承担：地物线一律无彩（白），等值线一律取自己那一档的
+// 地理参照与数据的分野改由**颜色语言**承担：地物线一律无彩，等值线一律取自己那一档的
 // 色相（见 contours 的 color）——无彩的是地图，带颜色的是数据，一眼分得开，不必比线宽。
-// 白之所以行得通，是因为场现在分了主次（见 lbColorScale 的 FOCUS）：大面积的主区被收进
-// 一档安静的中明度带，白线在它上面处处亮得出来；早先满饱和 Turbo 铺满时只能用中段灰折中，
-// 结果哪一段都只是勉强看得见，国界那层干脆看不清。
+// 无彩线取深墨还是取白按主题走（MAP_* 收的是 {light,dark} 两套）：场整层软化之后，亮底上
+// 它的明度被抬到 0.49~0.87，白线只剩 0.107 的落差、几乎没有，深墨才压得住；暗底的软化是
+// 沉下去，白线原样最好。取色的账见 lbBasemap 的 ① 段。
 // 先国界后岸线：两者在沿海重合时该由岸线压住（岸线是更强的参照，且国界在海上本就该断）。
 // 线宽随字号同比缩放——功能区调字号时整幅图一起缩，线不跟着走就会显得越调越粗或越细。
 //
@@ -564,18 +619,25 @@ function paintMap(base, line, ss) {
   bx.fillStyle = isDark() ? WASH.dark : WASH.light
   bx.fillRect(0, 0, cw, ch)
 
-  const k = lwK.value * dpr
+  const k = lwK.value * dpr, th = isDark() ? 'dark' : 'light'
+  // 浓淡档（界面上的「地图」一项）：α 与线宽同乘，见 props.mapInk
+  const ink = Math.max(0.5, Math.min(1.6, props.mapInk || 1))
+  // 线宽 = max(设备像素下限, CSS 宽 × 字号系数 × 每 CSS 像素的设备像素数)，两者都乘浓淡档。
+  // 下限只在 dpr=1 时咬得住：那时 0.6~0.75 的宽度不足一个设备像素，抗锯齿把它摊到相邻两行，
+  // 线像素的平均合成 α 只有 0.30 ——「地理参照太淡」的一半就出在这儿（见 lbBasemap 的 MAP_LW）。
+  // 出图倍率下 w·k·dpr 远大于下限，故报告里的线宽一分没变。
+  const lw = (s) => Math.max(s.min, s.w * k) * ink
   lx.lineJoin = 'round'; lx.lineCap = 'round'
   if (bord.length) {
     trace(lx, bord, false)
     // 国界**也是实线**。断续线型（虚线 / 点划线）在纸质地图上是国界的惯例，但那是整开幅
     // 的尺度；这张图只有三四百像素宽，欧亚大陆一屏几十条国界，一断开就成了满图碎点碎笔画，
-    // 比线本身还吵（用户原话「看着特别乱」）。与岸线的区别只在「更淡、更细」。
-    lx.strokeStyle = MAP_BORDER; lx.lineWidth = 0.6 * k; lx.stroke()
+    // 比线本身还吵（用户原话「看着特别乱」）。与岸线的区别只在「更淡一档、更细一档」。
+    lx.strokeStyle = scaleInk(MAP_BORDER[th], ink); lx.lineWidth = lw(MAP_LW.border); lx.stroke()
   }
   if (land.length) {
     trace(lx, land, true)
-    lx.strokeStyle = MAP_COAST; lx.lineWidth = 0.75 * k; lx.stroke()
+    lx.strokeStyle = scaleInk(MAP_COAST[th], ink); lx.lineWidth = lw(MAP_LW.coast); lx.stroke()
   }
   return true
 }
@@ -629,6 +691,9 @@ function paintField(cv, ss) {
   // 颜色，色标就不再对得上场，整幅还发闷（浓度全被那层洗淡的海陆色摊薄了）。
   // 海陆参照现在全部交给压在场上的岸线与国界两层线；底图只在「算不出的格」那里露脸，
   // 而那里场本就留空。
+  // 「场太浓压掉了国界」这件事**在色标里解**，不在这里解：查找表出口已经削过彩度、朝纸面
+  // 收过明度（见 lbColorScale 的 SOFT），得到的淡与 globalAlpha 一模一样，却是对**一块均匀
+  // 纸面**淡的——处处等价，故色标条照旧对得上场。这里一旦真设 alpha，上面那笔账立刻回来。
   // 外扩半格：图像像素的中心（(k+0.5)/n）要对上格点的位置（k/(n−1)），否则整张场
   // 会朝右下偏半格，等值线与色块错开半个格子
   const sw = cw / (nx - 1), sh = ch / (ny - 1)
@@ -656,7 +721,7 @@ function schedule(what) {
   _timer = setTimeout(run, 100)
 }
 watch([refined, scale, plotW, plotH, () => props.basemap], () => schedule())
-watch([xDomain, yDomain, feats, themeTick], () => schedule('map'))
+watch([xDomain, yDomain, feats, themeTick, () => props.mapInk], () => schedule('map'))
 
 // —— 悬停读数（MATLAB 的 data cursor：十字游标 + 三值读数）——
 // 取值走细化网格，与画出来的场同一份数：读数与色块、等值线必须对得上，
@@ -707,6 +772,8 @@ function onDown(e) {
   e.preventDefault()
 }
 function onPanMove(e) {
+  // 色标条的拖动与图框的平移共用这两个 window 级监听（松手多半在元素之外）
+  if (barDrag.value) { onBarDragMove(e); return }
   const g = drag.value
   if (!g) return
   const p = localXY(e, true)
@@ -720,6 +787,7 @@ function onPanMove(e) {
   view.value = clampView({ x0: g.dom.x0 - dx, x1: g.dom.x1 - dx, y0: g.dom.y0 + dy, y1: g.dom.y1 + dy })
 }
 function onUp() {
+  if (barDrag.value) { barDrag.value = null; barDigitsHold.value = 0; return }
   const g = drag.value
   drag.value = null
   if (!g || !g.moved || !view.value) return
@@ -760,20 +828,92 @@ function onDbl() {
 
 
 // —— 色标条刻度 ——
-// 文本已在 barTickText 里定好（边距要按它留位），这里只把每一条摆到条上
+// 文本已在 barTickText 里定好（边距要按它留位），这里只把每一条摆到条上。
+// 落位走 scale.tAt（= 颜色的轴）而不是值的线性比例：条上每一档色占的长度就是它分到的
+// 色带份额，读者一眼看得出「颜色都花在哪一段值上」。代价是刻度不等距——稀疏段的刻度会
+// 挤到一起，故挤过头的直接不画（间距不足 1.5 em 时舍去，两端那两个优先保）。
 const barTicks = computed(() => {
   const ex = zDomain.value
   if (!ex) return []
-  return barTickText.value.items.map((it) => ({
-    v: it.v, y: plotH.value * (1 - (it.v - ex[0]) / ((ex[1] - ex[0]) || 1)), text: it.text
-  }))
+  const sc = scale.value, H = plotH.value
+  const all = barTickText.value.items.map((it) => ({ v: it.v, y: H * (1 - sc.tAt(it.v)), text: it.text }))
+  const out = []
+  const gap = fs.value * 1.5
+  for (let i = 0; i < all.length; i++) {
+    const keep = i === 0 || i === all.length - 1
+    if (!out.length || Math.abs(all[i].y - out[out.length - 1].y) >= gap) { out.push(all[i]); continue }
+    if (keep) { out[out.length - 1] = all[i] }        // 末档优先：端点比中间刻度更值得留
+  }
+  return out
 })
-const barStops = computed(() => scale.value.stops(24))
+const barStops = computed(() => scale.value.stops(32))
 const critBarY = computed(() => {
   const ex = zDomain.value
   if (!ex || !Number.isFinite(props.zCrit) || props.zCrit < ex[0] || props.zCrit > ex[1]) return null
-  return plotH.value * (1 - (props.zCrit - ex[0]) / ((ex[1] - ex[0]) || 1))
+  return plotH.value * (1 - scale.value.tAt(props.zCrit))
 })
+
+// —— 色标条可拖 ——
+// 色标条不只是图例，也是这张图唯一一处「调色阶」的入口：拖上端改上限、拖下端改下限、
+// 拖条身把整段窗口平移，双击回到自动（2–98 分位）。为什么要给：自动域是按分位数定的，
+// 稳妥但保守——真实的场常有大半格点挤在色标的一小段里糊成一色（截图里那一大片暗红），
+// 那时把上限往上一拖，那片里的层次立刻出来；反过来把两端收拢，就是把全部对比度
+// 花在关心的那一段上。等值线电平表跟着新域重算（见 levelInfo），故拖完线也跟着变密变疏。
+//
+// 位移一律按**起手时的域**线性折算，不走条上的 tAt：条的轴是「颜色的轴」（刻度本就不等距，
+// 见 barTicks），拿它反解会自己咬自己的尾巴——域一变 tAt 就变，手感会随拖动越来越飘；
+// 而且按值线性才拖得出数据范围之外去（把上限抬到没有数据的地方，正是「留白让主区展开」）。
+const BAR_GRIP = 0.9           // 两端热区高度（em）：太窄抓不住，太宽就吃掉条身的平移区
+const barDrag = ref(null)      // { mode:'lo'|'hi'|'pan', py, lo, hi }
+const barHot = ref('')         // 悬停在哪一段（决定光标形状）
+function barZoneAt(py) {
+  const g = Math.max(6, fs.value * BAR_GRIP)
+  if (py <= g) return 'hi'
+  if (py >= plotH.value - g) return 'lo'
+  return 'pan'
+}
+function barLocalY(e) {
+  const box = svgEl.value && svgEl.value.getBoundingClientRect()
+  return box ? e.clientY - box.top - mT.value : null
+}
+const barCursor = computed(() => {
+  const m = barDrag.value ? barDrag.value.mode : barHot.value
+  return m === 'pan' ? (barDrag.value ? 'z-grabbing' : 'z-grab') : m ? 'z-ns' : ''
+})
+function onBarHover(e) { if (!barDrag.value) barHot.value = barZoneAt(barLocalY(e) ?? -1) }
+function onBarDown(e) {
+  const ex = zDomain.value
+  const py = barLocalY(e)
+  if (e.button !== 0 || !ready.value || flat.value || !ex || py === null) return
+  e.preventDefault(); e.stopPropagation()     // 别让它落到图框那套拖拽平移上去
+  barDigitsHold.value = barDigits.value
+  barDrag.value = { mode: barZoneAt(py), py, lo: ex[0], hi: ex[1] }
+}
+function onBarDragMove(e) {
+  const g = barDrag.value
+  const py = barLocalY(e)
+  if (!g || py === null) return
+  const dv = -(py - g.py) / Math.max(1, plotH.value) * (g.hi - g.lo)
+  // 限位：域再怎么拖也不离开数据一个量程。全落到场值之外时整幅图会塌成一色，
+  // 那时连「往回拖」的线索都没有了（条上一片同色，看不出自己拖到了哪儿）
+  const ex = zExtent.value || [g.lo, g.hi]
+  const full = Math.max(1e-9, ex[1] - ex[0])
+  const lim0 = ex[0] - full, lim1 = ex[1] + full
+  const clamp = (v) => Math.max(lim0, Math.min(lim1, v))
+  const minSpan = full * 0.02                 // 域收到比这更窄就只剩两档色，色标不再是尺子
+  let lo = g.lo, hi = g.hi
+  if (g.mode === 'hi') hi = Math.max(lo + minSpan, clamp(g.hi + dv))
+  else if (g.mode === 'lo') lo = Math.min(hi - minSpan, clamp(g.lo + dv))
+  else {
+    const d = Math.max(lim0 - g.lo, Math.min(lim1 - g.hi, dv))
+    lo = g.lo + d; hi = g.hi + d
+  }
+  zManual.value = { lo, hi }
+}
+function onBarDbl(e) {
+  e.preventDefault(); e.stopPropagation()     // 图框的双击是「复位视图」，两件事不能混
+  zManual.value = null
+}
 
 // —— 导出 ——
 // 三层画布先合成一张（底图 → 场（带当前搬运变换）→ 国界），再作为 <image> 嵌进 SVG 副本：
@@ -816,6 +956,8 @@ function exportSvgString(cssVars, scale) {
   if (!svg) return ''
   const s = Math.max(1, scale || 1)
   const clone = svg.cloneNode(true)
+  // 色标条的拖拽把手是控件不是图：报告里的色标只是一把图例尺，没有「可拖」这回事
+  clone.querySelectorAll('.sf-barui').forEach((n) => n.remove())
   const im = document.createElementNS('http://www.w3.org/2000/svg', 'image')
   im.setAttribute('x', String(mL.value)); im.setAttribute('y', String(mT.value))
   im.setAttribute('width', String(plotW.value)); im.setAttribute('height', String(plotH.value))
@@ -888,14 +1030,15 @@ defineExpose({ exportSvgString, svgSize, toCSV, svg: svgEl })
             <g :transform="xfAttr">
               <!-- 压在场上时每条线取它自己那一档的色（明度朝有余量的那侧推开，见 shiftInk）：
                    线因此是彩色的、且必然与它两侧的填充拉得开，不必再镶白边黑边 -->
-              <path v-for="c in contours" :key="'c' + c.lv" :class="c.crit ? 'sf-iso sf-iso-crit' : 'sf-iso'"
+              <path v-for="c in contours" :key="'c' + c.lv"
+                :class="['sf-iso', c.crit ? 'sf-iso-crit' : '', c.minor ? 'sf-iso-minor' : '']"
                 :d="c.d" :style="c.color ? { stroke: c.color } : null" vector-effect="non-scaling-stroke" />
             </g>
           </g>
           <!-- 等值线数值标注：顺着线摆（数字属于哪条线不言自明），线在此处已被 mask 断开。
                不进上面那层：跟着缩放会被拉扁，故只把落点过一遍变换 -->
           <template v-for="c in contours" :key="'l' + c.lv">
-            <text v-for="(l, i) in c.labs" :key="'l' + c.lv + '_' + i" class="sf-isolab" :class="{ on: c.crit }"
+            <text v-for="(l, i) in c.labs" :key="'l' + c.lv + '_' + i" class="sf-isolab" :class="{ on: c.crit, minor: c.minor }"
               :style="c.labColor ? { fill: c.labColor } : null"
               :transform="`translate(${labPos(l.x, l.y)[0].toFixed(1)},${labPos(l.x, l.y)[1].toFixed(1)}) rotate(${l.a.toFixed(1)})`"
               :y="fs * 0.34">{{ c.text }}</text>
@@ -940,7 +1083,7 @@ defineExpose({ exportSvgString, svgSize, toCSV, svg: svgEl })
             {{ flatText }}
           </text>
           <text class="sf-flat sf-flat-sub" :x="plotW / 2" :y="plotH / 2 + fs * 1.2">
-            {{ t('多因当前计算方式把它钉死了 · 换一个随两轴变化的量或换轴') }}
+            {{ t('该量多由当前计算方式约束为定值 · 可改选随两轴变化的量或更换轴') }}
           </text>
         </template>
 
@@ -970,13 +1113,30 @@ defineExpose({ exportSvgString, svgSize, toCSV, svg: svgEl })
           <line class="sf-tick" :x1="barW" :y1="t.y" :x2="barW + fs * 0.3" :y2="t.y" />
           <text class="sf-bt" :x="barTextX" :y="t.y + fs * 0.35">{{ t.text }}</text>
         </g>
-        <!-- 端点箭头：真实极值越过了色标域（2–98 分位）时画出，明示这一端是「裁到端点色」
+        <!-- 端点箭头：真实极值越过了色标域时画出，明示这一端是「裁到端点色」
              而不是「数据到此为止」——否则读者会把 −20 dB 的端点当成全场最差值 -->
         <path v-if="zClipped.hi" class="sf-barext" :d="`M0,0 L${barW},0 L${barW / 2},${-fs * 0.6} Z`" :fill="scale.cssAt(zDomain[1])" />
         <path v-if="zClipped.lo" class="sf-barext" :d="`M0,${plotH} L${barW},${plotH} L${barW / 2},${plotH + fs * 0.6} Z`" :fill="scale.cssAt(zDomain[0])" />
         <!-- 临界值在色标上的位置：读者一眼知道中性色对应的是哪个数 -->
         <line v-if="critBarY !== null" class="sf-barcrit" :x1="-1" :y1="critBarY" :x2="barW + 1" :y2="critBarY" />
         <text class="sf-bl" :transform="`translate(${barLabX},${plotH / 2}) rotate(-90)`">{{ zLabel }}<tspan v-if="zUnit" :dx="fs * 0.3">/ {{ zUnit }}</tspan></text>
+
+        <!-- 交互层（出图时整组剔除，见 exportSvgString：报告里的色标只是图例，没有可拖这回事）。
+             热区比条本身宽一圈（条只有 1.15 em，照条宽给热区抓不住），两端各一个把手。
+             把手常驻但极淡：不画的话读者根本不知道这里可以拖；画重了，一张以场为主角的图上
+             又多出两道与数据无关的墨。手动钉住之后加深一档——那是「这把尺子是你自己定的」
+             唯一的提示，不另起一行文字（这张图上不放结论性文字，见 lb-pure-numeric）。 -->
+        <g class="sf-barui" :class="[barCursor, { on: !!zManual }]">
+          <title>{{ t('拖动两端设定色标上下限 · 拖动条身整体平移 · 双击恢复自动') }}</title>
+          <rect class="sf-barhit" :x="-fs * 0.4" :y="-fs * 0.55" :width="barW + fs * 0.8" :height="plotH + fs * 1.1"
+            @mousedown="onBarDown" @mousemove="onBarHover" @mouseleave="barHot = ''" @dblclick="onBarDbl" />
+          <g class="sf-barthumb" :class="{ hot: (barDrag ? barDrag.mode : barHot) === 'hi' }">
+            <line :x1="-fs * 0.3" :y1="0" :x2="barW + fs * 0.3" :y2="0" />
+          </g>
+          <g class="sf-barthumb" :class="{ hot: (barDrag ? barDrag.mode : barHot) === 'lo' }">
+            <line :x1="-fs * 0.3" :y1="plotH" :x2="barW + fs * 0.3" :y2="plotH" />
+          </g>
+        </g>
       </g>
     </svg>
 
@@ -1025,6 +1185,9 @@ defineExpose({ exportSvgString, svgSize, toCSV, svg: svgEl })
 /* 等值线：半透明墨线，压在彩色场上仍读得出、又不与数据抢注意力 */
 .sf-iso { fill: none; stroke: color-mix(in srgb, var(--text) 55%, transparent); stroke-width: 1; }
 .sf-iso-crit { stroke: color-mix(in srgb, var(--text) 88%, transparent); stroke-width: 1.8; }
+/* 局部加密出来的电平（见 contourLevels）：轻一档，读者一眼分得出「全域骨架」与
+   「这一带补的细节」——不然线一密，「线密 = 坡陡」这条读图直觉就被搅了 */
+.sf-iso-minor { stroke: color-mix(in srgb, var(--text) 34%, transparent); stroke-width: 0.7; }
 /* 等值线数值：字顺着线走，线在字处已被 mask 断开（同 MATLAB clabel 的读法）。
    仍留一圈细描边——数字底下除了自己那条线，还压着岸线、别的电平与场本身 */
 .sf-isolab {
@@ -1033,6 +1196,7 @@ defineExpose({ exportSvgString, svgSize, toCSV, svg: svgEl })
   font-variant-numeric: tabular-nums; font-weight: 600;
 }
 .sf-isolab.on { font-weight: 700; }
+.sf-isolab.minor { font-size: calc(var(--lb-fs, 11px) - 2px); font-weight: 600; }
 
 /* —— 压在地图与 Turbo 场上时：一律**纯色细线，不带任何衬底** ——
    线宽一律乘 --sf-k（= lwK，与 canvas 那边同一条曲线），字号调大时两边一起变粗。
@@ -1053,9 +1217,13 @@ defineExpose({ exportSvgString, svgSize, toCSV, svg: svgEl })
    这张图的主角本就是场。数值标注同色但推得更开（笔画细，要拉得更狠才读得清）。 */
 .sf-onmap .sf-iso { stroke-width: calc(0.8px * var(--sf-k, 1)); stroke-opacity: 0.82; }
 .sf-onmap .sf-iso-crit { stroke-width: calc(1.3px * var(--sf-k, 1)); stroke-opacity: 1; }
+/* 加密线与骨架的分野走**透明度**，不走线宽：0.8 vs 0.55 px 在 dpr=1 上量化后一样粗
+   （这条弯路在地物线那边已经走过一次），而 α 不受像素量化影响 */
+.sf-onmap .sf-iso-minor { stroke-width: calc(0.6px * var(--sf-k, 1)); stroke-opacity: 0.5; }
 /* 标注不再描边：颜色本身已保证与它脚下那一档拉得开（同一色相、明度推开一档），
    白描边只会在彩色场上留一串白斑——这正是上一版「臃肿」的来源 */
 .sf-onmap .sf-isolab { stroke: none; font-weight: 700; }
+.sf-onmap .sf-isolab.minor { font-weight: 600; }
 /* 恒定场的说明：压在空场中央，底色描边保证任何填充色上都读得清 */
 .sf-flat {
   fill: var(--text); text-anchor: middle; font-weight: 700;
@@ -1069,6 +1237,22 @@ defineExpose({ exportSvgString, svgSize, toCSV, svg: svgEl })
 .sf-cur line { stroke: color-mix(in srgb, var(--text) 45%, transparent); stroke-width: 1; stroke-dasharray: 3 3; }
 .sf-barcrit { stroke: var(--text); stroke-width: 1.4; }
 .sf-barext { stroke: var(--lb-rule); stroke-width: 1; }
+
+/* 色标条的交互层：热区透明（fill:none 不吃指针事件，必须给 transparent），
+   把手是两道细横线。常驻但淡到 0.32——它是控件不是数据，抢不过场也丢不掉。 */
+.sf-barhit { fill: transparent; }
+.sf-barui.z-ns .sf-barhit { cursor: ns-resize; }
+.sf-barui.z-grab .sf-barhit { cursor: grab; }
+.sf-barui.z-grabbing .sf-barhit { cursor: grabbing; }
+/* 把手不吃事件：热区是唯一的入口，免得指针在把手与热区之间来回切换时光标闪 */
+.sf-barthumb { pointer-events: none; }
+.sf-barthumb line {
+  stroke: var(--text); stroke-width: 2; stroke-linecap: round; stroke-opacity: 0.32;
+  transition: stroke-opacity .12s;
+}
+/* 手动钉住了色标域：两端一起加深，读者一眼知道这把尺子不再是自动的那把 */
+.sf-barui.on .sf-barthumb line { stroke-opacity: 0.72; }
+.sf-barthumb.hot line { stroke-opacity: 0.95; }
 
 .sf-foot {
   display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;

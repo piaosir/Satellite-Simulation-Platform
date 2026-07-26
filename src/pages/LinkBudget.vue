@@ -110,13 +110,18 @@ async function saveHistory() {
 
 async function exportReport(format) {
   if (!hasApi || !data.value) return
-  const r = await window.api.report.export({
-    format,
-    results: data.value,
-    params: { satelliteName: form.satelliteName, frequencyBand: form.frequencyBand },
-    meta: { title: '卫星链路预算报告' }
-  })
-  if (r && r.ok) toast('已导出：' + r.filePath)
+  try {
+    const r = await window.api.report.export({
+      format,
+      results: data.value,
+      params: { satelliteName: form.satelliteName, frequencyBand: form.frequencyBand },
+      meta: { title: '卫星链路预算报告' }
+    })
+    if (r && r.ok) toast('已导出：' + r.filePath)
+    else if (r && !r.canceled) toast('导出失败：' + (r.error || '未知错误'))
+  } catch (e) {
+    toast('导出失败：' + ((e && e.message) || e))
+  }
 }
 
 let timer

@@ -19,6 +19,11 @@ const props = defineProps({
 })
 const t = computed(() => lbDocT(props.lang))
 const isCascade = (seg) => !!seg && seg.role === 'cascade'
+// 多列段的列头：默认「上行 / 下行 / 合计」，段可用 heads 自定义
+//（如工况对照段的「晴空 / 降雨 / 雨致代价」）。长度不符时退回默认，不至于画出空列头。
+const DEFAULT_HEADS = { 2: ['上行', '下行'], 3: ['上行', '下行', '合计'] }
+const headsOf = (seg) => (Array.isArray(seg.heads) && seg.heads.length === seg.cols)
+  ? seg.heads : (DEFAULT_HEADS[seg.cols] || [])
 const shown = computed(() => (
   props.pick === 'cascade' ? props.segments.filter(isCascade)
     : props.pick === 'rest' ? props.segments.filter((s) => !isCascade(s))
@@ -27,17 +32,19 @@ const shown = computed(() => (
 </script>
 
 <template>
-  <div class="wf">
+  <!-- wf-en：英文标签比中文长一截，参考段带的标签列/栏宽据此另给一档（lbworkbench.css） -->
+  <div class="wf" :class="{ 'wf-en': lang === 'en' }">
     <!-- seg-cols{n}：段级列数标记，供参考段带的 subgrid 父网格按列数取模板（lbworkbench.css） -->
     <div v-for="(seg, si) in shown" :key="si" class="wf-seg" :class="'seg-cols' + seg.cols">
-      <div class="wf-title">{{ seg.title }}</div>
+      <!-- 章节号（core 的 _number 按最终段序统一编）：栏流会让段竖着排、跨栏续读，
+           段头挂着 §n 读者才不会跟丢段序；同一个号也是 Excel sheet / PDF 章节的号。
+           旧记录没有 no，此时不画号，排版不受影响。 -->
+      <div class="wf-title"><span v-if="seg.no" class="wf-no">§{{ seg.no }}</span>{{ seg.title }}</div>
 
       <div v-if="seg.cols >= 2" class="wf-row wf-head" :class="'cols' + seg.cols">
         <span class="wf-sign"></span>
         <span class="wf-l"></span>
-        <span class="wf-c">{{ t('上行') }}</span>
-        <span class="wf-c">{{ t('下行') }}</span>
-        <span v-if="seg.cols === 3" class="wf-c">{{ t('合计') }}</span>
+        <span v-for="(h, hi) in headsOf(seg)" :key="hi" class="wf-c">{{ t(h) }}</span>
         <span class="wf-u"></span>
       </div>
 
@@ -66,6 +73,8 @@ const shown = computed(() => (
   padding: 2px 1px 3px; font-size: calc(var(--lb-fs, 11px) + 1px); font-weight: 700; color: var(--text);
   border-bottom: 2px solid var(--lb-rule-strong);
 }
+/* 章节号：退一档墨色、常规字重——它是定位用的路标，不与段名争标题的分量 */
+.wf-no { font-weight: 400; color: var(--text-faint); margin-right: .5em; font-variant-numeric: tabular-nums; }
 .wf-row { display: grid; align-items: baseline; gap: 8px; padding: 1px 2px; line-height: 1.5; }
 .wf-row:not(.wf-head):hover { background: var(--surface); }
 /* 列宽：标签列吃剩余宽度（minmax(0,3fr) 保证它先长、被挤时先让），数值列按内容需要钉死下限
