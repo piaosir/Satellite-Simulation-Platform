@@ -41,6 +41,9 @@ const props = defineProps({
   showImport: { type: Boolean, default: true },        // 导入城市库/点标记/地球站/航迹——纯地理点导入；星间链路（星→星，无经纬度）表关掉
   // 单元格「第二行小字」钩子 (field, row) => string|null：在单元格值下方渲染一行只读小字（链路表用它把实时 EIRP/G·T 挂到「地球站配置」格下方，替代原独立列）
   cellSub: { type: Function, default: null },
+  // 单元格「行内尾标」钩子 (field, row) => string|null：跟在单元格值后面、同一行的一枚淡色小字
+  // （链路表用它把发信站实时算出的功放功率贴在「地球站配置」名之后，正在第二行小字 EIRP 之上）；返回空即不加。
+  cellTag: { type: Function, default: null },
   // 单元格「占比填充条」钩子 (field, row) => 0..1 或 null：在格底画按值比例的数据条（链路表功率/带宽占用列）；
   // 返回 null / 非正数即不画，>1 封顶铺满（超限着色由 cellClass 的 st-bad 接手）。
   cellFill: { type: Function, default: null },
@@ -1145,12 +1148,12 @@ function clearColContents() {
                        @input="onCapInput($event, i, c)" @compositionstart="onCapCompStart(i, c)"
                        @keydown="onCapKey" @blur="onCapBlur"
                        @copy="onCapClip" @cut="onCapClip" @paste="onCapClip" />
-                <span v-if="!(isEditing(i, c) && f.type === 'select')" class="sg-v" :class="{ mono: f.type === 'num', 'has-caret': f.type === 'select', ph: ghost(s, f) }">{{ ghost(s, f) || displayValue(s, f) }}</span>
+                <span v-if="!(isEditing(i, c) && f.type === 'select')" class="sg-v" :class="{ mono: f.type === 'num', 'has-caret': f.type === 'select', ph: ghost(s, f) }">{{ ghost(s, f) || displayValue(s, f) }}<i v-if="cellTag && cellTag(f, s)" class="sg-tag">{{ cellTag(f, s) }}</i></span>
                 <span v-if="f.type === 'select'" class="sg-caret" :class="{ open: isEditing(i, c) }"
                       @mousedown.left.stop.prevent="onCaretDown(i, c)"><Icon name="chevron-down" :size="12" /></span>
               </template>
               <template v-else>
-                <span class="sg-v" :class="{ mono: f.type === 'num', 'has-caret': f.type === 'select', ph: ghost(s, f) }">{{ ghost(s, f) || displayValue(s, f) }}</span>
+                <span class="sg-v" :class="{ mono: f.type === 'num', 'has-caret': f.type === 'select', ph: ghost(s, f) }">{{ ghost(s, f) || displayValue(s, f) }}<i v-if="cellTag && cellTag(f, s)" class="sg-tag">{{ cellTag(f, s) }}</i></span>
                 <span v-if="f.type === 'select'" class="sg-caret"
                       @mousedown.left.stop.prevent="onCaretDown(i, c)"><Icon name="chevron-down" :size="12" /></span>
               </template>
@@ -1355,6 +1358,9 @@ function clearColContents() {
 .sg-v.mono { font-family: var(--font-mono); }
 /* 留空单元格「浅显示」默认值（占位提示，非真实输入）——比正常内容更淡，用户一眼可辨 */
 .sg-v.ph { color: var(--text-faint); opacity: .7; }
+/* 行内尾标（如「地球站配置」名之后的实时功放功率）：跟在值后同一行，与第二行小字同一档字号/色阶——
+   读数性质相同（都是随输入实时回填的算出量），只是一个贴在名后、一个另起一行。 */
+.sg-tag { margin-left: 6px; font-style: normal; font-size: max(9px, calc(var(--lb-fs, 11px) - 2px)); color: var(--text-faint); }
 /* 单元格第二行只读小字（如「地球站配置」下的实时 EIRP/G·T）：更小更淡、等宽、不吃鼠标（点击落到 td 选中本格） */
 .sg-sub { display: block; padding: 0 6px 2px; margin-top: -1px; font-size: max(9px, calc(var(--lb-fs, 11px) - 2px)); line-height: 1.3; color: var(--text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; }
 .sg-cell.sel { background: color-mix(in srgb, var(--accent) 12%, var(--bg)); }

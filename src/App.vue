@@ -20,7 +20,6 @@ import Settings from './pages/Settings.vue'
 import Placeholder from './pages/Placeholder.vue'
 
 // 重资源页面（Cesium / 高德）按需懒加载，避免其加载问题拖垮整个应用。
-const ConstellationMap = defineAsyncComponent(() => import('./pages/ConstellationMap.vue'))
 const ConstellationMap3D = defineAsyncComponent(() => import('./pages/ConstellationMap3D.vue'))
 const ISL = defineAsyncComponent(() => import('./pages/ISL.vue'))
 
@@ -96,7 +95,6 @@ const pageKey = computed(() => `${nav.current}-msaa${displayQuality.value.msaa !
 
 const pageMap = {
   link: LinkBudget,
-  constellation: ConstellationMap,
   globe3d: ConstellationMap3D,
   isl: ISL,
   configs: Configs,

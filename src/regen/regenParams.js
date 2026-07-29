@@ -82,7 +82,7 @@ export const FIELD_GROUPS = [
       // —— 工作点（再生上行的功放，随站型入库；target:'op' 不进 linkParams，由 App 换成引擎 power 模式）——
       //   给定功放功率(W) → 引擎 power 模式算上行余量。（已删「设置余量」反解模式，工作点只按功放功率。）
       // hero:true 仅指渲染位置——与口径并列排在配置面板顶部主参数条（功放是站型的另一个定性指标），side 仍为 'tx'。
-      { key: 'opPowerW', label: '功放功率', tip: '功放输出功率（W）；MEO 预设 0.2 W ≈ 2.4 m 站工作点 EIRP 42 dBW（馈线 0.5 dB）。按给定功放功率计算上行余量。', side: 'tx', hero: true, unit: 'W', type: 'num', def: '0.2', target: 'op' },
+      { key: 'opPowerW', label: '功放功率预设', tip: '功放输出功率预设值（W）；MEO 预设 0.2 W ≈ 2.4 m 站工作点 EIRP 42 dBW（馈线 0.5 dB）。按给定功放功率计算上行余量；各站算出的功放功率显示在发信站表「地球站配置」格内配置名之后。', side: 'tx', hero: true, unit: 'W', type: 'num', def: '0.2', target: 'op' },
       // —— 接收链（工作点 G/T 的构成量）：天线（口径共用公共字段）+ 噪温 + 馈线 → 引擎按 gOverTe = 天线增益 − 系统噪温dB − 馈线损耗 算 G/T（含精确雨致 G/T 劣化）——
       { key: 'rxAntennaEfficiency', label: '天线效率', side: 'rx', unit: '%', type: 'num', def: '65', target: 'link' },
       { key: 'rxAntennaNoiseTempMode', label: '天线噪温模式', tip: '自动 = 按 ITU-R P.618-14 §3 由晴空大气衰减与链路仰角实时求取天空噪温（+25 K 地面拾取常数；NGSO §8 口径下随等效仰角变化），忽略「天线噪温」手填值；自定义 = 用「天线噪温」数值。', side: 'rx', type: 'select', options: ['自动', '自定义'], def: '自动', target: 'link' },

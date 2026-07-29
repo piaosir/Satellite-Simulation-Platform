@@ -5,7 +5,6 @@ export const useNavStore = defineStore('nav', {
     current: 'globe3d',
     pages: [
       { key: 'link', label: '链路预算', mark: '▦' },
-      { key: 'constellation', label: '星座地图', mark: '◍' },
       { key: 'globe3d', label: '星座3D', mark: '◐' },
       { key: 'isl', label: '星间链路', mark: '⟁' },
       { key: 'configs', label: '配置管理', mark: '▥' },

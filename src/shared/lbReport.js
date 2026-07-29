@@ -189,7 +189,7 @@ export const LB_REPORT_EN = {
   '信息速率': 'Information Rate', '调制方式': 'Modulation', 'FEC 码率': 'FEC Rate', '门限': 'Threshold',
   '误码率 10⁻ⁿ': 'BER 10⁻ⁿ', '扩频增益': 'Spreading Gain', '滚降系数 (1+α)': 'Roll-off (1+α)',
   '帧效率': 'Frame Efficiency', '门限模式': 'Threshold Mode', '系统余量': 'System Margin',
-  '天线口径': 'Antenna Diameter', '天线效率': 'Antenna Efficiency', '功放功率': 'HPA Power',
+  '天线口径': 'Antenna Diameter', '天线效率': 'Antenna Efficiency', '功放功率预设': 'HPA Power (preset)',
   '功放回退': 'HPA Back-off', '馈线损耗': 'Feeder Loss', 'UPC': 'UPC', 'UPC值': 'UPC Value',
   '其他损耗': 'Other Losses', '天线噪温模式': 'Antenna Noise Temp. Mode', '天线噪温': 'Antenna Noise Temp.',
   '接收机噪温': 'Receiver Noise Temp.', '卫星名称': 'Satellite Name', '工作频段': 'Frequency Band',

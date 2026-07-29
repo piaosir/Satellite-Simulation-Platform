@@ -2,7 +2,7 @@
 // 被测文件是渲染端 ESM（src/shared/lbAutoName.js），故本测试也是 .mjs。
 //
 // 关键不变式：
-//   ① 没被用户改过名字的条目（nameAuto=true），名字随关键参数走：地球站=口径·功放 / 载波=速率·调制 FEC / 卫星=星名；
+//   ① 没被用户改过名字的条目（nameAuto=true），名字随关键参数走：地球站=口径 / 载波=速率·调制 FEC / 卫星=星名；
 //   ② 用户改过一次（nameAuto=false），此后参数怎么变都不动它的名字；
 //   ③ 幂等：同一份库反复 sync 结果不变（深监听里会反复跑，后缀不能越加越长）；
 //   ④ 重名自动加序号，且自定义名先占位（自动名让着它）；
@@ -22,10 +22,11 @@ function ok(name, cond, extra) {
 console.log('=== 资源库条目自动命名 ===\n')
 
 // —— ① 三库各自的自动名 ——
-ok('地球站 = 口径 · 功放', esAutoName({ antennaDiameter: '6.2', paPowerW: '40' }) === '6.2 m · 40 W')
-ok('地球站 功放键名两套通吃（再生式 opPowerW）', esAutoName({ antennaDiameter: '2.4', opPowerW: '0.2' }) === '2.4 m · 200 mW', esAutoName({ antennaDiameter: '2.4', opPowerW: '0.2' }))
-ok('地球站 功放换档到 kW', esAutoName({ antennaDiameter: '13', paPowerW: '3000' }) === '13 m · 3 kW', esAutoName({ antennaDiameter: '13', paPowerW: '3000' }))
+ok('地球站 = 口径（功放不进名字）', esAutoName({ antennaDiameter: '6.2', paPowerW: '40' }) === '6.2 m', esAutoName({ antennaDiameter: '6.2', paPowerW: '40' }))
+ok('地球站 功放多大都不进名字（再生式 opPowerW 同理）',
+  esAutoName({ antennaDiameter: '2.4', opPowerW: '0.2' }) === '2.4 m' && esAutoName({ antennaDiameter: '13', paPowerW: '3000' }) === '13 m')
 ok('地球站 无功放只报口径', esAutoName({ antennaDiameter: '0.35' }) === '0.35 m')
+ok('地球站 无口径 → 算不出名字', esAutoName({ paPowerW: '40' }) === '')
 // 载波：速率报「用户按的那一档」（锚点）+ 按数值换档到 Mbps/MHz 这一级（与结果列同一套档位表）
 const CAR = { infoRate: '2048', modulation: 'QPSK', fec: '3/4', rsCode: '188/204', m: '1', bandwidthFactor: '1.20' }
 ok('载波 = 速率 · 调制 FEC（2048 kbps → 2.048 Mbps）', carrierAutoName(CAR) === '2.048 Mbps · QPSK 3/4', carrierAutoName(CAR))
@@ -49,12 +50,12 @@ ok('卫星 出厂占位名 Satellite 不算星名（整条不成立）', satAuto
 // —— ①④ 全库刷名 + 重名加序号 ——
 const es = [
   withAutoFlag({ name: '', form: { antennaDiameter: '6.2', paPowerW: '40' } }, 'es'),
-  withAutoFlag({ name: '', form: { antennaDiameter: '6.2', paPowerW: '40' } }, 'es'),   // 同参数 → 加序号
+  withAutoFlag({ name: '', form: { antennaDiameter: '6.2', paPowerW: '400' } }, 'es'),  // 同口径（功放不进名字）→ 加序号
   withAutoFlag({ name: '关口站 6.2m', form: { antennaDiameter: '6.2', paPowerW: '400' } }, 'es')  // 起过名 → 不动
 ]
 syncAutoNames(es, 'es')
-ok('新建条目按参数得名', es[0].name === '6.2 m · 40 W', es[0].name)
-ok('同名自动加序号', es[1].name === '6.2 m · 40 W 2', es[1].name)
+ok('新建条目按参数得名', es[0].name === '6.2 m', es[0].name)
+ok('同名自动加序号', es[1].name === '6.2 m 2', es[1].name)
 ok('内置的自定义名不被冲掉', es[2].name === '关口站 6.2m' && es[2].nameAuto === false)
 
 // ③ 幂等：再跑两遍，名字一字不变
@@ -65,8 +66,12 @@ ok('反复 sync 幂等', es.map((c) => c.name).join('|') === before, es.map((c) 
 // ① 参数改了，名字跟着改
 es[0].form.antennaDiameter = '9.0'
 syncAutoNames(es, 'es')
-ok('改口径 → 名字跟随', es[0].name === '9.0 m · 40 W', es[0].name)
-ok('跟随后同参数那条让出后缀', es[1].name === '6.2 m · 40 W', es[1].name)
+ok('改口径 → 名字跟随', es[0].name === '9.0 m', es[0].name)
+ok('跟随后同口径那条让出后缀', es[1].name === '6.2 m', es[1].name)
+// 功放只是预设值（实时功率在链路表里算），改它不动名字
+es[1].form.paPowerW = '125'
+syncAutoNames(es, 'es')
+ok('改功放 → 名字不动', es[1].name === '6.2 m', es[1].name)
 
 // —— ② 用户改过名 → 此后再不自动 ——
 es[0].name = '我的关口站'; es[0].nameAuto = false
@@ -76,11 +81,11 @@ ok('自定义名此后不随参数变', es[0].name === '我的关口站')
 
 // ④ 自动名撞上别人的自定义名 → 自动的那条让位
 const es2 = [
-  { name: '3.7 m · 40 W', nameAuto: false, form: { antennaDiameter: '9', paPowerW: '5' } },
+  { name: '3.7 m', nameAuto: false, form: { antennaDiameter: '9', paPowerW: '5' } },
   { name: '', nameAuto: true, form: { antennaDiameter: '3.7', paPowerW: '40' } }
 ]
 syncAutoNames(es2, 'es')
-ok('自动名让着自定义名', es2[1].name === '3.7 m · 40 W 2', es2[1].name)
+ok('自动名让着自定义名', es2[1].name === '3.7 m 2', es2[1].name)
 
 // —— ⑤ 算不出名字的卫星 ——
 const sats = [
@@ -99,7 +104,10 @@ ok('历史默认名判为自动（站型2）', legacyAutoFlag('es', { name: '站
 ok('历史默认名判为自动（默认）', legacyAutoFlag('carrier', { name: '默认', form: {} }) === true)
 ok('历史默认名判为自动（默认卫星）', legacyAutoFlag('sat', { name: '默认卫星', form: {} }) === true)
 ok('带重名后缀的默认名也算（卫星2 3）', legacyAutoFlag('sat', { name: '卫星2 3', form: {} }) === true)
-ok('名字恰好等于自动名 → 自动', legacyAutoFlag('es', { name: '6.2 m · 40 W', form: { antennaDiameter: '6.2', paPowerW: '40' } }) === true)
+ok('名字恰好等于自动名 → 自动', legacyAutoFlag('es', { name: '6.2 m', form: { antennaDiameter: '6.2', paPowerW: '40' } }) === true)
+// 改规则（2026-07-29 功放退出名字）前的库：名字还是旧形状「口径 · 功放」的同样算自动，别一次性钉成自定义名
+ok('旧版自动名「口径 · 功放」也算自动', legacyAutoFlag('es', { name: '6.2 m · 40 W', form: { antennaDiameter: '6.2', paPowerW: '40' } }) === true)
+ok('旧版自动名 再生式 opPowerW 换档形状', legacyAutoFlag('es', { name: '2.4 m · 200 mW', form: { antennaDiameter: '2.4', opPowerW: '0.2' } }) === true)
 ok('用户起的名字判为自定义', legacyAutoFlag('es', { name: '关口站 6.2m', form: { antennaDiameter: '6.2', paPowerW: '40' } }) === false)
 ok('存过的标志位优先于推定', adoptAutoFlag('es', { name: '站型2', nameAuto: false, form: {} }) === false)
 ok('没存过才推定', adoptAutoFlag('es', { name: '站型2', form: {} }) === true)

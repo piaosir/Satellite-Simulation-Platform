@@ -43,7 +43,7 @@ export const FIELD_GROUPS = [
       // 功放功率是发射链硬件属性，随站型入库（对齐 GEO/再生式工作点的归属）：
       // 「设置功放功率」计算方式逐行取所选站型的此值反推余量。target:'op' 不进引擎参数，App 换算成 opt.powerW。
       // hero:true 仅指渲染位置——与口径并列排在配置面板顶部主参数条（功放是站型的另一个定性指标），side 仍为 'tx'。
-      { key: 'paPowerW', label: '功放功率', tip: '发射链高功放输出功率（W）——「设置功放功率」计算方式按行取此值反推余量', side: 'tx', hero: true, unit: 'W', type: 'num', def: '40', target: 'op' },
+      { key: 'paPowerW', label: '功放功率预设', tip: '发射链高功放输出功率预设值（W）——「设置功放功率」计算方式按行取此值反推余量；各行实时算出的功放功率显示在链路表「地球站配置」格内配置名之后', side: 'tx', hero: true, unit: 'W', type: 'num', def: '40', target: 'op' },
       { key: 'paBackoff', label: '功放回退', side: 'tx', unit: 'dB', type: 'num', def: '0', target: 'link' },
       { key: 'feederLoss', label: '馈线损耗', side: 'tx', unit: 'dB', type: 'num', def: '3.5', target: 'link' },
       { key: 'uplinkPowerControl', label: 'UPC', tip: '上行功率控制 (Uplink Power Control)', side: 'tx', type: 'select', options: ['否', '是', '自定义'], def: '否', target: 'link' },

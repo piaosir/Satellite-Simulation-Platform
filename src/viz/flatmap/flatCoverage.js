@@ -8,6 +8,7 @@ import { CHINA_IDS, NO_LABEL_IDS } from '../globe3d/cnClaims.js'
 import { NANHAI_DASHES, NANHAI_WIDTH_MUL, NANHAI_MIN_WIDTH } from '../nanhaiDashes.js'
 // 陆地配色（LAND/CHINA/ICE/基调方案/逐国覆盖）统一收拢到 ../landPalette.js（与 3D 球体共用单一来源）
 import { CHINA, ARCTIC_ISLAND_LAT, landColors, setLandPalette } from '../landPalette.js'
+import { terminatorFlat } from '../terminator.js'
 
 const OCEAN = '#15426b'
 // 南极极冠：南极洲数据止于约 -85°，极点处留有空洞，补到 -90°。
@@ -94,6 +95,9 @@ export function createFlatCoverage(canvas) {
   // 位图不走分带多边形——连续场用栅格一次 drawImage 即可，缩放平移零成本、也不受多边形数量拖累。
   let envImg = null, envBBox = null, envAlpha = 0.78, envSmooth = true
   let envContours = []   // [{ level, text, color, width, lines:[[[lon,lat]...]], labels:[{lon,lat,a}] }]
+  // 晨昏线 / 夜区：随时间轴每次推进重算，只存当次的点列（约 360 点，逐帧直接 trace，不烘 Path2D
+  // ——量级比覆盖分带小两三个数量级，缓存收益还不如省掉 compat 分支的复杂度）
+  let termData = null, termOpts = {}
   // GRD 全局标注选项（与 3D 同步）：天线名 / 波束中心 / 数值标签
   let fieldOpts = { showName: true, nameSize: 16, showBore: true, boreSize: 0.5, showPeak: false, peakSize: 5, showVal: false, valSize: 12 }
   let nameMode = 'off', provVisible = false, prov = null, cityVisible = false, city = null
@@ -370,6 +374,42 @@ export function createFlatCoverage(canvas) {
   function traceSegGroup(grp) {
     ctx.beginPath()
     for (const sg of (grp.segs || [])) { let a = sg[0][0], b = sg[1][0]; while (b - a > 180) b -= 360; while (b - a < -180) b += 360; ctx.moveTo(a - LON0, 90 - sg[0][1]); ctx.lineTo(b - LON0, 90 - sg[1][1]) }
+  }
+
+  // 夜区填充 + 晨昏分界线。世界坐标 x=lon−LON0、y=90−lat，与覆盖层同一套 setTransform + ±360 环绕。
+  // 采样起点已在 terminatorFlat 里对齐到 LON0（地图接缝）→ 世界 X 单调 0→360，多边形不会被接缝撕开。
+  // 画在 drawEnvRaster 之前（即所有数据层之下、底图之上）：夜区是「打光」不是「数据」，
+  // 只该压暗底图，不该把覆盖场/等值线一起蒙灰；国界地名在 aboveCanvas，天然压在其上。
+  function drawTerminator() {
+    if (!termData) return
+    const kk = k(), wl = -tx / kk, wr = (cw - tx) / kk
+    const o = termOpts
+    ctx.save()
+    for (const off of [-360, 0, 360]) {
+      if (off + 360 < wl || off > wr) continue          // 该副本整幅落在视口外
+      ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * (tx + off * kk), dpr * ty)
+      if (o.night !== false) {
+        ctx.globalAlpha = o.nightOpacity != null ? o.nightOpacity : 0.42
+        ctx.fillStyle = o.nightColor || '#0a1120'
+        ctx.beginPath()
+        const ng = termData.night
+        ctx.moveTo(ng[0][0] - LON0, 90 - ng[0][1])
+        for (let i = 1; i < ng.length; i++) ctx.lineTo(ng[i][0] - LON0, 90 - ng[i][1])
+        ctx.closePath(); ctx.fill()
+      }
+      if (o.line !== false) {
+        ctx.globalAlpha = o.lineOpacity != null ? o.lineOpacity : 0.75
+        ctx.strokeStyle = o.lineColor || '#ffd27a'
+        ctx.lineWidth = (o.lineWidth || 1.2) / kk       // 除以缩放 → 恒定屏幕像素宽
+        ctx.lineJoin = 'round'; ctx.lineCap = 'round'
+        ctx.beginPath()
+        const ln = termData.line
+        ctx.moveTo(ln[0][0] - LON0, 90 - ln[0][1])
+        for (let i = 1; i < ln.length; i++) ctx.lineTo(ln[i][0] - LON0, 90 - ln[i][1])
+        ctx.stroke()
+      }
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.globalAlpha = 1; ctx.restore()
   }
 
   function drawField() {
@@ -694,7 +734,8 @@ export function createFlatCoverage(canvas) {
     ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, bw, bh); ctx.drawImage(belowCanvas, 0, 0)
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     ctx.save(); ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip()
-    drawEnvRaster()      // ITU 环境场栅格（最底：气象/地形是背景量，谁都压得住它）
+    drawTerminator()     // 夜区遮罩 + 晨昏线（最底：是「打光」不是数据，只压暗底图、不蒙灰数据层）
+    drawEnvRaster()      // ITU 环境场栅格（气象/地形是背景量，谁都压得住它）
     drawEnvContours()    // 环境场等值线 + 数值标注（紧跟其场，不与覆盖层混层）
     drawSatFills()       // Polygon 区域填充（覆盖场之下：叠加区只显示覆盖图颜色）
     drawCovGrid()        // STK Coverage FOM 热力图（Polygon 填充之上、GRD 覆盖场之下）
@@ -912,6 +953,18 @@ export function createFlatCoverage(canvas) {
     setEnvAlpha(a) { envAlpha = a; envFadeKey = ''; requestDraw() },
     setEnvContours(groups) { envContours = Array.isArray(groups) ? groups : []; requestDraw() },
     clearEnv() { envImg = null; envBBox = null; envContours = []; envFadeKey = ''; requestDraw() },
+    // ---- 晨昏线 / 夜区 ----
+    // date = UTC 时刻（跟随时间轴，非系统时钟）；传 null 清层。opts 同 3D：
+    // { night, line, nightColor, nightOpacity, lineColor, lineWidth, lineOpacity, steps }
+    // 采样起点钉在 LON0（地图接缝）—— 否则夜区多边形横跨接缝、填充被撕成两半。
+    // steps 默认 1440（0.25°/段）：平面图能放大到 60×，360 段（1°/段）在高倍下会看出折线棱角。
+    // 逐帧只是 1440 次 lineTo，与覆盖分带填充比可忽略，故直接给足而不做自适应。
+    setTerminator(date, opts) {
+      if (opts) termOpts = { ...termOpts, ...opts }
+      termData = date ? terminatorFlat(date, { steps: (termOpts.steps || 1440), lon0: LON0 }) : null
+      requestDraw()
+    },
+    clearTerminator() { termData = null; requestDraw() },
     setCovGrid(layer, opts) {
       covGridLayers = (layer && layer.fillBands && layer.fillBands.length) ? [{ ...layer, fillPaths: buildFillPaths(layer.fillBands), bounds: layerBounds(layer) }] : []
       if (opts && opts.alpha != null) covGridAlpha = opts.alpha
@@ -1041,7 +1094,8 @@ export function createFlatCoverage(canvas) {
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
       if (o.background !== false) { ctx.fillStyle = BG; ctx.fillRect(0, 0, cw, ch) }
       drawBelowContent(rx, ry, rw, rh)
-      ctx.save(); ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip(); drawEnvRaster(); drawEnvContours(); drawSatFills(); drawCovGrid(); drawField(); drawSatPolyLines(); drawDataLines(); ctx.restore()
+      // 层序必须与 draw() 逐字一致（所见即所得）：晨昏线夜区打头，与屏幕上同为最底层
+      ctx.save(); ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip(); drawTerminator(); drawEnvRaster(); drawEnvContours(); drawSatFills(); drawCovGrid(); drawField(); drawSatPolyLines(); drawDataLines(); ctx.restore()
       drawAboveContent(rx, ry, rw, rh)
       ctx.save(); ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip()
       drawFieldOverlays()

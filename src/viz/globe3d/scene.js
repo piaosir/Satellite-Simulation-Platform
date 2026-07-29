@@ -14,6 +14,7 @@ import { ENV_R, envSphereParams } from '../env/envSphere.js'
 import { NANHAI_DASHES, NANHAI_WIDTH_MUL, NANHAI_MIN_WIDTH } from '../nanhaiDashes.js'
 import { CHINA, ARCTIC_ISLAND_LAT, landColors, setLandPalette } from '../landPalette.js'
 import { antarcticaFillRings } from './antarctica.js'
+import { solarGeometry, terminatorRing } from '../terminator.js'
 
 const RE = 6371
 
@@ -797,6 +798,90 @@ export function createGlobeScene(container, quality = {}) {
     }
     covGroup = g; scene.add(g)
   }
+
+  // ===================== 晨昏线 / 夜区 =====================
+  // 夜区＝以「反日下点」为心、张角 90° 的球冠 —— 正好是 three.js SphereGeometry 的 thetaLength=π/2，
+  // 零自定义三角化：建一个半球壳，再把它的 +Y 轴转到反日下点方向即可。
+  // 球背面那半由深度测试自然剔除（陆/海球写深度，夜区壳 depthWrite=false 只读），无需手工裁剪。
+  //
+  // 渲染序 4.5：压在数据层（GRD 覆盖 5 / 等值线·波束·轨迹 6 / 经纬网 6.3 / 国界 6.5）【之下】。
+  // 夜区是「打光」不是「数据」——它只该压暗底图，不该把覆盖场和等值线一起蒙灰、更不该盖住地理骨架。
+  // 地球本身用 MeshBasicMaterial 不打光（见 :414），故这里走独立叠加层而非真实光照。
+  //
+  // ★ 半径与细分是【一对必须一起算】的参数，别单独调其中一个：
+  //   陆地网格顶点严格在半径 1.0，但按 MAXSEG=3° 细分后三角形是弦，面心下陷到约 0.9996。
+  //   夜区壳同理有弦切下陷 sag = 1 − cos(δ)，δ＝格子半对角。壳的【最低点】必须仍高于陆地的【最高点】1.0，
+  //   否则两套疏密不同的球面剖分互相穿插 → 斜向摩尔纹条纹（v1.3.9 首版 R=1.0002 + 96×48 就是这么翻的：
+  //   δ≈2.1° → 最低仅 0.99953，比陆地顶点还低 4.7e-4）。
+  //   现取 R=1.0008 + 180×45：δ=√(1²+1²)=1.414° → sag=3.0e-4 → 最低 1.00050，比陆地高 5.0e-4，够。
+  //   R 也不能一味加大：1.0008 相当于 5 km 高，再高地平处会看出夜区与地表错开的视差。
+  //   另加 polygonOffset 朝相机偏一点作保险。这条不变式由 packages/core/test/terminatorRender.test.mjs 守着。
+  const TERM_CAP_R = 1.0008, TERM_CAP_W = 180, TERM_CAP_H = 45
+  const TERM_LINE_R = 1.0012   // 分界线：压在夜区壳之上（壳最高 1.0008），也远高于陆地
+  const TERM_UP = new THREE.Vector3(0, 1, 0)
+  let termGroup = null, termCap = null, termLine = null
+  function clearTerminator() {
+    if (!termGroup) return
+    termGroup.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) { lineMats.delete(o.material); o.material.dispose() } })
+    scene.remove(termGroup); termGroup = null; termCap = null; termLine = null
+  }
+  // 球冠几何【只建一次】：它随时刻变的只有朝向，改 quaternion 即可。
+  // 首版每次调用整体重建，而本函数在实时模式每秒调一次、拖时间轴每帧调一次 —— 等于每秒重建 1.6 万个三角形。
+  function ensureTerminator() {
+    if (termGroup) return
+    termGroup = new THREE.Group()
+    termCap = new THREE.Mesh(
+      new THREE.SphereGeometry(TERM_CAP_R, TERM_CAP_W, TERM_CAP_H, 0, Math.PI * 2, 0, Math.PI / 2),
+      new THREE.MeshBasicMaterial({
+        color: 0x0a1120, transparent: true, opacity: 0.42, depthWrite: false,
+        // FrontSide（非 DoubleSide）：始终从球外看，只会看到壳的外面；用 DoubleSide 则地平附近掠射的
+        // 视线会穿过壳两次、叠两遍 alpha，沿晨昏线压出一条更暗的假边。
+        side: THREE.FrontSide, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4
+      })
+    )
+    termCap.renderOrder = 4.5
+    termGroup.add(termCap)
+    // 线：材质常驻（regMat 登记进 lineMats 由 resize 统一更新分辨率），几何每次重建——
+    // 720 点的重建成本可忽略，且避免 LineGeometry.setPositions 反复换 buffer 留下不回收的 GPU 缓冲。
+    termLine = new Line2(new LineGeometry(), regMat(new LineMaterial({
+      color: 0xffd27a, linewidth: 1.2, transparent: true, opacity: 0.75, worldUnits: false, depthWrite: false
+    })))
+    termLine.renderOrder = 6.2
+    termGroup.add(termLine)
+    scene.add(termGroup)
+  }
+  // date = UTC 时刻（跟随时间轴，非系统时钟）；传 null 清层。
+  // opts: { night:bool, line:bool, nightColor, nightOpacity, lineColor, lineWidth, lineOpacity, steps }
+  function setTerminator(date, opts) {
+    if (!date) { clearTerminator(); return }
+    ensureTerminator()
+    const o = opts || {}
+    termCap.visible = o.night !== false
+    if (termCap.visible) {
+      const { anti } = solarGeometry(date)
+      // SphereGeometry 的 theta 自 +Y 起算 → 把 +Y 转到反日下点方向，球冠即罩住整个夜半球
+      termCap.quaternion.setFromUnitVectors(TERM_UP, llaToVec(anti.lat, anti.lon, 0).normalize())
+      if (o.nightColor != null) termCap.material.color.setHex(o.nightColor)
+      if (o.nightOpacity != null) termCap.material.opacity = o.nightOpacity
+    }
+    termLine.visible = o.line !== false
+    if (termLine.visible) {
+      const ring = terminatorRing(date, o.steps || 720)
+      const flat = new Array((ring.length + 1) * 3)
+      for (let i = 0; i <= ring.length; i++) {
+        const p = ring[i % ring.length]   // 末点回到首点即闭合
+        const v = llaToVec(p.lat, p.lon, 0).multiplyScalar(TERM_LINE_R)
+        flat[i * 3] = v.x; flat[i * 3 + 1] = v.y; flat[i * 3 + 2] = v.z
+      }
+      termLine.geometry.dispose()
+      const g = new LineGeometry(); g.setPositions(flat)
+      termLine.geometry = g
+      if (o.lineColor != null) termLine.material.color.setHex(o.lineColor)
+      if (o.lineWidth != null) termLine.material.linewidth = o.lineWidth
+      if (o.lineOpacity != null) termLine.material.opacity = o.lineOpacity
+    }
+  }
+
   // ===================== GRD 覆盖（独立图层：填充面 + 等值线，与烘焙 setCoverage 互不干扰） =====================
   // fillBands=[{color:[r,g,b], verts:Float64Array[x,y,...], counts:Int32Array}]（分带填充扁平几何，可空）；segGroups=[{segs:[[[lon,lat],[lon,lat]]...], color, width, opacity}]（逐档等值线，可空）；
   // opts={alpha}。整层一个 group，重设即整体替换。
@@ -1544,7 +1629,8 @@ export function createGlobeScene(container, quality = {}) {
     renderer.render(scene, camera)   // 立即补画一帧，避免 setSize 清空缓冲后等到下帧才重绘 → 黑一下
   }
   function destroy() {
-    clearEnv()   // 贴图/几何不随 renderer.dispose 走，显式释放（切页面重挂载时会反复走这里）
+    clearEnv()          // 贴图/几何不随 renderer.dispose 走，显式释放（切页面重挂载时会反复走这里）
+    clearTerminator()   // 同上：夜区球壳几何 + 线材质（materials 还挂在 lineMats 里）也要显式还
     cancelAnimationFrame(raf); controls.dispose(); renderer.dispose()
     if (renderer.domElement.parentNode) renderer.domElement.parentNode.removeChild(renderer.domElement)
   }
@@ -1553,6 +1639,7 @@ export function createGlobeScene(container, quality = {}) {
     setSatellites, setLabelMode, setHighlight, setHighlightLLA, setOnPick,
     setOrbit, setGroundTrack, setFootprint, setSelectionSet, clearSelectionGeom,
     setCoverage, clearCoverage, setCoverageField, patchCoverageLayers, clearCoverageField, setCoverageFieldAlpha, setCovGrid, clearCovGrid, setCovGridAlpha,
+    setTerminator, clearTerminator,
     setEnvRaster, setEnvAlpha, setEnvContours, clearEnv,
     setSatLayer, clearSatLayer, faceLonLat, setProvinces, setProvincesVisible, setCities, setCitiesVisible, setBorderStyle, setNameScale, setLabelStyle, setOceanColor, setLandColors,
     setPixelRatio, setRenderFps, setSphereDetail, setMapDetail,

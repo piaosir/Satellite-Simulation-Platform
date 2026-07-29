@@ -32,6 +32,7 @@ import { useGridSelect } from '../viz/grd/useGridSelect.js'
 import { useMarkerTable } from '../viz/markers/useMarkerTable.js'
 import sat from '../viz/constellation/satellite.js'
 import { sampleOrbitAdaptive } from '../viz/constellation/adaptiveSample.js'
+import { solarGeometry } from '../viz/terminator.js'
 import * as W from '../viz/wgs84.js'
 import { parseOMMCsv, fetchGroupLiveOrSup } from '../viz/constellation/tle.js'
 import { useCustomConstellations } from '../viz/constellation/useCustomConstellations.js'
@@ -92,6 +93,13 @@ let provincesData = null
 const showCities = ref(false)   // 显示中国地级市界 / 地级市名（默认关）
 let citiesLoaded = false
 let citiesData = null
+// 晨昏线（昼夜分界）：默认关。时刻取时间轴当前值 calcAt()（非系统时钟）——拖时间轴 / 实时推进时随之移动，
+// 与卫星星位同一个 UTC 时刻、同一个自转相位（GMST 复用 sat.gstime，见 viz/terminator.js）。
+const termOn = ref(false)
+const termNight = ref(true)     // 夜区半透明遮罩
+const termLine = ref(true)      // 晨昏分界线
+const termStyle = reactive({ nightColor: '#0a1120', nightOpacity: 0.42, lineColor: '#ffd27a', lineWidth: 1.2, lineOpacity: 0.75 })
+const termSub = ref(null)       // 当前日下点 {lat, lon}，供侧栏读数（applyTerminator 时回填）
 const timeOffset = ref(0)        // 分钟：游标(查看时刻)相对锚点的偏移，可负=过去
 const windowMin = ref(4320)      // 可见时间窗跨度(分钟)，用户可配(预设下拉/滚轮缩放)，持久化
 const winStartMin = ref(-1080)   // 窗口左边缘相对锚点的偏移(分钟)，负=含过去；= -PAST_FRAC*windowMin
@@ -1025,6 +1033,8 @@ function refreshPositions() {
   if (!scene) return
   nowStamp.value = Date.now()                                          // 「此刻」红标记参考
   if (live.value) { nowTick.value++; baseTime.value = nowStamp.value }  // 实时：时钟自增 + 锚点随系统时钟滑动
+  // 晨昏线随时间轴/实时移动。放在早退之前：一颗星都不显示时晨昏线照样该走（它只跟时刻有关，与星无关）。
+  if (termOn.value) applyTerminator()
   // renderEntries 已含可见自定义星座（即使内置组选「无」也可能非空），故只按空判断，不再短路 'none'
   if (!renderEntries.length) { scene.setSatellites([]); shownCount.value = 0; if (vis.open.value) vis.recompute(); commitGeometry(); if (hasLinkedElev() || vis.open.value) redrawSats(); grd.tickLive(); return }
   const now = calcAt(), gmst = sat.gstime(now)
@@ -1589,17 +1599,39 @@ const WIN_MIN = 10, WIN_MAX = 43200                      // 跨度上下限：10
 const WINDOW_PRESETS = [{ v: 360, l: '6h' }, { v: 720, l: '12h' }, { v: 1440, l: '24h' }, { v: 4320, l: '3d' }, { v: 10080, l: '7d' }]   // 时间窗预设
 const NICE = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 14400, 21600, 43200, 86400, 172800, 345600, 604800]   // 「整齐」刻度阶梯(秒)
 const _mod = (x, y) => x - y * Math.round(x / y)
+// —— 时间轴读数时区：'local'（本机时区，默认）| 'utc' ——
+// 只影响【显示】：Date 内部是 UTC 毫秒数，星位/晨昏线全程走 getUTC*，切这个开关不改变任何计算结果。
+// 加它是因为晨昏线、星历历元、过境窗口都是 UTC 口径，对国际时刻时需要直接读 UTC 而不是心算 −8。
+const tzMode = ref('local')
+const tzUtc = () => tzMode.value === 'utc'
+// 一组「按当前时区档位取分量」的读数器：UTC 档走 getUTC*，本地档走 getXxx（口径与切换前逐字一致）
+const tYear = (d) => (tzUtc() ? d.getUTCFullYear() : d.getFullYear())
+const tMon = (d) => (tzUtc() ? d.getUTCMonth() : d.getMonth())
+const tDay = (d) => (tzUtc() ? d.getUTCDate() : d.getDate())
+const tHour = (d) => (tzUtc() ? d.getUTCHours() : d.getHours())
+const tMin = (d) => (tzUtc() ? d.getUTCMinutes() : d.getMinutes())
+const tSec = (d) => (tzUtc() ? d.getUTCSeconds() : d.getSeconds())
+// 本机时区标签（如 UTC+8）：来自 Windows「时间和语言 → 时区」，仅用于显示，不参与任何计算
+const localTzLabel = computed(() => {
+  const off = -new Date().getTimezoneOffset()
+  const s = off >= 0 ? '+' : '−', h = Math.floor(Math.abs(off) / 60), m = Math.abs(off) % 60
+  return 'UTC' + s + h + (m ? ':' + String(m).padStart(2, '0') : '')
+})
 function fmtTick(ms, wMin) {
   const d = new Date(ms), p = (n) => String(n).padStart(2, '0')
-  const mid = d.getHours() === 0 && d.getMinutes() === 0 && d.getSeconds() === 0
-  if (wMin > 5760) return `${p(d.getMonth() + 1)}-${p(d.getDate())}`                                                           // >4 天：只显日期
-  if (wMin > 120) return mid ? `${p(d.getMonth() + 1)}-${p(d.getDate())}` : `${p(d.getHours())}:${p(d.getMinutes())}`          // 2h~4 天：整日显日期，否则 HH:MM
-  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`                                                        // ≤2h：HH:MM:SS
+  const mid = tHour(d) === 0 && tMin(d) === 0 && tSec(d) === 0
+  if (wMin > 5760) return `${p(tMon(d) + 1)}-${p(tDay(d))}`                                                           // >4 天：只显日期
+  if (wMin > 120) return mid ? `${p(tMon(d) + 1)}-${p(tDay(d))}` : `${p(tHour(d))}:${p(tMin(d))}`                     // 2h~4 天：整日显日期，否则 HH:MM
+  return `${p(tHour(d))}:${p(tMin(d))}:${p(tSec(d))}`                                                                 // ≤2h：HH:MM:SS
 }
 // 自适应刻度：日历阶梯 + 每~80px 一主刻度 + 对齐整点整日 + 主/次两级 + 标签防重叠（左→右贪心抽稀）
 function computeTicks(anchorMs, wStart, wMin, trackPx) {
   const span = wMin * 60, leftMs = anchorMs + wStart * 60000
-  const d = new Date(leftMs), epoch = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() / 1000   // 以左边缘所在日午夜为对齐基准
+  // 以左边缘所在日的午夜为对齐基准。★必须跟着 tzMode 走：UTC 档下若仍按本地午夜对齐，
+  // 刻度会落在 UTC 的非整点上（东八区就是每格差 8 小时的零头），标签一片 xx:00 之外的碎数。
+  const d = new Date(leftMs)
+  const epoch = (tzUtc() ? Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())
+    : new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()) / 1000
   const start = leftMs / 1000 - epoch, end = start + span
   const ideal = span / Math.max(1, trackPx / 80)
   const main = NICE.find((s) => s >= ideal) || NICE[NICE.length - 1]
@@ -1642,7 +1674,7 @@ function onHover(e) {
   if (!track.value) return
   const r = track.value.getBoundingClientRect(), x = clamp(e.clientX - r.left, 0, r.width), f = r.width ? x / r.width : 0
   const dd = new Date(baseTime.value + (winStartMin.value + f * windowMin.value) * 60000), p = (n) => String(n).padStart(2, '0')
-  hoverX.value = x; hoverLabel.value = `${p(dd.getMonth() + 1)}-${p(dd.getDate())} ${p(dd.getHours())}:${p(dd.getMinutes())}:${p(dd.getSeconds())}`; hoverShow.value = true
+  hoverX.value = x; hoverLabel.value = `${p(tMon(dd) + 1)}-${p(tDay(dd))} ${p(tHour(dd))}:${p(tMin(dd))}:${p(tSec(dd))}`; hoverShow.value = true
 }
 function onLeave() { hoverShow.value = false }
 
@@ -1883,6 +1915,7 @@ function feedFlat() {
   flat.setGeom(covGeom)
   grd.recompute()   // GRD 覆盖：把当前选中天线的面+线喂给 flat（recompute 同时喂 scene/flat）
   env.redraw()      // 环境场：平面图是懒创建的，切过来时把当前图层（栅格+等值线）补喂一份
+  applyTerminator() // 晨昏线：同上，平面图懒创建，切过来补喂当前时刻那一份（关着则清层）
   redrawSats()      // 卫星/仰角线图层（含 Polygon）
   syncEdit()        // 调点态（Polygon / 标记「调整点位置」）：切入平面图时接上拖拽
   commitGeometry()  // 聚焦卫星位置 + 覆盖范围 + 星下点轨迹（含可见性叠加层，若开）
@@ -2046,6 +2079,27 @@ function setCityNameSize(e) { cityNameSize.value = Number(e.target.value); apply
 function applyBorderStyle() { const s = { ...borderStyle }; if (scene) scene.setBorderStyle(s); if (flat) flat.setBorderStyle(s) }
 // 地名颜色/透明度 → 3D 与平面图。
 function applyLabelStyle() { const s = { ...labelStyle }; if (scene) scene.setLabelStyle(s); if (flat) flat.setLabelStyle(s) }
+// 晨昏线 / 夜区 → 3D 与平面图。时刻取【时间轴当前值】calcAt()，不是系统时钟：
+// 拖时间轴看某历史/未来时刻时，晨昏线必须跟着走，否则「那颗星当时在不在阳照区」就读错了。
+// 每次 refreshPositions（实时每秒 / 时间轴每次落点）调用一次；关闭时传 null 清层。
+// 颜色：three.js 要数值，Canvas 要 CSS 串 —— 同一份 termStyle 各自转换，避免两处配色漂移。
+const hexNum = (s) => parseInt(String(s || '#000000').replace('#', ''), 16) || 0
+function applyTerminator() {
+  if (!termOn.value) {
+    termSub.value = null
+    if (scene) scene.setTerminator(null)
+    if (flat) flat.setTerminator(null)
+    return
+  }
+  const now = calcAt()
+  termSub.value = solarGeometry(now).sub
+  const common = { night: termNight.value, line: termLine.value, nightOpacity: termStyle.nightOpacity, lineWidth: termStyle.lineWidth, lineOpacity: termStyle.lineOpacity }
+  if (scene) scene.setTerminator(now, { ...common, nightColor: hexNum(termStyle.nightColor), lineColor: hexNum(termStyle.lineColor) })
+  if (flat) flat.setTerminator(now, { ...common, nightColor: termStyle.nightColor, lineColor: termStyle.lineColor })
+}
+function toggleTerm() { termOn.value = !termOn.value; applyTerminator() }
+function toggleTermNight() { termNight.value = !termNight.value; applyTerminator() }
+function toggleTermLine() { termLine.value = !termLine.value; applyTerminator() }
 // 大海颜色 → 3D 与平面图。
 function setOceanColor(c) { oceanColor.value = c; if (scene) scene.setOceanColor(c); if (flat) flat.setOceanColor(c) }
 // 大地颜色 → 3D 与平面图（写公共色板状态 + 两端重建陆地）。3D 重建三角网有数百 ms 量级，
@@ -3649,16 +3703,19 @@ function mkDragResize(e, dir = 'se') {
 }
 
 // 时间读数（双行定宽块，DAW 范式：主行=时刻/偏移量，副行=日期时间；tabular-nums 防拖动抖动）
+// 时区随 tzMode 切换（仅显示）：副行末尾挂档位标记，避免「读到 08:00 却不知道是哪个 08:00」。
 const timeParts = computed(() => {
   const p = (n) => String(n).padStart(2, '0')
-  if (live.value) { void nowTick.value; const d = new Date(); return { m: `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`, s: `${p(d.getMonth() + 1)}-${p(d.getDate())} 实时` } }
+  const tag = tzUtc() ? 'UTC' : localTzLabel.value
+  if (live.value) { void nowTick.value; const d = new Date(); return { m: `${p(tHour(d))}:${p(tMin(d))}:${p(tSec(d))}`, s: `${p(tMon(d) + 1)}-${p(tDay(d))} 实时 ${tag}` } }
   const d = calcAt()
-  const dt = `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+  const dt = `${p(tMon(d) + 1)}-${p(tDay(d))} ${p(tHour(d))}:${p(tMin(d))} ${tag}`
   if (!timeOffset.value) return { m: '此刻', s: dt }
   const sgn = timeOffset.value < 0 ? '−' : '+', mm = Math.abs(timeOffset.value)
   const oh = Math.floor(mm / 60), om = mm % 60
   return { m: `${sgn}${oh}h${p(om)}m`, s: dt }
 })
+function toggleTz() { tzMode.value = tzUtc() ? 'local' : 'utc' }
 
 // ===================== 持久化（记住分组 + 选中星） =====================
 function saveSelection() {
@@ -3713,7 +3770,7 @@ function deserializeCov(items) {
 }
 function snapshot() {
   return {
-    nameMode: nameMode.value, countryName: countryNameSize.value, provName: provNameSize.value, cityName: cityNameSize.value, showProvinces: showProvinces.value, showCities: showCities.value, borderStyle: { ...borderStyle }, labelStyle: { ...labelStyle }, oceanColor: oceanColor.value, landScheme: landScheme.value, landOverrides: { ...landOverrides }, groupColors: { ...groupColors }, autoRotate: autoRotate.value, autoRotateSpeed: viewPrefs.autoRotateSpeed, live: live.value, beamLock: beamLock.value, fpMode: fpMode.value, beam: beam.value, elevMin: elevMin.value, windowMin: windowMin.value,
+    nameMode: nameMode.value, countryName: countryNameSize.value, provName: provNameSize.value, cityName: cityNameSize.value, showProvinces: showProvinces.value, showCities: showCities.value, borderStyle: { ...borderStyle }, labelStyle: { ...labelStyle }, termOn: termOn.value, termNight: termNight.value, termLine: termLine.value, termStyle: { ...termStyle }, tzMode: tzMode.value, oceanColor: oceanColor.value, landScheme: landScheme.value, landOverrides: { ...landOverrides }, groupColors: { ...groupColors }, autoRotate: autoRotate.value, autoRotateSpeed: viewPrefs.autoRotateSpeed, live: live.value, beamLock: beamLock.value, fpMode: fpMode.value, beam: beam.value, elevMin: elevMin.value, windowMin: windowMin.value,
     mkPt: markPtFont.value, mkStIcon: stIconSize.value, mkStFont: stFontSize.value, mkPtDot: markPtDot.value, mkTrajDot: trajDotSize.value,
     mkPtShow: showPtLabel.value, mkStShow: showStName.value,
     mkPtLayer: showPtLayer.value, mkStLayer: showStLayer.value, mkTrajLayer: showTrajLayer.value,
@@ -3776,6 +3833,15 @@ async function restoreSettings() {
   // 省界/市界开关：默认开，存档里的显式 false 也要恢复；数据加载统一走挂载尾部的 ensureProvinces/ensureCities
   if (typeof s.showProvinces === 'boolean') showProvinces.value = s.showProvinces
   if (typeof s.showCities === 'boolean') showCities.value = s.showCities
+  if (s.tzMode === 'utc' || s.tzMode === 'local') tzMode.value = s.tzMode   // 时间轴读数时区档位（仅显示）
+  // 晨昏线：默认关，存档里显式 true 才开；样式逐字段合并（旧存档缺字段时保留默认值）
+  if (typeof s.termOn === 'boolean') termOn.value = s.termOn
+  if (typeof s.termNight === 'boolean') termNight.value = s.termNight
+  if (typeof s.termLine === 'boolean') termLine.value = s.termLine
+  if (s.termStyle && typeof s.termStyle === 'object') {
+    for (const k of ['nightColor', 'lineColor']) if (typeof s.termStyle[k] === 'string') termStyle[k] = s.termStyle[k]
+    for (const k of ['nightOpacity', 'lineWidth', 'lineOpacity']) if (Number.isFinite(s.termStyle[k])) termStyle[k] = s.termStyle[k]
+  }
   if (s.live) { live.value = true; if (!timer) timer = setInterval(refreshPositions, 1000) }
   const c = s.cov
   if (c && Array.isArray(c.items) && c.items.length) {
@@ -3927,6 +3993,7 @@ onMounted(async () => {
   ensureSearchPool()   // 后台构建全量搜索库（当日缓存命中则很快），与当前分组无关
   redrawSats()   // 恢复后立即绘制自定义卫星（关联卫星待 loadGroup 完成由 refreshPositions 跟踪）
   applyDisplayQuality()   // 套用当前画质档位（含低/中档的 50m 底图按需加载）
+  applyTerminator()   // 晨昏线：按恢复后的开关画一次（不依赖星历，故不等 loadGroup）
   scene.setAutoRotateSpeed(viewPrefs.autoRotateSpeed)
   if (view.flat) await applyFlat(true)   // 恢复上次退出时的 2D 平面图（watch 不触发初始值，故挂载时主动套用一次）
   watch(snapshot, saveSettings, { deep: true })   // 此后任意改动自动本地缓存
@@ -5404,6 +5471,26 @@ onBeforeUnmount(() => {
           <div class="tip">需勾选「显示中国地级市界」后可见；画在省界之下，线粗可低至 0.05 以适配密集网格与小空间。</div>
           </template>
         </div>
+
+        <div class="sec">
+          <div class="sect acc" :class="{ open: isSecOpen('geo-term', false) }" @click="toggleSec('geo-term', false)"><Icon :name="isSecOpen('geo-term', false) ? 'chevron-down' : 'chevron-right'" :size="12" /><span>晨昏线（昼夜分界）</span></div>
+          <template v-if="isSecOpen('geo-term', false)">
+          <label class="chk2"><input type="checkbox" :checked="termOn" @change="toggleTerm" /><span>显示晨昏线 / 夜区</span></label>
+          <template v-if="termOn">
+          <label class="chk2"><input type="checkbox" :checked="termNight" @change="toggleTermNight" /><span>夜区遮罩</span></label>
+          <div v-if="termNight" class="srow"><label>夜区颜色</label><input class="clr" type="color" v-model="termStyle.nightColor" @input="applyTerminator" /><span class="u">{{ termStyle.nightColor }}</span></div>
+          <div v-if="termNight" class="srow"><label>夜区透明度</label><input class="rng" type="range" min="0" max="0.85" step="0.02" v-model.number="termStyle.nightOpacity" @input="applyTerminator" /><span class="u">{{ termStyle.nightOpacity.toFixed(2) }}</span></div>
+          <label class="chk2"><input type="checkbox" :checked="termLine" @change="toggleTermLine" /><span>分界线</span></label>
+          <div v-if="termLine" class="srow"><label>线颜色</label><input class="clr" type="color" v-model="termStyle.lineColor" @input="applyTerminator" /><span class="u">{{ termStyle.lineColor }}</span></div>
+          <div v-if="termLine" class="srow"><label>线粗</label><input class="rng" type="range" min="0.2" max="4" step="0.1" v-model.number="termStyle.lineWidth" @input="applyTerminator" /><span class="u">{{ termStyle.lineWidth.toFixed(1) }}</span></div>
+          <div v-if="termLine" class="srow"><label>线透明度</label><input class="rng" type="range" min="0" max="1" step="0.05" v-model.number="termStyle.lineOpacity" @input="applyTerminator" /><span class="u">{{ termStyle.lineOpacity.toFixed(2) }}</span></div>
+          <div class="tip">
+            日下点 {{ termSub ? fmtSlot(termSub.lon) + ' · ' + Math.abs(termSub.lat).toFixed(2) + '°' + (termSub.lat >= 0 ? 'N' : 'S') : '—' }}。
+            按时间轴当前 UTC 时刻算，拖时间轴 / 实时推进时随之移动；夜区压在底图之上、覆盖场与等值线之下（是打光不是数据）。
+          </div>
+          </template>
+          </template>
+        </div>
         </div>
         </div>
 
@@ -5503,7 +5590,7 @@ onBeforeUnmount(() => {
         <div v-show="hoverShow" class="tb-tip" :style="{ left: hoverX + 'px' }">{{ hoverLabel }}</div>
       </div>
       <div class="tl-grp">
-        <span class="tlab2"><span class="t1">{{ timeParts.m }}</span><span class="t2">{{ timeParts.s }}</span></span>
+        <span class="tlab2 tzsw" :title="tzMode === 'utc' ? '当前按 UTC 显示，点击切回本机时区 ' + localTzLabel + '（仅改显示；星位、晨昏线、过境窗口一律走 UTC 计算，与此开关无关）' : '当前按本机时区 ' + localTzLabel + ' 显示，点击切到 UTC（仅改显示；星位、晨昏线、过境窗口一律走 UTC 计算，与此开关无关）'" @click="toggleTz"><span class="t1">{{ timeParts.m }}</span><span class="t2">{{ timeParts.s }}</span></span>
         <span class="stg" role="group">
           <span class="st" @click="step(-60)" title="后退 1 小时">−1h</span>
           <span class="st" @click="step(-10)">−10m</span>
@@ -6186,6 +6273,10 @@ onBeforeUnmount(() => {
 .tlab2 { display: inline-flex; flex-direction: column; justify-content: center; min-width: 70px; flex: none; font-family: var(--font-mono); font-variant-numeric: tabular-nums; line-height: 1.25; }
 .tlab2 .t1 { font-size: 12px; color: var(--text); white-space: nowrap; }
 .tlab2 .t2 { font-size: 9.5px; color: var(--text-faint); white-space: nowrap; }
+/* 时区档位切换（本机时区 ⇄ UTC）：整块读数即按钮，副行末尾的档位标记就是当前态指示 */
+.tlab2.tzsw { cursor: pointer; border-radius: 3px; padding: 0 4px; margin: 0 -4px; }
+.tlab2.tzsw:hover { background: var(--hover, rgba(255, 255, 255, 0.06)); }
+.tlab2.tzsw:hover .t2 { color: var(--text); }
 /* 步进按钮组：共享外框(0.5px+圆角) + 内部细分隔线；hover 中性叠加(非 accent)、100ms 跟手 */
 .tl .stg { display: inline-flex; align-items: stretch; border: 0.5px solid var(--border); border-radius: 4px; overflow: hidden; flex: none; }
 .tl .stg .st { padding: 4px 7px; cursor: pointer; color: var(--text-muted); font-size: 11px; line-height: 1; white-space: nowrap; user-select: none; transition: background .12s ease, color .12s ease; }

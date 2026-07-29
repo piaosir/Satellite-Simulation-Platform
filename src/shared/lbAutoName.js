@@ -1,7 +1,7 @@
 // 资源库条目「自动命名」（GEO / NGSO / 再生式三窗共用）。
 //
 // 条目名默认不是用户的负担：没起过名字的条目，名字就随它自己的关键参数走——
-//   地球站  口径 · 功放       （「6.2 m · 40 W」，与列表摘要同口径，这两项最能一眼认出一种站型）
+//   地球站  口径              （「6.2 m」——站型先由天线口径认出；功放不进名字，由列表摘要报）
 //   卫星    所选星名           （天线树取星 / 星历检索 / 手动填的卫星名称）
 //   载波    速率 · 调制 FEC    （「2048 kbps · QPSK 3/4」）
 // 一旦用户自己改过名字（cfg.nameAuto = false），这套就此对该条目失效，参数再改也不动它的名字——
@@ -16,9 +16,18 @@ import { fmtQty } from './adaptUnits.js'   // 显示单位自适应（W→mW/kW�
 
 const s = (v) => String(v == null ? '' : v).trim()
 
-// 地球站：口径 · 功放（功放键名 GSO/NGSO 为 paPowerW、再生式为 opPowerW）。
-// 功放按数值大小换档（0.2 W → 200 mW、1200 W → 1.2 kW），与结果列同一套 adaptUnits 档位表。
+// 地球站：口径。2026-07-29 起功放不再进名字——同一种站型常换功放（6.2 m 站配 40 W / 400 W 都是同一副天线），
+// 名字跟着功放变反倒认不出是哪个站；功放改由列表摘要报（见各窗口 esSummary）。
 export function esAutoName(form) {
+  const f = form || {}
+  const d = s(f.antennaDiameter)
+  return d ? d + ' m' : ''
+}
+
+// 旧版自动名「口径 · 功放」（功放键名 GSO/NGSO 为 paPowerW、再生式为 opPowerW，按 adaptUnits 换档）。
+// 只用于旧库推定：没存过 nameAuto 的库里，名字还是这个形状的同样算「没起过名字」——
+// 否则改规则那一刻，旧库里的自动名会被一次性钉成自定义名，此后再不跟参数走。
+function esLegacyAutoName(form) {
   const f = form || {}
   const d = s(f.antennaDiameter)
   const p = s(f.paPowerW) || s(f.opPowerW)
@@ -58,7 +67,7 @@ export function satAutoName(cfg) {
 
 // 各库的自动名算法 + 无参数可用时的兜底名 + 旧库默认名的形状（含 syncAutoNames 加的 ' 2' 重名后缀）
 const KINDS = {
-  es: { name: (c) => esAutoName(c.form), fallback: '地球站', legacy: /^(默认|站型|地球站)(\d+)?( \d+)*$/ },
+  es: { name: (c) => esAutoName(c.form), fallback: '地球站', legacy: /^(默认|站型|地球站)(\d+)?( \d+)*$/, legacyName: (c) => esLegacyAutoName(c.form) },
   carrier: { name: (c) => carrierAutoName(c.form), fallback: '载波', legacy: /^(默认|配置|载波|基带)(\d+)?( \d+)*$/ },
   sat: { name: (c) => satAutoName(c), fallback: '卫星', legacy: /^(默认卫星|卫星)(\d+)?( \d+)*$/ }
 }
@@ -75,13 +84,13 @@ export const autoNameOf = (kind, cfg) => {
 export const isAutoNamed = (kind, cfg) => !!(cfg && cfg.nameAuto && autoNameOf(kind, cfg))
 
 // 旧库条目（没存过 nameAuto）的一次性推定：名字还是历史默认名（「站型2」「默认」…），
-// 或者恰好就等于当前参数的自动名 —— 两种都说明它没被真正起过名字。
+// 或者恰好就等于当前参数的自动名（含改规则前的旧版自动名形状，见 legacyName）——都说明它没被真正起过名字。
 export function legacyAutoFlag(kind, cfg) {
   const k = KINDS[kind]
   if (!k || !cfg) return false
   const nm = s(cfg.name)
   if (!nm) return true
-  return k.legacy.test(nm) || nm === autoNameOf(kind, cfg)
+  return k.legacy.test(nm) || nm === autoNameOf(kind, cfg) || (!!k.legacyName && nm === s(k.legacyName(cfg)))
 }
 
 // 入库/载入时定标志位：存过的以存的为准，没存过的按历史默认名推定

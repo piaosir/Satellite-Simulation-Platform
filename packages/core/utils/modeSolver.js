@@ -73,7 +73,15 @@ function computeLinkMode(satParams, inputs, opt) {
   if (mode === 'margin') {
     const final = ENGINE(satParams, inputs);
     if (!final.success) return final;
-    return { success: true, data: final.data, resolvedMargin: parseFloat(final.data.marginResult), mode };
+    // resolvedMargin＝真正喂进引擎的那个余量，必须全精度：本方式下它就是输入本身，别从
+    // data.marginResult 回读——那是显示值（toFixed(2)），4.567 会读成 4.57。高级计算拿它做
+    // 归一功率带宽 A = 功率带宽 / 10^(余量/10) 的基准，0.005 dB 的截断会让配平结果整体偏同样的量，
+    // 反复应用还会在两个值之间来回跳。空余量走引擎默认（3 dB），此时才回读。
+    const m = parseFloat(inputs && inputs.margin);
+    return {
+      success: true, data: final.data, mode,
+      resolvedMargin: isFinite(m) ? m : parseFloat(final.data.marginResult)
+    };
   }
 
   let resolvedMargin;

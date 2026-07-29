@@ -5,7 +5,7 @@ import { stableStringify } from '../shared/configDirty.js'
 import { pf } from '../shared/num.js'   // 全角容错 parseFloat：手填圆轨道高度/倾角（经 sat 面板，不过 StationGrid 归一）也能吃全角数字
 import { s8LinkParams } from '../shared/s8Params.js'   // ITU-R P.618-14 §8 统计口径参数组装 + 适用性门控
 import { migrateLegacyEs } from '../shared/esMigrate.js'
-import { pickColumn, fmtScaled } from '../shared/adaptUnits.js'
+import { pickColumn, fmtScaled, fmtQty } from '../shared/adaptUnits.js'
 import { lbDocT } from '../shared/lbDocI18n.js'
 import { syncAutoNames, adoptAutoFlag, withAutoFlag, isAutoNamed } from '../shared/lbAutoName.js'   // 三库条目自动命名（未被用户改名时，名字随关键参数走）
 import { loadSatTree } from '../ngso/grdParam.js'
@@ -314,6 +314,18 @@ const txCellSub = (f, row) => {
   const eirp = powerWToEirp(resolveEs(row.stationId).form.opPowerW, resolveEs(row.stationId).form, sat ? sat.form : {})
   return isFinite(eirp) ? `EIRP ${eirp.toFixed(2)} dBW` : null
 }
+// 「地球站配置」格内行内尾标：发信站配置名之后贴该站算出的功放功率（就在第二行 EIRP 之上）。只给发信站——
+// 功放是发射链的量，收信站那格没有它。库里那一项是「功放功率预设」，这里是引擎按该站几何/载波解出的
+// paRecommendation（含回退的功放输出）：计算方式=设置功放功率时二者相等，=设置余量时报本链路真正需要的功率。
+// 与 GSO/NGSO 的差别：再生式上行几何要跑 SGP4 最差互视，太贵故不做逐键实时——此值随「计算」更新
+// （输入再改会亮「输入已变」，与结果列同一口径）。
+const txCellTag = (f, row) => {
+  if (f.key !== 'stationId') return null
+  const m = computedVals.value[row._id]
+  const w = m ? parseFloat(m._paW) : NaN
+  // 取 4 位有效数字：尾标是一眼扫过的读数，引擎原串的 0.200 在这里读作「200 mW」（精确值看结果列/瀑布）
+  return isFinite(w) ? fmtQty(Number(w.toPrecision(4)), 'W') : null
+}
 const rxCellSub = (f, row) => {
   if (f.key !== 'stationId') return null
   const v = rxGtValues.value[row._id]
@@ -399,8 +411,9 @@ function editInLibrary(kind, id) {
 // 该行所选卫星显示实时 EIRP / G·T（见 txCellSub / rxCellSub）。
 // 列表摘要：自动命名的条目其名字就是这几项参数（见 lbAutoName），再报一遍纯属重影 → 只给自定义名的条目报
 const bbSummary = (c) => (isAutoNamed('carrier', c) ? '' : `${c.form.modulation || 'QPSK'} ${c.form.fec || '3/4'} · ${c.form.infoRate || '2048'} kbps`)
-// 摘要 = 口径 · 功放（这两项定性一份站型，与配置面板顶部主参数条一致；GSO/NGSO 同口径，其功放键名为 paPowerW）
-const esSummary = (c) => (isAutoNamed('es', c) ? '' : [`${c.form.antennaDiameter || '2.4'} m`, c.form.opPowerW ? `${c.form.opPowerW} W 功放` : ''].filter(Boolean).join(' · '))
+// 摘要 = 口径 · 功放（这两项定性一份站型，与配置面板顶部主参数条一致；GSO/NGSO 同口径，其功放键名为 paPowerW）。
+// 自动名只有口径（见 lbAutoName），功放不进名字 → 摘要照报功放，口径只给自定义名的条目补。
+const esSummary = (c) => [isAutoNamed('es', c) ? '' : `${c.form.antennaDiameter || '2.4'} m`, c.form.opPowerW ? `功放预设 ${c.form.opPowerW} W` : ''].filter(Boolean).join(' · ')
 // 自动命名时名字已带星名·频段·轨道高度倾角（见 lbAutoName），摘要只留名字里没有的取轨来源
 const satSummary = (c) => (c.ngsoSat && c.ngsoSat.mode !== 'manual' && c.ngsoSat.orbit)
   ? [isAutoNamed('sat', c) ? '' : c.ngsoSat.name, '选星定轨'].filter(Boolean).join(' · ')
@@ -570,6 +583,8 @@ function writeResultVals(out, mode) {
         patch['_' + def.key] = (v === undefined || v === null || v === '') ? '—' : (ad && isFinite(n)) ? fmtScaled(ad.conv(n)) : v
       }
     }
+    // _paW＝该站算出的功放功率原值（上行独有；不随列档位换算——尾标自己按 fmtQty 换 mW/kW 档，见 cellTagFn）
+    if (mode === 'uplink') patch._paW = d ? d.paRecommendation : ''
     setVals(l.rowId, patch)
   }
 }
@@ -673,6 +688,11 @@ function capacityKbpsOf(d) {
   const bw = parseFloat(d.allocBandwidthResult); const eta = parseFloat(d.spectralEfficiencyResult)
   return (isFinite(bw) && isFinite(eta)) ? eta * bw : NaN
 }
+// GSO/NGSO 两窗的容量汇总此处还有一项「总功率带宽」（Σ PowerBWResult = Σ 功率占用 × 转发器带宽），
+// 再生式没有：星上解调再调制，转发器（SFD/IBO/OBO/带宽）压根不参与，引擎入参里那套转发器参数只是
+// 为让求解良定而由 buildRegenParams 塞的 NGSO 占位值（见 linkCalculatorRegen.js 文件头）。
+// 结果对象里透传出来的 PowerBWResult 因此是占位值算出的弯管量，不可读——故 pbwN 恒为 0、该项不出现。
+// 报告侧同口径：regenSummaryRows 的四个体制也都没列功率带宽。
 const capacitySummary = computed(() => {
   const done = links.value.filter((l) => l && l.data && !l.error)
   let bwKHz = 0, capKbps = 0
@@ -827,7 +847,7 @@ async function compute() {
       if (calcModeOf(bbForm) === 'power') {
         const powerW = parseFloat(es.opPowerW)
         if (!(powerW > 0)) {
-          out.push({ ti, rowId: st._id, txName, satName, data: null, margin: '—', error: '工作点无效（地球站配置的「功放功率」需为正数）', geom: null, access: null }); continue
+          out.push({ ti, rowId: st._id, txName, satName, data: null, margin: '—', error: '工作点无效（地球站配置的「功放功率预设」需为正数）', geom: null, access: null }); continue
         }
         copt = { mode: 'power', powerW }
       }
@@ -1572,7 +1592,7 @@ onMounted(async () => {
           </nav>
           <div class="lb-libpane">
             <LbLibrary v-if="libTab === 'station'" v-model="selEsId" layout="column" :items="esConfigs" :summary="esSummary" name-placeholder="站型名称"
-              auto-tip="口径与功放" @add="addEsConfig" @duplicate="duplicateEsConfig" @remove="removeEsConfig" @toast="toast">
+              auto-tip="天线口径" @add="addEsConfig" @duplicate="duplicateEsConfig" @remove="removeEsConfig" @toast="toast">
               <template #editor-actions="{ cfg }">
                 <button class="lb-mini" title="复制此配置" @click="duplicateEsConfig(cfg)"><Icon name="copy" :size="12" /> 复制</button>
                 <button class="lb-mini" title="删除此配置（被引用时提示引用数）" :disabled="esConfigs.length <= 1" @click="removeEsConfig(cfg)">删除</button>
@@ -1704,10 +1724,10 @@ onMounted(async () => {
             </template>
             <div class="tx-optbar">
               <span class="tx-optl">工作点</span>
-              <span class="tx-opttip">功放随站型设置——在各站所选「地球站配置」的发射参数（工作点「功放功率」）中给定功放功率，据此计算上行余量。</span>
+              <span class="tx-opttip">功放随站型设置——在各站所选「地球站配置」的发射参数（工作点「功放功率预设」）中给定功放功率，据此计算上行余量；算出的功放功率贴在各行「地球站配置」名之后。</span>
             </div>
             <div class="lbx-grid">
-              <StationGrid :stations="txStations" :fields="txGridFields" :groups="GROUPS_STATION" :freeze-keys="false" :extra-values="computedVals" :cell-class="cellClassFn" :cell-sub="txCellSub" :cities="cities" :city-search="citySearch" label="发信站" :auto-geo="autoGeoTx" :select-options="{ basebandId: basebandSelectOptions, stationId: esSelectOptions, satelliteId: satSelectOptions }" :lib-fields="{ basebandId: 'carrier', stationId: 'station', satelliteId: 'sat' }" @edit-lib="editInLibrary" @row-focus="onRowFocus" />
+              <StationGrid :stations="txStations" :fields="txGridFields" :groups="GROUPS_STATION" :freeze-keys="false" :extra-values="computedVals" :cell-class="cellClassFn" :cell-sub="txCellSub" :cell-tag="txCellTag" :cities="cities" :city-search="citySearch" label="发信站" :auto-geo="autoGeoTx" :select-options="{ basebandId: basebandSelectOptions, stationId: esSelectOptions, satelliteId: satSelectOptions }" :lib-fields="{ basebandId: 'carrier', stationId: 'station', satelliteId: 'sat' }" @edit-lib="editInLibrary" @row-focus="onRowFocus" />
             </div>
             <LbCapFoot :cap="capacitySummary" :cap-main="capMain" :bw-main="bwMain" :readout="rowReadout" />
           </LbSection>

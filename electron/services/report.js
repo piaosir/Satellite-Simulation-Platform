@@ -172,7 +172,7 @@ const STR = {
     specEff: '频谱效率 (bps/Hz)', capacity: '容量 (Mbps)',
     calcFailed: '计算失败：',
     capHeader: (n, failed) => `容量汇总（${n} 条链路${failed ? ` · ${failed} 条失败已排除` : ''}）`,
-    totalCap: '总容量', totalBw: '总带宽', avgEff: '平均频谱效率',
+    totalCap: '总容量', totalBw: '总带宽', totalPbw: '总功率带宽', avgEff: '平均频谱效率',
     param: '参数', uplink: '上行', downlink: '下行', total: '合计', value: '数值', unit: '单位',
     // 再生式各体制汇总表专属列头（上行/下行/星间微波/星间激光按信号流向裁剪，避免整列空白）
     satGtDn: '收信站 G/T (dB/K)', satEirpDn: '卫星下行 EIRP (dBW)', availDown: '下行可用度 (%)',
@@ -215,7 +215,7 @@ const STR = {
     specEff: 'Spectral Efficiency (bps/Hz)', capacity: 'Capacity (Mbps)',
     calcFailed: 'Calculation Failed: ',
     capHeader: (n, failed) => `Capacity Summary (${n} link${n > 1 ? 's' : ''}${failed ? `, ${failed} failed excluded` : ''})`,
-    totalCap: 'Total Capacity', totalBw: 'Total Bandwidth', avgEff: 'Average Spectral Efficiency',
+    totalCap: 'Total Capacity', totalBw: 'Total Bandwidth', totalPbw: 'Total Power Bandwidth', avgEff: 'Average Spectral Efficiency',
     param: 'Parameter', uplink: 'Uplink', downlink: 'Downlink', total: 'Total', value: 'Value', unit: 'Unit',
     // Per-scheme regenerative summary column heads (trimmed by signal flow to avoid all-blank columns)
     satGtDn: 'Rx Station G/T (dB/K)', satEirpDn: 'Sat Downlink EIRP (dBW)', availDown: 'Downlink Availability (%)',
@@ -1072,15 +1072,22 @@ function enrichReportModel(model) {
   const done = links.filter((l) => l.data && !l.error)
   const stats = []
   if (done.length && regenMode !== 'laser') {
-    let bwKHz = 0, capKbps = 0
+    let bwKHz = 0, capKbps = 0, pbwKHz = 0, pbwN = 0
     for (const l of done) {
       const bw = parseFloat(l.data.allocBandwidthResult)
       if (isFinite(bw)) bwKHz += bw
       const k = capKbpsOf(l.data)
       if (isFinite(k)) capKbps += k
+      // 功率带宽 = 功率占用 × 转发器带宽（kHz）。再生式排除在外：星上解调再调制、转发器不参与，
+      // 其结果里的 PowerBWResult 是弯管引擎按占位转发器参数透传出来的（见 linkCalculatorRegen.js 文件头），
+      // 与 regenSummaryRows 四体制都不列功率带宽、工作台再生式窗口不出该项同一口径。
+      const pbw = orbitType === 'REGEN' ? NaN : parseFloat(l.data.PowerBWResult)
+      if (isFinite(pbw)) { pbwKHz += pbw; pbwN++ }
     }
     stats.push({ label: t.totalCap, value: fmtCapText(capKbps) })
     stats.push({ label: t.totalBw, value: fmtBwText(bwKHz) })
+    // 总功率带宽：转发器资源占用的另一维，与总带宽并列（口径同工作台「容量汇总」）
+    if (pbwN) stats.push({ label: t.totalPbw, value: fmtBwText(pbwKHz) })
     stats.push({ label: t.avgEff, value: bwKHz > 0 ? (capKbps / bwKHz).toFixed(3) + ' bps/Hz' : '—' })
   }
   model.summary = {

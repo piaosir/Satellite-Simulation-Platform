@@ -9,7 +9,7 @@ import { stableStringify } from '../shared/configDirty.js'
 import { pf } from '../shared/num.js'   // 全角容错 parseFloat：手填圆轨道高度/倾角（经 sat 面板，不过 StationGrid 归一）也能吃全角数字
 import { s8LinkParams } from '../shared/s8Params.js'   // ITU-R P.618-14 §8 统计口径参数组装 + 适用性门控
 import { migrateLegacyEs } from '../shared/esMigrate.js'
-import { pickColumn, fmtScaled } from '../shared/adaptUnits.js'
+import { pickColumn, fmtScaled, fmtQty } from '../shared/adaptUnits.js'
 import { lbDocT } from '../shared/lbDocI18n.js'
 import { syncAutoNames, adoptAutoFlag, withAutoFlag, isAutoNamed } from '../shared/lbAutoName.js'   // 三库条目自动命名（未被用户改名时，名字随关键参数走）
 import Icon from '../components/Icon.vue'
@@ -25,6 +25,7 @@ import LbVizPane from '../components/LbVizPane.vue'
 import LbReportDialog from '../components/LbReportDialog.vue'
 import LbAdvBalanceDialog from '../components/LbAdvBalanceDialog.vue'
 import { useLbReport } from '../shared/useLbReport.js'
+import { planAdvWriteback, advBaseMargin } from '../shared/advBalance.js'   // 高级计算配平结果的写回落点（新建副本 / 就地改）
 import LbFontCtl from '../components/LbFontCtl.vue'
 import LbCapFoot from '../components/LbCapFoot.vue'
 import LbShareDialog from '../components/LbShareDialog.vue'
@@ -295,7 +296,8 @@ const selEsId = ref('')
 const selSatId = ref('')
 // 列表摘要：自动命名的条目其名字就是这几项参数（见 lbAutoName），再报一遍纯属重影 → 只给自定义名的条目报
 const bbSummary = (c) => (isAutoNamed('carrier', c) ? '' : `${c.form.modulation || 'QPSK'} ${c.form.fec || '3/4'} · ${c.form.infoRate || '2048'} kbps`)
-const esSummary = (c) => (isAutoNamed('es', c) ? '' : [`${c.form.antennaDiameter || '6.2'} m`, c.form.paPowerW ? `${c.form.paPowerW} W 功放` : ''].filter(Boolean).join(' · '))
+// 地球站：自动名只有口径（见 lbAutoName），功放不进名字 → 摘要照报功放，口径只给自定义名的条目补
+const esSummary = (c) => [isAutoNamed('es', c) ? '' : `${c.form.antennaDiameter || '6.2'} m`, c.form.paPowerW ? `功放预设 ${c.form.paPowerW} W` : ''].filter(Boolean).join(' · ')
 // 库列表行摘要：频段 + 上/下行频率 + 轨道来源（选星定轨 / 手动圆轨道高度）。
 // 自动命名时名字已带频段与轨道高度倾角（见 lbAutoName），这里只留名字里没有的：频率 + 是否选星定轨。
 const satLibSummary = (c) => {
@@ -438,6 +440,17 @@ function cellSubFn(f, row) {
   if (v == null || v === '' || v === '—') return null
   return f.key === 'stationId' ? `EIRP ${v} dBW` : `G/T ${v} dB/K`
 }
+// 「地球站配置」单元格行内尾标：发端配置(stationId)名之后贴该行实时算出的功放功率（就在第二行 EIRP 之上）。
+// 只给发信站——功放是发射链的量，收端那格没有它。库里那一项是「功放功率预设」，这里是按本行几何/载波
+// 与计算方式实时解出的功放功率：口径同为引擎 paRecommendation（含回退的功放输出），故「设置功放功率」
+// 方式下二者相等，其余方式下这里报的是该链路真正需要的功率。单位自适应（0.2 W 报 200 mW）。
+function cellTagFn(f, row) {
+  if (f.key !== 'stationId') return null
+  const m = computedVals.value[row._id]
+  const w = m ? parseFloat(m._paW) : NaN
+  // 取 4 位有效数字：尾标是一眼扫过的读数，引擎原串的 40.000 在这里读作「40 W」（精确值看结果列/瀑布）
+  return isFinite(w) ? fmtQty(Number(w.toPrecision(4)), 'W') : null
+}
 // shallowRef：避免 Vue 把每条链路的 data(引擎结果) 深度代理成 reactive，
 // 否则传给 waterfall IPC 时结构化克隆会报 “could not be cloned”。
 const links = shallowRef([])  // [{ i, rowId, txName, rxName, data, geom, ok, error }]（瀑布/导出/汇总数据源）
@@ -494,7 +507,8 @@ async function refreshReadonly() {
       const bbForm = resolveBaseband(row.basebandId).form
       const { satParams, linkParams } = buildParams(curSat.value.form, bbForm, row, row, txEs, resolveEs(row.rxStationId).form)
       const r = await api.linkBudget.computeModeNGSO(satParams, linkParams, calcOptOf(bbForm, txEs))
-      if (r && r.success) setVals(row._id, { _eirp: fix2(r.data.stationEIRPResult), _gt: fix2(r.data.gOverTeResult) })
+      // _paW＝实时功放功率（原值不 toFixed：小功率靠 fmtQty 换 mW 档显示，见 cellTagFn）
+      if (r && r.success) setVals(row._id, { _eirp: fix2(r.data.stationEIRPResult), _gt: fix2(r.data.gOverTeResult), _paW: r.data.paRecommendation })
     } catch (e) { /* skip */ }
   }
 }
@@ -948,19 +962,24 @@ function capacityKbpsOf(d) {
   const eta = parseFloat(d.spectralEfficiencyResult)  // 频谱效率 bps/Hz
   return (isFinite(bw) && isFinite(eta)) ? eta * bw : NaN   // 容量 kbps
 }
+// 总功率带宽 = Σ 各链路功率带宽（PowerBWResult = 功率占用 × 转发器带宽，kHz）——转发器资源占用的另一维：
+// 与总带宽并列着看才知道整批是受功率限还是受带宽限（Σ功率带宽 = Σ载波带宽 即整批功带平衡，见「高级计算」）。
+// pbwN = 出了这个数的链路条数；为 0（本批没一条算出功率带宽）时汇总行不出该项，而非显示一个 0。
 const capacitySummary = computed(() => {
   const done = links.value.filter((l) => l && l.data && !l.error)
-  let bwKHz = 0, capKbps = 0
+  let bwKHz = 0, capKbps = 0, pbwKHz = 0, pbwN = 0
   for (const l of done) {
     const bw = parseFloat(l.data.allocBandwidthResult)
     if (isFinite(bw)) bwKHz += bw
     const kbps = capacityKbpsOf(l.data)
     if (isFinite(kbps)) capKbps += kbps
+    const pbw = parseFloat(l.data.PowerBWResult)
+    if (isFinite(pbw)) { pbwKHz += pbw; pbwN++ }
   }
   return {
     count: done.length,
     failed: links.value.length - done.length,
-    bwKHz, capKbps,
+    bwKHz, capKbps, pbwKHz, pbwN,
     avgEff: bwKHz > 0 ? capKbps / bwKHz : 0   // 带宽加权平均频谱效率 bps/Hz
   }
 })
@@ -981,6 +1000,7 @@ function fmtBandwidth(khz) {
 }
 const capMain = computed(() => fmtCapacity(capacitySummary.value.capKbps))
 const bwMain = computed(() => fmtBandwidth(capacitySummary.value.bwKHz))
+const pbwMain = computed(() => (capacitySummary.value.pbwN ? fmtBandwidth(capacitySummary.value.pbwKHz) : null))
 
 // —— 本行读数（容量汇总下方第二行，见 LbCapFoot）——
 // 结果列多了要横滚才看得全，而用户看的往往就是刚点的那一行：把聚焦行的结果就地摊平成一行，
@@ -1232,11 +1252,14 @@ const advRows = computed(() => linkRows.map((row, i) => {
   const d = (l && l.data) || null
   const name = l ? `${l.txName} → ${l.rxName}`
     : ([row.earthStationLocation, row.rxEarthStationLocation].filter(Boolean).join(' → ') || '链路 ' + (i + 1))
+  const marginDb = d ? (isFinite(l.resolvedMargin) ? l.resolvedMargin : parseFloat(d.marginResult)) : NaN
   return {
     no: i + 1, rowId: row._id, name, carrierId: bb.id, carrierName: bb.name,
     bwKHz: d ? parseFloat(d.allocBandwidthResult) : NaN,
     pbwKHz: d ? parseFloat(d.PowerBWResult) : NaN,
-    marginDb: d ? (isFinite(l.resolvedMargin) ? l.resolvedMargin : parseFloat(d.marginResult)) : NaN,
+    marginDb,
+    // 基准余量：本功能上一轮自己写进去的余量不算「当前」（含着那一轮的偏置，再当基准就一轮叠一层）
+    baseDb: advBaseMargin(bb.form, marginDb),
     error: l ? (l.error || '') : '未计算'
   }
 }))
@@ -1249,34 +1272,37 @@ async function openAdvDlg() {
   if (!links.value.length || resultsStale.value) await compute()
   advDlg.open = true
 }
-// 落地：解出的余量写进各载波配置（计算方式一并置为「设置余量」），随后重算全表。
-// 该载波若还被本表中未勾选的链路引用 → 另派生一份专用副本、只把勾选行改指过去（原载波与那些链路不动）；
-// 没有外部引用则就地改——反复配平（试错主路径）不会一轮生一份副本。
+// 落地：解出的余量写进载波配置的「设置余量」，随后重算全表。写进哪一份由 planAdvWriteback 定
+// （纯函数，与 GEO 窗共用）：VSAT 一律派生专用副本、用户原来的载波配置一字不动，反复配平复用同一份副本；
+// CNC 两条链路本就引用同一份载波，余量是它自己的属性，故就地改（仅被未勾选链路引用时才派生）。
 async function applyAdvPlan(plan) {
-  const picked = new Set(plan.rowIds)
-  const suffix = plan.mode === 'cnc' ? ' · CNC平衡' : ' · VSAT平衡'
+  const { ops } = planAdvWriteback({
+    mode: plan.mode, carriers: plan.carriers, rowIds: plan.rowIds,
+    rows: linkRows.map((r) => ({ rowId: r._id, carrierId: resolveBaseband(r.basebandId).id })),
+    configs: basebandConfigs.map((c) => ({ id: c.id, name: c.name, form: c.form }))
+  })
   const forked = []
   const remap = {}
-  for (const c of plan.carriers) {
-    if (c.locked || !isFinite(c.toDb)) continue
-    const orig = basebandConfigs.find((b) => b.id === c.id)
-    if (!orig) continue
-    const usedBy = (r) => resolveBaseband(r.basebandId).id === c.id
-    let target = orig
-    if (linkRows.some((r) => !picked.has(r._id) && usedBy(r))) {
-      target = { id: 'bb' + (_bbSeq++), name: (orig.name || '载波') + suffix, nameAuto: false, form: JSON.parse(JSON.stringify(orig.form)) }
-      basebandConfigs.push(target)
-      for (const r of linkRows) if (picked.has(r._id) && usedBy(r)) r.basebandId = target.id
-      forked.push(target.name); remap[c.id] = target.id
+  for (const op of ops) {
+    if (op.kind === 'fork') {
+      const from = basebandConfigs.find((b) => b.id === op.fromId)
+      if (!from) continue
+      const copy = { id: 'bb' + (_bbSeq++), name: op.name, nameAuto: false, form: JSON.parse(JSON.stringify(from.form)) }
+      Object.assign(copy.form, op.formPatch)
+      basebandConfigs.push(copy)
+      const ids = new Set(op.rowIds)
+      for (const r of linkRows) if (ids.has(r._id)) r.basebandId = copy.id
+      forked.push(copy.name); remap[op.fromId] = copy.id
+    } else {
+      const target = basebandConfigs.find((b) => b.id === op.carrierId)
+      if (target) Object.assign(target.form, op.formPatch)
     }
-    target.form.calcMode = 'margin'
-    target.form.margin = c.toDb.toFixed(3)   // 留 3 位：2 位小数的取整会在总功率带宽上留下可见残差
   }
-  advRemap.value = remap   // 载波换了 id：把对话框里那份锁定/偏置一并搬过去
+  advRemap.value = remap   // 载波换了 id：把对话框里那份偏置一并搬过去
   advDlg.busy = true
   try { await compute() } finally { advDlg.busy = false }
-  toast(`已按${plan.mode === 'cnc' ? 'CNC 载波叠加' : 'VSAT 组网'}配平 ${plan.rowIds.length} 条链路`
-    + (forked.length ? `，派生载波副本：${forked.join('、')}` : ''))
+  toast(`已按「${plan.mode === 'cnc' ? 'CNC 载波叠加' : 'VSAT 组网平衡'}」口径配平 ${plan.rowIds.length} 条链路`
+    + (forked.length ? `；配平余量写入新建载波配置「${forked.join('」「')}」，原配置未改动` : ''))
 }
 
 // —— 经纬度 → 降雨率/海拔自动填（与小程序一致；选址或改经纬度触发，逐站）——
@@ -1894,7 +1920,7 @@ onMounted(async () => {
           </nav>
           <div class="lb-libpane">
             <LbLibrary v-if="libTab === 'station'" v-model="selEsId" layout="column" :items="esConfigs" :summary="esSummary" name-placeholder="站型名称"
-              auto-tip="口径与功放" @add="addEsConfig" @duplicate="duplicateEsConfig" @remove="removeEsConfig" @toast="toast">
+              auto-tip="天线口径" @add="addEsConfig" @duplicate="duplicateEsConfig" @remove="removeEsConfig" @toast="toast">
               <template #editor-actions="{ cfg }">
                 <button class="lb-mini" title="复制此配置" @click="duplicateEsConfig(cfg)"><Icon name="copy" :size="12" /> 复制</button>
                 <button class="lb-mini" title="删除此配置（被引用时提示引用数）" :disabled="esConfigs.length <= 1" @click="removeEsConfig(cfg)">删除</button>
@@ -1960,9 +1986,13 @@ onMounted(async () => {
                 <svg viewBox="0 0 16 16" class="lbr-svg fill"><path d="M4 2.5 13 8 4 13.5z" /></svg>
                 {{ computing ? '计算中…' : '计算' }}
               </button>
+              <!-- 图标与「计算」同一枚实心三角：同一件事的两档（单条 / 整组），不该长成两个族 -->
               <button class="lbr-big" :disabled="computing || !linkRows.length"
-                title="高级计算：多载波功带平衡（VSAT 组网 / CNC 载波叠加）——多选链路，自适应解出各载波该设多少余量，令整组 Σ功率带宽 = Σ载波带宽"
-                @click="openAdvDlg"><Icon name="sliders" :size="15" />高级计算</button>
+                title="高级计算：多载波组功带平衡（VSAT 组网 / CNC 载波叠加）——勾选多条链路，解出各载波应设的系统余量，使整组 Σ功率带宽 = Σ载波带宽"
+                @click="openAdvDlg">
+                <svg viewBox="0 0 16 16" class="lbr-svg fill"><path d="M4 2.5 13 8 4 13.5z" /></svg>
+                高级计算
+              </button>
             </div>
             <div class="lbr-cap">计算</div>
           </div>
@@ -2039,13 +2069,13 @@ onMounted(async () => {
             </template>
             <div class="lbx-grid">
               <StationGrid :stations="linkRows" :fields="gridFields" :groups="GRID_GROUPS" :extra-values="computedVals" :cell-class="cellClassFn"
-                :cell-sub="cellSubFn" :cell-fill="cellFillFn" :freeze-keys="false"
+                :cell-sub="cellSubFn" :cell-tag="cellTagFn" :cell-fill="cellFillFn" :freeze-keys="false"
                 :cities="cities" :city-search="citySearch" label="链路" :auto-geo="autoGeoRow"
                 :select-options="{ basebandId: basebandSelectOptions, stationId: esSelectOptions, rxStationId: esSelectOptions }"
                 :lib-fields="{ basebandId: 'carrier', stationId: 'station', rxStationId: 'station' }" @edit-lib="editInLibrary"
                 @row-focus="onRowFocus" />
             </div>
-            <LbCapFoot :cap="capacitySummary" :cap-main="capMain" :bw-main="bwMain" :readout="rowReadout" />
+            <LbCapFoot :cap="capacitySummary" :cap-main="capMain" :bw-main="bwMain" :pbw-main="pbwMain" :readout="rowReadout" />
           </LbSection>
           <LbSection id="detail" title="详细预算" :summary="sel && links.length ? `${sel.txName} → ${sel.rxName}` : ''">
             <div v-if="error" class="lb-err">{{ error }}</div>

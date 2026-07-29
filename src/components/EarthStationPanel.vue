@@ -1,8 +1,8 @@
 <script setup>
 // 地球站配置面板（GEO / NGSO / 再生式链路预算共用）：一份配置 = 一种站型的收发射频参数。
 // 顶部为「主参数」条：收发共用字段（side:'common'，如天线口径——口径收发一致，效率按收发频段分设）
-// 外加各链路标了 hero 的关键指标（如功放功率）——这几项最能定性一份站型，故放大加重排在最前，
-// 并在标签后缀归属小标（收发共用 / 发射链 / 接收链），免得放大后看不出功放只属发射链。
+// 外加各链路标了 hero 的关键指标（如功放功率预设）——这几项最能定性一份站型，故加重排在最前。
+// （标签后曾缀「收发共用 / 发射链」归属小标 + 右侧一句说明小字，用户嫌碎已删：归属看下方两栏即可。）
 // 下方「发射参数 / 接收参数」两栏分列余下字段——对应一座站的上行发射链（天线效率/回退/馈线/UPC）
 // 与下行接收链（天线效率/噪温/馈线）。字段集由各模块 params.js 的 ES_COMMON_FIELDS / ES_TX_FIELDS /
 // ES_RX_FIELDS 提供（三模块字段略有差异；频率/极化与干扰项均在卫星侧，不在本库），
@@ -28,15 +28,13 @@ const heroVis = computed(() => [
   ...vis(props.txFields).filter((f) => f.hero),
   ...vis(props.rxFields).filter((f) => f.hero)
 ])
-const SIDE_TAG = { common: '收发共用', tx: '发射链', rx: '接收链' }
-const sideTag = (f) => SIDE_TAG[f.side] || ''
 </script>
 
 <template>
   <div class="es-box">
     <div v-if="heroVis.length" class="es-common">
       <label v-for="f in heroVis" :key="f.key" class="es-f es-f-big" :title="f.tip || ''">
-        <span class="es-l">{{ f.label }}<i v-if="sideTag(f)" class="es-tag">{{ sideTag(f) }}</i></span>
+        <span class="es-l">{{ f.label }}</span>
         <span class="es-ibox">
           <select v-if="f.type === 'select'" v-model="form[f.key]" class="es-i">
             <option v-for="o in f.options" :key="o" :value="o">{{ o }}</option>
@@ -45,7 +43,6 @@ const sideTag = (f) => SIDE_TAG[f.side] || ''
           <i v-if="f.unit" class="es-u">{{ f.unit }}</i>
         </span>
       </label>
-      <span class="es-common-note">天线收发共用同一面：口径一致，效率/馈线等按收发链分设</span>
     </div>
     <div class="es">
       <template v-for="(s, si) in sections" :key="s.key">
@@ -75,17 +72,15 @@ const sideTag = (f) => SIDE_TAG[f.side] || ''
 </template>
 
 <style scoped>
-/* 主参数条：一份配置的定性指标（口径 + 功放功率）——放大加重，一眼可读可改；归属小标贴在标签后 */
+/* 主参数条：一份配置的定性指标（口径 + 功放功率预设）——加重排在最前，一眼可读可改 */
 .es-common { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 6px 18px; margin-bottom: 12px; padding-bottom: 11px; border-bottom: 1px dashed var(--border); }
-.es-common-note { flex: 1 1 200px; min-width: 170px; font-size: 11px; color: var(--text-faint); line-height: 1.5; padding-bottom: 5px; }
 .es-f-big { flex: 0 0 auto; gap: 4px; }
-.es-f-big .es-l { font-size: 12px; font-weight: 600; color: var(--text); letter-spacing: .3px; }
-.es-tag { margin-left: 6px; font-size: 11px; font-weight: 400; font-style: normal; letter-spacing: 0; color: var(--text-faint); }
+.es-f-big .es-l { font-size: 11px; font-weight: 600; color: var(--text); letter-spacing: .3px; }
 /* 输入 + 单位后缀：单位挪出标签贴在框右侧，读数区留给数字本身 */
 .es-ibox { display: flex; align-items: baseline; gap: 6px; }
-.es-f-big .es-i { font-size: 19px; font-weight: 600; line-height: 1.25; padding: 4px 10px; width: 132px; text-align: right; letter-spacing: .5px; }
+.es-f-big .es-i { font-size: 17px; font-weight: 600; line-height: 1.25; padding: 3px 9px; width: 118px; text-align: right; letter-spacing: .5px; }
 .es-f-big select.es-i { text-align: left; }
-.es-u { font-size: 12px; color: var(--text-muted); font-style: normal; }
+.es-u { font-size: 11px; color: var(--text-muted); font-style: normal; }
 .es { display: flex; gap: 14px; align-items: stretch; flex-wrap: wrap; }   /* 窄容器（库主从视图右栏）下发/收两栏自动上下堆叠 */
 .es-side { flex: 1; min-width: 280px; }
 .es-div { width: 1px; flex: none; background: var(--border); }
