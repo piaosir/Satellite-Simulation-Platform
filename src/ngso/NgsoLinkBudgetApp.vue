@@ -23,6 +23,7 @@ import NgsoSatellitePanel from './NgsoSatellitePanel.vue'
 import WaterfallTable from './WaterfallTable.vue'
 import LbVizPane from '../components/LbVizPane.vue'
 import LbReportDialog from '../components/LbReportDialog.vue'
+import LbAdvBalanceDialog from '../components/LbAdvBalanceDialog.vue'
 import { useLbReport } from '../shared/useLbReport.js'
 import LbFontCtl from '../components/LbFontCtl.vue'
 import LbCapFoot from '../components/LbCapFoot.vue'
@@ -1099,7 +1100,9 @@ async function compute() {
       // 是瞬时几何仰角，不能作 §8 仰角分布的下界。候选间轨道相同 → s8 片段整批复用（引擎侧带缓存，
       // 逐候选重复注入近零成本）；雨衰等统计量因此不随候选变，候选排序退化为纯几何/增益比较（更稳）。
       const s8Frag = s8LinkParams(geom, { minElevUp: tx.minElevation, minElevDn: rx.rxMinElevation })
-      let worstCand = null, worstLp = null, worstData = null
+      // resolvedMargin＝求解器最终喂给引擎的余量（功带平衡等方式下由它解出）。留全精度原值：
+      // 高级计算的组配平要拿它做归一化基准，data.marginResult 已按显示精度截成 2 位小数。
+      let worstCand = null, worstLp = null, worstData = null, resolvedMargin = null
       if (candList.length === 1) {
         worstCand = candList[0]
         worstLp = Object.assign({}, linkParams, s8Frag)
@@ -1135,12 +1138,13 @@ async function compute() {
         let wr = rows[0]
         for (const x of rows) if (badnessOf(x) > badnessOf(wr)) wr = x
         worstCand = wr.cand; worstLp = wr.lp
-        if (mode === 'margin') worstData = wr.data   // 用户口径即 margin → 直接复用排序结果，省一次计算
+        if (mode === 'margin') { worstData = wr.data; resolvedMargin = parseFloat(worstLp.margin) }   // 用户口径即 margin → 直接复用排序结果，省一次计算
       }
       if (!worstData) {
         const r = await api.linkBudget.computeModeNGSO(satParams, worstLp, opt)
         if (!(r && r.success)) { out.push({ ...base, data: null, error: (r && r.message) || '失败', geom }); continue }
         worstData = r.data
+        resolvedMargin = r.resolvedMargin
       }
 
       const d = worstData
@@ -1154,7 +1158,7 @@ async function compute() {
       const pUse = parseFloat(d.powerUsageRatio); const bUse = parseFloat(d.bandwidthUsageRatio)
       // 合格判定按本行自己的方式：设置余量看资源是否够（功率/带宽占用 ≤100%），其它方式看余量 ≥0
       const ok = mode === 'margin' ? (!(pUse > 100) && !(bUse > 100)) : (!isNaN(m) && m >= 0)
-      out.push({ ...base, data: d, geom: worstGeom, ok })
+      out.push({ ...base, data: d, geom: worstGeom, ok, resolvedMargin })
     }
     sweepParamsByRow.value = sweepStore
     const prevSel = sel.value
@@ -1213,6 +1217,66 @@ function onRowFocus(idx, rowId) {
   if (!links.value.length) return
   const i = links.value.findIndex((l) => l.rowId === rowId)
   if (i >= 0 && i !== selected.value) { selected.value = i; loadWaterfall() }
+}
+
+// —— 高级计算：多载波功带平衡（VSAT 组网 / CNC 载波叠加，与 GEO 窗同一套求解与对话框）——
+// 单链路的功带平衡只看自己，而转发器上跑的是一组载波：前向 TDM 超发、返向 TDMA 欠发，各自都不平衡，
+// 合起来 Σ功率带宽 = Σ载波带宽 才是要的结果（CNC 则是两条链路占同一段频谱、功率叠加）。求解在核心
+// 算法外层（shared/advBalance.js，闭式解），结果落成各载波的「设置余量」，再照常走一次正常计算——
+// 本窗的参考态即上一次计算，那已经是各链路「最坏几何」下的结果，配平也就配在最坏工况上。
+const advDlg = reactive({ open: false, busy: false })
+const advRemap = ref(null)   // 上一次应用时的「原载波id → 派生副本id」映射，回传给对话框
+const advRows = computed(() => linkRows.map((row, i) => {
+  const bb = resolveBaseband(row.basebandId)
+  const l = links.value.find((x) => x.rowId === row._id) || null
+  const d = (l && l.data) || null
+  const name = l ? `${l.txName} → ${l.rxName}`
+    : ([row.earthStationLocation, row.rxEarthStationLocation].filter(Boolean).join(' → ') || '链路 ' + (i + 1))
+  return {
+    no: i + 1, rowId: row._id, name, carrierId: bb.id, carrierName: bb.name,
+    bwKHz: d ? parseFloat(d.allocBandwidthResult) : NaN,
+    pbwKHz: d ? parseFloat(d.PowerBWResult) : NaN,
+    marginDb: d ? (isFinite(l.resolvedMargin) ? l.resolvedMargin : parseFloat(d.marginResult)) : NaN,
+    error: l ? (l.error || '') : '未计算'
+  }
+}))
+const advTpBwMHz = computed(() => {
+  const d = (links.value.find((l) => l.data) || {}).data
+  const v = parseFloat(d ? d.transponderBandwidthResult : (curSat.value && curSat.value.form.transponderBandwidth))
+  return isFinite(v) ? v : 0
+})
+async function openAdvDlg() {
+  if (!links.value.length || resultsStale.value) await compute()
+  advDlg.open = true
+}
+// 落地：解出的余量写进各载波配置（计算方式一并置为「设置余量」），随后重算全表。
+// 该载波若还被本表中未勾选的链路引用 → 另派生一份专用副本、只把勾选行改指过去（原载波与那些链路不动）；
+// 没有外部引用则就地改——反复配平（试错主路径）不会一轮生一份副本。
+async function applyAdvPlan(plan) {
+  const picked = new Set(plan.rowIds)
+  const suffix = plan.mode === 'cnc' ? ' · CNC平衡' : ' · VSAT平衡'
+  const forked = []
+  const remap = {}
+  for (const c of plan.carriers) {
+    if (c.locked || !isFinite(c.toDb)) continue
+    const orig = basebandConfigs.find((b) => b.id === c.id)
+    if (!orig) continue
+    const usedBy = (r) => resolveBaseband(r.basebandId).id === c.id
+    let target = orig
+    if (linkRows.some((r) => !picked.has(r._id) && usedBy(r))) {
+      target = { id: 'bb' + (_bbSeq++), name: (orig.name || '载波') + suffix, nameAuto: false, form: JSON.parse(JSON.stringify(orig.form)) }
+      basebandConfigs.push(target)
+      for (const r of linkRows) if (picked.has(r._id) && usedBy(r)) r.basebandId = target.id
+      forked.push(target.name); remap[c.id] = target.id
+    }
+    target.form.calcMode = 'margin'
+    target.form.margin = c.toDb.toFixed(3)   // 留 3 位：2 位小数的取整会在总功率带宽上留下可见残差
+  }
+  advRemap.value = remap   // 载波换了 id：把对话框里那份锁定/偏置一并搬过去
+  advDlg.busy = true
+  try { await compute() } finally { advDlg.busy = false }
+  toast(`已按${plan.mode === 'cnc' ? 'CNC 载波叠加' : 'VSAT 组网'}配平 ${plan.rowIds.length} 条链路`
+    + (forked.length ? `，派生载波副本：${forked.join('、')}` : ''))
 }
 
 // —— 经纬度 → 降雨率/海拔自动填（与小程序一致；选址或改经纬度触发，逐站）——
@@ -1896,6 +1960,9 @@ onMounted(async () => {
                 <svg viewBox="0 0 16 16" class="lbr-svg fill"><path d="M4 2.5 13 8 4 13.5z" /></svg>
                 {{ computing ? '计算中…' : '计算' }}
               </button>
+              <button class="lbr-big" :disabled="computing || !linkRows.length"
+                title="高级计算：多载波功带平衡（VSAT 组网 / CNC 载波叠加）——多选链路，自适应解出各载波该设多少余量，令整组 Σ功率带宽 = Σ载波带宽"
+                @click="openAdvDlg"><Icon name="sliders" :size="15" />高级计算</button>
             </div>
             <div class="lbr-cap">计算</div>
           </div>
@@ -2118,6 +2185,10 @@ onMounted(async () => {
         <button class="lb-ctx-i" @click="ctxDo(() => { sideView = '' })">隐藏配置列表</button>
       </div>
     </div>
+
+    <!-- 高级计算：多载波功带平衡（VSAT 组网 / CNC 载波叠加，GEO/NGSO 共用组件）-->
+    <LbAdvBalanceDialog :open="advDlg.open" :rows="advRows" :tp-bw-mhz="advTpBwMHz" :busy="advDlg.busy || computing"
+      :stale="resultsStale" :carrier-remap="advRemap" store-key="ngso" @close="advDlg.open = false" @apply="applyAdvPlan" />
 
     <!-- 命名弹窗：保存为新配置（替代 Electron 不支持的 window.prompt）-->
     <!-- 导出报告：封面元信息 + 输出格式 + 是否含图（三窗共用组件）-->
