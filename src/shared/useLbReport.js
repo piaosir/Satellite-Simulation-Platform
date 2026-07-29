@@ -72,7 +72,9 @@ export function useLbReport(o) {
       }
       dlg.progress = { text: en ? 'Laying out and writing files…' : '排版与写盘…', done: total, total }
 
-      const cb = calcBlock(calc, lang)
+      // 「计算设置」块：求解策略随载波逐链路而定（o.calcFor），故逐条各出各的；
+      // 未提供 calcFor 的窗口沿用全批次同一份。
+      const cbOf = (l) => (o.calcFor ? calcBlock(Object.assign({}, calc, o.calcFor(l)), lang) : calcBlock(calc, lang))
       const model = buildReportModel({
         lang,
         orbitType: o.orbitType,
@@ -85,6 +87,7 @@ export function useLbReport(o) {
         links: links.map((l, i) => {
           const p = o.paramsFor(l)
           const inputs = p ? buildInputDigest(o.fieldGroups, p, lang) : []
+          const cb = cbOf(l)
           if (cb) inputs.push(cb)
           const base = {
             no: i + 1, rowId: l.rowId, txName: l.txName, rxName: l.rxName,

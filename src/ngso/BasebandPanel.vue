@@ -1,5 +1,5 @@
 <script setup>
-import { computed, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import Icon from '../components/Icon.vue'
 import { checkNtnBandwidth } from '../shared/ntnLimits.js'
 import { MOD_FACTORS, parseFrac, rateChain, rateDisplays, infoRateFrom, anchorOf } from '../shared/carrierRate.js'
@@ -8,7 +8,9 @@ import { MOD_FACTORS, parseFrac, rateChain, rateDisplays, infoRateFrom, anchorOf
 // 频谱效率⇄帧效率切换、速率换算链（信息速率/码片速率/符号率/载波带宽，编辑任一个反算其余）。
 const props = defineProps({
   form: { type: Object, required: true },   // 共享载波信号参数（含 noiseRatioMode / rsCodeMode / dvbStandard / modcodIndex）
-  options: { type: Object, default: () => ({}) }
+  options: { type: Object, default: () => ({}) },
+  // 本窗支持的计算方式 [{ key, label }]（各窗按自身引擎能力给：弯管四种、再生式两种）；空数组＝不出该栏
+  calcModes: { type: Array, default: () => [] }
 })
 
 // 调制因子/分数解析/换算链都在 shared/carrierRate.js（面板与资源库自动命名共用一份口径）
@@ -40,20 +42,57 @@ function toggleEbno() {
 }
 
 // —— 频谱效率 ⇄ 帧效率 ——
+// 这一格里真正的存储字段只有帧效率 rsCode；频谱效率是它的一个视角（η = 调制因子·fec·rs /(滚降·扩频)），
+// 用户编辑 η 即反解回 rsCode。两件事：
+//   ① 反解不能跟着每一次按键做。η 的显示值是定长 toFixed(4)，边打边反解、边把算回来的值写回输入框，
+//      「1.38」在打完「1」的一瞬就被回写成「1.0000」，后面的「.38」全被吞掉（实测落到 1.0001），
+//      码片速率/符号率/载波带宽整条链跟着算错。故输入期间只记原文，失焦或回车（change）才提交。
+//   ② η 不设上限。理论上帧效率 ≤ 1，于是 η ≤ η_max = 调制因子·fec /(滚降·扩频)（rs = 1，无外码开销）；
+//      但「不想逐项去配调制/FEC/外码，直接把总的频谱效率填进来」是常用的省事口径，此时反解出的
+//      rs > 1 只是个等效开销因子。故越过 η_max 只灰字提醒（并点明报告照此输出），不夹紧、不阻断。
+const rsEditing = ref(null)     // 频谱效率模式下正在输入的原文；null = 不在编辑
+const spectralEffMax = computed(() => modFactor.value * fecV.value / (bwV.value * mV.value))
+// 人读文案：滚降系数或扩频增益填 0 时 η 与上限都发散，不印 Infinity
+const qty = (v) => (isFinite(v) ? v.toFixed(4) + ' bps/Hz' : '无解（滚降系数或扩频增益为 0）')
+const capText = computed(() => qty(spectralEffMax.value))
+
 function toggleRsCode() {
   props.form.rsCodeMode = props.form.rsCodeMode === 'spectral' ? 'fraction' : 'spectral'
+  rsEditing.value = null
 }
-// rsCode 字段显示值：帧效率模式=真实 rsCode；频谱效率模式=η（编辑则反解回 rsCode）
-const rsCodeDisplay = computed({
-  get() { return props.form.rsCodeMode === 'spectral' ? (isNaN(spectralEff.value) ? '' : spectralEff.value.toFixed(4)) : props.form.rsCode },
-  set(v) {
-    if (props.form.rsCodeMode === 'spectral') {
-      const se = parseFloat(v)
-      if (!isNaN(se) && modFactor.value && fecV.value) props.form.rsCode = String(parseFloat((se * bwV.value * mV.value / (modFactor.value * fecV.value)).toFixed(6)))
-    } else {
-      props.form.rsCode = v
+// rsCode 字段显示值：帧效率模式=真实 rsCode 原文（分数照写）；频谱效率模式=编辑中的原文，否则实时 η
+const rsCodeDisplay = computed(() => {
+  if (props.form.rsCodeMode !== 'spectral') return props.form.rsCode
+  if (rsEditing.value != null) return rsEditing.value
+  return isFinite(spectralEff.value) ? spectralEff.value.toFixed(4) : ''
+})
+function onRsInput(e) {
+  if (props.form.rsCodeMode === 'spectral') rsEditing.value = e.target.value
+  else props.form.rsCode = e.target.value   // 帧效率是文本字段（'188/204'），实时写入不经格式化，不会被吞
+}
+function onRsChange(e) {
+  if (props.form.rsCodeMode !== 'spectral') return
+  const se = parseFloat(e.target.value)
+  rsEditing.value = null
+  if (!isFinite(se) || se <= 0 || !modFactor.value || !fecV.value) return  // 非法输入：丢弃，显示回落到实时 η
+  props.form.rsCode = String(parseFloat((se * bwV.value * mV.value / (modFactor.value * fecV.value)).toFixed(6)))
+}
+// 提示行：值无效才拦（红字），越过理论上限只说明（灰字）。
+// 覆盖三条来路：频谱效率模式下的直接指定、帧效率模式下的手输、历史配置里已经存下的值
+const rsAlert = computed(() => {
+  const rs = rsV.value
+  if (!isFinite(rs) || rs <= 0) return { level: 'over', text: '帧效率须为正数，当前值无效——带宽与容量结果不可用' }
+  if (rs > 1) {
+    const rsTxt = parseFloat(rs.toFixed(6))
+    return {
+      level: 'note',
+      // 措辞跟着当前口径走：在频谱效率格里填的，说频谱效率；在帧效率格里填的，说帧效率
+      text: props.form.rsCodeMode === 'spectral'
+        ? `已按直接指定的频谱效率计算：${qty(spectralEff.value)} 超过当前调制/FEC/滚降的理论上限 ${capText.value}，等效帧效率 ${rsTxt} > 1，报告照此输出`
+        : `帧效率 ${rsTxt} > 1 超出理论上限（等效频谱效率 ${qty(spectralEff.value)}），按此口径计算并输出`
     }
   }
+  return null
 })
 
 // —— DVB / MODCOD ——
@@ -71,6 +110,7 @@ function applyModcod(e) {
   props.form.bandwidthFactor = String(mc.bandwidthFactor)
   props.form.ebno = mc.threshold.toFixed(2)
   props.form.noiseRatioMode = mc.noiseRatioMode
+  rsEditing.value = null   // MODCOD 整套覆写了 rsCode，编辑中的原文作废
 }
 
 // —— 速率换算链：信息速率 / 码片速率 / 符号率 / 载波带宽（四者并列，编辑任一个反算其余）——
@@ -143,28 +183,37 @@ function onBwInput(e) { setAnchor('bw', e.target.value) }
       <label class="bb-f"><span class="bb-l">FEC 码率</span>
         <input v-model="form.fec" class="bb-i mono" placeholder="3/4" />
       </label>
-      <label class="bb-f"><span class="bb-l">
-          {{ form.noiseRatioMode === 'ebno' ? 'Eb/N₀' : 'Es/N₀' }}门限 <i>(dB)</i>
-          <button class="bb-tg" title="Eb/N₀ ⇄ Es/N₀" @click.prevent="toggleEbno"><Icon name="arrow-left-right" :size="11" /></button>
+      <!-- 带口径钮的行用 div 而非 label：label 会把行内任意位置的点击转发给它的第一个可关联控件，
+           而那正是这枚 button（button 也是 labelable）——点标签文字、单位括注甚至行内空白都会误切口径。 -->
+      <div class="bb-f bb-f-tg"><span class="bb-l">
+          <button type="button" class="bb-tg" :title="`当前 ${form.noiseRatioMode === 'ebno' ? 'Eb/N₀' : 'Es/N₀'} 口径，点击换算为 ${form.noiseRatioMode === 'ebno' ? 'Es/N₀' : 'Eb/N₀'}（门限值同步换算）`"
+                  @click.prevent="toggleEbno">{{ form.noiseRatioMode === 'ebno' ? 'Eb/N₀' : 'Es/N₀' }}<Icon name="arrow-left-right" :size="10" /></button>门限<i>(dB)</i>
         </span>
         <input v-model="form.ebno" class="bb-i mono" placeholder="5.50" />
-      </label>
+      </div>
       <label class="bb-f"><span class="bb-l">误码率 <i>(1×10⁻ⁿ)</i></span>
         <input v-model="form.ber" class="bb-i mono" placeholder="7" />
       </label>
       <label class="bb-f"><span class="bb-l">滚降系数 <i>(1+α)</i></span>
         <input v-model="form.bandwidthFactor" class="bb-i mono" placeholder="1.20" />
       </label>
-      <label class="bb-f"><span class="bb-l">
-          {{ form.rsCodeMode === 'spectral' ? '频谱效率' : '帧效率' }}<i v-if="form.rsCodeMode === 'spectral'"> (bps/Hz)</i>
-          <button class="bb-tg" title="频谱效率 ⇄ 帧效率" @click.prevent="toggleRsCode"><Icon name="arrow-left-right" :size="11" /></button>
+      <div class="bb-f bb-f-tg"><span class="bb-l">
+          <button type="button" class="bb-tg" :title="`当前按${form.rsCodeMode === 'spectral' ? '频谱效率' : '帧效率'}填，点击切换为${form.rsCodeMode === 'spectral' ? '帧效率' : '频谱效率'}`"
+                  @click.prevent="toggleRsCode">{{ form.rsCodeMode === 'spectral' ? '频谱效率' : '帧效率' }}<Icon name="arrow-left-right" :size="10" /></button><i v-if="form.rsCodeMode === 'spectral'">(bps/Hz)</i>
         </span>
-        <input v-model="rsCodeDisplay" class="bb-i mono" :placeholder="form.rsCodeMode === 'spectral' ? '0.9216' : '188/204'" />
-      </label>
+        <input :value="rsCodeDisplay" class="bb-i mono" :class="{ 'bb-over': rsAlert && rsAlert.level === 'over' }"
+               :placeholder="form.rsCodeMode === 'spectral' ? '1.1520' : '188/204'" @input="onRsInput" @change="onRsChange" />
+      </div>
       <label class="bb-f"><span class="bb-l">扩频增益</span>
         <input v-model="form.m" class="bb-i mono" placeholder="1.00" />
       </label>
     </div>
+
+    <!-- 帧效率越界告警 / 频谱效率夹到上限的说明（频谱效率只是帧效率的一个视角，见 script） -->
+    <p v-if="rsAlert" class="bb-ntn bb-rs" :class="{ over: rsAlert.level === 'over' }">
+      <Icon v-if="rsAlert.level === 'over'" name="alert-triangle" :size="11" />
+      <span>{{ rsAlert.text }}</span>
+    </p>
 
     <!-- 速率换算链（信息速率 → 码片速率 → 符号率 → 载波带宽）：四者同一条链上的不同视角，编辑任一个
          即把它设为锚点、其余三个跟着算；正常色的那个＝当前锚点，退一档的＝由它算出来的。
@@ -189,29 +238,61 @@ function onBwInput(e) { setAnchor('bw', e.target.value) }
       <Icon v-if="ntnBw.level === 'over'" name="alert-triangle" :size="11" />
       <span>{{ ntnBw.text }}</span>
     </p>
+
+    <!-- 计算方式：本载波的求解策略。链路表逐行按所选载波取用（功放功率取各行发端地球站配置的 paPowerW），
+         故同一批次里不同载波可各按各的方式求解。系统余量只在「设置余量」下为输入，其余方式下是解出的结果。 -->
+    <div v-if="calcModes.length" class="bb-cm">
+      <label class="bb-f"><span class="bb-l">计算方式</span>
+        <select v-model="form.calcMode" class="bb-i">
+          <option v-for="m in calcModes" :key="m.key" :value="m.key">{{ m.label }}</option>
+        </select>
+      </label>
+      <label v-if="form.calcMode === 'margin'" class="bb-f"><span class="bb-l">系统余量 <i>(dB)</i></span>
+        <input v-model="form.margin" class="bb-i mono" placeholder="3.00" />
+      </label>
+      <label v-else-if="form.calcMode === 'overbalance'" class="bb-f"><span class="bb-l">超发量 <i>(dB)</i></span>
+        <input v-model="form.overDb" class="bb-i mono" placeholder="0.00" />
+      </label>
+    </div>
   </div>
 </template>
 
 <style scoped>
 .bb { max-width: 560px; }
-.bb-modcod, .bb-grid, .bb-rt { display: grid; gap: 8px 10px; margin-bottom: 10px; }
+.bb-modcod, .bb-grid, .bb-rt, .bb-cm { display: grid; gap: 8px 10px; margin-bottom: 10px; }
 .bb-modcod { grid-template-columns: 1fr 2fr; }
 .bb-grid { grid-template-columns: repeat(4, 1fr); }
 .bb-rt { grid-template-columns: repeat(4, 1fr); padding-top: 8px; border-top: 1px dashed var(--border); }
+/* 计算方式：求解策略，与载波信号参数隔一条分隔线；方式名较长，首列给两倍宽 */
+.bb-cm { grid-template-columns: 2fr 1fr 1fr; padding-top: 8px; border-top: 1px dashed var(--border); }
 .bb-f { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .bb-l { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-muted); white-space: nowrap; }
-.bb-l i { color: var(--text-faint); font-style: normal; }
+/* 单位括注：从属信息，比标签名收小半档——既压住视觉权重，也给最窄一列（~87px）匀出余量，
+   「频谱效率 (bps/Hz)」这类长标签才不会把括号裁掉 */
+.bb-l i { font-size: .95em; color: var(--text-faint); font-style: normal; }
 .bb-i { font: inherit; font-size: 12px; padding: 4px 7px; width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
 .bb-i:focus { outline: none; border-color: var(--accent); }
 .bb-i.mono { font-family: var(--font-mono); }
 /* 速率链：非锚点＝由锚点算出来的，退一档；锚点＝用户钉住的那个，正常色 */
 .bb-rt .bb-i { background: var(--surface); color: var(--text-muted); }
 .bb-rt .bb-i.bb-anch { color: var(--text); }
-/* 3GPP NTN 信道带宽提示：正常灰字说明占哪一档，超限转红并给输入框描红边 */
-.bb-rt .bb-i.bb-over { color: var(--danger); border-color: var(--danger); }
+/* 3GPP NTN 信道带宽提示 / 帧效率越界：正常灰字说明，超限转红并给输入框描红边 */
+.bb-rt .bb-i.bb-over, .bb-grid .bb-i.bb-over { color: var(--danger); border-color: var(--danger); }
 .bb-ntn { display: flex; align-items: flex-start; gap: 5px; margin: -4px 0 0; font-size: 11px; line-height: 1.55; color: var(--text-faint); }
+.bb-ntn.bb-rs { margin: -6px 0 10px; }   /* 帧效率提示夹在两组之间，上下都要留白 */
 .bb-ntn.over { color: var(--danger); }
 .bb-ntn :deep(svg) { flex: none; margin-top: 2px; }
-.bb-tg { font: inherit; font-size: 11px; line-height: 1; padding: 1px 4px; cursor: pointer; background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
-.bb-tg:hover { color: var(--text); border-color: var(--border-strong); }
+/* 口径切换：当前口径名 + 互换图标合成一枚有边框的标签钮（Eb/N₀ ⇄ Es/N₀、频谱效率 ⇄ 帧效率）——
+   名字在钮内，一眼看清「现在按哪个口径填」，边框与图标表明它可点。
+   钮把口径名包进去而不是另占一格：检查器式排版下标签区只有 ~87px（styles/lbworkbench.css 两列
+   minmax(196px,1fr)），另加一枚 20px 的独立钮会被 .bb-l 的 overflow:hidden 裁成半个——旧版即此症。
+   这两行的数值都短（门限 4.30、效率 1.3800），故 .bb-f-tg 把输入框收窄，把宽度让给标签。 */
+.bb-tg { display: inline-flex; align-items: center; gap: 3px; flex: none; font: inherit; line-height: 1.35;
+         padding: 0 3px; cursor: pointer; background: var(--surface-2); color: var(--text);
+         border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
+.bb-tg :deep(svg) { flex: none; color: var(--text-faint); }
+.bb-tg:hover { border-color: var(--accent); }
+.bb-tg:hover :deep(svg) { color: var(--accent); }
+.bb-tg:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+.bb-f.bb-f-tg .bb-i { width: 78px; }   /* 四级：压过 styles/lbworkbench.css 里 104px 的三级规则 */
 </style>

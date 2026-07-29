@@ -22,7 +22,11 @@ export const FIELD_GROUPS = [
       { key: 'bandwidthFactor', label: '滚降系数 (1+α)', type: 'num', def: '1.20', target: 'link' },
       { key: 'rsCode', label: '帧效率', type: 'text', def: '188/204', target: 'link' },
       { key: 'noiseRatioMode', label: '门限模式', def: 'ebno', target: 'link' },
-      { key: 'margin', label: '系统余量', unit: 'dB', type: 'num', def: '3.00', target: 'link' }
+      { key: 'margin', label: '系统余量', unit: 'dB', type: 'num', def: '3.00', target: 'link' },
+      // 计算方式（求解策略）随载波入库：链路表逐行按所选载波取用，故一个批次内不同载波可各按各的方式求解。
+      // target:'op' 不进引擎参数——App 换算成求解器 opt（mode / overDb），功放功率仍按行取发端站型的 paPowerW。
+      { key: 'calcMode', label: '计算方式', type: 'select', options: ['margin', 'power', 'balance', 'overbalance'], def: 'margin', target: 'op' },
+      { key: 'overDb', label: '超发量', tip: '相对功带平衡点的超发量——仅「功带平衡下超发」方式生效', unit: 'dB', type: 'num', def: '0', target: 'op' }
     ]
   },
   {
@@ -155,7 +159,8 @@ export function buildParams(satForm, carrierForm, txStation, rxStation, txEs, rx
   const put = (obj, f, v) => { obj[f.key] = f.type === 'num' ? halfStr(v) : v }
   // 卫星模块字段按 target 分流：'sat' → satParams；'link'（上/下行频率与极化、轨道高度，全站共享）→ linkParams
   for (const f of SAT_FIELDS) put(f.target === 'link' ? linkParams : satParams, f, satForm[f.key])
-  for (const f of CARRIER_FIELDS) put(linkParams, f, carrierForm[f.key])
+  // 载波字段：求解策略(target:'op'，计算方式/超发量)不进引擎参数，由 App 换算成求解器 opt
+  for (const f of CARRIER_FIELDS) { if (f.target === 'op') continue; put(linkParams, f, carrierForm[f.key]) }
   // 收发共用字段（天线口径）：发射链取发信站所选配置、接收链取收信站所选配置（各站各自的那面天线）
   for (const f of ES_COMMON_FIELDS) { put(linkParams, f, txEs[f.key]); if (f.rxKey) put(linkParams, { ...f, key: f.rxKey }, rxEs[f.key]) }
   // 发/收链字段按 target 分流：工作点(target:'op'，如功放功率)不进引擎参数（App 换算成求解器 opt），其余 → linkParams

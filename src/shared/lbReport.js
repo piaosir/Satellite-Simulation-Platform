@@ -132,10 +132,12 @@ export function buildInputDigest(groups, params, lang) {
 
 // 计算设置块：计算方式、目标余量、过载余量——它们不在 FIELD_GROUPS 里（是求解策略，不是链路参数），
 // 但少了它整份预算就复算不出来（同一组参数，不同计算方式给的是不同的数）。
+// solveMode：再生式窗口的「计算方式」一栏报的是链路类型（再生式上行/下行/星间），求解策略另占一行。
 export function calcBlock(calc, lang) {
   const t = (s) => translate(s, lang)
   const rows = []
   if (calc.mode) rows.push({ label: t('计算方式'), value: calc.mode, unit: '' })
+  if (calc.solveMode) rows.push({ label: t('求解方式'), value: calc.solveMode, unit: '' })
   if (!emptyVal(calc.targetMargin)) rows.push({ label: t('目标系统余量'), value: String(calc.targetMargin), unit: 'dB' })
   if (!emptyVal(calc.overDb)) rows.push({ label: t('过载门限'), value: String(calc.overDb), unit: 'dB' })
   return rows.length ? { key: 'calc', title: t('计算设置'), rows } : null
@@ -178,6 +180,7 @@ export const LB_REPORT_EN = {
   '参数': 'Parameter', '数值': 'Value', '单位': 'Unit', '说明': 'Note',
   '计算失败': 'Calculation failed', '本条链路未计算成功，故无结果与图': 'This link did not compute successfully; no results or figures are available.',
   '图': 'Figure', '表': 'Table', '目标系统余量': 'Target System Margin', '过载门限': 'Overload Threshold',
+  '求解方式': 'Solve Mode',
   '计算设置': 'Calculation Settings', '载波与调制': 'Carrier & Modulation', '地球站': 'Earth Station',
   '卫星与转发器': 'Satellite & Transponder', '上行 · 发信站': 'Uplink · Tx Station',
   '下行 · 收信站': 'Downlink · Rx Station', '卫星群': 'Satellite Group', '发信站群': 'Tx Stations',

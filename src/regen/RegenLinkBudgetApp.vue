@@ -280,6 +280,17 @@ const txStations = reactive([newStation(TX_FIELDS)])
 // 工作点（功放功率）已随站型移入「地球站配置」发射参数（opPowerW）：给定功放功率 → 引擎 power 模式算上行余量。
 // 原「工作点列 EIRP⇄W 切换」随之退役——EIRP 仍可在结果指标「地球站 EIRP」查看。
 
+// —— 计算方式 ——（enLabel 供导出报告选英文时用）
+// 求解策略随载波入库（资源库「载波」条目的 calcMode / margin，见 regenParams.js CARRIER_FIELDS），
+// 逐行按该行所选载波取用。再生式上下行解耦、无转发器功带之分，故只有两种；工作点仍是硬件属性
+// （上行＝发信站功放功率 opPowerW，下行＝收信站天线/噪温算出的 G/T），留在地球站库。
+// 星间/激光链路不受此约束：其工作点由链路自身参数给定（见 computeIsl / computeLaser）。
+const CALC_MODES = [
+  { key: 'power', label: '设置工作点', enLabel: 'Fixed Operating Point' },
+  { key: 'margin', label: '设置余量', enLabel: 'Fixed Margin' }
+]
+const calcModeOf = (bbForm) => ((bbForm && bbForm.calcMode) === 'margin' ? 'margin' : 'power')
+
 // ============ 收信站群（再生式下行）============
 // 工作点 G/T 恒由天线口径/效率 + 天线噪温 + 接收机噪温 + 馈线损耗按引擎口径算得
 // （不再支持「直接输入设备 G/T」——设备 G/T 系统噪温未知，无法自洽推出雨致 G/T 劣化）。
@@ -792,8 +803,10 @@ async function compute() {
         Object.assign(linkParams, s8LinkParams(geo, { minElevDn: st.rxMinElevation }))
         let acc = null
         try { acc = await api.linkBudget.accessWindows({ orbit: orbitSpec, station: stationGeo, t0ISO, horizonHours: geoHorizonHours.value }) } catch (e) { acc = null }
-        sweepStore[st._id] = { satParams, linkParams, opt: { mode: 'power' } }
-        const r = await api.linkBudget.computeRegenDownlink(satParams, linkParams, { mode: 'power' })
+        // 计算方式随该行所选载波：power = 按收信站实配 G/T 算余量；margin = 按载波系统余量反解所需 G/T
+        const dopt = { mode: calcModeOf(bbForm) }
+        sweepStore[st._id] = { satParams, linkParams, opt: dopt }
+        const r = await api.linkBudget.computeRegenDownlink(satParams, linkParams, dopt)
         if (r && r.success) {
           const d = r.data
           mergePlatformGeometry(d, geo)
@@ -805,16 +818,19 @@ async function compute() {
         continue
       }
 
-      // ===== 再生式上行：地球站 → 星上再生解调；工作点随站型（地球站配置）——功放功率 → power 模式（给定功放算上行余量）=====
+      // ===== 再生式上行：地球站 → 星上再生解调 =====
+      // 计算方式随该行所选载波：power = 按站型功放功率（工作点）算上行余量；margin = 按载波系统余量反解所需功放功率
       const txName = st.earthStationLocation || ('发' + (ti + 1))
       const es = resolveEs(st.stationId).form
       const { satParams, linkParams } = buildRegenParams(sat.form, bbForm, st, es)
-      // 工作点只按功放功率（power 模式）：给定功放功率算上行余量（已删「设置余量」反解模式）
-      const powerW = parseFloat(es.opPowerW)
-      if (!(powerW > 0)) {
-        out.push({ ti, rowId: st._id, txName, satName, data: null, margin: '—', error: '工作点无效（地球站配置的「功放功率」需为正数）', geom: null, access: null }); continue
+      let copt = { mode: 'margin' }
+      if (calcModeOf(bbForm) === 'power') {
+        const powerW = parseFloat(es.opPowerW)
+        if (!(powerW > 0)) {
+          out.push({ ti, rowId: st._id, txName, satName, data: null, margin: '—', error: '工作点无效（地球站配置的「功放功率」需为正数）', geom: null, access: null }); continue
+        }
+        copt = { mode: 'power', powerW }
       }
-      const copt = { mode: 'power', powerW }
       const freqGHz = parseFloat(sat.form.centerFrequency) || 14.25
       const stationGeo = { lonDeg: parseFloat(st.longitude), latDeg: parseFloat(st.latitude), altKm: (parseFloat(st.altitude) || 0) / 1000, minElevDeg: parseFloat(st.minElevation) || 0, freqGHz }
       const geo = await api.linkBudget.ngsoGeometry({ orbit: orbitSpec, tx: stationGeo, rx: stationGeo, t0ISO, horizonHours: geoHorizonHours.value })
@@ -1432,6 +1448,18 @@ const { reportDlg, openReportDialog, runReport } = useLbReport({
   lang: () => reportLang.value,
   appVersion: () => appVersion.value,
   paramsFor: (l) => sweepParamsByRow.value[l.rowId] || null,
+  // 「计算方式」一栏报的是链路类型（再生式上行/下行/星间）；求解策略随载波逐链路而定，另占「求解方式」一行
+  // （取计算时留底的那份入参，此后改库不改已出结果的口径）。星间/激光无此栏——工作点由链路自身参数给定。
+  calcFor: (l) => {
+    const p = l && sweepParamsByRow.value[l.rowId]
+    const key = (p && p.opt && p.opt.mode) || ''
+    const info = CALC_MODES.find((m) => m.key === key)
+    if (!info) return {}
+    return {
+      solveMode: reportLang.value === 'en' ? info.enLabel : info.label,
+      targetMargin: key === 'margin' ? ((p.linkParams && p.linkParams.margin) || '') : ''
+    }
+  },
   calc: () => {
     const en = reportLang.value === 'en'
     const m = REGEN_MODE_LABEL[linkMode.value] || REGEN_MODE_LABEL.uplink
@@ -1565,7 +1593,7 @@ onMounted(async () => {
                 <button class="lb-mini" title="复制此配置" @click="duplicateBasebandConfig(cfg)"><Icon name="copy" :size="12" /> 复制</button>
                 <button class="lb-mini" title="删除此配置（被引用时提示引用数）" :disabled="basebandConfigs.length <= 1" @click="removeBasebandConfig(cfg)">删除</button>
               </template>
-              <template #default="{ cfg }"><BasebandPanel :form="cfg.form" :options="basebandOpts" /></template>
+              <template #default="{ cfg }"><BasebandPanel :form="cfg.form" :options="basebandOpts" :calc-modes="CALC_MODES" /></template>
             </LbLibrary>
           </div>
           <div class="lb-lib-foot" :title="(LIB_TABS.find((t) => t.key === libTab) || {}).tip">{{ (LIB_TABS.find((t) => t.key === libTab) || {}).tip }}</div>
@@ -1577,7 +1605,7 @@ onMounted(async () => {
 
       <!-- ② 主区：MATLAB 式功能区 + 停靠面板 -->
       <section class="lb-col lb-build">
-        <!-- 功能区：文件 · 计算 · 视图 · 导出 ‖ 状态位（工作点随站型给定，无计算方式组） -->
+        <!-- 功能区：文件 · 计算 · 视图 · 导出 ‖ 状态位（计算方式随载波入资源库，功能区只留执行） -->
         <div class="lbr">
           <div class="lbr-g">
             <div class="lbr-items">

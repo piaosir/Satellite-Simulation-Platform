@@ -30,7 +30,12 @@ export const FIELD_GROUPS = [
       { key: 'bandwidthFactor', label: '滚降系数 (1+α)', type: 'num', def: '1.20', target: 'link' },
       { key: 'rsCode', label: '帧效率', type: 'text', def: '188/204', target: 'link' },
       { key: 'noiseRatioMode', label: '门限模式', def: 'ebno', target: 'link' },
-      { key: 'margin', label: '系统余量', unit: 'dB', type: 'num', def: '3.00', target: 'link' }
+      { key: 'margin', label: '系统余量', unit: 'dB', type: 'num', def: '3.00', target: 'link' },
+      // 计算方式（求解策略）随载波入库。再生式上下行解耦、无转发器功带之分，故只有两种：
+      //   power  设置工作点：上行取发信站功放功率(opPowerW)、下行取收信站 G/T → 求余量（出厂默认，沿用原口径）
+      //   margin 设置余量：给定系统余量 → 上行反解所需功放功率、下行反解所需 G/T
+      // 星间/激光链路不受此栏约束（其工作点由链路自身参数给定）。target:'op' 不进引擎参数，App 换算成求解器 opt.mode。
+      { key: 'calcMode', label: '计算方式', type: 'select', options: ['power', 'margin'], def: 'power', target: 'op' }
     ]
   },
   {
@@ -223,7 +228,7 @@ export function buildRegenParams(satForm, carrierForm, txStation, esForm) {
   // 卫星群字段按 target 分流
   for (const f of SAT_FIELDS) putNum(f.target === 'link' ? linkParams : satParams, f, satForm[f.key])
   // 载波
-  for (const f of CARRIER_FIELDS) putNum(linkParams, f, carrierForm[f.key])
+  for (const f of CARRIER_FIELDS) { if (f.target === 'op') continue; putNum(linkParams, f, carrierForm[f.key]) }   // 求解策略(target:'op')不进引擎
   // 地球站配置：公共（天线口径）+ 发射链（效率/功放/馈线/UPC）→ linkParams；上行干扰(target:'sat') → satParams；
   // 工作点(target:'op'，opPowerW) 不进引擎——App 换成 power 计算方式（给定功放功率）
   for (const f of ES_COMMON_FIELDS) putNum(linkParams, f, esForm[f.key])
@@ -308,7 +313,7 @@ export function buildRegenDownlinkParams(satForm, carrierForm, rxStation, esForm
   // 卫星群字段按 target 分流（含上/下行频率极化、轨道）
   for (const f of SAT_FIELDS) putNum(f.target === 'link' ? linkParams : satParams, f, satForm[f.key])
   // 载波
-  for (const f of CARRIER_FIELDS) putNum(linkParams, f, carrierForm[f.key])
+  for (const f of CARRIER_FIELDS) { if (f.target === 'op') continue; putNum(linkParams, f, carrierForm[f.key]) }   // 求解策略(target:'op')不进引擎
   // 地球站配置：公共（天线口径 → 收侧引擎键 rxKey）+ 接收链（效率/噪温/馈线）→ linkParams；下行干扰(target:'sat') → satParams
   for (const f of ES_COMMON_FIELDS) if (f.rxKey) putNum(linkParams, { ...f, key: f.rxKey }, esForm[f.key])
   for (const f of ES_RX_FIELDS) {
@@ -378,7 +383,7 @@ export function buildRegenIslParams(txSatForm, carrierForm, islLink) {
   satParams.satelliteName = txSatForm.satelliteName
   satParams.frequencyBand = txSatForm.frequencyBand
   // 载波（门限/带宽）
-  for (const f of CARRIER_FIELDS) putNum(linkParams, f, carrierForm[f.key])
+  for (const f of CARRIER_FIELDS) { if (f.target === 'op') continue; putNum(linkParams, f, carrierForm[f.key]) }   // 求解策略(target:'op')不进引擎
   // ISL 四项（target:'sat'）；islAtmMargin(target:'geom') 只喂几何，不进引擎
   for (const f of ISL_FIELDS) if (f.target === 'sat') putNum(satParams, f, islLink[f.key])
   satParams.islMode = 'rf'; satParams.islHops = 1

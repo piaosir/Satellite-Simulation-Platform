@@ -320,17 +320,17 @@ function editInLibrary(kind, id) {
 }
 
 // —— 计算方式 ——（enLabel 供导出 Excel 选英文时用，措辞对齐链路预算工程惯用语）
+// 求解策略随载波入库（资源库「载波」条目的 calcMode / margin / overDb，见 params.js CARRIER_FIELDS），
+// 逐行按该行所选载波取用——同一批次里不同载波可各按各的方式求解。功放功率仍是发射链硬件属性，
+// 留在地球站库（paPowerW），「设置功放功率」方式按行取发端站型之值。
 const CALC_MODES = [
-  { key: 'margin', label: '设置余量', enLabel: 'Fixed Margin', tip: '输入余量 → 算功放功率' },
-  { key: 'power', label: '设置功放功率', enLabel: 'Fixed PA Power', tip: '逐行取地球站配置的「功放功率」→ 反推余量' },
-  { key: 'balance', label: '功带平衡', enLabel: 'Power-Bandwidth Balance', tip: '自动求功带平衡点的余量' },
-  { key: 'overbalance', label: '功带平衡下超发', enLabel: 'Power-Bandwidth Balance with Overdrive', tip: '相对功带平衡超发 x dB → 自动算余量' }
+  { key: 'margin', label: '设置余量', enLabel: 'Fixed Margin' },
+  { key: 'power', label: '设置功放功率', enLabel: 'Fixed PA Power' },
+  { key: 'balance', label: '功带平衡', enLabel: 'Power-Bandwidth Balance' },
+  { key: 'overbalance', label: '功带平衡下超发', enLabel: 'Power-Bandwidth Balance with Overdrive' }
 ]
-const calcMode = ref('margin')
-const overDb = ref('0')
-// 系统余量是「设置余量」模式的批量目标值（计算策略，不随载波/站型库条目走）；
-// 功放功率则是发射链硬件属性，已下沉进地球站库（paPowerW），「设置功放功率」模式逐行取值。
-const targetMarginDb = ref('3.00')
+// 一行的求解器入参：方式与超发量取该行载波，功放功率取该行发端站型
+const calcOptOf = (bbForm, txEs) => ({ mode: bbForm.calcMode || 'margin', powerW: txEs.paPowerW, overDb: bbForm.overDb })
 
 // —— 计算结果列（只读，表头可自定义勾选）：并入链路表尾部「计算结果」列组 ——
 // key 与引擎结果字段同名（容量为派生指标）；勾选集按窗口记忆（localStorage），不入场景配置。
@@ -417,14 +417,13 @@ function cellSubFn(f, row) {
 // shallowRef：避免 Vue 把每条链路的 data(引擎结果) 深度代理成 reactive，
 // 否则传给 waterfall IPC 时结构化克隆会报 “could not be cloned”。
 const links = shallowRef([])  // [{ i, rowId, txName, rxName, data, ok, error }]（瀑布/导出/汇总数据源）
-const resultMode = ref('margin') // 出结果时所用的计算方式
 const selected = ref(0)       // 当前查看的链路下标（与链路表聚焦行联动）
 const segments = ref([])      // 当前链路瀑布
 const computing = ref(false)
 const error = ref('')
 // —— 结果过期提示：出结果后任何计算输入再变化（含库条目被改）→ 亮「输入已变」小灯，提醒重算 ——
 const resultsStale = ref(false)
-watch([satConfigs, basebandConfigs, esConfigs, linkRows, calcMode, overDb, targetMarginDb, satId],
+watch([satConfigs, basebandConfigs, esConfigs, linkRows, satId],
   () => { if (links.value.length) resultsStale.value = true }, { deep: true })
 // —— 瀑布表一键整表复制（TSV，直接粘贴进 Excel / 报告）——
 async function copyWaterfallTsv() {
@@ -456,21 +455,21 @@ let _roT = null
 let _suppressRO = false   // 刷新编排期间静默 watcher，避免表单/站点回填触发的重复扇出
 async function refreshReadonly() {
   if (!api || !linkRows.length) return
-  // EIRP 用当前计算方式（与主计算一致，否则功带平衡等模式下解出的功率不同 → EIRP 对不上）；
+  // EIRP 用该行载波的计算方式（与主计算一致，否则功带平衡等模式下解出的功率不同 → EIRP 对不上）；
   // G/T 只与收端天线/噪温有关 → 固定走最便宜的「设置余量」单算，避免平衡/超发模式白跑二分搜索。
   const fix2 = (v) => { const n = parseFloat(v); return isNaN(n) ? v : n.toFixed(2) }
   for (const row of linkRows) {
     try {
       const txEs = resolveEs(row.stationId).form
-      const { satParams, linkParams } = buildParams(curSat.value.form, resolveBaseband(row.basebandId).form, row, row, txEs, resolveEs(row.rxStationId).form)
-      linkParams.margin = targetMarginDb.value
-      const r = await api.linkBudget.computeMode(satParams, linkParams, { mode: calcMode.value, powerW: txEs.paPowerW, overDb: overDb.value })
+      const bbForm = resolveBaseband(row.basebandId).form
+      const { satParams, linkParams } = buildParams(curSat.value.form, bbForm, row, row, txEs, resolveEs(row.rxStationId).form)
+      const r = await api.linkBudget.computeMode(satParams, linkParams, calcOptOf(bbForm, txEs))
       if (r && r.success) setVals(row._id, { _eirp: fix2(r.data.stationEIRPResult), _gt: fix2(r.data.gOverTeResult) })
     } catch (e) { /* skip */ }
   }
 }
 function scheduleReadonly() { if (_suppressRO) return; clearTimeout(_roT); _roT = setTimeout(refreshReadonly, 350) }
-watch([satConfigs, basebandConfigs, esConfigs, linkRows, calcMode, overDb, targetMarginDb, satId], scheduleReadonly, { deep: true })
+watch([satConfigs, basebandConfigs, esConfigs, linkRows, satId], scheduleReadonly, { deep: true })
 
 // 注：地球站库编辑器曾在发射/接收标题右端显示实时 EIRP / G·T 预览，已删——频率在卫星侧后，一份站型配置
 // 不再自含算这两个量所需的全部输入（预览得挑一颗星当基准，反而误导）。链路表「地球站配置」格下的第二行
@@ -740,7 +739,6 @@ async function compute() {
   if (!linkRows.length) { error.value = '请至少添加一条链路'; return }
   computing.value = true; error.value = ''
   try {
-    const mode = calcMode.value
     const out = []
     const sweepStore = {}
     // 先把整表各行的入参组齐，再一次 IPC 连算完：逐行口径与单条调用完全一致，
@@ -749,10 +747,10 @@ async function compute() {
     for (let i = 0; i < linkRows.length; i++) {
       const row = linkRows[i]
       const txEs = resolveEs(row.stationId).form
-      const { satParams, linkParams } = buildParams(curSat.value.form, resolveBaseband(row.basebandId).form, row, row, txEs, resolveEs(row.rxStationId).form)
-      linkParams.margin = targetMarginDb.value   // 系统余量是批量目标值（计算策略），不随库条目走
-      // 「设置功放功率」逐行取发端站型的功放功率（功放是站的硬件属性，已入地球站库）
-      const opt = { mode, powerW: txEs.paPowerW, overDb: overDb.value }
+      const bbForm = resolveBaseband(row.basebandId).form
+      const { satParams, linkParams } = buildParams(curSat.value.form, bbForm, row, row, txEs, resolveEs(row.rxStationId).form)
+      // 计算方式与系统余量/超发量随该行所选载波；「设置功放功率」另取发端站型的功放功率（站的硬件属性）
+      const opt = calcOptOf(bbForm, txEs)
       // 留底本行真正送进引擎的那份入参，供图表区参数扫描原地重跑（见 selParams）
       sweepStore[row._id] = { satParams, linkParams, opt }
       specs.push({ sat: satParams, link: linkParams, opt })
@@ -780,14 +778,13 @@ async function compute() {
         }
         const m = parseFloat(d.linkmargin)
         const pUse = parseFloat(d.powerUsageRatio); const bUse = parseFloat(d.bandwidthUsageRatio)
-        // 合格判定：设置余量模式看资源是否够（功率/带宽占用 ≤100%）；其它模式看余量 ≥0
-        const ok = mode === 'margin' ? (!(pUse > 100) && !(bUse > 100)) : (!isNaN(m) && m >= 0)
+        // 合格判定按本行自己的方式：设置余量看资源是否够（功率/带宽占用 ≤100%），其它方式看余量 ≥0
+        const ok = specs[i].opt.mode === 'margin' ? (!(pUse > 100) && !(bUse > 100)) : (!isNaN(m) && m >= 0)
         out.push({ ...base, data: d, ok })
       } else {
         out.push({ ...base, data: null, error: (r && r.message) || '失败' })
       }
     }
-    resultMode.value = mode
     sweepParamsByRow.value = sweepStore
     const prevSel = sel.value
     links.value = out
@@ -877,13 +874,27 @@ let _noticeT = null
 function toast(msg) { notice.value = msg; clearTimeout(_noticeT); _noticeT = setTimeout(() => (notice.value = ''), 4000) }
 
 function serializeState() {
-  // v2 场景 = 关联关系：链路行（站址 + 库条目 id 引用）+ 计算策略 + GRD 匹配选择。
+  // v3 场景 = 关联关系：链路行（站址 + 库条目 id 引用）+ 卫星选择。
   // 三库是全局资产（userData/library.json），不再随场景存副本；_ 前缀键（行内部 id / 计算列）一律剥离。
+  // 计算方式/系统余量/超发量自 v3 起随载波入库（求解策略是载波的属性），故不再是场景字段。
   return {
-    v: 2,
+    v: 3,
     rows: linkRows.map((r) => { const o = {}; for (const k of Object.keys(r)) if (!k.startsWith('_')) o[k] = r[k]; return o }),
-    satId: satId.value,
-    calcMode: calcMode.value, overDb: overDb.value, targetMarginDb: targetMarginDb.value
+    satId: satId.value
+  }
+}
+// v2 及更早：计算方式/系统余量/超发量是场景级字段 → 下沉到该场景各行所引的载波条目
+// （与旧全局「设置功放功率」目标值下沉为站型 paPowerW 同一办法）。场景重存为 v3 后不再触发。
+function adoptSceneCalc(st) {
+  if (!st || st.v >= 3) return
+  const has = (v) => v !== undefined && v !== null && String(v) !== ''
+  if (!has(st.calcMode) && !has(st.overDb) && !has(st.targetMarginDb)) return
+  const ids = new Set(linkRows.map((r) => r.basebandId || ''))
+  for (const id of ids) {
+    const f = resolveBaseband(id).form
+    if (has(st.calcMode)) f.calcMode = st.calcMode
+    if (has(st.overDb)) f.overDb = st.overDb
+    if (has(st.targetMarginDb)) f.margin = st.targetMarginDb
   }
 }
 // 旧场景（v1.4.2 及以前）的方向图匹配是场景级 state.grdSel → 播种到本场景所引的卫星库条目。
@@ -900,9 +911,7 @@ function applyState(st) {
   if (Array.isArray(st.rows)) {
     linkRows.splice(0, linkRows.length, ...st.rows.map((r) => ({ ...defaultsFor(TX_FIELDS), ...defaultsFor(RX_FIELDS), ...r, _id: 's' + (_sid++) })))
     satId.value = st.satId || ''
-    if (st.calcMode) calcMode.value = st.calcMode
-    if (st.overDb != null) overDb.value = st.overDb
-    if (st.targetMarginDb != null) targetMarginDb.value = st.targetMarginDb
+    adoptSceneCalc(st)                        // v2 场景的计算策略 → 下沉到所引载波库条目
     if (st.grdSel) adoptSceneGrd(st.grdSel)   // 旧场景的方向图匹配 → 下沉到所引卫星库条目
     return
   }
@@ -975,17 +984,14 @@ function applyState(st) {
     for (let i = 0; i < n; i++) merged.push(mkRow(tArr[Math.min(i, tArr.length - 1)], xArr[Math.min(i, xArr.length - 1)]))
   }
   if (merged.length) linkRows.splice(0, linkRows.length, ...merged)
-  if (st.calcMode) calcMode.value = st.calcMode
-  if (st.overDb != null) overDb.value = st.overDb
-  // 系统余量：新字段优先；否则从旧存档兜底取（曾短暂挂在 carrierForm.margin / 载波信号配置卡片里）
-  if (st.targetMarginDb != null) targetMarginDb.value = st.targetMarginDb
-  else if (st.carrierForm && st.carrierForm.margin != null) targetMarginDb.value = st.carrierForm.margin
+  // 计算策略下沉到所引载波条目；系统余量场景级字段优先，缺则沿用旧存档里 carrierForm.margin（已随条目并库）
+  adoptSceneCalc(st)
 }
 let _stateT = null
 // 「上次会话」存盘要带上 activeId：否则重开窗口时配置列表没有任何一项被聚焦，
 // 但工作区却显示着上次的内容，看起来像是内容跟列表对不上号（用户反馈的困惑点）。
 function scheduleSaveState() { clearTimeout(_stateT); _stateT = setTimeout(() => { try { localStorage.setItem(STATE_KEY, JSON.stringify({ ...serializeState(), activeId: activeId.value })) } catch (e) { /* 配额满等忽略 */ } dirtyFlag.value = isDirty() }, 600) }
-watch([linkRows, satId, calcMode, overDb, targetMarginDb, activeId], scheduleSaveState, { deep: true })
+watch([linkRows, satId, activeId], scheduleSaveState, { deep: true })
 
 // —— 命名配置 CRUD ——
 // 注意：Electron 不支持 window.prompt（静默返回 null → 之前「保存不了」的根因）。改用应用内命名弹窗。
@@ -1104,9 +1110,9 @@ function onDeleteItem(item) { if (!item) return; if (item.type === 'folder') rem
 // 默认（空白）配置内容：一条默认链路行（收端引用库中第二份站型，经典 6.2m 发 / 3.7m 收基线）
 function blankState() {
   return {
-    v: 2,
+    v: 3,
     rows: [{ ...defaultsFor(TX_FIELDS), ...defaultsFor(RX_FIELDS), rxStationId: (esConfigs[1] && esConfigs[1].id) || '' }],
-    satId: '', calcMode: 'margin', overDb: '0', targetMarginDb: '3.00'
+    satId: ''
   }
 }
 function uniqueCfgName(base) {
@@ -1177,9 +1183,9 @@ function ctxDo(fn) { ctxMenu.open = false; fn() }
 // —— 改动检测 + 离开提示 + 恢复默认 ——
 // 指纹只取「配置内容」字段（不含页签/结果列勾选等视图态），避免切页签/调结果列误判为改动。
 function fingerprintOf(s) {
-  // 库是全局资产（自动保存、不入场景）：指纹只含场景自身内容（行/引用/计算策略）；
-  // 方向图匹配已随卫星库条目走（v1.4.3），不再是场景内容 → 不入指纹
-  return stableStringify({ rows: s.rows, satId: s.satId, calcMode: s.calcMode, overDb: s.overDb, targetMarginDb: s.targetMarginDb })
+  // 库是全局资产（自动保存、不入场景）：指纹只含场景自身内容（行/引用）；
+  // 方向图匹配已随卫星库条目走（v1.4.3）、计算策略已随载波库条目走（v1.3.8），不再是场景内容 → 不入指纹
+  return stableStringify({ rows: s.rows, satId: s.satId })
 }
 function fingerprint() { return fingerprintOf(serializeState()) }
 let activeBaseline = ''
@@ -1301,6 +1307,20 @@ watch(reportLang, (v) => {
 // 流程在 shared/useLbReport.js（三窗共用），这里只把本窗的数据源接上去。
 const vizRef = ref(null)
 const appVersion = ref('')
+// 某条已算链路实际用的求解策略：取计算时留底的那份入参（此后改库不改已出结果的口径）。
+// 超发量只在「功带平衡下超发」方式下有意义，其余方式不入报告。
+function calcOfLink(l) {
+  const p = l && sweepParamsByRow.value[l.rowId]
+  const key = (p && p.opt && p.opt.mode) || ''
+  const info = CALC_MODES.find((m) => m.key === key)
+  const en = reportLang.value === 'en'
+  return {
+    key,
+    label: info ? (en ? info.enLabel : info.label) : key,
+    margin: (p && p.linkParams && p.linkParams.margin) || '',
+    overDb: key === 'overbalance' ? ((p && p.opt && p.opt.overDb) || '') : ''
+  }
+}
 const { reportDlg, openReportDialog, runReport } = useLbReport({
   api,
   orbitType: 'GEO',
@@ -1314,17 +1334,16 @@ const { reportDlg, openReportDialog, runReport } = useLbReport({
   lang: () => reportLang.value,
   appVersion: () => appVersion.value,
   paramsFor: (l) => sweepParamsByRow.value[l.rowId] || null,
+  // 计算方式随载波逐链路而定：封面/表头只在全表口径一致时报该方式（不一致则不报，各链路详情自带「计算设置」块）
   calc: () => {
-    const info = CALC_MODES.find((m) => m.key === resultMode.value)
-    const en = reportLang.value === 'en'
+    const modes = new Set(links.value.map((l) => calcOfLink(l).key).filter(Boolean))
     return {
-      mode: (info && (en ? info.enLabel : info.label)) || resultMode.value,
-      targetMargin: targetMarginDb.value,
-      overDb: overDb.value,
+      mode: modes.size === 1 ? calcOfLink(links.value[0]).label : '',
       satelliteName: curSat.value ? curSat.value.form.satelliteName : '',
       frequencyBand: curSat.value ? curSat.value.form.frequencyBand : ''
     }
   },
+  calcFor: (l) => { const c = calcOfLink(l); return { mode: c.label, targetMargin: c.margin, overDb: c.overDb } },
   defaultName: (en) => {
     const s = curSat.value ? curSat.value.form.satelliteName : ''
     return en
@@ -1443,7 +1462,7 @@ onMounted(async () => {
                 <button class="lb-mini" title="复制此配置" @click="duplicateBasebandConfig(cfg)"><Icon name="copy" :size="12" /> 复制</button>
                 <button class="lb-mini" title="删除此配置（被引用时提示引用数）" :disabled="basebandConfigs.length <= 1" @click="removeBasebandConfig(cfg)">删除</button>
               </template>
-              <template #default="{ cfg }"><BasebandPanel :form="cfg.form" :options="basebandOpts" /></template>
+              <template #default="{ cfg }"><BasebandPanel :form="cfg.form" :options="basebandOpts" :calc-modes="CALC_MODES" /></template>
             </LbLibrary>
           </div>
           <div class="lb-lib-foot" :title="(LIB_TABS.find((t) => t.key === libTab) || {}).tip">{{ (LIB_TABS.find((t) => t.key === libTab) || {}).tip }}</div>
@@ -1474,15 +1493,7 @@ onMounted(async () => {
           </div>
           <div class="lbr-g">
             <div class="lbr-items">
-              <div class="lbr-form">
-                <label :title="'计算方式：' + ((CALC_MODES.find((m) => m.key === calcMode) || {}).tip || '')"><span>方式</span>
-                  <select v-model="calcMode"><option v-for="m in CALC_MODES" :key="m.key" :value="m.key" :title="m.tip">{{ m.label }}</option></select>
-                </label>
-                <label v-if="calcMode === 'margin'" title="系统余量目标（dB）"><span>余量</span><input v-model="targetMarginDb" placeholder="3.00" /><span class="lbr-u">dB</span></label>
-                <label v-else-if="calcMode === 'power'" title="功放功率已随站型入地球站库：逐行取发端「地球站配置」的功放功率反推余量"><span>功放</span><span class="lbr-u">取各行站型</span></label>
-                <label v-else-if="calcMode === 'overbalance'" title="相对功带平衡点的超发量（dB）"><span>超发</span><input v-model="overDb" /><span class="lbr-u">dB</span></label>
-                <label v-else title="功带平衡：自动求平衡点余量"><span>目标</span><input value="自动" disabled /><span class="lbr-u">dB</span></label>
-              </div>
+              <!-- 计算方式已随载波入资源库（逐行按所选载波取用），此处只留执行 -->
               <button class="lbr-big primary" :disabled="computing" :title="`逐行计算链路表全部 ${linkRows.length} 条链路（Ctrl+Enter）`" @click="compute">
                 <svg viewBox="0 0 16 16" class="lbr-svg fill"><path d="M4 2.5 13 8 4 13.5z" /></svg>
                 {{ computing ? '计算中…' : '计算' }}
