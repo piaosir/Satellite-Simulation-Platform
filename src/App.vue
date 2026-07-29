@@ -82,6 +82,7 @@ function openRegen() { window.api?.regen?.open?.() }
 function openSunOutage() { window.api?.sunOutage?.open?.() }
 function openRain() { window.api?.rainAttenuation?.open?.() }
 function openCi() { window.api?.interference?.open?.() }
+function openPfdMask() { window.api?.pfdMask?.open?.() }
 
 function pickView(flat) {
   if (view.flat === flat) return
@@ -130,7 +131,8 @@ const menus = computed(() => [
     { label: '再生处理（OBP）链路预算', icon: 'cpu', hint: '星上再生处理转发器：上行 / 下行 / 星间微波 / 星间激光，链路预算解耦（独立窗口）', run: openRegen },
     { label: '日凌预报（GSO）', icon: 'sun', hint: '打开日凌预报（独立窗口）', run: openSunOutage },
     { label: '雨衰计算', icon: 'droplets', hint: '打开雨衰计算（独立窗口，通用于各类卫星）', run: openRain },
-    { label: '干扰分析（C/I）', icon: 'radio-tower', hint: 'C/ASI 邻星 · C/CCI 同频复用 · C/XPI 交叉极化 · NGSO 时变 CDF（独立窗口，只读计算器）', run: openCi }
+    { label: '干扰分析（C/I）', icon: 'radio-tower', hint: 'C/ASI 邻星 · C/CCI 同频复用 · C/XPI 交叉极化 · NGSO 时变 CDF（独立窗口，只读计算器）', run: openCi },
+    { label: 'PFD EIRP Mask 生成器', icon: 'table', hint: 'ITU-R S.1503 掩模：下行 PFD / 星间 EIRP / 上行 EIRP 三种 + 系统运行参数，输出可提交的 XML（独立窗口）', run: openPfdMask }
   ] },
   { key: 'view', label: '视图', items: [
     { label: '3D 球体', icon: 'globe', check: !view.flat, hint: '三维地球视图', run: () => pickView(false) },
@@ -174,6 +176,8 @@ const toolButtons = computed(() => [
   { icon: 'sun', tip: '日凌预报（GSO）', run: openSunOutage },
   { icon: 'droplets', tip: '雨衰计算', run: openRain },
   { icon: 'radio-tower', tip: '干扰分析（C/I）', run: openCi },
+  // ∠ 取「辐射功率随角度的上包络」之意：三种掩模的自变量恰好全是角度（α 角 / 天底角 / 方位仰角）
+  { icon: 'table', tip: 'PFD EIRP Mask 生成器（ITU-R S.1503）', run: openPfdMask },
   { sep: true },
   { icon: 'globe', tip: '3D 球体视图', on: !view.flat, run: () => pickView(false) },
   { icon: 'map', tip: '2D 平面图视图', on: view.flat, run: () => pickView(true) },

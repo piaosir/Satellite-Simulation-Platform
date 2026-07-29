@@ -153,6 +153,11 @@ contextBridge.exposeInMainWorld('api', {
   },
   // 覆盖图导出：保存二进制（PNG/PDF）到用户选定路径 / 读取系统字体（PDF 嵌入用：TNR 西文 + 中文面）
   exportFile: (payload) => ipcRenderer.invoke('file:save', payload),
+  // PFD Mask 生成（ITU-R S.1503）：参数进、XML 文本与统计出；落盘走 exportFile / exportFiles
+  pfdMask: { open: () => ipcRenderer.invoke('pfd:open') },
+  pfdGenerate: (params) => ipcRenderer.invoke('pfd:generate', params),
+  // 批量落盘到一个目录（mask 分文件 + 参数存档）
+  exportFiles: (payload) => ipcRenderer.invoke('file:saveMany', payload),
   pdfFonts: () => ipcRenderer.invoke('font:pdf'),
   omm: {
     load: (group, online) => ipcRenderer.invoke('omm:load', group, online),

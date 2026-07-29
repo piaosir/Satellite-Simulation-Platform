@@ -41,3 +41,6 @@ electron/services/shareConfig.js
 # 可见性分析「时间覆盖」读数验证台：真 useVisibility + 真 SGP4（星历取 resources/omm），
 # CSS 从 ConstellationMap3D.vue 原文抽注，只用来核对侧栏读数排版；数值正确性归 visTimeCoverage.test.mjs
 .visharness/
+
+# PFD Mask 生成器 UI 验证台：PfdApp 挂浏览器里单跑，window.api 走桩，本地开发用，不进仓库
+.pfdharness/

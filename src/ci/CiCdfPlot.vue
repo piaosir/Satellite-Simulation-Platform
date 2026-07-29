@@ -10,7 +10,8 @@
 //   · 中位线（一半时间比它好），给「常态如何」一个锚；
 //   · 若给了门限 C/I，画一条竖线，与曲线的交点即「达不到门限的时间占比」——这是这张图
 //     真正要回答的问题。
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
+import { exportSvgPng, canExportPng, PNG_SCALE } from './ciFigureExport.js'
 
 const props = defineProps({
   // [{ pct, ciDb }]，pct 升序（0→100）
@@ -18,7 +19,10 @@ const props = defineProps({
   percentiles: { type: Object, default: null },
   medianCiDb: { type: Number, default: null },
   // 门限 C/I（dB）：给了就画竖线并算越限占比
-  thresholdDb: { type: Number, default: null }
+  thresholdDb: { type: Number, default: null },
+  // 图名（题行左侧）与出图默认文件名
+  title: { type: String, default: 'C/I 累积分布' },
+  fileName: { type: String, default: '' }
 })
 
 // 绘图矩形（viewBox 单位）
@@ -102,11 +106,30 @@ const breach = computed(() => {
 // 0 要显式说成「全时段高于门限」而不是「低于门限 0%」——后者读起来像「刚好卡在门限上」，
 // 而实际情形是门限整个落在曲线左侧，一次都没越过。指数记法只留给真正的小数（1e-3 量级）。
 const fmtPct = (v) => (v <= 0 ? '0%' : v >= 1 ? v.toFixed(2) + '%' : v >= 0.01 ? v.toFixed(3) + '%' : v.toExponential(1) + '%')
+
+// —— 出图 ——
+// 按钮长在图上：外层不必先判断「当前是哪张图」，图自己知道自己叫什么、画的是什么。
+const svgEl = ref(null)
+const busy = ref(false)
+async function exportPng() {
+  if (busy.value) return
+  busy.value = true
+  try { await exportSvgPng(svgEl.value, props.fileName || props.title) }
+  finally { busy.value = false }
+}
+defineExpose({ svg: svgEl, exportPng })
 </script>
 
 <template>
   <div class="ci-cdf">
-    <svg :viewBox="`0 0 ${W} ${H}`" preserveAspectRatio="xMidYMid meet">
+    <div class="ci-fig-hd">
+      <b class="ci-fig-name">{{ title }}</b>
+      <span class="ci-fig-sp" />
+      <button
+        v-if="canExportPng" class="ci-fig-exp" :disabled="busy || pts.length < 2"
+        :title="`导出为 PNG 图片（${PNG_SCALE} 倍分辨率）`" @click="exportPng">出图</button>
+    </div>
+    <svg ref="svgEl" :viewBox="`0 0 ${W} ${H}`" preserveAspectRatio="xMidYMid meet">
       <!-- 绘图区 -->
       <rect :x="M.l" :y="M.t" :width="PW" :height="PH" class="pl-bg" />
 
@@ -161,6 +184,17 @@ const fmtPct = (v) => (v <= 0 ? '0%' : v >= 1 ? v.toFixed(2) + '%' : v >= 0.01 ?
 <style scoped>
 .ci-cdf { width: 100%; }
 .ci-cdf svg { width: 100%; height: auto; display: block; }
+
+/* 题行：图名 + 出图。与 CiSeriesPlot 同一份（两图是并列的一对，样式一向各存各的） */
+.ci-fig-hd { display: flex; align-items: center; gap: 8px; margin: 14px 0 6px; }
+.ci-fig-name { font-size: 12.5px; font-weight: 700; color: var(--text-muted); }
+.ci-fig-sp { flex: 1; }
+.ci-fig-exp {
+  font: inherit; font-size: 11.5px; padding: 2px 9px; cursor: pointer;
+  color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-ctl, 4px);
+}
+.ci-fig-exp:hover:not(:disabled) { border-color: var(--border-strong); }
+.ci-fig-exp:disabled { opacity: 0.45; cursor: default; }
 
 .pl-bg { fill: var(--surface-2); stroke: var(--border-strong); stroke-width: 0.6; }
 .pl-grid { stroke: var(--border); stroke-width: 0.4; }

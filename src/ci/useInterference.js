@@ -14,6 +14,8 @@ import { generateConstellation, validateWalker } from '../viz/constellation/walk
 import { resolveScenarioEpoch } from '../viz/constellation/useCustomConstellations.js'
 
 const KEY = 'ci/panel'
+// NGSO 面板态的版本号。v2 = 「抽样上限」的出厂默认由 200 改成留空（全量），见 load() 里的迁移。
+const NGSO_STATE_V = 2
 const api = typeof window !== 'undefined' ? window.api : null
 
 export const MODES = [
@@ -114,9 +116,34 @@ export function useInterference() {
     applyPolarization: true,
     thresholdDb: 15,
     startIso: '',                    // 空 = 计算时取当前时刻（本层填，引擎不碰 Date.now）
-    wanted: { source: 'group', group: '', limit: 200, name: '本星座', altKm: 1200, incl: 53, planes: 6, perPlane: 6, phase: 1 },
+    inlineGuardDeg: '',              // 空 = 半功率半角（B4：in-line 由规避角定义，不由波束宽定义）
+    // 历元编排（P3）。single = 单历元（旧行为）；repeat = 时窗按回归周期取；
+    // monte-carlo = 在一条长基线上按 seed 抽 count 个起点，样本池合并出一条 CDF + 置信区间。
+    epochs: { mode: 'single', count: 8, spanDays: 7, seed: 20260728, capDays: 7, convergeTolDb: 0.2, convergePct: 0.1 },
+    // P4：噪声与门限。给了噪温才出 I/N、C/(N+I)、ΔT/T；门限留空的那一项就不算越限占比
+    // （不编一个默认门限出来当结论——S.1323 的数值待官方 PDF 核对，见方案 §6）。
+    noise: { mode: 'tsys', tSysK: 150, gOverTdBK: '' },
+    criteria: { ciDb: '', iOverNDb: '', deltaTOverTPct: '' },
+    // 可用度合成：干扰 CDF ⊗ 雨衰 CDF。雨衰分布走本平台的 P.618 引擎（NGSO 统计口径 §8）
+    rain: { on: false, thresholdDb: 6, applyToInterference: 'none', cdf: null, cdfInfo: '' },
+    // 卫星侧发射方向图与波束指向（A1）。默认 none = 各向同性满 EIRP = v1.3.6 行为（上界包络），
+    // 旧面板态原样读回；改成 s1528/gaussian/grd 才开始计入卫星天线。
+    satPattern: {
+      mode: 'none', pointing: 'nadir',
+      beamwidth3dBDeg: 4, peakGainDbi: '', s1528Section: '1.2', Ln: -25, farOutDbi: 0,
+      satMode: 'LEO', dOverLambda: '', sidelobeFloorDb: -30,
+      beamsPerSat: 32, cellSpacingKm: 200,
+      coFreqFactor: 1,
+      grdKey: '',                    // folder::name，与 C/CCI 页的天线树同源
+      grdBeam: ''                    // 原始 GRD set 序号（0 基）；留空 = 全部波束取最大（上界）
+    },
+    // ★ 抽样上限默认**留空 = 全量**。首版默认 200，Starlink 这类星座下静默削掉 ~16 dB 聚合干扰，
+    //   而且方向与「未计入卫星方向图」的高估反向、量级相近，默认配置下偶然对消——对上了也是巧合。
+    //   算力由 estimateNgso + NGSO_MAX_WORK 去拦，拦下时建议缩短时窗 / 增大步长（只影响统计分辨率），
+    //   减少干扰星数排在最后（那是直接伪造物理）。
+    wanted: { source: 'group', group: '', limit: '', name: '本星座', altKm: 1200, incl: 53, planes: 6, perPlane: 6, phase: 1 },
     interferers: [
-      { _id: 'ng1', enabled: true, source: 'group', group: '', limit: 200, name: '干扰星座', altKm: 1200, incl: 53, planes: 6, perPlane: 6, phase: 1, eirpDensityDbWPerHz: -48, polarization: 'H', xpdDb: '', selfSystem: false }
+      { _id: 'ng1', enabled: true, source: 'group', group: '', limit: '', name: '干扰星座', altKm: 1200, incl: 53, planes: 6, perPlane: 6, phase: 1, eirpDensityDbWPerHz: -48, polarization: 'H', xpdDb: '', selfSystem: false }
     ],
     progress: 0, progressTotal: 0,
     estimate: null,
@@ -183,6 +210,22 @@ export function useInterference() {
     return out
   })
   const currentAntenna = computed(() => grdAntennas.value.find((a) => a.key === cci.antennaKey) || null)
+
+  /**
+   * NGSO 卫星方向图选中的那副 GRD 的波束清单。
+   *
+   * 序号一律用**原始 GRD set 序号**（0 基）：星座3D 页删过波束的天线，其 cfg.keptSets 记的
+   * 就是这个口径（见 grdSampler.makeSampleCtx），两处必须同源，否则删过波束的天线选出来的
+   * 是另一个波束。没有 keptSets 就是 0..beams−1。
+   */
+  const ngsoGrdBeams = computed(() => {
+    const a = grdAntennas.value.find((x) => x.key === ngso.satPattern.grdKey)
+    if (!a) return []
+    const cfg = grdTree.value.cfgs[a.node.folder + '::' + a.ant.name] || {}
+    const kept = Array.isArray(cfg.keptSets) ? cfg.keptSets : null
+    const idx = kept || Array.from({ length: Math.max(1, +a.ant.beams || 1) }, (_, i) => i)
+    return idx.map((i) => ({ idx: i, label: `波束 ${i + 1}` }))
+  })
 
   // 本窗口自己导入 GRD —— 与「引用已有」并列，不必非得从别处引
   async function importGrdHere() {
@@ -478,8 +521,122 @@ export function useInterference() {
       horizonSec: +ngso.horizonH * 3600,
       stepSec: +ngso.stepSec,
       patternKind: ngso.patternKind,
-      applyPolarization: ngso.applyPolarization
+      applyPolarization: ngso.applyPolarization,
+      inlineGuardDeg: numOr(ngso.inlineGuardDeg, undefined),
+      satPattern: satPatternPayload(),
+      noise: ngso.noise.mode === 'gt'
+        ? { gOverTdBK: numOr(ngso.noise.gOverTdBK, null) }
+        : { tSysK: numOr(ngso.noise.tSysK, null) },
+      criteria: {
+        ciDb: numOr(ngso.criteria.ciDb, undefined),
+        iOverNDb: numOr(ngso.criteria.iOverNDb, undefined),
+        deltaTOverTPct: numOr(ngso.criteria.deltaTOverTPct, undefined)
+      },
+      rain: (ngso.rain.on && ngso.rain.cdf && ngso.rain.cdf.length)
+        ? {
+          thresholdDb: numOr(ngso.rain.thresholdDb, null),
+          applyToInterference: ngso.rain.applyToInterference || 'none',
+          cdf: ngso.rain.cdf.map((d) => ({ pct: +d.pct, attenDb: +d.attenDb, noiseTempK: d.noiseTempK == null ? undefined : +d.noiseTempK }))
+        }
+        : undefined,
+      seriesMaxPoints: 2000,
+      // 历元只把「怎么抽」告诉主进程，起点（startMs）仍由本层给 —— 引擎与服务层都不碰 Date.now()
+      epochs: {
+        mode: ngso.epochs.mode || 'single',
+        count: numOr(ngso.epochs.count, 8),
+        spanDays: numOr(ngso.epochs.spanDays, 7),
+        seed: numOr(ngso.epochs.seed, 20260728),
+        capDays: numOr(ngso.epochs.capDays, 7),
+        convergeTolDb: numOr(ngso.epochs.convergeTolDb, 0.2),
+        convergePct: numOr(ngso.epochs.convergePct, 0.1)
+      }
     }
+  }
+
+  /**
+   * 卫星侧方向图配置 → 纯数据（出 IPC 前现造，切断响应式代理）。
+   * GRD 只带**文件名**过去，采样器在主进程现建（函数过不了结构化克隆）。
+   */
+  function satPatternPayload() {
+    const s = ngso.satPattern
+    const out = { mode: s.mode || 'none', pointing: s.pointing || 'nadir', coFreqFactor: numOr(s.coFreqFactor, 1) }
+    if (out.mode === 'none') return out
+    if (out.mode === 'gaussian') {
+      out.beamwidth3dBDeg = numOr(s.beamwidth3dBDeg, null)
+      out.sidelobeFloorDb = numOr(s.sidelobeFloorDb, -30)
+    } else if (out.mode === 's1528') {
+      out.s1528Section = s.s1528Section || '1.2'
+      out.beamwidth3dBDeg = numOr(s.beamwidth3dBDeg, null)
+      out.peakGainDbi = numOr(s.peakGainDbi, undefined)
+      out.farOutDbi = numOr(s.farOutDbi, 0)
+      if (out.s1528Section === '1.3') {
+        out.satMode = s.satMode || 'LEO'
+        out.dOverLambda = numOr(s.dOverLambda, undefined)
+      } else {
+        out.Ln = numOr(s.Ln, -25)
+      }
+    } else if (out.mode === 'grd') {
+      const a = grdAntennas.value.find((x) => x.key === s.grdKey)
+      const spec = a ? antennaSpec(a) : null
+      out.grdFile = spec ? spec.file : ''
+      out.grdCfg = spec ? { ...spec.cfg } : {}
+      // 多波束 GRD 必须点名用哪个波束（同频的那个）；留空即全部取最大，引擎会如实告警
+      const b = numOr(s.grdBeam, null)
+      if (b != null) out.grdBeam = Math.round(b)
+    }
+    if (out.pointing === 'cells') {
+      out.beamsPerSat = numOr(s.beamsPerSat, 32)
+      out.cellSpacingKm = numOr(s.cellSpacingKm, 200)
+    }
+    return out
+  }
+
+  /**
+   * 取雨衰 CDF —— 可用度合成的另一半。
+   *
+   * 分布不自己造：走平台既有的 P.618 引擎，且用它的 **NGSO 统计口径（P.618-14 §8）**——
+   * 那里的仰角不是一个手填的数，而是由「轨道高度 + 倾角 + 最低仰角」的长期仰角分布加权
+   * 反解出的等效仰角，正是本页这个场景该用的口径。轨道参数取本星座的实参统计。
+   * 逐档同时取回雨致噪温，噪声抬升因此不必再拿介质温度去推。
+   */
+  const RAIN_PCTS = [0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 3, 5]
+  async function loadRainCdf() {
+    if (!api || !api.rainAttenuation) { msg.value = '需在桌面客户端中运行'; return }
+    // groupStats 是 ref：漏了 .value 就永远取不到实参统计，一路静默退回手填的 Walker 字段
+    // ——选了真实星座却报「请先选定星座或填写 Walker 参数」，正是这么来的。
+    // 高度与倾角要出自同一撮星，故整取占比最大的那个壳层；壳层缺失时才退回全体中位数。
+    const st = groupStats.value[ngso.wanted.group]
+    const sh = st && st.shells && st.shells[0]
+    const altKm = sh ? sh.altKmMed : (st ? st.altKmMed : numOr(ngso.wanted.altKm, null))
+    const incl = sh ? sh.inclDeg : (st ? st.inclMed : numOr(ngso.wanted.incl, null))
+    if (!(altKm > 0) || !(incl >= 0)) { msg.value = '取雨衰分布需要本星座的轨道高度与倾角，请先选定星座或填写 Walker 参数'; return }
+    busy.value = true
+    try {
+      const base = {
+        lat: +site.lat, lon: +site.lon, altitude: +site.alt,
+        freq: +site.rxFreqGHz, pol: carrier.dnPolarization === 'V' ? 'V' : (carrier.dnPolarization === 'H' ? 'H' : 'C'),
+        diameter: +site.rxDiameterM, efficiency: +site.rxEfficiency,
+        direction: 'down', systemNoiseTemp: numOr(ngso.noise.tSysK, 150), feederLoss: 0,
+        ngsoStat: true, orbitAltKm: altKm, inclDeg: incl, minElevDeg: +ngso.minElevDeg
+      }
+      const cases = RAIN_PCTS.map((p) => ({ ...base, availability: 100 - p }))
+      const r = await api.rainAttenuation.computeBatch(cases)
+      const rows = (r && (r.results || r)) || []
+      const cdf = []
+      for (let i = 0; i < RAIN_PCTS.length; i++) {
+        const x = rows[i]
+        if (!x || x.error || !Number.isFinite(Number(x.totalAttenItu))) continue
+        cdf.push({ pct: RAIN_PCTS[i], attenDb: +Number(x.totalAttenItu).toFixed(4), noiseTempK: Number.isFinite(Number(x.rainNoiseTemp)) ? +Number(x.rainNoiseTemp).toFixed(3) : undefined })
+      }
+      if (!cdf.length) { ngso.rain.cdf = null; ngso.rain.cdfInfo = ''; msg.value = '雨衰分布获取失败，请检查站址与频率'; return }
+      ngso.rain.cdf = cdf
+      const eq = rows.find((x) => x && x.elevation != null)
+      ngso.rain.cdfInfo = `P.618-14 §8 统计口径 · 等效仰角 ${eq ? Number(eq.elevation).toFixed(2) : '—'}° · 轨道 ${Math.round(altKm)} km / ${Number(incl).toFixed(1)}° · ${cdf.length} 档（${cdf[0].pct}%–${cdf[cdf.length - 1].pct}%）`
+      msg.value = '雨衰分布已取回：' + ngso.rain.cdfInfo
+    } catch (e) {
+      ngso.rain.cdf = null
+      msg.value = '取雨衰分布出错：' + ((e && e.message) || e)
+    } finally { busy.value = false }
   }
 
   async function estimateNgso() {
@@ -494,7 +651,13 @@ export function useInterference() {
     }
   }
 
-  const NGSO_MAX_WORK = 3e7   // 星×样本 的上限；超过先拦下并给可操作建议（口径同覆盖分析）
+  // 星×样本 的上限。★ 这道门拦的不是「算不动」，而是「点下去看不到头」——扫描在主进程分帧跑，
+  //   全程有进度条、随时可取消，窗口照常可交互，所以门槛该按「专业用户真正要跑的那一档」来定：
+  //     · 全量 Starlink（~7 000 颗）× 24 h / 10 s ≈ 6×10⁷ —— 这是 NGSO 兼容性分析的起步算例，
+  //       原先 3×10⁷ 的门限把它整个挡在门外，逼人去抽样（那是直接少算干扰源、伪造物理）；
+  //     · 再叠 5 个历元的蒙卡 ≈ 3×10⁸ —— 按 ~5×10⁵ 次传播/秒计约十来分钟，可等；
+  //   故取 3×10⁸。再往上（数小时）才真该拦下来重新设算例。
+  const NGSO_MAX_WORK = 3e8
   let _ngsoToken = 0
 
   async function computeNgso() {
@@ -502,7 +665,14 @@ export function useInterference() {
     await estimateNgso()
     const est = ngso.estimate
     if (est && est.work > NGSO_MAX_WORK) {
-      msg.value = `计算量过大（${est.wantedCount + est.interfererCount} 颗星 × ${Math.round(+ngso.horizonH * 3600 / +ngso.stepSec)} 采样 = ${est.work.toLocaleString()}）——请缩短时窗 / 增大步长 / 减少干扰星数`
+      // ★ 建议的次序是有讲究的：缩短时窗 / 增大步长只降统计分辨率（分位数会被样本门禁如实标出），
+      //   减少干扰星数则直接少算干扰源、伪造物理，所以排在最后并写明后果。
+      const T = Math.round(+ngso.horizonH * 3600 / +ngso.stepSec)
+      const ep = est.epochCount > 1 ? ` × ${est.epochCount} 历元` : ''
+      msg.value = `计算量过大（${est.wantedCount + est.interfererCount} 颗星 × ${T.toLocaleString()} 采样${ep} = ${est.work.toLocaleString()}，`
+        + `超过上限 ${NGSO_MAX_WORK.toLocaleString()}）——`
+        + `建议优先增大步长或缩短时窗（仅影响统计分辨率）；`
+        + `调整「抽样上限」将减少计入的干扰源，使 C/I 系统性偏乐观约 10·lg(抽样倍率) dB，应作为最后手段`
       return
     }
     busy.value = true; ngso.result = null; ngso.progress = 0; msg.value = '扫描中…'
@@ -721,12 +891,12 @@ export function useInterference() {
       polarization: f.downlinkPolarization || '',
       bandwidthHz: f.transponderBandwidth ? Number(f.transponderBandwidth) * 1e6 : ''
     }))
-    msg.value = `已从卫星库带入「${entry.name}」——EIRP 密度需自行填写（库里存的是 SFD/转发器参数，不含邻网谱密度）`
+    msg.value = `已从卫星库导入「${entry.name}」；EIRP 密度需另行填写（库中存放的是 SFD 与转发器参数，不含邻网谱密度）`
   }
   function addCciPoint() { cci.points.push({ _id: 'p' + (_srcSeq++), name: `点${cci.points.length + 1}`, lon: '', lat: '' }) }
   function removeCciPoint(id) { const i = cci.points.findIndex((p) => p._id === id); if (i >= 0) cci.points.splice(i, 1) }
   function addNgsoGroup() {
-    ngso.interferers.push({ _id: 'ng' + (_srcSeq++), enabled: true, source: 'group', group: '', limit: 200, name: `干扰星座 ${ngso.interferers.length + 1}`, altKm: 1200, incl: 53, planes: 6, perPlane: 6, phase: 1, eirpDensityDbWPerHz: -48, polarization: 'H', xpdDb: '', selfSystem: false, group: '' })
+    ngso.interferers.push({ _id: 'ng' + (_srcSeq++), enabled: true, source: 'group', group: '', limit: '', name: `干扰星座 ${ngso.interferers.length + 1}`, altKm: 1200, incl: 53, planes: 6, perPlane: 6, phase: 1, eirpDensityDbWPerHz: -48, polarization: 'H', xpdDb: '', selfSystem: false, group: '' })
   }
   function removeNgsoGroup(id) { const i = ngso.interferers.findIndex((g) => g._id === id); if (i >= 0) ngso.interferers.splice(i, 1) }
 
@@ -745,7 +915,7 @@ export function useInterference() {
           esCoDb: xpi.esCoDb, esXpolDb: xpi.esXpolDb, esAlignOn: xpi.esAlignOn, esAlignDeg: xpi.esAlignDeg
         },
         cci: { antennaKey: cci.antennaKey, colors: cci.colors, floorDb: cci.floorDb, points: cci.points, coloringOverride: cci.coloringOverride, bounds: cci.bounds, fieldStep: cci.fieldStep },
-        ngso: { minElevDeg: ngso.minElevDeg, horizonH: ngso.horizonH, stepSec: ngso.stepSec, patternKind: ngso.patternKind, applyPolarization: ngso.applyPolarization, thresholdDb: ngso.thresholdDb, wanted: ngso.wanted, interferers: ngso.interferers }
+        ngso: { v: NGSO_STATE_V, minElevDeg: ngso.minElevDeg, horizonH: ngso.horizonH, stepSec: ngso.stepSec, patternKind: ngso.patternKind, applyPolarization: ngso.applyPolarization, thresholdDb: ngso.thresholdDb, inlineGuardDeg: ngso.inlineGuardDeg, satPattern: ngso.satPattern, epochs: ngso.epochs, noise: ngso.noise, criteria: ngso.criteria, rain: { on: ngso.rain.on, thresholdDb: ngso.rain.thresholdDb, applyToInterference: ngso.rain.applyToInterference }, wanted: ngso.wanted, interferers: ngso.interferers }
       }))
     } catch (e) { /* 配额/隐私模式 */ }
   }
@@ -771,9 +941,23 @@ export function useInterference() {
       if (Array.isArray(d.cci.points) && d.cci.points.length) cci.points.splice(0, cci.points.length, ...d.cci.points)
     }
     if (d.ngso) {
-      Object.assign(ngso, { minElevDeg: d.ngso.minElevDeg ?? 10, horizonH: d.ngso.horizonH ?? 6, stepSec: d.ngso.stepSec ?? 10, patternKind: d.ngso.patternKind || 'average', applyPolarization: d.ngso.applyPolarization !== false, thresholdDb: d.ngso.thresholdDb ?? 15 })
+      Object.assign(ngso, { minElevDeg: d.ngso.minElevDeg ?? 10, horizonH: d.ngso.horizonH ?? 6, stepSec: d.ngso.stepSec ?? 10, patternKind: d.ngso.patternKind || 'average', applyPolarization: d.ngso.applyPolarization !== false, thresholdDb: d.ngso.thresholdDb ?? 15, inlineGuardDeg: d.ngso.inlineGuardDeg ?? '' })
+      if (d.ngso.satPattern) Object.assign(ngso.satPattern, d.ngso.satPattern)
+      if (d.ngso.epochs) Object.assign(ngso.epochs, d.ngso.epochs)
+      if (d.ngso.noise) Object.assign(ngso.noise, d.ngso.noise)
+      if (d.ngso.criteria) Object.assign(ngso.criteria, d.ngso.criteria)
+      // 雨衰分布本身不落盘（是算出来的、且随站址/星座变），只记开关与门限，重开后点一下重取
+      if (d.ngso.rain) Object.assign(ngso.rain, { ...d.ngso.rain, cdf: null, cdfInfo: '' })
       if (d.ngso.wanted) Object.assign(ngso.wanted, d.ngso.wanted)
       if (Array.isArray(d.ngso.interferers) && d.ngso.interferers.length) ngso.interferers.splice(0, ngso.interferers.length, ...d.ngso.interferers)
+      // ★ 旧面板态迁移：v2 之前「抽样上限」的出厂默认是 200，那不是用户选的，是软件替他选的，
+      //   而它会静默削掉十几 dB 的聚合干扰。故对没有版本号的旧存档，把**恰好等于旧默认值**的
+      //   200 清成留空（全量）；用户自己填过别的数（哪怕 199 或 201）一律原样保留。
+      if (!(d.ngso.v >= 2)) {
+        const un200 = (o) => { if (o && Number(o.limit) === 200) o.limit = '' }
+        un200(ngso.wanted)
+        for (const g of ngso.interferers) un200(g)
+      }
     }
   }
 
@@ -814,12 +998,12 @@ export function useInterference() {
   return {
     MODES, REUSE_COLORS,
     mode, busy, msg, site, carrier, asi, xpi, cci, ngso,
-    satLib, grdTree, grdAntennas, currentAntenna,
+    satLib, grdTree, grdAntennas, currentAntenna, ngsoGrdBeams,
     satSearch, searchNeighbors, addNeighbor,
     ngsoGroups, groupStats, groupsErr, loadNgsoGroups, ensureGroup,
     loadLibraries, loadGrdTree, importGrdHere,
     computeAsi, computeXpi, computeCci, computeCciField, sampleXpiFromGrd,
-    computeNgso, cancelNgso, estimateNgso,
+    computeNgso, cancelNgso, estimateNgso, loadRainCdf,
     addSource, removeSource, addFromLibrary,
     addCciPoint, removeCciPoint, addNgsoGroup, removeNgsoGroup,
     geoData, hoveredId, setHover, load, persist

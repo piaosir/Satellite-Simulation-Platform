@@ -232,6 +232,40 @@ function createSunOutageWindow() {
 // 不设关窗守卫——本窗口是纯只读计算器（读三库与 GRD、不写回），面板状态自动落 localStorage，
 // 关窗不会丢任何用户数据，弹确认框只是徒增一步。
 let _ciWin = null
+let _pfdWin = null
+function createPfdWindow() {
+  if (_pfdWin && !_pfdWin.isDestroyed()) {
+    if (_pfdWin.isMinimized()) _pfdWin.restore()
+    _pfdWin.focus()
+    return _pfdWin
+  }
+  const win = new BrowserWindow({
+    width: 1500,
+    height: 950,
+    minWidth: 1160,
+    minHeight: 720,
+    title: 'PFD EIRP Mask 生成器（ITU-R S.1503）',
+    backgroundColor: '#ffffff',
+    autoHideMenuBar: true,
+    webPreferences: {
+      preload: join(__dirname, '../preload/preload.js'),
+      contextIsolation: true,
+      sandbox: false
+    }
+  })
+  if (process.env['ELECTRON_RENDERER_URL']) {
+    win.loadURL(process.env['ELECTRON_RENDERER_URL'] + '/pfd.html')
+  } else {
+    win.loadFile(join(__dirname, '../renderer/pfd.html'))
+  }
+  win.on('closed', () => { _pfdWin = null })
+  win.webContents.on('before-input-event', (e, input) => {
+    if (input.type === 'keyDown' && input.key === 'F12') { win.webContents.toggleDevTools(); e.preventDefault() }
+  })
+  _pfdWin = win
+  return win
+}
+
 function createCiWindow() {
   if (_ciWin && !_ciWin.isDestroyed()) {
     if (_ciWin.isMinimized()) _ciWin.restore()
@@ -322,7 +356,7 @@ app.whenReady().then(() => {
   // GRD 取值服务（与 coverageGrd 共享导入目录）：链路预算逐站取值在主进程完成
   const grd = require(join(root, 'electron/services/grd'))(join(app.getPath('userData'), 'coverage-grd-imported'))
   const { register } = require(join(root, 'electron/ipc/register'))
-  register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget: createLinkBudgetWindow, openSunOutage: createSunOutageWindow, grd, confirmCloseLinkBudget, openNgso: createNgsoWindow, confirmCloseNgso, openRegen: createRegenWindow, confirmCloseRegen, openRain: createRainWindow, confirmCloseRain, openCi: createCiWindow })
+  register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget: createLinkBudgetWindow, openSunOutage: createSunOutageWindow, grd, confirmCloseLinkBudget, openNgso: createNgsoWindow, confirmCloseNgso, openRegen: createRegenWindow, confirmCloseRegen, openRain: createRainWindow, confirmCloseRain, openCi: createCiWindow, openPfd: createPfdWindow })
 
   // 加载 ITU 全精度数据（降雨率 P.837 / 海拔 P.1511 / 水汽 P.836 / 云 P.840）→ 注入计算内核，
   // 与小程序口径完全一致（小程序为云端下载，桌面端从本地 resources/itu 同步加载）。

@@ -24,7 +24,7 @@ const GL = (k) => GROUP_LABEL[k] || k;
 // omm：星历服务（主进程已持有各组 satrec），用于把「星座名」解析成 satrec 列表。
 // customSats：自定义星历库（文件管理导入的 OMM/TLE，存 custom.json）。
 // getCore：引擎实例的 getter，取 sgp4.omm2satrec 用（自定义记录要现建 satrec）。
-module.exports = function createInterference(omm, customSats, getCore) {
+module.exports = function createInterference(omm, customSats, getCore, grd) {
 
   // ---------------------------------------------------------------------------
   // 星座 key 的三类编码
@@ -268,35 +268,77 @@ module.exports = function createInterference(omm, customSats, getCore) {
     return errs;
   }
 
+  // 壳层识别的两个尺度。SHELL_BIN_KM = 高度直方图步长；SHELL_HALF_KM = 主峰两侧多宽算「同一层」。
+  // 25 km 的取法——LEO 星座各设计壳层之间普遍隔着 ≥ 50 km（实测 Starlink 43° / 53° / 70° 三层
+  // 分居 483 / 465 / 570 km），而同一壳层内的位置保持带宽不到 ±10 km：25 km 两头都够得着，
+  // 又不至于把两个相邻壳层并成一个。
+  const SHELL_BIN_KM = 10, SHELL_HALF_KM = 25;
+  const qOf = (arr, p) => { const b = arr.slice().sort((x, y) => x - y); return b[Math.min(b.length - 1, Math.floor(p * b.length))]; };
+
   /**
-   * 星座实参统计：高度 / 倾角 / 周期的分布。
+   * 一个倾角箱 → 一个壳层。
+   *
+   * ★ 只按倾角分箱是不够的：正在抬轨 / 离轨的星与在轨工作的星**倾角相同、高度差一两百公里**
+   *   （实测 Starlink 53° 箱内高度从 196 km 一直铺到 543 km）。混在一起取中位数，得到的是一条
+   *   **任何一颗星都不在其上**的轨道。故先在箱内按高度找主峰，只把主峰窗里的那一撮算作壳层，
+   *   窗外的星单独计数（strayCount），不参与该壳层的任何统计。
+   *
+   * 倾角报**窗内实测中位数**而不是箱号：箱号是 Math.round 的产物、不是实测值
+   *   （实测 OneWeb 87.90° 报成箱号 88°、Starlink 主壳层 53.16° 报成 53°）。
+   */
+  function shellOf(items) {
+    const hist = new Map();
+    for (const it of items) {
+      const k = Math.round(it.h / SHELL_BIN_KM);
+      hist.set(k, (hist.get(k) || 0) + 1);
+    }
+    // 并列时取高的那个峰：抬轨 / 离轨的星总在工作轨道之下，取高者更可能是工作壳层
+    let peak = null, best = -1;
+    for (const [k, c] of hist) if (c > best || (c === best && k > peak)) { best = c; peak = k; }
+    const hc = peak * SHELL_BIN_KM;
+    const core = items.filter((it) => Math.abs(it.h - hc) <= SHELL_HALF_KM);
+    const hs = core.map((x) => x.h), is = core.map((x) => x.i);
+    return {
+      inclDeg: +qOf(is, 0.5).toFixed(2),
+      altKmMed: Math.round(qOf(hs, 0.5)),
+      altKmMin: Math.round(Math.min(...hs)), altKmMax: Math.round(Math.max(...hs)),
+      count: core.length, strayCount: items.length - core.length
+    };
+  }
+
+  /**
+   * 星座实参统计：高度 / 倾角 / 周期的分布 + 壳层分解。
    * 选了真实星座就不该再让用户填根数——这些数由星历直接给出，填了也是白填、还会与星历打架。
-   * 倾角按 1° 分箱找主壳层（Starlink 这类多壳星座只报「最多的那几档」才有意义）。
+   *
+   * ★ 顶层的 altKmMed / inclMed 是**全体**的中位数，两者未必出自同一撮星。要「一条真实存在的
+   *   轨道」必须整取某个 shells[i]（高度与倾角同源），别把这两个顶层字段配成一对。
    */
   function statsOf(list) {
     const RE = 6378.137, MU = 398600.4418;
-    const alts = [], incls = [], bins = {};
+    const items = [], bins = new Map();
     for (const s of list) {
       const rec = s.satrec;
       const n = Number(rec && (rec.no != null ? rec.no : rec.no_kozai));
       if (!(n > 0)) continue;
       const nRadS = n / 60;
       const a = Math.pow(MU / (nRadS * nRadS), 1 / 3);
-      alts.push(a - RE);
-      const inc = Math.abs((rec.inclo || 0) * 180 / Math.PI);
-      incls.push(inc);
-      const k = Math.round(inc);
-      bins[k] = (bins[k] || 0) + 1;
+      const it = { h: a - RE, i: Math.abs((rec.inclo || 0) * 180 / Math.PI) };
+      items.push(it);
+      const k = Math.round(it.i);
+      const b = bins.get(k);
+      if (b) b.push(it); else bins.set(k, [it]);
     }
-    if (!alts.length) return null;
-    const q = (arr, p) => { const b = arr.slice().sort((x, y) => x - y); return b[Math.min(b.length - 1, Math.floor(p * b.length))]; };
-    const shells = Object.keys(bins).map(Number).sort((a, b) => bins[b] - bins[a]).slice(0, 3)
-      .map((k) => ({ inclDeg: k, count: bins[k] }));
+    if (!items.length) return null;
+    const alts = items.map((x) => x.h), incls = items.map((x) => x.i);
+    // 壳层按规模降序。占比不足 1% 的碎片不列（多是退役星与在途星），但前 3 档无论多小都保留，
+    // 否则单壳星座里那几颗掉队的会把唯一一档挤掉。
+    const all = Array.from(bins.values()).map(shellOf).sort((a, b) => b.count - a.count);
+    const shells = all.filter((s, i) => i < 3 || s.count >= items.length * 0.01).slice(0, 6);
     return {
-      count: alts.length,
-      altKmMin: Math.round(Math.min(...alts)), altKmMax: Math.round(Math.max(...alts)), altKmMed: Math.round(q(alts, 0.5)),
-      inclMin: +Math.min(...incls).toFixed(1), inclMax: +Math.max(...incls).toFixed(1), inclMed: +q(incls, 0.5).toFixed(1),
-      periodMin: +(2 * Math.PI * Math.sqrt(Math.pow(q(alts, 0.5) + RE, 3) / MU) / 60).toFixed(1),
+      count: items.length,
+      altKmMin: Math.round(Math.min(...alts)), altKmMax: Math.round(Math.max(...alts)), altKmMed: Math.round(qOf(alts, 0.5)),
+      inclMin: +Math.min(...incls).toFixed(1), inclMax: +Math.max(...incls).toFixed(1), inclMed: +qOf(incls, 0.5).toFixed(1),
+      periodMin: +(2 * Math.PI * Math.sqrt(Math.pow(qOf(alts, 0.5) + RE, 3) / MU) / 60).toFixed(1),
       shells
     };
   }
@@ -443,13 +485,34 @@ module.exports = function createInterference(omm, customSats, getCore) {
       groupInfo.push({ id: g.id, name: g.name, count: s.sats.length });
     }
     const total = w.sats.length + intCount;
+    // 多历元把同一段时窗跑 M 遍，算力就是 M 倍——预估必须把它算进去，否则拦截线形同虚设
+    const ep = r.epochs || {};
+    const epochCount = ep.mode && ep.mode !== 'single' ? Math.max(1, Math.round(Number(ep.count) || 1)) : 1;
     return {
       ok: true,
       wantedCount: w.sats.length,
       interfererCount: intCount,
       groups: groupInfo,
-      work: I.ciNgso.estimateWork(total, Number(r.horizonSec) || 86400, Number(r.stepSec) || 10)
+      epochCount,
+      work: I.ciNgso.estimateWork(total, Number(r.horizonSec) || 86400, Number(r.stepSec) || 10) * epochCount
     };
+  }
+
+  /**
+   * 卫星方向图配置：把 payload 里的 grdFile（字符串，能过 IPC）换成引擎要的采样器（函数，过不了 IPC）。
+   * 其余模式原样透传。GRD 拿不到就明确报错——静默退回别的模式等于偷偷换了算法。
+   */
+  function resolveSatPattern(cfg, who, warns) {
+    if (!cfg || cfg.mode !== 'grd') return cfg || null;
+    if (!grd || typeof grd.ngsoSampler !== 'function') throw new Error(`${who}：GRD 服务不可用`);
+    if (!cfg.grdFile) throw new Error(`${who}：卫星方向图选了 GRD，但未指定方向图文件`);
+    // grdBeam：原始 GRD set 序号（0 基）；null/未给 = 全部波束取最大（上界口径）
+    const pick = Number.isInteger(cfg.grdBeam) ? cfg.grdBeam : null;
+    const s = grd.ngsoSampler(cfg.grdFile, cfg.grdCfg || {}, pick);
+    warns.push(`${who}：卫星方向图取自 GRD「${cfg.grdFile}」，共 ${s.beamCount} 个波束，`
+      + (s.beamPick == null ? '按全部波束取最大' : `仅取第 ${s.beamPick + 1} 个波束`)
+      + `，峰值 ${s.peakDbi.toFixed(2)} dB`);
+    return { ...cfg, grd: s };
   }
 
   async function ngsoStart(webContents, req) {
@@ -464,30 +527,78 @@ module.exports = function createInterference(omm, customSats, getCore) {
     const groups = [];
     const resolveWarnings = [...loadErrs];
     if (w.samplingFactor > 1.001) {
-      resolveWarnings.push(`本星座从 ${w.total} 颗中等间隔抽了 ${w.sats.length} 颗（1/${w.samplingFactor.toFixed(1)}）——服务星可选范围变小，服务可用度会偏低`);
+      resolveWarnings.push(`本星座从 ${w.total} 颗中等间隔抽了 ${w.sats.length} 颗（1/${w.samplingFactor.toFixed(1)}）——服务星可选范围随之减小，服务可用度偏低`);
     }
-    if (w.missing) resolveWarnings.push(`本星座的卫星组里有 ${w.missing} 颗在全量编目与自定义星历里都找不到，已跳过（可能已退役）`);
+    if (w.missing) resolveWarnings.push(`本星座的卫星组中有 ${w.missing} 颗在全量编目与自定义星历中均未找到，已跳过（可能已退役）`);
     for (const g of (r.interferers || [])) {
       const s = resolveSats(g);
       if (s.error) { resolveWarnings.push(`干扰星座「${g.name || g.id || '?'}」：${s.error}`); continue; }
-      if (s.missing) resolveWarnings.push(`干扰星座「${g.name || g.id}」的卫星组里有 ${s.missing} 颗找不到星历，已跳过——聚合干扰因此偏低`);
+      if (s.missing) resolveWarnings.push(`干扰星座「${g.name || g.id}」的卫星组中有 ${s.missing} 颗未找到星历，已跳过，聚合干扰因此偏低`);
       if (s.samplingFactor > 1.001) {
         // 干扰源抽样是会算错的那一头：少算了 (K−1)/K 的干扰源，C/I 系统性偏乐观
-        resolveWarnings.push(`⚠ 干扰星座「${g.name || g.id}」从 ${s.total} 颗中抽了 ${s.sats.length} 颗（1/${s.samplingFactor.toFixed(1)}）——聚合干扰因此偏低约 ${(10 * Math.log10(s.samplingFactor)).toFixed(1)} dB，**C/I 偏乐观**。要真实结果请把「取前 N 颗」留空`);
+        resolveWarnings.push(`⚠ 干扰星座「${g.name || g.id}」从 ${s.total} 颗中抽了 ${s.sats.length} 颗（1/${s.samplingFactor.toFixed(1)}）——聚合干扰因此偏低约 ${(10 * Math.log10(s.samplingFactor)).toFixed(1)} dB，C/I 偏乐观；如需完整结果请将「抽样上限」留空`);
       }
-      groups.push({ ...g, sats: s.sats });
+      // 抽样倍率要一路带进引擎：不止在这里说一句，每个分位数上都要留下 sampled 标记
+      groups.push({ ...g, sats: s.sats, samplingFactor: s.samplingFactor || 1 });
     }
 
     let run;
     try {
-      run = I.createNgsoCiRun({
+      // GRD 采样器在此现建（函数过不了 IPC，payload 里只有文件名）
+      const satPatDefault = resolveSatPattern(r.satPattern, '默认卫星方向图', resolveWarnings);
+      const wantedPat = resolveSatPattern((r.wanted || {}).satPattern, '本星座', resolveWarnings);
+      for (const g of groups) {
+        if (g.satPattern) g.satPattern = resolveSatPattern(g.satPattern, `干扰星座「${g.name || g.id}」`, resolveWarnings);
+      }
+      // ---- 历元编排（P3）----
+      //
+      // 分工：**起始时刻由渲染端给**（引擎与本层都不碰 Date.now()，可复现是硬要求），
+      // 本层只按 (startMs, spanDays, count, seed) 把它确定性地展开成一串历元——
+      // 展开公式在 core 里（ciNgso.makeEpochs），渲染端过不了 CommonJS 的门，故落在这一层。
+      const ep = r.epochs || {};
+      const epMode = ep.mode || 'single';
+      let horizonSec = Number(r.horizonSec) || 86400;
+      let epochs = null;
+
+      if (epMode === 'repeat') {
+        // 时窗取「回归周期与上限中的小者」，并把覆盖率如实写进告警
+        const recs = groups.reduce((a, g) => a.concat((g.sats || []).map((s) => s.rec)), []);
+        const rp = I.ciNgso.constellationRepeatPeriodSec(recs);
+        if (rp && rp.sec > 0) {
+          const capSec = (Number(ep.capDays) > 0 ? Number(ep.capDays) : 7) * 86400;
+          const want = Math.min(rp.sec, capSec);
+          resolveWarnings.push(
+            `按回归周期取时窗：星座回归周期 ${(rp.sec / 86400).toFixed(2)} 天（${rp.orbits} 圈，S.1325-3 §2.7.3，精度 ${rp.accuracyDeg}°）`
+            + (rp.sec > capSec ? `，超过上限 ${(capSec / 86400).toFixed(1)} 天已封顶，本次覆盖 ${(want / rp.sec * 100).toFixed(1)}%` : '，本次完整覆盖一个回归周期')
+            + (rp.exhausted ? '；搜索至上限仍未满足回归精度，该值为下界' : '')
+          );
+          horizonSec = want;
+        } else {
+          resolveWarnings.push('按回归周期取时窗：无法获得干扰星的轨道周期，已沿用手工设定的时窗');
+        }
+      } else if (epMode === 'monte-carlo') {
+        const count = Math.max(1, Math.round(Number(ep.count) || 1));
+        const spanMs = (Number(ep.spanDays) > 0 ? Number(ep.spanDays) : 7) * 86400e3;
+        epochs = I.ciNgso.makeEpochs(Number(r.startMs) || 0, spanMs, count, ep.seed);
+      }
+
+      const runOpt = {
         station: r.station, rx: r.rx,
-        wanted: { ...(r.wanted || {}), sats: w.sats },
+        wanted: { ...(r.wanted || {}), sats: w.sats, satPattern: wantedPat },
         interferers: groups,
         minElevDeg: r.minElevDeg, startMs: r.startMs,
-        horizonSec: r.horizonSec, stepSec: r.stepSec,
-        patternKind: r.patternKind, applyPolarization: r.applyPolarization
-      });
+        horizonSec, stepSec: r.stepSec,
+        patternKind: r.patternKind, applyPolarization: r.applyPolarization,
+        satPattern: satPatDefault, inlineGuardDeg: r.inlineGuardDeg,
+        // P4：噪声 / 门限 / 雨衰分布 / 时序抽稀点数
+        noise: r.noise, criteria: r.criteria, rain: r.rain, seriesMaxPoints: r.seriesMaxPoints
+      };
+      run = epochs && epochs.length > 1
+        ? I.ciNgso.createNgsoCiMultiRun({
+          ...runOpt, epochs, epochMode: epMode, epochSpanDays: ep.spanDays, seed: ep.seed,
+          convergeTolDb: ep.convergeTolDb, convergePct: ep.convergePct
+        })
+        : I.createNgsoCiRun(runOpt);
     } catch (e) {
       return { ok: false, error: (e && e.message) || String(e) };
     }

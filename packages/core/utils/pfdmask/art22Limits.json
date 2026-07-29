@@ -1,0 +1,1496 @@
+{
+ "meta": {
+  "source": "ITU Radio Regulations, Edition of 2024, Volume 1 - Articles, Article 22 (pp. RR22-3..RR22-12)",
+  "sourceUrl": "https://search.itu.int/history/HistoryDigitalCollectionDocLibrary/1.49.48.en.101.pdf",
+  "crossCheckedAgainst": "ITU Radio Regulations, Edition of 2020, Volume 1 (https://search.itu.int/history/HistoryDigitalCollectionDocLibrary/1.44.48.en.101.pdf) - all (epfd, percentTime) pairs identical",
+  "extractedOn": "2026-07-28",
+  "percentTimeMeaning": "RR column heading: \"Percentage of time during which epfd may not be exceeded\". Exceedance percentage = 100 - percentTime.",
+  "interpolation": "RR No.22.5C.5: for each reference antenna diameter the limit is the complete curve, linear (dB) in epfd and logarithmic in time percentage, straight lines joining the data points.",
+  "unitsEpfd": "dB(W/m2) in the stated reference bandwidth",
+  "additionalLatitudeLimit": {
+   "appliesTo": [
+    "22-1A (all antenna sizes > 60 cm, RR No.22.5C.4)",
+    "22-1D (180 cm, 240 cm, 300 cm BSS antennas, RR No.22.5C.8)"
+   ],
+   "percentTime": 100.0,
+   "refBwKhz": 40,
+   "unit": "dB(W/(m2 . 40 kHz))",
+   "rule": [
+    {
+     "latDegLow": 0,
+     "latDegHigh": 57.5,
+     "lowExclusive": true,
+     "highInclusive": true,
+     "epfdDb": -160.0,
+     "formula": null
+    },
+    {
+     "latDegLow": 57.5,
+     "latDegHigh": 63.75,
+     "lowExclusive": true,
+     "highInclusive": true,
+     "epfdDb": null,
+     "formula": "-160 + 3.4 * (57.5 - absLatDeg) / 4"
+    },
+    {
+     "latDegLow": 63.75,
+     "latDegHigh": 90,
+     "lowExclusive": true,
+     "highInclusive": true,
+     "epfdDb": -165.3,
+     "formula": null
+    }
+   ],
+   "note": "Latitude is North or South (absolute value), degrees. Continuous at both breakpoints: -160 at 57.5 deg, -165.3125 (tabulated -165.3) at 63.75 deg."
+  }
+ },
+ "tables": [
+  {
+   "tableId": "22-1A",
+   "direction": "down",
+   "bands": [
+    {
+     "lowGhz": 10.7,
+     "highGhz": 11.7,
+     "regions": [
+      1,
+      2,
+      3
+     ]
+    },
+    {
+     "lowGhz": 11.7,
+     "highGhz": 12.2,
+     "regions": [
+      2
+     ]
+    },
+    {
+     "lowGhz": 12.2,
+     "highGhz": 12.5,
+     "regions": [
+      3
+     ]
+    },
+    {
+     "lowGhz": 12.5,
+     "highGhz": 12.75,
+     "regions": [
+      1,
+      3
+     ]
+    }
+   ],
+   "refBwKhz": 40.0,
+   "refPattern": "ITU-R S.1428-1",
+   "entries": [
+    {
+     "antennaDiameterM": 0.6,
+     "points": [
+      {
+       "percentTime": 0.0,
+       "epfdDb": -175.4
+      },
+      {
+       "percentTime": 90.0,
+       "epfdDb": -174.0
+      },
+      {
+       "percentTime": 99.0,
+       "epfdDb": -170.8
+      },
+      {
+       "percentTime": 99.73,
+       "epfdDb": -165.3
+      },
+      {
+       "percentTime": 99.991,
+       "epfdDb": -160.4
+      },
+      {
+       "percentTime": 99.997,
+       "epfdDb": -160.0
+      },
+      {
+       "percentTime": 100.0,
+       "epfdDb": -160.0
+      }
+     ]
+    },
+    {
+     "antennaDiameterM": 1.2,
+     "points": [
+      {
+       "percentTime": 0.0,
+       "epfdDb": -181.9
+      },
+      {
+       "percentTime": 99.5,
+       "epfdDb": -178.4
+      },
+      {
+       "percentTime": 99.74,
+       "epfdDb": -173.4
+      },
+      {
+       "percentTime": 99.857,
+       "epfdDb": -173.0
+      },
+      {
+       "percentTime": 99.954,
+       "epfdDb": -164.0
+      },
+      {
+       "percentTime": 99.984,
+       "epfdDb": -161.6
+      },
+      {
+       "percentTime": 99.991,
+       "epfdDb": -161.4
+      },
+      {
+       "percentTime": 99.997,
+       "epfdDb": -160.8
+      },
+      {
+       "percentTime": 99.997,
+       "epfdDb": -160.5
+      },
+      {
+       "percentTime": 99.9993,
+       "epfdDb": -160.0
+      },
+      {
+       "percentTime": 100.0,
+       "epfdDb": -160.0
+      }
+     ]
+    },
+    {
+     "antennaDiameterM": 3.0,
+     "points": [
+      {
+       "percentTime": 0.0,
+       "epfdDb": -190.45
+      },
+      {
+       "percentTime": 90.0,
+       "epfdDb": -189.45
+      },
+      {
+       "percentTime": 99.5,
+       "epfdDb": -187.45
+      },
+      {
+       "percentTime": 99.7,
+       "epfdDb": -182.4
+      },
+      {
+       "percentTime": 99.855,
+       "epfdDb": -182.0
+      },
+      {
+       "percentTime": 99.971,
+       "epfdDb": -168.0
+      },
+      {
+       "percentTime": 99.988,
+       "epfdDb": -164.0
+      },
+      {
+       "percentTime": 99.995,
+       "epfdDb": -162.0
+      },
+      {
+       "percentTime": 99.999,
+       "epfdDb": -160.0
+      },
+      {
+       "percentTime": 100.0,
+       "epfdDb": -160.0
+      }
+     ]
+    },
+    {
+     "antennaDiameterM": 10.0,
+     "points": [
+      {
+       "percentTime": 0.0,
+       "epfdDb": -195.45
+      },
+      {
+       "percentTime": 99.0,
+       "epfdDb": -195.45
+      },
+      {
+       "percentTime": 99.65,
+       "epfdDb": -190.0
+      },
+      {
+       "percentTime": 99.71,
+       "epfdDb": -190.0
+      },
+      {
+       "percentTime": 99.99,
+       "epfdDb": -172.5
+      },
+      {
+       "percentTime": 99.998,
+       "epfdDb": -160.0
+      },
+      {
+       "percentTime": 100.0,
+       "epfdDb": -160.0
+      }
+     ]
+    }
+   ],
+   "note": "RR footnotes 3,4,5,6,7 (Nos. 22.5C.2-22.5C.6). 40 kHz only."
+  },
+  {
+   "tableId": "22-1B",
+   "direction": "down",
+   "bands": [
+    {
+     "lowGhz": 17.3,
+     "highGhz": 17.7,
+     "regions": [
+      2
+     ]
+    },
+    {
+     "lowGhz": 17.8,
+     "highGhz": 18.6,
+     "regions": [
+      1,
+      2,
+      3
+     ]
+    }
+   ],
+   "refBwKhz": 40.0,
+   "refPattern": "ITU-R S.1428-1",
+   "entries": [
+    {
+     "antennaDiameterM": 1.0,
+     "points": [
+      {
+       "percentTime": 0.0,
+       "epfdDb": -175.4
+      },
+      {
+       "percentTime": 90.0,
+       "epfdDb": -175.4
+      },
+      {
+       "percentTime": 99.0,
+       "epfdDb": -172.5
+      },
+      {
+       "percentTime": 99.714,
+       "epfdDb": -167.0
+      },
+      {
+       "percentTime": 99.971,
+       "epfdDb": -164.0
+      },
+      {
+       "percentTime": 100.0,
+       "epfdDb": -164.0
+      }
+     ]
+    },
+    {
+     "antennaDiameterM": 2.0,
+     "points": [
+      {
+       "percentTime": 0.0,
+       "epfdDb": -178.4
+      },
+      {
+       "percentTime": 99.4,
+       "epfdDb": -178.4
+      },
+      {
+       "percentTime": 99.9,
+       "epfdDb": -171.4
+      },
+      {
+       "percentTime": 99.913,
+       "epfdDb": -170.5
+      },
+      {
+       "percentTime": 99.971,
+       "epfdDb": -166.0
+      },
+      {
+       "percentTime": 99.977,
+       "epfdDb": -164.0
+      },
+      {
+       "percentTime": 100.0,
+       "epfdDb": -164.0
+      }
+     ]
+    },
+    {
+     "antennaDiameterM": 5.0,
+     "points": [
+      {
+       "percentTime": 0.0,
+       "epfdDb": -185.4
+      },
+      {
+       "percentTime": 99.8,
+       "epfdDb": -185.4
+      },
+      {
+       "percentTime": 99.8,
+       "epfdDb": -180.0
+      },
+      {
+       "percentTime": 99.943,
+       "epfdDb": -180.0
+      },
+      {
+       "percentTime": 99.943,
+       "epfdDb": -172.0
+      },
+      {
+       "percentTime": 99.998,
+       "epfdDb": -164.0
+      },
+      {
+       "percentTime": 100.0,
+       "epfdDb": -164.0
+      }
+     ]
+    }
+   ],
+   "note": "RR footnotes 3,6,8,8bis,7 (Nos. 22.5C.5-22.5C.7, 22.5C.13). No.22.5C.7: system must meet BOTH the 40 kHz and 1 MHz limits. No.22.5C.13 (WRC-23): in Region 2, for 17.3-17.7 GHz w.r.t. GSO BSS, use ITU-R BO.1443-3 patterns."
+  },
+  {
+   "tableId": "22-1B",
+   "direction": "down",
+   "bands": [
+    {
+     "lowGhz": 17.3,
+     "highGhz": 17.7,
+     "regions": [
+      2
+     ]
+    },
+    {
+     "lowGhz": 17.8,
+     "highGhz": 18.6,
+     "regions": [
+      1,
+      2,
+      3
+     ]
+    }
+   ],
+   "refBwKhz": 1000.0,
+   "refPattern": "ITU-R S.1428-1",
+   "entries": [
+    {
+     "antennaDiameterM": 1.0,
+     "points": [
+      {
+       "percentTime": 0.0,
+       "epfdDb": -161.4
+      },
+      {
+       "percentTime": 90.0,
+       "epfdDb": -161.4
+      },
+      {
+       "percentTime": 99.0,
+       "epfdDb": -158.5
+      },
+      {
+       "percentTime": 99.714,
+       "epfdDb": -153.0
+      },
+      {
+       "percentTime": 99.971,
+       "epfdDb": -150.0
+      },
+      {
+       "percentTime": 100.0,
+       "epfdDb": -150.0
+      }
+     ]
+    },
+    {
+     "antennaDiameterM": 2.0,
+     "points": [
+      {
+       "percentTime": 0.0,
+       "epfdDb": -164.4
+      },
+      {
+       "percentTime": 99.4,
+       "epfdDb": -164.4
+      },
+      {
+       "percentTime": 99.9,
+       "epfdDb": -157.4
+      },
+      {
+       "percentTime": 99.913,
+       "epfdDb": -156.5
+      },
+      {
+       "percentTime": 99.971,
+       "epfdDb": -152.0
+      },
+      {
+       "percentTime": 99.977,
+       "epfdDb": -150.0
+      },
+      {
+       "percentTime": 100.0,
+       "epfdDb": -150.0
+      }
+     ]
+    },
+    {
+     "antennaDiameterM": 5.0,
+     "points": [
+      {
+       "percentTime": 0.0,
+       "epfdDb": -171.4
+      },
+      {
+       "percentTime": 99.8,
+       "epfdDb": -171.4
+      },
+      {
+       "percentTime": 99.8,
+       "epfdDb": -166.0
+      },
+      {
+       "percentTime": 99.943,
+       "epfdDb": -166.0
+      },
+      {
+       "percentTime": 99.943,
+       "epfdDb": -158.0
+      },
+      {
+       "percentTime": 99.998,
+       "epfdDb": -150.0
+      },
+      {
+       "percentTime": 100.0,
+       "epfdDb": -150.0
+      }
+     ]
+    }
+   ],
+   "note": "RR footnotes 3,6,8,8bis,7 (Nos. 22.5C.5-22.5C.7, 22.5C.13). No.22.5C.7: system must meet BOTH the 40 kHz and 1 MHz limits. No.22.5C.13 (WRC-23): in Region 2, for 17.3-17.7 GHz w.r.t. GSO BSS, use ITU-R BO.1443-3 patterns."
+  },
+  {
+   "tableId": "22-1C",
+   "direction": "down",
+   "bands": [
+    {
+     "lowGhz": 19.7,
+     "highGhz": 20.2,
+     "regions": [
+      1,
+      2,
+      3
+     ]
+    }
+   ],
+   "refBwKhz": 40.0,
+   "refPattern": "ITU-R S.1428-1",
+   "entries": [
+    {
+     "antennaDiameterM": 0.7,
+     "points": [
+      {
+       "percentTime": 0.0,
+       "epfdDb": -187.4
+      },
+      {
+       "percentTime": 71.429,
+       "epfdDb": -182.0
+      },
+      {
+       "percentTime": 97.143,
+       "epfdDb": -172.0
+      },
+      {
+       "percentTime": 99.983,
+       "epfdDb": -154.0
+      },
+      {
+       "percentTime": 100.0,
+       "epfdDb": -154.0
+      }
+     ]
+    },
+    {
+     "antennaDiameterM": 0.9,
+     "points": [
+      {
+       "percentTime": 0.0,
+       "epfdDb": -190.4
+      },
+      {
+       "percentTime": 91.0,
+       "epfdDb": -181.4
+      },
+      {
+       "percentTime": 99.8,
+       "epfdDb": -170.4
+      },
+      {
+       "percentTime": 99.8,
+       "epfdDb": -168.6
+      },
+      {
+       "percentTime": 99.943,
+       "epfdDb": -165.0
+      },
+      {
+       "percentTime": 99.943,
+       "epfdDb": -160.0
+      },
+      {
+       "percentTime": 99.997,
+       "epfdDb": -154.0
+      },
+      {
+       "percentTime": 100.0,
+       "epfdDb": -154.0
+      }
+     ]
+    },
+    {
+     "antennaDiameterM": 2.5,
+     "points": [
+      {
+       "percentTime": 0.0,
+       "epfdDb": -196.4
+      },
+      {
+       "percentTime": 99.98,
+       "epfdDb": -162.0
+      },
+      {
+       "percentTime": 99.99943,
+       "epfdDb": -154.0
+      },
+      {
+       "percentTime": 100.0,
+       "epfdDb": -154.0
+      }
+     ]
+    },
+    {
+     "antennaDiameterM": 5.0,
+     "points": [
+      {
+       "percentTime": 0.0,
+       "epfdDb": -200.4
+      },
+      {
+       "percentTime": 90.0,
+       "epfdDb": -189.4
+      },
+      {
+       "percentTime": 94.0,
+       "epfdDb": -187.8
+      },
+      {
+       "percentTime": 97.143,
+       "epfdDb": -184.0
+      },
+      {
+       "percentTime": 99.886,
+       "epfdDb": -175.0
+      },
+      {
+       "percentTime": 99.99,
+       "epfdDb": -164.2
+      },
+      {
+       "percentTime": 99.999,
+       "epfdDb": -154.6
+      },
+      {
+       "percentTime": 99.9992,
+       "epfdDb": -154.0
+      },
+      {
+       "percentTime": 100.0,
+       "epfdDb": -154.0
+      }
+     ]
+    }
+   ],
+   "note": "RR footnotes 3,6,8,7. No.22.5C.7: system must meet BOTH the 40 kHz and 1 MHz limits."
+  },
+  {
+   "tableId": "22-1C",
+   "direction": "down",
+   "bands": [
+    {
+     "lowGhz": 19.7,
+     "highGhz": 20.2,
+     "regions": [
+      1,
+      2,
+      3
+     ]
+    }
+   ],
+   "refBwKhz": 1000.0,
+   "refPattern": "ITU-R S.1428-1",
+   "entries": [
+    {
+     "antennaDiameterM": 0.7,
+     "points": [
+      {
+       "percentTime": 0.0,
+       "epfdDb": -173.4
+      },
+      {
+       "percentTime": 71.429,
+       "epfdDb": -168.0
+      },
+      {
+       "percentTime": 97.143,
+       "epfdDb": -158.0
+      },
+      {
+       "percentTime": 99.983,
+       "epfdDb": -140.0
+      },
+      {
+       "percentTime": 100.0,
+       "epfdDb": -140.0
+      }
+     ]
+    },
+    {
+     "antennaDiameterM": 0.9,
+     "points": [
+      {
+       "percentTime": 0.0,
+       "epfdDb": -176.4
+      },
+      {
+       "percentTime": 91.0,
+       "epfdDb": -167.4
+      },
+      {
+       "percentTime": 99.8,
+       "epfdDb": -156.4
+      },
+      {
+       "percentTime": 99.8,
+       "epfdDb": -154.6
+      },
+      {
+       "percentTime": 99.943,
+       "epfdDb": -151.0
+      },
+      {
+       "percentTime": 99.943,
+       "epfdDb": -146.0
+      },
+      {
+       "percentTime": 99.997,
+       "epfdDb": -140.0
+      },
+      {
+       "percentTime": 100.0,
+       "epfdDb": -140.0
+      }
+     ]
+    },
+    {
+     "antennaDiameterM": 2.5,
+     "points": [
+      {
+       "percentTime": 0.0,
+       "epfdDb": -182.4
+      },
+      {
+       "percentTime": 99.98,
+       "epfdDb": -148.0
+      },
+      {
+       "percentTime": 99.99943,
+       "epfdDb": -140.0
+      },
+      {
+       "percentTime": 100.0,
+       "epfdDb": -140.0
+      }
+     ]
+    },
+    {
+     "antennaDiameterM": 5.0,
+     "points": [
+      {
+       "percentTime": 0.0,
+       "epfdDb": -186.4
+      },
+      {
+       "percentTime": 90.0,
+       "epfdDb": -175.4
+      },
+      {
+       "percentTime": 94.0,
+       "epfdDb": -173.8
+      },
+      {
+       "percentTime": 97.143,
+       "epfdDb": -170.0
+      },
+      {
+       "percentTime": 99.886,
+       "epfdDb": -161.0
+      },
+      {
+       "percentTime": 99.99,
+       "epfdDb": -150.2
+      },
+      {
+       "percentTime": 99.999,
+       "epfdDb": -140.6
+      },
+      {
+       "percentTime": 99.9992,
+       "epfdDb": -140.0
+      },
+      {
+       "percentTime": 100.0,
+       "epfdDb": -140.0
+      }
+     ]
+    }
+   ],
+   "note": "RR footnotes 3,6,8,7. No.22.5C.7: system must meet BOTH the 40 kHz and 1 MHz limits."
+  },
+  {
+   "tableId": "22-1D",
+   "direction": "down",
+   "bands": [
+    {
+     "lowGhz": 11.7,
+     "highGhz": 12.5,
+     "regions": [
+      1
+     ]
+    },
+    {
+     "lowGhz": 11.7,
+     "highGhz": 12.2,
+     "regions": [
+      3
+     ]
+    },
+    {
+     "lowGhz": 12.5,
+     "highGhz": 12.75,
+     "regions": [
+      3
+     ]
+    },
+    {
+     "lowGhz": 12.2,
+     "highGhz": 12.7,
+     "regions": [
+      2
+     ]
+    }
+   ],
+   "refBwKhz": 40.0,
+   "refPattern": "ITU-R BO.1443-3, Annex 1",
+   "entries": [
+    {
+     "antennaDiameterM": 0.3,
+     "points": [
+      {
+       "percentTime": 0.0,
+       "epfdDb": -165.841
+      },
+      {
+       "percentTime": 25.0,
+       "epfdDb": -165.541
+      },
+      {
+       "percentTime": 96.0,
+       "epfdDb": -164.041
+      },
+      {
+       "percentTime": 98.857,
+       "epfdDb": -158.6
+      },
+      {
+       "percentTime": 99.429,
+       "epfdDb": -158.6
+      },
+      {
+       "percentTime": 99.429,
+       "epfdDb": -158.33
+      },
+      {
+       "percentTime": 100.0,
+       "epfdDb": -158.33
+      }
+     ]
+    },
+    {
+     "antennaDiameterM": 0.45,
+     "points": [
+      {
+       "percentTime": 0.0,
+       "epfdDb": -175.441
+      },
+      {
+       "percentTime": 66.0,
+       "epfdDb": -172.441
+      },
+      {
+       "percentTime": 97.75,
+       "epfdDb": -169.441
+      },
+      {
+       "percentTime": 99.357,
+       "epfdDb": -164.0
+      },
+      {
+       "percentTime": 99.809,
+       "epfdDb": -160.75
+      },
+      {
+       "percentTime": 99.986,
+       "epfdDb": -160.0
+      },
+      {
+       "percentTime": 100.0,
+       "epfdDb": -160.0
+      }
+     ]
+    },
+    {
+     "antennaDiameterM": 0.6,
+     "points": [
+      {
+       "percentTime": 0.0,
+       "epfdDb": -176.441
+      },
+      {
+       "percentTime": 97.8,
+       "epfdDb": -173.191
+      },
+      {
+       "percentTime": 99.371,
+       "epfdDb": -167.75
+      },
+      {
+       "percentTime": 99.886,
+       "epfdDb": -162.0
+      },
+      {
+       "percentTime": 99.943,
+       "epfdDb": -161.0
+      },
+      {
+       "percentTime": 99.971,
+       "epfdDb": -160.2
+      },
+      {
+       "percentTime": 99.997,
+       "epfdDb": -160.0
+      },
+      {
+       "percentTime": 100.0,
+       "epfdDb": -160.0
+      }
+     ]
+    },
+    {
+     "antennaDiameterM": 0.9,
+     "points": [
+      {
+       "percentTime": 0.0,
+       "epfdDb": -178.94
+      },
+      {
+       "percentTime": 33.0,
+       "epfdDb": -178.44
+      },
+      {
+       "percentTime": 98.0,
+       "epfdDb": -176.44
+      },
+      {
+       "percentTime": 99.429,
+       "epfdDb": -171.0
+      },
+      {
+       "percentTime": 99.714,
+       "epfdDb": -165.5
+      },
+      {
+       "percentTime": 99.857,
+       "epfdDb": -163.0
+      },
+      {
+       "percentTime": 99.943,
+       "epfdDb": -161.0
+      },
+      {
+       "percentTime": 99.991,
+       "epfdDb": -160.0
+      },
+      {
+       "percentTime": 100.0,
+       "epfdDb": -160.0
+      }
+     ]
+    },
+    {
+     "antennaDiameterM": 1.2,
+     "points": [
+      {
+       "percentTime": 0.0,
+       "epfdDb": -182.44
+      },
+      {
+       "percentTime": 90.0,
+       "epfdDb": -180.69
+      },
+      {
+       "percentTime": 98.9,
+       "epfdDb": -179.19
+      },
+      {
+       "percentTime": 98.9,
+       "epfdDb": -178.44
+      },
+      {
+       "percentTime": 99.5,
+       "epfdDb": -174.94
+      },
+      {
+       "percentTime": 99.68,
+       "epfdDb": -173.75
+      },
+      {
+       "percentTime": 99.68,
+       "epfdDb": -173.0
+      },
+      {
+       "percentTime": 99.85,
+       "epfdDb": -169.5
+      },
+      {
+       "percentTime": 99.915,
+       "epfdDb": -167.8
+      },
+      {
+       "percentTime": 99.94,
+       "epfdDb": -164.0
+      },
+      {
+       "percentTime": 99.97,
+       "epfdDb": -161.9
+      },
+      {
+       "percentTime": 99.99,
+       "epfdDb": -161.0
+      },
+      {
+       "percentTime": 99.998,
+       "epfdDb": -160.4
+      },
+      {
+       "percentTime": 100.0,
+       "epfdDb": -160.0
+      }
+     ]
+    },
+    {
+     "antennaDiameterM": 1.8,
+     "points": [
+      {
+       "percentTime": 0.0,
+       "epfdDb": -184.941
+      },
+      {
+       "percentTime": 33.0,
+       "epfdDb": -184.101
+      },
+      {
+       "percentTime": 98.5,
+       "epfdDb": -181.691
+      },
+      {
+       "percentTime": 99.571,
+       "epfdDb": -176.25
+      },
+      {
+       "percentTime": 99.946,
+       "epfdDb": -163.25
+      },
+      {
+       "percentTime": 99.974,
+       "epfdDb": -161.5
+      },
+      {
+       "percentTime": 99.993,
+       "epfdDb": -160.35
+      },
+      {
+       "percentTime": 99.999,
+       "epfdDb": -160.0
+      },
+      {
+       "percentTime": 100.0,
+       "epfdDb": -160.0
+      }
+     ]
+    },
+    {
+     "antennaDiameterM": 2.4,
+     "points": [
+      {
+       "percentTime": 0.0,
+       "epfdDb": -187.441
+      },
+      {
+       "percentTime": 33.0,
+       "epfdDb": -186.341
+      },
+      {
+       "percentTime": 99.25,
+       "epfdDb": -183.441
+      },
+      {
+       "percentTime": 99.786,
+       "epfdDb": -178.0
+      },
+      {
+       "percentTime": 99.957,
+       "epfdDb": -164.4
+      },
+      {
+       "percentTime": 99.983,
+       "epfdDb": -161.9
+      },
+      {
+       "percentTime": 99.994,
+       "epfdDb": -160.5
+      },
+      {
+       "percentTime": 99.999,
+       "epfdDb": -160.0
+      },
+      {
+       "percentTime": 100.0,
+       "epfdDb": -160.0
+      }
+     ]
+    },
+    {
+     "antennaDiameterM": 3.0,
+     "points": [
+      {
+       "percentTime": 0.0,
+       "epfdDb": -191.941
+      },
+      {
+       "percentTime": 33.0,
+       "epfdDb": -189.441
+      },
+      {
+       "percentTime": 99.5,
+       "epfdDb": -185.941
+      },
+      {
+       "percentTime": 99.857,
+       "epfdDb": -180.5
+      },
+      {
+       "percentTime": 99.914,
+       "epfdDb": -173.0
+      },
+      {
+       "percentTime": 99.951,
+       "epfdDb": -167.0
+      },
+      {
+       "percentTime": 99.983,
+       "epfdDb": -162.0
+      },
+      {
+       "percentTime": 99.991,
+       "epfdDb": -160.0
+      },
+      {
+       "percentTime": 100.0,
+       "epfdDb": -160.0
+      }
+     ]
+    }
+   ],
+   "note": "RR footnotes 6,9,10,11,12. Victim = GSO BSS earth stations. Additional 100%-time latitude-dependent limit (No.22.5C.8) applies to 180/240/300 cm."
+  },
+  {
+   "tableId": "22-1E",
+   "direction": "down",
+   "bands": [
+    {
+     "lowGhz": 3.7,
+     "highGhz": 4.2,
+     "regions": [
+      1,
+      2,
+      3
+     ]
+    }
+   ],
+   "refBwKhz": 4,
+   "refPattern": "RR No.22.5C.12 explicit pattern (not a named ITU-R Rec.)",
+   "entries": [
+    {
+     "antennaDiameterM": 1.8,
+     "points": [
+      {
+       "percentTime": 100.0,
+       "epfdDb": -195.4
+      }
+     ]
+    },
+    {
+     "antennaDiameterM": 2.4,
+     "points": [
+      {
+       "percentTime": 100.0,
+       "epfdDb": -197.9
+      }
+     ]
+    },
+    {
+     "antennaDiameterM": 3.7,
+     "points": [
+      {
+       "percentTime": 100.0,
+       "epfdDb": -201.6
+      }
+     ]
+    },
+    {
+     "antennaDiameterM": 4.5,
+     "points": [
+      {
+       "percentTime": 100.0,
+       "epfdDb": -203.3
+      }
+     ]
+    },
+    {
+     "antennaDiameterM": 5.5,
+     "points": [
+      {
+       "percentTime": 100.0,
+       "epfdDb": -204.5
+      }
+     ]
+    },
+    {
+     "antennaDiameterM": 8.0,
+     "points": [
+      {
+       "percentTime": 100.0,
+       "epfdDb": -207.5
+      }
+     ]
+    },
+    {
+     "antennaDiameterM": 10.0,
+     "points": [
+      {
+       "percentTime": 100.0,
+       "epfdDb": -208.5
+      }
+     ]
+    },
+    {
+     "antennaDiameterM": 15.0,
+     "points": [
+      {
+       "percentTime": 100.0,
+       "epfdDb": -212.0
+      }
+     ]
+    }
+   ],
+   "note": "Single 100%-of-time point per diameter. Applies to nGSO FSS filings with complete notification information received after 5 July 2003 (No.22.5H)."
+  },
+  {
+   "tableId": "22-2",
+   "direction": "up",
+   "bands": [
+    {
+     "lowGhz": 5.925,
+     "highGhz": 6.725,
+     "regions": [
+      1,
+      2,
+      3
+     ]
+    }
+   ],
+   "refBwKhz": 4,
+   "refPattern": "ITU-R S.672-4, Ls=-20",
+   "entries": [
+    {
+     "antennaDiameterM": null,
+     "antennaBeamwidthDeg": 1.5,
+     "points": [
+      {
+       "percentTime": 100.0,
+       "epfdDb": -183.0
+      }
+     ]
+    }
+   ],
+   "note": "Victim = GSO FSS space station. RR No.22.5D.3: for Ls=-10 use a=1.83, b=6.32 in S.672-4 single-feed circular beam equations; in all cases the parabolic main-beam equation starts at zero."
+  },
+  {
+   "tableId": "22-2",
+   "direction": "up",
+   "bands": [
+    {
+     "lowGhz": 12.5,
+     "highGhz": 12.75,
+     "regions": [
+      1,
+      2,
+      3
+     ]
+    },
+    {
+     "lowGhz": 12.75,
+     "highGhz": 13.25,
+     "regions": [
+      1,
+      2,
+      3
+     ]
+    },
+    {
+     "lowGhz": 13.75,
+     "highGhz": 14.5,
+     "regions": [
+      1,
+      2,
+      3
+     ]
+    }
+   ],
+   "refBwKhz": 40,
+   "refPattern": "ITU-R S.672-4, Ls=-20",
+   "entries": [
+    {
+     "antennaDiameterM": null,
+     "antennaBeamwidthDeg": 4.0,
+     "points": [
+      {
+       "percentTime": 100.0,
+       "epfdDb": -160.0
+      }
+     ]
+    }
+   ],
+   "note": "Victim = GSO FSS space station. RR No.22.5D.3: for Ls=-10 use a=1.83, b=6.32 in S.672-4 single-feed circular beam equations; in all cases the parabolic main-beam equation starts at zero."
+  },
+  {
+   "tableId": "22-2",
+   "direction": "up",
+   "bands": [
+    {
+     "lowGhz": 17.3,
+     "highGhz": 18.1,
+     "regions": [
+      1,
+      3
+     ]
+    },
+    {
+     "lowGhz": 17.8,
+     "highGhz": 18.1,
+     "regions": [
+      2
+     ]
+    }
+   ],
+   "refBwKhz": 40,
+   "refPattern": "ITU-R S.672-4, Ls=-20",
+   "entries": [
+    {
+     "antennaDiameterM": null,
+     "antennaBeamwidthDeg": 4.0,
+     "points": [
+      {
+       "percentTime": 100.0,
+       "epfdDb": -160.0
+      }
+     ]
+    }
+   ],
+   "note": "RR No.22.5D.4: this epfd-up level also applies to 17.3-17.8 GHz to protect BSS feeder links in Region 2 from nGSO FSS Earth-to-space transmissions in Regions 1 and 3."
+  },
+  {
+   "tableId": "22-2",
+   "direction": "up",
+   "bands": [
+    {
+     "lowGhz": 27.5,
+     "highGhz": 28.6,
+     "regions": [
+      1,
+      2,
+      3
+     ]
+    }
+   ],
+   "refBwKhz": 40,
+   "refPattern": "ITU-R S.672-4, Ls=-10",
+   "entries": [
+    {
+     "antennaDiameterM": null,
+     "antennaBeamwidthDeg": 1.55,
+     "points": [
+      {
+       "percentTime": 100.0,
+       "epfdDb": -162.0
+      }
+     ]
+    }
+   ],
+   "note": "Victim = GSO FSS space station. RR No.22.5D.3: for Ls=-10 use a=1.83, b=6.32 in S.672-4 single-feed circular beam equations; in all cases the parabolic main-beam equation starts at zero."
+  },
+  {
+   "tableId": "22-2",
+   "direction": "up",
+   "bands": [
+    {
+     "lowGhz": 29.5,
+     "highGhz": 30.0,
+     "regions": [
+      1,
+      2,
+      3
+     ]
+    }
+   ],
+   "refBwKhz": 40,
+   "refPattern": "ITU-R S.672-4, Ls=-10",
+   "entries": [
+    {
+     "antennaDiameterM": null,
+     "antennaBeamwidthDeg": 1.55,
+     "points": [
+      {
+       "percentTime": 100.0,
+       "epfdDb": -162.0
+      }
+     ]
+    }
+   ],
+   "note": "Victim = GSO FSS space station. RR No.22.5D.3: for Ls=-10 use a=1.83, b=6.32 in S.672-4 single-feed circular beam equations; in all cases the parabolic main-beam equation starts at zero."
+  },
+  {
+   "tableId": "22-3",
+   "direction": "is",
+   "bands": [
+    {
+     "lowGhz": 10.7,
+     "highGhz": 11.7,
+     "regions": [
+      1
+     ]
+    },
+    {
+     "lowGhz": 12.5,
+     "highGhz": 12.75,
+     "regions": [
+      1
+     ]
+    },
+    {
+     "lowGhz": 12.7,
+     "highGhz": 12.75,
+     "regions": [
+      2
+     ]
+    }
+   ],
+   "refBwKhz": 40,
+   "refPattern": "ITU-R S.672-4, Ls=-20",
+   "entries": [
+    {
+     "antennaDiameterM": null,
+     "antennaBeamwidthDeg": 4.0,
+     "points": [
+      {
+       "percentTime": 100.0,
+       "epfdDb": -160.0
+      }
+     ]
+    }
+   ],
+   "note": "Victim = GSO space station (AP30A feeder-link / FSS). RR No.22.5F.3: S.672-4 parabolic main-beam equation starts at zero."
+  },
+  {
+   "tableId": "22-3",
+   "direction": "is",
+   "bands": [
+    {
+     "lowGhz": 17.3,
+     "highGhz": 17.7,
+     "regions": [
+      1,
+      2
+     ]
+    },
+    {
+     "lowGhz": 17.8,
+     "highGhz": 18.4,
+     "regions": [
+      1,
+      2,
+      3
+     ]
+    }
+   ],
+   "refBwKhz": 40,
+   "refPattern": "ITU-R S.672-4, Ls=-20",
+   "entries": [
+    {
+     "antennaDiameterM": null,
+     "antennaBeamwidthDeg": 4.0,
+     "points": [
+      {
+       "percentTime": 100.0,
+       "epfdDb": -160.0
+      }
+     ]
+    }
+   ],
+   "note": "RR No.22.5F.4 (WRC-23): an nGSO system operating in Region 1 or 2, at any orbital position, shall meet the 17.3-17.7 GHz limits w.r.t. a receiving space station in the AP30A BSS feeder link, in all three Regions."
+  }
+ ]
+}

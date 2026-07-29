@@ -248,6 +248,41 @@ function sampleMax(loaded, sat, cfg, lon, lat) {
   return sampleMaxCtx(ctx, lon, lat);
 }
 
+/**
+ * 方向图峰值（dB，与 sampleMax 同口径）：取**网格节点**上的最大值，不插值、不看几何。
+ *
+ * NGSO 时变干扰要的是「相对滚降」= 采样值 − 峰值：干扰源的入参是满 EIRP 谱密度，
+ * 里头已含卫星天线峰值增益，方向图在那里只作一条 ≤0 的修正（见 interference/patternsSat.js）。
+ * 峰值必须与采样值同口径（同 pol 组合、同 gainOffset），否则修正量会整体平移。
+ * 节点最大值与插值后的真峰相差不超过一个网格的曲率，对滚降口径可忽略。
+ */
+function peakDb(loaded, cfg) {
+  if (!loaded || !loaded.beams || !loaded.beams.length) return null;
+  const c = cfg || {};
+  const pol = c.pol || 'RSS', gainOffset = Number(c.gainOffset) || 0;
+  const keep = Array.isArray(c.keptSets) ? c.keptSets : null;
+  const beams = (keep && keep.length < loaded.beams.length)
+    ? keep.map((i) => loaded.beams[i]).filter(Boolean) : loaded.beams;
+  let best = null;
+  for (const bm of beams) {
+    const n = bm.grid.NX * bm.grid.NY;
+    for (let i = 0; i < n; i++) {
+      let p1, p2;
+      if (bm.c1re) { p1 = bm.c1re[i] * bm.c1re[i] + bm.c1im[i] * bm.c1im[i]; p2 = bm.c2re[i] * bm.c2re[i] + bm.c2im[i] * bm.c2im[i]; }
+      else { p1 = bm.P1[i]; p2 = bm.P2[i]; }
+      let Pw;
+      if (pol === 'P1') Pw = p1;
+      else if (pol === 'P2') Pw = p2;
+      else if (pol === 'RSS') Pw = p1 + p2;
+      else if (pol === 'P1/P2') Pw = p2 > 0 ? p1 / p2 : 0;
+      else if (pol === 'P2/P1') Pw = p1 > 0 ? p2 / p1 : 0;
+      else Pw = p1;
+      if (Pw > 0 && (best === null || Pw > best)) best = Pw;
+    }
+  }
+  return best === null ? null : 10 * Math.log10(best) + gainOffset;
+}
+
 function sampleMaxCtx(ctx, lon, lat) {
   let best = null;
   for (const bm of ctx.beams) {
@@ -350,5 +385,5 @@ function sampleXpdCtx(ctx, lon, lat) {
 module.exports = {
   parseGrd, buildBin, loadBin,
   sampleMax, sampleAll, sampleXpd,
-  makeSampleCtx, sampleMaxCtx, sampleAllCtx, sampleXpdCtx, coPolIndexOf
+  makeSampleCtx, sampleMaxCtx, sampleAllCtx, sampleXpdCtx, coPolIndexOf, peakDb
 };

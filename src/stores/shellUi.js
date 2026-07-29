@@ -9,7 +9,10 @@ import { reactive, watch } from 'vue'
 // KEY 带版本号：日志窗格默认改为收起前，早期版本可能已把 log:true 存进旧 key，
 // 不换 key 的话旧用户会一直读到那个 true，看起来像「默认没生效」。
 const KEY = 'shell-ui-v2'
-const SIDES = ['constellation', 'antenna', 'beams', 'vis', 'poly', 'gxt', 'markers', 'geo']
+// 注意：这张表是 side 的持久化白名单，活动栏新增一项就必须同步加进来，
+// 否则重开软件后 localStorage 里的值过不了 :18 的校验、静默回落到 'constellation'
+//（'env' 曾经就漏在这里，表现为「环境场不被记忆」）。
+const SIDES = ['constellation', 'antenna', 'beams', 'vis', 'poly', 'gxt', 'markers', 'env', 'geo']
 export const shellUi = reactive({ toolbar: true, log: false, side: 'constellation', exw: 300 })
 try {
   const saved = JSON.parse(localStorage.getItem(KEY) || 'null')

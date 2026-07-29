@@ -16,11 +16,12 @@ import { useInterference } from './useInterference.js'
 import CiGeoPanel from './CiGeoPanel.vue'
 import LbSurfacePlot from '../components/LbSurfacePlot.vue'
 import CiCdfPlot from './CiCdfPlot.vue'
+import CiSeriesPlot from './CiSeriesPlot.vue'
 
 const I = useInterference()
 const {
   MODES, REUSE_COLORS, mode, busy, msg, site, carrier, asi, xpi, cci, ngso,
-  satLib, grdAntennas, currentAntenna, geoData, hoveredId, satSearch, ngsoGroups, groupStats, groupsErr
+  satLib, grdAntennas, currentAntenna, ngsoGrdBeams, geoData, hoveredId, satSearch, ngsoGroups, groupStats, groupsErr
 } = I
 
 onMounted(() => { I.load(); I.loadLibraries(); I.loadGrdTree(); I.loadNgsoGroups() })
@@ -41,6 +42,41 @@ const fPct = (v) => (v == null || !Number.isFinite(Number(v)) ? '—' : Number(v
 const fSlot = (v) => (v == null || !Number.isFinite(Number(v)) ? '' : `${Math.round(Number(v) * 100) / 100}°E`)
 const fDur = (s) => (s == null ? '—' : s < 60 ? s.toFixed(2) + ' s' : (s / 60).toFixed(2) + ' min')
 const fTime = (ms) => { try { return new Date(ms).toISOString().replace('T', ' ').slice(0, 19) + 'Z' } catch (e) { return '—' } }
+
+// ─── NGSO 分位数的样本支撑度（引擎的 percentileSupport）─────────────────────────
+// 「样本不足」必须显示成「样本不足」，不能显示成一个看着完全正常的数字：
+// 6 h / 10 s = 2161 个样本时，C/I(0.001%) 那一档对应 0.022 个样本——它就是最小值，
+// 只是贴了个百分比标签，与 worst 差 0.003 dB。
+const ngSup = (p) => {
+  const r = ngso.result
+  return (r && r.percentileSupport && r.percentileSupport[p]) || null
+}
+const ngSupTip = (p) => {
+  const s = ngSup(p)
+  if (!s) return ''
+  if (!s.enough) return `样本不足：该档需 ≥ ${s.needSamples.toLocaleString()} 个样本，当前 ${(ngso.result.samples || 0).toLocaleString()} 个，有效样本 ${s.nEff.toExponential(2)} 个。延长时窗或减小步长后重算`
+  if (s.weak) return `有效样本 ${s.nEff.toFixed(2)} 个，尾部估计不稳定`
+  return `有效样本 ${s.nEff.toFixed(1)} 个`
+}
+// 一年折合分钟数：p% 的时间 = 一年里多少分钟
+const fYearMin = (p) => (Number(p) / 100 * 525600)
+// 多历元的 bootstrap 95% 区间（只有多历元才有：单历元长跑的样本时间上高度相关，
+// 对它做 bootstrap 会把区间报得比真实窄得多）
+const ngCi = (p) => {
+  const e = ngso.result && ngso.result.epochStats
+  return (e && e.ciP && e.ciP[p]) || null
+}
+// 区间按【历元整块】重采样得出（逐样本 i.i.d. 会把区间窄一个数量级）。块数不足时区间宽度
+// 主要反映块组合的种数而非真实不确定度，此时必须让用户改看逐历元的原始估值散布。
+const ngCiLowRes = computed(() => {
+  const e = ngso.result && ngso.result.epochStats
+  if (!e || !e.ciP) return false
+  return Object.values(e.ciP).some((c) => c && c.lowResolution)
+})
+const ngPerEpoch = computed(() => {
+  const e = ngso.result && ngso.result.epochStats
+  return ((e && e.perEpoch) || []).filter((v) => v != null && Number.isFinite(v)).map((v) => v.toFixed(2))
+})
 
 // 模板里的 @click 只能写表达式，写不了 if 语句——这类分支一律落到这里
 function toggleSearch() {
@@ -548,8 +584,8 @@ const run = () => {
                   </optgroup>
                 </select>
               </label>
-              <label>抽样上限<input v-model.number="ngso.wanted.limit" type="number" placeholder="留空 = 全部" /></label>
-              <label class="btn-cell"><button class="ci-btn" title="重读「星座」页的卫星组 / 自定义星座与编目列表——本窗口是单例，开着它去建的组靠这里进来（切窗口回来也会自动重读）" @click="I.loadNgsoGroups()">刷新列表</button></label>
+              <label title="留空为全量。按倍率 K 抽样将使聚合干扰偏低约 10·lg K dB；受算力限制时应优先调整步长与时窗">抽样上限<input v-model.number="ngso.wanted.limit" type="number" placeholder="留空 = 全量" /></label>
+              <label class="btn-cell"><button class="ci-btn" title="重新读取「星座」页的卫星组、自定义星座与编目列表；本窗口为单例，切换窗口返回时亦会自动重读" @click="I.loadNgsoGroups()">刷新列表</button></label>
               <label class="btn-cell"><button class="ci-btn" :disabled="!ngso.wanted.group" @click="I.ensureGroup(ngso.wanted.group, true)">联网刷新</button></label>
             </div>
             <p v-if="groupsErr" class="ci-note sm err">编目星座 / 自定义星历这两段没取回来：{{ groupsErr }}</p>
@@ -559,7 +595,8 @@ const run = () => {
               <div><dt>轨道高度</dt><dd>{{ groupStats[ngso.wanted.group].altKmMin }}–{{ groupStats[ngso.wanted.group].altKmMax }} km<span class="dim">（中位 {{ groupStats[ngso.wanted.group].altKmMed }}）</span></dd></div>
               <div><dt>倾角</dt><dd>{{ groupStats[ngso.wanted.group].inclMin }}–{{ groupStats[ngso.wanted.group].inclMax }}°</dd></div>
               <div><dt>轨道周期</dt><dd>{{ groupStats[ngso.wanted.group].periodMin }} min</dd></div>
-              <div class="wide"><dt>主壳层</dt><dd>{{ groupStats[ngso.wanted.group].shells.map((x) => `${x.inclDeg}° × ${x.count} 颗`).join('　') }}</dd></div>
+              <!-- 壳层 = 同一倾角且高度落在同一主峰窗里的那一撮，高度与倾角同源（抬轨/离轨中的星不计入） -->
+              <div class="wide"><dt>主壳层</dt><dd>{{ groupStats[ngso.wanted.group].shells.slice(0, 3).map((x) => `${x.inclDeg}° / ${x.altKmMed} km × ${x.count} 颗`).join('　') }}</dd></div>
             </dl>
             <p v-else-if="ngso.wanted.group" class="ci-note sm">选中后自动载入，载入完成后在此列出该星座的实际轨道参数。</p>
           </div>
@@ -571,15 +608,9 @@ const run = () => {
             <label>每面星数<input v-model.number="ngso.wanted.perPlane" type="number" /></label>
             <label>相位因子 F<input v-model.number="ngso.wanted.phase" type="number" /></label>
           </div>
-          <p class="ci-note sm">
-            星座下拉分四段：<strong>我的卫星组</strong>（星座页所存的组，仅记编目号，成员星历自全量编目取得）、
-            <strong>自定义星座</strong>（星座页 Walker 生成器建的合成星座，按同一份放置公式与场景历元展开，
-            与 3D 页看到的是同一批星）、<strong>自定义星历</strong>（文件管理中导入的 OMM/TLE 组）、
-            <strong>编目星座</strong>（CelesTrak 分组，与主窗口「星座」页同一份数据）。某段显示「无」就是那里还没有东西，
-            按括号里的去处去建；建完点「刷新列表」（或切到主窗口再切回来）即可出现。
-            右侧「Walker 参数」用于连星座都还没建、只有设计参数时的方案比选。
-            大星座请用「抽样上限」限量：数千颗逐时刻传播将超出计算量上限。
-          </p>
+          <!-- 曾有两段说明（星座下拉四段的来源 / 抽样上限的偏差口径）铺在这里——已删。
+               来源在下拉的分组标题里就写着，抽样偏差在输入框的 title 与运行时告警里都说了，
+               铺成两段正文只是把面板顶长。 -->
 
           <div class="ci-panel-hd">
             <h3>干扰星座</h3>
@@ -643,11 +674,200 @@ const run = () => {
                   <option value="peak">AP8/S.580（峰值，对比用）</option>
                 </select>
               </label>
+              <label title="in-line 事件的判定半角。留空取半功率半角，此时穿越时长 = 3 dB 全宽 / 视角速度">
+                in-line 规避角 °<input v-model="ngso.inlineGuardDeg" type="number" step="0.01" placeholder="留空 = 半功率半角" />
+              </label>
               <label class="ci-chk wide"><input v-model="ngso.applyPolarization" type="checkbox" />计入极化折减</label>
             </div>
-            <p class="ci-note">
-              <strong>包络须按角域核对</strong>：S.1428 在近区（&lt;37°）低于 AP8，但在 40°–120° 的溢出区高出 2.5–7.5 dB。
-              干扰星散布全天时多数落在远区，故 S.1428 给出的聚合 C/I 常<strong>更低（更保守）</strong>，并非更宽松。
+            <p class="ci-note sm">
+              两条包络的差异随角域反号：S.1428 在 &lt; 37° 低于 AP8，在 40°–120° 高出 2.5–7.5 dB。
+              干扰星多分布于远区，故 S.1428 给出的聚合 C/I 通常更低。
+            </p>
+          </div>
+
+          <!-- ============ 噪声 · 门限 · 可用度（P4）============ -->
+          <div class="ci-sub">
+            <h3>噪声与判据</h3>
+            <p class="ci-note sm">
+              给定系统噪声温度后，I/N、C/(N+I)、ΔT/T 与 C/I 取自同一样本池一并输出。
+              规划口径的干扰判据为 I/N 或 ΔT/T，链路口径为 C/(N+I)。
+            </p>
+            <div class="ci-grid">
+              <label>噪声给法
+                <select v-model="ngso.noise.mode">
+                  <option value="tsys">系统噪声温度 T_sys</option>
+                  <option value="gt">由 G/T 反推</option>
+                </select>
+              </label>
+              <label v-if="ngso.noise.mode === 'tsys'">T_sys K<input v-model="ngso.noise.tSysK" type="number" step="1" placeholder="留空 = 仅输出 C/I" /></label>
+              <label v-else title="T_sys = 10^((G_peak − G/T)/10)，G_peak 为本站天线峰值增益">G/T dB/K<input v-model="ngso.noise.gOverTdBK" type="number" step="0.1" /></label>
+              <label title="仅用于「越限时间占比」的统计">C/I 门限 dB<input v-model="ngso.criteria.ciDb" type="number" step="0.5" placeholder="留空 = 不统计" /></label>
+              <label title="门限数值须依 ITU-R S.1323 与具体协调场景确定">I/N 门限 dB<input v-model="ngso.criteria.iOverNDb" type="number" step="0.1" placeholder="留空 = 不统计" /></label>
+              <label title="ΔT/T 与 I/N 为同一比值的两种表达">ΔT/T 门限 %<input v-model="ngso.criteria.deltaTOverTPct" type="number" step="0.5" placeholder="留空 = 不统计" /></label>
+            </div>
+            <p class="ci-note sm">
+              三项门限均不预置默认值，数值应依 ITU-R S.1323 与具体协调场景确定；留空即不统计该项。
+            </p>
+
+            <h3>可用度合成</h3>
+            <p class="ci-note sm">
+              本页的时间百分比为几何统计，雨衰的时间百分比为传播统计，二者物理独立，
+              故按<strong>卷积</strong>合成，不得相加。输出无干扰与计入干扰两种口径的可用度及所需补偿余量。
+            </p>
+            <div class="ci-grid">
+              <label class="ci-chk"><input v-model="ngso.rain.on" type="checkbox" />合成可用度</label>
+              <label title="C/(N+I) 低于该值判为不可用">可用门限 dB<input v-model.number="ngso.rain.thresholdDb" type="number" step="0.5" /></label>
+              <label title="干扰路径与本站路径的仰角不同，默认不施加雨衰（保守口径）">干扰路径雨衰
+                <select v-model="ngso.rain.applyToInterference">
+                  <option value="none">不施加（保守）</option>
+                  <option value="same">按同路径等量施加</option>
+                </select>
+              </label>
+              <label class="btn-cell"><button class="ci-btn" :disabled="busy" @click="I.loadRainCdf()">取雨衰分布</button></label>
+            </div>
+            <p v-if="ngso.rain.cdfInfo" class="ci-note sm">雨衰分布：{{ ngso.rain.cdfInfo }}；雨致噪温逐档一并取回，计入噪声抬升。</p>
+            <p v-else-if="ngso.rain.on" class="ci-note sm">尚未取雨衰分布。分布取自本平台 P.618-14 §8 NGSO 统计口径，等效仰角由轨道高度、倾角与最低仰角的长期分布反解。</p>
+          </div>
+
+          <!-- ============ 历元编排 ============ -->
+          <div class="ci-sub">
+            <h3>仿真时长与历元</h3>
+            <p class="ci-note sm">
+              尾部统计量对起始历元敏感：同一场景起点相差 0 / 3 / 12 h 时，中位值稳定在 40.5–40.9 dB，
+              而最差值变化 1.2 dB、in-line 次数变化 ±12%。多历元在同等算力下覆盖更分散的几何，并给出置信区间。
+            </p>
+            <div class="ci-grid">
+              <label>历元方式
+                <select v-model="ngso.epochs.mode">
+                  <option value="single">单历元（用上面的时窗）</option>
+                  <option value="repeat">按回归周期取时窗</option>
+                  <option value="monte-carlo">多历元蒙特卡洛（推荐）</option>
+                </select>
+              </label>
+              <template v-if="ngso.epochs.mode === 'monte-carlo'">
+                <label>历元个数<input v-model.number="ngso.epochs.count" type="number" step="1" min="2" /></label>
+                <label title="起始历元在该基线内抽取">基线跨度 天<input v-model.number="ngso.epochs.spanDays" type="number" step="1" min="1" /></label>
+                <label title="相同种子与起点的两次计算结果逐位一致">随机种子<input v-model.number="ngso.epochs.seed" type="number" step="1" /></label>
+                <label title="目标分位连续两次变化小于该值判为收敛">收敛判据 dB<input v-model.number="ngso.epochs.convergeTolDb" type="number" step="0.05" /></label>
+                <label title="用于判定收敛的分位档">收敛分位 %<input v-model.number="ngso.epochs.convergePct" type="number" step="0.01" /></label>
+              </template>
+              <template v-else-if="ngso.epochs.mode === 'repeat'">
+                <label title="回归周期超过该上限时封顶，并输出实际覆盖率">时窗上限 天<input v-model.number="ngso.epochs.capDays" type="number" step="1" min="1" /></label>
+              </template>
+            </div>
+            <p v-if="ngso.epochs.mode === 'monte-carlo'" class="ci-note sm">
+              计算量为单历元的 {{ ngso.epochs.count }} 倍。各历元样本池合并为一条 CDF，分位数附 95% bootstrap 区间；
+              逐历元累加至目标分位连续两次变化小于判据即判为收敛。起始时刻由本窗口给定，结果可复现。
+            </p>
+            <p v-else-if="ngso.epochs.mode === 'repeat'" class="ci-note sm">
+              回归周期按 <strong>ITU-R S.1325-3 §2.7.3</strong> 四步法估算：忽略升交点漂移，取满足
+              mod(j·Δφ₀, 2π) ≤ 精度 的最小圈数。回归周期跨度可达数月，超过上限即封顶并输出实际覆盖率。
+            </p>
+          </div>
+
+          <!-- ============ 卫星发射天线（干扰源侧）============ -->
+          <div class="ci-sub">
+            <h3>卫星发射天线</h3>
+            <p class="ci-note sm">
+              取各向同性时，地平线以上的每颗干扰星均按满 EIRP 计入，结果为上界包络而非实际 C/I。
+              本设置同时作用于干扰星与服务星，以保证 C 与 I 两侧的增益口径一致。
+            </p>
+            <div class="ci-grid">
+              <label>方向图
+                <select v-model="ngso.satPattern.mode">
+                  <option value="none">各向同性满 EIRP（上界包络）</option>
+                  <option value="s1528">ITU-R S.1528 参考方向图</option>
+                  <option value="gaussian">高斯主瓣近似</option>
+                  <option value="grd">GRD 实测方向图</option>
+                </select>
+              </label>
+              <label v-if="ngso.satPattern.mode !== 'none'">波束指向
+                <select v-model="ngso.satPattern.pointing">
+                  <option value="nadir">星下点</option>
+                  <option value="cells">地面小区网格</option>
+                  <option value="worst">始终指向本站（上界）</option>
+                </select>
+              </label>
+              <label title="同频复用系数 × 波束时隙占空，线性作用于每颗干扰星的功率">
+                同频占空<input v-model.number="ngso.satPattern.coFreqFactor" type="number" step="0.05" min="0.001" max="1" />
+              </label>
+              <template v-if="ngso.satPattern.mode === 's1528'">
+                <label>S.1528 分节
+                  <select v-model="ngso.satPattern.s1528Section">
+                    <option value="1.2">§1.2（LN 型包络）</option>
+                    <option value="1.3">§1.3（LEO / MEO 型）</option>
+                  </select>
+                </label>
+                <label>3 dB 波束宽 °<input v-model.number="ngso.satPattern.beamwidth3dBDeg" type="number" step="0.1" /></label>
+                <label title="留空时由 ψb 反推：D/λ = √1200/ψb，Gm = 20lg(D/λ) + 7.974（隐含 η≈63%）">
+                  峰值增益 dBi<input v-model="ngso.satPattern.peakGainDbi" type="number" step="0.1" placeholder="留空 = 由波束宽反推" />
+                </label>
+                <label v-if="ngso.satPattern.s1528Section === '1.2'" title="S.1528 Table 1 仅给出四档；−30 dB 一档原文标注为待进一步研究">
+                  近旁瓣 LN dB
+                  <select v-model.number="ngso.satPattern.Ln">
+                    <option :value="-15">−15</option><option :value="-20">−20</option>
+                    <option :value="-25">−25</option><option :value="-30">−30（暂定）</option>
+                  </select>
+                </label>
+                <template v-else>
+                  <label>轨道类型
+                    <select v-model="ngso.satPattern.satMode"><option value="LEO">LEO</option><option value="MEO">MEO</option></select>
+                  </label>
+                  <label title="S.1528 §1.3 仅给出 D/λ < 35 的形式">D/λ<input v-model="ngso.satPattern.dOverLambda" type="number" step="0.1" placeholder="留空 = 由 ψb 反推" /></label>
+                </template>
+                <label title="远旁瓣电平 LF，S.1528 正文取 0 dBi">远旁瓣 dBi<input v-model.number="ngso.satPattern.farOutDbi" type="number" step="0.5" /></label>
+              </template>
+              <template v-else-if="ngso.satPattern.mode === 'gaussian'">
+                <label>3 dB 波束宽 °<input v-model.number="ngso.satPattern.beamwidth3dBDeg" type="number" step="0.1" /></label>
+                <label>旁瓣底板 dB<input v-model.number="ngso.satPattern.sidelobeFloorDb" type="number" step="1" /></label>
+              </template>
+              <template v-else-if="ngso.satPattern.mode === 'grd'">
+                <label class="wide">方向图
+                  <select v-model="ngso.satPattern.grdKey">
+                    <option value="">— 选择天线 —</option>
+                    <option v-for="a in grdAntennas" :key="a.key" :value="a.key">{{ a.label }}（{{ a.origin }}）</option>
+                  </select>
+                </label>
+                <label v-if="ngsoGrdBeams.length > 1" title="干扰计算的是与受扰载波同频的那一个波束，不是整副天线">同频波束
+                  <select v-model="ngso.satPattern.grdBeam">
+                    <option value="">全部波束取最大（上界）</option>
+                    <option v-for="b in ngsoGrdBeams" :key="b.idx" :value="b.idx">{{ b.label }}</option>
+                  </select>
+                </label>
+              </template>
+              <template v-if="ngso.satPattern.mode !== 'none' && ngso.satPattern.pointing === 'cells'">
+                <label title="每颗卫星同时激活的波束数">同时波束数<input v-model.number="ngso.satPattern.beamsPerSat" type="number" step="1" min="1" /></label>
+                <label title="地面小区间距">小区间距 km<input v-model.number="ngso.satPattern.cellSpacingKm" type="number" step="10" min="1" /></label>
+              </template>
+            </div>
+            <p v-if="ngso.satPattern.mode === 's1528'" class="ci-note sm">
+              系数依 ITU-R S.1528 (2001) 正文实现，与 PFD Mask 模块同源，原文 Annex 1 / 2 算例已作校验。
+              ψb 为半个 3 dB 波束宽，此处输入全宽，引擎内部折半。
+            </p>
+            <p v-else-if="ngso.satPattern.mode === 'gaussian'" class="ci-note sm">
+              高斯近似非 ITU 参考方向图，仅主瓣内有效；离轴较大时应改用 S.1528 或导入 GRD。
+            </p>
+            <template v-else-if="ngso.satPattern.mode === 'grd'">
+              <p v-if="ngsoGrdBeams.length > 1 && ngso.satPattern.grdBeam === ''" class="ci-warn">
+                所选方向图含 <strong>{{ ngsoGrdBeams.length }} 个波束</strong>，当前按「全部波束取最大」计算。
+                干扰计算的是与受扰载波<strong>同频</strong>的那一个波束，而非整副天线；
+                取最大等价于假设任一波束均可能与本站同频且满功率发射，结果为<strong>上界而非实际值</strong>
+                （实测两波束、峰值差 3 dB、相隔约 11° 的算例，同一地面点两种口径的相对滚降相差 17.5 dB）。
+                请在「同频波束」中选定对应波束。
+              </p>
+              <p v-else class="ci-note sm">
+                多波束 GRD 须指定与受扰载波同频的波束：采样与峰值归一均按该波束进行。
+                方向图自身已含波束排布，指向宜取「星下点」；与「地面小区网格」叠加会使排布被应用两次。
+              </p>
+            </template>
+            <p v-else-if="ngso.satPattern.mode === 'none'" class="ci-warn">
+              未计入卫星发射方向图。当前结果的准确表述为「所有干扰星在任意方向均满功率发射时的聚合 C/I」，
+              属<strong>上界包络</strong>，不宜不加限定地表述为 NGSO C/I。
+            </p>
+            <p v-if="ngso.satPattern.mode !== 'none' && ngso.satPattern.pointing === 'cells'" class="ci-note sm">
+              小区模型：每颗卫星服务距星下点最近的 N 个小区。本站小区在激活集内时按主瓣计，
+              否则按最近激活波束的离轴角计。小区选取为确定性映射，结果可复现。
+              N 与小区间距共同决定服务球冠的角半径，取值过小将使覆盖收缩至星下点邻域。
             </p>
             <div v-if="busy && ngso.progressTotal" class="ci-prog">
               <div class="ci-prog-bar" :style="{ width: (ngso.progress / ngso.progressTotal * 100) + '%' }" />
@@ -659,12 +879,66 @@ const run = () => {
           <h2>结果</h2>
           <div class="ci-kpis">
             <div class="ci-kpi"><span>C/I 中位</span><b>{{ f(ngso.result.medianCiDb, 1) }}</b><i>dB</i></div>
-            <div class="ci-kpi"><span>C/I(0.1%)</span><b>{{ f(ngso.result.percentiles && ngso.result.percentiles[0.1], 1) }}</b><i>dB</i></div>
+            <div class="ci-kpi" :title="ngSupTip(0.1)">
+              <span>C/I(0.1%)</span>
+              <template v-if="ngso.result.percentiles && ngso.result.percentiles[0.1] != null">
+                <b>{{ f(ngso.result.percentiles[0.1], 1) }}</b><i>dB</i>
+                <i v-if="ngCi(0.1)">±{{ f((ngCi(0.1).hi - ngCi(0.1).lo) / 2, 1) }}</i>
+              </template>
+              <template v-else><b class="kpi-short">样本不足</b><i>需 ≥ {{ ngSup(0.1) ? ngSup(0.1).needSamples.toLocaleString() : '—' }} 样本</i></template>
+            </div>
             <div class="ci-kpi"><span>C/I 最差</span><b>{{ f(ngso.result.worstCiDb, 1) }}</b><i>dB</i></div>
             <div class="ci-kpi"><span>服务可用度</span><b>{{ f(ngso.result.availabilityPct, 2) }}</b><i>%</i></div>
             <div class="ci-kpi"><span>in-line</span><b>{{ ngso.result.inlineCount }}</b><i>次 / {{ f(ngso.result.horizonSec / 3600, 1) }} h</i></div>
           </div>
 
+          <p v-if="ngso.result.epochStats" class="ci-note sm">
+            多历元：{{ ngso.result.epochStats.count }} 个起始历元
+            <template v-if="ngso.result.epochStats.spanDays">（{{ ngso.result.epochStats.spanDays }} 天基线内按种子 {{ ngso.result.epochStats.seed }} 抽取）</template>，
+            样本池合并共 {{ (ngso.result.samples || 0).toLocaleString() }} 个。
+            <template v-if="ngso.result.epochStats.converged">
+              目标分位 C/I({{ ngso.result.epochStats.convergePct }}%) 在第
+              <strong>{{ ngso.result.epochStats.convergedAtEpoch }}</strong> 个历元收敛（各历元独立估值的均值 95% 区间宽
+              {{ f(ngso.result.epochStats.ciWidthDb, 2) }} dB &lt; {{ ngso.result.epochStats.convergeTolDb }} dB）。
+            </template>
+            <template v-else>
+              目标分位 C/I({{ ngso.result.epochStats.convergePct }}%) 至第 {{ ngso.result.epochStats.count }} 个历元<strong>仍未收敛</strong>（各历元独立估值散布过大，其均值
+              95% 区间宽 {{ f(ngso.result.epochStats.ciWidthDb, 2) }} dB，未达 {{ ngso.result.epochStats.convergeTolDb }} dB），
+              需增加历元数或延长各段时窗。
+            </template>
+          </p>
+          <p v-if="ngCiLowRes" class="ci-warn">
+            历元数 {{ ngso.result.epochStats.count }} 少于 8：95% 区间按历元整块重采样得出，块数这么少时区间宽度主要取决于
+            块组合的种数而非真实不确定度（<strong>会偏窄</strong>），仅供参考。
+            <template v-if="ngPerEpoch.length">
+              各历元独立估出的 C/I({{ ngso.result.epochStats.convergePct }}%) 依次为
+              <strong>{{ ngPerEpoch.join(' / ') }}</strong> dB —— 请直接看这组数的散布。
+            </template>
+          </p>
+          <p v-if="ngso.result.repeatPeriodSec" class="ci-note sm">
+            星座回归周期 <strong>{{ f(ngso.result.repeatPeriodSec / 86400, 2) }} 天</strong>
+            （{{ ngso.result.repeatPeriodOrbits }} 圈，ITU-R S.1325-3 §2.7.3，精度 {{ ngso.result.repeatPeriodAccuracyDeg }}°）；
+            本次扫描覆盖 <strong>{{ f(ngso.result.repeatCoveragePct, 2) }}%</strong>。
+            覆盖率偏低时，尾部统计量的历元依赖性显著。
+          </p>
+          <p v-if="!ngso.result.satPatternActive" class="ci-warn">
+            未计入卫星发射方向图（各向同性满 EIRP），以上结果为<strong>上界包络</strong>。
+            其中 {{ f(ngso.result.farShareNoPatternPct, 1) }}% 的聚合干扰来自离轴
+            {{ ngso.result.farOffAxisDeg }}° 以外的干扰星。可在「卫星发射天线」中选定方向图与指向模型后重算。
+          </p>
+          <p v-else class="ci-note sm">
+            卫星发射天线：{{ ngso.result.satPattern.shape }}，指向
+            {{ { nadir: '星下点', cells: '地面小区网格', worst: '始终指向本站' }[ngso.result.satPattern.pointing] || ngso.result.satPattern.pointing }}
+            <template v-if="ngso.result.satPattern.beamCount > 1">，{{ ngso.result.satPattern.beamCount }} 个波束中{{ ngso.result.satPattern.beamPick == null ? '按全部取最大' : `仅取第 ${ngso.result.satPattern.beamPick + 1} 个` }}</template>
+            <template v-if="ngso.result.satPattern.coFreqFactor !== 1">，同频占空 {{ ngso.result.satPattern.coFreqFactor }}（{{ f(ngso.result.satPattern.coFreqDb, 2) }} dB）</template>
+            <template v-if="ngso.result.satPattern.peakGainDerived">，<strong>峰值增益由波束宽反推</strong></template>。
+            <template v-if="ngso.result.satPattern.allBeamsMax">
+              <strong>多波束按最大合并，本次结果为上界。</strong>
+            </template>
+            计入方向图后聚合干扰总能量下降 <strong>{{ f(ngso.result.satPatternReductionDb, 1) }} dB</strong>；
+            离轴 {{ ngso.result.farOffAxisDeg }}° 以外的贡献占比由 {{ f(ngso.result.farShareNoPatternPct, 1) }}% 变为
+            <strong>{{ f(ngso.result.farSharePct, 1) }}%</strong>。
+          </p>
           <p v-if="ngso.result.perf" class="ci-note sm">
             算力：共 {{ (ngso.result.perf.totalPropagations || 0).toLocaleString() }} 次轨道传播，
             可见性粗筛保留 {{ f(ngso.result.perf.screenKeptPct, 0) }}%（粗步 {{ f(ngso.result.perf.coarseSec, 0) }} s，掩码自身 {{ (ngso.result.perf.screenPropagations || 0).toLocaleString() }} 次），
@@ -674,21 +948,62 @@ const run = () => {
             <div class="ci-split-l">
               <h3>CDF 分位</h3>
               <table class="ci-tb res">
-                <thead><tr><th>超越时间</th><th>C/I dB</th><th>年折合</th></tr></thead>
+                <thead><tr>
+                  <th>超越时间</th><th>C/I dB</th>
+                  <th v-if="ngso.result.epochStats">95% 区间</th>
+                  <th>有效样本</th>
+                  <th v-if="ngso.result.iOverN" title="I/N 越大越劣，取自分布高端">I/N dB</th>
+                  <th v-if="ngso.result.cOverNI" title="链路口径">C/(N+I) dB</th>
+                  <th v-if="ngso.result.deltaTOverT" title="与 I/N 为同一比值的百分数表达">ΔT/T %</th>
+                  <th>年折合</th>
+                </tr></thead>
                 <tbody>
-                  <tr v-for="(v, k) in ngso.result.percentiles" :key="k">
+                  <tr v-for="(v, k) in ngso.result.percentiles" :key="k" :class="{ 'pct-none': v === null, 'pct-weak': ngSup(k) && ngSup(k).weak }">
                     <td>{{ k }} %</td>
-                    <td class="num">{{ f(v, 2) }}</td>
-                    <td class="dim">{{ f(Number(k) / 100 * 525600, 1) }} min/年</td>
+                    <td class="num" :title="ngSupTip(k)">
+                      <template v-if="v !== null">
+                        {{ f(v, 2) }}<sup v-if="ngSup(k) && ngSup(k).weak" class="pct-flag">弱</sup><sup v-if="ngSup(k) && ngSup(k).sampled" class="pct-flag samp">抽</sup>
+                      </template>
+                      <span v-else class="pct-short">样本不足</span>
+                    </td>
+                    <td v-if="ngso.result.epochStats" class="num dim">
+                      <template v-if="ngCi(k)">±{{ f((ngCi(k).hi - ngCi(k).lo) / 2, 2) }}</template>
+                      <template v-else>—</template>
+                    </td>
+                    <td class="num dim" :title="ngSupTip(k)">
+                      <template v-if="ngSup(k)">
+                        <template v-if="ngSup(k).enough">{{ ngSup(k).nEff < 100 ? ngSup(k).nEff.toFixed(1) : Math.round(ngSup(k).nEff).toLocaleString() }}</template>
+                        <template v-else>需 ≥ {{ ngSup(k).needSamples.toLocaleString() }}</template>
+                      </template>
+                      <template v-else>—</template>
+                    </td>
+                    <td v-if="ngso.result.iOverN" class="num">{{ f(ngso.result.iOverN[k], 2) }}</td>
+                    <td v-if="ngso.result.cOverNI" class="num">{{ f(ngso.result.cOverNI[k], 2) }}</td>
+                    <td v-if="ngso.result.deltaTOverT" class="num">{{ f(ngso.result.deltaTOverT[k], 3) }}</td>
+                    <td class="dim">{{ f(fYearMin(k), 1) }} min/年</td>
                   </tr>
                 </tbody>
               </table>
+              <p class="ci-note sm">
+                有效样本 = p% × 总样本数（{{ (ngso.result.samples || 0).toLocaleString() }}）。
+                不足 1 个的档不输出数值——该档取到的即样本最小值；不足 10 个的标「弱」，尾部估计不稳定。
+                输出更细的分位需延长时窗或减小步长。
+                <template v-if="ngso.result.sampled">
+                  标「抽」表示干扰星座按 1/{{ f(ngso.result.samplingFactorMax, 1) }} 抽样，
+                  聚合干扰偏低约 {{ f(10 * Math.log10(ngso.result.samplingFactorMax), 1) }} dB。
+                </template>
+              </p>
+              <p v-if="ngso.result.esPattern && ngso.result.esPattern.fellBack" class="ci-warn">
+                收信站离轴包络已由 S.1428 <strong>退回 AP8/S.580</strong>：{{ ngso.result.esPattern.reason }}。
+                AP8 为静态单干扰源的峰值包络，用于动态多干扰源场景偏保守。
+              </p>
 
               <h3>in-line 穿越事件</h3>
               <p class="ci-note sm">
-                干扰星穿过接收主瓣（θ &lt; {{ f(ngso.result.beamwidth3dBDeg, 3) }}°）的时段。
+                干扰星进入规避角以内（θ &lt; {{ f(ngso.result.inlineGuardDeg, 3) }}°，
+                天线 3 dB 全宽 {{ f(ngso.result.beamwidth3dBDeg, 3) }}°）的时段。
                 <template v-if="ngso.result.inlineRefined">
-                  事件表按 {{ f(ngso.result.inlineFineStepSec, 2) }} s 细步重扫得出：粗步长会漏采快速穿越。
+                  事件表按 {{ f(ngso.result.inlineFineStepSec, 2) }} s 细步重扫得出，以避免粗步长漏采快速穿越。
                 </template>
               </p>
               <table v-if="ngso.result.inlineEvents.length" class="ci-tb res">
@@ -708,26 +1023,110 @@ const run = () => {
               </p>
 
               <p v-if="ngso.result.cdfAliasRisk" class="ci-warn">
-                ⚠ 步长 {{ ngso.result.stepSec }} s 大于 in-line 穿越时长 {{ f(ngso.result.crossingSec, 2) }} s
-                （干扰星视角速度 {{ f(ngso.result.interfererRateDegPerSec, 3) }} °/s）：
+                步长 {{ ngso.result.stepSec }} s 大于 in-line 穿越时长 {{ f(ngso.result.crossingSec, 2) }} s
+                （干扰星视角速度 {{ f(ngso.result.interfererRateDegPerSec, 3) }} °/s），
                 <strong>CDF 尾部可能漏采穿越事件</strong>。事件表已按细步重扫；若需 CDF 一并覆盖，
                 请将步长降至 {{ f(ngso.result.recommendedStepSec, 2) }} s 以下重新计算。
               </p>
+              <template v-if="ngso.result.perGroup && ngso.result.perGroup.length">
+                <h3>单源分解</h3>
+                <p class="ci-note sm">
+                  单入与聚合为两项独立门限，不可相互替代。聚合份额为全时窗按功率的时间平均占比（合计 100%）；
+                  单入最坏为该星座自身贡献的最大值及其发生时刻。
+                </p>
+                <table class="ci-tb res">
+                  <thead><tr><th>干扰星座</th><th>星数</th><th>聚合份额</th><th>时均 I₀ dBW/Hz</th><th>单入最坏 dBW/Hz</th><th>最坏时刻</th></tr></thead>
+                  <tbody>
+                    <tr v-for="g in ngso.result.perGroup" :key="g.id">
+                      <td>{{ g.name }}</td>
+                      <td class="num dim">{{ g.count }}</td>
+                      <td class="num">
+                        {{ f(g.sharePct, 1) }}%
+                        <span class="share-bar"><i :style="{ width: Math.max(0, Math.min(100, g.sharePct || 0)) + '%' }" /></span>
+                      </td>
+                      <td class="num">{{ f(g.iAggDbW, 2) }}</td>
+                      <td class="num">{{ f(g.worstSingleEntryDbW, 2) }}</td>
+                      <td class="dim">{{ g.worstAtMs ? fTime(g.worstAtMs) : '—' }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </template>
+
+              <template v-if="ngso.result.breach && (ngso.result.breach.ciPct != null || ngso.result.breach.iOverNPct != null || ngso.result.breach.deltaTPct != null)">
+                <h3>越限时间占比</h3>
+                <table class="ci-tb res">
+                  <thead><tr><th>判据</th><th>门限</th><th>越限时间</th><th>年折合</th></tr></thead>
+                  <tbody>
+                    <tr v-if="ngso.result.breach.ciPct != null">
+                      <td>C/I</td><td class="num">&lt; {{ ngso.result.breach.criteria.ciDb }} dB</td>
+                      <td class="num">{{ f(ngso.result.breach.ciPct, 4) }}%</td>
+                      <td class="dim">{{ f(fYearMin(ngso.result.breach.ciPct), 1) }} min/年</td>
+                    </tr>
+                    <tr v-if="ngso.result.breach.iOverNPct != null">
+                      <td>I/N</td><td class="num">&gt; {{ ngso.result.breach.criteria.iOverNDb }} dB</td>
+                      <td class="num">{{ f(ngso.result.breach.iOverNPct, 4) }}%</td>
+                      <td class="dim">{{ f(fYearMin(ngso.result.breach.iOverNPct), 1) }} min/年</td>
+                    </tr>
+                    <tr v-if="ngso.result.breach.deltaTPct != null">
+                      <td>ΔT/T</td><td class="num">&gt; {{ ngso.result.breach.criteria.deltaTOverTPct }}%</td>
+                      <td class="num">{{ f(ngso.result.breach.deltaTPct, 4) }}%</td>
+                      <td class="dim">{{ f(fYearMin(ngso.result.breach.deltaTPct), 1) }} min/年</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </template>
+
+              <template v-if="ngso.result.availability">
+                <h3>可用度</h3>
+                <table class="ci-tb res">
+                  <thead><tr><th>口径</th><th>可用度</th><th>年不可用</th></tr></thead>
+                  <tbody>
+                    <tr><td>仅雨衰</td><td class="num">{{ f(ngso.result.availability.noInterferencePct, 4) }}%</td><td class="dim">{{ f((100 - ngso.result.availability.noInterferencePct) / 100 * 8760, 2) }} h/年</td></tr>
+                    <tr class="strong"><td>计入干扰</td><td class="num">{{ f(ngso.result.availability.withInterferencePct, 4) }}%</td><td class="dim">{{ f((100 - ngso.result.availability.withInterferencePct) / 100 * 8760, 2) }} h/年</td></tr>
+                    <tr><td>所需补偿余量</td><td class="num">{{ f(ngso.result.availability.extraMarginDb, 2) }} dB</td><td class="dim">补偿后可用度恢复至仅雨衰水平</td></tr>
+                  </tbody>
+                </table>
+                <p class="ci-note sm">
+                  门限 C/(N+I) = {{ ngso.result.availability.thresholdDb }} dB；
+                  干扰路径雨衰{{ ngso.result.availability.applyToInterference === 'same' ? '按等量施加' : '不施加（保守口径）' }}；
+                  雨致噪温抬升{{ ngso.result.availability.noiseRiseIncluded ? '已计入' : '未计入' }}。
+                  本表由干扰分布与雨衰分布卷积得出，与上文纯几何时间百分比为不同口径，不可相加。
+                </p>
+              </template>
+
               <p class="ci-note sm">
-                此处的时间百分比为<strong>几何统计</strong>（取决于卫星轨位分布），与雨衰可用度的百分比（传播统计）
-                物理独立，两者不能相加，合成需另行判断。
+                本节的时间百分比为几何统计（取决于卫星轨位分布），与雨衰可用度的传播统计相互独立，
+                不可直接相加；二者的合成结果见「可用度」一节。
               </p>
             </div>
 
             <div class="ci-split-r">
-              <h3>C/I 累积分布</h3>
               <CiCdfPlot
+                title="C/I 累积分布" file-name="NGSO时变_CI累积分布"
                 :cdf="ngso.result.cdf" :percentiles="ngso.result.percentiles"
                 :median-ci-db="ngso.result.medianCiDb" :threshold-db="ngso.thresholdDb" />
               <p class="ci-note sm">
-                纵轴取对数：关注区间为 0.001%–1%（相当于每年数分钟至数小时），线性轴会将其压缩。
+                纵轴取对数刻度：关注区间 0.001%–1%（对应每年数分钟至数小时），线性轴会将其压缩。
                 竖线为门限，交点即低于门限的时间占比。
               </p>
+
+              <template v-if="ngso.result.series && ngso.result.series.length">
+                <CiSeriesPlot
+                  title="C/I 时序" file-name="NGSO时变_CI时序"
+                  :series="ngso.result.series" :threshold-db="ngso.thresholdDb"
+                  metric="ci" :show-elev="true" />
+                <p class="ci-note sm">
+                  CDF 给出各电平的超越时间占比，时序给出其发生时刻、持续时长与重复间隔。
+                  低于门限的区段加粗显示；虚线为服务星仰角（右轴）；无服务星的时刻断开不连线。
+                  <template v-if="ngso.result.epochStats">多历元下各区段取自不同起始时刻，横轴按各自绝对时刻排列。</template>
+                </p>
+                <template v-if="ngso.result.iOverN">
+                  <CiSeriesPlot
+                    title="I/N 时序" file-name="NGSO时变_IN时序"
+                    :series="ngso.result.series" :threshold-db="ngso.result.breach && ngso.result.breach.criteria.iOverNDb"
+                    metric="iOverN" :show-elev="false" />
+                </template>
+              </template>
             </div>
           </div>
         </section>
@@ -839,6 +1238,19 @@ const run = () => {
 .ci-kpi span { display: block; font-size: 11px; color: var(--text-muted); }
 .ci-kpi b { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .ci-kpi b.sm { font-size: 14px; }
+/* 「样本不足」不是一个数，别把它排得像一个数 */
+.ci-kpi b.kpi-short { font-size: 15px; font-weight: 600; color: var(--text-muted); }
+
+/* 分位表的样本支撑度：不足的整行压暗并划掉数字位，弱支撑只给个上标 */
+.ci-tb.res tr.pct-none td { color: var(--text-muted); }
+.ci-tb.res tr.pct-weak td.num { color: var(--warn, #d08a2e); }
+.pct-short { font-size: 11px; color: var(--text-muted); }
+.pct-flag { font-size: 8.5px; font-weight: 700; margin-left: 2px; color: var(--warn, #d08a2e); }
+.pct-flag.samp { color: var(--danger, #c0392b); }
+
+/* 单源分解的份额条：数值旁附一条细条，便于横向比较各座的贡献占比 */
+.share-bar { display: inline-block; width: 46px; height: 5px; margin-left: 6px; vertical-align: middle; background: var(--surface-2); border: 1px solid var(--border); border-radius: 2px; overflow: hidden; }
+.share-bar i { display: block; height: 100%; background: var(--accent); }
 .ci-kpi i { font-size: 11px; font-style: normal; color: var(--text-muted); margin-left: 3px; }
 
 .ci-split { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(300px, 0.85fr); gap: 20px; align-items: start; }

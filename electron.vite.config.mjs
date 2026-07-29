@@ -43,6 +43,7 @@ export default defineConfig({
           suntool: resolve('src/suntool.html'),
           rain: resolve('src/rain.html'),
           ci: resolve('src/ci.html'),
+          pfd: resolve('src/pfd.html'),
           // 报告打印页：隐藏窗口载入、printToPDF 取材（见 electron/services/reportPdf.js）
           report: resolve('src/report.html')
         }

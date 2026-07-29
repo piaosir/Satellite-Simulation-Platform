@@ -133,6 +133,51 @@ module.exports = function createGrd(saveDir) {
     }
   }
 
+  /**
+   * NGSO 时变干扰用的「准备一次、逐次取值」采样器。
+   *
+   * 与 sample() 的差别在于**卫星在动**：每个时刻的天线基底都不一样（星位变、boresight 也变），
+   * 所以不能像 C/CCI 场图那样把 ctx 建一次；但 .grdbin 的载入与解析可以只做一次——
+   * sample() 每次调用都要 statSync + LRU 查表，放进逐时刻逐星的热路径里就太贵了。
+   *
+   * ─── 多波束 GRD 的口径 ─────────────────────────────────────────────────────
+   * 一份 GRD 常含多个 set（多波束）。干扰算的是「与受扰载波**同频**的那一个波束」，
+   * 而不是整副天线：不同波束照的是不同小区，把它们混在一起取最大，等于假设任一波束
+   * 都可能同频满功率照到本站。实测（两波束、峰值差 3 dB、相隔约 11°）：同一地面点上
+   * 「全部波束取最大」与「只算第 2 波束」的相对滚降差 17.5 dB。
+   *
+   * 故 beamIndex 显式区分两种口径：
+   *   number  只用该波束（原始 GRD set 序号，0 基），峰值也按该波束归一 —— 严谨口径
+   *   null    全部波束取最大，峰值取全局最大 —— 上界包络，由上层如实告警
+   *
+   * 返回的对象直接喂给 interference/patternsSat.js 的 mode:'grd'。
+   */
+  function ngsoSampler(file, cfg, beamIndex) {
+    const loaded = loadCached(ensureBin(resolveRaw(file)));
+    const base = cfg || {};
+    const beamCount = (loaded.beams || []).length;
+    const pick = Number.isInteger(beamIndex) ? beamIndex : null;
+    if (pick != null && (pick < 0 || pick >= beamCount)) {
+      throw new Error(`方向图只有 ${beamCount} 个波束，指定的波束序号 ${pick + 1} 越界`);
+    }
+    // 指定了波束就覆盖 keptSets（它本就是「原始 set 序号」的口径，见 grdSampler.makeSampleCtx）
+    const c = pick == null ? base : { ...base, keptSets: [pick] };
+    const peak = sampler.peakDb(loaded, c);
+    if (!Number.isFinite(peak)) throw new Error('方向图里取不到峰值（文件可能是空的或全为零场）');
+    return {
+      peakDbi: peak,
+      beamCount,
+      beamPick: pick,
+      // boresight 由指向模型给（星下点 / 小区中心 / 本站），故一律走 geo 型基底
+      sampleDbi(satLon, satLat, altKm, boreLon, boreLat, lon, lat) {
+        try {
+          return sampler.sampleMax(loaded, { lon: satLon, lat: satLat, alt: altKm },
+            { ...c, boreType: 'geo', boreLon, boreLat }, lon, lat);
+        } catch (e) { return null; }
+      }
+    };
+  }
+
   // 预编译（可选预热）：仅确保 .grdbin 生成，不采样。
   function precompile(file) {
     try { ensureBin(resolveRaw(file)); return { ok: true }; }
@@ -153,5 +198,5 @@ module.exports = function createGrd(saveDir) {
     } catch (e) { return { ok: false, error: e && e.message }; }
   }
 
-  return { sample, sampleBeams, sampleXpd, sampleCci, precompile, meta };
+  return { sample, sampleBeams, sampleXpd, sampleCci, precompile, meta, ngsoSampler };
 };

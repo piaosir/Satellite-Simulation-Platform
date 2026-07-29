@@ -98,6 +98,11 @@ function offAxisAP8(diameterM, wavelengthM, efficiency, phiDeg) {
 // ITU-R S.1428-1 平均包络 —— NGSO 干扰用
 // ---------------------------------------------------------------------------
 
+// S.1428-1 的适用频段：建议书标题与 recommends 均写明 10.7–30 GHz。
+// 频段之外用它没有依据——由 earthStationOffAxis 退回 AP8 并如实上报 fellBack。
+const S1428_F_LO_GHZ = 10.7;
+const S1428_F_HI_GHZ = 30;
+
 /**
  * ITU-R S.1428-1 参考方向图 G(φ)（dBi），10.7–30 GHz、D/λ ≥ 20。
  *
@@ -110,13 +115,18 @@ function offAxisAP8(diameterM, wavelengthM, efficiency, phiDeg) {
  * 增益。故返回值里 gmaxRef 与 gain 一并给出——需要「鉴别度」时用 gmaxRef − gain，
  * 需要绝对增益时直接用 gain（参考图的用法即如此）。
  *
- * D/λ < 20 超出本建议书适用范围 → 返回 null，由调用方回退到 AP8。
+ * 适用范围外返回 null，由调用方回退到 AP8：
+ *   · D/λ < 20              建议书自身的下界
+ *   · freqGHz 在 10.7–30 之外  同上（**freqGHz 不给则不校验**，兼容只关心口径比的调用方）
  *
  * @returns {{gain:number, gmaxRef:number, g1:number, phiM:number, phiR:number|null}|null}
  */
-function offAxisS1428(diameterM, wavelengthM, phiDeg) {
+function offAxisS1428(diameterM, wavelengthM, phiDeg, freqGHz) {
   const D = Number(diameterM), lam = Number(wavelengthM);
   if (!(D > 0) || !(lam > 0)) return null;
+  const f = Number(freqGHz);
+  // 频段校验只在调用方给了频率时做：拿不到频率就无从判断，不能假装它落在范围内
+  if (Number.isFinite(f) && (f < S1428_F_LO_GHZ || f > S1428_F_HI_GHZ)) return null;
   const r = D / lam;
   if (r < 20) return null;                       // 建议书不覆盖，调用方回退
   const phi = Math.max(0, Math.min(180, Number(phiDeg) || 0));
@@ -163,15 +173,83 @@ function offAxisS1428(diameterM, wavelengthM, phiDeg) {
 
 /**
  * 统一入口：按场景选包络。
+ *
+ * ─── S.1428 分支为什么走「鉴别度」而不是绝对增益 ─────────────────────────────
+ * S.1428 的 Gmax 是建议书自洽的**参考**峰值（20lg(D/λ)+7.7 或 +8.4，隐含 η≈70%），
+ * 与用户填的那副天线的实测峰值（20lg(πD/λ)+10lg η）不是一个量。
+ * 首版此处直接返回 s.gain（绝对增益），于是 C 侧用 gPeak(η)、I 侧用与 η 无关的 Gmax 基准，
+ * η 就成了 C/I 的杠杆：η 从 65% 改到 50%，C/I 恰好掉 10lg(0.65/0.50)=1.14 dB——
+ * 纯粹来自两套增益基准混用，不是物理。
+ * 现改为 G(φ) = gPeak(η) − [Gmax_ref − G_ref(φ)]：把建议书当**鉴别度包络**用，
+ * η 同时作用于 C 与 I，两边对消。AP8 分支（offAxisAP8）本来就自洽，不受影响。
+ *
  * @param {'peak'|'average'} kind 'peak' = GEO 静态（AP8/S.580）；'average' = NGSO 动态（S.1428）
+ * @param {number} [freqGHz] 给了才校验 S.1428 的 10.7–30 GHz 适用频段（见 offAxisS1428）
  */
-function earthStationOffAxis(kind, diameterM, wavelengthM, efficiency, phiDeg) {
+function earthStationOffAxis(kind, diameterM, wavelengthM, efficiency, phiDeg, freqGHz) {
   if (kind === 'average') {
-    const s = offAxisS1428(diameterM, wavelengthM, phiDeg);
-    if (s) return s.gain;
+    const s = offAxisS1428(diameterM, wavelengthM, phiDeg, freqGHz);
+    if (s) {
+      const gPeak = peakGainDbi(diameterM, wavelengthM, efficiency);
+      // 结合次序写成 (gPeak − gmaxRef) + gain，与 makeEarthStationOffAxis 的预解析版逐位一致
+      // ——那边把 (gPeak − gmaxRef) 提成了循环外常量，两处必须是同一个浮点表达式
+      return gPeak == null ? s.gain : (gPeak - s.gmaxRef) + s.gain;
+    }
     // D/λ < 20 或 10.7–30 GHz 之外：S.1428 不适用，退回峰值包络（偏保守，但有出处）
   }
   return offAxisAP8(diameterM, wavelengthM, efficiency, phiDeg);
+}
+
+/**
+ * 本副天线在本频率上**实际会走哪条包络**——与 φ 无关，故每次扫描只需算一次。
+ * 调用方据此告警：退回 AP8 是有出处的保守选择，但用户得知道自己看的不是 S.1428。
+ *
+ * @returns {{kind, applied:'S.1428-1'|'AP8/S.580', fellBack:boolean, reason:string|null,
+ *            dOverLambda:number|null, freqGHz:number|null}}
+ */
+function earthStationPatternInfo(kind, diameterM, wavelengthM, freqGHz) {
+  const D = Number(diameterM), lam = Number(wavelengthM), f = Number(freqGHz);
+  const r = (D > 0 && lam > 0) ? D / lam : null;
+  const out = {
+    kind: kind === 'average' ? 'average' : 'peak',
+    applied: 'AP8/S.580', fellBack: false, reason: null,
+    dOverLambda: r, freqGHz: Number.isFinite(f) ? f : null
+  };
+  if (out.kind !== 'average') return out;
+  if (r != null && r < 20) {
+    out.fellBack = true;
+    out.reason = `D/λ = ${r.toFixed(1)} < 20，超出 ITU-R S.1428-1 的适用范围`;
+    return out;
+  }
+  if (Number.isFinite(f) && (f < S1428_F_LO_GHZ || f > S1428_F_HI_GHZ)) {
+    out.fellBack = true;
+    out.reason = `${f} GHz 在 ITU-R S.1428-1 的适用频段 ${S1428_F_LO_GHZ}–${S1428_F_HI_GHZ} GHz 之外`;
+    return out;
+  }
+  out.applied = 'S.1428-1';
+  return out;
+}
+
+/**
+ * 热路径用的预解析版：包络选择、Gmax 参考基准、鉴别度偏置都只与 (kind, D, λ, η, f) 有关，
+ * 与 φ 无关——NGSO 扫描里 earthStationOffAxis 每颗星每时刻调一次，把这些常量提到循环外。
+ *
+ * ⚠️ 与 earthStationOffAxis 必须逐位一致：两者是同一口径的两种写法，改一处必改另一处。
+ * interference.test.mjs 里有一条全角域逐点比对把这件事钉死。
+ *
+ * @returns {{info:object, gain:(phiDeg:number)=>number}}
+ */
+function makeEarthStationOffAxis(kind, diameterM, wavelengthM, efficiency, freqGHz) {
+  const info = earthStationPatternInfo(kind, diameterM, wavelengthM, freqGHz);
+  if (info.applied === 'S.1428-1') {
+    const gPeak = peakGainDbi(diameterM, wavelengthM, efficiency);
+    const ref0 = offAxisS1428(diameterM, wavelengthM, 0, freqGHz);
+    if (ref0 && gPeak != null) {
+      const off = gPeak - ref0.gmaxRef;          // 鉴别度偏置（见 earthStationOffAxis 头注）
+      return { info, gain: (phi) => off + offAxisS1428(diameterM, wavelengthM, phi, freqGHz).gain };
+    }
+  }
+  return { info, gain: (phi) => offAxisAP8(diameterM, wavelengthM, efficiency, phi) };
 }
 
 // ---------------------------------------------------------------------------
@@ -305,7 +383,8 @@ function s524LimitPer4kHz(phiDeg, freqGHz) {
 
 module.exports = {
   peakGainDbi, beamwidth3dB,
-  offAxisAP8, offAxisS1428, earthStationOffAxis,
+  offAxisAP8, offAxisS1428, earthStationOffAxis, earthStationPatternInfo, makeEarthStationOffAxis,
+  S1428_F_LO_GHZ, S1428_F_HI_GHZ,
   gaussianSatBeam,
   s524OffAxisEirpDensity, s524LimitPer4kHz, S524_BANDS
 };
