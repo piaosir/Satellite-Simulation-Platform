@@ -266,6 +266,43 @@ function createPfdWindow() {
   return win
 }
 
+// 转发器频率计划：独立 BrowserWindow，单例复用。
+// 不设关窗守卫——编辑器每次改动即存盘（频率计划是「文件」不是「会话」，与三个链路预算窗口
+// 那种「一整套输入攒到最后才存」的形态不同），关窗无可丢之物。
+let _freqPlanWin = null
+function createFreqPlanWindow() {
+  if (_freqPlanWin && !_freqPlanWin.isDestroyed()) {
+    if (_freqPlanWin.isMinimized()) _freqPlanWin.restore()
+    _freqPlanWin.focus()
+    return _freqPlanWin
+  }
+  const win = new BrowserWindow({
+    width: 1560,
+    height: 980,
+    minWidth: 1180,
+    minHeight: 720,
+    title: '转发器频率计划',
+    backgroundColor: '#ffffff',
+    autoHideMenuBar: true,
+    webPreferences: {
+      preload: join(__dirname, '../preload/preload.js'),
+      contextIsolation: true,
+      sandbox: false
+    }
+  })
+  if (process.env['ELECTRON_RENDERER_URL']) {
+    win.loadURL(process.env['ELECTRON_RENDERER_URL'] + '/freqplan.html')
+  } else {
+    win.loadFile(join(__dirname, '../renderer/freqplan.html'))
+  }
+  win.on('closed', () => { _freqPlanWin = null })
+  win.webContents.on('before-input-event', (e, input) => {
+    if (input.type === 'keyDown' && input.key === 'F12') { win.webContents.toggleDevTools(); e.preventDefault() }
+  })
+  _freqPlanWin = win
+  return win
+}
+
 function createCiWindow() {
   if (_ciWin && !_ciWin.isDestroyed()) {
     if (_ciWin.isMinimized()) _ciWin.restore()
@@ -355,8 +392,10 @@ app.whenReady().then(() => {
   const share = require(join(root, 'electron/services/share'))()
   // GRD 取值服务（与 coverageGrd 共享导入目录）：链路预算逐站取值在主进程完成
   const grd = require(join(root, 'electron/services/grd'))(join(app.getPath('userData'), 'coverage-grd-imported'))
+  // 转发器频率计划：挂在卫星下、与 GRD 天线平级的一类「文件」
+  const freqPlan = require(join(root, 'electron/services/freqPlan'))(join(app.getPath('userData'), 'freq-plans'))
   const { register } = require(join(root, 'electron/ipc/register'))
-  register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget: createLinkBudgetWindow, openSunOutage: createSunOutageWindow, grd, confirmCloseLinkBudget, openNgso: createNgsoWindow, confirmCloseNgso, openRegen: createRegenWindow, confirmCloseRegen, openRain: createRainWindow, confirmCloseRain, openCi: createCiWindow, openPfd: createPfdWindow })
+  register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget: createLinkBudgetWindow, openSunOutage: createSunOutageWindow, grd, confirmCloseLinkBudget, openNgso: createNgsoWindow, confirmCloseNgso, openRegen: createRegenWindow, confirmCloseRegen, openRain: createRainWindow, confirmCloseRain, openCi: createCiWindow, openPfd: createPfdWindow, freqPlan, openFreqPlan: createFreqPlanWindow })
 
   // 加载 ITU 全精度数据（降雨率 P.837 / 海拔 P.1511 / 水汽 P.836 / 云 P.840）→ 注入计算内核，
   // 与小程序口径完全一致（小程序为云端下载，桌面端从本地 resources/itu 同步加载）。

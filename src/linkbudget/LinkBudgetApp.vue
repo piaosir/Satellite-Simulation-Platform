@@ -131,7 +131,12 @@ function removeEsConfig(cfg) { removeLibEntry(esConfigs, cfg, 'es') }
 // 编辑在资源库「卫星」库的条目编辑器里（SatellitePanel），工作台卫星分区只留只读速览行。
 let _satSeq = 1
 const blankGrd = () => ({ satFolder: '', eirpKey: '', gtKey: '' })
-const normGrd = (g) => ({ satFolder: (g && g.satFolder) || '', eirpKey: (g && g.eirpKey) || '', gtKey: (g && g.gtKey) || '' })
+// 卫星库条目的「外部资源引用」容器：方向图匹配（satFolder/eirpKey/gtKey）+ 频率计划引用（fpId/fpNo）。
+// 两者同属「这个卫星条目引了哪些外部资产」，共用一处即随条目入库/复制/分享，无需再开一条存储路径。
+const normGrd = (g) => ({
+  satFolder: (g && g.satFolder) || '', eirpKey: (g && g.eirpKey) || '', gtKey: (g && g.gtKey) || '',
+  fpId: (g && g.fpId) || '', fpNo: (g && g.fpNo) || ''
+})
 function makeSatConfig(name) { return withAutoFlag({ id: 'sat' + (_satSeq++), name: name || '', form: { ...defaultsFor(SAT_FIELDS) }, grd: blankGrd() }, 'sat') }
 const satConfigs = reactive([makeSatConfig('默认卫星')])
 const satId = ref('')   // 场景选用的卫星库条目（空 = 第一份）
@@ -572,7 +577,7 @@ async function importGrdFor(cfg) {
     if (r.canceled) return
     if (r.added.length) {
       reloadSatTree()
-      if (!cfg.grd) cfg.grd = { satFolder: '', eirpKey: '', gtKey: '' }
+      if (!cfg.grd) cfg.grd = normGrd(null)
       cfg.grd.satFolder = folder
       const keyOf = (a) => folder + '|' + a.name
       // 只填空位，不覆盖用户已匹配的：首个文件 → EIRP；有第二个 → G/T，只有一个则两路同一副天线

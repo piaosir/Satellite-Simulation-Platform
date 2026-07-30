@@ -177,6 +177,23 @@ contextBridge.exposeInMainWorld('api', {
     // 星历取数链路的操作明细（主进程广播）→ 底部「日志」窗格；{ text, level }
     onLog: (cb) => ipcRenderer.on('omm:log', (_e, p) => cb(p))
   },
+  // 转发器频率计划：挂在卫星下、与 GRD 天线平级的一类「文件」。
+  // 识图在渲染端做（需要 Canvas），主进程只负责存取与原生对话框。
+  freqPlan: {
+    open: (planId) => ipcRenderer.invoke('freqPlan:open', planId),
+    list: () => ipcRenderer.invoke('freqPlan:list'),
+    get: (id) => ipcRenderer.invoke('freqPlan:get', id),
+    save: (plan) => ipcRenderer.invoke('freqPlan:save', plan),
+    remove: (id) => ipcRenderer.invoke('freqPlan:remove', id),
+    rename: (id, name) => ipcRenderer.invoke('freqPlan:rename', id, name),
+    reassignSat: (folder, patch) => ipcRenderer.invoke('freqPlan:reassignSat', folder, patch),
+    saveImage: (id, dataUrl) => ipcRenderer.invoke('freqPlan:saveImage', id, dataUrl),
+    getImage: (id) => ipcRenderer.invoke('freqPlan:getImage', id),
+    openImage: () => ipcRenderer.invoke('freqPlan:openImage'),
+    exportFile: (kind, payload, defaultName) => ipcRenderer.invoke('freqPlan:export', kind, payload, defaultName),
+    importJson: () => ipcRenderer.invoke('freqPlan:importJson'),
+    onOpenPlan: (cb) => ipcRenderer.on('freqPlan:openPlan', (_e, id) => cb(id))
+  },
   coverage: {
     index: () => ipcRenderer.invoke('coverage:index'),
     get: (file) => ipcRenderer.invoke('coverage:get', file)

@@ -1,6 +1,7 @@
 <script setup>
-import { computed, watch } from 'vue'
+import { computed, watch, ref, onMounted } from 'vue'
 import { BAND_FREQ, BAND_LABEL } from './satPresets.js'
+import { listPlans, getPlan, transponderOptions, applyChannel, MANAGED_KEYS } from '../shared/lbFreqPlanRef.js'
 import Icon from '../components/Icon.vue'
 
 // 卫星模块（资源库「卫星」库的条目编辑器）：方向图匹配 + 完整卫星参数表单。
@@ -42,13 +43,55 @@ function onPickSat() {
   props.sel.gtKey = ''
 }
 
-// 选完工作频段，上/下行频率跟随预设变（与小程序一致；仍可手改）
+// 选完工作频段，上/下行频率跟随预设变（与小程序一致；仍可手改）。
+// ★ 已引用频率计划时不动：那五项由转发器托管，频段预设再来覆盖就把引用值冲掉了。
 watch(() => props.form.frequencyBand, (band) => {
+  if (fpActive.value) return
   const f = BAND_FREQ[band]; if (!f) return
   props.form.centerFrequency = String(f.up)
   props.form.rxCenterFrequency = String(f.dn)
 })
 const bandLabel = (o) => BAND_LABEL[o] || o
+
+/* ---- 频率计划引用：选「计划 → 转发器」，上下行频率/极化/转发器带宽由该转发器托管 ----
+   引用关系存在 sel（即卫星库条目的 grd 属性）里，随条目入库/复制/分享，与方向图匹配同一去处。 */
+const fpIndex = ref([])
+const fpPlan = ref(null)
+const fpLoading = ref(false)
+// 本卫星名下的计划优先；其余计划仍可选（同一份计划服务多个卫星条目是常见做法）
+const fpOwn = computed(() => fpIndex.value.filter((e) => e.satFolder && e.satFolder === props.sel.satFolder))
+const fpOther = computed(() => fpIndex.value.filter((e) => !e.satFolder || e.satFolder !== props.sel.satFolder))
+const fpOptions = computed(() => transponderOptions(fpPlan.value))
+const fpActive = computed(() => !!(props.sel.fpId && props.sel.fpNo && fpPlan.value))
+// 引用生效后被托管的字段灰显——避免有人改了手填值却发现算出来不对
+const isManaged = (key) => fpActive.value && MANAGED_KEYS.includes(key)
+
+async function loadFpIndex() { fpIndex.value = await listPlans() }
+async function loadFpPlan() {
+  const id = props.sel.fpId
+  if (!id) { fpPlan.value = null; return }
+  fpLoading.value = true
+  try { fpPlan.value = await getPlan(id) } finally { fpLoading.value = false }
+}
+async function onPickPlan() {
+  props.sel.fpNo = ''
+  await loadFpPlan()
+  // 计划里只有一个转发器时直接选中——多点一次没有信息量
+  if (fpOptions.value.length === 1) { props.sel.fpNo = fpOptions.value[0].no; applyFp() }
+}
+function applyFp() {
+  if (!fpPlan.value || !props.sel.fpNo) return
+  applyChannel(props.form, fpPlan.value, props.sel.fpNo)
+}
+function clearFp() {
+  props.sel.fpId = ''
+  props.sel.fpNo = ''
+  fpPlan.value = null
+}
+onMounted(async () => { await loadFpIndex(); await loadFpPlan() })
+// 换库条目时（同一组件实例复用于不同 cfg）重新解引用
+watch(() => props.sel.fpId, loadFpPlan)
+// 引用生效期间计划本身可能在另一个窗口被改过 —— 每次选转发器都按当前计划重取值，不缓存结果
 </script>
 
 <template>
@@ -106,17 +149,49 @@ const bandLabel = (o) => BAND_LABEL[o] || o
       </div>
     </div>
 
+    <!-- 频率计划引用：选「计划 → 转发器」，上下行频率/极化/转发器带宽由该转发器托管 -->
+    <div class="sp-grd sp-fp">
+      <div class="sp-gmain">
+        <label class="sp-gf" title="转发器频率计划（挂在卫星下，与 GRD 天线平级）。选定后本卫星的上下行频率/极化/转发器带宽由所选转发器托管。">
+          <span class="sp-gl">频率计划</span>
+          <select v-model="sel.fpId" class="sp-gi" :class="{ unset: !sel.fpId }" @change="onPickPlan">
+            <option value="">— 未引用 —</option>
+            <optgroup v-if="fpOwn.length" label="本卫星">
+              <option v-for="e in fpOwn" :key="e.id" :value="e.id">{{ e.name }}（{{ e.transponderCount }} 转发器）</option>
+            </optgroup>
+            <optgroup v-if="fpOther.length" label="其他">
+              <option v-for="e in fpOther" :key="e.id" :value="e.id">{{ e.satName ? e.satName + ' · ' : '' }}{{ e.name }}</option>
+            </optgroup>
+          </select>
+        </label>
+        <label v-if="sel.fpId" class="sp-gf" title="选定转发器后，其上下行频率/极化/带宽即刻填入下方卫星参数并锁定">
+          <span class="sp-gl">转发器</span>
+          <select v-model="sel.fpNo" class="sp-gi wide" :class="{ unset: !sel.fpNo }" @change="applyFp">
+            <option value="">— 未选 —</option>
+            <option v-for="o in fpOptions" :key="o.no" :value="o.no">{{ o.label }}</option>
+          </select>
+        </label>
+        <button v-if="sel.fpId" class="sp-gbtn" title="解除引用，五项频率参数交回手工填写" @click.prevent="clearFp">
+          <Icon name="lock-open" :size="12" /><span>解除引用</span>
+        </button>
+        <span v-if="fpLoading" class="sp-tip">载入中…</span>
+        <span v-else-if="fpActive" class="sp-tip">已锁定 → 上/下行频率 · 上/下行极化 · 转发器带宽（改动请回频率计划工作台）</span>
+        <span v-else-if="!fpIndex.length" class="sp-tip">尚无频率计划：在「计算 → 转发器频率计划」里新建，或从标准频率计划图截图导入</span>
+      </div>
+    </div>
+
     <!-- 卫星参数：自适应多列密排。f.br=true 的字段前插一个整行占位（sp-break），令其另起一行——
-         用于把上/下行干扰各自归为一行，按上下行区分而不做成带边框的分区块。 -->
+         用于把上/下行干扰各自归为一行，按上下行区分而不做成带边框的分区块。
+         被频率计划托管的字段置为只读并淡显：值的来源只有一处，免得手改了却不生效。 -->
     <div class="sp-fields">
       <template v-for="f in fields" :key="f.key">
         <span v-if="f.br" class="sp-break" aria-hidden="true"></span>
-        <label class="sp-f" :title="f.tip || f.label">
-          <span class="sp-l">{{ f.label }}<i v-if="f.unit"> ({{ f.unit }})</i></span>
-          <select v-if="f.type === 'select'" v-model="form[f.key]" class="sp-i">
+        <label class="sp-f" :title="isManaged(f.key) ? '由所引用的转发器托管 — 到频率计划工作台修改，或先解除引用' : (f.tip || f.label)">
+          <span class="sp-l">{{ f.label }}<i v-if="f.unit"> ({{ f.unit }})</i><i v-if="isManaged(f.key)" class="sp-lk">·计划</i></span>
+          <select v-if="f.type === 'select'" v-model="form[f.key]" class="sp-i" :disabled="isManaged(f.key)" :class="{ managed: isManaged(f.key) }">
             <option v-for="o in f.options" :key="o" :value="o">{{ f.key === 'frequencyBand' ? bandLabel(o) : o }}</option>
           </select>
-          <input v-else v-model="form[f.key]" class="sp-i mono" :placeholder="f.ph || ''" />
+          <input v-else v-model="form[f.key]" class="sp-i mono" :placeholder="f.ph || ''" :readonly="isManaged(f.key)" :class="{ managed: isManaged(f.key) }" />
         </label>
       </template>
     </div>
@@ -150,4 +225,11 @@ const bandLabel = (o) => BAND_LABEL[o] || o
 .sp-i { font: inherit; font-size: 12px; padding: 4px 7px; width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
 .sp-i:focus { outline: none; border-color: var(--accent); }
 .sp-i.mono { font-family: var(--font-mono); }
+/* 频率计划引用行：与方向图行同构，两条虚线分隔三段（方向图 / 频率计划 / 参数） */
+.sp-fp { margin-top: -2px; }
+.sp-gi.wide { flex: 0 1 300px; width: 300px; font-family: var(--font-mono); }
+/* 被频率计划托管的字段：只读 + 淡显，一眼看出「这个数不归这里管」 */
+.sp-i.managed { background: var(--surface-2); color: var(--text-muted); cursor: default; }
+.sp-i.managed:focus { border-color: var(--border); }
+.sp-lk { font-style: normal; color: var(--text-faint); font-size: 10.5px; margin-left: 3px; }
 </style>

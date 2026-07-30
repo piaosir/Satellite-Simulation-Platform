@@ -82,6 +82,7 @@ function openSunOutage() { window.api?.sunOutage?.open?.() }
 function openRain() { window.api?.rainAttenuation?.open?.() }
 function openCi() { window.api?.interference?.open?.() }
 function openPfdMask() { window.api?.pfdMask?.open?.() }
+function openFreqPlan() { window.api?.freqPlan?.open?.() }
 
 function pickView(flat) {
   if (view.flat === flat) return
@@ -130,7 +131,8 @@ const menus = computed(() => [
     { label: '日凌预报（GSO）', icon: 'sun', hint: '打开日凌预报（独立窗口）', run: openSunOutage },
     { label: '雨衰计算', icon: 'droplets', hint: '打开雨衰计算（独立窗口，通用于各类卫星）', run: openRain },
     { label: '干扰分析（C/I）', icon: 'radio-tower', hint: 'C/ASI 邻星 · C/CCI 同频复用 · C/XPI 交叉极化 · NGSO 时变 CDF（独立窗口，只读计算器）', run: openCi },
-    { label: 'PFD EIRP Mask 生成器', icon: 'table', hint: 'ITU-R S.1503 掩模：下行 PFD / 星间 EIRP / 上行 EIRP 三种 + 系统运行参数，输出可提交的 XML（独立窗口）', run: openPfdMask }
+    { label: 'PFD EIRP Mask 生成器', icon: 'table', hint: 'ITU-R S.1503 掩模：下行 PFD / 星间 EIRP / 上行 EIRP 三种 + 系统运行参数，输出可提交的 XML（独立窗口）', run: openPfdMask },
+    { label: '转发器频率计划', icon: 'layers', hint: '转发器频率排布与容量规划：截图识别导入 / 自定义 / 导出 PNG·PDF / 供链路预算引用（独立窗口）', run: openFreqPlan }
   ] },
   { key: 'view', label: '视图', items: [
     { label: '3D 球体', icon: 'globe', check: !view.flat, hint: '三维地球视图', run: () => pickView(false) },

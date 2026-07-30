@@ -1,8 +1,9 @@
 <script setup>
-import { ref, computed, onMounted, nextTick } from 'vue'
+import { ref, computed, onMounted, nextTick, watch } from 'vue'
 import { fileBridge, bumpLibrary, bumpCustomSats } from '../stores/fileBridge'
 import { readCustomConstellationSummary, customConstellationsToOmmRecords, renameCustomConstellation } from '../viz/constellation/useCustomConstellations.js'
 import { parseGxt, metaFromName } from '../viz/gxt/parse.js'
+import { loadSatNodes } from '../shared/freqPlanSats.js'
 import { serializeGxt } from '../viz/gxt/serialize.js'
 import { grdToStkAzEl } from '../viz/grd/stkPattern.js'
 import { repackGrdCommonGrid } from '../viz/grd/synth.js'
@@ -185,6 +186,85 @@ function openEditGrdSat(sat) {
   if (!a || !a.openEditSat) { flash('请在「星座地图 3D」页操作'); return }
   a.openEditSat(sat.folder)
 }
+
+/* ===================== ②b 频率计划（挂在卫星下，与 GRD 天线平级）=====================
+   宿主卫星树与 GRD 天线同源：3D 页在场时用活树（拿得到刚加的星），否则退到 localStorage 快照，
+   使本页不依赖「必须先去过 3D 页」。编辑一律在独立窗口进行——这里只做文件级的增删改查。 */
+const fpRows = ref([])
+const fpBusy = ref(false)
+async function loadFreqPlans() {
+  try { fpRows.value = api?.freqPlan?.list ? await api.freqPlan.list() : [] } catch { fpRows.value = [] }
+}
+// 卫星清单：活树优先（含尚未持久化的新星），否则读快照
+const fpSats = computed(() => {
+  const live = fileBridge.grd ? fileBridge.grd.sats.value : null
+  if (live && live.length) return live.map((s) => ({ folder: s.folder, satName: s.satName, lon: s.lon }))
+  return loadSatNodes()
+})
+// 卫星 → 其下的频率计划；宿主已不在树中的单列，避免条目从界面上凭空消失
+const fpGroups = computed(() => {
+  const by = new Map()
+  for (const e of fpRows.value) {
+    const k = e.satFolder || ''
+    if (!by.has(k)) by.set(k, [])
+    by.get(k).push(e)
+  }
+  const out = fpSats.value.map((s) => ({ folder: s.folder, label: fpSatLabel(s), plans: by.get(s.folder) || [], sat: s }))
+  for (const s of fpSats.value) by.delete(s.folder)
+  for (const [k, plans] of by) out.push({ folder: k, label: k ? `（卫星已不在树中：${plans[0].satName || k}）` : '（未归属卫星）', plans, orphan: true })
+  return out
+})
+function fpSatLabel(s) {
+  const lon = Number(s.lon)
+  return Number.isFinite(lon) && lon !== 0 ? `${s.satName}（${lon.toFixed(1)}°E）` : s.satName
+}
+function fmtFpMeta(e) {
+  const parts = [e.band || '—', `${e.transponderCount} 转发器`]
+  if (e.beamCount) parts.push(`${e.beamCount} 波束`)
+  if (e.hasImage) parts.push('有原图')
+  parts.push(fmtTime(e.updatedAt))
+  return parts.join(' · ')
+}
+function openFreqPlanWin(planId) { api?.freqPlan?.open?.(planId || '') }
+async function addFreqPlan(g) {
+  if (!api?.freqPlan) return
+  fpBusy.value = true
+  try {
+    const r = await api.freqPlan.save({ name: `${g.sat?.satName || '卫星'} 频率计划`, satFolder: g.folder, satName: g.sat?.satName || '', band: 'Ku', channels: [], los: [], beams: [] })
+    if (r?.ok) { await loadFreqPlans(); openFreqPlanWin(r.id); flash('已新建频率计划，已在编辑窗口打开') }
+  } finally { fpBusy.value = false }
+}
+async function removeFreqPlan(e) {
+  if (!(await ask(`删除频率计划「${e.name}」？此操作不可撤销。`))) return
+  await api.freqPlan.remove(e.id)
+  await loadFreqPlans()
+  flash(`已删除「${e.name}」`)
+}
+async function exportFreqPlan(e) {
+  const p = await api.freqPlan.get(e.id)
+  if (!p) { flash('计划不存在'); return }
+  const r = await api.freqPlan.exportFile('json', JSON.stringify(p, null, 2), p.name || '频率计划')
+  if (r?.canceled) return
+  flash(r?.ok ? '已导出：' + r.filePath : '导出失败：' + (r?.error || '未知错误'))
+}
+async function importFreqPlanJson() {
+  const r = await api?.freqPlan?.importJson?.()
+  if (!r || r.canceled) return
+  await loadFreqPlans()
+  flash(`导入 ${r.added} 份${r.replaced ? `，覆盖 ${r.replaced} 份` : ''}${r.errors?.length ? `，${r.errors.length} 份失败` : ''}`)
+}
+const fpEdit = ref('')
+const fpVal = ref('')
+function startRenameFp(e) { fpEdit.value = e.id; fpVal.value = e.name }
+async function commitRenameFp(e) {
+  const name = fpVal.value.trim()
+  if (!name) { flash('名称不能为空'); return }
+  await api.freqPlan.rename(e.id, name)
+  fpEdit.value = ''
+  await loadFreqPlans()
+  flash('已改名为「' + name + '」')
+}
+function cancelRenameFp() { fpEdit.value = '' }
 
 // —— 天线重命名（点名称或「改名」进入编辑，✓/回车提交）——
 const grdAntEdit = ref('')   // 正在重命名的天线 key（folder|name）
@@ -392,7 +472,10 @@ async function exportCurrentGxt() {
   else if (save && save.error) flash('导出失败：' + save.error)
 }
 
-onMounted(() => { loadOmm(); loadCustomGroups(); loadCustomConsts(); loadGxt(); loadPreset() })
+onMounted(() => { loadOmm(); loadCustomGroups(); loadCustomConsts(); loadGxt(); loadPreset(); loadFreqPlans() })
+// 频率计划在独立窗口编辑，改动不会回推本页 —— 切回本页签时重新拉一次索引，
+// 免得用户编辑完回来看到的还是旧的转发器数/更新时间。
+watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
 </script>
 
 <template>
@@ -409,6 +492,7 @@ onMounted(() => { loadOmm(); loadCustomGroups(); loadCustomConsts(); loadGxt(); 
         <nav class="rail">
           <button class="rb" :class="{ on: tab === 'omm' }" @click="tab = 'omm'">星历 OMM</button>
           <button class="rb" :class="{ on: tab === 'grd' }" @click="tab = 'grd'">GRD 天线</button>
+          <button class="rb" :class="{ on: tab === 'freqplan' }" @click="tab = 'freqplan'">频率计划</button>
           <button class="rb" :class="{ on: tab === 'gxt' }" @click="tab = 'gxt'">GXT 文件管理</button>
         </nav>
 
@@ -528,6 +612,51 @@ onMounted(() => { loadOmm(); loadCustomGroups(); loadCustomConsts(); loadGxt(); 
                 </div>
               </div>
             </template>
+          </section>
+
+          <!-- ②b 频率计划 -->
+          <section v-else-if="tab === 'freqplan'">
+            <p class="lead">卫星 → 转发器频率计划。频率计划与 GRD 天线平级、同挂在卫星下：天线管「波束往哪照」，频率计划管「频率怎么排」。编辑在独立窗口进行（截图识别导入 / 批量生成 / 容量规划 / 导出 PNG·PDF），本页只做增删改查。</p>
+            <div class="addbar">
+              <button class="mini imp" @click="openFreqPlanWin('')"><Icon name="layers" :size="12" /> 打开频率计划工作台</button>
+              <button class="mini ghost" @click="importFreqPlanJson"><Icon name="import" :size="12" /> 导入 JSON…</button>
+              <span class="dimnote">可多选，一份文件一份计划</span>
+            </div>
+
+            <div v-if="!fpSats.length && !fpRows.length" class="empty-hint">
+              暂无卫星。频率计划挂在卫星下，请先在「GRD 天线」页或「星座地图 3D · 覆盖分析」添加卫星。
+            </div>
+            <div v-else class="tree">
+              <div v-for="g in fpGroups" :key="g.folder || 'none'" class="tnode">
+                <div class="trow sat">
+                  <span class="tname" :class="{ orphanname: g.orphan }">{{ g.label }}</span>
+                  <span class="tcount">{{ g.plans.length }} 份计划</span>
+                  <span class="trops">
+                    <button v-if="!g.orphan" class="mini" :disabled="fpBusy" @click="addFreqPlan(g)"><Icon name="plus" :size="12" /> 新建计划</button>
+                  </span>
+                </div>
+                <div v-for="e in g.plans" :key="e.id" class="trow ant">
+                  <template v-if="fpEdit === e.id">
+                    <input class="ci wide" v-model="fpVal" @keydown.enter="commitRenameFp(e)" @keydown.esc="cancelRenameFp" />
+                    <span class="trops">
+                      <button class="mini imp" @mousedown.prevent @click="commitRenameFp(e)"><Icon name="check" :size="12" /> 确定</button>
+                      <button class="mini ghost" @click="cancelRenameFp">取消</button>
+                    </span>
+                  </template>
+                  <template v-else>
+                    <span class="tname rn" title="点击重命名" @click="startRenameFp(e)">{{ e.name }}</span>
+                    <span class="tmeta">{{ fmtFpMeta(e) }}</span>
+                    <span class="trops">
+                      <button class="mini" @click="openFreqPlanWin(e.id)">打开</button>
+                      <button class="mini ghost" @click="startRenameFp(e)">改名</button>
+                      <button class="mini ghost" title="导出为 JSON（可交换 / 备份）" @click="exportFreqPlan(e)">导出</button>
+                      <button class="mini del" @click="removeFreqPlan(e)">删除</button>
+                    </span>
+                  </template>
+                </div>
+                <div v-if="!g.plans.length" class="noant">暂无频率计划 — 点上方「新建计划」，或在工作台用「从截图导入」读一张标准频率计划图</div>
+              </div>
+            </div>
           </section>
 
           <!-- ③ GXT -->
@@ -673,6 +802,8 @@ onMounted(() => { loadOmm(); loadCustomGroups(); loadCustomConsts(); loadGxt(); 
 /* 天线名可点重命名：悬停提示可交互 */
 .tname.rn { cursor: pointer; }
 .tname.rn:hover { color: var(--accent); }
+/* 宿主卫星已不在树中的频率计划：标黄而不隐藏——条目还在，只是需要重新指定卫星 */
+.tname.orphanname { color: var(--warn); font-weight: 500; }
 .addbar .ci:first-child { width: 180px; flex: none; }
 .spacer { flex: 1; }
 /* 应用内确认弹窗（覆盖在文件管理器之上，居中） */

@@ -56,3 +56,9 @@ electron/services/shareConfig.js
 # 「夜区在不在正确那侧、会不会被地图接缝撕开」的判定已由 packages/core/test/terminatorRender.test.mjs
 # 逐点覆盖（进 npm test），这里只留给肉眼看观感（配色/线宽/与覆盖场叠加的层次）。本地开发用，不进仓库
 .termharness/
+
+# 频率计划识图验证台：浏览器里合成逼近真实版式的频率计划图（真字体/双极化/上下行/多 LO/分段
+# 线性轴），跑 analyzeImage 整条管线并与合成真值逐项比对。模型与几何归 freqPlan.test.mjs（进
+# npm test），但 OCR 与「标注↔色块归属」要 Canvas 才跑得动（Node 里 makeCanvas 返回 null），
+# 只能在这里验。本地开发用，不进仓库
+.fpharness/

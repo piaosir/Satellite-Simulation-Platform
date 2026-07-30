@@ -6,7 +6,7 @@ const createCustomSats = require('../services/customSats')
 const createInterference = require('../services/interference')
 
 // 注册所有 IPC 处理器。core 为返回引擎实例的函数（延迟解析）。
-function register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget, openSunOutage, grd, confirmCloseLinkBudget, openNgso, confirmCloseNgso, openRegen, confirmCloseRegen, openRain, confirmCloseRain, openCi, openPfd }) {
+function register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget, openSunOutage, grd, confirmCloseLinkBudget, openNgso, confirmCloseNgso, openRegen, confirmCloseRegen, openRain, confirmCloseRain, openCi, openPfd, freqPlan, openFreqPlan }) {
   const omm = createOmm(core)
   const customSats = createCustomSats(core)
   // grd 传进去是给 NGSO 时变的「卫星发射方向图取 GRD 实测图」用的（见 resolveSatPattern）
@@ -318,6 +318,91 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   // 干扰分析（C/I）独立窗口：只读消费者——读三库与 GRD，不写回任何库
   ipcMain.handle('ci:open', () => { if (openCi) openCi(); return true })
   ipcMain.handle('pfd:open', () => { if (openPfd) openPfd() })
+
+  // ---- 转发器频率计划 ----
+  ipcMain.handle('freqPlan:open', (_e, planId) => {
+    if (!openFreqPlan) return false
+    const win = openFreqPlan()
+    // 带 planId 打开 = 从文件区双击某份计划进来，等页面就绪后再送（新开窗口时 DOM 还没挂载）
+    if (win && planId) {
+      const send = () => { try { win.webContents.send('freqPlan:openPlan', planId) } catch { /* 窗口已关 */ } }
+      if (win.webContents.isLoading()) win.webContents.once('did-finish-load', send)
+      else send()
+    }
+    return true
+  })
+  if (freqPlan) {
+    ipcMain.handle('freqPlan:list', () => freqPlan.list())
+    ipcMain.handle('freqPlan:get', (_e, id) => freqPlan.get(id))
+    ipcMain.handle('freqPlan:save', (_e, plan) => freqPlan.save(plan))
+    ipcMain.handle('freqPlan:remove', (_e, id) => freqPlan.remove(id))
+    ipcMain.handle('freqPlan:rename', (_e, id, name) => freqPlan.rename(id, name))
+    ipcMain.handle('freqPlan:reassignSat', (_e, folder, patch) => freqPlan.reassignSat(folder, patch))
+    ipcMain.handle('freqPlan:saveImage', (_e, id, dataUrl) => freqPlan.saveImage(id, dataUrl))
+    ipcMain.handle('freqPlan:getImage', (_e, id) => freqPlan.getImage(id))
+
+    // 截图导入：原生文件框选图 → 读成 dataURL 交渲染端识图（识图需要 Canvas，只能在渲染端做）
+    ipcMain.handle('freqPlan:openImage', async (e) => {
+      const win = BrowserWindow.fromWebContents(e.sender)
+      const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+        title: '导入频率计划图（截图 / 图片）',
+        properties: ['openFile'],
+        filters: [{ name: '图片 (*.png, *.jpg, *.jpeg, *.webp, *.bmp)', extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp'] }, { name: '所有文件', extensions: ['*'] }]
+      })
+      if (canceled || !filePaths || !filePaths.length) return { canceled: true }
+      const fp = filePaths[0]
+      try {
+        const buf = fs.readFileSync(fp)
+        const ext = path.extname(fp).slice(1).toLowerCase()
+        const mime = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : ext === 'webp' ? 'image/webp' : ext === 'bmp' ? 'image/bmp' : 'image/png'
+        return { canceled: false, name: path.basename(fp), dataUrl: `data:${mime};base64,${buf.toString('base64')}` }
+      } catch (err) { return { canceled: false, error: err.message } }
+    })
+
+    // 导出：PNG / PDF / JSON 三种，统一走原生保存框
+    ipcMain.handle('freqPlan:export', async (e, kind, payload, defaultName) => {
+      const win = BrowserWindow.fromWebContents(e.sender)
+      const ext = kind === 'pdf' ? 'pdf' : kind === 'json' ? 'json' : kind === 'svg' ? 'svg' : 'png'
+      const nameMap = { pdf: 'PDF 文档', json: 'JSON 数据', svg: 'SVG 矢量图', png: 'PNG 图片' }
+      const { canceled, filePath } = await dialog.showSaveDialog(win, {
+        title: '导出频率计划',
+        defaultPath: (defaultName || '频率计划') + '.' + ext,
+        filters: [{ name: nameMap[ext], extensions: [ext] }]
+      })
+      if (canceled || !filePath) return { canceled: true }
+      try {
+        if (kind === 'json' || kind === 'svg') fs.writeFileSync(filePath, String(payload || ''), 'utf8')
+        else {
+          // PNG / PDF 都由渲染端生成后以 dataURL 送来（PDF 走 jspdf + svg2pdf，与报表同一条管线）
+          const m = /^data:[^;]+;base64,(.+)$/.exec(String(payload || ''))
+          if (!m) throw new Error('导出数据格式不正确')
+          fs.writeFileSync(filePath, Buffer.from(m[1], 'base64'))
+        }
+        return { ok: true, filePath }
+      } catch (err) { return { ok: false, error: err.message } }
+    })
+
+    // 导入 JSON（整份计划交换）
+    ipcMain.handle('freqPlan:importJson', async (e) => {
+      const win = BrowserWindow.fromWebContents(e.sender)
+      const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+        title: '导入频率计划（JSON）', properties: ['openFile', 'multiSelections'],
+        filters: [{ name: 'JSON (*.json)', extensions: ['json'] }]
+      })
+      if (canceled || !filePaths || !filePaths.length) return { canceled: true }
+      const plans = []
+      const errors = []
+      for (const fp of filePaths) {
+        try {
+          const j = JSON.parse(fs.readFileSync(fp, 'utf8'))
+          if (Array.isArray(j)) plans.push(...j)
+          else if (j && typeof j === 'object') plans.push(j)
+        } catch (err) { errors.push(`${path.basename(fp)}：${err.message}`) }
+      }
+      const r = freqPlan.importMany(plans, { mode: 'merge' })
+      return { canceled: false, ...r, errors }
+    })
+  }
   ipcMain.handle('ci:asi', (_e, req) => interference.asi(req))
   ipcMain.handle('ci:xpi', (_e, req) => interference.xpi(req))
   ipcMain.handle('ci:xpiTerm', (_e, req) => interference.xpiTerm(req))
