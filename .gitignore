@@ -52,6 +52,12 @@ electron/services/shareConfig.js
 # ——build 只查编译期，模板里引用了不存在的变量得靠它。本地开发用，不进仓库
 .advharness/
 
+# 频率计划图版式验证台（node .fpharness/gen.mjs 重生成）：双 LO cross-strap 与宽窄混排两张真出图，
+# 用来肉眼核对「块宽只由带宽决定」。数值正确性归 packages/core/test/freqPlan.test.mjs 的 ⑩b 段。
+# .fpharness/ui/ 是另一台：整个 FreqPlanApp 挂浏览器里跑（window.api 走桩），用来核对上下行双向联动
+# 在真实 DOM 里的行为（改一边另一边跟着变、清一侧两侧都空、cross-strap 解耦互不牵动）。
+.fpharness/
+
 # 晨昏线验证台：可拖 UTC 时刻，2D 平面图 + 3D 球体同屏画晨昏线/夜区，另附城市昼夜探针。
 # 「夜区在不在正确那侧、会不会被地图接缝撕开」的判定已由 packages/core/test/terminatorRender.test.mjs
 # 逐点覆盖（进 npm test），这里只留给肉眼看观感（配色/线宽/与覆盖场叠加的层次）。本地开发用，不进仓库

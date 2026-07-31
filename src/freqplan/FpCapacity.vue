@@ -4,7 +4,8 @@
 // 只出数值与色标，不出「达标/受限」这类文字判定（平台既定口径）。
 import { computed, ref } from 'vue'
 import { computeLoading, autoPlace, newCarrier } from '../shared/freqPlanCapacity.js'
-import { resolveAll } from '../shared/freqPlanModel.js'
+import { resolveAll, loValueOf, dnFromUp, upFromDn } from '../shared/freqPlanModel.js'
+import { num as parseNum } from '../shared/num.js'
 import Icon from '../components/Icon.vue'
 
 const props = defineProps({
@@ -32,11 +33,34 @@ function removeCarrier(id) { emit('update:carriers', props.carriers.filter((c) =
 function patchCarrier(id, key, val) {
   emit('update:carriers', props.carriers.map((c) => {
     if (c.id !== id) return c
-    const v = ['occBwMHz', 'pwrBwMHz', 'infoRateKbps', 'fcMHz'].includes(key)
-      ? (val === '' || val == null ? null : (Number.isFinite(Number(val)) ? Number(val) : null))
-      : val
+    const v = ['occBwMHz', 'pwrBwMHz', 'infoRateKbps', 'fcMHz'].includes(key) ? parseNum(val) : val
     return { ...c, [key]: v }
   }))
+}
+
+// ---- 中心频率的上下行双向 ----
+// 载波中心频率存的始终是【上行】那一个数（容量核算、自动排布、越界判断全在上行域进行），
+// 但拿到手的常常是下行读数（频谱仪摆在接收站那一侧）。故这一列可切到下行录入：
+//   显示 = f上 − LO，录入 = f下 + LO，LO 取该载波所属转发器的那一个。
+// 与转发器表同一条等式、同一个方向口径（见 freqPlanModel 的「上下行联动」段），不在这里另写一遍。
+const fcSide = ref('up')
+const loByNo = computed(() => {
+  const m = new Map()
+  for (const ch of props.plan?.channels || []) if (ch.no) m.set(String(ch.no), loValueOf(props.plan, ch))
+  return m
+})
+// 该载波所属转发器的 LO（没归属转发器、或那条没挂 LO → null，此时下行侧无从换算）
+const carrierLo = (c) => (c?.channelNo ? (loByNo.value.get(String(c.channelNo)) ?? null) : null)
+const fcOf = (c) => (fcSide.value === 'up' ? (Number.isFinite(c?.fcMHz) ? c.fcMHz : null) : dnFromUp(c?.fcMHz, carrierLo(c)))
+const fcDisp = (c) => fcOf(c) ?? ''
+// 明细行与装填条提示里的读数：没定频写「未定频」；定了频但切到下行侧又没 LO 可换算写「—」
+const fcText = (c) => (!Number.isFinite(c?.fcMHz) ? '未定频' : (fcOf(c) != null ? fx(fcOf(c)) + ' MHz' : '—'))
+function setFc(c, v) {
+  if (fcSide.value === 'up') { patchCarrier(c.id, 'fcMHz', v); return }
+  const lo = carrierLo(c)
+  if (lo == null) return                       // 无 LO：这一格是禁用的，走到这里只可能是粘贴，宁可不落值
+  const x = parseNum(v)
+  patchCarrier(c.id, 'fcMHz', x == null ? null : upFromDn(x, lo))
 }
 function doAutoPlace() {
   emit('update:carriers', autoPlace(props.plan, props.carriers, { guardMHz: Number(guardMHz.value) || 0 }))
@@ -125,7 +149,7 @@ function bars(t) {
                 <td colspan="9">
                   <div class="bar" :title="`转发器带宽 ${fx(t.bwMHz)} MHz`">
                     <div v-for="(b, i) in bars(t)" :key="i" class="seg" :class="{ float: !b.placed }"
-                      :style="{ left: b.left + '%', width: b.width + '%' }" :title="`${b.c.name} · ${fx(b.c.occBwMHz)} MHz${b.placed ? ' @ ' + fx(b.c.fcMHz) + ' MHz' : '（未定频）'}`"></div>
+                      :style="{ left: b.left + '%', width: b.width + '%' }" :title="`${b.c.name} · ${fx(b.c.occBwMHz)} MHz${b.placed ? ' @ ' + fcText(b.c) : '（未定频）'}`"></div>
                     <!-- 功率占用作为底衬横线，与带宽占用同轴比对 -->
                     <div class="pwr" :style="{ width: Math.min(100, (t.pwrSum / t.bwMHz) * 100) + '%' }"></div>
                   </div>
@@ -137,7 +161,7 @@ function bars(t) {
                   <div v-for="c in t.carriers" :key="c.id" class="cline">
                     <span class="cn">{{ c.name }}</span>
                     <span class="cd">{{ fx(c.occBwMHz) }} MHz</span>
-                    <span class="cd">{{ Number.isFinite(c.fcMHz) ? fx(c.fcMHz) + ' MHz' : '未定频' }}</span>
+                    <span class="cd">{{ fcText(c) }}</span>
                     <span class="cd">{{ c.modcod }}</span>
                   </div>
                 </td>
@@ -153,11 +177,20 @@ function bars(t) {
 
       <!-- 载波清单 -->
       <div class="crpane">
-        <div class="ph">载波清单</div>
+        <div class="ph">
+          <span>载波清单</span>
+          <span class="spacer"></span>
+          <span class="fcsw" title="中心频率按哪一侧录入。存的始终是上行；切到下行时按该载波所属转发器的 LO 互算（f上 = f下 + LO）">
+            中心频率
+            <button class="sw" :class="{ on: fcSide === 'up' }" @click="fcSide = 'up'">上行</button>
+            <button class="sw" :class="{ on: fcSide === 'dn' }" @click="fcSide = 'dn'">下行</button>
+          </span>
+        </div>
         <div class="crscroll">
           <table class="t">
             <thead>
-              <tr><th>名称</th><th>转发器</th><th title="Rs×(1+α)">占用 MHz</th><th title="功率占用 × 转发器带宽">功率 MHz</th><th>中心 MHz</th><th>速率 kbps</th><th></th></tr>
+              <tr><th>名称</th><th>转发器</th><th title="Rs×(1+α)">占用 MHz</th><th title="功率占用 × 转发器带宽">功率 MHz</th>
+                <th>{{ fcSide === 'up' ? '上行中心' : '下行中心' }} MHz</th><th>速率 kbps</th><th></th></tr>
             </thead>
             <tbody>
               <tr v-for="c in carriers" :key="c.id">
@@ -170,7 +203,9 @@ function bars(t) {
                 </td>
                 <td><input class="ci num nar" :value="c.occBwMHz ?? ''" @input="patchCarrier(c.id, 'occBwMHz', $event.target.value)" /></td>
                 <td><input class="ci num nar" :value="c.pwrBwMHz ?? ''" @input="patchCarrier(c.id, 'pwrBwMHz', $event.target.value)" /></td>
-                <td><input class="ci num nar" :value="c.fcMHz ?? ''" @input="patchCarrier(c.id, 'fcMHz', $event.target.value)" /></td>
+                <td><input class="ci num nar" :value="fcDisp(c)" @input="setFc(c, $event.target.value)"
+                  :disabled="fcSide === 'dn' && carrierLo(c) == null"
+                  :title="fcSide === 'dn' && carrierLo(c) == null ? '该载波所属转发器未挂 LO —— 无从换算下行，请切回上行录入' : ''" /></td>
                 <td><input class="ci num nar" :value="c.infoRateKbps ?? ''" @input="patchCarrier(c.id, 'infoRateKbps', $event.target.value)" /></td>
                 <td><button class="del" title="删除" @click="removeCarrier(c.id)"><Icon name="x" :size="10" /></button></td>
               </tr>
@@ -205,7 +240,11 @@ function bars(t) {
 .split { flex: 1; display: grid; grid-template-columns: 1fr 480px; min-height: 0; }
 .tppane { overflow: auto; border-right: 1px solid var(--border); }
 .crpane { display: flex; flex-direction: column; min-height: 0; }
-.ph { padding: 5px 8px; font-size: 12px; color: var(--text-muted); border-bottom: 1px solid var(--border); }
+.ph { display: flex; align-items: center; gap: 6px; padding: 4px 8px; font-size: 12px; color: var(--text-muted); border-bottom: 1px solid var(--border); }
+/* 中心频率按哪一侧录入：两个小段钮，选中的那个是实底。切的是「用哪一侧的数说话」，存的仍是上行 */
+.fcsw { display: inline-flex; align-items: center; gap: 3px; font-size: 11.5px; }
+.sw { font: inherit; font-size: 11.5px; padding: 1px 6px; border: 1px solid var(--border-strong); background: var(--bg); color: var(--text-muted); cursor: pointer; }
+.sw.on { background: var(--text); border-color: var(--text); color: var(--bg); }
 .crscroll { flex: 1; overflow: auto; }
 
 .t { width: 100%; border-collapse: collapse; font-size: 12.5px; }

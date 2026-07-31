@@ -129,7 +129,7 @@ const menus = computed(() => [
     // 链路预算三工作台的专业命名：轨道维度（GSO 对地静止 / NGSO 非对地静止，ITU《无线电规则》口径）×
     // 转发体制维度（透明弯管转发 / 星上再生处理 OBP）——「GEO/NGSO/再生式」旧并列混淆了两个维度，已更正。
     { label: 'GSO 透明转发链路预算', icon: 'calculator', hint: '对地静止轨道（GSO）· 透明弯管转发器：打开链路预算工作台（独立窗口）', run: openLinkBudget },
-    { label: 'NGSO 透明转发链路预算', icon: 'square-function', hint: '非对地静止轨道（NGSO，含 LEO/MEO/HEO）· 透明弯管转发器：打开链路预算工作台（独立窗口）', run: openNgso },
+    { label: 'NGSO 透明转发链路预算', icon: 'ngso', hint: '非对地静止轨道（NGSO，含 LEO/MEO/HEO）· 透明弯管转发器：打开链路预算工作台（独立窗口）', run: openNgso },
     { label: '再生处理（OBP）链路预算', icon: 'cpu', hint: '星上再生处理转发器：上行 / 下行 / 星间微波 / 星间激光，链路预算解耦（独立窗口）', run: openRegen },
     { label: '日凌预报（GSO）', icon: 'sun', hint: '打开日凌预报（独立窗口）', run: openSunOutage },
     { label: '雨衰计算', icon: 'droplets', hint: '打开雨衰计算（独立窗口，通用于各类卫星）', run: openRain },
@@ -175,7 +175,7 @@ const toolButtons = computed(() => [
   { icon: 'freq-plan', tip: '转发器频率计划', run: openFreqPlan },
   { sep: true },
   { icon: 'calculator', tip: 'GSO 透明转发链路预算', run: openLinkBudget },
-  { icon: 'square-function', tip: 'NGSO 透明转发链路预算', run: openNgso },
+  { icon: 'ngso', tip: 'NGSO 透明转发链路预算', run: openNgso },
   { icon: 'cpu', tip: '再生处理（OBP）链路预算', run: openRegen },
   { icon: 'sun', tip: '日凌预报（GSO）', run: openSunOutage },
   { icon: 'droplets', tip: '雨衰计算', run: openRain },

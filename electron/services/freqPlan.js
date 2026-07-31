@@ -78,8 +78,13 @@ module.exports = function createFreqPlan(baseDirIn) {
     p.id = safeId(p.id)
     p.updatedAt = new Date().toISOString()
     writeJson(p.id + '.json', p)
-    const idx = listIndex().filter((e) => e.id !== p.id)
-    idx.unshift(indexEntry(p))
+    // 索引顺序即列表顺序：已在库里的原地更新——保存/改名不该让它在左栏跳到最前
+    // （打开一份计划就会触发一次存盘，按最近保存排序等于「点谁谁置顶」，列表一直在动）。
+    // 只有新建/导入进来的才插到最前。
+    const idx = listIndex()
+    const at = idx.findIndex((e) => e.id === p.id)
+    if (at >= 0) idx[at] = indexEntry(p)
+    else idx.unshift(indexEntry(p))
     writeJson('index.json', idx)
     return { ok: true, id: p.id, entry: indexEntry(p) }
   }

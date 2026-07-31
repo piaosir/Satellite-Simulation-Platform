@@ -7,7 +7,7 @@
 // 功带平衡即两者相等；带宽占用大 = 受带宽限，功率占用大 = 受功率限。这里不下文字结论，
 // 只把两个数并列摆出来（遵循平台「结果输出纯数字」口径）。
 
-import { resolveAll, resolveChannel, channelByNo } from './freqPlanModel.js'
+import { resolveAll, resolveChannel, channelByNo, beamLabel } from './freqPlanModel.js'
 
 export function newCarrier(patch = {}) {
   return {
@@ -45,7 +45,12 @@ export function computeLoading(plan, carriers, opts = {}) {
     f1: r.up?.f1 ?? null,
     f2: r.up?.f2 ?? null,
     pol: r.up?.pol ?? null,
-    beam: r.beamUp?.name || '',
+    // 表内行尾的短标签（带宽另有一列，不重复写）。多波束的转发器写成「A + B」。
+    beam: (r.beamsUp || []).map((b) => b.name).filter(Boolean).join(' + '),
+    // 汇总按【波束集合】分，不按第一个波束分：一条同时落在 A+B 的转发器与只落在 A 的不是同一组，
+    // 并到 A 里去会让 A 的容量把复用出去的那份也算成自己的。同名不同带宽仍是两组（分的是 id）。
+    beamId: (r.beamsUp || []).map((b) => b.id).join('|'),
+    beamText: (r.beamsUp || []).map((b) => beamLabel(b)).join(' + '),
     carriers: [],
     occSum: 0,
     pwrSum: 0,
@@ -113,11 +118,11 @@ export function computeLoading(plan, carriers, opts = {}) {
   const totalRate = tps.reduce((s, t) => s + t.rateSum, 0)
   const usedTp = tps.filter((t) => t.count > 0).length
 
-  // 按波束分组汇总（一颗多波束星最关心的就是「每个波束卖出去多少」）
+  // 按「波束/带宽」组汇总（一颗多波束星最关心的就是「每个波束卖出去多少」）
   const beamMap = new Map()
   for (const t of tps) {
-    const k = t.beam || '（未分波束）'
-    if (!beamMap.has(k)) beamMap.set(k, { beam: k, tpCount: 0, bwMHz: 0, occMHz: 0, pwrMHz: 0, rateKbps: 0, carriers: 0 })
+    const k = t.beamId || ''
+    if (!beamMap.has(k)) beamMap.set(k, { beamId: k, beam: t.beamText || '（未分波束）', tpCount: 0, bwMHz: 0, occMHz: 0, pwrMHz: 0, rateKbps: 0, carriers: 0 })
     const g = beamMap.get(k)
     g.tpCount++
     g.bwMHz += Number(t.bwMHz) || 0

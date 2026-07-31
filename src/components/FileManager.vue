@@ -653,7 +653,7 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
                     </span>
                   </template>
                 </div>
-                <div v-if="!g.plans.length" class="noant">暂无频率计划 — 点上方「新建计划」，再到工作台用「批量生成」按「首频 + 步进 + 数量」铺一排转发器</div>
+                <div v-if="!g.plans.length" class="noant">暂无频率计划 — 点上方「新建计划」，再到工作台用「批量生成」按「起始频率 + 频率间隔 + 数量」铺一排转发器</div>
               </div>
             </div>
           </section>

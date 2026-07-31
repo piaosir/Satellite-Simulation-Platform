@@ -353,8 +353,10 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
       try {
         if (kind === 'json' || kind === 'svg') fs.writeFileSync(filePath, String(payload || ''), 'utf8')
         else {
-          // PNG / PDF 都由渲染端生成后以 dataURL 送来（PDF 走 jspdf + svg2pdf，与报表同一条管线）
-          const m = /^data:[^;]+;base64,(.+)$/.exec(String(payload || ''))
+          // PNG / PDF 都由渲染端生成后以 dataURL 送来（PDF 走 jspdf + svg2pdf，与报表同一条管线）。
+          // ★ MIME 与 base64 之间允许夹参数：jsPDF 的 datauristring 就带着 ;filename=xxx.pdf 那一节，
+          //   原先那条 [^;]+ 的正则一口咬死「类型后面必须紧跟 base64」，把每一份 PDF 都判成格式不正确。
+          const m = /^data:[^,]*;base64,(.+)$/.exec(String(payload || ''))
           if (!m) throw new Error('导出数据格式不正确')
           fs.writeFileSync(filePath, Buffer.from(m[1], 'base64'))
         }

@@ -52,8 +52,11 @@ const ICONS = {
   radio: '<path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9"/><path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5"/><circle cx="12" cy="12" r="2"/><path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5"/><path d="M19.1 4.9C23 8.8 23 15.1 19.1 19"/>',
   // 卫星覆盖等值线用：层叠的平滑曲线，形似地形/覆盖等值线（GXT），比四宫格 layout-grid 贴切
   waves: '<path d="M2 6c.6.5 1.2 1 2.5 1C7 7 7 5 9.5 5c2.6 0 2.4 2 5 2 2.5 0 2.5-2 5-2 1.3 0 1.9.5 2.5 1"/><path d="M2 12c.6.5 1.2 1 2.5 1 2.5 0 2.5-2 5-2 2.6 0 2.4 2 5 2 2.5 0 2.5-2 5-2 1.3 0 1.9.5 2.5 1"/><path d="M2 18c.6.5 1.2 1 2.5 1 2.5 0 2.5-2 5-2 2.6 0 2.4 2 5 2 2.5 0 2.5-2 5-2 1.3 0 1.9.5 2.5 1"/>',
-  // 方框函数 ƒ：NGSO（非地球静止轨道）链路预算入口用；与 GEO 链路预算的 calculator 同属「计算」家族，图形上再区分
-  'square-function': '<rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><path d="M9 17c2 0 2.8-1 2.8-2.8V10c0-2 1-3.3 3.2-3"/><path d="M9 11.2h5.7"/>',
+  // 「NGSO 透明转发链路预算」专用（非 Lucide，自绘）：方框里一个字母 N（NGSO）。
+  // 与 freq-plan 的「框中 F」同一套几何（同样的外框与 7.5→16.5 字高），构成同一族的字母标；
+  // 原先借用的 Lucide square-function（框中 ƒ）在 15 px 下只是「框里一团曲线」，认不出是什么，
+  // 换成字母后只需认「框中一个字母」，与 calculator（GSO）/ cpu（再生式）三枚并排也不再撞脸。
+  ngso: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 16.5V7.5l6 9v-9"/>',
   'chart-line': '<path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="m19 9-5 5-4-4-3 3"/>',
   // 芯片 CPU：再生式链路预算入口用；再生式 = 星上解调重调处理，用芯片寓意与 GEO/NGSO 的弯管转发区分
   cpu: '<rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9" rx="1"/><path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/>',
@@ -89,13 +92,16 @@ const ICONS = {
   angle: '<path d="M3 20h18"/><path d="M3 20 16 7"/><path d="M9.5 20a6.5 6.5 0 0 1 1.5-4.2"/>',
   // 发射塔 + 辐射弧（Lucide「radio-tower」，ISC License）：干扰分析（C/I）入口用。
   // 与波束合成的 radio 同属「辐射」族（一个源朝两边打 = 旁瓣落进别人主瓣），
-  // 靠塔身的 Λ + 横杆在图形上区分 —— 同 calculator / square-function 的做法。
+  // 靠塔身的 Λ + 横杆在图形上区分 —— 同 calculator / ngso 的做法。
   'radio-tower': '<path d="M4.9 16.1C1 12.2 1 5.8 4.9 1.9"/><path d="M7.8 4.7a6.14 6.14 0 0 0-.8 7.5"/><circle cx="12" cy="9" r="2"/><path d="M16.2 4.8c2 2 2.26 5.11.8 7.47"/><path d="M19.1 1.9a9.96 9.96 0 0 1 0 14.1"/><path d="M9.5 18h5"/><path d="m8 22 4-11 4 11"/>',
   // 「转发器频率计划」专用（非 Lucide，自绘）：方框里一个字母 F（Frequency）。
   // Lucide 那套全是隐喻式图形（表格/图层/函数/处理器…），计算与文件类入口已把这一品类用满，
   // 再从里面挑只会与既有几枚撞脸；字母＋框是另一路数，在一排线描图形里天然跳出来，
   // 且 15 px 下只需认「框中一个字母」而不必分辨细节形状，比任何写实图形都稳。
-  'freq-plan': '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9.5 16.5V7.5H15"/><path d="M9.5 12h4"/>'
+  'freq-plan': '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9.5 16.5V7.5H15"/><path d="M9.5 12h4"/>',
+  // 断开的链环（Lucide unlink-2）：频率计划里标「这一行的下行已与 LO 解耦（cross-strap）」——
+  // 中间那根连杆没了，正是「两侧不再是同一个量」的字面意思
+  'unlink-2': '<path d="M15 7h2a5 5 0 0 1 0 10h-2m-6 0H7A5 5 0 0 1 7 7h2"/>'
 }
 export const iconNames = Object.keys(ICONS)
 export default { name: 'AppIcon' }
