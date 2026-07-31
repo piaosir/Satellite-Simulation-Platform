@@ -14,7 +14,6 @@ import {
 } from '../shared/freqPlanModel.js'
 import { loadSatNodes, satLabel } from '../shared/freqPlanSats.js'
 import { toPngDataUrl, toPdfDataUrl, toSvgText } from './fpExport.js'
-import { setLbFontSize, getLbFontSize } from '../shared/lbFont.js'
 import FpChart from './FpChart.vue'
 import FpCapacity from './FpCapacity.vue'
 import Icon from '../components/Icon.vue'
@@ -241,10 +240,6 @@ async function doExport(kind) {
   } catch (e) { flash('导出失败：' + e.message) } finally { busy.value = '' }
 }
 
-// ---- 字号 ----
-const fontSize = ref(getLbFontSize())
-watch(fontSize, (v) => setLbFontSize(v))
-
 // ---- 尺寸自适应 ----
 function measure() {
   const el = chartWrap.value
@@ -294,7 +289,6 @@ watch(tab, () => nextTick(measure))
         <option value="MHz">MHz</option><option value="GHz">GHz</option>
       </select>
       <label class="fld">图字号 <input class="ci num xnar" type="number" v-model.number="opt.fontSize" min="8" max="22" /></label>
-      <label class="fld">界面 <input class="ci num xnar" type="number" v-model.number="fontSize" min="9" max="16" /></label>
       <span v-if="busy" class="busy">{{ busy }}</span>
     </header>
     <div v-if="msg" class="msg">{{ msg }}</div>
@@ -544,7 +538,9 @@ watch(tab, () => nextTick(measure))
 </template>
 
 <style scoped>
-.fp { height: 100vh; display: flex; flex-direction: column; background: var(--bg); color: var(--text); font-family: var(--font-serif); font-size: var(--lb-fs, 13px); }
+/* 根字号写死：本窗口的表格/检查器/工具栏字号全部逐处固定，跟 --lb-fs 联动等于只动一个
+   谁也继承不到的根值——原先那个「界面字号」输入框正因如此调了没反应，已连同变量一起去掉。 */
+.fp { height: 100vh; display: flex; flex-direction: column; background: var(--bg); color: var(--text); font-family: var(--font-serif); font-size: 13px; }
 .tb { display: flex; align-items: center; gap: 7px; padding: 6px 10px; border-bottom: 1px solid var(--border-strong); background: var(--surface); flex-wrap: wrap; }
 .brand { font-weight: 600; }
 .sep { width: 1px; height: 16px; background: var(--border-strong); margin: 0 2px; }
