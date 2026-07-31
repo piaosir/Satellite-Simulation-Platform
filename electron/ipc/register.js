@@ -338,28 +338,8 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     ipcMain.handle('freqPlan:remove', (_e, id) => freqPlan.remove(id))
     ipcMain.handle('freqPlan:rename', (_e, id, name) => freqPlan.rename(id, name))
     ipcMain.handle('freqPlan:reassignSat', (_e, folder, patch) => freqPlan.reassignSat(folder, patch))
-    ipcMain.handle('freqPlan:saveImage', (_e, id, dataUrl) => freqPlan.saveImage(id, dataUrl))
-    ipcMain.handle('freqPlan:getImage', (_e, id) => freqPlan.getImage(id))
 
-    // 截图导入：原生文件框选图 → 读成 dataURL 交渲染端识图（识图需要 Canvas，只能在渲染端做）
-    ipcMain.handle('freqPlan:openImage', async (e) => {
-      const win = BrowserWindow.fromWebContents(e.sender)
-      const { canceled, filePaths } = await dialog.showOpenDialog(win, {
-        title: '导入频率计划图（截图 / 图片）',
-        properties: ['openFile'],
-        filters: [{ name: '图片 (*.png, *.jpg, *.jpeg, *.webp, *.bmp)', extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp'] }, { name: '所有文件', extensions: ['*'] }]
-      })
-      if (canceled || !filePaths || !filePaths.length) return { canceled: true }
-      const fp = filePaths[0]
-      try {
-        const buf = fs.readFileSync(fp)
-        const ext = path.extname(fp).slice(1).toLowerCase()
-        const mime = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : ext === 'webp' ? 'image/webp' : ext === 'bmp' ? 'image/bmp' : 'image/png'
-        return { canceled: false, name: path.basename(fp), dataUrl: `data:${mime};base64,${buf.toString('base64')}` }
-      } catch (err) { return { canceled: false, error: err.message } }
-    })
-
-    // 导出：PNG / PDF / JSON 三种，统一走原生保存框
+    // 导出：PNG / PDF / SVG / JSON，统一走原生保存框
     ipcMain.handle('freqPlan:export', async (e, kind, payload, defaultName) => {
       const win = BrowserWindow.fromWebContents(e.sender)
       const ext = kind === 'pdf' ? 'pdf' : kind === 'json' ? 'json' : kind === 'svg' ? 'svg' : 'png'

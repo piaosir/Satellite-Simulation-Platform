@@ -10,15 +10,13 @@ import { ref, computed, watch, onMounted, nextTick } from 'vue'
 import {
   newPlan, normalizePlan, newChannel, newLo, newBeam, genSeries, validatePlan, errorCount,
   resolveChannel, resolveAll, planSummary, POLS, POL_LABEL, CHANNEL_KINDS, KIND_LABEL,
-  DEFAULT_BEAM_COLORS, POL_ORTHO
+  DEFAULT_BEAM_COLORS, POL_ORTHO, guessBand
 } from '../shared/freqPlanModel.js'
 import { loadSatNodes, satLabel } from '../shared/freqPlanSats.js'
-import { guessBand } from '../shared/freqPlanVision.js'
 import { toPngDataUrl, toPdfDataUrl, toSvgText } from './fpExport.js'
 import { setLbFontSize, getLbFontSize } from '../shared/lbFont.js'
 import FpChart from './FpChart.vue'
 import FpCapacity from './FpCapacity.vue'
-import FpImportDialog from './FpImportDialog.vue'
 import Icon from '../components/Icon.vue'
 
 const api = typeof window !== 'undefined' ? window.api : null
@@ -32,7 +30,6 @@ const tab = ref('table')           // table | capacity | check
 const carriers = ref([])           // 容量规划的载波（随计划走，存在计划里）
 const msg = ref('')
 const busy = ref('')
-const importOpen = ref(false)
 const confirmMsg = ref('')
 let _confirmResolve = null
 const chartWrap = ref(null)
@@ -218,25 +215,6 @@ function removeBeam(id) {
 }
 
 // ---- 导入 ----
-async function onImportConfirm({ plan: p, imageDataUrl, imageName }) {
-  importOpen.value = false
-  busy.value = '保存中…'
-  try {
-    const folder = newSatFolder.value || satNodes.value[0]?.folder || ''
-    const node = satNodes.value.find((s) => s.folder === folder)
-    p.satFolder = folder
-    p.satName = node?.satName || ''
-    p.name = imageName && imageName !== '（剪贴板）' ? imageName.replace(/\.[^.]+$/, '') : (node ? `${node.satName} 频率计划` : '导入的频率计划')
-    const r = await api.freqPlan.save(JSON.parse(JSON.stringify({ ...p, id: '' })))
-    if (r?.ok) {
-      // 原图留痕：供日后「回看原图核对」
-      if (imageDataUrl) { try { await api.freqPlan.saveImage(r.id, imageDataUrl) } catch { /* 图存不下不影响计划 */ } }
-      await loadIndex()
-      await openPlan(r.id)
-      flash(`已导入 ${p.channels.length} 个转发器 — 请核对标「存疑 / 几何」的条目`)
-    }
-  } finally { busy.value = '' }
-}
 async function importJson() {
   if (!api?.freqPlan?.importJson) return
   const r = await api.freqPlan.importJson()
@@ -294,10 +272,7 @@ watch(tab, () => nextTick(measure))
     <header class="tb">
       <span class="brand">转发器频率计划</span>
       <span class="sep"></span>
-      <button class="mini imp" :disabled="!satNodes.length" @click="importOpen = true" title="从标准频率计划图截图识别导入">
-        <Icon name="image" :size="12" /> 从截图导入
-      </button>
-      <button class="mini" :disabled="!satNodes.length" @click="createPlan()"><Icon name="plus" :size="12" /> 新建</button>
+      <button class="mini imp" :disabled="!satNodes.length" @click="createPlan()"><Icon name="plus" :size="12" /> 新建</button>
       <button class="mini ghost" @click="importJson"><Icon name="import" :size="12" /> 导入 JSON</button>
       <span class="sep"></span>
       <div class="dd">
@@ -341,7 +316,7 @@ watch(tab, () => nextTick(measure))
               <div class="gh" :class="{ orphan: g.orphan }">{{ g.label }}</div>
               <div v-for="e in g.items" :key="e.id" class="li" :class="{ on: e.id === currentId }" @click="openPlan(e.id)">
                 <div class="ln">{{ e.name }}</div>
-                <div class="lm">{{ e.band }} · {{ e.transponderCount }} 转发器<template v-if="e.beamCount"> · {{ e.beamCount }} 波束</template><template v-if="e.hasImage"> · 有原图</template></div>
+                <div class="lm">{{ e.band }} · {{ e.transponderCount }} 转发器<template v-if="e.beamCount"> · {{ e.beamCount }} 波束</template></div>
                 <div class="lops" @click.stop>
                   <button class="lop" title="复制" @click="duplicatePlan(e)"><Icon name="copy" :size="11" /></button>
                   <button class="lop del" title="删除" @click="removePlan(e)"><Icon name="trash" :size="11" /></button>
@@ -363,7 +338,7 @@ watch(tab, () => nextTick(measure))
       <main class="center">
         <div v-if="!plan" class="mnone">
           <p>未打开频率计划。</p>
-          <p class="dim">左栏选一份，或用「从截图导入」把一张标准频率计划图读进来。</p>
+          <p class="dim">左栏选一份，或新建一份后用右侧「批量生成」按「首频 + 步进 + 数量」铺一排转发器。</p>
         </div>
         <template v-else>
           <div class="chartbox" ref="chartWrap">
@@ -555,8 +530,6 @@ watch(tab, () => nextTick(measure))
         </div>
       </aside>
     </div>
-
-    <FpImportDialog v-if="importOpen" @close="importOpen = false" @confirm="onImportConfirm" />
 
     <div v-if="confirmMsg" class="mask">
       <div class="cdlg">

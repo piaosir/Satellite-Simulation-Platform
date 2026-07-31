@@ -4,8 +4,7 @@
 //     f_下行 = f_上行 − LO
 //   （5950−2320=3630 · 14022−1750=12272 · 14.27−3.3=10.97 …）。于是本模型只存
 //   【上行频率 + LO 归属 + 带宽 + 上下行极化 + 波束】，下行是算出来的：
-//     · 手工录入从「填 44 个数字」降为「填首频/步进/数量」（见 genSeries）；
-//     · 截图识别时下行那一排从「必须识别对」变为「交叉校验」（见 freqPlanVision 的 crossCheck）；
+//     · 录入从「填 44 个数字」降为「填首频/步进/数量」（见 genSeries）；
 //     · cross-strap（Ku 图 P5~P8→K2/K4/K6/K8 那种上下行不同 LO 的重排）是显式例外——
 //       dn.fcMHz 填了值就以填的为准，null 才走 LO 推算。这一个字段同时吃掉两个问题。
 //
@@ -122,8 +121,6 @@ export function newPlan(patch = {}) {
     los: (patch.los || []).map(newLo),
     beams: (patch.beams || []).map(newBeam),
     channels: (patch.channels || []).map(newChannel),
-    // 识图来源留痕：原图与检测框，供「回看原图核对」——不参与任何计算
-    source: patch.source ? { ...patch.source } : null,
     updatedAt: patch.updatedAt || new Date().toISOString()
   }
   return p
@@ -230,34 +227,20 @@ export function genSeries(spec = {}) {
   return out
 }
 
-// 从一串已知频率反推等差规律：识图给出零散数字后，用它判断「是不是一条等差序列、步进多少」。
-// 返回 { step, ok, outliers:[索引] }；ok=false 表示不成等差（该组得逐个录）。
-//
-// ★ 步进取【差值的众数】而非中位数：一个被 OCR 读错的数会同时制造一个「缺项的大差」和一个
-//   「跳到别处的巨大差」，差值个数是偶数时中位数正好落在这些坏值上（实测 41.5 被算成 83）。
-//   等差序列的真步进必然是重复次数最多的那个差，按容差聚类取最大簇才稳。
-export function inferArithmetic(freqs, tolRatio = 0.02) {
-  const xs = (freqs || []).map(Number).filter(Number.isFinite).sort((a, b) => a - b)
-  if (xs.length < 3) return { step: xs.length === 2 ? xs[1] - xs[0] : null, ok: xs.length === 2, outliers: [] }
-  const diffs = []
-  for (let i = 1; i < xs.length; i++) diffs.push(xs[i] - xs[i - 1])
-
-  // 按相对容差把差值聚类，取最大簇（并列时取步进更小的那簇——漏识比多识常见，
-  // 漏一项会让差翻倍，取小的那个才是真步进）
-  const clusters = []
-  for (const d of diffs.slice().sort((a, b) => a - b)) {
-    const hit = clusters.find((c) => Math.abs(d - c.mean) <= Math.max(c.mean * tolRatio, 1e-6))
-    if (hit) { hit.items.push(d); hit.mean = hit.items.reduce((s, x) => s + x, 0) / hit.items.length }
-    else clusters.push({ mean: d, items: [d] })
-  }
-  clusters.sort((a, b) => b.items.length - a.items.length || a.mean - b.mean)
-  const step = clusters[0] ? clusters[0].mean : null
-  if (!(step > 0)) return { step: null, ok: false, outliers: [] }
-
-  const tol = Math.max(step * tolRatio, 1e-6)
-  const outliers = []
-  for (let i = 0; i < diffs.length; i++) if (Math.abs(diffs[i] - step) > tol) outliers.push(i + 1)
-  return { step, ok: outliers.length === 0, outliers }
+// 频段猜测：按卫星固定业务的实际划分，不按「S 段是 2~4 GHz」这种泛频段定义——
+// 3.4~4.2 GHz 是 C 段下行而非 S 段，边界卡在 3 GHz 上。只是个默认值，界面上可改。
+export function guessBand(fMHz) {
+  const f = Number(fMHz)
+  if (!Number.isFinite(f)) return 'Ku'
+  if (f < 2000) return 'L'
+  if (f < 3000) return 'S'          // S 段：上行 2.025~2.11、下行 2.2~2.29 GHz
+  if (f < 5000) return 'C'          // C 段下行 3.4~4.2 GHz
+  if (f < 7100) return 'C'          // C 段上行 5.85~6.725 GHz
+  if (f < 9000) return 'X'
+  if (f < 15500) return 'Ku'        // Ku 下行 10.7~12.75 / 上行 12.75~14.5 GHz
+  if (f < 40000) return 'Ka'        // Ka 下行 17.7~21.2 / 上行 27.5~31 GHz
+  if (f < 50000) return 'Q'
+  return 'V'
 }
 
 // ---- 校验 ----
@@ -329,7 +312,7 @@ export const errorCount = (issues) => issues.filter((i) => i.severity === 'error
 // 按编号取通道（链路表里存的是编号，取用时解引用）
 export const channelByNo = (plan, no) => (plan.channels || []).find((c) => String(c.no) === String(no)) || null
 
-// 某频率落在哪个通道内（识图校对与「载波落在哪个转发器」都用它）
+// 某频率落在哪个通道内（「这条载波落在哪个转发器」用它）
 export function channelAtFreq(plan, fMHz, side = 'up', pol = null) {
   const f = Number(fMHz)
   if (!Number.isFinite(f)) return null

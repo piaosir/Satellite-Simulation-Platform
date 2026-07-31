@@ -7,7 +7,6 @@
 // 落盘：userData/freq-plans/
 //   index.json      —— 轻量索引（列表页只读它，不必把每份计划都读进内存）
 //   <id>.json       —— 计划全文
-//   img-<id>.png    —— 识图导入的原图留痕（供「回看原图核对」；删计划时一并清）
 const fs = require('fs')
 const path = require('path')
 
@@ -60,7 +59,6 @@ module.exports = function createFreqPlan(baseDirIn) {
       channelCount: chs.length,
       transponderCount: chs.filter((c) => (c.kind || 'transponder') === 'transponder').length,
       beamCount: Array.isArray(plan.beams) ? plan.beams.length : 0,
-      hasImage: !!plan.hasImage,
       updatedAt: plan.updatedAt || new Date().toISOString()
     }
   }
@@ -73,14 +71,12 @@ module.exports = function createFreqPlan(baseDirIn) {
     return p || null
   }
 
-  // save：新建（无 id）或整份覆盖。图像单独走 saveImage，不塞进计划 JSON——
-  // 一份 base64 PNG 动辄几百 KB，混进来会让每次存盘都重写一遍大文件。
+  // save：新建（无 id）或整份覆盖
   function save(plan) {
     const p = { ...(plan || {}) }
     if (!p.id) p.id = genId()
     p.id = safeId(p.id)
     p.updatedAt = new Date().toISOString()
-    try { p.hasImage = fs.existsSync(file('img-' + p.id + '.png')) } catch { p.hasImage = false }
     writeJson(p.id + '.json', p)
     const idx = listIndex().filter((e) => e.id !== p.id)
     idx.unshift(indexEntry(p))
@@ -90,7 +86,7 @@ module.exports = function createFreqPlan(baseDirIn) {
 
   function remove(id) {
     const sid = safeId(id)
-    for (const n of [sid + '.json', sid + '.json.bak', 'img-' + sid + '.png']) {
+    for (const n of [sid + '.json', sid + '.json.bak']) {
       try { fs.unlinkSync(file(n)) } catch { /* 不存在即已达成目的 */ }
     }
     writeJson('index.json', listIndex().filter((e) => e.id !== sid))
@@ -122,25 +118,6 @@ module.exports = function createFreqPlan(baseDirIn) {
     return { ok: true, count: n }
   }
 
-  // 原图：base64 dataURL 存成 PNG
-  function saveImage(id, dataUrl) {
-    const sid = safeId(id)
-    const m = /^data:image\/(png|jpeg|jpg|webp);base64,(.+)$/i.exec(String(dataUrl || ''))
-    if (!m) return { ok: false, error: '不支持的图像格式' }
-    fs.writeFileSync(file('img-' + sid + '.png'), Buffer.from(m[2], 'base64'))
-    const p = get(sid)
-    if (p) { p.hasImage = true; save(p) }
-    return { ok: true }
-  }
-
-  function getImage(id) {
-    const sid = safeId(id)
-    try {
-      const buf = fs.readFileSync(file('img-' + sid + '.png'))
-      return 'data:image/png;base64,' + buf.toString('base64')
-    } catch { return null }
-  }
-
   // 整库导出/导入（跟着分享包走，也可单独交换）
   function exportAll() {
     return listIndex().map((e) => get(e.id)).filter(Boolean)
@@ -159,5 +136,5 @@ module.exports = function createFreqPlan(baseDirIn) {
     return { ok: true, added, replaced }
   }
 
-  return { list, get, save, remove, rename, reassignSat, saveImage, getImage, exportAll, importMany }
+  return { list, get, save, remove, rename, reassignSat, exportAll, importMany }
 }

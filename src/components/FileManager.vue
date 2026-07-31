@@ -221,7 +221,6 @@ function fpSatLabel(s) {
 function fmtFpMeta(e) {
   const parts = [e.band || '—', `${e.transponderCount} 转发器`]
   if (e.beamCount) parts.push(`${e.beamCount} 波束`)
-  if (e.hasImage) parts.push('有原图')
   parts.push(fmtTime(e.updatedAt))
   return parts.join(' · ')
 }
@@ -616,7 +615,7 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
 
           <!-- ②b 频率计划 -->
           <section v-else-if="tab === 'freqplan'">
-            <p class="lead">卫星 → 转发器频率计划。频率计划与 GRD 天线平级、同挂在卫星下：天线管「波束往哪照」，频率计划管「频率怎么排」。编辑在独立窗口进行（截图识别导入 / 批量生成 / 容量规划 / 导出 PNG·PDF），本页只做增删改查。</p>
+            <p class="lead">卫星 → 转发器频率计划。频率计划与 GRD 天线平级、同挂在卫星下：天线管「波束往哪照」，频率计划管「频率怎么排」。编辑在独立窗口进行（批量生成 / 容量规划 / 导出 PNG·PDF），本页只做增删改查。</p>
             <div class="addbar">
               <button class="mini imp" @click="openFreqPlanWin('')"><Icon name="layers" :size="12" /> 打开频率计划工作台</button>
               <button class="mini ghost" @click="importFreqPlanJson"><Icon name="import" :size="12" /> 导入 JSON…</button>
@@ -654,7 +653,7 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
                     </span>
                   </template>
                 </div>
-                <div v-if="!g.plans.length" class="noant">暂无频率计划 — 点上方「新建计划」，或在工作台用「从截图导入」读一张标准频率计划图</div>
+                <div v-if="!g.plans.length" class="noant">暂无频率计划 — 点上方「新建计划」，再到工作台用「批量生成」按「首频 + 步进 + 数量」铺一排转发器</div>
               </div>
             </div>
           </section>

@@ -1,22 +1,19 @@
-// 转发器频率计划：模型 / LO 推算 / 校验 / 容量 / 识图几何核 的自测。运行：npm test
+// 转发器频率计划：模型 / LO 推算 / 校验 / 容量 / 版式出图 的自测。运行：npm test
 // 被测文件是渲染端 ESM（src/shared/freqPlan*.js），故本测试自身也是 .mjs。
 //
 // 关键不变式：
 //   ① 下行 = 上行 − LO；显式填了 dn.fcMHz 就以填的为准（cross-strap 不能被 LO 覆盖掉）；
 //   ② 同侧同极化重叠必报，正交极化重叠不报（那是合法的极化复用，报了就是狼来了）；
 //   ③ 序列生成的频率严格等差，交替极化严格正交；
-//   ④ inferArithmetic 对含离群点的序列仍取出正确步进（中位差，不是均值）；
-//   ⑤ 频率标度最小二乘能剔除离群点后复原真实标度 —— 这是识图「OCR 只要对几个就行」的支点；
-//   ⑥ 容量的两条约束各自独立累计，正交极化不合并；
-//   ⑦ 引用出去的链路字段单位正确（频率 GHz、带宽 MHz）—— 单位错会静默算错整条链路。
+//   ④ 容量的两条约束各自独立累计，正交极化不合并；
+//   ⑤ 引用出去的链路字段单位正确（频率 GHz、带宽 MHz）—— 单位错会静默算错整条链路。
 import {
   newPlan, newChannel, newLo, newBeam, normalizePlan, downlinkFc, resolveChannel, resolveAll,
-  validatePlan, errorCount, genSeries, inferArithmetic, channelToLinkFields, channelByNo,
-  channelAtFreq, planExtent, toMHz, POL_ORTHO, planSummary
+  validatePlan, errorCount, genSeries, channelToLinkFields, channelByNo,
+  channelAtFreq, planExtent, toMHz, POL_ORTHO, planSummary, guessBand
 } from '../../../src/shared/freqPlanModel.js'
 import { computeLoading, autoPlace, newCarrier } from '../../../src/shared/freqPlanCapacity.js'
 import { layout, toSvg } from '../../../src/shared/freqPlanRender.js'
-import { guessBand, analyzeImage } from '../../../src/shared/freqPlanVision.js'
 
 let pass = 0, fail = 0
 function ok(name, cond, extra) {
@@ -128,44 +125,7 @@ ok('toMHz: 1000 当 MHz（边界）', near(toMHz(1000), 1000))
   ok('交替编号从 3 起', alt.map((c) => c.no).join(',') === '3,4,5,6')
 }
 
-/* ---------- ⑥ 等差推断（含离群点） ---------- */
-{
-  const clean = inferArithmetic([14022, 14063.5, 14105, 14146.5, 14188])
-  ok('等差推断步进 41.5', near(clean.step, 41.5, 1e-9))
-  ok('干净序列 ok=true', clean.ok === true)
-
-  // 中间一个被 OCR 读错（14105 → 14705）：中位差仍应给出 41.5，并标出离群
-  const dirty = inferArithmetic([14022, 14063.5, 14705, 14146.5, 14188])
-  ok('含离群仍取到 41.5', near(dirty.step, 41.5, 1e-9), '得到 ' + dirty.step)
-  ok('含离群 ok=false', dirty.ok === false)
-  ok('离群位置被标出', dirty.outliers.length > 0)
-}
-
-/* ---------- ⑦ 频率标度最小二乘（识图的支点）---------- */
-{
-  // 复刻 fitScale 的调用路径：analyzeImage 内部私有，这里用同一算法验证「离群剔除后复原真标度」。
-  // 真标度 f = 0.5·x + 13900，5 个点里第 3 个被污染
-  const truth = (x) => 0.5 * x + 13900
-  const pts = [50, 100, 150, 200, 250].map((x, i) => ({ x, f: i === 2 ? truth(x) + 400 : truth(x) }))
-  // 与 freqPlanVision.fitScale 等价的实现（该函数未导出，此处内联同式验证）
-  const fit = (ps) => {
-    const n = ps.length
-    let sx = 0, sf = 0, sxx = 0, sxf = 0
-    for (const p of ps) { sx += p.x; sf += p.f; sxx += p.x * p.x; sxf += p.x * p.f }
-    const den = n * sxx - sx * sx
-    const a = (n * sxf - sx * sf) / den
-    return { a, b: (sf - a * sx) / n }
-  }
-  let s = fit(pts)
-  const resid = pts.map((p) => ({ p, r: Math.abs(s.a * p.x + s.b - p.f) })).sort((u, v) => u.r - v.r)
-  s = fit(resid.slice(0, Math.max(2, Math.floor(pts.length * 0.8))).map((u) => u.p))
-  ok('标度斜率复原 0.5', near(s.a, 0.5, 1e-9), '得到 ' + s.a)
-  ok('标度截距复原 13900', near(s.b, 13900, 1e-6), '得到 ' + s.b)
-  // 关键含义：被污染的那一点用几何回代后能被纠回真值
-  ok('污染点由几何纠回', near(s.a * 150 + s.b, truth(150), 1e-6))
-}
-
-/* ---------- ⑧ 容量：两条约束独立累计 ---------- */
+/* ---------- ⑥ 容量：两条约束独立累计 ---------- */
 {
   const plan = newPlan()
   plan.channels.push(
@@ -197,7 +157,7 @@ ok('toMHz: 1000 当 MHz（边界）', near(toMHz(1000), 1000))
   ok('未归属载波单列', r2.unassigned.length === 1 && r2.summary.unassignedCount === 1)
 }
 
-/* ---------- ⑨ 自动排布 ---------- */
+/* ---------- ⑦ 自动排布 ---------- */
 {
   const plan = newPlan()
   plan.channels.push(newChannel({ no: 'C1', up: { fcMHz: 14022, bwMHz: 36, pol: 'H' } }))
@@ -220,7 +180,7 @@ ok('toMHz: 1000 当 MHz（边界）', near(toMHz(1000), 1000))
   ok('装不下的留 null', p2.some((c) => c.fcMHz == null))
 }
 
-/* ---------- ⑩ 引用出去的链路字段（单位！）---------- */
+/* ---------- ⑧ 引用出去的链路字段（单位！）---------- */
 {
   const lo = newLo({ name: 'LO', valueMHz: 1750 })
   const plan = newPlan({ los: [lo] })
@@ -242,7 +202,7 @@ ok('toMHz: 1000 当 MHz（边界）', near(toMHz(1000), 1000))
   ok('按频率定位通道（带外返回 null）', channelAtFreq(plan, 15000, 'up') === null)
 }
 
-/* ---------- ⑪ 规范化：悬挂引用必须清掉 ---------- */
+/* ---------- ⑨ 规范化：悬挂引用必须清掉 ---------- */
 {
   const lo = newLo({ name: 'LO', valueMHz: 1750 })
   const beam = newBeam({ name: 'CHN' })
@@ -257,7 +217,7 @@ ok('toMHz: 1000 当 MHz（边界）', near(toMHz(1000), 1000))
   ok('normalizePlan 容忍 null', normalizePlan(null).channels.length === 0)
 }
 
-/* ---------- ⑫ 版式与出图 ---------- */
+/* ---------- ⑩ 版式与出图 ---------- */
 {
   const lo = newLo({ name: 'LO', valueMHz: 1750 })
   const beam = newBeam({ name: 'CHN', color: '#4472C4' })
@@ -288,7 +248,7 @@ ok('toMHz: 1000 当 MHz（边界）', near(toMHz(1000), 1000))
   ok('摘要含转发器数', /6 转发器/.test(planSummary(plan)))
 }
 
-/* ---------- ⑬ 频段猜测 ---------- */
+/* ---------- ⑪ 频段猜测 ---------- */
 {
   ok('C 段上行', guessBand(5950) === 'C')
   ok('C 段下行', guessBand(3630) === 'C')
@@ -298,7 +258,7 @@ ok('toMHz: 1000 当 MHz（边界）', near(toMHz(1000), 1000))
   ok('L 段', guessBand(1600) === 'L')
 }
 
-/* ---------- ⑭ 空计划与边界 ---------- */
+/* ---------- ⑫ 空计划与边界 ---------- */
 {
   const empty = newPlan()
   ok('空计划版式不炸', layout(empty).empty === true)
@@ -311,53 +271,6 @@ ok('toMHz: 1000 当 MHz（边界）', near(toMHz(1000), 1000))
   noLo.channels.push(newChannel({ no: 'X', up: { fcMHz: 14000, bwMHz: 36 } }))
   ok('无 LO 无下行 → null', downlinkFc(noLo, noLo.channels[0]) === null)
   ok('无 LO 报 warn', validatePlan(noLo).some((i) => i.code === 'nolo'))
-}
-
-/* ---------- ⑮ 识图 CV 管线（合成图）----------
-   OCR 那一半要 Canvas（Node 里 makeCanvas 返回 null → 识别结果为空），但几何这一半是识图的主干：
-   色块检出 / 行聚类 / 频带分区 / 图例剔除。用一张合成的标准版式图验证它们。
-   analyzeImage 只用到 imageData 的 width/height/data，故此处传裸对象即可。 */
-{
-  const W = 900, H = 520
-  const data = new Uint8ClampedArray(W * H * 4)
-  for (let i = 0; i < W * H; i++) { data[i * 4] = 255; data[i * 4 + 1] = 255; data[i * 4 + 2] = 255; data[i * 4 + 3] = 255 }
-  const fillRect = (x0, y0, w, h, [r, g, b]) => {
-    for (let y = y0; y < y0 + h; y++) {
-      for (let x = x0; x < x0 + w; x++) {
-        if (x < 0 || y < 0 || x >= W || y >= H) continue
-        const i = (y * W + x) * 4
-        data[i] = r; data[i + 1] = g; data[i + 2] = b; data[i + 3] = 255
-      }
-    }
-  }
-  const BLUE = [68, 114, 196], RED = [224, 60, 49]
-  // 上行区：两排各 6 块（模拟 H / V 双极化），块宽 60、间隔 10
-  for (let i = 0; i < 6; i++) fillRect(80 + i * 70, 90, 60, 26, BLUE)
-  for (let i = 0; i < 6; i++) fillRect(115 + i * 70, 126, 60, 26, RED)
-  // 下行区：同样两排（y 相距足够远，须被切成另一个频带）
-  for (let i = 0; i < 6; i++) fillRect(80 + i * 70, 330, 60, 26, BLUE)
-  for (let i = 0; i < 6; i++) fillRect(115 + i * 70, 366, 60, 26, RED)
-  // 图例：底部两个孤立小块，应被当图例剔除（不进频带）
-  fillRect(80, 470, 26, 14, BLUE)
-  fillRect(220, 470, 26, 14, RED)
-
-  const r = analyzeImage({ width: W, height: H, data })
-  ok('CV：检出 26 个色块（24 转发器 + 2 图例）', r.stats.blocks === 26, '得到 ' + r.stats.blocks)
-  ok('CV：切成 2 个频带（上行 / 下行）', r.stats.bands === 2, '得到 ' + r.stats.bands)
-  ok('CV：共 4 排（每带双极化）', r.stats.rows === 4, '得到 ' + r.stats.rows)
-  ok('CV：图例区被剔除', r.warnings.some((w) => /图例/.test(w)))
-  ok('CV：两排极化互为正交', (() => {
-    const b0 = r.overlay.bands[0]
-    return b0 && b0.rows.length === 2 && POL_ORTHO[b0.rows[0].pol] === b0.rows[1].pol
-  })())
-  // 无 OCR → 没有频率标注可拟合，标度必然失败，但绝不能因此崩掉或造出假频率
-  ok('CV：无 OCR 时不造假频率', r.plan.channels.every((c) => c.up.fcMHz == null || Number.isFinite(c.up.fcMHz)))
-  ok('CV：无 OCR 时给出标度失败告警', r.warnings.some((w) => /标度/.test(w)))
-
-  // 纯白图：不应崩，且明确报「未检出色块」
-  const blank = new Uint8ClampedArray(200 * 100 * 4).fill(255)
-  const rb = analyzeImage({ width: 200, height: 100, data: blank })
-  ok('CV：纯白图不崩', rb.stats.blocks === 0 && rb.warnings.length > 0)
 }
 
 console.log(`  ${pass} 通过, ${fail} 失败`)

@@ -117,7 +117,10 @@ const stepZoom = (d) => { const t = Math.max(0, Math.min(1, zoom.value + d)); if
 // ---- 菜单栏（仿 SATSOFT 经典菜单：纯文字标题 + 下拉；不可用项置灰不隐藏）----
 const menus = computed(() => [
   { key: 'file', label: '文件', items: [
-    { label: '文件管理…', icon: 'folder-open', hint: '管理 GRD / GXT 覆盖文件库（导入 / 导出 / 删除）', run: () => { fileOpen.value = true } },
+    { label: '文件管理…', icon: 'folder-open', hint: '管理 GRD 天线 / 频率计划 / GXT 覆盖文件库（导入 / 导出 / 删除）', run: () => { fileOpen.value = true } },
+    // 频率计划是「文件」不是「计算」：它与 GRD 天线平级、同挂在卫星下，本身不产出任何计算结果，
+    // 只是被链路预算引用的一份资料。故归文件区，不留在计算菜单里。
+    { label: '转发器频率计划…', icon: 'freq-plan', hint: '转发器频率排布与容量规划：挂在卫星下、与 GRD 天线平级；供链路预算引用，可导出 PNG / PDF（独立窗口）', run: openFreqPlan },
     { label: '导入 TLE 文件（CSV）…', icon: 'import', disabled: !covNav.importTle, hint: '从本地 CSV（CelesTrak「FORMAT=csv」的 OMM 文件）导入卫星星历，离线或无法连接 CelesTrak 时使用', run: () => covNav.importTle?.() },
     { sep: true },
     { label: '退出', icon: 'log-out', hint: '关闭主窗口', run: () => window.close() }
@@ -131,8 +134,7 @@ const menus = computed(() => [
     { label: '日凌预报（GSO）', icon: 'sun', hint: '打开日凌预报（独立窗口）', run: openSunOutage },
     { label: '雨衰计算', icon: 'droplets', hint: '打开雨衰计算（独立窗口，通用于各类卫星）', run: openRain },
     { label: '干扰分析（C/I）', icon: 'radio-tower', hint: 'C/ASI 邻星 · C/CCI 同频复用 · C/XPI 交叉极化 · NGSO 时变 CDF（独立窗口，只读计算器）', run: openCi },
-    { label: 'PFD EIRP Mask 生成器', icon: 'table', hint: 'ITU-R S.1503 掩模：下行 PFD / 星间 EIRP / 上行 EIRP 三种 + 系统运行参数，输出可提交的 XML（独立窗口）', run: openPfdMask },
-    { label: '转发器频率计划', icon: 'layers', hint: '转发器频率排布与容量规划：截图识别导入 / 自定义 / 导出 PNG·PDF / 供链路预算引用（独立窗口）', run: openFreqPlan }
+    { label: 'PFD EIRP Mask 生成器', icon: 'table', hint: 'ITU-R S.1503 掩模：下行 PFD / 星间 EIRP / 上行 EIRP 三种 + 系统运行参数，输出可提交的 XML（独立窗口）', run: openPfdMask }
   ] },
   { key: 'view', label: '视图', items: [
     { label: '3D 球体', icon: 'globe', check: !view.flat, hint: '三维地球视图', run: () => pickView(false) },
@@ -169,6 +171,8 @@ function runItem(it) { if (it.disabled) return; openMenu.value = ''; hint.value 
 // ---- 工具栏（只放侧栏覆盖不到的动作：文件 / 计算窗口 / 视图切换 / 导出 / 设置；面板切换交给活动栏，不重复）----
 const toolButtons = computed(() => [
   { icon: 'folder-open', tip: '文件管理', run: () => { fileOpen.value = true } },
+  // 与文件管理同组：频率计划挂在卫星下、与 GRD 天线平级，属文件区而非计算区
+  { icon: 'freq-plan', tip: '转发器频率计划', run: openFreqPlan },
   { sep: true },
   { icon: 'calculator', tip: 'GSO 透明转发链路预算', run: openLinkBudget },
   { icon: 'square-function', tip: 'NGSO 透明转发链路预算', run: openNgso },
