@@ -91,11 +91,11 @@ const ICONS = {
   // 与波束合成的 radio 同属「辐射」族（一个源朝两边打 = 旁瓣落进别人主瓣），
   // 靠塔身的 Λ + 横杆在图形上区分 —— 同 calculator / square-function 的做法。
   'radio-tower': '<path d="M4.9 16.1C1 12.2 1 5.8 4.9 1.9"/><path d="M7.8 4.7a6.14 6.14 0 0 0-.8 7.5"/><circle cx="12" cy="9" r="2"/><path d="M16.2 4.8c2 2 2.26 5.11.8 7.47"/><path d="M19.1 1.9a9.96 9.96 0 0 1 0 14.1"/><path d="M9.5 18h5"/><path d="m8 22 4-11 4 11"/>',
-  // 「转发器频率计划」专用（非 Lucide，自绘）。Lucide 那套是隐喻式的（表格/图层/函数…），
-  // 计算类入口已把这一品类用满，再挑一个只会与既有几枚撞脸。故直接画【频率计划图本身的形态】：
-  // 一条贯穿基线 + 基线上下各两个错开半格的信道块——正是标准频率计划图的缩影，
-  // 与周围图标不属同一路数，16 px 下靠「横线 + 交错方块」的节奏即可辨认。
-  'freq-plan': '<path d="M2 12h20"/><rect x="3" y="6" width="6" height="5" rx="1"/><rect x="12" y="6" width="6" height="5" rx="1"/><rect x="6" y="13" width="6" height="5" rx="1"/><rect x="15" y="13" width="6" height="5" rx="1"/>'
+  // 「转发器频率计划」专用（非 Lucide，自绘）：方框里一个字母 F（Frequency）。
+  // Lucide 那套全是隐喻式图形（表格/图层/函数/处理器…），计算与文件类入口已把这一品类用满，
+  // 再从里面挑只会与既有几枚撞脸；字母＋框是另一路数，在一排线描图形里天然跳出来，
+  // 且 15 px 下只需认「框中一个字母」而不必分辨细节形状，比任何写实图形都稳。
+  'freq-plan': '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9.5 16.5V7.5H15"/><path d="M9.5 12h4"/>'
 }
 export const iconNames = Object.keys(ICONS)
 export default { name: 'AppIcon' }
