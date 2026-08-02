@@ -191,8 +191,7 @@ const rows = computed(() => {
         </select>
         <i class="pf-u"></i>
       </label>
-      <div v-if="!satTree.length" class="rsp-tip">卫星树为空：请先在「星座3D」页导入卫星（作轨道来源），或改用「搜索卫星」。</div>
-      <div v-else class="rsp-tip">取所选卫星轨道用于几何求解（斜距/仰角/访问窗口）；卫星 G/T 在「发信站群」表逐站手动输入。</div>
+      <div v-if="!satTree.length" class="rsp-tip">卫星树为空。</div>
     </div>
 
     <!-- ② 搜索卫星 -->
@@ -201,7 +200,7 @@ const rows = computed(() => {
         <input v-model="kw" class="pf-i" placeholder="名称 / NORAD 号，如 STARLINK / 44713" @focus="onSearchFocus" @click="listOpen = true" @input="listOpen = true" @blur="onSearchBlur" />
         <i class="pf-u"></i>
       </label>
-      <div v-if="loading" class="rsp-tip">正在加载星历（CelesTrak 全域 + 导航星常用名 + 本地自定义星座）…</div>
+      <div v-if="loading" class="rsp-tip">正在加载星历…</div>
       <div v-else-if="loadErr" class="rsp-tip rsp-err">{{ loadErr }}</div>
       <template v-else-if="listOpen">
         <div v-if="kw && !searchRes.length" class="rsp-tip">无匹配卫星</div>

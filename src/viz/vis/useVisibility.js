@@ -150,7 +150,7 @@ export function useVisibility({
   let _accToken = 0               // 取消令牌：重复点击/参数变时作废上一次分帧扫描
   function computeAccess() {
     const tp = targetPoints()
-    if (!tp.length) { accessMsg.value = '请先选一个分析目标'; accessResults.value = []; return }
+    if (!tp.length) { accessMsg.value = '请先选择分析目标'; accessResults.value = []; return }
     const srcAll = getRenderEntries() || []
     if (!srcAll.length) { accessMsg.value = '卫星集为空'; accessResults.value = []; return }
     const me = Number(minElev.value) || 0, tgtLat = tp[0].lat

@@ -14,6 +14,7 @@
 // 单次打印即可，不需要分两次打印再合并。
 const { BrowserWindow, app, ipcMain } = require('electron')
 const { join } = require('path')
+const { pathToFileURL } = require('url')
 
 // 模型暂存：打印页载入后向主进程要（不走 URL 传参——一份报告带着几十兆的图，URL 塞不下）。
 // 通道就在本模块注册（谁存的谁发），不必让 ipc/register.js 代管一份别人的状态。
@@ -26,21 +27,33 @@ function wire() {
   ipcMain.on('report:print:ready', () => { /* 就绪信号；主进程以轮询 window.__reportReady 为准 */ })
 }
 
-// 页眉页脚：照《文档格式模板》——页眉无内容，页脚只有一个居中页码（模板 footer 就是一个 PAGE 域）。
+// 页眉页脚：页脚照模板——只有一个居中页码（模板 footer 就是一个 PAGE 域，页脚样式宋体 9pt）；
+// 页眉放用户上传的 logo，右上角，每一页都有（含封面）。
 // 字体要写死：模板是独立渲染的一小段 HTML，继承不到页面样式，不写就是微软雅黑。
-function templates() {
+//
+// ★ 页眉高度必须小于上页边距（@page margin-top 2.25cm），超了 Chromium 直接把它裁掉；
+//   模板的宽度是整张纸，版心的左右边距要自己补出来（纵向页 2.5cm；横向页是 2.2cm，
+//   差的 3mm 肉眼看不出，故两种方向共用一份模板）。
+// ★ 页眉模板里的图必须给**显式的 width 和 height（px）**：Chromium 是在一个独立的迷你文档里
+//   渲染这段 HTML 的，那里没有视口也没有页面样式，mm/百分比一类相对单位与「只给高、宽 auto」
+//   都会让 <img> 量不出尺寸而整个被丢掉——实测就是这样，PDF 里连图像对象都不会有。
+function templates(logo) {
   const font = 'font-family:\'Times New Roman\',SimSun,serif;-webkit-print-color-adjust:exact;'
-  return {
-    head: '<div></div>',
-    foot: `<div style="${font}font-size:10.5pt;color:#1a1a1a;width:100%;text-align:center;"><span class="pageNumber"></span></div>`
+  const src = logo && logo.dataUrl ? String(logo.dataUrl) : ''
+  let head = '<div></div>'
+  if (src) {
+    const MM = (mm) => Math.round(mm / 25.4 * 96)
+    let h = MM(10), w = Math.round(h * (logo.w || 2) / (logo.h || 1))
+    const wMax = MM(40)
+    if (w > wMax) { w = wMax; h = Math.round(w * (logo.h || 1) / (logo.w || 2)) }
+    head = '<div style="width:100%;margin:0;padding:0;box-sizing:border-box;text-align:right;line-height:0;">'
+      + `<img src="${src}" width="${w}" height="${h}" style="width:${w}px;height:${h}px;margin-right:${MM(25)}px;">`
+      + '</div>'
   }
-}
-
-// PDF 里的页数：数 /Type /Page。封面「页 数」栏要填它，而排版完才知道 —— 故打两遍。
-function countPages(buf) {
-  const s = buf.toString('latin1')
-  const n = (s.match(/\/Type\s*\/Page[^s]/g) || []).length
-  return n || 0
+  return {
+    head,
+    foot: `<div style="${font}font-size:9pt;color:#1a1a1a;width:100%;text-align:center;"><span class="pageNumber"></span></div>`
+  }
 }
 
 // 打印页就绪：页面渲染完（含图解码）会置 window.__reportReady，并调一次 report:print:ready。
@@ -80,10 +93,12 @@ async function buildReportPdf(model) {
     }
   })
   try {
+    // ★ 走 loadURL(pathToFileURL(...)) 而不是 loadFile：应用目录里带非 ASCII 字符时
+    //   （中文用户名 / 中文安装路径）loadFile 会 ERR_FILE_NOT_FOUND，自己编码就没这问题。
     if (process.env['ELECTRON_RENDERER_URL']) await win.loadURL(process.env['ELECTRON_RENDERER_URL'] + '/report.html')
-    else await win.loadFile(join(root, 'out/renderer/report.html'))
+    else await win.loadURL(pathToFileURL(join(root, 'out/renderer/report.html')).href)
     await waitReady(win, 120000)
-    const { head, foot } = templates()
+    const { head, foot } = templates(model && model.doc && model.doc.logo)
     const opts = {
       printBackground: true,
       preferCSSPageSize: true,
@@ -93,15 +108,9 @@ async function buildReportPdf(model) {
       headerTemplate: head,
       footerTemplate: foot
     }
-    // 第一遍只为数页数；回填封面的「页 数」后再打一遍交出去。
-    // 页数变了不会引起重新分页（那一格宽度固定），故两遍的页数必然一致。
-    const first = await win.webContents.printToPDF(opts)
-    const n = countPages(first)
-    if (!n) return first
-    try {
-      await win.webContents.executeJavaScript(`window.__setTotalPages && window.__setTotalPages(${n})`)
-      return await win.webContents.printToPDF(opts)
-    } catch (e) { return first }   // 回填失败：交第一遍的（只是封面页数空着）
+    // 只打一遍。2026-08-02 去掉文档控制页后，文件里不再有「总页数」那一栏，
+    // 原来的「打两遍——第一遍数 /Type /Page 回填再打第二遍」也就没有了理由。
+    return await win.webContents.printToPDF(opts)
   } finally {
     _pending = null
     if (!win.isDestroyed()) win.destroy()

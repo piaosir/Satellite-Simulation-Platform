@@ -171,7 +171,7 @@ C/I {{ fmt(p.ciDb, 2) }} dB<template v-if="Number.isFinite(p.sharePct)">
       <text :x="11" :y="M.t + PH / 2" class="axis" text-anchor="middle" :transform="`rotate(-90 11 ${M.t + PH / 2})`">增益（dBi）</text>
       <text :x="W - 9" :y="M.t + PH / 2" class="axis dim" text-anchor="middle" :transform="`rotate(90 ${W - 9} ${M.t + PH / 2})`">鉴别度（dB）</text>
     </svg>
-    <p v-if="!curve.length" class="empty">请先计算：方向图由引擎按本站天线口径与频率给出</p>
+    <p v-if="!curve.length" class="empty">请先计算。</p>
   </div>
 </template>
 

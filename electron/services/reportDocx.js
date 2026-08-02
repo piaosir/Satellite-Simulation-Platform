@@ -1,83 +1,90 @@
 // 链路预算报告的 Word 出口（.docx，主进程）。
 //
-// 版式照用户给的《文档格式模板（公开）.docx》——中国卫通标准公文格式：
-//   封面（名称/单位/编写/校对/审核/批准 + 编号/阶段/密级/页数 + 公司名）
-//   → 文档控制（变更记录）→ 目录（Word 域，打开时自动生成页码）→ 正文（五级标题 + 正文/题注/表格样式）
-// 各样式的字号、字体、间距、缩进、表格边框与表头底纹全部取自 reportStyle.js（那里注了模板原值）。
-// 字体：西文与数字 Times New Roman，中文标题黑体、中文正文宋体（模板本身即此口径）。
+// 版式照用户给的《技术文档标准模板.docx》：
+//   封面（密级 / 文档编号 → 文档标题 / 副标题 → 编制单位 / 成文日期，右上角可贴 logo）
+//   → 文档控制（签署 + 变更记录）→ 目录（Word 域，打开时自动生成页码）
+//   → 正文（四级标题 + 正文 / 图号表号格式 / 三线表）
+// 各样式的字号、字体、间距、缩进与表格边框全部取自 reportStyle.js（那里注了模板原值）。
+// 字体：西文与数字 Times New Roman，中文标题与题注黑体、中文正文宋体（模板本身即此口径）。
+// 表格一律三线表：顶线/底线 1.5 磅、栏目线 0.75 磅，无竖线、无底纹（模板「三线表」样式）。
 //
 // 与 PDF 的分工：PDF 的逐链路详情是屏幕排版的复刻（级联表 ‖ 图 两栏），Word 是流式文档，
 // 故详情章按「级联主表 → 图 → 参考段各表」顺排。数字、题注编号、章节号三处一致。
 const {
   Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell, TableOfContents,
-  Footer, PageNumber, AlignmentType, WidthType, BorderStyle, VerticalAlign, ImageRun,
-  SimpleField, PageOrientation, LineRuleType, ShadingType
+  Header, Footer, PageNumber, AlignmentType, WidthType, BorderStyle, VerticalAlign, ImageRun,
+  PageOrientation, LineRuleType
 } = require('docx')
 const { TPL, half } = require('./reportStyle')
 
 const FN = { ascii: TPL.font.latin, hAnsi: TPL.font.latin, cs: TPL.font.latin, eastAsia: TPL.font.cjkBody }
 const FN_H = { ascii: TPL.font.latin, hAnsi: TPL.font.latin, cs: TPL.font.latin, eastAsia: TPL.font.cjkHeading }
 
-// —— 样式表（id 前缀 Rpt/Cv，避免与模板自带的 C503-* 撞名）——
+// —— 样式表（id 前缀 Rpt/Cv，避免与模板自带的样式撞名）——
 function paragraphStyles() {
-  const line = { line: 360, lineRule: LineRuleType.AUTO }   // 模板：1.5 倍行距
-  const head = (id, name, size, outline, before, after) => ({
+  const line = { line: 360, lineRule: LineRuleType.AUTO }   // 模板 正文：1.5 倍行距
+  // 模板各级标题：黑体，固定行距（标题 1/3 为 25 磅、标题 4 为 22 磅），段前后 6 磅。
+  // 黑体本身已是重字面，模板未再加粗，此处照办。
+  const head = (id, name, size, outline, lineTw) => ({
     id, name, basedOn: 'Normal', next: 'RptBody', quickFormat: true,
-    run: { size: half(size), bold: true, font: FN_H },
-    paragraph: { spacing: Object.assign({ before, after }, line), keepNext: true, outlineLevel: outline }
+    run: { size: half(size), font: FN_H },
+    paragraph: {
+      spacing: { before: TPL.spacing.hBeforeTw, after: TPL.spacing.hAfterTw, line: lineTw, lineRule: LineRuleType.EXACT },
+      keepNext: true, outlineLevel: outline
+    }
   })
   return [
+    // 文档标题：模板 文档标题（黑体 16pt 居中，段前后 2.5 磅）
     { id: 'RptTitle', name: 'Report Title', basedOn: 'Normal', next: 'RptBody',
-      run: { size: half(TPL.size.docTitle), bold: true, font: FN_H },
-      paragraph: { alignment: AlignmentType.CENTER, spacing: Object.assign({ after: 240 }, line) } },
-    head('RptH1', 'Report Heading 1', TPL.size.h1, 0, TPL.spacing.h1BeforeTw, TPL.spacing.h1AfterTw),
-    head('RptH2', 'Report Heading 2', TPL.size.h2, 1, TPL.spacing.hBeforeTw, TPL.spacing.hAfterTw),
-    head('RptH3', 'Report Heading 3', TPL.size.h3, 2, TPL.spacing.hBeforeTw, TPL.spacing.hAfterTw),
-    head('RptH4', 'Report Heading 4', TPL.size.h4, 3, TPL.spacing.hBeforeTw, TPL.spacing.hAfterTw),
-    // 正文：模板 CSPC-正文格式（小四、1.5 倍行距、首行缩进 2 字符）
+      run: { size: half(TPL.size.docTitle), font: FN_H },
+      paragraph: { alignment: AlignmentType.CENTER, spacing: Object.assign({ before: 120, after: 240 }, line) } },
+    head('RptH1', 'Report Heading 1', TPL.size.h1, 0, TPL.spacing.h1LineTw),
+    head('RptH2', 'Report Heading 2', TPL.size.h2, 1, TPL.spacing.h1LineTw),
+    head('RptH3', 'Report Heading 3', TPL.size.h3, 2, TPL.spacing.h3LineTw),
+    head('RptH4', 'Report Heading 4', TPL.size.h4, 3, TPL.spacing.h4LineTw),
+    // 正文：模板 正文（小四、1.5 倍行距、首行缩进 2 字符、两端对齐）
     { id: 'RptBody', name: 'Report Body', basedOn: 'Normal', next: 'RptBody', quickFormat: true,
       run: { size: half(TPL.size.body), font: FN },
       paragraph: { spacing: line, indent: { firstLine: TPL.spacing.bodyFirstLineTw }, alignment: AlignmentType.BOTH } },
-    // 说明性文字：同正文但不缩进（表下注释、方法学脚注）
+    // 说明性文字：同正文但不缩进（表下注释、方法学脚注）——模板 正文中文
     { id: 'RptNote', name: 'Report Note', basedOn: 'Normal', next: 'RptBody',
       run: { size: half(TPL.size.caption), font: FN, color: '595959' },
       paragraph: { spacing: { line: 300, lineRule: LineRuleType.AUTO, after: 60 }, alignment: AlignmentType.BOTH } },
-    // 题注：模板 caption（加粗居中黑体，前后 10 行距）
+    // 题注：模板 表号格式 / 图号格式（黑体 10.5pt 居中，段前后 50 行）。表题在表上方、图题在图下方。
     { id: 'RptCaption', name: 'Report Caption', basedOn: 'Normal', next: 'RptBody',
-      run: { size: half(TPL.size.caption), bold: true, font: FN_H },
-      paragraph: { alignment: AlignmentType.CENTER, spacing: { before: TPL.spacing.captionBeforeTw, after: TPL.spacing.captionAfterTw }, keepNext: true } },
-    { id: 'RptFig', name: 'Report Figure', basedOn: 'Normal', next: 'RptCaption',
+      run: { size: half(TPL.size.caption), font: FN_H },
+      paragraph: { alignment: AlignmentType.CENTER, spacing: { before: TPL.spacing.captionBeforeTw, after: TPL.spacing.captionAfterTw, line: 300, lineRule: LineRuleType.AUTO }, keepNext: true } },
+    // 图题跟在图下面，故它自己不 keepNext（keepNext 的是图那一段）
+    { id: 'RptCaptionFig', name: 'Report Figure Caption', basedOn: 'RptCaption', next: 'RptBody',
+      paragraph: { alignment: AlignmentType.CENTER, spacing: { before: TPL.spacing.captionBeforeTw, after: TPL.spacing.captionAfterTw, line: 300, lineRule: LineRuleType.AUTO } } },
+    // 图：模板 AA图片（居中，1.5 倍行距）
+    { id: 'RptFig', name: 'Report Figure', basedOn: 'Normal', next: 'RptCaptionFig',
       paragraph: { alignment: AlignmentType.CENTER, spacing: { before: 60, after: 0 }, keepNext: true } },
-    // 表格文字：模板正文表格（10.5pt，单倍行距，不缩进）
+    // 表格文字：模板 表格格式（宋体 10.5pt，单倍行距，不缩进）
     { id: 'RptTd', name: 'Report Table Cell', basedOn: 'Normal', next: 'RptTd',
       run: { size: half(TPL.size.table), font: FN },
-      paragraph: { spacing: { line: 240, lineRule: LineRuleType.AUTO }, alignment: AlignmentType.LEFT } },
+      paragraph: { spacing: { line: 240, lineRule: LineRuleType.AUTO }, indent: { firstLine: 0 }, alignment: AlignmentType.LEFT } },
+    // 表头：三线表不加粗、不加底纹，只把中文换成黑体（模板的字体语言，又刚好补上一档视觉分隔）
     { id: 'RptTh', name: 'Report Table Head', basedOn: 'RptTd', next: 'RptTd',
-      run: { size: half(TPL.size.table), bold: true, font: FN_H },
+      run: { size: half(TPL.size.table), font: FN_H },
       paragraph: { alignment: AlignmentType.CENTER } },
-    // 密排表（级联/瀑布：四十余行逐行可手算，降一档字号、行距压紧）
+    // 密排表：只给「逐参数对照」那张链路做列的宽表用（7 条链路 8 列，10.5pt 排不开）。
+    // 级联/瀑布表不再走这一档——9pt + 10pt 固定行距挤得没法读，是用户 2026-08-02 点名的问题。
     { id: 'RptTdS', name: 'Report Table Cell Small', basedOn: 'Normal', next: 'RptTdS',
       run: { size: half(TPL.size.tableDense), font: FN },
-      paragraph: { spacing: { line: 200, lineRule: LineRuleType.AUTO } } },
+      paragraph: { spacing: { line: 240, lineRule: LineRuleType.AUTO }, indent: { firstLine: 0 } } },
     { id: 'RptThS', name: 'Report Table Head Small', basedOn: 'RptTdS', next: 'RptTdS',
-      run: { size: half(TPL.size.tableDense), bold: true, font: FN_H },
-      paragraph: { alignment: AlignmentType.CENTER, spacing: { line: 200, lineRule: LineRuleType.AUTO } } },
-    // 封面各栏（模板 C503-* 系列）
-    { id: 'CvName', name: 'Cover Name', basedOn: 'Normal',
-      run: { size: half(TPL.size.coverName), bold: true, font: FN },
-      paragraph: { alignment: AlignmentType.LEFT, spacing: Object.assign({}, line) } },
-    { id: 'CvLabel', name: 'Cover Label', basedOn: 'Normal',
-      run: { size: half(TPL.size.coverLabel), bold: true, font: FN },
-      paragraph: { alignment: AlignmentType.CENTER, spacing: Object.assign({}, line) } },
-    { id: 'CvValue', name: 'Cover Value', basedOn: 'Normal',
-      run: { size: half(TPL.size.coverValue), font: FN },
-      paragraph: { alignment: AlignmentType.CENTER, spacing: Object.assign({}, line) } },
+      run: { size: half(TPL.size.tableDense), font: FN_H },
+      paragraph: { alignment: AlignmentType.CENTER, spacing: { line: 240, lineRule: LineRuleType.AUTO } } },
+    // 封面各栏（模板封面全部是「标题（Title）」样式：黑体 16pt 居中；顶部两行密级/编号是正文样式）
     { id: 'CvMeta', name: 'Cover Meta', basedOn: 'Normal',
       run: { size: half(TPL.size.coverMeta), font: FN },
-      paragraph: { alignment: AlignmentType.CENTER, spacing: Object.assign({}, line) } },
-    { id: 'CvOrg', name: 'Cover Org', basedOn: 'Normal',
-      run: { size: half(TPL.size.coverOrg), bold: true, font: FN },
-      paragraph: { alignment: AlignmentType.CENTER } }
+      paragraph: { alignment: AlignmentType.LEFT, indent: { firstLine: 0 }, spacing: Object.assign({}, line) } },
+    { id: 'CvTitle', name: 'Cover Title', basedOn: 'Normal',
+      run: { size: half(TPL.size.coverTitle), font: FN_H },
+      paragraph: { alignment: AlignmentType.CENTER, indent: { firstLine: 0 }, spacing: { before: 120, after: 120, line: 300, lineRule: LineRuleType.AUTO } } },
+    { id: 'CvSub', name: 'Cover Subtitle', basedOn: 'CvTitle', run: { size: half(TPL.size.coverSub), font: FN_H } },
+    { id: 'CvOrg', name: 'Cover Org', basedOn: 'CvTitle', run: { size: half(TPL.size.coverOrg), font: FN_H } }
   ]
 }
 
@@ -85,74 +92,92 @@ function paragraphStyles() {
 const P = (text, style, opts) => new Paragraph(Object.assign({
   style, children: [new TextRun({ text: text == null ? '' : String(text) })]
 }, opts || {}))
-const empty = (style) => new Paragraph({ style: style || 'RptTd', children: [] })
 
 const B = (sz, color) => ({ style: BorderStyle.SINGLE, size: sz, color: color || 'auto' })
-const GRID = (sz) => ({ top: B(sz), bottom: B(sz), left: B(sz), right: B(sz) })
 const NONE = { style: BorderStyle.NONE, size: 0, color: 'auto' }
 
-// 文档类表格（模板正文表：全边框 0.5pt、表头灰底加粗居中）
+// 文档类表格（模板「三线表」样式：顶线 / 底线 1.5 磅、栏目线 0.75 磅，无竖线、无底纹）。
+// 表内文字 10.5pt、垂直居中，单元格边距上下 45 / 左右 108 tw——全部照模板。
 function docTable(head, rows, opts) {
   opts = opts || {}
-  const sz = TPL.table.borderSz
+  const strong = TPL.table.topSz, thin = TPL.table.headSz
   const dense = !!opts.dense
   const tdStyle = dense ? 'RptTdS' : 'RptTd'
   const thStyle = dense ? 'RptThS' : 'RptTh'
   const align = opts.align || []
-  const cell = (text, i, isHead) => new TableCell({
+  const M = TPL.table.cellMarTw
+  const cell = (text, i, o) => new TableCell({
     width: opts.widths ? { size: opts.widths[i], type: WidthType.PERCENTAGE } : undefined,
-    shading: isHead ? { type: ShadingType.CLEAR, color: 'auto', fill: TPL.table.headFill } : undefined,
+    borders: { top: o.top ? B(o.top) : NONE, bottom: o.bottom ? B(o.bottom) : NONE, left: NONE, right: NONE },
     verticalAlign: VerticalAlign.CENTER,
-    margins: { top: 20, bottom: 20, left: 60, right: 60 },
+    margins: { top: M.top, bottom: M.bottom, left: M.left, right: M.right },
     children: [new Paragraph({
-      style: isHead ? thStyle : tdStyle,
-      alignment: isHead ? AlignmentType.CENTER : (align[i] === 'right' ? AlignmentType.RIGHT : align[i] === 'center' ? AlignmentType.CENTER : AlignmentType.LEFT),
-      children: [new TextRun({ text: text == null ? '' : String(text), bold: isHead || undefined })]
+      style: o.head ? thStyle : tdStyle,
+      alignment: o.head ? AlignmentType.CENTER : (align[i] === 'right' ? AlignmentType.RIGHT : align[i] === 'center' ? AlignmentType.CENTER : AlignmentType.LEFT),
+      // 关键行（分组行 / 小计 / 余量）换黑体，不加粗：三线表不许底纹，层次只能靠字体给，
+      // 而黑体上再加粗会被 Word 合成成假粗体，糊成一团。
+      children: [new TextRun({ text: text == null ? '' : String(text), font: o.key ? FN_H : undefined })]
     })]
   })
   const trs = []
-  if (head && head.length) trs.push(new TableRow({ tableHeader: true, children: head.map((h, i) => cell(h, i, true)) }))
-  for (const r of rows) trs.push(new TableRow({ children: r.map((v, i) => cell(v, i, false)) }))
+  const hasHead = !!(head && head.length)
+  // cantSplit：一行不许被分页拦腰截断
+  if (hasHead) trs.push(new TableRow({ tableHeader: true, cantSplit: true, children: head.map((h, i) => cell(h, i, { head: true, top: strong, bottom: thin })) }))
+  rows.forEach((r, ri) => {
+    const first = !hasHead && ri === 0
+    const last = ri === rows.length - 1
+    const key = !!(opts.keyRows && opts.keyRows[ri])
+    trs.push(new TableRow({ cantSplit: true, children: r.map((v, i) => cell(v, i, { top: first ? strong : 0, bottom: last ? strong : 0, key })) }))
+  })
+  // widthPct：三列的小表（输入参数）铺满 253mm 的横向版心会显得空旷，收窄并居中更像正式文档里的表
   return new Table({
-    width: { size: 100, type: WidthType.PERCENTAGE },
-    borders: GRID(sz),
+    width: { size: opts.widthPct || 100, type: WidthType.PERCENTAGE },
+    alignment: opts.widthPct ? AlignmentType.CENTER : undefined,
+    borders: { top: NONE, bottom: NONE, left: NONE, right: NONE, insideHorizontal: NONE, insideVertical: NONE },
     rows: trs
   })
 }
 
-// 计算结果表（三线表：题注下顶线、列头下栏目线、段末底线；无竖线无底色）
-// —— 用户此前定下的口径：密排的逐行手算单靠线的层级差分层，加满网格与灰底会压成一堵墙。
+// 计算结果表（级联 / 瀑布）：同为三线表——题注下顶线、列头下栏目线、段末底线。
+// 版式与 docTable 一致（10.5pt、模板的单元格边距、垂直居中），差别只在它多两样：
+//   keyRows  关键行（小计 / 门限 / 余量 / 分段基准）换黑体——三线表不许底纹，层次只能靠字体给；
+//   sepRows  小计与余量上方一条 0.75pt 分隔线，把四十余行切成几段。
 function bookTable(head, rows, opts) {
   opts = opts || {}
   const align = opts.align || []
   const strong = TPL.rule.strongSz, thin = TPL.rule.thinSz
+  const M = TPL.table.cellMarTw
   const mk = (text, i, o) => new TableCell({
     width: opts.widths ? { size: opts.widths[i], type: WidthType.PERCENTAGE } : undefined,
     borders: {
       top: o.top ? B(o.top) : NONE, bottom: o.bottom ? B(o.bottom) : NONE, left: NONE, right: NONE
     },
-    margins: { top: 10, bottom: 10, left: 40, right: 40 },
+    verticalAlign: VerticalAlign.CENTER,
+    margins: { top: M.top, bottom: M.bottom, left: M.left, right: M.right },
     children: [new Paragraph({
-      style: o.head ? 'RptThS' : 'RptTdS',
-      alignment: o.head ? (i === 0 ? AlignmentType.LEFT : AlignmentType.RIGHT)
+      style: o.head ? 'RptTh' : 'RptTd',
+      alignment: o.head ? AlignmentType.CENTER
         : (align[i] === 'right' ? AlignmentType.RIGHT : align[i] === 'center' ? AlignmentType.CENTER : AlignmentType.LEFT),
-      children: [new TextRun({ text: text == null ? '' : String(text), bold: (o.head || o.bold) || undefined })]
+      children: [new TextRun({ text: text == null ? '' : String(text), font: o.key ? FN_H : undefined })]
     })]
   })
   const trs = []
-  if (head && head.length) trs.push(new TableRow({ tableHeader: true, children: head.map((h, i) => mk(h, i, { head: true, top: strong, bottom: thin })) }))
+  // cantSplit：一行不许被分页拦腰截断（数值与其标签分居两页是最难读的一种断法）
+  if (head && head.length) {
+    trs.push(new TableRow({ tableHeader: true, cantSplit: true, children: head.map((h, i) => mk(h, i, { head: true, top: strong, bottom: thin })) }))
+  }
   rows.forEach((r, ri) => {
     const last = ri === rows.length - 1
-    const bold = !!(opts.boldRows && opts.boldRows[ri])
+    const key = !!(opts.keyRows && opts.keyRows[ri])
     const sep = !!(opts.sepRows && opts.sepRows[ri])
-    trs.push(new TableRow({ children: r.map((v, i) => mk(v, i, { bottom: last ? strong : 0, top: sep ? thin : 0, bold })) }))
+    trs.push(new TableRow({ cantSplit: true, children: r.map((v, i) => mk(v, i, { bottom: last ? strong : 0, top: sep ? thin : 0, key })) }))
   })
   return new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, borders: {
     top: NONE, bottom: NONE, left: NONE, right: NONE, insideHorizontal: NONE, insideVertical: NONE
   }, rows: trs })
 }
 
-// 键值表（报告信息 / 场景与假设）：模板里这类是两列全边框表
+// 键值表（报告信息 / 场景与假设）：同样走三线表，标签列左、值列左
 const kvTable = (rows) => docTable(null, rows.map(([k, v]) => [k, v]), { widths: [26, 74] })
 
 // —— 图 ——
@@ -171,16 +196,41 @@ function figureParagraphs(dataUrl, caption, maxWpx, maxHpx) {
   if (h > maxHpx) { h = maxHpx; w = Math.round(maxHpx * size.w / size.h) }
   const data = Buffer.from(String(dataUrl).split(',').pop(), 'base64')
   return [
+    // 图题在图**下方**（模板「图号格式」的口径，也是中文出版惯例）
     new Paragraph({ style: 'RptFig', children: [new ImageRun({ data, type: 'png', transformation: { width: w, height: h } })] }),
-    P(caption, 'RptCaption')
+    P(caption, 'RptCaptionFig')
   ]
 }
 
-// —— 页脚：模板 footer 只有一个居中页码域 ——
+// —— 页眉的右上角 logo ——
+// 每一页都有（含封面），故走 Header 而不是往正文里塞段落——正文段落只跟着它所在那一页走。
+// 高度钉在 10 mm：上页边距是 2.25 cm，页眉超过它 Word 会把版心整体往下推。
+// 矢量图已在渲染端栅格化成 PNG（docx 的图只吃位图）。
+const MM_PX = (mm) => Math.round(mm / 25.4 * 96)
+function logoHeader(logo) {
+  const empty = new Header({ children: [new Paragraph({ children: [] })] })
+  if (!logo || !logo.dataUrl) return empty
+  const size = pngSizeOf(logo.dataUrl)
+  if (!size || !size.w || !size.h) return empty
+  let h = MM_PX(TPL.cover.logoHeaderHmm)
+  let w = Math.round(h * size.w / size.h)
+  const wMax = MM_PX(TPL.cover.logoHeaderWmm)
+  if (w > wMax) { w = wMax; h = Math.round(w * size.h / size.w) }
+  const data = Buffer.from(String(logo.dataUrl).split(',').pop(), 'base64')
+  return new Header({
+    children: [new Paragraph({
+      alignment: AlignmentType.RIGHT, spacing: { after: 0, line: 240, lineRule: LineRuleType.AUTO },
+      indent: { firstLine: 0 },
+      children: [new ImageRun({ data, type: 'png', transformation: { width: w, height: h } })]
+    })]
+  })
+}
+
+// —— 页脚：模板 页脚样式（宋体 9pt），只有一个居中页码域 ——
 const pageFooter = () => new Footer({
   children: [new Paragraph({
     alignment: AlignmentType.CENTER,
-    children: [new TextRun({ font: FN, size: half(TPL.size.caption), children: [PageNumber.CURRENT] })]
+    children: [new TextRun({ font: FN, size: half(TPL.size.footer), children: [PageNumber.CURRENT] })]
   })]
 })
 
@@ -199,125 +249,40 @@ const contentPx = (landscape) => Math.round(((landscape ? TPL.page.heightTw : TP
 
 // ============================ 正文装配 ============================
 
-// 封面：照模板逐组还原（位置量自模板第一节的浮动表，见 reportStyle.js 的 TPL.cover）。
-//   外框 1.5pt ─┬ 右上：编 号 / 阶 段 / 密 级 / 页 数（标签无框、值压下划线）
-//               ├ 上中：名 称（18pt 加粗居中，两条下划线：报告名 / 项目名）
-//               ├ 中部：单 位 / 编 写 / 校 对 / 审 核 / 批 准（15pt 标签 + 12pt 值压下划线）
-//               └ 底部：公司名（22pt 加粗居中）
-//   左页边距另有一条「会 签」栏（模板是 VML 文本框，此处用浮动表落在页左侧）。
-// 单位 / 公司名 / 签署人全部来自用户填写 —— 软件不预设任何单位名。
+// 封面：照模板第一节的结构还原——流式一栏，不是浮动表。
+//   （右上角 logo，用户上传时才有）
+//   密　　级：xxx
+//   文档编号：xxx
+//   ……留白……
+//   报告名（模板「标题（Title）」：黑体 16pt 居中）—— 全篇唯一的一行主标题
+//   ……留白……
+//   编制单位
+//   成文日期
+// ★ 2026-08-02 用户定：封面**不要副标题**（体制名与报告名里的「链路预算」重复），
+//   一个醒目的主标题即可；项目名、公司名、签署栏一并去掉（新模板封面本就没有这些栏位）。
+// ★ 编制单位来自用户填写 —— 软件不预设任何单位名。
 function coverSection(model) {
   const d = model.doc || {}
   const L = model.t || {}
-  const C = TPL.cover
-  const sz = TPL.table.borderSz
-  const noB = { top: NONE, bottom: NONE, left: NONE, right: NONE }
-  const underline = { top: NONE, bottom: B(sz), left: NONE, right: NONE }
-  const cellT = (children, w, borders) => new TableCell({
-    width: { size: w, type: WidthType.DXA }, borders: borders || noB,
-    verticalAlign: VerticalAlign.BOTTOM, children
-  })
-  const row2 = (label, labelStyle, value, valueStyle, widths, h) => new TableRow({
-    height: { value: h, rule: 'atLeast' },
-    children: [cellT([P(label, labelStyle)], widths[0]), cellT([P(value, valueStyle)], widths[1], underline)]
-  })
-  // 浮动表：与模板同样锚在页面上（横向居中 / 右对齐 + 绝对纵坐标）
-  const floatTbl = (rows, widths, float) => new Table({
-    columnWidths: widths,
-    width: { size: widths.reduce((a, b) => a + b, 0), type: WidthType.DXA },
-    borders: { top: NONE, bottom: NONE, left: NONE, right: NONE, insideHorizontal: NONE, insideVertical: NONE },
-    float: Object.assign({ horizontalAnchor: 'margin', verticalAnchor: 'page', overlap: 'never', leftFromText: 180, rightFromText: 180 }, float),
-    rows
-  })
-
-  // ① 右上：编号 / 阶段 / 密级 / 页数（页数是 NUMPAGES 域，Word 打开时自己算）
-  const metaTbl = floatTbl([
-    row2(L.cvDocNo, 'CvMeta', d.docNo || '', 'CvMeta', C.metaWTw, 540),
-    row2(L.cvStage, 'CvMeta', d.stage || '', 'CvMeta', C.metaWTw, 540),
-    row2(L.cvClass, 'CvMeta', d.classification || '', 'CvMeta', C.metaWTw, 540),
-    new TableRow({
-      height: { value: 540, rule: 'atLeast' },
-      children: [
-        cellT([P(L.cvPages, 'CvMeta')], C.metaWTw[0]),
-        cellT([new Paragraph({ style: 'CvMeta', alignment: AlignmentType.CENTER, children: [new SimpleField('NUMPAGES')] })], C.metaWTw[1], underline)
-      ]
-    })
-  ], C.metaWTw, { absoluteVerticalPosition: C.metaYTw, relativeHorizontalPosition: 'right' })
-
-  // ② 名称：两条下划线（第一行报告名、第二行项目名——模板同款两行）
-  const nameTbl = floatTbl([
-    row2(L.cvName, 'CvLabel', d.title || '', 'CvName', C.nameWTw, 811),
-    row2('', 'CvLabel', d.project || '', 'CvName', C.nameWTw, 811)
-  ], C.nameWTw, { absoluteVerticalPosition: C.nameYTw, relativeHorizontalPosition: 'center' })
-
-  // ③ 单位 / 编写 / 校对 / 审核 / 批准
-  const signTbl = floatTbl([
-    row2(L.cvDept, 'CvLabel', d.org || '', 'CvValue', C.signWTw, 890),
-    row2(L.cvPrepared, 'CvLabel', d.preparedBy || '', 'CvValue', C.signWTw, 890),
-    row2(L.cvChecked, 'CvLabel', d.checkedBy || '', 'CvValue', C.signWTw, 890),
-    row2(L.cvApproved, 'CvLabel', d.approvedBy || '', 'CvValue', C.signWTw, 890),
-    row2(L.cvRatified, 'CvLabel', d.ratifiedBy || '', 'CvValue', C.signWTw, 890)
-  ], C.signWTw, { absoluteVerticalPosition: C.signYTw, relativeHorizontalPosition: 'center' })
-
-  // ④ 左页边距的「会 签」栏：标签 + 若干空格，供落笔会签
-  const hqW = 760
-  const hqTbl = new Table({
-    columnWidths: [hqW],
-    width: { size: hqW, type: WidthType.DXA },
-    borders: GRID(sz),
-    float: {
-      horizontalAnchor: 'page', verticalAnchor: 'page', overlap: 'never',
-      absoluteHorizontalPosition: C.hqXTw, absoluteVerticalPosition: C.hqYTw
-    },
-    rows: Array.from({ length: C.hqRows }, () => new TableRow({
-      height: { value: 700, rule: 'atLeast' },
-      children: [new TableCell({ width: { size: hqW, type: WidthType.DXA }, borders: GRID(sz), children: [empty('CvValue')] })]
-    }))
-  })
-
-  // 外框：模板是一张 9574×13674 的单格表；Word 里用等效的页面边框（1.5pt 四边）。
-  // ★ borders 必须挂在 properties.page 下（docx 的 SectionProperties 从 page 里取它），
-  //   挂在 properties 顶层会被静默忽略——踩过一次，pgBorders 压根不出现在 XML 里。
-  const coverProps = sectPage(false)
-  // offsetFrom:'text' + space 24pt：框线落在版心外 0.85cm 处，与模板那张比版心宽约 1cm 的框位置相当
-  //（offsetFrom:'page' 的 space 上限只有 31pt，够不到模板那 2cm，反而离纸边太近）
-  const edge = { style: BorderStyle.SINGLE, size: C.frameSz, color: 'auto', space: 24 }
-  coverProps.page.borders = {
-    pageBorders: { display: 'allPages', offsetFrom: 'text', zOrder: 'front' },
-    pageBorderTop: edge, pageBorderBottom: edge, pageBorderLeft: edge, pageBorderRight: edge
-  }
-  return {
-    properties: coverProps,
-    children: [
-      metaTbl, nameTbl, signTbl, hqTbl,
-      // 会签标签（挨着左侧那条栏），随后留白到底部落公司名与日期
-      new Paragraph({ style: 'CvValue', alignment: AlignmentType.LEFT, children: [new TextRun({ text: L.hqSign, bold: true })] }),
-      new Paragraph({ style: 'CvOrg', spacing: { before: 6200 }, children: [new TextRun({ text: d.company || '' })] }),
-      P(d.date || '', 'CvValue')
-    ]
-  }
-}
-
-// 文档控制（变更记录）：模板里这一页是外框 1.5pt、内线 0.75pt 的表
-function controlSection(model) {
-  const d = model.doc || {}
-  const L = model.t || {}
-  const head = [L.chgVer || '版本号', L.chgDate || '日期', L.chgAuthor || '作者',
-    L.chgWhere || '段落、图或表', L.chgKind || '增加/修改/删除', L.chgDesc || '简单描述', L.chgReq || '更改申请单号']
-  const rows = [[d.appVersion || '', d.date || '', d.preparedBy || '', '—', L.chgAdd || '增加', L.chgCreate || '创建文档', '—']]
-  const t = docTable(head, rows, { widths: [10, 13, 10, 17, 16, 20, 14], align: ['center', 'center', 'center', 'left', 'center', 'left', 'center'] })
-  return {
-    properties: sectPage(false, { start: 1, formatType: 'upperRoman' }),
-    footers: { default: pageFooter() },
-    children: [P(L.docControl || '文档控制', 'RptTitle'), P(L.changeLog || '变更记录', 'RptH2'), t]
-  }
+  const gap = (tw) => new Paragraph({ style: 'CvTitle', spacing: { before: tw }, children: [] })
+  const children = []
+  children.push(P(L.cvClass + '：' + (d.classification || ''), 'CvMeta'))
+  children.push(P(L.cvDocNo + '：' + (d.docNo || ''), 'CvMeta'))
+  children.push(gap(TPL.spacing.coverTopTw))
+  children.push(P(d.title || '', 'CvTitle'))
+  children.push(gap(TPL.spacing.coverMidTw))
+  if (d.org) children.push(P(d.org, 'CvOrg'))
+  children.push(P(d.date || '', 'CvSub'))
+  // 封面也有页眉 logo——用户要的是「每一页右上角」，封面不该是例外；
+  // 页脚不给（封面不编页码，模板亦然）。
+  return { properties: sectPage(false), headers: { default: logoHeader(d.logo) }, children }
 }
 
 function tocSection(model) {
   const L = model.t || {}
   return {
-    properties: sectPage(false, { formatType: 'upperRoman' }),
-    footers: { default: pageFooter() },
+    properties: sectPage(false, { start: 1, formatType: 'upperRoman' }),
+    headers: { default: logoHeader((model.doc || {}).logo) }, footers: { default: pageFooter() },
     children: [
       P(L.contents || '目 录', 'RptTitle'),
       new TableOfContents('Contents', { hyperlink: true, headingStyleRange: '1-3' }),
@@ -337,8 +302,9 @@ function masterTablesSection(model) {
   const CL = 7
   const lchunks = []
   for (let i = 0; i < links.length; i += CL) lchunks.push({ from: i, items: links.slice(i, i + CL) })
+  const cmpNo = nextTableNo(model)     // 续表共用一个表号（表 n-1 / 表 n-2 …）
   lchunks.forEach((ck, ci) => {
-    children.push(P(capTable(model, 1, ci, lchunks.length, L.compare), 'RptCaption'))
+    children.push(P(capTable(model, cmpNo, ci, lchunks.length, L.compare), 'RptCaption'))
     const head = [L.param, ...ck.items.map((l) => '#' + l.no + '　' + (l.txName || '') + ' → ' + (l.rxName || ''))]
     const rows = sum.metrics.map((m) => [m.label, ...ck.items.map((l, i) => fmtVal(m.values[ck.from + i]))])
     const rest = Math.floor(66 / ck.items.length)
@@ -347,7 +313,7 @@ function masterTablesSection(model) {
       align: ['left', ...ck.items.map(() => 'right')]
     }))
   })
-  return { properties: sectPage(true, { start: 1, formatType: 'decimal' }), footers: { default: pageFooter() }, children }
+  return { properties: sectPage(true, { start: 1, formatType: 'decimal' }), headers: { default: logoHeader((model.doc || {}).logo) }, footers: { default: pageFooter() }, children }
 }
 
 // 容量与统计 + 计算模型与参考（纵向）
@@ -359,6 +325,7 @@ function masterTailSection(model) {
   if (sum.stats && sum.stats.length) {
     children.push(P('2　' + L.capacity, 'RptH2'))
     if (sum.statsTitle) children.push(P(sum.statsTitle, 'RptNote'))
+    children.push(P(capTable(model, nextTableNo(model), 0, 1, L.capacity), 'RptCaption'))
     children.push(docTable([L.param, L.value], sum.stats.map((s) => [s.label, s.value]), { widths: [60, 40], align: ['left', 'right'] }))
   }
   // 方法学章节：报告的权威性所在——逐段说明算法口径，再列引用建议书与常数基准
@@ -369,19 +336,20 @@ function masterTailSection(model) {
     children.push(P(b.text, 'RptBody'))
   }
   children.push(P('3.2　' + L.mRefs, 'RptH3'))
-  children.push(P(capTable(model, 2, 0, 1, L.mRefs), 'RptCaption'))
+  children.push(P(capTable(model, nextTableNo(model), 0, 1, L.mRefs), 'RptCaption'))
   const refRows = []
+  const refBold = []
   for (const g of m.refGroups) {
-    refRows.push([g.group, '', ''])
-    for (const r of g.items) refRows.push([r.id, r.title, r.use])
+    refRows.push([g.group, '', '']); refBold.push(true)         // 类别行：三线表不许底纹，靠加粗分组
+    for (const r of g.items) { refRows.push([r.id, r.title, r.use]); refBold.push(false) }
   }
-  children.push(docTable([L.mId, L.mTitle, L.mUse], refRows, { widths: [26, 38, 36] }))
+  children.push(docTable([L.mId, L.mTitle, L.mUse], refRows, { widths: [26, 38, 36], keyRows: refBold }))
   children.push(P('3.3　' + L.mConst, 'RptH3'))
-  children.push(P(capTable(model, 3, 0, 1, L.mConst), 'RptCaption'))
+  children.push(P(capTable(model, nextTableNo(model), 0, 1, L.mConst), 'RptCaption'))
   children.push(docTable([L.param, L.mSymbol, L.mValue, L.unit, L.mSrc],
     m.constants.map((c) => [c.name, c.symbol, c.value, c.unit, c.src]),
     { widths: [30, 12, 20, 14, 24], align: ['left', 'center', 'right', 'left', 'left'] }))
-  return { properties: sectPage(false), footers: { default: pageFooter() }, children }
+  return { properties: sectPage(false), headers: { default: logoHeader((model.doc || {}).logo) }, footers: { default: pageFooter() }, children }
 }
 
 // 逐链路详情（横向）：输入参数 → 级联主表 → 图 → 参考段各表
@@ -401,11 +369,15 @@ function detailSection(model) {
     }
     if (l.inputs && l.inputs.length) {
       children.push(P(L.inputs, 'RptH3'))
-      for (const blk of l.inputs) {
-        children.push(P(blk.title, 'RptCaption'))
+      // 详情章的表号按「链路序号-块序号」编（与图号同一套），不占全文连续号——
+      // 一条链路的表与图因此自成一组，读者从题注就知道它属于哪条链路。
+      // 与级联表同一档字号（10.5pt）与单元格边距——输入表原来走 9pt 密排档，和结果表一样难读。
+      // 三列的小表收窄到六成版心并居中：铺满 253mm 的横向版心时，参数名与数值会被拉开半页。
+      l.inputs.forEach((blk, bi) => {
+        children.push(P(capTable(model, l.no + '-' + (bi + 1), 0, 1, blk.title), 'RptCaption'))
         children.push(docTable([L.param, L.value, L.unit], blk.rows.map((r) => [r.label, r.value, r.unit]),
-          { dense: true, widths: [56, 26, 18], align: ['left', 'right', 'left'] }))
-      }
+          { widths: [52, 26, 22], align: ['left', 'right', 'left'], widthPct: 60 }))
+      })
       children.push(P(L.results, 'RptH3'))
     }
     const segs = l.segments || []
@@ -418,7 +390,7 @@ function detailSection(model) {
     })
     for (const seg of rest) children.push(...segTable(model, seg))
   })
-  return { properties: sectPage(true), footers: { default: pageFooter() }, children }
+  return { properties: sectPage(true), headers: { default: logoHeader((model.doc || {}).logo) }, footers: { default: pageFooter() }, children }
 }
 
 // 一个瀑布段 → 题注 + 三线表
@@ -435,26 +407,27 @@ function segTable(model, seg) {
     const vals = cols >= 3 ? [r.up, r.down, r.total] : cols >= 2 ? [r.up, r.down] : [r.up]
     return [(r.sign ? r.sign + ' ' : '') + (r.label || ''), ...vals.map((v) => (v == null ? '' : String(v))), r.unit || '']
   })
-  const boldRows = seg.rows.map((r) => strongKind.indexOf(r.kind) > -1)
+  const keyRows = seg.rows.map((r) => strongKind.indexOf(r.kind) > -1)
   const sepRows = seg.rows.map((r) => ['sub', 'margin'].indexOf(r.kind) > -1)
-  const n = head.length
-  const vw = Math.floor(44 / (n - 2))
+  // 列宽：参数列占四成（最长的标签是「上行大气衰减 (P.676)」一类，约 14 字），
+  // 数值列均分，单位列留够 dBW/m² 这种量纲。总和钉在 100，别让 Word 自己去凑。
+  const n = heads.length
+  const vw = Math.floor(46 / n)
   return [
     P((seg.no ? '§' + seg.no + '　' : '') + (seg.title || ''), 'RptCaption'),
     bookTable(head, rows, {
-      boldRows, sepRows,
-      widths: [46, ...heads.map(() => vw), 10],
+      keyRows, sepRows,
+      widths: [100 - vw * n - 12, ...heads.map(() => vw), 12],
       align: ['left', ...heads.map(() => 'right'), 'left']
     })
   ]
 }
 
 // —— 小工具 ——
-function fmtTime(iso) {
-  const d = iso ? new Date(iso) : new Date()
-  return isNaN(d.getTime()) ? '' : d.toLocaleString()
-}
 const fmtVal = (v) => (v == null || v === '' ? '—' : String(v))
+// 表号全文连续（模板口径）。一张逻辑表取一次号，续表共用（表 n-1 / 表 n-2 …）；
+// 详情章的表另按「链路序号-块序号」编，不走这个计数器。
+const nextTableNo = (model) => { model.__tblNo = (model.__tblNo || 0) + 1; return model.__tblNo }
 function capTable(model, no, i, total, title) {
   const L = model.t || {}
   const en = model.lang === 'en'
@@ -468,10 +441,11 @@ function capFigure(model, linkNo, i, title) {
 }
 
 async function buildReportDocx(model) {
+  model.__tblNo = 0     // 表号从头数（同一份模型可能被反复渲染）
   const doc = new Document({
-    creator: (model.doc && model.doc.company) || (model.doc && model.doc.org) || '',
+    creator: (model.doc && model.doc.org) || '',
     title: (model.doc && model.doc.title) || '',
-    description: (model.doc && model.doc.project) || '',
+    description: (model.scheme && model.scheme.label) || '',
     styles: {
       default: {
         document: { run: { font: FN, size: half(TPL.size.body) } }
@@ -479,9 +453,9 @@ async function buildReportDocx(model) {
       paragraphStyles: paragraphStyles()
     },
     features: { updateFields: true },     // 打开时提示更新域 → 目录页码自动填
+    // 封面 → 目录 → 总报告 → 逐链路详情。文档控制页（签署 / 变更记录 / 页数）2026-08-02 按用户要求去掉。
     sections: [
       coverSection(model),
-      controlSection(model),
       tocSection(model),
       masterTablesSection(model),
       masterTailSection(model),

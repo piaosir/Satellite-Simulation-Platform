@@ -15,31 +15,25 @@
 // 只有数值、单位与出处。报告要说的话由读者从数字里读，不由软件替他下结论。
 
 // —— 报告元信息（导出对话框填写，按窗口记住上次输入）——
-// 字段少而定：多一个字段就多一处要填的空，专业报告封面上真正会被追问的就这几项。
-// 字段与栏位对齐《文档格式模板》的封面：名 称 / 单 位 / 编 写 / 校 对 / 审 核 / 批 准 +
-// 编 号 / 阶 段 / 密 级 / 页 数（页数由 Word 的 NUMPAGES 域自动填、PDF 由两遍打印数出来），
-// 底部公司名。project / notes 不在封面，进总报告的「报告说明」。
+// 字段只留《技术文档标准模板》封面上真有栏位的那五项：名称 / 编号 / 密级 / 编制单位 / 日期。
+// 2026-08-02 精简（用户定）：阶段与公司名（与单位重复）、备注（不进任何文件）、项目名称，
+// 以及编写/校对/审核/批准四项签署——新模板封面没有签署栏，文档控制页也一并去掉了，
+// 留着就是四个填了没去处的空格子。
 export const DOC_FIELDS = [
   { key: 'title', label: '名称', labelEn: 'Title', wide: true },
   { key: 'docNo', label: '编号', labelEn: 'Document No.' },
-  { key: 'stage', label: '阶段', labelEn: 'Stage' },
   { key: 'classification', label: '密级', labelEn: 'Classification' },
-  { key: 'org', label: '单位', labelEn: 'Department' },
-  { key: 'company', label: '公司名称', labelEn: 'Company', wide: true },
-  { key: 'preparedBy', label: '编写', labelEn: 'Prepared by' },
-  { key: 'checkedBy', label: '校对', labelEn: 'Checked by' },
-  { key: 'approvedBy', label: '审核', labelEn: 'Approved by' },
-  { key: 'ratifiedBy', label: '批准', labelEn: 'Ratified by' },
-  { key: 'project', label: '项目名称', labelEn: 'Project', wide: true },
-  { key: 'date', label: '日期', labelEn: 'Date' },
-  { key: 'notes', label: '备注', labelEn: 'Remarks', wide: true, area: true }
+  { key: 'org', label: '编制单位', labelEn: 'Organisation', wide: true },
+  { key: 'date', label: '日期', labelEn: 'Date' }
 ]
 
-// 体制名（封面与页眉用）。再生式按信号流向再分四档——一份再生式报告只讲其中一段链路。
+// 体制名。★ 不带「链路预算」四个字——报告标题里已经有了，副标题再说一遍就是同一句话说两遍
+//（用户 2026-08-02 指出的「重复取名」）。现在它只出现在导出对话框的抬头与 Excel 主表的摘要行，
+// 封面上不再有副标题。再生式按信号流向再分四档——一份再生式报告只讲其中一段链路。
 const SCHEME_NAME = {
-  GEO: ['GSO 透明转发链路预算', 'GSO Transparent (Bent-Pipe) Link Budget'],
-  NGSO: ['NGSO 透明转发链路预算', 'NGSO Transparent (Bent-Pipe) Link Budget'],
-  REGEN: ['再生式（星上处理）链路预算', 'Regenerative (On-Board Processing) Link Budget']
+  GEO: ['GSO 透明转发（弯管）体制', 'GSO Transparent (Bent-Pipe)'],
+  NGSO: ['NGSO 透明转发（弯管）体制', 'NGSO Transparent (Bent-Pipe)'],
+  REGEN: ['再生式（星上处理）体制', 'Regenerative (On-Board Processing)']
 }
 const REGEN_NAME = {
   uplink: ['上行（地球站 → 卫星）', 'Uplink (Earth Station → Satellite)'],
@@ -62,19 +56,33 @@ export function schemeOf(orbitType, regenMode) {
 export const schemeName = (scheme, lang) => (lang === 'en' ? scheme.labelEn : scheme.label)
 export const schemeSub = (scheme, lang) => (lang === 'en' ? scheme.subLabelEn : scheme.subLabel)
 
-// 默认元信息：能自动填的一律自动填（报告名称随体制与卫星走、日期取今天），
-// 用户只需要补编号/项目/签署那几栏。
-export function defaultDocInfo(scheme, satName, lang) {
+// 默认报告名：正式技术文档的取名法「对象 + 范围 + 文档类型」，
+// 即「<卫星> 卫星 <频段> 频段链路预算报告」。封面上它是唯一的一行主标题，故必须自己说全，
+// 不靠副标题补充（用户 2026-08-02 定：一个醒目的主标题即可）。
+export function reportTitle(satName, band, lang) {
+  const sat = String(satName || '').trim()
+  const bd = String(band || '').trim()
+  if (lang === 'en') {
+    const head = [sat && sat + ' Satellite', bd && bd + '-Band'].filter(Boolean).join(' ')
+    return (head ? head + ' ' : 'Satellite ') + 'Link Budget Report'
+  }
+  // 中文不在「频段」与「链路预算报告」之间断词——那是一个完整的名词短语
+  const head = [sat && sat + ' 卫星', bd && bd + ' 频段'].filter(Boolean).join(' ')
+  return (head || '卫星') + '链路预算报告'
+}
+
+// 默认元信息：能自动填的一律自动填（报告名随卫星与频段走、日期取今天），用户只需要补编号与单位。
+// logo：{ dataUrl, w, h } —— 用户上传的台标，贴在三份文件的右上角。矢量图（SVG）在上传时
+// 就已在渲染端栅格化成 PNG（Excel 与 Word 的图都只吃位图），故这里一律是 PNG 的 data URL。
+// ★ 编制单位一律留空由用户填——软件不替任何人预设单位名。
+export function defaultDocInfo(scheme, satName, lang, band) {
   const d = new Date()
   const p = (n) => String(n).padStart(2, '0')
-  // 标题只带卫星名 + 「链路预算报告」：体制与信号流向在封面上另有一行（写进标题就成了同一句话说两遍）。
-  // 单位 / 公司名 / 签署人一律留空由用户填——软件不替任何人预设单位名。
   return {
-    title: (satName ? satName + '　' : '') + translate('链路预算报告', lang),
-    docNo: '', stage: '/', classification: '', org: '', company: '',
-    preparedBy: '', checkedBy: '', approvedBy: '', ratifiedBy: '', project: '',
+    title: reportTitle(satName, band, lang),
+    docNo: '', classification: '', org: '',
     date: `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`,
-    notes: ''
+    logo: null
   }
 }
 
@@ -152,17 +160,13 @@ export const LB_REPORT_EN = {
   '报告说明': 'Scope & Basis', '场景与假设': 'Scenario & Assumptions', '链路清单': 'Link Schedule',
   '逐参数对照': 'Parameter Comparison', '容量与统计': 'Capacity & Statistics',
   '输入参数': 'Input Parameters', '详情索引': 'Detail Index', '计算模型与参考': 'Models & References',
-  '几何关系': 'Geometry', '链路详情': 'Link Details', '编制': 'Prepared by', '校核': 'Checked by',
-  '审核': 'Approved by', '日期': 'Date', '密级': 'Classification', '报告编号': 'Document No.',
-  '项目名称': 'Project', '编制单位': 'Organisation', '备注': 'Remarks', '报告名称': 'Report Title',
+  '几何关系': 'Geometry', '链路详情': 'Link Details',
+  '日期': 'Date', '密级': 'Classification', '报告编号': 'Document No.',
+  '编制单位': 'Organisation', '报告名称': 'Report Title',
   '生成时间': 'Generated', '软件版本': 'Software Version',
   '序号': 'No.', '链路': 'Link', '发信站': 'Tx Station', '收信站': 'Rx Station',
-  // 模板的封面/文档控制栏名
-  '名称': 'Title', '编号': 'Document No.', '阶段': 'Stage', '单位': 'Department',
-  '公司名称': 'Company', '编写': 'Prepared by', '校对': 'Checked by', '批准': 'Ratified by',
-  '文档控制': 'Document Control', '变更记录': 'Change Log', '版本号': 'Version',
-  '作者': 'Author', '段落、图或表': 'Section / Figure / Table', '增加/修改/删除': 'Add / Modify / Delete',
-  '简单描述': 'Description', '更改申请单号': 'Change Request No.', '增加': 'Add', '创建文档': 'Document created',
+  // 模板封面栏名
+  '名称': 'Title', '编号': 'Document No.',
   // 方法学章节
   '计算链路与口径': 'Computation Chain and Conventions', '引用建议书与标准': 'Normative References',
   '物理常数与基准': 'Physical Constants and Reference Values', '本报告中的用途': 'Use in this report',
@@ -172,10 +176,13 @@ export const LB_REPORT_EN = {
   '导出报告': 'Export Report', '输出': 'Output', '包含图件': 'Include figures',
   '取消': 'Cancel', '关闭': 'Close', '生成中…': 'Generating…', '生成报告': 'Generate', '条链路': 'links',
   '字体': 'Font', '语言': 'Language',
+  '选择图片': 'Choose image', '更换': 'Replace', '移除': 'Remove',
+  '贴在每一页右上角': 'Placed at the top-right of every page and worksheet; remembered across windows',
+  '图片读取失败': 'Could not read the image',
   '第一张表为总报告，其后每条链路一张详情表': 'First sheet is the master report; one detail sheet per link follows',
   '封面 / 目录 / 总报告为 A4 纵向，逐链路详情为 A4 横向': 'Cover / contents / master report in A4 portrait; per-link details in A4 landscape',
   '图表区已关闭（功能区「视图 → 图表」），本次导出没有图': 'The figure pane is hidden (View → Figures); this export will contain no figures',
-  '逐条链路生成地理场图与链路视图（每条都要重跑一次网格扫描，链路多时较慢）': 'Renders the geographic field and link view for every link (each re-runs a full grid sweep — slow with many links)',
+  '逐条链路生成地理场图与链路视图（每条链路需重新执行一次网格扫描，链路较多时耗时增加）': 'Renders the geographic field and link view for every link (each re-runs a full grid sweep — slow with many links)',
   '卫星': 'Satellite', '频段': 'Band', '体制': 'Scheme', '计算方式': 'Calculation Mode',
   '参数': 'Parameter', '数值': 'Value', '单位': 'Unit', '说明': 'Note',
   '计算失败': 'Calculation failed', '本条链路未计算成功，故无结果与图': 'This link did not compute successfully; no results or figures are available.',
@@ -377,27 +384,18 @@ export function labelBundle(lang) {
     results: t('详细计算结果'), figures: t('图件'),
     no: t('序号'), link: t('链路'), tx: t('发信站'), rx: t('收信站'),
     param: t('参数'), value: t('数值'), unit: t('单位'), note: t('说明'),
-    title: t('名称'), docNo: t('编号'), project: t('项目名称'), org: t('单位'), company: t('公司名称'),
-    classification: t('密级'), stage: t('阶段'), prepared: t('编写'), checked: t('校对'),
-    approved: t('审核'), ratified: t('批准'),
-    date: t('日期'), generated: t('生成时间'), appVersion: t('软件版本'), remarks: t('备注'),
+    title: t('名称'), docNo: t('编号'), org: t('编制单位'),
+    classification: t('密级'),
+    date: t('日期'), generated: t('生成时间'), appVersion: t('软件版本'),
     scheme: t('体制'), satellite: t('卫星'), band: t('频段'), calcMode: t('计算方式'),
     calcFailed: t('计算失败'), noResult: t('本条链路未计算成功，故无结果与图'),
     figure: t('图'), table: t('表'), continued: lang === 'en' ? '(continued)' : '（续）',
     // 三线表列头（与屏幕瀑布表同一套译法，见 shared/lbDocI18n.js）
     uplink: lang === 'en' ? 'Uplink' : '上行', downlink: lang === 'en' ? 'Downlink' : '下行',
     total: lang === 'en' ? 'Total' : '合计',
-    // 模板封面与文档控制页的栏名（带全角空格，与模板一致）
-    cvName: lang === 'en' ? 'Title' : '名　称', cvDept: lang === 'en' ? 'Department' : '单　位',
-    cvPrepared: lang === 'en' ? 'Prepared' : '编　写', cvChecked: lang === 'en' ? 'Checked' : '校　对',
-    cvApproved: lang === 'en' ? 'Approved' : '审　核', cvRatified: lang === 'en' ? 'Ratified' : '批　准',
-    cvDocNo: lang === 'en' ? 'Doc. No.' : '编　号', cvStage: lang === 'en' ? 'Stage' : '阶　段',
-    cvClass: lang === 'en' ? 'Classification' : '密　级', cvPages: lang === 'en' ? 'Pages' : '页　数',
-    hqSign: lang === 'en' ? 'Countersign' : '会　签',
-    docControl: t('文档控制'), changeLog: t('变更记录'),
-    chgVer: t('版本号'), chgDate: t('日期'), chgAuthor: t('作者'), chgWhere: t('段落、图或表'),
-    chgKind: t('增加/修改/删除'), chgDesc: t('简单描述'), chgReq: t('更改申请单号'),
-    chgAdd: t('增加'), chgCreate: t('创建文档')
+    // 封面栏名（带全角空格，与模板一致：模板封面顶上就是「密级：」「文档编号：」两行）
+    cvDocNo: lang === 'en' ? 'Doc. No.' : '文档编号',
+    cvClass: lang === 'en' ? 'Classification' : '密　　级'
   }
 }
 
@@ -415,7 +413,7 @@ export function buildReportModel(o) {
     lang,
     scheme,
     t: labelBundle(lang),
-    doc: Object.assign({}, defaultDocInfo(scheme, satelliteName, lang), doc, {
+    doc: Object.assign({}, defaultDocInfo(scheme, satelliteName, lang, frequencyBand), doc, {
       appVersion,
       generatedAt: new Date().toISOString()
     }),

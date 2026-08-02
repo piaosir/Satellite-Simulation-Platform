@@ -164,7 +164,7 @@ function apply() {
         <div class="ab-modes">
           <button v-for="m in ADV_MODES" :key="m.key" class="ab-mode" :class="{ on: mode === m.key }" :title="m.desc" @click="mode = m.key">{{ m.label }}</button>
         </div>
-        <div v-if="stale" class="ab-warn">链路表输入已在上次计算之后变更，下列参考数据取自该次计算结果；建议重新计算后再配平。</div>
+        <div v-if="stale" class="ab-warn">链路表输入已在上次计算之后变更，下列参考数据取自该次计算结果。</div>
 
         <!-- ① 参与链路 -->
         <div class="ab-sec">参与链路</div>
@@ -192,7 +192,7 @@ function apply() {
                 <td v-if="usable(r)" class="n">{{ d2(r.marginDb) }}<i v-if="solvedMargin.has(r.rowId)" class="ab-to" :class="{ bad: solvedMargin.get(r.rowId) < 0 }">→{{ d2(solvedMargin.get(r.rowId)) }}</i></td>
                 <td v-else class="n">{{ r.error || '未计算' }}</td>
               </tr>
-              <tr v-if="!rows.length"><td colspan="7" class="ab-empty">链路表暂无计算结果，请先执行「计算」</td></tr>
+              <tr v-if="!rows.length"><td colspan="7" class="ab-empty">链路表暂无计算结果。</td></tr>
             </tbody>
           </table>
         </div>
@@ -222,7 +222,7 @@ function apply() {
                   <td class="n"><input class="ab-in" type="number" step="0.1" :value="cs(c.id).bias" @change="setCs(c.id, { bias: parseFloat($event.target.value) || 0 })" /></td>
                   <td class="n st" :class="{ bad: c.toDb < 0 }">{{ d2(c.toDb) }}<i class="ab-sh">{{ sign(c.shiftDb) }}</i></td>
                 </tr>
-                <tr v-if="!res.carriers.length"><td colspan="6" class="ab-empty">请在上表勾选参与配平的链路</td></tr>
+                <tr v-if="!res.carriers.length"><td colspan="6" class="ab-empty">未选择链路。</td></tr>
               </tbody>
             </table>
           </div>

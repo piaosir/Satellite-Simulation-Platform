@@ -189,4 +189,176 @@ async function remove(myId, msgId) {
   return { ok: true }
 }
 
-module.exports = () => ({ configured, send, inbox, remove, putSnapshot })
+// ============ 绑定投递：多个平台 ↔ 多个小程序账号，免密钥直投 ============
+//
+// 小程序侧生成一个 12 位【认证码】(CH) 作为自己的收件地址，人肉带到平台（长按复制 → 文件传输
+// 助手 → 粘贴）。平台记下 CH 就能一直往里投；同一个 CH 可被多个平台绑定，同一个平台可绑多个 CH。
+//
+// 对象布局（全在 updates/gxt/ 下 —— 那是唯一【匿名公读】的前缀，而小程序云函数没有任何 COS
+// 凭证、只能匿名 GET，所以信箱只能落在这里。share/* 是私有读，小程序够不着）：
+//   updates/gxt/box/<CH>/roster.json         谁绑了这个账号（多平台共享）
+//   updates/gxt/box/<CH>/<PID>/index.json    该平台的消息索引
+//   updates/gxt/box/<CH>/<PID>/<MID>.json    消息件（信封原样转存，小程序侧的 import* 零改动）
+//
+// ★ 为什么不学 share/<用户ID>/inbox.json 那个聚合对象：那边装的是配置（20 KB 级），这边要装频率
+//   计划（94 波束 HTS 一件几百 KB）。聚合进一个对象必爆，且小程序每次拉取都得把历史全下一遍。
+//   拆成「索引 + 分件」后，日常同步只下索引（几 KB），点开哪件才下哪件。
+//
+// ★★ 按平台分目录，是为了让每个索引【只有一个写者】—— 多平台共写一个索引必然读改写竞态。
+//    roster 是唯一的多写者对象，但它只在「这个平台第一次往这个 CH 投递」时才写。真撞上了会丢一条，
+//    故每次投递都重新自检「我在不在 roster 里」，不在就补写：最坏情况是某平台的首投晚一轮才被
+//    发现，下次投递自愈，不会永久失联。
+//
+// ★★★ CAM 只给了 PutObject / GetObject，【没有 DeleteObject】—— 那把密钥随安装包分发，给了删
+//     权限就等于任何人都能删别人的信箱。所以「撤回」只能把消息件覆写成空对象 + 从索引里摘掉，
+//     COS 上的对象本身留着。这不会无限堆积：MID 由 syncId 哈希而来，重发同一份内容【复用同一个
+//     对象】，故对象数的上界是「你一共发过多少件不同的东西」，不是「你发了多少次」。
+const BOX_PREFIX = `${GXT_PREFIX}/box`
+const BOX_IDX_KIND = 'satsim-boxidx'
+const BOX_ROSTER_KIND = 'satsim-roster'
+const CH_LEN = 12
+const BOX_KEEP = 60          // 索引里保留的条数上限（超出的最旧条目摘掉；对象本身按上面第三条留着）
+
+// 认证码归一：去分隔符、大写。字母表与密钥同源（A-Z2-9，去掉易混的 I L O 0 1）。
+// 长度 12 而不是密钥那样的 8：密钥是一次性的，猜中只泄露一份内容；认证码是【长期收件地址】，
+// 猜中等于长期可读该账号收到的一切，风险等级不同。31^12 ≈ 7.9e17。
+function normCh(raw) {
+  const s = String(raw == null ? '' : raw).toUpperCase().replace(/[^A-Z0-9]/g, '')
+  if (s.length !== CH_LEN || [...s].some((c) => !KEY_ALPHABET.includes(c))) {
+    throw new Error(`认证码格式不正确（应为 ${CH_LEN} 位，字母表 A-Z2-9）`)
+  }
+  return s
+}
+const boxDir = (ch) => `${BOX_PREFIX}/${ch}`
+const rosterKey = (ch) => `${boxDir(ch)}/roster.json`
+const boxIdxKey = (ch, pid) => `${boxDir(ch)}/${pid}/index.json`
+const boxMsgKey = (ch, pid, mid) => `${boxDir(ch)}/${pid}/${mid}.json`
+
+// 通用 JSON 读取；对象不存在(404/NoSuchKey)返回 fallback（首次投递时 roster / index 都还不存在）
+async function getJson(key, fallback) {
+  try {
+    const v = JSON.parse(await request('GET', encPath(key)))
+    return v && typeof v === 'object' ? v : fallback
+  } catch (e) {
+    const msg = String((e && e.message) || '')
+    if (msg.includes('COS 404') || msg.includes('NoSuchKey')) return fallback
+    if (msg.includes('Unexpected token') || msg.includes('JSON')) return fallback   // 半截对象/被覆写成空
+    throw e
+  }
+}
+
+/**
+ * 投递一批到某个认证码。
+ *
+ * ★ 粒度：【一件内容 = 一条消息】，不是「一次发送 = 一条消息」。自动同步要的语义是
+ *   「平台改了哪一份，手机上就更新哪一份」，所以幂等键必须挂在内容上（sync = 该件的 srcId /
+ *   计划 id），而不是挂在这次发送的动作上。一次勾了 8 行就是 8 条消息，各自独立覆盖。
+ * ★★ 但索引【只写一次】：8 条消息各做一次读改写索引会串行 8 个 RTT，且中途失败会留半截。
+ *
+ * @param {string} ch  小程序端的 12 位认证码
+ * @param {object} o   { pid 本机ID, label 本机备注名, app 版本,
+ *                       msgs: [{ sync 幂等键, name, payload 信封 }] }
+ * @returns {Promise<{ok:true, sent:number, bytes:number, mids:string[]}>}
+ */
+async function boxSend(ch, o) {
+  if (!configured()) throw new Error('发送到小程序未配置（缺少 COS 凭证：shareConfig.js 或 COS_SECRET_ID 等环境变量）')
+  const C = normCh(ch)
+  const pid = sanitizeId(o && o.pid)
+  if (!pid) throw new Error('本机ID无效')
+  const msgs = (o && Array.isArray(o.msgs) ? o.msgs : []).filter((m) => m && m.payload && typeof m.payload === 'object')
+  if (!msgs.length) throw new Error('内容为空')
+
+  const label = String((o && o.label) || '').slice(0, 40)
+  const app = String((o && o.app) || '').slice(0, 20)
+  const now = Date.now()
+
+  // 1) roster 自检自愈（见本段 ★★）：不在里面、或备注名/版本变了，就写回
+  const roster = await getJson(rosterKey(C), null) || { kind: BOX_ROSTER_KIND, v: 1, ch: C, platforms: [] }
+  if (!Array.isArray(roster.platforms)) roster.platforms = []
+  const at = roster.platforms.findIndex((p) => p && p.pid === pid)
+  const mine = at >= 0 ? roster.platforms[at] : null
+  if (!mine || mine.label !== label || mine.app !== app) {
+    const next = { pid, label, app, firstAt: (mine && mine.firstAt) || now, lastAt: now }
+    if (at >= 0) roster.platforms[at] = next; else roster.platforms.push(next)
+    roster.ch = C; roster.updatedAt = now
+    await request('PUT', encPath(assertWritable(rosterKey(C))), { body: JSON.stringify(roster) })
+  }
+
+  // 2) 先写全部消息件、再改索引。反过来会让小程序拉到一条索引里有、对象却 404 的幽灵消息；
+  //    这个顺序下最坏情况只是留几个没人引用的孤儿对象（无害，且下次同 sync 重发会覆盖它们）。
+  const rows = []
+  let total = 0
+  await Promise.all(msgs.map(async (m) => {
+    const payload = m.payload
+    const body = JSON.stringify(payload)
+    const bytes = Buffer.byteLength(body, 'utf8')
+    // 幂等键：调用方给（如 'GEO:cfg_a1b2:0'）。没给就退化为内容哈希 —— 内容一字不改地重发仍复用
+    // 同一件，改一个字就是新的一件（旧件被弃在 COS 上，不再被索引引用）。
+    const sync = String(m.sync || '') || ('sha:' + sha1(body).slice(0, 16))
+    const mid = 'm' + sha1(`${pid}|${sync}`).slice(0, 15)
+    await request('PUT', encPath(assertWritable(boxMsgKey(C, pid, mid))), { body })
+    total += bytes
+    rows.push({
+      id: mid,
+      sync,
+      name: String(m.name || payload.name || '仿真平台数据').slice(0, 80),
+      kind: String(payload.kind || ''),
+      ts: now,
+      expiresAt: Number(payload.expiresAt) || 0,
+      bytes,
+      // 清单用：小程序不下载消息件就能列出这一条里装了什么
+      items: Array.isArray(payload.items)
+        ? payload.items.map((it) => ({ type: String((it && it.type) || ''), name: String((it && it.name) || ''), mod: String((it && it.mod) || '') }))
+        : []
+    })
+  }))
+
+  // 3) 索引（单写者，读改写无竞态）
+  const idx = await getJson(boxIdxKey(C, pid), null) || { kind: BOX_IDX_KIND, v: 1 }
+  if (!Array.isArray(idx.msgs)) idx.msgs = []
+  for (const row of rows) {
+    const hit = idx.msgs.findIndex((m) => m && m.id === row.id)
+    if (hit >= 0) idx.msgs[hit] = row; else idx.msgs.push(row)
+  }
+  idx.msgs.sort((a, b) => (a.ts || 0) - (b.ts || 0))
+  if (idx.msgs.length > BOX_KEEP) idx.msgs = idx.msgs.slice(-BOX_KEEP)
+  Object.assign(idx, { ch: C, pid, label, app, updatedAt: now })
+  await request('PUT', encPath(assertWritable(boxIdxKey(C, pid))), { body: JSON.stringify(idx) })
+
+  return { ok: true, sent: rows.length, bytes: total, mids: rows.map((r) => r.id) }
+}
+
+/** 平台回看自己往某个认证码投过什么（设置页的「已投递」列表）。roster 一并返回，供显示「还绑了谁」。 */
+async function boxPeek(ch, pid) {
+  if (!configured()) throw new Error('发送到小程序未配置（缺少 COS 凭证）')
+  const C = normCh(ch)
+  const p = sanitizeId(pid)
+  const idx = await getJson(boxIdxKey(C, p), null)
+  const roster = await getJson(rosterKey(C), null)
+  return {
+    ok: true,
+    msgs: (idx && Array.isArray(idx.msgs) ? idx.msgs : []).slice().sort((a, b) => (b.ts || 0) - (a.ts || 0)),
+    platforms: roster && Array.isArray(roster.platforms) ? roster.platforms : []
+  }
+}
+
+/** 撤回一件：从索引摘掉 + 把消息件覆写成空对象（没有 DeleteObject 权限，见本段 ★★★）。 */
+async function boxRevoke(ch, pid, mid) {
+  if (!configured()) throw new Error('发送到小程序未配置（缺少 COS 凭证）')
+  const C = normCh(ch)
+  const p = sanitizeId(pid)
+  const m = String(mid || '').replace(/[^A-Za-z0-9]/g, '')
+  if (!m) throw new Error('消息ID无效')
+  const idx = await getJson(boxIdxKey(C, p), null)
+  if (idx && Array.isArray(idx.msgs)) {
+    idx.msgs = idx.msgs.filter((x) => x && x.id !== m)
+    idx.updatedAt = Date.now()
+    await request('PUT', encPath(assertWritable(boxIdxKey(C, p))), { body: JSON.stringify(idx) })
+  }
+  // 覆写要在摘索引之后：先覆写、后摘索引的话，中间那一瞬小程序会拉到一件空内容的消息。
+  try { await request('PUT', encPath(assertWritable(boxMsgKey(C, p, m))), { body: '{}' }) }
+  catch (e) { /* 覆写失败无妨：索引里已经没有它了，小程序不会再去拉 */ }
+  return { ok: true }
+}
+
+module.exports = () => ({ configured, send, inbox, remove, putSnapshot, boxSend, boxPeek, boxRevoke, normCh, CH_LEN })

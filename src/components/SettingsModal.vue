@@ -56,7 +56,6 @@ const speedPct = computed({
           <div class="tiers">
             <button v-for="t in TIERS" :key="t.key" class="tier" :class="{ on: quality.tier === t.key }" @click="setTier(t.key)">{{ t.label }}</button>
           </div>
-          <p class="tip">「极致」为可达的最高画质；改动任意项将切换为「自定义」。</p>
 
           <div class="grid">
             <label class="frow">
@@ -66,13 +65,13 @@ const speedPct = computed({
               </select>
             </label>
             <label class="frow">
-              <span class="fn">底图精细化<em>海岸线/国界几何精度（粗→细）</em></span>
+              <span class="fn">底图精细化</span>
               <select :value="mapLevelIdx" @change="onPickMapLevel">
                 <option v-for="(l, i) in MAP_LEVELS" :key="i" :value="i">{{ l.label }}</option>
               </select>
             </label>
             <label class="frow">
-              <span class="fn">覆盖网格<em>等值线/填充密度（数值不变）</em></span>
+              <span class="fn">覆盖网格</span>
               <select :value="eff.gridStride" @change="onPick('gridStride', $event)">
                 <option v-for="o in optsOf('gridStride')" :key="o.label" :value="o.v">{{ o.label }}</option>
               </select>
@@ -90,7 +89,7 @@ const speedPct = computed({
               </select>
             </label>
             <div class="frow">
-              <span class="fn">MSAA 抗锯齿<em>切换后 3D 视图会重新渲染一次</em></span>
+              <span class="fn">MSAA 抗锯齿</span>
               <span class="sw" :class="{ on: msaaOn }" @click="toggleMsaa"><i></i></span>
             </div>
           </div>

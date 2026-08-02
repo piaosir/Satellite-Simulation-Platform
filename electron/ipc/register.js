@@ -339,11 +339,12 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     ipcMain.handle('freqPlan:rename', (_e, id, name) => freqPlan.rename(id, name))
     ipcMain.handle('freqPlan:reassignSat', (_e, folder, patch) => freqPlan.reassignSat(folder, patch))
 
-    // 导出：PNG / PDF / SVG / JSON，统一走原生保存框
+    // 导出：PNG / PDF / SVG / JSON / XLSX，统一走原生保存框
     ipcMain.handle('freqPlan:export', async (e, kind, payload, defaultName) => {
       const win = BrowserWindow.fromWebContents(e.sender)
-      const ext = kind === 'pdf' ? 'pdf' : kind === 'json' ? 'json' : kind === 'svg' ? 'svg' : 'png'
-      const nameMap = { pdf: 'PDF 文档', json: 'JSON 数据', svg: 'SVG 矢量图', png: 'PNG 图片' }
+      const ext = kind === 'pdf' ? 'pdf' : kind === 'json' ? 'json' : kind === 'svg' ? 'svg'
+        : kind === 'xlsx' ? 'xlsx' : 'png'
+      const nameMap = { pdf: 'PDF 文档', json: 'JSON 数据', svg: 'SVG 矢量图', png: 'PNG 图片', xlsx: 'Excel 工作簿' }
       const { canceled, filePath } = await dialog.showSaveDialog(win, {
         title: '导出频率计划',
         defaultPath: (defaultName || '频率计划') + '.' + ext,
@@ -351,7 +352,12 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
       })
       if (canceled || !filePath) return { canceled: true }
       try {
-        if (kind === 'json' || kind === 'svg') fs.writeFileSync(filePath, String(payload || ''), 'utf8')
+        if (kind === 'xlsx') {
+          // payload 是渲染端算好的纯数据模型（版式与口径都在 src/shared/fpXlsxModel.js），
+          // 这里只把它刷成工作簿 —— 见 electron/services/freqPlanXlsx.js 文件头
+          const { buildFreqPlanWorkbook } = require('../services/freqPlanXlsx')
+          fs.writeFileSync(filePath, Buffer.from(await buildFreqPlanWorkbook(payload)))
+        } else if (kind === 'json' || kind === 'svg') fs.writeFileSync(filePath, String(payload || ''), 'utf8')
         else {
           // PNG / PDF 都由渲染端生成后以 dataURL 送来（PDF 走 jspdf + svg2pdf，与报表同一条管线）。
           // ★ MIME 与 base64 之间允许夹参数：jsPDF 的 datauristring 就带着 ;filename=xxx.pdf 那一节，
@@ -863,6 +869,16 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     // 发送到小程序：上传当前绘制状态快照到 COS gxt/<key>.json，返回 { ok, key }
     ipcMain.handle('share:gxtSnapshot', async (_e, payload) => {
       try { return await share.putSnapshot(payload) } catch (err) { return { ok: false, error: err.message || String(err) } }
+    })
+    // 绑定投递：往小程序端的 12 位认证码信箱直投（见 share.js「绑定投递」段）
+    ipcMain.handle('share:boxSend', async (_e, ch, o) => {
+      try { return await share.boxSend(ch, o) } catch (err) { return { ok: false, error: err.message || String(err) } }
+    })
+    ipcMain.handle('share:boxPeek', async (_e, ch, pid) => {
+      try { return await share.boxPeek(ch, pid) } catch (err) { return { ok: false, error: err.message || String(err) } }
+    })
+    ipcMain.handle('share:boxRevoke', async (_e, ch, pid, mid) => {
+      try { return await share.boxRevoke(ch, pid, mid) } catch (err) { return { ok: false, error: err.message || String(err) } }
     })
   }
 }

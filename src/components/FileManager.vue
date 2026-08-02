@@ -10,6 +10,8 @@ import { repackGrdCommonGrid } from '../viz/grd/synth.js'
 import { displaySatName } from '../viz/satName.js'
 import { logMsg } from '../stores/log'
 import Icon from './Icon.vue'
+import MiniSendDialog from './MiniSendDialog.vue'
+import { fpMiniItem } from '../shared/fpMiniExport.js'
 
 const emit = defineEmits(['close'])
 const api = typeof window !== 'undefined' ? window.api : null
@@ -252,6 +254,31 @@ async function importFreqPlanJson() {
   await loadFreqPlans()
   flash(`导入 ${r.added} 份${r.replaced ? `，覆盖 ${r.replaced} 份` : ''}${r.errors?.length ? `，${r.errors.length} 份失败` : ''}`)
 }
+// —— 发送到小程序（频率计划）——
+// 送出去的是【导出那一刻的版式】：小程序不重算 layout（那套口径 2026-07~08 连改三轮，照抄一份
+// 必漂，见 shared/fpMiniExport.js 文件头），故平台把绘制指令连同解析结果一起打包。
+// 计划改了要重发——这是「只能从仿真平台导入」这个定位下的应有代价。
+const fpMiniOpen = ref(false)
+const fpMiniPack = ref(null)     // { name, items }
+const fpMiniConfigured = ref(false)
+// 刻度是整份计划的属性（工作台那一个下拉，存 localStorage，与频率计划窗口同 origin）。
+// 小程序侧【不给单位切换】——再给一个下拉就是第二个真相源，故导出时定死这一把尺子。
+function freqPlanUnit() {
+  try { return JSON.parse(localStorage.getItem('freqplan/opt') || '{}').unit || 'MHz' } catch { return 'MHz' }
+}
+async function sendFreqPlanToMini(e) {
+  if (!api?.freqPlan) return
+  fpBusy.value = true
+  try {
+    const p = await api.freqPlan.get(e.id)
+    if (!p) { flash('计划不存在'); return }
+    fpMiniPack.value = { name: p.name || e.name || '频率计划', items: [fpMiniItem(p, { unit: freqPlanUnit() })] }
+    fpMiniOpen.value = true
+  } catch (err) {
+    flash('准备失败：' + ((err && err.message) || err))
+  } finally { fpBusy.value = false }
+}
+
 const fpEdit = ref('')
 const fpVal = ref('')
 function startRenameFp(e) { fpEdit.value = e.id; fpVal.value = e.name }
@@ -471,7 +498,13 @@ async function exportCurrentGxt() {
   else if (save && save.error) flash('导出失败：' + save.error)
 }
 
-onMounted(() => { loadOmm(); loadCustomGroups(); loadCustomConsts(); loadGxt(); loadPreset(); loadFreqPlans() })
+const fpMiniDeviceId = ref('')
+onMounted(() => {
+  loadOmm(); loadCustomGroups(); loadCustomConsts(); loadGxt(); loadPreset(); loadFreqPlans()
+  // 「发送到小程序」的凭证与本机ID（缺凭证时按钮仍在，点开即说明原因，不静默失效）
+  api?.share?.configured?.().then((v) => { fpMiniConfigured.value = !!v }).catch(() => {})
+  api?.app?.deviceId?.().then((v) => { fpMiniDeviceId.value = String(v || '') }).catch(() => {})
+})
 // 频率计划在独立窗口编辑，改动不会回推本页 —— 切回本页签时重新拉一次索引，
 // 免得用户编辑完回来看到的还是旧的转发器数/更新时间。
 watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
@@ -545,11 +578,10 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
                   </span>
                 </template>
               </div>
-              <div v-if="!hasCustomAny" class="cempty">暂无自定义卫星 — 点「导入星历」加载 OMM CSV / TLE（每文件成一组，支持一文件多星、Alpha-5 编号），或在「星座地图 3D」用 Walker 生成器自建星座。</div>
+              <div v-if="!hasCustomAny" class="cempty">暂无自定义卫星。</div>
             </div>
 
             <div class="secbar top"><span class="sect">内置星座组</span></div>
-            <p class="lead">每组对应一份 CelesTrak OMM（CSV）。软件已内置一份最新快照，无网络时也能查看星座；联网时自动改用更新的一版。可导入本地文件替换、或导出当前数据。</p>
             <table class="tbl">
               <thead><tr><th>星座组</th><th>卫星数</th><th>更新时间</th><th>状态</th><th></th></tr></thead>
               <tbody>
@@ -569,14 +601,12 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
 
           <!-- ② GRD -->
           <section v-else-if="tab === 'grd'">
-            <p class="lead">卫星 / 天线树（与「星座地图 3D」的覆盖分析共用）。「添加 / 编辑卫星」会在本窗口之上弹出覆盖分析的同一弹窗（定位方式 / 星座关联一应俱全，仅隐藏图标·字号·仰角线·颜色等显示项）。也可导入 GRD 新建天线、重命名、导出原始 GRD。</p>
-            <div v-if="!grdApi" class="empty-hint">GRD 数据随「星座地图 3D」加载，请切换到该页面后再进行管理。</div>
+            <div v-if="!grdApi" class="empty-hint">GRD 数据尚未加载。</div>
             <template v-else>
               <div class="addbar sub">
                 <button class="mini imp" @click="openAddGrdSat"><Icon name="plus" :size="12" /> 添加卫星</button>
-                <span class="dimnote">支持固定经纬度 / 轨道根数定位</span>
               </div>
-              <div v-if="!grdSats.length" class="empty-hint">暂无卫星。可点「添加卫星」新建一颗，或为卫星导入 GRD。</div>
+              <div v-if="!grdSats.length" class="empty-hint">暂无卫星。</div>
               <div v-else class="tree">
                 <div v-for="sat in grdSats" :key="sat.folder" class="tnode">
                   <div class="trow sat">
@@ -607,7 +637,7 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
                       </span>
                     </template>
                   </div>
-                  <div v-if="!sat.antennas.length" class="noant">暂无天线 — 点上方「导入 GRD」</div>
+                  <div v-if="!sat.antennas.length" class="noant">暂无天线。</div>
                 </div>
               </div>
             </template>
@@ -615,11 +645,9 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
 
           <!-- ②b 频率计划 -->
           <section v-else-if="tab === 'freqplan'">
-            <p class="lead">卫星 → 转发器频率计划。频率计划与 GRD 天线平级、同挂在卫星下：天线管「波束往哪照」，频率计划管「频率怎么排」。编辑在独立窗口进行（批量生成 / 容量规划 / 导出 PNG·PDF），本页只做增删改查。</p>
             <div class="addbar">
               <button class="mini imp" @click="openFreqPlanWin('')"><Icon name="layers" :size="12" /> 打开频率计划工作台</button>
               <button class="mini ghost" @click="importFreqPlanJson"><Icon name="import" :size="12" /> 导入 JSON…</button>
-              <span class="dimnote">可多选，一份文件一份计划</span>
             </div>
 
             <div v-if="!fpSats.length && !fpRows.length" class="empty-hint">
@@ -649,24 +677,23 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
                       <button class="mini" @click="openFreqPlanWin(e.id)">打开</button>
                       <button class="mini ghost" @click="startRenameFp(e)">改名</button>
                       <button class="mini ghost" title="导出为 JSON（可交换 / 备份）" @click="exportFreqPlan(e)">导出</button>
+                      <button class="mini ghost" :disabled="fpBusy" title="生成只读快照并上传，返回 8 位密钥；在小程序「工具栏 · 频率计划」输入该密钥即可查看。快照对应当前版式，计划变更后需重新发送" @click="sendFreqPlanToMini(e)">发送到小程序</button>
                       <button class="mini del" @click="removeFreqPlan(e)">删除</button>
                     </span>
                   </template>
                 </div>
-                <div v-if="!g.plans.length" class="noant">暂无频率计划 — 点上方「新建计划」，再到工作台用「批量生成」按「起始频率 + 频率间隔 + 数量」铺一排转发器</div>
+                <div v-if="!g.plans.length" class="noant">暂无频率计划。</div>
               </div>
             </div>
           </section>
 
           <!-- ③ GXT -->
           <section v-else-if="tab === 'gxt'">
-            <p class="lead">卫星 → 波束 → GXT 文件。直接「导入 GXT 文件」可多选一批，按文件名（卫星_频段_波束_类型）自动归类建立卫星与波束；导入后能在 3D 页「覆盖图（GXT）」面板选用绘制。软件自带的默认覆盖只读、可导出。</p>
 
             <div class="addbar">
               <button class="mini imp" @click="importGxtBatch">导入 GXT 文件…</button>
-              <span class="dimnote">可多选，按文件名自动归类</span>
               <span class="spacer"></span>
-              <button class="mini ghost" :disabled="!canExportCurrent" title="把 3D 页当前绘制的覆盖（GXT/GRD 来源）转为 GXT 文件导出" @click="exportCurrentGxt">当前覆盖转为 GXT 导出</button>
+              <button class="mini ghost" :disabled="!canExportCurrent" title="将 3D 页当前绘制的覆盖（GXT/GRD 来源）转为 GXT 文件导出" @click="exportCurrentGxt">当前覆盖转为 GXT 导出</button>
             </div>
             <div class="addbar sub">
               <span class="dimnote">或手动新建：</span>
@@ -675,7 +702,7 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
               <button class="mini ghost" @click="addGxtSat"><Icon name="plus" :size="12" /> 空白卫星</button>
             </div>
 
-            <div v-if="!allSats.length" class="empty-hint">暂无覆盖数据。可新建卫星并导入 GXT。</div>
+            <div v-if="!allSats.length" class="empty-hint">暂无覆盖数据。</div>
             <div v-else class="tree">
               <div v-for="sat in allSats" :key="sat.key" class="tnode">
                 <div class="trow sat clk" @click="toggleSat(sat.key)">
@@ -708,7 +735,7 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
                       <button class="mini del" @click="removeGxtBeam(sat, beam)">删除</button>
                     </span>
                   </div>
-                  <div v-if="!sat.beams.length" class="noant">暂无波束 — 点上方「＋ 波束」</div>
+                  <div v-if="!sat.beams.length" class="noant">暂无波束。</div>
                 </template>
               </div>
             </div>
@@ -731,6 +758,8 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
         <button class="ok" @click="emit('close')">完成</button>
       </footer>
     </div>
+    <MiniSendDialog v-model:open="fpMiniOpen" :build="() => fpMiniPack || { name: '', items: [] }"
+      :device-id="fpMiniDeviceId" :configured="fpMiniConfigured" @toast="flash" />
   </div>
 </template>
 
@@ -750,7 +779,6 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
 .rb:hover { background: var(--bg); color: var(--text); }
 .rb.on { background: var(--bg); color: var(--text); border-left-color: var(--accent); }
 .pane { flex: 1; min-width: 0; overflow: auto; padding: 14px 16px; }
-.lead { font-size: 12px; color: var(--text-faint); line-height: 1.6; margin: 0 0 12px; }
 .tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .tbl th { text-align: left; color: var(--text-faint); font-weight: 500; padding: 6px 8px; border-bottom: 1px solid var(--border); font-size: 11.5px; }
 .tbl td { padding: 7px 8px; border-bottom: 1px solid var(--border); color: var(--text); }

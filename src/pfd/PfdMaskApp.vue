@@ -366,7 +366,7 @@ const constGroups = computed(() => {
     key: `sg:${x.id}`, text: `${x.name || '卫星组'}（${(x.sats || []).length} 星）`,
     disabled: !(x.sats || []).length
   }))
-  if (sgItems.length) out.push({ label: '我的卫星组', items: sgItems })
+  if (sgItems.length) out.push({ label: '卫星组', items: sgItems })
 
   const custom = ommGroups.value.filter((x) => x.kind === 'custom')
   if (custom.length) out.push({ label: '自定义星历', items: custom.map((x) => ({ key: x.key, text: `${x.label}（${x.count} 星）` })) })
@@ -477,7 +477,7 @@ async function importConstellation() {
       const it = localSrc.value.sg.find((x) => `sg:${x.id}` === key)
       if (!it) { msg.value = '该卫星组已不存在，请点「刷新来源」'; msgBad.value = true; return }
       satIds = (it.sats || []).map((s) => s && s.id).filter((x) => x != null).map(String)
-      if (!satIds.length) { msg.value = `「${it.name}」是空组，请先在主窗口往组里加卫星`; msgBad.value = true; return }
+      if (!satIds.length) { msg.value = `「${it.name}」为空组，请先在主窗口向该组添加卫星`; msgBad.value = true; return }
     }
     const r = await window.api.interference.loadGroup(key, false, satIds, null)
     if (!r || !r.ok) { msg.value = (r && r.error) || '读取星历失败'; msgBad.value = true; return }
@@ -535,7 +535,6 @@ const resultBw = computed(() => (curResult.value ? bwLabel(curResult.value.refBw
         </select>
         <button class="pb sm" :disabled="!constPick || constBusy" @click="importConstellation">{{ constBusy ? '读取中…' : '取用轨道' }}</button>
         <button class="pb sm" :disabled="constBusy" title="重新读取主窗口里的自定义星座与卫星组" @click="refreshSources">刷新来源</button>
-        <em>仅取高度与倾角；载荷与地球站参数需另行填写</em>
       </div>
       <p class="pw-src" :class="{ bad: localSrc.err || ommErr }">{{ srcDiag }}</p>
       <!-- 多壳星座：一份掩模只对应一个壳层，选哪一层由用户定，不替他挑 -->
@@ -544,14 +543,14 @@ const resultBw = computed(() => (curResult.value ? bwLabel(curResult.value.refBw
         <select class="w360" :value="shellPick" @change="applyShell(Number($event.target.value))">
           <option v-for="(s, i) in shells" :key="i" :value="i">{{ shellText(s, i) }}</option>
         </select>
-        <em>该星座分出 {{ shells.length }} 层，高度与倾角整取所选层的实测中位数</em>
+        <em>该星座分出 {{ shells.length }} 层</em>
       </div>
       <div class="pw-r">
         <label>卫星高度</label><input class="pi w90" type="number" step="any" v-model.number="g.altKm" /><span class="pu">km</span>
         <label>轨道倾角</label><input class="pi w90" type="number" step="any" v-model.number="g.inclDeg" /><span class="pu">°</span>
         <label>最小工作仰角</label><input class="pi w90" type="number" step="any" v-model.number="g.minElevDeg" /><span class="pu">°</span>
         <label>星下点纬度步长</label><input class="pi w80" type="number" step="any" v-model.number="g.latStepDeg" /><span class="pu">°</span>
-        <em>纬度范围 ±{{ latMax.toFixed(1) }}°，共 {{ latCount }} 张切片；低于最小仰角视为不发射</em>
+        <em>纬度范围 ±{{ latMax.toFixed(1) }}°，共 {{ latCount }} 张切片</em>
       </div>
       <p v-if="constNote" class="pw-note">{{ constNote }}</p>
     </section>
@@ -570,20 +569,18 @@ const resultBw = computed(() => (curResult.value ? bwLabel(curResult.value.refBw
         <template v-if="tab === 'down'">
           <label class="pw-en"><input type="checkbox" v-model="down.on" /><span>输出本掩模</span></label>
           <div class="pw-grp"><h3>掩模标识</h3>
-            <div class="pw-r"><label>掩模编号</label><input class="pi w80" type="number" min="1" max="999" v-model.number="down.maskId" /><em>三种掩模共用 1–999 编号，不得重号</em></div>
+            <div class="pw-r"><label>掩模编号</label><input class="pi w80" type="number" min="1" max="999" v-model.number="down.maskId" /></div>
             <div class="pw-r"><label>参考带宽</label>
-              <select v-model.number="down.refBwKhz"><option v-for="o in REF_BW" :key="o.v" :value="o.v">{{ o.label }}</option></select>
-              <em>由 RR 第 22 条按频段规定，非任选</em></div>
+              <select v-model.number="down.refBwKhz"><option v-for="o in REF_BW" :key="o.v" :value="o.v">{{ o.label }}</option></select></div>
           </div>
 
           <div class="pw-grp"><h3>星上载荷</h3>
-            <div class="pw-r"><label>单波束最大 EIRP 谱密度</label><input class="pi w90" type="number" step="any" v-model.number="down.eirpDbwPerRefBw" /><span class="pu">dBW/{{ downBw }}</span><em>含天线增益</em></div>
+            <div class="pw-r"><label>单波束最大 EIRP 谱密度</label><input class="pi w90" type="number" step="any" v-model.number="down.eirpDbwPerRefBw" /><span class="pu">dBW/{{ downBw }}</span></div>
             <div class="pw-r"><label>天线方向图</label>
               <select class="w280" v-model="down.patternKind">
                 <option v-for="o in SAT_PATTERNS" :key="o.v" :value="o.v">{{ o.label }}</option>
               </select>
               <em v-if="!curPat.steerable">固定指向，波束不可转</em></div>
-            <p class="pw-note">{{ curPat.note }}</p>
 
             <!-- 增益：抛物面由口径派生，其余为输入 -->
             <div class="pw-r" v-if="patNeeds('peakGainDbi')">
@@ -594,20 +591,19 @@ const resultBw = computed(() => (curResult.value ? bwLabel(curResult.value.refBw
               <label>效率</label><input class="pi w70" type="number" step="any" v-model.number="down.efficiency" />
               <em v-if="derivedPeakGain !== null">主轴增益 {{ derivedPeakGain.toFixed(2) }} dBi（由口径与效率算出）</em></div>
             <div class="pw-r" v-if="patNeeds('nullFloorDb')"><label>零点下界</label>
-              <input class="pi w90" type="number" step="any" v-model.number="down.nullFloorDb" /><span class="pu">dB</span>
-              <em>解析式在方向图零点会掉到 −∞，下界须显式给定</em></div>
+              <input class="pi w90" type="number" step="any" v-model.number="down.nullFloorDb" /><span class="pu">dB</span></div>
 
             <!-- S.1528 专有 -->
             <template v-if="patNeeds('section')">
               <div class="pw-r"><label>参考图节次</label>
                 <select class="w220" v-model="down.patternSection"><option v-for="o in PATTERN_SECTIONS" :key="o.v" :value="o.v">{{ o.label }}</option></select></div>
-              <div class="pw-r"><label>3 dB 半波束宽度</label><input class="pi w90" type="number" step="any" v-model.number="down.psibDeg" /><span class="pu">°</span><em>S.1528 的 ψb，是半宽不是全宽</em></div>
+              <div class="pw-r"><label>3 dB 半波束宽度</label><input class="pi w90" type="number" step="any" v-model.number="down.psibDeg" /><span class="pu">°</span></div>
               <div class="pw-r" v-if="down.patternSection === '1.2'"><label>近区旁瓣电平</label>
                 <select v-model.number="down.Ln"><option v-for="o in LN_VALUES" :key="o.v" :value="o.v">{{ o.label }}</option></select></div>
               <template v-if="down.patternSection === '1.3'">
                 <div class="pw-r"><label>轨道类别</label>
                   <span class="pseg"><span :class="{ on: down.patternMode === 'LEO' }" @click="down.patternMode = 'LEO'">LEO</span><span :class="{ on: down.patternMode === 'MEO' }" @click="down.patternMode = 'MEO'">MEO</span></span></div>
-                <div class="pw-r"><label>口径波长比 D/λ</label><input class="pi w90" type="number" step="any" v-model.number="down.dOverLambda" /><em>建议书仅给出 D/λ &lt; 35 的形式</em></div>
+                <div class="pw-r"><label>口径波长比 D/λ</label><input class="pi w90" type="number" step="any" v-model.number="down.dOverLambda" /></div>
                 <div class="pw-r"><label>远区旁瓣电平</label><input class="pi w90" type="number" step="any" v-model.number="down.farOutDbi" /><span class="pu">dBi</span></div>
               </template>
             </template>
@@ -617,8 +613,7 @@ const resultBw = computed(() => (curResult.value ? bwLabel(curResult.value.refBw
               <div class="pw-r"><label>主瓣宽度（3 dB）</label><input class="pi w90" type="number" step="any" v-model.number="down.beamwidth1Deg" /><span class="pu">°</span>
                 <label>第一级底</label><input class="pi w80" type="number" step="any" v-model.number="down.gainFloor1Db" /><span class="pu">dB</span></div>
               <div class="pw-r"><label>第二级起始宽度</label><input class="pi w90" type="number" step="any" v-model.number="down.beamwidth2Deg" /><span class="pu">°</span>
-                <label>第二级底</label><input class="pi w80" type="number" step="any" v-model.number="down.gainFloor2Db" /><span class="pu">dB</span>
-                <em>底电平相对主轴</em></div>
+                <label>第二级底</label><input class="pi w80" type="number" step="any" v-model.number="down.gainFloor2Db" /><span class="pu">dB</span></div>
             </template>
           </div>
 
@@ -627,31 +622,24 @@ const resultBw = computed(() => (curResult.value ? bwLabel(curResult.value.refBw
             <div class="pw-r"><label>波束间最小间隔角</label><input class="pi w90" type="number" step="any" v-model.number="down.beamMinSepDeg" /><span class="pu">°</span></div>
             <div class="pw-r"><label>波束排布假设</label>
               <select class="w260" v-model="down.beamLayout"><option v-for="o in BEAM_LAYOUTS" :key="o.v" :value="o.v">{{ o.label }}</option></select></div>
-            <p class="pw-note" :class="{ bad: down.beamLayout === 'single' }">S.1503 只约束波束数量、不规定排布方式，此项无建议书依据，取值会随掩模一并声明。<template v-if="down.beamLayout === 'single'">「仅主波束」会低估多波束叠加，产出的掩模可能不安全，仅供对照。</template></p>
+            <p v-if="down.beamLayout === 'single'" class="pw-note bad">「仅主波束」会低估多波束叠加，产出的掩模可能不安全，仅供对照。</p>
           </div>
 
           <div class="pw-grp"><h3>上行功率控制</h3>
             <label class="pw-en"><input type="checkbox" v-model="down.powerControl" /><span>启用功率控制</span></label>
             <div class="pw-r" v-if="down.powerControl"><label>补偿系数</label>
-              <input type="range" min="0" max="1" step="0.05" v-model.number="down.powerControlKappa" /><span class="pu">{{ Number(down.powerControlKappa).toFixed(2) }}</span>
-              <em>1 = 完全补偿，使工作区地面 PFD 平坦</em></div>
-            <p class="pw-note">S.1503 未定义功率控制机制，此项无建议书依据。</p>
+              <input type="range" min="0" max="1" step="0.05" v-model.number="down.powerControlKappa" /><span class="pu">{{ Number(down.powerControlKappa).toFixed(2) }}</span></div>
           </div>
 
           <div class="pw-grp"><h3>GSO 弧规避</h3>
-            <div class="pw-r"><label>掩模用规避角</label><input class="pi w90" type="number" step="any" v-model.number="down.maskAlpha0Deg" /><span class="pu">°</span>
-              <em>与 GSO 弧夹角小于此值的地面区域按不发射处理</em></div>
-            <p class="pw-note">系统实际承诺的规避角在「系统运行参数」页填写，两者是不同的量：前者写进本掩模，后者进 SRS。</p>
+            <div class="pw-r"><label>掩模用规避角</label><input class="pi w90" type="number" step="any" v-model.number="down.maskAlpha0Deg" /><span class="pu">°</span></div>
           </div>
 
           <div class="pw-grp"><h3>计算设置</h3>
             <div class="pw-r"><label>方位 / 仰角采样点数</label><input class="pi w80" type="number" min="2" max="200" step="1" v-model.number="down.gridPoints" /><span class="pu">点/轴</span><em>共 {{ latCount }} 张纬度切片，{{ cellCount.toLocaleString() }} 个网格点</em></div>
-            <div class="pw-r"><label>保守余量</label><input class="pi w80" type="number" min="0" step="any" v-model.number="down.marginDb" /><span class="pu">dB</span>
-              <em>只叠加到实算网格，不叠加到不发射区</em></div>
-            <div class="pw-r"><label>不发射区填充值</label><input class="pi w90" type="number" step="any" v-model.number="down.noEmissionDb" /><span class="pu">dBW/m²/{{ downBw }}</span>
-              <em>建议书规定填极低值；掩模格式下限为 −999</em></div>
-            <div class="pw-r"><label>几何无解填充值</label><input class="pi w90" type="number" step="any" v-model.number="down.unresolvedDb" /><span class="pu">dBW/m²/{{ downBw }}</span>
-              <em>射线落在地球之外等情形，与「不发射」区分开计数</em></div>
+            <div class="pw-r"><label>保守余量</label><input class="pi w80" type="number" min="0" step="any" v-model.number="down.marginDb" /><span class="pu">dB</span></div>
+            <div class="pw-r"><label>不发射区填充值</label><input class="pi w90" type="number" step="any" v-model.number="down.noEmissionDb" /><span class="pu">dBW/m²/{{ downBw }}</span></div>
+            <div class="pw-r"><label>几何无解填充值</label><input class="pi w90" type="number" step="any" v-model.number="down.unresolvedDb" /><span class="pu">dBW/m²/{{ downBw }}</span></div>
           </div>
         </template>
 
@@ -660,17 +648,13 @@ const resultBw = computed(() => (curResult.value ? bwLabel(curResult.value.refBw
           <label class="pw-en"><input type="checkbox" v-model="is.on" /><span>输出本掩模</span></label>
           <div class="pw-grp"><h3>掩模标识</h3>
             <div class="pw-r"><label>掩模编号</label><input class="pi w80" type="number" min="1" max="999" v-model.number="is.maskId" /></div>
-            <div class="pw-r"><label>参考带宽</label><input class="pi w80" type="text" value="40 kHz" disabled />
-              <em>ITU 掩模格式未给本类掩模设参考带宽属性，读方一律按 40 kHz 解释</em></div>
+            <div class="pw-r"><label>参考带宽</label><input class="pi w80" type="text" value="40 kHz" disabled /></div>
           </div>
           <div class="pw-grp"><h3>自变量</h3>
-            <p class="pw-note">本掩模的角度自变量是<b>从卫星观察、天底方向与 GSO 弧方向之间的夹角</b>（S.1503-4 §B4.3），
-              与下行掩模的 α 角不是同一个量。取值规则：该方向落在波束可指向范围内时按满功率，超出时按天线方向图滚降。</p>
             <div class="pw-r"><label>角度采样步长</label><input class="pi w80" type="number" min="0.5" max="30" step="any" v-model.number="is.sepStepDeg" /><span class="pu">°</span></div>
             <div class="pw-r"><label>保守余量</label><input class="pi w80" type="number" min="0" step="any" v-model.number="is.marginDb" /><span class="pu">dB</span></div>
           </div>
           <div class="pw-grp"><h3>取用参数</h3>
-            <p class="pw-note">轨道、星上载荷、多波束、功率控制参数与下行掩模共用，在「下行 PFD 掩模」页填写。</p>
             <div class="pw-r"><label>卫星高度</label><span class="pv">{{ g.altKm }} km</span><label>轨道倾角</label><span class="pv">{{ g.inclDeg }}°</span></div>
             <div class="pw-r"><label>单波束最大 EIRP 谱密度</label><span class="pv">{{ down.eirpDbwPerRefBw }} dBW/{{ downBw }}</span>
               <em v-if="ssBwOffsetDb">折合 {{ (Number(down.eirpDbwPerRefBw) + ssBwOffsetDb).toFixed(2) }} dBW/40 kHz</em></div>
@@ -679,7 +663,6 @@ const resultBw = computed(() => (curResult.value ? bwLabel(curResult.value.refBw
               请把下行参考带宽改为 40 kHz，或按上面的折合值重填。</p>
             <div class="pw-r"><label>同频同时工作波束数</label><span class="pv">{{ down.nco }}</span>
               <label>天线方向图</label><span class="pv">{{ curPat.label }}</span></div>
-            <p class="pw-note" v-if="!curPat.steerable">当前为固定指向天线，星间掩模的角度自变量直接就是天底角，不再按「可指向范围外滚降」处理。</p>
           </div>
         </template>
 
@@ -689,13 +672,11 @@ const resultBw = computed(() => (curResult.value ? bwLabel(curResult.value.refBw
           <div class="pw-grp"><h3>掩模标识</h3>
             <div class="pw-r"><label>掩模编号</label><input class="pi w80" type="number" min="1" max="999" v-model.number="up.maskId" /></div>
             <div class="pw-r"><label>参考带宽</label>
-              <select v-model.number="up.refBwKhz"><option v-for="o in refBwUp" :key="o.v" :value="o.v">{{ o.label }}</option></select>
-              <em>本类掩模不提供 1 MHz 选项</em></div>
+              <select v-model.number="up.refBwKhz"><option v-for="o in refBwUp" :key="o.v" :value="o.v">{{ o.label }}</option></select></div>
           </div>
           <div class="pw-grp"><h3>地球站</h3>
             <div class="pw-r"><label>站型</label>
-              <span class="pseg"><span :class="{ on: up.esType === 'typical' }" @click="up.esType = 'typical'">典型站</span><span :class="{ on: up.esType === 'specific' }" @click="up.esType = 'specific'">特定站</span></span>
-              <em>典型站在文件中记作 −1；特定站须给出 SNS 序号</em></div>
+              <span class="pseg"><span :class="{ on: up.esType === 'typical' }" @click="up.esType = 'typical'">典型站</span><span :class="{ on: up.esType === 'specific' }" @click="up.esType = 'specific'">特定站</span></span></div>
             <div class="pw-r" v-if="up.esType === 'specific'"><label>SNS 序号</label><input class="pi w110" type="number" min="0" step="1" v-model.number="up.esId" /></div>
             <div class="pw-r"><label>天线方向图</label>
               <select class="w240" v-model="up.patternStandard"><option v-for="o in ES_PATTERNS" :key="o.v" :value="o.v">{{ o.label }}</option></select></div>
@@ -704,14 +685,10 @@ const resultBw = computed(() => (curResult.value ? bwLabel(curResult.value.refBw
             <div class="pw-r"><label>最大 EIRP 谱密度</label><input class="pi w90" type="number" step="any" v-model.number="up.eirpDbwPerRefBw" /><span class="pu">dBW/{{ upBw }}</span></div>
             <template v-if="up.patternStandard === 'M.2101'">
               <div class="pw-r"><label>阵元数</label><input class="pi w80" type="number" min="1" step="1" v-model.number="up.arrayElements" /></div>
-              <div class="pw-r"><label>扫描角序列</label><input class="pi w180" type="text" v-model="up.scanAnglesDeg" placeholder="0, 15, 30, 45" /><span class="pu">°</span>
-                <em>相控阵方向图随扫描角变化；输出时按各扫描角逐点取包络并报告降维损失</em></div>
+              <div class="pw-r"><label>扫描角序列</label><input class="pi w180" type="text" v-model="up.scanAnglesDeg" placeholder="0, 15, 30, 45" /><span class="pu">°</span></div>
             </template>
-            <p class="pw-note">不提供 S.1428：该方向图是为<b>受扰方接收天线</b>制定的统计型包络，用作发射包络会得到偏松的掩模。</p>
           </div>
           <div class="pw-grp"><h3>自变量与计算</h3>
-            <p class="pw-note">本掩模的角度自变量是<b>地球站主轴指向与地球站至 GSO 弧方向之间的夹角</b>（S.1503-4 §B4.2）。
-              <b>规避角不写入本掩模</b>——按建议书它属于系统运行参数，在两处同时体现会被重复计入。落盘前按 §B5.3 强制单调不增。</p>
             <div class="pw-r"><label>角度采样步长</label><input class="pi w80" type="number" min="0.5" max="30" step="any" v-model.number="up.sepStepDeg" /><span class="pu">°</span></div>
             <div class="pw-r"><label>保守余量</label><input class="pi w80" type="number" min="0" step="any" v-model.number="up.marginDb" /><span class="pu">dB</span></div>
           </div>
@@ -720,30 +697,24 @@ const resultBw = computed(() => (curResult.value ? bwLabel(curResult.value.refBw
         <!-- ── 系统运行参数 ── -->
         <template v-else>
           <label class="pw-en"><input type="checkbox" v-model="op.on" /><span>输出运行参数文件</span></label>
-          <p class="pw-note">本页内容按 Rec. ITU-R S.1503-4 §B3.3 输出为独立文件 <code>Mask_param_id_N_OP.xml</code>，
-            随掩模一并提交。<b>不写入掩模文件</b>——掩模格式的根元素不含此项，混入会使掩模文件不合规。</p>
           <div class="pw-grp"><h3>标识</h3>
             <div class="pw-r"><label>参数集编号</label><input class="pi w80" type="number" min="1" step="1" v-model.number="op.paramId" /></div>
           </div>
           <div class="pw-grp"><h3>GSO 弧规避</h3>
-            <div class="pw-r"><label>系统规避角</label><input class="pi w90" type="number" step="any" v-model.number="op.alpha0Deg" /><span class="pu">°</span>
-              <em>系统实际承诺值，对应 MIN_EXCLUDE</em></div>
+            <div class="pw-r"><label>系统规避角</label><input class="pi w90" type="number" step="any" v-model.number="op.alpha0Deg" /><span class="pu">°</span></div>
           </div>
           <div class="pw-grp"><h3>地球站布设</h3>
             <div class="pw-r"><label>地球站密度</label><input class="pi w110" type="number" step="any" v-model.number="op.esDensityPerKm2" /><span class="pu">站/km²</span></div>
-            <div class="pw-r"><label>同频站平均间距</label><input class="pi w90" type="number" step="any" v-model.number="op.esDistanceKm" /><span class="pu">km</span>
-              <em>取 0 表示 GSO 波束覆盖内仅设 1 个站</em></div>
+            <div class="pw-r"><label>同频站平均间距</label><input class="pi w90" type="number" step="any" v-model.number="op.esDistanceKm" /><span class="pu">km</span></div>
             <div class="pw-r"><label>纬度范围</label><input class="pi w80" type="number" step="any" v-model.number="op.esLatMin" /><span class="pu">–</span>
               <input class="pi w80" type="number" step="any" v-model.number="op.esLatMax" /><span class="pu">°</span></div>
-            <p class="pw-note" v-if="up.esType === 'specific'">当前上行掩模为「特定站」，密度与间距两项不参与审查。</p>
           </div>
           <div class="pw-grp"><h3>同频跟踪约束</h3>
             <div class="pw-r"><label>单站同频跟踪卫星数上限</label><input class="pi w80" type="number" min="0" step="1" v-model.number="op.maxCoFreq" /></div>
             <div class="pw-r"><label>单星同频接收地球站数上限</label><input class="pi w80" type="number" min="0" step="1" v-model.number="op.maxCoFreqSat" /></div>
             <div class="pw-r"><label>地球站侧最小夹角</label><input class="pi w80" type="number" min="0" step="any" v-model.number="op.minAngleAtEsDeg" /><span class="pu">°</span></div>
             <div class="pw-r"><label>卫星侧最小夹角</label><input class="pi w80" type="number" min="0" step="any" v-model.number="op.minAngleAtSatDeg" /><span class="pu">°</span></div>
-            <div class="pw-r"><label>最短切换驻留时间</label><input class="pi w80" type="number" min="1" step="any" v-model.number="op.minDurationSec" placeholder="不设" /><span class="pu">s</span>
-              <em>仅用于下行审查；设了本项则地球站侧最小夹角不适用</em></div>
+            <div class="pw-r"><label>最短切换驻留时间</label><input class="pi w80" type="number" min="1" step="any" v-model.number="op.minDurationSec" placeholder="不设" /><span class="pu">s</span></div>
           </div>
         </template>
       </section>
@@ -752,7 +723,7 @@ const resultBw = computed(() => (curResult.value ? bwLabel(curResult.value.refBw
       <aside class="pw-side">
         <h3>计算结果</h3>
         <div v-if="!curResult && tab !== 'op'" class="pw-empty">尚未计算，或本页掩模未启用。</div>
-        <div v-else-if="tab === 'op'" class="pw-empty">运行参数不产生计算结果，计算后直接输出为文件。</div>
+        <div v-else-if="tab === 'op'" class="pw-empty">无计算结果。</div>
         <template v-else>
           <dl class="pw-kv">
             <dt>纬度切片</dt><dd>{{ curResult.latCount }} 张<s>ITU 掩模查看器会显示为「{{ curResult.latCount }} masks」，那是切片数不是掩模份数</s></dd>
@@ -785,7 +756,6 @@ const resultBw = computed(() => (curResult.value ? bwLabel(curResult.value.refBw
 
         <template v-if="curResult && curResult.discretion">
           <h3>无建议书依据的取值</h3>
-          <p class="pw-note">下列取值 ITU-R S.1503 未作规定，由本次计算自行确定，会写入掩模文件的注释头与生成参数记录。</p>
           <ul class="pw-disc"><li v-for="(d, i) in curResult.discretion" :key="i"><b>{{ d.field }}</b> = {{ d.value }}</li></ul>
         </template>
 

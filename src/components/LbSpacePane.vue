@@ -416,7 +416,7 @@ defineExpose({
       <span class="sp-sub">{{ t('站址经纬度') }}</span>
       <span class="sp-flex"></span>
       <button class="sp-exp" :title="t('导出网格数据为 CSV（一行一格）')" @click="exportCsv">{{ t('数据') }}</button>
-      <button class="sp-exp" :title="t('导出为 PNG 图片（4 倍分辨率）')" @click="exportPng">{{ t('出图') }}</button>
+      <button class="sp-exp" :title="t('导出为 PNG 图片（4 倍分辨率）')" @click="exportPng">{{ t('导出') }}</button>
     </div>
 
     <div class="sp-bar">
@@ -475,7 +475,7 @@ defineExpose({
     </div>
 
     <div v-if="unavailable" class="sp-ph">{{ unavailable }}</div>
-    <div v-else-if="!params" class="sp-ph">{{ t('先计算链路，再在此出图') }}</div>
+    <div v-else-if="!params" class="sp-ph">{{ t('尚无计算结果') }}</div>
     <!-- errMsg 存的是中文原文，在此按语言翻；引擎抛回来的消息不在字典里，原样透出。
          整片区间都在覆盖外时一个数也算不出来，此时说「暂无扫描结果」会被当成程序出错 -->
     <div v-else-if="!field && !running" class="sp-ph">

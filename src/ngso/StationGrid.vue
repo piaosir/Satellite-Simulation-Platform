@@ -1218,7 +1218,7 @@ function clearColContents() {
                   @mousedown.prevent.stop @click.stop="imp.other = it">⇄</span>
             <span class="sg-impck" :class="{ show: imp.added[it.id] }">✓<i v-if="imp.added[it.id] > 1"> ×{{ imp.added[it.id] }}</i></span>
           </div>
-          <div v-if="!impResults.length" class="sg-empty">无可导入项{{ imp.source !== 'city' ? '（请先在地图上标记点/地球站/航迹）' : '' }}</div>
+          <div v-if="!impResults.length" class="sg-empty">无可导入项</div>
         </div>
         <div class="sg-box-ft sg-impft">
           <span class="sg-impn2">{{ imp.addedN ? '本次已加 ' + imp.addedN + ' 行（Ctrl+Z 可撤销）' : '点击条目即导入；↑↓ 高亮，Enter 导入' }}</span>

@@ -1,8 +1,9 @@
 // 链路预算 ← 频率计划「引用」（渲染端 ESM，GSO / NGSO / 再生式共用）。
 //
 // 引用做的事：卫星配置里选定「频率计划 → 转发器 C5」，把这条转发器的
-//   上行频率 · 上行极化 · 下行频率 · 下行极化 · 转发器带宽
+//   工作频段 · 上行频率 · 上行极化 · 下行频率 · 下行极化 · 转发器带宽
 // 直接填进卫星表单并锁住（可解锁覆盖），另把转发器自带的 SFD/G-T/IBO/OBO/C-IM 一并带过去（填了才带）。
+// 工作频段由转发器的实际频率判定（guessLinkBand），不取 plan.band——理由在 channelToLinkFields 上。
 // 与 frequencyBand 预设自动填频率、GRD 天线自动回填 EIRP/G-T 是同一个范式，只是数据源换成了频率计划。
 //
 // 口径咽喉在 freqPlanModel.channelToLinkFields —— 链路预算认哪几项、单位怎么换，只在那一处定义，
@@ -43,7 +44,7 @@ export function transponderOptions(plan) {
 const fmt = (mhz) => (Number.isFinite(mhz) ? (mhz / 1000).toFixed(4).replace(/0+$/, '').replace(/\.$/, '') + ' GHz' : '—')
 
 /** 链路预算表单里由频率计划托管的字段——引用生效时这几项灰显锁定 */
-export const MANAGED_KEYS = ['centerFrequency', 'uplinkPolarization', 'rxCenterFrequency', 'downlinkPolarization', 'transponderBandwidth']
+export const MANAGED_KEYS = ['frequencyBand', 'centerFrequency', 'uplinkPolarization', 'rxCenterFrequency', 'downlinkPolarization', 'transponderBandwidth']
 
 /**
  * 把某转发器应用到卫星表单。

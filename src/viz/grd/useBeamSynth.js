@@ -10,17 +10,15 @@
 // 生成：generateGroup 经 synth.js 产标准 GRD → grd.importSynthGrd 入树（同名替换＝更新），此后与导入
 //   GRD 天线完全同构（拖拽指向/性能表/导出链全通）。草图独立持久化 localStorage（v2 嵌套，含旧档迁移）。
 import { ref, reactive, computed, watch } from 'vue'
-import { theta3dbFromAperture, shapedTheta3db, shapedApertureEff, feedGeom, crossoverDb, polysUnionPeak, buildGaussGrd, buildShapedGrd, beamSketchRing, hexFillCenters, snapTangentAzEl, colorFreqPlan, solveReflector, solvePam, buildPamGrd, buildPamShapedGrd } from './synth.js'
+import { theta3dbFromAperture, shapedTheta3db, shapedApertureEff, feedGeom, crossoverDb, polysUnionPeak, buildGaussGrd, buildShapedGrd, beamSketchRing, hexFillCenters, snapTangentAzEl, colorFreqPlan, reuseDist, solveReflector, solvePam, buildPamGrd, buildPamShapedGrd } from './synth.js'
 import { dirToAzEl, azElGround } from './coverage.js'
+// 频率配色板与频率计划模块共用一份（见该文件头）：一个色号在两个模块里必须是同一个色
+import { FC_PALETTE, fcHex, fcCss } from '../../shared/freqReuseColors.js'
 
 const KEY = 'globe3d/beamSynth'
 const BAK = KEY + '.v1bak'                        // 旧档一次性备份（首次升级到 v2 前写入，可回退）
 const SKETCH_CSS = '#5ad1ff'                      // 草图默认轮廓色（放置阶段，与正式覆盖层区分）
 const DIM_NUM_CSS = '#8a97a6'                     // 兄弟组（只读）编号色（压暗，与激活组区分）
-// 频率计划配色板（三色/四色取前 3/4 个；七色 = 经典蜂窝 reuse-7）：饱和度压过、地图上不刺眼
-const FC_PALETTE = [0xe05252, 0xf2c14e, 0x3fb77f, 0x4f8fe8, 0xa06fdc, 0xf08a3c, 0x38b8b0]
-const fcHex = (i) => FC_PALETTE[((i % FC_PALETTE.length) + FC_PALETTE.length) % FC_PALETTE.length]
-const fcCss = (i) => '#' + fcHex(i).toString(16).padStart(6, '0')
 // 波束设置默认配色板（每个新设置换一色，便于区分不同宽度的波束环）
 const SETTING_CSS = ['#5ad1ff', '#f2c14e', '#3fb77f', '#e05252', '#a06fdc', '#f08a3c', '#38b8b0', '#4f8fe8']
 // '#rrggbb' → 数值色（渲染层吃数值）；非法输入回退 fb
@@ -40,7 +38,7 @@ const DEFAULT_P = {
   snapTangent: true,                             // SATSOFT 式相切吸附
   skColor: SKETCH_CSS, skWidth: 1.5, skDash: false,
   skNumShow: true, skNumMode: 'auto', skNumScale: 100, skNumSize: 14, skNumColor: SKETCH_CSS,
-  fcN: 4, fcShow: true, fcOpacity: 0.3,          // 频率计划：颜色数（3/4/7）/ 显隐 / 填充透明度
+  fcN: 4, fcShow: true, fcOpacity: 0.3,          // 频率计划：颜色数（3/4/7/16）/ 显隐 / 填充透明度
   polyId: '',                                    // 蜂窝布满目标 Polygon（高斯档）
   polyIds: [],                                   // 赋形：覆盖区 Polygon（多选）；各区目标电平 = 该 Polygon 的「数值」栏
   shapedMode: 'value',                           // 电平口径：'value'=按覆盖值(Polygon 数值当绝对 EIRP/覆盖) | 'physical'=按天线增益(方向图积分算 dBi，数值只提供分区相对锥度)
@@ -469,7 +467,7 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
     if (!hit.length) { appAlert('该设置下还没有放置任何波束'); return }
     pushUndo()
     for (const b of hit) { b.thX = s.thX; b.thY = s.thY; b.rot = s.rot || 0; b._ring = null }
-    status.value = `已把「${s.name}」的宽度 ${s.thX}×${s.thY}° 应用到 ${hit.length} 个波束`
+    status.value = `已将「${s.name}」的宽度 ${s.thX}×${s.thY}° 应用至 ${hit.length} 个波束`
     refresh()
   }
 
@@ -536,7 +534,7 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
       return
     }
     if (mode.value !== 'gauss' && mode.value !== 'pam') return
-    if (mode.value === 'gauss' && !curSetting.value) { appAlert('请先添加一个波束设置'); return }
+    if (mode.value === 'gauss' && !curSetting.value) { appAlert('请先添加波束设置'); return }
     const aw = activeWidth()
     const s = snapGround(+ll.lon.toFixed(4), +ll.lat.toFixed(4), null, null)
     pushUndo()
@@ -580,10 +578,10 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
   function clearBeams() { if (!beams.value.length) return; pushUndo(); beams.value = []; refresh() }
   function hexFill() {
     const pg = polysOf().find((x) => x.id === p.polyId && x.pts && x.pts.length >= 3)
-    if (!pg) { appAlert('请先在下拉框选择一个 Polygon（需 ≥3 顶点，可在 Polygon 面板绘制）'); return }
+    if (!pg) { appAlert('请先在下拉框中选择 Polygon（需 ≥3 顶点，可在 Polygon 面板绘制）'); return }
     const pos = satPos()
     if (!pos) { appAlert('请先选择卫星'); return }
-    if (mode.value === 'gauss' && !curSetting.value) { appAlert('请先添加一个波束设置'); return }
+    if (mode.value === 'gauss' && !curSetting.value) { appAlert('请先添加波束设置'); return }
     // 间距：高斯＝当前设置的波束间距（Auto=波束宽）；相控阵＝Butler 波束间距（λ/Nd）
     const sp = mode.value === 'pam'
       ? (pam.value && pam.value.ok ? Math.max(pam.value.beamSpacingXDeg || 0, pam.value.beamSpacingYDeg || 0) : NaN)
@@ -617,9 +615,15 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
     pushUndo()
     valid.forEach((b, i) => { b.fc = r.colors[i] })
     p.fcShow = true
+    // 判据是复用距离（见 colorFreqPlan），故回执里报的也是它——只说「相邻不同色」会让人以为
+    // 七色/十六色排得比四色开，而那正是判据没跟上时的假象。
+    // ★ 用可达间距 reuseDist(k) 而不是 √k：10 色这类非复用因子取不到 √k（最远 = √7，与七色同档），
+    //   照 √k 报就成了虚标；顺带把这句话挑明，省得有人以为加到十色就更开。
+    const D = reuseDist(k)
+    const cap = Math.abs(D - Math.sqrt(k)) > 0.01 ? `（${k} 色不是复用因子，最远只到这一档，与 ${Math.round(D * D)} 色同水平）` : ''
     status.value = r.conflicts
-      ? `频率配色：${k} 色下仍有 ${r.conflicts} 对相邻同色 —— 该布局 ${k} 色不足，可增加颜色数或加大波束间距`
-      : `频率配色完成：${valid.length} 个波束 · ${k} 色，相邻波束互不同色（拖拽微调后可重新分配）`
+      ? `频率配色：${k} 色下仍有 ${r.conflicts} 对同色波束间距不足 ${D.toFixed(2)}× 波束间距 —— 该布局 ${k} 色排不开，可增加颜色数或加大波束间距`
+      : `频率配色完成：${valid.length} 个波束 · ${k} 色，同色最小间距 ≥ ${D.toFixed(2)}× 波束间距${cap}`
     refresh()
   }
   function clearFreqPlan() {
@@ -679,9 +683,10 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
             }
           } else lines.push({ p: sg, color: col, width: lineW, opacity: 0.9 * alpha, closed: false, under: true })
         }
-        if (fcOn && b.fc != null && fillOp > 0 && b._ring.segs.length === 1) {
-          const s0 = b._ring.segs[0], a = s0[0], z = s0[s0.length - 1]
-          if (s0.length >= 4 && Math.abs(a[0] - z[0]) < 1e-9 && Math.abs(a[1] - z[1]) < 1e-9) fills.push({ p: s0.slice(0, -1), color: fcHex(b.fc), opacity: fillOp })
+        // 填充 = 环去掉重合的末点（beamSketchRing 保证「有一点命中地球 → 恰好一段闭环」，
+        // 跨地平的边缘波束也照填；从前在这里做「单段且首尾重合」的双重校验，跨地平时判死→漏填）
+        if (fcOn && b.fc != null && fillOp > 0 && b._ring.segs.length && b._ring.segs[0].length >= 4) {
+          fills.push({ p: b._ring.segs[0].slice(0, -1), color: fcHex(b.fc), opacity: fillOp })
         }
         dots.push({ lon: b.lon, lat: b.lat, color: col, px: isActive ? 3.5 : 2.6, r: (isActive ? 3.5 : 2.6) * 0.0018 })
         if (gp.skNumShow !== false) {
@@ -854,7 +859,7 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
   // 生成激活组（面板底部按钮）
   async function generate() {
     commitActive()
-    if (!curGroup.value) { appAlert('请先新建一个波束组'); return null }
+    if (!curGroup.value) { appAlert('请先新建波束组'); return null }
     try { const k = await generateGroup(curGroup.value); if (k) persist(); return k } catch (e) { console.error('波束合成失败', e); appAlert('波束合成失败：' + ((e && e.message) || e)); return null }
   }
   // 全部生成：当前卫星下每个组各出一根天线

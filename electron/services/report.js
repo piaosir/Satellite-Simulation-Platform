@@ -117,16 +117,17 @@ async function buildExcel(payload) {
 // 「几何关系」STK 版式表。报告的装配在文件末尾的 buildReportWorkbook。
 // 标签中英文由 lang('zh'|'en') 控制；瀑布段的标签翻译在 packages/core 的 waterfallBuilder.js 的 WF_DICT
 // （与结果区实时瀑布同源，避免两处译法不一致），此文件只维护汇总/几何表自己的列头译法。
-// 导出文档字体：与软件界面同一套（西文/数字 Times New Roman，中文回落宋体）。
-// xlsx 的字体名只有一个字段（无「西文/东亚」分栏），故中文单元格也写 Times New Roman——
-// Excel 遇 TNR 里没有的汉字会按字体链接回落到宋体，效果即 TNR + 宋体。CJK 别名保留只为标出
-// 「这格是中文标签」的语义（改回中文专用字体时只需改这一行）。
+// 导出文档字体（模板《技术文档标准模板.docx》口径，也是用户明确要求）：
+// 西文与数字一律 Times New Roman；中文正文宋体、中文标题与题注黑体。
 const FNT = 'Times New Roman'
-const CJK = FNT
+const SONG = '宋体'          // 模板 docDefaults 的 eastAsia：中文正文与表内文字
+const HEI = '黑体'           // 模板 标题 1–4 / 图号格式 / 表号格式：中文标题与题注
+// CJK 是「这格是中文正文」的语义别名（本文件里用得极多，故保留旧名）
+const CJK = SONG
 
-// Word（docx）的字体分「西文 / 东亚」两栏，故按界面同一套栈分别指定：西文 Times New Roman、中文宋体。
+// Word（docx）的字体分「西文 / 东亚」两栏，故分别指定：西文 Times New Roman、中文宋体。
 // 正文默认样式 + 各级标题都要指（标题默认吃主题字体 Calibri Light，不覆盖会漏网）。
-const WORD_RUN = { font: { ascii: FNT, hAnsi: FNT, cs: FNT, eastAsia: '宋体' } }
+const WORD_RUN = { font: { ascii: FNT, hAnsi: FNT, cs: FNT, eastAsia: SONG } }
 const WORD_STYLES = {
   default: {
     document: { run: WORD_RUN }, title: { run: WORD_RUN },
@@ -135,22 +136,83 @@ const WORD_STYLES = {
   }
 }
 
-// Excel 兜底：① 给所有没显式设字体的单元格补上 TNR（各表大多逐格设了 name，此处收漏网的默认样式格）；
-// ② 把工作簿主题字体（Excel「正文/标题」的来源，exceljs 硬写 Calibri/Cambria）换成 TNR——空白格与
-// 用户导出后新键入的内容也跟着是 TNR。② 走 exceljs 内部模块，故整段 try 兜底：失败只是默认字体没换，
-// 已写入的单元格字体不受影响。
+// ★ xlsx 的 <font> 只有一个 name 字段（不像 docx 分 ascii / eastAsia 两栏），一个单元格因此
+// 只能有一种字体。要「中文宋体 + 西文数字 Times New Roman」，唯一的办法是把这一格写成**富文本**
+// （sharedStrings 里逐段带 rPr），于是下面这一支：写盘前整本过一遍，把中西混排的字符串按
+// 「中文段 / 西文段」切开，两段各挂各的字体；纯中文或纯西文的格不拆，只把 name 归位。
+//
+// 各表写格时用 name 表明意图：'黑体' = 中文标题/题注、'宋体' = 中文正文、TNR = 纯西文或数字。
+// 数字格（value 是 number）不能富文本，本来也只有数字，一律 TNR。
+const CJK_CH = /[⺀-〾ぁ-㏿㐀-䶿一-鿿豈-﫿︰-﹏＀-￯]/
+// 破折号 / 省略号 / 箭头：TNR 里没有 →↑↓ 的字形，按中文字体走才不至于让 Excel 自己去回落。
+// 中点 · (U+00B7) 是中文的间隔号，跟着中文段走——不然「　·　」会被切成三段，
+// 中间那个点用 TNR 出来又小又高，与两侧全角空格对不齐。
+const CJK_SYM = /[—―…·←-⇿]/
+const isCjkCh = (ch) => CJK_CH.test(ch) || CJK_SYM.test(ch)
+const hasCjk = (s) => { for (const ch of s) if (isCjkCh(ch)) return true; return false }
+const hasLatin = (s) => { for (const ch of s) if (!isCjkCh(ch) && !/\s/.test(ch)) return true; return false }
+
+// 切成交替的中文段 / 西文段。半角空白是中性的——归进当前段，免得「上行 C/N」被切成三段。
+// ★ 全角空格（U+3000）不算中性：它是中文标点，用 TNR 渲染会缩成半角宽，
+//   「1　逐参数对照」这类标题的对齐就散了。它落进 CJK_CH，随中文段走。
+const NEUTRAL_SP = /[ \t\r\n]/
+function splitCjkRuns(text) {
+  const out = []
+  let cur = null
+  for (const ch of String(text)) {
+    if (cur && NEUTRAL_SP.test(ch)) { cur.text += ch; continue }
+    const k = isCjkCh(ch)
+    if (cur && cur.cjk === k) cur.text += ch
+    else { cur = { cjk: k, text: ch }; out.push(cur) }
+  }
+  return out
+}
+
+// 一格的字体归位。返回 true 表示把 value 换成了富文本。
+function fixCellFont(cell) {
+  const f = Object.assign({}, cell.font)
+  const v = cell.value
+  // 已经是富文本（本文件不主动写，留给未来）：只补 name 缺省
+  if (v && typeof v === 'object' && Array.isArray(v.richText)) return false
+  const cjkFont = (f.name === HEI) ? HEI : SONG
+  const text = (typeof v === 'string') ? v : null
+  if (text === null) {
+    // 数字 / 日期 / 公式：不能走富文本。数字本来就只有西文；公式（详情索引的跳转链接）
+    // 按缓存结果里有没有汉字选一种——那一格的文字是工作表名，常常是中文站名。
+    const res = (v && typeof v === 'object' && v.formula !== undefined && v.result != null) ? String(v.result) : ''
+    cell.font = Object.assign(f, { name: hasCjk(res) ? cjkFont : FNT })
+    return false
+  }
+  if (!hasCjk(text)) { cell.font = Object.assign(f, { name: FNT }); return false }
+  if (!hasLatin(text)) { cell.font = Object.assign(f, { name: cjkFont }); return false }
+  // 混排：拆富文本。cell.font 仍写中文那一档——它是这一格的「默认字体」，
+  // 自适应算宽（reportAutofit）与用户导出后续打的字都按它走。
+  cell.value = {
+    richText: splitCjkRuns(text).map((seg) => ({
+      font: Object.assign({}, f, { name: seg.cjk ? cjkFont : FNT }),
+      text: seg.text
+    }))
+  }
+  cell.font = Object.assign(f, { name: cjkFont })
+  return true
+}
+
+// 整本归位 + 换掉工作簿主题字体（Excel「正文/标题」的来源，exceljs 硬写 Calibri/Cambria）：
+// 空白格与用户导出后新键入的内容也跟着是 TNR + 宋体。主题那一段走 exceljs 内部模块，故 try 兜底，
+// 失败只是默认字体没换，已写入的单元格字体不受影响。
 function applyBookFont(wb) {
   try {
     const theme1 = require('exceljs/lib/xlsx/xml/theme1.js')
     // 注意：wb.model 的 getter 每次现造一个对象，改它的字段无效——主题存在 wb._themes 上（writer 由此取）
-    wb._themes = { theme1: String(theme1).replace(/<a:latin typeface="(Calibri|Cambria)"\/>/g, `<a:latin typeface="${FNT}"/>`) }
+    wb._themes = {
+      theme1: String(theme1)
+        .replace(/<a:latin typeface="(Calibri|Cambria)"\/>/g, `<a:latin typeface="${FNT}"/>`)
+        .replace(/<a:ea typeface=""\/>/g, `<a:ea typeface="${SONG}"/>`)
+    }
   } catch (e) { /* exceljs 内部结构变了就跳过，不影响导出 */ }
   wb.eachSheet((ws) => {
     ws.eachRow({ includeEmpty: false }, (row) => {
-      row.eachCell({ includeEmpty: false }, (cell) => {
-        const f = cell.font || {}
-        if (f.name !== FNT) cell.font = Object.assign({}, f, { name: FNT })
-      })
+      row.eachCell({ includeEmpty: false }, (cell) => { fixCellFont(cell) })
     })
   })
   return wb
@@ -466,15 +528,16 @@ function writeSegmentBlocks(ws, segments, t, startRow) {
     const cols = seg.cols || 1
     const vh = valueHeaders(cols, t)
     const totalCols = 2 + vh.length
+    // 段题注：模板 表号格式（黑体 10.5pt 居中，在表上方）
     ws.mergeCells(r, 1, r, totalCols)
     const cap = ws.getCell(r, 1); cap.value = segCaption(seg)
-    cap.font = { name: CJK, bold: true, size: 12 }; cap.alignment = { horizontal: 'left', vertical: 'middle' }; ws.getRow(r).height = 24; r++
-    // 表头
+    cap.font = { name: HEI, size: RSTY.size.caption }; cap.alignment = { horizontal: 'center', vertical: 'middle' }; ws.getRow(r).height = 24; r++
+    // 表头（三线表：不加粗、不加底纹，中文黑体、居中）
     const headerTexts = [t.param, ...vh, t.unit]
     headerTexts.forEach((h, i) => {
       const cell = ws.getCell(r, i + 1); cell.value = h
-      cell.font = { name: CJK, bold: true, size: 10 }
-      cell.alignment = { horizontal: i === 0 ? 'left' : (i === totalCols - 1 ? 'left' : 'right'), vertical: 'middle' }
+      cell.font = { name: HEI, size: RSTY.size.table }
+      cell.alignment = { horizontal: 'center', vertical: 'middle' }
     })
     setRowBorder(ws, r, 1, totalCols, { top: MED, bottom: THIN }); ws.getRow(r).height = 20; r++
     // 数据行
@@ -486,16 +549,16 @@ function writeSegmentBlocks(ws, segments, t, startRow) {
       const strong = ['base', 'sub', 'chk', 'kpi', 'margin'].indexOf(row.kind) > -1
       const sepTop = ['sub', 'margin'].indexOf(row.kind) > -1
       const lc = ws.getCell(r, 1); lc.value = labelWithSign(row)
-      lc.font = { name: CJK, size: 10, bold: strong, color: { argb: 'FF1A1A1A' } }; lc.alignment = { horizontal: 'left', vertical: 'middle' }
+      lc.font = { name: CJK, size: RSTY.size.table, bold: strong, color: { argb: 'FF1A1A1A' } }; lc.alignment = { horizontal: 'left', vertical: 'middle' }
       vals.forEach((v, vi) => {
         const isTotalCol = cols >= 3 && vi === 2
         const cell = ws.getCell(r, 2 + vi)
         const n = nums[vi]
         cell.value = (n === null || n === undefined) ? numOrText(v) : n
-        cell.font = { name: FNT, size: 10, bold: strong || isTotalCol }; cell.alignment = { horizontal: 'right', vertical: 'middle' }
+        cell.font = { name: FNT, size: RSTY.size.table, bold: strong || isTotalCol }; cell.alignment = { horizontal: 'right', vertical: 'middle' }
       })
       const uc = ws.getCell(r, totalCols); uc.value = row.unit || ''
-      uc.font = { name: FNT, size: 9, color: { argb: 'FF555555' } }; uc.alignment = { horizontal: 'left', vertical: 'middle' }
+      uc.font = { name: FNT, size: RSTY.size.table, color: { argb: 'FF555555' } }; uc.alignment = { horizontal: 'left', vertical: 'middle' }
       const edges = {}
       if (sepTop) edges.top = HAIR
       if (isLast) edges.bottom = MED
@@ -544,33 +607,33 @@ function buildNgsoGeometrySheet(wb, links, params, meta, lang) {
     const cell = ws.getCell(rr, c); const v = (x == null || !isFinite(x)) ? null : Number(x)
     cell.value = v == null ? '—' : v
     if (v != null) cell.numFmt = dp > 0 ? '0.' + '0'.repeat(dp) : '0'
-    cell.font = { name: FNT, size: 10, bold: !!bold }; cell.alignment = { horizontal: 'right', vertical: 'middle' }
+    cell.font = { name: FNT, size: RSTY.size.table, bold: !!bold }; cell.alignment = { horizontal: 'right', vertical: 'middle' }
   }
   const str = (rr, c, text, align, o) => {
     o = o || {}; const cell = ws.getCell(rr, c)
     cell.value = text == null ? '' : text
-    cell.font = { name: o.font || CJK, size: o.size || 10, bold: !!o.bold, color: o.color ? { argb: o.color } : undefined }
+    cell.font = { name: o.font || (o.hei ? HEI : CJK), size: o.size || RSTY.size.table, bold: !!o.bold, color: o.color ? { argb: o.color } : undefined }
     cell.alignment = { horizontal: align || 'left', vertical: 'middle', wrapText: !!o.wrap }
   }
   const section = (text, span) => {
     ws.mergeCells(r, 1, r, span); const cell = ws.getCell(r, 1)
-    cell.value = text; cell.font = { name: CJK, bold: true, size: 12 }; cell.alignment = { horizontal: 'left', vertical: 'middle' }
+    cell.value = text; cell.font = { name: HEI, size: RSTY.size.h1 }; cell.alignment = { horizontal: 'left', vertical: 'middle' }
     ws.getRow(r).height = 24; r++
   }
   const thead = (labels) => {
-    labels.forEach((lb, i) => str(r, i + 1, lb, i === 0 ? 'left' : 'center', { bold: true, size: 9, wrap: true }))
+    labels.forEach((lb, i) => str(r, i + 1, lb, 'center', { hei: true, size: RSTY.size.tableDense, wrap: true }))
     setRowBorder(ws, r, 1, labels.length, { top: MED, bottom: THIN }); ws.getRow(r).height = 30; r++
   }
   const kv = (label, value, unit, valFont) => {
-    ws.mergeCells(r, 1, r, 2); str(r, 1, label, 'left', { size: 10 })
-    ws.mergeCells(r, 3, r, 5); str(r, 3, value, 'left', { size: 10, font: valFont || FNT })
-    str(r, 6, unit || '', 'left', { size: 9, font: FNT, color: 'FF555555' })
+    ws.mergeCells(r, 1, r, 2); str(r, 1, label, 'left', {})
+    ws.mergeCells(r, 3, r, 5); str(r, 3, value, 'left', { font: valFont || FNT })
+    str(r, 6, unit || '', 'left', { font: FNT, color: 'FF555555' })
     ws.getRow(r).height = 18; r++
   }
   const kvNum = (label, v, dp, unit) => {
-    ws.mergeCells(r, 1, r, 2); str(r, 1, label, 'left', { size: 10 })
+    ws.mergeCells(r, 1, r, 2); str(r, 1, label, 'left', {})
     ws.mergeCells(r, 3, r, 5); num(r, 3, v, dp)
-    str(r, 6, unit || '', 'left', { size: 9, font: FNT, color: 'FF555555' })
+    str(r, 6, unit || '', 'left', { font: FNT, color: 'FF555555' })
     ws.getRow(r).height = 18; r++
   }
 
@@ -583,11 +646,11 @@ function buildNgsoGeometrySheet(wb, links, params, meta, lang) {
   // —— 标题 + 副标题 ——
   ws.mergeCells(r, 1, r, NCOL)
   const tc = ws.getCell(r, 1); tc.value = g.title
-  tc.font = { name: CJK, bold: true, size: 15 }; tc.alignment = { horizontal: 'left', vertical: 'middle' }; ws.getRow(r).height = 28; r++
+  tc.font = { name: HEI, size: RSTY.size.docTitle }; tc.alignment = { horizontal: 'center', vertical: 'middle' }; ws.getRow(r).height = 28; r++
   ws.mergeCells(r, 1, r, NCOL)
   const sc = ws.getCell(r, 1)
   sc.value = g.subtitle(params.satelliteName || '—', params.frequencyBand || '—', propName, new Date().toLocaleString())
-  sc.font = { name: CJK, size: 10, color: { argb: 'FF666666' } }; sc.alignment = { horizontal: 'left', vertical: 'middle' }; ws.getRow(r).height = 18; r++
+  sc.font = { name: CJK, size: RSTY.size.table, color: { argb: 'FF666666' } }; sc.alignment = { horizontal: 'center', vertical: 'middle' }; ws.getRow(r).height = 18; r++
   r++
 
   // —— 场景与轨道属性（全局属性，STK 口径）——
@@ -623,18 +686,18 @@ function buildNgsoGeometrySheet(wb, links, params, meta, lang) {
     thead([g.accNo, g.accLink, g.accPair, g.accStart, g.accStop, g.accDur, g.accTypical])
     coupledLinks.forEach((l, idx) => {
       const s = l.geom.search || {}, w = s.mutualWindow || {}
-      str(r, 1, String(idx + 1), 'center', { font: FNT, size: 10 })
-      str(r, 2, l.coord, 'center', { font: FNT, size: 10 })
-      str(r, 3, `${l.txName || ''} → ${l.rxName || ''}`, 'left', { size: 10, wrap: true })
-      str(r, 4, utcg(w.startISO), 'center', { font: FNT, size: 9, wrap: true })
-      str(r, 5, utcg(w.endISO) + (w.clipped ? g.accClip : ''), 'center', { font: FNT, size: 9, wrap: true })
+      str(r, 1, String(idx + 1), 'center', { font: FNT, size: RSTY.size.table })
+      str(r, 2, l.coord, 'center', { font: FNT, size: RSTY.size.table })
+      str(r, 3, `${l.txName || ''} → ${l.rxName || ''}`, 'left', { size: RSTY.size.table, wrap: true })
+      str(r, 4, utcg(w.startISO), 'center', { font: FNT, size: RSTY.size.tableDense, wrap: true })
+      str(r, 5, utcg(w.endISO) + (w.clipped ? g.accClip : ''), 'center', { font: FNT, size: RSTY.size.tableDense, wrap: true })
       num(r, 6, w.durationMin, 2)
-      str(r, 7, utcg(s.typicalISO), 'center', { font: FNT, size: 9, wrap: true })
+      str(r, 7, utcg(s.typicalISO), 'center', { font: FNT, size: RSTY.size.tableDense, wrap: true })
       ws.getRow(r).height = 26; r++
     })
     setRowBorder(ws, r - 1, 1, 7, { bottom: MED })
   } else if (feasLinks.length) {
-    ws.mergeCells(r, 1, r, NCOL); str(r, 1, g.accNA, 'left', { size: 10, color: 'FF666666', wrap: true }); ws.getRow(r).height = 20; r++
+    ws.mergeCells(r, 1, r, NCOL); str(r, 1, g.accNA, 'left', { size: RSTY.size.table, color: 'FF666666', wrap: true }); ws.getRow(r).height = 20; r++
   }
   r++
 
@@ -649,13 +712,13 @@ function buildNgsoGeometrySheet(wb, links, params, meta, lang) {
         { dir: g.dirDn, geo: l.rxGeo || {}, side: w.dn || {}, name: l.rxName }
       ]
       dirs.forEach((d, ri) => {
-        str(r, 1, ri === 0 ? l.coord : '', 'center', { font: FNT, size: 10 })
-        str(r, 2, d.dir, 'center', { size: 9, color: 'FF1A1A1A' })
-        str(r, 3, d.geo.name || d.name || '', 'left', { size: 10, wrap: true })
+        str(r, 1, ri === 0 ? l.coord : '', 'center', { font: FNT, size: RSTY.size.table })
+        str(r, 2, d.dir, 'center', { size: RSTY.size.tableDense, color: 'FF1A1A1A' })
+        str(r, 3, d.geo.name || d.name || '', 'left', { size: RSTY.size.table, wrap: true })
         num(r, 4, d.geo.lat, 4); num(r, 5, d.geo.lon, 4); num(r, 6, d.geo.minEl, 2)
         num(r, 7, d.side.elevDeg, 2); num(r, 8, d.side.slantKm, 2); num(r, 9, d.side.altKm, 1)
         num(r, 10, d.side.coverageHalfAngleDeg, 3); num(r, 11, d.side.coverageRadiusKm, 1)
-        if (d.side.maxPassMin == null) str(r, 12, g.resident, 'right', { font: FNT, size: 9, color: 'FF888888' })
+        if (d.side.maxPassMin == null) str(r, 12, g.resident, 'right', { font: FNT, size: RSTY.size.tableDense, color: 'FF888888' })
         else num(r, 12, d.side.maxPassMin, 2)
         ws.getRow(r).height = 18; r++
       })
@@ -669,7 +732,7 @@ function buildNgsoGeometrySheet(wb, links, params, meta, lang) {
     thead([g.dynLink, g.dynVi, g.dynVg + (anyEst ? g.dynEst : ''), g.dynDu + (anyEst ? g.dynEst : ''), g.dynDd + (anyEst ? g.dynEst : ''), g.dynDelay])
     feasLinks.forEach((l) => {
       const w = l.geom.worst || {}
-      str(r, 1, l.coord, 'center', { font: FNT, size: 10 })
+      str(r, 1, l.coord, 'center', { font: FNT, size: RSTY.size.table })
       num(r, 2, w.speedInertialKmS, 3)
       num(r, 3, w.speedGroundRelKmS, 3)
       num(r, 4, w.maxDopplerUpHz != null ? w.maxDopplerUpHz / 1000 : null, 3)
@@ -685,14 +748,14 @@ function buildNgsoGeometrySheet(wb, links, params, meta, lang) {
   const infeas = links.filter((l) => l.geom && !l.geom.feasible)
   if (infeas.length) {
     section(g.infeasHead, NCOL)
-    str(r, 1, g.accLink, 'center', { bold: true, size: 9 })
-    ws.mergeCells(r, 2, r, 3); str(r, 2, g.accPair, 'left', { bold: true, size: 9 })
-    ws.mergeCells(r, 4, r, NCOL); str(r, 4, g.infeasReason, 'left', { bold: true, size: 9 })
+    str(r, 1, g.accLink, 'center', { bold: true, size: RSTY.size.tableDense })
+    ws.mergeCells(r, 2, r, 3); str(r, 2, g.accPair, 'left', { bold: true, size: RSTY.size.tableDense })
+    ws.mergeCells(r, 4, r, NCOL); str(r, 4, g.infeasReason, 'left', { bold: true, size: RSTY.size.tableDense })
     setRowBorder(ws, r, 1, NCOL, { top: MED, bottom: THIN }); ws.getRow(r).height = 20; r++
     infeas.forEach((l) => {
-      str(r, 1, l.coord, 'center', { font: FNT, size: 10 })
-      ws.mergeCells(r, 2, r, 3); str(r, 2, `${l.txName || ''} → ${l.rxName || ''}`, 'left', { size: 10, wrap: true })
-      ws.mergeCells(r, 4, r, NCOL); str(r, 4, l.geom.reason || '—', 'left', { size: 10, color: 'FF666666', wrap: true })
+      str(r, 1, l.coord, 'center', { font: FNT, size: RSTY.size.table })
+      ws.mergeCells(r, 2, r, 3); str(r, 2, `${l.txName || ''} → ${l.rxName || ''}`, 'left', { size: RSTY.size.table, wrap: true })
+      ws.mergeCells(r, 4, r, NCOL); str(r, 4, l.geom.reason || '—', 'left', { size: RSTY.size.table, color: 'FF666666', wrap: true })
       ws.getRow(r).height = 20; r++
     })
     setRowBorder(ws, r - 1, 1, NCOL, { bottom: MED })
@@ -702,7 +765,7 @@ function buildNgsoGeometrySheet(wb, links, params, meta, lang) {
   // —— 方法学脚注 ——
   ws.mergeCells(r, 1, r, NCOL)
   const fc = ws.getCell(r, 1); fc.value = g.foot
-  fc.font = { name: CJK, size: 9, color: { argb: 'FF999999' } }; fc.alignment = { horizontal: 'left', vertical: 'top', wrapText: true }
+  fc.font = { name: CJK, size: RSTY.size.tableDense, color: { argb: 'FF999999' } }; fc.alignment = { horizontal: 'left', vertical: 'top', wrapText: true }
   ws.getRow(r).height = 48
 }
 
@@ -719,48 +782,48 @@ function makeGeoWriter(ws, ncol) {
     const cell = ws.getCell(w.r, c); const v = (x == null || !isFinite(x)) ? null : Number(x)
     cell.value = v == null ? '—' : v
     if (v != null) cell.numFmt = dp > 0 ? '0.' + '0'.repeat(dp) : '0'
-    cell.font = { name: FNT, size: 10, bold: !!bold }; cell.alignment = { horizontal: 'right', vertical: 'middle' }
+    cell.font = { name: FNT, size: RSTY.size.table, bold: !!bold }; cell.alignment = { horizontal: 'right', vertical: 'middle' }
   }
   w.str = (c, text, align, o) => {
     o = o || {}; const cell = ws.getCell(w.r, c)
     cell.value = text == null ? '' : text
-    cell.font = { name: o.font || CJK, size: o.size || 10, bold: !!o.bold, color: o.color ? { argb: o.color } : undefined }
+    cell.font = { name: o.font || (o.hei ? HEI : CJK), size: o.size || RSTY.size.table, bold: !!o.bold, color: o.color ? { argb: o.color } : undefined }
     cell.alignment = { horizontal: align || 'left', vertical: 'middle', wrapText: !!o.wrap }
   }
   w.section = (text, span) => {
     ws.mergeCells(w.r, 1, w.r, span || ncol); const cell = ws.getCell(w.r, 1)
-    cell.value = text; cell.font = { name: CJK, bold: true, size: 12 }; cell.alignment = { horizontal: 'left', vertical: 'middle' }
+    cell.value = text; cell.font = { name: HEI, size: RSTY.size.h1 }; cell.alignment = { horizontal: 'left', vertical: 'middle' }
     ws.getRow(w.r).height = 24; w.r++
   }
   w.thead = (labels) => {
-    labels.forEach((lb, i) => w.str(i + 1, lb, i === 0 ? 'left' : 'center', { bold: true, size: 9, wrap: true }))
+    labels.forEach((lb, i) => w.str(i + 1, lb, 'center', { hei: true, size: RSTY.size.tableDense, wrap: true }))
     setRowBorder(ws, w.r, 1, labels.length, { top: MED, bottom: THIN }); ws.getRow(w.r).height = 30; w.r++
   }
   w.kv = (label, value, unit, valFont) => {
-    ws.mergeCells(w.r, 1, w.r, 2); w.str(1, label, 'left', { size: 10 })
-    ws.mergeCells(w.r, 3, w.r, 5); w.str(3, value, 'left', { size: 10, font: valFont || FNT })
-    w.str(6, unit || '', 'left', { size: 9, font: FNT, color: 'FF555555' })
+    ws.mergeCells(w.r, 1, w.r, 2); w.str(1, label, 'left', {})
+    ws.mergeCells(w.r, 3, w.r, 5); w.str(3, value, 'left', { font: valFont || FNT })
+    w.str(6, unit || '', 'left', { font: FNT, color: 'FF555555' })
     ws.getRow(w.r).height = 18; w.r++
   }
   w.kvNum = (label, v, dp, unit) => {
-    ws.mergeCells(w.r, 1, w.r, 2); w.str(1, label, 'left', { size: 10 })
+    ws.mergeCells(w.r, 1, w.r, 2); w.str(1, label, 'left', {})
     ws.mergeCells(w.r, 3, w.r, 5); w.num(3, v, dp)
-    w.str(6, unit || '', 'left', { size: 9, font: FNT, color: 'FF555555' })
+    w.str(6, unit || '', 'left', { font: FNT, color: 'FF555555' })
     ws.getRow(w.r).height = 18; w.r++
   }
   w.title = (title, subtitle) => {
     ws.mergeCells(w.r, 1, w.r, ncol)
     const tc = ws.getCell(w.r, 1); tc.value = title
-    tc.font = { name: CJK, bold: true, size: 15 }; tc.alignment = { horizontal: 'left', vertical: 'middle' }; ws.getRow(w.r).height = 28; w.r++
+    tc.font = { name: HEI, size: RSTY.size.docTitle }; tc.alignment = { horizontal: 'center', vertical: 'middle' }; ws.getRow(w.r).height = 28; w.r++
     ws.mergeCells(w.r, 1, w.r, ncol)
     const sc = ws.getCell(w.r, 1); sc.value = subtitle
-    sc.font = { name: CJK, size: 10, color: { argb: 'FF666666' } }; sc.alignment = { horizontal: 'left', vertical: 'middle' }; ws.getRow(w.r).height = 18; w.r++
+    sc.font = { name: CJK, size: RSTY.size.table, color: { argb: 'FF666666' } }; sc.alignment = { horizontal: 'center', vertical: 'middle' }; ws.getRow(w.r).height = 18; w.r++
     w.r++
   }
   w.foot = (text) => {
     ws.mergeCells(w.r, 1, w.r, ncol)
     const fc = ws.getCell(w.r, 1); fc.value = text
-    fc.font = { name: CJK, size: 9, color: { argb: 'FF999999' } }; fc.alignment = { horizontal: 'left', vertical: 'top', wrapText: true }
+    fc.font = { name: CJK, size: RSTY.size.caption, color: { argb: 'FF999999' } }; fc.alignment = { horizontal: 'left', vertical: 'top', wrapText: true }
     ws.getRow(w.r).height = 56; w.r++
   }
   w.rowEnd = (span) => setRowBorder(ws, w.r - 1, 1, span || ncol, { bottom: MED })
@@ -821,10 +884,10 @@ function buildRegenGroundGeometrySheet(wb, links, params, meta, lang, direction)
     W.thead([rg.sat, rg.a, rg.e, rg.i, rg.raan, rg.period, rg.peri, rg.apo, rg.norad])
     elemList.forEach((it) => {
       const el = it.el
-      W.str(1, it.name, 'left', { size: 10, wrap: true })
+      W.str(1, it.name, 'left', { size: RSTY.size.table, wrap: true })
       W.num(2, el.a, 3); W.num(3, el.e, 6); W.num(4, el.iDeg, 4); W.num(5, el.raanDeg, 4)
       W.num(6, el.periodMin, 3); W.num(7, el.perigeeAltKm, 1); W.num(8, el.apogeeAltKm, 1)
-      W.str(9, el.satnum == null ? '—' : String(el.satnum), 'right', { font: FNT, size: 10 })
+      W.str(9, el.satnum == null ? '—' : String(el.satnum), 'right', { font: FNT, size: RSTY.size.table })
       ws.getRow(W.r).height = 18; W.r++
     })
     W.rowEnd(9); W.gap()
@@ -840,19 +903,19 @@ function buildRegenGroundGeometrySheet(wb, links, params, meta, lang, direction)
       const wins = l.access.windows.slice(0, 12)
       wins.forEach((wd) => {
         n++
-        W.str(1, String(n), 'center', { font: FNT, size: 10 })
-        W.str(2, '#' + l._no, 'center', { font: FNT, size: 10 })
-        W.str(3, (l.staGeo && l.staGeo.name) || l.satName || '', 'left', { size: 10, wrap: true })
-        W.str(4, utcg(wd.startISO), 'center', { font: FNT, size: 9, wrap: true })
-        W.str(5, utcg(wd.endISO) + (wd.clipped ? g.accClip : ''), 'center', { font: FNT, size: 9, wrap: true })
+        W.str(1, String(n), 'center', { font: FNT, size: RSTY.size.table })
+        W.str(2, '#' + l._no, 'center', { font: FNT, size: RSTY.size.table })
+        W.str(3, (l.staGeo && l.staGeo.name) || l.satName || '', 'left', { size: RSTY.size.table, wrap: true })
+        W.str(4, utcg(wd.startISO), 'center', { font: FNT, size: RSTY.size.tableDense, wrap: true })
+        W.str(5, utcg(wd.endISO) + (wd.clipped ? g.accClip : ''), 'center', { font: FNT, size: RSTY.size.tableDense, wrap: true })
         W.num(6, wd.durationMin, 2); W.num(7, wd.peakElevDeg, 2); W.num(8, wd.peakSlantKm, 1)
-        W.str(9, utcg(wd.peakISO), 'center', { font: FNT, size: 9, wrap: true })
+        W.str(9, utcg(wd.peakISO), 'center', { font: FNT, size: RSTY.size.tableDense, wrap: true })
         ws.getRow(W.r).height = 26; W.r++
       })
     })
     W.rowEnd(9)
   } else if (feas.length) {
-    ws.mergeCells(W.r, 1, W.r, NCOL); W.str(1, rg.accNAg, 'left', { size: 10, color: 'FF666666', wrap: true }); ws.getRow(W.r).height = 20; W.r++
+    ws.mergeCells(W.r, 1, W.r, NCOL); W.str(1, rg.accNAg, 'left', { size: RSTY.size.table, color: 'FF666666', wrap: true }); ws.getRow(W.r).height = 20; W.r++
   }
   W.gap()
 
@@ -863,12 +926,12 @@ function buildRegenGroundGeometrySheet(wb, links, params, meta, lang, direction)
     feas.forEach((l, li) => {
       const side = (l.geom.worst && l.geom.worst[sideKey]) || {}
       const sta = l.staGeo || {}
-      W.str(1, '#' + l._no, 'center', { font: FNT, size: 10 })
-      W.str(2, sta.name || l.satName || '', 'left', { size: 10, wrap: true })
+      W.str(1, '#' + l._no, 'center', { font: FNT, size: RSTY.size.table })
+      W.str(2, sta.name || l.satName || '', 'left', { size: RSTY.size.table, wrap: true })
       W.num(3, sta.lat, 4); W.num(4, sta.lon, 4); W.num(5, sta.minEl, 2)
       W.num(6, side.elevDeg, 2); W.num(7, side.slantKm, 2); W.num(8, side.altKm, 1)
       W.num(9, side.coverageHalfAngleDeg, 3); W.num(10, side.coverageRadiusKm, 1)
-      if (side.maxPassMin == null) W.str(11, g.resident, 'right', { font: FNT, size: 9, color: 'FF888888' })
+      if (side.maxPassMin == null) W.str(11, g.resident, 'right', { font: FNT, size: RSTY.size.tableDense, color: 'FF888888' })
       else W.num(11, side.maxPassMin, 2)
       ws.getRow(W.r).height = 18; W.r++
     })
@@ -880,8 +943,8 @@ function buildRegenGroundGeometrySheet(wb, links, params, meta, lang, direction)
     W.thead([g.aerLink, rg.dynSat, g.dynVi, g.dynVg + (anyEst ? g.dynEst : ''), rg.dynDop + (anyEst ? g.dynEst : ''), rg.dynDelay])
     feas.forEach((l, li) => {
       const wrs = l.geom.worst || {}
-      W.str(1, '#' + l._no, 'center', { font: FNT, size: 10 })
-      W.str(2, l.satName || params.satelliteName || '', 'left', { size: 10, wrap: true })
+      W.str(1, '#' + l._no, 'center', { font: FNT, size: RSTY.size.table })
+      W.str(2, l.satName || params.satelliteName || '', 'left', { size: RSTY.size.table, wrap: true })
       W.num(3, wrs.speedInertialKmS, 3); W.num(4, wrs.speedGroundRelKmS, 3)
       W.num(5, wrs[dopKey] != null ? wrs[dopKey] / 1000 : null, 3); W.num(6, wrs.oneWayDelayMs, 3)
       ws.getRow(W.r).height = 18; W.r++
@@ -893,14 +956,14 @@ function buildRegenGroundGeometrySheet(wb, links, params, meta, lang, direction)
   const infeas = links.filter((l) => l.geom && !l.geom.feasible)
   if (infeas.length) {
     W.section(g.infeasHead, NCOL)
-    W.str(1, g.accLink, 'center', { bold: true, size: 9 })
-    ws.mergeCells(W.r, 2, W.r, 3); W.str(2, rg.station, 'left', { bold: true, size: 9 })
-    ws.mergeCells(W.r, 4, W.r, NCOL); W.str(4, g.infeasReason, 'left', { bold: true, size: 9 })
+    W.str(1, g.accLink, 'center', { bold: true, size: RSTY.size.tableDense })
+    ws.mergeCells(W.r, 2, W.r, 3); W.str(2, rg.station, 'left', { bold: true, size: RSTY.size.tableDense })
+    ws.mergeCells(W.r, 4, W.r, NCOL); W.str(4, g.infeasReason, 'left', { bold: true, size: RSTY.size.tableDense })
     setRowBorder(ws, W.r, 1, NCOL, { top: MED, bottom: THIN }); ws.getRow(W.r).height = 20; W.r++
     infeas.forEach((l, li) => {
-      W.str(1, '#' + l._no, 'center', { font: FNT, size: 10 })
-      ws.mergeCells(W.r, 2, W.r, 3); W.str(2, (l.staGeo && l.staGeo.name) || l.satName || '', 'left', { size: 10, wrap: true })
-      ws.mergeCells(W.r, 4, W.r, NCOL); W.str(4, (l.geom && l.geom.reason) || '—', 'left', { size: 10, color: 'FF666666', wrap: true })
+      W.str(1, '#' + l._no, 'center', { font: FNT, size: RSTY.size.table })
+      ws.mergeCells(W.r, 2, W.r, 3); W.str(2, (l.staGeo && l.staGeo.name) || l.satName || '', 'left', { size: RSTY.size.table, wrap: true })
+      ws.mergeCells(W.r, 4, W.r, NCOL); W.str(4, (l.geom && l.geom.reason) || '—', 'left', { size: RSTY.size.table, color: 'FF666666', wrap: true })
       ws.getRow(W.r).height = 20; W.r++
     })
     W.rowEnd(NCOL); W.gap()
@@ -953,12 +1016,12 @@ function buildRegenSpaceGeometrySheet(wb, links, params, meta, lang, isLaser) {
     ]
     ends.forEach((en, ri) => {
       const el = en.el || {}
-      W.str(1, ri === 0 ? '#' + l._no : '', 'center', { font: FNT, size: 10 })
-      W.str(2, en.tag, 'center', { size: 9, color: 'FF1A1A1A' })
-      W.str(3, en.name || '', 'left', { size: 10, wrap: true })
+      W.str(1, ri === 0 ? '#' + l._no : '', 'center', { font: FNT, size: RSTY.size.table })
+      W.str(2, en.tag, 'center', { size: RSTY.size.tableDense, color: 'FF1A1A1A' })
+      W.str(3, en.name || '', 'left', { size: RSTY.size.table, wrap: true })
       W.num(4, el.a, 3); W.num(5, el.e, 6); W.num(6, el.iDeg, 4); W.num(7, el.raanDeg, 4)
       W.num(8, el.periodMin, 3); W.num(9, el.perigeeAltKm, 1); W.num(10, el.apogeeAltKm, 1)
-      W.str(11, el.satnum == null ? '—' : String(el.satnum), 'right', { font: FNT, size: 10 })
+      W.str(11, el.satnum == null ? '—' : String(el.satnum), 'right', { font: FNT, size: RSTY.size.table })
       ws.getRow(W.r).height = 18; W.r++
     })
   })
@@ -974,18 +1037,18 @@ function buildRegenSpaceGeometrySheet(wb, links, params, meta, lang, isLaser) {
     withWin.forEach((l, li) => {
       l.islGeo.visibility.windows.slice(0, 12).forEach((wd) => {
         n++
-        W.str(1, String(n), 'center', { font: FNT, size: 10 })
-        W.str(2, '#' + l._no, 'center', { font: FNT, size: 10 })
-        W.str(3, rg.pairArrow(l.txName || '', l.rxName || ''), 'left', { size: 10, wrap: true })
-        W.str(4, utcg(wd.startISO), 'center', { font: FNT, size: 9, wrap: true })
-        W.str(5, utcg(wd.endISO) + (wd.clipped ? g.accClip : ''), 'center', { font: FNT, size: 9, wrap: true })
+        W.str(1, String(n), 'center', { font: FNT, size: RSTY.size.table })
+        W.str(2, '#' + l._no, 'center', { font: FNT, size: RSTY.size.table })
+        W.str(3, rg.pairArrow(l.txName || '', l.rxName || ''), 'left', { size: RSTY.size.table, wrap: true })
+        W.str(4, utcg(wd.startISO), 'center', { font: FNT, size: RSTY.size.tableDense, wrap: true })
+        W.str(5, utcg(wd.endISO) + (wd.clipped ? g.accClip : ''), 'center', { font: FNT, size: RSTY.size.tableDense, wrap: true })
         W.num(6, wd.durationMin, 2); W.num(7, wd.maxRangeKm, 1)
         ws.getRow(W.r).height = 26; W.r++
       })
     })
     W.rowEnd(7)
   } else if (feas.length) {
-    ws.mergeCells(W.r, 1, W.r, NCOL); W.str(1, rg.mAccNA, 'left', { size: 10, color: 'FF666666', wrap: true }); ws.getRow(W.r).height = 20; W.r++
+    ws.mergeCells(W.r, 1, W.r, NCOL); W.str(1, rg.mAccNA, 'left', { size: RSTY.size.table, color: 'FF666666', wrap: true }); ws.getRow(W.r).height = 20; W.r++
   }
   W.gap()
 
@@ -996,8 +1059,8 @@ function buildRegenSpaceGeometrySheet(wb, links, params, meta, lang, isLaser) {
     feas.forEach((l, li) => {
       const wrs = l.islGeo.worst || {}
       const vis = l.islGeo.visibility || {}
-      W.str(1, '#' + l._no, 'center', { font: FNT, size: 10 })
-      W.str(2, rg.pairArrow(l.txName || '', l.rxName || ''), 'left', { size: 10, wrap: true })
+      W.str(1, '#' + l._no, 'center', { font: FNT, size: RSTY.size.table })
+      W.str(2, rg.pairArrow(l.txName || '', l.rxName || ''), 'left', { size: RSTY.size.table, wrap: true })
       W.num(3, wrs.rangeKm, 1); W.num(4, wrs.txAltKm, 1); W.num(5, wrs.rxAltKm, 1)
       W.num(6, wrs.centralAngleDeg, 3); W.num(7, wrs.grazAltKm, 1); W.num(8, wrs.oneWayDelayMs, 3)
       W.num(9, wrs.rangeRateKmS, 4)
@@ -1012,7 +1075,7 @@ function buildRegenSpaceGeometrySheet(wb, links, params, meta, lang, isLaser) {
     W.thead([g.aerLink, rg.dTxVi, rg.dRxVi, rg.dTxVg, rg.dRxVg, rg.dRR])
     feas.forEach((l, li) => {
       const wrs = l.islGeo.worst || {}
-      W.str(1, '#' + l._no, 'center', { font: FNT, size: 10 })
+      W.str(1, '#' + l._no, 'center', { font: FNT, size: RSTY.size.table })
       W.num(2, wrs.txSpeedKmS, 3); W.num(3, wrs.rxSpeedKmS, 3)
       W.num(4, wrs.txGroundSpeedKmS, 3); W.num(5, wrs.rxGroundSpeedKmS, 3); W.num(6, wrs.rangeRateKmS, 4)
       ws.getRow(W.r).height = 18; W.r++
@@ -1024,14 +1087,14 @@ function buildRegenSpaceGeometrySheet(wb, links, params, meta, lang, isLaser) {
   const infeas = links.filter((l) => l.islGeo && !l.islGeo.feasible)
   if (infeas.length) {
     W.section(g.infeasHead, NCOL)
-    W.str(1, g.accLink, 'center', { bold: true, size: 9 })
-    ws.mergeCells(W.r, 2, W.r, 4); W.str(2, rg.mAccPair, 'left', { bold: true, size: 9 })
-    ws.mergeCells(W.r, 5, W.r, NCOL); W.str(5, g.infeasReason, 'left', { bold: true, size: 9 })
+    W.str(1, g.accLink, 'center', { bold: true, size: RSTY.size.tableDense })
+    ws.mergeCells(W.r, 2, W.r, 4); W.str(2, rg.mAccPair, 'left', { bold: true, size: RSTY.size.tableDense })
+    ws.mergeCells(W.r, 5, W.r, NCOL); W.str(5, g.infeasReason, 'left', { bold: true, size: RSTY.size.tableDense })
     setRowBorder(ws, W.r, 1, NCOL, { top: MED, bottom: THIN }); ws.getRow(W.r).height = 20; W.r++
     infeas.forEach((l, li) => {
-      W.str(1, '#' + l._no, 'center', { font: FNT, size: 10 })
-      ws.mergeCells(W.r, 2, W.r, 4); W.str(2, rg.pairArrow(l.txName || '', l.rxName || ''), 'left', { size: 10, wrap: true })
-      ws.mergeCells(W.r, 5, W.r, NCOL); W.str(5, (l.islGeo && l.islGeo.reason) || '—', 'left', { size: 10, color: 'FF666666', wrap: true })
+      W.str(1, '#' + l._no, 'center', { font: FNT, size: RSTY.size.table })
+      ws.mergeCells(W.r, 2, W.r, 4); W.str(2, rg.pairArrow(l.txName || '', l.rxName || ''), 'left', { size: RSTY.size.table, wrap: true })
+      ws.mergeCells(W.r, 5, W.r, NCOL); W.str(5, (l.islGeo && l.islGeo.reason) || '—', 'left', { size: RSTY.size.table, color: 'FF666666', wrap: true })
       ws.getRow(W.r).height = 20; W.r++
     })
     W.rowEnd(NCOL); W.gap()
@@ -1054,8 +1117,9 @@ function buildRegenGeometrySheet(wb, links, params, meta, lang, regenMode) {
 // summary 由主进程补而不是渲染端自己算——那几张表的列定义、单位自适应与中英译法早已在本文件
 // 维护着（summaryRows / adaptSummaryUnits / STR），往渲染端镜像一份必然漂移。
 //
-// 版式：全篇三线表（booktabs），西文/数字 Times New Roman、中文回落宋体；不写任何达标/判定一类的
-// 文字结论（纯数字口径），读者从数字里读结论。
+// 版式照《技术文档标准模板.docx》：全篇三线表（顶/底 1.5pt、栏目线 0.75pt，无竖线、无底纹），
+// 西文与数字 Times New Roman、中文正文宋体、中文标题与题注黑体，表题在表上方、图题在图下方；
+// 不写任何达标/判定一类的文字结论（纯数字口径），读者从数字里读结论。
 
 // 指标矩阵：一行一个指标、跨全部链路取值（单位已按整行共选档位换算好）。
 // 横表（一行一链路）与纵表（一行一指标）是它的两种转置，两张表因此不可能对不上。
@@ -1111,24 +1175,26 @@ function pngSizeOf(dataUrl) {
   } catch (e) { return null }
 }
 
-// —— 模板版式（《文档格式模板（公开）.docx》，参数见 electron/services/reportStyle.js）——
-// 文档类表格照模板：全框线 0.5pt + 表头灰底 BFBFBF 加粗居中；字号 16/14/12/10.5pt 四档。
-// 计算结果（级联/瀑布）表仍是三线表——用户此前定的口径，密排手算单加满网格会压成一堵墙。
+// —— 模板版式（《技术文档标准模板.docx》，参数见 electron/services/reportStyle.js）——
+// 全篇一律三线表：顶线 / 底线 1.5pt、栏目线 0.75pt，无竖线、无底纹；字号 16/14/12/10.5pt 四档。
 const RSTY = require('./reportStyle').TPL
-const GRIDBOX = { top: THIN, left: THIN, bottom: THIN, right: THIN }
-const HEADFILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF' + RSTY.table.headFill } }
-// 给一片区域打全框线；headRow 那一行另加灰底加粗（模板正文表的样子）
-function gridBox(ws, r1, c1, r2, c2, headRow) {
-  for (let r = r1; r <= r2; r++) {
-    for (let c = c1; c <= c2; c++) {
-      const cell = ws.getCell(r, c)
-      cell.border = Object.assign({}, cell.border, GRIDBOX)
-      if (headRow && r === headRow) {
-        cell.fill = HEADFILL
-        cell.font = Object.assign({}, cell.font, { bold: true })
-        cell.alignment = Object.assign({}, cell.alignment, { horizontal: 'center', vertical: 'middle', wrapText: true })
-      }
-    }
+// 给一片区域画三线表（模板「三线表」样式）：顶线 1.5pt、栏目线 0.75pt（表头下沿）、底线 1.5pt，
+// 无竖线、无底纹。headRow 那一行另作表头处理：中文黑体、居中。
+//
+// 表头为什么用黑体而不是模板写的宋体：模板的表头靠 Word 的行距与单元格边距把它与数据行分开，
+// Excel 里没有那两样，只剩一条 0.75pt 的栏目线，表头会糊进数据里。黑体是模板自己的字体
+// （标题与题注即用它），不引入模板以外的东西，又刚好补上这一档视觉分隔。不加粗、不加底纹。
+function bookBox(ws, r1, c1, r2, c2, headRow) {
+  for (let c = c1; c <= c2; c++) {
+    const top = ws.getCell(r1, c)
+    top.border = Object.assign({}, top.border, { top: MED })
+    const bot = ws.getCell(r2, c)
+    bot.border = Object.assign({}, bot.border, { bottom: MED })
+    if (!headRow) continue
+    const h = ws.getCell(headRow, c)
+    h.border = Object.assign({}, h.border, { bottom: THIN })
+    if (hasCjk(String(h.value == null ? '' : h.value))) h.font = Object.assign({}, h.font, { name: HEI })
+    h.alignment = Object.assign({}, h.alignment, { horizontal: 'center', vertical: 'middle', wrapText: true })
   }
 }
 
@@ -1142,6 +1208,44 @@ function placeImage(wb, ws, dataUrl, atRow, dispW) {
   const id = wb.addImage({ base64: dataUrl, extension: 'png' })
   ws.addImage(id, { tl: { col: 0.15, row: atRow - 0.85 }, ext: { width: w, height: h } })
   return Math.ceil(h / XLS_ROW_PX) + 1
+}
+
+// —— 右上角 logo ——
+// 用户上传的图（矢量图已在渲染端栅格化成 PNG，见 LbReportDialog）贴在每张工作表的右上角，
+// 相当于每页页眉都有一枚台标。
+//
+// Excel 的图不占格子、只浮在格子上，位置是「哪一格 + 格内偏移」。故要贴到版心右边界，
+// 得先把列宽单位折成像素（px ≈ 单位 × 7 + 5，Excel 的老口径），从右往左累加找到落点。
+//
+// ★ 偏移必须写 nativeColOff / nativeRowOff（EMU），不能用 exceljs 的小数 col：
+//   它把「一个列宽单位」当 10000 EMU 折算，而真值是 ≈ 66675（7 px × 9525），
+//   小数锚点因此会把图往左搬 6.7 倍——logo 会贴在倒数第二列的左边缘上。
+const COL_PX = (w) => Math.round((typeof w === 'number' && w > 0 ? w : 8.43) * 7 + 5)
+const EMU_PX = 9525
+function placeLogo(wb, ws, logo, ncol) {
+  if (!logo || !logo.dataUrl) return
+  const size = pngSizeOf(logo.dataUrl)
+  if (!size) return
+  const C = RSTY.cover
+  let w = C.logoWpx, h = Math.round(C.logoWpx * size.h / size.w)
+  if (h > C.logoMaxHpx) { h = C.logoMaxHpx; w = Math.round(C.logoMaxHpx * size.w / size.h) }
+  // 版心右边界：把 1..ncol 列的像素宽加起来
+  const px = []
+  let total = 0
+  for (let c = 1; c <= ncol; c++) { px[c] = COL_PX(ws.getColumn(c).width); total += px[c] }
+  // 从右往左退 w 像素，落在哪一列的哪个位置
+  const left = Math.max(0, total - w)
+  let acc = 0, col = ncol - 1, off = 0
+  for (let c = 1; c <= ncol; c++) {
+    if (acc + px[c] > left) { col = c - 1; off = left - acc; break }
+    acc += px[c]
+  }
+  const id = wb.addImage({ base64: logo.dataUrl, extension: 'png' })
+  ws.addImage(id, {
+    tl: { nativeCol: col, nativeColOff: Math.round(off * EMU_PX), nativeRow: 0, nativeRowOff: 3 * EMU_PX },
+    ext: { width: w, height: h },
+    editAs: 'oneCell'
+  })
 }
 
 // —— 主报告表（第一张 sheet）——
@@ -1164,54 +1268,59 @@ function buildMasterSheet(wb, model, t, L) {
     o = o || {}
     const c = ws.getCell(row, col)
     c.value = text == null ? '' : text
-    c.font = { name: o.font || CJK, size: o.size || 10, bold: !!o.bold, color: o.color ? { argb: o.color } : undefined }
+    // 字体名同时是「中文用哪一档」的意图标记：黑体=标题与题注、宋体=正文与表内文字，
+    // 西文与数字一律 TNR（混排格在写盘前由 applyBookFont 拆成富文本，见文件上半段）。
+    c.font = { name: o.font || (o.hei ? HEI : CJK), size: o.size || RSTY.size.table, bold: !!o.bold, color: o.color ? { argb: o.color } : undefined }
     c.alignment = { horizontal: align || 'left', vertical: 'middle', wrapText: !!o.wrap }
     return c
   }
+  // 章节标题：模板 标题 1（黑体 14pt）。下沿那条线是章的收口，不是表格的线。
   const section = (text) => {
     r++
     ws.mergeCells(r, 1, r, NCOL)
-    str(r, 1, text, 'left', { bold: true, size: RSTY.size.h2 })   // 模板标题 2：14pt 加粗
+    str(r, 1, text, 'left', { hei: true, size: RSTY.size.h1 })
     setRowBorder(ws, r, 1, NCOL, { bottom: THIN })
     ws.getRow(r).height = 26; r++
   }
-  // 键值行（模板的两列全框线表：标签列灰底加粗）
-  const kv = (label, value) => {
-    const lc = str(r, 1, label, 'left', { size: RSTY.size.table, bold: true })
-    lc.fill = HEADFILL
-    ws.mergeCells(r, 2, r, Math.min(NCOL, 6))
-    str(r, 2, value, 'left', { size: RSTY.size.table, wrap: true })
-    for (let c = 1; c <= Math.min(NCOL, 6); c++) {
-      const cell = ws.getCell(r, c); cell.border = Object.assign({}, cell.border, GRIDBOX)
-    }
-    ws.getRow(r).height = 19; r++
+  // 表题：模板 表号格式（黑体 10.5pt 居中，在表**上方**）。跨整幅——它是一句话，
+  // 不跨的话自适应会按这句话的长短去撑表格第 1 列。
+  const tableCap = (no, title) => {
+    ws.mergeCells(r, 1, r, NCOL)
+    str(r, 1, model.lang === 'en' ? `Table ${no}  ${title}` : `${L.table} ${no}　${title}`, 'center', { hei: true, size: RSTY.size.caption })
+    ws.getRow(r).height = 18; r++
   }
 
-  // 报告头
+  // 报告头：模板 文档标题（黑体 16pt 居中）
   ws.mergeCells(r, 1, r, NCOL)
-  str(r, 1, doc.title || L.master, 'left', { bold: true, size: 16 })
+  str(r, 1, doc.title || L.master, 'center', { hei: true, size: RSTY.size.docTitle })
   ws.getRow(r).height = 30; r++
+  // 摘要行：体制 · 编号 · 编制单位 · 日期。Excel 没有封面，这一行就是它唯一的上下文。
+  // 体制名已不含「链路预算」四字（见 lbReport.js 的 SCHEME_NAME），与上面的报告名不重复。
   ws.mergeCells(r, 1, r, NCOL)
-  const schemeText = (model.lang === 'en' ? model.scheme.labelEn : model.scheme.label)
-    + ((model.lang === 'en' ? model.scheme.subLabelEn : model.scheme.subLabel) ? '　·　' + (model.lang === 'en' ? model.scheme.subLabelEn : model.scheme.subLabel) : '')
-  str(r, 1, schemeText, 'left', { size: 10, color: 'FF666666' })
+  const en = model.lang === 'en'
+  const summaryLine = [
+    (en ? model.scheme.labelEn : model.scheme.label) + ((en ? model.scheme.subLabelEn : model.scheme.subLabel) ? '　·　' + (en ? model.scheme.subLabelEn : model.scheme.subLabel) : ''),
+    doc.docNo, doc.org, doc.date
+  ].filter(Boolean).join('　·　')
+  str(r, 1, summaryLine, 'center', { size: RSTY.size.table, color: 'FF666666' })
   ws.getRow(r).height = 18; r++
 
   // 逐参数对照（纵表：一行一个指标、每条链路一列——多条链路并排比对同一项）
   section('1　' + L.compare)
-  str(r, 1, L.param, 'left', { bold: true, size: 9 })
-  links.forEach((l, li) => str(r, 2 + li, '#' + (l.no || li + 1) + '\n' + (l.txName || '') + ' → ' + (l.rxName || ''), 'center', { bold: true, size: 9, wrap: true }))
+  tableCap(1, L.compare)
+  str(r, 1, L.param, 'left', { size: RSTY.size.tableDense })
+  links.forEach((l, li) => str(r, 2 + li, '#' + (l.no || li + 1) + '\n' + (l.txName || '') + ' → ' + (l.rxName || ''), 'center', { size: RSTY.size.tableDense, wrap: true }))
   const cmpHead = r
   ws.getRow(r).height = 34; r++
   sum.metrics.forEach((m) => {
-    str(r, 1, m.label, 'left', { size: 10 })
+    str(r, 1, m.label, 'left', { size: RSTY.size.table })
     m.values.forEach((v, li) => {
       const c = ws.getCell(r, 2 + li); c.value = numOrText(v)
-      c.font = { name: FNT, size: 10 }; c.alignment = { horizontal: 'right', vertical: 'middle' }
+      c.font = { name: FNT, size: RSTY.size.table }; c.alignment = { horizontal: 'right', vertical: 'middle' }
     })
     ws.getRow(r).height = 18; r++
   })
-  if (nMetric) gridBox(ws, cmpHead, 1, r - 1, 1 + links.length, cmpHead)
+  if (nMetric) bookBox(ws, cmpHead, 1, r - 1, 1 + links.length, cmpHead)
 
   // 容量与统计
   if (sum.stats.length) {
@@ -1219,7 +1328,7 @@ function buildMasterSheet(wb, model, t, L) {
     // 题注跨整幅（它是一句话，不是表格的第一列——不跨的话自适应会把第 1 列按这句话的长短撑宽）
     if (sum.statsTitle) {
       ws.mergeCells(r, 1, r, NCOL)
-      str(r, 1, sum.statsTitle, 'left', { size: 10, color: 'FF666666' })
+      str(r, 1, sum.statsTitle, 'left', { size: RSTY.size.table, color: 'FF666666' })
       ws.getRow(r).height = 18; r++
     }
     const stHead = r
@@ -1228,17 +1337,18 @@ function buildMasterSheet(wb, model, t, L) {
       str(r, 2, s.value, 'right', { font: FNT, size: RSTY.size.table, bold: true })
       ws.getRow(r).height = 19; r++
     }
-    gridBox(ws, stHead, 1, r - 1, 2)
+    bookBox(ws, stHead, 1, r - 1, 2)
   }
 
   // 计算模型与参考（编号 3：与 Word / PDF 的总报告章节号一一对应，三份文件的「§1 逐参数对照」
   // 说的必须是同一张表。Excel 专有的「详情索引」是工作簿的导航件，不占章节号，附在最后。）
   // 三小节：3.1 计算链路与口径（逐段方法学说明）· 3.2 引用建议书与标准 · 3.3 物理常数与基准。
   const mth = model.method || { basis: [], refGroups: [], constants: [] }
+  // 二级标题：模板 标题 2（黑体 12pt）
   const subsec = (text) => {
     r++
     ws.mergeCells(r, 1, r, NCOL)
-    str(r, 1, text, 'left', { bold: true, size: RSTY.size.h3 })
+    str(r, 1, text, 'left', { hei: true, size: RSTY.size.h2 })
     ws.getRow(r).height = 22; r++
   }
   section('3　' + L.refs)
@@ -1246,7 +1356,7 @@ function buildMasterSheet(wb, model, t, L) {
   subsec('3.1　' + L.mBasis)
   for (const b of mth.basis) {
     ws.mergeCells(r, 1, r, NCOL)
-    str(r, 1, b.title, 'left', { bold: true, size: RSTY.size.table })
+    str(r, 1, b.title, 'left', { hei: true, size: RSTY.size.table })
     ws.getRow(r).height = 18; r++
     ws.mergeCells(r, 1, r, NCOL)
     str(r, 1, b.text, 'left', { size: RSTY.size.table, wrap: true })
@@ -1257,6 +1367,7 @@ function buildMasterSheet(wb, model, t, L) {
   }
 
   subsec('3.2　' + L.mRefs)
+  tableCap(2, L.mRefs)
   const refHead = r
   const refLast = Math.min(NCOL, 8)
   // 建议书名（英文动辄百来字符）单占一列会被挤成七八行，故名称与用途各占一段：名称 2..refMid、
@@ -1266,15 +1377,15 @@ function buildMasterSheet(wb, model, t, L) {
     if (refMid > 2) ws.mergeCells(row, 2, row, refMid)
     if (refLast > refMid + 1) ws.mergeCells(row, refMid + 1, row, refLast)
   }
-  str(r, 1, L.mId, 'left', { bold: true, size: RSTY.size.table })
+  str(r, 1, L.mId, 'left', { size: RSTY.size.table })
   refCols(r)
-  str(r, 2, L.mTitle, 'left', { bold: true, size: RSTY.size.table })
-  str(r, refMid + 1, L.mUse, 'left', { bold: true, size: RSTY.size.table })
+  str(r, 2, L.mTitle, 'left', { size: RSTY.size.table })
+  str(r, refMid + 1, L.mUse, 'left', { size: RSTY.size.table })
   ws.getRow(r).height = 19; r++
   for (const g of mth.refGroups) {
     ws.mergeCells(r, 1, r, refLast)
-    const gc = str(r, 1, g.group, 'left', { bold: true, size: RSTY.size.table })
-    gc.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF2F2F2' } }
+    // 类别行（三组标准的分界）：三线表不许底纹，改用黑体把它与条目行分开
+    str(r, 1, g.group, 'left', { hei: true, size: RSTY.size.table })
     ws.getRow(r).height = 18; r++
     for (const ref of g.items) {
       str(r, 1, ref.id, 'left', { font: FNT, size: RSTY.size.table, wrap: true })
@@ -1284,11 +1395,12 @@ function buildMasterSheet(wb, model, t, L) {
       ws.getRow(r).height = 30; r++
     }
   }
-  gridBox(ws, refHead, 1, r - 1, refLast, refHead)
+  bookBox(ws, refHead, 1, r - 1, refLast, refHead)
 
   subsec('3.3　' + L.mConst)
+  tableCap(3, L.mConst)
   const cHead = r
-  ;[L.param, L.mSymbol, L.mValue, L.unit, L.mSrc].forEach((h, i) => str(r, i + 1, h, i >= 2 && i <= 3 ? 'center' : 'left', { bold: true, size: RSTY.size.table }))
+  ;[L.param, L.mSymbol, L.mValue, L.unit, L.mSrc].forEach((h, i) => str(r, i + 1, h, 'center', { size: RSTY.size.table }))
   ws.getRow(r).height = 19; r++
   for (const c of mth.constants) {
     str(r, 1, c.name, 'left', { size: RSTY.size.table })
@@ -1298,7 +1410,7 @@ function buildMasterSheet(wb, model, t, L) {
     str(r, 5, c.src, 'left', { size: RSTY.size.table, color: 'FF333333', wrap: true })
     ws.getRow(r).height = 18; r++
   }
-  gridBox(ws, cHead, 1, r - 1, 5, cHead)
+  bookBox(ws, cHead, 1, r - 1, 5, cHead)
 
   // 详情索引：点一下跳到该链路的详情表。
   // 「站对」一栏铺到倒数第二列、跳转链接放末列：站名长起来（尤其英文导出）时，若仍挤在第 2 列，
@@ -1310,21 +1422,21 @@ function buildMasterSheet(wb, model, t, L) {
     if (idxNameEnd > 2) ws.mergeCells(r, 2, r, idxNameEnd)
     str(r, 2, text, 'left', o)
   }
-  const headOpt = { bold: true, size: RSTY.size.table }
+  const headOpt = { size: RSTY.size.table }
   str(r, 1, L.no, 'center', headOpt)
   idxName(L.link, headOpt)
   str(r, NCOL, L.detail, 'left', headOpt)
   ws.getRow(r).height = 19; r++
   links.forEach((l, li) => {
-    str(r, 1, String(l.no || li + 1), 'center', { font: FNT, size: 10 })
-    idxName((l.txName || '') + ' → ' + (l.rxName || ''), { size: 10 })
+    str(r, 1, String(l.no || li + 1), 'center', { font: FNT, size: RSTY.size.table })
+    idxName((l.txName || '') + ' → ' + (l.rxName || ''), { size: RSTY.size.table })
     const c = ws.getCell(r, NCOL)
     c.value = { formula: `HYPERLINK("#'${l.sheetName}'!A1","${(l.sheetName || '').replace(/"/g, '')}")`, result: l.sheetName }
-    c.font = { name: CJK, size: 10, color: { argb: 'FF15619B' }, underline: true }
+    c.font = { name: CJK, size: RSTY.size.table, color: { argb: 'FF15619B' }, underline: true }
     c.alignment = { horizontal: 'left', vertical: 'middle' }
     ws.getRow(r).height = 19; r++
   })
-  if (links.length) gridBox(ws, idxHead, 1, r - 1, NCOL, idxHead)
+  if (links.length) bookBox(ws, idxHead, 1, r - 1, NCOL, idxHead)
 }
 
 // —— 单链路详情表 ——
@@ -1338,23 +1450,30 @@ function writeReportLinkSheet(wb, ws, link, model, t, L) {
     o = o || {}
     const c = ws.getCell(row, col)
     c.value = text == null ? '' : text
-    c.font = { name: o.font || CJK, size: o.size || 10, bold: !!o.bold, color: o.color ? { argb: o.color } : undefined }
+    c.font = { name: o.font || (o.hei ? HEI : CJK), size: o.size || RSTY.size.table, bold: !!o.bold, color: o.color ? { argb: o.color } : undefined }
     c.alignment = { horizontal: align || 'left', vertical: 'middle', wrapText: !!o.wrap }
   }
   const section = (text) => {
     r++
     ws.mergeCells(r, 1, r, MAXCOL)
-    str(r, 1, text, 'left', { bold: true, size: RSTY.size.h2 })   // 模板标题 2：14pt
+    str(r, 1, text, 'left', { hei: true, size: RSTY.size.h1 })   // 模板 标题 1：黑体 14pt
     setRowBorder(ws, r, 1, MAXCOL, { bottom: THIN }); ws.getRow(r).height = 26; r++
+  }
+  // 题注：模板 表号格式 / 图号格式（黑体 10.5pt 居中）。跨整幅——它是一句话，
+  // 占着参数列会把参数列按题注的长短撑宽。
+  const caption = (text) => {
+    ws.mergeCells(r, 1, r, MAXCOL)
+    str(r, 1, text, 'center', { hei: true, size: RSTY.size.caption })
+    ws.getRow(r).height = 18; r++
   }
 
   ws.mergeCells(r, 1, r, MAXCOL)
-  str(r, 1, '#' + link.no + '　' + (link.txName || '') + ' → ' + (link.rxName || ''), 'left', { bold: true, size: 15 })
+  str(r, 1, '#' + link.no + '　' + (link.txName || '') + ' → ' + (link.rxName || ''), 'center', { hei: true, size: RSTY.size.docTitle })
   ws.getRow(r).height = 28; r++
   ws.mergeCells(r, 1, r, MAXCOL)
   const sub = [(model.calc && model.calc.satelliteName), (model.calc && model.calc.frequencyBand),
     (model.calc && model.calc.mode), (model.doc && model.doc.docNo)].filter(Boolean).join('　·　')
-  str(r, 1, sub, 'left', { size: 10, color: 'FF666666' }); ws.getRow(r).height = 18; r++
+  str(r, 1, sub, 'center', { size: RSTY.size.table, color: 'FF666666' }); ws.getRow(r).height = 18; r++
 
   if (link.error) {
     r++
@@ -1364,16 +1483,16 @@ function writeReportLinkSheet(wb, ws, link, model, t, L) {
     return
   }
 
-  // 输入参数
+  // 输入参数。表号按「链路序号-块序号」编（表 3-2 = 第 3 条链路的第 2 块输入），
+  // 与图号同一套编法，读者从题注就知道它属于哪条链路。
   if (link.inputs && link.inputs.length) {
     section(L.inputs)
-    for (const blk of link.inputs) {
-      ws.mergeCells(r, 1, r, 3)
-      str(r, 1, blk.title, 'left', { bold: true, size: RSTY.size.h3 }); ws.getRow(r).height = 22; r++
+    link.inputs.forEach((blk, bi) => {
+      caption(model.lang === 'en' ? `Table ${link.no}-${bi + 1}  ${blk.title}` : `${L.table} ${link.no}-${bi + 1}　${blk.title}`)
       const hb = r
-      str(r, 1, L.param, 'left', { bold: true, size: RSTY.size.table })
-      str(r, 2, L.value, 'right', { bold: true, size: RSTY.size.table })
-      str(r, 3, L.unit, 'left', { bold: true, size: RSTY.size.table })
+      str(r, 1, L.param, 'left', { size: RSTY.size.table })
+      str(r, 2, L.value, 'right', { size: RSTY.size.table })
+      str(r, 3, L.unit, 'left', { size: RSTY.size.table })
       ws.getRow(r).height = 19; r++
       for (const row of blk.rows) {
         str(r, 1, row.label, 'left', { size: RSTY.size.table })
@@ -1382,25 +1501,24 @@ function writeReportLinkSheet(wb, ws, link, model, t, L) {
         str(r, 3, row.unit, 'left', { font: FNT, size: RSTY.size.table, color: 'FF333333' })
         ws.getRow(r).height = 18; r++
       }
-      gridBox(ws, hb, 1, r - 1, 3, hb)
+      bookBox(ws, hb, 1, r - 1, 3, hb)
       r++
-    }
+    })
   }
 
   // 详细计算结果（与屏幕「详细预算」同一份 segments）
   section(L.results)
   r = writeSegmentBlocks(ws, link.segments, t, r)
 
-  // 图件（4 倍分辨率 PNG，与图上「出图」按钮出的是同一张）
+  // 图件（与图上「出图」按钮出的是同一张）。图题在图**下方**——模板「图号格式」的口径，
+  // 也是中文出版惯例（表题在上、图题在下）。
   const figs = (link.figures || []).filter((f) => f && f.dataUrl)
   if (figs.length) {
     section(L.figures)
     figs.forEach((f, i) => {
       const cap = model.lang === 'en' ? `Figure ${link.no}-${i + 1}  ${f.title || ''}` : `${L.figure} ${link.no}-${i + 1}　${f.title || ''}`
-      // 图题跨整幅：它是一句话，占着参数列会把参数列按图题长短撑宽
-      ws.mergeCells(r, 1, r, MAXCOL)
-      str(r, 1, cap, 'left', { size: 10, bold: true }); ws.getRow(r).height = 18; r++
       r += placeImage(wb, ws, f.dataUrl, r, 460)
+      caption(cap)
       r++
     })
   }
@@ -1447,6 +1565,9 @@ async function buildReportWorkbook(model) {
   }
   // 列宽 / 行高自适应（放在最后：要按每张表实际写进去的内容量，而不是按写表时的预期）
   autofitBook(wb, { maxWidth: 56, maxHeight: 260 })
+  // logo 贴在自适应**之后**：它按版心右边界定位，而版心宽正是刚刚才定下来的
+  const logo = model.doc && model.doc.logo
+  if (logo && logo.dataUrl) wb.eachSheet((ws) => placeLogo(wb, ws, logo, Math.max(1, ws.actualColumnCount || ws.columnCount || 1)))
   return applyBookFont(wb).xlsx.writeBuffer()
 }
 

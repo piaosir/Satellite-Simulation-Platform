@@ -50,7 +50,6 @@ onMounted(load)
         <button @click="save">保存</button>
         <span v-if="saved" class="ok">已保存</span>
       </div>
-      <p class="hint">设置保存在本地 %APPDATA%/卫星仿真平台/data/settings.json，不上传。</p>
     </template>
   </div>
 </template>

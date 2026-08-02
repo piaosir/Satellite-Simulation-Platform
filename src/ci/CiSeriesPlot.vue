@@ -161,7 +161,7 @@ defineExpose({ svg: svgEl, exportPng })
       <span class="ci-fig-sp" />
       <button
         v-if="canExportPng" class="ci-fig-exp" :disabled="busy || !pts.length"
-        :title="`导出为 PNG 图片（${PNG_SCALE} 倍分辨率）`" @click="exportPng">出图</button>
+        :title="`导出为 PNG 图片（${PNG_SCALE} 倍分辨率）`" @click="exportPng">导出</button>
     </div>
     <svg ref="svgEl" :viewBox="`0 0 ${W} ${H}`" preserveAspectRatio="xMidYMid meet">
       <rect :x="M.l" :y="M.t" :width="PW" :height="PH" class="pl-bg" />

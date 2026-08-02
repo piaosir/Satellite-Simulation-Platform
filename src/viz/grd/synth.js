@@ -17,7 +17,7 @@
 // 以【相对星下点的 az/el】编码在各自 set 的 XS..XE 子窗口（与真实 HTS 多波束 GRD 同构）。
 // 场写入 icomp=3（Ludwig-3 co/cx）：分量1 = √P（实部）、其余 0 → P1=|c1|²=共极化，
 // 下游 RSS/P1 取值、复场 bicubic 插值（性能表）全部自然成立。
-import { antennaBasis, gridDir, invGridDir, project, dirToAzEl, azElGround } from './coverage.js'
+import { antennaBasis, gridDir, invGridDir, projectLimb, dirToAzEl, azElGround } from './coverage.js'
 import { parseGrd } from './parse.js'
 
 const D2R = Math.PI / 180
@@ -345,7 +345,7 @@ function nadirBasis(satLon, satLat, altKm) {
 //   EIRP 语义由天线级「增益偏置」叠加）。floorDb：相对峰值地板（默认 −50，避免 0 功率 NaN 点）。
 export function buildGaussGrd({ satName = '', satLon, satLat = 0, altKm, effPct = 55, beams, floorDb = -50 }) {
   const n = beams.length
-  if (!n) throw new Error('没有波束：请先在地图上放置波束轮廓')
+  if (!n) throw new Error('尚无波束：请先在地图上放置波束轮廓')
   // 分辨率随波束数自适应：波束少画得细，波束多控制总量（网格是每波束局部小窗口，远小于导入 HTS 的整幅网格）。
   // 蜂窝布满不设数量上限 → 靠降档托底：上千波束时每束波束在图上本就很小，粗网格无感知；
   // 总点数 n·res² 控制在 ~2M 内，文本/解析/绘制均不失控。
@@ -595,7 +595,7 @@ export function butlerCenters(pam) {
 // pam: {Nx,Ny,dxWl,dyWl,R,tri,elem,eff,fGHz}。
 export function buildPamGrd({ satName = '', satLon, satLat = 0, altKm, pam, beams, floorDb = -50 }) {
   const n = beams.length
-  if (!n) throw new Error('没有波束：请先在地图上放置波束')
+  if (!n) throw new Error('尚无波束：请先在地图上放置波束')
   const sol = solvePam(pam)
   if (!sol.ok) throw new Error('相控阵参数无效：请检查阵元数 / 间距 / 频率')
   const th3 = Math.max(sol.th3xDeg, sol.th3yDeg, 1e-3)
@@ -1128,7 +1128,7 @@ export function buildShapedGrd({ satName = '', satLon, satLat = 0, altKm, polysP
   else if (cornerDip > 2.5) warn = `个别边角凹陷至 ${covMin.toFixed(1)}（低于保证值 ${cornerDip.toFixed(1)} dB）—— 细部小于口径分辨率 θ3=${th.toFixed(2)}°，加大口径可贴合`
   const hotOut = hots.filter((h) => geo.signedDist(h.az, h.el) < 0).length
   if (hotOut) warn = (warn ? warn + '；' : '') + `${hotOut} 个峰点在覆盖区外 —— 目标场只作用于覆盖区内/边界站点，区外峰点基本无效（请移入 Polygon）`
-  if (hotGap > 1.5) warn = (warn ? warn + '；' : '') + `峰值点最大欠额 ${hotGap.toFixed(1)} dB（波束宽 θ3=${th.toFixed(2)}° 造不出更锐的局部峰——加大口径，或把峰点宽度放大到 ≥2·θ3）`
+  if (hotGap > 1.5) warn = (warn ? warn + '；' : '') + `峰值点最大欠额 ${hotGap.toFixed(1)} dB（波束宽 θ3=${th.toFixed(2)}° 无法形成更锐的局部峰——加大口径，或将峰点宽度放大至 ≥2·θ3）`
   return { text: head.join('\r\n') + '\r\n' + L.join('\r\n') + '\r\n', value: edgeVal, peakDbi, physPeakDbi, paDb, covMin, omegaDeg2, nBeams: N, rippleDb: rippleBest / 2, nx: NX, ny: NY, warn, peakAt, hotReport }
 }
 
@@ -1468,31 +1468,36 @@ export function buildPamShapedGrd({ satName = '', satLon, satLat = 0, altKm, pol
   const cornerDip = edgeVal - covMin
   if (dropPct > 2) warn = (warn ? warn + '；' : '') + `约 ${dropPct.toFixed(0)}% 覆盖细节小于 Butler 波束分辨率 θ3=${th.toFixed(2)}°（加大阵元数可改善）`
   else if (cornerDip > 2.5) warn = (warn ? warn + '；' : '') + `个别边角凹陷至 ${covMin.toFixed(1)}（低于保证值 ${cornerDip.toFixed(1)} dB）——细部小于阵面分辨率 θ3=${th.toFixed(2)}°`
-  if (sol.gratingInReal) warn = (warn ? warn + '；' : '') + `⚠ 单元间距 ≥1λ：栅瓣进实空间（±${sol.gratingLobeDeg.toFixed(1)}°），出图窗口未含栅瓣（减小间距至 <1λ 可消除）`
+  if (sol.gratingInReal) warn = (warn ? warn + '；' : '') + `⚠ 单元间距 ≥1λ：栅瓣进实空间（±${sol.gratingLobeDeg.toFixed(1)}°），成图窗口未含栅瓣（减小间距至 <1λ 可消除）`
   const hotOut = hots.filter((h) => geo.signedDist(h.az, h.el) < 0).length
   if (hotOut) warn = (warn ? warn + '；' : '') + `${hotOut} 个峰值点在覆盖区外——目标只作用于覆盖区内，区外峰点基本无效（请移入覆盖区）`
-  if (hotGap > 1.5) warn = (warn ? warn + '；' : '') + `峰值点最大欠额 ${hotGap.toFixed(1)} dB（阵面波束宽 θ3=${th.toFixed(2)}° 造不出更锐的局部峰——加大阵元数 / 减小间距，或把峰点宽度放大到 ≥2·θ3）`
+  if (hotGap > 1.5) warn = (warn ? warn + '；' : '') + `峰值点最大欠额 ${hotGap.toFixed(1)} dB（阵面波束宽 θ3=${th.toFixed(2)}° 无法形成更锐的局部峰——加大阵元数 / 减小间距，或将峰点宽度放大至 ≥2·θ3）`
   return { text: head.join('\r\n') + '\r\n' + Lout.join('\r\n') + '\r\n', value: edgeVal, peakDbi, physPeakDbi, paDb, covMin, omegaDeg2, nBeams: N, rippleDb: rippleBest / 2, nx: NX, ny: NY, warn, peakAt, scanDeg, excit, hotReport }
 }
 
 // ================= 草图几何（放置阶段的轮廓预览，与场合成同一几何链 → 所见即所得） =================
 // 波束 3dB 椭圆草图环：在方向空间取椭圆（半轴 θx/2、θy/2，含旋转），逐点 gridDir(6)→天底 basis 投影 WGS84。
-// 越地平的点被剔除 → 返回连续段数组 [[ [lon,lat],... ], ...]（全部越地平返回 []）。
+// 返回 [[ [lon,lat],... ]]：单段、首尾重合的闭环；整只波束都越地平返回 []。
+//
+// ★ 跨地平的波束（边缘覆盖，GEO 上离轴 ≳8.3°）：越地平的点【不剔除】，落到地平上的趋近点
+//   （projectLimb，与覆盖场 projectGrid 同一口径）。原先剔除 → 环被地平切成两段开口弧，
+//   于是「单段且首尾重合」的填充判据一律不成立，配色填充整块消失（轮廓还在，看着就是没上色）。
+//   钉死的不变式：只要有点命中地球，就返回【恰好一段闭环】——填充多边形永远拿得到。
 export function beamSketchRing({ satLon, satLat = 0, altKm, lon, lat, thX, thY, rot = 0, n = 72 }) {
   const ae = dirToAzEl(satLon, satLat || 0, altKm, lon, lat)
   const basis = nadirBasis(satLon, satLat, altKm)
   const rg = -(rot || 0) * D2R, cr = Math.cos(rg), sr = Math.sin(rg)
-  const segs = []
-  let cur = null
+  const ring = []
+  let seen = 0
   for (let i = 0; i <= n; i++) {
     const ps = (i % n) * 2 * Math.PI / n
     const xp = (thX / 2) * Math.cos(ps), yp = (thY / 2) * Math.sin(ps)
     const az = ae.az + (xp * cr - yp * sr), el = ae.el + (xp * sr + yp * cr)
-    const p = project(gridDir(6, az, el), basis)
-    if (p) { if (!cur) { cur = []; segs.push(cur) } cur.push([p.lon, p.lat]) }
-    else cur = null
+    const p = projectLimb(gridDir(6, az, el), basis)
+    if (p.vis >= 0) seen++
+    ring.push([p.lon, p.lat])
   }
-  return segs.filter((s) => s.length >= 2)
+  return seen ? [ring] : []                        // 全越地平（波束在地球背面）→ 不画
 }
 
 // Polygon 蜂窝布满：在方向空间（az/el 平面）以间距 spacing（deg）铺六角格，取落在多边形内的
@@ -1562,21 +1567,46 @@ export function snapTangentAzEl(click, neighbors, rNew, capture = 1.6, band = nu
 }
 
 // ================= 频率计划自动配色（SATSOFT 三色/四色填充同款用途） =================
-// 图着色：相邻（相切/交叠，中心距 < (ri+rj)·adjFactor）的波束不得同色，k 色内均衡使用。
+// 图着色：同色波束的中心距必须达到【复用距离】，k 色内均衡使用。
 // nodes=[{az,el,r}]（方向空间中心与等效半径）。返回 { colors:[0..k-1,...], conflicts }。
+//
+// ★ 判据是复用距离，不是「挨着就行」：正六边形晶格上，复用因子 N 的同色最小间距
+//     D = √N · d      （d = 相邻波束中心距 ≈ 两波束的半功率半宽之和 ri+rj）
+//   故门限取 (ri+rj)·√k·0.95 —— 卡在理想复用距离之下一点点：理想蜂窝图案仍然排得开，
+//   比它更近的同色一律禁止。三色 1.65d · 四色 1.90d · 七色 2.51d · 十二色 3.29d · 十六色 3.80d。
+//   ★ √k 只对 Loeschian 数（i²+ij+j² = 1·3·4·7·9·12·13·16·19…）成立；十色那样取不到的，
+//     门限按【实际能排到的最远间距】给（十色 = √7·d，与七色同一水平），见 bestSublattice。
+//   原先恒为 1.18d（只管相切的那一圈）：四色下同色可以只隔 √3·d（第二圈就撞上），七色、十六色
+//   更是形同虚设 —— 色数加上去了、复用距离没跟上，C/CCI 一点没变好，图上却像是排开了。
+//   （N 取 3/4/7/12/13/16/19… 这些 i²+ij+j² 才有严格的晶格图案，其余色数按同一条距离判据尽力排。）
+//
 // 取色策略（对齐 SATSOFT 蜂窝观感）：
 //   1) 扫描线次序（按行自北向南、行内自西向东）——蜂窝格上贪心即收敛为周期性规则复用图案，
 //      不用 DSATUR 动态次序（其结果虽合法但呈补丁状，不像频率规划图）；
 //   2) 可行色中取「全局用量最少」（并列取最小编号）——k 色都用起来（四色蜂窝呈菱形 1234 图案，
 //      而非退化成三色），自由摆放时各频段负载也均衡；
 //   3) 无可行色（该布局色数不足）→ 取冲突邻居最少的颜色，随后多轮局部修复压低冲突对数。
-export function colorFreqPlan(nodes, k, adjFactor = 1.18) {
+//
+// ★★ 但规则蜂窝上贪心【排不出来】：复用距离一收紧，可行解就只剩严格的子晶格图案（四色那张
+//   「每行只用两种色、隔行错开」的图，不是「行内 1234 轮着来」）。实测 12×12 蜂窝：四色贪心剩 49 对
+//   冲突，再加 min-conflicts 局部搜索 6 万步仍剩 12 对 —— 这类完美装填不是局部搜索找得到的。
+//   故规则布局走【子晶格着色】（见 latticeColoring）：识别晶格基向量 → 取模 = 经典复用图案，
+//   同色间距恰为 √N·d；识别不出（手摆的不规则布局）才回退贪心 + 局部修复，与从前一致。
+export const reuseDistFactor = (k) => reuseDist(k) * 0.95
+export function colorFreqPlan(nodes, k, adjFactor = reuseDistFactor(k)) {
   const n = nodes.length
   if (!n || !(k >= 2)) return { colors: [], conflicts: 0 }
   const adj = Array.from({ length: n }, () => [])
   for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
     const d = Math.hypot(nodes[i].az - nodes[j].az, nodes[i].el - nodes[j].el)
     if (d < (nodes[i].r + nodes[j].r) * adjFactor) { adj[i].push(j); adj[j].push(i) }
+  }
+  // 规则蜂窝先走子晶格：排得开就直接用（这才是频率规划图上那张周期图案）
+  const lat = latticeColoring(nodes, k)
+  if (lat) {
+    let c0 = 0
+    for (let i = 0; i < n; i++) for (const j of adj[i]) if (j > i && lat[j] === lat[i]) c0++
+    if (!c0) return { colors: lat, conflicts: 0 }
   }
   // 行分组：按 el 降序聚类（容差 = 半径中位数×0.5，吸掉经纬取整带来的行内抖动），行内按 az 升序
   const byEl = nodes.map((q, i) => i).sort((a, b) => nodes[b].el - nodes[a].el)
@@ -1615,4 +1645,124 @@ export function colorFreqPlan(nodes, k, adjFactor = 1.18) {
   let conflicts = 0
   for (let i = 0; i < n; i++) for (const j of adj[i]) if (j > i && colors[j] === colors[i]) conflicts++
   return { colors, conflicts }
+}
+
+// ---- 子晶格着色：规则蜂窝上的经典 N 色复用图案 ----
+//
+// 蜂窝频率规划的标准做法（Rappaport §3、SATSOFT 的蜂窝填充同源）：把波束中心当作三角晶格 Λ，
+// 同色波束构成一个【指数为 N 的子晶格】Λ′ —— 于是同色最小间距恰是 Λ′ 的最短向量。
+//   Λ′ 由 u = a·e1 + b·e2 及其 60° 旋转生成，|u| = √(a²+ab+b²)·d
+//   ⇒ N = a² + ab + b²，即经典的复用因子 1 · 3 · 4 · 7 · 9 · 12 · 13 · 16 · 19 …
+// 界面上那四档都在表里：3=(1,1) · 4=(2,0) · 7=(2,1) · 16=(4,0)。
+// 着色 = 晶格坐标 (m,n) 在商群 Z²/MZ² 里的编号（M 的两列即 Λ′ 的两个生成元，|det M| = N），
+// 用 Hermite 标准形约化，得到 0..N−1 的编号；各色用量天然均衡（差别只来自边界截断）。
+//
+// 识别不出晶格（手摆的不规则布局、波束大小不一）→ 返回 null，由调用方回退贪心。
+// 指数为 k 的子晶格中【最短向量最长】的那一个 —— 即 k 种颜色能拉开的最大同色间距。
+//
+// 六角晶格的范数式：|m·e1 + n·e2|² = (m² + mn + n²)·d²。指数 k 的子晶格用 Hermite 标准形穷举完：
+//   两个生成元 (h11, 0) 与 (h12, h22)，h11·h22 = k，0 ≤ h12 < h11 —— 每组即一个不同的子晶格。
+// 逐个求最短向量，取最大的那一个。
+//
+// ★ 只有 k = i²+ij+j²（Loeschian 数：1·3·4·7·9·12·13·16·19·21…）才取得到理论上界 √k·d ——
+//   那时最优子晶格恰是六角对称的，也就是教科书上的经典复用图案。k = 5/6/8/10/11… 取不到：
+//   例如【十色最远只能排到 √7·d，与七色同一水平】——多付三段频率，同色间距一点没多。
+//   界面据此如实标注，不假装十色比七色排得开。
+const _subCache = new Map()
+function bestSublattice(k) {
+  if (_subCache.has(k)) return _subCache.get(k)
+  let best = null
+  const norm2 = (x, y) => x * x + x * y + y * y
+  for (let h22 = 1; h22 <= k; h22++) {
+    if (k % h22) continue
+    const h11 = k / h22
+    for (let h12 = 0; h12 < h11; h12++) {
+      // |v|² ≥ ¾·max(x², y²)，且 λ1² ≤ k（Hermite 界）⇒ 只需在 |x|,|y| ≤ 2√k/√3 内找最短向量。
+      // ★ a 的范围要【按 b 现算】：x = a·h11 + b·h12，b·h12 可以很大，用一个固定的 ±A 会把
+      //   短向量漏在范围外，于是报出比理论上界 √k 还大的「最短向量」（17/18/19 色曾这么错）。
+      const X = 2 * Math.sqrt(k) / Math.sqrt(3)
+      const B = Math.floor(X / h22)
+      let m2 = Infinity
+      for (let b = -B; b <= B; b++) {
+        const a0 = Math.ceil((-X - b * h12) / h11), a1 = Math.floor((X - b * h12) / h11)
+        for (let a = a0; a <= a1; a++) {
+          if (!a && !b) continue
+          const v = norm2(a * h11 + b * h12, b * h22)
+          if (v < m2) m2 = v
+        }
+      }
+      if (!best || m2 > best.m2) best = { h11, h12, h22, m2 }
+    }
+  }
+  const out = best ? { ...best, dist: Math.sqrt(best.m2) } : null
+  _subCache.set(k, out)
+  return out
+}
+/** k 色理论上能达到的同色最小间距（以相邻波束中心距 d 为单位）：Loeschian 数 = √k，其余更小 */
+export const reuseDist = (k) => (bestSublattice(Math.max(2, Math.round(k)))?.dist || 1)
+function latticeColoring(nodes, k) {
+  const n = nodes.length
+  const sub = bestSublattice(k)
+  if (!sub || n < 3) return null
+  // 最近邻间距 d：取各点最近邻距离的中位数（比全局最小稳，个别贴太近的波束不会把尺子带偏）
+  const nn = []
+  for (let i = 0; i < n; i++) {
+    let m = Infinity
+    for (let j = 0; j < n; j++) if (j !== i) m = Math.min(m, Math.hypot(nodes[i].az - nodes[j].az, nodes[i].el - nodes[j].el))
+    if (Number.isFinite(m)) nn.push(m)
+  }
+  if (!nn.length) return null
+  nn.sort((x, y) => x - y)
+  const d = nn[nn.length >> 1]
+  if (!(d > 0)) return null
+  // 基向量：在「一个 d 那么长」的差向量里按方向聚类，取支持度最高的两个方向（夹角须在 60° 上下）
+  const bins = new Map()                        // 方向（0~180° 分 36 档）→ { sx, sy, cnt }
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      let vx = nodes[j].az - nodes[i].az, vy = nodes[j].el - nodes[i].el
+      const L = Math.hypot(vx, vy)
+      if (L < d * 0.85 || L > d * 1.15) continue
+      if (vx < 0 || (vx === 0 && vy < 0)) { vx = -vx; vy = -vy }     // 方向取半平面（v 与 −v 是同一条边）
+      const key = Math.round((Math.atan2(vy, vx) * 180 / Math.PI + 180) % 180 / 5)
+      const e = bins.get(key) || { sx: 0, sy: 0, cnt: 0 }
+      e.sx += vx; e.sy += vy; e.cnt++
+      bins.set(key, e)
+    }
+  }
+  const dirs = [...bins.values()].filter((e) => e.cnt >= 2)
+    .map((e) => ({ x: e.sx / e.cnt, y: e.sy / e.cnt, cnt: e.cnt }))
+    .sort((a, b) => b.cnt - a.cnt)
+  if (dirs.length < 2) return null
+  const e1 = dirs[0]
+  let e2 = null
+  for (let i = 1; i < dirs.length; i++) {
+    const cs = Math.abs((e1.x * dirs[i].x + e1.y * dirs[i].y) / (Math.hypot(e1.x, e1.y) * Math.hypot(dirs[i].x, dirs[i].y)))
+    if (cs > 0.3 && cs < 0.8) { e2 = dirs[i]; break }   // 夹角 37°~72°：三角晶格是 60°
+  }
+  if (!e2) return null
+  // 基必须成 60°（不是 120°）：a²+ab+b² 那条式子按 60° 写的，钝角基下 |u| 会算错一档
+  if (e1.x * e2.x + e1.y * e2.y < 0) { e2 = { x: -e2.x, y: -e2.y } }
+  const det = e1.x * e2.y - e1.y * e2.x
+  if (Math.abs(det) < 1e-9) return null
+  // 晶格坐标：p = m·e1 + n·e2（原点取第一个点）。整数化残差超过 0.22d 即认为不是规则晶格
+  const p0 = nodes[0]
+  const mn = new Array(n)
+  for (let i = 0; i < n; i++) {
+    const dx = nodes[i].az - p0.az, dy = nodes[i].el - p0.el
+    const m = (dx * e2.y - dy * e2.x) / det
+    const nn2 = (dy * e1.x - dx * e1.y) / det
+    const mi = Math.round(m), ni = Math.round(nn2)
+    const rx = (m - mi) * e1.x + (nn2 - ni) * e2.x, ry = (m - mi) * e1.y + (nn2 - ni) * e2.y
+    if (Math.hypot(rx, ry) > d * 0.22) return null
+    mn[i] = [mi, ni]
+  }
+  // 子晶格 Λ′ 的两个生成元 (h11,0) 与 (h12,h22)（bestSublattice 已挑出最短向量最长的那一组）：
+  // 商群 Z²/Λ′ 的代表元即 { (x,y) | 0≤x<h11, 0≤y<h22 }，共 h11·h22 = k 个 —— 就是 k 种颜色
+  const { h11, h12, h22 } = sub
+  const mod = (v, q) => ((v % q) + q) % q
+  return mn.map(([m, nq]) => {
+    const y = mod(nq, h22)
+    const x = mod(m - h12 * ((nq - y) / h22), h11)
+    return x + h11 * y                          // 0 .. h11·h22−1 = 0..N−1
+  })
 }

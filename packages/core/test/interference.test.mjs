@@ -465,7 +465,11 @@ const X = require('../utils/interference/ciCci.js');
 
 // 缺省着色按原始 set 下标轮转
 {
-  ok('复用预设 = 3/4/7 色', JSON.stringify(X.REUSE_PRESETS) === JSON.stringify([3, 4, 7]));
+  // 与波束合成那边的颜色数一一对应。七档 = 有效前沿（单极化 3/7/9 · 双极化 4/8/12/16），
+  // 「同一间距上只留最省频率的那一档」这条不变式在 freqReuse.test.mjs 里按可达间距逐档验。
+  ok('复用预设 = 3/4/7/8/9/12/16 色', JSON.stringify(X.REUSE_PRESETS) === JSON.stringify([3, 4, 7, 8, 9, 12, 16]));
+  const c16 = X.defaultColoring(Array.from({ length: 32 }, (_, i) => i), 16);
+  ok('16 色轮转：32 个波束每色各 2 个', new Set(Object.values(c16)).size === 16 && c16[0] === 0 && c16[16] === 0 && c16[15] === 15);
   const c = X.defaultColoring([0, 1, 2, 3, 4, 5, 6], 3);
   ok('3 色轮转着色', c[0] === 0 && c[3] === 0 && c[6] === 0 && c[1] === 1 && c[2] === 2);
   const c7 = X.defaultColoring([0, 1, 2, 3, 4, 5, 6], 7);

@@ -10,28 +10,31 @@
    页眉页脚与页码由 Chromium 的 headerTemplate/footerTemplate 画（CSS 的 @page 边距框 Chromium
    不支持 counter(page)），见 electron/services/reportPdf.js。
 
-   字体：全篇 Times New Roman，中文回落宋体（--font-serif 即软件通用衬线栈，见 styles/global.css）。
-   颜色：报告落在白纸上，故打印页恒定浅色（report.html 把 data-theme 钉在 light）。 */
+   字体：西文与数字 Times New Roman，中文正文宋体、中文标题与题注黑体（模板 rFonts 口径）。
+   颜色：报告落在白纸上，故打印页恒定浅色（report.html 把 data-theme 钉在 light）。
+   表格：一律三线表——顶线/底线 1.5pt、栏目线 0.75pt，无竖线、无底纹（模板「三线表」样式）。 */
 
-/* 页面与字号全部取自模板（同一份数在 electron/services/reportStyle.js，改一处务必同步另一处）：
-   pgMar top/bottom 1440 tw = 2.54 cm、left/right 1797 tw = 3.17 cm；正文小四(12pt)、1.5 倍行距。 */
+/* 页面与字号全部取自《技术文档标准模板.docx》（同一份数在 electron/services/reportStyle.js，
+   改一处务必同步另一处）：pgMar top 1276 tw = 2.25 cm、bottom 1701 tw = 3 cm、
+   left/right 1418 tw = 2.5 cm；正文小四(12pt)、1.5 倍行距。 */
 @page {
   size: A4 portrait;
-  margin: 2.54cm 3.17cm;
+  margin: 2.25cm 2.5cm 3cm;
 }
 @page land {
   size: A4 landscape;
-  margin: 2.2cm 2.4cm;   /* 横向页放的是宽表与详情两栏，左右收一点换版心 */
+  margin: 2.25cm 2.2cm 2.5cm;   /* 横向页放的是宽表与详情两栏，左右收一点换版心 */
 }
 
 :root {
-  --rp-fs: 12pt;                    /* 模板 CSPC-正文格式：小四 */
-  --rp-fs-cap: 10.5pt;              /* 模板 caption / 表格文字 */
+  --rp-fs: 12pt;                    /* 模板 正文：小四 */
+  --rp-fs-cap: 10.5pt;              /* 模板 表号/图号格式、表格格式 */
   --rp-rule: #1a1a1a;
   --rp-rule-thin: #8a8a85;
-  --rp-grid: #000000;               /* 模板正文表：全边框 0.5pt */
-  --rp-head-fill: #BFBFBF;          /* 模板正文表：表头底纹 */
-  /* 西文与数字 Times New Roman；中文标题黑体、中文正文宋体（模板 rFonts 口径，也是用户的要求） */
+  --rp-grid: #000000;
+  --rp-rule-top: 1.5pt;             /* 模板三线表：顶线 / 底线 */
+  --rp-rule-head: .75pt;            /* 模板三线表：栏目线 */
+  /* 西文与数字 Times New Roman；中文标题与题注黑体、中文正文宋体（模板 rFonts 口径，也是用户的要求） */
   --rp-font-head: "Times New Roman", SimHei, "黑体", serif;
   --rp-font-body: "Times New Roman", SimSun, "宋体", serif;
 }
@@ -52,25 +55,25 @@ body {
 .rp-sheet:last-child { break-after: auto; }
 .rp-land { page: land; }
 
-/* 标题层级照模板：Title 16pt 居中黑体；标题 1/2 = 14pt 黑体加粗；标题 3 = 12pt。
-   层级靠「章名 → 编号节名 → 分块名」的编号与位置区分（模板里 h1/h2 同为 14pt 亦然）。
+/* 标题层级照模板：文档标题 16pt 居中黑体；标题 1 = 14pt 黑体；标题 2/3 = 12pt 黑体。
+   模板的标题不加粗——黑体本身就是重字面，再加粗会被浏览器合成成假粗体。
    与 Word 端一一对应：rp-title↔RptTitle、rp-h1↔RptH1、rp-h2↔RptH2、rp-h3↔RptH3。 */
 .rp-title {
-  font-family: var(--rp-font-head); font-size: 16pt; font-weight: 700; text-align: center;
+  font-family: var(--rp-font-head); font-size: 16pt; font-weight: 400; text-align: center;
   margin: 0 0 12pt; letter-spacing: 2px;
 }
 .rp-h1 {
-  font-family: var(--rp-font-head); font-size: 14pt; font-weight: 700;
+  font-family: var(--rp-font-head); font-size: 14pt; font-weight: 400;
   margin: 0 0 6pt; padding-bottom: 4pt; border-bottom: 1.2pt solid var(--rp-rule);
   break-after: avoid;
 }
 .rp-h2 {
-  font-family: var(--rp-font-head); font-size: 14pt; font-weight: 700;
+  font-family: var(--rp-font-head); font-size: 12pt; font-weight: 400;
   margin: 12pt 0 6pt; break-after: avoid;
 }
 .rp-h2:first-child { margin-top: 0; }
 .rp-h3 {
-  font-family: var(--rp-font-head); font-size: 12pt; font-weight: 700;
+  font-family: var(--rp-font-head); font-size: 12pt; font-weight: 400;
   margin: 9pt 0 4pt; break-after: avoid;
 }
 .rp-p { margin: 0 0 6pt; text-indent: 2em; text-align: justify; }   /* 模板正文：首行缩进 2 字符 */
@@ -78,53 +81,32 @@ body {
 .rp-small { font-size: var(--rp-fs-cap); }
 
 /* ——— 封面（PDF 版）———
-   Word 那份是模板浮动表的严格复刻；PDF 这份按 PDF 自己的排版逻辑重做：常规流式一栏、无绝对定位，
-   字号/字体/线宽仍取模板那一套（题 24pt 黑体、标签 15pt、值 12pt、线 0.5pt / 外框 1.5pt），
-   于是它与正文是同一份文档的口吻，而不是把 Word 的浮动版式硬搬到浏览器里。
+   结构照新模板第一节：（logo）→ 密级 / 文档编号 → 留白 → 文档标题 / 副标题 → 留白 →
+   编制单位 / 成文日期。一栏流式，无绝对定位、无外框（模板封面本就没有框）。
+   ★ 排版按 PDF 自己的逻辑：模板的封面标题是 16pt（Word 那份严格照此），整页 PDF 封面上
+     16pt 撑不住，故标题放到 24pt——这是用户 2026-07-26 定的口径「PDF 封面不用严格照模板」。
    ★ 封面上的单位 / 公司名 / 签署人全部来自用户填写，软件不预设任何单位名。 */
 .rp-cover {
-  height: calc(29.7cm - 2 * 2.54cm - 2px);
-  border: 1.5pt solid var(--rp-grid);
-  padding: 10mm 14mm 12mm;
+  height: calc(29.7cm - 2.25cm - 3cm - 2px);
   display: flex; flex-direction: column;
   box-sizing: border-box;
 }
-/* 顶栏：编号在左、密级在右，一条细线收口 */
-.rp-cv-top {
-  flex: 0 0 auto; display: flex; justify-content: space-between; align-items: baseline;
-  font-size: 12pt; color: #333; padding-bottom: 5pt; border-bottom: .5pt solid var(--rp-grid);
-}
-.rp-cv-cls { font-weight: 700; letter-spacing: 3px; }
-/* 中区：报告名 + 短横 + 体制 + 项目，整体在上三分之一处（不居中——下面还有信息栏要占位） */
-.rp-cv-mid { flex: 0 0 auto; padding: 34mm 0 0; text-align: center; }
+/* logo 不在页面里：它是页眉，由 printToPDF 的 headerTemplate 画在每一页右上角
+   （见 electron/services/reportPdf.js）。 */
+/* 顶部两行：密级 / 文档编号（模板是正文样式、左对齐）。
+   栏名「密　　级」自带两个全角空格与「文档编号」对齐，故不许再加 letter-spacing——加了就错位。 */
+.rp-cv-meta { flex: 0 0 auto; font-size: 12pt; color: #1a1a1a; line-height: 1.9; }
+.rp-cv-meta b { font-weight: 400; }
+/* 中区：报告名，整篇唯一的一行主标题，落在上三分之一处（没有副标题——用户 2026-08-02 定） */
+.rp-cv-mid { flex: 0 0 auto; padding: 46mm 0 0; text-align: center; }
 .rp-cv-title {
-  font-family: var(--rp-font-head); font-size: 24pt; font-weight: 700;
-  line-height: 1.45; letter-spacing: 1px; margin: 0;
+  font-family: var(--rp-font-head); font-size: 24pt; font-weight: 400;
+  line-height: 1.6; letter-spacing: 1px; margin: 0;
 }
-.rp-cv-rule { width: 42mm; height: 1.5pt; background: var(--rp-grid); margin: 9mm auto 7mm; }
-.rp-cv-scheme { font-size: 14pt; color: #1a1a1a; }
-.rp-cv-proj { margin-top: 4mm; font-size: 12pt; color: #333; }
-/* 信息栏：两列「标签 + 压线值」，居中一块（模板的下划线语汇） */
-.rp-cv-info {
-  flex: 0 0 auto; width: 148mm; margin: 30mm auto 0; border-collapse: collapse;
-}
-.rp-cv-info th {
-  width: 15%; font-family: var(--rp-font-body); font-size: 15pt; font-weight: 700;
-  text-align: center; vertical-align: bottom; white-space: nowrap;
-  padding: 7pt 6pt 3pt 0;
-}
-.rp-cv-info td {
-  width: 35%; font-size: 12pt; text-align: center; vertical-align: bottom;
-  padding: 7pt 8pt 3pt; border-bottom: .5pt solid var(--rp-grid);
-}
-/* 右列没有对应项的那两格：不画线（画了像漏填） */
-.rp-cv-info td.blank { border-bottom: none; }
-/* 底部：公司名压轴，日期跟在下面 */
+/* 底部：编制单位压轴，成文日期跟在下面（模板末两行） */
 .rp-cv-bot { flex: 1 1 auto; display: flex; flex-direction: column; justify-content: flex-end; text-align: center; }
-.rp-cv-org {
-  font-family: var(--rp-font-body); font-size: 20pt; font-weight: 700; letter-spacing: 3px;
-}
-.rp-cv-date { margin-top: 6mm; font-size: 12pt; color: #333; }
+.rp-cv-org { font-family: var(--rp-font-head); font-size: 16pt; letter-spacing: 3px; line-height: 2; }
+.rp-cv-date { margin-top: 4mm; font-family: var(--rp-font-head); font-size: 16pt; }
 
 /* ——— 目录（模板 toc 1 = 12pt 加粗，toc 2/3 = 10pt 缩进 2/4 字符）——— */
 .rp-toc { margin-top: 4pt; }
@@ -134,50 +116,62 @@ body {
 .rp-toc-t { flex: 0 0 auto; }
 .rp-toc-d { flex: 1 1 auto; border-bottom: .5pt dotted #999; transform: translateY(-2pt); }
 
-/* ——— 文档类表格：模板正文表（全框线 0.5pt + 灰底表头，10.5pt）——— */
+/* ——— 文档类表格：模板「三线表」（顶/底 1.5pt、栏目线 0.75pt，无竖线无底纹，10.5pt）——— */
 .rp-tb {
   width: 100%; border-collapse: collapse; font-size: var(--rp-fs-cap);
   margin: 3pt 0 8pt; line-height: 1.35;
+  border-top: var(--rp-rule-top) solid var(--rp-grid);
+  border-bottom: var(--rp-rule-top) solid var(--rp-grid);
 }
 .rp-tb th, .rp-tb td {
-  padding: 2.4pt 5pt; text-align: right; vertical-align: middle;
-  border: .5pt solid var(--rp-grid);
+  padding: 2.4pt 5pt; text-align: right; vertical-align: middle; border: none;
 }
+/* 表头：三线表不加粗、不加底纹，只把中文换成黑体——模板自己的字体语言，
+   又刚好补上「表头 vs 数据行」这一档视觉分隔。 */
 .rp-tb thead th {
-  font-family: var(--rp-font-head); font-weight: 700; text-align: center;
-  background: var(--rp-head-fill);
+  font-family: var(--rp-font-head); font-weight: 400; text-align: center;
+  border-bottom: var(--rp-rule-head) solid var(--rp-grid);
 }
+/* 无 thead 的表（键值型）：首行下面同样落一条栏目线 */
+.rp-tb tbody tr.rp-headrow td { border-bottom: var(--rp-rule-head) solid var(--rp-grid); }
 .rp-tb td.num, .rp-tb th.num { font-variant-numeric: tabular-nums; }
 .rp-tb td.unit, .rp-tb th.unit { text-align: left; color: #333; width: 12%; }
 .rp-tb .lbl { text-align: left; }
 /* 标识列（序号 / 发信站 / 收信站）不许逐字折行：站名被压成竖排的「北\n京」是最刺眼的排版事故 */
 .rp-tb .id { text-align: left; white-space: nowrap; }
+/* ★ 表头一律居中。上面那四个列对齐类（.id/.num/.unit/.lbl）管的是数据行，但它们的特异度
+   (0,2,0) 压过 `.rp-tb thead th` 的 (0,1,2)，不显式盖一次的话表头会跟着数据行左/右对齐。 */
+.rp-tb thead th.id, .rp-tb thead th.num, .rp-tb thead th.unit, .rp-tb thead th.lbl { text-align: center; }
 .rp-tb tr { break-inside: avoid; }
 .rp-tb thead { display: table-header-group; }   /* 跨页续表自动重复表头 */
-/* 引用建议书表里的「类别」行：浅灰通栏、加粗，把三组标准分开 */
+/* 引用建议书表里的「类别」行：三线表不许底纹，改用黑体通栏把三组标准分开 */
 .rp-tb tr.rp-grp td {
-  background: #F2F2F2; font-family: var(--rp-font-head); font-weight: 700; text-align: left;
+  font-family: var(--rp-font-head); font-weight: 400; text-align: left;
 }
 .rp-refs td { vertical-align: top; }
 .rp-refs td:first-child { white-space: nowrap; }
 
-/* 键值表：模板的全框线表，标签列灰底 */
-.rp-kv { width: 100%; border-collapse: collapse; font-size: var(--rp-fs-cap); margin: 2pt 0 8pt; }
-.rp-kv th, .rp-kv td { border: .5pt solid var(--rp-grid); padding: 2.8pt 6pt; vertical-align: middle; }
+/* 键值表：同为三线表，标签列黑体 */
+.rp-kv {
+  width: 100%; border-collapse: collapse; font-size: var(--rp-fs-cap); margin: 2pt 0 8pt;
+  border-top: var(--rp-rule-top) solid var(--rp-grid);
+  border-bottom: var(--rp-rule-top) solid var(--rp-grid);
+}
+.rp-kv th, .rp-kv td { border: none; padding: 2.8pt 6pt; vertical-align: middle; }
 .rp-kv th {
-  width: 26%; text-align: left; font-family: var(--rp-font-head); font-weight: 700;
-  background: var(--rp-head-fill); white-space: nowrap;
+  width: 26%; text-align: left; font-family: var(--rp-font-head); font-weight: 400;
+  white-space: nowrap;
 }
 .rp-kv td { text-align: left; }
-/* 题注：模板 caption —— 加粗居中黑体，10.5pt，紧跟其表/图 */
+/* 题注：模板 表号格式 / 图号格式 —— 黑体 10.5pt 居中；表题在表上方、图题在图下方 */
 .rp-caption {
-  font-family: var(--rp-font-head); font-size: var(--rp-fs-cap); font-weight: 700;
+  font-family: var(--rp-font-head); font-size: var(--rp-fs-cap); font-weight: 400;
   text-align: center; margin: 8pt 0 2pt; break-after: avoid;
 }
 .rp-note { font-size: var(--rp-fs-cap); color: #444; margin-top: 3pt; line-height: 1.45; }
-/* 方法学段落的小标题：比标题 3 轻一档（它是段名不是节名），与 Word 的 RptH4 对应 */
+/* 方法学段落的小标题：模板 标题 4（黑体 12pt），与 Word 的 RptH4 对应 */
 .rp-mb-t {
-  font-family: var(--rp-font-head); font-size: 12pt; font-weight: 700;
+  font-family: var(--rp-font-head); font-size: 12pt; font-weight: 400;
   margin: 8pt 0 2pt; break-after: avoid;
 }
 
@@ -187,13 +181,13 @@ body {
    基准字号按纸张调小一档、段不许被分页拦腰截断、图按栏宽满铺。 */
 .rp-detail { break-before: page; }
 .rp-detail:first-child { break-before: auto; }
-/* 详情章名：与「标题 2」同一档（14pt 黑体加粗），右端挂本条链路的一行摘要 */
+/* 详情章名：与「标题 1」同一档（14pt 黑体），右端挂本条链路的一行摘要 */
 .rp-detail-hd {
   display: flex; align-items: baseline; gap: 8pt; margin-bottom: 6pt; padding-bottom: 3pt;
   border-bottom: 1.2pt solid var(--rp-rule); font-family: var(--rp-font-head);
 }
-.rp-detail-no { font-size: 14pt; font-weight: 700; }
-.rp-detail-name { font-size: 14pt; font-weight: 700; }
+.rp-detail-no { font-size: 14pt; font-weight: 400; }
+.rp-detail-name { font-size: 14pt; font-weight: 400; margin: 0; }
 .rp-detail-sub { margin-left: auto; font-family: var(--rp-font-body); font-size: 10.5pt; color: #333; }
 .rp-doc { --lb-fs: 8.6pt; }
 /* ★ 两栏不用 flex，用表格盒。
@@ -230,21 +224,22 @@ body {
   display: block; margin: 0 auto; width: auto; height: auto;
   max-width: 100%; max-height: 82mm; border: .5pt solid #d8d8d3;
 }
-/* 图题注：与表题注同一档（模板 caption），图在上、题注在下（中文出版惯例） */
+/* 图题注：模板 图号格式 —— 黑体 10.5pt 居中，图在上、题注在下 */
 .rp-fig figcaption {
   margin-top: 3pt; font-family: var(--rp-font-head); font-size: var(--rp-fs-cap);
-  font-weight: 700; text-align: center; color: #1a1a1a;
+  font-weight: 400; text-align: center; color: #1a1a1a;
 }
 .rp-fail { font-size: 12pt; color: #a32d2d; margin-top: 10pt; }
 
 /* 详情章开头的输入参数：与 Excel 详情表同一个形态（每块竖排三列：参数 / 数值 / 单位），
-   块按栏流铺开——横向页三栏，五个块一屏放得下，不至于把「先输入再结果」拉成好几页。 */
-.rp-inputs { columns: 3; column-gap: 8mm; column-fill: auto; }
+   块按栏流铺开。★ 两栏而不是三栏：横向页 253mm 分三栏后每栏只剩 78mm，参数名要折两行、
+   字号被迫压到 9pt——与级联表一样难读。两栏每栏 120mm，字号回到 10pt，参数名一行放得下。 */
+.rp-inputs { columns: 2; column-gap: 10mm; column-fill: auto; }
 .rp-inputs > * { break-inside: avoid; }
 .rp-inputs .rp-caption { text-align: left; margin-top: 0; }
-.rp-inputs .rp-tb { font-size: 9pt; }
+.rp-inputs .rp-tb { font-size: 10pt; }
 /* 窄表里「单 位」表头不许折成两行 */
 .rp-inputs .rp-tb th { white-space: nowrap; }
-.rp-inputs .rp-tb td.unit, .rp-inputs .rp-tb th.unit { width: 16%; }
+.rp-inputs .rp-tb td.unit, .rp-inputs .rp-tb th.unit { width: 18%; }
 /* 结果小标题：与输入之间断开一页，结果页就是屏幕上那一版（表 ‖ 图 + 参考段带） */
 .rp-h3.rp-results { break-before: page; }

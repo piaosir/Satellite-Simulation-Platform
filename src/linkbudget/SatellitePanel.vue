@@ -44,7 +44,8 @@ function onPickSat() {
 }
 
 // 选完工作频段，上/下行频率跟随预设变（与小程序一致；仍可手改）。
-// ★ 已引用频率计划时不动：那五项由转发器托管，频段预设再来覆盖就把引用值冲掉了。
+// ★ 已引用频率计划时不动：频段本身也归转发器托管（由其实际频率判定），
+//    频段预设再来覆盖就把引用值冲掉了。
 watch(() => props.form.frequencyBand, (band) => {
   if (fpActive.value) return
   const f = BAND_FREQ[band]; if (!f) return
@@ -71,7 +72,13 @@ async function loadFpPlan() {
   const id = props.sel.fpId
   if (!id) { fpPlan.value = null; return }
   fpLoading.value = true
-  try { fpPlan.value = await getPlan(id) } finally { fpLoading.value = false }
+  try {
+    fpPlan.value = await getPlan(id)
+    // 解引用后按当前计划重取一次托管字段。存量条目的转发器早就选定，不会再触发 @change——
+    // 不在这里重取，则计划在别处被改过、或托管字段清单扩充过（「工作频段」就是后加的），
+    // 这些条目会一直停在旧值上。值没变时赋值不触发响应式，对已同步的条目是空操作。
+    applyFp()
+  } finally { fpLoading.value = false }
 }
 async function onPickPlan() {
   props.sel.fpNo = ''
@@ -141,18 +148,15 @@ watch(() => props.sel.fpId, loadFpPlan)
                 @click.prevent="onRemoveAnt()">
           <Icon name="eye-off" :size="12" /><span>删除方向图</span>
         </button>
-        <span v-if="staleFolder" class="sp-tip">本机卫星树中没有该 GRD 卫星，匹配已保留：在「星座3D」页导入后自动恢复回填</span>
-        <span v-else-if="!satTree.length" class="sp-tip">卫星树为空：点「导入方向图」直接导入，或在「星座3D」页导入 GRD 天线</span>
-        <span v-else-if="curSat" class="sp-tip" title="匹配后按各站经纬度自动回填：收信站「卫星EIRP」、发信站「卫星G/T」；一面天线多波束时取 Parameter 最大者">
-          自动回填 → 收信站 EIRP · 发信站 G/T（多波束取最大）
-        </span>
+        <span v-if="staleFolder" class="sp-tip">本机卫星树中没有该 GRD 卫星，匹配已保留。</span>
+        <span v-else-if="!satTree.length" class="sp-tip">卫星树为空。</span>
       </div>
     </div>
 
     <!-- 频率计划引用：选「计划 → 转发器」，上下行频率/极化/转发器带宽由该转发器托管 -->
     <div class="sp-grd sp-fp">
       <div class="sp-gmain">
-        <label class="sp-gf" title="转发器频率计划（挂在卫星下，与 GRD 天线平级）。选定后本卫星的上下行频率/极化/转发器带宽由所选转发器托管。">
+        <label class="sp-gf" title="转发器频率计划（挂在卫星下，与 GRD 天线平级）。选定后本卫星的工作频段/上下行频率/极化/转发器带宽由所选转发器托管。">
           <span class="sp-gl">频率计划</span>
           <select v-model="sel.fpId" class="sp-gi" :class="{ unset: !sel.fpId }" @change="onPickPlan">
             <option value="">— 未引用 —</option>
@@ -164,19 +168,19 @@ watch(() => props.sel.fpId, loadFpPlan)
             </optgroup>
           </select>
         </label>
-        <label v-if="sel.fpId" class="sp-gf" title="选定转发器后，其上下行频率/极化/带宽即刻填入下方卫星参数并锁定">
+        <label v-if="sel.fpId" class="sp-gf" title="选定转发器后，其频段/上下行频率/极化/带宽即刻填入下方卫星参数并锁定">
           <span class="sp-gl">转发器</span>
           <select v-model="sel.fpNo" class="sp-gi wide" :class="{ unset: !sel.fpNo }" @change="applyFp">
             <option value="">— 未选 —</option>
             <option v-for="o in fpOptions" :key="o.no" :value="o.no">{{ o.label }}</option>
           </select>
         </label>
-        <button v-if="sel.fpId" class="sp-gbtn" title="解除引用，五项频率参数交回手工填写" @click.prevent="clearFp">
+        <button v-if="sel.fpId" class="sp-gbtn" title="解除引用，六项频率参数交回手工填写" @click.prevent="clearFp">
           <Icon name="lock-open" :size="12" /><span>解除引用</span>
         </button>
         <span v-if="fpLoading" class="sp-tip">载入中…</span>
-        <span v-else-if="fpActive" class="sp-tip">已锁定 → 上/下行频率 · 上/下行极化 · 转发器带宽（改动请回频率计划工作台）</span>
-        <span v-else-if="!fpIndex.length" class="sp-tip">尚无频率计划：在「计算 → 转发器频率计划」里新建，或从标准频率计划图截图导入</span>
+        <span v-else-if="fpActive" class="sp-tip">已锁定 → 工作频段 · 上/下行频率 · 上/下行极化 · 转发器带宽</span>
+        <span v-else-if="!fpIndex.length" class="sp-tip">尚无频率计划。</span>
       </div>
     </div>
 

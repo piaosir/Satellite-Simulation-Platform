@@ -35,11 +35,6 @@ const view = ref('down')                                // 'down' | 'up'
         :curve="(down && down.patternCurve) || []" :marks="(down && down.patternMarks) || []"
         :sources="(down && down.sources) || []"
         :peak-gain-dbi="down && down.peakGainDbi" :hovered-id="hoveredId" @hover="emit('hover', $event)" />
-      <p class="ci-note sm">
-        横轴为离轴角（对数），纵轴为增益，曲线为<strong>本站接收天线</strong>的 AP8/S.580 包络，
-        右侧副轴直读<strong>鉴别度</strong>。干扰星标于曲线上并引垂线至横轴；其所处区段
-        （主瓣、φ₁ 拐点、29−25lgφ 斜坡或远场底板）决定鉴别度取值。
-      </p>
     </template>
 
     <template v-else>
@@ -49,15 +44,7 @@ const view = ref('down')                                // 'down' | 'up'
         :mask-band="(up && up.maskBand) || ''" :mask-authoritative="!!(up && up.maskAuthoritative)"
         :mask-phi0-deg="up && up.maskPhi0Deg"
         :peer-curves="(up && up.peerCurves) || []" :sources="(up && up.sources) || []"
-        :source-mode="(up && up.sourceMode) || 'peer'"
         :hovered-id="hoveredId" @hover="emit('hover', $event)" />
-      <p class="ci-note sm">
-        施扰源为<strong>邻网发射站</strong>，按其自身天线与自身视轴夹角计算：
-        横轴为<strong>干扰站</strong>离轴角，纵轴为其 EIRP 谱密度。水平线为本站上行密度（即 C），
-        其到干扰点的垂直距离<strong>即</strong>该源的 C/I，右侧副轴已标定。
-        红虚线为 S.524 监管上界，实线为对等站按实际天线算得的值，
-        两者之差即「硬上界」与「工程值」的差量（约二十余 dB）。
-      </p>
     </template>
   </div>
 </template>

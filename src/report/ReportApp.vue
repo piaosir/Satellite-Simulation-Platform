@@ -15,9 +15,6 @@ import WaterfallTable from '../linkbudget/WaterfallTable.vue'
 
 const model = ref(null)
 const api = (typeof window !== 'undefined' && window.api) ? window.api.reportPrint : null
-// 封面的「页 数」：PDF 排完才知道总页数，故主进程打两遍——第一遍数出页数，回填后再打一遍
-// （见 electron/services/reportPdf.js）。Word 那边由 NUMPAGES 域自动填，不走这条路。
-const totalPages = ref(0)
 
 const L = computed(() => (model.value && model.value.t) || {})
 const doc = computed(() => (model.value && model.value.doc) || {})
@@ -29,13 +26,6 @@ const method = computed(() => (model.value && model.value.method) || { basis: []
 const lang = computed(() => (model.value && model.value.lang) || 'zh')
 const en = computed(() => lang.value === 'en')
 
-const schemeText = computed(() => {
-  const s = (model.value && model.value.scheme) || {}
-  const a = en.value ? s.labelEn : s.label
-  const b = en.value ? s.subLabelEn : s.subLabel
-  return [a, b].filter(Boolean).join('　·　')
-})
-
 // 逐参数对照是链路做列的宽表：按 8 条链路一组切成续表，用「表 n-i（续）」的题注串起来。
 const CMP_CHUNK = 8
 const chunk = (arr, n) => {
@@ -45,6 +35,19 @@ const chunk = (arr, n) => {
 }
 const cmpChunks = computed(() => chunk(links.value, CMP_CHUNK))
 
+// 表号全文连续（模板口径），与 Word 端同一套编法：逐参数对照 → 容量与统计 → 引用建议书 →
+// 物理常数；详情章的表另按「链路序号-块序号」编，不占这个号。
+// 模板渲染是纯函数式的（同一份模型可能被 Vue 重算多次），故编号不能用可变计数器——
+// 在这里按固定次序一次算好，各处照名字取。
+const tblNo = computed(() => {
+  const n = {}
+  let k = 0
+  n.compare = ++k
+  if (summary.value.stats && summary.value.stats.length) n.capacity = ++k
+  n.refs = ++k
+  n.consts = ++k
+  return n
+})
 const capTable = (no, i, total, title) => {
   const t = en.value ? 'Table' : (L.value.table || '表')
   const seq = total > 1 ? `${no}-${i + 1}` : String(no)
@@ -63,7 +66,6 @@ const detailSub = computed(() => [calc.value.satelliteName, calc.value.frequency
 const toc = computed(() => {
   const l = L.value
   const items = [
-    { n: '', t: l.docControl, sub: false },
     { n: '', t: l.master, sub: false },
     { n: '1', t: l.compare, sub: true }, { n: '2', t: l.capacity, sub: true },
     { n: '3', t: l.refs, sub: true },
@@ -80,11 +82,6 @@ onMounted(async () => {
   const imgs = Array.from(document.images || [])
   await Promise.all(imgs.map((im) => (im.complete ? Promise.resolve() : im.decode().catch(() => {}))))
   await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))
-  // 主进程第一遍打印后回填总页数：置好等一帧再打第二遍
-  window.__setTotalPages = (n) => {
-    totalPages.value = Number(n) || 0
-    return new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(true))))
-  }
   window.__reportReady = true
   if (api) { try { api.ready() } catch (e) { /* 主进程会走轮询兜底 */ } }
 })
@@ -92,59 +89,28 @@ onMounted(async () => {
 
 <template>
   <div v-if="model" class="rp">
-    <!-- ——— 封面（A4 纵向，版式照《文档格式模板》）——— -->
+    <!-- ——— 封面（A4 纵向，结构照《技术文档标准模板》第一节）———
+         （logo）→ 密级 / 文档编号 → 留白 → 报告名（唯一的一行主标题）→ 留白 → 编制单位 / 成文日期。
+         ★ 不要副标题：体制名与报告名里的「链路预算」重复，用户 2026-08-02 点名要去掉。
+         排版按 PDF 自己的逻辑（标题放大到 24pt），Word 那份才严格照模板的 16pt —— 用户定的口径。 -->
+    <!-- logo 不在这里：它是页眉，每一页（含封面）右上角都有，由 printToPDF 的 headerTemplate 画
+         （见 electron/services/reportPdf.js）。放正文里只会让封面出现两枚。 -->
     <section class="rp-sheet">
-      <!-- PDF 的封面按 PDF 自己的排版逻辑做（Word 那份才严格复刻模板的浮动表）：
-           一栏流式版面，字号/字体/线宽仍取模板那一套，故与正文是同一份文档的口吻。
-           顶栏 编号·密级 → 中区 报告名+体制+项目 → 信息栏（两列压线）→ 底部 公司名·日期 -->
       <div class="rp-cover">
-        <div class="rp-cv-top">
-          <span>{{ doc.docNo ? L.cvDocNo + '　' + doc.docNo : '' }}</span>
-          <span class="rp-cv-cls">{{ doc.classification }}</span>
+        <div class="rp-cv-meta">
+          <div><b>{{ L.cvClass }}</b>：{{ doc.classification }}</div>
+          <div><b>{{ L.cvDocNo }}</b>：{{ doc.docNo }}</div>
         </div>
 
         <div class="rp-cv-mid">
           <h1 class="rp-cv-title">{{ doc.title }}</h1>
-          <div class="rp-cv-rule"></div>
-          <div class="rp-cv-scheme">{{ schemeText }}</div>
-          <div v-if="doc.project" class="rp-cv-proj">{{ doc.project }}</div>
         </div>
 
-        <!-- 信息栏：标签 + 值压在细线上（模板的下划线语汇），两列排完十项 -->
-        <table class="rp-cv-info">
-          <tbody>
-            <tr v-for="(r, i) in coverInfo" :key="i">
-              <th>{{ r[0] }}</th><td>{{ r[1] }}</td>
-              <th>{{ r[2] }}</th><td :class="{ blank: r[2] == null }">{{ r[3] }}</td>
-            </tr>
-          </tbody>
-        </table>
-
         <div class="rp-cv-bot">
-          <div class="rp-cv-org">{{ doc.company }}</div>
+          <div v-if="doc.org" class="rp-cv-org">{{ doc.org }}</div>
           <div class="rp-cv-date">{{ doc.date }}</div>
         </div>
       </div>
-    </section>
-
-    <!-- ——— 文档控制（变更记录）——— -->
-    <section class="rp-sheet">
-      <div class="rp-title">{{ L.docControl }}</div>
-      <h2 class="rp-h2">{{ L.changeLog }}</h2>
-      <table class="rp-tb">
-        <thead>
-          <tr>
-            <th class="id">{{ L.chgVer }}</th><th class="id">{{ L.chgDate }}</th><th class="id">{{ L.chgAuthor }}</th>
-            <th class="id">{{ L.chgWhere }}</th><th class="id">{{ L.chgKind }}</th><th class="id">{{ L.chgDesc }}</th><th class="id">{{ L.chgReq }}</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td class="id">{{ doc.appVersion }}</td><td class="id">{{ doc.date }}</td><td class="id">{{ doc.preparedBy }}</td>
-            <td class="id">—</td><td class="id">{{ L.chgAdd }}</td><td class="id">{{ L.chgCreate }}</td><td class="id">—</td>
-          </tr>
-        </tbody>
-      </table>
     </section>
 
     <!-- ——— 目录（A4 纵向）——— -->
@@ -166,7 +132,7 @@ onMounted(async () => {
       <h1 class="rp-h1">{{ L.master }}</h1>
       <h2 class="rp-h2">1　{{ L.compare }}</h2>
       <template v-for="(ck, ci) in cmpChunks" :key="ci">
-        <div class="rp-caption">{{ capTable(1, ci, cmpChunks.length, L.compare) }}</div>
+        <div class="rp-caption">{{ capTable(tblNo.compare, ci, cmpChunks.length, L.compare) }}</div>
         <table class="rp-tb">
           <thead>
             <tr>
@@ -189,6 +155,7 @@ onMounted(async () => {
       <template v-if="summary.stats && summary.stats.length">
         <h2 class="rp-h2">2　{{ L.capacity }}</h2>
         <div v-if="summary.statsTitle" class="rp-note">{{ summary.statsTitle }}</div>
+        <div class="rp-caption">{{ capTable(tblNo.capacity, 0, 1, L.capacity) }}</div>
         <table class="rp-tb">
           <thead><tr><th class="lbl">{{ L.param }}</th><th class="num">{{ L.value }}</th></tr></thead>
           <tbody>
@@ -206,7 +173,7 @@ onMounted(async () => {
       </template>
 
       <h3 class="rp-h3">3.2　{{ L.mRefs }}</h3>
-      <div class="rp-caption">{{ capTable(2, 0, 1, L.mRefs) }}</div>
+      <div class="rp-caption">{{ capTable(tblNo.refs, 0, 1, L.mRefs) }}</div>
       <table class="rp-tb rp-refs">
         <thead><tr><th class="lbl">{{ L.mId }}</th><th class="lbl">{{ L.mTitle }}</th><th class="lbl">{{ L.mUse }}</th></tr></thead>
         <tbody>
@@ -220,7 +187,7 @@ onMounted(async () => {
       </table>
 
       <h3 class="rp-h3">3.3　{{ L.mConst }}</h3>
-      <div class="rp-caption">{{ capTable(3, 0, 1, L.mConst) }}</div>
+      <div class="rp-caption">{{ capTable(tblNo.consts, 0, 1, L.mConst) }}</div>
       <table class="rp-tb">
         <thead><tr>
           <th class="lbl">{{ L.param }}</th><th class="id">{{ L.mSymbol }}</th>
@@ -249,9 +216,10 @@ onMounted(async () => {
            块按栏流铺开，横向页上三栏一屏放得下 -->
       <template v-else-if="(l.inputs || []).length">
         <h3 class="rp-h3">{{ L.inputs }}</h3>
+        <!-- 详情章的表号按「链路序号-块序号」编（与图号同一套），不占全文连续号 -->
         <div class="rp-inputs">
           <div v-for="(blk, bi) in l.inputs" :key="bi">
-            <div class="rp-caption">{{ blk.title }}</div>
+            <div class="rp-caption">{{ capTable(l.no + '-' + (bi + 1), 0, 1, blk.title) }}</div>
             <table class="rp-tb">
               <thead><tr><th class="lbl">{{ L.param }}</th><th class="num">{{ L.value }}</th><th class="unit">{{ L.unit }}</th></tr></thead>
               <tbody>

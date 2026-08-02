@@ -10,19 +10,30 @@ import { ref, computed, watch, onMounted, nextTick } from 'vue'
 import {
   newPlan, normalizePlan, newChannel, newLo, newBeam, genSeries, validatePlan, errorCount,
   resolveChannel, resolveAll, planSummary, POLS, POL_LABEL, CHANNEL_KINDS, KIND_LABEL,
-  DEFAULT_BEAM_COLORS, POL_ORTHO, guessBand, BANDS, beamLabel, bwFromMHz, bwToMHz, FREQ_UNITS, DEFAULT_BW_MHZ,
+  MARK_KINDS, markSide, isMark, setChannelKind,
+  DEFAULT_BEAM_COLORS, POL_ORTHO, guessBand, BANDS, beamLabel, FREQ_UNITS, DEFAULT_BW_MHZ,
   uplinkBw, planExtent, cleanFreq,
   setChannelFc, setDnDecoupled, isDnLinked, loValueOf, dnFromUp, upFromDn,
-  channelEdges, setChannelEdge
+  channelEdges, setChannelEdge, setChannelSpan, setChannelBw,
+  beamBw, beamSegs, segBwOf, channelBeams, BEAM_LAYOUTS, beamLayoutOf,
+  setBeamBw, setBeamSegBw, setBeamSegEdge,
+  fcLabel, fmtBeamNos, beamSynthText
 } from '../shared/freqPlanModel.js'
 import { loadSatNodes, satLabel } from '../shared/freqPlanSats.js'
+import { loadSynthGroups } from '../shared/freqPlanBeamSynth.js'
+import { fcCss } from '../shared/freqReuseColors.js'
+import { useFreqUnit, useLateDraft } from './fpUnit.js'
 import { num as parseNum } from '../shared/num.js'   // 全角容错：中文输入法下的全角数字也能落值
 import { toPngDataUrl, toPdfDataUrl, toSvgText, toPngDataUrlMulti, toPdfDataUrlMulti, toSvgTextMulti } from './fpExport.js'
 import { toSvgMulti } from '../shared/freqPlanRender.js'
 import FpChart from './FpChart.vue'
-import FpCapacity from './FpCapacity.vue'
+import FpAlloc from './FpAlloc.vue'
 import BeamPicker from './BeamPicker.vue'
 import Icon from '../components/Icon.vue'
+import MiniSendDialog from '../components/MiniSendDialog.vue'
+import { fpMiniItem } from '../shared/fpMiniExport.js'
+import { estimateBytes, SIZE_MAX } from '../shared/miniPack.js'
+import { buildFreqPlanXlsx } from '../shared/fpXlsxModel.js'
 
 const api = typeof window !== 'undefined' ? window.api : null
 
@@ -31,8 +42,8 @@ const index = ref([])              // 计划索引（左栏）
 const plan = ref(null)             // 当前打开的计划全文
 const currentId = ref('')
 const selectedId = ref('')         // 选中通道
-const tab = ref('table')           // table | capacity | check
-const carriers = ref([])           // 容量规划的载波（随计划走，存在计划里）
+const tab = ref('table')           // table | alloc | check
+const carriers = ref([])           // 频率分配表的载波（随计划走，存在计划里）
 const msg = ref('')
 const busy = ref('')
 const confirmMsg = ref('')
@@ -43,32 +54,90 @@ const chartW = ref(1240)
 // 左右两栏宽度：右栏默认给足（转发器参数是两列、波束那组三个控件一行，旧的 316px 挤成一团）；
 // 左栏也可拖（卫星名 + 轨位 + 缩进后的计划名，236px 常不够）。两个手柄都骑在分界线上
 // （0 宽轨 + 负边距），不占版面；现调现存。
+//
+// ★ 设置栏在分配表那一页另记一个宽度，且可以一路拖到 0 收起。从前那一页是把整栏隐藏死的
+//   （十四列的表在 620px 的中栏里只能横着拖着看），但波束占段（一条转发器的频带切给哪几个
+//   波束）恰恰只在设置栏里改 —— DTP 载荷正是边看分配表边切段，隐藏死等于两页来回跳。
+//   故改成宽度可调：拖到下限一半以内即吸到 0，不留窄到没法用的中间态；收起后手柄仍在右缘，
+//   页签那头还有一个开合钮。两页各记各的宽度 —— 共用一个值的话每切一次页就要重拖一遍。
 const LEFT_W_MIN = 190, LEFT_W_MAX = 460
-const RIGHT_W_MIN = 260, RIGHT_W_MAX = 760
+const RIGHT_W_MIN = 260, RIGHT_W_MAX = 760, ALLOC_RIGHT_W_DEF = 320
 const clampW = (v, lo, hi) => Math.min(hi, Math.max(lo, v))
-const leftW = ref(clampW(Number(localStorage.getItem('freqplan/leftWidth')) || 250, LEFT_W_MIN, LEFT_W_MAX))
-const rightW = ref(clampW(Number(localStorage.getItem('freqplan/rightWidth')) || 396, RIGHT_W_MIN, RIGHT_W_MAX))
+// ★ 存过 0（收起）与没存过是两回事：`|| 默认值` 会把收起状态弹回默认宽（同 Number(null) 是 0 那一课）
+function readW(key, def) {
+  let raw = null
+  try { raw = localStorage.getItem(key) } catch { /* 隐私模式下读不到，用默认值 */ }
+  const n = raw == null || raw === '' ? NaN : Number(raw)
+  return Number.isFinite(n) ? n : def
+}
+// 分配表页的档位：0 = 收起，其余落在 [RIGHT_W_MIN, RIGHT_W_MAX]
+const snapAllocW = (v) => (v >= RIGHT_W_MIN ? Math.min(RIGHT_W_MAX, v) : v > RIGHT_W_MIN / 2 ? RIGHT_W_MIN : 0)
+const leftW = ref(clampW(readW('freqplan/leftWidth', 250), LEFT_W_MIN, LEFT_W_MAX))
+const rightW = ref(clampW(readW('freqplan/rightWidth', 396), RIGHT_W_MIN, RIGHT_W_MAX))
+const allocRightW = ref(snapAllocW(readW('freqplan/allocRightWidth', ALLOC_RIGHT_W_DEF)))
+const onAlloc = computed(() => tab.value === 'alloc')
+const rightWNow = computed(() => (onAlloc.value ? allocRightW.value : rightW.value))
 const resizing = ref('')
+const saveW = (key, v) => { try { localStorage.setItem(key, String(v)) } catch { /* ignore */ } }
+// 收起前的宽度：再打开时回到那个数，而不是回到默认宽
+let lastAllocW = allocRightW.value || ALLOC_RIGHT_W_DEF
+watch(allocRightW, (v) => { if (v > 0) lastAllocW = v })
+function toggleAllocRight() {
+  allocRightW.value = allocRightW.value > 0 ? 0 : clampW(lastAllocW, RIGHT_W_MIN, RIGHT_W_MAX)
+  saveW('freqplan/allocRightWidth', allocRightW.value)
+}
 function startResize(side, e) {
-  const box = side === 'left' ? leftW : rightW
-  const [lo, hi] = side === 'left' ? [LEFT_W_MIN, LEFT_W_MAX] : [RIGHT_W_MIN, RIGHT_W_MAX]
+  const alloc = side === 'right' && onAlloc.value
+  const box = side === 'left' ? leftW : alloc ? allocRightW : rightW
+  const key = side === 'left' ? 'freqplan/leftWidth' : alloc ? 'freqplan/allocRightWidth' : 'freqplan/rightWidth'
   const startX = e.clientX, startW = box.value
   resizing.value = side; document.body.style.cursor = 'col-resize'; document.body.style.userSelect = 'none'
   // 右栏的手柄在栏的左缘，往左拖 = 变宽，故取负号；左栏相反
-  const move = (ev) => { box.value = clampW(startW + (ev.clientX - startX) * (side === 'left' ? 1 : -1), lo, hi) }
+  const move = (ev) => {
+    const w = startW + (ev.clientX - startX) * (side === 'left' ? 1 : -1)
+    box.value = side === 'left' ? clampW(w, LEFT_W_MIN, LEFT_W_MAX)
+      : alloc ? snapAllocW(w) : clampW(w, RIGHT_W_MIN, RIGHT_W_MAX)
+  }
   const up = () => {
     resizing.value = ''; document.body.style.cursor = ''; document.body.style.userSelect = ''
     window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up)
-    try { localStorage.setItem(`freqplan/${side}Width`, String(box.value)) } catch (e2) { /* ignore */ }
+    saveW(key, box.value)
   }
   window.addEventListener('mousemove', move); window.addEventListener('mouseup', up)
 }
 
-// 图的显示选项。只留单位与字号两项 —— 频率标注 / 图例 / LO / 断轴曾各有一个工具栏开关，
+// 显示选项。只留单位与字号两项 —— 频率标注 / 图例 / LO / 断轴曾各有一个工具栏开关，
 // 但没人会去关（一张频率计划图缺了标注或图例就不成图了），四个常开的勾占着工具栏还添歧义。
 // 现在不写进 opt，layout/toSvg 各自按 DEFAULT_STYLE 取 true；渲染层的这四个开关保留（供导出
 // 与 core 测试用），只是界面不再暴露。
-const opt = ref({ unit: 'MHz', fontSize: 12 })
+// ★ 单位是【整个工作台】的刻度，不只是图的：表、检查器、批量条、批量生成、LO、频率分配表、校验
+//   条目里的每一个频率/带宽读数与输入框都按它写（见下面的 dispF/toM）。选了 kHz，14000 MHz 那条
+//   转发器处处写成 14000000 —— 换的只是刻度，计划本身一个数都没动，故换来换去无损。
+// ★ 存在 localStorage：换了刻度再打开另一份计划（或重开窗口）仍是那把尺子，不必每次重选。
+const OPT_KEY = 'freqplan/opt'
+function readOpt() {
+  const d = { unit: 'MHz', fontSize: 12 }
+  try {
+    const o = JSON.parse(localStorage.getItem(OPT_KEY) || '{}')
+    return {
+      unit: FREQ_UNITS.includes(o.unit) ? o.unit : d.unit,
+      fontSize: Number.isFinite(o.fontSize) ? Math.min(22, Math.max(8, o.fontSize)) : d.fontSize
+    }
+  } catch { return d }
+}
+const opt = ref(readOpt())
+watch(opt, (o) => { try { localStorage.setItem(OPT_KEY, JSON.stringify(o)) } catch { /* ignore */ } }, { deep: true })
+
+// 刻度换算与手输草稿在 fpUnit 那一份（频率分配表页共用同一份，见其文件头）：
+//   U 单位名 · dispF MHz→屏上 · toM 屏上→MHz · textF「数 + 单位」读数 · dval/dput/ddone 录入草稿
+const { U, dispF, toM, textF, dval, dput, ddone } = useFreqUnit(() => opt.value.unit)
+// 转发器表那两格频率列写哪一种口径：'fc' 中心 + 带宽 · 'edge' 起 + 止。手上的频率计划表两种都有
+// （「13932~14112」与「中心 14022 / 180 MHz」），切到与手上那张同一档就能整列往下 Tab 着录，
+// 不必先自己加减半个带宽、也不必一条条进右栏。列数不变：两档都是两格。
+// ★ 与 zoom 同理不放进 opt —— opt 整份当版式参数传给 layout/toSvg，表格的列口径与图无关。
+const TCOLS_KEY = 'freqplan/tableCols'
+const tcols = ref(localStorage.getItem(TCOLS_KEY) === 'edge' ? 'edge' : 'fc')
+watch(tcols, (v) => { try { localStorage.setItem(TCOLS_KEY, v) } catch { /* ignore */ } })
 // 屏上缩放。★ 不放进 opt：opt 会整份当版式参数传给 layout/toSvg，而 toSvg 导出时会把里头每个数
 // 都乘上倍率——缩放比例混进去会被连乘一次，导出图就跟着屏上的缩放走样了。
 const ZOOM_MIN = 0.1, ZOOM_MAX = 8
@@ -184,6 +253,20 @@ async function openPlan(id) {
   })
 }
 
+// 左栏树里的两个入口，点哪一个决定中栏落在哪一页（页签仍在，两处同步）：
+//   计划行 → 转发器表（这份计划的本体）   ·   子节点「频率分配表」→ 分配表
+// 已经打开的那份不重新载入 —— openPlan 会把选中通道弹回第一条，只是换个页签不该有这个副作用。
+async function openTable(id) {
+  if (currentId.value !== id) await openPlan(id)
+  tab.value = 'table'
+}
+async function openAlloc(id) {
+  if (currentId.value !== id) await openPlan(id)
+  tab.value = 'alloc'
+}
+// 子节点上的载波数：当前打开的那份取编辑区里的实时值，其余取索引（存盘时一并写进去）
+const allocCount = (e) => (e.id === currentId.value ? carriers.value.length : (e.carrierCount || 0))
+
 let saveTimer = null
 let dirty = false
 let loading = false      // 正在把某份计划换入编辑区（见 openPlan）
@@ -196,7 +279,7 @@ async function doSave() {
   if (!api?.freqPlan || !plan.value || !currentId.value) return
   clearTimeout(saveTimer)
   try {
-    // 载波跟着计划走（容量规划是这份计划的一部分，分开存会出现「计划改了载波还挂在旧转发器上」）
+    // 载波跟着计划走（频率分配表是这份计划的一部分，分开存会出现「计划改了载波还挂在旧转发器上」）
     const r = await api.freqPlan.save({ ...JSON.parse(JSON.stringify(plan.value)), id: currentId.value, carriers: JSON.parse(JSON.stringify(carriers.value)) })
     if (r?.ok) { dirty = false; await loadIndex() }
   } catch (e) { flash('保存失败：' + e.message) }
@@ -273,13 +356,53 @@ watch(autoBand, (b) => { if (plan.value && plan.value.bandAuto !== false) plan.v
 // ---- 通道编辑 ----
 const selected = computed(() => plan.value?.channels.find((c) => c.id === selectedId.value) || null)
 const selectedResolved = computed(() => (plan.value && selected.value ? resolveChannel(plan.value, selected.value) : null))
+// 选中这一条是不是标记类载波，是的话在哪一侧（'' = 转发器 / 保留，两侧都在）
+const selMark = computed(() => markSide(selected.value?.kind))
 const rowsResolved = computed(() => (plan.value ? resolveAll(plan.value) : []))
-const issues = computed(() => (plan.value ? validatePlan(plan.value) : []))
+// 表上几个数字列的最小宽度，跟着刻度走：Hz 档下 14022000000 比 MHz 档长 6 位，列不跟着长就把数
+// 截在框里 —— 框内也看不全（只能靠光标左右挪），等于换个单位就读不了表。按当前刻度下最长的那个
+// 读数定宽（表格是 auto 布局，输入框的 min-width 就是这一列的最小内容宽）。
+// 两端一并量：切到「起 + 止」那一档写的是它们，而 14022 ± 20.75 比中心本身多两位小数。
+const numColW = computed(() => {
+  let n = 6                                     // 底数 = MHz 档常见的「14022.5」那个长度
+  for (const r of rowsResolved.value) {
+    for (const v of [r.up?.fc, r.up?.bw, r.dn?.fc, r.up?.f1, r.up?.f2, r.dn?.f1, r.dn?.f2]) {
+      if (Number.isFinite(v)) n = Math.max(n, String(dispF(v)).length)
+    }
+  }
+  return `${n + 1}ch`
+})
+const issues = computed(() => (plan.value ? validatePlan(plan.value, opt.value.unit) : []))
 const errCount = computed(() => errorCount(issues.value))
 
-function addChannel() {
+// ---- 标记类载波：信标 / 遥控 / 遥测 ----
+//
+// 这三类只有【频率 + 极化】两项，且只在一侧（信标与遥测是星上发的 → 下行，遥控是地面发的 → 上行）。
+// 表与检查器据此只留它有的那几格：带宽 / 波束 / LO / 起止一律不出现 —— 摆出来也是填了不生效的格子。
+const mkSide = (ch) => markSide(ch?.kind)          // '' = 转发器 / 保留（两侧都在）
+const isMk = (ch) => isMark(ch)
+// 该侧那一格出不出：转发器两侧都出，标记类只出它自己那一侧
+const hasSide = (ch, side) => !mkSide(ch) || mkSide(ch) === side
+const setKind = (ch, v) => setChannelKind(plan.value, ch, v)
+// 标记类载波的那一个频率（解析结果里只有一侧非空）
+const mkFc = (r) => (r?.up || r?.dn || {}).fc ?? null
+
+function addChannel(kind = 'transponder') {
   if (!plan.value) return
-  const last = plan.value.channels[plan.value.channels.length - 1]
+  const side = markSide(kind)
+  if (side) {
+    // 极化照抄同侧最近的那一条（一颗星的几个信标多半同极化；不同再改一格即可）
+    const prev = [...plan.value.channels].reverse().find((c) => markSide(c.kind) === side)
+      || plan.value.channels[plan.value.channels.length - 1]
+    const ch = newChannel({ no: '', kind })
+    const pol = (side === 'up' ? prev?.up?.pol : prev?.dn?.pol)
+    if (POLS.includes(pol)) ch[side].pol = pol
+    plan.value.channels.push(ch)
+    selectedId.value = ch.id
+    return
+  }
+  // 「上一条」只认转发器：信标那几条没有带宽也没有排在序列上的频率，照抄过来只会得到一条空行
+  const last = [...plan.value.channels].reverse().find((c) => !isMark(c))
   // 带宽照抄上一条的「录入状态」：上一条留空（随波束组）就跟着留空，别硬塞一个 36 把继承打断
   const lastBw = last ? uplinkBw(plan.value, last) : null
   const ch = newChannel({
@@ -296,8 +419,14 @@ function addChannel() {
 }
 function removeChannel(id) {
   if (!plan.value) return
+  const at = plan.value.channels.findIndex((c) => c.id === id)
   plan.value.channels = plan.value.channels.filter((c) => c.id !== id)
-  if (selectedId.value === id) selectedId.value = plan.value.channels[0]?.id || ''
+  // 删掉的正是选中那条 → 落到顶上来的那条（删的是末条则退到前一条）。弹回第一行等于把视线
+  // 从手头这一段甩到表头，删连着几条时尤其难受
+  if (selectedId.value === id) {
+    const list = plan.value.channels
+    selectedId.value = (list[at] || list[at - 1] || list[0])?.id || ''
+  }
   uncheck([id])                      // 勾选集里不能留悬挂 id（留着「已选 N 个」就与表上对不上）
 }
 function duplicateChannel(id) {
@@ -308,13 +437,21 @@ function duplicateChannel(id) {
   plan.value.channels.splice(i + 1, 0, copy)
   selectedId.value = copy.id
 }
-// 该转发器从所属「波束/带宽」组继承来的带宽——带宽输入框留空时以灰字占位显示
+// 分配表组头上点色片：指定这条转发器的载波默认归哪个波束。只对「几个波束同频叠放」的转发器
+// 有意义（频带被切开的按频率认领，见 freqPlanCapacity 的 rowBeam）。老计划没有这个字段，
+// 直接补上去即可 —— 计划是深监听存盘的，加一个键照样落盘。
+function setChannelBeam({ channelId, beamId }) {
+  const ch = plan.value?.channels.find((c) => c.id === channelId)
+  if (ch) ch.carrierBeamId = beamId || ''
+}
+// 该转发器从所属「波束/带宽」组继承来的带宽——带宽输入框留空时以灰字占位显示（同样按当前刻度写）
 function groupBw(ch) {
   // 多波束时取第一个给了标称带宽的波束 —— 与 uplinkBw 的继承口径一致
   const b = (ch.beamUpIds || []).map((id) => plan.value?.beams.find((x) => x.id === id))
     .find((x) => Number.isFinite(x?.bwMHz))
-  return Number.isFinite(b?.bwMHz) ? String(b.bwMHz) : ''
+  return Number.isFinite(b?.bwMHz) ? String(dispF(b.bwMHz)) : ''
 }
+// 不带刻度的数（dB、dBW/m²…）走这个；频率与带宽一律走 dput（要过一次换算）
 function setNum(obj, key, v) {
   obj[key] = parseNum(v)
 }
@@ -324,61 +461,284 @@ function setNum(obj, key, v) {
 const setFc = (ch, side, v) => setChannelFc(plan.value, ch, side, v)
 // 下行框里显示的数：联动态下它就是这条转发器的下行频率（由等式给出），不再是「灰字占位提示」。
 // ★ 不四舍五入到 2 位：窄带计划里 0.01 MHz 以下是有效信息，而回写一个舍过的数会把正在敲的字改掉。
-const dnDisp = (r) => (r?.dn ? r.dn.fc : '')
+const dnDisp = (r) => (r?.dn ? r.dn.fc : null)
 const dnLinked = (ch) => isDnLinked(plan.value, ch)
 // 解耦态：挂着 LO 却又显式填了下行（cross-strap / 下行重排）——此时两侧各改各的，界面上要说清楚
 const dnCut = (ch) => plan.value && loValueOf(plan.value, ch) != null && Number.isFinite(ch?.dn?.fcMHz)
 const setCut = (ch, off) => setDnDecoupled(plan.value, ch, off)
 
-// ---- 起止频率（频带两端）----
+// ---- 频带四格：中心 · 带宽 · 起 · 止 ----
 //
-// 等式与四条分支都在 freqPlanModel 那一段，这里只管录入手感。
-// ★ 与「中心 / 带宽」两格不同，这两格【不即时落值】：起止是相互约束的一对，敲到一半的前缀在等式里
-//   同样成立 —— 把 14040 改成 14100 的中途会经过 141，即时落值先把带宽算成 13899 那样的荒唐数，
-//   下一次按键又正好落在「越过另一端」那条分支上，整条转发器就被那个中间值定死。故走草稿 ref，
-//   回车 / 离焦（change）才提交，与工具栏缩放那格同一套做法。
-// 一次只可能有一格在编辑，草稿因此只存一份：{ 哪一格, 正在敲的字 }。
-const edgeDraft = ref({ k: '', v: '' })
-const edgeKey = (side, which) => `${side}.${which}`
-const clearEdgeDraft = () => { edgeDraft.value = { k: '', v: '' } }
-const selEdges = (side) => channelEdges(plan.value, selected.value, side)
-function edgeVal(side, which) {
-  if (edgeDraft.value.k === edgeKey(side, which)) return edgeDraft.value.v
-  const e = selEdges(side)
-  const x = which === 'f1' ? e.f1 : e.f2
-  return x == null ? '' : x                    // 带宽未定 → 两端无从谈起，空着（占位字提示这格是哪一端）
+// 四个数、两个自由度，是同一段频带的两种写法（等式与分支都在 freqPlanModel 的「频带两端」那一段，
+// 这里只管录入手感）。三条口径：
+//
+//  ① 一律【迟落】—— 敲字期间只留字面，回车或离焦才落值。这四个数互相约束，敲到一半的前缀在等式里
+//     同样成立：把 14022 改成 14100 的中途要经过 141，即时落值先拿 141 把整条转发器定死（带宽被算
+//     成荒唐数），下一次按键又正好落在「越过另一端」那条分支上；带宽格同理（36 → 72 的中途是 7）。
+//     从前只有起止两格走草稿、中心与带宽即时落值，两半手感不一样，图还要为每个中间态重排一次。
+//  ② 改带宽【起始钉住】（setChannelBw 的 anchor='f1'）—— 与同一面板里波束段那格一致，也贴合频率
+//     计划表「起始 + 带宽」的口径。从前是中心钉住、两端对称张缩。
+//  ③ 中心与带宽都还没有的条目（波束合成导进来的、批量生成里带宽留空的），从前起止两格填什么都被
+//     弹回空 —— 一端确实定不出一段频带，但那不该是死路。现在把落不下去的那一端记下（格子里照旧
+//     显示着），另一端录进来就两端一起定（setChannelSpan）；中间去填了中心或带宽，落完也把它补上。
+//
+// 草稿带上【开敲时是哪一条】，见 useLateDraft 文件头：点表格另一行时 mousedown 先改 selectedId，
+// 本格的 change/blur 在那之后才到，不抓下来这几个字就落到刚点中的那一行上了。
+const { lval, lput, lend, lclr } = useLateDraft(() => opt.value.unit, dispF, toM)
+
+const fcKey = (ch, side) => `${ch.id}.${side}.fc`
+const bwKey = (ch, side) => `${ch.id}.${side}.bw`
+const slotKey = (ch, side) => `${ch.id}.${side}.slot`
+const edgeKey = (ch, side, which) => `${ch.id}.${side}.${which}`
+const chEdges = (ch, side) => channelEdges(plan.value, ch, side)
+
+// 落不下去的那一端（口径 ③）。一次只可能有一个：另一端录进来就当场兑现。
+const edgePend = ref({ ch: null, side: '', which: '', mhz: null })
+const clearPend = () => { edgePend.value = { ch: null, side: '', which: '', mhz: null } }
+const pendOf = (ch, side, which) => {
+  const p = edgePend.value
+  return p.ch === ch && p.side === side && p.which === which ? p.mhz : null
 }
-const edgeInput = (side, which, v) => { edgeDraft.value = { k: edgeKey(side, which), v } }
-function commitEdge(side, which, v) {
-  const mode = setChannelEdge(plan.value, selected.value, side, which, v)
-  clearEdgeDraft()                             // 清草稿 = 回到由中心/带宽算出的读数（没落值的输入也就被弹回）
+// 记下了但还没成段的那一格：数照旧显示着，压成灰斜体与已落定的读数分开 —— 图上还没有这条频带，
+// 不给个记号人会以为已经填进去了
+const pendCls = (ch, side, which) => ({ pend: pendOf(ch, side, which) != null })
+// 中心 / 带宽落值之后补上那一端：刚才缺的正是它俩之一
+function flushPend(ch) {
+  const p = edgePend.value
+  if (p.ch !== ch || p.mhz == null) return
+  if (setChannelEdge(plan.value, ch, p.side, p.which, p.mhz)) clearPend()
+}
+// 换刻度时那个数是上一把尺子上的（草稿由 useLateDraft 自己清）
+watch(() => opt.value.unit, clearPend)
+
+// ---- 右栏检查器：分区折叠 · 当前条定位 · 三处选中联动 ----
+//
+// 右栏是一条从「计划」一路到「批量生成」的长滚动区，从前分区之间只有一条 1px 的线（与栏内
+// 行线同一档），整栏读起来是一列连不断的表单。现在每区一条 22px 的标题栏（吸顶）+ 区间 4px 灰槽，
+// 标题栏可点折叠 —— 94 波束的计划里，把「波束/带宽」折起来才腾得出地方编转发器。
+const SEC_KEY = 'freqplan/closedSecs'
+const closedSecs = ref(new Set(readClosedSecs()))
+function readClosedSecs() {
+  try { return JSON.parse(localStorage.getItem(SEC_KEY) || '[]') } catch { return [] }
+}
+const secOpen = (k) => !closedSecs.value.has(k)
+function putSecs(s) {
+  closedSecs.value = s
+  try { localStorage.setItem(SEC_KEY, JSON.stringify([...s])) } catch { /* ignore */ }
+}
+function toggleSec(k) {
+  const s = new Set(closedSecs.value)
+  if (s.has(k)) s.delete(k); else s.add(k)
+  putSecs(s)
+}
+// 标题栏上的动作钮（加 LO / 加波束 / 从波束合成导入）在折叠着的区上也点得到，
+// 那就必须连带展开——否则加出来的那一条落在看不见的地方，等同于「点了没反应」
+function openSec(k) {
+  if (secOpen(k)) return
+  const s = new Set(closedSecs.value); s.delete(k); putSecs(s)
+}
+
+// 当前条在表上的位次：检查器标题栏写「7 / 18」并带 ‹ › 两个钮 —— 逐条核对参数时不必回表点
+const selIdx = computed(() => (plan.value ? plan.value.channels.findIndex((c) => c.id === selectedId.value) : -1))
+function stepSel(d) {
+  const list = plan.value?.channels || []
+  if (!list.length) return
+  const i = selIdx.value < 0 ? (d > 0 ? -1 : list.length) : selIdx.value
+  const n = Math.min(list.length - 1, Math.max(0, i + d))
+  selectedId.value = list[n].id
+}
+
+// 行滚进视野。★ 不用 scrollIntoView：表头是 sticky 的，它算的「可见」不认那截表头，
+// 往上翻时行会正好停在表头底下（看着就是「跳了一下还是没露出来」）。
+function ensureRowVisible(tr) {
+  const box = tblScroll.value
+  if (!box || !tr) return
+  const head = box.querySelector('thead')?.getBoundingClientRect().height || 0
+  const br = box.getBoundingClientRect(), rr = tr.getBoundingClientRect()
+  if (rr.top < br.top + head) box.scrollTop -= (br.top + head - rr.top)
+  else if (rr.bottom > br.bottom) box.scrollTop += (rr.bottom - br.bottom)
+}
+// 图上点一块 / 校验条目跳过来 / ‹ › 翻条：表与右栏都跟到那一条上去。
+// 反过来点表里的行时两者本就在视野内，nearest 的算法天然不动。
+const chSecEl = ref(null)
+watch(selectedId, (id) => {
+  ddone()
+  if (!id) return
+  nextTick(() => {
+    ensureRowVisible(document.querySelector(`.t tr[data-id="${id}"]`))
+    // ★ 滚的是【区头】不是整区：转发器那一区比栏高，整区送进视野等于每选一条都把栏顶到那一区的
+    //   开头（人正在下面编波束时尤其烦）。区头是 22px 的 sticky 条，已经在视野里就一动不动。
+    chSecEl.value?.querySelector('.sh')?.scrollIntoView({ block: 'nearest' })
+  })
+})
+// 图上双击一块 = 直接改它那一侧的中心频率（双击的是上行块就落在上行那一格）
+function editBlock(b) {
+  if (!b?.channelId) return
+  selectedId.value = b.channelId
+  openSec('ch')          // 折叠着的话先展开：v-show 的格子聚焦不了，双击会像没反应
+  nextTick(() => {
+    const el = chSecEl.value?.querySelector(`[data-f="${b.side === 'dn' ? 'dn' : 'up'}"]`)
+    if (el) { el.focus(); el.select?.() }
+  })
+}
+// 表里 ↑↓ 在同一列上下走（Excel 手感，与链路预算的站表一套）。
+// ★ 只认输入框：下拉的 ↑↓ 是切选项，抢过来就没法用键盘选极化/LO 了。
+function gridKey(e) {
+  if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return
+  const el = e.target
+  if (!el || el.tagName !== 'INPUT' || el.type === 'checkbox') return
+  const td = el.closest('td'), tr = el.closest('tr')
+  if (!td || !tr) return
+  const col = [...tr.children].indexOf(td)
+  const next = e.key === 'ArrowUp' ? tr.previousElementSibling : tr.nextElementSibling
+  const to = next?.children[col]?.querySelector('input:not([type=checkbox]), select')
+  if (!to) return
+  e.preventDefault()
+  to.focus({ preventScroll: true })      // 自己按表头高度滚（见 ensureRowVisible）
+  to.select?.()
+  ensureRowVisible(next)
+}
+
+// 中心频率：带宽不动、两端一起挪。上下行联动仍走唯一收口（LO 确定时改哪一边另一边都跟着变）
+function commitFc(ch, side, m) {
+  setChannelFc(plan.value, ch, side, m)
+  flushPend(ch)
+}
+// 带宽：起始钉住、终止随之走
+function commitBw(ch, side, m) {
+  setChannelBw(plan.value, ch, side, m, 'f1')
+  flushPend(ch)
+}
+
+function edgeVal(ch, side, which) {
+  const pend = pendOf(ch, side, which)
+  if (pend != null) return lval(edgeKey(ch, side, which), pend)
+  const e = chEdges(ch, side)
+  // 带宽未定 → 两端无从谈起，空着（占位字提示这格是哪一端）
+  return lval(edgeKey(ch, side, which), which === 'f1' ? e.f1 : e.f2)
+}
+function commitEdge(ch, side, which, m) {
+  if (!ch) return
+  const other = which === 'f1' ? 'f2' : 'f1'
+  const twin = pendOf(ch, side, other)
+  // 另一端刚才也没落下去 → 两端齐了，直接定出这一段
+  if (m != null && twin != null) {
+    clearPend()
+    if (setChannelSpan(plan.value, ch, side, which === 'f1' ? m : twin, which === 'f1' ? twin : m)) return
+  }
+  const mode = setChannelEdge(plan.value, ch, side, which, m)
+  if (mode == null) {
+    // 数是好的却落不下去 = 中心与带宽都还没有：先记着，等另一端（或等中心/带宽录进来）。
+    // 清空这一格 = 把记着的那个数擦掉（别的格子记着的不动）
+    if (m != null) edgePend.value = { ch, side, which, mhz: m }
+    else if (pendOf(ch, side, which) != null) clearPend()
+    return
+  }
+  clearPend()
   if (mode === 'shift') {
     flash(`${which === 'f1' ? '起始越过终止' : '终止越过起始'} —— 已按「带宽不变、整条频带平移」处理`)
   }
 }
-// 换一条转发器时丢掉没提交的字，免得它跟到下一条身上
-watch(selectedId, clearEdgeDraft)
 // 说明写全：「改一端另一端钉住」是这两格与中心频率的全部区别，不写清人只会把它们当两个只读读数
-function edgeTitle(side, which) {
+function edgeTitle(ch, side, which) {
   const self = which === 'f1' ? '起始' : '终止'
   const other = which === 'f1' ? '终止' : '起始'
-  const bwUndef = selEdges(side).bw == null
+  const e = chEdges(ch, side)
   return `${side === 'up' ? '上行' : '下行'}频带${which === 'f1' ? '下' : '上'}边沿。`
     + `改这里${other}钉住，中心与带宽一并重算（中心 =（起 + 止）/ 2 · 带宽 = 止 − 起）；`
-    + `${self}越过${other}时改按「带宽不变、整条频带平移」处理。回车或离焦落值。`
-    + (bwUndef ? '当前带宽未定 —— 此时改为中心钉住、由这一端定出带宽。'
-      : '带宽随之落成本转发器自填值（不再随波束/带宽组）。')
-    + (side === 'dn' && dnLinked(selected.value) ? '下行与 LO 联动：上行随等式反解，带宽两侧同宽故落在上行。' : '')
+    + `${self}越过${other}时改按「带宽不变、整条频带平移」处理。回车或离焦生效。`
+    + (e.fc == null && e.bw == null ? '这条还没有中心也没有带宽 —— 两端都录进来即定出这一段。'
+      : e.bw == null ? '当前带宽未定 —— 此时改为中心钉住、由这一端定出带宽。'
+        : '带宽随之落成本转发器自填值（不再随波束/带宽组）。')
+    + (side === 'dn' && dnLinked(ch) ? '下行与 LO 联动：上行随等式反解，带宽两侧同宽故落在上行。' : '')
 }
+
+// ---- 转发器占段：这条转发器的频带分给它的几个波束（界面上唯一的频率录入口）----
+//
+// 段位是【转发器】的属性，不是波束的：人一次编排一条转发器，「这条 36 MHz 分给哪几个波束、
+// 各占哪一截」在那条转发器上一眼看得全。波束那边只有名字与标称带宽。口径与四条分支都在
+// freqPlanModel 的 setBeamSegEdge，这里只管录入手感：
+//   · 起止两格走草稿、回车或离焦才提交（同转发器自己的起止：敲到一半的前缀在等式里同样成立，
+//     即时落值会把整段定死在中间值上）；带宽即时落值（它自己就是一个独立的数）。
+//   · 三格恒自洽：只存 偏移 + 带宽，终止是算出来的。
+//   · 留空 = 走排布档（自适应 / 频分排布 / 同频叠加），格子里写的是算出来的落点（灰字占位）。
+// ★ 下行那一份【留空 = 随上行】（段内格局不变、整段随本转发器的 LO 平移，常态），填了才是
+//   下行另有落点（cross-strap / 下行重排 / 收发不等宽）—— 同「下行波束留空 = 随上行」那套读法。
+// 这条转发器这一侧实际生效的那组波束（下行留空 = 随上行，占段表跟着摊开同一组）
+const chBeams = (ch, side) => (ch ? channelBeams(plan.value, ch, side) : [])
+const segKey = (chId, beamId, side, which) => `sg.${chId}.${beamId}.${side}.${which}`
+const segOf = (ch, side, beamId) => beamSegs(plan.value, ch, side).find((g) => g.beam.id === beamId) || null
+// 这一格的【原值】：录过才写数，没录过写空（灰字占位写的是算出来的落点）
+function segEdgeVal(ch, side, b, which) {
+  const k = segKey(ch.id, b.id, side, which)
+  const g = segOf(ch, side, b.id)
+  if (!g || g.autoOff) return lval(k, null)
+  return lval(k, which === 'f1' ? g.f1 : g.f2)
+}
+const segEdgePh = (ch, side, b, which) => {
+  const g = segOf(ch, side, b.id)
+  const v = !g ? null : (which === 'f1' ? g.f1 : g.f2)
+  return v == null ? '' : String(dispF(v))
+}
+const segBwVal = (ch, side, b) => lval(segKey(ch.id, b.id, side, 'bw'), segBwOf(ch, b.id, side))
+// 带宽留空之后实际用的那个数：该波束这一侧的标称带宽，没有标称就是「占满」整条频带
+function segBwPh(ch, side, b) {
+  const nom = beamBw(b)
+  if (nom != null) return String(dispF(nom))
+  const g = segOf(ch, side, b.id)
+  return g && g.full ? '占满' : ''
+}
+function commitSegEdge(ch, side, b, which, m) {
+  const mode = setBeamSegEdge(plan.value, ch, side, b.id, which, m)
+  if (mode === 'shift') {
+    flash(`${side === 'dn' ? '下行' : '上行'}波束「${b.name}」${which === 'f1' ? '起始越过终止' : '终止越过起始'} —— 已按「带宽不变、整段平移」处理`)
+  }
+}
+function segEdgeTitle(ch, side, b, which) {
+  const self = which === 'f1' ? '起始' : '终止'
+  const other = which === 'f1' ? '终止' : '起始'
+  const g = segOf(ch, side, b.id)
+  const auto = g && g.autoOff
+  return `波束「${b.name}」在本转发器${side === 'dn' ? '下行' : '上行'}频带里占的那一段的${which === 'f1' ? '下' : '上'}边沿（绝对频率）。`
+    + (auto ? `当前是${LAYOUT_TEXT[g.from] || '自动'}排布生成的位置，录入后即固定。` : '')
+    + `改这里${other}钉住、带宽随之变（带宽 = 终止 − 起始）；${self}越过${other}时改按「带宽不变、整段平移」处理。`
+    + (which === 'f1' ? '清空 = 这个波束回到自动排布。' : '')
+    + (side === 'dn' ? '留空 = 随上行（整段随本转发器的 LO 平移）。' : '')
+    + '回车或离焦生效。'
+}
+function segBwTitle(ch, side, b) {
+  return `波束「${b.name}」在本转发器${side === 'dn' ? '下行' : '上行'}占的那一段有多宽（${U.value}）：`
+    + '起始钉住、终止随之走（终止 = 起始 + 带宽）。'
+    + `留空 = 随该波束的${side === 'dn' ? '下行' : ''}标称带宽（「波束/带宽」那里填的），波束也没填则占满整条频带。`
+}
+// 波束那边只剩标称带宽这一个数（频率不在那里设，上下行也不分两格）
+function bmBwTitle(b) {
+  return `波束「${b.name}」的标称带宽（${U.value}）：`
+    + '转发器那行的带宽留空即取这个值；它在各转发器里占哪一段由那条转发器的占段表定，留空 = 占满整条频带。'
+    + '收发不等宽的转发器在占段表里两侧各录各的。'
+}
+const LAYOUT_TEXT = { tile: '频分', stack: '同频', seg: '录入' }
+const LAYOUT_TIP = '这条转发器的频带在几个波束之间怎么摆（只管【没逐个录过起止】的那些）：'
+  + '自适应 = 人人有带宽且装得下就频分排布，装不下就同频叠加；'
+  + '频分排布 = 自频带下边沿依次紧排（HTS 那一路，转发器带宽 = Σ 各波束带宽）；'
+  + '同频叠加 = 各自贴频带下边沿、各占各的带宽（常规多波束转发器 / 频率复用）。'
+  + '整条转发器一档，上下行同一个（段内格局不变，下行随 LO 平移）。'
+// 排布档换了之后，自动排出来的落点跟着变——草稿里还留着上一档的字面值会把新落点盖掉
+const setLayout = (ch, v) => { lclr(); ch.beamLayout = v }
 
 // 表上 LO 那格只写得下名字（列宽就那么点），数值补在 title 里
 function loTitle(ch) {
   const l = plan.value?.los.find((x) => x.id === ch.loId)
-  return l ? `${l.name}：${l.valueMHz ?? '—'} MHz` : '未挂 LO —— 上下行各自独立'
+  return l ? `${l.name}：${textF(l.valueMHz)}` : '未挂 LO —— 上下行各自独立'
 }
+// 下拉里的一条 LO（批量条与检查器共用）：名字 + 当前刻度下的数
+const loOption = (l) => `${l.name} · ${textF(l.valueMHz)}`
 function sortChannels() {
   if (!plan.value) return
-  plan.value.channels.sort((a, b) => (a.up.fcMHz ?? a.dn.fcMHz ?? 0) - (b.up.fcMHz ?? b.dn.fcMHz ?? 0))
+  // 标记类载波一律排到表尾：它们没有上行频率（信标与遥测的那个数是下行的），混进来按数排的话
+  // 一个 12500 的信标会插到 14022 那排转发器之前 —— 两个数不在同一侧，不可比。
+  const fc = (c) => c.up.fcMHz ?? c.dn.fcMHz ?? 0
+  plan.value.channels.sort((a, b) => (isMark(a) - isMark(b)) || (fc(a) - fc(b)))
   flash('已按上行频率排序')
 }
 
@@ -509,9 +869,11 @@ function endDrag() {
 // 批量条上的几个下拉/输入。下拉恒以 '' 为「—」，故「不挂 LO」得另给一个哨兵值（'' 已被占用）
 const NO_LO = '__none__'
 const bsel = ref({ kind: '', upPol: '', dnPol: '', lo: '' })
-const batch = ref({ bwMHz: '', shiftMHz: '', noPattern: 'C{n}', noStart: 1 })
+// bwMHz / shiftMHz 同模型一律存 MHz，格子里按当前刻度显示（走 dput/dval）
+const batch = ref({ bwMHz: null, shiftMHz: null, noPattern: 'C{n}', noStart: 1 })
 const beamPop = ref('')                // '' | 'up' | 'dn'：波束批量赋值的浮层
 const batchBeamIds = ref([])
+const addPop = ref(false)              // 「+ 转发器」旁那个小菜单（加信标 / 遥控 / 遥测）
 
 function eachChecked(label, fn) {
   const list = checkedChannels.value
@@ -519,37 +881,41 @@ function eachChecked(label, fn) {
   list.forEach(fn)
   flash(`${list.length} 个转发器：${label}`)
 }
+// 标记类载波没有带宽 / 波束 / LO，批量施加时跳过它们 —— 勾了一整片（含中间那条信标）再改带宽是常事，
+// 落值到信标身上既不显形又会在存储里留下不生效的数
+const notMk = (fn) => (c) => { if (!isMark(c)) fn(c) }
 function batchSet(key) {
   const v = bsel.value[key]
   if (v) {
-    if (key === 'kind') eachChecked(`类型 → ${KIND_LABEL[v] || v}`, (c) => { c.kind = v })
-    else if (key === 'upPol') eachChecked(`上行极化 → ${v}`, (c) => { c.up.pol = v })
+    if (key === 'kind') eachChecked(`类型 → ${KIND_LABEL[v] || v}`, (c) => setKind(c, v))
+    // 极化只落在这一条真有的那一侧：下行的信标不该被「上行极化」改到（那一格根本不出现在表上）
+    else if (key === 'upPol') eachChecked(`上行极化 → ${v}`, (c) => { if (hasSide(c, 'up')) c.up.pol = v })
     // 「正交」不是一个极化值而是一条规则：逐条按各自的上行取正交（同频复用的 B 面正是这么排的）
     else if (key === 'dnPol') {
       eachChecked(v === 'ortho' ? '下行极化 → 随上行取正交' : `下行极化 → ${v}`,
-        (c) => { c.dn.pol = v === 'ortho' ? (POL_ORTHO[c.up.pol] || 'V') : v })
+        (c) => { if (hasSide(c, 'dn')) c.dn.pol = v === 'ortho' ? (POL_ORTHO[c.up.pol] || 'V') : v })
     } else if (key === 'lo') {
       const id = v === NO_LO ? '' : v
       const nm = id ? (plan.value?.los.find((l) => l.id === id)?.name || 'LO') : '不挂 LO'
-      eachChecked(`本振 → ${nm}`, (c) => { c.loId = id })
+      eachChecked(`本振 → ${nm}`, notMk((c) => { c.loId = id }))
     }
   }
   bsel.value[key] = ''                 // 动作不留痕：弹回「—」
 }
 // 带宽：填了数 = 各条单独指定；清 = 回到「随所属波束组的标称值」（与单行留空同一口径）
-const batchBwOk = computed(() => Number.isFinite(parseNum(batch.value.bwMHz)))
+const batchBwOk = computed(() => Number.isFinite(batch.value.bwMHz))
 function batchBw(clear) {
-  if (clear) { eachChecked('带宽已清空（随波束组）', (c) => { c.up.bwMHz = null }); return }
-  const v = parseNum(batch.value.bwMHz)
+  if (clear) { eachChecked('带宽已清空（随波束组）', notMk((c) => { c.up.bwMHz = null })); return }
+  const v = batch.value.bwMHz
   if (v == null) return
-  eachChecked(`带宽 → ${v} MHz`, (c) => { c.up.bwMHz = v })
+  eachChecked(`带宽 → ${textF(v)}`, notMk((c) => { c.up.bwMHz = v }))
 }
 // 频率平移：整条频带一起挪。联动态的下行由等式给出（不用动它），解耦态的下行不跟上行走，得自己挪一次
-const batchShiftOk = computed(() => { const d = parseNum(batch.value.shiftMHz); return d != null && d !== 0 })
+const batchShiftOk = computed(() => { const d = batch.value.shiftMHz; return Number.isFinite(d) && d !== 0 })
 function batchShift() {
-  const d = parseNum(batch.value.shiftMHz)
-  if (d == null || !d) return
-  eachChecked(`频率平移 ${d > 0 ? '+' : ''}${d} MHz`, (c) => {
+  const d = batch.value.shiftMHz
+  if (!Number.isFinite(d) || !d) return
+  eachChecked(`频率平移 ${d > 0 ? '+' : ''}${textF(d)}`, (c) => {
     if (Number.isFinite(c.up.fcMHz)) c.up.fcMHz = cleanFreq(c.up.fcMHz + d)
     if (Number.isFinite(c.dn.fcMHz)) c.dn.fcMHz = cleanFreq(c.dn.fcMHz + d)
   })
@@ -576,7 +942,7 @@ function applyBeamPop(clear) {
     ? ids.map((id) => plan.value?.beams.find((b) => b.id === id)?.name).filter(Boolean).join(' + ')
     : (side === 'up' ? '不归组' : '随上行')
   eachChecked(`${side === 'up' ? '上行' : '下行'}波束 → ${txt}`,
-    (c) => { if (side === 'up') c.beamUpIds = [...ids]; else c.beamDnIds = [...ids] })
+    notMk((c) => { if (side === 'up') c.beamUpIds = [...ids]; else c.beamDnIds = [...ids] }))
   beamPop.value = ''
 }
 // 复制到表尾（不逐条插在原行后）：复制出来的这一批多半接着就要整批再改一遍（B 面翻极化那种），
@@ -610,6 +976,8 @@ async function batchRemove() {
 // dnPolMode: '' = 下行取上行的正交极化（默认，转发器翻极化的常见接法）| 'same' = 下行与上行同极化。
 // 一排恒为同一个上行极化：真实计划里换极化的那一排，编号与起始频率本就另起一套，分两批生成更直白
 // （曾有个「全同 / 逐个交替」的模式选择器，交替出来的那半排编号怎么排始终说不清，已撤）。
+// 三个频率量（起始 / 间隔 / 带宽）同模型一律存 MHz，格子里按当前刻度显示 —— 换刻度时这三格
+// 里的数跟着换算（14004 MHz ⇄ 14004000 kHz），与表上的数始终是同一把尺子。
 const gen = ref({ count: 6, startFMHz: 14004, stepMHz: 41.5, bwMHz: 36, pol: 'H', dnPolMode: '', noPattern: 'C{n}', noStart: 1, loId: '', beamUpIds: [], beamDnIds: [], kind: 'transponder' })
 // 批量生成也是双向的：手上拿到的若是下行那张表，直接填「下行起始频率」即可，上行由 LO 反解。
 // 间隔不给两份 —— LO 是常数，两侧间隔本就相同，给两个只会多一处能填错的地方。
@@ -620,7 +988,7 @@ const genLo = computed(() => {
 // 边沿 → 中心用的带宽：本栏填了用填的，留空则取所选上行波束组的标称值（与转发器那行
 // 「带宽留空 = 取本组标称值」同一口径）。两处都没有 → 半带宽按 0 计：带宽都还没定，也就无边沿可言。
 const genBw = computed(() => {
-  const b = parseNum(gen.value.bwMHz)
+  const b = gen.value.bwMHz
   if (Number.isFinite(b)) return b
   for (const id of gen.value.beamUpIds || []) {
     const bm = plan.value?.beams.find((x) => x.id === id)
@@ -630,21 +998,21 @@ const genBw = computed(() => {
 })
 const genHalfBw = computed(() => (Number.isFinite(genBw.value) ? genBw.value / 2 : 0))
 // 上下行两侧填的都是边沿：整条频带平移 LO，边沿之差与中心之差是同一个数，故仍走同一条等式
-const genDnStart = computed(() => dnFromUp(parseNum(gen.value.startFMHz), genLo.value) ?? '')
-function setGenDnStart(v) {
+const genDnStartMHz = computed(() => dnFromUp(gen.value.startFMHz, genLo.value))
+// 收的是已换算好的 MHz（录入口统一在 dput 那一处过刻度，不在这里再过一次）
+function setGenDnStart(mhz) {
   if (genLo.value == null) return
-  const x = parseNum(v)
-  gen.value.startFMHz = x == null ? '' : upFromDn(x, genLo.value)
+  gen.value.startFMHz = mhz == null ? null : upFromDn(mhz, genLo.value)
 }
 function runGen() {
   if (!plan.value) return
   // 带宽留空 → null（各通道随所属波束/带宽组走）。不能写成 Number('')，那会变成 0 宽转发器
-  const bw = parseNum(gen.value.bwMHz)
-  const startF = parseNum(gen.value.startFMHz) ?? 0
+  const bw = gen.value.bwMHz
+  const startF = gen.value.startFMHz ?? 0
   const chs = genSeries({
     ...gen.value, count: parseNum(gen.value.count) || 0,
     startFcMHz: cleanFreq(startF + genHalfBw.value),   // 录入的是边沿，模型收的是中心
-    stepMHz: parseNum(gen.value.stepMHz) ?? 0, bwMHz: bw, noStart: parseNum(gen.value.noStart) || 1,
+    stepMHz: gen.value.stepMHz ?? 0, bwMHz: bw, noStart: parseNum(gen.value.noStart) || 1,
     dnPol: gen.value.dnPolMode === 'same' ? gen.value.pol : null   // 模型收的是极化字母；null = 由它取正交
   })
   if (!chs.length) { flash('数量为 0'); return }
@@ -655,15 +1023,17 @@ function runGen() {
 }
 
 // ---- LO / 波束 ----
-function addLo() { plan.value?.los.push(newLo({ name: `LO${(plan.value.los.length || 0) + 1}`, valueMHz: null })) }
+function addLo() { openSec('lo'); plan.value?.los.push(newLo({ name: `LO${(plan.value.los.length || 0) + 1}`, valueMHz: null })) }
 function removeLo(id) {
   if (!plan.value) return
   plan.value.los = plan.value.los.filter((l) => l.id !== id)
   for (const c of plan.value.channels) if (c.loId === id) c.loId = ''
 }
 function addBeam() {
+  openSec('beam')
   const i = plan.value?.beams.length || 0
-  // 带宽默认跟上一条（一份计划里多半是同一档带宽的几个波束）；上一条也没填就给 36 MHz 兜底
+  // 带宽默认跟上一条（一份计划里多半是同一档带宽的几个波束）；上一条也没填就给 36 MHz 兜底。
+  // 频率不在这里给：这一条占哪一段是各转发器的事（在转发器那一区录）。
   const prev = plan.value?.beams[i - 1]
   plan.value?.beams.push(newBeam({
     name: `Beam ${i + 1}`,          // 波束名直接进图例，默认名走英文（人改中文名照画中文）
@@ -671,10 +1041,73 @@ function addBeam() {
     bwMHz: Number.isFinite(prev?.bwMHz) ? prev.bwMHz : DEFAULT_BW_MHZ
   }))
 }
-// 带宽录入：显示按工具栏那一个单位、存进去一律 MHz。换单位只换刻度不动物理量，
-// 故切 kHz/MHz/GHz 时数值自动改写（36 MHz ⇄ 36000 kHz），计划本身不变。
-const beamBwDisp = (b) => { const v = bwFromMHz(b.bwMHz, opt.value.unit); return v == null ? '' : v }
-function setBeamBw(b, v) { b.bwMHz = bwToMHz(v, opt.value.unit) }
+
+// ---- 从波束合成导入波束 ----
+//
+// 【同色的波束合并成一条】：同色 = 同频同极化，在频率上本就是同一件事，分成几条会让同一段频率
+// 在表里出现几遍。故一条 = 一个色，【名字 = 它覆盖的那几个波束代号】（'1,5'、'1-3,7'；代号 =
+// 整星连续编号，与 3D 页草图上画的那个数同一套）。未配色的波束没法按色合并，逐个成条。颜色与代号
+// 由波束合成给（几何是那边的事），起止频率与带宽仍在这里录（频率是这边的事）。
+// 色号（F1 这类）落在 synth 上，不另占一格：它是这一条的来源，挂在名字那格的 title 上读得出。
+// 重新导入按【色号】配对（未配色那种按波束 id）：名字/颜色还是上次导进来的原样就跟着刷新，
+// 人改过一次就钉死不再覆盖（同资源库自动命名那套，比对上一次的值即可，不必存标志位）。
+const synthPop = ref(false)
+const synthGroups = ref([])
+// 现读现用：波束合成在另一个窗口随时在改，缓存下来只会导进一份旧的
+function openSynthPop() { openSec('beam'); synthGroups.value = loadSynthGroups(); synthPop.value = true }
+// 本计划这颗星的组排前面（一份计划挂在一颗星下，多半就是导它自己那几组）
+const synthList = computed(() => {
+  const folder = plan.value?.satFolder || ''
+  return [...synthGroups.value].sort((a, b) => (a.satFolder === folder ? 0 : 1) - (b.satFolder === folder ? 0 : 1))
+})
+const synthSatName = (folder) => (satNodes.value.find((s) => s.folder === folder) || {}).satName || ''
+// 别的星上的组，行里写出星名 —— 一份计划挂在一颗星下，导错星是这一步唯一会犯的错
+const synthOtherSat = (g) => (g.satFolder === (plan.value?.satFolder || '') ? '' : synthSatName(g.satFolder))
+function synthTitle(g) {
+  const sat = synthSatName(g.satFolder)
+  const head = `${g.name}${sat ? ` · ${sat}` : ''} · ${g.beamCount} 个波束`
+  if (!g.colors.length) return `${head}｜还没有频率配色`
+  return `${head}｜${g.colors.map((c) => `${fcLabel(c.fc)}×${c.count}`).join(' · ')}${g.uncolored ? `｜${g.uncolored} 个未配色` : ''}`
+}
+// 名字 = 这一条覆盖的波束代号。撞名（另一颗星的组也有这几个号）才补上组名
+function synthBeamName(nos, group, used) {
+  const base = fmtBeamNos(nos)
+  if (!used.has(base)) return base
+  const withGroup = `${base}·${group}`
+  if (!used.has(withGroup)) return withGroup
+  for (let i = 2; ; i++) if (!used.has(`${base}(${i})`)) return `${base}(${i})`
+}
+function importSynth(g) {
+  if (!plan.value || !g?.entries?.length) return
+  const used = new Set(plan.value.beams.map((b) => b.name))
+  let added = 0, updated = 0
+  g.entries.forEach((e, i) => {
+    // 配对键：按色合并的用色号，未配色那种用波束合成那边的波束 id
+    const cur = plan.value.beams.find((b) => b.synth && b.synth.groupId === g.id
+      && (e.fc != null ? b.synth.fc === e.fc : b.synth.beamId === e.beamId))
+    const color = e.css || DEFAULT_BEAM_COLORS[i % DEFAULT_BEAM_COLORS.length]
+    if (cur) {
+      // 还是上次导进来的原样才跟着刷新 —— 人改过一次就是人的了（同 nameAuto 那套，只是不必存标志位）
+      if (cur.name === fmtBeamNos(cur.synth.nos)) cur.name = fmtBeamNos(e.nos)
+      if (cur.synth.fc != null && cur.color === fcCss(cur.synth.fc)) cur.color = color
+      cur.synth = { groupId: g.id, group: g.name, fc: e.fc, beamId: e.beamId, nos: e.nos.slice() }
+      updated++
+      return
+    }
+    const name = synthBeamName(e.nos, g.name, used)
+    used.add(name)
+    // 带宽不给默认值：这一条占多宽是这份计划的事，猜一个 36 只会让人以为已经填过（同「起止留空」）
+    plan.value.beams.push(newBeam({
+      name, color,
+      synth: { groupId: g.id, group: g.name, fc: e.fc, beamId: e.beamId, nos: e.nos.slice() }
+    }))
+    added++
+  })
+  synthPop.value = false
+  flash(`「${g.name}」：新增 ${added} 条${updated ? ` · 更新 ${updated} 条` : ''}`)
+}
+
+// 带宽录入与表里那几格同一套：显示按工具栏那一个单位、存进去一律 MHz（36 MHz ⇄ 36000 kHz）
 function removeBeam(id) {
   if (!plan.value) return
   plan.value.beams = plan.value.beams.filter((b) => b.id !== id)
@@ -711,17 +1144,52 @@ async function doExport(kind, opts = {}) {
       // 与它背后的几份计划这样才对得上，不必把它们硬揉成一份计划
       payload = composite ? JSON.stringify(list, null, 2)
         : JSON.stringify({ ...plan.value, carriers: carriers.value }, null, 2)
+    } else if (kind === 'xlsx' || kind === 'xlsxData') {
+      // ★ 出 IPC 前现造一份纯数据：Vue 的响应式 Proxy 过不了结构化克隆，invoke 会当场抛且
+      //   没人 catch（见 ipc-no-reactive-proxy）。模型本就是逐字段重造的，这一趟只作保险。
+      payload = JSON.parse(JSON.stringify(
+        buildFreqPlanXlsx(kind === 'xlsxData' ? 'data' : 'styled', plan.value, carriers.value, { unit: opt.value.unit })
+      ))
     } else if (kind === 'svg') payload = composite ? toSvgTextMulti(list, style) : toSvgText(plan.value, style)
     else if (kind === 'pdf') payload = composite ? await toPdfDataUrlMulti(list, style) : await toPdfDataUrl(plan.value, style)
     else if (composite) {
       payload = await toPngDataUrlMulti(list, style, png, (sc) => { note = `（纸面过大，倍率已降到 ${sc}×）` })
     } else payload = await toPngDataUrl(plan.value, style, png)
-    const ext = kind === 'json' ? 'json' : kind === 'svg' ? 'svg' : kind === 'pdf' ? 'pdf' : 'png'
-    const r = await api.freqPlan.exportFile(ext, payload, opts.name || plan.value?.name || 'Frequency Plan')
+    const ext = kind === 'json' ? 'json' : kind === 'svg' ? 'svg' : kind === 'pdf' ? 'pdf'
+      : (kind === 'xlsx' || kind === 'xlsxData') ? 'xlsx' : 'png'
+    // Excel 的默认文件名带上体例：一份计划两种版式常常同时导，同名会互相盖掉
+    const base = opts.name || plan.value?.name || 'Frequency Plan'
+    const name = kind === 'xlsx' ? `${base}-频率分配表`
+      : kind === 'xlsxData' ? `${base}-频率计划数据表` : base
+    const r = await api.freqPlan.exportFile(ext, payload, name)
     if (r?.canceled) return r
     flash(r?.ok ? '已导出：' + r.filePath + note : '导出失败：' + (r?.error || '未知错误'))
     return r
   } catch (e) { flash('导出失败：' + e.message); return null } finally { busy.value = '' }
+}
+
+// ---- 发到小程序 ----
+// 与上面五种导出并列的第六条路，只是落点不是文件而是一个 8 位密钥（小程序「工具栏 ·
+// 频率计划」输入即看）。★ 送的是【屏上这一份】（含 debounce 还没落盘的改动与载波），
+// 与合成导出的 planOf 同一个口径 —— 眼前的图与发出去的图必须是同一张。
+// ★★ 送的是导出那一刻的【版式】（绘制指令 + 解析结果），不是模型：小程序不重算 layout
+//    （那套口径两个月改三轮，照抄必漂，见 shared/fpMiniExport.js 文件头）。计划改了要重发。
+const miniOpen = ref(false)
+const miniConfigured = ref(false)
+const miniDeviceId = ref('')
+function buildMiniPack() {
+  const p = planOf(currentId.value)
+  if (!p) return { name: '', items: [] }
+  let it = fpMiniItem(p, { unit: opt.value.unit })
+  // Excel 数据表是随包【捎】的一件（小程序那边「导出数据表」吃的就是它）。它按一条载波一行铺开，
+  // 载波多的计划能捎出上百 KB —— 不该为了捎一张表把整包顶过云函数的返回上限、连图都发不出去。
+  // 估一次，紧了就摘掉：图与分配表照送，小程序点导出时会说清楚为什么没有。
+  if (estimateBytes(it) > SIZE_MAX - 48 * 1024) it = fpMiniItem(p, { unit: opt.value.unit, xlsx: false })
+  return { name: p.name || '频率计划', items: [it] }
+}
+function openMiniSend() {
+  if (!plan.value) return
+  miniOpen.value = true
 }
 
 // ---- 合成导出：多份计划叠成一张完整的频率计划图 ----
@@ -852,13 +1320,24 @@ onMounted(async () => {
   if (index.value.length) await openPlan(index.value[0].id)
   measure()
   window.addEventListener('resize', measure)
+  // Esc 逐层退出（最上面的那一层先退）：确认框 → 合成导出 → 各浮层。
+  // 从前浮层只能点遮罩关，而手已经在键盘上（浮层多半是敲完一格顺手点开的）
+  window.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return
+    if (confirmMsg.value) { answer(false); return }
+    if (mergeOpen.value) { mergeOpen.value = false; return }
+    if (addPop.value || beamPop.value || synthPop.value) { addPop.value = false; beamPop.value = ''; synthPop.value = false }
+  })
   // 从文件区双击某份计划进来
   api?.freqPlan?.onOpenPlan?.((id) => { if (id) openPlan(id) })
   // 窗口失焦/关闭前把待存的落盘（debounce 尾巴不能丢）
   window.addEventListener('beforeunload', () => { if (dirty) doSave() })
+  // 「发到小程序」的凭证与本机ID（缺凭证时菜单项仍在，点开即说明原因，不静默失效）
+  api?.share?.configured?.().then((v) => { miniConfigured.value = !!v }).catch(() => {})
+  api?.app?.deviceId?.().then((v) => { miniDeviceId.value = String(v || '') }).catch(() => {})
 })
 watch(tab, () => nextTick(measure))
-watch([leftW, rightW], () => nextTick(measure))   // 左右栏拖宽 = 中栏变窄，图跟着重算宽度
+watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏变窄，图跟着重算宽度
 </script>
 
 <template>
@@ -880,15 +1359,21 @@ watch([leftW, rightW], () => nextTick(measure))   // 左右栏拖宽 = 中栏变
           <button @click="doExport('svg')">SVG</button>
           <button @click="doExport('json')">JSON 数据</button>
           <div class="ddsep"></div>
-          <button @click="openMerge" title="多选几份计划（一颗星的 C / Ku / Ka 各一份），自上而下叠成一张完整的频率计划">合成导出（多份）…</button>
+          <button @click="doExport('xlsx')" title="依《卫星转发器频率分配表》体例：总表（频率轴上的转发器排布，按极化分行，编号行下逐条绘制波束占段，配色与界面一致）＋ 波束表（各波束所属转发器）＋ 每 3 条转发器一张的分配表（波束占段带 · 载波占用条 · 使用情况汇总 · 冲突与越界明细）">Excel · 频率分配表（样式版）</button>
+          <button @click="doExport('xlsxData')" title="两张表：计划概览（规模 / 跨度 / 装填合计 / 波束 / 本振 / 校验条目）＋ 转发器·载波总表（每行一条载波，转发器字段随之重复；整列无值时不输出该列）。频率与带宽以数值写入，逐转发器 / 逐波束的核算可由透视表直接得出">Excel · 纯数据表</button>
+          <div class="ddsep"></div>
+          <button @click="openMerge" title="选择多份计划（同一卫星的 C / Ku / Ka 各一份），自上而下合成为一张完整的频率计划">合成导出（多份）…</button>
+          <div class="ddsep"></div>
+          <button @click="openMiniSend" title="生成只读快照并上传，返回 8 位密钥；在小程序「工具栏 · 频率计划」输入该密钥即可查看图、转发器清单与频率分配表。快照对应当前版式，计划变更后需重新发送">发送到小程序…</button>
         </div>
       </div>
       <span class="spacer"></span>
-      <select class="ci nar" v-model="opt.unit" title="全图共用的单位：频率标注、图例带宽、波束那组的带宽录入都按这个刻度写。只换刻度，不改任何物理量">
+      <select class="ci nar" v-model="opt.unit"
+        title="整份计划共用的单位：图上的频率标注与图例、转发器表、检查器、批量条、批量生成、LO、频率分配表、校验条目，全部频率与带宽按此刻度读写。仅变更刻度，不改变物理量 —— 14000 MHz 切换至 kHz 即记为 14000000，既有计划一并换算">
         <option v-for="u in FREQ_UNITS" :key="u" :value="u">{{ u }}</option>
       </select>
       <label class="fld">图字号 <input class="ci num xnar" type="number" v-model.number="opt.fontSize" min="8" max="22" /></label>
-      <label class="fld" title="10~800%，回车或离焦生效；Ctrl+滚轮同效。只放大屏上显示，导出倍率在「导出」菜单里选">缩放
+      <label class="fld" title="10~800%，回车或离焦生效；Ctrl+滚轮同效。仅缩放界面显示，导出倍率在「导出」菜单中选择">缩放
         <input class="ci num xnar" :value="zoomPct" @input="zoomPct = $event.target.value"
           @change="commitZoom" @keydown.enter="commitZoom" /><span class="pct">%</span>
       </label>
@@ -896,7 +1381,11 @@ watch([leftW, rightW], () => nextTick(measure))   // 左右栏拖宽 = 中栏变
     </header>
     <div v-if="msg" class="msg">{{ msg }}</div>
 
-    <div class="body" :style="{ gridTemplateColumns: plan ? `${leftW}px 0px minmax(0,1fr) 0px ${rightW}px` : `${leftW}px 0px minmax(0,1fr)` }">
+    <!-- 分配表是整幅的文档，故那一页的设置栏另记一个宽度、可一路拖到 0 收起（见 allocRightW）：
+         十四列的表要中栏宽，而波束占段又只在设置栏里改，两边都得让人自己定。收起时第四轨从 0
+         撑到 7px —— 手柄骑在分界线上靠负边距抵消，分界线正压在窗口右缘时会被切掉一半。
+         转发器身份写在每一组的组头上，检查器不在场也读得出这一行落在哪条转发器上。 -->
+    <div class="body" :style="{ gridTemplateColumns: plan ? `${leftW}px 0px minmax(0,1fr) ${rightWNow ? 0 : 7}px ${rightWNow}px` : `${leftW}px 0px minmax(0,1fr)` }">
       <!-- 左：卫星 → 频率计划 两级树 -->
       <aside class="left">
         <div class="lh">
@@ -910,9 +1399,7 @@ watch([leftW, rightW], () => nextTick(measure))   // 左右栏拖宽 = 中栏变
           <button v-if="q" class="qx" title="清空" @click="q = ''"><Icon name="x" :size="10" /></button>
         </div>
         <div class="lscroll">
-          <div v-if="!satNodes.length" class="lnone">
-            卫星树为空 — 频率计划挂在卫星下（与 GRD 天线平级）。请先到主窗口「星座地图 3D · 覆盖分析」或「文件管理 · GRD 天线」添加卫星。
-          </div>
+          <div v-if="!satNodes.length" class="lnone">卫星树为空。</div>
           <div v-else-if="!tree.length" class="lnone">没有匹配「{{ q }}」的卫星或频率计划。</div>
           <template v-else>
             <section v-for="g in tree" :key="g.key" class="grp">
@@ -929,19 +1416,27 @@ watch([leftW, rightW], () => nextTick(measure))   // 左右栏拖宽 = 中栏变
                   <Icon name="plus" :size="11" /><span v-if="!g.items.length">新建</span>
                 </button>
               </div>
-              <!-- 二级：该星下的计划 -->
+              <!-- 二级：该星下的计划。三级：这份计划的频率分配表（载波摆在哪条转发器的哪一段上） -->
               <div class="kids" v-show="isOpen(g)">
-                <div v-for="e in g.items" :key="e.id" class="li" :class="{ on: e.id === currentId }" :data-id="e.id" @click="openPlan(e.id)">
-                  <div class="ln" :title="e.name">{{ shortName(e, g) }}</div>
-                  <div class="lm">{{ e.band }} · {{ e.transponderCount }} 转发器<template v-if="e.beamCount"> · {{ e.beamCount }} 波束</template></div>
-                  <div class="lops" @click.stop>
-                    <button class="lop" title="复制" @click="duplicatePlan(e)"><Icon name="copy" :size="11" /></button>
-                    <button class="lop del" title="删除" @click="removePlan(e)"><Icon name="trash" :size="11" /></button>
+                <div v-for="e in g.items" :key="e.id" class="pw">
+                  <div class="li" :class="{ on: e.id === currentId && tab !== 'alloc' }" :data-id="e.id" @click="openTable(e.id)">
+                    <div class="ln" :title="e.name">{{ shortName(e, g) }}</div>
+                    <div class="lm">{{ e.band }} · {{ e.transponderCount }} 转发器<template v-if="e.beamCount"> · {{ e.beamCount }} 波束</template></div>
+                    <div class="lops" @click.stop>
+                      <button class="lop" title="复制" @click="duplicatePlan(e)"><Icon name="copy" :size="11" /></button>
+                      <button class="lop del" title="删除" @click="removePlan(e)"><Icon name="trash" :size="11" /></button>
+                    </div>
+                  </div>
+                  <div class="sub" :class="{ on: e.id === currentId && tab === 'alloc' }" @click="openAlloc(e.id)"
+                    title="本计划的频率分配表：逐转发器列出该段频谱所分配的载波（起—中—止 · 占用带宽 · 功率带宽）">
+                    <Icon name="table" :size="11" />
+                    <span class="sbn">频率分配表</span>
+                    <span class="sbc" v-if="allocCount(e)">{{ allocCount(e) }}</span>
                   </div>
                 </div>
               </div>
             </section>
-            <div v-if="q && !shown" class="lnone">只匹配到卫星名，这些星下还没有频率计划——在卫星行右端点 ＋ 建一份。</div>
+            <div v-if="q && !shown" class="lnone">所选卫星下尚无频率计划。</div>
           </template>
         </div>
       </aside>
@@ -954,26 +1449,43 @@ watch([leftW, rightW], () => nextTick(measure))   // 左右栏拖宽 = 中栏变
       <main class="center">
         <div v-if="!plan" class="mnone">
           <p>未打开频率计划。</p>
-          <p class="dim">左栏「计划库」按卫星分层：点计划名打开；在卫星名右端点 <Icon name="plus" :size="11" /> 为那颗星新建一份。</p>
-          <p class="dim">新建后用右侧「批量生成」按「起始频率 + 频率间隔 + 数量」铺一排转发器。</p>
         </div>
         <template v-else>
           <div class="chartbox" ref="chartWrap" @wheel="onWheelZoom">
+            <!-- 双击一块 = 选中并把光标送到它那一侧的中心频率格（见 editBlock）：改频率是这张图上
+                 最常做的一件事，从前要「点块 → 眼睛移到右栏 → 找到那一格 → 点进去」 -->
             <FpChart :plan="plan" :selected-id="selectedId" :chart-style="opt" :width="chartW" :zoom="zoom"
-              @select="selectedId = $event" />
+              @select="selectedId = $event" @dblclick-block="editBlock" />
           </div>
 
           <div class="tabs">
             <button class="tb-b" :class="{ on: tab === 'table' }" @click="tab = 'table'">转发器表 <i>{{ plan.channels.length }}</i></button>
-            <button class="tb-b" :class="{ on: tab === 'capacity' }" @click="tab = 'capacity'">容量规划 <i v-if="carriers.length">{{ carriers.length }}</i></button>
+            <button class="tb-b" :class="{ on: tab === 'alloc' }" @click="tab = 'alloc'">频率分配表 <i v-if="carriers.length">{{ carriers.length }}</i></button>
             <button class="tb-b" :class="{ on: tab === 'check' }" @click="tab = 'check'">校验 <i v-if="issues.length" :class="{ bad: errCount }">{{ issues.length }}</i></button>
             <span class="spacer"></span>
             <template v-if="tab === 'table'">
-              <!-- 拖选是这张表最省手的入口，但手势本身不可见 —— 没勾选时在这里写一句，勾上了就换成批量条 -->
-              <span v-if="!checkedCount && plan.channels.length" class="hint">左端行号列按住划过几行 = 批量改</span>
-              <button class="mini" @click="addChannel"><Icon name="plus" :size="12" /> 转发器</button>
+              <button class="mini" @click="addChannel()"><Icon name="plus" :size="12" /> 转发器</button>
+              <!-- 信标 / 遥控 / 遥测：加得少，收在一个小菜单里，免得工具栏并排四个「+」 -->
+              <span class="bwrap">
+                <button class="mini ghost caret" :class="{ on: addPop }" @click="addPop = !addPop"
+                  title="添加信标 / 遥控 TC / 遥测 TM —— 该三类仅含频率与极化，图上以箭头标注">▾</button>
+                <template v-if="addPop">
+                  <div class="bpmask" @click="addPop = false"></div>
+                  <div class="bpop addpop">
+                    <button v-for="k in MARK_KINDS" :key="k.key" class="apo" @click="addChannel(k.key); addPop = false">
+                      <Icon name="plus" :size="11" /> {{ k.label }}
+                    </button>
+                  </div>
+                </template>
+              </span>
               <button class="mini ghost" @click="sortChannels" title="按上行频率升序重排">排序</button>
             </template>
+            <!-- 分配表页的设置栏开合。宽度靠拖分界线调，这个钮只管开与关（收起后分界线贴着窗口
+                 右缘，光靠它不好找） -->
+            <button v-if="tab === 'alloc'" class="mini ghost pnb" :class="{ on: allocRightW > 0 }" @click="toggleAllocRight"
+              title="设置栏：波束占段（转发器频带在各波束间的划分）、转发器参数、LO 均在此处编辑。拖动左缘调整宽度">
+              <Icon name="panel-right" :size="12" />
+            </button>
           </div>
 
           <div class="tabbody">
@@ -985,23 +1497,23 @@ watch([leftW, rightW], () => nextTick(measure))   // 左右栏拖宽 = 中栏变
 
               <!-- 这四个下拉不另配文字标签：占位项本身就是标签（「类型…」），选完即施加、随即弹回。
                    一条批量条上七八组控件，每组再前置两三个字，窄栏下能折成三行 -->
-              <select class="ci bsl" v-model="bsel.kind" @change="batchSet('kind')" title="把已选转发器的类型统一改成…">
+              <select class="ci bsl" v-model="bsel.kind" @change="batchSet('kind')" title="将已选转发器的类型统一设为…">
                 <option value="">类型…</option>
                 <option v-for="k in CHANNEL_KINDS" :key="k.key" :value="k.key">{{ k.label }}</option>
               </select>
-              <select class="ci bsl" v-model="bsel.upPol" @change="batchSet('upPol')" title="把已选转发器的上行极化统一改成…">
+              <select class="ci bsl" v-model="bsel.upPol" @change="batchSet('upPol')" title="将已选转发器的上行极化统一设为…">
                 <option value="">上行极化…</option>
                 <option v-for="p in POLS" :key="p" :value="p">{{ POL_LABEL[p] }}</option>
               </select>
-              <select class="ci bsl" v-model="bsel.dnPol" @change="batchSet('dnPol')" title="把已选转发器的下行极化统一改成…">
+              <select class="ci bsl" v-model="bsel.dnPol" @change="batchSet('dnPol')" title="将已选转发器的下行极化统一设为…">
                 <option value="">下行极化…</option>
                 <option value="ortho">逐条取上行的正交</option>
                 <option v-for="p in POLS" :key="p" :value="p">{{ POL_LABEL[p] }}</option>
               </select>
-              <select class="ci bsl" v-model="bsel.lo" @change="batchSet('lo')" title="把已选转发器挂到同一个本振上（下行随之按等式重算）">
+              <select class="ci bsl" v-model="bsel.lo" @change="batchSet('lo')" title="将已选转发器统一挂接至同一本振（下行随之按等式重算）">
                 <option value="">本振 LO…</option>
                 <option :value="NO_LO">不挂 LO</option>
-                <option v-for="l in plan.los" :key="l.id" :value="l.id">{{ l.name }} · {{ l.valueMHz ?? '—' }} MHz</option>
+                <option v-for="l in plan.los" :key="l.id" :value="l.id">{{ loOption(l) }}</option>
               </select>
               <!-- 波束是多选，塞不进一个下拉：点开一个小浮层照常勾，勾完一次落到这 N 条上 -->
               <span v-for="side in ['up', 'dn']" :key="side" class="bwrap">
@@ -1028,23 +1540,27 @@ watch([leftW, rightW], () => nextTick(measure))   // 左右栏拖宽 = 中栏变
               </span>
               <span class="bsep"></span>
 
-              <label class="fld" title="填值 = 这 N 条各自单独指定带宽；「清」= 回到随所属波束组的标称值">带宽
-                <input class="ci num xnar" v-model="batch.bwMHz" placeholder="MHz" @keydown.enter="batchBw(false)" />
+              <label class="fld" title="填值 = 所选 N 条各自单独指定带宽；「清」= 恢复为所属波束组的标称值">带宽
+                <input class="ci num xnar" :value="dval('batch.bw', batch.bwMHz)" :placeholder="U"
+                  @input="dput('batch.bw', $event.target.value, (m) => { batch.bwMHz = m })" @blur="ddone"
+                  @keydown.enter="batchBw(false)" />
               </label>
               <button class="mini ghost xs" :disabled="!batchBwOk" @click="batchBw(false)">应用</button>
               <button class="mini ghost xs" @click="batchBw(true)" title="清空带宽 = 随所属波束组的标称值">清</button>
-              <label class="fld" title="整条频带一起挪：联动态的下行由 LO 等式跟着走，解耦态的下行同量平移">平移
-                <input class="ci num xnar" v-model="batch.shiftMHz" placeholder="±MHz" @keydown.enter="batchShift" />
+              <label class="fld" title="整条频带整体平移：联动态下行按 LO 等式随动，解耦态下行等量平移">平移
+                <input class="ci num xnar" :value="dval('batch.shift', batch.shiftMHz)" :placeholder="`±${U}`"
+                  @input="dput('batch.shift', $event.target.value, (m) => { batch.shiftMHz = m })" @blur="ddone"
+                  @keydown.enter="batchShift" />
               </label>
               <button class="mini ghost xs" :disabled="!batchShiftOk" @click="batchShift">应用</button>
-              <label class="fld" title="按表上的先后顺次给号；{n} 处替换为序号">编号
+              <label class="fld" title="按表内先后顺序编号；{n} 处替换为序号">编号
                 <input class="ci xnar" v-model="batch.noPattern" @keydown.enter="batchRenumber" />
                 <input class="ci num xxnar" v-model="batch.noStart" title="起始序号" @keydown.enter="batchRenumber" />
               </label>
               <button class="mini ghost xs" @click="batchRenumber">重编号</button>
               <span class="bsep"></span>
 
-              <button class="mini ghost" @click="batchDuplicate" title="复制这 N 条到表尾，勾选随之转到副本上（接着整批改极化/频率即为 B 面）">
+              <button class="mini ghost" @click="batchDuplicate" title="复制所选 N 条至表尾，勾选状态转至副本（随后整批修改极化/频率即为 B 面）">
                 <Icon name="copy" :size="12" /> 复制
               </button>
               <button class="mini ghost bdel" @click="batchRemove"><Icon name="trash" :size="12" /> 删除</button>
@@ -1052,7 +1568,8 @@ watch([leftW, rightW], () => nextTick(measure))   // 左右栏拖宽 = 中栏变
 
             <!-- 转发器表 -->
             <div v-if="tab === 'table'" class="tscroll" ref="tblScroll">
-              <table class="t" :class="{ dragsel: dragging }">
+              <!-- ↑↓ 在同一列上下走（Excel 手感）：绑在表上而不是逐格绑，下拉自己那套 ↑↓ 让开 -->
+              <table class="t" :class="{ dragsel: dragging }" :style="{ '--fp-numw': numColW }" @keydown="gridKey">
                 <thead>
                   <tr>
                     <!-- 波束两列：一列贴上行、一列贴下行。多波束是分方向的（几个波束收、一个波束发是常态），
@@ -1062,58 +1579,110 @@ watch([leftW, rightW], () => nextTick(measure))   // 左右栏拖宽 = 中栏变
                         :disabled="!plan.channels.length" @change="toggleCheckAll"
                         title="全选 / 全不选" />
                     </th>
-                    <th>编号</th><th>类型</th><th>上行中心 MHz</th><th>带宽 MHz</th><th>极化</th><th>上行波束</th>
-                    <th>LO</th><th>下行中心 MHz</th><th>极化</th><th>下行波束</th><th></th>
+                    <!-- 列头写的是当前刻度（工具栏那个下拉），不恒写 MHz —— 表上的数与图上的数同一把尺子。
+                         频率那两格的口径可切：中心 + 带宽 ⇄ 起 + 止（列数不变，见 tcols） -->
+                    <th>编号</th><th>类型</th>
+                    <th class="colsw" @click="tcols = tcols === 'fc' ? 'edge' : 'fc'"
+                      :title="`频率列口径：现为「${tcols === 'fc' ? '中心 + 带宽' : '起 + 止'}」，点击切到「${tcols === 'fc' ? '起 + 止' : '中心 + 带宽'}」。同一段频带的两种写法，手上的计划表是哪一种就切到哪一种`">
+                      {{ tcols === 'fc' ? '上行中心' : '上行起' }} {{ U }} <Icon name="arrow-left-right" :size="10" />
+                    </th>
+                    <th>{{ tcols === 'fc' ? '带宽' : '上行止' }} {{ U }}</th><th>极化</th><th>上行波束</th>
+                    <th>LO</th><th>{{ tcols === 'fc' ? '下行中心' : '下行起' }} {{ U }}</th>
+                    <th v-if="tcols === 'edge'">下行止 {{ U }}</th>
+                    <th>极化</th><th>下行波束</th><th></th>
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="(ch, i) in plan.channels" :key="ch.id" :data-idx="i"
-                    :class="{ on: ch.id === selectedId, ckd: isChecked(ch.id) }" @click="selectedId = ch.id">
+                  <!-- 选中走 mousedown + focusin，不走 click：这一行几乎每格都是输入框/下拉，
+                       它们各自 stopPropagation 之后 click 根本冒不到 tr 上（「点第 5 行的编号，
+                       右栏还停在第 1 行」即由此而来）。mousedown 在聚焦之前就落定，focusin 兜住
+                       Tab 键跨行的情形 —— 落到哪一行，右栏检查器就是哪一行 -->
+                  <tr v-for="(ch, i) in plan.channels" :key="ch.id" :data-idx="i" :data-id="ch.id"
+                    :class="{ on: ch.id === selectedId, ckd: isChecked(ch.id) }"
+                    @mousedown="selectedId = ch.id" @focusin="selectedId = ch.id">
                     <!-- 行头槽：按住往下划即整片选中（Excel 行头那套）。勾选 = 批量作用域，
-                         点行身 = 送进右栏检查器，两件事，故这一格不往上冒泡 -->
+                         与「点行身 = 送进右栏检查器」是两件事 -->
                     <td class="ck" @click.stop @mousedown="gutterDown(i, $event)"
-                      title="按住往下（或往上）划 = 连选一片；单击 = 只选这一行；Shift 单击 = 从上次那行连选到这行">
+                      title="按住拖动 = 连续多选；单击 = 单选该行；Shift 单击 = 从上一选中行连选至该行">
                       <input type="checkbox" :checked="isChecked(ch.id)" @change.stop="toggleCheck(ch, $event)" />
                       <i class="rn">{{ i + 1 }}</i>
                     </td>
-                    <td><input class="ci nar" v-model="ch.no" @click.stop /></td>
+                    <td><input class="ci nar" v-model="ch.no" /></td>
                     <td>
-                      <select class="ci selc selkind" v-model="ch.kind" @click.stop>
+                      <!-- 改类型走 setKind：切成信标/遥测/遥控时把频率折到它那一侧（见 foldMark） -->
+                      <select class="ci selc selkind" :value="ch.kind" @change="setKind(ch, $event.target.value)">
                         <option v-for="k in CHANNEL_KINDS" :key="k.key" :value="k.key">{{ k.label }}</option>
                       </select>
                     </td>
-                    <td><input class="ci num" :value="ch.up.fcMHz ?? ''" @input="setFc(ch, 'up', $event.target.value)" @click.stop
-                      :title="dnLinked(ch) ? '与下行由 LO 联动：改这里下行跟着变' : ''" /></td>
-                    <td class="dnum"><input class="ci num nar" :value="ch.up.bwMHz ?? ''" :placeholder="groupBw(ch)"
-                      @input="setNum(ch.up, 'bwMHz', $event.target.value)" @click.stop
-                      title="留空 = 取所属波束/带宽组的标称值（灰字为继承值）；填值 = 本转发器单独指定" /></td>
-                    <td><select class="ci selc selpol" v-model="ch.up.pol" @click.stop :title="POL_LABEL[ch.up.pol]"><option v-for="p in POLS" :key="p" :value="p">{{ p }}</option></select></td>
+                    <!-- 标记类载波（信标/遥测/遥控）只有频率与极化，且只在一侧：其余那几格连同它那一侧
+                         之外的两格一并留空，格位不动 —— 表还是那张表，只是这一行本就没有那些量。
+                         等幅波没有频带两端，故切到「起 + 止」那一档时它这两格照旧写频率与间隔带宽 -->
+                    <td><input v-if="hasSide(ch, 'up') && (tcols === 'fc' || isMk(ch))" class="ci num"
+                      :value="lval(fcKey(ch, 'up'), ch.up.fcMHz)"
+                      @input="lput(fcKey(ch, 'up'), ch, $event.target.value)"
+                      @change="lend(fcKey(ch, 'up'), (c, m) => commitFc(c, 'up', m))" @blur="lend(fcKey(ch, 'up'), (c, m) => commitFc(c, 'up', m))"
+                      :title="dnLinked(ch) ? '与下行经 LO 联动：此处修改后下行随动。回车或离焦生效' : '回车或离焦生效'" />
+                      <input v-else-if="!isMk(ch)" class="ci num" :class="pendCls(ch, 'up', 'f1')" :value="edgeVal(ch, 'up', 'f1')" :title="edgeTitle(ch, 'up', 'f1')"
+                        @input="lput(edgeKey(ch, 'up', 'f1'), ch, $event.target.value)"
+                        @change="lend(edgeKey(ch, 'up', 'f1'), (c, m) => commitEdge(c, 'up', 'f1', m))"
+                        @blur="lend(edgeKey(ch, 'up', 'f1'), (c, m) => commitEdge(c, 'up', 'f1', m))" /></td>
+                    <!-- 这一格转发器写带宽（或终止），标记类写「间隔带宽」（轴上给它留的那一格，不是信号带宽）：
+                         同一列两种量，各带各的 title —— 分两列的话标记类那一行会空着一格、转发器那一列
+                         又空着一整列，格位反倒更乱 -->
+                    <td class="dnum"><input v-if="!isMk(ch) && tcols === 'fc'" class="ci num nar"
+                      :value="lval(bwKey(ch, 'up'), ch.up.bwMHz)" :placeholder="groupBw(ch)"
+                      @input="lput(bwKey(ch, 'up'), ch, $event.target.value)"
+                      @change="lend(bwKey(ch, 'up'), (c, m) => commitBw(c, 'up', m))" @blur="lend(bwKey(ch, 'up'), (c, m) => commitBw(c, 'up', m))"
+                      title="留空 = 取所属波束/带宽组的标称值（灰字为继承值）；填值 = 本转发器单独指定。起始锁定、终止随动（终止 = 起始 + 带宽）。回车或离焦生效" />
+                      <input v-else-if="!isMk(ch)" class="ci num" :class="pendCls(ch, 'up', 'f2')" :value="edgeVal(ch, 'up', 'f2')" :title="edgeTitle(ch, 'up', 'f2')"
+                        @input="lput(edgeKey(ch, 'up', 'f2'), ch, $event.target.value)"
+                        @change="lend(edgeKey(ch, 'up', 'f2'), (c, m) => commitEdge(c, 'up', 'f2', m))"
+                        @blur="lend(edgeKey(ch, 'up', 'f2'), (c, m) => commitEdge(c, 'up', 'f2', m))" />
+                      <input v-else class="ci num nar" :value="lval(slotKey(ch, mkSide(ch)), ch[mkSide(ch)].slotMHz)"
+                        @input="lput(slotKey(ch, mkSide(ch)), ch, $event.target.value)"
+                        @change="lend(slotKey(ch, mkSide(ch)), (c, m) => { c[mkSide(c)].slotMHz = m })"
+                        @blur="lend(slotKey(ch, mkSide(ch)), (c, m) => { c[mkSide(c)].slotMHz = m })"
+                        :title="`${KIND_LABEL[ch.kind]}在频率轴上占的那一格（间隔带宽，不是信号带宽）：填 n 则频带端点算到 频率 ± n/2 上；留空 = 不占频带`" /></td>
+                    <td><select v-if="hasSide(ch, 'up')" class="ci selc selpol" v-model="ch.up.pol" :title="POL_LABEL[ch.up.pol]"><option v-for="p in POLS" :key="p" :value="p">{{ p }}</option></select></td>
                     <td>
-                      <BeamPicker mode="chips" :beams="plan.beams" :unit="opt.unit" v-model="ch.beamUpIds" />
+                      <BeamPicker v-if="!isMk(ch)" mode="chips" :beams="plan.beams" :unit="opt.unit" v-model="ch.beamUpIds" />
                     </td>
                     <td>
                       <!-- 这格只写得下 LO 名，数值放进 title（几个 LO 重名时也就这一处分得清） -->
-                      <select class="ci selc sello" v-model="ch.loId" @click.stop :title="loTitle(ch)">
+                      <select v-if="!isMk(ch)" class="ci selc sello" v-model="ch.loId" :title="loTitle(ch)">
                         <option value="">—</option>
                         <option v-for="l in plan.los" :key="l.id" :value="l.id">{{ l.name }}</option>
                       </select>
                     </td>
                     <!-- 下行不再是「灰字占位的推算值」：LO 定了它就是可直接录的一侧，录进去上行反解跟着变 -->
                     <td class="dnum">
-                      <div class="lkc">
-                        <input class="ci num" :value="dnDisp(rowsResolved[i])" @click.stop
-                          @input="setFc(ch, 'dn', $event.target.value)"
-                          :title="dnLinked(ch) ? '与上行由 LO 联动：f下 = f上 − LO —— 改这里上行跟着变'
-                            : (dnCut(ch) ? '下行已与 LO 解耦（cross-strap）：两侧各填各的。点右侧图标按 LO 重新联动'
-                              : '未挂 LO —— 上下行各自独立；在左边 LO 列选一个即可联动')" />
+                      <div class="lkc" v-if="hasSide(ch, 'dn')">
+                        <input v-if="tcols === 'fc' || isMk(ch)" class="ci num" :value="lval(fcKey(ch, 'dn'), dnDisp(rowsResolved[i]))"
+                          @input="lput(fcKey(ch, 'dn'), ch, $event.target.value)"
+                          @change="lend(fcKey(ch, 'dn'), (c, m) => commitFc(c, 'dn', m))" @blur="lend(fcKey(ch, 'dn'), (c, m) => commitFc(c, 'dn', m))"
+                          :title="(isMk(ch) ? `${KIND_LABEL[ch.kind]}的频率（下行）`
+                            : (dnLinked(ch) ? '与上行由 LO 联动：f下 = f上 − LO —— 改这里上行跟着变'
+                              : (dnCut(ch) ? '下行已与 LO 解耦（cross-strap）：上下行分别录入。点击右侧图标按 LO 恢复联动'
+                                : '未挂 LO —— 上下行各自独立；在左边 LO 列选一个即可联动'))) + '。回车或离焦生效'" />
+                        <input v-else class="ci num" :class="pendCls(ch, 'dn', 'f1')" :value="edgeVal(ch, 'dn', 'f1')" :title="edgeTitle(ch, 'dn', 'f1')"
+                          @input="lput(edgeKey(ch, 'dn', 'f1'), ch, $event.target.value)"
+                          @change="lend(edgeKey(ch, 'dn', 'f1'), (c, m) => commitEdge(c, 'dn', 'f1', m))"
+                          @blur="lend(edgeKey(ch, 'dn', 'f1'), (c, m) => commitEdge(c, 'dn', 'f1', m))" />
                         <button v-if="dnCut(ch)" class="lkb" title="下行已与 LO 解耦（cross-strap）—— 点击按 LO 重新联动"
                           @click.stop="setCut(ch, false)"><Icon name="unlink-2" :size="11" /></button>
                       </div>
                     </td>
-                    <td><select class="ci selc selpol" v-model="ch.dn.pol" @click.stop :title="POL_LABEL[ch.dn.pol]"><option v-for="p in POLS" :key="p" :value="p">{{ p }}</option></select></td>
+                    <!-- 「起 + 止」那一档下行多出的这一格（中心 + 带宽档下没有：带宽两侧同宽，只写一遍） -->
+                    <td class="dnum" v-if="tcols === 'edge'">
+                      <input v-if="hasSide(ch, 'dn') && !isMk(ch)" class="ci num" :class="pendCls(ch, 'dn', 'f2')" :value="edgeVal(ch, 'dn', 'f2')" :title="edgeTitle(ch, 'dn', 'f2')"
+                        @input="lput(edgeKey(ch, 'dn', 'f2'), ch, $event.target.value)"
+                        @change="lend(edgeKey(ch, 'dn', 'f2'), (c, m) => commitEdge(c, 'dn', 'f2', m))"
+                        @blur="lend(edgeKey(ch, 'dn', 'f2'), (c, m) => commitEdge(c, 'dn', 'f2', m))" />
+                    </td>
+                    <td><select v-if="hasSide(ch, 'dn')" class="ci selc selpol" v-model="ch.dn.pol" :title="POL_LABEL[ch.dn.pol]"><option v-for="p in POLS" :key="p" :value="p">{{ p }}</option></select></td>
                     <td>
                       <!-- 留空 = 随上行（灰色片示意），与带宽/下行频率两格的灰字继承值同一套读法 -->
-                      <BeamPicker mode="chips" :beams="plan.beams" :unit="opt.unit" v-model="ch.beamDnIds" :inherit="ch.beamUpIds" />
+                      <BeamPicker v-if="!isMk(ch)" mode="chips" :beams="plan.beams" :unit="opt.unit" v-model="ch.beamDnIds" :inherit="ch.beamUpIds" />
                     </td>
                     <td class="ops" @click.stop>
                       <button class="lop" title="复制" @click="duplicateChannel(ch.id)"><Icon name="copy" :size="11" /></button>
@@ -1122,14 +1691,14 @@ watch([leftW, rightW], () => nextTick(measure))   // 左右栏拖宽 = 中栏变
                   </tr>
                 </tbody>
               </table>
-              <div v-if="!plan.channels.length" class="none">
-                还没有转发器。用右侧「批量生成」按「起始频率 + 频率间隔 + 数量」一次铺一排，或点上方「转发器」逐个加。
-              </div>
+              <div v-if="!plan.channels.length" class="none">还没有转发器。</div>
             </div>
 
-            <!-- 容量规划 -->
-            <FpCapacity v-else-if="tab === 'capacity'" :plan="plan" :carriers="carriers"
-              @update:carriers="carriers = $event" @select-channel="selectedId = $event" />
+            <!-- 频率分配表（左栏树里挂在这份计划下的那个子节点，也从这里出） -->
+            <!-- selected-id 双向连着图：图上点一块转发器，分配表就摊开那一条；反过来亦然 -->
+            <FpAlloc v-else-if="tab === 'alloc'" :plan="plan" :carriers="carriers" :unit="opt.unit" :selected-id="selectedId"
+              @update:carriers="carriers = $event" @select-channel="selectedId = $event" @flash="flash"
+              @set-channel-beam="setChannelBeam" />
 
             <!-- 校验 -->
             <div v-else class="tscroll chk">
@@ -1144,93 +1713,227 @@ watch([leftW, rightW], () => nextTick(measure))   // 左右栏拖宽 = 中栏变
         </template>
       </main>
 
-      <!-- 中/右分界上的拖宽手柄 -->
-      <div class="rz" :class="{ on: resizing === 'right' }" v-if="plan" title="拖动调整设置栏宽度"
+      <!-- 中/右分界上的拖宽手柄。收起时仍在（这是把设置栏拉回来的那一处），故只认 plan -->
+      <div class="rz" :class="{ on: resizing === 'right', closed: !rightWNow }" v-if="plan"
+        :title="rightWNow ? '拖动调整设置栏宽度' : '向左拖出设置栏'"
         @mousedown.prevent="startResize('right', $event)"></div>
 
       <!-- 右：检查器 -->
-      <aside class="right" v-if="plan">
-        <div class="sec">
-          <div class="sh">计划</div>
-          <label class="row"><span>名称</span><input class="ci" v-model="plan.name" /></label>
-          <label class="row"><span>卫星</span>
-            <select class="ci" v-model="plan.satFolder" @change="plan.satName = (satNodes.find((s) => s.folder === plan.satFolder) || {}).satName || ''">
-              <option value="">（未归属）</option>
-              <option v-for="s in satNodes" :key="s.folder" :value="s.folder">{{ satLabel(s) }}</option>
-            </select>
-          </label>
-          <!-- 频段：默认自动（跟着图上的频率走），也可手选钉死。它只进汇总行与列表说明，
-               不参与作图与校验，故手选与图上的频率不会打架 -->
-          <label class="row"><span>频段</span>
-            <select class="ci" v-model="bandPick" title="自动 = 按图上最低的那个频率判定，改频率时跟着变；手选 = 钉死这个段名（频段只用于汇总与列表说明，不参与作图与校验）">
-              <option value="">自动（{{ autoBand }}）</option>
-              <option v-for="b in BANDS" :key="b" :value="b">{{ b }}</option>
-            </select>
-          </label>
-          <div class="sum">{{ planSummary(plan) }}</div>
-        </div>
+      <aside class="right" v-if="plan && rightWNow">
+        <!-- 分区壳：22px 吸顶标题栏（点标题即折叠）+ 区间 4px 灰槽。从前分区之间只有一条 1px 线，
+             与栏内行线同一档，整栏读成一列连不断的表单 —— 这是「分区区分度低」的根。 -->
+        <section class="sec" :class="{ closed: !secOpen('plan') }">
+          <div class="sh" @click="toggleSec('plan')" title="点击折叠 / 展开本区">
+            <Icon class="shx" :name="secOpen('plan') ? 'chevron-down' : 'chevron-right'" :size="11" />
+            <span class="sht">计划</span>
+          </div>
+          <div class="sbd" v-show="secOpen('plan')">
+            <label class="row"><span>名称</span><input class="ci" v-model="plan.name" /></label>
+            <label class="row"><span>卫星</span>
+              <select class="ci" v-model="plan.satFolder" @change="plan.satName = (satNodes.find((s) => s.folder === plan.satFolder) || {}).satName || ''">
+                <option value="">（未归属）</option>
+                <option v-for="s in satNodes" :key="s.folder" :value="s.folder">{{ satLabel(s) }}</option>
+              </select>
+            </label>
+            <!-- 频段：默认自动（跟着图上的频率走），也可手选钉死。它只进汇总行与列表说明，
+                 不参与作图与校验，故手选与图上的频率不会打架 -->
+            <label class="row"><span>频段</span>
+              <select class="ci" v-model="bandPick" title="自动 = 按图上最低频率判定，随频率变更而更新；手选 = 锁定该频段名（频段仅用于汇总与列表标注，不参与作图与校验）">
+                <option value="">自动（{{ autoBand }}）</option>
+                <option v-for="b in BANDS" :key="b" :value="b">{{ b }}</option>
+              </select>
+            </label>
+            <div class="sum">{{ planSummary(plan, opt.unit) }}</div>
+          </div>
+        </section>
 
-        <div class="sec" v-if="selected">
-          <div class="sh">转发器 {{ selected.no || '—' }}</div>
+        <!-- 单条转发器 = 这一栏的主角。区内按图的读法分成 ↑上行 / 本振 / ↓下行 三段（图上正是这三段），
+             字段名因此不再逐个前缀「上行/下行」，标题列反而收窄、数值格更宽。
+             区头恒带一条左标（.cur），聚焦时整区再压一条实心竖标（:focus-within）——
+             与图上选中块的描边、表里那一行的左标是同一套语言：三处认的是同一条转发器。 -->
+        <section class="sec cur" :class="{ closed: !secOpen('ch') }" v-if="selected" ref="chSecEl">
+          <div class="sh" @click="toggleSec('ch')" title="点击折叠 / 展开本区">
+            <Icon class="shx" :name="secOpen('ch') ? 'chevron-down' : 'chevron-right'" :size="11" />
+            <span class="sht">{{ KIND_LABEL[selected.kind] || '转发器' }} · {{ selected.no || '—' }}</span>
+            <span class="spacer"></span>
+            <!-- 逐条核对参数时不必回表点：‹ › 按表上的先后翻条，图与表跟着一起走 -->
+            <span class="shnav" @click.stop>
+              <button class="shb" :disabled="selIdx <= 0" title="上一条" @click="stepSel(-1)"><Icon name="chevron-left" :size="11" /></button>
+              <i>{{ selIdx + 1 }} / {{ plan.channels.length }}</i>
+              <button class="shb" :disabled="selIdx < 0 || selIdx >= plan.channels.length - 1" title="下一条" @click="stepSel(1)"><Icon name="chevron-right" :size="11" /></button>
+            </span>
+          </div>
+          <div class="sbd" v-show="secOpen('ch')">
           <label class="row"><span>编号</span><input class="ci nar" v-model="selected.no" /></label>
           <label class="row"><span>类型</span>
-            <select class="ci" v-model="selected.kind"><option v-for="k in CHANNEL_KINDS" :key="k.key" :value="k.key">{{ k.label }}</option></select>
+            <select class="ci" :value="selected.kind" @change="setKind(selected, $event.target.value)">
+              <option v-for="k in CHANNEL_KINDS" :key="k.key" :value="k.key">{{ k.label }}</option>
+            </select>
           </label>
-          <label class="row"><span>上行中心频率 MHz</span><input class="ci num" :value="selected.up.fcMHz ?? ''" @input="setFc(selected, 'up', $event.target.value)" /></label>
-          <label class="row"><span>转发器带宽 MHz</span>
-            <input class="ci num" :value="selected.up.bwMHz ?? ''" :placeholder="groupBw(selected) ? groupBw(selected) + '（本组）' : ''"
-              @input="setNum(selected.up, 'bwMHz', $event.target.value)"
-              title="留空 = 取所属波束/带宽组的标称值（灰字为继承值）；填值 = 本转发器单独指定" />
+
+          <!-- 标记类载波（信标 / 遥控 / 遥测）：不载业务的等幅波，没有带宽、不归波束、不经变频。
+               图上画成频率轴上的一根箭头（见 freqPlanRender 的 markGeom）；「间隔带宽」是给它在轴上
+               留的那一格（频带两端因此算到 fc ± n/2 上，见 resolveChannel） -->
+          <template v-if="selMark">
+            <div class="fgrp"><i class="fgrp-ar">{{ selMark === 'dn' ? '↓' : '↑' }}</i>{{ selMark === 'dn' ? '下行' : '上行' }}</div>
+            <label class="row"><span>频率 {{ U }}</span>
+              <input class="ci num" :data-f="selMark" :value="lval(fcKey(selected, selMark), mkFc(selectedResolved))"
+                @input="lput(fcKey(selected, selMark), selected, $event.target.value)"
+                @change="lend(fcKey(selected, selMark), (c, m) => commitFc(c, selMark, m))"
+                @blur="lend(fcKey(selected, selMark), (c, m) => commitFc(c, selMark, m))"
+                :title="`${KIND_LABEL[selected.kind]}在${selMark === 'up' ? '上行' : '下行'}的频率。回车或离焦生效`" />
+            </label>
+            <label class="row"><span>间隔带宽 {{ U }}</span>
+              <input class="ci num" :value="lval(slotKey(selected, selMark), selected[selMark].slotMHz)"
+                @input="lput(slotKey(selected, selMark), selected, $event.target.value)"
+                @change="lend(slotKey(selected, selMark), (c, m) => { c[selMark].slotMHz = m })"
+                @blur="lend(slotKey(selected, selMark), (c, m) => { c[selMark].slotMHz = m })"
+                title="在频率轴上为其预留的宽度（非信号带宽——等幅波无带宽）：填 n 则频带端点取 频率 ± n/2；留空 = 不占频带，界标仅标注转发器" />
+            </label>
+            <label class="row"><span>极化</span>
+              <select class="ci" v-model="selected[selMark].pol"><option v-for="p in POLS" :key="p" :value="p">{{ POL_LABEL[p] }}</option></select>
+            </label>
+          </template>
+
+          <template v-else>
+          <div class="fgrp"><i class="fgrp-ar">↑</i>上行</div>
+          <label class="row"><span>中心频率 {{ U }}</span>
+            <input class="ci num" data-f="up" :value="lval(fcKey(selected, 'up'), selected.up.fcMHz)"
+              title="带宽保持不变，两端等量平移。回车或离焦生效"
+              @input="lput(fcKey(selected, 'up'), selected, $event.target.value)"
+              @change="lend(fcKey(selected, 'up'), (c, m) => commitFc(c, 'up', m))"
+              @blur="lend(fcKey(selected, 'up'), (c, m) => commitFc(c, 'up', m))" />
+          </label>
+          <label class="row"><span>带宽 {{ U }}</span>
+            <input class="ci num" :value="lval(bwKey(selected, 'up'), selected.up.bwMHz)" :placeholder="groupBw(selected) ? groupBw(selected) + '（本组）' : ''"
+              title="留空 = 取所属波束/带宽组的标称值（灰字为继承值）；填值 = 本转发器单独指定。起始锁定、终止随动（终止 = 起始 + 带宽）。回车或离焦生效"
+              @input="lput(bwKey(selected, 'up'), selected, $event.target.value)"
+              @change="lend(bwKey(selected, 'up'), (c, m) => commitBw(c, 'up', m))"
+              @blur="lend(bwKey(selected, 'up'), (c, m) => commitBw(c, 'up', m))" />
           </label>
           <!-- 起止：与上面两格是同一段频带的两种写法（中心 + 带宽 ⇄ 起始 + 终止）。手上的计划表多半
                直接给频带两端，照着录进去比让人先自己减掉半个带宽直白；改一端另一端钉住，中心与
                带宽一并重算（口径与四条分支见 freqPlanModel 的「频带两端」那一段） -->
-          <div class="row"><span>上行起止 MHz</span>
-            <input class="ci num" :value="edgeVal('up', 'f1')" placeholder="起始" :title="edgeTitle('up', 'f1')"
-              @input="edgeInput('up', 'f1', $event.target.value)" @change="commitEdge('up', 'f1', $event.target.value)" />
+          <div class="row"><span>起止 {{ U }}</span>
+            <input class="ci num" :class="pendCls(selected, 'up', 'f1')" :value="edgeVal(selected, 'up', 'f1')" placeholder="起始" :title="edgeTitle(selected, 'up', 'f1')"
+              @input="lput(edgeKey(selected, 'up', 'f1'), selected, $event.target.value)"
+              @change="lend(edgeKey(selected, 'up', 'f1'), (c, m) => commitEdge(c, 'up', 'f1', m))"
+              @blur="lend(edgeKey(selected, 'up', 'f1'), (c, m) => commitEdge(c, 'up', 'f1', m))" />
             <span class="tw">~</span>
-            <input class="ci num" :value="edgeVal('up', 'f2')" placeholder="终止" :title="edgeTitle('up', 'f2')"
-              @input="edgeInput('up', 'f2', $event.target.value)" @change="commitEdge('up', 'f2', $event.target.value)" />
+            <input class="ci num" :class="pendCls(selected, 'up', 'f2')" :value="edgeVal(selected, 'up', 'f2')" placeholder="终止" :title="edgeTitle(selected, 'up', 'f2')"
+              @input="lput(edgeKey(selected, 'up', 'f2'), selected, $event.target.value)"
+              @change="lend(edgeKey(selected, 'up', 'f2'), (c, m) => commitEdge(c, 'up', 'f2', m))"
+              @blur="lend(edgeKey(selected, 'up', 'f2'), (c, m) => commitEdge(c, 'up', 'f2', m))" />
           </div>
-          <label class="row"><span>上行极化</span>
+          <label class="row"><span>极化</span>
             <select class="ci" v-model="selected.up.pol"><option v-for="p in POLS" :key="p" :value="p">{{ POL_LABEL[p] }}</option></select>
           </label>
-          <label class="row"><span>本振 LO</span>
+          <div class="row top"><span>波束</span>
+            <BeamPicker mode="list" :beams="plan.beams" :unit="opt.unit" v-model="selected.beamUpIds" />
+          </div>
+          <!-- 占段表：这条转发器的频带分给它的几个波束。★ 界面上唯一的频率录入口 ——
+               波束那边只有名字与带宽，「谁占哪一截」在编排这条转发器时一眼看得全。
+               留空 = 走排布档（灰字写的是算出来的落点）。下行留空 = 随上行（整段随 LO 平移）。 -->
+          <template v-if="chBeams(selected, 'up').length">
+          <div class="row"><span>排布</span>
+            <select class="ci" :value="beamLayoutOf(selected)" :title="LAYOUT_TIP"
+              @change="setLayout(selected, $event.target.value)">
+              <option v-for="L in BEAM_LAYOUTS" :key="L.key" :value="L.key">{{ L.label }}</option>
+            </select>
+          </div>
+          <div class="bsrow hd"><span>占段 {{ U }}</span><span>起始</span><span>终止</span><span>带宽</span></div>
+          <div v-for="b in chBeams(selected, 'up')" :key="b.id" class="bsrow">
+            <span class="bsn" :title="b.name"><i class="bsc" :style="{ background: b.color }"></i>{{ b.name }}</span>
+            <input class="ci num" :value="segEdgeVal(selected, 'up', b, 'f1')" :placeholder="segEdgePh(selected, 'up', b, 'f1')"
+              :title="segEdgeTitle(selected, 'up', b, 'f1')"
+              @input="lput(segKey(selected.id, b.id, 'up', 'f1'), selected, $event.target.value)"
+              @change="lend(segKey(selected.id, b.id, 'up', 'f1'), (c, m) => commitSegEdge(c, 'up', b, 'f1', m))"
+              @blur="lend(segKey(selected.id, b.id, 'up', 'f1'), (c, m) => commitSegEdge(c, 'up', b, 'f1', m))" />
+            <input class="ci num" :value="segEdgeVal(selected, 'up', b, 'f2')" :placeholder="segEdgePh(selected, 'up', b, 'f2')"
+              :title="segEdgeTitle(selected, 'up', b, 'f2')"
+              @input="lput(segKey(selected.id, b.id, 'up', 'f2'), selected, $event.target.value)"
+              @change="lend(segKey(selected.id, b.id, 'up', 'f2'), (c, m) => commitSegEdge(c, 'up', b, 'f2', m))"
+              @blur="lend(segKey(selected.id, b.id, 'up', 'f2'), (c, m) => commitSegEdge(c, 'up', b, 'f2', m))" />
+            <input class="ci num" :value="segBwVal(selected, 'up', b)" :placeholder="segBwPh(selected, 'up', b)"
+              :title="segBwTitle(selected, 'up', b)"
+              @input="lput(segKey(selected.id, b.id, 'up', 'bw'), selected, $event.target.value)"
+              @change="lend(segKey(selected.id, b.id, 'up', 'bw'), (c, m) => setBeamSegBw(plan, c, b.id, m, 'up'))"
+              @blur="lend(segKey(selected.id, b.id, 'up', 'bw'), (c, m) => setBeamSegBw(plan, c, b.id, m, 'up'))" />
+          </div>
+          </template>
+
+          <!-- 上下行之间那一步变频：图上就是 UPLINK → DOWNLINK 之间那支箭头，故它摆在两组之间 -->
+          <label class="row hinge"><span>本振 LO</span>
             <select class="ci" v-model="selected.loId">
               <option value="">—</option>
-              <option v-for="l in plan.los" :key="l.id" :value="l.id">{{ l.name }} · {{ l.valueMHz ?? '—' }} MHz</option>
+              <option v-for="l in plan.los" :key="l.id" :value="l.id">{{ loOption(l) }}</option>
             </select>
           </label>
-          <label class="row"><span>下行中心频率 MHz</span>
-            <input class="ci num" :value="dnDisp(selectedResolved)"
+
+          <div class="fgrp"><i class="fgrp-ar">↓</i>下行</div>
+          <label class="row"><span>中心频率 {{ U }}</span>
+            <input class="ci num" data-f="dn" :value="lval(fcKey(selected, 'dn'), dnDisp(selectedResolved))"
               :placeholder="dnLinked(selected) ? '' : '未挂 LO'"
-              :title="dnLinked(selected) ? '与上行由 LO 联动：f下 = f上 − LO —— 改这里上行跟着变'
-                : (dnCut(selected) ? '下行已与 LO 解耦（cross-strap）：两侧各填各的' : '未挂 LO —— 上下行各自独立')"
-              @input="setFc(selected, 'dn', $event.target.value)" />
+              :title="(dnLinked(selected) ? '与上行由 LO 联动：f下 = f上 − LO —— 改这里上行跟着变'
+                : (dnCut(selected) ? '下行已与 LO 解耦（cross-strap）：两侧各填各的' : '未挂 LO —— 上下行各自独立')) + '。回车或离焦生效'"
+              @input="lput(fcKey(selected, 'dn'), selected, $event.target.value)"
+              @change="lend(fcKey(selected, 'dn'), (c, m) => commitFc(c, 'dn', m))"
+              @blur="lend(fcKey(selected, 'dn'), (c, m) => commitFc(c, 'dn', m))" />
           </label>
           <label class="ck2" v-if="loValueOf(plan, selected) != null"
-            :title="dnCut(selected) ? `下行按本行自填值，不再跟随上行（LO 推算值为 ${dnFromUp(selected.up.fcMHz, loValueOf(plan, selected)) ?? '—'} MHz）`
+            :title="dnCut(selected) ? `下行按本行自填值，不再跟随上行（LO 推算值为 ${textF(dnFromUp(selected.up.fcMHz, loValueOf(plan, selected)))}）`
               : '勾选后下行与 LO 解耦，两侧各填各的'">
             <input type="checkbox" :checked="dnCut(selected)" @change="setCut(selected, $event.target.checked)" />
             <span>下行频率独立（cross-strap）</span>
           </label>
-          <div class="row"><span>下行起止 MHz</span>
-            <input class="ci num" :value="edgeVal('dn', 'f1')" placeholder="起始" :title="edgeTitle('dn', 'f1')"
-              @input="edgeInput('dn', 'f1', $event.target.value)" @change="commitEdge('dn', 'f1', $event.target.value)" />
+          <div class="row"><span>起止 {{ U }}</span>
+            <input class="ci num" :class="pendCls(selected, 'dn', 'f1')" :value="edgeVal(selected, 'dn', 'f1')" placeholder="起始" :title="edgeTitle(selected, 'dn', 'f1')"
+              @input="lput(edgeKey(selected, 'dn', 'f1'), selected, $event.target.value)"
+              @change="lend(edgeKey(selected, 'dn', 'f1'), (c, m) => commitEdge(c, 'dn', 'f1', m))"
+              @blur="lend(edgeKey(selected, 'dn', 'f1'), (c, m) => commitEdge(c, 'dn', 'f1', m))" />
             <span class="tw">~</span>
-            <input class="ci num" :value="edgeVal('dn', 'f2')" placeholder="终止" :title="edgeTitle('dn', 'f2')"
-              @input="edgeInput('dn', 'f2', $event.target.value)" @change="commitEdge('dn', 'f2', $event.target.value)" />
+            <input class="ci num" :class="pendCls(selected, 'dn', 'f2')" :value="edgeVal(selected, 'dn', 'f2')" placeholder="终止" :title="edgeTitle(selected, 'dn', 'f2')"
+              @input="lput(edgeKey(selected, 'dn', 'f2'), selected, $event.target.value)"
+              @change="lend(edgeKey(selected, 'dn', 'f2'), (c, m) => commitEdge(c, 'dn', 'f2', m))"
+              @blur="lend(edgeKey(selected, 'dn', 'f2'), (c, m) => commitEdge(c, 'dn', 'f2', m))" />
           </div>
-          <label class="row"><span>下行极化</span>
+          <label class="row"><span>极化</span>
             <select class="ci" v-model="selected.dn.pol"><option v-for="p in POLS" :key="p" :value="p">{{ POL_LABEL[p] }}</option></select>
           </label>
-          <div class="row top"><span>上行波束</span>
-            <BeamPicker mode="list" :beams="plan.beams" :unit="opt.unit" v-model="selected.beamUpIds" />
-          </div>
-          <div class="row top" title="留空 = 与上行同一组；勾任意一个即单独指定"><span>下行波束</span>
+          <div class="row top" title="留空 = 与上行同组；勾选任一项即单独指定"><span>波束</span>
             <BeamPicker mode="list" :beams="plan.beams" :unit="opt.unit" v-model="selected.beamDnIds" :inherit="selected.beamUpIds" />
           </div>
-          <div class="sh sub" title="填了的项在链路预算引用本转发器时一并带过去；留空则沿用卫星配置里的值">转发器参数（可留空）</div>
+          <!-- 占段表：这条转发器的频带分给它的几个波束。★ 界面上唯一的频率录入口 ——
+               波束那边只有名字与带宽，「谁占哪一截」在编排这条转发器时一眼看得全。
+               留空 = 走排布档（灰字写的是算出来的落点）。下行留空 = 随上行（整段随 LO 平移）。 -->
+          <template v-if="chBeams(selected, 'dn').length">
+          <div class="row"><span>排布</span>
+            <select class="ci" :value="beamLayoutOf(selected)" :title="LAYOUT_TIP"
+              @change="setLayout(selected, $event.target.value)">
+              <option v-for="L in BEAM_LAYOUTS" :key="L.key" :value="L.key">{{ L.label }}</option>
+            </select>
+          </div>
+          <div class="bsrow hd"><span>占段 {{ U }}</span><span>起始</span><span>终止</span><span>带宽</span></div>
+          <div v-for="b in chBeams(selected, 'dn')" :key="b.id" class="bsrow">
+            <span class="bsn" :title="b.name"><i class="bsc" :style="{ background: b.color }"></i>{{ b.name }}</span>
+            <input class="ci num" :value="segEdgeVal(selected, 'dn', b, 'f1')" :placeholder="segEdgePh(selected, 'dn', b, 'f1')"
+              :title="segEdgeTitle(selected, 'dn', b, 'f1')"
+              @input="lput(segKey(selected.id, b.id, 'dn', 'f1'), selected, $event.target.value)"
+              @change="lend(segKey(selected.id, b.id, 'dn', 'f1'), (c, m) => commitSegEdge(c, 'dn', b, 'f1', m))"
+              @blur="lend(segKey(selected.id, b.id, 'dn', 'f1'), (c, m) => commitSegEdge(c, 'dn', b, 'f1', m))" />
+            <input class="ci num" :value="segEdgeVal(selected, 'dn', b, 'f2')" :placeholder="segEdgePh(selected, 'dn', b, 'f2')"
+              :title="segEdgeTitle(selected, 'dn', b, 'f2')"
+              @input="lput(segKey(selected.id, b.id, 'dn', 'f2'), selected, $event.target.value)"
+              @change="lend(segKey(selected.id, b.id, 'dn', 'f2'), (c, m) => commitSegEdge(c, 'dn', b, 'f2', m))"
+              @blur="lend(segKey(selected.id, b.id, 'dn', 'f2'), (c, m) => commitSegEdge(c, 'dn', b, 'f2', m))" />
+            <input class="ci num" :value="segBwVal(selected, 'dn', b)" :placeholder="segBwPh(selected, 'dn', b)"
+              :title="segBwTitle(selected, 'dn', b)"
+              @input="lput(segKey(selected.id, b.id, 'dn', 'bw'), selected, $event.target.value)"
+              @change="lend(segKey(selected.id, b.id, 'dn', 'bw'), (c, m) => setBeamSegBw(plan, c, b.id, m, 'dn'))"
+              @blur="lend(segKey(selected.id, b.id, 'dn', 'bw'), (c, m) => setBeamSegBw(plan, c, b.id, m, 'dn'))" />
+          </div>
+          </template>
+          <div class="fgrp" title="已填项在链路预算引用本转发器时一并传递；留空则沿用卫星配置中的取值">转发器参数</div>
           <!-- 名称与单位逐项对齐链路预算卫星栏（params.js 的 sfdRef / sfdGtRef / BOi / BOo /
                xpdrIntermodFactor），引用过去时一一落位，不再需要人脑做一次名词映射。 -->
           <div class="grid2">
@@ -1240,54 +1943,117 @@ watch([leftW, rightW], () => nextTick(measure))   // 左右栏拖宽 = 中栏变
             <label class="row2"><span>OBO dB</span><input class="ci num" :value="selected.booDb ?? ''" @input="setNum(selected, 'booDb', $event.target.value)" /></label>
             <label class="row2"><span>C/IM dB</span><input class="ci num" :value="selected.cimDb ?? ''" @input="setNum(selected, 'cimDb', $event.target.value)" /></label>
           </div>
-        </div>
-
-        <div class="sec">
-          <div class="sh">本振 LO <button class="mini ghost xs" @click="addLo"><Icon name="plus" :size="10" /></button></div>
-          <div v-for="l in plan.los" :key="l.id" class="lorow">
-            <input class="ci nar" v-model="l.name" />
-            <input class="ci num" :value="l.valueMHz ?? ''" @input="setNum(l, 'valueMHz', $event.target.value)" placeholder="MHz" />
-            <button class="lop del" @click="removeLo(l.id)"><Icon name="x" :size="10" /></button>
+          </template>
           </div>
-        </div>
+        </section>
 
-        <div class="sec">
-          <div class="sh" title="一行即图例上的一条：颜色 + 波束名 + 标称带宽">波束/带宽 <button class="mini ghost xs" @click="addBeam"><Icon name="plus" :size="10" /></button></div>
+        <section class="sec" :class="{ closed: !secOpen('lo') }">
+          <div class="sh" @click="toggleSec('lo')" title="点击折叠 / 展开本区">
+            <Icon class="shx" :name="secOpen('lo') ? 'chevron-down' : 'chevron-right'" :size="11" />
+            <span class="sht">本振 LO</span>
+            <button class="mini ghost xs" title="添加本振" @click.stop="addLo"><Icon name="plus" :size="10" /></button>
+            <span class="spacer"></span>
+            <span class="shn">{{ plan.los.length }}</span>
+          </div>
+          <div class="sbd" v-show="secOpen('lo')">
+            <div v-for="l in plan.los" :key="l.id" class="lorow">
+              <input class="ci nar" v-model="l.name" />
+              <!-- 变频量同样跟刻度走：1750 MHz 在 kHz 档下写成 1750000（图上的 LO 注记与这里一致） -->
+              <input class="ci num" :value="dval(`lo${l.id}`, l.valueMHz)" :placeholder="U"
+                @input="dput(`lo${l.id}`, $event.target.value, (m) => { l.valueMHz = m })" @blur="ddone" />
+              <button class="lop del" @click="removeLo(l.id)"><Icon name="x" :size="10" /></button>
+            </div>
+          </div>
+        </section>
+
+        <!-- 波束 = 颜色 + 名 + 带宽。★ 这里不设频率：占哪一段是【单条转发器】的事（在转发器那一区
+             逐波束录起止），波束只管「叫什么、多宽」。上下行两个带宽，下行留空 = 同上行。 -->
+        <section class="sec bmsec" :class="{ closed: !secOpen('beam') }">
+          <div class="sh" @click="toggleSec('beam')"
+            title="每行对应图例中的一条：颜色 + 波束名 + 带宽。频率不在此设置——所占频段在转发器分区逐条录入。点击标题折叠 / 展开本区">
+            <Icon class="shx" :name="secOpen('beam') ? 'chevron-down' : 'chevron-right'" :size="11" />
+            <span class="sht">波束/带宽 · {{ U }}</span>
+            <button class="mini ghost xs" @click.stop="addBeam" title="添加波束"><Icon name="plus" :size="10" /></button>
+            <!-- 从波束合成导入：一色一条（同色 = 同频同极化，一个色号对应一批波束号）。
+                 浮层现读现用，不缓存另一个窗口的旧数据。 -->
+            <button class="mini ghost xs" :class="{ on: synthPop }" @click.stop="synthPop ? (synthPop = false) : openSynthPop()"
+              title="从波束合成导入：每个频率配色（F#）生成一条，该色对应的波束编号一并导入；带宽与频率仍在本平台录入">
+              <Icon name="import" :size="10" />
+            </button>
+            <span class="spacer"></span>
+            <span class="shn">{{ plan.beams.length }}</span>
+          </div>
+          <!-- 浮层贴本区左右两边（不挂在按钮上）：右栏可拖窄到 260px，挂按钮上的浮层会探出栏外被裁掉 -->
+          <template v-if="synthPop">
+            <div class="bpmask" @click="synthPop = false"></div>
+            <div class="spop">
+              <div class="bph">从波束合成导入</div>
+              <button v-for="g in synthList" :key="g.id" type="button" class="sgrow"
+                :disabled="!g.beamCount" :title="synthTitle(g)" @click="importSynth(g)">
+                <span class="sgn">{{ g.name }}</span>
+                <span v-if="synthOtherSat(g)" class="sgsat">{{ synthOtherSat(g) }}</span>
+                <span class="sgt">{{ g.beamCount }} 波束<template v-if="g.colors.length"> · {{ g.colors.length }} 色</template></span>
+                <span class="sgc"><i v-for="c in g.colors" :key="c.fc" :style="{ background: c.css }"></i></span>
+              </button>
+              <p v-if="!synthList.length" class="sgnone">尚无波束合成的波束组。</p>
+            </div>
+          </template>
+          <!-- 一个波束一行：色块 · 名字 · 带宽。列名只在整区顶上写一次。 -->
+          <div class="sbd" v-show="secOpen('beam')">
+          <div v-if="plan.beams.length" class="bmrow hd">
+            <i></i><span>波束</span><span>带宽</span><i></i>
+          </div>
           <div v-for="b in plan.beams" :key="b.id" class="bmrow">
             <input class="clr" type="color" v-model="b.color" title="色块与图例的颜色" />
-            <input class="ci" v-model="b.name" placeholder="波束名" />
-            <input class="ci num bw" :value="beamBwDisp(b)" @input="setBeamBw(b, $event.target.value)"
-              placeholder="不定" :title="`本组标称带宽（${opt.unit}）：转发器那行的带宽留空即取这个值`" />
-            <span class="unit">{{ opt.unit }}</span>
+            <input class="ci nm" v-model="b.name" placeholder="波束名"
+              :title="beamSynthText(b) || '波束名（与图例一致）。由波束合成导入时为波束代号'" />
+            <input class="ci num" :value="lval(`bm.${b.id}.bw`, b.bwMHz)" placeholder="占满" :title="bmBwTitle(b)"
+              @input="lput(`bm.${b.id}.bw`, b, $event.target.value)"
+              @change="lend(`bm.${b.id}.bw`, (x, m) => setBeamBw(x, m))"
+              @blur="lend(`bm.${b.id}.bw`, (x, m) => setBeamBw(x, m))" />
             <button class="lop del" @click="removeBeam(b.id)"><Icon name="x" :size="10" /></button>
           </div>
-        </div>
+          </div>
+        </section>
 
-        <div class="sec">
-          <div class="sh">批量生成</div>
+        <section class="sec" :class="{ closed: !secOpen('gen') }">
+          <div class="sh" @click="toggleSec('gen')" title="点击折叠 / 展开本区">
+            <Icon class="shx" :name="secOpen('gen') ? 'chevron-down' : 'chevron-right'" :size="11" />
+            <span class="sht">批量生成</span>
+          </div>
+          <div class="sbd" v-show="secOpen('gen')">
           <div class="grid2">
             <label class="row2"><span>转发器数量</span><input class="ci num" v-model="gen.count" /></label>
-            <label class="row2"><span>频率间隔 MHz</span><input class="ci num" v-model="gen.stepMHz" title="相邻转发器的中心频率之差（上下行相同）" /></label>
-            <label class="row2"><span>上行起始频率 MHz</span>
-              <input class="ci num" v-model="gen.startFMHz" title="第一个转发器上行频带的下边沿（不是中心频率）" />
+            <label class="row2"><span>频率间隔 {{ U }}</span>
+              <input class="ci num" :value="dval('g.step', gen.stepMHz)" title="相邻转发器的中心频率之差（上下行相同）"
+                @input="dput('g.step', $event.target.value, (m) => { gen.stepMHz = m })" @blur="ddone" />
             </label>
-            <label class="row2"><span>下行起始频率 MHz</span>
-              <input class="ci num" :value="genDnStart" :disabled="genLo == null" :placeholder="genLo == null ? '先选 LO' : ''"
-                @input="setGenDnStart($event.target.value)"
-                title="第一个转发器下行频带的下边沿。与上行起始频率由下面选的 LO 互算：填哪一侧都行，另一侧跟着变" />
+            <label class="row2"><span>上行起始频率 {{ U }}</span>
+              <input class="ci num" :value="dval('g.start', gen.startFMHz)" title="第一个转发器上行频带的下边沿（不是中心频率）"
+                @input="dput('g.start', $event.target.value, (m) => { gen.startFMHz = m })" @blur="ddone" />
             </label>
-            <label class="row2"><span>转发器带宽 MHz</span><input class="ci num" v-model="gen.bwMHz" placeholder="随波束组" title="留空 = 取所选上行波束组的标称带宽" /></label>
+            <label class="row2"><span>下行起始频率 {{ U }}</span>
+              <input class="ci num" :value="dval('g.dnstart', genDnStartMHz)" :disabled="genLo == null" :placeholder="genLo == null ? '先选 LO' : ''"
+                @input="dput('g.dnstart', $event.target.value, setGenDnStart)" @blur="ddone"
+                title="第一个转发器下行频带的下边沿。与上行起始频率经所选 LO 互算：任一侧输入后另一侧随动" />
+            </label>
+            <label class="row2"><span>转发器带宽 {{ U }}</span>
+              <input class="ci num" :value="dval('g.bw', gen.bwMHz)" placeholder="随波束组" title="留空 = 取所选上行波束组的标称带宽"
+                @input="dput('g.bw', $event.target.value, (m) => { gen.bwMHz = m })" @blur="ddone" />
+            </label>
           </div>
           <!-- 一排恒为同一个上行极化（见 gen 的注释）。第二个下拉管的是下行那一侧：批量生成过去
                一律把下行按正交铺，遇上「上下行同极化」的星就得回表里逐行改，故给在这儿选 -->
-          <label class="row"><span>上行极化</span>
+          <!-- 一行两个控件的排必须用 div：<label> 只绑第一个控件，在第二个框里拖选、
+               指针划出框外时 click 落到 label 上，焦点会被转发回第一个框 -->
+          <div class="row"><span>上行极化</span>
             <select class="ci nar" v-model="gen.pol"><option v-for="p in POLS" :key="p" :value="p">{{ p }}</option></select>
-            <select class="ci" v-model="gen.dnPolMode" title="下行极化：正交 = 取上行的正交极化（转发器翻极化的常见接法）；同上行 = 上下行一个极化。生成后仍可在表里逐行改">
+            <select class="ci" v-model="gen.dnPolMode" title="下行极化：正交 = 取上行的正交极化（转发器极化变换的常见接法）；同上行 = 上下行同一极化。生成后仍可在表内逐行修改">
               <option value="">下行正交（{{ POL_ORTHO[gen.pol] || 'V' }}）</option>
               <option value="same">下行同极化（{{ gen.pol }}）</option>
             </select>
-          </label>
-          <label class="row"><span>编号规则</span><input class="ci nar" v-model="gen.noPattern" title="编号模板：{n} 处替换为序号" /><input class="ci num xnar" v-model="gen.noStart" title="起始序号" /></label>
+          </div>
+          <div class="row"><span>编号规则</span><input class="ci nar" v-model="gen.noPattern" title="编号模板：{n} 处替换为序号" /><input class="ci num xnar" v-model="gen.noStart" title="起始序号" /></div>
           <label class="row"><span>本振 LO</span>
             <select class="ci" v-model="gen.loId"><option value="">—</option><option v-for="l in plan.los" :key="l.id" :value="l.id">{{ l.name }}</option></select>
           </label>
@@ -1298,7 +2064,8 @@ watch([leftW, rightW], () => nextTick(measure))   // 左右栏拖宽 = 中栏变
             <BeamPicker mode="list" :beams="plan.beams" :unit="opt.unit" v-model="gen.beamDnIds" :inherit="gen.beamUpIds" />
           </div>
           <button class="mini imp wide" @click="runGen">生成 {{ gen.count }} 个转发器</button>
-        </div>
+          </div>
+        </section>
       </aside>
     </div>
 
@@ -1307,7 +2074,6 @@ watch([leftW, rightW], () => nextTick(measure))   // 左右栏拖宽 = 中栏变
       <div class="mdlg">
         <div class="mh">
           <span class="mt">合成导出</span>
-          <span class="dim mhs">多份计划自上而下叠成一张完整的频率计划——每段各带各的上下行频带与图例（原计划不动）</span>
           <span class="spacer"></span>
           <button class="mx" title="关闭" @click="mergeOpen = false"><Icon name="x" :size="12" /></button>
         </div>
@@ -1353,15 +2119,15 @@ watch([leftW, rightW], () => nextTick(measure))   // 左右栏拖宽 = 中栏变
           <div class="mright">
             <div class="mprevh">
               <span>预览</span>
-              <span class="dim">{{ mergePlans.length }} 段 · 导出恒为浅色</span>
+              <span class="dim">{{ mergePlans.length }} 段</span>
               <span class="spacer"></span>
-              <label class="ck" title="打开 = 全图一把尺子，同带宽跨频段同宽（便于横向比对）；关 = 每段各自铺满画布，段内更宽更清楚">
+              <label class="ck" title="开启 = 全图统一标尺，同带宽跨频段等宽（便于横向比对）；关闭 = 各频段分别铺满画布，段内展开更宽">
                 <input type="checkbox" v-model="mergeShared" /> 统一比例尺
               </label>
               <label class="ck"><input type="checkbox" v-model="mergeSecTitles" /> 段头</label>
             </div>
             <div class="mprev" ref="prevBox">
-              <div v-if="!mergePlans.length" class="mempty pad">勾选左侧的计划后在此预览。</div>
+              <div v-if="!mergePlans.length" class="mempty pad">暂无预览。</div>
               <div v-else class="mprevin" v-html="mergeSvg"></div>
             </div>
           </div>
@@ -1392,6 +2158,8 @@ watch([leftW, rightW], () => nextTick(measure))   // 左右栏拖宽 = 中栏变
         </div>
       </div>
     </div>
+
+    <MiniSendDialog v-model:open="miniOpen" :build="buildMiniPack" :device-id="miniDeviceId" :configured="miniConfigured" @toast="flash" />
   </div>
 </template>
 
@@ -1408,7 +2176,8 @@ watch([leftW, rightW], () => nextTick(measure))   // 左右栏拖宽 = 中栏变
 
 /* 五列（列宽由 :style 出，左右两栏都可拖）；两条 0 宽轨只用来挂拖宽手柄 */
 .body { flex: 1; display: grid; grid-template-columns: 250px 0px minmax(0,1fr) 0px 396px; min-height: 0; }
-.left { border-right: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; }
+/* 三栏的分界线走 --border-strong：栏与栏的边界不该与栏内的行线同一档（区分度的第一刀） */
+.left { border-right: 1px solid var(--border-strong); display: flex; flex-direction: column; min-height: 0; }
 .lh { display: flex; align-items: center; padding: 5px 8px; border-bottom: 1px solid var(--border); font-size: 12px; color: var(--text-muted); }
 .lht { font-weight: 600; color: var(--text); }
 /* 筛选条：卫星一多（一整个星座就是几十行）全列出来会很长，先筛再点 */
@@ -1461,16 +2230,26 @@ watch([leftW, rightW], () => nextTick(measure))   // 左右栏拖宽 = 中栏变
 .lop:hover { color: var(--text); }
 .lop.del:hover { color: var(--danger); }
 
+/* ── 三级：这份计划的频率分配表 ── 再缩一档、字更小，且不给自己的分隔线：
+   它是计划的一部分，不是与计划并列的另一个条目。选中同样是那道 3px 黑标（与二级一套认法）。 */
+.sub { display: flex; align-items: center; gap: 5px; padding: 3px 8px 3px 22px; cursor: pointer;
+  background: var(--bg); border-bottom: 1px solid var(--border); color: var(--text-muted); font-size: 11.5px; }
+.sub:hover { background: var(--surface); color: var(--text); }
+.sub.on { background: var(--surface); color: var(--text); box-shadow: inset 3px 0 0 var(--text); }
+.sub.on .sbn { font-weight: 600; }
+.sbn { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sbc { flex: none; font-size: 10.5px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+
 .center { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
 .mnone { padding: 40px; color: var(--text-muted); }
 .mnone .dim { color: var(--text-faint); font-size: 12.5px; }
-.chartbox { padding: 10px 12px; border-bottom: 1px solid var(--border); overflow: auto; max-height: 52%; }
+.chartbox { padding: 10px 12px; border-bottom: 1px solid var(--border-strong); overflow: auto; max-height: 52%; }
 .tabs { display: flex; align-items: center; gap: 4px; padding: 4px 8px; border-bottom: 1px solid var(--border); background: var(--surface); }
 .tb-b { font: inherit; font-size: 12.5px; padding: 3px 10px; border: 1px solid transparent; background: transparent; color: var(--text-muted); cursor: pointer; }
-.tb-b.on { background: var(--bg); border-color: var(--border-strong); color: var(--text); }
+/* 经典连体文件页签：选中页与下方内容面同底，顶缘 2px 墨条 —— 页与它管的那片内容连成一体 */
+.tb-b.on { background: var(--bg); border-color: var(--border-strong); color: var(--text); box-shadow: inset 0 2px 0 var(--accent); }
 .tb-b i { font-style: normal; font-size: 11px; color: var(--text-faint); margin-left: 3px; }
 .tb-b i.bad { color: var(--danger); }
-.hint { font-size: 11.5px; color: var(--text-faint); }
 .tabbody { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .tscroll { flex: 1; overflow: auto; }
 
@@ -1500,9 +2279,25 @@ watch([leftW, rightW], () => nextTick(measure))   // 左右栏拖宽 = 中栏变
 }
 .bph { font-size: 11.5px; color: var(--text-muted); margin-bottom: 5px; }
 .bpo { display: flex; align-items: center; gap: 5px; margin-top: 7px; }
+/* 「+ 转发器」旁那个下拉菜单：贴右缘展开（它在工具条右端，贴左缘会探出画布） */
+.caret { padding-left: 5px; padding-right: 5px; }
+.addpop { left: auto; right: 0; min-width: 118px; padding: 4px; }
+.apo {
+  display: flex; align-items: center; gap: 5px; width: 100%; padding: 5px 7px;
+  background: none; border: 0; color: var(--text); font: inherit; font-size: 12px; text-align: left; cursor: pointer;
+}
+.apo:hover { background: var(--surface); }
 
 .t { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .t thead th { position: sticky; top: 0; z-index: 1; background: var(--surface); border-bottom: 1px solid var(--border-strong); padding: 4px 6px; text-align: left; font-weight: 600; white-space: nowrap; }
+/* 记下了但还没成段的那一端（另一端还没录，见 edgePend）：数照旧显示着，但它还没进模型、
+   图上也还没有这条频带，故压成灰斜体与已落定的读数分开 */
+.ci.num.pend { color: var(--text-faint); font-style: italic; }
+/* 频率列口径的切换（中心 + 带宽 ⇄ 起 + 止）：开关就是列头本身，不另占一格工具栏 */
+.t thead th.colsw { cursor: pointer; user-select: none; }
+.t thead th.colsw:hover { color: var(--accent, var(--text)); }
+.t thead th.colsw svg { vertical-align: -1px; opacity: .55; }
+.t thead th.colsw:hover svg { opacity: 1; }
 .t td { border-bottom: 1px solid var(--border); padding: 1px 5px; }
 .t tbody tr { cursor: pointer; }
 .t tbody tr:hover { background: var(--surface); }
@@ -1538,48 +2333,138 @@ watch([leftW, rightW], () => nextTick(measure))   // 左右栏拖宽 = 中栏变
 .ci-item.info .sev { color: var(--text-muted); }
 .cm { color: var(--text-muted); }
 
-.right { border-left: 1px solid var(--border); overflow: auto; min-width: 0; }
+/* ── 右栏 = 检查器 ──
+   底色给最深的一档，各分区自己是白面板 —— 分区之间那 4px 灰槽即由此而来（平台停靠面板的既定
+   做法：灰槽 + 面板实边，不做浮动卡片、不加圆角）。从前分区界与栏内行线同为 1px --border，
+   一栏读下来是一列连不断的表单，这正是「各分区区分度低」的根。 */
+.right { border-left: 1px solid var(--border-strong); overflow: auto; min-width: 0; background: var(--surface-2); }
 /* 骑在分界线上：7px 命中区靠 ±3.5px 负边距抵消，净占 0，拖时高亮 */
 .rz { width: 7px; margin: 0 -3.5px; position: relative; z-index: 6; cursor: col-resize; }
 .rz:hover, .rz.on { background: var(--accent); opacity: .35; }
-.sec { border-bottom: 1px solid var(--border); padding: 7px 9px 9px; }
-.sh { font-size: 12px; font-weight: 600; color: var(--text); margin-bottom: 5px; display: flex; align-items: center; gap: 6px; }
-.sh.sub { margin-top: 8px; color: var(--text-muted); font-weight: 500; }
-.row { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
+/* 设置栏收起时：手柄自己占满那 7px 的轨（不再负边距），画成一道窄槽 —— 拖回来的地方得看得见 */
+.rz.closed { margin: 0; border-left: 1px solid var(--border); background: var(--surface); }
+.rz.closed:hover { background: var(--accent); }
+.sec { background: var(--bg); border: 1px solid var(--border); border-width: 0 0 1px; margin-bottom: 4px; }
+.sec:last-child { margin-bottom: 0; }
+.sbd { padding: 5px 9px 8px; }
+/* 分区标题栏：22px 细栏（灰底 + 强下线 + 字距），且吸顶 —— 右栏是一整条滚动区，
+   滚到波束那一堆卡片中间时，顶上仍写着「波束/带宽」。点标题即折叠（状态存 localStorage）：
+   94 波束的计划里，把这一区折起来才腾得出地方编转发器。 */
+.sh { position: sticky; top: 0; z-index: 3; display: flex; align-items: center; gap: 5px;
+  height: 22px; padding: 0 7px 0 3px; background: var(--surface); border-bottom: 1px solid var(--border-strong);
+  font-size: 11.5px; font-weight: 600; letter-spacing: .5px; color: var(--text-muted); cursor: pointer; user-select: none; }
+.sh:hover { color: var(--text); }
+.sh .shx { flex: none; color: var(--text-faint); }
+.sht { flex: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.shn { flex: none; font-size: 10.5px; font-weight: 400; letter-spacing: 0; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+/* 当前这一条转发器：标题栏加深一档 + 左标；聚焦时整区左缘再压一条实心竖标。
+   两者与图上选中块的描边（.fpc-blk.on）、表里那一行的左标（tr.on）同一套语言。 */
+.sec.cur > .sh { background: var(--surface-2); color: var(--text); box-shadow: inset 3px 0 0 var(--text); }
+.sec:focus-within { box-shadow: inset 3px 0 0 var(--text); }   /* 与区头那条同宽：焦点进来 = 那条标从区头一直长到区底 */
+.sec:focus-within > .sh { background: var(--surface-2); color: var(--text); }
+/* 检查器里翻条：‹ 7 / 18 › —— 逐条核对参数时不必回表点 */
+.shnav { display: inline-flex; align-items: center; gap: 1px; font-weight: 400; letter-spacing: 0; }
+.shnav i { font-style: normal; font-size: 10.5px; color: var(--text-muted); font-variant-numeric: tabular-nums; padding: 0 1px; }
+.shb { flex: none; display: flex; align-items: center; border: 1px solid transparent; background: none;
+  color: var(--text-muted); cursor: pointer; padding: 1px 2px; }
+.shb:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); background: var(--bg); }
+.shb:disabled { color: var(--text-faint); cursor: default; }
+/* 区内分组头（↑ 上行 / ↓ 下行 / 转发器参数）：小号字距 + 题线，把一列 13 行的长表分成图上那三段。
+   ★ 类名不叫 .gh —— BeamPicker 里 .gh 已是「继承态（随上行）」的修饰类。scoped CSS 今天挡得住
+   （子组件内部不带父组件的 data-v），但同名两义迟早咬人，见 FpAlloc 那次 .ghost 撞车。 */
+.fgrp { display: flex; align-items: center; gap: 5px; margin: 7px 0 3px; padding-bottom: 2px;
+  border-bottom: 1px solid var(--border); font-size: 10.5px; letter-spacing: 2px; color: var(--text-faint); }
+.fgrp .fgrp-ar { font-style: normal; font-size: 12px; letter-spacing: 0; color: var(--text-muted); }
+/* 变频那一步：图上是 UPLINK → DOWNLINK 之间的箭头，这里就是夹在两组之间的这一条 */
+.hinge { background: var(--surface); border: 1px solid var(--border); border-width: 1px 0; padding: 2px 5px; margin: 6px -5px 2px; }
+.row { display: flex; align-items: center; gap: 6px; padding: 1px 5px; margin: 0 -5px 2px; }
+/* 正在录的是哪一格：标签转深加粗 + 整行提一档底色（格级的聚焦环见 .ci:focus） */
+.row:focus-within { background: var(--surface); }
+.row:focus-within > span { color: var(--text); font-weight: 600; }
 /* 右侧是多行控件（波束多选那种）时标题贴顶，别把「上行波束」四个字吊在一列勾选框的正中 */
 .row.top { align-items: flex-start; }
 .row.top > span { padding-top: 4px; }
 .row.top > :last-child { flex: 1; min-width: 0; }
-/* 标题列按最长的那条（「上行中心频率 MHz」≈ 96px：宋体 6 个全角字 + Times 的「 MHz」）定宽，
-   留一点余量并禁止折行——名称写全、单位跟在后面，字体回落变化时也不会掉成两行把整行撑高。 */
-.row > span { flex: none; width: 104px; font-size: 11.5px; color: var(--text-muted); white-space: nowrap; }
-/* 起止那行是两格输入夹一个「~」：这个波浪号是分隔符不是标题列，得从上面那条 104px 里摘出来 */
+/* 标题列按最长的那条（「间隔带宽 MHz」≈ 72px：宋体 4 个全角字 + Times 的「 MHz」）定宽，
+   留一点余量并禁止折行——名称写全、单位跟在后面，字体回落变化时也不会掉成两行把整行撑高。
+   ★ 从前是 104px：那时每个名字都得前缀「上行/下行」（上行中心频率 MHz）。侧别现在由分组头
+   （↑ 上行 / ↓ 下行）说清，标题列因此收窄 26px，全落给数值格。 */
+.row > span { flex: none; width: 78px; font-size: 11.5px; color: var(--text-muted); white-space: nowrap; }
+/* 起止那行是两格输入夹一个「~」：这个波浪号是分隔符不是标题列，得从上面那条定宽里摘出来 */
 .row > span.tw { width: auto; padding: 0 1px; color: var(--text-faint); }
 .row2 { display: flex; flex-direction: column; gap: 1px; }
 .row2 > span { font-size: 11px; color: var(--text-muted); }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 6px; margin-bottom: 4px; }
 .sum { font-size: 11px; color: var(--text-faint); margin-top: 4px; }
-/* 勾选行：左缩进对齐输入框那一列（104px 标题 + 6px 间距），不与上面几行的标题列错开 */
-.ck2 { display: flex; align-items: center; gap: 5px; margin: 2px 0 3px 110px; font-size: 11.5px; color: var(--text-muted); cursor: pointer; }
-.lorow, .bmrow { display: flex; align-items: center; gap: 4px; margin-bottom: 3px; }
+/* 勾选行：左缩进对齐输入框那一列（78px 标题 + 6px 间距），不与上面几行的标题列错开 */
+.ck2 { display: flex; align-items: center; gap: 5px; margin: 2px 0 3px 84px; font-size: 11.5px; color: var(--text-muted); cursor: pointer; }
+.lorow { display: flex; align-items: center; gap: 4px; margin-bottom: 3px; }
 .clr { width: 26px; height: 21px; flex: none; border: 1px solid var(--border); background: none; padding: 0; cursor: pointer; }
-/* 波束一行一组：色块 · 名称 · 带宽 · 单位 —— 与图例条目「■ 中国波束：36 MHz」同序，照着填完
-   就是图上那一条。代号那格已去掉（与波束名是同一件事），空出的宽度正好让这一组回到一行里。 */
-.bmrow .bw { flex: none; width: 66px; }
-/* 单位只是跟读工具栏那个下拉的静态标签（本行不再能各改各的），故是文字不是控件。
-   「THz」在衬线 11.5px 下约 26px，给 34px 让五档都不换行、也不把带宽格挤窄。 */
-.bmrow .unit { flex: none; width: 34px; font-size: 11.5px; color: var(--text-faint); }
-.bmrow .bw::placeholder { color: var(--text-faint); font-style: italic; }
+/* 波束一行：色块 · 名字 · 备注 · ↑ 上行带宽 · ↓ 下行带宽 · 删。与图例条目
+   「■ 中国波束：36 MHz」同序，照着填完就是图上那一条。频率不在这里 —— 占哪一段是转发器的事。 */
+/* 「从波束合成导入」浮层：一行一个波束组（组名 · 色数/波束数 · 色片）。
+   ★ 贴【本区】的左右两边、不挂在那个按钮上：右栏可拖到 260px 窄，挂按钮上的浮层会探出栏外
+   被 .right 的 overflow 裁掉（人只看到半个浮层）。故 .bmsec 起定位上下文，浮层跟着栏宽走。 */
+.bmsec { position: relative; }
+.spop {
+  position: absolute; left: 9px; right: 9px; top: 23px; z-index: 30;
+  max-height: 320px; overflow: auto; padding: 6px;
+  background: var(--bg); border: 1px solid var(--border-strong); box-shadow: 0 4px 14px rgba(0, 0, 0, .12);
+}
+.sgrow {
+  display: flex; align-items: center; gap: 5px; width: 100%; padding: 4px 5px;
+  background: transparent; border: 1px solid transparent; color: var(--text);
+  font: inherit; font-size: 12px; text-align: left; cursor: pointer;
+}
+.sgrow:hover:not(:disabled) { background: var(--surface); border-color: var(--border); }
+.sgrow:disabled { color: var(--text-faint); cursor: not-allowed; }
+.sgrow .sgn { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 别的星上的组才写星名（本星的不写——一整列同一个名字是噪声） */
+.sgrow .sgsat { flex: none; max-width: 96px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10.5px; color: var(--text-muted); }
+.sgrow .sgt { flex: none; font-size: 10.5px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+/* 色片一行排开：色数多到 16 个也不换行（挤窄一点即可，看的是「有几种色」而不是每一片多大） */
+.sgrow .sgc { flex: none; display: flex; gap: 1px; max-width: 74px; overflow: hidden; }
+.sgrow .sgc i { width: 7px; height: 12px; flex: none; }
+.sgnone { color: var(--text-faint); font-size: 11.5px; margin: 2px 4px; }
+/* 末列是那个 ×：定宽 15px，数格的宽度不因它变 */
+.bmrow { display: grid; grid-template-columns: 26px minmax(0, 1.7fr) minmax(0, 1fr) 15px; gap: 4px; align-items: center; margin-bottom: 3px; }
+.bmrow .ci { padding: 1px 3px; font-size: 11.5px; }
+.bmrow .ci::placeholder { color: var(--text-faint); font-style: italic; }
+/* 列名行：几格挤在一起，不写列名就分不出哪格是哪格 */
+.bmrow.hd { margin-bottom: 1px; }
+.bmrow.hd span { font-size: 10.5px; color: var(--text-faint); text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bmrow.hd span:first-of-type { text-align: left; }
+/* 行尾的 ×：与整行同高、不撑格 */
+.bmrow .lop { padding: 1px 2px; line-height: 0; }
+
+/* 转发器占段表：一个波束一行（波束名 · 起始 · 终止 · 带宽），跟在该侧的「波束」多选之后。
+   ★ 类名不能沿用浮层那套 .sg*（同一个组件里的同名类会互相盖，scoped 挡不住）。
+   波束名那一列比三个数格窄：数格是要逐个 Tab 着录的，名字只用来认行。 */
+.bsrow { display: grid; grid-template-columns: 78px repeat(3, minmax(0, 1fr)); gap: 4px; align-items: center; margin-bottom: 3px; padding-left: 6px; }
+.bsrow .ci { padding: 1px 3px; font-size: 11.5px; }
+.bsrow .ci::placeholder { color: var(--text-faint); font-style: italic; }
+.bsrow .bsn { display: flex; align-items: center; gap: 4px; font-size: 11.5px; color: var(--text-muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bsrow .bsc { flex: none; width: 8px; height: 12px; }
+.bsrow.hd { margin-bottom: 1px; }
+.bsrow.hd span { font-size: 10.5px; color: var(--text-faint); text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bsrow.hd span:first-of-type { text-align: left; }
 
 .ci { flex: 1; min-width: 0; background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 2px 4px; font: inherit; font-size: 12.5px; font-family: var(--font-serif); }
-.ci:focus { border-color: var(--text); outline: none; }
+/* 格级聚焦：1px 深边 + 一圈极淡的环。方角、无动效 —— 环只是把「光标在这一格」摆明，
+   不是网页那种高亮。表内密排另给一套更收敛的（见下面 .t .ci:focus）。 */
+.ci:focus { border-color: var(--text); outline: none; box-shadow: 0 0 0 2px color-mix(in srgb, var(--text) 14%, transparent); }
 .ci:disabled { background: var(--surface); color: var(--text-faint); cursor: not-allowed; }
 .ci.num { text-align: right; font-variant-numeric: tabular-nums; }
 .ci.nar { max-width: 88px; }
 .ci.xnar { max-width: 54px; }
 .t .ci { border-color: transparent; background: transparent; width: 100%; }
+/* 数字列随刻度加宽（--fp-numw 由 numColW 按当前刻度下最长的读数算）。写在 .nar 之后：
+   min-width 压过 max-width 是 CSS 的既定顺序，Hz 档下那一列才不会把数截掉。
+   +12px 是这个框自己的左右内边距与边框（box-sizing: border-box，min-width 连它们一起算） */
+.t .ci.num { min-width: calc(var(--fp-numw, 0ch) + 12px); }
 .t .ci:hover { border-color: var(--border); }
-.t .ci:focus { border-color: var(--text); background: var(--bg); }
+/* 表内的聚焦格：不外扩（密表里 2px 的环会顶到邻格），改用内侧再压一道 1px —— 双线即 Excel 的活动格 */
+.t .ci:focus { border-color: var(--text); background: var(--bg); box-shadow: inset 0 0 0 1px var(--text); }
 
 /* ── 表内下拉的宽度 ──（必须写在上面三条之后：那三条用的是 background 简写，
    同权重下写在后面就会把这里的箭头背景图抹掉）
@@ -1609,6 +2494,9 @@ html[data-theme="dark"] .t .ci.selc {
 .mini:disabled { opacity: .45; cursor: default; }
 .mini.imp { background: var(--text); color: var(--bg); border-color: var(--text); }
 .mini.ghost { color: var(--text-muted); }
+/* 分配表页的设置栏开合钮：只有一个图标，故按下态靠边框与墨色区分（同批量条那几个小钮的写法） */
+.pnb { display: inline-flex; align-items: center; padding: 3px 7px; }
+.pnb.on { border-color: var(--text); color: var(--text); }
 .mini.xs { padding: 0 5px; font-size: 11px; }
 .mini.wide { width: 100%; margin-top: 5px; }
 .fld { font-size: 11.5px; color: var(--text-muted); display: inline-flex; align-items: center; gap: 4px; }
@@ -1630,7 +2518,6 @@ html[data-theme="dark"] .t .ci.selc {
 .mdlg { background: var(--bg); border: 1px solid var(--border-strong); width: min(1160px, 94vw); height: min(760px, 88vh); display: flex; flex-direction: column; }
 .mh { display: flex; align-items: baseline; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border-strong); background: var(--surface); }
 .mt { font-weight: 600; }
-.mhs { font-size: 11.5px; }
 .mx { align-self: center; border: none; background: none; color: var(--text-faint); cursor: pointer; display: flex; padding: 2px; }
 .mx:hover { color: var(--text); }
 .mbody { flex: 1; min-height: 0; display: grid; grid-template-columns: 312px minmax(0,1fr); }

@@ -17,6 +17,8 @@ import { parseGxt } from '../viz/gxt/parse.js'
 import { serializeKml } from '../viz/kml/serialize.js'
 import { parseKmlPolys } from '../viz/kml/parse.js'
 import Icon from '../components/Icon.vue'
+import MiniSendDialog from '../components/MiniSendDialog.vue'
+import { MINI_COVERAGE_SATS, satKey, inMiniList } from '../shared/miniSatList.js'
 defineOptions({ inheritAttrs: false })   // 不把父级传入的 title 落到根节点（去掉鼠标悬停的“星座3D”原生提示）
 import { createGlobeScene } from '../viz/globe3d/scene.js'
 import { createFlatCoverage } from '../viz/flatmap/flatCoverage.js'
@@ -400,7 +402,7 @@ async function perfPasteBtn() {
 // ===== 城市组：把当前城市列表存成命名预设，选组即载入（替换）并重算结果，供不同天线复用 =====
 function perfOpenGroups() { perfGrpDelId.value = ''; perfGrpRenameId.value = ''; perfNewGrpName.value = ''; perfGrpOpen.value = true }
 function perfCreateGroup() {
-  if (!perf.stations.value.length) { appAlert('当前城市列表为空，先添加城市再存为组'); return }
+  if (!perf.stations.value.length) { appAlert('当前城市列表为空，无法存为组'); return }
   const id = perf.addCityGroup(perfNewGrpName.value)
   if (id) { perfNewGrpName.value = ''; perfGroupSel.value = id }
 }
@@ -534,12 +536,6 @@ function setLevelColor(i, e) { const x = e.target.value; const css = `rgb(${pars
 function setLineColor(i, e) { const x = e.target.value; const css = `rgb(${parseInt(x.slice(1, 3), 16)},${parseInt(x.slice(3, 5), 16)},${parseInt(x.slice(5, 7), 16)})`; const L = grdS.levels[i]; L.lineColor = css; L.lineSet = true; L.locked = true }
 // GRD 天线指向模式（STK 口径）：底层仍是 boreType+boreLock，这里做单一「模式」表示层（读写委托给 useGrdCoverage）
 const boreMode = computed({ get: () => grd.boreModeOf(), set: (m) => grd.setBoreMode(m) })
-const BORE_MODE_HINT = {
-  target: '目标跟踪 Targeted：boresight 锁定固定经纬点，卫星移动时天线重新指向、足迹中心不动（STK Targeted）',
-  groundtrack: '星下点跟随 Ground-track：足迹随星下点平移、保持相对经纬偏置（STK Ground-track）',
-  fixed: '本体固定 Fixed：相对天底固定 Az/El，卫星移动时足迹随之扫过地面（STK Fixed）',
-  nadir: '天底 Nadir：boresight 恒指星下点（Az=El=0，本体固定的特例）'
-}
 const covSats = ref([])           // 索引：[{folder,displayName,satName,lon,beams:[{band,beam,type,gains,file}...]}]
 const covItems = ref([])          // 已添加卫星（两级结构）
 const covCleared = ref(false)      // 「清除绘制」后置位：保留 covItems 但暂不绘制，避免切视图/重开面板时 GXT 覆盖自行复现（再次 redraw 即解除）。入 snapshot 持久化，使「清除后效果」跨重启保留
@@ -1923,18 +1919,11 @@ function feedFlat() {
 
 // ===================== 覆盖图导出（高清 PNG / 矢量 PDF，统一走 2D 平面图） =====================
 const exporting = ref(false)
-// 发送到小程序：上传中态 + 密钥展示弹窗
-const sendingMiniapp = ref(false)
-const miniappKey = ref('')
-const miniappKeyOpen = ref(false)
-const keyCopied = ref(false)
-// 密钥展示为 XXXX-XXXX（更易手输）；小程序侧会去掉分隔符归一
-const formatKey = (k) => (k ? String(k).replace(/(.{4})(.{4})/, '$1-$2') : '')
-function copyMiniappKey() {
-  if (!miniappKey.value) return
-  keyCopied.value = perfWriteClipboard(formatKey(miniappKey.value))
-  if (!keyCopied.value) appAlert('复制失败，请手动记录密钥')
-}
+// 发送到小程序：走共用的 MiniSendDialog（绑定账号直投 / 生成密钥两选一，见 sendToMiniapp）
+const miniSendOpen = ref(false)
+const miniDeviceId = ref('')
+const miniConfigured = ref(false)
+
 let _pdfFonts   // undefined=未取；对象={cjk,latin,latinBold,latinItalic} 各面缺失为 null；null=取不到
 async function getPdfFonts() {
   if (_pdfFonts !== undefined) return _pdfFonts
@@ -2323,27 +2312,79 @@ function buildMiniappSnapshot() {
   return { app: 'satsim', kind: 'gxt-snapshot', v: 1, name, createdAt: Date.now(), coverage: { beams }, polygons }
 }
 
-// 发送到小程序：构建快照 → 上传 COS → 弹窗展示可输入的短密钥。覆盖层与多边形共用（一份快照含两层）。
+// 发送到小程序：打开共用的发送弹窗（与链路预算三窗、文件区同一个 MiniSendDialog）。
+// 两种投法在那里选：投给已绑定的小程序账号（免密钥、自动同步），或生成一次性密钥。
+// ★ 快照是【整块载荷】，没有 items[] —— 弹窗按 raw 形态收（见 MiniSendDialog 的 build 约定），
+//   不套 makePack 的信封：它自带 kind='gxt-snapshot'，套上去小程序那边反而认不出来。
 async function sendToMiniapp() {
-  if (sendingMiniapp.value) return
-  if (!(window.api && window.api.share && window.api.share.gxtSnapshot)) { appAlert('需在桌面客户端中运行'); return }
-  // 先问「配没配」再攒快照：没凭证时上传必然失败，与其让用户等一轮再看到「发送失败」，
+  if (miniSendOpen.value) return
+  if (!(window.api && window.api.share)) { appAlert('需在桌面客户端中运行'); return }
+  // 先问「配没配」再开弹窗：没凭证时上传必然失败，与其让用户填完一轮再看到「发送失败」，
   // 不如一上来就说清是配置问题（凭证随安装包分发，见 electron/services/shareConfig.example.js）
   try {
-    if (!(await window.api.share.configured())) {
+    miniConfigured.value = !!(await window.api.share.configured())
+    if (!miniConfigured.value) {
       appAlert('本机未配置在线分享凭证，无法发送到小程序。\n（该功能需要安装包内置 COS 凭证，请联系软件提供方）')
       return
     }
-  } catch (e) { /* configured 本身失败则照常往下走，由上传阶段报错 */ }
-  sendingMiniapp.value = true
+  } catch (e) { miniConfigured.value = true /* configured 本身失败则照常往下走，由上传阶段报错 */ }
+  const snap = buildMiniappSnapshot()
+  if (!snap.coverage.beams.length && !snap.polygons.length) { appAlert('当前画面没有可发送的覆盖等值线或多边形'); return }
+  try { miniDeviceId.value = String((await window.api.app.deviceId()) || '') } catch (e) { /* 显示用，取不到无妨 */ }
+  miniSendOpen.value = true
+}
+
+// 「这份覆盖算哪颗星的」候选 = 【小程序「卫星覆盖」页那 24 颗】，顺序照抄（见 shared/miniSatList.js）。
+// ★ 必须由人来定：快照里的星名是平台侧的叫法，小程序那边的波束是按 satelliteName 归类显示的，
+//   对不上就是「导进去了却在任何一颗星下面都看不见」。
+// ★★ 别改回平台自己的 SAT_PRESETS —— 那是超集（含 JCSAT 等小程序没有的星）且顺序不同，
+//   两边下拉对不上，正是 2026-08-02 用户反馈的问题。
+// ★★★ 画面里出现的星名若不在那 24 颗里，仍然给出来但标「小程序没有 · 将新建」：
+//   小程序收到不认识的名字会按送过去的轨位自动登记成自定义卫星（见那边的 _ensureSatName），
+//   所以这条路是通的，只是要让人知道这一下会在手机上多出一颗星。
+const miniSatOptions = computed(() => {
+  const known = MINI_COVERAGE_SATS.map((s) => ({ value: s.name, label: `${s.name}（${s.lon}°E）`, lon: s.lon }))
+  // 画面里画的是哪颗星：不在那 24 颗里的排到最前 —— 多半就是这次要发的那颗
+  const extra = []
+  const seen = new Set()
   try {
-    const snap = buildMiniappSnapshot()
-    if (!snap.coverage.beams.length && !snap.polygons.length) { appAlert('当前画面没有可发送的覆盖等值线或多边形'); return }
-    const r = await window.api.share.gxtSnapshot(snap)
-    if (r && r.ok && r.key) { miniappKey.value = r.key; keyCopied.value = false; miniappKeyOpen.value = true }
-    else { appAlert('发送失败：' + ((r && r.error) || '未知错误')) }
-  } catch (e) { console.error('发送到小程序失败', e); appAlert('发送失败：' + ((e && e.message) || e)) }
-  finally { sendingMiniapp.value = false }
+    for (const b of (buildMiniappSnapshot().coverage.beams || [])) {
+      const n = String(b.satName || '').trim()
+      if (!n || seen.has(satKey(n)) || inMiniList(n)) continue
+      seen.add(satKey(n))
+      const p = Number(b.lon)
+      extra.push({ value: n, label: `${n}${Number.isFinite(p) ? `（${p}°E）` : ''} · 小程序没有，将新建`, lon: Number.isFinite(p) ? p : null })
+    }
+  } catch (e) { /* 画面还没有覆盖层 */ }
+  return [...extra, ...known]
+})
+
+// 默认选中：画面里那颗星若正好是那 24 颗之一就选它（最常见），否则选第一个候选
+const miniSatDefault = computed(() => {
+  try {
+    for (const b of (buildMiniappSnapshot().coverage.beams || [])) {
+      const hit = MINI_COVERAGE_SATS.find((s) => satKey(s.name) === satKey(b.satName))
+      if (hit) return hit.name
+    }
+  } catch (e) { /* ignore */ }
+  const o = miniSatOptions.value
+  return o.length ? o[0].value : ''
+})
+
+// 弹窗打开的那一刻现攒快照（这中间用户可能又改了画面）；picked.sat 是上面选的目标星
+function buildMiniSend(picked) {
+  const snap = buildMiniappSnapshot()
+  const satName = String((picked && picked.sat) || '').trim()
+  const hit = miniSatOptions.value.find((o) => o.value === satName)
+  if (satName) snap.target = { satName, satLon: hit && hit.lon != null ? hit.lon : null }
+  return {
+    name: satName ? `${satName} 覆盖` : snap.name,
+    raw: snap,
+    label: '覆盖快照',
+    // 幂等键按【目标星】走：反复给同一颗星发覆盖就是要更新手机上那一份，不是再堆一份；
+    // 换一颗星才算新的一件。
+    sync: 'gxt:' + (satName || snap.name || '覆盖快照')
+  }
 }
 
 // ===================== Polygon（协调区多边形，仿 SATSOFT Polygon Editor 精简版） =====================
@@ -2583,7 +2624,7 @@ function offsetPolyPts(pts, d) {
 }
 function polyOffset(pg, sign) {
   const amt = Math.abs(Number(polyOffAmt.value))
-  if (!amt || !Number.isFinite(amt)) { appAlert('请先在「扩/缩幅度」里填一个大于 0 的度数'); return }
+  if (!amt || !Number.isFinite(amt)) { appAlert('请先在「扩/缩幅度」中填写大于 0 的度数'); return }
   if (pg.pts.length < 3) { appAlert('该多边形还未成形（至少 3 个顶点），不能扩/缩'); return }
   const pts = offsetPolyPts(pg.pts, amt * sign)
   if (!pts) return
@@ -2967,7 +3008,7 @@ const bsPamExcitCopied = ref(false)
 let bsPamExcitTmr = null
 function bsPamExcitCopy() {
   const e = bsPamExcitShown.value
-  if (!e || !e.rows.length) { appAlert('还没有激励指令：请先生成相控阵赋形天线'); return }
+  if (!e || !e.rows.length) { appAlert('尚无激励指令：请先生成相控阵赋形天线'); return }
   const head = ['端口#', '指向经度', '指向纬度', '方位az°', '俯仰el°', '幅度dB(rel BFN)', '相位°', '功率占比%'].join('\t')
   const body = e.rows.map((r) => [r.port, r.lon, r.lat, r.az, r.el, r.ampDb, r.phaseDeg, r.powPct].join('\t')).join('\n')
   if (perfWriteClipboard(head + '\n' + body)) {
@@ -2978,7 +3019,7 @@ function bsPamExcitCopy() {
 }
 function bsExportPamExcit() {
   const csv = bs.pamExcitCsv()
-  if (!csv) { appAlert('还没有激励指令：请先生成相控阵赋形天线'); return }
+  if (!csv) { appAlert('尚无激励指令：请先生成相控阵赋形天线'); return }
   const e = bsPamExcitShown.value
   const nm = (e && e.name ? e.name : '相控阵赋形').replace(/[\\/:*?"<>|]/g, '_')
   saveExport(csv, `星上激励指令_${nm}.csv`, [{ name: 'CSV（Excel 可打开）', extensions: ['csv'] }])
@@ -4191,13 +4232,13 @@ onBeforeUnmount(() => {
               <span class="fdot"></span>
               <template v-if="filterGroupId">查看组 <b>{{ filterKw }}</b> · {{ filterN }} 颗</template>
               <template v-else>已筛选 <b>{{ filterKw }}</b> · 显示 {{ filterN }} 颗</template>
-              <span v-if="!filterGroupId" class="fsave" title="把当前筛选结果存成卫星组（可稍后重新显示）" @click="saveFilterAsGroup"><Icon name="folder-plus" :size="11" /> 存为组</span>
+              <span v-if="!filterGroupId" class="fsave" title="将当前筛选结果存为卫星组（可稍后重新显示）" @click="saveFilterAsGroup"><Icon name="folder-plus" :size="11" /> 存为组</span>
               <span class="fx" @click="clearSearch">清除</span>
             </div>
             <!-- 一颗也算数：单颗选中同样要能「存为组」（此前 ≥2 才出条，导致单星无法建组） -->
             <div v-if="selList.length" class="fbar selbar">
               <span class="fdot sel"></span>已选 <b>{{ selList.length }}</b> 颗卫星
-              <span class="fsave" title="把选中的卫星存成卫星组（可稍后重新显示）" @click="saveSelectionAsGroup"><Icon name="folder-plus" :size="11" /> 存为组</span>
+              <span class="fsave" title="将选中的卫星存为卫星组（可稍后重新显示）" @click="saveSelectionAsGroup"><Icon name="folder-plus" :size="11" /> 存为组</span>
               <span class="fx" title="取消全部选择" @click="closeCard">清除</span>
             </div>
             <div class="pchips">
@@ -4240,7 +4281,7 @@ onBeforeUnmount(() => {
                 <span class="lnk" title="打开卫星组管理器：新建 / 改名 / 复制 / 删除 · 搜索添加卫星 · 逐颗或批量移出" @click="openSatGrpMgr()"><Icon name="sliders-horizontal" :size="11" /> 管理</span>
               </span>
             </div>
-            <div v-if="!satGroups.list.value.length" class="cctip">把常用卫星存成命名组，之后一键重新显示。点「新建」建组后在管理器里搜索添加；也可在地图上点选卫星（按住 Ctrl 多选）后点上方「存为组」。</div>
+            <div v-if="!satGroups.list.value.length" class="cctip">还没有卫星组。</div>
             <div
               v-for="g in satGroups.list.value" :key="g.id"
               class="ccrow sgrow" :class="{ sel: filterGroupId === g.id }"
@@ -4261,11 +4302,11 @@ onBeforeUnmount(() => {
                 <span class="ccic"><Icon name="layers" :size="12" /></span>
                 <span class="ccnm" :title="g.name">{{ g.name }}</span>
                 <span class="cccode">{{ g.sats.length }} 颗</span>
-                <span v-if="selList.length || (filterN && !filterGroupId)" class="ccic add" :title="'把当前' + (selList.length ? ('选中的 ' + selList.length) : ('筛选的 ' + filterN)) + ' 颗卫星加入本组（去重追加）'" @click.stop="addSelToGroup(g)"><Icon name="plus" :size="13" /></span>
-                <span v-if="selList.length && filterGroupId === g.id" class="ccic del" :title="'把选中的 ' + selList.length + ' 颗从本组移出'" @click.stop="removeSelFromGroup(g)"><Icon name="minus" :size="13" /></span>
+                <span v-if="selList.length || (filterN && !filterGroupId)" class="ccic add" :title="'将当前' + (selList.length ? ('选中的 ' + selList.length) : ('筛选的 ' + filterN)) + ' 颗卫星加入本组（去重追加）'" @click.stop="addSelToGroup(g)"><Icon name="plus" :size="13" /></span>
+                <span v-if="selList.length && filterGroupId === g.id" class="ccic del" :title="'将选中的 ' + selList.length + ' 颗从本组移出'" @click.stop="removeSelFromGroup(g)"><Icon name="minus" :size="13" /></span>
                 <span class="ccic" title="管理成员：搜索添加 / 逐颗移出（无需先在地图上显示）" @click.stop="openSatGrpMgr(g)"><Icon name="sliders-horizontal" :size="11" /></span>
                 <span class="ccic" title="重命名" @click.stop="satGrpEnterRename(g)"><Icon name="pencil" :size="11" /></span>
-                <span class="ccic del" :class="{ warn: satGrpDelId === g.id }" :title="satGrpDelId === g.id ? '再点一次确认删除' : '删除该组'" @click.stop="satGrpDelete(g)"><Icon name="trash" :size="11" /></span>
+                <span class="ccic del" :class="{ warn: satGrpDelId === g.id }" :title="satGrpDelId === g.id ? '再次点击确认删除' : '删除该组'" @click.stop="satGrpDelete(g)"><Icon name="trash" :size="11" /></span>
               </template>
             </div>
           </div>
@@ -4277,7 +4318,7 @@ onBeforeUnmount(() => {
               <input class="ci" type="datetime-local" v-model="scenarioEpochLocal" />
               <span class="lnk" title="取当前时刻为场景历元" @click="scenarioEpochNow">当前</span>
             </div>
-            <div v-if="!customList.length" class="cctip">按 Walker 参数生成自定义星座，叠加为星点 + 轨道圈，可点选查看单星轨道 / 星下点 / 覆盖圈。</div>
+            <div v-if="!customList.length" class="cctip">还没有自定义星座。</div>
             <div v-for="c in customList" :key="c.id" class="ccrow" :class="{ off: c.visible === false, sel: c.id === soloConst }" title="点击单独显示该星座" @click="showConstAlone(c)">
               <span class="ccdot" :style="{ background: c.color }"></span>
               <span class="ccnm" :title="c.name">{{ c.name }}</span>
@@ -4301,7 +4342,7 @@ onBeforeUnmount(() => {
                       :disabled="covItems.some(i => i.folder === s.folder)">{{ s.displayName }}（{{ s.lon }}°）</option>
             </select>
           </div>
-          <div v-if="!covItems.length" class="tip">添加一颗或多颗卫星，各自可建多个批次（波束分组），分别设增益档与颜色。</div>
+          <div v-if="!covItems.length" class="tip">还没有卫星。</div>
         </div>
 
         <!-- 每颗已添加卫星 -->
@@ -4416,7 +4457,7 @@ onBeforeUnmount(() => {
         <div class="sec">
           <div class="sect acc" :class="{ open: isSecOpen('poly-list') }" @click="toggleSec('poly-list')"><Icon :name="isSecOpen('poly-list') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>协调区多边形</span><span class="lnk" title="从标准 GXT / KML 文件导入多边形（追加到列表，不影响已有；可多选）" @click.stop="importPolys"><Icon name="import" :size="12" /> 导入</span><span class="lnk" style="margin-left:12px" @click.stop="polyStartDraw"><Icon name="plus" :size="11" /> 绘制</span></div>
           <template v-if="isSecOpen('poly-list')">
-          <div v-if="!polys.length && !polyDrawId" class="tip">画一个多边形圈定协调区域，给区域标一个数值（如谱密度，数值含义与单位不做定义），可导出 / 导入 GXT / KML。点「＋ 绘制」后在地图上右键连续加顶点，或按住左键沿路径拖动连续加点（3D / 平面图均可）；也可点「导入」从标准 GXT / KML 文件载入多边形。</div>
+          <div v-if="!polys.length && !polyDrawId" class="tip">暂无多边形。</div>
           <div v-for="pg in polys" :key="pg.id" class="plg" :class="{ act: polyDrawId === pg.id || polyEditId === pg.id || polyMoveId === pg.id }">
             <div class="plgh">
               <input type="checkbox" :checked="pg.show !== false" title="在地图上显示 / 隐藏该多边形" @change="togglePoly(pg)" />
@@ -4467,14 +4508,13 @@ onBeforeUnmount(() => {
           <template v-if="isSecOpen('poly-disp', false)">
           <div class="srow"><label>顶点大小</label><input class="rng" type="range" min="1" max="12" step="0.5" :value="polyDotSize" @input="e => { polyDotSize = Number(e.target.value); polyRefresh() }" /><span class="u">{{ polyDotSize }}</span></div>
           <div class="srow"><label>扩/缩幅度</label><input class="ci" v-model="polyOffAmt" placeholder="如 0.5" @change="persistPolys" /><span class="u">°</span></div>
-          <div class="tip">顶点圆点在绘制 / 调整顶点 / 整体拖动时显示；「扩大 / 缩小」按上方幅度（度）整体偏移一圈生成新多边形（原多边形保留）。</div>
           </template>
         </div>
 
         <div class="csfoot">
-          <span class="expb2" title="把当前绘制的覆盖等值线 + 协调区多边形一起导出为 GXT（所见即所得；多边形每个一条闭合等值线，值=数值栏）" @click="exportPolys('gxt')">导出 GXT</span>
-          <span class="expb2" title="把当前绘制的覆盖等值线 + 协调区多边形一起导出为 KML（所见即所得；覆盖按档位渐变，多边形保留各自名称/数值/颜色）" @click="exportPolys('kml')">导出 KML</span>
-          <span class="expb2" title="把当前绘制（覆盖等值线 + 显示中的多边形）作为一份快照发送到小程序，生成导入密钥" @click="sendToMiniapp">发送到小程序</span>
+          <span class="expb2" title="将当前绘制的覆盖等值线 + 协调区多边形一并导出为 GXT（所见即所得；多边形每个一条闭合等值线，值=数值栏）" @click="exportPolys('gxt')">导出 GXT</span>
+          <span class="expb2" title="将当前绘制的覆盖等值线 + 协调区多边形一并导出为 KML（所见即所得；覆盖按档位渐变，多边形保留各自名称/数值/颜色）" @click="exportPolys('kml')">导出 KML</span>
+          <span class="expb2" title="将当前绘制内容（覆盖等值线 + 显示中的多边形）作为一份快照发送到小程序，生成导入密钥" @click="sendToMiniapp">发送到小程序</span>
         </div>
         </div>
         </div>
@@ -4514,7 +4554,7 @@ onBeforeUnmount(() => {
                 <span class="gsname" @click="grd.toggleExpand(sat.folder)" :title="sat.satName">{{ sat.satName }}<em v-if="sat.antennas.length">{{ sat.antennas.length }}</em><i v-if="sat.elements" class="simtag" title="轨道根数模拟星：星下点随时间移动">轨</i></span>
                 <!-- 显示开关（卫星名 / 仰角线）：图标按钮，色随该星颜色（在「✎」里改），与右侧操作图标以竖线分组 -->
                 <span class="sdisp">
-                  <span class="ic" :class="{ on: satVisible(sat) }" title="一键显示/隐藏该卫星（图标 + 名称）；如需只隐藏图标或只隐藏名称，在「卫星设置」里单独勾选" @click.stop="toggleSatLabel(sat)"><Icon :name="satVisible(sat) ? 'eye' : 'eye-off'" :size="12" /></span>
+                  <span class="ic" :class="{ on: satVisible(sat) }" title="显示/隐藏该卫星（图标 + 名称）；如需只隐藏图标或只隐藏名称，在「卫星设置」里单独勾选" @click.stop="toggleSatLabel(sat)"><Icon :name="satVisible(sat) ? 'eye' : 'eye-off'" :size="12" /></span>
                   <span class="ic" :class="{ on: sat.elevShow }" :style="sat.elevShow ? { color: sat.elevColor } : {}" title="显示/隐藏等仰角线（需先在「✎」里填仰角值，如 5,10）" @click.stop="toggleSatElev(sat)"><Icon name="angle" :size="12" /></span>
                 </span>
                 <span class="sacts">
@@ -4524,7 +4564,7 @@ onBeforeUnmount(() => {
                 </span>
               </div>
               <div v-if="sat.kind !== 'elevline' && grd.isExpanded(sat.folder)" class="gbody">
-                <div v-if="!sat.antennas.length" class="gant noant">暂无天线 — 点上方「＋」导入 GRD</div>
+                <div v-if="!sat.antennas.length" class="gant noant">暂无天线。</div>
                 <template v-for="a in sat.antennas" :key="a.name">
                 <div class="gant" :class="{ on: grd.isSelected(sat.folder, a.name), foc: grd.isActive(sat.folder, a.name) }" title="点击编辑该天线参数（不影响是否显示）" @click="grd.setActive(sat, a)">
                   <input type="checkbox" class="gck" title="勾选＝在地图上显示该天线覆盖范围" :checked="grd.isSelected(sat.folder, a.name)" @click.stop @change="grd.toggleAnt(sat, a)" />
@@ -4623,7 +4663,6 @@ onBeforeUnmount(() => {
             <label class="chk2"><input type="checkbox" v-model="grdS.fill" /><span>Fill Contours（分带填充）</span></label>
             <label class="chk2"><input type="checkbox" v-model="grdS.line" /><span>显示等值线</span></label>
             <div class="srow"><label>透明度</label><input class="rng" type="range" min="0" max="1" step="0.02" v-model.number="grdS.alpha" /><span class="u">{{ grdS.alpha.toFixed(2) }}</span></div>
-            <div class="tip">多个天线/卫星各自开启「Fill」即可叠加填充；交叠区按透明度混合，编辑中天线置于最上。仰角线在上方卫星树展开各星设置。</div>
           </div>
 
           <div class="sec">
@@ -4648,7 +4687,6 @@ onBeforeUnmount(() => {
               <div class="srow"><label>俯仰 El</label><input class="ci" type="number" step="0.5" v-model.number="grdS.boreEl" /><span class="u">°</span></div>
             </template>
             <div class="srow"><label>旋转 Rot</label><input class="ci" type="number" step="1" v-model.number="grdS.yaw" /><span class="u">°</span></div>
-            <div class="tip">{{ BORE_MODE_HINT[boreMode] }}</div>
             <div class="tip"><template v-if="grd.boreGround()">指向 {{ grd.boreGround().lon.toFixed(2) }}°E, {{ grd.boreGround().lat.toFixed(2) }}°N</template><template v-else>指向深空（越过地平）</template>（默认星下点 {{ grd.antMeta().satLon }}°）· 峰值 {{ grd.antMeta().peakDb }}dB @ {{ grd.antMeta().peak[0] }},{{ grd.antMeta().peak[1] }}</div>
             </template>
           </div>
@@ -4665,9 +4703,8 @@ onBeforeUnmount(() => {
             <label class="chk2"><input type="checkbox" v-model="grdS.showVal" /><span>显示数值标签</span></label>
             <div v-if="grdS.showVal" class="srow"><label>字号</label><input class="rng" type="range" min="0.5" max="30" step="0.5" v-model.number="grdS.valSize" /><span class="u">{{ grdS.valSize }}</span></div>
             <div v-if="grdS.showVal" class="srow" style="justify-content:flex-start">
-              <span class="lnk" :class="{ on: grd.dragLabel.value }" title="开启后在地图上按住拖动数值标签，可沿等值线滑动其位置（松手保存；再点关闭）" @click="grd.setDragLabel(!grd.dragLabel.value)"><Icon v-if="grd.dragLabel.value" name="check" :size="10" /> 拖动标签位置</span>
+              <span class="lnk" :class="{ on: grd.dragLabel.value }" title="开启后在地图上按住拖动数值标签，可沿等值线滑动其位置（释放后保存；再次点击关闭）" @click="grd.setDragLabel(!grd.dragLabel.value)"><Icon v-if="grd.dragLabel.value" name="check" :size="10" /> 拖动标签位置</span>
             </div>
-            <div class="tip">数值标签文字取「电平」表灰色列（默认电平值，可改为自定义名）；开启「拖动标签位置」后可在图上把标签沿等值线拖动。需开启「显示等值线」。</div>
             </template>
           </div>
         </template>
@@ -4692,7 +4729,7 @@ onBeforeUnmount(() => {
               <option v-for="st in grdSats" :key="st.folder" :value="st.folder">{{ st.satName }}</option>
             </select>
           </div>
-          <div v-if="bs.satPos()" class="tip">星下点 {{ bs.satPos().lon.toFixed(2) }}°E{{ Math.abs(bs.satPos().lat || 0) > 0.05 ? ', ' + bs.satPos().lat.toFixed(2) + '°N' : '' }} · 高度 {{ Math.round(bs.satPos().altKm).toLocaleString() }} km。一颗卫星可包含多个波束组，每组对应一根天线。</div>
+          <div v-if="bs.satPos()" class="tip">星下点 {{ bs.satPos().lon.toFixed(2) }}°E{{ Math.abs(bs.satPos().lat || 0) > 0.05 ? ', ' + bs.satPos().lat.toFixed(2) + '°N' : '' }} · 高度 {{ Math.round(bs.satPos().altKm).toLocaleString() }} km</div>
           <div class="bs-grps">
             <div v-for="g in bs.groupsForSat.value" :key="g.id" class="bs-grow" :class="{ on: g.id === bs.activeGroupId.value, hid: !g.pinned && g.id !== bs.activeGroupId.value }" @click="bs.selectGroup(g.id)">
               <span class="bs-gk" :class="g.mode">{{ g.mode === 'pam' ? '相控阵' : g.mode === 'gauss' ? '多馈源' : '赋形' }}</span>
@@ -4702,7 +4739,7 @@ onBeforeUnmount(() => {
               <span class="gic" title="复制该组" @click.stop="bs.duplicateGroup(g.id)"><Icon name="copy" :size="11" /></span>
               <span class="gic del" title="删除该组（不影响已生成的天线）" @click.stop="bsRemoveGroup(g)"><Icon name="x" :size="12" /></span>
             </div>
-            <div v-if="!bs.groupsForSat.value.length" class="bs-empty">还没有波束组。点下方 ＋ 新建一个。</div>
+            <div v-if="!bs.groupsForSat.value.length" class="bs-empty">还没有波束组。</div>
           </div>
           <div class="bs-addrow">
             <span class="opb" :class="{ dis: !grdSats.length }" title="新建多馈源反射面（点/椭圆波束群；一组内可多设置混合宽度，如 0.8+0.9+1.6°）" @click="bsAddGroup('gauss')">＋多馈源组</span>
@@ -4710,7 +4747,7 @@ onBeforeUnmount(() => {
             <span class="opb" :class="{ dis: !grdSats.length }" title="新建相控阵（SATSOFT §6.5 PAM：矩形阵 + Butler 矩阵，sinc 波束群，可电扫到任意指向）" @click="bsAddGroup('pam')">＋相控阵组</span>
           </div>
           <div class="bs-navops">
-            <span class="opb sm" :class="{ dis: !bs.groupsForSat.value.length }" title="当前卫星下每个组各生成一根天线" @click="bsGenerateAll"><Icon name="check" :size="11" /> 全部生成</span>
+            <span class="opb sm" :class="{ dis: !bs.groupsForSat.value.length }" title="当前卫星下每个组各生成一副天线" @click="bsGenerateAll"><Icon name="check" :size="11" /> 全部生成</span>
             <span class="opb sm" :class="{ dis: !bs.canUndo.value }" title="撤销（当前组）" @click="bs.undo"><Icon name="undo-2" :size="11" /> 撤销</span>
             <span class="opb sm" :class="{ dis: !bs.canRedo.value }" title="重做（当前组）" @click="bs.redo"><Icon name="redo-2" :size="11" /> 重做</span>
           </div>
@@ -4734,7 +4771,6 @@ onBeforeUnmount(() => {
           <template v-if="bs.curSetting.value">
             <div class="srow"><label>设置名</label><input class="ci" :value="bs.curSetting.value.name" @input="e => bs.renameSetting(bs.curSetting.value.id, e.target.value)" /><input class="clr" type="color" :value="bs.curSetting.value.color" title="该波束类型轮廓/中心点颜色" @input="e => bsSetSettingColor(e.target.value)" /><span class="opb sm" :class="{ dis: bs.settings.value.length <= 1 }" title="删除本波束类型" @click="bs.removeSetting(bs.curSetting.value.id)">删除</span></div>
           </template>
-          <div class="tip">每个「波束设置」= 一种波束类型（一套独立反射面）。在「天线参数」中设置其口径/馈源，决定该类型的波束宽·效率·方向性。一根天线可含多种波束（如点波束 + 区域波束），生成时各波束按其所属类型的波束宽/增益计算。</div>
           </template>
         </div>
 
@@ -4771,7 +4807,7 @@ onBeforeUnmount(() => {
             <input class="ci" type="number" step="0.05" :disabled="bs.curSetting.value.fdDriver !== 'feedspacing'" v-model.number="bs.curSetting.value.feedSpacingWl" /><span class="u">WL</span>
           </div>
           <div class="srow"><label>馈源直径</label>
-            <label class="chk-in" title="Auto＝馈源直径 = 馈源间距（多馈源刚好铺满不交叠）；取消可手动输入——馈源直径是控制口径效率的核心：越大→边缘照射越低（更聚焦）→溢出越小、效率越高"><input type="checkbox" :checked="bs.curSetting.value.feedDiaAuto !== false" @change="bs.curSetting.value.feedDiaAuto = $event.target.checked" /><span>Auto</span></label>
+            <label class="chk-in" title="Auto＝馈源直径 = 馈源间距（多馈源恰好相接不交叠）；取消可手动输入——馈源直径是控制口径效率的核心：越大→边缘照射越低（更聚焦）→溢出越小、效率越高"><input type="checkbox" :checked="bs.curSetting.value.feedDiaAuto !== false" @change="bs.curSetting.value.feedDiaAuto = $event.target.checked" /><span>Auto</span></label>
             <input class="ci" type="number" step="0.05" :disabled="bs.curSetting.value.feedDiaAuto !== false" v-model.number="bs.curSetting.value.feedDiaWl" /><span class="u">WL</span>
           </div>
           <div v-if="bs.curSetting.value.feedDiaAuto === false && bs.refl.value && bs.refl.value.ok && Number(bs.curSetting.value.feedDiaWl) > bs.refl.value.feedSpacingWl + 1e-4" class="tip warn">⚠ 馈源直径 &gt; 馈源间距（{{ bsFmt(bs.refl.value.feedSpacingWl, 2) }} WL）：多馈源会交叠。单波束效率读数仍有效；多波束请加大波束间距或减小直径。</div>
@@ -4852,13 +4888,13 @@ onBeforeUnmount(() => {
             <div class="sect acc" :class="{ open: isSecOpen('bs-place') }" @click="toggleSec('bs-place')"><Icon :name="isSecOpen('bs-place') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>放置波束</span><span class="bs-cnt">{{ bs.beams.value.length }} 个{{ bs.curSetting.value ? ' · 设置 ' + bs.curSetting.value.name : '' }}</span></div>
             <template v-if="isSecOpen('bs-place')">
             <div class="bs-ops">
-              <span class="opb" :class="{ on: bs.placing.value }" title="开启后在地图上左键点击放置波束轮廓（拖动仍旋转/平移，右键也可放；再点关闭）" @click="bsPlaceToggle">{{ bs.placing.value ? '放置中…点击地图' : '地图放置' }}</span>
-              <span class="opb" :class="{ on: bs.adjusting.value }" title="在平面图上拖动波束中心调整位置：轮廓实时跟随指针，经过相切位置时自动贴边（可随时拖离）" @click="bsAdjustToggle">{{ bs.adjusting.value ? '完成调整' : '调整中心' }}</span>
+              <span class="opb" :class="{ on: bs.placing.value }" title="开启后在地图上左键点击放置波束轮廓（拖动仍为旋转/平移，右键亦可放置；再次点击关闭）" @click="bsPlaceToggle">{{ bs.placing.value ? '放置中…点击地图' : '地图放置' }}</span>
+              <span class="opb" :class="{ on: bs.adjusting.value }" title="在平面图上拖动波束中心调整位置：轮廓实时跟随指针，经过相切位置时自动吸附（可随时拖离）" @click="bsAdjustToggle">{{ bs.adjusting.value ? '完成调整' : '调整中心' }}</span>
               <span class="opb" title="打开波束批量表格：Excel 式框选/粘贴，从表格批量成群" @click="openBsTable">批量表格</span>
               <span class="opb" title="清空本组所有已放置波束（可撤销：批量表格 Ctrl+Z）" @click="bs.clearBeams">清空</span>
-              <span class="opb danger" :class="{ on: bs.deleting.value }" title="开启后在地图上点击波束中心即可删除该波束，可连续点删多个（误删可点上方「撤销」）；再点关闭" @click="bsDeleteToggle">{{ bs.deleting.value ? '删除中…点击波束' : '删除波束' }}</span>
+              <span class="opb danger" :class="{ on: bs.deleting.value }" title="开启后点击地图上的波束中心即可删除该波束，支持连续删除（误删可用上方「撤销」）；再次点击关闭" @click="bsDeleteToggle">{{ bs.deleting.value ? '删除中…点击波束' : '删除波束' }}</span>
             </div>
-            <label class="chk2"><input type="checkbox" v-model="bs.p.snapTangent" /><span>相切吸附（点击/拖拽贴边自动相切，与 SATSOFT 一致）</span></label>
+            <label class="chk2"><input type="checkbox" v-model="bs.p.snapTangent" /><span>相切吸附（点击或拖动至边界附近自动相切，与 SATSOFT 一致）</span></label>
             <div class="bs-hex">
               <label>蜂窝布满</label>
               <select :value="bs.p.polyId" @change="e => bs.p.polyId = e.target.value">
@@ -4871,7 +4907,7 @@ onBeforeUnmount(() => {
               <label class="chk-in" title="Auto＝波束间距 = 该设置的波束宽度 θ3dB（相邻波束 −3.01 dB 交叠）；取消可手动输入。间距下沉到每个波束设置（随其口径/波束宽变），故此处读写激活设置、Auto 显示实时算出值"><input type="checkbox" :checked="bs.curSetting.value.autoSpacing !== false" @change="bs.curSetting.value.autoSpacing = $event.target.checked" /><span>Auto</span></label>
               <input class="ci" type="number" step="0.1" :disabled="bs.curSetting.value.autoSpacing !== false" v-model.number="bs.curSetting.value.spacing" /><span class="u">°</span>
             </div>
-            <div v-if="bs.beams.value.length > 60" class="tip">共 <b>{{ bs.beams.value.length }}</b> 个波束——列表过长已折叠，用「删除波束」在地图上点选删除，或「批量表格」批量查看 / 编辑 / 删除。</div>
+            <div v-if="bs.beams.value.length > 60" class="tip">共 <b>{{ bs.beams.value.length }}</b> 个波束，列表过长已折叠。</div>
             <div v-else-if="bs.beams.value.length" class="bs-list">
               <div v-for="(b, i) in bs.beams.value" :key="b.id" class="bs-brow">
                 <span class="bs-bi">{{ bs.beamNumOffset.value + i + 1 }}</span>
@@ -4880,7 +4916,6 @@ onBeforeUnmount(() => {
                 <span class="ic del" title="删除该波束" @click="bs.removeBeam(b.id)"><Icon name="x" :size="10" /></span>
               </div>
             </div>
-            <div v-else class="tip">开启「地图放置」后在地图上左键点击放置（相切吸附会自动贴边）；或选一个 Polygon「布满」一键成群；或用「批量表格」粘贴经纬度。</div>
             </template>
           </div>
 
@@ -4916,15 +4951,26 @@ onBeforeUnmount(() => {
           <div class="sec">
             <div class="sect acc" :class="{ open: isSecOpen('bs-freq', false) }" @click="toggleSec('bs-freq', false)"><Icon :name="isSecOpen('bs-freq', false) ? 'chevron-down' : 'chevron-right'" :size="12" /><span>频率计划</span><span v-if="bs.fcStats.value.length" class="bs-cnt">{{ bs.fcStats.value.reduce((s, x) => s + x.count, 0) }} 已配色</span></div>
             <template v-if="isSecOpen('bs-freq', false)">
+              <!-- 颜色数：七档写成纯数字（七个「N 色」在这条窄栏里放不下），含义与可达间距进 title。
+                   ★ 档位取的是【有效前沿】而不是「凡复用因子都列」：同一个可达间距上只留最省频率的
+                     那一档，单极化（奇数档）与双极化（偶数档）各算各的 —— 于是
+                       单极化 3 / 7 / 9（1.73 / 2.65 / 3.00 d）· 双极化 4 / 8 / 12 / 16（2.00 / 2.65 / 3.46 / 4.00 d）
+                     8 不是复用因子（取不到 √8，最远 √7 = 与七色同距），但它是【双极化那条线上
+                     2.65d 这一档最省频率的】：4 频段 × 2 极化，每波束拿 1/4 频段，而七色只有 1/7。
+                     10 被 8 支配（同样 2.65d 却要切 5 段频率），故不列 —— 这也正是上一轮撤掉它的理由。 -->
               <div class="srow"><label>颜色数</label>
                 <span class="seg sm">
-                  <span class="sg" :class="{ on: bs.p.fcN === 3 }" title="三色复用（相邻异色最少可行数：规则蜂窝为三色可着色）" @click="bs.p.fcN = 3">三色</span>
-                  <span class="sg" :class="{ on: bs.p.fcN === 4 }" title="四色复用（SATSOFT 四色填充；平面图四色恒可行）" @click="bs.p.fcN = 4">四色</span>
-                  <span class="sg" :class="{ on: bs.p.fcN === 7 }" title="七色复用（经典蜂窝 reuse-7 格局）" @click="bs.p.fcN = 7">七色</span>
+                  <span class="sg" :class="{ on: bs.p.fcN === 3 }" title="三色复用：同色最小间距 1.73× 波束间距（3 频段 × 单极化，每波束 1/3 频段）" @click="bs.p.fcN = 3">3</span>
+                  <span class="sg" :class="{ on: bs.p.fcN === 4 }" title="四色复用：同色最小间距 2.00× 波束间距（2 频段 × 2 极化，每波束 1/2 频段 —— 单波束带宽最大的一档，SATSOFT 四色填充）" @click="bs.p.fcN = 4">4</span>
+                  <span class="sg" :class="{ on: bs.p.fcN === 7 }" title="七色复用：同色最小间距 2.65× 波束间距（7 频段 × 单极化，每波束 1/7 频段；经典蜂窝 reuse-7）" @click="bs.p.fcN = 7">7</span>
+                  <span class="sg" :class="{ on: bs.p.fcN === 8 }" title="八色复用：同色最小间距 2.65× 波束间距（4 频段 × 2 极化，每波束 1/4 频段）。8 不是复用因子（无法取到 √8 的晶格间距），间距与七色相同——但同样的间距下它只切 4 段频率，每波束带宽是七色的近两倍，故双极化系统用八色而不是七色" @click="bs.p.fcN = 8">8</span>
+                  <span class="sg" :class="{ on: bs.p.fcN === 9 }" title="九色复用：同色最小间距 3.00× 波束间距（9 频段 × 单极化；经典 reuse-9，蜂窝格上的严格图案）" @click="bs.p.fcN = 9">9</span>
+                  <span class="sg" :class="{ on: bs.p.fcN === 12 }" title="十二色复用：同色最小间距 3.46× 波束间距（6 频段 × 2 极化，每波束 1/6 频段）" @click="bs.p.fcN = 12">12</span>
+                  <span class="sg" :class="{ on: bs.p.fcN === 16 }" title="十六色复用：同色最小间距 4.00× 波束间距（8 频段 × 2 极化，每波束 1/8 频段；中星26 小波束那族即此格局）。配色板上 F1~F8 与 F9~F16 两两同色相分深浅，正好读成同一段频率的两个极化" @click="bs.p.fcN = 16">16</span>
                 </span>
               </div>
               <div class="bs-ops">
-                <span class="opb" title="按当前布局自动分配：相邻（相切/交叠）波束互不同色，蜂窝布局呈规则复用图案；拖拽微调后可重新分配（可撤销）" @click="bs.assignFreqPlan">自动分配</span>
+                <span class="opb" title="按当前布局自动分配：同色波束的间距不小于 √N × 波束间距（N = 颜色数，即正六边形晶格的复用距离），蜂窝布局呈规则复用图案；拖拽微调后可重新分配（可撤销）" @click="bs.assignFreqPlan">自动分配</span>
                 <span class="opb" title="清除本组所有波束的频率配色（可撤销）" @click="bs.clearFreqPlan">清除配色</span>
               </div>
               <label class="chk2"><input type="checkbox" v-model="bs.p.fcShow" /><span>显示配色（波束填充 + 轮廓着色）</span></label>
@@ -4947,7 +4993,6 @@ onBeforeUnmount(() => {
                     <span class="c-th">{{ r.thX.toFixed(1) }}×{{ r.thY.toFixed(1) }}<em v-if="r.rot"> ∠{{ r.rot }}</em></span>
                   </div>
                 </div>
-                <div class="tip">「复制表格」把全部 {{ bsFreqRows.length }} 个波束按 7 列（编号 / 频率 / 经度 / 纬度 / 3dB-X / 3dB-Y / 旋转）复制到剪贴板，可直接粘贴至 Excel。未配色的波束「频率」列留空。</div>
               </div>
             </template>
           </div>
@@ -4966,8 +5011,7 @@ onBeforeUnmount(() => {
                 </label>
               </div>
             </div>
-            <div v-if="!polys.length" class="tip">暂无 Polygon：请先在活动栏「Polygon（协调区）」视图中绘制区域。</div>
-            <div v-else class="tip">所选 Polygon 并集为覆盖区（可多选，含不连续区域）；增益按阵面物理算出。</div>
+            <div v-if="!polys.length" class="tip">暂无 Polygon。</div>
             </template>
           </div>
 
@@ -4982,11 +5026,10 @@ onBeforeUnmount(() => {
               <input class="ci" type="number" step="0.1" v-model.number="h.lat" placeholder="纬°" title="峰值点纬度（°N，北纬正）" />
               <input class="ci" type="number" step="0.5" v-model.number="h.boost" placeholder="dB" title="目标增量（dB）：正=局部增强（能量向此集中），负=局部压低；0/空=不生效。相控阵宽波束下有物理上限，生成后据实报告实现量。" />
               <input class="ci" type="number" step="0.1" min="0" v-model.number="h.width" placeholder="1" :title="'目标坡半高全宽（°）＝预览环大小（所见即所得），默认 1、留空取 1。注意：阵面波束宽 θ3≈' + bsFmt(bs.hotTheta3.value, 1) + '° 是物理分辨率：填入值小于 θ3 时，实际仍扩散至约 θ3（生成后据实报告实现量）'" />
-              <span class="hic" :class="{ on: bs.placing.value && bs.hotPickId.value === h.id }" title="地图拾取该峰值点位置（左键/右键点地图；再点取消）" @click="bsPickHotspot(h.id)"><Icon name="crosshair" :size="12" /></span>
+              <span class="hic" :class="{ on: bs.placing.value && bs.hotPickId.value === h.id }" title="地图拾取该峰值点位置（左键/右键点击地图；再次点击取消）" @click="bsPickHotspot(h.id)"><Icon name="crosshair" :size="12" /></span>
               <span class="hic hdel" title="删除该峰值点" @click="bs.removeHotspot(h.id)"><Icon name="x" :size="11" /></span>
             </div>
-            <span class="opb" title="添加一个峰值点并进入地图拾取" @click="bsAddHotspot"><Icon name="plus" :size="11" /> 添加峰值点</span>
-            <div class="tip">局部增益特征受阵面波束宽 θ3 约束（θ3 越小越锐）；生成后报告各点实测实现量。</div>
+            <span class="opb" title="添加峰值点并进入地图拾取" @click="bsAddHotspot"><Icon name="plus" :size="11" /> 添加峰值点</span>
             </template>
           </div>
 
@@ -5022,7 +5065,6 @@ onBeforeUnmount(() => {
                   </tbody>
                 </table>
               </div>
-              <div class="tip">幅度＝相对 BFN 输入功率（SATSOFT §10.3）；相位 0/180°＝实激励。有源孔径（T/R 增益补偿）下任意激励不损天线增益（§6.5/§10.6.1）。</div>
             </template>
           </div>
         </template>
@@ -5072,8 +5114,7 @@ onBeforeUnmount(() => {
                 </label>
               </div>
             </div>
-            <div v-if="!polys.length" class="tip">暂无 Polygon：请先在活动栏「Polygon（协调区）」视图中绘制区域。</div>
-            <div v-else class="tip">所选 Polygon 并集为覆盖区（可多选，含不连续区域）；增益按口径物理算出（∫P̂dΩ 定标）。</div>
+            <div v-if="!polys.length" class="tip">暂无 Polygon。</div>
             </template>
           </div>
 
@@ -5087,11 +5128,10 @@ onBeforeUnmount(() => {
               <input class="ci" type="number" step="0.1" v-model.number="h.lat" placeholder="纬°" title="峰值点纬度（°N，北纬正）" />
               <input class="ci" type="number" step="0.5" v-model.number="h.boost" placeholder="dB" title="目标增量（dB）：正=局部增强（能量向此集中），负=局部压低；0/空=不生效。生成后据实报告实现量。" />
               <input class="ci" type="number" step="0.1" min="0" v-model.number="h.width" placeholder="1" :title="'目标坡半高全宽（°）＝预览环大小（所见即所得），默认 1、留空取 1。注意：成分波束宽 θ3≈' + bsFmt(bs.hotTheta3.value, 2) + '° 是口径物理分辨率：填入值小于 θ3 时，实际仍扩散至约 θ3（生成后据实报告实现量）'" />
-              <span class="hic" :class="{ on: bs.placing.value && bs.hotPickId.value === h.id }" title="地图拾取该峰值点位置（左键/右键点地图；再点取消）" @click="bsPickHotspot(h.id)"><Icon name="crosshair" :size="12" /></span>
+              <span class="hic" :class="{ on: bs.placing.value && bs.hotPickId.value === h.id }" title="地图拾取该峰值点位置（左键/右键点击地图；再次点击取消）" @click="bsPickHotspot(h.id)"><Icon name="crosshair" :size="12" /></span>
               <span class="hic hdel" title="删除该峰值点" @click="bs.removeHotspot(h.id)"><Icon name="x" :size="11" /></span>
             </div>
-            <span class="opb" title="添加一个峰值点并进入地图拾取" @click="bsAddHotspot"><Icon name="plus" :size="11" /> 添加峰值点</span>
-            <div class="tip">局部增益特征受成分波束宽 θ3 约束；生成后报告各点实测实现量。</div>
+            <span class="opb" title="添加峰值点并进入地图拾取" @click="bsAddHotspot"><Icon name="plus" :size="11" /> 添加峰值点</span>
             </template>
           </div>
         </template>
@@ -5104,7 +5144,7 @@ onBeforeUnmount(() => {
         </template>
 
         <div v-else class="sec">
-          <div class="bs-empty2">从上方选择一个波束组进行编辑，或点「＋多馈源组 / ＋赋形组」新建一个。生成的天线挂到该卫星下，由「覆盖分析」视图管理。</div>
+          <div class="bs-empty2">未选择波束组。</div>
         </div>
 
         </div>
@@ -5141,7 +5181,7 @@ onBeforeUnmount(() => {
                 </optgroup>
               </select>
             </div>
-            <div v-if="vis.mode.value !== 'coverage' && !stations.length && !points.length && !polys.length" class="tip">暂无可选目标：请在「标记」中绘制地球站 / 点，或在「Polygon」中绘制区域。</div>
+            <div v-if="vis.mode.value !== 'coverage' && !stations.length && !points.length && !polys.length" class="tip">暂无可选目标。</div>
             <div class="srow"><label>仰角门限</label><input class="ci vis-elev" type="number" step="1" min="0" max="89" :value="vis.minElev.value" @input="e => visSetElev(e.target.value)" /><span class="u">°</span><span class="tip inl">≥ 此仰角判为可见 / 被覆盖</span></div>
           </div>
 
@@ -5156,14 +5196,14 @@ onBeforeUnmount(() => {
 
             <!-- 瞬时可见（now）：KPI + 极坐标 sky 图 + 结果表 -->
             <template v-if="vis.mode.value === 'now'">
-              <div v-if="!vis.hasTarget.value" class="tip">请先在上方选择分析目标（瞬时＝当前时刻可见的卫星）。</div>
+              <div v-if="!vis.hasTarget.value" class="tip">请先选择分析目标。</div>
               <template v-else>
                 <div class="vis-sum">
                   <span>可见 <b>{{ vis.kpi.value.count }}</b> <s>/ {{ vis.satCount.value.toLocaleString() }}</s></span>
                   <span v-if="vis.kpi.value.top">最高 <b>{{ vis.kpi.value.top.elevDeg.toFixed(1) }}°</b> <em :title="vis.kpi.value.top.name">{{ vis.kpi.value.top.name }}</em></span>
                   <span v-if="vis.kpi.value.classes.length" class="vis-sumcls"><i v-for="c in vis.kpi.value.classes" :key="c.c">{{ c.c }} {{ c.n }}</i></span>
                 </div>
-                <div v-if="!vis.results.value.length" class="tip">当前时刻门限 {{ vis.minElev.value || 0 }}° 以上没有可见卫星（可拖动时间轴或降低门限）。</div>
+                <div v-if="!vis.results.value.length" class="tip">当前时刻门限 {{ vis.minElev.value || 0 }}° 以上没有可见卫星。</div>
                 <template v-else>
                   <div class="srow vis-icrow"><label>图标</label><input class="vis-slider" type="range" min="5" max="36" step="1" :value="vis.iconSize.value" @input="e => vis.iconSize.value = Number(e.target.value)" /><span class="u">{{ vis.iconSize.value }}</span><input class="vis-clr" type="color" :value="vis.iconColor.value" @input="e => vis.iconColor.value = e.target.value" title="星下点图标 / 名字颜色（3D 与 2D 一致）" /><label class="chk-in" title="卫星较多时建议关闭，避免名称相互重叠"><input type="checkbox" :checked="vis.showName.value" @change="vis.showName.value = $event.target.checked" /><span>名字</span></label></div>
                   <div v-if="vis.showName.value" class="srow vis-icrow"><label>名字大小</label><input class="vis-slider" type="range" min="1" max="12" step="1" :value="vis.nameSize.value" @input="e => vis.nameSize.value = Number(e.target.value)" /><span class="u">{{ vis.nameSize.value }}</span></div>
@@ -5197,18 +5237,17 @@ onBeforeUnmount(() => {
                       <span>{{ Math.round(r.rangeKm).toLocaleString() }}</span>
                     </div>
                   </div>
-                  <div class="tip">悬停行 / 图上一点 → 三处（图·表·地图）联动高亮。方位见图与行悬停提示，高仰角（≥45°）行加粗。</div>
                 </template>
               </template>
             </template>
 
             <!-- 时段过境（access）：时窗 + 计算 + 甘特 + 过境列表 -->
             <template v-else-if="vis.mode.value === 'access'">
-              <div v-if="!vis.hasTarget.value" class="tip">请先在上方选择分析目标（时段＝后续时段内对该目标的过境窗口 Access）。</div>
+              <div v-if="!vis.hasTarget.value" class="tip">请先选择分析目标。</div>
               <template v-else>
                 <div class="srow"><label>时窗</label><input class="ci vis-elev" type="number" step="1" min="0.5" max="168" :value="vis.horizonH.value" @input="e => vis.horizonH.value = e.target.value" /><span class="u nw">小时</span><span class="opb sm" :class="{ dis: vis.accessBusy.value }" title="扫描卫星集在此时窗内对目标的全部过境（卫星越多越慢；上限 400 颗）" @click="vis.computeAccess()">计算过境</span></div>
                 <div v-if="vis.accessResults.value.length && !vis.accessBusy.value" class="srow acc-exp"><span class="opb sm" title="导出全部过境窗口为 CSV（Excel 可直接打开）" @click="exportAccessExcel()">导出 Excel</span><span class="tip inl">{{ vis.accessResults.value.reduce((n, s) => n + s.windows.length, 0) }} 次过境 → CSV</span></div>
-                <div v-if="vis.accessBusy.value" class="tip">扫描过境窗口…（卫星越多耗时越长）</div>
+                <div v-if="vis.accessBusy.value" class="tip">扫描过境窗口…</div>
                 <div v-else-if="vis.accessMsg.value" class="tip">{{ vis.accessMsg.value }}</div>
                 <template v-else-if="vis.accessResults.value.length">
                   <!-- 时间覆盖（严口径）：全部窗口合并去重后的可见时长 ÷ 实际时窗；最长中断含时窗首尾 -->
@@ -5236,7 +5275,6 @@ onBeforeUnmount(() => {
                       </div>
                     </template>
                   </div>
-                  <div class="tip">AOS＝升起（相对现在）；甘特条＝时窗内各次过境（绿＝最高仰角 ≥45°）。时间覆盖＝全部窗口【合并重叠】后的可见时长 ÷ 时窗（多星同时可见只计一次，不是各次时长求和）。卫星较多时扫描较慢（显示进度）；可缩短时窗，或在「星座」中筛选星座以加速。</div>
                 </template>
               </template>
             </template>
@@ -5290,7 +5328,7 @@ onBeforeUnmount(() => {
                   <span>{{ vis.covKpi.value.label }} 极值 <b>{{ covFmt(vis.covKpi.value.min, vis.covLegend.value) }}</b> ~ <b>{{ covFmt(vis.covKpi.value.max, vis.covLegend.value) }}</b> {{ vis.covLegend.value ? vis.covLegend.value.unit : '' }}</span>
                   <span class="vis-sumcls"><s>网格 {{ vis.covKpi.value.cells.toLocaleString() }} 点</s></span>
                 </div>
-                <div class="tip">色阶＝{{ vis.covLegend.value ? vis.covLegend.value.label : '' }}（冷→热）。资产集＝当前显示的卫星；结果为【计算时刻起 {{ vis.covHorizonH.value }} 小时】时窗内的静态统计快照，不随时间轴联动。切换指标 / 配色即时重绘，无需重新计算。</div>
+                <div class="tip">色阶＝{{ vis.covLegend.value ? vis.covLegend.value.label : '' }}　·　时窗 {{ vis.covHorizonH.value }} 小时</div>
               </template>
             </template>
           </div>
@@ -5319,7 +5357,7 @@ onBeforeUnmount(() => {
                 </select>
               </div>
               <div class="srow"><label>格距</label>
-                <select :value="env.stepDeg.value" @change="e => env.stepDeg.value = Number(e.target.value)" title="出图格距：细于数据原生分辨率不会增加信息，仅增加耗时">
+                <select :value="env.stepDeg.value" @change="e => env.stepDeg.value = Number(e.target.value)" title="成图格距：细于数据原生分辨率不会增加信息，仅增加耗时">
                   <option v-for="s in env.STEPS" :key="s.v" :value="s.v">{{ s.label }}</option>
                 </select>
               </div>
@@ -5375,12 +5413,11 @@ onBeforeUnmount(() => {
               <template v-if="env.contourOn.value">
                 <div class="srow"><label>级差</label><input class="ci cov-num" type="number" min="0" step="any" :placeholder="env.field.value && env.field.value.contourStep ? String(env.field.value.contourStep) : '自动'" :value="env.contourStep.value" @input="e => env.contourStep.value = e.target.value" /><span class="u">{{ env.field.value ? env.field.value.unit : '' }}</span></div>
                 <label class="chk2"><input type="checkbox" v-model="env.contourLabel.value" /><span>沿线标数值（仅平面图）</span></label>
-                <div class="tip">共 {{ env.contours.value.length }} 档；线取该档对应色（压暗一档以便与填充区分）。等值线只在当前值域内定级，改值域即改线。</div>
+                <div class="tip">共 {{ env.contours.value.length }} 档</div>
               </template>
             </template>
           </div>
 
-          <div class="tip">ITU-R 环境数据场，取值与链路预算引擎同源（同一套查表插值）：图上颜色即预算表中的取值。图层画在所有叠加层最底，与覆盖分析 / GRD 覆盖场可同屏共存。鼠标移至图上，状态栏右侧显示当前点数值。</div>
         </div>
         </div>
 
@@ -5393,7 +5430,6 @@ onBeforeUnmount(() => {
           <div class="swatches">
             <span v-for="c in OCEAN_BLUES" :key="c" class="sw" :class="{ on: oceanColor === c }" :style="{ background: c }" :title="c" @click="setOceanColor(c)"></span>
           </div>
-          <div class="tip">海洋底色限蓝色系，同时作用于 3D 球体与平面图。</div>
           </template>
         </div>
         <div class="sec">
@@ -5404,8 +5440,7 @@ onBeforeUnmount(() => {
             <span v-for="c in LAND_UNIFORMS" :key="c" class="sw" :class="{ on: landScheme === c }" :style="{ background: c }" :title="c" @click="setLandScheme(c)"></span>
           </div>
           <div class="srow"><label>自定义底色</label><input class="clr" type="color" :value="landScheme === 'morandi' ? '#e4eccf' : landScheme" @change="setLandScheme($event.target.value)" /><span class="u">{{ landScheme === 'morandi' ? '杂色' : landScheme }}</span></div>
-          <div class="tip">首格为莫兰迪杂色（默认，中国砖红、冰盖冰白）；其余为统一单色（首个取 SATSOFT 米绿，全部陆地含中国/冰盖一律随基调）。同时作用于 3D 与平面图。</div>
-          <div class="bsub"><span>逐国设色（优先于基调；也可右键地图选国）</span></div>
+          <div class="bsub"><span>逐国设色</span></div>
           <div class="srow"><label>国家</label><input class="ci" v-model="landQuery" placeholder="输入中文名搜索" /></div>
           <div class="mlist" v-if="landHits.length">
             <div v-for="c in landHits" :key="c.id" class="mrow rowlk" @click="pickLandCountry(c)"><span class="mc">{{ c.zh }}</span></div>
@@ -5440,7 +5475,6 @@ onBeforeUnmount(() => {
           <div class="srow"><label>国界线颜色</label><input class="clr" type="color" v-model="borderStyle.natColor" @input="applyBorderStyle" /><span class="u">{{ borderStyle.natColor }}</span></div>
           <div class="srow"><label>国界线粗</label><input class="rng" type="range" min="0.1" max="8" step="0.1" v-model.number="borderStyle.natWidth" @input="applyBorderStyle" /><span class="u">{{ borderStyle.natWidth.toFixed(1) }}</span></div>
           <div class="srow"><label>国界透明度</label><input class="rng" type="range" min="0" max="1" step="0.05" v-model.number="borderStyle.natOpacity" @input="applyBorderStyle" /><span class="u">{{ borderStyle.natOpacity.toFixed(2) }}</span></div>
-          <div class="tip">国家名含海岸线/国境线；大洋名维持固有蓝，不随国家名色改。同时作用于 3D 与平面图。</div>
           </template>
         </div>
 
@@ -5454,7 +5488,6 @@ onBeforeUnmount(() => {
           <div class="srow"><label>省界线颜色</label><input class="clr" type="color" v-model="borderStyle.provColor" @input="applyBorderStyle" /><span class="u">{{ borderStyle.provColor }}</span></div>
           <div class="srow"><label>省界线粗</label><input class="rng" type="range" min="0.1" max="8" step="0.1" v-model.number="borderStyle.provWidth" @input="applyBorderStyle" /><span class="u">{{ borderStyle.provWidth.toFixed(1) }}</span></div>
           <div class="srow"><label>省界透明度</label><input class="rng" type="range" min="0" max="1" step="0.05" v-model.number="borderStyle.provOpacity" @input="applyBorderStyle" /><span class="u">{{ borderStyle.provOpacity.toFixed(2) }}</span></div>
-          <div class="tip">需勾选「显示中国省界」后可见；线宽为屏幕像素，缩放时恒定。</div>
           </template>
         </div>
 
@@ -5468,7 +5501,6 @@ onBeforeUnmount(() => {
           <div class="srow"><label>市界线颜色</label><input class="clr" type="color" v-model="borderStyle.cityColor" @input="applyBorderStyle" /><span class="u">{{ borderStyle.cityColor }}</span></div>
           <div class="srow"><label>市界线粗</label><input class="rng" type="range" min="0.05" max="8" step="0.05" v-model.number="borderStyle.cityWidth" @input="applyBorderStyle" /><span class="u">{{ borderStyle.cityWidth.toFixed(2) }}</span></div>
           <div class="srow"><label>市界透明度</label><input class="rng" type="range" min="0" max="1" step="0.05" v-model.number="borderStyle.cityOpacity" @input="applyBorderStyle" /><span class="u">{{ borderStyle.cityOpacity.toFixed(2) }}</span></div>
-          <div class="tip">需勾选「显示中国地级市界」后可见；画在省界之下，线粗可低至 0.05 以适配密集网格与小空间。</div>
           </template>
         </div>
 
@@ -5486,7 +5518,6 @@ onBeforeUnmount(() => {
           <div v-if="termLine" class="srow"><label>线透明度</label><input class="rng" type="range" min="0" max="1" step="0.05" v-model.number="termStyle.lineOpacity" @input="applyTerminator" /><span class="u">{{ termStyle.lineOpacity.toFixed(2) }}</span></div>
           <div class="tip">
             日下点 {{ termSub ? fmtSlot(termSub.lon) + ' · ' + Math.abs(termSub.lat).toFixed(2) + '°' + (termSub.lat >= 0 ? 'N' : 'S') : '—' }}。
-            按时间轴当前 UTC 时刻算，拖时间轴 / 实时推进时随之移动；夜区压在底图之上、覆盖场与等值线之下（是打光不是数据）。
           </div>
           </template>
           </template>
@@ -5502,7 +5533,6 @@ onBeforeUnmount(() => {
           <template v-if="isSecOpen('mk-points')">
           <div class="srow"><label>纬度</label><input class="ci" v-model="ptLat" placeholder="-90 ~ 90" /></div>
           <div class="srow"><label>经度</label><input class="ci" v-model="ptLon" placeholder="-180 ~ 180" /><span class="addb" @click="addPointInput">添加</span></div>
-          <div class="tip">右键地图也可直接标点</div>
           <label class="chk2"><input type="checkbox" :checked="showPtLabel" @change="togglePtLabel" /><span>显示坐标</span></label>
           <div v-if="showPtLabel" class="srow"><label>坐标字号</label><input class="rng" type="range" min="1" max="32" step="1" :value="markPtFont" @input="setPtFont" /><span class="u">{{ markPtFont }}</span></div>
           <div class="srow"><label>圆点大小</label><input class="rng" type="range" min="1" max="12" step="0.5" :value="markPtDot" @input="setPtDot" /><span class="u">{{ markPtDot }}</span></div>
@@ -5557,7 +5587,7 @@ onBeforeUnmount(() => {
             <input class="ci nrw" v-model="wpLon" placeholder="经" />
             <span class="addb" @click="addWaypoint">加点</span>
           </div>
-          <div v-if="!trajectories.length" class="tip">+航行 / +飞行 新建轨迹，再加航点</div>
+          <div v-if="!trajectories.length" class="tip">暂无轨迹。</div>
           </template>
         </div>
 
@@ -5627,7 +5657,6 @@ onBeforeUnmount(() => {
             <div class="srow"><label>升交点赤经</label><input class="ci" type="number" step="0.1" v-model.number="satModal.elements.raan" /><span class="u">°</span></div>
             <div class="srow"><label>近地点幅角</label><input class="ci" type="number" step="0.1" v-model.number="satModal.elements.argp" /><span class="u">°</span></div>
             <div class="srow"><label>平近点角</label><input class="ci" type="number" step="0.1" v-model.number="satModal.elements.ma" /><span class="u">°</span></div>
-            <div class="tip2">轨道根数模拟星：星下点 / 覆盖足迹随时间轴 / 实时模式移动（历元取保存时刻）。偏心率&gt;0 时轨道高度按近地点高度计。</div>
           </template>
           <template v-if="!satModal.hideViz">
             <label class="chk2"><input type="checkbox" v-model="satModal.iconShow" /><span>显示图标</span></label>
@@ -5643,7 +5672,6 @@ onBeforeUnmount(() => {
             <div class="sdiv">颜色（仰角线与卫星名共用）</div>
             <div class="srow"><label>颜色</label><input class="clr" type="color" v-model="satModal.color" /></div>
           </template>
-          <div v-if="satModal.kind === 'preset'" class="tip2">预置卫星，可改名称 / 位置 / 仰角线；导入的天线沿用其原星下点投影。</div>
 
           <div class="sdiv">从星座选取（可选）</div>
           <div class="srow"><span class="pickbtn" @click="toggleSatPick">在地图上点选卫星</span></div>
@@ -5708,7 +5736,7 @@ onBeforeUnmount(() => {
               <span class="lnk" title="新建一个空组" @click="sgmNew"><Icon name="plus" :size="11" /> 新建</span>
             </div>
             <div class="sgm-glist">
-              <div v-if="!satGroups.list.value.length" class="sgm-empty">还没有卫星组，点上方「新建」。</div>
+              <div v-if="!satGroups.list.value.length" class="sgm-empty">还没有卫星组。</div>
               <div
                 v-for="g in satGroups.list.value" :key="g.id"
                 class="sgm-grow" :class="{ cur: g.id === sgmId }"
@@ -5717,7 +5745,7 @@ onBeforeUnmount(() => {
                 <span class="gnm" :title="g.name">{{ g.name }}</span>
                 <span class="gcnt">{{ g.sats.length }}</span>
                 <span class="gic" title="复制该组（含成员）" @click.stop="sgmDup(g)"><Icon name="copy" :size="11" /></span>
-                <span class="gic del" :class="{ warn: sgmDelId === g.id }" :title="sgmDelId === g.id ? '再点一次确认删除' : '删除该组'" @click.stop="sgmDel(g)"><Icon name="trash" :size="11" /></span>
+                <span class="gic del" :class="{ warn: sgmDelId === g.id }" :title="sgmDelId === g.id ? '再次点击确认删除' : '删除该组'" @click.stop="sgmDel(g)"><Icon name="trash" :size="11" /></span>
               </div>
             </div>
           </div>
@@ -5730,14 +5758,14 @@ onBeforeUnmount(() => {
                 <span class="gbtn" title="在地图上显示该组的卫星" @click="sgmShow"><Icon name="eye" :size="11" /> 显示</span>
               </div>
 
-              <div class="sgm-sec">搜索添加 <em>换关键词继续搜，勾选会累积</em></div>
+              <div class="sgm-sec">搜索添加 <em>更换关键词可继续检索，勾选结果累计保留</em></div>
               <div class="sgm-srch">
                 <input class="ci" v-model="sgmKw" placeholder="卫星名 / NORAD 编号 / 星座名，如 starlink、48274" @input="sgmOnSearch" />
-                <span v-if="sgmRes.length" class="gbtn" title="把当前结果里未入组的全部勾上" @click="sgmPickAllRes">全选结果</span>
+                <span v-if="sgmRes.length" class="gbtn" title="将当前结果中未入组的全部勾选" @click="sgmPickAllRes">全选结果</span>
               </div>
               <div class="sgm-reslist">
-                <div v-if="sgmBusy" class="sgm-empty">搜索中…（首次需加载全量在轨目录）</div>
-                <div v-else-if="!sgmKw.trim()" class="sgm-empty">输入关键词搜索全量在轨目录（跨分组，与地图当前显示哪一组无关）。</div>
+                <div v-if="sgmBusy" class="sgm-empty">搜索中…</div>
+                <div v-else-if="!sgmKw.trim()" class="sgm-empty">输入关键词搜索。</div>
                 <div v-else-if="!sgmRes.length" class="sgm-empty">没有匹配的卫星。</div>
                 <label v-for="it in sgmRes" :key="it.id" class="sgm-ck" :class="{ dim: sgmMemIds.has(it.id) }">
                   <!-- 已在组内 → 禁用且不显勾（勾选集是跨组暂存的，切组后可能含本组已有星，避免显示成「已勾选」误导） -->
@@ -5760,7 +5788,7 @@ onBeforeUnmount(() => {
                 <span class="gbtn danger" :class="{ dis: !sgmSel.length }" @click="sgmRemoveMem(sgmSel)"><Icon name="minus" :size="11" /> 移出所选{{ sgmSel.length ? (' ' + sgmSel.length) : '' }}</span>
               </div>
               <div class="sgm-memlist">
-                <div v-if="!sgmCur.sats.length" class="sgm-empty">该组还没有卫星，用上面的「搜索添加」加入。</div>
+                <div v-if="!sgmCur.sats.length" class="sgm-empty">该组还没有卫星。</div>
                 <div v-else-if="!sgmMembers.length" class="sgm-empty">没有匹配的成员。</div>
                 <label v-for="m in sgmMembers" :key="m.id" class="sgm-ck">
                   <input type="checkbox" :checked="sgmSelIds.has(m.id)" @change="sgmToggleMem(m.id)" />
@@ -5770,7 +5798,7 @@ onBeforeUnmount(() => {
                 </label>
               </div>
             </template>
-            <div v-else class="sgm-empty big">左侧还没有卫星组。点「新建」创建一个，再在这里搜索卫星加入。</div>
+            <div v-else class="sgm-empty big">还没有卫星组。</div>
           </div>
         </div>
         <div class="sdfoot"><span class="save" @click="closeSatGrpMgr">完成</span></div>
@@ -5786,18 +5814,16 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <!-- 发送到小程序成功：展示可输入的密钥（供微信小程序「卫星覆盖」导入本次绘制） -->
-    <div v-if="miniappKeyOpen" class="sat-mask sat-overlay" @click.self="miniappKeyOpen = false">
-      <div class="sat-dlg al-dlg">
-        <div class="sdh"><span>已发送到小程序</span><span class="csx" @click="miniappKeyOpen = false"><Icon name="x" :size="12" /></span></div>
-        <div class="sdbody">
-          <p class="al-msg">在微信小程序「卫星覆盖」里输入下面的密钥，即可导入本次绘制的覆盖等值线与协调区多边形：</p>
-          <div class="ma-key">{{ formatKey(miniappKey) }}</div>
-          <p class="al-msg ma-key-tip">密钥仅对应本次绘制内容；重新发送会生成新密钥。</p>
-        </div>
-        <div class="sdfoot"><span class="save ghost" @click="copyMiniappKey">{{ keyCopied ? '已复制 ✓' : '复制密钥' }}</span><span class="save" @click="miniappKeyOpen = false">完成</span></div>
-      </div>
-    </div>
+    <!-- 发送到小程序：与链路预算三窗、文件区共用同一个弹窗（绑定账号直投 / 生成密钥） -->
+    <MiniSendDialog
+      v-model:open="miniSendOpen"
+      :build="buildMiniSend"
+      :picks="[{ key: 'sat', label: '算哪颗星', options: miniSatOptions, default: miniSatDefault }]"
+      :device-id="miniDeviceId"
+      :configured="miniConfigured"
+      key-hint="小程序「工具栏 → 卫星覆盖 → 导入」输入"
+      @toast="(m) => logMsg(m)"
+    />
 
     <!-- 轨迹描绘横幅：有正在编辑的轨迹时显示；与 Polygon 同款：右键逐点 / 左键沿路径拖动连续加点 -->
     <div v-if="activeTraj" class="traj-banner">
@@ -5903,8 +5929,8 @@ onBeforeUnmount(() => {
           <span class="ptb" :class="{ dis: !perf.canUndo.value }" title="撤销 (Ctrl+Z)" @click="perfUndo"><Icon name="undo-2" :size="12" /></span>
           <span class="ptb" :class="{ dis: !perf.canRedo.value }" title="重做 (Ctrl+Y)" @click="perfRedo"><Icon name="redo-2" :size="12" /></span>
           <span class="ptb" title="在选中行下方增加一行（直接在表格里键入或粘贴）" @click="perfAddRow"><Icon name="plus" :size="12" /> 增加</span>
-          <span class="ptb" title="把地图上的点标记 / 地球站导入为城市" @click="perfImportMarkers"><Icon name="import" :size="12" /> 从标记导入</span>
-          <span class="ptb" title="把地图上的航迹航点导入为城市（每个航点一行，城市名取「航迹名#序号」）" @click="perfImportTrajs"><Icon name="import" :size="12" /> 导入航迹</span>
+          <span class="ptb" title="将地图上的点标记 / 地球站导入为城市" @click="perfImportMarkers"><Icon name="import" :size="12" /> 从标记导入</span>
+          <span class="ptb" title="将地图上的航迹航点导入为城市（每个航点一行，城市名取「航迹名#序号」）" @click="perfImportTrajs"><Icon name="import" :size="12" /> 导入航迹</span>
           <span class="ptb" title="从剪贴板粘贴表格（末两列=经度、纬度，可含 国家/城市/代号）批量添加" @click="perfPasteBtn"><Icon name="clipboard" :size="12" /> 粘贴</span>
           <span class="ptb" title="清空城市列表" @click="perfClearStations">清空</span>
           <span class="pin-sep"></span>
@@ -5912,7 +5938,7 @@ onBeforeUnmount(() => {
             <option value="">载入城市组…</option>
             <option v-for="g in perf.cityGroups.value" :key="g.id" :value="g.id">{{ g.name }}（{{ g.cities.length }}）</option>
           </select>
-          <span class="ptb" title="城市组：把当前城市列表存为新组，或重命名 / 覆盖 / 删除已有组" @click="perfOpenGroups"><Icon name="layers" :size="12" /> 城市组…</span>
+          <span class="ptb" title="城市组：将当前城市列表存为新组，或重命名 / 覆盖 / 删除已有组" @click="perfOpenGroups"><Icon name="layers" :size="12" /> 城市组…</span>
           <span class="perf-cnt">{{ perf.stations.value.length }} 城市</span>
         </div>
         <!-- Excel 式网格：拖拽框选 / Shift 扩选 / 方向键导航 / Ctrl+C 复制 / 双击·键入编辑 / Ctrl+V 区域粘贴 / Del 清除 -->
@@ -5944,7 +5970,7 @@ onBeforeUnmount(() => {
                 <td class="td-act"><span class="del" title="删除该城市" @click="perfDelStation(s.id)"><Icon name="x" :size="11" /></span></td>
               </tr>
               <tr v-if="!perf.stations.value.length">
-                <td class="pin-empty" :colspan="perfInCols.length + 1">暂无城市——点「增加」逐行键入，或复制 Excel 区域后 Ctrl+V / 点「粘贴」批量添加</td>
+                <td class="pin-empty" :colspan="perfInCols.length + 1">暂无城市。</td>
               </tr>
             </tbody>
           </table>
@@ -5982,8 +6008,8 @@ onBeforeUnmount(() => {
                   <template v-else>{{ r[c.key] || '' }}</template>
                 </td>
               </tr>
-              <tr v-if="!perf.stations.value.length"><td :colspan="perfCols.length" class="perf-empty">先在上方「城市输入」添加城市（手动输入 / 从标记导入 / 粘贴）</td></tr>
-              <tr v-else-if="!perf.filteredRows.value.length"><td :colspan="perfCols.length" class="perf-empty">没有波束覆盖这些城市 — 可调低覆盖阈值或取消「仅覆盖波束」</td></tr>
+              <tr v-if="!perf.stations.value.length"><td :colspan="perfCols.length" class="perf-empty">暂无城市。</td></tr>
+              <tr v-else-if="!perf.filteredRows.value.length"><td :colspan="perfCols.length" class="perf-empty">没有波束覆盖这些城市。</td></tr>
             </tbody>
           </table>
         </div>
@@ -6107,7 +6133,7 @@ onBeforeUnmount(() => {
               </td>
               <td class="td-act"><span class="del" title="删除该行" @click="bsTblDelRow(r.id)"><Icon name="x" :size="11" /></span></td>
             </tr>
-            <tr v-if="!bs.beams.value.length"><td class="pin-empty" :colspan="bsTblCols.length + 1">暂无波束 —— 点「增加」逐行键入，或复制经纬度列表后点「粘贴」批量导入</td></tr>
+            <tr v-if="!bs.beams.value.length"><td class="pin-empty" :colspan="bsTblCols.length + 1">暂无波束。</td></tr>
           </tbody>
         </table>
       </div>
@@ -6138,7 +6164,6 @@ onBeforeUnmount(() => {
                 </label>
               </div>
             </div>
-            <div class="po-note">取值用功率域 bicubic 插值；AR 由复场相位算（bicubic）。预置烘焙天线无复场 → AR 显示 —</div>
           </section>
 
           <!-- 右：计算设置 -->
@@ -6161,7 +6186,6 @@ onBeforeUnmount(() => {
                 </label>
                 <div v-if="!perf.filteredBeams().length" class="empty">无匹配波束</div>
               </div>
-              <div class="po-note">默认全选（不筛选）；仅勾选的波束参与本表取值，未选波束整列不出现。</div>
             </section>
 
             <section class="po-card">
@@ -6189,7 +6213,7 @@ onBeforeUnmount(() => {
             </section>
           </div>
         </div>
-        <div class="sdfoot"><span class="save ghost po-reset" title="把当前天线的表选项恢复为出厂默认（列 / 口径 / 指向误差 / 波束筛选）" @click="perfResetOpts">恢复默认</span><span class="save" @click="perfOptsOpen = false">完成</span></div>
+        <div class="sdfoot"><span class="save ghost po-reset" title="将当前天线的表选项恢复为默认值（列 / 口径 / 指向误差 / 波束筛选）" @click="perfResetOpts">恢复默认</span><span class="save" @click="perfOptsOpen = false">完成</span></div>
       </div>
     </div>
 
@@ -6198,7 +6222,6 @@ onBeforeUnmount(() => {
       <div class="sat-dlg grp-dlg">
         <div class="sdh"><span>城市组</span><span class="csx" @click="perfGrpOpen = false"><Icon name="x" :size="12" /></span></div>
         <div class="sdbody">
-          <p class="grp-hint">把「城市输入」当前的城市列表存成命名组，之后可一键载入不同城市组进行查询。城市组在所有天线的性能表间共享。</p>
           <div class="grp-save">
             <input class="grp-name" v-model="perfNewGrpName" :placeholder="'新组名称（默认：城市组 ' + (perf.cityGroups.value.length + 1) + '）'" @keydown.enter="perfCreateGroup" />
             <span class="save" :class="{ dis: !perf.stations.value.length }" @click="perfCreateGroup">存当前 {{ perf.stations.value.length }} 城市为新组</span>
@@ -6217,10 +6240,10 @@ onBeforeUnmount(() => {
                 <span class="gbtn" title="追加此组城市到当前列表（按坐标去重）" @click="perfAppendGroup(g)">追加</span>
                 <span class="gbtn" title="用当前城市列表覆盖此组" @click="perfOverwriteGroup(g)">覆盖</span>
                 <span class="gic" title="重命名" @click="perfStartRenameGroup(g)"><Icon name="pencil" :size="12" /></span>
-                <span class="gic del" :class="{ warn: perfGrpDelId === g.id }" :title="perfGrpDelId === g.id ? '再点一次确认删除' : '删除此组'" @click="perfDeleteGroup(g)"><Icon name="trash" :size="12" /></span>
+                <span class="gic del" :class="{ warn: perfGrpDelId === g.id }" :title="perfGrpDelId === g.id ? '再次点击确认删除' : '删除此组'" @click="perfDeleteGroup(g)"><Icon name="trash" :size="12" /></span>
               </template>
             </div>
-            <div v-if="!perf.cityGroups.value.length" class="grp-empty">还没有城市组。在上方输入名称，点「存当前…为新组」即可创建。</div>
+            <div v-if="!perf.cityGroups.value.length" class="grp-empty">还没有城市组。</div>
           </div>
         </div>
         <div class="sdfoot"><span class="save" @click="perfGrpOpen = false">完成</span></div>
@@ -6937,7 +6960,6 @@ onBeforeUnmount(() => {
 .po-ck input { flex: none; accent-color: var(--accent); }
 .po-ck.dis { color: var(--text-faint); cursor: not-allowed; }
 .po-ck em { color: var(--text-faint); font-style: normal; }
-.po-note { font-size: 10px; color: var(--text-faint); line-height: 1.4; margin-top: 8px; padding-top: 6px; border-top: 1px solid color-mix(in srgb, var(--border) 70%, transparent); }
 .po-right { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
 .po-chk { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text); cursor: pointer; padding: 1px 0; }
 .po-chk input { accent-color: var(--accent); }
@@ -6956,7 +6978,6 @@ onBeforeUnmount(() => {
 /* —— 城市组管理弹窗 —— */
 .sat-mask.perf-grp-mask { z-index: 70; }   /* 压过性能表浮窗(z60)，避免被遮挡 */
 .grp-dlg { width: 460px; max-width: calc(100% - 32px); }
-.grp-hint { margin: 0 0 10px; font-size: 11.5px; line-height: 1.6; color: var(--text-muted); }
 .grp-save { display: flex; align-items: center; gap: 8px; padding-bottom: 10px; margin-bottom: 8px; border-bottom: 1px solid var(--border); }
 .grp-name { flex: 1; min-width: 0; border: 1px solid var(--border); background: var(--bg); padding: 4px 8px; font-size: 12px; color: var(--text); border-radius: 4px; outline: none; }
 .grp-name:focus { border-color: var(--accent); }
@@ -7232,8 +7253,6 @@ onBeforeUnmount(() => {
 .al-msg { margin: 0; font-size: 13px; line-height: 1.65; color: var(--text); }
 .al-dlg .sdfoot { justify-content: flex-end; }
 /* 发送到小程序：密钥展示 */
-.ma-key { margin: 12px 0 6px; text-align: center; font-family: var(--font-mono); font-size: 26px; font-weight: 700; letter-spacing: 3px; color: var(--accent); user-select: all; }
-.ma-key-tip { font-size: 11px; color: var(--text-muted); margin-top: 6px; }
 .sdfoot .save.ghost { background: transparent; color: var(--text); border: 1px solid var(--border); }
 .sat-banner { position: absolute; top: 64px; left: 50%; transform: translateX(-50%); z-index: 40; background: var(--surface); border: 1px solid var(--accent); padding: 7px 14px; font-size: 12px; color: var(--text); box-shadow: 0 6px 20px rgba(0,0,0,0.4); }
 .sat-banner .lnk { margin-left: 10px; color: var(--accent); cursor: pointer; }

@@ -32,7 +32,7 @@ const hasGeom = computed(() => !!(props.scene && Array.isArray(props.scene.nodes
 const hint = computed(() => {
   if (hasGeom.value) return ''
   const b = props.scene && props.scene.blocked
-  return b ? (t.value('这条链路画不出几何') + '：' + t.value(b)) : t.value('先计算链路，再在此看几何')
+  return b ? (t.value('本链路无可绘制的几何') + '：' + t.value(b)) : t.value('链路尚未计算')
 })
 
 const host = ref(null)
@@ -133,7 +133,7 @@ defineExpose({
       <b class="lk-name">{{ t('链路视图') }}</b>
       <span class="lk-sub">{{ t('站星几何') }}</span>
       <span class="lk-flex"></span>
-      <button class="lk-btn" :title="t('导出为 PNG 图片（4 倍分辨率）')" @click="exportPng">{{ t('出图') }}</button>
+      <button class="lk-btn" :title="t('导出为 PNG 图片（4 倍分辨率）')" @click="exportPng">{{ t('导出') }}</button>
     </div>
 
     <div class="lk-bar">
@@ -164,7 +164,6 @@ defineExpose({
         </div>
       </div>
       <div class="lk-note">
-        <span class="lk-hint">{{ t('拖拽旋转 · 滚轮缩放 · 尺度按真实比例') }}</span>
         <span v-for="(n, i) in ((scene && scene.notes) || [])" :key="i" class="lk-cav">{{ n }}</span>
       </div>
     </template>
@@ -217,5 +216,5 @@ html[data-theme="dark"] .lk-isl { background: #9878d8; }
 .lk-lv { color: var(--text); font-variant-numeric: tabular-nums; }
 .lk-lv i { font-style: normal; color: var(--text-faint); font-size: calc(var(--lb-fs, 11px) - 1px); margin-left: 1px; }
 .lk-note { display: flex; flex-direction: column; gap: 1px; font-size: calc(var(--lb-fs, 11px) - 1px); padding-top: 3px; }
-.lk-hint, .lk-cav { color: var(--text-faint); }
+.lk-cav { color: var(--text-faint); }
 </style>

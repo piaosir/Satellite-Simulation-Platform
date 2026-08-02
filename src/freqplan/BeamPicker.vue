@@ -10,7 +10,7 @@
 //            全列出来就能选完，弹层反而多一次点击、还要处理表格滚动时的定位。
 //   list  —— 右栏检查器与批量生成，一行一个（色块 + 名称:带宽），空间够就把话写全。
 import { computed } from 'vue'
-import { beamLabel } from '../shared/freqPlanModel.js'
+import { beamLabel, beamSynthText } from '../shared/freqPlanModel.js'
 
 const props = defineProps({
   beams: { type: Array, default: () => [] },
@@ -31,6 +31,14 @@ const shown = (id) => (inheriting.value ? props.inherit.includes(id) : has(id))
 const inheritText = computed(() => (props.inherit || [])
   .map((id) => props.beams.find((b) => b.id === id)).filter(Boolean).map((b) => b.name).join(' + '))
 
+// 从波束合成导入的那几条，把「这一色对应哪几个波束号」写进 title：一份 HTS 计划里
+// 认色片靠的就是这个（F3 落在哪几个波束上），名字与带宽都说不出这件事。
+// 频率不在这里写 —— 一个波束在各转发器里各占各的段，写哪一条都是指错。
+function bandText(b) {
+  const syn = beamSynthText(b)
+  return syn ? `｜${syn}` : ''
+}
+
 function toggle(id) {
   // ★ 结果按波束表的顺序排，不按点击顺序：色片自上而下就是这个次序，
   //   先点谁后点谁不该改变图上的样子（也免得同一组波束在不同转发器上画成不同次序）。
@@ -42,7 +50,7 @@ function toggle(id) {
   <div v-if="mode === 'chips'" class="bp-chips">
     <button v-for="b in beams" :key="b.id" type="button" class="chip" :class="{ on: has(b.id), gh: inherited(b.id) }"
       :style="{ background: shown(b.id) ? b.color : 'transparent', borderColor: b.color }"
-      :title="beamLabel(b, unit) + (has(b.id) ? '（已选）' : inherited(b.id) ? '（随上行）' : '')"
+      :title="beamLabel(b, unit) + bandText(b) + (has(b.id) ? '（已选）' : inherited(b.id) ? '（随上行）' : '')"
       @click.stop="toggle(b.id)"></button>
     <!-- 上行也没归波束时不写这三个字：一份新计划每行都挂一句「随上行」只是噪声 -->
     <span v-if="inheriting && inherit.length" class="bp-inh" :title="'下行未单独指定，随上行：' + inheritText">随上行</span>
@@ -51,12 +59,12 @@ function toggle(id) {
 
   <div v-else class="bp-list">
     <button v-for="b in beams" :key="b.id" type="button" class="bp-row" :class="{ on: has(b.id), gh: inherited(b.id) }"
-      @click="toggle(b.id)">
+      :title="beamLabel(b, unit) + bandText(b)" @click="toggle(b.id)">
       <i class="sw" :style="{ background: shown(b.id) ? b.color : 'transparent', borderColor: b.color }"></i>
       <span class="nm">{{ beamLabel(b, unit) }}</span>
     </button>
     <p v-if="inheriting && inherit.length" class="bp-inh">未选 = 随上行（{{ inheritText }}）</p>
-    <p v-if="!beams.length" class="bp-none">还没有波束。先在上面加一组，再回来把转发器归进去。</p>
+    <p v-if="!beams.length" class="bp-none">还没有波束。</p>
   </div>
 </template>
 

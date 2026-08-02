@@ -104,9 +104,9 @@ export function buildGeoScene(sel, params) {
   const tx = station('tx', 'tx', sel.txName, pick(d.earthLongitudeResult, lp.longitude), pick(d.earthLatitudeResult, lp.latitude))
   const rx = station('rx', 'rx', sel.rxName, pick(d.rxLongitudeResult, lp.rxLongitude), pick(d.rxLatitudeResult, lp.rxLatitude))
   const sat = satNode('sat', sp.satelliteName, pick(d.orbitPositionResult, sp.orbitPosition, sp.position), 0, GEO_ALT_KM)
-  if (!tx) return blocked('取不到发信站经纬度')
-  if (!rx) return blocked('取不到收信站经纬度')
-  if (!sat) return blocked('取不到卫星定点轨道经度')
+  if (!tx) return blocked('缺少发信站经纬度')
+  if (!rx) return blocked('缺少收信站经纬度')
+  if (!sat) return blocked('缺少卫星定点轨道经度')
   return {
     epochISO: null, method: '地球静止轨道',
     nodes: [tx, rx, sat],
@@ -130,8 +130,8 @@ export function buildNgsoScene(sel, params) {
   const lp = (params && params.linkParams) || {}, sp = (params && params.satParams) || {}
   const tx = station('tx', 'tx', sel.txName, pick(d.earthLongitudeResult, lp.longitude), pick(d.earthLatitudeResult, lp.latitude))
   const rx = station('rx', 'rx', sel.rxName, pick(d.rxLongitudeResult, lp.rxLongitude), pick(d.rxLatitudeResult, lp.rxLatitude))
-  if (!tx) return blocked('取不到发信站经纬度')
-  if (!rx) return blocked('取不到收信站经纬度')
+  if (!tx) return blocked('缺少发信站经纬度')
+  if (!rx) return blocked('缺少收信站经纬度')
   const g = sel.geom
   const w = g && g.worst
   const name = sp.satelliteName || sel.satName || '卫星'
@@ -142,7 +142,7 @@ export function buildNgsoScene(sel, params) {
 
   if (g && g.subSat) {
     const sat = satNode('sat', name, g.subSat.lonDeg, g.subSat.latDeg, g.subSat.altKm)
-    if (!sat) return blocked('取不到卫星星下点')
+    if (!sat) return blocked('缺少卫星星下点')
     return {
       epochISO: (g.search && g.search.typicalISO) || null,
       method: g.method || '',
@@ -158,7 +158,7 @@ export function buildNgsoScene(sel, params) {
   // 闭式球面：两颗示意星，方位各取指向对端（仰角只定中心角、不定方位，故方位纯属示意）
   const altKm = w ? num(w.up.altKm) : num(lp.orbitAltitude)
   const λu = centralAngleDeg(upEl, altKm), λd = centralAngleDeg(dnEl, w ? num(w.dn.altKm) : altKm)
-  if (λu === null || λd === null) return blocked('取不到轨道高度或最差仰角')
+  if (λu === null || λd === null) return blocked('缺少轨道高度或最差仰角')
   const pu = destPoint(tx.latDeg, tx.lonDeg, initialBearing(tx.latDeg, tx.lonDeg, rx.latDeg, rx.lonDeg), λu)
   const pd = destPoint(rx.latDeg, rx.lonDeg, initialBearing(rx.latDeg, rx.lonDeg, tx.latDeg, tx.lonDeg), λd)
   const one = angDist(pu.latDeg, pu.lonDeg, pd.latDeg, pd.lonDeg) < 0.5
@@ -167,7 +167,7 @@ export function buildNgsoScene(sel, params) {
   // 都得先看这面旗——如地理图的覆盖门（见 satForSide）
   if (one) {
     const sat = satNode('sat', name, pu.lonDeg, pu.latDeg, altKm)
-    if (!sat) return blocked('取不到轨道高度')
+    if (!sat) return blocked('缺少轨道高度')
     return {
       epochISO: null, method: g ? g.method : '闭式球面', schematicSat: true, nodes: [tx, rx, sat],
       legs: [
@@ -179,7 +179,7 @@ export function buildNgsoScene(sel, params) {
   }
   const su = satNode('satU', name + '·上行最差', pu.lonDeg, pu.latDeg, altKm)
   const sd = satNode('satD', name + '·下行最差', pd.lonDeg, pd.latDeg, w ? num(w.dn.altKm) : altKm)
-  if (!su || !sd) return blocked('取不到轨道高度')
+  if (!su || !sd) return blocked('缺少轨道高度')
   return {
     epochISO: null, method: g ? g.method : '闭式球面', schematicSat: true, nodes: [tx, rx, su, sd],
     legs: [
@@ -207,7 +207,7 @@ export function buildRegenScene(sel, params, mode) {
     if (!w || !w.txSub || !w.rxSub) return blocked('星间几何不可解（两星互不可见或缺相位）')
     const a = satNode('satA', sel.txName || '发射星', w.txSub.lonDeg, w.txSub.latDeg, w.txSub.altKm)
     const b = satNode('satB', sel.satName || '接收星', w.rxSub.lonDeg, w.rxSub.latDeg, w.rxSub.altKm)
-    if (!a || !b) return blocked('取不到两星的星下点')
+    if (!a || !b) return blocked('缺少两星的星下点')
     const graz = num(w.grazAltKm)
     const notes = [ig.representative ? '手动圆轨道：两星位置为示意（相位缺省），几何量仍按此刻严格算出' : '两星位于最差星间距离时刻的位置']
     if (graz !== null) notes.push('LOS 掠地高度 ' + graz.toFixed(0) + ' km' + (graz < 0 ? '（被地球遮挡）' : ''))
@@ -224,7 +224,7 @@ export function buildRegenScene(sel, params, mode) {
   const st = isDown
     ? station('rx', 'rx', sel.txName, pick(d.rxLongitudeResult, lp.rxLongitude), pick(d.rxLatitudeResult, lp.rxLatitude))
     : station('tx', 'tx', sel.txName, pick(d.earthLongitudeResult, lp.longitude), pick(d.earthLatitudeResult, lp.latitude))
-  if (!st) return blocked(isDown ? '取不到收信站经纬度' : '取不到发信站经纬度')
+  if (!st) return blocked(isDown ? '缺少收信站经纬度' : '缺少发信站经纬度')
   const elevDeg = w ? num(isDown ? w.dn.elevDeg : w.up.elevDeg) : num(isDown ? d.rxElevationResult : d.elevationResult)
   const slantKm = w ? num(isDown ? w.dn.slantKm : w.up.slantKm) : num(isDown ? d.rxSlantRangeResult : d.slantRangeResult)
   const leg = isDown
@@ -233,7 +233,7 @@ export function buildRegenScene(sel, params, mode) {
 
   if (g && g.subSat) {
     const sat = satNode('sat', name, g.subSat.lonDeg, g.subSat.latDeg, g.subSat.altKm)
-    if (!sat) return blocked('取不到卫星星下点')
+    if (!sat) return blocked('缺少卫星星下点')
     return {
       epochISO: (g.search && g.search.typicalISO) || null, method: g.method || '',
       nodes: [st, sat], legs: [leg],
@@ -243,11 +243,11 @@ export function buildRegenScene(sel, params, mode) {
   // 闭式球面：仰角只定中心角不定方位 → 方位取指向赤道一侧（示意），高度取轨道高度
   const altKm = w ? num(isDown ? w.dn.altKm : w.up.altKm) : num(lp.orbitAltitude)
   const λ = centralAngleDeg(elevDeg, altKm)
-  if (λ === null) return blocked('取不到轨道高度或最差仰角')
+  if (λ === null) return blocked('缺少轨道高度或最差仰角')
   const brg = st.latDeg >= 0 ? 180 : 0
   const p = destPoint(st.latDeg, st.lonDeg, brg, λ)
   const sat = satNode('sat', name, p.lonDeg, p.latDeg, altKm)
-  if (!sat) return blocked('取不到轨道高度')
+  if (!sat) return blocked('缺少轨道高度')
   return {
     epochISO: null, method: g ? g.method : '闭式球面', schematicSat: true,
     nodes: [st, sat], legs: [leg],

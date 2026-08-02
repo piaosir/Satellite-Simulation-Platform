@@ -428,7 +428,6 @@ onMounted(async () => {
   <div class="lb-shell">
     <div class="lb-topbar">
       <span class="lb-brand">雨衰计算</span>
-      <span class="lb-sub">ITU-R 传播模型 · GEO 轨位 / NGSO 近圆轨道（P.618-14 §8）两种几何口径</span>
       <span class="lb-flex"></span>
       <span v-if="notice" class="lb-notice">{{ notice }}</span>
       <span v-if="!api" class="lb-warn">需在桌面客户端中运行</span>
@@ -507,7 +506,6 @@ onMounted(async () => {
         </div>
 
         <div class="lb-foot">
-          <span class="rain-foot-desc">每行一个独立算例 · 点击行在右侧查看详情；仰角 / G/T衰减 / 雨致XPD / 合计衰减见右侧详情与 Excel 导出</span>
           <span class="lb-flex"></span>
           <span v-if="resultsStale && hasResults" class="rain-stale" title="计算输入已被修改，表内雨衰列与右侧详情对应修改前的参数">输入已变</span>
           <button class="lb-calc" :disabled="computing || !cases.length" @click="compute">
@@ -529,7 +527,7 @@ onMounted(async () => {
         </div>
         <div class="lb-result-bd">
           <template v-if="!hasResults">
-            <div class="rain-ph">点「计算」后，这里显示所选算例的雨衰函数曲线与 SatMaster 版详细结果。</div>
+            <div class="rain-ph">尚无计算结果。</div>
           </template>
           <template v-else-if="selectedResult && selectedResult.error">
             <div class="rain-err">✕ {{ selectedResult.message || '该算例无法计算' }}</div>
@@ -612,7 +610,6 @@ onMounted(async () => {
 
 .lb-topbar { flex: none; display: flex; align-items: baseline; gap: 10px; padding: 8px 14px; border-bottom: 1px solid var(--border); background: var(--surface); }
 .lb-brand { font-family: var(--font-serif); font-size: 16px; font-weight: 600; }
-.lb-sub { font-size: 11px; color: var(--text-faint); }
 .lb-flex { flex: 1 1 auto; }
 .lb-notice { font-size: 12px; color: var(--ok); }
 .lb-warn { font-size: 12px; color: var(--danger); }
@@ -660,9 +657,7 @@ onMounted(async () => {
 .rain-stale { flex: none; font-size: 11px; padding: 2px 7px; letter-spacing: 0; text-transform: none; color: var(--warn); border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); border-radius: var(--r-ctl); background: color-mix(in srgb, var(--warn) 8%, transparent); }
 
 .lb-foot { flex: none; display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-top: 1px solid var(--border); background: var(--surface); }
-.rain-foot-desc { font-size: 11px; color: var(--text-faint); }
 .lb-calc { flex: none; white-space: nowrap; font: inherit; font-size: 13px; font-weight: 600; padding: 6px 18px; border: 1px solid var(--accent); background: var(--accent); color: #fff; border-radius: var(--r-ctl); cursor: pointer; }
-.rain-foot-desc { min-width: 0; }
 .lb-calc:disabled { opacity: .55; cursor: default; }
 
 /* 结果栏 */

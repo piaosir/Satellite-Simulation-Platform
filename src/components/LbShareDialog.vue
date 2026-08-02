@@ -6,8 +6,8 @@
 //     一份包可以只带配置、只带库、或两者兼有；
 //   · 被勾选配置所引用的库条目自动进包并锁定（🔒，不可取消）——这是「对端算出来的数与我这边
 //     一致」的唯一保证，见 shared/lbShare.js 文件头记的那个静默算错的老 bug；
-//   · 顶层页签先分「分享 / 导入」（旧版是「线下 / 线上」，把"选什么"和"怎么发"混在一起了）；
-//     分享码 / 文件 / 发给用户ID 三条路共用同一份勾选结果；
+//   · 顶层页签先分「分享 / 发到小程序 / 导入」（旧版是「线下 / 线上」，把"选什么"和"怎么发"混在一起了）；
+//     分享码 / 文件 / 发给用户ID 三条路共用同一份勾选结果；发到小程序走另一套载荷，故提到顶层；
 //   · 导入一律先出「包内清单」再落盘：别人的包会往本机全局资源库里塞东西，得先看一眼。
 //
 // 体制差异全部由父组件经 ctx 注入，本组件不认识任何一种体制：
@@ -24,6 +24,7 @@
 //   }
 import { ref, reactive, computed, watch } from 'vue'
 import Icon from './Icon.vue'
+import MiniSendDialog from './MiniSendDialog.vue'
 import {
   SHARE_PREFIX, LIB_KINDS, KIND_LABEL, MOD_LABEL,
   makeBundle, encodeShare, bundleFileText, decodeShare, describeBundle, legacyItemsOf,
@@ -41,7 +42,7 @@ const api = typeof window !== 'undefined' ? window.api : null
 const toast = (m) => emit('toast', m)
 const close = () => emit('update:open', false)
 
-const tab = ref('share')          // 'share' | 'import'
+const tab = ref('share')          // 'share' | 'mini' | 'import'
 const way = ref('code')           // 'code' | 'file' | 'online'
 const items = ref([])             // 打开弹窗那一刻的配置树快照（模态期间不会变）
 const draft = ref(null)           // { name, state } 当前工作参数
@@ -185,6 +186,26 @@ async function sendOnline() {
   } catch (e) { toast('发送失败：' + (e.message || e)) } finally { sending.value = false }
 }
 
+// —— 顶层第三个页签：发到小程序 ——
+// 与「分享」共用同一份勾选结果，但走的是【另一套载荷】：小程序没有三库结构，故不发分享包，
+// 而是把勾选的每份配置【逐行摊平】成小程序那边的扁平配置（一行 = 一份，见 shared/lbMiniExport.js）。
+// 载荷不同、可选内容也不同（资源库不单独发），所以它不是「分享方式」的第 4 个按钮，而是与分享平级。
+// 摊平要用到本机的三个库（行里存的是引用），故由父组件经 ctx.toMiniItems 提供——本组件仍不认识体制。
+// 没有这个钩子的窗口（再生式暂未接）不显示这个页签。
+const canMini = computed(() => typeof props.ctx.toMiniItems === 'function')
+const miniOpen = ref(false)
+// id 一并给出去（草稿为 '__draft__'）：父组件据此判「这一份是不是工作台上正算着的那一份」，
+// 是才把平台的计算结果随配置带过去（见 §结果一并带走）。别的配置没有对应的结果，不能张冠李戴。
+function buildMini() {
+  const picked = []
+  if (sel.draft && draft.value && draft.value.state) picked.push({ id: '__draft__', name: draft.value.name || '当前工作参数', state: draft.value.state })
+  for (const r of rows.value) {
+    if (r.isFolder || !sel.cfg.has(r.item.id) || !r.item.state) continue
+    picked.push({ id: r.item.id, name: r.item.name, state: r.item.state })
+  }
+  return { name: label.value, from: props.deviceId, items: props.ctx.toMiniItems(picked) || [] }
+}
+
 // —— 导入：粘贴 / 文件 / 收件箱 三个入口收敛到同一条「解析 → 预览 → 落盘」流水线 ——
 const imp = reactive({ text: '', plan: null, err: '', busy: false, src: '', msgId: '' })
 function makePlan(input, src, msgId) {
@@ -291,17 +312,18 @@ watch(() => way.value, (w) => { if (w === 'online' && props.configured && !inbox
         <span class="lbs-hd-t">分享 / 导入</span>
         <span class="lbs-mod" :title="'本窗口体制：' + (MOD_LABEL[ctx.mod] || ctx.mod)">{{ ctx.mod }}</span>
         <span class="lbs-sp"></span>
-        <span v-if="deviceId" class="lbs-id">我的ID：<b>{{ deviceId }}</b></span>
+        <span v-if="deviceId" class="lbs-id">本机标识：<b>{{ deviceId }}</b></span>
       </div>
       <nav class="lbs-tabs">
         <button class="lbs-tab" :class="{ on: tab === 'share' }" @click="tab = 'share'">分享</button>
+        <button v-if="canMini" class="lbs-tab" :class="{ on: tab === 'mini' }" @click="tab = 'mini'">发送到小程序</button>
         <button class="lbs-tab" :class="{ on: tab === 'import' }" @click="tab = 'import'">导入</button>
       </nav>
 
-      <!-- ============ 分享 ============ -->
-      <div v-if="tab === 'share'" class="lbs-bd">
-        <div class="lbs-sec">分享内容</div>
-        <div class="lbs-pick">
+      <!-- ============ 分享 / 发到小程序（共用同一份勾选结果） ============ -->
+      <div v-if="tab !== 'import'" class="lbs-bd">
+        <div class="lbs-sec">{{ tab === 'mini' ? '发送内容' : '分享内容' }}</div>
+        <div class="lbs-pick" :class="{ solo: tab === 'mini' }">
           <!-- 左：配置（全展开的树，文件夹勾选=递归勾其下配置） -->
           <div class="lbs-col">
             <div class="lbs-col-hd">
@@ -314,7 +336,7 @@ watch(() => way.value, (w) => { if (w === 'online' && props.configured && !inbox
               <label v-if="draft" class="lbs-row lbs-draft">
                 <input type="checkbox" :checked="sel.draft" @change="sel.draft = $event.target.checked" />
                 <span class="lbs-nm">{{ draft.name }}</span>
-                <span class="lbs-tag" title="工作台上此刻的参数（尚未存成命名配置）">当前工作参数</span>
+                <span class="lbs-tag" title="工作台当前参数（尚未存为命名配置）">当前工作参数</span>
               </label>
               <template v-for="r in rows" :key="r.item.id">
                 <div v-if="r.isFolder" class="lbs-row lbs-fold" :style="{ paddingLeft: (7 + r.depth * 13) + 'px' }" @click="toggleFolderSel(r.item.id)">
@@ -331,8 +353,9 @@ watch(() => way.value, (w) => { if (w === 'online' && props.configured && !inbox
             </div>
           </div>
 
-          <!-- 右：资源库三段（🔒＝被勾选的配置引用，随配置自动进包） -->
-          <div class="lbs-col">
+          <!-- 右：资源库三段（🔒＝被勾选的配置引用，随配置自动进包）。
+               小程序那边没有三库结构、库引用在导出时已摊平进每一份，故「发到小程序」页不出现这一栏。 -->
+          <div v-if="tab === 'share'" class="lbs-col">
             <div class="lbs-col-hd">
               <span>资源库</span><span class="lbs-n">{{ nLib }}</span>
               <span class="lbs-sp"></span>
@@ -357,51 +380,60 @@ watch(() => way.value, (w) => { if (w === 'online' && props.configured && !inbox
             </div>
           </div>
         </div>
-        <div class="lbs-sum">
+        <div v-if="tab === 'mini'" class="lbs-sum">
+          已选 <b>{{ nCfg }}</b> 个配置
+          <span v-if="!nCfg" class="lbs-warn">— 请至少勾选一个配置</span>
+        </div>
+        <div v-else class="lbs-sum">
           已选 <b>{{ nCfg }}</b> 个配置 · <b>{{ nLib }}</b> 条库条目<i v-if="nAuto">（其中 {{ nAuto }} 条随配置自动带上）</i>
           <span v-if="!nCfg && !nLib" class="lbs-warn">— 请至少勾选一项</span>
         </div>
 
-        <div class="lbs-sec">分享方式</div>
-        <div class="lbs-ways">
-          <button class="lbs-way" :class="{ on: way === 'code' }" @click="way = 'code'"><Icon name="clipboard" :size="12" />分享码</button>
-          <button class="lbs-way" :class="{ on: way === 'file' }" @click="way = 'file'"><Icon name="file-text" :size="12" />文件 .lbcfg</button>
-          <button class="lbs-way" :class="{ on: way === 'online' }" @click="way = 'online'"><Icon name="external-link" :size="12" />发给用户ID</button>
+        <!-- 发到小程序：载荷现造（见 buildMini），清单与密钥都在 MiniSendDialog 里 -->
+        <div v-if="tab === 'mini'" class="lbs-acts">
+          <button class="lbs-btn primary" :disabled="!nCfg" title="勾选的每份配置逐行拆分为小程序侧的配置（小程序中一份配置 = 一条链路）；库引用已摊平至每一份，资源库不单独发送" @click="miniOpen = true">发送到小程序…</button>
         </div>
 
-        <template v-if="way === 'code'">
-          <textarea class="lbs-area" :value="code" readonly rows="3" :placeholder="'勾选内容后这里会出现 ' + SHARE_PREFIX + '… 分享码'" @focus="$event.target.select()"></textarea>
-          <div class="lbs-acts">
-            <button class="lbs-btn primary" :disabled="!code" @click="copyCode">复制分享码</button>
-            <span class="lbs-note">对方在「导入」页粘贴即可</span>
-          </div>
-        </template>
-        <template v-else-if="way === 'file'">
-          <div class="lbs-acts">
-            <button class="lbs-btn primary" :disabled="!bundle" @click="exportFile">导出为文件（.lbcfg）</button>
-            <span class="lbs-note">内容与分享码完全一致，内容较多时宜用文件传递</span>
-          </div>
-        </template>
         <template v-else>
-          <template v-if="configured">
+          <div class="lbs-sec">分享方式</div>
+          <div class="lbs-ways">
+            <button class="lbs-way" :class="{ on: way === 'code' }" @click="way = 'code'"><Icon name="clipboard" :size="12" />分享码</button>
+            <button class="lbs-way" :class="{ on: way === 'file' }" @click="way = 'file'"><Icon name="file-text" :size="12" />文件 .lbcfg</button>
+            <button class="lbs-way" :class="{ on: way === 'online' }" @click="way = 'online'"><Icon name="external-link" :size="12" />发给用户ID</button>
+          </div>
+
+          <template v-if="way === 'code'">
+            <textarea class="lbs-area" :value="code" readonly rows="3" :placeholder="'勾选内容后这里会出现 ' + SHARE_PREFIX + '… 分享码'" @focus="$event.target.select()"></textarea>
             <div class="lbs-acts">
-              <input v-model="recip" class="lbs-inp" placeholder="对方用户ID，例如 3F9A2C7B10" @keyup.enter="sendOnline" />
-              <button class="lbs-btn primary" :disabled="sending || !recip.trim() || !bundle" @click="sendOnline">{{ sending ? '发送中…' : '发送' }}</button>
+              <button class="lbs-btn primary" :disabled="!code" @click="copyCode">复制分享码</button>
             </div>
-            <div class="lbs-inbox-hd">
-              <span>我的收件箱</span>
-              <button class="lbs-lnk" :disabled="loadingInbox" @click="loadInbox">{{ loadingInbox ? '刷新中…' : '刷新' }}</button>
-            </div>
-            <div v-if="inboxMsg" class="lbs-note">{{ inboxMsg }}</div>
-            <ul v-if="inbox.length" class="lbs-inbox">
-              <li v-for="it in inbox" :key="it.id">
-                <span class="lbs-inbox-nm" :title="it.name || ''">{{ inboxLabel(it) }}<i v-if="it.from"> · 来自 {{ it.from }}</i></span>
-                <button class="lbs-btn" @click="acceptInbox(it)">查看并导入</button>
-                <button class="lbs-btn" @click="dismissInbox(it)">忽略</button>
-              </li>
-            </ul>
           </template>
-          <div v-else class="lbs-warnbox">在线分享尚未配置（缺少 COS 子账号密钥）；先用「分享码」或「文件」即可。</div>
+          <template v-else-if="way === 'file'">
+            <div class="lbs-acts">
+              <button class="lbs-btn primary" :disabled="!bundle" @click="exportFile">导出为文件（.lbcfg）</button>
+            </div>
+          </template>
+          <template v-else>
+            <template v-if="configured">
+              <div class="lbs-acts">
+                <input v-model="recip" class="lbs-inp" placeholder="接收方标识，例如 3F9A2C7B10" @keyup.enter="sendOnline" />
+                <button class="lbs-btn primary" :disabled="sending || !recip.trim() || !bundle" @click="sendOnline">{{ sending ? '发送中…' : '发送' }}</button>
+              </div>
+              <div class="lbs-inbox-hd">
+                <span>收件箱</span>
+                <button class="lbs-lnk" :disabled="loadingInbox" @click="loadInbox">{{ loadingInbox ? '刷新中…' : '刷新' }}</button>
+              </div>
+              <div v-if="inboxMsg" class="lbs-note">{{ inboxMsg }}</div>
+              <ul v-if="inbox.length" class="lbs-inbox">
+                <li v-for="it in inbox" :key="it.id">
+                  <span class="lbs-inbox-nm" :title="it.name || ''">{{ inboxLabel(it) }}<i v-if="it.from"> · 来自 {{ it.from }}</i></span>
+                  <button class="lbs-btn" @click="acceptInbox(it)">查看并导入</button>
+                  <button class="lbs-btn" @click="dismissInbox(it)">忽略</button>
+                </li>
+              </ul>
+            </template>
+            <div v-else class="lbs-warnbox">在线分享尚未配置（缺少 COS 子账号密钥）。</div>
+          </template>
         </template>
       </div>
 
@@ -458,6 +490,9 @@ watch(() => way.value, (w) => { if (w === 'online' && props.configured && !inbox
       <div class="lbs-ft"><button class="lbs-btn" @click="close">关闭</button></div>
     </div>
   </div>
+  <!-- 同级而不是嵌在 .lbs-mask 里：那一层的 @click 是「点遮罩即关闭」，嵌进去的话点小程序弹窗的
+       遮罩会把两个窗一起关掉（本组件的关闭要由用户自己按） -->
+  <MiniSendDialog v-if="open && canMini" v-model:open="miniOpen" :build="buildMini" :device-id="deviceId" :configured="configured" @toast="(m) => emit('toast', m)" />
 </template>
 
 <style scoped>
@@ -482,8 +517,9 @@ watch(() => way.value, (w) => { if (w === 'online' && props.configured && !inbox
 .lbs-sec { display: flex; align-items: baseline; gap: 8px; font-size: 11px; font-weight: 600; color: var(--text-muted); letter-spacing: .5px; padding-top: 2px; }
 .lbs-src { font-weight: 400; font-size: 10.5px; color: var(--text-faint); }
 
-/* 两栏选择区 */
+/* 两栏选择区（.solo＝只剩配置一栏，「发到小程序」页不带资源库） */
 .lbs-pick { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.lbs-pick.solo { grid-template-columns: 1fr; }
 .lbs-col { display: flex; flex-direction: column; min-width: 0; border: 1px solid var(--border); border-radius: var(--r-box, 3px); overflow: hidden; }
 .lbs-col-hd { display: flex; align-items: center; gap: 6px; padding: 4px 7px; font-size: 11px; color: var(--text-muted); background: var(--surface-2); border-bottom: 1px solid var(--border); }
 .lbs-n { font-family: var(--font-mono); font-size: 10px; padding: 0 5px; line-height: 15px; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 999px; }

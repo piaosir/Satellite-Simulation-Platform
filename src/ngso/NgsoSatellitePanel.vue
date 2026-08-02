@@ -204,8 +204,8 @@ const rows = computed(() => {
           <Icon name="eye-off" :size="12" /><span>删除方向图</span>
         </button>
       </div>
-      <div v-if="staleFolder" class="sp-tip">本机卫星树中没有该 GRD 卫星，匹配已保留：在「星座3D」页导入后自动恢复回填（轨道根数不受影响）</div>
-      <div v-else-if="!satTree.length" class="sp-tip">卫星树为空：点「导入方向图」直接导入，或在「星座3D」页导入 GRD 天线</div>
+      <div v-if="staleFolder" class="sp-tip">本机卫星树中没有该 GRD 卫星，匹配已保留。</div>
+      <div v-else-if="!satTree.length" class="sp-tip">卫星树为空。</div>
       <template v-else-if="curSat">
         <template v-if="curSat.antennas.length">
           <label class="pf"><span class="pf-l" title="按各收信站经纬度取该天线多波束最大 Parameter → 卫星EIRP">卫星EIRP 天线</span>
@@ -222,9 +222,8 @@ const rows = computed(() => {
             </select>
             <i class="pf-u"></i>
           </label>
-          <div class="sp-tip">匹配后按站经纬度自动回填：收信站「卫星EIRP」、发信站「卫星G/T」（多波束取 Parameter 最大者）；斜距按所选卫星轨道自动计算。</div>
         </template>
-        <div v-else class="sp-tip">该卫星未导入天线，仅作轨道来源：斜距按其轨道自动计算，EIRP/G/T 请在发/收信站手动输入。</div>
+        <div v-else class="sp-tip">该卫星未导入天线，仅作轨道来源。</div>
       </template>
     </div>
 
@@ -234,7 +233,7 @@ const rows = computed(() => {
         <input v-model="kw" class="pf-i" placeholder="名称 / NORAD 号，如 STARLINK / 44713" @focus="onSearchFocus" @click="listOpen = true" @input="listOpen = true" @blur="onSearchBlur" />
         <i class="pf-u"></i>
       </label>
-      <div v-if="loading" class="sp-tip">正在加载星历（CelesTrak 全域 + 导航星常用名 + 本地自定义星座）…</div>
+      <div v-if="loading" class="sp-tip">正在加载星历…</div>
       <div v-else-if="loadErr" class="sp-tip sp-err">{{ loadErr }}</div>
       <template v-else-if="listOpen">
         <div v-if="kw && !searchRes.length" class="sp-tip">无匹配卫星</div>

@@ -116,7 +116,7 @@ function onRowClick(row) {
 
 <template>
   <div class="lb-tree" :class="{ rootdrop: overRoot }" @dragover="onRootOver" @drop="onRootDrop">
-    <div v-if="!rows.length" class="lb-empty">暂无配置<br />＋ 添加配置 · ▸ 新建文件夹分组</div>
+    <div v-if="!rows.length" class="lb-empty">暂无配置</div>
     <div
       v-for="row in rows" :key="row.item.id"
       class="lb-tree-row"

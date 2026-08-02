@@ -166,6 +166,17 @@ export function project(dir, basis) {
   return { lon: g.lon, lat: g.lat, ecef: P }
 }
 
+// project 的连续版：越过地平不返回 null，而是落到地平上的趋近点（与 projectGrid 的 vis 口径同源），
+// 由 vis 区分（>=0 命中椭球、<0 在地平外）。给「需要一条不断裂的曲线」的场合用——环形轮廓一旦
+// 在地平处丢点就闭不上，填充多边形随之整块消失。
+export function projectLimb(dir, basis) {
+  const { S, x, y, z } = basis
+  const d = nrm(add(add(sc(x, dir[0]), sc(y, dir[1])), sc(z, dir[2])))
+  const r = rayEllipsoidMargin(S, d)
+  const g = ecefToGeodetic(r.p[0], r.p[1], r.p[2])
+  return { lon: g.lon, lat: g.lat, ecef: r.p, vis: r.m }
+}
+
 // 每点天线系单位矢量（gridDir 结果展平成 Float32Array[N*3]）。只随网格几何/igrid 变，与指向(basis)无关，
 // 故记忆化到 set 上——拖拽时 basis 每帧变但这张表不变，省掉逐点 sin/cos。
 export function gridDirs(set, igrid) {

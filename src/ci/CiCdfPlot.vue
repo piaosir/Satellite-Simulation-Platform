@@ -127,7 +127,7 @@ defineExpose({ svg: svgEl, exportPng })
       <span class="ci-fig-sp" />
       <button
         v-if="canExportPng" class="ci-fig-exp" :disabled="busy || pts.length < 2"
-        :title="`导出为 PNG 图片（${PNG_SCALE} 倍分辨率）`" @click="exportPng">出图</button>
+        :title="`导出为 PNG 图片（${PNG_SCALE} 倍分辨率）`" @click="exportPng">导出</button>
     </div>
     <svg ref="svgEl" :viewBox="`0 0 ${W} ${H}`" preserveAspectRatio="xMidYMid meet">
       <!-- 绘图区 -->
@@ -177,7 +177,7 @@ defineExpose({ svg: svgEl, exportPng })
       <text :x="10" :y="M.t + PH / 2" class="pl-axis" text-anchor="middle"
         :transform="`rotate(-90 10 ${M.t + PH / 2})`">超越时间百分比</text>
     </svg>
-    <p v-if="pts.length < 2" class="ci-cdf-empty">尚无扫描结果 —— 设好星座与时窗后点「计算」</p>
+    <p v-if="pts.length < 2" class="ci-cdf-empty">尚无扫描结果。</p>
   </div>
 </template>
 

@@ -59,6 +59,8 @@ module.exports = function createFreqPlan(baseDirIn) {
       channelCount: chs.length,
       transponderCount: chs.filter((c) => (c.kind || 'transponder') === 'transponder').length,
       beamCount: Array.isArray(plan.beams) ? plan.beams.length : 0,
+      // 载波数：左栏树里那个「频率分配表」子节点上的读数（没打开的计划也要能看出装了几条）
+      carrierCount: Array.isArray(plan.carriers) ? plan.carriers.length : 0,
       updatedAt: plan.updatedAt || new Date().toISOString()
     }
   }

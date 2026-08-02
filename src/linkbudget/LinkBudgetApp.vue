@@ -1,6 +1,8 @@
 <script setup>
 import { ref, shallowRef, reactive, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
 import { FIELD_GROUPS, SAT_FIELDS, CARRIER_FIELDS, TX_FIELDS, RX_FIELDS, ES_FIELDS, ES_COMMON_FIELDS, ES_TX_FIELDS, ES_RX_FIELDS, defaultsFor, buildParams } from './params.js'
+import * as GEO_PARAMS from './params.js'   // 整份 schema 传给 lbMiniExport 的 target 分流（与 buildParams 同源，但不做 sfdRef 的引擎入口换算）
+import { buildMiniConfig, miniConfigItem, miniConfigName } from '../shared/lbMiniExport.js'
 import { loadSatTree, sampleAntennaParams, antennaSampleSpec } from './grdParam.js'
 import { importGrdAntennas, removeLocalAntenna, localFolderFor, syncLocalNode } from '../shared/lbGrdImport.js'
 import { resolveRefId } from '../shared/lbShare.js'
@@ -1354,6 +1356,40 @@ function shareRemap(state, idMap) {
   }
   if (state.satId) state.satId = idMap.sat[state.satId] || ''
 }
+// —— 发到小程序：一条链路 = 一份小程序配置（逐行摊平，见 shared/lbMiniExport.js）——
+// 小程序没有三库结构，故不发分享包而发【摊平后的扁平配置】；摊平要用到本机三个库（行里存的是
+// 引用），故这一层留在体制适配层里。结果只随「工作台上正算着的那一份」走（见 buildMini 的 id）。
+function toMiniItems(picked) {
+  const out = []
+  const taken = new Set()
+  // 行 _id 在 serializeState 里被剥掉了（_ 前缀键不入场景），故结果按【行下标】对齐——
+  // 只有当前正算着的那一份才对得上，别的配置不带结果（见下 useRes）
+  const fresh = !resultsStale.value && links.value.length ? links.value : null
+  for (const p of picked || []) {
+    const st = p && p.state
+    if (!st || !Array.isArray(st.rows) || !st.rows.length) continue
+    const sat = resolveSat(st.satId)
+    const useRes = fresh && (p.id === '__draft__' || p.id === activeId.value) && fresh.length === st.rows.length
+    st.rows.forEach((row, i) => {
+      const bb = resolveBaseband(row.basebandId)
+      const txEs = resolveEs(row.stationId)
+      const rxEs = resolveEs(row.rxStationId)
+      const l = useRes ? fresh[i] : null
+      out.push(miniConfigItem(buildMiniConfig({
+        mod: 'GEO',
+        P: GEO_PARAMS,
+        name: miniConfigName(p.name, row.earthStationLocation, row.rxEarthStationLocation, i, taken),
+        forms: { satForm: sat.form, carrierForm: bb.form, txStation: row, rxStation: row, txEs: txEs.form, rxEs: rxEs.form },
+        result: l && l.data ? l.data : null,
+        resolvedMargin: l ? l.resolvedMargin : null,
+        // 小程序的「波束」是一格纯文字（不参与计算）：有方向图匹配就写那颗星的名字，否则写卫星条目名
+        beamInput: sat.form.satelliteName || sat.name || '',
+        note: `${p.name || '配置'} · 第 ${i + 1} 行 · 载波「${bb.name || '默认'}」· 站型「${txEs.name || '默认'}」→「${rxEs.name || '默认'}」`
+      }), 'GEO', `GEO:${p.id || ''}:${i}`))
+    })
+  }
+  return out
+}
 const shareCtx = {
   mod: 'GEO',
   getConfigs: () => configs.value,
@@ -1363,6 +1399,7 @@ const shareCtx = {
   refsOf: shareRefsOf,
   pinRefs: sharePinRefs,
   remapState: shareRemap,
+  toMiniItems,
   saveConfig: (payload) => api.store.saveConfig(payload),
   onImported: async ({ last, plan, idMap }) => {
     await loadConfigs()
@@ -1515,7 +1552,7 @@ onMounted(async () => {
               @rename-start="startRename" @rename-input="editing.name = $event" @rename-commit="commitRename" @rename-cancel="cancelRename"
             />
           </div>
-          <div v-if="deviceId" class="lb-myid" :title="'本机用户 ID（用于在线分享）'">我的ID：<b>{{ deviceId }}</b></div>
+          <div v-if="deviceId" class="lb-myid" :title="'本机用户 ID（用于在线分享）'">本机标识：<b>{{ deviceId }}</b></div>
         </template>
 
         <!-- ①-B 资源库视图：地球站 / 卫星 / 载波三库主从管理（全局资产，改动实时保存并影响所有引用场景） -->
@@ -1614,7 +1651,7 @@ onMounted(async () => {
           </div>
           <div class="lbr-g">
             <div class="lbr-items">
-              <button class="lbr-big" :disabled="reportDlg.busy || !links.length" :title="links.length ? '生成交付级报告：Excel（总报告 + 逐链路详情）/ PDF（封面 · 目录 · 总报告 · 逐链路详情，含图）' : '先计算再导出'" @click="openReportDialog"><Icon name="file-down" :size="15" />{{ reportDlg.busy ? '生成中…' : '报告' }}</button>
+              <button class="lbr-big" :disabled="reportDlg.busy || !links.length" :title="links.length ? '生成交付级报告：Excel（总报告 + 逐链路详情）/ PDF（封面 · 目录 · 总报告 · 逐链路详情，含图）' : '尚无计算结果'" @click="openReportDialog"><Icon name="file-down" :size="15" />{{ reportDlg.busy ? '生成中…' : '报告' }}</button>
               <button class="lbr-big" :disabled="!segments.length" title="复制当前瀑布表（TSV，可直接粘贴到 Excel / 报告）" @click="copyWaterfallTsv"><Icon name="file-text" :size="15" />TSV</button>
               <div class="lbr-form">
                 <label title="报表语言：「详细预算」区与导出内容一起切换 / Report language: detailed budget & exports"><span>语言</span>
@@ -1704,7 +1741,7 @@ onMounted(async () => {
 
           <LbSection id="detail" title="详细预算" :summary="sel && links.length ? `${sel.txName} → ${sel.rxName}` : ''">
             <div v-if="error" class="lb-err">{{ error }}</div>
-            <div v-else-if="!links.length" class="lb-placeholder">在上方「链路表」逐行核对链路构成<br />点击「计算」（或 Ctrl+Enter）生成预算；点击表格行切换此处的详细预算</div>
+            <div v-else-if="!links.length" class="lb-placeholder">尚无预算结果。</div>
             <div v-else-if="sel && sel.error" class="lb-err">链路 {{ sel.txName }} → {{ sel.rxName }} 计算失败：{{ sel.error }}</div>
             <!-- 文档区（样式见 styles/lbworkbench.css）：上排＝级联主表 ‖ 图表区，下排＝参考段整幅段带 -->
             <div v-else-if="core" class="lbx-doc">
@@ -1754,7 +1791,7 @@ onMounted(async () => {
 
     <!-- 导出报告：封面元信息 + 输出格式 + 是否含图（三窗共用组件）-->
     <LbReportDialog :open="reportDlg.open" :lang="reportLang" orbit-type="GEO"
-      :sat-name="curSat ? curSat.form.satelliteName : ''" :link-count="links.length"
+      :sat-name="curSat ? curSat.form.satelliteName : ''" :band="curSat ? curSat.form.frequencyBand : ''" :link-count="links.length"
       :viz-available="showViz" store-key="linkbudget" :busy="reportDlg.busy" :progress="reportDlg.progress"
       @close="reportDlg.open = false" @submit="runReport" />
 

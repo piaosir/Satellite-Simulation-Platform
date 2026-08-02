@@ -19,7 +19,7 @@ export function useLbReport(o) {
   const dlg = reactive({ open: false, busy: false, progress: null })
 
   function open() {
-    if (!o.links().length) { o.toast('请先点「计算」生成结果'); return }
+    if (!o.links().length) { o.toast('请先执行「计算」生成结果'); return }
     dlg.progress = null
     dlg.open = true
   }

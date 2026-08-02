@@ -237,7 +237,6 @@ const hoverText = computed(() => hover.value ? (`${curAxis.value.label} ${hover.
     </div>
     <div class="rp-foot">
       <span v-if="hoverText" class="rp-hover">{{ hoverText }}</span>
-      <span v-else class="rp-hint">橙色虚线 = 当前算例取值；悬停查看曲线上任意点</span>
     </div>
   </div>
 </template>
@@ -260,5 +259,4 @@ const hoverText = computed(() => hover.value ? (`${curAxis.value.label} ${hover.
 .rp-loading { position: absolute; top: 8px; right: 12px; font-size: 11px; color: var(--text-faint); }
 .rp-foot { padding: 4px 10px 6px; border-top: 1px solid var(--border); min-height: 20px; }
 .rp-hover { font-size: 11px; font-family: var(--font-mono); color: var(--accent); }
-.rp-hint { font-size: 11px; color: var(--text-faint); }
 </style>

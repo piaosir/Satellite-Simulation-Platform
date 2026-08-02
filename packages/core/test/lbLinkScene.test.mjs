@@ -110,7 +110,7 @@ const DATA = { elevationResult: '30.0', rxElevationResult: '35.0', slantRangeRes
 {
   const s = buildGeoScene({ error: null, data: { ...DATA }, txName: '发', rxName: '收' },
     { linkParams: { longitude: '116.4', latitude: '39.9', rxLongitude: '121.5', rxLatitude: '31.2' }, satParams: {} })
-  ok('缺轨位 → 给出原因而不是 null', !!s && s.blocked === '取不到卫星定点轨道经度', JSON.stringify(s))
+  ok('缺轨位 → 给出原因而不是 null', !!s && s.blocked === '缺少卫星定点轨道经度', JSON.stringify(s))
   ok('缺料场景不喂给覆盖门', satForSide(s, 'tx') === null)
   ok('没算过仍然返回 null', buildGeoScene(null, null) === null)
 }

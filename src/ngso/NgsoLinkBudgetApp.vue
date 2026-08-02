@@ -1,6 +1,8 @@
 <script setup>
 import { ref, shallowRef, reactive, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
 import { FIELD_GROUPS, SAT_FIELDS, CARRIER_FIELDS, TX_FIELDS, RX_FIELDS, ES_FIELDS, ES_COMMON_FIELDS, ES_TX_FIELDS, ES_RX_FIELDS, defaultsFor, buildParams } from './ngsoParams.js'
+import * as NGSO_PARAMS from './ngsoParams.js'   // 整份 schema 传给 lbMiniExport 的 target 分流（同 buildParams 但不折算 sfdRef）
+import { buildMiniConfig, miniConfigItem, miniConfigName } from '../shared/lbMiniExport.js'
 import { loadSatTree, sampleAntennaParams, sampleAntennaParam, antennaSampleSpec } from './grdParam.js'
 import { importGrdAntennas, removeLocalAntenna, localFolderFor, syncLocalNode } from '../shared/lbGrdImport.js'
 import { resolveRefId } from '../shared/lbShare.js'
@@ -1730,6 +1732,41 @@ function shareRemap(state, idMap) {
   }
   if (state.satId) state.satId = idMap.sat[state.satId] || ''
 }
+// —— 发到小程序：一条链路 = 一份小程序配置（逐行摊平，见 shared/lbMiniExport.js）——
+// ★ NGSO 的几何必须送【平台算出来的那一组】：本窗口是 SGP4 双站互视 + 逐候选跑真实引擎按瓶颈侧
+//   取最差路径，而小程序只有「最低仰角 + 轨道高度」的闭式几何。只送轨道高度的话小程序会用自己的
+//   几何重算，与平台的最差路径不是一回事。故有结果时送 slantRange 模式 + 该时刻的实际仰角
+//   （斜距与仰角要是同一时刻的那一对，大气/雨衰按仰角走）；没算过就退回轨道高度模式，诚实。
+function toMiniItems(picked) {
+  const out = []
+  const taken = new Set()
+  const fresh = !resultsStale.value && links.value.length ? links.value : null
+  for (const p of picked || []) {
+    const st = p && p.state
+    if (!st || !Array.isArray(st.rows) || !st.rows.length) continue
+    const sat = resolveSat(st.satId)
+    const useRes = fresh && (p.id === '__draft__' || p.id === activeId.value) && fresh.length === st.rows.length
+    st.rows.forEach((row, i) => {
+      const bb = resolveBaseband(row.basebandId)
+      const txEs = resolveEs(row.stationId)
+      const rxEs = resolveEs(row.rxStationId)
+      const l = useRes ? fresh[i] : null
+      out.push(miniConfigItem(buildMiniConfig({
+        mod: 'NGSO',
+        P: NGSO_PARAMS,
+        name: miniConfigName(p.name, row.earthStationLocation, row.rxEarthStationLocation, i, taken),
+        forms: { satForm: sat.form, carrierForm: bb.form, txStation: row, rxStation: row, txEs: txEs.form, rxEs: rxEs.form },
+        result: l && l.data ? l.data : null,
+        resolvedMargin: l ? l.resolvedMargin : null,
+        // 轨道取星来源（ngsoSat.folder）是本机指针，buildMiniConfig 只读它的轨道根数判区制，不外传
+        ngsoSat: sat.ngsoSat,
+        beamInput: sat.form.satelliteName || sat.name || '',
+        note: `${p.name || '配置'} · 第 ${i + 1} 行 · 载波「${bb.name || '默认'}」· 站型「${txEs.name || '默认'}」→「${rxEs.name || '默认'}」`
+      }), 'NGSO', `NGSO:${p.id || ''}:${i}`))
+    })
+  }
+  return out
+}
 const shareCtx = {
   mod: 'NGSO',
   getConfigs: () => configs.value,
@@ -1739,6 +1776,7 @@ const shareCtx = {
   refsOf: shareRefsOf,
   pinRefs: sharePinRefs,
   remapState: shareRemap,
+  toMiniItems,
   saveConfig: (payload) => api.store.saveConfig(payload),
   onImported: async ({ last, plan, idMap }) => {
     for (const c of satConfigs) enforceGrdOwner(c)   // 并进来的卫星条目也要过一遍「一个条目=一颗星」的不变式
@@ -1900,7 +1938,7 @@ onMounted(async () => {
               @rename-start="startRename" @rename-input="editing.name = $event" @rename-commit="commitRename" @rename-cancel="cancelRename"
             />
           </div>
-          <div v-if="deviceId" class="lb-myid" :title="'本机用户 ID（用于在线分享）'">我的ID：<b>{{ deviceId }}</b></div>
+          <div v-if="deviceId" class="lb-myid" :title="'本机用户 ID（用于在线分享）'">本机标识：<b>{{ deviceId }}</b></div>
         </template>
 
         <!-- ①-B 资源库视图：地球站 / 卫星 / 载波三库主从管理（全局资产，改动实时保存并影响所有引用场景） -->
@@ -2005,7 +2043,7 @@ onMounted(async () => {
           </div>
           <div class="lbr-g">
             <div class="lbr-items">
-              <button class="lbr-big" :disabled="reportDlg.busy || !links.length" :title="links.length ? '生成交付级报告：Excel（总报告 + 几何关系 + 逐链路详情）/ PDF（封面 · 目录 · 总报告 · 逐链路详情，含图）' : '先计算再导出'" @click="openReportDialog"><Icon name="file-down" :size="15" />{{ reportDlg.busy ? '生成中…' : '报告' }}</button>
+              <button class="lbr-big" :disabled="reportDlg.busy || !links.length" :title="links.length ? '生成交付级报告：Excel（总报告 + 几何关系 + 逐链路详情）/ PDF（封面 · 目录 · 总报告 · 逐链路详情，含图）' : '尚无计算结果'" @click="openReportDialog"><Icon name="file-down" :size="15" />{{ reportDlg.busy ? '生成中…' : '报告' }}</button>
               <button class="lbr-big" :disabled="!segments.length" title="复制当前瀑布表（TSV，可直接粘贴到 Excel / 报告）" @click="copyWaterfallTsv"><Icon name="file-text" :size="15" />TSV</button>
               <div class="lbr-form">
                 <label title="报表语言：「详细预算」区与导出内容一起切换 / Report language: detailed budget & exports"><span>语言</span>
@@ -2079,7 +2117,7 @@ onMounted(async () => {
           </LbSection>
           <LbSection id="detail" title="详细预算" :summary="sel && links.length ? `${sel.txName} → ${sel.rxName}` : ''">
             <div v-if="error" class="lb-err">{{ error }}</div>
-            <div v-else-if="!links.length" class="lb-placeholder">在上方「链路表」逐行核对链路构成<br />点击「计算」（或 Ctrl+Enter）生成预算；点击表格行切换此处的详细预算</div>
+            <div v-else-if="!links.length" class="lb-placeholder">尚无预算结果。</div>
             <div v-else-if="sel && sel.error" class="lb-err">链路 {{ sel.txName }} → {{ sel.rxName }} 计算失败：{{ sel.error }}</div>
             <div v-else-if="core" class="lbx-doc">
               <!-- NGSO 特有：平台精确几何。选星=单一典型时刻 t*(SGP4/SDP4，两站同刻·仰角尽量贴近各自最低)；
@@ -2111,8 +2149,8 @@ onMounted(async () => {
                   <!-- 互视访问（选星耦合：典型时刻 t* / 两站互视窗口起止·持续，STK UTCG 时标）-->
                   <template v-if="geom.coupled && geom.search">
                     <div class="geo-sec">互视访问<span class="geo-sec-x">{{ tzMode === 'utc' ? 'UTCG' : tzSuffix }}</span></div>
-                    <div v-if="geom.search.typicalISO" class="geo-trow"><span class="geo-l" title="所有几何量取自这一物理瞬间；此刻两站同时可见、仰角尽量贴近各自最低仰角（通常一站正压最低、另一站略高）。t* 为墙钟绝对时——在「星座3D」页把时间轴设到此刻，即可与地图星下点直接核对（自定义星座同理：合成星已按场景历元正向传播到时间轴时刻，无需偏移换算）。">典型时刻 t*</span><span class="geo-time">{{ fmtInstant(geom.search.typicalISO, tzMode) }}</span></div>
-                    <div v-if="geom.search.subSatLonDeg != null" class="geo-trow"><span class="geo-l" title="t* 该刻卫星星下点（经纬）。导入卫星天线时，卫星EIRP/G·T 即把卫星置于此位置对各站取天线增益，与本行斜距/FSL/C·N 同一瞬间">t* 星下点</span><span class="geo-time">{{ g2(geom.search.subSatLonDeg, 3) }}°E, {{ g2(geom.search.subSatLatDeg, 3) }}°N</span></div>
+                    <div v-if="geom.search.typicalISO" class="geo-trow"><span class="geo-l" title="所有几何量取自这一物理瞬间；此刻两站同时可见、仰角尽量贴近各自最低仰角（通常一站正压最低、另一站略高）。t* 为墙钟绝对时——在「星座3D」页将时间轴设至此刻，即可与地图星下点直接核对（自定义星座同理：合成星已按场景历元正向传播到时间轴时刻，无需偏移换算）。">典型时刻 t*</span><span class="geo-time">{{ fmtInstant(geom.search.typicalISO, tzMode) }}</span></div>
+                    <div v-if="geom.search.subSatLonDeg != null" class="geo-trow"><span class="geo-l" title="t* 该刻卫星星下点（经纬）。导入卫星天线时，卫星EIRP/G·T 即将卫星置于该位置对各站取天线增益，与本行斜距/FSL/C·N 同一瞬间">t* 星下点</span><span class="geo-time">{{ g2(geom.search.subSatLonDeg, 3) }}°E, {{ g2(geom.search.subSatLatDeg, 3) }}°N</span></div>
                     <template v-if="geom.search.mutualWindow">
                       <div class="geo-trow"><span class="geo-l" title="发信站与收信站同时满足各自最低仰角的时段（含 t* 的那次过境）——即两站可经该星建链的时间窗口范围">互视窗口 · 起始</span><span class="geo-time">{{ fmtInstant(geom.search.mutualWindow.startISO, tzMode) }}</span></div>
                       <div class="geo-trow"><span class="geo-l">互视窗口 · 结束</span><span class="geo-time">{{ fmtInstant(geom.search.mutualWindow.endISO, tzMode) }}<span v-if="geom.search.mutualWindow.clipped" class="geo-clip" title="窗口被搜索时窗边界切断，非完整过境">clipped</span></span></div>
@@ -2166,10 +2204,7 @@ onMounted(async () => {
                 </div>
               </div>
               <div v-else-if="geom && !geom.feasible" class="geo-card geo-note">
-                几何提示：{{ geom.reason }}。可增大搜索时窗、改选卫星，或取消选星改用手动轨道高度 + 最低仰角（闭式球面最差几何）。
-              </div>
-              <div v-else class="geo-card geo-note">
-                当前为手动轨道模式：几何按「每站自身最低仰角处的最大斜距」闭式球面给出（轨道高度 + 各站最低仰角，Re=6378.137 km），斜距/仰角见下方瀑布表。选星后此处显示所选星的最差工况几何（圆轨道走闭式球面、偏心/HEO 走 SGP4/SDP4）与轨道根数。
+                几何提示：{{ geom.reason }}。
               </div>
                 </div>
               </div>
@@ -2223,7 +2258,7 @@ onMounted(async () => {
     <!-- 命名弹窗：保存为新配置（替代 Electron 不支持的 window.prompt）-->
     <!-- 导出报告：封面元信息 + 输出格式 + 是否含图（三窗共用组件）-->
     <LbReportDialog :open="reportDlg.open" :lang="reportLang" orbit-type="NGSO"
-      :sat-name="curSat ? curSat.form.satelliteName : ''" :link-count="links.length"
+      :sat-name="curSat ? curSat.form.satelliteName : ''" :band="curSat ? curSat.form.frequencyBand : ''" :link-count="links.length"
       :viz-available="showViz" store-key="ngso" :busy="reportDlg.busy" :progress="reportDlg.progress"
       @close="reportDlg.open = false" @submit="runReport" />
 

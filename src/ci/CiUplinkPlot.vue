@@ -26,7 +26,6 @@ const props = defineProps({
   maskPhi0Deg: { type: Number, default: null },
   peerCurves: { type: Array, default: () => [] },     // [{key, diameterM, mainLobeDeg, curve:[…]}]
   sources: { type: Array, default: () => [] },
-  sourceMode: { type: String, default: 'peer' },
   hoveredId: { type: String, default: '' }
 })
 const emit = defineEmits(['hover'])
@@ -225,26 +224,13 @@ C/I {{ fmt(p.ciDb, 2) }} dB<template v-if="Number.isFinite(p.sharePct)">
       <span v-if="ownY != null" class="lg-i"><i class="sw own" />本站上行密度（C）</span>
       <span class="lg-i"><i class="sw src" />干扰源落点</span>
     </div>
-    <!-- 没有实线时要说清为什么：读者看到一条红虚线加几个孤零零的点，第一反应是图没画全 -->
-    <p v-if="hasData && !peerPaths.length" class="ci-hint sm">
-      <template v-if="sourceMode === 'explicit'">
-        <strong>逐站给定</strong>：落点为直接填入的离轴 EIRP 密度，不经天线模型计算，故图上无对等站曲线。
-        此时应读<strong>落点到红虚线的距离</strong>，即申报值相对 S.524 上界的余量。
-        若多座站填入同一数值，落点同高、C/I 亦相同。
-      </template>
-      <template v-else>
-        <strong>S.524 掩模模式</strong>：干扰源模型即该红线，故落点必位于线上，且无对等站曲线。
-        查看工程预期值请切换至「对等站」。
-      </template>
-    </p>
     <p v-if="belowScopeNames.length" class="warn sm">
-      {{ belowScopeNames.join('、') }} 的离轴角在 S.524 的 φ₀ 以内：<strong>建议书对该角不设限</strong>，
-      此处取 φ₀ 处的钳位值。这些源的 C/I 因而相同，系掩模模型在该角不适用所致。
+      {{ belowScopeNames.join('、') }} 的离轴角在 S.524 的 φ₀ 以内，此处取 φ₀ 处的钳位值。
     </p>
     <p v-if="!maskAuthoritative && maskCurve.length" class="warn sm">
       该频率不在 S.524-9 正文明列的三个频段内，掩模按邻近频段外推，仅可作量级参照，不应标注为「ITU-R S.524-9」。
     </p>
-    <p v-if="!hasData" class="empty">请先计算：上行几何由引擎按所选干扰源模型给出</p>
+    <p v-if="!hasData" class="empty">请先计算。</p>
   </div>
 </template>
 
@@ -288,8 +274,6 @@ C/I {{ fmt(p.ciDb, 2) }} dB<template v-if="Number.isFinite(p.sharePct)">
 .sw.own { border-top-color: var(--text-muted); border-top-style: dashed; }
 .sw.src { width: 7px; height: 7px; border: none; border-radius: 50%; background: var(--warn, #d08a2e); }
 
-.ci-hint { margin: 6px 0 0; font-size: 11px; line-height: 1.55; color: var(--text-muted); }
-.ci-hint strong { color: var(--text); font-weight: 600; }
 .warn { margin: 6px 0 0; font-size: 11px; line-height: 1.5; color: var(--warn, #d08a2e); }
 .empty { margin: 8px 0 0; text-align: center; font-size: 12px; color: var(--text-muted); }
 </style>

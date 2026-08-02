@@ -53,20 +53,15 @@ export const BEAM_LAYOUTS = [
  */
 export const SAT_PATTERNS = [
   { v: 'isoflux', label: '等通量（Isoflux）', steerable: false, evidence: 'R',
-    needs: ['peakGainDbi'],
-    note: 'S.1503-4 §C2.3.1 为该类天线规定：功率通量密度计算中的斜距恒取卫星高度。常用于 TT&C 与全球波束下行。' },
+    needs: ['peakGainDbi'] },
   { v: 'omni', label: '全向 / 各向同性（Omni）', steerable: false, evidence: 'T',
-    needs: ['peakGainDbi'],
-    note: '各方向增益相同。Transfinite 把它列在「单一固定波束开/关」这一类天线体制里。' },
+    needs: ['peakGainDbi'] },
   { v: 's1528', label: 'ITU-R S.1528 参考方向图', steerable: true, evidence: 'R',
-    needs: ['peakGainDbi', 'psibDeg', 'section', 'Ln'],
-    note: '★ S.1528 §1.1 明确：有实测方向图时应当用实测图，本节的参考图是拿不到实测图时的替代品。' },
+    needs: ['peakGainDbi', 'psibDeg', 'section', 'Ln'] },
   { v: 'parabolic', label: '理论抛物面（均匀照射圆口径）', steerable: true, evidence: 'S',
-    needs: ['diameterM', 'efficiency', 'nullFloorDb'],
-    note: '增益由口径与效率算出（主轴增益变为派生只读）。滚降取均匀照射圆口径的解析式 2J₁(u)/u。' },
+    needs: ['diameterM', 'efficiency', 'nullFloorDb'] },
   { v: 'two-level', label: '两级带底包络', steerable: true, evidence: 'S',
-    needs: ['peakGainDbi', 'beamwidth1Deg', 'gainFloor1Db', 'beamwidth2Deg', 'gainFloor2Db'],
-    note: '主瓣外落到第一级底电平，再向外落到第二级。用于厂商只给了「主瓣宽度 + 两级旁瓣包络」的情形。' }
+    needs: ['peakGainDbi', 'beamwidth1Deg', 'gainFloor1Db', 'beamwidth2Deg', 'gainFloor2Db'] }
 ]
 
 /** ★ 默认不给 S.1428：那是受扰方【接收】天线的统计型图，用作发射包络会给出偏松的 mask。 */
@@ -571,7 +566,7 @@ export function useMaskWorkbench(opts) {
         const q = c && c.params
         if (!q) continue
         out.push({
-          key: 'cc:' + c.id, group: '我的星座', label: c.name || '自定义星座',
+          key: 'cc:' + c.id, group: '自定义星座', label: c.name || '自定义星座',
           incl: Number(q.incl) || 0, perigeeKm: Number(q.perigeeKm) || 0,
           apogeeKm: Number(q.apogeeKm) || Number(q.perigeeKm) || 0, shape: q.shape || 'circ',
           T: Number(q.T) || 0, P: Number(q.P) || 0, S: 0

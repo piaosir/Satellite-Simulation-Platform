@@ -122,7 +122,16 @@ contextBridge.exposeInMainWorld('api', {
     inbox: (myId) => ipcRenderer.invoke('share:inbox', myId),
     remove: (myId, id) => ipcRenderer.invoke('share:delete', myId, id),
     // 发送到小程序：把当前绘制状态快照上传 COS，返回可在小程序输入的短密钥
-    gxtSnapshot: (payload) => ipcRenderer.invoke('share:gxtSnapshot', payload)
+    gxtSnapshot: (payload) => ipcRenderer.invoke('share:gxtSnapshot', payload),
+    // 同一条通道的通名（putSnapshot 本就与内容语义无关，只是 PUT 一份 JSON）：
+    // 覆盖快照 kind='gxt-snapshot'、链路配置/频率计划 kind='satsim-pack'（见 shared/miniPack.js）。
+    // 主进程处理器不必改，故这里只是别名；老名保留，3D 页那条路一个字不动。
+    putPack: (payload) => ipcRenderer.invoke('share:gxtSnapshot', payload),
+    // 绑定投递（免密钥）：往小程序端的认证码信箱直投。密钥模式照旧并存 —— 绑定给常用的人，
+    // 密钥给客户/临时协作。o = { pid, label, app, sync, name, payload }
+    boxSend: (ch, o) => ipcRenderer.invoke('share:boxSend', ch, o),
+    boxPeek: (ch, pid) => ipcRenderer.invoke('share:boxPeek', ch, pid),
+    boxRevoke: (ch, pid, mid) => ipcRenderer.invoke('share:boxRevoke', ch, pid, mid)
   },
   store: {
     listHistory: () => ipcRenderer.invoke('store:history:list'),

@@ -54,11 +54,41 @@ electron/services/shareConfig.js
 
 # 频率计划图版式验证台（node .fpharness/gen.mjs 重生成）：双 LO cross-strap 与宽窄混排两张真出图，
 # 用来肉眼核对「块宽只由带宽决定」。数值正确性归 packages/core/test/freqPlan.test.mjs 的 ⑩b 段。
-# .fpharness/ui/ 是另一台：整个 FreqPlanApp 挂浏览器里跑（window.api 走桩），用来核对上下行双向联动
-# 在真实 DOM 里的行为（改一边另一边跟着变、清一侧两侧都空、cross-strap 解耦互不牵动）。
+# .fpharness/ui/ 是另一台：整个 FreqPlanApp 挂浏览器里跑（window.api 走桩），用来核对单测证明不了的
+# DOM 行为：上下行双向联动（改一边另一边跟着变、清一侧两侧都空、cross-strap 解耦互不牵动），
+# 以及换单位后整份计划（表/检查器/批量/LO/波束/容量/校验/图）是否一起换刻度、录入中途的小数点会不会被吞。
 .fpharness/
+
+# 「发送到小程序」端到端验证台（node .mpharness/gen.mjs）：跨两个仓库真跑一遍——
+# 平台造计划/配置 → fpMiniExport/lbMiniExport → 信封 → 小程序 utils/satsimPack（wx.storage 走内存桩）
+# → 频率计划页 openPlan/draw（canvas 2d 走录制桩）/tapAt。两侧的字段名编译器一个都管不着，靠它兜。
+# 另把绘制指令回放成 SVG 与平台 toSvg 逐图元比对（矩形/直线/圆点/箭头/文字），防「planBody 改了
+# drawOps 没跟上」。小程序仓库默认取兄弟目录 ../Satellitelinkbudget，可用 MINIAPP_DIR 覆盖。
+.mpharness/
+
+# 频率计划 Excel 导出的版式验证台（node .fpxharness/gen.mjs）：真跑 fpXlsxModel → freqPlanXlsx
+# 出两本 .xlsx（样式版 / 纯数据版），并渲成 HTML 预览。数值正确性归 packages/core/test/fpXlsx.test.mjs，
+# 这里只看单测证明不了的版式：色块宽度是否随带宽走、量化抖动看不看得出、兑白底色压不压得住字。
+.fpxharness/
 
 # 晨昏线验证台：可拖 UTC 时刻，2D 平面图 + 3D 球体同屏画晨昏线/夜区，另附城市昼夜探针。
 # 「夜区在不在正确那侧、会不会被地图接缝撕开」的判定已由 packages/core/test/terminatorRender.test.mjs
 # 逐点覆盖（进 npm test），这里只留给肉眼看观感（配色/线宽/与覆盖场叠加的层次）。本地开发用，不进仓库
 .termharness/
+
+# 交付级报告版式验证台（《技术文档标准模板》口径，三个渲染器共一份版式档 reportStyle.js）。
+# 模型三台共用 .rpharness/model.mjs 的 makeModel()，别各带一份。
+# node .rpharness/check.mjs        出 out.xlsx / out.docx，拆开 XML 逐项核对——富文本中西分家
+#                                  （宋体/黑体 vs TNR）、三线表边框、无底纹无竖线、logo 贴齐版心右边界、
+#                                  字号档位、表号连续编号、页眉数、输入表宽。
+# node .rpharness/serve.mjs        起 PDF 打印页（out/renderer 的真产物 + 打桩的 window.api，
+#                                  需先 npm run build），浏览器里核对版式；对应 launch.json 的 rp-harness。
+# npx electron .rpharness/pdf.cjs  真跑 printToPDF 出 out.pdf——页眉的 logo 只有真打印才出现，
+#                                  serve.mjs 那台看不到。
+# npx electron .rpharness/hdrtest.cjs  页眉模板探针（图不出现时用它分因）。
+.rpharness/
+
+# 「小程序绑定 · 免密钥自动同步」端到端验证台（node .bindharness/gen.mjs）：
+# COS 换内存桩、云函数当普通模块 require 进来真跑一遍——平台 boxSend / 云函数 boxList / 小程序 syncNow
+# 三处用各自仓库里的真代码，专治「跨仓库字段名漂了编译器管不着」。
+.bindharness/

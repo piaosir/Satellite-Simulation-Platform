@@ -10,6 +10,7 @@ import { theme } from './stores/theme'
 import { logStore, logMsg, clearLog } from './stores/log'
 import { effective as displayQuality } from './stores/displayQuality'
 import SettingsModal from './components/SettingsModal.vue'
+import MiniBindDialog from './components/MiniBindDialog.vue'
 import FileManager from './components/FileManager.vue'
 import Icon from './components/Icon.vue'
 import logoUrl from './assets/linklab-avatar-dark.png'
@@ -25,6 +26,7 @@ const ISL = defineAsyncComponent(() => import('./pages/ISL.vue'))
 
 const nav = useNavStore()
 const settingsOpen = ref(false)
+const bindOpen = ref(false)      // 绑定小程序账号（工具菜单，与设置平级）
 const fileOpen = ref(false)
 const aboutOpen = ref(false)
 const appVersion = ref('')
@@ -120,7 +122,7 @@ const menus = computed(() => [
     { label: '文件管理…', icon: 'folder-open', hint: '管理 GRD 天线 / 频率计划 / GXT 覆盖文件库（导入 / 导出 / 删除）', run: () => { fileOpen.value = true } },
     // 频率计划是「文件」不是「计算」：它与 GRD 天线平级、同挂在卫星下，本身不产出任何计算结果，
     // 只是被链路预算引用的一份资料。故归文件区，不留在计算菜单里。
-    { label: '转发器频率计划…', icon: 'freq-plan', hint: '转发器频率排布与容量规划：挂在卫星下、与 GRD 天线平级；供链路预算引用，可导出 PNG / PDF（独立窗口）', run: openFreqPlan },
+    { label: '转发器频率计划…', icon: 'freq-plan', hint: '转发器频率排布与频率分配表：挂在卫星下、与 GRD 天线平级；供链路预算引用，可导出 PNG / PDF（独立窗口）', run: openFreqPlan },
     { label: '导入 TLE 文件（CSV）…', icon: 'import', disabled: !covNav.importTle, hint: '从本地 CSV（CelesTrak「FORMAT=csv」的 OMM 文件）导入卫星星历，离线或无法连接 CelesTrak 时使用', run: () => covNav.importTle?.() },
     { sep: true },
     { label: '退出', icon: 'log-out', hint: '关闭主窗口', run: () => window.close() }
@@ -154,12 +156,14 @@ const menus = computed(() => [
     { label: EXP_NAME.png6, icon: 'image', disabled: !covNav.exportAvail, hint: '导出 6 倍高清 PNG 图片', run: () => doExport('png6') },
     { label: EXP_NAME.pdf, icon: 'file-text', disabled: !covNav.exportAvail, hint: '导出矢量 PDF 文档', run: () => doExport('pdf') },
     { sep: true },
-    { label: EXP_NAME.gxt, icon: 'layers', disabled: !covNav.exportAvail, hint: '把当前绘制的覆盖等值线 + 协调区多边形一起导出为一个 GXT 文件（所见即所得）', run: () => doExport('gxt') },
-    { label: EXP_NAME.kml, icon: 'layers', disabled: !covNav.exportAvail, hint: '把当前绘制的覆盖等值线 + 协调区多边形一起导出为一个 Google KML 文件（所见即所得）', run: () => doExport('kml') },
+    { label: EXP_NAME.gxt, icon: 'layers', disabled: !covNav.exportAvail, hint: '将当前绘制的覆盖等值线 + 协调区多边形一并导出为一个 GXT 文件（所见即所得）', run: () => doExport('gxt') },
+    { label: EXP_NAME.kml, icon: 'layers', disabled: !covNav.exportAvail, hint: '将当前绘制的覆盖等值线 + 协调区多边形一并导出为一个 Google KML 文件（所见即所得）', run: () => doExport('kml') },
     { sep: true },
-    { label: '发送到小程序…', icon: 'upload', disabled: !covNav.exportAvail, hint: '把当前绘制的覆盖等值线 + 协调区多边形上传云端，生成密钥供微信小程序「卫星覆盖」导入', run: () => doSendMiniapp() }
+    { label: '发送到小程序…', icon: 'upload', disabled: !covNav.exportAvail, hint: '将当前绘制的覆盖等值线 + 协调区多边形上传至云端，生成密钥供微信小程序「卫星覆盖」导入', run: () => doSendMiniapp() }
   ] },
   { key: 'tools', label: '工具', items: [
+    { label: '绑定小程序账号…', icon: 'wechat', hint: '登记小程序端的认证码，此后「发送到小程序」可免密钥直接投递，接收方打开小程序后自动同步', run: () => { bindOpen.value = true } },
+    { sep: true },
     { label: '设置…', icon: 'settings', hint: '外观主题 / 显示画质 / 单位等设置', run: () => { settingsOpen.value = true } }
   ] },
   { key: 'help', label: '帮助', items: [
@@ -189,6 +193,7 @@ const toolButtons = computed(() => [
   { icon: 'image', tip: '导出高清 PNG（4×）', disabled: !covNav.exportAvail, run: () => doExport('png4') },
   { icon: 'file-down', tip: '导出矢量 PDF', disabled: !covNav.exportAvail, run: () => doExport('pdf') },
   { sep: true },
+  { icon: 'wechat', tip: '绑定小程序账号', run: () => { bindOpen.value = true } },
   { icon: 'settings', tip: '设置', run: () => { settingsOpen.value = true } }
 ])
 
@@ -328,6 +333,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
     </div>
 
     <SettingsModal v-if="settingsOpen" @close="settingsOpen = false" />
+    <MiniBindDialog v-if="bindOpen" @close="bindOpen = false" @toast="(m) => logMsg(m)" />
     <FileManager v-if="fileOpen" @close="fileOpen = false" />
 
     <!-- 帮助 → 关于 -->

@@ -25,7 +25,11 @@ export const MODES = [
   { key: 'ngso', label: 'NGSO 时变', tip: 'NGSO 干扰是随机过程：逐时刻扫描出 C/I 的 CDF 与 in-line 事件' }
 ]
 
-export const REUSE_COLORS = [3, 4, 7]
+// 与引擎的 REUSE_PRESETS 同表（ciCci.js）。七档 = 有效前沿：
+//   单极化 3 / 7 / 9  （每波束 1/3 · 1/7 · 1/9 频段，同色间距 1.73 / 2.65 / 3.00 d）
+//   双极化 4 / 8 / 12 / 16（K 频段 × 2 极化，K = 2/4/6/8，间距 2.00 / 2.65 / 3.46 / 4.00 d）
+// 同一个间距上只留最省频率的那一档：10 与 8 同为 2.65d 却多切一段频率，被 8 支配，故不列。
+export const REUSE_COLORS = [3, 4, 7, 8, 9, 12, 16]
 
 let _srcSeq = 1
 const blankSource = (o) => ({
@@ -433,7 +437,7 @@ export function useInterference() {
         coloring: r.coloring, beamIdx: r.beamIdx || [], colors: r.colors
       }
       const none = cci.result.rows.filter((x) => x.cciDb == null).length
-      if (none === cci.result.rows.length) msg.value = '所有点都算不出 —— 检查站址是否落在方向图覆盖内，或该色下无同色波束'
+      if (none === cci.result.rows.length) msg.value = '全部取值点均无有效结果 —— 请核查站址是否落在方向图覆盖内，或该色下无同色波束'
     } finally { busy.value = false }
   }
 
@@ -475,7 +479,7 @@ export function useInterference() {
       let n = 0
       for (let k = 0; k < z.length; k++) { const v = r.cci[k]; z[k] = v == null ? NaN : v; if (v != null) n++ }
       cci.field = { xs, ys, nx, ny, z, coloring: r.coloring, beamIdx: r.beamIdx || [], colors: r.colors, valid: n }
-      msg.value = n ? `C/CCI 场完成：${nx}×${ny} 格，${n} 格有值` : '整张图都算不出——检查方向图覆盖范围与复用色数（色数≥波束数时没有同色波束）'
+      msg.value = n ? `C/CCI 场完成：${nx}×${ny} 格，${n} 格有值` : '场图全域无有效值 —— 请核查方向图覆盖范围与复用色数（色数≥波束数时无同色波束）'
     } finally { busy.value = false }
   }
 

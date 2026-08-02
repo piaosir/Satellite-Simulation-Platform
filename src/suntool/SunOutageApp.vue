@@ -250,7 +250,6 @@ const dEnd = (d) => (isLocal.value ? shiftParts(d.date, d.endTimeUTC, staOffsetM
           <label class="row" title="太阳射电亮温：太阳作为射电源在工作频率上的等效温度。默认值按频率由太阳射电流量模型自动推算（随太阳活动强弱有波动），一般无需修改。">
             <span>T_sun K</span><input v-model="form.solarTemp" :placeholder="defaultTsun ? `默认 ${defaultTsun}（按频率推算）` : '按频率自动推算'" inputmode="decimal" />
           </label>
-          <div class="hint">T_sys＝接收天线系统噪声温度；T_sun＝太阳射电亮温。</div>
         </div>
 
         <div class="sec">
@@ -311,8 +310,7 @@ const dEnd = (d) => (isLocal.value ? shiftParts(d.date, d.endTimeUTC, staOffsetM
 
         <template v-else>
           <div class="empty">
-            <p>输入地球站与卫星参数，点击「计算日凌」。</p>
-            <p class="dim">输出分点前后 ±30 天内逐日的日凌起止/峰值时刻与 C/N 恶化，可导出交付级 Word 报告与 ICS 值班日历。</p>
+            <p>尚无计算结果。</p>
           </div>
         </template>
 

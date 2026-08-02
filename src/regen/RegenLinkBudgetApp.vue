@@ -1572,7 +1572,7 @@ onMounted(async () => {
               @rename-start="startRename" @rename-input="editing.name = $event" @rename-commit="commitRename" @rename-cancel="cancelRename"
             />
           </div>
-          <div v-if="deviceId" class="lb-myid" :title="'本机用户 ID（用于在线分享）'">我的ID：<b>{{ deviceId }}</b></div>
+          <div v-if="deviceId" class="lb-myid" :title="'本机用户 ID（用于在线分享）'">本机标识：<b>{{ deviceId }}</b></div>
         </template>
 
         <!-- ①-B 资源库视图：地球站 / 卫星 / 载波三库主从管理（全局资产，改动实时保存并影响所有引用场景） -->
@@ -1666,7 +1666,7 @@ onMounted(async () => {
           </div>
           <div class="lbr-g">
             <div class="lbr-items">
-              <button class="lbr-big" :disabled="reportDlg.busy || !links.length" :title="links.length ? '生成交付级报告：Excel（总报告 + 几何关系 + 逐链路详情）/ PDF（封面 · 目录 · 总报告 · 逐链路详情，含图）' : '先计算再导出'" @click="openReportDialog"><Icon name="file-down" :size="15" />{{ reportDlg.busy ? '生成中…' : '报告' }}</button>
+              <button class="lbr-big" :disabled="reportDlg.busy || !links.length" :title="links.length ? '生成交付级报告：Excel（总报告 + 几何关系 + 逐链路详情）/ PDF（封面 · 目录 · 总报告 · 逐链路详情，含图）' : '尚无计算结果'" @click="openReportDialog"><Icon name="file-down" :size="15" />{{ reportDlg.busy ? '生成中…' : '报告' }}</button>
               <button class="lbr-big" :disabled="!segments.length" title="复制当前瀑布表（TSV，可直接粘贴到 Excel / 报告）" @click="copyWaterfallTsv"><Icon name="file-text" :size="15" />TSV</button>
               <div class="lbr-form">
                 <label title="报表语言：「详细预算」区与导出内容一起切换 / Report language: detailed budget & exports"><span>语言</span>
@@ -1724,7 +1724,6 @@ onMounted(async () => {
             </template>
             <div class="tx-optbar">
               <span class="tx-optl">工作点</span>
-              <span class="tx-opttip">功放随站型设置——在各站所选「地球站配置」的发射参数（工作点「功放功率预设」）中给定功放功率，据此计算上行余量；算出的功放功率贴在各行「地球站配置」名之后。</span>
             </div>
             <div class="lbx-grid">
               <StationGrid :stations="txStations" :fields="txGridFields" :groups="GROUPS_STATION" :freeze-keys="false" :extra-values="computedVals" :cell-class="cellClassFn" :cell-sub="txCellSub" :cell-tag="txCellTag" :cities="cities" :city-search="citySearch" label="发信站" :auto-geo="autoGeoTx" :select-options="{ basebandId: basebandSelectOptions, stationId: esSelectOptions, satelliteId: satSelectOptions }" :lib-fields="{ basebandId: 'carrier', stationId: 'station', satelliteId: 'sat' }" @edit-lib="editInLibrary" @row-focus="onRowFocus" />
@@ -1746,7 +1745,6 @@ onMounted(async () => {
             </template>
             <div class="tx-optbar">
               <span class="tx-optl">工作点 G/T</span>
-              <span class="tx-opttip">收信站 G/T 由所选「地球站配置」的接收参数（天线口径/效率 + 天线噪温 + 接收机噪温 + 馈线损耗）按引擎口径算得（含精确雨致 G/T 劣化）；「地球站配置」格下方小字「G/T」为随参数实时更新的晴空 G/T 预览（按「天线噪温」手填值近似——「天线噪温模式=自动」时最终以计算结果为准，天空噪温随链路仰角实时求取）。</span>
             </div>
             <div class="lbx-grid">
               <StationGrid :stations="rxStations" :fields="rxGridFields" :groups="GROUPS_STATION" :freeze-keys="false" :extra-values="computedVals" :cell-class="cellClassFn" :cell-sub="rxCellSub" :cities="cities" :city-search="citySearch" label="收信站" :auto-geo="autoGeoRx" :select-options="{ basebandId: basebandSelectOptions, stationId: esSelectOptions, satelliteId: satSelectOptions }" :lib-fields="{ basebandId: 'carrier', stationId: 'station', satelliteId: 'sat' }" @edit-lib="editInLibrary" @row-focus="onRowFocus" />
@@ -1766,7 +1764,6 @@ onMounted(async () => {
                 </div>
               </span>
             </template>
-            <p class="isl-tip">星间链路：<b>发射卫星 → 接收卫星</b>（两星均选自资源库「卫星群」）。几何由两星轨道严格求解（双 SGP4 传播 + 地球临边遮挡）取最差星间距离与互视可见度；发射 EIRP 在发射卫星、接收 G/T 在接收卫星。<b>选真实卫星</b>几何才严谨；两颗同参数手动圆轨道相位缺省相同会重合报错。</p>
             <div class="lbx-grid">
               <StationGrid :stations="islLinks" :fields="islGridFields" :groups="GROUPS_ISL" :freeze-keys="false" :extra-values="computedVals" :cell-class="cellClassFn" :cities="cities" :city-search="citySearch" label="星间链路" :show-import="false" :select-options="{ basebandId: basebandSelectOptions, txSatelliteId: satSelectOptions, rxSatelliteId: satSelectOptions }" :lib-fields="{ basebandId: 'carrier', txSatelliteId: 'sat', rxSatelliteId: 'sat' }" @edit-lib="editInLibrary" @row-focus="onRowFocus" />
             </div>
@@ -1793,7 +1790,7 @@ onMounted(async () => {
           </LbSection>
           <LbSection id="detail" title="详细预算" :summary="sel && links.length ? pairLabel(sel) : ''">
             <div v-if="error" class="lb-err">{{ error }}</div>
-            <div v-else-if="!links.length" class="lb-placeholder">在上方表格逐行核对{{ modeLabel }}链路构成<br />点击「计算」（或 Ctrl+Enter）生成再生式{{ modeLabel }}预算；点击表格行切换此处的详细预算</div>
+            <div v-else-if="!links.length" class="lb-placeholder">尚无预算结果。</div>
             <div v-else-if="sel && sel.error" class="lb-err">链路 {{ pairLabel(sel) }} 计算失败：{{ sel.error }}</div>
             <div v-else-if="core" class="lbx-doc">
 
@@ -1938,7 +1935,7 @@ onMounted(async () => {
               </div>
             </div>
             <div v-else-if="geom && !geom.feasible" class="geo-card geo-note">
-              几何提示：{{ geom.reason }}。请检查卫星轨道高度与发信站纬度（赤道轨道看不到高纬站），或调整最低仰角/搜索时窗。
+              几何提示：{{ geom.reason }}。
             </div>
               </div>
             </div>
@@ -1987,7 +1984,7 @@ onMounted(async () => {
     <!-- 命名弹窗 -->
     <!-- 导出报告：封面元信息 + 输出格式 + 是否含图（三窗共用组件）-->
     <LbReportDialog :open="reportDlg.open" :lang="reportLang" orbit-type="REGEN" :regen-mode="linkMode"
-      :sat-name="(satConfigs[0] && satConfigs[0].form.satelliteName) || ''" :link-count="links.length"
+      :sat-name="(satConfigs[0] && satConfigs[0].form.satelliteName) || ''" :band="(satConfigs[0] && satConfigs[0].form.frequencyBand) || ''" :link-count="links.length"
       :viz-available="showViz" store-key="regen" :busy="reportDlg.busy" :progress="reportDlg.progress"
       @close="reportDlg.open = false" @submit="runReport" />
 
@@ -2123,9 +2120,6 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 /* 链路表节内的说明条 */
 .tx-optbar { display: flex; align-items: center; gap: 10px; flex: none; margin-bottom: 6px; flex-wrap: wrap; }
 .tx-optl { font-size: 12px; color: var(--text-muted); font-weight: 600; }
-.tx-opttip { font-size: 11px; color: var(--text-faint); }
-.isl-tip { font-size: 11px; color: var(--text-faint); line-height: 1.6; margin: 0 0 8px; flex: none; }
-.isl-tip b { color: var(--text-muted); font-weight: 600; }
 
 .lb-err { color: var(--danger); font-size: 12px; padding: 8px; }
 
