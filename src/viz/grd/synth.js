@@ -17,7 +17,7 @@
 // 以【相对星下点的 az/el】编码在各自 set 的 XS..XE 子窗口（与真实 HTS 多波束 GRD 同构）。
 // 场写入 icomp=3（Ludwig-3 co/cx）：分量1 = √P（实部）、其余 0 → P1=|c1|²=共极化，
 // 下游 RSS/P1 取值、复场 bicubic 插值（性能表）全部自然成立。
-import { antennaBasis, gridDir, invGridDir, projectLimb, dirToAzEl, azElGround } from './coverage.js'
+import { antennaBasis, gridDir, invGridDir, projectLimb, limbMargin, limbPoint, dirToAzEl, azElGround } from './coverage.js'
 import { parseGrd } from './parse.js'
 
 const D2R = Math.PI / 180
@@ -355,8 +355,11 @@ export function buildGaussGrd({ satName = '', satLon, satLat = 0, altKm, effPct 
   // GRASP ASCII 纯 ASCII 表头（对齐真实参考 .grd 表头样式；非 ASCII 星名已剔除）。SYNTHMETA 仅存
   // 精简元数据（不再逐波束展开——旧版整行可达十几 KB，超长单行对严格读取器不友好，且从不被回读）。
   const sn = asciiSafe(satName)
+  // 最窄波束 3dB 宽记入 SYNTHMETA：公共网格重打包据此定步长（由窗宽反推只对固定 span 成立，见 repackGrdCommonGrid）
+  let th3Min = Infinity
+  for (const b of beams) { const t = Math.min(Number(b.thX), Number(b.thY)); if (t > 0 && t < th3Min) th3Min = t }
   head.push(`SatSim synthesized pattern (Gaussian beam model)${sn ? ' - ' + sn : ''}. Sat. lon=${(+satLon).toFixed(2)}, lat=${(+(satLat || 0)).toFixed(2)}, height=${Math.round(altKm)} km, beams=${n}`)
-  head.push(`SYNTHMETA ${JSON.stringify({ kind: 'gauss', satLon: +satLon.toFixed(4), satLat: +(satLat || 0).toFixed(4), altKm: Math.round(altKm), effPct, nBeams: n })}`)
+  head.push(`SYNTHMETA ${JSON.stringify({ kind: 'gauss', satLon: +satLon.toFixed(4), satLat: +(satLat || 0).toFixed(4), altKm: Math.round(altKm), effPct, ...(Number.isFinite(th3Min) ? { theta3: +th3Min.toFixed(4) } : {}), nBeams: n })}`)
   head.push('++++')
   head.push('1')
   head.push(` ${n} 3 2 6`)
@@ -403,9 +406,10 @@ export function buildGaussGrd({ satName = '', satLon, satLat = 0, altKm, effPct 
 // 修法：把全部 set 重采样到一张覆盖并集包围盒的【公共网格】(所有 set 同 XS..XE)，各波束落在其【真实 az/el】
 //   → SATSOFT 逐 set 定位正确。NSET 不变(=波束数，SATSOFT 仍按 N 个可分波束读取，可做频率复用/波束级分析)。
 // 仅对「多 set 且各 set 网格不一致」的合成 .grd 生效；单 set(赋形)/已同网格(真实导入件) 原样返回。
-// 分辨率 ptsPerBw = 每半功率宽的采样点数（高斯窗宽=3.6θ → θ≈窗宽/3.6）：太粗则 SATSOFT 提出的等值线呈多边形
-//   （θ/4≈六边形 → 圆波束看着不圆），故取 8（-3dB 环≈8 格宽、半径≈4 格 → 圆滑）。总点数封顶防文本/解析失控
-//   （各 set 现为全幅公共网格、波束外为地板，比原「贴身小窗口」体积大，属 SATSOFT 同网格前提下的必然代价）。
+// 分辨率 ptsPerBw = 每半功率宽的采样点数：太粗则 SATSOFT 提出的等值线呈多边形（θ/4≈六边形 → 圆波束看着不圆），
+//   故取 8（-3dB 环≈8 格宽、半径≈4 格 → 圆滑）。θ 取 SYNTHMETA.theta3（生成时写入的真值）；老档无该字段时
+//   由窗宽反推，换算因子随窗口 span 而异（高斯 span=1.8 → 窗全宽 3.6θ；相控阵 span=4.0 → 8θ）。总点数封顶防
+//   文本/解析失控（各 set 现为全幅公共网格、波束外为地板，比原「贴身小窗口」体积大，属 SATSOFT 同网格前提下的必然代价）。
 export function repackGrdCommonGrid(text, { floorDb = -50, cap = 2_000_000, ptsPerBw = 8 } = {}) {
   let g
   try { g = parseGrd(text) } catch { return text }
@@ -414,14 +418,20 @@ export function repackGrdCommonGrid(text, { floorDb = -50, cap = 2_000_000, ptsP
   const s0 = sets[0]
   const sameGrid = sets.every((s) => s.XS === s0.XS && s.YS === s0.YS && s.XE === s0.XE && s.YE === s0.YE && s.NX === s0.NX && s.NY === s0.NY)
   if (sameGrid) return text                                    // 已是公共网格（真实多波束/多频文件）→ 不动
-  // 并集包围盒（支持轴递减：min/max）+ 最窄波束估计（合成高斯窗宽 = 3.6θ）
+  let meta = null
+  const mm = /^SYNTHMETA\s+(\{.*\})\s*$/m.exec(text)
+  if (mm) { try { meta = JSON.parse(mm[1]) } catch { /* 元数据不可解析 → 走窗宽反推 */ } }
+  const winFull = meta && meta.kind === 'pam' ? 8 : 3.6        // 窗全宽 / θ3
+  const th3Meta = meta && Number(meta.theta3) > 0 ? Number(meta.theta3) : 0
+  // 并集包围盒（支持轴递减：min/max）+ 最窄波束估计
   let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity, thMin = Infinity
   for (const s of sets) {
     x0 = Math.min(x0, s.XS, s.XE); x1 = Math.max(x1, s.XS, s.XE)
     y0 = Math.min(y0, s.YS, s.YE); y1 = Math.max(y1, s.YS, s.YE)
-    const th = Math.min(Math.abs(s.XE - s.XS), Math.abs(s.YE - s.YS)) / 3.6
+    const th = Math.min(Math.abs(s.XE - s.XS), Math.abs(s.YE - s.YS)) / winFull
     if (th > 0) thMin = Math.min(thMin, th)
   }
+  if (th3Meta > 0) thMin = th3Meta
   let step = Number.isFinite(thMin) && thMin > 0 ? thMin / ptsPerBw : (Math.max(x1 - x0, y1 - y0) / 100) || 0.1
   let NX = Math.max(2, Math.round((x1 - x0) / step) + 1)
   let NY = Math.max(2, Math.round((y1 - y0) / step) + 1)
@@ -605,7 +615,7 @@ export function buildPamGrd({ satName = '', satLon, satLat = 0, altKm, pam, beam
   const head = []
   const sn = asciiSafe(satName)
   head.push(`SatSim synthesized pattern (Phased array model)${sn ? ' - ' + sn : ''}. Sat. lon=${(+satLon).toFixed(2)}, lat=${(+(satLat || 0)).toFixed(2)}, height=${Math.round(altKm)} km, beams=${n}`)
-  head.push(`SYNTHMETA ${JSON.stringify({ kind: 'pam', satLon: +(+satLon).toFixed(4), satLat: +(+(satLat || 0)).toFixed(4), altKm: Math.round(altKm), Nx: Math.round(pam.Nx), Ny: Math.round(pam.Ny), dxWl: +pam.dxWl, dyWl: +pam.dyWl, R: +pam.R, tri: !!pam.tri, dirDbi: +peakDbi.toFixed(2), nBeams: n })}`)
+  head.push(`SYNTHMETA ${JSON.stringify({ kind: 'pam', satLon: +(+satLon).toFixed(4), satLat: +(+(satLat || 0)).toFixed(4), altKm: Math.round(altKm), Nx: Math.round(pam.Nx), Ny: Math.round(pam.Ny), dxWl: +pam.dxWl, dyWl: +pam.dyWl, R: +pam.R, tri: !!pam.tri, theta3: +Math.min(sol.th3xDeg, sol.th3yDeg).toFixed(4), dirDbi: +peakDbi.toFixed(2), nBeams: n })}`)
   head.push('++++')
   head.push('1')
   head.push(` ${n} 3 2 6`)
@@ -1479,25 +1489,86 @@ export function buildPamShapedGrd({ satName = '', satLon, satLat = 0, altKm, pol
 // 波束 3dB 椭圆草图环：在方向空间取椭圆（半轴 θx/2、θy/2，含旋转），逐点 gridDir(6)→天底 basis 投影 WGS84。
 // 返回 [[ [lon,lat],... ]]：单段、首尾重合的闭环；整只波束都越地平返回 []。
 //
-// ★ 跨地平的波束（边缘覆盖，GEO 上离轴 ≳8.3°）：越地平的点【不剔除】，落到地平上的趋近点
-//   （projectLimb，与覆盖场 projectGrid 同一口径）。原先剔除 → 环被地平切成两段开口弧，
-//   于是「单段且首尾重合」的填充判据一律不成立，配色填充整块消失（轮廓还在，看着就是没上色）。
+// ★ 跨地平的波束（边缘覆盖，GEO 上离轴 ≳8.7°）：越地平的点【不剔除】——剔除会把环切成两段开口弧，
+//   「单段且首尾重合」的填充判据一律不成立，配色填充整块消失（轮廓还在，看着就是没上色）。
+//   越出去的那一段轮廓【贴着地平线（0°仰角线）走】，两条不变式各治一个假象：
+//   ① 位置：不能用 projectLimb 的「最近趋近点」——那个点的地心角 = 90°−离轴角，越出去越往星下点方向
+//      【回缩】（离轴 10° 已缩进地平线内 1.3°≈145 km），画出来是条在地平线内侧摆动的曲线；且缩进量随
+//      各波束越地平的深浅而不同 → 相邻波束的地平边参差、对不齐。改走 limbPoint 解析式（同方位取地平
+//      线上的那一点，仰角严格 0），各波束的地平边于是重合成同一条弧。
+//   ② 采样：地面位置对离轴角的导数在相切处发散（离轴 8.70°→8.80° 之间地面上跨了近 1000 km），
+//      均匀采样在这一带既会把内外跃迁一条直线连过去（地平处一条假直边），相邻两点之间的真实曲线也
+//      弯得厉害（实测单条边弦-弧偏差 86 km，同一只波束在天底附近只有 2 km）。两手：跃迁边二分求出
+//      穿越参数（途中落在内侧的中点留作加密点，几何级数正合 √ 奇点的密度）；其余边按弦-弧偏差
+//      自适应劈分（>5 km 就在中点断开，至多 4 层）——天底附近的边一次都不劈，只在近地平处加密。
 //   钉死的不变式：只要有点命中地球，就返回【恰好一段闭环】——填充多边形永远拿得到。
 export function beamSketchRing({ satLon, satLat = 0, altKm, lon, lat, thX, thY, rot = 0, n = 72 }) {
   const ae = dirToAzEl(satLon, satLat || 0, altKm, lon, lat)
   const basis = nadirBasis(satLon, satLat, altKm)
   const rg = -(rot || 0) * D2R, cr = Math.cos(rg), sr = Math.sin(rg)
-  const ring = []
-  let seen = 0
-  for (let i = 0; i <= n; i++) {
-    const ps = (i % n) * 2 * Math.PI / n
+  const azel = (t) => {                                  // 环参数 t∈[0,n) → 方向空间椭圆上的 (az,el)
+    const ps = t * 2 * Math.PI / n
     const xp = (thX / 2) * Math.cos(ps), yp = (thY / 2) * Math.sin(ps)
-    const az = ae.az + (xp * cr - yp * sr), el = ae.el + (xp * sr + yp * cr)
-    const p = projectLimb(gridDir(6, az, el), basis)
-    if (p.vis >= 0) seen++
-    ring.push([p.lon, p.lat])
+    return [ae.az + (xp * cr - yp * sr), ae.el + (xp * sr + yp * cr)]
   }
-  return seen ? [ring] : []                        // 全越地平（波束在地球背面）→ 不画
+  // 环上参数 t 的落点：命中 → 真实交点；越地平 → 同方位地平线上那一点（仰角严格 0）
+  const at = (t) => {
+    const d = gridDir(6, ...azel(t)), p = projectLimb(d, basis)
+    if (p.vis >= 0) return { t, m: p.vis, ll: [p.lon, p.lat] }
+    const g = limbPoint(d, basis)
+    return { t, m: p.vis, ll: g ? [g.lon, g.lat] : [p.lon, p.lat] }
+  }
+  const mAt = (t) => limbMargin(gridDir(6, ...azel(t)), basis)
+  // 跨地平边细化：tIn 在内、tOut 在外（同一条边的两端）→ 二分夹逼穿越参数，取【外侧端】b（at() 于是
+  // 给出地平线上的点，而非「几乎相切的射线交点」——后者带 √ 放大的残差，仰角能差 0.05°≈6 km）。
+  // 前 12 步落在内侧的中点留作加密点（升序返回）。
+  const refine = (tIn, tOut) => {
+    let a = tIn, b = tOut
+    const mids = []
+    for (let k = 0; k < 16; k++) {
+      const t = (a + b) / 2
+      if (mAt(t) >= 0) { a = t; if (k < 12) mids.push(t) } else b = t
+    }
+    return { mids: mids.sort((p, q) => p - q), tEdge: b }
+  }
+  const P = new Array(n)
+  let seen = 0
+  for (let i = 0; i < n; i++) { P[i] = at(i); if (P[i].m >= 0) seen++ }
+  if (!seen) return []                                 // 全越地平（波束在地球背面）→ 不画
+  // 锚点序列：基准采样点 + 跃迁边的加密点/穿越点（沿环向有序）
+  const anchors = []
+  for (let i = 0; i < n; i++) {
+    anchors.push(P[i])
+    const j = (i + 1) % n
+    if ((P[i].m >= 0) === (P[j].m >= 0)) continue
+    if (P[i].m >= 0) {                                 // 出：内 → 外（加密点在前、穿越点收尾）
+      const { mids, tEdge } = refine(i, i + 1)
+      for (const t of mids) anchors.push(at(t))
+      anchors.push(at(tEdge))
+    } else {                                           // 入：外 → 内（穿越点起头、加密点顺 t 跟上）
+      const { mids, tEdge } = refine(i + 1, i)
+      anchors.push(at(tEdge))
+      for (const t of mids) anchors.push(at(t))
+    }
+  }
+  anchors.push({ ...P[0], t: n, ll: P[0].ll.slice() }) // 收口回起点（参数续到 n，劈分不会绕回）
+  // 弦长 / 弦-弧偏差（地面 km，经度按 ±180° 解缠）
+  const unwrap = (l, ref) => { while (l - ref > 180) l -= 360; while (l - ref < -180) l += 360; return l }
+  const chordKm = (a, b) => Math.hypot((unwrap(b.ll[0], a.ll[0]) - a.ll[0]) * Math.cos((a.ll[1] + b.ll[1]) / 2 * D2R), b.ll[1] - a.ll[1]) * 111.2
+  const sagKm = (a, b, m) => {
+    const lb = unwrap(b.ll[0], a.ll[0]), lm = unwrap(m.ll[0], a.ll[0])
+    const cs = Math.cos((a.ll[1] + b.ll[1]) / 2 * D2R)
+    return Math.hypot(((a.ll[0] + lb) / 2 - lm) * cs, (a.ll[1] + b.ll[1]) / 2 - m.ll[1]) * 111.2
+  }
+  const ring = [anchors[0].ll]
+  const flatten = (a, b, dep) => {                     // a 已入列；本函数只补 (a,b) 之间，b 由调用方入列
+    if (dep >= 4 || chordKm(a, b) < 40) return         // 短边弯不出 5 km（省掉一次投影：小波束密排时这是主开销）
+    const m = at((a.t + b.t) / 2)
+    if (sagKm(a, b, m) <= 5) return
+    flatten(a, m, dep + 1); ring.push(m.ll); flatten(m, b, dep + 1)
+  }
+  for (let k = 1; k < anchors.length; k++) { flatten(anchors[k - 1], anchors[k], 0); ring.push(anchors[k].ll) }
+  return [ring]                                        // 首尾重合（填充多边形的判据）
 }
 
 // Polygon 蜂窝布满：在方向空间（az/el 平面）以间距 spacing（deg）铺六角格，取落在多边形内的

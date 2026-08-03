@@ -2,6 +2,7 @@
 // 接口与 SQLite 版一致，后续打包阶段可换 better-sqlite3（需 electron-rebuild）而不动调用方。
 const fs = require('fs')
 const path = require('path')
+const { writeJsonAtomic, readJsonSafe } = require('./jsonStore')
 
 let baseDir = null
 function dir() {
@@ -14,23 +15,11 @@ function dir() {
   return baseDir
 }
 function file(name) { return path.join(dir(), name) }
-function read(name, def) {
-  try { return JSON.parse(fs.readFileSync(file(name), 'utf8')) }
-  catch {
-    // 主文件损坏（写入中途崩溃/断电）→ 回退上一份完好备份，避免「配置全没了」
-    try { return JSON.parse(fs.readFileSync(file(name) + '.bak', 'utf8')) } catch { return def }
-  }
-}
-// 原子写：先写 .tmp，保留上一份 .bak，再 rename 覆盖。崩溃/断电至多丢「本次未落盘的改动」，
+// 主文件损坏（写入中途崩溃/断电）→ 回退上一份完好备份，避免「配置全没了」
+function read(name, def) { return readJsonSafe(file(name), def).value }
+// 原子写：见 jsonStore。崩溃/断电至多丢「本次未落盘的改动」，
 // 不会让既有 configs.json 被截断成乱码后被 read 当空列表清空。
-function write(name, val) {
-  const f = file(name)
-  const data = JSON.stringify(val, null, 2)
-  const tmp = f + '.tmp'
-  fs.writeFileSync(tmp, data)               // 写满临时文件（失败则抛错，原文件不动）
-  try { if (fs.existsSync(f)) fs.copyFileSync(f, f + '.bak') } catch { /* 备份尽力而为 */ }
-  fs.renameSync(tmp, f)                      // 原子替换（Windows MoveFileEx 覆盖）
-}
+function write(name, val) { writeJsonAtomic(file(name), val, 2) }
 function genId() { return Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8) }
 
 // ---- 历史记录 ----

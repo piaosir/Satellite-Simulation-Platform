@@ -277,21 +277,25 @@ export function autoPlace(plan, carriers, opts = {}) {
     const fixed = list.filter((c) => Number.isFinite(c.fcMHz) && Number.isFinite(c.occBwMHz))
       .map((c) => ({ a: w(c.fcMHz) - c.occBwMHz / 2, b: w(c.fcMHz) + c.occBwMHz / 2 }))
       .sort((u, v) => u.a - v.a)
+    // ★ 空隙按【区间】求，不是拿一个游标点去躲已定频载波：只看游标落没落在禁区里的话，一条比
+    //   眼前那截空隙宽的载波会从空隙起点直接横穿到已定频载波身上（一键动作产出即非法），也不会
+    //   跳到它后面那段空着的去。保护带在每条已定频载波两侧各让一段，与 computeLoading 的
+    //   guardShort 同口径（那边是任意相邻两条之间都要够 guard）。
+    const gaps = []
     let cursor = b.f1
-    const advance = () => {
-      // 跳过与已定频载波冲突的区间
-      for (const f of fixed) {
-        if (cursor < f.b + guard && cursor + 1e-9 > f.a - guard - 1e-9) cursor = f.b + guard
-      }
+    for (const f of fixed) {
+      if (f.a - guard - cursor > 1e-9) gaps.push({ x: cursor, end: f.a - guard })
+      if (f.b + guard > cursor) cursor = f.b + guard
     }
+    if (b.f2 - cursor > 1e-9) gaps.push({ x: cursor, end: b.f2 })
     for (const c of list) {
       if (Number.isFinite(c.fcMHz)) continue
       const bw = Number(c.occBwMHz)
       if (!Number.isFinite(bw) || bw <= 0) continue
-      advance()
-      if (cursor + bw > b.f2 + 1e-6) { c.fcMHz = null; c.note = (c.note ? c.note + '；' : '') + '转发器内已无足够连续带宽'; continue }
-      c.fcMHz = s(Math.round((cursor + bw / 2) * 1000) / 1000)
-      cursor += bw + guard
+      const g = gaps.find((q) => q.x + bw <= q.end + 1e-6)
+      if (!g) { c.fcMHz = null; c.note = (c.note ? c.note + '；' : '') + '转发器内已无足够连续带宽'; continue }
+      c.fcMHz = s(Math.round((g.x + bw / 2) * 1000) / 1000)
+      g.x += bw + guard
     }
   }
   return out

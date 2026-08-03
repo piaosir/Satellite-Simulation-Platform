@@ -73,18 +73,22 @@ module.exports = function createFreqPlan(baseDirIn) {
     return p || null
   }
 
-  // save：新建（无 id）或整份覆盖
-  function save(plan) {
+  // save：新建（无 id）或整份覆盖。
+  // opts.updateOnly = 只认索引里已有的 id，不许借这条路新建——编辑窗的自动存盘走它：
+  // 一份计划在文件区被删掉后，编辑窗里随手一改就会把它连文件带索引整份复活（内容还是删除前的）。
+  // 新建/复制/导入不带这个标志，照旧登记。
+  function save(plan, opts) {
     const p = { ...(plan || {}) }
     if (!p.id) p.id = genId()
     p.id = safeId(p.id)
-    p.updatedAt = new Date().toISOString()
-    writeJson(p.id + '.json', p)
     // 索引顺序即列表顺序：已在库里的原地更新——保存/改名不该让它在左栏跳到最前
     // （打开一份计划就会触发一次存盘，按最近保存排序等于「点谁谁置顶」，列表一直在动）。
     // 只有新建/导入进来的才插到最前。
     const idx = listIndex()
     const at = idx.findIndex((e) => e.id === p.id)
+    if (at < 0 && opts && opts.updateOnly) return { ok: false, error: '计划不存在' }
+    p.updatedAt = new Date().toISOString()
+    writeJson(p.id + '.json', p)
     if (at >= 0) idx[at] = indexEntry(p)
     else idx.unshift(indexEntry(p))
     writeJson('index.json', idx)

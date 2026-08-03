@@ -199,6 +199,20 @@ ok('toMHz: 1000 当 MHz（边界）', near(toMHz(1000), 1000))
   const many = Array.from({ length: 5 }, (_, i) => newCarrier({ name: 'x' + i, channelNo: 'C1', occBwMHz: 10 }))
   const p2 = autoPlace(plan, many, { guardMHz: 1 })
   ok('装不下的留 null', p2.some((c) => c.fcMHz == null))
+
+  // 已定频的载波是一段【区间】不是一个点：新载波不能从它身上横穿过去，眼前这截空隙装不下就该
+  // 跳到它后面那段空着的（频带 14004~14040、已定频 14016~14024、保护带 1 → 空隙 11 与 15）
+  const mixed = [
+    newCarrier({ name: 'fix', channelNo: 'C1', fcMHz: 14020, occBwMHz: 8 }),
+    newCarrier({ name: 'w14', channelNo: 'C1', occBwMHz: 14 }),
+    newCarrier({ name: 'n10', channelNo: 'C1', occBwMHz: 10 })
+  ]
+  const mp = autoPlace(plan, mixed, { guardMHz: 1 })
+  ok('前段空隙装不下 → 跳到已定频载波之后', near(mp[1].fcMHz, 14032, 1e-6), '得到 ' + mp[1].fcMHz)
+  ok('后来的小载波仍首次适配落回前段空隙', near(mp[2].fcMHz, 14009, 1e-6), '得到 ' + mp[2].fcMHz)
+  const mchk = computeLoading(plan, mp, { guardMHz: 1 })
+  ok('排布结果不压在已定频载波上、保护带也够', !mchk.transponders[0].issues.length,
+    JSON.stringify(mchk.transponders[0].issues.map((i) => i.code)))
 }
 
 /* ---------- ⑧ 引用出去的链路字段（单位！）---------- */

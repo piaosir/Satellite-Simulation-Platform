@@ -6,7 +6,7 @@ const createCustomSats = require('../services/customSats')
 const createInterference = require('../services/interference')
 
 // 注册所有 IPC 处理器。core 为返回引擎实例的函数（延迟解析）。
-function register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget, openSunOutage, grd, confirmCloseLinkBudget, openNgso, confirmCloseNgso, openRegen, confirmCloseRegen, openRain, confirmCloseRain, openCi, openPfd, freqPlan, openFreqPlan }) {
+function register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget, openSunOutage, grd, confirmCloseLinkBudget, openNgso, confirmCloseNgso, openRegen, confirmCloseRegen, openRain, confirmCloseRain, openCi, openPfd, freqPlan, openFreqPlan, notifyFreqPlan }) {
   const omm = createOmm(core)
   const customSats = createCustomSats(core)
   // grd 传进去是给 NGSO 时变的「卫星发射方向图取 GRD 实测图」用的（见 resolveSatPattern）
@@ -334,9 +334,18 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   if (freqPlan) {
     ipcMain.handle('freqPlan:list', () => freqPlan.list())
     ipcMain.handle('freqPlan:get', (_e, id) => freqPlan.get(id))
-    ipcMain.handle('freqPlan:save', (_e, plan) => freqPlan.save(plan))
-    ipcMain.handle('freqPlan:remove', (_e, id) => freqPlan.remove(id))
-    ipcMain.handle('freqPlan:rename', (_e, id, name) => freqPlan.rename(id, name))
+    ipcMain.handle('freqPlan:save', (_e, plan, opts) => freqPlan.save(plan, opts))
+    // 删/改名后告诉编辑窗（它可能正开着这一份）：不通知它就会被它的自动存盘整份写回来
+    ipcMain.handle('freqPlan:remove', (_e, id) => {
+      const r = freqPlan.remove(id)
+      if (r && r.ok && notifyFreqPlan) notifyFreqPlan('freqPlan:planRemoved', String(id || ''))
+      return r
+    })
+    ipcMain.handle('freqPlan:rename', (_e, id, name) => {
+      const r = freqPlan.rename(id, name)
+      if (r && r.ok && notifyFreqPlan) notifyFreqPlan('freqPlan:planRenamed', String(id || ''), r.entry ? r.entry.name : String(name || ''))
+      return r
+    })
     ipcMain.handle('freqPlan:reassignSat', (_e, folder, patch) => freqPlan.reassignSat(folder, patch))
 
     // 导出：PNG / PDF / SVG / JSON / XLSX，统一走原生保存框

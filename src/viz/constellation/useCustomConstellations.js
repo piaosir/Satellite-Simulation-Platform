@@ -125,6 +125,11 @@ export function useCustomConstellations(onChange) {
     for (const cfg of list.value) for (const e of build(cfg)) out.push(e)
     return out
   }
+  // 某座星座的合成星（含隐藏），供侧栏行内展开列表；复用 build 的签名缓存，不重新生成。
+  function satsOf(id) {
+    const c = list.value.find((x) => x.id === id)
+    return c ? build(c) : []
+  }
   // 按 NORAD 号在全部星座（含隐藏）里找合成星；供关联卫星按号实时解算位置（关联不因显隐中断）。
   function findByNorad(noradId) {
     const id = String(noradId)
@@ -210,7 +215,7 @@ export function useCustomConstellations(onChange) {
     preview.value = { editId: draft.id || null, cfg: normalize({ ...draft, id: '__preview__', noradBase: PREVIEW_BASE }) }
   }
 
-  return { list, scenarioEpoch, setScenarioEpoch, add, update, remove, toggle, showOnly, setPreview, count, entriesForRender, catalog, findByNorad, load, PLANE_PALETTE }
+  return { list, scenarioEpoch, setScenarioEpoch, add, update, remove, toggle, showOnly, setPreview, count, entriesForRender, catalog, satsOf, findByNorad, load, PLANE_PALETTE }
 }
 
 /* ===================== 只读读取（供「文件管理 · 星历」镜像展示 / 导出，无需实例化 composable） ===================== */

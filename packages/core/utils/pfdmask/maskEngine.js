@@ -82,11 +82,18 @@ function normalize(p) {
   return q;
 }
 
-/** 纬度轴：对称覆盖 ±latMax 且含 0。 */
+/**
+ * 纬度轴：对称覆盖 ±latMax 且含 0。
+ * ★ 落到 2 位小数后相同的相邻点必须并成一个 —— @a 是 by_a 的键，重复即非法文档。
+ *   赤道星座（latMax=0）因此退化为单张切片，而不是三张 a=0。
+ */
 function buildLatAxis(latMaxDeg, stepDeg) {
   const n = Math.max(1, Math.round(latMaxDeg / stepDeg));
   const out = [];
-  for (let i = -n; i <= n; i++) out.push(round2((i * latMaxDeg) / n));
+  for (let i = -n; i <= n; i++) {
+    const v = round2((i * latMaxDeg) / n) || 0;   // −0 归一，否则写成 "-0.00" 与 "0.00" 并存
+    if (!out.length || v !== out[out.length - 1]) out.push(v);
+  }
   return out;
 }
 
@@ -136,8 +143,11 @@ function makeGainLut(patternParams, satHeightKm) {
 }
 
 /**
- * Nco 个波束对同一方向的聚合增益（dBi），按 §C2.3.1 在功率域求和。
+ * Nco 个波束对【波束可正对的方向】的聚合增益（dBi），按 §C2.3.1 在功率域求和。
  * ★ [S1] 排布规则无 ITU 依据，三种口径差别可达 10 dB 量级。
+ *
+ * 这是 aggregateGainTowardDb 在 d ≤ ρ₀ 时的特例（那时最近合法指向就是 d 本身）。
+ * 下行 pfd_mask 只用得到这一档：地面每一格都在视场内，波束总能对准。
  */
 function aggregateGainDb(gain, nBeams, minAngleDeg, layout) {
   const peak = gain.at(0);
@@ -150,6 +160,55 @@ function aggregateGainDb(gain, nBeams, minAngleDeg, layout) {
     const cap = 6 * ring;
     const take = Math.min(cap, nBeams - placed);
     acc += take * Math.pow(10, gain.at(ring * minAngleDeg) / 10);
+    placed += take; ring++;
+  }
+  return 10 * LOG10(acc);
+}
+
+/**
+ * Nco 个波束朝【天底角 d】方向的聚合增益（dBi）。eirp_mask_ss 逐角度调用。
+ *
+ * ★ 必须逐角度算，不能把 d=0 处的聚合抬升当常数平移整条曲线：
+ *   远区各波束的离轴角都落进方向图的【常数平台段】，聚合就是「该平台电平 + 10lg(Nco)」
+ *   （50 波束即 +17 dB），而常数平移只给了六角环在峰值方向那点抬升（< 1 dB）。
+ *   d ∈ [180−ρ₀, 180] 时是严格等式：任一波束的离轴角恒为 180 − 它自己的天底角。
+ *   而 LEO 看 GSO 弧的天底角本来就落在 [ρ₀, 180]，正是这一段 —— 平移法在整个受用角域都不是包络。
+ *
+ * ⚠ 平台段有两个，别混：S.1528 §1.2 的 (4a) G = LF 只管 Y < ψ ≤ 90°，(4b) G = LB 管 90° < ψ ≤ 180°，
+ *   而 LB = max(15 + LN + 0.25·Gm + 5·lg z, 0) 可以【高于】LF。星间掩模 d 接近 180° 时离轴角
+ *   全在 (4b)，定值的是 LB 不是 LF（Gm=45/LN=−15 时差 11.25 dB）。本函数逐环查方向图，
+ *   两段自动区分；需要手算对拍时才要留意取哪一个。
+ *
+ * 几何：波束只能指向地面（天底角 ≤ ρ₀）。离 d 最近的合法指向 p₀ 天底角 = min(d, ρ₀)，
+ * 与 d 相距 a₀ = max(0, d − ρ₀)。第 k 环波束绕 p₀ 张角 β = k·minAngle，其中离 d 最近的
+ * 合法位置受 θ ≤ ρ₀ 约束，取 cos φ* = max(−1, −cot ρ₀ · tan(β/2))；该环 6k 个波束一律按
+ * 这个最近距离计——保守（实际只有一两个能占到最近位），且 a₀ = 0 时精确退化为 ψ = β，
+ * 与 aggregateGainDb 逐位一致，下行掩模的数值不受本函数影响。
+ */
+function aggregateGainTowardDb(gain, nBeams, minAngleDeg, layout, rho0Deg, dDeg) {
+  const N = Math.max(1, Math.round(nBeams));
+  // 固定指向天线转不了：Nco 个同频波束共用同一张方向图、同一个指向，聚合就是 +10lg(Nco)
+  if (!gain.steerable) return gain.at(dDeg) + 10 * LOG10(N);
+
+  const a0 = Math.max(0, dDeg - rho0Deg);
+  const g0 = gain.at(a0);
+  if (layout === 'single' || N <= 1) return g0;
+  if (layout === 'worst-case-uniform') return g0 + 10 * LOG10(N);
+
+  const D2R = Math.PI / 180;
+  const ca0 = Math.cos(a0 * D2R), sa0 = Math.sin(a0 * D2R);
+  const cotRho = 1 / Math.tan(Math.max(1e-9, rho0Deg) * D2R);
+  const betaMaxDeg = 2 * rho0Deg;          // 环半径不可能超过视场锥的直径
+
+  let acc = Math.pow(10, g0 / 10);
+  let placed = 1, ring = 1;
+  while (placed < N && ring < 200) {
+    const beta = Math.min(ring * minAngleDeg, betaMaxDeg) * D2R;
+    const cosPhi = Math.max(-1, -cotRho * Math.tan(beta / 2));
+    const psi = Math.acos(Math.max(-1, Math.min(1,
+      ca0 * Math.cos(beta) + sa0 * Math.sin(beta) * cosPhi))) / D2R;
+    const take = Math.min(6 * ring, N - placed);
+    acc += take * Math.pow(10, gain.at(psi) / 10);
     placed += take; ring++;
   }
   return 10 * LOG10(acc);
@@ -246,18 +305,22 @@ function buildPfdSlices(p, gain, rho0, latAxis, aggOverPeakDb, hooks) {
  * 取值：波束只能指向地面（天底角 ≤ ρ₀）
  *   d ≤ ρ₀ ⇒ 主瓣可对准 ⇒ 满功率
  *   d > ρ₀ ⇒ 最近合法指向是 ρ₀，离轴 (d − ρ₀) ⇒ 按方向图滚降
+ *
+ * ★ 聚合逐角度算（aggregateGainTowardDb），不是拿 d=0 的抬升平移整条曲线。
+ *   maxEirp 已含单波束峰值增益 G_peak，所以这里减 peak 再加当前方向的聚合增益。
  */
-function buildEirpSsSlices(p, gain, rho0, latAxis, aggOverPeakDb) {
+function buildEirpSsSlices(p, gain, rho0, latAxis) {
   const step = p.sepAngleStepDeg;
   const axis = [];
   for (let d = 0; d <= 180 - 1e-9; d += step) axis.push(round2(d));
   axis.push(180);
 
   const peak = gain.peakDb;
-  // ★ 可动点波束：d ≤ ρ₀ 时主瓣可对准 ⇒ 满功率；d > ρ₀ 时按离轴 (d−ρ₀) 滚降。
-  //   固定指向天线（isoflux/omni）转不了，天底角就是离轴角，直接按 d 取值。
-  const raw = axis.map((d) => p.maxEirpDbwPerRefBw + aggOverPeakDb + p.conservativeMarginDb
-    + (gain.steerable ? (gain.at(Math.max(0, d - rho0)) - peak) : (gain.at(d) - peak)));
+  const agg = axis.map((d) =>
+    aggregateGainTowardDb(gain, p.nBeams, p.minAngleDeg, p.beamLayout, rho0, d));
+  // 同方向【单波束】能给出的最大增益——聚合抬升的基准，只用于报表
+  const one = axis.map((d) => gain.at(gain.steerable ? Math.max(0, d - rho0) : d));
+  const raw = agg.map((a) => p.maxEirpDbwPerRefBw - peak + a + p.conservativeMarginDb);
   // §B5.3 单调不增：星上方向图理论上单调，但 §1.4 Taylor 有零点起伏，统一过一次包络
   const mono = esPat.monotoneEnvelope(raw);
 
@@ -270,6 +333,10 @@ function buildEirpSsSlices(p, gain, rho0, latAxis, aggOverPeakDb) {
     minValueDb: Math.min.apply(null, mono.values),
     maxValueDb: Math.max.apply(null, mono.values),
     monotoneLift: { count: mono.liftedCount, maxDb: mono.maxLiftDb },
+    // 多波束聚合相对同方向单波束的抬升，两端各报一个：
+    // 天底（波束彼此错开，抬升微弱）与远区（全部落进同一个常数平台段，抬升吃满 10lg Nco）
+    aggLiftNadirDb: agg[0] - one[0],
+    aggLiftFarDb: agg[agg.length - 1] - one[one.length - 1],
   };
 }
 
@@ -406,7 +473,7 @@ function generateMasks(params, hooks) {
 
   if (dirs.is) {
     units.checkEirpSsRefBw(p.refBwKhz * 1e3, 'throw');   // XSD 无 refbw_khz ⇒ 只能 40 kHz
-    const r = buildEirpSsSlices(p, gain, rho0, latAxis, aggOverPeakDb);
+    const r = buildEirpSsSlices(p, gain, rho0, latAxis);
     doc.eirpMaskSs.push({
       maskId: useId(p.eirpMaskId, 'eirp_mask_ss'),
       lowFreqGhz: p.lowFreqGhz, highFreqGhz: p.highFreqGhz,
@@ -415,6 +482,8 @@ function generateMasks(params, hooks) {
     meta.eirpSs = {
       axisCount: r.axisCount, minValueDb: r.minValueDb, maxValueDb: r.maxValueDb,
       sepAngleStepDeg: p.sepAngleStepDeg, monotoneLift: r.monotoneLift,
+      nBeams: p.nBeams, peakGainDb: gain.peakDb,
+      aggLiftNadirDb: r.aggLiftNadirDb, aggLiftFarDb: r.aggLiftFarDb,
     };
   }
 
@@ -501,6 +570,13 @@ function buildDiscretion(p, dirs) {
         + '而出口 XSD v4.0.0.0 自述对应 -2，BR 现役验证软件亦为 -2。',
       impact: '同一张数字表在两版下含义不同。若对拍发现不符，改 buildEirpSsSlices 的角定义一处即可。',
     });
+    d.push({
+      field: 'eirp_ss 多波束聚合', value: `逐角度求和（${p.beamLayout}）`, evidence: 'S',
+      why: '与 [S1] 同源：§C2.3.1 只规定功率域求和，不规范排布，逐角度的最坏排布须自定。',
+      impact: '每环按「离目标方向最近的合法位置」整环计，保守；远区各波束同落方向图的常数平台段'
+        + '（§1.2 在 ψ>90° 是背瓣 LB，非远旁瓣 LF），聚合趋近该电平 +10lg(Nco)。'
+        + '两端抬升见 meta.eirpSs.aggLift{Nadir,Far}Db。',
+    });
   }
   if (dirs.up) {
     d.push({
@@ -539,7 +615,7 @@ function buildDiscretion(p, dirs) {
 
 module.exports = {
   SENTINEL_NO_EMISSION_DB, SENTINEL_UNRESOLVED_DB,
-  normalize, buildLatAxis, makeGainLut, aggregateGainDb,
+  normalize, buildLatAxis, makeGainLut, aggregateGainDb, aggregateGainTowardDb,
   buildPfdSlices, buildEirpSsSlices, buildEirpEsSlices,
   generateMasks, generatePfdMask, slantRangeAtEdge, buildPreview,
 };

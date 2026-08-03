@@ -392,9 +392,68 @@ const mk = (over) => eng.generatePfdMask(Object.assign({}, BASE, over || {}));
   const cells = doc.eirpMaskSs[0].slices[0].cells;
   approx('E7 [他证] d=0（天底）⇒ 波束可直接对准 ⇒ 满功率',
     cells[0].v, -5 + meta.aggregateGainOverPeakDb + 1, 1e-3);
+  // ★ d=180（反天底）：任一波束的离轴角恒为 180 − 它自己的天底角 ∈ [180−ρ₀, 180]，
+  //   §1.2 在 90° 之外是【背瓣平台 LB】（(4b) 段），不是远旁瓣平台 LF（(4a) 段只到 90°）。
+  //   两段都是常数 ⇒ 聚合 = 该段电平 + 10lg(Nco)，严格等式。
+  //   曾把 d=0 处的聚合抬升当常数平移整条曲线，此处低估 10lg(50) − 0.2 ≈ 16.8 dB，掩模在
+  //   LEO 看 GSO 弧的整个受用角域（d ∈ [ρ₀,180]）都不再是包络。
+  const D12 = s1528.derivedS1528_12(BASE.pattern);
   const gAt180 = s1528.gainDbS1528_12(180 - meta.rho0Deg, BASE.pattern);
-  approx('E8 [他证] d=180 ⇒ 离轴 (180−ρ₀) 处按方向图滚降',
-    cells[cells.length - 1].v, -5 + meta.aggregateGainOverPeakDb + (gAt180 - 32) + 1, 1e-3);
+  approx('E8 [他证] d=180 ⇒ 全部波束落到背瓣平台 ⇒ LB + 10lg(Nco)',
+    cells[cells.length - 1].v, -5 - 32 + D12.LB + 10 * Math.log10(50) + 1, 1e-3);
+  ok('E8a [他证] d=180 时各波束离轴角全在 (4b) 段内（> 90°，取 LB）',
+    180 - meta.rho0Deg > 90 && Math.abs(gAt180 - D12.LB) < 1e-12,
+    `离轴 ∈ [${(180 - meta.rho0Deg).toFixed(1)}°,180°]，LB=${D12.LB} LF=${D12.LF}`);
+  ok('E8a2 [自省] 本例 LB 与 LF 恰好都是 0 dBi（LB = max(15+LN+0.25Gm, 0) = max(−2,0)）'
+    + '——两者不可区分，故另有 E8f 用 LB ≠ LF 的方向图把它们分开',
+    Math.abs(D12.LB - D12.LF) < 1e-12, `LB=${D12.LB} LF=${D12.LF}`);
+
+  // 平台段（d ≤ ρ₀）逐位不变：那里最近合法指向就是 d 本身，新旧模型必须同值
+  {
+    const g = eng.makeGainLut(BASE.pattern, 900);
+    const old = eng.aggregateGainDb(g, 50, 5, 'hex-ring');
+    for (const d of [0, 10, 30, meta.rho0Deg]) {
+      approx(`E8b [自洽] d=${d.toFixed(2)}° ≤ ρ₀ 的聚合与 aggregateGainDb 逐位一致（下行掩模不受影响）`,
+        eng.aggregateGainTowardDb(g, 50, 5, 'hex-ring', meta.rho0Deg, d), old, 1e-12);
+    }
+    approx('E8c [他证] d=180 的聚合 = LB + 10lg(Nco)',
+      eng.aggregateGainTowardDb(g, 50, 5, 'hex-ring', meta.rho0Deg, 180), D12.LB + 10 * Math.log10(50), 1e-9);
+    approx('E8d [他证] worst-case-uniform 在任意 d 都是「最近合法离轴增益 + 10lg(Nco)」',
+      eng.aggregateGainTowardDb(g, 50, 5, 'worst-case-uniform', meta.rho0Deg, 90),
+      s1528.gainDbS1528_12(90 - meta.rho0Deg, BASE.pattern) + 10 * Math.log10(50), 1e-9);
+    // 「聚合抬升」= 聚合增益 − 该方向单波束能给出的最大增益。天底处波束彼此错开 ⇒ 抬升微弱；
+    // 远区所有波束同落一个常数平台 ⇒ 抬升吃满 10lg(Nco)。两者差 ~16.8 dB，正是曾被平移法抹掉的量。
+    const liftNadir = eng.aggregateGainTowardDb(g, 50, 5, 'hex-ring', meta.rho0Deg, 0) - 32;
+    const liftFar = eng.aggregateGainTowardDb(g, 50, 5, 'hex-ring', meta.rho0Deg, 180) - gAt180;
+    ok('E8e [他证] 远区聚合抬升吃满 10lg(Nco)，天底处不足 1 dB',
+      Math.abs(liftFar - 10 * Math.log10(50)) < 1e-9 && liftNadir < 1,
+      `天底 +${liftNadir.toFixed(2)} dB → 远区 +${liftFar.toFixed(2)} dB`);
+  }
+
+  // ★ 非退化例：LB ≠ LF，把「背瓣平台」与「远旁瓣平台」真正分开。
+  //   LB = max(15 + LN + 0.25·Gm + 5·lg z, 0)；Gm=45、LN=−15 ⇒ LB = 11.25 dBi 而 LF = 0 dBi。
+  //   §1.2 的 LB 可以【高于】LF（原文 "or 0 dBi, whichever is higher"），此时星间掩模的远端
+  //   由背瓣决定，误用 LF 会低 11.25 dB。BASE 那组恰好 LB = LF = 0，单靠它查不出这个错。
+  {
+    const pat = { section: '1.2', peakGainDbi: 45, psibDeg: 0.5, Ln: -15 };
+    const Dx = s1528.derivedS1528_12(pat);
+    approx('E8f.1 [他证] LB = max(15 + LN + 0.25·Gm + 5·lg z, 0)',
+      Dx.LB, Math.max(15 - 15 + 0.25 * 45, 0), 1e-12);
+    ok('E8f.2 [他证] 该方向图的 LB 高于 LF（背瓣平台反而更高，是原文本意）',
+      Dx.LB - Dx.LF > 11, `LB=${Dx.LB} LF=${Dx.LF}`);
+    const { doc: d2, meta: m2 } = eng.generateMasks(Object.assign({}, BASE, {
+      pattern: pat, sepAngleStepDeg: 2, directions: { down: false, is: true, up: false },
+    }));
+    const c2 = d2.eirpMaskSs[0].slices[0].cells;
+    approx('E8f.3 [他证] d=180 取 LB 而不是 LF（差 11.25 dB，退化例查不出）',
+      c2[c2.length - 1].v, -5 - 45 + Dx.LB + 10 * Math.log10(50) + 1, 1e-3);
+    // 90° 跨界处方向图向上跳 ⇒ 原始曲线非单调 ⇒ §B5.3 包络把中段整体抬到背瓣电平
+    approx('E8f.4 [他证] §B5.3 单调化把中段抬升量 = LB − LF',
+      m2.eirpSs.monotoneLift.maxDb, Dx.LB - Dx.LF, 1e-9);
+    ok('E8f.5 [自洽] 被抬升的点数可观（背瓣平台反噬整个中段）',
+      m2.eirpSs.monotoneLift.count > 20,
+      `${m2.eirpSs.monotoneLift.count} / ${m2.eirpSs.axisCount} 点抬升 ${m2.eirpSs.monotoneLift.maxDb.toFixed(2)} dB`);
+  }
 
   // XML 往返
   const xml = io.buildMaskXml(doc);
@@ -559,15 +618,37 @@ throws('W13 [他证] 不发射哨兵低于 XSD 下界 −999 → 抛', () => mkW
     meta.eirpEs.patternKind === 'S.580-6' && meta.eirpEs.peakGainDbi > 30);
 }
 
+// 赤道星座（i=0）：latMax=0，纬度轴不得铺成三张同 a=0 的切片（@a 是 by_a 的键）
+{
+  const { doc, meta } = mkW({ incDeg: 0 });
+  ok('W15b [自洽] i=0 时纬度轴退化为单张切片',
+    meta.latCount === 1 && doc.pfdMasks[0].slices.length === 1 && doc.pfdMasks[0].slices[0].a === 0,
+    `latCount=${meta.latCount}, a=[${doc.pfdMasks[0].slices.map((s) => s.a)}]`);
+  const v = io.validateMaskDoc(doc);
+  ok('W15c [他证] i=0 的三份 mask 仍通过 XSD（曾因 by_a/@a 重复被整次拒绝）', v.ok,
+    `${v.errors.length} 错：${v.errors.slice(0, 2).map((e) => e.path).join(' ')}`);
+  // ★ eirp_mask_* 走两层校验，早先没查 @a 重复 ⇒ 同一批重复切片在 pfd 侧被拒、在 eirp 侧静默落盘
+  const dup = Object.assign({}, doc.eirpMaskEs[0], { slices: [doc.eirpMaskEs[0].slices[0], doc.eirpMaskEs[0].slices[0]] });
+  ok('W15d [他证] eirp_mask_es 的 by_a/@a 同样查重',
+    io.validateMaskDoc({ ntcId: 1, satName: 'T', pfdMasks: [], eirpMaskEs: [dup], eirpMaskSs: [] })
+      .errors.some((e) => /by_a\/@a 重复/.test(e.message)));
+}
+
 // 相控阵降维
 {
-  const { meta } = mkW({
-    directions: { down: false, is: false, up: true },
-    terminal: Object.assign({}, W.terminal, { kind: 'M.2101', arrayElements: 64, scanAnglesDeg: [0, 20, 40] }),
-  });
+  const term = (scan) => Object.assign({}, W.terminal, { kind: 'M.2101', arrayElements: 64, scanAnglesDeg: scan });
+  const dirs = { down: false, is: false, up: true };
+  const one = mkW({ directions: dirs, terminal: term([0]) });
+  const fam = mkW({ directions: dirs, terminal: term([0, 15, 30, 45]) });
   ok('W16 [自洽] 扫描角族被降维到二维 T 型并报告损失',
-    meta.eirpEs.scanCount === 3 && meta.eirpEs.dimReductionLossDb >= 0,
-    `${meta.eirpEs.scanCount} 个扫描角 · 降维损失 ${meta.eirpEs.dimReductionLossDb.toFixed(3)} dB`);
+    fam.meta.eirpEs.scanCount === 4 && fam.meta.eirpEs.dimReductionLossDb > 0,
+    `${fam.meta.eirpEs.scanCount} 个扫描角 · 降维损失 ${fam.meta.eirpEs.dimReductionLossDb.toFixed(3)} dB`);
+  approx('W16b [自洽] 单一扫描角时降维不吃 dB', one.meta.eirpEs.dimReductionLossDb, 0, 1e-12);
+  // 逐点取最大 ⇒ 族包络处处 ≥ 单角；主瓣按 1/cosθs 展宽 ⇒ 肩部必有严格更高的点
+  const vOne = one.doc.eirpMaskEs[0].slices[0].cells.map((c) => c.v);
+  const vFam = fam.doc.eirpMaskEs[0].slices[0].cells.map((c) => c.v);
+  ok('W16c [自洽] 扫描族包络处处 ≥ 单角，且至少一点严格更高（降维不是空转）',
+    vFam.every((v, i) => v >= vOne[i] - 1e-9) && vFam.some((v, i) => v > vOne[i] + 1e-9));
 }
 
 // esPatterns
@@ -586,6 +667,31 @@ throws('W13 [他证] 不发射哨兵低于 XSD 下界 −999 → 抛', () => mkW
   ok('W21 [他证] 单调包络处处 ≥ 原值（安全）', m.values.every((v, i) => v >= raw[i] - 1e-12));
   ok('W22 [他证] 且等于逐点后缀最大（最紧）',
     m.values.every((v, i) => Math.abs(v - Math.max.apply(null, raw.slice(i))) < 1e-12));
+
+  // ★ M.2101 旁瓣底板：不给 floorDbi 时取 −10 dBi。若底板算成 NaN，主瓣外全 NaN，
+  //   经逐点取最大（NaN 比较恒 false）塌成 −Infinity，再被 clamp 成 −999「永不发射」，
+  //   而 XSD 校验照样放行 —— 一份全哑的 mask 能一路落盘。
+  const m2 = { kind: 'M.2101', diameterM: 0.6, wavelengthM: 0.0104, arrayElements: 256 };
+  const pa = esPat.makeEsPattern(m2);
+  const gs = [0, 1, 2, 4, 10, 30, 90, 180].map((x) => pa.gainDb(x));
+  ok('W22b [自洽] M.2101 主瓣外全程有限', gs.every(Number.isFinite), `G(4°)=${gs[3]}`);
+  ok('W22c [自洽] M.2101 随角度单调滚降', gs.every((v, i) => i === 0 || v <= gs[i - 1] + 1e-9));
+  approx('W22d [自洽] 缺省底板 = −10 dBi', pa.gainDb(180), -10, 1e-12);
+  approx('W22e [自洽] 显式 floorDbi 覆盖缺省底板',
+    esPat.makeEsPattern(Object.assign({}, m2, { floorDbi: 0 })).gainDb(180), 0, 1e-12);
+
+  // 扫描角（M.2101 §5「单元方向图 + 阵因子」）：峰值损失出自单元图、展宽出自阵因子
+  approx('W22f [他证] 扫描 45° 的峰值损失 = −min(12(45/65)², 30)',
+    esPat.makeEsPattern(Object.assign({}, m2, { scanAngleDeg: 45 })).gainDb(0) - pa.gainDb(0),
+    -12 * Math.pow(45 / 65, 2), 1e-12);
+  const rel = (scan, x) => {
+    const q = esPat.makeEsPattern(Object.assign({}, m2, { scanAngleDeg: scan }));
+    return q.gainDb(x) - q.gainDb(0);
+  };
+  approx('W22g [他证] 主瓣按 1/cosθs 展宽：φ 与 φ/cosθs 处相对电平相同',
+    rel(45, 2 / Math.cos(45 * Math.PI / 180)), rel(0, 2), 1e-9);
+  throws('W22h [守卫] 扫描角 ≥ 90°（cosθs→0，主瓣宽发散）→ 抛',
+    () => esPat.makeEsPattern(Object.assign({}, m2, { scanAngleDeg: 90 })).gainDb(1), /扫描角/);
 }
 
 // Art.22 限值表：内置 7 张表 214 点（2020/2024 两版官方 RR PDF 逐点比对一致）

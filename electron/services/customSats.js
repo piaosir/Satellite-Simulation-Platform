@@ -15,6 +15,7 @@
 
 const fs = require('fs')
 const path = require('path')
+const { writeJsonAtomic, readJsonSafe } = require('./jsonStore')
 
 const MU = 398600.4418
 const RE = 6378.137
@@ -230,11 +231,16 @@ function validateRecord(getCore, rec) {
 // —— 分组存储（custom.json = { groups: [{ id, name, importedAt, format, sats:[OMM记录] }] }）——
 // 旧版单文件路径：早期把导入统一存成一份扁平 custom.csv，后改为分组 custom.json。
 const legacyCsvFile = () => path.join(cacheDir(), 'custom.csv')
+const CORRUPT = '星历库文件损坏'
 // 读库：优先 custom.json；无 json 但有旧版 custom.csv 时自动迁移为一个「历史导入」组，
 // 使文件管理 / 地图分组 / 搜索池一并识别历史导入（文件管理是自定义卫星的唯一权威库）。
 function readStore() {
-  try { const j = JSON.parse(fs.readFileSync(storeFile(), 'utf8')); if (j && Array.isArray(j.groups)) return j } catch { /* 无/坏 custom.json：尝试迁移旧版 custom.csv */ }
-  try {
+  const r = readJsonSafe(storeFile(), null)
+  if (r.value && Array.isArray(r.value.groups)) return r.value
+  // custom.json 与它的 .bak 都解析不出来：不当空库使——空库上的下一次写会把坏文件整份覆盖，
+  // 导入过的星历再也找不回来。标出来让写侧拒写、上层显示状态。
+  if (r.corrupt) return { groups: [], corrupt: true }
+  try {   /* 无 custom.json：尝试迁移旧版 custom.csv */
     const legacy = legacyCsvFile()
     const recs = parseOMMCsv(fs.readFileSync(legacy, 'utf8'))
     if (recs.length) {
@@ -249,8 +255,12 @@ function readStore() {
 }
 function writeStore(store) {
   const f = storeFile()
-  if (!store || !store.groups || !store.groups.length) { try { fs.unlinkSync(f) } catch { /* 已空 */ } ; return }
-  fs.writeFileSync(f, JSON.stringify(store))
+  // 库清空 = 主文件与备份一起去掉：只删主文件的话，下次读会从 .bak 把删掉的组捞回来
+  if (!store || !store.groups || !store.groups.length) {
+    for (const n of [f, f + '.bak']) { try { fs.unlinkSync(n) } catch { /* 已空 */ } }
+    return
+  }
+  writeJsonAtomic(f, store)
 }
 const mtimeOf = () => { try { return fs.statSync(storeFile()).mtime.toISOString() } catch { return null } }
 let _seq = 0
@@ -284,7 +294,9 @@ module.exports = function createCustomSats(getCore) {
       id: g.id, name: g.name, importedAt: g.importedAt, format: g.format || '',
       count: (g.sats || []).length, sats: (g.sats || []).map(satView)
     }))
-    return { groups, count: groups.reduce((s, g) => s + g.count, 0), mtime: mtimeOf() }
+    const out = { groups, count: groups.reduce((s, g) => s + g.count, 0), mtime: mtimeOf() }
+    if (store.corrupt) out.error = CORRUPT
+    return out
   }
   // 全部组扁平化为一份 OMM CSV（供 3D 地图「自定义卫星」分组 / 搜索池；按 NORAD 去重，后组覆盖）。
   function raw() {
@@ -308,6 +320,7 @@ module.exports = function createCustomSats(getCore) {
     const sats = Array.from(map.values())
     if (!sats.length) return { ok: false, error: '无有效卫星（' + (errs[0] || '全部校验失败') + '）', invalid }
     const store = readStore()
+    if (store.corrupt) return { ok: false, error: CORRUPT }
     const gname = (name && String(name).trim()) || '导入组'
     const existing = store.groups.find((g) => g.name === gname)
     const group = { id: existing ? existing.id : genId(), name: gname, importedAt: new Date().toISOString(), format, sats }
@@ -317,6 +330,7 @@ module.exports = function createCustomSats(getCore) {
   }
   function removeGroup(id) {
     const store = readStore()
+    if (store.corrupt) return { ok: false, error: CORRUPT }
     store.groups = store.groups.filter((g) => g.id !== id)
     writeStore(store)
     return { ok: true, groups: store.groups.length }
@@ -325,6 +339,7 @@ module.exports = function createCustomSats(getCore) {
     const nm = (name && String(name).trim())
     if (!nm) return { ok: false, error: '名称不能为空' }
     const store = readStore()
+    if (store.corrupt) return { ok: false, error: CORRUPT }
     const g = store.groups.find((x) => x.id === id)
     if (!g) return { ok: false, error: '组不存在' }
     g.name = nm

@@ -20,6 +20,7 @@
 //     refsOf(state) → { es:[], carrier:[], sat:[] }   该场景引用了哪些库条目（含空串=库里第一份）
 //     remapState(state, idMap)             // 就地把行引用改写成本机 id
 //     saveConfig(payload) → Promise<item>  // 直通 api.store.saveConfig
+//     flushLib() → Promise                 // 冲刷全局库的防抖写盘（并库后、写配置前必须等它）
 //     onImported({ last, plan })           // 落盘后：刷新列表 / 载入末条 / 展开新建的文件夹
 //   }
 import { ref, reactive, computed, watch } from 'vue'
@@ -250,7 +251,10 @@ async function doImport() {
   if (!api) { imp.err = '导入需在桌面客户端中运行'; return }
   imp.busy = true
   try {
-    const idMap = adoptLib(plan, props.ctx)                      // ① 并库（就地 push 进各库数组，自动保存由各 App 的 watch 接手）
+    const idMap = adoptLib(plan, props.ctx)                      // ① 并库（就地 push 进各库数组）
+    // 库先落盘，再写配置：新配置的行引用指向的正是这批条目，反了顺序则中途关窗后引用解析不到，
+    // 会静默回退到本机库里第一份配置——算出一组看着合理其实是别人参数的数（见 lbShare.js 文件头）
+    if (props.ctx.flushLib) await props.ctx.flushLib()
     const fid = new Map()                                        // ② 文件夹 find-or-create（plan.folders 已是根→叶序）
     for (const f of plan.folders) {
       if (f.id) { fid.set(f.key, f.id); continue }

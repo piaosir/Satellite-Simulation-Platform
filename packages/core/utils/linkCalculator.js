@@ -114,19 +114,9 @@ const CONSTANTS = {
   BOLTZMANN: -228.6 // 玻尔兹曼常数 dBW/K/Hz
 };
 
-// 调制因子
-const MODULATION_FACTORS = {
-  'BPSK': 1,
-  'QPSK': 2,
-  '8PSK': 3,
-  '8QAM': 3,
-  '16QAM': 4,
-  '16APSK': 4,
-  '32APSK': 5,
-  '64APSK': 6,
-  '128APSK': 7,
-  '256APSK': 8
-};
+// 调制因子 —— 取 constants.js 那份单一出处：面板下拉（MODULATION_OPTIONS）与 MODCOD 预设表同源，
+// 引擎再抄一份就会漂（曾漏 '64QAM' 致其静默回退 QPSK，符号率/带宽错 3 倍）
+const { MODULATION_FACTORS } = require('./constants.js');
 
 // ITU-R P.838 降雨衰减系数表 (完全按照 index.html)
 const P838_TABLE = {
@@ -289,6 +279,19 @@ function calculateITU465Isolation(diameter, wavelength, efficiency, phi) {
 }
 
 /**
+ * 极化显示值 → 计算值。圆极化在界面上有两套写法：链路预算三窗的下拉存 'L'/'R'，
+ * 早期配置与雨衰页存 'LHCP'/'RHCP'，两套都必须归一到 'C'，否则会掉进线极化分支
+ * 拿到 τ=0°（等同水平极化），P.618-14 §4.1 的雨致 XPD 被抬高十几 dB。
+ * 显示值本身不在这里改写（报表照原样显示 L/R/LHCP/RHCP）。
+ * @param {string} display 极化显示值
+ * @returns {string} 圆极化返回 'C'，其余（'V'/'H'）原样返回
+ */
+function toCalcPolarization(display) {
+  const s = String(display || '').toUpperCase();
+  return (s === 'L' || s === 'R' || s === 'LHCP' || s === 'RHCP') ? 'C' : display;
+}
+
+/**
  * 卫星链路预算计算主函数
  */
 function calculateLinkBudget(satParams, linkParams) {
@@ -337,9 +340,9 @@ function performCalculations(satParams, inputs) {
   const frequencyBand = satParams.frequencyBand;
   const transponderStatus = satParams.transponderStatus || 'single';
   // 修复：优先从 inputs 读取极化参数，如果没有则从 satParams 读取
-  // 保存原始极化显示值（LHCP/RHCP/V/H），并转换为计算用的值（C/V/H）
+  // 保存原始极化显示值（L/R/LHCP/RHCP/V/H），并转换为计算用的值（C/V/H）
   const uplinkPolarizationDisplay = inputs.uplinkPolarization || satParams.uplinkPolarization || 'V';
-  const uplinkPolarization = (uplinkPolarizationDisplay === 'LHCP' || uplinkPolarizationDisplay === 'RHCP') ? 'C' : uplinkPolarizationDisplay;
+  const uplinkPolarization = toCalcPolarization(uplinkPolarizationDisplay);
   const transponderBandwidth = pickNum(satParams.transponderBandwidth, 36); // MHz
   const _orbitPosRaw = satParams.orbitPosition !== undefined && satParams.orbitPosition !== '' && satParams.orbitPosition !== null
     ? satParams.orbitPosition : (satParams.position !== undefined && satParams.position !== '' && satParams.position !== null ? satParams.position : null);
@@ -475,12 +478,11 @@ function performCalculations(satParams, inputs) {
   const SFDs = SFDref - G_Ts;
   
   // 下行极化方式 - 修复：优先从 inputs 读取，如果没有则根据上行极化自动推导
-  // 保存原始极化显示值（LHCP/RHCP/V/H），并转换为计算用的值（C/V/H）
-  const downlinkPolarizationDisplay = inputs.downlinkPolarization || 
-                               (uplinkPolarizationDisplay === 'LHCP' ? 'LHCP' :
-                               (uplinkPolarizationDisplay === 'RHCP' ? 'RHCP' :
-                               (uplinkPolarization === 'V' ? 'H' : 'V')));
-  const downlinkPolarization = (downlinkPolarizationDisplay === 'LHCP' || downlinkPolarizationDisplay === 'RHCP') ? 'C' : downlinkPolarizationDisplay;
+  // 保存原始极化显示值（L/R/LHCP/RHCP/V/H），并转换为计算用的值（C/V/H）
+  const downlinkPolarizationDisplay = inputs.downlinkPolarization ||
+                               (uplinkPolarization === 'C' ? uplinkPolarizationDisplay :
+                               (uplinkPolarization === 'V' ? 'H' : 'V'));
+  const downlinkPolarization = toCalcPolarization(downlinkPolarizationDisplay);
   
   // 系统可用度
   const rxdownlinkAvailability = rxDownlinkAvailability * 100;
@@ -1228,7 +1230,7 @@ function performCalculations(satParams, inputs) {
   results.elevationValidation = txElevationValidation;
   results.azimuthResult = azimuth.toFixed(2 + FX);
   // 圆极化时极化角显示为'-'
-  results.uplinkPolarizationAngleResult = (uplinkPolarizationDisplay === 'LHCP' || uplinkPolarizationDisplay === 'RHCP') ? '-' : uplinkPolarizationAngle.toFixed(2 + FX);
+  results.uplinkPolarizationAngleResult = uplinkPolarization === 'C' ? '-' : uplinkPolarizationAngle.toFixed(2 + FX);
   results.earthAntennaEfficiencyResult = (antennaEfficiency * 100).toFixed(0 + FX); // 回显实际参与计算的效率(对齐下行 rxAntennaEfficiencyResult)
   results.wavelengthResult = wavelength.toFixed(4 + FX);
   results.beamWidthResult = beamWidth.toFixed(2 + FX);
@@ -1270,7 +1272,7 @@ function performCalculations(satParams, inputs) {
   results.rxElevationValidation = rxElevationValidation;
   results.rxAzimuthResult = rxAzimuth.toFixed(2 + FX);
   // 圆极化时极化角显示为'-'
-  results.downlinkPolarizationAngleResult = (downlinkPolarizationDisplay === 'LHCP' || downlinkPolarizationDisplay === 'RHCP') ? '-' : downlinkPolarizationAngle.toFixed(2 + FX);
+  results.downlinkPolarizationAngleResult = downlinkPolarization === 'C' ? '-' : downlinkPolarizationAngle.toFixed(2 + FX);
   results.rxAntennaEfficiencyResult = (rxAntennaEfficiency * 100).toFixed(0 + FX);
   results.rxWavelengthResult = rxWavelength.toFixed(4 + FX); // 下行波长
   results.rxAntennaGainResult = rxAntennaGain.toFixed(2 + FX);

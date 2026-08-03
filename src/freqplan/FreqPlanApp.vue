@@ -280,13 +280,33 @@ async function doSave() {
   clearTimeout(saveTimer)
   try {
     // 载波跟着计划走（频率分配表是这份计划的一部分，分开存会出现「计划改了载波还挂在旧转发器上」）
-    const r = await api.freqPlan.save({ ...JSON.parse(JSON.stringify(plan.value)), id: currentId.value, carriers: JSON.parse(JSON.stringify(carriers.value)) })
+    // updateOnly：这份要是已经在文件区被删了，别把它写回来（广播还没到时也拦得住）
+    const r = await api.freqPlan.save({ ...JSON.parse(JSON.stringify(plan.value)), id: currentId.value, carriers: JSON.parse(JSON.stringify(carriers.value)) }, { updateOnly: true })
     if (r?.ok) { dirty = false; await loadIndex() }
+    else { dirty = false; flash('保存失败：' + (r?.error || '未知错误')); await loadIndex() }
   } catch (e) { flash('保存失败：' + e.message) }
 }
 // 深监听：图/表/检查器三处都直接改 plan，逐处调 scheduleSave 迟早漏
 watch(plan, () => { if (plan.value && !loading) scheduleSave() }, { deep: true })
 watch(carriers, () => { if (plan.value && !loading) scheduleSave() }, { deep: true })
+
+// 文件区（主窗口）删/改名的广播：那边直接改库，编辑窗手里这份可能就是它。
+function planRemovedRemote(id) {
+  if (currentId.value === id) {
+    clearTimeout(saveTimer); dirty = false      // 待存的那一笔要是落下去，删掉的计划就整份复活了
+    plan.value = null; currentId.value = ''; carriers.value = []; selectedId.value = ''
+    clearChecked()
+  }
+  loadIndex()
+}
+function planRenamedRemote(id, name) {
+  if (currentId.value === id && plan.value && name) {
+    loading = true                              // 跟进别人的改名不是编辑，别反手把整份存回去（旧名字就赢了）
+    plan.value.name = name
+    nextTick(() => { loading = false })
+  }
+  loadIndex()
+}
 
 // ---- 新建 / 删除 / 改名 ----
 // 新建一律「给某颗星建」——入口就在左栏那颗星的行上，宿主由点击位置说了算。
@@ -1330,6 +1350,8 @@ onMounted(async () => {
   })
   // 从文件区双击某份计划进来
   api?.freqPlan?.onOpenPlan?.((id) => { if (id) openPlan(id) })
+  api?.freqPlan?.onPlanRemoved?.((id) => { if (id) planRemovedRemote(id) })
+  api?.freqPlan?.onPlanRenamed?.((id, name) => { if (id) planRenamedRemote(id, name) })
   // 窗口失焦/关闭前把待存的落盘（debounce 尾巴不能丢）
   window.addEventListener('beforeunload', () => { if (dirty) doSave() })
   // 「发到小程序」的凭证与本机ID（缺凭证时菜单项仍在，点开即说明原因，不静默失效）

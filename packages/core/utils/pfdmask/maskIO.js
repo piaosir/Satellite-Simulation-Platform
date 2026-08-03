@@ -275,9 +275,14 @@ function validateSlices2(issues, P, slices) {
     return 0;
   }
   let n = 0;
+  const aSeen = new Set();
   slices.forEach((s, ai) => {
     const PA = `${P}/by_a[${ai}]`;
     chkNum(issues, `${PA}/@a`, s.a, XSD.angleA, 'a（纬度）');
+    const aKey = fixedSafe(s.a, 2);
+    if (aSeen.has(aKey)) mkIssue(issues, 'error', `${PA}/@a`, '同一 mask 内 by_a/@a 重复', s.a);
+    aSeen.add(aKey);
+
     if (!Array.isArray(s.cells) || s.cells.length === 0) {
       mkIssue(issues, 'error', `${PA}/eirp`, '每个 by_a 至少需要一个 eirp');
       return;

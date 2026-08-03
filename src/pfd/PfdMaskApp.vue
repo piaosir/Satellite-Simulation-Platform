@@ -741,6 +741,7 @@ const resultBw = computed(() => (curResult.value ? bwLabel(curResult.value.refBw
             <template v-if="tab === 'is' && curResult.eirpSs">
               <dt>角度采样</dt><dd>{{ curResult.eirpSs.axisCount }} 点（步长 {{ curResult.eirpSs.sepAngleStepDeg }}°）</dd>
               <dt>EIRP 范围</dt><dd>{{ curResult.eirpSs.minValueDb.toFixed(2) }} … {{ curResult.eirpSs.maxValueDb.toFixed(2) }} dBW/{{ resultBw }}</dd>
+              <dt>多波束聚合抬升</dt><dd>天底 +{{ curResult.eirpSs.aggLiftNadirDb.toFixed(2) }} dB → 远区 +{{ curResult.eirpSs.aggLiftFarDb.toFixed(2) }} dB<s>{{ curResult.eirpSs.nBeams }} 波束，上限 10lg(Nco) = {{ (10 * Math.log10(curResult.eirpSs.nBeams)).toFixed(2) }} dB</s></dd>
               <dt>单调化抬升</dt><dd>{{ curResult.eirpSs.monotoneLift.maxDb.toFixed(2) }} dB（{{ curResult.eirpSs.monotoneLift.count }} 点）</dd>
             </template>
             <template v-if="tab === 'up' && curResult.eirpEs">

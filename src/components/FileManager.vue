@@ -78,7 +78,8 @@ const customGroups = ref([])        // 导入组 [{ id, name, importedAt, format
 const customConsts = ref([])        // 自建星座概览 [{ id, name, incl, count, color }]
 const customBusy = ref(false)
 const hasCustomAny = computed(() => customGroups.value.length > 0 || customConsts.value.length > 0)
-async function loadCustomGroups() { try { const r = api?.omm?.customList ? await api.omm.customList() : null; customGroups.value = (r && r.groups) || [] } catch { customGroups.value = [] } }
+// r.error = 库文件与备份都解析不出来（此时组列表为空，但那不是「库是空的」，主进程也会拒绝写入）
+async function loadCustomGroups() { try { const r = api?.omm?.customList ? await api.omm.customList() : null; customGroups.value = (r && r.groups) || []; if (r && r.error) flash(r.error) } catch { customGroups.value = [] } }
 function loadCustomConsts() { try { customConsts.value = readCustomConstellationSummary() } catch { customConsts.value = [] } }
 // 汇总导入结果 → 一句反馈
 function summarizeImport(r) {
@@ -388,7 +389,7 @@ async function exportBeam(sat, beam) {
 const newSat = ref({ name: '', lon: '' })
 const addBeamFor = ref('')          // 正在添加波束的卫星 id
 const newBeam = ref({ name: '', type: 'EIRP', band: '' })
-async function loadGxt() { try { gxtIndex.value = api?.coverageGxt ? await api.coverageGxt.index() : { satellites: [] } } catch { gxtIndex.value = { satellites: [] } } }
+async function loadGxt() { try { gxtIndex.value = api?.coverageGxt ? await api.coverageGxt.index() : { satellites: [] }; if (gxtIndex.value?.corrupt) flash('覆盖库索引损坏') } catch { gxtIndex.value = { satellites: [] } } }
 // 批量导入：多选 .gxt → 按文件名（卫星_频段_波束_类型）自动归类建星/建波束并导入，一次完成
 async function importGxtBatch() {
   const res = await api.coverageGxt.open()

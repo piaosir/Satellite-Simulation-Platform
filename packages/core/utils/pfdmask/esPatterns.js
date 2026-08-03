@@ -72,18 +72,28 @@ function gainDbiS465(phiDeg, p) {
  */
 function gainDbiM2101(phiDeg, p) {
   const phi = Math.abs(Number(phiDeg));
-  const pk = Number(p.peakGainDbi);
   const n = Number(p.arrayElements) > 0 ? Number(p.arrayElements) : 64;
+  // 扫描角 = 波束轴与阵面法线的夹角。M.2101 §5 把方向图拆成「单元方向图 + 阵因子」，
+  // 扫描的两个后果分别出自这两项：
+  //   峰值 —— 阵因子在指向上恒为 10lg(N_H·N_V)，与扫描无关，故扫描损失全部来自单元方向图，
+  //           取该建议书的缺省单元参数 θ₃dB = 65°、A_max = 30 dB ⇒ −min(12(θs/65)², 30)。
+  //           不得再叠加 cosθs 的投影损失，那是同一份损失的另一种记法，叠加即双计。
+  //   主瓣宽 —— 投影口径按 cosθs 缩 ⇒ 展宽 1/cosθs。单元包络本身不随扫描变。
+  const scan = Math.abs(Number(p.scanAngleDeg)) || 0;
+  if (!(scan < 90)) throw new RangeError(`esPatterns: M.2101 扫描角须 < 90°（${p.scanAngleDeg}）`);
+  const cs = Math.cos(scan * Math.PI / 180);
+  const pk = Number(p.peakGainDbi) - Math.min(12 * Math.pow(scan / 65, 2), 30);
   // 阵因子主瓣宽度 ≈ 102/√N 度（等幅方阵近似），旁瓣包络按 −13.2 dB 首旁瓣后 25lg 滚降
-  const bw = 102 / Math.sqrt(n);
+  const bw = 102 / Math.sqrt(n) / cs;
   if (phi <= bw / 2) return pk - 12 * Math.pow(2 * phi / bw, 2);
   const env = pk - 13.2 - 25 * LOG10(Math.max(1, 2 * phi / bw));
-  return Math.max(env, Number(p.floorDbi) === undefined ? -10 : Number(p.floorDbi));
+  return Math.max(env, Number.isFinite(Number(p.floorDbi)) ? Number(p.floorDbi) : -10);
 }
 
 /**
  * 统一入口：造一个地球站发射方向图求值器。
- * @param {object} p {kind, peakGainDbi?, diameterM, wavelengthM, efficiency?, samples?, arrayElements?, floorDbi?}
+ * @param {object} p {kind, peakGainDbi?, diameterM, wavelengthM, efficiency?, samples?, arrayElements?, floorDbi?, scanAngleDeg?}
+ *        scanAngleDeg 只对 kind='M.2101' 有意义；反射面天线（S.580/S.465）没有扫描角，忽略。
  *        kind='measured' 时须给 samples: [[phiDeg, gainDbi], ...]（升序，将做单调化前的原始曲线）
  */
 function makeEsPattern(p) {

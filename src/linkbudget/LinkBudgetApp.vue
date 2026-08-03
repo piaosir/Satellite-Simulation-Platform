@@ -188,10 +188,20 @@ function serializeLibrary() {
     seq: { es: _esSeq, bb: _bbSeq, sat: _satSeq }
   }))
 }
+const libSaveFailed = (e) => toast('资源库保存失败：' + ((e && e.message) || e))
 function scheduleLibSave() {
   if (!_libLoaded || !api) return
   clearTimeout(_libT)
-  _libT = setTimeout(() => { api.store.saveLibrary(LIB_NS, serializeLibrary()).catch(() => {}) }, 500)
+  _libT = setTimeout(() => { api.store.saveLibrary(LIB_NS, serializeLibrary()).catch(libSaveFailed) }, 500)
+}
+// 冲刷挂起的那次防抖写盘。两处必须用：① 关窗——库改动不入场景指纹（见 fingerprintOf），guardedLeave
+// 拦不住它，改完 0.5 秒内关窗就丢；② 导入并库后——configs.json 里的新配置引用的正是这批条目，
+// 反了顺序则中途关窗后引用解析不到，会静默回退到库里第一份配置。
+async function flushLibSave() {
+  if (!_libLoaded || !api) return
+  await nextTick()   // 让 watch 里的 syncAutoNames 先跑完，落盘的名字与屏幕上的一致
+  clearTimeout(_libT); _libT = null
+  try { await api.store.saveLibrary(LIB_NS, serializeLibrary()) } catch (e) { libSaveFailed(e) }
 }
 // 频率/极化 + 干扰归属调整（两者均为「地球站 → 卫星」）的一次性迁移：就着旧库 form 里被移走的「孤儿键」搬运，
 // 保留用户自定义值（须在按新字段集补默认值之前跑；已迁移过的库因目标键非空而幂等跳过）。
@@ -1365,11 +1375,16 @@ function toMiniItems(picked) {
   // 行 _id 在 serializeState 里被剥掉了（_ 前缀键不入场景），故结果按【行下标】对齐——
   // 只有当前正算着的那一份才对得上，别的配置不带结果（见下 useRes）
   const fresh = !resultsStale.value && links.value.length ? links.value : null
+  // 幂等身份「体制:配置id:行下标」。草稿没有稳定 id（'__draft__' 是每次都一样的假身份，两份不同的
+  // 草稿会在手机上互相顶掉）→ 留空，按 lbMiniExport 的规矩退化为内容哈希：宁可多一份，不错覆盖。
+  const srcIdOf = (p, i) => (p.id && p.id !== '__draft__' ? `GEO:${p.id}:${i}` : '')
   for (const p of picked || []) {
     const st = p && p.state
     if (!st || !Array.isArray(st.rows) || !st.rows.length) continue
     const sat = resolveSat(st.satId)
-    const useRes = fresh && (p.id === '__draft__' || p.id === activeId.value) && fresh.length === st.rows.length
+    // 已存配置的 st 是 configs.json 里的旧快照，fresh 却是按工作区当前参数算的：工作区一脏两者就不是
+    // 一回事（行数相同不代表内容相同），结果不能贴上去，让小程序自己算
+    const useRes = fresh && fresh.length === st.rows.length && (p.id === '__draft__' || (p.id === activeId.value && !isDirty()))
     st.rows.forEach((row, i) => {
       const bb = resolveBaseband(row.basebandId)
       const txEs = resolveEs(row.stationId)
@@ -1385,7 +1400,7 @@ function toMiniItems(picked) {
         // 小程序的「波束」是一格纯文字（不参与计算）：有方向图匹配就写那颗星的名字，否则写卫星条目名
         beamInput: sat.form.satelliteName || sat.name || '',
         note: `${p.name || '配置'} · 第 ${i + 1} 行 · 载波「${bb.name || '默认'}」· 站型「${txEs.name || '默认'}」→「${rxEs.name || '默认'}」`
-      }), 'GEO', `GEO:${p.id || ''}:${i}`))
+      }), 'GEO', srcIdOf(p, i)))
     })
   }
   return out
@@ -1401,6 +1416,7 @@ const shareCtx = {
   remapState: shareRemap,
   toMiniItems,
   saveConfig: (payload) => api.store.saveConfig(payload),
+  flushLib: flushLibSave,
   onImported: async ({ last, plan, idMap }) => {
     await loadConfigs()
     if (last) {
@@ -1520,7 +1536,9 @@ onMounted(async () => {
   // 关窗守卫：主进程拦截原生关闭动作后转发到这里，复用与内部切换配置同一套「取消/不保存/保存」
   // 弹窗（guardedLeave/isDirty），答完（或本就无未保存改动）才回调 confirmClose() 真正关闭窗口。
   api?.linkBudget?.onCloseRequested?.(async () => {
-    if (await guardedLeave()) api.linkBudget.confirmClose()
+    if (!(await guardedLeave())) return
+    await flushLibSave()
+    api.linkBudget.confirmClose()
   })
   window.addEventListener('keydown', onGlobalKey)   // Ctrl+Enter = 计算
   window.addEventListener('focus', reloadSatTree)   // 单例窗口：切回本窗口即纳入「星座3D」新导入的 GRD

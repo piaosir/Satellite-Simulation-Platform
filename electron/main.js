@@ -6,6 +6,23 @@ const { join } = require('path')
 // 忽略黑名单使其走真实 GPU。必须在 app ready 之前调用（命令行开关只在启动期生效）。
 app.commandLine.appendSwitch('ignore-gpu-blocklist')
 
+// 单实例：两个进程共用同一个 userData，而 library.json / configs.json 都是「整份读-改-写」，
+// 原子写只保证单进程内不撕文件、不做跨进程合并——两边交错落盘时后写的一方整份冲掉先写的一方
+// （Chromium 的 Local Storage 也是同一把锁）。拿不到锁就退出，把焦点还给已在跑的那个实例。
+let _mainWin = null
+const gotSingleInstanceLock = app.requestSingleInstanceLock()
+if (!gotSingleInstanceLock) app.quit()
+else {
+  app.on('second-instance', () => {
+    // 主窗口关掉、只剩某个子窗口时（Windows 下要全关才退出）也得给个响应，否则第二次双击像是没启动
+    const win = (_mainWin && !_mainWin.isDestroyed()) ? _mainWin : BrowserWindow.getAllWindows()[0]
+    if (!win || win.isDestroyed()) return
+    if (win.isMinimized()) win.restore()
+    win.show()
+    win.focus()
+  })
+}
+
 // 引擎与各服务都以磁盘上的 CommonJS 形式按 app 根目录动态加载，
 // 绕开 electron-vite 对相对依赖的外部化（其会把 ./services/* 解析到 out/main 下而找不到）。
 let _core = null
@@ -48,6 +65,8 @@ function createWindow() {
   win.webContents.on('before-input-event', (e, input) => {
     if (input.type === 'keyDown' && input.key === 'F12') { win.webContents.toggleDevTools(); e.preventDefault() }
   })
+  win.on('closed', () => { if (_mainWin === win) _mainWin = null })
+  _mainWin = win
 
   return win
 }
@@ -302,6 +321,12 @@ function createFreqPlanWindow() {
   _freqPlanWin = win
   return win
 }
+// 定向广播给频率计划编辑窗。文件区删/改名后不通知它，它手里还是删除前那一份，
+// 600ms 后的自动存盘会把计划连文件带索引整份写回来（见 FreqPlanApp 的 doSave）。
+function notifyFreqPlan(channel, ...args) {
+  if (!_freqPlanWin || _freqPlanWin.isDestroyed()) return
+  try { _freqPlanWin.webContents.send(channel, ...args) } catch { /* 窗口正在关 */ }
+}
 
 function createCiWindow() {
   if (_ciWin && !_ciWin.isDestroyed()) {
@@ -383,6 +408,7 @@ function confirmCloseRain() {
 }
 
 app.whenReady().then(() => {
+  if (!gotSingleInstanceLock) return   // 第二个实例：已 app.quit()，但 ready 仍会到，别再建窗口/注册 IPC
   const root = app.getAppPath()
   const storage = require(join(root, 'electron/services/storage'))
   const report = require(join(root, 'electron/services/report'))
@@ -395,7 +421,7 @@ app.whenReady().then(() => {
   // 转发器频率计划：挂在卫星下、与 GRD 天线平级的一类「文件」
   const freqPlan = require(join(root, 'electron/services/freqPlan'))(join(app.getPath('userData'), 'freq-plans'))
   const { register } = require(join(root, 'electron/ipc/register'))
-  register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget: createLinkBudgetWindow, openSunOutage: createSunOutageWindow, grd, confirmCloseLinkBudget, openNgso: createNgsoWindow, confirmCloseNgso, openRegen: createRegenWindow, confirmCloseRegen, openRain: createRainWindow, confirmCloseRain, openCi: createCiWindow, openPfd: createPfdWindow, freqPlan, openFreqPlan: createFreqPlanWindow })
+  register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget: createLinkBudgetWindow, openSunOutage: createSunOutageWindow, grd, confirmCloseLinkBudget, openNgso: createNgsoWindow, confirmCloseNgso, openRegen: createRegenWindow, confirmCloseRegen, openRain: createRainWindow, confirmCloseRain, openCi: createCiWindow, openPfd: createPfdWindow, freqPlan, openFreqPlan: createFreqPlanWindow, notifyFreqPlan })
 
   // 加载 ITU 全精度数据（降雨率 P.837 / 海拔 P.1511 / 水汽 P.836 / 云 P.840）→ 注入计算内核，
   // 与小程序口径完全一致（小程序为云端下载，桌面端从本地 resources/itu 同步加载）。

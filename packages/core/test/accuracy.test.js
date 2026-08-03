@@ -44,5 +44,57 @@ approx('链路余量回归', r.linkmargin, 3.0, 0.01)
 
 ok('NGSO 引擎可用', typeof core.calculateLinkBudgetNGSO === 'function')
 
+// 圆极化两套写法必须同口径：链路预算三窗的极化下拉存 'L'/'R'，早期配置与雨衰页存 'LHCP'/'RHCP'。
+// 只认后者时 'L'/'R' 会掉进线极化分支（τ 取极化偏转角而非 45°），P.618-14 §4.1 的雨致 XPD 虚高十几 dB。
+const POL_IN = {
+  rainRate: 60, uplinkAvailability: 99.5, rxRainRate: 60, rxDownlinkAvailability: 99.5,
+  orbitAltitude: 1200, rxOrbitAltitude: 1200
+}
+const POL_KEYS = ['uplinkRainXPDResult', 'downlinkRainXPDResult',
+  'effectiveXpolUplinkFactorResult', 'effectiveXpolDownlinkFactorResult',
+  'uplinkCN', 'downlinkCN', 'carrierTotalCN',
+  'uplinkPolarizationAngleResult', 'downlinkPolarizationAngleResult']
+function polRun(calc, pol) {
+  const rr = calc({ frequencyBand: 'Ku', satelliteName: 'DEMO' },
+    Object.assign({}, POL_IN, { uplinkPolarization: pol }))
+  return rr.success ? rr.data : null
+}
+for (const [engName, calc] of [['GEO', core.calculateLinkBudget], ['NGSO', core.calculateLinkBudgetNGSO]]) {
+  for (const [short, long] of [['L', 'LHCP'], ['R', 'RHCP']]) {
+    const a = polRun(calc, short), b = polRun(calc, long)
+    ok(`${engName} 极化 ${short} 与 ${long} 结果逐位一致`,
+      !!a && !!b && POL_KEYS.every(k => String(a[k]) === String(b[k])))
+  }
+  // 显示值不被归一化改写（报表照原样出 L/R）
+  ok(`${engName} 极化显示值保持 L`, (polRun(calc, 'L') || {}).uplinkPolarizationResult === 'L')
+  // 圆极化 τ=45° 的 XPD 必须低于线极化 —— 归一化真的落到了 XPD 算式上
+  const cir = polRun(calc, 'L'), lin = polRun(calc, 'V')
+  ok(`${engName} 圆极化雨致 XPD 低于线极化`,
+    !!cir && !!lin && parseFloat(cir.uplinkRainXPDResult) < parseFloat(lin.uplinkRainXPDResult) - 8)
+}
+
+// 调制因子必须取 constants.js 那份（面板下拉与 MODCOD 预设表同源）。引擎曾各抄一份且漏了 '64QAM'，
+// 查表落空回退 QPSK：3GPP NR-NTN 的 MCS17–28 全是 64QAM，符号率/带宽错 3 倍、Es/N₀→Eb/N₀ 折算错 4.77 dB。
+// 余量因门限与实际同错而抵消，界面看着正常 —— 故此处锁的是符号率与调制因子本身，不是余量。
+// orbitAltitude 两项是 NGSO 引擎的必填几何（GEO 引擎不读），与调制口径无关
+const MOD_IN = { infoRate: 2048, fec: '438/1024', rsCode: '0.9', bandwidthFactor: 1.1, m: 1, noiseRatioMode: 'esno', ebno: 12.79,
+  orbitAltitude: 1200, rxOrbitAltitude: 1200 }
+const modRun = (calc, mod) => {
+  const rr = calc({}, Object.assign({}, MOD_IN, { modulation: mod }))
+  return rr.success ? rr.data : null
+}
+const MOD_KEYS = ['modulationFactorResult', 'symbolRateResult', 'allocBandwidthResult', 'ebnoResult', 'spectralEfficiencyResult']
+for (const [engName, calc] of [['GEO', core.calculateLinkBudget], ['NGSO', core.calculateLinkBudgetNGSO]]) {
+  const q = modRun(calc, '64QAM')
+  ok(`${engName} 64QAM 调制因子 = 6`, !!q && Number(q.modulationFactorResult) === 6)
+  // 同为 6 bit/symbol 的 64APSK 作对照：除调制方式名外全部数值必须逐位一致
+  const ap = modRun(calc, '64APSK')
+  ok(`${engName} 64QAM 与 64APSK 数值逐位一致`,
+    !!q && !!ap && MOD_KEYS.every(k => String(q[k]) === String(ap[k])))
+  // 反向证伪：查表落空的回退值就是 2，若表又漏键则本条与上面两条同时挂
+  ok(`${engName} 64QAM 未退化成 QPSK`,
+    !!q && String(q.symbolRateResult) !== String(modRun(calc, 'QPSK').symbolRateResult))
+}
+
 console.log(`\n=== ${pass} passed, ${fail} failed ===`)
 process.exit(fail ? 1 : 0)

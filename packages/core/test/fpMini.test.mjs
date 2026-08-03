@@ -11,7 +11,9 @@
 //      整条载波涂成头一个波束的色（它明明归后一个）；
 //   ⑤ 墨色随底色亮度翻转，门限与 FpAlloc 的 inkOf 同值（同一个波束不该一处白字一处黑字）；
 //   ⑥ 出去的必须是【纯数据】：结构化克隆过得去（云函数与 IPC 两头都要过序列化）；
-//   ⑦ Excel 表模型随包同行，两张表齐备。
+//   ⑦ Excel 表模型随包同行，两张表齐备；
+//   ⑧ 留空过去必须还是留空：小程序侧一律按 `== null` 判空显示「—」，这边把 null 写成 0 发过去，
+//      兜底就被击穿成一个像模像样的工程值（没填的 SFD 写成「0 dBW/m²」、没定频的写成「0 ~ 0」）。
 import { newPlan, newChannel, newLo, newBeam, normalizePlan, setBeamSegFc, setBeamSegBw } from '../../../src/shared/freqPlanModel.js'
 import { newCarrier } from '../../../src/shared/freqPlanCapacity.js'
 import { fpMiniItem, allocationOf, drawOps } from '../../../src/shared/fpMiniExport.js'
@@ -146,6 +148,19 @@ const slim = fpMiniItem(plan, { unit: 'MHz', xlsx: false })
 ok('摘掉数据表后图与分配表还在', slim.draw.ops.length > 0 && slim.alloc.groups.length === a.groups.length)
 ok('摘掉这件事写在包里', slim.xlsx.kind === 'omitted' && !slim.xlsx.sheets && /数据表/.test(slim.xlsx.reason))
 ok('摘掉之后确实小了一截', JSON.stringify(slim).length < JSON.stringify(item).length)
+
+// ⑧ 留空 ≠ 0
+const ch1 = item.chs.find((c) => c.no === 'C1')
+ok('没填的转发器参数仍是留空（不是 0 dBW/m²、0 dB/K）',
+  [ch1.sfd, ch1.gt, ch1.boi, ch1.boo, ch1.cim].every((v) => v === null),
+  JSON.stringify([ch1.sfd, ch1.gt, ch1.boi, ch1.boo, ch1.cim]))
+const unf = g1.rows.find((r) => r.name === '未定频')
+ok('未定频的载波两侧频率仍是留空（不是 0 ~ 0）',
+  !!unf && [unf.up.fc, unf.up.f1, unf.up.f2, unf.dn.fc, unf.dn.f1, unf.dn.f2].every((v) => v === null),
+  unf && JSON.stringify([unf.up, unf.dn]))
+ok('没填的速率 / 功率带宽仍是留空', !!unf && unf.rate === null && unf.pwr === null, unf && `${unf.rate} / ${unf.pwr}`)
+const emptyLo = normalizePlan(newPlan({ name: '空本振', los: [newLo({ name: 'L0' })], channels: [newChannel({ no: 'X', up: { fcMHz: 6000, bwMHz: 36, pol: 'H' } })] }))
+ok('本振没给值仍是留空', fpMiniItem(emptyLo, { unit: 'MHz' }).los[0].value === null)
 
 // 没有载波的计划：分配表整块留空，不是造一张空表出来
 const noCar = normalizePlan(newPlan({ name: '空', channels: [newChannel({ no: 'X', up: { fcMHz: 6000, bwMHz: 36, pol: 'H' } })] }))

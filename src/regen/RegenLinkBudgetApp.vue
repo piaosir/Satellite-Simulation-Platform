@@ -208,10 +208,20 @@ function serializeLibrary() {
     seq: { es: _esSeq, bb: _bbSeq, sat: _satSeq }
   }))
 }
+const libSaveFailed = (e) => toast('资源库保存失败：' + ((e && e.message) || e))
 function scheduleLibSave() {
   if (!_libLoaded || !api) return
   clearTimeout(_libT)
-  _libT = setTimeout(() => { api.store.saveLibrary(LIB_NS, serializeLibrary()).catch(() => {}) }, 500)
+  _libT = setTimeout(() => { api.store.saveLibrary(LIB_NS, serializeLibrary()).catch(libSaveFailed) }, 500)
+}
+// 冲刷挂起的那次防抖写盘。两处必须用：① 关窗——库改动不入场景指纹（见 fingerprintOf），guardedLeave
+// 拦不住它，改完 0.5 秒内关窗就丢；② 导入并库后——configs.json 里的新配置引用的正是这批条目，
+// 反了顺序则中途关窗后引用解析不到，会静默回退到库里第一份配置。
+async function flushLibSave() {
+  if (!_libLoaded || !api) return
+  await nextTick()   // 让 watch 里的 syncAutoNames 先跑完，落盘的名字与屏幕上的一致
+  clearTimeout(_libT); _libT = null
+  try { await api.store.saveLibrary(LIB_NS, serializeLibrary()) } catch (e) { libSaveFailed(e) }
 }
 // 干扰(地球站→卫星) 归属调整的一次性迁移：干扰八项从地球站库迁回「卫星群」（与 GSO/NGSO 一致）。
 // 就着旧库 es[0].form 里被移走的「孤儿键」搬运到各卫星条目，保留用户自定义值（须在按新字段集补默认值之前跑；
@@ -1404,6 +1414,7 @@ const shareCtx = {
   pinRefs: sharePinRefs,
   remapState: shareRemap,
   saveConfig: (payload) => api.store.saveConfig(payload),
+  flushLib: flushLibSave,
   onImported: async ({ last, plan, idMap }) => {
     await loadConfigs()
     if (last) {
@@ -1542,7 +1553,7 @@ onMounted(async () => {
   } catch (e) { /* ignore */ }
   try { deviceId.value = (api && await api.app.deviceId()) || '' } catch (e) { deviceId.value = '' }
   try { shareConfigured.value = !!(api && await api.share.configured()) } catch (e) { shareConfigured.value = false }
-  api?.regen?.onCloseRequested?.(async () => { if (await guardedLeave()) api.regen.confirmClose() })
+  api?.regen?.onCloseRequested?.(async () => { if (!(await guardedLeave())) return; await flushLibSave(); api.regen.confirmClose() })
   window.addEventListener('keydown', onGlobalKey)   // Ctrl+Enter = 计算（按体制分发）
 })
 </script>

@@ -39,7 +39,15 @@ const T = { paper: '#ffffff', ink: '#1a1a1a', dim: '#666', line: '#333', blockSt
 const DEFAULT_BLOCK_COLOR = '#5B8FD4'
 
 const n2 = (v) => (Number.isFinite(v) ? Math.round(v * 100) / 100 : null)
-const nz = (v) => (Number.isFinite(Number(v)) ? Number(v) : null)
+// ★ 空值必须先挡掉再 Number()：Number(null) 与 Number('') 都是 0，而 0 是有限数 —— 不挡的话
+//   整包的「留空」全成 0 发过去，小程序侧一律按 `== null` 判空显示「—」，兜底被 0 击穿：
+//   没填的 SFD 写成「0 dBW/m²」、没定频的载波写成「0 ~ 0」，看着都像实打实的工程值
+//   （同 fpXlsxModel 的 nz、freqPlanModel 的 num()、freqPlanCapacity 的 numOrNull）。
+const nz = (v) => {
+  if (v === null || v === undefined || v === '') return null
+  const n = Number(v)
+  return Number.isFinite(n) ? n : null
+}
 
 // 「M x,y L x,y L x,y Z」→ [x,y,x,y,x,y]。箭头头部由 loArrowGeom / markGeom 自绘成三角
 // （不用 <marker>，见 freqPlanRender 文件头），这里只把那条路径拆回顶点给 canvas 用。

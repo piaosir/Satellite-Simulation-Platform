@@ -15,6 +15,7 @@
 //   ④ 排不开时不许假装排开：conflicts 如实计数（UI 据此报「该布局 k 色排不开」）。
 import { colorFreqPlan, reuseDistFactor, reuseDist, beamSketchRing } from '../../../src/viz/grd/synth.js'
 import { dirToAzEl } from '../../../src/viz/grd/coverage.js'
+import { geodeticToEcef, elevationDeg } from '../../../src/viz/wgs84.js'
 // 引擎侧的档位表（CJS）：两处档位必须同表，故在这里一并验
 import ciCci from '../utils/interference/ciCci.js'
 
@@ -232,12 +233,30 @@ function minSameColorDist(nodes, colors, d) {
   }
   ok('全球扫：画得出轮廓 = 填得上色', noFill === 0, `${noFill}/${drawn} 只有轮廓没填色`)
 
-  // 环不能因为贴地平就退化：仍是完整一圈（n+1 点），且经纬范围有限（不绕地球一圈）
+  // 环不能因为贴地平就退化：仍是完整一圈（≥ n+1 点，跨地平处另有加密），且经纬范围有限（不绕地球一圈）
   const r = ringAt(satLon - 76, 32)[0]
   const lons = r.map((q) => q[0]), lats = r.map((q) => q[1])
-  ok('跨地平波束仍是完整一圈', r.length === 73, `${r.length} 点`)
+  ok('跨地平波束仍是完整一圈', r.length >= 73, `${r.length} 点`)
   ok('跨地平波束的环不发散', Math.max(...lons) - Math.min(...lons) < 60 && Math.max(...lats) - Math.min(...lats) < 30,
     `lon 跨 ${(Math.max(...lons) - Math.min(...lons)).toFixed(1)}° · lat 跨 ${(Math.max(...lats) - Math.min(...lats)).toFixed(1)}°`)
+
+  // ★ 越地平那一段必须【贴在地平线上】：轮廓不许落到地平线外（仰角 <0），越出去的点仰角恒为 0。
+  //   曾经取 projectLimb 的「最近趋近点」——地心角 = 90°−离轴角，越出去越往星下点回缩（离轴 10° 已
+  //   缩进 1.3°≈145 km），画出来是条在地平线内侧摆动的曲线，且各波束缩进量不同 → 地平边参差对不齐。
+  const S = geodeticToEcef(satLon, 0, altKm)
+  const els = r.map((q) => elevationDeg(q[0], q[1], S))
+  ok('轮廓不越出地平线', Math.min(...els) > -1e-6, `最低仰角 ${Math.min(...els).toFixed(6)}°`)
+  ok('越地平段恰贴地平线（仰角 0）', els.filter((e) => Math.abs(e) < 1e-6).length >= 8,
+    `只有 ${els.filter((e) => Math.abs(e) < 1e-6).length} 个点在地平线上`)
+  // ★ 地平附近不许留假直边：地面位置对离轴角的导数在相切处发散，均匀采样会一条直线跨过近千公里。
+  const D2R = Math.PI / 180
+  let gap = 0
+  for (let i = 1; i < r.length; i++) {
+    const c = Math.sin(r[i - 1][1] * D2R) * Math.sin(r[i][1] * D2R) +
+      Math.cos(r[i - 1][1] * D2R) * Math.cos(r[i][1] * D2R) * Math.cos((r[i][0] - r[i - 1][0]) * D2R)
+    gap = Math.max(gap, Math.acos(Math.max(-1, Math.min(1, c))) * 6371)
+  }
+  ok('跨地平处无假直边（相邻点间距受控）', gap < 320, `最大相邻间距 ${gap.toFixed(0)} km`)
   // 星下点的波束几何不受影响（回归护栏：改的是地平外的点，可见区一个点都不许动）
   const c = ringAt(satLon, 0)[0]
   ok('星下点波束仍居中对称', Math.abs((Math.min(...c.map((q) => q[0])) + Math.max(...c.map((q) => q[0]))) / 2 - satLon) < 1e-6)

@@ -5,6 +5,7 @@
 // 解析在渲染进程做（src/viz/gxt/parse.js，ESM），主进程只负责存盘 + 索引增删。
 const fs = require('fs')
 const path = require('path')
+const { writeJsonAtomic, readJsonSafe } = require('./jsonStore')
 
 module.exports = function createCoverageGxt(saveDirFn) {
   function dir() {
@@ -14,8 +15,11 @@ module.exports = function createCoverageGxt(saveDirFn) {
   }
   const idxPath = () => path.join(dir(), 'index.json')
   function readIndex() {
-    let idx
-    try { idx = JSON.parse(fs.readFileSync(idxPath(), 'utf8')) } catch { idx = { satellites: [] } }
+    const r = readJsonSafe(idxPath(), null)
+    const idx = (r.value && typeof r.value === 'object') ? r.value : {}
+    // index.json 与它的 .bak 都解析不出来：不当空库使——空库上的下一次写会把坏索引整份覆盖，
+    // 盘上的 .gxt 还在却再没有索引指向它。标出来让写侧拒写、上层显示状态。
+    if (r.corrupt) idx.corrupt = true
     if (!Array.isArray(idx.satellites)) idx.satellites = []
     // hidden：对内置（preset）卫星/波束的软删除覆盖层（内置数据只读，删除即记此处供前端过滤）
     if (!idx.hidden || typeof idx.hidden !== 'object') idx.hidden = {}
@@ -23,7 +27,10 @@ module.exports = function createCoverageGxt(saveDirFn) {
     if (!Array.isArray(idx.hidden.beams)) idx.hidden.beams = []
     return idx
   }
-  function writeIndex(idx) { fs.writeFileSync(idxPath(), JSON.stringify(idx, null, 2)) }
+  function writeIndex(idx) {
+    if (idx && idx.corrupt) throw new Error('覆盖库索引损坏')
+    writeJsonAtomic(idxPath(), idx, 2)
+  }
   const genId = () => Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7)
   const clean = (s) => String(s || '').replace(/[^\w.\-]+/g, '_').replace(/\.+/g, '.') || 'x'
   // 限定在 saveDir 内（防路径穿越）

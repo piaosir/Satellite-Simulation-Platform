@@ -2,7 +2,7 @@
 // 几何全程 WGS84，复用 src/viz/wgs84.js。填充面着色(L2a) 在渲染层做。
 // 见 docs/GRD导入与覆盖可视化设计.md（性能分层 §4、面+线 §5）。
 
-import { geodeticToEcef, ecefToGeodetic, geodeticUp, rayEllipsoid, rayEllipsoidMargin, A, E2, RS_GEO } from '../wgs84.js'
+import { geodeticToEcef, ecefToGeodetic, geodeticUp, rayEllipsoid, rayEllipsoidMargin, A, B, E2, RS_GEO } from '../wgs84.js'
 
 const D2R = Math.PI / 180, H = RS_GEO - A
 const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
@@ -162,6 +162,34 @@ export function project(dir, basis) {
   const d = nrm(add(add(sc(x, dir[0]), sc(y, dir[1])), sc(z, dir[2])))
   const P = rayEllipsoid(S, d)
   if (!P) return null
+  const g = ecefToGeodetic(P[0], P[1], P[2])
+  return { lon: g.lon, lat: g.lat, ecef: P }
+}
+
+// 天线系 r̂ 的「地平裕度」m（=rayEllipsoidMargin 的判别式）：>0 命中地球、=0 恰切地平（0°仰角线）、<0 越地平。
+// 只求交、不反算经纬（比 projectLimb 便宜一个数量级），给「二分逼近地平」的场合用。
+// 判据走 WGS84 判别式本身，不用球近似的地平角半径 asin(A/r)——椭球的地平角随方位差 0.03°（≈3 km）。
+export function limbMargin(dir, basis) {
+  const { S, x, y, z } = basis
+  const d = nrm(add(add(sc(x, dir[0]), sc(y, dir[1])), sc(z, dir[2])))
+  return rayEllipsoidMargin(S, d).m
+}
+
+// 「地平线上的点」解析式：取 dir 所在的方位半平面与地球可见地平（0°仰角线）的交点。
+// 归一坐标 (x/A, y/A, z/B) 下椭球即单位球、卫星在 |S′|=ρ 处，切点集合 = 圆 { |P′|=1, P′·Ŝ′=1/ρ }；
+// 该方位上的那一点 P′ = Ŝ′/ρ + √(1−1/ρ²)·û（û = dir 垂直于 Ŝ′ 的分量），再线性映回 ECEF ——
+// 线性映射保持「相切」，故 P 恰在椭球地平线上（仰角严格 0），椭球扁率带来的地平非正圆自动含在内。
+// ★ 必须走解析式，不能「二分逼近相切射线再求交」：相切处地面位置 ∝ √(角度亏欠)，二分 20 步（角度
+//   已收敛到 3e-5°）地面上仍差 ~6 km、仰角残留 0.05° —— 画出来的地平弧带着可见的抖动。
+export function limbPoint(dir, basis) {
+  const { S, x, y, z } = basis
+  const d = add(add(sc(x, dir[0]), sc(y, dir[1])), sc(z, dir[2]))
+  const Sn = [S[0] / A, S[1] / A, S[2] / B], dn = [d[0] / A, d[1] / A, d[2] / B]
+  const rho = Math.hypot(Sn[0], Sn[1], Sn[2]), sh = sc(Sn, 1 / rho)
+  const u = sub(dn, sc(sh, dt(dn, sh))), un = Math.hypot(u[0], u[1], u[2])
+  if (!(un > 0)) return null                                   // 正对天底：不可能在地平外
+  const k = Math.sqrt(Math.max(0, 1 - 1 / (rho * rho))) / un
+  const P = [(sh[0] / rho + u[0] * k) * A, (sh[1] / rho + u[1] * k) * A, (sh[2] / rho + u[2] * k) * B]
   const g = ecefToGeodetic(P[0], P[1], P[2])
   return { lon: g.lon, lat: g.lat, ecef: P }
 }

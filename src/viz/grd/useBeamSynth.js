@@ -136,8 +136,10 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
   })
   // 反射面参数下沉到每个设置：refl = 当前激活设置的反射面解（每设置一套独立反射面 → 各自波束宽/效率/方向性）
   const refl = computed(() => (mode.value === 'gauss' && curSetting.value ? reflOf(curSetting.value) : { ok: false }))
-  // 当前设置口径 → 波束宽 θ3dB（deg）：解析反射面算出；无解时回落 70λ/D
-  const thetaAuto = computed(() => { const r = refl.value; if (r && r.ok && r.th3Design > 0) return r.th3Design; const s = curSetting.value; return s ? theta3dbFromAperture(Number(s.fGHz), Number(s.antD)) : NaN })
+  // 当前设置口径 → 波束宽 θ3dB（deg）：解析反射面算出；无解时回落 70λ/D。
+  // 取【仿真频率】口径的 th3Sim（simSame 时 lamS≡lamD → 与 th3Design 逐位相同）：方向性 dirDbi 本就按仿真 λ 算，
+  // 波束宽也须同 λ，否则 D0·Ω 不守恒（设计频率的宽 + 仿真频率的增益）。
+  const thetaAuto = computed(() => { const r = refl.value; if (r && r.ok && r.th3Sim > 0) return r.th3Sim; const s = curSetting.value; return s ? theta3dbFromAperture(simFreqOf(s), Number(s.antD)) : NaN })
   // 方向性＝反射面口径面积方向性（与天线参数一致；高斯波束宽公式差 k 因子，生成时用 effGauss 补齐峰值）
   const dirDbi = computed(() => { const r = refl.value; return r && r.ok ? r.dirDbi : NaN })
   const crossX = computed(() => { const s = curSetting.value; return s ? crossoverDb(Number(s.spacing), Number(s.thX)) : NaN })
@@ -281,7 +283,7 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
     const idx = settings.value.length
     const rp = pickRP(curSetting.value || DEFAULT_P)          // 新设置反射面：从当前设置拷一份（起步=当前反射面，再改口径等）
     const r = reflOf(rp)
-    const w = r && r.ok && r.th3Design > 0 ? +r.th3Design.toFixed(3) : (Number(curSetting.value && curSetting.value.thX) || 3)
+    const w = r && r.ok && r.th3Sim > 0 ? +r.th3Sim.toFixed(3) : (Number(curSetting.value && curSetting.value.thX) || 3)
     return { id: newId('st'), name: nameHint || ('设置' + (idx + 1)), thX: w, thY: w, rot: 0, color: SETTING_CSS[idx % SETTING_CSS.length], ...rp }
   }
   function load() {
@@ -360,7 +362,7 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
   function defaultSettingFor(gp) {
     const rp = pickRP(gp)                                            // 首个设置的反射面参数取自组默认（freshP）
     const r = reflOf(rp)                                             // 初始宽度 = 解析反射面 θ3
-    const t = r && r.ok && r.th3Design > 0 ? r.th3Design : theta3dbFromAperture(Number(gp.fGHz), Number(gp.antD))
+    const t = r && r.ok && r.th3Sim > 0 ? r.th3Sim : theta3dbFromAperture(simFreqOf(gp), Number(gp.antD))
     const w = Number.isFinite(t) && t > 0 ? +t.toFixed(3) : 3
     return { id: newId('st'), name: '设置1', thX: w, thY: w, rot: 0, color: SETTING_CSS[0], ...rp }
   }
@@ -762,9 +764,13 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
       const defs = valid.map((b) => {
         const ae = dirToAzEl(pos.lon, pos.lat || 0, pos.altKm, b.lon, b.lat)
         const rf = reflForBeam(b)
-        const th3 = rf && rf.ok && rf.th3Design > 0 ? rf.th3Design : (Number(b.thX) || 1)
-        const def = { az: ae.az, el: ae.el, thX: th3, thY: th3, rot: 0 }
-        if (rf && rf.ok && Number.isFinite(rf.dirDbi)) def.peakDbi = rf.dirDbi   // 峰值 = 该设置反射面口径方向性（逐波束）
+        const th3 = rf && rf.ok && rf.th3Sim > 0 ? rf.th3Sim : (Number(b.thX) || 1)
+        // 宽度/旋转逐波束沿用草图值（批量表格可改）→ 生成口径 = 草图口径。峰值随之按 D0·Ω 守恒缩放：
+        // 宽度偏离设置 θ3 等价于换了一面更大/更小的反射面，只改宽不改峰会凭空造出能量。
+        const thX = Number(b.thX) > 0 ? Number(b.thX) : th3
+        const thY = Number(b.thY) > 0 ? Number(b.thY) : th3
+        const def = { az: ae.az, el: ae.el, thX, thY, rot: Number(b.rot) || 0 }
+        if (rf && rf.ok && Number.isFinite(rf.dirDbi)) def.peakDbi = rf.dirDbi + 10 * Math.log10(th3 * th3 / (thX * thY))
         return def
       })
       const text = buildGaussGrd({ satName: node.satName, satLon: pos.lon, satLat: pos.lat || 0, altKm: pos.altKm, effPct: 55, beams: defs })
@@ -772,7 +778,7 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
       if (key) {
         g._genName = name
         const rfs = [...reflCache.values()].filter((r) => r && r.ok)
-        const th3s = [...new Set(rfs.map((r) => +r.th3Design.toFixed(3)))].sort((a, b) => a - b)
+        const th3s = [...new Set(rfs.map((r) => +r.th3Sim.toFixed(3)))].sort((a, b) => a - b)
         const nSet = new Set(valid.map((b) => b.settingId)).size
         status.value = `已生成天线「${name}」：${defs.length} 个波束${nSet > 1 ? ' · ' + nSet + ' 种波束设置' : ''}${th3s.length ? ' · 波束宽 ' + th3s.map((t) => t + '°').join('/') : ''}（再点即按当前草图更新）`
       }

@@ -11,6 +11,7 @@ import { logStore, logMsg, clearLog } from './stores/log'
 import { effective as displayQuality } from './stores/displayQuality'
 import SettingsModal from './components/SettingsModal.vue'
 import MiniBindDialog from './components/MiniBindDialog.vue'
+import MiniAboutDialog from './components/MiniAboutDialog.vue'
 import FileManager from './components/FileManager.vue'
 import Icon from './components/Icon.vue'
 import logoUrl from './assets/linklab-avatar-dark.png'
@@ -27,6 +28,7 @@ const ISL = defineAsyncComponent(() => import('./pages/ISL.vue'))
 const nav = useNavStore()
 const settingsOpen = ref(false)
 const bindOpen = ref(false)      // 绑定小程序账号（工具菜单，与设置平级）
+const miniAboutOpen = ref(false) // 微信小程序介绍（帮助菜单，与关于平级）
 const fileOpen = ref(false)
 const aboutOpen = ref(false)
 const appVersion = ref('')
@@ -167,6 +169,8 @@ const menus = computed(() => [
     { label: '设置…', icon: 'settings', hint: '外观主题 / 显示画质 / 单位等设置', run: () => { settingsOpen.value = true } }
   ] },
   { key: 'help', label: '帮助', items: [
+    { label: '微信小程序 LinkLab…', icon: 'wechat', hint: '「LinkLab星链链路计算」手机端：链路预算 / AR 对星 / 覆盖图 / 星座地图，并可接收本平台发送的覆盖快照、链路配置与频率计划', run: () => { miniAboutOpen.value = true } },
+    { sep: true },
     { label: '关于卫星仿真平台…', icon: 'info', hint: '版本与说明', run: () => { aboutOpen.value = true } }
   ] }
 ])
@@ -334,6 +338,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 
     <SettingsModal v-if="settingsOpen" @close="settingsOpen = false" />
     <MiniBindDialog v-if="bindOpen" @close="bindOpen = false" @toast="(m) => logMsg(m)" />
+    <!-- 帮助 → 微信小程序：介绍页里可直接转到绑定（两者是同一件事的两步） -->
+    <MiniAboutDialog v-if="miniAboutOpen" @close="miniAboutOpen = false" @bind="miniAboutOpen = false; bindOpen = true" />
     <FileManager v-if="fileOpen" @close="fileOpen = false" />
 
     <!-- 帮助 → 关于 -->

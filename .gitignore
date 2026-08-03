@@ -88,6 +88,13 @@ electron/services/shareConfig.js
 # npx electron .rpharness/hdrtest.cjs  页眉模板探针（图不出现时用它分因）。
 .rpharness/
 
+# 「帮助 → 微信小程序」介绍弹窗的版式验证台：真组件 + 真全局样式，暗/亮各看一遍（头像反相是否成立）。
+.miniaboutharness/
+
+# 星座侧栏「行内展开的卫星列表」验证台（SatList.vue）：三万条真数据，验虚拟滚动只渲染视口内十几行、
+# 以及 Excel 式多选口径（点 / Ctrl / Shift / 拖 / Ctrl+A / 方向键）。上方读数带供驱动脚本断言。
+.satlistharness/
+
 # 「小程序绑定 · 免密钥自动同步」端到端验证台（node .bindharness/gen.mjs）：
 # COS 换内存桩、云函数当普通模块 require 进来真跑一遍——平台 boxSend / 云函数 boxList / 小程序 syncNow
 # 三处用各自仓库里的真代码，专治「跨仓库字段名漂了编译器管不着」。

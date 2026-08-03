@@ -192,13 +192,17 @@ contextBridge.exposeInMainWorld('api', {
     open: (planId) => ipcRenderer.invoke('freqPlan:open', planId),
     list: () => ipcRenderer.invoke('freqPlan:list'),
     get: (id) => ipcRenderer.invoke('freqPlan:get', id),
-    save: (plan) => ipcRenderer.invoke('freqPlan:save', plan),
+    // opts.updateOnly：只更新索引里已有的计划，不许新建（编辑窗的自动存盘用）
+    save: (plan, opts) => ipcRenderer.invoke('freqPlan:save', plan, opts),
     remove: (id) => ipcRenderer.invoke('freqPlan:remove', id),
     rename: (id, name) => ipcRenderer.invoke('freqPlan:rename', id, name),
     reassignSat: (folder, patch) => ipcRenderer.invoke('freqPlan:reassignSat', folder, patch),
     exportFile: (kind, payload, defaultName) => ipcRenderer.invoke('freqPlan:export', kind, payload, defaultName),
     importJson: () => ipcRenderer.invoke('freqPlan:importJson'),
-    onOpenPlan: (cb) => ipcRenderer.on('freqPlan:openPlan', (_e, id) => cb(id))
+    onOpenPlan: (cb) => ipcRenderer.on('freqPlan:openPlan', (_e, id) => cb(id)),
+    // 文件区删/改名的广播（编辑窗手里那份可能就是它）
+    onPlanRemoved: (cb) => ipcRenderer.on('freqPlan:planRemoved', (_e, id) => cb(id)),
+    onPlanRenamed: (cb) => ipcRenderer.on('freqPlan:planRenamed', (_e, id, name) => cb(id, name))
   },
   coverage: {
     index: () => ipcRenderer.invoke('coverage:index'),
