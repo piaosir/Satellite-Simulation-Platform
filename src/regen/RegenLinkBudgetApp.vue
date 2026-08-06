@@ -24,6 +24,9 @@ import LbReportDialog from '../components/LbReportDialog.vue'
 import { useLbReport } from '../shared/useLbReport.js'
 import LbFontCtl from '../components/LbFontCtl.vue'
 import LbCapFoot from '../components/LbCapFoot.vue'
+import LbCustomColsDialog from '../components/LbCustomColsDialog.vue'
+import { buildPool, makeResolver, evalRows, customFieldDefs, loadDefs, saveDefs, unitOf, schemaInputPool } from '../shared/lbCustomCols.js'   // 自定义列：公式合成新列
+import { labeledResultPool, RESULT_LABELS } from '../shared/lbResultLabels.js'   // 引擎出参中文名与单位（全量词表）
 import LbShareDialog from '../components/LbShareDialog.vue'
 import { buildRegenScene } from '../shared/lbLinkScene.js'
 
@@ -434,6 +437,7 @@ watch(linkMode, () => {
   nextTick(() => { const el = flowEl.value; if (el) el.scrollTop = 0 })
   links.value = []; selected.value = 0; segments.value = []; error.value = ''
   computedVals.value = {}
+  rawDataByRow.value = {}   // 自定义列留底同步清：旧模式的引擎结果不许穿到新模式的自定义列上
 })
 
 // ============ 几何搜索时窗（选星 SGP4 典型时刻 + 全部访问窗口）============
@@ -533,9 +537,107 @@ function toggleResultKey(k) {
 // 结果列显示单位自适应：每次计算按整列最大|值|共选档位（W→mW/kW、kHz→MHz、全列<0dBW→dBm），
 // 列头单位跟随（resColUnits 按 '模式:键' 记录）；写入 computedVals 的值已按所选档位换算
 const resColUnits = reactive({})
-const resColsOf = (mode) => RESULT_DEFS_BY[mode]
-  .filter((d) => resultKeys[mode].includes(d.key))
-  .map((d) => ({ key: '_' + d.key, label: d.label, unit: resColUnits[mode + ':' + d.key] || d.unit, type: d.type === 'text' ? 'text' : 'num', ro: true, group: 'res', target: 'meta', tip: d.tip || d.label }))
+const resColsOf = (mode) => [
+  ...RESULT_DEFS_BY[mode]
+    .filter((d) => resultKeys[mode].includes(d.key))
+    .map((d) => ({ key: '_' + d.key, label: d.label, unit: resColUnits[mode + ':' + d.key] || d.unit, type: d.type === 'text' ? 'text' : 'num', ro: true, group: 'res', target: 'meta', tip: d.tip || d.label })),
+  ...customFieldDefs(customColsBy[mode], customPoolOf(mode))
+]
+// —— 自定义列（公式把引擎出参组合成新列，语法与求值见 shared/lbCustomCols.js；按子链路模式各存一份）——
+// 定义按窗口记忆（localStorage），不入场景配置——口径同结果列勾选集；值由 writeResultVals 留底的
+// 引擎结果即时求出，新建/改公式即刻回填，无需重算。
+// 字段池按【本模式实际算出的键】过滤：lbOutputDefs 那张表是 GSO/NGSO 口径的超集，再生式
+// （尤其星间/激光）大半键根本不出——不过滤会端出一池死字段。算过之前只有本模式结果列池；
+// 算过之后 = 结果列∩出参 + 可绘清单∩出参 + 其余全部数值出参（「全部出参」组，label=键名）。
+// 求值解析器逐模式建，与编辑器字段池同口径（isl/laser 的「星间距离」同名不同键，合并池会歧义判死）。
+const customColsBy = reactive(Object.fromEntries(LINK_MODES.map((m) => [m.key, loadDefs('regen/customCols.' + m.key)])))
+watch(customColsBy, () => { try { for (const m of LINK_MODES) saveDefs('regen/customCols.' + m.key, customColsBy[m.key]) } catch (e) { /* ignore */ } }, { deep: true })
+const customOutputPool = ref([])
+onMounted(async () => {
+  try {
+    if (api) {
+      const g = await api.linkBudget.outputDefs()
+      // 站址地理量组（siteRainRate/siteAltitude）是参数扫描的注入量，引擎结果里不存在，不进池
+      customOutputPool.value = (g || []).flatMap((x) => (x.items || []).map((it) => ({ key: it.key, label: it.label, unit: it.unit, group: x.title })))
+        .filter((it) => it.key !== 'siteRainRate' && it.key !== 'siteAltitude')
+    }
+  } catch (e) { /* 取不到就只用结果列池 */ }
+})
+// 引擎结果按行留底（writeResultVals 顺手写入；切模式清空见 watch(linkMode)）
+const rawDataByRow = ref({})
+const ccRowsOf = (mode) => (mode === 'laser' ? laserLinks : mode === 'isl' ? islLinks : mode === 'downlink' ? rxStations : txStations)
+// 输入参数池的策展清单（不倒整包入参对象，只收 schema 声明的数值字段）：按面板逻辑分组，
+// ES 收发共用字段拆两侧；具体模式用不到的组由 schema ∩ 入参样本自然滤空
+const CC_INPUT_SPECS = [
+  { fields: SAT_FIELDS, group: '输入 · 卫星' },
+  { fields: CARRIER_FIELDS, group: '输入 · 载波' },
+  { fields: TX_FIELDS, group: '输入 · 发信站', side: 'tx' },
+  { fields: ES_TX_FIELDS, group: '输入 · 发信站', side: 'tx' },
+  { fields: ES_COMMON_FIELDS, group: '输入 · 发信站', side: 'tx' },
+  { fields: RX_FIELDS, group: '输入 · 收信站', side: 'rx' },
+  { fields: ES_RX_FIELDS, group: '输入 · 收信站', side: 'rx' },
+  { fields: ES_COMMON_FIELDS, group: '输入 · 收信站', side: 'rx', useRxKey: true },
+  { fields: ISL_FIELDS, group: '输入 · 星间链路' },
+  { fields: LASER_FIELDS, group: '输入 · 激光链路' }
+]
+const ccInputsOfRow = (rowId) => { const p = sweepParamsByRow.value[rowId]; return p ? { ...(p.linkParams || null), ...(p.satParams || null) } : null }
+// 求值/预览用的行数据：输入参数打底、引擎出参盖上（同名键出参优先；激光模式不留底入参则只有出参）
+const ccRowDataOf = (rowId) => { const d = rawDataByRow.value[rowId]; if (!d) return null; const inp = ccInputsOfRow(rowId); return inp ? { ...inp, ...d } : d }
+const customPoolOf = (mode) => {
+  // 结果列组沿用【词表】的名字与单位：同一个量在两个组里叫两个名字（功放建议/功放建议功率）
+  // 会让人以为是两个量，且裸标签一歧义就报「未知字段」。词表是命名权威，表头短名只用于链路表列头。
+  const base = RESULT_DEFS_BY[mode].filter((d) => d.key !== 'capacityMbps').map((d) => { const t = RESULT_LABELS[d.key]; return { key: d.key, label: t ? t.label : d.label, unit: t ? t.unit : d.unit, group: '结果列' } })
+  const rows = ccRowsOf(mode).filter((r) => rawDataByRow.value[r._id])
+  if (!rows.length) return buildPool(base)
+  // 键取全部行的并集：逐行出参可不同（0 雨强行的 XPD 出 '-'），单行样本会误滤别行的合法键。
+  // berResult 是 "1×10⁻⁷" 形式，parseFloat 得 1 是错值，恒剔除。
+  const keySet = new Set()
+  for (const r of rows) {
+    const d = rawDataByRow.value[r._id]
+    for (const k of Object.keys(d)) {
+      if (k !== 'berResult' && typeof d[k] !== 'object' && Number.isFinite(parseFloat(d[k]))) keySet.add(k)
+    }
+  }
+  return buildPool(
+    base.filter((it) => keySet.has(it.key)),
+    customOutputPool.value.filter((it) => keySet.has(it.key)),
+    schemaInputPool(CC_INPUT_SPECS, ccInputsOfRow(rows[0]._id)),
+    labeledResultPool(keySet),   // 全量词表：出参一律有中文名与单位（含 ISL/激光族，见 shared/lbResultLabels.js）
+    // 词表没收录的键才落裸键名——测试钉死三体制 100% 收录，正常情况下这一组是空的
+    [...keySet].sort().map((k) => ({ key: k, label: k, unit: '', group: '未命名出参' }))
+  )
+}
+const customPool = computed(() => customPoolOf(linkMode.value))
+const customResolveOf = (mode) => makeResolver(customPoolOf(mode))
+const customVals = computed(() => {
+  const out = {}
+  for (const m of LINK_MODES) {
+    const defs = (customColsBy[m.key] || []).filter((c) => c.on !== false)
+    if (!defs.length) continue
+    Object.assign(out, evalRows(defs, ccRowsOf(m.key).map((r) => ({ id: r._id, data: ccRowDataOf(r._id) })), customResolveOf(m.key), customPoolOf(m.key)))
+  }
+  return out
+})
+// 编辑器实时预览：优先当前聚焦行，没有就取本模式第一条有结果的行
+function ccPreview(expr, dp) {
+  const mode = linkMode.value
+  const rows = ccRowsOf(mode)
+  const row = rows.find((r) => r._id === focusRowId.value && rawDataByRow.value[r._id]) || rows.find((r) => rawDataByRow.value[r._id]) || null
+  if (!row) return null
+  const v = evalRows([{ id: 'p', expr, dp }], [{ id: 'p', data: ccRowDataOf(row._id) }], customResolveOf(mode), customPoolOf(mode))
+  return v.p && v.p._cp !== '—' ? v.p._cp : null
+}
+// 弹窗开关与下拉里的勾选（下拉只负责选，建在独立弹窗——写公式费时间，不能点外即丢）
+const ccDlgOpen = ref(false)
+const toggleCustomCol = (id) => { const m = linkMode.value; customColsBy[m] = (customColsBy[m] || []).map((c) => (c.id === id ? { ...c, on: c.on === false } : c)) }
+const ccUnit = (c) => unitOf(c, customPool.value)
+// 表格取值 = 内置结果列(computedVals) + 自定义列(customVals) 合流
+const gridVals = computed(() => {
+  if (!LINK_MODES.some((m) => (customColsBy[m.key] || []).some((c) => c.on !== false))) return computedVals.value
+  const out = { ...computedVals.value }
+  for (const [id, patch] of Object.entries(customVals.value)) out[id] = { ...(out[id] || null), ...patch }
+  return out
+})
 // —— 列组（排版更符合逻辑）：配置引用 / 站址 / 链路参数 / 计算结果。字段按 key 归组（结果列已带 group:'res'）——
 const _STN_GROUP = { basebandId: 'ref', stationId: 'ref', satelliteId: 'ref',
   earthStationLocation: 'geo', longitude: 'geo', latitude: 'geo', minElevation: 'geo', altitude: 'geo',
@@ -578,6 +680,9 @@ function writeResultVals(out, mode) {
   }
   for (const k of Object.keys(resColUnits)) { if (k.startsWith(mode + ':')) delete resColUnits[k] }
   for (const k of Object.keys(colAd)) resColUnits[mode + ':' + k] = colAd[k].unit
+  const raw = { ...rawDataByRow.value }   // 引擎结果按行留底，供自定义列即时求值
+  for (const l of out) raw[l.rowId] = l.data
+  rawDataByRow.value = raw
   for (const l of out) {
     const d = l.data
     const patch = {}
@@ -739,6 +844,12 @@ const rowReadout = computed(() => {
     const n = parseFloat(v)   // 着色口径同结果单元格（见 cellClassFn）：负余量转红
     const bad = def.key === 'linkmargin' && isFinite(n) && n < 0
     items.push({ key: def.key, label: def.label, value: v, unit: resColUnits[mode + ':' + def.key] || def.unit || '', tip: def.tip || def.label, bad })
+  }
+  const cv = customVals.value[row._id] || null
+  for (const c of (cv ? (customColsBy[mode] || []).filter((x) => x.on !== false) : [])) {
+    const v = cv['_c' + c.id]
+    if (v === undefined || v === null || v === '' || v === '—') continue
+    items.push({ key: '_c' + c.id, label: c.label, value: v, unit: unitOf(c, customPoolOf(mode)), tip: c.expr, bad: false })
   }
   const name = link ? pairLabel(link) : (row.earthStationLocation || row.rxEarthStationLocation || '')
   return { no: idx + 1, name, err: (link && link.error) || '', items }
@@ -1723,13 +1834,21 @@ onMounted(async () => {
           <LbSection v-if="linkMode === 'uplink'" id="tx" title="发信站群" :count="txStations.length" summary="一行一站：站址 + 库引用 + 结果列">
             <template #actions>
               <span class="lbx-colpick-wrap">
-                <button class="lb-mini" title="自定义计算结果列（只读，重算即时回填）" @click="colPickOpen = !colPickOpen">结果列 <Icon name="chevron-down" :size="11" /></button>
+                <button class="lb-mini" title="计算结果列：勾选显示列，底部可新建自定义公式列" @click="colPickOpen = !colPickOpen">结果列 <Icon name="chevron-down" :size="11" /></button>
                 <div v-if="colPickOpen" class="lbx-colpick-mask" @click="colPickOpen = false" @wheel.prevent></div>
                 <div v-if="colPickOpen" class="lbx-colpick" @wheel="onColPickWheel">
                   <label v-for="d in curResultDefs" :key="d.key" class="lbx-colpick-i" :title="d.tip || d.label">
                     <input type="checkbox" :checked="resultKeys[linkMode].includes(d.key)" @change="toggleResultKey(d.key)" />
                     <span>{{ d.label }}<i v-if="d.unit"> ({{ d.unit }})</i></span>
                   </label>
+                  <div class="lbx-ccf">
+                    <div class="lbx-ccf-hd"><span>自定义列</span>
+                      <button class="lbx-ccf-btn" title="新建/编辑/删除自定义列（独立窗口，误点不丢）" @click="ccDlgOpen = true; colPickOpen = false">{{ (customColsBy[linkMode] || []).length ? '管理…' : '＋ 新建…' }}</button></div>
+                    <label v-for="c in customColsBy[linkMode]" :key="c.id" class="lbx-colpick-i" :title="c.expr">
+                      <input type="checkbox" :checked="c.on !== false" @change="toggleCustomCol(c.id)" />
+                      <span>{{ c.label }}<i v-if="ccUnit(c)"> ({{ ccUnit(c) }})</i></span>
+                    </label>
+                  </div>
                 </div>
               </span>
             </template>
@@ -1737,20 +1856,28 @@ onMounted(async () => {
               <span class="tx-optl">工作点</span>
             </div>
             <div class="lbx-grid">
-              <StationGrid :stations="txStations" :fields="txGridFields" :groups="GROUPS_STATION" :freeze-keys="false" :extra-values="computedVals" :cell-class="cellClassFn" :cell-sub="txCellSub" :cell-tag="txCellTag" :cities="cities" :city-search="citySearch" label="发信站" :auto-geo="autoGeoTx" :select-options="{ basebandId: basebandSelectOptions, stationId: esSelectOptions, satelliteId: satSelectOptions }" :lib-fields="{ basebandId: 'carrier', stationId: 'station', satelliteId: 'sat' }" @edit-lib="editInLibrary" @row-focus="onRowFocus" />
+              <StationGrid :stations="txStations" :fields="txGridFields" :groups="GROUPS_STATION" :freeze-keys="false" :extra-values="gridVals" :cell-class="cellClassFn" :cell-sub="txCellSub" :cell-tag="txCellTag" :cities="cities" :city-search="citySearch" label="发信站" :auto-geo="autoGeoTx" :select-options="{ basebandId: basebandSelectOptions, stationId: esSelectOptions, satelliteId: satSelectOptions }" :lib-fields="{ basebandId: 'carrier', stationId: 'station', satelliteId: 'sat' }" @edit-lib="editInLibrary" @row-focus="onRowFocus" />
             </div>
             <LbCapFoot :cap="capacitySummary" :cap-main="capMain" :bw-main="bwMain" :readout="rowReadout" />
           </LbSection>
           <LbSection v-if="linkMode === 'downlink'" id="rx" title="收信站群" :count="rxStations.length" summary="一行一站：站址 + 库引用 + 结果列">
             <template #actions>
               <span class="lbx-colpick-wrap">
-                <button class="lb-mini" title="自定义计算结果列（只读，重算即时回填）" @click="colPickOpen = !colPickOpen">结果列 <Icon name="chevron-down" :size="11" /></button>
+                <button class="lb-mini" title="计算结果列：勾选显示列，底部可新建自定义公式列" @click="colPickOpen = !colPickOpen">结果列 <Icon name="chevron-down" :size="11" /></button>
                 <div v-if="colPickOpen" class="lbx-colpick-mask" @click="colPickOpen = false" @wheel.prevent></div>
                 <div v-if="colPickOpen" class="lbx-colpick" @wheel="onColPickWheel">
                   <label v-for="d in curResultDefs" :key="d.key" class="lbx-colpick-i" :title="d.tip || d.label">
                     <input type="checkbox" :checked="resultKeys[linkMode].includes(d.key)" @change="toggleResultKey(d.key)" />
                     <span>{{ d.label }}<i v-if="d.unit"> ({{ d.unit }})</i></span>
                   </label>
+                  <div class="lbx-ccf">
+                    <div class="lbx-ccf-hd"><span>自定义列</span>
+                      <button class="lbx-ccf-btn" title="新建/编辑/删除自定义列（独立窗口，误点不丢）" @click="ccDlgOpen = true; colPickOpen = false">{{ (customColsBy[linkMode] || []).length ? '管理…' : '＋ 新建…' }}</button></div>
+                    <label v-for="c in customColsBy[linkMode]" :key="c.id" class="lbx-colpick-i" :title="c.expr">
+                      <input type="checkbox" :checked="c.on !== false" @change="toggleCustomCol(c.id)" />
+                      <span>{{ c.label }}<i v-if="ccUnit(c)"> ({{ ccUnit(c) }})</i></span>
+                    </label>
+                  </div>
                 </div>
               </span>
             </template>
@@ -1758,43 +1885,59 @@ onMounted(async () => {
               <span class="tx-optl">工作点 G/T</span>
             </div>
             <div class="lbx-grid">
-              <StationGrid :stations="rxStations" :fields="rxGridFields" :groups="GROUPS_STATION" :freeze-keys="false" :extra-values="computedVals" :cell-class="cellClassFn" :cell-sub="rxCellSub" :cities="cities" :city-search="citySearch" label="收信站" :auto-geo="autoGeoRx" :select-options="{ basebandId: basebandSelectOptions, stationId: esSelectOptions, satelliteId: satSelectOptions }" :lib-fields="{ basebandId: 'carrier', stationId: 'station', satelliteId: 'sat' }" @edit-lib="editInLibrary" @row-focus="onRowFocus" />
+              <StationGrid :stations="rxStations" :fields="rxGridFields" :groups="GROUPS_STATION" :freeze-keys="false" :extra-values="gridVals" :cell-class="cellClassFn" :cell-sub="rxCellSub" :cities="cities" :city-search="citySearch" label="收信站" :auto-geo="autoGeoRx" :select-options="{ basebandId: basebandSelectOptions, stationId: esSelectOptions, satelliteId: satSelectOptions }" :lib-fields="{ basebandId: 'carrier', stationId: 'station', satelliteId: 'sat' }" @edit-lib="editInLibrary" @row-focus="onRowFocus" />
             </div>
             <LbCapFoot :cap="capacitySummary" :cap-main="capMain" :bw-main="bwMain" :readout="rowReadout" />
           </LbSection>
           <LbSection v-if="linkMode === 'isl'" id="isl" title="星间链路群" :count="islLinks.length" summary="一行一条：发射星 → 接收星 + 结果列">
             <template #actions>
               <span class="lbx-colpick-wrap">
-                <button class="lb-mini" title="自定义计算结果列（只读，重算即时回填）" @click="colPickOpen = !colPickOpen">结果列 <Icon name="chevron-down" :size="11" /></button>
+                <button class="lb-mini" title="计算结果列：勾选显示列，底部可新建自定义公式列" @click="colPickOpen = !colPickOpen">结果列 <Icon name="chevron-down" :size="11" /></button>
                 <div v-if="colPickOpen" class="lbx-colpick-mask" @click="colPickOpen = false" @wheel.prevent></div>
                 <div v-if="colPickOpen" class="lbx-colpick" @wheel="onColPickWheel">
                   <label v-for="d in curResultDefs" :key="d.key" class="lbx-colpick-i" :title="d.tip || d.label">
                     <input type="checkbox" :checked="resultKeys[linkMode].includes(d.key)" @change="toggleResultKey(d.key)" />
                     <span>{{ d.label }}<i v-if="d.unit"> ({{ d.unit }})</i></span>
                   </label>
+                  <div class="lbx-ccf">
+                    <div class="lbx-ccf-hd"><span>自定义列</span>
+                      <button class="lbx-ccf-btn" title="新建/编辑/删除自定义列（独立窗口，误点不丢）" @click="ccDlgOpen = true; colPickOpen = false">{{ (customColsBy[linkMode] || []).length ? '管理…' : '＋ 新建…' }}</button></div>
+                    <label v-for="c in customColsBy[linkMode]" :key="c.id" class="lbx-colpick-i" :title="c.expr">
+                      <input type="checkbox" :checked="c.on !== false" @change="toggleCustomCol(c.id)" />
+                      <span>{{ c.label }}<i v-if="ccUnit(c)"> ({{ ccUnit(c) }})</i></span>
+                    </label>
+                  </div>
                 </div>
               </span>
             </template>
             <div class="lbx-grid">
-              <StationGrid :stations="islLinks" :fields="islGridFields" :groups="GROUPS_ISL" :freeze-keys="false" :extra-values="computedVals" :cell-class="cellClassFn" :cities="cities" :city-search="citySearch" label="星间链路" :show-import="false" :select-options="{ basebandId: basebandSelectOptions, txSatelliteId: satSelectOptions, rxSatelliteId: satSelectOptions }" :lib-fields="{ basebandId: 'carrier', txSatelliteId: 'sat', rxSatelliteId: 'sat' }" @edit-lib="editInLibrary" @row-focus="onRowFocus" />
+              <StationGrid :stations="islLinks" :fields="islGridFields" :groups="GROUPS_ISL" :freeze-keys="false" :extra-values="gridVals" :cell-class="cellClassFn" :cities="cities" :city-search="citySearch" label="星间链路" :show-import="false" :select-options="{ basebandId: basebandSelectOptions, txSatelliteId: satSelectOptions, rxSatelliteId: satSelectOptions }" :lib-fields="{ basebandId: 'carrier', txSatelliteId: 'sat', rxSatelliteId: 'sat' }" @edit-lib="editInLibrary" @row-focus="onRowFocus" />
             </div>
             <LbCapFoot :cap="capacitySummary" :cap-main="capMain" :bw-main="bwMain" :readout="rowReadout" />
           </LbSection>
           <LbSection v-if="linkMode === 'laser'" id="laser" title="星间激光链路群" :count="laserLinks.length" summary="一行一条：发射星 → 接收星 + 结果列">
             <template #actions>
               <span class="lbx-colpick-wrap">
-                <button class="lb-mini" title="自定义计算结果列（只读，重算即时回填）" @click="colPickOpen = !colPickOpen">结果列 <Icon name="chevron-down" :size="11" /></button>
+                <button class="lb-mini" title="计算结果列：勾选显示列，底部可新建自定义公式列" @click="colPickOpen = !colPickOpen">结果列 <Icon name="chevron-down" :size="11" /></button>
                 <div v-if="colPickOpen" class="lbx-colpick-mask" @click="colPickOpen = false" @wheel.prevent></div>
                 <div v-if="colPickOpen" class="lbx-colpick" @wheel="onColPickWheel">
                   <label v-for="d in curResultDefs" :key="d.key" class="lbx-colpick-i" :title="d.tip || d.label">
                     <input type="checkbox" :checked="resultKeys[linkMode].includes(d.key)" @change="toggleResultKey(d.key)" />
                     <span>{{ d.label }}<i v-if="d.unit"> ({{ d.unit }})</i></span>
                   </label>
+                  <div class="lbx-ccf">
+                    <div class="lbx-ccf-hd"><span>自定义列</span>
+                      <button class="lbx-ccf-btn" title="新建/编辑/删除自定义列（独立窗口，误点不丢）" @click="ccDlgOpen = true; colPickOpen = false">{{ (customColsBy[linkMode] || []).length ? '管理…' : '＋ 新建…' }}</button></div>
+                    <label v-for="c in customColsBy[linkMode]" :key="c.id" class="lbx-colpick-i" :title="c.expr">
+                      <input type="checkbox" :checked="c.on !== false" @change="toggleCustomCol(c.id)" />
+                      <span>{{ c.label }}<i v-if="ccUnit(c)"> ({{ ccUnit(c) }})</i></span>
+                    </label>
+                  </div>
                 </div>
               </span>
             </template>
             <div class="lbx-grid">
-              <StationGrid :stations="laserLinks" :fields="laserGridFields" :groups="GROUPS_LASER" :freeze-keys="false" :extra-values="computedVals" :cell-class="cellClassFn" :cities="cities" :city-search="citySearch" label="激光星间链路" :show-import="false" :select-options="{ txSatelliteId: satSelectOptions, rxSatelliteId: satSelectOptions }" :lib-fields="{ txSatelliteId: 'sat', rxSatelliteId: 'sat' }" @edit-lib="editInLibrary" @row-focus="onRowFocus" />
+              <StationGrid :stations="laserLinks" :fields="laserGridFields" :groups="GROUPS_LASER" :freeze-keys="false" :extra-values="gridVals" :cell-class="cellClassFn" :cities="cities" :city-search="citySearch" label="激光星间链路" :show-import="false" :select-options="{ txSatelliteId: satSelectOptions, rxSatelliteId: satSelectOptions }" :lib-fields="{ txSatelliteId: 'sat', rxSatelliteId: 'sat' }" @edit-lib="editInLibrary" @row-focus="onRowFocus" />
             </div>
             <!-- 激光星间不出容量汇总（载波带宽/频谱效率口径不适用），但本行读数照给 -->
             <LbCapFoot :readout="rowReadout" />
@@ -1994,6 +2137,9 @@ onMounted(async () => {
 
     <!-- 命名弹窗 -->
     <!-- 导出报告：封面元信息 + 输出格式 + 是否含图（三窗共用组件）-->
+    <LbCustomColsDialog :open="ccDlgOpen" :cols="customColsBy[linkMode]" :pool="customPool"
+      :subtitle="(LINK_MODES.find((m) => m.key === linkMode) || {}).label || ''" :preview-fn="ccPreview"
+      @update:cols="customColsBy[linkMode] = $event" @close="ccDlgOpen = false" />
     <LbReportDialog :open="reportDlg.open" :lang="reportLang" orbit-type="REGEN" :regen-mode="linkMode"
       :sat-name="(satConfigs[0] && satConfigs[0].form.satelliteName) || ''" :band="(satConfigs[0] && satConfigs[0].form.frequencyBand) || ''" :link-count="links.length"
       :viz-available="showViz" store-key="regen" :busy="reportDlg.busy" :progress="reportDlg.progress"

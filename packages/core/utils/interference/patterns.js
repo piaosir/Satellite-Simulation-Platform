@@ -48,7 +48,11 @@ function beamwidth3dB(diameterM, wavelengthM) {
 
 /**
  * 地球站离轴增益 G(φ)（dBi），峰值旁瓣包络。
- * 与 utils/linkCalculator.js 的 calculateITU465OffAxisGain 同口径同分段——两处必须一致，
+ * 本模块是 AP8/S.580 型离轴包络在全平台的【唯一】实现：链路预算引擎里那份同口径副本
+ * （calculateITU465OffAxisGain / calculateITU465Isolation）已于 2026-08-07 随「邻星离轴口径」
+ * 整组移除，故不再有「两处必须一致」的约束——但也意味着这里错了没有第二处能对出来，
+ * 三档 D/λ 分支的逐点核对与单调性由 test/interference.test.mjs 的「② 方向图」段守着。
+ * 旧注释原文（存档）：与 utils/linkCalculator.js 的 calculateITU465OffAxisGain 同口径同分段——两处必须一致，
  * 否则同一副天线在链路预算里显示的旁瓣增益与干扰分析算出的鉴别度会对不上。
  *
  * 注：函数名里的 465 在引擎侧是历史遗留（S.465-6 正文只有 32−25lgφ / −10 两段），

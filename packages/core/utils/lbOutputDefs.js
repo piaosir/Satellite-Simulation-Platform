@@ -91,8 +91,9 @@ const OUTPUT_GROUPS = [
       { key: 'arrivalPFDAtSatelliteResult', label: '到达卫星通量密度', labelEn: 'PFD at Satellite', unit: 'dBW/m²', geoSide: 'both', geoField: true },
       { key: 'arrivalPFDAtGroundResult', label: '到达地面通量密度', labelEn: 'PFD at Ground', unit: 'dBW/m²', geoSide: 'both', geoField: true },
       { key: 'transponderOutputEIRP', label: '转发器输出 EIRP', labelEn: 'Transponder Output EIRP', unit: 'dBW', geoSide: 'both' },
-      { key: 'satellitePSDResult', label: '卫星功率谱密度', labelEn: 'Satellite PSD', unit: 'dBW/Hz', geoSide: 'both', geoField: true },
-      { key: 'txSidelobeEIRPResult', label: '旁瓣 EIRP', labelEn: 'Sidelobe EIRP', unit: 'dBW', geoSide: 'both' }
+      // 「旁瓣 EIRP」已随邻星离轴口径整组移除（2026-08-07）：它由 deltaTheta 派生，而平台三窗
+      // 从来没有那个输入框，引擎只能靠空值回退硬造角度 —— 详见 linkCalculator.js 同日注释。
+      { key: 'satellitePSDResult', label: '卫星功率谱密度', labelEn: 'Satellite PSD', unit: 'dBW/Hz', geoSide: 'both', geoField: true }
     ]
   },
   {

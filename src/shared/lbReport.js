@@ -330,9 +330,10 @@ export function methodology(scheme, lang) {
     {
       group: G('噪声与系统', 'Noise and system'),
       items: [
-        { id: 'ITU-R P.372-16', title: G('无线电噪声', 'Radio noise'), use: G('天空噪声温度与噪声环境基准', 'Sky-noise temperature and noise environment reference') },
-        { id: 'ITU-R S.465-6', title: G('地球站天线参考辐射图（协调用）', 'Reference radiation pattern for earth station antennas'), use: G('邻星干扰评估的天线旁瓣参考口径', 'Reference sidelobe envelope for adjacent-satellite interference assessment') },
-        { id: 'ITU-R S.524-9', title: G('地球站发射旁瓣 EIRP 密度限值', 'Maximum permissible off-axis e.i.r.p. density from earth stations'), use: G('上行离轴 EIRP 密度的合规参照', 'Compliance reference for off-axis uplink EIRP density') }
+        // S.465-6 与 S.524-9 两条已撤（2026-08-07）：链路预算侧唯一的消费点是「邻星离轴口径」，
+        // 那组量随 deltaTheta 一并移除，本报告不再有任何数出自这两份建议书。干扰分析模块仍在用它们，
+        // 但那是另一份报告的参考文献——列在这里就是给读者一个本报告根本没算的出处。
+        { id: 'ITU-R P.372-16', title: G('无线电噪声', 'Radio noise'), use: G('天空噪声温度与噪声环境基准', 'Sky-noise temperature and noise environment reference') }
       ]
     }
   ]

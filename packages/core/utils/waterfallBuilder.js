@@ -118,21 +118,16 @@ const WF_DICT = {
   'IBO': 'IBO',
   '转发器带宽': 'Transponder Bandwidth',
   '卫星功率谱密度': 'Satellite PSD',
-  // —— 旁瓣·功率谱·增益与噪声 ——
+  // —— 功率谱·增益与噪声 ——
   '功放建议功率(W)': 'Recommended PA Power (W)',
-  '旁瓣发射增益': 'Tx Sidelobe Gain',
-  '旁瓣 EIRP': 'Sidelobe EIRP',
-  '旁瓣功率谱密度': 'Sidelobe PSD',
   '地球站功率谱密度': 'Earth Station PSD',
   '发射端功率谱密度': 'Tx-side PSD',
   '到达端通量密度': 'PFD at Rx Side',
   '到达通量密度（晴天）': 'PFD, Clear Sky',
-  'ITU 旁瓣 PSD 建议值': 'ITU Sidelobe PSD Limit',
   '到达卫星通量密度': 'PFD at Satellite',
   '到达卫星通量密度（晴天）': 'PFD at Satellite (Clear Sky)',
   '卫星到地面 PFD': 'Satellite-to-Ground PFD',
   'ITU PFD 限值': 'ITU PFD Limit',
-  '接收旁瓣增益': 'Rx Sidelobe Gain',
   '接收馈线损耗': 'Rx Feeder Loss',
   'G/T 劣化': 'G/T Degradation',
   '天线噪声温度': 'Antenna Noise Temperature',
@@ -722,8 +717,10 @@ function createBuilder(ctx) {
     // 上行发射端＝地球站、到达端＝卫星；下行发射端＝卫星、到达端＝地面。
     // 「到达端通量密度」两列同取实际值（含雨衰）才是同一口径；晴天口径（PFDc，ITU 协调用）
     // 只有上行有对应量，单列一行，下行留空不硬凑。
-    // 邻星旁瓣/离轴各行（旁瓣发射增益·EIRP·PSD、ITU 旁瓣 PSD 建议、接收旁瓣增益）随「邻星离轴角」
-    // 输入一并移除（基于 deltaTheta + ITU-R S.465 的邻星隔离分析，不参与 C/N 级联）。
+    // 邻星旁瓣/离轴各行（旁瓣发射增益·EIRP·PSD、ITU 旁瓣 PSD 建议、接收旁瓣增益）已整组移除：
+    // 它们全由「邻星轨位差 deltaTheta」派生，而平台三窗从来没有这个输入框，引擎只能靠空值回退
+    // 硬造一个角度——2026-08-07 起该入参与派生量在两个引擎里一并删除（见 linkCalculator.js 同日注释）。
+    // 留下的这四行与邻星无关：功率谱密度、到达通量密度、RR Art.21 落地 PFD 限值（仰角驱动）。
     segs.push(b._dualSeg('功率谱与通量密度（上行 / 下行）', [
       ['发射端功率谱密度', 'stationPSDResult', 'satellitePSDResult', 'dBW/Hz'],
       ['到达端通量密度', 'arrivalPFDAtSatelliteResult', 'arrivalPFDAtGroundResult', 'dBW/m²'],
@@ -822,7 +819,9 @@ function createBuilder(ctx) {
       C('loss', '载波噪声带宽 10·lgB', noiseBW, 'dB', 'down'),
       C('chk', '下行 C/N（热噪声）', null, 'dB', 'down'),
       C('loss', '下行干扰损失 ACI/ASI/XPI/IM', dnIntfLoss, 'dB', 'down'),
-      ...(isFinite(dnResidualRain) && Math.abs(dnResidualRain) >= 0.005
+      // 「确有上行雨衰」门槛：残余由十余个 toFixed(2) 出参相加，量化噪声可越过 0.005，
+      // 晴空也会冒出一行 0.01~0.02 的假「上行雨衰」；上行雨衰 <0.05 dB 时本行无物理意义，不列。
+      ...(isFinite(dnResidualRain) && Math.abs(dnResidualRain) >= 0.005 && num('uplinkRainAttenuation') >= 0.05
         ? [C('loss', '上行雨衰', dnResidualRain, 'dB', 'down')]
         : []),
       C('sub', '下行 C/(N+I)', null, 'dB', 'down'),
@@ -1003,9 +1002,10 @@ function createBuilder(ctx) {
 
     // ⑤ 功率谱与通量密度（上行 / 下行 双列）——口径同 GEO：每行一个物理量，两列＝两个方向的
     // 发射端 / 到达端；「到达端通量密度」两列同取实际值（含雨衰），晴天口径只有上行有对应量。
-    // NGSO 已移除 GEO 弧「邻星旁瓣/隔离」相关行（旁瓣增益/EIRP/PSD、ITU 旁瓣 PSD 建议值、接收旁瓣增益）——
-    // 这些基于邻星轨位差 deltaTheta + ITU-R S.465，是 GEO 静止弧概念，不适配 NGSO。
-    // 保留落地 PFD vs ITU Article 21 限值（对 NGSO 下行有效）。
+    // 「邻星旁瓣/隔离」相关行（旁瓣增益/EIRP/PSD、ITU 旁瓣 PSD 建议值、接收旁瓣增益）本段没有：
+    // 它们是 GEO 静止弧概念，对 NGSO 本就不适配；2026-08-07 起该口径连同 deltaTheta 入参
+    // 在 GEO/NGSO 两个引擎里都已删除（平台无此输入框，见 linkCalculator.js 同日注释）。
+    // 保留落地 PFD vs ITU Article 21 限值（仰角驱动，对 NGSO 下行有效）。
     segs.push(b._dualSeg('功率谱与通量密度（上行 / 下行）', [
       ['发射端功率谱密度', 'stationPSDResult', 'satellitePSDResult', 'dBW/Hz'],
       ['到达端通量密度', 'arrivalPFDAtSatelliteResult', 'arrivalPFDAtGroundResult', 'dBW/m²'],
@@ -1098,7 +1098,9 @@ function createBuilder(ctx) {
       C('loss', '载波噪声带宽 10·lgB', noiseBW, 'dB', 'down'),
       C('chk', '下行 C/N（热噪声）', null, 'dB', 'down'),
       C('loss', '下行干扰损失 ACI/ASI/XPI/IM', dnIntfLoss, 'dB', 'down'),
-      ...(isFinite(dnResidualRain) && Math.abs(dnResidualRain) >= 0.005
+      // 「确有上行雨衰」门槛：残余由十余个 toFixed(2) 出参相加，量化噪声可越过 0.005，
+      // 晴空也会冒出一行 0.01~0.02 的假「上行雨衰」；上行雨衰 <0.05 dB 时本行无物理意义，不列。
+      ...(isFinite(dnResidualRain) && Math.abs(dnResidualRain) >= 0.005 && num('uplinkRainAttenuation') >= 0.05
         ? [C('loss', '上行雨衰', dnResidualRain, 'dB', 'down')]
         : []),
       C('sub', '下行 C/N', null, 'dB', 'down')

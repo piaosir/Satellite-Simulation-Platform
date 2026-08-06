@@ -90,9 +90,8 @@ console.log('\n=== ② 方向图 ===');
 
 // AP8 必须与链路预算引擎逐位一致（同一副天线在两处显示的旁瓣增益不能不同）
 {
-  const engine = require('../utils/linkCalculator.js');
-  // 引擎未导出该函数 → 用引擎出参里的「接收旁瓣增益」交叉验证：rxSidelobeGainResult = Gmax − ISO = G(φ)
-  // 这里退而用同结构的独立复算：AP8 的三档分支各取一个点，与手写公式比对
+  // 链路预算引擎那份离轴增益实现已随邻星离轴口径整组删除（2026-08-07），patterns.js 现为唯一出处，
+  // 故三档 D/λ 分支都要有覆盖（此前只测了 ≥100 那一档）。以下与建议书公式手写复算逐点比对。
   const lam = A.lambdaOf(12.5);
   // 大天线档 D/λ ≥ 100
   const D1 = 4.5, r1 = D1 / lam;
@@ -102,7 +101,23 @@ console.log('\n=== ② 方向图 ===');
   // 主瓣抛物线
   approx('AP8 主瓣抛物线', P.offAxisAP8(D1, lam, 0.65, 0.1),
     P.peakGainDbi(D1, lam, 0.65) - 0.0025 * Math.pow(r1 * 0.1, 2), 1e-9);
-  ok('引擎模块可加载（口径同源检查）', typeof engine.calculateLinkBudget === 'function');
+  // 中档 50 ≤ D/λ < 100（1.2 m @ 12.5 GHz，D/λ≈50）：旁瓣段 39−5lg(D/λ)−25lgφ、远场底板 −3−5lg(D/λ)
+  const D2 = 1.2, r2 = D2 / lam;
+  ok('AP8 中档 50 ≤ D/λ < 100', r2 >= 50 && r2 < 100, `D/λ=${r2.toFixed(1)}`);
+  approx('AP8 中档旁瓣段 = 39−5lg(D/λ)−25lgφ', P.offAxisAP8(D2, lam, 0.65, 10),
+    39 - 5 * Math.log10(r2) - 25 * Math.log10(10), 1e-9);
+  approx('AP8 中档远场底板 = −3−5lg(D/λ)', P.offAxisAP8(D2, lam, 0.65, 60), -3 - 5 * Math.log10(r2), 1e-9);
+  // 小档 D/λ < 50（0.75 m @ 12.5 GHz，D/λ≈31）：旁瓣段 29−25lgφ、远场底板 −10−10lg(D/λ)
+  const D3 = 0.75, r3 = D3 / lam;
+  ok('AP8 小档 D/λ < 50', r3 < 50, `D/λ=${r3.toFixed(1)}`);
+  approx('AP8 小档旁瓣段 = 29−25lgφ', P.offAxisAP8(D3, lam, 0.65, 10), 29 - 25 * Math.log10(10), 1e-9);
+  approx('AP8 小档远场底板 = −10−10lg(D/λ)', P.offAxisAP8(D3, lam, 0.65, 60), -10 - 10 * Math.log10(r3), 1e-9);
+  // 单调不增：包络在 0.5°~60° 全程不得回升（三档接缝处最容易出台阶）
+  for (const [D, tag] of [[D1, '大档'], [D2, '中档'], [D3, '小档']]) {
+    let mono = true, prev = Infinity;
+    for (let phi = 0.5; phi <= 60; phi += 0.25) { const g = P.offAxisAP8(D, lam, 0.65, phi); if (g > prev + 1e-9) { mono = false; break } prev = g }
+    ok(`AP8 ${tag}包络 0.5°~60° 单调不增`, mono);
+  }
 }
 
 // S.1428-1：官方原文关键系数
@@ -214,13 +229,19 @@ console.log('\n=== ② 方向图 ===');
     approx('φ < φ₀ 按 φ₀ 处连续钳住', below.limitDb, 39 - 25 * Math.log10(2.5), 1e-9);
   }
 
-  // 两个链路预算引擎必须与本表同源（统一后不得再各存一份）
+  // S.524 掩模现在只有干扰分析这一个消费者：链路预算两个引擎的邻星离轴口径（deltaTheta 派生的
+  // 旁瓣增益/EIRP/PSD 与 S.524 门限）已于 2026-08-07 整组移除——平台从来没有那个角度的输入框。
+  // 故此处不再文本匹配引擎里的 require（那会把「不许清死 import」钉成不变式），改为直接钉住
+  // 「引擎不得再出这几个由假角度派生的键」，与移除决定同向。
   {
     const eng = require('../utils/linkCalculator.js');
     const engN = require('../utils/linkCalculatorNGSO.js');
-    ok('GSO 引擎已改为共用 patterns.js 的掩模', /interference\/patterns/.test(require('fs').readFileSync(new URL('../utils/linkCalculator.js', import.meta.url), 'utf8')));
-    ok('NGSO 引擎已改为共用 patterns.js 的掩模', /interference\/patterns/.test(require('fs').readFileSync(new URL('../utils/linkCalculatorNGSO.js', import.meta.url), 'utf8')));
-    ok('两个引擎均可正常加载', typeof eng.calculateLinkBudget === 'function' && typeof engN.calculateLinkBudget === 'function');
+    const gone = ['txSidelobeGainResult', 'txSidelobeEIRPResult', 'txSidelobePSDResult', 'rxSidelobeGainResult', 'ituPsdLimit4kHz', 'ituPsdLimitHz', 'deltagain'];
+    const rg = eng.calculateLinkBudget({ frequencyBand: 'Ku', satelliteName: 'D' }, {});
+    const rn = engN.calculateLinkBudget({ frequencyBand: 'Ku', satelliteName: 'D' }, { orbitAltitude: 1145, rxOrbitAltitude: 1145 });
+    ok('两个引擎均可正常加载', rg.success === true && rn.success === true);
+    ok('GSO 引擎不再出邻星离轴派生量', gone.every((k) => rg.data[k] === undefined), gone.filter((k) => rg.data[k] !== undefined).join(' '));
+    ok('NGSO 引擎不再出邻星离轴派生量', gone.every((k) => rn.data[k] === undefined), gone.filter((k) => rn.data[k] !== undefined).join(' '));
   }
 }
 

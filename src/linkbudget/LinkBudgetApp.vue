@@ -23,6 +23,9 @@ import WaterfallTable from './WaterfallTable.vue'
 import LbVizPane from '../components/LbVizPane.vue'
 import LbFontCtl from '../components/LbFontCtl.vue'
 import LbCapFoot from '../components/LbCapFoot.vue'
+import LbCustomColsDialog from '../components/LbCustomColsDialog.vue'
+import { buildPool, makeResolver, evalRows, customFieldDefs, loadDefs, saveDefs, unitOf, schemaInputPool } from '../shared/lbCustomCols.js'   // 自定义列：公式合成新列
+import { labeledResultPool, RESULT_LABELS } from '../shared/lbResultLabels.js'   // 引擎出参中文名与单位（全量词表）
 import LbShareDialog from '../components/LbShareDialog.vue'
 import LbReportDialog from '../components/LbReportDialog.vue'
 import LbAdvBalanceDialog from '../components/LbAdvBalanceDialog.vue'
@@ -400,7 +403,8 @@ const GRID_GROUPS = [{ key: 'tx', label: '发信站' }, { key: 'rx', label: '收
 const gridFields = computed(() => [
   ...TX_FIELDS.map((f) => ({ ...f, group: 'tx' })),
   ...RX_FIELDS.map((f) => ({ ...f, group: 'rx' })),
-  ...RESULT_DEFS.filter((d) => resultKeys.value.includes(d.key)).map((d) => ({ key: '_' + d.key, label: d.label, unit: resColUnits.value[d.key] || d.unit, type: d.type === 'text' ? 'text' : 'num', ro: true, group: 'res', target: 'meta', tip: d.tip || d.label }))
+  ...RESULT_DEFS.filter((d) => resultKeys.value.includes(d.key)).map((d) => ({ key: '_' + d.key, label: d.label, unit: resColUnits.value[d.key] || d.unit, type: d.type === 'text' ? 'text' : 'num', ro: true, group: 'res', target: 'meta', tip: d.tip || d.label })),
+  ...customFieldDefs(customCols.value, customPool.value)
 ])
 // 计算列取值映射 { 行_id: { _键: 值 } }：结果不写行数据 → 写回不惊动存档/脏检/过期 watcher
 const computedVals = ref({})
@@ -456,6 +460,86 @@ const error = ref('')
 const resultsStale = ref(false)
 watch([satConfigs, basebandConfigs, esConfigs, linkRows, satId],
   () => { if (links.value.length) resultsStale.value = true }, { deep: true })
+// —— 自定义列（公式把引擎出参组合成新列，语法与求值见 shared/lbCustomCols.js）——
+// 定义按窗口记忆（localStorage），不入场景配置——口径同结果列勾选集；值由 links 里留底的引擎
+// 结果即时求出，新建/改公式即刻回填，无需重算。
+// 字段池 = 本页【输入参数】+【全部输出参数】：输入取每行真正送进引擎的那份入参（sweepParamsByRow
+// 留底，天然分体制），标签复用 params 字段表；输出算过之前给结果列+可绘清单（策展），算过之后按
+// 本体制实际出参过滤并补齐其余全部数值键（「全部出参」组，label=键名）。capacityMbps 是派生指标，恒剔除。
+const customCols = ref(loadDefs('linkbudget/customCols'))
+watch(customCols, (v) => saveDefs('linkbudget/customCols', v), { deep: true })
+const customCurated = ref([])
+onMounted(async () => {
+  try {
+    if (api) {
+      const g = await api.linkBudget.outputDefs()
+      // 站址地理量组（siteRainRate/siteAltitude）是参数扫描的注入量，引擎结果里不存在，不进池
+      customCurated.value = (g || []).flatMap((x) => (x.items || []).map((it) => ({ key: it.key, label: it.label, unit: it.unit, group: x.title })))
+        .filter((it) => it.key !== 'siteRainRate' && it.key !== 'siteAltitude')
+    }
+  } catch (e) { /* 取不到就只用结果列池 */ }
+})
+// 输入参数池的策展清单（不倒整包入参对象，只收 schema 声明的数值字段）：按面板逻辑分组，
+// ES 收发共用字段拆两侧，跨侧同名标签（降雨率/天线口径…）由 schemaInputPool 自动标（发）/（收）
+const CC_INPUT_SPECS = [
+  { fields: SAT_FIELDS, group: '输入 · 卫星与转发器' },
+  { fields: CARRIER_FIELDS, group: '输入 · 载波' },
+  { fields: TX_FIELDS, group: '输入 · 发信站', side: 'tx' },
+  { fields: ES_TX_FIELDS, group: '输入 · 发信站', side: 'tx' },
+  { fields: ES_COMMON_FIELDS, group: '输入 · 发信站', side: 'tx' },
+  { fields: RX_FIELDS, group: '输入 · 收信站', side: 'rx' },
+  { fields: ES_RX_FIELDS, group: '输入 · 收信站', side: 'rx' },
+  { fields: ES_COMMON_FIELDS, group: '输入 · 收信站', side: 'rx', useRxKey: true }
+]
+const ccSampleRow = computed(() => links.value.find((x) => x.data) || null)
+const ccInputsOf = (l) => { const p = l && sweepParamsByRow.value[l.rowId]; return p ? { ...(p.linkParams || null), ...(p.satParams || null) } : null }
+// 求值/预览用的行数据：输入参数打底、引擎出参盖上（同名键出参优先）
+const ccRowData = (l) => (l && l.data ? { ...(ccInputsOf(l) || null), ...l.data } : null)
+const customPool = computed(() => {
+  // 结果列组沿用【词表】的名字与单位：同一个量在两个组里叫两个名字（功放建议/功放建议功率）
+  // 会让人以为是两个量，且裸标签一歧义就报「未知字段」。词表是命名权威，表头短名只用于链路表列头。
+  const base = RESULT_DEFS.filter((d) => d.key !== 'capacityMbps').map((d) => { const t = RESULT_LABELS[d.key]; return { key: d.key, label: t ? t.label : d.label, unit: t ? t.unit : d.unit, group: '结果列' } })
+  const rows = links.value.filter((x) => x.data)
+  if (!rows.length) return buildPool(base, customCurated.value)
+  // 键取全部行的并集：逐行出参可不同（0 雨强行的 XPD 出 '-'），单行样本会误滤别行的合法键。
+  // berResult 是 "1×10⁻⁷" 形式，parseFloat 得 1 是错值，恒剔除。
+  const keySet = new Set()
+  for (const l of rows) {
+    const d = l.data
+    for (const k of Object.keys(d)) {
+      if (k !== 'berResult' && typeof d[k] !== 'object' && Number.isFinite(parseFloat(d[k]))) keySet.add(k)
+    }
+  }
+  return buildPool(
+    base.filter((it) => keySet.has(it.key)),
+    customCurated.value.filter((it) => keySet.has(it.key)),
+    schemaInputPool(CC_INPUT_SPECS, ccInputsOf(rows[0])),
+    labeledResultPool(keySet),   // 全量词表：出参一律有中文名与单位（见 shared/lbResultLabels.js）
+    // 词表没收录的键才落裸键名——测试钉死三体制 100% 收录，正常情况下这一组是空的
+    [...keySet].sort().map((k) => ({ key: k, label: k, unit: '', group: '未命名出参' }))
+  )
+})
+const customResolve = computed(() => makeResolver(customPool.value))
+const customOn = computed(() => customCols.value.filter((c) => c.on !== false))
+const customVals = computed(() => evalRows(customOn.value, links.value.map((l) => ({ id: l.rowId, data: ccRowData(l) })), customResolve.value, customPool.value))
+// 编辑器实时预览：优先当前聚焦行，没有就取第一条有结果的链路
+function ccPreview(expr, dp) {
+  const l = links.value.find((x) => x.rowId === focusRowId.value && x.data) || ccSampleRow.value
+  if (!l) return null
+  const v = evalRows([{ id: 'p', expr, dp }], [{ id: 'p', data: ccRowData(l) }], customResolve.value, customPool.value)
+  return v.p && v.p._cp !== '—' ? v.p._cp : null
+}
+// 弹窗开关与下拉里的勾选（下拉只负责选，建在独立弹窗——写公式费时间，不能点外即丢）
+const ccDlgOpen = ref(false)
+const toggleCustomCol = (id) => { customCols.value = customCols.value.map((c) => (c.id === id ? { ...c, on: c.on === false } : c)) }
+const ccUnit = (c) => unitOf(c, customPool.value)
+// 表格取值 = 内置结果列(computedVals) + 自定义列(customVals) 合流
+const gridVals = computed(() => {
+  if (!customOn.value.length) return computedVals.value
+  const out = { ...computedVals.value }
+  for (const [id, patch] of Object.entries(customVals.value)) out[id] = { ...(out[id] || null), ...patch }
+  return out
+})
 // —— 瀑布表一键整表复制（TSV，直接粘贴进 Excel / 报告）——
 async function copyWaterfallTsv() {
   if (!segments.value.length) return
@@ -766,6 +850,12 @@ const rowReadout = computed(() => {
     const bad = isFinite(n) && (def.key === 'linkmargin' ? n < 0
       : (def.key === 'powerUsageRatio' || def.key === 'bandwidthUsageRatio') ? n > 100 : false)
     items.push({ key: def.key, label: def.label, value: v, unit: resColUnits.value[def.key] || def.unit || '', tip: def.tip || def.label, bad })
+  }
+  const cv = customVals.value[row._id] || null
+  for (const c of (cv ? customOn.value : [])) {
+    const v = cv['_c' + c.id]
+    if (v === undefined || v === null || v === '' || v === '—') continue
+    items.push({ key: '_c' + c.id, label: c.label, value: v, unit: unitOf(c, customPool.value), tip: c.expr, bad: false })
   }
   const name = link ? `${link.txName} → ${link.rxName}`
     : [row.earthStationLocation, row.rxEarthStationLocation].filter(Boolean).join(' → ')
@@ -1736,18 +1826,26 @@ onMounted(async () => {
           <LbSection id="links" title="链路表" :count="linkRows.length" summary="一行一条链路：发端 + 收端 + 库引用 + 结果">
             <template #actions>
               <span class="lbx-colpick-wrap">
-                <button class="lb-mini" title="自定义计算结果列（只读，重算即时回填）" @click="colPickOpen = !colPickOpen">结果列 <Icon name="chevron-down" :size="11" /></button>
+                <button class="lb-mini" title="计算结果列：勾选显示列，底部可新建自定义公式列" @click="colPickOpen = !colPickOpen">结果列 <Icon name="chevron-down" :size="11" /></button>
                 <div v-if="colPickOpen" class="lbx-colpick-mask" @click="colPickOpen = false" @wheel.prevent></div>
                 <div v-if="colPickOpen" class="lbx-colpick" @wheel="onColPickWheel">
                   <label v-for="d in RESULT_DEFS" :key="d.key" class="lbx-colpick-i" :title="d.tip || d.label">
                     <input type="checkbox" :checked="resultKeys.includes(d.key)" @change="toggleResultKey(d.key)" />
                     <span>{{ d.label }}<i v-if="d.unit"> ({{ d.unit }})</i></span>
                   </label>
+                  <div class="lbx-ccf">
+                    <div class="lbx-ccf-hd"><span>自定义列</span>
+                      <button class="lbx-ccf-btn" title="新建/编辑/删除自定义列（独立窗口，误点不丢）" @click="ccDlgOpen = true; colPickOpen = false">{{ customCols.length ? '管理…' : '＋ 新建…' }}</button></div>
+                    <label v-for="c in customCols" :key="c.id" class="lbx-colpick-i" :title="c.expr">
+                      <input type="checkbox" :checked="c.on !== false" @change="toggleCustomCol(c.id)" />
+                      <span>{{ c.label }}<i v-if="ccUnit(c)"> ({{ ccUnit(c) }})</i></span>
+                    </label>
+                  </div>
                 </div>
               </span>
             </template>
             <div class="lbx-grid">
-              <StationGrid :stations="linkRows" :fields="gridFields" :groups="GRID_GROUPS" :extra-values="computedVals" :cell-class="cellClassFn"
+              <StationGrid :stations="linkRows" :fields="gridFields" :groups="GRID_GROUPS" :extra-values="gridVals" :cell-class="cellClassFn"
                 :cell-sub="cellSubFn" :cell-tag="cellTagFn" :cell-fill="cellFillFn" :freeze-keys="false"
                 :cities="cities" :city-search="citySearch" label="链路" :auto-geo="autoGeoRow"
                 :select-options="{ basebandId: basebandSelectOptions, stationId: esSelectOptions, rxStationId: esSelectOptions }"
@@ -1808,6 +1906,8 @@ onMounted(async () => {
       :stale="resultsStale" :carrier-remap="advRemap" store-key="linkbudget" @close="advDlg.open = false" @apply="applyAdvPlan" />
 
     <!-- 导出报告：封面元信息 + 输出格式 + 是否含图（三窗共用组件）-->
+    <LbCustomColsDialog :open="ccDlgOpen" :cols="customCols" :pool="customPool" :preview-fn="ccPreview"
+      @update:cols="customCols = $event" @close="ccDlgOpen = false" />
     <LbReportDialog :open="reportDlg.open" :lang="reportLang" orbit-type="GEO"
       :sat-name="curSat ? curSat.form.satelliteName : ''" :band="curSat ? curSat.form.frequencyBand : ''" :link-count="links.length"
       :viz-available="showViz" store-key="linkbudget" :busy="reportDlg.busy" :progress="reportDlg.progress"

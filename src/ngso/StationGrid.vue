@@ -1119,7 +1119,7 @@ function clearColContents() {
           </tr>
           <tr>
             <th class="sg-sel"><input type="checkbox" :checked="allSelected" @change="toggleAll" /></th>
-            <th v-for="({ f, c }) in visFields" :key="f.key" class="sg-hcol" :class="{ 'sg-key': isKeyCol(c), colsel: colHeadSel(c), 'sg-gend': isGroupEnd(c) }" :style="isKeyCol(c) ? keyColStyle(c) : null" :title="f.label"
+            <th v-for="({ f, c }) in visFields" :key="f.key" class="sg-hcol" :class="{ 'sg-key': isKeyCol(c), colsel: colHeadSel(c), 'sg-gend': isGroupEnd(c) }" :style="isKeyCol(c) ? keyColStyle(c) : null" :title="f.tip || f.label"
                 @mousedown.left="onHeaderDown(c, $event)" @mouseenter="onHeaderEnter(c)">
               {{ f.label }}<i v-if="f.unit"> ({{ f.unit }})</i>
               <!-- 站址组锚点列（地球站位置）：列头内联导入钮，点击按该侧（f.city='tx'/'rx'）打开导入 -->

@@ -48,7 +48,10 @@ export const MINI_SAT_DEFAULTS = {
   beamInput: '',
   BOi: 6,
   BOo: 3,
-  deltaTheta: 2.5,        // 邻星间隔。平台 UI 无此字段，而两侧引擎的空值回退都是 2.5 → 无口径差
+  // 邻星间隔：平台引擎已整组移除这一口径（2026-08-07，见 packages/core/utils/linkCalculator.js
+  // 同日注释），但小程序仍有该输入框与旁瓣/ITU PSD 读数——这里显式给 2.5，免得对面拿到空值
+  // 走它自己的回退，界面上那一格还是空的。此值只进小程序，不参与平台任何计算。
+  deltaTheta: 2.5,
   aciUplinkFactor: 30,
   adjUplinkFactor: 25,
   xpolUplinkFactor: 26,
@@ -159,6 +162,11 @@ export function toMiniParams(P, { satForm, carrierForm, txStation, rxStation, tx
   for (const f of P.TX_FIELDS) { if (f.target !== 'meta') put(f.target === 'sat' ? sat : link, f.key, tx[f.key]) }
   for (const f of P.RX_FIELDS) { if (f.target !== 'meta') put(f.target === 'sat' ? sat : link, f.key, rx[f.key]) }
   // ★ 这里【没有】 sfdRef = sfdRef + sfdGtRef —— 小程序的 _engineSatParams 会自己折一次
+  // ★★ 极化字典对齐：平台存 'L'/'R'，小程序引擎只认 'LHCP'/'RHCP'——不映射的话对面重算时
+  //    'L'/'R' 落进线极化分支按 τ=0° 算雨致 XPD（偏差 ~13 dB，雨天功放反解随之偏乐观）
+  const mapPol = (v) => (v === 'L' ? 'LHCP' : v === 'R' ? 'RHCP' : v)
+  if (link.uplinkPolarization !== undefined) link.uplinkPolarization = mapPol(link.uplinkPolarization)
+  if (link.downlinkPolarization !== undefined) link.downlinkPolarization = mapPol(link.downlinkPolarization)
   return { satParams: sat, linkParams: link, op }
 }
 

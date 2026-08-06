@@ -3,7 +3,6 @@
 
 const validator = require('./validator.js');
 // 离轴 EIRP 密度掩模（ITU-R S.524-9）单一出处——本文件与 NGSO 引擎共用，勿再各自内联频段表
-const ituPatterns = require('./interference/patterns.js');
 
 const { getIsothermHeight } = require('./isothermHeight.js');
 const { P676_PART1 } = require('./p676Data.js');
@@ -183,102 +182,6 @@ const P838_TABLE = {
 };
 
 /**
- * 地球站天线离轴增益计算 — RR Appendix 8 型参考方向图（29−25·lgφ 旁瓣包络）
- * 结构为 RR AP8 分段（G1=2+15lg(D/λ)、主瓣抛物线、φr=15.85(D/λ)^-0.6）+ S.580 的 29 系数旁瓣段，
- * 并非 ITU-R S.465-6 正文（S.465-6 仅 32−25lgφ / −10 两段）。函数名保留 465 仅为兼容既有调用。
- * @param {number} diameter - 天线直径 (m)
- * @param {number} wavelength - 波长 (m)
- * @param {number} efficiency - 天线效率 (0-1)
- * @param {number} phi - 离轴角 (度)
- * @returns {number} 离轴增益 G(φ) (dBi)
- */
-function calculateITU465OffAxisGain(diameter, wavelength, efficiency, phi) {
-  const ratio = diameter / wavelength; // D/λ
-  const Gmax = 20 * Math.log10(Math.PI * diameter / wavelength) + 10 * Math.log10(efficiency);
-  
-  // 确保 phi > 0
-  if (phi <= 0) {
-    return Gmax;
-  }
-  
-  let G_phi;
-  
-  if (ratio >= 100) {
-    // 情况A：D/λ ≥ 100 (大型天线)
-    const G1 = 2 + 15 * Math.log10(ratio);
-    const phi1 = (20 * wavelength / diameter) * Math.sqrt(Gmax - G1);
-    const phi_r = 15.85 * Math.pow(ratio, -0.6);
-    
-    if (phi < phi1) {
-      // 主波束区域
-      G_phi = Gmax - 0.0025 * Math.pow(ratio * phi, 2);
-    } else if (phi < phi_r) {
-      // 第一旁瓣平台区
-      G_phi = G1;
-    } else if (phi < 36.31) {
-      // 旁瓣衰减区（29−25·lgφ 延续到与 −10 dBi 交点 φ=10^(39/25)≈36.31°，
-      // 原 36°~48° 的 −5 dBi 平台在 S.465/S.580/AP8 任何版本中均无出处，已删除）
-      G_phi = 29 - 25 * Math.log10(phi);
-    } else {
-      // 远旁瓣区
-      G_phi = -10;
-    }
-  } else if (ratio >= 50) {
-    // 情况B：50 ≤ D/λ < 100 (中型天线)
-    const L_S = 39 - 5 * Math.log10(ratio);
-    const L_F = -3 - 5 * Math.log10(ratio);
-    
-    // 数值求解 phi1: Gmax - 0.0025*(ratio*phi1)^2 = L_S - 25*log10(phi1)
-    // 使用迭代法求解
-    let phi1 = 1;
-    for (let i = 0; i < 20; i++) {
-      const left = Gmax - 0.0025 * Math.pow(ratio * phi1, 2);
-      const right = L_S - 25 * Math.log10(phi1);
-      if (Math.abs(left - right) < 0.01) break;
-      phi1 = phi1 * Math.pow(10, (left - right) / 50);
-      phi1 = Math.max(0.1, Math.min(phi1, 10));
-    }
-    
-    if (phi < phi1) {
-      G_phi = Gmax - 0.0025 * Math.pow(ratio * phi, 2);
-    } else if (phi < 48) {
-      G_phi = L_S - 25 * Math.log10(phi);
-    } else {
-      G_phi = L_F;
-    }
-  } else {
-    // 情况C：D/λ < 50 (小型天线)
-    const L_S = 29;
-    const L_F = -10 - 10 * Math.log10(ratio);
-    
-    
-    if (phi < 70 / ratio) {
-      G_phi = Gmax - 0.0025 * Math.pow(ratio * phi, 2);
-    } else if (phi < 48) {
-      G_phi = 29 - 25 * Math.log10(phi);
-    } else {
-      G_phi = L_F;
-    }
-  }
-  
-  return G_phi;
-}
-
-/**
- * 计算 ITU-R S.465-6 隔离度 (ISO)
- * @param {number} diameter - 天线直径 (m)
- * @param {number} wavelength - 波长 (m)
- * @param {number} efficiency - 天线效率 (0-1)
- * @param {number} phi - 离轴角/邻星角度偏差 (度)
- * @returns {number} 隔离度 ISO (dB)
- */
-function calculateITU465Isolation(diameter, wavelength, efficiency, phi) {
-  const Gmax = 20 * Math.log10(Math.PI * diameter / wavelength) + 10 * Math.log10(efficiency);
-  const G_phi = calculateITU465OffAxisGain(diameter, wavelength, efficiency, phi);
-  return Gmax - G_phi;
-}
-
-/**
  * 极化显示值 → 计算值。圆极化在界面上有两套写法：链路预算三窗的下拉存 'L'/'R'，
  * 早期配置与雨衰页存 'LHCP'/'RHCP'，两套都必须归一到 'C'，否则会掉进线极化分支
  * 拿到 τ=0°（等同水平极化），P.618-14 §4.1 的雨致 XPD 被抬高十几 dB。
@@ -413,12 +316,7 @@ function performCalculations(satParams, inputs) {
   const receiverNoiseTemp = (inputs.rxReceiverNoiseTemp !== undefined && inputs.rxReceiverNoiseTemp !== '' && inputs.rxReceiverNoiseTemp !== null)
     ? parseFloat(inputs.rxReceiverNoiseTemp)
     : ((frequencyBand === 'C' || frequencyBand === 'ExtC') ? 40 : 75); // K
-  
-  // 干扰因子 - 从卫星参数中读取 (支持输入0)
-  const deltaTheta = satParams.deltaTheta !== undefined && satParams.deltaTheta !== '' && satParams.deltaTheta !== null
-    ? parseFloat(satParams.deltaTheta)
-    : 2.5; // 度 - 角度偏差（空回退对齐字段默认 2.5）
-  const aciUplinkFactor = satParams.aciUplinkFactor !== undefined && satParams.aciUplinkFactor !== '' && satParams.aciUplinkFactor !== null
+    const aciUplinkFactor = satParams.aciUplinkFactor !== undefined && satParams.aciUplinkFactor !== '' && satParams.aciUplinkFactor !== null
     ? parseFloat(satParams.aciUplinkFactor) 
     : 30; // dB
   const adjUplinkFactor = satParams.adjUplinkFactor !== undefined && satParams.adjUplinkFactor !== '' && satParams.adjUplinkFactor !== null
@@ -756,17 +654,6 @@ function performCalculations(satParams, inputs) {
   // 门限C/N
   const thresholdCN = ebno + 10 * Math.log10(infoRate / noiseBW);
   
-  // ============ 干扰计算 ============
-  // 邻星干扰隔离度（接收站）- 使用 ITU-R S.465-6
-  const ISO = calculateITU465Isolation(rxAntennaDiameter, rxWavelength, rxAntennaEfficiency, deltaTheta);
-  const rxOffAxisGain = calculateITU465OffAxisGain(rxAntennaDiameter, rxWavelength, rxAntennaEfficiency, deltaTheta);
-  const deltagain = rxAntennaGain - rxOffAxisGain;
-  
-  // 发信站旁瓣增益计算（根据邻星轨位差）- 使用 ITU-R S.465-6
-  const txISO = calculateITU465Isolation(antennaDiameter, wavelength, antennaEfficiency, deltaTheta);
-  const txOffAxisGain = calculateITU465OffAxisGain(antennaDiameter, wavelength, antennaEfficiency, deltaTheta);
-  const txSidelobeGain = txOffAxisGain; // 发信站旁瓣发射增益
-  
   // ============ 其他损耗（用户输入，上下行分别设置）============
   const uplinkMiscLoss = inputs.uplinkOtherLoss !== undefined && inputs.uplinkOtherLoss !== '' && inputs.uplinkOtherLoss !== null
     ? parseFloat(inputs.uplinkOtherLoss)
@@ -1012,44 +899,23 @@ function performCalculations(satParams, inputs) {
   const downlinkCN = -10 * Math.log10(
     Math.pow(10, -carrierTotalCN / 10) - Math.pow(10, -uplinkCN / 10)
   );
-  // 下行干扰等效 C/I（仅展示，由热噪声与反算 C/N 反推）
+  // 下行干扰等效 C/I（仅展示）：由真实四路干扰损失正推 ⊖(热噪−干扰损失, 热噪)，与级联「下行干扰损失」行同源。
+  // 不再由反解 downlinkCN 取残差——上行主导 + UPC 未全补偿时残差含上行残余雨衰，会把本行低报数 dB。
   const downlinkInterferenceCN = -10 * Math.log10(
-    Math.max(Math.pow(10, -downlinkCN / 10) - Math.pow(10, -downlinkThermalCN / 10), 1e-30)
+    Math.max(Math.pow(10, -(downlinkThermalCN - downlinkInterferenceLoss) / 10) - Math.pow(10, -downlinkThermalCN / 10), 1e-30)
   );
 
   // 地球站功率谱密度：EIRP - 10*log10(带宽Hz)
   const stationPSD = stationEIRP - 10 * Math.log10(allocBandwidth * 1000);
   
-  // ============ ITU-R 功率谱密度门限计算 ============
-  // 离轴 EIRP 密度上限：单一出处在 utils/interference/patterns.js 的 s524LimitPer4kHz。
-  //
-  // 【2026-07-26 统一】此前本文件与 linkCalculatorNGSO.js 各内联一份 ~300 行的频段 if 链，
-  // 两处 C 频段（5.725–7.075 GHz）均为 26/5/29/−7 —— 与 ITU-R S.524-9 recommends 2 的
-  // 32/11/35/−7 相比，A、平台、B 三项整体低 6 dB。Ku(rec.3.1) 与 Ka(rec.4) 两组本来就对。
-  // 已按建议书订正并把两份表合并到 patterns.js，两个引擎共用，不再各存一份。
-  //
-  // 另：S.524-9 只覆盖 5.725–7.075 / 12.75–13.25 / 13.75–14.5 / 27.5–30 GHz 四段，
-  // 其余频段（X / 10.7–11.7 / 17.3–18.4 / Q / V 等）是按邻近频段外推的工程值，数值沿用未动，
-  // 但 patterns.js 会置 authoritative=false —— 引用时不得标成「ITU-R S.524-9」。
-  //
-  // φ 取邻星轨位差（deltaTheta）作离轴角，缺省 3°，与旧实现一致。
-  const phi = deltaTheta > 0 ? deltaTheta : 3;
-  const _s524 = ituPatterns.s524LimitPer4kHz(phi, uplinkFrequency);
-  const ituPsdLimit4kHz = _s524 ? _s524.limit4kHz : 0;
-  const ituRefBandwidth = _s524
-    ? (_s524.refBwHz === 4e3 ? '4kHz' : _s524.refBwHz === 4e4 ? '40kHz' : '1MHz')
-    : '4kHz';
-  
-  // 转换为dBW/Hz（统一从4kHz基准转换）
-  // 10*log10(4000) ≈ 36.02 dB
-  const ituPsdLimitHz = ituPsdLimit4kHz - 10 * Math.log10(4000);
-  
-  // 发信站旁瓣EIRP：功率 + 旁瓣增益 - 馈电损耗
-  const txSidelobeEIRP = selectedPower + txSidelobeGain - feederLoss;
-  
-  // 发信站旁瓣功率谱密度：旁瓣EIRP - 10*log10(带宽Hz)
-  const txSidelobePSD = txSidelobeEIRP - 10 * Math.log10(allocBandwidth * 1000);
-  
+  // ============ 邻星离轴口径（2026-08-07 移除）============
+  // 旁瓣增益/旁瓣 EIRP/旁瓣 PSD、接收旁瓣增益、离轴鉴别度与 ITU-R S.524 的 PSD 门限，
+  // 全部由「邻星轨位差 deltaTheta」这一个角度派生。该入参是当年从小程序移植过来的，
+  // 平台三窗从来没有它的输入框 —— 引擎只能靠空值回退（GEO 2.5° / NGSO 3°）硬造一个角度，
+  // 于是这几项读数全是「基于一个凭空数字」的假合规量，还与真正做邻星协调的干扰分析模块
+  // （utils/interference/，有真实站址几何与 UI）各说一套。故整组删除，不留半吊子出参。
+  // 要看离轴 EIRP 密度与 S.524 门限，去干扰分析模块 —— 那里的离轴角是真几何算出来的。
+
   // 卫星功率谱密度：转发器输出EIRP - 10*log10(载波带宽Hz)
   const satellitePSD = transponderOutputEIRP - 10 * Math.log10(allocBandwidth * 1000);
   
@@ -1234,13 +1100,7 @@ function performCalculations(satParams, inputs) {
   results.earthAntennaEfficiencyResult = (antennaEfficiency * 100).toFixed(0 + FX); // 回显实际参与计算的效率(对齐下行 rxAntennaEfficiencyResult)
   results.wavelengthResult = wavelength.toFixed(4 + FX);
   results.beamWidthResult = beamWidth.toFixed(2 + FX);
-  results.txAntennaGainResult = txAntennaGain.toFixed(2 + FX);
-  results.txSidelobeGainResult = txSidelobeGain.toFixed(2 + FX); // 发信站旁瓣发射增益
-  results.txSidelobeEIRPResult = txSidelobeEIRP.toFixed(2 + FX); // 发信站旁瓣EIRP
-  results.txSidelobePSDResult = txSidelobePSD.toFixed(3 + FX); // 发信站旁瓣功率谱密度
-  results.ituPsdLimit4kHz = ituPsdLimit4kHz.toFixed(2 + FX); // ITU功率谱密度门限(dBW/4kHz)
-  results.ituPsdLimitHz = ituPsdLimitHz.toFixed(3 + FX); // ITU功率谱密度门限(dBW/Hz)
-  results.feederLossResult = feederLoss.toFixed(2 + FX);
+  results.txAntennaGainResult = txAntennaGain.toFixed(2 + FX);  results.feederLossResult = feederLoss.toFixed(2 + FX);
   results.slantRangeResult = slantRange.toFixed(2 + FX);
   results.uplinkFSLResult = uplinkFSL.toFixed(2 + FX);
   results.uplinkRainAttenuation = uplinkRainAttenuation.toFixed(2 + FX);
@@ -1308,9 +1168,7 @@ function performCalculations(satParams, inputs) {
   results.systemNoiseTempDbResult = systemNoiseTempDb.toFixed(2 + FX);
   results.gOverTeResult = gOverTe.toFixed(2 + FX);
   results.gOverTdegradationResult = gOverTdegradation.toFixed(2 + FX);
-  results.rxFeederLossResult = rxFeederLoss.toFixed(2 + FX);
-  results.rxSidelobeGainResult = (rxAntennaGain - ISO).toFixed(2 + FX); // 接收旁瓣增益
-  
+  results.rxFeederLossResult = rxFeederLoss.toFixed(2 + FX);  
   // 卫星参数
   results.orbitPositionResult = orbitPosition;
   results.EIRPsResult = EIRPs.toFixed(2 + FX);
@@ -1427,9 +1285,7 @@ function performCalculations(satParams, inputs) {
   results.PFDcResult = PFDc.toFixed(3 + FX);
   results.arrivalPFDAtSatelliteResult = arrivalPFDAtSatellite.toFixed(3 + FX); // 实际到达卫星通量密度（载波电平+单位面积增益）
   results.stationPSDResult = stationPSD.toFixed(3 + FX);
-  results.satellitePSDResult = satellitePSD.toFixed(3 + FX);
-  results.deltagain = deltagain.toFixed(2 + FX);
-  results.transponderCapacity = transponderCapacity.toFixed(3 + FX);
+  results.satellitePSDResult = satellitePSD.toFixed(3 + FX);  results.transponderCapacity = transponderCapacity.toFixed(3 + FX);
   results.eirpPerCarrier = eirpPerCarrier.toFixed(3 + FX);
   results.uplinkPowerRatioResult = uplinkPowerRatio.toFixed(3 + FX);
   results.downlinkPowerRatioResult = downlinkPowerRatio.toFixed(3 + FX);
