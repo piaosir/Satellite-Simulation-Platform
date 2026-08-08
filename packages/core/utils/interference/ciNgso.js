@@ -76,6 +76,20 @@ function orbitCanReach(satrec, stationLatDeg, minElevDeg) {
   return Math.abs(Number(stationLatDeg) || 0) <= maxSubLat + centralHalfAngle + 1e-9;
 }
 
+/**
+ * 卫星身份指纹（自系统排除用）。
+ *
+ * 同一颗星在「本星座」与「勾了同星座的干扰座」里是解析层各解一遍的**两个对象**，
+ * 引用不等；但两次都由同一份根数建 satrec，六根数与历元是 bit 级相同的，可作身份键。
+ * id 单独取并集是因为 walker 源的 id 里带着组名（两组组名不同 → id 不同），
+ * 而编目源（OMM/卫星组）的 id 才是 NORAD 号。两者取并集，各种来源都对得上。
+ */
+function satIdentity(s) {
+  const r = (s && s.rec) || {};
+  const n = r.no_kozai != null ? r.no_kozai : r.no;
+  return `${r.inclo}|${r.nodeo}|${r.ecco}|${r.argpo}|${r.mo}|${n}|${r.jdsatepoch}|${r.jdsatepochF || 0}`;
+}
+
 /** 计算量估算：可见候选星数 × 时间样本数。调用方据此拦截。 */
 function estimateWork(candidateSatCount, horizonSec, stepSec) {
   const T = Math.floor(Math.max(1, horizonSec) / Math.max(1, stepSec)) + 1;
@@ -267,22 +281,50 @@ function createNgsoCiRun(o) {
     warnings.push(`本星座 ${wantedSats.length} 颗中 ${wantedSats.length - wantedUse.length} 颗的轨道无法覆盖本站纬度，已剔除`);
   }
 
+  // 自系统排除用的身份表：指纹 / id → wantedUse 下标（见 satIdentity 头注）
+  const wantedIdent = new Map();
+  wantedUse.forEach((s, i) => {
+    wantedIdent.set(satIdentity(s), i);
+    if (s.id != null && s.id !== '') wantedIdent.set('id:' + String(s.id), i);
+  });
+
   const groups = [];
   for (const g of (opt.interferers || [])) {
     if (!g) continue;
     const den = num(g.eirpDensityDbWPerHz, null);
     if (den == null) { warnings.push(`干扰星座「${g.name || g.id || '?'}」缺 EIRP 密度，已跳过`); continue; }
     const all = (g.sats || []).filter((s) => s && s.rec);
-    const use = all.filter((s) => orbitCanReach(s.rec, st.lat, minElev));
+    // ★ 干扰侧的粗筛门限是 0°（地平线），不是本站的工作仰角 minElev——干扰从旁瓣打进来，
+    //   与本站愿不愿意在这个仰角上工作无关。主循环判据（地平线以上就计）与 buildScreen(g.sats, 0)
+    //   一直是 0°，这里曾误传 minElev：站纬落在 [i+γ(minElev), i+γ(0)] 带内时（如 30° 倾角
+    //   1200 km 干扰座对 58~63°N 的站）整座星座会被静默剔掉、报成「无干扰」。
+    const use = all.filter((s) => orbitCanReach(s.rec, st.lat, 0));
     if (!use.length) { warnings.push(`干扰星座「${g.name || g.id}」的轨道无法覆盖本站纬度，已跳过`); continue; }
     if (use.length < all.length) warnings.push(`干扰星座「${g.name || g.id}」${all.length} 颗中 ${all.length - use.length} 颗被轨道粗筛剔除`);
+    // 自系统：逐颗对出「它就是本星座的第几颗」，服务星那一颗在主循环里跳过。
+    // 原判据是 acos 后的离轴角 < 1e-6°，而 acos 在 1 附近病态：自点乘因归一化舍入落到
+    // 1−2ulp 时 acos 得 1.2e-6° > 1e-6°，约 14% 的时刻漏判、服务星以满增益进干扰和、
+    // C/I 当场坍到 ≈0 dB。改按身份排除，与浮点无关。
+    let selfIdx = null;
+    if (g.selfSystem) {
+      selfIdx = new Int32Array(use.length).fill(-1);
+      let matched = 0;
+      for (let i = 0; i < use.length; i++) {
+        const byElem = wantedIdent.get(satIdentity(use[i]));
+        const byId = use[i].id != null && use[i].id !== '' ? wantedIdent.get('id:' + String(use[i].id)) : undefined;
+        const k = byElem !== undefined ? byElem : (byId !== undefined ? byId : -1);
+        selfIdx[i] = k;
+        if (k >= 0) matched++;
+      }
+      if (!matched) warnings.push(`干扰星座「${g.name || g.id}」勾了「同星座」，但没有一颗星与本星座对得上，服务星不会被排除`);
+    }
     // 极化折减（同座内一致）
     const ciAsi = require('./ciAsi.js');
     const pol = opt.applyPolarization === false
       ? { db: 0, relation: 'off' }
       : ciAsi.polarizationDiscrimination((opt.wanted || {}).polarization, g.polarization, g.xpdDb);
     groups.push({
-      id: g.id, name: g.name || g.id, den, pol, sats: use, selfSystem: !!g.selfSystem,
+      id: g.id, name: g.name || g.id, den, pol, sats: use, selfSystem: !!g.selfSystem, selfIdx,
       // 抽样倍率由解析层（electron/services/interference.js 的 applyLimit）带下来：
       // 抽了样就意味着少算了 (K−1)/K 的干扰源，结果偏乐观 ≈ 10lg K dB。
       // 这件事必须一路跟到每一个分位数上（见 summarize 的 sampled 标），不许只在告警里说一句。
@@ -531,7 +573,7 @@ function createNgsoCiRun(o) {
     const slot = visSlot(tMs);
 
     // 服务星 = 门限以上仰角最高者。比较用 sinEl 而非 asin 后的度数——单调等价，省一次 asin。
-    let bestSin = -2, bestRange = 0;
+    let bestSin = -2, bestRange = 0, bestI = -1;
     let bx = 0, by = 0, bz = 0, hasBest = false;
     let bex = 0, bey = 0, bez = 0;                         // 服务星的 ECEF（卫星侧方向图要用）
     for (let i = 0; i < wantedUse.length; i++) {
@@ -544,7 +586,7 @@ function createNgsoCiRun(o) {
       const ux = dx / r, uy = dy / r, uz = dz / r;
       const sinEl = ux * UPX + uy * UPY + uz * UPZ;
       if (sinEl < sinMinElev) continue;
-      if (sinEl > bestSin) { bestSin = sinEl; bestRange = r; bx = ux; by = uy; bz = uz; bex = e[0]; bey = e[1]; bez = e[2]; hasBest = true; }
+      if (sinEl > bestSin) { bestSin = sinEl; bestRange = r; bestI = i; bx = ux; by = uy; bz = uz; bex = e[0]; bey = e[1]; bez = e[2]; hasBest = true; }
     }
     if (!hasBest) return null;
     sux = bx; suy = by; suz = bz;
@@ -560,8 +602,9 @@ function createNgsoCiRun(o) {
       const g = groups[gi];
       gSumHere[gi] = 0;
       const gden = g.den - g.pol.db;
-      const sats = g.sats, screen = g.screen;
+      const sats = g.sats, screen = g.screen, selfIdx = g.selfIdx;
       for (let i = 0; i < sats.length; i++) {
+        if (selfIdx && selfIdx[i] === bestI) continue;      // 自系统：服务星自己不算干扰源（按身份，见 satIdentity）
         if (screen && !screenHas(screen, i, slot)) continue;
         const e = ecefAt(sats[i].rec, date, gmst);
         if (!e) continue;
@@ -575,7 +618,6 @@ function createNgsoCiRun(o) {
         let c = ux * sux + uy * suy + uz * suz;
         if (c > 1) c = 1; else if (c < -1) c = -1;
         const th = Math.acos(c) * G.RAD;
-        if (g.selfSystem && th < 1e-6) continue;            // 自系统：服务星自己不算干扰
         if (c > cosThMax) cosThMax = c;
         const gOff = esGain(th);
         // base = 各向同性满 EIRP（v1.3.6 口径）；act = 再过一遍卫星侧方向图与同频占空

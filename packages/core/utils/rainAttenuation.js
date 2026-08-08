@@ -280,7 +280,10 @@ function calculateRainAttenuation(p) {
     const polAngle = hasGeo ? geo.calculatePolarizationAngle(lon, lat, satLon) : 0;
     tau = (pol === 'V') ? polAngle + 90 : polAngle;
   }
-  const rawXpd = geo.calculateRainXPD_P618_14(rainAtten, freq, tau, elevation, pct);
+  // 第 6 参是 4~6 GHz 专用的雨衰上下文（C 频段要按 6 GHz 重算雨衰再标度，见函数头注）：
+  // 与本页雨衰同源——同站址、同降雨率、同极化，仰角同样走第 8 参注入
+  const rawXpd = geo.calculateRainXPD_P618_14(rainAtten, freq, tau, elevation, pct,
+    { R001, pol, lat, lon, orbitPos: null, altitude: altKm, elevOverride: elevation });
   const rainXPD = Number.isFinite(rawXpd) ? rawXpd : null;
 
   // —— 可用度 / 不可用时长（年 + 最坏月 ITU-R P.841）——

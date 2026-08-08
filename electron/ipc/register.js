@@ -55,6 +55,8 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   ipcMain.handle('omm:customList', () => customSats.list())
   // 3D 地图分组 / 搜索池加载用：全部组扁平化为一份 OMM CSV（{text, fetchedAt} 或 null，绝不联网）
   ipcMain.handle('omm:customCsv', () => customSats.raw())
+  // 某个导入组的 OMM 记录原样返回（「发送到小程序」按组打包用；不存在的组给空数组）
+  ipcMain.handle('omm:customGroupRecords', (_e, groupId) => customSats.groupRecords(groupId) || [])
   // 删除 / 改名某个导入组
   ipcMain.handle('omm:customRemove', (_e, groupId) => customSats.removeGroup(groupId))
   ipcMain.handle('omm:customRename', (_e, groupId, name) => customSats.renameGroup(groupId, name))

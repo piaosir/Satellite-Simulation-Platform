@@ -707,6 +707,83 @@ const runNgso = (o) => {
 }
 
 // ---------------------------------------------------------------------------
+// 自系统（selfSystem）：服务星自己不算干扰源 —— 按**身份**排除，不是按离轴角
+//
+// 原实现判 acos 后的离轴角 < 1e-6°。acos 在 1 附近病态：服务星与「它自己那颗干扰星」
+// 的 LOS 单位矢量由同一算式对同一 ECEF 算出，自点乘因归一化舍入落在 {1, 1−1ulp, 1−2ulp…}，
+// 落到 1−2ulp 时 acos 给 1.207e-6° > 1e-6° → 漏判，服务星以满增益进干扰和、C/I 当场坍到
+// ≈(期望密度−干扰密度)。实测约 14% 的时刻中招，凡低于第 ~86 百分位的档全被拉平。
+// ---------------------------------------------------------------------------
+{
+  // 病理性的浮点事实先钉住（与实现无关，纯数值）：1−2ulp 处的 acos 就是超过 1e-6°
+  const ulp = Math.pow(2, -53);
+  approx('acos(1−1ulp) 折成度 < 1e-6（旧判据能拦住）', Math.acos(1 - ulp) * 180 / Math.PI, 8.5377e-7, 1e-10);
+  ok('acos(1−2ulp) 折成度 > 1e-6（旧判据漏判）', Math.acos(1 - 2 * ulp) * 180 / Math.PI > 1e-6,
+    `${(Math.acos(1 - 2 * ulp) * 180 / Math.PI).toExponential(3)}°`);
+
+  // 本星座与「自系统干扰座」是解析层各解一遍的两组对象：walker 源的 id 里带组名，
+  // 故两组 id 完全不同（'M…' vs 'X…'），只能靠轨道根数指纹认出是同一颗星。
+  const SELF = walker(8000, 45, 4, 4, 'X', 0);              // 与 MINE 同轨道、不同 id
+  ok('构造前提：两组 id 无一相同', MINE.every((m) => !SELF.some((s) => s.id === m.id)));
+
+  const denW = 40 - 10 * Math.log10(20e6);                  // 期望载波 EIRP 密度 = −33.01 dBW/Hz
+  const denI = -48;
+  const collapse = denW - denI;                             // 服务星漏判时 C/I 会坍到这个值（≈14.99 dB）
+
+  const self = runNgso({ interferers: [{ id: 'g', name: '自系统', sats: SELF, eirpDensityDbWPerHz: denI, polarization: 'H', selfSystem: true }] });
+  const off = runNgso({ interferers: [{ id: 'g', name: '自系统', sats: SELF, eirpDensityDbWPerHz: denI, polarization: 'H', selfSystem: false }] });
+
+  // 不勾时服务星必然被当成干扰 → 最差 C/I 恰好压在两个密度之差上（该值即「漏判」的指纹）
+  approx('不勾 selfSystem：worst C/I = 期望密度 − 干扰密度（服务星满增益入和）', off.worstCiDb, collapse, 0.05);
+  // 勾了就必须整条 CDF 都离开那个值——只要有一个时刻漏判，worst 就会被拉回 collapse
+  ok('勾 selfSystem：worst C/I 远高于该指纹值（无一时刻漏判）', self.worstCiDb > collapse + 10,
+    `worst ${self.worstCiDb.toFixed(2)} dB vs 指纹 ${collapse.toFixed(2)} dB`);
+  ok('勾 selfSystem：全部分位都不坍到指纹值',
+    N.DEFAULT_PCTS.every((p) => self.percentiles[p] == null || self.percentiles[p] > collapse + 5));
+  ok('身份能对上，不发「对不上」告警', !self.warnings.some((w) => /对得上/.test(w)));
+
+  // 反向：真的不是同一星座时要如实告警（勾了也排除不掉，不能装作排除了）
+  const alien = runNgso({ interferers: [{ id: 'g', name: '别人家的', sats: OTHER, eirpDensityDbWPerHz: denI, polarization: 'H', selfSystem: true }] });
+  ok('勾了 selfSystem 但星座对不上 → 告警', alien.warnings.some((w) => /对得上/.test(w)));
+}
+
+// ---------------------------------------------------------------------------
+// 干扰星座的轨道粗筛用 0°（地平线），不是本站的工作仰角 minElev
+//
+// 粗筛只是性能优化，语义必须与主循环一致：主循环判「地平线以上就计干扰」
+// （buildScreen(g.sats, 0) 与 up·LOS>0）。曾误传 minElev，使站纬落在
+// [i+γ(minElev), i+γ(0)] 带内时整座干扰星座被静默剔除、报成「无干扰」。
+// ---------------------------------------------------------------------------
+{
+  const INTF = walker(1200, 30, 6, 6, 'S', 17);             // 30° 倾角 / 1200 km
+  // 该带的存在性（纯几何，不依赖实现）：γ(ε)=90−ε−asin((Re/r)cosε)
+  const gamma = (eps) => { const Re = 6378.137, r = Re + 1200, e = eps * Math.PI / 180;
+    return 90 - eps - Math.asin((Re / r) * Math.cos(e)) * 180 / Math.PI; };
+  ok('0° 与 5° 口径的可达纬度确实差着一条带', gamma(0) - gamma(5) > 4,
+    `γ(0)=${gamma(0).toFixed(2)}° γ(5)=${gamma(5).toFixed(2)}° 带宽 ${(gamma(0) - gamma(5)).toFixed(2)}°`);
+  const latIn = 30 + (gamma(0) + gamma(5)) / 2;             // 落在带正中的站纬（≈60.3°N）
+  ok('该站纬正是两口径判定相反的地方',
+    N.orbitCanReach(INTF[0].rec, latIn, 5) === false && N.orbitCanReach(INTF[0].rec, latIn, 0) === true,
+    `站纬 ${latIn.toFixed(2)}°N`);
+
+  // 端到端：本座取高倾角保证该纬度有服务星，干扰座必须真的算进来
+  const HI = walker(550, 80, 6, 4, 'H', 0);
+  const r = N.createNgsoCiRun({
+    station: { lon: 20, lat: latIn, alt: 0 },
+    rx: { diameterM: 1.2, efficiency: 0.65, freqGHz: 12.5 },
+    wanted: { sats: HI, eirpDbW: 40, bandwidthHz: 20e6, polarization: 'H' },
+    interferers: [{ id: 'g', name: '干扰座', sats: INTF, eirpDensityDbWPerHz: -48, polarization: 'H' }],
+    minElevDeg: 5, startMs: T0, horizonSec: 6 * 3600, stepSec: 30
+  });
+  while (r.stepBatch(3000) < r.T);
+  const s = r.finalize();
+  ok('minElev=5° 的高纬站仍算得到干扰（不再整座被剔）',
+    s.groups.length === 1 && s.samples - s.noInterfererSamples > 0 && Number.isFinite(s.worstCiDb),
+    `有干扰样本 ${s.samples - s.noInterfererSamples}/${s.samples}，worst ${s.worstCiDb.toFixed(2)} dB`);
+  ok('不再谎报「轨道无法覆盖本站纬度」', !s.warnings.some((w) => /无法覆盖本站纬度/.test(w)));
+}
+
+// ---------------------------------------------------------------------------
 // 一期验收（docs/NGSO时变CI改进方案.md §5）：A2 样本门禁 / B2 η 不再是杠杆 /
 // B3 样本池不变式 / B1 频段外退回 AP8
 // ---------------------------------------------------------------------------

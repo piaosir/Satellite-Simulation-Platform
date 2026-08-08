@@ -178,6 +178,7 @@ contextBridge.exposeInMainWorld('api', {
     // 自定义卫星库（导入 OMM CSV / TLE，合并去重后持久化为一份 OMM CSV，贯通 3D 分组与搜索池）
     customList: () => ipcRenderer.invoke('omm:customList'),
     customCsv: () => ipcRenderer.invoke('omm:customCsv'),
+    customGroupRecords: (groupId) => ipcRenderer.invoke('omm:customGroupRecords', groupId),
     customImport: () => ipcRenderer.invoke('omm:customImport'),
     customRemove: (groupId) => ipcRenderer.invoke('omm:customRemove', groupId),
     customRename: (groupId, name) => ipcRenderer.invoke('omm:customRename', groupId, name),

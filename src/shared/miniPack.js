@@ -30,7 +30,7 @@ export const SIZE_MAX = 900 * 1024
 const asArr = (x) => (Array.isArray(x) ? x : [])
 
 /** 包内一件的一句话名字（清单与提示语共用） */
-export const ITEM_LABEL = { 'lb-config': '链路配置', 'freq-plan': '频率计划' }
+export const ITEM_LABEL = { 'lb-config': '链路配置', 'freq-plan': '频率计划', 'sat-set': '卫星集' }
 
 /**
  * 造一个信封。items 由各调用方按类型自备（见 lbMiniExport / fpMiniExport）。
@@ -103,6 +103,7 @@ export function syncOf(item) {
   if (!item) return ''
   if (item.type === 'lb-config') return item.srcId ? `cfg:${item.srcId}` : ''
   if (item.type === 'freq-plan') return item.meta && item.meta.id ? `fp:${item.meta.id}` : ''
+  if (item.type === 'sat-set') return item.setId ? `ss:${item.setId}` : ''
   return ''
 }
 
@@ -121,11 +122,15 @@ const packOne = (pack, item) => ({
 // 拆件的意义不只是省流量：一件一条消息，幂等键才挂得到内容上，自动同步才能做到
 // 「平台改了哪一份，手机上更新哪一份」。
 
-/** 标准包 → 逐件拆开 */
+/**
+ * 标准包 → 逐件拆开。
+ * label 优先取件自带的（卫星集那类一个 type 下有「卫星组 / 自定义卫星 / 自定义星座」三种来源，
+ * 清单上只写「卫星集」的话，三行长得一模一样，勾选时分不出哪行是哪个）。
+ */
 export const unitsOfPack = (pack) => asArr(pack && pack.items).map((it) => ({
   sync: syncOf(it),
   name: it.name || '',
-  label: ITEM_LABEL[it.type] || it.type,
+  label: it.label || ITEM_LABEL[it.type] || it.type,
   payload: packOne(pack, it)
 }))
 

@@ -38,8 +38,9 @@ import { sampleOrbitAdaptive } from '../viz/constellation/adaptiveSample.js'
 import { solarGeometry } from '../viz/terminator.js'
 import * as W from '../viz/wgs84.js'
 import { parseOMMCsv, fetchGroupLiveOrSup } from '../viz/constellation/tle.js'
-import { useCustomConstellations } from '../viz/constellation/useCustomConstellations.js'
+import { useCustomConstellations, customConstellationsToOmmRecords } from '../viz/constellation/useCustomConstellations.js'
 import { useSatGroups } from '../viz/constellation/useSatGroups.js'
+import { makeSatSetItem } from '../shared/satconMiniExport.js'
 import { walkerCode, orbitPeriodMin, validateWalker } from '../viz/constellation/walker.js'
 import { classifyOrbit } from '../shared/orbitClass.js'
 
@@ -2153,6 +2154,7 @@ function feedFlat() {
 const exporting = ref(false)
 // 发送到小程序：走共用的 MiniSendDialog（绑定账号直投 / 生成密钥两选一，见 sendToMiniapp）
 const miniSendOpen = ref(false)
+const miniSatOpen = ref(false)      // 星座（卫星组 / 自定义卫星 / 自定义星座）那一路，与覆盖快照各一个弹窗
 const miniDeviceId = ref('')
 const miniConfigured = ref(false)
 
@@ -2565,6 +2567,86 @@ async function sendToMiniapp() {
   try { miniDeviceId.value = String((await window.api.app.deviceId()) || '') } catch (e) { /* 显示用，取不到无妨 */ }
   miniSendOpen.value = true
 }
+
+// ===================== 星座 → 小程序「星座地图」 =====================
+// 卫星组 / 自定义卫星（导入星历） / 自定义星座 三类，各打成一件「卫星集」（见 shared/satconMiniExport.js）。
+// 与覆盖快照走同一条通道、同一个弹窗：绑定账号直投（自动同步、按 setId 覆盖）或生成一次性密钥。
+// 载荷是 OMM 根数本身而非 NORAD 清单 —— 小程序那边照 omm2satrec 直接建 satrec，零联网。
+let miniSatItems = []
+
+// 卫星组只存了 NORAD 清单，发送前要按号找回根数。来源两处：
+//   · 全量目录并集（loadUniverse 已含本地自定义卫星库，按 NORAD 覆盖同号目录星）
+//   · 自定义星座合成星（号段 900000+，不在任何目录里，只能从参数展开）
+async function satGroupRecordMap() {
+  const map = new Map()
+  try { for (const r of customConstellationsToOmmRecords()) map.set(String(r.noradId), r) } catch { /* 无自建星座 */ }
+  try { for (const s of await loadUniverse(true)) map.set(String(s.noradId), s) } catch { /* 离线：只剩合成星能解出来 */ }
+  return map
+}
+
+// 攒出发送弹窗的包内清单。次序＝侧栏从上到下：卫星组 → 自定义卫星 → 自定义星座。
+async function buildMiniSatItems() {
+  const items = []
+  const groups = satGroups.list.value
+
+  // 1) 卫星组（有组才去建全量目录 —— 那一步要联网/读缓存，没组时纯属白等）
+  if (groups.length) {
+    const map = await satGroupRecordMap()
+    for (const g of groups) {
+      const recs = []
+      for (const s of g.sats) { const r = map.get(String(s.id)); if (r) recs.push(r) }
+      const it = makeSatSetItem({ srcKind: 'group', id: g.id, name: g.name, records: recs, epochMode: 'file' })
+      if (it) {
+        // 解析不全时把差额写进名字之外的日志：包里少几颗而界面上不说，到手机上才发现就晚了
+        if (it.count < g.sats.length) logMsg(`卫星组「${g.name}」：${g.sats.length} 颗中有 ${g.sats.length - it.count} 颗未在当前星历中找到，本次不发送这几颗`)
+        items.push(it)
+      } else logMsg(`卫星组「${g.name}」：没有一颗能解析出星历，已跳过`)
+    }
+  }
+
+  // 2) 自定义卫星：「文件管理 · 星历」导入的每一个组各成一件（与那边逐条导出同口径）
+  if (apiOk && window.api.omm.customGroupRecords) {
+    try {
+      const r = await window.api.omm.customList()
+      for (const g of (r && r.groups) || []) {
+        let recs = []
+        try { recs = await window.api.omm.customGroupRecords(g.id) } catch { recs = [] }
+        const it = makeSatSetItem({ srcKind: 'custom', id: g.id, name: g.name, records: recs, epochMode: 'file' })
+        if (it) items.push(it)
+      }
+    } catch { /* 读不到自定义库：只发别的 */ }
+  }
+
+  // 3) 自定义星座（Walker）：按参数展开成 OMM 记录，历元＝场景历元（与本页渲染同口径）
+  for (const c of customConst.list.value) {
+    let recs = []
+    try { recs = customConstellationsToOmmRecords(c.id) } catch { recs = [] }
+    const it = makeSatSetItem({ srcKind: 'walker', id: c.id, name: c.name, records: recs, epochMode: 'scenario', epoch: customConst.scenarioEpoch.value })
+    if (it) items.push(it)
+  }
+
+  return items
+}
+
+async function sendSatsToMiniapp() {
+  if (miniSatOpen.value) return
+  if (!(window.api && window.api.share)) { appAlert('需在桌面客户端中运行'); return }
+  try {
+    miniConfigured.value = !!(await window.api.share.configured())
+    if (!miniConfigured.value) {
+      appAlert('本机未配置在线分享凭证，无法发送到小程序。\n（该功能需要安装包内置 COS 凭证，请联系软件提供方）')
+      return
+    }
+  } catch (e) { miniConfigured.value = true /* configured 本身失败则照常往下走，由上传阶段报错 */ }
+  status.value = '整理卫星集…'
+  let items = []
+  try { items = await buildMiniSatItems() } catch (e) { appAlert('整理失败：' + ((e && e.message) || e)); return } finally { status.value = '' }
+  if (!items.length) { appAlert('没有可发送的内容：还没有卫星组、导入的自定义卫星或自定义星座'); return }
+  miniSatItems = items
+  try { miniDeviceId.value = String((await window.api.app.deviceId()) || '') } catch (e) { /* 显示用，取不到无妨 */ }
+  miniSatOpen.value = true
+}
+const buildMiniSatSend = () => ({ name: '星座地图数据', items: miniSatItems })
 
 // 「这份覆盖算哪颗星的」候选 = 【小程序「卫星覆盖」页那 24 颗】，顺序照抄（见 shared/miniSatList.js）。
 // ★ 必须由人来定：快照里的星名是平台侧的叫法，小程序那边的波束是按 satelliteName 归类显示的，
@@ -4475,6 +4557,7 @@ onBeforeUnmount(() => {
             <div class="pchips">
               <span class="mini" :class="{ on: autoRotate }" @click="toggleRotate">{{ autoRotate ? '旋转中' : '已停止' }}</span>
               <span class="mini" :class="{ on: live }" @click="toggleLive">{{ live ? '实时开' : '实时关' }}</span>
+              <span class="mini act" title="把卫星组 / 自定义卫星 / 自定义星座发送到小程序「星座地图」（投给已绑定账号，或生成一次性密钥）" @click="sendSatsToMiniapp"><Icon name="external-link" :size="10" /> 发送到小程序</span>
             </div>
             <div class="pstat"><template v-if="filterN">筛选显示 {{ filterN }} 颗（清空搜索恢复）</template><template v-else>在轨 {{ satCount }}<template v-if="shownCount && shownCount < satCount"> · 渲染 {{ shownCount }}</template></template>
               <template v-if="dataTime"> · OMM {{ dataTime }}</template>
@@ -6092,6 +6175,16 @@ onBeforeUnmount(() => {
       @toast="(m) => logMsg(m)"
     />
 
+    <!-- 卫星组 / 自定义卫星 / 自定义星座 → 小程序「星座地图」（与上面同一个组件、同一条通道，各自一份清单） -->
+    <MiniSendDialog
+      v-model:open="miniSatOpen"
+      :build="buildMiniSatSend"
+      :device-id="miniDeviceId"
+      :configured="miniConfigured"
+      key-hint="小程序「工具栏 → 星座地图 → 导入」输入"
+      @toast="(m) => logMsg(m)"
+    />
+
     <!-- 轨迹描绘横幅：有正在编辑的轨迹时显示；与 Polygon 同款：右键逐点 / 左键沿路径拖动连续加点 -->
     <div v-if="activeTraj" class="traj-banner">
       正在描绘{{ curTraj() && curTraj().kind === 'flight' ? '飞行' : '航行' }}轨迹 · 右键地图连续加点，或按住左键沿路径拖动连续加点
@@ -6687,6 +6780,10 @@ onBeforeUnmount(() => {
 .fbar.selbar .fdot.sel { background: var(--accent); }   /* 多选栏用强调色圆点，区别于筛选栏的绿点 */
 .pchips { display: flex; gap: 6px; }
 .pchips .mini { flex: 1; text-align: center; padding: 3px 0; }
+/* 「发送到小程序」是动作不是开关（旁边两个是开关），故用强调色描边区分；字更长，多占一份宽度 */
+.pchips .mini.act { flex: 1.7; display: inline-flex; align-items: center; justify-content: center; gap: 4px; white-space: nowrap;
+  color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.pchips .mini.act:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .pstat { color: var(--text-faint); font-size: 11px; line-height: 1.5; }
 /* 星座分组列表（grprow 而非 pgrow：后者是 GXT 逐档色行的既有类名，避免撞名） */
 .pgl { padding: 4px 0 8px; }

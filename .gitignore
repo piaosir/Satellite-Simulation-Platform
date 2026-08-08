@@ -99,3 +99,10 @@ electron/services/shareConfig.js
 # COS 换内存桩、云函数当普通模块 require 进来真跑一遍——平台 boxSend / 云函数 boxList / 小程序 syncNow
 # 三处用各自仓库里的真代码，专治「跨仓库字段名漂了编译器管不着」。
 .bindharness/
+
+# 「星座 → 小程序星座地图」端到端验证台（node .satconharness/gen.mjs）：
+# 平台 satconMiniExport 打包 → share.boxSend/putSnapshot → 云函数 → 小程序 importSatSets → 星座地图页
+# （Page() 打桩后直接调页面方法），五处各自的真代码跑一遍。
+# ★ 核心哨兵：同一条 OMM 记录在平台与小程序两端各自 omm2satrec，satrec 与 +3 天位置必须逐位相同 ——
+#   「送根数不送编号」全部的意义就在这一条上，而两边的解析器是同一份代码的两个副本，会漂。
+.satconharness/

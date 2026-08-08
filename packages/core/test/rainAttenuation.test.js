@@ -121,5 +121,69 @@ const swF = core.sweepRainAttenuation(
 ok('频率扫描点数正确', swF.points.length === 20);
 ok('雨衰随频率总体上升', swF.points[swF.points.length - 1].y > swF.points[0].y);
 
+// ---------------------------------------------------------------------------
+// 4~6 GHz 雨致 XPD：递归进 6 GHz 公式时必须换成 **6 GHz 上的** 雨衰
+//
+// §4.1 的下界是 6 GHz，C 频段要先算「6 GHz 的 XPD」再按 §4.3 式(79) 标度下来。
+// Step 2 的 CA = V(f)·lg(Ap) 里 V(6)=21.6 配套的就是 6 GHz 的 CPA 统计；曾沿用本频率
+// 那个小得多的雨衰（C 段 γ(6)/γ(4)≈6），CA 少算十几 dB、XPD 高报 16~17 dB。
+// ---------------------------------------------------------------------------
+{
+  const site = { lat: 23.13, lon: 113.26, elevation: 50.38, pol: 'C', availability: 99.9, rainRate: 80, diameter: 7.3, efficiency: 65, direction: 'down' };
+  const p = 100 - site.availability, tau = 45;             // 圆极化：τ=45°，与几何无关
+  const at = (f) => core.calculateRainAttenuation({ ...site, freq: f }).rainXPD;
+
+  // 测试侧独立走一遍严格路径：A001@6GHz → Ap(p)@6GHz → XPD(6) → −20lg(f/6)
+  const strict = (f) => {
+    const { A001 } = core.geo.calculateSinglePathRainAttenuation(site.rainRate, 6, site.pol, site.lat, site.lon, null, 0, site.elevation);
+    const ap6 = core.geo.scaleRainAttenP618_14(A001, p, site.lat, site.elevation);
+    return core.geo.calculateRainXPD_P618_14(ap6, 6, tau, site.elevation, p) - 20 * Math.log10(f / 6);
+  };
+  // 旧口径（本频率的雨衰直接喂进 6 GHz 公式）——用来证明两者真的差着双位数
+  const legacy = (f) => {
+    const { A001 } = core.geo.calculateSinglePathRainAttenuation(site.rainRate, f, site.pol, site.lat, site.lon, null, 0, site.elevation);
+    const apf = core.geo.scaleRainAttenP618_14(A001, p, site.lat, site.elevation);
+    return core.geo.calculateRainXPD_P618_14(apf, 6, tau, site.elevation, p) - 20 * Math.log10(f / 6);
+  };
+
+  const a6 = core.geo.scaleRainAttenP618_14(
+    core.geo.calculateSinglePathRainAttenuation(site.rainRate, 6, site.pol, site.lat, site.lon, null, 0, site.elevation).A001,
+    p, site.lat, site.elevation);
+  const a4 = core.geo.scaleRainAttenP618_14(
+    core.geo.calculateSinglePathRainAttenuation(site.rainRate, 4, site.pol, site.lat, site.lon, null, 0, site.elevation).A001,
+    p, site.lat, site.elevation);
+  ok('前提：C 段雨衰随频率极陡（Ap@6GHz 是 Ap@4GHz 的数倍）', a6 / a4 > 4, `${a4.toFixed(4)} → ${a6.toFixed(4)} dB（×${(a6 / a4).toFixed(2)}）`);
+
+  approx('4.0 GHz XPD = 由 6 GHz 雨衰算出再标度', at(4.0), strict(4.0), 1e-9);
+  approx('4.2 GHz XPD = 由 6 GHz 雨衰算出再标度', at(4.2), strict(4.2), 1e-9);
+  approx('5.925 GHz XPD = 由 6 GHz 雨衰算出再标度', at(5.925), strict(5.925), 1e-9);
+  ok('与旧口径确实差着双位数 dB（4.0 GHz）', legacy(4.0) - at(4.0) > 10,
+    `旧 ${legacy(4.0).toFixed(2)} vs 现 ${at(4.0).toFixed(2)}，差 ${(legacy(4.0) - at(4.0)).toFixed(2)} dB`);
+  ok('越靠近 6 GHz 两口径越收敛（5.925 处差 < 1 dB）', legacy(5.925) - at(5.925) < 1);
+
+  // 6 GHz 接缝：标度支与主支必须接得上
+  ok('6 GHz 接缝连续（5.999 vs 6.001 差 < 0.01 dB）', Math.abs(at(5.999) - at(6.001)) < 0.01,
+    `${at(5.999).toFixed(4)} vs ${at(6.001).toFixed(4)}`);
+  // f≥6 主路径不受影响
+  approx('6.5 GHz 走主路径（不经标度）', at(6.5),
+    core.geo.calculateRainXPD_P618_14(
+      core.geo.scaleRainAttenP618_14(core.geo.calculateSinglePathRainAttenuation(site.rainRate, 6.5, site.pol, site.lat, site.lon, null, 0, site.elevation).A001, p, site.lat, site.elevation),
+      6.5, tau, site.elevation, p), 1e-9);
+  ok('f<4 GHz 不计雨致去极化（超出 §4.3 标度下界）', core.calculateRainAttenuation({ ...site, freq: 3.8 }).rainXPD === null);
+
+  // 健壮性：重算路径要按 6 GHz 再查一次 P.837/P.838，极干旱站也得算得出来（不抛错）
+  const dry = core.calculateRainAttenuation({ ...site, lat: 23.4, lon: 12.0, rainRate: 5, freq: 4.0 });   // 撒哈拉腹地、小雨
+  ok('极干旱站 C 频段 XPD 仍算得出（雨衰趋 0 → XPD 很高）', Number.isFinite(dry.rainXPD) && dry.rainXPD > 50,
+    `R001=${dry.rainRate} mm/h，雨衰 ${dry.rainAtten.toFixed(5)} dB，XPD ${dry.rainXPD.toFixed(2)} dB`);
+  ok('雨越小 XPD 越高（去极化单调性，C 频段标度支）',
+    core.calculateRainAttenuation({ ...site, lat: 23.4, lon: 12.0, rainRate: 2, freq: 4.0 }).rainXPD > dry.rainXPD);
+  // 缺上下文必须显式报错，不许退回「拿本频率雨衰硬算」那种静默高报 16~17 dB 的老路
+  let threw = false;
+  try { core.geo.calculateRainXPD_P618_14(0.074, 4.0, tau, site.elevation, p); } catch (e) { threw = /重算雨衰|rainCtx/.test(e.message); }
+  ok('4~6 GHz 缺 rainCtx → 显式抛错（不静默沿用本频率雨衰）', threw);
+  ok('f≥6 GHz 不需要 rainCtx（Ku/Ka 调用方零改动）',
+    Number.isFinite(core.geo.calculateRainXPD_P618_14(3.5, 12.5, tau, site.elevation, p)));
+}
+
 console.log(`\n=== ${pass} passed, ${fail} failed ===`);
 process.exit(fail ? 1 : 0);
