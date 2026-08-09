@@ -6630,7 +6630,7 @@ onBeforeUnmount(() => {
 /* 结果行「+」：加入选中集而不清搜索框（跨多次搜索攒一批，再「存为组」）；已在集中时显示 ✓ */
 .search .ipk { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; border: 1px solid var(--border); border-radius: 4px; color: var(--text-faint); }
 .search .ipk:hover { border-color: var(--accent); color: var(--accent); }
-.search .item.picked .ipk { border-color: var(--accent); background: var(--accent); color: #fff; }
+.search .item.picked .ipk { border-color: var(--accent); background: var(--accent); color: var(--bg); }
 .meta { margin-left: auto; color: var(--text-faint); }
 .tl { display: flex; align-items: center; gap: 14px; padding: 6px 12px; border-bottom: 1px solid var(--border); flex: none; font-size: 11.5px; }
 /* 时间轴（专业刻度尺）：基线尺 + 主/次两级刻度 + 游标针(顶部握柄) + 悬停幽灵线 + 独立「此刻」标记 */
@@ -6881,7 +6881,7 @@ onBeforeUnmount(() => {
 .seg3 { display: flex; flex: 1; }
 .seg3 > span { flex: 1; text-align: center; border: 1px solid var(--border); border-left-width: 0; padding: 4px 0; cursor: pointer; font-size: 12px; color: var(--text-muted); }
 .seg3 > span:first-child { border-left-width: 1px; }
-.seg3 > span.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+.seg3 > span.on { background: var(--accent); color: var(--bg); border-color: var(--accent); }
 .seg3 > span:hover:not(.on) { color: var(--text); }
 .ceread { margin-top: 13px; padding: 8px 10px; background: var(--surface-2); }
 .ceread .crcode { color: var(--accent); font-weight: 600; font-size: 13px; font-variant-numeric: tabular-nums; }
@@ -6890,14 +6890,14 @@ onBeforeUnmount(() => {
 .cefoot { display: flex; gap: 10px; padding: 10px 12px; border-top: 1px solid var(--border); flex: none; }
 .cefoot .cancel { margin-left: auto; color: var(--text-muted); border: 1px solid var(--border); padding: 4px 14px; cursor: pointer; font-size: 12px; }
 .cefoot .cancel:hover { color: var(--text); }
-.cefoot .save { background: var(--accent); color: #fff; padding: 4px 18px; cursor: pointer; font-size: 12px; }
+.cefoot .save { background: var(--accent); color: var(--bg); padding: 4px 18px; cursor: pointer; font-size: 12px; }
 /* 面板停靠形态：占满侧栏宽度、去左缘边框，滚动交给侧栏整体 */
 .cov-side.docked { width: auto; border-left: 0; overflow: visible; }
 .csh { display: flex; align-items: stretch; border-bottom: 1px solid var(--border); }
 .csn { font-family: var(--font-serif); font-size: 15px; padding: 11px 16px; align-self: center; }
 .flatbtn { align-self: center; margin-left: 10px; flex: none; border: 1px solid var(--border); padding: 2px 9px; font-size: 11.5px; color: var(--text-muted); cursor: pointer; }
 .flatbtn:hover { border-color: var(--accent); color: var(--text); }
-.flatbtn.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+.flatbtn.on { background: var(--accent); color: var(--bg); border-color: var(--accent); }
 /* 关闭按钮：与「文件管理」一致——Windows 风矩形热区，悬停变红 */
 .winx { width: 44px; margin-left: auto; align-self: stretch; border: 0; background: transparent; color: var(--text-muted); cursor: pointer; display: flex; align-items: center; justify-content: center; transition: background .12s, color .12s; }
 .winx:hover { background: #c42b1c; color: #fff; }
@@ -6911,7 +6911,7 @@ onBeforeUnmount(() => {
 .srow .u { color: var(--text-muted); }
 .seg { display: flex; border: 1px solid var(--border); }
 .seg .sg { padding: 3px 12px; cursor: pointer; color: var(--text-muted); }
-.seg .sg.on { background: var(--accent); color: #fff; }
+.seg .sg.on { background: var(--accent); color: var(--bg); }
 .nseg { font-size: 12px; }
 .nseg .sg { padding: 3px 8px; }
 .nseg .sg + .sg { border-left: 1px solid var(--border); }
@@ -6993,7 +6993,7 @@ onBeforeUnmount(() => {
 .bs-tab { flex: 1; text-align: center; padding: 4px 0; font-size: 11.5px; color: var(--text-muted); cursor: pointer; user-select: none; }
 .bs-tab + .bs-tab { border-left: 1px solid var(--border); }
 .bs-tab:hover { color: var(--text); }
-.bs-tab.on { background: var(--accent); color: #fff; }
+.bs-tab.on { background: var(--accent); color: var(--bg); }
 .bs-cnt { font-size: 10.5px; color: var(--text-faint); font-family: var(--font-mono); }
 .bs-plist { display: flex; flex-direction: column; gap: 1px; max-height: 172px; overflow-y: auto; margin: 4px 0 2px; padding: 3px 6px; border: 1px solid var(--border); border-radius: 4px; }
 .bs-plist .chk2 { margin: 0; padding: 2px 0; }
@@ -7039,7 +7039,7 @@ onBeforeUnmount(() => {
 .bs-bth { color: var(--text-faint); font-family: var(--font-mono); font-size: 10.5px; white-space: nowrap; }
 .bs-bth em { color: var(--text-faint); font-style: normal; }
 .bs-status { font-size: 10.5px; color: var(--accent); line-height: 1.5; margin-top: 5px; }
-.bs-gen { display: flex; justify-content: center; align-items: center; gap: 5px; width: 100%; box-sizing: border-box; margin-top: 4px; background: var(--accent); color: #fff; font-size: 12px; font-weight: 600; padding: 5px 0; border-radius: 4px; cursor: pointer; user-select: none; }
+.bs-gen { display: flex; justify-content: center; align-items: center; gap: 5px; width: 100%; box-sizing: border-box; margin-top: 4px; background: var(--accent); color: var(--bg); font-size: 12px; font-weight: 600; padding: 5px 0; border-radius: 4px; cursor: pointer; user-select: none; }
 .bs-gen:hover { filter: brightness(1.08); }
 .ci.wide { width: 100%; }
 /* 轮廓与编号样式行：同一行放两组「标签+短输入」；lb2=行内第二个标签 */
@@ -7243,7 +7243,7 @@ onBeforeUnmount(() => {
 .mk-tab { padding: 2px 12px; font-size: 11.5px; color: var(--text-muted); cursor: pointer; user-select: none; }
 .mk-tab + .mk-tab { border-left: 1px solid var(--border); }
 .mk-tab:hover { color: var(--text); }
-.mk-tab.on { background: var(--accent); color: #fff; }
+.mk-tab.on { background: var(--accent); color: var(--bg); }
 .mk-toolbar .mk-sep { width: 1px; align-self: stretch; margin: 2px 3px; background: var(--border); }
 .mk-trajchip { font-size: 11px; color: var(--text-muted); border: 1px solid var(--border); border-left-width: 3px; border-radius: 4px; padding: 1px 8px; cursor: pointer; white-space: nowrap; max-width: 130px; overflow: hidden; text-overflow: ellipsis; }
 .mk-trajchip:hover { color: var(--text); }
@@ -7361,7 +7361,7 @@ onBeforeUnmount(() => {
 .grp-save { display: flex; align-items: center; gap: 8px; padding-bottom: 10px; margin-bottom: 8px; border-bottom: 1px solid var(--border); }
 .grp-name { flex: 1; min-width: 0; border: 1px solid var(--border); background: var(--bg); padding: 4px 8px; font-size: 12px; color: var(--text); border-radius: 4px; outline: none; }
 .grp-name:focus { border-color: var(--accent); }
-.grp-save .save { flex: none; background: var(--accent); color: #fff; padding: 4px 12px; cursor: pointer; font-size: 11.5px; border-radius: 4px; white-space: nowrap; }
+.grp-save .save { flex: none; background: var(--accent); color: var(--bg); padding: 4px 12px; cursor: pointer; font-size: 11.5px; border-radius: 4px; white-space: nowrap; }
 .grp-save .save.dis { opacity: .45; pointer-events: none; }
 .grp-list { max-height: 300px; overflow-y: auto; }
 .grp-row { display: flex; align-items: center; gap: 6px; padding: 5px 4px; border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent); }
@@ -7525,7 +7525,7 @@ onBeforeUnmount(() => {
 
 /* 标记面板 */
 .addb { flex: none; border: 1px solid var(--accent); color: var(--accent); padding: 2px 8px; cursor: pointer; font-size: 11.5px; }
-.addb:hover { background: var(--accent); color: #fff; }
+.addb:hover { background: var(--accent); color: var(--bg); }
 .ci.nrw { width: 0; }
 .mlist { margin-top: 6px; display: flex; flex-direction: column; gap: 4px; max-height: 150px; overflow-y: auto; }
 .mrow { display: flex; align-items: center; gap: 6px; }
@@ -7563,14 +7563,14 @@ onBeforeUnmount(() => {
 .sdbody { padding: 12px 14px; }
 .sdbody .srow label { width: 64px; }
 .geobtn { flex: none; border: 1px solid var(--accent); color: var(--accent); padding: 2px 8px; cursor: pointer; font-size: 11px; }
-.geobtn:hover { background: var(--accent); color: #fff; }
+.geobtn:hover { background: var(--accent); color: var(--bg); }
 .sdiv { margin: 12px 0 8px; padding-top: 10px; border-top: 1px solid var(--border); color: var(--text-muted); font-size: 11.5px; }
 .sdbody .sdiv:first-child { margin-top: 0; padding-top: 0; border-top: none; }
 .pickbtn { flex: 1; text-align: center; border: 1px solid var(--border); color: var(--text-muted); padding: 4px 8px; cursor: pointer; font-size: 12px; }
 .pickbtn:hover { border-color: var(--accent); color: var(--text); }
 .pmode { flex: 1; text-align: center; border: 1px solid var(--border); color: var(--text-muted); padding: 4px 8px; cursor: pointer; font-size: 12px; }
 .pmode:hover { border-color: var(--accent); color: var(--text); }
-.pmode.on { border-color: var(--accent); background: var(--accent); color: #fff; }
+.pmode.on { border-color: var(--accent); background: var(--accent); color: var(--bg); }
 .sres { border: 1px solid var(--border); max-height: 150px; overflow-y: auto; margin-bottom: 8px; }
 .sresi { display: flex; align-items: center; gap: 6px; padding: 4px 8px; cursor: pointer; font-size: 11.5px; }
 .sresi:hover { background: var(--bg); }
@@ -7579,7 +7579,7 @@ onBeforeUnmount(() => {
 .sdfoot { display: flex; gap: 10px; padding: 10px 14px; border-top: 1px solid var(--border); }
 .sdfoot .cancel { margin-left: auto; color: var(--text-muted); border: 1px solid var(--border); padding: 4px 14px; cursor: pointer; font-size: 12px; }
 .sdfoot .cancel:hover { color: var(--text); }
-.sdfoot .save { background: var(--accent); color: #fff; padding: 4px 18px; cursor: pointer; font-size: 12px; }
+.sdfoot .save { background: var(--accent); color: var(--bg); padding: 4px 18px; cursor: pointer; font-size: 12px; }
 /* —— 卫星组管理器：左＝组列表，右＝改名 + 搜索添加 + 成员表 —— */
 .sgm-dlg { width: 780px; max-width: calc(100% - 32px); height: 76vh; max-height: 660px; overflow: hidden; }
 .sgm-body { flex: 1; min-height: 0; display: flex; }
@@ -7624,7 +7624,7 @@ onBeforeUnmount(() => {
 .sgm-pickbar { display: flex; align-items: center; gap: 10px; flex: none; margin-top: 6px; font-size: 11.5px; color: var(--text-muted); }
 .sgm-pickbar b { color: var(--text); }
 .sgm-pickbar .lnk { color: var(--accent); cursor: pointer; }
-.sgm-pickbar .save { margin-left: auto; display: inline-flex; align-items: center; gap: 3px; background: var(--accent); color: #fff; padding: 3px 12px; border-radius: 4px; cursor: pointer; font-size: 11.5px; }
+.sgm-pickbar .save { margin-left: auto; display: inline-flex; align-items: center; gap: 3px; background: var(--accent); color: var(--bg); padding: 3px 12px; border-radius: 4px; cursor: pointer; font-size: 11.5px; }
 .sgm-empty { padding: 12px 10px; font-size: 11px; color: var(--text-faint); line-height: 1.6; }
 .sgm-empty.big { margin: auto; text-align: center; max-width: 300px; }
 .sgm-dlg .sdfoot { justify-content: flex-end; flex: none; }

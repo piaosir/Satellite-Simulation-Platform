@@ -306,6 +306,162 @@ function calculateRainAttenuation(p) {
   };
 }
 
+// ============================================================================
+// 反解：给定「该站能承受多大衰减」→ 求可用度
+// ============================================================================
+// 正向是 A(p)：给时间百分比 p 求衰减。反解是它的数值反函数 p(A)。
+//
+// 定义域必须硬钳在 (0, 5]：ITU-R P.618-14 式(8) 的标度式只在 0.001%~5% 有效，
+// 而 linkCalculator.js:1800 在 p>5 处直接 return 0（不是缓慢衰减，是断崖）。
+// 若把求根区间放到 50%，任何 A_target < A(5%) 的算例都会在 [5, 5+ε] 上找到一个
+// 假的变号点，Brent 收敛到 p≈5 而残差恒等于 A_target 本身，求解器要么报失败、
+// 要么给出一个看着正常的错数。故先算 A(5%) 当可解下界，域外钳端点并标状态。
+const PCT_MIN = 0.001;   // P.618-14 式(8) 定义域下端
+const PCT_MAX = 5;       // 同上，上端；超过此值引擎的雨衰恒为 0
+
+// 反解目标量：三者对 p 都单调（气体与 p 无关；云衰 P.840 对 p 单调；
+// gtDegradation 随 precipAtten 单调）。闪烁不进 totalAtten，故不破坏单调性。
+const SOLVE_TARGETS = {
+  rainAtten: (r) => r.rainAtten,                 // 纯雨衰（默认，与表内结果列同口径）
+  totalAtten: (r) => r.totalAtten,               // 气体+云+雨（SatMaster 口径）
+  dnd: (r) => (r.dnd == null ? NaN : r.dnd)      // 下行劣化 = 降水衰减 + 噪声抬升（仅 direction='down'）
+};
+
+/**
+ * 反解可用度：已知该站链路能承受 targetDb 的衰减，求一年中有多少时间是通的。
+ *
+ * @param {object} p          同 calculateRainAttenuation 的入参（availability 一项会被本函数覆盖）
+ * @param {number} targetDb   可承受衰减门限（dB）
+ * @param {object} [opts]     { target:'rainAtten'|'totalAtten'|'dnd', tolDb, maxIter }
+ * @returns {object} {
+ *   availability, outagePct, downtimeYear, worstMonthAvail, downtimeWorstMonth,
+ *   errDb, iterations, rootCount, state, bounds, elevation, warn[]
+ * }
+ *   state: 'ok'    落在定义域内的解
+ *          'below' targetDb < A(5%)：可用度低于 95%，已钳到 5%
+ *          'above' targetDb > A(0.001%)：可用度高于 99.999%，已钳到 0.001%
+ *          'flat'  A(p) 在整个定义域上几乎不随 p 变（无雨算例），无从反解
+ *          'err'   正向计算本身报错
+ */
+function solveAvailabilityForAtten(p, targetDb, opts) {
+  opts = opts || {};
+  const pick = SOLVE_TARGETS[opts.target] || SOLVE_TARGETS.rainAtten;
+  const tol = num(opts.tolDb, 1e-6);
+  const maxIter = Math.max(10, Math.round(num(opts.maxIter, 80)));
+  const A = num(targetDb);
+  if (!Number.isFinite(A)) return { state: 'err', message: '缺少可承受衰减' };
+
+  const warn = [];
+  let calls = 0;
+  let lastFull = null;
+  // 一次正向求值：**只改时间百分比**，别的一个字段都不动。
+  // R0.01 是 0.01% 的定义值、是标度式的输入不是输出，故 rainRate 不能跟着 p 变；
+  // 而调用方给的 rainRateExact（「就按我填的 R0.01 算，不要查表」）必须原样透传——
+  // 抹掉它会让反解走查表值、正算走填写值，两条路算的不是同一条 A(p) 曲线。
+  const evalAt = (pct) => {
+    calls++;
+    const r = calculateRainAttenuation(Object.assign({}, p, { availability: 100 - pct }));
+    if (!r || r.error) return { error: true, message: (r && r.message) || '计算失败' };
+    lastFull = r;
+    const v = pick(r);
+    return Number.isFinite(v) ? { v, r } : { error: true, message: '目标量在本方向下不可用' };
+  };
+
+  const hi = evalAt(PCT_MIN);   // p 最小 → 衰减最大
+  if (hi.error) return { state: 'err', message: hi.message };
+  const lo = evalAt(PCT_MAX);   // p 最大 → 衰减最小
+  if (lo.error) return { state: 'err', message: lo.message };
+
+  const bounds = { pctMin: PCT_MIN, pctMax: PCT_MAX, attenAtPctMin: hi.v, attenAtPctMax: lo.v };
+  const span = hi.v - lo.v;
+
+  const wrap = (pct, state, errDb, rootCount, iterations) => {
+    const pctC = Math.min(100, Math.max(0, pct));
+    const pw = pctC > 0 ? Math.min(100, Math.pow(pctC / 0.30, 1 / 1.15)) : 0;
+    return {
+      state,
+      availability: 100 - pctC,
+      outagePct: pctC,
+      downtimeYear: (pctC / 100) * HOURS_PER_YEAR,
+      worstMonthAvail: 100 - pw,
+      downtimeWorstMonth: (pw / 100) * (HOURS_PER_YEAR / 12),
+      errDb, rootCount, iterations, calls, bounds, warn,
+      elevation: lastFull ? lastFull.elevation : null,
+      rainRate: lastFull ? lastFull.rainRate : null,
+      target: opts.target || 'rainAtten', targetDb: A
+    };
+  };
+
+  // A(p) 在定义域上几乎是平的（无雨 / 极低频）：任何门限都无从区分，不给一个假的 p
+  if (!(span > 1e-9)) { warn.push('flat'); return wrap(NaN, 'flat', NaN, 0, 0); }
+
+  // 域外：钳端点 + 标状态，不外推（与平台既有「越界告警不禁用」口径一致）
+  if (A <= lo.v) { warn.push('clampedLow'); return wrap(PCT_MAX, 'below', lo.v - A, 0, 0); }
+  if (A >= hi.v) { warn.push('clampedHigh'); return wrap(PCT_MIN, 'above', hi.v - A, 0, 0); }
+
+  const g = (pct) => { const e = evalAt(pct); return e.error ? null : e.v - A; };
+
+  // 括号区间。GEO 路径下仰角固定、A(p) 由标度式的幂律严格单调递减，端点已经把根夹住了，
+  // 无需粗扫（省 40 次引擎调用，整表反解快 5 倍）。只有 NGSO §8 路径要粗扫：等效仰角随 p 变，
+  // 而雨衰对仰角本就非单调（本仓已踩过这个坑），可能出现多个根。
+  let brackets;
+  if (!p.ngsoStat) {
+    brackets = [[PCT_MIN, PCT_MAX]];
+  } else {
+    const N = 40;
+    const xs = [], gs = [];
+    for (let i = 0; i < N; i++) {
+      const t = i / (N - 1);
+      const pct = PCT_MIN * Math.pow(PCT_MAX / PCT_MIN, t);
+      xs.push(pct); gs.push(g(pct));
+    }
+    brackets = [];
+    for (let i = 1; i < N; i++) {
+      const a = gs[i - 1], b = gs[i];
+      if (a == null || b == null) continue;
+      if (a === 0) brackets.push([xs[i - 1], xs[i - 1]]);
+      else if ((a > 0 && b < 0) || (a < 0 && b > 0)) brackets.push([xs[i - 1], xs[i]]);
+    }
+  }
+  const rootCount = brackets.length;
+  if (!rootCount) { warn.push('noBracket'); return wrap(PCT_MAX, 'below', lo.v - A, 0, 0); }
+  if (rootCount > 1) warn.push('multiRoot');
+
+  // 多根时取**最大** p 的那个根：A(p) 是「被超过 p% 时间的衰减」，本该是单调的
+  // 反 CCDF；出现多根说明 §8 等效仰角把它弄成了非单调。最大根是衰减最终落到
+  // 门限以下的那一点，P(A>门限) ≈ 该 p，既更接近 CCDF 定义也更保守（不高报可用度）。
+  const [bl, br] = brackets[brackets.length - 1];
+
+  // Illinois 试位法：普通试位法在一端饱和时会单侧停滞（收敛慢一个量级）
+  let xa = bl, xb = br;
+  let fa = g(xa), fb = g(xb);
+  if (fa == null || fb == null) return { state: 'err', message: '求根区间内计算失败' };
+  let x = xa, fx = fa, iter = 0;
+  if (fa === 0) { x = xa; fx = 0; }
+  else if (fb === 0) { x = xb; fx = 0; }
+  else {
+    let side = 0;
+    for (iter = 0; iter < maxIter; iter++) {
+      x = xb - fb * (xb - xa) / (fb - fa);
+      if (!Number.isFinite(x) || x <= Math.min(xa, xb) || x >= Math.max(xa, xb)) x = 0.5 * (xa + xb);
+      fx = g(x);
+      if (fx == null) return { state: 'err', message: '求根迭代中计算失败' };
+      if (Math.abs(fx) <= tol) break;
+      if ((fx > 0) === (fa > 0)) {
+        xa = x; fa = fx;
+        if (side === -1) fb *= 0.5;      // 同侧连续命中 → 保留端的 f 折半
+        side = -1;
+      } else {
+        xb = x; fb = fx;
+        if (side === 1) fa *= 0.5;
+        side = 1;
+      }
+      if (Math.abs(xb - xa) <= 1e-12) break;
+    }
+  }
+  return wrap(x, 'ok', fx, rootCount, iter);
+}
+
 /**
  * 曲线扫描：固定其余参数，扫某一自变量 → [{x, y=雨衰(dB)}]，供交互式坐标系绘制。
  * @param {object} p     基准算例参数（同 calculateRainAttenuation）
@@ -336,4 +492,103 @@ function sweepRainAttenuation(p, axis, range) {
   return { axis, points };
 }
 
-module.exports = { calculateRainAttenuation, sweepRainAttenuation, s8EquivalentElevation };
+// ============================================================================
+// 多站总可用度：把「逐站可用度（直接给 / 由可承受衰减反解）→ 纯概率论聚合」串成一次调用
+// ============================================================================
+// 数学在 rainDiversity.js（纯函数、不认识引擎），本函数只做编排与口径对接。
+
+/**
+ * 多站总可用度。
+ * @param {Array} cases 每站一个：calculateRainAttenuation 的入参 + { attenBudgetDb, name }
+ * @param {object} opt {
+ *   inputMode,                  // 'atten' 由可承受衰减反解（默认）| 'avail' 直接读各站可用度
+ *   nMin,                       // 最少可用站数（默认 = 全部参与站，即一站倒系统即倒）
+ *   target,                     // 反解目标量 'rainAtten'|'totalAtten'|'dnd'
+ *   tSwMin, uBudgetPct, nSwPerYear   // 切换预算
+ * }
+ */
+function solveMultiSite(cases, opt) {
+  opt = opt || {};
+  const div = require('./rainDiversity.js');
+  const list = Array.isArray(cases) ? cases : [];
+  const target = opt.target || 'rainAtten';
+  const pickV = SOLVE_TARGETS[target] || SOLVE_TARGETS.rainAtten;
+
+  // 输入方式：'atten' 由「可承受衰减」反解可用度（默认）；'avail' 直接读各站「可用度」列。
+  // 'avail' 下不碰反解，各站不可用度就是 100 − 可用度 —— 纯概率论入口，零传播模型假设。
+  const byAvail = opt.inputMode === 'avail';
+
+  const sites = list.map((c, i) => {
+    const name = c.stationName || ('站 ' + (i + 1));
+    const budget = num(c.attenBudgetDb);
+    const availIn = num(c.availability);
+    const out = {
+      idx: i, name,
+      lat: num(c.lat), lon: num(c.lon),
+      attenBudgetDb: Number.isFinite(budget) ? budget : null,
+      availInputPct: Number.isFinite(availIn) ? availIn : null,
+      solve: null, atten: null, warn: []
+    };
+
+    if (byAvail) {
+      // 直接给可用度：不反解，按输入值直接构造与反解同形的结果对象
+      if (!(availIn > 0 && availIn <= 100)) { out.warn.push('noAvail'); return out; }
+      const pct = 100 - availIn;
+      const pw = pct > 0 ? Math.min(100, Math.pow(pct / 0.30, 1 / 1.15)) : 0;
+      out.solve = {
+        state: 'given', availability: availIn, outagePct: pct,
+        downtimeYear: (pct / 100) * HOURS_PER_YEAR,
+        worstMonthAvail: 100 - pw, downtimeWorstMonth: (pw / 100) * (HOURS_PER_YEAR / 12),
+        errDb: null, rootCount: 1, warn: []
+      };
+    } else {
+      if (!Number.isFinite(budget)) { out.warn.push('noBudget'); return out; }
+      out.solve = solveAvailabilityForAtten(c, budget, { target });
+      if (out.solve.state === 'err') { out.warn.push('solveErr'); return out; }
+    }
+
+    // 该站工作点（= 它自己的不可用度对应的时间百分比）上的三档衰减，两种输入方式都给：
+    //   反解模式下三档里有一档就是用户填的门限，另两档是同一工作点的换算；
+    //   直接给可用度模式下，三档就是「这个可用度需要多大余量」的答案。
+    const at = calculateRainAttenuation(Object.assign({}, c, { availability: out.solve.availability }));
+    if (at && !at.error) {
+      out.atten = {
+        rain: at.rainAtten,
+        total: at.totalAtten,
+        dnd: at.dnd == null ? null : at.dnd,
+        elevation: at.elevation, rainRate: at.rainRate
+      };
+    }
+    return out;
+  });
+
+  const active = sites.filter((s) => s.solve && s.solve.state !== 'err');
+  const nMin = Math.max(1, Math.min(active.length || 1, Math.round(num(opt.nMin, active.length))));
+
+  const result = { sites, nMin, activeCount: active.length, target, inputMode: byAvail ? 'avail' : 'atten', warn: [] };
+  if (!active.length) { result.warn.push('noSites'); return result; }
+
+  // —— 系统聚合：P(中断站数 ≥ L)，各站中断按相互独立计（口径见 rainDiversity.js 文件头）——
+  result.system = div.aggregate(active.map((s) => s.solve.outagePct), nMin);
+  result.system.names = active.map((s) => s.name);
+
+  // —— 切换：独立可加项，直接并进年度总账 ——
+  // U_sw = 次数 × 单次时长 / 全年分钟数。它进不了联合概率模型（静态模型没有时间轴），
+  // 只能这样相加。已知偏保守：系统已中断的时段里也在计切换，这部分被算了两遍。
+  if (opt.tSwMin != null || opt.uBudgetPct != null || opt.nSwPerYear != null) {
+    const sw = div.switchBudget({
+      tSwMin: opt.tSwMin, uBudgetPct: opt.uBudgetPct, nSwPerYear: opt.nSwPerYear
+    });
+    if (Number.isFinite(sw.switchUnavailPct)) {
+      sw.unavail = sw.switchUnavailPct / 100;
+      sw.total = result.system.unavail + sw.unavail;
+    }
+    result.switch = sw;
+  }
+  return result;
+}
+
+module.exports = {
+  calculateRainAttenuation, sweepRainAttenuation, s8EquivalentElevation,
+  solveAvailabilityForAtten, solveMultiSite, PCT_MIN, PCT_MAX
+};

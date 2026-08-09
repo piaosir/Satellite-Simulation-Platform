@@ -1030,7 +1030,7 @@ const run = () => {
 .ci-tabs { display: flex; gap: 3px; }
 .ci-tab { font: inherit; font-size: 12px; padding: 5px 12px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 4px); }
 .ci-tab.on { background: var(--surface-2); color: var(--text); border-color: var(--border-strong); font-weight: 600; box-shadow: inset 0 -2px 0 var(--accent); }
-.ci-run { font: inherit; font-weight: 600; padding: 6px 18px; cursor: pointer; color: #fff; background: var(--accent); border: none; border-radius: var(--r-ctl, 4px); }
+.ci-run { font: inherit; font-weight: 600; padding: 6px 18px; cursor: pointer; color: var(--bg); background: var(--accent); border: none; border-radius: var(--r-ctl, 4px); }
 .ci-run:disabled { opacity: 0.55; cursor: default; }
 .ci-btn { font: inherit; font-size: 12px; padding: 4px 10px; cursor: pointer; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl, 4px); }
 .ci-btn:hover:not(:disabled) { border-color: var(--border-strong); }

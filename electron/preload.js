@@ -95,6 +95,7 @@ contextBridge.exposeInMainWorld('api', {
     open: () => ipcRenderer.invoke('rain:open'),
     compute: (p) => ipcRenderer.invoke('rain:compute', p),
     computeBatch: (cases) => ipcRenderer.invoke('rain:computeBatch', cases),
+    solveMultiSite: (cases, opt) => ipcRenderer.invoke('rain:solveMultiSite', cases, opt),
     sweep: (p, axis, range) => ipcRenderer.invoke('rain:sweep', p, axis, range),
     exportExcel: (payload) => ipcRenderer.invoke('rain:exportExcel', payload),
     geoFill: (lat, lon) => ipcRenderer.invoke('link:geoFill', lat, lon),

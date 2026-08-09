@@ -2258,12 +2258,12 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .rlmode-i.on { background: var(--accent); color: var(--bg); border-color: var(--accent); }
 .rlmode-i.disabled { opacity: .55; cursor: not-allowed; }
 .rlmode-todo { font-size: 9px; font-weight: 700; margin-left: 1px; padding: 1px 5px; border-radius: 999px; background: var(--surface-2); color: var(--text-faint); border: 1px solid var(--border); vertical-align: 1px; }
-.rlmode-i.on .rlmode-todo { background: rgba(255,255,255,.2); color: #fff; border-color: transparent; }
+.rlmode-i.on .rlmode-todo { background: color-mix(in srgb, var(--bg) 20%, transparent); color: var(--bg); border-color: transparent; }
 .rlmode-x { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; margin-left: 1px; border-radius: 4px; color: currentColor; opacity: .5; }
 .rlmode-x svg { stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; fill: none; }
 .rlmode-i:hover .rlmode-x { opacity: .8; }
 .rlmode-x:hover { opacity: 1; background: rgba(214,69,69,.16); color: #d64545; }
-.rlmode-i.on .rlmode-x:hover { background: rgba(255,255,255,.28); color: #fff; }
+.rlmode-i.on .rlmode-x:hover { background: color-mix(in srgb, var(--bg) 28%, transparent); color: var(--bg); }
 .rlmode-add-wrap { position: relative; display: inline-flex; }
 .rlmode-add { display: inline-flex; align-items: center; justify-content: center; width: 27px; height: 27px; padding: 0; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px dashed var(--border-strong); border-radius: var(--r-ctl); }
 .rlmode-add svg { stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; fill: none; }

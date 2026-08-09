@@ -8,7 +8,8 @@ import StationGrid from '../linkbudget/StationGrid.vue'   // 通用表格组件�
 import ConfigTree from '../components/ConfigTree.vue'
 import Icon from '../components/Icon.vue'
 import RainPlot from './RainPlot.vue'
-import { rainFields, GRID_GROUPS, RESULT_KEYS, LEGACY_KEYS, POL_LABEL, defaultRow, effectiveRow, buildRainCase } from './rainParams.js'
+import RainDiversity from './RainDiversity.vue'
+import { rainFields, GRID_GROUPS, RESULT_KEYS, RESULT_DIGITS, LEGACY_KEYS, POL_LABEL, defaultRow, effectiveRow, buildRainCase } from './rainParams.js'
 import { stableStringify } from '../shared/configDirty.js'
 import { halfStr } from '../shared/num.js'
 
@@ -19,7 +20,10 @@ const orbitMode = ref('geo')        // 'geo'（输入 GEO 轨位算仰角）| 'n
 const direction = ref('down')       // 'down' | 'up'（G/T 衰减 / DND 为下行专属）
 const rainModel = ref('auto')       // 'auto'（经纬度→ITU-R P.837 自动填 R0.01）| 'manual'（手填）
 // 字段集：几何是全局参数、派生结果收进详情 → 两种轨道类型同一套列
-const fields = computed(() => rainFields())
+// 多站汇总开关（底栏）：一处控三件事 —— 表加「多站」列组、底栏出多站设置、右栏换成多站结果。
+// 关掉即完全回到单算例形态（表不变宽、右栏是曲线+详情），故不需要「页签」这一层。
+const divOn = ref(false)
+const fields = computed(() => rainFields({ diversity: divOn.value, byAvail: divOpt.inputMode === 'avail' }))
 // 只读字段：自动降雨模型 → R0.01 只读（结果列由 f.ro 恒只读，不必列在此）
 const readonlyKeys = computed(() => (rainModel.value === 'auto' ? ['rainRate'] : []))
 const geoTip = computed(() => orbitMode.value === 'geo'
@@ -80,21 +84,80 @@ async function autoGeo(row, skip) {
   } catch (e) { /* ignore */ }
 }
 
+// —— 多站总可用度 ——
+// 设置与「计算」按钮都在中间栏底部，与单算例共用一个按钮、一盏「输入已变」灯：
+// 一次点击先算整表单算例，多站开关打开时再顺带算一遍系统聚合。
+const divResult = shallowRef(null)
+const divOpt = reactive({
+  // inputMode: 'atten' 由可承受衰减反解可用度 | 'avail' 直接读表内「可用度」列
+  inputMode: 'atten', target: 'rainAtten', nMin: '', tSwMin: '', nSwPerYear: ''
+})
+// 逐站反解结果按行 _id 存（与单算例结果同口径，不写回行对象、不串位）
+const divByRow = shallowRef({})
+// 底栏输入框收的是字符串，出 IPC 前统一归一（留空 = 不传，引擎按缺省处理，不编数）
+const nOrUndef = (v) => { const n = parseFloat(halfStr(v)); return Number.isFinite(n) ? n : undefined }
+
+async function computeDiversity(ids) {
+  const payload = JSON.parse(JSON.stringify(cases.map((row) => buildRainCase(row, caseOpts()))))
+  const plain = {
+    inputMode: divOpt.inputMode,
+    target: divOpt.target,
+    nMin: nOrUndef(divOpt.nMin),
+    tSwMin: nOrUndef(divOpt.tSwMin),
+    nSwPerYear: nOrUndef(divOpt.nSwPerYear)
+  }
+  const r = await api.solveMultiSite(payload, plain)
+  divResult.value = r || null
+  // 逐站反解回填到表内两个结果列
+  const m = {}
+  if (r && Array.isArray(r.sites)) {
+    r.sites.forEach((s, i) => {
+      const id = ids[i]; if (!id) return
+      const q = s.solve
+      m[id] = q && q.state !== 'err'
+        ? { availSolved: q.availability, outagePct: q.outagePct, downtimeH: q.downtimeYear, _state: q.state }
+        : { availSolved: null, downtimeH: null, _state: 'err' }
+    })
+  }
+  divByRow.value = m
+  if (r && r.error) return '多站计算失败：' + r.message
+  return ''
+}
+// 多站设置也算「计算输入」：改了要亮灯，否则灯说谎
+watch(divOpt, () => { if (hasResults.value || divResult.value) resultsStale.value = true }, { deep: true })
+// 关掉多站开关：结果与表内反解列一并清掉，免得留着一份对不上当前形态的旧数
+watch(divOn, (on) => { if (!on) { divResult.value = null; divByRow.value = {} } })
+
 // —— 表内结果列取值（StationGrid 计算列口径：{ 行_id: { 列key: 值 } }）——
+// 小数位按 RESULT_DIGITS 逐列取：可用度列 2 位会把 99.99% 与 99.999% 显示成同一个数。
 const extraValues = computed(() => {
   const out = {}
   for (const row of cases) {
     const r = resultById.value[row._id]
-    if (!r) continue
+    const d = divByRow.value[row._id]
+    if (!r && !d) continue
     const o = {}
-    for (const k of RESULT_KEYS) o[k] = r.error ? '✕' : ((r[k] == null || !Number.isFinite(+r[k])) ? '—' : (+r[k]).toFixed(2))
+    for (const k of RESULT_KEYS) {
+      const src = (k === 'availSolved' || k === 'downtimeH') ? d : r
+      if (!src) { o[k] = ''; continue }
+      const digits = RESULT_DIGITS[k] == null ? 2 : RESULT_DIGITS[k]
+      o[k] = src.error ? '✕' : ((src[k] == null || !Number.isFinite(+src[k])) ? '—' : (+src[k]).toFixed(digits))
+    }
     out[row._id] = o
   }
   return out
 })
-// 结果列着色：该算例算不出来时标红（保留数值着色与报错诊断，不出文字判定）
+// 结果列着色：该算例算不出来时标红（保留数值着色与报错诊断，不出文字判定）。
+// 多站那两列走各自的反解状态：钳到定义域端点的标警示色（越界只标色 + title，不禁用）。
 function cellClassFn(f, row) {
   if (!f.ro) return null
+  if (f.key === 'availSolved' || f.key === 'downtimeH') {
+    const d = divByRow.value[row._id]
+    if (!d) return null
+    if (d._state === 'err') return 'st-bad'
+    if (d._state === 'below' || d._state === 'above' || d._state === 'flat') return 'st-warn'
+    return null
+  }
   const r = resultById.value[row._id]
   return (r && r.error) ? 'st-bad' : null
 }
@@ -121,9 +184,16 @@ async function compute() {
     const m = {}
     ids.forEach((id, i) => { if (arr[i]) m[id] = arr[i] })
     resultById.value = m
-    resultsStale.value = false
     const errs = arr.filter((r) => r && r.error).length
-    toast(errs ? `完成，${errs}/${ids.length} 个算例计算失败（见表内 ✕）` : `完成，共 ${ids.length} 个算例`)
+    // 多站开关打开时，同一次点击顺带把系统聚合算了（一个按钮、一盏灯）
+    let divMsg = ''
+    if (divOn.value) {
+      if (!api.solveMultiSite) divMsg = '多站计算需在桌面客户端中运行'
+      else divMsg = await computeDiversity(ids)
+    }
+    resultsStale.value = false
+    toast(divMsg || (errs ? `完成，${errs}/${ids.length} 个算例计算失败（见表内 ✕）`
+      : `完成，共 ${ids.length} 个算例${divOn.value ? ' · 多站汇总已出' : ''}`))
   } catch (e) { toast('计算失败：' + (e && e.message ? e.message : e)); resultById.value = {} }
   finally { computing.value = false }
 }
@@ -223,8 +293,9 @@ async function exportExcel() {
   if (!hasResults.value) { toast('请先计算'); return }
   try {
     const pf = (v) => { const x = parseFloat(halfStr(v)); return Number.isFinite(x) ? x : null }
+    const divOut = (divOn.value && divResult.value && !divResult.value.error) ? JSON.parse(JSON.stringify(divResult.value)) : null
     const payload = {
-      defaultName: '雨衰计算结果.xlsx',
+      defaultName: divOut ? '多站总可用度.xlsx' : '雨衰计算结果.xlsx',
       orbitMode: orbitMode.value,
       direction: direction.value,
       rainModel: rainModel.value,
@@ -234,7 +305,9 @@ async function exportExcel() {
         : { satLon: pf(geoSatLon.value) },
       rows: cases.map((c) => { const { _id, ...r } = effectiveRow(c); return r }),
       // 报表按下标把 rows[i] 与 results[i] 配对 → 这里按当前行序摊平（未算出的行留 null 占位，不串位）
-      results: JSON.parse(JSON.stringify(cases.map((c) => resultById.value[c._id] || null)))
+      results: JSON.parse(JSON.stringify(cases.map((c) => resultById.value[c._id] || null))),
+      // 多站汇总打开且已算出 → 汇总页同步进导出（「多站汇总」sheet 替代批量结果页，三线表模板版式）
+      div: divOut
     }
     const r = await api.exportExcel(payload)
     if (r && r.ok) toast('已导出：' + r.filePath)
@@ -261,6 +334,8 @@ function serializeState() {
     orbitMode: orbitMode.value, direction: direction.value, rainModel: rainModel.value,
     satLon: geoSatLon.value,
     orbit: { alt: ngsoOrbit.alt, incl: ngsoOrbit.incl, minEl: ngsoOrbit.minEl },
+    // 多站汇总的开关与设置随档走（结果不入档，载入后待重算）
+    div: { on: divOn.value, inputMode: divOpt.inputMode, target: divOpt.target, nMin: divOpt.nMin, tSwMin: divOpt.tSwMin, nSwPerYear: divOpt.nSwPerYear },
     cases: cases.map(strip),
     // 存档里仍按下标记（_id 是会话内的临时键，不入档）
     selectedIdx: Math.max(0, cases.findIndex((c) => c._id === selectedId.value))
@@ -293,19 +368,29 @@ function applyState(st) {
       return row
     }))
   }
+  // 多站汇总的开关与设置（旧存档无 div 字段 → 回到默认关闭，不沿用上一份配置的选择）
+  const dv = (st.div && typeof st.div === 'object') ? st.div : {}
+  divOn.value = !!dv.on
+  divOpt.inputMode = dv.inputMode === 'avail' ? 'avail' : 'atten'
+  divOpt.target = (dv.target === 'totalAtten' || dv.target === 'dnd') ? dv.target : 'rainAtten'
+  divOpt.nMin = dv.nMin != null ? String(dv.nMin) : ''
+  divOpt.tSwMin = dv.tSwMin != null ? String(dv.tSwMin) : ''
+  divOpt.nSwPerYear = dv.nSwPerYear != null ? String(dv.nSwPerYear) : ''
   const si = (st.selectedIdx != null) ? Math.min(st.selectedIdx, Math.max(0, cases.length - 1)) : 0
   selectedId.value = cases[si] ? cases[si]._id : (cases[0] ? cases[0]._id : null)
   resultById.value = {}       // 载入配置后清空旧结果，待重新计算
+  divResult.value = null      // 多站结果同样不跨配置存活
+  divByRow.value = {}
   resultsStale.value = false
 }
-function blankState() { return { orbitType: 'RAIN', orbitMode: 'geo', direction: 'down', rainModel: 'auto', satLon: '130.5', orbit: { alt: '550', incl: '53', minEl: '10' }, cases: [defaultRow()], selectedIdx: 0 } }
+function blankState() { return { orbitType: 'RAIN', orbitMode: 'geo', direction: 'down', rainModel: 'auto', satLon: '130.5', orbit: { alt: '550', incl: '53', minEl: '10' }, div: { on: false, inputMode: 'atten', target: 'rainAtten', nMin: '', tSwMin: '', nSwPerYear: '' }, cases: [defaultRow()], selectedIdx: 0 } }
 
 let _stateT = null
 function scheduleSaveState() { clearTimeout(_stateT); _stateT = setTimeout(() => { try { localStorage.setItem(STATE_KEY, JSON.stringify({ ...serializeState(), activeId: activeId.value })) } catch (e) { /* ignore */ } }, 600) }
-watch([orbitMode, direction, rainModel, geoSatLon, ngsoOrbit, cases, selectedId, activeId], scheduleSaveState, { deep: true })
+watch([orbitMode, direction, rainModel, geoSatLon, ngsoOrbit, cases, selectedId, activeId, divOn, divOpt], scheduleSaveState, { deep: true })
 
-// 指纹（只取内容，不含 selectedIdx 视图态）→ 脏检测（全局几何属内容，计入）
-function fingerprintOf(s) { return stableStringify({ orbitMode: s.orbitMode, direction: s.direction, rainModel: s.rainModel, satLon: s.satLon, orbit: s.orbit, cases: s.cases }) }
+// 指纹（只取内容，不含 selectedIdx 视图态）→ 脏检测（全局几何与多站设置属内容，计入）
+function fingerprintOf(s) { return stableStringify({ orbitMode: s.orbitMode, direction: s.direction, rainModel: s.rainModel, satLon: s.satLon, orbit: s.orbit, div: s.div, cases: s.cases }) }
 function fingerprint() { return fingerprintOf(serializeState()) }
 let activeBaseline = ''
 function setBaseline() { activeBaseline = fingerprint() }
@@ -505,27 +590,63 @@ onMounted(async () => {
           />
         </div>
 
-        <div class="lb-foot">
+        <!-- 底栏：单算例与多站的全部设置 + 唯一一个「计算」按钮。
+             多站那一组随开关出现/消失（关掉时这一条与改造前一模一样）。 -->
+        <div class="lb-foot rain-foot">
+          <label class="rain-sw" title="把整张算例表当站表：逐站取可用度（表内直接给，或由「可承受衰减」反解），聚合成系统总可用度；右栏换成汇总结果">
+            <input v-model="divOn" type="checkbox" /><span>多站汇总</span>
+          </label>
+
+          <template v-if="divOn">
+            <div class="rain-seg-grp">
+              <span class="rain-seg-lb">输入</span>
+              <div class="rain-seg">
+                <button :class="{ on: divOpt.inputMode === 'atten' }" title="表内填「可承受衰减」，由 ITU-R P.618-14 标度式反解各站可用度" @click="divOpt.inputMode = 'atten'">可承受衰减</button>
+                <button :class="{ on: divOpt.inputMode === 'avail' }" title="直接读表内「可用度」列，不走反解 —— 纯概率论入口，零传播模型假设。结果里同时给出该可用度对应的雨衰 / 合计 / 下行总劣化" @click="divOpt.inputMode = 'avail'">站可用度</button>
+              </div>
+            </div>
+            <label class="rain-geom" title="系统可用 = 至少这么多站不处于中断。留空按全部站数（一站倒系统即倒）">
+              <span>最少可用</span><input v-model="divOpt.nMin" spellcheck="false" placeholder="全部" /><i>站</i>
+            </label>
+            <div v-if="divOpt.inputMode === 'atten'" class="rain-seg-grp">
+              <span class="rain-seg-lb">可承受衰减</span>
+              <!-- 表内那一列填的数，到底对标哪一项 —— 三档差值可达 4 dB，不说清同一个 12 dB 会算出不同的可用度 -->
+              <select v-model="divOpt.target" class="rain-sel" title="表内「可承受衰减」列填的数对标哪一项衰减。北京站 12.5 GHz、99.9% 实测三档分别为 3.57 / 4.00 / 7.51 dB">
+                <option value="rainAtten">单独雨衰</option>
+                <option value="totalAtten">气体吸收 + 云衰 + 雨衰</option>
+                <option value="dnd">雨衰 + 云衰 + 噪声抬升（下行总劣化）</option>
+              </select>
+            </div>
+            <div class="rain-seg-grp">
+              <span class="rain-seg-lb">切换</span>
+              <label class="rain-geom" title="单次切换的业务中断时长"><span>时间</span><input v-model="divOpt.tSwMin" spellcheck="false" placeholder="时长" /><i>min</i></label>
+              <label class="rain-geom" title="一年切换多少次。切换进不了联合概率模型（静态模型没有时间轴），只作独立可加项 U_sw = 次数 × 时间 / 525960，与站点中断项相加进年度总账"><span>次数</span><input v-model="divOpt.nSwPerYear" spellcheck="false" placeholder="次/年" /><i>次/年</i></label>
+            </div>
+          </template>
+
           <span class="lb-flex"></span>
-          <span v-if="resultsStale && hasResults" class="rain-stale" title="计算输入已被修改，表内雨衰列与右侧详情对应修改前的参数">输入已变</span>
+          <span v-if="resultsStale && (hasResults || divResult)" class="rain-stale" title="计算输入已被修改，表内结果列与右栏数值对应修改前的参数">输入已变</span>
           <button class="lb-calc" :disabled="computing || !cases.length" @click="compute">
             {{ computing ? '计算中…' : ('计算（' + cases.length + ' 个算例）') }}
           </button>
         </div>
       </section>
 
-      <!-- ③ 单算例细致分析 -->
+      <!-- ③ 结果栏：多站开关决定看哪一份 -->
       <section class="lb-col lb-result">
         <div class="lb-col-hd">
-          <span class="lb-cfg-hd-t">单算例分析</span>
-          <span v-if="resultsStale && hasResults" class="rain-stale" title="计算输入已被修改，以下数值对应修改前的参数">输入已变</span>
+          <span class="lb-cfg-hd-t">{{ divOn ? '多站汇总' : '单算例分析' }}</span>
+          <span v-if="resultsStale && (hasResults || divResult)" class="rain-stale" title="计算输入已被修改，以下数值对应修改前的参数">输入已变</span>
           <span class="lb-flex"></span>
-          <select v-model="selectedId" class="rain-sel" title="选择要细致分析的算例（点表格中的行亦可）">
-            <option v-for="(c, i) in cases" :key="c._id" :value="c._id">{{ (i + 1) + ' · ' + caseName(c, i) }}</option>
-          </select>
+          <template v-if="!divOn">
+            <select v-model="selectedId" class="rain-sel" title="选择要细致分析的算例（点表格中的行亦可）">
+              <option v-for="(c, i) in cases" :key="c._id" :value="c._id">{{ (i + 1) + ' · ' + caseName(c, i) }}</option>
+            </select>
+          </template>
           <button class="lb-mini" :disabled="!hasResults" title="导出批量结果 Excel" @click="exportExcel">导出 Excel</button>
         </div>
-        <div class="lb-result-bd">
+        <RainDiversity v-if="divOn" :result="divResult" />
+        <div v-else class="lb-result-bd">
           <template v-if="!hasResults">
             <div class="rain-ph">尚无计算结果。</div>
           </template>
@@ -628,7 +749,7 @@ onMounted(async () => {
 .lb-mini { font: inherit; font-size: 12px; padding: 3px 9px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); border-radius: var(--r-ctl); cursor: pointer; }
 .lb-mini:hover:not(:disabled) { border-color: var(--accent); }
 .lb-mini:disabled { opacity: .5; cursor: default; }
-.lb-mini.pri { background: var(--accent); color: #fff; border-color: var(--accent); }
+.lb-mini.pri { background: var(--accent); color: var(--bg); border-color: var(--accent); }
 .lb-mini-ico { display: inline-flex; align-items: center; padding: 3px 6px; }
 .rain-sel { font: inherit; font-size: 12px; padding: 3px 6px; border: 1px solid var(--border); border-radius: var(--r-ctl); background: var(--surface-2); color: var(--text); max-width: 220px; }
 
@@ -657,8 +778,17 @@ onMounted(async () => {
 .rain-stale { flex: none; font-size: 11px; padding: 2px 7px; letter-spacing: 0; text-transform: none; color: var(--warn); border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); border-radius: var(--r-ctl); background: color-mix(in srgb, var(--warn) 8%, transparent); }
 
 .lb-foot { flex: none; display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-top: 1px solid var(--border); background: var(--surface); }
-.lb-calc { flex: none; white-space: nowrap; font: inherit; font-size: 13px; font-weight: 600; padding: 6px 18px; border: 1px solid var(--accent); background: var(--accent); color: #fff; border-radius: var(--r-ctl); cursor: pointer; }
+.lb-calc { flex: none; white-space: nowrap; font: inherit; font-size: 13px; font-weight: 600; padding: 6px 18px; border: 1px solid var(--accent); background: var(--accent); color: var(--bg); border-radius: var(--r-ctl); cursor: pointer; }
 .lb-calc:disabled { opacity: .55; cursor: default; }
+/* 底栏承载了单算例 + 多站的全部设置：窄窗口下按整组换行（组内不折断，与顶部工具栏同一套办法），
+   「计算」按钮靠 lb-flex 始终推到最右，换行后仍在最后一行右端 */
+.rain-foot { flex-wrap: wrap; gap: 7px 12px; }
+.rain-foot .lb-flex { min-width: 0; }
+/* 多站开关：底栏第一项，关掉时底栏与改造前一模一样 */
+.rain-sw { flex: none; display: inline-flex; align-items: center; gap: 5px; cursor: pointer; user-select: none; white-space: nowrap; }
+.rain-sw input { margin: 0; cursor: pointer; }
+.rain-sw span { font-size: 12px; font-weight: 600; }
+.rain-sel-sm { font-size: 11px; padding: 2px 4px; max-width: 74px; }
 
 /* 结果栏 */
 .lb-result-bd { flex: 1 1 auto; overflow: auto; padding: 10px; }

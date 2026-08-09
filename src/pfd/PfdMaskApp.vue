@@ -846,13 +846,13 @@ select { padding: 3px 6px; border: 1px solid var(--border); border-radius: 3px; 
 .pv { font-family: var(--font-mono); font-size: 12px; color: var(--text); margin-right: 14px; }
 .pseg { display: inline-flex; border: 1px solid var(--border); border-radius: 3px; overflow: hidden; }
 .pseg span { padding: 3px 12px; cursor: pointer; color: var(--text-muted); font-size: 12px; }
-.pseg span.on { background: var(--accent); color: #fff; }
+.pseg span.on { background: var(--accent); color: var(--bg); }
 
 .pb { padding: 5px 14px; border: 1px solid var(--border); border-radius: 3px; background: var(--bg); color: var(--text);
   font-size: 12.5px; cursor: pointer; }
 .pb:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
 .pb:disabled { opacity: 0.45; cursor: default; }
-.pb.main { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; }
+.pb.main { background: var(--accent); color: var(--bg); border-color: var(--accent); font-weight: 600; }
 .pb.sm { padding: 3px 10px; font-size: 12px; }
 
 .pw-kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; margin: 0; font-size: 12px; }

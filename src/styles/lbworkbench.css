@@ -210,6 +210,9 @@ html[data-theme='dark'] {
 /* 链路表结果单元格着色（StationGrid 单元格附加 class，全局规则穿透 scoped） */
 .sg-cell.st-ok .sg-v { color: var(--ok, #4a7a62); font-weight: 600; }
 .sg-cell.st-bad .sg-v { color: var(--danger, #9c5751); font-weight: 600; }
+/* 警示档（介于 ok 与 bad 之间）：如可用度反解被钳到 P.618-14 式(8) 的定义域端点——
+   数还是有效的，只是要提醒一眼，故用暖色而不是红色 */
+.sg-cell.st-warn .sg-v { color: var(--warn, #8a7038); font-weight: 600; }
 .sg-cell.st-err .sg-v { color: var(--text-faint); }
 /* 占用类结果列（功率/带宽占用）的比例填充条——单色半透明色块：
    不描边、不圆角、不渐变、无格底衬色（旧版「水位」双层渐变 + 满量程水槽底色＝整格被染，读数格变色块，已弃）。

@@ -292,7 +292,7 @@ const rows = computed(() => {
 .sp { max-width: 940px; }
 .sp-modes { display: flex; align-items: center; gap: 6px; margin-bottom: 10px; }
 .sp-seg { font-size: 12px; padding: 4px 12px; border: 1px solid var(--border); background: var(--bg); color: var(--text-muted); border-radius: 3px; cursor: pointer; }
-.sp-seg.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+.sp-seg.on { background: var(--accent); color: var(--bg); border-color: var(--accent); }
 .sp-flex { flex: 1; }
 .sp-clear { font-size: 11px; padding: 3px 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text-muted); border-radius: 3px; cursor: pointer; }
 .sp-grd { margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px dashed var(--border); }
@@ -312,7 +312,7 @@ const rows = computed(() => {
 .sp-li-n { display: block; font-size: 12px; color: var(--text); }
 .sp-li-i { display: block; font-size: 10px; color: var(--text-faint); font-family: var(--font-mono); }
 .sp-badge { display: inline-block; font-size: 9px; font-style: normal; padding: 0 5px; margin-left: 5px; border-radius: 8px; background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); vertical-align: middle; }
-.sp-badge-cc { background: var(--accent); color: #fff; border-color: var(--accent); }
+.sp-badge-cc { background: var(--accent); color: var(--bg); border-color: var(--accent); }
 /* 轨道区制徽标配色（列表）：GEO 绿 / IGSO 青 / MEO 蓝 / HEO 琥珀（LEO 不显示徽标） */
 .sp-badge.sp-rg-GEO { background: #16a34a1a; color: #16a34a; border-color: #16a34a55; }
 .sp-badge.sp-rg-IGSO { background: #0d94881a; color: #0d9488; border-color: #0d948855; }

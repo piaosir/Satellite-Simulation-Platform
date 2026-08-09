@@ -425,6 +425,11 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     try { return (Array.isArray(cases) ? cases : []).map((c) => core().calculateRainAttenuation(c || {})) }
     catch (err) { return { error: true, message: err.message || String(err) } }
   })
+  // 多站总可用度：逐站可用度（表内直接给 / 由可承受衰减反解）→ 纯概率论聚合（Poisson–binomial 尾概率）+ 切换可加项
+  ipcMain.handle('rain:solveMultiSite', (_e, cases, opt) => {
+    try { return core().solveMultiSite(Array.isArray(cases) ? cases : [], opt || {}) }
+    catch (err) { return { error: true, message: err.message || String(err) } }
+  })
   // 曲线扫描（雨衰 vs 可用度/频率/降雨率），供交互式坐标系绘制
   ipcMain.handle('rain:sweep', (_e, p, axis, range) => {
     try { return core().sweepRainAttenuation(p || {}, axis, range || {}) }

@@ -1725,79 +1725,275 @@ function rainDetailRows(r, row, down) {
     ['最坏月不可用时长', f(r.downtimeWorstMonth, 2), 'h']
   ]
 }
+// 《三线表模板_TimesNewRoman_11pt.xlsx》（用户 Excel 文档模板）口径的表格工厂 —— 雨衰导出全簿统一用这一套：
+// 全表 11 磅；表题在表上方居中加粗（表 N  标题，表号逐 sheet 自增）；顶线/底线 medium、表头下栏目线 thin；
+// 无竖线、无表体内部横线、无底纹；表注在底线下方以「注：」起首；首列左对齐缩进 1，其余列居中；同列小数位一致。
+function tplSheet(ws) {
+  let rn = 1
+  let tableNo = 0
+  return {
+    // 页首标题（模板「使用说明」页样式：加粗 13 磅、左对齐），下带一空行
+    heading(text) {
+      const c = ws.getCell(rn, 1)
+      c.value = text; c.font = { name: CJK, size: 13, bold: true }
+      ws.getRow(rn).height = 27.75
+      rn += 2
+    },
+    caption(text, span) {
+      ws.mergeCells(rn, 1, rn, span)
+      tableNo++
+      const c = ws.getCell(rn, 1)
+      c.value = `表 ${tableNo}  ${text}`
+      c.font = { name: CJK, size: 11, bold: true }
+      c.alignment = { horizontal: 'center', vertical: 'middle' }
+      ws.getRow(rn).height = 25.5
+      rn++
+    },
+    headRow(cells) {
+      cells.forEach((h, i) => {
+        const c = ws.getCell(rn, i + 1)
+        c.value = h
+        c.font = { name: typeof h === 'number' ? FNT : CJK, size: 11 }
+        c.alignment = i === 0
+          ? { horizontal: 'left', vertical: 'middle', indent: 1 }
+          : { horizontal: 'center', vertical: 'middle', wrapText: true }
+      })
+      setRowBorder(ws, rn, 1, cells.length, { top: MED, bottom: THIN })
+      ws.getRow(rn).height = 21.75
+      rn++
+    },
+    // fmts[i]：该列数字的小数位格式（模板：同列小数位一致）；'—' / 文本原样入格
+    dataRow(vals, fmts) {
+      vals.forEach((v, i) => {
+        const c = ws.getCell(rn, i + 1)
+        c.value = v
+        if (fmts && fmts[i] && typeof v === 'number') c.numFmt = fmts[i]
+        c.font = { name: typeof v === 'number' ? FNT : CJK, size: 11 }
+        c.alignment = i === 0
+          ? { horizontal: 'left', vertical: 'middle', indent: 1 }
+          : { horizontal: 'center', vertical: 'middle' }
+      })
+      ws.getRow(rn).height = 19.5
+      rn++
+    },
+    // 表体最后一行的底线（medium）
+    endTable(span) { setRowBorder(ws, rn - 1, 1, span, { bottom: MED }) },
+    note(text, span) {
+      ws.mergeCells(rn, 1, rn, span)
+      const c = ws.getCell(rn, 1)
+      c.value = '注：' + text
+      c.font = { name: CJK, size: 11 }
+      c.alignment = { horizontal: 'left', vertical: 'middle', wrapText: true, indent: 1 }
+      // 行高按折行数估：合并区可容纳字符数 ≈ 跨列宽度之和 ÷ 2（中文全角）
+      const wSum = Array.from({ length: span }, (_, i) => ws.getColumn(i + 1).width || 10).reduce((a, b) => a + b, 0)
+      ws.getRow(rn).height = Math.max(19.5, Math.ceil((text.length + 2) / Math.max(10, wSum / 2.1)) * 16 + 4)
+      rn++
+    },
+    skip(n) { rn += (n == null ? 1 : n) }
+  }
+}
+
 async function buildRainAttenuationExcel(payload) {
   const { direction = 'down', rainModel = 'auto', orbitMode = 'geo', rows = [], results = [] } = payload || {}
   const down = direction !== 'up'
+  const dv = payload && payload.div
+  const hasDiv = !!(dv && !dv.error && dv.activeCount && dv.system)
   const wb = new ExcelJS.Workbook()
   wb.creator = '卫星仿真平台'; wb.created = new Date()
 
-  // —— Sheet 1：批量结果（每行一个算例）——
-  const ws = wb.addWorksheet('雨衰批量结果', { views: [{ showGridLines: false, state: 'frozen', ySplit: 4, xSplit: 1 }] })
-  const round2 = (v) => (typeof v === 'number' && Number.isFinite(v)) ? Math.round(v * 100) / 100 : v
-  const isNgso = orbitMode === 'ngso'
-  // 几何输入已上提为全局（工具栏）→ 写进副标题；表内只留每站的仰角结果列
-  const geomCols = [isNgso ? { k: '_elev', h: '§8等效仰角(°)', w: 13 } : { k: '_elev', h: '仰角(°)', w: 9 }]
-  const cols = [
-    { k: 'stationName', h: '地球站', w: 14, text: true },
-    { k: 'latitude', h: '纬度(°)', w: 10 },
-    { k: 'longitude', h: '经度(°)', w: 10 },
-    { k: 'altitude', h: '海拔(m)', w: 9 },
-    ...geomCols,
-    { k: 'frequency', h: '频率(GHz)', w: 10 },
-    { k: 'polarization', h: '极化', w: 7, text: true },
-    { k: '_rain', h: 'R0.01(mm/h)', w: 12 },
-    { k: 'availability', h: '可用度(%)', w: 10 },
-    { k: 'systemNoiseTemp', h: '系统噪温(K)', w: 11 },
-    { k: 'gasAtten', h: '气体(dB)', w: 9, res: true },
-    { k: 'cloudAtten', h: '云衰(dB)', w: 9, res: true },
-    { k: 'rainAtten', h: '雨衰(dB)', w: 9, res: true },
-    { k: 'totalAtten', h: '合计(dB)', w: 9, res: true },
-    { k: 'gtDegradation', h: 'G/T衰减(dB)', w: 11, res: true, dl: true },
-    { k: 'rainXPD', h: '雨致XPD(dB)', w: 11, res: true },
-    { k: 'downtimeYear', h: '年停时(h)', w: 10, res: true },
-    { k: 'downtimeWorstMonth', h: '最坏月停时(h)', w: 13, res: true }
-  ]
-  const ncol = cols.length
-  ws.mergeCells(1, 1, 1, ncol)
-  const tt = ws.getCell(1, 1); tt.value = '雨衰计算结果'; tt.font = { name: CJK, size: 15, bold: true }; tt.alignment = { horizontal: 'center' }
-  ws.mergeCells(2, 1, 2, ncol)
-  const st = ws.getCell(2, 1)
-  // 全局几何：优先 payload.geom（新导出）；缺则从首个成功结果兜底（r.s8 / r.satLon）
-  const gm = (payload && payload.geom) || {}
-  const firstOk = results.find((x) => x && !x.error) || {}
-  const s8i = firstOk.s8 || {}
-  const gv = (v, d) => (v == null || !Number.isFinite(+v)) ? '—' : (+v).toFixed(d)
-  const geomTxt = isNgso
-    ? `NGSO 近圆 ${gv(gm.orbitAltKm != null ? gm.orbitAltKm : s8i.orbitAltKm, 0)} km · 倾角 ${gv(gm.inclDeg != null ? gm.inclDeg : s8i.inclDeg, 1)}° · 最低仰角 ${gv(gm.minElevDeg != null ? gm.minElevDeg : s8i.minElevDeg, 1)}°（ITU-R P.618-14 §8 仰角加权 → 等效仰角）`
-    : `GEO ${gv(gm.satLon != null ? gm.satLon : firstOk.satLon, 1)}°E（轨位算仰角）`
-  st.value = `轨道：${geomTxt}　·　链路方向：${down ? '下行' : '上行'}　·　降雨模型：${rainModel === 'auto' ? 'ITU-R P.837 自动' : '手动'}　·　共 ${rows.length} 个算例`
-  st.font = { name: CJK, size: 10, color: { argb: 'FF666666' } }; st.alignment = { horizontal: 'center' }
-  const hr = 4
-  cols.forEach((c, i) => {
-    const cell = ws.getCell(hr, i + 1)
-    cell.value = c.h; cell.font = { name: CJK, size: 10, bold: true }
-    cell.alignment = { horizontal: 'center', wrapText: true }
-    ws.getColumn(i + 1).width = c.w
-  })
-  setRowBorder(ws, hr, 1, ncol, { top: MED, bottom: THIN })
-  rows.forEach((row, ri) => {
-    const r = results[ri] || {}
-    const rowNo = hr + 1 + ri
-    cols.forEach((c, ci) => {
-      const cell = ws.getCell(rowNo, ci + 1)
-      let v
-      if (c.res) { v = r.error ? '✕' : round2(r[c.k]); if (c.dl && !down) v = '—' }
-      else if (c.k === '_elev') v = (r.elevation != null ? round2(r.elevation) : row.elevation)
-      else if (c.k === '_rain') v = (r.rainRate != null ? round2(r.rainRate) : row.rainRate)
-      else v = row[c.k]
-      cell.value = c.text ? (v == null ? '' : v) : numOrText(v)
-      cell.font = { name: c.text ? CJK : FNT, size: 10 }
-      cell.alignment = { horizontal: c.text ? 'left' : 'right' }
+  // —— Sheet 1：批量结果（每行一个算例，三线表模板版式）。多站汇总打开时不出（其数据已被「多站汇总」页覆盖）——
+  if (!hasDiv) {
+    // 冻结线钉在表头行（页首标题 1 + 空行 2 + 表题 3 + 表头 4）
+    const ws = wb.addWorksheet('雨衰批量结果', { views: [{ showGridLines: false, state: 'frozen', ySplit: 4, xSplit: 1 }] })
+    const round2 = (v) => (typeof v === 'number' && Number.isFinite(v)) ? Math.round(v * 100) / 100 : v
+    const isNgso = orbitMode === 'ngso'
+    // 几何输入已上提为全局（工具栏）→ 写进表注；表内只留每站的仰角结果列
+    const geomCols = [isNgso ? { k: '_elev', h: '§8等效仰角 (°)', w: 14, fmt: '0.00' } : { k: '_elev', h: '仰角 (°)', w: 10, fmt: '0.00' }]
+    const cols = [
+      { k: 'stationName', h: '地球站', w: 14, text: true },
+      { k: 'latitude', h: '纬度 (°)', w: 10 },
+      { k: 'longitude', h: '经度 (°)', w: 10 },
+      { k: 'altitude', h: '海拔 (m)', w: 10 },
+      ...geomCols,
+      { k: 'frequency', h: '频率 (GHz)', w: 10 },
+      { k: 'polarization', h: '极化', w: 8, text: true },
+      { k: '_rain', h: 'R0.01 (mm/h)', w: 12, fmt: '0.000' },
+      { k: 'availability', h: '可用度 (%)', w: 10 },
+      { k: 'systemNoiseTemp', h: '系统噪温 (K)', w: 12 },
+      { k: 'gasAtten', h: '气体 (dB)', w: 10, res: true, fmt: '0.00' },
+      { k: 'cloudAtten', h: '云衰 (dB)', w: 10, res: true, fmt: '0.00' },
+      { k: 'rainAtten', h: '雨衰 (dB)', w: 10, res: true, fmt: '0.00' },
+      { k: 'totalAtten', h: '合计 (dB)', w: 10, res: true, fmt: '0.00' },
+      { k: 'gtDegradation', h: 'G/T衰减 (dB)', w: 12, res: true, dl: true, fmt: '0.00' },
+      { k: 'rainXPD', h: '雨致XPD (dB)', w: 12, res: true, fmt: '0.00' },
+      { k: 'downtimeYear', h: '年停时 (h)', w: 10, res: true, fmt: '0.00' },
+      { k: 'downtimeWorstMonth', h: '最坏月停时 (h)', w: 14, res: true, fmt: '0.00' }
+    ]
+    const ncol = cols.length
+    cols.forEach((c, i) => { ws.getColumn(i + 1).width = c.w })
+    const fmts = cols.map((c) => c.fmt || '')
+    const T = tplSheet(ws)
+    T.heading('雨衰计算结果')
+    T.caption('雨衰批量计算结果', ncol)
+    T.headRow(cols.map((c) => c.h))
+    rows.forEach((row, ri) => {
+      const r = results[ri] || {}
+      const vals = cols.map((c) => {
+        let v
+        if (c.res) { v = r.error ? '✕' : round2(r[c.k]); if (c.dl && !down) v = '—' }
+        else if (c.k === '_elev') v = (r.elevation != null ? round2(r.elevation) : row.elevation)
+        else if (c.k === '_rain') v = (r.rainRate != null ? round2(r.rainRate) : row.rainRate)
+        else v = row[c.k]
+        return c.text ? (v == null ? '' : v) : numOrText(v)
+      })
+      T.dataRow(vals, fmts)
     })
-  })
-  if (rows.length) setRowBorder(ws, hr + rows.length, 1, ncol, { bottom: MED })
+    if (rows.length) T.endTable(ncol)
+    // 全局几何：优先 payload.geom（新导出）；缺则从首个成功结果兜底（r.s8 / r.satLon）
+    const gm = (payload && payload.geom) || {}
+    const firstOk = results.find((x) => x && !x.error) || {}
+    const s8i = firstOk.s8 || {}
+    const gv = (v, d) => (v == null || !Number.isFinite(+v)) ? '—' : (+v).toFixed(d)
+    const geomTxt = isNgso
+      ? `NGSO 近圆 ${gv(gm.orbitAltKm != null ? gm.orbitAltKm : s8i.orbitAltKm, 0)} km、倾角 ${gv(gm.inclDeg != null ? gm.inclDeg : s8i.inclDeg, 1)}°、最低仰角 ${gv(gm.minElevDeg != null ? gm.minElevDeg : s8i.minElevDeg, 1)}°（ITU-R P.618-14 §8 仰角加权 → 等效仰角）`
+      : `GEO ${gv(gm.satLon != null ? gm.satLon : firstOk.satLon, 1)}°E（轨位算仰角）`
+    T.note(`轨道：${geomTxt}；链路方向：${down ? '下行' : '上行'}；降雨模型：${rainModel === 'auto' ? 'ITU-R P.837 自动' : '手动'}；共 ${rows.length} 个算例。`, ncol)
+  }
 
-  // —— 每算例详情 sheet（SatMaster 三段版式）——
+  // —— 多站汇总 sheet（「多站汇总」打开并算出时才有 payload.div）——
+  // 版式按《三线表模板_TimesNewRoman_11pt》（用户 Excel 文档模板）：全表 11 磅；表题在表上方
+  // 居中加粗（表 N  标题）；顶线/底线 medium、表头下栏目线 thin；无竖线、无表体内部横线、无底纹；
+  // 表注在底线下方以「注：」起首、左对齐缩进 1；首列左对齐缩进 1，其余列居中；同列小数位一致。
+  // 内容四张表镜像结果页：逐站 / 系统级联 / 中断站数分布 / 切换。数字格式函数与
+  // src/rain/RainDiversity.vue 里的 pct/yearly/pmfPct 是手工镜像，改动须两处同步。
+  if (hasDiv) {
+    const sys = dv.system
+    const sw = dv.switch || null
+    const byAvail = dv.inputMode === 'avail'
+    const dsites = Array.isArray(dv.sites) ? dv.sites : []
+    const TGT = { rainAtten: '单独雨衰', totalAtten: '气体吸收 + 云衰 + 雨衰', dnd: '雨衰 + 云衰 + 噪声抬升' }
+    const HOURS = 8766
+    const pctS = (v) => {
+      if (v == null || !Number.isFinite(v)) return '—'
+      if (v === 0) return '0'
+      const p = v * 100
+      return p >= 1e-4 ? p.toFixed(6) : p.toExponential(3)
+    }
+    const yearlyS = (v) => {
+      if (v == null || !Number.isFinite(v) || v <= 0) return '0'
+      const h = v * HOURS
+      if (h >= 1) return h.toFixed(2) + ' h/年'
+      const m = h * 60
+      return m >= 1 ? m.toFixed(2) + ' min/年' : (m * 60).toFixed(2) + ' s/年'
+    }
+    const pmfS = (v) => {
+      if (v == null || !Number.isFinite(v) || v <= 0) return '0'
+      const p = v * 100
+      if (p >= 100) return '100'
+      const d = Math.min(8, Math.max(0, 2 - Math.floor(Math.log10(p))))
+      const s = p.toFixed(d)
+      return parseFloat(s) === 0 ? '0' : s
+    }
+    const fx2 = (v, d) => (v == null || !Number.isFinite(+v)) ? '—' : (+v).toFixed(d)
+    const nOrDash = (v) => (v == null || !Number.isFinite(+v)) ? '—' : +v
+    const mcols = Math.max(byAvail ? 6 : 7, (Array.isArray(sys.pmf) ? sys.pmf.length : 0) + 1, 5)
+    const mws = wb.addWorksheet('多站汇总', { views: [{ showGridLines: false }] })
+    mws.getColumn(1).width = 18
+    mws.getColumn(2).width = 24
+    for (let ci = 3; ci <= mcols; ci++) mws.getColumn(ci).width = 14
+    const T = tplSheet(mws)
+    T.heading('多站总可用度')
+
+    // —— 表 1  逐站可用度 ——
+    const siteHead = ['站']
+    if (!byAvail) siteHead.push('可承受 (dB)')
+    siteHead.push('可用度 (%)', '年停时 (h)', '雨衰 (dB)', '合计 (dB)', '下行总劣化 (dB)')
+    T.caption('逐站可用度', siteHead.length)
+    T.headRow(siteHead)
+    // 小数位与结果页逐列同口径（可用度 5 位——2 位会把 99.99 与 99.999 显示成同一个数）
+    const siteFmts = ['']
+    if (!byAvail) siteFmts.push('0.00')
+    siteFmts.push('0.00000', '0.000', '0.00', '0.00', '0.00')
+    dsites.forEach((s) => {
+      const okS = s.solve && s.solve.state !== 'err'
+      const vals = [s.name]
+      if (!byAvail) vals.push(nOrDash(s.attenBudgetDb))
+      vals.push(
+        okS ? nOrDash(s.solve.availability) : '—',
+        okS ? nOrDash(s.solve.downtimeYear) : '—',
+        s.atten ? nOrDash(s.atten.rain) : '—',
+        s.atten ? nOrDash(s.atten.total) : '—',
+        s.atten ? nOrDash(s.atten.dnd) : '—'
+      )
+      T.dataRow(vals, siteFmts)
+    })
+    T.endTable(siteHead.length)
+    if (!byAvail) T.note(`可承受衰减对标 ${TGT[dv.target] || dv.target}，可用度由 ITU-R P.618-14 反解。`, siteHead.length)
+    T.skip()
+
+    // —— 表 2  系统可用度（级联：P(S≥L) 逐项 → Σ → 切换 → 合计；闭账规则与结果页一致）——
+    T.caption(`系统可用度（参与 ${sys.M} 站 · 最少可用 ${sys.nMin}）`, 5)
+    T.headRow(['项', '算式', '不可用度 (%)', '可用度 (%)', '年停时'])
+    const casRow = (label, formula, v) => {
+      const num = v != null && Number.isFinite(v)
+      // 不可用度：≥1e-4 % 定点 6 位（同 pctS），更小走 Excel 科学计数（页面 e 记法的等价形态）
+      const uFmt = num && !(v === 0 || v * 100 >= 1e-4) ? '0.000E+00' : '0.000000'
+      T.dataRow(
+        [label, formula, num ? v * 100 : '—', num ? 100 - v * 100 : '—', yearlyS(v)],
+        ['', '', uFmt, '0.000000', '']
+      )
+    }
+    if (Array.isArray(sys.pmf) && sys.unavail > 0) {
+      let shown = 0, lastJ = Math.max(0, sys.L) - 1, nTail = 0
+      for (let j = Math.max(0, sys.L); j < sys.pmf.length; j++) {
+        const v = sys.pmf[j]
+        if (!(v >= sys.unavail * 1e-4) || nTail >= 6) break
+        casRow(`恰好中断 ${j} 站`, `P(S=${j})`, v)
+        shown += v; lastJ = j; nTail++
+      }
+      const rest = sys.unavail - shown
+      if (rest >= sys.unavail * 1e-4) casRow(`其余 j ≥ ${lastJ + 1}`, `ΣP(S≥${lastJ + 1})`, rest)
+    }
+    casRow('站点中断', `P(S≥${sys.L}) = Σ`, sys.unavail)
+    if (sw && sw.unavail != null) casRow('切换', `${fx2(sw.nSwPerYear, 0)} × ${fx2(sw.tSwMin, 0)} min ÷ 525960`, sw.unavail)
+    if (sw && sw.total != null) casRow('合计', '站点中断 + 切换', sw.total)
+    T.endTable(5)
+    T.note('系统不可用度 = P(同时中断的站数 ≥ L)，L = 参与站数 − 最少可用站数 + 1，各站中断按相互独立计（Poisson–binomial 尾概率）。'
+      + (sw ? '切换 U_sw = 次数 × 单次时长 ÷ 525960 min，作独立可加项与站点中断相加为合计。' : ''), 5)
+    T.skip()
+
+    // —— 表 3  中断站数分布 ——
+    if (Array.isArray(sys.pmf)) {
+      T.caption('中断站数分布', sys.pmf.length + 1)
+      T.headRow(['同时中断站数 j'].concat(sys.pmf.map((_, j) => j)))
+      const distFmts = ['']
+      const distVals = ['占比 (%)']
+      sys.pmf.forEach((v) => {
+        // 值存真数、显示按 pmfS 的定点位数（禁科学计数，与结果页一致）
+        const s = pmfS(v)
+        const dec = (s.split('.')[1] || '').length
+        distVals.push(s === '0' ? 0 : v * 100)
+        distFmts.push(dec ? ('0.' + '0'.repeat(dec)) : '0')
+      })
+      T.dataRow(distVals, distFmts)
+      T.endTable(sys.pmf.length + 1)
+      T.note(`j ≥ ${sys.L} 各列之和 = 站点中断。`, sys.pmf.length + 1)
+      T.skip()
+    }
+
+    // —— 表 4  切换预算 ——
+    if (sw) {
+      T.caption('切换预算', 3)
+      T.headRow(['项', '数值', '单位'])
+      T.dataRow(['切换时间', nOrDash(sw.tSwMin), 'min'], ['', '0.00', ''])
+      T.dataRow(['切换次数', nOrDash(sw.nSwPerYear), '次/年'], ['', '0', ''])
+      T.dataRow(['切换不可用度', sw.unavail == null ? '—' : pctS(sw.unavail), '%'])
+      T.dataRow(['切换年停时', sw.unavail == null ? '—' : yearlyS(sw.unavail), ''])
+      T.endTable(3)
+    }
+  }
+
+  // —— 每算例详情 sheet（三线表模板版式：三段各成一张 项/数值/单位 表）——
   const used = {}
   rows.forEach((row, ri) => {
     const r = results[ri]; if (!r || r.error) return
@@ -1806,40 +2002,29 @@ async function buildRainAttenuationExcel(payload) {
     while (used[name]) { name = ((ri + 1) + ' ' + base).slice(0, 28) + '~' + k; k++ }
     used[name] = true
     const ds = wb.addWorksheet(name, { views: [{ showGridLines: false }] })
-    ds.getColumn(1).width = 26; ds.getColumn(2).width = 18; ds.getColumn(3).width = 8
-    ds.mergeCells(1, 1, 1, 3)
-    const dt = ds.getCell(1, 1)
-    dt.value = '雨衰详细计算结果 · ' + (row.stationName || ('算例' + (ri + 1)))
-    dt.font = { name: CJK, size: 13, bold: true }; dt.alignment = { horizontal: 'left' }
-    let rn = 3
+    ds.getColumn(1).width = 26; ds.getColumn(2).width = 20; ds.getColumn(3).width = 10
+    const T = tplSheet(ds)
+    T.heading('雨衰详细计算结果 · ' + (row.stationName || ('算例' + (ri + 1))))
+    let open = false
     for (const [label, value, unit] of rainDetailRows(r, row, down)) {
-      if (value === null && unit === null) {
-        ds.mergeCells(rn, 1, rn, 3)
-        const c = ds.getCell(rn, 1); c.value = label; c.font = { name: CJK, size: 10, bold: true }
-        c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF2F2F2' } }
-        setRowBorder(ds, rn, 1, 3, { top: THIN, bottom: HAIR }); rn++; continue
+      if (value === null && unit === null) {          // 分段标记 → 上一张表收底线，起新表
+        if (open) { T.endTable(3); T.skip() }
+        T.caption(label, 3)
+        T.headRow(['项', '数值', '单位'])
+        open = true
+        continue
       }
-      const a = ds.getCell(rn, 1); a.value = label; a.font = { name: CJK, size: 10 }
-      const b = ds.getCell(rn, 2); b.value = numOrText(value); b.font = { name: FNT, size: 10 }; b.alignment = { horizontal: 'right' }
-      const u = ds.getCell(rn, 3); u.value = unit; u.font = { name: CJK, size: 9, color: { argb: 'FF888888' } }
-      rn++
+      T.dataRow([label, numOrText(value), unit || ''])
     }
-    setRowBorder(ds, rn - 1, 1, 3, { bottom: MED })
-    // 口径说明（避免读者把 DND 和合计衰减混起来）
-    rn += 1
-    ds.mergeCells(rn, 1, rn, 3)
-    const nt = ds.getCell(rn, 1)
+    if (open) T.endTable(3)
+    // 口径注（避免读者把 DND 和合计衰减混起来；NGSO 的等效仰角不是「某一时刻的仰角」）
     const dndNote = down
       ? 'DND = (雨衰+云衰) + 降雨噪声致 G/T 衰减。降雨噪声按 雨+云、T_mr=275 K、经馈线折算；气体不计入（晴空已含、不构成劣化），闪烁不计入（折射，不辐射噪声）。'
       : '上行不计降雨噪声：G/T 衰减与 DND 为下行专属。'
-    // NGSO 口径说明：等效仰角不是「某一时刻的仰角」，务必写清，否则读者会当成瞬时几何
     const s8Note = r.s8
-      ? 'NGSO 口径（ITU-R P.618-14 §8）：仰角范围按增量分箱，各增量的可见时间占比 × 该仰角下的超越时间占比再求和；等效仰角 = 使单仰角法给出同一雨衰的仰角，非任何瞬时几何。统计口径为卫星可服务期间。气体/云/闪烁/XPD/降雨噪温按该等效仰角求值（雨衰等效，属工程近似）。仰角分布为近圆轨道解析式，不适用于大偏心率轨道。\n'
+      ? 'NGSO 口径（ITU-R P.618-14 §8）：仰角范围按增量分箱，各增量的可见时间占比 × 该仰角下的超越时间占比再求和；等效仰角 = 使单仰角法给出同一雨衰的仰角，非任何瞬时几何。统计口径为卫星可服务期间。气体/云/闪烁/XPD/降雨噪温按该等效仰角求值（雨衰等效，属工程近似）。仰角分布为近圆轨道解析式，不适用于大偏心率轨道。'
       : ''
-    nt.value = s8Note + dndNote
-    nt.font = { name: CJK, size: 9, color: { argb: 'FF888888' } }
-    nt.alignment = { wrapText: true, vertical: 'top' }
-    ds.getRow(rn).height = r.s8 ? 78 : 32
+    T.note(s8Note + dndNote, 3)
   })
 
   return applyBookFont(wb).xlsx.writeBuffer()

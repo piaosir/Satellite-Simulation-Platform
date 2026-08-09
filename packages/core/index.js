@@ -148,6 +148,10 @@ module.exports = {
   // 雨衰计算（通用，面向所有种类卫星；仰角直接驱动，复用 ITU-R 传播模型）
   calculateRainAttenuation: rainAttenuation.calculateRainAttenuation,
   sweepRainAttenuation: rainAttenuation.sweepRainAttenuation,
+  // 可用度反解（已知可承受衰减 → 求可用度）与多站总可用度（N+P 网关分集）
+  solveAvailabilityForAtten: rainAttenuation.solveAvailabilityForAtten,
+  solveMultiSite: rainAttenuation.solveMultiSite,
+  rainDiversity: require('./utils/rainDiversity.js'),
   rainAttenuation,
   ngsoElevStats,   // ITU-R P.618-14 §8 非静止轨道长期统计（仰角分布 + 等效仰角）
   rainRate,
