@@ -4,6 +4,7 @@
 // 三种掩模各占一个页签，各自独立的参数界面；第四个页签是系统运行参数（进 SRS，不进掩模文件）。
 // 术语一律用申报口径，不用内部代号。
 import { ref, reactive, computed, watch } from 'vue'
+import ActivationLock from '../components/ActivationLock.vue'
 import Icon from '../components/Icon.vue'
 import {
   DIRECTIONS, REF_BW, PATTERN_SECTIONS, LN_VALUES, BEAM_LAYOUTS, ES_PATTERNS, EXPORT_MODES, SAT_PATTERNS
@@ -509,6 +510,7 @@ const resultBw = computed(() => (curResult.value ? bwLabel(curResult.value.refBw
 
 <template>
   <div class="pw">
+    <ActivationLock />
     <!-- 顶部：申报标识 + 通用参数 -->
     <header class="pw-hd">
       <div class="pw-title"><Icon name="table" :size="16" /><span>PFD EIRP Mask 生成器</span><s>ITU-R S.1503</s></div>

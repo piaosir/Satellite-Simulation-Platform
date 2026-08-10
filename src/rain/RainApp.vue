@@ -4,6 +4,7 @@
 // 点表格任一行即在右侧细看该算例。算例表与链路预算链路表同一套表格口径（两层表头分区 / 不冻结数据列 / 结果格着色）。
 // 计算在主进程 core.calculateRainAttenuation（复用 ITU-R 传播模型），本组件负责采集/展示/配置持久化。
 import { ref, reactive, shallowRef, computed, watch, nextTick, onMounted } from 'vue'
+import ActivationLock from '../components/ActivationLock.vue'
 import StationGrid from '../linkbudget/StationGrid.vue'   // 通用表格组件（Regen 先例：直接复用）
 import ConfigTree from '../components/ConfigTree.vue'
 import Icon from '../components/Icon.vue'
@@ -511,6 +512,7 @@ onMounted(async () => {
 
 <template>
   <div class="lb-shell">
+    <ActivationLock />
     <div class="lb-topbar">
       <span class="lb-brand">雨衰计算</span>
       <span class="lb-flex"></span>

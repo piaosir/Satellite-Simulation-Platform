@@ -137,7 +137,8 @@ const speedPct = computed({
 .tier:hover { color: var(--text); border-color: var(--accent); }
 .tier.on { color: var(--bg); background: var(--accent); border-color: var(--accent); font-weight: 600; }
 .tip { font-size: 11.5px; color: var(--text-faint); margin: 8px 0 12px; }
-.grid { display: flex; flex-direction: column; gap: 9px; }
+.tiers + .grid { margin-top: 14px; }
+.grid { display: flex; flex-direction: column; gap: 11px; }
 .frow { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .fn { font-size: 12.5px; color: var(--text); display: flex; flex-direction: column; }
 .fn em { font-style: normal; font-size: 11px; color: var(--text-faint); margin-top: 2px; }

@@ -113,6 +113,13 @@ contextBridge.exposeInMainWorld('api', {
     deviceId: () => ipcRenderer.invoke('app:deviceId'),
     version: () => ipcRenderer.invoke('app:version')
   },
+  // 激活状态（终端设备侧）：status 读本地缓存（快，不碰网络）；refresh 立即心跳 + 拉最新激活书；
+  // onChanged 订阅主进程定时心跳发现的状态变化（管理端激活/撤销最迟一跳自动生效）
+  activation: {
+    status: () => ipcRenderer.invoke('activation:status'),
+    refresh: () => ipcRenderer.invoke('activation:refresh'),
+    onChanged: (cb) => ipcRenderer.on('activation:changed', (_e, st) => cb(st))
+  },
   // 主窗口自定义标题栏：把原生窗口控制按钮（Windows 覆盖式）的配色更新为当前主题色
   win: {
     setOverlay: (opt) => ipcRenderer.invoke('window:setOverlay', opt)

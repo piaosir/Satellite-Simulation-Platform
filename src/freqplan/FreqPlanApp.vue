@@ -7,6 +7,7 @@
 // 版式沿用平台既定范式：左列表（主从）· 中主体（图 + 页签）· 右检查器，同屏一个上下文。
 // 存盘策略是「改即存」（debounce 600ms）——频率计划是「文件」不是「会话」，所以不设关窗守卫。
 import { ref, computed, watch, onMounted, nextTick } from 'vue'
+import ActivationLock from '../components/ActivationLock.vue'
 import {
   newPlan, normalizePlan, newChannel, newLo, newBeam, genSeries, validatePlan, errorCount,
   resolveChannel, resolveAll, planSummary, POLS, POL_LABEL, CHANNEL_KINDS, KIND_LABEL,
@@ -1364,6 +1365,7 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
 
 <template>
   <div class="fp">
+    <ActivationLock />
     <!-- 工具栏 -->
     <header class="tb">
       <span class="brand">转发器频率计划</span>

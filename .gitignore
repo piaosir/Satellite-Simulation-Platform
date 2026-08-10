@@ -100,6 +100,10 @@ electron/services/shareConfig.js
 # 三处用各自仓库里的真代码，专治「跨仓库字段名漂了编译器管不着」。
 .bindharness/
 
+# 激活管理验证台：smoke.mjs 离线全链路（登录/签发 × 验签/心跳/状态机，share 内存桩）、
+# live.mjs 真桶往返（本机心跳 → 管理端读回）、boot.mjs 管理端 Electron 启动探活。
+.mgrharness/
+
 # 「星座 → 小程序星座地图」端到端验证台（node .satconharness/gen.mjs）：
 # 平台 satconMiniExport 打包 → share.boxSend/putSnapshot → 云函数 → 小程序 importSatSets → 星座地图页
 # （Page() 打桩后直接调页面方法），五处各自的真代码跑一遍。

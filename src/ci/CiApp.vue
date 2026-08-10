@@ -12,6 +12,7 @@
 //
 // 本窗口是只读计算器：读三库与 GRD、不写回。算出的 C/I 要用到链路预算里由使用者自己搬。
 import { computed, onMounted } from 'vue'
+import ActivationLock from '../components/ActivationLock.vue'
 import { useInterference } from './useInterference.js'
 import CiGeoPanel from './CiGeoPanel.vue'
 import LbSurfacePlot from '../components/LbSurfacePlot.vue'
@@ -109,6 +110,7 @@ const run = () => {
 
 <template>
   <div class="ci-root">
+    <ActivationLock />
     <!-- ── 功能条 ── -->
     <header class="ci-bar">
       <h1 class="ci-title">干扰分析</h1>

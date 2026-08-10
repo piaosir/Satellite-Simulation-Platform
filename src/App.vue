@@ -9,6 +9,7 @@ import { shellUi as ui, toggleUi } from './stores/shellUi'
 import { theme } from './stores/theme'
 import { logStore, logMsg, clearLog } from './stores/log'
 import { effective as displayQuality } from './stores/displayQuality'
+import { activation, activationLocked, initActivation, refreshActivation, activationText, lockTitle } from './stores/activation'
 import SettingsModal from './components/SettingsModal.vue'
 import MiniBindDialog from './components/MiniBindDialog.vue'
 import MiniAboutDialog from './components/MiniAboutDialog.vue'
@@ -51,7 +52,45 @@ const sideViews = computed(() => [
   { key: 'geo', label: '地图设置', icon: 'sliders-horizontal', disabled: !pageReady.value, hint: '海陆配色 / 国界省界 / 名称标注' }
 ])
 const sideTitle = computed(() => sideViews.value.find((v) => v.key === ui.side)?.label || '')
-function setSide(k) { ui.side = ui.side === k ? '' : k }
+function setSide(k) {
+  if (activationLocked.value) { lockOpen.value = true; return }   // 侧栏视图全部在锁定范围（活动栏与「显示」菜单同入口）
+  ui.side = ui.side === k ? '' : k
+}
+
+// ---- 激活（终端设备侧）：未激活时仅保留地图拖拽/缩放与视图切换等常规操作，
+//      功能入口（菜单/工具栏/活动栏/独立窗口）点击一律弹「未激活」。----
+const lockOpen = ref(false)
+const lockCopied = ref(false)
+const actText = computed(() => activationText())
+// 状态栏激活格：未激活 / 有截止期才占格；永久激活是常态不写字（刷新中的反馈除外）
+const actCellOn = computed(() => activation.ready && (activation.busy || !activation.active || activation.expiresAt > 0))
+// 激活后自动收掉锁窗（管理端开通 → 定时心跳或手动刷新拉到 → 就地解锁）
+watch(() => activation.active, (v) => { if (v) lockOpen.value = false })
+// 撤销/到期到达时就地收起已开的侧栏面板：入口 guard 只拦「下一次打开」，
+// 开着的面板不收的话，撤销前打开的功能会一直可用
+watch(activationLocked, (v) => { if (v && ui.side) ui.side = '' })
+async function doRefreshActivation() {
+  if (activation.busy) return
+  logMsg('刷新激活状态…')
+  await refreshActivation()
+  logMsg(`激活状态：${activationText() || '未知'}`, activation.active ? 'info' : 'warn')
+}
+async function copyDeviceId() {
+  try {
+    await navigator.clipboard.writeText(activation.deviceId || '')
+    lockCopied.value = true
+    setTimeout(() => { lockCopied.value = false }, 1200)
+  } catch { /* 剪贴板不可用 */ }
+}
+// 「特定动作」触发刷新：状态栏激活格连点 5 次 / 关于对话框设备ID连点 5 次 / Ctrl+Alt+A
+const _taps = {}
+function multiTap(key, n, fn) {
+  const t = _taps[key] || (_taps[key] = { c: 0, timer: null })
+  t.c++
+  clearTimeout(t.timer)
+  t.timer = setTimeout(() => { t.c = 0 }, 900)
+  if (t.c >= n) { t.c = 0; fn() }
+}
 
 // 侧栏宽度拖拽（左右分隔条）
 function splitDown(e) {
@@ -121,24 +160,24 @@ const stepZoom = (d) => { const t = Math.max(0, Math.min(1, zoom.value + d)); if
 // ---- 菜单栏（仿 SATSOFT 经典菜单：纯文字标题 + 下拉；不可用项置灰不隐藏）----
 const menus = computed(() => [
   { key: 'file', label: '文件', items: [
-    { label: '文件管理…', icon: 'folder-open', hint: '管理 GRD 天线 / 频率计划 / GXT 覆盖文件库（导入 / 导出 / 删除）', run: () => { fileOpen.value = true } },
+    { label: '文件管理…', icon: 'folder-open', lock: true, hint: '管理 GRD 天线 / 频率计划 / GXT 覆盖文件库（导入 / 导出 / 删除）', run: () => { fileOpen.value = true } },
     // 频率计划是「文件」不是「计算」：它与 GRD 天线平级、同挂在卫星下，本身不产出任何计算结果，
     // 只是被链路预算引用的一份资料。故归文件区，不留在计算菜单里。
-    { label: '转发器频率计划…', icon: 'freq-plan', hint: '转发器频率排布与频率分配表：挂在卫星下、与 GRD 天线平级；供链路预算引用，可导出 PNG / PDF（独立窗口）', run: openFreqPlan },
-    { label: '导入 TLE 文件（CSV）…', icon: 'import', disabled: !covNav.importTle, hint: '从本地 CSV（CelesTrak「FORMAT=csv」的 OMM 文件）导入卫星星历，离线或无法连接 CelesTrak 时使用', run: () => covNav.importTle?.() },
+    { label: '转发器频率计划…', icon: 'freq-plan', lock: true, hint: '转发器频率排布与频率分配表：挂在卫星下、与 GRD 天线平级；供链路预算引用，可导出 PNG / PDF（独立窗口）', run: openFreqPlan },
+    { label: '导入 TLE 文件（CSV）…', icon: 'import', lock: true, disabled: !covNav.importTle, hint: '从本地 CSV（CelesTrak「FORMAT=csv」的 OMM 文件）导入卫星星历，离线或无法连接 CelesTrak 时使用', run: () => covNav.importTle?.() },
     { sep: true },
     { label: '退出', icon: 'log-out', hint: '关闭主窗口', run: () => window.close() }
   ] },
   { key: 'calc', label: '计算', items: [
     // 链路预算三工作台的专业命名：轨道维度（GSO 对地静止 / NGSO 非对地静止，ITU《无线电规则》口径）×
     // 转发体制维度（透明弯管转发 / 星上再生处理 OBP）——「GEO/NGSO/再生式」旧并列混淆了两个维度，已更正。
-    { label: 'GSO 透明转发链路预算', icon: 'calculator', hint: '对地静止轨道（GSO）· 透明弯管转发器：打开链路预算工作台（独立窗口）', run: openLinkBudget },
-    { label: 'NGSO 透明转发链路预算', icon: 'ngso', hint: '非对地静止轨道（NGSO，含 LEO/MEO/HEO）· 透明弯管转发器：打开链路预算工作台（独立窗口）', run: openNgso },
-    { label: '再生处理（OBP）链路预算', icon: 'cpu', hint: '星上再生处理转发器：上行 / 下行 / 星间微波 / 星间激光，链路预算解耦（独立窗口）', run: openRegen },
-    { label: '日凌预报（GSO）', icon: 'sun', hint: '打开日凌预报（独立窗口）', run: openSunOutage },
-    { label: '雨衰计算', icon: 'droplets', hint: '打开雨衰计算（独立窗口，通用于各类卫星）', run: openRain },
-    { label: '干扰分析（C/I）', icon: 'radio-tower', hint: 'C/ASI 邻星 · C/CCI 同频复用 · C/XPI 交叉极化 · NGSO 时变 CDF（独立窗口，只读计算器）', run: openCi },
-    { label: 'PFD EIRP Mask 生成器', icon: 'table', hint: 'ITU-R S.1503 掩模：下行 PFD / 星间 EIRP / 上行 EIRP 三种 + 系统运行参数，输出可提交的 XML（独立窗口）', run: openPfdMask }
+    { label: 'GSO 透明转发链路预算', icon: 'calculator', lock: true, hint: '对地静止轨道（GSO）· 透明弯管转发器：打开链路预算工作台（独立窗口）', run: openLinkBudget },
+    { label: 'NGSO 透明转发链路预算', icon: 'ngso', lock: true, hint: '非对地静止轨道（NGSO，含 LEO/MEO/HEO）· 透明弯管转发器：打开链路预算工作台（独立窗口）', run: openNgso },
+    { label: '再生处理（OBP）链路预算', icon: 'cpu', lock: true, hint: '星上再生处理转发器：上行 / 下行 / 星间微波 / 星间激光，链路预算解耦（独立窗口）', run: openRegen },
+    { label: '日凌预报（GSO）', icon: 'sun', lock: true, hint: '打开日凌预报（独立窗口）', run: openSunOutage },
+    { label: '雨衰计算', icon: 'droplets', lock: true, hint: '打开雨衰计算（独立窗口，通用于各类卫星）', run: openRain },
+    { label: '干扰分析（C/I）', icon: 'radio-tower', lock: true, hint: 'C/ASI 邻星 · C/CCI 同频复用 · C/XPI 交叉极化 · NGSO 时变 CDF（独立窗口，只读计算器）', run: openCi },
+    { label: 'PFD EIRP Mask 生成器', icon: 'table', lock: true, hint: 'ITU-R S.1503 掩模：下行 PFD / 星间 EIRP / 上行 EIRP 三种 + 系统运行参数，输出可提交的 XML（独立窗口）', run: openPfdMask }
   ] },
   { key: 'view', label: '视图', items: [
     { label: '3D 球体', icon: 'globe', check: !view.flat, hint: '三维地球视图', run: () => pickView(false) },
@@ -153,18 +192,18 @@ const menus = computed(() => [
     { label: v.label, icon: v.icon, check: ui.side === v.key, disabled: v.disabled, hint: v.hint, run: () => setSide(v.key) }
   )) },
   { key: 'export', label: '导出', items: [
-    { label: EXP_NAME.png2, icon: 'image', disabled: !covNav.exportAvail, hint: '导出 2 倍高清 PNG 图片', run: () => doExport('png2') },
-    { label: EXP_NAME.png4, icon: 'image', disabled: !covNav.exportAvail, hint: '导出 4 倍高清 PNG 图片', run: () => doExport('png4') },
-    { label: EXP_NAME.png6, icon: 'image', disabled: !covNav.exportAvail, hint: '导出 6 倍高清 PNG 图片', run: () => doExport('png6') },
-    { label: EXP_NAME.pdf, icon: 'file-text', disabled: !covNav.exportAvail, hint: '导出矢量 PDF 文档', run: () => doExport('pdf') },
+    { label: EXP_NAME.png2, icon: 'image', lock: true, disabled: !covNav.exportAvail, hint: '导出 2 倍高清 PNG 图片', run: () => doExport('png2') },
+    { label: EXP_NAME.png4, icon: 'image', lock: true, disabled: !covNav.exportAvail, hint: '导出 4 倍高清 PNG 图片', run: () => doExport('png4') },
+    { label: EXP_NAME.png6, icon: 'image', lock: true, disabled: !covNav.exportAvail, hint: '导出 6 倍高清 PNG 图片', run: () => doExport('png6') },
+    { label: EXP_NAME.pdf, icon: 'file-text', lock: true, disabled: !covNav.exportAvail, hint: '导出矢量 PDF 文档', run: () => doExport('pdf') },
     { sep: true },
-    { label: EXP_NAME.gxt, icon: 'layers', disabled: !covNav.exportAvail, hint: '将当前绘制的覆盖等值线 + 协调区多边形一并导出为一个 GXT 文件（所见即所得）', run: () => doExport('gxt') },
-    { label: EXP_NAME.kml, icon: 'layers', disabled: !covNav.exportAvail, hint: '将当前绘制的覆盖等值线 + 协调区多边形一并导出为一个 Google KML 文件（所见即所得）', run: () => doExport('kml') },
+    { label: EXP_NAME.gxt, icon: 'layers', lock: true, disabled: !covNav.exportAvail, hint: '将当前绘制的覆盖等值线 + 协调区多边形一并导出为一个 GXT 文件（所见即所得）', run: () => doExport('gxt') },
+    { label: EXP_NAME.kml, icon: 'layers', lock: true, disabled: !covNav.exportAvail, hint: '将当前绘制的覆盖等值线 + 协调区多边形一并导出为一个 Google KML 文件（所见即所得）', run: () => doExport('kml') },
     { sep: true },
-    { label: '发送到小程序…', icon: 'upload', disabled: !covNav.exportAvail, hint: '将当前绘制的覆盖等值线 + 协调区多边形上传至云端，生成密钥供微信小程序「卫星覆盖」导入', run: () => doSendMiniapp() }
+    { label: '发送到小程序…', icon: 'upload', lock: true, disabled: !covNav.exportAvail, hint: '将当前绘制的覆盖等值线 + 协调区多边形上传至云端，生成密钥供微信小程序「卫星覆盖」导入', run: () => doSendMiniapp() }
   ] },
   { key: 'tools', label: '工具', items: [
-    { label: '绑定小程序账号…', icon: 'wechat', hint: '登记小程序端的认证码，此后「发送到小程序」可免密钥直接投递，接收方打开小程序后自动同步', run: () => { bindOpen.value = true } },
+    { label: '绑定小程序账号…', icon: 'wechat', lock: true, hint: '登记小程序端的认证码，此后「发送到小程序」可免密钥直接投递，接收方打开小程序后自动同步', run: () => { bindOpen.value = true } },
     { sep: true },
     { label: '设置…', icon: 'settings', hint: '外观主题 / 显示画质 / 单位等设置', run: () => { settingsOpen.value = true } }
   ] },
@@ -174,32 +213,42 @@ const menus = computed(() => [
     { label: '关于卫星仿真平台…', icon: 'info', hint: '版本与说明', run: () => { aboutOpen.value = true } }
   ] }
 ])
-function runItem(it) { if (it.disabled) return; openMenu.value = ''; hint.value = ''; it.run && it.run() }
+function runItem(it) {
+  if (it.disabled) return
+  openMenu.value = ''; hint.value = ''
+  if (it.lock && activationLocked.value) { lockOpen.value = true; return }
+  it.run && it.run()
+}
 
 // ---- 工具栏（只放侧栏覆盖不到的动作：文件 / 计算窗口 / 视图切换 / 导出 / 设置；面板切换交给活动栏，不重复）----
 const toolButtons = computed(() => [
-  { icon: 'folder-open', tip: '文件管理', run: () => { fileOpen.value = true } },
+  { icon: 'folder-open', tip: '文件管理', lock: true, run: () => { fileOpen.value = true } },
   // 与文件管理同组：频率计划挂在卫星下、与 GRD 天线平级，属文件区而非计算区
-  { icon: 'freq-plan', tip: '转发器频率计划', run: openFreqPlan },
+  { icon: 'freq-plan', tip: '转发器频率计划', lock: true, run: openFreqPlan },
   { sep: true },
-  { icon: 'calculator', tip: 'GSO 透明转发链路预算', run: openLinkBudget },
-  { icon: 'ngso', tip: 'NGSO 透明转发链路预算', run: openNgso },
-  { icon: 'cpu', tip: '再生处理（OBP）链路预算', run: openRegen },
-  { icon: 'sun', tip: '日凌预报（GSO）', run: openSunOutage },
-  { icon: 'droplets', tip: '雨衰计算', run: openRain },
-  { icon: 'radio-tower', tip: '干扰分析（C/I）', run: openCi },
+  { icon: 'calculator', tip: 'GSO 透明转发链路预算', lock: true, run: openLinkBudget },
+  { icon: 'ngso', tip: 'NGSO 透明转发链路预算', lock: true, run: openNgso },
+  { icon: 'cpu', tip: '再生处理（OBP）链路预算', lock: true, run: openRegen },
+  { icon: 'sun', tip: '日凌预报（GSO）', lock: true, run: openSunOutage },
+  { icon: 'droplets', tip: '雨衰计算', lock: true, run: openRain },
+  { icon: 'radio-tower', tip: '干扰分析（C/I）', lock: true, run: openCi },
   // ∠ 取「辐射功率随角度的上包络」之意：三种掩模的自变量恰好全是角度（α 角 / 天底角 / 方位仰角）
-  { icon: 'table', tip: 'PFD EIRP Mask 生成器（ITU-R S.1503）', run: openPfdMask },
+  { icon: 'table', tip: 'PFD EIRP Mask 生成器（ITU-R S.1503）', lock: true, run: openPfdMask },
   { sep: true },
   { icon: 'globe', tip: '3D 球体视图', on: !view.flat, run: () => pickView(false) },
   { icon: 'map', tip: '2D 平面图视图', on: view.flat, run: () => pickView(true) },
   { sep: true },
-  { icon: 'image', tip: '导出高清 PNG（4×）', disabled: !covNav.exportAvail, run: () => doExport('png4') },
-  { icon: 'file-down', tip: '导出矢量 PDF', disabled: !covNav.exportAvail, run: () => doExport('pdf') },
+  { icon: 'image', tip: '导出高清 PNG（4×）', lock: true, disabled: !covNav.exportAvail, run: () => doExport('png4') },
+  { icon: 'file-down', tip: '导出矢量 PDF', lock: true, disabled: !covNav.exportAvail, run: () => doExport('pdf') },
   { sep: true },
-  { icon: 'wechat', tip: '绑定小程序账号', run: () => { bindOpen.value = true } },
+  { icon: 'wechat', tip: '绑定小程序账号', lock: true, run: () => { bindOpen.value = true } },
   { icon: 'settings', tip: '设置', run: () => { settingsOpen.value = true } }
 ])
+function tbClick(b) {
+  if (b.disabled) return
+  if (b.lock && activationLocked.value) { lockOpen.value = true; return }
+  b.run && b.run()
+}
 
 // 日志窗格：新条目自动滚到底
 const logEl = ref(null)
@@ -207,7 +256,11 @@ watch(() => logStore.items.length, () => {
   nextTick(() => { if (logEl.value) logEl.value.scrollTop = logEl.value.scrollHeight })
 })
 
-function onKey(e) { if (e.key === 'Escape') { openMenu.value = ''; hint.value = '' } }
+function onKey(e) {
+  if (e.key === 'Escape') { openMenu.value = ''; hint.value = '' }
+  // 「特定动作」之三：Ctrl+Alt+A 刷新激活状态
+  else if (e.ctrlKey && e.altKey && (e.key === 'a' || e.key === 'A')) { e.preventDefault(); doRefreshActivation() }
+}
 
 // 自定义标题栏：把原生窗口控制按钮（Windows 覆盖式）的配色同步到当前主题，避免暗色下亮色三键突兀。
 // 直接读 --surface/--text，主题色一改这里自动跟随，无需在两处维护色值。
@@ -230,6 +283,7 @@ onMounted(() => {
   window.addEventListener('keydown', onKey)
   window.api?.app?.version?.().then((v) => { appVersion.value = v || '' }).catch(() => { /* 浏览器直跑无 IPC */ })
   syncTitleOverlay()
+  initActivation()
   logMsg('卫星仿真平台就绪')
 })
 onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
@@ -277,7 +331,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
         <button
           v-else class="tbtn" :class="{ on: b.on, dis: b.disabled }" :title="b.tip"
           @mouseenter="hint = b.disabled ? '' : b.tip" @mouseleave="hint = ''"
-          @click="!b.disabled && b.run()"
+          @click="tbClick(b)"
         ><Icon :name="b.icon" :size="15" /></button>
       </template>
       <span class="tgrow"></span>
@@ -342,19 +396,42 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
     <MiniAboutDialog v-if="miniAboutOpen" @close="miniAboutOpen = false" @bind="miniAboutOpen = false; bindOpen = true" />
     <FileManager v-if="fileOpen" @close="fileOpen = false" />
 
-    <!-- 帮助 → 关于 -->
+    <!-- 帮助 → 关于（设备ID 行连点 5 次 = 刷新激活状态的「特定动作」之二） -->
     <div v-if="aboutOpen" class="about-mask" @click.self="aboutOpen = false">
       <div class="about">
         <div class="ab-name">卫星仿真平台</div>
         <div v-if="appVersion" class="ab-ver mono">版本 {{ appVersion }}</div>
+        <div v-if="activation.deviceId" class="ab-ver mono ab-id" :title="lockCopied ? '已复制' : '点击复制设备ID'" @click="copyDeviceId(); multiTap('about', 5, doRefreshActivation)">
+          设备ID {{ activation.deviceId }}<span v-if="lockCopied" class="ab-copied">已复制</span>
+        </div>
+        <div v-if="activation.ready" class="ab-ver" :class="activation.active ? 'ab-on' : 'ab-off'">{{ actText }}</div>
         <div class="ab-desc">卫星链路预算 · 星座可视化 · 覆盖分析 · 日凌预报</div>
         <button class="ab-close" @click="aboutOpen = false">确定</button>
       </div>
     </div>
 
-    <!-- ⑥ 状态栏：左提示 + 右侧凹陷读数格（视图 / 缩放 / 光标经纬度） -->
+    <!-- 未激活：功能入口点击统一落到这里（地图拖拽/缩放等常规操作不受限） -->
+    <div v-if="lockOpen" class="about-mask" @click.self="lockOpen = false">
+      <div class="about">
+        <div class="ab-name">{{ lockTitle() }}</div>
+        <div class="ab-ver mono ab-id" :title="lockCopied ? '已复制' : '点击复制设备ID'" @click="copyDeviceId">
+          设备ID {{ activation.deviceId || '—' }}<span v-if="lockCopied" class="ab-copied">已复制</span>
+        </div>
+        <div class="lk-btns">
+          <button class="ab-close" :disabled="activation.busy" @click="doRefreshActivation()">{{ activation.busy ? '刷新中…' : '刷新激活状态' }}</button>
+          <button class="ab-close" @click="lockOpen = false">关闭</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ⑥ 状态栏：左激活状态 + 提示，右侧凹陷读数格（视图 / 缩放 / 光标经纬度） -->
     <footer class="statusbar">
-      <span class="hint">{{ hint || '就绪' }}</span>
+      <!-- 激活状态（纯文字）：连点 5 次 = 刷新激活状态的「特定动作」之一 -->
+      <span
+        v-if="actCellOn" class="sb-actv" :class="activation.active ? 'a-on' : 'a-off'"
+        :title="`设备ID ${activation.deviceId}`" @click="multiTap('cell', 5, doRefreshActivation)"
+      >{{ activation.busy ? '刷新中…' : actText }}</span>
+      <span class="hint">{{ hint || (activationLocked ? '' : '就绪') }}</span>
       <span class="cells">
         <span class="cell">{{ view.flat ? '2D 平面图' : '3D 球体' }}</span>
         <span v-if="zoom.avail" class="cell zoomctl" title="地图缩放（拖动精细调节，滚轮亦可）">
@@ -501,6 +578,18 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 .ab-desc { margin-top: 6px; font-size: 12px; color: var(--text-faint); }
 .ab-close { margin-top: 18px; padding: 4px 22px; border: 1px solid var(--border-strong); background: var(--bg); color: var(--text); cursor: pointer; border-radius: 2px; }
 .ab-close:hover { border-color: var(--accent); }
+.ab-close:disabled { opacity: .5; cursor: default; }
+.ab-id { cursor: pointer; user-select: text; font-size: 15px; }
+.ab-id:hover { color: var(--text); }
+.ab-copied { margin-left: 8px; color: var(--ok); font-size: 11px; }
+.ab-on { color: var(--ok); }
+.ab-off { color: var(--danger); }
+.lk-btns { display: flex; gap: 10px; justify-content: center; }
+
+/* 状态栏激活状态（左侧纯文字，无背景框） */
+.sb-actv { flex: none; cursor: default; font-variant-numeric: tabular-nums; }
+.sb-actv.a-on { color: var(--ok); }
+.sb-actv.a-off { color: var(--danger); }
 
 /* ===== ⑥ 状态栏 ===== */
 .statusbar {

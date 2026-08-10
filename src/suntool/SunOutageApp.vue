@@ -2,6 +2,7 @@
 // 日凌预报（GEO）独立窗口。计算在主进程（core.calculateSunOutage，v5 物理恶化门限判据），
 // 本组件只负责参数采集与结果展示；导出 Word / ICS 走 sunoutage:* IPC。
 import { ref, shallowRef, reactive, computed, watch } from 'vue'
+import ActivationLock from '../components/ActivationLock.vue'
 import { SAT_PRESETS } from '../linkbudget/satPresets.js'
 import Icon from '../components/Icon.vue'
 
@@ -175,6 +176,7 @@ const dEnd = (d) => (isLocal.value ? shiftParts(d.date, d.endTimeUTC, staOffsetM
 
 <template>
   <div class="shell" @click="cityOpen = false">
+    <ActivationLock />
     <header class="topbar">
       <span class="brand">日凌预报 · GSO</span>
       <span class="grow"></span>

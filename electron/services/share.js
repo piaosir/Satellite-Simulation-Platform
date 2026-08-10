@@ -66,6 +66,10 @@ function authorization(method, pathname, params) {
 
 const encPath = (key) => '/' + key.split('/').map(encodeURIComponent).join('/')
 
+// 最近一次 COS 响应的 Date 头（epoch ms；0=尚未联网成功）。激活模块的时钟锚用。
+let _serverDate = 0
+const serverDate = () => _serverDate
+
 // 写入前缀白名单。真正的防线是 CAM 策略（见 shareConfig.example.js），但策略这种「配在别处、
 // 看不见、容易被后来者图省事放宽」的东西不该是唯一防线：这里就地挡一道，保证客户端在代码层面
 // 就没有能力去写 updates/latest.yml、updates/*.exe 这类对象——哪怕手上的密钥恰好给多了权限。
@@ -95,6 +99,11 @@ function request(method, pathname, { params, body } = {}) {
     const opts = { method, host: host(), path, headers: { Authorization: auth } }
     if (body != null) { opts.headers['Content-Type'] = 'application/json'; opts.headers['Content-Length'] = Buffer.byteLength(body) }
     const req = https.request(opts, (res) => {
+      // 服务器时间（TLS 保真）：无论 2xx 还是 404 都记录——激活模块用它做时钟防篡改的权威锚
+      if (res.headers && res.headers.date) {
+        const t = Date.parse(res.headers.date)
+        if (t) _serverDate = t
+      }
       const chunks = []
       res.on('data', (c) => chunks.push(c))
       res.on('end', () => {
@@ -103,6 +112,9 @@ function request(method, pathname, { params, body } = {}) {
         else reject(new Error(`COS ${res.statusCode}: ${text.slice(0, 300)}`))
       })
     })
+    // 半连接黑洞（网关吞包不回）下 Node https 默认永不超时：请求会无限挂起，
+    // 「刷新激活状态」一直转圈、分享收发无响应。30 秒足够宽，超了按网络错处理。
+    req.setTimeout(30_000, () => req.destroy(new Error('COS 请求超时')))
     req.on('error', reject)
     if (body != null) req.write(body)
     req.end()
@@ -361,4 +373,24 @@ async function boxRevoke(ch, pid, mid) {
   return { ok: true }
 }
 
-module.exports = () => ({ configured, send, inbox, remove, putSnapshot, boxSend, boxPeek, boxRevoke, normCh, CH_LEN })
+// 通用 JSON 写：assertWritable 白名单内的对象 PUT（激活/设备管理复用，见 activation.js）
+async function putJson(key, obj) {
+  await request('PUT', encPath(assertWritable(key)), { body: JSON.stringify(obj) })
+  return true
+}
+
+// 严格 JSON 读：只有【确凿的 404/NoSuchKey】返回 null，其余一切失败照抛。
+// 与上面 getJson 的区别是不把「解析失败」吞成 fallback —— 酒店/企业门户网络会把任意 GET
+// 劫持成 200 + HTML 登录页，宽松版会把它当「对象损坏」落成空值；对激活书（activation.js）
+// 这等于把断网的已激活设备误清成未激活。激活书要的语义是「抛错 = 云端不可信 = 维持本地缓存」。
+async function getJsonStrict(key) {
+  try {
+    return JSON.parse(await request('GET', encPath(key)))
+  } catch (e) {
+    const msg = String((e && e.message) || '')
+    if (msg.includes('COS 404') || msg.includes('NoSuchKey')) return null
+    throw e
+  }
+}
+
+module.exports = () => ({ configured, send, inbox, remove, putSnapshot, boxSend, boxPeek, boxRevoke, normCh, CH_LEN, getJson, getJsonStrict, putJson, prefixOf, serverDate })

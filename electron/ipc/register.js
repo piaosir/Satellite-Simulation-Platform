@@ -6,7 +6,13 @@ const createCustomSats = require('../services/customSats')
 const createInterference = require('../services/interference')
 
 // 注册所有 IPC 处理器。core 为返回引擎实例的函数（延迟解析）。
-function register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget, openSunOutage, grd, confirmCloseLinkBudget, openNgso, confirmCloseNgso, openRegen, confirmCloseRegen, openRain, confirmCloseRain, openCi, openPfd, freqPlan, openFreqPlan, notifyFreqPlan }) {
+function register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget, openSunOutage, grd, confirmCloseLinkBudget, openNgso, confirmCloseNgso, openRegen, confirmCloseRegen, openRain, confirmCloseRain, openCi, openPfd, freqPlan, openFreqPlan, notifyFreqPlan, activation }) {
+  // 未激活拦截（主进程硬防线；渲染端菜单/工具栏的拦截只是第一道观感）：
+  // 各功能窗口的 open 一律先过这里——渲染端被绕过（devtools 直调 IPC）也开不出窗。
+  const gate = (fn) => (...args) => {
+    if (activation && !activation.current().active) return { locked: true }
+    return fn(...args)
+  }
   const omm = createOmm(core)
   const customSats = createCustomSats(core)
   // grd 传进去是给 NGSO 时变的「卫星发射方向图取 GRD 实测图」用的（见 resolveSatPattern）
@@ -303,26 +309,26 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   ipcMain.handle('link:baseband', () => core().basebandOptions())
 
   // 打开「GEO 链路预算」独立工作台窗口（单例，由 main 注入创建函数）
-  ipcMain.handle('linkbudget:open', () => { if (openLinkBudget) openLinkBudget(); return true })
+  ipcMain.handle('linkbudget:open', gate(() => { if (openLinkBudget) openLinkBudget(); return true }))
   // 关窗守卫：渲染进程问过用户「配置存了没」（取消/不保存/保存）并按需存盘后，调这个才真正关闭窗口
   ipcMain.handle('linkbudget:confirmClose', () => { if (confirmCloseLinkBudget) confirmCloseLinkBudget(); return true })
 
   // 打开「NGSO 链路预算」独立工作台窗口（单例，由 main 注入创建函数）
-  ipcMain.handle('ngso:open', () => { if (openNgso) openNgso(); return true })
+  ipcMain.handle('ngso:open', gate(() => { if (openNgso) openNgso(); return true }))
   ipcMain.handle('ngso:confirmClose', () => { if (confirmCloseNgso) confirmCloseNgso(); return true })
 
   // 打开「再生式链路预算」独立工作台窗口（单例，由 main 注入创建函数）
-  ipcMain.handle('regen:open', () => { if (openRegen) openRegen(); return true })
+  ipcMain.handle('regen:open', gate(() => { if (openRegen) openRegen(); return true }))
   ipcMain.handle('regen:confirmClose', () => { if (confirmCloseRegen) confirmCloseRegen(); return true })
 
   // ---- 雨衰计算（独立窗口 · 通用于各类卫星 · 批量/单算例/曲线计算 + Excel 导出）----
-  ipcMain.handle('rain:open', () => { if (openRain) openRain(); return true })
+  ipcMain.handle('rain:open', gate(() => { if (openRain) openRain(); return true }))
   // 干扰分析（C/I）独立窗口：只读消费者——读三库与 GRD，不写回任何库
-  ipcMain.handle('ci:open', () => { if (openCi) openCi(); return true })
-  ipcMain.handle('pfd:open', () => { if (openPfd) openPfd() })
+  ipcMain.handle('ci:open', gate(() => { if (openCi) openCi(); return true }))
+  ipcMain.handle('pfd:open', gate(() => { if (openPfd) openPfd() }))
 
   // ---- 转发器频率计划 ----
-  ipcMain.handle('freqPlan:open', (_e, planId) => {
+  ipcMain.handle('freqPlan:open', gate((_e, planId) => {
     if (!openFreqPlan) return false
     const win = openFreqPlan()
     // 带 planId 打开 = 从文件区双击某份计划进来，等页面就绪后再送（新开窗口时 DOM 还没挂载）
@@ -332,7 +338,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
       else send()
     }
     return true
-  })
+  }))
   if (freqPlan) {
     ipcMain.handle('freqPlan:list', () => freqPlan.list())
     ipcMain.handle('freqPlan:get', (_e, id) => freqPlan.get(id))
@@ -466,7 +472,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   })
 
   // ---- 日凌预报（独立窗口 + 计算 + Word/ICS 导出）----
-  ipcMain.handle('suntool:open', () => { if (openSunOutage) openSunOutage(); return true })
+  ipcMain.handle('suntool:open', gate(() => { if (openSunOutage) openSunOutage(); return true }))
   ipcMain.handle('sunoutage:compute', (_e, p) => {
     try { return core().calculateSunOutage(p || {}) }
     catch (err) { return { error: true, message: err.message || String(err) } }
@@ -832,31 +838,18 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   // ---- 应用版本（帮助 → 关于 对话框显示）----
   ipcMain.handle('app:version', () => require('electron').app.getVersion())
 
-  // ---- 设备 ID（按本机 MAC 派生的稳定短码，作为「用户 ID」用于配置分享）----
-  // 取所有非内网物理网卡 MAC 排序后 sha256，取前 10 位 hex 大写；落盘 settings 保证跨网卡变化也稳定。
-  // 管理员身份硬编码（不开放修改，避免他人冒充）：派生ID → 固定标识。
-  // 加 master2/master3：在那台机器上跑一次、看软件左下「我的ID」显示的派生ID，填进此表再发版即可。
-  const ADMIN_IDS = {
-    '2E314A3754': 'master1',     // 开发者笔记本（MAC 84:9e:56:77:52:9d）
-    '731D97DD7B': 'master2'      // 开发者台式机（MAC 50:eb:f6:eb:83:02）
-    // '<机器3派生ID>': 'master3'
+  // ---- 设备 ID（按本机 MAC 派生的稳定短码，作为「用户 ID」用于配置分享与激活管理）----
+  // 实现收敛到 activation 服务（心跳/激活书都用同一份 ID，含管理员身份映射表 ADMIN_IDS）。
+  ipcMain.handle('app:deviceId', () => (activation ? activation.deviceId() : ''))
+
+  // ---- 激活状态（终端设备侧）：status 纯本地读缓存验签；refresh 为用户「特定动作」触发的
+  //      立即心跳（上报最后在线 + 拉最新激活书），状态变化经 activation:changed 广播各窗口 ----
+  if (activation) {
+    ipcMain.handle('activation:status', () => activation.current())
+    ipcMain.handle('activation:refresh', async () => {
+      try { return await activation.refreshNow() } catch (e) { return activation.current() }
+    })
   }
-  ipcMain.handle('app:deviceId', () => {
-    const s = storage.getSettings()
-    let base = s && s.deviceId
-    if (!base) {
-      const os = require('os'); const crypto = require('crypto')
-      const ifaces = os.networkInterfaces(); const macs = []
-      for (const name of Object.keys(ifaces)) for (const i of (ifaces[name] || [])) {
-        if (i.mac && i.mac !== '00:00:00:00:00:00' && !i.internal) macs.push(i.mac.toLowerCase())
-      }
-      macs.sort()
-      const seed = macs.join(',') || os.hostname() || String(Date.now())
-      base = crypto.createHash('sha256').update(seed).digest('hex').slice(0, 10).toUpperCase()
-      storage.setSettings({ deviceId: base })
-    }
-    return ADMIN_IDS[base] || base
-  })
 
   // ---- 配置文件导入（线下分享：选 .lbcfg/.json 读回文本）----
   ipcMain.handle('linkbudget:openConfig', async (e) => {
