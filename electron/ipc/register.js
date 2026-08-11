@@ -1,4 +1,7 @@
-const { ipcMain, dialog, BrowserWindow } = require('electron')
+// ipcMain 在 register() 里被【同名局部变量刻意遮蔽】成带授权门禁的包装（见 gatedIpc），
+// 所以这里必须换个名字导入 —— 否则 `const ipcMain = gatedIpc(ipcMain)` 会撞上 TDZ。
+// 本文件里一律写 ipcMain.handle 即可，拿到的都是包装过的那个。
+const { ipcMain: rawIpcMain, dialog, BrowserWindow } = require('electron')
 const fs = require('fs')
 const path = require('path')
 const createOmm = require('../services/omm')
@@ -9,9 +12,57 @@ const createInterference = require('../services/interference')
 function register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget, openSunOutage, grd, confirmCloseLinkBudget, openNgso, confirmCloseNgso, openRegen, confirmCloseRegen, openRain, confirmCloseRain, openCi, openPfd, freqPlan, openFreqPlan, notifyFreqPlan, activation }) {
   // 未激活拦截（主进程硬防线；渲染端菜单/工具栏的拦截只是第一道观感）：
   // 各功能窗口的 open 一律先过这里——渲染端被绕过（devtools 直调 IPC）也开不出窗。
+  // （下方九处 *:open 仍显式写着 gate(...)，在新的默认全拦之下已是冗余的第二层，无副作用，
+  //   保留是因为它在调用处直白地标出「这条是锁内功能」。）
   const gate = (fn) => (...args) => {
     if (activation && !activation.current().active) return { locked: true }
     return fn(...args)
+  }
+
+  // ---- 默认全拦、白名单放行（2026-08-11 授权审计）----
+  // 改法的由来：原先只有九个 *:open 套了 gate，于是未激活用户绕开渲染端（控制台直调 IPC、
+  // 或改 asar 里的渲染代码）就能调到真正值钱的那批 handler —— report:exportReport 出交付级
+  // 报告、link:* 全套链路预算、ci:* 干扰计算、pfd:generate 出 Mask，全是裸的。开窗被拦住了，
+  // 但功能压根不需要开窗就能调。
+  //
+  // 现在反过来：register() 里注册的每一个 handler 默认都在锁内，只有下面 UNGATED 里点名的
+  // 才在未激活时可用。失败方向也因此反了 —— 将来新增 handler 忘了归类，是「锁着、测试时立刻
+  // 发现」，而不是「敞着、没人发现」。
+  //
+  // UNGATED 收的是两类：
+  //   ① 授权流程自身（不放行就永远激活不了）与外壳（标题栏/版本/设置读写）；
+  //   ② 主窗口的浏览面 —— 产品明确决定未激活也保留地球/星座等已加载内容可看
+  //      （见 ActivationLock.vue 注释：主窗口刻意不上遮罩），所以星历读取、覆盖图/频率
+  //      规划的只读取数、城市与字段定义这些查询要放行，否则未激活时主窗口直接空白。
+  // 凡是「产出交付物」的一律不在表里：计算、导出、落盘、导入、对外分享。
+  const UNGATED = new Set([
+    // ① 授权与外壳
+    'activation:status', 'activation:refresh', 'app:version', 'app:deviceId',
+    'window:setOverlay', 'font:pdf',
+    'store:settings:get', 'store:settings:set',
+    // 窗口关闭确认：拦掉会导致功能窗口关不干净（锁定期间窗口仍在，只是被遮罩盖住）
+    'linkbudget:confirmClose', 'ngso:confirmClose', 'regen:confirmClose', 'rain:confirmClose',
+    // ② 浏览面（只读查询，不产出交付物）
+    'omm:load', 'omm:positions', 'omm:csv', 'omm:list',
+    'omm:customList', 'omm:customCsv', 'omm:customGroupRecords',
+    'coverage:index', 'coverage:get',
+    'coverageGrd:index', 'coverageGrd:get', 'coverageGrd:raw',
+    'coverageGxt:index', 'coverageGxt:get', 'coverageGxt:raw',
+    'freqPlan:list', 'freqPlan:get',
+    'store:history:list', 'store:config:list', 'store:library:get',
+    'env:defs', 'env:field',
+    'link:cities', 'link:searchCities', 'link:baseband', 'link:outputDefs',
+    // 分享的收件侧：收/删/探视是别人推过来的东西，不算本机产出；发件侧（send/boxSend/
+    // gxtSnapshot/boxRevoke）不在表里，未激活不许往外发
+    'share:configured', 'share:inbox', 'share:delete', 'share:boxPeek'
+  ])
+  // 同名遮蔽 electron 的 ipcMain：本文件下方一百多处 ipcMain.handle 因此自动过门禁，
+  // 不必逐条改写、将来新增的也漏不掉。注意只覆盖本文件——services/reportPdf.js 里那个
+  // report:print:model 是隐藏打印窗专用（只在已过门禁的导出流程中被拉起），不受此表管辖。
+  const ipcMain = {
+    handle: (channel, fn) => rawIpcMain.handle(channel, UNGATED.has(channel) ? fn : gate(fn)),
+    on: (...a) => rawIpcMain.on(...a),
+    removeHandler: (...a) => rawIpcMain.removeHandler(...a)
   }
   const omm = createOmm(core)
   const customSats = createCustomSats(core)
@@ -556,7 +607,35 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   ipcMain.handle('store:config:move', (_e, { id, parentId, anchorId, position }) => storage.moveItem(id, parentId, anchorId, position))
   ipcMain.handle('store:config:deleteFolder', (_e, id) => storage.deleteFolder(id))
   ipcMain.handle('store:settings:get', () => storage.getSettings())
-  ipcMain.handle('store:settings:set', (_e, s) => storage.setSettings(s))
+  // ---- 只许渲染端写它自己的偏好项（2026-08-11 授权审计）----
+  // 原先是 (_e, s) => storage.setSettings(s)：无任何键名过滤，而 setSettings 是浅合并，
+  // 于是 settings.json 里【每一个】键都成了渲染端可写的，包括授权状态自己。控制台一行即可：
+  //   setSettings({ deviceId:'<别人的设备ID>', mgrIdSeal:null })  → 重启后落进 activation.js
+  //       deviceId() 的第 3 分支（无封印 → 认领并补盖）→ 完整继承对方授权。而对方的设备ID
+  //       就摆在「关于」框里、还支持一键复制（那本是给客户报给管理员开通用的）。
+  //   setSettings({ mgrLicFloor:null })    → 重放下限归零 → 撤销前存下的旧激活书可以救活
+  //   setSettings({ mgrClockAnchor:null }) → 时钟高水位清零 → 配合系统时钟回拨给过期件续命
+  // 机器封印（DPAPI）防的是「把 settings.json 从别的机器拷过来」，防不了「从合法入口把
+  // stored 改成别人的、同时把封印清掉」—— 那三个键就是这么被绕过去的。
+  //
+  // 白名单只收渲染端确实在写的四项：Settings.vue 的 amapKey/units/noiseRatioMode
+  // （src/pages/Settings.vue 的 form），加 miniBindings（src/shared/miniBindings.js）。
+  // 授权相关的键（deviceId / mgrIdSeal / activationLic / mgrLicFloor / mgrClockAnchor /
+  // mgrFirstSeen）一律只由主进程的 activation.js 自己维护，渲染端永远碰不到。
+  // 新增用户偏好项时记得往这张表里加一条 —— 漏加的现象是「设置存不住」，测试时一眼可见。
+  const SETTINGS_WRITABLE = new Set(['amapKey', 'units', 'noiseRatioMode', 'miniBindings', 'miniSelfLabel'])
+  ipcMain.handle('store:settings:set', (_e, s) => {
+    const patch = {}
+    const rejected = []
+    for (const k of Object.keys(s && typeof s === 'object' ? s : {})) {
+      if (SETTINGS_WRITABLE.has(k)) patch[k] = s[k]
+      else rejected.push(k)
+    }
+    // 静默丢弃会让「设置存不住」这类真 bug 无从查起，故留一行日志；但绝不因此报错，
+    // 免得攻击者能靠返回值试探出保护键名单（也免得正常升级路径上多一个失败分支）。
+    if (rejected.length) console.warn('[ipc] store:settings:set 拒绝了不可由渲染端写入的键：', rejected.join(', '))
+    return storage.setSettings(patch)
+  })
   ipcMain.handle('store:library:get', (_e, ns) => storage.getLibrary(ns))
   ipcMain.handle('store:library:save', (_e, { ns, data }) => storage.saveLibrary(ns, data))
 

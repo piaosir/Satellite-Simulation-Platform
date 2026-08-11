@@ -31,6 +31,21 @@ function core() {
   return _core
 }
 
+// ---- 开发者工具：只在开发期开放（2026-08-11 授权审计）----
+// 原先九个窗口一律无条件绑 F12。打包版里这一条等于把整套授权体系交出去：
+//   · ActivationLock 是 CSS 遮罩，控制台一行 document.querySelector('.al-mask').remove() 就没了；
+//   · 主窗口按产品决定本来就不上遮罩（未激活也留着地球/星座可看），于是未激活用户
+//     连遮罩都不用碰，直接 window.api.report.exportReport(...) 就能出交付级报告。
+// 主进程侧的配套补丁见 ipc/register.js 的 gatedIpc（默认全拦、白名单放行），两条一起才闭环：
+// 这里挡住「拿到控制台」，那里挡住「就算拿到控制台也调不动值钱的 IPC」。
+// app.isPackaged 为假（npm run dev / electron . 直跑）时照常绑，开发体验不受影响。
+function bindDevTools(win) {
+  if (app.isPackaged) return
+  win.webContents.on('before-input-event', (e, input) => {
+    if (input.type === 'keyDown' && input.key === 'F12') { win.webContents.toggleDevTools(); e.preventDefault() }
+  })
+}
+
 function createWindow() {
   const win = new BrowserWindow({
     width: 1280,
@@ -51,7 +66,11 @@ function createWindow() {
     webPreferences: {
       preload: join(__dirname, '../preload/preload.js'),
       contextIsolation: true,
-      sandbox: false
+      sandbox: false,
+      // 打包版彻底关闭 DevTools（2026-08-11 复审补）：只摘 F12 绑定不够——autoHideMenuBar
+      // 仅隐藏菜单栏，Electron 默认菜单里 toggleDevTools 的 Ctrl+Shift+I 加速键仍然生效，
+      // 打包版照样能开控制台。devTools:false 连 openDevTools() 一起封死，与任何加速键无关。
+      devTools: !app.isPackaged
     }
   })
 
@@ -61,10 +80,7 @@ function createWindow() {
   } else {
     win.loadFile(join(__dirname, '../renderer/index.html'))
   }
-  // F12 切换开发者工具（autoHideMenuBar 下默认快捷键可能失效，这里显式绑定）
-  win.webContents.on('before-input-event', (e, input) => {
-    if (input.type === 'keyDown' && input.key === 'F12') { win.webContents.toggleDevTools(); e.preventDefault() }
-  })
+  bindDevTools(win)
   win.on('closed', () => { if (_mainWin === win) _mainWin = null })
   _mainWin = win
 
@@ -91,7 +107,11 @@ function createLinkBudgetWindow() {
     webPreferences: {
       preload: join(__dirname, '../preload/preload.js'),
       contextIsolation: true,
-      sandbox: false
+      sandbox: false,
+      // 打包版彻底关闭 DevTools（2026-08-11 复审补）：只摘 F12 绑定不够——autoHideMenuBar
+      // 仅隐藏菜单栏，Electron 默认菜单里 toggleDevTools 的 Ctrl+Shift+I 加速键仍然生效，
+      // 打包版照样能开控制台。devTools:false 连 openDevTools() 一起封死，与任何加速键无关。
+      devTools: !app.isPackaged
     }
   })
   if (process.env['ELECTRON_RENDERER_URL']) {
@@ -99,9 +119,7 @@ function createLinkBudgetWindow() {
   } else {
     win.loadFile(join(__dirname, '../renderer/linkbudget.html'))
   }
-  win.webContents.on('before-input-event', (e, input) => {
-    if (input.type === 'keyDown' && input.key === 'F12') { win.webContents.toggleDevTools(); e.preventDefault() }
-  })
+  bindDevTools(win)
   // 关窗前先拦一次，转问渲染进程「配置存了没」：渲染进程用与内部切换配置同一套「取消/不保存/保存」
   // 弹窗（见 LinkBudgetApp.vue 的 guardedLeave）问过用户、按需存盘后，回调 confirmCloseLinkBudget()
   // 才真正关闭；没有未保存改动时渲染进程会立即回调，观感上仍是秒关。
@@ -140,7 +158,11 @@ function createNgsoWindow() {
     webPreferences: {
       preload: join(__dirname, '../preload/preload.js'),
       contextIsolation: true,
-      sandbox: false
+      sandbox: false,
+      // 打包版彻底关闭 DevTools（2026-08-11 复审补）：只摘 F12 绑定不够——autoHideMenuBar
+      // 仅隐藏菜单栏，Electron 默认菜单里 toggleDevTools 的 Ctrl+Shift+I 加速键仍然生效，
+      // 打包版照样能开控制台。devTools:false 连 openDevTools() 一起封死，与任何加速键无关。
+      devTools: !app.isPackaged
     }
   })
   if (process.env['ELECTRON_RENDERER_URL']) {
@@ -148,9 +170,7 @@ function createNgsoWindow() {
   } else {
     win.loadFile(join(__dirname, '../renderer/ngso.html'))
   }
-  win.webContents.on('before-input-event', (e, input) => {
-    if (input.type === 'keyDown' && input.key === 'F12') { win.webContents.toggleDevTools(); e.preventDefault() }
-  })
+  bindDevTools(win)
   _ngsoAllowClose = false
   win.on('close', (e) => {
     if (_ngsoAllowClose) return
@@ -186,7 +206,11 @@ function createRegenWindow() {
     webPreferences: {
       preload: join(__dirname, '../preload/preload.js'),
       contextIsolation: true,
-      sandbox: false
+      sandbox: false,
+      // 打包版彻底关闭 DevTools（2026-08-11 复审补）：只摘 F12 绑定不够——autoHideMenuBar
+      // 仅隐藏菜单栏，Electron 默认菜单里 toggleDevTools 的 Ctrl+Shift+I 加速键仍然生效，
+      // 打包版照样能开控制台。devTools:false 连 openDevTools() 一起封死，与任何加速键无关。
+      devTools: !app.isPackaged
     }
   })
   if (process.env['ELECTRON_RENDERER_URL']) {
@@ -194,9 +218,7 @@ function createRegenWindow() {
   } else {
     win.loadFile(join(__dirname, '../renderer/regen.html'))
   }
-  win.webContents.on('before-input-event', (e, input) => {
-    if (input.type === 'keyDown' && input.key === 'F12') { win.webContents.toggleDevTools(); e.preventDefault() }
-  })
+  bindDevTools(win)
   _regenAllowClose = false
   win.on('close', (e) => {
     if (_regenAllowClose) return
@@ -231,7 +253,11 @@ function createSunOutageWindow() {
     webPreferences: {
       preload: join(__dirname, '../preload/preload.js'),
       contextIsolation: true,
-      sandbox: false
+      sandbox: false,
+      // 打包版彻底关闭 DevTools（2026-08-11 复审补）：只摘 F12 绑定不够——autoHideMenuBar
+      // 仅隐藏菜单栏，Electron 默认菜单里 toggleDevTools 的 Ctrl+Shift+I 加速键仍然生效，
+      // 打包版照样能开控制台。devTools:false 连 openDevTools() 一起封死，与任何加速键无关。
+      devTools: !app.isPackaged
     }
   })
   if (process.env['ELECTRON_RENDERER_URL']) {
@@ -239,9 +265,7 @@ function createSunOutageWindow() {
   } else {
     win.loadFile(join(__dirname, '../renderer/suntool.html'))
   }
-  win.webContents.on('before-input-event', (e, input) => {
-    if (input.type === 'keyDown' && input.key === 'F12') { win.webContents.toggleDevTools(); e.preventDefault() }
-  })
+  bindDevTools(win)
   win.on('closed', () => { _soWin = null })
   _soWin = win
   return win
@@ -269,7 +293,11 @@ function createPfdWindow() {
     webPreferences: {
       preload: join(__dirname, '../preload/preload.js'),
       contextIsolation: true,
-      sandbox: false
+      sandbox: false,
+      // 打包版彻底关闭 DevTools（2026-08-11 复审补）：只摘 F12 绑定不够——autoHideMenuBar
+      // 仅隐藏菜单栏，Electron 默认菜单里 toggleDevTools 的 Ctrl+Shift+I 加速键仍然生效，
+      // 打包版照样能开控制台。devTools:false 连 openDevTools() 一起封死，与任何加速键无关。
+      devTools: !app.isPackaged
     }
   })
   if (process.env['ELECTRON_RENDERER_URL']) {
@@ -278,9 +306,7 @@ function createPfdWindow() {
     win.loadFile(join(__dirname, '../renderer/pfd.html'))
   }
   win.on('closed', () => { _pfdWin = null })
-  win.webContents.on('before-input-event', (e, input) => {
-    if (input.type === 'keyDown' && input.key === 'F12') { win.webContents.toggleDevTools(); e.preventDefault() }
-  })
+  bindDevTools(win)
   _pfdWin = win
   return win
 }
@@ -306,7 +332,11 @@ function createFreqPlanWindow() {
     webPreferences: {
       preload: join(__dirname, '../preload/preload.js'),
       contextIsolation: true,
-      sandbox: false
+      sandbox: false,
+      // 打包版彻底关闭 DevTools（2026-08-11 复审补）：只摘 F12 绑定不够——autoHideMenuBar
+      // 仅隐藏菜单栏，Electron 默认菜单里 toggleDevTools 的 Ctrl+Shift+I 加速键仍然生效，
+      // 打包版照样能开控制台。devTools:false 连 openDevTools() 一起封死，与任何加速键无关。
+      devTools: !app.isPackaged
     }
   })
   if (process.env['ELECTRON_RENDERER_URL']) {
@@ -315,9 +345,7 @@ function createFreqPlanWindow() {
     win.loadFile(join(__dirname, '../renderer/freqplan.html'))
   }
   win.on('closed', () => { _freqPlanWin = null })
-  win.webContents.on('before-input-event', (e, input) => {
-    if (input.type === 'keyDown' && input.key === 'F12') { win.webContents.toggleDevTools(); e.preventDefault() }
-  })
+  bindDevTools(win)
   _freqPlanWin = win
   return win
 }
@@ -345,7 +373,11 @@ function createCiWindow() {
     webPreferences: {
       preload: join(__dirname, '../preload/preload.js'),
       contextIsolation: true,
-      sandbox: false
+      sandbox: false,
+      // 打包版彻底关闭 DevTools（2026-08-11 复审补）：只摘 F12 绑定不够——autoHideMenuBar
+      // 仅隐藏菜单栏，Electron 默认菜单里 toggleDevTools 的 Ctrl+Shift+I 加速键仍然生效，
+      // 打包版照样能开控制台。devTools:false 连 openDevTools() 一起封死，与任何加速键无关。
+      devTools: !app.isPackaged
     }
   })
   if (process.env['ELECTRON_RENDERER_URL']) {
@@ -353,9 +385,7 @@ function createCiWindow() {
   } else {
     win.loadFile(join(__dirname, '../renderer/ci.html'))
   }
-  win.webContents.on('before-input-event', (e, input) => {
-    if (input.type === 'keyDown' && input.key === 'F12') { win.webContents.toggleDevTools(); e.preventDefault() }
-  })
+  bindDevTools(win)
   win.on('closed', () => { _ciWin = null })
   _ciWin = win
   return win
@@ -381,7 +411,11 @@ function createRainWindow() {
     webPreferences: {
       preload: join(__dirname, '../preload/preload.js'),
       contextIsolation: true,
-      sandbox: false
+      sandbox: false,
+      // 打包版彻底关闭 DevTools（2026-08-11 复审补）：只摘 F12 绑定不够——autoHideMenuBar
+      // 仅隐藏菜单栏，Electron 默认菜单里 toggleDevTools 的 Ctrl+Shift+I 加速键仍然生效，
+      // 打包版照样能开控制台。devTools:false 连 openDevTools() 一起封死，与任何加速键无关。
+      devTools: !app.isPackaged
     }
   })
   if (process.env['ELECTRON_RENDERER_URL']) {
@@ -389,9 +423,7 @@ function createRainWindow() {
   } else {
     win.loadFile(join(__dirname, '../renderer/rain.html'))
   }
-  win.webContents.on('before-input-event', (e, input) => {
-    if (input.type === 'keyDown' && input.key === 'F12') { win.webContents.toggleDevTools(); e.preventDefault() }
-  })
+  bindDevTools(win)
   _rainAllowClose = false
   win.on('close', (e) => {
     if (_rainAllowClose) return
