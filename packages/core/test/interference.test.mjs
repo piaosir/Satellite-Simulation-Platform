@@ -107,11 +107,23 @@ console.log('\n=== ② 方向图 ===');
   approx('AP8 中档旁瓣段 = 39−5lg(D/λ)−25lgφ', P.offAxisAP8(D2, lam, 0.65, 10),
     39 - 5 * Math.log10(r2) - 25 * Math.log10(10), 1e-9);
   approx('AP8 中档远场底板 = −3−5lg(D/λ)', P.offAxisAP8(D2, lam, 0.65, 60), -3 - 5 * Math.log10(r2), 1e-9);
-  // 小档 D/λ < 50（0.75 m @ 12.5 GHz，D/λ≈31）：旁瓣段 29−25lgφ、远场底板 −10−10lg(D/λ)
+  // 小档 D/λ < 50（0.75 m @ 12.5 GHz，D/λ≈31）：旁瓣段 29−25lgφ、远场底板 10−10lg(D/λ)（RR AP8）
+  // v1.3.6–v1.3.16 底板曾为 −10−10lg(D/λ)——符号笔误，比 AP8 低约 20 dB，2026-08-11 订正
   const D3 = 0.75, r3 = D3 / lam;
   ok('AP8 小档 D/λ < 50', r3 < 50, `D/λ=${r3.toFixed(1)}`);
   approx('AP8 小档旁瓣段 = 29−25lgφ', P.offAxisAP8(D3, lam, 0.65, 10), 29 - 25 * Math.log10(10), 1e-9);
-  approx('AP8 小档远场底板 = −10−10lg(D/λ)', P.offAxisAP8(D3, lam, 0.65, 60), -10 - 10 * Math.log10(r3), 1e-9);
+  approx('AP8 小档远场底板 = 10−10lg(D/λ)（RR AP8，非 −10−10lg）',
+    P.offAxisAP8(D3, lam, 0.65, 60), 10 - 10 * Math.log10(r3), 1e-9);
+  // φ>48° 回归锚点：D/λ=40 → 10−10lg40 = −6.02 dBi（笔误版给 −26.02，正是低了 20 dB 的那处）
+  approx('AP8 小档底板锚点 D/λ=40 → −6.02 dBi', P.offAxisAP8(40 * lam, lam, 0.65, 120), 10 - 10 * Math.log10(40), 1e-9);
+  // 旁瓣段→底板在交点 φx = 10^((19+10lg(D/λ))/25) 处切换（与大档 36.31° 同款拼接），两侧连续
+  {
+    const phiX = Math.pow(10, (19 + 10 * Math.log10(r3)) / 25);
+    ok('AP8 小档 φx 落在 48° 以内', phiX < 48, `φx=${phiX.toFixed(2)}°`);
+    const eps = 1e-7;
+    const lft = P.offAxisAP8(D3, lam, 0.65, phiX - eps), rgt = P.offAxisAP8(D3, lam, 0.65, phiX + eps);
+    ok('AP8 小档 φx 处连续', Math.abs(lft - rgt) < 1e-4, `Δ=${(rgt - lft).toExponential(2)}`);
+  }
   // 单调不增：包络在 0.5°~60° 全程不得回升（三档接缝处最容易出台阶）
   for (const [D, tag] of [[D1, '大档'], [D2, '中档'], [D3, '小档']]) {
     let mono = true, prev = Infinity;

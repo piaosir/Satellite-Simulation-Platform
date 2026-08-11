@@ -220,7 +220,8 @@ function patternMarks(D, lam, eff, gMax) {
   } else if (ratio >= 50) {
     out.push({ deg: 48, key: 'far', label: '远场底板' });
   } else {
-    out.push({ deg: 48, key: 'far', label: '远场底板' });
+    // 小档底板起点 = 29−25lgφ 与 10−10lg(D/λ) 的交点 φx，不是固定 48°（见 patterns.js 小档注释）
+    out.push({ deg: +Math.pow(10, (19 + 10 * LOG10(ratio)) / 25).toFixed(2), key: 'far', label: '远场底板' });
   }
   for (const m of out) m.gainDbi = +P.offAxisAP8(D, lam, eff, m.deg).toFixed(2);
   return out.filter((m) => m.deg > 0).sort((a, b) => a.deg - b.deg);

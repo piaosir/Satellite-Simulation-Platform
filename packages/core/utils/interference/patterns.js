@@ -18,6 +18,8 @@
 //             均以原文为准，未凭记忆。
 //   AP8/S.580 沿用 utils/linkCalculator.js:202 已有实现的口径（RR AP8 分段 + S.580 的
 //             29−25lgφ 旁瓣段），使干扰分析与链路预算引擎的「旁瓣增益」显示同源。
+//             例外：D/λ<50 档远旁瓣底板不再沿用旧值 −10−10lg(D/λ)（无建议书对应，系符号
+//             笔误），2026-08-11 订正为 RR AP8 的 10−10lg(D/λ)，见 offAxisAP8 小档注释。
 //   S.524-9   离轴 EIRP 密度掩模，见 §S524 的注释——含一处与引擎实现的已知分歧。
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -92,9 +94,16 @@ function offAxisAP8(diameterM, wavelengthM, efficiency, phiDeg) {
     if (phi < 48) return LS - 25 * LOG10(phi);
     return LF;
   }
-  const LF = -10 - 10 * LOG10(ratio);
+  // 远旁瓣底板 = RR AP8（D/λ<100 档）/F.699 同款的 10 − 10lg(D/λ)。
+  // v1.3.6 首版此处为 −10 − 10lg(D/λ)——符号笔误（比 AP8 低约 20 dB），无任何建议书对应，
+  // 2026-08-11 订正。29−25lgφ 段延续到与底板的交点 φx = 10^((19+10lg(D/λ))/25) 再接平，
+  // 与 ≥100 档对 −10 dBi 底板取 36.31° 交点是同一处理：S.580 旁瓣段与 AP8 底板拼接，
+  // 交点切换保证包络连续单调（AP8 原文旁瓣段是 52−10lg(D/λ)−25lgφ，在 48° 与底板天然相接；
+  // 本实现旁瓣段取更严的 S.580 系数，48° 处不再相接，故取交点）。
+  const LF = 10 - 10 * LOG10(ratio);
   if (phi < 70 / ratio) return Gmax - 0.0025 * Math.pow(ratio * phi, 2);
-  if (phi < 48) return 29 - 25 * LOG10(phi);
+  const phiX = Math.pow(10, (19 + 10 * LOG10(ratio)) / 25);
+  if (phi < phiX) return 29 - 25 * LOG10(phi);
   return LF;
 }
 
