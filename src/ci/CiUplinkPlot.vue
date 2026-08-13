@@ -227,10 +227,10 @@ C/I {{ fmt(p.ciDb, 2) }} dB<template v-if="Number.isFinite(p.sharePct)">
     <p v-if="belowScopeNames.length" class="warn sm">
       {{ belowScopeNames.join('、') }} 的离轴角在 S.524 的 φ₀ 以内，此处取 φ₀ 处的钳位值。
     </p>
-    <p v-if="!maskAuthoritative && maskCurve.length" class="warn sm">
-      该频率不在 S.524-9 正文明列的三个频段内，掩模按邻近频段外推，仅可作量级参照，不应标注为「ITU-R S.524-9」。
+    <p v-if="!maskAuthoritative && maskCurve.length" class="warn sm" title="外推结果不应标注为「ITU-R S.524-9」">
+      该频率不在 S.524-9 正文明列的三个频段内，掩模按邻近频段外推，仅可作量级参照。
     </p>
-    <p v-if="!hasData" class="empty">请先计算。</p>
+    <p v-if="!hasData" class="empty">尚未计算。</p>
   </div>
 </template>
 

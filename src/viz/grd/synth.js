@@ -120,9 +120,12 @@ function _te11U(u) {
 const _oblq = (th) => ((1 + Math.cos(th)) / 2) ** 2             // 口径辐射斜率因子（功率）
 // Potter（TE11+TM11）：TM 功率 16% → 方向图更宽、溢出更大。近似为等效小口径（×0.86）展宽馈源图。
 const _feedDiaEff = (dWl, model) => (model === 'potter' ? dWl * 0.86 : dWl)
-// 波束宽因子 k（θ3=k·λ/D，rad）：g(r)=p+(1−p)(1−r²/a²) 远场 F(u)=p·Λ1+(1−p)·Λ2 的半功率点 u_h；k=2u_h/π
+// 波束宽因子 k（θ3=k·λ/D，rad）：g(r)=p+q(1−r²/a²) 的远场是【体积加权】F=(2p·Λ1+q·Λ2)/(2p+q)
+//（Hankel 变换 H=p·J1/u+2q·J2/u²，H(0)=(2p+q)/4——直接 p·Λ1+(1−p)·Λ2 是错的，均匀分量会被低估）。
+// 半功率点 u_h：F(u_h)²=1/2；k=2u_h/π。
 function _kFactor(p) {
-  const F = (u) => p * _Lam1(u) + (1 - p) * _Lam2(u)
+  const q = 1 - p
+  const F = (u) => (2 * p * _Lam1(u) + q * _Lam2(u)) / (2 * p + q)
   let lo = 0.5, hi = 3.0
   for (let i = 0; i < 60; i++) { const m = (lo + hi) / 2; if (F(m) * F(m) > 0.5) lo = m; else hi = m }
   return 2 * ((lo + hi) / 2) / Math.PI
@@ -508,6 +511,67 @@ export function pamArrayFactor(du, N, dWl) {
   return Math.sin(N * x) / (N * sx)
 }
 
+// ---- 栅瓣分能修正（Hannon 方向性公式的适用域守卫）----
+// 公式 D=4πA/λ²·cos^R θ0 的前提是全部功率进主瓣（手册 §6.5：element pattern truncates grating lobes）。
+// 栅瓣进实空间（d≥1λ 天底恒有；0.5<d<1 电扫超 asin(1/d−1) 后出现）时功率被栅瓣分走，公式高估峰值
+//（实测 d=1.0/1.2/1.4 天底高估 3.8/6.5/7.7 dB、d=0.6 电扫 50° 高估 1.9 dB）。修正 = 模型场全实空间
+// 积分的【波束中心】真方向性 ÷ 含扫描损失的公式值：corr = [4π·w₀^R/∫(pf²/w)dudv] / [4π·NxNy·dx·dy·w₀^R]
+// = 1/(NxNy·dx·dy·∫)（w₀^R 约去——扫描损失已在公式/场里，勿双计）≤ 1。真峰被栅瓣压过由 glDomDb 揭示。
+// 无可见栅瓣走快路返 0（域内输出一字不动）；elem=false（纯阵因子诊断视图）不修；按参数+指向记忆化。
+// tri 候选格取子阵半周期（隔位被 cos 因子压制），真伪由场幅/积分甄别。
+const _lobeCache = new Map()
+export function pamLobeSplit(pam, u0, v0) {
+  const nx = Math.round(pam.Nx), ny = Math.round(pam.Ny), dx = Number(pam.dxWl), dy = Number(pam.dyWl)
+  const none = { corrDb: 0, glVis: 0, glDomDb: -Infinity }
+  if (pam.elem === false || !(nx > 0) || !(ny > 0) || !(dx > 0) || !(dy > 0)) return none
+  const w0sq = 1 - u0 * u0 - v0 * v0
+  if (!(w0sq > 1e-6)) return none
+  const tri = pam.tri === true && nx % 2 === 0
+  const stepU = 1 / ((tri ? 2 : 1) * dx), stepV = 1 / dy
+  const fp = 1.2 * Math.max(1 / (nx * dx), 1 / (ny * dy))      // 瓣脚余量（径向）：瓣脚蹭进单位圆也算可见
+  const pf0 = Math.abs(pamField(u0, v0, u0, v0, pam))
+  if (!(pf0 > 1e-9)) return none
+  let glVis = 0, glDomDb = -Infinity
+  const Mx = Math.ceil((1 + Math.abs(u0)) / stepU) + 1, My = Math.ceil((1 + Math.abs(v0)) / stepV) + 1
+  for (let m = -Mx; m <= Mx; m++) for (let n = -My; n <= My; n++) {
+    if (!m && !n) continue
+    const ug = u0 + m * stepU, vg = v0 + n * stepV
+    const rr2 = ug * ug + vg * vg
+    if (Math.sqrt(rr2) >= 1 + fp) continue
+    glVis++
+    if (rr2 < 1) {                                             // 中心在圆内 → 记「栅瓣压过主瓣」判据用的电平
+      const a = Math.abs(pamField(ug, vg, u0, v0, pam))
+      const lv = 20 * Math.log10(Math.max(a, 1e-9) / pf0)
+      if (lv > glDomDb) glDomDb = lv
+    }
+  }
+  if (!glVis) return none
+  const key = nx + ',' + ny + ',' + dx + ',' + dy + ',' + (Number(pam.R) || 0) + ',' + (tri ? 1 : 0) + ',' + u0.toFixed(3) + ',' + v0.toFixed(3)
+  const hit = _lobeCache.get(key)
+  if (hit) return hit
+  // 全实空间数值积分：分辨率 ≥~10 点/3dB 波束宽，封顶控算量（601² ≈ 单次几十 ms，进缓存）
+  const bw = 0.886 / Math.max(nx * dx, ny * dy)
+  const N = Math.min(601, Math.max(201, Math.ceil(20 / bw)))
+  const du = 2 / N
+  let I = 0
+  for (let i = 0; i < N; i++) {
+    const u = -1 + du * (i + 0.5)
+    for (let j = 0; j < N; j++) {
+      const v = -1 + du * (j + 0.5)
+      const s = 1 - u * u - v * v
+      if (s <= 1e-6) continue
+      const f = pamField(u, v, u0, v0, pam)
+      I += f * f / Math.sqrt(s)
+    }
+  }
+  I *= du * du
+  const corr = I > 0 ? 1 / (I * nx * ny * dx * dy) : 1         // w₀^R 已约去（扫描损失在公式/场里，勿双计）
+  const out = { corrDb: Math.min(0, 10 * Math.log10(Math.max(corr, 1e-6))), glVis, glDomDb }
+  if (_lobeCache.size > 512) _lobeCache.clear()
+  _lobeCache.set(key, out)
+  return out
+}
+
 // 阵因子 3dB 半宽（方向余弦 u 空间）：牛顿法解 AF(u_h)=1/√2（eq 6.16）。返回 u_h（半宽）。
 export function pamBeamwidthU(N, dWl) {
   if (!(N > 1) || !(dWl > 0)) return NaN
@@ -549,7 +613,7 @@ export function pamField(u, v, u0, v0, { Nx, Ny, dxWl, dyWl, R = 1.2, tri = fals
 // 相控阵读数（逐字段对齐 §6.5.1 对话框）：类比 solveReflector。默认 eff=100（手册「usually set to 1.0」）。
 // 返回 {ok, th3xDeg, th3yDeg, beamSpacing{XDeg,YDeg,XU,YU,XReal,YReal}, crossoverDb, arrayDim*m,
 //   gratingLobeBw（距原点波束宽数，供 Range 字段）, gratingLobeDeg, gratingInReal, dirDbi, lam}。
-export function solvePam({ fGHz, Nx, Ny, dxWl, dyWl, R = 1.2, eff = 100, tri = false }) {
+export function solvePam({ fGHz, Nx, Ny, dxWl, dyWl, R = 1.2, eff = 100, tri = false, elem = true }) {
   const nx = Math.round(Nx), ny = Math.round(Ny)
   if (!(fGHz > 0) || !(nx > 0) || !(ny > 0) || !(dxWl > 0) || !(dyWl > 0)) return { ok: false }
   const lam = 0.299792458 / fGHz
@@ -568,22 +632,38 @@ export function solvePam({ fGHz, Nx, Ny, dxWl, dyWl, R = 1.2, eff = 100, tri = f
   // 阵物理尺寸（m）与峰值方向性（boresight）：D0 = 4πA/λ²·eff，A=Nx·Ny·dx·dy·λ² → 4π·Nx·Ny·dxWl·dyWl·eff
   const dimX = nx * dxWl * lam, dimY = ny * dyWl * lam
   const dirDbi = 10 * Math.log10(4 * Math.PI * nx * ny * dxWl * dyWl * (eff / 100))
-  // 第一栅瓣（手册 §6.5.1）：栅瓣在 sin 空间 u=1/d。报【距原点的波束宽数】（"distance from origin in
-  // beamwidths"，供填 Beamlet Grid 的 Range）= (1/d)/波束宽(u 空间 2·u_h)；d≥1 时另给进实空间的角度。
-  const glBwX = uhx > 0 ? (1 / dxWl) / (2 * uhx) : Infinity
-  const glBwY = uhy > 0 ? (1 / dyWl) / (2 * uhy) : Infinity
-  const gratingLobeBw = Math.min(glBwX, glBwY)
-  const dMax = Math.max(dxWl, dyWl)
-  const glDeg = dMax >= 1 ? Math.asin(1 / dMax) * R2D : NaN
-  // 无栅瓣可扫范围（手册 §6.5.1）：扫到 sinθ_scan=1/d−1 时首栅瓣进实空间（u=u0−1/d 触及 −1）。
-  //   d≤0.5 → 1/d−1≥1 恒无栅瓣，满半球可扫（封顶 90°）；0.5<d<1 → asin(1/d−1)；d≥1 → 天底已有栅瓣，0°。
-  const scanArg = 1 / dMax - 1
+  // 第一栅瓣（手册 §6.5.1）：栅瓣在 sin 空间的【倒格点】上。矩形晶格 (n/dx, m/dy) → 最近 {(1/dx,0),(0,1/dy)}；
+  // 三角晶格（两重叠子阵，基矢 (2dx,0)/(dx,dy/2)）倒格点 (a/(2dx), b/dy) 限 a、b 同奇偶——矩形的 (0,±1/dy)
+  // 被 cos 因子抹掉，最近降为 {(1/dx,0),(0,2/dy),(1/(2dx),1/dy)}（这 3 个已覆盖全格最短）。等边 dx=√3/2·dy
+  // 时三者同长 2/(√3·dy)，比按矩形算远 2/√3−1≈15.5%——栅瓣更远/可扫更大正是三角晶格的意义；
+  // 按矩形算还会在 dy∈[1λ, 1.155λ) 弹「栅瓣进实空间」假告警。
+  const triLat = tri && nx % 2 === 0                 // 与 pamField 同判据：奇 Nx 回退矩形
+  const glCand = triLat
+    ? [[1 / dxWl, 0], [0, 2 / dyWl], [1 / (2 * dxWl), 1 / dyWl]]
+    : [[1 / dxWl, 0], [0, 1 / dyWl]]
+  // 距原点波束宽数（"distance from origin in beamwidths"，供填 Beamlet Grid 的 Range）：按波束椭圆
+  // 度量 hypot(gu/2u_hx, gv/2u_hy)，轴上栅瓣退化为旧口径 (1/d)/(2·u_h)。
+  const bwOf = (gu, gv) => Math.hypot(gu ? (uhx > 0 ? gu / (2 * uhx) : Infinity) : 0, gv ? (uhy > 0 ? gv / (2 * uhy) : Infinity) : 0)
+  let gMin = Infinity, gratingLobeBw = Infinity
+  for (const [gu, gv] of glCand) {
+    const r = Math.hypot(gu, gv)
+    if (r < gMin) gMin = r
+    const b = bwOf(gu, gv)
+    if (b < gratingLobeBw) gratingLobeBw = b
+  }
+  const glDeg = gMin <= 1 ? Math.asin(gMin) * R2D : NaN
+  // 无栅瓣可扫范围（手册 §6.5.1）：波束扫到 u0 时栅瓣在 u0−g，最坏扫向迎着最近倒格矢 → 界 = |g|min−1。
+  //   ≥1 恒无栅瓣，满半球可扫（封顶 90°）；(0,1) → asin(|g|min−1)；≤0 → 天底已有栅瓣，0°。
+  const scanArg = gMin - 1
   const scanMaxDeg = scanArg >= 1 ? 90 : scanArg > 0 ? Math.asin(scanArg) * R2D : 0
+  // 天底栅瓣分能修正（d≥1λ 时栅瓣天底即在实空间，Hannon 公式高估 → dirDbiCorr 为修正后读数；无栅瓣恒等）
+  const glc = pamLobeSplit({ Nx: nx, Ny: ny, dxWl, dyWl, R, tri, elem }, 0, 0)
   return {
     ok: true, lam, th3xDeg: th3x, th3yDeg: th3y, th3Deg: Math.max(th3x, th3y),
     beamSpacingXDeg: bsX, beamSpacingYDeg: bsY, beamSpacingXU: duX, beamSpacingYU: duY, beamSpacingXReal: bsXReal, beamSpacingYReal: bsYReal,
     crossoverDb: cross, arrayDimXm: dimX, arrayDimYm: dimY,
-    gratingLobeBw, gratingLobeDeg: glDeg, gratingInReal: Number.isFinite(glDeg), scanMaxDeg, dirDbi
+    gratingLobeBw, gratingLobeDeg: glDeg, gratingInReal: Number.isFinite(glDeg), scanMaxDeg, dirDbi,
+    dirCorrDb: glc.corrDb, dirDbiCorr: dirDbi + glc.corrDb
   }
 }
 
@@ -625,6 +705,8 @@ export function buildPamGrd({ satName = '', satLon, satLat = 0, altKm, pam, beam
   for (const b of beams) {
     const d0 = gridDir(6, b.az, b.el)                  // 波束中心方向余弦
     const u0 = d0[0], v0 = d0[1]
+    // 逐波束栅瓣分能修正：电扫超 asin(1/d−1) 或 d≥1λ 时功率被实空间栅瓣分走 → 该波束峰值下修（域内恒 0）
+    const pkB = peakDbi + pamLobeSplit(pam, u0, v0).corrDb
     const XS = b.az - span * th3, XE = b.az + span * th3, YS = b.el - span * th3, YE = b.el + span * th3
     const dx = (XE - XS) / (res - 1), dy = (YE - YS) / (res - 1)
     const L = new Array(res * res + 2)
@@ -639,7 +721,7 @@ export function buildPamGrd({ satName = '', satLon, satLat = 0, altKm, pam, beam
         const val = pamField(dd[0], dd[1], u0, v0, pam)
         let rel = 20 * Math.log10(Math.abs(val) + 1e-12)
         if (!(rel > floorDb)) rel = floorDb
-        L[k++] = ` ${fexp(Math.pow(10, (peakDbi + rel) / 20))} ${zero} ${zero} ${zero}`
+        L[k++] = ` ${fexp(Math.pow(10, (pkB + rel) / 20))} ${zero} ${zero} ${zero}`
       }
     }
     parts.push(L.join('\r\n'))
@@ -880,6 +962,8 @@ export function buildShapedGrd({ satName = '', satLon, satLat = 0, altKm, polysP
   for (const h of hots) if (h.boost > 0 && (!hotAnchor || h.boost > hotAnchor.boost)) hotAnchor = h
   const { centers, spacing } = layoutBeamlets(geo, polys, th, hotAnchor)
   const N = centers.length
+  // 超 NMAX_B 的静默增距会把交叠拉到 −3dB 以下（纹波随之变大）——必须让用户知道
+  const gridWarn = spacing > BEAMLET_SP * th * 1.02 ? `成分波束数超上限 ${NMAX_B}：波束栅间距放宽至 ${(spacing / th).toFixed(2)}×θ3，纹波偏大（缩小覆盖区或减小口径可复位）` : ''
   const Rcut = th * Math.sqrt(-floorDb / GCOEF)
   const near = hashGrid(centers, Rcut)
   const reach = 1.15 * th                          // 覆盖可达半径：口径分辨率外的细部剔除（如实回报）
@@ -1075,6 +1159,11 @@ export function buildShapedGrd({ satName = '', satLon, satLat = 0, altKm, polysP
   //   D = η_ap · 4πA/λ² · Ω₁/∫P̂dΩ —— Ω₁=单支高斯 beamlet 立体角=π·θ3²/(4ln2)；比值 Ω₁/∫P̂dΩ 用【同一高斯模型】
   //   度量单支 vs 赋形场，模型误差抵消 → 单支 beamlet 恰=物理笔形波束 η_ap·4πA/λ²，赋形随形张开自然降增益。
   //   η_ap（口径效率＝照射×溢出）由馈源锥度定死（shapedApertureEff，只读）。缺口径/频率信息时回退旧 4π/∫P̂dΩ 口径。
+  // 【勿按 4π 封顶】峰值锚定后发射图窗口积分 = η_ap·π³k²/(4ln2)（D、λ 精确相消，只随锥度变）≈ 4π+0.45dB（−15 档）：
+  //   超 4π 是高斯裙边比真实主瓣胖的模型伪影，上行比值定标已令其在「单支 vs 赋形」间抵消，不是物理功率超限
+  //   （SATSOFT 自家高斯模型 eff·4π/(θx·θy) 高效率档积分同样超 4π）。曾试按真实天线窗口功率 4π·η_ml·η_spill 封顶：
+  //   该上界对全锥度域（−3…−40dB）恒比口径分支小 0.5~2.2dB → min 恒绑定，峰值随锥度系统性偏低、effPct 成死参数、
+  //   面板「口径效率」与生成图脱钩——等于把已抵消的模型误差当物理超限再扣一遍，已回退。
   const intP = (sumP / (Fmax * Fmax)) * dx * dy * D2R * D2R   // 合成场立体角 ∫P̂dΩ/P̂max（cos az 已入 sumP）
   const etaAp = cl(effPct, 1, 100) / 100
   const th3r = theta3 * D2R                                   // θ3 弧度
@@ -1130,12 +1219,12 @@ export function buildShapedGrd({ satName = '', satLon, satLat = 0, altKm, polysP
     if (c < fAmp) c = fAmp                          // 地板：避免 0 功率/−∞ dB 点
     L[k] = ` ${fexp(c)} ${zero} ${zero} ${zero}`
   }
-  let warn = ''
+  let warn = gridWarn
   const dropPct = 100 * unreach / Math.max(1, covCnt + unreach)
   const cornerDip = edgeVal - covMin               // 最差覆盖点低于边缘保证值的量（dB）
-  if (dropPct > 2) warn = `约 ${dropPct.toFixed(0)}% 覆盖细节小于波束分辨率 θ3=${th.toFixed(2)}°，无法贴合（加大口径可改善）`
-  else if (N <= 2 && omegaDeg2 < 1.5 * 0.866 * Math.pow(BEAMLET_SP * th, 2)) warn = `区域尺度小于 θ3=${th.toFixed(2)}°，赋形退化为准单波束（加大口径方能贴合 Polygon）`
-  else if (cornerDip > 2.5) warn = `个别边角凹陷至 ${covMin.toFixed(1)}（低于保证值 ${cornerDip.toFixed(1)} dB）—— 细部小于口径分辨率 θ3=${th.toFixed(2)}°，加大口径可贴合`
+  if (dropPct > 2) warn = (warn ? warn + '；' : '') + `约 ${dropPct.toFixed(0)}% 覆盖细节小于波束分辨率 θ3=${th.toFixed(2)}°，无法贴合（加大口径可改善）`
+  else if (N <= 2 && omegaDeg2 < 1.5 * 0.866 * Math.pow(BEAMLET_SP * th, 2)) warn = (warn ? warn + '；' : '') + `区域尺度小于 θ3=${th.toFixed(2)}°，赋形退化为准单波束（加大口径方能贴合 Polygon）`
+  else if (cornerDip > 2.5) warn = (warn ? warn + '；' : '') + `个别边角凹陷至 ${covMin.toFixed(1)}（低于保证值 ${cornerDip.toFixed(1)} dB）—— 细部小于口径分辨率 θ3=${th.toFixed(2)}°，加大口径可贴合`
   const hotOut = hots.filter((h) => geo.signedDist(h.az, h.el) < 0).length
   if (hotOut) warn = (warn ? warn + '；' : '') + `${hotOut} 个峰点在覆盖区外 —— 目标场只作用于覆盖区内/边界站点，区外峰点基本无效（请移入 Polygon）`
   if (hotGap > 1.5) warn = (warn ? warn + '；' : '') + `峰值点最大欠额 ${hotGap.toFixed(1)} dB（波束宽 θ3=${th.toFixed(2)}° 无法形成更锐的局部峰——加大口径，或将峰点宽度放大至 ≥2·θ3）`
@@ -1276,7 +1365,8 @@ export function buildPamShapedGrd({ satName = '', satLon, satLat = 0, altKm, pol
   const tAmp = new Float64Array(M)
   for (let m = 0; m < M; m++) tAmp[m] = Math.pow(10, tdb[m] / 20)
   // ④ 复激励交替相位 IRLS minimax（与 buildShapedGrd 同款；gᵢ=pamField 实 → 法矩阵实对称、仅右端复 → 同一
-  //    Cholesky 解 Re/Im 两路；实高斯型 basis 令虚部恒 0 → 激励为实（相位 0/180°），对齐 SATSOFT 单模「Uniform,
+  //    Cholesky 解 Re/Im 两路；实高斯型 basis 令虚部恒 0 → basis 域激励为实（相位 0/180°；三角晶格的
+  //    【上注】相位在 ⑦ 另补逐端口常数 ψ_p，勿省），对齐 SATSOFT 单模「Uniform,
   //    zero phase」初值。区内/边界 meet-or-exceed、界外压制、相对残差权重、20 分位归一、IRLS 升权最差站）——
   const wRe = new Float64Array(N), wIm = new Float64Array(N)
   const rho = new Float64Array(M)
@@ -1400,7 +1490,9 @@ export function buildPamShapedGrd({ satName = '', satLon, satLat = 0, altKm, pol
   const etaAp = cl(Number(pam.eff), 1, 100) / 100
   const maxDirLin = 4 * Math.PI * Math.round(pam.Nx) * Math.round(pam.Ny) * Number(pam.dxWl) * Number(pam.dyWl)
   const scanLoss = pam.elem === false ? 1 : Math.pow(wPk, R)   // cos^R(θ0_peak) 电扫损失（单元因子关闭则无）
-  const physPeakDbi = 10 * Math.log10(Math.max(1e-9, etaAp * maxDirLin * scanLoss * omega1 / intP))
+  // 栅瓣分能修正（按峰值端口指向）：可见栅瓣分走的功率既不在 Ω1 也不在 ∫（都只积成图窗口）→ 显式下修
+  const lsPk = pamLobeSplit(pam, pk.u0, pk.v0)
+  const physPeakDbi = 10 * Math.log10(Math.max(1e-9, etaAp * maxDirLin * scanLoss * omega1 / intP)) + lsPk.corrDb
   // 站点标签锚定（value 模式，同 buildShapedGrd ⑤）：令最差覆盖点≈covValue、内圈按标签更高
   let relMin = Infinity, minTdb = Infinity
   for (let m = 0; m < M; m++) if (kind[m] !== 2 && tdb[m] < minTdb) minTdb = tdb[m]
@@ -1441,14 +1533,21 @@ export function buildPamShapedGrd({ satName = '', satLon, satLat = 0, altKm, pol
     }
   }
   // ⑦ 星上激励指令（BFN 端口复激励）：功率占比 p_i=|w_i|²/Σ|w_j|²；幅度=10log10(p_i) dB（rel BFN 输入功率，手册 p126）；
-  //   相位=arg(w_i)（实 basis → 0/180°）；端口指向(u0,v0)→(az,el)→地面经纬（供测控可视 / 上注）。
+  //   相位=arg(w_i)+ψ_p；端口指向(u0,v0)→(az,el)→地面经纬（供测控可视 / 上注）。
+  //   ψ_p（仅三角晶格非零）：pamField 的 tri basis 取实数 cos(φ/2)，与物理子阵积 1+e^{jφ}=2cos(φ/2)·e^{jφ/2}
+  //   差半相位 φ/2 = π(u·dx+v·dy/2)−ψ_p。前项与端口无关（整体相位，|Σ| 不受影响 → 出图场本来就对、不进指令）；
+  //   ψ_p=π(u0·dx+v0·dy/2) 逐端口不同——上注激励必须补 e^{+jψ_p}，漏补则硬件打出的波束 ≠ 出图
+  //  （16×16 等边阵 ψ_p 跨 ±120°，实测场偏差达峰值 20%）。矩形晶格 basis 无该因子，ψ_p≡0。
   let sumW2 = 0
   for (let i = 0; i < N; i++) sumW2 += bRe[i] * bRe[i] + bIm[i] * bIm[i]
   if (!(sumW2 > 0)) sumW2 = 1
+  const triExc = pam.tri === true && Math.round(pam.Nx) % 2 === 0
   const excit = ports.map((pt, i) => {
     const w2 = bRe[i] * bRe[i] + bIm[i] * bIm[i]
     const gr = azElGround(satLon, satLat || 0, altKm, pt.az, pt.el)
     let ph = Math.atan2(bIm[i], bRe[i]) / D2R
+    if (triExc) ph += 180 * (pt.u0 * Number(pam.dxWl) + pt.v0 * Number(pam.dyWl) / 2)
+    ph = ((ph % 360) + 540) % 360 - 180
     if (ph < -179.999) ph = 180
     return {
       port: i + 1, n: pt.n, m: pt.m, u0: +pt.u0.toFixed(4), v0: +pt.v0.toFixed(4), az: +pt.az.toFixed(3), el: +pt.el.toFixed(3),
@@ -1478,7 +1577,12 @@ export function buildPamShapedGrd({ satName = '', satLon, satLat = 0, altKm, pol
   const cornerDip = edgeVal - covMin
   if (dropPct > 2) warn = (warn ? warn + '；' : '') + `约 ${dropPct.toFixed(0)}% 覆盖细节小于 Butler 波束分辨率 θ3=${th.toFixed(2)}°（加大阵元数可改善）`
   else if (cornerDip > 2.5) warn = (warn ? warn + '；' : '') + `个别边角凹陷至 ${covMin.toFixed(1)}（低于保证值 ${cornerDip.toFixed(1)} dB）——细部小于阵面分辨率 θ3=${th.toFixed(2)}°`
-  if (sol.gratingInReal) warn = (warn ? warn + '；' : '') + `⚠ 单元间距 ≥1λ：栅瓣进实空间（±${sol.gratingLobeDeg.toFixed(1)}°），成图窗口未含栅瓣（减小间距至 <1λ 可消除）`
+  if (sol.gratingInReal) warn = (warn ? warn + '；' : '') + `⚠ 单元间距 ≥1λ：栅瓣进实空间（±${sol.gratingLobeDeg.toFixed(1)}°），成图窗口未含栅瓣，峰值已按分能修正 ${lsPk.corrDb.toFixed(1)} dB（减小间距至 <1λ 可消除）`
+  else {
+    let overPorts = 0
+    for (const pt of ports) { const w2 = 1 - pt.u0 * pt.u0 - pt.v0 * pt.v0; if (Math.acos(Math.sqrt(Math.max(0, Math.min(1, w2)))) / D2R > sol.scanMaxDeg + 0.01) overPorts++ }
+    if (overPorts) warn = (warn ? warn + '；' : '') + `⚠ ${overPorts} 个 Butler 端口超无栅瓣可扫界 ±${sol.scanMaxDeg.toFixed(0)}°：栅瓣进实空间，峰值已按分能修正 ${lsPk.corrDb.toFixed(1)} dB`
+  }
   const hotOut = hots.filter((h) => geo.signedDist(h.az, h.el) < 0).length
   if (hotOut) warn = (warn ? warn + '；' : '') + `${hotOut} 个峰值点在覆盖区外——目标只作用于覆盖区内，区外峰点基本无效（请移入覆盖区）`
   if (hotGap > 1.5) warn = (warn ? warn + '；' : '') + `峰值点最大欠额 ${hotGap.toFixed(1)} dB（阵面波束宽 θ3=${th.toFixed(2)}° 无法形成更锐的局部峰——加大阵元数 / 减小间距，或将峰点宽度放大至 ≥2·θ3）`

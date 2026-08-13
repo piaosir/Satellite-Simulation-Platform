@@ -1201,7 +1201,7 @@ function clearColContents() {
             <b class="sg-oth-v" :title="imp.other.lon + '°E ' + imp.other.lat + '°N'">{{ imp.other.name }}</b>
             <button class="sg-oth-x" title="清除另一端，恢复用默认站址" @click="imp.other = null">✕</button>
           </template>
-          <span v-else class="sg-oth-def" title="未指定另一端：新行对侧用默认站址。悬停列表条目点 ⇄ 可将该站设为另一端">默认（{{ impOtherDefault }}）· 列表悬停 ⇄ 可指定</span>
+          <span v-else class="sg-oth-def" title="未指定另一端：新行对侧用默认站址。悬停列表条目点 ⇄ 可将该站设为另一端">默认（{{ impOtherDefault }}）</span>
         </div>
         <input ref="impSearchEl" v-model="imp.query" class="sg-search" :placeholder="imp.source === 'city' ? '搜索城市 / 省份 / 拼音缩写（如 北京 / 江苏 / bj）' : '搜索名称 / 经度'"
                @keydown="onImpKey" @input="imp.hl = 0" />
@@ -1220,7 +1220,7 @@ function clearColContents() {
           <div v-if="!impResults.length" class="sg-empty">无可导入项</div>
         </div>
         <div class="sg-box-ft sg-impft">
-          <span class="sg-impn2">{{ imp.addedN ? '本次已加 ' + imp.addedN + ' 行（Ctrl+Z 可撤销）' : '点击条目即导入；↑↓ 高亮，Enter 导入' }}</span>
+          <span class="sg-impn2">{{ imp.addedN ? '本次已加 ' + imp.addedN + ' 行（Ctrl+Z 可撤销）' : '↑↓ 高亮 · Enter 导入' }}</span>
           <button class="sg-btn" :disabled="!impResults.length" :title="'将当前列出的 ' + impResults.length + ' 项全部加为新行（一步可撤销）'" @click="importAll">全部导入（{{ impResults.length }}）</button>
           <button class="sg-btn primary" @click="closeImport">完成</button>
         </div>

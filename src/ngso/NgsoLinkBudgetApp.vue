@@ -248,7 +248,7 @@ function applyLibrary(lib) {
   syncAutoNames(esConfigs, 'es'); syncAutoNames(basebandConfigs, 'carrier'); syncAutoNames(satConfigs, 'sat')
   // 历史库归一化：早期两种取星未互斥，可能留下「星历检索定轨 + 天线树方向图」的双重身份 → 按不变式清掉失效那份
   const fixed = satConfigs.reduce((n, c) => n + (enforceGrdOwner(c) ? 1 : 0), 0)
-  if (fixed) toast(`已清理 ${fixed} 份卫星配置里失效的方向图匹配：这些条目改用了星历检索/手动轨道定轨，方向图只随「天线树取星」而来`)
+  if (fixed) toast(`已清理 ${fixed} 份卫星配置里失效的方向图匹配`)
   if (lib.seq) { _esSeq = Math.max(_esSeq, lib.seq.es || 1); _bbSeq = Math.max(_bbSeq, lib.seq.bb || 1); _satSeq = Math.max(_satSeq, lib.seq.sat || 1) }
   // 兜底回抬序号：防旧库无 seq 时新建条目撞已有 id
   for (const [arr, re, bump] of [[esConfigs, /^es(\d+)$/, (n) => { _esSeq = Math.max(_esSeq, n + 1) }], [basebandConfigs, /^bb(\d+)$/, (n) => { _bbSeq = Math.max(_bbSeq, n + 1) }], [satConfigs, /^sat(\d+)$/, (n) => { _satSeq = Math.max(_satSeq, n + 1) }]]) {

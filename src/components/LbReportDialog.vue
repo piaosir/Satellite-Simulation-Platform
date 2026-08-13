@@ -249,7 +249,6 @@ const labelOf = (f) => (props.lang === 'en' ? f.labelEn : f.label)
             <input v-model="opt.figures" type="checkbox" :disabled="busy || !vizAvailable" />{{ t('包含图件') }}
           </label>
         </div>
-        <div class="rd-hint">{{ figHint }}</div>
         <div class="rd-hint">{{ linkCount }} {{ t('条链路') }}　·　{{ t('字体') }} Times New Roman + {{ lang === 'en' ? 'SimSun / SimHei' : '宋体 / 黑体' }}　·　{{ t('语言') }} {{ lang === 'en' ? 'English' : '中文' }}</div>
 
         <div v-if="progress" class="rd-prog">

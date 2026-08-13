@@ -141,7 +141,9 @@ const grd = useGrdCoverage(() => scene, () => flat, () => flatView.value, {
   // 故由本页注入；useGrdCoverage 自己不碰 SGP4。见下方 satTargetEcef。
   getTargetEcef: (id) => satTargetEcef(id),
   // 切到「空间点」指向时，指向点默认落在哪层壳上（取对星覆盖分析里第一层显示中的壳层）
-  defaultBoreAlt: () => satcovDragAlt()
+  defaultBoreAlt: () => satcovDragAlt(),
+  // 2D 平面图只有一块 GRD 场，对地/对星共用 → 按当前活动视图定归属（另一半见下面 satcov 的第 5 参）
+  ownsFlatField: () => shellUi.side !== 'satcov'
 })
 const { sats: grdSats, loading: grdLoading, s: grdS } = grd
 const grdOpen = toRef(covNav, 'grdOpen')   // GRD 覆盖面板开关；与顶栏按钮共用 covNav store
@@ -154,7 +156,7 @@ const bs = useBeamSynth({ grd, getPolys: () => polys.value, livePos: (n) => satL
 // ===================== 对星覆盖分析（波束打到轨道壳层上）=====================
 // 与对地覆盖共用同一棵卫星/天线树与同一套【物理设置】（指向/极化/增益/路损，经 grd.getPerfContext 现取）；
 // 只有【显示设置】（档位/填充/画哪些波束）各记一套。渲染走 scene 的壳层专用通道，与对地覆盖互不覆写。
-const satcov = useShellCoverage(grd, () => scene, () => flat, () => flatView.value)
+const satcov = useShellCoverage(grd, () => scene, () => flat, () => flatView.value, () => shellUi.side === 'satcov')
 const satPerf = useSatPerfTable()
 const satcovTableOpen = ref(false)
 
@@ -990,7 +992,8 @@ let entries = []        // 全部 {rec, name, noradId, group}
 let renderEntries = []  // 有效卫星集，与点云顺序一致
 let selEntry = null       // 主选中（primary/active）：详情展开、beam 输入、跟随定位都作用于它
 let selEntries = []        // 多选集合（含 primary）；裸点选=替换，Ctrl/Cmd/Shift 点选=增减
-const selList = ref([])   // 多选卡片列表（响应式）
+// 多选卡片列表。shallowRef：整批重建（每次刷新都换新数组，从不就地改），几百颗时不必再为每行建深代理
+const selList = shallowRef([])
 // 每颗一行 mini-card（名称+类型+关键指标），active=primary。
 // 【别再加回行首色点】：地球上的选中轨道/足迹并不按这个色画（轨道走统一选中样式、在轨点走该星原本的分组色），
 // 色点跟画面上任何东西都对不上，纯装饰。
@@ -1212,25 +1215,56 @@ function cardFor(e) {
 // 与 beam 夹断占位。实际提交交由 commitGeometry 与可见性叠加层、对星聚焦特效合并
 //（三者共用 setSelectionSet / setFocusSatLLA / setHighlightLLA replace-all 通道，故必须一次性喂）。
 let selHl = null   // primary 选中星的高亮环位置（null=无），由 footprintFor 回填
+// —— 多选聚焦的细节分档 ——
+// 每颗选中星每次刷新都要重算整圈轨道 + 足迹（一次 SGP4/采样点），故按颗数摊薄采样：
+// 少量选中保持满细节，多了就降采样。线已在 3D 端按样式合批（见 scene.setSelectionSet），
+// 对象数与颗数无关，剩下的成本主要就是这里的 SGP4。
+const FOCUS_FULL_N = 24            // 这个颗数以内保持满细节（与单选完全一致）
+const FOCUS_SAMPLE_BUDGET = 2880   // 超出后每次刷新的轨道采样点总预算（= 24 × 120）
+const FOCUS_SAMPLE_MIN = 24        // 单颗采样下限：再少轨道圈就看得出折线
+const FOCUS_FP_BUDGET = 1728       // 足迹分段总预算（= 24 × 72）
+const FOCUS_FP_MIN = 18
+// 逐颗一个 30px 星下点图标：几十颗尚可读，上百颗互相盖住只剩开销 → 超过就只留主选那一个
+const FOCUS_ICON_MAX = 120
+// 画几何的颗数上限：选中集本身不设限（信息卡、存为组、加入组都按全部算），
+// 超出的只是不再画轨道/轨迹/足迹 —— 那个量级下叠画本就是一团糊，且每秒重算扛不住。
+const FOCUS_GEOM_MAX = 600
+const focusLod = (n) => {
+  const samples = n <= FOCUS_FULL_N ? 120 : clamp(Math.round(FOCUS_SAMPLE_BUDGET / n), FOCUS_SAMPLE_MIN, 120)
+  return {
+    samples,
+    // 细分阈值随采样数放宽：近圆轨道相邻跳变 ≈ 384/N 度，阈值卡在它之上一点点 —— 否则
+    // sampleOrbitAdaptive 会把降下去的点数原样二分补回来（120 点时正好落回原来的 4°）
+    stepDeg: clamp(480 / samples, 4, 30),
+    fpSeg: n <= FOCUS_FULL_N ? 72 : clamp(Math.round(FOCUS_FP_BUDGET / n), FOCUS_FP_MIN, 72)
+  }
+}
 function computeSelectedGeometry() {
   selGeomAll = []; selHl = null
   if (!scene || !selEntries.length) return []
   const now = calcAt(), gmstNow = sat.gstime(now)
   const ccNow = ccTimeAt(now), ccGmstNow = sat.gstime(ccNow)   // 合成星按场景历元解算（跨会话稳定）
   const items = []
-  selEntries.forEach((e) => {
+  let draw = selEntries
+  if (selEntries.length > FOCUS_GEOM_MAX) {
+    draw = selEntries.slice(0, FOCUS_GEOM_MAX)
+    // 主选必须在画的这批里：高亮环与 beam ε=0 上限占位都由它回填（footprintFor 的 primary 分支）
+    if (selEntry && !draw.includes(selEntry)) draw[draw.length - 1] = selEntry
+  }
+  const lod = focusLod(draw.length)
+  draw.forEach((e) => {
     const rec = e.rec
     const cc = isCustomEntry(e), t = cc ? ccNow : now, g = cc ? ccGmstNow : gmstNow
     const periodMin = (2 * Math.PI) / rec.no
     // 一个周期自适应采样（大椭圆近地点段自动加密），轨道圈与轨迹共用
-    const samples = sampleOrbitAdaptive(rec, t, periodMin)
+    const samples = sampleOrbitAdaptive(rec, t, periodMin, lod.samples, lod.stepDeg)
     const orbit = samples.map((s) => {
       const gd = sat.eciToGeodetic(s.pv.position, g)
       return { lat: sat.degreesLat(gd.latitude), lon: sat.degreesLong(gd.longitude), altKm: gd.height }
     })
     const track = samples.map((s) => ({ lat: s.lat, lon: s.lon }))
     const primary = e === selEntry
-    const fp = footprintFor(rec, t, g, primary)   // primary 顺带更新高亮环 + beam ε=0 上限占位
+    const fp = footprintFor(rec, t, g, primary, lod.fpSeg)   // primary 顺带更新高亮环 + beam ε=0 上限占位
     // 选中星当前在轨位置：供 3D 在该处画大号「在轨点」（跟随星点原色，压在细轨道之上）
     let satPos = null
     try {
@@ -1340,7 +1374,8 @@ function pushSelGeomFlat(extra) {
 //   beam — 与 2D 同一套几何（全波束角 B，半角 η=B/2；地心半角 λ=arcsin(r/RE·sinη)−η，夹断到 ε=0 上限）
 //   elev — 按地面最低仰角画等仰角环（0°=可见地平，与 beam 模式空值时的上限同界）
 // 返回该星覆盖足迹点列（或 null）；primary=true 时顺带更新高亮环与 beam ε=0 上限占位。纯函数，不直接改场景足迹层（由 setSelectionSet 统一绘制）。
-function footprintFor(rec, now, gmstNow, primary) {
+// seg：足迹分段数（多选时按颗数摊薄，见 focusLod）；省略取满细节。
+function footprintFor(rec, now, gmstNow, primary, seg) {
   const pv = sat.propagate(rec, now)
   if (!pv || !pv.position) { if (primary) selHl = null; return null }
   const gd = sat.eciToGeodetic(pv.position, gmstNow)
@@ -1349,7 +1384,7 @@ function footprintFor(rec, now, gmstNow, primary) {
   if (!(h > 0)) return null
   const ecf = sat.eciToEcf(pv.position, gmstNow)   // 卫星 ECEF(km)，按 WGS84 椭球求足迹边
   const lim = {}
-  const fp = footprintAtEcef([ecf.x, ecf.y, ecf.z], h, lim)
+  const fp = footprintAtEcef([ecf.x, ecf.y, ecf.z], h, lim, seg)
   if (primary && lim.bMaxDeg != null) {
     // placeholder 常显 ε=0 上限；用户超限回写夹断值（锁定态不回写）
     const autoText = lim.bMaxDeg.toFixed(1)
@@ -1360,12 +1395,13 @@ function footprintFor(rec, now, gmstNow, primary) {
 }
 // 足迹的纯几何部分（按当前 fpMode 口径），不碰高亮环/占位符：footprintFor 与「对星覆盖分析聚焦特效」共用同一定义。
 // ecef=卫星 ECEF(km)，h=轨道高度 km；lim=可选出参，回填 { bMaxDeg, clampText } 供调用方写占位符（仅 beam 模式）。
-function footprintAtEcef(ecef, h, lim) {
+function footprintAtEcef(ecef, h, lim, seg) {
   if (!ecef || !(h > 0)) return null
+  const n = seg > 0 ? Math.max(6, Math.round(seg / 2) * 2) : 72   // 取偶数：足迹虚线是隔段取一画一，奇数会丢掉末段
   if (fpMode.value === 'elev') {
     const raw = parseFloat(elevMin.value)
     const el = raw >= 0 && raw < 90 ? raw : 0
-    const ring = W.isoElevationContourAt(ecef, el, 120)
+    const ring = W.isoElevationContourAt(ecef, el, Math.round(n * 5 / 3))   // 等仰角环满细节 120（=72×5/3），随 seg 同比摊薄
     return ring ? ring.map(([lon, lat]) => ({ lat, lon })) : null
   }
   const etaMax = Math.asin(clamp(RE / (RE + h), -1, 1))
@@ -1376,7 +1412,7 @@ function footprintAtEcef(ecef, h, lim) {
   else if (raw > bMaxDeg) { bDeg = bMaxDeg; clampText = bMaxDeg.toFixed(1) }
   else bDeg = raw
   if (lim) { lim.bMaxDeg = bMaxDeg; lim.clampText = clampText }
-  return W.footprintEllipsoid(ecef, (bDeg / 2) * DEG, 72)
+  return W.footprintEllipsoid(ecef, (bDeg / 2) * DEG, n)
 }
 
 // 以 (lat0,lon0) 为心、地心半角 lambda 的地表小圆 -> 经纬度点列
@@ -1758,7 +1794,7 @@ function selSatsForGroup() {
 function addSelToGroup(g) {
   let sats = selSatsForGroup()
   if (!sats.length && filterEntries.length && filterGroupId.value !== g.id) sats = filterEntries.map((e) => ({ noradId: e.noradId, name: e.name }))
-  if (!sats.length) { appAlert('先选中卫星（点选一颗 / 按住 Ctrl 多选），或搜索出结果再加入'); return }
+  if (!sats.length) { appAlert('尚未选中卫星。'); return }
   const n = satGroups.append(g.id, sats)
   const gg = satGroups.find(g.id)
   logMsg(n ? `已加入 ${n} 颗到卫星组「${g.name}」（去重后共 ${gg ? gg.sats.length : '?'} 颗）` : `所选卫星都已在「${g.name}」中`)
@@ -1767,7 +1803,7 @@ function addSelToGroup(g) {
 // 把当前选中的卫星【移出】某组（一般用于正在显示的组：点该组显示 → Ctrl 选要删的星 → 移出）
 function removeSelFromGroup(g) {
   const ids = selSatsForGroup().map((s) => s.noradId)
-  if (!ids.length) { appAlert('先选中要移出的卫星（点该组显示后，Ctrl 选中组内的星）'); return }
+  if (!ids.length) { appAlert('尚未选中要移出的卫星。'); return }
   const n = satGroups.removeSats(g.id, ids)
   const gg = satGroups.find(g.id)
   logMsg(n ? `已从卫星组「${g.name}」移出 ${n} 颗（剩 ${gg ? gg.sats.length : '?'} 颗）` : '所选卫星不在该组中')
@@ -1825,7 +1861,7 @@ async function showNorads(sats, label, groupId) {
 // 显示某卫星组
 async function showSatGroup(g) {
   if (!g) return
-  if (!(g.sats || []).length) { appAlert(`卫星组「${g.name}」还没有卫星——点该组行的「管理」图标，在管理器里搜索添加。`); return }
+  if (!(g.sats || []).length) { appAlert(`卫星组「${g.name}」还没有卫星。`); return }
   await showNorads(g.sats, g.name, g.id)
 }
 // 点击组行：已在显示→再点退出（回到当前分组）；否则显示该组
@@ -1923,10 +1959,16 @@ const expActions = computed(() => {
 // 把列表里选中的这批星解析成可渲染 entries。
 // 内置分组【直接从该组自己的星历里现建 satrec】（只建选中的这几颗）—— 不必先花几秒把「全量搜索池」
 // 建起来才动；跨组的卫星组 / 自定义星座合成星才回退全量池。
-async function expResolve(sats) {
+async function expResolve(sats, tagOverride) {
   const want = new Map((sats || []).map((s) => [String(s.noradId), s]))
   if (!want.size) return []
-  const tag = expTag.value, key = tag.slice(2)
+  const tag = tagOverride || expTag.value, key = tag.slice(2)
+  // 自定义星座合成星本来就在内存里（build 有签名缓存）：直接挑，不必为它先建全量搜索池
+  if (tag[0] === 'c') {
+    const out = []
+    for (const e of customConst.satsOf(key)) if (want.has(String(e.noradId))) out.push(e)
+    if (out.length) return out
+  }
   if (tag[0] === 'g' && key !== 'all' && key !== 'other' && apiOk) {
     try {
       let recs = []
@@ -1948,25 +1990,28 @@ async function expResolve(sats) {
   }
   return out
 }
-// 一次聚焦最多把多少颗设成「选中星」：每颗选中星每帧都要重算整圈轨道 + 足迹，几十颗一起会拖垮时间轴推进。
-// 超出的只显示、不画轨道足迹（状态条明说，不做无声截断）。
-const FOCUS_SEL_MAX = 12
 // 聚焦所选：地图只显示这批 → 把它们设为选中星（画轨道/星下点/足迹 + 信息卡逐颗列出）→ 地球转到它们那一面。
 // 单颗与双击一颗完全同效；多颗只是把同一套动作施加到一批上，不是另一种行为。
-async function expFocus(sats, label) {
+// 选中集不截断（信息卡、存为组、加入组都按全部算）；画多少细节由 focusLod / FOCUS_GEOM_MAX 分档决定。
+// tagOverride：不经侧栏展开直接聚焦某一行时传该行的展开标记（'g:'/'s:'/'c:'），让 expResolve 走对应的快路径。
+async function expFocus(sats, label, tagOverride) {
   status.value = `聚焦 ${sats.length} 颗：解析星历…`   // 卫星组/全部卫星要现建全量池，可能等几秒 —— 别让界面看起来没反应
-  const hit = await expResolve(sats)
+  const hit = await expResolve(sats, tagOverride)
   if (!hit.length) { status.value = ''; appAlert(`「${label}」的卫星在当前星历中都未找到（可能未联网加载全量目录，或卫星已退役）`); return }
   showEntries(hit, label, '')
   // 选中（含主选）：直接铺 selEntries，与 selectSat 的多选路径同构
-  selEntries = hit.slice(0, FOCUS_SEL_MAX)
+  selEntries = hit
   selEntry = selEntries[0]
   resetBeam()
   refreshSelection()
   faceEntries(hit)     // 单颗时与 faceEntry 逐位一致；一批则转到它们的方向矢量均值
   saveSelection()
   const miss = sats.length - hit.length
-  const tail = miss > 0 ? `（另有 ${miss} 颗未在当前星历中找到）` : (hit.length > FOCUS_SEL_MAX ? `（前 ${FOCUS_SEL_MAX} 颗画轨道与足迹）` : '')
+  const parts = []
+  if (miss > 0) parts.push(`另有 ${miss} 颗未在当前星历中找到`)
+  if (hit.length > FOCUS_GEOM_MAX) parts.push(`前 ${FOCUS_GEOM_MAX} 颗画轨道与足迹`)
+  if (hit.length > FOCUS_ICON_MAX) parts.push('星下点图标只画主选那颗')
+  const tail = parts.length ? `（${parts.join('；')}）` : ''
   status.value = `${label}：聚焦 ${hit.length} 颗${tail}`
   logMsg(`聚焦${label ? `「${label}」` : ''} ${hit.length} 颗${tail}`)
 }
@@ -2031,6 +2076,175 @@ function expMenuNew() {
   expMenu.value = null
   const g = satGroups.add(m.sats, expLabel.value ? (expLabel.value + ' 选集') : '')
   if (g) { logMsg(`已存为卫星组「${g.name}」：${g.sats.length} 颗`); satGrpEnterRename(g) }
+}
+
+// ===================== 侧栏行右键菜单（内置星座 / 卫星组 / 自定义星座三类行共用一套） =====================
+// kind: 'grp'=内置星座行（obj=GROUPS 项，idx=下标） | 'sg'=卫星组行 | 'cc'=自定义星座行。
+// 剪贴板只有一份：复制卫星只填 sats；复制自定义星座另填 cfg —— 于是能粘出一座同参数的新星座，
+// 也能把它的合成星粘进卫星组。删除走菜单内两步确认（与行内删除按钮同口径，不做一击即删）。
+const rowMenu = ref(null)       // { x, y, kind, obj, idx }；null=隐藏
+const rowMenuEl = ref(null)
+const rowMenuArm = ref(false)   // 删除已进入确认态
+const satClip = ref(null)       // { label, sats:[{noradId,name}], cfg:null|{name,params,color,colorByPlane} }
+function openRowMenu(e, kind, obj, idx) {
+  satGrpRenameId.value = ''; satGrpDelId.value = ''   // 收起未完成的行内改名/删除确认
+  expMenu.value = null; ctxMenu.value = null
+  rowMenuArm.value = false
+  rowMenu.value = { x: e.clientX, y: e.clientY, kind, obj, idx: idx == null ? -1 : idx }
+  nextTick(() => {   // 按实际渲染尺寸夹进视口：靠下边缘右键时不被裁掉一截
+    const el = rowMenuEl.value, m = rowMenu.value
+    if (!el || !m) return
+    const r = el.getBoundingClientRect(), pad = 4
+    const x = Math.max(pad, Math.min(m.x, window.innerWidth - r.width - pad))
+    const y = Math.max(pad, Math.min(m.y, window.innerHeight - r.height - pad))
+    if (x !== m.x || y !== m.y) rowMenu.value = { ...m, x, y }
+  })
+}
+function closeRowMenu() { rowMenu.value = null; rowMenuArm.value = false }
+const rowMenuName = (m) => !m ? '' : (m.kind === 'grp' ? m.obj.label : m.obj.name)
+const rowMenuTag = (m) => !m ? '' : (m.kind === 'sg' ? 's:' + m.obj.id : (m.kind === 'cc' ? 'c:' + m.obj.id : 'g:' + m.obj.key))
+// 菜单里能显示的颗数：卫星组/自定义星座当场就知道；内置星座要读名录，未读过则不显示计数
+const rowMenuCount = computed(() => {
+  const m = rowMenu.value; if (!m) return null
+  if (m.kind === 'sg') return m.obj.sats.length
+  if (m.kind === 'cc') return customConst.count(m.obj)
+  const hit = grpListCache.get(m.obj.key)
+  return hit ? hit.length : null
+})
+const rowMenuHasSats = computed(() => { const m = rowMenu.value; return !!m && !(m.kind === 'grp' && m.obj.key === 'none') })
+// 该行代表的一批卫星（内置星座按需读名录，会话内缓存；失败弹提示并返回 null）
+async function rowMenuSats(m) {
+  if (!m) return []
+  if (m.kind === 'sg') return (m.obj.sats || []).map((s) => ({ noradId: s.id, name: s.name }))
+  if (m.kind === 'cc') return customConst.satsOf(m.obj.id).map((e) => ({ noradId: e.noradId, name: e.name }))
+  return (await grpSatList(m.obj.key)).map((it) => ({ noradId: it.id, name: it.name }))
+}
+async function rowMenuTake(m) {
+  try { return await rowMenuSats(m) }
+  catch (e) { appAlert(`读取「${rowMenuName(m)}」的卫星名录失败：${(e && e.message) || e}`); return null }
+}
+// —— 菜单动作 ——
+async function rowMenuFocus() {
+  const m = rowMenu.value; if (!m) return
+  closeRowMenu()
+  const label = rowMenuName(m)
+  status.value = `${label}：读取卫星名录…`
+  const sats = await rowMenuTake(m)
+  if (!sats) { status.value = ''; return }
+  if (!sats.length) { status.value = ''; appAlert(`「${label}」还没有卫星。`); return }
+  expFocus(sats, label, rowMenuTag(m))
+}
+async function rowMenuCopySats() {
+  const m = rowMenu.value; if (!m) return
+  closeRowMenu()
+  const label = rowMenuName(m)
+  const sats = await rowMenuTake(m)
+  if (!sats) return
+  if (!sats.length) { appAlert(`「${label}」还没有卫星。`); return }
+  satClip.value = { label, sats, cfg: null }
+  logMsg(`已复制「${label}」的 ${sats.length} 颗卫星`)
+}
+function rowMenuCopyConst() {
+  const m = rowMenu.value; if (!m || m.kind !== 'cc') return
+  const c = m.obj
+  closeRowMenu()
+  satClip.value = {
+    label: c.name,
+    sats: customConst.satsOf(c.id).map((e) => ({ noradId: e.noradId, name: e.name })),
+    cfg: { name: c.name, params: { ...c.params }, color: c.color, colorByPlane: c.colorByPlane !== false }
+  }
+  logMsg(`已复制自定义星座「${c.name}」`)
+}
+function pasteAsNewGroup(clip) {
+  const g = satGroups.add(clip.sats, clip.label || '')
+  if (g) { logMsg(`已粘贴为卫星组「${g.name}」：${g.sats.length} 颗`); satGrpEnterRename(g) }
+}
+// 粘贴：卫星组行=加入本组（去重追加）；自定义星座行=粘一座同参数的新星座；内置星座行=粘成新的卫星组
+function rowMenuPaste() {
+  const m = rowMenu.value, clip = satClip.value; if (!m || !clip) return
+  closeRowMenu()
+  if (m.kind === 'sg') {
+    const n = satGroups.append(m.obj.id, clip.sats)
+    const gg = satGroups.find(m.obj.id)
+    logMsg(n ? `已粘贴 ${n} 颗到卫星组「${m.obj.name}」（去重后共 ${gg ? gg.sats.length : '?'} 颗）` : `剪贴板里的卫星都已在「${m.obj.name}」中`)
+    if (n && filterGroupId.value === m.obj.id && gg) showSatGroup(gg)
+    return
+  }
+  if (m.kind === 'cc') {
+    if (!clip.cfg) { pasteAsNewGroup(clip); return }   // 剪贴板里是一批卫星 → 只能落成卫星组
+    const cfg = customConst.add({ ...clip.cfg, name: clip.cfg.name + ' 副本' })
+    logMsg(`已粘贴自定义星座「${cfg.name}」`)
+    showConstAlone(cfg)
+    return
+  }
+  pasteAsNewGroup(clip)
+}
+async function rowMenuSaveGroup() {
+  const m = rowMenu.value; if (!m) return
+  closeRowMenu()
+  const label = rowMenuName(m)
+  const sats = await rowMenuTake(m)
+  if (!sats) return
+  if (!sats.length) { appAlert(`「${label}」还没有卫星。`); return }
+  const g = satGroups.add(sats, label)
+  if (g) { logMsg(`已存为卫星组「${g.name}」：${g.sats.length} 颗`); satGrpEnterRename(g) }
+}
+function rowMenuShow() {
+  const m = rowMenu.value; if (!m) return
+  closeRowMenu()
+  if (m.kind === 'grp') { pickGroup(m.idx); return }
+  if (m.kind === 'sg') { toggleSatGroup(m.obj); return }
+  showConstAlone(m.obj)
+}
+function rowMenuExpand() {
+  const m = rowMenu.value; if (!m) return
+  const tag = rowMenuTag(m), label = rowMenuName(m)
+  closeRowMenu()
+  expToggle(tag, label)
+}
+function rowMenuDup() {
+  const m = rowMenu.value; if (!m) return
+  closeRowMenu()
+  if (m.kind === 'sg') {
+    const c = satGroups.duplicate(m.obj.id)
+    if (c) { logMsg(`已复制卫星组「${m.obj.name}」→「${c.name}」`); satGrpEnterRename(c) }
+    return
+  }
+  if (m.kind === 'cc') {
+    const c = m.obj
+    const cfg = customConst.add({ name: c.name + ' 副本', params: { ...c.params }, color: c.color, colorByPlane: c.colorByPlane !== false })
+    logMsg(`已复制自定义星座「${c.name}」→「${cfg.name}」`)
+    showConstAlone(cfg)
+  }
+}
+function rowMenuRename() { const m = rowMenu.value; if (!m || m.kind !== 'sg') return; const g = m.obj; closeRowMenu(); satGrpEnterRename(g) }
+function rowMenuManage() { const m = rowMenu.value; if (!m || m.kind !== 'sg') return; const g = m.obj; closeRowMenu(); openSatGrpMgr(g) }
+function rowMenuEdit() { const m = rowMenu.value; if (!m || m.kind !== 'cc') return; const c = m.obj; closeRowMenu(); openConstWizard(c) }
+function rowMenuToggleVis() { const m = rowMenu.value; if (!m || m.kind !== 'cc') return; const id = m.obj.id; closeRowMenu(); customConst.toggle(id) }
+function rowMenuResetColor() { const m = rowMenu.value; if (!m || m.kind !== 'grp') return; const k = m.obj.key; closeRowMenu(); resetGroupColor(k) }
+function rowMenuAddSel() {
+  const m = rowMenu.value; if (!m || m.kind !== 'sg') return
+  const g = m.obj; closeRowMenu(); addSelToGroup(g)
+}
+// 两步删除：首次点击进入确认态（菜单不关），再点一次才真正删除
+function rowMenuDelete() {
+  const m = rowMenu.value; if (!m) return
+  if (!rowMenuArm.value) { rowMenuArm.value = true; return }
+  closeRowMenu()
+  if (m.kind === 'sg') {
+    const g = m.obj
+    if (filterGroupId.value === g.id) clearSearch()   // 正在显示的组被删 → 退出显示态
+    expDrop('s:' + g.id)
+    satGroups.remove(g.id)
+    logMsg(`已删除卫星组「${g.name}」`)
+    return
+  }
+  if (m.kind === 'cc') {
+    const c = m.obj
+    if (soloConst.value === c.id) soloConst.value = null
+    removeConst(c)
+    logMsg(`已删除自定义星座「${c.name}」`)
+  }
 }
 
 // ===================== 卫星组管理器（新建 / 改名 / 复制 / 删除 + 搜索添加 + 成员移出） =====================
@@ -2128,7 +2342,7 @@ function sgmPickAllRes() {
 function sgmAddPick() {
   const g = sgmCur.value
   if (!g) { appAlert('先在左侧新建或选中一个卫星组'); return }
-  if (!sgmPick.value.length) { appAlert('先勾选要加入的卫星（可多次换词搜索，勾选会累积）'); return }
+  if (!sgmPick.value.length) { appAlert('尚未勾选要加入的卫星。'); return }
   const n = satGroups.append(g.id, sgmPick.value)
   logMsg(n ? `已加入 ${n} 颗到卫星组「${g.name}」（去重后共 ${g.sats.length} 颗）` : `勾选的卫星都已在「${g.name}」中`)
   sgmPick.value = []
@@ -2159,7 +2373,7 @@ function sgmRemoveMem(ids) {
 }
 function sgmShow() {
   const g = sgmCur.value; if (!g) return
-  if (!g.sats.length) { appAlert('该组还没有卫星，先在上面「搜索添加」里加几颗'); return }
+  if (!g.sats.length) { appAlert('该组还没有卫星。'); return }
   closeSatGrpMgr(); showSatGroup(g)
 }
 
@@ -2542,6 +2756,7 @@ function feedFlat() {
   flat.setSizes({ beamFont: beamLabelSize.value, contourFont: contourLabelSize.value, dotSize: boreSize.value, showBore: showBore.value, nameScale: countryNameSize.value, provScale: provNameSize.value, cityScale: cityNameSize.value, ptFont: markPtFont.value, stIcon: stIconSize.value, stFont: stFontSize.value, ptDot: markPtDot.value, trajDot: trajDotSize.value })
   flat.setGeom(covGeom)
   grd.recompute()   // GRD 覆盖：把当前选中天线的面+线喂给 flat（recompute 同时喂 scene/flat）
+  if (shellUi.side === 'satcov') satcov.recompute()   // 对星视图占着 2D 那块场（见 ownsFlatField）→ 上一行被闸住，改由它来喂
   env.redraw()      // 环境场：平面图是懒创建的，切过来时把当前图层（栅格+等值线）补喂一份
   applyTerminator() // 晨昏线：同上，平面图懒创建，切过来补喂当前时刻那一份（关着则清层）
   redrawSats()      // 卫星/仰角线图层（含 Polygon）
@@ -2578,7 +2793,7 @@ async function exportMap(fmt, scope) {
   // 数据导出（GXT/KML）统一走 exportDrawn：覆盖等值线 + 协调区多边形一起导（所见即所得），与 scope 无关。
   if (fmt === 'gxt' || fmt === 'kml') { return exportDrawn(fmt) }
   const view = scope === 'view'
-  if (view && !flatView.value) { appAlert('「截图」导出需先切换到 2D 平面图（顶栏「视图」按钮），再框定要导出的范围'); return }
+  if (view && !flatView.value) { appAlert('「截图」导出需先切换到 2D 平面图。'); return }
   exporting.value = true
   try {
     await ensureCovIndex(); if (!covCleared.value) redraw()
@@ -2957,7 +3172,7 @@ async function sendToMiniapp() {
   try {
     miniConfigured.value = !!(await window.api.share.configured())
     if (!miniConfigured.value) {
-      appAlert('本机未配置在线分享凭证，无法发送到小程序。\n（该功能需要安装包内置 COS 凭证，请联系软件提供方）')
+      appAlert('本机未配置在线分享凭证，无法发送到小程序。')
       return
     }
   } catch (e) { miniConfigured.value = true /* configured 本身失败则照常往下走，由上传阶段报错 */ }
@@ -3033,7 +3248,7 @@ async function sendSatsToMiniapp() {
   try {
     miniConfigured.value = !!(await window.api.share.configured())
     if (!miniConfigured.value) {
-      appAlert('本机未配置在线分享凭证，无法发送到小程序。\n（该功能需要安装包内置 COS 凭证，请联系软件提供方）')
+      appAlert('本机未配置在线分享凭证，无法发送到小程序。')
       return
     }
   } catch (e) { miniConfigured.value = true /* configured 本身失败则照常往下走，由上传阶段报错 */ }
@@ -3185,7 +3400,7 @@ function polyContinue(pg) { mkEditStop(); polyEditStop(); polyMoveStop(); stopSy
 function polyUndo() { const pg = curPoly(); if (pg && pg.pts.length) { pg.pts.pop(); polyRefresh() } }
 function polyDone() {
   const pg = curPoly(); if (!pg) { polyDrawId.value = ''; return }
-  if (pg.pts.length < 3) { appAlert('多边形至少需要 3 个顶点：右键地图连续加点'); return }
+  if (pg.pts.length < 3) { appAlert('多边形至少需要 3 个顶点。'); return }
   polyDrawId.value = ''; polyRefresh()
 }
 function polyCancel() {
@@ -3337,7 +3552,7 @@ function offsetPolyPts(pts, d) {
 }
 function polyOffset(pg, sign) {
   const amt = Math.abs(Number(polyOffAmt.value))
-  if (!amt || !Number.isFinite(amt)) { appAlert('请先在「扩/缩幅度」中填写大于 0 的度数'); return }
+  if (!amt || !Number.isFinite(amt)) { appAlert('「扩/缩幅度」需大于 0。'); return }
   if (pg.pts.length < 3) { appAlert('该多边形还未成形（至少 3 个顶点），不能扩/缩'); return }
   const pts = offsetPolyPts(pg.pts, amt * sign)
   if (!pts) return
@@ -3620,7 +3835,7 @@ function bsPickHotspot(id) {
 // 「调整中心」开关：开启即切平面图 + 清场 + 喂拖拽手柄（与放置互斥）
 function bsAdjustToggle() {
   if (bs.adjusting.value) { bs.adjusting.value = false; syncEdit(); redrawSats(); return }
-  if (!bs.beams.value.length) { appAlert('还没有波束可调整：先放置或用蜂窝布满/批量表格添加'); return }
+  if (!bs.beams.value.length) { appAlert('还没有波束可调整。'); return }
   bsStopOtherModes(); bs.placing.value = false; bs.deleting.value = false
   bs.adjusting.value = true
   if (!view.flat) view.flat = true   // 拖动在平面图进行
@@ -3629,7 +3844,7 @@ function bsAdjustToggle() {
 // 「删除波束」开关：开启即切平面图 + 清场 + 喂手柄；点击命中的波束中心直接删除，可连续点删多个（与放置/调整互斥）
 function bsDeleteToggle() {
   if (bs.deleting.value) { bs.deleting.value = false; syncEdit(); redrawSats(); return }
-  if (!bs.beams.value.length) { appAlert('还没有波束可删除：先放置或用蜂窝布满/批量表格添加'); return }
+  if (!bs.beams.value.length) { appAlert('还没有波束可删除。'); return }
   bsStopOtherModes(); bs.placing.value = false; bs.adjusting.value = false
   bs.deleting.value = true
   if (!view.flat) view.flat = true   // 命中检测在平面图进行
@@ -4122,10 +4337,13 @@ const fmtElev = (lat, lon) => { const e = satElevAt(lat, lon); return e == null 
 // 全部聚焦卫星的实时星下点列表（多选=每颗一个，同款图标不分主次；主次区分靠轨道加粗+高亮环）
 function focusSubpoints() {
   if (!selEntries.length) return []
+  // 逐颗一个 30px 图标：几十颗尚可读，上百颗互相盖住只剩开销 → 超过 FOCUS_ICON_MAX 只画主选那一颗
+  const list = selEntries.length > FOCUS_ICON_MAX ? (selEntry ? [selEntry] : []) : selEntries
+  if (!list.length) return []
   const now = calcAt(), gmst = sat.gstime(now)
   const ccNow = ccTimeAt(now), ccGmst = sat.gstime(ccNow)   // 合成星按场景历元解算
   const out = []
-  for (const e of selEntries) {
+  for (const e of list) {
     const cc = isCustomEntry(e), t = cc ? ccNow : now, g = cc ? ccGmst : gmst
     const pv = sat.propagate(e.rec, t)
     if (!pv || !pv.position) continue
@@ -4980,6 +5198,7 @@ onBeforeUnmount(() => {
             <div
               class="grprow" :class="{ sel: i === groupIndex && !filterN, exp: expTag === 'g:' + g.key }"
               @click="pickGroup(i)"
+              @contextmenu.prevent.stop="openRowMenu($event, 'grp', g, i)"
             >
               <!-- 箭头只管展开卫星列表，不切换地图上渲染的分组（那是点行本身的事） -->
               <span v-if="g.key !== 'none'" class="pgex" :title="expTag === 'g:' + g.key ? '收起卫星列表' : '展开卫星列表'" @click.stop="expToggle('g:' + g.key, g.label)"><Icon :name="expTag === 'g:' + g.key ? 'chevron-down' : 'chevron-right'" :size="13" /></span>
@@ -5019,6 +5238,7 @@ onBeforeUnmount(() => {
               class="ccrow sgrow" :class="{ sel: filterGroupId === g.id, exp: expTag === 's:' + g.id }"
               :title="filterGroupId === g.id ? '再次点击退出显示' : ('显示该组的 ' + g.sats.length + ' 颗卫星')"
               @click="toggleSatGroup(g)"
+              @contextmenu.prevent.stop="openRowMenu($event, 'sg', g)"
             >
               <span class="pgex" :title="expTag === 's:' + g.id ? '收起成员列表' : '展开成员列表'" @click.stop="expToggle('s:' + g.id, g.name)"><Icon :name="expTag === 's:' + g.id ? 'chevron-down' : 'chevron-right'" :size="13" /></span>
               <template v-if="satGrpRenameId === g.id">
@@ -5060,7 +5280,7 @@ onBeforeUnmount(() => {
             </div>
             <div v-if="!customList.length" class="cctip">还没有自定义星座。</div>
             <template v-for="c in customList" :key="c.id">
-            <div class="ccrow" :class="{ off: c.visible === false, sel: c.id === soloConst, exp: expTag === 'c:' + c.id }" title="点击单独显示该星座" @click="showConstAlone(c)">
+            <div class="ccrow" :class="{ off: c.visible === false, sel: c.id === soloConst, exp: expTag === 'c:' + c.id }" title="点击单独显示该星座" @click="showConstAlone(c)" @contextmenu.prevent.stop="openRowMenu($event, 'cc', c)">
               <span class="pgex" :title="expTag === 'c:' + c.id ? '收起卫星列表' : '展开卫星列表'" @click.stop="expToggle('c:' + c.id, c.name)"><Icon :name="expTag === 'c:' + c.id ? 'chevron-down' : 'chevron-right'" :size="13" /></span>
               <span class="ccdot" :style="{ background: c.color }"></span>
               <span class="ccnm" :title="c.name">{{ c.name }}</span>
@@ -5084,6 +5304,43 @@ onBeforeUnmount(() => {
               <div class="lmh">加入 {{ expMenu.sats.length }} 颗</div>
               <div class="lmi new" @click="expMenuNew"><Icon name="folder-plus" :size="12" /><span>新建组</span></div>
               <div v-for="g in satGroups.list.value" :key="g.id" class="lmi" :title="g.name" @click="expMenuTo(g)"><Icon name="layers" :size="12" /><span>{{ g.name }}</span><em>{{ g.sats.length }}</em></div>
+            </div>
+          </template>
+
+          <!-- 行右键菜单：内置星座 / 卫星组 / 自定义星座三类行共用一套，按 kind 出不同条目 -->
+          <template v-if="rowMenu">
+            <div class="lmenu-bd" @mousedown="closeRowMenu" @contextmenu.prevent="closeRowMenu"></div>
+            <div ref="rowMenuEl" class="rmenu" :style="{ left: rowMenu.x + 'px', top: rowMenu.y + 'px' }">
+              <div class="rmh"><span>{{ rowMenuName(rowMenu) }}</span><em v-if="rowMenuCount != null">{{ rowMenuCount }} 颗</em></div>
+              <div class="rmi" :class="{ dis: !rowMenuHasSats }" @click="rowMenuHasSats && rowMenuFocus()"><Icon name="crosshair" :size="12" /><span>聚焦</span></div>
+              <div class="rmi" @click="rowMenuShow">
+                <Icon name="eye" :size="12" />
+                <span v-if="rowMenu.kind === 'sg'">{{ filterGroupId === rowMenu.obj.id ? '退出显示' : '显示该组' }}</span>
+                <span v-else-if="rowMenu.kind === 'cc'">单独显示</span>
+                <span v-else>显示该星座</span>
+              </div>
+              <div v-if="rowMenu.kind === 'cc'" class="rmi" @click="rowMenuToggleVis"><Icon :name="rowMenu.obj.visible === false ? 'eye-off' : 'eye'" :size="12" /><span>{{ rowMenu.obj.visible === false ? '取消隐藏' : '隐藏' }}</span></div>
+              <div v-if="rowMenuHasSats" class="rmi" @click="rowMenuExpand"><Icon :name="expTag === rowMenuTag(rowMenu) ? 'chevron-down' : 'chevron-right'" :size="12" /><span>{{ expTag === rowMenuTag(rowMenu) ? '收起卫星列表' : '展开卫星列表' }}</span></div>
+              <div class="rms"></div>
+              <div v-if="rowMenu.kind === 'cc'" class="rmi" @click="rowMenuCopyConst"><Icon name="copy" :size="12" /><span>复制星座</span></div>
+              <div class="rmi" :class="{ dis: !rowMenuHasSats }" @click="rowMenuHasSats && rowMenuCopySats()"><Icon name="copy" :size="12" /><span>复制卫星</span></div>
+              <div class="rmi" :class="{ dis: !satClip }" @click="satClip && rowMenuPaste()">
+                <Icon name="clipboard" :size="12" />
+                <span v-if="rowMenu.kind === 'sg'">粘贴（加入本组）</span>
+                <span v-else-if="rowMenu.kind === 'cc'">粘贴{{ satClip && satClip.cfg ? '星座副本' : '为新卫星组' }}</span>
+                <span v-else>粘贴为新卫星组</span>
+                <em v-if="satClip">{{ satClip.label }}</em>
+              </div>
+              <div v-if="rowMenu.kind !== 'grp'" class="rmi" @click="rowMenuDup"><Icon name="copy" :size="12" /><span>创建副本</span></div>
+              <div v-if="rowMenu.kind !== 'sg'" class="rmi" :class="{ dis: !rowMenuHasSats }" @click="rowMenuHasSats && rowMenuSaveGroup()"><Icon name="folder-plus" :size="12" /><span>存为卫星组</span></div>
+              <div v-if="rowMenu.kind === 'sg' && selList.length" class="rmi" @click="rowMenuAddSel"><Icon name="plus" :size="12" /><span>加入选中的 {{ selList.length }} 颗</span></div>
+              <!-- 内置星座行下面这段常常整段没有条目（只有配过色才出一条）→ 分隔线跟着条件出，避免菜单尾巴上挂一条空线 -->
+              <div v-if="rowMenu.kind !== 'grp' || (groupColorable(rowMenu.obj.key) && groupColors[rowMenu.obj.key])" class="rms"></div>
+              <div v-if="rowMenu.kind === 'sg'" class="rmi" @click="rowMenuRename"><Icon name="pencil" :size="12" /><span>重命名</span></div>
+              <div v-if="rowMenu.kind === 'sg'" class="rmi" @click="rowMenuManage"><Icon name="sliders-horizontal" :size="12" /><span>管理成员…</span></div>
+              <div v-if="rowMenu.kind === 'cc'" class="rmi" @click="rowMenuEdit"><Icon name="pencil" :size="12" /><span>编辑…</span></div>
+              <div v-if="rowMenu.kind === 'grp' && groupColorable(rowMenu.obj.key) && groupColors[rowMenu.obj.key]" class="rmi" @click="rowMenuResetColor"><Icon name="x" :size="12" /><span>恢复默认星点色</span></div>
+              <div v-if="rowMenu.kind !== 'grp'" class="rmi del" :class="{ arm: rowMenuArm }" @click="rowMenuDelete"><Icon name="trash" :size="12" /><span>{{ rowMenuArm ? '再次点击确认删除' : '删除' }}</span></div>
             </div>
           </template>
           </template>
@@ -5389,8 +5646,8 @@ onBeforeUnmount(() => {
         <!-- ===== 导航器：卫星 + 波束组列表 ===== -->
         <div class="sec">
           <div class="srow"><label>卫星</label>
-            <select :value="bs.satFolder.value" @change="e => bsSetSat(e.target.value)">
-              <option v-if="!grdSats.length" value="">（先在覆盖分析添加卫星）</option>
+            <select :value="bs.satFolder.value" title="卫星来自「对地覆盖分析」视图" @change="e => bsSetSat(e.target.value)">
+              <option v-if="!grdSats.length" value="">（暂无卫星）</option>
               <option v-for="st in grdSats" :key="st.folder" :value="st.folder">{{ st.satName }}</option>
             </select>
           </div>
@@ -5475,7 +5732,7 @@ onBeforeUnmount(() => {
             <label class="chk-in" title="Auto＝馈源直径 = 馈源间距（多馈源恰好相接不交叠）；取消可手动输入——馈源直径是控制口径效率的核心：越大→边缘照射越低（更聚焦）→溢出越小、效率越高"><input type="checkbox" :checked="bs.curSetting.value.feedDiaAuto !== false" @change="bs.curSetting.value.feedDiaAuto = $event.target.checked" /><span>Auto</span></label>
             <input class="ci" type="number" step="0.05" :disabled="bs.curSetting.value.feedDiaAuto !== false" v-model.number="bs.curSetting.value.feedDiaWl" /><span class="u">WL</span>
           </div>
-          <div v-if="bs.curSetting.value.feedDiaAuto === false && bs.refl.value && bs.refl.value.ok && Number(bs.curSetting.value.feedDiaWl) > bs.refl.value.feedSpacingWl + 1e-4" class="tip warn">⚠ 馈源直径 &gt; 馈源间距（{{ bsFmt(bs.refl.value.feedSpacingWl, 2) }} WL）：多馈源会交叠。单波束效率读数仍有效；多波束请加大波束间距或减小直径。</div>
+          <div v-if="bs.curSetting.value.feedDiaAuto === false && bs.refl.value && bs.refl.value.ok && Number(bs.curSetting.value.feedDiaWl) > bs.refl.value.feedSpacingWl + 1e-4" class="tip warn" title="单波束效率读数仍有效；多波束需加大波束间距或减小馈源直径">⚠ 馈源直径 &gt; 馈源间距（{{ bsFmt(bs.refl.value.feedSpacingWl, 2) }} WL）：多馈源会交叠。</div>
           <div class="srow"><label>馈源模型</label>
             <select v-model="bs.curSetting.value.feedModel">
               <option value="te11">circular TE11</option>
@@ -5525,18 +5782,19 @@ onBeforeUnmount(() => {
           <div class="srow"><label>口径效率</label><input class="ci" type="number" step="1" min="1" max="100" v-model.number="bs.p.pamEff" title="口径效率（%）：50% ≈ 相对满口径 −3dB；补偿阵列损耗等" /><span class="u">%</span></div>
           <div class="srow"><label>单元因子 R</label><input class="ci" type="number" step="0.1" min="0" v-model.number="bs.p.pamR" title="单元功率方向图 cos^R(θ) 指数（典型 1.0–1.5）：越大扫描增益滚降越快" /><span class="u">cos^R θ</span></div>
           <label class="chk2"><input type="checkbox" v-model="bs.p.pamTri" /><span>三角晶格（等边 dx=√3/2·dy；Nx 需偶）</span></label>
-          <div v-if="bs.p.pamTri && Math.round(Number(bs.p.pamNx)) % 2 !== 0" class="tip warn">⚠ 三角晶格要求 X 向单元数 Nx 为偶数（手册 §6.5.1）；当前 Nx={{ Math.round(Number(bs.p.pamNx)) }} 为奇数，已按矩形晶格计算。请把 Nx 改为偶数。</div>
+          <div v-if="bs.p.pamTri && Math.round(Number(bs.p.pamNx)) % 2 !== 0" class="tip warn" title="SATSOFT 手册 §6.5.1">⚠ 三角晶格要求 X 向单元数 Nx 为偶数；当前 Nx={{ Math.round(Number(bs.p.pamNx)) }} 为奇数，已按矩形晶格计算。</div>
           <label class="chk2"><input type="checkbox" v-model="bs.p.pamElem" /><span>应用单元因子（关闭＝仅看阵因子 / 栅瓣）</span></label>
           <div class="bs-read2">
             <span>波束宽 <b>{{ bsFmt(bs.pam.value && bs.pam.value.th3xDeg, 2) }}×{{ bsFmt(bs.pam.value && bs.pam.value.th3yDeg, 2) }}</b>°</span>
-            <span>方向性 <b>{{ bsFmt(bs.pam.value && bs.pam.value.dirDbi, 2) }}</b> dBi</span>
+            <span>方向性 <b :title="bs.pam.value && bs.pam.value.dirCorrDb < -0.05 ? '已按栅瓣分能修正 ' + bsFmt(bs.pam.value.dirCorrDb, 2) + ' dB（Hannon 公式原值 ' + bsFmt(bs.pam.value.dirDbi, 2) + ' dBi）' : ''">{{ bsFmt(bs.pam.value && (bs.pam.value.dirDbiCorr != null ? bs.pam.value.dirDbiCorr : bs.pam.value.dirDbi), 2) }}</b> dBi</span>
           </div>
           <div class="bs-read">
             <span>波束间距 <b :title="bs.pam.value && !bs.pam.value.beamSpacingXReal ? '波束间距落在 sin 空间外（Δu&gt;1），以方向余弦 u 显示（手册 §6.5.1）' : ''">{{ bs.pam.value && bs.pam.value.beamSpacingXReal ? bsFmt(bs.pam.value.beamSpacingXDeg, 2) + '°' : bsFmt(bs.pam.value && bs.pam.value.beamSpacingXU, 3) + ' u' }}</b> · 交叉 <b>{{ bsFmt(bs.pam.value && bs.pam.value.crossoverDb, 2) }}</b> dB</span>
             <span>阵尺寸 <b>{{ bsFmt(bs.pam.value && bs.pam.value.arrayDimXm, 2) }}×{{ bsFmt(bs.pam.value && bs.pam.value.arrayDimYm, 2) }}</b> m</span>
           </div>
-          <div class="bs-read"><span title="第一栅瓣距原点的波束宽数（手册 §6.5.1：distance from origin in beamwidths；合成赋形时可填入 Beamlet Grid 的 Range 字段）">第一栅瓣 <b>{{ bsFmt(bs.pam.value && bs.pam.value.gratingLobeBw, 1) }}</b> 波束宽{{ bs.pam.value && bs.pam.value.gratingInReal ? '（±' + bsFmt(bs.pam.value.gratingLobeDeg, 1) + '° 进实空间）' : '（圈外，安全）' }}</span></div>
-          <div v-if="bs.pam.value && bs.pam.value.gratingInReal" class="tip warn">⚠ 单元间距 ≥ 1λ：栅瓣进入实空间（±{{ bsFmt(bs.pam.value.gratingLobeDeg, 1) }}°），会形成重复波束。减小间距至 &lt;1λ 可消除。</div>
+          <div class="bs-read"><span title="第一栅瓣距原点的波束宽数（手册 §6.5.1：distance from origin in beamwidths；合成赋形时可填入 Beamlet Grid 的 Range 字段）。电扫超过无栅瓣可扫界 asin(1/d−1) 时栅瓣即进入实空间">第一栅瓣 <b>{{ bsFmt(bs.pam.value && bs.pam.value.gratingLobeBw, 1) }}</b> 波束宽{{ bs.pam.value && bs.pam.value.gratingInReal ? '（±' + bsFmt(bs.pam.value.gratingLobeDeg, 1) + '° 进实空间）' : '（天底圈外 · 无栅瓣可扫 ±' + bsFmt(bs.pam.value && bs.pam.value.scanMaxDeg, 1) + '°）' }}</span></div>
+          <div v-if="bs.pam.value && bs.pam.value.gratingInReal" class="tip warn" title="栅瓣会形成重复波束；单元间距减至 &lt;1λ 可消除">⚠ 单元间距 ≥ 1λ：栅瓣进入实空间（±{{ bsFmt(bs.pam.value.gratingLobeDeg, 1) }}°），方向性读数已按分能修正。</div>
+          <div v-else-if="bs.pamScanStat.value && bs.pamScanStat.value.over" class="tip warn">⚠ {{ bs.pamScanStat.value.over }} 个波束超无栅瓣可扫界 ±{{ bsFmt(bs.pamScanStat.value.scanMaxDeg, 1) }}°（最大离轴 {{ bsFmt(bs.pamScanStat.value.maxOffDeg, 1) }}°）——栅瓣进实空间，生成时峰值按分能修正。</div>
           <div class="bs-refl" v-html="bsPamSvg"></div>
           <div class="bs-reflbar">
             <span class="pgb" @click="bsPamView = bsPamView === 1 ? 2 : 1">◀</span>
@@ -5559,7 +5817,7 @@ onBeforeUnmount(() => {
               <span class="opb" title="清空本组所有已放置波束（可撤销：批量表格 Ctrl+Z）" @click="bs.clearBeams">清空</span>
               <span class="opb danger" :class="{ on: bs.deleting.value }" title="开启后点击地图上的波束中心即可删除该波束，支持连续删除（误删可用上方「撤销」）；再次点击关闭" @click="bsDeleteToggle">{{ bs.deleting.value ? '删除中…点击波束' : '删除波束' }}</span>
             </div>
-            <label class="chk2"><input type="checkbox" v-model="bs.p.snapTangent" /><span>相切吸附（点击或拖动至边界附近自动相切，与 SATSOFT 一致）</span></label>
+            <label class="chk2" title="点击或拖动至边界附近自动相切"><input type="checkbox" v-model="bs.p.snapTangent" /><span>相切吸附</span></label>
             <div class="bs-hex">
               <label>蜂窝布满</label>
               <select :value="bs.p.polyId" @change="e => bs.p.polyId = e.target.value">
@@ -5847,7 +6105,7 @@ onBeforeUnmount(() => {
               </select>
             </div>
             <div v-if="vis.mode.value !== 'coverage' && !stations.length && !points.length && !polys.length" class="tip">暂无可选目标。</div>
-            <div class="srow"><label>仰角门限</label><input class="ci vis-elev" type="number" step="1" min="0" max="89" :value="vis.minElev.value" @input="e => visSetElev(e.target.value)" /><span class="u">°</span><span class="tip inl">≥ 此仰角判为可见 / 被覆盖</span></div>
+            <div class="srow" title="仰角 ≥ 该值判为可见 / 被覆盖"><label>仰角门限</label><input class="ci vis-elev" type="number" step="1" min="0" max="89" :value="vis.minElev.value" @input="e => visSetElev(e.target.value)" /><span class="u">°</span></div>
           </div>
 
           <!-- 可见卫星 / 覆盖：瞬时可见（now）/ 时段过境（access）/ 覆盖（coverage）三模式（复刻 STK Access / Coverage）-->
@@ -5861,7 +6119,7 @@ onBeforeUnmount(() => {
 
             <!-- 瞬时可见（now）：KPI + 极坐标 sky 图 + 结果表 -->
             <template v-if="vis.mode.value === 'now'">
-              <div v-if="!vis.hasTarget.value" class="tip">请先选择分析目标。</div>
+              <div v-if="!vis.hasTarget.value" class="tip">尚未选择分析目标。</div>
               <template v-else>
                 <div class="vis-sum">
                   <span>可见 <b>{{ vis.kpi.value.count }}</b> <s>/ {{ vis.satCount.value.toLocaleString() }}</s></span>
@@ -5908,7 +6166,7 @@ onBeforeUnmount(() => {
 
             <!-- 时段过境（access）：时窗 + 计算 + 甘特 + 过境列表 -->
             <template v-else-if="vis.mode.value === 'access'">
-              <div v-if="!vis.hasTarget.value" class="tip">请先选择分析目标。</div>
+              <div v-if="!vis.hasTarget.value" class="tip">尚未选择分析目标。</div>
               <template v-else>
                 <div class="srow"><label>时窗</label><input class="ci vis-elev" type="number" step="1" min="0.5" max="168" :value="vis.horizonH.value" @input="e => vis.horizonH.value = e.target.value" /><span class="u nw">小时</span><span class="opb sm" :class="{ dis: vis.accessBusy.value }" title="扫描卫星集在此时窗内对目标的全部过境（卫星越多越慢；上限 400 颗）" @click="vis.computeAccess()">计算过境</span></div>
                 <div v-if="vis.accessResults.value.length && !vis.accessBusy.value" class="srow acc-exp"><span class="opb sm" title="导出全部过境窗口为 CSV（Excel 可直接打开）" @click="exportAccessExcel()">导出 Excel</span><span class="tip inl">{{ vis.accessResults.value.reduce((n, s) => n + s.windows.length, 0) }} 次过境 → CSV</span></div>
@@ -5993,7 +6251,6 @@ onBeforeUnmount(() => {
                   <span>{{ vis.covKpi.value.label }} 极值 <b>{{ covFmt(vis.covKpi.value.min, vis.covLegend.value) }}</b> ~ <b>{{ covFmt(vis.covKpi.value.max, vis.covLegend.value) }}</b> {{ vis.covLegend.value ? vis.covLegend.value.unit : '' }}</span>
                   <span class="vis-sumcls"><s>网格 {{ vis.covKpi.value.cells.toLocaleString() }} 点</s></span>
                 </div>
-                <div class="tip">色阶＝{{ vis.covLegend.value ? vis.covLegend.value.label : '' }}　·　时窗 {{ vis.covHorizonH.value }} 小时</div>
               </template>
             </template>
           </div>
@@ -6144,7 +6401,7 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="sec">
-          <div class="sect acc" :class="{ open: isSecOpen('geo-prov', false) }" @click="toggleSec('geo-prov', false)"><Icon :name="isSecOpen('geo-prov', false) ? 'chevron-down' : 'chevron-right'" :size="12" /><span>中国省（中国省界）</span></div>
+          <div class="sect acc" :class="{ open: isSecOpen('geo-prov', false) }" @click="toggleSec('geo-prov', false)"><Icon :name="isSecOpen('geo-prov', false) ? 'chevron-down' : 'chevron-right'" :size="12" /><span>中国省（省界）</span></div>
           <template v-if="isSecOpen('geo-prov', false)">
           <label class="chk2"><input type="checkbox" :checked="showProvinces" @change="toggleProvinces" /><span>显示中国省界 / 省名</span></label>
           <div class="srow"><label>名字号</label><input class="rng" type="range" min="0.3" max="2" step="0.05" :value="provNameSize" @input="setProvNameSize" /><span class="u">{{ provNameSize.toFixed(2) }}</span></div>
@@ -6157,7 +6414,7 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="sec">
-          <div class="sect acc" :class="{ open: isSecOpen('geo-city', false) }" @click="toggleSec('geo-city', false)"><Icon :name="isSecOpen('geo-city', false) ? 'chevron-down' : 'chevron-right'" :size="12" /><span>中国地级市（中国地级市界）</span></div>
+          <div class="sect acc" :class="{ open: isSecOpen('geo-city', false) }" @click="toggleSec('geo-city', false)"><Icon :name="isSecOpen('geo-city', false) ? 'chevron-down' : 'chevron-right'" :size="12" /><span>中国地级市（地级市界）</span></div>
           <template v-if="isSecOpen('geo-city', false)">
           <label class="chk2"><input type="checkbox" :checked="showCities" @change="toggleCities" /><span>显示中国地级市界 / 地级市名</span></label>
           <div class="srow"><label>名字号</label><input class="rng" type="range" min="0.05" max="1.5" step="0.05" :value="cityNameSize" @input="setCityNameSize" /><span class="u">{{ cityNameSize.toFixed(2) }}</span></div>
@@ -6423,7 +6680,7 @@ onBeforeUnmount(() => {
                 <span class="gbtn" title="在地图上显示该组的卫星" @click="sgmShow"><Icon name="eye" :size="11" /> 显示</span>
               </div>
 
-              <div class="sgm-sec">搜索添加 <em>更换关键词可继续检索，勾选结果累计保留</em></div>
+              <div class="sgm-sec" title="更换关键词可继续检索，勾选结果累计保留">搜索添加</div>
               <div class="sgm-srch">
                 <input class="ci" v-model="sgmKw" placeholder="卫星名 / NORAD 编号 / 星座名，如 starlink、48274" @input="sgmOnSearch" />
                 <span v-if="sgmRes.length" class="gbtn" title="将当前结果中未入组的全部勾选" @click="sgmPickAllRes">全选结果</span>
@@ -6771,7 +7028,7 @@ onBeforeUnmount(() => {
                 <td class="td-act"><span class="del" title="删除该行" @click="mkDelRow(r.id)"><Icon name="x" :size="11" /></span></td>
               </tr>
               <tr v-if="!p.rows.length">
-                <td class="pin-empty" :colspan="p.cols.length + 1">{{ p.tab === 'traj' && !mkCurTraj() ? '请在上方选择或新建一条航迹' : '暂无数据 —— 点「增加」逐行键入，或复制 Excel 区域后点「粘贴」批量导入' }}</td>
+                <td class="pin-empty" :colspan="p.cols.length + 1">{{ p.tab === 'traj' && !mkCurTraj() ? '尚未选择航迹。' : '暂无数据。' }}</td>
               </tr>
             </tbody>
           </table>
@@ -7148,6 +7405,20 @@ onBeforeUnmount(() => {
 .lmi > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lmi > em { flex: none; font-style: normal; font-size: 10.5px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
 .lmi.new { color: var(--accent); border-bottom: 1px solid var(--border); }
+/* 行右键菜单（内置星座 / 卫星组 / 自定义星座三类行共用）：与 .lmenu 同一层级与视觉，条目带图标 */
+.rmenu { position: fixed; z-index: 2200; min-width: 186px; max-width: 300px; max-height: calc(100vh - 8px); overflow-y: auto; background: var(--surface); border: 1px solid var(--border-strong); box-shadow: 0 6px 20px rgba(0,0,0,.28); padding: 3px 0; }
+.rmh { display: flex; align-items: baseline; gap: 8px; padding: 4px 10px 5px; font-size: 10.5px; color: var(--text-faint); border-bottom: 1px solid var(--border); }
+.rmh > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); }
+.rmh > em { flex: none; font-style: normal; font-variant-numeric: tabular-nums; }
+.rmi { display: flex; align-items: center; gap: 7px; padding: 5px 10px; font-size: 12px; color: var(--text-muted); cursor: pointer; }
+.rmi > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rmi > em { flex: none; max-width: 96px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-style: normal; font-size: 10.5px; color: var(--text-faint); }
+.rmi:hover { background: var(--surface-2); color: var(--text); }
+.rmi.dis, .rmi.dis:hover { color: var(--text-faint); opacity: .45; cursor: default; background: none; }
+.rmi.del { color: var(--danger); }
+.rmi.del:hover { background: color-mix(in srgb, var(--danger) 14%, transparent); }
+.rmi.del.arm { background: color-mix(in srgb, var(--danger) 18%, transparent); font-weight: 600; }
+.rms { height: 1px; background: var(--border); margin: 3px 6px; }
 /* 自定义星座（仿 STK Walker 生成器）：侧栏区 + 列表 */
 .ccsec { border-top: 1px solid var(--border); margin-top: 4px; padding-top: 4px; }
 .cchd { display: flex; align-items: center; justify-content: space-between; padding: 4px 12px; font-size: 11.5px; color: var(--text-muted); }
@@ -7357,7 +7628,8 @@ onBeforeUnmount(() => {
 .bs-ops { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; margin-bottom: 5px; }
 .bs-hex { display: flex; align-items: center; gap: 5px; margin: 5px 0; }
 .bs-hex label { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
-.bs-hex select { flex: 1; min-width: 0; }
+.bs-hex select { flex: 1; min-width: 0; border: 1px solid var(--border); background: var(--bg); color: var(--text); padding: 2px 6px; font-size: 11.5px; border-radius: 4px; outline: none; cursor: pointer; }
+.bs-hex select:hover { border-color: var(--accent); }
 .opb.sm { padding: 3px 10px; flex: none; }
 .chk-in { display: inline-flex; align-items: center; gap: 3px; font-size: 10.5px; color: var(--text-muted); white-space: nowrap; }
 .chk-in input { margin: 0; }

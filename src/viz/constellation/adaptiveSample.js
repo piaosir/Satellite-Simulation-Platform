@@ -19,7 +19,10 @@ const MAX_DEPTH = 7;      // 单段最多二分 7 层(×128)：TANGO 近地点 2
 //   t 采样时刻(Date)、pv=sat.propagate 结果（含 ECI position，供调用方按需转轨道圈坐标）、
 //   gd=逐时刻 gmst 的大地坐标（弧度制，星下点）、lat/lon 为 gd 的度数形式。
 // 推演失败的时刻直接跳过（与原实现一致）。
-export function sampleOrbitAdaptive(rec, t0, periodMin, N = 120) {
+// stepDeg：细分阈值，【必须随 N 一起放宽】—— 多选降采样时若仍按 4° 判，二分会把点数原样补回来，
+// 降采样等于白做。近圆轨道均匀采样的相邻跳变 ≈ 384/N 度，故调用方按 N 给相称的阈值（见 focusLod）。
+export function sampleOrbitAdaptive(rec, t0, periodMin, N = 120, stepDeg) {
+  const MAX_STEP = stepDeg > 0 ? stepDeg : MAX_STEP_DEG;
   const evalAt = (t) => {
     const pv = sat.propagate(rec, t);
     if (!pv || !pv.position) return null;
@@ -33,7 +36,7 @@ export function sampleOrbitAdaptive(rec, t0, periodMin, N = 120) {
   };
   const out = [];
   const refine = (a, b, depth) => {                     // 追加 (a,b] 之间的加密点与 b 本身
-    if (depth < MAX_DEPTH && jumpDeg(a, b) > MAX_STEP_DEG) {
+    if (depth < MAX_DEPTH && jumpDeg(a, b) > MAX_STEP) {
       const m = evalAt(new Date((a.t.getTime() + b.t.getTime()) / 2));
       if (m) { refine(a, m, depth + 1); refine(m, b, depth + 1); return }
     }

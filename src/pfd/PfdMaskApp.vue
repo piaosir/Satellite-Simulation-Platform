@@ -342,7 +342,7 @@ function readLocal() {
 
 async function loadGroupList() {
   ommErr.value = ''
-  if (!window.api?.interference?.groups) { ommErr.value = '本窗口未连接主进程，编目星座与自定义星历不可用'; return }
+  if (!window.api?.interference?.groups) { ommErr.value = '编目星座与自定义星历需在桌面客户端中运行'; return }
   try {
     const r = await window.api.interference.groups()
     if (r && r.ok) ommGroups.value = r.groups || []
@@ -471,14 +471,14 @@ async function importConstellation() {
 
     // ③④⑤ 其余三类都要按星历统计壳层，走主进程
     if (!window.api?.interference?.loadGroup) {
-      msg.value = '该来源需要在桌面客户端中读取星历（本窗口未连接主进程）'; msgBad.value = true; return
+      msg.value = '该来源的星历需在桌面客户端中读取'; msgBad.value = true; return
     }
     let satIds = null
     if (key.startsWith('sg:')) {
       const it = localSrc.value.sg.find((x) => `sg:${x.id}` === key)
       if (!it) { msg.value = '该卫星组已不存在，请点「刷新来源」'; msgBad.value = true; return }
       satIds = (it.sats || []).map((s) => s && s.id).filter((x) => x != null).map(String)
-      if (!satIds.length) { msg.value = `「${it.name}」为空组，请先在主窗口向该组添加卫星`; msgBad.value = true; return }
+      if (!satIds.length) { msg.value = `「${it.name}」为空组`; msgBad.value = true; return }
     }
     const r = await window.api.interference.loadGroup(key, false, satIds, null)
     if (!r || !r.ok) { msg.value = (r && r.error) || '读取星历失败'; msgBad.value = true; return }
@@ -582,7 +582,7 @@ const resultBw = computed(() => (curResult.value ? bwLabel(curResult.value.refBw
               <select class="w280" v-model="down.patternKind">
                 <option v-for="o in SAT_PATTERNS" :key="o.v" :value="o.v">{{ o.label }}</option>
               </select>
-              <em v-if="!curPat.steerable">固定指向，波束不可转</em></div>
+              <em v-if="!curPat.steerable">固定指向</em></div>
 
             <!-- 增益：抛物面由口径派生，其余为输入 -->
             <div class="pw-r" v-if="patNeeds('peakGainDbi')">
@@ -591,7 +591,7 @@ const resultBw = computed(() => (curResult.value ? bwLabel(curResult.value.refBw
             <div class="pw-r" v-if="patNeeds('diameterM')"><label>天线口径</label>
               <input class="pi w90" type="number" step="any" v-model.number="down.dishSizeM" /><span class="pu">m</span>
               <label>效率</label><input class="pi w70" type="number" step="any" v-model.number="down.efficiency" />
-              <em v-if="derivedPeakGain !== null">主轴增益 {{ derivedPeakGain.toFixed(2) }} dBi（由口径与效率算出）</em></div>
+              <em v-if="derivedPeakGain !== null">主轴增益 {{ derivedPeakGain.toFixed(2) }} dBi</em></div>
             <div class="pw-r" v-if="patNeeds('nullFloorDb')"><label>零点下界</label>
               <input class="pi w90" type="number" step="any" v-model.number="down.nullFloorDb" /><span class="pu">dB</span></div>
 
@@ -620,11 +620,11 @@ const resultBw = computed(() => (curResult.value ? bwLabel(curResult.value.refBw
           </div>
 
           <div class="pw-grp"><h3>多波束</h3>
-            <div class="pw-r"><label>同频同时工作波束数</label><input class="pi w90" type="number" min="1" step="1" v-model.number="down.nco" /><em>S.1503 记作 N<sub>co</sub></em></div>
+            <div class="pw-r"><label title="ITU-R S.1503 记作 Nco">同频同时工作波束数</label><input class="pi w90" type="number" min="1" step="1" v-model.number="down.nco" /></div>
             <div class="pw-r"><label>波束间最小间隔角</label><input class="pi w90" type="number" step="any" v-model.number="down.beamMinSepDeg" /><span class="pu">°</span></div>
             <div class="pw-r"><label>波束排布假设</label>
               <select class="w260" v-model="down.beamLayout"><option v-for="o in BEAM_LAYOUTS" :key="o.v" :value="o.v">{{ o.label }}</option></select></div>
-            <p v-if="down.beamLayout === 'single'" class="pw-note bad">「仅主波束」会低估多波束叠加，产出的掩模可能不安全，仅供对照。</p>
+            <p v-if="down.beamLayout === 'single'" class="pw-note bad">「仅主波束」会低估多波束叠加，掩模仅供对照。</p>
           </div>
 
           <div class="pw-grp"><h3>上行功率控制</h3>
@@ -660,9 +660,7 @@ const resultBw = computed(() => (curResult.value ? bwLabel(curResult.value.refBw
             <div class="pw-r"><label>卫星高度</label><span class="pv">{{ g.altKm }} km</span><label>轨道倾角</label><span class="pv">{{ g.inclDeg }}°</span></div>
             <div class="pw-r"><label>单波束最大 EIRP 谱密度</label><span class="pv">{{ down.eirpDbwPerRefBw }} dBW/{{ downBw }}</span>
               <em v-if="ssBwOffsetDb">折合 {{ (Number(down.eirpDbwPerRefBw) + ssBwOffsetDb).toFixed(2) }} dBW/40 kHz</em></div>
-            <p class="pw-note bad" v-if="ssBwOffsetDb">下行页的参考带宽是 {{ downBw }}，而本掩模落盘后一律按 40 kHz 解释：
-              当前按原值落盘，掩模会偏{{ ssBwOffsetDb > 0 ? '低' : '高' }} {{ Math.abs(ssBwOffsetDb).toFixed(2) }} dB。
-              请把下行参考带宽改为 40 kHz，或按上面的折合值重填。</p>
+            <p class="pw-note bad" v-if="ssBwOffsetDb" title="改用 40 kHz 参考带宽，或按折合值重填单波束 EIRP 谱密度">下行页参考带宽为 {{ downBw }}，本掩模按 40 kHz 落盘：偏{{ ssBwOffsetDb > 0 ? '低' : '高' }} {{ Math.abs(ssBwOffsetDb).toFixed(2) }} dB。</p>
             <div class="pw-r"><label>同频同时工作波束数</label><span class="pv">{{ down.nco }}</span>
               <label>天线方向图</label><span class="pv">{{ curPat.label }}</span></div>
           </div>
@@ -728,7 +726,7 @@ const resultBw = computed(() => (curResult.value ? bwLabel(curResult.value.refBw
         <div v-else-if="tab === 'op'" class="pw-empty">无计算结果。</div>
         <template v-else>
           <dl class="pw-kv">
-            <dt>纬度切片</dt><dd>{{ curResult.latCount }} 张<s>ITU 掩模查看器会显示为「{{ curResult.latCount }} masks」，那是切片数不是掩模份数</s></dd>
+            <dt title="ITU 掩模查看器显示为「masks」，即切片数，非掩模份数">纬度切片</dt><dd>{{ curResult.latCount }} 张</dd>
             <dt>星下点纬度范围</dt><dd>±{{ curResult.latMaxDeg.toFixed(1) }}°</dd>
             <dt>星下视场半张角</dt><dd>{{ curResult.rho0Deg.toFixed(2) }}°</dd>
             <template v-if="tab === 'down' && curResult.stat">

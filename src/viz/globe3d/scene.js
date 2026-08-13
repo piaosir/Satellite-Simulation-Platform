@@ -692,20 +692,29 @@ export function createGlobeScene(container, quality = {}) {
     }
     disposeGroup(selDotGroup); selDotGroup = null   // 精灵点用 disposeGroup（连同 canvas 贴图一起释放）
   }
+  // 合批：同样式的线并进一条 LineSegments2，线对象数与聚焦颗数无关（3 条 + primary 轨道 1 条），
+  // 多选几百颗时重建与绘制都不再随颗数线性膨胀。Line2 内部本就把折线拆成相邻点对喂同一材质，
+  // 故合批后画面与逐条画完全一致（颜色/线宽/透明度照旧，primary 仍单独一条以加粗加亮）。
+  function pushStripSegs(out, pts) {
+    for (let i = 0; i + 1 < pts.length; i++) { const a = pts[i], b = pts[i + 1]; out.push(a.x, a.y, a.z, b.x, b.y, b.z) }
+  }
   function setSelectionSet(items) {
     disposeSelSet()
     if (!items || !items.length) return
     selSetGroup = new THREE.Group()
     const dotG = new THREE.Group()
+    const orbSeg = [], trkSeg = [], fpSeg = []
     for (const it of items) {
       // 轨道圈/星下点轨迹(金)/覆盖足迹(青) 都用与单选时相同的固定原色，多颗同时叠画；primary 仅加粗加亮以区分聚焦星（不用变色）
       // 轨道线宽收细（primary 1.3 / 其余 1.0）：与选中星「在轨点」大号圆点配合，点更醒目、线不再吃掉点
-      if (it.orbit && it.orbit.length) selSetGroup.add(lineFromLLA(it.orbit, 0x6f9fc8, it.primary ? 0.9 : 0.5, it.primary ? 1.3 : 1.0))
-      if (it.track && it.track.length) selSetGroup.add(lineFromLLA(it.track.map((p) => ({ lat: p.lat, lon: p.lon, altKm: LIFT })), 0xe8c074, 1, 1.6))
+      if (it.orbit && it.orbit.length) {
+        if (it.primary) selSetGroup.add(lineFromLLA(it.orbit, 0x6f9fc8, 0.9, 1.3))
+        else pushStripSegs(orbSeg, it.orbit.map((p) => llaToVec(p.lat, p.lon, p.altKm || 0)))
+      }
+      if (it.track && it.track.length) pushStripSegs(trkSeg, it.track.map((p) => llaToVec(p.lat, p.lon, LIFT)))
       if (it.footprint && it.footprint.length > 1) {
-        const pts = it.footprint.map((p) => llaToVec(p.lat, p.lon, LIFT)); const flat = []
-        for (let i = 0; i + 1 < pts.length; i += 2) { const a = pts[i], b = pts[i + 1]; flat.push(a.x, a.y, a.z, b.x, b.y, b.z) }
-        selSetGroup.add(fatSegments(flat, 0xb8e6fa, 1.6, 1, 6))
+        const pts = it.footprint.map((p) => llaToVec(p.lat, p.lon, LIFT))
+        for (let i = 0; i + 1 < pts.length; i += 2) { const a = pts[i], b = pts[i + 1]; fpSeg.push(a.x, a.y, a.z, b.x, b.y, b.z) }
       }
       // 选中星「在轨点」：在卫星真实在轨位置画大号圆点，跟随星点原色。renderOrder 7 > 轨道线 6 → 同深度时点画在线之上，不被细轨道盖住；
       // makeDot 自带 depthTest 开 → 背面星点仍由不透明地球深度天然剔除（绝不能关 depthTest）。随缩放联动见 rescaleMarkers。
@@ -716,6 +725,9 @@ export function createGlobeScene(container, quality = {}) {
         dotG.add(dot)
       }
     }
+    if (orbSeg.length) selSetGroup.add(fatSegments(orbSeg, 0x6f9fc8, 1.0, 0.5, 6))
+    if (trkSeg.length) selSetGroup.add(fatSegments(trkSeg, 0xe8c074, 1.6, 1, 6))
+    if (fpSeg.length) selSetGroup.add(fatSegments(fpSeg, 0xb8e6fa, 1.6, 1, 6))
     scene.add(selSetGroup)
     if (dotG.children.length) { selDotGroup = dotG; scene.add(selDotGroup) }
   }
@@ -1566,17 +1578,27 @@ export function createGlobeScene(container, quality = {}) {
     img.src = 'data:image/svg+xml;base64,' + btoa(FOCUS_SAT_SVG)
     return focusSatTex
   }
+  // 圆点精灵：同色共用一份贴图 + 一份材质。多选聚焦几百颗时，每次刷新都为每颗现画一张 32px canvas
+  // 并上传纹理是纯固定开销；缓存后同色只做一次。共享件打 _shared 标记，disposeGroup 见到就跳过。
+  // （调用处只改 position/scale/renderOrder，从不改材质属性，故材质可安全共享。）
+  const dotCache = new Map()
   function makeDot(hex) {
-    const s = 32, c = document.createElement('canvas'); c.width = c.height = s
-    const x = c.getContext('2d')
-    x.beginPath(); x.arc(16, 16, 9, 0, Math.PI * 2); x.fillStyle = hex; x.fill()
-    x.lineWidth = 3; x.strokeStyle = 'rgba(255,255,255,0.92)'; x.stroke()
-    const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace
-    return new THREE.Sprite(new THREE.SpriteMaterial({ map: t, depthTest: true, depthWrite: false, transparent: true }))
+    let hit = dotCache.get(hex)
+    if (!hit) {
+      const s = 32, c = document.createElement('canvas'); c.width = c.height = s
+      const x = c.getContext('2d')
+      x.beginPath(); x.arc(16, 16, 9, 0, Math.PI * 2); x.fillStyle = hex; x.fill()
+      x.lineWidth = 3; x.strokeStyle = 'rgba(255,255,255,0.92)'; x.stroke()
+      const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t._shared = true
+      const m = new THREE.SpriteMaterial({ map: t, depthTest: true, depthWrite: false, transparent: true }); m._shared = true
+      hit = { mat: m }
+      dotCache.set(hex, hit)
+    }
+    return new THREE.Sprite(hit.mat)
   }
 
   let markersGroup = null, trajGroup = null, focusSatGroup = null
-  function disposeGroup(grp) { if (grp) { grp.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) { lineMats.delete(o.material); if (o.material.map && o.material.map !== stationTex && o.material.map !== focusSatTex) o.material.map.dispose(); o.material.dispose() } }); scene.remove(grp) } }
+  function disposeGroup(grp) { if (grp) { grp.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material && !o.material._shared) { lineMats.delete(o.material); if (o.material.map && !o.material.map._shared && o.material.map !== stationTex && o.material.map !== focusSatTex) o.material.map.dispose(); o.material.dispose() } }); scene.remove(grp) } }
   // 聚焦卫星当前星下点图标（与 2D 同款，固定 30px 基准——与 2D sizes.satIcon 默认值一致，随 3D 缩放联动）；
   // depthTest 关 + _dir 半球剔除，复用地球站图标同一套策略，转到背面自动隐藏，不会被地球遮挡。
   const FOCUS_SAT_PX = 30

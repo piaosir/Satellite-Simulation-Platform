@@ -91,8 +91,7 @@ function ago(ts) {
   <div class="mb" :class="{ compact }">
     <div v-if="!compact" class="mb-self">
       <span class="mb-lb">本机名称</span>
-      <input v-model="selfLabel" maxlength="40" placeholder="如「朴东旭的笔记本」" @blur="saveSelf" @keyup.enter="saveSelf" />
-      <span class="mb-hint">该名称作为投递来源显示在接收端</span>
+      <input v-model="selfLabel" maxlength="40" title="作为投递来源显示在接收端" placeholder="如「朴东旭的笔记本」" @blur="saveSelf" @keyup.enter="saveSelf" />
     </div>
 
     <div class="mb-list">
@@ -128,7 +127,6 @@ function ago(ts) {
 .mb-lb { font-size: 12.5px; color: var(--text); flex: none; }
 .mb-self input { flex: 1; min-width: 160px; font: inherit; font-size: 12px; padding: 5px 8px; outline: none;
   color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
-.mb-hint { flex: 100%; font-size: 11px; color: var(--text-faint); }
 .mb-list { border: 1px solid var(--border); border-radius: var(--r-box, 3px); background: var(--bg); max-height: 190px; overflow-y: auto; }
 .mb-row { display: flex; align-items: center; gap: 7px; padding: 3px 6px 3px 8px;
   border-bottom: 1px solid color-mix(in srgb, var(--border) 45%, transparent); }

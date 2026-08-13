@@ -5,7 +5,7 @@
 <template>
   <div class="ph">
     <h2>星间链路 ISL</h2>
-    <p>星间链路可视化功能正在开发中，敬请期待。</p>
+    <p>星间链路可视化正在开发中。</p>
   </div>
 </template>
 

@@ -10,8 +10,8 @@
 // 生成：generateGroup 经 synth.js 产标准 GRD → grd.importSynthGrd 入树（同名替换＝更新），此后与导入
 //   GRD 天线完全同构（拖拽指向/性能表/导出链全通）。草图独立持久化 localStorage（v2 嵌套，含旧档迁移）。
 import { ref, reactive, computed, watch } from 'vue'
-import { theta3dbFromAperture, shapedTheta3db, shapedApertureEff, feedGeom, crossoverDb, polysUnionPeak, buildGaussGrd, buildShapedGrd, beamSketchRing, hexFillCenters, snapTangentAzEl, colorFreqPlan, reuseDist, solveReflector, solvePam, buildPamGrd, buildPamShapedGrd } from './synth.js'
-import { dirToAzEl, azElGround } from './coverage.js'
+import { theta3dbFromAperture, shapedTheta3db, shapedApertureEff, feedGeom, crossoverDb, polysUnionPeak, buildGaussGrd, buildShapedGrd, beamSketchRing, hexFillCenters, snapTangentAzEl, colorFreqPlan, reuseDist, solveReflector, solvePam, buildPamGrd, buildPamShapedGrd, pamLobeSplit } from './synth.js'
+import { dirToAzEl, azElGround, gridDir } from './coverage.js'
 // 频率配色板与频率计划模块共用一份（见该文件头）：一个色号在两个模块里必须是同一个色
 import { FC_PALETTE, fcHex, fcCss } from '../../shared/freqReuseColors.js'
 
@@ -145,9 +145,27 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
   const crossX = computed(() => { const s = curSetting.value; return s ? crossoverDb(Number(s.spacing), Number(s.thX)) : NaN })
   const crossY = computed(() => { const s = curSetting.value; return s ? crossoverDb(Number(s.spacing), Number(s.thY)) : NaN })
   // ---- 相控阵（PAM，SATSOFT §6.5）：阵面参数（组级 p）→ solvePam 读数（波束宽/间距/交叉/栅瓣/方向性/可扫范围）----
-  const pamOf = (gp) => solvePam({ fGHz: Number(gp.pamFGHz), Nx: Number(gp.pamNx), Ny: Number(gp.pamNy), dxWl: Number(gp.pamDx), dyWl: Number(gp.pamDy), R: Number(gp.pamR), eff: Number(gp.pamEff), tri: gp.pamTri === true })
+  const pamOf = (gp) => solvePam({ fGHz: Number(gp.pamFGHz), Nx: Number(gp.pamNx), Ny: Number(gp.pamNy), dxWl: Number(gp.pamDx), dyWl: Number(gp.pamDy), R: Number(gp.pamR), eff: Number(gp.pamEff), tri: gp.pamTri === true, elem: gp.pamElem !== false })
   const pam = computed(() => (mode.value === 'pam' ? pamOf(p) : { ok: false }))
   const pamTheta = computed(() => { const v = pam.value; return v && v.ok ? { x: v.th3xDeg, y: v.th3yDeg } : { x: NaN, y: NaN } })
+  // 逐波束电扫核对（面板告警）：已放置波束的最大离轴角 vs 无栅瓣可扫界（0.5<d<1 电扫超界时栅瓣即进实空间）
+  const pamScanStat = computed(() => {
+    if (mode.value !== 'pam' || p.pamCover === 'shaped') return null
+    const v = pam.value
+    if (!v || !v.ok || !(v.scanMaxDeg < 89.99)) return null
+    const pos = satPos()
+    if (!pos) return null
+    let over = 0, maxOff = 0
+    for (const b of beams.value) {
+      if (!Number.isFinite(b.lon) || !Number.isFinite(b.lat)) continue
+      const ae = dirToAzEl(pos.lon, pos.lat || 0, pos.altKm, b.lon, b.lat)
+      const d0 = gridDir(6, ae.az, ae.el)
+      const off = Math.acos(Math.max(-1, Math.min(1, d0[2]))) * 180 / Math.PI
+      if (off > maxOff) maxOff = off
+      if (off > v.scanMaxDeg + 0.01) over++
+    }
+    return { over, maxOffDeg: maxOff, scanMaxDeg: v.scanMaxDeg }
+  })
   // 峰值点宽度下限 = 当前模式的成分波束宽 θ3（反射面赋形 / 相控阵赋形各取自身）
   const hotTheta3 = computed(() => { if (mode.value === 'pam') { const t = pamTheta.value; return Math.max(Number(t.x) || 0, Number(t.y) || 0) } return Number(shapedTheta3.value) })
   // 赋形：仿真频率 → 成分波束宽 θ3=k(|锥度|)·λ/D
@@ -855,8 +873,19 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
         key = await grd.importSynthGrd(node.folder, name, text, { ctype: 'rel', levels: [-3] })
         if (key) {
           g._genName = name
-          const gl = sol.gratingInReal ? ` · ⚠ 栅瓣 @±${sol.gratingLobeDeg.toFixed(1)}°` : ''
-          status.value = `已生成相控阵天线「${name}」：${valid.length} 个波束 · 阵 ${pamCfg.Nx}×${pamCfg.Ny} 单元（${pamCfg.dxWl}×${pamCfg.dyWl} λ）· 波束宽 ${sol.th3xDeg.toFixed(2)}°×${sol.th3yDeg.toFixed(2)}° · 峰值 ${sol.dirDbi.toFixed(1)} dBi · 交叉 ${sol.crossoverDb.toFixed(1)} dB · 可扫 ±${sol.scanMaxDeg.toFixed(0)}°${gl}`
+          // 栅瓣核对：逐波束离轴角 vs 无栅瓣可扫界（超界波束的峰值已在 buildPamGrd 内按分能修正）
+          let over = 0, worstCorr = 0, glDom = 0
+          for (const ae of beamsAe) {
+            const d0 = gridDir(6, ae.az, ae.el)
+            const off = Math.acos(Math.max(-1, Math.min(1, d0[2]))) * 180 / Math.PI
+            const ls = pamLobeSplit(pamCfg, d0[0], d0[1])
+            if (off > sol.scanMaxDeg + 0.01) over++
+            if (ls.corrDb < worstCorr) worstCorr = ls.corrDb
+            if (ls.glDomDb > 0) glDom++
+          }
+          const gl = sol.gratingInReal ? ` · ⚠ 栅瓣 @±${sol.gratingLobeDeg.toFixed(1)}°（峰值已按分能修正 ${sol.dirCorrDb.toFixed(1)} dB）`
+            : over ? ` · ⚠ ${over} 波束超可扫界 ±${sol.scanMaxDeg.toFixed(0)}°，峰值已按栅瓣分能修正（最深 ${worstCorr.toFixed(1)} dB）${glDom ? '，' + glDom + ' 波束真峰为栅瓣（图内不含）' : ''}` : ''
+          status.value = `已生成相控阵天线「${name}」：${valid.length} 个波束 · 阵 ${pamCfg.Nx}×${pamCfg.Ny} 单元（${pamCfg.dxWl}×${pamCfg.dyWl} λ）· 波束宽 ${sol.th3xDeg.toFixed(2)}°×${sol.th3yDeg.toFixed(2)}° · 峰值 ${(sol.dirDbiCorr != null ? sol.dirDbiCorr : sol.dirDbi).toFixed(1)} dBi · 交叉 ${sol.crossoverDb.toFixed(1)} dB · 可扫 ±${sol.scanMaxDeg.toFixed(0)}°${gl}`
         }
       }
     }
@@ -955,7 +984,7 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
     open, mode, satFolder, placing, adjusting, deleting, beams, settings, activeSettingId, status, p, curName,
     groups, activeGroupId, curGroup, curSetting, hasGroup, groupsForSat, beamNumOffset, groupStat,
     thetaAuto, dirDbi, crossX, crossY, shapedTheta3, hotTheta3, shapedEff, shapedPeak, togglePoly,
-    shapedSimF, shapedRefl, refl, pam, pamExcit, pamExcitCsv,
+    shapedSimF, shapedRefl, refl, pam, pamScanStat, pamExcit, pamExcitCsv,
     satNode, satNodeOf, satPos, openFor, close, placeAt, dragBeam, removeBeam, removeBeamAt, clearBeams, hexFill, sketchSpec,
     hotPickId, addHotspot, removeHotspot, pickHotspot,
     addGroup, removeGroup, renameGroup, duplicateGroup, toggleGroupVisible, selectGroup, setSat,

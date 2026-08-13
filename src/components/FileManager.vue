@@ -702,9 +702,7 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
               <button class="mini ghost" @click="importFreqPlanJson"><Icon name="import" :size="12" /> 导入 JSON…</button>
             </div>
 
-            <div v-if="!fpSats.length && !fpRows.length" class="empty-hint">
-              暂无卫星。频率计划挂在卫星下，请先在「GRD 天线」页或「星座地图 3D · 覆盖分析」添加卫星。
-            </div>
+            <div v-if="!fpSats.length && !fpRows.length" class="empty-hint">暂无卫星。</div>
             <div v-else class="tree">
               <div v-for="g in fpGroups" :key="g.folder || 'none'" class="tnode">
                 <div class="trow sat">

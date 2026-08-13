@@ -59,8 +59,16 @@ function satHull(lon, lat, alt) {
   return hull
 }
 
-// grd = useGrdCoverage 的活实例；getScene/getFlat = 3D 与 2D 渲染器；isFlat = 当前是否 2D 视图
-export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = () => false) {
+// grd = useGrdCoverage 的活实例；getScene/getFlat = 3D 与 2D 渲染器；isFlat = 当前是否 2D 视图。
+// panelOn = 本视图当前是不是活动视图（宿主页裁定 shellUi.side === 'satcov'）。
+//
+// 为什么需要它：下面 watch(grd.s) 盯的是【两个视图共享的编辑态】，对地面板改一次填充/电平/指向，
+// 本视图同样被唤醒 —— 而本视图往外写的两处都不是自己独占的：
+//   · 2D 平面图只有【一块】GRD 场且是整体替换（见 useGrdCoverage 的 ownsFlatField）：不归自己时照写，
+//     会把对地刚画好的层整体换成本视图的（selected 通常为空 → 直接清空），表现为覆盖闪一下就没；
+//   · 3D 壳层内容虽是自己的通道，但面板【从没打开过】时一次也不该推，否则对地那边一改设置就凭空
+//     往球上糊两层壳层参照网。
+export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = () => false, panelOn = () => true) {
   const shells = ref(PRESET_SHELLS.slice(0, 2).map((p) => ({ id: newShellId(), ...p, show: true, branch: 'both' })))
   const selected = ref([])        // 画在壳层上的天线 key 列表（与对地视图各自独立）
   // ★ 聚焦天线【不自存一份】，只做 grd.active 的镜像：面板的天线设置区绑的就是 grd.s（＝grd.active
@@ -372,14 +380,21 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
     }
     return out
   }
+  // 「已经画到场景里过」：壳层是场景内容，【离开面板不撤】（要清空走面板的「清除绘图」）——所以一旦画过，
+  // 之后即便切走也得继续跟着设置/时间刷新，否则星在动、壳层还停在旧位置。反过来，从没画过就一次也不推。
+  // 随存档走（见 getState/restoreState）：重开软件时场景照原样接着画，不必等用户再进一次面板。
+  let _painted = false
   function recompute() {
+    const on = panelOn()
+    if (!on && !_painted) return       // 面板没打开过 → 场景里本就没有本视图的东西；stats/shellStatus/focusBeam 的读者也全在面板内
+    if (on) _painted = true
     const sc = getScene()
     if (sc && sc.setShellField) {
       sc.setShellField(buildShellLayers(), fieldOpts())
       sc.setShellGuides(s.guides ? shells.value.filter((x) => x.show).map((x) => ({ R: A + x.altKm, color: x.color, alpha: 0.14 })) : [])
       if (sc.setShellRays) sc.setShellRays(buildRays())
     } else buildShellLayers()          // 场景未就绪也要出空层归因，面板读数不能等
-    const fl = getFlat()
+    const fl = on ? getFlat() : null
     if (fl) fl.setField(buildGroundLayers(), fieldOpts())
   }
   let _pending = false
@@ -392,7 +407,8 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
   function clearAll() {
     const sc = getScene()
     if (sc && sc.clearShellField) { sc.clearShellField(); sc.clearShellGuides(); if (sc.clearShellRays) sc.clearShellRays() }
-    const fl = getFlat(); if (fl) fl.setField([], {})
+    const fl = panelOn() ? getFlat() : null; if (fl) fl.setField([], {})
+    _painted = false                   // 场景已清空 → 回到「没画过」，面板关着时不再自行复现
   }
 
   watch(shells, scheduleRecompute, { deep: true })
@@ -407,7 +423,8 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
     return {
       shells: shells.value.map((x) => ({ name: x.name, altKm: x.altKm, color: x.color, show: x.show, branch: x.branch })),
       selected: selected.value.slice(), active: active.value,
-      opts: { ...s }
+      opts: { ...s },
+      painted: _painted   // 3D 壳层已在场景里（离开面板不撤）→ 重开软件要照原样接着画，见 recompute 的闸
     }
   }
   async function restoreState(st) {
@@ -428,6 +445,9 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
       const want = (st.active && keys.includes(st.active)) ? st.active : (keys[0] || '')
       if (want) await grd.setActiveKey(want)
     }
+    // 上次退出时壳层就画着 → 这次也接着画（面板未必停在对星视图，但内容本就不随离开而撤）。
+    // 老存档没有 painted 字段：有选中天线即视作画过，不让升级掉一层图。
+    if (st.painted || keys.length) _painted = true
     recompute()
   }
 

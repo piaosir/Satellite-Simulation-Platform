@@ -842,8 +842,15 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
   }
 
   const fieldOpts = () => ({ alpha: s.alpha, showBore: s.showBore, boreSize: s.boreSize, showRay: s.showRay, rayColor: s.rayColor, rayWidth: s.rayWidth, rayOpacity: s.rayOpacity, showName: s.showName, nameSize: s.nameSize, showPeak: s.showPeak, peakSize: s.peakSize, showVal: s.showVal, valSize: s.valSize })
+  // 2D 平面图只有【一块】GRD 场（flatCoverage 的 fieldLayers 是整体替换），对地与对星两个视图都往那儿画，
+  // 归属由宿主页按当前活动视图裁定（hooks.ownsFlatField）——不归自己时一律不碰 flat，3D 侧两条通道
+  // (setCoverageField / setShellField) 各自独立、不受此限。
+  // 不加这道闸的后果：天线设置是两视图共享的 grd.s，改任一项都会同时唤醒两边的 watcher，对星那份走
+  // rAF 后到、把对地刚喂进去的层整体换掉（它自己的 selected 通常是空的 → 直接清空）。症状即「在平面图上
+  // 点分带填充，覆盖闪一下就没了，切一次视图（feedFlat 重喂）又回来」。
+  const flatField = () => ((hooks.ownsFlatField && !hooks.ownsFlatField()) ? null : getFlat())
   function recompute() {
-    const sc = getScene(), fl = getFlat()
+    const sc = getScene(), fl = flatField()
     // 聚焦（编辑中）天线排到最后 → 填充叠加时位于最上层，最醒目（其余按选中顺序在下）
     const ks = [...selected.value].sort((a, b) => (a === active.value ? 1 : 0) - (b === active.value ? 1 : 0))
     const layers = ks.flatMap((k) => buildLayer(k, s.showVal))   // 每天线展开成 N 个波束子层；2D/3D 共用同一份（省一半重算）
@@ -857,7 +864,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     if (!active.value || !selected.value.includes(active.value)) return   // 未勾选显示的天线，编辑/拖拽时也不上图
     const layers = buildLayer(active.value, s.showVal)
     const opts = fieldOpts()
-    if (isFlat()) { const fl = getFlat(); if (fl) fl.patchField(layers, opts) }
+    if (isFlat()) { const fl = flatField(); if (fl) fl.patchField(layers, opts) }
     else { const sc = getScene(); if (sc) sc.patchCoverageLayers(layers, opts) }
   }
   // rAF 合帧的聚焦层重算（与拖拽同策略）：<input type=color> 的 @input 在挑色时高频连发，
@@ -1366,9 +1373,9 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     return out
   }
 
-  function clearAll() { selected.value = []; active.value = ''; const sc = getScene(), fl = getFlat(); if (sc) sc.setCoverageField([], {}); if (fl) fl.setField([], {}) }
+  function clearAll() { selected.value = []; active.value = ''; const sc = getScene(), fl = flatField(); if (sc) sc.setCoverageField([], {}); if (fl) fl.setField([], {}) }
   // 一键清除绘图：抹掉地图上的填充/线，但保留各天线设置（数据库）与聚焦项 → 再次勾选天线即按原设置重绘。
-  function clearDrawing() { selected.value = []; const sc = getScene(), fl = getFlat(); if (sc) sc.setCoverageField([], {}); if (fl) fl.setField([], {}) }
+  function clearDrawing() { selected.value = []; const sc = getScene(), fl = flatField(); if (sc) sc.setCoverageField([], {}); if (fl) fl.setField([], {}) }
 
   watch(() => [s.fill, s.line, s.lineWidth, s.ctype, s.pol, s.gainOffset, s.pathLoss], () => { persistActive(); recompute() }, { deep: true })
   // 电平改动只影响聚焦天线这一层（persistActive 仅写 active）→ 走单层快路径 recomputeActive，只 patch 当前可见视图。
@@ -1376,7 +1383,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
   watch(() => s.levels, () => { persistActive(); scheduleRecomputeActive() }, { deep: true })   // 合帧：挑色高频连发不再卡（persistActive 同步保证状态最新，重算合到下一帧）
   watch(() => s.beamsToPlot, () => { persistActive(); recompute() }, { deep: true })   // Beams To Plot 多选变更 → 回存 + 重绘
   watch(active, () => { beamQuery.value = '' })   // 切换聚焦天线：清空波束筛选词（波束数/含义随天线变）
-  watch(() => s.alpha, (a) => { persistActive(); const sc = getScene(), fl = getFlat(); if (sc) sc.setCoverageFieldAlpha(a); if (fl) fl.setFieldAlpha(a) })
+  watch(() => s.alpha, (a) => { persistActive(); const sc = getScene(), fl = flatField(); if (sc) sc.setCoverageFieldAlpha(a); if (fl) fl.setFieldAlpha(a) })
   // 切换 boresight 类型：把当前指向无缝换算到另一种表示，避免跳变（geo→azel 取该地表点的 az/el；azel→geo 取落地点）
   watch(() => s.boreType, (nt, ot) => {
     if (_muteSync || _dragging || nt === ot) return   // 拖拽自行管理指向，不在此换算

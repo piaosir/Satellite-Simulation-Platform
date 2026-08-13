@@ -175,7 +175,7 @@ const sending = ref(false)
 async function sendOnline() {
   if (!api || !props.configured) { toast('在线分享未配置'); return }
   const rid = (recip.value || '').trim()
-  if (!rid) { toast('请输入对方用户ID'); return }
+  if (!rid) { toast('请输入对方用户 ID'); return }
   if (!bundle.value) { toast('请先勾选要分享的内容'); return }
   sending.value = true
   try {
@@ -403,7 +403,7 @@ watch(() => way.value, (w) => { if (w === 'online' && props.configured && !inbox
           <div class="lbs-ways">
             <button class="lbs-way" :class="{ on: way === 'code' }" @click="way = 'code'"><Icon name="clipboard" :size="12" />分享码</button>
             <button class="lbs-way" :class="{ on: way === 'file' }" @click="way = 'file'"><Icon name="file-text" :size="12" />文件 .lbcfg</button>
-            <button class="lbs-way" :class="{ on: way === 'online' }" @click="way = 'online'"><Icon name="external-link" :size="12" />发给用户ID</button>
+            <button class="lbs-way" :class="{ on: way === 'online' }" @click="way = 'online'"><Icon name="external-link" :size="12" />发给用户 ID</button>
           </div>
 
           <template v-if="way === 'code'">
@@ -436,7 +436,7 @@ watch(() => way.value, (w) => { if (w === 'online' && props.configured && !inbox
                 </li>
               </ul>
             </template>
-            <div v-else class="lbs-warnbox">在线分享尚未配置（缺少 COS 子账号密钥）。</div>
+            <div v-else class="lbs-warnbox">在线分享尚未配置。</div>
           </template>
         </template>
       </div>

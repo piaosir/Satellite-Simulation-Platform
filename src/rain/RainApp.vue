@@ -27,10 +27,6 @@ const divOn = ref(false)
 const fields = computed(() => rainFields({ diversity: divOn.value, byAvail: divOpt.inputMode === 'avail' }))
 // 只读字段：自动降雨模型 → R0.01 只读（结果列由 f.ro 恒只读，不必列在此）
 const readonlyKeys = computed(() => (rainModel.value === 'auto' ? ['rainRate'] : []))
-const geoTip = computed(() => orbitMode.value === 'geo'
-  ? 'GEO：填定点轨位（全局，各站共用）→ 各站仰角由经纬度自动换算'
-  : 'NGSO：填近圆轨道三要素（全局）→ 按 ITU-R P.618-14 §8「仰角分箱 × 可见时间占比」加权反解各站等效仰角')
-
 // —— 全局几何（一颗星 / 一个星座对全表地球站，不再逐行填）——
 const geoSatLon = ref('130.5')                                        // GEO 定点轨位（°E）
 const ngsoOrbit = reactive({ alt: '550', incl: '53', minEl: '10' })   // NGSO 近圆轨道三要素
@@ -578,7 +574,6 @@ onMounted(async () => {
               <button :class="{ on: rainModel === 'manual' }" title="R0.01 手工填写" @click="rainModel = 'manual'">手动 (mm/h)</button>
             </div>
           </div>
-          <span class="rain-tip">{{ geoTip }}</span>
         </div>
 
         <div class="rain-grid">
@@ -656,7 +651,7 @@ onMounted(async () => {
             <div class="rain-err">✕ {{ selectedResult.message || '该算例无法计算' }}</div>
           </template>
           <template v-else-if="!selectedResult">
-            <div class="rain-ph">该算例（{{ selName }}）在上次计算之后才加进来，点「计算」把它一并算上。</div>
+            <div class="rain-ph">该算例（{{ selName }}）尚未计入上次计算。</div>
           </template>
           <template v-else-if="detail">
             <!-- 交互式坐标系（在详情上方）-->
@@ -770,7 +765,6 @@ onMounted(async () => {
 .rain-geom span { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
 .rain-geom input { width: 48px; padding: 0; border: 0; background: transparent; color: var(--text); font: inherit; font-size: 12px; text-align: right; outline: none; font-variant-numeric: tabular-nums; }
 .rain-geom i { font-style: normal; font-size: 10px; color: var(--text-faint); }
-.rain-tip { flex: 1 1 200px; min-width: 0; font-size: 11px; color: var(--text-faint); }
 
 .rain-grid { flex: 1 1 auto; min-height: 0; min-width: 0; overflow: hidden; display: flex; padding: 8px; }
 .rain-grid > * { flex: 1 1 auto; min-height: 0; min-width: 0; }

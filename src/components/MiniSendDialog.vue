@@ -259,10 +259,10 @@ async function copyKey() {
           <MiniBindingsPanel v-if="mngOpen" compact :list="bindings" @change="onBindingsChange" @toast="(m) => emit('toast', m)" />
 
           <div v-if="tooBig && wantKey" class="ms-warnbox">
-            内容 {{ fmtBytes(info.bytes) }}，接近微信云函数 1 MB 返回上限。该限制仅作用于密钥模式（整包单次拉取），绑定账号按件拉取不受此限。
+            内容 {{ fmtBytes(info.bytes) }}，接近密钥模式 1 MB 上限。
           </div>
           <div v-if="err" class="ms-warnbox">{{ err }}</div>
-          <div v-if="!configured" class="ms-warnbox">「发送到小程序」尚未配置（缺少 COS 凭证：shareConfig.js 或 COS_SECRET_ID 等环境变量）。</div>
+          <div v-if="!configured" class="ms-warnbox">「发送到小程序」尚未配置。</div>
           <div class="ms-acts">
             <button class="ms-btn primary" :disabled="busy || !canSend" @click="doSend">{{ busy ? '发送中…' : '发送' }}</button>
             <span v-if="nPicked" class="ms-note">{{ rows.length }} 项内容将同步至 {{ nPicked }} 个账号</span>
@@ -278,7 +278,6 @@ async function copyKey() {
                 <span class="ms-ch">{{ b.ch.match(/.{1,4}/g).join('-') }}</span>
               </div>
             </div>
-            <div class="ms-note">接收方打开小程序后自动同步；同一内容重复投递按原件覆盖。</div>
           </template>
 
           <template v-if="key">

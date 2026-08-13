@@ -266,12 +266,12 @@ const dEnd = (d) => (isLocal.value ? shiftParts(d.date, d.endTimeUTC, staOffsetM
             <div class="card"><i>分点（{{ result.seasonName }}）</i><b class="mono">{{ result.equinoxDate }}</b></div>
             <div class="card"><i>日凌区间（UTC 日期）</i><b class="mono">{{ result.startDate }} ~ {{ result.endDate }} · {{ result.totalDays }} 天</b></div>
             <div class="card"><i>单日最长</i><b class="mono">{{ result.maxDurationStr }}</b></div>
-            <div class="card"><i>主轴对准恶化上限</i><b class="mono">{{ model.boresightDeg }} dB</b></div>
+            <div class="card" title="太阳视位置 VSOP87+章动（≈1″）；太阳均匀盘 × 高斯主瓣精确卷积 → ΔT(θ)，D(θ)=10lg(1+ΔT/Tsys)"><i>主轴对准恶化上限</i><b class="mono">{{ model.boresightDeg }} dB</b></div>
             <div class="card"><i>3dB 波束宽（70λ/D）</i><b class="mono">{{ model.beamWidth3dB }}°</b></div>
             <div class="card"><i>门限角（分点日）</i><b class="mono">{{ result.thresholdAngle }}°</b></div>
             <div class="card"><i>卫星指向</i><b class="mono">Az {{ result.satAz }}° · El {{ result.satEl }}°</b></div>
             <div class="card"><i>判据 / 噪温</i><b class="mono">≥{{ model.degThreshold }} dB · T<sub>sys</sub> {{ model.sysTemp }}K</b></div>
-            <div class="card"><i>太阳亮温 T<sub>sun</sub></i><b class="mono">{{ model.solarTemp }}K（{{ model.solarTempSource === 'manual' ? '手动' : '默认推算' }}）</b></div>
+            <div class="card" title="默认值由太阳射电流量（F10.7=120 周期均值）按频率外推；太阳活动峰年实际值可高约 30%"><i>太阳亮温 T<sub>sun</sub></i><b class="mono">{{ model.solarTemp }}K（{{ model.solarTempSource === 'manual' ? '手动' : '默认推算' }}）</b></div>
           </div>
 
           <table class="tbl">
@@ -296,17 +296,12 @@ const dEnd = (d) => (isLocal.value ? shiftParts(d.date, d.endTimeUTC, staOffsetM
             </tbody>
           </table>
 
-          <div class="foot">
-            模型：太阳视位置 VSOP87+章动（≈1″）· 太阳均匀盘 × 高斯主瓣<b>精确卷积</b> → ΔT(θ)，D(θ)=10lg(1+ΔT/T<sub>sys</sub>)。
-            T<sub>sun</sub> 默认值由太阳射电流量（F10.7=120 周期均值）按频率外推，太阳活动峰年实际值可高 ~30%；
-            填入本站实测 T<sub>sys</sub> 时峰值恶化不确定度约 ±1dB，起止时刻对噪温仅对数敏感（±数十秒）。ICS 日历事件恒用 UTC 时刻。
-          </div>
         </template>
 
         <template v-else-if="result && !days.length">
           <div class="empty">
             <p>本季无满足判据的日凌事件。</p>
-            <p class="dim">主轴对准恶化上限 {{ model.boresightDeg }} dB，低于门限 {{ model.degThreshold }} dB —— 可降低门限或核对 T_sys / 口径。</p>
+            <p class="dim">主轴对准恶化上限 {{ model.boresightDeg }} dB，低于门限 {{ model.degThreshold }} dB。</p>
           </div>
         </template>
 
@@ -377,7 +372,6 @@ const dEnd = (d) => (isLocal.value ? shiftParts(d.date, d.endTimeUTC, staOffsetM
 .so-intensity-mid { color: var(--warn); border-color: var(--warn); }
 .so-intensity-low { color: var(--ok); border-color: var(--ok); }
 
-.foot { margin-top: 12px; font-size: 11px; color: var(--text-faint); line-height: 1.7; max-width: 860px; }
 .empty { padding: 60px 20px; text-align: center; color: var(--text-muted); }
 .empty .dim { color: var(--text-faint); font-size: 12px; margin-top: 8px; line-height: 1.7; }
 .status { position: sticky; bottom: 0; margin-top: 10px; padding: 7px 11px; background: var(--surface); border: 1px solid var(--border); font-size: 12px; color: var(--text); border-radius: 2px; }

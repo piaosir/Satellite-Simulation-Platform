@@ -59,7 +59,7 @@ const speedPct = computed({
 
           <div class="grid">
             <label class="frow">
-              <span class="fn">渲染分辨率<em>超采样倍率，对性能影响最大</em></span>
+              <span class="fn" title="超采样倍率，对性能影响最大">渲染分辨率</span>
               <select :value="eff.pixelRatio" @change="onPick('pixelRatio', $event)">
                 <option v-for="o in optsOf('pixelRatio')" :key="o.label" :value="o.v">{{ o.label }}</option>
               </select>
@@ -77,13 +77,13 @@ const speedPct = computed({
               </select>
             </label>
             <label class="frow">
-              <span class="fn">渲染帧率<em>上限越低越省电</em></span>
+              <span class="fn" title="帧率上限越低越省电">渲染帧率</span>
               <select :value="eff.fps" @change="onPick('fps', $event)">
                 <option v-for="o in optsOf('fps')" :key="o.label" :value="o.v">{{ o.label }}</option>
               </select>
             </label>
             <label class="frow">
-              <span class="fn">球体细分<em>地球网格精度</em></span>
+              <span class="fn" title="地球网格精度">球体细分</span>
               <select :value="eff.sphereSeg" @change="onPick('sphereSeg', $event)">
                 <option v-for="o in optsOf('sphereSeg')" :key="o.label" :value="o.v">{{ o.label }}</option>
               </select>

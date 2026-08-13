@@ -189,10 +189,9 @@ onMounted(compute)
         </div>
       </div>
 
-      <div class="pv-state" :class="{ bad: !marginOk && data }">
+      <div v-if="error || computing || !data" class="pv-state">
         <template v-if="error">{{ error }}</template>
         <template v-else-if="computing">计算中…</template>
-        <template v-else-if="data">{{ marginOk ? '链路闭合，余量充足' : '余量不足，链路未闭合' }}</template>
         <template v-else>等待计算</template>
       </div>
 

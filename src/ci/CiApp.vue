@@ -553,7 +553,7 @@ const run = () => {
               <label class="btn-cell"><button class="ci-btn" title="重新读取「星座」页的卫星组、自定义星座与编目列表；本窗口为单例，切换窗口返回时亦会自动重读" @click="I.loadNgsoGroups()">刷新列表</button></label>
               <label class="btn-cell"><button class="ci-btn" :disabled="!ngso.wanted.group" @click="I.ensureGroup(ngso.wanted.group, true)">联网刷新</button></label>
             </div>
-            <p v-if="groupsErr" class="ci-note sm err">编目星座 / 自定义星历这两段没取回来：{{ groupsErr }}</p>
+            <p v-if="groupsErr" class="ci-note sm err">编目星座 / 自定义星历读取失败：{{ groupsErr }}</p>
             <!-- 选了真实星座就不再要求填根数：轨道参数由星历直接给出，这里只读速览 -->
             <dl v-if="groupStats[ngso.wanted.group]" class="ci-stats">
               <div><dt>在轨</dt><dd>{{ groupStats[ngso.wanted.group].count }} 颗</dd></div>
@@ -777,7 +777,6 @@ const run = () => {
             <template v-if="ngso.satPattern.mode === 'grd'">
               <p v-if="ngsoGrdBeams.length > 1 && ngso.satPattern.grdBeam === ''" class="ci-warn">
                 所选方向图含 <strong>{{ ngsoGrdBeams.length }} 个波束</strong>，当前按「全部波束取最大」计算。
-                请在「同频波束」中选定对应波束。
               </p>
             </template>
             <p v-else-if="ngso.satPattern.mode === 'none'" class="ci-warn">未计入卫星发射方向图。</p>
@@ -815,16 +814,14 @@ const run = () => {
             </template>
             <template v-else>
               目标分位 C/I({{ ngso.result.epochStats.convergePct }}%) 至第 {{ ngso.result.epochStats.count }} 个历元<strong>仍未收敛</strong>（各历元独立估值散布过大，其均值
-              95% 区间宽 {{ f(ngso.result.epochStats.ciWidthDb, 2) }} dB，未达 {{ ngso.result.epochStats.convergeTolDb }} dB），
-              需增加历元数或延长各段时窗。
+              95% 区间宽 {{ f(ngso.result.epochStats.ciWidthDb, 2) }} dB，未达 {{ ngso.result.epochStats.convergeTolDb }} dB）。
             </template>
           </p>
           <p v-if="ngCiLowRes" class="ci-warn">
-            历元数 {{ ngso.result.epochStats.count }} 少于 8：95% 区间按历元整块重采样得出，块数这么少时区间宽度主要取决于
-            块组合的种数而非真实不确定度（<strong>会偏窄</strong>），仅供参考。
+            历元数 {{ ngso.result.epochStats.count }} 少于 8：95% 区间按历元整块重采样得出，<strong>会偏窄</strong>。
             <template v-if="ngPerEpoch.length">
               各历元独立估出的 C/I({{ ngso.result.epochStats.convergePct }}%) 依次为
-              <strong>{{ ngPerEpoch.join(' / ') }}</strong> dB —— 请直接看这组数的散布。
+              <strong>{{ ngPerEpoch.join(' / ') }}</strong> dB。
             </template>
           </p>
           <p v-if="ngso.result.repeatPeriodSec" class="ci-note sm">
@@ -833,9 +830,9 @@ const run = () => {
             本次扫描覆盖 <strong>{{ f(ngso.result.repeatCoveragePct, 2) }}%</strong>。
           </p>
           <p v-if="!ngso.result.satPatternActive" class="ci-warn">
-            未计入卫星发射方向图（各向同性满 EIRP），以上结果为<strong>上界包络</strong>。
+            未计入卫星发射方向图（各向同性满 EIRP）。
             其中 {{ f(ngso.result.farShareNoPatternPct, 1) }}% 的聚合干扰来自离轴
-            {{ ngso.result.farOffAxisDeg }}° 以外的干扰星。可在「卫星发射天线」中选定方向图与指向模型后重算。
+            {{ ngso.result.farOffAxisDeg }}° 以外的干扰星。
           </p>
           <p v-else class="ci-note sm">
             卫星发射天线：{{ ngso.result.satPattern.shape }}，指向
@@ -899,9 +896,8 @@ const run = () => {
                 标「抽」表示干扰星座按 1/{{ f(ngso.result.samplingFactorMax, 1) }} 抽样，
                 聚合干扰偏低约 {{ f(10 * Math.log10(ngso.result.samplingFactorMax), 1) }} dB。
               </p>
-              <p v-if="ngso.result.esPattern && ngso.result.esPattern.fellBack" class="ci-warn">
+              <p v-if="ngso.result.esPattern && ngso.result.esPattern.fellBack" class="ci-warn" title="AP8 为静态单干扰源的峰值包络，用于动态多干扰源场景偏保守">
                 收信站离轴包络已由 S.1428 <strong>退回 AP8/S.580</strong>：{{ ngso.result.esPattern.reason }}。
-                AP8 为静态单干扰源的峰值包络，用于动态多干扰源场景偏保守。
               </p>
 
               <h3>in-line 穿越事件</h3>
@@ -931,8 +927,7 @@ const run = () => {
               <p v-if="ngso.result.cdfAliasRisk" class="ci-warn">
                 步长 {{ ngso.result.stepSec }} s 大于 in-line 穿越时长 {{ f(ngso.result.crossingSec, 2) }} s
                 （干扰星视角速度 {{ f(ngso.result.interfererRateDegPerSec, 3) }} °/s），
-                <strong>CDF 尾部可能漏采穿越事件</strong>。事件表已按细步重扫；若需 CDF 一并覆盖，
-                请将步长降至 {{ f(ngso.result.recommendedStepSec, 2) }} s 以下重新计算。
+                <strong>CDF 尾部可能漏采穿越事件</strong>。事件表已按细步重扫；CDF 一并覆盖需步长 ≤ {{ f(ngso.result.recommendedStepSec, 2) }} s。
               </p>
               <template v-if="ngso.result.perGroup && ngso.result.perGroup.length">
                 <h3>单源分解</h3>

@@ -50,6 +50,10 @@ body {
 h1, h2, h3 { font-family: var(--font-serif); font-weight: 500; margin: 0; }
 .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 input, select, button { font-family: inherit; font-size: inherit; color: inherit; }
+/* 原生 <select> 的下拉列表由 UA 画：没给显式底色时它恒按浅色画（白底），而选项文字继承上一行的
+   color:inherit —— 深色主题下就是浅灰字压白底，看不清。故给 select 一个兜底底色；组件里已显式
+   设色的（.srow select 一类）靠类选择器优先级压过本条。 */
+select { background: var(--bg); color: var(--text); }
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 0; }
 ::-webkit-scrollbar-track { background: transparent; }
