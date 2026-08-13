@@ -39,14 +39,15 @@ const hint = ref('')         // 状态栏左侧提示文字（悬停菜单项/�
 // ---- 侧栏（VS Code 活动栏范式：图标竖条切换视图，同屏只显示一个视图）----
 // 视图内容由 3D 页 Teleport 挂入 #side-view；可用性来自 covNav（polyAvail 无 IPC 依赖，可兼作「页面已挂载」信号）
 const pageReady = computed(() => covNav.polyAvail)
-// 可见性分析紧跟 Polygon；波束合成 / 卫星覆盖等值线（GXT）为低频功能，排其后
+// 可见性分析紧跟 Polygon；天线波束合成 / 覆盖等值线显示（GXT · KML）为低频功能，排其后
 const sideViews = computed(() => [
   { key: 'constellation', label: '星座', icon: 'satellite', disabled: !pageReady.value, hint: '星座分组与卫星搜索' },
-  { key: 'antenna', label: '覆盖分析', icon: 'satellite-dish', disabled: !covNav.grdAvail, hint: '卫星 → 天线 → 覆盖范围 / 性能指标表（GRD）' },
+  { key: 'antenna', label: '对地覆盖分析', icon: 'earth', disabled: !covNav.grdAvail, hint: '卫星 → 天线 → 波束在地球上的覆盖范围 / 性能指标表（GRD）' },
+  { key: 'satcov', label: '对星覆盖分析', icon: 'orbit', disabled: !covNav.grdAvail, hint: '同一棵天线树 → 波束在各轨道壳层上的投影（含反天底侧）/ 对星性能指标表' },
   { key: 'poly', label: 'Polygon（协调区）', icon: 'hexagon', disabled: !covNav.polyAvail, hint: '协调区多边形：绘制 / 调点 / 扩缩 / 导出' },
   { key: 'vis', label: '可见性分析', icon: 'eye', disabled: !pageReady.value, hint: '选目标（地球站 / 点 / 航迹 / Polygon）→ 设仰角门限 → 算可见卫星（复刻 STK Access / Coverage）' },
-  { key: 'beams', label: '波束合成', icon: 'radio', disabled: !covNav.grdAvail, hint: '多馈源反射面 / 赋形反射面：设参数 → 点图放置轮廓 → 生成方向图天线' },
-  { key: 'gxt', label: '卫星覆盖等值线', icon: 'waves', disabled: !covNav.covAvail, hint: 'GEO 卫星覆盖等值线（GXT 库）' },
+  { key: 'beams', label: '天线波束合成', icon: 'satellite-dish', disabled: !covNav.grdAvail, hint: '多馈源反射面 / 赋形反射面：设参数 → 点图放置轮廓 → 生成方向图天线' },
+  { key: 'gxt', label: 'GXT/KML 显示', icon: 'waves', disabled: !covNav.covAvail, hint: 'GEO 卫星覆盖等值线：显示 GXT / KML 覆盖库里的波束' },
   { key: 'markers', label: '标记', icon: 'map-pin', disabled: !pageReady.value, hint: '点标记 / 地球站 / 轨迹' },
   { key: 'env', label: '环境场', icon: 'cloud-rain', disabled: !pageReady.value, hint: 'ITU-R 环境数据场：R0.01% 降雨率 / 0°C 等温线高度 / 雨高 / 海拔 / 水汽密度 / 云液态水（栅格 + 等值线）' },
   { key: 'geo', label: '地图设置', icon: 'sliders-horizontal', disabled: !pageReady.value, hint: '海陆配色 / 国界省界 / 名称标注' }
@@ -160,7 +161,7 @@ const stepZoom = (d) => { const t = Math.max(0, Math.min(1, zoom.value + d)); if
 // ---- 菜单栏（仿 SATSOFT 经典菜单：纯文字标题 + 下拉；不可用项置灰不隐藏）----
 const menus = computed(() => [
   { key: 'file', label: '文件', items: [
-    { label: '文件管理…', icon: 'folder-open', lock: true, hint: '管理 GRD 天线 / 频率计划 / GXT 覆盖文件库（导入 / 导出 / 删除）', run: () => { fileOpen.value = true } },
+    { label: '文件管理…', icon: 'folder-open', lock: true, hint: '管理 GRD 天线 / 频率计划 / GXT · KML 覆盖文件库（导入 / 导出 / 删除）', run: () => { fileOpen.value = true } },
     // 频率计划是「文件」不是「计算」：它与 GRD 天线平级、同挂在卫星下，本身不产出任何计算结果，
     // 只是被链路预算引用的一份资料。故归文件区，不留在计算菜单里。
     { label: '转发器频率计划…', icon: 'freq-plan', lock: true, hint: '转发器频率排布与频率分配表：挂在卫星下、与 GRD 天线平级；供链路预算引用，可导出 PNG / PDF（独立窗口）', run: openFreqPlan },

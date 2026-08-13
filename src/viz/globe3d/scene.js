@@ -640,11 +640,18 @@ export function createGlobeScene(container, quality = {}) {
     return t
   }
   const RING_PX = 26  // 选中环固定屏幕像素大小，与缩放无关
-  const ringSpr = new THREE.Sprite(new THREE.SpriteMaterial({ map: makeRingTexture(), depthTest: false, depthWrite: false, transparent: true }))
-  ringSpr.renderOrder = 20
-  ringSpr.visible = false
-  scene.add(ringSpr)
-  let hlPos = null  // 选中星的世界坐标（null=未选中）
+  // 环可以有多个：点选星一个 + 对星覆盖分析「聚焦特效」每颗被点亮的星各一个（源星与其对星跟踪的目标星）。
+  // 共用同一张纹理，精灵按需扩池、只增不减（多出来的隐藏），每帧逐个反缩放 + 背面剔除。
+  const ringTex = makeRingTexture()
+  const ringSprs = []
+  function ringSprite() {
+    const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: ringTex, depthTest: false, depthWrite: false, transparent: true }))
+    spr.renderOrder = 20; spr.visible = false
+    scene.add(spr); ringSprs.push(spr)
+    return spr
+  }
+  ringSprite()
+  let hlPos = []  // 选中星/聚焦星的世界坐标列表（空=一个都不画）
 
   // 选中卫星几何：轨道圈（3D）、星下点轨迹（贴地）、覆盖足迹圈（贴地）。
   // 球体不透明 + 默认深度测试 -> 背面线段被地球天然遮挡，无需手动分正/背面。
@@ -918,6 +925,133 @@ export function createGlobeScene(container, quality = {}) {
   }
   function setCovGridAlpha(a) { if (covGridFill) covGridFill.mat.opacity = a }
 
+  // ===== 对星覆盖分析【轨道壳层专用通道】：波束打在球壳上的分带填充 + 等值线。=====
+  // 与 GRD 对地覆盖(covFieldGroup)、STK Coverage(covGridGroup) 三条通道互不覆写，同屏可叠。
+  // 层 L = { id, R(壳层地心半径 km), fillBands, segGroups, bore, name }：
+  //   · 顶点是【地心】经纬度（壳层本就是地心球，llaToVec 也是纯地心球，两边同源，喂进去精确落在壳面）；
+  //   · 且【已在参数域预细分】→ updateFill 走 preTess=true 跳过经纬度域细分（跨极点/接缝的坑见那边注释）。
+  // ★ 场景单位：半径 1 = RE(6371 km 平均半径)，不是 WGS84 长半轴。故壳层半径一律由 R 现算，
+  //   别拿「轨道高度」直接喂 llaToVec —— 两者差 7.137 km。
+  let shellGroup = null, shellFills = [], shellOpts = {}
+  const shellAlt = (R) => R - RE          // R(km) → 场景 llaToVec 的 altKm
+  function clearShellField() {
+    if (!shellGroup) return
+    disposeCovGroup(shellGroup)
+    shellGroup.traverse((o) => { if (o.material && o.material.map) o.material.map.dispose() })
+    scene.remove(shellGroup); shellGroup = null; shellFills = []
+  }
+  function setShellField(layers, opts) {
+    clearShellField()
+    shellOpts = opts || {}
+    const list = layers || []
+    if (!list.length) return
+    const o = shellOpts, g = new THREE.Group()
+    for (const L of list) {
+      const R = L.R || RE
+      const alpha = L.alpha != null ? L.alpha : (o.alpha != null ? o.alpha : 0.55)
+      if (L.fillBands && L.fillBands.length) {
+        const fm = makeFill(alpha)
+        fm.mesh.renderOrder = 4.7                              // 低于 GRD 对地覆盖(5)：同屏时地表足迹压在壳层之上
+        updateFill(fm, L.fillBands, alpha, R / RE, true)
+        g.add(fm.mesh); shellFills.push(fm)
+      }
+      const la = shellAlt(R)
+      for (const grp of (L.segGroups || [])) {
+        if (!grp.segs || !grp.segs.length) continue
+        const flat = []
+        for (const sg of grp.segs) {
+          const a = llaToVec(sg[0][1], sg[0][0], la), b = llaToVec(sg[1][1], sg[1][0], la)
+          flat.push(a.x, a.y, a.z, b.x, b.y, b.z)
+        }
+        g.add(fatSegments(flat, grp.color != null ? grp.color : 0xffffff, grp.width || 1.2, grp.opacity != null ? grp.opacity : 0.95, 6))
+      }
+      // 数值标签：每档一处（锚点由上游按等值线环给）
+      if (o.showVal) for (const grp of (L.segGroups || [])) {
+        if (grp.txt == null) continue
+        for (const an of (grp.labels || [])) {
+          const spr = makeCovLabel(String(grp.txt), (o.valSize || 12) / 533, '#ffffff')
+          const pos = llaToVec(an[1], an[0], la)
+          pos.addScaledVector(pos.clone().normalize(), spr.scale.y * 0.6)
+          spr.position.copy(pos); spr.renderOrder = 12; g.add(spr)
+        }
+      }
+      // 波束中心（峰值方向与壳层的交点）+ 波束名：与对地覆盖同款，只是锚在壳面上
+      const b = L.bore
+      if (b) {
+        const anchor = llaToVec(b.lat, b.lon, la)
+        // 连线不在这儿画：对星视图的射线是【天线视轴】那一条，由 setShellRays 单独出（波束打不到壳层时也得有）
+        if (o.showBore) {
+          const dot = new THREE.Mesh(new THREE.SphereGeometry((o.boreSize || 0.5) * 0.0014, 12, 12), new THREE.MeshBasicMaterial({ color: 0xffffff }))
+          dot.position.copy(anchor); dot.renderOrder = 11; g.add(dot)
+        }
+        if (o.showName && L.name) {
+          const spr = makeCovLabel(L.name, (o.nameSize || 16) / 533, '#ffffff')
+          spr.center.set(0.5, -0.35); spr.position.copy(anchor); spr.renderOrder = 13; g.add(spr)
+        }
+        if (o.showPeak && b.peak != null) {
+          const spr = makeCovLabel(b.peak.toFixed(2) + ' dB', (o.peakSize || 5) / 533, '#cfd6df')
+          spr.center.set(0.5, 1.15); spr.position.copy(anchor); spr.renderOrder = 12; g.add(spr)
+        }
+      }
+    }
+    shellGroup = g; scene.add(g)
+  }
+  function setShellFieldAlpha(a) { for (const fm of shellFills) fm.mat.opacity = a }
+
+  // 壳层参照网（经纬 30° 稀疏球面格网）：等值线悬在空中没有「面」的落点，画一层极淡的格网当参照。
+  // 与场数据分开成组：改指向/电平时只重建场，参照网不动。list=[{R, color, alpha}]。
+  let shellGuideGroup = null
+  function clearShellGuides() {
+    if (!shellGuideGroup) return
+    shellGuideGroup.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose() })
+    scene.remove(shellGuideGroup); shellGuideGroup = null
+  }
+  function setShellGuides(list) {
+    clearShellGuides()
+    if (!list || !list.length) return
+    const g = new THREE.Group()
+    for (const sh of list) {
+      const la = shellAlt(sh.R), pos = []
+      const push = (lat, lon) => { const v = llaToVec(lat, lon, la); pos.push(v.x, v.y, v.z) }
+      for (let lon = -180; lon < 180; lon += 30) {                       // 经线
+        for (let lat = -90; lat < 90; lat += 5) { push(lat, lon); push(lat + 5, lon) }
+      }
+      for (let lat = -60; lat <= 60; lat += 30) {                        // 纬线
+        for (let lon = -180; lon < 180; lon += 5) { push(lat, lon); push(lat, lon + 5) }
+      }
+      const geo = new THREE.BufferGeometry()
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3))
+      const mat = new THREE.LineBasicMaterial({ color: new THREE.Color(sh.color != null ? sh.color : 0x6b8199), transparent: true, opacity: sh.alpha != null ? sh.alpha : 0.14, depthWrite: false })
+      const ls = new THREE.LineSegments(geo, mat)
+      ls.renderOrder = 4.6; ls.frustumCulled = false
+      g.add(ls)
+    }
+    shellGuideGroup = g; scene.add(g)
+  }
+
+  // 波束射线（对星覆盖分析）：从卫星沿天线视轴射出去的一条线。与「卫星↔波束中心」的连线不同，它
+  // 【不依赖有没有画出覆盖】—— 波束转到空无一物的方向时，这条线就是唯一还看得见的把手（拖拽时全靠它）。
+  // list = [{ from:{lon,lat,rKm}, to:{lon,lat,rKm}, color? }]：地心经纬度 + 地心半径 km（与壳层层同一口径，
+  // 半径经 shellAlt(R)=R−RE 换算成场景高度；别拿「轨道高度」直接喂 llaToVec，两者差 7.137 km）。
+  let shellRayGroup = null
+  function clearShellRays() {
+    if (!shellRayGroup) return
+    shellRayGroup.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) { lineMats.delete(o.material); o.material.dispose() } })
+    scene.remove(shellRayGroup); shellRayGroup = null
+  }
+  function setShellRays(list) {
+    clearShellRays()
+    if (!list || !list.length) return
+    const g = new THREE.Group()
+    for (const ry of list) {
+      if (!ry || !ry.from || !ry.to) continue
+      const a = llaToVec(ry.from.lat || 0, ry.from.lon, shellAlt(ry.from.rKm || RE))
+      const b = llaToVec(ry.to.lat || 0, ry.to.lon, shellAlt(ry.to.rKm || RE))
+      g.add(fatStrip([a, b], new THREE.Color(ry.color != null ? ry.color : 0xffb14a), ry.width != null ? ry.width : 1.2, ry.opacity != null ? ry.opacity : 0.75, 6))
+    }
+    shellRayGroup = g; scene.add(g)
+  }
+
   // ===== 环境场【专用通道】：一张等经纬贴图（ITU 降雨率/零度等温线/海拔…）+ 逐档等值线 =====
   // 连续场用贴图而不是分带多边形：一个 draw call、零细分，避开覆盖填充那条球面细分的老性能坑。
   //
@@ -1007,7 +1141,9 @@ export function createGlobeScene(container, quality = {}) {
   // fillBands=[{color:[r,g,b], verts:Float64Array[x,y,...], counts:Int32Array(各多边形顶点数)}]（bandGeometry 扁平输出，零分配）。
   // 细分后叶三角输出【独立顶点】（不共享，索引顺序递增）；顶点数与数据相关 → 先数一遍精确定容量再写入
   // （两趟细分极廉价，远小于逐帧投影开销；持久缓冲仅在不足时 ×2 扩容，拖拽热路径不每帧重分配）。
-  function updateFill(fm, fillBands, alpha, lift) {
+  // preTess：调用方已把多边形细分好（对星覆盖的壳层层在【参数域】里细分——见 shellProj.tessellateFills），
+  //   此时必须跳过下面这套【经纬度域】细分：壳层投影可能跨极点/跨 ±180°，在经纬度域里对半劈会横穿整个球。
+  function updateFill(fm, fillBands, alpha, lift, preTess = false) {
     if (alpha != null) fm.mat.opacity = alpha
     const St = _covSub
     let n = 0, triN = 0, cr = 0, cg = 0, cb = 0
@@ -1055,7 +1191,10 @@ export function createGlobeScene(container, quality = {}) {
           const plen = counts[j]
           const a0x = verts[vi * 2], a0y = verts[vi * 2 + 1]
           for (let q = 1; q < plen - 1; q++) {
-            subdivide(a0x, a0y, verts[(vi + q) * 2], verts[(vi + q) * 2 + 1], verts[(vi + q + 1) * 2], verts[(vi + q + 1) * 2 + 1], leaf)
+            const bx = verts[(vi + q) * 2], by = verts[(vi + q) * 2 + 1]
+            const cx = verts[(vi + q + 1) * 2], cy = verts[(vi + q + 1) * 2 + 1]
+            if (preTess) leaf(a0x, a0y, bx, by, cx, cy)
+            else subdivide(a0x, a0y, bx, by, cx, cy, leaf)
           }
           vi += plen
         }
@@ -1111,9 +1250,9 @@ export function createGlobeScene(container, quality = {}) {
       // 文字锚：径向再抬出 ~45km。billboard 整体深度≈锚点深度，抬到球面之前 → 标签（尤其位于中心点下方的峰值）
       // 不再被地球模型遮挡；depthTest 仍为真，背面波束的标签照常被球体隐藏。
       const labelAnchor = llaToVec(b.lat, b.lon, 45)
+      // 波束射线(卫星→波束中心)：自成一个开关「显示波束射线」，与波束中心点解耦（3D 专属，2D 无连线）
+      if (o.showRay && b.satShown) out.push(fatStrip([llaToVec(b.satLat || 0, b.satLon, b.satAlt || 35786), anchor], new THREE.Color(o.rayColor != null ? o.rayColor : 0xffb14a), o.rayWidth != null ? o.rayWidth : 1.2, o.rayOpacity != null ? o.rayOpacity : 0.75, 5))
       if (o.showBore) {
-        // 连线(卫星↔波束中心)仅当该卫星「卫星名」也显示时才画（3D 专属，2D 无连线）
-        if (b.satShown) out.push(fatStrip([llaToVec(b.satLat || 0, b.satLon, b.satAlt || 35786), anchor], 0xffb14a, 1.0, 0.3, 5))
         const dotR = (o.boreSize || 0.5) * 0.0014
         const dot = new THREE.Mesh(new THREE.SphereGeometry(dotR, 12, 12), new THREE.MeshBasicMaterial({ color: 0xffffff }))
         dot.position.copy(anchor); dot.renderOrder = 11; out.push(dot)
@@ -1288,19 +1427,71 @@ export function createGlobeScene(container, quality = {}) {
     if (t < 0) return null
     return vecToLatLon(o.clone().add(d.clone().multiplyScalar(t)))
   }
-  // 拖拽波束专用拾取：命中地球取地表点；未命中（光标移出球面）取射线最近趋近点投到球面=屏幕轮廓(地平)，
-  // 让拖拽能贴着地平推到可见极限（否则光标一离开球面就停更，拖不到高纬/南北极限）。
+  // 拖拽波束（对地）/ 拖数值标签 专用拾取：命中地球取落点；未命中（光标推出地球轮廓）按
+  // 【方位不变、极角钉在地平圈】给点，让拖拽贴着地平推到可见极限。
+  // 别拿「射线对球心的最近趋近点」当兜底：那个点的极角是 90°−ψ，光标越往外拖落点反而往回缩，
+  // 到轮廓处折返，拖起来像被弹回去。这里用显式的 (轴, 面内垂向) 分解，全程单调。
   function pickGlobeOrLimb(clientX, clientY) {
     const hit = pickGlobe(clientX, clientY)
     if (hit) return hit
     const r = renderer.domElement.getBoundingClientRect()
     const ndcv = new THREE.Vector2(((clientX - r.left) / r.width) * 2 - 1, -((clientY - r.top) / r.height) * 2 + 1)
     ray.setFromCamera(ndcv, camera)
-    const o = ray.ray.origin, d = ray.ray.direction
-    const tc = -o.dot(d) / d.dot(d)                    // 射线对地心的最近趋近参数
-    const p = o.clone().add(d.clone().multiplyScalar(tc)).normalize()   // 投到单位球(地平)
-    return vecToLatLon(p)
+    const o = ray.ray.origin, d = ray.ray.direction.clone().normalize()
+    const D = o.length()
+    if (!(D > 1)) return null
+    const axis = o.clone().divideScalar(D)             // 地心 → 相机 单位矢量
+    const cosPsi = -d.dot(axis)
+    const perp = d.clone().addScaledVector(axis, cosPsi)
+    const pl = perp.length()
+    if (pl < 1e-9) return null
+    perp.divideScalar(pl)
+    const th = Math.acos(Math.min(1, 1 / D))           // 切点自轴起算的地心角（地平圈）
+    return vecToLatLon(axis.multiplyScalar(Math.cos(th)).addScaledVector(perp, Math.sin(th)))
   }
+
+  // ===== 对星覆盖分析的拖拽：绕【源星】转方向 =====
+  // 不能沿用「光标落在某个球面上」那一套：源星常常根本不在画面里（GEO 源星在 6.6RE，相机看地球时它在视锥外），
+  // 以它为心的拾取球也就无从抓起。这里改成【相机轴转台】：光标的屏幕位移 → 绕相机 右/上 轴转视轴，
+  //   · 没有屏幕锚点，源星在不在画面里都能拖；
+  //   · 转量随光标线性累加，不封顶 —— 4π 全向可达（一次拖不到就松开再拖，转角连续累加）；
+  //   · 增益 = |相机→落点| / |源星→落点|，即「屏上转多少度、波束就跟着转多少度」的一阶跟手比例，
+  //     GEO 打地球这类长射线增益 ≈0.36（拖得慢而准），近距离对星增益接近 1。
+  // 回调给的是【世界系旋转四元数】而不是经纬度：指向是 3D 转动，用一个落点表达不了（少一个自由度）。
+  let beamDragPivot = null, ttA = null
+  const TT_GAIN = [0.12, 6]
+  // 高度直接当场景高度用：这两个点只用来算增益（一个比值），差那 7 km 的 A/RE 口径无关紧要
+  const llaVecOf = (p) => (p && Number.isFinite(p.lon) ? llaToVec(p.lat || 0, p.lon, p.altKm || 0) : null)
+  // ★ 渲染系 → ECEF 的定轴换算（由 llaToVec 反推：渲染 (x,y,z) = ECEF (X, Z, −Y)，故反向是 (x, −z, y)）。
+  //   转出去的四元数要作用在【ECEF 的视轴】上，轴不换算就是绕错轴转 —— 表现为「拖了半天只挪一点点、
+  //   方向还不对」，且随卫星经度变化而变，极难从画面上看出来。
+  const toEcefAxis = (v) => new THREE.Vector3(v.x, -v.z, v.y)
+  function beginTurntable(clientX, clientY) {
+    const S = llaVecOf(beamDragPivot && beamDragPivot.sat)
+    if (!S) { ttA = null; return }
+    const T = llaVecOf(beamDragPivot.tip)
+    const L = T ? Math.max(1e-4, T.distanceTo(S)) : Math.max(1e-4, camera.position.distanceTo(S) * 0.5)
+    const a = camera.position.distanceTo(T || S)
+    ttA = {
+      x: clientX, y: clientY,
+      right: toEcefAxis(new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0).normalize()),
+      up: toEcefAxis(new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1).normalize()),
+      gain: Math.min(TT_GAIN[1], Math.max(TT_GAIN[0], a / L)),
+      k: 2 * Math.tan(camera.fov * Math.PI / 360) / Math.max(1, renderer.domElement.getBoundingClientRect().height)
+    }
+  }
+  const _q1 = new THREE.Quaternion(), _q2 = new THREE.Quaternion()
+  function turntableQuat(clientX, clientY) {
+    if (!ttA) return null
+    const ax = Math.atan((clientX - ttA.x) * ttA.k) * ttA.gain        // 右拖 → 视轴朝屏幕右转
+    const ay = Math.atan((clientY - ttA.y) * ttA.k) * ttA.gain        // 下拖 → 视轴朝屏幕下转
+    _q1.setFromAxisAngle(ttA.up, -ax)
+    _q2.setFromAxisAngle(ttA.right, -ay)
+    _q1.multiply(_q2)
+    return { q: [_q1.x, _q1.y, _q1.z, _q1.w] }
+  }
+  const pickDragStart = (x, y) => { if (!beamDragPivot) return pickGlobeOrLimb(x, y); beginTurntable(x, y); return turntableQuat(x, y) }
+  const pickDragMove = (x, y) => (beamDragPivot ? turntableQuat(x, y) : pickGlobeOrLimb(x, y))
   let onHover = null, onRightClick = null
   function setOnHover(fn) { onHover = fn }
   function setOnRightClick(fn) { onRightClick = fn }
@@ -1316,6 +1507,11 @@ export function createGlobeScene(container, quality = {}) {
   const updateRotate = () => { controls.enableRotate = !(beamDragMode || labelDragMode || polyDrawMode) }   // 拖波束/拖标签/绘制态均停旋转
   function setBeamDragMode(v) { beamDragMode = !!v; if (!v) beamDragging = false; updateRotate(); renderer.domElement.style.cursor = beamDragMode ? 'move' : (labelDragMode ? 'move' : (polyDrawMode ? 'crosshair' : '')) }
   function setOnBeamDrag(fn) { onBeamDrag = fn }
+  // 拖拽的拾取方式：给 {sat:{lon,lat,altKm}, tip:{lon,lat,altKm}} → 绕源星转方向（对星覆盖分析，
+  // tip=当前视轴落点，只用来定转动增益）；给 null → 回到地表落点拾取（对地覆盖分析）。
+  function setBeamDragPivot(p) {
+    beamDragPivot = (p && p.sat && Number.isFinite(p.sat.lon)) ? { sat: p.sat, tip: p.tip || null } : null
+  }
   function setLabelDragMode(v) { labelDragMode = !!v; if (!v) labelDragging = false; updateRotate(); renderer.domElement.style.cursor = labelDragMode ? 'move' : (beamDragMode ? 'move' : (polyDrawMode ? 'crosshair' : '')) }
   function setOnLabelDrag(fn) { onLabelDrag = fn }
   function setPolyDrawMode(v) { polyDrawMode = !!v; polyDrawing = false; updateRotate(); renderer.domElement.style.cursor = polyDrawMode ? 'crosshair' : (beamDragMode ? 'move' : (placeMode ? 'crosshair' : '')) }
@@ -1324,7 +1520,7 @@ export function createGlobeScene(container, quality = {}) {
   function setOnPlace(fn) { onPlace = fn }
   function setOnPolyDraw(fn) { onPolyDraw = fn }
   renderer.domElement.addEventListener('pointermove', (e) => {
-    if (beamDragging) { const ll = pickGlobeOrLimb(e.clientX, e.clientY); if (ll && onBeamDrag) onBeamDrag(ll, 'move') }
+    if (beamDragging) { const ll = pickDragMove(e.clientX, e.clientY); if (ll && onBeamDrag) onBeamDrag(ll, 'move') }
     if (labelDragging) { const ll = pickGlobeOrLimb(e.clientX, e.clientY); if (ll && onLabelDrag) onLabelDrag(ll, 'move') }
     if (polyDrawing) { const dx = e.clientX - drawLX, dy = e.clientY - drawLY; if (dx * dx + dy * dy >= POLY_DRAW_MIN2) { drawLX = e.clientX; drawLY = e.clientY; const ll = pickGlobe(e.clientX, e.clientY); if (ll && onPolyDraw) onPolyDraw(ll, 'move') } }
     if (onHover) onHover(pickGlobe(e.clientX, e.clientY))
@@ -1505,8 +1701,16 @@ export function createGlobeScene(container, quality = {}) {
     satPoints = new THREE.Points(geo, mat)
     scene.add(satPoints)
   }
-  function setHighlight(vec) { hlPos = vec ? vec.clone() : null; if (!hlPos) ringSpr.visible = false }
-  function setHighlightLLA(p) { setHighlight(p ? llaToVec(p.lat, p.lon, p.altKm) : null) }
+  // vec：单个 Vector3 / Vector3 数组 / null（清空）。p 同理，收 {lat,lon,altKm} 或其数组。
+  function setHighlight(vec) {
+    const list = (Array.isArray(vec) ? vec : (vec ? [vec] : [])).filter(Boolean)
+    hlPos = list.map((v) => v.clone())
+    for (let i = hlPos.length; i < ringSprs.length; i++) ringSprs[i].visible = false   // 多余的精灵收起来
+  }
+  function setHighlightLLA(p) {
+    const list = (Array.isArray(p) ? p : (p ? [p] : [])).filter((q) => q && Number.isFinite(q.lat) && Number.isFinite(q.lon))
+    setHighlight(list.map((q) => llaToVec(q.lat, q.lon, q.altKm)))
+  }
 
   // 拾取卫星：非拖拽的点击 -> 离光标最近、且未被地球遮挡的星点
   const ray = new THREE.Raycaster()
@@ -1530,7 +1734,7 @@ export function createGlobeScene(container, quality = {}) {
   let downX = 0, downY = 0
   renderer.domElement.addEventListener('pointerdown', (e) => {
     downX = e.clientX; downY = e.clientY
-    if (beamDragMode && e.button === 0) { beamDragging = true; const ll = pickGlobeOrLimb(e.clientX, e.clientY); if (ll && onBeamDrag) onBeamDrag(ll, 'start') }
+    if (beamDragMode && e.button === 0) { beamDragging = true; const ll = pickDragStart(e.clientX, e.clientY); if (ll && onBeamDrag) onBeamDrag(ll, 'start') }
     else if (labelDragMode && e.button === 0) { labelDragging = true; const ll = pickGlobeOrLimb(e.clientX, e.clientY); if (ll && onLabelDrag) onLabelDrag(ll, 'start') }
     else if (polyDrawMode && e.button === 0) { polyDrawing = true; drawLX = e.clientX; drawLY = e.clientY; try { renderer.domElement.setPointerCapture(e.pointerId) } catch { /* ignore */ } const ll = pickGlobe(e.clientX, e.clientY); if (ll && onPolyDraw) onPolyDraw(ll, 'start') }
   })
@@ -1602,13 +1806,16 @@ export function createGlobeScene(container, quality = {}) {
     // 卫星点随缩放联动：基准距离上 SAT_POINT_PX，拉近变大、拉远变小；下限 0.5×/上限 4× 钳制保证可见且不过大
     if (satPoints) satPoints.material.size = SAT_POINT_PX * Math.max(0.5, Math.min(4, LABEL_REF_DIST / cur))
     // 选中环：固定屏幕像素大小（不随缩放变化，拉远也能看清选中的是哪颗），背面被地球挡住时隐藏
-    if (hlPos) {
+    if (hlPos.length) {
       const tanHalf = Math.tan(camera.fov * 0.5 * Math.PI / 180) || 1
-      const d = camera.position.distanceTo(hlPos)
-      const sz = RING_PX * (2 * d * tanHalf) / curH
-      ringSpr.position.copy(hlPos)
-      ringSpr.scale.set(sz, sz, 1)
-      ringSpr.visible = !occludedByGlobe(hlPos)
+      for (let i = 0; i < hlPos.length; i++) {
+        const P = hlPos[i], spr = ringSprs[i] || ringSprite()
+        const d = camera.position.distanceTo(P)
+        const sz = RING_PX * (2 * d * tanHalf) / curH
+        spr.position.copy(P)
+        spr.scale.set(sz, sz, 1)
+        spr.visible = !occludedByGlobe(P)
+      }
     }
     rescaleMarkers()
     updateLabels()
@@ -1631,6 +1838,7 @@ export function createGlobeScene(container, quality = {}) {
   function destroy() {
     clearEnv()          // 贴图/几何不随 renderer.dispose 走，显式释放（切页面重挂载时会反复走这里）
     clearTerminator()   // 同上：夜区球壳几何 + 线材质（materials 还挂在 lineMats 里）也要显式还
+    clearShellField(); clearShellGuides()   // 对星覆盖壳层：标签用的 canvas 贴图同样不随 dispose 走
     cancelAnimationFrame(raf); controls.dispose(); renderer.dispose()
     if (renderer.domElement.parentNode) renderer.domElement.parentNode.removeChild(renderer.domElement)
   }
@@ -1639,11 +1847,12 @@ export function createGlobeScene(container, quality = {}) {
     setSatellites, setLabelMode, setHighlight, setHighlightLLA, setOnPick,
     setOrbit, setGroundTrack, setFootprint, setSelectionSet, clearSelectionGeom,
     setCoverage, clearCoverage, setCoverageField, patchCoverageLayers, clearCoverageField, setCoverageFieldAlpha, setCovGrid, clearCovGrid, setCovGridAlpha,
+    setShellField, clearShellField, setShellFieldAlpha, setShellGuides, clearShellGuides, setShellRays, clearShellRays,
     setTerminator, clearTerminator,
     setEnvRaster, setEnvAlpha, setEnvContours, clearEnv,
     setSatLayer, clearSatLayer, faceLonLat, setProvinces, setProvincesVisible, setCities, setCitiesVisible, setBorderStyle, setNameScale, setLabelStyle, setOceanColor, setLandColors,
     setPixelRatio, setRenderFps, setSphereDetail, setMapDetail,
-    setMarkers, setTrajectories, setFocusSatLLA, setOnHover, setOnRightClick, setBeamDragMode, setOnBeamDrag, setLabelDragMode, setOnLabelDrag, setPolyDrawMode, setOnPolyDraw, setPlaceMode, setOnPlace,
+    setMarkers, setTrajectories, setFocusSatLLA, setOnHover, setOnRightClick, setBeamDragMode, setOnBeamDrag, setBeamDragPivot, setLabelDragMode, setOnLabelDrag, setPolyDrawMode, setOnPolyDraw, setPlaceMode, setOnPlace,
     faceTo, rotateBy, setAutoRotate, setAutoRotateSpeed, setOnAutoRotateOff, resize, pause, resume, destroy,
     // 缩放进度条接口：getZoom 读当前进度、setZoom 设到进度 t、setOnZoom 注册滚轮缩放回填回调
     getZoom: () => distToT(zoomTarget),

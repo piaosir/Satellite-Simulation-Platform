@@ -3,9 +3,10 @@
 // 当前聚焦(active)天线额外画分带填充。计算核心 src/viz/grd/{parse,coverage,colormap}.js。
 import { ref, reactive, watch, nextTick } from 'vue'
 import { parseGrd } from './parse.js'
-import { antennaBasis, antennaBasisAzEl, dirToAzEl, azElGround, surfaceAzEl, projectGrid, fieldDb, bandGeometry, stitchLoops } from './coverage.js'
+import { antennaBasis, antennaBasisEcef, beamBasisFrom, dirAzElAbout, dirToAzEl, azElGround, surfaceAzEl, projectGrid, fieldDb, bandGeometry, stitchLoops, dLon, loopPointAtFraction, loopLabelAnchor, nearestFractionOnLoop } from './coverage.js'
+import { boresightShellPoint } from './shellProj.js'
 import { schemeColorsRGB, rgbCss, cssRgb } from './colormap.js'
-import { RS_GEO, A, geodeticToEcef, isoElevationContourAt } from '../wgs84.js'
+import { RS_GEO, A, geodeticToEcef, geocentricToEcef, isoElevationContourAt } from '../wgs84.js'
 import { effective as displayQuality } from '../../stores/displayQuality.js'
 import { appAlert } from '../../stores/alert.js'   // 应用内提示，替代会夺焦点的原生 alert
 
@@ -56,7 +57,9 @@ function satHull(c) {
   return hull
 }
 
-export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
+// hooks.getTargetEcef(id) → 目标星当前 ECEF（km）或 null：对星指向（boreType='sat'）用。
+// 由宿主页注入——星历/时间轴都在页面手里，本模块不自己碰 SGP4。
+export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = {}) {
   // 卫星树（唯一真相）：预置星(index) / 自定义星 / 星座关联星 共用同一数组。
   // 每个节点 = { folder, satName, kind:'preset'|'custom'|'linked', lon, lat, altKm, noradId,
   //   els, elevColor, elevShow,  antennas:[...] }。仰角线是卫星属性，天线挂在卫星下。
@@ -98,44 +101,115 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
     ctype: 'abs', levels: defaultLevels(),
     pol: 'RSS', gainOffset: 0, pathLoss: 'none',
     boreType: 'azel', boreLon: null, boreLat: 0, boreAz: 0, boreEl: 0, yaw: 0,
+    boreSat: null, boreSatName: '',   // 对星指向（boreType='sat'/'satoff'）的目标星身份 + 显示名
+    boreOffAz: 0, boreOffEl: 0,       // 对星跟踪 + 偏置（boreType='satoff'）：相对目标星方向的 az/el 偏置
+    borePtLon: null, borePtLat: 0, borePtAlt: 550,   // 空间点指向（boreType='point'）：地心经纬度 + 高度 km
     boreLock: true,     // 指向锁定（默认开）：卫星移动时 boresight 钉在地面目标不动（天线重新指向）；关则随星下点平移
 
     beamsToPlot: [0],   // 多波束 GRD：要绘制的波束序号（SATSOFT「Beams To Plot」多选；共用本天线同一套电平/极化设置）
     beamNames: {},      // 波束序号 → 自定义波束名（空=用默认「波束 N」）。地图标注与选波束列表均用此名，不再用天线名+波束名
     // 全局显示选项（与 GXT 一致；不随聚焦天线切换，对所有选中天线生效）：天线名 / 波束中心 / 波束中心峰值 / 数值标签
     // 默认四项全关：新天线导入即为干净地图（无天线名/中心点/峰值/数值标注），需要时再逐项开启
-    showName: false, nameSize: 16, showBore: false, boreSize: 0.5, showPeak: false, peakSize: 5, showVal: false, valSize: 12
+    showName: false, nameSize: 16, showBore: false, boreSize: 0.5, showRay: false, showPeak: false, peakSize: 5, showVal: false, valSize: 12,
+    // 波束射线样式（对地＝卫星↔波束中心连线，对星＝沿视轴射出的那条线；两视图同一套值）
+    rayColor: '#ffb14a', rayWidth: 1.2, rayOpacity: 0.75
   })
-  // 天线姿态基底：azel 模式用方向基准（boresight 由 az/el 方向给定，可指深空）；geo 模式用地表目标点。
+  // 天线姿态基底，两大类五种指向来源：
+  //  【对地指向】geo  —— 地表目标点
+  //             azel —— 相对星下天底的固定 Az/El 偏置（可指深空）
+  //  【对星指向】sat    —— 直指另一颗卫星（星间链路）。目标位置由宿主按【当前时间轴时刻】解算，故 basis 随时间走。
+  //                        这是能表达「低轨打 GSO」这类【反天底】指向的模式：geo 只能瞄地表点，azel 的 El
+  //                        虽然数学上能超过地平、但那是相对天底的固定偏置，不跟着目标星走。
+  //             satoff —— sat 再叠一层相对目标星方向的 az/el 偏置（瞄目标星旁边某个方向；偏置 0 时严格等于 sat）
+  //             point  —— 空间中一个【地心经纬度 + 高度】的定点（轨道壳层上的点）。与 geo 同为「钉住不动的
+  //                        目标点、星动天线重指」，只是点不在地表——不依赖任何在场卫星，可自由拖。
+  // 目标星解析不到（未在场 / 星历缺失）时退回天底，不让整层覆盖凭空消失。
+  // ★ 公式本体在 coverage.beamBasisFrom（纯函数）：时段扫描要按任意时刻重建基底，两条路共用一份口径。
+  //   这里只负责把「目标星身份 → 当前 ECEF」这一步经 hooks 解出来喂进去。
   function beamBasis(meta, st) {
-    if (st.boreType === 'azel') return antennaBasisAzEl(meta.satLon, meta.satLat || 0, meta.satAlt, st.boreAz || 0, st.boreEl || 0, st.yaw || 0)
-    return antennaBasis(meta.satLon, st.boreLon == null ? meta.satLon : st.boreLon, st.boreLat || 0, st.yaw || 0, meta.satLat || 0, meta.satAlt)
+    const T = (st.boreType === 'sat' || st.boreType === 'satoff') && st.boreSat && hooks.getTargetEcef
+      ? hooks.getTargetEcef(st.boreSat) : null
+    return beamBasisFrom(meta, st, T)
   }
-  // 当前聚焦天线 boresight 的地表落点（深空则 null）：供 tip 显示与 geo↔azel 互换
+  // 目标星当前是否解析得到（面板据此提示「目标星不在场」）
+  const boreSatResolved = (st) => !!(st && (st.boreType === 'sat' || st.boreType === 'satoff') && st.boreSat && hooks.getTargetEcef && hooks.getTargetEcef(st.boreSat))
+  // 当前聚焦天线 boresight 的地表落点（深空/对星/空间点则 null）：供 tip 显示与 geo↔azel 互换
   function boreGround() {
     const m = antMeta(); if (!m) return null
+    if (s.boreType === 'sat' || s.boreType === 'satoff' || s.boreType === 'point') return null
     if (s.boreType === 'azel') return azElGround(m.satLon, m.satLat || 0, m.satAlt, s.boreAz || 0, s.boreEl || 0)
     return { lon: s.boreLon == null ? m.satLon : s.boreLon, lat: s.boreLat || 0 }
+  }
+  // 当前聚焦天线的 boresight 方向（ECEF 单位矢量）与源星位置：拖拽/切模式取初值用
+  function boreDir() {
+    const m = antMeta(); if (!m) return null
+    const b = beamBasis(m, s)
+    return { S: b.S, d: b.z }
+  }
+  // 当前视轴打在半径 R 壳层上的落点 {lon, lat, altKm}（地心口径）：3D 拖拽据此定转动增益
+  function boreTip(R) {
+    const bd = boreDir()
+    return bd ? boresightShellPoint(bd.S, bd.d, R) : null
   }
   // 指向模式（STK 口径）＝ 底层 boreType(geo/azel)+boreLock 两字段的规范组合，UI 只暴露单一「模式」：
   //   目标跟踪 Targeted     = geo + 锁定：boresight 钉住固定经纬点，星动天线重指向、足迹中心不动（STK Targeted + Tracking Boresight）
   //   星下点跟随 Ground-track = geo + 不锁定：足迹随星下点平移、保持相对经纬偏置（本平台自有模式，STK 无对应项）
   //   本体固定 Fixed        = azel(不锁定)：相对天底固定 Az/El，星动足迹随之扫过地面（STK Fixed）
   //   天底 Nadir            = azel(不锁定) 且 Az=El=0：boresight 恒指星下点（Fixed 的特例）
+  //   对星跟踪 Sat-track    = sat：boresight 直指另一颗卫星，随两星相对运动实时重指（星间链路；可指反天底）
+  //   对星跟踪+偏置          = satoff：sat 再叠一层相对目标星方向的 az/el 偏置
+  //   空间点 Space-point    = point：钉住空间中一个「地心经纬度 + 高度」的定点（不依赖在场卫星，可自由拖）
+  // 后三者是【对星指向】，UI 里与前四者分作两个 optgroup。
   function boreModeOf() {
+    if (s.boreType === 'sat') return 'sat'
+    if (s.boreType === 'satoff') return 'satoff'
+    if (s.boreType === 'point') return 'point'
     if (s.boreType === 'azel') return (!s.boreAz && !s.boreEl) ? 'nadir' : 'fixed'
     return s.boreLock !== false ? 'target' : 'groundtrack'
   }
   // 切模式只改这两字段：boreType 变化交给既有 watch(s.boreType) 无缝换算当前指向（geo↔azel 不跳变）。
   // Nadir 需把 Az/El 归零、覆盖换算结果，故在 nextTick（换算 watch 冲刷之后）再置 0；持久化同样延到换算完成后，避免存到中间态。
+  // 切到 point 前先按【当前指向】反推空间点，切到 satoff 前把偏置归零 —— 两处都保证换模式时指向不跳变。
   function setBoreMode(mode) {
     if (!antMeta()) return
     if (mode === 'target') { s.boreType = 'geo'; s.boreLock = true }
     else if (mode === 'groundtrack') { s.boreType = 'geo'; s.boreLock = false }
     else if (mode === 'fixed') { s.boreType = 'azel'; s.boreLock = false }
     else if (mode === 'nadir') { s.boreType = 'azel'; s.boreLock = false }
+    else if (mode === 'sat') { s.boreType = 'sat'; s.boreLock = false }   // 目标星在 boreSat，另设
+    else if (mode === 'satoff') { if (s.boreType !== 'satoff') { s.boreOffAz = 0; s.boreOffEl = 0 } s.boreType = 'satoff'; s.boreLock = false }
+    else if (mode === 'point') { syncBorePoint(); s.boreType = 'point'; s.boreLock = false }
     else return
     nextTick(() => { if (mode === 'nadir') { s.boreAz = 0; s.boreEl = 0 } persistActive() })
+  }
+  // 按当前 boresight 方向反推空间点（打在「默认壳层」上，宿主可经 hooks.defaultBoreAlt 给高度；
+  // 缺省沿用上次的 borePtAlt）。切到 point 模式与首次拖拽前调用，避免指向凭空跳到某个旧坐标。
+  function syncBorePoint() {
+    if (s.boreType === 'point' && s.borePtLon != null) return
+    const alt = (hooks.defaultBoreAlt && hooks.defaultBoreAlt()) || s.borePtAlt || 550
+    const bd = boreDir(); if (!bd) { s.borePtAlt = alt; return }
+    const p = boresightShellPoint(bd.S, bd.d, A + alt)
+    // 只在算得出有限值时才写：当前指向的经纬度被清空（v-model.number 落空串）时 basis 会退化成 NaN，
+    // 写进去就成了「NaN°E」，之后每次投影都是空的、还救不回来。
+    if (p && Number.isFinite(p.lon) && Number.isFinite(p.lat)) { s.borePtLon = +p.lon.toFixed(4); s.borePtLat = +p.lat.toFixed(4) }
+    s.borePtAlt = alt
+  }
+  // 设定 / 清除对星指向的目标（id = 宿主认得的身份串，见 hooks.getTargetEcef；name 仅供显示）
+  function setBoreSat(id, name) {
+    if (!antMeta()) return
+    s.boreSat = id || null
+    s.boreSatName = name || ''
+    if (id && s.boreType !== 'satoff') s.boreType = 'sat'
+    persistActive()
+    reproject(); recompute()
+  }
+  // 直接设定空间点指向（面板输入 / 3D 拖拽落点共用）
+  function setBorePoint(lon, lat, altKm) {
+    if (!antMeta()) return
+    if (Number.isFinite(lon)) s.borePtLon = +lon.toFixed(4)
+    if (Number.isFinite(lat)) s.borePtLat = +lat.toFixed(4)
+    if (Number.isFinite(altKm)) s.borePtAlt = +altKm.toFixed(3)
+    s.boreType = 'point'
   }
 
   // 加一档（电平值一律取整数）：
@@ -162,11 +236,14 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
 
   // 每个天线的独立设置（数据库）：除等仰角线(全局参考线)外的全部绘制设置都按天线保存，
   // 切换聚焦时载入该天线设置、编辑时回存，只有用户改动才变。bore 指向同样并入。
-  const PA = ['ctype', 'pol', 'gainOffset', 'pathLoss', 'fill', 'line', 'lineWidth', 'alpha', 'boreType', 'boreLon', 'boreLat', 'boreAz', 'boreEl', 'yaw', 'boreLock']
+  const PA = ['ctype', 'pol', 'gainOffset', 'pathLoss', 'fill', 'line', 'lineWidth', 'alpha', 'boreType', 'boreLon', 'boreLat', 'boreAz', 'boreEl', 'yaw', 'boreLock', 'boreSat', 'boreSatName', 'boreOffAz', 'boreOffEl', 'borePtLon', 'borePtLat', 'borePtAlt']
   const copyLevels = (lv) => lv.map((L) => ({ v: L.v, name: L.name || '', labelT: (L.labelT == null ? null : L.labelT), color: L.color, lineColor: L.lineColor, locked: !!L.locked, lineSet: !!L.lineSet }))
   function defaultSettings(satLon, satLat = 0, peakDb) {
     return { ctype: 'abs', pol: 'RSS', gainOffset: 0, pathLoss: 'none', fill: false, line: true, lineWidth: 1.6, alpha: 0.78,
-      boreType: 'azel', boreLon: satLon == null ? null : satLon, boreLat: satLat || 0, boreAz: 0, boreEl: 0, yaw: 0, boreLock: true, beamsToPlot: [0], beamNames: {}, levels: defaultLevels(peakDb) }
+      boreType: 'azel', boreLon: satLon == null ? null : satLon, boreLat: satLat || 0, boreAz: 0, boreEl: 0, yaw: 0, boreLock: true,
+      boreSat: null, boreSatName: '', boreOffAz: 0, boreOffEl: 0,
+      borePtLon: satLon == null ? null : satLon, borePtLat: satLat || 0, borePtAlt: 550,
+      beamsToPlot: [0], beamNames: {}, levels: defaultLevels(peakDb) }
   }
   function applySettings(cfg) { if (!cfg) return; for (const k of PA) s[k] = cfg[k]; s.levels = copyLevels(cfg.levels || defaultLevels()); s.beamsToPlot = (cfg.beamsToPlot || []).slice(); s.beamNames = { ...(cfg.beamNames || {}) } }
   // 设置序列化（深拷贝 levels/beamsToPlot/beamNames/keptSets），供 getState 回存每个天线
@@ -399,6 +476,13 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
     if (add.length) { sats.value = [...sats.value, ...add]; for (const s of add) expanded.value = { ...expanded.value, [s.folder]: true } }
   }
 
+  // 天线 key 的增删改广播：本模块自己那份 selected 就地维护，但【对星覆盖分析】另存一份 selected
+  // （画哪些天线是它独有的），删天线/删卫星/改名一律要跟着走。两棵树共用同一份数据、任一棵树都能改，
+  // 靠订阅比靠调用方记得同步可靠（早先只在对星那边包一层，从对地树删掉的天线会在对星留一个死 key）。
+  const _keySubs = []
+  function onTreeKeys(fn) { if (typeof fn === 'function') _keySubs.push(fn) }
+  function emitTreeKeys(ev) { for (const f of _keySubs) { try { f(ev) } catch (e) { console.warn('onTreeKeys 订阅者抛错', e) } } }
+
   // 同名加点号去重，作为节点唯一 key（folder）
   function genFolder(name) {
     const base = (name || '卫星').trim() || '卫星'
@@ -458,13 +542,16 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
   // 删卫星：连带清掉其天线的选中/缓存（预置星也可删——仅本会话，重载后随 index 复现）
   function removeSatellite(folder) {
     const n = sats.value.find((x) => x.folder === folder); if (!n) return
+    const gone = []
     for (const a of n.antennas) {
       const k = keyOf(folder, a.name)
       if (a.imported && a.file) { try { window.api.coverageGrd.remove(a.file) } catch { /* ignore */ } }
       cache.delete(k); pendingCfgs.delete(k)
       selected.value = selected.value.filter((x) => x !== k)
       if (active.value === k) active.value = ''
+      gone.push(k)
     }
+    if (gone.length) emitTreeKeys({ type: 'remove', keys: gone })
     sats.value = sats.value.filter((x) => x.folder !== folder)
     if (!active.value) { active.value = selected.value[0] || ''; loadActive() }
     persistSats()
@@ -480,6 +567,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
     cache.delete(key); pendingCfgs.delete(key)
     selected.value = selected.value.filter((k) => k !== key)
     if (active.value === key) { active.value = selected.value[0] || ''; loadActive() }
+    emitTreeKeys({ type: 'remove', keys: [key] })
     recompute()
   }
   // 重命名天线：改名同时迁移其缓存键/选中键/聚焦键（名称即天线唯一标识，导入天线的存盘 file 不受影响）。
@@ -498,6 +586,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
     selected.value = selected.value.map((k) => (k === oldKey ? newKey : k))
     if (active.value === oldKey) active.value = newKey
     sats.value = [...sats.value]   // 触发卫星树响应式刷新（antennas 内属性变更）
+    emitTreeKeys({ type: 'rename', from: oldKey, to: newKey })
     recompute()
     return true
   }
@@ -576,6 +665,9 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
 
   // 聚焦项切换后，把该天线已存设置载入面板（_muteSync 防止载入即回存）
   function loadActive() { const c = cache.get(active.value); if (c && c.settings) { _muteSync = true; applySettings(c.settings); _muteSync = false } }
+  // 按 key 聚焦（快照恢复 / 对星覆盖分析同步聚焦用）：树里找不到该天线就原地不动。
+  // 聚焦是【全局唯一】的——两个覆盖视图的设置区绑的都是 s（＝聚焦天线的编辑态），不许各聚焦各的。
+  async function setActiveKey(key) { const info = findAnt(key); if (info) await setActive(info.sat, info.a) }
 
   // 勾选框 → 加入/移出选中集
   async function toggleAnt(sat, a) {
@@ -615,10 +707,18 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
   function toggleExpand(folder) { expanded.value = { ...expanded.value, [folder]: !expanded.value[folder] } }
   const isExpanded = (folder) => !!expanded.value[folder]
 
-  // 指向(basis)签名：投影只随它变。azel 模式按 az/el，geo 模式按 lon/lat。
+  // 指向(basis)签名：投影只随它变。azel 按 az/el，geo 按 lon/lat，sat 按【目标星当前位置】——
+  // 对星指向下 basis 每个时刻都在变，签名必须带上目标坐标，否则缓存会把投影钉死在第一帧。
   const basisKeyOf = (c) => {
     const m = c.meta, b = c.settings
-    const p = b.boreType === 'azel' ? ('A' + (b.boreAz || 0) + ',' + (b.boreEl || 0)) : ('G' + (b.boreLon == null ? m.satLon : b.boreLon) + ',' + (b.boreLat || 0))
+    let p
+    if (b.boreType === 'sat' || b.boreType === 'satoff') {
+      const T = b.boreSat && hooks.getTargetEcef ? hooks.getTargetEcef(b.boreSat) : null
+      p = 'S' + (b.boreSat || '') + ',' + (T ? T[0].toFixed(3) + ',' + T[1].toFixed(3) + ',' + T[2].toFixed(3) : 'x')
+      if (b.boreType === 'satoff') p += ',O' + (b.boreOffAz || 0) + ',' + (b.boreOffEl || 0)
+    } else if (b.boreType === 'point') p = 'P' + (b.borePtLon == null ? m.satLon : b.borePtLon) + ',' + (b.borePtLat || 0) + ',' + (b.borePtAlt || 0)
+    else if (b.boreType === 'azel') p = 'A' + (b.boreAz || 0) + ',' + (b.boreEl || 0)
+    else p = 'G' + (b.boreLon == null ? m.satLon : b.boreLon) + ',' + (b.boreLat || 0)
     return p + ',' + (b.yaw || 0) + ',' + m.satLon + ',' + (m.satLat || 0) + ',' + (m.satAlt || 0)
   }
   // 最低绝对档（相对模式 = 峰值 + 最低相对值）：低于它的点无覆盖、不参与绘制。
@@ -660,48 +760,9 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
 
   function absLevels(peak, cfg) { return cfg.levels.map((L, idx) => ({ idx, abs: cfg.ctype === 'rel' ? peak + L.v : L.v, v: L.v, name: L.name || '', labelT: (L.labelT == null ? null : L.labelT), color: L.color, lineColor: L.lineColor })) }
 
-  // 一条等值线（点链）的最上端点（纬度最大）：数值标签【默认】锚点，与 GXT「每条等值线取 top 标一次」一致
-  function loopTop(pts) {
-    let best = pts[0]
-    for (const p of pts) if (p[1] > best[1]) best = p
-    return best
-  }
-  // ===== 数值标签沿等值线拖动：把标签位置存成「沿环弧长的比例 t∈[0,1)」，几何每帧重算也始终贴在线上 =====
-  // 经度差（跨 ±180 取最短）：环点用经纬度平面近似度量（覆盖等值线是局部区域，够用）。
-  const dLon = (a, b) => { let d = a - b; while (d > 180) d -= 360; while (d < -180) d += 360; return d }
-  // 环总弧长（度，经纬度平面近似）
-  function loopLen(loop) {
-    let s2 = 0
-    for (let i = 1; i < loop.length; i++) { const dx = dLon(loop[i][0], loop[i - 1][0]), dy = loop[i][1] - loop[i - 1][1]; s2 += Math.hypot(dx, dy) }
-    return s2
-  }
-  // 环上「弧长比例 t」处的点 [lon,lat]（越界 t 环绕；退化环回退 loopTop）
-  function loopPointAtFraction(loop, t) {
-    const total = loopLen(loop); if (!(total > 0) || loop.length < 2) return loopTop(loop)
-    const target = (((t % 1) + 1) % 1) * total
-    let acc = 0
-    for (let i = 1; i < loop.length; i++) {
-      const dx = dLon(loop[i][0], loop[i - 1][0]), dy = loop[i][1] - loop[i - 1][1], seg = Math.hypot(dx, dy)
-      if (acc + seg >= target) { const f = seg > 0 ? (target - acc) / seg : 0; return [wrap180(loop[i - 1][0] + dx * f), loop[i - 1][1] + dy * f] }
-      acc += seg
-    }
-    return loop[loop.length - 1]
-  }
-  // 点 p={lon,lat} 到环的最近投影所对应的「弧长比例 t」（拖拽时把指针吸附到线上）
-  function nearestFractionOnLoop(loop, p) {
-    const total = loopLen(loop); if (!(total > 0) || loop.length < 2) return 0
-    let best = Infinity, bestAcc = 0, acc = 0
-    for (let i = 1; i < loop.length; i++) {
-      const ax = loop[i - 1][0], ay = loop[i - 1][1], dx = dLon(loop[i][0], ax), dy = loop[i][1] - ay, seg2 = dx * dx + dy * dy
-      let f = seg2 > 0 ? (dLon(p.lon, ax) * dx + (p.lat - ay) * dy) / seg2 : 0
-      f = Math.max(0, Math.min(1, f))
-      const ex = dLon(p.lon, ax + dx * f), ey = p.lat - (ay + dy * f), d2 = ex * ex + ey * ey
-      if (d2 < best) { best = d2; bestAcc = acc + Math.hypot(dx, dy) * f }
-      acc += Math.hypot(dx, dy)
-    }
-    // 夹到 <1：开口环（被地平/热区盒裁断）投影到末端时比例会恰为 1，而 loopPointAtFraction 对 t=1 取模回到环首 → 标签瞬移。
-    return Math.min(bestAcc / total, 0.999999)
-  }
+  // 数值标签锚点/沿环拖动（loopTop·loopPointAtFraction·nearestFractionOnLoop：把标签位置存成
+  // 「沿环弧长的比例 t∈[0,1)」，几何每帧重算也始终贴在线上）的几何本体在 coverage.js —— 对星覆盖
+  // （useShellCoverage）共用同一份，两视图标签落点口径逐字一致。
   // 单个波束 → 一个子图层（分带填充 + 等值线 + 波束中心）。相对峰值模式按【该波束自身峰值】算电平
   // （HTS 多点波束各自的 −3dB 圈），绝对模式所有波束共用同一绝对 dB。
   // 填充与等值线由 bandGeometry 一次性同源生成（逐三角形线性插值）：填充 = 各档环带多边形，
@@ -737,11 +798,8 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
         const labels = []
         if (withLabels) for (const loop of stitchLoops(segs)) {
           if (loop.length < 4) continue
-          // 默认锚点：单档取环最上端点(顶部，旧行为不变)；多档时按档序沿环错开 (i+0.5)/n，避免同心环各档
-          // 标签都堆在顶端叠成一列（看着像「统一」、还分不开）——错开后各档天然散开、可分别就近抓取拖动。
-          const t0 = asc.length > 1 ? (i + 0.5) / asc.length : null
-          const anchor = (x.labelT != null) ? loopPointAtFraction(loop, x.labelT)
-            : (t0 != null ? loopPointAtFraction(loop, t0) : loopTop(loop))
+          // 默认锚点见 loopLabelAnchor（单档取顶部、多档沿环错开）；该档拖过则按存下的弧长比例取点。
+          const anchor = (x.labelT != null) ? loopPointAtFraction(loop, x.labelT) : loopLabelAnchor(loop, i, asc.length)
           labels.push(anchor)
           if (_dragCapture) _dragCapture.push({ levelIdx: x.idx, loop, anchor })   // 聚焦天线：供数值标签拖拽就近锁定 + 沿环投影
         }
@@ -783,7 +841,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
     return out
   }
 
-  const fieldOpts = () => ({ alpha: s.alpha, showBore: s.showBore, boreSize: s.boreSize, showName: s.showName, nameSize: s.nameSize, showPeak: s.showPeak, peakSize: s.peakSize, showVal: s.showVal, valSize: s.valSize })
+  const fieldOpts = () => ({ alpha: s.alpha, showBore: s.showBore, boreSize: s.boreSize, showRay: s.showRay, rayColor: s.rayColor, rayWidth: s.rayWidth, rayOpacity: s.rayOpacity, showName: s.showName, nameSize: s.nameSize, showPeak: s.showPeak, peakSize: s.peakSize, showVal: s.showVal, valSize: s.valSize })
   function recompute() {
     const sc = getScene(), fl = getFlat()
     // 聚焦（编辑中）天线排到最后 → 填充叠加时位于最上层，最醒目（其余按选中顺序在下）
@@ -832,8 +890,9 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
         const g = azElGround(oLon, oLat, oAlt, b.boreAz || 0, b.boreEl || 0)
         if (g) { b.boreType = 'geo'; b.boreLon = +g.lon.toFixed(4); b.boreLat = +g.lat.toFixed(4) }
       }
-    } else if (b.boreType !== 'azel') {
+    } else if (b.boreType === 'geo') {
       // 不锁定（跟随卫星）：geo 指向随星下点平移，保留地面目标的相对偏置。azel 相对天底，星动自动跟随，无需平移。
+      // 【对星指向】三型（sat/satoff/point）一律不在此平移：目标星有自己的星历，空间点是钉死的定点。
       let dLon = p.lon - oLon; while (dLon > 180) dLon -= 360; while (dLon < -180) dLon += 360
       const bl = (b.boreLon == null ? oLon : b.boreLon) + dLon
       b.boreLon = +(((bl % 360) + 540) % 360 - 180).toFixed(4)
@@ -842,26 +901,34 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
     c.meta.satLon = p.lon; c.meta.satLat = p.lat || 0; c.meta.satAlt = p.altKm
     for (const bm of c.beams) bm._projKey = null   // 标记投影过期 → 下次按热区盒重投影（只重算绘制中的波束）
     // 同步聚焦天线面板（锁定钉点 azel→geo、或不锁定平移都可能改了 boreType/lon/lat）；值未变则赋值为空操作、不触发指向 watch。
-    if (key === active.value) { _muteSync = true; s.boreType = b.boreType; if (b.boreType !== 'azel') { s.boreLon = b.boreLon; s.boreLat = b.boreLat } _muteSync = false }
+    if (key === active.value) { _muteSync = true; s.boreType = b.boreType; if (b.boreType === 'geo') { s.boreLon = b.boreLon; s.boreLat = b.boreLat } _muteSync = false }
     return true
   }
   // 实时跟踪：linked 星随星历/时间轴移动 → 平移各选中天线的覆盖投影。
   // 由页面在 refreshPositions（1s 实时 / 时间轴拖动）调用。
-  // extraKey：性能指标表当前打开的天线 key。即使其覆盖未绘制（不在 selected），也需随星移动其 meta，
-  // 否则 getPerfContext 取到陈旧星位、表值不随时间轴波动。perfMoved 单独返回，供页面只在该表星动时重算。
-  function tickLive(extraKey = null) {
+  // extra：额外要跟踪的天线 key（单个或数组）。这些天线的覆盖未必绘制在【对地】视图里（不在 selected），
+  // 但性能指标表 / 对星覆盖分析仍要按当前星位取值，故也得随星移动其 meta，否则 getPerfContext 取到陈旧星位。
+  // 返回 moved（本次真的动了的 key 集合），调用方据此各取所需——只有一个 perfMoved 布尔量不够用了。
+  function tickLive(extra = null) {
     const keys = new Set(selected.value)
-    if (extraKey) keys.add(extraKey)
-    if (!keys.size) return { changed: false, perfMoved: false }
-    let changed = false, perfMoved = false
+    const extras = Array.isArray(extra) ? extra.filter(Boolean) : (extra ? [extra] : [])
+    for (const k of extras) keys.add(k)
+    if (!keys.size) return { changed: false, perfMoved: false, moved: null }
+    let changed = false
+    const moved = new Set()
     for (const key of keys) {
       const c = cache.get(key); if (!c || !c.meta) continue
+      // 对星指向：即使源星不动，目标星在动 → basis 每刻都变，必须每拍重投影。
+      // （源星是否跟踪由下面 moveCoverage 管，两者互不替代：低轨打 GSO 是两头都在动。）
+      if (c.settings && (c.settings.boreType === 'sat' || c.settings.boreType === 'satoff') && c.settings.boreSat) {
+        moved.add(key); if (selected.value.includes(key)) changed = true
+      }
       const node = sats.value.find((x) => x.folder === c.meta.folder)
       if (!node || (!node.noradId && !node.elements)) continue   // 仅星座关联星 / 轨道根数模拟星跟踪（固定星不动）
-      if (moveCoverage(c, key, liveOf(node))) { if (selected.value.includes(key)) changed = true; if (key === extraKey) perfMoved = true }
+      if (moveCoverage(c, key, liveOf(node))) { moved.add(key); if (selected.value.includes(key)) changed = true }
     }
     if (changed) recompute()   // 仅绘制中的覆盖层变了才重绘；未绘制的性能表天线只需 meta 已更新
-    return { changed, perfMoved }
+    return { changed, perfMoved: extras.length ? moved.has(extras[0]) : false, moved }
   }
   // 手改卫星信息（经纬度/高度）后，该星全部天线的覆盖图随之平移/缩放（与仰角线一同变化）。
   // 已加载的天线即时重投影；导入天线同步存盘快照，未加载的下次按新位置重建。
@@ -901,17 +968,19 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
     }
     return { meta, beams, peak: best.peak, peakDb: best.peakDb }
   }
+  // 返回新建天线的 key 列表（对星覆盖分析的树据此把新天线一并勾进【它自己那份】显示列表）
   async function importGrd(target) {
     const sat = target || targetSat()
-    if (!sat) { appAlert('请先选择一颗卫星'); return }
+    if (!sat) { appAlert('请先选择一颗卫星'); return [] }
     loading.value = true
     try {
       const res = await window.api.coverageGrd.open()
-      if (!res || res.canceled) return
+      if (!res || res.canceled) return []
       // 多选：每个文件 = 一个天线。兼容旧返回（单文件 {base,text}）。
       const files = res.files || (res.text ? [{ base: res.base, text: res.text }] : [])
-      if (!files.length) { appAlert('读取失败：' + (res.error || '空文件')); return }
+      if (!files.length) { appAlert('读取失败：' + (res.error || '空文件')); return [] }
       const errs = []
+      const added = []
       let lastKey = null, lastPeak = null
       for (const f of files) {
         if (f.error || !f.text) { errs.push((f.base || '文件') + '：' + (f.error || '空文件')); continue }
@@ -931,6 +1000,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
         cache.set(key, { meta: m, beams: ent.beams, settings })
         sat.antennas.push({ name, type: '', band: '', beams: m.beams, peakDb: ent.peakDb, peak: ent.peak, file, imported: true, satLon: m.satLon, satLat: m.satLat, satAlt: m.satAlt })
         selected.value = [...selected.value, key]
+        added.push(key)
         lastKey = key; lastPeak = ent.peak
       }
       if (lastKey) {
@@ -941,6 +1011,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
         const sc = getScene(); if (sc && lastPeak) sc.faceLonLat(lastPeak[0], lastPeak[1])
       }
       if (errs.length) appAlert('部分文件导入失败：\n' + errs.join('\n'))
+      return added
     } finally { loading.value = false }
   }
 
@@ -1054,6 +1125,85 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
     })
   }
 
+  // 拖拽波束【对星覆盖分析视图】：绕【源星】转视轴 —— 光标在屏幕上移动多少，视轴就绕相机的右/上轴转多少
+  // （转量由 scene 的转台算成一个世界系四元数，见那边注释）。与对地拖拽（beamDrag 的 az/el 增量）同为
+  // 【增量】式：起拖不跳变、转量随光标线性累加不封顶 → 空间里 4π 全向可达（反天底、背面都指得到）。
+  //   早先按「光标落在某层壳上的点」绝对写入，方向被那层壳朝向相机的那半边圈死，出了那片就指不过去
+  //   —— 那就是「错误限位」。
+  // ll = { q: [x,y,z,w] } 自起拖以来的累计转动；R = 首层显示中的壳层地心半径，只用来定射线长度
+  // （写空间点得有个距离，方向与它无关）。写回按模式分两种，都只改「指向哪儿」、不改模式性质：
+  //   对星跟踪 / +偏置 → 反解成相对目标星方向的 az/el 偏置（保住对目标星的锁定，只是偏一点）
+  //   其余四种         → 写空间点（切到 point 模式）——这是唯一能在空间里自由指的模式
+  let _sdRaf = 0, _sdLL = null, _sd = null
+  const SD_R2D = 180 / Math.PI
+  const clamp1 = (x) => (x < -1 ? -1 : x > 1 ? 1 : x)
+  const unit3 = (v) => { const n = Math.hypot(v[0], v[1], v[2]) || 1; return [v[0] / n, v[1] / n, v[2] / n] }
+  // v 绕四元数 q 转（与 THREE.Vector3.applyQuaternion 同一套展开）
+  function applyQuat(v, q) {
+    const qx = q[0], qy = q[1], qz = q[2], qw = q[3]
+    const ix = qw * v[0] + qy * v[2] - qz * v[1]
+    const iy = qw * v[1] + qz * v[0] - qx * v[2]
+    const iz = qw * v[2] + qx * v[1] - qy * v[0]
+    const iw = -qx * v[0] - qy * v[1] - qz * v[2]
+    return unit3([
+      ix * qw + iw * -qx + iy * -qz - iz * -qy,
+      iy * qw + iw * -qy + iz * -qx - ix * -qz,
+      iz * qw + iw * -qz + ix * -qy - iy * -qx
+    ])
+  }
+  function shellDrag(ll, phase, R) {
+    if (phase === 'end') {
+      // 最后一帧还压在 rAF 队列里就松手了（快拖快放）→ 先补一次，否则末位光标位置被丢掉、指向差一截
+      if (_sdRaf) { cancelAnimationFrame(_sdRaf); _sdRaf = 0; applyShellDrag(_sd, _sdLL) }
+      _dragging = false; _sdLL = null; _sd = null
+      persistActive(); recompute(); return
+    }
+    if (!active.value || !ll || !ll.q) return
+    const m = antMeta(); if (!m) return
+    if (phase === 'start') {
+      const bd = boreDir(); if (!bd) return
+      // 射线长度：当前视轴打在这层壳上的斜距；打不到（指向深空）就退到「半个源星地心距」的量级
+      const rS = Math.hypot(bd.S[0], bd.S[1], bd.S[2])
+      const hit = boresightShellPoint(bd.S, bd.d, R || (A + 550))
+      let L = rS * 0.5
+      if (hit) {
+        const P = geocentricToEcef(hit.lon, hit.lat, hit.altKm)
+        const t = Math.hypot(P[0] - bd.S[0], P[1] - bd.S[1], P[2] - bd.S[2])
+        if (t > 1) L = t
+      }
+      _dragging = true
+      _sd = { S: bd.S, b0: bd.d, L }
+      return
+    }
+    if (!_sd) return
+    _sdLL = ll
+    if (_sdRaf) return                       // rAF 节流：每帧最多重投影一次
+    _sdRaf = requestAnimationFrame(() => { _sdRaf = 0; applyShellDrag(_sd, _sdLL) })
+  }
+  function applyShellDrag(sd, ll) {
+    if (!sd || !ll || !ll.q) return
+    const b = applyQuat(sd.b0, ll.q)                              // 新视轴（ECEF 单位）
+    if (s.boreType === 'sat' || s.boreType === 'satoff') {
+      const T = s.boreSat && hooks.getTargetEcef ? hooks.getTargetEcef(s.boreSat) : null
+      if (T) {
+        const ae = dirAzElAbout(antennaBasisEcef(sd.S, T, s.yaw || 0), b)
+        s.boreOffAz = +ae.az.toFixed(3); s.boreOffEl = +ae.el.toFixed(3); s.boreType = 'satoff'
+        return
+      }
+    }
+    // 空间点＝视轴上距源星 L 处。落进地球里就沿视轴把它推到地面（只动距离不动方向，指向不受影响）
+    let L = sd.L
+    for (let i = 0; i < 40; i++) {
+      const P = [sd.S[0] + L * b[0], sd.S[1] + L * b[1], sd.S[2] + L * b[2]]
+      const r = Math.hypot(P[0], P[1], P[2])
+      if (r >= A) {
+        setBorePoint(Math.atan2(P[1], P[0]) * SD_R2D, Math.asin(clamp1(P[2] / (r || 1))) * SD_R2D, r - A)
+        return
+      }
+      L *= 0.8
+    }
+  }
+
   // 缓存：导出/恢复 GRD 面板状态（选中天线 / 聚焦 / 各天线全部设置 / 全局等仰角线）
   function getState() {
     persistActive()
@@ -1073,13 +1223,13 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
         satLon: a.satLon, satLat: a.satLat, satAlt: a.satAlt, imported: true, synth: !!a.synth
       }))
     }))
-    const disp = { showName: s.showName, nameSize: s.nameSize, showBore: s.showBore, boreSize: s.boreSize, showPeak: s.showPeak, peakSize: s.peakSize, showVal: s.showVal, valSize: s.valSize }
+    const disp = { showName: s.showName, nameSize: s.nameSize, showBore: s.showBore, boreSize: s.boreSize, showRay: s.showRay, rayColor: s.rayColor, rayWidth: s.rayWidth, rayOpacity: s.rayOpacity, showPeak: s.showPeak, peakSize: s.peakSize, showVal: s.showVal, valSize: s.valSize }
     return { selected: selected.value.slice(), active: active.value, cfgs, sats: satsState, disp }
   }
   async function restoreState(st) {
     if (!st) return
     // 全局显示选项（天线名/波束中心/数值标签）：先恢复，后续 recompute 即按此绘制
-    if (st.disp) for (const k of ['showName', 'nameSize', 'showBore', 'boreSize', 'showPeak', 'peakSize', 'showVal', 'valSize']) if (st.disp[k] != null) s[k] = st.disp[k]
+    if (st.disp) for (const k of ['showName', 'nameSize', 'showBore', 'boreSize', 'showRay', 'rayColor', 'rayWidth', 'rayOpacity', 'showPeak', 'peakSize', 'showVal', 'valSize']) if (st.disp[k] != null) s[k] = st.disp[k]
     // 先恢复卫星：自定义/星座关联星补建到树；所有星（含预置）叠加用户编辑（名称/位置/关联/仰角线）。
     // 预置星节点本身由 index 复现，这里仅叠加用户改过的字段；预置星 kind 始终保持 'preset'。
     if (Array.isArray(st.sats)) {
@@ -1121,6 +1271,9 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
     // 灌入【所有】已存档天线设置到 pending（含未绘制/清除绘图的）：天线一经加载即套用；getState 时一并回存 → 不丢失。
     pendingCfgs.clear()
     if (st.cfgs) for (const key in st.cfgs) pendingCfgs.set(key, st.cfgs[key])
+    // 已经在缓存里的天线当场套用：applyPendingCfg 只在天线【首次加载】时触发，启动恢复时 cache 是空的
+    // 所以一直没露馅；一旦是会话中途恢复存档（cache 已有这些天线），存档设置就永远落不到它头上。
+    for (const key of [...pendingCfgs.keys()]) if (cache.has(key)) applyPendingCfg(key)
     if (!Array.isArray(st.selected)) { recompute(); return }
     // 旧格式（全局设置 + bores）兜底：拼出该天线的 cfg
     const legacy = (key) => st.cfgs ? null : {
@@ -1141,8 +1294,14 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
       keys.push(key)
     }
     selected.value = keys
-    active.value = (st.active && keys.includes(st.active)) ? st.active : (keys[0] || '')
-    if (active.value) { _muteSync = true; applySettings(cache.get(active.value).settings); _muteSync = false }
+    // ★ 聚焦与勾选是【两件事】（见 toggleAnt）：存档里的聚焦天线不一定在本视图的 selected 里 ——
+    //   典型是只在「对星覆盖分析」里勾选画到壳层的那根。早先按 keys.includes 取，聚焦就落到了别的
+    //   天线上，设置区（两视图共用、绑的就是聚焦天线的 s）显示与编辑的都成了另一根天线的设置，
+    //   表现为「指向模式/目标星没保存」。故这里单独把它载进来，载不进才退回 keys[0]。
+    let act = ''
+    if (st.active && await ensureAntLoaded(st.active)) act = st.active
+    active.value = act || keys[0] || ''
+    if (active.value && cache.get(active.value)) { _muteSync = true; applySettings(cache.get(active.value).settings); _muteSync = false }
     recompute()
   }
 
@@ -1222,27 +1381,33 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false) {
   watch(() => s.boreType, (nt, ot) => {
     if (_muteSync || _dragging || nt === ot) return   // 拖拽自行管理指向，不在此换算
     const m = antMeta(); if (!m) return
+    // 对星指向另成一路：目标是一颗星或空间中一个定点，不是一个角度或地表点，geo↔azel 那套换算对它没有意义。
+    // 从对星模式切回来时保留原有的 az/el 与经纬度（切换前存的那份），不做任何折算。
+    const off = (t) => t === 'sat' || t === 'satoff' || t === 'point'
+    if (off(nt) || off(ot)) return
     if (nt === 'azel') { const ae = dirToAzEl(m.satLon, m.satLat || 0, m.satAlt, s.boreLon == null ? m.satLon : s.boreLon, s.boreLat || 0); _muteSync = true; s.boreAz = +ae.az.toFixed(3); s.boreEl = +ae.el.toFixed(3); _muteSync = false }
     else { const g = azElGround(m.satLon, m.satLat || 0, m.satAlt, s.boreAz || 0, s.boreEl || 0); if (g) { _muteSync = true; s.boreLon = +g.lon.toFixed(4); s.boreLat = +g.lat.toFixed(4); _muteSync = false } }
   })
   watch(() => s.boreLock, () => persistActive())   // 指向锁定开关：回存到聚焦天线设置（不改画面，下次卫星移动/编辑星位时生效）
   // 指向变化（geo 的 lon/lat 或 azel 的 az/el，含 yaw/类型）：reproject 只重投影聚焦天线；拖拽中走单层+单视图快路径，否则全量。
-  watch(() => [s.boreLon, s.boreLat, s.boreAz, s.boreEl, s.yaw, s.boreType], () => {
+  watch(() => [s.boreLon, s.boreLat, s.boreAz, s.boreEl, s.yaw, s.boreType,
+    s.boreOffAz, s.boreOffEl, s.borePtLon, s.borePtLat, s.borePtAlt], () => {
     reproject(); _dragging ? recomputeActive() : recompute()
   })
   // 全局显示选项（天线名/波束中心/数值标签开关与字号）：仅影响标注层，重绘即可（不回存到天线设置）
-  watch(() => [s.showName, s.nameSize, s.showBore, s.boreSize, s.showPeak, s.peakSize, s.showVal, s.valSize], () => recompute())
+  watch(() => [s.showName, s.nameSize, s.showBore, s.boreSize, s.showRay, s.rayColor, s.rayWidth, s.rayOpacity, s.showPeak, s.peakSize, s.showVal, s.valSize], () => recompute())
   watch(() => s.showVal, (v) => { if (!v && dragLabel.value) setDragLabel(false) })   // 关掉数值标签即退出标签拖拽模式（无标签可拖）
 
   return {
     sats, expanded, selected, active, loading, s,
-    keyOf, isSelected, isActive, isExpanded, antMeta, activeName, beamsCount, satState, dragBore, boreGround, boreModeOf, setBoreMode,
+    keyOf, isSelected, isActive, isExpanded, antMeta, activeName, beamsCount, satState, dragBore, boreGround, boreDir, boreTip, boreModeOf, setBoreMode,
+    setBoreSat, boreSatResolved, setBorePoint, syncBorePoint, shellDrag, beamBasis,
     activeBeams, beamListOn, isBeamOn, toggleBeam, setAllBeams, allBeamsOn, renameBeam,
     beamQuery, setBeamQuery, filteredBeams, filteredAllOn, filteredAnyOn, selectFiltered,
     deleteBeam, deleteCheckedBeams,
     loadIndex, setActive, toggleAnt, toggleSatAll, toggleExpand, addLevel, removeLevel, importGrd, importSynthGrd,
-    addSatellite, addElevLine, updateSatellite, removeSatellite, removeAntenna, renameAntenna, setElev,
-    setDragBore, beamDrag, dragLabel, setDragLabel, labelDrag, getState, restoreState, recompute, clearAll, clearDrawing,
+    addSatellite, addElevLine, updateSatellite, removeSatellite, removeAntenna, renameAntenna, setElev, onTreeKeys,
+    setDragBore, beamDrag, dragLabel, setDragLabel, labelDrag, getState, restoreState, recompute, clearAll, clearDrawing, setActiveKey,
     setLivePos, tickLive, getPerfContext, ensureAntLoaded, exportContours
   }
 }

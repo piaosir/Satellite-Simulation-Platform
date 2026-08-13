@@ -13,6 +13,13 @@ function gainRgb(t) {
 // KML 颜色为 aabbggrr（8 位十六进制：透明度+蓝+绿+红，与常见 rrggbb 顺序相反）
 const kmlColor = (rrggbb, alpha) => alpha + rrggbb.slice(4, 6) + rrggbb.slice(2, 4) + rrggbb.slice(0, 2)
 const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+// <ExtendedData>：KML 标准的结构化元信息位。写卫星轨位 / 频段 / 类型 / 增益档，
+// 让「导出 KML → 再导入覆盖库」（kml/parse.js 的 parseKmlBeams）能原样还原，不必从中文名称里猜。
+function extDataXml(pairs) {
+  const rows = pairs.filter(([, v]) => v != null && String(v).trim() !== '')
+  if (!rows.length) return []
+  return ['<ExtendedData>', ...rows.map(([k, v]) => `<Data name="${k}"><value>${esc(v)}</value></Data>`), '</ExtendedData>']
+}
 // 环坐标：lon,lat,0 空格分隔；首尾不同则补首点闭合（LinearRing 要求闭合环）
 function ringCoords(pts) {
   if (!pts || pts.length < 2) return ''
@@ -130,6 +137,7 @@ export function serializeKml(beams = [], opts = {}) {
           '<Placemark>',
           `<name>${esc(c.g)} dB</name>`,
           `<styleUrl>#${sid}</styleUrl>`,
+          ...extDataXml([['gain', c.g]]),
           '<Polygon>',
           '<tessellate>1</tessellate>',
           '<altitudeMode>clampToGround</altitudeMode>',
@@ -139,9 +147,10 @@ export function serializeKml(beams = [], opts = {}) {
         )
       }
 
-      beamFolders.push('<Folder>', `<name>${esc(b.name || '波束')}</name>`, ...placemarks, '</Folder>')
+      beamFolders.push('<Folder>', `<name>${esc(b.name || '波束')}</name>`, ...extDataXml([['type', b.type], ['band', b.band]]), ...placemarks, '</Folder>')
     }
-    satFolders.push('<Folder>', `<name>${esc(satName)}</name>`, ...beamFolders, '</Folder>')
+    const satLon = sbeams.map((b) => Number(b.lon)).find((v) => Number.isFinite(v))
+    satFolders.push('<Folder>', `<name>${esc(satName)}</name>`, ...extDataXml([['satLon', satLon]]), ...beamFolders, '</Folder>')
   }
 
   // 协调区多边形（可选）：与覆盖等值线合到同一 Document，按各自颜色/名称渲染（所见即所得）。

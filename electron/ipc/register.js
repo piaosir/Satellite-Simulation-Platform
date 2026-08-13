@@ -180,18 +180,25 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     ipcMain.handle('coverageGxt:removeBeam', (_e, satId, beamId) => coverageGxt.removeBeam(satId, beamId))
     ipcMain.handle('coverageGxt:attach', (_e, satId, beamId, payload) => coverageGxt.attach(satId, beamId, payload))
     ipcMain.handle('coverageGxt:importBatch', (_e, items) => coverageGxt.importBatch(items))
-    // 用户导入：原生框选 .gxt（多选）→ 逐个读原文返回渲染进程解析（parse.js）
+    // 用户导入：原生框选 .gxt / .kml（多选）→ 逐个读原文返回渲染进程解析（gxt/parse.js、kml/parse.js）。
+    // KML 是 UTF-8 XML，GXT 是 latin1 定长文本，编码按扩展名分派（读错编码 → 中文名乱码）。
     ipcMain.handle('coverageGxt:open', async (e) => {
       const win = BrowserWindow.fromWebContents(e.sender)
       const { canceled, filePaths } = await dialog.showOpenDialog(win, {
-        title: '导入 GXT 文件（可多选）', properties: ['openFile', 'multiSelections'],
-        filters: [{ name: 'GXT 等值线 (*.gxt)', extensions: ['gxt'] }, { name: '所有文件', extensions: ['*'] }]
+        title: '导入覆盖等值线（GXT / KML，可多选）', properties: ['openFile', 'multiSelections'],
+        filters: [
+          { name: '覆盖等值线 (*.gxt, *.kml)', extensions: ['gxt', 'kml'] },
+          { name: 'GXT 等值线 (*.gxt)', extensions: ['gxt'] },
+          { name: 'KML (*.kml)', extensions: ['kml'] },
+          { name: '所有文件', extensions: ['*'] }
+        ]
       })
       if (canceled || !filePaths || !filePaths.length) return { canceled: true }
       const path = require('path')
       const files = filePaths.map((fp) => {
-        try { return { base: path.basename(fp), text: fs.readFileSync(fp, 'latin1') } }
-        catch (err) { return { base: path.basename(fp), error: err.message } }
+        const ext = path.extname(fp).slice(1).toLowerCase()
+        try { return { base: path.basename(fp), ext, text: fs.readFileSync(fp, ext === 'kml' ? 'utf8' : 'latin1') } }
+        catch (err) { return { base: path.basename(fp), ext, error: err.message } }
       })
       return { canceled: false, files }
     })

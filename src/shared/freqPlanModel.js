@@ -223,11 +223,11 @@ export function fmtBeamNos(nos) {
   return out.join(',')
 }
 
-/** 这一条的来源读数：「波束合成「组名」· F3 · 9 个波束：1-3,7,9,10」；不是导入来的 → 空串 */
+/** 这一条的来源读数：「天线波束合成「组名」· F3 · 9 个波束：1-3,7,9,10」；不是导入来的 → 空串 */
 export function beamSynthText(bm) {
   const s = bm && bm.synth
   if (!s) return ''
-  const parts = [s.group ? `波束合成「${s.group}」` : '波束合成']
+  const parts = [s.group ? `天线波束合成「${s.group}」` : '天线波束合成']
   if (s.fc != null) parts.push(fcLabel(s.fc))
   if (s.nos.length) parts.push(`${s.nos.length} 个波束：${fmtBeamNos(s.nos)}`)
   return parts.join(' · ')

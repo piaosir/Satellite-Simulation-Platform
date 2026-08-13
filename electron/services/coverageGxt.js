@@ -1,8 +1,9 @@
-// 用户 GXT 覆盖库（主进程）：用户导入的 .gxt 持久化到 userData/gxt-imported。
+// 用户覆盖等值线库（主进程）：用户导入的 .gxt / .kml 持久化到 userData/gxt-imported。
 // 维护一棵「卫星 → 波束」索引树（index.json，元信息真相），每个波束挂：
-//   - 原始 .gxt 原文（再导出用，原样字节保真）
+//   - 原始 .gxt 原文（再导出用，原样字节保真；KML 来源不留原文——一个 KML 可含多波束，
+//     逐波束各存一份整档是冗余，再导出时由归一化 JSON 重建即可，数据无损）
 //   - 归一化 JSON（{ lon, bore, contours }，供渲染管线 coverage.get 同构消费）
-// 解析在渲染进程做（src/viz/gxt/parse.js，ESM），主进程只负责存盘 + 索引增删。
+// 解析在渲染进程做（src/viz/gxt/parse.js、src/viz/kml/parse.js，ESM），主进程只负责存盘 + 索引增删。
 const fs = require('fs')
 const path = require('path')
 const { writeJsonAtomic, readJsonSafe } = require('./jsonStore')
@@ -115,12 +116,14 @@ module.exports = function createCoverageGxt(saveDirFn) {
     const rawRel = `${clean(satId)}/${clean(beamId)}.gxt`
     fs.writeFileSync(safePath(jsonRel), JSON.stringify(payload.json || {}))
     if (payload.rawText != null) fs.writeFileSync(safePath(rawRel), String(payload.rawText), 'latin1')
+    else if (beam.rawFile) { try { fs.unlinkSync(safePath(beam.rawFile)) } catch { /* 已不在 */ } }   // 改从无原文的来源（KML）重导：清掉上一版 .gxt，别留孤儿
     beam.file = jsonRel
     beam.rawFile = payload.rawText != null ? rawRel : null
     beam.contours = (payload.json && payload.json.contours ? payload.json.contours.length : 0)
     beam.gains = payload.json && payload.json.contours ? [...new Set(payload.json.contours.map((c) => c.g))].sort((a, b) => a - b) : []
     beam.lon = payload.json && Number.isFinite(payload.json.lon) ? payload.json.lon : beam.lon
     beam.sourceName = payload.sourceName || beam.sourceName || null
+    beam.sourceFormat = payload.sourceFormat || (payload.rawText != null ? 'gxt' : beam.sourceFormat) || null
     beam.importedAt = new Date().toISOString()
     if (Number.isFinite(beam.lon) && !Number.isFinite(sat.lon)) sat.lon = beam.lon
     if (payload.type) beam.type = payload.type
@@ -149,6 +152,7 @@ module.exports = function createCoverageGxt(saveDirFn) {
       const rawRel = `${clean(sat.id)}/${clean(beam.id)}.gxt`
       fs.writeFileSync(safePath(jsonRel), JSON.stringify(it.json || {}))
       if (it.rawText != null) fs.writeFileSync(safePath(rawRel), String(it.rawText), 'latin1')
+      else if (beam.rawFile) { try { fs.unlinkSync(safePath(beam.rawFile)) } catch { /* 已不在 */ } }   // 同上：KML 重导覆盖旧 GXT 原文
       beam.file = jsonRel
       beam.rawFile = it.rawText != null ? rawRel : null
       beam.contours = it.json && it.json.contours ? it.json.contours.length : 0
@@ -157,6 +161,7 @@ module.exports = function createCoverageGxt(saveDirFn) {
       beam.band = it.band != null ? it.band : beam.band
       beam.type = type
       beam.sourceName = it.sourceName || null
+      beam.sourceFormat = it.sourceFormat || (it.rawText != null ? 'gxt' : null)
       beam.importedAt = new Date().toISOString()
       if (Number.isFinite(beam.lon) && !Number.isFinite(sat.lon)) sat.lon = beam.lon
     }

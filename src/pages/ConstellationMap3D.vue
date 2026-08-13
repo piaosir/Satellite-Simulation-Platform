@@ -31,6 +31,13 @@ import { useBeamSynth } from '../viz/grd/useBeamSynth.js'
 import { useVisibility, orbitClass } from '../viz/vis/useVisibility.js'
 import { useEnvField } from '../viz/env/useEnvField.js'
 import { usePerfTable } from '../viz/grd/usePerfTable.js'
+import { useShellCoverage } from '../viz/grd/useShellCoverage.js'
+import { useSatPerfTable } from '../viz/grd/useSatPerfTable.js'
+import { sampleBeamAtEcef } from '../viz/grd/coverage.js'
+import SatCovPanel from '../components/SatCovPanel.vue'
+import SatCovWindows from '../components/SatCovWindows.vue'
+import SatCovShellPicker from '../components/SatCovShellPicker.vue'
+import GrdSetSections from '../components/GrdSetSections.vue'
 import { useGridSelect } from '../viz/grd/useGridSelect.js'
 import { useMarkerTable } from '../viz/markers/useMarkerTable.js'
 import sat from '../viz/constellation/satellite.js'
@@ -129,7 +136,13 @@ const grdApiOk = typeof window !== 'undefined' && !!(window.api && window.api.co
 const covOpen = toRef(covNav, 'covOpen')   // 右侧覆盖面板开关（GXT）；与顶栏按钮共用 covNav store
 
 // 覆盖图（GRD）：实时原始场，渲染到星座3D 的 scene/flat（独立图层）
-const grd = useGrdCoverage(() => scene, () => flat, () => flatView.value)
+const grd = useGrdCoverage(() => scene, () => flat, () => flatView.value, {
+  // 对星指向（boreType='sat'/'satoff'）的目标解析：身份串 → 当前时刻 ECEF(km)。星历与时间轴都在本页，
+  // 故由本页注入；useGrdCoverage 自己不碰 SGP4。见下方 satTargetEcef。
+  getTargetEcef: (id) => satTargetEcef(id),
+  // 切到「空间点」指向时，指向点默认落在哪层壳上（取对星覆盖分析里第一层显示中的壳层）
+  defaultBoreAlt: () => satcovDragAlt()
+})
 const { sats: grdSats, loading: grdLoading, s: grdS } = grd
 const grdOpen = toRef(covNav, 'grdOpen')   // GRD 覆盖面板开关；与顶栏按钮共用 covNav store
 
@@ -137,6 +150,13 @@ const grdOpen = toRef(covNav, 'grdOpen')   // GRD 覆盖面板开关；与顶栏
 // polys/satLivePos 在下方定义 → 用 getter 传入避免 TDZ（仅运行时调用）。
 // refresh：草图轮廓变化 → 重画卫星层（含 sketchSpec）+ 同步拖拽手柄。
 const bs = useBeamSynth({ grd, getPolys: () => polys.value, livePos: (n) => satLivePos(n), appAlert, refresh: () => { redrawSats(); syncEdit() } })
+
+// ===================== 对星覆盖分析（波束打到轨道壳层上）=====================
+// 与对地覆盖共用同一棵卫星/天线树与同一套【物理设置】（指向/极化/增益/路损，经 grd.getPerfContext 现取）；
+// 只有【显示设置】（档位/填充/画哪些波束）各记一套。渲染走 scene 的壳层专用通道，与对地覆盖互不覆写。
+const satcov = useShellCoverage(grd, () => scene, () => flat, () => flatView.value)
+const satPerf = useSatPerfTable()
+const satcovTableOpen = ref(false)
 
 // 可见性分析（复刻 STK Access / Coverage）：选目标（站/点/航迹/Polygon）→ 仰角门限 → 算可见卫星。
 // 宿主能力全经 getter/箭头注入（避免 TDZ；stations/points/renderEntries 等在下方定义，仅运行时调用）。
@@ -324,6 +344,303 @@ async function ensurePerfCities() {
   catch { _perfCitiesLoaded = false }   // 载入失败（无 IPC 等）→ 允许下次开表重试；自动补全暂不可用
 }
 function closePerf() { perfKey.value = '' }
+
+// ===================== 对星指向：目标星身份 ↔ 当前 ECEF =====================
+// 身份串用 'n:<NORAD>'，没有编号的（自定义/合成星）退用 'm:<名字>'。存进天线设置里要跨会话稳定，
+// 故不能存数组下标或对象引用。
+const satIdOf = (e) => (e && e.noradId ? 'n:' + e.noradId : (e ? 'm:' + e.name : ''))
+// 全量目录索引（NORAD / 名字 → 条目）：searchPool 一旦就绪就不再变，故只建一次。
+// satEntryById 会被指向计算与聚焦特效【每帧】调到，两万多条上做线性 find 扛不住。
+let _poolById = null, _poolByName = null
+function poolIndexReady() {
+  if (!poolReady) return false
+  if (!_poolById) {
+    _poolById = new Map(); _poolByName = new Map()
+    for (const e of searchPool) {
+      const n = String(e.noradId)
+      if (!_poolById.has(n)) _poolById.set(n, e)
+      if (!_poolByName.has(e.name)) _poolByName.set(e.name, e)
+    }
+  }
+  return true
+}
+// 目标星不在场且全量目录还没建 → 后台拉一次；就绪后清帧缓存并重算（此前解析不到的指向这时才生效）
+let _borePoolPending = false
+function requestSearchPoolForBore() {
+  if (poolReady || _borePoolPending || !apiOk) return
+  _borePoolPending = true
+  ensureSearchPool().finally(() => {
+    _borePoolPending = false
+    _tgtBucket = -1; _tgtMap = new Map()
+    if (!poolReady) return                       // 离线/失败：别空转重算
+    grd.recompute(); satcov.scheduleRecompute()
+    if (shellUi.side === 'satcov') commitGeometry()
+  })
+}
+// 身份串 → 卫星条目。★【全量】解析，不限于在场：对星跟踪的目标星可以是任何一颗目录星 /
+// 自定义星座合成星 / 卫星组成员，它没被渲染出来不影响指向解算（与搜索池同一口径，见 satcovSearch）。
+// 顺序＝在场（与点云同一批对象）→ 全量在轨目录 → 自定义星座（含隐藏的座，取最新一次生成的合成星）。
+function satEntryById(id) {
+  if (!id) return null
+  const isN = id.startsWith('n:'), key = id.slice(2)
+  const live = isN ? renderEntries.find((x) => String(x.noradId) === key) : renderEntries.find((x) => x.name === key)
+  if (live) return live
+  if (poolIndexReady()) { const e = isN ? _poolById.get(key) : _poolByName.get(key); if (e) return e }
+  else requestSearchPoolForBore()
+  return (isN ? customConst.findByNorad(key) : customConst.catalog().find((x) => x.name === key)) || null
+}
+// 帧内缓存：一次重算里 basisKeyOf + beamBasis 会反复问同一颗星，逐次 SGP4 太浪费。
+// 桶宽 100 ms —— 实时档 calcAt() 每次调用都不同毫秒，不分桶就等于没缓存。
+let _tgtBucket = -1, _tgtMap = new Map()
+function satTargetEcef(id) {
+  if (!id) return null
+  const t = calcAt(), bucket = Math.floor(t.getTime() / 100)
+  if (bucket !== _tgtBucket) { _tgtBucket = bucket; _tgtMap = new Map() }
+  if (_tgtMap.has(id)) return _tgtMap.get(id)
+  let P = null
+  const e = satEntryById(id)
+  if (e) {
+    const cc = isCustomEntry(e), tm = cc ? ccTimeAt(t) : t
+    try {
+      const pv = sat.propagate(e.rec, tm)
+      if (pv && pv.position) { const ecf = sat.eciToEcf(pv.position, sat.gstime(tm)); P = [ecf.x, ecf.y, ecf.z] }
+    } catch { P = null }
+  }
+  _tgtMap.set(id, P)
+  return P
+}
+
+// ===================== 对星覆盖分析：目标星集 / 指标表浮窗 =====================
+// 目标星集与可见性分析同源（renderEntries = 当前在场的星），排除源星自己。双历元：合成星按场景历元解算。
+function satcovTimes() {
+  const now = calcAt(), ccNow = ccTimeAt(now)
+  return { now, gmst: sat.gstime(now), ccNow, ccGmst: sat.gstime(ccNow) }
+}
+// 指标表里时刻列的格式化：与时间轴读数同一套时区开关（tYear/tMon… 在本文件后段定义，
+// 这个闭包只在渲染时才执行，届时早已就绪）。函数体里读了 tzMode.value → 切时区表格自动重排。
+satPerf.setTimeFmt((ms) => {
+  const d = new Date(ms), p = (n) => String(n).padStart(2, '0')
+  return `${tYear(d)}-${p(tMon(d) + 1)}-${p(tDay(d))} ${p(tHour(d))}:${p(tMin(d))}:${p(tSec(d))}`
+})
+const satcovNowMs = computed(() => { void nowTick.value; void timeOffset.value; void live.value; return calcAt().getTime() })
+function satcovEntries(ctx) {
+  const selfName = ctx ? String(ctx.satName || '') : ''
+  return renderEntries.filter((e) => !selfName || e.name !== selfName)
+    .map((e) => ({ rec: e.rec, name: e.name, noradId: e.noradId, group: e.group, _cc: !!isCustomEntry(e) }))
+}
+// picks（只存名字/NORAD）→ 活体条目。星历更新后按身份重新解析，解析不到的自动缺席。
+// 解析走 satEntryById 的【全量】口径（在场 → 全量目录 → 自定义星座）：目标星是从全量目录里搜进来的，
+// 若这里只认在场，加得进列表却算不出行，表面上像「这颗星没被照到」——静默算错，比报错还糟。
+function satcovResolvePicks() {
+  const out = []
+  for (const p of satPerf.picks.value) {
+    const e = satEntryById(p.noradId ? 'n:' + p.noradId : 'm:' + p.name)
+      || renderEntries.find((x) => x.name === p.name)      // 编号对不上了但名字还在（星历换版）
+    if (e) out.push({ rec: e.rec, name: e.name, noradId: e.noradId, group: e.group, _cc: !!isCustomEntry(e) })
+  }
+  return out
+}
+function satcovRefreshTable() {
+  if (!satcovTableOpen.value) return
+  const key = satcov.active.value
+  const ctx = key ? grd.getPerfContext(key) : null
+  if (!ctx) { satPerf.compute(null); return }
+  satPerf.compute(ctx, satPerf.getOpts(key), satcovResolvePicks(), satcovTimes(), satcov.shells.value, satcov.s.hEx)
+}
+// 「加入波束内的星」：扫一遍在场卫星，把当前落在方向图域里的加进目标库。
+// 这是「全量」与「点选」之间的桥——先捞一批，再自己删到只剩关心的那几颗。
+function satcovAddInBeam() {
+  const key = satcov.active.value
+  const ctx = key ? grd.getPerfContext(key) : null
+  if (!ctx || !ctx.beams.length) { status.value = '先选一根天线'; return }
+  const fb = satcov.focusBeam.value                    // 这一轮真画出来的那个波束；没画就退回第一个
+  const bm = (fb && ctx.beams.find((b) => b.bi === fb.bi)) || ctx.beams[0]
+  const t = satcovTimes()
+  const dirOpts = { pol: ctx.settings.pol, gainOffset: 0, pathLoss: 'none' }
+  const found = []
+  for (const e of satcovEntries(ctx)) {
+    let pv
+    try { pv = sat.propagate(e.rec, e._cc ? t.ccNow : t.now) } catch { continue }
+    if (!pv || !pv.position) continue
+    const ecf = sat.eciToEcf(pv.position, e._cc ? t.ccGmst : t.gmst)
+    if (!sampleBeamAtEcef(bm.beam, ctx.igrid, ctx.basis, [ecf.x, ecf.y, ecf.z], dirOpts)) continue
+    found.push({ name: e.name, noradId: e.noradId, group: e.group })
+  }
+  const n = satPerf.addTargets(found)
+  status.value = found.length ? `波束内 ${found.length} 星，新增 ${n} 个目标` : '当前波束内没有卫星'
+  satcovRefreshTable()
+}
+// ---- 时间窗口（时段扫描）----
+// 与瞬时表最大的不同：源星与目标星都要按【任意时刻】解算，故得把两者的星历（satrec）交给表模块，
+// 不能只给一个当下的星下点。固定星（无 NORAD、无根数）没有星历 → 给 null，表模块按 ctx.meta 恒定处理。
+function satcovSourceRec(ctx) {
+  const folder = ctx && ctx.meta && ctx.meta.folder
+  const node = folder ? grdSats.value.find((x) => x.folder === folder) : null
+  if (!node) return null
+  if (node.noradId) {
+    const en = entries.find((x) => String(x.noradId) === String(node.noradId))
+      || searchPool.find((x) => String(x.noradId) === String(node.noradId))
+      || customConst.findByNorad(node.noradId)
+    if (en) return { rec: en.rec, _cc: !!isCustomEntry(en) }
+  } else if (node.elements) {
+    try { return { rec: orbitSatrec(node), _cc: false } } catch { return null }
+  }
+  return null
+}
+// 对星指向（sat/satoff）的目标星星历：指向本身随时间走，扫描时每个时刻都要重解
+function satcovBoreRec(ctx) {
+  const st = ctx && ctx.settings
+  if (!st || (st.boreType !== 'sat' && st.boreType !== 'satoff')) return null
+  const e = satEntryById(st.boreSat)
+  return e ? { rec: e.rec, _cc: !!isCustomEntry(e) } : null
+}
+async function satcovScanWindows() {
+  const key = satcov.active.value
+  const ctx = key ? grd.getPerfContext(key) : null
+  if (!ctx) { status.value = '先选一根天线'; return }
+  const tgts = satcovResolvePicks()
+  if (!tgts.length) { status.value = '先加目标星'; return }
+  await satPerf.computeWindows(ctx, satPerf.getOpts(key), tgts, satcovTimes(), satcov.shells.value, satcov.s.hEx,
+    { srcRec: satcovSourceRec(ctx), boreRec: satcovBoreRec(ctx) })
+}
+// 指标表里点「聚焦」：旋转地球正对该星并选中（与搜索结果点选、双击定位同一路径）
+async function satcovFocusTarget(t) {
+  if (!t || !t.name) return
+  const nid = t.noradId == null ? '' : String(t.noradId)
+  let en = renderEntries.find((x) => (nid && String(x.noradId) === nid) || x.name === t.name)
+  if (!en && nid) { await ensureSearchPool(); en = searchSource().find((x) => String(x.noradId) === nid) }
+  if (!en) { status.value = `「${t.name}」不在当前星历中`; return }
+  selectSat(en, true)
+  autoRotate.value = false
+}
+
+// 浮窗以 .g3 为参照系（与对地性能指标表同款），开窗前把当前可视尺寸递过去
+const satcovHost = ref({ w: 0, h: 0 })
+async function satcovOpenTable() {
+  if (!satcovTableOpen.value) satcovHost.value = g3Size()
+  satcovTableOpen.value = !satcovTableOpen.value
+  if (satcovTableOpen.value) { await nextTick(); satcovRefreshTable() }
+}
+// ---- 「从星座取」壳层挑选器 ----
+// 候选池默认取【全量在轨目录】（searchSource：与主界面搜索同一个池，后台加载一次），
+// 不受当前「星座分组」选择限制——选了 GEO 组照样能取 Starlink 的壳层。
+// 高度取 satrec 的平均半长轴 a（地球半径为单位，WGS72）换算的平均轨道高度：与时刻无关、圆轨道即壳层半径，
+// 比逐星 SGP4 出瞬时星下高度既快又稳（后者短周期抖几 km，会把一层打散成好几层）。
+const RE_SGP4 = 6378.135
+const satcovPickOpen = ref(false)
+const satcovPickSrc = ref('all')          // 'all' 全量在轨目录 ｜ 'live' 当前在场卫星
+const satcovPickLoading = ref(false)
+const satcovPickPool = shallowRef([])
+const satcovShellAlts = computed(() => satcov.shells.value.map((x) => x.altKm))
+async function satcovLoadShellPool() {
+  satcovPickLoading.value = true
+  try {
+    let src = renderEntries
+    if (satcovPickSrc.value === 'all') { await ensureSearchPool(); src = searchSource() }
+    const out = [], seen = new Set()
+    for (const e of src) {
+      const rec = e && e.rec
+      if (!rec || !Number.isFinite(rec.a)) continue
+      const id = String(e.noradId || e.name)
+      if (seen.has(id)) continue
+      seen.add(id)
+      const altKm = (rec.a - 1) * RE_SGP4
+      if (!(altKm > 0)) continue
+      out.push({
+        name: e.name, noradId: e.noradId, groupLabel: e.groupLabel || GROUP_LABEL[e.group] || '其他',
+        altKm, incDeg: (rec.inclo || 0) * 180 / Math.PI, ecc: rec.ecco || 0
+      })
+    }
+    satcovPickPool.value = out
+  } catch { satcovPickPool.value = [] } finally { satcovPickLoading.value = false }
+}
+async function satcovOpenPick() { satcovPickOpen.value = true; await satcovLoadShellPool() }
+function satcovSetPickSrc(v) { satcovPickSrc.value = v; satcovLoadShellPool() }
+function satcovAddPicked(items) {
+  const n = satcov.addShells(items)
+  satcovPickOpen.value = false
+  status.value = n ? `新增 ${n} 层壳层` : '选中的壳层都已在库中'
+}
+// ---- 拖拽波束 ----
+// 对地视图：光标落点在地球表面，落点即指向点。
+// 对星视图：绕【源星】转方向（弧球），4π 全向可达。这里的高度只用来定「指向点离源星多远」——
+//   空间点指向取它自己的高度，否则取第一层显示中的壳层，方向与它无关。
+function satcovDragAlt() {
+  const st = grd.s
+  if (st.boreType === 'point' && Number.isFinite(st.borePtAlt)) return st.borePtAlt
+  const sh = satcov.shells.value.find((x) => x.show) || satcov.shells.value[0]
+  return sh ? sh.altKm : 550
+}
+const satcovDragOn = () => shellUi.side === 'satcov' && !flatView.value
+// 拖拽回调分派：3D 的对星视图走绕星弧球（shellDrag），其余（含对星视图下的 2D 对地平面图）走原地表拖拽
+function onBeamDragAny(ll, phase) {
+  if (satcovDragOn()) grd.shellDrag(ll, phase, W.A + satcovDragAlt())
+  else grd.beamDrag(ll, phase)
+}
+// 拖拽方式要在【按下之前】就设好（scene 在 pointerdown 当场起算）→ 相关量一变就同步。
+// 对星视图给「源星 + 当前视轴落点」＝绕源星转方向；其余给 null ＝回到地表落点拾取。
+function satcovSyncDragSphere() {
+  if (!scene || !scene.setBeamDragPivot) return
+  const m = satcovDragOn() ? grd.antMeta() : null
+  scene.setBeamDragPivot(m ? {
+    sat: { lon: m.satLon, lat: m.satLat || 0, altKm: m.satAlt },
+    tip: grd.boreTip(W.A + satcovDragAlt())        // 当前视轴落点：只用来定「屏上转一度、波束转几度」的增益
+  } : null)
+}
+watch(() => [shellUi.side, flatView.value, grd.dragBore.value, grd.active.value, grdS.boreType], satcovSyncDragSphere)
+// 时间轴 / 星位变化后的刷新：只管源星动了要重投影；指标表按其「重算」走（一行一颗星，逐帧算不起）
+function satcovTick(movedKeys) {
+  if (movedKeys && movedKeys.size) {
+    for (const k of satcov.selected.value) if (movedKeys.has(k)) { satcov.scheduleRecompute(); break }
+  }
+}
+// 瞬时表随手重算（便宜）；时段表只标「输入已变」等用户点重算 —— 一次扫描是几十万次取值，不能跟着抖
+watch(() => satcov.active.value, () => satcovRefreshTable())
+watch(satcovTableOpen, (v) => { if (v) satcovRefreshTable() })
+// 聚焦特效的触发面：画哪些天线变了（点亮谁按此定）、指向模式/目标星变了（目标星那一端要跟着换）。
+// 时间推进不在这里管——refreshPositions 每帧都会 commitGeometry。
+watch(() => [satcov.selected.value.join('|'), grd.active.value, grdS.boreType, grdS.boreSat], () => { if (shellUi.side === 'satcov') commitGeometry() })
+// 目标库变动（加/删/清空）→ 表重算
+watch(() => satPerf.picks.value, () => satcovRefreshTable(), { deep: true })
+// ===== 目标星搜索（对星跟踪的目标星 / 指标表的目标星，两处共用）=====
+// ★【全量】搜索，不限于「在场」：池 = 全量在轨目录（内置各星座分组 ∪ active ∪ 本地自定义卫星库）
+//   ＋ 自定义星座合成星（含隐藏的座）；另按【卫星组】的组名命中该组全部成员（与自定义星座按星座名
+//   命中全部成员同款）。选中的星不必被渲染出来——指向解算与指标表都按同一口径全量解析（satEntryById）。
+// 全量目录是懒加载的（第一次搜索可能要等几秒联网/读缓存），故本函数是 async；防抖与竞态由调用方管。
+// 返回纯数据（不含 satrec / 不是 Proxy）：{ items: [{name, noradId, group, tag}], total }
+//   tag = 卫星组名 / 星座名 / 分组名；★ total 是【不截断】的命中总数（列表只列前 limit 条，
+//   条数与主界面搜索/卫星组管理器同量级）——否则用户没法分辨「只有这几颗」与「被截断了」。
+// exclude：要排除的身份串（指标表传「已在目标库里的星」）。★ 必须在这里排除、不能由调用方对结果再过滤——
+//   列表是截断过的，对截断后的 60 条再滤掉已加入的，会在「全都加过了」时报成「没有匹配」，而目录里其实还剩一百多颗。
+async function satcovSearch(q, limit = 60, exclude = null) {
+  const kw = String(q || '').trim().toLowerCase()
+  if (!kw) return { items: [], total: 0 }
+  await ensureSearchPool()
+  const cap = Math.max(1, limit)
+  const skip = exclude && exclude.length ? new Set(exclude) : null
+  // 卫星组：组名命中 → 该组成员整批进池（组名本身不是一条结果）
+  const grpHit = new Map()
+  for (const g of satGroups.list.value) {
+    const gname = String(g.name || '')
+    if (!gname.toLowerCase().includes(kw)) continue
+    for (const s of (g.sats || [])) { const id = String(s.noradId); if (!grpHit.has(id)) grpHit.set(id, gname) }
+  }
+  const match = (e) => e.name.toLowerCase().includes(kw) || String(e.noradId).includes(kw)
+    || (e.groupLabel && e.groupLabel.toLowerCase().includes(kw)) || grpHit.has(String(e.noradId))
+  const out = [], seen = new Set()
+  let total = 0
+  const push = (e) => {
+    const k = e.noradId ? 'n:' + e.noradId : 'm:' + e.name
+    if (seen.has(k) || (skip && skip.has(k))) return
+    seen.add(k)
+    total++
+    if (out.length < cap) out.push({ name: e.name, noradId: e.noradId, group: e.group, tag: grpHit.get(String(e.noradId)) || e.groupLabel || GROUP_LABEL[e.group] || '' })
+  }
+  // 两轮都【扫到底】不提前 break：列表截断到 cap，命中总数照实数（两万多条上做 includes 是毫秒级）
+  for (const e of renderEntries) if (match(e)) push(e)        // 在场的排前面
+  for (const e of searchSource()) if (match(e)) push(e)
+  return { items: out, total }
+}
 // ===== 浮窗拖拽：移动（标题栏）/ 缩放（右下角）/ 分隔（中缝）。统一一个临时 window 监听会话 =====
 // 浮窗定位以 .g3（本页根，position:relative）为参照系，而非整个浏览器窗口：
 // .g3 只是主内容区（活动栏/侧栏/菜单栏/工具栏/状态栏均不在其内），用 window.innerWidth/innerHeight
@@ -530,14 +847,7 @@ watch(() => [grdS.pol, grdS.gainOffset, grdS.pathLoss, grdS.ctype, grdS.beamsToP
 let _perfDragRaf = 0
 function scheduleRefreshPerf() { if (_perfDragRaf) return; _perfDragRaf = requestAnimationFrame(() => { _perfDragRaf = 0; refreshPerf() }) }
 watch(() => [grdS.boreType, grdS.boreLon, grdS.boreLat, grdS.boreAz, grdS.boreEl, grdS.yaw], () => { if (perfKey.value && perfKey.value === grd.active.value) scheduleRefreshPerf() })
-// 电平颜色 css(rgb) -> #hex（供 <input type=color>）；setLevelColor 反向写回
-function grdLvHex(css) { const m = /(\d+)\D+(\d+)\D+(\d+)/.exec(css || ''); if (!m) return '#ffffff'; const h = (n) => (+n).toString(16).padStart(2, '0'); return '#' + h(m[1]) + h(m[2]) + h(m[3]) }
-// 改填充色：线色未单独设过时跟随填充一同改（默认二者同色）；整档 locked，此后增删档不再自动改（记忆到再改）
-function setLevelColor(i, e) { const x = e.target.value; const css = `rgb(${parseInt(x.slice(1, 3), 16)},${parseInt(x.slice(3, 5), 16)},${parseInt(x.slice(5, 7), 16)})`; const L = grdS.levels[i]; L.color = css; if (!L.lineSet) L.lineColor = css; L.locked = true }
-// 改线色：线色转为独立设定（lineSet），之后不再跟随填充；整档 locked
-function setLineColor(i, e) { const x = e.target.value; const css = `rgb(${parseInt(x.slice(1, 3), 16)},${parseInt(x.slice(3, 5), 16)},${parseInt(x.slice(5, 7), 16)})`; const L = grdS.levels[i]; L.lineColor = css; L.lineSet = true; L.locked = true }
-// GRD 天线指向模式（STK 口径）：底层仍是 boreType+boreLock，这里做单一「模式」表示层（读写委托给 useGrdCoverage）
-const boreMode = computed({ get: () => grd.boreModeOf(), set: (m) => grd.setBoreMode(m) })
+// 电平配色 / 指向模式 / 波束名与电平名的内联改名都在 GrdSetSections.vue 里（两个覆盖分析视图共用那份 UI）
 const covSats = ref([])           // 索引：[{folder,displayName,satName,lon,beams:[{band,beam,type,gains,file}...]}]
 const covItems = ref([])          // 已添加卫星（两级结构）
 const covCleared = ref(false)      // 「清除绘制」后置位：保留 covItems 但暂不绘制，避免切视图/重开面板时 GXT 覆盖自行复现（再次 redraw 即解除）。入 snapshot 持久化，使「清除后效果」跨重启保留
@@ -898,10 +1208,12 @@ function cardFor(e) {
 
 // ===================== 选中几何：轨道圈 / 星下点轨迹 / 覆盖足迹 =====================
 // 为所有选中星各画一组轨道圈/星下点轨迹/覆盖足迹；星下点轨迹/覆盖足迹固定原色多颗叠画，轨道圈固定原色仅 primary 加粗加亮区分聚焦星。
-// 只「算」不「推」：返回选中星 3D items（轨道/轨迹/足迹/在轨点），并写入 selGeomAll(2D) 与副作用（primary 高亮环 / beam 夹断）。
-// 实际提交交由 commitGeometry 与可见性叠加层合并（二者共用 setSelectionSet / setFocusSatLLA replace-all 通道，故必须一次性喂）。
+// 只「算」不「推」：返回选中星 3D items（轨道/轨迹/足迹/在轨点），并写入 selGeomAll(2D)、selHl(primary 金色高亮环)
+// 与 beam 夹断占位。实际提交交由 commitGeometry 与可见性叠加层、对星聚焦特效合并
+//（三者共用 setSelectionSet / setFocusSatLLA / setHighlightLLA replace-all 通道，故必须一次性喂）。
+let selHl = null   // primary 选中星的高亮环位置（null=无），由 footprintFor 回填
 function computeSelectedGeometry() {
-  selGeomAll = []
+  selGeomAll = []; selHl = null
   if (!scene || !selEntries.length) return []
   const now = calcAt(), gmstNow = sat.gstime(now)
   const ccNow = ccTimeAt(now), ccGmstNow = sat.gstime(ccNow)   // 合成星按场景历元解算（跨会话稳定）
@@ -934,6 +1246,70 @@ function computeSelectedGeometry() {
   return items
 }
 
+// ===================== 对星覆盖分析：卫星「聚焦特效」（不弹信息卡）=====================
+// 与点击星座卫星【同一套几何】：轨道圈 / 星下点轨迹 / 覆盖足迹 / 在轨点。区别只有两点——
+//   · 不动 selEntries → 不弹信息卡、不改多选列表；
+//   · 谁被点亮由本视图自己决定：小眼睛亮着【且】至少有一根天线画在壳层上的星（一棵树十几颗星
+//     全套轨道圈只会糊成一团，故必须以「正在分析」为准），外加它对星跟踪的目标星（链路两端同时亮）。
+// 关联星按星历实时解算，固定点星没有轨道、只出足迹与在轨点。
+const liveEntryOf = (noradId) => entries.find((x) => String(x.noradId) === String(noradId))
+  || searchPool.find((x) => String(x.noradId) === String(noradId))
+  || customConst.findByNorad(noradId) || null       // 自定义星座合成星(含隐藏)
+function focusGeomOfRec(rec, isCc, color) {
+  if (!rec) return null
+  const now = calcAt(), t = isCc ? ccTimeAt(now) : now, g = sat.gstime(t)   // 合成星按场景历元解算
+  try {
+    const pv = sat.propagate(rec, t)
+    if (!pv || !pv.position) return null
+    const gd = sat.eciToGeodetic(pv.position, g)
+    const lat = sat.degreesLat(gd.latitude), lon = sat.degreesLong(gd.longitude), h = gd.height
+    const samples = sampleOrbitAdaptive(rec, t, (2 * Math.PI) / rec.no)     // 一周期自适应采样，与选中星同源
+    const orbit = samples.map((q) => { const d = sat.eciToGeodetic(q.pv.position, g); return { lat: sat.degreesLat(d.latitude), lon: sat.degreesLong(d.longitude), altKm: d.height } })
+    const track = samples.map((q) => ({ lat: q.lat, lon: q.lon }))
+    const ecf = sat.eciToEcf(pv.position, g)
+    const fp = footprintAtEcef([ecf.x, ecf.y, ecf.z], h)
+    return { item: { orbit, track, footprint: fp, primary: false, satPos: { lat, lon, altKm: h, color } }, sub: { lat, lon }, flat: { track, footprint: fp } }
+  } catch { return null }
+}
+function focusGeomStatic(node, color) {
+  const lon = Number(node.lon), lat = Number(node.lat), h = Number(node.altKm)
+  if (!Number.isFinite(lon) || !Number.isFinite(lat) || !(h > 0)) return null
+  const fp = footprintAtEcef(W.geodeticToEcef(lon, lat, h), h)
+  return { item: { footprint: fp, primary: false, satPos: { lat, lon, altKm: h, color } }, sub: { lat, lon }, flat: { footprint: fp } }
+}
+// 只「算」不「推」：返回 { items(3D), subs(3D 星下点图标), subs2d(2D 星下点图标), flat(2D 轨迹/足迹) }，
+// 由 commitGeometry 与聚焦星几何、可见性叠加层合并后一次性提交（三者共用同一 replace-all 通道）。
+// subs2d 只含【目标星】：源星在 2D 已由 redrawSats 画了自己的卫星图标（小眼睛的老作用），再叠一个就是重影。
+function computeSatcovFocusGeometry() {
+  const empty = { items: [], subs: [], subs2d: [], flat: [], rings: [] }
+  if (!scene || shellUi.side !== 'satcov') return empty
+  const items = [], subs = [], subs2d = [], flatGeom = [], rings = []
+  const seen = new Set(selEntries.map((e) => satIdOf(e)))   // 已被点选的星不重画一遍（几何完全一致）
+  const add = (id, g, on2d) => {
+    if (!g || (id && seen.has(id))) return
+    if (id) seen.add(id)
+    items.push(g.item); flatGeom.push(g.flat)
+    if (g.item.satPos) rings.push(g.item.satPos)             // 金色高亮环：套在星本体上（在轨高度，不是星下点）
+    if (g.sub) { subs.push(g.sub); if (on2d) subs2d.push(g.sub) }
+  }
+  for (const node of grdSats.value) {
+    if (node.kind === 'elevline' || !satVisible(node)) continue
+    const keys = (node.antennas || []).map((a) => grd.keyOf(node.folder, a.name)).filter((k) => satcov.selected.value.includes(k))
+    if (!keys.length) continue
+    const en = node.noradId ? liveEntryOf(node.noradId) : null
+    if (en) add(satIdOf(en), focusGeomOfRec(en.rec, isCustomEntry(en), satDotHex(en)), false)
+    else if (node.elements) { let rec = null; try { rec = orbitSatrec(node) } catch { rec = null }; add('f:' + node.folder, focusGeomOfRec(rec, false, node.elevColor), false) }
+    else add('f:' + node.folder, focusGeomStatic(node, node.elevColor), false)
+    for (const k of keys) {
+      const st = (grd.getPerfContext(k) || {}).settings
+      if (!st || (st.boreType !== 'sat' && st.boreType !== 'satoff')) continue
+      const te = satEntryById(st.boreSat)
+      if (te) add(satIdOf(te), focusGeomOfRec(te.rec, isCustomEntry(te), satDotHex(te)), true)
+    }
+  }
+  return { items, subs, subs2d, flat: flatGeom, rings }
+}
+
 // 统一提交：把「聚焦星几何」与「可见性叠加层」合并后一次性喂给共用的 replace-all 通道
 // （3D setSelectionSet / setFocusSatLLA、2D setFocusSat / setSelGeom），二者可同时呈现、各随时间轴移动。
 // 修复：此前可见性激活时 buildSelectedGeometry / pushFocusSat 被 !vis.open 门控掉、且 buildVisibilityGeometry
@@ -941,19 +1317,23 @@ function computeSelectedGeometry() {
 function commitGeometry() {
   if (!scene) return
   const selItems = computeSelectedGeometry()
-  if (!selEntries.length) scene.setHighlightLLA(null)   // 无聚焦星：清高亮环（computeSelectedGeometry 空选不经 footprintFor，否则残留）
   const vg = vis.open.value ? computeVisibilityGeometry() : { items: [], subs: [] }
-  scene.setSelectionSet([...selItems, ...vg.items])
+  const sf = computeSatcovFocusGeometry()               // 对星覆盖分析的聚焦特效（不在该视图时为空）
+  scene.setSelectionSet([...selItems, ...vg.items, ...sf.items])
+  // 金色高亮环：点选主星 + 对星聚焦的每颗星。整条通道每次全量重喂 —— 空选时喂空即清环，
+  // 不再需要单独一句「无聚焦星就清环」（computeSelectedGeometry 空选不经 footprintFor，selHl 已置 null）
+  scene.setHighlightLLA([...(selHl ? [selHl] : []), ...sf.rings])
   const focus = focusSubpoints()                        // 聚焦星星下点（白·默认大小；无选中时为 []）
-  scene.setFocusSatLLA([...focus, ...vg.subs])          // + 可见星星下点（面板色/大小，每点自带 px/colorHex）
-  if (flat) flat.setFocusSat(focus)                     // 2D 聚焦星下点；可见星走 overlaySpec 的 sats（redrawSats）
-  pushSelGeomFlat()
+  scene.setFocusSatLLA([...focus, ...vg.subs, ...sf.subs])   // + 可见星星下点（面板色/大小，每点自带 px/colorHex）
+  if (flat) flat.setFocusSat([...focus, ...sf.subs2d])  // 2D 聚焦星下点；可见星走 overlaySpec 的 sats（redrawSats）
+  pushSelGeomFlat(sf.flat)
 }
 
 // 聚焦卫星几何缓存列表（推 2D 平面图：覆盖范围 + 星下点轨迹，与 3D 同源，多选=每颗都缓存）
 let selGeomAll = []
-function pushSelGeomFlat() {
-  if (flat) flat.setSelGeom(selGeomAll)
+// extra：对星覆盖分析聚焦特效的几何（同款画法，与聚焦星并列，不入 selGeomAll 缓存）
+function pushSelGeomFlat(extra) {
+  if (flat) flat.setSelGeom(extra && extra.length ? [...selGeomAll, ...extra] : selGeomAll)
 }
 
 // 覆盖足迹圈，两种定义方式（fpMode）：
@@ -962,34 +1342,41 @@ function pushSelGeomFlat() {
 // 返回该星覆盖足迹点列（或 null）；primary=true 时顺带更新高亮环与 beam ε=0 上限占位。纯函数，不直接改场景足迹层（由 setSelectionSet 统一绘制）。
 function footprintFor(rec, now, gmstNow, primary) {
   const pv = sat.propagate(rec, now)
-  if (!pv || !pv.position) { if (primary) scene.setHighlightLLA(null); return null }
+  if (!pv || !pv.position) { if (primary) selHl = null; return null }
   const gd = sat.eciToGeodetic(pv.position, gmstNow)
   const lat0 = sat.degreesLat(gd.latitude), lon0 = sat.degreesLong(gd.longitude), h = gd.height
-  if (primary) scene.setHighlightLLA({ lat: lat0, lon: lon0, altKm: h })
+  if (primary) selHl = { lat: lat0, lon: lon0, altKm: h }
   if (!(h > 0)) return null
   const ecf = sat.eciToEcf(pv.position, gmstNow)   // 卫星 ECEF(km)，按 WGS84 椭球求足迹边
+  const lim = {}
+  const fp = footprintAtEcef([ecf.x, ecf.y, ecf.z], h, lim)
+  if (primary && lim.bMaxDeg != null) {
+    // placeholder 常显 ε=0 上限；用户超限回写夹断值（锁定态不回写）
+    const autoText = lim.bMaxDeg.toFixed(1)
+    if (autoText !== beamAuto.value) beamAuto.value = autoText
+    if (lim.clampText != null && !beamLock.value && lim.clampText !== beam.value) beam.value = lim.clampText
+  }
+  return fp
+}
+// 足迹的纯几何部分（按当前 fpMode 口径），不碰高亮环/占位符：footprintFor 与「对星覆盖分析聚焦特效」共用同一定义。
+// ecef=卫星 ECEF(km)，h=轨道高度 km；lim=可选出参，回填 { bMaxDeg, clampText } 供调用方写占位符（仅 beam 模式）。
+function footprintAtEcef(ecef, h, lim) {
+  if (!ecef || !(h > 0)) return null
   if (fpMode.value === 'elev') {
     const raw = parseFloat(elevMin.value)
     const el = raw >= 0 && raw < 90 ? raw : 0
-    const ring = W.isoElevationContourAt([ecf.x, ecf.y, ecf.z], el, 120)
+    const ring = W.isoElevationContourAt(ecef, el, 120)
     return ring ? ring.map(([lon, lat]) => ({ lat, lon })) : null
   }
-  const r = RE + h
-  const etaMax = Math.asin(clamp(RE / r, -1, 1))
+  const etaMax = Math.asin(clamp(RE / (RE + h), -1, 1))
   const bMaxDeg = 2 * etaMax / DEG
   const raw = parseFloat(beam.value)
   let bDeg, clampText = null
   if (!(raw > 0)) bDeg = bMaxDeg
   else if (raw > bMaxDeg) { bDeg = bMaxDeg; clampText = bMaxDeg.toFixed(1) }
   else bDeg = raw
-  const fp = W.footprintEllipsoid([ecf.x, ecf.y, ecf.z], (bDeg / 2) * DEG, 72)
-  if (primary) {
-    // placeholder 常显 ε=0 上限；用户超限回写夹断值（锁定态不回写）
-    const autoText = bMaxDeg.toFixed(1)
-    if (autoText !== beamAuto.value) beamAuto.value = autoText
-    if (clampText != null && !beamLock.value && clampText !== beam.value) beam.value = clampText
-  }
-  return fp
+  if (lim) { lim.bMaxDeg = bMaxDeg; lim.clampText = clampText }
+  return W.footprintEllipsoid(ecef, (bDeg / 2) * DEG, 72)
 }
 
 // 以 (lat0,lon0) 为心、地心半角 lambda 的地表小圆 -> 经纬度点列
@@ -1068,7 +1455,13 @@ function refreshPositions() {
   }
   commitGeometry()   // 聚焦星几何 + 可见性叠加层合并提交：二者同时呈现、均随时间轴移动（聚焦星星下点/轨迹不再被可见性覆盖）
   if (hasLinkedElev() || vis.open.value) redrawSats()   // 星座关联星仰角线 / 可见性目标点：随时间轴/实时跟踪
-  if (grd.tickLive(perfKey.value || null).perfMoved) refreshPerf()   // 星动 → GRD 覆盖随时间轴移动；性能指标表也随之重算（取值依赖星位推出的 basis）
+  // 星动 → GRD 覆盖随时间轴移动；两张性能指标表与对星壳层也随之重算（取值/几何都依赖星位推出的 basis）
+  {
+    const tk = grd.tickLive([perfKey.value || null, satcov.active.value || null, ...satcov.selected.value])
+    const mv = tk.moved
+    if (perfKey.value && mv && mv.has(perfKey.value)) refreshPerf()
+    satcovTick(mv)
+  }
   if (satModal.value && satModal.value.noradId) liveTick.value++   // 关联星编辑中：驱动弹窗经纬度/高度刷新
   persistGrdLive()   // 写实时关联星当前星下点到轻量缓存，供链路预算窗口「导入时取新位置」
 }
@@ -1896,6 +2289,12 @@ function fmtSpan(min) {
   const h = Math.floor(min / 60), m = min % 60; return h ? (m ? `${h}h${m}m` : `${h}h`) : `${m}m`
 }
 const customWinLabel = computed(() => fmtSpan(windowMin.value))
+// 对星指标表窗口的时刻读数：取【时间轴游标】calcAt()，不是系统时钟（与晨昏线/可见性同口径）
+const timeText = computed(() => {
+  void nowTick.value; void timeOffset.value; void live.value; void tzMode.value
+  const d = calcAt(), p = (n) => String(n).padStart(2, '0')
+  return `${tYear(d)}-${p(tMon(d) + 1)}-${p(tDay(d))} ${p(tHour(d))}:${p(tMin(d))}:${p(tSec(d))} ${tzUtc() ? 'UTC' : localTzLabel.value}`
+})
 
 // 悬停幽灵线 + 时间气泡（落点前先预览该处对应时间）
 const hoverShow = ref(false), hoverX = ref(0), hoverLabel = ref('')
@@ -2115,7 +2514,7 @@ function ensureFlat() {
   if (!flat && flatCanvas.value) {
     flat = createFlatCoverage(flatCanvas.value)
     flat.setRenderScale(displayQuality.value.pixelRatio); flat.setMapDetail(displayQuality.value.mapDetail, displayQuality.value.mapThin)
-    flat.setOnRightClick(onMapRightClick); flat.setOnHover(onHoverLL); flat.setOnBeamDrag(grd.beamDrag); flat.setBeamDragMode(grd.dragBore.value)
+    flat.setOnRightClick(onMapRightClick); flat.setOnHover(onHoverLL); flat.setOnBeamDrag(onBeamDragAny); flat.setBeamDragMode(grd.dragBore.value)
     flat.setOnLabelDrag(grd.labelDrag); flat.setLabelDragMode(grd.dragLabel.value)   // 拖拽等值线数值标签（沿线滑动）
     flat.setOnVertexDrag(onVertexDrag)   // 拖动单个顶点/标记点（Polygon 调点 或 标记「调整点位置」，分发）
     flat.setOnPolyMove(onPolyMoveDrag)       // Polygon 整体拖动：按住内部平移全部顶点
@@ -2443,7 +2842,7 @@ function collectGxt() {
         const d = covCache[r.file]; if (!d) continue
         const contours = (d.contours || []).filter((c) => eff.has(c.g))
         if (!contours.length) continue
-        out.push({ name: r.beam, satName: idx.displayName, lon: idx.lon, bore: d.bore || [], contours, emiRcp: 'E' })
+        out.push({ name: r.beam, satName: idx.displayName, lon: idx.lon, band: r.band || '', type: it.type || 'EIRP', bore: d.bore || [], contours, emiRcp: 'E' })
       }
     }
   }
@@ -3176,7 +3575,7 @@ function stopSynthPlacement() {
   if (bs.placing.value || bs.adjusting.value || bs.deleting.value) { bs.placing.value = false; bs.adjusting.value = false; bs.deleting.value = false; syncEdit() }
 }
 // 活动栏切到「波束合成」→ 载入卫星树（懒加载）+ 打开草图；离开 → 关草图（放置/调整态一并退出，数据保留）
-watch(() => shellUi.side, async (side) => {
+watch(() => shellUi.side, async (side, prev) => {
   if (side === 'beams') {
     await grd.loadIndex(false)   // 卫星下拉需要卫星树；不自动改动覆盖显示
     bs.openFor(grd.active.value ? grd.active.value.split('|')[0] : '')
@@ -3188,6 +3587,16 @@ watch(() => shellUi.side, async (side) => {
   // 环境场：进入即取数并铺图层；离开只收面板不撤图层（气象/地形是底图性质的背景，切走还得看得见）
   if (side === 'env') env.openPanel()
   else if (env.open.value) env.close()
+  // 对星覆盖分析：进入即懒加载卫星树并按当前状态重绘（3D 壳层 + 2D 对地投影）。
+  // 3D 壳层是场景内容，离开不撤（要清空走面板的「清除绘图」）；但 2D 平面图只有一块场，
+  // 两个视图都往那儿画 → 离开时必须把它交还给对地视图，否则切回去平面图还留着对星那批层。
+  // 聚焦特效随视图进/出（其余触发面见 satcov.selected / 指向设置的 watch，时间推进由 refreshPositions 兜住）
+  if (side === 'satcov') { await grd.loadIndex(false); satcov.recompute(); commitGeometry() }
+  else {
+    if (prev === 'satcov') { grd.recompute(); commitGeometry() }          // 交还 2D 平面图
+    satcovTableOpen.value = false
+    satcovPickOpen.value = false
+  }
 }, { immediate: true })
 // 「地图放置」开关：开启即清场并进入右键放置态（与调整互斥）
 function bsPlaceToggle() {
@@ -3386,41 +3795,20 @@ function commitRenameAnt(sat, a) {
   grdEditAnt.value = ''
 }
 
-// 波束名内联重命名：草稿缓冲，防止实时重渲染（nowTick/星动每秒自增触发整组件重渲染）时
-// Vue 强制回写 <input> 的 value 吞掉未提交的输入。grdEditBeam 存正在编辑波束的 "active天线key#紧凑下标"，
-// grdEditBeamVal 为输入框草稿；@input 即时写草稿 → 每次重渲染的 :value 都取草稿=已输入内容 → 不再被吞。
-// （对照天线名 grdEditAnt/grdEditVal 同款；波束名的提交仍走 grd.renameBeam，失焦/回车落库。）
-const grdEditBeam = ref('')
-const grdEditBeamVal = ref('')
-const beamEditKey = (b) => grd.active.value + '#' + b.i
-function startRenameBeam(b) { grdEditBeam.value = beamEditKey(b); grdEditBeamVal.value = b.label }
-function inputRenameBeam(b, v) { grdEditBeam.value = beamEditKey(b); grdEditBeamVal.value = v }
-function commitRenameBeam(b) {
-  if (grdEditBeam.value === '') return   // 已提交（blur 与回车可能重复触发）→ 跳过
-  if (grdEditBeamVal.value !== b.label) grd.renameBeam(b.i, grdEditBeamVal.value)   // 未改名则跳过，省一次 live 冗余重绘
-  grdEditBeam.value = ''; grdEditBeamVal.value = ''
-}
-
-// 电平档「灰色列」内联改名：空=显示电平值（默认），填=显示自定义名（等值线数值标签同步用此名）。
-// 同波束名走草稿缓冲防每秒重渲染吞字：grdEditLv 存正在编辑的档下标(String)，grdEditLvVal 为草稿。
-const grdEditLv = ref('')
-const grdEditLvVal = ref('')
-// 某档默认灰字（无自定义名时）＝该档在地图上的数值标签文字，与 buildBeamLayer 的 txt=String(x.v) 一致（所见即所得）。
-function lvDefaultText(L) { return String(L.v) }
-function startRenameLv(i, L) { grdEditLv.value = String(i); grdEditLvVal.value = L.name || '' }
-function inputRenameLv(i, v) { grdEditLv.value = String(i); grdEditLvVal.value = v }
-function commitRenameLv(i) {
-  if (grdEditLv.value === '') return   // 已提交（blur 与回车可能重复触发）→ 跳过
-  const L = grdS.levels[i]; const nm = grdEditLvVal.value.trim()
-  if (L && nm !== (L.name || '')) L.name = nm   // 未改则跳过（改 levels 会触发 watch(s.levels) 回存+重绘）
-  grdEditLv.value = ''; grdEditLvVal.value = ''
-}
+// 波束名 / 电平名的内联重命名（草稿缓冲防实时重渲染吞字）随「天线设置」一并搬进 GrdSetSections.vue。
 
 // 仰角线显示开关（仰角值/颜色在卫星「✎」弹窗里编辑）
 function toggleSatElev(node) { node.elevShow = !node.elevShow; redrawSats() }
 // 小眼睛状态独立于「卫星设置」里的显示图标/显示卫星名两个开关：只要有一个开着就算亮着，两个都关了才算灭
 const satVisible = (node) => node.iconShow !== false || node.labelShow !== false
-function toggleSatLabel(node) { const next = !satVisible(node); node.labelShow = next; node.iconShow = next; redrawSats(); if (grdOpen.value) grd.recompute() }   // 一键同时隐藏/恢复图标+名称（各自的独立开关在「卫星设置」里）；卫星名开关也影响 3D 覆盖连线(卫星↔波束中心)，需重绘覆盖层
+// 一键同时隐藏/恢复图标+名称（各自的独立开关在「卫星设置」里）；卫星名开关也影响 3D 覆盖连线(卫星↔波束中心)，需重绘覆盖层。
+// 对星覆盖分析里这个开关还兼「聚焦特效」的总闸（见 computeSatcovFocusGeometry），故在该视图另走一次壳层重算 + 几何提交。
+function toggleSatLabel(node) {
+  const next = !satVisible(node); node.labelShow = next; node.iconShow = next
+  redrawSats()
+  if (grdOpen.value) grd.recompute()
+  if (shellUi.side === 'satcov') { satcov.scheduleRecompute(); commitGeometry() }
+}
 // 是否有显示中且位置随时间变化的卫星（星座关联星 / 轨道根数模拟星）：其仰角线/卫星名需随时间刷新位置
 const hasLinkedElev = () => grdSats.value.some((s) => (s.noradId || s.elements) && (s.elevShow || satVisible(s)))
 // 随 GRD「清除绘图」一并隐藏所有仰角线与卫星名（保留各星配置，再点亮即重绘）
@@ -3493,6 +3881,9 @@ function saveSatModal() {
     grd.addSatellite({ name: m.name, lon, lat, altKm, noradId: m.noradId, elements, els: m.els, color: m.color, elevWidth: m.elevWidth, elevLabelSize: m.elevLabelSize, iconSize: m.iconSize, labelSize: m.labelSize, iconShow: m.iconShow, labelShow: m.labelShow })
   }
   closeSatModal(); redrawSats()
+  // 改星位＝天线基底变了：对星覆盖的壳层投影与聚焦特效都得跟着重算（对地那条由 updateSatellite 内的
+  // reprojectSat 兜住；壳层是另一条通道，不重算就停在旧星位上）
+  if (shellUi.side === 'satcov') { satcov.scheduleRecompute(); commitGeometry() }
 }
 function removeSat(node) { grd.removeSatellite(node.folder); redrawSats() }
 
@@ -3544,7 +3935,7 @@ function orbitSatrec(node) {
 // 当前生效位置：星座关联星按 calcAt() 实时解算；轨道根数模拟星按自建 satrec 解算；否则取节点存储值
 function satLivePos(node) {
   if (node.noradId) {
-    const en = entries.find((x) => String(x.noradId) === String(node.noradId)) || searchPool.find((x) => String(x.noradId) === String(node.noradId)) || customConst.findByNorad(node.noradId)   // 自定义星座合成星(含隐藏)：关联后按合成星历实时跟踪
+    const en = liveEntryOf(node.noradId)   // 自定义星座合成星(含隐藏)：关联后按合成星历实时跟踪
     if (en) { const now = isCustomEntry(en) ? ccTimeAt() : calcAt(); const pv = sat.propagate(en.rec, now); if (pv && pv.position) { const gd = sat.eciToGeodetic(pv.position, sat.gstime(now)); return { lon: sat.degreesLong(gd.longitude), lat: sat.degreesLat(gd.latitude), altKm: gd.height } } }
   } else if (node.elements) {
     try { const now = calcAt(); const pv = sat.propagate(orbitSatrec(node), now); if (pv && pv.position) { const gd = sat.eciToGeodetic(pv.position, sat.gstime(now)); return { lon: sat.degreesLong(gd.longitude), lat: sat.degreesLat(gd.latitude), altKm: gd.height } } } catch { /* 根数异常 → 回退静态值 */ }
@@ -4131,6 +4522,8 @@ function snapshot() {
     mkPtLayer: showPtLayer.value, mkStLayer: showStLayer.value, mkTrajLayer: showTrajLayer.value,
     covOpen: covOpen.value, polyOpen: polyOpen.value,
     grdOpen: grdOpen.value, grd: grd.getState(), perf: perf.getState(),
+    satcov: satcov.getState(), satPerf: satPerf.getState(),
+    satcovUi: { table: satcovTableOpen.value, pickSrc: satcovPickSrc.value },
     cov: {
       items: serializeCov(), cleared: covCleared.value,
       beamLabels: showBeamLabels.value, beamFont: beamLabelSize.value, bore: showBore.value, boreSize: boreSize.value,
@@ -4222,10 +4615,24 @@ async function restoreSettings() {
   // 覆盖图（GRD）状态恢复：只要有保存的 GRD 状态就载入索引并恢复卫星树（含自定义/星座星）+
   // 天线设置 + 仰角线属性，使仰角线即便面板关闭也照常画在地图上；面板仅在上次开启时才展开。
   if (s.perf) perf.restoreState(s.perf)
+  if (s.satPerf) satPerf.restoreState(s.satPerf)
   if (grdApiOk && s.grd) {
     await grd.loadIndex(false)
     await grd.restoreState(s.grd)
     if (s.grdOpen) grdOpen.value = true
+    // 对星壳层状态在 grd 树恢复【之后】才能还原（restoreState 里要 ensureAntLoaded 那些天线）
+    if (s.satcov) await satcov.restoreState(s.satcov)
+    // 对星覆盖分析的页面级 UI：壳层挑选器的数据源、性能指标表浮窗。
+    // 表只在【上次就停在这个视图】时才跟着回来——切走视图本就会关表（见 shellUi.side 的 watch），
+    // 在别的视图下把它弹出来既碍事、又要为一张看不见的表跑一遍取值。
+    if (s.satcovUi) {
+      if (s.satcovUi.pickSrc === 'live' || s.satcovUi.pickSrc === 'all') satcovPickSrc.value = s.satcovUi.pickSrc
+      if (s.satcovUi.table && shellUi.side === 'satcov') {
+        satcovHost.value = g3Size()
+        satcovTableOpen.value = true
+        await nextTick(); satcovRefreshTable()
+      }
+    }
     redrawSats()
   } else if (s.grdOpen && grdApiOk) {
     grdOpen.value = true
@@ -4296,7 +4703,8 @@ onMounted(async () => {
   // 鼠标实时经纬度（底部状态栏显示）+ 右键标点/加航点
   scene.setOnHover(onHoverLL)
   scene.setOnRightClick(onMapRightClick)
-  scene.setOnBeamDrag(grd.beamDrag)   // 拖拽波束（GRD boresight 中心）
+  scene.setOnBeamDrag(onBeamDragAny)   // 拖拽波束（GRD boresight）：对地拖地表落点、对星绕源星转方向
+  satcovSyncDragSphere()
   scene.setOnLabelDrag(grd.labelDrag); scene.setLabelDragMode(grd.dragLabel.value)   // 拖拽等值线数值标签（沿线滑动）
   scene.setOnPolyDraw(onPolyDraw); scene.setPolyDrawMode(!!(polyDrawId.value || activeTraj.value))   // Polygon/航迹绘制：左键按住沿路径连续加点
   scene.setOnPlace((ll) => bs.placeAt(ll)); scene.setPlaceMode(bs.placing.value)   // 波束合成放置：左键点击落波束（拖动仍旋转）
@@ -4681,7 +5089,7 @@ onBeforeUnmount(() => {
           </template>
         </div>
 
-        <!-- 覆盖图（GXT） -->
+        <!-- 覆盖等值线显示（GXT / KML 库） -->
         <div v-show="shellUi.side === 'gxt'" class="sview">
         <div v-if="covOpen" class="cov-side docked">
         <div class="sec">
@@ -4689,7 +5097,7 @@ onBeforeUnmount(() => {
             <select :value="covAddSel" @change="e => { covAddSel = e.target.value; addCovSat() }">
               <option value="" disabled>选择卫星…</option>
               <option v-for="s in covSats" :key="s.folder" :value="s.folder"
-                      :disabled="covItems.some(i => i.folder === s.folder)">{{ s.displayName }}（{{ s.lon }}°）</option>
+                      :disabled="covItems.some(i => i.folder === s.folder)">{{ s.displayName }}{{ s.lon != null ? `（${s.lon}°）` : '' }}</option>
             </select>
           </div>
           <div v-if="!covItems.length" class="tip">还没有卫星。</div>
@@ -4698,7 +5106,7 @@ onBeforeUnmount(() => {
         <!-- 每颗已添加卫星 -->
         <div v-for="it in covItems" :key="it.id" class="sec satcard">
           <div class="sath">
-            <span class="satn">{{ idxOf(it.folder)?.displayName }} <em>{{ idxOf(it.folder)?.lon }}°</em></span>
+            <span class="satn">{{ idxOf(it.folder)?.displayName }} <em v-if="idxOf(it.folder)?.lon != null">{{ idxOf(it.folder)?.lon }}°</em></span>
             <span class="seg sm">
               <span class="sg" :class="{ on: it.type === 'EIRP' }" @click="setItemType(it, 'EIRP')">EIRP</span>
               <span class="sg" :class="{ on: it.type === 'GT' }" @click="setItemType(it, 'GT')">G/T</span>
@@ -4952,112 +5360,8 @@ onBeforeUnmount(() => {
           </template>
         </div>
 
-        <template v-if="grd.antMeta()">
-          <div class="sec">
-            <div class="sect setsect acc" :class="{ open: isSecOpen('grd-set') }" @click="toggleSec('grd-set')">
-              <Icon :name="isSecOpen('grd-set') ? 'chevron-down' : 'chevron-right'" :size="12" />
-              <svg class="gsvg ant-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M4 10a7.31 7.31 0 0 0 10 10Z" /><path d="m9 15 3-3" /><path d="M17 13a6 6 0 0 0-6-6" /><path d="M21 13A10 10 0 0 0 11 3" />
-              </svg>
-              <span class="setlbl">天线设置</span><span class="setname" :title="grd.activeName()">{{ grd.activeName() }}</span>
-              <span v-if="grd.selected.value.length > 1" class="editing" title="多选时设置只作用于聚焦（编辑中）天线，各天线独立保存">仅编辑聚焦天线</span>
-            </div>
-            <template v-if="isSecOpen('grd-set')">
-            <template v-if="grd.beamListOn()">
-              <div class="sect" style="margin-top:2px"><span>Beams To Plot · {{ grd.activeBeams().length }} 波束</span></div>
-              <input class="ci bq" :value="grd.beamQuery.value" placeholder="搜索：波束名，或序号 1-62、1,3,5、1-10,20-30" @input="e => grd.setBeamQuery(e.target.value)" />
-              <div class="bplist">
-                <label class="brow ball">
-                  <input type="checkbox" :checked="grd.filteredAllOn()" :indeterminate="grd.filteredAnyOn() && !grd.filteredAllOn()" @change="grd.selectFiltered(!grd.filteredAllOn())" />
-                  <span class="balln">{{ grd.beamQuery.value.trim() ? '(全选搜索结果)' : '(全选)' }}</span>
-                  <span class="bpk">{{ grdS.beamsToPlot.length }}/{{ grd.activeBeams().length }}</span>
-                  <span v-if="grdS.beamsToPlot.length && grd.activeBeams().length > 1" class="ic del" :title="`删除勾选的 ${grdS.beamsToPlot.length} 个波束（可重新导入原 GRD 恢复）`" @click.stop.prevent="grd.deleteCheckedBeams()"><Icon name="x" :size="11" /></span>
-                </label>
-                <label v-for="b in grd.filteredBeams()" :key="b.seq" class="brow" :class="{ on: grd.isBeamOn(b.i) }">
-                  <input type="checkbox" :checked="grd.isBeamOn(b.i)" @change="grd.toggleBeam(b.i)" />
-                  <span class="bseq">{{ b.seq }}</span>
-                  <input class="bnm-in" :value="grdEditBeam === grd.active.value + '#' + b.i ? grdEditBeamVal : b.label" title="编辑波束名（地图标注同步用此名）" @click.stop @focus="startRenameBeam(b)" @input="e => inputRenameBeam(b, e.target.value)" @keydown.enter="e => e.target.blur()" @blur="commitRenameBeam(b)" />
-                  <span v-if="grd.activeBeams().length > 1" class="ic del" :title="`删除该波束（峰值 ${b.peakDb.toFixed(1)} dB，可重新导入原 GRD 恢复）`" @click.stop.prevent="grd.deleteBeam(b.i)"><Icon name="x" :size="11" /></span>
-                  <span v-else class="bpk" :title="`峰值 ${b.peakDb.toFixed(1)} dB`">{{ b.peakDb.toFixed(1) }}</span>
-                </label>
-                <div v-if="!grd.filteredBeams().length" class="empty">无匹配波束</div>
-              </div>
-            </template>
-            <div class="srow"><label>极化</label><select v-model="grdS.pol"><option value="P1">P1 共极化</option><option value="P2">P2 交叉</option><option value="RSS">RSS 合成</option><option value="P1/P2">P1/P2</option><option value="P2/P1">P2/P1</option></select></div>
-            <div class="srow"><label>类型</label>
-              <span class="seg sm"><span class="sg" :class="{ on: grdS.ctype === 'rel' }" @click="grdS.ctype = 'rel'">相对峰值</span><span class="sg" :class="{ on: grdS.ctype === 'abs' }" @click="grdS.ctype = 'abs'">绝对</span></span>
-            </div>
-            <div class="srow"><label>增益偏置</label><input class="ci" type="number" step="0.5" v-model.number="grdS.gainOffset" /><span class="u">dB</span></div>
-            <div class="srow"><label>路径损耗</label><select v-model="grdS.pathLoss"><option value="none">无</option><option value="relative">相对(h/Rs)²</option><option value="absolute">通量密度</option></select></div>
-
-            <div class="sect" style="margin-top:9px"><span>电平</span><span class="lvhdr">填充 · 线 · 值 · 绝对</span></div>
-            <div class="glv">
-              <div v-for="(L, i) in grdS.levels" :key="i" class="glvrow">
-                <input class="lvclr" type="color" title="填充色" :value="grdLvHex(L.color)" @input="e => setLevelColor(i, e)" />
-                <input class="lvclr" type="color" title="线色" :value="grdLvHex(L.lineColor)" @input="e => setLineColor(i, e)" />
-                <input class="lvval" type="number" step="0.5" v-model.number.lazy="L.v" />
-                <input class="lvabs lvname" :class="{ named: !!L.name }"
-                  :value="grdEditLv === String(i) ? grdEditLvVal : (L.name || lvDefaultText(L))"
-                  :title="L.name ? '自定义名称（等值线数值标签用此名，清空恢复电平值）' : '点击自定义名称（默认显示电平值，作等值线数值标签）'"
-                  @click.stop @focus="startRenameLv(i, L)" @input="e => inputRenameLv(i, e.target.value)"
-                  @keydown.enter="e => e.target.blur()" @blur="commitRenameLv(i)" />
-                <span class="ic del" title="删除该档" @click="grd.removeLevel(i)"><Icon name="x" :size="11" /></span>
-              </div>
-              <div class="glvadd" @click="grd.addLevel()"><Icon name="plus" :size="11" /> 添加电平</div>
-            </div>
-            <div class="srow"><label>线宽</label><input class="rng" type="range" min="0.5" max="8" step="0.1" v-model.number="grdS.lineWidth" /><span class="u">{{ grdS.lineWidth.toFixed(1) }}</span></div>
-            </template>
-          </div>
-
-          <div class="sec">
-            <label class="chk2"><input type="checkbox" v-model="grdS.fill" /><span>Fill Contours（分带填充）</span></label>
-            <label class="chk2"><input type="checkbox" v-model="grdS.line" /><span>显示等值线</span></label>
-            <div class="srow"><label>透明度</label><input class="rng" type="range" min="0" max="1" step="0.02" v-model.number="grdS.alpha" /><span class="u">{{ grdS.alpha.toFixed(2) }}</span></div>
-          </div>
-
-          <div class="sec">
-            <div class="sect acc" :class="{ open: isSecOpen('grd-bore') }" @click="toggleSec('grd-bore')"><Icon :name="isSecOpen('grd-bore') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>天线 boresight</span>
-              <span class="lnk" :class="{ on: grd.dragBore.value }" title="开启后在地图上拖动可平移波束中心" @click.stop="grd.setDragBore(!grd.dragBore.value)"><Icon v-if="grd.dragBore.value" name="check" :size="10" /> 拖拽波束</span>
-            </div>
-            <template v-if="isSecOpen('grd-bore')">
-            <div class="srow"><label>指向模式</label>
-              <select v-model="boreMode">
-                <option value="target">目标跟踪 Targeted</option>
-                <option value="groundtrack">星下点跟随 Ground-track</option>
-                <option value="fixed">本体固定 Fixed (Az/El)</option>
-                <option value="nadir">天底 Nadir</option>
-              </select>
-            </div>
-            <template v-if="grdS.boreType === 'geo'">
-              <div class="srow"><label>经度</label><input class="ci" type="number" step="0.5" v-model.number="grdS.boreLon" /><span class="u">°E</span></div>
-              <div class="srow"><label>纬度</label><input class="ci" type="number" step="0.5" v-model.number="grdS.boreLat" /><span class="u">°N</span></div>
-            </template>
-            <template v-else>
-              <div class="srow"><label>方位 Az</label><input class="ci" type="number" step="0.5" v-model.number="grdS.boreAz" /><span class="u">°</span></div>
-              <div class="srow"><label>俯仰 El</label><input class="ci" type="number" step="0.5" v-model.number="grdS.boreEl" /><span class="u">°</span></div>
-            </template>
-            <div class="srow"><label>旋转 Rot</label><input class="ci" type="number" step="1" v-model.number="grdS.yaw" /><span class="u">°</span></div>
-            <div class="tip"><template v-if="grd.boreGround()">指向 {{ grd.boreGround().lon.toFixed(2) }}°E, {{ grd.boreGround().lat.toFixed(2) }}°N</template><template v-else>指向深空（越过地平）</template>（默认星下点 {{ grd.antMeta().satLon }}°）· 峰值 {{ grd.antMeta().peakDb }}dB @ {{ grd.antMeta().peak[0] }},{{ grd.antMeta().peak[1] }}</div>
-            </template>
-          </div>
-
-          <div class="sec">
-            <div class="sect acc" :class="{ open: isSecOpen('grd-disp', false) }" @click="toggleSec('grd-disp', false)"><Icon :name="isSecOpen('grd-disp', false) ? 'chevron-down' : 'chevron-right'" :size="12" /><span>显示选项</span><span class="editing" title="对所有选中天线生效">全局</span></div>
-            <template v-if="isSecOpen('grd-disp', false)">
-            <label class="chk2"><input type="checkbox" v-model="grdS.showName" /><span>显示天线名</span></label>
-            <div v-if="grdS.showName" class="srow"><label>字号</label><input class="rng" type="range" min="0.5" max="32" step="0.5" v-model.number="grdS.nameSize" /><span class="u">{{ grdS.nameSize }}</span></div>
-            <label class="chk2"><input type="checkbox" v-model="grdS.showBore" /><span>显示波束中心</span></label>
-            <div v-if="grdS.showBore" class="srow"><label>大小</label><input class="rng" type="range" min="0.1" max="3" step="0.1" v-model.number="grdS.boreSize" /><span class="u">{{ grdS.boreSize }}</span></div>
-            <label class="chk2"><input type="checkbox" v-model="grdS.showPeak" /><span>显示波束中心峰值</span></label>
-            <div v-if="grdS.showPeak" class="srow"><label>字号</label><input class="rng" type="range" min="0.5" max="30" step="0.5" v-model.number="grdS.peakSize" /><span class="u">{{ grdS.peakSize }}</span></div>
-            <label class="chk2"><input type="checkbox" v-model="grdS.showVal" /><span>显示数值标签</span></label>
-            <div v-if="grdS.showVal" class="srow"><label>字号</label><input class="rng" type="range" min="0.5" max="30" step="0.5" v-model.number="grdS.valSize" /><span class="u">{{ grdS.valSize }}</span></div>
-            <div v-if="grdS.showVal" class="srow" style="justify-content:flex-start">
-              <span class="lnk" :class="{ on: grd.dragLabel.value }" title="开启后在地图上按住拖动数值标签，可沿等值线滑动其位置（释放后保存；再次点击关闭）" @click="grd.setDragLabel(!grd.dragLabel.value)"><Icon v-if="grd.dragLabel.value" name="check" :size="10" /> 拖动标签位置</span>
-            </div>
-            </template>
-          </div>
-        </template>
+        <!-- 天线设置四区（波束/参数/电平/填充/指向/显示）＝ 与「对星覆盖分析」共用的同一个组件 -->
+        <GrdSetSections :grd="grd" variant="ground" :sat-search="satcovSearch" />
 
         <div class="csfoot">
           <span v-if="grdLoading" class="cst">载入中…</span>
@@ -5066,8 +5370,19 @@ onBeforeUnmount(() => {
         </div>
         </div>
 
+        <!-- 对星覆盖分析：同一棵天线树，投影面从地球换成轨道壳层。面板整体在 SatCovPanel 里，
+             对星性能指标表浮窗挂在页面根部。 -->
+        <div v-show="shellUi.side === 'satcov'" class="sview">
+          <SatCovPanel
+            v-if="shellUi.side === 'satcov'"
+            :sc="satcov" :grd="grd" :sat-count="shownCount" :sat-search="satcovSearch"
+            :table-open="satcovTableOpen" :sat-vis="satVisible"
+            @open-table="satcovOpenTable" @pick-shells="satcovOpenPick" @toggle-eye="toggleSatLabel"
+            @add-sat="openAddSat()" @edit-sat="editSat" @remove-sat="removeSat" />
+        </div>
+
         <!-- 波束合成（独立视图，SATSOFT 同款）：导航器（卫星 ▸ 波束组） ＋ 检查器（选中组/设置的编辑器）。
-             一组＝一根天线，挂到该卫星下由「覆盖分析」视图管理显示/电平/指向/导出（工具 → 产物）。 -->
+             一组＝一根天线，挂到该卫星下由「对地覆盖分析」视图管理显示/电平/指向/导出（工具 → 产物）。 -->
         <div v-show="shellUi.side === 'beams'" class="sview">
         <div v-if="shellUi.side === 'beams'" class="cov-side bs-side docked">
 
@@ -6271,6 +6586,21 @@ onBeforeUnmount(() => {
         <div class="sdfoot"><span class="save" @click="covSetOpen = false">完成</span></div>
       </div>
     </div>
+
+    <!-- 对星覆盖分析：对星性能指标表浮窗 -->
+    <SatCovWindows
+      :sc="satcov" :sp="satPerf" :table-open="satcovTableOpen"
+      :time-label="timeText" :sat-search="satcovSearch" :host-size="satcovHost"
+      :tz-utc="tzMode === 'utc'" :now-ms="satcovNowMs"
+      @close-table="satcovTableOpen = false"
+      @recompute-table="satcovRefreshTable" @add-in-beam="satcovAddInBeam"
+      @scan-windows="satcovScanWindows" @focus-target="satcovFocusTarget" />
+
+    <!-- 「从星座取」壳层挑选器（全量在轨目录 → 归并成层 → 勾哪层加哪层） -->
+    <SatCovShellPicker
+      v-if="satcovPickOpen"
+      :sats="satcovPickPool" :loading="satcovPickLoading" :source="satcovPickSrc" :existing="satcovShellAlts"
+      @close="satcovPickOpen = false" @set-source="satcovSetPickSrc" @add="satcovAddPicked" />
 
     <!-- 性能指标表（独立浮窗，每个天线一张）。对标 SATSOFT 两步法、合为一窗：
          上 = 城市输入区（增删改）；下 = 只读性能结果表（仅列覆盖该城市的波束）。 -->

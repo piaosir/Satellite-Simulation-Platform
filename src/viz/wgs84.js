@@ -29,6 +29,14 @@ export function geodeticToEcef(lonDeg, latDeg, hKm = 0) {
   ]
 }
 
+// 地心球坐标(度,度,km) -> ECEF(km)：r = A + hKm，纬度是【地心】纬度。
+// 轨道壳层（shellProj.js）与「空间点指向」共用这一套口径——壳层是概念球面，不是椭球+h；
+// 拿 geodeticToEcef 去算壳层上的点会在中纬度偏出十几 km（椭球扁率），投影就落不回壳面。
+export function geocentricToEcef(lonDeg, latDeg, hKm = 0) {
+  const lat = latDeg * DEG, lon = lonDeg * DEG, r = A + hKm, cl = Math.cos(lat)
+  return [r * cl * Math.cos(lon), r * cl * Math.sin(lon), r * Math.sin(lat)]
+}
+
 // ECEF(km) -> 大地坐标 {lon(度), lat(度), h(km)}（定点迭代，与 satellite.js 同法）
 export function ecefToGeodetic(x, y, z) {
   const R = Math.hypot(x, y)

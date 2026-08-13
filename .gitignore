@@ -110,3 +110,8 @@ electron/services/shareConfig.js
 # ★ 核心哨兵：同一条 OMM 记录在平台与小程序两端各自 omm2satrec，satrec 与 +3 天位置必须逐位相同 ——
 #   「送根数不送编号」全部的意义就在这一条上，而两边的解析器是同一份代码的两个副本，会漂。
 .satconharness/
+
+# 「对星覆盖分析」验证台：SatCovHarness 把壳层投影挂浏览器里单跑（天线网格域切几何 → 逐壳投影），
+# SatCovPanelHarness 单挂侧栏面板（window.api 走桩），核对聚焦天线/壳层选择/时段扫描的 DOM 行为。
+# 数值正确性归 packages/core/test/shellProj.test.mjs 与 satcovScan.test.mjs。本地开发用，不进仓库
+.satcovharness/

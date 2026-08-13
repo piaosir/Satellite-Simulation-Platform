@@ -3,8 +3,10 @@ import { ref, computed, onMounted, nextTick, watch } from 'vue'
 import { fileBridge, bumpLibrary, bumpCustomSats } from '../stores/fileBridge'
 import { readCustomConstellationSummary, customConstellationsToOmmRecords, renameCustomConstellation } from '../viz/constellation/useCustomConstellations.js'
 import { parseGxt, metaFromName } from '../viz/gxt/parse.js'
+import { parseKmlBeams } from '../viz/kml/parse.js'
 import { loadSatNodes } from '../shared/freqPlanSats.js'
 import { serializeGxt } from '../viz/gxt/serialize.js'
+import { serializeKml } from '../viz/kml/serialize.js'
 import { grdToStkAzEl } from '../viz/grd/stkPattern.js'
 import { repackGrdCommonGrid } from '../viz/grd/synth.js'
 import { displaySatName } from '../viz/satName.js'
@@ -369,7 +371,7 @@ const allSats = computed(() => {
   for (const s of (gxtIndex.value.satellites || [])) {
     const n = nodeFor(s.name, s.lon); n.userSatId = s.id
     for (const b of (s.beams || [])) {
-      n.beams.push({ key: 'u:' + b.id, id: b.id, name: b.name, type: b.type, band: b.band, file: b.file, rawFile: b.rawFile, contours: b.contours, importedAt: b.importedAt, source: 'user' })
+      n.beams.push({ key: 'u:' + b.id, id: b.id, name: b.name, type: b.type, band: b.band, file: b.file, rawFile: b.rawFile, contours: b.contours, importedAt: b.importedAt, sourceFormat: b.sourceFormat, source: 'user' })
     }
   }
   return order.filter((n) => n.beams.length || n.userSatId)
@@ -386,35 +388,72 @@ async function exportBeam(sat, beam) {
   if (beam.source === 'preset') return exportPresetBeam(sat.name, { beam: beam.name, band: beam.band, type: beam.type, file: beam.file, lon: beam.lon != null ? beam.lon : sat.lon })
   return exportGxtBeam(beam)
 }
+// 导出为 KML（Google Earth 通用）：内置/用户同一条路径，从归一化数据重建（轨位/频段/类型写进 ExtendedData，可再导回来）
+async function exportBeamKml(sat, beam) {
+  if (!beam.file) { flash('该波束尚未导入数据'); return }
+  try {
+    const j = beam.source === 'preset' ? await api.coverage.get(beam.file) : await api.coverageGxt.get(beam.file)
+    const lon = [j.lon, beam.lon, sat.lon].map(Number).find(Number.isFinite)
+    const text = serializeKml(
+      [{ name: beam.name, satName: j.sat || sat.name, lon, type: beam.type, band: beam.band, bore: j.bore || [], contours: j.contours || [] }],
+      { name: `${sat.name} ${beam.name}` }
+    )
+    const save = await api.exportFile({ defaultName: `${sat.name}_${beam.name}.kml`, data: text, filters: [{ name: 'KML', extensions: ['kml'] }] })
+    if (save && save.ok) flash('已导出：' + save.filePath)
+    else if (save && save.error) flash('导出失败：' + save.error)
+  } catch (e) { flash('导出失败：' + (e.message || e)) }
+}
 const newSat = ref({ name: '', lon: '' })
 const addBeamFor = ref('')          // 正在添加波束的卫星 id
 const newBeam = ref({ name: '', type: 'EIRP', band: '' })
 async function loadGxt() { try { gxtIndex.value = api?.coverageGxt ? await api.coverageGxt.index() : { satellites: [] }; if (gxtIndex.value?.corrupt) flash('覆盖库索引损坏') } catch { gxtIndex.value = { satellites: [] } } }
-// 批量导入：多选 .gxt → 按文件名（卫星_频段_波束_类型）自动归类建星/建波束并导入，一次完成
+// 扩展名兜底：老版 IPC 不返回 ext，且用户可能把 KML 存成别的后缀 —— 认文件头
+const isKmlFile = (f) => String(f.ext || '').toLowerCase() === 'kml' || /^\s*(<\?xml|<kml)/i.test(f.text || '')
+// 批量导入：多选 .gxt / .kml → 自动归类建星/建波束并导入，一次完成。
+// GXT：一个文件 = 一个波束，卫星/频段/波束/类型按文件名（卫星_频段_波束_类型）拆，留原文供原样再导出。
+// KML：一个文件可含多卫星多波束（文件夹树即层级），逐个建；不留原文，再导出由归一化数据重建。
 async function importGxtBatch() {
   const res = await api.coverageGxt.open()
   if (!res || res.canceled) return
   const files = res.files || []
   const items = [], errs = []
+  let noGain = 0, skipPolys = 0
   for (const f of files) {
     if (f.error || !f.text) { errs.push((f.base || '文件') + '：' + (f.error || '空文件')); continue }
+    if (isKmlFile(f)) {
+      let r
+      try { r = parseKmlBeams(f.text) } catch (e) { errs.push((f.base || '文件') + '：解析失败 ' + (e.message || e)); continue }
+      noGain += r.noGain; skipPolys += r.polys
+      const fb = metaFromName(String(f.base || '').replace(/\.kml$/i, ''))
+      for (const b of r.beams) {
+        const satName = b.satName || fb.sat || fb.name || '卫星'
+        const beamName = b.beamName || fb.beam || '波束'
+        items.push({
+          satName, lon: b.lon, beamName, type: b.type || 'EIRP', band: b.band || '',
+          rawText: null, sourceName: f.base, sourceFormat: 'kml',
+          json: { sat: satName, band: b.band || '', beam: beamName, type: b.type || 'EIRP', lon: b.lon, bore: b.bore, contours: b.contours }
+        })
+      }
+      continue
+    }
     let parsed
     try { parsed = parseGxt(f.text) } catch (e) { errs.push((f.base || '文件') + '：解析失败 ' + (e.message || e)); continue }
     const meta = metaFromName(f.base)
     items.push({
       satName: meta.sat || meta.name, lon: parsed.lon, beamName: meta.beam || meta.name,
-      type: meta.type || 'EIRP', band: meta.band || '', rawText: f.text, sourceName: f.base,
+      type: meta.type || 'EIRP', band: meta.band || '', rawText: f.text, sourceName: f.base, sourceFormat: 'gxt',
       json: { sat: meta.sat, band: meta.band, beam: meta.beam, type: meta.type || 'EIRP', lon: parsed.lon, bore: parsed.bore, contours: parsed.contours }
     })
   }
-  if (!items.length) { flash('未能导入：' + (errs[0] || '没有有效的 GXT 文件')); return }
+  if (!items.length) { flash('未能导入：' + (errs[0] || '没有有效的 GXT / KML 文件')); return }
   const r = await api.coverageGxt.importBatch(items)
   await loadGxt(); bumpLibrary()
   // 自动展开本次涉及的卫星，便于查看（节点按名合并，key = 'g:'+小写名）
   const exp = { ...gxtExpanded.value }
   for (const it of items) exp['g:' + String(it.satName || '').toLowerCase()] = true
   gxtExpanded.value = exp
-  flash(`导入 ${items.length} 个文件 → 新增 ${r.sats} 卫星 / ${r.beams} 波束` + (errs.length ? `（${errs.length} 个失败）` : ''))
+  const extra = [errs.length ? `${errs.length} 个失败` : '', noGain ? `${noGain} 个多边形无增益档` : '', skipPolys ? `${skipPolys} 个协调区多边形已跳过` : ''].filter(Boolean)
+  flash(`导入 ${files.length} 个文件 → ${items.length} 个波束，新增 ${r.sats} 卫星 / ${r.beams} 波束` + (extra.length ? `（${extra.join('，')}）` : ''))
 }
 async function addGxtSat() {
   const name = newSat.value.name.trim(); if (!name) { flash('请填写卫星名'); return }
@@ -440,25 +479,37 @@ async function addGxtBeam(node) {
   await api.coverageGxt.addBeam(id, name, newBeam.value.type, newBeam.value.band.trim())
   addBeamFor.value = ''; await loadGxt(); bumpLibrary()
 }
+// 导入到指定波束：KML 含多个波束时只收第一个（目标波束是用户点定的，多的那些走批量导入才归得对位）
 async function importGxtToBeam(node, beam) {
   const res = await api.coverageGxt.open()
   if (!res || res.canceled) return
   const files = res.files || []
   const f = files[0]
   if (!f || f.error || !f.text) { flash('读取失败：' + ((f && f.error) || '空文件')); return }
-  let parsed
-  try { parsed = parseGxt(f.text) } catch (e) { flash('GXT 解析失败：' + (e.message || e)); return }
+  const kml = isKmlFile(f)
+  let parsed, rest = 0
+  if (kml) {
+    let r
+    try { r = parseKmlBeams(f.text) } catch (e) { flash('KML 解析失败：' + (e.message || e)); return }
+    const b = r.beams[0]; rest = r.beams.length - 1
+    parsed = { lon: b.lon, bore: b.bore, contours: b.contours, band: b.band, type: b.type }
+  } else {
+    try { parsed = parseGxt(f.text) } catch (e) { flash('GXT 解析失败：' + (e.message || e)); return }
+  }
   const meta = metaFromName(f.base)
   const json = {
-    sat: meta.sat, band: beam.band || meta.band, beam: beam.name || meta.beam, type: beam.type || meta.type || 'EIRP',
+    sat: node.name || meta.sat, band: beam.band || parsed.band || meta.band, beam: beam.name || meta.beam,
+    type: beam.type || parsed.type || meta.type || 'EIRP',
     lon: parsed.lon, bore: parsed.bore, contours: parsed.contours
   }
-  const r = await api.coverageGxt.attach(node.userSatId, beam.id, { rawText: f.text, sourceName: f.base, json, type: json.type, band: json.band })
-  if (r && r.ok) { flash(`已导入 ${f.base}（${parsed.contours.length} 条等值线）`); await loadGxt(); bumpLibrary() }
+  const r = await api.coverageGxt.attach(node.userSatId, beam.id, {
+    rawText: kml ? null : f.text, sourceName: f.base, sourceFormat: kml ? 'kml' : 'gxt', json, type: json.type, band: json.band
+  })
+  if (r && r.ok) { flash(`已导入 ${f.base}（${parsed.contours.length} 条等值线${rest > 0 ? `；文件里另有 ${rest} 个波束未收，用「导入 GXT / KML…」批量导` : ''}）`); await loadGxt(); bumpLibrary() }
   else flash('导入失败：' + ((r && r.error) || '未知'))
 }
 async function exportGxtBeam(beam) {
-  if (!beam.rawFile && !beam.file) { flash('该波束尚未导入 GXT'); return }
+  if (!beam.rawFile && !beam.file) { flash('该波束尚未导入数据'); return }
   try {
     let text
     if (beam.rawFile) { const r = await api.coverageGxt.raw(beam.rawFile); text = r.text }
@@ -526,7 +577,7 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
           <button class="rb" :class="{ on: tab === 'omm' }" @click="tab = 'omm'">星历 OMM</button>
           <button class="rb" :class="{ on: tab === 'grd' }" @click="tab = 'grd'">GRD 天线</button>
           <button class="rb" :class="{ on: tab === 'freqplan' }" @click="tab = 'freqplan'">频率计划</button>
-          <button class="rb" :class="{ on: tab === 'gxt' }" @click="tab = 'gxt'">GXT 文件管理</button>
+          <button class="rb" :class="{ on: tab === 'gxt' }" @click="tab = 'gxt'">GXT/KML 管理</button>
         </nav>
 
         <div class="pane">
@@ -692,7 +743,7 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
           <section v-else-if="tab === 'gxt'">
 
             <div class="addbar">
-              <button class="mini imp" @click="importGxtBatch">导入 GXT 文件…</button>
+              <button class="mini imp" title="GXT：一个文件一个波束，按文件名「卫星_频段_波束_类型」归类；KML：按文件夹树还原卫星 → 波束 → 等值线" @click="importGxtBatch">导入 GXT / KML…</button>
               <span class="spacer"></span>
               <button class="mini ghost" :disabled="!canExportCurrent" title="将 3D 页当前绘制的覆盖（GXT/GRD 来源）转为 GXT 文件导出" @click="exportCurrentGxt">当前覆盖转为 GXT 导出</button>
             </div>
@@ -727,12 +778,13 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
                     <span class="tname">{{ beam.name }}</span>
                     <span class="tmeta">
                       <template v-if="beam.source === 'preset'">{{ beam.type }}<template v-if="beam.band"> · {{ beam.band }}</template> · {{ beam.meta }}</template>
-                      <template v-else-if="beam.file">{{ beam.type }}<template v-if="beam.band"> · {{ beam.band }}</template> · {{ beam.contours }} 等值线 · {{ fmtTime(beam.importedAt) }}</template>
-                      <template v-else><span class="dim">未导入 GXT</span></template>
+                      <template v-else-if="beam.file">{{ beam.type }}<template v-if="beam.band"> · {{ beam.band }}</template> · {{ beam.contours }} 等值线<template v-if="beam.sourceFormat === 'kml'"> · KML</template> · {{ fmtTime(beam.importedAt) }}</template>
+                      <template v-else><span class="dim">未导入数据</span></template>
                     </span>
                     <span class="trops">
-                      <button v-if="beam.source === 'user'" class="mini" @click="importGxtToBeam(sat, beam)">{{ beam.file ? '重新导入' : '导入 GXT' }}</button>
+                      <button v-if="beam.source === 'user'" class="mini" @click="importGxtToBeam(sat, beam)">{{ beam.file ? '重新导入' : '导入 GXT / KML' }}</button>
                       <button class="mini ghost" :disabled="beam.source === 'user' && !beam.file" @click="exportBeam(sat, beam)">导出 GXT</button>
+                      <button class="mini ghost" :disabled="!beam.file" @click="exportBeamKml(sat, beam)">导出 KML</button>
                       <button class="mini del" @click="removeGxtBeam(sat, beam)">删除</button>
                     </span>
                   </div>

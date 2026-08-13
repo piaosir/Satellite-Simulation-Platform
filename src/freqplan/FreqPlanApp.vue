@@ -1998,10 +1998,10 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
             <Icon class="shx" :name="secOpen('beam') ? 'chevron-down' : 'chevron-right'" :size="11" />
             <span class="sht">波束/带宽 · {{ U }}</span>
             <button class="mini ghost xs" @click.stop="addBeam" title="添加波束"><Icon name="plus" :size="10" /></button>
-            <!-- 从波束合成导入：一色一条（同色 = 同频同极化，一个色号对应一批波束号）。
+            <!-- 从天线波束合成导入：一色一条（同色 = 同频同极化，一个色号对应一批波束号）。
                  浮层现读现用，不缓存另一个窗口的旧数据。 -->
             <button class="mini ghost xs" :class="{ on: synthPop }" @click.stop="synthPop ? (synthPop = false) : openSynthPop()"
-              title="从波束合成导入：每个频率配色（F#）生成一条，该色对应的波束编号一并导入；带宽与频率仍在本平台录入">
+              title="从天线波束合成导入：每个频率配色（F#）生成一条，该色对应的波束编号一并导入；带宽与频率仍在本平台录入">
               <Icon name="import" :size="10" />
             </button>
             <span class="spacer"></span>
@@ -2011,7 +2011,7 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
           <template v-if="synthPop">
             <div class="bpmask" @click="synthPop = false"></div>
             <div class="spop">
-              <div class="bph">从波束合成导入</div>
+              <div class="bph">从天线波束合成导入</div>
               <button v-for="g in synthList" :key="g.id" type="button" class="sgrow"
                 :disabled="!g.beamCount" :title="synthTitle(g)" @click="importSynth(g)">
                 <span class="sgn">{{ g.name }}</span>
@@ -2019,7 +2019,7 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
                 <span class="sgt">{{ g.beamCount }} 波束<template v-if="g.colors.length"> · {{ g.colors.length }} 色</template></span>
                 <span class="sgc"><i v-for="c in g.colors" :key="c.fc" :style="{ background: c.css }"></i></span>
               </button>
-              <p v-if="!synthList.length" class="sgnone">尚无波束合成的波束组。</p>
+              <p v-if="!synthList.length" class="sgnone">尚无天线波束合成的波束组。</p>
             </div>
           </template>
           <!-- 一个波束一行：色块 · 名字 · 带宽。列名只在整区顶上写一次。 -->
@@ -2030,7 +2030,7 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
           <div v-for="b in plan.beams" :key="b.id" class="bmrow">
             <input class="clr" type="color" v-model="b.color" title="色块与图例的颜色" />
             <input class="ci nm" v-model="b.name" placeholder="波束名"
-              :title="beamSynthText(b) || '波束名（与图例一致）。由波束合成导入时为波束代号'" />
+              :title="beamSynthText(b) || '波束名（与图例一致）。由天线波束合成导入时为波束代号'" />
             <input class="ci num" :value="lval(`bm.${b.id}.bw`, b.bwMHz)" placeholder="占满" :title="bmBwTitle(b)"
               @input="lput(`bm.${b.id}.bw`, b, $event.target.value)"
               @change="lend(`bm.${b.id}.bw`, (x, m) => setBeamBw(x, m))"

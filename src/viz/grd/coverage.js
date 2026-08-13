@@ -2,7 +2,7 @@
 // 几何全程 WGS84，复用 src/viz/wgs84.js。填充面着色(L2a) 在渲染层做。
 // 见 docs/GRD导入与覆盖可视化设计.md（性能分层 §4、面+线 §5）。
 
-import { geodeticToEcef, ecefToGeodetic, geodeticUp, rayEllipsoid, rayEllipsoidMargin, A, B, E2, RS_GEO } from '../wgs84.js'
+import { geodeticToEcef, geocentricToEcef, ecefToGeodetic, geodeticUp, rayEllipsoid, rayEllipsoidMargin, A, B, E2, RS_GEO } from '../wgs84.js'
 
 const D2R = Math.PI / 180, H = RS_GEO - A
 const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
@@ -92,6 +92,23 @@ export function antennaBasis(satLon, boreLon = satLon, boreLat = 0, yawDeg = 0, 
   return { S, x, y, z }
 }
 
+// 对星指向：boresight 直指空间中的一点 T（ECEF km）——星间链路的基元。
+// 与 antennaBasis 的区别只在 T 不必在地表：低轨打 GSO 时 T 在卫星【上方】，z 指向反天底侧，
+// 这是「对地」那两套基底（地表目标点 / 相对天底的 az-el 偏置）都表达不了的方向。
+// x/y 的参考约定与 antennaBasis 完全一致（x=ẑ_ECEF×z，y=z×x），故方向图的取向口径两者可比。
+export function antennaBasisEcef(S, T, yawDeg = 0) {
+  const z = nrm(sub(T, S))
+  let x = crs([0, 0, 1], z)
+  // z 近乎平行于地轴（极区正上方对星）时 ẑ×z 退化 → 退用 x 轴做参考，保证基底始终正交归一
+  x = (Math.hypot(x[0], x[1], x[2]) > 1e-9) ? nrm(x) : nrm(crs([1, 0, 0], z))
+  let y = crs(z, x)
+  if (yawDeg) {
+    const c = Math.cos(yawDeg * D2R), sn = Math.sin(yawDeg * D2R)
+    const x2 = add(sc(x, c), sc(y, sn)), y2 = add(sc(y, c), sc(x, -sn)); x = x2; y = y2
+  }
+  return { S, x, y, z }
+}
+
 // 方向式天线姿态：boresight 由「相对星下天底的 az/el 方向」直接给定（igrid6 约定），
 // 不经过地表目标点 → boresight 可指向任意方向，包括越过地平的深空（El 超出地球张角即指深空）。
 // 这是物理正确的指向基元：方向图照常逐点投影，命中地球的点出覆盖、越地平的点自然滚降（vis<0）。
@@ -110,6 +127,31 @@ export function antennaBasisAzEl(satLon, satLat = 0, altKm = H, azDeg = 0, elDeg
   }
   return { S: nb.S, x, y, z }
 }
+// 在给定参考基底上再加一层 az/el 偏置的姿态（igrid6 约定，与 antennaBasisAzEl 同一套 az/el 口径，
+// 只是参考轴从「星下天底」换成任意 nb.z）。「对星跟踪 + 偏置」＝ nb 取对星跟踪基底后套这一层：
+// 偏置为 0 时严格退化回 nb 的指向（数值上 gridDir(6,0,0)=[0,0,1]），故切模式不跳变。
+export function antennaBasisAbout(nb, azDeg = 0, elDeg = 0, yawDeg = 0) {
+  const dir = gridDir(6, azDeg, elDeg)
+  const z = nrm([
+    nb.x[0] * dir[0] + nb.y[0] * dir[1] + nb.z[0] * dir[2],
+    nb.x[1] * dir[0] + nb.y[1] * dir[1] + nb.z[1] * dir[2],
+    nb.x[2] * dir[0] + nb.y[2] * dir[1] + nb.z[2] * dir[2]
+  ])
+  let x = crs([0, 0, 1], z)
+  x = (Math.hypot(x[0], x[1], x[2]) > 1e-9) ? nrm(x) : nrm(crs([1, 0, 0], z))   // 极区正上方退化保护，同 antennaBasisEcef
+  let y = crs(z, x)
+  if (yawDeg) {
+    const c = Math.cos(yawDeg * D2R), sn = Math.sin(yawDeg * D2R)
+    const x2 = add(sc(x, c), sc(y, sn)), y2 = add(sc(y, c), sc(x, -sn)); x = x2; y = y2
+  }
+  return { S: nb.S, x, y, z }
+}
+// 某方向 w（ECEF 单位矢量）在参考基底 nb 里的 az/el（antennaBasisAbout 的逆；拖拽反解偏置量用）
+export function dirAzElAbout(nb, w) {
+  const dx = dt(w, nb.x), dy = dt(w, nb.y), dz = dt(w, nb.z)
+  return { az: Math.atan2(-dx, Math.hypot(dy, dz)) * R2D, el: Math.atan2(dy, dz) * R2D }
+}
+
 // 地表点(lon,lat) → 该点相对星下天底的 az/el（geo↔azel 模式互换用）。任意地表点皆有定义（含地平内）。
 export function dirToAzEl(satLon, satLat, altKm, lon, lat) {
   const nb = antennaBasis(satLon, satLon, satLat || 0, 0, satLat || 0, altKm)
@@ -154,6 +196,58 @@ export function azElGround(satLon, satLat, altKm, azDeg, elDeg) {
   if (!P) return null
   const g = ecefToGeodetic(P[0], P[1], P[2])
   return { lon: g.lon, lat: g.lat }
+}
+
+// ==================== 指向设置 → 天线基底（纯函数，与时刻无关）====================
+// useGrdCoverage.beamBasis 的纯函数版：把「对星指向的目标星 ECEF」提成显式入参 T，不碰任何 hooks/状态。
+// 时段扫描要在【时窗内任意时刻】重建基底（源星与目标星两头都在动），必须有一个可反复调用的纯口径；
+// useGrdCoverage 那份改为调用本函数 —— 实时路与扫描路只此一份公式，不会漂。
+//   meta — 该时刻源星的 {satLon, satLat, satAlt}
+//   st   — 天线设置（boreType / boreLon,boreLat / boreAz,boreEl / yaw / boreOff* / borePt*）
+//   T    — sat/satoff 模式的目标星 ECEF（km）；解析不到给 null → 退回天底（不让覆盖凭空消失）
+export function beamBasisFrom(meta, st, T = null) {
+  if (st.boreType === 'sat' || st.boreType === 'satoff') {
+    if (T) {
+      const nb = antennaBasisEcef(geodeticToEcef(meta.satLon, meta.satLat || 0, meta.satAlt), T, st.yaw || 0)
+      return st.boreType === 'satoff' ? antennaBasisAbout(nb, st.boreOffAz || 0, st.boreOffEl || 0, 0) : nb
+    }
+    return antennaBasisAzEl(meta.satLon, meta.satLat || 0, meta.satAlt, 0, 0, st.yaw || 0)
+  }
+  if (st.boreType === 'point') {
+    const S = geodeticToEcef(meta.satLon, meta.satLat || 0, meta.satAlt)
+    const P = geocentricToEcef(st.borePtLon == null ? meta.satLon : st.borePtLon, st.borePtLat || 0, st.borePtAlt || 0)
+    return antennaBasisEcef(S, P, st.yaw || 0)
+  }
+  if (st.boreType === 'azel') return antennaBasisAzEl(meta.satLon, meta.satLat || 0, meta.satAlt, st.boreAz || 0, st.boreEl || 0, st.yaw || 0)
+  return antennaBasis(meta.satLon, st.boreLon == null ? meta.satLon : st.boreLon, st.boreLat || 0, st.yaw || 0, meta.satLat || 0, meta.satAlt)
+}
+
+// 「源星从 meta0 走到 pos 之后，指向字段该变成什么」—— useGrdCoverage.moveCoverage 的纯函数版。
+// 三条口径与实时路逐字一致：
+//   · 锁定（boreLock ≠ false）：geo 原地不动（basis 按新星位重算 ＝ 天线重新指向同一地面点）；
+//     azel 若有地面落点则钉成 geo（默认天底 azel(0,0) 就此锁定在【时窗起点】的星下点）；越地平的深空指向保持 azel。
+//   · 不锁定 + geo：boresight 随星下点平移，保留相对经纬偏置。
+//   · 对星三型（sat/satoff/point）：一律不动 —— 目标星自带星历，空间点是钉死的定点。
+// ★ 与实时路唯一的差别：实时是逐帧增量累加，这里是相对【起点 meta0】的一次性总量。geo 平移量
+//   telescoping 相等 ⇒ 两者等价；只有纬度撞上 ±89.9 夹紧时会分叉（极区退化的边角）。
+export function boreSettingsAtPos(st, meta0, pos) {
+  const locked = st.boreLock !== false
+  if (st.boreType === 'sat' || st.boreType === 'satoff' || st.boreType === 'point') return st
+  if (locked) {
+    if (st.boreType !== 'azel') return st
+    const g = azElGround(meta0.satLon, meta0.satLat || 0, meta0.satAlt, st.boreAz || 0, st.boreEl || 0)
+    return g ? { ...st, boreType: 'geo', boreLon: g.lon, boreLat: g.lat } : st
+  }
+  if (st.boreType !== 'geo') return st                        // azel 相对天底，星动自动跟随
+  let dLon = pos.lon - meta0.satLon
+  while (dLon > 180) dLon -= 360
+  while (dLon < -180) dLon += 360
+  const bl = (st.boreLon == null ? meta0.satLon : st.boreLon) + dLon
+  return {
+    ...st,
+    boreLon: ((bl % 360) + 540) % 360 - 180,
+    boreLat: Math.max(-89.9, Math.min(89.9, (st.boreLat || 0) + (pos.lat || 0) - (meta0.satLat || 0)))
+  }
 }
 
 // 天线系 r̂ → 大地经纬度（射线交 WGS84 椭球）；off-limb 返回 null。
@@ -203,6 +297,22 @@ export function projectLimb(dir, basis) {
   const r = rayEllipsoidMargin(S, d)
   const g = ecefToGeodetic(r.p[0], r.p[1], r.p[2])
   return { lon: g.lon, lat: g.lat, ecef: r.p, vis: r.m }
+}
+
+// 每点的【网格参数坐标】(X,Y) 展平成两条 Float32Array。只随网格几何变，记忆化到 set 上。
+// 用途：对星覆盖分析把等值线/分带填充切在【天线网格域】里（见 shellProj.js 的口径说明），
+// bandGeometry 的 lon/lat 两条数组直接换成这里的 gx/gy 即可复用，一行不用改。
+export function gridXY(set) {
+  if (set._gxy) return set._gxy
+  const { XS, YS, XE, YE, NX, NY } = set
+  const dx = (XE - XS) / (NX - 1), dy = (YE - YS) / (NY - 1)
+  const N = NX * NY, gx = new Float32Array(N), gy = new Float32Array(N)
+  for (let row = 0; row < NY; row++) {
+    const y = YS + dy * row, base = row * NX
+    for (let col = 0; col < NX; col++) { gx[base + col] = XS + dx * col; gy[base + col] = y }
+  }
+  set._gxy = { gx, gy }
+  return set._gxy
 }
 
 // 每点天线系单位矢量（gridDir 结果展平成 Float32Array[N*3]）。只随网格几何/igrid 变，与指向(basis)无关，
@@ -339,19 +449,39 @@ export function axialRatioDb(comp, icomp) {
 //   （p=re²+im²≥0，无零点处的负过冲问题）；comp 也由此一并得到（AR 用，免重复插值）。
 //   预置烘焙天线无复场 → 回退【对功率 P1/P2 做 bicubic】（过冲致非正时回退双线性）。
 // beam: { P1,P2,[c1re,c1im,c2re,c2im], grid:{...} }；basis: { S,x,y,z }。
-export function sampleBeamAt(beam, igrid, basis, lon, lat, { pol = 'RSS', gainOffset = 0, pathLoss = 'none', hNadir = H, wantComp = false } = {}) {
-  const { S, x, y, z } = basis
+export function sampleBeamAt(beam, igrid, basis, lon, lat, opts = {}) {
+  const { S } = basis
   const P = geodeticToEcef(lon, lat, 0)
   const ex = P[0] - S[0], ey = P[1] - S[1], ez = P[2] - S[2]
   const rs = Math.hypot(ex, ey, ez); if (!(rs > 0)) return null
-  const e = [ex / rs, ey / rs, ez / rs]
   // 地平遮挡（全轨道物理可见性）：卫星须在测站地方水平面之上（仰角≥0），否则视线被地球挡住 → 无效。
   // up=测站测地外法线，e 由卫星指向测站 → e·up>0 表示卫星在测站地平线【以下】（地球背面/对趾整片皆被排除）。
   // 必须独立判此：invGridDir 的 c>0 只能分前/后半球，无法区分「前方可见」与「前方穿过地球到背面对趾」(两者 e 同向)。
+  // ★ 此判据【只对地面目标成立】（依赖测站测地法线），故留在本包装里，不下沉到 sampleBeamAtEcef——
+  //   对星取值的遮挡是「视线与地球椭球求交」，完全另一回事（见 shellProj.losBlocked）。
   const clat = Math.cos(lat * D2R), up = [clat * Math.cos(lon * D2R), clat * Math.sin(lon * D2R), Math.sin(lat * D2R)]
-  if (dt(e, up) > 0) return null
+  if ((ex * up[0] + ey * up[1] + ez * up[2]) / rs > 0) return null
+  return sampleBeamAtEcef(beam, igrid, basis, P, opts)
+}
+
+// sampleBeamAt 的通用内核：目标点直接给 ECEF（km），不含任何「地面站」专属判据。
+// 对地（sampleBeamAt）与对星（性能指标表逐星取值）共用此内核，取值口径逐位一致。
+export function sampleBeamAtEcef(beam, igrid, basis, P, opts = {}) {
+  const { S, x, y, z } = basis
+  const ex = P[0] - S[0], ey = P[1] - S[1], ez = P[2] - S[2]
+  const rs = Math.hypot(ex, ey, ez); if (!(rs > 0)) return null
+  const e = [ex / rs, ey / rs, ez / rs]
   const a = dt(e, x), b = dt(e, y), c = dt(e, z)   // basis 正交 → 转置即逆，天线系分量
   const xy = invGridDir(igrid, a, b, c); if (!xy) return null
+  const r = sampleBeamAtParam(beam, xy, rs, opts)
+  return r ? { db: r.db, u: a, v: b, slant: rs, comp: r.comp } : null
+}
+
+// 上者的后半段：方向【已经】折算成网格坐标 xy 之后的插值+口径换算。
+// 单独抽出来是为了时段扫描的热路径——一个时刻要问 N 个波束同一个方向，方向→网格坐标的那段
+// （单位化 + 三次点积 + invGridDir）逐波束重算纯属浪费；多波束 GRD 还能先用各波束的网格盒剪枝，
+// 只对「盒子套得住这个方向」的波束插值（盒外本来就返回 null，剪枝不改结果）。
+export function sampleBeamAtParam(beam, xy, rs, { pol = 'RSS', gainOffset = 0, pathLoss = 'none', hNadir = H, wantComp = false } = {}) {
   const g = beam.grid, NX = g.NX, NY = g.NY
   const fc = (xy[0] - g.XS) / ((g.XE - g.XS) / (NX - 1))
   const fr = (xy[1] - g.YS) / ((g.YE - g.YS) / (NY - 1))
@@ -376,7 +506,7 @@ export function sampleBeamAt(beam, igrid, basis, lon, lat, { pol = 'RSS', gainOf
   if (!(Pw > 0)) return null
   let v = 10 * Math.log10(Pw) + gainOffset
   if (pathLoss !== 'none') v += pathLoss === 'relative' ? 20 * Math.log10(hNadir / rs) : -10 * Math.log10(4 * Math.PI * rs * rs)
-  return { db: v, u: a, v: b, slant: rs, comp }
+  return { db: v, comp }
 }
 
 // L2b：marching-squares 在 dB 网格上按电平取等值线段，端点经投影网格映射到 lon/lat。
@@ -629,4 +759,52 @@ export function stitchLoops(segs) {
     loops.push(loop)
   }
   return loops
+}
+
+// ===== 等值线环上的取点（数值标签锚点用；对地 useGrdCoverage 与对星 useShellCoverage 共用一份）=====
+// 经度差（跨 ±180 取最短）：环点用经纬度平面近似度量（覆盖等值线是局部区域，够用）。
+export const dLon = (a, b) => { let d = a - b; while (d > 180) d -= 360; while (d < -180) d += 360; return d }
+// 一条等值线（点链）的最上端点（纬度最大）：数值标签【默认】锚点，与 GXT「每条等值线取 top 标一次」一致
+export function loopTop(pts) {
+  let best = pts[0]
+  for (const p of pts) if (p[1] > best[1]) best = p
+  return best
+}
+// 环总弧长（度，经纬度平面近似）
+export function loopLen(loop) {
+  let s = 0
+  for (let i = 1; i < loop.length; i++) { const dx = dLon(loop[i][0], loop[i - 1][0]), dy = loop[i][1] - loop[i - 1][1]; s += Math.hypot(dx, dy) }
+  return s
+}
+// 环上「弧长比例 t」处的点 [lon,lat]（越界 t 环绕；退化环回退 loopTop）
+export function loopPointAtFraction(loop, t) {
+  const total = loopLen(loop); if (!(total > 0) || loop.length < 2) return loopTop(loop)
+  const target = (((t % 1) + 1) % 1) * total
+  let acc = 0
+  for (let i = 1; i < loop.length; i++) {
+    const dx = dLon(loop[i][0], loop[i - 1][0]), dy = loop[i][1] - loop[i - 1][1], seg = Math.hypot(dx, dy)
+    if (acc + seg >= target) { const f = seg > 0 ? (target - acc) / seg : 0; return [wrap180(loop[i - 1][0] + dx * f), loop[i - 1][1] + dy * f] }
+    acc += seg
+  }
+  return loop[loop.length - 1]
+}
+// 点 p={lon,lat} 到环的最近投影所对应的「弧长比例 t」（拖拽时把指针吸附到线上）
+export function nearestFractionOnLoop(loop, p) {
+  const total = loopLen(loop); if (!(total > 0) || loop.length < 2) return 0
+  let best = Infinity, bestAcc = 0, acc = 0
+  for (let i = 1; i < loop.length; i++) {
+    const ax = loop[i - 1][0], ay = loop[i - 1][1], dx = dLon(loop[i][0], ax), dy = loop[i][1] - ay, seg2 = dx * dx + dy * dy
+    let f = seg2 > 0 ? (dLon(p.lon, ax) * dx + (p.lat - ay) * dy) / seg2 : 0
+    f = Math.max(0, Math.min(1, f))
+    const ex = dLon(p.lon, ax + dx * f), ey = p.lat - (ay + dy * f), d2 = ex * ex + ey * ey
+    if (d2 < best) { best = d2; bestAcc = acc + Math.hypot(dx, dy) * f }
+    acc += Math.hypot(dx, dy)
+  }
+  // 夹到 <1：开口环（被地平/热区盒裁断）投影到末端时比例会恰为 1，而 loopPointAtFraction 对 t=1 取模回到环首 → 标签瞬移。
+  return Math.min(bestAcc / total, 0.999999)
+}
+// 多档同心环的标签默认锚点：单档取环最上端点（顶部，旧行为不变）；多档按档序沿环错开 (i+0.5)/n，
+// 避免各档标签都堆在顶端叠成一列（看着像「统一」、还分不开）——错开后各档天然散开、可分别就近抓取。
+export function loopLabelAnchor(loop, i, n) {
+  return n > 1 ? loopPointAtFraction(loop, (i + 0.5) / n) : loopTop(loop)
 }
