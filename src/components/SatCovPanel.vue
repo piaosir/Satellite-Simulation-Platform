@@ -187,7 +187,7 @@ function shellWhy(sh) {
     <GrdSetSections :grd="grd" variant="shell" :sat-search="satSearch" />
 
     <div class="csfoot">
-      <span class="cst">{{ sc.stats.value.layers }} 层 · {{ sc.stats.value.tris }} 面片 · {{ sc.stats.value.ms }} ms · {{ satCount }} 星在场</span>
+      <span class="cst" :title="sc.stats.value.fullMs ? '几何 ' + sc.stats.value.ms + ' ms + GPU 重建，整轮 ' + sc.stats.value.fullMs + ' ms。播放时一拍就要这么久，时钟据此拉开两拍的间隔' : ''">{{ sc.stats.value.layers }} 层 · {{ sc.stats.value.tris }} 面片 · {{ sc.stats.value.fullMs || sc.stats.value.ms }} ms · {{ satCount }} 星在场</span>
       <span class="cclr" title="清空壳层上的填充/等值线，保留各天线设置与壳层库" @click="sc.clearDrawing()">清除绘图</span>
     </div>
   </div>

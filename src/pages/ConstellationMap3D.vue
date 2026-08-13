@@ -9,6 +9,8 @@ import { viewPrefs } from '../stores/viewPrefs'
 import { setGrdBridge, clearGrdBridge, fileBridge, bumpCustomSats } from '../stores/fileBridge'
 import { shellUi } from '../stores/shellUi'
 import { isSecOpen, toggleSec } from '../stores/panelSections'
+import { clock, onTick, goLive, togglePlay, setTime as clockSetTime, stepBy as clockStepBy, setStep as clockSetStep, setSpeed as clockSetSpeed, releaseClock, resumeClock, effective as clockEff, capped as clockCapped, restoreState as clockRestore } from '../stores/simClock'
+import { STEP_PRESETS, SPEED_PRESETS, cursorSnapSec, followWindow, snapMs, fmtStep, fmtStepShort, fmtRate, fmtOffset, rateFor } from '../shared/simClockCore.js'
 import { logMsg } from '../stores/log'
 import { alertMsg, appAlert, closeAlert } from '../stores/alert'
 import { displaySatName } from '../viz/satName.js'
@@ -94,8 +96,10 @@ const status = ref('')          // 卫星加载状态：仅显示在左侧星座
 const satCount = ref(0)     // 该组卫星总数
 const shownCount = ref(0)   // 实际渲染点数
 const dataTime = ref('')
-const live = ref(false)     // 实时刷新（与 2D 默认一致：关）
-const nowTick = ref(0)      // 实时模式下每秒自增：驱动时间条上的系统时钟标签
+// 「实时」＝仿真时钟跟随系统时钟（clock.mode==='live'）。这里只读不写：改状态一律走时钟的 goLive/pause，
+// 否则时钟自己的定时器与页面的标志位会各说各话。
+const live = computed(() => clock.mode === 'live')
+const nowTick = ref(0)      // 每拍自增：驱动时间条上随时刻走的读数（时钟推进 / 实时 / 拖游标都算一拍）
 const autoRotate = toRef(viewPrefs, 'autoRotate')   // 自转开关：以 viewPrefs 为单一真相（设置弹窗共享）
 const nameMode = ref('off')   // 国名：'zh' | 'en' | 'off'（默认不显示）
 const showProvinces = ref(false)   // 显示中国省界/省名（默认关；勾选或存档恢复后经 ensureProvinces 加载数据）
@@ -111,7 +115,15 @@ const termNight = ref(true)     // 夜区半透明遮罩
 const termLine = ref(true)      // 晨昏分界线
 const termStyle = reactive({ nightColor: '#0a1120', nightOpacity: 0.42, lineColor: '#ffd27a', lineWidth: 1.2, lineOpacity: 0.75 })
 const termSub = ref(null)       // 当前日下点 {lat, lon}，供侧栏读数（applyTerminator 时回填）
-const timeOffset = ref(0)        // 分钟：游标(查看时刻)相对锚点的偏移，可负=过去
+// —— 时间轴：尺（窗口）与针（时刻）彻底分家 ——
+// 针 = clock.tMs（全局仿真时钟，唯一真相）；尺 = baseTime 锚点 + winStartMin/windowMin 跨度。
+// 游标偏移是【推出来的】不是存出来的：改造前 timeOffset(分钟) 既是显示位置又是时间来源，
+// 于是「秒级」无处安放（整数分钟）、播放推进还得反写回它。现在它只是 tMs 在尺上的投影。
+// ★ 锚点一律从 clock.tMs 取，不各自 Date.now()：两次 Date.now() 差 1 ms，游标偏移就成了「−0:00」
+//   （0 与「几乎是 0」在读数上是两回事，后者还会让「此刻」按钮一直亮着）
+const baseTime = ref(clock.tMs)    // 时间轴锚点：冻结时不变，实时时每拍跟随系统时钟
+const offMs = computed(() => clock.tMs - baseTime.value)          // 游标相对锚点的偏移(ms，可负=过去)
+const offMin = computed(() => offMs.value / 60000)                // 同上，分钟（尺的刻度单位）
 const windowMin = ref(4320)      // 可见时间窗跨度(分钟)，用户可配(预设下拉/滚轮缩放)，持久化
 const winStartMin = ref(-1080)   // 窗口左边缘相对锚点的偏移(分钟)，负=含过去；= -PAST_FRAC*windowMin
 const trackWidthPx = ref(600)    // 时间轴轨道像素宽(ResizeObserver 驱动，供刻度自适应)
@@ -135,8 +147,12 @@ const grdApiOk = typeof window !== 'undefined' && !!(window.api && window.api.co
 //   batch: { id, name, beams:[beamId], gains:[number], custom:'', mode:'gradient'|'solid'|'perGain', solid:'#hex', gainColors:{gain:'#hex'} }
 const covOpen = toRef(covNav, 'covOpen')   // 右侧覆盖面板开关（GXT）；与顶栏按钮共用 covNav store
 
+// 2D 那块场此刻有没有人看：平面图可见，或正在按 2D 出图（导出在 3D 视图下也走 flat，见 exportMap→feedFlat）。
+// 两个覆盖视图的 2D 通道都拿它当闸——3D 视图下每拍往不可见画布烘 Path2D 是白做（exporting/flatView 均运行时求值，无 TDZ）。
+const flatActive = () => flatView.value || exporting.value
 // 覆盖图（GRD）：实时原始场，渲染到星座3D 的 scene/flat（独立图层）
 const grd = useGrdCoverage(() => scene, () => flat, () => flatView.value, {
+  flatActive,
   // 对星指向（boreType='sat'/'satoff'）的目标解析：身份串 → 当前时刻 ECEF(km)。星历与时间轴都在本页，
   // 故由本页注入；useGrdCoverage 自己不碰 SGP4。见下方 satTargetEcef。
   getTargetEcef: (id) => satTargetEcef(id),
@@ -156,7 +172,7 @@ const bs = useBeamSynth({ grd, getPolys: () => polys.value, livePos: (n) => satL
 // ===================== 对星覆盖分析（波束打到轨道壳层上）=====================
 // 与对地覆盖共用同一棵卫星/天线树与同一套【物理设置】（指向/极化/增益/路损，经 grd.getPerfContext 现取）；
 // 只有【显示设置】（档位/填充/画哪些波束）各记一套。渲染走 scene 的壳层专用通道，与对地覆盖互不覆写。
-const satcov = useShellCoverage(grd, () => scene, () => flat, () => flatView.value, () => shellUi.side === 'satcov')
+const satcov = useShellCoverage(grd, () => scene, () => flat, () => flatView.value, () => shellUi.side === 'satcov', flatActive)
 const satPerf = useSatPerfTable()
 const satcovTableOpen = ref(false)
 
@@ -375,8 +391,11 @@ function requestSearchPoolForBore() {
     _borePoolPending = false
     _tgtBucket = -1; _tgtMap = new Map()
     if (!poolReady) return                       // 离线/失败：别空转重算
-    grd.recompute(); satcov.scheduleRecompute()
-    if (shellUi.side === 'satcov') commitGeometry()
+    // 补一拍而不是各自重画：目标星解析通了只是其一，源星若也是刚解析通的关联星，meta 还停在
+    // 存盘位置 —— recompute 只重画不修 meta，得走 tickLive 那条。一拍对齐全场（星位/覆盖/壳层/
+    // 视轴/表），与「一次调用 = 一个时刻的完整画面」同口径；对星指向天线在 tickLive 里无条件
+    // 标 moved，原先 recompute + commitGeometry 的职责全被这一拍覆盖。
+    refreshPositions()
   })
 }
 // 身份串 → 卫星条目。★【全量】解析，不限于在场：对星跟踪的目标星可以是任何一颗目录星 /
@@ -424,7 +443,7 @@ satPerf.setTimeFmt((ms) => {
   const d = new Date(ms), p = (n) => String(n).padStart(2, '0')
   return `${tYear(d)}-${p(tMon(d) + 1)}-${p(tDay(d))} ${p(tHour(d))}:${p(tMin(d))}:${p(tSec(d))}`
 })
-const satcovNowMs = computed(() => { void nowTick.value; void timeOffset.value; void live.value; return calcAt().getTime() })
+const satcovNowMs = computed(() => clock.tMs)
 function satcovEntries(ctx) {
   const selfName = ctx ? String(ctx.satName || '') : ''
   return renderEntries.filter((e) => !selfName || e.name !== selfName)
@@ -442,12 +461,69 @@ function satcovResolvePicks() {
   }
   return out
 }
+// ★「波束内的星」跟随时钟：目标集不是一次捞死的名单，而是【此刻真的落在方向图域里的那些星】。
+// 每拍重算成员：星进波束就出现在表里，出去就消失 —— 这才是动态覆盖仿真该有的样子。
+// 取值复用本拍已算好的 ECEF 快照（_tickEcef，见 refreshPositions），不重跑 SGP4。
+let _tickEcef = null, _tickEcefN = 0
+function satcovInBeamNow(ctx) {
+  const out = []
+  if (!ctx || !ctx.beams || !ctx.beams.length) return out
+  // 成员判据＝落在【这一轮真画出来的那个波束】的方向图域内（与「加入波束内的星」按钮同一口径，
+  // 也与画面所见一致）；表里的取值仍按全部波束取最大，两者口径不同是刻意的：看到的是这个波束照到谁，
+  // 报的是这颗星在这根天线上最好能拿到多少。
+  const fb = satcov.focusBeam.value                     // 没画就退回第一个
+  const bm = (fb && ctx.beams.find((b) => b.bi === fb.bi)) || ctx.beams[0]
+  const dirOpts = { pol: ctx.settings.pol, gainOffset: 0, pathLoss: 'none' }
+  const selfName = String(ctx.satName || '')
+  const P = [0, 0, 0]
+  // 快照与在场集对不上（刚换组/刚筛选，还没走过一拍）→ 就地传播一遍，宁可慢一次也不能少算星
+  const fresh = _tickEcef && _tickEcefN === renderEntries.length
+  const t = fresh ? null : satcovTimes()
+  for (let k = 0; k < renderEntries.length; k++) {
+    const e = renderEntries[k]
+    if (selfName && e.name === selfName) continue       // 源星自己不算目标
+    const cc = !!isCustomEntry(e)
+    if (fresh) {
+      const x = _tickEcef[k * 3]
+      if (!Number.isFinite(x)) continue                 // 本拍传播失败的星（占位）
+      P[0] = x; P[1] = _tickEcef[k * 3 + 1]; P[2] = _tickEcef[k * 3 + 2]
+    } else {
+      let pv
+      try { pv = sat.propagate(e.rec, cc ? t.ccNow : t.now) } catch { continue }
+      if (!pv || !pv.position) continue
+      const ecf = sat.eciToEcf(pv.position, cc ? t.ccGmst : t.gmst)
+      P[0] = ecf.x; P[1] = ecf.y; P[2] = ecf.z
+    }
+    if (!sampleBeamAtEcef(bm.beam, ctx.igrid, ctx.basis, P, dirOpts)) continue
+    out.push({ rec: e.rec, name: e.name, noradId: e.noradId, group: e.group, _cc: cc })
+  }
+  return out
+}
+// 本轮该算哪些目标星：点选档取用户名单，波束内档取此刻的成员（并把名单回填给浮窗显示）
+function satcovResolveTargets(ctx) {
+  if (satPerf.targetMode.value !== 'beam') return satcovResolvePicks()
+  const list = satcovInBeamNow(ctx)
+  satPerf.setBeamTargets(list.map((e) => ({ name: e.name, noradId: e.noradId, group: e.group })))
+  return list
+}
 function satcovRefreshTable() {
   if (!satcovTableOpen.value) return
   const key = satcov.active.value
   const ctx = key ? grd.getPerfContext(key) : null
-  if (!ctx) { satPerf.compute(null); return }
-  satPerf.compute(ctx, satPerf.getOpts(key), satcovResolvePicks(), satcovTimes(), satcov.shells.value, satcov.s.hEx)
+  if (!ctx) { satPerf.compute(null); satPerf.setBeamTargets([]); return }
+  satPerf.compute(ctx, satPerf.getOpts(key), satcovResolveTargets(ctx), satcovTimes(), satcov.shells.value, satcov.s.hEx)
+}
+// ===== 瞬时表跟随仿真时钟（预算自适应）=====
+// 改造前这张表只在【源星移动】时重算，时间推进它是不动的 —— 目标星在动、几何在变、取值早就不是这个数了。
+// 现在每拍跟着走。代价按实测耗时自适应：一次重算超过一拍间隔的 1/3，就按比例跳拍（宁可少刷几帧，
+// 也不能让表把时钟拖慢——时钟一慢，画面上的星就跟不上真实速率，那是把显示问题变成物理问题）。
+// 时段表（几十万次取值）不跟：它只在用户点「计算」时跑，输入变了亮「输入已变」。
+// 表也当场重算，与星位、覆盖场同一个时刻 —— 表脚的 satPerf.stampMs 因此恒等于画面时刻。
+// （曾按预算跳帧，于是表里的数比画面旧一两拍。省下的那点算力换不来这个代价：
+//   一屏之内两个时刻，比慢一点糟得多。要省算力就整体放慢，那是时钟占用底线的事。）
+function satcovClockTick() {
+  if (!satcovTableOpen.value || satPerf.win.on) return
+  satcovRefreshTable()
 }
 // 「加入波束内的星」：扫一遍在场卫星，把当前落在方向图域里的加进目标库。
 // 这是「全量」与「点选」之间的桥——先捞一批，再自己删到只剩关心的那几颗。
@@ -455,19 +531,7 @@ function satcovAddInBeam() {
   const key = satcov.active.value
   const ctx = key ? grd.getPerfContext(key) : null
   if (!ctx || !ctx.beams.length) { status.value = '先选一根天线'; return }
-  const fb = satcov.focusBeam.value                    // 这一轮真画出来的那个波束；没画就退回第一个
-  const bm = (fb && ctx.beams.find((b) => b.bi === fb.bi)) || ctx.beams[0]
-  const t = satcovTimes()
-  const dirOpts = { pol: ctx.settings.pol, gainOffset: 0, pathLoss: 'none' }
-  const found = []
-  for (const e of satcovEntries(ctx)) {
-    let pv
-    try { pv = sat.propagate(e.rec, e._cc ? t.ccNow : t.now) } catch { continue }
-    if (!pv || !pv.position) continue
-    const ecf = sat.eciToEcf(pv.position, e._cc ? t.ccGmst : t.gmst)
-    if (!sampleBeamAtEcef(bm.beam, ctx.igrid, ctx.basis, [ecf.x, ecf.y, ecf.z], dirOpts)) continue
-    found.push({ name: e.name, noradId: e.noradId, group: e.group })
-  }
+  const found = satcovInBeamNow(ctx).map((e) => ({ name: e.name, noradId: e.noradId, group: e.group }))
   const n = satPerf.addTargets(found)
   status.value = found.length ? `波束内 ${found.length} 星，新增 ${n} 个目标` : '当前波束内没有卫星'
   satcovRefreshTable()
@@ -500,8 +564,9 @@ async function satcovScanWindows() {
   const key = satcov.active.value
   const ctx = key ? grd.getPerfContext(key) : null
   if (!ctx) { status.value = '先选一根天线'; return }
-  const tgts = satcovResolvePicks()
-  if (!tgts.length) { status.value = '先加目标星'; return }
+  // 波束内档：目标 = 点「计算」那一刻在波束里的那批星（成员本身随时刻变，扫描得先钉住一份名单）
+  const tgts = satcovResolveTargets(ctx)
+  if (!tgts.length) { status.value = satPerf.targetMode.value === 'beam' ? '当前波束内没有卫星' : '先加目标星'; return }
   await satPerf.computeWindows(ctx, satPerf.getOpts(key), tgts, satcovTimes(), satcov.shells.value, satcov.s.hEx,
     { srcRec: satcovSourceRec(ctx), boreRec: satcovBoreRec(ctx) })
 }
@@ -593,7 +658,9 @@ watch(() => [shellUi.side, flatView.value, grd.dragBore.value, grd.active.value,
 // 时间轴 / 星位变化后的刷新：只管源星动了要重投影；指标表按其「重算」走（一行一颗星，逐帧算不起）
 function satcovTick(movedKeys) {
   if (movedKeys && movedKeys.size) {
-    for (const k of satcov.selected.value) if (movedKeys.has(k)) { satcov.scheduleRecompute(); break }
+    // 当场重算，不走 rAF 合帧：星位已经写进场景了，壳层再晚一帧就是「星在 t、场在 t−Δ」。
+    // 合帧那条路留给【设置变更】（一次改动会连着触发好几个 watcher，合成一帧做完才划算）。
+    for (const k of satcov.selected.value) if (movedKeys.has(k)) { satcov.recompute(); break }
   }
 }
 // 瞬时表随手重算（便宜）；时段表只标「输入已变」等用户点重算 —— 一次扫描是几十万次取值，不能跟着抖
@@ -602,8 +669,9 @@ watch(satcovTableOpen, (v) => { if (v) satcovRefreshTable() })
 // 聚焦特效的触发面：画哪些天线变了（点亮谁按此定）、指向模式/目标星变了（目标星那一端要跟着换）。
 // 时间推进不在这里管——refreshPositions 每帧都会 commitGeometry。
 watch(() => [satcov.selected.value.join('|'), grd.active.value, grdS.boreType, grdS.boreSat], () => { if (shellUi.side === 'satcov') commitGeometry() })
-// 目标库变动（加/删/清空）→ 表重算
+// 目标库变动（加/删/清空）→ 表重算；切目标来源（点选 ↔ 波束内）同理
 watch(() => satPerf.picks.value, () => satcovRefreshTable(), { deep: true })
+watch(satPerf.targetMode, () => satcovRefreshTable())
 // ===== 目标星搜索（对星跟踪的目标星 / 指标表的目标星，两处共用）=====
 // ★【全量】搜索，不限于「在场」：池 = 全量在轨目录（内置各星座分组 ∪ active ∪ 本地自定义卫星库）
 //   ＋ 自定义星座合成星（含隐藏的座）；另按【卫星组】的组名命中该组全部成员（与自定义星座按星座名
@@ -1154,11 +1222,14 @@ function showConstAlone(c) {
   customConst.showOnly(c.id)   // 仅该星座可见 → persist + 重建渲染集
 }
 function removeConst(c) { expDrop('c:' + c.id); customConst.remove(c.id) }
-const baseTime = ref(Date.now())   // 时间轴锚点：冻结时不变，实时时每 tick 跟随系统时钟
-let timer = null, ro = null, trackRo = null
+let ro = null, trackRo = null
+let unsubClock = null, nowBeat = null   // nowBeat：1 Hz 心跳，只刷「真实此刻」参考量（见 nowStamp）
 let pendingNorad = null, pendingNoFace = false
 
-function calcAt() { return live.value ? new Date() : new Date(baseTime.value + timeOffset.value * 60000) }
+// 全平台取时刻的唯一入口：星位 / GRD 覆盖 / 对星壳层 / 可见性 / 晨昏线 / 两张指标表都从这里拿。
+// 实时模式下时钟每拍把 tMs 对齐系统时间，故这里不再单独 new Date()——同一拍内多次调用得到同一时刻，
+// 不会出现「星位算在 t，覆盖算在 t+3ms」的自相矛盾（改造前实时档就是这样，只是量级小看不出来）。
+function calcAt() { return new Date(clock.tMs) }
 // —— 自定义星座（合成星）时间模型（STK 口径）——
 // 场景历元（customConst.scenarioEpoch，可设/持久化，默认当天 08:00）只作各合成星 satrec 的【固定设计历元】：
 // 定 RAAN/MA 的惯性参考、跨会话稳定（RAAN 仍是真惯性升交点赤经，与真实 TLE/星历同参考）。
@@ -1455,29 +1526,60 @@ function rebuildRenderSet() {
   refreshPositions()
 }
 
-// 时间推进 / 实时刷新：只重算渲染集位置（不重建集合），并刷新选中几何/信息卡
+// 时间推进 / 实时刷新：只重算渲染集位置（不重建集合），并刷新选中几何/信息卡。
+// ★ 一次调用 = 一个时刻的【完整】画面：星位、覆盖场、壳层、可见性、晨昏线、指标表全在这里面算完，
+//   谁也不许延后到下一帧（延后就是「星在 t、场在 t−Δ」，用户一眼看得出来）。
+//   算不过来怎么办？由时钟拉长两拍的间隔（simClockCore.nextDelayMs 的占用底线）—— 整体放慢，
+//   而不是让画面里的东西各走各的。
+// ★ 别在这里加名为 live 的形参：模块作用域已有 live（=clock.mode==='live' 的 computed），
+//   同名形参会把它整个遮住，实时档的锚点跟随就此失效（这个坑踩过一次）。
 function refreshPositions() {
   if (!scene) return
   nowStamp.value = Date.now()                                          // 「此刻」红标记参考
-  if (live.value) { nowTick.value++; baseTime.value = nowStamp.value }  // 实时：时钟自增 + 锚点随系统时钟滑动
+  nowTick.value++                                                      // 一拍一次：驱动随时刻走的读数
+  if (live.value) baseTime.value = clock.tMs                           // 实时：锚点随系统时钟滑动（游标恒钉在 0）
+  else followCursor()                                                  // 播放推进跑出可见窗口 → 平移尺子接回来
   // 晨昏线随时间轴/实时移动。放在早退之前：一颗星都不显示时晨昏线照样该走（它只跟时刻有关，与星无关）。
   if (termOn.value) applyTerminator()
   // renderEntries 已含可见自定义星座（即使内置组选「无」也可能非空），故只按空判断，不再短路 'none'
-  if (!renderEntries.length) { scene.setSatellites([]); shownCount.value = 0; if (vis.open.value) vis.recompute(); commitGeometry(); if (hasLinkedElev() || vis.open.value) redrawSats(); grd.tickLive(); return }
+  if (!renderEntries.length) {
+    scene.setSatellites([]); shownCount.value = 0; _tickEcefN = 0
+    if (vis.open.value) vis.recompute()
+    commitGeometry()
+    if (hasLinkedElev() || vis.open.value) redrawSats()
+    // 与正常分支同款带 extras 并接 satcovTick：GRD 关联星按星历解算不依赖在场星（satLivePos 走
+    // 全量目录），「无」分组下时间推进照样要修 meta。早先这里无参 tickLive 且不接对星，对星那份
+    // meta 停在恢复时的存盘位置——视轴/壳层错位，切分组前怎么播放都修不回来。
+    const tk = grd.tickLive([perfKey.value || null, satcov.active.value || null, ...satcov.selected.value])
+    if (perfKey.value && tk.moved && tk.moved.has(perfKey.value)) refreshPerf()
+    satcovTick(tk.moved)
+    satcovClockTick()
+    return
+  }
   const now = calcAt(), gmst = sat.gstime(now)
   const ccNow = ccTimeAt(now), ccGmst = sat.gstime(ccNow)   // 合成星按固定场景历元解算（跨会话稳定）
   const n = renderEntries.length
   const positions = new Array(n)
   const colors = renderHasColor ? new Float32Array(n * 3) : null   // 有自定义星座时逐点上色（真实星取默认色）
+  // 本拍的在场星 ECEF 快照：只在【真有人要】时才存 ——「波束内的星」那个档开着才用得上。
+  // ★ 无条件存是笔白账：7000 颗星每拍多 7000 次 ECI→ECEF 旋转 + 一次 168 KB 的写入，
+  //   而绝大多数时候那张表根本没开。（这条是本轮改动自己引入的回归，别再无条件做。）
+  const wantEcef = satcovTableOpen.value && satPerf.targetMode.value === 'beam'
+  if (wantEcef) {
+    if (!_tickEcef || _tickEcef.length < n * 3) _tickEcef = new Float64Array(Math.max(1024, n * 3))
+    _tickEcefN = n
+  } else _tickEcefN = 0
   for (let k = 0; k < n; k++) {
     const e = renderEntries[k]
     const cc = isCustomEntry(e), t = cc ? ccNow : now, g = cc ? ccGmst : gmst
     let pos
     try {
       const pv = sat.propagate(e.rec, t)
-      if (pv && pv.position) { const gd = sat.eciToGeodetic(pv.position, g); pos = { lat: sat.degreesLat(gd.latitude), lon: sat.degreesLong(gd.longitude), altKm: gd.height } }
-      else pos = { lat: 0, lon: 0, altKm: -RE }   // 占位，保持索引对齐（落到地心不可见）
-    } catch { pos = { lat: 0, lon: 0, altKm: -RE } }
+      if (pv && pv.position) {
+        const gd = sat.eciToGeodetic(pv.position, g); pos = { lat: sat.degreesLat(gd.latitude), lon: sat.degreesLong(gd.longitude), altKm: gd.height }
+        if (wantEcef) { const ecf = sat.eciToEcf(pv.position, g); _tickEcef[k * 3] = ecf.x; _tickEcef[k * 3 + 1] = ecf.y; _tickEcef[k * 3 + 2] = ecf.z }
+      } else { pos = { lat: 0, lon: 0, altKm: -RE }; if (wantEcef) _tickEcef[k * 3] = NaN }   // 占位，保持索引对齐（落到地心不可见）
+    } catch { pos = { lat: 0, lon: 0, altKm: -RE }; if (wantEcef) _tickEcef[k * 3] = NaN }
     positions[k] = pos
     if (colors) { const c = e.color || groupRgb(e.group) || DEFAULT_SAT_RGB; colors[k * 3] = c[0]; colors[k * 3 + 1] = c[1]; colors[k * 3 + 2] = c[2] }
   }
@@ -1497,6 +1599,7 @@ function refreshPositions() {
     const mv = tk.moved
     if (perfKey.value && mv && mv.has(perfKey.value)) refreshPerf()
     satcovTick(mv)
+    satcovClockTick()   // 对星侧的表与「波束内的星」跟随时钟（与画面同一时刻，见其注释）
   }
   if (satModal.value && satModal.value.noradId) liveTick.value++   // 关联星编辑中：驱动弹窗经纬度/高度刷新
   persistGrdLive()   // 写实时关联星当前星下点到轻量缓存，供链路预算窗口「导入时取新位置」
@@ -2431,8 +2534,10 @@ const fpLegend = computed(() => {
 const track = ref(null)
 // —— 可配置时间窗 + 自适应刻度尺（参考 Cesium Timeline / DAW scrubber）——
 const PAST_FRAC = 0.25                                   // 窗口内展示的「过去」占比（可回看过去）
-const WIN_MIN = 10, WIN_MAX = 43200                      // 跨度上下限：10min ~ 30 天
-const WINDOW_PRESETS = [{ v: 360, l: '6h' }, { v: 720, l: '12h' }, { v: 1440, l: '24h' }, { v: 4320, l: '3d' }, { v: 10080, l: '7d' }]   // 时间窗预设
+// 跨度上下限：2min ~ 30 天。★下限压到 2 min 是为了游标的秒级——600 px 上 2 min ＝ 0.2 s/px，
+// 拖动吸附随之细到 1 s（见 cursorSnapSec）；原来的 10 min 下限只能吸到 5~10 s。
+const WIN_MIN = 2, WIN_MAX = 43200
+const WINDOW_PRESETS = [{ v: 10, l: '10m' }, { v: 60, l: '1h' }, { v: 360, l: '6h' }, { v: 1440, l: '24h' }, { v: 4320, l: '3d' }, { v: 10080, l: '7d' }]   // 时间窗预设
 const NICE = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 14400, 21600, 43200, 86400, 172800, 345600, 604800]   // 「整齐」刻度阶梯(秒)
 const _mod = (x, y) => x - y * Math.round(x / y)
 // —— 时间轴读数时区：'local'（本机时区，默认）| 'utc' ——
@@ -2494,7 +2599,7 @@ function computeTicks(anchorMs, wStart, wMin, trackPx) {
 }
 const ticks = computed(() => { void nowTick.value; return computeTicks(baseTime.value, winStartMin.value, windowMin.value, trackWidthPx.value) })
 const winEndMin = computed(() => winStartMin.value + windowMin.value)
-const timePct = computed(() => clamp((timeOffset.value - winStartMin.value) / windowMin.value, 0, 1) * 100)   // 游标位置(%)
+const timePct = computed(() => clamp((offMin.value - winStartMin.value) / windowMin.value, 0, 1) * 100)   // 游标位置(%)
 const nowPct = computed(() => { void nowTick.value; return ((nowStamp.value - baseTime.value) / 60000 - winStartMin.value) / windowMin.value * 100 })
 const nowInWin = computed(() => !live.value && nowPct.value >= 0 && nowPct.value <= 100)   // 实时时游标即此刻，不另画红线
 const isCustomWindow = computed(() => !WINDOW_PRESETS.some((w) => w.v === windowMin.value))
@@ -2505,8 +2610,8 @@ function fmtSpan(min) {
 const customWinLabel = computed(() => fmtSpan(windowMin.value))
 // 对星指标表窗口的时刻读数：取【时间轴游标】calcAt()，不是系统时钟（与晨昏线/可见性同口径）
 const timeText = computed(() => {
-  void nowTick.value; void timeOffset.value; void live.value; void tzMode.value
-  const d = calcAt(), p = (n) => String(n).padStart(2, '0')
+  void tzMode.value
+  const d = new Date(clock.tMs), p = (n) => String(n).padStart(2, '0')
   return `${tYear(d)}-${p(tMon(d) + 1)}-${p(tDay(d))} ${p(tHour(d))}:${p(tMin(d))}:${p(tSec(d))} ${tzUtc() ? 'UTC' : localTzLabel.value}`
 })
 
@@ -2520,34 +2625,41 @@ function onHover(e) {
 }
 function onLeave() { hoverShow.value = false }
 
-function trackToMin(clientX) {
+// 光标 x → 时刻(ms)。★ 秒级：吸附粒度按「1 像素 ≈ 1 格」自适应（cursorSnapSec），窗口越窄越细，
+// 最细 1 s；24 h 窗口下吸到秒毫无意义（一像素就是两分钟），要精确到秒请缩窗口 / 用步进 / 直接键入时刻。
+const snapSec = computed(() => cursorSnapSec(windowMin.value, trackWidthPx.value))
+function trackToMs(clientX) {
   const r = track.value.getBoundingClientRect()
-  return Math.round(winStartMin.value + clamp01((clientX - r.left) / r.width) * windowMin.value)
+  const ms = baseTime.value + (winStartMin.value + clamp01((clientX - r.left) / r.width) * windowMin.value) * 60000
+  return snapMs(ms, snapSec.value * 1000)
 }
-// 拖动游标(查看时刻)；pointer 监听挂 document，移出轨道仍连续；实时中照常可拖，applyTime 会静默退出实时
+// 拖动游标(查看时刻)；pointer 监听挂 document，移出轨道仍连续。
+// ★ 播放中拖游标＝就地续播（STK 拖动画游标同款），不再被静默停成暂停；实时中拖则退出实时。
 function trackDown(e) {
   if (!track.value) return
   track.value.focus()
-  applyTime(trackToMin(e.clientX))
-  const move = (ev) => applyTime(trackToMin(ev.clientX))
+  applyTimeMs(trackToMs(e.clientX))
+  const move = (ev) => applyTimeMs(trackToMs(ev.clientX))
   const up = () => { document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', up) }
   document.addEventListener('pointermove', move); document.addEventListener('pointerup', up)
 }
-function applyTime(v) {
-  timeOffset.value = clamp(v, winStartMin.value, winEndMin.value)
-  if (live.value) { live.value = false; if (timer) { clearInterval(timer); timer = null } baseTime.value = Date.now() }
-  refreshPositions()
+// 设时刻（夹在可见窗口内——拖不到看不见的地方）。刷新由时钟的 tick 回调统一驱动，这里不自己调 refreshPositions。
+function applyTimeMs(ms) {
+  const lo = baseTime.value + winStartMin.value * 60000, hi = baseTime.value + winEndMin.value * 60000
+  clockSetTime(clamp(ms, lo, hi))
 }
-function step(min) { applyTime((timeOffset.value || 0) + min) }
-// 键盘(role=slider)：←→步进(Shift 大步)，PageUp/Down ±1h，Home/End 跳窗口两端
+function applyTime(min) { applyTimeMs(baseTime.value + min * 60000) }   // 分钟口径的老入口（窗口两端跳转仍用）
+function step(min) { applyTimeMs(clock.tMs + min * 60000) }
+// 键盘(role=slider)：←→ 走一个【仿真步长】(Shift ×10)，PageUp/Down ±1h，Home/End 跳窗口两端，空格播放/暂停
 function onTrackKey(e) {
   let h = true
-  if (e.key === 'ArrowLeft') step(e.shiftKey ? -60 : -1)
-  else if (e.key === 'ArrowRight') step(e.shiftKey ? 60 : 1)
+  if (e.key === 'ArrowLeft') clockStepBy(e.shiftKey ? -10 : -1)
+  else if (e.key === 'ArrowRight') clockStepBy(e.shiftKey ? 10 : 1)
   else if (e.key === 'PageDown') step(-60)
   else if (e.key === 'PageUp') step(60)
   else if (e.key === 'Home') applyTime(winStartMin.value)
   else if (e.key === 'End') applyTime(winEndMin.value)
+  else if (e.key === ' ' || e.key === 'Spacebar') togglePlay(1)
   else h = false
   if (h) e.preventDefault()
 }
@@ -2557,27 +2669,78 @@ function onWheel(e) {
   const r = track.value.getBoundingClientRect(), f = clamp01((e.clientX - r.left) / r.width)
   const cursorOff = winStartMin.value + f * windowMin.value
   windowMin.value = Math.round(clamp(windowMin.value * (e.deltaY > 0 ? 1.15 : 1 / 1.15), WIN_MIN, WIN_MAX))
-  winStartMin.value = live.value ? -Math.round(PAST_FRAC * windowMin.value) : Math.round(cursorOff - f * windowMin.value)
-  timeOffset.value = clamp(timeOffset.value, winStartMin.value, winEndMin.value)
-  saveSettings(); refreshPositions()
+  winStartMin.value = live.value ? -PAST_FRAC * windowMin.value : cursorOff - f * windowMin.value
+  clampCursorIntoWindow()
+  saveSettings()
+}
+// 缩放/换跨度后游标可能落到窗外 → 夹回来（时刻本身被改动才通知时钟，避免每次滚轮都白刷一拍：
+// 尺子变了星并没有动，刻度是 computed 自己会重算，7000 颗星的 SGP4 没必要跟着滚轮跑）
+function clampCursorIntoWindow() {
+  const lo = baseTime.value + winStartMin.value * 60000, hi = baseTime.value + winEndMin.value * 60000
+  const t = clamp(clock.tMs, lo, hi)
+  if (t !== clock.tMs) clockSetTime(t)
 }
 // 预设/自定义跨度：窗口居中重置（含 PAST_FRAC 过去），游标夹入新范围
 function setWindow(min) {
   windowMin.value = clamp(Math.round(min), WIN_MIN, WIN_MAX)
-  winStartMin.value = -Math.round(PAST_FRAC * windowMin.value)
-  timeOffset.value = clamp(timeOffset.value, winStartMin.value, winEndMin.value)
-  saveSettings(); refreshPositions()
+  winStartMin.value = -PAST_FRAC * windowMin.value
+  clampCursorIntoWindow()
+  saveSettings()
 }
 function resetTime() {
-  if (!timeOffset.value && !live.value) return
-  baseTime.value = Date.now(); winStartMin.value = -Math.round(PAST_FRAC * windowMin.value); applyTime(0)
+  if (atNow.value && !live.value) return
+  winStartMin.value = -PAST_FRAC * windowMin.value
+  clockSetTime(Date.now()); baseTime.value = clock.tMs
 }
 function toggleLive() {
-  live.value = !live.value
-  winStartMin.value = -Math.round(PAST_FRAC * windowMin.value); timeOffset.value = 0; baseTime.value = Date.now()
-  if (live.value) { if (!timer) timer = setInterval(refreshPositions, 1000) }
-  else if (timer) { clearInterval(timer); timer = null }
-  refreshPositions()
+  const on = !live.value
+  winStartMin.value = -PAST_FRAC * windowMin.value
+  if (on) goLive(); else clockSetTime(Date.now())
+  baseTime.value = clock.tMs
+}
+// ===================== 仿真时钟走带（STK Animation 范式）=====================
+// 步长 = 一拍走多少仿真秒（采样量子）；倍速 = 比真实时间快多少倍（STK 的 x Real Time）。
+// 拍率 = 倍速 ÷ 步长，夹在 [0.2, 30] —— 顶住时实际倍速打折，读数如实并列（见 clockEff/clockCapped）。
+// 播放中游标跑出可见窗口 → 平移尺子把它接回来（不是夹住游标：夹住等于播放撞墙停住）。
+const stepText = computed(() => fmtStep(clock.stepSec))
+const speedText = computed(() => fmtRate(clock.speed) + '×')
+// 三个数可能不一样：设定倍速（下拉里）/ 步长顶住后实际能达到的 / 机器真跑出来的。
+// ★ 只在【和设定值不一样】时才出现这行读数 —— 一致时它就是旁边下拉里的同一个数，摆着只会让人以为
+//   自己漏看了什么（截图里那个孤零零的「10×」正是这个毛病）。
+const speedNote = computed(() => {
+  const eff = clockEff.value, out = []
+  if (clockCapped.value) out.push(`实际 ${fmtRate(eff)}×`)
+  if (clock.mode === 'play' && clock.achieved > 0 && Math.abs(clock.achieved - eff) / eff > 0.12) out.push(`实测 ${fmtRate(clock.achieved)}×`)
+  return out.join(' · ')
+})
+function setStepSec(v) { clockSetStep(v); saveSettings() }
+function setSpeedVal(v) { clockSetSpeed(v); saveSettings() }
+// 播放推进后把尺子跟上（订阅回调里调）。慢档翻页、快档连续滑动，见 followWindow。
+function followCursor() {
+  const ws = followWindow(offMin.value, winStartMin.value, windowMin.value, PAST_FRAC,
+    clock.mode === 'play' ? clockEff.value : 0)
+  if (ws != null) winStartMin.value = ws
+}
+// —— 跳到指定时刻（精确到秒）——
+// 拖游标的吸附粒度受像素限制（24 h 窗口下 1 px = 144 s），要落在某个确切的秒上只能键入。
+// 输入按当前时区档位解释（与时间轴读数同一个开关），跳过去后窗口以该时刻重新居中。
+const gotoOpen = ref(false)
+const gotoVal = ref('')
+function openGoto() {
+  const d = new Date(clock.tMs), p = (n) => String(n).padStart(2, '0')
+  gotoVal.value = `${tYear(d)}-${p(tMon(d) + 1)}-${p(tDay(d))}T${p(tHour(d))}:${p(tMin(d))}:${p(tSec(d))}`
+  gotoOpen.value = !gotoOpen.value
+}
+function applyGoto() {
+  const v = String(gotoVal.value || '')
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?/.exec(v)
+  if (!m) { gotoOpen.value = false; return }
+  const [, Y, Mo, D, h, mi, s] = m.map(Number)
+  const t = tzUtc() ? Date.UTC(Y, Mo - 1, D, h, mi, s || 0) : new Date(Y, Mo - 1, D, h, mi, s || 0).getTime()
+  if (!Number.isFinite(t)) { gotoOpen.value = false; return }
+  winStartMin.value = -PAST_FRAC * windowMin.value
+  clockSetTime(t); baseTime.value = clock.tMs
+  gotoOpen.value = false
 }
 function toggleRotate() { autoRotate.value = !autoRotate.value; scene && scene.setAutoRotate(autoRotate.value) }
 function setNameMode(m) { nameMode.value = m; scene && scene.setLabelMode(m); if (flat) flat.setNameMode(m) }
@@ -2711,7 +2874,11 @@ async function applyFlat(v) {
   if (!v) {
     scene && scene.resume()
     if (satSpec3dDirty && scene) { scene.setSatLayer(satSpec3dPending); satSpec3dDirty = false; satSpec3dPending = null }
-    if (grdOpen.value) grd.recompute(); pushZoom(); return
+    // 2D 期间两个覆盖视图的 3D 通道都被闸着（recompute 的 isFlat 门）→ 切回必须各补一次全量，
+    // 不能再只看面板开关：2D 里播放过的话，场景里的场还停在切走那一刻，星早走远了。
+    grd.recompute()
+    satcov.recompute()   // 内部 panelOn/_painted 闸自己管：没画过不推
+    pushZoom(); return
   }
   await ensureCovIndex(); if (!covCleared.value) redraw()   // 已清除则切平面图不复现覆盖（covGeom 保持为空）
   await nextTick()
@@ -4357,7 +4524,6 @@ function focusSubpoints() {
 // 地图右键（3D 球体与 2D 平面图共用）：轨迹描绘中→直接加航点（连续右键描点）；否则→弹出右键菜单。
 // ll：点击处经纬度（点在地球外为 null）；pos：屏幕坐标（菜单定位）。
 const ctxMenu = ref(null)        // { x, y, ll } 右键菜单状态（null=隐藏）
-const covSetOpen = ref(false)    // 「覆盖图设置」弹窗开关
 function onMapRightClick(ll, pos) {
   if (bs.placing.value) { if (ll) bs.placeAt(ll); return }   // 波束合成放置态：右键在此放一个波束轮廓，不弹菜单
   const pg = curPoly()
@@ -4415,8 +4581,11 @@ function ctxClearPolys() {
 }
 function clearAllMk() { clearAllMarkers(); closeCtx() }
 function clearAllCoverage() { if (covApiOk) clearCoverage(); if (grdApiOk) grd.clearDrawing(); closeCtx() }
-function ctxOpenMarkers() { shellUi.side = 'markers'; closeCtx() }
-function ctxOpenGeo() { shellUi.side = 'geo'; closeCtx() }
+// 清除壳层覆盖：与对星面板「清除绘图」同口径 —— 只取消勾选的天线（壳层上的填充/等值线/波束射线随之
+// 消失），壳层库、参照网与各天线设置一概保留。参照网不随之撤（它由壳层的 show 决定），要撤走下一条。
+function ctxClearShellCov() { satcov.clearDrawing(); closeCtx() }
+// 隐藏壳层参照网（不删壳层）：与对星面板「显示壳层参照网」是同一个开关，可在面板重新勾上。
+function ctxHideShellGuides() { satcov.s.guides = false; closeCtx() }
 // 右键处命中国家（点在多边形内判定）→ 打开地图设置并选中该国进入逐国设色
 function ctxSetLandColor() {
   const ll = ctxLL(); closeCtx()
@@ -4426,7 +4595,6 @@ function ctxSetLandColor() {
   shellUi.side = 'geo'
   pickLandCountry(c)
 }
-function ctxOpenCovSet() { covSetOpen.value = true; closeCtx() }   // 打开覆盖图显示设置弹窗（GRD 4 + GXT 3，含字号/大小条）
 const markSizes = () => ({ ptFont: markPtFont.value, stIcon: stIconSize.value, stFont: stFontSize.value, ptDot: markPtDot.value, trajDot: trajDotSize.value })
 // 标记载荷构造器：坐标/名称是否带文字由 showPtLabel/showStName 决定（空串=圆点/图标保留、文字隐藏）。
 // pushMarkers 与 feedFlat 共用，避免两处各写一份导致显隐口径不一致。
@@ -4668,16 +4836,20 @@ function mkDragResize(e, dir = 'se') {
 
 // 时间读数（双行定宽块，DAW 范式：主行=时刻/偏移量，副行=日期时间；tabular-nums 防拖动抖动）
 // 时区随 tzMode 切换（仅显示）：副行末尾挂档位标记，避免「读到 08:00 却不知道是哪个 08:00」。
+// ★ 主行改成【时刻本身】（HH:MM:SS），副行才是日期 + 相对真实此刻的偏移。
+//   改造前主行是「相对时间轴锚点的偏移」：锚点会随「跳到时刻」搬家，跳到后天照样显示「此刻」——
+//   偏移的参照必须是真实当前时刻，否则这个数读不出任何东西。近 1 min 内一律算「此刻」，
+//   免得停着不动的表每秒把 −0:02 −0:03 数下去（那个抖动只是参照在走，不是仿真时刻在走）。
+const relNowMs = computed(() => clock.tMs - nowStamp.value)
+const atNow = computed(() => Math.abs(relNowMs.value) < 60000)
 const timeParts = computed(() => {
   const p = (n) => String(n).padStart(2, '0')
   const tag = tzUtc() ? 'UTC' : localTzLabel.value
-  if (live.value) { void nowTick.value; const d = new Date(); return { m: `${p(tHour(d))}:${p(tMin(d))}:${p(tSec(d))}`, s: `${p(tMon(d) + 1)}-${p(tDay(d))} 实时 ${tag}` } }
-  const d = calcAt()
-  const dt = `${p(tMon(d) + 1)}-${p(tDay(d))} ${p(tHour(d))}:${p(tMin(d))} ${tag}`
-  if (!timeOffset.value) return { m: '此刻', s: dt }
-  const sgn = timeOffset.value < 0 ? '−' : '+', mm = Math.abs(timeOffset.value)
-  const oh = Math.floor(mm / 60), om = mm % 60
-  return { m: `${sgn}${oh}h${p(om)}m`, s: dt }
+  const d = new Date(clock.tMs)
+  const md = `${p(tMon(d) + 1)}-${p(tDay(d))}`
+  const hms = `${p(tHour(d))}:${p(tMin(d))}:${p(tSec(d))}`
+  if (live.value) return { m: hms, s: `${md} 实时 ${tag}` }
+  return { m: hms, s: `${md} ${atNow.value ? '此刻' : fmtOffset(relNowMs.value)} ${tag}` }
 })
 function toggleTz() { tzMode.value = tzUtc() ? 'local' : 'utc' }
 
@@ -4734,7 +4906,7 @@ function deserializeCov(items) {
 }
 function snapshot() {
   return {
-    nameMode: nameMode.value, countryName: countryNameSize.value, provName: provNameSize.value, cityName: cityNameSize.value, showProvinces: showProvinces.value, showCities: showCities.value, borderStyle: { ...borderStyle }, labelStyle: { ...labelStyle }, termOn: termOn.value, termNight: termNight.value, termLine: termLine.value, termStyle: { ...termStyle }, tzMode: tzMode.value, oceanColor: oceanColor.value, landScheme: landScheme.value, landOverrides: { ...landOverrides }, groupColors: { ...groupColors }, autoRotate: autoRotate.value, autoRotateSpeed: viewPrefs.autoRotateSpeed, live: live.value, beamLock: beamLock.value, fpMode: fpMode.value, beam: beam.value, elevMin: elevMin.value, windowMin: windowMin.value,
+    nameMode: nameMode.value, countryName: countryNameSize.value, provName: provNameSize.value, cityName: cityNameSize.value, showProvinces: showProvinces.value, showCities: showCities.value, borderStyle: { ...borderStyle }, labelStyle: { ...labelStyle }, termOn: termOn.value, termNight: termNight.value, termLine: termLine.value, termStyle: { ...termStyle }, tzMode: tzMode.value, oceanColor: oceanColor.value, landScheme: landScheme.value, landOverrides: { ...landOverrides }, groupColors: { ...groupColors }, autoRotate: autoRotate.value, autoRotateSpeed: viewPrefs.autoRotateSpeed, live: live.value, clock: { stepSec: clock.stepSec, speed: clock.speed }, beamLock: beamLock.value, fpMode: fpMode.value, beam: beam.value, elevMin: elevMin.value, windowMin: windowMin.value,
     mkPt: markPtFont.value, mkStIcon: stIconSize.value, mkStFont: stFontSize.value, mkPtDot: markPtDot.value, mkTrajDot: trajDotSize.value,
     mkPtShow: showPtLabel.value, mkStShow: showStName.value,
     mkPtLayer: showPtLayer.value, mkStLayer: showStLayer.value, mkTrajLayer: showTrajLayer.value,
@@ -4794,7 +4966,7 @@ async function restoreSettings() {
   if (s.fpMode === 'elev') fpMode.value = 'elev'
   if (typeof s.beam === 'string') beam.value = s.beam
   if (typeof s.elevMin === 'string') elevMin.value = s.elevMin
-  if (Number.isFinite(s.windowMin)) { windowMin.value = clamp(Math.round(s.windowMin), WIN_MIN, WIN_MAX); winStartMin.value = -Math.round(PAST_FRAC * windowMin.value) }
+  if (Number.isFinite(s.windowMin)) { windowMin.value = clamp(Math.round(s.windowMin), WIN_MIN, WIN_MAX); winStartMin.value = -PAST_FRAC * windowMin.value }
   if (typeof s.polyOpen === 'boolean') polyOpen.value = s.polyOpen
   // 省界/市界开关：默认开，存档里的显式 false 也要恢复；数据加载统一走挂载尾部的 ensureProvinces/ensureCities
   if (typeof s.showProvinces === 'boolean') showProvinces.value = s.showProvinces
@@ -4808,7 +4980,8 @@ async function restoreSettings() {
     for (const k of ['nightColor', 'lineColor']) if (typeof s.termStyle[k] === 'string') termStyle[k] = s.termStyle[k]
     for (const k of ['nightOpacity', 'lineWidth', 'lineOpacity']) if (Number.isFinite(s.termStyle[k])) termStyle[k] = s.termStyle[k]
   }
-  if (s.live) { live.value = true; if (!timer) timer = setInterval(refreshPositions, 1000) }
+  clockRestore(s.clock)   // 步长/速率（播放态刻意不恢复：一开软件就自己跑起来会冲掉「上次看到哪」）
+  if (s.live) goLive()
   const c = s.cov
   if (c && Array.isArray(c.items) && c.items.length) {
     covOpen.value = !!s.covOpen
@@ -4852,6 +5025,11 @@ async function restoreSettings() {
       }
     }
     redrawSats()
+    // 恢复链路把各天线 cache 的星位（meta）建在【存盘位置】上；星历缓存若抢先完成了第一次
+    // refreshPositions（ingest 比逐文件读 GRD 快是常态），那一拍修正的 meta 已被这里的重建覆盖，
+    // 而默认暂停态之后再无拍来修 —— 视轴/壳层/覆盖停在旧星位（「第一帧不对，播放一下就好」）。
+    // 补一拍对齐；星历还没好时走空集早退，等 ingest 的那拍来修 —— 两种完成顺序都闭合。
+    refreshPositions()
   } else if (s.grdOpen && grdApiOk) {
     grdOpen.value = true
     await grd.loadIndex(false)
@@ -4904,6 +5082,13 @@ onMounted(async () => {
     else if (s === 'antenna' && !grdOpen.value) toggleGrd()
     else if (s === 'poly' && !polyOpen.value) togglePolyPanel()
   }, { immediate: true })
+  // ★ 全局仿真时钟接进来：一拍 = 一次全场重算（星位/覆盖/壳层/可见性/晨昏线/指标表都在 refreshPositions 里）。
+  //   改造前只有「实时」档有一个 1 Hz 的 setInterval，冻结档全靠用户拖游标才动；现在时间本身会走。
+  unsubClock = onTick(() => refreshPositions())
+  resumeClock()   // 上次离开本页时若在实时/播放，回来接着走（时刻与模式都留在 store 里）
+  // 「真实此刻」参考量的心跳：只写一个 ref（红色「此刻」标记的位置 + 偏移读数 + 此刻按钮的可用性），
+  // 不碰星位、不碰场景。没有它的话，暂停期间这三样会冻在最后一拍上 —— 停十分钟后点「此刻」会发现按钮是灰的。
+  nowBeat = setInterval(() => { nowStamp.value = Date.now() }, 1000)
   scene = createGlobeScene(el.value, { ...displayQuality.value })
   scene.setAutoRotate(autoRotate.value)
   scene.setLabelMode(nameMode.value)
@@ -4971,7 +5156,10 @@ onMounted(async () => {
   satGroups.load()   // 恢复已存卫星组（仅列表；显示由用户点击组行触发）
   refreshCustomImportCount()   // 权威导入组计数（决定「自定义卫星」分组是否在星座列表出现）
   loadGroup()
-  ensureSearchPool()   // 后台构建全量搜索库（当日缓存命中则很快），与当前分组无关
+  // 后台构建全量搜索库（当日缓存命中则很快），与当前分组无关。
+  // 就绪后补一拍：GRD 关联星不在当前分组时，此前 satLivePos 解析不到星历（liveEntryOf 的兜底
+  // 顺序是 entries → searchPool）、meta 停在存盘位置，这一拍才把星位/视轴/壳层一并对齐。
+  ensureSearchPool().finally(() => { if (poolReady) refreshPositions() })
   redrawSats()   // 恢复后立即绘制自定义卫星（关联卫星待 loadGroup 完成由 refreshPositions 跟踪）
   applyDisplayQuality()   // 套用当前画质档位（含低/中档的 50m 底图按需加载）
   applyTerminator()   // 晨昏线：按恢复后的开关画一次（不依赖星历，故不等 loadGroup）
@@ -4999,7 +5187,11 @@ onBeforeUnmount(() => {
 
   clearGrdBridge()   // 离开 3D 页：注销文件管理器对活树/导出器的引用
   fileBridge.customConst = null
-  cursor.ll = null; cursor.env = null; if (timer) clearInterval(timer); if (ro) ro.disconnect(); if (trackRo) trackRo.disconnect(); if (flat) flat.destroy(); if (scene) { scene.clearCoverage(); scene.destroy() }
+  // 离开本页：退订并停表。时刻本身保留在 store 里 —— 回来接着这个时刻，不弹回「此刻」。
+  if (unsubClock) { unsubClock(); unsubClock = null }
+  if (nowBeat) { clearInterval(nowBeat); nowBeat = null }
+  releaseClock()
+  cursor.ll = null; cursor.env = null; if (ro) ro.disconnect(); if (trackRo) trackRo.disconnect(); if (flat) flat.destroy(); if (scene) { scene.clearCoverage(); scene.destroy() }
 })
 </script>
 
@@ -5273,7 +5465,7 @@ onBeforeUnmount(() => {
           <!-- 自定义星座（仿 STK Walker 生成器）：星点 + 轨道圈叠加显示 -->
           <div class="ccsec">
             <div class="cchd"><span>自定义星座</span><span class="lnk" @click="openConstWizard()"><Icon name="plus" :size="11" /> 生成</span></div>
-            <div class="ccep" title="全部自定义星座共用的「场景历元」（STK Scenario Epoch）。星座定向以此为准；拖时间轴仍从此历元向后推演。默认取电脑当天 08:00，每天自动更新；当天若手动改过则当天以手动值为准（次日回到该日 08:00）。RAAN 仍是惯性升交点赤经，与真实 TLE 同参考。">
+            <div class="ccep" title="全部自定义星座共用的「场景历元」。星座定向以此为准；拖时间轴仍从此历元向后推演。默认取电脑当天 08:00，每天自动更新；当天若手动改过则当天以手动值为准（次日回到该日 08:00）。RAAN 仍是惯性升交点赤经，与真实 TLE 同参考。">
               <label>场景历元</label>
               <input class="ci" type="datetime-local" v-model="scenarioEpochLocal" />
               <span class="lnk" title="取当前时刻为场景历元" @click="scenarioEpochNow">当前</span>
@@ -6114,7 +6306,7 @@ onBeforeUnmount(() => {
             <div class="seg sm vis-mode">
               <span class="sg" :class="{ on: vis.mode.value === 'now' }" @click="vis.setMode('now')">瞬时可见</span>
               <span class="sg" :class="{ on: vis.mode.value === 'access' }" title="未来一段时间内每颗星对目标的过境窗口（Access）" @click="vis.setMode('access')">时段过境</span>
-              <span class="sg" :class="{ on: vis.mode.value === 'coverage' }" title="STK Coverage：区域布设网格 → 逐胞元计算覆盖性能指标(FOM) → 热力图" @click="vis.setMode('coverage')">覆盖</span>
+              <span class="sg" :class="{ on: vis.mode.value === 'coverage' }" title="区域布设网格 → 逐胞元计算覆盖性能指标(FOM) → 热力图" @click="vis.setMode('coverage')">覆盖</span>
             </div>
 
             <!-- 瞬时可见（now）：KPI + 极坐标 sky 图 + 结果表 -->
@@ -6530,7 +6722,7 @@ onBeforeUnmount(() => {
         </span>
       </div>
       <div class="tb-track" ref="track" tabindex="0" role="slider" aria-label="仿真时间游标"
-           :aria-valuemin="winStartMin" :aria-valuemax="winEndMin" :aria-valuenow="timeOffset" :aria-valuetext="timeParts.s"
+           :aria-valuemin="winStartMin" :aria-valuemax="winEndMin" :aria-valuenow="offMin" :aria-valuetext="timeParts.s"
            @pointerdown="trackDown" @wheel.prevent="onWheel" @keydown="onTrackKey" @pointermove="onHover" @pointerleave="onLeave">
         <div class="tb-base"></div>
         <div v-for="(t, i) in ticks.minor" :key="'n' + i" class="tb-t min" :style="{ left: t.x + 'px' }"></div>
@@ -6543,14 +6735,36 @@ onBeforeUnmount(() => {
       </div>
       <div class="tl-grp">
         <span class="tlab2 tzsw" :title="tzMode === 'utc' ? '当前按 UTC 显示，点击切回本机时区 ' + localTzLabel + '（仅改显示；星位、晨昏线、过境窗口一律走 UTC 计算，与此开关无关）' : '当前按本机时区 ' + localTzLabel + ' 显示，点击切到 UTC（仅改显示；星位、晨昏线、过境窗口一律走 UTC 计算，与此开关无关）'" @click="toggleTz"><span class="t1">{{ timeParts.m }}</span><span class="t2">{{ timeParts.s }}</span></span>
-        <span class="stg" role="group">
-          <span class="st" @click="step(-60)" title="后退 1 小时">−1h</span>
-          <span class="st" @click="step(-10)">−10m</span>
-          <span class="st" @click="step(-1)">−1m</span>
-          <span class="st now" :class="{ dis: !live && !timeOffset }" title="回到当前时刻" @click="resetTime">此刻</span>
-          <span class="st" @click="step(1)">+1m</span>
-          <span class="st" @click="step(10)">+10m</span>
-          <span class="st" @click="step(60)" title="前进 1 小时">+1h</span>
+        <!-- 仿真时钟走带：反向连播 / 步退 / 播放·暂停 / 步进 / 回到此刻 / 跳到时刻 -->
+        <span class="stg" role="group" aria-label="仿真时钟">
+          <span class="st tic" :class="{ act: clock.mode === 'play' && clock.dir < 0 }" title="反向播放" @click="togglePlay(-1)"><Icon name="rewind" :size="12" /></span>
+          <span class="st tic" title="后退一个步长" @click="clockStepBy(-1)"><Icon name="step-back" :size="12" /></span>
+          <span class="st tic play" :class="{ act: clock.mode === 'play' && clock.dir > 0 }" :title="clock.mode === 'play' ? '暂停' : '播放（空格）'" @click="togglePlay(1)"><Icon :name="clock.mode === 'play' ? 'pause' : 'play'" :size="12" /></span>
+          <span class="st tic" title="前进一个步长" @click="clockStepBy(1)"><Icon name="step-forward" :size="12" /></span>
+          <span class="st now" :class="{ dis: !live && atNow }" title="回到当前时刻" @click="resetTime">此刻</span>
+          <span class="st tic" :class="{ act: gotoOpen }" title="跳到指定时刻" @click="openGoto"><Icon name="clock" :size="12" /></span>
+        </span>
+        <template v-if="gotoOpen">
+          <div class="lmenu-bd" @mousedown="gotoOpen = false" @contextmenu.prevent="gotoOpen = false"></div>
+          <div class="gotobox">
+            <input class="ci" type="datetime-local" step="1" v-model="gotoVal" @keydown.enter="applyGoto" @keydown.esc="gotoOpen = false" />
+            <span class="ptb" @click="applyGoto">跳转</span>
+          </div>
+        </template>
+        <!-- 步长 + 倍速。两个旋钮各带栏名 —— 光一个「1s」和一个「×10」摆在那里看不出是什么。
+             右侧读数只在【设定值没达到】时出现：一致时它和左边的下拉是同一个数，纯属重复。 -->
+        <span class="clkg" role="group" aria-label="仿真步长与倍速">
+          <span class="ckl">步长</span>
+          <select class="cksel" :value="clock.stepSec" title="每拍推进的仿真时间" @change="setStepSec(Number($event.target.value))">
+            <option v-for="s in STEP_PRESETS" :key="s" :value="s">{{ fmtStepShort(s) }}</option>
+            <option v-if="!STEP_PRESETS.includes(clock.stepSec)" :value="clock.stepSec">{{ fmtStepShort(clock.stepSec) }}</option>
+          </select>
+          <span class="ckl">倍速</span>
+          <select class="cksel" :value="clock.speed" title="仿真时间相对真实时间的倍数" @change="setSpeedVal(Number($event.target.value))">
+            <option v-for="x in SPEED_PRESETS" :key="x" :value="x">×{{ fmtRate(x) }}</option>
+            <option v-if="!SPEED_PRESETS.includes(clock.speed)" :value="clock.speed">{{ speedText }}</option>
+          </select>
+          <span v-if="speedNote" class="ckx lag" :title="'拍率 ' + fmtRate(rateFor(clock.stepSec, clock.speed)) + ' 拍/s（上限 30）× 步长 ' + stepText">{{ speedNote }}</span>
         </span>
       </div>
     </div>
@@ -6807,42 +7021,10 @@ onBeforeUnmount(() => {
         <div class="ctx-item" @click="ctxClearPolys">隐藏所有 Polygon</div>
         <div class="ctx-item" @click="clearAllMk">清除所有标记</div>
         <div v-if="grdApiOk || covApiOk" class="ctx-item" @click="clearAllCoverage">清除所有覆盖图</div>
-        <div class="ctx-sep"></div>
-        <div class="ctx-item" @click="ctxOpenMarkers">标记设置</div>
-        <div class="ctx-item" @click="ctxOpenGeo">地图设置</div>
-        <div v-if="grdApiOk || covApiOk" class="ctx-item" @click="ctxOpenCovSet">覆盖图设置…</div>
+        <div v-if="grdApiOk" class="ctx-item" @click="ctxClearShellCov">清除壳层覆盖</div>
+        <div v-if="grdApiOk" class="ctx-item" @click="ctxHideShellGuides">隐藏壳层参照网</div>
       </div>
     </template>
-
-    <!-- 覆盖图显示设置弹窗（GRD 4 项 + GXT 3 项，含字号/大小调节条） -->
-    <div v-if="covSetOpen" class="sat-mask">
-      <div class="sat-dlg">
-        <div class="sdh"><span>覆盖图显示设置</span><span class="csx" @click="covSetOpen = false"><Icon name="x" :size="12" /></span></div>
-        <div class="sdbody">
-          <template v-if="grdApiOk">
-            <div class="sect"><span>覆盖分析</span></div>
-            <label class="chk2"><input type="checkbox" v-model="grdS.showName" /><span>显示天线名</span></label>
-            <div v-if="grdS.showName" class="srow"><label>字号</label><input class="rng" type="range" min="0.5" max="32" step="0.5" v-model.number="grdS.nameSize" /><span class="u">{{ grdS.nameSize }}</span></div>
-            <label class="chk2"><input type="checkbox" v-model="grdS.showBore" /><span>显示波束中心</span></label>
-            <div v-if="grdS.showBore" class="srow"><label>大小</label><input class="rng" type="range" min="0.1" max="3" step="0.1" v-model.number="grdS.boreSize" /><span class="u">{{ grdS.boreSize }}</span></div>
-            <label class="chk2"><input type="checkbox" v-model="grdS.showPeak" /><span>显示波束中心峰值</span></label>
-            <div v-if="grdS.showPeak" class="srow"><label>字号</label><input class="rng" type="range" min="0.5" max="30" step="0.5" v-model.number="grdS.peakSize" /><span class="u">{{ grdS.peakSize }}</span></div>
-            <label class="chk2"><input type="checkbox" v-model="grdS.showVal" /><span>显示数值标签</span></label>
-            <div v-if="grdS.showVal" class="srow"><label>字号</label><input class="rng" type="range" min="0.5" max="30" step="0.5" v-model.number="grdS.valSize" /><span class="u">{{ grdS.valSize }}</span></div>
-          </template>
-          <template v-if="covApiOk">
-            <div class="sect"><span>覆盖图（GXT）</span></div>
-            <label class="chk2"><input type="checkbox" :checked="showBeamLabels" @change="toggleBeamLabels" /><span>显示波束名</span></label>
-            <div v-if="showBeamLabels" class="srow"><label>字号</label><input class="rng" type="range" min="6" max="32" step="1" :value="beamLabelSize" @input="setBeamFont" /><span class="u">{{ beamLabelSize }}</span></div>
-            <label class="chk2"><input type="checkbox" :checked="showBore" @change="toggleBore" /><span>显示波束中心</span></label>
-            <div v-if="showBore" class="srow"><label>大小</label><input class="rng" type="range" min="1" max="12" step="1" :value="boreSize" @input="setBoreSize" /><span class="u">{{ boreSize }}</span></div>
-            <label class="chk2"><input type="checkbox" :checked="showContourLabels" @change="toggleContourLabels" /><span>显示数值标签</span></label>
-            <div v-if="showContourLabels" class="srow"><label>字号</label><input class="rng" type="range" min="2" max="20" step="1" :value="contourLabelSize" @input="setContourSize" /><span class="u">{{ contourLabelSize }}</span></div>
-          </template>
-        </div>
-        <div class="sdfoot"><span class="save" @click="covSetOpen = false">完成</span></div>
-      </div>
-    </div>
 
     <!-- 对星覆盖分析：对星性能指标表浮窗 -->
     <SatCovWindows
@@ -7240,7 +7422,7 @@ onBeforeUnmount(() => {
 .tl .wseg { font-family: var(--font-mono); }
 .tl .wseg .sg.cust { cursor: default; }
 /* 时间读数：双行定宽块（主行=时刻/偏移量，副行=日期时间），tabular-nums + min-width，拖动不抖、不参与伸缩 */
-.tlab2 { display: inline-flex; flex-direction: column; justify-content: center; min-width: 70px; flex: none; font-family: var(--font-mono); font-variant-numeric: tabular-nums; line-height: 1.25; }
+.tlab2 { display: inline-flex; flex-direction: column; justify-content: center; min-width: 96px; flex: none; font-family: var(--font-mono); font-variant-numeric: tabular-nums; line-height: 1.25; }
 .tlab2 .t1 { font-size: 12px; color: var(--text); white-space: nowrap; }
 .tlab2 .t2 { font-size: 9.5px; color: var(--text-faint); white-space: nowrap; }
 /* 时区档位切换（本机时区 ⇄ UTC）：整块读数即按钮，副行末尾的档位标记就是当前态指示 */
@@ -7262,15 +7444,58 @@ onBeforeUnmount(() => {
 .tl .live-btn.on { color: #e05252; border-color: color-mix(in srgb, #e05252 55%, transparent); }
 .tl .live-btn.on .ldot { background: #e05252; animation: live-pulse 2s ease-in-out infinite; }
 @keyframes live-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(224, 82, 82, 0.4); } 50% { box-shadow: 0 0 0 4px rgba(224, 82, 82, 0); } }
+/* 仿真时钟走带：图标按钮与文字按钮同高同框（同一 .stg 里不能一个 12px 字一个 12px 图标各算各的行高） */
+.tl .stg .st.tic { display: inline-flex; align-items: center; justify-content: center; padding: 4px 7px; }
+.tl .stg .st.play { padding: 4px 9px; }
+.tl .stg .st.act { color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+/* 步长 / 倍速：两个带栏名的下拉 + 一个只在设定值没达到时才出现的读数（不描边，它不是按钮） */
+.tl .clkg { display: inline-flex; align-items: center; gap: 4px; flex: none; }
+.tl .ckl { font-size: 11px; color: var(--text-faint); white-space: nowrap; }
+.tl .ckl + .cksel { margin-right: 4px; }
+.tl .cksel {
+  background: var(--surface); color: var(--text-muted); border: 0.5px solid var(--border); border-radius: 4px;
+  font-size: 11px; font-family: var(--font-mono); padding: 3px 4px; cursor: pointer; outline: none;
+}
+.tl .cksel:hover { color: var(--text); border-color: var(--border-strong); }
+.tl .ckx { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 11px; color: var(--text-faint); white-space: nowrap; }
+.tl .ckx.lag { color: var(--warn); }   /* 设定倍速没达到（被步长顶住 / 机器跟不上）：读数变告警色 */
+/* 跳到时刻：浮在时间条上方的小盒（时间条本身很矮，塞不进一个日期时间输入框） */
+.tl .gotobox {
+  position: absolute; right: 12px; bottom: calc(100% + 6px); z-index: 2200;   /* 压过 .lmenu-bd 的遮罩 */
+  display: inline-flex; align-items: center; gap: 6px; padding: 6px 8px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 6px; box-shadow: 0 6px 20px rgba(0, 0, 0, .28);
+}
+.tl .gotobox .ci { font-size: 11.5px; padding: 3px 6px; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; font-family: var(--font-mono); }
+.tl .gotobox .ptb { font-size: 11.5px; color: var(--text-muted); border: 1px solid var(--border); border-radius: 4px; padding: 3px 8px; cursor: pointer; white-space: nowrap; }
+.tl .gotobox .ptb:hover { color: var(--accent); border-color: var(--accent); }
 /* 时间控制条置于地图正下方：分隔线换到上缘 */
-.tl.bottom { border-bottom: 0; border-top: 1px solid var(--border); background: var(--surface); container-type: inline-size; }
+.tl.bottom { border-bottom: 0; border-top: 1px solid var(--border); background: var(--surface); container-type: inline-size; position: relative; }
 /* 窄容器（侧栏挤压）优雅降级：收紧内边距/竖线/时间轴下限，保证「最低仰角」输入始终可见 */
+/* 让位次序（挤窄时按「越靠后越先走」）：刻度次线 → 时间窗大档预设 → 栏名 → 跳到时刻 → 时间窗预设。
+   ★ 走带五个键、两个旋钮、以及「实际/实测倍速」读数任何档位都不许消失：
+     前两者是这条时间条的功能本体；那行读数只在设定倍速没达到时才出现，恰恰是最该被看见的时候。 */
 @container (max-width: 880px) {
   .tl { gap: 10px; }
   .tl-grp { gap: 6px; }
   .tl .tb-track { min-width: 130px; }
   .tl .tb-t.min { display: none; }
   .tl .stg .st { padding: 4px 5px; }
+  .tl .stg .st.tic { padding: 4px 4px; }
+  .tl .clkg { gap: 3px; }
+  .tl .ckl { font-size: 10px; }
+  .tl .cksel { font-size: 10.5px; padding: 3px 2px; }
+  .tl .wseg .sg:nth-child(n+5) { display: none; }          /* 大档（3d/7d）先走：滚轮照样能缩放到任意跨度 */
+  .tlab2 { min-width: 84px; }
+}
+@container (max-width: 760px) {
+  .tl { gap: 8px; }
+  .tl .wseg .sg:nth-child(n+3) { display: none; }           /* 只留 10m / 1h 两档 */
+  .tl .stg .st.tic:last-child { display: none; }            /* 「跳到时刻」：键盘与拖动仍可定位 */
+}
+/* 最后一档才动栏名：没有栏名的「1s」「×10」谁也看不出是什么，能留就留 */
+@container (max-width: 560px) {
+  .tl .ckl { display: none; }                               /* 口径仍在两个下拉的悬停提示里 */
+  .tl .wseg { display: none; }
 }
 .mini { padding: 3px 10px; border: 1px solid var(--border); cursor: pointer; color: var(--text-muted); font-size: 12px; }
 .mini.on { color: var(--text); border-color: var(--accent); }

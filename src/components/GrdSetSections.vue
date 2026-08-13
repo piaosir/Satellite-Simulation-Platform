@@ -238,9 +238,9 @@ const boreTip = computed(() => {
         <div v-if="st.showName" class="srow"><label>字号</label><input class="rng" type="range" min="0.5" max="32" step="0.5" v-model.number="st.nameSize" /><span class="u">{{ st.nameSize }}</span></div>
         <label class="chk2"><input type="checkbox" v-model="st.showBore" /><span>显示波束中心</span></label>
         <div v-if="st.showBore" class="srow"><label>大小</label><input class="rng" type="range" min="0.1" max="3" step="0.1" v-model.number="st.boreSize" /><span class="u">{{ st.boreSize }}</span></div>
-        <label class="chk2"><input type="checkbox" v-model="st.showRay" /><span :title="isShell ? '从卫星沿天线视轴射出的线（波束打不到壳层时也在，拖拽指向时当把手）' : '卫星到波束中心的连线'">显示波束射线</span></label>
+        <label class="chk2"><input type="checkbox" v-model="st.showRay" /><span title="从卫星沿方向图 u=v=0 方向射出的一条线，一根天线一条">显示天线视轴</span></label>
         <template v-if="st.showRay">
-          <div class="srow"><label>颜色</label><input class="clr" type="color" v-model="st.rayColor" title="波束射线颜色（两个视图同一套样式）" /></div>
+          <div class="srow"><label>颜色</label><input class="clr" type="color" v-model="st.rayColor" title="视轴颜色（两个视图同一套样式）" /></div>
           <div class="srow"><label>线宽</label><input class="rng" type="range" min="0.4" max="6" step="0.1" v-model.number="st.rayWidth" /><span class="u">{{ fx(st.rayWidth, 1) }}</span></div>
           <div class="srow"><label>透明度</label><input class="rng" type="range" min="0.05" max="1" step="0.05" v-model.number="st.rayOpacity" /><span class="u">{{ fx(st.rayOpacity) }}</span></div>
         </template>

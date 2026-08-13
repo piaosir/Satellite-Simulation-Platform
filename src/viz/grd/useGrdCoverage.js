@@ -10,6 +10,8 @@ import { RS_GEO, A, geodeticToEcef, geocentricToEcef, isoElevationContourAt } fr
 import { effective as displayQuality } from '../../stores/displayQuality.js'
 import { appAlert } from '../../stores/alert.js'   // 应用内提示，替代会夺焦点的原生 alert
 
+const perfNow = () => (typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now())
+
 const H = RS_GEO - A
 const GEO_ALT = 35786              // GEO 轨道高度 km（预置星默认）：NASA 标称值（22,236 mi）
 // 仰角线配色调色板（卫星属性）：新建/预置星按序分配，可逐星改色
@@ -150,6 +152,48 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
   function boreTip(R) {
     const bd = boreDir()
     return bd ? boresightShellPoint(bd.S, bd.d, R) : null
+  }
+
+  // ==================== 天线视轴（boresight axis）====================
+  // 一根天线【一条】线：从源星沿方向图坐标系的 z 轴（u=v=0 那个方向）射出去。
+  // ★ 这不是「每个波束一条」——多波束天线的 94 个波束共用同一根反射面/同一个视轴，逐波束连线既不是
+  //   物理上的一根轴，94 条粗线本身也是每帧几十次几何分配（94 波束下点播放就卡在这里）。
+  //   要看单个波束打在哪，那是「波束中心」那个开关的事。
+  // 与半径 R 球面求交：源星在球外（对地 R=A）取【近】交点＝视轴打在地球上的落点；
+  // 源星在球内（对星，R=最外壳层）恒有唯一正根。整个视轴指着天上（对地时打不到地球）→ 交不着，
+  // 由调用方退到一个可见长度，射线仍在（拖全向指向时它是唯一的把手）。
+  function axisHit(S, d, R) {
+    const rS = Math.hypot(S[0], S[1], S[2]) || 1
+    const b = 2 * (S[0] * d[0] + S[1] * d[1] + S[2] * d[2]), c = rS * rS - R * R
+    const disc = b * b - 4 * c
+    if (disc < 0) return null
+    const sq = Math.sqrt(disc), t1 = (-b - sq) / 2, t2 = (-b + sq) / 2
+    const t = t1 > 1e-6 ? t1 : (t2 > 1e-6 ? t2 : 0)
+    if (!(t > 0)) return null
+    return { rS, P: [S[0] + t * d[0], S[1] + t * d[1], S[2] + t * d[2]] }
+  }
+  // keys 里每根天线一条视轴。R 由调用方给（对地传地球半径，对星传最外一层壳层半径）；
+  // 交不着就退到 rS×1.15 的球，保证线一直看得见。
+  function buildAxisRays(keys, R) {
+    if (!s.showRay) return []
+    const D = 180 / Math.PI, out = []
+    for (const key of (keys || [])) {
+      // 直接取缓存算基底，不走 getPerfContext —— 后者顺带 map 出【全部波束】的清单（94 波束就是每帧
+      // 94 个对象 + 94 次取名），而这里只要 S 和 z 两个矢量。拖拽热路径上这笔白账尤其贵。
+      const c = cache.get(key); if (!c || !c.meta || !c.beams) continue
+      const b0 = beamBasis(c.meta, c.settings)
+      const S = b0.S, d = b0.z
+      const rS = Math.hypot(S[0], S[1], S[2]) || 1
+      const hit = axisHit(S, d, R) || axisHit(S, d, rS * 1.15)
+      if (!hit) continue
+      const P = hit.P, rP = Math.hypot(P[0], P[1], P[2]) || 1
+      out.push({
+        from: { lon: Math.atan2(S[1], S[0]) * D, lat: Math.asin(Math.max(-1, Math.min(1, S[2] / rS))) * D, rKm: rS },
+        to: { lon: Math.atan2(P[1], P[0]) * D, lat: Math.asin(Math.max(-1, Math.min(1, P[2] / rP))) * D, rKm: rP },
+        color: s.rayColor, width: s.rayWidth, opacity: s.rayOpacity
+      })
+    }
+    return out
   }
   // 指向模式（STK 口径）＝ 底层 boreType(geo/azel)+boreLock 两字段的规范组合，UI 只暴露单一「模式」：
   //   目标跟踪 Targeted     = geo + 锁定：boresight 钉住固定经纬点，星动天线重指向、足迹中心不动（STK Targeted + Tracking Boresight）
@@ -848,22 +892,41 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
   // 不加这道闸的后果：天线设置是两视图共享的 grd.s，改任一项都会同时唤醒两边的 watcher，对星那份走
   // rAF 后到、把对地刚喂进去的层整体换掉（它自己的 selected 通常是空的 → 直接清空）。症状即「在平面图上
   // 点分带填充，覆盖闪一下就没了，切一次视图（feedFlat 重喂）又回来」。
-  const flatField = () => ((hooks.ownsFlatField && !hooks.ownsFlatField()) ? null : getFlat())
+  // 两道闸：归属（对星视图占场时不碰，见上）+ 活跃（3D 视图下画布不可见，Path2D 白烘一整套；
+  // 「按 2D 出图」在 3D 视图下也要喂 flat，由宿主的 flatActive 放行——所以不能直接拿 isFlat 当闸）。
+  const flatField = () => {
+    if (hooks.ownsFlatField && !hooks.ownsFlatField()) return null
+    if (hooks.flatActive && !hooks.flatActive()) return null
+    return getFlat()
+  }
   function recompute() {
-    const sc = getScene(), fl = flatField()
+    const t0 = perfNow()
+    // 2D 平面图盖住球面期间（scene 已 pause）不喂 3D：切回 3D 时由 applyFlat 补一次全量。
+    const sc = isFlat() ? null : getScene(), fl = flatField()
+    if (!sc && !fl) { _fullMs = 0; return }   // 两侧都不收（如 2D 下对星视图占着场）：几何白算，直接跳过
     // 聚焦（编辑中）天线排到最后 → 填充叠加时位于最上层，最醒目（其余按选中顺序在下）
     const ks = [...selected.value].sort((a, b) => (a === active.value ? 1 : 0) - (b === active.value ? 1 : 0))
     const layers = ks.flatMap((k) => buildLayer(k, s.showVal))   // 每天线展开成 N 个波束子层；2D/3D 共用同一份（省一半重算）
     const opts = fieldOpts()
-    if (sc) sc.setCoverageField(layers, opts)
+    opts.rays = buildAxisRays(ks, A)                             // 天线视轴：一根天线一条，打到地球上（见 buildAxisRays）
+    // 增量更新：图层按 id 复用 GPU 缓冲，只有真消失的层才销毁（94 波束下这是「点播放就卡」的大头）
+    if (sc) (sc.updateCoverageField || sc.setCoverageField)(layers, opts)
     if (fl) fl.setField(layers, opts)
+    _fullMs = perfNow() - t0            // 整轮耗时（几何 + GPU 重建都算在内）：面板读数用
   }
+  // ★ 【一帧一个时刻】：覆盖场的重算永远与星位在同一次调用里做完，绝不延后。
+  //   曾经为了省算力把它推迟到「上次耗时 ×2」之后 —— 那等于画面上星在 t、覆盖场在 t−Δ，
+  //   同一帧里两个时刻。用户一眼就看出来了：「覆盖场等卫星走一小段后才刷新，慢半拍」。
+  //   省算力的活交给时钟去做：一拍算多久，下一拍就隔多久（见 simClockCore.nextDelayMs 的占用底线）——
+  //   场景贵就整体放慢，星和场一起慢，永远对得上，而不是让场去追星。
+  let _fullMs = 0
   // 拖拽热路径：只重算【聚焦天线】这一层，并只补丁【当前可见视图】（2D 或 3D，由 isFlat 决定）。
   // 其余天线层不变（拖拽不改它们的投影），另一视图在拖拽结束时由 recompute 一次性补齐 → 每帧工作量大幅下降。
   function recomputeActive() {
     if (!active.value || !selected.value.includes(active.value)) return   // 未勾选显示的天线，编辑/拖拽时也不上图
     const layers = buildLayer(active.value, s.showVal)
     const opts = fieldOpts()
+    opts.rays = buildAxisRays(selected.value, A)   // 拖指向时视轴跟着转（一天线一条，全量重建也不贵）
     if (isFlat()) { const fl = flatField(); if (fl) fl.patchField(layers, opts) }
     else { const sc = getScene(); if (sc) sc.patchCoverageLayers(layers, opts) }
   }
@@ -916,6 +979,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
   // extra：额外要跟踪的天线 key（单个或数组）。这些天线的覆盖未必绘制在【对地】视图里（不在 selected），
   // 但性能指标表 / 对星覆盖分析仍要按当前星位取值，故也得随星移动其 meta，否则 getPerfContext 取到陈旧星位。
   // 返回 moved（本次真的动了的 key 集合），调用方据此各取所需——只有一个 perfMoved 布尔量不够用了。
+  // live=true ＝ 连播拍（重算走节流闸）；false ＝ 用户离散动作（步进/拖游标/跳时刻）→ 当场重算。
   function tickLive(extra = null) {
     const keys = new Set(selected.value)
     const extras = Array.isArray(extra) ? extra.filter(Boolean) : (extra ? [extra] : [])
@@ -934,7 +998,9 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
       if (!node || (!node.noradId && !node.elements)) continue   // 仅星座关联星 / 轨道根数模拟星跟踪（固定星不动）
       if (moveCoverage(c, key, liveOf(node))) { moved.add(key); if (selected.value.includes(key)) changed = true }
     }
-    if (changed) recompute()   // 仅绘制中的覆盖层变了才重绘；未绘制的性能表天线只需 meta 已更新
+    // 仅绘制中的覆盖层变了才重绘；未绘制的性能表天线只需 meta 已更新。
+    // 当场重算、不延后：星位与覆盖场必须是同一个时刻（见上面「一帧一个时刻」）。
+    if (changed) recompute()
     return { changed, perfMoved: extras.length ? moved.has(extras[0]) : false, moved }
   }
   // 手改卫星信息（经纬度/高度）后，该星全部天线的覆盖图随之平移/缩放（与仰角线一同变化）。
@@ -1407,7 +1473,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
 
   return {
     sats, expanded, selected, active, loading, s,
-    keyOf, isSelected, isActive, isExpanded, antMeta, activeName, beamsCount, satState, dragBore, boreGround, boreDir, boreTip, boreModeOf, setBoreMode,
+    keyOf, isSelected, isActive, isExpanded, antMeta, activeName, beamsCount, satState, dragBore, boreGround, boreDir, boreTip, buildAxisRays, boreModeOf, setBoreMode,
     setBoreSat, boreSatResolved, setBorePoint, syncBorePoint, shellDrag, beamBasis,
     activeBeams, beamListOn, isBeamOn, toggleBeam, setAllBeams, allBeamsOn, renameBeam,
     beamQuery, setBeamQuery, filteredBeams, filteredAllOn, filteredAnyOn, selectFiltered,

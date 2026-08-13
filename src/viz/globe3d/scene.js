@@ -908,10 +908,11 @@ export function createGlobeScene(container, quality = {}) {
   let covLayers = new Map()   // 层 id → { group, li }：每个覆盖层(天线·波束)独立子组，支持拖拽时按层增量重建
   let covOpts = {}
   function disposeCovGroup(grp) {
-    grp.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) { lineMats.delete(o.material); o.material.dispose() } })
+    grp.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) { lineMats.delete(o.material); if (o.material.map) o.material.map.dispose(); o.material.dispose() } })
   }
   function clearCoverageField() {
     if (!covFieldGroup) return
+    covRayGroup = null                 // 视轴子组挂在 covFieldGroup 下，随它一起被 disposeCovGroup 收走
     disposeCovGroup(covFieldGroup)
     scene.remove(covFieldGroup); covFieldGroup = null; covLayers = new Map()
   }
@@ -944,71 +945,106 @@ export function createGlobeScene(container, quality = {}) {
   //   · 且【已在参数域预细分】→ updateFill 走 preTess=true 跳过经纬度域细分（跨极点/接缝的坑见那边注释）。
   // ★ 场景单位：半径 1 = RE(6371 km 平均半径)，不是 WGS84 长半轴。故壳层半径一律由 R 现算，
   //   别拿「轨道高度」直接喂 llaToVec —— 两者差 7.137 km。
-  let shellGroup = null, shellFills = [], shellOpts = {}
+  let shellGroup = null, shellLayers = new Map(), shellOpts = {}
   const shellAlt = (R) => R - RE          // R(km) → 场景 llaToVec 的 altKm
   function clearShellField() {
     if (!shellGroup) return
-    disposeCovGroup(shellGroup)
-    shellGroup.traverse((o) => { if (o.material && o.material.map) o.material.map.dispose() })
-    scene.remove(shellGroup); shellGroup = null; shellFills = []
+    disposeCovGroup(shellGroup)           // 含 sprite 纹理（material.map）一并释放
+    scene.remove(shellGroup); shellGroup = null; shellLayers.clear()
+  }
+  // 一层的装饰（等值线 + 数值/名称/峰值标签 + 波束中心点）：与对地 buildDeco 同策略——相对填充轻量，每次重建。
+  function buildShellDeco(L, o) {
+    const out = []
+    const la = shellAlt(L.R || RE)
+    for (const grp of (L.segGroups || [])) {
+      if (!grp.segs || !grp.segs.length) continue
+      const flat = []
+      for (const sg of grp.segs) {
+        const a = llaToVec(sg[0][1], sg[0][0], la), b = llaToVec(sg[1][1], sg[1][0], la)
+        flat.push(a.x, a.y, a.z, b.x, b.y, b.z)
+      }
+      out.push(fatSegments(flat, grp.color != null ? grp.color : 0xffffff, grp.width || 1.2, grp.opacity != null ? grp.opacity : 0.95, 6))
+    }
+    // 数值标签：每档一处（锚点由上游按等值线环给）
+    if (o.showVal) for (const grp of (L.segGroups || [])) {
+      if (grp.txt == null) continue
+      for (const an of (grp.labels || [])) {
+        const spr = makeCovLabel(String(grp.txt), (o.valSize || 12) / 533, '#ffffff')
+        const pos = llaToVec(an[1], an[0], la)
+        pos.addScaledVector(pos.clone().normalize(), spr.scale.y * 0.6)
+        spr.position.copy(pos); spr.renderOrder = 12; out.push(spr)
+      }
+    }
+    // 波束中心（峰值方向与壳层的交点）+ 波束名：与对地覆盖同款，只是锚在壳面上
+    const b = L.bore
+    if (b) {
+      const anchor = llaToVec(b.lat, b.lon, la)
+      // 连线不在这儿画：对星视图的射线是【天线视轴】那一条，由 setShellRays 单独出（波束打不到壳层时也得有）
+      if (o.showBore) {
+        const dot = new THREE.Mesh(new THREE.SphereGeometry((o.boreSize || 0.5) * 0.0014, 12, 12), new THREE.MeshBasicMaterial({ color: 0xffffff }))
+        dot.position.copy(anchor); dot.renderOrder = 11; out.push(dot)
+      }
+      if (o.showName && L.name) {
+        const spr = makeCovLabel(L.name, (o.nameSize || 16) / 533, '#ffffff')
+        spr.center.set(0.5, -0.35); spr.position.copy(anchor); spr.renderOrder = 13; out.push(spr)
+      }
+      if (o.showPeak && b.peak != null) {
+        const spr = makeCovLabel(b.peak.toFixed(2) + ' dB', (o.peakSize || 5) / 533, '#cfd6df')
+        spr.center.set(0.5, 1.15); spr.position.copy(anchor); spr.renderOrder = 12; out.push(spr)
+      }
+    }
+    return out
+  }
+  // 一层实体 { group, fill(持久填充网格), deco }：填充原地写回既有缓冲，装饰重建（对地 ensureLayerEntry 同款）。
+  function ensureShellEntry(L, o, prev) {
+    let entry = prev
+    if (!entry) entry = { group: new THREE.Group(), fill: null, deco: [] }
+    else disposeDeco(entry)
+    const R = L.R || RE
+    const alpha = L.alpha != null ? L.alpha : (o.alpha != null ? o.alpha : 0.55)
+    if (L.fillBands && L.fillBands.length) {
+      if (!entry.fill) {
+        entry.fill = makeFill(alpha)
+        entry.fill.mesh.renderOrder = 4.7                      // 低于 GRD 对地覆盖(5)：同屏时地表足迹压在壳层之上
+        entry.group.add(entry.fill.mesh)
+      }
+      updateFill(entry.fill, L.fillBands, alpha, R / RE, true) // 已在参数域预细分 → 跳过经纬度域细分
+    } else if (entry.fill) { entry.fill.mesh.visible = false; if (entry.fill.geo.index) entry.fill.geo.setDrawRange(0, 0) }
+    const deco = buildShellDeco(L, o)
+    for (const d of deco) entry.group.add(d)
+    entry.deco = deco
+    return entry
   }
   function setShellField(layers, opts) {
     clearShellField()
     shellOpts = opts || {}
-    const list = layers || []
-    if (!list.length) return
-    const o = shellOpts, g = new THREE.Group()
-    for (const L of list) {
-      const R = L.R || RE
-      const alpha = L.alpha != null ? L.alpha : (o.alpha != null ? o.alpha : 0.55)
-      if (L.fillBands && L.fillBands.length) {
-        const fm = makeFill(alpha)
-        fm.mesh.renderOrder = 4.7                              // 低于 GRD 对地覆盖(5)：同屏时地表足迹压在壳层之上
-        updateFill(fm, L.fillBands, alpha, R / RE, true)
-        g.add(fm.mesh); shellFills.push(fm)
-      }
-      const la = shellAlt(R)
-      for (const grp of (L.segGroups || [])) {
-        if (!grp.segs || !grp.segs.length) continue
-        const flat = []
-        for (const sg of grp.segs) {
-          const a = llaToVec(sg[0][1], sg[0][0], la), b = llaToVec(sg[1][1], sg[1][0], la)
-          flat.push(a.x, a.y, a.z, b.x, b.y, b.z)
-        }
-        g.add(fatSegments(flat, grp.color != null ? grp.color : 0xffffff, grp.width || 1.2, grp.opacity != null ? grp.opacity : 0.95, 6))
-      }
-      // 数值标签：每档一处（锚点由上游按等值线环给）
-      if (o.showVal) for (const grp of (L.segGroups || [])) {
-        if (grp.txt == null) continue
-        for (const an of (grp.labels || [])) {
-          const spr = makeCovLabel(String(grp.txt), (o.valSize || 12) / 533, '#ffffff')
-          const pos = llaToVec(an[1], an[0], la)
-          pos.addScaledVector(pos.clone().normalize(), spr.scale.y * 0.6)
-          spr.position.copy(pos); spr.renderOrder = 12; g.add(spr)
-        }
-      }
-      // 波束中心（峰值方向与壳层的交点）+ 波束名：与对地覆盖同款，只是锚在壳面上
-      const b = L.bore
-      if (b) {
-        const anchor = llaToVec(b.lat, b.lon, la)
-        // 连线不在这儿画：对星视图的射线是【天线视轴】那一条，由 setShellRays 单独出（波束打不到壳层时也得有）
-        if (o.showBore) {
-          const dot = new THREE.Mesh(new THREE.SphereGeometry((o.boreSize || 0.5) * 0.0014, 12, 12), new THREE.MeshBasicMaterial({ color: 0xffffff }))
-          dot.position.copy(anchor); dot.renderOrder = 11; g.add(dot)
-        }
-        if (o.showName && L.name) {
-          const spr = makeCovLabel(L.name, (o.nameSize || 16) / 533, '#ffffff')
-          spr.center.set(0.5, -0.35); spr.position.copy(anchor); spr.renderOrder = 13; g.add(spr)
-        }
-        if (o.showPeak && b.peak != null) {
-          const spr = makeCovLabel(b.peak.toFixed(2) + ' dB', (o.peakSize || 5) / 533, '#cfd6df')
-          spr.center.set(0.5, 1.15); spr.position.copy(anchor); spr.renderOrder = 12; g.add(spr)
-        }
-      }
-    }
-    shellGroup = g; scene.add(g)
+    if (!(layers || []).length) return
+    shellGroup = new THREE.Group()
+    scene.add(shellGroup)
+    updateShellField(layers, shellOpts)
   }
-  function setShellFieldAlpha(a) { for (const fm of shellFills) fm.mat.opacity = a }
+  // 全量【增量】更新：按层 id 复用上一轮实体（填充网格原地写回顶点缓冲，只重建线与标签），
+  // 只有真正消失的 id 才销毁。
+  // ★ 时间推进走这条，不走 setShellField —— 后者是整组销毁重建（每拍 makeFill + 全量上传 + 标签纹理
+  //   重烘），正是对星视图「点播放就卡」的大头。两条路出来的画面逐字一致（层内容全由 L 定，与建层路径无关）。
+  function updateShellField(layers, opts) {
+    if (!shellGroup) { setShellField(layers, opts); return }
+    if (opts) shellOpts = opts
+    const o = shellOpts, seen = new Set()
+    let auto = 0
+    for (const L of (layers || [])) {
+      const id = L.id != null ? L.id : '#' + auto++
+      const prev = shellLayers.get(id)
+      const entry = ensureShellEntry(L, o, prev)
+      if (!prev) { shellLayers.set(id, entry); shellGroup.add(entry.group) }
+      seen.add(id)
+    }
+    for (const [id, e] of [...shellLayers]) {
+      if (seen.has(id)) continue
+      shellGroup.remove(e.group); disposeCovGroup(e.group); shellLayers.delete(id)
+    }
+  }
+  function setShellFieldAlpha(a) { for (const e of shellLayers.values()) if (e.fill) e.fill.mat.opacity = a }
 
   // 壳层参照网（经纬 30° 稀疏球面格网）：等值线悬在空中没有「面」的落点，画一层极淡的格网当参照。
   // 与场数据分开成组：改指向/电平时只重建场，参照网不动。list=[{R, color, alpha}]。
@@ -1262,8 +1298,8 @@ export function createGlobeScene(container, quality = {}) {
       // 文字锚：径向再抬出 ~45km。billboard 整体深度≈锚点深度，抬到球面之前 → 标签（尤其位于中心点下方的峰值）
       // 不再被地球模型遮挡；depthTest 仍为真，背面波束的标签照常被球体隐藏。
       const labelAnchor = llaToVec(b.lat, b.lon, 45)
-      // 波束射线(卫星→波束中心)：自成一个开关「显示波束射线」，与波束中心点解耦（3D 专属，2D 无连线）
-      if (o.showRay && b.satShown) out.push(fatStrip([llaToVec(b.satLat || 0, b.satLon, b.satAlt || 35786), anchor], new THREE.Color(o.rayColor != null ? o.rayColor : 0xffb14a), o.rayWidth != null ? o.rayWidth : 1.2, o.rayOpacity != null ? o.rayOpacity : 0.75, 5))
+      // 视轴不在这儿画：它是【一根天线一条】（opts.rays，由 buildAxisRays 出），不是逐波束的连线。
+      // 原先每个波束层都画一条卫星→波束中心的粗线，94 波束就是每次重建 94 次几何分配 —— 播放时的卡顿大头之一。
       if (o.showBore) {
         const dotR = (o.boreSize || 0.5) * 0.0014
         const dot = new THREE.Mesh(new THREE.SphereGeometry(dotR, 12, 12), new THREE.MeshBasicMaterial({ color: 0xffffff }))
@@ -1313,6 +1349,28 @@ export function createGlobeScene(container, quality = {}) {
       g.add(entry.group)
     })
     covFieldGroup = g; scene.add(g)
+    setCovRays(covOpts.rays)
+  }
+  // 天线视轴（对地视图）：一根天线一条，不随波束数增长。自成一个子组，拖拽指向时只换这一组
+  // ——不能跟着波束层走：那样 94 波束就是 94 条线、每次重建 94 次几何分配。
+  let covRayGroup = null
+  function clearCovRays() {
+    if (!covRayGroup) return
+    covRayGroup.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) { lineMats.delete(o.material); o.material.dispose() } })
+    covRayGroup.parent && covRayGroup.parent.remove(covRayGroup)
+    covRayGroup = null
+  }
+  function setCovRays(list) {
+    clearCovRays()
+    if (!covFieldGroup || !list || !list.length) return
+    const g = new THREE.Group()
+    for (const ry of list) {
+      if (!ry || !ry.from || !ry.to) continue
+      const a = llaToVec(ry.from.lat || 0, ry.from.lon, shellAlt(ry.from.rKm || RE))
+      const b = llaToVec(ry.to.lat || 0, ry.to.lon, shellAlt(ry.to.rKm || RE))
+      g.add(fatStrip([a, b], new THREE.Color(ry.color != null ? ry.color : 0xffb14a), ry.width != null ? ry.width : 1.2, ry.opacity != null ? ry.opacity : 0.75, 5))
+    }
+    covRayGroup = g; covFieldGroup.add(g)
   }
   // 拖拽热路径：只更新给定层（聚焦天线各波束）——填充网格原地写回顶点、装饰轻量重建，其余层 GPU 资源原样保留。
   function patchCoverageLayers(layers, opts) {
@@ -1326,6 +1384,30 @@ export function createGlobeScene(container, quality = {}) {
       const entry = ensureLayerEntry(L, covOpts, li, prev)
       if (!prev) { covLayers.set(id, entry); covFieldGroup.add(entry.group) }
     }
+    if (opts && opts.rays) setCovRays(opts.rays)   // 拖指向时视轴要跟着转（一条线，重建不心疼）
+  }
+  // 全量【增量】更新：按 id 复用上一轮的图层实体（填充网格原地写回顶点缓冲，只重建线与标签），
+  // 只有真正消失的 id 才销毁。
+  // ★ 时间推进走这条，不走 setCoverageField —— 后者是整组销毁重建，94 波束就是每次 94 个球面细分
+  //   网格重新分配 + 重新上传，正是「点播放就卡」的大头。两条路出来的画面逐字一致（层序仍由 li 定：
+  //   半径抬升与 renderOrder 都按 li 算，与场景图里的子节点顺序无关）。
+  function updateCoverageField(layers, opts) {
+    if (!covFieldGroup) { setCoverageField(layers, opts); return }
+    if (opts) covOpts = opts
+    const seen = new Set()
+    let li = 0
+    for (const L of (layers || [])) {
+      const id = L.id != null ? L.id : '#' + li
+      const prev = covLayers.get(id)
+      const entry = ensureLayerEntry(L, covOpts, li, prev)
+      if (!prev) { covLayers.set(id, entry); covFieldGroup.add(entry.group) }
+      seen.add(id); li++
+    }
+    for (const [id, e] of [...covLayers]) {
+      if (seen.has(id)) continue
+      covFieldGroup.remove(e.group); disposeCovGroup(e.group); covLayers.delete(id)
+    }
+    setCovRays(covOpts.rays)
   }
   function setCoverageFieldAlpha(a) {
     if (!covFieldGroup) return
@@ -1868,8 +1950,8 @@ export function createGlobeScene(container, quality = {}) {
   return {
     setSatellites, setLabelMode, setHighlight, setHighlightLLA, setOnPick,
     setOrbit, setGroundTrack, setFootprint, setSelectionSet, clearSelectionGeom,
-    setCoverage, clearCoverage, setCoverageField, patchCoverageLayers, clearCoverageField, setCoverageFieldAlpha, setCovGrid, clearCovGrid, setCovGridAlpha,
-    setShellField, clearShellField, setShellFieldAlpha, setShellGuides, clearShellGuides, setShellRays, clearShellRays,
+    setCoverage, clearCoverage, setCoverageField, updateCoverageField, patchCoverageLayers, clearCoverageField, setCoverageFieldAlpha, setCovGrid, clearCovGrid, setCovGridAlpha,
+    setShellField, updateShellField, clearShellField, setShellFieldAlpha, setShellGuides, clearShellGuides, setShellRays, clearShellRays,
     setTerminator, clearTerminator,
     setEnvRaster, setEnvAlpha, setEnvContours, clearEnv,
     setSatLayer, clearSatLayer, faceLonLat, setProvinces, setProvincesVisible, setCities, setCitiesVisible, setBorderStyle, setNameScale, setLabelStyle, setOceanColor, setLandColors,

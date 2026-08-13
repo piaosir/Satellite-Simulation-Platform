@@ -10,8 +10,10 @@
 //   ① 一行 = 一颗目标星，不是「目标星 × 波束」。多波束天线对同一颗星只报【取到最大方向性的那个波束】，
 //      波束号/名单列一列。贵的那几列（Min/Max Pointing 要 72 次重采样、Xpol/Slope 各要 2~3 次）只对
 //      胜出波束算一遍 —— 94 波束的 HTS 下这就是 94 倍的差距。
-//   ② 目标星【由用户点选】，不是把在场的星全算一遍。星座动辄上千颗，全量 SGP4 + 逐星取值毫无意义，
-//      而且结果一屏也读不完。想看哪颗加哪颗，或用「加入波束内的星」一次性把落在波束里的捞进来。
+//   ② 目标星不是把在场的星全算一遍（星座动辄上千颗，全量 SGP4 + 逐星取值毫无意义，结果一屏也读不完）。
+//      两种来源二选一：【点选】想看哪颗加哪颗（可用「加入波束内的星」一次性捞一批进来再删）；
+//      【波束内】＝此刻真的落在方向图域里的那些星，成员随仿真时钟每拍重算 —— 星进波束就出现在表里、
+//      出去就消失。后者是「目标集本身是时间的函数」，对星动态仿真真正要看的就是它。
 //
 // ★ 时间窗口口径（时段扫描）：
 //   · 判据 = 落在方向图域内 && Dir ≥ 门限 && 视线没被地球挡（遮挡可关）。门限两种口径：相对波束峰值
@@ -170,15 +172,33 @@ function defaultOpts() {
 
 export function useSatPerfTable() {
   const rows = ref([])
+  // 这批数值算在哪一刻。表跟着仿真时钟走，但重算太贵时会跳拍（宿主的预算自适应），
+  // 那几拍里表脚要报的是【取值时刻】而不是「现在几点」—— 否则读数与数值对不上。
+  const stampMs = ref(null)
   const ctxInfo = ref(null)
   const ctxBeams = ref([])
   const query = ref('')
   const optsByAnt = ref({})
   const note = ref('')               // 运行时读数（目标星数 / 截断 / 耗时），面板一行显示
 
-  // ===== 目标星库（用户点选，随页面快照存盘）=====
+  // ===== 目标星（两种来源，随页面快照存盘）=====
+  // 'pick' 点选  —— 用户自己加的名单，不随时间变（原有口径）；
+  // 'beam' 波束内 —— 【此刻真的落在方向图域里的星】，由宿主每拍重算成员回填 beamPicks：
+  //                  星进波束就出现在表里、出去就消失。目标集本身是时间的函数，这是动态仿真的那一半。
   // 只存身份（名字 + NORAD），不存 satrec —— 星历会更新，每次取值时由页面按名字/编号重新解析。
   const picks = ref([])
+  const targetMode = ref('pick')
+  const beamPicks = ref([])
+  function setBeamTargets(list) {
+    const next = (list || []).map((e, i) => ({ id: 'bm' + (e.noradId || e.name || i), name: e.name, noradId: e.noradId || null, group: e.group || '' }))
+    // 成员没变就不换引用：每拍换一次数组会把浮窗的只读网格整片重渲，选区跟着丢
+    const a = beamPicks.value
+    if (a.length === next.length && a.every((p, i) => p.id === next[i].id)) return
+    beamPicks.value = next
+  }
+  // 当前生效的目标名单（浮窗列表 / 计数读数都读它）
+  const activePicks = computed(() => (targetMode.value === 'beam' ? beamPicks.value : picks.value))
+
   const pickedNames = computed(() => picks.value.map((p) => p.name))
   const hasPick = (name, noradId) => picks.value.some((p) => (noradId && p.noradId === noradId) || p.name === name)
   function addTarget(e) {
@@ -390,8 +410,9 @@ export function useSatPerfTable() {
   // shells  — [{altKm, name}]（只用于「壳层」列的就近归属，不参与取值）
   // hExKm   — 遮挡判据的大气排除高度
   function compute(ctx, opts, targets, times, shells, hExKm = 0) {
-    if (!ctx) { rows.value = []; ctxInfo.value = null; ctxBeams.value = []; note.value = ''; return }
+    if (!ctx) { rows.value = []; ctxInfo.value = null; ctxBeams.value = []; note.value = ''; stampMs.value = null; return }
     const t0 = (typeof performance !== 'undefined' ? performance.now() : 0)
+    stampMs.value = times && times.now ? times.now.getTime() : null
     const o = opts || defaultOpts()
     ctxBeams.value = ctx.beams.map((b) => ({ bi: b.bi, seq: b.seq || b.bi + 1, name: b.name, peakDb: b.peakDb }))
     const calc = perfCalc(ctx, o, shells, hExKm)
@@ -459,8 +480,10 @@ export function useSatPerfTable() {
   // 标志位靠 watcher 时序，「改完参数当场点计算」这种同一拍里的操作，watcher 可能在扫描【之后】才刷，
   // 结果刚算完就自称过期。指纹是当场比对，谁先谁后都不会错判。
   const winFp = ref('')
+  // ★ 波束内档不把成员名单计入指纹：成员本来就每拍在变（星进星出），计入就等于每拍都自称过期，
+  //   「输入已变」会一直闪。扫描用的是点「计算」那一刻钉住的名单，想按新名单重扫再点一次即可。
   const winSig = (key) => [key || '', win.durH, win.startMs, win.thrMode, winThr(), win.losOn ? 1 : 0, win.res,
-    picks.value.map((p) => p.noradId || p.name).join(',')].join('|')
+    targetMode.value === 'beam' ? 'beam' : picks.value.map((p) => p.noradId || p.name).join(',')].join('|')
   const winStaleFor = (key) => !winInfo.value || winFp.value !== winSig(key)
   let _winToken = 0
   function cancelWindows() { _winToken++; win.busy = false; win.msg = '已取消' }
@@ -675,6 +698,7 @@ export function useSatPerfTable() {
       optsByAnt: JSON.parse(JSON.stringify(optsByAnt.value)),
       optsTemplate: optsTemplate ? cloneOpts(optsTemplate) : null,
       picks: picks.value.map((p) => ({ name: p.name, noradId: p.noradId, group: p.group })),
+      targetMode: targetMode.value,   // 波束内档不存名单（名单是时刻的函数，存了也对不上下次打开的时刻）
       // startMs 同样要存：钉住的时窗起点是用户【显式设过】的时刻（null = 跟随时间轴），
       // 漏存就等于每次重开都被悄悄放回「跟随」，扫出来的时段与上次对不上。
       win: { on: win.on, view: win.view, startMs: win.startMs, durH: win.durH, thrMode: win.thrMode, thrRel: win.thrRel, thrAbs: win.thrAbs, losOn: win.losOn, res: win.res, gantt: win.gantt }
@@ -683,6 +707,7 @@ export function useSatPerfTable() {
   function restoreState(st) {
     if (!st) return
     if (Array.isArray(st.picks)) picks.value = st.picks.filter((p) => p && p.name).map((p) => ({ id: newTid(), name: p.name, noradId: p.noradId || null, group: p.group || '' }))
+    if (st.targetMode === 'beam' || st.targetMode === 'pick') targetMode.value = st.targetMode
     const fill = (c) => ({ ...defaultOpts(), ...c, cols: { ...defaultOpts().cols, ...(c.cols || {}) }, winCols: { ...defaultOpts().winCols, ...(c.winCols || {}) }, sumCols: { ...defaultOpts().sumCols, ...(c.sumCols || {}) } })
     if (st.optsByAnt && typeof st.optsByAnt === 'object') {
       const m = {}
@@ -697,8 +722,9 @@ export function useSatPerfTable() {
   }
 
   return {
-    rows, filteredRows, ctxInfo, ctxBeams, query, note, optsByAnt,
+    rows, filteredRows, ctxInfo, ctxBeams, query, note, optsByAnt, stampMs,
     picks, pickedNames, hasPick, addTarget, addTargets, removeTarget, clearTargets,
+    targetMode, beamPicks, activePicks, setBeamTargets,
     colDefs: COL_DEFS, colGroups: COL_GROUPS, getOpts, visibleColumns, rememberOpts, resetOpts,
     beamQuery, filteredBeams, beamOn, beamSelCount, filteredAllOn, filteredAnyOn, toggleBeam, selectFiltered,
     compute, toTsv, getState, restoreState, setTimeFmt, fmtCell, footNote,

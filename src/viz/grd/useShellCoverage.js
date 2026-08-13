@@ -18,7 +18,7 @@ import { effective as displayQuality } from '../../stores/displayQuality.js'
 let _sid = 1
 const newShellId = () => 'sh' + Date.now().toString(36) + (_sid++)
 const clampN = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v)
-const R2D = 180 / Math.PI
+const perfNow = () => (typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now())
 const wrap180 = (x) => ((x % 360) + 540) % 360 - 180
 
 // 预置壳层：常见轨道高度，选中即用（可增删改）。颜色只用于壳层参照网与列表标识，不参与场配色。
@@ -68,7 +68,9 @@ function satHull(lon, lat, alt) {
 //     会把对地刚画好的层整体换成本视图的（selected 通常为空 → 直接清空），表现为覆盖闪一下就没；
 //   · 3D 壳层内容虽是自己的通道，但面板【从没打开过】时一次也不该推，否则对地那边一改设置就凭空
 //     往球上糊两层壳层参照网。
-export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = () => false, panelOn = () => true) {
+// flatActive = 2D 那块场此刻有没有人看：平面图可见【或宿主正在按 2D 出图】（导出在 3D 视图下也走 flat）。
+// 与 isFlat 分工：isFlat 管「哪个视图可见」（3D 通道的闸），flatActive 管「flat 要不要喂」（2D 通道的闸）。
+export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = () => false, panelOn = () => true, flatActive = isFlat) {
   const shells = ref(PRESET_SHELLS.slice(0, 2).map((p) => ({ id: newShellId(), ...p, show: true, branch: 'both' })))
   const selected = ref([])        // 画在壳层上的天线 key 列表（与对地视图各自独立）
   // ★ 聚焦天线【不自存一份】，只做 grd.active 的镜像：面板的天线设置区绑的就是 grd.s（＝grd.active
@@ -223,8 +225,16 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
         const bm = ctx.beams.find((b) => b.bi === bi); if (!bm) continue
         const beam = bm.beam, set = beam.grid
         const pat = patternField(beam, st)
-        const box = st.pathLoss === 'none' ? computeBox(pat.db, set.NX, set.NY, lowestAbs(pat.max, st)) : null
-        if (st.pathLoss === 'none' && !box) continue
+        // 热区盒【与星位无关】：只由方向图本身（pat.db，已按 pol/增益记忆化）和最低档电平定。
+        // 播放时每拍逐波束全网格扫一遍纯属白做——94 波束 × 101×101 就是每帧近百万次比较。
+        // 用 pat.db 的对象身份 + L0 当键：方向图或档位一变，键自然不命中。
+        let box = null
+        if (st.pathLoss === 'none') {
+          const L0 = lowestAbs(pat.max, st), ck = beam._shbox
+          if (ck && ck.db === pat.db && ck.L0 === L0) box = ck.box
+          else { box = computeBox(pat.db, set.NX, set.NY, L0); beam._shbox = { db: pat.db, L0, box } }
+          if (!box) continue
+        }
         yield { key, ctx, st, bm, beam, set, box, satShown }
       }
     }
@@ -353,50 +363,55 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
       showPeak: st.showPeak, peakSize: st.peakSize, showVal: st.showVal, valSize: st.valSize
     }
   }
-  // 波束射线：每根选中天线一条，从源星沿【天线视轴】射到最外一层壳（没有壳层就取 1.15 倍源星地心距）。
-  // 与「卫星↔波束中心」的连线是两回事——射线不依赖有没有画出覆盖：波束转到空无一物的方向时，
-  // 它是唯一还看得见的把手（拖拽全向指向时全靠它），故独立成一条通道、由「显示波束射线」单独开关。
+  // 天线视轴：每根选中天线【一条】，从源星沿方向图坐标系的 z 轴射到最外一层壳。
+  // 与「卫星↔波束中心」的连线是两回事——视轴不依赖有没有画出覆盖：波束转到空无一物的方向时，
+  // 它是唯一还看得见的把手（拖拽全向指向时全靠它），故独立成一条通道、单独开关。
+  // 求交与对地视图共用 grd.buildAxisRays（那边打到地球，这边打到壳层），两个视图同一条轴、同一套样式。
   function buildRays() {
-    if (!grd.s.showRay) return []
     let Rout = A
     for (const sh of shells.value) if (sh.show && A + sh.altKm > Rout) Rout = A + sh.altKm
-    const out = []
-    for (const key of selected.value) {
-      const ctx = grd.getPerfContext(key); if (!ctx) continue
-      const S = ctx.basis.S, d = ctx.basis.z
-      const rS = Math.hypot(S[0], S[1], S[2]) || 1
-      const R = Math.max(Rout, rS * 1.15)
-      // 射线与外球求交（源星在球内 → 恒有唯一正根）
-      const b = 2 * (S[0] * d[0] + S[1] * d[1] + S[2] * d[2]), c = rS * rS - R * R
-      const t = (-b + Math.sqrt(Math.max(0, b * b - 4 * c))) / 2
-      if (!(t > 0)) continue
-      const P = [S[0] + t * d[0], S[1] + t * d[1], S[2] + t * d[2]]
-      const rP = Math.hypot(P[0], P[1], P[2]) || 1
-      out.push({
-        from: { lon: Math.atan2(S[1], S[0]) * R2D, lat: Math.asin(clampN(S[2] / rS, -1, 1)) * R2D, rKm: rS },
-        to: { lon: Math.atan2(P[1], P[0]) * R2D, lat: Math.asin(clampN(P[2] / rP, -1, 1)) * R2D, rKm: rP },
-        color: grd.s.rayColor, width: grd.s.rayWidth, opacity: grd.s.rayOpacity
-      })
-    }
-    return out
+    return grd.buildAxisRays(selected.value, Rout)
   }
   // 「已经画到场景里过」：壳层是场景内容，【离开面板不撤】（要清空走面板的「清除绘图」）——所以一旦画过，
   // 之后即便切走也得继续跟着设置/时间刷新，否则星在动、壳层还停在旧位置。反过来，从没画过就一次也不推。
   // 随存档走（见 getState/restoreState）：重开软件时场景照原样接着画，不必等用户再进一次面板。
   let _painted = false
+  let _guideKey = ''
+  // 壳层参照网只随壳层库/开关变，与时间无关 —— 键控跳过：播放拍键不变就一次也不重建
+  //（改造前每拍销毁重建几千顶点的格网，纯属白做）。场景清空后由 clearAll 复位键。
+  function syncGuides(sc) {
+    const list = s.guides ? shells.value.filter((x) => x.show).map((x) => ({ R: A + x.altKm, color: x.color, alpha: 0.14 })) : []
+    const key = list.map((g) => g.R + '|' + g.color).join(',')
+    if (key === _guideKey) return
+    _guideKey = key
+    sc.setShellGuides(list)
+  }
   function recompute() {
     const on = panelOn()
     if (!on && !_painted) return       // 面板没打开过 → 场景里本就没有本视图的东西；stats/shellStatus/focusBeam 的读者也全在面板内
     if (on) _painted = true
-    const sc = getScene()
+    // 2D 平面图盖住球面期间（scene 已 pause）不喂 3D：几何构建 + GPU 缓冲全是白做，切回 3D 时由
+    // applyFlat 补一次全量。面板开着时 buildShellLayers 照跑——读数行/空层归因/focusBeam
+    //（「波束内的星」的成员判据）都从它出，2D 下指标表还在每拍走，不能喂它旧焦点。
+    const sc = isFlat() ? null : getScene()
+    const fl = (on && flatActive()) ? getFlat() : null
+    if (!sc && !fl && !on) return      // 两侧都不收、读数也没人看（2D 期间面板关着）：整轮白算
+    const t0 = perfNow()
     if (sc && sc.setShellField) {
-      sc.setShellField(buildShellLayers(), fieldOpts())
-      sc.setShellGuides(s.guides ? shells.value.filter((x) => x.show).map((x) => ({ R: A + x.altKm, color: x.color, alpha: 0.14 })) : [])
+      // 播放热路径走增量：按层 id 复用填充缓冲原地写回，只重建线与标签（对地 updateCoverageField 同款）
+      ;(sc.updateShellField || sc.setShellField)(buildShellLayers(), fieldOpts())
+      syncGuides(sc)
       if (sc.setShellRays) sc.setShellRays(buildRays())
-    } else buildShellLayers()          // 场景未就绪也要出空层归因，面板读数不能等
-    const fl = on ? getFlat() : null
+    } else if (on) buildShellLayers()  // 场景不收（未就绪 / 2D 期间）也要出空层归因，面板读数不能等
+    // 2D 那块场：平面图可见或正在按 2D 出图才烘 —— 3D 视图下 buildGroundLayers + Path2D 烘焙
+    // 是每拍一整套白算（独立的对地投影 + bandGeometry，画布根本不可见）。
     if (fl) fl.setField(buildGroundLayers(), fieldOpts())
+    // 整轮耗时（含 GPU 重建）：贵不贵不该让人猜，摆进面板读数行
+    stats.value = { ...stats.value, fullMs: Math.round(perfNow() - t0) }
   }
+  // ★ 【一帧一个时刻】：时间推进时壳层与星位在同一次调用里算完，绝不延后 —— 延后就等于
+  //   画面上星在 t、覆盖场在 t−Δ（用户原话「慢半拍」）。省算力的活交给时钟的占用底线去做。
+  //   rAF 合帧只服务【设置变更】那一路（一次改动可能连着触发好几个 watcher，合成一帧做完）。
   let _pending = false
   function scheduleRecompute() {
     if (_pending) return
@@ -407,6 +422,7 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
   function clearAll() {
     const sc = getScene()
     if (sc && sc.clearShellField) { sc.clearShellField(); sc.clearShellGuides(); if (sc.clearShellRays) sc.clearShellRays() }
+    _guideKey = ''                     // 参照网已清 → 键复位，下次 recompute 重喂
     const fl = panelOn() ? getFlat() : null; if (fl) fl.setField([], {})
     _painted = false                   // 场景已清空 → 回到「没画过」，面板关着时不再自行复现
   }

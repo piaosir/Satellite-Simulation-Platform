@@ -130,7 +130,9 @@ const PICK_COLS = [
   { key: 'noradId', label: 'NORAD', num: true },
   { key: 'group', label: '分组' }
 ]
-const pickRows = computed(() => sp.picks.value.map((p, i) => ({ ...p, no: i + 1 })))
+// 目标名单：点选档取用户名单，波束内档取宿主每拍回填的「此刻在波束里的星」（只读，不能逐行删）
+const beamMode = computed(() => sp.targetMode.value === 'beam')
+const pickRows = computed(() => sp.activePicks.value.map((p, i) => ({ ...p, no: i + 1 })))
 // 上：目标星列表（只读网格——目标是「点选」进来的，不像城市那样逐格键入）
 const pickGrid = useGridSelect({
   rows: () => pickRows.value, cols: () => PICK_COLS, readOnly: true,
@@ -152,19 +154,28 @@ watch(tblOpts, () => { if (sc.active.value) sp.rememberOpts(sc.active.value) }, 
 const p2 = (n) => String(n).padStart(2, '0')
 const winT0 = computed(() => (Number.isFinite(win.startMs) ? win.startMs : (props.nowMs || Date.now())))
 const startLocal = computed({
+  // 秒也要能录：时间轴游标已经下沉到秒级，时窗起点再只到分钟就对不上（同一个「起点」两处差半分钟）
   get: () => {
     const d = new Date(winT0.value)
     return props.tzUtc
-      ? `${d.getUTCFullYear()}-${p2(d.getUTCMonth() + 1)}-${p2(d.getUTCDate())}T${p2(d.getUTCHours())}:${p2(d.getUTCMinutes())}`
-      : `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}T${p2(d.getHours())}:${p2(d.getMinutes())}`
+      ? `${d.getUTCFullYear()}-${p2(d.getUTCMonth() + 1)}-${p2(d.getUTCDate())}T${p2(d.getUTCHours())}:${p2(d.getUTCMinutes())}:${p2(d.getUTCSeconds())}`
+      : `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}T${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`
   },
   set: (v) => {
     if (!v) { win.startMs = null; return }
     const [dp, tp] = String(v).split('T'); if (!dp || !tp) return
-    const [Y, M, D] = dp.split('-').map(Number), [h, m] = tp.split(':').map(Number)
+    const [Y, M, D] = dp.split('-').map(Number), [h, m, s] = tp.split(':').map(Number)
     if (!Number.isFinite(Y) || !Number.isFinite(h)) return
-    win.startMs = props.tzUtc ? Date.UTC(Y, M - 1, D, h, m) : new Date(Y, M - 1, D, h, m).getTime()
+    const ss = Number.isFinite(s) ? s : 0
+    win.startMs = props.tzUtc ? Date.UTC(Y, M - 1, D, h, m, ss) : new Date(Y, M - 1, D, h, m, ss).getTime()
   }
+})
+// 表脚的时刻：瞬时表报【这批数值算在哪一刻】（跟随仿真时钟；重算太贵跳拍时它会比时间轴慢一两拍，
+// 那正是这些数真正对应的时刻）；时段表的时刻在结果里逐行给，脚上只报时间轴当前值。
+const stampText = computed(() => {
+  if (win.on) return props.timeLabel
+  const ms = sp.stampMs.value
+  return Number.isFinite(ms) ? sp.fmtCell({ time: true }, ms) : props.timeLabel
 })
 const durText = (min) => (min >= 1440 ? (min / 1440).toFixed(1) + ' d' : min >= 60 ? (min / 60).toFixed(1) + ' h' : min.toFixed(1) + ' min')
 const bands = computed(() => (sp.winInfo.value && sp.winInfo.value.bands) || [])
@@ -204,12 +215,16 @@ function copyTsv() {
     <section class="perf-input" :style="{ height: inH + 'px' }">
       <div class="pin-h">
         <span class="pin-t">目标星</span>
-        <input class="perf-q" v-model="tq" placeholder="搜索添加：卫星名 / NORAD / 星座 / 卫星组" />
-        <span class="ptb" title="把当前落在方向图网格域内的在场卫星一次性加为目标" @click="emit('add-in-beam')"><Icon name="plus" :size="12" /> 加入波束内的星</span>
-        <span class="ptb" :class="{ dis: !sp.picks.value.length }" title="清空目标星列表" @click="sp.clearTargets()">清空</span>
-        <span class="perf-cnt">{{ sp.picks.value.length }} 目标</span>
+        <span class="seg2 tmseg" role="group" aria-label="目标星来源">
+          <span class="sg" :class="{ on: !beamMode }" title="自己加的名单，不随时刻变" @click="sp.targetMode.value = 'pick'">点选</span>
+          <span class="sg" :class="{ on: beamMode }" title="此刻落在方向图域内的星，随时钟每拍重算" @click="sp.targetMode.value = 'beam'">波束内</span>
+        </span>
+        <input v-if="!beamMode" class="perf-q" v-model="tq" placeholder="搜索添加：卫星名 / NORAD / 星座 / 卫星组" />
+        <span v-if="!beamMode" class="ptb" title="把当前落在方向图网格域内的在场卫星一次性加为目标" @click="emit('add-in-beam')"><Icon name="plus" :size="12" /> 加入波束内的星</span>
+        <span v-if="!beamMode" class="ptb" :class="{ dis: !sp.picks.value.length }" title="清空目标星列表" @click="sp.clearTargets()">清空</span>
+        <span class="perf-cnt">{{ pickRows.length }} 目标</span>
       </div>
-      <div v-if="tq.trim()" class="sres">
+      <div v-if="!beamMode && tq.trim()" class="sres">
         <div v-if="cBusy" class="sres-e">搜索中…</div>
         <div v-else-if="!cand.length" class="sres-e">没有匹配的卫星。</div>
         <template v-else>
@@ -237,10 +252,10 @@ function copyTsv() {
                   @mousedown="pickGrid.cellDown($event, ri, ci)" @mouseenter="pickGrid.cellEnter(ri, ci)">{{ p[c.key] == null ? '' : p[c.key] }}</td>
               <td class="td-act">
                 <span class="foc" title="聚焦该卫星（旋转地球正对它并选中）" @click="focusRow(p)"><Icon name="crosshair" :size="11" /></span>
-                <span class="del" title="移除该目标星" @click="sp.removeTarget(p.id)"><Icon name="x" :size="11" /></span>
+                <span v-if="!beamMode" class="del" title="移除该目标星" @click="sp.removeTarget(p.id)"><Icon name="x" :size="11" /></span>
               </td>
             </tr>
-            <tr v-if="!pickRows.length"><td class="pin-empty" :colspan="PICK_COLS.length + 1">还没有目标星。</td></tr>
+            <tr v-if="!pickRows.length"><td class="pin-empty" :colspan="PICK_COLS.length + 1">{{ beamMode ? '当前波束内没有卫星。' : '还没有目标星。' }}</td></tr>
           </tbody>
         </table>
       </div>
@@ -278,7 +293,7 @@ function copyTsv() {
       <!-- 时窗参数：起点/时长/门限/遮挡/角步进 + 扫描按钮。改任一项即标「输入已变」，等点重算 -->
       <div v-if="win.on" class="pw-bar">
         <label>起始</label>
-        <input class="ci dt" type="datetime-local" v-model="startLocal" />
+        <input class="ci dt" type="datetime-local" step="1" v-model="startLocal" />
         <span class="ptb sq" :class="{ dis: win.startMs == null }" title="回到跟随时间轴当前时刻" @click="win.startMs = null"><Icon name="refresh-cw" :size="10" /></span>
         <label>时长</label>
         <input class="ci w56" type="number" step="1" min="0.02" max="720" v-model.number="win.durH" /><span class="u">h</span>
@@ -338,13 +353,13 @@ function copyTsv() {
                   @mousedown="resGrid.cellDown($event, ri, ci)" @mouseenter="resGrid.cellEnter(ri, ci)">{{ fmt(c, r[c.key]) }}</td>
               <td class="td-act"><span class="foc" title="聚焦该卫星（旋转地球正对它并选中）" @click="focusRow(r)"><Icon name="crosshair" :size="11" /></span></td>
             </tr>
-            <tr v-if="!sp.picks.value.length"><td :colspan="Math.max(1, tblCols.length) + 1" class="perf-empty">还没有目标星。</td></tr>
+            <tr v-if="!pickRows.length"><td :colspan="Math.max(1, tblCols.length) + 1" class="perf-empty">{{ beamMode ? '当前波束内没有卫星。' : '还没有目标星。' }}</td></tr>
             <tr v-else-if="win.on && !sp.winInfo.value"><td :colspan="Math.max(1, tblCols.length) + 1" class="perf-empty">尚未扫描时段。</td></tr>
             <tr v-else-if="!sp.filteredRows.value.length"><td :colspan="Math.max(1, tblCols.length) + 1" class="perf-empty">{{ win.on ? '时窗内没有照到任何目标星。' : '这些目标星都没有取到值。' }}</td></tr>
           </tbody>
         </table>
       </div>
-      <div class="pr-foot">{{ sp.footNote.value }}<span v-if="timeLabel" class="tl">{{ timeLabel }}</span></div>
+      <div class="pr-foot">{{ sp.footNote.value }}<span v-if="stampText" class="tl">{{ stampText }}</span></div>
     </section>
 
     <div class="prh prh-n" @mousedown="dragResize($event, tw, 'n', true)"></div>
