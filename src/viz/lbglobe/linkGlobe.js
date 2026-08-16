@@ -130,6 +130,7 @@ function spriteFrom(draw, w, h) {
   const cv = document.createElement('canvas')
   cv.width = Math.round(w * SPRITE_SS); cv.height = Math.round(h * SPRITE_SS)
   const cx = cv.getContext('2d')
+  cx.__i18nSkip = true                    // 标注语言由「报表语言」管辖（LB_DOC_EN），不随界面语言走
   cx.scale(SPRITE_SS, SPRITE_SS)
   draw(cx, w, h)
   const tex = new THREE.CanvasTexture(cv)
@@ -143,6 +144,7 @@ function spriteFrom(draw, w, h) {
 function labelSprite(text, color, halo) {
   const fs = 13, pad = 3
   const probe = document.createElement('canvas').getContext('2d')
+  probe.__i18nSkip = true                 // 量宽与绘制同语言（报表语言），见 spriteFrom
   probe.font = `${fs}px ${UI_FONT}`
   const w = Math.ceil(probe.measureText(text).width) + pad * 2
   const h = fs + pad * 2

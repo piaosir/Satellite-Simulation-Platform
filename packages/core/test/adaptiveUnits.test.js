@@ -19,12 +19,13 @@ console.log('=== 显示单位自适应测试 ===\n');
   ok('36 MHz 不换档', au.pickUnit(36, 'MHz') === null);
   const w = au.pickUnit(0.5, 'W');
   ok('0.5 W→mW', w && w.unit === 'mW' && Math.abs(0.5 * w.factor - 500) < 1e-9);
-  const kw = au.pickUnit(4000, 'W');
-  ok('4000 W→kW', kw && kw.unit === 'kW' && Math.abs(4000 * kw.factor - 4) < 1e-9);
+  ok('4000 W 不换档（无 kW 档）', au.pickUnit(4000, 'W') === null);
+  ok('0.999 W→mW（门限 1 W）', (() => { const p = au.pickUnit(0.999, 'W'); return p && p.unit === 'mW' && Math.abs(0.999 * p.factor - 999) < 1e-9; })());
+  ok('1 W 不换档（门限含等号）', au.pickUnit(1, 'W') === null);
   const hz = au.pickUnit(0.06, 'kHz');
   ok('0.06 kHz→Hz', hz && hz.unit === 'Hz' && Math.abs(0.06 * hz.factor - 60) < 1e-9);
   const uw = au.pickUnit(0.00001404, 'W');
-  ok('1.4e-5 W→µW', uw && uw.unit === 'µW' && Math.abs(0.00001404 * uw.factor - 14.04) < 1e-9);
+  ok('1.4e-5 W→mW（不再下探 µW）', uw && uw.unit === 'mW' && Math.abs(0.00001404 * uw.factor - 0.01404) < 1e-12);
   const gb = au.pickUnit(2048000, 'kbps');
   ok('2048000 kbps→Gbps', gb && gb.unit === 'Gbps' && Math.abs(2048000 * gb.factor - 2.048) < 1e-9);
   ok('未知单位不动', au.pickUnit(123, 'dB') === null);
@@ -84,7 +85,8 @@ console.log('=== 显示单位自适应测试 ===\n');
 }
 
 // ⑤ 引擎小功率精度回归：微瓦级功放不得被 toFixed(3) 舍成 '0.000'（线性值与 dB 侧一致，
-// 瀑布自适应据此换 µW 档）——对应实际用户场景（16 m 站 + 1 kbps 低速率载波）
+// 瀑布自适应据此换 mW 档）——对应实际用户场景（16 m 站 + 1 kbps 低速率载波）。
+// 档位只到 mW，故这一档写作 0.0145 mW（fmtScaled 保 4 位小数，仍留 3 位有效数字，不塌成 0）。
 {
   const geo = require('../utils/linkCalculator.js');
   const r = geo.calculateLinkBudget({ frequencyBand: 'Ku', satelliteName: 'D' },
@@ -97,7 +99,7 @@ console.log('=== 显示单位自适应测试 ===\n');
   const rows = [];
   for (const s of segs) for (const row of s.rows) rows.push(row);
   const pa = rows.find((row) => row.key === '功放建议值(W)');
-  ok('微瓦级功放瀑布换 µW 档', pa && pa.unit === 'µW' && parseFloat(pa.up) > 1, pa && `${pa.up} ${pa.unit}`);
+  ok('微瓦级功放瀑布换 mW 档且未塌成 0', pa && pa.unit === 'mW' && parseFloat(pa.up) > 0, pa && `${pa.up} ${pa.unit}`);
   const paDbm = rows.find((row) => row.key === '功放实际输出');
   ok('独立行功放实际输出 dBW→dBm', paDbm && paDbm.unit === 'dBm', paDbm && `${paDbm.up} ${paDbm.unit}`);
 

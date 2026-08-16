@@ -258,7 +258,7 @@ function onAction(a, e) {
             @dblclick="emit('activate', it)"
           >
             <span class="slck" :class="{ on: sel.has(it.id) }" title="加入 / 移出选择（等同 Ctrl 点）" @mousedown.stop="onCheckDown($event, idx)"><Icon v-if="sel.has(it.id)" name="check" :size="9" /></span>
-            <span class="slnm">{{ it.name }}</span>
+            <span class="slnm" data-i18n-skip>{{ it.name }}</span>
             <span v-if="it.sub" class="slsub">{{ it.sub }}</span>
           </div>
         </div>

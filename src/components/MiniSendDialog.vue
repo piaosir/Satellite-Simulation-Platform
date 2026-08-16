@@ -16,6 +16,7 @@ import Icon from './Icon.vue'
 import MiniBindingsPanel from './MiniBindingsPanel.vue'
 import { makePack, sendPack, sendUnitsToBoxes, unitsOfPack, unitOfRaw, estimateBytes, fmtBytes, SIZE_WARN, TTL_DAYS } from '../shared/miniPack.js'
 import { loadBindings, markSent } from '../shared/miniBindings.js'
+import { byLang } from '../shared/i18n/lang.js'   // 空名占位是界面语汇，却画在打了 skip 的名字位上（呈现层翻不到），故在这里按语言出字
 
 const props = defineProps({
   open: { type: Boolean, default: false },
@@ -233,7 +234,7 @@ async function copyKey() {
             <label v-for="(u, i) in rows" :key="i" class="ms-row ms-pick" :class="{ off: !on[i] }">
               <input type="checkbox" :checked="on[i]" @change="toggleUnit(i)" />
               <span class="ms-k">{{ u.label }}</span>
-              <span class="ms-nm" :title="u.name">{{ u.name }}</span>
+              <span class="ms-nm" :title="u.name" data-i18n-skip>{{ u.name }}</span>
               <span v-if="u.payload && u.payload.items && u.payload.items[0] && u.payload.items[0].mod" class="ms-tag">{{ u.payload.items[0].mod }}</span>
             </label>
             <div v-if="!rows.length" class="ms-empty">没有可发送的内容。</div>
@@ -243,7 +244,7 @@ async function copyKey() {
           <div class="ms-list">
             <label v-for="b in bindings" :key="b.ch" class="ms-row ms-pick">
               <input type="checkbox" :checked="picked.has(b.ch)" @change="toggle(b.ch)" />
-              <span class="ms-nm" :title="b.ch">{{ b.name || '未命名账号' }}</span>
+              <span class="ms-nm" :title="b.ch" data-i18n-skip>{{ b.name || byLang('未命名账号', 'Unnamed account') }}</span>
               <span class="ms-ch">{{ b.ch.match(/.{1,4}/g).join('-') }}</span>
             </label>
             <label class="ms-row ms-pick">
@@ -274,7 +275,7 @@ async function copyKey() {
             <div class="ms-sec">已投递</div>
             <div class="ms-list">
               <div v-for="b in sentTo" :key="b.ch" class="ms-row">
-                <span class="ms-nm">{{ b.name || '未命名账号' }}</span>
+                <span class="ms-nm" data-i18n-skip>{{ b.name || byLang('未命名账号', 'Unnamed account') }}</span>
                 <span class="ms-ch">{{ b.ch.match(/.{1,4}/g).join('-') }}</span>
               </div>
             </div>

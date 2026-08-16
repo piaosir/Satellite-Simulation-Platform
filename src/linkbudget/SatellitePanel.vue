@@ -2,6 +2,7 @@
 import { computed, watch, ref, onMounted } from 'vue'
 import { BAND_FREQ, BAND_LABEL } from './satPresets.js'
 import { listPlans, getPlan, transponderOptions, applyChannel, MANAGED_KEYS } from '../shared/lbFreqPlanRef.js'
+import { antennaGroups, staleAntOption, folderOfKey } from '../shared/lbGrdImport.js'
 import Icon from '../components/Icon.vue'
 
 // 卫星模块（资源库「卫星」库的条目编辑器）：方向图匹配 + 完整卫星参数表单。
@@ -15,6 +16,7 @@ const props = defineProps({
   fields: { type: Array, required: true },
   satTree: { type: Array, default: () => [] },   // [{ folder, satName, lon, antennas:[{name,beams}] }]
   sel: { type: Object, default: () => ({ satFolder: '', eirpKey: '', gtKey: '' }) },  // 库条目的 grd，本组件就地写入
+  localFolder: { type: String, default: '' },    // 本条目「导入方向图」节点的 folder（lb:<条目 id>）
   // 「导入方向图」：直接在本编辑器里导入 GRD/PAT，挂到本卫星条目名下（免去先去「星座3D」页导入一趟）。
   // 由父组件实现（它知道条目 id / 星位，且导入后要重载卫星树并落匹配），本组件只管按钮与忙态。
   onImport: { type: Function, default: null },
@@ -22,25 +24,32 @@ const props = defineProps({
   importing: { type: Boolean, default: false }
 })
 
-// 当前选中的卫星树节点 + 其天线列表
+// 当前选中的卫星树节点（「星座3D」页导入的那颗星；本条目自己导入的方向图不占这一格）
 const curSat = computed(() => props.satTree.find((s) => s.folder === props.sel.satFolder) || null)
-const antKey = (a) => (curSat.value ? curSat.value.folder + '|' + a.name : '')
 // 已匹配、但本机卫星树里没有这颗 GRD 卫星（换机器 / 尚未在「星座3D」导入）：保留原值占位显示，
 // 不静默清空——库是全局资产，清掉的匹配无从找回；未命中期间父组件自然不回填。
 const staleFolder = computed(() => ((props.sel.satFolder && !curSat.value) ? props.sel.satFolder : ''))
-// 卫星树按来源分两组：星座3D 页导入的 / 本模块（本编辑器「导入方向图」）导入的
+// 取星下拉只列「星座3D」导入的星（local 节点是本条目自己的方向图影子，不是另一颗星）
 const treeSats = computed(() => props.satTree.filter((s) => !s.local))
-const localSats = computed(() => props.satTree.filter((s) => s.local))
-// 本条目自己导入的方向图（local 节点上的天线）——「删除方向图」按钮据此出现
-const localAnts = computed(() => ((curSat.value && curSat.value.local) ? curSat.value.antennas : []))
+// 天线可选项：树选星的天线 + 本条目导入的天线，两组并列——「导入方向图」是纯添加，不作废树里选的
+const antGroups = computed(() => antennaGroups(props.satTree, props.sel.satFolder, props.localFolder, [props.sel.eirpKey, props.sel.gtKey]))
+const staleAnt = (key) => staleAntOption(antGroups.value, key)
+// 本条目自己导入的方向图——「删除方向图」按钮据此出现
+const localAnts = computed(() => {
+  const n = props.satTree.find((s) => s.folder === props.localFolder)
+  return (n && n.antennas) || []
+})
 
-// 选星：写入卫星名称/轨道位置；切换卫星时清空已匹配天线（不同星天线不同）。
+// 选星：写入卫星名称/轨道位置；切换卫星时只清掉挂在【上一颗树星】名下的匹配（不同星天线不同），
+// 本条目自己导入的那几路照留——它随的是条目，不随取的哪颗星。
 // 条目名跟随星名由 satelliteName 这一处写入触发（自动命名，见 shared/lbAutoName.js），此处不另行通知父组件。
 function onPickSat() {
   const s = curSat.value
   if (s) { props.form.satelliteName = s.satName; props.form.orbitPosition = String(s.lon) }
-  props.sel.eirpKey = ''
-  props.sel.gtKey = ''
+  for (const k of ['eirpKey', 'gtKey']) {
+    const f = folderOfKey(props.sel[k])
+    if (f && f !== props.localFolder && f !== props.sel.satFolder) props.sel[k] = ''
+  }
 }
 
 // 选完工作频段，上/下行频率跟随预设变（与小程序一致；仍可手改）。
@@ -110,30 +119,31 @@ watch(() => props.sel.fpId, loadFpPlan)
         <label class="sp-gf" title="从「星座3D」页导入的 GRD 天线树选星（星名/轨位随之回填本卫星配置）">
           <span class="sp-gl">卫星方向图</span>
           <select v-model="sel.satFolder" class="sp-gi" :class="{ unset: !sel.satFolder }" @change="onPickSat">
-            <!-- 空值可选＝解除匹配（本条目不接方向图，EIRP/G·T 回到手工填）——库条目的匹配得能撤 -->
+            <!-- 空值可选＝不从树取星（方向图仍可用本条目导入的那几副）——库条目的取星得能撤 -->
             <option value="">— 未匹配 —</option>
-            <optgroup v-if="treeSats.length" label="星座3D 导入">
-              <option v-for="s in treeSats" :key="s.folder" :value="s.folder">{{ s.satName }}（{{ s.lon }}°E）</option>
-            </optgroup>
-            <optgroup v-if="localSats.length" label="本模块导入">
-              <option v-for="s in localSats" :key="s.folder" :value="s.folder">{{ s.satName }}（{{ s.lon }}°E）</option>
-            </optgroup>
+            <option v-for="s in treeSats" :key="s.folder" :value="s.folder">{{ s.satName }}（{{ s.lon }}°E）</option>
             <option v-if="staleFolder" :value="staleFolder">{{ staleFolder }}（未导入）</option>
           </select>
         </label>
-        <template v-if="curSat">
+        <template v-if="antGroups.length">
           <label class="sp-gf" title="按各收信站经纬度取该天线多波束最大 Parameter → 回填收信站「卫星EIRP」">
             <span class="sp-gl">EIRP 天线</span>
             <select v-model="sel.eirpKey" class="sp-gi" :class="{ unset: !sel.eirpKey }">
               <option value="">— 未匹配 —</option>
-              <option v-for="a in curSat.antennas" :key="a.name" :value="antKey(a)">{{ a.name }}（{{ a.beams }} 波束）</option>
+              <optgroup v-for="g in antGroups" :key="g.folder" :label="g.label">
+                <option v-for="a in g.ants" :key="a.key" :value="a.key">{{ a.name }}（{{ a.beams }} 波束）</option>
+              </optgroup>
+              <option v-if="staleAnt(sel.eirpKey)" :value="sel.eirpKey">{{ staleAnt(sel.eirpKey).name }}（未导入）</option>
             </select>
           </label>
           <label class="sp-gf" title="按各发信站经纬度取该天线多波束最大 Parameter → 回填发信站「卫星G/T」">
             <span class="sp-gl">G/T 天线</span>
             <select v-model="sel.gtKey" class="sp-gi" :class="{ unset: !sel.gtKey }">
               <option value="">— 未匹配 —</option>
-              <option v-for="a in curSat.antennas" :key="a.name" :value="antKey(a)">{{ a.name }}（{{ a.beams }} 波束）</option>
+              <optgroup v-for="g in antGroups" :key="g.folder" :label="g.label">
+                <option v-for="a in g.ants" :key="a.key" :value="a.key">{{ a.name }}（{{ a.beams }} 波束）</option>
+              </optgroup>
+              <option v-if="staleAnt(sel.gtKey)" :value="sel.gtKey">{{ staleAnt(sel.gtKey).name }}（未导入）</option>
             </select>
           </label>
         </template>

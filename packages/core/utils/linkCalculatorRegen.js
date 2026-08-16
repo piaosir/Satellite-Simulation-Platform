@@ -352,6 +352,32 @@ function computeRegenDownlinkMode(satParams, inputs, opt) {
 // 链路预算复用 NGSO 引擎已对标的 RF 星间预算（islMode='rf'/islHops=1）：
 //   cIsl_CT = islEirp − FSL(dist,freq) + islGT − islMiscLoss；islPerHopCN = cIsl_CT + 228.6 − 载波噪声带宽。
 // 门限、载波带宽仍由引擎按载波信号算；余量 = islPerHopCN − 门限。发射 EIRP / 接收 G/T 分别是发射卫星 / 接收卫星的输入。
+// 干扰：星间域自己的一项聚合 C/I（islCI，手填、留空即不计入）与热噪并联，见 _islIntfMerge。
+
+// 星间干扰 C/I（satParams.islCI，dB）并入单跳 C/N。就地改写 d 并返回。
+//
+// 物理口径：星间域有自己的干扰（星座内邻 ISL 同频、邻道、极化泄漏），与星地那四项不是同一个
+// 物理域——真空段无雨致去极化、无地面邻星 ASI 路径，且随这条链路的几何与频率复用而变。故不
+// 复用卫星上的上/下行四项，而是一个【聚合成一项】的手填量，归属在这条星间链路（跳）上。
+// 默认留空＝不计入：软件不替用户编星座内的干扰环境。
+//   islPerHopThermalCNResult = 引擎原 islPerHopCN（热噪，恒出）
+//   islPerHopCNResult        = −10·lg( 10^(−热噪/10) + 10^(−C/I/10) )   —— 有效时改写为 C/(N+I)
+// 改写发生在 _reframeIslOnly 之前，故其后的 carrierTotalCN / 余量 / Eb·Es N₀ 自动随动。
+// 只认数值有效性（isFinite 且 >0，不设上限）：C/I 越大干扰越弱，上界由工程判断，不由软件设。
+// ★ 激光星间不走这条路：背景光/串扰已含在接收灵敏度 P_req 的定义里，再并一项即双计。
+function _islIntfMerge(d, sat) {
+  const thermal = _num(d.islPerHopCNResult);
+  d.islPerHopThermalCNResult = thermal != null ? thermal.toFixed(2 + FX) : '';
+  const ci = _num((sat || {}).islCI);
+  if (thermal == null || ci == null || !isFinite(ci) || !(ci > 0)) {
+    d.islCIResult = '';                       // 留空＝不计入（下游据此不出干扰行）
+    return d;
+  }
+  d.islCIResult = ci.toFixed(2 + FX);
+  const merged = -10 * Math.log10(Math.pow(10, -thermal / 10) + Math.pow(10, -ci / 10));
+  d.islPerHopCNResult = merged.toFixed(2 + FX);
+  return d;
+}
 
 // 把结果重标为再生式星间专属（合计 C/N = ISL 单跳 C/N）。availPct：互视可见度(%)，作系统可用度。
 function _reframeIslOnly(d, availPct) {
@@ -373,8 +399,16 @@ function _reframeIslOnly(d, availPct) {
   // 上/下行在星间口径下不参与——清空展示字段
   d.uplinkCN = '';
   d.downlinkCN = '';
-  // 系统可用度 = 互视可见度（ISL 无雨衰，唯一中断来自 LOS 丢失/被地球遮挡）
-  if (availPct != null && isFinite(availPct)) {
+  // 系统可用度 = 互视可见度（ISL 无雨衰，唯一中断来自 LOS 丢失/被地球遮挡）。
+  // 没给可见度（手动几何：星间距离由用户直接给定，不解算轨道 ⇒ 无互视统计）就必须清空——
+  // 否则漏出来的是上/下行占位入参算出的雨衰可用度（实测 99.8%），与这条星间链路毫无关系。
+  if (availPct == null || !isFinite(availPct)) {
+    d.systemAvailabilityResult = '';
+    d.uplinkAvailabilityResult = '';
+    d.downlinkAvailabilityResult = '';
+    d.interruptionMinutes = '';
+    d.interruptionHours = '';
+  } else {
     const a = Math.max(0, Math.min(100, availPct));
     d.systemAvailabilityResult = a.toFixed(5 + FX);
     d.uplinkAvailabilityResult = a.toFixed(5 + FX);
@@ -390,7 +424,11 @@ function _reframeIslOnly(d, availPct) {
 }
 
 // 再生式星间计算。satParams 需含 islEirp/islGT/islFreq/islMiscLoss/islHopDistance(几何最差距离)；
+// 可选 islCI（星间干扰合计 C/I，dB；留空＝不计入，见 _islIntfMerge）。
 // opt: { visibilityPct }（互视可见度%，来自几何）。返回 { success, data, mode:'isl', resolvedMargin }。
+// ★ 本函数是星间单跳的唯一出口：再生式窗口与端到端窗口（linkChain.probeIslHop）都走它，
+//   星间干扰因此在这一处并联即两窗同时生效。NGSO 引擎自己的 islPerHopCN（弯管等参数多跳共用
+//   出口）不受影响——改写只落在这里返回的这份结果上。
 function computeRegenIslMode(satParams, inputs, opt) {
   opt = opt || {};
   if (!_calcNGSO) return { success: false, message: 'NGSO 引擎不可用（linkCalculatorNGSO 加载失败）' };
@@ -398,7 +436,7 @@ function computeRegenIslMode(satParams, inputs, opt) {
   const sp = Object.assign({}, satParams || {}, { islMode: 'rf', islHops: 1 });
   const r = _calcNGSO(sp, inputs || {});
   if (!r || !r.success) return r || { success: false, message: 'ISL 计算失败' };
-  const d = _reframeIslOnly(r.data, _num(opt.visibilityPct));
+  const d = _reframeIslOnly(_islIntfMerge(r.data, sp), _num(opt.visibilityPct));
   return { success: true, data: d, mode: 'isl', resolvedMargin: _num(d.linkmargin) };
 }
 
@@ -465,7 +503,10 @@ function computeRegenLaserIslMode(params, opt) {
   const margin = pRxDbm - pReqDbm;
 
   // —— 系统可用度 = 几何互视占比（无雨）——
-  const visFrac = isFinite(visPct) ? Math.max(0, Math.min(100, visPct)) / 100 : 1;
+  // 没给可见度（手动几何：星间距离由用户直接给定，不解算轨道 ⇒ 无互视统计）就不报可用度：
+  // 缺省成 100% 等于凭空承诺「这条链路从不中断」。
+  const hasVis = isFinite(visPct);
+  const visFrac = hasVis ? Math.max(0, Math.min(100, visPct)) / 100 : 1;
   const sysAvailPct = visFrac * 100;
   const interruptionMinutes = (1 - visFrac) * 365.25 * 24 * 60;
   // —— 相干多普勒 Δf = v_r/λ（仅展示，简化版不据此判合格）——
@@ -499,12 +540,12 @@ function computeRegenLaserIslMode(params, opt) {
     laserPrxResult: pRxDbm.toFixed(2 + FX),
     laserPreqResult: pReqDbm.toFixed(2 + FX),
     // 可用度（无雨 = 几何互视）
-    laserVisibleFracResult: isFinite(visPct) ? visPct.toFixed(2 + FX) : '',
-    systemAvailabilityResult: sysAvailPct.toFixed(5 + FX),
-    uplinkAvailabilityResult: sysAvailPct.toFixed(5 + FX),
-    downlinkAvailabilityResult: sysAvailPct.toFixed(5 + FX),
-    interruptionMinutes: interruptionMinutes.toFixed(2 + FX),
-    interruptionHours: (interruptionMinutes / 60).toFixed(2 + FX),
+    laserVisibleFracResult: hasVis ? visPct.toFixed(2 + FX) : '',
+    systemAvailabilityResult: hasVis ? sysAvailPct.toFixed(5 + FX) : '',
+    uplinkAvailabilityResult: hasVis ? sysAvailPct.toFixed(5 + FX) : '',
+    downlinkAvailabilityResult: hasVis ? sysAvailPct.toFixed(5 + FX) : '',
+    interruptionMinutes: hasVis ? interruptionMinutes.toFixed(2 + FX) : '',
+    interruptionHours: hasVis ? (interruptionMinutes / 60).toFixed(2 + FX) : '',
     laserDopplerResult: isFinite(dopplerGHz) ? dopplerGHz.toFixed(3 + FX) : '',
     // 清空上/下行展示字段（激光星间不参与）
     uplinkCN: '', downlinkCN: ''

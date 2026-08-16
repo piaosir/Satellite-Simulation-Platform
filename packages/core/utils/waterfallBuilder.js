@@ -266,6 +266,9 @@ const WF_DICT = {
   '下行 C/(N+I)（再生·合计）': 'Downlink C/(N+I) (Regenerative Total)',
   // —— 再生式星间（微波 ISL）——
   '星间几何（最差工况）': 'Inter-Satellite Geometry (Worst Case)',
+  // 手动几何：星间距离由用户逐条给定，没有轨道解算 → 段名/行名不说「最差工况」
+  '星间距离（手动给定）': 'ISL Range (Manual Input)',
+  '星间链路距离': 'ISL Range',
   '星间频率': 'ISL Frequency',
   '星间距离(最差)': 'ISL Distance (Worst Case)',
   '发射卫星高度': 'Tx Satellite Altitude',
@@ -282,6 +285,9 @@ const WF_DICT = {
   '星间 C/T': 'ISL C/T',
   '星间 C/N₀': 'ISL C/N₀',
   '星间 C/N': 'ISL C/N',
+  '星间 C/N（热噪声）': 'ISL C/N (Thermal)',
+  '星间 C/(N+I)': 'ISL C/(N+I)',
+  '星间C/I': 'ISL C/I',
   '可用度与资源（星间）': 'Availability & Resources (ISL)',
   '性能与余量（星间）': 'Performance & Margin (ISL)',
   '资源占用（星间）': 'Resource Usage (ISL)',
@@ -308,6 +314,75 @@ const WF_DICT = {
   '接收光功率 P_rx': 'Rx Optical Power P_rx',
   '所需接收功率 P_req': 'Required Rx Power P_req',
   '可用度（激光星间）': 'Availability (Laser ISL)',
+  // —— 端到端链路（多跳 / 混合转发）——
+  '端到端链路级联（正向电平递推）': 'End-to-End Cascade (Forward Power Ledger)',
+  '逐跳几何与时延': 'Per-Hop Geometry & Delay',
+  '收发链参数': 'Tx/Rx Chain Parameters',
+  '其他传播衰减': 'Other Propagation Losses',
+  '−k − 10·lgB': '−k − 10·lgB',
+  '逐段汇总': 'Per-Segment Summary',
+  '端到端汇总': 'End-to-End Summary',
+  '段': 'Segment',
+  '段余量': 'Segment Margin',
+  '段 C/(N+I)': 'Segment C/(N+I)',
+  '星地上行': 'Uplink',
+  '星地下行': 'Downlink',
+  '星间微波': 'ISL (RF)',
+  '星间激光': 'ISL (Optical)',
+  '透明转发': 'Bent Pipe',
+  '发信站': 'Tx Station',
+  '收信站': 'Rx Station',
+  '发信站 EIRP': 'Tx Station EIRP',
+  '再生卫星 EIRP': 'Regenerative Satellite EIRP',
+  '发射卫星 EIRP': 'Transmit Satellite EIRP',
+  '功放输出功率': 'PA Output Power',
+  '功放输出功率(W)': 'PA Output Power (W)',
+  'UPC 补偿': 'UPC Compensation',
+  '天线口径': 'Antenna Diameter',
+  '转发器功率占比': 'Transponder Power Utilization',
+  '转发器带宽占比': 'Transponder Bandwidth Utilization',
+  '透明转发器占用': 'Bent-Pipe Transponder Utilization',
+  '逐段解调结算': 'Per-Segment Demodulation',
+  '解调': 'Demodulation',
+  '解调实现损失': 'Demodulator Implementation Loss',
+  '实际解调门限': 'Effective Demodulation Threshold',
+  '实际所需接收功率': 'Effective Required Rx Power',
+  '设计 BER': 'Design BER',
+  '端到端 BER': 'End-to-End BER',
+  '每载波输出 EIRP': 'Output EIRP per Carrier',
+  '可容纳同类载波数': 'Max Carriers of This Type',
+  '到达载波电平 C': 'Received Carrier Level C',
+  '卫星 SFD（标称）': 'Satellite SFD (Nominal)',
+  'G/T 差（卫星 − 参考）': 'G/T Offset (Satellite − Reference)',
+  '饱和通量密度 SFD': 'Saturation Flux Density SFD',
+  '输入回退 IBO': 'Input Backoff IBO',
+  '转发器工作点通量密度': 'Transponder Operating-Point Flux Density',
+  '到达通量密度': 'Received Flux Density',
+  '载波占转发器回退': 'Carrier Transponder Backoff',
+  '转发器输出 EIRP（每载波）': 'Transponder Output EIRP (per Carrier)',
+  '接收站 G/T': 'Rx Station G/T',
+  '星间发射 EIRP': 'ISL Tx EIRP',
+  '星间接收 G/T': 'ISL Rx G/T',
+  '附加损耗': 'Additional Losses',
+  '本跳 C/N': 'Hop C/N',
+  '本跳 C/N（热噪声）': 'Hop C/N (Thermal)',
+  '本跳 C/(N+I)': 'Hop C/(N+I)',
+  '本跳等效 C/N': 'Hop Equivalent C/N',
+  '干扰损失 ACI/ASI/XPI/IM': 'Interference Loss ACI/ASI/XPI/IM',
+  '干扰损失 转发器IM': 'Interference Loss Transponder IM',
+  '干扰损失 星间C/I': 'Interference Loss ISL C/I',
+  '段干扰损失（直接合并）': 'Segment Interference Loss (Direct Merge)',
+  '多跳级联损失（前序跳并联）': 'Multi-Hop Cascade Loss (Prior Hops Combined)',
+  '星地距离': 'Slant Range',
+  '星间距离': 'ISL Range',
+  '节点数': 'Nodes',
+  '跳数': 'Hops',
+  '段数': 'Segments',
+  '最弱段': 'Weakest Segment',
+  '端到端余量': 'End-to-End Margin',
+  '端到端时延': 'End-to-End Delay',
+  '传播时延合计': 'Total Propagation Delay',
+  '处理时延合计': 'Total Processing Delay',
   // —— 特殊单位 ——
   '米': 'm'
 };
@@ -1553,6 +1628,7 @@ function createBuilder(ctx) {
     const r = results;
     if (r.linkmargin === undefined) return [];
     const segs = [];
+    const manualGeo = String(r.islManualGeomResult || '') === '1';   // 手动几何：星间距离由用户逐条给定
 
     // ① 载波与调制参数（链路级，单列）
     segs.push(b._refSeg('载波与调制参数', [
@@ -1571,10 +1647,12 @@ function createBuilder(ctx) {
       ['载波噪声带宽', 'RXnoiseBW', 'dB-Hz']
     ], { id: 'carrier', cls: 'param' }));   // 实际 Eb/N₀ / Es/N₀ 与系统余量移入「性能与余量」，同 GEO
 
-    // ② 星间几何（最差工况，单列）——双 SGP4 + 地球临边遮挡
-    segs.push(b._refSeg('星间几何（最差工况）', [
+    // ② 星间几何（最差工况，单列）——双 SGP4 + 地球临边遮挡。
+    // 手动几何（islManualGeomResult）下星间距离是用户给的一个数，没有轨道解算：段名与行名都不说
+    // 「最差工况」，其余几何行本就无值、自动被 _refSeg 剔掉。
+    segs.push(b._refSeg(manualGeo ? '星间距离（手动给定）' : '星间几何（最差工况）', [
       ['星间频率', 'islRfFreqResult', 'GHz'],
-      ['星间距离(最差)', 'islRfDistResult', 'km'],
+      [manualGeo ? '星间链路距离' : '星间距离(最差)', 'islRfDistResult', 'km'],
       ['发射卫星高度', 'islTxAltResult', 'km'],
       ['接收卫星高度', 'islRxAltResult', 'km'],
       ['地心夹角', 'islCentralAngleResult', '°'],
@@ -1586,9 +1664,23 @@ function createBuilder(ctx) {
     ], { id: 'geometry', cls: 'param' }));
 
     // ③ 链路预算级联（再生式星间，单列）：发射EIRP → FSL → 接收G/T → C/T → C/N₀ → C/N → 门限 → 余量
+    // 星间干扰 C/I（islCI，手填、留空即不计入）填了才出那三行：热噪检查点 → 干扰损失 → C/(N+I)，
+    // 与 GEO/NGSO 上下行级联同体例（干扰以一行 loss 桥接热噪与实际值，级联列仍逐行可手算）。
+    // 没填时只有原来那一行「星间 C/N」，逐字与从前相同。
     const C = b._cRow;
     const KB = 228.6;
     const noiseBW = b._num(r.RXnoiseBW);
+    const islThermal = b._num(r.islPerHopThermalCNResult);
+    const islTotal = b._num(r.islPerHopCNResult);
+    const islCI = b._num(r.islCIResult);
+    const islIntfRows = (islCI !== null && islThermal !== null && islTotal !== null) ? [
+      C('chk', '星间 C/N（热噪声）', 'islPerHopThermalCNResult', 'dB', 'up'),
+      C('ref', '星间C/I', 'islCIResult', 'dB', 'up'),
+      C('loss', '干扰损失 星间C/I', islThermal - islTotal, 'dB', 'up'),
+      C('sub', '星间 C/(N+I)', 'islPerHopCNResult', 'dB', 'up')
+    ] : [
+      C('chk', '星间 C/N', 'islPerHopCNResult', 'dB', 'up')
+    ];
     segs.push(b._cascadeSingleSeg('链路预算级联（再生式星间）', [
       C('base', '发射卫星 EIRP', 'islRfEirpResult', 'dBW', 'up'),
       C('loss', '自由空间损耗', 'islRfFslResult', 'dB', 'up'),
@@ -1598,7 +1690,7 @@ function createBuilder(ctx) {
       C('gain', '−玻尔兹曼常数 k', KB, 'dB', 'up'),
       C('chk', '星间 C/N₀', null, 'dBHz', 'up'),
       C('loss', '载波噪声带宽 10·lgB', noiseBW, 'dB', 'up'),
-      C('chk', '星间 C/N', 'islPerHopCNResult', 'dB', 'up'),
+      ...islIntfRows,
       C('ref', '门限 C/N', 'thresholdCN', 'dB', 'up'),
       C('margin', '链路余量', 'linkmargin', 'dB', 'up')
     ], { id: 'cascade', cls: 'result' }));
@@ -1607,7 +1699,8 @@ function createBuilder(ctx) {
     segs.push(b._refSeg('性能与余量（星间）', [
       ['Eb/N₀', 'ebnoActualResult', 'dB'],
       ['Es/N₀', 'esnoActualResult', 'dB'],
-      ['星间 C/N', 'islPerHopCNResult', 'dB'],
+      // 填了星间 C/I 时这个数已是 C/(N+I)，行名跟着口径走（没填时仍是那一行「星间 C/N」）
+      [islCI !== null ? '星间 C/(N+I)' : '星间 C/N', 'islPerHopCNResult', 'dB'],
       ['门限 C/N', 'thresholdCN', 'dB'],
       ['链路余量', 'linkmargin', 'dB'],
       ['系统余量', 'marginResult', 'dB'],
@@ -1632,6 +1725,7 @@ function createBuilder(ctx) {
     const r = results;
     if (r.linkmargin === undefined) return [];
     const segs = [];
+    const manualGeo = String(r.islManualGeomResult || '') === '1';   // 手动几何：星间距离由用户逐条给定
 
     // ① 激光终端参数（链路级，单列）
     segs.push(b._refSeg('激光终端参数', [
@@ -1644,9 +1738,9 @@ function createBuilder(ctx) {
       ['接收机灵敏度 P_req', 'laserPreqResult', 'dBm']
     ], { id: 'carrier', cls: 'param' }));
 
-    // ② 星间几何（最差工况，单列）——双 SGP4 + 地球临边遮挡
-    segs.push(b._refSeg('星间几何（最差工况）', [
-      ['星间距离(最差)', 'laserDistResult', 'km'],
+    // ② 星间几何（最差工况，单列）——双 SGP4 + 地球临边遮挡；手动几何同微波侧，只报用户给的那个距离
+    segs.push(b._refSeg(manualGeo ? '星间距离（手动给定）' : '星间几何（最差工况）', [
+      [manualGeo ? '星间链路距离' : '星间距离(最差)', 'laserDistResult', 'km'],
       ['发射卫星高度', 'islTxAltResult', 'km'],
       ['接收卫星高度', 'islRxAltResult', 'km'],
       ['地心夹角', 'islCentralAngleResult', '°'],
@@ -1689,16 +1783,246 @@ function createBuilder(ctx) {
     return b._number(segs);
   };
 
+  // ============ 端到端链路（多跳 / 混合转发）瀑布 ============
+  // 读的是 utils/linkChain.js 的出参（linkType:'chain'）——它自带一份机读的正向电平递推台账
+  // （results.ledger），这里只负责翻成三线表的行：一条从「发信站 EIRP」到「末段余量」的完整
+  // 级联，段边界处插段结算行（段 C/(N+I)、门限、段余量）。
+  // 与三窗一致的分工：左＝级联主表（role:'cascade'），右＝几何 / 逐段汇总 / 端到端汇总参考段。
+  b.buildChain = function () {
+    const r = results;
+    if (!Array.isArray(r.ledger)) return [];
+    const segs = [];
+    const fmt = (v, n) => (v === null || v === undefined || !isFinite(v)) ? '' : ('' + (Math.round(v * Math.pow(10, n)) / Math.pow(10, n)));
+    const sep = (lang === 'en') ? ': ' : '：';
+
+    // —— 逐项分组的参考段（逐段体制 / 逐跳几何 / 逐颗透明星 / 逐段解调）——
+    // 每项一个小标题行（k-shead），标题下的读数行只留短标签。行行重复「1·星间微波 」这种前缀会把
+    // 标签挤到折行，一屏下来全是同一个前缀，反倒看不出分组——标题挑出来一行，表才读得动。
+    const groupOf = (out, title, list, idPre) => {
+      const rows = [];
+      for (const [label, val, unit] of list) {
+        if (val === '' || val === null || val === undefined) continue;
+        rows.push({
+          key: idPre + title + label, id: '#' + idPre + title + label, kind: 'ref', sign: '', label: b._t(label),
+          up: '' + val, down: '', total: '', unit: b._t(unit) || '', unitKey: unit || '', cum: '',
+          num: b._numStrict(val)
+        });
+      }
+      if (!rows.length) return;
+      out.push({
+        key: idPre + title, id: '#' + idPre + title, kind: 'shead', sign: '', label: title,
+        up: '', down: '', total: '', unit: '', unitKey: '', cum: '', num: null
+      });
+      out.push(...rows);
+    };
+    // 组标题里的「起点 → 终点」：节点名一个字不动（平台既定：用户自命名不翻）
+    const endsOf = (o) => ((o.fromName || o.toName) ? sep + ((o.fromName || '') + ' → ' + (o.toName || '')) : '');
+
+    // ① 载波与调制参数。再生节点解调-重调后可换体制，故这一段按【段】给：各段体制完全相同时
+    // 仍收成一组（绝大多数链就是这样），只要有一段不同就逐段列开——否则表上只剩首段那一份，
+    // 读者会拿它去对后面几段的门限。
+    const CARR_ROWS = [
+      ['载波带宽', 'allocBandwidthResult', 'kHz'],
+      ['频谱效率', 'spectralEfficiencyResult', 'bit/s/Hz'],
+      ['信息速率', 'infoRateResult', 'kbps'],
+      ['载波速率', 'carrierRateResult', 'kbps'],
+      ['符号速率', 'symbolRateResult', 'ksps'],
+      ['调制方式', 'modulationResult', ''],
+      ['FEC 码率', 'fecResult', ''],
+      ['误码率', 'berResult', ''],
+      ['门限 Eb/N₀', 'ebnoResult', 'dB'],
+      ['门限 Es/N₀', 'esnoResult', 'dB'],
+      ['载波噪声带宽', 'RXnoiseBW', 'dB-Hz'],
+      ['门限 C/N', 'thresholdCN', 'dB']
+    ];
+    const carrs = Array.isArray(r.carriers) ? r.carriers : [];
+    const sig = (c) => CARR_ROWS.map((t) => c[t[1]]).join('|');
+    const oneCarrier = carrs.length <= 1 || carrs.every((c) => sig(c) === sig(carrs[0]));
+    if (oneCarrier) {
+      segs.push(b._refSeg('载波与调制参数', CARR_ROWS, { id: 'carrier', cls: 'param' }));
+    } else {
+      const cRows = [];
+      carrs.forEach((c) => {
+        groupOf(cRows, b._t('段') + ' ' + c.no + endsOf(c), CARR_ROWS.map((t) => [t[0], c[t[1]], t[2]]), 'carr');
+      });
+      segs.push(b._seg('载波与调制参数', 1, cRows, { id: 'carrier', cls: 'param' }));
+    }
+
+    // ② 端到端级联（正向电平递推，单列）——主角段
+    // 台账行 kind 直接对应瀑布行 kind；三种标题行（段 / 跳 / 透明转发）另立 head/shead，
+    // 排版在 lbworkbench.css 的 .lbx-doc .wf-row.k-head / .k-shead（带 .lbx-doc 前缀，不影响三窗）。
+    const HEAD = { seghd: 'head', hophd: 'shead', txphd: 'shead', eshd: 'shead' };
+    const rows = r.ledger.map((it) => {
+      const hk = HEAD[it.kind];
+      if (hk) {
+        // 标题行＝「可译的类型词 + 用户自命名的节点名」：只译前半段，节点名一个字不动
+        // （平台既定：用户自命名不翻）。故台账里 tag / name 分开存，此处才拼。
+        const label = b._t(it.tag) + (it.no ? ' ' + it.no : '') + (it.name ? sep + it.name : '');
+        return {
+          key: label, id: '#' + label, kind: hk, sign: '', label,
+          up: '', down: '', total: '', unit: '', unitKey: '', cum: '', num: null, _raw: null, _col: null
+        };
+      }
+      // 算式行（base/gain/loss/sub/chk）交给 _cascadeSingleSeg 沿链累加，值必须保持全精度，
+      // 显示由 _fmt 收成 2 位；非算式行（ref/margin）走 _disp 原样透传，故这里先按引擎口径
+      // toFixed(2) 成串再写回——不收就会把 12.804620941514187 这种浮点尾巴印在表上。
+      const calc = (it.kind === 'base' || it.kind === 'gain' || it.kind === 'loss' || it.kind === 'sub' || it.kind === 'chk');
+      const v = (it.value === null || it.value === undefined || !isFinite(it.value)) ? null : it.value;
+      const row = b._cRow(it.kind, it.label, v, it.unit || '', 'up');
+      if (!calc && v !== null) { row.up = v.toFixed(2); row.num = b._numStrict(row.up); }
+      return row;
+    });
+    const casc = b._cascadeSingleSeg('端到端链路级联（正向电平递推）', rows, { id: 'cascade', cls: 'result' });
+    // 级联列数值统一定两位小数（0 → 0.00、60.7 → 60.70）：_fmt 全局是「最多两位、去尾零」
+    //（四窗共用，不动），但本窗级联是单列密排，参差的小数尾会让右对齐的数值列只剩个位对齐、
+    // 小数点排不成列。只在本构建器内把纯数值显示串收成定两位（QPSK / 3×10⁻⁷ 等非数值串原样），
+    // 屏幕 / TSV / 报表同源生效。
+    for (const row of casc.rows) {
+      if (row.up && /^-?\d+(\.\d+)?$/.test(row.up)) { row.up = (+row.up).toFixed(2); row.num = b._numStrict(row.up); }
+    }
+    segs.push(casc);
+
+    // ③ 逐跳几何与时延（单列，逐跳一组）
+    // 传播分项也在这里逐条出：级联列把「大气 + 云 + 附加」并成了一行「其他传播衰减」，
+    // 三个分项的数值不能因此丢掉（那是雨衰之外的全部常态损耗，报告要能逐条查）。
+    const geoRows = [];
+    const HOP_T = { up: '星地上行', down: '星地下行', isl: '星间微波', laser: '星间激光' };
+    (r.hops || []).forEach((h, i) => {
+      // 大气 / 雨 / 云只对星地跳有意义：星间是真空段，引擎那三个数恒为 0，摆出来是三行假账
+      const air = (h.type === 'up' || h.type === 'down');
+      groupOf(geoRows, (i + 1) + ' ' + b._t(HOP_T[h.type] || h.type) + endsOf(h), [
+        ['频率', h.frequencyResult, 'GHz'],
+        [air ? '星地距离' : '星间距离', h.distanceResult, 'km'],
+        ['对卫星仰角', h.elevationResult, '°'],
+        ['链路时延(单程·分段)', h.delayResult, 'ms'],
+        ['自由空间损耗', h.fslResult, 'dB'],
+        ['大气衰减 P.676', air ? h.atmResult : '', 'dB'],
+        ['雨衰 P.618', air ? h.rainResult : '', 'dB'],
+        ['云衰 P.840', air ? h.cloudResult : '', 'dB'],
+        ['附加损耗', h.miscResult, 'dB'],
+        ['本跳 C/N', h.cnResult, 'dB']
+      ], 'geo');
+    });
+    segs.push(b._seg('逐跳几何与时延', 1, geoRows, { id: 'geometry', cls: 'param' }));
+
+    // ③⁻ 收发链参数（单列，逐跳一组）——级联列只留算式行之后，被摘出去的设备参数在这里落地，
+    // 一个数不丢：上行跳出发信站那四项，下行跳出收信站 G/T 的十项分解（增益 / 馈线 / 四路噪温 /
+    // 系统噪温 K 与 dB）。星间微波与激光跳没有地面收发链，整组不出（groupOf 无行即不成组）。
+    const rfRows = [];
+    (r.hops || []).forEach((h, i) => {
+      const title = (i + 1) + ' ' + b._t(HOP_T[h.type] || h.type) + endsOf(h);
+      if (h.type === 'up') {
+        groupOf(rfRows, title, [
+          ['天线口径', h.txDiameterResult, 'm'],
+          ['天线效率', h.txEffResult, '%'],
+          ['功放输出功率(W)', h.paWResult, 'W'],
+          // UPC 补偿为 0（没开上行功率控制）时不占一行——原级联列也是有值才摆
+          ['UPC 补偿', b._num(h.upcMarginResult) ? h.upcMarginResult : '', 'dB']
+        ], 'rfc');
+      } else if (h.type === 'down') {
+        groupOf(rfRows, title, [
+          ['天线口径', h.rxDiameterResult, 'm'],
+          ['天线效率', h.rxEffResult, '%'],
+          ['接收天线增益', h.rxAntennaGainResult, 'dBi'],
+          ['接收馈线损耗', h.rxFeederLossResult, 'dB'],
+          ['天线噪声温度', h.antennaNoiseTempResult, 'K'],
+          ['接收机噪声温度', h.receiverNoiseTempResult, 'K'],
+          ['雨噪声温度', h.rainNoiseTempResult, 'K'],
+          ['云噪声温度', h.cloudNoiseTempResult, 'K'],
+          ['系统噪声温度', h.sysNoiseTempKResult, 'K'],
+          ['系统噪声温度(dB)', h.sysNoiseTempDbResult, 'dBK']
+        ], 'rfc');
+      }
+    });
+    segs.push(b._seg('收发链参数', 1, rfRows, { id: 'rfchain', cls: 'param' }));
+
+    // ③′ 透明转发器占用（单列，逐颗透明星一组行）——弯管星的资源账：
+    // 这一条载波在该转发器上占了多少功率、多少带宽。功率占比由载波占转发器回退换算
+    // （回退 0 dB 即吃满转发器输出功率），带宽占比 = 载波带宽 / 转发器带宽。
+    const txpRows = [];
+    (r.transponders || []).forEach((t, i) => {
+      groupOf(txpRows, (i + 1) + ' ' + (t.name || ''), [
+        ['转发器带宽', t.transponderBandwidthResult, 'MHz'],
+        ['载波带宽', t.carrierBandwidthResult, 'kHz'],
+        ['转发器带宽占比', t.bandwidthRatioResult, '%'],
+        ['饱和通量密度 SFD', t.sfdsResult, 'dBW/m²'],
+        ['转发器工作点通量密度', t.opPFDResult, 'dBW/m²'],
+        ['到达通量密度', t.arrivalPFDResult, 'dBW/m²'],
+        ['载波占转发器回退', t.capacityResult, 'dB'],
+        ['转发器功率占比', t.powerRatioResult, '%'],
+        ['每载波输出 EIRP', t.eirpPerCarrierResult, 'dBW'],
+        ['可容纳同类载波数', t.maxCarrierCount, '']
+      ], 'txp');
+    });
+    segs.push(b._seg('透明转发器占用', 1, txpRows, { id: 'transponder', cls: 'result' }));
+
+    // ③″ 逐段解调结算（单列，逐段一组行）——收侧那台解调器的账：
+    // 实际门限 = 体制的理论门限 + 该段收端的解调实现损失；设计 BER 是这一段按门限工作时的误码率，
+    // 各段独立解调、误码不可恢复，故端到端按各段之和（见 §端到端汇总的「端到端 BER」）。
+    // 纯激光段没有 C/N 也就没有门限：判据是「收到的光功率比所需接收功率高多少」，
+    // 实现损失照样抬高所需接收功率（P_req + 实现损失 = 实际所需接收功率）。
+    const demRows = [];
+    (r.segments || []).forEach((sg) => {
+      groupOf(demRows, b._t('段') + ' ' + sg.no + endsOf(sg), sg.laser ? [
+        ['所需接收功率 P_req', sg.preqResult, 'dBm'],
+        ['解调实现损失', sg.demodLossResult, 'dB'],
+        ['实际所需接收功率', sg.preqEffResult, 'dBm'],
+        ['接收光功率 P_rx', sg.prxResult, 'dBm'],
+        ['设计 BER', sg.berResult, ''],
+        ['段余量', sg.marginResult, 'dB']
+      ] : [
+        ['门限 C/N', sg.thresholdCN, 'dB'],
+        ['解调实现损失', sg.demodLossResult, 'dB'],
+        ['实际解调门限', sg.thresholdEffResult, 'dB'],
+        ['设计 BER', sg.berResult, ''],
+        ['段余量', sg.marginResult, 'dB']
+      ], 'dem');
+    });
+    segs.push(b._seg('逐段解调结算', 1, demRows, { id: 'demod', cls: 'result' }));
+
+    // ④ 逐段汇总（双列：段 C/(N+I) / 段余量）
+    const segRows = (r.segments || []).map((sg) => ({
+      key: 'seg' + sg.no, id: '#seg' + sg.no, kind: 'ref', sign: '',
+      label: `${b._t('段')} ${sg.no}　${sg.fromName} → ${sg.toName}`,
+      up: sg.cnResult, down: sg.marginResult, total: '', unit: 'dB', unitKey: 'dB', cum: '',
+      num: b._numStrict(sg.cnResult), numDown: b._numStrict(sg.marginResult)
+    }));
+    const segSeg = b._seg('逐段汇总', 2, segRows, { id: 'segments', cls: 'result' });
+    segSeg.heads = [b._t('C/(N+I)'), b._t('段余量')];
+    segs.push(segSeg);
+
+    // ⑤ 端到端汇总（单列）
+    segs.push(b._refSeg('端到端汇总', [
+      ['节点数', r.nodeCount, '', true],
+      ['跳数', r.hopCount, '', true],
+      ['段数', r.segmentCount, '', true],
+      ['最弱段', r.weakestSegment, '', true],
+      ['门限 C/N', 'thresholdCN', 'dB'],
+      ['端到端余量', 'e2eMarginResult', 'dB'],
+      ['系统可用度', 'systemAvailabilityResult', '%'],
+      ['年中断(分钟)', 'interruptionMinutes', 'min'],
+      ['年中断(小时)', 'interruptionHours', 'h'],
+      ['端到端 BER', 'e2eBerResult', ''],
+      ['传播时延合计', 'propDelayResult', 'ms'],
+      ['处理时延合计', 'procDelayResult', 'ms'],
+      ['端到端时延', 'e2eDelayResult', 'ms'],
+      ['链路时延(往返 RTT)', (parseFloat(r.e2eDelayResult) > 0) ? fmt(parseFloat(r.e2eDelayResult) * 2, 3) : null, 'ms', true]
+    ], { id: 'performance', cls: 'result' }));
+
+    return b._number(segs);
+  };
+
   return b;
 }
 
-// 构建链路瀑布 segments（路由：按轨道/体制类型分派到 GEO / NGSO / 再生式 专属构建器）。
-// 出口统一过显示单位自适应（W→mW/kW、kHz→MHz、独立行 dBW→dBm 等；级联算式行不动），
+// 构建链路瀑布 segments（路由：按轨道/体制类型分派到 GEO / NGSO / 再生式 / 端到端 专属构建器）。
+// 出口统一过显示单位自适应（W→mW、kHz→MHz、独立行 dBW→dBm 等；级联算式行不动），
 // UI 瀑布 / TSV 复制 / Excel 详表同源同口径。
 function buildWaterfallSegments(ctx) {
   const builder = createBuilder(ctx || {});
   let segs;
-  if (ctx && ctx.orbitType === 'REGEN') segs = builder.buildRegen();
+  if (ctx && ctx.orbitType === 'E2E') segs = builder.buildChain();
+  else if (ctx && ctx.orbitType === 'REGEN') segs = builder.buildRegen();
   else segs = (ctx && ctx.orbitType === 'NGSO') ? builder.buildNGSO() : builder.buildGEO();
   return adaptiveUnits.adaptSegments(segs);
 }

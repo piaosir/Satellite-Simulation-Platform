@@ -12,6 +12,8 @@ import RainPlot from './RainPlot.vue'
 import RainDiversity from './RainDiversity.vue'
 import { rainFields, GRID_GROUPS, RESULT_KEYS, RESULT_DIGITS, LEGACY_KEYS, POL_LABEL, defaultRow, effectiveRow, buildRainCase } from './rainParams.js'
 import { stableStringify } from '../shared/configDirty.js'
+import { newCfgName, newFolderName } from '../shared/lbAutoName.js'   // 配置树默认名（按平台语言出字）
+import { byLang } from '../shared/i18n/lang.js'
 import { halfStr } from '../shared/num.js'
 
 const api = (typeof window !== 'undefined' && window.api) ? window.api.rainAttenuation : null
@@ -403,7 +405,7 @@ async function loadConfigs() {
   for (const id of [...expandedFolders.value]) if (!ids.has(id)) expandedFolders.value.delete(id)
 }
 function uniqueCfgName(base) { const n = new Set(configs.value.map((c) => c.name)); if (!n.has(base)) return base; let i = 2; while (n.has(base + ' ' + i)) i++; return base + ' ' + i }
-function defaultCfgName() { return (cases[0] && cases[0].stationName ? cases[0].stationName + ' ' : '') + `雨衰 ${cases.length} 例` }
+function defaultCfgName() { return (cases[0] && cases[0].stationName ? cases[0].stationName + ' ' : '') + byLang(`雨衰 ${cases.length} 例`, `${cases.length} Rain Cases`) }
 
 // 保存 / 更新 / 改名 / 删除
 const cfgDlg = reactive({ open: false, name: '' })
@@ -439,7 +441,7 @@ function askConfirm(msg) { confirmDlg.msg = msg; confirmDlg.open = true; return 
 function answerConfirm(ok) { confirmDlg.open = false; const r = _confirmResolve; _confirmResolve = null; if (r) r(ok) }
 async function addFolder(parentId = null) {
   if (!api) { toast('需在桌面客户端中运行'); return }
-  const item = await window.api.store.saveConfig({ type: 'folder', name: uniqueCfgName('新建文件夹'), parentId: parentId || null, orbitType: 'RAIN' })
+  const item = await window.api.store.saveConfig({ type: 'folder', name: uniqueCfgName(newFolderName()), parentId: parentId || null, orbitType: 'RAIN' })
   if (parentId) expandedFolders.value.add(parentId)
   if (item && item.id) expandedFolders.value.add(item.id)
   persistExpanded(); await loadConfigs(); if (item && item.id) startRename(item)
@@ -448,7 +450,7 @@ async function addBlankConfig(parentId = null) {
   if (!api) { toast('需在桌面客户端中运行'); return }
   if (!(await guardedLeave())) return
   const state = blankState()
-  const item = await window.api.store.saveConfig({ name: uniqueCfgName('新配置'), state, parentId: parentId || null })
+  const item = await window.api.store.saveConfig({ name: uniqueCfgName(newCfgName()), state, parentId: parentId || null })
   if (parentId) { expandedFolders.value.add(parentId); persistExpanded() }
   await loadConfigs(); if (item && item.id) { activeId.value = item.id; applyState(state); setBaseline() }; toast('已添加空白配置')
 }

@@ -13,6 +13,7 @@ import { activation, activationLocked, initActivation, refreshActivation, activa
 import SettingsModal from './components/SettingsModal.vue'
 import MiniBindDialog from './components/MiniBindDialog.vue'
 import MiniAboutDialog from './components/MiniAboutDialog.vue'
+import AboutDialog from './components/AboutDialog.vue'
 import FileManager from './components/FileManager.vue'
 import Icon from './components/Icon.vue'
 import logoUrl from './assets/linklab-avatar-dark.png'
@@ -122,6 +123,7 @@ function doSendMiniapp() {
 function openLinkBudget() { window.api?.linkBudget?.open?.() }
 function openNgso() { window.api?.ngso?.open?.() }
 function openRegen() { window.api?.regen?.open?.() }
+function openE2e() { window.api?.e2e?.open?.() }
 function openSunOutage() { window.api?.sunOutage?.open?.() }
 function openRain() { window.api?.rainAttenuation?.open?.() }
 function openCi() { window.api?.interference?.open?.() }
@@ -175,6 +177,7 @@ const menus = computed(() => [
     { label: 'GSO 透明转发链路预算', icon: 'calculator', lock: true, hint: '对地静止轨道（GSO）· 透明弯管转发器：打开链路预算工作台（独立窗口）', run: openLinkBudget },
     { label: 'NGSO 透明转发链路预算', icon: 'ngso', lock: true, hint: '非对地静止轨道（NGSO，含 LEO/MEO/HEO）· 透明弯管转发器：打开链路预算工作台（独立窗口）', run: openNgso },
     { label: '再生处理（OBP）链路预算', icon: 'cpu', lock: true, hint: '星上再生处理转发器：上行 / 下行 / 星间微波 / 星间激光，链路预算解耦（独立窗口）', run: openRegen },
+    { label: '端到端链路预算（多跳 / 混合转发）', icon: 'chain-hops', lock: true, hint: '任意节点链：多颗透明星 ISL 串联 / 透明与再生混用 / 双跳地面转接，按段结算取最弱段（独立窗口）', run: openE2e },
     { label: '日凌预报（GSO）', icon: 'sun', lock: true, hint: '打开日凌预报（独立窗口）', run: openSunOutage },
     { label: '雨衰计算', icon: 'droplets', lock: true, hint: '打开雨衰计算（独立窗口，通用于各类卫星）', run: openRain },
     { label: '干扰分析（C/I）', icon: 'radio-tower', lock: true, hint: 'C/ASI 邻星 · C/CCI 同频复用 · C/XPI 交叉极化 · NGSO 时变 CDF（独立窗口，只读计算器）', run: openCi },
@@ -230,6 +233,7 @@ const toolButtons = computed(() => [
   { icon: 'calculator', tip: 'GSO 透明转发链路预算', lock: true, run: openLinkBudget },
   { icon: 'ngso', tip: 'NGSO 透明转发链路预算', lock: true, run: openNgso },
   { icon: 'cpu', tip: '再生处理（OBP）链路预算', lock: true, run: openRegen },
+  { icon: 'chain-hops', tip: '端到端链路预算（多跳 / 混合转发）', lock: true, run: openE2e },
   { icon: 'sun', tip: '日凌预报（GSO）', lock: true, run: openSunOutage },
   { icon: 'droplets', tip: '雨衰计算', lock: true, run: openRain },
   { icon: 'radio-tower', tip: '干扰分析（C/I）', lock: true, run: openCi },
@@ -397,19 +401,11 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
     <MiniAboutDialog v-if="miniAboutOpen" @close="miniAboutOpen = false" @bind="miniAboutOpen = false; bindOpen = true" />
     <FileManager v-if="fileOpen" @close="fileOpen = false" />
 
-    <!-- 帮助 → 关于（设备ID 行连点 5 次 = 刷新激活状态的「特定动作」之二） -->
-    <div v-if="aboutOpen" class="about-mask" @click.self="aboutOpen = false">
-      <div class="about">
-        <div class="ab-name">卫星仿真平台</div>
-        <div v-if="appVersion" class="ab-ver mono">版本 {{ appVersion }}</div>
-        <div v-if="activation.deviceId" class="ab-ver mono ab-id" :title="lockCopied ? '已复制' : '点击复制设备ID'" @click="copyDeviceId(); multiTap('about', 5, doRefreshActivation)">
-          设备ID {{ activation.deviceId }}<span v-if="lockCopied" class="ab-copied">已复制</span>
-        </div>
-        <div v-if="activation.ready" class="ab-ver" :class="activation.active ? 'ab-on' : 'ab-off'">{{ actText }}</div>
-        <div class="ab-desc">卫星链路预算 · 星座可视化 · 覆盖分析 · 日凌预报</div>
-        <button class="ab-close" @click="aboutOpen = false">确定</button>
-      </div>
-    </div>
+    <!-- 帮助 → 关于（设备ID 复制钮连点 5 次 = 刷新激活状态的「特定动作」之二） -->
+    <AboutDialog
+      v-if="aboutOpen" :version="appVersion" :act-text="actText"
+      @close="aboutOpen = false" @refresh="doRefreshActivation()" @tap="multiTap('about', 5, doRefreshActivation)"
+    />
 
     <!-- 未激活：功能入口点击统一落到这里（地图拖拽/缩放等常规操作不受限） -->
     <div v-if="lockOpen" class="about-mask" @click.self="lockOpen = false">
@@ -576,15 +572,12 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 }
 .ab-name { font-family: var(--font-serif); font-size: 19px; letter-spacing: .6px; }
 .ab-ver { margin-top: 8px; font-size: 12px; color: var(--text-muted); }
-.ab-desc { margin-top: 6px; font-size: 12px; color: var(--text-faint); }
 .ab-close { margin-top: 18px; padding: 4px 22px; border: 1px solid var(--border-strong); background: var(--bg); color: var(--text); cursor: pointer; border-radius: 2px; }
 .ab-close:hover { border-color: var(--accent); }
 .ab-close:disabled { opacity: .5; cursor: default; }
 .ab-id { cursor: pointer; user-select: text; font-size: 15px; }
 .ab-id:hover { color: var(--text); }
 .ab-copied { margin-left: 8px; color: var(--ok); font-size: 11px; }
-.ab-on { color: var(--ok); }
-.ab-off { color: var(--danger); }
 .lk-btns { display: flex; gap: 10px; justify-content: center; }
 
 /* 状态栏激活状态（左侧纯文字，无背景框） */

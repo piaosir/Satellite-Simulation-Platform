@@ -115,3 +115,12 @@ electron/services/shareConfig.js
 # SatCovPanelHarness 单挂侧栏面板（window.api 走桩），核对聚焦天线/壳层选择/时段扫描的 DOM 行为。
 # 数值正确性归 packages/core/test/shellProj.test.mjs 与 satcovScan.test.mjs。本地开发用，不进仓库
 .satcovharness/
+
+# 「端到端链路工作台」验证台：E2eApp 挂浏览器里单跑（window.api 走桩）+ 出图打印页（print-serve.mjs）。
+.e2eharness/
+
+# 「帮助 → 关于」窗口版式验证台：真组件 + 真全局样式，暗/亮各看一遍。
+.aboutharness/
+
+# 星间链路仿真验证台：模块本身已于 2026-08-12 回退，台子留着备查，不进仓库。
+.islharness/

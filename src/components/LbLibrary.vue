@@ -7,6 +7,7 @@
 // 「复制名称」（行内钮 / 名称旁的钮 / 选中条目按 Ctrl+C）把条目名送进剪贴板，到链路表的配置列 Ctrl+V 即套用。
 import { computed, ref, watch, nextTick } from 'vue'
 import Icon from './Icon.vue'
+import { byLang } from '../shared/i18n/lang.js'   // 空名占位是界面语汇，却画在打了 skip 的名字位上（呈现层翻不到），故在这里按语言出字
 
 const props = defineProps({
   items: { type: Array, required: true },        // [{ id, name, form, nameAuto, ... }]
@@ -108,7 +109,7 @@ function onListKey(e) {
     <div ref="listEl" class="lbl-list" role="listbox" tabindex="0" @keydown="onListKey">
       <div v-for="cfg in items" :key="cfg.id" class="lbl-row" :class="{ on: selected && cfg.id === selected.id }"
            role="option" :aria-selected="selected && cfg.id === selected.id" @click="emit('update:modelValue', cfg.id)">
-        <span class="lbl-nm" :title="cfg.name">{{ cfg.name || '（未命名）' }}</span>
+        <span class="lbl-nm" :title="cfg.name" data-i18n-skip>{{ cfg.name || byLang('（未命名）', '(Unnamed)') }}</span>
         <span v-if="sumOf(cfg)" class="lbl-sum" :title="sumOf(cfg)">{{ sumOf(cfg) }}</span>
         <span class="lbl-row-acts">
           <button class="lbl-ico" :class="{ done: copied === cfg.id }" title="复制名称（到链路表的配置格 Ctrl+V 即套用本条）"

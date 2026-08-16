@@ -5,8 +5,8 @@
 // 密级），② 这一次导出的口径（出哪几种文件、带不带图）。元信息按窗口记在本地，下次打开就在——
 // 同一个项目的报告要连着出好几份，每份都重填一遍编号和单位是不能忍的。
 //
-// 报告语言不在这里选：它是功能区的「语言」，屏幕上的详细预算与导出的文件一起切换
-//（见 memory「详细预算区语言联动」），在这儿再放一个开关就会出现「屏幕是中文、导出是英文」。
+// 报告语言不在这里选：它跟随平台语言（设置▸语言），屏幕上的详细预算与导出的文件一起切换。
+// 在这儿再放一个开关就会出现「屏幕是中文、导出是英文」。
 import { reactive, ref, computed, watch, onBeforeUnmount } from 'vue'
 import Icon from './Icon.vue'
 import { DOC_FIELDS, defaultDocInfo, schemeOf, schemeName, schemeSub, translate } from '../shared/lbReport.js'

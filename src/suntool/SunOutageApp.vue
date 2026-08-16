@@ -198,7 +198,7 @@ const dEnd = (d) => (isLocal.value ? shiftParts(d.date, d.endTimeUTC, staOffsetM
             <input v-model="cityKw" placeholder="名称 / 省份 / 拼音首字母" @focus="cityKw && (cityOpen = true)" />
             <div v-if="cityOpen && cityList.length" class="citydrop">
               <div v-for="c in cityList" :key="c.name" class="cityitem" @click="pickCity(c)">
-                <span>{{ c.name }}</span><b>{{ c.lat.toFixed(2) }}, {{ c.lon.toFixed(2) }}</b>
+                <span data-i18n-skip>{{ c.name }}</span><b>{{ c.lat.toFixed(2) }}, {{ c.lon.toFixed(2) }}</b>
               </div>
             </div>
           </label>

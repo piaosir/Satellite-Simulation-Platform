@@ -105,7 +105,7 @@ function add() {
           </div>
           <div v-if="exp.has(r.altKm)" class="sp-sats">
             <div v-for="s in r.sats.slice(0, SAT_CAP)" :key="s.noradId || s.name" class="sp-sat">
-              <span class="s-nm" :title="s.name">{{ s.name }}</span>
+              <span class="s-nm" :title="s.name" data-i18n-skip>{{ s.name }}</span>
               <span class="s-id">{{ s.noradId || '' }}</span>
               <span class="s-gp">{{ s.groupLabel }}</span>
               <span class="s-alt">{{ s.altKm.toFixed(1) }}</span>

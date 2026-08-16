@@ -799,6 +799,11 @@ function solveIslWorstCase(opts) {
   const atmMarginKm = Number(opts.atmMarginKm) >= 0 ? Number(opts.atmMarginKm) : 100;
   const blockRadiusKm = RE_KM + atmMarginKm;
   const freqGHz = Number(opts.freqGHz) > 0 ? Number(opts.freqGHz) : 23;
+  // 最大工作距离（km，>0 才生效）：把「几何上互视」收窄成「工程上会用这条链路」。
+  // 不设它时最差工况必然落在擦着地球临边的那一瞬（掠地高度≈大气余量）——那是几何可达的极限，
+  // 真系统在到那之前早就切换链路了，拿它做预算既过保守、可用度也被那段没人用的窗口撑着。
+  // 设了它之后：最差 = 满足「互视 且 距离 ≤ 上限」的样本里距离最大者；可用度/访问窗口按同一条件重算。
+  const maxRangeKm = Number(opts.maxRangeKm) > 0 ? Number(opts.maxRangeKm) : 0;
   const representative = A.representative || B.representative;
   const method = representative ? '闭式球面·示意' : (A.method + '↔' + B.method);
 
@@ -808,22 +813,26 @@ function solveIslWorstCase(opts) {
   const perMin = Math.min(A.elements ? A.elements.periodMin : 1440, B.elements ? B.elements.periodMin : 1440);
   const stepSec = Math.max(2, Math.min((perMin * 60) / 200, 30));
 
+  // visible = 「可用」：LOS 清过遮挡球，且（给了上限时）距离不超过最大工作距离。
+  // geoVisible 保留纯几何互视，供「超出工作距离」与「压根不互视」两种不可行如实分辨。
   const sampleAt = (ts) => {
     const d = new Date(ts * 1000);
     const pA = _islPosEcefAt(A.node, d), pB = _islPosEcefAt(B.node, d);
     if (!pA || !pB) return null;
     const los = _islLos(pA, pB, blockRadiusKm);
-    return { pA, pB, ...los };
+    const geoVisible = los.visible;
+    return { pA, pB, ...los, geoVisible, visible: geoVisible && (!maxRangeKm || los.rangeKm <= maxRangeKm) };
   };
 
   // 扫描：互视样本取【最大 range】为最差 FSL；同时 track 全窗口峰值径向速率（相邻可见样本有限差分）
   //   → 稳定可复现的最大多普勒。峰值径向速率是轨道周期性复现量，与搜索起点 t0 无关，多次计算复现。
-  let worst = null, minR = Infinity, nVis = 0, nTot = 0;
+  let worst = null, minR = Infinity, nVis = 0, nTot = 0, nGeoVis = 0, minGeoRange = Infinity;
   let maxAbsRR = 0, rrAtPeak = 0, prevVis = null;
   for (let ts = startS; ts <= endS + 1e-6; ts += stepSec) {
     const s = sampleAt(ts);
     if (!s) { prevVis = null; continue; }
     nTot++;
+    if (s.geoVisible) { nGeoVis++; if (s.rangeKm < minGeoRange) minGeoRange = s.rangeKm; }
     if (!s.visible) { prevVis = null; continue; }
     nVis++;
     if (s.rangeKm < minR) minR = s.rangeKm;
@@ -838,11 +847,14 @@ function solveIslWorstCase(opts) {
   const visibleFrac = nTot > 0 ? nVis / nTot : 0;
 
   if (!worst) {
+    // 两种不可行分开报：压根不互视 vs 互视但始终超出最大工作距离（后者告诉用户最近能到多少）
+    const reason = (maxRangeKm && nGeoVis > 0)
+      ? `搜索时窗 ${horizonHours}h 内两星虽互视，但星间距离始终超过最大工作距离 ${maxRangeKm}km（窗口内最近 ${minGeoRange.toFixed(0)}km）`
+      : `搜索时窗 ${horizonHours}h 内两星从不互视（LOS 始终被地球遮挡；可增大搜索时窗、调整轨道或减小大气余量 ${atmMarginKm}km）`;
     return {
-      feasible: false, method, representative,
-      reason: `搜索时窗 ${horizonHours}h 内两星从不互视（LOS 始终被地球遮挡；可增大搜索时窗、调整轨道或减小大气余量 ${atmMarginKm}km）`,
+      feasible: false, method, representative, reason,
       visibility: { visibleFrac: 0, visibleMinutes: 0, windowMinutes },
-      search: { t0ISO: t0.toISOString(), horizonHours, stepSec, atmMarginKm, blockRadiusKm, freqGHz }
+      search: { t0ISO: t0.toISOString(), horizonHours, stepSec, atmMarginKm, blockRadiusKm, freqGHz, maxRangeKm }
     };
   }
   if (worst.s.rangeKm < 1) {
@@ -888,8 +900,14 @@ function solveIslWorstCase(opts) {
     worstISO: worstDate.toISOString()
   };
 
-  // 互视访问窗口：f(t) = 最近点离地心 − R_block（>0 可见）
-  const fVis = (ts) => { const s = sampleAt(ts); return s ? (s.minCenterKm - blockRadiusKm) : NaN; };
+  // 可用窗口：f(t) = min(最近点离地心 − R_block, 最大工作距离 − 星间距离)，>0 即可用。
+  // 两个条件取小，任一不满足就变号——窗口边界因此既可能是「刚出遮挡」也可能是「刚进工作距离」。
+  const fVis = (ts) => {
+    const s = sampleAt(ts);
+    if (!s) return NaN;
+    const clear = s.minCenterKm - blockRadiusKm;
+    return maxRangeKm ? Math.min(clear, maxRangeKm - s.rangeKm) : clear;
+  };
   const raw = findWindows(fVis, startS, endS, { coarseStep: stepSec, tol: 1, findPeak: false });
   const windows = raw.map((w) => {
     let wMax = 0;
@@ -907,7 +925,74 @@ function solveIslWorstCase(opts) {
     worst: worstMetrics,
     visibility: { visibleFrac, visibleMinutes: visibleFrac * windowMinutes, windowMinutes, totalWindows: windows.length, totalVisibleMin, windows, persistent: windows.length === 1 && windows[0].clipped && visibleFrac > 0.999 },
     elements: { tx: A.elements, rx: B.elements },
-    search: { t0ISO: t0.toISOString(), horizonHours, stepSec, atmMarginKm, blockRadiusKm, freqGHz, t0Source: opts.t0ISO ? 'explicit' : 'epoch', representative }
+    search: { t0ISO: t0.toISOString(), horizonHours, stepSec, atmMarginKm, blockRadiusKm, freqGHz, maxRangeKm, t0Source: opts.t0ISO ? 'explicit' : 'epoch', representative }
+  };
+}
+
+// ============================================================================
+// 10b. 星间距离时间序列：两星在一段时窗内的星间距离曲线（供「星间链路距离」工具的时间轴）
+// ============================================================================
+// 与 solveIslWorstCase 同一套几何（双 SGP4 → ECEF → LOS 段），差别只在出参形态：那个函数把整段
+// 时窗折成一个最差工况标量，这个函数把每一拍原样交出来，让用户自己在时间轴上挑一个时刻的距离。
+// 手动几何下星间距离是用户给的一个数，这条曲线就是他挑那个数的依据（挑最大＝最差工况、挑某一刻＝
+// 那一刻的真实几何），软件不替他决定挑哪个。
+// 样本数按 maxSamples 封顶（IPC 一次传完，曲线画得动）：步长取 max(轨道周期/200 与 2s 的下界, 时窗/上限)。
+// opts = { orbitA(发射), orbitB(接收), t0ISO?, horizonHours?, atmMarginKm?, maxSamples? }
+function sampleIslRangeSeries(opts) {
+  opts = opts || {};
+  const A = _islNode(opts.orbitA), B = _islNode(opts.orbitB);
+  if (A.reason) return { ok: false, reason: '卫星一：' + A.reason };
+  if (B.reason) return { ok: false, reason: '卫星二：' + B.reason };
+  const horizonHours = Number(opts.horizonHours) > 0 ? Number(opts.horizonHours) : 6;
+  const atmMarginKm = Number(opts.atmMarginKm) >= 0 ? Number(opts.atmMarginKm) : 100;
+  const blockRadiusKm = RE_KM + atmMarginKm;
+  const maxSamples = Math.max(60, Math.min(Number(opts.maxSamples) > 0 ? Number(opts.maxSamples) : 720, 4000));
+  const representative = A.representative || B.representative;
+  const method = representative ? '闭式球面·示意' : (A.method + '↔' + B.method);
+
+  const epochOf = (nd) => (nd.node.kind === 'sat' && nd.node.satrec) ? new Date((nd.node.satrec.jdsatepoch + (nd.node.satrec.jdsatepochF || 0) - 2440587.5) * 86400000) : null;
+  const t0 = opts.t0ISO ? new Date(opts.t0ISO) : (epochOf(A) || epochOf(B) || new Date());
+  if (!isFinite(t0.getTime())) return { ok: false, reason: '起始时刻无效' };
+  const startS = t0.getTime() / 1000, endS = startS + horizonHours * 3600;
+  const perMin = Math.min(A.elements ? A.elements.periodMin : 1440, B.elements ? B.elements.periodMin : 1440);
+  const baseStep = Math.max(2, Math.min((perMin * 60) / 200, 30));
+  const stepSec = Math.max(baseStep, (endS - startS) / maxSamples);
+
+  const samples = [];
+  let maxR = -Infinity, minR = Infinity, maxVisR = -Infinity, minVisR = Infinity, nVis = 0;
+  for (let ts = startS; ts <= endS + 1e-6; ts += stepSec) {
+    const d = new Date(ts * 1000);
+    const pA = _islPosEcefAt(A.node, d), pB = _islPosEcefAt(B.node, d);
+    if (!pA || !pB) continue;
+    const los = _islLos(pA, pB, blockRadiusKm);
+    samples.push({
+      tMs: Math.round(ts * 1000),
+      rangeKm: los.rangeKm,
+      grazAltKm: los.minCenterKm - RE_KM,
+      visible: los.visible
+    });
+    if (los.rangeKm > maxR) maxR = los.rangeKm;
+    if (los.rangeKm < minR) minR = los.rangeKm;
+    if (los.visible) {
+      nVis++;
+      if (los.rangeKm > maxVisR) maxVisR = los.rangeKm;
+      if (los.rangeKm < minVisR) minVisR = los.rangeKm;
+    }
+  }
+  if (!samples.length) return { ok: false, reason: '轨道传播失败：时窗内取不到任何样本' };
+
+  return {
+    ok: true, method, representative,
+    search: { t0ISO: t0.toISOString(), endISO: new Date(endS * 1000).toISOString(), horizonHours, stepSec, atmMarginKm, blockRadiusKm },
+    samples,
+    stats: {
+      count: samples.length, visibleCount: nVis, visibleFrac: samples.length ? nVis / samples.length : 0,
+      maxRangeKm: maxR === -Infinity ? null : maxR,
+      minRangeKm: minR === Infinity ? null : minR,
+      maxVisibleRangeKm: maxVisR === -Infinity ? null : maxVisR,
+      minVisibleRangeKm: minVisR === Infinity ? null : minVisR
+    },
+    elements: { a: A.elements, b: B.elements }
   };
 }
 
@@ -916,6 +1001,7 @@ module.exports = {
   buildSatrec,
   solveAccessWindows,
   solveIslWorstCase,
+  sampleIslRangeSeries,
   propagatorLabel,
   lookAngles,
   subPoint,

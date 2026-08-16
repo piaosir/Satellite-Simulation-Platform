@@ -402,13 +402,17 @@ function segTable(model, seg) {
     : cols >= 2 ? [L.uplink || '上行', L.downlink || '下行'] : [L.value]
   const heads = (Array.isArray(seg.heads) && seg.heads.length === cols) ? seg.heads : vh
   const head = [L.param, ...heads, L.unit]
-  const strongKind = ['base', 'sub', 'chk', 'kpi', 'margin']
+  // 端到端级联的两级分组行（head=段 / shead=跳·透明转发·收发站）与小计/余量同走 keyRows：
+  // bookTable 的 keyRows 就是「换黑体不加粗」，正是三线表里唯一允许的分组手法（不许底纹）。
+  // 段标题另上一条 0.75pt 分隔线（sepRows），跳标题不画——十来跳各一条会把表切成横带。
+  // ★ 不认识的 kind 一律按普通行走，行不会丢。
+  const strongKind = ['base', 'sub', 'chk', 'kpi', 'margin', 'head', 'shead']
   const rows = seg.rows.map((r) => {
     const vals = cols >= 3 ? [r.up, r.down, r.total] : cols >= 2 ? [r.up, r.down] : [r.up]
     return [(r.sign ? r.sign + ' ' : '') + (r.label || ''), ...vals.map((v) => (v == null ? '' : String(v))), r.unit || '']
   })
   const keyRows = seg.rows.map((r) => strongKind.indexOf(r.kind) > -1)
-  const sepRows = seg.rows.map((r) => ['sub', 'margin'].indexOf(r.kind) > -1)
+  const sepRows = seg.rows.map((r, i) => (r.kind === 'head' ? i > 0 : ['sub', 'margin'].indexOf(r.kind) > -1))
   // 列宽：参数列占四成（最长的标签是「上行大气衰减 (P.676)」一类，约 14 字），
   // 数值列均分，单位列留够 dBW/m² 这种量纲。总和钉在 100，别让 Word 自己去凑。
   const n = heads.length

@@ -200,6 +200,8 @@ const RESULT_LABEL_LIST = [
     ['islHopsResult', 'ISL 跳数', ''],
     ['islPerHopCTResult', 'ISL 单跳 C/T', 'dBW/K'],
     ['islPerHopCNResult', 'ISL 单跳 C/N', 'dB'],
+    ['islPerHopThermalCNResult', 'ISL 单跳 C/N（热噪声）', 'dB'],
+    ['islCIResult', 'ISL 星间 C/I', 'dB'],
     ['islTotalCTResult', 'ISL 多跳等效 C/T', 'dBW/K'],
     ['islTotalCNResult', 'ISL 多跳等效 C/N', 'dB'],
     ['islCascadeCNResult', 'ISL 级联 C/N', 'dB'],

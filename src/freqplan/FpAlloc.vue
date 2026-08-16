@@ -724,7 +724,8 @@ function nudge(g, sign, big) {
           </span>
           <span class="gn" v-if="g.count">{{ g.count }}</span>
           <span class="gsum" v-if="g.count">
-            <b :class="utilCls(g.bwUtil)">{{ fu(g.occSum) }}</b><i v-if="g.freeMHz != null">剩 {{ fu(g.freeMHz) }}</i>
+            <!-- 「剩」单独成节点：与数字挤在同一个文本节点里的话，界面语言切英文时整串查不到表 -->
+            <b :class="utilCls(g.bwUtil)">{{ fu(g.occSum) }}</b><i v-if="g.freeMHz != null"><span>剩</span> {{ fu(g.freeMHz) }}</i>
           </span>
           <button v-if="!g.orphan" class="gadd" @click.stop="addCarrier(g)" title="在该转发器上添加载波">
             <Icon name="plus" :size="11" /> 载波
@@ -763,7 +764,7 @@ function nudge(g, sign, big) {
                   :title="barTitle(b)" @pointerdown.stop="beginDrag($event, g, 'move', b, '')"
                   @contextmenu.prevent.stop="openMenu($event, g, b.r.c.id)">
                   <!-- 名字与带宽上下两行摆在块里：从前带宽是块外一条绝对定位的标注，正压在名字上 -->
-                  <span class="bn">{{ b.r.c.name }}</span>
+                  <span class="bn" data-i18n-skip>{{ b.r.c.name }}</span>
                   <span class="bbw" v-if="st(g).px(b.b - b.a) > 42">{{ fu(b.r.occ) }}</span>
                   <i class="h l" @pointerdown.stop="beginDrag($event, g, 'edge', b, 'f1')"></i>
                   <i class="h r" @pointerdown.stop="beginDrag($event, g, 'edge', b, 'f2')"></i>
@@ -841,7 +842,7 @@ function nudge(g, sign, big) {
                       :disabled="!g.beams || !g.beams.length" :title="beamCellTitle(g, r)"
                       @change="patch(r.c.id, { beamId: $event.target.value })">
                       <option v-if="r.beamPinned" value="">自动</option>
-                      <option v-for="b in g.beams" :key="b.id" :value="b.id">{{ b.name }}</option>
+                      <option v-for="b in g.beams" :key="b.id" :value="b.id" data-i18n-skip>{{ b.name }}</option>
                     </select>
                   </span>
                 </td>
@@ -889,7 +890,7 @@ function nudge(g, sign, big) {
         <template v-if="menuBeams.length">
           <div class="msep"></div>
           <button v-for="b in menuBeams" :key="b.id" class="bm" :disabled="!sel.length" @click="runMenu('beam', b.id)">
-            <span class="cdot" :style="{ background: b.color }"></span><span>{{ b.name }}</span>
+            <span class="cdot" :style="{ background: b.color }"></span><span data-i18n-skip>{{ b.name }}</span>
           </button>
           <button class="bm" :disabled="!sel.length" @click="runMenu('beam', '')">
             <span class="cdot none"></span><span>自动</span>

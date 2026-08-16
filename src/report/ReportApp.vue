@@ -25,6 +25,9 @@ const summary = computed(() => (model.value && model.value.summary) || { metrics
 const method = computed(() => (model.value && model.value.method) || { basis: [], refGroups: [], constants: [] })
 const lang = computed(() => (model.value && model.value.lang) || 'zh')
 const en = computed(() => lang.value === 'en')
+// 端到端体制的详细预算是单列级联，排版另有一套（.e2-doc，见 styles/lbworkbench.css）。
+// 打印页与工作台屏幕共用那一套：同一个组件、同一份规则，PDF 里的表与屏幕上核对的是同一张。
+const isE2e = computed(() => !!(model.value && model.value.scheme && model.value.scheme.orbitType === 'E2E'))
 
 // 逐参数对照是链路做列的宽表：按 8 条链路一组切成续表，用「表 n-i（续）」的题注串起来。
 const CMP_CHUNK = 8
@@ -88,7 +91,9 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div v-if="model" class="rp">
+  <!-- data-i18n-skip：本窗口是交付文档（printToPDF 抓 DOM），整篇语汇由生成报告时的 model 决定，
+       不再经界面层二次改写——报表语言已跟随平台语言，两者本就一致，此处只是不让 DOM 翻译插手排版 -->
+  <div v-if="model" class="rp" data-i18n-skip>
     <!-- ——— 封面（A4 纵向，结构照《技术文档标准模板》第一节）———
          （logo）→ 密级 / 文档编号 → 留白 → 报告名（唯一的一行主标题）→ 留白 → 编制单位 / 成文日期。
          ★ 不要副标题：体制名与报告名里的「链路预算」重复，用户 2026-08-02 点名要去掉。
@@ -195,7 +200,7 @@ onMounted(async () => {
         </tr></thead>
         <tbody>
           <tr v-for="(c, ci) in method.constants" :key="ci">
-            <td class="lbl">{{ c.name }}</td><td class="id">{{ c.symbol }}</td>
+            <td class="lbl" data-i18n-skip>{{ c.name }}</td><td class="id">{{ c.symbol }}</td>
             <td class="num">{{ c.value }}</td><td class="unit">{{ c.unit }}</td><td class="lbl">{{ c.src }}</td>
           </tr>
         </tbody>
@@ -233,7 +238,7 @@ onMounted(async () => {
         <h3 class="rp-h3 rp-results">{{ L.results }}</h3>
       </template>
 
-      <div v-if="!l.error" class="lbx-doc rp-doc">
+      <div v-if="!l.error" class="lbx-doc rp-doc" :class="{ 'e2-doc': isE2e }">
         <div class="lbx-doc-main"><WaterfallTable :segments="l.segments || []" pick="cascade" :lang="lang" /></div>
         <div v-if="(l.figures || []).length" class="lbx-doc-side">
           <figure v-for="(f, fi) in l.figures" :key="fi" class="rp-fig">

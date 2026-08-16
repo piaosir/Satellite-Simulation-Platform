@@ -141,7 +141,7 @@ function siteTitle(s) {
             </thead>
             <tbody>
               <tr v-for="s in sites" :key="s.idx" :class="siteCls(s)" :title="siteTitle(s)">
-                <td class="l">{{ s.name }}</td>
+                <td class="l" data-i18n-skip>{{ s.name }}</td>
                 <td v-if="!byAvail">{{ fx(s.attenBudgetDb, 2) }}</td>
                 <td>{{ s.solve && s.solve.state !== 'err' ? s.solve.availability.toFixed(5) : '—' }}</td>
                 <td>{{ s.solve && s.solve.state !== 'err' ? s.solve.downtimeYear.toFixed(3) : '—' }}</td>

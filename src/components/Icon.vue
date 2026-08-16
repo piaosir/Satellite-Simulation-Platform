@@ -70,6 +70,10 @@ const ICONS = {
   'chart-line': '<path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="m19 9-5 5-4-4-3 3"/>',
   // 芯片 CPU：再生式链路预算入口用；再生式 = 星上解调重调处理，用芯片寓意与 GEO/NGSO 的弯管转发区分
   cpu: '<rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9" rx="1"/><path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/>',
+  // 「端到端链路预算」专用（非 Lucide，自绘）：站→星→站 的折线跳段 + 三个节点。
+  // 与 calculator（GSO）/ ngso（框中 N）/ cpu（再生式）并排时靠「折线拓扑」一眼区分——
+  // 那三枚讲的是体制，这一枚讲的是链路形状，正是本窗口的主命题。
+  'chain-hops': '<path d="M4.7 15.1 10.5 7.6"/><path d="M13.5 7.6l5.8 7.5"/><circle cx="3" cy="17" r="2"/><circle cx="12" cy="6" r="2"/><circle cx="21" cy="17" r="2"/>',
   'external-link': '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
   list: '<path d="M3 12h.01"/><path d="M3 18h.01"/><path d="M3 6h.01"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M8 6h13"/>',
   table: '<path d="M12 3v18"/><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M3 15h18"/>',

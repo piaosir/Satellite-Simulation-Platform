@@ -155,7 +155,7 @@ function onRowClick(row) {
         @input="emit('rename-input', $event.target.value)"
         @keyup.enter="emit('rename-commit')" @keyup.esc="emit('rename-cancel')" @blur="emit('rename-commit')"
       />
-      <span v-else class="lb-tree-nm">{{ row.item.name }}</span>
+      <span v-else class="lb-tree-nm" data-i18n-skip>{{ row.item.name }}</span>
 
       <span v-if="row.isFolder && row.childCount" class="lb-tree-count">{{ row.childCount }}</span>
       <span v-if="editingId !== row.item.id" class="lb-tree-sp"></span>

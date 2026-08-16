@@ -234,6 +234,52 @@ function confirmCloseRegen() {
   if (_regenWin && !_regenWin.isDestroyed()) _regenWin.close()
 }
 
+// 端到端链路预算工作台（多跳 / 混合转发）：独立 BrowserWindow，单例复用（与前三窗同模式）。
+let _e2eWin = null
+let _e2eAllowClose = false
+function createE2eWindow() {
+  if (_e2eWin && !_e2eWin.isDestroyed()) {
+    if (_e2eWin.isMinimized()) _e2eWin.restore()
+    _e2eWin.focus()
+    return _e2eWin
+  }
+  const win = new BrowserWindow({
+    width: 1520,
+    height: 940,
+    minWidth: 1180,
+    minHeight: 740,
+    title: '端到端链路预算（多跳 / 混合转发）',
+    backgroundColor: '#ffffff',
+    autoHideMenuBar: true,
+    webPreferences: {
+      preload: join(__dirname, '../preload/preload.js'),
+      contextIsolation: true,
+      sandbox: false,
+      // 打包版彻底关闭 DevTools（同前三窗，见 createWindow 注释）
+      devTools: !app.isPackaged
+    }
+  })
+  if (process.env['ELECTRON_RENDERER_URL']) {
+    win.loadURL(process.env['ELECTRON_RENDERER_URL'] + '/e2e.html')
+  } else {
+    win.loadFile(join(__dirname, '../renderer/e2e.html'))
+  }
+  bindDevTools(win)
+  _e2eAllowClose = false
+  win.on('close', (e) => {
+    if (_e2eAllowClose) return
+    e.preventDefault()
+    win.webContents.send('e2e:closeRequested')
+  })
+  win.on('closed', () => { _e2eWin = null })
+  _e2eWin = win
+  return win
+}
+function confirmCloseE2e() {
+  _e2eAllowClose = true
+  if (_e2eWin && !_e2eWin.isDestroyed()) _e2eWin.close()
+}
+
 // 日凌预报：独立 BrowserWindow，单例复用（与链路预算工作台同模式）。
 let _soWin = null
 function createSunOutageWindow() {
@@ -455,7 +501,7 @@ app.whenReady().then(() => {
   // 激活与设备管理：终端心跳上报 + 激活书拉取验签（对端为独立的「卫星仿真平台管理」软件）
   const activation = require(join(root, 'electron/services/activation'))(share, storage)
   const { register } = require(join(root, 'electron/ipc/register'))
-  register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget: createLinkBudgetWindow, openSunOutage: createSunOutageWindow, grd, confirmCloseLinkBudget, openNgso: createNgsoWindow, confirmCloseNgso, openRegen: createRegenWindow, confirmCloseRegen, openRain: createRainWindow, confirmCloseRain, openCi: createCiWindow, openPfd: createPfdWindow, freqPlan, openFreqPlan: createFreqPlanWindow, notifyFreqPlan, activation })
+  register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget: createLinkBudgetWindow, openSunOutage: createSunOutageWindow, grd, confirmCloseLinkBudget, openNgso: createNgsoWindow, confirmCloseNgso, openRegen: createRegenWindow, confirmCloseRegen, openE2e: createE2eWindow, confirmCloseE2e, openRain: createRainWindow, confirmCloseRain, openCi: createCiWindow, openPfd: createPfdWindow, freqPlan, openFreqPlan: createFreqPlanWindow, notifyFreqPlan, activation })
   // 定时心跳；激活状态变化（管理端激活/撤销被拉到）广播到所有窗口，各窗口就地上锁/解锁
   activation.start((st) => {
     for (const w of BrowserWindow.getAllWindows()) {
@@ -499,6 +545,7 @@ app.on('before-quit', () => {
   _lbAllowClose = true
   _ngsoAllowClose = true
   _regenAllowClose = true
+  _e2eAllowClose = true
   _rainAllowClose = true
 })
 

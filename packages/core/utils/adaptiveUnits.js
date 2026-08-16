@@ -4,6 +4,10 @@
 // 小站接收/发射电平场景）时改记 dBm。只改「显示」层（瀑布行 / 结果列 / 报告汇总），
 // 引擎结果字段与入参口径一律不动。
 //
+// ★ 功率档位只有 mW 与 W 两档（不设 µW / kW / MW）：<1 W 一律记 mW，≥1 W 一律记 W，
+//   低于 mW 也不再下探（0.014 mW 就写 0.014 mW）。与 dBW→dBm 的门限（<0 dBW 即 <1 W）
+//   刻意取同一条界，使「500 mW / −3 dBm」这类同一功率的两种写法始终同档，不会一个换一个不换。
+//
 // 渲染端镜像：src/shared/adaptUnits.js（Vite ESM 无法直接吃本 CJS 文件；两边档位表与
 // 规则须保持一致，改这里记得同步那边）。
 
@@ -13,7 +17,7 @@ const FAMILIES = {
   bps: [['bps', 1], ['kbps', 1e3], ['Mbps', 1e6], ['Gbps', 1e9]],
   sps: [['sps', 1], ['ksps', 1e3], ['Msps', 1e6], ['Gsps', 1e9]],
   cps: [['cps', 1], ['kcps', 1e3], ['Mcps', 1e6], ['Gcps', 1e9]],
-  W: [['µW', 1e-6], ['mW', 1e-3], ['W', 1], ['kW', 1e3], ['MW', 1e6]]
+  W: [['mW', 1e-3], ['W', 1]]
 };
 const UNIT_INDEX = {};
 for (const fam of Object.keys(FAMILIES)) {
@@ -21,6 +25,7 @@ for (const fam of Object.keys(FAMILIES)) {
 }
 
 // 按最大绝对值挑档位（尾数落在 [1, 1000)；低于最小档用最小档、高于最大档用最大档）。
+// 功率族只有两档，此规则自然退化为「<1 W 记 mW、≥1 W 记 W」，不必单开分支。
 // 返回 { unit, factor }（新值 = 旧值 × factor）；单位不认识 / 无须换档返回 null。
 function pickUnit(maxAbs, unit) {
   const info = UNIT_INDEX[unit];

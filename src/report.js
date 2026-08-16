@@ -7,5 +7,6 @@ import ReportApp from './report/ReportApp.vue'
 import './styles/global.css'
 import './styles/lbworkbench.css'
 import './styles/lbreport.css'
+import './shared/i18n/runtime'
 
 createApp(ReportApp).mount('#app')

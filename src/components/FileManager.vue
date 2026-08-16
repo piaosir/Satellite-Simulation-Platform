@@ -602,7 +602,7 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
                   </span>
                 </template>
                 <template v-else>
-                  <span class="cnm rn" title="点击改名" @click="startRenameCust('k' + c.id, c.name)">{{ c.name }}</span>
+                  <span class="cnm rn" title="点击改名" @click="startRenameCust('k' + c.id, c.name)" data-i18n-skip>{{ c.name }}</span>
                   <span class="cmeta">{{ c.incl.toFixed(1) }}° · {{ c.count }} 颗</span>
                   <span class="cops">
                     <button class="mini ghost" @click="exportConstellation(c)">导出</button>
@@ -622,7 +622,7 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
                   </span>
                 </template>
                 <template v-else>
-                  <span class="cnm rn" title="点击改名" @click="startRenameCust('g' + g.id, g.name)">{{ g.name }}</span>
+                  <span class="cnm rn" title="点击改名" @click="startRenameCust('g' + g.id, g.name)" data-i18n-skip>{{ g.name }}</span>
                   <span class="cmeta">{{ fmtGroupMeta(g) }}</span>
                   <span class="cops">
                     <button class="mini ghost" @click="exportGroup(g)">导出</button>
@@ -679,7 +679,7 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
                       </span>
                     </template>
                     <template v-else>
-                      <span class="tname rn" title="点击重命名" @click="startRenameGrdAnt(sat, a)">{{ a.name }}</span>
+                      <span class="tname rn" title="点击重命名" @click="startRenameGrdAnt(sat, a)" data-i18n-skip>{{ a.name }}</span>
                       <span class="tmeta">{{ a.beams }} 波束 · {{ a.imported ? '导入' : '预置' }}<template v-if="a.peakDb != null"> · 峰值 {{ Number(a.peakDb).toFixed(1) }} dB</template></span>
                       <span class="trops">
                         <button class="mini ghost" @click="startRenameGrdAnt(sat, a)">改名</button>
@@ -721,7 +721,7 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
                     </span>
                   </template>
                   <template v-else>
-                    <span class="tname rn" title="点击重命名" @click="startRenameFp(e)">{{ e.name }}</span>
+                    <span class="tname rn" title="点击重命名" @click="startRenameFp(e)" data-i18n-skip>{{ e.name }}</span>
                     <span class="tmeta">{{ fmtFpMeta(e) }}</span>
                     <span class="trops">
                       <button class="mini" @click="openFreqPlanWin(e.id)">打开</button>
@@ -757,7 +757,7 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
               <div v-for="sat in allSats" :key="sat.key" class="tnode">
                 <div class="trow sat clk" @click="toggleSat(sat.key)">
                   <span class="tw"><Icon :name="gxtExpanded[sat.key] ? 'chevron-down' : 'chevron-right'" :size="12" /></span>
-                  <span class="tname">{{ sat.name }}</span>
+                  <span class="tname" data-i18n-skip>{{ sat.name }}</span>
                   <span class="tcount">{{ (sat.lon != null ? sat.lon + '°E · ' : '') }}{{ sat.beams.length }} 波束</span>
                   <span class="trops" @click.stop>
                     <button class="mini" @click="openAddBeam(sat)"><Icon name="plus" :size="12" /> 波束</button>
@@ -773,7 +773,7 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
                     <button class="mini ghost" @click="addBeamFor = ''">取消</button>
                   </div>
                   <div v-for="beam in sat.beams" :key="beam.key" class="trow ant">
-                    <span class="tname">{{ beam.name }}</span>
+                    <span class="tname" data-i18n-skip>{{ beam.name }}</span>
                     <span class="tmeta">
                       <template v-if="beam.source === 'preset'">{{ beam.type }}<template v-if="beam.band"> · {{ beam.band }}</template> · {{ beam.meta }}</template>
                       <template v-else-if="beam.file">{{ beam.type }}<template v-if="beam.band"> · {{ beam.band }}</template> · {{ beam.contours }} 等值线<template v-if="beam.sourceFormat === 'kml'"> · KML</template> · {{ fmtTime(beam.importedAt) }}</template>

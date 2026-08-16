@@ -1,8 +1,9 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { quality, effective, setTier, setField, setMapLevel, currentMapLevelIndex, TIERS, FIELD_OPTS, MAP_LEVELS } from '../stores/displayQuality'
 import { viewPrefs } from '../stores/viewPrefs'
 import { theme, setTheme } from '../stores/theme'
+import { getLang, setLang } from '../shared/i18n/runtime'
 import Icon from './Icon.vue'
 
 // 外观：跟随系统 / 浅色 / 深色
@@ -11,6 +12,14 @@ const THEME_OPTS = [
   { key: 'light', label: '浅色', icon: 'sun' },
   { key: 'dark', label: '深色', icon: 'moon' }
 ]
+
+// 语言：界面语言，跨窗口即时生效；选项名保持各自语言的本名，不随界面翻译
+const LANG_OPTS = [
+  { key: 'zh', label: '中文' },
+  { key: 'en', label: 'English' }
+]
+const langCur = ref(getLang())
+function pickLang(k) { setLang(k); langCur.value = k }
 
 const emit = defineEmits(['close'])
 
@@ -47,6 +56,14 @@ const speedPct = computed({
             <button v-for="t in THEME_OPTS" :key="t.key" class="tier ttheme" :class="{ on: theme.mode === t.key }" @click="setTheme(t.key)">
               <Icon :name="t.icon" :size="13" />{{ t.label }}
             </button>
+          </div>
+        </section>
+
+        <!-- 语言 -->
+        <section class="sec">
+          <div class="shd">语言</div>
+          <div class="tiers" data-i18n-skip>
+            <button v-for="l in LANG_OPTS" :key="l.key" class="tier" :class="{ on: langCur === l.key }" @click="pickLang(l.key)">{{ l.label }}</button>
           </div>
         </section>
 

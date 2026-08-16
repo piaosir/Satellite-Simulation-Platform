@@ -6,6 +6,7 @@ import './styles/global.css'
 // 结果格着色 st-bad / 占比数据条）。本页不用 .lbx-*、.lbr-* 布局类，只吃这几项表格口径。
 import './styles/lbworkbench.css'
 import './stores/theme'
+import './shared/i18n/runtime'
 // 数据区字号与三个链路预算窗口共享（localStorage + storage 事件跨窗同步）
 import { initLbFontSize } from './shared/lbFont.js'
 

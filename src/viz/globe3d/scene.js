@@ -1046,31 +1046,51 @@ export function createGlobeScene(container, quality = {}) {
   }
   function setShellFieldAlpha(a) { for (const e of shellLayers.values()) if (e.fill) e.fill.mat.opacity = a }
 
-  // 壳层参照网（经纬 30° 稀疏球面格网）：等值线悬在空中没有「面」的落点，画一层极淡的格网当参照。
-  // 与场数据分开成组：改指向/电平时只重建场，参照网不动。list=[{R, color, alpha}]。
+  // 壳层参照网（稀疏球面经纬格网）：等值线悬在空中没有「面」的落点，画一层极淡的格网当参照。
+  // 与场数据分开成组：改指向/电平时只重建场，参照网不动。
+  // list=[{R, color}]（颜色随壳层，兼列表身份色）；style={ step, latMax, width, alpha, dash } 全局一份。
+  //
+  // 走粗线基建（LineSegments2 + LineMaterial）而不是 LineBasicMaterial：后者的 linewidth 在 WebGL 下
+  // 恒等于 1 设备像素，线宽根本调不动。代价是材质要进 lineMats（resize 时统一刷 resolution），
+  // 于是 clearShellGuides 必须显式 lineMats.delete —— 漏掉就是集合泄漏 + resize 后线宽失真。
+  const GUIDE_SAMP = 5                          // 折线采样步（°）：与格网间隔无关，只管球面弧够圆滑
+  const GUIDE_DASH = 0.02, GUIDE_GAP = 0.012    // 虚线尺寸：场景世界单位（球半径 1 = 6371 km）
   let shellGuideGroup = null
   function clearShellGuides() {
     if (!shellGuideGroup) return
-    shellGuideGroup.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose() })
+    shellGuideGroup.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) { lineMats.delete(o.material); o.material.dispose() } })
     scene.remove(shellGuideGroup); shellGuideGroup = null
   }
-  function setShellGuides(list) {
+  function setShellGuides(list, style) {
     clearShellGuides()
     if (!list || !list.length) return
+    const st = style || {}
+    const step = Number(st.step) > 0 ? Number(st.step) : 30
+    const latMax = Number(st.latMax) > 0 ? Math.min(Number(st.latMax), 89) : 60
+    const width = Number(st.width) > 0 ? Number(st.width) : 0.8
+    const alpha = st.alpha != null && Number.isFinite(Number(st.alpha)) ? Number(st.alpha) : 0.14   // 别用 Number(null)=0：会把整层网调成全透明
+    const nLon = Math.max(1, Math.round(360 / step))
+    const nLat = Math.floor(latMax / step)      // 纬线 = 间隔的整倍数 ∩ ±latMax（0° 赤道恒在内）
     const g = new THREE.Group()
     for (const sh of list) {
       const la = shellAlt(sh.R), pos = []
       const push = (lat, lon) => { const v = llaToVec(lat, lon, la); pos.push(v.x, v.y, v.z) }
-      for (let lon = -180; lon < 180; lon += 30) {                       // 经线
-        for (let lat = -90; lat < 90; lat += 5) { push(lat, lon); push(lat + 5, lon) }
+      for (let k = 0; k < nLon; k++) {                                   // 经线：全程 −90…90
+        const lon = -180 + k * step
+        for (let lat = -90; lat < 90; lat += GUIDE_SAMP) { push(lat, lon); push(lat + GUIDE_SAMP, lon) }
       }
-      for (let lat = -60; lat <= 60; lat += 30) {                        // 纬线
-        for (let lon = -180; lon < 180; lon += 5) { push(lat, lon); push(lat, lon + 5) }
+      for (let i = -nLat; i <= nLat; i++) {                              // 纬线
+        const lat = i * step
+        for (let lon = -180; lon < 180; lon += GUIDE_SAMP) { push(lat, lon); push(lat, lon + GUIDE_SAMP) }
       }
-      const geo = new THREE.BufferGeometry()
-      geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3))
-      const mat = new THREE.LineBasicMaterial({ color: new THREE.Color(sh.color != null ? sh.color : 0x6b8199), transparent: true, opacity: sh.alpha != null ? sh.alpha : 0.14, depthWrite: false })
-      const ls = new THREE.LineSegments(geo, mat)
+      const geo = new LineSegmentsGeometry(); geo.setPositions(pos)
+      const mat = regMat(new LineMaterial({
+        color: new THREE.Color(sh.color != null ? sh.color : 0x6b8199),
+        linewidth: width, transparent: true, opacity: alpha, worldUnits: false, depthWrite: false,
+        dashed: !!st.dash, dashSize: GUIDE_DASH, gapSize: GUIDE_GAP
+      }))
+      const ls = new LineSegments2(geo, mat)
+      if (st.dash) ls.computeLineDistances()    // 虚线必做：不算线上距离，USE_DASH 分支拿不到 vLineDistance，虚线不显示
       ls.renderOrder = 4.6; ls.frustumCulled = false
       g.add(ls)
     }

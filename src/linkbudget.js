@@ -4,5 +4,6 @@ import LinkBudgetApp from './linkbudget/LinkBudgetApp.vue'
 import './styles/global.css'
 import './styles/lbworkbench.css'
 import './stores/theme'
+import './shared/i18n/runtime'
 
 createApp(LinkBudgetApp).use(createPinia()).mount('#app')

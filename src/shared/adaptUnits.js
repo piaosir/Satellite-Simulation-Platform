@@ -2,13 +2,14 @@
 // Vite ESM 吃不了那份 CJS，两边改动须同步）。
 // 线性族按数值大小挑档（0.5 W → 500 mW、2457.6 kHz → 2.4576 MHz）；
 // 纯功率 dBW 在整组值 <0 dBW（<1 W）时改记 dBm。只用于显示层，不碰引擎口径。
+// ★ 功率档位只有 mW 与 W 两档（无 µW / kW / MW）：<1 W 记 mW、≥1 W 记 W，与 dBW→dBm 同一条门限。
 
 const FAMILIES = {
   Hz: [['Hz', 1], ['kHz', 1e3], ['MHz', 1e6], ['GHz', 1e9]],
   bps: [['bps', 1], ['kbps', 1e3], ['Mbps', 1e6], ['Gbps', 1e9]],
   sps: [['sps', 1], ['ksps', 1e3], ['Msps', 1e6], ['Gsps', 1e9]],
   cps: [['cps', 1], ['kcps', 1e3], ['Mcps', 1e6], ['Gcps', 1e9]],
-  W: [['µW', 1e-6], ['mW', 1e-3], ['W', 1], ['kW', 1e3], ['MW', 1e6]]
+  W: [['mW', 1e-3], ['W', 1]]
 }
 const UNIT_INDEX = {}
 for (const fam of Object.keys(FAMILIES)) {

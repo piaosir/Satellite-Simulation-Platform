@@ -9,7 +9,7 @@ const createCustomSats = require('../services/customSats')
 const createInterference = require('../services/interference')
 
 // 注册所有 IPC 处理器。core 为返回引擎实例的函数（延迟解析）。
-function register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget, openSunOutage, grd, confirmCloseLinkBudget, openNgso, confirmCloseNgso, openRegen, confirmCloseRegen, openRain, confirmCloseRain, openCi, openPfd, freqPlan, openFreqPlan, notifyFreqPlan, activation }) {
+function register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget, openSunOutage, grd, confirmCloseLinkBudget, openNgso, confirmCloseNgso, openRegen, confirmCloseRegen, openE2e, confirmCloseE2e, openRain, confirmCloseRain, openCi, openPfd, freqPlan, openFreqPlan, notifyFreqPlan, activation }) {
   // 未激活拦截（主进程硬防线；渲染端菜单/工具栏的拦截只是第一道观感）：
   // 各功能窗口的 open 一律先过这里——渲染端被绕过（devtools 直调 IPC）也开不出窗。
   // （下方九处 *:open 仍显式写着 gate(...)，在新的默认全拦之下已是冗余的第二层，无副作用，
@@ -41,7 +41,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     'window:setOverlay', 'font:pdf',
     'store:settings:get', 'store:settings:set',
     // 窗口关闭确认：拦掉会导致功能窗口关不干净（锁定期间窗口仍在，只是被遮罩盖住）
-    'linkbudget:confirmClose', 'ngso:confirmClose', 'regen:confirmClose', 'rain:confirmClose',
+    'linkbudget:confirmClose', 'ngso:confirmClose', 'regen:confirmClose', 'e2e:confirmClose', 'rain:confirmClose',
     // ② 浏览面（只读查询，不产出交付物）
     'omm:load', 'omm:positions', 'omm:csv', 'omm:list',
     'omm:customList', 'omm:customCsv', 'omm:customGroupRecords',
@@ -318,11 +318,21 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     core().computeRegenLaserIslMode
       ? core().computeRegenLaserIslMode(p || {}, opt || {})
       : { success: false, message: '再生式引擎未加载' })
+  // 端到端链路（多跳 / 混合转发）：一条链一次算完（分段 + 级联 + 汇总）。批量＝渲染端逐行调用。
+  ipcMain.handle('link:chainCompute', (_e, chain) =>
+    core().computeLinkChain
+      ? core().computeLinkChain(chain || {})
+      : { success: false, message: '端到端链路引擎未加载' });
   // 星间链路(ISL)两星几何求解（双 SGP4 + 地球临边遮挡 → 最差星间距离 + 互视可见度 + 访问窗口）
   ipcMain.handle('link:islGeometry', (_e, opt) =>
     core().solveIslWorstCase
       ? core().solveIslWorstCase(opt || {})
       : { feasible: false, reason: '星间几何求解器未加载' })
+  // 星间距离时间序列（双 SGP4 逐拍出星间距离/掠地高度/互视）：供「星间链路距离」工具的时间轴
+  ipcMain.handle('link:islRangeSeries', (_e, opt) =>
+    core().sampleIslRangeSeries
+      ? core().sampleIslRangeSeries(opt || {})
+      : { ok: false, reason: '星间几何求解器未加载' })
   // NGSO 站星几何求解（选星=SGP4/SDP4 单一典型时刻 t* 几何；手动=闭式球面最差 + 轨道根数）
   ipcMain.handle('link:ngsoGeometry', (_e, opt) =>
     core().solveNgsoMutualWorstCase
@@ -378,6 +388,10 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   // 打开「再生式链路预算」独立工作台窗口（单例，由 main 注入创建函数）
   ipcMain.handle('regen:open', gate(() => { if (openRegen) openRegen(); return true }))
   ipcMain.handle('regen:confirmClose', () => { if (confirmCloseRegen) confirmCloseRegen(); return true })
+
+  // 打开「端到端链路预算」独立工作台窗口（单例，由 main 注入创建函数）
+  ipcMain.handle('e2e:open', gate(() => { if (openE2e) openE2e(); return true }))
+  ipcMain.handle('e2e:confirmClose', () => { if (confirmCloseE2e) confirmCloseE2e(); return true })
 
   // ---- 雨衰计算（独立窗口 · 通用于各类卫星 · 批量/单算例/曲线计算 + Excel 导出）----
   ipcMain.handle('rain:open', gate(() => { if (openRain) openRain(); return true }))

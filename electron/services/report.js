@@ -242,6 +242,10 @@ const STR = {
     islRxGt: '接收卫星 G/T (dB/K)', islCN: '星间 C/N (dB)', islVis: '互视可见度 (%)', availSys: '系统可用度 (%)',
     laserDist: '星间距离 (km)', laserTxPower: '发射光功率 (dBm)', laserPrx: '接收光功率 (dBm)',
     laserPreq: '所需接收功率 (dBm)', laserDoppler: '相干多普勒 (GHz)', dataRate: '信息速率 (kbps)',
+    // 端到端（第四窗）汇总列头：链是一串节点，指标按「构成 → 段结算 → 链级性能 → 时延」四段排
+    e2eNodes: '节点数', e2eHops: '跳数', e2eSegs: '段数', e2eWeakest: '最弱段',
+    e2eWeakCN: '最弱段 C/(N+I) (dB)', e2eMargin: '端到端余量 (dB)', e2eBer: '端到端 BER',
+    e2eOutage: '年中断 (min)', e2ePropDelay: '传播时延 (ms)', e2eProcDelay: '处理时延 (ms)', e2eDelay: '端到端时延 (ms)',
     geo: {
       sheetName: '几何关系',
       title: 'NGSO 卫星—地球站几何关系报告',
@@ -285,6 +289,10 @@ const STR = {
     islRxGt: 'Rx Sat G/T (dB/K)', islCN: 'ISL C/N (dB)', islVis: 'Mutual Visibility (%)', availSys: 'System Availability (%)',
     laserDist: 'Inter-Sat Range (km)', laserTxPower: 'Tx Optical Power (dBm)', laserPrx: 'Rx Optical Power (dBm)',
     laserPreq: 'Required Rx Power (dBm)', laserDoppler: 'Coherent Doppler (GHz)', dataRate: 'Information Rate (kbps)',
+    // End-to-end (fourth workbench) summary column heads
+    e2eNodes: 'Nodes', e2eHops: 'Hops', e2eSegs: 'Segments', e2eWeakest: 'Weakest Segment',
+    e2eWeakCN: 'Weakest-Segment C/(N+I) (dB)', e2eMargin: 'End-to-End Margin (dB)', e2eBer: 'End-to-End BER',
+    e2eOutage: 'Annual Outage (min)', e2ePropDelay: 'Propagation Delay (ms)', e2eProcDelay: 'Processing Delay (ms)', e2eDelay: 'End-to-End Delay (ms)',
     geo: {
       sheetName: 'Geometry',
       title: 'NGSO Satellite–Facility Geometry Report',
@@ -461,10 +469,30 @@ function regenSummaryRows(t, regenMode) {
   ]
 }
 
+// 端到端（第四窗）的汇总参数行。一条链是一串节点，没有「上行/下行」两侧可列，故整套另开：
+// 构成（节点/跳/段）→ 载波（速率/带宽/效率）→ 段结算（最弱段与其 C/(N+I)、门限、余量）→
+// 链级性能（可用度、年中断、端到端 BER）→ 时延（传播 / 处理 / 合计）。
+// ★ 不列「功率占用 / 带宽占用 / 功放建议」：占比是某一颗透明星的资源账，链上有几颗星就有几份，
+//   取其一或取最大都是编出来的链级指标（见 linkChain.js 出参处的同一条注记）；功放建议属于反算，
+//   端到端只有正向递推。逐颗星的占用在详情表的「透明转发器占用」段里各归各位。
+function e2eSummaryRows(t) {
+  const R = (label, key) => ({ label, get: (l) => val(l.data, key) })
+  return [
+    R(t.e2eNodes, 'nodeCount'), R(t.e2eHops, 'hopCount'), R(t.e2eSegs, 'segmentCount'),
+    R(t.dataRate, 'infoRateResult'), R(t.allocBw, 'allocBandwidthResult'), R(t.specEff, 'spectralEfficiencyResult'),
+    R(t.e2eWeakest, 'weakestSegment'), R(t.e2eWeakCN, 'carrierTotalCN'), R(t.thresholdCN, 'thresholdCN'),
+    R(t.e2eMargin, 'e2eMarginResult'),
+    R(t.avail, 'systemAvailabilityResult'), R(t.e2eOutage, 'interruptionMinutes'), R(t.e2eBer, 'e2eBerResult'),
+    R(t.e2ePropDelay, 'propDelayResult'), R(t.e2eProcDelay, 'procDelayResult'), R(t.e2eDelay, 'e2eDelayResult')
+  ]
+}
+
 // 链路汇总的"参数行"：矩阵显示全部指标 ∪ 结果卡片全部字段。每行一个参数，纵向排列——
 // 这样每条链路占一整列，从上往下读完一列就是这条链路的完整结果，跟下面单链路详细计算结果表
 // （参数纵向列在左、数值在右）是同一种阅读方式，多条链路时天然变成左右并排的对比表。
 function summaryRows(t, orbitType, regenMode) {
+  // 端到端：链级指标另成一套（见 e2eSummaryRows）
+  if (orbitType === 'E2E') return e2eSummaryRows(t)
   // 再生式四体制各自裁剪汇总列（按信号流向只列有效指标，避免上/下/星间口径混列的整列空白）
   if (orbitType === 'REGEN') return regenSummaryRows(t, regenMode)
   // 再生式上下行解耦：系统可用度 = 上行可用度，汇总列头据此改标（GEO/NGSO 仍为联合系统可用度）
@@ -491,7 +519,7 @@ function summaryRows(t, orbitType, regenMode) {
   ]
 }
 // 汇总表显示单位自适应（与 UI 结果列同规则）：从行标签尾部 '(单位)' 识别可缩放量，
-// 每个指标行跨全部链路共选一个档位（W→mW/kW、kHz→MHz/GHz、整行<0dBW→dBm），
+// 每个指标行跨全部链路共选一个档位（W→mW、kHz→MHz/GHz、整行<0dBW→dBm），
 // 重写标签单位并包裹取值函数（数值换算、'—'/文本原样）
 function adaptSummaryUnits(rows, links) {
   for (const row of rows) {
@@ -521,7 +549,13 @@ const labelWithSign = (row) => (row.sign ? row.sign + ' ' : '') + (row.label || 
 // 瀑布段落的表体（题注 + 三线表），从第 r 行起写，返回写完后的下一行。
 // 抽成独立一支供两处调用：旧版「详细计算结果」分表与新版报告的链路详情表——
 // 两处画出来的必须是同一种表，否则同一份数据在两个文件里长得不一样。
-function writeSegmentBlocks(ws, segments, t, startRow) {
+// opts.fixedDecimals：按显示串的小数位给数字格式。数值单元格写的是【数】（要能在 Excel 里继续算），
+// 而 Excel 的 General 会把 3.50 印成 3.5、0.00 印成 0 —— 端到端级联刻意把每一格钉成两位小数
+// （单列密排，小数点要排成列，见 waterfallBuilder 的同一条注记），General 一印就把这条对齐拆了。
+// ★ 只在端到端打开：三窗的显示串由 _fmt 去过尾零，本来就与 General 印出来的一样，
+//   多这一句只会平白改动它们的输出，故整条挂在开关后面（默认关＝三窗逐字节不变）。
+function writeSegmentBlocks(ws, segments, t, startRow, opts) {
+  const fixedDecimals = !!(opts && opts.fixedDecimals)
   let r = startRow
   for (const seg of (segments || [])) {
     if (!seg || !seg.rows || !seg.rows.length) continue
@@ -546,21 +580,32 @@ function writeSegmentBlocks(ws, segments, t, startRow) {
       const isLast = ri === dataRows.length - 1
       const vals = rowValues(row, cols)
       const nums = rowNums(row, cols)
+      // 端到端级联的两级分组行（kind head=段 / shead=跳·透明转发·收发站）：整行只有标签，
+      // 数值列恒空。三线表不许底纹，故与本文件其它分组行（参考文献的类别行）同一手法——中文换黑体
+      // 不加粗（黑体已是重字面，再加粗会被合成成假粗体糊成一团）；段标题上方另切一条栏目线。
+      // ★ 不认识的 kind 一律走普通行分支照常写出，一行都不许丢。
+      const isGroup = row.kind === 'head' || row.kind === 'shead'
       const strong = ['base', 'sub', 'chk', 'kpi', 'margin'].indexOf(row.kind) > -1
-      const sepTop = ['sub', 'margin'].indexOf(row.kind) > -1
       const lc = ws.getCell(r, 1); lc.value = labelWithSign(row)
-      lc.font = { name: CJK, size: RSTY.size.table, bold: strong, color: { argb: 'FF1A1A1A' } }; lc.alignment = { horizontal: 'left', vertical: 'middle' }
+      lc.font = { name: isGroup ? HEI : CJK, size: RSTY.size.table, bold: strong, color: { argb: 'FF1A1A1A' } }
+      lc.alignment = { horizontal: 'left', vertical: 'middle' }
       vals.forEach((v, vi) => {
         const isTotalCol = cols >= 3 && vi === 2
         const cell = ws.getCell(r, 2 + vi)
         const n = nums[vi]
         cell.value = (n === null || n === undefined) ? numOrText(v) : n
+        if (fixedDecimals && typeof cell.value === 'number') {
+          const dec = (String(v == null ? '' : v).split('.')[1] || '').length
+          if (dec > 0 && dec <= 6) cell.numFmt = '0.' + '0'.repeat(dec)
+        }
         cell.font = { name: FNT, size: RSTY.size.table, bold: strong || isTotalCol }; cell.alignment = { horizontal: 'right', vertical: 'middle' }
       })
       const uc = ws.getCell(r, totalCols); uc.value = row.unit || ''
       uc.font = { name: FNT, size: RSTY.size.table, color: { argb: 'FF555555' } }; uc.alignment = { horizontal: 'left', vertical: 'middle' }
       const edges = {}
-      if (sepTop) edges.top = HAIR
+      // 段标题行（head）上方 0.75pt 栏目线——它是表内最强的一层分组；跳标题（shead）只换字体不画线，
+      // 十来跳各画一条会把表切成一堆横带。首行不画（表头下沿已有一条）。
+      if (row.kind === 'head') { if (ri > 0) edges.top = THIN } else if (['sub', 'margin'].indexOf(row.kind) > -1) edges.top = HAIR
       if (isLast) edges.bottom = MED
       if (edges.top || edges.bottom) setRowBorder(ws, r, 1, totalCols, edges)
       ws.getRow(r).height = 18
@@ -975,6 +1020,8 @@ function buildRegenGroundGeometrySheet(wb, links, params, meta, lang, direction)
 // —— 空间—空间几何（再生式星间微波 / 激光）——每链路两星（发射星→接收星）互视最差工况。
 function buildRegenSpaceGeometrySheet(wb, links, params, meta, lang, isLaser) {
   if (!links || !links.length) return
+  // 手动几何：星间距离由用户逐条给定，压根没有解算出来的几何 —— 整张表不出，不留空表头
+  if (!links.some((l) => l.islGeo)) return
   const g = strFor(lang).geo, rg = rgeoFor(lang)
   const NCOL = 12
   const ws = wb.addWorksheet(g.sheetName, { views: [{ showGridLines: false }] })
@@ -1135,7 +1182,16 @@ function enrichReportModel(model) {
 
   const done = links.filter((l) => l.data && !l.error)
   const stats = []
-  if (done.length && regenMode !== 'laser') {
+  // 端到端：只出「总容量」= Σ 各链业务信息速率。业务速率在一条链上全程守恒（再生节点解调重调后
+  // 速率不变），求和是实打实的服务总量；而带宽/功率占用逐段各不相同（各段体制可换、各透明星各占各的），
+  // 加不出一个链级的数——不编造，那两行整体不出（口径同 linkChain.js「不出链级功率/带宽占比」）。
+  if (orbitType === 'E2E') {
+    if (done.length) {
+      let capKbps = 0
+      for (const l of done) { const k = parseFloat(l.data.infoRateResult); if (isFinite(k)) capKbps += k }
+      stats.push({ label: t.totalCap, value: fmtCapText(capKbps) })
+    }
+  } else if (done.length && regenMode !== 'laser') {
     let bwKHz = 0, capKbps = 0, pbwKHz = 0, pbwN = 0
     for (const l of done) {
       const bw = parseFloat(l.data.allocBandwidthResult)
@@ -1508,7 +1564,8 @@ function writeReportLinkSheet(wb, ws, link, model, t, L) {
 
   // 详细计算结果（与屏幕「详细预算」同一份 segments）
   section(L.results)
-  r = writeSegmentBlocks(ws, link.segments, t, r)
+  // 端到端级联的数值定两位（见 writeSegmentBlocks 的 fixedDecimals），屏幕/TSV/Excel 三处印出来一致
+  r = writeSegmentBlocks(ws, link.segments, t, r, { fixedDecimals: (model.scheme && model.scheme.orbitType) === 'E2E' })
 
   // 图件（与图上「出图」按钮出的是同一张）。图题在图**下方**——模板「图号格式」的口径，
   // 也是中文出版惯例（表题在上、图题在下）。
@@ -1556,6 +1613,8 @@ async function buildReportWorkbook(model) {
   const params = { satelliteName: (model.calc && model.calc.satelliteName) || '', frequencyBand: (model.calc && model.calc.frequencyBand) || '' }
   const meta = { title: (model.doc && model.doc.title) || '' }
   const ot = (model.scheme && model.scheme.orbitType) || 'GEO'
+  // 端到端没有独立的「几何关系」sheet：一条链的几何是逐跳的（斜距/仰角/星间距离各跳一份），
+  // 已由瀑布的「逐跳几何与时延」段逐跳列全，另开一张 STK 版式表只会把同一批数抄第二遍。
   if (ot === 'NGSO') buildNgsoGeometrySheet(wb, links, params, meta, lang)
   else if (ot === 'REGEN') buildRegenGeometrySheet(wb, links, params, meta, lang, (model.scheme && model.scheme.regenMode) || 'uplink')
 

@@ -28,7 +28,11 @@ contextBridge.exposeInMainWorld('api', {
     computeRegenIsl: (s, l, opt) => ipcRenderer.invoke('link:computeRegenIsl', s, l, opt),
     // 再生式星间激光：第一性原理光学预算（P_rx 链 + 光子/bit 灵敏度）；几何复用 islGeometry（传光频算相干多普勒）
     computeRegenLaser: (p, opt) => ipcRenderer.invoke('link:computeRegenLaser', p, opt),
+    // 端到端链路（多跳 / 混合转发）：整条链一次算完（分段 + 段内级联 + 端到端汇总）
+    chainCompute: (chain) => ipcRenderer.invoke('link:chainCompute', chain),
     islGeometry: (opt) => ipcRenderer.invoke('link:islGeometry', opt),
+    // 星间距离时间序列（时间轴上逐拍的星间距离/掠地高度/互视）：手动几何下「星间链路距离」工具用
+    islRangeSeries: (opt) => ipcRenderer.invoke('link:islRangeSeries', opt),
     ngsoGeometry: (opt) => ipcRenderer.invoke('link:ngsoGeometry', opt),
     ngsoGeometryBatch: (opt) => ipcRenderer.invoke('link:ngsoGeometryBatch', opt),
     accessWindows: (opt) => ipcRenderer.invoke('link:accessWindows', opt),
@@ -60,6 +64,12 @@ contextBridge.exposeInMainWorld('api', {
     open: () => ipcRenderer.invoke('regen:open'),
     onCloseRequested: (cb) => ipcRenderer.on('regen:closeRequested', cb),
     confirmClose: () => ipcRenderer.invoke('regen:confirmClose')
+  },
+  // 端到端链路预算独立窗口的开窗/关窗守卫（计算走 linkBudget.chainCompute，几何全部手填）
+  e2e: {
+    open: () => ipcRenderer.invoke('e2e:open'),
+    onCloseRequested: (cb) => ipcRenderer.on('e2e:closeRequested', cb),
+    confirmClose: () => ipcRenderer.invoke('e2e:confirmClose')
   },
   sunOutage: {
     open: () => ipcRenderer.invoke('suntool:open'),

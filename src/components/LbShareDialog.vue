@@ -26,6 +26,7 @@
 import { ref, reactive, computed, watch } from 'vue'
 import Icon from './Icon.vue'
 import MiniSendDialog from './MiniSendDialog.vue'
+import { byLang } from '../shared/i18n/lang.js'   // 空名占位是界面语汇，却画在打了 skip 的名字位上（呈现层翻不到），故在这里按语言出字
 import {
   SHARE_PREFIX, LIB_KINDS, KIND_LABEL, MOD_LABEL,
   makeBundle, encodeShare, bundleFileText, decodeShare, describeBundle, legacyItemsOf,
@@ -339,18 +340,18 @@ watch(() => way.value, (w) => { if (w === 'online' && props.configured && !inbox
             <div class="lbs-list">
               <label v-if="draft" class="lbs-row lbs-draft">
                 <input type="checkbox" :checked="sel.draft" @change="sel.draft = $event.target.checked" />
-                <span class="lbs-nm">{{ draft.name }}</span>
+                <span class="lbs-nm" data-i18n-skip>{{ draft.name }}</span>
                 <span class="lbs-tag" title="工作台当前参数（尚未存为命名配置）">当前工作参数</span>
               </label>
               <template v-for="r in rows" :key="r.item.id">
                 <div v-if="r.isFolder" class="lbs-row lbs-fold" :style="{ paddingLeft: (7 + r.depth * 13) + 'px' }" @click="toggleFolderSel(r.item.id)">
                   <input type="checkbox" :checked="folderState(r.item.id) === 'all'" :indeterminate.prop="folderState(r.item.id) === 'some'" @click.stop="toggleFolderSel(r.item.id)" />
                   <Icon name="folder" :size="11" class="lbs-fi" />
-                  <span class="lbs-nm">{{ r.item.name }}</span>
+                  <span class="lbs-nm" data-i18n-skip>{{ r.item.name }}</span>
                 </div>
                 <label v-else class="lbs-row" :style="{ paddingLeft: (7 + r.depth * 13) + 'px' }">
                   <input type="checkbox" :checked="sel.cfg.has(r.item.id)" @change="toggleCfg(r.item.id)" />
-                  <span class="lbs-nm">{{ r.item.name }}</span>
+                  <span class="lbs-nm" data-i18n-skip>{{ r.item.name }}</span>
                 </label>
               </template>
               <div v-if="!rows.length && !draft" class="lbs-empty">还没有保存过的配置</div>
@@ -376,7 +377,7 @@ watch(() => way.value, (w) => { if (w === 'online' && props.configured && !inbox
                 </div>
                 <label v-for="c in libArrays[k]" :key="c.id" class="lbs-row" :class="{ lock: isLocked(k, c.id) }">
                   <input type="checkbox" :checked="effIds[k].has(c.id)" :disabled="isLocked(k, c.id)" @change="toggleLib(k, c.id)" />
-                  <span class="lbs-nm">{{ c.name || '（未命名）' }}</span>
+                  <span class="lbs-nm" data-i18n-skip>{{ c.name || byLang('（未命名）', '(Unnamed)') }}</span>
                   <Icon v-if="isLocked(k, c.id)" name="lock" :size="10" class="lbs-lk" />
                 </label>
                 <div v-if="!libArrays[k].length" class="lbs-empty">（空）</div>

@@ -185,7 +185,7 @@ function apply() {
               <tr v-for="r in rows" :key="r.rowId" :class="{ on: isPicked(r), off: !usable(r) }" @click="togglePick(r)">
                 <td class="ck"><input type="checkbox" :checked="isPicked(r)" :disabled="!usable(r)" @click.stop="togglePick(r)" /></td>
                 <td class="no">{{ r.no }}</td>
-                <td class="nm" :title="r.name">{{ r.name }}</td>
+                <td class="nm" :title="r.name" data-i18n-skip>{{ r.name }}</td>
                 <td class="nm" :title="r.carrierName">{{ r.carrierName }}</td>
                 <td class="n">{{ usable(r) ? bw(r.bwKHz) : '—' }}</td>
                 <td class="n" :class="{ over: r.pbwKHz > r.bwKHz, under: r.pbwKHz < r.bwKHz }">{{ usable(r) ? bw(r.pbwKHz) : '—' }}</td>
@@ -214,10 +214,11 @@ function apply() {
               </thead>
               <tbody>
                 <tr v-for="c in res.carriers" :key="c.id">
-                  <td class="nm" :title="c.name">{{ c.name }}</td>
+                  <td class="nm" :title="c.name" data-i18n-skip>{{ c.name }}</td>
                   <td class="n">{{ c.n }}</td>
                   <td class="n" :title="drifted(c) ? '该载波的系统余量已由本功能配平写入（当前 ' + d2(c.fromDb) + ' dB）；基准仍取其配平前的原始余量，故重复应用不会累加偏置' : ''">
-                    {{ d2(c.baseDb) }}<i v-if="drifted(c)" class="ab-sh">现 {{ d2(c.fromDb) }}</i></td>
+                    <!-- 「现」单独成节点：与数字挤在一个文本节点里，英文模式下整串查不到表 -->
+                    {{ d2(c.baseDb) }}<i v-if="drifted(c)" class="ab-sh"><span>现</span> {{ d2(c.fromDb) }}</i></td>
                   <td class="n dim">{{ d2(c.balanceDb) }}</td>
                   <td class="n"><input class="ab-in" type="number" step="0.1" :value="cs(c.id).bias" @change="setCs(c.id, { bias: parseFloat($event.target.value) || 0 })" /></td>
                   <td class="n st" :class="{ bad: c.toDb < 0 }">{{ d2(c.toDb) }}<i class="ab-sh">{{ sign(c.shiftDb) }}</i></td>

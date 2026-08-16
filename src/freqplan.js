@@ -6,5 +6,6 @@ import './styles/global.css'
 // 不引 lbFont 的 --lb-fs 联动：本窗口的字号逐处固定，跟着全局变量走也没有元素继承得到。
 import './styles/lbworkbench.css'
 import './stores/theme'
+import './shared/i18n/runtime'
 
 createApp(FreqPlanApp).use(createPinia()).mount('#app')

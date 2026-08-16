@@ -10,7 +10,10 @@ const props = defineProps({
   form: { type: Object, required: true },   // 共享载波信号参数（含 noiseRatioMode / rsCodeMode / dvbStandard / modcodIndex）
   options: { type: Object, default: () => ({}) },
   // 本窗支持的计算方式 [{ key, label }]（各窗按自身引擎能力给：弯管四种、再生式两种）；空数组＝不出该栏
-  calcModes: { type: Array, default: () => [] }
+  calcModes: { type: Array, default: () => [] },
+  // 速率锁定（端到端窗口的下游段用）：这一段的信息速率由链首那份定、全程守恒，此处只读；
+  // 四个速率视角照常按当前 MODCOD 实时算出来给读数，只是不接受编辑、也不参与锚点。
+  rateLocked: { type: Boolean, default: false }
 })
 
 // 调制因子/分数解析/换算链都在 shared/carrierRate.js（面板与资源库自动命名共用一份口径）
@@ -187,7 +190,7 @@ function onBwInput(e) { setAnchor('bw', e.target.value) }
            而那正是这枚 button（button 也是 labelable）——点标签文字、单位括注甚至行内空白都会误切口径。 -->
       <div class="bb-f bb-f-tg"><span class="bb-l">
           <button type="button" class="bb-tg" :title="`当前 ${form.noiseRatioMode === 'ebno' ? 'Eb/N₀' : 'Es/N₀'} 口径，点击换算为 ${form.noiseRatioMode === 'ebno' ? 'Es/N₀' : 'Eb/N₀'}（门限值同步换算）`"
-                  @click.prevent="toggleEbno">{{ form.noiseRatioMode === 'ebno' ? 'Eb/N₀' : 'Es/N₀' }}<Icon name="arrow-left-right" :size="10" /></button>门限<i>(dB)</i>
+                  @click.prevent="toggleEbno">{{ form.noiseRatioMode === 'ebno' ? 'Eb/N₀' : 'Es/N₀' }}<Icon name="arrow-left-right" :size="10" /></button><i>(dB)</i>
         </span>
         <input v-model="form.ebno" class="bb-i mono" placeholder="5.50" />
       </div>
@@ -220,16 +223,16 @@ function onBwInput(e) { setAnchor('bw', e.target.value) }
          系统余量不在此处：它是批量计算的目标值，不随载波信号配置走，在 LinkBudgetApp 底部「计算方式」栏统一设置 -->
     <div class="bb-rt">
       <label class="bb-f"><span class="bb-l">信息速率 <i>(kbps)</i></span>
-        <input v-model="form.infoRate" class="bb-i mono" :class="{ 'bb-anch': rateAnchor === 'info' }" placeholder="2048" @input="onInfoInput" />
+        <input v-model="form.infoRate" class="bb-i mono" :class="{ 'bb-anch': rateAnchor === 'info' && !rateLocked }" :readonly="rateLocked" placeholder="2048" @input="onInfoInput" />
       </label>
       <label class="bb-f"><span class="bb-l">码片速率 <i>(kcps)</i></span>
-        <input :value="disp.chip" class="bb-i mono" :class="{ 'bb-anch': rateAnchor === 'chip' }" @change="onChipInput" />
+        <input :value="disp.chip" class="bb-i mono" :class="{ 'bb-anch': rateAnchor === 'chip' && !rateLocked }" :readonly="rateLocked" @change="onChipInput" />
       </label>
       <label class="bb-f"><span class="bb-l">符号率 <i>(ksps)</i></span>
-        <input :value="disp.symbol" class="bb-i mono" :class="{ 'bb-anch': rateAnchor === 'symbol' }" @change="onSymbolInput" />
+        <input :value="disp.symbol" class="bb-i mono" :class="{ 'bb-anch': rateAnchor === 'symbol' && !rateLocked }" :readonly="rateLocked" @change="onSymbolInput" />
       </label>
       <label class="bb-f"><span class="bb-l">载波带宽 <i>(kHz)</i></span>
-        <input :value="disp.bw" class="bb-i mono" :class="{ 'bb-anch': rateAnchor === 'bw', 'bb-over': ntnBw && ntnBw.level === 'over' }" @change="onBwInput" />
+        <input :value="disp.bw" class="bb-i mono" :class="{ 'bb-anch': rateAnchor === 'bw' && !rateLocked, 'bb-over': ntnBw && ntnBw.level === 'over' }" :readonly="rateLocked" @change="onBwInput" />
       </label>
     </div>
 

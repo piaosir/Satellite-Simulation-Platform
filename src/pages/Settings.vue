@@ -1,6 +1,10 @@
 <script setup>
 import { reactive, ref, onMounted } from 'vue'
 import { theme, setTheme } from '../stores/theme'
+import { getLang, setLang } from '../shared/i18n/runtime'
+
+const langCur = ref(getLang())
+function pickLang(v) { setLang(v); langCur.value = v }
 
 const hasApi = typeof window !== 'undefined' && !!window.api
 const form = reactive({ amapKey: '', units: 'metric', noiseRatioMode: 'ebno' })
@@ -29,6 +33,13 @@ onMounted(load)
         <option value="system">跟随系统</option>
         <option value="light">浅色</option>
         <option value="dark">深色</option>
+      </select>
+    </div>
+    <div class="row">
+      <label>语言</label>
+      <select data-i18n-skip :value="langCur" @change="pickLang($event.target.value)">
+        <option value="zh">中文</option>
+        <option value="en">English</option>
       </select>
     </div>
     <div v-if="!hasApi" class="empty">需在桌面客户端中运行。</div>

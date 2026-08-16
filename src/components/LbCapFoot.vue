@@ -31,7 +31,7 @@ const hasCap = () => !!(props.cap && props.cap.count)
     </div>
     <div v-if="readout" class="lbx-rowline" title="表格中当前聚焦行的计算结果（指标随「结果列」勾选；点选另一行即切换）">
       <span class="lbx-cap-t">本行读数</span>
-      <span class="lbx-rr-id">#{{ readout.no }}<em v-if="readout.name">{{ readout.name }}</em></span>
+      <span class="lbx-rr-id">#{{ readout.no }}<em v-if="readout.name" data-i18n-skip>{{ readout.name }}</em></span>
       <span v-if="readout.err" class="lbx-rr-err">{{ readout.err }}</span>
       <template v-else-if="readout.items.length">
         <span v-for="it in readout.items" :key="it.key" class="lbx-rr-i" :title="it.tip">

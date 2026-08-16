@@ -203,6 +203,10 @@ body {
 .lbx-doc.rp-doc > .lbx-doc-main, .lbx-doc.rp-doc > .lbx-doc-side { display: table-cell; vertical-align: top; float: none; }
 .lbx-doc.rp-doc > .lbx-doc-main { width: 52%; max-width: none; padding-right: 7mm; }
 .lbx-doc.rp-doc > .lbx-doc-side { width: 48%; }
+/* 端到端：级联是单列表（宽 = 内容宽，见 lbworkbench.css 的 .e2-doc 一节），且本窗没有图表区，
+   于是左栏是这张匿名表格里唯一的格子——52% 会把 24～31em 的表摊在半幅版心上，标签与数值又被
+   拉开。改回内容宽：表格盒 width:auto 即收缩到内容，右边整幅留给下一页的参考段带。 */
+.lbx-doc.rp-doc.e2-doc > .lbx-doc-main { width: auto; max-width: 36em; padding-right: 0; }
 /* 参考段带另起一页：它铺满整幅、与上面「主表 ‖ 图」是两件事，挤在同一页的下半截既排不开
    （多栏只灌到半页高就被截断）又难读。内容与次序不变，只是多一个页界。 */
 .lbx-doc.rp-doc > .lbx-doc-ref { display: block; margin-top: 6pt; break-before: page; }

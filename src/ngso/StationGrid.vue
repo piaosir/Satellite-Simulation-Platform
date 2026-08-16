@@ -1199,7 +1199,7 @@ function clearColContents() {
         <div v-if="impOtherGroup" class="sg-oth">
           <span class="sg-oth-l">另一端（{{ imp.side === 'rx' ? '发信站' : '收信站' }}）</span>
           <template v-if="imp.other">
-            <b class="sg-oth-v" :title="imp.other.lon + '°E ' + imp.other.lat + '°N'">{{ imp.other.name }}</b>
+            <b class="sg-oth-v" :title="imp.other.lon + '°E ' + imp.other.lat + '°N'" data-i18n-skip>{{ imp.other.name }}</b>
             <button class="sg-oth-x" title="清除另一端，恢复用默认站址" @click="imp.other = null">✕</button>
           </template>
           <span v-else class="sg-oth-def" title="未指定另一端：新行对侧用默认站址。悬停列表条目点 ⇄ 可把该站设为另一端">默认（{{ impOtherDefault }}）</span>
@@ -1211,7 +1211,7 @@ function clearColContents() {
           <div v-for="(it, ii) in impResults" :key="it.id" class="sg-impitem" :class="{ hl: ii === imp.hl, done: imp.added[it.id] }"
                :title="'点击加为新行（写入' + (imp.side === 'rx' ? '收信站' : '发信站') + '侧）'"
                @mousedown.prevent @click="importItems([it])" @mouseenter="imp.hl = ii">
-            <span class="sg-impn">{{ it.name }}</span>
+            <span class="sg-impn" data-i18n-skip>{{ it.name }}</span>
             <span class="mono sg-ll">{{ it.lon }}°E  {{ it.lat }}°N</span>
             <span v-if="impOtherGroup" class="sg-imppin" :class="{ on: imp.other && imp.other.id === it.id }"
                   :title="'设为另一端：之后导入的每行，' + (imp.side === 'rx' ? '发信站' : '收信站') + '侧都写「' + it.name + '」'"

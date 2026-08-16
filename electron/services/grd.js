@@ -48,7 +48,8 @@ module.exports = function createGrd(saveDir) {
     return loaded;
   }
 
-  // 主入口：req = { file, sat:{lon,lat,alt}, cfg, points:[{lon,lat}…] } → (number|null)[]（与 points 等长同序）
+  // 主入口：req = { file, sat:{lon,lat,alt}, cfg, points:[{lon,lat,alt?}…] } → (number|null)[]（与 points 等长同序）
+  // 点上的 alt（km）> 0 表示目标在【空间】而非地表——星间链路对另一颗星取值时用（见 grdSampler.sampleBeamAt）。
   function sample(req) {
     req = req || {};
     const points = Array.isArray(req.points) ? req.points : [];
@@ -56,7 +57,7 @@ module.exports = function createGrd(saveDir) {
       const rawPath = resolveRaw(req.file);
       const loaded = loadCached(ensureBin(rawPath));
       return points.map((p) => {
-        try { return sampler.sampleMax(loaded, req.sat || {}, req.cfg || {}, Number(p.lon), Number(p.lat)); }
+        try { return sampler.sampleMax(loaded, req.sat || {}, req.cfg || {}, Number(p.lon), Number(p.lat), Number(p.alt) || 0); }
         catch { return null; }
       });
     } catch (e) {

@@ -83,7 +83,10 @@ html[data-theme='dark'] {
    目标：高信息密度 + 可扫读。三件事：① 多列栅格按宽度自动降列；② 每个参数压成一条 21px 的
    「标签 … 数值」行，行间发丝线（表感，眼睛沿右缘数值列往下扫）；③ 输入框去框（hover/focus 才显边），
    把原本一堵框墙还原成读数表。带 .lb-shell 前缀凑够三级特异度，压过各 Panel 的 scoped 规则。 */
-.lb-shell .lb-libpane :is(.es-grid, .es-common, .bb-grid, .bb-modcod, .bb-rt, .sp-fields, .rsp-fields) {
+/* .bb-cm（计算方式行）原先漏在这张清单外，保留着自己 2fr 1fr 1fr 的三列：侧栏只有 ~439px 时
+   后两列各摊到 105px，而数值框就要 104px —— 标签被挤成 0 宽，中文下「系统余量 (dB)」整条看不见。
+   并进来一起走自动降列。 */
+.lb-shell .lb-libpane :is(.es-grid, .es-common, .bb-grid, .bb-modcod, .bb-rt, .bb-cm, .sp-fields, .rsp-fields) {
   grid-template-columns: repeat(auto-fill, minmax(196px, 1fr)); gap: 0 18px; margin-bottom: 8px;
 }
 .lb-shell .lb-libpane .es-common-note { grid-column: 1 / -1; font-size: 10.5px; line-height: 1.45; padding: 3px 0 0; }
@@ -320,6 +323,88 @@ html[data-theme='dark'] .sg-cell .sg-fillbar::after {
 .lbx-doc-ref .wf .wf-sign { display: none; }        /* 参考段全是 ref 行，符号列恒空，整列收掉 */
 .lbx-doc-ref .wf .wf-l { max-width: 15em; }         /* 超长标签折行显示全，不把整段撑宽 */   /* 165px */
 .lbx-doc > .lbx-fold { flex: 1 1 100%; max-width: 69em; }         /* 几何折叠：独占末行但内容自限宽 */
+
+/* —— 详细预算 · 端到端专属排版（.e2-doc，第四窗 + 其 PDF 打印页）——
+   本窗级联是【单列】瀑布，而上面那套是按三窗「上行/下行/合计」多列定的：.wf-row.cols1 的
+   标签列是 1fr、左轨上限 45em —— 单列下就成了标签贴左缘、数值甩到 45em 外的右缘，
+   中间横着大半栏空白，读一行要横扫整个表宽（用户 2026-08-16 点名）。
+   改法＝级联段升为父网格、数据行 subgrid 共列轨：标签列宽 = 全段最长标签（max-content，
+   中英文自适应），数值紧随其后，表总宽 = 内容宽；腾出来的整幅宽度全归参考段带。
+   段/跳/站标题行退出列轨——「星地上行：发信站 → STARLINK-1123」这类长题不该撑宽数据列。
+   ★ 这一节【放在公共表而不是 E2eLinkBudgetApp 的 scoped 里】：PDF 打印页（report/ReportApp.vue）
+     渲染的是同一个 WaterfallTable、同一套 .lbx-doc 栅格，屏幕与 PDF 必须是同一张表；
+     写成组件 scoped 打印页就吃不到，各存一份必然漂移。
+   ★ 三窗压不到：它们的 DOM 上没有 .e2-doc，每条规则都以它起头。
+   ★ 尺寸一律 em（1em = --lb-fs，随功能区「字号」整体缩放）。 */
+/* 左轨宽 = 内容宽（flex 不许长），剩下的整幅全归参考段带。36em 是硬上界，实测中文 24.4em、
+   英文 31.1em 都够不着——它只防一件事：将来某个超长标签把左轨撑到把参考段带挤下去换行。 */
+.e2-doc .lbx-doc-main { flex: 0 0 auto; max-width: 36em; }
+.e2-doc .lbx-doc-main .wf-seg {
+  display: grid; width: max-content; max-width: 100%;
+  grid-template-columns: 1.1em max-content minmax(5.2em, max-content) 3em;
+  column-gap: .7em;
+}
+.e2-doc .lbx-doc-main .wf-title { grid-column: 1 / -1; }
+/* ★ 行上必须重给 column-gap：subgrid 的行虽然共用父轨，间距却仍认自己那一份，
+   而 WaterfallTable 的 .wf-row 写死 gap:8px —— 不覆盖的话「标签→数值」的距离是像素级定值，
+   字号从 9px 调到 16px 时它一动不动（0.89em → 0.5em），整节的 em 缩放就在这一处断掉。
+   参考段带的 .wf-row.cols1 早有同一条（上方，1.2em），此处照办。 */
+.e2-doc .lbx-doc-main .wf-row.cols1 { grid-column: 1 / -1; grid-template-columns: subgrid; column-gap: .7em; }
+/* 标题行自铺一行：列模板独立于父轨，长题不参与数据列宽的 max-content 计算 */
+.e2-doc .lbx-doc-main .wf-row:is(.k-head, .k-shead) { grid-template-columns: 1.1em 1fr; }
+.e2-doc .lbx-doc-main .wf-row:is(.k-head, .k-shead) .wf-c,
+.e2-doc .lbx-doc-main .wf-row:is(.k-head, .k-shead) .wf-u { display: none; }
+/* 标签列上界：23em 恰好装下英文报表最长的一条数据行标签（「Multi-Hop Cascade Loss
+   (Prior Hops Combined)」实测 22.1em），中英文都一行放得下——折行会把该行的数值抬到
+   两行的首行基线上，右对齐的数值列就此塌一格。再长的（将来新增项）仍折行兜底，不撑破数据列。 */
+.e2-doc .lbx-doc-main .wf-l { max-width: 23em; }
+/* 参考段带栏宽：由公共档的 28/32em 收到 26/30em。公共档是按「段带独占整幅、左轨另占一行」定的；
+   本窗左轨收窄后整幅宽度大半归了段带，28em 的栏在这个宽度下仍只排得下 3 栏、每栏末轨白吃十余 em。
+   收一档即多出一栏，栏内留白从 ~16em 降到 ~6em。
+   ★ 与上面 .lbx-doc .lbx-doc-ref .wf 同分（同为三/四位特异度），靠「写在后面」取胜——
+     同属本文件，顺序钉死，不受打包顺序影响。 */
+.e2-doc .lbx-doc-ref .wf { columns: 26em; }
+.e2-doc .lbx-doc-ref .wf.wf-en { columns: 30em; }
+
+/* —— 端到端链路级联的段/跳标题行（第四窗 e2e 专用行类 k-head / k-shead）——
+   一条端到端级联动辄跨四五段十来跳，全是同一列数字，没有分层就读不动。故在级联表内插两级
+   标题行：段（k-head，粗、上留白、题线）与跳/透明转发（k-shead，退一档墨色、无线）。
+   ★ 必须带 .lbx-doc 前缀：WaterfallTable 的 scoped .wf-row 是两位特异度，这里三位才压得住，
+   且三窗的瀑布里根本没有这两个 kind，加了也影响不到它们。 */
+.lbx-doc .wf-row.k-head {
+  margin-top: .9em; padding-top: .35em;
+  font-weight: 700; color: var(--text); border-top: 1px solid var(--lb-rule);
+}
+/* 紧贴段标题的那条段标题行不留白、不画线：题注下已经有一条 2px 顶线，再叠一次上留白 + 题线，
+   「端到端链路级联」的标题与第一行之间就空出十几像素还夹着一条多余的横线。
+   ★ 选择器不能写 :first-of-type —— of-type 认的是标签名，.wf-seg 的头一个 div 是 .wf-title，
+   段标题行永远排在它后面，那条规则一次也没命中过（这个空档就是这么来的）。 */
+.lbx-doc .wf-seg > .wf-title + .wf-row.k-head { margin-top: 0; border-top: none; }
+.lbx-doc .wf-row.k-head .wf-l { color: var(--text); font-weight: 700; letter-spacing: .3px; }
+.lbx-doc .wf-row.k-shead { margin-top: .35em; }
+.lbx-doc .wf-row.k-shead .wf-l { color: var(--text-muted); font-weight: 600; }
+.lbx-doc .wf-row:is(.k-head, .k-shead):hover { background: transparent; }
+/* —— 右键菜单（浮层，工作台公共）——
+   前三窗把 .lb-ctx* 各写在自己 App 的 <style scoped> 里，于是菜单只要挪进子组件就失去样式：
+   scoped 给选择器缀 data-v-，子组件的元素带的是它自己那个。端到端窗口的节点/hop 右键菜单
+   正是画在 ChainStrip 里的，漏样式的后果在深色主题下最刺眼——按钮退回 UA 默认的浅灰实底，
+   而字色继承 .lb-shell 的近白墨色，成了白底白字。故在公共表里存一份，任何组件都吃得到。
+   ★ 这几条【刻意不加 .lb-shell 前缀】：本表末尾那批带前缀的规则是为「压过各 App 的 scoped」，
+   这里要的正相反——它是兜底，前三窗自己那份（.lb-ctx-i[data-v-…]，特异度高一级）必须照旧生效。 */
+.lb-ctx-mask { position: fixed; inset: 0; z-index: 400; }
+.lb-ctx {
+  position: fixed; min-width: 150px; padding: 4px; display: flex; flex-direction: column;
+  background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-box, 3px); box-shadow: 0 6px 20px rgba(0, 0, 0, .22);
+}
+.lb-ctx-i {
+  font: inherit; font-size: 12px; text-align: left; padding: 6px 10px; cursor: pointer; white-space: nowrap;
+  background: transparent; color: var(--text); border: 0; border-radius: var(--r-ctl, 2px);
+}
+.lb-ctx-i:hover:not(:disabled) { background: var(--surface-2); }
+.lb-ctx-i:disabled { opacity: .45; cursor: not-allowed; }
+.lb-ctx-i.danger:hover { color: var(--danger); }
+.lb-ctx-sep { height: 1px; margin: 4px 6px; background: var(--border); }
+
 /* 计算栏提示（功放取站型）：纯文本 */
 .lbx-run-hint { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
 
@@ -409,3 +494,18 @@ html[data-theme='dark'] .sg-cell .sg-fillbar::after {
 
 /* 分享码 / 设备ID 等代码型内容原有「真等宽回钉」已撤销：全软件统一 Times New Roman 后不再破例，
    字距靠 .lb-myid b 的 letter-spacing 与 .lb-area 的 word-break 保证可读可选。 */
+
+/* —— 英文版式让位（根元素 lang="en" 由 i18n 运行时打上）——
+   检查器行是「标签占剩余宽 + 数值定宽」的密排结构，标签设了 ellipsis。中文 4 个字说完的
+   「分配带宽」，英文 Allocated Bandwidth 要 128px，而标签只分到 90px —— 直接被咬掉。
+   译名那侧已按卫通惯例缩写（BW / Freq. / Pol. / Rx），这里再把数值列收窄一档补上差额；
+   两者相加才够，单靠任一侧都不够。只在英文下生效，中文版式一个像素不动。 */
+html[lang="en"] .lb-shell :is(.lbx-flow, .lb-libpane) :is(.es-i, .bb-i, .sp-i, .rsp-i) { width: 92px; }
+html[lang="en"] .lb-shell .lb-libpane :is(.es-i, .bb-i, .sp-i, .rsp-i) { width: 88px; }
+html[lang="en"] .lb-shell .lb-libpane :is(select.es-i, select.bb-i, select.sp-i, select.rsp-i) { width: 100px; }
+/* 口径切换那两行（.bb-f-tg：门限 Eb/N₀⇄Es/N₀、效率⇄频谱效率）标签里嵌着一枚钮，本就最挤。
+   BasebandPanel 的 scoped 规则把输入框收到 78px 让位，而上面这条英文规则特异度更高会把它顶回
+   92px —— 反把标签挤没。这里显式收得更窄，英文标签才放得下。 */
+html[lang="en"] .lb-shell :is(.lbx-flow, .lb-libpane) .bb-f.bb-f-tg .bb-i { width: 68px; }
+/* 卫星分区栏名轴：按中文 3 字算死的（--lb-fs × 3），英文 Configurations / Transponder 放不下 */
+html[lang="en"] .lbx-satband { --lbx-gut: calc(var(--lb-fs) * 6 + 12px); }

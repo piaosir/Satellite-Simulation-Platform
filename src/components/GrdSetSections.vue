@@ -210,7 +210,7 @@ const boreTip = computed(() => {
             <template v-else>
               <div class="sres-list">
                 <div v-for="e in bcand" :key="e.noradId || e.name" class="sitem" @click="pickBoreSat(e)">
-                  <div class="nm" :title="e.name">{{ e.name }}</div>
+                  <div class="nm" :title="e.name" data-i18n-skip>{{ e.name }}</div>
                   <div class="sub">{{ e.tag }}<template v-if="e.noradId"><template v-if="e.tag"> · </template>NORAD {{ e.noradId }}</template></div>
                 </div>
               </div>

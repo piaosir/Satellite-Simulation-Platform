@@ -76,6 +76,14 @@ try {
   console.warn('[satlink-core] NGSO 引擎延迟加载：', e.message);
 }
 
+// 端到端链路（多跳 / 混合转发）引擎——正向电平递推，物理量借三引擎，只做级联代数。
+let linkChain = null;
+try {
+  linkChain = require('./utils/linkChain.js');
+} catch (e) {
+  console.warn('[satlink-core] 端到端链路引擎加载失败：', e.message);
+}
+
 // 再生式链路预算引擎（v1：再生式上行）——复用 NGSO 上行物理量，把合计重标为上行 C/(N+I)。
 let regen = null;
 try {
@@ -121,6 +129,8 @@ module.exports = {
   computeRegenIslMode: regen && regen.computeRegenIslMode,
   // 再生式星间激光计算（第一性原理光学预算：发射光功率/望远镜增益/光学FSL/指向 → P_rx；光子/bit 灵敏度 → 余量）
   computeRegenLaserIslMode: regen && regen.computeRegenLaserIslMode,
+  // 端到端链路（多跳 / 混合转发）：节点链 → 分段 → 段内级联 → 逐段结算 → 端到端汇总（只有正向计算）
+  computeLinkChain: linkChain && linkChain.computeLinkChain,
   // NGSO 站星几何求解（SGP4 双站互视最差几何 + 轨道根数 + 时刻/时窗），供结果几何区用平台精确几何
   ngsoGeometry,
   solveNgsoMutualWorstCase: ngsoGeometry.solveMutualWorstCase,
@@ -128,6 +138,8 @@ module.exports = {
   solveNgsoMutualWorstCaseBatch: ngsoGeometry.solveMutualWorstCaseBatch,
   // 星间链路(ISL)两星几何：双 SGP4 + 地球临边遮挡 → 最差星间距离 + 互视可见度 + 访问窗口
   solveIslWorstCase: ngsoGeometry.solveIslWorstCase,
+  // 星间距离时间序列（同一套几何，逐拍出参）：供「星间链路距离」工具的时间轴取某一时刻的距离
+  sampleIslRangeSeries: ngsoGeometry.sampleIslRangeSeries,
   // 单站访问窗口（满足最低仰角及以上的全部过境时间窗），供再生式几何关系区
   solveAccessWindows: ngsoGeometry.solveAccessWindows,
   // 经纬度 → 降雨率 / 海拔自动填值（与小程序口径一致）

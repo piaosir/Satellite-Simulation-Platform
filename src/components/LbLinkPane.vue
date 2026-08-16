@@ -156,7 +156,7 @@ defineExpose({
       <div v-if="hasGeom" class="lk-legs">
         <div v-for="(l, i) in legRows" :key="i" class="lk-leg">
           <span class="lk-dot" :class="'lk-' + l.dir"></span>
-          <span class="lk-lname">{{ l.name }}</span>
+          <span class="lk-lname" data-i18n-skip>{{ l.name }}</span>
           <span class="lk-lpath">{{ l.path }}</span>
           <span v-if="l.elev != null" class="lk-lv">{{ t('仰角') }} {{ g2(l.elev) }}<i>°</i></span>
           <span v-if="l.az != null" class="lk-lv">{{ t('方位') }} {{ g2(l.az) }}<i>°</i></span>

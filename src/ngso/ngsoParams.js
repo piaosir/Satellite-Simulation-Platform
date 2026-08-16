@@ -69,7 +69,7 @@ export const FIELD_GROUPS = [
       { key: 'rxCenterFrequency', label: '下行频率', tip: '下行中心频率（卫星→收信站）', unit: 'GHz', type: 'num', def: '12.5', target: 'link' },
       { key: 'downlinkPolarization', label: '下行极化', tip: '下行极化方式', type: 'select', options: ['V', 'H', 'L', 'R'], def: 'H', target: 'link' },
       // NGSO 轨道：轨道高度（圆轨道高度）+ 轨道倾角。手动模式可编辑；选星后由所选卫星轨道自动确定（只读显示「自动」）。
-      { key: 'orbitAltitude', label: '轨道高度', tip: '圆轨道高度；选星（天线树导入/搜索）后由所选卫星轨道自动确定，只读', unit: 'km', type: 'num', def: '8000', target: 'link', pair: 'orbit' },
+      { key: 'orbitAltitude', label: '轨道高度', tip: '圆轨道高度；选星（卫星/天线树选择、从星历搜索）后由所选卫星轨道自动确定，只读。手动几何下改它即重算各行斜距', unit: 'km', type: 'num', def: '8000', target: 'link', pair: 'orbit' },
       { key: 'orbitInclination', label: '轨道倾角', tip: '轨道倾角；选星后由所选卫星轨道根数自动确定，只读', unit: '°', type: 'num', def: '45', target: 'sat', pair: 'orbit' },
       { key: 'sfdRef', label: 'SFDref', tip: '饱和通量密度参考值 (Saturation Flux Density)', unit: 'dBW/m²', type: 'num', def: '-84', target: 'sat' },
       { key: 'sfdGtRef', label: 'G/Tref', tip: '参考点卫星品质因数 G/T', unit: 'dB/K', type: 'num', def: '0', target: 'sat' },
@@ -101,9 +101,13 @@ export const FIELD_GROUPS = [
       { key: 'earthStationLocation', label: '地球站位置', type: 'text', def: '北京', target: 'link', city: 'tx', lonKey: 'longitude', latKey: 'latitude' },
       { key: 'longitude', label: '经度', unit: '°E', type: 'num', def: '116.4074', target: 'link' },
       { key: 'latitude', label: '纬度', unit: '°N', type: 'num', def: '39.9042', target: 'link' },
-      { key: 'minElevation', label: '最低仰角', tip: '发信站对卫星的最低工作仰角，决定最差几何（斜距最大）', unit: '°', type: 'num', def: '10', target: 'link' },
+      // 仰角：几何=自动最差 时它是【门限】（决定最差几何，斜距最大）；几何=手动 时它就是【本条链路的仰角】，
+      // 与同组的「斜距」一起直接送进引擎，不解算任何轨道关系。故标签/口径随几何模式切换（见 gridFields）。
+      { key: 'minElevation', label: '最低仰角', manualLabel: '仰角', tip: '发信站对卫星的最低工作仰角，决定最差几何（斜距最大）', manualTip: '发信站对卫星的仰角（手动几何：直接送进引擎，不解算轨道）', unit: '°', type: 'num', def: '10', target: 'link' },
+      // 斜距（手动几何专用列）：几何=自动最差 时由几何求解器覆盖，故只在手动模式下显示与生效。
+      { key: 'slantRange', label: '斜距', tip: '发信站到卫星的星地斜距。随仰角 / 纬度 / 海拔 / 轨道高度自动算出（WGS-84，取绕站一圈的最大值），也可直接改；这四项再变即重算。', unit: 'km', type: 'num', def: '', target: 'link', manualOnly: true },
       { key: 'altitude', label: '海拔', unit: 'm', type: 'num', def: '0', target: 'link', auto: 'elev' },
-      { key: 'G_Ts', label: '卫星G/T', tip: '卫星接收品质因数 G/T（随波束位置随站而异的「卫星×发信站」配对量，故留在站表；可由 GRD 天线匹配自动回填）。MEO 预设 10 dB/K：MEO Ku 点波束量级（GEO 宽波束为 0~2 dB/K 量级）', unit: 'dB/K', type: 'num', def: '10', target: 'link' },
+      { key: 'G_Ts', label: '卫星G/T', tip: '卫星接收品质因数 G/T（随波束位置随站而异的「卫星×发信站」配对量，故留在站表逐站填写）。MEO 预设 10 dB/K：MEO Ku 点波束量级（GEO 宽波束为 0~2 dB/K 量级）', unit: 'dB/K', type: 'num', def: '10', target: 'link' },
       { key: 'rainRate', label: 'R0.01%', unit: 'mm/h', type: 'num', def: '0', target: 'link', auto: 'rain' },
       { key: 'uplinkAvailability', label: '可用度', unit: '%', type: 'num', def: '99.90', target: 'link' }
     ]
@@ -117,9 +121,10 @@ export const FIELD_GROUPS = [
       { key: 'rxEarthStationLocation', label: '地球站位置', type: 'text', def: '北京', target: 'link', city: 'rx', lonKey: 'rxLongitude', latKey: 'rxLatitude' },
       { key: 'rxLongitude', label: '经度', unit: '°E', type: 'num', def: '116.4074', target: 'link' },
       { key: 'rxLatitude', label: '纬度', unit: '°N', type: 'num', def: '39.9042', target: 'link' },
-      { key: 'rxMinElevation', label: '最低仰角', tip: '收信站对卫星的最低工作仰角，决定最差几何（斜距最大）', unit: '°', type: 'num', def: '10', target: 'link' },
+      { key: 'rxMinElevation', label: '最低仰角', manualLabel: '仰角', tip: '收信站对卫星的最低工作仰角，决定最差几何（斜距最大）', manualTip: '收信站对卫星的仰角（手动几何：直接送进引擎，不解算轨道）', unit: '°', type: 'num', def: '10', target: 'link' },
+      { key: 'rxSlantRange', label: '斜距', tip: '收信站到卫星的星地斜距。随仰角 / 纬度 / 海拔 / 轨道高度自动算出（WGS-84，取绕站一圈的最大值），也可直接改；这四项再变即重算。', unit: 'km', type: 'num', def: '', target: 'link', manualOnly: true },
       { key: 'rxAltitude', label: '海拔', unit: 'm', type: 'num', def: '0', target: 'link', auto: 'elev' },
-      { key: 'rxEIRP', label: '卫星EIRP', tip: '卫星下行 EIRP（随波束位置随站而异的「卫星×收信站」配对量，故留在站表；可由 GRD 天线匹配自动回填）', unit: 'dBW', type: 'num', def: '46', target: 'link' },
+      { key: 'rxEIRP', label: '卫星EIRP', tip: '卫星下行 EIRP（随波束位置随站而异的「卫星×收信站」配对量，故留在站表逐站填写）', unit: 'dBW', type: 'num', def: '46', target: 'link' },
       { key: 'rxRainRate', label: 'R0.01%', unit: 'mm/h', type: 'num', def: '0', target: 'link', auto: 'rain' },
       { key: 'rxDownlinkAvailability', label: '可用度', unit: '%', type: 'num', def: '99.90', target: 'link' }
     ]

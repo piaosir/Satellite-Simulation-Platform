@@ -38,11 +38,13 @@ ok('载波 锚点缺失/非法 → 退回信息速率', carrierAutoName({ ...CAR
 // 锚点用用户填的原值：infoRate 只存 3 位小数，沿链反推回去会掉精度（填 5000 kcps 反推成 4999.999）
 ok('载波 锚点照用户原值', anchoredRate({ ...CAR, infoRate: '3455.882', rateAnchor: 'chip', rateAnchorValue: 5000 }).value === 5000)
 ok('载波 原值缺失 → 退回按链反推', Math.abs(anchoredRate({ ...CAR, infoRate: '3455.882', rateAnchor: 'chip', rateAnchorValue: null }).value - 5000) > 1e-6)
-// 卫星 = 星名 · 频段 · 轨道（GSO 报轨位、NGSO 报高度倾角）
+// 卫星：GSO = 星名 · 频段 · 轨位；NGSO/再生式（有 ngsoSat）= 只报星名
 ok('卫星 GSO = 星名 · 频段 · 轨位', satAutoName({ form: { satelliteName: 'APSTAR-6D', frequencyBand: 'Ku', orbitPosition: '134' } }) === 'APSTAR-6D · Ku · 134°E',
   satAutoName({ form: { satelliteName: 'APSTAR-6D', frequencyBand: 'Ku', orbitPosition: '134' } }))
-ok('卫星 NGSO = 星名 · 频段 · 高度倾角', satAutoName({ form: { satelliteName: 'X', frequencyBand: 'Ka', orbitAltitude: '1000', orbitInclination: '89' }, ngsoSat: { mode: 'manual', orbit: null } }) === 'X · Ka · h=1000 km i=89°',
-  satAutoName({ form: { satelliteName: 'X', frequencyBand: 'Ka', orbitAltitude: '1000', orbitInclination: '89' }, ngsoSat: { mode: 'manual', orbit: null } }))
+const NGSO_SAT = { form: { satelliteName: 'X', frequencyBand: 'Ka', orbitAltitude: '1000', orbitInclination: '89' }, ngsoSat: { mode: 'manual', orbit: null } }
+ok('卫星 NGSO/再生式 只报星名（频段与轨道不进名字）', satAutoName(NGSO_SAT) === 'X', satAutoName(NGSO_SAT))
+ok('卫星 NGSO 选星后也只报星名',
+  satAutoName({ form: { satelliteName: '旧星', frequencyBand: 'Ka', orbitAltitude: '550' }, ngsoSat: { mode: 'search', orbit: {}, name: 'STARLINK-31234' } }) === 'STARLINK-31234')
 ok('卫星 取星后以所选星为准', satAutoName({ form: { satelliteName: '旧星' }, ngsoSat: { mode: 'search', orbit: {}, name: 'QIANFAN-1' } }) === 'QIANFAN-1')
 ok('卫星 手动轨道取表单星名', satAutoName({ form: { satelliteName: 'CS10R' }, ngsoSat: { mode: 'manual', orbit: null, name: '' } }) === 'CS10R')
 ok('卫星 出厂占位名 Satellite 不算星名（整条不成立）', satAutoName({ form: { satelliteName: 'Satellite', frequencyBand: 'Ku', orbitPosition: '110.5' } }) === '')
@@ -108,6 +110,11 @@ ok('名字恰好等于自动名 → 自动', legacyAutoFlag('es', { name: '6.2 m
 // 改规则（2026-07-29 功放退出名字）前的库：名字还是旧形状「口径 · 功放」的同样算自动，别一次性钉成自定义名
 ok('旧版自动名「口径 · 功放」也算自动', legacyAutoFlag('es', { name: '6.2 m · 40 W', form: { antennaDiameter: '6.2', paPowerW: '40' } }) === true)
 ok('旧版自动名 再生式 opPowerW 换档形状', legacyAutoFlag('es', { name: '2.4 m · 200 mW', form: { antennaDiameter: '2.4', opPowerW: '0.2' } }) === true)
+// 改规则（2026-08-15 NGSO/再生式的卫星只报星名）前的库：名字还是「星名 · 频段 · h/i」的同样算自动
+ok('旧版自动名 NGSO「星名 · 频段 · 高度倾角」也算自动',
+  legacyAutoFlag('sat', { name: 'X · Ka · h=1000 km i=89°', form: { satelliteName: 'X', frequencyBand: 'Ka', orbitAltitude: '1000', orbitInclination: '89' }, ngsoSat: { mode: 'manual', orbit: null } }) === true)
+ok('NGSO 用户起的名字仍判为自定义',
+  legacyAutoFlag('sat', { name: 'X 备份星', form: { satelliteName: 'X', frequencyBand: 'Ka', orbitAltitude: '1000' }, ngsoSat: { mode: 'manual', orbit: null } }) === false)
 ok('用户起的名字判为自定义', legacyAutoFlag('es', { name: '关口站 6.2m', form: { antennaDiameter: '6.2', paPowerW: '40' } }) === false)
 ok('存过的标志位优先于推定', adoptAutoFlag('es', { name: '站型2', nameAuto: false, form: {} }) === false)
 ok('没存过才推定', adoptAutoFlag('es', { name: '站型2', form: {} }) === true)
@@ -116,6 +123,35 @@ ok('没存过才推定', adoptAutoFlag('es', { name: '站型2', form: {} }) === 
 ok('未知库类型不改动', (() => { const a = [{ name: 'X', nameAuto: true, form: {} }]; syncAutoNames(a, '不存在'); return a[0].name === 'X' })())
 ok('非数组不炸', (() => { syncAutoNames(null, 'es'); return true })())
 ok('缺 form 不炸', autoNameOf('es', { name: 'x' }) === '' || autoNameOf('es', { name: 'x' }) === undefined)
+
+// —— ⑦ 平台语言：自动名是【数据】（存进 library.json、显示在 <input> 里），DOM 呈现层翻不到，
+//        故生成时就得按语言出字；换语言时兜底名要跟着搬过去，带参数的名字与自定义名一律不动 ——
+const { newCfgName, newFolderName, copyNameOf } = await import('../../../src/shared/lbAutoName.js')
+const store = new Map()
+globalThis.localStorage = { getItem: (k) => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, String(v)) }
+const setLang = (v) => store.set('ui-lang', v)
+
+setLang('en')
+ok('英文：配置树默认名', newCfgName() === 'New Configuration' && newFolderName() === 'New Folder' && copyNameOf('A') === 'A Copy')
+ok('英文：e2e 自带中文默认名也走英文', newCfgName('新建配置') === 'New Configuration')
+const enLib = [withAutoFlag({ name: '', form: {} }, 'sat'), withAutoFlag({ name: '', form: {} }, 'es')]
+syncAutoNames(enLib, 'sat')
+ok('英文：新建卫星落到英文兜底名', enLib[0].name === 'Satellite', enLib[0].name)
+const enEs = [withAutoFlag({ name: '', form: {} }, 'es')]
+syncAutoNames(enEs, 'es')
+ok('英文：新建地球站落到英文兜底名', enEs[0].name === 'Earth Station', enEs[0].name)
+// 有参数的自动名不受语言影响（口径/速率/星名本就没有中文）
+const enD = [{ name: '', nameAuto: true, form: { antennaDiameter: '6.2' } }]
+syncAutoNames(enD, 'es')
+ok('英文：有参数的自动名照旧', enD[0].name === '6.2 m', enD[0].name)
+
+setLang('zh')
+syncAutoNames(enEs, 'es'); syncAutoNames(enLib, 'sat')
+ok('换回中文：兜底名跟着搬', enEs[0].name === '地球站' && enLib[0].name === '卫星', enEs[0].name + ' / ' + enLib[0].name)
+ok('中文：配置树默认名回中文', newCfgName() === '新配置' && newFolderName() === '新建文件夹' && copyNameOf('A') === 'A 副本')
+const keep = [{ name: '关口站 6.2m', nameAuto: false, form: {} }, { name: '默认卫星', nameAuto: true, form: { satelliteName: 'Satellite' } }]
+setLang('en'); syncAutoNames(keep, 'sat'); setLang('zh')
+ok('换语言不碰自定义名 / 不碰算不出名字的条目', keep[0].name === '关口站 6.2m' && keep[1].name === '默认卫星')
 
 console.log(`\n=== ${pass} passed, ${fail} failed ===`)
 process.exit(fail ? 1 : 0)

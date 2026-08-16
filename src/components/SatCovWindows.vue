@@ -230,7 +230,7 @@ function copyTsv() {
         <template v-else>
           <div class="sres-list">
             <div v-for="e in cand" :key="e.noradId || e.name" class="sitem" @click="sp.addTarget(e); tq = ''">
-              <div class="nm" :title="e.name">{{ e.name }}</div>
+              <div class="nm" :title="e.name" data-i18n-skip>{{ e.name }}</div>
               <div class="sub">{{ e.tag }}<template v-if="e.noradId"><template v-if="e.tag"> · </template>NORAD {{ e.noradId }}</template></div>
             </div>
           </div>
@@ -331,7 +331,7 @@ function copyTsv() {
           <div v-for="b in bands" :key="b.id" class="sgt-row" :class="{ hov: hoverId === b.id }"
                :title="b.name + ' · ' + b.nWin + ' 次'" @mouseenter="hoverId = b.id" @mouseleave="hoverId = ''"
                @click="emit('focus-target', { name: b.name, noradId: b.id })">
-            <span class="sgt-n">{{ b.name }}</span>
+            <span class="sgt-n" data-i18n-skip>{{ b.name }}</span>
             <span class="sgt-bar"><i v-for="(s, si) in b.segs" :key="si" :style="{ left: (s.a * 100) + '%', width: Math.max(0.35, (s.b - s.a) * 100) + '%' }"></i></span>
             <span class="sgt-c">{{ b.nWin }}</span>
           </div>
@@ -402,7 +402,7 @@ function copyTsv() {
               <label v-for="b in sp.filteredBeams()" :key="b.seq" class="brow" :class="{ on: sp.beamOn(tblOpts, b.bi) }">
                 <input type="checkbox" :checked="sp.beamOn(tblOpts, b.bi)" @change="sp.toggleBeam(tblOpts, b.bi)" />
                 <span class="bseq">{{ b.seq }}</span>
-                <span class="pbnm" :title="b.name">{{ b.name }}</span>
+                <span class="pbnm" :title="b.name" data-i18n-skip>{{ b.name }}</span>
                 <span class="bpk">{{ b.peakDb == null ? '—' : b.peakDb.toFixed(1) }}</span>
               </label>
               <div v-if="!sp.filteredBeams().length" class="empty">无匹配波束</div>

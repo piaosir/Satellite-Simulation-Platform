@@ -52,6 +52,7 @@ import { useSatGroups } from '../viz/constellation/useSatGroups.js'
 import { makeSatSetItem } from '../shared/satconMiniExport.js'
 import { walkerCode, orbitPeriodMin, validateWalker } from '../viz/constellation/walker.js'
 import { classifyOrbit } from '../shared/orbitClass.js'
+import { byLang } from '../shared/i18n/lang.js'   // 空名占位是界面语汇，却画在打了 skip 的名字位上（呈现层翻不到），故在这里按语言出字
 
 // 分组与「星座地图」(2D) 完全一致：同一份列表 / 顺序 / 默认「中国星网」。
 const GROUPS = [
@@ -1731,18 +1732,20 @@ const filterGroupId = ref('')   // 非空=当前筛选显示集来自某个已�
 // 卫星集「具体是谁」标签：给可见性分析「分析目标」区显式点出正在分析哪些星——口径与 rebuildRenderSet 完全一致：
 //   搜索/卫星组筛选态优先（filterN>0）；否则=内置分组（非「无」）+ 全部可见自定义星座（可叠加，故可能多来源）。
 // 用于让用户一眼知道 238 颗到底是 Starlink / 某自定义星座 / 某卫星组 / 搜索结果，而非只看到裸数字。
+// lit＝这个 name 是界面词而不是用户数据（缺省占位、内置分组名），英文模式下该翻；
+// 用户起的名字（自定义星座 / 卫星组 / 搜索词）不翻，故渲染处按它决定挂不挂 i18n-skip。
 const satSetLabel = computed(() => {
   if (filterN.value > 0) {
     return filterGroupId.value
-      ? { kind: '卫星组', name: filterKw.value || '未命名组' }
-      : { kind: '搜索', name: filterKw.value || '关键词' }
+      ? { kind: '卫星组', name: filterKw.value || '未命名组', lit: !filterKw.value }
+      : { kind: '搜索', name: filterKw.value || '关键词', lit: !filterKw.value }
   }
   const g = GROUPS[groupIndex.value]
   const names = []
   if (g && g.key !== 'none') names.push(g.label)         // 「无（不渲染星座）」不计入——它没有真实星
   for (const c of customConst.list.value) if (c.visible !== false) names.push(c.name)
-  if (!names.length) return { kind: '', name: '无' }
-  if (names.length === 1) return { kind: (g && g.key === 'none') ? '自定义星座' : '星座', name: names[0] }
+  if (!names.length) return { kind: '', name: '无', lit: true }
+  if (names.length === 1) return { kind: (g && g.key === 'none') ? '自定义星座' : '星座', name: names[0], lit: !!(g && g.key !== 'none') }
   return { kind: '混合', name: names.join(' + ') }        // 内置组叠加自定义星座 / 多座自定义星座并显
 })
 // 【必须等在建的那一次】：早先「poolLoading 就早退」会让第二个调用方在池子只建了一半时就拿 searchSource()
@@ -5218,7 +5221,7 @@ onBeforeUnmount(() => {
           <div v-show="!cardCollapsed && selList.length > 1" class="msel">
             <div v-for="s in selList" :key="s.idx" class="mrow" :class="{ active: s.active }" @click="setPrimary(s)">
               <div class="mmain">
-                <div class="mr1"><span class="mnm" :title="s.name">{{ s.name }}</span><span class="mkind">{{ s.kind }}</span></div>
+                <div class="mr1"><span class="mnm" :title="s.name" data-i18n-skip>{{ s.name }}</span><span class="mkind">{{ s.kind }}</span></div>
                 <div class="msub">{{ s.noradId }} · {{ s.alt }}km · {{ s.incl }}°</div>
               </div>
               <span class="mx" title="移出该星" @click.stop="removeSel(s)"><Icon name="x" :size="10" /></span>
@@ -5347,7 +5350,7 @@ onBeforeUnmount(() => {
               <div v-if="searchResults.length" class="panel">
                 <div v-for="item in searchResults" :key="item.noradId" class="item" :class="{ picked: selNorads.has(String(item.noradId)) }" @click="pickResult(item)">
                   <div class="itx">
-                    <div class="nm">{{ item.name }}</div>
+                    <div class="nm" data-i18n-skip>{{ item.name }}</div>
                     <div class="sub">{{ item.groupLabel }} · NORAD {{ item.noradId }}<span v-if="item.slot"> · {{ item.slot }}</span></div>
                   </div>
                   <!-- 「+」＝加入选中集但不清搜索框：换关键词再点「+」可跨多次搜索攒出一批，再「存为组」 -->
@@ -5445,7 +5448,7 @@ onBeforeUnmount(() => {
               </template>
               <template v-else>
                 <span class="ccic"><Icon name="layers" :size="12" /></span>
-                <span class="ccnm" :title="g.name">{{ g.name }}</span>
+                <span class="ccnm" :title="g.name" data-i18n-skip>{{ g.name }}</span>
                 <span class="cccode">{{ g.sats.length }} 颗</span>
                 <span v-if="selList.length || (filterN && !filterGroupId)" class="ccic add" :title="'将当前' + (selList.length ? ('选中的 ' + selList.length) : ('筛选的 ' + filterN)) + ' 颗卫星加入本组（去重追加）'" @click.stop="addSelToGroup(g)"><Icon name="plus" :size="13" /></span>
                 <span v-if="selList.length && filterGroupId === g.id" class="ccic del" :title="'将选中的 ' + selList.length + ' 颗从本组移出'" @click.stop="removeSelFromGroup(g)"><Icon name="minus" :size="13" /></span>
@@ -5475,7 +5478,7 @@ onBeforeUnmount(() => {
             <div class="ccrow" :class="{ off: c.visible === false, sel: c.id === soloConst, exp: expTag === 'c:' + c.id }" title="点击单独显示该星座" @click="showConstAlone(c)" @contextmenu.prevent.stop="openRowMenu($event, 'cc', c)">
               <span class="pgex" :title="expTag === 'c:' + c.id ? '收起卫星列表' : '展开卫星列表'" @click.stop="expToggle('c:' + c.id, c.name)"><Icon :name="expTag === 'c:' + c.id ? 'chevron-down' : 'chevron-right'" :size="13" /></span>
               <span class="ccdot" :style="{ background: c.color }"></span>
-              <span class="ccnm" :title="c.name">{{ c.name }}</span>
+              <span class="ccnm" :title="c.name" data-i18n-skip>{{ c.name }}</span>
               <span class="cccode">{{ ccCode(c) }}</span>
               <span class="ccic" :title="c.visible === false ? '显示' : '隐藏'" @click.stop="customConst.toggle(c.id)"><Icon :name="c.visible === false ? 'eye-off' : 'eye'" :size="12" /></span>
               <span class="ccic" title="编辑" @click.stop="openConstWizard(c)"><Icon name="pencil" :size="11" /></span>
@@ -5495,7 +5498,7 @@ onBeforeUnmount(() => {
             <div class="lmenu" :style="{ left: expMenu.x + 'px', top: expMenu.y + 'px' }">
               <div class="lmh">加入 {{ expMenu.sats.length }} 颗</div>
               <div class="lmi new" @click="expMenuNew"><Icon name="folder-plus" :size="12" /><span>新建组</span></div>
-              <div v-for="g in satGroups.list.value" :key="g.id" class="lmi" :title="g.name" @click="expMenuTo(g)"><Icon name="layers" :size="12" /><span>{{ g.name }}</span><em>{{ g.sats.length }}</em></div>
+              <div v-for="g in satGroups.list.value" :key="g.id" class="lmi" :title="g.name" @click="expMenuTo(g)"><Icon name="layers" :size="12" /><span data-i18n-skip>{{ g.name }}</span><em>{{ g.sats.length }}</em></div>
             </div>
           </template>
 
@@ -5788,7 +5791,7 @@ onBeforeUnmount(() => {
                     <span class="ic ok" title="确认重命名" @mousedown.prevent @click.stop="commitRenameAnt(sat, a)"><Icon name="check" :size="11" /></span>
                   </template>
                   <template v-else>
-                    <span class="aname" title="双击重命名" @dblclick.stop="startRenameAnt(sat, a)">{{ a.name }}</span>
+                    <span class="aname" title="双击重命名" @dblclick.stop="startRenameAnt(sat, a)" data-i18n-skip>{{ a.name }}</span>
                     <span v-if="grd.isActive(sat.folder, a.name)" class="afoc">编辑中</span>
                     <span class="sacts">
                       <span class="ic" title="重命名天线" @click.stop="startRenameAnt(sat, a)"><Icon name="pencil" :size="11" /></span>
@@ -5847,7 +5850,7 @@ onBeforeUnmount(() => {
           <div class="bs-grps">
             <div v-for="g in bs.groupsForSat.value" :key="g.id" class="bs-grow" :class="{ on: g.id === bs.activeGroupId.value, hid: !g.pinned && g.id !== bs.activeGroupId.value }" @click="bs.selectGroup(g.id)">
               <span class="bs-gk" :class="g.mode">{{ g.mode === 'pam' ? '相控阵' : g.mode === 'gauss' ? '多馈源' : '赋形' }}</span>
-              <span class="bs-gname" :title="g.name">{{ g.name }}</span>
+              <span class="bs-gname" :title="g.name" data-i18n-skip>{{ g.name }}</span>
               <span class="bs-gcnt">{{ bs.groupStat(g).n }}{{ bs.groupStat(g).unit }}</span>
               <span class="gic" :title="g.pinned ? '取消常显（切换到其它组编辑时自动隐藏本组草图）' : (g.id === bs.activeGroupId.value ? '常显本组（切换到其它组编辑后仍保留显示，用于比对）' : '仅显示编辑中的组；点击常显本组草图以便和其它组比对')" @click.stop="bs.toggleGroupVisible(g.id)"><Icon :name="(g.pinned || g.id === bs.activeGroupId.value) ? 'eye' : 'eye-off'" :size="12" /></span>
               <span class="gic" title="复制该组" @click.stop="bs.duplicateGroup(g.id)"><Icon name="copy" :size="11" /></span>
@@ -6122,7 +6125,7 @@ onBeforeUnmount(() => {
               <div v-for="pg in polys" :key="pg.id" class="bs-prow">
                 <label class="bs-pchk" :title="(pg.name || 'Polygon') + '（' + pg.pts.length + '点）'">
                   <input type="checkbox" :checked="bs.p.polyIds.includes(pg.id)" @change="bs.togglePoly(pg.id)" />
-                  <span class="bs-pnm">{{ pg.name || 'Polygon' }}</span>
+                  <span class="bs-pnm" data-i18n-skip>{{ pg.name || 'Polygon' }}</span>
                 </label>
               </div>
             </div>
@@ -6225,7 +6228,7 @@ onBeforeUnmount(() => {
               <div v-for="pg in polys" :key="pg.id" class="bs-prow">
                 <label class="bs-pchk" :title="(pg.name || 'Polygon') + '（' + pg.pts.length + '点）'">
                   <input type="checkbox" :checked="bs.p.polyIds.includes(pg.id)" @change="bs.togglePoly(pg.id)" />
-                  <span class="bs-pnm">{{ pg.name || 'Polygon' }}</span>
+                  <span class="bs-pnm" data-i18n-skip>{{ pg.name || 'Polygon' }}</span>
                 </label>
               </div>
             </div>
@@ -6278,7 +6281,7 @@ onBeforeUnmount(() => {
             <div class="srow vis-satset"><label>卫星集</label>
               <span class="vis-satset-val" :title="'当前分析的卫星集＝地图上显示的卫星。可在「星座」视图切换分组 / 搜索 / 显示卫星组以变更本集。'">
                 <span v-if="satSetLabel.kind" class="vis-satset-kind">{{ satSetLabel.kind }}</span>
-                <b>{{ satSetLabel.name }}</b>
+                <b :data-i18n-skip="satSetLabel.lit ? null : ''">{{ satSetLabel.name }}</b>
                 <s>{{ (vis.satCount.value || 0).toLocaleString() }} 颗</s>
               </span>
             </div>
@@ -6292,7 +6295,7 @@ onBeforeUnmount(() => {
                   <option v-for="p in points" :key="p.id" :value="'point|' + p.id">{{ fmtLL(p.lat, p.lon) }}</option>
                 </optgroup>
                 <optgroup v-if="polys.length" label="Polygon（质心）">
-                  <option v-for="pg in polys" :key="pg.id" :value="'poly|' + pg.id">{{ pg.name }}</option>
+                  <option v-for="pg in polys" :key="pg.id" :value="'poly|' + pg.id" data-i18n-skip>{{ pg.name }}</option>
                 </optgroup>
               </select>
             </div>
@@ -6315,7 +6318,7 @@ onBeforeUnmount(() => {
               <template v-else>
                 <div class="vis-sum">
                   <span>可见 <b>{{ vis.kpi.value.count }}</b> <s>/ {{ vis.satCount.value.toLocaleString() }}</s></span>
-                  <span v-if="vis.kpi.value.top">最高 <b>{{ vis.kpi.value.top.elevDeg.toFixed(1) }}°</b> <em :title="vis.kpi.value.top.name">{{ vis.kpi.value.top.name }}</em></span>
+                  <span v-if="vis.kpi.value.top">最高 <b>{{ vis.kpi.value.top.elevDeg.toFixed(1) }}°</b> <em :title="vis.kpi.value.top.name" data-i18n-skip>{{ vis.kpi.value.top.name }}</em></span>
                   <span v-if="vis.kpi.value.classes.length" class="vis-sumcls"><i v-for="c in vis.kpi.value.classes" :key="c.c">{{ c.c }} {{ c.n }}</i></span>
                 </div>
                 <div v-if="!vis.results.value.length" class="tip">当前时刻门限 {{ vis.minElev.value || 0 }}° 以上没有可见卫星。</div>
@@ -6346,7 +6349,7 @@ onBeforeUnmount(() => {
                   </div>
                   <div class="vis-list">
                     <div v-for="r in vis.sortedResults.value" :key="r.noradId" class="vis-lrow" :class="{ hi: r.elevDeg >= 45, hov: String(vis.hoveredId.value) === String(r.noradId) }" @mouseenter="vis.setHover(r.noradId)" @mouseleave="vis.setHover('')" :title="r.name + ' · #' + r.noradId + ' · 方位 ' + r.azDeg.toFixed(0) + '° ' + visCompass(r.azDeg) + ' · 高度 ' + Math.round(r.altKm).toLocaleString() + ' km'">
-                      <span class="vis-lname">{{ r.name }}</span>
+                      <span class="vis-lname" data-i18n-skip>{{ r.name }}</span>
                       <span class="vis-lc" :class="'oc-' + orbitClass(r.altKm)">{{ orbitClass(r.altKm) }}</span>
                       <span class="vis-lel">{{ r.elevDeg.toFixed(1) }}<i v-if="r.rising === true" class="vis-ud up" title="上升中">↑</i><i v-else-if="r.rising === false" class="vis-ud dn" title="下降中">↓</i></span>
                       <span>{{ Math.round(r.rangeKm).toLocaleString() }}</span>
@@ -6373,7 +6376,7 @@ onBeforeUnmount(() => {
                   </div>
                   <div class="vis-gantt">
                     <div v-for="s in vis.accessResults.value" :key="s.noradId" class="vis-grow" :class="{ hov: String(vis.hoveredId.value) === String(s.noradId) }" @mouseenter="vis.setHover(s.noradId)" @mouseleave="vis.setHover('')" :title="s.name + ' · ' + s.windows.length + ' 次过境'">
-                      <span class="vis-gname">{{ s.name }}</span>
+                      <span class="vis-gname" data-i18n-skip>{{ s.name }}</span>
                       <span class="vis-gbar">
                         <i v-for="(w, wi) in s.windows" :key="wi" class="vis-gseg" :class="{ hi: w.peakEl >= 45 }" :style="{ left: (w.startMin / vis.accessKpi.value.horizonMin * 100) + '%', width: (Math.max(0.6, w.endMin - w.startMin) / vis.accessKpi.value.horizonMin * 100) + '%' }" :title="'AOS +' + visDur(w.startMin) + ' · 时长 ' + visDur(w.durMin) + ' · 最高 ' + w.peakEl.toFixed(0) + '°'"></i>
                       </span>
@@ -6383,7 +6386,7 @@ onBeforeUnmount(() => {
                   <div class="vis-acc-list">
                     <template v-for="s in vis.accessResults.value" :key="s.noradId">
                       <div v-for="(w, wi) in s.windows" :key="s.noradId + '-' + wi" class="vis-acc-row" :class="{ hov: String(vis.hoveredId.value) === String(s.noradId) }" @mouseenter="vis.setHover(s.noradId)" @mouseleave="vis.setHover('')" :title="s.name + ' · 最高在 +' + visDur(w.peakMin) + (w.truncated ? ' · 窗口延伸到时窗末（截断）' : '')">
-                        <span class="vis-lname">{{ s.name }}</span>
+                        <span class="vis-lname" data-i18n-skip>{{ s.name }}</span>
                         <span>+{{ visDur(w.startMin) }}</span>
                         <span>{{ visDur(w.durMin) }}</span>
                         <span :class="{ 'oc-hi': w.peakEl >= 45 }">{{ w.peakEl.toFixed(0) }}</span>
@@ -6410,7 +6413,7 @@ onBeforeUnmount(() => {
               <div v-else-if="vis.covRegionKind.value === 'poly'" class="srow"><label>选择</label>
                 <select :value="vis.covPolyId.value" @change="e => vis.covPolyId.value = e.target.value">
                   <option value="">（选择 Polygon）</option>
-                  <option v-for="pg in polys" :key="pg.id" :value="pg.id">{{ pg.name }}</option>
+                  <option v-for="pg in polys" :key="pg.id" :value="pg.id" data-i18n-skip>{{ pg.name }}</option>
                 </select>
               </div>
               <div class="srow"><label>网格步长</label><input class="ci cov-num" type="number" step="0.5" min="0.5" max="30" title="网格胞元间隔（度）：越小越细，耗时越长" :value="vis.covStep.value" @input="e => vis.covStep.value = e.target.value" /><span class="u">°</span></div>
@@ -6814,7 +6817,7 @@ onBeforeUnmount(() => {
           <div class="srow"><input class="ci" :value="satSearchKw" placeholder="或搜索卫星名 / 编号" @input="onSatSearch" /></div>
           <div v-if="satSearchRes.length" class="sres">
             <div v-for="r in satSearchRes" :key="r.noradId" class="sresi" @click="pickSatSearch(r)">
-              <span class="srn">{{ r.name }}</span><em>{{ r.groupLabel }} · {{ r.noradId }}</em>
+              <span class="srn" data-i18n-skip>{{ r.name }}</span><em>{{ r.groupLabel }} · {{ r.noradId }}</em>
             </div>
           </div>
           <div v-if="satModal.noradId" class="tip2">已关联星座卫星 NORAD {{ satModal.noradId }}（仰角线随时间轴 / 实时跟踪）<span class="lnk" @click="satModal.noradId = null">取消关联</span></div>
@@ -6878,7 +6881,7 @@ onBeforeUnmount(() => {
                 class="sgm-grow" :class="{ cur: g.id === sgmId }"
                 @click="sgmPickGroup(g)"
               >
-                <span class="gnm" :title="g.name">{{ g.name }}</span>
+                <span class="gnm" :title="g.name" data-i18n-skip>{{ g.name }}</span>
                 <span class="gcnt">{{ g.sats.length }}</span>
                 <span class="gic" title="复制该组（含成员）" @click.stop="sgmDup(g)"><Icon name="copy" :size="11" /></span>
                 <span class="gic del" :class="{ warn: sgmDelId === g.id }" :title="sgmDelId === g.id ? '再次点击确认删除' : '删除该组'" @click.stop="sgmDel(g)"><Icon name="trash" :size="11" /></span>
@@ -6906,7 +6909,7 @@ onBeforeUnmount(() => {
                 <label v-for="it in sgmRes" :key="it.id" class="sgm-ck" :class="{ dim: sgmMemIds.has(it.id) }">
                   <!-- 已在组内 → 禁用且不显勾（勾选集是跨组暂存的，切组后可能含本组已有星，避免显示成「已勾选」误导） -->
                   <input type="checkbox" :checked="!sgmMemIds.has(it.id) && sgmPickIds.has(it.id)" :disabled="sgmMemIds.has(it.id)" @change="sgmTogglePick(it)" />
-                  <span class="cn" :title="it.name">{{ it.name }}</span>
+                  <span class="cn" :title="it.name" data-i18n-skip>{{ it.name }}</span>
                   <em>{{ it.groupLabel }} · {{ it.id }}</em>
                   <b v-if="sgmMemIds.has(it.id)">已在组内</b>
                 </label>
@@ -6928,7 +6931,7 @@ onBeforeUnmount(() => {
                 <div v-else-if="!sgmMembers.length" class="sgm-empty">没有匹配的成员。</div>
                 <label v-for="m in sgmMembers" :key="m.id" class="sgm-ck">
                   <input type="checkbox" :checked="sgmSelIds.has(m.id)" @change="sgmToggleMem(m.id)" />
-                  <span class="cn" :title="m.name">{{ m.name }}</span>
+                  <span class="cn" :title="m.name" data-i18n-skip>{{ m.name }}</span>
                   <em :class="{ miss: !m.inPool }">{{ m.inPool ? m.groupLabel : '未在当前星历' }} · {{ m.id }}</em>
                   <span class="gic del" title="从本组移出" @click.stop.prevent="sgmRemoveMem([m.id])"><Icon name="x" :size="11" /></span>
                 </label>
@@ -7176,7 +7179,7 @@ onBeforeUnmount(() => {
         <span class="ptb" title="清空当前分页列表" @click="mkClear">清空</span>
         <template v-if="mkTab === 'traj'">
           <span class="mk-sep"></span>
-          <span v-for="t in trajectories" :key="t.id" class="mk-trajchip" :class="{ on: mkTrajId === t.id, flight: t.kind === 'flight', sea: t.kind !== 'flight' }" :title="t.kind === 'flight' ? '飞行航迹' : '航行航迹'" @click="mkTrajId = t.id">{{ t.name || '航迹' }}</span>
+          <span v-for="t in trajectories" :key="t.id" class="mk-trajchip" :class="{ on: mkTrajId === t.id, flight: t.kind === 'flight', sea: t.kind !== 'flight' }" :title="t.kind === 'flight' ? '飞行航迹' : '航行航迹'" @click="mkTrajId = t.id" data-i18n-skip>{{ t.name || byLang('航迹', 'Track') }}</span>
           <span class="ptb" title="新建航行航迹" @click="mkNewTraj('sea')"><Icon name="plus" :size="12" /> 航行</span>
           <span class="ptb" title="新建飞行航迹" @click="mkNewTraj('flight')"><Icon name="plus" :size="12" /> 飞行</span>
         </template>
@@ -7310,7 +7313,7 @@ onBeforeUnmount(() => {
                 <label v-for="b in perf.filteredBeams()" :key="b.seq" class="brow" :class="{ on: perf.beamOn(perfOpts, b.bi) }">
                   <input type="checkbox" :checked="perf.beamOn(perfOpts, b.bi)" @change="perf.toggleBeam(perfOpts, b.bi)" />
                   <span class="bseq">{{ b.seq }}</span>
-                  <span class="pbnm" :title="b.name">{{ b.name }}</span>
+                  <span class="pbnm" :title="b.name" data-i18n-skip>{{ b.name }}</span>
                   <span class="bpk">{{ b.peakDb == null ? '—' : b.peakDb.toFixed(1) }}</span>
                 </label>
                 <div v-if="!perf.filteredBeams().length" class="empty">无匹配波束</div>
@@ -7363,7 +7366,7 @@ onBeforeUnmount(() => {
                 <span class="gic" title="取消" @click="perfGrpRenameId = ''"><Icon name="x" :size="12" /></span>
               </template>
               <template v-else>
-                <span class="grp-nm" :title="g.name">{{ g.name }}</span>
+                <span class="grp-nm" :title="g.name" data-i18n-skip>{{ g.name }}</span>
                 <span class="grp-cnt">{{ g.cities.length }} 城市</span>
                 <span class="gbtn" title="载入：用此组城市替换当前列表（可撤销）" @click="perfLoadGroup(g)">载入</span>
                 <span class="gbtn" title="追加此组城市到当前列表（按坐标去重）" @click="perfAppendGroup(g)">追加</span>

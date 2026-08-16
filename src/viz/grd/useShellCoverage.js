@@ -82,7 +82,15 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
 
   const s = reactive({
     hEx: 0,                       // 大气/临边排除高度 km：判遮挡时把地球膨胀这么多。0 = 纯几何
-    guides: true                  // 壳层参照网
+    guides: true,                 // 壳层参照网
+    // 参照网样式：全局一份，作用于所有壳层（逐层只留颜色）。★ 扁平存放，不套嵌套对象——
+    // getState 的 opts 是 { ...s } 浅拷贝、restoreState 按 s 的键逐个回填：老快照缺键天然落默认，
+    // 快照过 IPC 也要求纯数据。套一层对象两条都要另写代码。
+    guideStep: 30,                // 网格间隔 °（经线与纬线同一间隔）
+    guideLat: 60,                 // 纬线范围 ±°
+    guideWidth: 0.8,              // 线宽 px（粗线基建，与 DPR 无关）
+    guideAlpha: 0.14,             // 透明度
+    guideDash: false              // 线型：true = 虚线
   })
 
   // ==================== 树选择（画哪些天线是本视图独有的；设置一概共享）====================
@@ -380,11 +388,14 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
   // 壳层参照网只随壳层库/开关变，与时间无关 —— 键控跳过：播放拍键不变就一次也不重建
   //（改造前每拍销毁重建几千顶点的格网，纯属白做）。场景清空后由 clearAll 复位键。
   function syncGuides(sc) {
-    const list = s.guides ? shells.value.filter((x) => x.show).map((x) => ({ R: A + x.altKm, color: x.color, alpha: 0.14 })) : []
-    const key = list.map((g) => g.R + '|' + g.color).join(',')
+    const list = s.guides ? shells.value.filter((x) => x.show).map((x) => ({ R: A + x.altKm, color: x.color })) : []
+    const style = { step: s.guideStep, latMax: s.guideLat, width: s.guideWidth, alpha: s.guideAlpha, dash: s.guideDash }
+    // ★ 键必须并进【全部】样式字段：漏一个就是改了那项不重建，表现为「设置没生效」
+    const key = list.map((g) => g.R + '|' + g.color).join(',') + '#' +
+      [style.step, style.latMax, style.width, style.alpha, style.dash].join('|')
     if (key === _guideKey) return
     _guideKey = key
-    sc.setShellGuides(list)
+    sc.setShellGuides(list, style)
   }
   function recompute() {
     const on = panelOn()
@@ -430,7 +441,7 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
   watch(shells, scheduleRecompute, { deep: true })
   watch(selected, scheduleRecompute, { deep: true })
   watch(active, scheduleRecompute)
-  watch(() => [s.hEx, s.guides], scheduleRecompute)
+  watch(() => [s.hEx, s.guides, s.guideStep, s.guideLat, s.guideWidth, s.guideAlpha, s.guideDash], scheduleRecompute)
   // 天线设置是【共享】的：对地面板改、对星面板改、拖拽改，都落在 grd.s 上 → 一处监听全覆盖
   watch(() => grd.s, scheduleRecompute, { deep: true })
 

@@ -40,7 +40,7 @@ onMounted(load)
         <thead><tr><th>名称</th><th>创建时间</th><th></th></tr></thead>
         <tbody>
           <tr v-for="r in rows" :key="r.id">
-            <td>{{ r.name }}</td>
+            <td data-i18n-skip>{{ r.name }}</td>
             <td>{{ fmt(r.createdAt) }}</td>
             <td><button class="link" @click="del(r.id)">删除</button></td>
           </tr>

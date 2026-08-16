@@ -35,6 +35,7 @@ import MiniSendDialog from '../components/MiniSendDialog.vue'
 import { fpMiniItem } from '../shared/fpMiniExport.js'
 import { estimateBytes, SIZE_MAX } from '../shared/miniPack.js'
 import { buildFreqPlanXlsx } from '../shared/fpXlsxModel.js'
+import { byLang } from '../shared/i18n/lang.js'   // 运行时才拼得出全貌的长句：生成时就按平台语言出字
 
 const api = typeof window !== 'undefined' ? window.api : null
 
@@ -661,17 +662,31 @@ function commitEdge(ch, side, which, m) {
   }
 }
 // 说明写全：「改一端另一端钉住」是这两格与中心频率的全部区别，不写清人只会把它们当两个只读读数
+// ★ 整条 title 由四五个从句拼出、其中几段还是三元选词 —— 拼完的整串永远进不了 uiDict，
+//   呈现层只能按标点把它切碎了逐段查表，切错一层整句就成中英夹杂。这类「运行时才拼得出全貌」
+//   的长句一律在生成时按平台语言出字（同 e2e / AboutDialog 的做法）。
 function edgeTitle(ch, side, which) {
   const self = which === 'f1' ? '起始' : '终止'
   const other = which === 'f1' ? '终止' : '起始'
+  const selfEn = which === 'f1' ? 'start' : 'stop'
+  const otherEn = which === 'f1' ? 'stop' : 'start'
   const e = chEdges(ch, side)
-  return `${side === 'up' ? '上行' : '下行'}频带${which === 'f1' ? '下' : '上'}边沿。`
-    + `改这里${other}钉住，中心与带宽一并重算（中心 =（起 + 止）/ 2 · 带宽 = 止 − 起）；`
-    + `${self}越过${other}时改按「带宽不变、整条频带平移」处理。回车或离焦生效。`
-    + (e.fc == null && e.bw == null ? '这条还没有中心也没有带宽 —— 两端都录进来即定出这一段。'
-      : e.bw == null ? '当前带宽未定 —— 此时改为中心钉住、由这一端定出带宽。'
-        : '带宽随之落成本转发器自填值（不再随波束/带宽组）。')
-    + (side === 'dn' && dnLinked(ch) ? '下行与 LO 联动：上行随等式反解，带宽两侧同宽故落在上行。' : '')
+  return byLang(
+    `${side === 'up' ? '上行' : '下行'}频带${which === 'f1' ? '下' : '上'}边沿。`
+      + `改这里${other}钉住，中心与带宽一并重算（中心 =（起 + 止）/ 2 · 带宽 = 止 − 起）；`
+      + `${self}越过${other}时改按「带宽不变、整条频带平移」处理。回车或离焦生效。`
+      + (e.fc == null && e.bw == null ? '这条还没有中心也没有带宽 —— 两端都录进来即定出这一段。'
+        : e.bw == null ? '当前带宽未定 —— 此时改为中心钉住、由这一端定出带宽。'
+          : '带宽随之落成本转发器自填值（不再随波束/带宽组）。')
+      + (side === 'dn' && dnLinked(ch) ? '下行与 LO 联动：上行随等式反解，带宽两侧同宽故落在上行。' : ''),
+    `${side === 'up' ? 'Uplink' : 'Downlink'} band ${which === 'f1' ? 'lower' : 'upper'} edge. `
+      + `Editing it pins the ${otherEn}; the centre and bandwidth are both recomputed (centre = (start + stop) / 2 · bandwidth = stop − start). `
+      + `If the ${selfEn} crosses the ${otherEn} it is handled as “bandwidth unchanged, whole band shifted”. Takes effect on Enter or blur. `
+      + (e.fc == null && e.bw == null ? 'This one has neither a centre nor a bandwidth yet — entering both ends fixes the band.'
+        : e.bw == null ? 'The bandwidth is undefined, so the centre is pinned instead and this end fixes the bandwidth.'
+          : 'The bandwidth becomes this transponder’s own value (it no longer follows the beam / bandwidth group).')
+      + (side === 'dn' && dnLinked(ch) ? ' The downlink is tied to the LO: the uplink is back-solved from the equation, and since both sides share one width the bandwidth lands on the uplink.' : '')
+  )
 }
 
 // ---- 转发器占段：这条转发器的频带分给它的几个波束（界面上唯一的频率录入口）----
@@ -715,17 +730,28 @@ function commitSegEdge(ch, side, b, which, m) {
     flash(`${side === 'dn' ? '下行' : '上行'}波束「${b.name}」${which === 'f1' ? '起始越过终止' : '终止越过起始'} —— 已按「带宽不变、整段平移」处理`)
   }
 }
+// 同 edgeTitle：整串拼出来才成句，故在这里就按平台语言出字
 function segEdgeTitle(ch, side, b, which) {
   const self = which === 'f1' ? '起始' : '终止'
   const other = which === 'f1' ? '终止' : '起始'
+  const selfEn = which === 'f1' ? 'start' : 'stop'
+  const otherEn = which === 'f1' ? 'stop' : 'start'
   const g = segOf(ch, side, b.id)
   const auto = g && g.autoOff
-  return `波束「${b.name}」在本转发器${side === 'dn' ? '下行' : '上行'}频带里占的那一段的${which === 'f1' ? '下' : '上'}边沿（绝对频率）。`
-    + (auto ? `当前是${LAYOUT_TEXT[g.from] || '自动'}排布生成的位置，录入后即固定。` : '')
-    + `改这里${other}钉住、带宽随之变（带宽 = 终止 − 起始）；${self}越过${other}时改按「带宽不变、整段平移」处理。`
-    + (which === 'f1' ? '清空 = 这个波束回到自动排布。' : '')
-    + (side === 'dn' ? '留空 = 随上行（整段随本转发器的 LO 平移）。' : '')
-    + '回车或离焦生效。'
+  return byLang(
+    `波束「${b.name}」在本转发器${side === 'dn' ? '下行' : '上行'}频带里占的那一段的${which === 'f1' ? '下' : '上'}边沿（绝对频率）。`
+      + (auto ? `当前是${LAYOUT_TEXT[g.from] || '自动'}排布生成的位置，录入后即固定。` : '')
+      + `改这里${other}钉住、带宽随之变（带宽 = 终止 − 起始）；${self}越过${other}时改按「带宽不变、整段平移」处理。`
+      + (which === 'f1' ? '清空 = 这个波束回到自动排布。' : '')
+      + (side === 'dn' ? '留空 = 随上行（整段随本转发器的 LO 平移）。' : '')
+      + '回车或离焦生效。',
+    `${which === 'f1' ? 'Lower' : 'Upper'} edge (absolute frequency) of the slice beam “${b.name}” takes in this transponder’s ${side === 'dn' ? 'downlink' : 'uplink'} band. `
+      + (auto ? `The position now comes from ${LAYOUT_TEXT_EN[g.from] || 'automatic'} layout and is fixed once entered. ` : '')
+      + `Editing it pins the ${otherEn} and lets the bandwidth follow (bandwidth = stop − start); if the ${selfEn} crosses the ${otherEn} it is handled as “bandwidth unchanged, whole slice shifted”. `
+      + (which === 'f1' ? 'Clearing it returns this beam to automatic layout. ' : '')
+      + (side === 'dn' ? 'Leave empty to follow the uplink (the slice moves with this transponder’s LO). ' : '')
+      + 'Takes effect on Enter or blur.'
+  )
 }
 function segBwTitle(ch, side, b) {
   return `波束「${b.name}」在本转发器${side === 'dn' ? '下行' : '上行'}占的那一段有多宽（${U.value}）：`
@@ -739,6 +765,7 @@ function bmBwTitle(b) {
     + '收发不等宽的转发器在占段表里两侧各录各的。'
 }
 const LAYOUT_TEXT = { tile: '频分', stack: '同频', seg: '录入' }
+const LAYOUT_TEXT_EN = { tile: 'frequency-division', stack: 'co-frequency', seg: 'manual' }
 const LAYOUT_TIP = '这条转发器的频带在几个波束之间怎么摆（只管【没逐个录过起止】的那些）：'
   + '自适应 = 人人有带宽且装得下就频分排布，装不下就同频叠加；'
   + '频分排布 = 自频带下边沿依次紧排（HTS 那一路，转发器带宽 = Σ 各波束带宽）；'
@@ -1675,7 +1702,7 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
                       <!-- 这格只写得下 LO 名，数值放进 title（几个 LO 重名时也就这一处分得清） -->
                       <select v-if="!isMk(ch)" class="ci selc sello" v-model="ch.loId" :title="loTitle(ch)">
                         <option value="">—</option>
-                        <option v-for="l in plan.los" :key="l.id" :value="l.id">{{ l.name }}</option>
+                        <option v-for="l in plan.los" :key="l.id" :value="l.id" data-i18n-skip>{{ l.name }}</option>
                       </select>
                     </td>
                     <!-- 下行不再是「灰字占位的推算值」：LO 定了它就是可直接录的一侧，录进去上行反解跟着变 -->
@@ -2014,7 +2041,7 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
               <div class="bph">从天线波束合成导入</div>
               <button v-for="g in synthList" :key="g.id" type="button" class="sgrow"
                 :disabled="!g.beamCount" :title="synthTitle(g)" @click="importSynth(g)">
-                <span class="sgn">{{ g.name }}</span>
+                <span class="sgn" data-i18n-skip>{{ g.name }}</span>
                 <span v-if="synthOtherSat(g)" class="sgsat">{{ synthOtherSat(g) }}</span>
                 <span class="sgt">{{ g.beamCount }} 波束<template v-if="g.colors.length"> · {{ g.colors.length }} 色</template></span>
                 <span class="sgc"><i v-for="c in g.colors" :key="c.fc" :style="{ background: c.css }"></i></span>
@@ -2079,7 +2106,7 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
           </div>
           <div class="row"><span>编号规则</span><input class="ci nar" v-model="gen.noPattern" title="编号模板：{n} 处替换为序号" /><input class="ci num xnar" v-model="gen.noStart" title="起始序号" /></div>
           <label class="row"><span>本振 LO</span>
-            <select class="ci" v-model="gen.loId"><option value="">—</option><option v-for="l in plan.los" :key="l.id" :value="l.id">{{ l.name }}</option></select>
+            <select class="ci" v-model="gen.loId"><option value="">—</option><option v-for="l in plan.los" :key="l.id" :value="l.id" data-i18n-skip>{{ l.name }}</option></select>
           </label>
           <div class="row top"><span>上行波束</span>
             <BeamPicker mode="list" :beams="plan.beams" :unit="opt.unit" v-model="gen.beamUpIds" />
@@ -2131,7 +2158,7 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
               <div v-if="!mergeIds.length" class="mempty">还没勾选计划。</div>
               <div v-for="(e, i) in mergeSelected" :key="e.id" class="mordrow">
                 <span class="oi">{{ i + 1 }}</span>
-                <span class="mn" :title="e.name">{{ e.name }}</span>
+                <span class="mn" :title="e.name" data-i18n-skip>{{ e.name }}</span>
                 <span class="mm">{{ e.band }}</span>
                 <button class="lop" :disabled="i === 0" title="上移" @click="moveMerge(i, -1)"><Icon name="chevron-up" :size="11" /></button>
                 <button class="lop" :disabled="i === mergeSelected.length - 1" title="下移" @click="moveMerge(i, 1)"><Icon name="chevron-down" :size="11" /></button>

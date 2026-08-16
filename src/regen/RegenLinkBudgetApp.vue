@@ -8,8 +8,11 @@ import { s8LinkParams } from '../shared/s8Params.js'   // ITU-R P.618-14 §8 统
 import { migrateLegacyEs } from '../shared/esMigrate.js'
 import { pickColumn, fmtScaled, fmtQty } from '../shared/adaptUnits.js'
 import { lbDocT } from '../shared/lbDocI18n.js'
-import { syncAutoNames, adoptAutoFlag, withAutoFlag, isAutoNamed } from '../shared/lbAutoName.js'   // 三库条目自动命名（未被用户改名时，名字随关键参数走）
-import { loadSatTree } from '../ngso/grdParam.js'
+import { getLang, onLangChange } from '../shared/i18n/runtime.js'   // 报表语言跟随平台语言
+import { syncAutoNames, adoptAutoFlag, withAutoFlag, isAutoNamed, newCfgName, newFolderName, copyNameOf } from '../shared/lbAutoName.js'   // 三库条目自动命名（未被用户改名时，名字随关键参数走）
+import { byLang } from '../shared/i18n/lang.js'   // 自动生成的名字是数据、呈现层翻不到，生成时就按平台语言出字
+import { loadSatTree } from '../ngso/satTree.js'   // 卫星树＝轨道来源（v1.4.5 起不再带方向图，见该文件头注）
+import { slantWgs84Max, altFromSlant } from '../shared/slantRange.js'   // 手动几何：斜距换算 / 等效轨道高度
 import { resolveRefId } from '../shared/lbShare.js'
 import Icon from '../components/Icon.vue'
 import ConfigTree from '../components/ConfigTree.vue'
@@ -26,6 +29,8 @@ import { useLbReport } from '../shared/useLbReport.js'
 import LbFontCtl from '../components/LbFontCtl.vue'
 import LbCapFoot from '../components/LbCapFoot.vue'
 import LbCustomColsDialog from '../components/LbCustomColsDialog.vue'
+import LbSlantTool from '../components/LbSlantTool.vue'
+import LbIslRangeTool from '../components/LbIslRangeTool.vue'
 import { buildPool, makeResolver, evalRows, customFieldDefs, loadDefs, saveDefs, unitOf, schemaInputPool } from '../shared/lbCustomCols.js'   // 自定义列：公式合成新列
 import { labeledResultPool, RESULT_LABELS } from '../shared/lbResultLabels.js'   // 引擎出参中文名与单位（全量词表）
 import LbShareDialog from '../components/LbShareDialog.vue'
@@ -104,6 +109,8 @@ function restoreMode(m) {
 // ============ 卫星库（全局；每颗 NGSO 式：搜索/天线树选星，无 EIRP 匹配；卫星 G/T 由发信站逐站手动输入）============
 let _satSeq = 1
 // nameAuto：条目名是否还随参数自动生成（见 shared/lbAutoName.js）——不传 name 即新建的空名条目，自动
+// ★ v1.4.5：方向图匹配(grd)整块删除——卫星 EIRP / G·T 与星间 EIRP / G·T 一律逐行手填
+//   （原因见 ngso/satTree.js 头注：三个窗口曾各按各的口径取值，同一副方向图能读出三个数）。
 function makeSatConfig(name) { return withAutoFlag({ id: 'sat' + (_satSeq++), name: name || '', form: { ...defaultsFor(SAT_FIELDS) }, ngsoSat: { mode: 'manual', orbit: null, name: '', noradId: null, folder: '' } }, 'sat') }
 const satConfigs = reactive([makeSatConfig('卫星1')])
 function resolveSatellite(id) {
@@ -115,13 +122,15 @@ function addSatConfig() { satConfigs.push(makeSatConfig()); syncAutoNames(satCon
 // 复制：自动命名的条目复制出来仍是自动的（名字由 syncAutoNames 按参数出，重名自动加序号）；
 // 自定义名的条目才带「副本」后缀——那是用户起的名字，复制件跟着它走。
 function duplicateSatConfig(cfg) {
-  satConfigs.push({ id: 'sat' + (_satSeq++), name: cfg.nameAuto ? '' : cfg.name + ' 副本', nameAuto: !!cfg.nameAuto, form: JSON.parse(JSON.stringify(cfg.form)), ngsoSat: JSON.parse(JSON.stringify(cfg.ngsoSat)) })
+  satConfigs.push({ id: 'sat' + (_satSeq++), name: cfg.nameAuto ? '' : copyNameOf(cfg.name), nameAuto: !!cfg.nameAuto, form: JSON.parse(JSON.stringify(cfg.form)), ngsoSat: JSON.parse(JSON.stringify(cfg.ngsoSat)) })
   syncAutoNames(satConfigs, 'sat')
 }
 function removeSatConfig(cfg) { removeLibEntry(satConfigs, cfg, 'sat') }
-// 天线树（星座3D 导入的卫星）——作卫星轨道来源；切到「卫星群」时刷新
+// 卫星树（星座3D 页导入的卫星）——作轨道来源
 const satTree = ref(loadSatTree().sats)
-function reloadSatTree() { try { satTree.value = loadSatTree().sats } catch (e) { /* keep */ } }
+function reloadSatTree() {
+  try { satTree.value = loadSatTree().sats } catch (e) { /* keep */ }
+}
 
 // ============ 载波信号库 ============
 let _bbSeq = 1
@@ -135,7 +144,7 @@ function resolveBaseband(id) {
 const basebandSelectOptions = computed(() => [{ value: '', label: '（默认）' }, ...basebandConfigs.map((c) => ({ value: c.id, label: c.name }))])
 function addBasebandConfig() { basebandConfigs.push(makeBasebandConfig()); syncAutoNames(basebandConfigs, 'carrier') }
 function duplicateBasebandConfig(cfg) {
-  basebandConfigs.push({ id: 'bb' + (_bbSeq++), name: cfg.nameAuto ? '' : cfg.name + ' 副本', nameAuto: !!cfg.nameAuto, form: JSON.parse(JSON.stringify(cfg.form)) })
+  basebandConfigs.push({ id: 'bb' + (_bbSeq++), name: cfg.nameAuto ? '' : copyNameOf(cfg.name), nameAuto: !!cfg.nameAuto, form: JSON.parse(JSON.stringify(cfg.form)) })
   syncAutoNames(basebandConfigs, 'carrier')
 }
 function removeBasebandConfig(cfg) { removeLibEntry(basebandConfigs, cfg, 'bb') }
@@ -154,7 +163,7 @@ function resolveEs(id) {
 const esSelectOptions = computed(() => [{ value: '', label: '（默认）' }, ...esConfigs.map((c) => ({ value: c.id, label: c.name }))])
 function addEsConfig() { esConfigs.push(makeEsConfig()); syncAutoNames(esConfigs, 'es') }
 function duplicateEsConfig(cfg) {
-  esConfigs.push({ id: 'es' + (_esSeq++), name: cfg.nameAuto ? '' : cfg.name + ' 副本', nameAuto: !!cfg.nameAuto, form: JSON.parse(JSON.stringify(cfg.form)) })
+  esConfigs.push({ id: 'es' + (_esSeq++), name: cfg.nameAuto ? '' : copyNameOf(cfg.name), nameAuto: !!cfg.nameAuto, form: JSON.parse(JSON.stringify(cfg.form)) })
   syncAutoNames(esConfigs, 'es')
 }
 function removeEsConfig(cfg) { removeLibEntry(esConfigs, cfg, 'es') }
@@ -350,6 +359,7 @@ const rxCellSub = (f, row) => {
 const islLinks = reactive([newStation(ISL_FIELDS)])
 // ============ 星间激光链路群（再生式激光 / 相干 DP-QPSK）============
 const laserLinks = reactive([newStation(LASER_FIELDS)])
+
 // 某卫星配置 → 轨道来源 spec（选星→真实星历；未选→手动圆轨道）。上/下/星间共用。
 function orbitSpecOf(sat) {
   const ns = sat && sat.ngsoSat
@@ -360,6 +370,27 @@ function orbitSpecOf(sat) {
 // 搜索时窗起点 t0：不再锚各星 TLE/场景历元，一律锚到「计算此刻」的墙钟绝对时（用户口径「从当前时间开始」扫描）。
 // 每次计算前取一次、整批共用 → 同一张表内上下行/星间各行起点严格一致；轨道仍按 SGP4 从各自历元正推到该时刻（同属墙钟系）。
 function searchT0ISO() { return new Date().toISOString() }
+// 手动几何：星间距离是用户给的一个数，没有轨道也就没有两星高度/掠地高度/多普勒/互视占比。
+// 只把这个数与由它直接导出的单程时延写进结果，其余几何量一律不写（不拿占位数冒充几何）。
+// ★ 可用度必须清掉：星间可用度的唯一来源是互视占比，手动几何没有它——留着的话，微波侧会漏出
+//   上下行占位入参算出的雨衰可用度、激光侧会漏出「visPct 缺省 → 100%」，两个都是凭空的数。
+function clearIslAvailability(d) {
+  d.systemAvailabilityResult = ''; d.uplinkAvailabilityResult = ''; d.downlinkAvailabilityResult = ''
+  d.interruptionMinutes = ''; d.interruptionHours = ''
+  d.islVisibleFracResult = ''; d.laserVisibleFracResult = ''
+}
+function mergeIslManualDistance(d, distKm) {
+  d.islRfDistResult = distKm.toFixed(1)
+  d.islDelayResult = (distKm / 299792.458 * 1000).toFixed(2)
+  d.islManualGeomResult = '1'   // 瀑布据此把「星间几何（最差工况）」段改称「星间距离（手动给定）」
+  clearIslAvailability(d)
+}
+// 激光同理（距离另有 laserDistResult 一份；多普勒需要距离变化率，手动几何没有 → 清空）
+function mergeLaserManualDistance(d, distKm) {
+  mergeIslManualDistance(d, distKm)
+  d.laserDistResult = distKm.toFixed(1)
+  d.laserDopplerResult = ''
+}
 // 把两星几何最差工况量注入结果对象，供瀑布「星间几何」段与结果卡展示
 function mergeIslGeometry(d, geo) {
   const w = geo.worst
@@ -387,13 +418,13 @@ function mergeLaserGeometry(d, geo) {
   d.islVisibleFracResult = (geo.visibility.visibleFrac * 100).toFixed(2)
 }
 
-// 顶栏「刷新」：重新拉取主窗口的最新设置（GRD 卫星树 + 城市库/载波信号选项）。
+// 顶栏「刷新」：重新拉取主窗口的最新设置（卫星/天线树 + 城市库/载波信号选项）。
 // 与 GEO refreshLatest 同口径（去掉 GEO 特有的实时星位/只读 EIRP·G·T 扇出）。
 const refreshing = ref(false)
 async function refreshLatest() {
   refreshing.value = true
   try {
-    reloadSatTree()   // 重读 globe3d/settings.grd（卫星树，作轨道来源）
+    reloadSatTree()   // 重读星座3D 页的卫星树（作轨道来源）
     try { const c = api && await api.linkBudget.cities(); if (c) cities.value = c } catch (e) { /* keep */ }
     try { const b = api && await api.linkBudget.baseband(); if (b) basebandOpts.value = b } catch (e) { /* keep */ }
     toast('已刷新最新设置')
@@ -428,10 +459,12 @@ const bbSummary = (c) => (isAutoNamed('carrier', c) ? '' : `${c.form.modulation 
 // 摘要 = 口径 · 功放（这两项定性一份站型，与配置面板顶部主参数条一致；GSO/NGSO 同口径，其功放键名为 paPowerW）。
 // 自动名只有口径（见 lbAutoName），功放不进名字 → 摘要照报功放，口径只给自定义名的条目补。
 const esSummary = (c) => [isAutoNamed('es', c) ? '' : `${c.form.antennaDiameter || '2.4'} m`, c.form.opPowerW ? `功放预设 ${c.form.opPowerW} W` : ''].filter(Boolean).join(' · ')
-// 自动命名时名字已带星名·频段·轨道高度倾角（见 lbAutoName），摘要只留名字里没有的取轨来源
-const satSummary = (c) => (c.ngsoSat && c.ngsoSat.mode !== 'manual' && c.ngsoSat.orbit)
-  ? [isAutoNamed('sat', c) ? '' : c.ngsoSat.name, '选星定轨'].filter(Boolean).join(' · ')
-  : (isAutoNamed('sat', c) ? '手动轨道' : `h=${c.form.orbitAltitude || '?'} km · i=${c.form.orbitInclination || '?'}°`)
+// 自动名只有星名（见 lbAutoName），频段与轨道不再进名字 → 摘要一律报轨道来源与高度倾角，与名字不重影
+const satSummary = (c) => [
+  c.form.frequencyBand ? c.form.frequencyBand + ' 频段' : '',
+  (c.ngsoSat && c.ngsoSat.mode !== 'manual' && c.ngsoSat.orbit) ? '选星定轨' : '手动轨道',
+  `h=${c.form.orbitAltitude || '?'} km · i=${c.form.orbitInclination || '?'}°`
+].filter(Boolean).join(' · ')
 // 切换体制：只显示该模式的表格分区。上/下行/星间各口径的链路条数与结果列都不同，旧体制的结果
 // 不再适用——切换即清空（含表格结果列映射），避免「上行结果套着下行列头」的串味显示。
 watch(linkMode, () => {
@@ -445,6 +478,31 @@ watch(linkMode, () => {
 const geoHorizonHours = ref(Number(localStorage.getItem('regen/horizonHours')) || 24)
 watch(geoHorizonHours, (v) => { try { localStorage.setItem('regen/horizonHours', String(v)) } catch (e) { /* ignore */ } })
 const HORIZONS = [{ v: 6, l: '6 小时' }, { v: 12, l: '12 小时' }, { v: 24, l: '24 小时' }, { v: 48, l: '2 天' }, { v: 72, l: '3 天' }, { v: 120, l: '5 天' }, { v: 168, l: '7 天' }, { v: 336, l: '14 天' }, { v: 720, l: '30 天' }]
+
+// —— 几何模式（场景级，随场景存档；默认手动。四种体制统一受此开关约束：上/下行的站星几何 +
+//    星间/激光的两星几何）——
+//   'manual' 纯手动（默认）：仰角与斜距都由站表逐行给定，软件不解算任何轨道关系（也就没有 t*、
+//            没有过境窗口、没有 §8 仰角分布）。两个数直接送进引擎的 slantRange 模式。
+//            斜距不用手敲——换卫星即按新轨道高度算出推荐值填进去（见 refreshSlant），改不改由用户。
+//            星间/激光同理：不选卫星，星间距离由链路表的 islRangeKm 逐条给定（可用「距离工具」按两星
+//            轨道在时间轴上算出来再填），没有互视可见度/多普勒/访问窗口 → 可用度也随之留空。
+//   'auto'   自动最差工况：按卫星轨道解最差几何，仰角字段作【门限】，斜距由求解器给出；
+//            星间/激光按两星轨道解最差星间距离与互视可见度。
+// 旧场景（无此字段）载入时回到 'auto'——它们的结果本就是那样算出来的，不静默改口径。
+const GEO_MODES = [{ v: 'manual', l: '手动' }, { v: 'auto', l: '自动最差' }]
+const geoMode = ref(localStorage.getItem('regen/geoMode') === 'auto' ? 'auto' : 'manual')
+watch(geoMode, (v) => { try { localStorage.setItem('regen/geoMode', v) } catch (e) { /* ignore */ } })
+const geoManual = computed(() => geoMode.value === 'manual')
+// 手动几何注入：斜距/仰角照抄单元格；轨道高度顺带按二者反算成【等效值】覆盖进去——引擎在
+// slantRange 模式下不用它，但链路视图与几何读数会去读，不覆盖就会拿卫星条目里那个对不上的高度画图。
+// 再生式一条链路只有一侧是真的（上行走 up、下行走 dn），另一侧是让弯管引擎良定的镜像占位，故两侧同值。
+function applyManualGeom(lp, slantKm, elevDeg) {
+  const d = pf(slantKm), e = pf(elevDeg) || 0
+  lp.distanceMode = 'slantRange'; lp.slantRange = d; lp.minElevation = e
+  lp.rxDistanceMode = 'slantRange'; lp.rxSlantRange = d; lp.rxMinElevation = e
+  const h = altFromSlant(d, e)
+  if (h != null) { lp.orbitAltitude = h; lp.rxOrbitAltitude = h }
+}
 
 // ============ 计算结果（每个发信站一条上行链路）============
 const links = shallowRef([])  // [{ ti, txName, satName, data, geom, access, margin, powerW, ok, error }]
@@ -535,7 +593,7 @@ function toggleResultKey(k) {
   else resultKeys[mode] = RESULT_DEFS_BY[mode].map((d) => d.key).filter((x) => x === k || cur.includes(x))
 }
 // 各模式表格列 = 输入列 + 已勾选结果列（计算列 ro:true，值走 computedVals 映射，不写行数据）。
-// 结果列显示单位自适应：每次计算按整列最大|值|共选档位（W→mW/kW、kHz→MHz、全列<0dBW→dBm），
+// 结果列显示单位自适应：每次计算按整列最大|值|共选档位（W→mW、kHz→MHz、全列<0dBW→dBm），
 // 列头单位跟随（resColUnits 按 '模式:键' 记录）；写入 computedVals 的值已按所选档位换算
 const resColUnits = reactive({})
 const resColsOf = (mode) => [
@@ -641,8 +699,8 @@ const gridVals = computed(() => {
 })
 // —— 列组（排版更符合逻辑）：配置引用 / 站址 / 链路参数 / 计算结果。字段按 key 归组（结果列已带 group:'res'）——
 const _STN_GROUP = { basebandId: 'ref', stationId: 'ref', satelliteId: 'ref',
-  earthStationLocation: 'geo', longitude: 'geo', latitude: 'geo', minElevation: 'geo', altitude: 'geo',
-  rxEarthStationLocation: 'geo', rxLongitude: 'geo', rxLatitude: 'geo', rxMinElevation: 'geo', rxAltitude: 'geo',
+  earthStationLocation: 'geo', longitude: 'geo', latitude: 'geo', minElevation: 'geo', slantRange: 'geo', altitude: 'geo',
+  rxEarthStationLocation: 'geo', rxLongitude: 'geo', rxLatitude: 'geo', rxMinElevation: 'geo', rxSlantRange: 'geo', rxAltitude: 'geo',
   rainRate: 'link', uplinkAvailability: 'link', G_Ts: 'link',
   rxRainRate: 'link', rxDownlinkAvailability: 'link', rxEIRP: 'link' }
 // 收信站群另一份归组：「地球站配置」并入站址组（列序上它已排在站址组之首，见 regenParams 的 downlink 组）
@@ -651,13 +709,21 @@ const _STN_GROUP = { basebandId: 'ref', stationId: 'ref', satelliteId: 'ref',
 const _RX_GROUP = { ..._STN_GROUP, stationId: 'geo' }
 const _ISL_GROUP = { basebandId: 'ref', txSatelliteId: 'ref', rxSatelliteId: 'ref' }   // 其余（EIRP/GT/频率/损耗…）默认归 'link'
 const _tagGroup = (map, def) => (f) => ({ ...f, group: map[f.key] || def })
+// 几何=手动：多出「斜距」列，仰角列改称「仰角」（此时它就是本条链路的仰角，不再是最差工况的门限）；
+// 几何=自动最差：斜距由求解器给出，不占列。
+// 星间/激光两张表同一套开关：手动只留「星间链路距离」（manualOnly），自动才有两颗卫星与大气余量/
+// 最大工作距离（autoOnly）——那三项都是解算轨道才用得上的量。
+function _geoCols(fields) {
+  return fields.filter((f) => (f.manualOnly ? geoManual.value : (f.autoOnly ? !geoManual.value : true)))
+    .map((f) => ((geoManual.value && f.manualLabel) ? { ...f, label: f.manualLabel, tip: f.manualTip || f.tip } : f))
+}
 const GROUPS_STATION = [{ key: 'ref', label: '配置' }, { key: 'geo', label: '站址' }, { key: 'link', label: '链路' }, { key: 'res', label: '计算结果' }]
 const GROUPS_ISL = [{ key: 'ref', label: '配置' }, { key: 'link', label: '星间参数' }, { key: 'res', label: '计算结果' }]
 const GROUPS_LASER = [{ key: 'ref', label: '配置' }, { key: 'link', label: '激光参数' }, { key: 'res', label: '计算结果' }]
-const txGridFields = computed(() => [...TX_FIELDS.map(_tagGroup(_STN_GROUP, 'link')), ...resColsOf('uplink')])
-const rxGridFields = computed(() => [...RX_FIELDS.map(_tagGroup(_RX_GROUP, 'link')), ...resColsOf('downlink')])
-const islGridFields = computed(() => [...ISL_FIELDS.map(_tagGroup(_ISL_GROUP, 'link')), ...resColsOf('isl')])
-const laserGridFields = computed(() => [...LASER_FIELDS.map(_tagGroup(_ISL_GROUP, 'link')), ...resColsOf('laser')])
+const txGridFields = computed(() => [..._geoCols(TX_FIELDS).map(_tagGroup(_STN_GROUP, 'link')), ...resColsOf('uplink')])
+const rxGridFields = computed(() => [..._geoCols(RX_FIELDS).map(_tagGroup(_RX_GROUP, 'link')), ...resColsOf('downlink')])
+const islGridFields = computed(() => [..._geoCols(ISL_FIELDS).map(_tagGroup(_ISL_GROUP, 'link')), ...resColsOf('isl')])
+const laserGridFields = computed(() => [..._geoCols(LASER_FIELDS).map(_tagGroup(_ISL_GROUP, 'link')), ...resColsOf('laser')])
 // 计算列取值映射 { 行_id: { _键: 值 } }：结果不写行数据 → 写回不惊动存档/脏检/过期 watcher
 const computedVals = ref({})
 function setVals(id, patch) { computedVals.value = { ...computedVals.value, [id]: { ...(computedVals.value[id] || null), ...patch } } }
@@ -699,7 +765,7 @@ function writeResultVals(out, mode) {
         patch['_' + def.key] = (v === undefined || v === null || v === '') ? '—' : (ad && isFinite(n)) ? fmtScaled(ad.conv(n)) : v
       }
     }
-    // _paW＝该站算出的功放功率原值（上行独有；不随列档位换算——尾标自己按 fmtQty 换 mW/kW 档，见 cellTagFn）
+    // _paW＝该站算出的功放功率原值（上行独有；不随列档位换算——尾标自己按 fmtQty 换 mW 档，见 cellTagFn）
     if (mode === 'uplink') patch._paW = d ? d.paRecommendation : ''
     setVals(l.rowId, patch)
   }
@@ -717,7 +783,7 @@ const computing = ref(false)
 const error = ref('')
 // —— 结果过期提示 ——
 const resultsStale = ref(false)
-watch([satConfigs, basebandConfigs, esConfigs, txStations, rxStations, islLinks, laserLinks, geoHorizonHours],
+watch([satConfigs, basebandConfigs, esConfigs, txStations, rxStations, islLinks, laserLinks, geoMode, geoHorizonHours],
   () => { if (links.value.length) resultsStale.value = true }, { deep: true })
 // —— 瀑布表一键整表复制（TSV） ——
 async function copyWaterfallTsv() {
@@ -750,6 +816,8 @@ const nLinks = computed(() => (linkMode.value === 'laser' ? laserLinks.length : 
 // 链路方向标签：上行=站→星，下行=星→站，星间=发射星→接收星（txName=发射星, satName=接收星）
 function pairLabel(l) {
   if (!l) return ''
+  // 手动几何的星间/激光链路两端没有卫星身份（表上也没那两列）→ 按条数命名，不拿「发射星 → 接收星」充数
+  if (l.islManual) return `星间链路 ${(l.ti || 0) + 1}`
   return linkMode.value === 'downlink' ? `${l.satName} → ${l.txName}` : `${l.txName} → ${l.satName}`
 }
 // 体制短标签（上行/下行/星间）与逐条量词
@@ -828,6 +896,91 @@ const bwMain = computed(() => fmtBandwidth(capacitySummary.value.bwKHz))
 // 点哪行看哪行、重算即刷新。指标口径与「结果列」勾选完全一致（连列序也一致），只是换了个横排读法。
 // 单位取该列此次计算共选的档位（resColUnits 按 '模式:键' 记）；切体制会清空结果，此行随之消失。
 const focusRowId = ref('')
+
+// —— 斜距工具（几何=手动）——
+// 只做换算与填入；填多少、填哪几行由用户点。填入按【各行自己的仰角】算，不是把同一个数刷满全表。
+// 作用于当前子链路模式那张表（上行→发信站群、下行→收信站群；星间/激光不受几何模式约束）。
+const slantToolOpen = ref(false)
+// 两张表各自的站址/仰角/斜距列名（站表海拔单位是 m，换算函数吃 km）
+const MANUAL_TX = { rows: null, eKey: 'minElevation', dKey: 'slantRange', latKey: 'latitude', staAltKey: 'altitude', label: '上行' }
+const MANUAL_RX = { rows: null, eKey: 'rxMinElevation', dKey: 'rxSlantRange', latKey: 'rxLatitude', staAltKey: 'rxAltitude', label: '下行' }
+const slantSide = computed(() => (linkMode.value === 'downlink'
+  ? { ...MANUAL_RX, rows: rxStations } : { ...MANUAL_TX, rows: txStations }))
+// 某行某侧：按 WGS-84 椭球 + 该站纬度/海拔算「绕站一圈最大斜距」（口径见 shared/slantRange.js）
+const rowSlant = (row, side, altKm) => slantWgs84Max(pf(row[side.latKey]), (pf(row[side.staAltKey]) || 0) / 1000, pf(row[side.eKey]) || 0, altKm)
+const slantToolRow = computed(() => slantSide.value.rows.find((r) => r._id === focusRowId.value) || null)
+const _slantSeedRow = computed(() => slantToolRow.value || slantSide.value.rows[0] || null)
+const slantToolAlt = computed(() => {
+  const sat = _slantSeedRow.value ? resolveSatellite(_slantSeedRow.value.satelliteId) : satConfigs[0]
+  return (sat && sat.form.orbitAltitude) || ''
+})
+const slantToolElev = computed(() => (_slantSeedRow.value && _slantSeedRow.value[slantSide.value.eKey]) || 10)
+const slantToolLat = computed(() => (_slantSeedRow.value && _slantSeedRow.value[slantSide.value.latKey]) || '')
+const slantToolStaAlt = computed(() => (_slantSeedRow.value && _slantSeedRow.value[slantSide.value.staAltKey]) || 0)
+function applySlantFill({ altKm, scope }) {
+  const s = slantSide.value
+  const rows = scope === 'row' ? [slantToolRow.value].filter(Boolean) : s.rows
+  let n = 0
+  for (const r of rows) {
+    const d = rowSlant(r, s, altKm)
+    if (d != null) { r[s.dKey] = d.toFixed(2); n++ }
+  }
+  slantToolOpen.value = false
+  toast(`已按各行站址与仰角填入 ${n} 处斜距（轨道高度 ${Number(altKm).toFixed(0)} km）`)
+}
+
+// —— 星间链路距离工具（几何=手动，星间/激光两张表共用）——
+// 手动几何不选卫星，星间距离是逐条给的一个数。工具里挑两颗卫星在时间轴上算距离曲线，用户挑一刻填回。
+const islToolOpen = ref(false)
+const islToolRows = computed(() => (linkMode.value === 'laser' ? laserLinks : islLinks))
+const islToolRow = computed(() => islToolRows.value.find((r) => r._id === focusRowId.value) || null)
+// 工具的两端候选＝卫星群全部条目（选星定轨的给真实星历，手动轨道的给圆轨道；也可在工具里自定义轨道）
+const islToolSats = computed(() => satConfigs.map((c) => ({
+  id: c.id, name: c.name || c.form.satelliteName || c.id, orbit: orbitSpecOf(c), summary: satSummary(c)
+})))
+function applyIslRangeFill({ rangeKm, scope }) {
+  const rows = scope === 'row' ? [islToolRow.value].filter(Boolean) : islToolRows.value
+  const v = Number(rangeKm).toFixed(1)
+  let n = 0
+  for (const r of rows) { r.islRangeKm = v; n++ }
+  islToolOpen.value = false
+  toast(`已填入 ${n} 条链路的星间链路距离 ${v} km`)
+}
+
+// —— 斜距＝派生量：手动几何下由【仰角 / 站点纬度 / 站点海拔 / 轨道高度】四项按 WGS-84 算出 ——
+// 这四项只要有一项变，本行的斜距立刻重算写回——不问那格是不是用户改过的：输入都变了，旧值必然对不上。
+// （轨道高度取该行所选卫星的，故换卫星＝换轨道高度，同样触发重算。）
+// 用户仍可就地改斜距，改完一直用它，直到上述四项再次变动。斜距格空着也直接补上（切到手动 / 新增行）。
+// slantSig 只活在本次会话（不入场景）：载入场景时各行是新 _id、签名尚未记过 ⇒ 只登记不改写，
+// 绝不覆盖存档里的值。上下两张表一起刷，切子链路模式不用再来一遍。
+const slantSig = {}   // { 行_id: { 斜距列名: '纬度|海拔|仰角|轨道高度' } }
+function refreshSlant() {
+  if (!geoManual.value) return
+  const wasClean = !isDirty()
+  for (const [rows, side] of [[txStations, MANUAL_TX], [rxStations, MANUAL_RX]]) {
+    for (const r of rows) {
+      const rec = slantSig[r._id] || (slantSig[r._id] = {})
+      const h = pf(resolveSatellite(r.satelliteId).form.orbitAltitude)
+      const sig = `${r[side.latKey]}|${r[side.staAltKey]}|${r[side.eKey]}|${h || ''}`
+      const changed = rec[side.dKey] !== undefined && rec[side.dKey] !== sig
+      rec[side.dKey] = sig
+      const empty = String(r[side.dKey] == null ? '' : r[side.dKey]).trim() === ''
+      if (!(changed || empty) || !(h > 0)) continue
+      const d = rowSlant(r, side, h)
+      if (d != null) r[side.dKey] = d.toFixed(2)
+    }
+  }
+  // 派生值是系统自动填的、不是用户改的：本就无未保存改动时把基线推进，免得误报「未保存」
+  if (wasClean) setBaseline()
+}
+let _slantT = null
+function scheduleSlant() { clearTimeout(_slantT); _slantT = setTimeout(refreshSlant, 300) }
+// 只盯推荐值的【输入】（几何模式 / 各行所选卫星与其轨道高度 / 各行站址与仰角）——盯回填值本身会自激
+watch(() => [geoMode.value,
+  [[txStations, MANUAL_TX], [rxStations, MANUAL_RX]].map(([rows, s]) => rows.map((r) =>
+    `${r.satelliteId},${resolveSatellite(r.satelliteId).form.orbitAltitude},${r[s.latKey]},${r[s.staAltKey]},${r[s.eKey]}`).join(';')).join('/')].join('#'),
+scheduleSlant, { immediate: true })
+
 const rowReadout = computed(() => {
   const mode = linkMode.value
   const rows = mode === 'laser' ? laserLinks : mode === 'isl' ? islLinks : mode === 'downlink' ? rxStations : txStations
@@ -934,24 +1087,32 @@ async function compute() {
         const { satParams, linkParams } = buildRegenDownlinkParams(sat.form, bbForm, st, resolveEs(st.stationId).form)
         const freqGHz = parseFloat(sat.form.rxCenterFrequency) || 12.5   // 下行频率（几何多普勒/FSL）
         const stationGeo = { lonDeg: parseFloat(st.rxLongitude), latDeg: parseFloat(st.rxLatitude), altKm: (parseFloat(st.rxAltitude) || 0) / 1000, minElevDeg: parseFloat(st.rxMinElevation) || 0, freqGHz }
-        const geo = await api.linkBudget.ngsoGeometry({ orbit: orbitSpec, tx: stationGeo, rx: stationGeo, t0ISO, horizonHours: geoHorizonHours.value })
-        if (!(geo && geo.feasible)) {
-          out.push({ ti, rowId: st._id, txName: rxName, satName, data: null, margin: '—', error: (geo && geo.reason) || '轨道几何不可行', geom: geo, access: null }); continue
+        let geo = null, acc = null
+        if (geoManual.value) {
+          // 手动几何：仰角与斜距就是本行那两个数，不解算轨道（无 t*、无过境窗口、§8 不适用）
+          if (!(pf(st.rxSlantRange) > 0)) {
+            out.push({ ti, rowId: st._id, txName: rxName, satName, data: null, margin: '—', error: '手动几何：斜距未填或非正数', geom: null, access: null }); continue
+          }
+          applyManualGeom(linkParams, st.rxSlantRange, st.rxMinElevation)
+        } else {
+          geo = await api.linkBudget.ngsoGeometry({ orbit: orbitSpec, tx: stationGeo, rx: stationGeo, t0ISO, horizonHours: geoHorizonHours.value })
+          if (!(geo && geo.feasible)) {
+            out.push({ ti, rowId: st._id, txName: rxName, satName, data: null, margin: '—', error: (geo && geo.reason) || '轨道几何不可行', geom: geo, access: null }); continue
+          }
+          // 下行几何注入（单站：收=发，up/dn 同值）
+          linkParams.rxDistanceMode = 'slantRange'; linkParams.rxSlantRange = geo.worst.dn.slantKm; linkParams.rxMinElevation = geo.worst.dn.elevDeg
+          linkParams.distanceMode = 'slantRange'; linkParams.slantRange = geo.worst.dn.slantKm; linkParams.minElevation = geo.worst.dn.elevDeg
+          // §8 统计口径（仅下行侧；最低仰角取收信站门限字段，非最差瞬时仰角；不适用时为空对象=原口径）
+          Object.assign(linkParams, s8LinkParams(geo, { minElevDn: st.rxMinElevation }))
+          try { acc = await api.linkBudget.accessWindows({ orbit: orbitSpec, station: stationGeo, t0ISO, horizonHours: geoHorizonHours.value }) } catch (e) { acc = null }
         }
-        // 下行几何注入（单站：收=发，up/dn 同值）
-        linkParams.rxDistanceMode = 'slantRange'; linkParams.rxSlantRange = geo.worst.dn.slantKm; linkParams.rxMinElevation = geo.worst.dn.elevDeg
-        linkParams.distanceMode = 'slantRange'; linkParams.slantRange = geo.worst.dn.slantKm; linkParams.minElevation = geo.worst.dn.elevDeg
-        // §8 统计口径（仅下行侧；最低仰角取收信站门限字段，非最差瞬时仰角；不适用时为空对象=原口径）
-        Object.assign(linkParams, s8LinkParams(geo, { minElevDn: st.rxMinElevation }))
-        let acc = null
-        try { acc = await api.linkBudget.accessWindows({ orbit: orbitSpec, station: stationGeo, t0ISO, horizonHours: geoHorizonHours.value }) } catch (e) { acc = null }
         // 计算方式随该行所选载波：power = 按收信站实配 G/T 算余量；margin = 按载波系统余量反解所需 G/T
         const dopt = { mode: calcModeOf(bbForm) }
         sweepStore[st._id] = { satParams, linkParams, opt: dopt }
         const r = await api.linkBudget.computeRegenDownlink(satParams, linkParams, dopt)
         if (r && r.success) {
           const d = r.data
-          mergePlatformGeometry(d, geo)
+          if (geo) mergePlatformGeometry(d, geo)   // 手动几何不覆盖：引擎回填的就是用户给的那两个数
           const m = parseFloat(d.linkmargin)
           out.push({ ti, rowId: st._id, txName: rxName, satName, data: d, geom: geo, access: acc, margin: d.linkmargin, ok: !isNaN(m) && m >= 0, totalCN: d.carrierTotalCN, thresholdCN: d.thresholdCN, avail: d.systemAvailabilityResult })
         } else {
@@ -975,21 +1136,28 @@ async function compute() {
       }
       const freqGHz = parseFloat(sat.form.centerFrequency) || 14.25
       const stationGeo = { lonDeg: parseFloat(st.longitude), latDeg: parseFloat(st.latitude), altKm: (parseFloat(st.altitude) || 0) / 1000, minElevDeg: parseFloat(st.minElevation) || 0, freqGHz }
-      const geo = await api.linkBudget.ngsoGeometry({ orbit: orbitSpec, tx: stationGeo, rx: stationGeo, t0ISO, horizonHours: geoHorizonHours.value })
-      if (!(geo && geo.feasible)) {
-        out.push({ ti, rowId: st._id, txName, satName, data: null, margin: '—', error: (geo && geo.reason) || '轨道几何不可行', geom: geo, access: null }); continue
+      let geo = null, acc = null
+      if (geoManual.value) {
+        if (!(pf(st.slantRange) > 0)) {
+          out.push({ ti, rowId: st._id, txName, satName, data: null, margin: '—', error: '手动几何：斜距未填或非正数', geom: null, access: null }); continue
+        }
+        applyManualGeom(linkParams, st.slantRange, st.minElevation)
+      } else {
+        geo = await api.linkBudget.ngsoGeometry({ orbit: orbitSpec, tx: stationGeo, rx: stationGeo, t0ISO, horizonHours: geoHorizonHours.value })
+        if (!(geo && geo.feasible)) {
+          out.push({ ti, rowId: st._id, txName, satName, data: null, margin: '—', error: (geo && geo.reason) || '轨道几何不可行', geom: geo, access: null }); continue
+        }
+        linkParams.distanceMode = 'slantRange'; linkParams.slantRange = geo.worst.up.slantKm; linkParams.minElevation = geo.worst.up.elevDeg
+        linkParams.rxDistanceMode = 'slantRange'; linkParams.rxSlantRange = geo.worst.up.slantKm; linkParams.rxMinElevation = geo.worst.up.elevDeg
+        // §8 统计口径（仅上行侧；最低仰角取发信站门限字段，非最差瞬时仰角；不适用时为空对象=原口径）
+        Object.assign(linkParams, s8LinkParams(geo, { minElevUp: st.minElevation }))
+        try { acc = await api.linkBudget.accessWindows({ orbit: orbitSpec, station: stationGeo, t0ISO, horizonHours: geoHorizonHours.value }) } catch (e) { acc = null }
       }
-      linkParams.distanceMode = 'slantRange'; linkParams.slantRange = geo.worst.up.slantKm; linkParams.minElevation = geo.worst.up.elevDeg
-      linkParams.rxDistanceMode = 'slantRange'; linkParams.rxSlantRange = geo.worst.up.slantKm; linkParams.rxMinElevation = geo.worst.up.elevDeg
-      // §8 统计口径（仅上行侧；最低仰角取发信站门限字段，非最差瞬时仰角；不适用时为空对象=原口径）
-      Object.assign(linkParams, s8LinkParams(geo, { minElevUp: st.minElevation }))
-      let acc = null
-      try { acc = await api.linkBudget.accessWindows({ orbit: orbitSpec, station: stationGeo, t0ISO, horizonHours: geoHorizonHours.value }) } catch (e) { acc = null }
       sweepStore[st._id] = { satParams, linkParams, opt: copt }
       const r = await api.linkBudget.computeRegenUplink(satParams, linkParams, copt)
       if (r && r.success) {
         const d = r.data
-        mergePlatformGeometry(d, geo)
+        if (geo) mergePlatformGeometry(d, geo)
         const m = parseFloat(d.linkmargin)
         out.push({ ti, rowId: st._id, txName, satName, data: d, geom: geo, access: acc, margin: d.linkmargin, powerW: d.paRecommendation, ok: !isNaN(m) && m >= 0, totalCN: d.carrierTotalCN, thresholdCN: d.thresholdCN, avail: d.systemAvailabilityResult })
       } else {
@@ -1004,6 +1172,7 @@ async function compute() {
     let keepIdx = prevSel ? out.findIndex((l) => l.rowId === prevSel.rowId) : -1
     if (keepIdx < 0) keepIdx = Math.min(selected.value, out.length - 1)
     selected.value = keepIdx < 0 ? 0 : keepIdx
+    await nextTick()
     resultsStale.value = false
     await loadWaterfall()
   } catch (e) {
@@ -1013,10 +1182,11 @@ async function compute() {
   }
 }
 
-// 再生式星间：逐条星间链路（发射卫星 → 接收卫星）。几何为核心：两星轨道 → 严格互视最差距离/可见度。
+// 再生式星间：逐条星间链路。几何=自动最差 时两星轨道 → 严格互视最差距离/可见度；
+// 几何=手动 时不选卫星，星间距离取本行 islRangeKm 直接算 FSL。
 async function computeIsl() {
   if (!islLinks.length) { error.value = '请至少添加一条星间链路'; return }
-  if (!satConfigs.length) { error.value = '请至少添加一颗卫星'; return }
+  if (!geoManual.value && !satConfigs.length) { error.value = '请至少添加一颗卫星'; return }
   computing.value = true; error.value = ''
   try {
     const out = []
@@ -1024,31 +1194,42 @@ async function computeIsl() {
     const t0ISO = searchT0ISO()   // 本批星间统一起点：与上下行同口径，计算此刻墙钟
     for (let ti = 0; ti < islLinks.length; ti++) {
       const link = islLinks[ti]
-      const txSat = resolveSatellite(link.txSatelliteId)
-      const rxSat = resolveSatellite(link.rxSatelliteId)
+      const manual = geoManual.value
+      // 手动几何不选卫星：两端无身份（表上也没那两列），链路名按条数走；引擎占位仍取首份卫星配置
+      const txSat = manual ? null : resolveSatellite(link.txSatelliteId)
+      const rxSat = manual ? null : resolveSatellite(link.rxSatelliteId)
       const bbForm = resolveBaseband(link.basebandId).form
       const txName = (txSat && (txSat.form.satelliteName || txSat.name)) || '发射星'
       const rxName = (rxSat && (rxSat.form.satelliteName || rxSat.name)) || '接收星'
-      const orbitA = orbitSpecOf(txSat), orbitB = orbitSpecOf(rxSat)
-      const freqGHz = parseFloat(link.islFreq) || 23
-      const am = parseFloat(link.islAtmMargin); const atmMarginKm = isNaN(am) ? 100 : am
-      // 两星几何（双 SGP4 + 地球临边遮挡 → 最差星间距离 + 互视可见度 + 访问窗口）
-      const geo = await api.linkBudget.islGeometry({ orbitA, orbitB, t0ISO, horizonHours: geoHorizonHours.value, freqGHz, atmMarginKm })
-      if (!(geo && geo.feasible)) {
-        out.push({ ti, rowId: link._id, txName, satName: rxName, data: null, margin: '—', error: (geo && geo.reason) || '两星几何不可行/时窗内不互视', geom: null, islGeo: geo, access: null }); continue
+      let geo = null, distKm = 0, visPct = null   // 手动几何无互视占比 → null（引擎据此不写可用度）
+      if (manual) {
+        distKm = pf(link.islRangeKm)
+        if (!(distKm > 0)) {
+          out.push({ ti, rowId: link._id, txName, satName: rxName, islManual: true, data: null, margin: '—', error: '手动几何：星间链路距离未填或非正数', geom: null, islGeo: null, access: null }); continue
+        }
+      } else {
+        const freqGHz = parseFloat(link.islFreq) || 23
+        const am = parseFloat(link.islAtmMargin); const atmMarginKm = isNaN(am) ? 100 : am
+        // 两星几何（双 SGP4 + 地球临边遮挡 → 最差星间距离 + 互视可见度 + 访问窗口）。
+        // 最大工作距离留空＝不限：最差工况就是几何可达的最大互视距离（擦地球临边那一瞬）。
+        geo = await api.linkBudget.islGeometry({ orbitA: orbitSpecOf(txSat), orbitB: orbitSpecOf(rxSat), t0ISO, horizonHours: geoHorizonHours.value, freqGHz, atmMarginKm, maxRangeKm: pf(link.islMaxRange) || 0 })
+        if (!(geo && geo.feasible)) {
+          out.push({ ti, rowId: link._id, txName, satName: rxName, data: null, margin: '—', error: (geo && geo.reason) || '两星几何不可行/时窗内不互视', geom: null, islGeo: geo, access: null }); continue
+        }
+        distKm = geo.worst.rangeKm
+        visPct = (geo.visibility.visibleFrac || 0) * 100
       }
-      const { satParams, linkParams } = buildRegenIslParams(txSat.form, bbForm, link)
-      satParams.islHopDistance = geo.worst.rangeKm     // 几何最差距离注入
-      const visPct = (geo.visibility.visibleFrac || 0) * 100
+      const { satParams, linkParams } = buildRegenIslParams(txSat ? txSat.form : ((satConfigs[0] && satConfigs[0].form) || null), bbForm, link)
+      satParams.islHopDistance = distKm     // 星间距离注入（自动=几何最差；手动=本行给定）
       sweepStore[link._id] = { satParams, linkParams, opt: { visibilityPct: visPct } }
       const r = await api.linkBudget.computeRegenIsl(satParams, linkParams, { visibilityPct: visPct })
       if (r && r.success) {
         const d = r.data
-        mergeIslGeometry(d, geo)
+        if (manual) mergeIslManualDistance(d, distKm); else mergeIslGeometry(d, geo)
         const m = parseFloat(d.linkmargin)
-        out.push({ ti, rowId: link._id, txName, satName: rxName, data: d, geom: null, islGeo: geo, access: null, margin: d.linkmargin, ok: !isNaN(m) && m >= 0, totalCN: d.carrierTotalCN, thresholdCN: d.thresholdCN, avail: d.systemAvailabilityResult })
+        out.push({ ti, rowId: link._id, txName, satName: rxName, islManual: manual, data: d, geom: null, islGeo: geo, access: null, margin: d.linkmargin, ok: !isNaN(m) && m >= 0, totalCN: d.carrierTotalCN, thresholdCN: d.thresholdCN, avail: d.systemAvailabilityResult })
       } else {
-        out.push({ ti, rowId: link._id, txName, satName: rxName, data: null, margin: '—', error: (r && r.message) || '失败', geom: null, islGeo: geo, access: null })
+        out.push({ ti, rowId: link._id, txName, satName: rxName, islManual: manual, data: null, margin: '—', error: (r && r.message) || '失败', geom: null, islGeo: geo, access: null })
       }
     }
     const prevSel = sel.value
@@ -1059,6 +1240,7 @@ async function computeIsl() {
     let keepIdx = prevSel ? out.findIndex((l) => l.rowId === prevSel.rowId) : -1
     if (keepIdx < 0) keepIdx = Math.min(selected.value, out.length - 1)
     selected.value = keepIdx < 0 ? 0 : keepIdx
+    await nextTick()
     resultsStale.value = false
     await loadWaterfall()
   } catch (e) {
@@ -1072,38 +1254,48 @@ async function computeIsl() {
 // 链路预算走第一性原理光学预算（P_rx 链 + 光子/bit 灵敏度）；给定速率 → 链路余量。
 async function computeLaser() {
   if (!laserLinks.length) { error.value = '请至少添加一条激光星间链路'; return }
-  if (!satConfigs.length) { error.value = '请至少添加一颗卫星'; return }
+  if (!geoManual.value && !satConfigs.length) { error.value = '请至少添加一颗卫星'; return }
   computing.value = true; error.value = ''
   try {
     const out = []
     const t0ISO = searchT0ISO()
     for (let ti = 0; ti < laserLinks.length; ti++) {
       const link = laserLinks[ti]
-      const txSat = resolveSatellite(link.txSatelliteId)
-      const rxSat = resolveSatellite(link.rxSatelliteId)
+      const manual = geoManual.value
+      const txSat = manual ? null : resolveSatellite(link.txSatelliteId)
+      const rxSat = manual ? null : resolveSatellite(link.rxSatelliteId)
       const txName = (txSat && (txSat.form.satelliteName || txSat.name)) || '发射星'
       const rxName = (rxSat && (rxSat.form.satelliteName || rxSat.name)) || '接收星'
-      const orbitA = orbitSpecOf(txSat), orbitB = orbitSpecOf(rxSat)
-      // 光频（GHz）= c/λ：喂几何求解器使 maxDopplerHz 为相干光多普勒
-      const lambdaNm = parseFloat(link.wavelengthNm) || 1550
-      const optFreqGHz = 2.99792458e8 / lambdaNm    // = c[m/s]/λ[nm] → GHz（c/λ 的 GHz 数值）
-      const am = parseFloat(link.islAtmMargin); const atmMarginKm = isNaN(am) ? 100 : am
-      // 两星几何（双 SGP4 + 地球临边遮挡 → 最差星间距离 + 互视可见度 + 访问窗口）
-      const geo = await api.linkBudget.islGeometry({ orbitA, orbitB, t0ISO, horizonHours: geoHorizonHours.value, freqGHz: optFreqGHz, atmMarginKm })
-      if (!(geo && geo.feasible)) {
-        out.push({ ti, rowId: link._id, txName, satName: rxName, data: null, margin: '—', error: (geo && geo.reason) || '两星几何不可行/时窗内不互视', geom: null, islGeo: geo, access: null }); continue
+      let geo = null, distKm = 0, visPct = null, rangeRateKmS = null
+      if (manual) {
+        distKm = pf(link.islRangeKm)
+        if (!(distKm > 0)) {
+          out.push({ ti, rowId: link._id, txName, satName: rxName, islManual: true, data: null, margin: '—', error: '手动几何：星间链路距离未填或非正数', geom: null, islGeo: null, access: null }); continue
+        }
+      } else {
+        // 光频（GHz）= c/λ：喂几何求解器使 maxDopplerHz 为相干光多普勒
+        const lambdaNm = parseFloat(link.wavelengthNm) || 1550
+        const optFreqGHz = 2.99792458e8 / lambdaNm    // = c[m/s]/λ[nm] → GHz（c/λ 的 GHz 数值）
+        const am = parseFloat(link.islAtmMargin); const atmMarginKm = isNaN(am) ? 100 : am
+        // 两星几何（双 SGP4 + 地球临边遮挡 → 最差星间距离 + 互视可见度 + 访问窗口）
+        geo = await api.linkBudget.islGeometry({ orbitA: orbitSpecOf(txSat), orbitB: orbitSpecOf(rxSat), t0ISO, horizonHours: geoHorizonHours.value, freqGHz: optFreqGHz, atmMarginKm, maxRangeKm: pf(link.islMaxRange) || 0 })
+        if (!(geo && geo.feasible)) {
+          out.push({ ti, rowId: link._id, txName, satName: rxName, data: null, margin: '—', error: (geo && geo.reason) || '两星几何不可行/时窗内不互视', geom: null, islGeo: geo, access: null }); continue
+        }
+        distKm = geo.worst.rangeKm
+        visPct = (geo.visibility.visibleFrac || 0) * 100
+        rangeRateKmS = geo.worst.rangeRateKmS
       }
-      const laserParams = buildRegenLaserParams(txSat.form, link)
-      laserParams.islHopDistance = geo.worst.rangeKm          // 几何最差距离注入
-      const visPct = (geo.visibility.visibleFrac || 0) * 100
-      const r = await api.linkBudget.computeRegenLaser(laserParams, { visibilityPct: visPct, rangeRateKmS: geo.worst.rangeRateKmS })
+      const laserParams = buildRegenLaserParams(txSat ? txSat.form : null, link)
+      laserParams.islHopDistance = distKm          // 星间距离注入（自动=几何最差；手动=本行给定）
+      const r = await api.linkBudget.computeRegenLaser(laserParams, { visibilityPct: visPct, rangeRateKmS })
       if (r && r.success) {
         const d = r.data
-        mergeLaserGeometry(d, geo)
+        if (manual) mergeLaserManualDistance(d, distKm); else mergeLaserGeometry(d, geo)
         const m = parseFloat(d.linkmargin)
-        out.push({ ti, rowId: link._id, txName, satName: rxName, data: d, geom: null, islGeo: geo, access: null, margin: d.linkmargin, ok: !isNaN(m) && m >= 0, totalCN: d.carrierTotalCN, thresholdCN: d.thresholdCN, avail: d.systemAvailabilityResult })
+        out.push({ ti, rowId: link._id, txName, satName: rxName, islManual: manual, data: d, geom: null, islGeo: geo, access: null, margin: d.linkmargin, ok: !isNaN(m) && m >= 0, totalCN: d.carrierTotalCN, thresholdCN: d.thresholdCN, avail: d.systemAvailabilityResult })
       } else {
-        out.push({ ti, rowId: link._id, txName, satName: rxName, data: null, margin: '—', error: (r && r.message) || '失败', geom: null, islGeo: geo, access: null })
+        out.push({ ti, rowId: link._id, txName, satName: rxName, islManual: manual, data: null, margin: '—', error: (r && r.message) || '失败', geom: null, islGeo: geo, access: null })
       }
     }
     const prevSel = sel.value
@@ -1114,6 +1306,9 @@ async function computeLaser() {
     let keepIdx = prevSel ? out.findIndex((l) => l.rowId === prevSel.rowId) : -1
     if (keepIdx < 0) keepIdx = Math.min(selected.value, out.length - 1)
     selected.value = keepIdx < 0 ? 0 : keepIdx
+    // 先把「表格一动就置位」的 stale 侦听冲刷掉再清旗：方向图回填也是往单元格里写数，
+    // 那是本次计算自己填的、不是用户改的，不该立刻亮「输入已变」。
+    await nextTick()
     resultsStale.value = false
     await loadWaterfall()
   } catch (e) {
@@ -1163,6 +1358,7 @@ function serializeState() {
     rx: rxStations.map(stripRow),
     isl: islLinks.map(stripRow),
     laser: laserLinks.map(stripRow),
+    geoMode: geoMode.value,
     geoHorizonHours: geoHorizonHours.value
   }
 }
@@ -1297,11 +1493,12 @@ function applyState(st) {
       return o
     }))
   }
+  geoMode.value = st.geoMode === 'manual' ? 'manual' : 'auto'   // 旧场景无此字段 → 自动最差（原行为）
   if (st.geoHorizonHours != null) geoHorizonHours.value = Number(st.geoHorizonHours) || 24
 }
 let _stateT = null
 function scheduleSaveState() { clearTimeout(_stateT); _stateT = setTimeout(() => { try { localStorage.setItem(STATE_KEY, JSON.stringify({ ...serializeState(), activeId: activeId.value })) } catch (e) { /* ignore */ } dirtyFlag.value = isDirty() }, 600) }
-watch([txStations, rxStations, islLinks, laserLinks, geoHorizonHours, linkMode, hiddenModes, activeId], scheduleSaveState, { deep: true })
+watch([txStations, rxStations, islLinks, laserLinks, geoMode, geoHorizonHours, linkMode, hiddenModes, activeId], scheduleSaveState, { deep: true })
 
 async function loadConfigs() {
   try {
@@ -1316,7 +1513,7 @@ function pruneExpanded() {
   for (const id of [...expandedFolders.value]) if (!ids.has(id)) { expandedFolders.value.delete(id); changed = true }
   if (changed) persistExpanded()
 }
-function defaultCfgName() { const s = satConfigs[0] && satConfigs[0].form.satelliteName; const kind = linkMode.value === 'laser' ? '再生激光星间' : linkMode.value === 'isl' ? '再生星间' : linkMode.value === 'downlink' ? '再生下行' : '再生上行'; const unit = (linkMode.value === 'isl' || linkMode.value === 'laser') ? '条' : '站'; return (s ? s + ' ' : '') + `${kind} ${nLinks.value} ${unit}` }
+function defaultCfgName() { const s = satConfigs[0] && satConfigs[0].form.satelliteName; const kind = linkMode.value === 'laser' ? byLang('再生激光星间', 'OBP Optical ISL') : linkMode.value === 'isl' ? byLang('再生星间', 'OBP ISL') : linkMode.value === 'downlink' ? byLang('再生下行', 'OBP Downlink') : byLang('再生上行', 'OBP Uplink'); const unit = (linkMode.value === 'isl' || linkMode.value === 'laser') ? byLang('条', 'links') : byLang('站', 'stations'); return (s ? s + ' ' : '') + `${kind} ${nLinks.value} ${unit}` }
 const cfgDlg = reactive({ open: false, name: '' })
 function openSaveDlg() { if (!api) { toast('保存需在桌面客户端中运行'); return } cfgDlg.name = defaultCfgName(); cfgDlg.open = true }
 async function confirmCfgDlg() {
@@ -1356,7 +1553,7 @@ function askConfirm(msg) { confirmDlg.msg = msg; confirmDlg.open = true; return 
 function answerConfirm(ok) { confirmDlg.open = false; const r = _confirmResolve; _confirmResolve = null; if (r) r(ok) }
 async function addFolder(parentId = null) {
   if (!api) { toast('需在桌面客户端中运行'); return }
-  const item = await api.store.saveConfig({ type: 'folder', name: uniqueCfgName('新建文件夹'), parentId: parentId || null, orbitType: 'REGEN' })
+  const item = await api.store.saveConfig({ type: 'folder', name: uniqueCfgName(newFolderName()), parentId: parentId || null, orbitType: 'REGEN' })
   if (parentId) expandedFolders.value.add(parentId)
   if (item && item.id) expandedFolders.value.add(item.id)
   persistExpanded(); await loadConfigs(); if (item && item.id) startRename(item)
@@ -1387,7 +1584,7 @@ function blankState() {
     rx: [defaultsFor(RX_FIELDS)],
     isl: [defaultsFor(ISL_FIELDS)],
     laser: [defaultsFor(LASER_FIELDS)],
-    geoHorizonHours: 24
+    geoMode: 'manual', geoHorizonHours: 24
   }
 }
 function uniqueCfgName(base) { const names = new Set(configs.value.map((c) => c.name)); if (!names.has(base)) return base; let i = 2; while (names.has(base + ' ' + i)) i++; return base + ' ' + i }
@@ -1395,7 +1592,7 @@ async function addBlankConfig(parentId = null) {
   if (!api) { toast('需在桌面客户端中运行'); return }
   if (!(await guardedLeave())) return
   const state = blankState()
-  const item = await api.store.saveConfig({ name: uniqueCfgName('新配置'), state, parentId: parentId || null })
+  const item = await api.store.saveConfig({ name: uniqueCfgName(newCfgName()), state, parentId: parentId || null })
   if (parentId) { expandedFolders.value.add(parentId); persistExpanded() }
   await loadConfigs(); if (item && item.id) { activeId.value = item.id; applyState(state); setBaseline() }
   toast('已添加空白配置')
@@ -1406,7 +1603,7 @@ function cutConfig(c) { if (!c || c.type === 'folder') return; cfgClip.value = {
 async function pasteConfig(targetId, into = false) {
   const clip = cfgClip.value; if (!clip || !api) return
   let movingId
-  if (clip.mode === 'copy') { const item = await api.store.saveConfig({ name: uniqueCfgName(clip.name + ' 副本'), state: JSON.parse(JSON.stringify(clip.state)) }); movingId = item && item.id }
+  if (clip.mode === 'copy') { const item = await api.store.saveConfig({ name: uniqueCfgName(copyNameOf(clip.name)), state: JSON.parse(JSON.stringify(clip.state)) }); movingId = item && item.id }
   else movingId = clip.id
   if (movingId) {
     const target = (targetId && targetId !== movingId) ? configs.value.find((c) => c.id === targetId) : null
@@ -1436,7 +1633,7 @@ function openCtx(e, c) { e.preventDefault(); ctxMenu.configId = c ? c.id : null;
 function ctxDo(fn) { ctxMenu.open = false; fn() }
 // 指纹只取「场景内容」字段（库是全局资产、页签/结果列勾选是视图态，均不入指纹）
 function fingerprintOf(s) {
-  return stableStringify({ tx: s.tx, rx: s.rx, isl: s.isl, laser: s.laser, geoHorizonHours: s.geoHorizonHours, linkMode: s.linkMode, hiddenModes: s.hiddenModes })
+  return stableStringify({ tx: s.tx, rx: s.rx, isl: s.isl, laser: s.laser, geoMode: s.geoMode || 'auto', geoHorizonHours: s.geoHorizonHours, linkMode: s.linkMode, hiddenModes: s.hiddenModes })
 }
 function fingerprint() { return fingerprintOf(serializeState()) }
 let activeBaseline = ''
@@ -1553,12 +1750,17 @@ const shareCtx = {
 }
 
 // ============ 报表语言与报告导出 ============
-// 报表语言：「详细预算」区与导出内容同吃这一个值——屏幕上核对的和交出去的报表得是同一份东西。
-// localStorage 键沿用旧名 exportLang，保住用户已经存下的选择。
-const reportLang = ref(localStorage.getItem('regen/exportLang') || 'zh')
-watch(reportLang, (v) => {
-  try { localStorage.setItem('regen/exportLang', v) } catch (e) { /* ignore */ }
+// 报表语言跟随平台语言（设置▸语言），不再单独设一档：一个软件只有一种语言，
+// 屏幕上核对的、详细预算区显示的、交出去的报表，三者必然是同一种。
+const reportLang = ref(getLang())
+onLangChange((v) => { reportLang.value = v })
+watch(reportLang, () => {
   loadWaterfall()   // 段标题/行标签是 core 取数时按 lang 翻好的，换语言得重取一次
+})
+// 自动命名的库条目跟着换语言：它们的名字是生成时按语言出的字（呈现层翻不到），换了语言得重出一次。
+// 只动 nameAuto 的条目，用户起过的名字一律不碰（syncAutoNames 幂等，重跑无副作用）。
+onLangChange(() => {
+  syncAutoNames(basebandConfigs, 'carrier'); syncAutoNames(esConfigs, 'es'); syncAutoNames(satConfigs, 'sat')
 })
 // 交付级报告：流程在 shared/useLbReport.js（三窗共用），此处只接本窗数据源。
 // 再生式一份报告只讲一段链路（上行 / 下行 / 星间微波 / 星间激光），故 regenMode 随当前体制走；
@@ -1729,6 +1931,7 @@ onMounted(async () => {
                 <button class="lb-mini" title="复制此卫星" @click="duplicateSatConfig(cfg)"><Icon name="copy" :size="12" /> 复制</button>
                 <button class="lb-mini" title="删除此卫星（被引用时提示引用数）" :disabled="satConfigs.length <= 1" @click="removeSatConfig(cfg)">删除</button>
               </template>
+              <!-- 取星只定轨道（卫星/天线树 / 星历搜索）；EIRP·G/T 逐行手填 -->
               <template #default="{ cfg }"><RegenSatPanel :form="cfg.form" :fields="SAT_FIELDS" :ngso-sat="cfg.ngsoSat" :sat-tree="satTree" /></template>
             </LbLibrary>
             <LbLibrary v-else v-model="selBbId" layout="column" :items="basebandConfigs" :summary="bbSummary" name-placeholder="载波名称"
@@ -1758,7 +1961,7 @@ onMounted(async () => {
                 保存<span v-if="dirtyFlag" class="lbx-dirty" title="有未保存的修改"></span>
               </button>
               <button class="lbr-big" :disabled="!api" title="分享 / 导入：配置（可多选）+ 资源库条目（可多选）——分享码 / 文件 / 发给用户ID" @click="openShareDlg"><Icon name="external-link" :size="15" />分享</button>
-              <button class="lbr-big" :class="{ spin: refreshing }" :disabled="!api" title="刷新最新设置（GRD 卫星树 / 天线设置 / 城市库 / 载波信号选项 等）" @click="refreshLatest">
+              <button class="lbr-big" :class="{ spin: refreshing }" :disabled="!api" title="刷新最新设置（卫星/天线树 / 城市库 / 载波信号选项 等）" @click="refreshLatest">
                 <svg viewBox="0 0 16 16" class="lbr-svg"><path d="M13 8a5 5 0 1 1-1.46-3.54" /><path d="M13 2.6v2.6h-2.6" /></svg>
                 刷新
               </button>
@@ -1769,7 +1972,10 @@ onMounted(async () => {
           <div class="lbr-g">
             <div class="lbr-items">
               <div class="lbr-form">
-                <label title="在此时窗内求几何最差工况并列出全部满足最低仰角的访问窗口（选星走 SGP4；手动圆轨道为示意）"><span>时窗</span>
+                <label title="几何来源（四种体制统一）：自动最差＝按卫星轨道解最差工况几何（星地：仰角字段作门限、斜距由求解器给出；星间：两星轨道解最差星间距离与互视可见度）；手动＝星地斜距与星间链路距离由表内逐行给定，不解算轨道"><span>几何</span>
+                  <select v-model="geoMode" style="width: 86px"><option v-for="g in GEO_MODES" :key="g.v" :value="g.v">{{ g.l }}</option></select>
+                </label>
+                <label v-if="!geoManual" title="在此时窗内求几何最差工况并列出全部满足最低仰角的访问窗口（选星走 SGP4；手动圆轨道为示意）"><span>时窗</span>
                   <select v-model.number="geoHorizonHours" style="width: 76px"><option v-for="h in HORIZONS" :key="h.v" :value="h.v">{{ h.l }}</option></select>
                 </label>
                 <label title="功放与余量随站型设置——在各站所选「地球站配置」的发射参数（工作点）中"><span>工作点</span><span class="lbr-u">随站型</span></label>
@@ -1792,11 +1998,6 @@ onMounted(async () => {
             <div class="lbr-items">
               <button class="lbr-big" :disabled="reportDlg.busy || !links.length" :title="links.length ? '生成交付级报告：Excel（总报告 + 几何关系 + 逐链路详情）/ PDF（封面 · 目录 · 总报告 · 逐链路详情，含图）' : '尚无计算结果'" @click="openReportDialog"><Icon name="file-down" :size="15" />{{ reportDlg.busy ? '生成中…' : '报告' }}</button>
               <button class="lbr-big" :disabled="!segments.length" title="复制当前瀑布表（TSV，可直接粘贴到 Excel / 报告）" @click="copyWaterfallTsv"><Icon name="file-text" :size="15" />TSV</button>
-              <div class="lbr-form">
-                <label title="报表语言：「详细预算」区与导出内容一起切换 / Report language: detailed budget & exports"><span>语言</span>
-                  <select v-model="reportLang" style="width: 64px"><option value="zh">中文</option><option value="en">English</option></select>
-                </label>
-              </div>
             </div>
             <div class="lbr-cap">导出</div>
           </div>
@@ -1835,6 +2036,7 @@ onMounted(async () => {
         <div ref="flowEl" class="lbx-flow lbx-cards">
           <LbSection v-if="linkMode === 'uplink'" id="tx" title="发信站群" :count="txStations.length" summary="一行一站：站址 + 库引用 + 结果列">
             <template #actions>
+              <button v-if="geoManual" class="lb-mini" title="斜距工具：按轨道高度 × 仰角算斜距，可按各行仰角批量填入「斜距」列" @click="slantToolOpen = true">斜距工具</button>
               <span class="lbx-colpick-wrap">
                 <button class="lb-mini" title="计算结果列：勾选显示列，底部可新建自定义公式列" @click="colPickOpen = !colPickOpen">结果列 <Icon name="chevron-down" :size="11" /></button>
                 <div v-if="colPickOpen" class="lbx-colpick-mask" @click="colPickOpen = false" @wheel.prevent></div>
@@ -1864,6 +2066,7 @@ onMounted(async () => {
           </LbSection>
           <LbSection v-if="linkMode === 'downlink'" id="rx" title="收信站群" :count="rxStations.length" summary="一行一站：站址 + 库引用 + 结果列">
             <template #actions>
+              <button v-if="geoManual" class="lb-mini" title="斜距工具：按轨道高度 × 仰角算斜距，可按各行仰角批量填入「斜距」列" @click="slantToolOpen = true">斜距工具</button>
               <span class="lbx-colpick-wrap">
                 <button class="lb-mini" title="计算结果列：勾选显示列，底部可新建自定义公式列" @click="colPickOpen = !colPickOpen">结果列 <Icon name="chevron-down" :size="11" /></button>
                 <div v-if="colPickOpen" class="lbx-colpick-mask" @click="colPickOpen = false" @wheel.prevent></div>
@@ -1891,8 +2094,9 @@ onMounted(async () => {
             </div>
             <LbCapFoot :cap="capacitySummary" :cap-main="capMain" :bw-main="bwMain" :readout="rowReadout" />
           </LbSection>
-          <LbSection v-if="linkMode === 'isl'" id="isl" title="星间链路群" :count="islLinks.length" summary="一行一条：发射星 → 接收星 + 结果列">
+          <LbSection v-if="linkMode === 'isl'" id="isl" title="星间链路群" :count="islLinks.length" :summary="geoManual ? '一行一条：星间链路距离 + 星间参数 + 结果列' : '一行一条：发射星 → 接收星 + 结果列'">
             <template #actions>
+              <button v-if="geoManual" class="lb-mini" title="星间链路距离工具：两颗卫星在时间轴上的星间距离，可填入「星间链路距离」列" @click="islToolOpen = true">距离工具</button>
               <span class="lbx-colpick-wrap">
                 <button class="lb-mini" title="计算结果列：勾选显示列，底部可新建自定义公式列" @click="colPickOpen = !colPickOpen">结果列 <Icon name="chevron-down" :size="11" /></button>
                 <div v-if="colPickOpen" class="lbx-colpick-mask" @click="colPickOpen = false" @wheel.prevent></div>
@@ -1917,8 +2121,9 @@ onMounted(async () => {
             </div>
             <LbCapFoot :cap="capacitySummary" :cap-main="capMain" :bw-main="bwMain" :readout="rowReadout" />
           </LbSection>
-          <LbSection v-if="linkMode === 'laser'" id="laser" title="星间激光链路群" :count="laserLinks.length" summary="一行一条：发射星 → 接收星 + 结果列">
+          <LbSection v-if="linkMode === 'laser'" id="laser" title="星间激光链路群" :count="laserLinks.length" :summary="geoManual ? '一行一条：星间链路距离 + 激光参数 + 结果列' : '一行一条：发射星 → 接收星 + 结果列'">
             <template #actions>
+              <button v-if="geoManual" class="lb-mini" title="星间链路距离工具：两颗卫星在时间轴上的星间距离，可填入「星间链路距离」列" @click="islToolOpen = true">距离工具</button>
               <span class="lbx-colpick-wrap">
                 <button class="lb-mini" title="计算结果列：勾选显示列，底部可新建自定义公式列" @click="colPickOpen = !colPickOpen">结果列 <Icon name="chevron-down" :size="11" /></button>
                 <div v-if="colPickOpen" class="lbx-colpick-mask" @click="colPickOpen = false" @wheel.prevent></div>
@@ -1950,8 +2155,9 @@ onMounted(async () => {
             <div v-else-if="sel && sel.error" class="lb-err">链路 {{ pairLabel(sel) }} 计算失败：{{ sel.error }}</div>
             <div v-else-if="core" class="lbx-doc">
 
-            <!-- 几何/访问窗口：预算文档以瀑布为主角，几何收进可折叠小节（记忆展开态），头部常显摘要 -->
-            <div class="lbx-fold">
+            <!-- 几何/访问窗口：预算文档以瀑布为主角，几何收进可折叠小节（记忆展开态），头部常显摘要。
+                 手动几何（斜距/星间链路距离由表内给定）压根没有解算出来的几何 → 整节不出，不留空壳标题。 -->
+            <div v-if="islGeo || geom || access" class="lbx-fold">
               <div class="lbx-fold-hd" :class="{ closed: geoFold }" @click="geoFold = !geoFold">
                 <span class="chev"><Icon name="chevron-down" :size="12" /></span>
                 <span>{{ linkMode === 'isl' || linkMode === 'laser' ? '星间几何 · 互视' : '站星几何 · 访问窗口' }}</span>
@@ -2001,7 +2207,7 @@ onMounted(async () => {
                 <div class="geo-sec" v-if="islGeo.elements && (islGeo.elements.tx || islGeo.elements.rx)">两星轨道与运动<span class="geo-sec-x">发射 / 接收各一列</span></div>
                 <div v-if="islGeo.elements && (islGeo.elements.tx || islGeo.elements.rx)" class="geo-2col">
                   <div v-for="side in [{ k: 'tx', name: sel.txName, alt: islGeo.worst.txAltKm, spd: islGeo.worst.txSpeedKmS, gspd: islGeo.worst.txGroundSpeedKmS, el: islGeo.elements.tx }, { k: 'rx', name: sel.satName, alt: islGeo.worst.rxAltKm, spd: islGeo.worst.rxSpeedKmS, gspd: islGeo.worst.rxGroundSpeedKmS, el: islGeo.elements.rx }]" :key="side.k" class="geo-col">
-                    <div class="geo-col-hd" :class="side.k">{{ side.k === 'tx' ? '发射卫星' : '接收卫星' }}<em>{{ side.name }}</em></div>
+                    <div class="geo-col-hd" :class="side.k">{{ side.k === 'tx' ? '发射卫星' : '接收卫星' }}<em data-i18n-skip>{{ side.name }}</em></div>
                     <template v-if="side.el">
                       <div class="geo-sec">卫星运动</div>
                       <div class="geo-row"><span class="geo-l">轨道速度<i>惯性系</i></span><span class="geo-v">{{ g2(side.spd, 3) }}<i>km/s</i></span></div>
@@ -2142,6 +2348,16 @@ onMounted(async () => {
     <LbCustomColsDialog :open="ccDlgOpen" :cols="customColsBy[linkMode]" :pool="customPool"
       :subtitle="(LINK_MODES.find((m) => m.key === linkMode) || {}).label || ''" :preview-fn="ccPreview"
       @update:cols="customColsBy[linkMode] = $event" @close="ccDlgOpen = false" />
+
+    <!-- 斜距工具（几何=手动 时可用）：算斜距 + 按各行仰角批量填 -->
+    <LbSlantTool :open="slantToolOpen" :alt-km="slantToolAlt" :elev-deg="slantToolElev" :lat-deg="slantToolLat" :sta-alt-m="slantToolStaAlt"
+      :row-count="slantSide.rows.length" :has-row="!!slantToolRow" :side-label="slantSide.label" @fill="applySlantFill" @close="slantToolOpen = false" />
+
+    <!-- 星间链路距离工具（几何=手动 时可用）：两星轨道 → 时间轴上的星间距离 → 填入链路表 -->
+    <LbIslRangeTool :open="islToolOpen" :sats="islToolSats" :row-count="islToolRows.length" :has-row="!!islToolRow"
+      :default-hours="geoHorizonHours" :side-label="linkMode === 'laser' ? '星间激光' : '星间微波'"
+      @fill="applyIslRangeFill" @close="islToolOpen = false" />
+
     <LbReportDialog :open="reportDlg.open" :lang="reportLang" orbit-type="REGEN" :regen-mode="linkMode"
       :sat-name="(satConfigs[0] && satConfigs[0].form.satelliteName) || ''" :band="(satConfigs[0] && satConfigs[0].form.frequencyBand) || ''" :link-count="links.length"
       :viz-available="showViz" store-key="regen" :busy="reportDlg.busy" :progress="reportDlg.progress"
@@ -2162,7 +2378,7 @@ onMounted(async () => {
     <div v-if="leaveDlg.open" class="lb-mask" @click="leaveAnswer('cancel')">
       <div class="lb-dlg" @click.stop>
         <div class="lb-dlg-hd">配置已修改</div>
-        <div class="lb-dlg-bd"><div class="lb-share-row">「<b>{{ leaveDlg.name }}</b>」有未保存的修改，是否保存？</div></div>
+        <div class="lb-dlg-bd"><div class="lb-share-row">「<b data-i18n-skip>{{ leaveDlg.name }}</b>」有未保存的修改，是否保存？</div></div>
         <div class="lb-dlg-ft">
           <button class="lb-mini" @click="leaveAnswer('cancel')">取消</button>
           <button class="lb-mini" @click="leaveAnswer('discard')">不保存</button>

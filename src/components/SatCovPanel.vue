@@ -121,7 +121,7 @@ function shellWhy(sh) {
                     <span class="ic ok" title="确认重命名" @mousedown.prevent @click.stop="commitRenameAnt(sat, a)"><Icon name="check" :size="11" /></span>
                   </template>
                   <template v-else>
-                    <span class="aname" title="双击重命名" @dblclick.stop="startRenameAnt(sat, a)">{{ a.name }}</span>
+                    <span class="aname" title="双击重命名" @dblclick.stop="startRenameAnt(sat, a)" data-i18n-skip>{{ a.name }}</span>
                     <span v-if="sc.isActive(grd.keyOf(sat.folder, a.name))" class="afoc">编辑中</span>
                     <span class="sacts">
                       <span class="ic" title="重命名天线" @click.stop="startRenameAnt(sat, a)"><Icon name="pencil" :size="11" /></span>
@@ -158,6 +158,8 @@ function shellWhy(sh) {
               <input class="lvclr" type="color" title="壳层参照网颜色" :value="sh.color" @change="sc.updateShell(sh.id, { color: $event.target.value })" />
               <input class="shalt" type="number" step="10" :value="sh.altKm" title="轨道高度（不是地心半径）：壳层地心半径 = 6378.137 + 该值。与卫星列表里的「高度」同一口径"
                      @change="sc.updateShell(sh.id, { altKm: Number($event.target.value) || sh.altKm })" /><span class="u">km</span>
+              <!-- 壳层名不是用户自命名（无改名入口）：从星座取来的那批直接沿用编目分组名，
+                   「其他」这类是界面词，打 i18n-skip 会让它在英文模式下留着中文 -->
               <span class="shnm" :title="sh.name">{{ sh.name }}</span>
               <select v-if="!singleBranch(sh)" class="shbr" :value="sh.branch" @change="sc.updateShell(sh.id, { branch: $event.target.value })">
                 <option value="both">近+远</option><option value="near">近侧</option><option value="far">远侧</option>
@@ -174,12 +176,31 @@ function shellWhy(sh) {
           <span class="addb" @click="addShellFromInput"><Icon name="plus" :size="11" /> 加壳层</span>
           <select class="ci shpre" @change="addPreset($event)">
             <option value="">预置…</option>
-            <option v-for="(p, i) in sc.presetShells()" :key="p.name" :value="i">{{ p.name }}</option>
+            <option v-for="(p, i) in sc.presetShells()" :key="p.name" :value="i" data-i18n-skip>{{ p.name }}</option>
           </select>
         </div>
         <div class="srow"><label>掠地高度</label><input class="ci" type="number" step="10" min="0" v-model.number="sc.s.hEx"
              title="视线掠过地球表面的最低高度：低于此高度的路径按被地球挡住处理（把地球膨胀这么多再判遮挡）。0 = 纯几何遮挡" /><span class="u">km</span></div>
         <label class="chk2"><input type="checkbox" v-model="sc.s.guides" /><span>显示壳层参照网</span></label>
+        <!-- 参照网样式：全局一份（逐层只留颜色，行内不加控件） -->
+        <template v-if="sc.s.guides">
+          <div class="srow gtop"><label>网格间隔</label>
+            <select v-model.number="sc.s.guideStep" title="经线与纬线的角度间隔">
+              <option :value="10">10°</option><option :value="15">15°</option><option :value="30">30°</option><option :value="45">45°</option>
+            </select></div>
+          <div class="srow"><label>纬线范围</label>
+            <select v-model.number="sc.s.guideLat" title="纬线只画到该纬度以内；经线始终画全程。取间隔的整倍数">
+              <option :value="30">±30°</option><option :value="60">±60°</option><option :value="80">±80°</option>
+            </select></div>
+          <div class="srow"><label>线宽</label>
+            <input class="rng" type="range" min="0.4" max="4" step="0.1" v-model.number="sc.s.guideWidth" title="像素线宽，与屏幕缩放/分辨率无关" /><span class="u">{{ sc.s.guideWidth.toFixed(1) }}</span></div>
+          <div class="srow"><label>透明度</label>
+            <input class="rng" type="range" min="0.02" max="1" step="0.02" v-model.number="sc.s.guideAlpha" /><span class="u">{{ sc.s.guideAlpha.toFixed(2) }}</span></div>
+          <div class="srow"><label>线型</label>
+            <select v-model="sc.s.guideDash" title="虚线：与壳层上的等值线区分开">
+              <option :value="false">实线</option><option :value="true">虚线</option>
+            </select></div>
+        </template>
       </template>
     </div>
 
@@ -213,6 +234,9 @@ function shellWhy(sh) {
 .sect .editing + .lnk { margin-left: 0; }   /* 「n 已选」在时由它顶到右边，链接紧随其后（两个 auto 会把空白对半分） */
 .chk2 { display: flex; align-items: center; gap: 6px; margin-top: 8px; cursor: pointer; }
 .chk2 input, .shrow input, .gck { accent-color: var(--accent); }
+/* 滑块：同 ConstellationMap3D 的 .rng（那份 scoped 进不到本组件） */
+.rng { flex: 1; min-width: 0; accent-color: var(--accent); }
+.srow.gtop { margin-top: 8px; }   /* 参照网样式组的第一行：与上面的勾选行拉开 */
 .empty { color: var(--text-faint); padding: 4px 0; }
 .ic { flex: none; cursor: pointer; color: var(--text-faint); padding: 0 1px; display: inline-flex; }
 .ic:hover { color: var(--text); }

@@ -203,7 +203,7 @@ const run = () => {
                 v-for="h in satSearch.hits" :key="h.name"
                 class="ci-hit" :title="h.inclined ? `星下点纬度 ${h.latDeg}° —— 有倾角残余，按赤道面近似会有偏差` : ''"
                 @click="I.addNeighbor(h)">
-                <b>{{ h.name }}</b>
+                <b data-i18n-skip>{{ h.name }}</b>
                 <span class="lon">{{ h.lonDeg }}°E</span>
                 <span class="dl">Δ{{ h.dLon }}°</span>
                 <span v-if="h.inclined" class="incl">倾</span>
@@ -244,7 +244,7 @@ const run = () => {
               <thead><tr><th>干扰源</th><th>朝本星方向的离轴 EIRP 密度 dBW/Hz</th></tr></thead>
               <tbody>
                 <tr v-for="s in asi.sources.filter((x) => x.enabled)" :key="s._id + 'e'">
-                  <td class="ci-ro">{{ s.name || s._id }}</td>
+                  <td class="ci-ro" data-i18n-skip>{{ s.name || s._id }}</td>
                   <td><input v-model="s.offAxisEirpDensityDbWPerHz" type="number" step="0.1" placeholder="必填，缺则该条被跳过" /></td>
                 </tr>
               </tbody>
@@ -253,7 +253,7 @@ const run = () => {
               <thead><tr><th>干扰站</th><th>口径 m</th><th>功放 W</th><th>带宽 Hz</th><th>馈损 dB</th><th>站经度</th><th>站纬度</th></tr></thead>
               <tbody>
                 <tr v-for="s in asi.sources.filter((x) => x.enabled)" :key="s._id + 'p'">
-                  <td class="ci-ro">{{ s.name || s._id }}</td>
+                  <td class="ci-ro" data-i18n-skip>{{ s.name || s._id }}</td>
                   <td><input v-model="s.diameterM" type="number" step="0.1" /></td>
                   <td><input v-model="s.powerW" type="number" /></td>
                   <td><input v-model="s.bandwidthHz" type="number" /></td>
@@ -425,7 +425,7 @@ const run = () => {
                     <thead><tr><th>取值点</th><th>经度</th><th>纬度</th><th>服务波束</th><th>颜色</th><th>C/CCI dB</th></tr></thead>
                     <tbody>
                       <tr v-for="(r, i) in cci.result.rows" :key="i">
-                        <td>{{ r.name }}</td>
+                        <td data-i18n-skip>{{ r.name }}</td>
                         <td class="dim">{{ f(r.lon, 4) }}</td>
                         <td class="dim">{{ f(r.lat, 4) }}</td>
                         <td>{{ r.servingIdx == null ? '—' : '#' + r.servingIdx }}</td>
@@ -881,7 +881,8 @@ const run = () => {
                     <td class="num dim" :title="ngSupTip(k)">
                       <template v-if="ngSup(k)">
                         <template v-if="ngSup(k).enough">{{ ngSup(k).nEff < 100 ? ngSup(k).nEff.toFixed(1) : Math.round(ngSup(k).nEff).toLocaleString() }}</template>
-                        <template v-else>需 ≥ {{ ngSup(k).needSamples.toLocaleString() }}</template>
+                        <!-- 「需 ≥」单独成节点：与数字挤在一个文本节点里，英文模式下整串查不到表 -->
+                        <template v-else><span>需 ≥</span> {{ ngSup(k).needSamples.toLocaleString() }}</template>
                       </template>
                       <template v-else>—</template>
                     </td>
@@ -935,7 +936,7 @@ const run = () => {
                   <thead><tr><th>干扰星座</th><th>星数</th><th>聚合份额</th><th>时均 I₀ dBW/Hz</th><th>单入最坏 dBW/Hz</th><th>最坏时刻</th></tr></thead>
                   <tbody>
                     <tr v-for="g in ngso.result.perGroup" :key="g.id">
-                      <td>{{ g.name }}</td>
+                      <td data-i18n-skip>{{ g.name }}</td>
                       <td class="num dim">{{ g.count }}</td>
                       <td class="num">
                         {{ f(g.sharePct, 1) }}%

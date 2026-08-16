@@ -204,6 +204,8 @@ export function buildRegenScene(sel, params, mode) {
   if (mode === 'isl' || mode === 'laser') {
     const ig = sel.islGeo
     const w = ig && ig.feasible && ig.worst
+    // 手动几何只给了一个星间距离，没有两星轨道 → 无处摆星，如实说明（不是几何解不出来）
+    if (sel.islManual) return blocked('手动几何：只给了星间链路距离，无两星轨道可画')
     if (!w || !w.txSub || !w.rxSub) return blocked('星间几何不可解（两星互不可见或缺相位）')
     const a = satNode('satA', sel.txName || '发射星', w.txSub.lonDeg, w.txSub.latDeg, w.txSub.altKm)
     const b = satNode('satB', sel.satName || '接收星', w.rxSub.lonDeg, w.rxSub.latDeg, w.rxSub.altKm)

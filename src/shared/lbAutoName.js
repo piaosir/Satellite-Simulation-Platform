@@ -12,7 +12,8 @@
 // 标志位随条目入库（library.json）；旧库没有这一位，按 legacyAutoFlag() 的历史默认名/同名推定一次。
 
 import { anchoredRate } from './carrierRate.js'
-import { fmtQty } from './adaptUnits.js'   // 显示单位自适应（W→mW/kW、kbps→Mbps…），与结果列同一套档位表
+import { fmtQty } from './adaptUnits.js'   // 显示单位自适应（W→mW、kbps→Mbps…），与结果列同一套档位表
+import { byLang, isDefaultName } from './i18n/lang.js'   // 兜底名按平台语言出字（自动名是数据，呈现层翻不到）
 
 const s = (v) => String(v == null ? '' : v).trim()
 
@@ -44,10 +45,14 @@ export function carrierAutoName(form) {
   return [rate, mod].filter(Boolean).join(' · ')
 }
 
-// 卫星：星名 · 频段 · 轨道（GSO 报轨位「110.5°E」，NGSO/再生式报高度倾角「h=8000 km i=45°」——
-// 按表单里有哪个字段自然分流，一个卫星配置本来就只可能是其中一种）。
-// 星名：取星定轨（天线树 / 星历检索）时以所选星为准，其余取表单里的卫星名称；GSO 窗口无 ngsoSat，
-// 取星时 SatellitePanel 已把 satelliteName 回填成节点星名，故同一条口径通吃三窗。
+// 卫星：
+//   GSO          星名 · 频段 · 轨位（「CHINASAT 6D · Ku · 110.5°E」）
+//   NGSO/再生式  星名（2026-08-15 起）——星历检索来的星名本就长（「STARLINK-31234」「QIANFAN-0123」），
+//                再挂上频段与「h=1145 km i=53°」，列表里一条名字要折两行，反倒认不出是哪颗星；
+//                频段与轨道改由列表摘要报（见各窗口 satLibSummary / satSummary）。
+// 两者靠 ngsoSat（轨道来源态）分流：GSO 窗口的卫星条目没有这一项（见 LinkBudgetApp.makeSatConfig）。
+// 星名：取星定轨（天线树 / 星历检索）时以所选星为准，其余取表单里的卫星名称；GSO 取星时
+// SatellitePanel 已把 satelliteName 回填成节点星名，故同一条口径通吃三窗。
 // 卫星名称字段的出厂默认值 'Satellite' 只是占位符，不算星名——星名是这一串的头，没有它就整条不成立：
 // 返回空 → syncAutoNames 留着现名不动（「默认卫星」原样），等取到星再一起跟上来。
 const SAT_NAME_PLACEHOLDER = 'Satellite'
@@ -57,20 +62,46 @@ function satOrbitText(f) {
   const h = s(f.orbitAltitude), i = s(f.orbitInclination)
   return [h ? 'h=' + h + ' km' : '', i ? 'i=' + i + '°' : ''].filter(Boolean).join(' ')
 }
-export function satAutoName(cfg) {
+function satName(cfg) {
   const c = cfg || {}, f = c.form || {}, ns = c.ngsoSat
   const picked = (ns && ns.mode && ns.mode !== 'manual' && ns.orbit) ? s(ns.name) : ''
   const nm = picked || s(f.satelliteName)
-  if (!nm || nm === SAT_NAME_PLACEHOLDER) return ''
+  return (!nm || nm === SAT_NAME_PLACEHOLDER) ? '' : nm
+}
+export function satAutoName(cfg) {
+  const nm = satName(cfg)
+  if (!nm) return ''
+  if (cfg && cfg.ngsoSat) return nm                // NGSO / 再生式：只报星名
+  const f = (cfg && cfg.form) || {}
+  return [nm, s(f.frequencyBand), satOrbitText(f)].filter(Boolean).join(' · ')
+}
+
+// 旧版自动名「星名 · 频段 · 轨道」。只用于旧库推定：NGSO/再生式改规则（2026-08-15 星名单独成名）前
+// 入库的自动名还是这个形状，同样算「没起过名字」，否则改规则那一刻它们会被一次性钉成自定义名。
+// GSO 走的仍是这条，与 satAutoName 同值，推定结果不变。
+function satLegacyAutoName(cfg) {
+  const nm = satName(cfg)
+  if (!nm) return ''
+  const f = (cfg && cfg.form) || {}
   return [nm, s(f.frequencyBand), satOrbitText(f)].filter(Boolean).join(' · ')
 }
 
 // 各库的自动名算法 + 无参数可用时的兜底名 + 旧库默认名的形状（含 syncAutoNames 加的 ' 2' 重名后缀）
+// 兜底名中英各备一份：它是纯界面语汇（不含任何参数），而自动名是数据、呈现层翻不到，只能生成时就出对语言。
+// legacy 正则一并收进英文形状——英文模式下建的库回到中文模式，那些名字同样算「没起过名字」。
 const KINDS = {
-  es: { name: (c) => esAutoName(c.form), fallback: '地球站', legacy: /^(默认|站型|地球站)(\d+)?( \d+)*$/, legacyName: (c) => esLegacyAutoName(c.form) },
-  carrier: { name: (c) => carrierAutoName(c.form), fallback: '载波', legacy: /^(默认|配置|载波|基带)(\d+)?( \d+)*$/ },
-  sat: { name: (c) => satAutoName(c), fallback: '卫星', legacy: /^(默认卫星|卫星)(\d+)?( \d+)*$/ }
+  es: { name: (c) => esAutoName(c.form), fallback: ['地球站', 'Earth Station'], legacy: /^(默认|站型|地球站|Earth Station)(\d+)?( \d+)*$/, legacyName: (c) => esLegacyAutoName(c.form) },
+  carrier: { name: (c) => carrierAutoName(c.form), fallback: ['载波', 'Carrier'], legacy: /^(默认|配置|载波|基带|Carrier)(\d+)?( \d+)*$/ },
+  sat: { name: (c) => satAutoName(c), fallback: ['卫星', 'Satellite'], legacy: /^(默认卫星|卫星|Satellite)(\d+)?( \d+)*$/, legacyName: (c) => satLegacyAutoName(c) }
 }
+const fallbackOf = (kind) => byLang(...KINDS[kind].fallback)
+
+// —— 配置树与复制件的默认名（五个工作台共用一套词）——
+// 与库条目的兜底名同一性质：它是界面语汇，却以【数据】的身份存进 configs.json、显示在树的
+// 行内改名框（<input>）里，呈现层的 runtime.js 一概翻不到，只能生成时就出对语言。
+export const newCfgName = (zh = '新配置') => byLang(zh, 'New Configuration')
+export const newFolderName = () => byLang('新建文件夹', 'New Folder')
+export const copyNameOf = (name) => byLang(name + ' 副本', name + ' Copy')
 
 // 单条自动名（不含重名后缀）；算不出来返回 ''
 export const autoNameOf = (kind, cfg) => {
@@ -112,8 +143,10 @@ export function syncAutoNames(arr, kind) {
   for (const c of arr) if (c && c.nameAuto !== true) taken.add(s(c.name))
   for (const c of arr) {
     if (!c || c.nameAuto !== true) continue
-    // 算不出名字（如还没取星的卫星）：留着现名不动，只有新建的空名条目才落到兜底名
-    const base = autoNameOf(kind, c) || (s(c.name) ? '' : KINDS[kind].fallback)
+    // 算不出名字（如还没取星的卫星）：留着现名不动，只有新建的空名条目才落到兜底名。
+    // 现名恰好就是【另一种语言下的】兜底名时同样重出——它不含任何参数信息，换语言要跟着换。
+    const base = autoNameOf(kind, c) ||
+      ((!s(c.name) || isDefaultName(c.name, ...KINDS[kind].fallback)) ? fallbackOf(kind) : '')
     if (!base) { taken.add(s(c.name)); continue }
     let nm = base
     for (let i = 2; taken.has(nm); i++) nm = base + ' ' + i

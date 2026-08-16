@@ -4,24 +4,27 @@ import { BAND_FREQ, BAND_LABEL } from '../ngso/satPresets.js'
 import { ensureSearchPool, findPoolByNorad } from '../ngso/satSearchPool.js'
 import { classifyOrbit, orbitRegimeLabel } from '../shared/orbitClass.js'
 
-// 再生式「卫星群」单份配置的参数面板 —— 和 NGSO 一样支持「搜索卫星 / 天线树导入」选星定轨道。
-// 【不做 EIRP 匹配】；卫星 G/T 不在此面板取值——它是「卫星×发信站」配对量，由各发信站在「发信站群」表逐站手动输入。
-// 每份卫星配置各自持有 form（频段/极化/轨道，不含 G/T）与 ngsoSat（轨道来源，tree 模式记 folder），本组件按引用就地改写。
+// 再生式「卫星群」单份配置的参数面板 —— 和 NGSO 一样支持「卫星/天线树选择 / 从星历搜索」定轨道。
+// 两种取星都只定【轨道】：卫星 EIRP / G·T 与星间 EIRP / G·T 一律在各表逐行手填
+// （v1.4.5 起删除方向图匹配，原因见 ngso/satTree.js 头注）。
+// 每份卫星配置各自持有 form（频段/极化/轨道）与 ngsoSat（轨道来源，tree 模式记 folder），本组件按引用就地改写。
 const props = defineProps({
   form: { type: Object, required: true },              // 卫星参数（satelliteName / 频段 / 上行频率极化 / 轨道高度倾角）
   fields: { type: Array, required: true },             // SAT_FIELDS
   ngsoSat: { type: Object, required: true },           // { mode:'manual'|'tree'|'search', orbit, name, noradId, folder }
-  satTree: { type: Array, default: () => [] }          // 天线树（星座3D 导入的卫星，用于取轨道）
+  satTree: { type: Array, default: () => [] }          // 卫星树（星座3D 页导入的卫星，作轨道来源）
 })
 
 const satSelected = computed(() => props.ngsoSat.mode !== 'manual' && !!props.ngsoSat.orbit)
 
-// —— 取星模式：天线树导入 / 搜索卫星。仅切换「看哪个选星器」，不动已选卫星——
+// —— 取星模式：卫星/天线树选择 / 从星历搜索。仅切换「看哪个选星器」，不动已选卫星——
 // 单一 active 卫星在两标签页间保留，来回切换不再清缓存；只有真正另选一颗星才替换当前选星
 // （互斥由 pick 时清 ngsoSat.folder 保证；tree 下拉直接绑 ngsoSat.folder，无独立本地态需同步）。
-const mode = ref(props.ngsoSat.mode === 'search' ? 'search' : (props.ngsoSat.mode === 'tree' ? 'tree' : 'tree'))
+const mode = ref(props.ngsoSat.mode === 'search' ? 'search' : 'tree')
 function switchMode(m) { if (mode.value === m) return; mode.value = m }
-function onClear() { props.ngsoSat.mode = 'manual'; props.ngsoSat.orbit = null; props.ngsoSat.name = ''; props.ngsoSat.noradId = null; props.ngsoSat.folder = '' }
+function onClear() {
+  props.ngsoSat.mode = 'manual'; props.ngsoSat.orbit = null; props.ngsoSat.name = ''; props.ngsoSat.noradId = null; props.ngsoSat.folder = ''
+}
 
 // 平均运动(rev/day) → 圆轨道高度(km)
 const _MU = 398600.4418, _RE = 6378.137
@@ -31,10 +34,11 @@ function altFromMeanMotion(revDay) {
   return Math.cbrt(_MU / (n * n)) - _RE
 }
 
-// —— ① 天线树导入：按 NORAD/根数解析真实轨道（与 NGSO 同口径，读同一份共享候选池）——
+// —— ① 卫星/天线树选择：按 NORAD/根数解析真实轨道（与 NGSO 同口径，读同一份共享候选池）——
 // tree 下拉直接绑定 ngsoSat.folder（唯一真值源）：搜索选星/取消选星把它清空即自动回到未选，
 // 重载时也自动回显已保存的 folder，无需独立本地态同步（切换标签页因此不会丢失树选星）。
 const curNode = computed(() => props.satTree.find((s) => s.folder === props.ngsoSat.folder) || null)
+const treeSats = computed(() => props.satTree)
 async function treeNodeOrbit(node) {
   if (!node) return null
   const kind = node.kind || ''
@@ -47,7 +51,7 @@ async function treeNodeOrbit(node) {
       }
       return { type: 'omm', name: rec.name, noradId: rec.noradId, epoch: rec.epoch, meanMotion: rec.meanMotion, ecc: rec.ecc, incl: rec.incl, raan: rec.raan, argp: rec.argp, ma: rec.ma, bstar: rec.bstar, mdot: rec.mdot, mddot: rec.mddot }
     }
-    return { type: 'unresolved', noradId: node.noradId, reason: `关联星（NORAD ${node.noradId}）暂未在星历库解析到轨道（可能离线或本地缓存缺失）。请联网后在「搜索卫星」按 NORAD 重选，或改用手动轨道高度+倾角。` }
+    return { type: 'unresolved', noradId: node.noradId, reason: `关联星（NORAD ${node.noradId}）暂未在星历库解析到轨道（可能离线或本地缓存缺失）。请联网后在「从星历搜索」按 NORAD 重选，或改用手动轨道高度+倾角。` }
   }
   if (node.omm && node.omm.meanMotion) return Object.assign({ type: 'omm' }, node.omm)
   const el = node.elements
@@ -176,18 +180,18 @@ const rows = computed(() => {
   <div class="rsp">
     <!-- 取星模式 -->
     <div class="rsp-modes">
-      <button class="rsp-seg" :class="{ on: mode === 'tree' }" @click="switchMode('tree')">天线树导入</button>
-      <button class="rsp-seg" :class="{ on: mode === 'search' }" @click="switchMode('search')">搜索卫星</button>
+      <button class="rsp-seg" :class="{ on: mode === 'tree' }" @click="switchMode('tree')">卫星/天线树选择</button>
+      <button class="rsp-seg" :class="{ on: mode === 'search' }" @click="switchMode('search')">从星历搜索</button>
       <span class="rsp-flex"></span>
       <button v-if="satSelected" class="rsp-clear" title="取消选星，恢复手动填轨道" @click="onClear">✕ 取消选星</button>
     </div>
 
-    <!-- ① 天线树导入：取所选卫星轨道用于几何求解 -->
+    <!-- ① 卫星/天线树选择：取所选卫星轨道用于几何求解 -->
     <div v-if="mode === 'tree'" class="rsp-grd">
       <label class="pf"><span class="pf-l">选择卫星</span>
         <select v-model="ngsoSat.folder" class="pf-i" @change="onPickTree">
           <option value="" disabled>从卫星树选择…</option>
-          <option v-for="s in satTree" :key="s.folder" :value="s.folder">{{ s.satName }}（{{ s.lon }}°E）</option>
+          <option v-for="s in treeSats" :key="s.folder" :value="s.folder">{{ s.satName }}（{{ s.lon }}°E）</option>
         </select>
         <i class="pf-u"></i>
       </label>
@@ -224,7 +228,7 @@ const rows = computed(() => {
 
     <!-- 当前选星摘要 -->
     <div v-if="satSelected" class="rsp-sel">
-      <div>已选卫星：<b class="rsp-name" title="可框选复制此卫星名">{{ ngsoSat.name || form.satelliteName }}</b>
+      <div>已选卫星：<b class="rsp-name" title="可框选复制此卫星名" data-i18n-skip>{{ ngsoSat.name || form.satelliteName }}</b>
         <span v-if="ngsoSat.noradId">（NORAD {{ ngsoSat.noradId }}）</span> · 轨道高度/倾角已由所选卫星自动确定
       </div>
       <div v-if="orbitShape" class="rsp-shape">
@@ -299,8 +303,9 @@ const rows = computed(() => {
 .rsp-i:focus { outline: none; border-color: var(--accent); }
 .rsp-i.mono { font-family: var(--font-mono); }
 .rsp-i.auto { background: var(--surface); color: var(--text-muted); cursor: not-allowed; }
-/* 取星区（树/搜索）沿用 pf 行式，仅放宽选择列 */
-.pf { display: grid; grid-template-columns: 96px minmax(180px, 320px) 30px; align-items: center; gap: 6px; margin-bottom: 6px; }
+/* 取星区（树/搜索）与方向图区沿用 pf 行式，仅放宽选择列。
+   标签列 108px：容得下最长的「对地EIRP 天线」，四面天线与两个取星器的输入列因此对齐同一根轴 */
+.pf { display: grid; grid-template-columns: 108px minmax(180px, 320px) 30px; align-items: center; gap: 6px; margin-bottom: 6px; }
 .pf-l { font-size: 12px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pf-i { font: inherit; font-size: 12px; padding: 4px 7px; width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 2px; }
 .pf-i:focus { outline: none; border-color: var(--accent); }

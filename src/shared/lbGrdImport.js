@@ -18,6 +18,14 @@ const api = typeof window !== 'undefined' ? window.api : null
 export function localFolderFor(satConfigId) { return 'lb:' + String(satConfigId || '') }
 export function isLocalFolder(folder) { return String(folder || '').startsWith('lb:') }
 
+// —— 天线匹配键 = '<folder>|<天线名>' ——
+// 键自带来源，故「从天线树选的那颗星」与「本条目导入的方向图」可以同时挂在各路天线上：
+// 「导入方向图」是纯添加，不会作废树里已选的匹配（各面板的天线下拉按来源分 optgroup）。
+// 按【第一个】'|' 切：天线名来自文件名，可能含 '|'；folder 不会。
+export function antKeyOf(folder, name) { return String(folder || '') + '|' + String(name || '') }
+export function folderOfKey(key) { const s = String(key || ''); const i = s.indexOf('|'); return i < 0 ? '' : s.slice(0, i) }
+export function antNameOfKey(key) { const s = String(key || ''); const i = s.indexOf('|'); return i < 0 ? s : s.slice(i + 1) }
+
 // 读本模块的天线库：{ sats: [{ folder, satName, lon, lat, altKm, antennas:[…] }] }
 export function loadLocalGrdSats() {
   let raw = ''
@@ -46,6 +54,39 @@ export function localTreeNodes() {
       satLon: Number(a.satLon), satLat: Number(a.satLat), satAlt: Number(a.satAlt)
     }))
   }))
+}
+
+/**
+ * 天线下拉的可选项分组：「树选星那颗星的天线」与「本条目自己导入的天线」两组并列。
+ * 三个链路预算窗口的卫星面板共用——各路天线各选各的，来源互不排斥。
+ * @param keys 当前已匹配的天线键：来源若是第三个节点（复制条目带过来的、别的条目导入的），
+ *             也把那个节点列进来，否则下拉里只剩一个「未导入」占位项，想改都改不回去。
+ * @returns {Array<{folder:string, label:string, ants:Array<{key:string,name:string,beams:number}>}>}
+ */
+export function antennaGroups(satTree, treeFolder, localFolder, keys) {
+  const out = []
+  const find = (f) => (f ? (satTree || []).find((s) => s.folder === f) : null)
+  const push = (node, label) => {
+    if (!node || !(node.antennas || []).length) return
+    if (out.some((g) => g.folder === node.folder)) return   // 存量数据里两个 folder 可能撞上，只列一次
+    out.push({
+      folder: node.folder, label,
+      ants: node.antennas.map((a) => ({ key: antKeyOf(node.folder, a.name), name: a.name, beams: Number(a.beams) || 1 }))
+    })
+  }
+  const t = find(treeFolder)
+  push(t, t ? (t.satName || t.folder) : '')
+  push(find(localFolder), '本条目导入')
+  for (const k of (keys || [])) { const n = find(folderOfKey(k)); if (n) push(n, n.satName || n.folder) }
+  return out
+}
+
+// 已匹配、但本机卫星树里没有那份 GRD（换机器 / 尚未导入）：下拉里补一个占位项，保住这次匹配
+// 不被静默清空——库是全局资产，清掉的匹配无从找回；未命中期间取值端自然不回填。
+export function staleAntOption(groups, key) {
+  if (!key) return null
+  if ((groups || []).some((g) => g.ants.some((a) => a.key === key))) return null
+  return { key, name: antNameOfKey(key) || key }
 }
 
 function nodeOf(state, spec) {

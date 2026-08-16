@@ -5,13 +5,15 @@ import { FIELD_GROUPS, SAT_FIELDS, CARRIER_FIELDS, TX_FIELDS, RX_FIELDS, ES_FIEL
 import * as GEO_PARAMS from './params.js'   // 整份 schema 传给 lbMiniExport 的 target 分流（与 buildParams 同源，但不做 sfdRef 的引擎入口换算）
 import { buildMiniConfig, miniConfigItem, miniConfigName } from '../shared/lbMiniExport.js'
 import { loadSatTree, sampleAntennaParams, antennaSampleSpec } from './grdParam.js'
-import { importGrdAntennas, removeLocalAntenna, localFolderFor, syncLocalNode } from '../shared/lbGrdImport.js'
+import { importGrdAntennas, removeLocalAntenna, localFolderFor, isLocalFolder, syncLocalNode, antKeyOf, folderOfKey, antNameOfKey } from '../shared/lbGrdImport.js'
 import { resolveRefId } from '../shared/lbShare.js'
 import { stableStringify } from '../shared/configDirty.js'
 import { migrateLegacyEs } from '../shared/esMigrate.js'
 import { pickColumn, fmtScaled, fmtQty } from '../shared/adaptUnits.js'
 import { lbDocT } from '../shared/lbDocI18n.js'
-import { syncAutoNames, adoptAutoFlag, withAutoFlag, isAutoNamed } from '../shared/lbAutoName.js'   // 三库条目自动命名（未被用户改名时，名字随关键参数走）
+import { getLang, onLangChange } from '../shared/i18n/runtime.js'   // 报表语言跟随平台语言
+import { syncAutoNames, adoptAutoFlag, withAutoFlag, isAutoNamed, newCfgName, newFolderName, copyNameOf } from '../shared/lbAutoName.js'   // 三库条目自动命名（未被用户改名时，名字随关键参数走）
+import { byLang } from '../shared/i18n/lang.js'   // 自动生成的名字是数据、呈现层翻不到，生成时就按平台语言出字
 import Icon from '../components/Icon.vue'
 import ConfigTree from '../components/ConfigTree.vue'
 import LbSection from '../components/LbSection.vue'
@@ -102,7 +104,7 @@ function addBasebandConfig() { basebandConfigs.push(makeBasebandConfig()); syncA
 // 复制：自动命名的条目复制出来仍是自动的（名字由 syncAutoNames 按参数出，重名自动加序号）；
 // 自定义名的条目才带「副本」后缀——那是用户起的名字，复制件跟着它走。
 function duplicateBasebandConfig(cfg) {
-  basebandConfigs.push({ id: 'bb' + (_bbSeq++), name: cfg.nameAuto ? '' : cfg.name + ' 副本', nameAuto: !!cfg.nameAuto, form: JSON.parse(JSON.stringify(cfg.form)) })
+  basebandConfigs.push({ id: 'bb' + (_bbSeq++), name: cfg.nameAuto ? '' : copyNameOf(cfg.name), nameAuto: !!cfg.nameAuto, form: JSON.parse(JSON.stringify(cfg.form)) })
   syncAutoNames(basebandConfigs, 'carrier')
 }
 function removeBasebandConfig(cfg) { removeLibEntry(basebandConfigs, cfg, 'bb') }
@@ -126,7 +128,7 @@ function resolveEs(id) {
 const esSelectOptions = computed(() => [{ value: '', label: '（默认）' }, ...esConfigs.map((c) => ({ value: c.id, label: c.name }))])
 function addEsConfig() { esConfigs.push(makeEsConfig()); syncAutoNames(esConfigs, 'es') }
 function duplicateEsConfig(cfg) {
-  esConfigs.push({ id: 'es' + (_esSeq++), name: cfg.nameAuto ? '' : cfg.name + ' 副本', nameAuto: !!cfg.nameAuto, form: JSON.parse(JSON.stringify(cfg.form)) })
+  esConfigs.push({ id: 'es' + (_esSeq++), name: cfg.nameAuto ? '' : copyNameOf(cfg.name), nameAuto: !!cfg.nameAuto, form: JSON.parse(JSON.stringify(cfg.form)) })
   syncAutoNames(esConfigs, 'es')
 }
 function removeEsConfig(cfg) { removeLibEntry(esConfigs, cfg, 'es') }
@@ -139,8 +141,11 @@ let _satSeq = 1
 const blankGrd = () => ({ satFolder: '', eirpKey: '', gtKey: '' })
 // 卫星库条目的「外部资源引用」容器：方向图匹配（satFolder/eirpKey/gtKey）+ 频率计划引用（fpId/fpNo）。
 // 两者同属「这个卫星条目引了哪些外部资产」，共用一处即随条目入库/复制/分享，无需再开一条存储路径。
+// satFolder 只表示「从天线树选的那颗星」；本条目自己导入的方向图不占这一格（存量数据里占过，
+// 见下方 isLocalFolder 归一化）——两者并列可选，「导入方向图」因此是纯添加。
 const normGrd = (g) => ({
-  satFolder: (g && g.satFolder) || '', eirpKey: (g && g.eirpKey) || '', gtKey: (g && g.gtKey) || '',
+  satFolder: (g && g.satFolder && !isLocalFolder(g.satFolder)) ? g.satFolder : '',
+  eirpKey: (g && g.eirpKey) || '', gtKey: (g && g.gtKey) || '',
   fpId: (g && g.fpId) || '', fpNo: (g && g.fpNo) || ''
 })
 function makeSatConfig(name) { return withAutoFlag({ id: 'sat' + (_satSeq++), name: name || '', form: { ...defaultsFor(SAT_FIELDS) }, grd: blankGrd() }, 'sat') }
@@ -154,7 +159,7 @@ const curSat = computed(() => resolveSat(satId.value))
 const satSelectOptions = computed(() => satConfigs.map((c) => ({ value: c.id, label: c.name })))
 function addSatConfig() { satConfigs.push(makeSatConfig()); syncAutoNames(satConfigs, 'sat') }
 function duplicateSatConfig(cfg) {
-  satConfigs.push({ id: 'sat' + (_satSeq++), name: cfg.nameAuto ? '' : cfg.name + ' 副本', nameAuto: !!cfg.nameAuto, form: JSON.parse(JSON.stringify(cfg.form)), grd: normGrd(cfg.grd) })
+  satConfigs.push({ id: 'sat' + (_satSeq++), name: cfg.nameAuto ? '' : copyNameOf(cfg.name), nameAuto: !!cfg.nameAuto, form: JSON.parse(JSON.stringify(cfg.form)), grd: normGrd(cfg.grd) })
   syncAutoNames(satConfigs, 'sat')
 }
 function removeSatConfig(cfg) { removeLibEntry(satConfigs, cfg, 'sat') }
@@ -409,7 +414,7 @@ const gridFields = computed(() => [
 ])
 // 计算列取值映射 { 行_id: { _键: 值 } }：结果不写行数据 → 写回不惊动存档/脏检/过期 watcher
 const computedVals = ref({})
-// 结果列显示单位自适应：每次计算按整列最大|值|共选档位（W→mW/kW、kHz→MHz、全列<0dBW→dBm），
+// 结果列显示单位自适应：每次计算按整列最大|值|共选档位（W→mW、kHz→MHz、全列<0dBW→dBm），
 // 列头单位跟随；写入 computedVals 的值已按所选档位换算（复制出去的数与列头一致）
 const resColUnits = ref({})
 function setVals(id, patch) { computedVals.value = { ...computedVals.value, [id]: { ...(computedVals.value[id] || null), ...patch } } }
@@ -602,11 +607,14 @@ let grdCfgs = satTreeState.cfgs
 // 匹配选择随卫星库条目走（curSat.grd，见上方卫星库）：本场景用哪颗星，就用那颗星自己的方向图。
 const curGrd = computed(() => (curSat.value && curSat.value.grd) || null)
 const grdSat = computed(() => (curGrd.value ? satTree.value.find((s) => s.folder === curGrd.value.satFolder) : null) || null)
+// 天线按键里自带的 folder 解析，不再钉在 satFolder 那一个节点上——树选星与本条目导入的方向图
+// 因此能同时挂在各路天线上：「导入方向图」是纯添加，不作废已选树星的匹配。
 const antByKey = (key) => {
-  if (!key || !grdSat.value) return null
-  const name = key.split('|')[1]
-  const a = grdSat.value.antennas.find((x) => x.name === name)
-  return a ? { node: grdSat.value, ant: a, cfg: grdCfgs[key] } : null
+  if (!key) return null
+  const node = satTree.value.find((s) => s.folder === folderOfKey(key))
+  if (!node) return null
+  const a = node.antennas.find((x) => x.name === antNameOfKey(key))
+  return a ? { node, ant: a, cfg: grdCfgs[key] } : null
 }
 // 工作台卫星分区第三行「方向图」：只读速览（与第二行「转发器」同款读数族）。
 // 匹配本身在资源库「卫星」库的条目编辑器里改——方向图是卫星的属性，工作台只报当前接的是哪面天线。
@@ -616,7 +624,7 @@ const antByKey = (key) => {
 //   mismatch 星名/轨位事后被手改得与所选 GRD 节点对不上——那才是真有两颗星，必须报出来
 const grdFacts = computed(() => {
   const g = curGrd.value, node = grdSat.value, f = (curSat.value && curSat.value.form) || {}
-  const antName = (k) => (k ? (String(k).split('|')[1] || '') : '')
+  const antName = (k) => (k ? antNameOfKey(k) : '')
   const eq = (a, b) => String(a == null ? '' : a).trim() === String(b == null ? '' : b).trim()
   let mismatch = ''
   if (node) {
@@ -625,10 +633,12 @@ const grdFacts = computed(() => {
     if (f.orbitPosition !== '' && f.orbitPosition != null && node.lon != null && Math.abs(parseFloat(f.orbitPosition) - Number(node.lon)) > 0.05) drift.push(`${node.lon}°E`)
     if (drift.length) mismatch = '方向图属 ' + drift.join(' ')
   }
+  // stale 逐路判：树选星与各面天线各有各的来源，只要有一路在本机卫星树里找不到就标出来
+  const missing = (k) => !!(k && !antByKey(k))
   return {
     eirp: antName(g && g.eirpKey) || '—',
     gt: antName(g && g.gtKey) || '—',
-    stale: !!(g && g.satFolder && !node),
+    stale: !!(g && ((g.satFolder && !node) || missing(g.eirpKey) || missing(g.gtKey))),
     mismatch
   }
 })
@@ -658,8 +668,9 @@ function scheduleGrdFill() { clearTimeout(_grdT); _grdT = setTimeout(refreshGrdF
 
 // —— 直接导入方向图（卫星库条目编辑器里的「导入方向图」）——
 // 免去「先去星座3D页导入一趟」：选中的 GRD/PAT 由主进程按字节拷进 userData，挂在本卫星条目名下
-// （folder = lb:<条目 id>，即「一个卫星配置＝一颗星」的那颗星），随后自动匹配到 EIRP / G·T 两路，
+// （folder = lb:<条目 id>，即「一个卫星配置＝一颗星」的那颗星），随后自动匹配到空着的那几路，
 // 站表按各站经纬度回填。一个文件＝一副天线，文件内多个 set＝该天线的多波束（取值取多波束最大）。
+// ★ 纯添加：既不改写树选星（satFolder），也不覆盖用户已匹配的天线——导进来的只是多了几个可选项。
 const importingGrd = ref(false)
 async function importGrdFor(cfg) {
   if (!cfg || importingGrd.value) return
@@ -675,13 +686,12 @@ async function importGrdFor(cfg) {
     if (r.added.length) {
       reloadSatTree()
       if (!cfg.grd) cfg.grd = normGrd(null)
-      cfg.grd.satFolder = folder
-      const keyOf = (a) => folder + '|' + a.name
+      const keyOf = (a) => antKeyOf(folder, a.name)
       // 只填空位，不覆盖用户已匹配的：首个文件 → EIRP；有第二个 → G/T，只有一个则两路同一副天线
       if (!cfg.grd.eirpKey) cfg.grd.eirpKey = keyOf(r.added[0])
       if (!cfg.grd.gtKey) cfg.grd.gtKey = keyOf(r.added[1] || r.added[0])
       scheduleGrdFill()
-      toast(`已导入 ${r.added.length} 副方向图：${r.added.map((a) => `${a.name}（${a.beams} 波束）`).join('、')}；已匹配 EIRP / G·T，可在下拉中改选`)
+      toast(`已导入 ${r.added.length} 副方向图：${r.added.map((a) => `${a.name}（${a.beams} 波束）`).join('、')}；已填入空着的天线位，可在下拉中改选`)
     }
     if (r.errors.length) error.value = '部分方向图导入失败：' + r.errors.join('；')
   } catch (e) {
@@ -697,7 +707,11 @@ async function removeImportedGrd(cfg) {
   if (!(await askConfirm(`删除本卫星条目导入的方向图？\n${names.join('、')}\n（原始 GRD 文件一并删除，匹配随之解除）`))) return
   for (const n of names) await removeLocalAntenna(folder, n)
   reloadSatTree()
-  if (cfg.grd && cfg.grd.satFolder === folder) { cfg.grd.satFolder = ''; cfg.grd.eirpKey = ''; cfg.grd.gtKey = '' }
+  // 只解除指向本条目导入天线的那几路；树选星与它的匹配不受影响
+  if (cfg.grd) {
+    if (cfg.grd.satFolder === folder) cfg.grd.satFolder = ''   // 存量数据：早期导入曾把树选星改写成本地节点
+    for (const k of ['eirpKey', 'gtKey']) if (folderOfKey(cfg.grd[k]) === folder) cfg.grd[k] = ''
+  }
   toast(`已删除 ${names.length} 副方向图`)
 }
 // 地理图的「卫星关联」（见 LbSpacePane / core 的 spec.geo）：站表回填只在各站那一个点上取方向图，
@@ -721,10 +735,9 @@ function reloadSatTree() {
   const wasClean = !isDirty()
   // 本模块导入的方向图节点：星名/轨位以卫星库条目为准（条目改名/改轨位后，树里那颗星跟着变）。
   // 单向——条目是真值源，节点只是它的影子，故下面的回写循环会跳过 local 节点。
+  // 逐条目无条件同步：节点不存在（本条目没导过方向图）时 syncLocalNode 自身是空操作。
   for (const c of satConfigs) {
-    if (c.grd && c.grd.satFolder && c.grd.satFolder === localFolderFor(c.id)) {
-      syncLocalNode({ folder: c.grd.satFolder, satName: c.form.satelliteName || c.name, lon: parseFloat(c.form.orbitPosition), lat: 0, altKm: 35786 })
-    }
+    syncLocalNode({ folder: localFolderFor(c.id), satName: c.form.satelliteName || c.name, lon: parseFloat(c.form.orbitPosition), lat: 0, altKm: 35786 })
   }
   const t = loadSatTree(); satTree.value = t.sats; grdCfgs = t.cfgs
   // 实时星位同步写入【所有】引用该 GRD 节点的卫星库条目（名称/轨位以实时星历为准）——库为全局资产，
@@ -1212,7 +1225,7 @@ function pruneExpanded() {
   for (const id of [...expandedFolders.value]) if (!ids.has(id)) { expandedFolders.value.delete(id); changed = true }
   if (changed) persistExpanded()
 }
-function defaultCfgName() { const nm = curSat.value && curSat.value.form.satelliteName; return (nm ? nm + ' ' : '') + `链路 ${linkRows.length} 条` }
+function defaultCfgName() { const nm = curSat.value && curSat.value.form.satelliteName; return (nm ? nm + ' ' : '') + byLang(`链路 ${linkRows.length} 条`, `${linkRows.length} Links`) }
 // 命名弹窗：保存为新配置
 const cfgDlg = reactive({ open: false, name: '' })
 function openSaveDlg() { if (!api) { toast('保存需在桌面客户端中运行'); return } cfgDlg.name = defaultCfgName(); cfgDlg.open = true }
@@ -1277,7 +1290,7 @@ function answerConfirm(ok) { confirmDlg.open = false; const r = _confirmResolve;
 // 新建文件夹：parentId 为空=根，否则建在该文件夹下；建后自动展开并进入改名
 async function addFolder(parentId = null) {
   if (!api) { toast('需在桌面客户端中运行'); return }
-  const item = await api.store.saveConfig({ type: 'folder', name: uniqueCfgName('新建文件夹'), parentId: parentId || null, orbitType: 'GEO' })
+  const item = await api.store.saveConfig({ type: 'folder', name: uniqueCfgName(newFolderName()), parentId: parentId || null, orbitType: 'GEO' })
   if (parentId) { expandedFolders.value.add(parentId) }
   if (item && item.id) expandedFolders.value.add(item.id)
   persistExpanded()
@@ -1325,7 +1338,7 @@ async function addBlankConfig(parentId = null) {
   if (!api) { toast('需在桌面客户端中运行'); return }
   if (!(await guardedLeave())) return
   const state = blankState()
-  const item = await api.store.saveConfig({ name: uniqueCfgName('新配置'), state, parentId: parentId || null })
+  const item = await api.store.saveConfig({ name: uniqueCfgName(newCfgName()), state, parentId: parentId || null })
   if (parentId) { expandedFolders.value.add(parentId); persistExpanded() }
   await loadConfigs()
   if (item && item.id) { activeId.value = item.id; applyState(state); setBaseline() }
@@ -1341,7 +1354,7 @@ function cutConfig(c) { if (!c || c.type === 'folder') return; cfgClip.value = {
 async function pasteConfig(targetId, into = false) {
   const clip = cfgClip.value; if (!clip || !api) return
   let movingId
-  if (clip.mode === 'copy') { const item = await api.store.saveConfig({ name: uniqueCfgName(clip.name + ' 副本'), state: JSON.parse(JSON.stringify(clip.state)) }); movingId = item && item.id }
+  if (clip.mode === 'copy') { const item = await api.store.saveConfig({ name: uniqueCfgName(copyNameOf(clip.name)), state: JSON.parse(JSON.stringify(clip.state)) }); movingId = item && item.id }
   else movingId = clip.id
   if (movingId) {
     const target = (targetId && targetId !== movingId) ? configs.value.find((c) => c.id === targetId) : null
@@ -1536,13 +1549,17 @@ const shareCtx = {
 }
 
 // —— 报表语言与报告导出 ——
-// 报表语言：中文 / English（学术英文译法，与瀑布详情表的 WF_DICT 同源）。记住上次选择。
-// 「详细预算」区与导出内容同吃这一个值——屏幕上核对的和交出去的报表得是同一份东西。
-// localStorage 键沿用旧名 exportLang，保住用户已经存下的选择。
-const reportLang = ref(localStorage.getItem('linkbudget/exportLang') || 'zh')
-watch(reportLang, (v) => {
-  try { localStorage.setItem('linkbudget/exportLang', v) } catch (e) { /* ignore */ }
+// 报表语言跟随平台语言（设置▸语言），不再单独设一档：一个软件只有一种语言，
+// 屏幕上核对的、详细预算区显示的、交出去的报表，三者必然是同一种。
+const reportLang = ref(getLang())
+onLangChange((v) => { reportLang.value = v })
+watch(reportLang, () => {
   loadWaterfall()   // 段标题/行标签是 core 取数时按 lang 翻好的，换语言得重取一次
+})
+// 自动命名的库条目跟着换语言：它们的名字是生成时按语言出的字（呈现层翻不到），换了语言得重出一次。
+// 只动 nameAuto 的条目，用户起过的名字一律不碰（syncAutoNames 幂等，重跑无副作用）。
+onLangChange(() => {
+  syncAutoNames(basebandConfigs, 'carrier'); syncAutoNames(esConfigs, 'es'); syncAutoNames(satConfigs, 'sat')
 })
 // —— 交付级报告导出（Excel 总报告 + 逐链路详情 / PDF 封面+目录+总报告+详情）——
 // 流程在 shared/useLbReport.js（三窗共用），这里只把本窗的数据源接上去。
@@ -1697,7 +1714,7 @@ onMounted(async () => {
               </template>
               <!-- 方向图匹配（卫星方向图 + EIRP/G·T 天线）是本条目的属性：把卫星树与本条目的 grd 递进去，
                    编辑器就地写 cfg.grd（工作台卫星分区只留只读速览行，见 grdFacts）。 -->
-              <template #default="{ cfg }"><SatellitePanel :form="cfg.form" :fields="SAT_FIELDS" :sat-tree="satTree" :sel="cfg.grd"
+              <template #default="{ cfg }"><SatellitePanel :form="cfg.form" :fields="SAT_FIELDS" :sat-tree="satTree" :sel="cfg.grd" :local-folder="localFolderFor(cfg.id)"
                 :on-import="() => importGrdFor(cfg)" :on-remove-ant="() => removeImportedGrd(cfg)" :importing="importingGrd" /></template>
             </LbLibrary>
             <LbLibrary v-else v-model="selBbId" layout="column" :items="basebandConfigs" :summary="bbSummary" name-placeholder="载波名称"
@@ -1763,11 +1780,6 @@ onMounted(async () => {
             <div class="lbr-items">
               <button class="lbr-big" :disabled="reportDlg.busy || !links.length" :title="links.length ? '生成交付级报告：Excel（总报告 + 逐链路详情）/ PDF（封面 · 目录 · 总报告 · 逐链路详情，含图）' : '尚无计算结果'" @click="openReportDialog"><Icon name="file-down" :size="15" />{{ reportDlg.busy ? '生成中…' : '报告' }}</button>
               <button class="lbr-big" :disabled="!segments.length" title="复制当前瀑布表（TSV，可直接粘贴到 Excel / 报告）" @click="copyWaterfallTsv"><Icon name="file-text" :size="15" />TSV</button>
-              <div class="lbr-form">
-                <label title="报表语言：「详细预算」区与导出内容一起切换 / Report language: detailed budget & exports"><span>语言</span>
-                  <select v-model="reportLang" style="width: 64px"><option value="zh">中文</option><option value="en">English</option></select>
-                </label>
-              </div>
             </div>
             <div class="lbr-cap">导出</div>
           </div>
@@ -1933,7 +1945,7 @@ onMounted(async () => {
     <div v-if="leaveDlg.open" class="lb-mask" @click="leaveAnswer('cancel')">
       <div class="lb-dlg" @click.stop>
         <div class="lb-dlg-hd">配置已修改</div>
-        <div class="lb-dlg-bd"><div class="lb-share-row">「<b>{{ leaveDlg.name }}</b>」有未保存的修改，是否保存？</div></div>
+        <div class="lb-dlg-bd"><div class="lb-share-row">「<b data-i18n-skip>{{ leaveDlg.name }}</b>」有未保存的修改，是否保存？</div></div>
         <div class="lb-dlg-ft">
           <button class="lb-mini" @click="leaveAnswer('cancel')">取消</button>
           <button class="lb-mini" @click="leaveAnswer('discard')">不保存</button>

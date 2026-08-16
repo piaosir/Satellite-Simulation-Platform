@@ -104,16 +104,23 @@ function bilinearAt(arr, NX, NY, fc, fr) {
 }
 
 // 在 (lon,lat) 上对单波束采 Parameter（dB）。口径同 coverage.sampleBeamAt（复场域 bicubic）。
-function sampleBeamAt(beam, igrid, basis, lon, lat, opt) {
+//
+// tgtAltKm > 0 = 目标点在【空间】而非地表（星间链路：另一颗星的位置）。此时不走地平线闸——
+// 那一闸判的是「卫星在地面测站的地平线之下」，对空间目标没有意义（互视与否由星间几何求解器
+// 的地球临边遮挡判定，见 ngsoGeometry.solveIslWorstCase，取值只在它判定互视的那一刻发生）。
+function sampleBeamAt(beam, igrid, basis, lon, lat, opt, tgtAltKm) {
   const pol = (opt && opt.pol) || 'RSS', gainOffset = (opt && opt.gainOffset) || 0, pathLoss = (opt && opt.pathLoss) || 'none';
   const hNadir = (opt && opt.hNadir) || H;
+  const hT = Number(tgtAltKm) > 0 ? Number(tgtAltKm) : 0;
   const { S, x, y, z } = basis;
-  const P = geodeticToEcef(lon, lat, 0);
+  const P = geodeticToEcef(lon, lat, hT);
   const ex = P[0] - S[0], ey = P[1] - S[1], ez = P[2] - S[2];
   const rs = Math.hypot(ex, ey, ez); if (!(rs > 0)) return null;
   const e = [ex / rs, ey / rs, ez / rs];
-  const clat = Math.cos(lat * D2R), up = [clat * Math.cos(lon * D2R), clat * Math.sin(lon * D2R), Math.sin(lat * D2R)];
-  if (dt(e, up) > 0) return null;                                  // 卫星在测站地平线下 → 不可见
+  if (!hT) {
+    const clat = Math.cos(lat * D2R), up = [clat * Math.cos(lon * D2R), clat * Math.sin(lon * D2R), Math.sin(lat * D2R)];
+    if (dt(e, up) > 0) return null;                                // 卫星在测站地平线下 → 不可见
+  }
   const a = dt(e, x), b = dt(e, y), c = dt(e, z);
   const xy = invGridDir(igrid, a, b, c); if (!xy) return null;
   const g = beam.grid, NX = g.NX, NY = g.NY;
@@ -241,11 +248,12 @@ function makeSampleCtx(loaded, sat, cfg) {
 }
 
 // 多波束最大 Parameter（绝对 dB）。口径同 grdParam.ensureAntenna + maxParamAt。域外/不可见返回 null。
-function sampleMax(loaded, sat, cfg, lon, lat) {
+// tgtAltKm > 0 → 目标点在空间（星间链路对另一颗星取值），见 sampleBeamAt。
+function sampleMax(loaded, sat, cfg, lon, lat, tgtAltKm) {
   if (!Number.isFinite(lon) || !Number.isFinite(lat)) return null;
   const ctx = makeSampleCtx(loaded, sat, cfg);
   if (!ctx) return null;
-  return sampleMaxCtx(ctx, lon, lat);
+  return sampleMaxCtx(ctx, lon, lat, tgtAltKm);
 }
 
 /**
@@ -283,10 +291,10 @@ function peakDb(loaded, cfg) {
   return best === null ? null : 10 * Math.log10(best) + gainOffset;
 }
 
-function sampleMaxCtx(ctx, lon, lat) {
+function sampleMaxCtx(ctx, lon, lat, tgtAltKm) {
   let best = null;
   for (const bm of ctx.beams) {
-    const db = sampleBeamAt(bm, ctx.igrid, ctx.basis, lon, lat, ctx.par);
+    const db = sampleBeamAt(bm, ctx.igrid, ctx.basis, lon, lat, ctx.par, tgtAltKm);
     if (db == null) continue;
     if (best == null || db > best) best = db;
   }

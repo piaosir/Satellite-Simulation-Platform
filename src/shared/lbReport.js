@@ -1,4 +1,4 @@
-// 链路预算「报告」的单一真值源（GSO / NGSO / 再生式三窗共用）。
+// 链路预算「报告」的单一真值源（GSO / NGSO / 再生式 / 端到端 四窗共用）。
 //
 // 一份报告要出两种文件（.xlsx 与 .pdf），两条渲染路径分居主进程与打印窗：
 //   模型  本文件（渲染进程）   把屏幕上那次计算的全部东西——元信息、输入、结果、瀑布段、图——
@@ -33,7 +33,8 @@ export const DOC_FIELDS = [
 const SCHEME_NAME = {
   GEO: ['GSO 透明转发（弯管）体制', 'GSO Transparent (Bent-Pipe)'],
   NGSO: ['NGSO 透明转发（弯管）体制', 'NGSO Transparent (Bent-Pipe)'],
-  REGEN: ['再生式（星上处理）体制', 'Regenerative (On-Board Processing)']
+  REGEN: ['再生式（星上处理）体制', 'Regenerative (On-Board Processing)'],
+  E2E: ['端到端多跳 / 混合转发', 'End-to-End Multi-Hop / Hybrid Relay']
 }
 const REGEN_NAME = {
   uplink: ['上行（地球站 → 卫星）', 'Uplink (Earth Station → Satellite)'],
@@ -43,7 +44,7 @@ const REGEN_NAME = {
 }
 
 export function schemeOf(orbitType, regenMode) {
-  const ot = (orbitType === 'NGSO' || orbitType === 'REGEN') ? orbitType : 'GEO'
+  const ot = (orbitType === 'NGSO' || orbitType === 'REGEN' || orbitType === 'E2E') ? orbitType : 'GEO'
   const [zh, en] = SCHEME_NAME[ot]
   const sub = ot === 'REGEN' ? (REGEN_NAME[regenMode] || REGEN_NAME.uplink) : null
   return {
@@ -59,7 +60,10 @@ export const schemeSub = (scheme, lang) => (lang === 'en' ? scheme.subLabelEn : 
 // 默认报告名：正式技术文档的取名法「对象 + 范围 + 文档类型」，
 // 即「<卫星> 卫星 <频段> 频段链路预算报告」。封面上它是唯一的一行主标题，故必须自己说全，
 // 不靠副标题补充（用户 2026-08-02 定：一个醒目的主标题即可）。
-export function reportTitle(satName, band, lang) {
+// 端到端链没有「那颗卫星」也没有「那个频段」——一条链跨着几颗星、上下行各一个频段，
+// 拿其中任何一个来取名都是以偏概全。故本体制的默认名不带对象与范围，只说文档类型。
+export function reportTitle(satName, band, lang, orbitType) {
+  if (orbitType === 'E2E') return lang === 'en' ? 'End-to-End Link Budget Report' : '端到端链路预算报告'
   const sat = String(satName || '').trim()
   const bd = String(band || '').trim()
   if (lang === 'en') {
@@ -79,7 +83,7 @@ export function defaultDocInfo(scheme, satName, lang, band) {
   const d = new Date()
   const p = (n) => String(n).padStart(2, '0')
   return {
-    title: reportTitle(satName, band, lang),
+    title: reportTitle(satName, band, lang, scheme && scheme.orbitType),
     docNo: '', classification: '', org: '',
     date: `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`,
     logo: null
@@ -225,7 +229,12 @@ export const reportT = (lang) => (s) => translate(s, lang)
 // 只写引擎真正做了的事：没实现的不写、没核实的不写（宁可少一条，不可多一条错的）。
 export function methodology(scheme, lang) {
   const en = lang === 'en'
+  const e2e = scheme.orbitType === 'E2E'
+  // ★ ngso 只管「引擎是否走 §8 仰角统计 + SGP4 站星最差工况」——端到端不在其中：
+  //   它的几何是逐跳给定（手动）或逐跳解最差工况（自动），可用度是逐跳站址值连乘，
+  //   没有 §8 那套分箱加权。故 e2e 另立分支，只在参考文献那一组沿用轨道与时空基准。
   const ngso = scheme.orbitType === 'NGSO' || scheme.orbitType === 'REGEN'
+  const orbitRefs = ngso || e2e
   const regen = scheme.orbitType === 'REGEN'
   const isl = regen && (scheme.regenMode === 'isl' || scheme.regenMode === 'laser')
   const laser = regen && scheme.regenMode === 'laser'
@@ -234,7 +243,27 @@ export function methodology(scheme, lang) {
   const basis = []
   const put = (zh, ezh) => basis.push({ title: en ? ezh[0] : zh[0], text: en ? ezh[1] : zh[1] })
 
-  put(['链路方程与级联',
+  // 端到端是另一套算法（正向电平递推 + 再生节点切段），三窗那两句（弯管合成 / 再生单段）
+  // 都不是它做的事，故整条另写——方法学章节只许写引擎真正做了的。
+  if (e2e) {
+    put(['链路方程与级联',
+      '端到端链路按正向电平递推计算：自发信站功放输出起，沿节点链逐跳把增益与损耗加减下去，每一行均可由上一行手工推算。'
+      + '透明（弯管）节点只作变频放大转发，其上行与下行同属一段，段内 C/N 按功率倒数相加合成；'
+      + '再生（星上处理）节点与地面转接站解调重调，把链切成若干段，段与段之间载噪比不再传递。'
+      + '各段独立解调，端到端余量取各段余量的最小值（最弱段），链级门限与合成载噪比取同一段的那一份。'
+      + '多跳下不作反算：目标余量可由发信站功放、任一透明星回退、任一再生星 EIRP 分别去凑，反算欠定。'],
+    ['Link equation and cascade',
+      'The end-to-end chain is computed as a forward level recursion: starting from the transmit HPA output, gains and losses are '
+      + 'added and subtracted hop by hop along the node chain, so that every line can be re-derived by hand from the line above. '
+      + 'A transparent (bent-pipe) node only frequency-converts and amplifies, so its uplink and downlink belong to one segment and '
+      + 'their C/N values are combined by reciprocal power addition; a regenerative (on-board processing) node — or a ground relay — '
+      + 'demodulates and remodulates, cutting the chain into segments across which carrier-to-noise no longer propagates. '
+      + 'Each segment is demodulated independently, so the end-to-end margin is the minimum of the per-segment margins (the weakest '
+      + 'segment), and the chain-level threshold and combined ratio are taken from that same segment. No back-solving is performed: '
+      + 'with multiple hops a target margin could be met by the transmit HPA, by any transparent transponder back-off or by any '
+      + 'regenerative satellite EIRP, so the inverse problem is under-determined.'])
+  } else {
+    put(['链路方程与级联',
     '链路预算按逐段功率级联计算，每一行均可由上一行手工推算：发射端由功放输出经回退、馈线损耗与发射天线增益得到 EIRP；'
     + '经自由空间损耗与大气路径衰减（气体吸收、云衰、雨衰及其他综合损耗）得到接收端载波电平；与接收品质因数 G/T 合成载波噪声比 '
     + 'C/T，再由玻尔兹曼常数与载波噪声带宽折算为 C/N。' + (regen ? '再生式体制上下行独立解调，故总载噪比即本段自身的 C/(N+I)。'
@@ -246,6 +275,7 @@ export function methodology(scheme, lang) {
     + 'the carrier-to-noise-temperature ratio C/T follows from the receive figure of merit G/T, and C/N from Boltzmann’s constant '
     + 'and the carrier noise bandwidth. ' + (regen ? 'In a regenerative payload each hop is demodulated on board, so the total ratio is the C/(N+I) of the hop itself.'
       : 'For a transparent (bent-pipe) payload the uplink and downlink C/N are combined by reciprocal power addition, with the transponder operating point set by the saturation flux density (SFD) and the input/output back-off (IBO/OBO).')])
+  }
 
   put(['干扰合成',
     '干扰按功率与热噪声一并合成为 C/(N+I)：计入邻道干扰 C/ACI、邻星干扰 C/ASI、交叉极化干扰 C/XPI、'
@@ -265,13 +295,47 @@ export function methodology(scheme, lang) {
     + '25 K ground-pickup constant added. Under rain, the medium-radiated noise of rain and cloud is added as well (mean radiating '
     + 'temperature 275 K, referred through the feeder), which together with rain attenuation constitutes the downlink degradation.'])
 
-  put(['可用度与统计口径',
-    '传播余量按年时间百分比统计：给定链路可用度对应的超越时间百分比即雨衰预测的输入。上行与下行各自独立统计，'
+  if (e2e) {
+    put(['可用度与时延、误码的链级口径',
+      '传播余量按年时间百分比统计：给定链路可用度对应的超越时间百分比即雨衰预测的输入；降雨率取 ITU-R P.837-7 的 '
+      + '0.01% 超越降雨率（可按站址自动取值或手工指定）。链级系统可用度取各星地跳站址可用度之积（各跳雨区独立假设）；'
+      + '星间跳为真空段，不贡献可用度损失。地面转接站的上、下行同址同雨，独立相乘是保守包络。'
+      + '端到端误码率取各段设计误码率之和——各段独立解调、比特透传，误码一旦产生下游无法恢复。'
+      + '端到端时延 = 各跳传播时延（斜距 / 光速）之和 + 各再生类节点的处理时延之和。'],
+    ['Availability, delay and error-rate conventions for the chain',
+      'Propagation margins are stated as annual time percentages: the exceedance percentage corresponding to the required '
+      + 'availability is the input to the rain-attenuation prediction; rain rate is the 0.01 % exceedance value of ITU-R P.837-7 '
+      + '(taken automatically from the site coordinates or entered manually). Chain availability is the product of the site '
+      + 'availabilities of the Earth–space hops (rain cells assumed independent); inter-satellite hops are vacuum paths and '
+      + 'contribute no availability loss. For a ground relay the uplink and downlink share one site and one rain cell, so the '
+      + 'independent product is a conservative envelope. The end-to-end bit error ratio is the sum of the per-segment design '
+      + 'values — each segment is demodulated independently and bits are passed through, so an error once made cannot be '
+      + 'recovered downstream. End-to-end delay is the sum of the per-hop propagation delays (slant range / c) plus the '
+      + 'processing delay of every regenerative node.'])
+
+    put(['几何与轨道',
+      '逐跳几何有两档口径，由用户在功能区选定，报告写的是本次计算实际所用的那一档：'
+      + '手动档由各跳直接给定斜距与对卫星仰角（星间跳给星间距离）；自动最差档按各跳卫星自身的轨道解最差工况——'
+      + '静止轨道按定点经度与站址经纬度的闭式球面解算，非静止轨道由 NORAD 两行根数 / OMM 经 SGP4/SDP4 传播至 TEME 惯性系、'
+      + '取满足最低工作仰角的最大斜距，星间跳在地心固连系（ECEF）内取给定时窗内的最大互视距离。'
+      + '站址一律取 WGS84 椭球坐标；斜距工具按「绕站一圈」求 WGS84 椭球上的最大值。'],
+    ['Geometry and orbits',
+      'Per-hop geometry follows one of two conventions selected by the user; this report states the one actually used for this '
+      + 'computation. In manual mode the slant range and elevation of each hop (or the range of each inter-satellite hop) are '
+      + 'entered directly. In automatic worst-case mode each hop is solved from the orbit of its own satellite: geostationary '
+      + 'geometry in closed form on the sphere from the orbital longitude and site coordinates; non-geostationary orbits '
+      + 'propagated from NORAD two-line elements / OMM by SGP4/SDP4 into the TEME inertial frame, taking the maximum slant '
+      + 'range that still satisfies the minimum operating elevation; inter-satellite hops taken as the maximum mutually visible '
+      + 'range within the given horizon in the Earth-fixed (ECEF) frame. Facility positions always use WGS84 ellipsoidal '
+      + 'coordinates, and the slant-range tool takes the maximum over a full revolution about the site on the WGS84 ellipsoid.'])
+  } else {
+    put(['可用度与统计口径',
+      '传播余量按年时间百分比统计：给定链路可用度对应的超越时间百分比即雨衰预测的输入。上行与下行各自独立统计，'
     + '系统可用度由两段联合给出。降雨率取 ITU-R P.837-7 的 0.01% 超越降雨率（可按站址自动取值或手工指定）。'
     + (ngso ? '非静止轨道链路的仰角随时间变化，故按 ITU-R P.618-14 §8 的统计口径处理：将可服务仰角区间分箱，'
       + '以各箱的可见时间占比对该仰角下的超越时间占比加权求和，并以「等效仰角」表述结果——该仰角不对应任何瞬时几何。' : '')],
-  ['Availability and statistical basis',
-    'Propagation margins are stated as annual time percentages: the exceedance percentage corresponding to the required link '
+    ['Availability and statistical basis',
+      'Propagation margins are stated as annual time percentages: the exceedance percentage corresponding to the required link '
     + 'availability is the input to the rain-attenuation prediction. Uplink and downlink are treated independently and the system '
     + 'availability follows from the two hops jointly. Rain rate is the 0.01 % exceedance value of ITU-R P.837-7 (taken automatically '
     + 'from the site coordinates or entered manually).'
@@ -279,20 +343,21 @@ export function methodology(scheme, lang) {
       + 'elevation range is binned, each bin’s visibility fraction weights the exceedance fraction at that elevation, and the result is '
       + 'expressed as an "equivalent elevation" that corresponds to no instantaneous geometry.' : '')])
 
-  put(['几何与轨道',
-    ngso
-      ? '轨道由 NORAD 两行根数 / OMM 经 SGP4/SDP4 传播至 TEME 惯性系，站址取 WGS84 椭球坐标；'
+    put(['几何与轨道',
+      ngso
+        ? '轨道由 NORAD 两行根数 / OMM 经 SGP4/SDP4 传播至 TEME 惯性系，站址取 WGS84 椭球坐标；'
         + (isl ? '星间几何在地心固连系（ECEF）内解算，互视判据为视线段最近地心距不小于地球半径加大气余量。'
           : '站星几何取满足最低工作仰角的最差工况（最大斜距）。')
       : '静止轨道几何按定点轨道经度与站址经纬度的闭式球面解算，取斜距、仰角与方位角；单程时延由斜距与光速给出。'],
-  ['Geometry and orbits',
-    ngso
-      ? 'Orbits are propagated from NORAD two-line elements / OMM by SGP4/SDP4 into the TEME inertial frame; facility positions use '
+    ['Geometry and orbits',
+      ngso
+        ? 'Orbits are propagated from NORAD two-line elements / OMM by SGP4/SDP4 into the TEME inertial frame; facility positions use '
         + 'WGS84 ellipsoidal coordinates. ' + (isl ? 'Inter-satellite geometry is solved in the Earth-fixed (ECEF) frame; mutual visibility '
           + 'requires the minimum geocentric distance of the line-of-sight segment to be no less than the Earth radius plus an atmospheric margin.'
           : 'Station–satellite geometry is taken at the worst case (maximum slant range) satisfying the minimum operating elevation.')
       : 'Geostationary geometry is solved in closed form on the sphere from the orbital longitude and the site coordinates, giving slant '
         + 'range, elevation and azimuth; the one-way delay follows from slant range and the speed of light.'])
+  }
 
   if (laser) {
     put(['光学链路口径',
@@ -337,7 +402,7 @@ export function methodology(scheme, lang) {
       ]
     }
   ]
-  if (ngso) {
+  if (orbitRefs) {
     refGroups.push({
       group: G('轨道与时空基准', 'Orbits and reference frames'),
       items: [
