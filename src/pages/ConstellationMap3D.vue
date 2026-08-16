@@ -7,7 +7,7 @@ import { zoom } from '../stores/zoom'
 import { effective as displayQuality } from '../stores/displayQuality'
 import { viewPrefs } from '../stores/viewPrefs'
 import { setGrdBridge, clearGrdBridge, fileBridge, bumpCustomSats } from '../stores/fileBridge'
-import { shellUi } from '../stores/shellUi'
+import { shellUi, sideCtx } from '../stores/shellUi'
 import { isSecOpen, toggleSec } from '../stores/panelSections'
 import { clock, onTick, goLive, togglePlay, setTime as clockSetTime, stepBy as clockStepBy, setStep as clockSetStep, setSpeed as clockSetSpeed, releaseClock, resumeClock, effective as clockEff, capped as clockCapped, restoreState as clockRestore } from '../stores/simClock'
 import { STEP_PRESETS, SPEED_PRESETS, cursorSnapSec, followWindow, snapMs, fmtStep, fmtStepShort, fmtRate, fmtOffset, rateFor } from '../shared/simClockCore.js'
@@ -41,7 +41,9 @@ import SatCovWindows from '../components/SatCovWindows.vue'
 import SatCovShellPicker from '../components/SatCovShellPicker.vue'
 import GrdSetSections from '../components/GrdSetSections.vue'
 import { useGridSelect } from '../viz/grd/useGridSelect.js'
-import { useMarkerTable } from '../viz/markers/useMarkerTable.js'
+import ExcelGrid from '../components/ExcelGrid.vue'
+import { sheetModel, exportSheets, importWorkbook, sheetToRecords, sheetToTsv, pickSheet, safeFileName } from '../shared/gridXlsx.js'
+import { useMarkerTable, trajsFromSheets } from '../viz/markers/useMarkerTable.js'
 import sat from '../viz/constellation/satellite.js'
 import { sampleOrbitAdaptive } from '../viz/constellation/adaptiveSample.js'
 import { solarGeometry } from '../viz/terminator.js'
@@ -148,9 +150,10 @@ const grdApiOk = typeof window !== 'undefined' && !!(window.api && window.api.co
 //   batch: { id, name, beams:[beamId], gains:[number], custom:'', mode:'gradient'|'solid'|'perGain', solid:'#hex', gainColors:{gain:'#hex'} }
 const covOpen = toRef(covNav, 'covOpen')   // 右侧覆盖面板开关（GXT）；与顶栏按钮共用 covNav store
 
-// 2D 那块场此刻有没有人看：平面图可见，或正在按 2D 出图（导出在 3D 视图下也走 flat，见 exportMap→feedFlat）。
-// 两个覆盖视图的 2D 通道都拿它当闸——3D 视图下每拍往不可见画布烘 Path2D 是白做（exporting/flatView 均运行时求值，无 TDZ）。
-const flatActive = () => flatView.value || exporting.value
+// 2D 那块场此刻有没有人看：平面图可见，或本次出图走的是 2D 平面图（「全球图」在 3D 视图下也走 flat，
+// 见 exportMap→feedFlat；「3D 球体截图」不占这块场，故看的是 exportFlat 而非 exporting）。
+// 两个覆盖视图的 2D 通道都拿它当闸——3D 视图下每拍往不可见画布烘 Path2D 是白做（运行时求值，无 TDZ）。
+const flatActive = () => flatView.value || exportFlat.value
 // 覆盖图（GRD）：实时原始场，渲染到星座3D 的 scene/flat（独立图层）
 const grd = useGrdCoverage(() => scene, () => flat, () => flatView.value, {
   flatActive,
@@ -159,8 +162,9 @@ const grd = useGrdCoverage(() => scene, () => flat, () => flatView.value, {
   getTargetEcef: (id) => satTargetEcef(id),
   // 切到「空间点」指向时，指向点默认落在哪层壳上（取对星覆盖分析里第一层显示中的壳层）
   defaultBoreAlt: () => satcovDragAlt(),
-  // 2D 平面图只有一块 GRD 场，对地/对星共用 → 按当前活动视图定归属（另一半见下面 satcov 的第 5 参）
-  ownsFlatField: () => shellUi.side !== 'satcov'
+  // 2D 平面图只有一块 GRD 场，对地/对星共用 → 按当前【上下文视图】定归属（另一半见下面 satcov 的第 7 参）。
+  // 用 sideCtx 不用 side：收起侧栏只是把面板藏起来，归属不该跟着翻（翻了就是「关个侧栏，图变了」）。
+  ownsFlatField: () => sideCtx() !== 'satcov'
 })
 const { sats: grdSats, loading: grdLoading, s: grdS } = grd
 const grdOpen = toRef(covNav, 'grdOpen')   // GRD 覆盖面板开关；与顶栏按钮共用 covNav store
@@ -169,11 +173,20 @@ const grdOpen = toRef(covNav, 'grdOpen')   // GRD 覆盖面板开关；与顶栏
 // polys/satLivePos 在下方定义 → 用 getter 传入避免 TDZ（仅运行时调用）。
 // refresh：草图轮廓变化 → 重画卫星层（含 sketchSpec）+ 同步拖拽手柄。
 const bs = useBeamSynth({ grd, getPolys: () => polys.value, livePos: (n) => satLivePos(n), appAlert, refresh: () => { redrawSats(); syncEdit() } })
+// 组名就地改：同上 —— 本组件每秒重渲染，:value 又是无条件回写，不用草稿顶住就会打一半被组里的旧名打回。
+// 提交走 renameGroup（它自己去重；空名不改），提交后退出草稿，显示回到 curName（可能被去重改过）。
+const bsNameEdit = ref(null)
+function bsNameVal() { return bsNameEdit.value == null ? bs.curName.value : bsNameEdit.value }
+function bsNameCommit() { const v = bsNameEdit.value; bsNameEdit.value = null; if (v != null) bs.renameGroup(bs.activeGroupId.value, v) }
+watch(() => bs.activeGroupId.value, () => { bsNameEdit.value = null })
 
 // ===================== 对星覆盖分析（波束打到轨道壳层上）=====================
 // 与对地覆盖共用同一棵卫星/天线树与同一套【物理设置】（指向/极化/增益/路损，经 grd.getPerfContext 现取）；
 // 只有【显示设置】（档位/填充/画哪些波束）各记一套。渲染走 scene 的壳层专用通道，与对地覆盖互不覆写。
-const satcov = useShellCoverage(grd, () => scene, () => flat, () => flatView.value, () => shellUi.side === 'satcov', flatActive)
+// 两道闸分开传：panelOn（面板开着没有 → 面板读数要不要现算）与 ownsFlat（2D 那块场归不归自己）。
+// 前者看 side（面板收起就没人看读数），后者看 sideCtx（收起侧栏不改归属）。场景内容自己按 _painted 存续，两者都不管。
+const satcov = useShellCoverage(grd, () => scene, () => flat, () => flatView.value,
+  () => shellUi.side === 'satcov', flatActive, () => sideCtx() === 'satcov')
 const satPerf = useSatPerfTable()
 const satcovTableOpen = ref(false)
 
@@ -512,6 +525,12 @@ function satcovRefreshTable() {
   const key = satcov.active.value
   const ctx = key ? grd.getPerfContext(key) : null
   if (!ctx) { satPerf.compute(null); satPerf.setBeamTargets([]); return }
+  // 时间窗口档：表钉在【游标时刻】，不能被「按当前时钟重算」冲掉（目标星/口径改了由「输入已变」提示重扫）；
+  // 还没扫过就空着 —— 留一批当前时刻的数在时窗档下，看着就像是时窗里的数
+  if (satPerf.win.on) {
+    if (satPerf.winInfo.value) satPerf.seekCursor(satPerf.win.cursorMs); else satPerf.clearRows()
+    return
+  }
   satPerf.compute(ctx, satPerf.getOpts(key), satcovResolveTargets(ctx), satcovTimes(), satcov.shells.value, satcov.s.hEx)
 }
 // ===== 瞬时表跟随仿真时钟（预算自适应）=====
@@ -570,6 +589,13 @@ async function satcovScanWindows() {
   if (!tgts.length) { status.value = satPerf.targetMode.value === 'beam' ? '当前波束内没有卫星' : '先加目标星'; return }
   await satPerf.computeWindows(ctx, satPerf.getOpts(key), tgts, satcovTimes(), satcov.shells.value, satcov.s.hEx,
     { srcRec: satcovSourceRec(ctx), boreRec: satcovBoreRec(ctx) })
+}
+// 「同步到时间轴」：把主时间轴跳到时窗游标那一刻（与「跳到指定时刻」同一路径——窗口以该时刻重新居中）。
+// 表本身不用动：win.on 档下 satcovClockTick 不接管，表仍是游标那一刻的数，这一步只是让画面追上表。
+function satcovSeekClock(tMs) {
+  if (!Number.isFinite(tMs)) return
+  winStartMin.value = -PAST_FRAC * windowMin.value
+  clockSetTime(tMs); baseTime.value = clock.tMs
 }
 // 指标表里点「聚焦」：旋转地球正对该星并选中（与搜索结果点选、双击定位同一路径）
 async function satcovFocusTarget(t) {
@@ -639,7 +665,7 @@ function satcovDragAlt() {
   const sh = satcov.shells.value.find((x) => x.show) || satcov.shells.value[0]
   return sh ? sh.altKm : 550
 }
-const satcovDragOn = () => shellUi.side === 'satcov' && !flatView.value
+const satcovDragOn = () => sideCtx() === 'satcov' && !flatView.value
 // 拖拽回调分派：3D 的对星视图走绕星弧球（shellDrag），其余（含对星视图下的 2D 对地平面图）走原地表拖拽
 function onBeamDragAny(ll, phase) {
   if (satcovDragOn()) grd.shellDrag(ll, phase, W.A + satcovDragAlt())
@@ -655,7 +681,7 @@ function satcovSyncDragSphere() {
     tip: grd.boreTip(W.A + satcovDragAlt())        // 当前视轴落点：只用来定「屏上转一度、波束转几度」的增益
   } : null)
 }
-watch(() => [shellUi.side, flatView.value, grd.dragBore.value, grd.active.value, grdS.boreType], satcovSyncDragSphere)
+watch(() => [sideCtx(), flatView.value, grd.dragBore.value, grd.active.value, grdS.boreType], satcovSyncDragSphere)
 // 时间轴 / 星位变化后的刷新：只管源星动了要重投影；指标表按其「重算」走（一行一颗星，逐帧算不起）
 function satcovTick(movedKeys) {
   if (movedKeys && movedKeys.size) {
@@ -669,7 +695,9 @@ watch(() => satcov.active.value, () => satcovRefreshTable())
 watch(satcovTableOpen, (v) => { if (v) satcovRefreshTable() })
 // 聚焦特效的触发面：画哪些天线变了（点亮谁按此定）、指向模式/目标星变了（目标星那一端要跟着换）。
 // 时间推进不在这里管——refreshPositions 每帧都会 commitGeometry。
-watch(() => [satcov.selected.value.join('|'), grd.active.value, grdS.boreType, grdS.boreSat], () => { if (shellUi.side === 'satcov') commitGeometry() })
+// 不按视图门控：commitGeometry 是幂等的全量重喂，画不画由 satcov.selected 定（清空即自然收特效）——
+// 加个 side 判据反而会在【清除绘图那一下正好不在该视图】时把特效留在场景里。
+watch(() => [satcov.selected.value.join('|'), grd.active.value, grdS.boreType, grdS.boreSat], () => commitGeometry())
 // 目标库变动（加/删/清空）→ 表重算；切目标来源（点选 ↔ 波束内）同理
 watch(() => satPerf.picks.value, () => satcovRefreshTable(), { deep: true })
 watch(satPerf.targetMode, () => satcovRefreshTable())
@@ -779,6 +807,13 @@ function perfAddRow() {
   perf.addEmptyStation(at)
   nextTick(() => { perfInGrid.sel.value = { ar: at, ac: 0, ri: at, ci: 0 }; perfInGrid.focusGrid() })
 }
+// 表尾「＋ 增加一行」：恒追加到末尾（行中插入走右键菜单 / 工具条的「增加」）
+function perfAddRowEnd() {
+  perf.pushUndo()
+  const at = perf.stations.value.length
+  perf.addEmptyStation(at)
+  nextTick(() => { perfInGrid.sel.value = { ar: at, ac: 0, ri: at, ci: 0 }; perfInGrid.focusGrid() })
+}
 function perfImportMarkers() { perf.pushUndo(); const n = perf.importFromMarkers(points.value, stations.value); if (!n) { perf.dropUndo(); appAlert('没有可导入的新标记（点标记/地球站）') } refreshPerf() }
 function perfImportTrajs() { perf.pushUndo(); const n = perf.importFromTrajectories(trajectories.value); if (!n) { perf.dropUndo(); appAlert('没有可导入的新航点（航迹为空或已全部导入）') } refreshPerf() }
 // 「粘贴」按钮：直接读剪贴板批量加站（需浏览器授权剪贴板读取）
@@ -849,6 +884,9 @@ const perfInGrid = useGridSelect({
   onPasteBlock: (anchorId, startKey, text) => perf.pasteBlock(anchorId, startKey, text),
   onPasteAppend: (text) => perf.addStationsBulk(text),
   onClear: (cells) => cells.forEach(({ rowId, key }) => perf.updateStation(rowId, { [key]: '' })),
+  // 右键菜单的插入/删除行（撤销快照由内核统一压，这里不再自己 pushUndo）
+  onInsertRows: (at, n) => { for (let k = 0; k < n; k++) perf.addEmptyStation(at + k); return n },
+  onDeleteRows: (ids) => { const s = new Set(ids); const before = perf.stations.value.length; perf.stations.value = perf.stations.value.filter((x) => !s.has(x.id)); return before - perf.stations.value.length },
   pushUndo: () => perf.pushUndo(), dropUndo: () => perf.dropUndo(), refresh: () => refreshPerf(),
   undo: () => perfUndo(), redo: () => perfRedo()   // 表内 Ctrl+Z / Ctrl+Y（与工具栏按钮同源）
 })
@@ -890,7 +928,59 @@ function perfCopyResult() {
   const body = rows.map((r) => cols.map((c) => perfCellText(r, c)).join('\t')).join('\n')
   if (!perfWriteClipboard(head + '\n' + body)) appAlert('复制失败，请检查剪贴板权限')
 }
+// ===== 性能指标表 ⇄ Excel =====
+// 出表值：数字列写【真数字】（在 Excel 里能直接算），文本列原样。
+const perfXlsxVal = (r, c) => { const v = r[c.key]; if (v == null || v === '') return null; return (c.num && typeof v === 'number') ? v : String(v) }
+const perfCtxName = () => (perf.ctxInfo.value ? perf.ctxInfo.value.satName + '_' + perf.ctxInfo.value.antName : '性能指标表')
+function perfCitySheet() { return sheetModel({ name: '城市输入', cols: perfInCols, rows: perf.stations.value, value: perfXlsxVal }) }
+async function perfExportCities() {
+  if (!perf.stations.value.length) { appAlert('城市列表为空'); return }
+  const r = await exportSheets({ defaultName: safeFileName('城市列表_' + perfCtxName(), '城市列表') + '.xlsx', title: '导出城市列表', sheets: [perfCitySheet()] })
+  if (r && r.error) appAlert('导出失败：' + r.error)
+}
+async function perfExportResult() {
+  if (!perfCols.value.length) { appAlert('当前没有显示任何列'); return }
+  const c = perf.ctxInfo.value
+  const note = [c ? '卫星 ' + c.satName : '', c ? '天线 ' + c.antName : '', c ? c.beams + ' 波束' : ''].filter(Boolean).join(' · ')
+  const sheets = [
+    sheetModel({ name: '性能结果', cols: perfCols.value, rows: perfResGrid.rows.value, value: perfXlsxVal, unitOf: perfColUnit, note }),
+    perfCitySheet()
+  ]
+  const r = await exportSheets({ defaultName: safeFileName('性能指标表_' + perfCtxName(), '性能指标表') + '.xlsx', title: '导出性能指标表', sheets })
+  if (r && r.error) appAlert('导出失败：' + r.error)
+}
+// 导入城市列表：按表头匹配「国家/城市/代号/经度/纬度」；认不出表头就退回剪贴板那条位置约定（末两列=经纬度）。
+// replace=true 覆盖当前列表，否则追加。导入后对「只有城市名、没坐标」的行补一次城市库坐标（幂等，不覆盖已有坐标）。
+async function perfImportCities(replace) {
+  const res = await importWorkbook({ title: replace ? '导入城市列表（覆盖）' : '导入城市列表（追加）' })
+  if (!res || res.canceled) return
+  if (!res.ok) { appAlert('导入失败：' + (res.error || '无法读取该文件')); return }
+  const sheet = pickSheet(res.sheets, perfInCols)
+  if (!sheet) { appAlert('这份工作簿里没有数据'); return }
+  const { records } = sheetToRecords(sheet, perfInCols)
+  perf.pushUndo()
+  if (replace) perf.clearStations()
+  let n = 0
+  if (records) {
+    for (const rec of records) {
+      const s = perf.addEmptyStation()
+      perf.updateStation(s.id, { country: rec.country || '', city: rec.city || '', desig: rec.desig || '', lon: rec.lon, lat: rec.lat })
+      n++
+    }
+  } else {
+    n = perf.addStationsBulk(sheetToTsv(sheet))
+  }
+  if (!n) { perf.dropUndo(); appAlert('没有读到数据（表头需含「经度 / 纬度」，或把经纬度放在最后两列）'); return }
+  await ensurePerfCities()
+  perf.applyCityGeoAll()
+  refreshPerf()
+}
 const perfFix = (v, n) => (v == null ? '—' : v.toFixed(n == null ? 2 : n))
+// 结果表格内显示文本：数字列按列定义的小数位，取不到值显示破折号（复制/导出走各自口径，见 perfResGrid.cellText / perfXlsxVal）
+function perfResText(r, c) {
+  if (c.num) return c.fix != null ? perfFix(r[c.key], c.fix) : (r[c.key] == null ? '—' : String(r[c.key]))
+  return r[c.key] || ''
+}
 const perfColDef = (k) => perf.colDefs.find((c) => c.key === k)
 // 列单位：param（Parameter）随参数计算口径动态——dB / 功率 / 电压（与选项弹窗单位切换同口径，Same as Antenna 恒 dB）；
 // 其余列取列定义里的静态 unit（经纬度/角度 °、dir/xpol/slope/ar/min·maxPt 等 dB/…）。无量纲列（u/v）返回空。
@@ -1386,9 +1476,13 @@ function focusGeomStatic(node, color) {
 // 只「算」不「推」：返回 { items(3D), subs(3D 星下点图标), subs2d(2D 星下点图标), flat(2D 轨迹/足迹) }，
 // 由 commitGeometry 与聚焦星几何、可见性叠加层合并后一次性提交（三者共用同一 replace-all 通道）。
 // subs2d 只含【目标星】：源星在 2D 已由 redrawSats 画了自己的卫星图标（小眼睛的老作用），再叠一个就是重影。
+// ★ 不看侧栏、也不看当前停在哪个视图：判据只有【画哪些天线】（satcov.selected）——与 3D 壳层场同一条
+//   存续口径（场景内容离开面板不撤，要收走一律走「清除绘图」）。早先按 shellUi.side 门控，收起侧栏
+//   壳层还在、配套的轨道线/星下点/高亮环却整批消失，成了「关个侧栏图少一半」。
 function computeSatcovFocusGeometry() {
   const empty = { items: [], subs: [], subs2d: [], flat: [], rings: [] }
-  if (!scene || shellUi.side !== 'satcov') return empty
+  // 一颗天线都没勾就早退：commitGeometry 每拍都走，没有这一句就是每帧把整棵树的 key 拼一遍白算
+  if (!scene || !satcov.selected.value.length) return empty
   const items = [], subs = [], subs2d = [], flatGeom = [], rings = []
   const seen = new Set(selEntries.map((e) => satIdOf(e)))   // 已被点选的星不重画一遍（几何完全一致）
   const add = (id, g, on2d) => {
@@ -2926,7 +3020,7 @@ function feedFlat() {
   flat.setSizes({ beamFont: beamLabelSize.value, contourFont: contourLabelSize.value, dotSize: boreSize.value, showBore: showBore.value, nameScale: countryNameSize.value, provScale: provNameSize.value, cityScale: cityNameSize.value, ptFont: markPtFont.value, stIcon: stIconSize.value, stFont: stFontSize.value, ptDot: markPtDot.value, trajDot: trajDotSize.value })
   flat.setGeom(covGeom)
   grd.recompute()   // GRD 覆盖：把当前选中天线的面+线喂给 flat（recompute 同时喂 scene/flat）
-  if (shellUi.side === 'satcov') satcov.recompute()   // 对星视图占着 2D 那块场（见 ownsFlatField）→ 上一行被闸住，改由它来喂
+  if (sideCtx() === 'satcov') satcov.recompute()   // 对星视图占着 2D 那块场（见 ownsFlatField）→ 上一行被闸住，改由它来喂
   env.redraw()      // 环境场：平面图是懒创建的，切过来时把当前图层（栅格+等值线）补喂一份
   applyTerminator() // 晨昏线：同上，平面图懒创建，切过来补喂当前时刻那一份（关着则清层）
   redrawSats()      // 卫星/仰角线图层（含 Polygon）
@@ -2934,8 +3028,9 @@ function feedFlat() {
   commitGeometry()  // 聚焦卫星位置 + 覆盖范围 + 星下点轨迹（含可见性叠加层，若开）
 }
 
-// ===================== 覆盖图导出（高清 PNG / 矢量 PDF，统一走 2D 平面图） =====================
-const exporting = ref(false)
+// ===================== 覆盖图导出（高清 PNG / 矢量 PDF；「截图」在 3D 视图下抓球面） =====================
+const exporting = ref(false)    // 出图/导数据进行中：互斥闸
+const exportFlat = ref(false)   // 且本次走的是 2D 平面图那条（3D 球体截图不置位，见 flatActive）
 // 发送到小程序：走共用的 MiniSendDialog（绑定账号直投 / 生成密钥两选一，见 sendToMiniapp）
 const miniSendOpen = ref(false)
 const miniSatOpen = ref(false)      // 星座（卫星组 / 自定义卫星 / 自定义星座）那一路，与覆盖快照各一个弹窗
@@ -2955,16 +3050,18 @@ async function saveExport(bytes, defaultName, filters) {
   // 成功/取消无需提示（已走系统保存对话框，用户自选路径即知结果）；仅失败弹错。
   if (r && !r.ok && !r.canceled) { const msg = (r && r.error) || '写入失败'; appAlert('导出失败：' + msg) }
 }
-// fmt: 'png2' | 'png4' | 'png6' | 'pdf' | 'gxt' | 'kml'。无论当前在 2D 还是 3D 视图，都按 2D 平面图导出整幅世界图。
-// scope: 'world'(整幅世界图，默认) | 'view'(当前视图，所见即所得)。view 模式需在 2D 平面图下，按屏幕缩放/平移出图。
+// fmt: 'png2' | 'png4' | 'png6' | 'pdf' | 'gxt' | 'kml'。
+// scope: 'world'(整幅世界图，默认) | 'view'(截图，当前视图所见即所得)。
+//   world：无论当前在 2D 还是 3D，都按 2D 平面图导出整幅世界图（矢量）。
+//   view ：2D 平面图下按屏幕缩放/平移出矢量图；3D 球体下抓球面那一帧（位图，见 exportGlobeShot）。
 // gxt/kml 是数据导出（当前画面绘制的覆盖等值线，GXT+GRD 来源，同 collectGxt），与 scope 无关。
 async function exportMap(fmt, scope) {
   if (exporting.value) return
   // 数据导出（GXT/KML）统一走 exportDrawn：覆盖等值线 + 协调区多边形一起导（所见即所得），与 scope 无关。
   if (fmt === 'gxt' || fmt === 'kml') { return exportDrawn(fmt) }
   const view = scope === 'view'
-  if (view && !flatView.value) { appAlert('「截图」导出需先切换到 2D 平面图。'); return }
-  exporting.value = true
+  if (view && !flatView.value) return exportGlobeShot(fmt)
+  exporting.value = true; exportFlat.value = true
   try {
     await ensureCovIndex(); if (!covCleared.value) redraw()
     await nextTick()
@@ -2983,6 +3080,28 @@ async function exportMap(fmt, scope) {
       const factor = fmt === 'png6' ? 6 : fmt === 'png4' ? 4 : 2
       const bytes = await renderFlatPNG(flat, { base: 2400, factor, view })
       await saveExport(bytes, `覆盖图_${tag}_${factor}x.png`, [{ name: 'PNG 图片', extensions: ['png'] }])
+    }
+  } catch (e) { console.error('导出失败', e); appAlert('导出失败：' + ((e && e.message) || e)) }
+  finally { exporting.value = false; exportFlat.value = false }
+}
+
+// 3D 球体截图：把渲染分辨率抬到倍率再取一帧（机位/图层/主题一概不动 → 所见即所得）。
+// 出的是 WebGL 画布本身，不含叠在它上面的 HTML 面板（聚焦卡片 / 图例）——与 2D 出图只画地图同口径。
+// PNG 按菜单倍率（2×/4×/6×）；PDF 是一页一张位图（球面没有几何可矢量化），固定 4×。
+async function exportGlobeShot(fmt) {
+  if (!scene) { appAlert('3D 视图未就绪'); return }
+  exporting.value = true
+  try {
+    const { renderGlobePNG, renderGlobePDF } = await import('../viz/globe3d/exportGlobe.js')
+    const tag = '3D截图'   // 文件名与 2D 那条同格式（覆盖图_全球图 / 覆盖图_截图）
+    if (fmt === 'pdf') {
+      const r = await renderGlobePDF(scene, { factor: 4 })
+      await saveExport(r.bytes, `覆盖图_${tag}.pdf`, [{ name: 'PDF 文档', extensions: ['pdf'] }])
+    } else {
+      const r = await renderGlobePNG(scene, { factor: fmt === 'png6' ? 6 : fmt === 'png2' ? 2 : 4 })
+      // 文件名写实际倍率：显存不够时 snapshot 会降档，此处如实反映（如 6 倍要不下来就写 4.7x）
+      const factor = Math.round(r.factor * 10) / 10
+      await saveExport(r.bytes, `覆盖图_${tag}_${factor}x.png`, [{ name: 'PNG 图片', extensions: ['png'] }])
     }
   } catch (e) { console.error('导出失败', e); appAlert('导出失败：' + ((e && e.message) || e)) }
   finally { exporting.value = false }
@@ -3739,8 +3858,13 @@ function polyOffset(pg, sign) {
   })
   polyRefresh()
 }
-// 顶点表（仿 SATSOFT Table Edit）：文本框逐行「经度, 纬度」，失焦提交，整体校验通过才写回
+// 顶点表（仿 SATSOFT Table Edit）：文本框逐行「经度, 纬度」，失焦提交，整体校验通过才写回。
+// ★ 编辑期间必须用草稿顶住：本组件模板里有秒级时间读数（timeParts ← clock.tMs），实时/播放时每秒
+//   重渲染一次，而 Vue 对 <textarea> 的 value 是无条件回写 —— 不顶住的话改到一半就被库里的旧顶点打回。
+//   校验没过时草稿【留着】（弹了框还把人家打的字清掉，等于白改一遍）。
+const vertsDraft = ref(null)     // { id, text }
 const polyVertsText = (pg) => pg.pts.map((p) => `${(+p[0]).toFixed(3)}, ${(+p[1]).toFixed(3)}`).join('\n')
+function polyVertsVal(pg) { const d = vertsDraft.value; return d && d.id === pg.id ? d.text : polyVertsText(pg) }
 function polyVertsEdit(pg, e) {
   const pts = []
   for (const raw of String(e.target.value).split(/\r?\n/)) {
@@ -3750,6 +3874,7 @@ function polyVertsEdit(pg, e) {
     pts.push([m[0], m[1]])
   }
   if (pts.length < 3) { appAlert('多边形至少需要 3 个顶点'); return }
+  vertsDraft.value = null                 // 写回成功才退出草稿：此后显示跟着库里的顶点走
   pg.pts = pts; polyRefresh()
 }
 // 复制顶点为「两列」：逐行 经度<Tab>纬度——粘到 Excel / 表格会自动落进经度、纬度两个单元格（普通逗号复制只会挤进一格）。
@@ -3960,7 +4085,7 @@ function stopSynthPlacement() {
   if (bs.placing.value || bs.adjusting.value || bs.deleting.value) { bs.placing.value = false; bs.adjusting.value = false; bs.deleting.value = false; syncEdit() }
 }
 // 活动栏切到「波束合成」→ 载入卫星树（懒加载）+ 打开草图；离开 → 关草图（放置/调整态一并退出，数据保留）
-watch(() => shellUi.side, async (side, prev) => {
+watch(() => shellUi.side, async (side) => {
   if (side === 'beams') {
     await grd.loadIndex(false)   // 卫星下拉需要卫星树；不自动改动覆盖显示
     bs.openFor(grd.active.value ? grd.active.value.split('|')[0] : '')
@@ -3972,13 +4097,16 @@ watch(() => shellUi.side, async (side, prev) => {
   // 环境场：进入即取数并铺图层；离开只收面板不撤图层（气象/地形是底图性质的背景，切走还得看得见）
   if (side === 'env') env.openPanel()
   else if (env.open.value) env.close()
-  // 对星覆盖分析：进入即懒加载卫星树并按当前状态重绘（3D 壳层 + 2D 对地投影）。
-  // 3D 壳层是场景内容，离开不撤（要清空走面板的「清除绘图」）；但 2D 平面图只有一块场，
-  // 两个视图都往那儿画 → 离开时必须把它交还给对地视图，否则切回去平面图还留着对星那批层。
-  // 聚焦特效随视图进/出（其余触发面见 satcov.selected / 指向设置的 watch，时间推进由 refreshPositions 兜住）
-  if (side === 'satcov') { await grd.loadIndex(false); satcov.recompute(); commitGeometry() }
-  else {
-    if (prev === 'satcov') { grd.recompute(); commitGeometry() }          // 交还 2D 平面图
+}, { immediate: true })
+// 对星覆盖分析：进入即懒加载卫星树并按当前状态重绘（3D 壳层 + 2D 对地投影）。
+// 3D 壳层与聚焦特效都是场景内容，离开不撤（要清空走面板的「清除绘图」）；但 2D 平面图只有一块场，
+// 两个视图都往那儿画 → 离开时必须把它交还给对地视图，否则切回去平面图还留着对星那批层。
+// ★ 盯 sideCtx 而非 shellUi.side：收起侧栏（side=''）不算离开——面板藏起来而已，2D 归属、指标表、
+//   壳层挑选器一律留着；只有真切到别的视图才走交还那一支。
+watch(() => sideCtx(), async (cur, prev) => {
+  if (cur === 'satcov') { await grd.loadIndex(false); satcov.recompute(); commitGeometry() }
+  else if (prev === 'satcov') {
+    grd.recompute(); commitGeometry()          // 交还 2D 平面图
     satcovTableOpen.value = false
     satcovPickOpen.value = false
   }
@@ -4060,6 +4188,8 @@ const bsGrid = useGridSelect({
   onPasteBlock: (a, k, t) => bs.tblPasteBlock(a, k, t),
   onPasteAppend: (t) => bs.tblPasteAppend(t),
   onClear: (cells) => cells.forEach(({ rowId, key }) => bs.tblUpdate(rowId, { [key]: (key === 'lon' || key === 'lat') ? '' : (key === 'rot' ? 0 : 1) })),
+  onInsertRows: (at, n) => { for (let k = 0; k < n; k++) bs.tblAddRow(at + k); return n },
+  onDeleteRows: (ids) => { const s = new Set(ids); const before = bs.beams.value.length; bs.beams.value = bs.beams.value.filter((b) => !s.has(b.id)); return before - bs.beams.value.length },
   pushUndo: () => bs.pushUndo(), dropUndo: () => bs.dropUndo(), refresh: () => { redrawSats(); syncEdit() },
   undo: () => bs.undo(), redo: () => bs.redo()
 })
@@ -4084,6 +4214,12 @@ async function bsTblPaste() {
 }
 function bsTblClear() { if (!bs.beams.value.length) return; bs.pushUndo(); bs.beams.value = []; redrawSats(); syncEdit() }
 function bsTblDelRow(id) { bs.pushUndo(); bs.beams.value = bs.beams.value.filter((b) => b.id !== id); redrawSats(); syncEdit() }
+// 表尾「＋ 增加一行」：恒追加到末尾
+function bsTblAddRowEnd() {
+  const at = bs.beams.value.length
+  bs.pushUndo(); bs.tblAddRow(at); redrawSats(); syncEdit()
+  nextTick(() => { bsGrid.sel.value = { ar: at, ac: 0, ri: at, ci: 0 }; bsGrid.focusGrid() })
+}
 
 // ---- 频率计划：波束信息列表（可多列复制到 Excel）----
 // 每行 = 一个波束：整星连续编号 / 频率复用号(F#，未配色为空) / 经纬度 / 3dB 宽度 / 旋转。
@@ -4192,7 +4328,7 @@ function toggleSatLabel(node) {
   const next = !satVisible(node); node.labelShow = next; node.iconShow = next
   redrawSats()
   if (grdOpen.value) grd.recompute()
-  if (shellUi.side === 'satcov') { satcov.scheduleRecompute(); commitGeometry() }
+  satcov.scheduleRecompute(); commitGeometry()   // 无条件：壳层没画过时 scheduleRecompute 内部 _painted 闸自会早退
 }
 // 是否有显示中且位置随时间变化的卫星（星座关联星 / 轨道根数模拟星）：其仰角线/卫星名需随时间刷新位置
 const hasLinkedElev = () => grdSats.value.some((s) => (s.noradId || s.elements) && (s.elevShow || satVisible(s)))
@@ -4223,6 +4359,23 @@ const satModalPos = computed(() => {
   }
   return { lon: m.lon, lat: m.lat, altKm: m.altKm }
 })
+// 位置三格（经度/纬度/轨道高度）就地编辑：正在输入的那一格用本地草稿顶住。
+// 早先是 :value="satModalPos.x" + @input 直接 Number(...) 写回，两处会跳变：
+//   ① 只打一个「-」（西经 / 南纬）时 <input type=number> 的 value 是【空串】（负号还在框里，但取不到），
+//      Number('') = 0 写回状态 → 本组件重渲染 → Vue 对 value 无条件回写，把框改成「0」，负号没了；
+//      接着打 45 就成了 +45 —— 西经打成东经，还不报错（实测：输 −45 得 +45）。
+//   ② 本组件模板里有秒级时间读数（timeParts ← clock.tMs），实时/播放时【每秒重渲染一次】，
+//      任何与状态不一字不差的中间输入（清空、前导 0）都会在下一秒被改写。
+// 草稿：框里显示用户打的原文，半截/非法的不写状态，离开焦点即回落到已提交值。
+const satPosEdit = ref(null)          // { k, text }：只存正在编辑的那一格
+function satPosVal(k) { const d = satPosEdit.value; return d && d.k === k ? d.text : satModalPos.value[k] }
+function satPosInput(k, e) {
+  satPosEdit.value = { k, text: e.target.value }
+  const v = Number(e.target.value)
+  if (e.target.value !== '' && Number.isFinite(v) && satModal.value) satModal.value[k] = v
+}
+function satPosDone() { satPosEdit.value = null }
+watch(satModal, () => { satPosEdit.value = null })   // 换一颗星/开关弹窗：草稿作废，免得串到下一格
 
 const defaultElements = () => ({ altKm: 500, ecc: 0, incl: 53, raan: 0, argp: 0, ma: 0 })
 function defaultSatDraft() {
@@ -4267,8 +4420,9 @@ function saveSatModal() {
   }
   closeSatModal(); redrawSats()
   // 改星位＝天线基底变了：对星覆盖的壳层投影与聚焦特效都得跟着重算（对地那条由 updateSatellite 内的
-  // reprojectSat 兜住；壳层是另一条通道，不重算就停在旧星位上）
-  if (shellUi.side === 'satcov') { satcov.scheduleRecompute(); commitGeometry() }
+  // reprojectSat 兜住；壳层是另一条通道，不重算就停在旧星位上）。同 toggleSatLabel：不按视图门控，
+  // 没画过由 _painted 闸早退
+  satcov.scheduleRecompute(); commitGeometry()
 }
 function removeSat(node) { grd.removeSatellite(node.folder); redrawSats() }
 
@@ -4681,10 +4835,19 @@ function addStation() {
 function setStationName(id, v) { const s = stations.value.find((x) => x.id === id); if (s) { s.name = v; syncMarkers() } }
 function removeStation(id) { stations.value = stations.value.filter((s) => s.id !== id); syncMarkers() }
 
+// 自动名：同类顺序编号，且不与现有名撞车 —— 航迹名就是导出 Excel 的工作表名，同名会被 Excel 改写成「…(2)」
+function trajAutoName(kind) {
+  const base = kind === 'flight' ? byLang('飞行', 'Flight') : byLang('航行', 'Maritime')
+  const used = new Set(trajectories.value.map((t) => String(t.name || '')))
+  let i = trajectories.value.length + 1
+  while (used.has(base + i)) i++
+  return base + i
+}
 function newTraj(kind) {
   mkEditStop(); polyEditStop(); polyMoveStop(); if (polyDrawId.value) polyCancel(); stopSynthPlacement()   // 与 Polygon 各态 / 标记调整 / 波束合成互斥（同 polyStartDraw）
-  const t = { id: newId(), name: (kind === 'flight' ? '飞行' : '航行') + trajectories.value.length, kind, pts: [] }
+  const t = { id: newId(), name: trajAutoName(kind), kind, pts: [] }
   trajectories.value.push(t); activeTraj.value = t.id
+  return t
 }
 function curTraj() { return trajectories.value.find((t) => t.id === activeTraj.value) }
 function trajUndo() { const t = curTraj(); if (t && t.pts.length) { t.pts.pop(); syncMarkers() } }   // 撤销最后一个航点（与 polyUndo 一致）
@@ -4712,12 +4875,16 @@ const mkStCols = [{ key: 'name', label: '名称' }, { key: 'lon', label: '经度
 const mkWpCols = [{ key: 'lon', label: '经度', num: true }, { key: 'lat', label: '纬度', num: true }]
 const mkCellText = (r, c) => { const v = r[c.key]; return v == null ? '' : String(v) }
 // 点标记网格（可编辑：单格改 / 区域粘贴 / 清除，均落到 points，syncMarkers 实时推图+落盘）
+// 逐层的「删若干行」：按 id 集合过滤，返回真正删掉的条数（撤销快照由内核统一压）
+const mkDelIds = (getList, setList, ids) => { const s = new Set(ids); const before = getList().length; setList(getList().filter((r) => !s.has(r.id))); return before - getList().length }
 const mkPtGrid = useGridSelect({
   rows: () => points.value, cols: () => mkPtCols, cellText: mkCellText,
   onEdit: (id, key, val) => mkTable.ptLayer.update(id, { [key]: val }),
   onPasteBlock: (a, k, t) => mkTable.ptLayer.pasteBlock(a, k, t),
   onPasteAppend: (t) => mkTable.ptLayer.pasteAppend(t),
   onClear: (cells) => cells.forEach(({ rowId, key }) => mkTable.ptLayer.update(rowId, { [key]: '' })),
+  onInsertRows: (at, n) => { for (let k = 0; k < n; k++) mkTable.ptLayer.addRow(at + k); return n },
+  onDeleteRows: (ids) => mkDelIds(() => points.value, (a) => { points.value = a }, ids),
   pushUndo: () => mkTable.pushUndo(), dropUndo: () => mkTable.dropUndo(), refresh: () => syncMarkers(),
   undo: () => mkUndo(), redo: () => mkRedo()
 })
@@ -4727,6 +4894,8 @@ const mkStGrid = useGridSelect({
   onPasteBlock: (a, k, t) => mkTable.stLayer.pasteBlock(a, k, t),
   onPasteAppend: (t) => mkTable.stLayer.pasteAppend(t),
   onClear: (cells) => cells.forEach(({ rowId, key }) => mkTable.stLayer.update(rowId, { [key]: '' })),
+  onInsertRows: (at, n) => { for (let k = 0; k < n; k++) mkTable.stLayer.addRow(at + k); return n },
+  onDeleteRows: (ids) => mkDelIds(() => stations.value, (a) => { stations.value = a }, ids),
   pushUndo: () => mkTable.pushUndo(), dropUndo: () => mkTable.dropUndo(), refresh: () => syncMarkers(),
   undo: () => mkUndo(), redo: () => mkRedo()
 })
@@ -4736,6 +4905,8 @@ const mkWpGrid = useGridSelect({
   onPasteBlock: (a, k, t) => mkTable.wpPasteBlock(mkTrajId.value, a, k, t),
   onPasteAppend: (t) => mkTable.wpPasteAppend(mkTrajId.value, t),
   onClear: (cells) => cells.forEach(({ rowId, key }) => mkTable.wpUpdate(mkTrajId.value, rowId, { [key]: '' })),
+  onInsertRows: (at, n) => { if (!mkCurTraj()) return 0; for (let k = 0; k < n; k++) mkTable.wpAddRow(mkTrajId.value, at + k); return n },
+  onDeleteRows: (ids) => { const t = mkCurTraj(); if (!t) return 0; const s = new Set(ids); const before = t.pts.length; t.pts = t.pts.filter((p) => !s.has(p.id)); return before - t.pts.length },
   pushUndo: () => mkTable.pushUndo(), dropUndo: () => mkTable.dropUndo(), refresh: () => syncMarkers(),
   undo: () => mkUndo(), redo: () => mkRedo()
 })
@@ -4747,6 +4918,8 @@ const mkPanes = computed(() => [
   { tab: 'traj', grid: mkWpGrid, cols: mkWpCols, rows: mkCurTraj() ? mkCurTraj().pts : [] }
 ])
 const mkCount = computed(() => mkTab.value === 'stations' ? stations.value.length : mkTab.value === 'traj' ? (mkCurTraj() ? mkCurTraj().pts.length : 0) : points.value.length)
+// 「导出 Excel」可用性：航迹分页导的是全部航迹（不只当前这条），故按全部航点数算
+const mkXlsxRows = computed(() => mkTab.value === 'traj' ? trajectories.value.reduce((n, t) => n + ((t.pts || []).length), 0) : mkCount.value)
 function mkWinInit() {
   if (mkWin.value.init) return
   const { w: vw, h: vh } = g3Size()
@@ -4806,10 +4979,108 @@ function mkDelRow(id) {
   else mkTable.ptLayer.remove(id)
   syncMarkers()
 }
-function mkNewTraj(kind) { mkTable.pushUndo(); newTraj(kind); mkTrajId.value = activeTraj.value; syncMarkers() }
+// 表尾「＋ 增加一行」：恒追加到末尾（行中插入走右键菜单 / 工具条的「增加」）
+function mkAddRowEnd() {
+  const g = mkCurGrid()
+  const at = mkCount.value
+  mkTable.pushUndo()
+  if (mkTab.value === 'traj') { if (!mkCurTraj()) { mkTable.dropUndo(); appAlert('请先选择或新建一条航迹'); return } mkTable.wpAddRow(mkTrajId.value, at) }
+  else (mkTab.value === 'stations' ? mkTable.stLayer : mkTable.ptLayer).addRow(at)
+  syncMarkers()
+  nextTick(() => { g.sel.value = { ar: at, ac: 0, ri: at, ci: 0 }; g.focusGrid() })
+}
+// ===== 标记批量表格 ⇄ Excel（点标记 / 地球站：当前分页一张表；航迹：一条航迹一张工作表，见下）=====
+const mkPane = () => mkPanes.value.find((p) => p.tab === mkTab.value) || mkPanes.value[0]
+const mkPaneName = () => (mkTab.value === 'stations' ? '地球站' : mkTab.value === 'traj' ? '航迹' : '点标记')
+async function mkExportXlsx() {
+  if (mkTab.value === 'traj') return mkExportTrajXlsx()
+  const p = mkPane()
+  if (!p || !p.rows.length) { appAlert('当前分页没有数据'); return }
+  const sheets = [sheetModel({ name: mkPaneName(), cols: p.cols, rows: p.rows, value: (r, c) => r[c.key] })]
+  const r = await exportSheets({ defaultName: safeFileName(mkPaneName(), '标记') + '.xlsx', title: '导出标记表格', sheets })
+  if (r && r.error) appAlert('导出失败：' + r.error)
+}
+async function mkImportXlsx() {
+  if (mkTab.value === 'traj') return mkImportTrajXlsx()
+  const p = mkPane(); if (!p) return
+  const res = await importWorkbook({ title: '导入到' + mkPaneName() })
+  if (!res || res.canceled) return
+  if (!res.ok) { appAlert('导入失败：' + (res.error || '无法读取该文件')); return }
+  const sheet = pickSheet(res.sheets, p.cols)
+  if (!sheet) { appAlert('这份工作簿里没有数据'); return }
+  const { records } = sheetToRecords(sheet, p.cols)
+  const layer = mkTab.value === 'stations' ? mkTable.stLayer : mkTable.ptLayer
+  mkTable.pushUndo()
+  let n = 0
+  if (records) {
+    // 有表头：逐行新建再按列写入（走与单格编辑同一条 setter，坐标/文本的归一口径不另开一份）
+    for (const rec of records) { const row = layer.addRow(mkCount.value); layer.update(row.id, rec); n++ }
+  } else {
+    n = layer.pasteAppend(sheetToTsv(sheet))
+  }
+  if (!n) { mkTable.dropUndo(); appAlert('没有读到数据（表头需含「经度 / 纬度」，或把经纬度放在最后两列）'); return }
+  syncMarkers()
+}
+
+// ===== 航迹 ⇄ Excel（按工作表批量：一条航迹一张表，表名即航迹名；解析口径见 useMarkerTable.trajsFromSheets）=====
+async function mkExportTrajXlsx() {
+  const list = trajectories.value.filter((t) => (t.pts || []).length)
+  if (!list.length) { appAlert('没有可导出的航迹（航迹都还没有航点）'); return }
+  const sheets = list.map((t) => sheetModel({
+    name: t.name || byLang('航迹', 'Track'), cols: mkWpCols, rows: t.pts, value: (r, c) => r[c.key],
+    note: t.kind === 'flight' ? '飞行' : '航行'   // 航迹类型：主进程把 note 单开成「说明」表，导回来照认
+  }))
+  const r = await exportSheets({ defaultName: safeFileName('航迹', '航迹') + '.xlsx', title: '导出航迹', sheets })
+  if (r && r.error) appAlert('导出失败：' + r.error)
+}
+async function mkImportTrajXlsx() {
+  const res = await importWorkbook({ title: '导入航迹（一张工作表一条）' })
+  if (!res || res.canceled) return
+  if (!res.ok) { appAlert('导入失败：' + (res.error || '无法读取该文件')); return }
+  const made = trajsFromSheets(res.sheets, {
+    newId, taken: trajectories.value.map((t) => String(t.name || '')), fallbackName: byLang('航迹', 'Track')
+  })
+  if (!made.length) { appAlert('没有读到航点（表头需含「经度 / 纬度」，或把经纬度放在最后两列）'); return }
+  mkTable.pushUndo()
+  const add = made.map((t) => ({ id: newId(), name: t.name, kind: t.kind, pts: t.pts }))
+  trajectories.value = [...trajectories.value, ...add]
+  mkTrajId.value = add[0].id
+  syncMarkers()
+}
+// ---- 航迹分页左栏（主从：左边一条条航迹，右边该航迹的航点网格）：新建 / 选中 / 改名 / 换类型 / 删除 ----
+const mkRenameId = ref('')     // 正在改名的航迹 id（''=没有在改名）
+const mkRenameVal = ref('')
+function mkNewTraj(kind) {
+  mkTable.pushUndo()
+  const t = newTraj(kind); mkTrajId.value = t.id; syncMarkers()
+  mkRenameStart(t)             // 新建即进改名态，名字当场敲掉（不满意自动名时省一次双击）
+}
+function mkRenameStart(t) {
+  mkRenameId.value = t.id; mkRenameVal.value = t.name || ''
+  nextTick(() => { const el = document.querySelector('.mtj-ren'); if (el) { el.focus(); el.select() } })
+}
+function mkRenameCancel() { mkRenameId.value = '' }
+function mkRenameCommit() {
+  const id = mkRenameId.value; if (!id) return   // esc 取消后紧跟的 blur 会再进来一次，靠这句挡掉
+  mkRenameId.value = ''
+  const t = trajectories.value.find((x) => x.id === id); if (!t) return
+  const v = mkRenameVal.value.trim()
+  if (!v || v === t.name) return
+  mkTable.pushUndo(); t.name = v; syncMarkers()
+}
+function mkToggleKind(t) { mkTable.pushUndo(); t.kind = t.kind === 'flight' ? 'sea' : 'flight'; syncMarkers() }
+// 删航迹：选中落到相邻一条（删完不至于右边空着）；误删走工具条的撤销
+function mkDelTraj(t) {
+  const i = trajectories.value.findIndex((x) => x.id === t.id); if (i < 0) return
+  if (mkRenameId.value === t.id) mkRenameId.value = ''
+  mkTable.pushUndo()
+  removeTraj(t.id)             // 内部已 syncMarkers，并清掉 activeTraj / mkEditId / mkTrajId 的悬挂引用
+  const list = trajectories.value
+  mkTrajId.value = list.length ? list[Math.min(i, list.length - 1)].id : ''
+}
 // 浮窗拖拽/缩放（复用性能表的会话与坐标系换算 g3Size / perfDragSession）
 function mkDragMove(e) {
-  if (e.button !== 0 || (e.target.closest && e.target.closest('.csx, .ptb, .mk-tab, .mk-trajchip, input, select, label'))) return
+  if (e.button !== 0 || (e.target.closest && e.target.closest('.csx, .ptb, .mk-tab, input, select, label'))) return
   e.preventDefault()
   const sx = e.clientX, sy = e.clientY, o = { ...mkWin.value }
   perfDragSession((ev) => {
@@ -5017,11 +5288,12 @@ async function restoreSettings() {
     // 对星壳层状态在 grd 树恢复【之后】才能还原（restoreState 里要 ensureAntLoaded 那些天线）
     if (s.satcov) await satcov.restoreState(s.satcov)
     // 对星覆盖分析的页面级 UI：壳层挑选器的数据源、性能指标表浮窗。
-    // 表只在【上次就停在这个视图】时才跟着回来——切走视图本就会关表（见 shellUi.side 的 watch），
+    // 表只在【上次就停在这个视图】时才跟着回来——切走视图本就会关表（见 sideCtx 的 watch），
     // 在别的视图下把它弹出来既碍事、又要为一张看不见的表跑一遍取值。
+    // 判据同样走 sideCtx：上次是「停在对星视图但把侧栏收起来了」的话，表照样跟着回来。
     if (s.satcovUi) {
       if (s.satcovUi.pickSrc === 'live' || s.satcovUi.pickSrc === 'all') satcovPickSrc.value = s.satcovUi.pickSrc
-      if (s.satcovUi.table && shellUi.side === 'satcov') {
+      if (s.satcovUi.table && sideCtx() === 'satcov') {
         satcovHost.value = g3Size()
         satcovTableOpen.value = true
         await nextTick(); satcovRefreshTable()
@@ -5700,13 +5972,14 @@ onBeforeUnmount(() => {
               <span class="opb" :class="{ on: polyEditId === pg.id }" title="在平面图上直接拖动顶点调整位置" @click="polyEditToggle(pg)">{{ polyEditId === pg.id ? '完成调整' : '调整顶点' }}</span>
               <span class="opb" :class="{ on: polyMoveId === pg.id }" title="在平面图上按住多边形内部整体平移" @click="polyMoveToggle(pg)">{{ polyMoveId === pg.id ? '完成拖动' : '整体拖动' }}</span>
               <span class="opb" :class="{ on: polyDrawId === pg.id }" title="继续在地图上右键加顶点" @click="polyDrawId === pg.id ? null : polyContinue(pg)">{{ polyDrawId === pg.id ? '绘制中…' : '继续绘制' }}</span>
-              <span class="opb" :class="{ on: polyVertsOpen === pg.id }" title="按坐标查看 / 编辑顶点" @click="polyVertsOpen = polyVertsOpen === pg.id ? '' : pg.id">顶点表格</span>
+              <span class="opb" :class="{ on: polyVertsOpen === pg.id }" title="按坐标查看 / 编辑顶点" @click="vertsDraft = null; polyVertsOpen = polyVertsOpen === pg.id ? '' : pg.id">顶点表格</span>
               <span class="opb" title="复制出一个相同的多边形（整体略作偏移以便分辨），并直接进入整体拖动模式摆放" @click="polyCopy(pg)">复制</span>
               <span class="opb" title="按下方「扩/缩幅度」外扩一圈，生成新多边形（原多边形保留）" @click="polyOffset(pg, 1)">扩大</span>
               <span class="opb" title="按下方「扩/缩幅度」内收一圈，生成新多边形（原多边形保留）" @click="polyOffset(pg, -1)">缩小</span>
             </div>
             <div v-if="polyVertsOpen === pg.id" class="plgvt">
-              <textarea class="plgta" :value="polyVertsText(pg)" spellcheck="false" placeholder="每行一个顶点：经度, 纬度" @copy="onVertsCopy" @change="polyVertsEdit(pg, $event)"></textarea>
+              <textarea class="plgta" :value="polyVertsVal(pg)" spellcheck="false" placeholder="每行一个顶点：经度, 纬度" @copy="onVertsCopy"
+                        @input="vertsDraft = { id: pg.id, text: $event.target.value }" @change="polyVertsEdit(pg, $event)"></textarea>
               <span class="plgcp" title="复制全部顶点为两列（经度 ⇥ 纬度）：粘贴至 Excel / 表格自动分为经度、纬度两列" @click="copyPolyVerts(pg)"><Icon name="copy" :size="11" /> 复制两列</span>
             </div>
           </div>
@@ -5874,7 +6147,8 @@ onBeforeUnmount(() => {
         <template v-if="bs.hasGroup.value">
         <div class="sec">
           <div class="sect"><span>{{ bs.mode.value === 'pam' ? '相控阵' : bs.mode.value === 'gauss' ? '多馈源反射面' : '赋形反射面' }}</span></div>
-          <div class="srow"><label>组名</label><input class="ci wide" :value="bs.curName.value" @change="e => bs.renameGroup(bs.activeGroupId.value, e.target.value)" placeholder="天线名（同名再生成即更新；同星不可重名）" /></div>
+          <div class="srow"><label>组名</label><input class="ci wide" :value="bsNameVal()" @input="bsNameEdit = $event.target.value" @change="bsNameCommit" @blur="bsNameCommit"
+                 placeholder="天线名（同名再生成即更新；同星不可重名）" /></div>
         </div>
 
         <!-- 波束设置（波束类型选择器，上提）：每个设置 = 一种波束类型（= 一套独立反射面）；下面「天线参数」编辑当前设置的反射面 -->
@@ -6785,9 +7059,9 @@ onBeforeUnmount(() => {
             <span class="pmode" :class="{ on: satModal.posMode === 'orbit' }" @click="satModal.posMode = 'orbit'">轨道根数</span>
           </div>
           <template v-if="satModal.posMode !== 'orbit' || satModal.noradId">
-            <div class="srow"><label>经度</label><input class="ci" type="number" step="0.1" :value="satModalPos.lon" @input="satModal.lon = Number($event.target.value)" :disabled="!!satModal.noradId" :title="satModal.noradId ? '已关联星座卫星，位置随星历实时解算，不可手动输入' : ''" /><span class="u">°E</span></div>
-            <div class="srow"><label>纬度</label><input class="ci" type="number" step="0.1" :value="satModalPos.lat" @input="satModal.lat = Number($event.target.value)" :disabled="!!satModal.noradId" :title="satModal.noradId ? '已关联星座卫星，位置随星历实时解算，不可手动输入' : ''" /><span class="u">°N</span></div>
-            <div class="srow"><label>轨道高度</label><input class="ci" type="number" step="100" :value="satModalPos.altKm" @input="satModal.altKm = Number($event.target.value)" :disabled="!!satModal.noradId" :title="satModal.noradId ? '已关联星座卫星，位置随星历实时解算，不可手动输入' : ''" /><span class="u">km</span><span v-if="!satModal.noradId" class="geobtn" title="设为标准 GEO 轨道高度 35786km（NASA 标称值）" @click="applyGeoAlt">一键GEO</span></div>
+            <div class="srow"><label>经度</label><input class="ci" type="number" step="0.1" :value="satPosVal('lon')" @input="satPosInput('lon', $event)" @change="satPosDone" @blur="satPosDone" :disabled="!!satModal.noradId" :title="satModal.noradId ? '已关联星座卫星，位置随星历实时解算，不可手动输入' : ''" /><span class="u">°E</span></div>
+            <div class="srow"><label>纬度</label><input class="ci" type="number" step="0.1" :value="satPosVal('lat')" @input="satPosInput('lat', $event)" @change="satPosDone" @blur="satPosDone" :disabled="!!satModal.noradId" :title="satModal.noradId ? '已关联星座卫星，位置随星历实时解算，不可手动输入' : ''" /><span class="u">°N</span></div>
+            <div class="srow"><label>轨道高度</label><input class="ci" type="number" step="100" :value="satPosVal('altKm')" @input="satPosInput('altKm', $event)" @change="satPosDone" @blur="satPosDone" :disabled="!!satModal.noradId" :title="satModal.noradId ? '已关联星座卫星，位置随星历实时解算，不可手动输入' : ''" /><span class="u">km</span><span v-if="!satModal.noradId" class="geobtn" title="设为标准 GEO 轨道高度 35786km（NASA 标称值）" @click="applyGeoAlt">一键GEO</span></div>
           </template>
           <template v-else>
             <div class="srow"><label>轨道高度</label><input class="ci" type="number" step="50" v-model.number="satModal.elements.altKm" /><span class="u">km</span></div>
@@ -7035,7 +7309,7 @@ onBeforeUnmount(() => {
       :time-label="timeText" :sat-search="satcovSearch" :host-size="satcovHost"
       :tz-utc="tzMode === 'utc'" :now-ms="satcovNowMs"
       @close-table="satcovTableOpen = false"
-      @recompute-table="satcovRefreshTable" @add-in-beam="satcovAddInBeam"
+      @recompute-table="satcovRefreshTable" @add-in-beam="satcovAddInBeam" @seek-clock="satcovSeekClock"
       @scan-windows="satcovScanWindows" @focus-target="satcovFocusTarget" />
 
     <!-- 「从星座取」壳层挑选器（全量在轨目录 → 归并成层 → 勾哪层加哪层） -->
@@ -7064,6 +7338,8 @@ onBeforeUnmount(() => {
           <span class="ptb" title="将地图上的点标记 / 地球站导入为城市" @click="perfImportMarkers"><Icon name="import" :size="12" /> 从标记导入</span>
           <span class="ptb" title="将地图上的航迹航点导入为城市（每个航点一行，城市名取「航迹名#序号」）" @click="perfImportTrajs"><Icon name="import" :size="12" /> 导入航迹</span>
           <span class="ptb" title="从剪贴板粘贴表格（末两列=经度、纬度，可含 国家/城市/代号）批量添加" @click="perfPasteBtn"><Icon name="clipboard" :size="12" /> 粘贴</span>
+          <span class="ptb" title="从 Excel 追加城市（按表头匹配列；无表头时末两列作经纬度）" @click="perfImportCities(false)"><Icon name="import" :size="12" /> 导入 Excel</span>
+          <span class="ptb" :class="{ dis: !perf.stations.value.length }" title="把城市列表导出为 Excel" @click="perfExportCities"><Icon name="download" :size="12" /> 导出 Excel</span>
           <span class="ptb" title="清空城市列表" @click="perfClearStations">清空</span>
           <span class="pin-sep"></span>
           <select class="pin-gsel" v-model="perfGroupSel" @change="perfLoadGroupSel" title="选择一个已存的城市组即载入（替换当前城市列表）进行查询">
@@ -7073,40 +7349,14 @@ onBeforeUnmount(() => {
           <span class="ptb" title="城市组：将当前城市列表存为新组，或重命名 / 覆盖 / 删除已有组" @click="perfOpenGroups"><Icon name="layers" :size="12" /> 城市组…</span>
           <span class="perf-cnt">{{ perf.stations.value.length }} 城市</span>
         </div>
-        <!-- Excel 式网格：拖拽框选 / Shift 扩选 / 方向键导航 / Ctrl+C 复制 / 双击·键入编辑 / Ctrl+V 区域粘贴 / Del 清除 -->
-        <div class="pin-body" :ref="el => perfInGrid.bodyEl.value = el" tabindex="0" @keydown="perfInGrid.gridKey" @click="perfInGrid.focusGrid">
-          <table class="perf-tbl grid">
-            <thead>
-              <tr>
-                <th v-for="c in perfInCols" :key="c.key" :class="{ n: c.num }">{{ c.label }}<i v-if="c.unit" class="cu">({{ c.unit }})</i></th>
-                <th class="th-act"></th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="(s, ri) in perf.stations.value" :key="s.id">
-                <td v-for="(c, ci) in perfInCols" :key="c.key"
-                    :class="{ n: c.num, ed: true, sel: perfInGrid.inSel(ri, ci), active: perfInGrid.isActive(ri, ci), editing: perfInGrid.isEdit(ri, ci) }"
-                    @mousedown="perfInGrid.cellDown($event, ri, ci)" @mouseenter="perfInGrid.cellEnter(ri, ci)" @dblclick="perfInGrid.tryEdit(ri, ci, null)">
-                  <!-- 活动格常驻捕获输入框：始终存在并持有键盘/输入法焦点。导航态透明覆盖在 ghost 值上、pointer-events:none 让鼠标框选穿透；
-                       键入/输入法组字即翻成不透明可见编辑框——中文输入法从第一个拼音字母起就落在真实 <input>，不吞首字母。
-                       ghost span 显示当前值并撑住列宽；值由 useGridSelect 命令式写入（不绑 :value——实时时钟每秒重渲染会把绑定值刷回，吞掉正在键入内容）。 -->
-                  <template v-if="perfInGrid.isActive(ri, ci) && perfInGrid.colEditable(c)">
-                    <span class="pcell-ghost">{{ s[c.key] == null ? '' : s[c.key] }}</span>
-                    <input :ref="el => perfInGrid.editEl.value = el" class="pcell" :class="{ n: c.num, editing: perfInGrid.isEdit(ri, ci) }" tabindex="-1"
-                           @input="perfInGrid.onActiveInput" @compositionstart="perfInGrid.onActiveCompStart"
-                           @blur="perfInGrid.onActiveBlur" @paste="perfInGrid.onActivePaste($event, s, c.key)"
-                           @copy="perfInGrid.onActiveClip" @cut="perfInGrid.onActiveClip" />
-                  </template>
-                  <template v-else>{{ s[c.key] == null ? '' : s[c.key] }}</template>
-                </td>
-                <td class="td-act"><span class="del" title="删除该城市" @click="perfDelStation(s.id)"><Icon name="x" :size="11" /></span></td>
-              </tr>
-              <tr v-if="!perf.stations.value.length">
-                <td class="pin-empty" :colspan="perfInCols.length + 1">暂无城市。</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
+        <!-- Excel 式网格（见 src/components/ExcelGrid.vue）：序号列选行 / 拖拽框选 / 键盘导航 / 复制粘贴 / 填充柄 / 右键插入删除行 -->
+        <ExcelGrid class="pin-body eg-host" :grid="perfInGrid" :cols="perfInCols" :text="(r, c) => (r[c.key] == null ? '' : String(r[c.key]))"
+                   :actions-width="26" empty-text="暂无城市。" add-label="增加一行"
+                   @add="perfAddRowEnd">
+          <template #actions="{ row }">
+            <span class="del" title="删除该城市" @click="perfDelStation(row.id)"><Icon name="x" :size="11" /></span>
+          </template>
+        </ExcelGrid>
       </section>
 
       <!-- 中缝：上下拖拽调整城市输入区 / 结果区的高度比例 -->
@@ -7117,34 +7367,23 @@ onBeforeUnmount(() => {
         <div class="pr-h">
           <span class="pr-t">性能结果<em>只读</em></span>
           <label class="pr-cov"><input type="checkbox" v-model="perfOpts.filterOn" title="仅列方向性≥阈值（覆盖该城市）的波束" /> 仅覆盖波束</label>
-          <label class="pr-cov" :class="{ dis: !perfOpts.filterOn }">阈值<input class="ci" type="number" step="0.5" v-model.number="perfOpts.minDir" :disabled="!perfOpts.filterOn" /><span class="u">dB</span></label>
+          <!-- 选项里的数字框一律 .lazy（绑 change 而非 input）：optsByAnt 上挂着深 watch → 每敲一个字符就
+               整表重算一次（逐站×逐波束重采方向图，指向误差那几项更是每格 72 次），而且中途拿的是半截数字
+               （想输 63.6，途中先按 6 / 63 / 636 各算一遍）。失焦或回车才生效；▲▼ 微调与上下方向键仍即时
+               生效——它们按规范 input 与 change 一起发（已实测）。 -->
+          <label class="pr-cov" :class="{ dis: !perfOpts.filterOn }">阈值<input class="ci" type="number" step="0.5" v-model.lazy.number="perfOpts.minDir" :disabled="!perfOpts.filterOn" /><span class="u">dB</span></label>
           <input class="perf-q" v-model="perf.query.value" placeholder="查询：国家 / 城市 / 代号" />
           <span class="ptb" title="复制整张结果表（含表头，TSV，可粘进 Excel）" @click="perfCopyResult"><Icon name="copy" :size="11" /> 复制全表</span>
+          <span class="ptb" title="导出为 Excel（性能结果 + 城市输入两张工作表；数字列存真数字）" @click="perfExportResult"><Icon name="download" :size="11" /> 导出 Excel</span>
           <span class="ptb" :class="{ on: perfOptsOpen }" title="显示列 / 计算口径 / 指向误差" @click="perfOptsOpen = !perfOptsOpen"><Icon name="settings" :size="11" /> 选项…</span>
           <span class="perf-cnt">{{ perf.filteredRows.value.length }} 行</span>
         </div>
-        <!-- 只读 Excel 网格：拖拽框选 / Shift 扩选 / 方向键导航 / Ctrl+A 全选 / Ctrl+C 复制选区（不可编辑） -->
-        <div class="pr-body" :ref="el => perfResGrid.bodyEl.value = el" tabindex="0" @keydown="perfResGrid.gridKey" @click="perfResGrid.focusGrid">
-          <table class="perf-tbl grid ro">
-            <thead>
-              <tr>
-                <th v-for="c in perfCols" :key="c.key" :style="{ width: c.w + 'px' }" :class="{ n: c.num }" :title="c.na ? '本数据仅含功率（无相位），AR 暂不可算' : (c.tip || '')">{{ c.label }}<i v-if="perfColUnit(c)" class="cu">({{ perfColUnit(c) }})</i><em v-if="c.na">*</em></th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="(r, ri) in perf.filteredRows.value" :key="r.id" :class="{ out: !r.inPattern }">
-                <td v-for="(c, ci) in perfCols" :key="c.key"
-                    :class="{ n: c.num, sel: perfResGrid.inSel(ri, ci), active: perfResGrid.isActive(ri, ci) }"
-                    @mousedown="perfResGrid.cellDown($event, ri, ci)" @mouseenter="perfResGrid.cellEnter(ri, ci)">
-                  <template v-if="c.num">{{ c.fix != null ? perfFix(r[c.key], c.fix) : (r[c.key] == null ? '—' : r[c.key]) }}</template>
-                  <template v-else>{{ r[c.key] || '' }}</template>
-                </td>
-              </tr>
-              <tr v-if="!perf.stations.value.length"><td :colspan="perfCols.length" class="perf-empty">暂无城市。</td></tr>
-              <tr v-else-if="!perf.filteredRows.value.length"><td :colspan="perfCols.length" class="perf-empty">没有波束覆盖这些城市。</td></tr>
-            </tbody>
-          </table>
-        </div>
+        <!-- 只读 Excel 网格：框选 / 键盘导航 / Ctrl+A 全选 / Ctrl+C 复制选区 / 点列头排序（不可编辑） -->
+        <ExcelGrid class="pr-body eg-host" :grid="perfResGrid" :cols="perfCols" :text="perfResText"
+                   :serial="!perfCols.some((c) => c.key === 'no')" :head-unit="perfColUnit"
+                   :head-tip="(c) => (c.na ? '本数据仅含功率（无相位），AR 暂不可算' : (c.tip || c.label))"
+                   :row-class="(r) => (r.inPattern ? null : 'out')"
+                   :empty-text="perf.stations.value.length ? '没有波束覆盖这些城市。' : '暂无城市。'" />
       </section>
 
       <!-- 8 向缩放手柄（窗口 overflow:hidden，故均贴边在框内） -->
@@ -7170,55 +7409,56 @@ onBeforeUnmount(() => {
         <span class="csx" @click="closeMkTable"><Icon name="x" :size="12" /></span>
       </div>
 
-      <!-- 工具栏：撤销/重做/增加/粘贴/清空；航迹分页额外显示航迹选择条 + 新建 -->
+      <!-- 工具栏：撤销/重做/增加/粘贴/导入导出/清空。恒作用于右侧网格（航迹分页即当前那条航迹的航点），航迹本身的增删改在左栏 -->
       <div class="pin-h mk-toolbar">
         <span class="ptb" :class="{ dis: !mkTable.canUndo.value }" title="撤销 (Ctrl+Z)" @click="mkUndo"><Icon name="undo-2" :size="12" /></span>
         <span class="ptb" :class="{ dis: !mkTable.canRedo.value }" title="重做 (Ctrl+Y)" @click="mkRedo"><Icon name="redo-2" :size="12" /></span>
-        <span class="ptb" title="在选中行下方增加一行（直接键入或粘贴）" @click="mkAddRow"><Icon name="plus" :size="12" /> 增加</span>
+        <span class="ptb" :title="mkTab === 'traj' ? '在选中航点下方增加一行（直接键入或粘贴）' : '在选中行下方增加一行（直接键入或粘贴）'" @click="mkAddRow"><Icon name="plus" :size="12" /> 增加</span>
         <span class="ptb" title="从剪贴板批量追加（约定末两列 = 经度、纬度；地球站首列可为名称）" @click="mkPaste"><Icon name="clipboard" :size="12" /> 粘贴</span>
-        <span class="ptb" title="清空当前分页列表" @click="mkClear">清空</span>
-        <template v-if="mkTab === 'traj'">
-          <span class="mk-sep"></span>
-          <span v-for="t in trajectories" :key="t.id" class="mk-trajchip" :class="{ on: mkTrajId === t.id, flight: t.kind === 'flight', sea: t.kind !== 'flight' }" :title="t.kind === 'flight' ? '飞行航迹' : '航行航迹'" @click="mkTrajId = t.id" data-i18n-skip>{{ t.name || byLang('航迹', 'Track') }}</span>
-          <span class="ptb" title="新建航行航迹" @click="mkNewTraj('sea')"><Icon name="plus" :size="12" /> 航行</span>
-          <span class="ptb" title="新建飞行航迹" @click="mkNewTraj('flight')"><Icon name="plus" :size="12" /> 飞行</span>
-        </template>
+        <span class="ptb" :title="mkTab === 'traj' ? '从 Excel 批量导入航迹：一张工作表一条航迹，表名即航迹名' : '从 Excel 追加到当前分页（按表头匹配列；无表头时末两列作经纬度）'" @click="mkImportXlsx"><Icon name="import" :size="12" /> 导入 Excel</span>
+        <span class="ptb" :class="{ dis: !mkXlsxRows }" :title="mkTab === 'traj' ? '把全部航迹导出为 Excel：一条航迹一张工作表' : '把当前分页导出为 Excel'" @click="mkExportXlsx"><Icon name="download" :size="12" /> 导出 Excel</span>
+        <span class="ptb" :title="mkTab === 'traj' ? '清空当前航迹的航点（航迹本身保留）' : '清空当前分页列表'" @click="mkClear">清空</span>
         <span class="perf-cnt">{{ mkCount }} 行</span>
       </div>
 
-      <!-- Excel 网格：三分页各一张，v-show 切换（实例常驻，选区/编辑态各自保留）。拖拽框选 / Shift 扩选 / 方向键导航 / Ctrl+C 复制 / 双击·键入编辑 / Ctrl+V 区域粘贴 / Del 清除 -->
-      <template v-for="p in mkPanes" :key="p.tab">
-        <div v-show="mkTab === p.tab" class="pin-body mk-body" :ref="el => p.grid.bodyEl.value = el" tabindex="0" @keydown="p.grid.gridKey" @click="p.grid.focusGrid">
-          <table class="perf-tbl grid">
-            <thead>
-              <tr>
-                <th v-for="c in p.cols" :key="c.key" :class="{ n: c.num }">{{ c.label }}</th>
-                <th class="th-act"></th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="(r, ri) in p.rows" :key="r.id">
-                <td v-for="(c, ci) in p.cols" :key="c.key"
-                    :class="{ n: c.num, ed: true, sel: p.grid.inSel(ri, ci), active: p.grid.isActive(ri, ci), editing: p.grid.isEdit(ri, ci) }"
-                    @mousedown="p.grid.cellDown($event, ri, ci)" @mouseenter="p.grid.cellEnter(ri, ci)" @dblclick="p.grid.tryEdit(ri, ci, null)">
-                  <template v-if="p.grid.isActive(ri, ci) && p.grid.colEditable(c)">
-                    <span class="pcell-ghost">{{ r[c.key] == null ? '' : r[c.key] }}</span>
-                    <input :ref="el => p.grid.editEl.value = el" class="pcell" :class="{ n: c.num, editing: p.grid.isEdit(ri, ci) }" tabindex="-1"
-                           @input="p.grid.onActiveInput" @compositionstart="p.grid.onActiveCompStart"
-                           @blur="p.grid.onActiveBlur" @paste="p.grid.onActivePaste($event, r, c.key)"
-                           @copy="p.grid.onActiveClip" @cut="p.grid.onActiveClip" />
-                  </template>
-                  <template v-else>{{ r[c.key] == null ? '' : r[c.key] }}</template>
-                </td>
-                <td class="td-act"><span class="del" title="删除该行" @click="mkDelRow(r.id)"><Icon name="x" :size="11" /></span></td>
-              </tr>
-              <tr v-if="!p.rows.length">
-                <td class="pin-empty" :colspan="p.cols.length + 1">{{ p.tab === 'traj' && !mkCurTraj() ? '尚未选择航迹。' : '暂无数据。' }}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </template>
+      <!-- 表体：航迹分页是主从（左栏一条条航迹，右侧该航迹的航点网格）；点标记 / 地球站分页只有网格 -->
+      <div class="mk-main">
+        <aside v-if="mkTab === 'traj'" class="mk-trajs">
+          <div class="mtj-h">
+            <span class="mtj-ht">航迹</span>
+            <span class="mtj-add" title="新建航行航迹" @click="mkNewTraj('sea')"><Icon name="plus" :size="10" />航行</span>
+            <span class="mtj-add" title="新建飞行航迹" @click="mkNewTraj('flight')"><Icon name="plus" :size="10" />飞行</span>
+          </div>
+          <div class="mtj-list">
+            <div v-for="t in trajectories" :key="t.id" class="mtj-row" :class="{ on: mkTrajId === t.id }"
+                 @click="mkTrajId = t.id" @dblclick="mkRenameStart(t)">
+              <span class="mtj-k" :class="t.kind === 'flight' ? 'flight' : 'sea'"
+                    :title="t.kind === 'flight' ? '飞行航迹，点击改为航行' : '航行航迹，点击改为飞行'" @click.stop="mkToggleKind(t)"></span>
+              <input v-if="mkRenameId === t.id" class="mtj-ren" :value="mkRenameVal" @click.stop @dblclick.stop
+                     @input="e => mkRenameVal = e.target.value" @keyup.enter="mkRenameCommit" @keyup.esc="mkRenameCancel" @blur="mkRenameCommit" />
+              <template v-else>
+                <!-- 名字位打了 skip（用户自命名不翻），连带 title 也翻不到 → 后半句自己按语言出字 -->
+                <span class="mtj-n" :title="(t.name || byLang('航迹', 'Track')) + byLang(' · 双击改名', ' · double-click to rename')" data-i18n-skip>{{ t.name || byLang('航迹', 'Track') }}</span>
+                <span class="mtj-c">{{ (t.pts || []).length }}</span>
+                <span class="mtj-x" title="删除该航迹" @click.stop="mkDelTraj(t)"><Icon name="x" :size="11" /></span>
+              </template>
+            </div>
+            <div v-if="!trajectories.length" class="mtj-empty">还没有航迹。</div>
+          </div>
+        </aside>
+
+        <!-- Excel 网格（见 src/components/ExcelGrid.vue）：三分页各一张，v-show 切换（实例常驻，选区/编辑态各自保留） -->
+        <template v-for="p in mkPanes" :key="p.tab">
+          <ExcelGrid v-show="mkTab === p.tab" class="pin-body mk-body eg-host" :grid="p.grid" :cols="p.cols"
+                     :text="(r, c) => (r[c.key] == null ? '' : String(r[c.key]))" :actions-width="26"
+                     :empty-text="p.tab === 'traj' && !mkCurTraj() ? '尚未选择航迹。' : '暂无数据。'"
+                     add-label="增加一行" @add="mkAddRowEnd">
+            <template #actions="{ row }">
+              <span class="del" title="删除该行" @click="mkDelRow(row.id)"><Icon name="x" :size="11" /></span>
+            </template>
+          </ExcelGrid>
+        </template>
+      </div>
 
       <div class="prh prh-n" @mousedown="mkDragResize($event, 'n')"></div>
       <div class="prh prh-s" @mousedown="mkDragResize($event, 's')"></div>
@@ -7244,31 +7484,13 @@ onBeforeUnmount(() => {
         <span class="ptb" title="清空全部波束" @click="bsTblClear">清空</span>
         <span class="perf-cnt">{{ bs.beams.value.length }} 波束</span>
       </div>
-      <div class="pin-body mk-body" :ref="el => bsGrid.bodyEl.value = el" tabindex="0" @keydown="bsGrid.gridKey" @click="bsGrid.focusGrid">
-        <table class="perf-tbl grid">
-          <thead>
-            <tr><th v-for="c in bsTblCols" :key="c.key" :class="{ n: c.num }">{{ c.label }}</th><th class="th-act"></th></tr>
-          </thead>
-          <tbody>
-            <tr v-for="(r, ri) in bs.beams.value" :key="r.id">
-              <td v-for="(c, ci) in bsTblCols" :key="c.key"
-                  :class="{ n: c.num, ed: true, sel: bsGrid.inSel(ri, ci), active: bsGrid.isActive(ri, ci), editing: bsGrid.isEdit(ri, ci) }"
-                  @mousedown="bsGrid.cellDown($event, ri, ci)" @mouseenter="bsGrid.cellEnter(ri, ci)" @dblclick="bsGrid.tryEdit(ri, ci, null)">
-                <template v-if="bsGrid.isActive(ri, ci) && bsGrid.colEditable(c)">
-                  <span class="pcell-ghost">{{ r[c.key] == null ? '' : r[c.key] }}</span>
-                  <input :ref="el => bsGrid.editEl.value = el" class="pcell" :class="{ n: c.num, editing: bsGrid.isEdit(ri, ci) }" tabindex="-1"
-                         @input="bsGrid.onActiveInput" @compositionstart="bsGrid.onActiveCompStart"
-                         @blur="bsGrid.onActiveBlur" @paste="bsGrid.onActivePaste($event, r, c.key)"
-                         @copy="bsGrid.onActiveClip" @cut="bsGrid.onActiveClip" />
-                </template>
-                <template v-else>{{ r[c.key] == null ? '' : r[c.key] }}</template>
-              </td>
-              <td class="td-act"><span class="del" title="删除该行" @click="bsTblDelRow(r.id)"><Icon name="x" :size="11" /></span></td>
-            </tr>
-            <tr v-if="!bs.beams.value.length"><td class="pin-empty" :colspan="bsTblCols.length + 1">暂无波束。</td></tr>
-          </tbody>
-        </table>
-      </div>
+      <ExcelGrid class="pin-body mk-body eg-host" :grid="bsGrid" :cols="bsTblCols"
+                 :text="(r, c) => (r[c.key] == null ? '' : String(r[c.key]))" :actions-width="26"
+                 empty-text="暂无波束。" add-label="增加一行" @add="bsTblAddRowEnd">
+        <template #actions="{ row }">
+          <span class="del" title="删除该行" @click="bsTblDelRow(row.id)"><Icon name="x" :size="11" /></span>
+        </template>
+      </ExcelGrid>
       <div class="prh prh-n" @mousedown="bsTblDragResize($event, 'n')"></div>
       <div class="prh prh-s" @mousedown="bsTblDragResize($event, 's')"></div>
       <div class="prh prh-w" @mousedown="bsTblDragResize($event, 'w')"></div>
@@ -7323,7 +7545,7 @@ onBeforeUnmount(() => {
             <section class="po-card">
               <div class="po-ct">过滤</div>
               <label class="po-chk"><input type="checkbox" v-model="perfOpts.filterOn" /><span>剔除低于最低方向性的记录</span></label>
-              <div class="po-row"><label>最低方向性</label><input class="ci" type="number" step="0.5" v-model.number="perfOpts.minDir" :disabled="!perfOpts.filterOn" /><span class="u">dB</span></div>
+              <div class="po-row"><label>最低方向性</label><input class="ci" type="number" step="0.5" v-model.lazy.number="perfOpts.minDir" :disabled="!perfOpts.filterOn" /><span class="u">dB</span></div>
             </section>
 
             <section class="po-card">
@@ -7333,15 +7555,15 @@ onBeforeUnmount(() => {
                 <div class="po-row"><label>极化</label><select v-model="perfOpts.pol"><option value="P1">P1 共极化</option><option value="P2">P2 交叉</option><option value="RSS">RSS 合成</option><option value="P1/P2">P1/P2</option><option value="P2/P1">P2/P1</option></select></div>
                 <div class="po-row"><label>单位</label><span class="seg sm"><span class="sg" :class="{ on: perfOpts.unit === 'dB' }" @click="perfOpts.unit = 'dB'">dB</span><span class="sg" :class="{ on: perfOpts.unit === 'power' }" @click="perfOpts.unit = 'power'">功率</span><span class="sg" :class="{ on: perfOpts.unit === 'voltage' }" @click="perfOpts.unit = 'voltage'">电压</span></span></div>
                 <div class="po-row"><label>路径损耗</label><select v-model="perfOpts.pathLoss"><option value="none">无</option><option value="relative">相对(h/Rs)²</option><option value="absolute">通量密度</option></select></div>
-                <div class="po-row"><label>增益偏置</label><input class="ci" type="number" step="0.5" v-model.number="perfOpts.gainOffset" /><span class="u">dB</span></div>
+                <div class="po-row"><label>增益偏置</label><input class="ci" type="number" step="0.5" v-model.lazy.number="perfOpts.gainOffset" /><span class="u">dB</span></div>
               </template>
             </section>
 
             <section class="po-card">
               <div class="po-ct">指向误差 · Min/Max Pointing</div>
-              <div class="po-row"><label>方位 Az</label><input class="ci" type="number" step="any" min="0" v-model.number="perfOpts.pointAz" /><span class="u">°</span></div>
-              <div class="po-row"><label>俯仰 El</label><input class="ci" type="number" step="any" min="0" v-model.number="perfOpts.pointEl" /><span class="u">°</span></div>
-              <div class="po-row"><label>偏航 Yaw</label><input class="ci" type="number" step="any" min="0" v-model.number="perfOpts.pointYaw" /><span class="u">°</span></div>
+              <div class="po-row"><label>方位 Az</label><input class="ci" type="number" step="any" min="0" v-model.lazy.number="perfOpts.pointAz" /><span class="u">°</span></div>
+              <div class="po-row"><label>俯仰 El</label><input class="ci" type="number" step="any" min="0" v-model.lazy.number="perfOpts.pointEl" /><span class="u">°</span></div>
+              <div class="po-row"><label>偏航 Yaw</label><input class="ci" type="number" step="any" min="0" v-model.lazy.number="perfOpts.pointYaw" /><span class="u">°</span></div>
             </section>
           </div>
         </div>
@@ -7747,6 +7969,7 @@ onBeforeUnmount(() => {
 .sect { display: flex; align-items: center; margin-bottom: 6px; color: var(--text-muted); }
 .sect .lnk { margin-left: auto; color: var(--accent); cursor: pointer; font-size: 11.5px; }
 .sect .lnk.on { font-weight: 600; text-decoration: underline; }
+.sect .lnk:hover { text-decoration: underline; }   /* 与 SatCovPanel / GrdSetSections 同一手感 */
 /* 分区标题旁的「小眼睛」显隐开关：睁眼=显示，闭眼（带斜杠/淡出）=隐藏 */
 .eyebtn { display: inline-flex; align-items: center; margin-left: 7px; cursor: pointer; color: var(--text-muted); }
 .eyebtn:hover { color: var(--text); }
@@ -8074,12 +8297,32 @@ onBeforeUnmount(() => {
 .mk-tab + .mk-tab { border-left: 1px solid var(--border); }
 .mk-tab:hover { color: var(--text); }
 .mk-tab.on { background: var(--accent); color: var(--bg); }
-.mk-toolbar .mk-sep { width: 1px; align-self: stretch; margin: 2px 3px; background: var(--border); }
-.mk-trajchip { font-size: 11px; color: var(--text-muted); border: 1px solid var(--border); border-left-width: 3px; border-radius: 4px; padding: 1px 8px; cursor: pointer; white-space: nowrap; max-width: 130px; overflow: hidden; text-overflow: ellipsis; }
-.mk-trajchip:hover { color: var(--text); }
-.mk-trajchip.sea { border-left-color: #ff6a4a; }
-.mk-trajchip.flight { border-left-color: #5ad1ff; }
-.mk-trajchip.on { color: var(--text); background: color-mix(in srgb, var(--accent) 14%, transparent); border-color: var(--accent); }
+/* 表体：航迹分页是主从两栏（左栏航迹、右侧航点网格），另两个分页只有网格 */
+.mk-main { flex: 1; min-height: 0; display: flex; }
+.mk-main > .pin-body { min-width: 0; }
+/* —— 航迹左栏 —— */
+.mk-trajs { flex: none; width: 156px; display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--border); background: color-mix(in srgb, var(--surface) 55%, transparent); }
+.mtj-h { flex: none; display: flex; align-items: center; gap: 4px; padding: 5px 6px 5px 9px; border-bottom: 1px solid var(--border); }
+.mtj-ht { flex: 1; font-size: 11px; color: var(--text-faint); }
+.mtj-add { display: inline-flex; align-items: center; gap: 1px; font-size: 10.5px; color: var(--text-muted); border: 1px solid var(--border); border-radius: 3px; padding: 1px 5px 1px 3px; cursor: pointer; white-space: nowrap; }
+.mtj-add:hover { color: var(--accent); border-color: var(--accent); }
+.mtj-list { flex: 1; min-height: 0; overflow-y: auto; padding: 3px 0; }
+.mtj-row { display: flex; align-items: center; gap: 6px; padding: 3px 6px 3px 9px; cursor: pointer; user-select: none; border-left: 2px solid transparent; }
+.mtj-row:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
+.mtj-row.on { background: color-mix(in srgb, var(--accent) 14%, transparent); border-left-color: var(--accent); }
+/* 类型点：航行=橙、飞行=蓝（与图上的航迹线同色），点一下换类型 */
+.mtj-k { flex: none; width: 8px; height: 8px; border-radius: 2px; cursor: pointer; }
+.mtj-k.sea { background: #ff6a4a; }
+.mtj-k.flight { background: #5ad1ff; }
+.mtj-k:hover { outline: 2px solid color-mix(in srgb, var(--text) 35%, transparent); outline-offset: 1px; }
+.mtj-n { flex: 1; min-width: 0; font-size: 11.5px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mtj-row.on .mtj-n { color: var(--text); }
+.mtj-c { flex: none; font-size: 10px; color: var(--text-faint); font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.mtj-x { flex: none; display: inline-flex; color: var(--text-faint); opacity: 0; cursor: pointer; }
+.mtj-row:hover .mtj-x { opacity: .8; }
+.mtj-x:hover { color: #ff6a6a; }
+.mtj-ren { flex: 1; min-width: 0; font: inherit; font-size: 11.5px; padding: 1px 4px; background: var(--bg); color: var(--text); border: 1px solid var(--accent); border-radius: 3px; outline: none; }
+.mtj-empty { padding: 8px 9px; font-size: 11px; color: var(--text-faint); }
 
 /* —— 上：城市输入区（高度由 JS 控制，可经中缝拖拽） —— */
 .perf-input { flex: none; display: flex; flex-direction: column; min-height: 0; }
@@ -8103,8 +8346,6 @@ onBeforeUnmount(() => {
 .pin-t, .pr-t { font-size: 11.5px; font-weight: 600; color: var(--text-muted); white-space: nowrap; }
 .pr-t em { margin-left: 4px; font-style: normal; font-size: 10px; font-weight: 400; color: var(--text-faint); border: 1px solid var(--border); border-radius: 6px; padding: 0 5px; }
 .pin-body { flex: 1; overflow: auto; outline: none; }
-/* 新增行（不参与框选）：常驻输入框 */
-.perf-tbl td.pin-empty { padding: 14px 12px; text-align: center; color: var(--text-faint); cursor: default; }
 
 /* —— 下：只读性能结果表 —— */
 .perf-result { flex: 1; min-height: 0; display: flex; flex-direction: column; }
@@ -8116,41 +8357,13 @@ onBeforeUnmount(() => {
 .pr-cov .ci:disabled { opacity: .45; }
 .pr-cov .u { color: var(--text-faint); font-size: 10.5px; }
 .pr-body { flex: 1; overflow: auto; }
-.perf-tbl { width: 100%; border-collapse: collapse; font-size: 11.5px; }
-.perf-tbl th, .perf-tbl td { padding: 3px 8px; border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent); text-align: left; white-space: nowrap; }
-.perf-tbl th { position: sticky; top: 0; background: var(--panel, var(--bg)); color: var(--text-muted); font-weight: 600; z-index: 1; }
-.perf-tbl th.n, .perf-tbl td.n { text-align: right; font-family: var(--font-mono); }
-.perf-tbl td { color: var(--text); }
-.perf-tbl th em { color: var(--text-faint); font-style: normal; }
-/* 表头单位小字（经纬度/角度 °、dB 等）：弱化淡灰、比列名略小，紧跟列名 */
-.perf-tbl th .cu { font-style: normal; color: var(--text-faint); font-weight: 400; font-size: .9em; margin-left: 2px; }
-.perf-tbl th.n .cu { font-family: var(--font-mono); }
-.perf-tbl tbody tr:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
-.perf-tbl tr.out td { color: var(--text-faint); }
-.perf-empty { text-align: center !important; color: var(--text-faint); padding: 18px !important; font-style: italic; }
-/* —— Excel 式网格（城市输入 + 性能结果共用）：十字光标 / 框选淡蓝 / 活动格·编辑格描蓝框 —— */
-.perf-tbl.grid { user-select: none; }                    /* 拖拽框选时不选中文本 */
-.perf-tbl.grid tbody td { cursor: cell; }
-.perf-tbl.grid td.sel { background: color-mix(in srgb, var(--accent) 16%, transparent); }
-.perf-tbl.grid tr.out td.sel { background: color-mix(in srgb, var(--accent) 12%, transparent); }
-.perf-tbl.grid td.active { box-shadow: inset 0 0 0 2px var(--accent); }
-/* 可编辑表的活动格（含编辑态）内边距归零并 relative，交给 ghost 撑内边距、由绝对定位的捕获框铺满；只读表(.ro)活动格保持常规内边距 */
-.perf-tbl.grid:not(.ro) td.active, .perf-tbl.grid td.editing { padding: 0; position: relative; }
-.perf-tbl.grid td.editing { box-shadow: inset 0 0 0 2px var(--accent); }
-.perf-tbl.grid td.ed { color: var(--text); }
-/* ghost 显示活动格当前值并撑住列宽/行高（捕获框绝对定位不参与布局，否则 input 固有宽度会把 auto 布局的列撑开）；内边距与普通单元格一致 */
-.pcell-ghost { display: block; padding: 3px 8px; }
-.pcell-ghost:empty::before { content: '\00a0'; }   /* 空格占位保住行高（空单元格无文本行盒） */
-/* 捕获/编辑框覆盖在 ghost 之上，不参与表格布局 → 键入任意长度列宽不动（超长部分在框内滚动，与 Excel 视觉一致）。
-   导航态透明 + pointer-events:none：只露出下面的 ghost 值、鼠标框选穿透到 td；输入法/键入时翻成 .editing 不透明可交互。 */
-.pcell { position: absolute; inset: 0; width: 100%; height: 100%; box-sizing: border-box; border: none; background: transparent; color: transparent; caret-color: transparent; font: inherit; padding: 3px 8px; outline: none; pointer-events: none; }
-.pcell.editing { background: var(--bg); color: inherit; caret-color: auto; pointer-events: auto; }
-.pcell.n { text-align: right; font-family: var(--font-mono); }
-.perf-tbl .td-act, .perf-tbl .th-act { width: 22px; text-align: center; }
-.perf-tbl .td-act { cursor: default; }
-.perf-tbl .td-act .del { cursor: pointer; color: var(--text-faint); opacity: 0; }
-.perf-tbl tbody tr:hover .del { opacity: .8; }
-.perf-tbl .td-act .del:hover { color: #ff6a6a; }
+/* —— Excel 网格 —— 表体（序号列/列头/单元格/填充柄/右键菜单）全在 src/components/ExcelGrid.vue，
+   本页四张表（城市输入 / 性能结果 / 标记三分页 / 波束批量）共用那一份。这里只补插槽里的操作列图标：
+   子组件渲染的节点带的是它自己的 scoped 标记，故一律走 :deep()。 */
+.eg-host :deep(.eg-act .del) { cursor: pointer; color: var(--text-faint); opacity: 0; display: inline-flex; vertical-align: middle; }
+.eg-host :deep(tbody tr:hover .del) { opacity: .8; }
+.eg-host :deep(.eg-act .del:hover) { color: #ff6a6a; }
+.eg-host :deep(tr.out td) { color: var(--text-faint); }
 
 /* 性能表选项弹窗 */
 .sat-mask.perf-opt-mask { z-index: 70; }   /* 提高特异性压过 .sat-mask(z40)，高于性能表浮窗(z60)避免被遮挡 */

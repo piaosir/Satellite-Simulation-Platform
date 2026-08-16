@@ -9,6 +9,8 @@ import { ref, reactive, computed, onMounted, watch, nextTick } from 'vue'
 import ActivationLock from '../components/ActivationLock.vue'
 import Icon from '../components/Icon.vue'
 import ConfigTree from '../components/ConfigTree.vue'
+import ConfigTreeMenu from '../components/ConfigTreeMenu.vue'
+import { useConfigTree } from '../shared/useConfigTree.js'
 import LbSection from '../components/LbSection.vue'
 import LbLibrary from '../components/LbLibrary.vue'
 import LbFontCtl from '../components/LbFontCtl.vue'
@@ -880,11 +882,25 @@ function applyIslRangeFill({ rangeKm, scope }) {
 
 // ============ 场景持久化 ============
 const STATE_KEY = 'e2e/last'
-const configs = ref([])
-const activeId = ref(null)
-const expandedFolders = ref(new Set(JSON.parse(localStorage.getItem('e2e/expandedFolders') || '[]')))
-function persistExpanded() { try { localStorage.setItem('e2e/expandedFolders', JSON.stringify([...expandedFolders.value])) } catch (e) { /* ignore */ } }
-function toggleFolder(f) { const s = new Set(expandedFolders.value); if (s.has(f.id)) s.delete(f.id); else s.add(f.id); expandedFolders.value = s; persistExpanded() }
+// 配置列表：持久化到 userData/configs.e2e.json（store.config.*，各工作台一份互不见面）。
+// 树的全部行为（增删改移 / 剪贴板 / 右键 / 键盘）在 shared/useConfigTree.js，五个工作台共用一份。
+// ★ 本窗早先自建了一份精简树，漏掉的东西是实打实的故障：onMove 把 ConfigTree 的 dragId 原样
+//   透传给期待 id 的 IPC（拖拽整条静默失效）、右键 @context 没接（.prevent 还把系统菜单一并吃掉）、
+//   剪贴板整套没有、新建配置不载入也不展开父级（存进去了却看不见，随后「保存」写回的还是旧配置）。
+//   收进公共实现后这些一次补齐。
+const cfgTree = useConfigTree({
+  ns: 'e2e', orbitType: ORBIT, api, storageKey: 'e2e/expandedFolders',
+  toast, blankState, serializeState, applyState, setBaseline, guardedLeave, askConfirm, defaultCfgName
+})
+const {
+  configs, activeId, focusId, expandedFolders, editing, cfgClip, cfgDlg, ctxMenu,
+  loadConfigs, uniqueCfgName, activeName, applyConfig, selectConfig,
+  openSaveDlg, confirmCfgDlg, updateConfig, saveCurrent,
+  toggleFolder, expandFolder, expandAll, collapseAll, persistExpanded,
+  addFolder, addBlankConfig, removeConfig, removeFolder, onDeleteItem, onMove, moveToRoot,
+  startRename, commitRename, cancelRename,
+  copyItem, cutItem, pasteConfig, ctxItem, ctxIsFolder, openCtx, closeCtx, ctxDo, onCfgKey
+} = cfgTree
 
 // 老场景迁移（体制曾经是库引用 + 链级速率）：把引用解析成节点上那份体制，链级速率落到链首。
 // 迁完就地把老字段删掉，存回去时不再带它们。
@@ -949,74 +965,14 @@ let activeBaseline = ''
 const dirtyFlag = ref(false)
 function setBaseline() { activeBaseline = fingerprint(); dirtyFlag.value = false }
 function isDirty() { return !!activeId.value && fingerprint() !== activeBaseline }
-function activeName() { const c = configs.value.find((x) => x.id === activeId.value); return c ? c.name : '' }
 
-async function loadConfigs() {
-  try {
-    const all = (api && await api.store.listConfigs()) || []
-    configs.value = all.filter((it) => it && ((it.type === 'folder') ? (it.orbitType === ORBIT) : (it.state && it.state.orbitType === ORBIT)))
-  } catch (e) { configs.value = [] }
-}
-const cfgDlg = reactive({ open: false, name: '' })
-function openSaveDlg() { if (!api) { toast('保存需在桌面客户端中运行'); return } cfgDlg.name = byLang(`端到端 ${chains.length} 条`, `${chains.length} End-to-End Links`); cfgDlg.open = true }
-// 存盘失败一律报出来：这条路上最难查的一类故障是「按钮点了没反应」——写盘抛错、调用点没 catch，
-// 于是既没落盘也没提示。凡是写盘的出口都收口在这里，成功/失败都有回执。
-const errText = (e) => (e && e.message) || String(e)
-async function confirmCfgDlg() {
-  const name = (cfgDlg.name || '').trim()
-  if (!name) { toast('请输入配置名称'); return }
-  let item = null
-  try { item = await api.store.saveConfig({ name, state: serializeState() }) }
-  catch (e) { toast('保存失败：' + errText(e)); return }   // 对话框留着，用户可改名重试
-  cfgDlg.open = false; await loadConfigs()
-  if (item && item.id) { activeId.value = item.id; setBaseline() }
-  toast('已保存配置：' + name)
-}
-// 返回是否真的存进去了——关窗守卫要按它决定放不放行
-async function updateConfig() {
-  if (!api || !activeId.value) return false
-  const c = configs.value.find((x) => x.id === activeId.value); if (!c) return false
-  try { await api.store.saveConfig({ id: c.id, name: c.name, state: serializeState() }) }
-  catch (e) { toast('保存失败：' + errText(e)); return false }
-  setBaseline(); await loadConfigs(); toast('已保存修改到：' + c.name)
-  return true
-}
-async function saveCurrent() { if (!api) { toast('保存需在桌面客户端中运行'); return } if (activeId.value) await updateConfig(); else openSaveDlg() }
-async function selectConfig(c) {
-  if (!c || c.id === activeId.value) return
-  if (!(await guardedLeave())) return
-  activeId.value = c.id; applyState(c.state); setBaseline()
-}
-async function addBlankConfig(parentId = null) {
-  if (!api) { toast('需在桌面客户端中运行'); return }
-  // 空白配置里放一条默认链（站-星-站）而不是空数组：本窗口的工作对象就是链，
-  // 一条都没有的场景选中后无处可编辑，反倒像「载入没生效」。
-  const blank = defaultChain()
-  const state = serializeChainsState([blank], 'manual')
-  const item = await api.store.saveConfig({ name: newCfgName('新建配置'), parentId: parentId || null, state })
-  await loadConfigs(); if (item && item.id) startRename(item)
-}
-async function addFolder(parentId = null) {
-  if (!api) { toast('需在桌面客户端中运行'); return }
-  const item = await api.store.saveConfig({ type: 'folder', name: newFolderName(), parentId: parentId || null, orbitType: ORBIT })
-  if (parentId) expandedFolders.value.add(parentId)
-  persistExpanded(); await loadConfigs(); if (item && item.id) startRename(item)
-}
-async function onDeleteItem(c) {
-  if (!api || !c) return
-  if (c.type === 'folder') { await api.store.deleteFolder(c.id) } else { await api.store.deleteConfig(c.id) }
-  if (activeId.value === c.id) { activeId.value = null; activeBaseline = '' }
-  await loadConfigs()
-}
-async function onMove(payload) { if (!api) return; await api.store.moveItem(payload); await loadConfigs() }
-const editing = reactive({ id: null, name: '' })
-function startRename(c) { editing.id = c.id; editing.name = c.name; nextTick(() => { const el = document.querySelector('.lb-tree-rename'); if (el) { el.focus(); el.select() } }) }
-function cancelRename() { editing.id = null }
-async function commitRename() {
-  const id = editing.id; if (id == null) return
-  const c = configs.value.find((x) => x.id === id); const nm = (editing.name || '').trim(); editing.id = null
-  if (c && nm && nm !== c.name) { await api.store.saveConfig({ id: c.id, name: nm }); await loadConfigs() }
-}
+// —— 命名配置 CRUD ——
+// 树本身的增删改移 / 剪贴板 / 右键 / 键盘全在 shared/useConfigTree.js（见文件上方 useConfigTree(...) 注入点）。
+// 这里只留本窗特有的两件：保存为新配置的预填名、空白配置的内容。
+// 空白场景放一条默认链（站-星-站）而不是空数组：本窗口的工作对象就是链，
+// 一条都没有的场景选中后无处可编辑，反倒像「载入没生效」。
+function defaultCfgName() { return byLang(`端到端 ${chains.length} 条`, `${chains.length} End-to-End Links`) }
+function blankState() { return serializeChainsState([defaultChain()], 'manual') }
 
 const confirmDlg = reactive({ open: false, msg: '' })
 let _confirmResolve = null
@@ -1111,6 +1067,13 @@ onMounted(async () => {
 <template>
   <div class="lb-shell">
     <ActivationLock />
+    <!-- 配置右键菜单（五窗共用一份，条目与快捷键一致） -->
+    <ConfigTreeMenu
+      :menu="ctxMenu" :item="ctxItem" :is-folder="ctxIsFolder" :clip="cfgClip" :has-api="!!api"
+      @close="closeCtx" @rename="startRename" @new-folder="addFolder" @new-config="addBlankConfig"
+      @save-new="openSaveDlg" @cut="cutItem" @copy="copyItem" @paste="pasteConfig" @move-root="moveToRoot"
+      @delete="onDeleteItem" @expand-all="expandAll" @collapse-all="collapseAll" @hide="sideView = ''"
+    />
     <div class="lb-body">
       <!-- ① 左侧栏：配置列表 / 资源库 二选一 -->
       <aside v-show="sideView" class="lb-col lb-side" :class="[sideView === 'library' ? 'lb-lib' : 'lb-configs', { resizing: sideResizing }]" :style="{ width: sideWidth + 'px' }">
@@ -1123,12 +1086,13 @@ onMounted(async () => {
               <button class="lb-mini lb-mini-ico" title="隐藏配置列表" @click="sideView = ''"><Icon name="x" :size="13" /></button>
             </span>
           </div>
-          <div class="lb-col-bd">
+          <div class="lb-col-bd" tabindex="0" @keydown="onCfgKey" @contextmenu="openCtx($event, null)">
             <ConfigTree
-              :items="configs" :active-id="activeId" :editing-id="editing.id" :editing-name="editing.name"
+              :items="configs" :active-id="activeId" :focus-id="focusId" :editing-id="editing.id" :editing-name="editing.name"
               :expanded="expandedFolders"
-              @select="selectConfig" @toggle="toggleFolder" @delete="onDeleteItem" @move="onMove"
-              @add-folder="addFolder" @add-config="addBlankConfig"
+              :cut-id="cfgClip && cfgClip.mode === 'cut' ? cfgClip.id : null"
+              @select="selectConfig" @toggle="toggleFolder" @delete="onDeleteItem" @move="onMove" @focus="focusId = $event.id"
+              @add-folder="addFolder" @add-config="addBlankConfig" @context="openCtx"
               @rename-start="startRename" @rename-input="editing.name = $event" @rename-commit="commitRename" @rename-cancel="cancelRename"
             />
           </div>

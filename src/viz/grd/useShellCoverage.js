@@ -60,17 +60,19 @@ function satHull(lon, lat, alt) {
 }
 
 // grd = useGrdCoverage 的活实例；getScene/getFlat = 3D 与 2D 渲染器；isFlat = 当前是否 2D 视图。
-// panelOn = 本视图当前是不是活动视图（宿主页裁定 shellUi.side === 'satcov'）。
+// panelOn = 本视图的面板此刻【开着没有】（宿主页裁定 shellUi.side === 'satcov'）。★ 它只管【面板读数】
+//   （stats / shellStatus / focusBeam）要不要现算 —— 场景里画什么一概不由它裁，否则收起侧栏就等于关灯。
+// ownsFlat = 2D 那块 GRD 场此刻归不归自己（宿主页按【上下文视图】裁定：收起侧栏不改归属，见 stores/shellUi 的 sideCtx）。
 //
-// 为什么需要它：下面 watch(grd.s) 盯的是【两个视图共享的编辑态】，对地面板改一次填充/电平/指向，
+// 为什么要有归属这道闸：下面 watch(grd.s) 盯的是【两个视图共享的编辑态】，对地面板改一次填充/电平/指向，
 // 本视图同样被唤醒 —— 而本视图往外写的两处都不是自己独占的：
 //   · 2D 平面图只有【一块】GRD 场且是整体替换（见 useGrdCoverage 的 ownsFlatField）：不归自己时照写，
 //     会把对地刚画好的层整体换成本视图的（selected 通常为空 → 直接清空），表现为覆盖闪一下就没；
-//   · 3D 壳层内容虽是自己的通道，但面板【从没打开过】时一次也不该推，否则对地那边一改设置就凭空
+//   · 3D 壳层内容是自己的通道，闸在 _painted（【从没画过】就一次也不推），否则对地那边一改设置就凭空
 //     往球上糊两层壳层参照网。
 // flatActive = 2D 那块场此刻有没有人看：平面图可见【或宿主正在按 2D 出图】（导出在 3D 视图下也走 flat）。
 // 与 isFlat 分工：isFlat 管「哪个视图可见」（3D 通道的闸），flatActive 管「flat 要不要喂」（2D 通道的闸）。
-export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = () => false, panelOn = () => true, flatActive = isFlat) {
+export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = () => false, panelOn = () => true, flatActive = isFlat, ownsFlat = panelOn) {
   const shells = ref(PRESET_SHELLS.slice(0, 2).map((p) => ({ id: newShellId(), ...p, show: true, branch: 'both' })))
   const selected = ref([])        // 画在壳层上的天线 key 列表（与对地视图各自独立）
   // ★ 聚焦天线【不自存一份】，只做 grd.active 的镜像：面板的天线设置区绑的就是 grd.s（＝grd.active
@@ -405,7 +407,7 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
     // applyFlat 补一次全量。面板开着时 buildShellLayers 照跑——读数行/空层归因/focusBeam
     //（「波束内的星」的成员判据）都从它出，2D 下指标表还在每拍走，不能喂它旧焦点。
     const sc = isFlat() ? null : getScene()
-    const fl = (on && flatActive()) ? getFlat() : null
+    const fl = (ownsFlat() && flatActive()) ? getFlat() : null   // 归属看上下文视图，不看侧栏开合
     if (!sc && !fl && !on) return      // 两侧都不收、读数也没人看（2D 期间面板关着）：整轮白算
     const t0 = perfNow()
     if (sc && sc.setShellField) {
@@ -434,7 +436,7 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
     const sc = getScene()
     if (sc && sc.clearShellField) { sc.clearShellField(); sc.clearShellGuides(); if (sc.clearShellRays) sc.clearShellRays() }
     _guideKey = ''                     // 参照网已清 → 键复位，下次 recompute 重喂
-    const fl = panelOn() ? getFlat() : null; if (fl) fl.setField([], {})
+    const fl = ownsFlat() ? getFlat() : null; if (fl) fl.setField([], {})
     _painted = false                   // 场景已清空 → 回到「没画过」，面板关着时不再自行复现
   }
 

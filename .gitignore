@@ -124,3 +124,21 @@ electron/services/shareConfig.js
 
 # 星间链路仿真验证台：模块本身已于 2026-08-12 回退，台子留着备查，不进仓库。
 .islharness/
+
+# 配置列表树验证台（ConfigTree.vue + ConfigTreeMenu.vue）：真组件 + 真全局样式、无 IPC。
+# 盯层级几何（名称起点随深度严格单调）、导引线连续性、拖拽三区与悬停展开、焦点/载入/剪切三态叠加。
+# 带「旧几何」开关按改动前的算式复现，用来对拍。
+.cfgtreeharness/
+
+# Excel 网格验证台（ExcelGrid.vue + useGridSelect.js）：序号列/列头/全选、填充柄与 Ctrl+D、
+# 右键菜单定位、列宽拖拽与双击自适应、只读表列头排序、sticky 之下的 ensureVisible。
+# 读数行把选区/排序/列宽实时打出来，便于脚本断言。
+.gridharness/
+
+# 标记「航迹分页」验证台：主从两栏（左航迹 / 右航点网格）+ 真 useMarkerTable / trajsFromSheets。
+# ★ 窗口外壳与 .mk-* / .mtj-* 样式抄自 ConstellationMap3D.vue，改一处两处同步。
+.mkharness/
+
+# 3D 球体截图导出验证台：真 createGlobeScene + 真 exportGlobe，验 scene.snapshot 拿回的确实是
+# 「按倍率放大的那一帧」而不是黑图/拉伸图，并量一遍耗时与体积（页面直接把出的图贴出来看）。
+.shotharness/

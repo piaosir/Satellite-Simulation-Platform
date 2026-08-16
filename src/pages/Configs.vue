@@ -1,25 +1,26 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+// 配置管理：跨工作台的配置总览。
+//
+// 配置库已按工作台分家（configs.<ns>.json，见 electron/services/storage.js），各窗只读写自己那份。
+// 本页是唯一能同时看到五份的地方，故只做两件事：列出归属、删除。
+// 「新建预设」入口已撤：它产出的是既无 state 也无 orbitType 的空壳，没有任何工作台能载入它，
+// 却因 GEO 的白名单过滤（无 state ⇒ 算 GEO）常年混在 GSO 的配置列表里。要新建请到对应工作台里建。
+import { ref, computed, onMounted } from 'vue'
 
 const hasApi = typeof window !== 'undefined' && !!window.api
-const rows = ref([])
-const newName = ref('')
+const groups = ref([])
+
+const WORKBENCH = { geo: 'GSO 链路预算', ngso: 'NGSO 链路预算', regen: '再生式链路预算', e2e: '端到端链路预算', rain: '雨衰计算' }
 
 async function load() {
   if (!hasApi) return
-  // 与链路预算共用 configs.json，其中含「文件夹」分组项（type==='folder'）；本页只管配置预设，过滤掉文件夹，
-  // 也避免此页无级联删除时误删文件夹造成子项成孤儿。
-  rows.value = (await window.api.store.listConfigs()).filter((r) => r && r.type !== 'folder')
+  const all = (await window.api.store.listAllConfigs()) || []
+  // 文件夹只是分组容器，本页无级联删除，列出来只会让人误删成孤儿——过滤掉
+  groups.value = all.map((g) => ({ ...g, items: (g.items || []).filter((r) => r && r.type !== 'folder') }))
 }
-async function add() {
-  const name = newName.value.trim()
-  if (!name) return
-  await window.api.store.saveConfig({ name, params: {} })
-  newName.value = ''
-  await load()
-}
-async function del(id) {
-  await window.api.store.deleteConfig(id)
+const rows = computed(() => groups.value.flatMap((g) => g.items.map((r) => ({ ...r, ns: g.ns }))))
+async function del(ns, id) {
+  await window.api.store.deleteConfig(ns, id)
   await load()
 }
 function fmt(iso) { try { return new Date(iso).toLocaleString() } catch { return iso } }
@@ -31,18 +32,15 @@ onMounted(load)
     <h2>配置管理</h2>
     <div v-if="!hasApi" class="empty">需在桌面客户端中运行。</div>
     <template v-else>
-      <div class="add">
-        <input v-model="newName" placeholder="新建预设名称，如「GEO Ku 标准站」" @keyup.enter="add" />
-        <button @click="add">新建</button>
-      </div>
       <div v-if="!rows.length" class="empty">暂无配置。</div>
       <table v-else>
-        <thead><tr><th>名称</th><th>创建时间</th><th></th></tr></thead>
+        <thead><tr><th>名称</th><th>所属工作台</th><th>创建时间</th><th></th></tr></thead>
         <tbody>
-          <tr v-for="r in rows" :key="r.id">
+          <tr v-for="r in rows" :key="r.ns + ':' + r.id">
             <td data-i18n-skip>{{ r.name }}</td>
+            <td class="ns">{{ WORKBENCH[r.ns] || r.ns }}</td>
             <td>{{ fmt(r.createdAt) }}</td>
-            <td><button class="link" @click="del(r.id)">删除</button></td>
+            <td><button class="link" @click="del(r.ns, r.id)">删除</button></td>
           </tr>
         </tbody>
       </table>
@@ -53,13 +51,10 @@ onMounted(load)
 <style scoped>
 .cfg { padding: 20px 24px; height: 100%; overflow-y: auto; }   /* 外层 .content 已 overflow:hidden，滚动由页内承担 */
 .cfg h2 { font-size: 18px; }
-.hint { color: var(--text-faint); font-size: 12.5px; margin: 6px 0 16px; }
-.add { display: flex; gap: 10px; margin-bottom: 16px; }
-.add input { flex: 1; max-width: 360px; border: 1px solid var(--border); background: var(--bg); padding: 5px 8px; outline: none; }
-.add button, .head button { border: 1px solid var(--border); background: var(--bg); padding: 4px 12px; cursor: pointer; }
 .empty { color: var(--text-faint); padding: 14px 0; }
 table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 th { text-align: left; color: var(--text-muted); font-weight: 500; border-bottom: 1px solid var(--border-strong); padding: 6px 8px; }
 td { padding: 6px 8px; border-bottom: 1px solid var(--border); }
+.ns { color: var(--text-muted); }
 .link { border: 0; background: none; color: var(--danger); cursor: pointer; padding: 0; }
 </style>

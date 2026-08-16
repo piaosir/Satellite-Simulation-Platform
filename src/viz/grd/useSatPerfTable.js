@@ -1,6 +1,6 @@
-// 对星性能指标表 —— 对地那张表（usePerfTable）的孪生版本，两种口径：
-//   【当前时刻】一行 = 一颗目标星，报此刻的取值；
-//   【时间窗口】一行 = 一次「照到」的时段（或按目标星汇总），报窗口起止 / 时长 / 峰值时刻与峰值取值。
+// 对星性能指标表 —— 对地那张表（usePerfTable）的孪生版本。表只有一种形态：
+//   一行 = 一颗目标星，报【某一时刻】的取值。差别只在这个时刻从哪来：
+//   【当前时刻】跟仿真时钟走；【时间窗口】先扫出可见时段，再由用户拖游标点到时窗里的任意一刻。
 // 取值内核完全同源（sampleBeamAtParam），故与对地表的 Dir / Parameter / Min·Max Pointing / Xpol / Slope / AR
 // 逐位同口径，差别只在目标点怎么来、以及遮挡怎么判：
 //   · 地面站：目标点 = 经纬度贴椭球；遮挡 = 卫星是否在测站地平线以上；
@@ -15,11 +15,12 @@
 //      【波束内】＝此刻真的落在方向图域里的那些星，成员随仿真时钟每拍重算 —— 星进波束就出现在表里、
 //      出去就消失。后者是「目标集本身是时间的函数」，对星动态仿真真正要看的就是它。
 //
-// ★ 时间窗口口径（时段扫描）：
-//   · 判据 = 落在方向图域内 && Dir ≥ 门限 && 视线没被地球挡（遮挡可关）。门限两种口径：相对波束峰值
-//     （默认 −3 dB，与画面上的等值线同一口径，换天线不用重设）或绝对 dBi。
+// ★ 时间窗口口径（2026-08-16 重做，对齐链路预算「星间链路距离」工具的手感）：
+//   · 窗口判据【不设门限】= 目标落在方向图域内 && 星-星视线没被地球挡。没有门限就没有「照到算几 dB」
+//     这个说不清的口径 —— 能照到的时段由几何定，照得好不好把游标拖过去读 Dir 就是。
+//   · 扫描只出【时段本身】（起止 / 峰值时刻），不再逐窗算一遍完整指标：指标由游标那一刻现算，
+//     与「当前时刻」共用同一套列与同一条取值路径（buildRows），两种口径逐位可比。
 //   · 扫描步长【由角位移反控】，不是固定秒数 —— 波束比地平锥窄两个量级，固定步长必漏短穿越。见 satcovScan.js。
-//   · 窗内只在【峰值时刻】算一遍完整指标（贵列同理）：一次穿越报一行，报的是这次穿越最好的那一刻。
 //   · 源星与目标星【两头都按各自星历走】；天线指向随之重算（锁定/跟随/对星跟踪各按其语义，见 boreSettingsAtPos）。
 import { ref, reactive, computed } from 'vue'
 import sat from '../constellation/satellite.js'
@@ -47,7 +48,7 @@ const COL_DEFS = [
   { key: 'shell', label: '壳层', w: 84, tip: '按地心半径就近归入的轨道壳层；未建对应壳层显示 —' },
   { key: 'tgtLon', label: '星下点经度', w: 92, num: true, fix: 2, unit: '°E' },
   { key: 'tgtLat', label: '星下点纬度', w: 92, num: true, fix: 2, unit: '°N' },
-  { key: 'state', label: '状态', w: 66, tip: '空=正常取到值；域外=该方向不在方向图网格内；背面=在视轴背后；遮挡=星-星视线被地球挡住' },
+  { key: 'state', label: '状态', w: 66, tip: '空=正常取到值；域外=该方向不在方向图网格内；背面=在视轴背后；遮挡=星-星视线被地球挡住。非空即取不到值，性能列一律留空' },
   { key: 'beamNo', label: '波束号', w: 56, num: true, fix: 0, tip: '取到最大方向性的那个波束' },
   { key: 'beamName', label: '波束', w: 110, tip: '取到最大方向性的那个波束' },
   { key: 'scAz', label: 'S/C Az', w: 66, num: true, fix: 3, unit: '°', tip: '源星天底系下、指向该目标星的方位角（星下点方向为 0）' },
@@ -71,85 +72,9 @@ const COL_GROUPS = [
   { title: '几何', keys: ['scAz', 'scEl', 'offAxis', 'u', 'v', 'slant'] },
   { title: '性能', keys: ['dir', 'param', 'minPt', 'maxPt', 'xpol', 'slope', 'ar'] }
 ]
-// —— 时段视图：一行 = 一次「照到」的时段。窗内的指标一律取【峰值时刻】那一瞬（贵列同理，见文件头）——
-const WIN_COLS = [
-  { key: 'no', label: 'No.', w: 44, num: true, fix: 0 },
-  { key: 'satName', label: '源卫星', w: 96 },
-  { key: 'antName', label: '天线', w: 100 },
-  { key: 'tgtName', label: '目标卫星', w: 128 },
-  { key: 'noradId', label: 'NORAD', w: 68, num: true, fix: 0 },
-  { key: 'group', label: '分组', w: 88 },
-  { key: 'winNo', label: '窗口', w: 52, num: true, fix: 0, tip: '该目标星在本时窗内的第几次' },
-  { key: 'startAt', label: '开始', w: 152, time: true },
-  { key: 'endAt', label: '结束', w: 152, time: true },
-  { key: 'startMin', label: '起始', w: 78, num: true, fix: 2, unit: '+min', tip: '相对时窗起点的分钟数' },
-  { key: 'durMin', label: '时长', w: 78, num: true, fix: 2, unit: 'min' },
-  { key: 'trunc', label: '截断', w: 56, tip: '该端点不是真实穿越，而是撞上了时窗端点或星历断档' },
-  { key: 'peakAt', label: '峰值时刻', w: 152, time: true },
-  { key: 'peakMin', label: '峰值', w: 78, num: true, fix: 2, unit: '+min' },
-  { key: 'dir', label: '峰值 Dir', w: 82, num: true, fix: 2, unit: 'dB' },
-  { key: 'meanDir', label: '均值 Dir', w: 82, num: true, fix: 2, unit: 'dB', tip: '窗内按时间加权的功率平均（线性域平均后转 dB），非 dB 直接平均' },
-  { key: 'param', label: '峰值 Parameter', w: 104, num: true, fix: 2, unit: 'dB' },
-  { key: 'minOff', label: '最小离轴角', w: 92, num: true, fix: 3, unit: '°', tip: '按扫描采样取，未二次精炼' },
-  { key: 'beamNo', label: '波束号', w: 56, num: true, fix: 0 },
-  { key: 'beamName', label: '波束', w: 110 },
-  { key: 'offAxis', label: '峰值离轴角', w: 92, num: true, fix: 3, unit: '°' },
-  { key: 'slant', label: '峰值斜距', w: 90, num: true, fix: 1, unit: 'km' },
-  { key: 'tgtAlt', label: '高度', w: 78, num: true, fix: 1, unit: 'km' },
-  { key: 'shell', label: '壳层', w: 84 },
-  { key: 'tgtLon', label: '星下点经度', w: 92, num: true, fix: 2, unit: '°E' },
-  { key: 'tgtLat', label: '星下点纬度', w: 92, num: true, fix: 2, unit: '°N' },
-  { key: 'scAz', label: 'S/C Az', w: 66, num: true, fix: 3, unit: '°' },
-  { key: 'scEl', label: 'S/C El', w: 66, num: true, fix: 3, unit: '°' },
-  { key: 'u', label: 'u', w: 62, num: true, fix: 4 },
-  { key: 'v', label: 'v', w: 62, num: true, fix: 4 },
-  { key: 'minPt', label: 'Min Pointing', w: 92, num: true, fix: 2, unit: 'dB' },
-  { key: 'maxPt', label: 'Max Pointing', w: 92, num: true, fix: 2, unit: 'dB' },
-  { key: 'xpol', label: 'Xpol C/I', w: 92, num: true, fix: 2, unit: 'dB' },
-  { key: 'slope', label: 'Slope', w: 86, num: true, fix: 2, unit: 'dB/°' },
-  { key: 'ar', label: 'AR', w: 70, num: true, fix: 2, unit: 'dB' }
-]
-const WIN_GROUPS = [
-  { title: '标识', keys: ['satName', 'antName', 'tgtName', 'noradId', 'group'] },
-  { title: '时段', keys: ['winNo', 'startAt', 'endAt', 'startMin', 'durMin', 'trunc'] },
-  { title: '峰值', keys: ['peakAt', 'peakMin', 'dir', 'meanDir', 'param', 'minOff'] },
-  { title: '波束', keys: ['beamNo', 'beamName'] },
-  { title: '几何', keys: ['offAxis', 'slant', 'tgtAlt', 'shell', 'tgtLon', 'tgtLat', 'scAz', 'scEl', 'u', 'v'] },
-  { title: '性能', keys: ['minPt', 'maxPt', 'xpol', 'slope', 'ar'] }
-]
-// —— 汇总视图：一行 = 一颗目标星，报它在整个时窗里的统计 ——
-const SUM_COLS = [
-  { key: 'no', label: 'No.', w: 44, num: true, fix: 0 },
-  { key: 'satName', label: '源卫星', w: 96 },
-  { key: 'antName', label: '天线', w: 100 },
-  { key: 'tgtName', label: '目标卫星', w: 128 },
-  { key: 'noradId', label: 'NORAD', w: 68, num: true, fix: 0 },
-  { key: 'group', label: '分组', w: 88 },
-  { key: 'nWin', label: '窗口数', w: 64, num: true, fix: 0 },
-  { key: 'totMin', label: '总时长', w: 84, num: true, fix: 2, unit: 'min' },
-  { key: 'pct', label: '占比', w: 70, num: true, fix: 2, unit: '%', tip: '照到的总时长 ÷ 时窗长度' },
-  { key: 'maxWinMin', label: '最长', w: 78, num: true, fix: 2, unit: 'min' },
-  { key: 'minWinMin', label: '最短', w: 78, num: true, fix: 2, unit: 'min' },
-  { key: 'avgWinMin', label: '平均', w: 78, num: true, fix: 2, unit: 'min' },
-  { key: 'maxGapMin', label: '最长空档', w: 92, num: true, fix: 2, unit: 'min', tip: '两次照到之间的最长间隔；含时窗首尾（开头/末尾没被照到也算一段）' },
-  { key: 'gapCount', label: '空档数', w: 64, num: true, fix: 0 },
-  { key: 'firstAt', label: '首次开始', w: 152, time: true },
-  { key: 'dir', label: '全窗峰值 Dir', w: 100, num: true, fix: 2, unit: 'dB' },
-  { key: 'peakAt', label: '峰值时刻', w: 152, time: true },
-  { key: 'beamName', label: '峰值波束', w: 110 },
-  { key: 'state', label: '状态', w: 76, tip: '空=有窗口；无窗口=整个时窗内都没达到门限' },
-  { key: 'tgtAlt', label: '高度', w: 78, num: true, fix: 1, unit: 'km' },
-  { key: 'shell', label: '壳层', w: 84 }
-]
-const SUM_GROUPS = [
-  { title: '标识', keys: ['satName', 'antName', 'tgtName', 'noradId', 'group'] },
-  { title: '统计', keys: ['nWin', 'totMin', 'pct', 'maxWinMin', 'minWinMin', 'avgWinMin', 'maxGapMin', 'gapCount', 'firstAt'] },
-  { title: '峰值', keys: ['dir', 'peakAt', 'beamName'] },
-  { title: '目标', keys: ['state', 'tgtAlt', 'shell'] }
-]
-// 角步进档 → 「几倍网格步距」。网格步距是方向图自身的分辨率，比它还细的结构本就不存在；
-// 标准档 2 格 = 任何一个方向图特征至少被采到 2 次。窗口窄于 2×角步进就可能被漏（见 satcovScan 测试③）。
-const RES_K = { coarse: 4, std: 2, fine: 1 }
+// 扫描的角步进 = 2 × 网格步距。网格步距是方向图自身的分辨率，比它还细的结构本就不存在，2 格＝任何一个
+// 特征至少被采到 2 次。原先给了粗/标准/精细三档，实测差别只在耗时（见 satcovScan 测试③），故钉死在标准档。
+const ANG_STEP_CELLS = 2
 
 function colMap(defs, on) {
   const m = {}
@@ -160,8 +85,6 @@ function colMap(defs, on) {
 function defaultOpts() {
   return {
     cols: colMap(COL_DEFS, ['no', 'tgtName', 'tgtAlt', 'shell', 'state', 'beamName', 'offAxis', 'slant', 'dir', 'param']),
-    winCols: colMap(WIN_COLS, ['no', 'tgtName', 'winNo', 'startAt', 'durMin', 'peakAt', 'dir', 'beamName', 'minOff']),
-    sumCols: colMap(SUM_COLS, ['no', 'tgtName', 'nWin', 'totMin', 'pct', 'maxGapMin', 'dir', 'peakAt']),
     // 目标由用户点选 → 默认【不过滤】：选了却不显示比多显示几行更糟。想只看照到的，勾上过滤。
     filterOn: false, minDir: 0,
     sameAsAnt: true, pol: 'RSS', pathLoss: 'none', gainOffset: 0,
@@ -228,7 +151,7 @@ export function useSatPerfTable() {
     if (!optsByAnt.value[key]) {
       const base = defaultOpts()
       optsByAnt.value[key] = optsTemplate
-        ? { ...base, ...cloneOpts(optsTemplate), cols: { ...base.cols, ...(optsTemplate.cols || {}) }, winCols: { ...base.winCols, ...(optsTemplate.winCols || {}) }, sumCols: { ...base.sumCols, ...(optsTemplate.sumCols || {}) }, beamSel: null }
+        ? { ...base, ...cloneOpts(optsTemplate), cols: { ...base.cols, ...(optsTemplate.cols || {}) }, beamSel: null }
         : base
     }
     return optsByAnt.value[key]
@@ -353,12 +276,14 @@ export function useSatPerfTable() {
       for (const s of shellList) { const d = Math.abs(rGeo - s.R); if (d < bestD && d < s.R * 0.05) { bestD = d; name = s.name } }
       return name
     }
-    // 某时刻、某目标星的完整指标（瞬时表逐星、时段表逐窗的峰值时刻共用）。填进 row，返回胜出波束。
-    function fillRow(row, basis, P, meta, want) {
+    // 纯几何（离轴角 / 斜距 / u,v / S/C Az·El）：不碰方向图，故【被遮挡的目标也照填】——
+    // 这些量是两颗星的真实几何关系，与看不看得见无关。返回瞄准量供后续取值，算不出方向即 null。
+    function fillGeom(row, basis, P, meta, want) {
       const am = aim(basis, P)
       if (!am) { row.state = '背面'; return null }
       row.offAxis = Math.acos(Math.max(-1, Math.min(1, am.c))) * R2D
       row.slant = am.rs
+      row.u = am.a; row.v = am.b
       if (want('scAz') || want('scEl')) {
         // 源星天底系（与对地表 scAz/scEl 同一参照：星下点方向为 0，不是 boresight）
         const nb = antennaBasis(meta.satLon, meta.satLon, meta.satLat || 0, 0, meta.satLat || 0, meta.satAlt)
@@ -368,12 +293,18 @@ export function useSatPerfTable() {
         const dz = (ex * nb.z[0] + ey * nb.z[1] + ez * nb.z[2]) / rs
         row.scAz = Math.atan2(-dx, Math.hypot(dy, dz)) * R2D; row.scEl = Math.atan2(dy, dz) * R2D
       }
+      return am
+    }
+    // 某时刻、某目标星的完整指标（几何 + 方向图取值）。填进 row，返回胜出波束；取不到值即 null。
+    function fillRow(row, basis, P, meta, want) {
+      const am = fillGeom(row, basis, P, meta, want)
+      if (!am) return null
       if (!inDomain(am.xy)) { row.state = am.xy ? '域外' : '背面'; return null }
       const w = sampleMax(am.xy, am.rs, false)
       if (!w) { row.state = '域外'; return null }
       const beam = w.bm.beam
       row.beamNo = w.bm.seq || w.bm.bi + 1; row.beamName = w.bm.name
-      row.u = am.a; row.v = am.b; row.dir = w.db
+      row.dir = w.db
       if (want('ar')) { const d2 = sampleBeamAtEcef(beam, ctx.igrid, basis, P, { ...dirOpts, wantComp: true }); row.ar = (d2 && d2.comp) ? axialRatioDb(d2.comp, icomp) : null }
       const wantPt = want('minPt') || want('maxPt')
       const p = (want('param') || wantPt) ? sampleBeamAtParam(beam, am.xy, am.rs, parOpts) : null
@@ -394,7 +325,41 @@ export function useSatPerfTable() {
       }
       return w
     }
-    return { aim, inDomain, sampleMax, shellOf, fillRow, dirOpts, parOpts, rel, polD, beams, domRadDeg, gridCell, hasBounds }
+    return { aim, inDomain, sampleMax, shellOf, fillGeom, fillRow, dirOpts, parOpts, rel, polD, beams, domRadDeg, gridCell, hasBounds }
+  }
+
+  // ==================== 一张瞬时表（当前时刻 / 时窗游标共用）====================
+  // basis/meta = 该时刻的天线基底与源星星下点；posOf(e) = 该时刻目标星的 ECEF + 星下点。
+  // ★ 被遮挡（星-星视线被地球挡住）的目标【只填几何、不填方向图取值】：那一刻这条链路根本不存在，
+  //   报一个「理论上天线在那个方向有多少 dB」只会被当成能用的数（原先靠置灰表示无效，仍会被读走/被复制/
+  //   被导出成 Excel 里的一个数字）。留空才是无值本身。域外 / 背面同理，本就取不到值。
+  function buildRows(ctx, o, calc, want, basis, meta, targets, posOf, hExKm) {
+    const out = []
+    let no = 1, inBeam = 0, occluded = 0
+    for (const e of targets) {
+      const g = posOf(e)
+      if (!g) continue
+      const P = g.P
+      const blocked = losBlocked(basis.S, P, hExKm)
+      if (blocked) occluded++
+      const base = {
+        id: e.noradId || e.name, no: 0,
+        satName: ctx.satName, antName: ctx.antName,
+        tgtName: e.name, noradId: e.noradId, group: e.group,
+        tgtAlt: g.alt, shell: calc.shellOf(P), tgtLon: g.lon, tgtLat: g.lat,
+        scAz: null, scEl: null, offAxis: null, slant: null,
+        beamNo: null, beamName: '', u: null, v: null,
+        dir: null, param: null, minPt: null, maxPt: null, xpol: null, slope: null, ar: null, state: ''
+      }
+      if (blocked) { calc.fillGeom(base, basis, P, meta, want); base.state = '遮挡' }
+      else if (calc.fillRow(base, basis, P, meta, want)) inBeam++
+      // 「仅照到的星」：没取到值的（域外/背面/遮挡）与低于阈值的一并不列 —— 勾了这一项就是只要能用的那些。
+      // ★ null 要显式挡掉：`null >= 门限` 会被数值化成 `0 >= 门限`，门限一为负就把无值行全放过去了。
+      if (o.filterOn && (base.dir == null || base.dir < o.minDir)) continue
+      base.no = no++
+      out.push(base)
+    }
+    return { out, inBeam, occluded }
   }
 
   // 目标星的地理量（星下点经纬度 / 高度）：SGP4 的 ECI 结果直接换算，避免 ECEF 再反解
@@ -421,101 +386,58 @@ export function useSatPerfTable() {
 
     const all = targets || []
     const use = all.length > MAX_TARGETS ? all.slice(0, MAX_TARGETS) : all
-    const out = []
-    let no = 1, inBeam = 0, occluded = 0
-    for (const e of use) {
+    // 此刻的目标星位置：真实星按 now、合成/自定义星按 ccNow（双历元）
+    const posOf = (e) => {
       const t = e._cc ? times.ccNow : times.now
       const gm = e._cc ? times.ccGmst : times.gmst
       let pv
-      try { pv = sat.propagate(e.rec, t) } catch { continue }
-      if (!pv || !pv.position) continue
-      const ecf = sat.eciToEcf(pv.position, gm)
-      const P = [ecf.x, ecf.y, ecf.z]
-      const blocked = losBlocked(basis.S, P, hExKm)
-      if (blocked) occluded++
-      const g = geoOf(pv, gm)
-      const base = {
-        id: e.noradId || e.name, no: no++,
-        satName: ctx.satName, antName: ctx.antName,
-        tgtName: e.name, noradId: e.noradId, group: e.group,
-        tgtAlt: g.alt, shell: calc.shellOf(P), tgtLon: g.lon, tgtLat: g.lat,
-        scAz: null, scEl: null, offAxis: null, slant: null,
-        beamNo: null, beamName: '', u: null, v: null,
-        dir: null, param: null, minPt: null, maxPt: null, xpol: null, slope: null, ar: null, state: ''
-      }
-      const w = calc.fillRow(base, basis, P, meta, want)
-      if (w) {
-        inBeam++
-        base.state = blocked ? '遮挡' : ''
-        if (o.filterOn && base.dir < o.minDir) { no--; continue }
-      }
-      out.push(base)
+      try { pv = sat.propagate(e.rec, t) } catch { return null }
+      if (!pv || !pv.position) return null
+      const ecf = sat.eciToEcf(pv.position, gm), g = geoOf(pv, gm)
+      return { P: [ecf.x, ecf.y, ecf.z], lon: g.lon, lat: g.lat, alt: g.alt }
     }
-    rows.value = out
+    const r = buildRows(ctx, o, calc, want, basis, meta, use, posOf, hExKm)
+    rows.value = r.out
     ctxInfo.value = { satName: ctx.satName, antName: ctx.antName, beams: ctx.beams.length }
     const ms = Math.round((typeof performance !== 'undefined' ? performance.now() : 0) - t0)
-    note.value = `${all.length} 目标 · ${inBeam} 落入方向图 · ${occluded} 被遮挡 · ${out.length} 行 · ${ms} ms`
+    note.value = `${all.length} 目标 · ${r.inBeam} 落入方向图 · ${r.occluded} 被遮挡 · ${r.out.length} 行 · ${ms} ms`
       + (all.length > MAX_TARGETS ? ` · 已截断至前 ${MAX_TARGETS} 个` : '')
   }
 
-  // ==================== 时间窗口：时段扫描 ====================
+  // ==================== 时间窗口：可见时段扫描 + 时窗游标 ====================
+  // 参数只剩【起点 + 时长】。扫描出的是每颗目标星的可见时段（域内 && 视线通，见文件头），
+  // 表里的数由【游标那一刻】现算，与「当前时刻」共用 buildRows —— 两种口径逐位可比。
   const win = reactive({
     on: false,              // false = 当前时刻，true = 时间窗口
-    view: 'seg',            // 'seg' 时段 | 'sum' 汇总
     startMs: null,          // null = 跟随时间轴当前时刻
     durH: 24,
-    thrMode: 'rel',         // 'rel' 相对波束峰值 | 'abs' 绝对 dBi
-    thrRel: -3, thrAbs: 0,
-    losOn: true,            // 视线被地球挡住 = 出窗
-    res: 'std',             // 角步进档：coarse / std / fine
-    gantt: true,
+    cursorMs: null,         // 游标时刻（属于结果，不入快照）
     busy: false, progress: 0, msg: ''
   })
-  const winRows = ref([])
-  const sumRows = ref([])
   const winNote = ref('')
-  const winInfo = ref(null)   // { t0Ms, t1Ms, thrDb, nWin, samples, ms, budgetHit, minStepHit, truncated }
-  const winThr = () => (win.thrMode === 'rel' ? Number(win.thrRel) : Number(win.thrAbs)) || 0
+  const winInfo = ref(null)   // { t0Ms, t1Ms, bands, nTarget, nLit, nWin, samples, ms, budgetHit, minStepHit, truncated }
   // 「输入已变」＝当前输入的指纹 ≠ 出这份结果时的指纹。用指纹而不是一个 stale 标志位 + watcher：
   // 标志位靠 watcher 时序，「改完参数当场点计算」这种同一拍里的操作，watcher 可能在扫描【之后】才刷，
   // 结果刚算完就自称过期。指纹是当场比对，谁先谁后都不会错判。
   const winFp = ref('')
   // ★ 波束内档不把成员名单计入指纹：成员本来就每拍在变（星进星出），计入就等于每拍都自称过期，
   //   「输入已变」会一直闪。扫描用的是点「计算」那一刻钉住的名单，想按新名单重扫再点一次即可。
-  const winSig = (key) => [key || '', win.durH, win.startMs, win.thrMode, winThr(), win.losOn ? 1 : 0, win.res,
+  const winSig = (key) => [key || '', win.durH, win.startMs,
     targetMode.value === 'beam' ? 'beam' : picks.value.map((p) => p.noradId || p.name).join(',')].join('|')
   const winStaleFor = (key) => !winInfo.value || winFp.value !== winSig(key)
   let _winToken = 0
+  let _winEnv = null          // 扫完留下的取值环境：游标每挪一下按它现算一张瞬时表
   function cancelWindows() { _winToken++; win.busy = false; win.msg = '已取消' }
 
-  // ctx/opts/targets/times/shells/hExKm 同 compute；env 补上时段扫描才需要的东西：
-  //   env.srcRec   — 源星 {rec,_cc}；固定星（无星历）给 null → 源星位置恒取 ctx.meta
-  //   env.boreRec  — 对星指向（sat/satoff）的目标星 {rec,_cc}；非该模式或解析不到给 null
-  //   env.onDone   — 扫完回调（宿主刷新读数用）
-  async function computeWindows(ctx, opts, targets, times, shells, hExKm = 0, env = {}) {
-    const token = ++_winToken
-    if (!ctx) { winRows.value = []; sumRows.value = []; winInfo.value = null; win.msg = ''; winNote.value = ''; return }
-    const o = opts || defaultOpts()
-    ctxBeams.value = ctx.beams.map((b) => ({ bi: b.bi, seq: b.seq || b.bi + 1, name: b.name, peakDb: b.peakDb }))
-    ctxInfo.value = { satName: ctx.satName, antName: ctx.antName, beams: ctx.beams.length }
-    const all = targets || []
-    if (!all.length) { winRows.value = []; sumRows.value = []; winInfo.value = null; win.msg = ''; winNote.value = ''; winFp.value = ''; return }
-
-    const t0 = (typeof performance !== 'undefined' ? performance.now() : 0)
-    win.busy = true; win.progress = 0; win.msg = ''
-    const calc = perfCalc(ctx, o, shells, hExKm)
-    const want = (k) => o.winCols[k] || o.sumCols[k]
-    const thr = winThr(), byRel = win.thrMode === 'rel'
-    const t0Ms = Number.isFinite(win.startMs) ? win.startMs : times.now.getTime()
-    const durH = Math.max(0.02, Math.min(720, Number(win.durH) || 24))
-    const t1Ms = t0Ms + durH * 3600 * 1000
-    const ccOff = times.ccNow && times.now ? times.ccNow.getTime() - times.now.getTime() : 0
-    const angStep = Math.max(0.01, Math.min(1, RES_K[win.res] * calc.gridCell))
+  // —— 任意时刻的几何（扫描逐拍、游标逐次都走它）——
+  //   env.srcRec  — 源星 {rec,_cc}；固定星（无星历）给 null → 源星位置恒取 ctx.meta
+  //   env.boreRec — 对星指向（sat/satoff）的目标星 {rec,_cc}；非该模式或解析不到给 null
+  function makeGeom(ctx, times, env) {
     const st0 = ctx.settings, meta0 = ctx.meta
-
-    // —— 任意时刻的源星位置：有星历按星历走，固定星恒定。口径与实时路一致（星下点 lon/lat/alt）——
-    const srcRec = env.srcRec || null
+    const ccOff = times.ccNow && times.now ? times.ccNow.getTime() - times.now.getTime() : 0
     const baseMeta = { satLon: meta0.satLon, satLat: meta0.satLat || 0, satAlt: meta0.satAlt }
+    const srcRec = env.srcRec || null
+    // 源星位置：有星历按星历走，固定星恒定。口径与实时路一致（星下点 lon/lat/alt）
     const srcMetaAt = srcRec
       ? (tMs) => {
         const d = new Date(tMs + (srcRec._cc ? ccOff : 0))
@@ -526,89 +448,76 @@ export function useSatPerfTable() {
         return { satLon: g.lon, satLat: g.lat, satAlt: g.alt }
       }
       : () => baseMeta
-    const ecefAt = (rec, tMs) => {
+    const geoAt = (rec, tMs) => {
       const d = new Date(tMs)
       let pv
       try { pv = sat.propagate(rec, d) } catch { return null }
       if (!pv || !pv.position) return null
-      const e = sat.eciToEcf(pv.position, sat.gstime(d))
-      return [e.x, e.y, e.z]
+      const gm = sat.gstime(d), e = sat.eciToEcf(pv.position, gm), g = geoOf(pv, gm)
+      return { P: [e.x, e.y, e.z], lon: g.lon, lat: g.lat, alt: g.alt }
     }
+    const ecefAt = (rec, tMs) => { const r = geoAt(rec, tMs); return r ? r.P : null }
     const boreRec = env.boreRec || null
-    const boreAt = (tMs) => (boreRec ? ecefAt(boreRec.rec, tMs + (boreRec._cc ? ccOff : 0)) : null)
     const needBore = st0.boreType === 'sat' || st0.boreType === 'satoff'
+    const boreAt = (tMs) => (boreRec ? ecefAt(boreRec.rec, tMs + (boreRec._cc ? ccOff : 0)) : null)
     // 某时刻的天线基底：源星走到哪 → 指向字段按各自语义重算 → 基底
     const basisAt = (tMs, m) => beamBasisFrom(m, boreSettingsAtPos(st0, baseMeta, { lon: m.satLon, lat: m.satLat }), needBore ? boreAt(tMs) : null)
+    return { ccOff, srcMetaAt, geoAt, ecefAt, basisAt }
+  }
+
+  // ctx/opts/targets/times/shells/hExKm 同 compute；env 见 makeGeom，另有 env.onDone（扫完回调）
+  async function computeWindows(ctx, opts, targets, times, shells, hExKm = 0, env = {}) {
+    const token = ++_winToken
+    const clear = () => { winInfo.value = null; _winEnv = null; win.msg = ''; winNote.value = ''; win.cursorMs = null; clearRows() }
+    if (!ctx) { clear(); return }
+    const o = opts || defaultOpts()
+    ctxBeams.value = ctx.beams.map((b) => ({ bi: b.bi, seq: b.seq || b.bi + 1, name: b.name, peakDb: b.peakDb }))
+    ctxInfo.value = { satName: ctx.satName, antName: ctx.antName, beams: ctx.beams.length }
+    const all = targets || []
+    if (!all.length) { clear(); winFp.value = ''; return }
+
+    const t0 = (typeof performance !== 'undefined' ? performance.now() : 0)
+    win.busy = true; win.progress = 0; win.msg = ''
+    const calc = perfCalc(ctx, o, shells, hExKm)
+    const t0Ms = Number.isFinite(win.startMs) ? win.startMs : times.now.getTime()
+    const durH = Math.max(0.02, Math.min(720, Number(win.durH) || 24))
+    const t1Ms = t0Ms + durH * 3600 * 1000
+    const angStep = Math.max(0.01, Math.min(1, ANG_STEP_CELLS * calc.gridCell))
+    const geom = makeGeom(ctx, times, env)
 
     const use = all.length > MAX_TARGETS ? all.slice(0, MAX_TARGETS) : all
-    const segs = [], sums = [], bands = []
-    let no = 1, samples = 0, budgetHit = false, minStepHit = false, lastYield = t0
+    const bands = []
+    let samples = 0, nWin = 0, budgetHit = false, minStepHit = false, lastYield = t0
     for (let i = 0; i < use.length; i++) {
       if (token !== _winToken) return                    // 被新的计算或取消作废
       const e = use[i]
-      const tOff = e._cc ? ccOff : 0
+      const tOff = e._cc ? geom.ccOff : 0
+      // 判据 = 落在方向图域内 && 视线没被地球挡。val 只用来找窗内峰值时刻（拖游标的落点），不参与判据。
       const evalAt = (tMs) => {
-        const m = srcMetaAt(tMs); if (!m) return null
-        const basis = basisAt(tMs, m)
-        const P = ecefAt(e.rec, tMs + tOff); if (!P) return null
+        const m = geom.srcMetaAt(tMs); if (!m) return null
+        const basis = geom.basisAt(tMs, m)
+        const P = geom.ecefAt(e.rec, tMs + tOff); if (!P) return null
         const am = calc.aim(basis, P); if (!am) return null
-        let val = null
+        let val = null, inDom = false
         if (calc.inDomain(am.xy)) {
-          const w = calc.sampleMax(am.xy, am.rs, byRel)
-          if (w) val = byRel ? w.rel : w.db
+          const w = calc.sampleMax(am.xy, am.rs, false)
+          if (w) { inDom = true; val = w.db }
         }
-        const blocked = win.losOn ? losBlocked(basis.S, P, hExKm) : false
-        return { d: [am.a, am.b, am.c], on: val != null && val >= thr && !blocked, val }
+        return { d: [am.a, am.b, am.c], on: inDom && !losBlocked(basis.S, P, hExKm), val }
       }
-      const r = scanWindows(evalAt, t0Ms, t1Ms, { domRadDeg: calc.domRadDeg, angStepDeg: angStep, thrDb: thr })
-      samples += r.samples; budgetHit = budgetHit || r.budgetHit; minStepHit = minStepHit || r.minStepHit
-      const idBase = e.noradId || e.name
-
-      // 每个窗口在【峰值时刻】算一遍完整指标（贵列同理）：一次穿越报一行，报的是这次穿越最好的那一刻
-      const wrows = []
-      for (let k = 0; k < r.windows.length; k++) {
-        const w = r.windows[k]
-        const row = {
-          id: idBase + '#' + k, no: no++, satName: ctx.satName, antName: ctx.antName,
-          tgtName: e.name, noradId: e.noradId, group: e.group,
-          winNo: k + 1, startAt: w.startMs, endAt: w.endMs,
-          startMin: (w.startMs - t0Ms) / 60000, durMin: w.durMin,
-          trunc: (w.truncStart ? '起' : '') + (w.truncEnd ? '止' : ''),
-          peakAt: w.peakMs, peakMin: (w.peakMs - t0Ms) / 60000,
-          meanDir: null, minOff: w.minOff, state: '',
-          tgtAlt: null, shell: '—', tgtLon: null, tgtLat: null,
-          scAz: null, scEl: null, offAxis: null, slant: null, beamNo: null, beamName: '', u: null, v: null,
-          dir: null, param: null, minPt: null, maxPt: null, xpol: null, slope: null, ar: null
-        }
-        const m = srcMetaAt(w.peakMs)
-        const d = new Date(w.peakMs + tOff)
-        let pv
-        try { pv = sat.propagate(e.rec, d) } catch { pv = null }
-        if (m && pv && pv.position) {
-          const gm = sat.gstime(d), ecf = sat.eciToEcf(pv.position, gm)
-          const P = [ecf.x, ecf.y, ecf.z], g = geoOf(pv, gm)
-          row.tgtAlt = g.alt; row.tgtLon = g.lon; row.tgtLat = g.lat; row.shell = calc.shellOf(P)
-          calc.fillRow(row, basisAt(w.peakMs, m), P, m, want)
-          // 相对口径下，扫描里的 val 是「相对各自波束峰值」的量；均值按同一口径折回绝对 dB，与 Dir 列可比
-          if (w.meanVal != null && row.dir != null && w.peakVal != null) row.meanDir = row.dir + (w.meanVal - w.peakVal)
-        } else row.state = '星历缺失'
-        wrows.push(row)
-      }
-      segs.push(...wrows)
-
+      const r = scanWindows(evalAt, t0Ms, t1Ms, { domRadDeg: calc.domRadDeg, angStepDeg: angStep })
+      samples += r.samples; nWin += r.windows.length
+      budgetHit = budgetHit || r.budgetHit; minStepHit = minStepHit || r.minStepHit
       const s = summarize(r.windows, t0Ms, t1Ms)
-      const pk = wrows.length ? wrows.reduce((a, b) => ((b.dir != null && (a == null || a.dir == null || b.dir > a.dir)) ? b : a), null) : null
-      sums.push({
-        id: idBase, no: sums.length + 1, satName: ctx.satName, antName: ctx.antName,
-        tgtName: e.name, noradId: e.noradId, group: e.group,
-        nWin: s.nWin, totMin: s.totMin, pct: s.pct,
-        maxWinMin: s.maxWinMin, minWinMin: s.minWinMin, avgWinMin: s.avgWinMin,
-        maxGapMin: s.maxGapMin, gapCount: s.gapCount, firstAt: s.firstMs,
-        dir: pk ? pk.dir : null, peakAt: pk ? pk.peakAt : null, beamName: pk ? pk.beamName : '',
-        tgtAlt: pk ? pk.tgtAlt : null, shell: pk ? pk.shell : '—',
-        state: s.nWin ? '' : '无窗口'
+      bands.push({
+        id: e.noradId || e.name, name: e.name, noradId: e.noradId, nWin: r.windows.length,
+        totMin: s.totMin, pct: s.pct,
+        // a/b = 条带上的位置（0~1）；ms 三件套供游标吸附与读数
+        segs: r.windows.map((w, k) => ({
+          k: k + 1, a: (w.startMs - t0Ms) / (t1Ms - t0Ms), b: (w.endMs - t0Ms) / (t1Ms - t0Ms),
+          startMs: w.startMs, endMs: w.endMs, peakMs: w.peakMs, durMin: w.durMin, peakVal: w.peakVal, minOff: w.minOff
+        }))
       })
-      bands.push({ id: idBase, name: e.name, nWin: r.windows.length, segs: r.windows.map((w) => ({ a: (w.startMs - t0Ms) / (t1Ms - t0Ms), b: (w.endMs - t0Ms) / (t1Ms - t0Ms) })) })
 
       const now = (typeof performance !== 'undefined' ? performance.now() : 0)
       win.progress = (i + 1) / use.length
@@ -616,36 +525,66 @@ export function useSatPerfTable() {
       if (now - lastYield > 24) { await new Promise((res) => setTimeout(res, 0)); lastYield = (typeof performance !== 'undefined' ? performance.now() : 0) }
     }
     if (token !== _winToken) return
-    winRows.value = segs
-    sumRows.value = sums
     const ms = Math.round((typeof performance !== 'undefined' ? performance.now() : 0) - t0)
     winInfo.value = {
-      t0Ms, t1Ms, thrDb: thr, thrMode: win.thrMode, angStep, bands,
-      nTarget: use.length, nWin: segs.length, nLit: sums.filter((x) => x.nWin > 0).length,
+      t0Ms, t1Ms, angStep, bands,
+      nTarget: use.length, nWin, nLit: bands.filter((x) => x.nWin > 0).length,
       samples, ms, budgetHit, minStepHit, truncated: all.length > MAX_TARGETS
     }
+    _winEnv = { ctx, o, shells, hExKm, targets: use, geom, t0Ms, t1Ms }
     win.busy = false; win.progress = 1; winFp.value = winSig(ctx.key)
     win.msg = ''
     // 读数分两份：瞬时表随手重算会覆盖 note，扫描结果的读数得单独存，否则一刷新就没了
-    winNote.value = `${use.length} 目标 · ${winInfo.value.nLit} 有窗口 · ${segs.length} 个时段 · 取值 ${samples.toLocaleString()} 次 · ${ms} ms`
-      + ` · 角步进 ${angStep.toFixed(3)}°`
+    winNote.value = `${use.length} 目标 · ${winInfo.value.nLit} 有窗口 · ${nWin} 个时段 · 取值 ${samples.toLocaleString()} 次 · ${ms} ms`
       + (budgetHit ? ' · 已达取值预算（可能漏窗）' : '') + (minStepHit ? ' · 已到步长下限（可能漏窗）' : '')
       + (all.length > MAX_TARGETS ? ` · 已截断至前 ${MAX_TARGETS} 个` : '')
+    // 游标落在最早的那次窗口峰值上（没有窗口就落时窗起点）——一扫完表里就是「第一次照到时最好的那一刻」
+    const firstPeak = bands.reduce((a, b) => (b.segs.length && (a == null || b.segs[0].peakMs < a) ? b.segs[0].peakMs : a), null)
+    seekCursor(firstPeak == null ? t0Ms : firstPeak)
     if (typeof env.onDone === 'function') env.onDone()
   }
 
-  // ===== 当前视图（列定义 / 行 / 分组）：三张表共用一套渲染与复制路径 =====
-  const viewMode = computed(() => (!win.on ? 'now' : (win.view === 'sum' ? 'sum' : 'seg')))
-  const colDefsOf = (m) => (m === 'now' ? COL_DEFS : m === 'seg' ? WIN_COLS : SUM_COLS)
-  const colGroupsOf = (m) => (m === 'now' ? COL_GROUPS : m === 'seg' ? WIN_GROUPS : SUM_GROUPS)
-  const colKeyOf = (m) => (m === 'now' ? 'cols' : m === 'seg' ? 'winCols' : 'sumCols')
-  const viewCols = (o) => { const m = viewMode.value, ck = colKeyOf(m); return colDefsOf(m).filter((c) => o && o[ck] && o[ck][c.key]) }
-  const viewRows = computed(() => (viewMode.value === 'now' ? rows.value : viewMode.value === 'seg' ? winRows.value : sumRows.value))
-  const footNote = computed(() => (win.on ? winNote.value : note.value))
+  // 游标 → 表：按该时刻现算一张瞬时表（列、口径、取值路径与「当前时刻」完全一致）。
+  // 扫描结果本身不动 —— 拖游标只是换一个取值时刻，不重扫。
+  function computeAtCursor(tMs) {
+    const env = _winEnv
+    if (!env || !Number.isFinite(tMs)) return
+    const t = Math.max(env.t0Ms, Math.min(env.t1Ms, tMs))
+    const { ctx, o, shells, hExKm, targets, geom } = env
+    const t1 = (typeof performance !== 'undefined' ? performance.now() : 0)
+    const m = geom.srcMetaAt(t)
+    if (!m) { rows.value = []; note.value = '源星星历在该时刻无解'; stampMs.value = t; return }
+    // calc 每次现建：口径（极化 / 路径损耗 / 波束筛选）是选项弹窗里能随时改的，钉在扫描那一刻就改不动了
+    const calc = perfCalc(ctx, o, shells, hExKm)
+    const want = (k) => o.cols[k]
+    const basis = geom.basisAt(t, m)
+    const posOf = (e) => geom.geoAt(e.rec, t + (e._cc ? geom.ccOff : 0))
+    const r = buildRows(ctx, o, calc, want, basis, m, targets, posOf, hExKm)
+    rows.value = r.out
+    stampMs.value = t
+    const ms = Math.round((typeof performance !== 'undefined' ? performance.now() : 0) - t1)
+    note.value = `${targets.length} 目标 · ${r.inBeam} 落入方向图 · ${r.occluded} 被遮挡 · ${r.out.length} 行 · ${ms} ms`
+  }
+  // 清表（不动 ctxInfo/扫描结果）：切到「时间窗口」却还没扫过时用 —— 留着上一档那一刻的数会被当成时窗里的数
+  function clearRows() { rows.value = []; note.value = ''; stampMs.value = null }
+  // 只挪游标（夹在时窗内），不重算 —— 拖动时游标线与读数当场跟手，贵的那一步交给调用方按帧节流。
+  // ★ 两件事必须分开：都塞进节流里的话，「上一窗/下一窗」连点两下读到的还是上一帧的游标，第二下就白点了。
+  function setCursor(tMs) {
+    if (!winInfo.value || !Number.isFinite(tMs)) return
+    win.cursorMs = Math.max(winInfo.value.t0Ms, Math.min(winInfo.value.t1Ms, tMs))
+  }
+  // 挪游标并当场重算（跳转类操作、扫描完落位用；连续拖动走 setCursor + 按帧调 computeAtCursor）
+  function seekCursor(tMs) {
+    setCursor(tMs)
+    if (Number.isFinite(win.cursorMs)) computeAtCursor(win.cursorMs)
+  }
+
+  // ===== 行：两种时间口径（当前时刻 / 时窗游标）共用一套列、渲染与复制路径 =====
+  const footNote = computed(() => note.value)
 
   const filteredRows = computed(() => {
     const q = query.value.trim().toLowerCase()
-    const src = viewRows.value
+    const src = rows.value
     if (!q) return src
     return src.filter((r) => [r.tgtName, r.group, r.noradId].some((v) => String(v || '').toLowerCase().includes(q)))
   })
@@ -701,14 +640,15 @@ export function useSatPerfTable() {
       targetMode: targetMode.value,   // 波束内档不存名单（名单是时刻的函数，存了也对不上下次打开的时刻）
       // startMs 同样要存：钉住的时窗起点是用户【显式设过】的时刻（null = 跟随时间轴），
       // 漏存就等于每次重开都被悄悄放回「跟随」，扫出来的时段与上次对不上。
-      win: { on: win.on, view: win.view, startMs: win.startMs, durH: win.durH, thrMode: win.thrMode, thrRel: win.thrRel, thrAbs: win.thrAbs, losOn: win.losOn, res: win.res, gantt: win.gantt }
+      win: { on: win.on, startMs: win.startMs, durH: win.durH }
     }
   }
   function restoreState(st) {
     if (!st) return
     if (Array.isArray(st.picks)) picks.value = st.picks.filter((p) => p && p.name).map((p) => ({ id: newTid(), name: p.name, noradId: p.noradId || null, group: p.group || '' }))
     if (st.targetMode === 'beam' || st.targetMode === 'pick') targetMode.value = st.targetMode
-    const fill = (c) => ({ ...defaultOpts(), ...c, cols: { ...defaultOpts().cols, ...(c.cols || {}) }, winCols: { ...defaultOpts().winCols, ...(c.winCols || {}) }, sumCols: { ...defaultOpts().sumCols, ...(c.sumCols || {}) } })
+    // 老快照里的 winCols/sumCols（时段/汇总两套视图已删）就地丢掉，不让它们跟着存回去
+    const fill = (c0) => { const { winCols, sumCols, ...c } = (c0 || {}); return { ...defaultOpts(), ...c, cols: { ...defaultOpts().cols, ...(c.cols || {}) } } }
     if (st.optsByAnt && typeof st.optsByAnt === 'object') {
       const m = {}
       for (const k of Object.keys(st.optsByAnt)) m[k] = fill(st.optsByAnt[k])
@@ -716,7 +656,7 @@ export function useSatPerfTable() {
     }
     optsTemplate = (st.optsTemplate && typeof st.optsTemplate === 'object') ? { ...fill(st.optsTemplate), beamSel: null } : null
     if (st.win && typeof st.win === 'object') {
-      for (const k of ['on', 'view', 'durH', 'thrMode', 'thrRel', 'thrAbs', 'losOn', 'res', 'gantt']) if (st.win[k] !== undefined) win[k] = st.win[k]
+      for (const k of ['on', 'durH']) if (st.win[k] !== undefined) win[k] = st.win[k]
       win.startMs = Number.isFinite(st.win.startMs) ? st.win.startMs : null   // 非有限值一律回到「跟随时间轴」
     }
   }
@@ -729,7 +669,6 @@ export function useSatPerfTable() {
     beamQuery, filteredBeams, beamOn, beamSelCount, filteredAllOn, filteredAnyOn, toggleBeam, selectFiltered,
     compute, toTsv, getState, restoreState, setTimeFmt, fmtCell, footNote,
     // 时间窗口
-    win, winRows, sumRows, winNote, winInfo, computeWindows, cancelWindows, winStaleFor, winThr,
-    viewMode, viewCols, viewRows, colDefsOf, colGroupsOf, colKeyOf
+    win, winNote, winInfo, computeWindows, cancelWindows, winStaleFor, setCursor, computeAtCursor, seekCursor, clearRows
   }
 }

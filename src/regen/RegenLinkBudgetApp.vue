@@ -16,6 +16,8 @@ import { slantWgs84Max, altFromSlant } from '../shared/slantRange.js'   // 手�
 import { resolveRefId } from '../shared/lbShare.js'
 import Icon from '../components/Icon.vue'
 import ConfigTree from '../components/ConfigTree.vue'
+import ConfigTreeMenu from '../components/ConfigTreeMenu.vue'
+import { useConfigTree } from '../shared/useConfigTree.js'
 import LbSection from '../components/LbSection.vue'
 import LbLibrary from '../components/LbLibrary.vue'
 import StationGrid from '../ngso/StationGrid.vue'
@@ -38,12 +40,22 @@ import { buildRegenScene } from '../shared/lbLinkScene.js'
 
 const api = typeof window !== 'undefined' ? window.api : null
 
-// ============ 配置列表（多级文件夹树；持久化 orbitType='REGEN' 独立命名空间）============
-const configs = ref([])
-const activeId = ref(null)
-const expandedFolders = ref(new Set(JSON.parse(localStorage.getItem('regen/expandedFolders') || '[]')))
-function persistExpanded() { try { localStorage.setItem('regen/expandedFolders', JSON.stringify([...expandedFolders.value])) } catch (e) { /* ignore */ } }
-function toggleFolder(f) { const s = new Set(expandedFolders.value); if (s.has(f.id)) s.delete(f.id); else s.add(f.id); expandedFolders.value = s; persistExpanded() }
+// ============ 配置列表（多级文件夹树，持久化到 userData/configs.regen.json，各工作台一份互不见面）============
+// 树的全部行为（增删改移 / 剪贴板 / 右键 / 键盘）在 shared/useConfigTree.js，五个工作台共用一份。
+// 注入的都是本窗特有的那几件事；它们都是【函数声明】，提升后才能在这里前向引用。
+const cfgTree = useConfigTree({
+  ns: 'regen', orbitType: 'REGEN', api, storageKey: 'regen/expandedFolders',
+  toast, blankState, serializeState, applyState, setBaseline, guardedLeave, askConfirm, defaultCfgName
+})
+const {
+  configs, activeId, focusId, expandedFolders, editing, cfgClip, cfgDlg, ctxMenu,
+  loadConfigs, uniqueCfgName, activeName, applyConfig, selectConfig,
+  openSaveDlg, confirmCfgDlg, updateConfig, saveCurrent,
+  toggleFolder, expandFolder, expandAll, collapseAll, persistExpanded,
+  addFolder, addBlankConfig, removeConfig, removeFolder, onDeleteItem, onMove, moveToRoot,
+  startRename, commitRename, cancelRename,
+  copyItem, cutItem, pasteConfig, ctxItem, ctxIsFolder, openCtx, closeCtx, ctxDo, onCfgKey
+} = cfgTree
 // —— 左侧栏（VS Code 活动栏范式：同屏只开一个视图）——
 // 'configs' = 配置列表（场景文件树）/ 'library' = 资源库（全局参数库）/ '' = 隐藏，两者二选一。
 // 开关：功能区「文件 › 配置列表」与「视图 › 资源库」，点当前视图即收起。
@@ -1500,83 +1512,20 @@ let _stateT = null
 function scheduleSaveState() { clearTimeout(_stateT); _stateT = setTimeout(() => { try { localStorage.setItem(STATE_KEY, JSON.stringify({ ...serializeState(), activeId: activeId.value })) } catch (e) { /* ignore */ } dirtyFlag.value = isDirty() }, 600) }
 watch([txStations, rxStations, islLinks, laserLinks, geoMode, geoHorizonHours, linkMode, hiddenModes, activeId], scheduleSaveState, { deep: true })
 
-async function loadConfigs() {
-  try {
-    const all = (api && await api.store.listConfigs()) || []
-    configs.value = all.filter((it) => it && ((it.type === 'folder') ? (it.orbitType === 'REGEN') : (it.state && it.state.orbitType === 'REGEN')))
-  } catch (e) { configs.value = [] }
-  pruneExpanded()
-}
-function pruneExpanded() {
-  const ids = new Set(configs.value.filter((c) => c.type === 'folder').map((c) => c.id))
-  let changed = false
-  for (const id of [...expandedFolders.value]) if (!ids.has(id)) { expandedFolders.value.delete(id); changed = true }
-  if (changed) persistExpanded()
-}
+// —— 命名配置 CRUD ——
+// 树本身的增删改移 / 剪贴板 / 右键 / 键盘全在 shared/useConfigTree.js（见文件上方 useConfigTree(...) 注入点）。
+// 这里只留本窗特有的三件：保存为新配置的预填名、空白配置的内容、删除文件夹用的确认框。
+// 注意：Electron 渲染进程没有 window.prompt / confirm（静默返回 null → 早先「保存不了」的根因），一律用应用内弹窗。
 function defaultCfgName() { const s = satConfigs[0] && satConfigs[0].form.satelliteName; const kind = linkMode.value === 'laser' ? byLang('再生激光星间', 'OBP Optical ISL') : linkMode.value === 'isl' ? byLang('再生星间', 'OBP ISL') : linkMode.value === 'downlink' ? byLang('再生下行', 'OBP Downlink') : byLang('再生上行', 'OBP Uplink'); const unit = (linkMode.value === 'isl' || linkMode.value === 'laser') ? byLang('条', 'links') : byLang('站', 'stations'); return (s ? s + ' ' : '') + `${kind} ${nLinks.value} ${unit}` }
-const cfgDlg = reactive({ open: false, name: '' })
-function openSaveDlg() { if (!api) { toast('保存需在桌面客户端中运行'); return } cfgDlg.name = defaultCfgName(); cfgDlg.open = true }
-async function confirmCfgDlg() {
-  const name = (cfgDlg.name || '').trim()
-  if (!name) { toast('请输入配置名称'); return }
-  const item = await api.store.saveConfig({ name, state: serializeState() })
-  cfgDlg.open = false; await loadConfigs(); if (item && item.id) { activeId.value = item.id; setBaseline() }
-  toast('已保存配置：' + name)
-}
-const editing = reactive({ id: null, name: '' })
-function startRename(c) { editing.id = c.id; editing.name = c.name; nextTick(() => { const el = document.querySelector('.lb-tree-rename'); if (el) { el.focus(); el.select() } }) }
-function cancelRename() { editing.id = null }
-async function commitRename() {
-  const id = editing.id; if (id == null) return
-  const c = configs.value.find((x) => x.id === id); const nm = (editing.name || '').trim(); editing.id = null
-  if (c && nm && nm !== c.name) { await api.store.saveConfig({ id: c.id, name: nm }); await loadConfigs(); toast('已改名：' + nm) }
-}
-async function updateConfig() {
-  if (!api || !activeId.value) return
-  const c = configs.value.find((x) => x.id === activeId.value); if (!c) return
-  await api.store.saveConfig({ id: c.id, name: c.name, state: serializeState() })
-  setBaseline(); await loadConfigs(); toast('已保存修改到：' + c.name)
-}
-async function saveCurrent() { if (!api) { toast('保存需在桌面客户端中运行'); return } if (activeId.value) await updateConfig(); else openSaveDlg() }
-function applyConfig(c) { if (!c) return; activeId.value = c.id; applyState(c.state); setBaseline() }
-async function selectConfig(c) { if (!c || c.id === activeId.value) return; if (!(await guardedLeave())) return; applyConfig(c) }
-async function removeConfig(id, e) {
-  if (e) e.stopPropagation(); if (!api) return
-  await api.store.deleteConfig(id)
-  if (activeId.value === id) { activeId.value = null; activeBaseline = '' }
-  if (cfgClip.value && cfgClip.value.id === id) cfgClip.value = null
-  await loadConfigs()
-}
+
+// 通用确认弹窗（Electron 渲染进程无原生 confirm）
 const confirmDlg = reactive({ open: false, msg: '' })
 let _confirmResolve = null
 function askConfirm(msg) { confirmDlg.msg = msg; confirmDlg.open = true; return new Promise((res) => { _confirmResolve = res }) }
 function answerConfirm(ok) { confirmDlg.open = false; const r = _confirmResolve; _confirmResolve = null; if (r) r(ok) }
-async function addFolder(parentId = null) {
-  if (!api) { toast('需在桌面客户端中运行'); return }
-  const item = await api.store.saveConfig({ type: 'folder', name: uniqueCfgName(newFolderName()), parentId: parentId || null, orbitType: 'REGEN' })
-  if (parentId) expandedFolders.value.add(parentId)
-  if (item && item.id) expandedFolders.value.add(item.id)
-  persistExpanded(); await loadConfigs(); if (item && item.id) startRename(item)
-}
-async function onMove(payload) {
-  if (!api || !payload || !payload.dragId) return
-  await api.store.moveItem({ id: payload.dragId, parentId: payload.parentId, anchorId: payload.anchorId, position: payload.position })
-  if (payload.position === 'inside' && payload.parentId) { expandedFolders.value.add(payload.parentId); persistExpanded() }
-  await loadConfigs()
-}
-async function removeFolder(folder) {
-  if (!api || !folder) return
-  const hasChildren = configs.value.some((c) => c.parentId === folder.id)
-  if (hasChildren && !(await askConfirm(`删除文件夹「${folder.name}」及其中全部子项？此操作不可撤销。`))) return
-  const removed = (await api.store.deleteFolder(folder.id)) || [folder.id]
-  const rset = new Set(removed)
-  if (activeId.value && rset.has(activeId.value)) { activeId.value = null; activeBaseline = '' }
-  if (cfgClip.value && rset.has(cfgClip.value.id)) cfgClip.value = null
-  for (const id of removed) expandedFolders.value.delete(id)
-  persistExpanded(); await loadConfigs(); toast('已删除文件夹：' + folder.name)
-}
-function onDeleteItem(item) { if (!item) return; if (item.type === 'folder') removeFolder(item); else removeConfig(item.id) }
-// 默认（空白）配置内容：四种模式各一条默认行（空引用 = 各库第一份），不再内嵌三库
+
+// 默认（空白）配置内容：四种模式各一条默认行（空引用 = 各库第一份），不再内嵌三库。
+// state.orbitType 照写：瀑布表/报表按它分体制（配置库的归属已改由文件分家决定，是另一件事）。
 function blankState() {
   return {
     orbitType: 'REGEN', v: 2, linkMode: 'uplink', hiddenModes: [],
@@ -1587,50 +1536,6 @@ function blankState() {
     geoMode: 'manual', geoHorizonHours: 24
   }
 }
-function uniqueCfgName(base) { const names = new Set(configs.value.map((c) => c.name)); if (!names.has(base)) return base; let i = 2; while (names.has(base + ' ' + i)) i++; return base + ' ' + i }
-async function addBlankConfig(parentId = null) {
-  if (!api) { toast('需在桌面客户端中运行'); return }
-  if (!(await guardedLeave())) return
-  const state = blankState()
-  const item = await api.store.saveConfig({ name: uniqueCfgName(newCfgName()), state, parentId: parentId || null })
-  if (parentId) { expandedFolders.value.add(parentId); persistExpanded() }
-  await loadConfigs(); if (item && item.id) { activeId.value = item.id; applyState(state); setBaseline() }
-  toast('已添加空白配置')
-}
-const cfgClip = shallowRef(null)
-function copyConfig(c) { if (!c || c.type === 'folder') return; cfgClip.value = { mode: 'copy', id: c.id, name: c.name, state: JSON.parse(JSON.stringify(c.state)) }; toast('已复制：' + c.name) }
-function cutConfig(c) { if (!c || c.type === 'folder') return; cfgClip.value = { mode: 'cut', id: c.id, name: c.name, state: JSON.parse(JSON.stringify(c.state)) }; toast('已剪切：' + c.name + '（粘贴以换位置）') }
-async function pasteConfig(targetId, into = false) {
-  const clip = cfgClip.value; if (!clip || !api) return
-  let movingId
-  if (clip.mode === 'copy') { const item = await api.store.saveConfig({ name: uniqueCfgName(copyNameOf(clip.name)), state: JSON.parse(JSON.stringify(clip.state)) }); movingId = item && item.id }
-  else movingId = clip.id
-  if (movingId) {
-    const target = (targetId && targetId !== movingId) ? configs.value.find((c) => c.id === targetId) : null
-    if (into && target && target.type === 'folder') await api.store.moveItem({ id: movingId, parentId: target.id, anchorId: null, position: 'inside' })
-    else if (target) await api.store.moveItem({ id: movingId, parentId: null, anchorId: target.id, position: 'after' })
-    else await api.store.moveItem({ id: movingId, parentId: null, anchorId: null, position: 'inside' })
-    if (into && target && target.type === 'folder') { expandedFolders.value.add(target.id); persistExpanded() }
-  }
-  if (clip.mode === 'cut') cfgClip.value = null
-  await loadConfigs(); toast('已粘贴')
-}
-function onCfgKey(e) {
-  if (!(e.ctrlKey || e.metaKey)) return
-  if (editing.id != null) return
-  const t = e.target && e.target.tagName
-  if (t === 'INPUT' || t === 'SELECT' || t === 'TEXTAREA') return
-  const c = activeId.value && configs.value.find((x) => x.id === activeId.value)
-  const k = e.key.toLowerCase()
-  if (k === 'c') { if (c) { copyConfig(c); e.preventDefault() } }
-  else if (k === 'x') { if (c) { cutConfig(c); e.preventDefault() } }
-  else if (k === 'v') { if (cfgClip.value) { pasteConfig(activeId.value || null); e.preventDefault() } }
-}
-const ctxMenu = reactive({ open: false, x: 0, y: 0, configId: null })
-const ctxConfig = computed(() => (ctxMenu.configId ? configs.value.find((c) => c.id === ctxMenu.configId) : null))
-const ctxIsFolder = computed(() => !!(ctxConfig.value && ctxConfig.value.type === 'folder'))
-function openCtx(e, c) { e.preventDefault(); ctxMenu.configId = c ? c.id : null; ctxMenu.x = Math.min(e.clientX, window.innerWidth - 170); ctxMenu.y = Math.min(e.clientY, window.innerHeight - 230); ctxMenu.open = true }
-function ctxDo(fn) { ctxMenu.open = false; fn() }
 // 指纹只取「场景内容」字段（库是全局资产、页签/结果列勾选是视图态，均不入指纹）
 function fingerprintOf(s) {
   return stableStringify({ tx: s.tx, rx: s.rx, isl: s.isl, laser: s.laser, geoMode: s.geoMode || 'auto', geoHorizonHours: s.geoHorizonHours, linkMode: s.linkMode, hiddenModes: s.hiddenModes })
@@ -1641,7 +1546,6 @@ let activeBaseline = ''
 const dirtyFlag = ref(false)
 function setBaseline() { activeBaseline = fingerprint(); dirtyFlag.value = false }
 function isDirty() { return !!activeId.value && fingerprint() !== activeBaseline }
-function activeName() { const c = configs.value.find((x) => x.id === activeId.value); return c ? c.name : '' }
 const leaveDlg = reactive({ open: false, name: '' })
 let _leaveResolve = null
 function askLeave(name) { return new Promise((res) => { leaveDlg.name = name; leaveDlg.open = true; _leaveResolve = res }) }
@@ -1722,7 +1626,7 @@ const shareCtx = {
   refsOf: shareRefsOf,
   pinRefs: sharePinRefs,
   remapState: shareRemap,
-  saveConfig: (payload) => api.store.saveConfig(payload),
+  saveConfig: (payload) => api.store.saveConfig('regen', payload),
   flushLib: flushLibSave,
   onImported: async ({ last, plan, idMap }) => {
     await loadConfigs()
@@ -1890,10 +1794,10 @@ onMounted(async () => {
           </div>
           <div class="lb-col-bd" tabindex="0" @keydown="onCfgKey" @contextmenu="openCtx($event, null)">
             <ConfigTree
-              :items="configs" :active-id="activeId" :editing-id="editing.id" :editing-name="editing.name"
+              :items="configs" :active-id="activeId" :focus-id="focusId" :editing-id="editing.id" :editing-name="editing.name"
               :expanded="expandedFolders"
               :cut-id="cfgClip && cfgClip.mode === 'cut' ? cfgClip.id : null"
-              @select="selectConfig" @toggle="toggleFolder" @delete="onDeleteItem" @move="onMove"
+              @select="selectConfig" @toggle="toggleFolder" @delete="onDeleteItem" @move="onMove" @focus="focusId = $event.id"
               @add-folder="addFolder" @add-config="addBlankConfig" @context="openCtx"
               @rename-start="startRename" @rename-input="editing.name = $event" @rename-commit="commitRename" @rename-cancel="cancelRename"
             />
@@ -2316,32 +2220,13 @@ onMounted(async () => {
     </div>
 
     <!-- 配置右键菜单 -->
-    <div v-if="ctxMenu.open" class="lb-ctx-mask" @click="ctxMenu.open = false" @contextmenu.prevent="ctxMenu.open = false">
-      <div class="lb-ctx" :style="{ left: ctxMenu.x + 'px', top: ctxMenu.y + 'px' }" @click.stop>
-        <template v-if="ctxIsFolder">
-          <button class="lb-ctx-i" @click="ctxDo(() => startRename(ctxConfig))">重命名</button>
-          <button class="lb-ctx-i" @click="ctxDo(() => addFolder(ctxMenu.configId))">新建子文件夹</button>
-          <button class="lb-ctx-i" @click="ctxDo(() => addBlankConfig(ctxMenu.configId))">在此新建配置</button>
-          <button v-if="cfgClip" class="lb-ctx-i" @click="ctxDo(() => pasteConfig(ctxMenu.configId, true))">粘贴到此文件夹</button>
-          <button class="lb-ctx-i danger" @click="ctxDo(() => removeFolder(ctxConfig))">删除文件夹（含子项）</button>
-        </template>
-        <template v-else-if="ctxConfig">
-          <button class="lb-ctx-i" @click="ctxDo(() => startRename(ctxConfig))">重命名</button>
-          <button class="lb-ctx-i" @click="ctxDo(() => copyConfig(ctxConfig))">复制</button>
-          <button class="lb-ctx-i" @click="ctxDo(() => cutConfig(ctxConfig))">剪切</button>
-          <button v-if="cfgClip" class="lb-ctx-i" @click="ctxDo(() => pasteConfig(ctxMenu.configId))">粘贴到此后</button>
-          <button class="lb-ctx-i danger" @click="ctxDo(() => removeConfig(ctxConfig.id))">删除</button>
-        </template>
-        <template v-else>
-          <button class="lb-ctx-i" @click="ctxDo(() => addFolder(null))">新建文件夹</button>
-          <button class="lb-ctx-i" @click="ctxDo(() => addBlankConfig(null))">添加空白配置</button>
-          <button class="lb-ctx-i" :disabled="!api" @click="ctxDo(openSaveDlg)">保存当前为新配置</button>
-          <button v-if="cfgClip" class="lb-ctx-i" @click="ctxDo(() => pasteConfig(null))">粘贴{{ cfgClip.mode === 'cut' ? '（移动到末尾）' : '' }}</button>
-        </template>
-        <div class="lb-ctx-sep"></div>
-        <button class="lb-ctx-i" @click="ctxDo(() => { sideView = '' })">隐藏配置列表</button>
-      </div>
-    </div>
+    <!-- 配置右键菜单（五窗共用一份，条目与快捷键一致） -->
+    <ConfigTreeMenu
+      :menu="ctxMenu" :item="ctxItem" :is-folder="ctxIsFolder" :clip="cfgClip" :has-api="!!api"
+      @close="closeCtx" @rename="startRename" @new-folder="addFolder" @new-config="addBlankConfig"
+      @save-new="openSaveDlg" @cut="cutItem" @copy="copyItem" @paste="pasteConfig" @move-root="moveToRoot"
+      @delete="onDeleteItem" @expand-all="expandAll" @collapse-all="collapseAll" @hide="sideView = ''"
+    />
 
     <!-- 命名弹窗 -->
     <!-- 导出报告：封面元信息 + 输出格式 + 是否含图（三窗共用组件）-->
@@ -2445,13 +2330,6 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .lb-mini:disabled { opacity: .45; cursor: not-allowed; }
 .lb-placeholder { color: var(--text-faint); font-size: 12px; text-align: center; line-height: 1.7; }
 .lb-cfg-acts { display: flex; gap: 4px; }
-.lb-ctx-mask { position: fixed; inset: 0; z-index: 400; }
-.lb-ctx { position: fixed; min-width: 150px; padding: 4px; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-box); box-shadow: 0 6px 20px rgba(0,0,0,.22); display: flex; flex-direction: column; }
-.lb-ctx-i { font: inherit; font-size: 12px; text-align: left; padding: 6px 10px; cursor: pointer; background: transparent; color: var(--text); border: 0; border-radius: var(--r-ctl); white-space: nowrap; }
-.lb-ctx-i:hover:not(:disabled) { background: var(--surface-2); }
-.lb-ctx-i:disabled { opacity: .45; cursor: not-allowed; }
-.lb-ctx-i.danger:hover { color: var(--danger); }
-.lb-ctx-sep { height: 1px; margin: 4px 6px; background: var(--border); }
 .lb-mini-ico { display: inline-flex; align-items: center; justify-content: center; padding: 3px 5px; }
 .lb-ico-svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.2; stroke-linejoin: round; }
 .lb-myid { flex: none; display: flex; align-items: center; gap: 4px; padding: 6px 12px; font-size: 11px; color: var(--text-muted); border-top: 1px solid var(--border); background: var(--surface); white-space: nowrap; overflow: hidden; }

@@ -2,6 +2,7 @@
 // 与「链路预算性能表」同款交互内核（useGridSelect），此处只提供数据侧 CRUD/解析——渲染/命中/键盘交给 useGridSelect。
 // 三套数据仍是页面里的 points / stations / trajectories 三个 ref（本模块受注入的引用，改后调 sync 落盘+推图）。
 import { ref } from 'vue'
+import { sheetToRecords, sheetToTsv } from '../../shared/gridXlsx.js'
 
 // 空串/空白判 null（Number('')===0，否则粘贴块里的空单元格会把经纬度悄悄写成 0）
 const num = (v) => { if (v == null || String(v).trim() === '') return null; const n = Number(v); return Number.isFinite(n) ? n : null }
@@ -11,6 +12,74 @@ const splitCells = (t) => (t.includes('\t') ? t.split('\t') : (t.includes(',') ?
 // 名称里的逗号/空格不误拆；不含制表符的（手敲/文本里的「经度, 纬度」列表）才退回逗号/空白——否则选中某行后
 // Ctrl+V 逗号坐标会被当作单个单元格塞进经度列、解析成 null，表象是「有空白行时批量粘贴失效」。
 const parseGrid = (text) => String(text || '').split(/\r?\n/).filter((l) => l.trim() !== '').map((l) => splitCells(l))
+
+// 航点批量解析：每行【末两列 = 经度、纬度】，解析不出坐标的行跳过。
+// 剪贴板与「无表头工作表」共用这一条 —— 从 Excel 复制粘贴 和 导入 Excel 的行为必须逐字一致。
+function parseWpLines(text, newId) {
+  const add = []
+  for (const line of String(text || '').split(/\r?\n/)) {
+    const s = line.trim(); if (!s) continue
+    const c = splitCells(s); if (c.length < 2) continue
+    const lon = num(c[c.length - 2]), lat = num(c[c.length - 1])
+    if (lon == null || lat == null) continue
+    add.push({ id: newId(), lat, lon })
+  }
+  return add
+}
+
+// ===== 航迹 ⇄ 工作簿（一张工作表一条航迹，表名即航迹名）=====
+// 航迹的工作表列，与网格同序
+export const TRAJ_SHEET_COLS = [{ key: 'lon', label: '经度' }, { key: 'lat', label: '纬度' }]
+// 航行/飞行是【航迹】属性、不是航点属性，写不进「首行表头 + 纯数据」的数据表 → 导出时记在 note
+// （主进程 buildGridWorkbook 会把 note 单开成一张「说明」表：一行 = 表名 + 说明）。
+export const TRAJ_NOTE_SHEET = '说明'
+// 手搓的工作簿没有说明表 → 退回按表名认（自动名就叫「航行1 / 飞行2」），仍认不出算航行
+export const trajKindOf = (s) => (/飞行|flight/i.test(String(s == null ? '' : s)) ? 'flight' : 'sea')
+
+// 重名加序号：工作表重名会被 Excel 改写，同名两条航迹在列表里也分不清
+function uniqName(base, used, fallback) {
+  const b = String(base == null ? '' : base).trim() || fallback || '航迹'
+  let out = b
+  if (used.has(out)) { let k = 2; while (used.has(b + ' (' + k + ')')) k++; out = b + ' (' + k + ')' }
+  used.add(out)
+  return out
+}
+
+/**
+ * 一份工作簿的工作表 → 一批待建航迹 [{ name, kind, pts }]。
+ *   有表头（含「经度 / 纬度」）按表头取列，认不出退回位置约定（末两列 = 经纬度）；
+ *   经纬度缺一个的行不算航点（残缺航点画不出来，只会在网格里当垃圾行）；
+ *   一个航点都读不到的表整张丢掉 —— 工作簿里常混着无关的表，不能每张都造一条空航迹。
+ * opts：newId 造航点 id；taken 现有航迹名（去重用）；fallbackName 表名为空时的兜底名。
+ */
+export function trajsFromSheets(sheets, opts = {}) {
+  const mkId = opts.newId || (() => 'wp' + Math.random().toString(36).slice(2))
+  const used = new Set(opts.taken || [])
+  const notes = new Map(), data = []
+  for (const s of sheets || []) {
+    if (!s) continue
+    if (String(s.name || '').trim() === TRAJ_NOTE_SHEET) {   // 说明表不是数据：只取它记的航迹类型
+      for (const row of s.rows || []) if (row && row[0] != null) notes.set(String(row[0]).trim(), String(row[1] == null ? '' : row[1]))
+      continue
+    }
+    if (s.rows && s.rows.length) data.push(s)
+  }
+  const out = []
+  for (const s of data) {
+    const nm = String(s.name || '').trim()
+    const { records } = sheetToRecords(s, TRAJ_SHEET_COLS)
+    let pts
+    if (records) {
+      pts = []
+      for (const rec of records) { const lon = num(rec.lon), lat = num(rec.lat); if (lon != null && lat != null) pts.push({ id: mkId(), lat, lon }) }
+    } else {
+      pts = parseWpLines(sheetToTsv(s), mkId)
+    }
+    if (!pts.length) continue
+    out.push({ name: uniqName(nm, used, opts.fallbackName), kind: trajKindOf(notes.has(nm) ? notes.get(nm) : nm), pts })
+  }
+  return out
+}
 
 export function useMarkerTable({ points, stations, trajectories, newId, sync }) {
   // 坐标写入：合法数字→写入；空串→清空(null，该行暂不参与渲染)；非数字文本→保留原值（坐标列不存文本）
@@ -128,14 +197,7 @@ export function useMarkerTable({ points, stations, trajectories, newId, sync }) 
   function wpClear(trajId) { const t = trajOf(trajId); if (t) t.pts = [] }
   function wpPasteAppend(trajId, text) {
     const t = trajOf(trajId); if (!t) return 0
-    const add = []
-    for (const line of String(text || '').split(/\r?\n/)) {
-      const s = line.trim(); if (!s) continue
-      const c = splitCells(s); if (c.length < 2) continue
-      const lon = num(c[c.length - 2]), lat = num(c[c.length - 1])
-      if (lon == null || lat == null) continue
-      add.push({ id: newId(), lat, lon })
-    }
+    const add = parseWpLines(text, newId)
     if (add.length) t.pts = [...t.pts, ...add]
     return add.length
   }

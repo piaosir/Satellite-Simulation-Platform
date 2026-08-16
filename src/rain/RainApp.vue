@@ -398,7 +398,7 @@ function activeName() { const c = configs.value.find((x) => x.id === activeId.va
 
 async function loadConfigs() {
   try {
-    const all = (window.api && window.api.store ? await window.api.store.listConfigs() : []) || []
+    const all = (window.api && window.api.store ? await window.api.store.listConfigs('rain') : []) || []
     configs.value = all.filter((it) => (it.type === 'folder') ? (it.orbitType === 'RAIN') : (it.state && it.state.orbitType === 'RAIN'))
   } catch (e) { configs.value = [] }
   const ids = new Set(configs.value.filter((c) => c.type === 'folder').map((c) => c.id))
@@ -412,14 +412,14 @@ const cfgDlg = reactive({ open: false, name: '' })
 function openSaveDlg() { if (!api) { toast('保存需在桌面客户端中运行'); return } cfgDlg.name = defaultCfgName(); cfgDlg.open = true }
 async function confirmCfgDlg() {
   const name = (cfgDlg.name || '').trim(); if (!name) { toast('请输入配置名称'); return }
-  const item = await window.api.store.saveConfig({ name, state: serializeState() })
+  const item = await window.api.store.saveConfig('rain', { name, state: serializeState() })
   cfgDlg.open = false; await loadConfigs(); if (item && item.id) { activeId.value = item.id; setBaseline() }
   toast('已保存配置：' + name)
 }
 async function updateConfig() {
   if (!activeId.value) return
   const c = configs.value.find((x) => x.id === activeId.value); if (!c) return
-  await window.api.store.saveConfig({ id: c.id, name: c.name, state: serializeState() }); setBaseline(); await loadConfigs(); toast('已保存修改到：' + c.name)
+  await window.api.store.saveConfig('rain', { id: c.id, name: c.name, state: serializeState() }); setBaseline(); await loadConfigs(); toast('已保存修改到：' + c.name)
 }
 async function saveCurrent() { if (!api) { toast('保存需在桌面客户端中运行'); return } if (activeId.value) await updateConfig(); else openSaveDlg() }
 const editing = reactive({ id: null, name: '' })
@@ -428,11 +428,11 @@ function cancelRename() { editing.id = null }
 async function commitRename() {
   const id = editing.id; if (id == null) return
   const c = configs.value.find((x) => x.id === id); const nm = (editing.name || '').trim(); editing.id = null
-  if (c && nm && nm !== c.name) { await window.api.store.saveConfig({ id: c.id, name: nm }); await loadConfigs(); toast('已改名：' + nm) }
+  if (c && nm && nm !== c.name) { await window.api.store.saveConfig('rain', { id: c.id, name: nm }); await loadConfigs(); toast('已改名：' + nm) }
 }
 function applyConfig(c) { if (!c) return; activeId.value = c.id; applyState(c.state); setBaseline() }
 async function selectConfig(c) { if (!c || c.id === activeId.value) return; if (!(await guardedLeave())) return; applyConfig(c) }
-async function removeConfig(id) { if (!api) return; await window.api.store.deleteConfig(id); if (activeId.value === id) { activeId.value = null; activeBaseline = '' } await loadConfigs() }
+async function removeConfig(id) { if (!api) return; await window.api.store.deleteConfig('rain', id); if (activeId.value === id) { activeId.value = null; activeBaseline = '' } await loadConfigs() }
 
 // 文件夹
 const confirmDlg = reactive({ open: false, msg: '' })
@@ -441,7 +441,7 @@ function askConfirm(msg) { confirmDlg.msg = msg; confirmDlg.open = true; return 
 function answerConfirm(ok) { confirmDlg.open = false; const r = _confirmResolve; _confirmResolve = null; if (r) r(ok) }
 async function addFolder(parentId = null) {
   if (!api) { toast('需在桌面客户端中运行'); return }
-  const item = await window.api.store.saveConfig({ type: 'folder', name: uniqueCfgName(newFolderName()), parentId: parentId || null, orbitType: 'RAIN' })
+  const item = await window.api.store.saveConfig('rain', { type: 'folder', name: uniqueCfgName(newFolderName()), parentId: parentId || null, orbitType: 'RAIN' })
   if (parentId) expandedFolders.value.add(parentId)
   if (item && item.id) expandedFolders.value.add(item.id)
   persistExpanded(); await loadConfigs(); if (item && item.id) startRename(item)
@@ -450,13 +450,13 @@ async function addBlankConfig(parentId = null) {
   if (!api) { toast('需在桌面客户端中运行'); return }
   if (!(await guardedLeave())) return
   const state = blankState()
-  const item = await window.api.store.saveConfig({ name: uniqueCfgName(newCfgName()), state, parentId: parentId || null })
+  const item = await window.api.store.saveConfig('rain', { name: uniqueCfgName(newCfgName()), state, parentId: parentId || null })
   if (parentId) { expandedFolders.value.add(parentId); persistExpanded() }
   await loadConfigs(); if (item && item.id) { activeId.value = item.id; applyState(state); setBaseline() }; toast('已添加空白配置')
 }
 async function onMove(payload) {
   if (!api || !payload || !payload.dragId) return
-  await window.api.store.moveItem({ id: payload.dragId, parentId: payload.parentId, anchorId: payload.anchorId, position: payload.position })
+  await window.api.store.moveItem('rain', { id: payload.dragId, parentId: payload.parentId, anchorId: payload.anchorId, position: payload.position })
   if (payload.position === 'inside' && payload.parentId) { expandedFolders.value.add(payload.parentId); persistExpanded() }
   await loadConfigs()
 }
@@ -464,7 +464,7 @@ async function removeFolder(folder) {
   if (!api || !folder) return
   const hasChildren = configs.value.some((c) => c.parentId === folder.id)
   if (hasChildren && !(await askConfirm(`删除文件夹「${folder.name}」及其中全部子项？此操作不可撤销。`))) return
-  const removed = (await window.api.store.deleteFolder(folder.id)) || [folder.id]
+  const removed = (await window.api.store.deleteFolder('rain', folder.id)) || [folder.id]
   const rset = new Set(removed)
   if (activeId.value && rset.has(activeId.value)) { activeId.value = null; activeBaseline = '' }
   for (const id of removed) expandedFolders.value.delete(id)

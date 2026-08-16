@@ -1959,6 +1959,55 @@ export function createGlobeScene(container, quality = {}) {
     for (const m of lineMats) m.resolution.set(ww, hh)   // 粗线宽度依赖分辨率
     renderer.render(scene, camera)   // 立即补画一帧，避免 setSize 清空缓冲后等到下帧才重绘 → 黑一下
   }
+  // 出图：把渲染分辨率临时抬到 factor 倍取一帧，返回 PNG 字节。机位/图层/主题一概不动 → 所见即所得。
+  //
+  // 只动 setPixelRatio，**不动 lineMats 的 resolution**：LineMaterial 的线半宽 = linewidth/resolution.y
+  // 个 NDC，而 resolution 记的是 CSS 尺寸，于是画布放大多少线就跟着粗多少，缩回原尺寸看与屏幕一模一样。
+  // 把 resolution 一并乘上倍率等于把线钉死在「设备像素 linewidth」——出的图里岸线/轨道细如发丝，
+  // 链路视图 3D 踩过这个坑（见 viz/lbglobe/linkGlobe.js 的 snapshot）。卫星点（PointsMaterial）由
+  // three 自己乘 pixelRatio、标记/标签按 curH 折算世界尺寸，都跟着等比放大，无需另行处理。
+  //
+  // 地名/波束标签的纹理是 fs=54 的高分辨率画布（见 makeLabelSprite），屏上约 4 倍过采样：
+  // 4× 出图正好 1:1 最锐，6× 略有放大但仍远好于按屏幕分辨率截屏。
+  async function snapshot(factor) {
+    const cv = renderer.domElement
+    const gl = renderer.getContext()
+    // 先按驱动的帧缓冲上限收一道：超过 MAX_RENDERBUFFER_SIZE / MAX_TEXTURE_SIZE 必然分配失败
+    const maxDim = Math.min(gl.getParameter(gl.MAX_RENDERBUFFER_SIZE) || 8192, gl.getParameter(gl.MAX_TEXTURE_SIZE) || 8192)
+    let s = Math.max(1, Math.min(factor || 4, maxDim / Math.max(curW, curH)))
+    const prev = renderer.getPixelRatio()
+    let cap = null, w = 0, h = 0
+    try {
+      // 显存不够分这么大一块（MSAA 下还要乘采样数）时浏览器不报错，而是把 drawingBuffer 悄悄收小、
+      // canvas.width 照旧 —— 取回来的就是一张被拉伸的糊图。比对两者，不一致就重来一档：
+      // 宁可倍率打折（实际倍率随返回值出去，文件名如实写），也不出一张看不出哪里不对的错图。
+      //
+      // 下一档不是盲目减半，而是照「浏览器把缓冲收到了多大」直接折算（留 2% 余量）——它其实已经
+      // 把上限告诉我们了。盲目退让要试七八轮，每轮都真去申请一块大缓冲，反把显存压得更紧：
+      // 实测 900×560 的画布请求 40× 时，退让法一路试到 3.8× 还在被收（前面几轮的巨块还没还干净）。
+      // 折算法一两轮到位。谈不拢就退到 1×（屏幕原尺寸必然分得出来）。
+      for (let i = 0; ; i++) {
+        renderer.setPixelRatio(s)
+        if (s <= 1 || (gl.drawingBufferWidth === cv.width && gl.drawingBufferHeight === cv.height)) break
+        const fit = Math.min(gl.drawingBufferWidth / curW, gl.drawingBufferHeight / curH) * 0.98
+        const next = Math.min(s * 0.8, fit)
+        s = (i >= 4 || !(next > 1)) ? 1 : next
+      }
+      // 精灵/标签的世界尺寸由 rescaleMarkers 按当前机位算：出图前补一次，免得恰好一帧都没画过
+      // （窗口在后台被 rAF 节流）时精灵还停在上一次的尺寸上。
+      rescaleMarkers(); updateLabels()
+      renderer.render(scene, camera)
+      w = cv.width; h = cv.height
+      // toBlob 在调用当场就把画布位图拷走（编码才是异步的），故 finally 里改回倍率不影响这一张。
+      cap = new Promise((res, rej) => cv.toBlob((b) => b ? res(b) : rej(new Error('画布取图失败')), 'image/png'))
+    } finally {
+      renderer.setPixelRatio(prev)
+      renderer.render(scene, camera)   // 改倍率会清空缓冲：立刻补画一帧，避免屏幕闪一下黑
+    }
+    const blob = await cap
+    return { bytes: new Uint8Array(await blob.arrayBuffer()), w, h, factor: s }
+  }
+
   function destroy() {
     clearEnv()          // 贴图/几何不随 renderer.dispose 走，显式释放（切页面重挂载时会反复走这里）
     clearTerminator()   // 同上：夜区球壳几何 + 线材质（materials 还挂在 lineMats 里）也要显式还
@@ -1977,7 +2026,7 @@ export function createGlobeScene(container, quality = {}) {
     setSatLayer, clearSatLayer, faceLonLat, setProvinces, setProvincesVisible, setCities, setCitiesVisible, setBorderStyle, setNameScale, setLabelStyle, setOceanColor, setLandColors,
     setPixelRatio, setRenderFps, setSphereDetail, setMapDetail,
     setMarkers, setTrajectories, setFocusSatLLA, setOnHover, setOnRightClick, setBeamDragMode, setOnBeamDrag, setBeamDragPivot, setLabelDragMode, setOnLabelDrag, setPolyDrawMode, setOnPolyDraw, setPlaceMode, setOnPlace,
-    faceTo, rotateBy, setAutoRotate, setAutoRotateSpeed, setOnAutoRotateOff, resize, pause, resume, destroy,
+    faceTo, rotateBy, setAutoRotate, setAutoRotateSpeed, setOnAutoRotateOff, resize, pause, resume, snapshot, destroy,
     // 缩放进度条接口：getZoom 读当前进度、setZoom 设到进度 t、setOnZoom 注册滚轮缩放回填回调
     getZoom: () => distToT(zoomTarget),
     setZoom: (t) => { zoomTarget = Math.max(controls.minDistance, Math.min(controls.maxDistance, tToDist(t))) },

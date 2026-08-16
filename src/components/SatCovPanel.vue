@@ -49,6 +49,30 @@ function addPreset(e) {
   if (p) sc.addShell(p.altKm, p.name, p.color)
   e.target.value = ''
 }
+// ==================== 壳层高度就地编辑 ====================
+// 正在输入的那一格用【本地草稿】顶住。早先这格是一次性的 :value + @change，两处会跳变：
+//   ① 被后台重算改写回旧值：每轮 recompute 都重写 stats/shellStatus（读数行与空层归因都在本面板），
+//      面板整块重渲染，而 Vue 对 <input> 的 value 是【无条件回写】的（patchProp 里 value 不比对新旧
+//      vnode）——播放时钟一开、或上一次改动的重算落地，正打到一半的数字就被旧值盖掉；
+//   ② 微调箭头把新输入吸到旧值的台阶上：箭头的「台阶基准」取 value 属性（Vue 只在重渲染时同步它，
+//      ＝上次提交的高度）。基准与显示不一致时，浏览器按 基准 + k×step 吸附 ——
+//      旧值 1002.1、输入 39680、点一下 ▲ ＝ 39682.1（截图里那个数）。
+// 草稿一并解决：渲染出去的就是用户正在打的那串 → 无条件回写写的是同一个值（等值不落笔、光标不动），
+// value 属性也随之跟到当前值上 → 箭头就是「当前值 ±step」。
+const altEdit = ref(null)      // { id, text }：只存正在编辑的那一格
+const altText = (sh) => (altEdit.value && altEdit.value.id === sh.id ? altEdit.value.text : String(sh.altKm))
+function altInput(sh, e) { altEdit.value = { id: sh.id, text: e.target.value } }
+function altCommit(sh) {
+  const d = altEdit.value
+  if (!d || d.id !== sh.id) return
+  altEdit.value = null                    // 先退出草稿：空值/非法输入靠这一步让显示回落到原高度
+  const v = Number(d.text)
+  if (Number.isFinite(v) && v > 0 && v !== sh.altKm) sc.updateShell(sh.id, { altKm: v })
+}
+function altCancel(e) { altEdit.value = null; e.target.blur() }
+// 滚轮：Chromium 把滚轮当微调轮使（输入框带焦点时），侧栏一滚高度就被悄悄改掉 → 焦点在本格时吃掉滚轮
+function altWheel(e) { if (e.target === document.activeElement) e.preventDefault() }
+
 // 壳层高于源星 → 每条射线只有一个交点，「近/远」无意义。真正的分支判定在 shellGeom().inside 里按精确 |S| 算
 function singleBranch(sh) {
   const m = actMeta.value
@@ -156,8 +180,9 @@ function shellWhy(sh) {
             <div class="shrow">
               <input type="checkbox" :checked="sh.show" title="显示 / 隐藏该层壳的覆盖" @change="sc.updateShell(sh.id, { show: !sh.show })" />
               <input class="lvclr" type="color" title="壳层参照网颜色" :value="sh.color" @change="sc.updateShell(sh.id, { color: $event.target.value })" />
-              <input class="shalt" type="number" step="10" :value="sh.altKm" title="轨道高度（不是地心半径）：壳层地心半径 = 6378.137 + 该值。与卫星列表里的「高度」同一口径"
-                     @change="sc.updateShell(sh.id, { altKm: Number($event.target.value) || sh.altKm })" /><span class="u">km</span>
+              <input class="shalt" type="number" step="10" :value="altText(sh)" title="轨道高度（不是地心半径）：壳层地心半径 = 6378.137 + 该值。与卫星列表里的「高度」同一口径"
+                     @input="altInput(sh, $event)" @change="altCommit(sh)" @blur="altCommit(sh)"
+                     @keydown.enter="$event.target.blur()" @keydown.esc="altCancel($event)" @wheel="altWheel" /><span class="u">km</span>
               <!-- 壳层名不是用户自命名（无改名入口）：从星座取来的那批直接沿用编目分组名，
                    「其他」这类是界面词，打 i18n-skip 会让它在英文模式下留着中文 -->
               <span class="shnm" :title="sh.name">{{ sh.name }}</span>

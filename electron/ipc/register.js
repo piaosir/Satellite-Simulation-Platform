@@ -531,6 +531,42 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     }
   })
 
+  // ---- 通用表格 ⇄ Excel（性能指标表 / 对星性能表 / 标记批量表格 …）----
+  // 主进程只做「模型 → 工作簿」与「工作簿 → 格子值」，列匹配与业务口径在渲染端 src/shared/gridXlsx.js。
+  ipcMain.handle('grid:exportXlsx', async (e, payload) => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    const { canceled, filePath } = await dialog.showSaveDialog(win, {
+      title: (payload && payload.title) || '导出 Excel',
+      defaultPath: (payload && payload.defaultName) || '表格.xlsx',
+      filters: [{ name: 'Excel 工作簿', extensions: ['xlsx'] }]
+    })
+    if (canceled || !filePath) return { ok: false, canceled: true }
+    try {
+      const { buildGridWorkbook } = require('../services/gridXlsx')
+      fs.writeFileSync(filePath, Buffer.from(await buildGridWorkbook(payload || {})))
+      return { ok: true, filePath }
+    } catch (err) {
+      const busy = err && (err.code === 'EBUSY' || err.code === 'EPERM' || err.code === 'EACCES')
+      return { ok: false, error: busy ? '文件可能正被其他程序打开（如 Excel），请关闭后重试' : (err.message || String(err)) }
+    }
+  })
+  ipcMain.handle('grid:importXlsx', async (e, opt) => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+      title: (opt && opt.title) || '导入 Excel',
+      properties: ['openFile'],
+      filters: [{ name: 'Excel 工作簿', extensions: ['xlsx', 'xlsm'] }]
+    })
+    if (canceled || !filePaths || !filePaths.length) return { ok: false, canceled: true }
+    try {
+      const { readGridWorkbook } = require('../services/gridXlsx')
+      const r = await readGridWorkbook(filePaths[0])
+      return { ok: true, filePath: filePaths[0], sheets: r.sheets }
+    } catch (err) {
+      return { ok: false, error: err.message || String(err) }
+    }
+  })
+
   // ---- 环境场图层（主窗口「环境场」视图）----
   // 全精度 ITU 数据只在主进程（启动时注入内核），故整张等经纬栅格在这里生成后一次性回传；
   // 逐点走 IPC 做整张图要百万次往返，不可行。Float32Array 走结构化克隆，无需序列化成数组。
@@ -621,12 +657,14 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   ipcMain.handle('store:history:add', (_e, r) => storage.addHistory(r))
   ipcMain.handle('store:history:delete', (_e, id) => storage.deleteHistory(id))
   ipcMain.handle('store:history:clear', () => storage.clearHistory())
-  ipcMain.handle('store:config:list', () => storage.listConfigs())
-  ipcMain.handle('store:config:save', (_e, c) => storage.saveConfig(c))
-  ipcMain.handle('store:config:delete', (_e, id) => storage.deleteConfig(id))
-  ipcMain.handle('store:config:reorder', (_e, ids) => storage.reorderConfigs(ids))
-  ipcMain.handle('store:config:move', (_e, { id, parentId, anchorId, position }) => storage.moveItem(id, parentId, anchorId, position))
-  ipcMain.handle('store:config:deleteFolder', (_e, id) => storage.deleteFolder(id))
+  // 配置库按工作台命名空间分家（geo/ngso/regen/e2e/rain），ns 由渲染端逐窗传常量；见 storage.cfgFile
+  ipcMain.handle('store:config:list', (_e, ns) => storage.listConfigs(ns))
+  ipcMain.handle('store:config:listAll', () => storage.listAllConfigs())
+  ipcMain.handle('store:config:save', (_e, { ns, cfg }) => storage.saveConfig(ns, cfg))
+  ipcMain.handle('store:config:delete', (_e, { ns, id }) => storage.deleteConfig(ns, id))
+  ipcMain.handle('store:config:reorder', (_e, { ns, ids }) => storage.reorderConfigs(ns, ids))
+  ipcMain.handle('store:config:move', (_e, { ns, id, parentId, anchorId, position }) => storage.moveItem(ns, id, parentId, anchorId, position))
+  ipcMain.handle('store:config:deleteFolder', (_e, { ns, id }) => storage.deleteFolder(ns, id))
   ipcMain.handle('store:settings:get', () => storage.getSettings())
   // ---- 只许渲染端写它自己的偏好项（2026-08-11 授权审计）----
   // 原先是 (_e, s) => storage.setSettings(s)：无任何键名过滤，而 setSettings 是浅合并，

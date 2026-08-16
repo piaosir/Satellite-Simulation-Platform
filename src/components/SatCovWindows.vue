@@ -4,13 +4,16 @@
 //   上区=目标星（对地那边是城市），下区=只读 Excel 网格（框选 / Ctrl+C 复制选区 / 方向键导航），
 //   顶上一条 pr-h 工具条 + 「选项…」弹窗（显示列 / 波束筛选 / 过滤 / 参数计算 / 指向误差）。
 //   两张表的口径差别见 useSatPerfTable 文件头（一行=一颗目标星、目标由点选），UI 不再另立一套。
-// ★ 两种时间口径共用这一个结果区（列定义与行由 sp.viewMode 切换，渲染/选区/复制只有一条路径）：
-//   · 当前时刻 —— 一行 = 一颗目标星；
-//   · 时间窗口 —— 时段视图一行 = 一次「照到」的时段，汇总视图一行 = 一颗目标星的时窗统计；
-//     上面再压一条甘特条带，一眼看出并发与空档（与可见性分析 ACCESS 甘特同一套视觉语言）。
+// ★ 两种时间口径共用这一个结果区（列与行只有一套，渲染/选区/复制只有一条路径）：
+//   · 当前时刻 —— 表跟仿真时钟走；
+//   · 时间窗口 —— 先扫出每颗目标星的可见时段（条带），再拖游标点到时窗里的任意一刻，表按那一刻现算。
+//     手感对齐链路预算的「星间链路距离」工具：条带上拖 / 滑块细调 / ◀▶ 在窗口峰值间跳。
 import { ref, computed, reactive, watch, onBeforeUnmount } from 'vue'
 import Icon from './Icon.vue'
+import ExcelGrid from './ExcelGrid.vue'
 import { useGridSelect } from '../viz/grd/useGridSelect.js'
+import { sheetModel, exportSheets, importWorkbook, sheetToRecords, pickSheet, safeFileName } from '../shared/gridXlsx.js'
+import { appAlert } from '../stores/alert.js'
 
 const props = defineProps({
   sc: { type: Object, required: true },
@@ -25,7 +28,7 @@ const props = defineProps({
   tzUtc: { type: Boolean, default: false },         // 时刻显示/输入的时区（与主界面时间轴同一开关）
   nowMs: { type: Number, default: 0 }               // 时间轴当前时刻（时窗起点默认跟随它）
 })
-const emit = defineEmits(['close-table', 'recompute-table', 'add-in-beam', 'scan-windows', 'focus-target'])
+const emit = defineEmits(['close-table', 'recompute-table', 'add-in-beam', 'scan-windows', 'focus-target', 'seek-clock'])
 const sp = props.sp, sc = props.sc
 const win = sp.win
 
@@ -123,7 +126,7 @@ function dragSplit(e) {
 
 // ==================== 两张网格 ====================
 const tblOpts = computed(() => (sc.active.value ? sp.getOpts(sc.active.value) : null))
-const tblCols = computed(() => (tblOpts.value ? sp.viewCols(tblOpts.value) : []))
+const tblCols = computed(() => (tblOpts.value ? sp.visibleColumns(tblOpts.value) : []))
 const PICK_COLS = [
   { key: 'no', label: 'No.', num: true },
   { key: 'name', label: '目标卫星' },
@@ -145,6 +148,12 @@ const resGrid = useGridSelect({
 })
 const fmt = (c, v) => sp.fmtCell(c, v)
 const optsOpen = ref(false)
+// 结果区空态（三种成因各一句陈述）：没目标星 / 没扫过时段 / 有目标但一行都没出
+const resEmptyText = computed(() => {
+  if (!pickRows.value.length) return beamMode.value ? '当前波束内没有卫星。' : '还没有目标星。'
+  if (win.on && !sp.winInfo.value) return '尚未扫描时段。'
+  return '这些目标星都没有取到值。'
+})
 function resetOpts() { if (!sc.active.value) return; sp.resetOpts(sc.active.value); sp.beamQuery.value = ''; emit('recompute-table') }
 watch(tblOpts, () => { if (sc.active.value) sp.rememberOpts(sc.active.value) }, { deep: true })
 
@@ -170,22 +179,79 @@ const startLocal = computed({
     win.startMs = props.tzUtc ? Date.UTC(Y, M - 1, D, h, m, ss) : new Date(Y, M - 1, D, h, m, ss).getTime()
   }
 })
-// 表脚的时刻：瞬时表报【这批数值算在哪一刻】（跟随仿真时钟；重算太贵跳拍时它会比时间轴慢一两拍，
-// 那正是这些数真正对应的时刻）；时段表的时刻在结果里逐行给，脚上只报时间轴当前值。
+// 表脚的时刻 = 【这批数值算在哪一刻】：当前时刻档跟随仿真时钟（重算太贵跳拍时会比时间轴慢一两拍，
+// 那正是这些数真正对应的时刻），时间窗口档就是游标时刻。两档都读同一个 stampMs，不另立口径。
 const stampText = computed(() => {
-  if (win.on) return props.timeLabel
   const ms = sp.stampMs.value
   return Number.isFinite(ms) ? sp.fmtCell({ time: true }, ms) : props.timeLabel
 })
 const durText = (min) => (min >= 1440 ? (min / 1440).toFixed(1) + ' d' : min >= 60 ? (min / 60).toFixed(1) + ' h' : min.toFixed(1) + ' min')
-const bands = computed(() => (sp.winInfo.value && sp.winInfo.value.bands) || [])
 const hoverId = ref('')
-// 甘特行 / 结果行 → 聚焦该目标星（旋转地球正对它并选中，与搜索结果点选同一路径）
+// 条带行 / 结果行 → 聚焦该目标星（旋转地球正对它并选中，与搜索结果点选同一路径）
 function focusRow(r) { if (r && (r.tgtName || r.name)) emit('focus-target', { name: r.tgtName || r.name, noradId: r.noradId }) }
-// 切视图 = 换了一套列与行，旧选区的行列号已无意义 → 收回到左上角，别让高亮框落在别的格子上
-watch(() => [win.on, win.view], () => { resGrid.sel.value = { ar: -1, ac: -1, ri: -1, ci: -1 } })
-// 时窗参数/目标星/天线一改，已算出的结果就与输入对不上了 → 计算按钮转「重算」并变色（与雨衰页同款）
-const staleNow = computed(() => sp.winStaleFor(sc.active.value))
+
+// ==================== 时窗游标 ====================
+// 扫描只给「哪些时段可见」；表里的数由游标那一刻现算。游标本身当场跟手（setCursor），
+// 【重算】按 rAF 节流：一次重算＝一张瞬时表（几十颗星的 SGP4 + 方向图取值），逐 pointermove 直算会一顿一顿。
+const wi = computed(() => sp.winInfo.value)
+const bands = computed(() => (wi.value && wi.value.bands) || [])
+const curMs = computed(() => (Number.isFinite(win.cursorMs) ? win.cursorMs : (wi.value ? wi.value.t0Ms : 0)))
+const curFrac = computed(() => {
+  const w = wi.value
+  if (!w || !(w.t1Ms > w.t0Ms)) return 0
+  return Math.max(0, Math.min(1, (curMs.value - w.t0Ms) / (w.t1Ms - w.t0Ms)))
+})
+let seekRaf = 0
+function seek(tMs) {
+  if (!wi.value) return
+  sp.setCursor(tMs)
+  if (seekRaf) return
+  seekRaf = requestAnimationFrame(() => { seekRaf = 0; sp.computeAtCursor(win.cursorMs) })
+}
+onBeforeUnmount(() => { if (seekRaf) cancelAnimationFrame(seekRaf) })
+// 条带上按下 → 落到那一刻；落点正好在某个窗口里就吸到该窗口的【峰值时刻】（点一下窗口＝看它最好的那一瞬）。
+// 之后 pointermove 自由拖动。捕获挂在条上，指针移出条外仍连续；非左键不捕获（见 input-focus-intermittent）。
+function barDown(e, b) {
+  if (e.button !== 0 || !wi.value) return
+  const el = e.currentTarget, rect = el.getBoundingClientRect()
+  const w = wi.value, span = w.t1Ms - w.t0Ms
+  const at = (clientX) => w.t0Ms + Math.max(0, Math.min(1, (clientX - rect.left) / Math.max(1, rect.width))) * span
+  const t0 = at(e.clientX)
+  const hit = b && b.segs.find((s) => t0 >= s.startMs && t0 <= s.endMs)
+  seek(hit ? hit.peakMs : t0)
+  try { el.setPointerCapture(e.pointerId) } catch { /* 捕获失败就退化成不跟出条外 */ }
+  const move = (ev) => seek(at(ev.clientX))
+  const up = () => {
+    el.removeEventListener('pointermove', move); el.removeEventListener('pointerup', up); el.removeEventListener('pointercancel', up)
+    try { el.releasePointerCapture(e.pointerId) } catch { /* 已释放 */ }
+  }
+  el.addEventListener('pointermove', move); el.addEventListener('pointerup', up); el.addEventListener('pointercancel', up)
+  e.preventDefault()
+}
+// ◀▶：在【全部目标星的窗口峰值】里前后跳（按时刻排序）。跳到的就是那次照射最好的一瞬。
+const peaks = computed(() => bands.value.flatMap((b) => b.segs.map((s) => s.peakMs)).sort((a, b) => a - b))
+function jumpPeak(dir) {
+  const ps = peaks.value
+  if (!ps.length) return
+  const t = curMs.value
+  const k = dir > 0 ? ps.find((p) => p > t + 500) : [...ps].reverse().find((p) => p < t - 500)
+  if (k != null) seek(k)
+}
+// 游标此刻落在几颗星的窗口里（读数用；每行的具体取值看表）
+const inWinCount = computed(() => {
+  const t = curMs.value
+  return bands.value.reduce((n, b) => n + (b.segs.some((s) => t >= s.startMs && t <= s.endMs) ? 1 : 0), 0)
+})
+// 切换时间口径：回「当前时刻」按时钟重算，回「时间窗口」按游标重算（否则表里还留着另一档的那一刻的数）
+function setWinOn(on) {
+  if (win.on === on) return
+  win.on = on
+  if (on) { if (wi.value) sp.seekCursor(curMs.value); else sp.clearRows() } else emit('recompute-table')
+  resGrid.sel.value = { ar: -1, ac: -1, ri: -1, ci: -1 }
+}
+// 时窗参数/目标星/天线一改，已算出的结果就与输入对不上了 → 计算按钮转「重算」并变色（与雨衰页同款）。
+// 一次都没扫过时不叫「重算」—— 没有旧结果可重，那就是第一次「计算」。
+const staleNow = computed(() => !!sp.winInfo.value && sp.winStaleFor(sc.active.value))
 // 复制整张结果表为 TSV（含表头，可直接粘进 Excel）。同步 execCommand 优先，剪贴板 API 不可用时兜底。
 function copyTsv() {
   const text = sp.toTsv(tblCols.value)
@@ -200,6 +266,58 @@ function copyTsv() {
     document.body.removeChild(ta)
   } catch { ok = false }
   if (!ok) { try { navigator.clipboard && navigator.clipboard.writeText(text).catch(() => {}) } catch { /* 剪贴板不可用时静默 */ } }
+}
+
+// ==================== Excel 导入 / 导出 ====================
+// 出表值：数字列写【真数字】（Excel 里能直接算），时刻列写与网格同一条口径的文本。
+const xlsxVal = (r, c) => {
+  const v = r[c.key]
+  if (v == null || v === '') return null
+  if (c.time) return sp.fmtCell(c, v)
+  if (c.num && typeof v === 'number') return Number.isFinite(v) ? v : null
+  return sp.fmtCell(c, v)
+}
+const ctxName = () => (sp.ctxInfo.value ? sp.ctxInfo.value.satName + '_' + sp.ctxInfo.value.antName : '对星性能')
+const viewName = () => (!win.on ? '当前时刻' : '时间窗口')
+const noteText = () => {
+  const c = sp.ctxInfo.value
+  const bits = [c ? '源卫星 ' + c.satName : '', c ? '天线 ' + c.antName : '', '视图 ' + viewName(), stampText.value ? '时刻 ' + stampText.value : '']
+  return bits.filter(Boolean).join(' · ')
+}
+async function exportResultXlsx() {
+  if (!tblCols.value.length) { appAlert('当前没有显示任何列'); return }
+  const sheets = [
+    sheetModel({ name: '性能结果 · ' + viewName(), cols: tblCols.value, rows: resGrid.rows.value, value: xlsxVal, note: noteText() }),
+    sheetModel({ name: '目标星', cols: PICK_COLS, rows: pickRows.value, value: (r, c) => r[c.key] })
+  ]
+  const r = await exportSheets({ defaultName: safeFileName('对星性能指标表_' + ctxName(), '对星性能指标表') + '.xlsx', title: '导出对星性能指标表', sheets })
+  if (r && r.error) appAlert('导出失败：' + r.error)
+}
+async function exportPicksXlsx() {
+  if (!pickRows.value.length) { appAlert('还没有目标星'); return }
+  const sheets = [sheetModel({ name: '目标星', cols: PICK_COLS, rows: pickRows.value, value: (r, c) => r[c.key] })]
+  const r = await exportSheets({ defaultName: safeFileName('目标星_' + ctxName(), '目标星') + '.xlsx', title: '导出目标星', sheets })
+  if (r && r.error) appAlert('导出失败：' + r.error)
+}
+// 导入目标星：按表头匹配「目标卫星 / NORAD / 分组」；没有表头则按位置读（第 1 列星名、第 2 列 NORAD）。
+// 只落身份（名字 + NORAD），星历仍由页面按身份重新解析 —— 与点选加进来的目标完全同路。
+async function importPicksXlsx() {
+  if (beamMode.value) { appAlert('「波束内」的目标星随时钟自动重算，切到「点选」再导入'); return }
+  const r = await importWorkbook({ title: '导入目标星' })
+  if (!r || r.canceled) return
+  if (!r.ok) { appAlert('导入失败：' + (r.error || '无法读取该文件')); return }
+  // 自家导出的工作簿有「性能结果 + 目标星」两张表，不能取「第一张有数据的」——按表头匹配挑
+  const sheet = pickSheet(r.sheets, PICK_COLS)
+  if (!sheet) { appAlert('这份工作簿里没有数据'); return }
+  const { records } = sheetToRecords(sheet, PICK_COLS)
+  const list = records
+    ? records.map((x) => ({ name: String(x.name || '').trim(), noradId: Number(x.noradId) || null, group: String(x.group || '').trim() }))
+    : sheet.rows.map((cells) => ({ name: String(cells[0] == null ? '' : cells[0]).trim(), noradId: Number(cells[1]) || null, group: String(cells[2] == null ? '' : cells[2]).trim() }))
+  const clean = list.filter((x) => x.name)
+  if (!clean.length) { appAlert('没有读到卫星名（表头需含「目标卫星」，或把星名放在第一列）'); return }
+  const n = sp.addTargets(clean)
+  if (!n) appAlert('这些卫星都已在目标星列表里')
+  else emit('recompute-table')
 }
 </script>
 
@@ -221,6 +339,8 @@ function copyTsv() {
         </span>
         <input v-if="!beamMode" class="perf-q" v-model="tq" placeholder="搜索添加：卫星名 / NORAD / 星座 / 卫星组" />
         <span v-if="!beamMode" class="ptb" title="把当前落在方向图网格域内的在场卫星一次性加为目标" @click="emit('add-in-beam')"><Icon name="plus" :size="12" /> 加入波束内的星</span>
+        <span v-if="!beamMode" class="ptb" title="从 Excel 导入目标星（表头含「目标卫星 / NORAD / 分组」，或星名放第一列）" @click="importPicksXlsx"><Icon name="import" :size="12" /> 导入 Excel</span>
+        <span class="ptb" :class="{ dis: !pickRows.length }" title="把目标星列表导出为 Excel" @click="exportPicksXlsx"><Icon name="download" :size="12" /> 导出 Excel</span>
         <span v-if="!beamMode" class="ptb" :class="{ dis: !sp.picks.value.length }" title="清空目标星列表" @click="sp.clearTargets()">清空</span>
         <span class="perf-cnt">{{ pickRows.length }} 目标</span>
       </div>
@@ -240,125 +360,97 @@ function copyTsv() {
           </div>
         </template>
       </div>
-      <div class="pin-body" :ref="el => pickGrid.bodyEl.value = el" tabindex="0" @keydown="pickGrid.gridKey" @click="pickGrid.focusGrid">
-        <table class="perf-tbl grid ro">
-          <thead>
-            <tr><th v-for="c in PICK_COLS" :key="c.key" :class="{ n: c.num }">{{ c.label }}</th><th class="th-act"></th></tr>
-          </thead>
-          <tbody>
-            <tr v-for="(p, ri) in pickRows" :key="p.id" :class="{ hov: hoverId && hoverId === (p.noradId || p.name) }">
-              <td v-for="(c, ci) in PICK_COLS" :key="c.key"
-                  :class="{ n: c.num, sel: pickGrid.inSel(ri, ci), active: pickGrid.isActive(ri, ci) }"
-                  @mousedown="pickGrid.cellDown($event, ri, ci)" @mouseenter="pickGrid.cellEnter(ri, ci)">{{ p[c.key] == null ? '' : p[c.key] }}</td>
-              <td class="td-act">
-                <span class="foc" title="聚焦该卫星（旋转地球正对它并选中）" @click="focusRow(p)"><Icon name="crosshair" :size="11" /></span>
-                <span v-if="!beamMode" class="del" title="移除该目标星" @click="sp.removeTarget(p.id)"><Icon name="x" :size="11" /></span>
-              </td>
-            </tr>
-            <tr v-if="!pickRows.length"><td class="pin-empty" :colspan="PICK_COLS.length + 1">{{ beamMode ? '当前波束内没有卫星。' : '还没有目标星。' }}</td></tr>
-          </tbody>
-        </table>
-      </div>
+      <ExcelGrid class="pin-body sc-grid" :grid="pickGrid" :cols="PICK_COLS" :text="(r, c) => (r[c.key] == null ? '' : String(r[c.key]))"
+                 :serial="false" :actions-width="46" :row-class="(r) => (hoverId && hoverId === (r.noradId || r.name) ? 'hov' : null)"
+                 :empty-text="beamMode ? '当前波束内没有卫星。' : '还没有目标星。'">
+        <template #actions="{ row }">
+          <span class="foc" title="聚焦该卫星（旋转地球正对它并选中）" @click="focusRow(row)"><Icon name="crosshair" :size="11" /></span>
+          <span v-if="!beamMode" class="del" title="移除该目标星" @click="sp.removeTarget(row.id)"><Icon name="x" :size="11" /></span>
+        </template>
+      </ExcelGrid>
     </section>
 
     <!-- 中缝：上下拖拽调整目标星区 / 结果区的高度比例 -->
     <div class="perf-split" title="拖拽调整上下高度" @mousedown="dragSplit"><span class="grip"></span></div>
 
-    <!-- 下：只读性能结果表（第二步——输出）。当前时刻：一行 = 一颗目标星；时间窗口：一行 = 一次时段 / 一颗星的统计 -->
+    <!-- 下：只读性能结果表（第二步——输出）。一行 = 一颗目标星，两档只差在算在哪一刻 -->
     <section class="perf-result">
       <div class="pr-h">
         <span class="pr-t">性能结果<em>只读</em></span>
         <span class="seg2">
-          <span class="sg" :class="{ on: !win.on }" @click="win.on = false">当前时刻</span>
-          <span class="sg" :class="{ on: win.on }" @click="win.on = true">时间窗口</span>
+          <span class="sg" :class="{ on: !win.on }" title="表跟仿真时钟走" @click="setWinOn(false)">当前时刻</span>
+          <span class="sg" :class="{ on: win.on }" title="扫出可见时段，拖游标看任意一刻" @click="setWinOn(true)">时间窗口</span>
         </span>
-        <template v-if="!win.on">
-          <label v-if="tblOpts" class="pr-cov"><input type="checkbox" v-model="tblOpts.filterOn" title="仅列方向性≥阈值（被波束照到）的目标星" /> 仅照到的星</label>
-          <label v-if="tblOpts" class="pr-cov" :class="{ dis: !tblOpts.filterOn }">阈值<input class="ci" type="number" step="0.5" v-model.number="tblOpts.minDir" :disabled="!tblOpts.filterOn" /><span class="u">dB</span></label>
-        </template>
-        <template v-else>
-          <span class="seg2">
-            <span class="sg" :class="{ on: win.view === 'seg' }" @click="win.view = 'seg'">时段</span>
-            <span class="sg" :class="{ on: win.view === 'sum' }" @click="win.view = 'sum'">汇总</span>
-          </span>
-          <span class="ptb" :class="{ on: win.gantt }" title="时段甘特条带" @click="win.gantt = !win.gantt">甘特</span>
-        </template>
+        <label v-if="tblOpts" class="pr-cov"><input type="checkbox" v-model="tblOpts.filterOn" title="仅列方向性≥阈值（被波束照到）的目标星；取不到值的（域外/背面/遮挡）一并不列" /> 仅照到的星</label>
+        <!-- 选项里的数字框一律 .lazy（绑 change 而非 input）：改一下就整表重算，每敲一个字符算一遍且中途
+             拿的是半截数字。失焦/回车才生效；▲▼ 微调与上下方向键仍即时生效（规范上它们 input+change 一起发）。
+             与对地性能表同一口径，见 ConstellationMap3D.vue 同处注释。 -->
+        <label v-if="tblOpts" class="pr-cov" :class="{ dis: !tblOpts.filterOn }">阈值<input class="ci" type="number" step="0.5" v-model.lazy.number="tblOpts.minDir" :disabled="!tblOpts.filterOn" /><span class="u">dB</span></label>
         <input class="perf-q" v-model="sp.query.value" placeholder="查询：卫星名 / 分组 / NORAD" />
         <span v-if="!win.on" class="ptb" title="按当前时间轴时刻重算" @click="emit('recompute-table')"><Icon name="refresh-cw" :size="11" /> 重算</span>
         <span class="ptb" title="复制整张结果表（含表头，TSV，可粘进 Excel）" @click="copyTsv"><Icon name="copy" :size="11" /> 复制全表</span>
+        <span class="ptb" title="导出为 Excel（结果表 + 目标星两张工作表；数字列存真数字）" @click="exportResultXlsx"><Icon name="download" :size="11" /> 导出 Excel</span>
         <span class="ptb" :class="{ on: optsOpen }" title="显示列 / 波束筛选 / 参数计算 / 指向误差" @click="optsOpen = !optsOpen"><Icon name="settings" :size="11" /> 选项…</span>
         <span class="perf-cnt">{{ sp.filteredRows.value.length }} 行</span>
       </div>
 
-      <!-- 时窗参数：起点/时长/门限/遮挡/角步进 + 扫描按钮。改任一项即标「输入已变」，等点重算 -->
+      <!-- 时窗参数：只剩起点 + 时长（窗口判据＝域内且视线通，不再有门限/角步进档）。改任一项即标「输入已变」 -->
       <div v-if="win.on" class="pw-bar">
         <label>起始</label>
         <input class="ci dt" type="datetime-local" step="1" v-model="startLocal" />
         <span class="ptb sq" :class="{ dis: win.startMs == null }" title="回到跟随时间轴当前时刻" @click="win.startMs = null"><Icon name="refresh-cw" :size="10" /></span>
         <label>时长</label>
         <input class="ci w56" type="number" step="1" min="0.02" max="720" v-model.number="win.durH" /><span class="u">h</span>
-        <label>门限</label>
-        <select class="ci w104" v-model="win.thrMode">
-          <option value="rel">相对波束峰值</option>
-          <option value="abs">绝对方向性</option>
-        </select>
-        <input v-if="win.thrMode === 'rel'" class="ci w56" type="number" step="0.5" v-model.number="win.thrRel" />
-        <input v-else class="ci w56" type="number" step="0.5" v-model.number="win.thrAbs" />
-        <span class="u">dB</span>
-        <label class="pr-cov"><input type="checkbox" v-model="win.losOn" title="星-星视线被地球挡住时出窗" /> 视线遮挡</label>
-        <label>角步进</label>
-        <select class="ci w76" v-model="win.res">
-          <option value="coarse">粗</option>
-          <option value="std">标准</option>
-          <option value="fine">精细</option>
-        </select>
-        <span v-if="!win.busy" class="ptb go" :class="{ warn: staleNow }" title="按上述时窗扫描全部目标星的照射时段" @click="emit('scan-windows')">
+        <span v-if="!win.busy" class="ptb go" :class="{ warn: staleNow }" title="扫描全部目标星在该时窗内的可见时段" @click="emit('scan-windows')">
           <Icon name="play" :size="11" /> {{ staleNow ? '重算' : '计算' }}
         </span>
         <span v-else class="ptb" title="中止本次扫描" @click="sp.cancelWindows()"><Icon name="x" :size="11" /> 取消 {{ Math.round(win.progress * 100) }}%</span>
         <span v-if="win.busy" class="pw-prog"><i :style="{ width: (win.progress * 100) + '%' }"></i></span>
-        <span v-else-if="sp.winInfo.value" class="perf-cnt">{{ sp.winInfo.value.nLit }}/{{ sp.winInfo.value.nTarget }} 有窗口 · {{ durText((sp.winInfo.value.t1Ms - sp.winInfo.value.t0Ms) / 60000) }}</span>
+        <span v-else-if="wi" class="perf-cnt">{{ wi.nLit }}/{{ wi.nTarget }} 有窗口 · {{ wi.nWin }} 个时段 · {{ durText((wi.t1Ms - wi.t0Ms) / 60000) }}</span>
       </div>
 
-      <!-- 甘特条带：一行一颗目标星，横轴 = 整个时窗。悬停与结果行互相高亮，点击聚焦该星 -->
-      <div v-if="win.on && win.gantt && bands.length" class="sgantt">
+      <!-- 可见时段条带：一行一颗目标星，横轴 = 整个时窗；条上按住拖动 = 挪游标（落在窗口里先吸到峰值）。
+           悬停与结果行互相高亮；星名可点，聚焦该星。 -->
+      <div v-if="win.on && wi && bands.length" class="sgantt">
         <div class="sgt-ax">
-          <span>{{ sp.fmtCell({ time: true }, sp.winInfo.value.t0Ms) }}</span>
-          <span class="mid">{{ durText((sp.winInfo.value.t1Ms - sp.winInfo.value.t0Ms) / 60000) }}</span>
-          <span>{{ sp.fmtCell({ time: true }, sp.winInfo.value.t1Ms) }}</span>
+          <span>{{ sp.fmtCell({ time: true }, wi.t0Ms) }}</span>
+          <span class="mid">{{ durText((wi.t1Ms - wi.t0Ms) / 60000) }}</span>
+          <span>{{ sp.fmtCell({ time: true }, wi.t1Ms) }}</span>
         </div>
         <div class="sgt-rows">
           <div v-for="b in bands" :key="b.id" class="sgt-row" :class="{ hov: hoverId === b.id }"
-               :title="b.name + ' · ' + b.nWin + ' 次'" @mouseenter="hoverId = b.id" @mouseleave="hoverId = ''"
-               @click="emit('focus-target', { name: b.name, noradId: b.id })">
-            <span class="sgt-n" data-i18n-skip>{{ b.name }}</span>
-            <span class="sgt-bar"><i v-for="(s, si) in b.segs" :key="si" :style="{ left: (s.a * 100) + '%', width: Math.max(0.35, (s.b - s.a) * 100) + '%' }"></i></span>
+               :title="b.name + ' · ' + b.nWin + ' 次 · 总 ' + durText(b.totMin) + ' · 占比 ' + b.pct.toFixed(1) + '%'"
+               @mouseenter="hoverId = b.id" @mouseleave="hoverId = ''">
+            <span class="sgt-n" data-i18n-skip @click="emit('focus-target', { name: b.name, noradId: b.noradId })">{{ b.name }}</span>
+            <span class="sgt-bar" @pointerdown="barDown($event, b)">
+              <i v-for="(s, si) in b.segs" :key="si" :style="{ left: (s.a * 100) + '%', width: Math.max(0.35, (s.b - s.a) * 100) + '%' }"></i>
+              <b class="sgt-cur" :style="{ left: (curFrac * 100) + '%' }"></b>
+            </span>
             <span class="sgt-c">{{ b.nWin }}</span>
           </div>
         </div>
+        <!-- 游标：滑块细调（条上像素粒度不够时）+ 读数 + 在窗口峰值间前后跳 -->
+        <div class="swc">
+          <span class="ptb sq" title="上一个窗口峰值" @click="jumpPeak(-1)"><Icon name="chevron-left" :size="11" /></span>
+          <input class="swc-sl" type="range" :min="wi.t0Ms" :max="wi.t1Ms" step="1000" :value="curMs"
+                 @input="seek(Number($event.target.value))" />
+          <span class="ptb sq" title="下一个窗口峰值" @click="jumpPeak(1)"><Icon name="chevron-right" :size="11" /></span>
+          <span class="swc-t">{{ sp.fmtCell({ time: true }, curMs) }}</span>
+          <span class="perf-cnt">窗口内 {{ inWinCount }} 颗</span>
+          <span class="ptb" title="把主时间轴跳到游标时刻（画面上的星位随之走到这一刻）" @click="emit('seek-clock', curMs)">同步到时间轴</span>
+        </div>
       </div>
 
-      <div class="pr-body" :ref="el => resGrid.bodyEl.value = el" tabindex="0" @keydown="resGrid.gridKey" @click="resGrid.focusGrid">
-        <table class="perf-tbl grid ro">
-          <thead>
-            <tr><th v-for="c in tblCols" :key="c.key" :style="{ width: c.w + 'px' }" :class="{ n: c.num }" :title="c.tip || ''">
-              {{ c.label }}<i v-if="c.unit" class="cu">({{ c.unit }})</i>
-            </th><th class="th-act"></th></tr>
-          </thead>
-          <tbody>
-            <tr v-for="(r, ri) in sp.filteredRows.value" :key="r.id" :class="{ out: !!r.state, hov: hoverId && hoverId === (r.noradId || r.tgtName) }"
-                @mouseenter="hoverId = r.noradId || r.tgtName" @mouseleave="hoverId = ''">
-              <td v-for="(c, ci) in tblCols" :key="c.key"
-                  :class="{ n: c.num, occ: c.key === 'state' && r.state, sel: resGrid.inSel(ri, ci), active: resGrid.isActive(ri, ci) }"
-                  @mousedown="resGrid.cellDown($event, ri, ci)" @mouseenter="resGrid.cellEnter(ri, ci)">{{ fmt(c, r[c.key]) }}</td>
-              <td class="td-act"><span class="foc" title="聚焦该卫星（旋转地球正对它并选中）" @click="focusRow(r)"><Icon name="crosshair" :size="11" /></span></td>
-            </tr>
-            <tr v-if="!pickRows.length"><td :colspan="Math.max(1, tblCols.length) + 1" class="perf-empty">{{ beamMode ? '当前波束内没有卫星。' : '还没有目标星。' }}</td></tr>
-            <tr v-else-if="win.on && !sp.winInfo.value"><td :colspan="Math.max(1, tblCols.length) + 1" class="perf-empty">尚未扫描时段。</td></tr>
-            <tr v-else-if="!sp.filteredRows.value.length"><td :colspan="Math.max(1, tblCols.length) + 1" class="perf-empty">{{ win.on ? '时窗内没有照到任何目标星。' : '这些目标星都没有取到值。' }}</td></tr>
-          </tbody>
-        </table>
-      </div>
+      <ExcelGrid class="pr-body sc-grid" :grid="resGrid" :cols="tblCols" :text="(r, c) => fmt(c, r[c.key])"
+                 :serial="!tblCols.some((c) => c.key === 'no')" :actions-width="26"
+                 :row-class="(r) => [r.state ? 'out' : null, hoverId && hoverId === (r.noradId || r.tgtName) ? 'hov' : null]"
+                 :cell-class="(r, c) => (c.key === 'state' && r.state ? 'occ' : null)"
+                 :empty-text="resEmptyText"
+                 @row-enter="(r) => hoverId = r.noradId || r.tgtName" @row-leave="hoverId = ''">
+        <template #actions="{ row }">
+          <span class="foc" title="聚焦该卫星（旋转地球正对它并选中）" @click="focusRow(row)"><Icon name="crosshair" :size="11" /></span>
+        </template>
+      </ExcelGrid>
       <div class="pr-foot">{{ sp.footNote.value }}<span v-if="stampText" class="tl">{{ stampText }}</span></div>
     </section>
 
@@ -377,14 +469,14 @@ function copyTsv() {
     <div class="perf-opt-dlg">
       <div class="sdh"><span>对星性能表选项<em v-if="sp.ctxInfo.value"> · {{ sp.ctxInfo.value.antName }}</em></span><span class="csx" @click="optsOpen = false"><Icon name="x" :size="12" /></span></div>
       <div class="perf-opt-body">
-        <!-- 显示列跟着当前视图走：三种视图三套列，各存各的（切回去还是原来那几列） -->
+        <!-- 显示列：两档时间口径共用一套（当前时刻与时窗游标报的是同一批量，只是算在不同时刻） -->
         <section class="po-card po-cols">
-          <div class="po-ct">显示列<em class="po-cv">{{ sp.viewMode.value === 'now' ? '当前时刻' : sp.viewMode.value === 'seg' ? '时段' : '汇总' }}</em></div>
+          <div class="po-ct">显示列</div>
           <div class="po-scroll">
-            <div v-for="g in sp.colGroupsOf(sp.viewMode.value)" :key="g.title" class="po-grp">
+            <div v-for="g in sp.colGroups" :key="g.title" class="po-grp">
               <div class="po-gt">{{ g.title }}</div>
               <label v-for="k in g.keys" :key="k" class="po-ck">
-                <input type="checkbox" v-model="tblOpts[sp.colKeyOf(sp.viewMode.value)][k]" /><span>{{ sp.colDefsOf(sp.viewMode.value).find((c) => c.key === k).label }}</span>
+                <input type="checkbox" v-model="tblOpts.cols[k]" /><span>{{ sp.colDefs.find((c) => c.key === k).label }}</span>
               </label>
             </div>
           </div>
@@ -412,7 +504,7 @@ function copyTsv() {
           <section class="po-card">
             <div class="po-ct">过滤</div>
             <label class="po-chk"><input type="checkbox" v-model="tblOpts.filterOn" /><span>剔除低于最低方向性的记录</span></label>
-            <div class="po-row"><label>最低方向性</label><input class="ci" type="number" step="0.5" v-model.number="tblOpts.minDir" :disabled="!tblOpts.filterOn" /><span class="u">dB</span></div>
+            <div class="po-row"><label>最低方向性</label><input class="ci" type="number" step="0.5" v-model.lazy.number="tblOpts.minDir" :disabled="!tblOpts.filterOn" /><span class="u">dB</span></div>
           </section>
 
           <section class="po-card">
@@ -421,15 +513,15 @@ function copyTsv() {
             <template v-if="!tblOpts.sameAsAnt">
               <div class="po-row"><label>极化</label><select v-model="tblOpts.pol"><option value="P1">P1 共极化</option><option value="P2">P2 交叉</option><option value="RSS">RSS 合成</option><option value="P1/P2">P1/P2</option><option value="P2/P1">P2/P1</option></select></div>
               <div class="po-row"><label>路径损耗</label><select v-model="tblOpts.pathLoss"><option value="none">无</option><option value="relative">相对(h/Rs)²</option><option value="absolute">通量密度</option></select></div>
-              <div class="po-row"><label>增益偏置</label><input class="ci" type="number" step="0.5" v-model.number="tblOpts.gainOffset" /><span class="u">dB</span></div>
+              <div class="po-row"><label>增益偏置</label><input class="ci" type="number" step="0.5" v-model.lazy.number="tblOpts.gainOffset" /><span class="u">dB</span></div>
             </template>
           </section>
 
           <section class="po-card">
             <div class="po-ct">指向误差 · Min/Max Pointing</div>
-            <div class="po-row"><label>方位 Az</label><input class="ci" type="number" step="any" min="0" v-model.number="tblOpts.pointAz" /><span class="u">°</span></div>
-            <div class="po-row"><label>俯仰 El</label><input class="ci" type="number" step="any" min="0" v-model.number="tblOpts.pointEl" /><span class="u">°</span></div>
-            <div class="po-row"><label>偏航 Yaw</label><input class="ci" type="number" step="any" min="0" v-model.number="tblOpts.pointYaw" /><span class="u">°</span></div>
+            <div class="po-row"><label>方位 Az</label><input class="ci" type="number" step="any" min="0" v-model.lazy.number="tblOpts.pointAz" /><span class="u">°</span></div>
+            <div class="po-row"><label>俯仰 El</label><input class="ci" type="number" step="any" min="0" v-model.lazy.number="tblOpts.pointEl" /><span class="u">°</span></div>
+            <div class="po-row"><label>偏航 Yaw</label><input class="ci" type="number" step="any" min="0" v-model.lazy.number="tblOpts.pointYaw" /><span class="u">°</span></div>
           </section>
         </div>
       </div>
@@ -482,33 +574,16 @@ function copyTsv() {
 .pr-body { flex: 1; overflow: auto; outline: none; }
 .pr-foot { flex: none; padding: 3px 12px; border-top: 1px solid var(--border); font-family: var(--font-mono); font-size: 10px; color: var(--text-faint); display: flex; gap: 10px; }
 .pr-foot .tl { margin-left: auto; }
-.perf-tbl { width: 100%; border-collapse: collapse; font-size: 11.5px; }
-.perf-tbl th, .perf-tbl td { padding: 3px 8px; border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent); text-align: left; white-space: nowrap; }
-.perf-tbl th { position: sticky; top: 0; background: var(--panel, var(--bg)); color: var(--text-muted); font-weight: 600; z-index: 1; }
-.perf-tbl th.n, .perf-tbl td.n { text-align: right; font-family: var(--font-mono); }
-.perf-tbl td { color: var(--text); }
-.perf-tbl td.occ { color: #d08b5a; }
-.perf-tbl th .cu { font-style: normal; color: var(--text-faint); font-weight: 400; font-size: .9em; margin-left: 2px; }
-.perf-tbl th.n .cu { font-family: var(--font-mono); }
-.perf-tbl tbody tr:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
-.perf-tbl tr.out td { color: var(--text-faint); }
-.perf-tbl td.pin-empty { padding: 14px 12px; text-align: center; color: var(--text-faint); cursor: default; }
-.perf-empty { text-align: center !important; color: var(--text-faint); padding: 18px !important; font-style: italic; }
-.perf-tbl.grid { user-select: none; }
-.perf-tbl.grid tbody td { cursor: cell; }
-.perf-tbl.grid td.sel { background: color-mix(in srgb, var(--accent) 16%, transparent); }
-.perf-tbl.grid tr.out td.sel { background: color-mix(in srgb, var(--accent) 12%, transparent); }
-.perf-tbl.grid td.active { box-shadow: inset 0 0 0 2px var(--accent); }
-.perf-tbl .td-act, .perf-tbl .th-act { width: 22px; text-align: center; white-space: nowrap; }
-.perf-tbl .th-act { border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent); }
-.pin-body .td-act, .pin-body .th-act { width: 42px; }
-.perf-tbl .td-act { cursor: default; }
-.perf-tbl .td-act .del, .perf-tbl .td-act .foc { cursor: pointer; color: var(--text-faint); opacity: 0; display: inline-flex; vertical-align: middle; }
-.perf-tbl .td-act .foc { margin-right: 4px; }
-.perf-tbl tbody tr:hover .del, .perf-tbl tbody tr:hover .foc { opacity: .8; }
-.perf-tbl .td-act .del:hover { color: #ff6a6a; }
-.perf-tbl .td-act .foc:hover { color: var(--accent); }
-.perf-tbl tbody tr.hov > td { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+/* 两张网格都交给 ExcelGrid（src/components/ExcelGrid.vue）渲染，表体样式在那边；这里只补本窗口
+   特有的行/格着色与操作列图标。子组件渲染出来的节点带的是【它自己】的 scoped 标记，故一律走 :deep()。 */
+.sc-grid :deep(td.occ) { color: #d08b5a; }
+.sc-grid :deep(tr.out td) { color: var(--text-faint); }
+.sc-grid :deep(tbody tr.hov > td) { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.sc-grid :deep(.eg-act .del), .sc-grid :deep(.eg-act .foc) { cursor: pointer; color: var(--text-faint); opacity: 0; display: inline-flex; vertical-align: middle; }
+.sc-grid :deep(.eg-act .foc) { margin-right: 4px; }
+.sc-grid :deep(tbody tr:hover .del), .sc-grid :deep(tbody tr:hover .foc) { opacity: .8; }
+.sc-grid :deep(.eg-act .del:hover) { color: #ff6a6a; }
+.sc-grid :deep(.eg-act .foc:hover) { color: var(--accent); }
 /* 两段/三段切换（当前时刻⇄时间窗口、时段⇄汇总）：与可见性分析 .seg.sm.vis-mode 同一套锐边分段语言。
    活动段文字用 var(--bg) 而非写死 #fff —— 深色主题下 accent≈白，写死白字＝白底白字。 */
 .seg2 { display: inline-flex; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; background: var(--surface); flex: none; }
@@ -522,25 +597,33 @@ function copyTsv() {
 .pw-bar label { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
 .pw-bar .ci, .pw-bar select { border: 1px solid var(--border); background: var(--bg); padding: 1px 5px; font-size: 11px; color: var(--text); border-radius: 4px; outline: none; font-family: var(--font-mono); }
 .pw-bar .ci.dt { width: 150px; }
-.pw-bar .w56 { width: 56px; } .pw-bar .w76 { width: 76px; } .pw-bar .w104 { width: 104px; }
-.pw-bar select { font-family: inherit; }
+.pw-bar .w56 { width: 56px; }
 .pw-bar .u { color: var(--text-faint); font-size: 10.5px; }
 .pw-bar .ptb.sq { padding: 2px 5px; }
 .pw-bar .ptb.go { color: var(--accent); border-color: var(--accent); }
 .pw-bar .ptb.go.warn { color: var(--warn, #d08b5a); border-color: var(--warn, #d08b5a); }
 .pw-prog { flex: 1; min-width: 60px; height: 3px; background: color-mix(in srgb, var(--border) 60%, transparent); border-radius: 2px; overflow: hidden; }
 .pw-prog i { display: block; height: 100%; background: var(--accent); transition: width .12s linear; }
-/* 甘特条带：与可见性分析 ACCESS 甘特同款（78px 星名 + 轨道条 + 次数） */
+/* 可见时段条带：与可见性分析 ACCESS 甘特同款（78px 星名 + 轨道条 + 次数），条上多一根游标 */
 .sgantt { flex: none; border-bottom: 1px solid var(--border); padding: 4px 12px 6px; }
-.sgt-ax { display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: 9.5px; color: var(--text-faint); padding: 0 0 3px 84px; }
+/* 轴的左右内缩要与条带列宽对齐（名字 78 + 间隔 6 ｜ 次数 26 + 间隔 6），否则末端时刻标在条外 32px 处 */
+.sgt-ax { display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: 9.5px; color: var(--text-faint); padding: 0 32px 3px 84px; }
 .sgt-ax .mid { color: var(--text-muted); }
 .sgt-rows { display: flex; flex-direction: column; gap: 2px; max-height: 150px; overflow-y: auto; }
-.sgt-row { display: grid; grid-template-columns: 78px 1fr 26px; gap: 6px; align-items: center; font-size: 10.5px; padding: 1px 3px; border-radius: 3px; cursor: pointer; }
+.sgt-row { display: grid; grid-template-columns: 78px 1fr 26px; gap: 6px; align-items: center; font-size: 10.5px; padding: 1px 3px; border-radius: 3px; }
 .sgt-row:hover, .sgt-row.hov { background: color-mix(in srgb, var(--accent) 14%, transparent); }
-.sgt-n { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); }
-.sgt-bar { position: relative; height: 9px; background: color-mix(in srgb, var(--border) 45%, transparent); border-radius: 2px; }
+.sgt-n { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); cursor: pointer; }
+.sgt-n:hover { color: var(--accent); }
+.sgt-bar { position: relative; height: 9px; background: color-mix(in srgb, var(--border) 45%, transparent); border-radius: 2px; cursor: col-resize; touch-action: none; }
 .sgt-bar i { position: absolute; top: 1px; bottom: 1px; min-width: 1.2px; background: var(--accent); border-radius: 1px; }
+/* 游标：上下各探出 3px，正好把行间距接上，多行看着是一根通条的线 */
+.sgt-cur { position: absolute; top: -3px; bottom: -3px; width: 1px; margin-left: -0.5px; background: var(--text); pointer-events: none; }
 .sgt-c { font-family: var(--font-mono); font-size: 10px; color: var(--text-faint); text-align: right; }
+/* 游标控制条（滑块 + 读数 + 前后跳），与「星间链路距离」工具同款 */
+.swc { display: flex; align-items: center; gap: 6px; padding-top: 5px; }
+.swc-sl { flex: 1; min-width: 80px; accent-color: var(--accent); height: 12px; }
+.swc-t { font-family: var(--font-mono); font-size: 11px; color: var(--text); white-space: nowrap; user-select: text; }
+.swc .perf-cnt { margin-left: 0; }
 .po-cv { font-style: normal; font-weight: 400; color: var(--text-faint); margin-left: 5px; font-size: 10px; }
 /* 目标星搜索结果：与主界面搜索下拉 / 卫星组管理器同款（一行一颗 + 「来源 · NORAD」副行 + 命中读数） */
 .sres { flex: none; border-bottom: 1px solid var(--border); background: var(--bg); }

@@ -156,12 +156,15 @@ contextBridge.exposeInMainWorld('api', {
     addHistory: (r) => ipcRenderer.invoke('store:history:add', r),
     deleteHistory: (id) => ipcRenderer.invoke('store:history:delete', id),
     clearHistory: () => ipcRenderer.invoke('store:history:clear'),
-    listConfigs: () => ipcRenderer.invoke('store:config:list'),
-    saveConfig: (c) => ipcRenderer.invoke('store:config:save', c),
-    deleteConfig: (id) => ipcRenderer.invoke('store:config:delete', id),
-    reorderConfigs: (ids) => ipcRenderer.invoke('store:config:reorder', ids),
-    moveItem: (payload) => ipcRenderer.invoke('store:config:move', payload),
-    deleteFolder: (id) => ipcRenderer.invoke('store:config:deleteFolder', id),
+    // 配置库：首参一律是工作台命名空间 ns（geo/ngso/regen/e2e/rain），各窗只读写自己那份
+    listConfigs: (ns) => ipcRenderer.invoke('store:config:list', ns),
+    listAllConfigs: () => ipcRenderer.invoke('store:config:listAll'),
+    saveConfig: (ns, cfg) => ipcRenderer.invoke('store:config:save', { ns, cfg }),
+    deleteConfig: (ns, id) => ipcRenderer.invoke('store:config:delete', { ns, id }),
+    reorderConfigs: (ns, ids) => ipcRenderer.invoke('store:config:reorder', { ns, ids }),
+    // 展开 payload 而不是嵌一层：它常常是渲染端的响应式对象，展开后进 IPC 的是纯数据（结构化克隆过不了 Proxy）
+    moveItem: (ns, payload) => ipcRenderer.invoke('store:config:move', { ns, ...payload }),
+    deleteFolder: (ns, id) => ipcRenderer.invoke('store:config:deleteFolder', { ns, id }),
     getSettings: () => ipcRenderer.invoke('store:settings:get'),
     setSettings: (s) => ipcRenderer.invoke('store:settings:set', s),
     // 链路预算全局资源库（地球站/卫星/载波），按体制命名空间 geo/ngso/regen 整读整写
@@ -177,6 +180,11 @@ contextBridge.exposeInMainWorld('api', {
   reportPrint: {
     model: () => ipcRenderer.invoke('report:print:model'),
     ready: () => ipcRenderer.send('report:print:ready')
+  },
+  // 通用表格 ⇄ Excel：模型进、工作簿出；导入回 { sheets:[{ name, rows }] }，列匹配在渲染端
+  gridXlsx: {
+    export: (payload) => ipcRenderer.invoke('grid:exportXlsx', payload),
+    import: (opt) => ipcRenderer.invoke('grid:importXlsx', opt)
   },
   // 覆盖图导出：保存二进制（PNG/PDF）到用户选定路径 / 读取系统字体（PDF 嵌入用：TNR 西文 + 中文面）
   exportFile: (payload) => ipcRenderer.invoke('file:save', payload),

@@ -4,6 +4,7 @@ import { reactive, watch } from 'vue'
 //  - side：侧栏当前视图（VS Code 活动栏范式，同屏只显示一个视图；'' = 侧栏收起）
 //          'constellation' 星座 | 'antenna' 对地覆盖分析 | 'satcov' 对星覆盖分析 | 'beams' 天线波束合成
 //          | 'vis' 可见性分析 | 'poly' Polygon | 'gxt' 覆盖图 | 'markers' 标记 | 'env' 环境场 | 'geo' 地图设置
+//  - sideLast：收起前停在哪个视图（恒为非空，见下面 sideCtx）
 //  - toolbar / log：图标工具栏、底部日志窗格显隐
 //  - exw：侧栏宽度（px）
 // 单独成 store：3D 页的 Teleport（把各视图挂入侧栏）需要感知 side。
@@ -14,16 +15,26 @@ const KEY = 'shell-ui-v2'
 // 否则重开软件后 localStorage 里的值过不了 :18 的校验、静默回落到 'constellation'
 //（'env' 曾经就漏在这里，表现为「环境场不被记忆」）。
 const SIDES = ['constellation', 'antenna', 'satcov', 'beams', 'vis', 'poly', 'gxt', 'markers', 'env', 'geo']
-export const shellUi = reactive({ toolbar: true, log: false, side: 'constellation', exw: 300 })
+export const shellUi = reactive({ toolbar: true, log: false, side: 'constellation', sideLast: 'constellation', exw: 300 })
 try {
   const saved = JSON.parse(localStorage.getItem(KEY) || 'null')
   if (saved && typeof saved === 'object') {
     for (const k of ['toolbar', 'log']) if (typeof saved[k] === 'boolean') shellUi[k] = saved[k]
     if (saved.side === '' || SIDES.includes(saved.side)) shellUi.side = saved.side
     else if (saved.explorer === false) shellUi.side = ''   // 旧版「资源管理器」布尔量迁移
+    if (SIDES.includes(saved.sideLast)) shellUi.sideLast = saved.sideLast
     if (Number.isFinite(saved.exw)) shellUi.exw = Math.max(240, Math.min(420, saved.exw))
   }
 } catch { /* ignore */ }
+if (shellUi.side) shellUi.sideLast = shellUi.side   // 老快照没有 sideLast 字段：由当前 side 补一个
+// flush:'sync' 是必须的：活动栏「再点一次收起」走的是 side='satcov' → '' 这一步赋值，
+// 默认的 pre-flush 会让 sideLast 慢一拍 —— 中间那一瞬 sideCtx() 读到的是【上上个】视图。
+watch(() => shellUi.side, (v) => { if (v) shellUi.sideLast = v }, { flush: 'sync' })
 watch(shellUi, () => { try { localStorage.setItem(KEY, JSON.stringify(shellUi)) } catch { /* ignore */ } }, { deep: true })
+
+// 【上下文视图】：收起侧栏（side=''）只是把面板藏起来，不该动画面上任何东西 —— 场景内容、图层归属、
+// 拖拽方式一律沿用收起前那个视图，只有真的切到别的视图才算离开。
+// 分工：side 管「面板画不画」（模板里的 v-if/v-show 用它），sideCtx() 管「场景怎么画」（绘制侧的闸一律用它）。
+export const sideCtx = () => shellUi.side || shellUi.sideLast
 
 export function toggleUi(k) { shellUi[k] = !shellUi[k] }

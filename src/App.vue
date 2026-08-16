@@ -106,7 +106,8 @@ function splitDown(e) {
 const EXP_SCOPE_KEY = 'exp-scope'
 const expScope = ref((() => { try { const v = localStorage.getItem(EXP_SCOPE_KEY); return v === 'view' || v === 'world' ? v : 'world' } catch { return 'world' } })())
 watch(expScope, (v) => { try { localStorage.setItem(EXP_SCOPE_KEY, v) } catch { /* ignore */ } })
-const EXP_NAME = { png2: '高清 PNG · 2×', png4: '高清 PNG · 4×', png6: '高清 PNG · 6×', pdf: '矢量 PDF', gxt: '导出 GXT', kml: '导出 KML' }
+// GXT/KML 导的是【对地】那套覆盖等值线（对星覆盖分析的壳层投影不在其中），故名字里带上限定
+const EXP_NAME = { png2: '高清 PNG · 2×', png4: '高清 PNG · 4×', png6: '高清 PNG · 6×', pdf: '矢量 PDF', gxt: '导出 GXT（对地）', kml: '导出 KML（对地）' }
 function doExport(fmt) {
   if (!covNav.exportMap) return
   logMsg(`导出：${EXP_NAME[fmt] || fmt}（${expScope.value === 'view' ? '截图' : '全球图'}）`)
@@ -199,7 +200,7 @@ const menus = computed(() => [
     { label: EXP_NAME.png2, icon: 'image', lock: true, disabled: !covNav.exportAvail, hint: '导出 2 倍高清 PNG 图片', run: () => doExport('png2') },
     { label: EXP_NAME.png4, icon: 'image', lock: true, disabled: !covNav.exportAvail, hint: '导出 4 倍高清 PNG 图片', run: () => doExport('png4') },
     { label: EXP_NAME.png6, icon: 'image', lock: true, disabled: !covNav.exportAvail, hint: '导出 6 倍高清 PNG 图片', run: () => doExport('png6') },
-    { label: EXP_NAME.pdf, icon: 'file-text', lock: true, disabled: !covNav.exportAvail, hint: '导出矢量 PDF 文档', run: () => doExport('pdf') },
+    { label: EXP_NAME.pdf, icon: 'file-text', lock: true, disabled: !covNav.exportAvail, hint: '导出矢量 PDF 文档（3D 球体截图为位图 PDF，4 倍）', run: () => doExport('pdf') },
     { sep: true },
     { label: EXP_NAME.gxt, icon: 'layers', lock: true, disabled: !covNav.exportAvail, hint: '将当前绘制的覆盖等值线 + 协调区多边形一并导出为一个 GXT 文件（所见即所得）', run: () => doExport('gxt') },
     { label: EXP_NAME.kml, icon: 'layers', lock: true, disabled: !covNav.exportAvail, hint: '将当前绘制的覆盖等值线 + 协调区多边形一并导出为一个 Google KML 文件（所见即所得）', run: () => doExport('kml') },
@@ -308,8 +309,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
           >{{ m.label }}</span>
           <div v-if="openMenu === m.key" class="mpanel" @click.stop>
             <div v-if="m.key === 'export'" class="vscope">
-              <span class="vsp" :class="{ on: expScope === 'world' }" @click="expScope = 'world'">全球图</span>
-              <span class="vsp" :class="{ on: expScope === 'view' }" @click="expScope = 'view'">截图</span>
+              <span class="vsp" :class="{ on: expScope === 'world' }" title="整幅世界平面图（当前在 3D 球体下也按 2D 平面图出）" @click="expScope = 'world'">全球图</span>
+              <span class="vsp" :class="{ on: expScope === 'view' }" title="当前视图所见即所得：3D 球体出球面位图，2D 平面图出矢量图" @click="expScope = 'view'">截图</span>
             </div>
             <template v-for="(it, i) in m.items" :key="i">
               <div v-if="it.sep" class="msep"></div>

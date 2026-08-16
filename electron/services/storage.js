@@ -53,13 +53,49 @@ function addHistory(rec) {
 function deleteHistory(id) { write('history.json', listHistory().filter((r) => r.id !== id)); return true }
 function clearHistory() { write('history.json', []); return true }
 
-// ---- 配置预设 ----
-function listConfigs() { return read('configs.json', []) }
-// 同 setSettings 走 mutate：configs.json 是用户的活儿，被空库整份覆盖等于场景全丢。
+// ---- 配置预设（按工作台命名空间分家：configs.<ns>.json）----
+// 早先五个工作台（GEO / NGSO / 再生式 / 端到端 / 雨衰）共用一份 configs.json，各自靠 orbitType
+// 过滤出自己那批。两个后果：
+//   ① moveItem 会 filter+splice 重排【整份】数组 —— 某窗拖一下，另外四窗的条目顺序跟着动；
+//   ② mutate 是读-改-写，五个窗口能同时开着，后写的整份覆盖先写的（写盘窗口内的改动直接丢）。
+// 故按工作台拆成五份独立文件，各窗只读写自己那份，互不见面。
+const CFG_NS = ['geo', 'ngso', 'regen', 'e2e', 'rain']
+const NS_ORBIT = { geo: 'GEO', ngso: 'NGSO', regen: 'REGEN', e2e: 'E2E', rain: 'RAIN' }
+function cfgFile(ns) {
+  // 未知命名空间宁可抛错：静默回退到某一份就是把 A 窗的配置写进 B 窗的库，比报错难查得多
+  if (!CFG_NS.includes(ns)) throw new TypeError(`[storage] 未知的配置命名空间：${ns}`)
+  return `configs.${ns}.json`
+}
+// 旧库归属判定：与各窗口拆分前的 loadConfigs 过滤【逐字一致】，保证迁移前后各窗看到的列表不变。
+// GEO 是历史默认体制（老配置无 orbitType 字段），故用白名单——切忌写成「排除其余四种」的黑名单：
+// 每新增一种体制都会漏网串进 GEO。
+function belongsTo(it, ns) {
+  if (!it) return false
+  if (it.type === 'folder') return it.orbitType === NS_ORBIT[ns]
+  if (ns === 'geo') return !it.state || !it.state.orbitType || it.state.orbitType === 'GEO'
+  return !!(it.state && it.state.orbitType === NS_ORBIT[ns])
+}
+// 首次访问某命名空间：从旧 configs.json 拆出属于它的那批。旧文件只读不动，留作回滚兜底。
+// 拆完把指向本命名空间之外的 parentId 清成 null —— 跨库的父级引用在新文件里必然悬空。
+// 判在场要连 .bak 一起看：主文件被外部删掉而备份还在时，重迁会拿旧库盖掉 readJsonSafe 本可恢复的那份。
+function migrateNs(ns) {
+  const f = cfgFile(ns)
+  if (fs.existsSync(file(f)) || fs.existsSync(file(f) + '.bak')) return
+  const legacy = readJsonSafe(file('configs.json'), null).value
+  if (!Array.isArray(legacy)) return                 // 全新安装：不建文件，首次写入时自然创建
+  const mine = legacy.filter((it) => belongsTo(it, ns))
+  const ids = new Set(mine.map((it) => it.id))
+  write(f, mine.map((it) => (it.parentId != null && !ids.has(it.parentId)) ? { ...it, parentId: null } : it))
+}
+function listConfigs(ns) { migrateNs(ns); return read(cfgFile(ns), []) }
+// 跨命名空间总览（主窗口「配置管理」页用）：只读，不提供跨库写入
+function listAllConfigs() { return CFG_NS.map((ns) => ({ ns, items: listConfigs(ns) })) }
+// 同 setSettings 走 mutate：配置库是用户的活儿，被空库整份覆盖等于场景全丢。
 // 读不出来时返回 null / false，调用方（IPC → 渲染端）据此提示保存失败，总好过静默清空。
-function saveConfig(cfg) {
+function saveConfig(ns, cfg) {
+  migrateNs(ns)
   let out = null
-  mutate('configs.json', [], (list) => {
+  mutate(cfgFile(ns), [], (list) => {
     if (cfg.id) {
       const i = list.findIndex((c) => c.id === cfg.id)
       if (i >= 0) { list[i] = { ...list[i], ...cfg, updatedAt: new Date().toISOString() }; out = list[i]; return list }
@@ -69,16 +105,17 @@ function saveConfig(cfg) {
   })
   return out
 }
-function deleteConfig(id) { return mutate('configs.json', [], (list) => list.filter((c) => c.id !== id)) !== null }
-// 按给定 id 顺序重排 configs.json（用于剪切/粘贴换位置）；未列出的保持原相对序追加在后
-function reorderConfigs(ids) {
-  return mutate('configs.json', [], (list) => {
+function deleteConfig(ns, id) { migrateNs(ns); return mutate(cfgFile(ns), [], (list) => list.filter((c) => c.id !== id)) !== null }
+// 按给定 id 顺序重排本命名空间；未列出的保持原相对序追加在后
+function reorderConfigs(ns, ids) {
+  migrateNs(ns)
+  return mutate(cfgFile(ns), [], (list) => {
     const byId = new Map(list.map((c) => [c.id, c]))
     const ordered = []
     for (const id of (ids || [])) { const c = byId.get(id); if (c) { ordered.push(c); byId.delete(id) } }
     for (const c of list) if (byId.has(c.id)) ordered.push(c)
     return ordered
-  }) || listConfigs()
+  }) || listConfigs(ns)
 }
 // 归一化父级：缺省/null/undefined 一律视作 null（根）
 function pid(x) { return x && x.parentId != null ? x.parentId : null }
@@ -91,9 +128,10 @@ function subtreeIds(list, id) {
 }
 // 锚点式移动配置/文件夹：把 id 项挪到 anchorId 之 before/after（同级），或放入 parentId 文件夹内(position='inside')。
 // 单次读-改-写原子落盘；因数组相对序即同级序，紧贴锚点插入即保证顺序正确、其余组不动。
-function moveItem(id, parentId, anchorId, position) {
+function moveItem(ns, id, parentId, anchorId, position) {
+  migrateNs(ns)
   let bail = null
-  const next = mutate('configs.json', [], (list) => {
+  const next = mutate(cfgFile(ns), [], (list) => {
     const it = list.find((c) => c.id === id)
     if (!it) { bail = list; return undefined }                 // 返回 undefined = 不写盘（见 mutate）
     const anchor = anchorId ? list.find((c) => c.id === anchorId) : null
@@ -115,12 +153,13 @@ function moveItem(id, parentId, anchorId, position) {
     rest.splice(insertAt, 0, it)
     return rest
   })
-  return next || bail || listConfigs()
+  return next || bail || listConfigs(ns)
 }
 // 级联删除文件夹及其全部后代（沿 parentId 子树）；返回被删 id 数组。普通配置传入亦可（等价单删）。
-function deleteFolder(id) {
+function deleteFolder(ns, id) {
+  migrateNs(ns)
   let removed = new Set()
-  const next = mutate('configs.json', [], (list) => {
+  const next = mutate(cfgFile(ns), [], (list) => {
     removed = subtreeIds(list, id)
     return list.filter((c) => !removed.has(c.id))
   })
@@ -146,7 +185,7 @@ function setSettings(patch) {
 
 module.exports = {
   listHistory, addHistory, deleteHistory, clearHistory,
-  listConfigs, saveConfig, deleteConfig, reorderConfigs, moveItem, deleteFolder,
+  listConfigs, listAllConfigs, saveConfig, deleteConfig, reorderConfigs, moveItem, deleteFolder,
   getLibrary, saveLibrary,
   getSettings, setSettings,
   _dir: dir
