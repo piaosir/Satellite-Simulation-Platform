@@ -506,7 +506,7 @@ function pickCity(c) {
   nd.name = c.name
   nd.longitude = String(c.lon != null ? c.lon : c.longitude)
   nd.latitude = String(c.lat != null ? c.lat : c.latitude)
-  cityClose(); markStale()
+  cityClose(); markStale()   // 站址跟着城市走，降雨率/海拔由站址扫描接手（见下方 scanSites）
 }
 // 下拉行右侧的站址读数：与单元格同一套记法（经度恒为 °E 轴，西经记负；纬度北正南负）
 const cityGeo = (c) => `${(+c.lon).toFixed(1)}°E ${(+c.lat).toFixed(1)}°N`
@@ -518,6 +518,70 @@ watch(cityAt, async (i) => {
   if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest' })
 })
 watch([() => sel.type, () => sel.index], () => cityClose())
+
+// ============ 站址 → 降雨率 / 海拔（ITU 自动取值）============
+// 这两项由经纬度唯一确定：R0.01% 取 ITU-R P.837，海拔取 P.1511 地形高程——与三窗、雨衰页
+// 同一条 geoFill 通道。★ 变化锚定【经纬度这两个数】本身：只要它们变了（打字 / 选城市 / 粘贴 /
+// 新建节点），降雨率与海拔就跟着变，不必失焦、不看是谁改的。取回来的值仍可手改，手改后到下次
+// 动经纬度之前不再动它。取不到（数据未就绪 / 通道异常）保留原值，绝不写 0 兜底。
+// ★ 载入存盘场景只记指纹、不重取：用户存下来的手改值优先（与几何建议值 scanGeoSeeds 同一条口径）。
+const SITE_WAIT = 300        // 逐键敲的中间态（「1」「11」「116」…）收成一次：键还在敲就不打 IPC，停手即取
+const _siteFp = new Map()    // node._id → 上次排过取值的站址 'lon|lat'（坐标不成数时记空串）
+const _siteSeq = new Map()   // node._id → 请求序号：连改站址时只认最后一次回来的那份，防乱序
+const _sitePend = new Map()  // node._id → 待取的请求 { lat, lon, rain, alt, timer }
+// 排一次取值。★ 降雨率/海拔的快照在【发现站址变了】这一刻取，不在发请求那一刻：改完经纬度顺手
+// 去改海拔的，等值回来时现值已不等于快照 ⇒ 那一格不覆盖，手填照旧压过自动值。
+function scheduleSite(nd, lat, lon) {
+  const pend = _sitePend.get(nd._id) || { rain: nd.rainRate, alt: nd.altitude }
+  if (pend.timer) clearTimeout(pend.timer)
+  pend.lat = lat; pend.lon = lon
+  pend.timer = setTimeout(() => { _sitePend.delete(nd._id); fillSite(nd, pend) }, SITE_WAIT)
+  _sitePend.set(nd._id, pend)
+}
+async function fillSite(nd, pend) {
+  if (!api) return
+  const seq = (_siteSeq.get(nd._id) || 0) + 1
+  _siteSeq.set(nd._id, seq)
+  let g = null
+  try { g = await api.linkBudget.geoFill(pend.lat, pend.lon) } catch (e) { g = null }
+  if (!g || _siteSeq.get(nd._id) !== seq) return
+  const clean = !isDirty()
+  let wrote = false
+  if (g.rainRate != null && nd.rainRate === pend.rain) { nd.rainRate = String(g.rainRate); wrote = true }
+  if (g.altitude != null && nd.altitude === pend.alt) { nd.altitude = String(g.altitude); wrote = true }
+  // 自动取值不是「用户的改动」：取值前本就干净（刚载入 / 刚新建）就把脏态基线推到新值，
+  // 否则会「什么都没改却提示未保存」（GEO 窗的 GRD 回填踩过同一个坑，同一套修法）
+  if (wrote && clean) setBaseline()
+}
+// 全链扫描。mode：
+//   'live'  —— 站址与上次不同就重取（常态：打字 / 选城市 / 粘贴 / 新建或复制节点都走这条）；
+//   'prime' —— 只记指纹（载入存盘场景：存盘值优先）；
+//   'all'   —— 全部按站址重取（出厂默认场景：没有存盘值可优先）。
+function scanSites(mode) {
+  const seen = new Set()
+  for (const row of chains) {
+    for (const nd of row.nodes) {
+      if (nd.kind !== 'es') continue
+      seen.add(nd._id)
+      const prev = _siteFp.get(nd._id)
+      const lat = pf(nd.latitude), lon = pf(nd.longitude)
+      // 清空一格打算重敲的中途：坐标暂时不成数 ⇒ 不取值也不清值，等敲成数了这一轮自会跟上
+      if (!isFinite(lat) || !isFinite(lon)) { _siteFp.set(nd._id, ''); continue }
+      const fp = lon + '|' + lat
+      _siteFp.set(nd._id, fp)
+      if (mode === 'all' || (mode === 'live' && prev !== fp)) scheduleSite(nd, lat, lon)
+    }
+  }
+  for (const k of [..._siteFp.keys()]) {
+    if (seen.has(k)) continue
+    const p = _sitePend.get(k)
+    if (p && p.timer) clearTimeout(p.timer)      // 节点已删：在途的那次取值连带作废
+    _siteFp.delete(k); _siteSeq.delete(k); _sitePend.delete(k)
+  }
+}
+// 站址就是链上的数据：盯 chains 即可，与「谁改的、改完有没有失焦」无关
+watch(chains, () => scanSites('live'), { deep: true })
+
 const nodeIsRelay = computed(() => !!(cur.value && selNode.value && selNode.value.kind === 'es' && sel.index > 0 && sel.index < cur.value.nodes.length - 1))
 
 // —— 逐段载波体制 ——
@@ -922,8 +986,14 @@ function migrateCarriers(row) {
 // 场景出口（存盘 / 指纹 / localStorage 三处共用）。纯数据的保证在 e2eParams 那一侧，
 // 见 serializeChainsState 的头注：节点上的 carrier / ov 是嵌套对象，浅拷会漏响应式 Proxy 出去。
 function serializeState() { return serializeChainsState(chains, geoMode.value) }
+// 「新建空白配置」当场用出厂默认造的那份场景（见下方 blankState）：它不是【存过盘的场景】，
+// 里头的降雨率/海拔是 schema 默认值而非用户定过的数 ⇒ 载入后照站址取一遍，别把出厂值当成手改值供着。
+// 按引用认这一份：saveConfig 半路失败没走到 applyState 时，也不会误伤下一次真正的载入。
+let _blankSt = null
 function applyState(st) {
   if (!st || !Array.isArray(st.chains) || !st.chains.length) return
+  const fresh = st === _blankSt
+  _blankSt = null
   // ★ 先深拷一份再往 chains 里搬：st 常常就是 configs 里那条配置的 state（本身是响应式的），
   //   而下面 { ...n } 是浅拷 —— 不拷的话链上节点的 carrier / ov 会与「配置列表里已保存的那份」
   //   共用同一个对象，之后在链上改体制就地改掉了那份，「不保存」再切回来时改动还在。
@@ -937,6 +1007,7 @@ function applyState(st) {
   })))
   for (const row of chains) migrateCarriers(row)
   scanGeoSeeds(true)   // 只记录载入态的几何指纹：存盘值优先，此后的输入改动才触发建议值回填
+  scanSites(fresh ? 'all' : 'prime')   // 站址取值同理：存盘场景认存盘值，出厂空白场景照站址取
   curIdx.value = 0; sel.type = 'node'; sel.index = 0
   for (const k of Object.keys(results)) delete results[k]
   for (const k of Object.keys(errors)) delete errors[k]
@@ -972,7 +1043,7 @@ function isDirty() { return !!activeId.value && fingerprint() !== activeBaseline
 // 空白场景放一条默认链（站-星-站）而不是空数组：本窗口的工作对象就是链，
 // 一条都没有的场景选中后无处可编辑，反倒像「载入没生效」。
 function defaultCfgName() { return byLang(`端到端 ${chains.length} 条`, `${chains.length} End-to-End Links`) }
-function blankState() { return serializeChainsState([defaultChain()], 'manual') }
+function blankState() { _blankSt = serializeChainsState([defaultChain()], 'manual'); return _blankSt }
 
 const confirmDlg = reactive({ open: false, msg: '' })
 let _confirmResolve = null
@@ -1047,6 +1118,9 @@ onMounted(async () => {
       else applyState(st)
     }
   } catch (e) { /* ignore */ }
+  // 没有可恢复的工作状态 ⇒ 台面上这条是出厂默认链：按站址取一遍降雨率/海拔
+  //（存盘场景走 applyState 里那条，一律存盘值优先）
+  if (!_siteFp.size) scanSites('all')
   try { deviceId.value = (api && await api.app.deviceId()) || '' } catch (e) { deviceId.value = '' }
   for (const row of chains) migrateCarriers(row)   // 老库读进来之后再迁一次（体制引用 → 节点上那份）
   syncChainNames()
