@@ -9,6 +9,7 @@ import { createGlobeScene } from '../viz/globe3d/scene.js'
 import { createFlatCoverage } from '../viz/flatmap/flatCoverage.js'
 import { antennaBasis, projectGrid, fieldDb, contourLines, relLevels } from '../viz/grd/coverage.js'
 import { fieldRgba, colorAt, SCHEME_NAMES } from '../viz/grd/colormap.js'
+import { fmtGeoSlot } from '../shared/orbitClass.js'
 
 const mapEl = ref(null)       // 3D 容器
 const flatCanvas = ref(null)  // 2D 画布
@@ -151,7 +152,7 @@ watch(() => [s.boreLon, s.boreLat, s.yaw], () => { reproject(); recompute() })
         <div class="title">覆盖图（GRD）</div>
         <label class="row"><span>卫星</span>
           <select v-model="activeFolder">
-            <option v-for="x in sats" :key="x.folder" :value="x.folder">{{ x.folder }} · {{ x.lon }}°E</option>
+            <option v-for="x in sats" :key="x.folder" :value="x.folder">{{ x.folder }} · {{ fmtGeoSlot(Number(x.lon)) || x.lon + '°E' }}</option>
           </select>
         </label>
         <div class="beams">
@@ -194,7 +195,7 @@ watch(() => [s.boreLon, s.boreLat, s.yaw], () => { reproject(); recompute() })
         <label class="row"><span>视轴经度</span><input type="number" step="0.5" v-model.number="s.boreLon" /></label>
         <label class="row"><span>视轴纬度</span><input type="number" step="0.5" v-model.number="s.boreLat" /></label>
         <label class="row"><span>偏航</span><input type="number" step="1" v-model.number="s.yaw" /></label>
-        <div class="meta">改指向触发重投影。星下点 = {{ beam ? beam.meta.satLon : '-' }}°E</div>
+        <div class="meta">改指向触发重投影。星下点 = {{ beam ? (fmtGeoSlot(Number(beam.meta.satLon)) || beam.meta.satLon + '°E') : '-' }}</div>
       </div>
       <div v-if="loading" class="loading">载入中…</div>
     </aside>

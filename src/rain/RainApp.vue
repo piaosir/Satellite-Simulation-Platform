@@ -13,6 +13,7 @@ import RainDiversity from './RainDiversity.vue'
 import { rainFields, GRID_GROUPS, RESULT_KEYS, RESULT_DIGITS, LEGACY_KEYS, POL_LABEL, defaultRow, effectiveRow, buildRainCase } from './rainParams.js'
 import { stableStringify } from '../shared/configDirty.js'
 import { newCfgName, newFolderName } from '../shared/lbAutoName.js'   // 配置树默认名（按平台语言出字）
+import { fmtGeoSlot } from '../shared/orbitClass.js'   // 轨位 °E/°W 折算（西经不再写成负°E）
 import { byLang } from '../shared/i18n/lang.js'
 import { halfStr } from '../shared/num.js'
 
@@ -243,7 +244,7 @@ const detail = computed(() => {
       ['海拔', f(p.altitude, 0, 'm')],
       s
         ? ['轨道（近圆）', f(s.orbitAltKm, 0, 'km') + ' / 倾角 ' + f(s.inclDeg, 1, '°')]
-        : ['GEO 轨位', r.satLon != null ? f(r.satLon, 2, '°E') : '—（直接指定仰角）'],
+        : ['GEO 轨位', r.satLon != null ? (fmtGeoSlot(Number(r.satLon)) || f(r.satLon, 2, '°E')) : '—（直接指定仰角）'],
       ['频率', f(r.freq, 3, 'GHz')],
       ['极化', POL_LABEL[r.polDisplay] || POL_LABEL[r.pol] || r.pol],
       ['R0.01% 降雨率', f(r.rainRate, 3, 'mm/h') + (r.rainRateAuto ? '（ITU-R P.837 自动）' : '（手动）')],

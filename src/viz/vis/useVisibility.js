@@ -1,6 +1,7 @@
 // 可见性分析（复刻 STK Access / Coverage）—— 组合式逻辑层（仿 useBeamSynth）。
 // 职责：面板状态 + 目标点归约 + 单时刻可见性计算（recompute）+ 地图叠加 spec（overlaySpec）+ KPI 摘要 + 结果排序。
-// 卫星集统一取「当前显示的星」(renderEntries)——筛选在星座页搜索里做（搜索即筛选显示），本面板不再自持临时组。
+// 卫星集来源可选（satSrc）：''=当前显示的星（跟随星座视图）| 'g:<key>'=内置分组（g:custom=自定义卫星）| 's:<id>'=卫星组。
+// 非空来源由宿主异步解析成 entries 缓存，getSatSet 统一吐当前生效的集；本面板不自持临时组。
 // 纯几何在 visibility.js；本层只做编排与宿主接线，宿主能力全经参数注入。
 //
 // 交付节奏：P1 = 瞬时可见（本文件）。P2 时段表 / P3 覆盖热力图 复用同一「选目标 → 算仰角」地基。
@@ -9,6 +10,7 @@ import sat from '../constellation/satellite.js'
 import { computeVisibility, accessWindows, orbitCanReach, ringCentroid, timeCoverage } from './visibility.js'
 import { makeCoverageGrid, createCoverageRun, buildCoverageFillBands, estimateCoverageWork, fomMeta, COVERAGE_FOMS } from './coverageGrid.js'
 import { schemeColorsRGB } from '../grd/colormap.js'
+import { geoSlotOfSatrec } from '../../shared/geoSlot.js'
 
 const KEY = 'globe3d/visibility'
 
@@ -23,11 +25,12 @@ const HL_HEX = 0xefeae0
 export const orbitClass = (altKm) => (!Number.isFinite(altKm) ? '—' : altKm < 2000 ? 'LEO' : altKm < 34000 ? 'MEO' : altKm < 37000 ? 'GEO' : 'HEO')
 
 export function useVisibility({
-  getStations, getPoints, getTrajectories, getPolys, getRenderEntries,
+  getStations, getPoints, getTrajectories, getPolys, getSatSet,
   calcAt, ccTimeAt, isCustomEntry, refresh, drawCov, setCovAlpha
 }) {
   const clampN = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v)
   const open = ref(false)
+  const satSrc = ref('')             // 卫星集来源：''=当前显示 | 'g:<key>'=内置分组 | 's:<id>'=卫星组（解析在宿主）
   const minElev = ref(5)             // 仰角门限（度）
   const targetKind = ref('')         // 'station' | 'point' | 'traj' | 'poly'
   const targetId = ref('')
@@ -38,6 +41,7 @@ export function useVisibility({
   const showName = ref(false)        // 显示卫星名（默认关——Starlink 等星多时名字会糊成一片）
   const nameSize = ref(10)           // 卫星名字号（显示名字时可调）
   const iconColor = ref('#4caf82')   // 星下点图标 / 名字颜色（可自定义；3D 与 2D 一致）
+  const showLines = ref(true)        // 3D 目标→卫星视线连线（星多时连线糊成扇面，可关）
   // ACCESS 时段过境（P2）
   const mode = ref('now')            // 'now'=瞬时可见 | 'access'=时段过境
   const horizonH = ref(24)           // 时段时窗（小时）
@@ -45,6 +49,10 @@ export function useVisibility({
   const accessBusy = ref(false)
   const accessMsg = ref('')
   const accessHorizonMin = ref(24 * 60)   // 上次计算【实际使用】的时窗（分）——clamp 后的真值，供时间覆盖分母与甘特横轴（不随输入框漂移）
+  const accessBaseMs = ref(0)             // 上次计算的时窗起点（绝对 ms，=按下「计算过境」时的仿真时钟）；0=尚未计算。表格/时间轴/导出的绝对时刻全锚在它上
+  const accessTz = ref('local')           // 过境时刻显示时区：'local' 本地 | 'utc'（导出 Excel 恒两者都给，此开关只管屏上）
+  const accOrder = ref('time')            // 过境表行序：'time'=全星按 AOS 混排（带日期分隔）| 'sat'=按星分组（与甘特同序）
+  const accessScanned = ref(0)            // 上次计算实际扫描的候选星数（粗筛后），供导出摘要
   // ==================== 覆盖分析（Coverage / FOM）——「覆盖」模式（复刻 STK Coverage，与 access 同级）====================
   const covRegionKind = ref('global')   // 区域：'global' 全球 | 'bounds' 自定义边界 | 'poly' Polygon 区域
   const covLatMin = ref(-60), covLatMax = ref(60), covLonMin = ref(-180), covLonMax = ref(180)
@@ -72,20 +80,21 @@ export function useVisibility({
   }
   const hasTarget = computed(() => !!(targetKind.value && targetId.value))
 
-  // ---- 卫星集 = 当前显示的星 ----
-  const satCount = ref(0)   // recompute 里实时更新（renderEntries 非响应式，computed 追踪不到其变化）
+  // ---- 卫星集（getSatSet 按 satSrc 吐当前生效的集）----
+  const satCount = ref(0)   // recompute 里实时更新（集本体非响应式，computed 追踪不到其变化）
 
   // ---- 计算可见性（单时刻）----
   function recompute() {
     if (!open.value) { results.value = []; satCount.value = 0; return }
-    const src = getRenderEntries() || []
+    const src = getSatSet() || []
     satCount.value = src.length
     if (mode.value === 'coverage') { results.value = []; return }   // 覆盖模式只看热力图，不算/不画逐星可见标记
     const tp = targetPoints()
     if (!tp.length || !src.length) { results.value = []; return }
     const now = calcAt(), gmst = sat.gstime(now)
     const ccNow = ccTimeAt(now), ccGmst = sat.gstime(ccNow)
-    const ents = src.map((e) => ({ rec: e.rec, name: e.name, noradId: e.noradId, group: e.group, _cc: !!isCustomEntry(e) }))
+    // slot＝GEO 定点标注（geoSlotOfSatrec 结果缓存在 rec 上，逐拍重算只是一次属性读取），随结果行透传到表/叠加层
+    const ents = src.map((e) => ({ rec: e.rec, name: e.name, noradId: e.noradId, group: e.group, slot: geoSlotOfSatrec(e.rec), _cc: !!isCustomEntry(e) }))
     results.value = computeVisibility(ents, tp, { now, gmst, ccNow, ccGmst }, Number(minElev.value) || 0)
   }
 
@@ -135,7 +144,8 @@ export function useVisibility({
     for (const r of results.value) {
       if (!Number.isFinite(r.subLon) || !Number.isFinite(r.subLat)) continue
       const hot = hid && String(r.noradId) === hid
-      sats.push({ lon: r.subLon, lat: r.subLat, altKm: r.altKm, name: (showName.value || hot) ? r.name : '', color: hot ? HL_HEX : iconHex, nameColor: hot ? '#efeae0' : (iconColor.value || VIS_CSS), iconSize: Number(iconSize.value) || 12, labelSize: Number(nameSize.value) || 10, labelShow: showName.value || hot, iconShow: true })
+      const nm = r.slot ? r.name + ' ' + r.slot : r.name   // GEO 星地图标签带定点经度
+      sats.push({ lon: r.subLon, lat: r.subLat, altKm: r.altKm, name: (showName.value || hot) ? nm : '', color: hot ? HL_HEX : iconHex, nameColor: hot ? '#efeae0' : (iconColor.value || VIS_CSS), iconSize: Number(iconSize.value) || 12, labelSize: Number(nameSize.value) || 10, labelShow: showName.value || hot, iconShow: true })
     }
     return (dots.length || sats.length) ? { dots, sats } : null
   }
@@ -151,7 +161,7 @@ export function useVisibility({
   function computeAccess() {
     const tp = targetPoints()
     if (!tp.length) { accessMsg.value = '请先选择分析目标'; accessResults.value = []; return }
-    const srcAll = getRenderEntries() || []
+    const srcAll = getSatSet() || []
     if (!srcAll.length) { accessMsg.value = '卫星集为空'; accessResults.value = []; return }
     const me = Number(minElev.value) || 0, tgtLat = tp[0].lat
     const src = srcAll.filter((e) => orbitCanReach(e.rec, tgtLat, me))   // 几何粗筛（不传播）
@@ -162,7 +172,9 @@ export function useVisibility({
     const now = calcAt(), ccNow = ccTimeAt(now)
     const H = Math.max(0.5, Math.min(168, Number(horizonH.value) || 24)) * 3600
     accessHorizonMin.value = H / 60   // 钉住本次实际时窗（输入框超范围被 clamp 时，分母/横轴仍与窗口口径一致）
-    const ents = src.map((e) => ({ rec: e.rec, name: e.name, noradId: e.noradId, group: e.group, _cc: !!isCustomEntry(e) }))
+    accessBaseMs.value = now.getTime()   // 钉住时窗起点：绝对时刻 = 起点 + 相对分钟（cc 星的窗口也按此轴换算，与甘特同轴）
+    accessScanned.value = src.length
+    const ents = src.map((e) => ({ rec: e.rec, name: e.name, noradId: e.noradId, group: e.group, slot: geoSlotOfSatrec(e.rec), _cc: !!isCustomEntry(e) }))   // slot=GEO 定点标注，透传到过境表
     const BATCH = 400, out = []
     let i = 0
     const stepFn = () => {
@@ -215,8 +227,8 @@ export function useVisibility({
     const region = covRegionValue()
     const grid = makeCoverageGrid(region, Number(covStep.value) || 5)
     if (!grid.cells.length) { covData.value = null; covMsg.value = '该区域没有网格胞元（检查边界 / Polygon）'; drawCovNow(); return }
-    const srcAll = getRenderEntries() || []
-    if (!srcAll.length) { covData.value = null; covMsg.value = '卫星集为空（在「星座」视图搜索显示卫星）'; drawCovNow(); return }
+    const srcAll = getSatSet() || []
+    if (!srcAll.length) { covData.value = null; covMsg.value = '卫星集为空'; drawCovNow(); return }
     const me = Number(minElev.value) || 0
     const horizonSec = clampN(Number(covHorizonH.value) || 6, 0.1, 168) * 3600
     const sampleSec = clampN(Number(covSample.value) || 60, 5, 600)
@@ -297,7 +309,9 @@ export function useVisibility({
   function close() { open.value = false; hoveredId.value = ''; _covToken++; covBusy.value = false; if (drawCov) drawCov(null); refresh() }
 
   watch([minElev, targetKind, targetId], () => { recompute(); refresh(); persist() })
-  watch([iconSize, showName, nameSize, iconColor], () => { refresh(); persist() })   // 星下点样式变：只重绘（不重算）+ 存
+  watch(satSrc, () => persist())   // 来源变：解析与重算在宿主（异步取星历），这里只存
+  watch([accessTz, accOrder], () => persist()) // 时区/行序显示偏好：纯呈现层，只存不算
+  watch([iconSize, showName, nameSize, iconColor, showLines], () => { refresh(); persist() })   // 星下点样式/连线变：只重绘（不重算）+ 存
   watch([covFom, covScheme, covBands], () => { drawCovNow(); persist() })            // 换指标/配色/档数：只重建热力图（不重算）
   watch(covAlpha, () => { if (setCovAlpha) setCovAlpha(Number(covAlpha.value) || 0.82); persist() })
   watch([covRegionKind, covLatMin, covLatMax, covLonMin, covLonMax, covPolyId, covStep, covHorizonH, covSample], () => persist())   // 区域/参数变：仅存（需手动点「计算」）
@@ -318,7 +332,11 @@ export function useVisibility({
         if (typeof d.showName === 'boolean') showName.value = d.showName
         if (Number.isFinite(d.nameSize)) nameSize.value = d.nameSize
         if (typeof d.iconColor === 'string' && /^#[0-9a-f]{6}$/i.test(d.iconColor)) iconColor.value = d.iconColor
+        if (typeof d.showLines === 'boolean') showLines.value = d.showLines
+        if (typeof d.satSrc === 'string' && /^(|[gs]:[\w-]+)$/.test(d.satSrc)) satSrc.value = d.satSrc   // 宿主 watch 到非空值即解析；死 id 由宿主回退
         if (['now', 'access', 'coverage'].includes(d.mode)) mode.value = d.mode   // 记住上次模式（别每次都回瞬时可见）
+        if (d.accessTz === 'utc' || d.accessTz === 'local') accessTz.value = d.accessTz
+        if (d.accOrder === 'time' || d.accOrder === 'sat') accOrder.value = d.accOrder
         const c = d.cov
         if (c && typeof c === 'object') {
           if (['global', 'bounds', 'poly'].includes(c.regionKind)) covRegionKind.value = c.regionKind
@@ -341,8 +359,9 @@ export function useVisibility({
   function persist() {
     try {
       localStorage.setItem(KEY, JSON.stringify({
-        minElev: Number(minElev.value) || 0, targetKind: targetKind.value, targetId: targetId.value, sortKey: sortKey.value, mode: mode.value,
+        minElev: Number(minElev.value) || 0, targetKind: targetKind.value, targetId: targetId.value, sortKey: sortKey.value, mode: mode.value, accessTz: accessTz.value, accOrder: accOrder.value,
         iconSize: Number(iconSize.value) || 12, showName: !!showName.value, nameSize: Number(nameSize.value) || 10, iconColor: iconColor.value,
+        showLines: !!showLines.value, satSrc: satSrc.value,
         cov: {
           regionKind: covRegionKind.value, latMin: Number(covLatMin.value), latMax: Number(covLatMax.value), lonMin: Number(covLonMin.value), lonMax: Number(covLonMax.value),
           polyId: covPolyId.value, step: Number(covStep.value) || 5, horizonH: Number(covHorizonH.value) || 6, sample: Number(covSample.value) || 60,
@@ -355,8 +374,8 @@ export function useVisibility({
   return {
     open, minElev, targetKind, targetId, results, sortedResults, hoveredId, sortKey,
     hasTarget, satCount, kpi, skyPoints, skyThrR,
-    mode, horizonH, accessResults, accessBusy, accessMsg, accessHorizonMin, accessKpi, computeAccess, setMode,
-    iconSize, showName, nameSize, iconColor,
+    mode, horizonH, accessResults, accessBusy, accessMsg, accessHorizonMin, accessBaseMs, accessTz, accOrder, accessScanned, accessKpi, computeAccess, setMode,
+    iconSize, showName, nameSize, iconColor, showLines, satSrc,
     // 覆盖分析（Coverage）
     covRegionKind, covLatMin, covLatMax, covLonMin, covLonMax, covPolyId, covStep, covHorizonH, covSample,
     covFom, covScheme, covAlpha, covBands, covBusy, covMsg, covData, covLegend, covKpi,

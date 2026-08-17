@@ -9,8 +9,14 @@ const STORE_KEY = 'constellation3d/satGroups'
 let _seq = 0
 const genId = () => 'sg' + Date.now().toString(36) + (_seq++).toString(36)
 
-// 规范化成员集：统一为 [{ id: NORAD 字符串, name }]，按 NORAD 去重、丢空号。
-// 入参可为 [{ noradId, name }]（页面 entry）或 [{ id, name }]（已存组），两种都吃。
+// 颜色一律 '#rrggbb' 小写；其余一概视为「未设置」（''）。
+// 注意入参可能是自定义星座 entry 的 [r,g,b] 数组，必须先验 string 再验格式。
+const HEX6 = /^#[0-9a-fA-F]{6}$/
+const normColor = (c) => (typeof c === 'string' && HEX6.test(c)) ? c.toLowerCase() : ''
+
+// 规范化成员集：统一为 [{ id: NORAD 字符串, name, color? }]，按 NORAD 去重、丢空号。
+// 入参可为 [{ noradId, name }]（页面 entry）或 [{ id, name, color }]（已存组），两种都吃。
+// color 是逐颗覆盖色（优先于组色），未设置不落键，保持存量数据形状不变。
 function normSats(arr) {
   const out = [], seen = new Set()
   for (const s of (arr || [])) {
@@ -18,7 +24,8 @@ function normSats(arr) {
     const id = String(raw == null ? '' : raw).trim()
     if (!id || seen.has(id)) continue
     seen.add(id)
-    out.push({ id, name: String((s && s.name) || '').trim() })
+    const c = normColor(s && s.color)
+    out.push(c ? { id, name: String((s && s.name) || '').trim(), color: c } : { id, name: String((s && s.name) || '').trim() })
   }
   return out
 }
@@ -28,7 +35,7 @@ function normalize(g) {
   return {
     id: g && g.id ? g.id : genId(),
     name: ((g && g.name) || '卫星组').trim() || '卫星组',
-    color: (g && g.color) || '',
+    color: normColor(g && g.color),
     sats: normSats(g && g.sats)
   }
 }
@@ -78,10 +85,10 @@ export function useSatGroups() {
     persist()
     return g
   }
-  // 复制一组（含成员），插在原组之后
+  // 复制一组（含成员与配色），插在原组之后
   function duplicate(id) {
     const g = find(id); if (!g) return null
-    const c = normalize({ name: g.name + ' 副本', color: g.color, sats: g.sats.map((s) => ({ id: s.id, name: s.name })) })
+    const c = normalize({ name: g.name + ' 副本', color: g.color, sats: g.sats.map((s) => ({ id: s.id, name: s.name, color: s.color })) })
     const next = [...list.value]
     next.splice(list.value.findIndex((x) => x.id === id) + 1, 0, c)
     list.value = next
@@ -121,5 +128,31 @@ export function useSatGroups() {
   }
   function remove(id) { list.value = list.value.filter((g) => g.id !== id); persist() }
 
-  return { list, load, persist, find, add, create, duplicate, rename, overwrite, append, removeSats, remove }
+  // 组色：''=清除（回到「随所属星座」）。返回是否有实际改动。
+  function setColor(id, hex) {
+    const g = find(id); if (!g) return false
+    const c = normColor(hex)
+    if (hex !== '' && !c) return false   // 非法色值不落（'' 是合法的「清除」指令）
+    if (g.color === c) return false
+    g.color = c; list.value = [...list.value]; persist(); return true
+  }
+  // 逐颗覆盖色：为组内指定 NORAD 批量设色（优先于组色）；hex=''=清除覆盖、回到组色。
+  // 成员数组整体换新（不可变更新）：行内展开列表按数组身份做缓存，原地改对象会看不见变化。
+  function colorSats(id, ids, hex) {
+    const g = find(id); if (!g) return 0
+    const c = normColor(hex)
+    if (hex !== '' && !c) return 0
+    const want = new Set((ids || []).map((x) => String(x == null ? '' : x).trim()).filter(Boolean))
+    if (!want.size) return 0
+    let n = 0
+    const next = g.sats.map((s) => {
+      if (!want.has(s.id) || (s.color || '') === c) return s
+      n++
+      return c ? { ...s, color: c } : { id: s.id, name: s.name }
+    })
+    if (n) { g.sats = next; list.value = [...list.value]; persist() }
+    return n
+  }
+
+  return { list, load, persist, find, add, create, duplicate, rename, overwrite, append, removeSats, remove, setColor, colorSats }
 }

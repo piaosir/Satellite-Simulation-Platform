@@ -6,6 +6,8 @@
 // 两者按 folder 去重合并（快照优先，它带天线）。同源 localStorage 直读，与 grdParam.js 同法，
 // 不走 IPC——独立窗口与主窗口同 origin，读的就是同一份。
 
+import { fmtGeoSlot } from './orbitClass.js'
+
 const GEO_ALT = 35786
 
 function readJson(key) {
@@ -40,9 +42,10 @@ export function findSatNode(folder) {
   return loadSatNodes().find((s) => s.folder === folder) || null
 }
 
-/** 卫星显示名（带轨位，GEO 星在列表里靠轨位区分同名星） */
+/** 卫星显示名（带轨位，GEO 星在列表里靠轨位区分同名星）。°E/°W 折算（西经不再写成负°E）；
+ *  lon===0 视为未设置（Number(null)=0 陷阱），不标。 */
 export function satLabel(node) {
   if (!node) return '（未归属卫星）'
   const lon = Number(node.lon)
-  return Number.isFinite(lon) && lon !== 0 ? `${node.satName}（${lon.toFixed(1)}°E）` : node.satName
+  return Number.isFinite(lon) && lon !== 0 ? `${node.satName}（${fmtGeoSlot(lon)}）` : node.satName
 }

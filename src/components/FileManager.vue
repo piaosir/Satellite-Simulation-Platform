@@ -5,6 +5,7 @@ import { readCustomConstellationSummary, customConstellationsToOmmRecords, renam
 import { parseGxt, metaFromName } from '../viz/gxt/parse.js'
 import { parseKmlBeams } from '../viz/kml/parse.js'
 import { loadSatNodes } from '../shared/freqPlanSats.js'
+import { fmtGeoSlot } from '../shared/orbitClass.js'
 import { serializeGxt } from '../viz/gxt/serialize.js'
 import { serializeKml } from '../viz/kml/serialize.js'
 import { grdToStkAzEl } from '../viz/grd/stkPattern.js'
@@ -170,7 +171,7 @@ function grdLonText(sat) {
   const a = fileBridge.grdActions
   const p = a && a.livePos && a.livePos(sat.folder)
   const lon = (p && Number.isFinite(p.lon)) ? p.lon : (sat.lon != null ? Number(sat.lon) : null)
-  return lon != null ? lon.toFixed(1) + '°E · ' : ''
+  return lon != null ? fmtGeoSlot(lon) + ' · ' : ''   // °E/°W 折算（西经不再写成负°E）
 }
 // 改星后让 3D 场景里的卫星图标/仰角线同步刷新（3D 页注入的 redrawSats）
 function grdRedraw() { const a = fileBridge.grdActions; if (a && a.redraw) a.redraw() }
@@ -221,7 +222,7 @@ const fpGroups = computed(() => {
 })
 function fpSatLabel(s) {
   const lon = Number(s.lon)
-  return Number.isFinite(lon) && lon !== 0 ? `${s.satName}（${lon.toFixed(1)}°E）` : s.satName
+  return Number.isFinite(lon) && lon !== 0 ? `${s.satName}（${fmtGeoSlot(lon)}）` : s.satName   // 与 freqPlanSats.satLabel 同式（°E/°W）
 }
 function fmtFpMeta(e) {
   const parts = [e.band || '—', `${e.transponderCount} 转发器`]
@@ -758,7 +759,7 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
                 <div class="trow sat clk" @click="toggleSat(sat.key)">
                   <span class="tw"><Icon :name="gxtExpanded[sat.key] ? 'chevron-down' : 'chevron-right'" :size="12" /></span>
                   <span class="tname" data-i18n-skip>{{ sat.name }}</span>
-                  <span class="tcount">{{ (sat.lon != null ? sat.lon + '°E · ' : '') }}{{ sat.beams.length }} 波束</span>
+                  <span class="tcount">{{ (sat.lon != null ? (fmtGeoSlot(Number(sat.lon)) || sat.lon + '°') + ' · ' : '') }}{{ sat.beams.length }} 波束</span>
                   <span class="trops" @click.stop>
                     <button class="mini" @click="openAddBeam(sat)"><Icon name="plus" :size="12" /> 波束</button>
                     <button class="mini del" @click="removeGxtSat(sat)">删除卫星</button>

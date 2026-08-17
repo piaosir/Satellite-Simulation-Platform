@@ -24,7 +24,8 @@ export function ringCentroid(pts) {
 }
 
 // 单时刻可见性：
-//   entries    — [{rec, name, noradId, group, _cc}]，_cc=true 表示按场景历元解算（自定义/合成星）
+//   entries    — [{rec, name, noradId, group, slot?, _cc}]，_cc=true 表示按场景历元解算（自定义/合成星）；
+//                slot=GEO 定点标注（'110.5°E'，调用方预置，本核只透传）
 //   targets    — [{lat, lon}]，评估点集（站/点=1 个；航迹=点串；Polygon=质心），至少 1 个
 //   times      — {now, gmst, ccNow, ccGmst}，调用方按双历元预备（真实星 now/gmst；_cc 星 ccNow/ccGmst）
 //   minElevDeg — 仰角门限（度）
@@ -70,7 +71,7 @@ export function computeVisibility(entries, targets, times, minElevDeg) {
       }
     } catch { /* ignore */ }
     out.push({
-      name: e.name, noradId: e.noradId, group: e.group,
+      name: e.name, noradId: e.noradId, group: e.group, slot: e.slot || '',   // slot=GEO 定点标注（调用方预置，纯透传）
       elevDeg: best.elevDeg, azDeg: best.azDeg < 0 ? best.azDeg + 360 : best.azDeg, rangeKm: best.rangeKm, rising,
       atLat: best.atLat, atLon: best.atLon,
       subLon: sat.degreesLong(gd.longitude), subLat: sat.degreesLat(gd.latitude), altKm: gd.height
@@ -147,8 +148,8 @@ const peakInWindow = (rec, obs, aMs, bMs) => {
   return { peakMs: tPeak, peakEl: elevMaxAt(rec, obs, tPeak) }
 }
 
-// entries:[{rec,name,noradId,group,_cc}] · targets:[{lat,lon}] · times:{now:Date,ccNow:Date} · horizonSec · minElevDeg
-// 返回 [{noradId,name,group,windows:[{startMs,endMs,durMin,peakEl,peakMs,truncated}]}]，按首窗开始时刻排序。
+// entries:[{rec,name,noradId,group,slot?,_cc}] · targets:[{lat,lon}] · times:{now:Date,ccNow:Date} · horizonSec · minElevDeg
+// 返回 [{noradId,name,group,slot,windows:[{startMs,endMs,durMin,peakEl,peakMs,truncated}]}]，按首窗开始时刻排序。
 export function accessWindows(entries, targets, times, horizonSec, minElevDeg, opts) {
   if (!entries || !entries.length || !targets || !targets.length) return []
   const step = ((opts && opts.coarseSec) || 90) * 1000
@@ -171,13 +172,13 @@ export function accessWindows(entries, targets, times, horizonSec, minElevDeg, o
       else if (above && prevAbove) { if (el > pkEl) { pkEl = el; pkMs = ms } }
       else if (!above && prevAbove && startMs != null) {
         const losMs = bisectCross(e.rec, obs, prevMs, ms, thr, true), pk = seededPeak(e.rec, pkMs, startMs, losMs)
-        windows.push({ startMs, endMs: losMs, startMin: (startMs - base) / 60000, endMin: (losMs - base) / 60000, durMin: (losMs - startMs) / 60000, peakEl: pk.peakEl, peakMin: (pk.peakMs - base) / 60000, truncated: false })
+        windows.push({ startMs, endMs: losMs, startMin: (startMs - base) / 60000, endMin: (losMs - base) / 60000, durMin: (losMs - startMs) / 60000, peakEl: pk.peakEl, peakMs: pk.peakMs, peakMin: (pk.peakMs - base) / 60000, truncated: false })
         startMs = null
       }
       prevMs = ms; prevAbove = above
     }
-    if (prevAbove && startMs != null) { const pk = seededPeak(e.rec, pkMs, startMs, end); windows.push({ startMs, endMs: end, startMin: (startMs - base) / 60000, endMin: (end - base) / 60000, durMin: (end - startMs) / 60000, peakEl: pk.peakEl, peakMin: (pk.peakMs - base) / 60000, truncated: true }) }
-    if (windows.length) out.push({ noradId: e.noradId, name: e.name, group: e.group, windows })
+    if (prevAbove && startMs != null) { const pk = seededPeak(e.rec, pkMs, startMs, end); windows.push({ startMs, endMs: end, startMin: (startMs - base) / 60000, endMin: (end - base) / 60000, durMin: (end - startMs) / 60000, peakEl: pk.peakEl, peakMs: pk.peakMs, peakMin: (pk.peakMs - base) / 60000, truncated: true }) }
+    if (windows.length) out.push({ noradId: e.noradId, name: e.name, group: e.group, slot: e.slot || '', windows })   // slot=GEO 定点标注（调用方预置，纯透传）
   }
   out.sort((a, b) => a.windows[0].startMs - b.windows[0].startMs)
   return out

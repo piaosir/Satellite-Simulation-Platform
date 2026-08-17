@@ -13,6 +13,7 @@
 // 本窗口是只读计算器：读三库与 GRD、不写回。算出的 C/I 要用到链路预算里由使用者自己搬。
 import { computed, onMounted } from 'vue'
 import ActivationLock from '../components/ActivationLock.vue'
+import { fmtGeoSlot } from '../shared/orbitClass.js'
 import { useInterference } from './useInterference.js'
 import CiGeoPanel from './CiGeoPanel.vue'
 import LbSurfacePlot from '../components/LbSurfacePlot.vue'
@@ -38,9 +39,9 @@ const f = (v, n = 2) => (v == null || !Number.isFinite(Number(v)) ? '—' : Numb
 const siteSummary = computed(() =>
   `${site.name || '本站'} · ${f(site.lon, 4)}°E ${f(site.lat, 4)}°N · 收 Ø${f(site.rxDiameterM, 1)} m @ ${f(site.rxFreqGHz, 2)} GHz`)
 const fPct = (v) => (v == null || !Number.isFinite(Number(v)) ? '—' : Number(v) >= 1 ? Number(v).toFixed(2) + '%' : Number(v).toFixed(3) + '%')
-// 结果逐源明细里跟在干扰星名后的轨位标记：值就是「干扰星」表那一列（带符号 °E，西经为负），
-// 最多两位小数并去掉尾零 —— 星名认人、轨位认星，两者挨着才看得出「哪颗星、离本星多远」。
-const fSlot = (v) => (v == null || !Number.isFinite(Number(v)) ? '' : `${Math.round(Number(v) * 100) / 100}°E`)
+// 结果逐源明细里跟在干扰星名后的轨位标记：°E/°W 折算显示（「干扰星」表那一列仍按带符号 °E 录入，西经为负）
+// —— 星名认人、轨位认星，两者挨着才看得出「哪颗星、离本星多远」。
+const fSlot = (v) => (v == null || !Number.isFinite(Number(v)) ? '' : fmtGeoSlot(Number(v)))
 const fDur = (s) => (s == null ? '—' : s < 60 ? s.toFixed(2) + ' s' : (s / 60).toFixed(2) + ' min')
 const fTime = (ms) => { try { return new Date(ms).toISOString().replace('T', ' ').slice(0, 19) + 'Z' } catch (e) { return '—' } }
 
@@ -204,7 +205,7 @@ const run = () => {
                 class="ci-hit" :title="h.inclined ? `星下点纬度 ${h.latDeg}° —— 有倾角残余，按赤道面近似会有偏差` : ''"
                 @click="I.addNeighbor(h)">
                 <b data-i18n-skip>{{ h.name }}</b>
-                <span class="lon">{{ h.lonDeg }}°E</span>
+                <span class="lon">{{ fmtGeoSlot(Number(h.lonDeg)) || h.lonDeg + '°E' }}</span>
                 <span class="dl">Δ{{ h.dLon }}°</span>
                 <span v-if="h.inclined" class="incl">倾</span>
               </button>
@@ -286,7 +287,7 @@ const run = () => {
                     v-for="s in (asi.result.downlink && asi.result.downlink.sources) || []" :key="s.id"
                     :class="{ hot: hoveredId === s.id, skip: s.skipped }"
                     @mouseenter="I.setHover(s.id)" @mouseleave="I.setHover('')">
-                    <td>{{ s.name }}<span v-if="fSlot(s.lonDeg)" class="ci-slot" title="干扰星轨位（°E，西经为负）">{{ fSlot(s.lonDeg) }}</span></td>
+                    <td>{{ s.name }}<span v-if="fSlot(s.lonDeg)" class="ci-slot" title="干扰星轨位（°E/°W）">{{ fSlot(s.lonDeg) }}</span></td>
                     <td>{{ f(s.thetaDeg) }}</td>
                     <td class="dim">{{ f(s.lonDiffDeg) }}</td>
                     <td>{{ f(s.offAxisGainDbi) }}</td>
@@ -307,7 +308,7 @@ const run = () => {
                     :class="{ hot: hoveredId === s.id }"
                     @mouseenter="I.setHover(s.id)" @mouseleave="I.setHover('')">
                     <!-- 轨位标的是这一源所属的那颗干扰星（对等站模式下站址另有「站经度/站纬度」两列，别混） -->
-                    <td>{{ s.name }}<span v-if="fSlot(s.lonDeg)" class="ci-slot" title="该源所属干扰星的轨位（°E，西经为负；非干扰站站址经度）">{{ fSlot(s.lonDeg) }}</span></td>
+                    <td>{{ s.name }}<span v-if="fSlot(s.lonDeg)" class="ci-slot" title="该源所属干扰星的轨位（°E/°W；非干扰站站址经度）">{{ fSlot(s.lonDeg) }}</span></td>
                     <!-- 施扰的是对方那座站：非共址时它看到的夹角与本站的拓扑角不是一个数 -->
                     <td>{{ f(s.offAxisDeg) }}</td>
                     <td>{{ f(s.interfererDensityDbWPerHz) }}</td>

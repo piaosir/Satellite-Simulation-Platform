@@ -1787,9 +1787,9 @@ function rainDetailRows(r, row, down) {
 // 《三线表模板_TimesNewRoman_11pt.xlsx》（用户 Excel 文档模板）口径的表格工厂 —— 雨衰导出全簿统一用这一套：
 // 全表 11 磅；表题在表上方居中加粗（表 N  标题，表号逐 sheet 自增）；顶线/底线 medium、表头下栏目线 thin；
 // 无竖线、无表体内部横线、无底纹；表注在底线下方以「注：」起首；首列左对齐缩进 1，其余列居中；同列小数位一致。
-function tplSheet(ws) {
+function tplSheet(ws, startNo) {
   let rn = 1
-  let tableNo = 0
+  let tableNo = startNo || 0   // 起始表号（跨 sheet 连号的调用方传上一张的号；缺省从表 1 起）
   return {
     // 页首标题（模板「使用说明」页样式：加粗 13 磅、左对齐），下带一空行
     heading(text) {
@@ -1821,12 +1821,12 @@ function tplSheet(ws) {
       ws.getRow(rn).height = 21.75
       rn++
     },
-    // fmts[i]：该列数字的小数位格式（模板：同列小数位一致）；'—' / 文本原样入格
+    // fmts[i]：该列数字的小数位格式（模板：同列小数位一致）；'—' / 文本原样入格；Date 值配日期格式（如 'yyyy-mm-dd hh:mm:ss'）
     dataRow(vals, fmts) {
       vals.forEach((v, i) => {
         const c = ws.getCell(rn, i + 1)
         c.value = v
-        if (fmts && fmts[i] && typeof v === 'number') c.numFmt = fmts[i]
+        if (fmts && fmts[i] && (typeof v === 'number' || v instanceof Date)) c.numFmt = fmts[i]
         c.font = { name: typeof v === 'number' ? FNT : CJK, size: 11 }
         c.alignment = i === 0
           ? { horizontal: 'left', vertical: 'middle', indent: 1 }
@@ -2089,7 +2089,177 @@ async function buildRainAttenuationExcel(payload) {
   return applyBookFont(wb).xlsx.writeBuffer()
 }
 
+// ==================== 可见性分析 · 时段过境导出 ====================
+// 《三线表模板_TimesNewRoman_11pt.xlsx》版式，三张工作表：摘要（项目/数值/单位）、过境明细
+// （两级表头含辅助线：UTC 组与本地组各 开始/结束/峰值，真日期值 + 同列统一数字格式）、逐星汇总。
+// 时刻语义：payload 只送相对分钟（startMin…，与屏上甘特同一根相对轴）+ 时窗起点 baseMs，
+// 绝对时刻在此重建 —— UTC 列 = baseMs + 相对分；本地列再 + tzOffsetMin。xlsx 的日期序列号没有
+// 时区概念（exceljs 按 Date 的 UTC 分量入格），本地墙钟只能靠平移伪装，这是标准做法。
+const DT_FMT = 'yyyy-mm-dd hh:mm:ss'
+function buildVisAccessExcel(payload) {
+  const p = payload || {}
+  const base = Number(p.baseMs) || 0
+  if (!base) throw new Error('缺少时窗起点（请先计算过境）')
+  const offMs = (Number(p.tzOffsetMin) || 0) * 60000
+  const tzTag = String(p.tzTag || '本地')
+  const utcAt = (min) => new Date(base + min * 60000)
+  const locAt = (min) => new Date(base + min * 60000 + offMs)
+  const sats = Array.isArray(p.sats) ? p.sats : []
+  const kpi = p.kpi || {}, tgt = p.target || {}
+  const H = Number(p.horizonMin) || 0
+  const anySlot = sats.some((s) => s && s.slot)
+  const anyTrunc = sats.some((s) => ((s && s.windows) || []).some((w) => w.truncated))
+  const wb = new ExcelJS.Workbook()
+  wb.creator = '卫星仿真平台'; wb.created = new Date()
+
+  // 明细行序＝全星按 AOS 混排（时间线视角）；逐星视角在「逐星汇总」表，两个视角各占一张
+  const flat = []
+  for (const s of sats) for (const w of (s.windows || [])) flat.push({ s, w })
+  flat.sort((a, b) => a.w.startMin - b.w.startMin)
+
+  const llTxt = (lat, lon) => (Number.isFinite(lat) && Number.isFinite(lon))
+    ? Math.abs(lat).toFixed(4) + '°' + (lat >= 0 ? 'N' : 'S') + ', ' + Math.abs(lon).toFixed(4) + '°' + (lon >= 0 ? 'E' : 'W')
+    : '—'
+
+  // —— Sheet 1 摘要（项目 / 数值 / 单位）——
+  {
+    const ws = wb.addWorksheet('摘要', { views: [{ showGridLines: false }] })
+    ws.getColumn(1).width = 26; ws.getColumn(2).width = 24; ws.getColumn(3).width = 8
+    ws.pageSetup = { fitToPage: true, fitToWidth: 1, fitToHeight: 0 }
+    const T = tplSheet(ws)
+    T.heading('时段过境分析')
+    T.caption('过境分析摘要', 3)
+    T.headRow(['项目', '数值', '单位'])
+    const rowsA = [
+      ['分析目标', String(tgt.name || '—'), ''],
+      ['目标坐标', llTxt(tgt.lat, tgt.lon), ''],
+      ['卫星集', String(p.satSet || '—'), ''],
+      ['扫描卫星数', Number(p.scanned) || 0, '颗', '0'],
+      ['仰角门限', Number(p.minElevDeg) || 0, '°', '0'],
+      ['时窗起点 (UTC)', utcAt(0), '', DT_FMT],
+      ['时窗终点 (UTC)', utcAt(H), '', DT_FMT],
+      ['时窗起点 (' + tzTag + ')', locAt(0), '', DT_FMT],
+      ['时窗终点 (' + tzTag + ')', locAt(H), '', DT_FMT],
+      ['时窗长度', H / 60, 'h', '0.0'],
+      ['有过境的卫星', Number(kpi.sats) || 0, '颗', '0'],
+      ['过境次数', Number(kpi.passes) || 0, '次', '0'],
+      ['时间覆盖', Number(kpi.pct) || 0, '%', '0.00'],
+      ['合计可视时长', Number(kpi.coveredMin) || 0, 'min', '0.0'],
+      ['最长中断', Number(kpi.maxGapMin) || 0, 'min', '0.0'],
+      ['中断段数', Number(kpi.gapCount) || 0, '段', '0']
+    ]
+    for (const r of rowsA) T.dataRow([r[0], r[1], r[2]], ['', r[3] || '', ''])
+    T.endTable(3)
+    T.note('时间覆盖＝全部过境窗口在时间轴上合并重叠后的可视时长 ÷ 时窗（多星同时可见只计一次）；最长中断含时窗首尾；被时窗截断的过境只计窗内一段。本地时间＝' + tzTag + '（导出主机系统时区）。', 3)
+  }
+
+  // —— Sheet 2 过境明细（两级表头，模板「三线表-含辅助线」版式）——
+  {
+    const ws = wb.addWorksheet('过境明细', { views: [{ showGridLines: false, state: 'frozen', ySplit: 3 }] })
+    ws.pageSetup = { fitToPage: true, fitToWidth: 1, fitToHeight: 0, orientation: 'landscape' }
+    const single1 = [{ h: '序号', w: 6, fmt: '0' }, { h: '卫星', w: 16 }, { h: 'NORAD', w: 9 }]
+    if (anySlot) single1.push({ h: '轨道位置', w: 10 })
+    const single2 = [{ h: '时长 (min)', w: 10, fmt: '0.0' }, { h: '最高仰角 (°)', w: 12, fmt: '0.0' }]
+    if (anyTrunc) single2.push({ h: '备注', w: 12 })
+    const nCol = single1.length + 6 + single2.length
+    const fmts = [...single1.map((s) => s.fmt || ''), ...Array(6).fill(DT_FMT), ...single2.map((s) => s.fmt || '')]
+    let cc = 1
+    for (const s of single1) ws.getColumn(cc++).width = s.w
+    for (let i = 0; i < 6; i++) ws.getColumn(cc++).width = 19
+    for (const s of single2) ws.getColumn(cc++).width = s.w
+    // 表题（全簿连号：摘要=表 1，此表=表 2）
+    ws.mergeCells(1, 1, 1, nCol)
+    const cap = ws.getCell(1, 1)
+    cap.value = '表 2  ' + (tgt.name ? tgt.name + ' ' : '') + '过境窗口明细'
+    cap.font = { name: CJK, size: 11, bold: true }
+    cap.alignment = { horizontal: 'center', vertical: 'middle' }
+    ws.getRow(1).height = 25.5
+    // 两级表头：单列头竖向合并（2..3 行）；时区组头横跨 3 列，组下辅助线（THIN）由整行下边线给出，只在组头下方可见
+    const headCell = (r, col, text, left) => {
+      const cell = ws.getCell(r, col)
+      cell.value = text
+      cell.font = { name: CJK, size: 11 }
+      cell.alignment = left ? { horizontal: 'left', vertical: 'middle', indent: 1, wrapText: true } : { horizontal: 'center', vertical: 'middle', wrapText: true }
+    }
+    const GH = ['开始时间', '结束时间', '峰值时刻']
+    cc = 1
+    for (const s of single1) { ws.mergeCells(2, cc, 3, cc); headCell(2, cc, s.h, s.h === '卫星'); cc++ }
+    for (const gh of ['UTC', '本地时间 (' + tzTag + ')']) {
+      ws.mergeCells(2, cc, 2, cc + 2); headCell(2, cc, gh)
+      for (let i = 0; i < 3; i++) headCell(3, cc + i, GH[i])
+      cc += 3
+    }
+    for (const s of single2) { ws.mergeCells(2, cc, 3, cc); headCell(2, cc, s.h); cc++ }
+    setRowBorder(ws, 2, 1, nCol, { top: MED, bottom: THIN })
+    setRowBorder(ws, 3, 1, nCol, { bottom: THIN })
+    ws.getRow(2).height = 21.75; ws.getRow(3).height = 21.75
+    // 数据行
+    let rn = 4
+    flat.forEach((it, idx) => {
+      const s = it.s, w = it.w
+      const vals = [idx + 1, s.name, s.noradId]
+      if (anySlot) vals.push(s.slot || '')
+      vals.push(utcAt(w.startMin), utcAt(w.endMin), utcAt(w.peakMin), locAt(w.startMin), locAt(w.endMin), locAt(w.peakMin))
+      vals.push(Number(w.durMin) || 0, Number(w.peakEl) || 0)
+      if (anyTrunc) vals.push(w.truncated ? '截至时窗末' : '')
+      vals.forEach((v, i) => {
+        const cell = ws.getCell(rn, i + 1)
+        cell.value = (v === '' || v == null) ? null : v
+        cell.font = { name: (typeof v === 'number' || v instanceof Date) ? FNT : CJK, size: 11 }
+        cell.alignment = i === 1 ? { horizontal: 'left', vertical: 'middle', indent: 1 } : { horizontal: 'center', vertical: 'middle' }
+        if (fmts[i] && (typeof v === 'number' || v instanceof Date)) cell.numFmt = fmts[i]
+      })
+      ws.getRow(rn).height = 19.5
+      rn++
+    })
+    setRowBorder(ws, Math.max(3, rn - 1), 1, nCol, { bottom: MED })
+    // 表注（模板：底线下方、「注：」起首、左对齐缩进 1）
+    ws.mergeCells(rn, 1, rn, nCol)
+    const nt = ws.getCell(rn, 1)
+    nt.value = '注：AOS（开始）/ LOS（结束）＝仰角穿越门限 ' + (Number(p.minElevDeg) || 0) + '° 的时刻；峰值时刻＝该窗内最高仰角时刻；本地时间＝' + tzTag + '；「截至时窗末」＝过境延伸到时窗外、按时窗截断。'
+    nt.font = { name: CJK, size: 11 }
+    nt.alignment = { horizontal: 'left', vertical: 'middle', wrapText: true, indent: 1 }
+    ws.getRow(rn).height = 33.75
+  }
+
+  // —— Sheet 3 逐星汇总 ——
+  {
+    const ws = wb.addWorksheet('逐星汇总', { views: [{ showGridLines: false, state: 'frozen', ySplit: 2 }] })
+    ws.pageSetup = { fitToPage: true, fitToWidth: 1, fitToHeight: 0 }
+    const cols = [
+      { h: '序号', w: 6, fmt: '0' }, { h: '卫星', w: 16 }, { h: 'NORAD', w: 9 },
+      ...(anySlot ? [{ h: '轨道位置', w: 10 }] : []),
+      { h: '过境次数', w: 9, fmt: '0' }, { h: '合计可视 (min)', w: 13, fmt: '0.0' }, { h: '最长单次 (min)', w: 13, fmt: '0.0' },
+      { h: '最高仰角 (°)', w: 12, fmt: '0.0' }, { h: '首次 AOS (UTC)', w: 19, fmt: DT_FMT }, { h: '末次 LOS (UTC)', w: 19, fmt: DT_FMT }
+    ]
+    cols.forEach((c0, i) => { ws.getColumn(i + 1).width = c0.w })
+    const rowFmts = cols.map((c0) => c0.fmt || '')
+    const T = tplSheet(ws, 2)   // 接着明细连号：表 3
+    T.caption('逐星过境汇总', cols.length)
+    T.headRow(cols.map((c0) => c0.h))
+    sats.forEach((s, i) => {
+      const wl = s.windows || []
+      let tot = 0, maxDur = 0, maxEl = 0, first = Infinity, last = -Infinity
+      for (const w of wl) {
+        tot += Number(w.durMin) || 0
+        if (w.durMin > maxDur) maxDur = w.durMin
+        if (w.peakEl > maxEl) maxEl = w.peakEl
+        if (w.startMin < first) first = w.startMin
+        if (w.endMin > last) last = w.endMin
+      }
+      const vals = [i + 1, s.name, s.noradId]
+      if (anySlot) vals.push(s.slot || '')
+      vals.push(wl.length, tot, maxDur, maxEl, first < Infinity ? utcAt(first) : '—', last > -Infinity ? utcAt(last) : '—')
+      T.dataRow(vals, rowFmts)
+    })
+    T.endTable(cols.length)
+    T.note('行序＝各星首次过境先后；合计可视＝该星各窗时长之和（同星窗口不重叠）；首次 AOS / 末次 LOS 为该星在时窗内的首末边界，UTC。', cols.length)
+  }
+
+  return applyBookFont(wb).xlsx.writeBuffer()
+}
+
 module.exports = {
-  buildWord, buildExcel, buildSunOutageWord, buildRainAttenuationExcel, ROWS,
+  buildWord, buildExcel, buildSunOutageWord, buildRainAttenuationExcel, buildVisAccessExcel, ROWS,
   enrichReportModel, buildReportWorkbook
 }

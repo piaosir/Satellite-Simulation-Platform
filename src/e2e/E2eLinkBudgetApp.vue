@@ -24,6 +24,7 @@ import ChainStrip from './ChainStrip.vue'
 import E2eFields from './E2eFields.vue'
 import E2eSatPanel from './E2eSatPanel.vue'
 import { loadSatTree } from '../ngso/satTree.js'
+import { fmtGeoSlot } from '../shared/orbitClass.js'   // 轨位 °E/°W 折算（西经不再写成负°E）
 import {
   ES_FIELDS, ES_COMMON_FIELDS, ES_TX_FIELDS, ES_RX_FIELDS,
   SAT_FIELDS, SAT_TXP_FIELDS, SAT_REGEN_FIELDS, SAT_INTF_UP_FIELDS, SAT_INTF_DN_FIELDS,
@@ -170,7 +171,7 @@ const esSummary = (c) => [c.form.antennaDiameter ? c.form.antennaDiameter + ' m'
 // 卫星条目摘要：先报轨道（GSO 报定点经度、NGSO 报选星名或高度/倾角），再报射频要点
 const satOrbitBrief = (c) => {
   const f = c.form || {}
-  if ((f.orbitClass || 'GSO') === 'GSO') return f.orbitLongitude !== '' && f.orbitLongitude != null ? `GSO ${f.orbitLongitude}°E` : 'GSO'
+  if ((f.orbitClass || 'GSO') === 'GSO') return f.orbitLongitude !== '' && f.orbitLongitude != null ? `GSO ${fmtGeoSlot(Number(f.orbitLongitude)) || f.orbitLongitude + '°E'}` : 'GSO'
   const ns = c.ngsoSat
   if (ns && ns.mode !== 'manual' && ns.orbit) return `NGSO ${ns.name || ''}`.trim()
   return `NGSO ${f.orbitAltitude || '—'} km/${f.orbitInclination || '—'}°`

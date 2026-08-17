@@ -6,7 +6,8 @@ import { reactive, watch } from 'vue'
 //          | 'vis' 可见性分析 | 'poly' Polygon | 'gxt' 覆盖图 | 'markers' 标记 | 'env' 环境场 | 'geo' 地图设置
 //  - sideLast：收起前停在哪个视图（恒为非空，见下面 sideCtx）
 //  - toolbar / log：图标工具栏、底部日志窗格显隐
-//  - exw：侧栏宽度（px）
+//  - exw：侧栏宽度（px）；exwVis：可见性分析视图的专属宽度（时段过境双时刻表格+甘特轴信息密度高，
+//    独立记忆且默认更宽、拖拽上限也更高——两条轨互不影响，拖谁记谁）
 // 单独成 store：3D 页的 Teleport（把各视图挂入侧栏）需要感知 side。
 // KEY 带版本号：日志窗格默认改为收起前，早期版本可能已把 log:true 存进旧 key，
 // 不换 key 的话旧用户会一直读到那个 true，看起来像「默认没生效」。
@@ -15,7 +16,7 @@ const KEY = 'shell-ui-v2'
 // 否则重开软件后 localStorage 里的值过不了 :18 的校验、静默回落到 'constellation'
 //（'env' 曾经就漏在这里，表现为「环境场不被记忆」）。
 const SIDES = ['constellation', 'antenna', 'satcov', 'beams', 'vis', 'poly', 'gxt', 'markers', 'env', 'geo']
-export const shellUi = reactive({ toolbar: true, log: false, side: 'constellation', sideLast: 'constellation', exw: 300 })
+export const shellUi = reactive({ toolbar: true, log: false, side: 'constellation', sideLast: 'constellation', exw: 300, exwVis: 360 })
 try {
   const saved = JSON.parse(localStorage.getItem(KEY) || 'null')
   if (saved && typeof saved === 'object') {
@@ -24,6 +25,7 @@ try {
     else if (saved.explorer === false) shellUi.side = ''   // 旧版「资源管理器」布尔量迁移
     if (SIDES.includes(saved.sideLast)) shellUi.sideLast = saved.sideLast
     if (Number.isFinite(saved.exw)) shellUi.exw = Math.max(240, Math.min(420, saved.exw))
+    if (Number.isFinite(saved.exwVis)) shellUi.exwVis = Math.max(240, Math.min(560, saved.exwVis))
   }
 } catch { /* ignore */ }
 if (shellUi.side) shellUi.sideLast = shellUi.side   // 老快照没有 sideLast 字段：由当前 side 补一个
@@ -36,5 +38,9 @@ watch(shellUi, () => { try { localStorage.setItem(KEY, JSON.stringify(shellUi)) 
 // 拖拽方式一律沿用收起前那个视图，只有真的切到别的视图才算离开。
 // 分工：side 管「面板画不画」（模板里的 v-if/v-show 用它），sideCtx() 管「场景怎么画」（绘制侧的闸一律用它）。
 export const sideCtx = () => shellUi.side || shellUi.sideLast
+
+// 侧栏宽度按视图分轨：当前视图用哪个宽度字段 + 各自的拖拽范围（App.vue 的绑定与分隔条共用）
+export const sideWKey = () => (shellUi.side === 'vis' ? 'exwVis' : 'exw')
+export const SIDE_W_LIM = { exw: [240, 420], exwVis: [240, 560] }
 
 export function toggleUi(k) { shellUi[k] = !shellUi[k] }

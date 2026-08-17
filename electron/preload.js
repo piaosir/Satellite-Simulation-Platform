@@ -186,6 +186,8 @@ contextBridge.exposeInMainWorld('api', {
     export: (payload) => ipcRenderer.invoke('grid:exportXlsx', payload),
     import: (opt) => ipcRenderer.invoke('grid:importXlsx', opt)
   },
+  // 时段过境（可见性分析）导出 Excel：三线表模板版式（摘要 / 过境明细 / 逐星汇总），模型在渲染端组装
+  visAccess: { exportExcel: (payload) => ipcRenderer.invoke('vis:exportAccessExcel', payload) },
   // 覆盖图导出：保存二进制（PNG/PDF）到用户选定路径 / 读取系统字体（PDF 嵌入用：TNR 西文 + 中文面）
   exportFile: (payload) => ipcRenderer.invoke('file:save', payload),
   // PFD Mask 生成（ITU-R S.1503）：参数进、XML 文本与统计出；落盘走 exportFile / exportFiles

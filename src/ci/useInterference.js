@@ -12,6 +12,7 @@ import { ref, reactive, computed, watch } from 'vue'
 // 绝不在本窗口另写一遍——NGSO 链路预算的搜索池（ngso/satSearchPool.js）也是这么接的。
 import { generateConstellation, validateWalker } from '../viz/constellation/walker.js'
 import { resolveScenarioEpoch } from '../viz/constellation/useCustomConstellations.js'
+import { fmtGeoSlot } from '../shared/orbitClass.js'   // 轨位 °E/°W 折算（西经不再写成负°E）
 
 const KEY = 'ci/panel'
 // NGSO 面板态的版本号。v2 = 「抽样上限」的出厂默认由 200 改成留空（全量），见 load() 里的迁移。
@@ -730,7 +731,7 @@ export function useInterference() {
       satSearch.hits = r.sats || []
       satSearch.iso = r.iso || ''
       satSearch.msg = satSearch.hits.length
-        ? `本星 ${carrier.satLonDeg}°E 两侧 ±${satSearch.spanDeg}° 内 ${r.count} 颗（按经度差排序）`
+        ? `本星 ${fmtGeoSlot(Number(carrier.satLonDeg)) || carrier.satLonDeg + '°E'} 两侧 ±${satSearch.spanDeg}° 内 ${r.count} 颗（按经度差排序）`
         : `两侧 ±${satSearch.spanDeg}° 内没搜到——放宽范围，或先在主窗口「星座」页加载 GEO 组`
     } finally { satSearch.busy = false }
   }
@@ -744,9 +745,10 @@ export function useInterference() {
       polarization: carrier.dnPolarization,
       diameterM: site.rxDiameterM, powerW: site.txPowerW, bandwidthHz: carrier.bandwidthHz, feederLossDb: site.txFeederLossDb
     }))
+    const slotTxt = fmtGeoSlot(Number(s.lonDeg)) || s.lonDeg + '°E'
     satSearch.msg = s.inclined
-      ? `已加入「${s.name}」（${s.lonDeg}°E）—— 该星星下点纬度 ${s.latDeg}°，有倾角残余，按赤道面圆轨道近似算 C/ASI 会有偏差`
-      : `已加入「${s.name}」（${s.lonDeg}°E）—— 请补它的下行 EIRP 密度`
+      ? `已加入「${s.name}」（${slotTxt}）—— 该星星下点纬度 ${s.latDeg}°，有倾角残余，按赤道面圆轨道近似算 C/ASI 会有偏差`
+      : `已加入「${s.name}」（${slotTxt}）—— 请补它的下行 EIRP 密度`
   }
 
   // NGSO 星座组 + 各组的实参统计（选了真实星座就不必再填根数，这些数由星历直接给出）

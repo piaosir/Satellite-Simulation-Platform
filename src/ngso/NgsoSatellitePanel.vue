@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { BAND_FREQ, BAND_LABEL } from './satPresets.js'
 import { ensureSearchPool } from './satSearchPool.js'
 import { classifyOrbit, orbitRegimeLabel } from '../shared/orbitClass.js'
+import { fmtGeoSlot, geoSlotOfOmm } from '../shared/geoSlot.js'
 
 // NGSO 卫星模块：两种取星模式（互斥）——
 //  ① 卫星/天线树选择：从主窗口「星座3D」页那棵卫星/天线树选星，取其真实轨道根数（NORAD / OMM / 经典六根数）。
@@ -90,7 +91,7 @@ const searchRes = computed(() => {
       out.push(s); if (out.length >= 60) break
     }
   }
-  return out.map((s) => ({ ...s, _regime: regimeOf(s) }))
+  return out.map((s) => ({ ...s, _regime: regimeOf(s), _slot: geoSlotOfOmm(s) }))   // _slot=GEO 定点标注（缓存在池记录上；'elements' 型自然为空）
 })
 function onSearchFocus() { ensurePool(); listOpen.value = true }
 function onSearchBlur() { setTimeout(() => { listOpen.value = false }, 150) }  // 延时让列表项 click 先触发
@@ -123,6 +124,8 @@ function regimeOf(r) {
   return classifyOrbit({ e: Number(r.ecc) || 0, inclDeg: Number(r.incl) || 0, perigeeAltKm: Number(r.perigeeKm), apogeeAltKm: Number(r.apogeeKm), periodMin: mm > 0 ? 1440 / mm : NaN })
 }
 const fmtKm = (v) => (v == null ? '—' : Math.round(v).toLocaleString('en-US'))
+// 卫星树下拉的轨位标注：°E/°W 折算（西经不再写成负°E）；lon 缺失/为 0（Number(null)=0 陷阱）不标
+const treeSlot = (s) => { const v = Number(s && s.lon); return Number.isFinite(v) && v !== 0 ? fmtGeoSlot(v) : '' }
 
 // 选完工作频段，上/下行频率跟随预设变（与 GEO 窗口一致；仍可手改）
 watch(() => props.form.frequencyBand, (band) => {
@@ -163,7 +166,7 @@ const rows = computed(() => {
       <label class="pf"><span class="pf-l">选择卫星</span>
         <select v-model="ngsoSat.folder" class="pf-i" @change="onPickSat">
           <option value="" disabled>从卫星树选择…</option>
-          <option v-for="s in treeSats" :key="s.folder" :value="s.folder">{{ s.satName }}（{{ s.lon }}°E）</option>
+          <option v-for="s in treeSats" :key="s.folder" :value="s.folder">{{ s.satName }}<template v-if="treeSlot(s)">（{{ treeSlot(s) }}）</template></option>
           <option v-if="staleFolder" :value="staleFolder">{{ staleFolder }}（未导入）</option>
         </select>
         <i class="pf-u"></i>
@@ -188,7 +191,7 @@ const rows = computed(() => {
               {{ r.name }}
               <em v-if="r.custom" class="sp-badge sp-badge-cc">自定义</em>
               <em v-else-if="r.groupLabel" class="sp-badge">{{ r.groupLabel }}</em>
-              <em v-if="r._regime && r._regime !== 'LEO'" class="sp-badge" :class="'sp-rg-' + r._regime">{{ r._regime }}</em>
+              <em v-if="r._regime && r._regime !== 'LEO'" class="sp-badge" :class="'sp-rg-' + r._regime">{{ r._slot ? r._regime + ' ' + r._slot : r._regime }}</em>
             </span>
             <span class="sp-li-i">
               {{ r.custom ? '合成' : 'NORAD' }} {{ r.noradId }} · i={{ (+r.incl).toFixed(1) }}° ·

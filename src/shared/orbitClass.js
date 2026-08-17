@@ -84,3 +84,12 @@ export function orbitRegimeLabel(code) {
   const r = REGIME_LABELS[code]
   return r ? r.zh : String(code || '')
 }
+
+// GEO 轨道位置（定点经度）标注：经度（°，任意实数）→ 归一化 (−180,180] 后的 °E/°W 串；非有限值返回 ''。
+// 全平台唯一格式（°E/°W 为国际通式，不随界面语言翻译）。放本文件（零依赖）而非 geoSlot.js：
+// 频率计划等轻量窗口只要格式化、不必为此背上整个 SGP4 库。
+export function fmtGeoSlot(lonDeg) {
+  if (!Number.isFinite(lonDeg)) return ''
+  const v = ((lonDeg % 360) + 540) % 360 - 180
+  return `${Math.abs(v).toFixed(1)}°${v >= 0 ? 'E' : 'W'}`
+}

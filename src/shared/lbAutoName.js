@@ -14,6 +14,7 @@
 import { anchoredRate } from './carrierRate.js'
 import { fmtQty } from './adaptUnits.js'   // 显示单位自适应（W→mW、kbps→Mbps…），与结果列同一套档位表
 import { byLang, isDefaultName } from './i18n/lang.js'   // 兜底名按平台语言出字（自动名是数据，呈现层翻不到）
+import { fmtGeoSlot } from './orbitClass.js'   // 轨位 °E/°W 折算（全平台同式）
 
 const s = (v) => String(v == null ? '' : v).trim()
 
@@ -56,9 +57,15 @@ export function carrierAutoName(form) {
 // 卫星名称字段的出厂默认值 'Satellite' 只是占位符，不算星名——星名是这一串的头，没有它就整条不成立：
 // 返回空 → syncAutoNames 留着现名不动（「默认卫星」原样），等取到星再一起跟上来。
 const SAT_NAME_PLACEHOLDER = 'Satellite'
-function satOrbitText(f) {
+// legacy=true 出旧版形状（原样数字+°E，2026-08-17 改 °E/°W 前的样子）——只给 satLegacyAutoName 用于
+// 旧库推定：旧格式的自动名要还认得出是自动名，否则改格式那一刻它们会被钉成自定义名（见文件头）。
+function satOrbitText(f, legacy) {
   const pos = s(f.orbitPosition)
-  if (pos) return pos + '°E'                       // GSO：定点轨位（负值＝西经，与全窗口同口径）
+  if (pos) {
+    if (legacy) return pos + '°E'
+    const v = Number(pos)
+    return Number.isFinite(v) ? fmtGeoSlot(v) : pos + '°E'   // GSO：定点轨位（°E/°W 折算，西经不再写成负°E）
+  }
   const h = s(f.orbitAltitude), i = s(f.orbitInclination)
   return [h ? 'h=' + h + ' km' : '', i ? 'i=' + i + '°' : ''].filter(Boolean).join(' ')
 }
@@ -76,14 +83,14 @@ export function satAutoName(cfg) {
   return [nm, s(f.frequencyBand), satOrbitText(f)].filter(Boolean).join(' · ')
 }
 
-// 旧版自动名「星名 · 频段 · 轨道」。只用于旧库推定：NGSO/再生式改规则（2026-08-15 星名单独成名）前
-// 入库的自动名还是这个形状，同样算「没起过名字」，否则改规则那一刻它们会被一次性钉成自定义名。
-// GSO 走的仍是这条，与 satAutoName 同值，推定结果不变。
+// 旧版自动名「星名 · 频段 · 轨道」。只用于旧库推定：NGSO/再生式改规则（2026-08-15 星名单独成名）前、
+// 及 GSO 轨位改 °E/°W 折算（2026-08-17）前入库的自动名还是这个形状，同样算「没起过名字」，
+// 否则改规则那一刻它们会被一次性钉成自定义名。
 function satLegacyAutoName(cfg) {
   const nm = satName(cfg)
   if (!nm) return ''
   const f = (cfg && cfg.form) || {}
-  return [nm, s(f.frequencyBand), satOrbitText(f)].filter(Boolean).join(' · ')
+  return [nm, s(f.frequencyBand), satOrbitText(f, true)].filter(Boolean).join(' · ')
 }
 
 // 各库的自动名算法 + 无参数可用时的兜底名 + 旧库默认名的形状（含 syncAutoNames 加的 ' 2' 重名后缀）

@@ -5,7 +5,7 @@ import { cursor } from './stores/cursor'
 import { view } from './stores/view'
 import { covNav } from './stores/coveragePanels'
 import { zoom } from './stores/zoom'
-import { shellUi as ui, toggleUi } from './stores/shellUi'
+import { shellUi as ui, toggleUi, sideWKey, SIDE_W_LIM } from './stores/shellUi'
 import { theme } from './stores/theme'
 import { logStore, logMsg, clearLog } from './stores/log'
 import { effective as displayQuality } from './stores/displayQuality'
@@ -94,10 +94,11 @@ function multiTap(key, n, fn) {
   if (t.c >= n) { t.c = 0; fn() }
 }
 
-// 侧栏宽度拖拽（左右分隔条）
+// 侧栏宽度拖拽（左右分隔条）——宽度按视图分轨（可见性分析独立记忆、上限更高），拖谁记谁
 function splitDown(e) {
-  const x0 = e.clientX; const w0 = ui.exw
-  const move = (ev) => { ui.exw = Math.max(240, Math.min(420, w0 + ev.clientX - x0)) }
+  const k = sideWKey(), [lo, hi] = SIDE_W_LIM[k]
+  const x0 = e.clientX; const w0 = ui[k]
+  const move = (ev) => { ui[k] = Math.max(lo, Math.min(hi, w0 + ev.clientX - x0)) }
   const up = () => { document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up) }
   document.addEventListener('mousemove', move); document.addEventListener('mouseup', up)
 }
@@ -360,7 +361,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
            且 pageKey（nav.current / msaa）变化会整页重挂载 → 其 Teleport 随之卸载重建；而 Teleport 只在
            自身挂载时用 querySelector 解析一次 to 目标、之后不重试。若目标被 v-if 卸载，重挂载/异步时序错位下
            就会解析落空 → 侧栏偶发空白（刷新才好）。目标常驻即可根除此竞态（收起时靠 v-show 隐藏，节点不销毁）。 -->
-      <aside v-show="ui.side" class="dock sidebar" :style="{ width: ui.exw + 'px' }">
+      <aside v-show="ui.side" class="dock sidebar" :style="{ width: ui[sideWKey()] + 'px' }">
         <div class="dock-hd">
           <span class="dock-tt">{{ sideTitle }}</span>
           <span class="dock-x" title="收起侧栏" @click="ui.side = ''"><Icon name="x" :size="12" /></span>

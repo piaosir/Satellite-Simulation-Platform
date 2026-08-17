@@ -531,6 +531,25 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     }
   })
 
+  // ---- 可见性分析 · 时段过境导出 Excel（三线表模板版式：摘要 / 过境明细 / 逐星汇总）----
+  // 模型在渲染端 ConstellationMap3D.vue exportAccessExcel 组装（相对分钟 + 时窗起点），版式见 report.buildVisAccessExcel
+  ipcMain.handle('vis:exportAccessExcel', async (e, payload) => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    const { canceled, filePath } = await dialog.showSaveDialog(win, {
+      defaultPath: ((payload && payload.defaultName) || '过境窗口') + '.xlsx',
+      filters: [{ name: 'Excel 工作簿', extensions: ['xlsx'] }]
+    })
+    if (canceled || !filePath) return { ok: false, canceled: true }
+    try {
+      const buf = await report.buildVisAccessExcel(payload || {})
+      fs.writeFileSync(filePath, Buffer.from(buf))
+      return { ok: true, filePath }
+    } catch (err) {
+      const busy = err && (err.code === 'EBUSY' || err.code === 'EPERM' || err.code === 'EACCES')
+      return { ok: false, error: busy ? '文件可能正被其他程序打开（如 Excel），请关闭后重试' : (err.message || String(err)) }
+    }
+  })
+
   // ---- 通用表格 ⇄ Excel（性能指标表 / 对星性能表 / 标记批量表格 …）----
   // 主进程只做「模型 → 工作簿」与「工作簿 → 格子值」，列匹配与业务口径在渲染端 src/shared/gridXlsx.js。
   ipcMain.handle('grid:exportXlsx', async (e, payload) => {

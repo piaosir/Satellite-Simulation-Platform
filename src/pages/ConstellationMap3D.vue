@@ -54,6 +54,7 @@ import { useSatGroups } from '../viz/constellation/useSatGroups.js'
 import { makeSatSetItem } from '../shared/satconMiniExport.js'
 import { walkerCode, orbitPeriodMin, validateWalker } from '../viz/constellation/walker.js'
 import { classifyOrbit } from '../shared/orbitClass.js'
+import { fmtGeoSlot, geoSlotOfSatrec, geoSlotOfOmm } from '../shared/geoSlot.js'
 import { byLang } from '../shared/i18n/lang.js'   // 空名占位是界面语汇，却画在打了 skip 的名字位上（呈现层翻不到），故在这里按语言出字
 
 // 分组与「星座地图」(2D) 完全一致：同一份列表 / 顺序 / 默认「中国星网」。
@@ -82,6 +83,8 @@ const GROUPS = [
 const GROUP_LABEL = { other: '其他' }
 GROUPS.forEach((g) => { GROUP_LABEL[g.key] = g.label })
 const DEFAULT_GROUP = Math.max(0, GROUPS.findIndex((g) => g.key === 'geo'))
+// 可见性分析「卫星集」下拉的内置分组档（默认卫星组）：none 没有真实星、custom 在下拉里单列一项
+const VIS_SAT_GROUPS = GROUPS.filter((g) => g.key !== 'none' && g.key !== 'custom')
 
 const RE = 6378.137
 const DEG = Math.PI / 180
@@ -192,9 +195,10 @@ const satcovTableOpen = ref(false)
 
 // 可见性分析（复刻 STK Access / Coverage）：选目标（站/点/航迹/Polygon）→ 仰角门限 → 算可见卫星。
 // 宿主能力全经 getter/箭头注入（避免 TDZ；stations/points/renderEntries 等在下方定义，仅运行时调用）。
+// 卫星集按 vis.satSrc 分派：''=当前显示（renderEntries）；内置分组/卫星组/自定义卫星=异步解析缓存（见 visSatResolve）。
 const vis = useVisibility({
   getStations: () => stations.value, getPoints: () => points.value, getTrajectories: () => trajectories.value,
-  getPolys: () => polys.value, getRenderEntries: () => renderEntries,
+  getPolys: () => polys.value, getSatSet: () => (vis.satSrc.value ? visSatCache : renderEntries),
   calcAt: () => calcAt(), ccTimeAt: (t) => ccTimeAt(t), isCustomEntry: (e) => isCustomEntry(e),
   refresh: () => { redrawSats(); commitGeometry() },
   // 覆盖分析 FOM 热力图【专用通道】：spec={id,fillBands,alpha} 画到 3D 球 + 2D 平面图；spec=null 清除（互不干扰 GRD 覆盖）。
@@ -262,13 +266,20 @@ function computeVisibilityGeometry() {
     const hot = hid && String(r.noradId) === hid
     items.push({
       satPos: { lat: r.subLat, lon: r.subLon, altKm: r.altKm, color: hot ? '#efeae0' : (vis.iconColor.value || '#4caf82') },
-      orbit: [{ lat: tgt.lat, lon: tgt.lon, altKm: 0 }, { lat: r.subLat, lon: r.subLon, altKm: r.altKm }],
+      // 视线连线可关（showLines）：星多时几百根线糊成扇面；关线只影响呈现，在轨点/星下点/悬停高亮照常
+      orbit: vis.showLines.value ? [{ lat: tgt.lat, lon: tgt.lon, altKm: 0 }, { lat: r.subLat, lon: r.subLon, altKm: r.altKm }] : null,
       primary: hot
     })
     subs.push({ lat: r.subLat, lon: r.subLon, px: subPx, colorHex: icNum })
   }
   return { items, subs }
 }
+// 卫星集下拉选「当前显示」时的悬停读数：当前显示具体是谁（星座 / 自定义星座 / 卫星组 / 搜索 + 名称）
+const visSatTitle = computed(() => {
+  if (vis.satSrc.value) return ''
+  const L = satSetLabel.value
+  return `当前显示：${L.kind ? L.kind + ' · ' : ''}${L.name}`
+})
 // 可见性分析目标下拉：值形如 'kind|id'（kind ∈ station|point|traj|poly）→ 拆给 vis.setTarget
 function visPickTarget(v) {
   const s = String(v == null ? '' : v), i = s.indexOf('|')
@@ -277,11 +288,113 @@ function visPickTarget(v) {
 }
 // 仰角门限输入：允许临时清空（显示空、按 0° 算），非法输入保持原值——不卡在空/NaN
 function visSetElev(v) { vis.minElev.value = (v === '' || v == null) ? '' : (Number.isFinite(Number(v)) ? Number(v) : vis.minElev.value) }
+// 星下点图标大小：允许临时清空（空按默认 12 画），非法保持原值，1–64 钳制（负/超大像素会画坏图层）
+function visSetIcon(v) { vis.iconSize.value = (v === '' || v == null) ? '' : (Number.isFinite(Number(v)) ? Math.min(64, Math.max(1, Number(v))) : vis.iconSize.value) }
 // 方位角 → 八向罗盘文本
 const VIS_DIRS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']
 function visCompass(az) { const a = ((Number(az) % 360) + 360) % 360; return VIS_DIRS[Math.round(a / 45) % 8] }
 // 分钟 → 简短时长文本（如 2h15m / 45m）
 function visDur(min) { const m = Math.max(0, Math.round(Number(min) || 0)); const h = Math.floor(m / 60), mm = m % 60; return h ? h + 'h' + (mm < 10 ? '0' : '') + mm + 'm' : mm + 'm' }
+// ==== 时段过境：绝对时刻呈现（UTC / 本地双轨；显示时区跟 vis.accessTz 开关，导出恒双时区）====
+const p2t = (n) => (n < 10 ? '0' : '') + n
+// 分钟 → 秒级时长文本（≥1h 归整到分：2h16m；<1h 带秒：7m07s）——过境单窗常只有几分钟，分钟取整会把 30s 的差抹平
+function visDurS(min) {
+  let s = Math.max(0, Math.round((Number(min) || 0) * 60))
+  const h = Math.floor(s / 3600); s -= h * 3600
+  const m = Math.floor(s / 60); s -= m * 60
+  return h ? h + 'h' + p2t(m) + 'm' : m + 'm' + p2t(s) + 's'
+}
+// 本地时区标签：'UTC+8'（半时区如 'UTC+5:30'）。跟系统时区当期偏移
+function visTzTag(ms) {
+  const off = -new Date(ms || vis.accessBaseMs.value || Date.now()).getTimezoneOffset()
+  const a = Math.abs(off)
+  return 'UTC' + (off < 0 ? '-' : '+') + Math.floor(a / 60) + (a % 60 ? ':' + p2t(a % 60) : '')
+}
+// ms → 指定时区的日期分量；utc 省缺跟随显示开关（供表格），显式传值供双时区并排（详情卡 / title / 导出）
+function visP(ms, utc) {
+  const u = utc == null ? vis.accessTz.value === 'utc' : utc, d = new Date(ms)
+  return u
+    ? { y: d.getUTCFullYear(), mo: d.getUTCMonth() + 1, da: d.getUTCDate(), h: d.getUTCHours(), mi: d.getUTCMinutes(), se: d.getUTCSeconds() }
+    : { y: d.getFullYear(), mo: d.getMonth() + 1, da: d.getDate(), h: d.getHours(), mi: d.getMinutes(), se: d.getSeconds() }
+}
+const visHms = (ms, utc) => { const p = visP(ms, utc); return p2t(p.h) + ':' + p2t(p.mi) + ':' + p2t(p.se) }
+const visYmd = (ms, utc) => { const p = visP(ms, utc); return p.y + '-' + p2t(p.mo) + '-' + p2t(p.da) }
+const visMdHms = (ms, utc) => { const p = visP(ms, utc); return p2t(p.mo) + '-' + p2t(p.da) + ' ' + p2t(p.h) + ':' + p2t(p.mi) + ':' + p2t(p.se) }
+const visYmdHm = (ms, utc) => { const p = visP(ms, utc); return visYmd(ms, utc) + ' ' + p2t(p.h) + ':' + p2t(p.mi) }
+// 相对分钟 → 绝对 ms（锚在本次计算的时窗起点；合成星窗口在相对轴上与甘特同轴，映射后与真实星可比）
+const visAbsMs = (min) => vis.accessBaseMs.value + min * 60000
+// 显示时区里 ms 落在时窗第几天（0=起算日）：跨日角标与日期分隔行同源
+function visDayIdx(ms) {
+  const a = visP(ms), b = visP(vis.accessBaseMs.value)
+  return Math.round((Date.UTC(a.y, a.mo - 1, a.da) - Date.UTC(b.y, b.mo - 1, b.da)) / 86400000)
+}
+// 双时区完整读数（title 用）：'2026-08-17 22:38:05 UTC+8｜14:38:05 UTC'（同日省 UTC 侧日期）
+function visBoth(ms) {
+  const lp = visP(ms, false), up = visP(ms, true)
+  const sameDay = lp.y === up.y && lp.mo === up.mo && lp.da === up.da
+  return visYmd(ms, false) + ' ' + visHms(ms, false) + ' ' + visTzTag(ms) + '｜' + (sameDay ? '' : visYmd(ms, true) + ' ') + visHms(ms, true) + ' UTC'
+}
+const accEndMs = computed(() => vis.accessBaseMs.value + vis.accessKpi.value.horizonMin * 60000)
+// 甘特绝对时间刻度：整点对齐（显示时区），档位取到 ≤6 个刻度；午夜刻度改标日期
+const accAxis = computed(() => {
+  const H = vis.accessKpi.value.horizonMin, base = vis.accessBaseMs.value
+  if (!(H > 0) || !base || !vis.accessResults.value.length) return []
+  const STEPS = [15, 30, 60, 120, 180, 240, 360, 720, 1440]
+  const step = STEPS.find((s) => H / s <= 6) || 1440 * Math.ceil(H / 6 / 1440)
+  const p = visP(base), stepMs = step * 60000
+  const dayStart = base - ((p.h * 3600 + p.mi * 60 + p.se) * 1000) - (base % 1000)
+  const out = [], endMs = base + H * 60000
+  for (let t = dayStart + Math.ceil((base - dayStart) / stepMs) * stepMs; t <= endMs; t += stepMs) {
+    const pct = (t - base) / (H * 60000) * 100
+    if (pct < 2.5 || pct > 97.5) continue   // 端点值已在时窗读数行给出，贴边刻度只会被裁半
+    const q = visP(t), midnight = q.h === 0 && q.mi === 0
+    out.push({ pct, label: midnight ? p2t(q.mo) + '-' + p2t(q.da) : p2t(q.h) + ':' + p2t(q.mi), day: midnight })
+  }
+  return out
+})
+// 过境表行序（'time'=按 AOS 混排 + 日期分隔行；'sat'=按星分组）。行内预折好显示串，模板保持哑渲染
+const accExpKey = ref('')   // 当前展开详情的行 key（''=全收起；点行切换）
+const accHovKey = ref('')   // 悬停的过境窗 key（表格行 ⇆ 甘特段 段级 brush-and-link；星级联动仍走 vis.setHover）
+const accGanttEl = ref(null)
+function accToggle(k) { accExpKey.value = accExpKey.value === k ? '' : k }
+// 点击过境行：甘特滚到该星那一行，让高亮段进入可见区。上向对齐要让开钉在容器顶的 sticky 刻度轴
+function accScrollTo(nid) {
+  const box = accGanttEl.value
+  if (!box) return
+  const row = [...box.querySelectorAll('.vis-grow[data-nid]')].find((el) => el.dataset.nid === String(nid))
+  if (!row) return
+  const axis = box.querySelector('.vis-gaxis')
+  const cr = box.getBoundingClientRect(), rr = row.getBoundingClientRect()
+  const topGuard = cr.top + (axis ? axis.getBoundingClientRect().height : 0)
+  const d = rr.top < topGuard ? rr.top - topGuard : rr.bottom > cr.bottom ? rr.bottom - cr.bottom : 0
+  if (d) box.scrollTo({ top: box.scrollTop + d, behavior: 'smooth' })
+}
+watch(() => vis.accessResults.value, () => { accExpKey.value = ''; accHovKey.value = '' })
+const accRows = computed(() => {
+  const out = [], flat = []
+  for (const s of vis.accessResults.value) for (let wi = 0; wi < s.windows.length; wi++) flat.push({ s, w: s.windows[wi], wi })
+  const byTime = vis.accOrder.value !== 'sat'
+  if (byTime) flat.sort((a, b) => a.w.startMin - b.w.startMin)
+  let day = null
+  for (const it of flat) {
+    const sMs = visAbsMs(it.w.startMin), eMs = visAbsMs(it.w.endMin)
+    const ds = visDayIdx(sMs), de = visDayIdx(eMs)
+    if (byTime && ds !== day) { day = ds; out.push({ type: 'day', key: 'day' + ds, ms: sMs, d: ds }) }
+    out.push({
+      type: 'w', key: String(it.s.noradId) + '-' + it.wi, s: it.s, w: it.w,
+      t1: visHms(sMs), t2: visHms(eMs), sup1: (!byTime && ds > 0) ? ds : 0, sup2: de > ds ? de - ds : 0,
+      title: it.s.name + (it.s.slot ? ' · ' + it.s.slot : '')
+        + '\nAOS ' + visBoth(sMs) + '\nLOS ' + visBoth(eMs)
+        + '\n峰值 ' + visBoth(visAbsMs(it.w.peakMin)) + ' · ' + it.w.peakEl.toFixed(1) + '°'
+        + '\n时长 ' + visDurS(it.w.durMin) + ' · AOS 相对 +' + visDur(it.w.startMin) + (it.w.truncated ? ' · 截至时窗末' : '')
+    })
+  }
+  return out
+})
+// 甘特单段 title：双时区 AOS/LOS + 时长 + 峰仰角
+function accSegTitle(w) {
+  return 'AOS ' + visBoth(visAbsMs(w.startMin)) + '\nLOS ' + visBoth(visAbsMs(w.endMin)) + '\n时长 ' + visDurS(w.durMin) + ' · 最高 ' + w.peakEl.toFixed(0) + '°'
+}
 // 可见性侧栏分节头右侧读数（三模式各一套）。「时间覆盖」是严口径值，两种模式各有算法，定义一律写进 title——
 // 只摆一个孤零零的百分数会被当成松口径的「够不够得着」误读（那是覆盖面积，恒偏大）。
 const visCnt = computed(() => {
@@ -320,19 +433,34 @@ function covBandLabel(i, leg) {
   const span = leg.hi - leg.lo, a = leg.lo + span * i / leg.bands, b = leg.lo + span * (i + 1) / leg.bands
   return covFmt(a, leg) + ' ~ ' + covFmt(b, leg) + (leg.unit ? ' ' + leg.unit : '')
 }
-// 时段过境（Access）导出 CSV（UTF-8 BOM，Excel 可直接打开）：每行一次过境，绝对 UTC + 相对分钟。
-function exportAccessExcel() {
+// 时段过境（Access）导出 Excel（《三线表模板_TimesNewRoman_11pt》版式：摘要 / 过境明细 / 逐星汇总，UTC 与本地双时区）。
+// 渲染端只组纯数据模型（IPC 过不了响应式代理——逐字段现造纯数据），版式在主进程 report.js buildVisAccessExcel。
+async function exportAccessExcel() {
   const rows = vis.accessResults.value
   if (!rows || !rows.length) { appAlert('先点「计算过境」生成结果'); return }
-  const esc = (s) => { s = String(s == null ? '' : s); return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s }
-  const isoM = (ms) => new Date(ms).toISOString().replace('T', ' ').slice(0, 19)
-  const lines = [['卫星', 'NORAD', '过境#', 'AOS(+分)', 'AOS(UTC)', 'LOS(UTC)', '时长(分)', '最高仰角(°)', '峰值(+分)', '截断'].join(',')]
-  for (const s of rows) for (let i = 0; i < s.windows.length; i++) {
-    const w = s.windows[i]
-    lines.push([esc(s.name), esc(s.noradId), i + 1, w.startMin.toFixed(2), isoM(w.startMs), isoM(w.endMs), w.durMin.toFixed(2), w.peakEl.toFixed(2), w.peakMin.toFixed(2), w.truncated ? '是' : ''].join(','))
+  if (!(window.api && window.api.visAccess)) { appAlert('需在桌面客户端中运行'); return }
+  const tk = vis.targetKind.value, tid = vis.targetId.value
+  let tgtName = '目标'
+  if (tk === 'station') tgtName = ((stations.value.find((x) => x.id === tid) || {}).name) || '地球站'
+  else if (tk === 'point') { const p = points.value.find((x) => x.id === tid); tgtName = p ? fmtLL(p.lat, p.lon) : '点标记' }
+  else if (tk === 'poly') tgtName = ((polys.value.find((x) => x.id === tid) || {}).name) || 'Polygon'
+  const tp = vis.targetPoints()
+  const L = satSetLabel.value, base = vis.accessBaseMs.value, k = vis.accessKpi.value
+  const payload = {
+    defaultName: '过境窗口_' + String(tgtName).replace(/[\\/:*?"<>|]/g, '_'),
+    target: { name: String(tgtName), kind: tk, lat: tp.length ? tp[0].lat : null, lon: tp.length ? tp[0].lon : null },
+    satSet: (L.kind ? L.kind + ' · ' : '') + L.name, scanned: vis.accessScanned.value,
+    minElevDeg: Number(vis.minElev.value) || 0,
+    baseMs: base, horizonMin: k.horizonMin,
+    tzOffsetMin: -new Date(base).getTimezoneOffset(), tzTag: visTzTag(base),
+    kpi: { pct: k.pct, coveredMin: k.coveredMin, maxGapMin: k.maxGapMin, gapCount: k.gapCount, sats: k.sats, passes: k.passes },
+    sats: rows.map((s) => ({
+      name: String(s.name || ''), noradId: String(s.noradId == null ? '' : s.noradId), slot: String(s.slot || ''),
+      windows: s.windows.map((w) => ({ startMin: w.startMin, endMin: w.endMin, durMin: w.durMin, peakMin: w.peakMin, peakEl: w.peakEl, truncated: !!w.truncated }))
+    }))
   }
-  const tgt = vis.targetKind.value === 'station' ? ((stations.value.find((x) => x.id === vis.targetId.value) || {}).name || '地球站') : (vis.targetKind.value || '目标')
-  saveExport('﻿' + lines.join('\r\n'), `过境窗口_${String(tgt).replace(/[\\/:*?"<>|]/g, '_')}.csv`, [{ name: 'CSV（Excel 可打开）', extensions: ['csv'] }])
+  const r = await window.api.visAccess.exportExcel(payload)
+  if (r && !r.ok && !r.canceled) appAlert('导出失败：' + (r.error || '未知错误'))
 }
 async function toggleGrd() {
   grdOpen.value = !grdOpen.value
@@ -642,7 +770,7 @@ async function satcovLoadShellPool() {
       if (!(altKm > 0)) continue
       out.push({
         name: e.name, noradId: e.noradId, groupLabel: e.groupLabel || GROUP_LABEL[e.group] || '其他',
-        altKm, incDeg: (rec.inclo || 0) * 180 / Math.PI, ecc: rec.ecco || 0
+        altKm, incDeg: (rec.inclo || 0) * 180 / Math.PI, ecc: rec.ecco || 0, slot: geoSlotOfSatrec(rec)
       })
     }
     satcovPickPool.value = out
@@ -733,7 +861,7 @@ async function satcovSearch(q, limit = 60, exclude = null) {
     if (seen.has(k) || (skip && skip.has(k))) return
     seen.add(k)
     total++
-    if (out.length < cap) out.push({ name: e.name, noradId: e.noradId, group: e.group, tag: grpHit.get(String(e.noradId)) || e.groupLabel || GROUP_LABEL[e.group] || '' })
+    if (out.length < cap) out.push({ name: e.name, noradId: e.noradId, group: e.group, tag: grpHit.get(String(e.noradId)) || e.groupLabel || GROUP_LABEL[e.group] || '', slot: geoSlotOfSatrec(e.rec) })   // slot 是纯字符串，保持结果无 satrec/Proxy
   }
   // 两轮都【扫到底】不提前 break：列表截断到 cap，命中总数照实数（两万多条上做 includes 是毫秒级）
   for (const e of renderEntries) if (match(e)) push(e)        // 在场的排前面
@@ -1159,15 +1287,16 @@ const selList = shallowRef([])
 function buildSelList() {
   selList.value = selEntries.map((e, idx) => {
     const c = cardFor(e) || {}
-    return { idx, active: e === selEntry, name: e.name, noradId: e.noradId, kind: c.kind || '', alt: c.alt || '—', incl: c.incl || '—' }
+    return { idx, active: e === selEntry, name: e.name, noradId: e.noradId, kind: c.kind || '', slot: c.slot || '', alt: c.alt || '—', incl: c.incl || '—' }
   })
 }
 
 // ===================== 自定义星座（仿 STK Walker 生成器） =====================
 // 合成星并入点云叠加显示：其 entries 追加进 renderEntries，即自动获得星点渲染 / 点选 / 选中轨道·星下点·足迹。
 const DEFAULT_SAT_RGB = [0x9f / 255, 0xd0 / 255, 0xef / 255]   // 默认星点色（与统一材质 0x9fd0ef 一致）
-// 星点原色 → '#rrggbb'（自定义星用自身色，普通星用默认色）；供选中星「在轨点」大号圆点跟随星点原色
-const satDotHex = (e) => { const c = (e && e.color) || (e && groupRgb(e.group)) || DEFAULT_SAT_RGB; const h = (n) => Math.max(0, Math.min(255, Math.round(n * 255))).toString(16).padStart(2, '0'); return '#' + h(c[0]) + h(c[1]) + h(c[2]) }
+// 星点原色 → '#rrggbb'（卫星组配色 > 自定义星自身色 > 分组覆盖色 > 默认色，与 refreshPositions 的逐点取色链同序）；
+// 供选中星「在轨点」大号圆点跟随星点原色
+const satDotHex = (e) => { const c = (e && satGrpColor.size && satGrpColor.get(String(e.noradId))) || (e && e.color) || (e && groupRgb(e.group)) || DEFAULT_SAT_RGB; const h = (n) => Math.max(0, Math.min(255, Math.round(n * 255))).toString(16).padStart(2, '0'); return '#' + h(c[0]) + h(c[1]) + h(c[2]) }
 let renderHasColor = false     // 渲染集是否含逐点色（有可见自定义星座或分组配色覆盖时为真 → 传 colors 给 setSatellites）
 // —— 在轨现实星座「星点颜色」：按分组可改、可复位、持久化 ——
 // 每个内置分组一条覆盖色；缺省=默认蓝。'none' 无星、'all' 由各星自身分组着色（故此二者不设独立色）。
@@ -1182,8 +1311,8 @@ function groupRgb(key) {
   if (!hex || !HEX6.test(hex)) return null
   return [parseInt(hex.slice(1, 3), 16) / 255, parseInt(hex.slice(3, 5), 16) / 255, parseInt(hex.slice(5, 7), 16) / 255]
 }
-// 渲染集是否需逐点色 = 含自定义星 或 存在分组配色覆盖
-function recalcHasColor() { renderHasColor = renderEntries.some(isCustomEntry) || hasGroupColorOverrides() }
+// 渲染集是否需逐点色 = 含自定义星 或 存在分组配色覆盖 或 存在卫星组配色
+function recalcHasColor() { renderHasColor = renderEntries.some(isCustomEntry) || hasGroupColorOverrides() || satGrpColor.size > 0 }
 function setGroupColor(key, hex) {
   if (!groupColorable(key) || !HEX6.test(hex)) return
   groupColors[key] = hex.toLowerCase()
@@ -1199,6 +1328,22 @@ const customList = customConst.list
 const soloConst = ref(null)   // 当前「单独显示」的自定义星座 id（行高亮）
 // 「卫星组」：保存的命名卫星子集（来自筛选结果 / Ctrl 多选），可在星座列表下方重新显示
 const satGroups = useSatGroups()
+// —— 卫星组配色：NORAD → [r,g,b] 查表，插在逐点取色链最前（satGrpColor > e.color > groupRgb > 默认）。
+// 常驻生效：不论这颗星此刻以哪个内置分组 / 筛选态渲染，组里给过色就按组色画 —— 组着色的意义就是在全集里认出它们。
+// 组内逐颗覆盖色优先于任何组色；一星入多组时列表靠前的组先到先得。查表非响应式（每拍逐星查，不能背代理开销）。
+const satGrpColor = new Map()
+const hexRgbArr = (hex) => (typeof hex === 'string' && HEX6.test(hex)) ? [parseInt(hex.slice(1, 3), 16) / 255, parseInt(hex.slice(3, 5), 16) / 255, parseInt(hex.slice(5, 7), 16) / 255] : null
+function rebuildSatGrpColor() {
+  satGrpColor.clear()
+  const gs = satGroups.list.value
+  for (const g of gs) for (const s of g.sats) { const c = s.color ? hexRgbArr(s.color) : null; if (c && !satGrpColor.has(s.id)) satGrpColor.set(s.id, c) }
+  for (const g of gs) { const c = hexRgbArr(g.color); if (!c) continue; for (const s of g.sats) if (!satGrpColor.has(s.id)) satGrpColor.set(s.id, c) }
+}
+// 组增删改（含成员/配色变动）→ 重建查表并即时重绘。sync：load/改色当拍生效，后续 rebuildRenderSet 读到的必是新表
+watch(satGroups.list, () => { rebuildSatGrpColor(); recalcHasColor(); refreshPositions() }, { deep: true, flush: 'sync' })
+function satGrpSetColor(g, hex) { satGroups.setColor(g.id, hex) }
+function satGrpResetColor(g) { satGroups.setColor(g.id, '') }
+function satGrpColorSats(g, ids, hex) { if (g && (ids || []).length) satGroups.colorSats(g.id, ids, hex) }
 const satGrpRenameId = ref('')   // 正在行内重命名的组 id（''=无）
 const satGrpRenameVal = ref('')  // 重命名输入值
 const satGrpDelId = ref('')      // 待确认删除的组 id（两步删除防误删；''=无）
@@ -1340,7 +1485,7 @@ function applyScenarioEpoch(d) { if (!d || isNaN(d)) return; customConst.setScen
 function scenarioEpochNow() { applyScenarioEpoch(new Date()) }
 
 const curKey = () => GROUPS[groupIndex.value].key
-const fmtSlot = (lonDeg) => { const v = ((lonDeg % 360) + 540) % 360 - 180; return `${Math.abs(v).toFixed(1)}°${v >= 0 ? 'E' : 'W'}` }
+const fmtSlot = fmtGeoSlot   // °E/°W 格式化统一走 shared/geoSlot.js（模板日下点等处沿用旧名）
 const fmtDate = (d) => { const p = (n) => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}` }
 
 // ===================== 信息卡（字段/顺序与 2D 完全一致） =====================
@@ -1358,10 +1503,9 @@ function cardFor(e) {
   const apoKm = rec.alta * RE, perKm = rec.altp * RE, meanKm = (apoKm + perKm) / 2
   // 轨道区制判定（GEO/IGSO/MEO/LEO/HEO）——严谨口径见 shared/orbitClass.js（先偏心率→再同步周期→高度带）
   const kind = classifyOrbit({ aKm: RE + meanKm, e: rec.ecco, inclDeg: rec.inclo / DEG, perigeeAltKm: perKm, apogeeAltKm: apoKm, periodMin })
-  const isGeo = (e.group || curKey()) === 'geo'
   return {
     name: e.name, noradId: e.noradId, group: e.groupLabel || GROUP_LABEL[e.group] || GROUP_LABEL[curKey()] || '', kind,
-    slot: isGeo ? fmtSlot(sat.degreesLong(gd.longitude)) : '',
+    slot: geoSlotOfSatrec(e.rec),   // GEO 才有定点标注（严区制判定，与分组无关；历元值缓存，不随时钟漂移）
     alt: gd.height.toFixed(0), lat: sat.degreesLat(gd.latitude).toFixed(2), lon: sat.degreesLong(gd.longitude).toFixed(2),
     incl: (rec.inclo / DEG).toFixed(2), ecc: rec.ecco.toFixed(5), period: periodMin.toFixed(1),
     perigee: perKm.toFixed(0), apogee: apoKm.toFixed(0), meanMotion: meanMotion.toFixed(4),
@@ -1615,7 +1759,7 @@ function rebuildRenderSet() {
   } else {
     const custom = customConst.entriesForRender()   // 自定义星座合成星追加在真实星之后（点云索引对齐 renderEntries）
     renderEntries = custom.length ? valid.concat(custom) : valid
-    renderHasColor = custom.length > 0 || hasGroupColorOverrides()
+    renderHasColor = custom.length > 0 || hasGroupColorOverrides() || satGrpColor.size > 0
   }
   satCount.value = base.length
   refreshPositions()
@@ -1656,6 +1800,7 @@ function refreshPositions() {
   const n = renderEntries.length
   const positions = new Array(n)
   const colors = renderHasColor ? new Float32Array(n * 3) : null   // 有自定义星座时逐点上色（真实星取默认色）
+  const sgOn = satGrpColor.size > 0   // 卫星组配色查表开关：没人着色时逐星免掉 String+Map.get
   // 本拍的在场星 ECEF 快照：只在【真有人要】时才存 ——「波束内的星」那个档开着才用得上。
   // ★ 无条件存是笔白账：7000 颗星每拍多 7000 次 ECI→ECEF 旋转 + 一次 168 KB 的写入，
   //   而绝大多数时候那张表根本没开。（这条是本轮改动自己引入的回归，别再无条件做。）
@@ -1676,7 +1821,7 @@ function refreshPositions() {
       } else { pos = { lat: 0, lon: 0, altKm: -RE }; if (wantEcef) _tickEcef[k * 3] = NaN }   // 占位，保持索引对齐（落到地心不可见）
     } catch { pos = { lat: 0, lon: 0, altKm: -RE }; if (wantEcef) _tickEcef[k * 3] = NaN }
     positions[k] = pos
-    if (colors) { const c = e.color || groupRgb(e.group) || DEFAULT_SAT_RGB; colors[k * 3] = c[0]; colors[k * 3 + 1] = c[1]; colors[k * 3 + 2] = c[2] }
+    if (colors) { const c = (sgOn && satGrpColor.get(String(e.noradId))) || e.color || groupRgb(e.group) || DEFAULT_SAT_RGB; colors[k * 3] = c[0]; colors[k * 3 + 1] = c[1]; colors[k * 3 + 2] = c[2] }
   }
   scene.setSatellites(positions, colors)
   shownCount.value = n
@@ -1853,7 +1998,7 @@ async function ensureSearchPool() {
       const sats = await loadUniverse(true)   // 静默：不打扰主状态栏
       const pool = []
       for (const s of sats) { try { const r = sat.omm2satrec(s); if (r && !r.error) pool.push({ rec: r, name: s.name, noradId: s.noradId, group: s._group || 'other' }) } catch { /* skip */ } }
-      if (pool.length) { searchPool = pool; poolReady = true }
+      if (pool.length) { searchPool = pool; poolReady = true; _poolByNorad = null; poolTick.value++ }   // 就绪信号：卫星组行内列表重映射补 GEO 定点标注
     } catch { /* 离线/失败：回退当前组 */ } finally { poolLoading = false }
   })()
   poolPromise = p
@@ -1934,14 +2079,12 @@ function onSearch(e) {
   filterTimer = setTimeout(() => applyFilter(kw), 250)   // 输入即筛选显示（防抖 250ms；空词恢复分组）
   if (!kw) { searchResults.value = []; return }
   ensureSearchPool()   // 懒加载全量搜索库（幂等）
-  const now = new Date(), gmst = sat.gstime(now), geo = curKey() === 'geo'
   const src = searchSource(), out = []
   for (let i = 0; i < src.length && out.length < 40; i++) {
     const en = src[i]
     if (en.name.toLowerCase().includes(kw) || String(en.noradId).includes(kw) || (en.groupLabel && en.groupLabel.toLowerCase().includes(kw))) {   // 自定义星座另按星座名(groupLabel)命中→列出全部成员
-      let slot = ''
-      if (geo) { const t = isCustomEntry(en) ? ccTimeAt() : now, g = isCustomEntry(en) ? sat.gstime(t) : gmst; const pv = sat.propagate(en.rec, t); if (pv && pv.position) slot = fmtSlot(sat.degreesLong(sat.eciToGeodetic(pv.position, g).longitude)) }
-      out.push({ en, name: en.name, noradId: en.noradId, groupLabel: en.groupLabel || GROUP_LABEL[en.group] || GROUP_LABEL[curKey()] || '', slot })
+      // GEO 星逐颗标注定点经度（严区制判定，跨分组一律有效；非 GEO 为空串）
+      out.push({ en, name: en.name, noradId: en.noradId, groupLabel: en.groupLabel || GROUP_LABEL[en.group] || GROUP_LABEL[curKey()] || '', slot: geoSlotOfSatrec(en.rec) })
     }
   }
   searchResults.value = out
@@ -2089,10 +2232,12 @@ function toggleResultSel(item) { selectSat(item.en, false, true) }
 const selNorads = computed(() => new Set(selList.value.map((s) => String(s.noradId))))
 
 // ===================== 行内展开：卫星列表（虚拟滚动 + Excel 式多选） =====================
-// 列表项：lc 预建小写供 SatList 逐次键入筛选（上万条时不能每次都 toLowerCase）
-function expMkItem(id, name, tip) {
+// 列表项：lc 预建小写供 SatList 逐次键入筛选（上万条时不能每次都 toLowerCase）；dot=行首色点（卫星组成员显示生效配色）
+// slot=GEO 定点标注（'110.5°E'，非 GEO 空串）：进 sub（行右小字）与 tip，并并入 lc 让「110.5」也可搜。
+function expMkItem(id, name, tip, dot, slot) {
   const nid = String(id), nm = name || ('NORAD ' + nid)
-  return { id: nid, name: nm, lc: nm.toLowerCase(), sub: nid, tip: tip || (nm + ' · NORAD ' + nid) }
+  const t = tip || (nm + ' · NORAD ' + nid)
+  return { id: nid, name: nm, lc: (slot ? nm + ' ' + slot : nm).toLowerCase(), sub: slot ? slot + ' · ' + nid : nid, tip: slot ? t + ' · ' + slot : t, dot: dot || '' }
 }
 // 内置分组的卫星名录（只要名称+编号，不建 satrec）：'all'/'other' 走全集并集，'custom' 读本地导入库，
 // 其余按组读 CelesTrak CSV（主进程缓存优先，无缓存才联网）。会话内缓存，展开过一次即刻打开。
@@ -2105,7 +2250,7 @@ async function grpSatList(key) {
     const uni = await loadUniverse(true)
     const all = [], oth = []
     for (const s of uni) {
-      const it = expMkItem(s.noradId, s.name, `${s.name || ''} · ${GROUP_LABEL[s._group] || '其他'} · NORAD ${s.noradId}`)
+      const it = expMkItem(s.noradId, s.name, `${s.name || ''} · ${GROUP_LABEL[s._group] || '其他'} · NORAD ${s.noradId}`, '', geoSlotOfOmm(s))
       all.push(it)
       if (s._group === 'other') oth.push(it)
     }
@@ -2123,7 +2268,7 @@ async function grpSatList(key) {
     if (!p) p = await fetchGroupLiveOrSup(key)
     sats = (p && p.sats) || []
   }
-  const out = sats.map((s) => expMkItem(s.noradId, s.name))
+  const out = sats.map((s) => expMkItem(s.noradId, s.name, '', '', geoSlotOfOmm(s)))
   out.sort((a, b) => NAME_COLLATOR.compare(a.name, b.name))
   grpListCache.set(key, out)
   return out
@@ -2131,6 +2276,16 @@ async function grpSatList(key) {
 // 卫星组成员 / 自定义星座合成星：本来就在内存里，按源数组的对象身份缓存映射结果 ——
 // 成员没变就返回同一个数组，SatList 不会因无关的响应式变动（改名/切显隐）白清一次选择集。
 let expMemCache = { src: null, out: [] }
+// 卫星组成员只存 {id,name}：GEO 定点标注从全量搜索池反查。池未就绪先出无标注列表并后台建池（幂等），
+// 就绪时 poolTick 翻号触发重映射补上标注；池仍缺该星（不在星历）→ 空串。
+let _poolByNorad = null   // noradId → entry（池就绪后惰性建一次；池重建时随 poolTick 作废）
+const poolTick = ref(0)
+function slotByNorad(nid) {
+  if (!poolReady) return ''
+  if (!_poolByNorad) { _poolByNorad = new Map(); for (const en of searchPool) _poolByNorad.set(String(en.noradId), en) }
+  const en = _poolByNorad.get(String(nid))
+  return en ? geoSlotOfSatrec(en.rec) : ''
+}
 const expList = computed(() => {
   const tag = expTag.value
   if (!tag) return expItems.value
@@ -2138,12 +2293,19 @@ const expList = computed(() => {
     const g = satGroups.find(tag.slice(2))
     const src = g ? g.sats : null
     if (!src) return []
-    if (expMemCache.src !== src) expMemCache = { src, out: src.map((s) => expMkItem(s.id, s.name)) }
+    const tick = poolTick.value              // 池就绪后重映射一次（补 GEO 定点标注）
+    if (!poolReady) ensureSearchPool()       // 后台建池；就绪前列表先出（无标注）
+    // 缓存键含组色：逐颗色变会换 sats 数组（colorSats 不可变更新），组色变则数组不动，得单独盯
+    if (expMemCache.src !== src || expMemCache.gc !== g.color || expMemCache.tick !== tick) {
+      // 组里只要有任何配色，未着色成员给透明占位点 —— 名字列对齐，不然行首参差
+      const pad = (!!g.color || src.some((s) => s.color)) ? 'transparent' : ''
+      expMemCache = { src, gc: g.color, tick, out: src.map((s) => expMkItem(s.id, s.name, '', s.color || g.color || pad, slotByNorad(s.id))) }
+    }
     return expMemCache.out
   }
   if (tag[0] === 'c') {
     const src = customConst.satsOf(tag.slice(2))
-    if (expMemCache.src !== src) expMemCache = { src, out: src.map((e) => expMkItem(e.noradId, e.name, `${e.name} · 第 ${(e.plane || 0) + 1} 轨道面 · NORAD ${e.noradId}`)) }
+    if (expMemCache.src !== src) expMemCache = { src, out: src.map((e) => expMkItem(e.noradId, e.name, `${e.name} · 第 ${(e.plane || 0) + 1} 轨道面 · NORAD ${e.noradId}`, '', geoSlotOfSatrec(e.rec))) }
     return expMemCache.out
   }
   return expItems.value
@@ -2190,6 +2352,40 @@ async function expResolve(sats, tagOverride) {
   }
   return out
 }
+// ===================== 可见性分析·卫星集来源解析 =====================
+// vis.satSrc 非空时把所选来源解析成 entries 缓存（与 renderEntries 同构），瞬时/过境/覆盖三模式共用。
+// 解析与「行内展开→聚焦」同口径（grpSatList 名录 + expResolve）：内置分组走该组星历快路径、
+// 自定义卫星走 custom.csv、卫星组按 NORAD 回全量池（含合成星，group 前缀 cc 自动双历元）。
+let visSatCache = []
+const visSatBusy = ref(false)
+const visSatErr = ref('')
+let visSatSeq = 0
+async function visSatResolve() {
+  const src = String(vis.satSrc.value || ''), seq = ++visSatSeq
+  visSatErr.value = ''
+  if (!src) { visSatCache = []; visSatBusy.value = false; vis.recompute(); redrawSats(); commitGeometry(); return }
+  if (src[0] === 's' && !satGroups.find(src.slice(2))) { vis.satSrc.value = ''; return }   // 组已删 → 回退当前显示（watch 再走空分支）
+  visSatBusy.value = true
+  let ents = [], err = ''
+  try {
+    const roster = src[0] === 's'
+      ? (satGroups.find(src.slice(2)).sats || []).map((s) => ({ noradId: s.id, name: s.name }))
+      : (await grpSatList(src.slice(2))).map((it) => ({ noradId: it.id, name: it.name }))
+    if (seq !== visSatSeq) return
+    ents = await expResolve(roster, src)
+  } catch (e) { err = (e && e.message) || String(e) }
+  if (seq !== visSatSeq) return
+  visSatCache = ents
+  visSatErr.value = err ? ('加载失败：' + err) : (ents.length ? '' : '该卫星集在当前星历中没有找到卫星')
+  visSatBusy.value = false
+  vis.recompute(); redrawSats(); commitGeometry()
+}
+watch(() => vis.satSrc.value, visSatResolve)
+// 正被分析的卫星组被删 → 回退「当前显示」，不留死 id
+watch(() => satGroups.list.value.length, () => {
+  const src = String(vis.satSrc.value || '')
+  if (src[0] === 's' && !satGroups.find(src.slice(2))) vis.satSrc.value = ''
+})
 // 聚焦所选：地图只显示这批 → 把它们设为选中星（画轨道/星下点/足迹 + 信息卡逐颗列出）→ 地球转到它们那一面。
 // 单颗与双击一颗完全同效；多颗只是把同一套动作施加到一批上，不是另一种行为。
 // 选中集不截断（信息卡、存为组、加入组都按全部算）；画多少细节由 focusLod / FOCUS_GEOM_MAX 分档决定。
@@ -2459,8 +2655,16 @@ const sgmMembers = computed(() => {
   const k = sgmMemKw.value.trim().toLowerCase(), pool = sgmPool.value
   return g.sats
     .filter((s) => !k || (s.name || '').toLowerCase().includes(k) || s.id.includes(k))
-    .map((s) => ({ id: s.id, name: s.name || ('NORAD ' + s.id), groupLabel: pool.get(s.id) || '', inPool: pool.has(s.id) }))
+    .map((s) => ({ id: s.id, name: s.name || ('NORAD ' + s.id), color: s.color || '', groupLabel: pool.get(s.id) || '', inPool: pool.has(s.id), slot: slotByNorad(s.id) }))
 })
+// —— 组着色（管理器）：快捷调色板（借自定义星座轨道面十色）+ 取色器 + 恢复默认（组色与逐颗覆盖一并清） ——
+const SGM_PALETTE = customConst.PLANE_PALETTE
+const sgmHasAnyColor = computed(() => { const g = sgmCur.value; return !!(g && (g.color || g.sats.some((s) => s.color))) })
+function sgmResetAllColor() {
+  const g = sgmCur.value; if (!g || !sgmHasAnyColor.value) return
+  satGrpColorSats(g, g.sats.map((s) => s.id), '')
+  satGrpResetColor(g)
+}
 // 打开时按当前星历快照一份 NORAD→分组标签（成员表标注用；不做响应式跟随，够用且不拖慢）
 async function sgmSnapPool() {
   await ensureSearchPool()
@@ -2523,7 +2727,7 @@ function sgmOnSearch() {
         if (out.length >= SGM_MAX) break
         if (!(en.name.toLowerCase().includes(kk) || String(en.noradId).includes(kk) || (en.groupLabel && en.groupLabel.toLowerCase().includes(kk)))) continue
         const nid = String(en.noradId); if (seen.has(nid)) continue
-        seen.add(nid); out.push({ id: nid, name: en.name, groupLabel: en.groupLabel || GROUP_LABEL[en.group] || '' })
+        seen.add(nid); out.push({ id: nid, name: en.name, groupLabel: en.groupLabel || GROUP_LABEL[en.group] || '', slot: geoSlotOfSatrec(en.rec) })
       }
       sgmRes.value = out
     } finally { if (sgmKw.value.trim() === k) sgmBusy.value = false }
@@ -3560,7 +3764,7 @@ const buildMiniSatSend = () => ({ name: '星座地图数据', items: miniSatItem
 //   小程序收到不认识的名字会按送过去的轨位自动登记成自定义卫星（见那边的 _ensureSatName），
 //   所以这条路是通的，只是要让人知道这一下会在手机上多出一颗星。
 const miniSatOptions = computed(() => {
-  const known = MINI_COVERAGE_SATS.map((s) => ({ value: s.name, label: `${s.name}（${s.lon}°E）`, lon: s.lon }))
+  const known = MINI_COVERAGE_SATS.map((s) => ({ value: s.name, label: `${s.name}（${fmtGeoSlot(s.lon)}）`, lon: s.lon }))
   // 画面里画的是哪颗星：不在那 24 颗里的排到最前 —— 多半就是这次要发的那颗
   const extra = []
   const seen = new Set()
@@ -3570,7 +3774,7 @@ const miniSatOptions = computed(() => {
       if (!n || seen.has(satKey(n)) || inMiniList(n)) continue
       seen.add(satKey(n))
       const p = Number(b.lon)
-      extra.push({ value: n, label: `${n}${Number.isFinite(p) ? `（${p}°E）` : ''} · 小程序没有，将新建`, lon: Number.isFinite(p) ? p : null })
+      extra.push({ value: n, label: `${n}${Number.isFinite(p) ? `（${fmtGeoSlot(p)}）` : ''} · 小程序没有，将新建`, lon: Number.isFinite(p) ? p : null })
     }
   } catch (e) { /* 画面还没有覆盖层 */ }
   return [...extra, ...known]
@@ -4519,7 +4723,7 @@ function onSatSearch(e) {
   const src = searchSource(), out = []
   for (let i = 0; i < src.length && out.length < 30; i++) {
     const en = src[i]
-    if (en.name.toLowerCase().includes(kw) || String(en.noradId).includes(kw) || (en.groupLabel && en.groupLabel.toLowerCase().includes(kw))) out.push({ en, name: en.name, noradId: en.noradId, groupLabel: en.groupLabel || GROUP_LABEL[en.group] || GROUP_LABEL[curKey()] || '' })
+    if (en.name.toLowerCase().includes(kw) || String(en.noradId).includes(kw) || (en.groupLabel && en.groupLabel.toLowerCase().includes(kw))) out.push({ en, name: en.name, noradId: en.noradId, groupLabel: en.groupLabel || GROUP_LABEL[en.group] || GROUP_LABEL[curKey()] || '', slot: geoSlotOfSatrec(en.rec) })
   }
   satSearchRes.value = out
 }
@@ -5494,7 +5698,7 @@ onBeforeUnmount(() => {
             <div v-for="s in selList" :key="s.idx" class="mrow" :class="{ active: s.active }" @click="setPrimary(s)">
               <div class="mmain">
                 <div class="mr1"><span class="mnm" :title="s.name" data-i18n-skip>{{ s.name }}</span><span class="mkind">{{ s.kind }}</span></div>
-                <div class="msub">{{ s.noradId }} · {{ s.alt }}km · {{ s.incl }}°</div>
+                <div class="msub">{{ s.noradId }}<template v-if="s.slot"> · {{ s.slot }}</template> · {{ s.alt }}km · {{ s.incl }}°</div>
               </div>
               <span class="mx" title="移出该星" @click.stop="removeSel(s)"><Icon name="x" :size="10" /></span>
             </div>
@@ -5727,6 +5931,11 @@ onBeforeUnmount(() => {
                 <span class="ccic" title="管理成员：搜索添加 / 逐颗移出（无需先在地图上显示）" @click.stop="openSatGrpMgr(g)"><Icon name="sliders-horizontal" :size="11" /></span>
                 <span class="ccic" title="重命名" @click.stop="satGrpEnterRename(g)"><Icon name="pencil" :size="11" /></span>
                 <span class="ccic del" :class="{ warn: satGrpDelId === g.id }" :title="satGrpDelId === g.id ? '再次点击确认删除' : '删除该组'" @click.stop="satGrpDelete(g)"><Icon name="trash" :size="11" /></span>
+                <span v-if="g.color" class="pgrst" title="恢复默认星点色" @click.stop="satGrpResetColor(g)"><Icon name="x" :size="10" /></span>
+                <label class="pgclr" :title="'星点颜色（' + (g.color || '未设置，随所属星座') + '）'" @click.stop>
+                  <span class="pgsw" :class="{ unset: !g.color }" :style="g.color ? { background: g.color } : null"></span>
+                  <input type="color" :value="g.color || DEFAULT_SAT_HEX" @input="e => satGrpSetColor(g, e.target.value)" />
+                </label>
               </template>
             </div>
             <SatList
@@ -6119,7 +6328,7 @@ onBeforeUnmount(() => {
               <option v-for="st in grdSats" :key="st.folder" :value="st.folder">{{ st.satName }}</option>
             </select>
           </div>
-          <div v-if="bs.satPos()" class="tip">星下点 {{ bs.satPos().lon.toFixed(2) }}°E{{ Math.abs(bs.satPos().lat || 0) > 0.05 ? ', ' + bs.satPos().lat.toFixed(2) + '°N' : '' }} · 高度 {{ Math.round(bs.satPos().altKm).toLocaleString() }} km</div>
+          <div v-if="bs.satPos()" class="tip">星下点 {{ fmtGeoSlot(bs.satPos().lon) }}{{ Math.abs(bs.satPos().lat || 0) > 0.05 ? ', ' + bs.satPos().lat.toFixed(2) + '°N' : '' }} · 高度 {{ Math.round(bs.satPos().altKm).toLocaleString() }} km</div>
           <div class="bs-grps">
             <div v-for="g in bs.groupsForSat.value" :key="g.id" class="bs-grow" :class="{ on: g.id === bs.activeGroupId.value, hid: !g.pinned && g.id !== bs.activeGroupId.value }" @click="bs.selectGroup(g.id)">
               <span class="bs-gk" :class="g.mode">{{ g.mode === 'pam' ? '相控阵' : g.mode === 'gauss' ? '多馈源' : '赋形' }}</span>
@@ -6550,15 +6759,22 @@ onBeforeUnmount(() => {
           <!-- 分析目标 + 参数 -->
           <div class="sec">
             <div class="sect"><span>分析目标</span></div>
-            <!-- 卫星集＝正在分析哪些星：显式点出来源（星座 / 自定义星座 / 卫星组 / 搜索）+ 名称 + 颗数，避免只看到裸数字。
-                 在「星座」视图切换分组 / 搜索 / 显示卫星组即改变本集；覆盖模式同样以此集撒网格。 -->
+            <!-- 卫星集来源可选：当前显示（跟随星座视图，悬停可见具体是谁）/ 默认卫星组（内置分组）/ 卫星组 / 自定义卫星。
+                 三模式（瞬时/过境/覆盖）共用本集；非「当前显示」的来源异步解析成缓存（visSatResolve）。 -->
             <div class="srow vis-satset"><label>卫星集</label>
-              <span class="vis-satset-val" :title="'当前分析的卫星集＝地图上显示的卫星。可在「星座」视图切换分组 / 搜索 / 显示卫星组以变更本集。'">
-                <span v-if="satSetLabel.kind" class="vis-satset-kind">{{ satSetLabel.kind }}</span>
-                <b :data-i18n-skip="satSetLabel.lit ? null : ''">{{ satSetLabel.name }}</b>
-                <s>{{ (vis.satCount.value || 0).toLocaleString() }} 颗</s>
-              </span>
+              <select class="vis-satsel" :value="vis.satSrc.value" :title="visSatTitle" @change="e => vis.satSrc.value = e.target.value">
+                <option value="">当前显示</option>
+                <optgroup label="默认卫星组">
+                  <option v-for="g in VIS_SAT_GROUPS" :key="g.key" :value="'g:' + g.key">{{ g.label }}</option>
+                </optgroup>
+                <optgroup v-if="satGroups.list.value.length" label="卫星组">
+                  <option v-for="g in satGroups.list.value" :key="g.id" :value="'s:' + g.id" data-i18n-skip>{{ g.name }}</option>
+                </optgroup>
+                <option value="g:custom">自定义卫星</option>
+              </select>
+              <s class="vis-satn">{{ visSatBusy ? '解析中' : ((vis.satCount.value || 0).toLocaleString() + ' 颗') }}</s>
             </div>
+            <div v-if="visSatErr" class="tip">{{ visSatErr }}</div>
             <div v-if="vis.mode.value !== 'coverage'" class="srow"><label>目标</label>
               <select :value="vis.targetKind.value + '|' + vis.targetId.value" @change="e => visPickTarget(e.target.value)">
                 <option value="|">（选择地球站 / 点 / Polygon）</option>
@@ -6597,7 +6813,7 @@ onBeforeUnmount(() => {
                 </div>
                 <div v-if="!vis.results.value.length" class="tip">当前时刻门限 {{ vis.minElev.value || 0 }}° 以上没有可见卫星。</div>
                 <template v-else>
-                  <div class="srow vis-icrow"><label>图标</label><input class="vis-slider" type="range" min="5" max="36" step="1" :value="vis.iconSize.value" @input="e => vis.iconSize.value = Number(e.target.value)" /><span class="u">{{ vis.iconSize.value }}</span><input class="vis-clr" type="color" :value="vis.iconColor.value" @input="e => vis.iconColor.value = e.target.value" title="星下点图标 / 名字颜色（3D 与 2D 一致）" /><label class="chk-in" title="卫星较多时建议关闭，避免名称相互重叠"><input type="checkbox" :checked="vis.showName.value" @change="vis.showName.value = $event.target.checked" /><span>名字</span></label></div>
+                  <div class="srow vis-icrow"><label>图标</label><input class="ci vis-elev" type="number" step="1" min="1" max="64" :value="vis.iconSize.value" @input="e => visSetIcon(e.target.value)" title="星下点图标大小（1–64）" /><input class="vis-clr" type="color" :value="vis.iconColor.value" @input="e => vis.iconColor.value = e.target.value" title="星下点图标 / 名字颜色（3D 与 2D 一致）" /><label class="chk-in" title="目标与各可见卫星之间的视线连线（卫星较多时建议关闭）"><input type="checkbox" :checked="vis.showLines.value" @change="vis.showLines.value = $event.target.checked" /><span>连线</span></label><label class="chk-in" title="卫星较多时建议关闭，避免名称相互重叠"><input type="checkbox" :checked="vis.showName.value" @change="vis.showName.value = $event.target.checked" /><span>名字</span></label></div>
                   <div v-if="vis.showName.value" class="srow vis-icrow"><label>名字大小</label><input class="vis-slider" type="range" min="1" max="12" step="1" :value="vis.nameSize.value" @input="e => vis.nameSize.value = Number(e.target.value)" /><span class="u">{{ vis.nameSize.value }}</span></div>
                   <!-- 极坐标 sky 图：一点＝一颗可见星，角向＝方位（正北在上、顺时针），离心＝仰角（天顶在圆心、地平在外圈）；青虚线＝仰角门限 -->
                   <svg class="vis-sky" viewBox="0 0 100 100" aria-label="天空极坐标图">
@@ -6622,9 +6838,9 @@ onBeforeUnmount(() => {
                     <span class="sortable" :class="{ on: vis.sortKey.value === 'range' }" @click="vis.setSort('range')">斜距km</span>
                   </div>
                   <div class="vis-list">
-                    <div v-for="r in vis.sortedResults.value" :key="r.noradId" class="vis-lrow" :class="{ hi: r.elevDeg >= 45, hov: String(vis.hoveredId.value) === String(r.noradId) }" @mouseenter="vis.setHover(r.noradId)" @mouseleave="vis.setHover('')" :title="r.name + ' · #' + r.noradId + ' · 方位 ' + r.azDeg.toFixed(0) + '° ' + visCompass(r.azDeg) + ' · 高度 ' + Math.round(r.altKm).toLocaleString() + ' km'">
+                    <div v-for="r in vis.sortedResults.value" :key="r.noradId" class="vis-lrow" :class="{ hi: r.elevDeg >= 45, hov: String(vis.hoveredId.value) === String(r.noradId) }" @mouseenter="vis.setHover(r.noradId)" @mouseleave="vis.setHover('')" :title="r.name + (r.slot ? ' · ' + r.slot : '') + ' · #' + r.noradId + ' · 方位 ' + r.azDeg.toFixed(0) + '° ' + visCompass(r.azDeg) + ' · 高度 ' + Math.round(r.altKm).toLocaleString() + ' km'">
                       <span class="vis-lname" data-i18n-skip>{{ r.name }}</span>
-                      <span class="vis-lc" :class="'oc-' + orbitClass(r.altKm)">{{ orbitClass(r.altKm) }}</span>
+                      <span class="vis-lc" :class="'oc-' + orbitClass(r.altKm)" data-i18n-skip>{{ r.slot || orbitClass(r.altKm) }}</span>
                       <span class="vis-lel">{{ r.elevDeg.toFixed(1) }}<i v-if="r.rising === true" class="vis-ud up" title="上升中">↑</i><i v-else-if="r.rising === false" class="vis-ud dn" title="下降中">↓</i></span>
                       <span>{{ Math.round(r.rangeKm).toLocaleString() }}</span>
                     </div>
@@ -6638,7 +6854,7 @@ onBeforeUnmount(() => {
               <div v-if="!vis.hasTarget.value" class="tip">尚未选择分析目标。</div>
               <template v-else>
                 <div class="srow"><label>时窗</label><input class="ci vis-elev" type="number" step="1" min="0.5" max="168" :value="vis.horizonH.value" @input="e => vis.horizonH.value = e.target.value" /><span class="u nw">小时</span><span class="opb sm" :class="{ dis: vis.accessBusy.value }" title="扫描卫星集在此时窗内对目标的全部过境（卫星越多越慢；上限 400 颗）" @click="vis.computeAccess()">计算过境</span></div>
-                <div v-if="vis.accessResults.value.length && !vis.accessBusy.value" class="srow acc-exp"><span class="opb sm" title="导出全部过境窗口为 CSV（Excel 可直接打开）" @click="exportAccessExcel()">导出 Excel</span><span class="tip inl">{{ vis.accessResults.value.reduce((n, s) => n + s.windows.length, 0) }} 次过境 → CSV</span></div>
+                <div v-if="vis.accessResults.value.length && !vis.accessBusy.value" class="srow acc-exp"><span class="opb sm" title="按《三线表模板》导出 .xlsx：摘要 / 过境明细 / 逐星汇总，AOS·LOS·峰值均含 UTC 与本地两套时刻" @click="exportAccessExcel()">导出 Excel</span><span class="tip inl">{{ vis.accessResults.value.reduce((n, s) => n + s.windows.length, 0) }} 次过境</span></div>
                 <div v-if="vis.accessBusy.value" class="tip">扫描过境窗口…</div>
                 <div v-else-if="vis.accessMsg.value" class="tip">{{ vis.accessMsg.value }}</div>
                 <template v-else-if="vis.accessResults.value.length">
@@ -6648,23 +6864,51 @@ onBeforeUnmount(() => {
                     <span title="合并重叠后的可见总时长（多星同时可见只计一次，非各次时长求和）">合计可视 <b>{{ visDur(vis.accessKpi.value.coveredMin) }}</b></span>
                     <span :title="'时窗内共 ' + vis.accessKpi.value.gapCount + ' 段无星可见（含时窗首尾）'">最长中断 <b>{{ visDur(vis.accessKpi.value.maxGapMin) }}</b></span>
                   </div>
-                  <div class="vis-gantt">
-                    <div v-for="s in vis.accessResults.value" :key="s.noradId" class="vis-grow" :class="{ hov: String(vis.hoveredId.value) === String(s.noradId) }" @mouseenter="vis.setHover(s.noradId)" @mouseleave="vis.setHover('')" :title="s.name + ' · ' + s.windows.length + ' 次过境'">
-                      <span class="vis-gname" data-i18n-skip>{{ s.name }}</span>
+                  <!-- 时基行：UTC/本地显示切换（导出恒双时区，此开关只管屏上）+ 本次时窗的绝对起止 -->
+                  <div class="vis-tbase">
+                    <span class="vis-tzseg"><i :class="{ on: vis.accessTz.value !== 'utc' }" title="本地时区" data-i18n-skip @click="vis.accessTz.value = 'local'">{{ visTzTag() }}</i><i :class="{ on: vis.accessTz.value === 'utc' }" data-i18n-skip @click="vis.accessTz.value = 'utc'">UTC</i></span>
+                    <span class="vis-tspan" data-i18n-skip :title="'时窗起点 ' + visBoth(vis.accessBaseMs.value) + '\n时窗终点 ' + visBoth(accEndMs)">{{ visYmdHm(vis.accessBaseMs.value) }} → {{ visYmdHm(accEndMs) }}</span>
+                  </div>
+                  <div ref="accGanttEl" class="vis-gantt">
+                    <!-- 绝对时间刻度轴（显示时区整点对齐；午夜刻度标日期）；钉在滚动容器顶，与条同一坐标系 -->
+                    <div class="vis-grow vis-gaxis">
+                      <span class="vis-gname"></span>
+                      <span class="vis-gax" data-i18n-skip><s v-for="t in accAxis" :key="t.pct" class="vis-gtick" :class="{ day: t.day }" :style="{ left: t.pct + '%' }">{{ t.label }}</s></span>
+                    </div>
+                    <div v-for="s in vis.accessResults.value" :key="s.noradId" :data-nid="s.noradId" class="vis-grow" :class="{ hov: String(vis.hoveredId.value) === String(s.noradId) }" @mouseenter="vis.setHover(s.noradId)" @mouseleave="vis.setHover('')" :title="s.name + (s.slot ? ' · ' + s.slot : '') + ' · ' + s.windows.length + ' 次过境'">
+                      <span class="vis-gname" data-i18n-skip>{{ s.name }}<s v-if="s.slot" class="vis-slot">{{ s.slot }}</s></span>
                       <span class="vis-gbar">
-                        <i v-for="(w, wi) in s.windows" :key="wi" class="vis-gseg" :class="{ hi: w.peakEl >= 45 }" :style="{ left: (w.startMin / vis.accessKpi.value.horizonMin * 100) + '%', width: (Math.max(0.6, w.endMin - w.startMin) / vis.accessKpi.value.horizonMin * 100) + '%' }" :title="'AOS +' + visDur(w.startMin) + ' · 时长 ' + visDur(w.durMin) + ' · 最高 ' + w.peakEl.toFixed(0) + '°'"></i>
+                        <i v-for="(w, wi) in s.windows" :key="wi" class="vis-gseg" :class="{ hi: w.peakEl >= 45, hov: accHovKey === String(s.noradId) + '-' + wi }" :style="{ left: (w.startMin / vis.accessKpi.value.horizonMin * 100) + '%', width: (Math.max(0.6, w.endMin - w.startMin) / vis.accessKpi.value.horizonMin * 100) + '%' }" :title="accSegTitle(w)" @mouseenter="accHovKey = String(s.noradId) + '-' + wi" @mouseleave="accHovKey = ''"></i>
                       </span>
                     </div>
                   </div>
-                  <div class="vis-acc-hd"><span class="vis-lname">卫星</span><span>AOS(+)</span><span>时长</span><span>最高°</span></div>
+                  <div class="vis-acc-hd">
+                    <span class="vis-lname sortable" :class="{ on: vis.accOrder.value === 'sat' }" title="按卫星分组" @click="vis.accOrder.value = 'sat'">卫星</span>
+                    <span class="sortable" :class="{ on: vis.accOrder.value !== 'sat' }" title="全部卫星按 AOS 时间混排" @click="vis.accOrder.value = 'time'">开始</span>
+                    <span>结束</span>
+                    <span>最高°</span>
+                  </div>
                   <div class="vis-acc-list">
-                    <template v-for="s in vis.accessResults.value" :key="s.noradId">
-                      <div v-for="(w, wi) in s.windows" :key="s.noradId + '-' + wi" class="vis-acc-row" :class="{ hov: String(vis.hoveredId.value) === String(s.noradId) }" @mouseenter="vis.setHover(s.noradId)" @mouseleave="vis.setHover('')" :title="s.name + ' · 最高在 +' + visDur(w.peakMin) + (w.truncated ? ' · 窗口延伸到时窗末（截断）' : '')">
-                        <span class="vis-lname" data-i18n-skip>{{ s.name }}</span>
-                        <span>+{{ visDur(w.startMin) }}</span>
-                        <span>{{ visDur(w.durMin) }}</span>
-                        <span :class="{ 'oc-hi': w.peakEl >= 45 }">{{ w.peakEl.toFixed(0) }}</span>
-                      </div>
+                    <template v-for="row in accRows" :key="row.key">
+                      <div v-if="row.type === 'day'" class="vis-acc-day" data-i18n-skip>{{ visYmd(row.ms) }}<s v-if="row.d > 0">D+{{ row.d }}</s></div>
+                      <template v-else>
+                        <div class="vis-acc-row" :class="{ hov: String(vis.hoveredId.value) === String(row.s.noradId), exp: accExpKey === row.key }" @mouseenter="vis.setHover(row.s.noradId); accHovKey = row.key" @mouseleave="vis.setHover(''); accHovKey = ''" @click="accToggle(row.key); accScrollTo(row.s.noradId)" :title="row.title">
+                          <span class="vis-lname" data-i18n-skip><i class="vis-cw">▸</i>{{ row.s.name }}<s v-if="row.s.slot" class="vis-slot">{{ row.s.slot }}</s></span>
+                          <span>{{ row.t1 }}<s v-if="row.sup1" class="vis-dsup">+{{ row.sup1 }}</s></span>
+                          <span>{{ row.t2 }}<s v-if="row.sup2" class="vis-dsup">+{{ row.sup2 }}</s></span>
+                          <span :class="{ 'oc-hi': row.w.peakEl >= 45 }">{{ row.w.peakEl.toFixed(0) }}</span>
+                        </div>
+                        <!-- 行展开详情：AOS/峰值/LOS × 本地/UTC 全量时刻（年份见时基行；跨月才需月-日前缀） -->
+                        <div v-if="accExpKey === row.key" class="vis-acc-det">
+                          <div class="vexp-grid">
+                            <span></span><span class="h" data-i18n-skip>{{ visTzTag() }}</span><span class="h" data-i18n-skip>UTC</span>
+                            <span class="l">AOS</span><span class="t">{{ visMdHms(visAbsMs(row.w.startMin), false) }}</span><span class="t">{{ visMdHms(visAbsMs(row.w.startMin), true) }}</span>
+                            <span class="l">峰值</span><span class="t">{{ visMdHms(visAbsMs(row.w.peakMin), false) }}</span><span class="t">{{ visMdHms(visAbsMs(row.w.peakMin), true) }}</span>
+                            <span class="l">LOS</span><span class="t">{{ visMdHms(visAbsMs(row.w.endMin), false) }}</span><span class="t">{{ visMdHms(visAbsMs(row.w.endMin), true) }}</span>
+                          </div>
+                          <div class="vexp-foot"><span>时长 <b>{{ visDurS(row.w.durMin) }}</b></span><span>最高 <b>{{ row.w.peakEl.toFixed(1) }}°</b></span><span>AOS <b>+{{ visDur(row.w.startMin) }}</b></span><b v-if="row.w.truncated" class="vexp-tr">截至时窗末</b></div>
+                        </div>
+                      </template>
                     </template>
                   </div>
                 </template>
@@ -7091,7 +7335,7 @@ onBeforeUnmount(() => {
           <div class="srow"><input class="ci" :value="satSearchKw" placeholder="或搜索卫星名 / 编号" @input="onSatSearch" /></div>
           <div v-if="satSearchRes.length" class="sres">
             <div v-for="r in satSearchRes" :key="r.noradId" class="sresi" @click="pickSatSearch(r)">
-              <span class="srn" data-i18n-skip>{{ r.name }}</span><em>{{ r.groupLabel }} · {{ r.noradId }}</em>
+              <span class="srn" data-i18n-skip>{{ r.name }}</span><em>{{ r.groupLabel }} · {{ r.noradId }}<template v-if="r.slot"> · {{ r.slot }}</template></em>
             </div>
           </div>
           <div v-if="satModal.noradId" class="tip2">已关联星座卫星 NORAD {{ satModal.noradId }}（仰角线随时间轴 / 实时跟踪）<span class="lnk" @click="satModal.noradId = null">取消关联</span></div>
@@ -7155,6 +7399,7 @@ onBeforeUnmount(() => {
                 class="sgm-grow" :class="{ cur: g.id === sgmId }"
                 @click="sgmPickGroup(g)"
               >
+                <span class="gdot" :class="{ off: !g.color }" :style="g.color ? { background: g.color } : null"></span>
                 <span class="gnm" :title="g.name" data-i18n-skip>{{ g.name }}</span>
                 <span class="gcnt">{{ g.sats.length }}</span>
                 <span class="gic" title="复制该组（含成员）" @click.stop="sgmDup(g)"><Icon name="copy" :size="11" /></span>
@@ -7171,6 +7416,17 @@ onBeforeUnmount(() => {
                 <span class="gbtn" title="在地图上显示该组的卫星" @click="sgmShow"><Icon name="eye" :size="11" /> 显示</span>
               </div>
 
+              <div class="sgm-clr">
+                <label>着色</label>
+                <span v-for="p in SGM_PALETTE" :key="p" class="pz" :class="{ on: sgmCur.color === p }" :style="{ background: p }" :title="p" @click="satGrpSetColor(sgmCur, p)"></span>
+                <label class="pgclr lg" :title="'自定义颜色（' + (sgmCur.color || '未设置，随所属星座') + '）'">
+                  <span class="pgsw" :class="{ unset: !sgmCur.color }" :style="sgmCur.color ? { background: sgmCur.color } : null"></span>
+                  <input type="color" :value="sgmCur.color || DEFAULT_SAT_HEX" @input="e => satGrpSetColor(sgmCur, e.target.value)" />
+                </label>
+                <span class="hexv">{{ sgmCur.color || '—' }}</span>
+                <span class="gbtn" :class="{ dis: !sgmHasAnyColor }" title="清除组色与全部逐颗颜色，回到随所属星座" @click="sgmResetAllColor"><Icon name="x" :size="11" /> 恢复默认</span>
+              </div>
+
               <div class="sgm-sec" title="更换关键词可继续检索，勾选结果累计保留">搜索添加</div>
               <div class="sgm-srch">
                 <input class="ci" v-model="sgmKw" placeholder="卫星名 / NORAD 编号 / 星座名，如 starlink、48274" @input="sgmOnSearch" />
@@ -7184,7 +7440,7 @@ onBeforeUnmount(() => {
                   <!-- 已在组内 → 禁用且不显勾（勾选集是跨组暂存的，切组后可能含本组已有星，避免显示成「已勾选」误导） -->
                   <input type="checkbox" :checked="!sgmMemIds.has(it.id) && sgmPickIds.has(it.id)" :disabled="sgmMemIds.has(it.id)" @change="sgmTogglePick(it)" />
                   <span class="cn" :title="it.name" data-i18n-skip>{{ it.name }}</span>
-                  <em>{{ it.groupLabel }} · {{ it.id }}</em>
+                  <em>{{ it.groupLabel }} · {{ it.id }}<template v-if="it.slot"> · {{ it.slot }}</template></em>
                   <b v-if="sgmMemIds.has(it.id)">已在组内</b>
                 </label>
               </div>
@@ -7198,6 +7454,11 @@ onBeforeUnmount(() => {
               <div class="sgm-memtool">
                 <input class="ci" v-model="sgmMemKw" placeholder="在组内过滤…" />
                 <span class="gbtn" @click="sgmToggleMemAll">全选 / 反选</span>
+                <label class="gbtn clr" :class="{ dis: !sgmSel.length }" :title="'为所选 ' + sgmSel.length + ' 颗单独指定颜色（优先于组色）'">
+                  <Icon name="droplets" :size="11" /> 着色所选{{ sgmSel.length ? (' ' + sgmSel.length) : '' }}
+                  <input type="color" :value="sgmCur.color || DEFAULT_SAT_HEX" @input="e => satGrpColorSats(sgmCur, sgmSel, e.target.value)" />
+                </label>
+                <span class="gbtn" :class="{ dis: !sgmSel.length }" title="清除所选卫星的单独颜色，回到组色" @click="satGrpColorSats(sgmCur, sgmSel, '')">清除着色</span>
                 <span class="gbtn danger" :class="{ dis: !sgmSel.length }" @click="sgmRemoveMem(sgmSel)"><Icon name="minus" :size="11" /> 移出所选{{ sgmSel.length ? (' ' + sgmSel.length) : '' }}</span>
               </div>
               <div class="sgm-memlist">
@@ -7205,8 +7466,13 @@ onBeforeUnmount(() => {
                 <div v-else-if="!sgmMembers.length" class="sgm-empty">没有匹配的成员。</div>
                 <label v-for="m in sgmMembers" :key="m.id" class="sgm-ck">
                   <input type="checkbox" :checked="sgmSelIds.has(m.id)" @change="sgmToggleMem(m.id)" />
+                  <span class="pgclr" :title="m.color ? ('单独颜色（' + m.color + '）') : (sgmCur.color ? ('随组色（' + sgmCur.color + '）') : '未着色（随所属星座）')" @click.stop>
+                    <span class="pgsw" :class="{ unset: !m.color && !sgmCur.color, inh: !m.color && !!sgmCur.color }" :style="(m.color || sgmCur.color) ? { background: m.color || sgmCur.color } : null"></span>
+                    <input type="color" :value="m.color || sgmCur.color || DEFAULT_SAT_HEX" @input="e => satGrpColorSats(sgmCur, [m.id], e.target.value)" />
+                  </span>
                   <span class="cn" :title="m.name" data-i18n-skip>{{ m.name }}</span>
-                  <em :class="{ miss: !m.inPool }">{{ m.inPool ? m.groupLabel : '未在当前星历' }} · {{ m.id }}</em>
+                  <em :class="{ miss: !m.inPool }">{{ m.inPool ? m.groupLabel : '未在当前星历' }} · {{ m.id }}<template v-if="m.slot"> · {{ m.slot }}</template></em>
+                  <span v-if="m.color" class="gic" title="清除单独颜色，回到组色" @click.stop.prevent="satGrpColorSats(sgmCur, [m.id], '')"><Icon name="droplets" :size="11" /></span>
                   <span class="gic del" title="从本组移出" @click.stop.prevent="sgmRemoveMem([m.id])"><Icon name="x" :size="11" /></span>
                 </label>
               </div>
@@ -7831,13 +8097,17 @@ onBeforeUnmount(() => {
 .grprow:hover .pgico, .grprow.sel .pgico { color: inherit; }
 .grprow .pgn { flex: 1; overflow: hidden; text-overflow: ellipsis; }
 /* 星点颜色：小色块（覆盖原生取色器）+ 悬停复位×（仅有覆盖色时出现） */
-.grprow .pgclr { position: relative; flex: none; width: 14px; height: 14px; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
-.grprow .pgclr input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; padding: 0; border: 0; opacity: 0; cursor: pointer; }
-.grprow .pgsw { width: 11px; height: 11px; border-radius: 3px; box-sizing: border-box; border: 1px solid rgba(0,0,0,.3); box-shadow: 0 0 0 1px rgba(255,255,255,.35); }
-.grprow .pgrst { flex: none; display: inline-flex; padding: 0 1px; color: var(--text-faint); cursor: pointer; opacity: 0; }
-.grprow:hover .pgrst { opacity: 1; }
-.grprow .pgrst:hover { color: #ff6b6b; }
-.grprow.sel .pgrst { color: var(--bg); opacity: .85; }
+/* .pgclr/.pgsw/.pgrst 是通用件：内置分组行 / 卫星组行 / 组管理器（着色区、成员行）共用 */
+.pgclr { position: relative; flex: none; width: 14px; height: 14px; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
+.pgclr input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; padding: 0; border: 0; opacity: 0; cursor: pointer; }
+.pgsw { width: 11px; height: 11px; border-radius: 3px; box-sizing: border-box; border: 1px solid rgba(0,0,0,.3); box-shadow: 0 0 0 1px rgba(255,255,255,.35); }
+/* 未设置=斜线空块（随所属星座）；inh=随组色（成员行虚线描边，与单独色区分） */
+.pgsw.unset { background: linear-gradient(135deg, transparent 44%, var(--text-faint) 44%, var(--text-faint) 56%, transparent 56%); box-shadow: none; border-color: var(--text-faint); }
+.pgsw.inh { box-shadow: none; border: 1px dashed rgba(0,0,0,.45); }
+.pgrst { flex: none; display: inline-flex; padding: 0 1px; color: var(--text-faint); cursor: pointer; opacity: 0; }
+.grprow:hover .pgrst, .ccrow:hover .pgrst { opacity: 1; }
+.pgrst:hover { color: #ff6b6b; }
+.grprow.sel .pgrst, .ccrow.sel .pgrst { color: var(--bg); opacity: .85; }
 /* 行首展开箭头（内置组 / 卫星组 / 自定义星座 三处同一枚）：只管展开卫星列表，与行本身的点击语义分开 */
 .pgex { flex: none; width: 14px; height: 14px; display: inline-flex; align-items: center; justify-content: center; color: var(--text-faint); border-radius: 3px; }
 .pgex:hover { color: var(--text); background: var(--bg); }
@@ -8195,11 +8465,9 @@ onBeforeUnmount(() => {
 /* 分节头读数：加了「x% 时间覆盖」后可能长过标题剩余宽度 → 省略号收边（完整定义在 title 里），不许换行顶开表头 */
 .vis-side .sect .vis-cnt { margin-left: auto; padding-left: 8px; min-width: 0; font-size: 10px; color: var(--text-faint); font-family: var(--font-mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .vis-side .sect .vis-cnt.on { color: var(--ok); }
-/* 卫星集读数行：来源类型标签（星座 / 自定义星座 / 卫星组 / 搜索）+ 名称（长则省略）+ 颗数，与「目标」「仰角门限」同为分析设定行 */
-.vis-satset .vis-satset-val { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; font-size: 11.5px; }
-.vis-satset-kind { flex: none; font-size: 9.5px; line-height: 1.6; color: var(--text-faint); background: var(--surface-2); border: 1px solid var(--border); padding: 0 5px; white-space: nowrap; }
-.vis-satset-val b { flex: 1; min-width: 0; color: var(--text); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.vis-satset-val s { flex: none; text-decoration: none; color: var(--text-faint); font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+/* 卫星集来源行：下拉（当前显示 / 默认卫星组 / 卫星组 / 自定义卫星）+ 颗数，与「目标」「仰角门限」同为分析设定行 */
+.vis-satset .vis-satsel { flex: 1; min-width: 0; }
+.vis-satset .vis-satn { flex: none; text-decoration: none; color: var(--text-faint); font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 11px; white-space: nowrap; }
 .vis-side .tip.inl { display: inline; margin-left: 8px; }
 .vis-side .vis-elev { flex: none; width: 58px; }
 .vis-icrow { align-items: center; gap: 5px; }
@@ -8227,13 +8495,13 @@ onBeforeUnmount(() => {
 .vis-sky-dot.hi { fill: var(--ok); }
 .vis-sky-dot.hov { fill: #efeae0; stroke: var(--ok); stroke-width: 0.6; }
 /* 结果表：4 列（卫星 / 类别 / 仰角 / 斜距）——去方位列(交给 sky 图)、去仰角条(去卡通)，卫星名更宽 */
-.vis-lhead, .vis-lrow { display: grid; grid-template-columns: 1fr 38px 56px 54px; gap: 6px; align-items: center; }
+.vis-lhead, .vis-lrow { display: grid; grid-template-columns: 1fr 46px 56px 54px; gap: 6px; align-items: center; }   /* 类别列 46px：容下 GEO 定点经度「179.5°W」 */
 .vis-lhead { font-size: 10px; color: var(--text-faint); padding: 3px 6px 4px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--surface); z-index: 1; }
 .vis-lhead > span:not(.vis-lname):not(.vis-lc) { text-align: right; }
 .vis-lhead .vis-lc { text-align: center; }
-.vis-lhead .sortable { cursor: pointer; user-select: none; }
-.vis-lhead .sortable:hover { color: var(--text-muted); }
-.vis-lhead .sortable.on { color: var(--ok); }
+.vis-lhead .sortable, .vis-acc-hd .sortable { cursor: pointer; user-select: none; }
+.vis-lhead .sortable:hover, .vis-acc-hd .sortable:hover { color: var(--text-muted); }
+.vis-lhead .sortable.on, .vis-acc-hd .sortable.on { color: var(--ok); }
 .vis-list { max-height: 280px; overflow-y: auto; }
 .vis-lrow { padding: 3px 6px; font-size: 11px; border-bottom: 1px solid color-mix(in srgb, var(--border) 45%, transparent); color: var(--text-muted); }
 .vis-lrow:last-child { border-bottom: none; }
@@ -8241,6 +8509,8 @@ onBeforeUnmount(() => {
 .vis-lrow.hov { background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .vis-lrow > span:not(.vis-lname):not(.vis-lc):not(.vis-lel) { text-align: right; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 .vis-lname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* GEO 定点标注（'110.5°E'）：名字后的淡色小字，瞬时表 / 过境表 / 甘特共用 */
+.vis-slot { text-decoration: none; margin-left: 5px; color: var(--text-faint); font-size: 10px; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 .vis-lc { text-align: center; font-size: 9.5px; }
 .vis-lel { display: flex; align-items: center; justify-content: flex-end; gap: 3px; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 .vis-ud { font-style: normal; font-size: 9px; width: 7px; display: inline-block; text-align: center; }
@@ -8267,7 +8537,9 @@ onBeforeUnmount(() => {
 .vis-gbar { position: relative; height: 9px; background: color-mix(in srgb, var(--border) 45%, transparent); border-radius: 2px; }
 .vis-gseg { position: absolute; top: 1px; bottom: 1px; min-width: 1.5px; background: color-mix(in srgb, var(--ok) 55%, var(--text-faint)); border-radius: 1px; }
 .vis-gseg.hi { background: var(--ok); }
-.vis-acc-hd, .vis-acc-row { display: grid; grid-template-columns: 1fr 54px 46px 38px; gap: 6px; align-items: center; }
+/* 表格行 ⇆ 甘特段 段级联动：悬停的那次过境在甘特上提亮撑满（星级整行底色仍走 .vis-grow.hov） */
+.vis-gseg.hov { background: var(--accent); top: 0; bottom: 0; z-index: 1; box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent); }
+.vis-acc-hd, .vis-acc-row { display: grid; grid-template-columns: 1fr 58px 58px 30px; gap: 6px; align-items: center; }
 .vis-acc-hd { font-size: 10px; color: var(--text-faint); padding: 3px 6px 4px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--surface); z-index: 1; }
 .vis-acc-hd > span:not(.vis-lname) { text-align: right; }
 .vis-acc-list { max-height: 220px; overflow-y: auto; }
@@ -8275,6 +8547,34 @@ onBeforeUnmount(() => {
 .vis-acc-row:last-child { border-bottom: none; }
 .vis-acc-row.hov { background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .vis-acc-row > span:not(.vis-lname) { text-align: right; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+/* —— 时段过境：时基行（时区切换 + 时窗绝对起止）/ 甘特刻度轴 / 日期分隔 / 行展开详情 —— */
+.vis-tbase { display: flex; align-items: center; gap: 8px; margin: 0 0 6px; min-width: 0; }
+.vis-tzseg { display: inline-flex; flex: none; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }
+.vis-tzseg i { font-style: normal; padding: 1px 7px; cursor: pointer; color: var(--text-faint); font-family: var(--font-mono); font-size: 10px; line-height: 1.6; user-select: none; }
+.vis-tzseg i + i { border-left: 1px solid var(--border); }
+.vis-tzseg i.on { background: var(--accent); color: var(--bg); }
+.vis-tspan { color: var(--text-muted); font-size: 10.5px; font-family: var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.vis-gaxis { position: sticky; top: 0; z-index: 2; background: var(--surface); }
+.vis-gax { position: relative; height: 13px; }
+.vis-gtick { position: absolute; top: 0; transform: translateX(-50%); font-size: 9px; line-height: 1; color: var(--text-faint); font-family: var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; text-decoration: none; }
+.vis-gtick::before { content: ''; display: block; width: 1px; height: 3px; background: color-mix(in srgb, var(--text-faint) 70%, transparent); margin: 0 auto 1px; }
+.vis-gtick.day { color: var(--text-muted); }
+.vis-acc-day { position: sticky; top: 0; z-index: 1; background: var(--surface); display: flex; align-items: center; gap: 6px; padding: 4px 6px 3px; font-size: 9.5px; color: var(--text-muted); font-family: var(--font-mono); font-variant-numeric: tabular-nums; letter-spacing: .2px; }
+.vis-acc-day::after { content: ''; flex: 1; border-top: 1px solid color-mix(in srgb, var(--border) 55%, transparent); }
+.vis-acc-day s { text-decoration: none; color: var(--text-faint); }
+.vis-acc-row { cursor: pointer; }
+.vis-acc-row.exp { background: color-mix(in srgb, var(--accent) 8%, transparent); border-bottom-color: transparent; }
+.vis-dsup { text-decoration: none; font-size: 8px; vertical-align: super; color: var(--warn); margin-left: 1px; }
+.vis-cw { font-style: normal; display: inline-block; margin-right: 3px; font-size: 8px; color: var(--text-faint); transition: transform .15s; transform-origin: 45% 50%; }
+.vis-acc-row.exp .vis-cw { transform: rotate(90deg); }
+.vis-acc-det { padding: 4px 8px 7px 15px; border-bottom: 1px solid color-mix(in srgb, var(--border) 45%, transparent); background: color-mix(in srgb, var(--accent) 5%, transparent); }
+.vexp-grid { display: grid; grid-template-columns: 32px 1fr 1fr; gap: 1px 8px; font-size: 10.5px; align-items: baseline; }
+.vexp-grid .h { color: var(--text-faint); font-size: 9px; font-family: var(--font-mono); }
+.vexp-grid .l { color: var(--text-faint); font-size: 10px; }
+.vexp-grid .t { font-family: var(--font-mono); font-variant-numeric: tabular-nums; color: var(--text); white-space: nowrap; }
+.vexp-foot { margin-top: 4px; font-size: 10px; color: var(--text-faint); display: flex; flex-wrap: wrap; gap: 2px 10px; }
+.vexp-foot b { font-weight: 600; color: var(--text-muted); font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.vexp-foot .vexp-tr { color: var(--warn); font-family: inherit; }
 .oc-hi { color: var(--ok); font-weight: 600; }
 /* —— 覆盖分析（Coverage / FOM）：区域边界输入 + 配色 + 图例 + KPI —— */
 .cov-num { flex: none; width: 100px; }
@@ -8636,6 +8936,9 @@ onBeforeUnmount(() => {
 .sgm-grow.cur { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--text); }
 .sgm-grow .gnm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sgm-grow .gcnt { flex: none; font-size: 10.5px; color: var(--text-faint); font-family: var(--font-mono); }
+/* 组色点：恒占位保持名字列对齐；未着色=空心圈 */
+.sgm-grow .gdot { flex: none; width: 8px; height: 8px; border-radius: 50%; }
+.sgm-grow .gdot.off { box-shadow: inset 0 0 0 1px var(--text-faint); opacity: .45; }
 .sgm-grow .gic { flex: none; display: inline-flex; color: var(--text-faint); cursor: pointer; padding: 1px; opacity: 0; }
 .sgm-grow:hover .gic, .sgm-grow.cur .gic { opacity: 1; }
 .sgm-grow .gic:hover { color: var(--text); }
@@ -8643,6 +8946,19 @@ onBeforeUnmount(() => {
 .sgm-right { flex: 1; min-width: 0; display: flex; flex-direction: column; padding: 10px 12px; overflow: hidden; }
 .sgm-name { display: flex; align-items: center; gap: 8px; flex: none; }
 .sgm-name > label { flex: none; font-size: 11.5px; color: var(--text-muted); }
+/* 着色行：十色快捷板 + 取色器 + 色号读数 + 恢复默认 */
+.sgm-clr { display: flex; align-items: center; gap: 5px; flex: none; margin-top: 8px; }
+.sgm-clr > label:first-child { flex: none; font-size: 11.5px; color: var(--text-muted); margin-right: 3px; }
+.sgm-clr .pz { flex: none; width: 13px; height: 13px; border-radius: 3px; cursor: pointer; box-sizing: border-box; border: 1px solid rgba(0,0,0,.3); }
+.sgm-clr .pz:hover { box-shadow: 0 0 0 1px var(--text-muted); }
+.sgm-clr .pz.on { box-shadow: 0 0 0 1.5px var(--accent); }
+.sgm-clr .pgclr.lg { width: 18px; height: 18px; margin-left: 3px; }
+.sgm-clr .pgclr.lg .pgsw { width: 15px; height: 15px; }
+.sgm-clr .hexv { flex: none; min-width: 52px; font-size: 10.5px; color: var(--text-faint); font-family: var(--font-mono); }
+.sgm-clr .gbtn { margin-left: auto; }
+/* 「着色所选」：gbtn 外观 + 铺满的隐形取色器（dis 时随 .gbtn.dis 一起失效） */
+.sgm-right .gbtn.clr { position: relative; }
+.sgm-right .gbtn.clr input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; padding: 0; border: 0; opacity: 0; cursor: pointer; }
 .sgm-sec { flex: none; margin: 11px 0 5px; font-size: 11px; color: var(--text-muted); }
 .sgm-sec em { font-style: normal; color: var(--text-faint); }
 .sgm-srch, .sgm-memtool { display: flex; align-items: center; gap: 6px; flex: none; }

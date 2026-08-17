@@ -2,7 +2,7 @@
 // 卫星列表（虚拟滚动 + Excel 式多选）：星座页「内置组 / 卫星组 / 自定义星座」三处行内展开共用。
 //
 // 性能口径（目标：上万条列表与几十条同样跟手）
-//   · 只吃扁平数组 [{ id, name, lc, sub, tip }]，lc = name 小写由父级预建 —— 逐次键入筛选时不能每条 toLowerCase；
+//   · 只吃扁平数组 [{ id, name, lc, sub, tip, dot? }]，lc = name 小写由父级预建 —— 逐次键入筛选时不能每条 toLowerCase；
 //     数组本身由父级用 shallowRef 装载，Vue 不深代理，三万条也没有建代理的开销。
 //   · 视口内只渲染 ceil(视口高/行高) + 上下各 OVERSCAN 行；滚动直接改 scrollTop 状态（合帧交给 Vue 调度器，见 onScroll）。
 //   · 选择集是 Map(id → item) 装在 shallowRef 里：全选三万条也只触发一次重渲染；
@@ -258,6 +258,7 @@ function onAction(a, e) {
             @dblclick="emit('activate', it)"
           >
             <span class="slck" :class="{ on: sel.has(it.id) }" title="加入 / 移出选择（等同 Ctrl 点）" @mousedown.stop="onCheckDown($event, idx)"><Icon v-if="sel.has(it.id)" name="check" :size="9" /></span>
+            <span v-if="it.dot" class="sldot" :style="{ background: it.dot }"></span>
             <span class="slnm" data-i18n-skip>{{ it.name }}</span>
             <span v-if="it.sub" class="slsub">{{ it.sub }}</span>
           </div>
@@ -302,6 +303,8 @@ function onAction(a, e) {
 .slr:hover { background: var(--surface-2); color: var(--text); }
 .slr.on { background: color-mix(in srgb, var(--accent) 20%, transparent); color: var(--text); box-shadow: inset 2px 0 0 var(--accent); }
 .slr.cur { outline: 1px solid color-mix(in srgb, var(--accent) 70%, transparent); outline-offset: -1px; }
+/* 行首色点（可选 it.dot）：卫星组成员显示生效配色；'transparent' 为占位对齐 */
+.sldot { flex: none; width: 7px; height: 7px; border-radius: 50%; }
 .slnm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .slsub { flex: none; font-size: 10.5px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
 .slr.on .slsub { color: var(--text-muted); }

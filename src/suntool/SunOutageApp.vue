@@ -4,6 +4,7 @@
 import { ref, shallowRef, reactive, computed, watch } from 'vue'
 import ActivationLock from '../components/ActivationLock.vue'
 import { SAT_PRESETS } from '../linkbudget/satPresets.js'
+import { fmtGeoSlot } from '../shared/orbitClass.js'
 import Icon from '../components/Icon.vue'
 
 const api = typeof window !== 'undefined' && window.api ? window.api.sunOutage : null
@@ -211,7 +212,7 @@ const dEnd = (d) => (isLocal.value ? shiftParts(d.date, d.endTimeUTC, staOffsetM
           <label class="row"><span>预设</span>
             <select v-model="satPreset" @change="pickSat">
               <option value="">— 选择预设 —</option>
-              <option v-for="s in SAT_PRESETS" :key="s.name + s.position" :value="s.name">{{ s.name }} · {{ s.position }}°E</option>
+              <option v-for="s in SAT_PRESETS" :key="s.name + s.position" :value="s.name">{{ s.name }} · {{ fmtGeoSlot(Number(s.position)) || s.position + '°E' }}</option>
             </select>
           </label>
           <label class="row"><span>名称</span><input v-model="form.satName" /></label>

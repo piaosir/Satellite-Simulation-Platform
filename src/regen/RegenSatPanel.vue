@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { BAND_FREQ, BAND_LABEL } from '../ngso/satPresets.js'
 import { ensureSearchPool, findPoolByNorad } from '../ngso/satSearchPool.js'
 import { classifyOrbit, orbitRegimeLabel } from '../shared/orbitClass.js'
+import { fmtGeoSlot, geoSlotOfOmm } from '../shared/geoSlot.js'
 
 // 再生式「卫星群」单份配置的参数面板 —— 和 NGSO 一样支持「卫星/天线树选择 / 从星历搜索」定轨道。
 // 两种取星都只定【轨道】：卫星 EIRP / G·T 与星间 EIRP / G·T 一律在各表逐行手填
@@ -100,7 +101,7 @@ const searchRes = computed(() => {
       out.push(s); if (out.length >= 60) break
     }
   }
-  return out.map((s) => ({ ...s, _regime: regimeOf(s) }))
+  return out.map((s) => ({ ...s, _regime: regimeOf(s), _slot: geoSlotOfOmm(s) }))   // _slot=GEO 定点标注（缓存在池记录上；'elements' 型自然为空）
 })
 function onSearchFocus() { ensurePool(); listOpen.value = true }
 function onSearchBlur() { setTimeout(() => { listOpen.value = false }, 150) }
@@ -155,6 +156,8 @@ function regimeOf(r) {
   return classifyOrbit({ e: Number(r.ecc) || 0, inclDeg: Number(r.incl) || 0, perigeeAltKm: Number(r.perigeeKm), apogeeAltKm: Number(r.apogeeKm), periodMin: mm > 0 ? 1440 / mm : NaN })
 }
 const fmtKm = (v) => (v == null ? '—' : Math.round(v).toLocaleString('en-US'))
+// 卫星树下拉的轨位标注：°E/°W 折算（西经不再写成负°E）；lon 缺失/为 0（Number(null)=0 陷阱）不标
+const treeSlot = (s) => { const v = Number(s && s.lon); return Number.isFinite(v) && v !== 0 ? fmtGeoSlot(v) : '' }
 
 // 选完工作频段，上/下行频率跟随预设变（与 GSO/NGSO 一致；仍可手改）
 watch(() => props.form.frequencyBand, (band) => {
@@ -191,7 +194,7 @@ const rows = computed(() => {
       <label class="pf"><span class="pf-l">选择卫星</span>
         <select v-model="ngsoSat.folder" class="pf-i" @change="onPickTree">
           <option value="" disabled>从卫星树选择…</option>
-          <option v-for="s in treeSats" :key="s.folder" :value="s.folder">{{ s.satName }}（{{ s.lon }}°E）</option>
+          <option v-for="s in treeSats" :key="s.folder" :value="s.folder">{{ s.satName }}<template v-if="treeSlot(s)">（{{ treeSlot(s) }}）</template></option>
         </select>
         <i class="pf-u"></i>
       </label>
@@ -214,7 +217,7 @@ const rows = computed(() => {
               {{ r.name }}
               <em v-if="r.custom" class="rsp-badge rsp-badge-cc">自定义</em>
               <em v-else-if="r.groupLabel" class="rsp-badge">{{ r.groupLabel }}</em>
-              <em v-if="r._regime && r._regime !== 'LEO'" class="rsp-badge" :class="'rsp-rg-' + r._regime">{{ r._regime }}</em>
+              <em v-if="r._regime && r._regime !== 'LEO'" class="rsp-badge" :class="'rsp-rg-' + r._regime">{{ r._slot ? r._regime + ' ' + r._slot : r._regime }}</em>
             </span>
             <span class="rsp-li-i">
               {{ r.custom ? '合成' : 'NORAD' }} {{ r.noradId }} · i={{ (+r.incl).toFixed(1) }}° ·

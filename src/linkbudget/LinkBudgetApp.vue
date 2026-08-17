@@ -13,6 +13,7 @@ import { pickColumn, fmtScaled, fmtQty } from '../shared/adaptUnits.js'
 import { lbDocT } from '../shared/lbDocI18n.js'
 import { getLang, onLangChange } from '../shared/i18n/runtime.js'   // 报表语言跟随平台语言
 import { syncAutoNames, adoptAutoFlag, withAutoFlag, isAutoNamed, newCfgName, newFolderName, copyNameOf } from '../shared/lbAutoName.js'   // 三库条目自动命名（未被用户改名时，名字随关键参数走）
+import { fmtGeoSlot } from '../shared/orbitClass.js'   // 轨位 °E/°W 折算（西经不再写成负°E）
 import { byLang } from '../shared/i18n/lang.js'   // 自动生成的名字是数据、呈现层翻不到，生成时就按平台语言出字
 import Icon from '../components/Icon.vue'
 import ConfigTree from '../components/ConfigTree.vue'
@@ -317,7 +318,7 @@ const bbSummary = (c) => (isAutoNamed('carrier', c) ? '' : `${c.form.modulation 
 // 地球站：自动名只有口径（见 lbAutoName），功放不进名字 → 摘要照报功放，口径只给自定义名的条目补
 const esSummary = (c) => [isAutoNamed('es', c) ? '' : `${c.form.antennaDiameter || '6.2'} m`, c.form.paPowerW ? `功放预设 ${c.form.paPowerW} W` : ''].filter(Boolean).join(' · ')
 // 卫星摘要：自动命名时名字已带频段与轨位（见 lbAutoName），这里只补名字里没有的上/下行频率
-const satLibSummary = (c) => [isAutoNamed('sat', c) ? '' : (c.form.frequencyBand ? c.form.frequencyBand + ' 频段' : ''), (c.form.centerFrequency || c.form.rxCenterFrequency) ? `${c.form.centerFrequency || '—'}/${c.form.rxCenterFrequency || '—'} GHz` : '', isAutoNamed('sat', c) ? '' : (c.form.orbitPosition ? c.form.orbitPosition + '°E' : '')].filter(Boolean).join(' · ')
+const satLibSummary = (c) => [isAutoNamed('sat', c) ? '' : (c.form.frequencyBand ? c.form.frequencyBand + ' 频段' : ''), (c.form.centerFrequency || c.form.rxCenterFrequency) ? `${c.form.centerFrequency || '—'}/${c.form.rxCenterFrequency || '—'} GHz` : '', isAutoNamed('sat', c) ? '' : (c.form.orbitPosition ? (fmtGeoSlot(Number(c.form.orbitPosition)) || c.form.orbitPosition + '°E') : '')].filter(Boolean).join(' · ')
 // 工作台卫星分区第二行「转发器」：关键参数只读速览（横排读数，不可编辑——编辑走节头「编辑参数」进资源库）。
 // 只列空间段定调的那几项：频段/上下行频率极化/轨位（标识）+ SFDref/G/Tref（上行定标）+ 带宽/IBO/OBO/C/IM（转发器工作点）；
 // 干扰系数七项留在资源库编辑器（此处横排会挤成一堵墙）。label 为横排用短名，单位/悬浮说明取自 SAT_FIELDS 口径。
@@ -641,7 +642,7 @@ const grdFacts = computed(() => {
   if (node) {
     const drift = []
     if (f.satelliteName && !eq(f.satelliteName, node.satName)) drift.push(node.satName)
-    if (f.orbitPosition !== '' && f.orbitPosition != null && node.lon != null && Math.abs(parseFloat(f.orbitPosition) - Number(node.lon)) > 0.05) drift.push(`${node.lon}°E`)
+    if (f.orbitPosition !== '' && f.orbitPosition != null && node.lon != null && Math.abs(parseFloat(f.orbitPosition) - Number(node.lon)) > 0.05) drift.push(fmtGeoSlot(Number(node.lon)) || `${node.lon}°E`)
     if (drift.length) mismatch = '方向图属 ' + drift.join(' ')
   }
   // stale 逐路判：树选星与各面天线各有各的来源，只要有一路在本机卫星树里找不到就标出来

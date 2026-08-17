@@ -38,9 +38,11 @@ ok('载波 锚点缺失/非法 → 退回信息速率', carrierAutoName({ ...CAR
 // 锚点用用户填的原值：infoRate 只存 3 位小数，沿链反推回去会掉精度（填 5000 kcps 反推成 4999.999）
 ok('载波 锚点照用户原值', anchoredRate({ ...CAR, infoRate: '3455.882', rateAnchor: 'chip', rateAnchorValue: 5000 }).value === 5000)
 ok('载波 原值缺失 → 退回按链反推', Math.abs(anchoredRate({ ...CAR, infoRate: '3455.882', rateAnchor: 'chip', rateAnchorValue: null }).value - 5000) > 1e-6)
-// 卫星：GSO = 星名 · 频段 · 轨位；NGSO/再生式（有 ngsoSat）= 只报星名
-ok('卫星 GSO = 星名 · 频段 · 轨位', satAutoName({ form: { satelliteName: 'APSTAR-6D', frequencyBand: 'Ku', orbitPosition: '134' } }) === 'APSTAR-6D · Ku · 134°E',
+// 卫星：GSO = 星名 · 频段 · 轨位（°E/°W 折算，2026-08-17 起）；NGSO/再生式（有 ngsoSat）= 只报星名
+ok('卫星 GSO = 星名 · 频段 · 轨位', satAutoName({ form: { satelliteName: 'APSTAR-6D', frequencyBand: 'Ku', orbitPosition: '134' } }) === 'APSTAR-6D · Ku · 134.0°E',
   satAutoName({ form: { satelliteName: 'APSTAR-6D', frequencyBand: 'Ku', orbitPosition: '134' } }))
+ok('卫星 GSO 西经轨位报 °W（不再是负°E）', satAutoName({ form: { satelliteName: 'AMAZONAS-3', frequencyBand: 'Ku', orbitPosition: '-61' } }) === 'AMAZONAS-3 · Ku · 61.0°W',
+  satAutoName({ form: { satelliteName: 'AMAZONAS-3', frequencyBand: 'Ku', orbitPosition: '-61' } }))
 const NGSO_SAT = { form: { satelliteName: 'X', frequencyBand: 'Ka', orbitAltitude: '1000', orbitInclination: '89' }, ngsoSat: { mode: 'manual', orbit: null } }
 ok('卫星 NGSO/再生式 只报星名（频段与轨道不进名字）', satAutoName(NGSO_SAT) === 'X', satAutoName(NGSO_SAT))
 ok('卫星 NGSO 选星后也只报星名',
@@ -113,6 +115,11 @@ ok('旧版自动名 再生式 opPowerW 换档形状', legacyAutoFlag('es', { nam
 // 改规则（2026-08-15 NGSO/再生式的卫星只报星名）前的库：名字还是「星名 · 频段 · h/i」的同样算自动
 ok('旧版自动名 NGSO「星名 · 频段 · 高度倾角」也算自动',
   legacyAutoFlag('sat', { name: 'X · Ka · h=1000 km i=89°', form: { satelliteName: 'X', frequencyBand: 'Ka', orbitAltitude: '1000', orbitInclination: '89' }, ngsoSat: { mode: 'manual', orbit: null } }) === true)
+// 改规则（2026-08-17 GSO 轨位 °E/°W 折算）前的库：名字还是「原样数字+°E」旧形状的同样算自动
+ok('旧版自动名 GSO「原样数字+°E」也算自动',
+  legacyAutoFlag('sat', { name: 'APSTAR-6D · Ku · 134°E', form: { satelliteName: 'APSTAR-6D', frequencyBand: 'Ku', orbitPosition: '134' } }) === true)
+ok('旧版自动名 GSO 负值西经「-61°E」也算自动',
+  legacyAutoFlag('sat', { name: 'AMAZONAS-3 · Ku · -61°E', form: { satelliteName: 'AMAZONAS-3', frequencyBand: 'Ku', orbitPosition: '-61' } }) === true)
 ok('NGSO 用户起的名字仍判为自定义',
   legacyAutoFlag('sat', { name: 'X 备份星', form: { satelliteName: 'X', frequencyBand: 'Ka', orbitAltitude: '1000' }, ngsoSat: { mode: 'manual', orbit: null } }) === false)
 ok('用户起的名字判为自定义', legacyAutoFlag('es', { name: '关口站 6.2m', form: { antennaDiameter: '6.2', paPowerW: '40' } }) === false)

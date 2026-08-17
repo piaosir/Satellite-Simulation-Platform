@@ -14,7 +14,7 @@ import Icon from './Icon.vue'
 import { shellCandidates } from '../viz/grd/shellProj.js'
 
 const props = defineProps({
-  sats: { type: Array, default: () => [] },       // 候选池：[{name, noradId, groupLabel, altKm, incDeg, ecc}]
+  sats: { type: Array, default: () => [] },       // 候选池：[{name, noradId, groupLabel, altKm, incDeg, ecc, slot}]（slot=GEO 定点标注，非 GEO 空串）
   loading: { type: Boolean, default: false },
   source: { type: String, default: 'all' },       // 'all' 全量在轨目录 ｜ 'live' 当前在场卫星
   existing: { type: Array, default: () => [] }    // 已在库壳层高度 km（标「已在库」，加入时自动跳过）
@@ -33,7 +33,8 @@ const pool = computed(() => {
   const k = q.value.trim().toLowerCase()
   if (!k) return props.sats
   return props.sats.filter((s) => String(s.groupLabel || '').toLowerCase().includes(k)
-    || String(s.name || '').toLowerCase().includes(k) || String(s.noradId || '').includes(k))
+    || String(s.name || '').toLowerCase().includes(k) || String(s.noradId || '').includes(k)
+    || (s.slot && s.slot.toLowerCase().includes(k)))   // GEO 定点标注也可搜（如「110.5」）
 })
 const rows = computed(() => {
   const r = shellCandidates(pool.value, Math.max(1, Number(tol.value) || 1))
@@ -105,7 +106,7 @@ function add() {
           </div>
           <div v-if="exp.has(r.altKm)" class="sp-sats">
             <div v-for="s in r.sats.slice(0, SAT_CAP)" :key="s.noradId || s.name" class="sp-sat">
-              <span class="s-nm" :title="s.name" data-i18n-skip>{{ s.name }}</span>
+              <span class="s-nm" :title="s.slot ? s.name + ' · ' + s.slot : s.name" data-i18n-skip>{{ s.name }}<i v-if="s.slot" class="s-slot">{{ s.slot }}</i></span>
               <span class="s-id">{{ s.noradId || '' }}</span>
               <span class="s-gp">{{ s.groupLabel }}</span>
               <span class="s-alt">{{ s.altKm.toFixed(1) }}</span>
@@ -182,6 +183,7 @@ function add() {
 .sp-sat { display: flex; align-items: center; gap: 8px; padding: 1px 14px 1px 46px; font-size: 11px; color: var(--text-muted); }
 .sp-sat:hover { color: var(--text); }
 .s-nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.s-slot { font-style: normal; margin-left: 5px; font-family: var(--font-mono); font-size: 10px; color: var(--text-faint); }
 .s-id, .s-alt, .s-inc { flex: none; font-family: var(--font-mono); font-size: 10.5px; color: var(--text-faint); }
 .s-id { width: 56px; text-align: right; }
 .s-alt { width: 66px; text-align: right; }

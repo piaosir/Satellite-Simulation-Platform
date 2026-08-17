@@ -13,6 +13,7 @@ import { computed, ref, watch } from 'vue'
 import E2eFields from './E2eFields.vue'
 import { ensureSearchPool, findPoolByNorad } from '../ngso/satSearchPool.js'
 import { classifyOrbit, orbitRegimeLabel } from '../shared/orbitClass.js'
+import { fmtGeoSlot, geoSlotOfOmm } from '../shared/geoSlot.js'
 import {
   SAT_ID_FIELDS, SAT_ORBIT_FIELDS, SAT_TXP_FIELDS, SAT_REGEN_FIELDS,
   SAT_INTF_UP_FIELDS, SAT_INTF_DN_FIELDS
@@ -128,7 +129,7 @@ const searchRes = computed(() => {
       out.push(s); if (out.length >= 60) break
     }
   }
-  return out.map((s) => ({ ...s, _regime: regimeOf(s) }))
+  return out.map((s) => ({ ...s, _regime: regimeOf(s), _slot: geoSlotOfOmm(s) }))   // _slot=GEO 定点标注（缓存在池记录上；'elements' 型自然为空）
 })
 function onSearchFocus() { ensurePool(); listOpen.value = true }
 function onSearchBlur() { setTimeout(() => { listOpen.value = false }, 150) }
@@ -165,6 +166,8 @@ function regimeOf(r) {
   return classifyOrbit({ e: Number(r.ecc) || 0, inclDeg: Number(r.incl) || 0, perigeeAltKm: Number(r.perigeeKm), apogeeAltKm: Number(r.apogeeKm), periodMin: mm > 0 ? 1440 / mm : NaN })
 }
 const fmtKm = (v) => (v == null ? '—' : Math.round(v).toLocaleString('en-US'))
+// 卫星树下拉的轨位标注：°E/°W 折算（西经不再写成负°E）；lon 缺失/为 0（Number(null)=0 陷阱）不标
+const treeSlot = (s) => { const v = Number(s && s.lon); return Number.isFinite(v) && v !== 0 ? fmtGeoSlot(v) : '' }
 // 选星后轨道高度/倾角只读（值由所选卫星轨道确定）
 const roKeys = computed(() => (satSelected.value ? ['orbitAltitude', 'orbitInclination'] : []))
 const unresolved = computed(() => {
@@ -207,7 +210,7 @@ const unresolved = computed(() => {
                 {{ r.name }}
                 <em v-if="r.custom" class="esp-badge esp-badge-cc">自定义</em>
                 <em v-else-if="r.groupLabel" class="esp-badge">{{ r.groupLabel }}</em>
-                <em v-if="r._regime && r._regime !== 'LEO'" class="esp-badge" :class="'esp-rg-' + r._regime">{{ r._regime }}</em>
+                <em v-if="r._regime && r._regime !== 'LEO'" class="esp-badge" :class="'esp-rg-' + r._regime">{{ r._slot ? r._regime + ' ' + r._slot : r._regime }}</em>
               </span>
               <span class="esp-li-i">
                 {{ r.custom ? '合成' : 'NORAD' }} {{ r.noradId }} · i={{ (+r.incl).toFixed(1) }}° ·
@@ -222,7 +225,7 @@ const unresolved = computed(() => {
       <div v-else class="esp-pick">
         <select v-model="ngsoSat.folder" class="esp-in" @change="onPickTree">
           <option value="" disabled>从卫星树选择…</option>
-          <option v-for="s in satTree" :key="s.folder" :value="s.folder">{{ s.satName }}（{{ s.lon }}°E）</option>
+          <option v-for="s in satTree" :key="s.folder" :value="s.folder">{{ s.satName }}<template v-if="treeSlot(s)">（{{ treeSlot(s) }}）</template></option>
         </select>
         <div v-if="!satTree.length" class="esp-tip">卫星树为空。</div>
       </div>

@@ -3,6 +3,7 @@ import { computed, watch, ref, onMounted } from 'vue'
 import { BAND_FREQ, BAND_LABEL } from './satPresets.js'
 import { listPlans, getPlan, transponderOptions, applyChannel, MANAGED_KEYS } from '../shared/lbFreqPlanRef.js'
 import { antennaGroups, staleAntOption, folderOfKey } from '../shared/lbGrdImport.js'
+import { fmtGeoSlot } from '../shared/orbitClass.js'
 import Icon from '../components/Icon.vue'
 
 // 卫星模块（资源库「卫星」库的条目编辑器）：方向图匹配 + 完整卫星参数表单。
@@ -31,6 +32,8 @@ const curSat = computed(() => props.satTree.find((s) => s.folder === props.sel.s
 const staleFolder = computed(() => ((props.sel.satFolder && !curSat.value) ? props.sel.satFolder : ''))
 // 取星下拉只列「星座3D」导入的星（local 节点是本条目自己的方向图影子，不是另一颗星）
 const treeSats = computed(() => props.satTree.filter((s) => !s.local))
+// 卫星树下拉的轨位标注：°E/°W 折算（西经不再写成负°E）；lon 缺失/为 0（Number(null)=0 陷阱）不标
+const treeSlot = (s) => { const v = Number(s && s.lon); return Number.isFinite(v) && v !== 0 ? fmtGeoSlot(v) : '' }
 // 天线可选项：树选星的天线 + 本条目导入的天线，两组并列——「导入方向图」是纯添加，不作废树里选的
 const antGroups = computed(() => antennaGroups(props.satTree, props.sel.satFolder, props.localFolder, [props.sel.eirpKey, props.sel.gtKey]))
 const staleAnt = (key) => staleAntOption(antGroups.value, key)
@@ -121,7 +124,7 @@ watch(() => props.sel.fpId, loadFpPlan)
           <select v-model="sel.satFolder" class="sp-gi" :class="{ unset: !sel.satFolder }" @change="onPickSat">
             <!-- 空值可选＝不从树取星（方向图仍可用本条目导入的那几副）——库条目的取星得能撤 -->
             <option value="">— 未匹配 —</option>
-            <option v-for="s in treeSats" :key="s.folder" :value="s.folder">{{ s.satName }}（{{ s.lon }}°E）</option>
+            <option v-for="s in treeSats" :key="s.folder" :value="s.folder">{{ s.satName }}<template v-if="treeSlot(s)">（{{ treeSlot(s) }}）</template></option>
             <option v-if="staleFolder" :value="staleFolder">{{ staleFolder }}（未导入）</option>
           </select>
         </label>
