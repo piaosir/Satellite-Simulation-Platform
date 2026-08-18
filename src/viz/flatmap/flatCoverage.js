@@ -786,6 +786,9 @@ export function createFlatCoverage(canvas) {
   let onPolyMove = null, moveDragging = false, moveLast = null
   // 放置模式（波束合成）：左键点击落点（按下武装 → 拖过阈值解除=平移 → 原地抬起触发 onPlace）
   let placeMode = false, onPlace = null, placeArmed = false, placeSX = 0, placeSY = 0
+  // 框选模式（站点栅编辑）：左键拖矩形。'start'/'move' 回屏幕像素（页面画橡皮筋），'end' 回两角经纬（夹到地图边）；
+  // 原地点击（未拖过阈值）'end' 回 null＝清选。框选期间不平移。
+  let boxMode = false, onBoxSelect = null, boxDragging = false, boxSX = 0, boxSY = 0
   function vertexAt(clientX, clientY) {
     if (!editVerts || !editVerts.pts || !editVerts.pts.length) return -1
     const r = canvas.getBoundingClientRect()
@@ -831,6 +834,12 @@ export function createFlatCoverage(canvas) {
     }
     if (beamDragMode && e.button === 0) { beamDragging = true; canvas.setPointerCapture(e.pointerId); const ll = screenToLonLat(e.clientX, e.clientY); if (ll && onBeamDrag) onBeamDrag(ll, 'start'); return }
     if (labelDragMode && e.button === 0) { labelDragging = true; canvas.setPointerCapture(e.pointerId); const ll = screenToLonLat(e.clientX, e.clientY); if (ll && onLabelDrag) onLabelDrag(ll, 'start'); return }
+    if (boxMode && e.button === 0) {   // 框选：起框并捕获（不平移）
+      boxDragging = true; boxSX = e.clientX; boxSY = e.clientY
+      canvas.setPointerCapture(e.pointerId)
+      if (onBoxSelect) onBoxSelect('start', { x0: boxSX, y0: boxSY, x1: boxSX, y1: boxSY })
+      return
+    }
     if (placeMode && e.button === 0) { placeArmed = true; placeSX = e.clientX; placeSY = e.clientY }   // 武装放置（不 return：拖动仍平移）
     // 仅左键平移并夺指针捕获。右键/中键只用于 contextmenu（Polygon 加点 / 右键菜单）——若在此为右键 setPointerCapture，
     // 其 pointerup 会被 preventDefault 的 contextmenu 手势吞掉（Chromium 行为），捕获永不释放，此后点任何输入框都被
@@ -839,6 +848,11 @@ export function createFlatCoverage(canvas) {
     dragging = true; lx = e.clientX; ly = e.clientY; canvas.setPointerCapture(e.pointerId); canvas.style.cursor = 'grabbing'
   }
   function onMove(e) {
+    if (boxDragging) {
+      if (onBoxSelect) onBoxSelect('move', { x0: boxSX, y0: boxSY, x1: e.clientX, y1: e.clientY })
+      if (onHover) onHover(screenToLonLat(e.clientX, e.clientY))
+      return
+    }
     if (placeArmed && Math.abs(e.clientX - placeSX) + Math.abs(e.clientY - placeSY) > 6) placeArmed = false   // 拖过阈值 → 是平移不是点击
     if (moveDragging) {
       const ll = screenToLonLat(e.clientX, e.clientY)
@@ -861,6 +875,14 @@ export function createFlatCoverage(canvas) {
     if (onHover) onHover(screenToLonLat(e.clientX, e.clientY))   // 实时经纬度（拖拽时也更新）
   }
   function onUp(e) {
+    if (boxDragging) {
+      boxDragging = false
+      if (e && onBoxSelect) {
+        const moved = Math.abs(e.clientX - boxSX) + Math.abs(e.clientY - boxSY) > 6
+        const add = !!(e.ctrlKey || e.metaKey)   // Ctrl/⌘ = 累加（框选并入 / 点击增减）
+        onBoxSelect('end', moved ? { a: screenToLonLatClamp(boxSX, boxSY), b: screenToLonLatClamp(e.clientX, e.clientY), add } : { add, at: screenToLonLatClamp(boxSX, boxSY) })   // 原地点击带落点：命中站点=单选
+      } else if (onBoxSelect) onBoxSelect('end', null)
+    }
     if (placeArmed) { placeArmed = false; const ll = screenToLonLat(placeSX, placeSY); if (ll && onPlace) onPlace(ll) }   // 原地抬起 = 点击放置
     if (vertDragging >= 0 && onVertexDrag) onVertexDrag(null, null, 'end')
     if (moveDragging && onPolyMove) onPolyMove(0, 0, 'end')
@@ -877,6 +899,14 @@ export function createFlatCoverage(canvas) {
   }
   function onLeave() { placeArmed = false; onUp(); if (onHover) onHover(null) }       // 移出地图：清空读数（放置武装作废，避免离屏误落点）
   function onDbl() { fit(); invalidateStatic(); requestDraw(); if (onZoom) onZoom(scaleToT()) }
+  // 屏幕坐标 -> 经纬度（夹到地图边缘，框选角点用：框拖出地图外也取有效角）
+  function screenToLonLatClamp(clientX, clientY) {
+    const r = canvas.getBoundingClientRect(), kk = k()
+    const wx = (clientX - r.left - tx) / kk
+    const wy = Math.max(0, Math.min(180, (clientY - r.top - ty) / kk))
+    let lon = wx + LON0; lon = ((lon % 360) + 540) % 360 - 180
+    return { lat: 90 - wy, lon }
+  }
   // 屏幕坐标 -> 经纬度（投影逆运算）；超出地图范围返回 null
   function screenToLonLat(clientX, clientY) {
     const r = canvas.getBoundingClientRect(), kk = k()
@@ -1047,6 +1077,9 @@ export function createFlatCoverage(canvas) {
     // 放置模式（波束合成）：左键点击落点；拖动仍平移
     setPlaceMode(v) { placeMode = !!v; placeArmed = false; canvas.style.cursor = placeMode ? 'crosshair' : (polyDrawMode ? 'crosshair' : ((beamDragMode || labelDragMode) ? 'move' : 'grab')) },
     setOnPlace(fn) { onPlace = fn },
+    // 框选模式（站点栅编辑）：左键拖矩形选站；开启期间不平移
+    setBoxSelectMode(v) { boxMode = !!v; boxDragging = false; canvas.style.cursor = boxMode ? 'crosshair' : (placeMode || polyDrawMode ? 'crosshair' : ((beamDragMode || labelDragMode) ? 'move' : 'grab')) },
+    setOnBoxSelect(fn) { onBoxSelect = fn },
     setOnPolyMove(fn) { onPolyMove = fn },
     setMarkers(points, stations, trajectories) { mk = { points: points || [], stations: stations || [], trajectories: trajectories || [] }; invalidateStatic(); requestDraw() },
     // p：单个 {lat,lon} 或数组，兼容旧单选调用；聚焦星每帧实时绘制，不在快照内

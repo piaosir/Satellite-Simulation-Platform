@@ -293,6 +293,32 @@ function unionGeom(polys) {
   return { edges, inside, insideOther, signedDist, bbox: [x0, y0, x1, y1] }
 }
 
+// —— Polygon 外扩（az/el 平面）：SATSOFT「Expand Coverage (Pointing Error)」——合成前把覆盖区
+// 按航天器指向误差向外偏置 d（deg），站点/边界/beamlet 全随外扩几何走 → 有指向误差时区内仍达标。
+// 顶点沿相邻两边外法线的角平分线偏移，miter 限 2×d（尖角不爆炸）；绕向由带符号面积判定。
+function offsetPolyAzEl(V, d) {
+  const n = V.length
+  if (!(d > 0) || n < 3) return V
+  let a2 = 0
+  for (let i = 0; i < n; i++) { const p = V[i], q = V[(i + 1) % n]; a2 += p[0] * q[1] - q[0] * p[1] }
+  const s = a2 >= 0 ? 1 : -1                       // CCW：边方向 (ux,uy) 的外法线 = (uy,−ux)
+  const out = []
+  for (let i = 0; i < n; i++) {
+    const p = V[(i - 1 + n) % n], c = V[i], q = V[(i + 1) % n]
+    let ux = c[0] - p[0], uy = c[1] - p[1], vx = q[0] - c[0], vy = q[1] - c[1]
+    const lu = Math.hypot(ux, uy), lv = Math.hypot(vx, vy)
+    if (lu > 1e-12) { ux /= lu; uy /= lu }
+    if (lv > 1e-12) { vx /= lv; vy /= lv }
+    let nx = s * (uy + vy), ny = -s * (ux + vx)    // 两邻边外法线之和；|和| = 2cos(θ/2)
+    const ln = Math.hypot(nx, ny)
+    if (ln < 1e-9) { out.push([c[0], c[1]]); continue }
+    nx /= ln; ny /= ln
+    const cosH = Math.max(0.5, ln / 2)
+    out.push([c[0] + nx * d / cosH, c[1] + ny * d / cosH])
+  }
+  return out
+}
+
 // 多 Polygon 并集 → 立体角 Ω（网格计数）与理想赋形上限 D0=eff·4π/Ω（UI 实时参考；
 // 真实峰值由 buildShapedGrd 按合成方向图积分定标）。传 theta3 附带馈源数估计。
 export function polysUnionPeak({ satLon, satLat = 0, altKm, polysPts, effPct = 55, theta3 = 0 }) {
@@ -836,8 +862,11 @@ function layoutBeamlets(geo, polys, th, anchor) {
 // iso 多边形（value<base 的隔离区）内的站点 → kind2 抑制（把该区压低，做隔离/凹陷），覆盖保证里不计。
 // hots=[{az,el,boost,w}]（峰点引导）：在 contour/边界站点目标上叠加 dB 域高斯坡 boost·exp[−4ln2(r/w)²]
 //（r=w/2 处衰减一半 → w=坡的半高全宽）——连续目标场，抑制站点(kind2)不叠加。——
-function buildStations(geo, metas, maxTarget, th, spacing, omegaDeg2, hots) {
+function buildStations(geo, metas, maxTarget, th, spacing, omegaDeg2, hots, stDens = 0, edits = null, skipSup = false) {
   const X = [], Y = [], KIND = [], TDB = [], HB = []   // HB=该站点的峰点坡值（dB，自适应抬坡按此形状分摊）
+  const dens = stDens > 0.2 && stDens <= 8 ? stDens : ST_DENS   // 栅密度（站/波束宽）：UI 可调，缺省=旧常量（旧档结果不变）
+  const ovMap = edits && edits.ov ? edits.ov : null
+  let ovHit = 0
   const hasT = metas.some((m) => Number.isFinite(m.value))
   const hotBump = (px, py) => {
     let t = 0
@@ -860,17 +889,23 @@ function buildStations(geo, metas, maxTarget, th, spacing, omegaDeg2, hots) {
   }
   const push = (x, y, k) => {                         // contour 点按 kind；若落在隔离区则改 kind2 抑制
     if (k !== 2) {
+      // 站点修正（SATSOFT Edit Stations）按位置键命中：排除=不进优化 / 抑制=转 kind2 / 目标偏置 g 叠进 TDB
+      const o = ovMap ? ovMap.get(stationKey(x, y)) : null
+      if (o) ovHit++
+      if (o && o.t === 'ex') return
+      if (o && o.t === 'sup') { X.push(x); Y.push(y); KIND.push(2); TDB.push(0); HB.push(0); return }
       const c = clsOf(x, y)
       if (c.iso) { X.push(x); Y.push(y); KIND.push(2); TDB.push(0); HB.push(0); return }
       const b = hotBump(x, y)
-      X.push(x); Y.push(y); KIND.push(k); TDB.push(c.tdb + b); HB.push(b)
+      const g = o && Number.isFinite(o.g) && o.g !== 0 ? o.g : 0
+      X.push(x); Y.push(y); KIND.push(k); TDB.push(c.tdb + b + g); HB.push(b)
       return
     }
     X.push(x); Y.push(y); KIND.push(2); TDB.push(0); HB.push(0)
   }
   const [x0, y0, x1, y1] = geo.bbox
-  // 区内站点：θ3/ST_DENS 六角格（大区按面积放粗 + 3500 封顶），离边 ≥0.3θ3（边界带交给边界站点）
-  const cCov = Math.max(th / ST_DENS, Math.sqrt(Math.max(omegaDeg2, 1e-6) / (0.866 * 3500)))
+  // 区内站点：θ3/dens 六角格（大区按面积放粗 + 3500 封顶），离边 ≥0.3θ3（边界带交给边界站点）
+  const cCov = Math.max(th / dens, Math.sqrt(Math.max(omegaDeg2, 1e-6) / (0.866 * 3500)))
   const covPts = []
   {
     const rowH = cCov * Math.sqrt(3) / 2
@@ -881,10 +916,10 @@ function buildStations(geo, metas, maxTarget, th, spacing, omegaDeg2, hots) {
     }
   }
   for (const q of thin(covPts, 3500)) push(q[0], q[1], 0)
-  // 边界站点：沿并集边界 θ3/ST_DENS 步进；落在其它 Polygon 内部的边段不是并集边界，跳过
+  // 边界站点：沿并集边界 θ3/dens 步进；落在其它 Polygon 内部的边段不是并集边界，跳过
   let per = 0
   for (const e of geo.edges) per += Math.hypot(e[2] - e[0], e[3] - e[1])
-  const stepB = Math.max(th / ST_DENS, per / 2000)
+  const stepB = Math.max(th / dens, per / 2000)
   for (const e of geo.edges) {
     const ex = e[2] - e[0], ey = e[3] - e[1], len = Math.hypot(ex, ey)
     for (let t = 0; t < len; t += stepB) {
@@ -893,24 +928,39 @@ function buildStations(geo, metas, maxTarget, th, spacing, omegaDeg2, hots) {
     }
   }
   // 界外抑制站点：SUP_IN·θ3 起到 2.5θ3+s 止（θ3/2 六角格，3500 封顶）；再远无 beamlet 可及，天然为地板
-  const far = 2.5 * th + spacing
-  const supPts = []
-  {
-    const c = th / 2, rowH = c * Math.sqrt(3) / 2
-    let r = 0
-    for (let y = y0 - far; y <= y1 + far + 1e-9; y += rowH, r++) {
-      const off = r % 2 ? c / 2 : 0
-      for (let x = x0 - far + off; x <= x1 + far + 1e-9; x += c) {
-        const d = geo.signedDist(x, y)
-        if (d <= -SUP_IN * th && d >= -far) supPts.push([x, y])
+  // skipSup=预览：抑制带不上图也不参与配对（用户拍板只画黄方块），跳过生成省时
+  if (!skipSup) {
+    const far = 2.5 * th + spacing
+    const supPts = []
+    {
+      const c = th / 2, rowH = c * Math.sqrt(3) / 2
+      let r = 0
+      for (let y = y0 - far; y <= y1 + far + 1e-9; y += rowH, r++) {
+        const off = r % 2 ? c / 2 : 0
+        for (let x = x0 - far + off; x <= x1 + far + 1e-9; x += c) {
+          const d = geo.signedDist(x, y)
+          if (d <= -SUP_IN * th && d >= -far) supPts.push([x, y])
+        }
       }
     }
+    for (const q of thin(supPts, 3500)) push(q[0], q[1], 2)
   }
-  for (const q of thin(supPts, 3500)) push(q[0], q[1], 2)
   // 峰值点强制站点：在每个覆盖区内峰值点位置加一个 contour 站点（走 push → clsOf 区域目标 + hotBump 满 boost）。
   // 保证【宽度小于站点栅间距的峰值点】也有靶子——否则窄峰值点落在站点之间被漏掉、生成后无效果。
   if (hots) for (const h of hots) if (geo.signedDist(h.az, h.el) >= 0) push(h.az, h.el, 0)
-  return { X, Y, KIND, TDB, HB, n: X.length }
+  // 手工加站（SATSOFT Add Stations）：位置任意（区外也允许——用户显式指定）；抑制型转 kind2，隔离区内照旧转抑制
+  if (edits && Array.isArray(edits.add)) for (const a of edits.add) {
+    if (!Number.isFinite(a.az) || !Number.isFinite(a.el)) continue
+    if (a.t === 'sup') { X.push(a.az); Y.push(a.el); KIND.push(2); TDB.push(0); HB.push(0); continue }
+    const c = clsOf(a.az, a.el)
+    if (c.iso) { X.push(a.az); Y.push(a.el); KIND.push(2); TDB.push(0); HB.push(0); continue }
+    const b = hotBump(a.az, a.el)
+    const g = Number.isFinite(a.g) && a.g !== 0 ? a.g : 0
+    X.push(a.az); Y.push(a.el); KIND.push(0); TDB.push(c.tdb + b + g); HB.push(b)
+  }
+  const counts = { c0: 0, c1: 0, c2: 0 }
+  for (const k of KIND) if (k === 0) counts.c0++; else if (k === 1) counts.c1++; else counts.c2++
+  return { X, Y, KIND, TDB, HB, n: X.length, counts, ovHit }
 }
 
 // pol 仅记入 SYNTHMETA（本引擎只算共极化功率，极化不改功率方向图——与 SATSOFT 同：极化只影响
@@ -920,9 +970,9 @@ function buildStations(geo, metas, maxTarget, th, spacing, omegaDeg2, hots) {
 //   为中心的 dB 域高斯坡（半高全宽 widthDeg，物理下限 = θ3 口径分辨率；boostDb 正=热点、负=局部压低）。
 //   只改【优化目标】——激励仍在口径受限的可实现集合内搜索，定标环节照旧按 ∫P̂dΩ 守恒；峰值实际
 //   落点/数值由合成 argmax 如实回报（引导而非指定，超出口径能力的目标会如实欠额）。
-export function buildShapedGrd({ satName = '', satLon, satLat = 0, altKm, polysPts, polyTargets = null, hotspots = null, mode = 'value', value = null, effPct = 55, theta3, floorDb = -50, pol = '', apDm = 0, fSimGHz = 0 }) {
-  if (!(theta3 > 0)) throw new Error('滚降波束宽度无效：请检查频率 / 口径')
-  if (mode !== 'physical' && !Number.isFinite(value)) throw new Error('覆盖值无效：请填写区域内的电平（dB）')
+// —— 赋形几何准备（buildShapedGrd 与 shapedStations 预览共用同一条路：预览所见站点＝生成所用站点）——
+// polysPts → 投影/标签分类/面积排序 → 指向误差外扩 → 并集几何 + 峰值点方向空间 + 并集立体角。
+function _shapedPrep({ satLon, satLat = 0, altKm, polysPts, polyTargets = null, hotspots = null, expandDeg = 0 }) {
   // 投影 Polygon 到 az/el；每 Polygon 带目标标签（Use Polygon Labels）与面积。
   const projected = (polysPts || []).map((p, i) => ({ V: projPolyAzEl(satLon, satLat, altKm, p), t: polyTargets && Number.isFinite(Number(polyTargets[i])) ? Number(polyTargets[i]) : NaN })).filter((o) => o.V)
   if (!projected.length) throw new Error('Polygon 无效：每个至少需要 3 个顶点')
@@ -935,9 +985,10 @@ export function buildShapedGrd({ satName = '', satLon, satLat = 0, altKm, polysP
   metas.sort((a, b) => a.area - b.area)              // 最小/最具体在前 → 首个包含者胜
   const contourVals = metas.filter((m) => !m.iso && Number.isFinite(m.value)).map((m) => m.value)
   const maxTarget = contourVals.length ? Math.max(...contourVals) : NaN
-  const covValue = contourVals.length ? Math.min(...contourVals) : value   // 覆盖保证值 = 最低 contour 标签（隔离区不计）
+  // 指向误差外扩（SATSOFT Expand Coverage (Pointing Error)）：分类/面积排序按原几何，外扩只改参与合成的顶点
+  if (expandDeg > 0) for (const m of metas) m.V = offsetPolyAzEl(m.V, expandDeg)
   const polys = metas.map((m) => m.V)                // 全部多边形（含隔离）参与并集/beamlet（隔离区也需 beamlet 造凹陷）
-  const th = theta3, geo = unionGeom(polys)
+  const geo = unionGeom(polys)
   // 峰点引导 → 方向空间：宽度收紧到 ≥θ3（口径造不出更细的目标特征）；boost=0/坐标非法的行剔除
   const hots = []
   for (const h of (hotspots || [])) {
@@ -947,7 +998,6 @@ export function buildShapedGrd({ satName = '', satLon, satLat = 0, altKm, polysP
     const ae = dirToAzEl(satLon, satLat || 0, altKm, h.lon, h.lat)
     hots.push({ az: ae.az, el: ae.el, boost, w: Number(h.widthDeg) > 0 ? Number(h.widthDeg) : 1 })
   }
-  const cl = (v, lo, hi) => Math.max(lo, Math.min(hi, v))
   const [bx0, by0, bx1, by1] = geo.bbox
   // 并集立体角（网格计数，重叠不重复计）：报表 + 站点密度参考
   let omegaDeg2 = 0
@@ -957,6 +1007,46 @@ export function buildShapedGrd({ satName = '', satLon, satLat = 0, altKm, polysP
     for (let r = 0; r < G; r++) for (let c = 0; c < G; c++) if (geo.inside(bx0 + (c + 0.5) * gx, by0 + (r + 0.5) * gy)) cnt++
     omegaDeg2 = (cnt / (G * G)) * (bx1 - bx0) * (by1 - by0)
   }
+  return { metas, contourVals, maxTarget, polys, geo, hots, omegaDeg2 }
+}
+
+// 站点位置键（量化 1e-4 度）：站点修正（stOv）与自动站点的配对钥匙。预览与生成走同一 _shapedPrep+buildStations，
+// 同参数下坐标逐位一致 → 键必命中；栅参数/覆盖区变了 → 旧修正成为孤儿（如实计数回报，重置站点可清）。
+export const stationKey = (az, el) => Math.round(az * 1e4) + ',' + Math.round(el * 1e4)
+
+// 站点修正入参归一（SATSOFT Edit Stations）：ov 数组 → 位置键 Map + add 手工站列表；全空 → null（引擎纯 no-op）
+function _mkStEdits(stEdits) {
+  if (!stEdits) return null
+  const ovA = Array.isArray(stEdits.ov) ? stEdits.ov : [], addA = Array.isArray(stEdits.add) ? stEdits.add : []
+  if (!ovA.length && !addA.length) return null
+  const m = new Map()
+  for (const o of ovA) if (Number.isFinite(o.az) && Number.isFinite(o.el)) m.set(stationKey(o.az, o.el), o)
+  return { ov: m, add: addA }
+}
+
+// 站点栅预览（SATSOFT Station Grid 黄方块）：返回自动站点（区内 kind0 + 边界 kind1，不含界外抑制带）。
+// 与生成共用 _shapedPrep + buildStations —— 密度/外扩/峰值点强制站全部一致，所见即所用。
+export function shapedStations({ satLon, satLat = 0, altKm, polysPts, theta3, expandDeg = 0, stDens = 0, hotspots = null }) {
+  if (!(theta3 > 0)) return null
+  let prep
+  try { prep = _shapedPrep({ satLon, satLat, altKm, polysPts, polyTargets: null, hotspots, expandDeg }) } catch { return null }
+  const { metas, maxTarget, geo, hots, omegaDeg2 } = prep
+  const smp = buildStations(geo, metas, maxTarget, theta3, theta3, omegaDeg2, hots, stDens, null, true)
+  const list = []
+  for (let i = 0; i < smp.n; i++) list.push({ az: smp.X[i], el: smp.Y[i], kind: smp.KIND[i], key: stationKey(smp.X[i], smp.Y[i]) })
+  return { list, counts: smp.counts }
+}
+
+export function buildShapedGrd({ satName = '', satLon, satLat = 0, altKm, polysPts, polyTargets = null, hotspots = null, mode = 'value', value = null, effPct = 55, theta3, floorDb = -50, pol = '', apDm = 0, fSimGHz = 0, expandDeg = 0, stDens = 0, stEdits = null }) {
+  if (!(theta3 > 0)) throw new Error('滚降波束宽度无效：请检查频率 / 口径')
+  if (mode !== 'physical' && !Number.isFinite(value)) throw new Error('覆盖值无效：请填写区域内的电平（dB）')
+  const { metas, contourVals, maxTarget, polys, geo, hots, omegaDeg2 } = _shapedPrep({ satLon, satLat, altKm, polysPts, polyTargets, hotspots, expandDeg })
+  const covValue = contourVals.length ? Math.min(...contourVals) : value   // 覆盖保证值 = 最低 contour 标签（隔离区不计）
+  const th = theta3
+  const cl = (v, lo, hi) => Math.max(lo, Math.min(hi, v))
+  const [bx0, by0, bx1, by1] = geo.bbox
+  // 站点修正（SATSOFT Edit Stations）：ov=自动站点按位置键改类型/目标偏置，add=手工加站
+  const edits = _mkStEdits(stEdits)
   // ① 波束栅（自由度，由口径限死）；峰点引导时晶格锚到最强正 boost 峰点（相位自由，物理不变）
   let hotAnchor = null
   for (const h of hots) if (h.boost > 0 && (!hotAnchor || h.boost > hotAnchor.boost)) hotAnchor = h
@@ -975,7 +1065,7 @@ export function buildShapedGrd({ satName = '', satLon, satLat = 0, altKm, polysP
   if (NX * NY > 130000) { const k = Math.sqrt((NX * NY) / 130000); NX = Math.max(61, Math.round(NX / k)); NY = Math.max(61, Math.round(NY / k)) }
   const dx = (XE - XS) / (NX - 1), dy = (YE - YS) / (NY - 1)
   // ② 站点栅 → 稀疏装配（每站点只挂 −50dB 截断半径内的 beamlet）
-  const smp = buildStations(geo, metas, maxTarget, th, spacing, omegaDeg2, hots)
+  const smp = buildStations(geo, metas, maxTarget, th, spacing, omegaDeg2, hots, stDens, edits)
   const nbOf = [], gOf = [], kind = [], tdb = [], hb = []
   let unreach = 0, covCnt = 0
   for (let j = 0; j < smp.n; j++) {
@@ -1205,7 +1295,7 @@ export function buildShapedGrd({ satName = '', satLon, satLat = 0, altKm, polysP
   // GRASP ASCII 纯 ASCII 表头（对齐真实参考 .grd；非 ASCII 星名已剔除）。SYNTHMETA 为精简元数据行。
   const sn = asciiSafe(satName)
   head.push(`SatSim synthesized pattern (SATSOFT-style contour shaping)${sn ? ' - ' + sn : ''}. Sat. lon=${(+satLon).toFixed(2)}, lat=${(+(satLat || 0)).toFixed(2)}, height=${Math.round(altKm)} km, beamlets=${N}`)
-  head.push(`SYNTHMETA ${JSON.stringify({ kind: 'shaped', satLon: +satLon.toFixed(4), satLat: +(satLat || 0).toFixed(4), altKm: Math.round(altKm), mode, value: +edgeVal.toFixed(2), peak: +peakDbi.toFixed(2), physPeak: +physPeakDbi.toFixed(2), pa: +paDb.toFixed(2), theta3: +th.toFixed(4), nBeams: N, nPolys: polys.length, ...(hots.length ? { hot: hots.length } : {}), ...(pol ? { pol } : {}) })}`)
+  head.push(`SYNTHMETA ${JSON.stringify({ kind: 'shaped', satLon: +satLon.toFixed(4), satLat: +(satLat || 0).toFixed(4), altKm: Math.round(altKm), mode, value: +edgeVal.toFixed(2), peak: +peakDbi.toFixed(2), physPeak: +physPeakDbi.toFixed(2), pa: +paDb.toFixed(2), theta3: +th.toFixed(4), nBeams: N, nPolys: polys.length, ...(expandDeg > 0 ? { exp: +expandDeg.toFixed(3) } : {}), ...(hots.length ? { hot: hots.length } : {}), ...(pol ? { pol } : {}) })}`)
   head.push('++++')
   head.push('1')
   head.push(' 1 3 2 6')
@@ -1228,7 +1318,10 @@ export function buildShapedGrd({ satName = '', satLon, satLat = 0, altKm, polysP
   const hotOut = hots.filter((h) => geo.signedDist(h.az, h.el) < 0).length
   if (hotOut) warn = (warn ? warn + '；' : '') + `${hotOut} 个峰点在覆盖区外 —— 目标场只作用于覆盖区内/边界站点，区外峰点基本无效（请移入 Polygon）`
   if (hotGap > 1.5) warn = (warn ? warn + '；' : '') + `峰值点最大欠额 ${hotGap.toFixed(1)} dB（波束宽 θ3=${th.toFixed(2)}° 无法形成更锐的局部峰——加大口径，或将峰点宽度放大至 ≥2·θ3）`
-  return { text: head.join('\r\n') + '\r\n' + L.join('\r\n') + '\r\n', value: edgeVal, peakDbi, physPeakDbi, paDb, covMin, omegaDeg2, nBeams: N, rippleDb: rippleBest / 2, nx: NX, ny: NY, warn, peakAt, hotReport }
+  // 站点栅统计（SATSOFT 式回报）：区内/边界/抑制站数 + 站点修正命中/孤儿（栅变了旧修正失配 → 提示重置）
+  const stStats = { c0: smp.counts.c0, c1: smp.counts.c1, c2: smp.counts.c2, ovApplied: smp.ovHit, ovOrphan: edits ? Math.max(0, edits.ov.size - smp.ovHit) : 0, added: edits ? edits.add.length : 0 }
+  if (stStats.ovOrphan > 0) warn = (warn ? warn + '；' : '') + `${stStats.ovOrphan} 条站点修正未命中当前站点栅（覆盖区/密度/外扩已变）——「重置站点」可清理`
+  return { text: head.join('\r\n') + '\r\n' + L.join('\r\n') + '\r\n', value: edgeVal, peakDbi, physPeakDbi, paDb, covMin, omegaDeg2, nBeams: N, rippleDb: rippleBest / 2, nx: NX, ny: NY, warn, peakAt, hotReport, stStats }
 }
 
 // ================= 相控阵赋形（SATSOFT §6.5 Butler beamlet + §8/§9/§10 minimax 优化器） =================
@@ -1278,41 +1371,24 @@ const NMAX_PAM = 144                               // Butler 端口上限（激�
 const MAXPROD_PAM = 8e7                             // 法矩阵装配 O(M·N²)/轮 计算量守卫；超限抽稀站点保持空间均匀
 
 // 相控阵赋形波束群 → GRD 文本 + 星上激励指令。覆盖区＝polysPts 并集（无覆盖值；增益恒由阵面物理算出）。
-// 塑形＝hotspots 峰值点（[{lon,lat,boostDb,widthDeg}]，正=局部增强 / 负=局部压低），与 buildShapedGrd 同源
-// （连续目标场 + 闭环自适应抬坡：量测真实出图场、反复抬坡把峰点拱到阵面分辨率允许的最大——补偿宽波束的裙边抬升）。
-// pam={Nx,Ny,dxWl,dyWl,R,tri,elem,eff,fGHz}。（polyTargets/mode/value 保留兼容，前端已恒走 physical + 峰值点。）
+// 塑形＝站点栅（SATSOFT 原生：stDens 密度 / stEdits 类型·目标偏置修正 / expandDeg 指向误差外扩，与 buildShapedGrd 同款）。
+// hotspots 峰值点参数保留兼容（前端已按用户拍板移除，不再传入）。
+// pam={Nx,Ny,dxWl,dyWl,R,tri,elem,eff,fGHz}。（polyTargets/mode/value 保留兼容，前端已恒走 physical。）
 // 返回 { text, value, peakDbi, physPeakDbi, paDb, covMin, omegaDeg2, nBeams(端口数), rippleDb, nx, ny, warn,
 //        peakAt, scanDeg(峰值电扫角), excit:[{port,n,m,u0,v0,az,el,lon,lat,ampDb,phaseDeg,powPct}] }。
-export function buildPamShapedGrd({ satName = '', satLon, satLat = 0, altKm, polysPts, polyTargets = null, hotspots = null, pam, mode = 'value', value = null, floorDb = -50, marginBw = 1.0 }) {
+export function buildPamShapedGrd({ satName = '', satLon, satLat = 0, altKm, polysPts, polyTargets = null, hotspots = null, pam, mode = 'value', value = null, floorDb = -50, marginBw = 1.0, expandDeg = 0, stDens = 0, stEdits = null }) {
   const sol = solvePam(pam)
   if (!sol.ok) throw new Error('相控阵参数无效：请检查阵元数 / 间距 / 频率')
   if (mode !== 'physical' && !Number.isFinite(value)) throw new Error('覆盖值无效：请填写区域内的电平（dB）')
   const R = Number(pam.R) || 0
   const th = Math.max(sol.th3xDeg, sol.th3yDeg, 1e-3)
-  // —— 多边形分类（与 buildShapedGrd 完全同款：base / iso / 面积升序 / Use Polygon Labels）——
-  const projected = (polysPts || []).map((p, i) => ({ V: projPolyAzEl(satLon, satLat, altKm, p), t: polyTargets && Number.isFinite(Number(polyTargets[i])) ? Number(polyTargets[i]) : NaN })).filter((o) => o.V)
-  if (!projected.length) throw new Error('Polygon 无效：每个至少需要 3 个顶点')
-  const areaOf = (V) => { let a = 0; for (let i = 0; i < V.length; i++) { const p = V[i], q = V[(i + 1) % V.length]; a += p[0] * q[1] - q[0] * p[1] } return Math.abs(a) / 2 }
-  const metas = projected.map((o) => ({ V: o.V, value: o.t, area: areaOf(o.V), iso: false }))
-  const finiteM = metas.filter((m) => Number.isFinite(m.value))
-  const base = finiteM.length ? finiteM.reduce((a, b) => (b.area > a.area ? b : a)).value : NaN
-  for (const m of metas) m.iso = Number.isFinite(base) && Number.isFinite(m.value) && m.value < base - 0.01
-  metas.sort((a, b) => a.area - b.area)              // 最小/最具体在前 → 首个包含者胜
-  const contourVals = metas.filter((m) => !m.iso && Number.isFinite(m.value)).map((m) => m.value)
-  const maxTarget = contourVals.length ? Math.max(...contourVals) : NaN
+  // —— 多边形分类/指向误差外扩/并集/峰值点/立体角：与 buildShapedGrd 共用 _shapedPrep（同款 base/iso/面积升序）——
+  const { metas, contourVals, maxTarget, polys, geo, hots, omegaDeg2 } = _shapedPrep({ satLon, satLat, altKm, polysPts, polyTargets, hotspots, expandDeg })
   const covValue = contourVals.length ? Math.min(...contourVals) : value
-  const polys = metas.map((m) => m.V)
-  const geo = unionGeom(polys)
   const [bx0, by0, bx1, by1] = geo.bbox
   const cl = (v, lo, hi) => Math.max(lo, Math.min(hi, v))
-  // 并集立体角（网格计数，重叠不重复计）：报表 + 站点密度参考
-  let omegaDeg2 = 0
-  {
-    const G = 140, gx = (bx1 - bx0) / G, gy = (by1 - by0) / G
-    let cnt = 0
-    for (let r = 0; r < G; r++) for (let c = 0; c < G; c++) if (geo.inside(bx0 + (c + 0.5) * gx, by0 + (r + 0.5) * gy)) cnt++
-    omegaDeg2 = (cnt / (G * G)) * (bx1 - bx0) * (by1 - by0)
-  }
+  // 站点修正（SATSOFT Edit Stations）：ov=自动站点按位置键改类型/目标偏置，add=手工加站
+  const edits = _mkStEdits(stEdits)
   // ① Butler 波束栅（自由度＝被激励的端口）
   const lb = layoutButlerBeamlets(geo, pam, th, marginBw)
   let ports = lb.ports
@@ -1326,17 +1402,8 @@ export function buildPamShapedGrd({ satName = '', satLon, satLat = 0, altKm, pol
   }
   const N = ports.length
   const allIdx = Array.from({ length: N }, (_, i) => i)
-  // 峰值点 → 方向空间（宽度下限＝阵面分辨率 θ3，口径造不出更细的目标特征）；boost=0/坐标非法的行剔除
-  const hots = []
-  for (const h of (hotspots || [])) {
-    if (!h || !Number.isFinite(h.lon) || !Number.isFinite(h.lat)) continue
-    const boost = Number(h.boostDb)
-    if (!Number.isFinite(boost) || boost === 0) continue
-    const ae = dirToAzEl(satLon, satLat || 0, altKm, h.lon, h.lat)
-    hots.push({ az: ae.az, el: ae.el, boost, w: Number(h.widthDeg) > 0 ? Number(h.widthDeg) : 1 })
-  }
-  // ② 站点栅（靶子）：复用 buildStations（与反射面赋形同款）；hots=峰值点连续目标场（正增强/负压低）
-  const smp = buildStations(geo, metas, maxTarget, th, spacing, omegaDeg2, hots)
+  // ② 站点栅（靶子）：复用 buildStations（与反射面赋形同款，含站点密度与站点修正；hots 由 _shapedPrep 换算）
+  const smp = buildStations(geo, metas, maxTarget, th, spacing, omegaDeg2, hots, stDens, edits)
   // ③ 满装配：每站点见全部 Butler 端口（sinc 旁瓣/栅瓣不可截断）。contour/边界站点若无端口在 reach 内 → 亚分辨率剔除。
   const reachPam = 1.3 * spacing
   const nbOf = [], gOf = [], kind = [], tdb = [], hb = []
@@ -1562,7 +1629,7 @@ export function buildPamShapedGrd({ satName = '', satLon, satLat = 0, altKm, pol
   const head = []
   const sn = asciiSafe(satName)
   head.push(`SatSim synthesized pattern (SATSOFT-style phased-array contour shaping)${sn ? ' - ' + sn : ''}. Sat. lon=${(+satLon).toFixed(2)}, lat=${(+(satLat || 0)).toFixed(2)}, height=${Math.round(altKm)} km, ports=${N}`)
-  head.push(`SYNTHMETA ${JSON.stringify({ kind: 'pamShaped', satLon: +(+satLon).toFixed(4), satLat: +(+(satLat || 0)).toFixed(4), altKm: Math.round(altKm), Nx: Math.round(pam.Nx), Ny: Math.round(pam.Ny), dxWl: +pam.dxWl, dyWl: +pam.dyWl, R: +pam.R, tri: !!pam.tri, mode, value: +edgeVal.toFixed(2), peak: +peakDbi.toFixed(2), physPeak: +physPeakDbi.toFixed(2), pa: +paDb.toFixed(2), scan: +scanDeg.toFixed(2), nBeams: N, nPolys: polys.length, ...(hots.length ? { hot: hots.length } : {}) })}`)
+  head.push(`SYNTHMETA ${JSON.stringify({ kind: 'pamShaped', satLon: +(+satLon).toFixed(4), satLat: +(+(satLat || 0)).toFixed(4), altKm: Math.round(altKm), Nx: Math.round(pam.Nx), Ny: Math.round(pam.Ny), dxWl: +pam.dxWl, dyWl: +pam.dyWl, R: +pam.R, tri: !!pam.tri, mode, value: +edgeVal.toFixed(2), peak: +peakDbi.toFixed(2), physPeak: +physPeakDbi.toFixed(2), pa: +paDb.toFixed(2), scan: +scanDeg.toFixed(2), nBeams: N, nPolys: polys.length, ...(expandDeg > 0 ? { exp: +expandDeg.toFixed(3) } : {}), ...(hots.length ? { hot: hots.length } : {}) })}`)
   head.push('++++')
   head.push('1')
   head.push(' 1 3 2 6')
@@ -1586,7 +1653,10 @@ export function buildPamShapedGrd({ satName = '', satLon, satLat = 0, altKm, pol
   const hotOut = hots.filter((h) => geo.signedDist(h.az, h.el) < 0).length
   if (hotOut) warn = (warn ? warn + '；' : '') + `${hotOut} 个峰值点在覆盖区外——目标只作用于覆盖区内，区外峰点基本无效（请移入覆盖区）`
   if (hotGap > 1.5) warn = (warn ? warn + '；' : '') + `峰值点最大欠额 ${hotGap.toFixed(1)} dB（阵面波束宽 θ3=${th.toFixed(2)}° 无法形成更锐的局部峰——加大阵元数 / 减小间距，或将峰点宽度放大至 ≥2·θ3）`
-  return { text: head.join('\r\n') + '\r\n' + Lout.join('\r\n') + '\r\n', value: edgeVal, peakDbi, physPeakDbi, paDb, covMin, omegaDeg2, nBeams: N, rippleDb: rippleBest / 2, nx: NX, ny: NY, warn, peakAt, scanDeg, excit, hotReport }
+  // 站点栅统计（与反射面赋形同款）：区内/边界/抑制 + 修正命中/孤儿
+  const stStats = { c0: smp.counts.c0, c1: smp.counts.c1, c2: smp.counts.c2, ovApplied: smp.ovHit, ovOrphan: edits ? Math.max(0, edits.ov.size - smp.ovHit) : 0, added: edits ? edits.add.length : 0 }
+  if (stStats.ovOrphan > 0) warn = (warn ? warn + '；' : '') + `${stStats.ovOrphan} 条站点修正未命中当前站点栅（覆盖区/密度/外扩已变）——「重置站点」可清理`
+  return { text: head.join('\r\n') + '\r\n' + Lout.join('\r\n') + '\r\n', value: edgeVal, peakDbi, physPeakDbi, paDb, covMin, omegaDeg2, nBeams: N, rippleDb: rippleBest / 2, nx: NX, ny: NY, warn, peakAt, scanDeg, excit, hotReport, stStats }
 }
 
 // ================= 草图几何（放置阶段的轮廓预览，与场合成同一几何链 → 所见即所得） =================

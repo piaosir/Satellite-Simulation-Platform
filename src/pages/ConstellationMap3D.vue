@@ -3202,6 +3202,7 @@ function ensureFlat() {
     flat.setOnPolyMove(onPolyMoveDrag)       // Polygon 整体拖动：按住内部平移全部顶点
     flat.setOnPolyDraw(onPolyDraw); flat.setPolyDrawMode(!!(polyDrawId.value || activeTraj.value))   // Polygon/航迹绘制：左键按住沿路径连续加点
     flat.setOnPlace((ll) => bs.placeAt(ll)); flat.setPlaceMode(bs.placing.value)   // 波束合成放置：左键点击落波束（拖动仍平移）
+    flat.setOnBoxSelect(bsOnBoxSelect); flat.setBoxSelectMode(bs.stEditOn.value)   // 站点栅框选（拖矩形选站，页面画橡皮筋）
     flat.setOnZoom((t) => { if (flatView.value) { zoom.value = t; saveView() } })
     flatCanvas.value.addEventListener('pointerup', saveView)   // 平移结束保存视图（平移中心）
   }
@@ -4160,6 +4161,20 @@ const bsTblWin = ref({ x: 0, y: 0, w: 560, h: 420, init: false })
 const bsFmt = (v, d) => (Number.isFinite(v) ? v.toFixed(d) : '—') // 读数格式化（无效 → 破折号）
 // 当前「反射面参数」持有者：高斯档=激活波束设置（每设置一套反射面），赋形档=组级 p。诊断图/开关等据此取参。
 const bsRefP = computed(() => (bs.mode.value === 'gauss' ? (bs.curSetting.value || bs.p) : bs.p))
+// 站点栅编辑：框选橡皮筋（fixed 定位屏幕像素，flatCoverage 回调驱动）+ 目标偏置输入
+const bsStBox = reactive({ on: false, x: 0, y: 0, w: 0, h: 0 })
+const bsStGoal = ref('')
+function bsOnBoxSelect(phase, r) {
+  if (phase === 'start' || phase === 'move') {
+    if (r) { bsStBox.on = true; bsStBox.x = Math.min(r.x0, r.x1); bsStBox.y = Math.min(r.y0, r.y1); bsStBox.w = Math.abs(r.x1 - r.x0); bsStBox.h = Math.abs(r.y1 - r.y0) }
+    return
+  }
+  bsStBox.on = false
+  if (r && r.a && r.b) bs.stBoxSelect(r.a, r.b, !!r.add)
+  else if (r && r.at) bs.stClickSelect(r.at, !!r.add)   // 原地点击：命中站点=单选/增减选；未命中=清选（Ctrl 保持）
+  else bs.clearStSel()
+}
+watch(() => bs.stEditOn.value, (v) => { if (flat) flat.setBoxSelectMode(v); if (!v) bsStBox.on = false })
 // 仿真频率「同设计」开关：取消勾选且尚无有效仿真频率时，以设计频率为起点（对齐 SATSOFT Sim Frequency 复选框；
 // 已填过的仿真频率保留，反复勾选不覆写）
 function bsSimSameToggle(v) {
@@ -4320,19 +4335,6 @@ function bsPlaceToggle() {
   if (bs.placing.value) { bs.placing.value = false; return }
   bsStopOtherModes(); bs.adjusting.value = false; bs.deleting.value = false
   bs.placing.value = true
-}
-// 峰点引导：添加一行并直接进入地图拾取；拾取开关先清其它绘制/编辑态（复用 placing 通道，placeAt 按 mode 分流）
-function bsAddHotspot() {
-  bsStopOtherModes()
-  if (bs.adjusting.value) { bs.adjusting.value = false; syncEdit() }
-  bs.pickHotspot(bs.addHotspot())
-}
-function bsPickHotspot(id) {
-  if (!(bs.placing.value && bs.hotPickId.value === id)) {   // 开启拾取才清场；再点同行=取消，无需清
-    bsStopOtherModes()
-    if (bs.adjusting.value) { bs.adjusting.value = false; syncEdit() }
-  }
-  bs.pickHotspot(id)
 }
 // 「调整中心」开关：开启即切平面图 + 清场 + 喂拖拽手柄（与放置互斥）
 function bsAdjustToggle() {
@@ -6380,8 +6382,9 @@ onBeforeUnmount(() => {
           <template v-if="isSecOpen('bs-antp')">
           <div class="srow"><label>设计频率</label><input class="ci" type="number" step="0.1" v-model.number="bs.curSetting.value.fGHz" /><span class="u">GHz</span><span class="bs-wl">{{ bsFmt(bs.refl.value && bs.refl.value.lamDesignCm, 2) }} cm</span></div>
           <div class="srow"><label>仿真频率</label>
-            <label class="chk-in" title="勾选＝方向图按设计频率计算；取消可单独指定仿真频率（波束宽/方向性随 λ 变化）"><input type="checkbox" :checked="bs.curSetting.value.simSame !== false" @change="bsSimSameToggle($event.target.checked)" /><span>同设计</span></label>
-            <input class="ci" type="number" step="0.1" :disabled="bs.curSetting.value.simSame !== false" v-model.number="bs.curSetting.value.fSim" /><span class="u">GHz</span><span class="bs-wl">{{ bsFmt(bs.refl.value && bs.refl.value.lamSimCm, 2) }} cm</span>
+            <label class="chk-in" title="勾选＝仿真频率同设计频率（方向图按设计频率计算）；取消可单独指定（波束宽/方向性随 λ 变化）"><input type="checkbox" :checked="bs.curSetting.value.simSame !== false" @change="bsSimSameToggle($event.target.checked)" /></label>
+            <!-- SATSOFT 同款：勾选时输入框保持全宽、置灰、镜像显示设计频率实时值 -->
+            <input v-if="bs.curSetting.value.simSame !== false" key="fsim-mirror" class="ci" type="number" :value="bs.curSetting.value.fGHz" disabled /><input v-else key="fsim-own" class="ci" type="number" step="0.1" v-model.number="bs.curSetting.value.fSim" /><span class="u">GHz</span><span class="bs-wl">{{ bsFmt(bs.refl.value && bs.refl.value.lamSimCm, 2) }} cm</span>
           </div>
           <!-- 口径 ⟷ 3dB 波束宽：二选一驱动（选中者填、另一者只读自动算，对齐 SATSOFT 单选按钮） -->
           <div class="srow bs-drv" :class="{ act: bs.curSetting.value.apDriver === 'aperture' }">
@@ -6417,7 +6420,7 @@ onBeforeUnmount(() => {
               <option value="potter">TE11+TM11 (Potter)</option>
             </select>
           </div>
-          <div class="srow"><label>偏置净空/D</label><input class="ci" type="number" step="0.05" min="-0.5" v-model.number="bs.curSetting.value.offsetClr" title="偏置净空占口径直径的比例：0=贴轴偏置，-0.5=正馈（对称抛物面）" /></div>
+          <div class="srow"><label>偏置净空/D</label><input class="ci" type="number" step="0.05" min="-0.5" v-model.number="bs.curSetting.value.offsetClr" title="偏置净空占口径直径的比例：0=贴轴偏置，-0.5=正馈（对称抛物面）" /><span class="u"></span></div>
           <div class="srow"><label>极化类型</label>
             <select v-model="bs.curSetting.value.pol">
               <option value="linX">线极化 X</option><option value="linY">线极化 Y</option>
@@ -6435,7 +6438,7 @@ onBeforeUnmount(() => {
             <span class="pgb" @click="bsReflView = bsReflView === 1 ? 2 : 1">◀</span>
             <span class="bs-reflpg">{{ bsReflView }}/2</span>
             <span class="pgb" @click="bsReflView = bsReflView === 1 ? 2 : 1">▶</span>
-            <span class="bs-reflcap">{{ bsReflView === 1 ? '从反射面背后朝地球方向看' : '侧视剖面：焦点馈源照射锥 · 出射平行光柱' }}</span>
+            <span class="bs-reflcap">{{ bsReflView === 1 ? '从反射面背后朝地球方向看' : '反射面侧视图' }}</span>
           </div>
           </template>
         </div>
@@ -6613,24 +6616,37 @@ onBeforeUnmount(() => {
               </div>
             </div>
             <div v-if="!polys.length" class="tip">暂无 Polygon。</div>
+            <div class="srow"><label>指向误差</label><input class="ci" type="number" step="0.05" min="0" v-model.number="bs.p.expandDeg" title="航天器指向误差（°）：合成前把覆盖区外扩此角度（SATSOFT Expand Coverage (Pointing Error)），保证卫星有指向误差时覆盖区内仍达标；空/0＝不外扩" /><span class="u">°</span></div>
             </template>
           </div>
 
-          <!-- 峰值点（局部增强/压低）：正=增强、负=压低；宽度下限=阵面波束宽 θ3 -->
+          <!-- 站点栅（与反射面赋形档同一份交互的镜像——改动须两处同步；θ3=阵面波束宽，站点/修正机制全同） -->
           <div class="sec">
-            <div class="sect acc" :class="{ open: isSecOpen('bs-phot') }" @click="toggleSec('bs-phot')"><Icon :name="isSecOpen('bs-phot') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>峰值点</span><span v-if="(bs.p.hotspots || []).length" class="bs-cnt">{{ bs.p.hotspots.length }} 处</span></div>
-            <template v-if="isSecOpen('bs-phot')">
-            <div v-if="(bs.p.hotspots || []).length" class="bs-hshead"><span></span><span>经度°</span><span>纬度°</span><span>增量dB</span><span>宽度°</span><span></span><span></span></div>
-            <div v-for="(h, hi) in (bs.p.hotspots || [])" :key="h.id" class="bs-hsrow">
-              <span class="bs-hsn">P{{ hi + 1 }}</span>
-              <input class="ci" type="number" step="0.1" v-model.number="h.lon" placeholder="经°" title="峰值点经度（°E，东经正）" />
-              <input class="ci" type="number" step="0.1" v-model.number="h.lat" placeholder="纬°" title="峰值点纬度（°N，北纬正）" />
-              <input class="ci" type="number" step="0.5" v-model.number="h.boost" placeholder="dB" title="目标增量（dB）：正=局部增强（能量向此集中），负=局部压低；0/空=不生效。相控阵宽波束下有物理上限，生成后据实报告实现量。" />
-              <input class="ci" type="number" step="0.1" min="0" v-model.number="h.width" placeholder="1" :title="'目标坡半高全宽（°）＝预览环大小（所见即所得），默认 1、留空取 1。注意：阵面波束宽 θ3≈' + bsFmt(bs.hotTheta3.value, 1) + '° 是物理分辨率：填入值小于 θ3 时，实际仍扩散至约 θ3（生成后据实报告实现量）'" />
-              <span class="hic" :class="{ on: bs.placing.value && bs.hotPickId.value === h.id }" title="地图拾取该峰值点位置（左键/右键点击地图；再次点击取消）" @click="bsPickHotspot(h.id)"><Icon name="crosshair" :size="12" /></span>
-              <span class="hic hdel" title="删除该峰值点" @click="bs.removeHotspot(h.id)"><Icon name="x" :size="11" /></span>
+            <div class="sect acc" :class="{ open: isSecOpen('bs-st') }" @click="toggleSec('bs-st')"><Icon :name="isSecOpen('bs-st') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>站点栅</span><span v-if="bs.stInfo.value" class="bs-cnt">{{ bs.stInfo.value.counts.c0 + bs.stInfo.value.counts.c1 }} 站</span></div>
+            <template v-if="isSecOpen('bs-st')">
+            <div class="srow"><label>显示</label>
+              <label class="chk-in" title="在地图上显示站点栅（优化目标点阵）"><input type="checkbox" :checked="bs.p.stShow !== false" @change="bs.p.stShow = $event.target.checked" /><span>站点</span></label>
+              <label class="chk-in" title="在站点上标注序号（SATSOFT Plot Station Number）"><input type="checkbox" :checked="bs.p.stNum === true" @change="bs.p.stNum = $event.target.checked" /><span>编号</span></label>
+              <label class="chk-in" title="在偏置站上标注 ±dB 数值（默认关：偏置站只靠颜色区分，绿=抬高、紫=压低）"><input type="checkbox" :checked="bs.p.stGNum === true" @change="bs.p.stGNum = $event.target.checked" /><span>数值</span></label>
             </div>
-            <span class="opb" title="添加峰值点并进入地图拾取" @click="bsAddHotspot"><Icon name="plus" :size="11" /> 添加峰值点</span>
+            <div class="srow"><label>数字大小</label><input class="ci" type="number" step="1" min="5" max="24" v-model.number="bs.p.stNumSize" title="站点数字字号（px）：编号与偏置数值共用" /><span class="u">px</span></div>
+            <div class="srow"><label>栅密度</label><input class="ci" type="number" step="0.5" min="1" max="6" v-model.number="bs.p.stDens" title="站点密度（站/阵面波束宽，SATSOFT Grid Density）：区内/边界站步距=θ3/密度。手册 §9.1：1.7~2 足够；教程用 3（更细的形状分辨率、更慢）" /><span class="u">/θ3</span></div>
+            <div class="srow"><label>站点大小</label><input class="ci" type="number" step="1" min="2" max="30" v-model.number="bs.p.stSizePct" title="站点符号大小（%阵面波束宽，SATSOFT Station Size）：仅显示符号，非物理量" /><span class="u">%</span></div>
+            <div class="bs-strow">
+              <span class="opb sm" :class="{ on: bs.stEditOn.value }" title="平面图上拖矩形框选站点（Ctrl+拖=累加选择；点击站点=选中该站、Ctrl+点=增减选；点空处=清选；再点本钮退出）" @click="bs.toggleStEdit()"><Icon name="crosshair" :size="11" /> 框选</span>
+              <span class="opb sm" :class="{ on: bs.stPick.value }" title="地图点击添加 Contour 站点（可连续加；再点本钮退出）" @click="bs.toggleStPick()"><Icon name="plus" :size="11" /> 加站</span>
+              <span class="opb sm" title="清空选中" @click="bs.clearStSel()">清选</span>
+              <span class="opb sm" title="清除全部站点修正与手工站（回到自动站点栅）" @click="bs.resetStations()">重置</span>
+            </div>
+            <template v-if="bs.stSel.value.size">
+            <div class="bs-strow">
+              <span class="opb sm" title="选中站点还原为 Contour（抬到目标；保留目标偏置）" @click="bs.applyStType('cov')">Contour</span>
+              <span class="opb sm" title="选中站点转抑制（Sidelobe：该处场强被压低）" @click="bs.applyStType('sup')">抑制</span>
+              <span class="opb sm" title="选中站点排除（不参与优化，画为灰空心；手工站=直接删除）" @click="bs.applyStType('ex')">排除</span>
+            </div>
+            <div class="srow"><label>目标偏置</label><input class="ci" type="number" step="0.5" v-model.number="bsStGoal" title="对选中站点的目标偏置（dB，叠加在该处区域目标上）：正=局部抬高、负=压低、0=清除偏置。目标只看相对权重（SATSOFT §10.2）" /><span class="u">dB</span><span class="opb sm" @click="bs.applyStGoal(Number(bsStGoal) || 0)">应用</span></div>
+            </template>
+            <div v-if="bs.stSel.value.size || (bs.p.stOv || []).length || (bs.p.stAdd || []).length" class="bs-read"><span>选中 <b>{{ bs.stSel.value.size }}</b></span><span>修正 <b>{{ (bs.p.stOv || []).length }}</b></span><span>手工 <b>{{ (bs.p.stAdd || []).length }}</b></span><span v-if="bs.stSelOne.value"><template v-if="bs.stSelOne.value.add">手工 </template>{{ bs.stSelOne.value.type === 'sup' ? '抑制' : bs.stSelOne.value.type === 'ex' ? '排除' : 'Contour' }}<b v-if="bs.stSelOne.value.g"> {{ (bs.stSelOne.value.g > 0 ? '+' : '') + bs.stSelOne.value.g }} dB</b></span></div>
             </template>
           </div>
 
@@ -6677,13 +6693,16 @@ onBeforeUnmount(() => {
             <template v-if="isSecOpen('bs-refl')">
             <div class="srow"><label>口径直径</label><input class="ci" type="number" step="0.1" v-model.number="bs.p.antD" /><span class="u">m</span></div>
             <div class="srow"><label>焦距</label><input class="ci" type="number" step="0.1" v-model.number="bs.p.foc" /><span class="u">m</span></div>
-            <div class="bs-read"><span>圆口径 F/D <b>{{ bsFmt(bs.shapedRefl.value && bs.shapedRefl.value.fd, 2) }}</b></span><span>均匀口径 3dB <b>{{ bsFmt(bs.shapedRefl.value && bs.shapedRefl.value.thetaUniDeg, 2) }}</b>°</span></div>
+            <!-- SATSOFT 三行制读数：Aperture circular · F/D ｜ 3 dB Beamwidth ｜ Feed Mode -->
+            <div class="bs-read"><span>圆口径 F/D <b>{{ bsFmt(bs.shapedRefl.value && bs.shapedRefl.value.fd, 2) }}</b></span></div>
+            <div class="bs-read"><span>均匀口径 3dB <b>{{ bsFmt(bs.shapedRefl.value && bs.shapedRefl.value.thetaUniDeg, 2) }}</b>°</span></div>
             <div class="srow"><label>馈电方式</label><span class="bs-ro">高斯波束馈源</span></div>
             <div class="srow"><label>馈源锥度</label><input class="ci" type="number" step="1" max="-1" v-model.number="bs.p.taper" title="馈源朝反射面边缘的照射锥度（dB，负值）：决定成分波束宽与馈源直径读数" /><span class="u">dB</span></div>
             <div class="srow"><label>设计频率</label><input class="ci" type="number" step="0.1" v-model.number="bs.p.fGHz" /><span class="u">GHz</span><span class="bs-wl">{{ bsFmt(bs.shapedRefl.value && bs.shapedRefl.value.lamDesignCm, 2) }} cm</span></div>
             <div class="srow"><label>仿真频率</label>
-              <label class="chk-in" title="勾选＝方向图按设计频率计算；取消可单独指定仿真频率（波束宽随 λ 变化）"><input type="checkbox" :checked="bs.p.simSame !== false" @change="bsSimSameToggle($event.target.checked)" /><span>同设计</span></label>
-              <input class="ci" type="number" step="0.1" :disabled="bs.p.simSame !== false" v-model.number="bs.p.fSim" /><span class="u">GHz</span><span class="bs-wl">{{ bsFmt(bs.shapedRefl.value && bs.shapedRefl.value.lamSimCm, 2) }} cm</span>
+              <label class="chk-in" title="勾选＝仿真频率同设计频率（方向图按设计频率计算）；取消可单独指定（波束宽随 λ 变化）"><input type="checkbox" :checked="bs.p.simSame !== false" @change="bsSimSameToggle($event.target.checked)" /></label>
+              <!-- SATSOFT 同款：勾选时输入框保持全宽、置灰、镜像显示设计频率实时值 -->
+              <input v-if="bs.p.simSame !== false" key="fsim-mirror" class="ci" type="number" :value="bs.p.fGHz" disabled /><input v-else key="fsim-own" class="ci" type="number" step="0.1" v-model.number="bs.p.fSim" /><span class="u">GHz</span><span class="bs-wl">{{ bsFmt(bs.shapedRefl.value && bs.shapedRefl.value.lamSimCm, 2) }} cm</span>
             </div>
             <div class="bs-read"><span>馈源直径 <b>{{ bsFmt(bs.shapedRefl.value && bs.shapedRefl.value.feedWl, 2) }}</b> WL · <b>{{ bsFmt(bs.shapedRefl.value && bs.shapedRefl.value.feedCm, 2) }}</b> cm</span></div>
             <div class="srow"><label>极化类型</label>
@@ -6692,14 +6711,14 @@ onBeforeUnmount(() => {
                 <option value="rhcp">右旋圆极化</option><option value="lhcp">左旋圆极化</option>
               </select>
             </div>
-            <div class="srow"><label>偏置净空/D</label><input class="ci" type="number" step="0.05" min="-0.5" v-model.number="bs.p.offsetClr" title="偏置净空占口径直径的比例：0=贴轴偏置，-0.5=正馈（对称抛物面）" /></div>
+            <div class="srow"><label>偏置净空/D</label><input class="ci" type="number" step="0.05" min="-0.5" v-model.number="bs.p.offsetClr" title="偏置净空占口径直径的比例：0=贴轴偏置，-0.5=正馈（对称抛物面）" /><span class="u"></span></div>
             <div class="bs-read"><span title="口径效率＝照射锥度效率×溢出效率，由馈源锥度决定（不可手动输入）；欧姆/表面残差按理想计≈1">口径效率 <b>{{ bsFmt(bs.shapedEff.value, 1) }}</b>%</span><span>成分波束 3dB 宽 <b>{{ bsFmt(bs.shapedTheta3.value, 3) }}</b>°</span></div>
             <div class="bs-refl" v-html="bsReflSvg"></div>
             <div class="bs-reflbar">
               <span class="pgb" @click="bsReflView = bsReflView === 1 ? 2 : 1">◀</span>
               <span class="bs-reflpg">{{ bsReflView }}/2</span>
               <span class="pgb" @click="bsReflView = bsReflView === 1 ? 2 : 1">▶</span>
-              <span class="bs-reflcap">{{ bsReflView === 1 ? '从反射面背后朝地球方向看' : '侧视剖面：焦点馈源照射锥 · 出射平行光柱' }}</span>
+              <span class="bs-reflcap">{{ bsReflView === 1 ? '从反射面背后朝地球方向看' : '反射面侧视图' }}</span>
             </div>
             </template>
           </div>
@@ -6716,25 +6735,41 @@ onBeforeUnmount(() => {
               </div>
             </div>
             <div v-if="!polys.length" class="tip">暂无 Polygon。</div>
+            <div class="srow"><label>指向误差</label><input class="ci" type="number" step="0.05" min="0" v-model.number="bs.p.expandDeg" title="航天器指向误差（°）：合成前把覆盖区外扩此角度（SATSOFT Expand Coverage (Pointing Error)），保证卫星有指向误差时覆盖区内仍达标；空/0＝不外扩" /><span class="u">°</span></div>
             </template>
           </div>
 
+          <!-- 站点栅（SATSOFT Station Grid §9.1 / Edit Stations §9.12）：黄方块=优化目标站（靶子），中心=精确控制点；
+               与生成共用同一 buildStations（密度/外扩一致，所见即所用）。框选仅平面图（Ctrl=累加）；界外自动抑制带不画。 -->
           <div class="sec">
-            <div class="sect acc" :class="{ open: isSecOpen('bs-hot') }" @click="toggleSec('bs-hot')"><Icon :name="isSecOpen('bs-hot') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>峰值点</span><span v-if="(bs.p.hotspots || []).length" class="bs-cnt">{{ bs.p.hotspots.length }} 处</span></div>
-            <template v-if="isSecOpen('bs-hot')">
-            <div v-if="(bs.p.hotspots || []).length" class="bs-hshead"><span></span><span>经度°</span><span>纬度°</span><span>增量dB</span><span>宽度°</span><span></span><span></span></div>
-            <div v-for="(h, hi) in (bs.p.hotspots || [])" :key="h.id" class="bs-hsrow">
-              <span class="bs-hsn">P{{ hi + 1 }}</span>
-              <input class="ci" type="number" step="0.1" v-model.number="h.lon" placeholder="经°" title="峰值点经度（°E，东经正）" />
-              <input class="ci" type="number" step="0.1" v-model.number="h.lat" placeholder="纬°" title="峰值点纬度（°N，北纬正）" />
-              <input class="ci" type="number" step="0.5" v-model.number="h.boost" placeholder="dB" title="目标增量（dB）：正=局部增强（能量向此集中），负=局部压低；0/空=不生效。生成后据实报告实现量。" />
-              <input class="ci" type="number" step="0.1" min="0" v-model.number="h.width" placeholder="1" :title="'目标坡半高全宽（°）＝预览环大小（所见即所得），默认 1、留空取 1。注意：成分波束宽 θ3≈' + bsFmt(bs.hotTheta3.value, 2) + '° 是口径物理分辨率：填入值小于 θ3 时，实际仍扩散至约 θ3（生成后据实报告实现量）'" />
-              <span class="hic" :class="{ on: bs.placing.value && bs.hotPickId.value === h.id }" title="地图拾取该峰值点位置（左键/右键点击地图；再次点击取消）" @click="bsPickHotspot(h.id)"><Icon name="crosshair" :size="12" /></span>
-              <span class="hic hdel" title="删除该峰值点" @click="bs.removeHotspot(h.id)"><Icon name="x" :size="11" /></span>
+            <div class="sect acc" :class="{ open: isSecOpen('bs-st') }" @click="toggleSec('bs-st')"><Icon :name="isSecOpen('bs-st') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>站点栅</span><span v-if="bs.stInfo.value" class="bs-cnt">{{ bs.stInfo.value.counts.c0 + bs.stInfo.value.counts.c1 }} 站</span></div>
+            <template v-if="isSecOpen('bs-st')">
+            <div class="srow"><label>显示</label>
+              <label class="chk-in" title="在地图上显示站点栅（优化目标点阵）"><input type="checkbox" :checked="bs.p.stShow !== false" @change="bs.p.stShow = $event.target.checked" /><span>站点</span></label>
+              <label class="chk-in" title="在站点上标注序号（SATSOFT Plot Station Number）"><input type="checkbox" :checked="bs.p.stNum === true" @change="bs.p.stNum = $event.target.checked" /><span>编号</span></label>
+              <label class="chk-in" title="在偏置站上标注 ±dB 数值（默认关：偏置站只靠颜色区分，绿=抬高、紫=压低）"><input type="checkbox" :checked="bs.p.stGNum === true" @change="bs.p.stGNum = $event.target.checked" /><span>数值</span></label>
             </div>
-            <span class="opb" title="添加峰值点并进入地图拾取" @click="bsAddHotspot"><Icon name="plus" :size="11" /> 添加峰值点</span>
+            <div class="srow"><label>数字大小</label><input class="ci" type="number" step="1" min="5" max="24" v-model.number="bs.p.stNumSize" title="站点数字字号（px）：编号与偏置数值共用" /><span class="u">px</span></div>
+            <div class="srow"><label>栅密度</label><input class="ci" type="number" step="0.5" min="1" max="6" v-model.number="bs.p.stDens" title="站点密度（站/成分波束宽，SATSOFT Grid Density）：区内/边界站步距=θ3/密度。手册 §9.1：1.7~2 足够；教程用 3（更细的形状分辨率、更慢）" /><span class="u">/θ3</span></div>
+            <div class="srow"><label>站点大小</label><input class="ci" type="number" step="1" min="2" max="30" v-model.number="bs.p.stSizePct" title="站点符号大小（%成分波束宽，SATSOFT Station Size）：仅显示符号，非物理量" /><span class="u">%</span></div>
+            <div class="bs-strow">
+              <span class="opb sm" :class="{ on: bs.stEditOn.value }" title="平面图上拖矩形框选站点（Ctrl+拖=累加选择；点击站点=选中该站、Ctrl+点=增减选；点空处=清选；再点本钮退出）" @click="bs.toggleStEdit()"><Icon name="crosshair" :size="11" /> 框选</span>
+              <span class="opb sm" :class="{ on: bs.stPick.value }" title="地图点击添加 Contour 站点（可连续加；再点本钮退出）" @click="bs.toggleStPick()"><Icon name="plus" :size="11" /> 加站</span>
+              <span class="opb sm" title="清空选中" @click="bs.clearStSel()">清选</span>
+              <span class="opb sm" title="清除全部站点修正与手工站（回到自动站点栅）" @click="bs.resetStations()">重置</span>
+            </div>
+            <template v-if="bs.stSel.value.size">
+            <div class="bs-strow">
+              <span class="opb sm" title="选中站点还原为 Contour（抬到目标；保留目标偏置）" @click="bs.applyStType('cov')">Contour</span>
+              <span class="opb sm" title="选中站点转抑制（Sidelobe：该处场强被压低）" @click="bs.applyStType('sup')">抑制</span>
+              <span class="opb sm" title="选中站点排除（不参与优化，画为灰空心；手工站=直接删除）" @click="bs.applyStType('ex')">排除</span>
+            </div>
+            <div class="srow"><label>目标偏置</label><input class="ci" type="number" step="0.5" v-model.number="bsStGoal" title="对选中站点的目标偏置（dB，叠加在该处区域目标上）：正=局部抬高、负=压低、0=清除偏置。目标只看相对权重（SATSOFT §10.2）" /><span class="u">dB</span><span class="opb sm" @click="bs.applyStGoal(Number(bsStGoal) || 0)">应用</span></div>
+            </template>
+            <div v-if="bs.stSel.value.size || (bs.p.stOv || []).length || (bs.p.stAdd || []).length" class="bs-read"><span>选中 <b>{{ bs.stSel.value.size }}</b></span><span>修正 <b>{{ (bs.p.stOv || []).length }}</b></span><span>手工 <b>{{ (bs.p.stAdd || []).length }}</b></span><span v-if="bs.stSelOne.value"><template v-if="bs.stSelOne.value.add">手工 </template>{{ bs.stSelOne.value.type === 'sup' ? '抑制' : bs.stSelOne.value.type === 'ex' ? '排除' : 'Contour' }}<b v-if="bs.stSelOne.value.g"> {{ (bs.stSelOne.value.g > 0 ? '+' : '') + bs.stSelOne.value.g }} dB</b></span></div>
             </template>
           </div>
+
         </template>
 
         <div class="sec">
@@ -7736,6 +7771,9 @@ onBeforeUnmount(() => {
       <div class="perf-rsz" title="拖拽缩放窗口" @mousedown="mkDragResize($event, 'se')"></div>
     </div>
 
+    <!-- 站点栅框选橡皮筋（平面图拖矩形，flatCoverage 回调驱动屏幕像素定位） -->
+    <div v-if="bsStBox.on" class="bs-boxsel" :style="{ left: bsStBox.x + 'px', top: bsStBox.y + 'px', width: bsStBox.w + 'px', height: bsStBox.h + 'px' }"></div>
+
     <!-- 波束批量表格（Excel 网格）：经度 纬度 3dB-X 3dB-Y 旋转 -->
     <div v-if="bsTableOpen" class="perf-win mk-win" :style="{ left: bsTblWin.x + 'px', top: bsTblWin.y + 'px', width: bsTblWin.w + 'px', height: bsTblWin.h + 'px' }">
       <div class="perf-h" @mousedown="bsTblDragMove">
@@ -8228,7 +8266,8 @@ onBeforeUnmount(() => {
 /* 固定宽度需能容纳最长标签（如「升交点赤经」5 字）且不换行，原 36px 对 3 字以上标签会折行、拖乱整排对齐 */
 .srow label { color: var(--text-muted); width: 70px; flex: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .srow select, .srow .ci { flex: 1; min-width: 0; border: 1px solid var(--border); background: var(--bg); padding: 3px 6px; font-size: 12px; outline: none; color: var(--text); }
-.srow .ci:disabled { background: var(--surface); color: var(--text-faint); cursor: not-allowed; border-style: dashed; }
+/* 置灰但可读（SATSOFT 灰字镜像值）：faint 淡到读不出数，禁用态语义靠底色+虚线边框已足够 */
+.srow .ci:disabled { background: var(--surface); color: var(--text-muted); cursor: not-allowed; border-style: dashed; }
 .srow .u { color: var(--text-muted); }
 .seg { display: flex; border: 1px solid var(--border); }
 .seg .sg { padding: 3px 12px; cursor: pointer; color: var(--text-muted); }
@@ -8377,6 +8416,9 @@ onBeforeUnmount(() => {
 /* —— 赋形反射面模型（对齐 SATSOFT Shaped Reflector 对话框）：只读值 / 波长读数 / 几何预览图 —— */
 .bs-ro { font-size: 12px; color: var(--text-muted); }
 .bs-wl { flex: none; font-size: 10.5px; color: var(--text-faint); font-family: var(--font-mono); white-space: nowrap; }
+/* 站点栅编辑：操作按钮行 + 平面图框选橡皮筋（fixed 屏幕像素，指针事件穿透） */
+.bs-strow { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+.bs-boxsel { position: fixed; z-index: 900; border: 1px dashed var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); pointer-events: none; }
 .bs-refl { margin: 6px 0 2px; border: 1px solid var(--border); border-radius: 4px; padding: 3px; background: color-mix(in srgb, var(--text) 3%, transparent); }
 .bs-refl svg { width: 100%; display: block; }
 .bs-reflbar { display: flex; align-items: center; justify-content: center; gap: 8px; margin: 2px 0 0; }
