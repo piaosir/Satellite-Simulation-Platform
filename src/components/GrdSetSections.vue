@@ -90,7 +90,14 @@ function pickBoreSat(e) { grd.setBoreSat(e.noradId ? 'n:' + e.noradId : 'm:' + e
 const fx = (v, n = 2) => (Number.isFinite(+v) && v !== '' && v !== null ? (+v).toFixed(n) : '—')
 const boreTip = computed(() => {
   const m = grd.antMeta(); if (!m) return ''
-  const tail = ` · 峰值 ${m.peakDb}dB @ ${m.peak ? m.peak[0] + ',' + m.peak[1] : '—'}`
+  // 峰值读数取【当前画面上】标出来的那个峰值点（grd.livePeak，两个视图各一份），与地图所见同源。
+  // 不再用导入时烘的 meta.peak —— 那是标称指向下的落点，拖了指向就过时。
+  // hit=false（峰值方向越过地平 / 没打到那层壳）→ 地表上根本没有这个点，只报 dB 不报坐标。
+  // 该天线此刻没画出来（无实时读数）→ 退回天线自身的峰值 dB，同样不报坐标。
+  const lp = grd.livePeak.value[isShell.value ? 'shell' : 'ground']
+  const tail = lp
+    ? ` · 峰值 ${fx(lp.db)}dB` + (lp.hit ? ` @ ${fx(lp.lon)},${fx(lp.lat)}` : '')
+    : (Number.isFinite(+m.peakDb) ? ` · 峰值 ${fx(m.peakDb)}dB` : '')
   if (isSatMode.value) {
     const off = st.boreType === 'satoff' ? ` · 偏置 ${fx(st.boreOffAz || 0)}°/${fx(st.boreOffEl || 0)}°` : ''
     return (st.boreSat ? (satResolved.value ? '指向 ' + (st.boreSatName || '目标星') : '目标星不在场，已退回天底') : '未选目标星') + off + tail
@@ -234,9 +241,9 @@ const boreTip = computed(() => {
     <div class="sec">
       <div class="sect acc" :class="{ open: isSecOpen('grd-disp', false) }" @click="toggleSec('grd-disp', false)"><Icon :name="isSecOpen('grd-disp', false) ? 'chevron-down' : 'chevron-right'" :size="12" /><span>显示选项</span><span class="editing" title="对所有选中天线生效">全局</span></div>
       <template v-if="isSecOpen('grd-disp', false)">
-        <label class="chk2"><input type="checkbox" v-model="st.showName" /><span>显示天线名</span></label>
+        <label class="chk2"><input type="checkbox" v-model="st.showName" /><span>显示波束名</span></label>
         <div v-if="st.showName" class="srow"><label>字号</label><input class="rng" type="range" min="0.5" max="32" step="0.5" v-model.number="st.nameSize" /><span class="u">{{ st.nameSize }}</span></div>
-        <label class="chk2"><input type="checkbox" v-model="st.showBore" /><span>显示波束中心</span></label>
+        <label class="chk2"><input type="checkbox" v-model="st.showBore" /><span title="当前场的峰值格点打在地球/壳层上的位置；峰值方向越过地平时不标">显示峰值点</span></label>
         <div v-if="st.showBore" class="srow"><label>大小</label><input class="rng" type="range" min="0.1" max="3" step="0.1" v-model.number="st.boreSize" /><span class="u">{{ st.boreSize }}</span></div>
         <label class="chk2"><input type="checkbox" v-model="st.showRay" /><span title="从卫星沿方向图 u=v=0 方向射出的一条线，一根天线一条">显示天线视轴</span></label>
         <template v-if="st.showRay">
@@ -244,7 +251,7 @@ const boreTip = computed(() => {
           <div class="srow"><label>线宽</label><input class="rng" type="range" min="0.4" max="6" step="0.1" v-model.number="st.rayWidth" /><span class="u">{{ fx(st.rayWidth, 1) }}</span></div>
           <div class="srow"><label>透明度</label><input class="rng" type="range" min="0.05" max="1" step="0.05" v-model.number="st.rayOpacity" /><span class="u">{{ fx(st.rayOpacity) }}</span></div>
         </template>
-        <label class="chk2"><input type="checkbox" v-model="st.showPeak" /><span>显示波束中心峰值</span></label>
+        <label class="chk2"><input type="checkbox" v-model="st.showPeak" /><span title="峰值点处的 dB 读数，随极化 / 增益偏置 / 路径损耗变">显示峰值电平</span></label>
         <div v-if="st.showPeak" class="srow"><label>字号</label><input class="rng" type="range" min="0.5" max="30" step="0.5" v-model.number="st.peakSize" /><span class="u">{{ st.peakSize }}</span></div>
         <label class="chk2"><input type="checkbox" v-model="st.showVal" /><span>显示数值标签</span></label>
         <div v-if="st.showVal" class="srow"><label>字号</label><input class="rng" type="range" min="0.5" max="30" step="0.5" v-model.number="st.valSize" /><span class="u">{{ st.valSize }}</span></div>

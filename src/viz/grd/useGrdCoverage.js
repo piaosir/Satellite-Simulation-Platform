@@ -3,7 +3,7 @@
 // 当前聚焦(active)天线额外画分带填充。计算核心 src/viz/grd/{parse,coverage,colormap}.js。
 import { ref, reactive, watch, nextTick } from 'vue'
 import { parseGrd } from './parse.js'
-import { antennaBasis, antennaBasisEcef, beamBasisFrom, dirAzElAbout, dirToAzEl, azElGround, surfaceAzEl, projectGrid, fieldDb, bandGeometry, stitchLoops, dLon, loopPointAtFraction, loopLabelAnchor, nearestFractionOnLoop } from './coverage.js'
+import { antennaBasis, antennaBasisEcef, beamBasisFrom, dirAzElAbout, dirToAzEl, azElGround, surfaceAzEl, projectGrid, projectLimb, gridDirs, fieldDb, bandGeometry, stitchLoops, dLon, loopPointAtFraction, loopLabelAnchor, nearestFractionOnLoop } from './coverage.js'
 import { boresightShellPoint } from './shellProj.js'
 import { schemeColorsRGB, rgbCss, cssRgb } from './colormap.js'
 import { RS_GEO, A, geodeticToEcef, geocentricToEcef, isoElevationContourAt } from '../wgs84.js'
@@ -72,6 +72,15 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
   const loading = ref(false)
   let loaded = false
   const cache = new Map()           // key → { meta, P1, P2, proj }
+  // 聚焦天线【当前画面上】的峰值读数 { db, lon, lat, hit }：由图层构建顺手记下（对地/对星两个
+  // 视图各自的构建器都写这里），面板 tip 直接读 → 与地图上标出来的那个点永远是同一个数。
+  // hit = 峰值方向真打在那个面上（对地＝WGS84 椭球，对星＝那层壳）；false 时 lon/lat 只是
+  // 地平/相切方向上的锚点，不是读数，坐标一律不显示。
+  // meta.peakDb/meta.peak 是导入时按标称指向烘的，拖了指向就过时，故不再拿它当读数。
+  // ★ 两个视图各存一份（ground / shell）：天线设置是共享的，改任一项两边的 recompute 都会醒来，
+  //   共用一个槽位会互相冲刷 —— 面板按自己是哪个视图取自己那一份。
+  const livePeak = ref({ ground: null, shell: null })
+  const setLivePeak = (src, p) => { livePeak.value = { ...livePeak.value, [src]: p } }
   // 数值标签拖拽用（声明前置，供 buildLayer/buildBeamLayer 捕获引用；逻辑见文件后段 setDragLabel/labelDrag）
   let _dragLabels = []              // 聚焦天线当前可拖标签 [{ levelIdx, loop, anchor }]（recompute 按 showVal 捕获）
   let _dragCapture = null           // 捕获缓冲：仅在构建聚焦天线层期间非空
@@ -110,10 +119,10 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
 
     beamsToPlot: [0],   // 多波束 GRD：要绘制的波束序号（SATSOFT「Beams To Plot」多选；共用本天线同一套电平/极化设置）
     beamNames: {},      // 波束序号 → 自定义波束名（空=用默认「波束 N」）。地图标注与选波束列表均用此名，不再用天线名+波束名
-    // 全局显示选项（与 GXT 一致；不随聚焦天线切换，对所有选中天线生效）：天线名 / 波束中心 / 波束中心峰值 / 数值标签
-    // 默认四项全关：新天线导入即为干净地图（无天线名/中心点/峰值/数值标注），需要时再逐项开启
+    // 全局显示选项（与 GXT 一致；不随聚焦天线切换，对所有选中天线生效）：波束名 / 峰值点 / 峰值电平 / 数值标签
+    // 默认四项全关：新天线导入即为干净地图（无波束名/峰值点/峰值电平/数值标注），需要时再逐项开启
     showName: false, nameSize: 16, showBore: false, boreSize: 0.5, showRay: false, showPeak: false, peakSize: 5, showVal: false, valSize: 12,
-    // 波束射线样式（对地＝卫星↔波束中心连线，对星＝沿视轴射出的那条线；两视图同一套值）
+    // 波束射线样式（对地＝卫星↔峰值点连线，对星＝沿视轴射出的那条线；两视图同一套值）
     rayColor: '#ffb14a', rayWidth: 1.2, rayOpacity: 0.75
   })
   // 天线姿态基底，两大类五种指向来源：
@@ -158,7 +167,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
   // 一根天线【一条】线：从源星沿方向图坐标系的 z 轴（u=v=0 那个方向）射出去。
   // ★ 这不是「每个波束一条」——多波束天线的 94 个波束共用同一根反射面/同一个视轴，逐波束连线既不是
   //   物理上的一根轴，94 条粗线本身也是每帧几十次几何分配（94 波束下点播放就卡在这里）。
-  //   要看单个波束打在哪，那是「波束中心」那个开关的事。
+  //   要看单个波束打在哪，那是「峰值点」那个开关的事。
   // 与半径 R 球面求交：源星在球外（对地 R=A）取【近】交点＝视轴打在地球上的落点；
   // 源星在球内（对星，R=最外壳层）恒有唯一正根。整个视轴指着天上（对地时打不到地球）→ 交不着，
   // 由调用方退到一个可见长度，射线仍在（拖全向指向时它是唯一的把手）。
@@ -807,7 +816,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
   // 数值标签锚点/沿环拖动（loopTop·loopPointAtFraction·nearestFractionOnLoop：把标签位置存成
   // 「沿环弧长的比例 t∈[0,1)」，几何每帧重算也始终贴在线上）的几何本体在 coverage.js —— 对星覆盖
   // （useShellCoverage）共用同一份，两视图标签落点口径逐字一致。
-  // 单个波束 → 一个子图层（分带填充 + 等值线 + 波束中心）。相对峰值模式按【该波束自身峰值】算电平
+  // 单个波束 → 一个子图层（分带填充 + 等值线 + 峰值点）。相对峰值模式按【该波束自身峰值】算电平
   // （HTS 多点波束各自的 −3dB 圈），绝对模式所有波束共用同一绝对 dB。
   // 填充与等值线由 bandGeometry 一次性同源生成（逐三角形线性插值）：填充 = 各档环带多边形，
   // 线 = 相邻档公共边 → 二者精确重合；地平/接缝裁剪在 bandGeometry 内完成（无需再 clipSegsVisible）。
@@ -821,6 +830,20 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     const field = fieldDb(arg, beam.proj, { pol: cfg.pol, gainOffset: cfg.gainOffset, pathLoss: 'none' })
     beam._fld = { pol: cfg.pol, gain: cfg.gainOffset, field }
     return field
+  }
+  // 峰值点 = 当前场的 argmax 格点【打在地球上的那个点】。★ 不能直接读 beam.proj.lon/lat[maxIdx]：
+  // 那张投影是 limbOutside=true 投的，射线打不到椭球时返回的是「射线到地心的垂足」（rayEllipsoidMargin
+  // 的 pRaw，停在地平外、高度可达几万 km），把它当地表点反算经纬度得到的是没有物理意义的量——
+  // 其经度 ≈ 90°−离轴角，越往外拖反而越往回走，离轴超过 90° 直接翻到另一半球。原先只用 Number.isFinite
+  // 把关，而垂足的经纬度永远有限，这道关从来不触发。
+  // 故此处对 argmax 那一条射线单独求交（一根射线，白给）：hit=真打到椭球；打不到则退回该方向的
+  // 地平点，只作波束名的锚（点与峰值电平一律不画）。顺带绕开「热区盒为空时 proj 未写、读到陈旧值」的坑。
+  function peakPoint(c, cfg, beam, field) {
+    if (!Number.isFinite(field.max)) return null
+    const dirs = gridDirs(beam.grid, c.meta.igrid), o = field.maxIdx * 3
+    const r = projectLimb([dirs[o], dirs[o + 1], dirs[o + 2]], beamBasis(c.meta, cfg))
+    if (!Number.isFinite(r.lon) || !Number.isFinite(r.lat)) return null
+    return { lon: r.lon, lat: r.lat, hit: r.vis >= 0 }
   }
   function buildBeamLayer(c, cfg, beam, name, withLabels) {
     const field = beamField(beam, cfg)
@@ -853,10 +876,11 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
         return { segs, color: x.lineColor, width: cfg.lineWidth, txt: (x.name || String(x.v)), labels }
       }).filter((g) => g.segs.length)
       : []
-    // 波束中心 = 当前场的峰值点（随指向/拖拽实时变化）；波束名标签贴在此处，并向所属卫星连线
-    const pk = (Number.isFinite(beam.proj.lon[field.maxIdx]) && Number.isFinite(beam.proj.lat[field.maxIdx])) ? [beam.proj.lon[field.maxIdx], beam.proj.lat[field.maxIdx]] : (beam.peak || c.meta.peak || [c.meta.satLon, 0])
-    // peak = 波束中心峰值 dB（当前场峰值；显示用，随极化/增益/路损变）
-    const bore = { lon: pk[0], lat: pk[1], satLon: c.meta.satLon, satLat: c.meta.satLat || 0, satAlt: c.meta.satAlt || H, peak: Number.isFinite(field.max) ? field.max : null }
+    // 峰值点（随指向/拖拽实时变化）：波束名标签贴在此处。hit=false（峰值方向越过地平）时
+    // 这里只是该方向的地平点，仅作名字的锚——白点与峰值电平由渲染端按 hit 一律不画。
+    // peak = 该点的峰值 dB（当前场峰值；随极化/增益/路损变）
+    const pk = peakPoint(c, cfg, beam, field)
+    const bore = pk ? { lon: pk.lon, lat: pk.lat, hit: pk.hit, satLon: c.meta.satLon, satLat: c.meta.satLat || 0, satAlt: c.meta.satAlt || H, peak: field.max } : null
     return { fillBands, segGroups, bore, name }
   }
   // 每个选中天线 → N 个子图层（按 Beams To Plot 选中的波束逐个出层）；所有子层共用该天线同一套设置。
@@ -866,7 +890,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
   function buildLayer(key, withLabels) {
     const c = cache.get(key); if (!c || !c.beams) return []
     const cfg = c.settings   // 每层用自身保存的设置（聚焦层的实时编辑已由 watcher 回存到此）
-    // satShown = 该天线所属卫星的「卫星名」是否显示：3D 连线(卫星↔波束中心)需 showBore 且 satShown 同时为真
+    // satShown = 该天线所属卫星的「卫星名」是否显示：3D 连线(卫星↔峰值点)需 showBore 且 satShown 同时为真
     const node = sats.value.find((x) => x.folder === key.split('|')[0])
     const satShown = !node || node.labelShow !== false
     const plot = (cfg.beamsToPlot || []).filter((i) => i < c.beams.length)   // 全未选 → 不绘制任何波束
@@ -882,7 +906,14 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
       return L
     })
     if (capturing) { _dragLabels = _dragCapture; _dragCapture = null }
+    if (key === active.value) setLivePeak('ground', bestPeakOf(out))   // 面板 tip 的实时峰值读数（画面上标的就是它）
     return out
+  }
+  // 一批波束子层里峰值最高的那个 → { db, lon, lat, hit }（面板读数用；无波束/无场则 null）
+  function bestPeakOf(layers) {
+    let b = null
+    for (const L of layers) { const o = L.bore; if (o && Number.isFinite(o.peak) && (!b || o.peak > b.peak)) b = o }
+    return b ? { db: b.peak, lon: b.lon, lat: b.lat, hit: b.hit !== false } : null
   }
 
   const fieldOpts = () => ({ alpha: s.alpha, showBore: s.showBore, boreSize: s.boreSize, showRay: s.showRay, rayColor: s.rayColor, rayWidth: s.rayWidth, rayOpacity: s.rayOpacity, showName: s.showName, nameSize: s.nameSize, showPeak: s.showPeak, peakSize: s.peakSize, showVal: s.showVal, valSize: s.valSize })
@@ -906,6 +937,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     if (!sc && !fl) { _fullMs = 0; return }   // 两侧都不收（如 2D 下对星视图占着场）：几何白算，直接跳过
     // 聚焦（编辑中）天线排到最后 → 填充叠加时位于最上层，最醒目（其余按选中顺序在下）
     const ks = [...selected.value].sort((a, b) => (a === active.value ? 1 : 0) - (b === active.value ? 1 : 0))
+    if (!ks.includes(active.value)) setLivePeak('ground', null)   // 聚焦天线没画出来 → 面板读数留空，不留上一次的陈值
     const layers = ks.flatMap((k) => buildLayer(k, s.showVal))   // 每天线展开成 N 个波束子层；2D/3D 共用同一份（省一半重算）
     const opts = fieldOpts()
     opts.rays = buildAxisRays(ks, A)                             // 天线视轴：一根天线一条，打到地球上（见 buildAxisRays）
@@ -1028,7 +1060,9 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     const beams = g.sets.map((set) => {
       const proj = projectGrid(set, g.igrid, basis, null, null, true)
       const field = fieldDb({ P1: set.P1, P2: set.P2, NX: set.NX, NY: set.NY }, proj, { pol: 'RSS' })
-      const peak = [+proj.lon[field.maxIdx].toFixed(4), +proj.lat[field.maxIdx].toFixed(4)]
+      // 峰值落点：vis≥0 才是真打在椭球上。越地平时 proj 存的是「射线到地心的垂足」，
+      // 拿它当地表点会把镜头飞到一个不存在的地方（这里只给 faceLonLat 定位用），故留空。
+      const peak = proj.vis[field.maxIdx] >= 0 ? [+proj.lon[field.maxIdx].toFixed(4), +proj.lat[field.maxIdx].toFixed(4)] : null
       return { P1: set.P1, P2: set.P2, c1re: set.c1re, c1im: set.c1im, c2re: set.c2re, c2im: set.c2im, grid: { XS: set.XS, YS: set.YS, XE: set.XE, YE: set.YE, NX: set.NX, NY: set.NY }, proj, peakDb: +field.max.toFixed(3), peak }
     })
     // 天线整体峰值 = 各波束峰值的最大者（电平表默认值/聚焦定位用）
@@ -1301,7 +1335,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
   }
   async function restoreState(st) {
     if (!st) return
-    // 全局显示选项（天线名/波束中心/数值标签）：先恢复，后续 recompute 即按此绘制
+    // 全局显示选项（波束名/峰值点/数值标签）：先恢复，后续 recompute 即按此绘制
     if (st.disp) for (const k of ['showName', 'nameSize', 'showBore', 'boreSize', 'showRay', 'rayColor', 'rayWidth', 'rayOpacity', 'showPeak', 'peakSize', 'showVal', 'valSize']) if (st.disp[k] != null) s[k] = st.disp[k]
     // 先恢复卫星：自定义/星座关联星补建到树；所有星（含预置）叠加用户编辑（名称/位置/关联/仰角线）。
     // 预置星节点本身由 index 复现，这里仅叠加用户改过的字段；预置星 kind 始终保持 'preset'。
@@ -1428,11 +1462,11 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
             if (loop.length >= 4) contours.push({ g: cfg.ctype === 'rel' ? x.v : +x.abs.toFixed(2), p: loop.map((p) => [+p[0].toFixed(3), +p[1].toFixed(3)]) })
           }
         })
-        // 波束中心 = 当前场的峰值点，与 buildBeamLayer 画面显示同源（随指向拖拽/极化/增益实时变化）。
+        // 峰值点：与 buildBeamLayer 画面显示同源（随指向拖拽/极化/增益实时变化）。
         // 不用载入时烘焙的 c.meta.peak——那是天线级最佳波束的初始峰值：拖拽指向后过时，多波束时全部波束被写成同一点。
-        const pk = (Number.isFinite(beam.proj.lon[field.maxIdx]) && Number.isFinite(beam.proj.lat[field.maxIdx]))
-          ? [+beam.proj.lon[field.maxIdx].toFixed(4), +beam.proj.lat[field.maxIdx].toFixed(4)]
-          : (beam.peak || c.meta.peak || null)
+        // 峰值方向越过地平（hit=false）→ 地表上根本没有这个点，bore 留空，不往 GXT/KML 里写假坐标。
+        const pp = peakPoint(c, cfg, beam, field)
+        const pk = (pp && pp.hit) ? [+pp.lon.toFixed(4), +pp.lat.toFixed(4)] : null
         if (contours.length) out.push({ name: beamName(c, bi), satName: (node && node.satName) || c.meta.sat || '', lon: c.meta.satLon, bore: pk ? [pk] : [], contours })
       }
     }
@@ -1467,7 +1501,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     s.boreOffAz, s.boreOffEl, s.borePtLon, s.borePtLat, s.borePtAlt], () => {
     reproject(); _dragging ? recomputeActive() : recompute()
   })
-  // 全局显示选项（天线名/波束中心/数值标签开关与字号）：仅影响标注层，重绘即可（不回存到天线设置）
+  // 全局显示选项（波束名/峰值点/数值标签开关与字号）：仅影响标注层，重绘即可（不回存到天线设置）
   watch(() => [s.showName, s.nameSize, s.showBore, s.boreSize, s.showRay, s.rayColor, s.rayWidth, s.rayOpacity, s.showPeak, s.peakSize, s.showVal, s.valSize], () => recompute())
   watch(() => s.showVal, (v) => { if (!v && dragLabel.value) setDragLabel(false) })   // 关掉数值标签即退出标签拖拽模式（无标签可拖）
 
@@ -1481,6 +1515,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     loadIndex, setActive, toggleAnt, toggleSatAll, toggleExpand, addLevel, removeLevel, importGrd, importSynthGrd,
     addSatellite, addElevLine, updateSatellite, removeSatellite, removeAntenna, renameAntenna, setElev, onTreeKeys,
     setDragBore, beamDrag, dragLabel, setDragLabel, labelDrag, getState, restoreState, recompute, clearAll, clearDrawing, setActiveKey,
-    setLivePos, tickLive, getPerfContext, ensureAntLoaded, exportContours
+    setLivePos, tickLive, getPerfContext, ensureAntLoaded, exportContours,
+    livePeak, setLivePeak, bestPeakOf
   }
 }

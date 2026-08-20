@@ -777,6 +777,34 @@ export function createGlobeScene(container, quality = {}) {
     const s = hpx || 0.03; spr.scale.set((c.width / c.height) * s, s, 1)
     return spr
   }
+  // 峰值点标记＝细十字（对齐 SATSOFT §11.1 Contour Dialog 的 Beam Peak Label「+」）：叉心就是那个点，
+  // 两条细臂不遮挡下面的等值线/填充——实心圆点会把它标的那一小块盖掉，且看不出准确落点在哪。
+  // ★ 必须用 fatSegments 画，不能用贴图精灵：LineMaterial 的 linewidth 在 worldUnits:false 下是【屏幕
+  //   像素】，放大只变长不变粗；贴图版的笔画是纹理里的固定比例，跟着尺寸一起放大，缩放几档后就成了一个
+  //   又粗又笨的实心加号（SATSOFT 的十字自始至终是一根细线）。线宽与等值线同档，看上去就是「画在图上的
+  //   一个十字」而不是贴上去的符号；也因此不再需要深色套边——等值线自己也没有。
+  // 两条臂躺在当地切平面（东/北向），span = 十字全长（世界尺寸，与 makeCovLabel 的 hpx 同一套尺度）。
+  // ★ 2D 平面图那份在 flatCoverage.drawFieldOverlays / cross()，尺寸律与线宽必须与此处一致。
+  const CROSS_W = 1.3            // 十字线宽（屏幕 px），与等值线默认 1.2 同档
+  const _cu = new THREE.Vector3(), _ce = new THREE.Vector3(), _cn = new THREE.Vector3()
+  const _CY = new THREE.Vector3(0, 1, 0)
+  function makeCovCross(anchor, span, color) {
+    _cu.copy(anchor).normalize()
+    _ce.crossVectors(_CY, _cu)
+    if (_ce.lengthSq() < 1e-12) _ce.set(1, 0, 0)   // 正对极点：参考轴退化，换一根
+    _ce.normalize()
+    _cn.crossVectors(_cu, _ce).normalize()
+    const h = span * 0.5
+    const ex = _ce.x * h, ey = _ce.y * h, ez = _ce.z * h
+    const nx = _cn.x * h, ny = _cn.y * h, nz = _cn.z * h
+    return fatSegments([
+      anchor.x - ex, anchor.y - ey, anchor.z - ez, anchor.x + ex, anchor.y + ey, anchor.z + ez,
+      anchor.x - nx, anchor.y - ny, anchor.z - nz, anchor.x + nx, anchor.y + ny, anchor.z + nz
+    ], color != null ? color : 0xffffff, CROSS_W, 1, 11)
+  }
+  // 十字全长 = boreSize × 此常量（世界尺寸）。默认 boreSize=0.5 → 0.012 ≈ 9 px，与默认峰值字号(5→7px)
+  // 的比例正是 SATSOFT 图上那个「叉略大于读数字高」的观感。2D 侧同值（换算 px = 世界尺寸 × 750 × zf）。
+  const BORE_SPAN = 0.024
   function clearCoverage() {
     if (!covGroup) return
     covGroup.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) { lineMats.delete(o.material); if (o.material.map) o.material.map.dispose(); o.material.dispose() } })
@@ -952,7 +980,7 @@ export function createGlobeScene(container, quality = {}) {
     disposeCovGroup(shellGroup)           // 含 sprite 纹理（material.map）一并释放
     scene.remove(shellGroup); shellGroup = null; shellLayers.clear()
   }
-  // 一层的装饰（等值线 + 数值/名称/峰值标签 + 波束中心点）：与对地 buildDeco 同策略——相对填充轻量，每次重建。
+  // 一层的装饰（等值线 + 数值/名称/峰值标签 + 峰值点）：与对地 buildDeco 同策略——相对填充轻量，每次重建。
   function buildShellDeco(L, o) {
     const out = []
     const la = shellAlt(L.R || RE)
@@ -975,22 +1003,28 @@ export function createGlobeScene(container, quality = {}) {
         spr.position.copy(pos); spr.renderOrder = 12; out.push(spr)
       }
     }
-    // 波束中心（峰值方向与壳层的交点）+ 波束名：与对地覆盖同款，只是锚在壳面上
+    // 峰值点（峰值方向与壳层的交点）+ 波束名：与对地覆盖同款（细十字 + 上方两行），只是锚在壳面上。
+    // ★ b.hit=false ＝ 峰值方向压根没打到这层壳（相切兜底点不是射线真正到达的位置）：
+    //   十字与峰值电平一律不画，b.lon/lat 只留作波束名的锚。
     const b = L.bore
     if (b) {
+      const hit = b.hit !== false
       const anchor = llaToVec(b.lat, b.lon, la)
+      const span = (o.boreSize || 0.5) * BORE_SPAN
+      const crossOn = o.showBore && hit
+      const peakOn = o.showPeak && hit && b.peak != null
+      const peakH = (o.peakSize || 5) / 533, nameH = (o.nameSize || 16) / 533
+      const lift = (crossOn ? span * 0.5 : 0) + 0.0015
       // 连线不在这儿画：对星视图的射线是【天线视轴】那一条，由 setShellRays 单独出（波束打不到壳层时也得有）
-      if (o.showBore) {
-        const dot = new THREE.Mesh(new THREE.SphereGeometry((o.boreSize || 0.5) * 0.0014, 12, 12), new THREE.MeshBasicMaterial({ color: 0xffffff }))
-        dot.position.copy(anchor); dot.renderOrder = 11; out.push(dot)
+      if (crossOn) out.push(makeCovCross(anchor, span, 0xffffff))
+      if (peakOn) {
+        const spr = makeCovLabel(b.peak.toFixed(2), peakH, '#cfd6df')
+        spr.center.set(0.5, -(lift / peakH)); spr.position.copy(anchor); spr.renderOrder = 12; out.push(spr)
       }
       if (o.showName && L.name) {
-        const spr = makeCovLabel(L.name, (o.nameSize || 16) / 533, '#ffffff')
-        spr.center.set(0.5, -0.35); spr.position.copy(anchor); spr.renderOrder = 13; out.push(spr)
-      }
-      if (o.showPeak && b.peak != null) {
-        const spr = makeCovLabel(b.peak.toFixed(2) + ' dB', (o.peakSize || 5) / 533, '#cfd6df')
-        spr.center.set(0.5, 1.15); spr.position.copy(anchor); spr.renderOrder = 12; out.push(spr)
+        const spr = makeCovLabel(L.name, nameH, '#ffffff')
+        spr.center.set(0.5, -((lift + (peakOn ? peakH * 1.15 : 0)) / nameH))
+        spr.position.copy(anchor); spr.renderOrder = 13; out.push(spr)
       }
     }
     return out
@@ -1097,7 +1131,7 @@ export function createGlobeScene(container, quality = {}) {
     shellGuideGroup = g; scene.add(g)
   }
 
-  // 波束射线（对星覆盖分析）：从卫星沿天线视轴射出去的一条线。与「卫星↔波束中心」的连线不同，它
+  // 波束射线（对星覆盖分析）：从卫星沿天线视轴射出去的一条线。与「卫星↔峰值点」的连线不同，它
   // 【不依赖有没有画出覆盖】—— 波束转到空无一物的方向时，这条线就是唯一还看得见的把手（拖拽时全靠它）。
   // list = [{ from:{lon,lat,rKm}, to:{lon,lat,rKm}, color? }]：地心经纬度 + 地心半径 km（与壳层层同一口径，
   // 半径经 shellAlt(R)=R−RE 换算成场景高度；别拿「轨道高度」直接喂 llaToVec，两者差 7.137 km）。
@@ -1286,7 +1320,7 @@ export function createGlobeScene(container, quality = {}) {
     fm.geo.attributes.color.needsUpdate = true
     fm.geo.index.needsUpdate = true
   }
-  // 一层的「装饰」子物体（等值线 + 数值/峰值/名称标签 + 波束中心点/连线）：相对填充轻量，每次 patch 重建。
+  // 一层的「装饰」子物体（等值线 + 数值/峰值/名称标签 + 峰值点/连线）：相对填充轻量，每次 patch 重建。
   function buildDeco(L, o, li) {
     const base = 1.0006 + li * 0.00012, lineLift = base + 0.00003
     const out = []
@@ -1309,31 +1343,37 @@ export function createGlobeScene(container, quality = {}) {
         spr.position.copy(pos); spr.renderOrder = 12; out.push(spr)
       }
     }
-    // 波束中心（boresight）：白点 + 指向所属卫星的连线。波束名贴中心【上方】、峰值贴【下方】，
-    // 用 billboard 的 center 在【屏幕方向】上下分置（旧版按半径抬高，屏幕上几乎重合）。
+    // 峰值点：细十字。读数与波束名都码在十字【上方】——SATSOFT 的排布是「波束名 / 峰值读数 / ＋」
+    // 自上而下一摞（见手册 §11.1 与多波束例图），不是一上一下分置。
+    // 用 billboard 的 center 在【屏幕方向】叠放（旧版按半径抬高，屏幕上几乎重合）。
+    // ★ b.hit=false ＝ 峰值方向越过地平、地表上根本没有这个点：十字与峰值电平一律不画，
+    //   b.lon/lat 此时只是该方向的地平点，仅用来把波束名锚在那弯残余足迹的边上。
     const b = L.bore
     if (b) {
-      // 中心点锚（贴地）：白点 + 卫星连线落点
+      const hit = b.hit !== false
+      // 峰值点锚（贴地）
       const anchor = llaToVec(b.lat, b.lon, 0).multiplyScalar(1.0012)
-      // 文字锚：径向再抬出 ~45km。billboard 整体深度≈锚点深度，抬到球面之前 → 标签（尤其位于中心点下方的峰值）
-      // 不再被地球模型遮挡；depthTest 仍为真，背面波束的标签照常被球体隐藏。
+      // 文字锚：径向再抬出 ~45km。billboard 整体深度≈锚点深度，抬到球面之前 → 标签不再被地球模型遮挡；
+      // depthTest 仍为真，背面波束的标签照常被球体隐藏。
       const labelAnchor = llaToVec(b.lat, b.lon, 45)
+      const span = (o.boreSize || 0.5) * BORE_SPAN
+      const crossOn = o.showBore && hit
+      const peakOn = o.showPeak && hit && b.peak != null
+      const peakH = (o.peakSize || 5) / 533, nameH = (o.nameSize || 16) / 533
+      const lift = (crossOn ? span * 0.5 : 0) + 0.0015     // 让开十字上臂 + 一点空隙（世界尺寸）
       // 视轴不在这儿画：它是【一根天线一条】（opts.rays，由 buildAxisRays 出），不是逐波束的连线。
-      // 原先每个波束层都画一条卫星→波束中心的粗线，94 波束就是每次重建 94 次几何分配 —— 播放时的卡顿大头之一。
-      if (o.showBore) {
-        const dotR = (o.boreSize || 0.5) * 0.0014
-        const dot = new THREE.Mesh(new THREE.SphereGeometry(dotR, 12, 12), new THREE.MeshBasicMaterial({ color: 0xffffff }))
-        dot.position.copy(anchor); dot.renderOrder = 11; out.push(dot)
+      // 原先每个波束层都画一条卫星→峰值点的粗线，94 波束就是每次重建 94 次几何分配 —— 播放时的卡顿大头之一。
+      if (crossOn) out.push(makeCovCross(anchor, span, 0xffffff))
+      // 峰值读数：十字【正上方】第一行。SATSOFT 只印数字不带单位（与等值线标注同体例），此处照办。
+      if (peakOn) {
+        const spr = makeCovLabel(b.peak.toFixed(2), peakH, '#cfd6df')
+        spr.center.set(0.5, -(lift / peakH)); spr.position.copy(labelAnchor); spr.renderOrder = 12; out.push(spr)
       }
-      // 波束中心峰值 dB：中心点【下方】，中性次级色（弱于波束名，做读数，不再用卡通暖黄）
-      if (o.showPeak && b.peak != null) {
-        const spr = makeCovLabel(b.peak.toFixed(2) + ' dB', (o.peakSize || 5) / 533, '#cfd6df')
-        spr.center.set(0.5, 1.15); spr.position.copy(labelAnchor); spr.renderOrder = 12; out.push(spr)
-      }
-      // 波束名：中心点【上方】
+      // 波束名：再往上一行（读数在时让开它一行高，不在时直接贴十字上方）
       if (o.showName && L.name) {
-        const spr = makeCovLabel(L.name, (o.nameSize || 16) / 533, '#ffffff')
-        spr.center.set(0.5, -0.35); spr.position.copy(labelAnchor); spr.renderOrder = 13; out.push(spr)
+        const spr = makeCovLabel(L.name, nameH, '#ffffff')
+        spr.center.set(0.5, -((lift + (peakOn ? peakH * 1.15 : 0)) / nameH))
+        spr.position.copy(labelAnchor); spr.renderOrder = 13; out.push(spr)
       }
     }
     return out

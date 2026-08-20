@@ -9,7 +9,7 @@
 // 几何走参数域（见 shellProj.js 文件头）：bandGeometry 直接吃 gridXY 的 (X,Y)，切出来的顶点再逐壳投影。
 // 2D 平面地图（flatView）另走一条【对地投影】：同一批波束按对地那套投到 WGS84 椭球，与「对地覆盖分析」画法完全相同。
 import { ref, reactive, computed, watch } from 'vue'
-import { fieldDb, bandGeometry, stitchLoops, gridXY, projectGrid, loopLabelAnchor } from './coverage.js'
+import { fieldDb, bandGeometry, stitchLoops, gridXY, projectGrid, projectLimb, gridDirs, loopLabelAnchor } from './coverage.js'
 import { shellGeom, shellGrid, shellMapper, tessellateFills, tessellateSegs } from './shellProj.js'
 import { cssRgb } from './colormap.js'
 import { A, geodeticToEcef, isoElevationContourAt } from '../wgs84.js'
@@ -263,6 +263,7 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
       else if (!e.tris && reason) e.why = reason
     }
     const shown = shells.value.filter((sh) => sh.show)
+    const mine = []                    // 聚焦天线画出来的层（取其中峰值最高者做面板读数）
     for (const it of eachBeam()) {
       const { key, ctx, st, bm, beam, set, box, satShown } = it
       const igrid = ctx.igrid, basis = ctx.basis
@@ -303,21 +304,27 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
           if (fillBands) for (const fb of fillBands) nTri += fb.counts.length
           tris += nTri
           noteShell(sh.id, nTri || 1, '')
-          const pk = map(gx[field.maxIdx], gy[field.maxIdx])
-          out.push({
+          // 峰值点：先用 strict 版求交——峰值方向【真打在这层壳上】才是一个能标的点。打不到时
+          // 退回默认 map 的相切兜底点，那只是个锚（波束名贴在那儿），点与峰值电平由渲染端按 hit 不画。
+          const pkHit = shellMapper(igrid, basis, g, br, true)(gx[field.maxIdx], gy[field.maxIdx])
+          const pk = pkHit || map(gx[field.maxIdx], gy[field.maxIdx])
+          const layer = {
             id: `${key}#${bm.bi}@${sh.id}:${br}`, R, alpha: st.alpha,
             name: bm.name + (branches.length > 1 ? (br === 'near' ? ' 近' : ' 远') : ''),
             fillBands, segGroups,
-            bore: pk ? {
-              lon: pk.lon, lat: pk.lat, satLon: ctx.meta.satLon, satLat: ctx.meta.satLat || 0, satAlt: ctx.meta.satAlt,
-              peak: Number.isFinite(field.max) ? field.max : null, satShown
+            bore: pk && Number.isFinite(field.max) ? {
+              lon: pk.lon, lat: pk.lat, hit: !!pkHit, satLon: ctx.meta.satLon, satLat: ctx.meta.satLat || 0, satAlt: ctx.meta.satAlt,
+              peak: field.max, satShown
             } : null
-          })
+          }
+          if (key === grd.active.value) mine.push(layer)   // 面板 tip 的实时峰值读数（聚焦天线这一份）
+          out.push(layer)
         }
       }
     }
     focusBeam.value = focus
     shellStatus.value = why
+    grd.setLivePeak('shell', grd.bestPeakOf(mine))
     stats.value = { layers: out.length, tris, ms: Math.round((typeof performance !== 'undefined' ? performance.now() : 0) - t0) }
     return out
   }
@@ -327,6 +334,7 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
   // 指向若朝反天底（如低轨打 GSO），整片投不到地球上，这里自然为空，平面图留白。
   function buildGroundLayers() {
     const out = []
+    const mine = []                    // 聚焦天线画出来的层（取其中峰值最高者做面板读数）
     for (const it of eachBeam()) {
       const { key, ctx, st, bm, beam, set, box, satShown } = it
       const igrid = ctx.igrid, basis = ctx.basis
@@ -353,16 +361,23 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
         }).filter((gp) => gp.segs.length)
         : []
       if (!(fillBands && fillBands.length) && !segGroups.length) continue
-      const okPk = Number.isFinite(proj.lon[field.maxIdx]) && Number.isFinite(proj.lat[field.maxIdx])
-      out.push({
+      // 峰值点：与对地视图逐字同口径（useGrdCoverage.peakPoint）——★ 不能读 proj.lon/lat[maxIdx]，
+      // 那张投影 limbOutside=true，越地平的点返回的是「射线到地心的垂足」，反算出来的经纬度是假读数。
+      // 对 argmax 那一条射线单独求交：hit=真打到椭球；打不到则退回该方向的地平点，只作波束名的锚。
+      const dirs = gridDirs(set, igrid), o3 = field.maxIdx * 3
+      const pr = Number.isFinite(field.max) ? projectLimb([dirs[o3], dirs[o3 + 1], dirs[o3 + 2]], basis) : null
+      const layer = {
         id: `${key}#${bm.bi}`, fillBands, segGroups, name: bm.name,
-        bore: okPk ? {
-          lon: proj.lon[field.maxIdx], lat: proj.lat[field.maxIdx],
+        bore: pr && Number.isFinite(pr.lon) && Number.isFinite(pr.lat) ? {
+          lon: pr.lon, lat: pr.lat, hit: pr.vis >= 0,
           satLon: ctx.meta.satLon, satLat: ctx.meta.satLat || 0, satAlt: ctx.meta.satAlt,
-          peak: Number.isFinite(field.max) ? field.max : null, satShown
+          peak: field.max, satShown
         } : null
-      })
+      }
+      if (key === grd.active.value) mine.push(layer)   // 面板 tip 的实时峰值读数（聚焦天线这一份）
+      out.push(layer)
     }
+    grd.setLivePeak('shell', grd.bestPeakOf(mine))
     return out
   }
 
@@ -374,7 +389,7 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
     }
   }
   // 天线视轴：每根选中天线【一条】，从源星沿方向图坐标系的 z 轴射到最外一层壳。
-  // 与「卫星↔波束中心」的连线是两回事——视轴不依赖有没有画出覆盖：波束转到空无一物的方向时，
+  // 与「卫星↔峰值点」的连线是两回事——视轴不依赖有没有画出覆盖：波束转到空无一物的方向时，
   // 它是唯一还看得见的把手（拖拽全向指向时全靠它），故独立成一条通道、单独开关。
   // 求交与对地视图共用 grd.buildAxisRays（那边打到地球，这边打到壳层），两个视图同一条轴、同一套样式。
   function buildRays() {

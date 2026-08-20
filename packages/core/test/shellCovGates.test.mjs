@@ -36,7 +36,10 @@ function makeGrd() {
     keyOf: (f, a) => f + '|' + a,
     ensureAntLoaded: async () => true,
     setActiveKey: async () => {},
-    buildAxisRays: () => []
+    buildAxisRays: () => [],
+    livePeak: ref({ ground: null, shell: null }),          // 面板 tip 的实时峰值读数（两视图各一份）
+    setLivePeak: () => {},
+    bestPeakOf: () => null
   }
 }
 function makeScene() {

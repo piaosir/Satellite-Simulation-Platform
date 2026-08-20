@@ -98,7 +98,7 @@ export function createFlatCoverage(canvas) {
   // 晨昏线 / 夜区：随时间轴每次推进重算，只存当次的点列（约 360 点，逐帧直接 trace，不烘 Path2D
   // ——量级比覆盖分带小两三个数量级，缓存收益还不如省掉 compat 分支的复杂度）
   let termData = null, termOpts = {}
-  // GRD 全局标注选项（与 3D 同步）：天线名 / 波束中心 / 数值标签
+  // GRD 全局标注选项（与 3D 同步）：波束名 / 峰值点 / 数值标签
   let fieldOpts = { showName: true, nameSize: 16, showBore: true, boreSize: 0.5, showPeak: false, peakSize: 5, showVal: false, valSize: 12 }
   let nameMode = 'off', provVisible = false, prov = null, cityVisible = false, city = null
   // 国界(海岸线)/省界/地级市界线样式：线宽为恒定屏幕 px、颜色十六进制、透明度 0–1（与 3D 同步）
@@ -312,6 +312,21 @@ export function createFlatCoverage(canvas) {
     ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fillStyle = fill; ctx.fill()
     if (ring) { ctx.lineWidth = Math.max(1, r * 0.35); ctx.strokeStyle = 'rgba(255,255,255,0.92)'; ctx.stroke() }
   }
+  // 峰值点标记：细十字（对齐 SATSOFT §11.1 Contour Dialog 的 Beam Peak Label「+」；3D 侧 makeCovCross 同款）。
+  // 叉心＝那个点，两条细臂不遮挡下面的等值线/填充。span = 十字全长(px)。
+  // ★ 线宽【恒定屏幕像素】，不随 span 走：按比例给线宽的话，放大几档笔画就跟着变粗，十字成了一个又粗又笨
+  //   的实心加号（SATSOFT 的十字自始至终是一根细线）。与等值线同档线宽，故也不需要深色套边——等值线自己也没有。
+  const CROSS_W = 1.3            // 十字线宽（屏幕 px），与 3D 侧 scene.js 的 CROSS_W 同值
+  function cross(lon, lat, span, color) {
+    const x = PX(lon), y = PY(lat), a = span * 0.5
+    ctx.save()
+    ctx.lineCap = 'butt'
+    ctx.lineWidth = CROSS_W; ctx.strokeStyle = color
+    ctx.beginPath()
+    ctx.moveTo(x - a, y); ctx.lineTo(x + a, y); ctx.moveTo(x, y - a); ctx.lineTo(x, y + a)
+    ctx.stroke()
+    ctx.restore()
+  }
 
   // GRD 分带填充：与 3D 同源——由 bandGeometry 逐三角形切出的各档环带多边形（lon/lat）。每档把全部多边形
   // 烘成一个「世界度坐标」Path2D（x=lon-LON0, y=90-lat，仅在 setField 时一次），同档多边形并入一条 path
@@ -506,23 +521,32 @@ export function createFlatCoverage(canvas) {
     }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.globalAlpha = 1; ctx.restore()
   }
-  // GRD 标注层（天线名 / 波束中心点 / 数值标签）：画在填充+等值线之上，随各层 bore/segGroups 数据
+  // GRD 标注层（波束名 / 峰值点 / 数值标签）：画在填充+等值线之上，随各层 bore/segGroups 数据
   function drawFieldOverlays() {
     const o = fieldOpts
-    // 覆盖分析(GRD)注记：圆点(波束中心)按「克制版」iz=√scale 联动；文字(天线名/峰值/数值)按【世界尺寸】联动。
+    // 覆盖分析(GRD)注记：十字(峰值点)与文字(波束名/峰值/数值)一律按【世界尺寸】联动。
     // 文字为何用世界尺寸：3D 侧这三种标签都由 makeCovLabel(hpx=字号/533) 生成 = 世界尺寸精灵（随缩放线性变化、含每度像素）。
     // 旧实现 2D 文字用「字号 × iz」——既非世界尺寸律(iz=√scale)、又漏掉每度像素 base → 切到 3D 后 2D 明显偏大(默认视角约 2.6×)。
-    // 改为与 3D 同源：2D 世界尺寸 px = hpx × 750 × zf(=k()/13.1)，与卫星层数值标签(line 509)、地名标定(line 462)完全一致，两视图恒同大。
-    const iz = Math.sqrt(scale), zf = k() / 13.1
+    // 改为与 3D 同源：2D 世界尺寸 px = hpx × 750 × zf(=k()/13.1)，与卫星层数值标签、地名标定完全一致，两视图恒同大。
+    const zf = k() / 13.1
     const covFont = (size) => Math.round(size / 533 * 750 * zf)   // 字号(valSize/peakSize/nameSize) → 2D 世界尺寸 px，与 3D makeCovLabel(字号/533) 一致
     for (const L of fieldLayers) {
       if (o.showVal) for (const grp of (L.segGroups || [])) { if (grp.txt == null) continue; for (const an of (grp.labels || [])) drawText(String(grp.txt), an[0], an[1], covFont(o.valSize || 12), '#ffffff') }
       const b = L.bore; if (!b) continue
-      const br = (o.boreSize != null ? o.boreSize : 0.5) * iz
-      if (o.showBore) dot(b.lon, b.lat, Math.max(0.3, br), '#ffffff', true)
-      // 波束中心峰值 dB：标在中心点下方（2D 无卫星连线）
-      if (o.showPeak && b.peak != null) { const pf = covFont(o.peakSize || 5); drawText(b.peak.toFixed(2) + ' dB', b.lon, b.lat, pf, '#cfd6df', { dy: (o.showBore ? br : 0) + pf * 0.35 + 1.5 * iz }) }
-      if (o.showName && L.name) { const nf = covFont(o.nameSize || 16); drawText(L.name, b.lon, b.lat, nf, '#ffffff', { dy: -((o.showBore ? br : 0) + nf * 0.6 + 2 * iz) }) }
+      // b.hit=false ＝ 峰值方向越过地平（对星壳层视图＝没打到那层壳）：十字与峰值电平一律不画，
+      // b.lon/lat 此时只是该方向的地平/相切点，仅作波束名的锚。
+      const hit = b.hit !== false
+      // 十字全长(px) = 世界尺寸 × 750 × zf = boreSize × BORE_SPAN(0.024, 见 scene.js) × 750 × zf
+      // → boreSize × 18 × zf。两视图恒同大；圆点那版走的是「克制版 iz」，与 3D 对不上，一并归位。
+      const span = (o.boreSize != null ? o.boreSize : 0.5) * 18 * zf
+      const crossOn = o.showBore && hit
+      const peakOn = o.showPeak && hit && b.peak != null
+      const pf = covFont(o.peakSize || 5), nf = covFont(o.nameSize || 16)
+      const lift = (crossOn ? span * 0.5 : 0) + 1.125 * zf     // 让开十字上臂 + 一点空隙
+      if (crossOn) cross(b.lon, b.lat, span, '#ffffff')
+      // 峰值读数与波束名自上而下码在十字【上方】（SATSOFT 排布：波束名 / 读数 / ＋）；读数只印数字不带单位
+      if (peakOn) drawText(b.peak.toFixed(2), b.lon, b.lat, pf, '#cfd6df', { dy: -(lift + pf * 0.5) })
+      if (o.showName && L.name) drawText(L.name, b.lon, b.lat, nf, '#ffffff', { dy: -(lift + (peakOn ? pf * 1.15 : 0) + nf * 0.5) })
     }
   }
 
@@ -746,7 +770,7 @@ export function createFlatCoverage(canvas) {
     ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.drawImage(aboveCanvas, 0, 0)
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     ctx.save(); ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip()
-    drawFieldOverlays()   // GRD 天线名/波束中心/数值标签（覆盖层之上）
+    drawFieldOverlays()   // GRD 波束名/峰值点/数值标签（覆盖层之上）
     for (const p of focusSats) drawSatIcon(p.lon, p.lat, sizes.satIcon * Math.sqrt(scale) * SAT_ICON_K, '#ffffff')   // 聚焦卫星（最上层）：按 iz=√scale 克制联动（与 2D 导出/地球站/航迹一致，防止高倍放大时膨大、更贴 3D）；多选=每颗各一个图标
     ctx.restore()
   }

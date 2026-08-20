@@ -166,12 +166,15 @@ export function shellGrid(set, igrid, basis, g, branch, box = null, out = null) 
 // ==================== 参数域顶点 → 壳层 ====================
 // 返回 (X,Y) → {lon,lat} 的映射闭包。未命中壳层时回退到「相切方向」的落点，
 // 保证 bandGeometry 切在 vis=0 上的边界顶点不会因浮点误差丢点（丢一个点填充多边形就裂）。
-export function shellMapper(igrid, basis, g, branch) {
+// strict=true：关掉相切兜底，未命中一律返回 null。给「这个方向到底打没打到这层壳」的判定用
+// （峰值点标记：兜底点并不是射线真正到达的位置，拿它标峰值是假读数）——几何映射仍走默认的兜底版。
+export function shellMapper(igrid, basis, g, branch, strict = false) {
   return (X, Y) => {
     const dd = gridDir(igrid, X, Y)
     const d = toEcef(basis, dd[0], dd[1], dd[2])
     let t = shellT(g, d, branch)
     if (!(t > 0)) {
+      if (strict) return null
       // 相切兜底：取射线到球心的垂足处（disc≈0 的极限位置），再径向投到壳面
       const sd = g.S[0] * d[0] + g.S[1] * d[1] + g.S[2] * d[2]
       t = -sd

@@ -6622,7 +6622,7 @@ onBeforeUnmount(() => {
 
           <!-- 站点栅（与反射面赋形档同一份交互的镜像——改动须两处同步；θ3=阵面波束宽，站点/修正机制全同） -->
           <div class="sec">
-            <div class="sect acc" :class="{ open: isSecOpen('bs-st') }" @click="toggleSec('bs-st')"><Icon :name="isSecOpen('bs-st') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>站点栅</span><span v-if="bs.stInfo.value" class="bs-cnt">{{ bs.stInfo.value.counts.c0 + bs.stInfo.value.counts.c1 }} 站</span></div>
+            <div class="sect acc" :class="{ open: isSecOpen('bs-st') }" @click="toggleSec('bs-st')"><Icon :name="isSecOpen('bs-st') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>站点栅</span><span v-if="bs.stInfo.value" class="bs-cnt">{{ bs.stInfo.value.over ? '约 ' + bs.stInfo.value.over + ' 站 · 超上限' : (bs.stInfo.value.counts.c0 + bs.stInfo.value.counts.c1) + ' 站' }}</span></div>
             <template v-if="isSecOpen('bs-st')">
             <div class="srow"><label>显示</label>
               <label class="chk-in" title="在地图上显示站点栅（优化目标点阵）"><input type="checkbox" :checked="bs.p.stShow !== false" @change="bs.p.stShow = $event.target.checked" /><span>站点</span></label>
@@ -6630,7 +6630,14 @@ onBeforeUnmount(() => {
               <label class="chk-in" title="在偏置站上标注 ±dB 数值（默认关：偏置站只靠颜色区分，绿=抬高、紫=压低）"><input type="checkbox" :checked="bs.p.stGNum === true" @change="bs.p.stGNum = $event.target.checked" /><span>数值</span></label>
             </div>
             <div class="srow"><label>数字大小</label><input class="ci" type="number" step="1" min="5" max="24" v-model.number="bs.p.stNumSize" title="站点数字字号（px）：编号与偏置数值共用" /><span class="u">px</span></div>
-            <div class="srow"><label>栅密度</label><input class="ci" type="number" step="0.5" min="1" max="6" v-model.number="bs.p.stDens" title="站点密度（站/阵面波束宽，SATSOFT Grid Density）：区内/边界站步距=θ3/密度。手册 §9.1：1.7~2 足够；教程用 3（更细的形状分辨率、更慢）" /><span class="u">/θ3</span></div>
+            <div class="srow"><label>栅密度</label><input class="ci" type="number" step="0.5" min="0" v-model.number="bs.p.stDens" title="站点密度（站/阵面波束宽，SATSOFT Grid Density）：区内步距=θ3/密度，密度翻倍站点数变四倍；0＝每个 Polygon 在质心生成单站。手册 §9.1：1.7~2 足够，教程用 3~4；不设上限（§1.1.2 站点数 unlimited），只有 50 万站的兜底会拦下并报出数目" /><span class="u">/θ3</span></div>
+            <div class="srow"><label>栅类型</label><select v-model="bs.p.stType" title="站点栅晶格类型（SATSOFT Type）"><option value="tri">三角栅</option><option value="rect">矩形栅</option></select></div>
+            <div class="srow"><label>旋转</label><input class="ci" type="number" step="5" v-model.number="bs.p.stRot" title="站点栅朝向（SATSOFT Rotation）" /><span class="u">°</span></div>
+            <div class="srow"><label>中心偏移</label><input class="ci" type="number" step="0.1" v-model.number="bs.p.stXOff" title="中心站相对 boresight（＝覆盖区质心，SATSOFT Auto Position Boresight）的 X 位移" /><span class="u">,</span><input class="ci" type="number" step="0.1" v-model.number="bs.p.stYOff" title="中心站相对 boresight 的 Y 位移（SATSOFT Y Offset）" /><span class="u">°</span></div>
+            <div class="srow"><label>生成</label>
+              <label class="chk-in" title="在覆盖区多边形的顶点上生成边界站点（SATSOFT Add Border Points）：与栅密度无关——边界形状分辨率由多边形顶点密度决定"><input type="checkbox" :checked="bs.p.stBorder !== false" @change="bs.p.stBorder = $event.target.checked" /><span>边界点</span></label>
+              <label class="chk-in" title="覆盖区外自动铺一圈抑制站（本引擎附加档）：SATSOFT 生成站点栅时站点全为 Contour，Sidelobe 站须手工指定"><input type="checkbox" :checked="bs.p.stSup === true" @change="bs.p.stSup = $event.target.checked" /><span>界外抑制</span></label>
+            </div>
             <div class="srow"><label>站点大小</label><input class="ci" type="number" step="1" min="2" max="30" v-model.number="bs.p.stSizePct" title="站点符号大小（%阵面波束宽，SATSOFT Station Size）：仅显示符号，非物理量" /><span class="u">%</span></div>
             <div class="bs-strow">
               <span class="opb sm" :class="{ on: bs.stEditOn.value }" title="平面图上拖矩形框选站点（Ctrl+拖=累加选择；点击站点=选中该站、Ctrl+点=增减选；点空处=清选；再点本钮退出）" @click="bs.toggleStEdit()"><Icon name="crosshair" :size="11" /> 框选</span>
@@ -6740,9 +6747,9 @@ onBeforeUnmount(() => {
           </div>
 
           <!-- 站点栅（SATSOFT Station Grid §9.1 / Edit Stations §9.12）：黄方块=优化目标站（靶子），中心=精确控制点；
-               与生成共用同一 buildStations（密度/外扩一致，所见即所用）。框选仅平面图（Ctrl=累加）；界外自动抑制带不画。 -->
+               与生成共用同一 buildStations（栅参数/外扩一致，所见即所用）。框选仅平面图（Ctrl=累加）；界外抑制带（开了也）不画。 -->
           <div class="sec">
-            <div class="sect acc" :class="{ open: isSecOpen('bs-st') }" @click="toggleSec('bs-st')"><Icon :name="isSecOpen('bs-st') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>站点栅</span><span v-if="bs.stInfo.value" class="bs-cnt">{{ bs.stInfo.value.counts.c0 + bs.stInfo.value.counts.c1 }} 站</span></div>
+            <div class="sect acc" :class="{ open: isSecOpen('bs-st') }" @click="toggleSec('bs-st')"><Icon :name="isSecOpen('bs-st') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>站点栅</span><span v-if="bs.stInfo.value" class="bs-cnt">{{ bs.stInfo.value.over ? '约 ' + bs.stInfo.value.over + ' 站 · 超上限' : (bs.stInfo.value.counts.c0 + bs.stInfo.value.counts.c1) + ' 站' }}</span></div>
             <template v-if="isSecOpen('bs-st')">
             <div class="srow"><label>显示</label>
               <label class="chk-in" title="在地图上显示站点栅（优化目标点阵）"><input type="checkbox" :checked="bs.p.stShow !== false" @change="bs.p.stShow = $event.target.checked" /><span>站点</span></label>
@@ -6750,7 +6757,14 @@ onBeforeUnmount(() => {
               <label class="chk-in" title="在偏置站上标注 ±dB 数值（默认关：偏置站只靠颜色区分，绿=抬高、紫=压低）"><input type="checkbox" :checked="bs.p.stGNum === true" @change="bs.p.stGNum = $event.target.checked" /><span>数值</span></label>
             </div>
             <div class="srow"><label>数字大小</label><input class="ci" type="number" step="1" min="5" max="24" v-model.number="bs.p.stNumSize" title="站点数字字号（px）：编号与偏置数值共用" /><span class="u">px</span></div>
-            <div class="srow"><label>栅密度</label><input class="ci" type="number" step="0.5" min="1" max="6" v-model.number="bs.p.stDens" title="站点密度（站/成分波束宽，SATSOFT Grid Density）：区内/边界站步距=θ3/密度。手册 §9.1：1.7~2 足够；教程用 3（更细的形状分辨率、更慢）" /><span class="u">/θ3</span></div>
+            <div class="srow"><label>栅密度</label><input class="ci" type="number" step="0.5" min="0" v-model.number="bs.p.stDens" title="站点密度（站/成分波束宽，SATSOFT Grid Density）：区内步距=θ3/密度，密度翻倍站点数变四倍；0＝每个 Polygon 在质心生成单站。手册 §9.1：1.7~2 足够，教程用 3~4；不设上限（§1.1.2 站点数 unlimited），只有 50 万站的兜底会拦下并报出数目" /><span class="u">/θ3</span></div>
+            <div class="srow"><label>栅类型</label><select v-model="bs.p.stType" title="站点栅晶格类型（SATSOFT Type）"><option value="tri">三角栅</option><option value="rect">矩形栅</option></select></div>
+            <div class="srow"><label>旋转</label><input class="ci" type="number" step="5" v-model.number="bs.p.stRot" title="站点栅朝向（SATSOFT Rotation）" /><span class="u">°</span></div>
+            <div class="srow"><label>中心偏移</label><input class="ci" type="number" step="0.1" v-model.number="bs.p.stXOff" title="中心站相对 boresight（＝覆盖区质心，SATSOFT Auto Position Boresight）的 X 位移" /><span class="u">,</span><input class="ci" type="number" step="0.1" v-model.number="bs.p.stYOff" title="中心站相对 boresight 的 Y 位移（SATSOFT Y Offset）" /><span class="u">°</span></div>
+            <div class="srow"><label>生成</label>
+              <label class="chk-in" title="在覆盖区多边形的顶点上生成边界站点（SATSOFT Add Border Points）：与栅密度无关——边界形状分辨率由多边形顶点密度决定"><input type="checkbox" :checked="bs.p.stBorder !== false" @change="bs.p.stBorder = $event.target.checked" /><span>边界点</span></label>
+              <label class="chk-in" title="覆盖区外自动铺一圈抑制站（本引擎附加档）：SATSOFT 生成站点栅时站点全为 Contour，Sidelobe 站须手工指定"><input type="checkbox" :checked="bs.p.stSup === true" @change="bs.p.stSup = $event.target.checked" /><span>界外抑制</span></label>
+            </div>
             <div class="srow"><label>站点大小</label><input class="ci" type="number" step="1" min="2" max="30" v-model.number="bs.p.stSizePct" title="站点符号大小（%成分波束宽，SATSOFT Station Size）：仅显示符号，非物理量" /><span class="u">%</span></div>
             <div class="bs-strow">
               <span class="opb sm" :class="{ on: bs.stEditOn.value }" title="平面图上拖矩形框选站点（Ctrl+拖=累加选择；点击站点=选中该站、Ctrl+点=增减选；点空处=清选；再点本钮退出）" @click="bs.toggleStEdit()"><Icon name="crosshair" :size="11" /> 框选</span>

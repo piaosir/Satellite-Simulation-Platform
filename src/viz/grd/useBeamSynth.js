@@ -47,7 +47,12 @@ const DEFAULT_P = {
   stNum: false,                                  // 站点编号（SATSOFT Plot Station Number）
   stGNum: false,                                 // 偏置数值标注（默认关：偏置站只着色 绿=正/紫=负）
   stNumSize: 9,                                  // 站点数字字号（px，编号与偏置数值共用）
-  stDens: 2,                                     // 栅密度（站/成分波束宽，SATSOFT Grid Density）：缺省=引擎旧常量 2，旧档结果不变
+  stDens: 2,                                     // 栅密度（站/成分波束宽，SATSOFT Grid Density）：区内步距=θ3/密度；0=每 Polygon 质心单站；无上限
+  stType: 'tri',                                 // 栅类型（SATSOFT Type）：'tri'=三角（缺省）| 'rect'=矩形
+  stRot: 0,                                      // 栅朝向（°，SATSOFT Rotation）
+  stXOff: 0, stYOff: 0,                          // 中心站相对 boresight（=覆盖区质心）的位移（°，SATSOFT X/Y Offset）
+  stBorder: true,                                // 边界站点（SATSOFT Add Border Points）：站点落在 Polygon 顶点上，与密度无关
+  stSup: false,                                  // 界外抑制站（本引擎附加档）：SATSOFT 生成时全为 Contour，Sidelobe 须手工指定 → 缺省关
   stSizePct: 8,                                  // 站点符号大小（%成分波束宽，SATSOFT Station Size——仅显示符号，非物理量）
   stOv: [],                                      // 自动站点修正 [{az,el,t?:'sup'|'ex',g?:dB}]：按生成坐标配对；栅变→孤儿（生成时如实回报）
   stAdd: [],                                     // 手工加站 [{id,az,el,t?:'sup',g?:dB}]（SATSOFT Add Stations；位置任意）
@@ -65,6 +70,19 @@ const DEFAULT_P = {
   pamCover: 'spot', pamShapedMode: 'value'
 }
 const freshP = () => ({ ...DEFAULT_P, polyIds: [], stOv: [], stAdd: [] })
+// 站点栅生成参数（SATSOFT §9.1 Grid Generation）：配置 → 引擎入参。
+// 空串/缺键 → NaN → 引擎回落缺省密度（老档没有这批键时行为不变）；显式 0 才是「每 Polygon 质心单站」。
+const _num = (v) => (typeof v === 'string' && v.trim() === '' ? NaN : Number(v))
+const stGridOf = (pp) => ({
+  dens: _num(pp.stDens),
+  type: pp.stType === 'rect' ? 'rect' : 'tri',
+  rotDeg: _num(pp.stRot) || 0,
+  xOff: _num(pp.stXOff) || 0,
+  yOff: _num(pp.stYOff) || 0,
+  border: pp.stBorder !== false,
+  sup: pp.stSup === true
+})
+const stGridKey = (pp) => JSON.stringify(stGridOf(pp))
 // 高斯档「反射面参数」键：下沉到每个波束设置（每设置 = 一套独立反射面 → 各自波束宽/效率/方向性）。
 // 组级 p 只留显示/频率计划（skColor/fc*/polyId/snapTangent）与赋形档参数（taper/polyIds/站点栅 st*/shapedMode）。
 const RP_KEYS = ['fGHz', 'antD', 'eff', 'apDriver', 'bw3', 'fdDriver', 'feedSpacingWl', 'feedModel', 'feedDiaAuto', 'feedDiaWl', 'foc', 'offsetClr', 'pol', 'simSame', 'fSim', 'autoSpacing', 'spacing']
@@ -581,7 +599,7 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
     if (!(th > 0)) return null
     const key = [
       mode.value, pos.lon.toFixed(3), (pos.lat || 0).toFixed(3), Math.round(pos.altKm), th.toFixed(4),
-      Number(p.expandDeg) || 0, Number(p.stDens) || 0, Number(p.stSizePct) || 8,
+      Number(p.expandDeg) || 0, stGridKey(p), Number(p.stSizePct) || 8,
       JSON.stringify(p.stOv || []), JSON.stringify(p.stAdd || []),
       pgs.map((pg) => pg.id + ':' + JSON.stringify(pg.pts)).join('|')
     ].join('§')
@@ -589,7 +607,7 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
     const r = shapedStations({
       satLon: pos.lon, satLat: pos.lat || 0, altKm: pos.altKm,
       polysPts: pgs.map((pg) => pg.pts.map((q) => [q[0], q[1]])),
-      theta3: th, expandDeg: Number(p.expandDeg) > 0 ? Number(p.expandDeg) : 0, stDens: Number(p.stDens) || 0
+      theta3: th, expandDeg: Number(p.expandDeg) > 0 ? Number(p.expandDeg) : 0, stGrid: stGridOf(p)
     })
     let data = null
     if (r) {
@@ -616,7 +634,7 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
         const cll = azElGround(pos.lon, pos.lat || 0, pos.altKm, a.az, a.el)
         squares.push({ id: 'u:' + a.id, az: a.az, el: a.el, type: a.t === 'sup' ? 'sup' : 'cov', g: Number.isFinite(a.g) ? a.g : 0, ground, lon: cll ? cll.lon : null, lat: cll ? cll.lat : null, add: true })
       }
-      data = { squares, counts: r.counts }
+      data = { squares, counts: r.counts, over: r.over || 0 }
     }
     _stCache = { key, data }
     return data
@@ -983,7 +1001,7 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
         polysPts,
         mode: 'physical', value: null,
         effPct: shapedApertureEff(g.p.taper).effPct, theta3: t3, apDm: Number(g.p.antD), fSimGHz: sf, pol: g.p.pol || '', expandDeg: expDeg,
-        stDens: Number(g.p.stDens) || 0,
+        stGrid: stGridOf(g.p),
         stEdits: { ov: Array.isArray(g.p.stOv) ? g.p.stOv : [], add: Array.isArray(g.p.stAdd) ? g.p.stAdd : [] }
       })
       key = await grd.importSynthGrd(node.folder, name, r.text, { ctype: 'abs', levels: [+r.value.toFixed(1)] })
@@ -997,7 +1015,7 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
           if (gp2) pkNote = ` · 峰值落点 ${gp2.lon.toFixed(2)}°E, ${gp2.lat.toFixed(2)}°N`
         }
         const expNote = expDeg > 0 ? ` · 指向误差外扩 ${expDeg}°` : ''
-        const stNote = r.stStats ? ` · 站点 ${r.stStats.c0 + r.stStats.c1}（区内 ${r.stStats.c0}·边界 ${r.stStats.c1}${r.stStats.ovApplied ? '·修正 ' + r.stStats.ovApplied : ''}${r.stStats.added ? '·手工 ' + r.stStats.added : ''}）` : ''
+        const stNote = r.stStats ? ` · 站点 ${r.stStats.c0 + r.stStats.c1}（区内 ${r.stStats.c0}·边界 ${r.stStats.c1}${r.stStats.c2 ? '·抑制 ' + r.stStats.c2 : ''}${r.stStats.ovApplied ? '·修正 ' + r.stStats.ovApplied : ''}${r.stStats.added ? '·手工 ' + r.stStats.added : ''}）` : ''
         status.value = `已生成赋形天线「${name}」：${head}${expNote}${stNote} · ${r.nBeams} 支成分波束激励优化 · 物理峰值 ${r.physPeakDbi.toFixed(1)} dBi · 边缘 ${r.value.toFixed(1)} · 平顶纹波 ±${r.rippleDb.toFixed(1)} dB · Ω=${r.omegaDeg2.toFixed(2)} deg²${pkNote}${r.warn ? ' —— ' + r.warn : ''}`
       }
     } else if (g.mode === 'pam') {
@@ -1015,7 +1033,7 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
           satName: node.satName, satLon: pos.lon, satLat: pos.lat || 0, altKm: pos.altKm,
           polysPts: pgs.map((pg) => pg.pts.map((q) => [q[0], q[1]])),
           pam: pamCfg, mode: 'physical', value: null, expandDeg: expDeg,
-          stDens: Number(gp.stDens) || 0,
+          stGrid: stGridOf(gp),
           stEdits: { ov: Array.isArray(gp.stOv) ? gp.stOv : [], add: Array.isArray(gp.stAdd) ? gp.stAdd : [] }
         })
         key = await grd.importSynthGrd(node.folder, name, r.text, { ctype: 'abs', levels: [+r.value.toFixed(1)] })
@@ -1024,7 +1042,7 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
           pamExcit.value = { groupId: g.id, name, satName: node.satName, Nx: pamCfg.Nx, Ny: pamCfg.Ny, peakDbi: r.peakDbi, physPeakDbi: r.physPeakDbi, paDb: r.paDb, scanDeg: r.scanDeg, value: r.value, mode: 'physical', hotReport: [], rows: r.excit }
           const head = pgs.length > 1 ? `${pgs.length} 个 Polygon 并集` : (pgs[0].name || 'Polygon')
           const expNote = expDeg > 0 ? ` · 指向误差外扩 ${expDeg}°` : ''
-          const stNote = r.stStats ? ` · 站点 ${r.stStats.c0 + r.stStats.c1}（区内 ${r.stStats.c0}·边界 ${r.stStats.c1}${r.stStats.ovApplied ? '·修正 ' + r.stStats.ovApplied : ''}${r.stStats.added ? '·手工 ' + r.stStats.added : ''}）` : ''
+          const stNote = r.stStats ? ` · 站点 ${r.stStats.c0 + r.stStats.c1}（区内 ${r.stStats.c0}·边界 ${r.stStats.c1}${r.stStats.c2 ? '·抑制 ' + r.stStats.c2 : ''}${r.stStats.ovApplied ? '·修正 ' + r.stStats.ovApplied : ''}${r.stStats.added ? '·手工 ' + r.stStats.added : ''}）` : ''
           status.value = `已生成相控阵赋形天线「${name}」：${head}${expNote}${stNote} · 阵 ${pamCfg.Nx}×${pamCfg.Ny}（${pamCfg.dxWl}×${pamCfg.dyWl}λ）· ${r.nBeams} 个 Butler 端口激励优化 · 物理峰值 ${r.physPeakDbi.toFixed(1)} dBi · 边缘 ${r.value.toFixed(1)} · 电扫 ${r.scanDeg.toFixed(1)}° · 纹波 ±${r.rippleDb.toFixed(1)} dB · 星上激励指令 ${r.excit.length} 条（见下表，可导出上注）${r.warn ? ' —— ' + r.warn : ''}`
         }
       } else {

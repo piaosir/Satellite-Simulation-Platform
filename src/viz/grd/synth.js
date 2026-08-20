@@ -773,7 +773,12 @@ export function buildPamGrd({ satName = '', satLon, satLat = 0, altKm, pam, beam
 const BEAMLET_SP = 1.0                             // 波束栅间距 = 3dB 波束宽（SATSOFT 手册 §8/§9.1：component beam spacing = 3dB beamwidth）
 const BEAM_MARGIN = 1.0                            // 波束栅外扩量（×θ3）：手册建议「覆盖区外再铺一圈 beamlet」给边缘滚降
 const NMAX_B = 360                                 // 波束栅数量上限（复 Cholesky 规模）；超限增距降档
-const ST_DENS = 2.0                                // 站点密度：区内/边界步距 = θ3/ST_DENS（手册 §9.1：1.7~2 /波束宽足够）
+const ST_DENS = 2.0                                // 站点密度缺省（＝SATSOFT 对话框缺省）：区内步距 = θ3/密度（手册 §9.1：1.7~2 足够）
+// 站点数【不设上限】——手册 §1.1.2：An unlimited number of beamlets and synthesis stations may be defined。
+// 密度加大就该一路长下去（本引擎实测线性：约 16 µs/站、1 KB/站；6 m 口径打中国、密度 96 → 177 万站 28 s / 1.8 GB 能算完）。
+// ST_MAX 只是【防渲染进程被打死】的兜底：超了当场抛错并报出数目，绝不静默抽稀——静默抽稀会让「密度调了没反应」
+// 看起来像优化收敛，实际是栅压根没加密。合法用量离它很远（6 m 口径打中国、密度 32 才 20 万站）。
+const ST_MAX = 500000
 const SUP_IN = 1.15                                // 界外抑制带起点（×θ3）
 const SUP_DB = -25                                 // 界外抑制目标（相对峰值 dB）
 const KF = 2 * Math.LN2                            // 场幅高斯指数：exp[−KF(r/θ3)²] ⇔ 功率 −GCOEF(r/θ3)²
@@ -802,8 +807,52 @@ function hashGrid(pts, cell) {
   }
 }
 
-// —— 采样超限时等步抽稀（保持空间均匀） ——
-const thin = (arr, cap) => { if (arr.length <= cap) return arr; const st = Math.ceil(arr.length / cap); return arr.filter((_, i) => i % st === 0) }
+// 站点数兜底（见 ST_MAX）：超限当场抛错并把数目带出去（err.stCount 供预览侧读数），不静默抽稀
+function stGuard(n, cap, what) {
+  if (!(n > cap)) return
+  const e = new Error(`${what} ${Math.round(n)} 超出可算范围（上限 ${cap}）：请降低栅密度或缩小覆盖区`)
+  e.stCount = Math.round(n)
+  throw e
+}
+
+// —— 站点栅生成参数（SATSOFT §9.1 Grid Generation 区，逐项对齐）——
+//   dens   Grid Density：站/成分波束宽。区内步距 = θ3/dens；【0 = 每个 Polygon 在质心生成单站】（手册明文，
+//          用于一个 Polygon 一支衍射极限波束）。手册不设上限（§1.1.2 unlimited），本引擎同样不设——只有 ST_MAX 兜底抛错。
+//   type   Type：'tri'=三角栅（SATSOFT 缺省）| 'rect'=矩形栅
+//   rotDeg Rotation：栅朝向（deg）
+//   xOff/yOff  X/Y Offset：中心站相对 boresight（＝覆盖区质心，Auto Position Boresight）的位移（deg）
+//   border Add Border Points：边界站点开关（缺省开，同 SATSOFT）
+//   sup    界外抑制站：本引擎附加档（SATSOFT 生成时全为 Contour，Sidelobe 须手工指定 §10.2）→ 缺省关
+function _stGridOf(o) {
+  const g = o && typeof o === 'object' ? o : {}
+  const d = Number(g.dens), r = Number(g.rotDeg), xo = Number(g.xOff), yo = Number(g.yOff)
+  return {
+    dens: Number.isFinite(d) && d >= 0 ? d : ST_DENS,
+    type: g.type === 'rect' ? 'rect' : 'tri',
+    rot: Number.isFinite(r) ? r : 0,
+    xOff: Number.isFinite(xo) ? xo : 0,
+    yOff: Number.isFinite(yo) ? yo : 0,
+    border: g.border !== false,
+    sup: g.sup === true
+  }
+}
+
+// 多边形面积质心（密度 0 档的单站位置）；退化（面积≈0）→ 顶点均值
+function polyCentroid(V) {
+  if (!V || !V.length) return null
+  let a = 0, cx = 0, cy = 0
+  for (let i = 0; i < V.length; i++) {
+    const p = V[i], q = V[(i + 1) % V.length]
+    const f = p[0] * q[1] - q[0] * p[1]
+    a += f; cx += (p[0] + q[0]) * f; cy += (p[1] + q[1]) * f
+  }
+  if (Math.abs(a) < 1e-12) {
+    let sx = 0, sy = 0
+    for (const p of V) { sx += p[0]; sy += p[1] }
+    return [sx / V.length, sy / V.length]
+  }
+  return [cx / (3 * a), cy / (3 * a)]
+}
 
 // —— Cholesky：分解与回代分离（同一 A 的 LLᵀ 可解多个右端 → 复激励 Re/Im 两路复用一次分解）——
 // cholFactor：A 就地改写为下三角 L（非正定返回 false，上层加大 λ 重铺重试）。
@@ -861,10 +910,11 @@ function layoutBeamlets(geo, polys, th, anchor) {
 // TDB=首个包含它的 contour 多边形 value − maxTarget（Use Polygon Labels：内圈标签更高→内强外弱锥度）。
 // iso 多边形（value<base 的隔离区）内的站点 → kind2 抑制（把该区压低，做隔离/凹陷），覆盖保证里不计。
 // hots=[{az,el,boost,w}]（峰点引导）：在 contour/边界站点目标上叠加 dB 域高斯坡 boost·exp[−4ln2(r/w)²]
-//（r=w/2 处衰减一半 → w=坡的半高全宽）——连续目标场，抑制站点(kind2)不叠加。——
-function buildStations(geo, metas, maxTarget, th, spacing, omegaDeg2, hots, stDens = 0, edits = null, skipSup = false) {
+//（r=w/2 处衰减一半 → w=坡的半高全宽）——连续目标场，抑制站点(kind2)不叠加。
+// stGrid=栅生成参数（见 _stGridOf）：密度/类型/朝向/中心站偏移/边界点/界外抑制，逐项对齐 SATSOFT §9.1。——
+function buildStations(geo, metas, maxTarget, th, spacing, omegaDeg2, hots, stGrid = null, edits = null, skipSup = false) {
   const X = [], Y = [], KIND = [], TDB = [], HB = []   // HB=该站点的峰点坡值（dB，自适应抬坡按此形状分摊）
-  const dens = stDens > 0.2 && stDens <= 8 ? stDens : ST_DENS   // 栅密度（站/波束宽）：UI 可调，缺省=旧常量（旧档结果不变）
+  const gd = _stGridOf(stGrid)                        // 栅生成参数（密度/类型/朝向/偏移/边界点/界外抑制）
   const ovMap = edits && edits.ov ? edits.ov : null
   let ovHit = 0
   const hasT = metas.some((m) => Number.isFinite(m.value))
@@ -904,46 +954,70 @@ function buildStations(geo, metas, maxTarget, th, spacing, omegaDeg2, hots, stDe
     X.push(x); Y.push(y); KIND.push(2); TDB.push(0); HB.push(0)
   }
   const [x0, y0, x1, y1] = geo.bbox
-  // 区内站点：θ3/dens 六角格（大区按面积放粗 + 3500 封顶），离边 ≥0.3θ3（边界带交给边界站点）
-  const cCov = Math.max(th / dens, Math.sqrt(Math.max(omegaDeg2, 1e-6) / (0.866 * 3500)))
-  const covPts = []
-  {
-    const rowH = cCov * Math.sqrt(3) / 2
-    let r = 0
-    for (let y = y0; y <= y1 + 1e-9; y += rowH, r++) {
-      const off = r % 2 ? cCov / 2 : 0
-      for (let x = x0 + off; x <= x1 + 1e-9; x += cCov) if (geo.signedDist(x, y) >= 0.3 * th) covPts.push([x, y])
+  // 区内站点。密度 0＝每个 Polygon 质心单站（§9.1 明文）；否则铺【以覆盖区质心(＝boresight)+X/Y 偏移为中心站、
+  // 按 Rotation 定向】的三角/矩形栅，步距 θ3/密度（教程 §15 读数：密度 2 → 区内间距 = 半个波束宽）。
+  // 区内不再内缩——SATSOFT 的区内栅一直排到边界（点在区内即取，图 15-16/15-17 可见）。
+  if (gd.dens === 0) {
+    for (const m of metas) { const c = polyCentroid(m.V); if (c) push(c[0], c[1], 0) }
+  } else {
+    const kCell = gd.type === 'rect' ? 1 : 0.866      // 单位格面积系数（三角栅每格 0.866·c²）
+    const cCov = th / gd.dens                         // 步距只由密度定——【没有】按面积放粗的地板（旧版有，非 SATSOFT 口径）
+    stGuard(Math.max(omegaDeg2, 0) / (kCell * cCov * cCov), ST_MAX, '区内站点数')   // 先按面积估，别等铺完才发现
+    const rowH = gd.type === 'rect' ? cCov : cCov * Math.sqrt(3) / 2
+    const rad = gd.rot * D2R, cs = Math.cos(rad), sn = Math.sin(rad)
+    const cen = geo.cen || [(x0 + x1) / 2, (y0 + y1) / 2]        // 并集面积质心（_shapedPrep 回填）
+    const ax = cen[0] + gd.xOff, ay = cen[1] + gd.yOff           // 中心站
+    // bbox 四角逆旋到栅坐标 → 索引范围（各留一圈冗余，兜住奇数行半格偏移与旋转）
+    let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity
+    for (const c of [[x0, y0], [x1, y0], [x0, y1], [x1, y1]]) {
+      const dx = c[0] - ax, dy = c[1] - ay
+      const u = dx * cs + dy * sn, v = -dx * sn + dy * cs
+      if (u < u0) u0 = u; if (u > u1) u1 = u
+      if (v < v0) v0 = v; if (v > v1) v1 = v
     }
-  }
-  for (const q of thin(covPts, 3500)) push(q[0], q[1], 0)
-  // 边界站点：沿并集边界 θ3/dens 步进；落在其它 Polygon 内部的边段不是并集边界，跳过
-  let per = 0
-  for (const e of geo.edges) per += Math.hypot(e[2] - e[0], e[3] - e[1])
-  const stepB = Math.max(th / dens, per / 2000)
-  for (const e of geo.edges) {
-    const ex = e[2] - e[0], ey = e[3] - e[1], len = Math.hypot(ex, ey)
-    for (let t = 0; t < len; t += stepB) {
-      const px = e[0] + ex * t / len, py = e[1] + ey * t / len
-      if (!geo.insideOther(e[4], px, py)) push(px, py, 1)
-    }
-  }
-  // 界外抑制站点：SUP_IN·θ3 起到 2.5θ3+s 止（θ3/2 六角格，3500 封顶）；再远无 beamlet 可及，天然为地板
-  // skipSup=预览：抑制带不上图也不参与配对（用户拍板只画黄方块），跳过生成省时
-  if (!skipSup) {
-    const far = 2.5 * th + spacing
-    const supPts = []
-    {
-      const c = th / 2, rowH = c * Math.sqrt(3) / 2
-      let r = 0
-      for (let y = y0 - far; y <= y1 + far + 1e-9; y += rowH, r++) {
-        const off = r % 2 ? c / 2 : 0
-        for (let x = x0 - far + off; x <= x1 + far + 1e-9; x += c) {
-          const d = geo.signedDist(x, y)
-          if (d <= -SUP_IN * th && d >= -far) supPts.push([x, y])
-        }
+    const j0 = Math.floor(v0 / rowH) - 1, jE = Math.ceil(v1 / rowH) + 1
+    const i0 = Math.floor(u0 / cCov) - 1, iE = Math.ceil(u1 / cCov) + 1
+    // 细长覆盖区（bbox 远大于面积）时按面积估会偏小，铺栅的格点数才是真工作量 → 单独兜一道
+    stGuard((jE - j0 + 1) * (iE - i0 + 1), 4 * ST_MAX, '铺栅格点数')
+    for (let j = j0; j <= jE; j++) {
+      const off = gd.type === 'tri' && (j & 1) ? cCov / 2 : 0, v = j * rowH
+      for (let i = i0; i <= iE + 1; i++) {
+        const u = i * cCov + off
+        const px = ax + u * cs - v * sn, py = ay + u * sn + v * cs
+        if (geo.inside(px, py)) push(px, py, 0)
       }
     }
-    for (const q of thin(supPts, 3500)) push(q[0], q[1], 2)
+  }
+  // 边界站点（SATSOFT Add Border Points）：站点落在【多边形自身的顶点】上，与栅密度无关——
+  // 教程 §15 读数反证：密度 2→281 站、密度 4→501 站，差 220＝3×区内 ⇒ 区内 73→293，边界 208 恒定。
+  // 故覆盖区画得越细，边界形状分辨率越高（这是 SATSOFT 的口径：形状由多边形顶点定，不由密度定）。
+  // 落在其它 Polygon 内部的顶点不是并集边界，跳过；多边形间重合顶点按位置键去重。
+  if (gd.border) {
+    const seen = new Set()
+    for (const e of geo.edges) {
+      const px = e[0], py = e[1]
+      if (geo.insideOther(e[4], px, py)) continue
+      const k = stationKey(px, py)
+      if (seen.has(k)) continue
+      seen.add(k)
+      push(px, py, 1)
+    }
+  }
+  // 界外抑制站点：SUP_IN·θ3 起到 2.5θ3+s 止（θ3/2 六角格，密度固定与栅密度无关）；再远无 beamlet 可及，天然为地板。
+  // 【本引擎附加档，缺省关】——SATSOFT 生成栅时把站点全设为 Contour，Sidelobe 站要用户自己指定（§10.2）。
+  // skipSup=预览：抑制带不上图也不参与配对（用户拍板只画黄方块），跳过生成省时
+  if (gd.sup && !skipSup) {
+    const far = 2.5 * th + spacing
+    const c = th / 2, rowH = c * Math.sqrt(3) / 2
+    stGuard(((x1 - x0 + 2 * far) / c + 2) * ((y1 - y0 + 2 * far) / rowH + 2), 4 * ST_MAX, '抑制带格点数')
+    let r = 0
+    for (let y = y0 - far; y <= y1 + far + 1e-9; y += rowH, r++) {
+      const off = r % 2 ? c / 2 : 0
+      for (let x = x0 - far + off; x <= x1 + far + 1e-9; x += c) {
+        const d = geo.signedDist(x, y)
+        if (d <= -SUP_IN * th && d >= -far) push(x, y, 2)
+      }
+    }
   }
   // 峰值点强制站点：在每个覆盖区内峰值点位置加一个 contour 站点（走 push → clsOf 区域目标 + hotBump 满 boost）。
   // 保证【宽度小于站点栅间距的峰值点】也有靶子——否则窄峰值点落在站点之间被漏掉、生成后无效果。
@@ -958,9 +1032,10 @@ function buildStations(geo, metas, maxTarget, th, spacing, omegaDeg2, hots, stDe
     const g = Number.isFinite(a.g) && a.g !== 0 ? a.g : 0
     X.push(a.az); Y.push(a.el); KIND.push(0); TDB.push(c.tdb + b + g); HB.push(b)
   }
+  stGuard(X.length, ST_MAX, '站点数')                 // 各路加总后再兜一道（抑制带/手工站也算数）
   const counts = { c0: 0, c1: 0, c2: 0 }
   for (const k of KIND) if (k === 0) counts.c0++; else if (k === 1) counts.c1++; else counts.c2++
-  return { X, Y, KIND, TDB, HB, n: X.length, counts, ovHit }
+  return { X, Y, KIND, TDB, HB, n: X.length, counts, ovHit, dens: gd.dens }
 }
 
 // pol 仅记入 SYNTHMETA（本引擎只算共极化功率，极化不改功率方向图——与 SATSOFT 同：极化只影响
@@ -999,13 +1074,18 @@ function _shapedPrep({ satLon, satLat = 0, altKm, polysPts, polyTargets = null, 
     hots.push({ az: ae.az, el: ae.el, boost, w: Number(h.widthDeg) > 0 ? Number(h.widthDeg) : 1 })
   }
   const [bx0, by0, bx1, by1] = geo.bbox
-  // 并集立体角（网格计数，重叠不重复计）：报表 + 站点密度参考
+  // 并集立体角（网格计数，重叠不重复计）：报表 + 站点密度参考。
+  // 同一趟顺带求并集【面积质心】＝ SATSOFT Auto Position Boresight 的落点，站点栅的中心站锚在这里。
   let omegaDeg2 = 0
   {
     const G = 140, gx = (bx1 - bx0) / G, gy = (by1 - by0) / G
-    let cnt = 0
-    for (let r = 0; r < G; r++) for (let c = 0; c < G; c++) if (geo.inside(bx0 + (c + 0.5) * gx, by0 + (r + 0.5) * gy)) cnt++
+    let cnt = 0, sx = 0, sy = 0
+    for (let r = 0; r < G; r++) for (let c = 0; c < G; c++) {
+      const px = bx0 + (c + 0.5) * gx, py = by0 + (r + 0.5) * gy
+      if (geo.inside(px, py)) { cnt++; sx += px; sy += py }
+    }
     omegaDeg2 = (cnt / (G * G)) * (bx1 - bx0) * (by1 - by0)
+    geo.cen = cnt ? [sx / cnt, sy / cnt] : [(bx0 + bx1) / 2, (by0 + by1) / 2]
   }
   return { metas, contourVals, maxTarget, polys, geo, hots, omegaDeg2 }
 }
@@ -1026,18 +1106,21 @@ function _mkStEdits(stEdits) {
 
 // 站点栅预览（SATSOFT Station Grid 黄方块）：返回自动站点（区内 kind0 + 边界 kind1，不含界外抑制带）。
 // 与生成共用 _shapedPrep + buildStations —— 密度/外扩/峰值点强制站全部一致，所见即所用。
-export function shapedStations({ satLon, satLat = 0, altKm, polysPts, theta3, expandDeg = 0, stDens = 0, hotspots = null }) {
+export function shapedStations({ satLon, satLat = 0, altKm, polysPts, theta3, expandDeg = 0, stGrid = null, hotspots = null }) {
   if (!(theta3 > 0)) return null
   let prep
   try { prep = _shapedPrep({ satLon, satLat, altKm, polysPts, polyTargets: null, hotspots, expandDeg }) } catch { return null }
   const { metas, maxTarget, geo, hots, omegaDeg2 } = prep
-  const smp = buildStations(geo, metas, maxTarget, theta3, theta3, omegaDeg2, hots, stDens, null, true)
+  let smp
+  // 站点数兜底抛错在预览侧不该炸掉整帧：吞掉、把数目回给面板读数（生成时同一道兜底会如实报错）
+  try { smp = buildStations(geo, metas, maxTarget, theta3, theta3, omegaDeg2, hots, stGrid, null, true) }
+  catch (e) { return { list: [], counts: { c0: 0, c1: 0, c2: 0 }, over: (e && e.stCount) || 0 } }
   const list = []
   for (let i = 0; i < smp.n; i++) list.push({ az: smp.X[i], el: smp.Y[i], kind: smp.KIND[i], key: stationKey(smp.X[i], smp.Y[i]) })
-  return { list, counts: smp.counts }
+  return { list, counts: smp.counts, over: 0 }
 }
 
-export function buildShapedGrd({ satName = '', satLon, satLat = 0, altKm, polysPts, polyTargets = null, hotspots = null, mode = 'value', value = null, effPct = 55, theta3, floorDb = -50, pol = '', apDm = 0, fSimGHz = 0, expandDeg = 0, stDens = 0, stEdits = null }) {
+export function buildShapedGrd({ satName = '', satLon, satLat = 0, altKm, polysPts, polyTargets = null, hotspots = null, mode = 'value', value = null, effPct = 55, theta3, floorDb = -50, pol = '', apDm = 0, fSimGHz = 0, expandDeg = 0, stGrid = null, stEdits = null }) {
   if (!(theta3 > 0)) throw new Error('滚降波束宽度无效：请检查频率 / 口径')
   if (mode !== 'physical' && !Number.isFinite(value)) throw new Error('覆盖值无效：请填写区域内的电平（dB）')
   const { metas, contourVals, maxTarget, polys, geo, hots, omegaDeg2 } = _shapedPrep({ satLon, satLat, altKm, polysPts, polyTargets, hotspots, expandDeg })
@@ -1065,7 +1148,7 @@ export function buildShapedGrd({ satName = '', satLon, satLat = 0, altKm, polysP
   if (NX * NY > 130000) { const k = Math.sqrt((NX * NY) / 130000); NX = Math.max(61, Math.round(NX / k)); NY = Math.max(61, Math.round(NY / k)) }
   const dx = (XE - XS) / (NX - 1), dy = (YE - YS) / (NY - 1)
   // ② 站点栅 → 稀疏装配（每站点只挂 −50dB 截断半径内的 beamlet）
-  const smp = buildStations(geo, metas, maxTarget, th, spacing, omegaDeg2, hots, stDens, edits)
+  const smp = buildStations(geo, metas, maxTarget, th, spacing, omegaDeg2, hots, stGrid, edits)
   const nbOf = [], gOf = [], kind = [], tdb = [], hb = []
   let unreach = 0, covCnt = 0
   for (let j = 0; j < smp.n; j++) {
@@ -1371,12 +1454,12 @@ const NMAX_PAM = 144                               // Butler 端口上限（激�
 const MAXPROD_PAM = 8e7                             // 法矩阵装配 O(M·N²)/轮 计算量守卫；超限抽稀站点保持空间均匀
 
 // 相控阵赋形波束群 → GRD 文本 + 星上激励指令。覆盖区＝polysPts 并集（无覆盖值；增益恒由阵面物理算出）。
-// 塑形＝站点栅（SATSOFT 原生：stDens 密度 / stEdits 类型·目标偏置修正 / expandDeg 指向误差外扩，与 buildShapedGrd 同款）。
+// 塑形＝站点栅（SATSOFT 原生：stGrid 栅生成参数 / stEdits 类型·目标偏置修正 / expandDeg 指向误差外扩，与 buildShapedGrd 同款）。
 // hotspots 峰值点参数保留兼容（前端已按用户拍板移除，不再传入）。
 // pam={Nx,Ny,dxWl,dyWl,R,tri,elem,eff,fGHz}。（polyTargets/mode/value 保留兼容，前端已恒走 physical。）
 // 返回 { text, value, peakDbi, physPeakDbi, paDb, covMin, omegaDeg2, nBeams(端口数), rippleDb, nx, ny, warn,
 //        peakAt, scanDeg(峰值电扫角), excit:[{port,n,m,u0,v0,az,el,lon,lat,ampDb,phaseDeg,powPct}] }。
-export function buildPamShapedGrd({ satName = '', satLon, satLat = 0, altKm, polysPts, polyTargets = null, hotspots = null, pam, mode = 'value', value = null, floorDb = -50, marginBw = 1.0, expandDeg = 0, stDens = 0, stEdits = null }) {
+export function buildPamShapedGrd({ satName = '', satLon, satLat = 0, altKm, polysPts, polyTargets = null, hotspots = null, pam, mode = 'value', value = null, floorDb = -50, marginBw = 1.0, expandDeg = 0, stGrid = null, stEdits = null }) {
   const sol = solvePam(pam)
   if (!sol.ok) throw new Error('相控阵参数无效：请检查阵元数 / 间距 / 频率')
   if (mode !== 'physical' && !Number.isFinite(value)) throw new Error('覆盖值无效：请填写区域内的电平（dB）')
@@ -1403,7 +1486,7 @@ export function buildPamShapedGrd({ satName = '', satLon, satLat = 0, altKm, pol
   const N = ports.length
   const allIdx = Array.from({ length: N }, (_, i) => i)
   // ② 站点栅（靶子）：复用 buildStations（与反射面赋形同款，含站点密度与站点修正；hots 由 _shapedPrep 换算）
-  const smp = buildStations(geo, metas, maxTarget, th, spacing, omegaDeg2, hots, stDens, edits)
+  const smp = buildStations(geo, metas, maxTarget, th, spacing, omegaDeg2, hots, stGrid, edits)
   // ③ 满装配：每站点见全部 Butler 端口（sinc 旁瓣/栅瓣不可截断）。contour/边界站点若无端口在 reach 内 → 亚分辨率剔除。
   const reachPam = 1.3 * spacing
   const nbOf = [], gOf = [], kind = [], tdb = [], hb = []
