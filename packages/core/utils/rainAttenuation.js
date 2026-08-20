@@ -465,17 +465,25 @@ function solveAvailabilityForAtten(p, targetDb, opts) {
 /**
  * 曲线扫描：固定其余参数，扫某一自变量 → [{x, y=雨衰(dB)}]，供交互式坐标系绘制。
  * @param {object} p     基准算例参数（同 calculateRainAttenuation）
- * @param {string} axis  'availability' | 'frequency' | 'rainRate'
- * @param {object} range { min, max, steps }
+ * @param {string} axis  'availability' | 'frequency' | 'rainRate' | 'elevation'
+ * @param {object} range { min, max, steps, spacing }
+ *   spacing 'log-unavail'（仅可用度轴）：按不可用度 u = 100 − 可用度 等比取点。
+ *   高可用度区间线性取点等于白扫——99.99 ~ 99.99999 里 120 个线性点有 119 个落在 99.999 之前，
+ *   最后一个「9」只剩一个点，曲线在末端全靠直线连；等比取点则每个「9」都摊到同样多的点。
  */
 function sweepRainAttenuation(p, axis, range) {
   range = range || {};
   const steps = Math.max(2, Math.min(400, Math.round(num(range.steps, 120))));
   const min = num(range.min), max = num(range.max);
   if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) return { axis, points: [] };
+  const u1 = 100 - min, u2 = 100 - max;
+  const logU = range.spacing === 'log-unavail' && axis === 'availability' && u1 > 0 && u2 > 0;
   const points = [];
   for (let i = 0; i < steps; i++) {
-    const x = min + (max - min) * i / (steps - 1);
+    const t = i / (steps - 1);
+    // 两端取原值，不让 100 − u 的浮点往返把区间端点挪掉（标记点正好落在端点时要对得上）
+    const x = (i === 0) ? min : (i === steps - 1) ? max
+      : logU ? (100 - u1 * Math.pow(u2 / u1, t)) : (min + (max - min) * t);
     const q = Object.assign({}, p);
     if (axis === 'availability') q.availability = x;
     else if (axis === 'frequency') q.freq = x;

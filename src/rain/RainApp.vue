@@ -230,6 +230,23 @@ const detail = computed(() => {
   const r = selectedResult.value, row = selectedCase.value
   if (!r || r.error || !row) return null
   const f = (v, d = 2, u = '') => (v == null || !Number.isFinite(+v)) ? '—' : ((+v).toFixed(d) + (u ? ' ' + u : ''))
+  // 可用度：小数位跟着不可用度的量级走。固定 3 位会把 99.99999 显示成 100.000 —— 多少个 9
+  // 正是这一栏唯一的信息量，不能被四舍五入吃掉
+  const fa = (v) => {
+    if (v == null || !Number.isFinite(+v)) return '—'
+    const a = +v, u = 100 - a
+    if (!(u > 0)) return '100 %'
+    const s = a.toFixed(Math.min(9, Math.max(3, Math.ceil(-Math.log10(u)) + 1)))
+    return s.replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '') + ' %'
+  }
+  // 停时：h / min / s 自适应（同 RainDiversity 的 yearly）。5 个 9 以上按小时读全是 0.00
+  const fh = (v) => {
+    if (v == null || !Number.isFinite(+v)) return '—'
+    const h = +v
+    if (h >= 1) return h.toFixed(2) + ' h'
+    const m = h * 60
+    return m >= 1 ? (m.toFixed(2) + ' min') : ((m * 60).toFixed(2) + ' s')
+  }
   const down = r.direction === 'down'
   const s = r.s8 || null                     // NGSO 统计口径（ITU-R P.618-14 §8）诊断块
   // 「输入参数」段回显的是**实际入算的值**：留空列取该列默认（与表内灰字占位同口径），
@@ -248,7 +265,7 @@ const detail = computed(() => {
       ['频率', f(r.freq, 3, 'GHz')],
       ['极化', POL_LABEL[r.polDisplay] || POL_LABEL[r.pol] || r.pol],
       ['R0.01% 降雨率', f(r.rainRate, 3, 'mm/h') + (r.rainRateAuto ? '（ITU-R P.837 自动）' : '（手动）')],
-      ['年可用度', f(r.availability, 3, '%')],
+      ['年可用度', fa(r.availability)],
       ['系统噪温（晴空）', down ? f(r.systemNoiseTemp, 0, 'K') : '—（上行不适用）'],
       ['馈线损耗', down ? f(r.feederLoss, 2, 'dB') : '—（上行不适用）'],
       ['链路方向', down ? '下行' : '上行']
@@ -277,9 +294,9 @@ const detail = computed(() => {
       ['降雨噪声致 G/T 衰减', down ? f(r.gtDegradation, 2, 'dB') : '—（下行专属）', true],
       ['下行链路劣化 DND', down ? f(r.dnd, 2, 'dB') : '—（下行专属）', true],
       ['雨致去极化 XPD', f(r.rainXPD, 2, 'dB'), false],
-      ['年不可用时长', f(r.downtimeYear, 2, 'h'), false],
-      ['最坏月可用度', f(r.worstMonthAvail, 3, '%'), false],
-      ['最坏月不可用时长', f(r.downtimeWorstMonth, 2, 'h'), false]
+      ['年不可用时长', fh(r.downtimeYear), false],
+      ['最坏月可用度', fa(r.worstMonthAvail), false],
+      ['最坏月不可用时长', fh(r.downtimeWorstMonth), false]
     ],
     propNote: down
       ? `DND = (雨衰+云衰 ${f(r.precipAtten, 2)} dB) + G/T衰减 ${f(r.gtDegradation, 2)} dB。降雨噪声按 雨+云、T_mr=275K、经馈线 ${f(r.feederLoss, 2)} dB 折算；气体不计入（晴空已含，不构成劣化），闪烁不计入（折射，不辐射噪声）。`

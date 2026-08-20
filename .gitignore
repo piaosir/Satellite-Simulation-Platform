@@ -13,6 +13,10 @@ release/
 .envharness/
 
 # 离屏验证台（雨衰计算页交互核对，window.api 走桩），本地开发用，不进仓库
+# .rainharness/plot/ 是另一台：只挂 RainPlot 的坐标系绘制（node .rainharness/plot/gen.js 重生成）。
+# drawTo / xTicksFor 由 gen.js 从 RainPlot.vue 原文抽出、Vue 的 ref/computed 走桩，不是抄一份；
+# 曲线点由真引擎 sweepRainAttenuation 预生成。用来肉眼核对刻度标签会不会撞/重复/顶出画布 ——
+# 「99.99 99.99 100.00 100.00」这种塌陷单测看不出来，得看。并排画着改前的线性刻度版对拍。
 .rainharness/
 
 # 离屏验证台（链路预算图表 / NTN 参数 / 取星面板核对），本地开发用，不进仓库

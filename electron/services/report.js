@@ -1885,8 +1885,10 @@ async function buildRainAttenuationExcel(payload) {
       { k: 'totalAtten', h: '合计 (dB)', w: 10, res: true, fmt: '0.00' },
       { k: 'gtDegradation', h: 'G/T衰减 (dB)', w: 12, res: true, dl: true, fmt: '0.00' },
       { k: 'rainXPD', h: '雨致XPD (dB)', w: 12, res: true, fmt: '0.00' },
-      { k: 'downtimeYear', h: '年停时 (h)', w: 10, res: true, fmt: '0.00' },
-      { k: 'downtimeWorstMonth', h: '最坏月停时 (h)', w: 14, res: true, fmt: '0.00' }
+      // 停时不进 round2、格式留尾随可选位：可用度上到 5 个 9 以后年停时是 0.0009 h 量级，
+      // 「0.00」等于把这一列抹平（同列小数位一致的模板口径在这里让位于「别显示成 0」）
+      { k: 'downtimeYear', h: '年停时 (h)', w: 10, res: true, raw: true, fmt: '0.00####' },
+      { k: 'downtimeWorstMonth', h: '最坏月停时 (h)', w: 14, res: true, raw: true, fmt: '0.00####' }
     ]
     const ncol = cols.length
     cols.forEach((c, i) => { ws.getColumn(i + 1).width = c.w })
@@ -1899,7 +1901,7 @@ async function buildRainAttenuationExcel(payload) {
       const r = results[ri] || {}
       const vals = cols.map((c) => {
         let v
-        if (c.res) { v = r.error ? '✕' : round2(r[c.k]); if (c.dl && !down) v = '—' }
+        if (c.res) { v = r.error ? '✕' : (c.raw ? r[c.k] : round2(r[c.k])); if (c.dl && !down) v = '—' }
         else if (c.k === '_elev') v = (r.elevation != null ? round2(r.elevation) : row.elevation)
         else if (c.k === '_rain') v = (r.rainRate != null ? round2(r.rainRate) : row.rainRate)
         else v = row[c.k]
