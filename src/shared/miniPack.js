@@ -199,7 +199,12 @@ export const sendToBoxes = (api, chs, pack, meta) => sendUnitsToBoxes(api, chs, 
  */
 export async function sendPack(api, pack) {
   const bytes = estimateBytes(pack)
-  if (!asArr(pack && pack.items).length) return { ok: false, bytes, error: '包里没有内容' }
+  // 这条路上有两种载荷：标准信封（makePack 造，带 items[]）与【整块载荷】（覆盖快照 kind='gxt-snapshot'，
+  // 本就没有 items[]，见 MiniSendDialog 的 raw 分支）。只按 items 判空会把整块载荷整条挡在门外——
+  // v1.3.10 覆盖快照从直发改走共用弹窗后即是如此：绑定投递照常，密钥这一路恒返回「包里没有内容」、
+  // 连 putSnapshot 都走不到，表现为「密钥不显示」。判空须分形态各判各的。
+  const isRaw = !!(pack && pack.kind && !Array.isArray(pack.items))
+  if (!isRaw && !asArr(pack && pack.items).length) return { ok: false, bytes, error: '包里没有内容' }
   if (bytes > SIZE_MAX) {
     return {
       ok: false,

@@ -1,10 +1,14 @@
 <script setup>
 // 「发送到小程序」弹窗（链路预算三窗的分享弹窗与文件区的频率计划页共用）。
 //
-// 两种投法并存，由上面那排「发给谁」选：
-//   · 已绑定账号 —— 免密钥直投。给常用的人（自己的手机、同事），一次绑定长期有效，
-//                    且小程序端会自动同步（改一次内容，手机上那一份跟着变）。
-//   · 生成密钥   —— 8 位一次性密钥。给客户 / 临时协作 / 没绑定过的人。
+// 两条去向并存，也可同时用：
+//   · 接收方（已绑定账号）—— 免密钥直投。给常用的人（自己的手机、同事），一次绑定长期有效，
+//                            且小程序端会自动同步（改一次内容，手机上那一份跟着变）。
+//   · 一次性密钥          —— 8 位密钥，【不指定接收方】、就地产出，谁拿到谁能导入。给客户 /
+//                            临时协作 / 没绑定过的人。
+//
+// ★ 密钥不是一个「接收方」，故不与绑定账号同列勾选 —— 它是本次操作的产出物，摆在收件人清单
+//   之外单独一行。只勾密钥时这一趟没有「发给谁」这回事，按钮的动词也跟着换（actLabel）。
 //
 // 本组件只管：出包内清单 → 投递 → 把结果摆出来。造包是调用方的事（items 由 lbMiniExport /
 // fpMiniExport 备好），本组件不认识任何一种载荷。
@@ -134,6 +138,10 @@ const info = computed(() => ({
 const tooBig = computed(() => totalBytes.value > SIZE_WARN)
 const nPicked = computed(() => picked.value.size)
 const canSend = computed(() => nSel.value > 0 && props.configured && (nPicked.value > 0 || wantKey.value))
+// 只出密钥的那一趟没有收件人，动词就不该是「发送」——投给账号才叫发送，产出凭证叫生成。
+const actLabel = computed(() => (busy.value
+  ? (nPicked.value ? '发送中…' : '生成中…')
+  : (nPicked.value ? '发送' : '生成密钥')))
 
 function toggleUnit(i) { const a = on.value.slice(); a[i] = !a[i]; on.value = a }
 function selectAllUnits(v) { on.value = rows.value.map(() => !!v) }
@@ -247,11 +255,6 @@ async function copyKey() {
               <span class="ms-nm" :title="b.ch" data-i18n-skip>{{ b.name || byLang('未命名账号', 'Unnamed account') }}</span>
               <span class="ms-ch">{{ b.ch.match(/.{1,4}/g).join('-') }}</span>
             </label>
-            <label class="ms-row ms-pick">
-              <input v-model="wantKey" type="checkbox" />
-              <span class="ms-nm">生成一次性密钥</span>
-              <span class="ms-ch">用于未绑定账号</span>
-            </label>
             <div v-if="!bindings.length" class="ms-empty">尚无已绑定的小程序账号。</div>
           </div>
           <div class="ms-mng">
@@ -259,13 +262,18 @@ async function copyKey() {
           </div>
           <MiniBindingsPanel v-if="mngOpen" compact :list="bindings" @change="onBindingsChange" @toast="(m) => emit('toast', m)" />
 
+          <label class="ms-opt" title="不指定接收方，就地产出一个 8 位密钥；谁拿到谁能在小程序里导入这份内容">
+            <input v-model="wantKey" type="checkbox" />
+            <span>{{ nPicked ? '同时生成一次性密钥' : '生成一次性密钥' }}</span>
+          </label>
+
           <div v-if="tooBig && wantKey" class="ms-warnbox">
             内容 {{ fmtBytes(info.bytes) }}，接近密钥模式 1 MB 上限。
           </div>
           <div v-if="err" class="ms-warnbox">{{ err }}</div>
           <div v-if="!configured" class="ms-warnbox">「发送到小程序」尚未配置。</div>
           <div class="ms-acts">
-            <button class="ms-btn primary" :disabled="busy || !canSend" @click="doSend">{{ busy ? '发送中…' : '发送' }}</button>
+            <button class="ms-btn primary" :disabled="busy || !canSend" @click="doSend">{{ actLabel }}</button>
             <span v-if="nPicked" class="ms-note">{{ rows.length }} 项内容将同步至 {{ nPicked }} 个账号</span>
           </div>
         </template>
@@ -332,6 +340,8 @@ async function copyKey() {
 .ms-pk-l { flex: none; width: 76px; font-size: 11.5px; color: var(--text-muted); }
 .ms-pk select { flex: 1; min-width: 0; font: inherit; font-size: 11.5px; padding: 4px 6px; outline: none;
   color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
+.ms-opt { display: flex; align-items: center; gap: 7px; font-size: 11.5px; cursor: pointer; user-select: none; }
+.ms-opt input { flex: none; margin: 0; cursor: pointer; }
 .ms-mng { display: flex; justify-content: flex-end; margin-top: -2px; }
 .ms-mng-t { font-size: 10.5px; color: var(--text-faint); cursor: pointer; }
 .ms-mng-t:hover { color: var(--accent); }
