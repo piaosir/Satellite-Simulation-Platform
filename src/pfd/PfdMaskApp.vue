@@ -835,20 +835,20 @@ const resultBw = computed(() => (curResult.value ? bwLabel(curResult.value.refBw
 .pw-note.bad { border-left-color: var(--danger, #c0392b); color: var(--text-muted); }
 .pw-note b { color: var(--text-muted); }
 
-.pi { padding: 3px 6px; border: 1px solid var(--border); border-radius: 3px; background: var(--bg); color: var(--text);
+.pi { padding: 3px 6px; border: 1px solid var(--border); border-radius: var(--r-box); background: var(--bg); color: var(--text);
   font-family: var(--font-mono); font-size: 12px; font-variant-numeric: tabular-nums; }
 .pi:disabled { opacity: 0.55; }
 .pi.bad { border-color: var(--danger, #c0392b); }
 .w70 { width: 70px } .w80 { width: 80px } .w90 { width: 90px } .w110 { width: 110px }
 .w120 { width: 120px } .w180 { width: 180px } .w220 { width: 220px } .w240 { width: 240px } .w260 { width: 260px }
-select { padding: 3px 6px; border: 1px solid var(--border); border-radius: 3px; background: var(--bg); color: var(--text); font-size: 12px; }
+select { padding: 3px 6px; border: 1px solid var(--border); border-radius: var(--r-box); background-color: var(--bg); color: var(--text); font-size: 12px; }
 .pu { font-size: 11px; color: var(--text-faint); }
 .pv { font-family: var(--font-mono); font-size: 12px; color: var(--text); margin-right: 14px; }
-.pseg { display: inline-flex; border: 1px solid var(--border); border-radius: 3px; overflow: hidden; }
+.pseg { display: inline-flex; border: 1px solid var(--border); border-radius: var(--r-box); overflow: hidden; }
 .pseg span { padding: 3px 12px; cursor: pointer; color: var(--text-muted); font-size: 12px; }
 .pseg span.on { background: var(--accent); color: var(--bg); }
 
-.pb { padding: 5px 14px; border: 1px solid var(--border); border-radius: 3px; background: var(--bg); color: var(--text);
+.pb { padding: 5px 14px; border: 1px solid var(--border); border-radius: var(--r-box); background: var(--bg); color: var(--text);
   font-size: 12.5px; cursor: pointer; }
 .pb:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
 .pb:disabled { opacity: 0.45; cursor: default; }

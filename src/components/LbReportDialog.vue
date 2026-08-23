@@ -273,16 +273,16 @@ const labelOf = (f) => (props.lang === 'en' ? f.labelEn : f.label)
 .rd {
   width: 560px; max-height: 88vh; display: flex; flex-direction: column;
   font-family: var(--lb-serif, var(--font-serif));
-  background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-modal, 3px);
+  background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-card, 3px);
   box-shadow: 0 8px 24px rgba(0,0,0,.18); overflow: hidden;
 }
 .rd-hd {
   display: flex; align-items: center; gap: 6px; padding: 10px 12px;
-  font-size: 11px; font-weight: 600; letter-spacing: 1px; text-transform: uppercase; color: var(--text-muted);
+  font-size: 11px; font-weight: 600; letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--text-muted);
   background: var(--surface-2); border-bottom: 1px solid var(--border);
 }
 .rd-sp { flex: 1; }
-.rd-scheme { letter-spacing: normal; text-transform: none; color: var(--text-faint); font-size: 11px; }
+.rd-scheme { letter-spacing: 0; text-transform: none; color: var(--text-faint); font-size: 11px; }
 .rd-x {
   display: inline-flex; align-items: center; justify-content: center; margin: -4px -4px -4px 4px;
   padding: 3px; font: inherit; color: var(--text-faint); cursor: pointer;
@@ -319,10 +319,10 @@ const labelOf = (f) => (props.lang === 'en' ? f.labelEn : f.label)
 .rd-opts { display: flex; gap: 16px; flex-wrap: wrap; }
 .rd-ck { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text); cursor: pointer; }
 .rd-ck.off { color: var(--text-faint); cursor: not-allowed; }
-.rd-ck input { margin: 0; accent-color: var(--accent); }
+.rd-ck input { margin: 0; }
 .rd-hint { margin-top: 5px; font-size: 11px; color: var(--text-faint); line-height: 1.5; }
 .rd-prog { margin-top: 10px; }
-.rd-bar { height: 3px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 2px; overflow: hidden; }
+.rd-bar { height: 3px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-ctl); overflow: hidden; }
 .rd-bar i { display: block; height: 100%; background: var(--accent); transition: width .2s linear; }
 .rd-ptext { margin-top: 4px; font-size: 11px; color: var(--text-muted); }
 .rd-ft { display: flex; justify-content: flex-end; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--border); background: var(--surface); }

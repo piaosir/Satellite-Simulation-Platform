@@ -3,6 +3,7 @@
 // 当前聚焦(active)天线额外画分带填充。计算核心 src/viz/grd/{parse,coverage,colormap}.js。
 import { ref, reactive, watch, nextTick } from 'vue'
 import { parseGrd } from './parse.js'
+import { sniffPatternFormat, foreignPatternToGrd } from './patFormats.js'
 import { antennaBasis, antennaBasisEcef, beamBasisFrom, dirAzElAbout, dirToAzEl, azElGround, surfaceAzEl, projectGrid, projectLimb, gridDirs, fieldDb, bandGeometry, stitchLoops, dLon, loopPointAtFraction, loopLabelAnchor, nearestFractionOnLoop } from './coverage.js'
 import { boresightShellPoint } from './shellProj.js'
 import { schemeColorsRGB, rgbCss, cssRgb } from './colormap.js'
@@ -1086,26 +1087,39 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
       // 多选：每个文件 = 一个天线。兼容旧返回（单文件 {base,text}）。
       const files = res.files || (res.text ? [{ base: res.base, text: res.text }] : [])
       if (!files.length) { appAlert('读取失败：' + (res.error || '空文件')); return [] }
-      const errs = []
+      const errs = [], warns = []   // 分开走：warns 不影响导入结果，混进 errs 会让成功的导入弹「导入失败」
       const added = []
       let lastKey = null, lastPeak = null
       for (const f of files) {
         if (f.error || !f.text) { errs.push((f.base || '文件') + '：' + (f.error || '空文件')); continue }
+        // 外部格式（ACP4 #CAL1 / Eutelsat）先转成 GRASP 文本 —— 之后与原生 .grd 完全同一条路：
+        // 落盘的是转换后的 .grd，故采样器/覆盖渲染/链路预算/STK 与 GRD 导出全部零改动。
+        let text = f.text, src = 'grasp'
+        const kind = sniffPatternFormat(text)
+        if (kind !== 'grasp') {
+          try {
+            const c = foreignPatternToGrd(text)
+            text = c.text; src = c.kind
+            for (const w of c.warns || []) warns.push((f.base || '文件') + '：' + w)
+          } catch (e) { errs.push((f.base || '文件') + '：' + e.message); continue }
+        }
         let g
-        try { g = parseGrd(f.text) } catch (e) { errs.push((f.base || '文件') + '：解析失败 ' + e.message); continue }
-        let name = (f.base || 'GRD').replace(/\.(grd|pat)$/i, '')
+        try { g = parseGrd(text) } catch (e) { errs.push((f.base || '文件') + '：解析失败 ' + e.message); continue }
+        let name = (f.base || 'GRD').replace(/\.(grd|pat|txt|ant|pattern)$/i, '')
         while (sat.antennas.some((a) => a.name === name)) name += '·'   // 重名加后缀
         const ent = importedCacheEntry(sat, g, name)
         const m = ent.meta
         // 原始 GRD 存盘（userData/coverage-grd-imported）；失败则仅本会话内有效，不阻断导入
         let file = null
-        try { const r = await window.api.coverageGrd.save(f.base || name, f.text); file = r && r.file } catch (e) { console.warn('GRD 持久化失败，仅本会话内有效', e) }
+        try { const r = await window.api.coverageGrd.save(f.base || name, text); file = r && r.file } catch (e) { console.warn('GRD 持久化失败，仅本会话内有效', e) }
         const key = keyOf(sat.folder, name)
         // 多波束默认只画第 1 个波束（与 SATSOFT 一致：Beams To Plot 由用户按需多选/全选）。
         // 切勿默认全选——HTS 动辄 20+ 波束，一次性建几十个网格/提几十遍等值线会瞬时压垮 GPU（见 command_buffer 崩溃）。
         const settings = defaultSettings(m.satLon, m.satLat, m.peakDb)
         cache.set(key, { meta: m, beams: ent.beams, settings })
-        sat.antennas.push({ name, type: '', band: '', beams: m.beams, peakDb: ent.peakDb, peak: ent.peak, file, imported: true, satLon: m.satLon, satLat: m.satLat, satAlt: m.satAlt })
+        // src：来源格式（'grasp' | 'acp4' | 'eutelsat'）。ACP4/Eutelsat 只有标量幅度、无相位无交叉极化，
+        // 树上如实标出来源，天线行的 title 里说明 AR/XPD 对它们不可用。
+        sat.antennas.push({ name, type: '', band: '', beams: m.beams, peakDb: ent.peakDb, peak: ent.peak, file, imported: true, src, satLon: m.satLon, satLat: m.satLat, satAlt: m.satAlt })
         selected.value = [...selected.value, key]
         added.push(key)
         lastKey = key; lastPeak = ent.peak
@@ -1117,7 +1131,10 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
         recompute()
         const sc = getScene(); if (sc && lastPeak) sc.faceLonLat(lastPeak[0], lastPeak[1])
       }
-      if (errs.length) appAlert('部分文件导入失败：\n' + errs.join('\n'))
+      if (errs.length || warns.length) {
+        appAlert([errs.length ? '部分文件导入失败：\n' + errs.join('\n') : '',
+          warns.length ? '导入告警：\n' + warns.join('\n') : ''].filter(Boolean).join('\n\n'))
+      }
       return added
     } finally { loading.value = false }
   }
@@ -1325,9 +1342,11 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
       folder: s.folder, kind: s.kind, satName: s.satName,
       lon: s.lon, lat: s.lat, altKm: s.altKm, noradId: s.noradId, elements: s.elements || null,
       els: s.els, elevColor: s.elevColor, elevShow: s.elevShow, elevWidth: s.elevWidth, elevLabelSize: s.elevLabelSize, iconSize: s.iconSize, labelSize: s.labelSize, labelShow: s.labelShow !== false, iconShow: s.iconShow !== false,
+      // src（来源格式 grasp/acp4/eutelsat）必须一起存：它是文件管理里那行「ACP4 / Eutelsat」标注与
+      // 「AR/XPD 不适用」提示的唯一来源，漏了它重开软件后这两样就一声不吭地退回成「导入」。
       antennas: s.antennas.filter((a) => a.imported && a.file).map((a) => ({
         name: a.name, file: a.file, type: a.type || '', band: a.band || '', beams: a.beams, peakDb: a.peakDb, peak: a.peak,
-        satLon: a.satLon, satLat: a.satLat, satAlt: a.satAlt, imported: true, synth: !!a.synth
+        satLon: a.satLon, satLat: a.satLat, satAlt: a.satAlt, imported: true, synth: !!a.synth, src: a.src || ''
       }))
     }))
     const disp = { showName: s.showName, nameSize: s.nameSize, showBore: s.showBore, boreSize: s.boreSize, showRay: s.showRay, rayColor: s.rayColor, rayWidth: s.rayWidth, rayOpacity: s.rayOpacity, showPeak: s.showPeak, peakSize: s.peakSize, showVal: s.showVal, valSize: s.valSize }
@@ -1370,7 +1389,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
           for (const aa of ss.antennas) {
             if (!aa || !aa.imported || !aa.file || node.antennas.some((x) => x.name === aa.name)) continue
             node.antennas.push({ name: aa.name, type: aa.type || '', band: aa.band || '', beams: aa.beams, peakDb: aa.peakDb, peak: aa.peak,
-              file: aa.file, imported: true, synth: !!aa.synth, satLon: aa.satLon, satLat: aa.satLat, satAlt: aa.satAlt })
+              file: aa.file, imported: true, synth: !!aa.synth, src: aa.src || '', satLon: aa.satLon, satLat: aa.satLat, satAlt: aa.satAlt })
           }
         }
       }

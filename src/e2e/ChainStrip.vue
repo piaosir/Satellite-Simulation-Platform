@@ -255,7 +255,7 @@ const hopBot = (i) => {
 .cs-node.on { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
 .cs-n-top { display: flex; align-items: center; justify-content: space-between; gap: 4px; }
 .cs-n-t { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
-.cs-badge { font-size: 10px; line-height: 1.5; padding: 0 4px; border-radius: 2px; white-space: nowrap; }
+.cs-badge { font-size: 10px; line-height: 1.5; padding: 0 4px; border-radius: var(--r-ctl); white-space: nowrap; }
 .cs-badge.bg-accent { background: var(--accent); color: var(--bg); }
 .cs-badge.bg-out { background: transparent; color: var(--text-muted); border: 1px solid var(--border-strong); }
 /* 名字最多折两行（超长再省略）：整名比「一行齐平」重要 */
@@ -271,7 +271,7 @@ const hopBot = (i) => {
 .cs-occ { margin-top: 3px; display: flex; flex-direction: column; gap: 1px; }
 .cs-occ-row { display: flex; align-items: center; gap: 3px; }
 .cs-occ-k { flex: none; font-size: 10px; color: var(--text-muted); }
-.cs-occ-bar { flex: 1; min-width: 0; height: 4px; background: var(--surface-2); border: 0.5px solid var(--border); border-radius: 2px; overflow: hidden; }
+.cs-occ-bar { flex: 1; min-width: 0; height: 4px; background: var(--surface-2); border: 0.5px solid var(--border); border-radius: var(--r-ctl); overflow: hidden; }
 .cs-occ-bar i { display: block; height: 100%; background: var(--accent); }
 .cs-occ-bar i.over { background: var(--danger); }
 .cs-occ-v { flex: none; font-size: 10px; color: var(--text); font-variant-numeric: tabular-nums; }
@@ -331,5 +331,5 @@ const hopBot = (i) => {
 .cs-c-v.ok { color: var(--ok); }
 .cs-c-v i { font-style: normal; font-size: 11px; font-weight: 400; color: var(--text-faint); margin-left: 2px; }
 
-.cs-ins-hd { padding: 3px 12px 4px; font-size: 11px; color: var(--text-faint); letter-spacing: 1px; }
+.cs-ins-hd { padding: 3px 12px 4px; font-size: 11px; color: var(--text-faint); letter-spacing: var(--ls-label); }
 </style>

@@ -72,7 +72,7 @@ function toggle(id) {
 .bp-chips { display: flex; align-items: center; gap: 3px; flex-wrap: nowrap; }
 .chip {
   width: 13px; height: 13px; padding: 0; flex: none;
-  border: 1.5px solid var(--border); border-radius: 2px; cursor: pointer;
+  border: 1.5px solid var(--border); border-radius: var(--r-ctl); cursor: pointer;
 }
 .chip:hover { outline: 1px solid var(--text-muted); outline-offset: 1px; }
 /* 继承态（下行留空）：色片灰掉 + 虚线边 —— 与带宽那格的灰字占位同一套读法「这不是我填的，是随来的」 */
@@ -84,11 +84,11 @@ function toggle(id) {
 .bp-row {
   display: flex; align-items: center; gap: 6px; width: 100%;
   padding: 3px 5px; background: transparent; border: 1px solid transparent;
-  color: var(--text-muted); font-size: 12px; text-align: left; cursor: pointer; border-radius: 2px;
+  color: var(--text-muted); font-size: 12px; text-align: left; cursor: pointer; border-radius: var(--r-ctl);
 }
 .bp-row:hover { background: var(--surface); color: var(--text); }
 .bp-row.on { color: var(--text); border-color: var(--border); background: var(--surface); }
-.bp-row .sw { width: 12px; height: 12px; flex: none; border: 1.5px solid var(--border); border-radius: 2px; }
+.bp-row .sw { width: 12px; height: 12px; flex: none; border: 1.5px solid var(--border); border-radius: var(--r-ctl); }
 .bp-row.gh .sw { opacity: .42; border-style: dashed; }
 .bp-row .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>

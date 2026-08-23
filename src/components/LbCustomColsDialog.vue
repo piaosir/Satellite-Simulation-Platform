@@ -190,7 +190,7 @@ const listUnit = (c) => unitOf(c, props.pool)
 .ccd-bd { display: flex; align-items: stretch; min-height: 0; overflow: hidden; }
 .ccd-list { flex: 0 0 200px; display: flex; flex-direction: column; gap: 2px; padding: 8px; border-right: 1px solid var(--border, rgba(128,128,128,.3)); overflow-y: auto; }
 .ccd-newbtn { align-self: flex-start; margin-bottom: 4px; }
-.ccd-it { display: flex; align-items: center; gap: 4px; padding: 4px 6px; font-size: 12px; color: var(--text); border-radius: 3px; cursor: pointer; }
+.ccd-it { display: flex; align-items: center; gap: 4px; padding: 4px 6px; font-size: 12px; color: var(--text); border-radius: var(--r-box); cursor: pointer; }
 .ccd-it:hover { background: var(--surface-2, rgba(128,128,128,.12)); }
 .ccd-it.ccd-on { background: var(--surface-2, rgba(128,128,128,.16)); font-weight: 600; }
 .ccd-it-n { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -203,14 +203,14 @@ const listUnit = (c) => unitOf(c, props.pool)
 .ccd-row { display: flex; align-items: center; gap: 8px; }
 .ccd-f { display: flex; flex-direction: column; gap: 3px; }
 .ccd-grow { flex: 1 1 auto; min-width: 0; }
-.ccd-l { font-size: 10px; color: var(--text-faint, #888); letter-spacing: 1px; }
-.ccd-in { font-size: 12px; padding: 3px 6px; background: var(--surface-2, rgba(128,128,128,.12)); color: var(--text, inherit); border: 1px solid var(--border, rgba(128,128,128,.35)); border-radius: 3px; min-width: 0; }
+.ccd-l { font-size: 10px; color: var(--text-faint, #888); letter-spacing: var(--ls-label); }
+.ccd-in { font-size: 12px; padding: 3px 6px; background-color: var(--surface-2, rgba(128,128,128,.12)); color: var(--text, inherit); border: 1px solid var(--border, rgba(128,128,128,.35)); border-radius: var(--r-box); min-width: 0; }
 .ccd-in:focus { outline: none; border-color: var(--border-strong, rgba(128,128,128,.6)); }
 .ccd-dp { width: 56px; }
 .ccd-sel { flex: 1 1 auto; }
 .ccd-unitrow { flex-wrap: wrap; }
 .ccd-unitv { font-size: 12px; color: var(--text); font-family: ui-monospace, Consolas, monospace; }
-.ccd-expr { font-size: 12px; padding: 4px 6px; background: var(--surface-2, rgba(128,128,128,.12)); color: var(--text, inherit); border: 1px solid var(--border, rgba(128,128,128,.35)); border-radius: 3px; resize: vertical; font-family: ui-monospace, Consolas, monospace; }
+.ccd-expr { font-size: 12px; padding: 4px 6px; background: var(--surface-2, rgba(128,128,128,.12)); color: var(--text, inherit); border: 1px solid var(--border, rgba(128,128,128,.35)); border-radius: var(--r-box); resize: vertical; font-family: ui-monospace, Consolas, monospace; }
 .ccd-expr:focus { outline: none; border-color: var(--border-strong, rgba(128,128,128,.6)); }
 .ccd-prev { font-size: 12px; color: var(--text-muted, var(--text)); }
 .ccd-prev b { font-weight: 600; }
@@ -219,6 +219,6 @@ const listUnit = (c) => unitOf(c, props.pool)
 .ccd-act { margin-top: 2px; }
 .ccd-ref { margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--border, rgba(128,128,128,.3)); display: flex; flex-direction: column; gap: 2px; }
 .ccd-ref-r { display: flex; gap: 8px; font-size: 11px; color: var(--text-faint, #888); line-height: 1.5; }
-.ccd-ref-r b { flex: 0 0 34px; font-weight: 600; color: var(--text-muted, var(--text-faint, #888)); letter-spacing: 1px; }
+.ccd-ref-r b { flex: 0 0 34px; font-weight: 600; color: var(--text-muted, var(--text-faint, #888)); letter-spacing: var(--ls-label); }
 .ccd-ref-r span { flex: 1 1 auto; min-width: 0; font-family: ui-monospace, Consolas, monospace; }
 </style>

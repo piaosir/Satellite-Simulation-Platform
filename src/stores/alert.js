@@ -1,5 +1,5 @@
 import { ref } from 'vue'
-import { logMsg } from './log'
+import { logMsg } from './log.js'   // 带扩展名：全库 .js 源文件里唯一一处漏写，补上后 node 也能直接加载（自测用）
 
 // 全局应用内提示：替代 Electron 原生 alert。
 // 原生 alert/confirm 关闭后会夺走渲染进程焦点，导致之后输入框点击无法聚焦（需最小化再恢复才正常）。

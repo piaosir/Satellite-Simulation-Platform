@@ -42,7 +42,7 @@ defineProps({
   border-bottom: 2px solid var(--lb-rule-strong);
   user-select: none;
 }
-.lbx-sec-t { font-size: calc(var(--lb-fs, 11px) + 2px); font-weight: 700; letter-spacing: .5px; color: var(--text); white-space: nowrap; }
+.lbx-sec-t { font-size: calc(var(--lb-fs, 11px) + 2px); font-weight: 700; letter-spacing: var(--ls-tight); color: var(--text); white-space: nowrap; }
 .lbx-sec-n { font-size: calc(var(--lb-fs, 11px) - 1px); line-height: 1; color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .lbx-sec-n::before { content: '('; }
 .lbx-sec-n::after { content: ')'; }

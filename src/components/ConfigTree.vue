@@ -240,7 +240,7 @@ function onRowClick(row) {
 .lb-tree-row:hover .lb-tree-guide, .lb-tree-row.on .lb-tree-guide { background: var(--border-strong); }
 
 /* 图标在第一行文本的高度内居中（行是 flex-start，名称可能换行） */
-.lb-tree-chev { flex: none; width: 14px; height: 1.35em; display: inline-flex; align-items: center; justify-content: center; color: var(--text-faint); border-radius: 3px; }
+.lb-tree-chev { flex: none; width: 14px; height: 1.35em; display: inline-flex; align-items: center; justify-content: center; color: var(--text-faint); border-radius: var(--r-box); }
 .lb-tree-chev:not(.empty):hover { color: var(--text); background: var(--bg); }
 /* 文件夹＝骨架（accent），配置＝内容（弱一档）：类型一眼可分，又不喧宾夺主 */
 .lb-tree-fi { flex: none; height: 1.35em; display: inline-flex; align-items: center; color: var(--accent); }
@@ -250,7 +250,7 @@ function onRowClick(row) {
    折行第二行从本 span 的左缘起，也就是名称起点——层级不会因此断掉。 */
 .lb-tree-nm { flex: 0 1 auto; min-width: 0; overflow-wrap: anywhere; line-height: 1.35; }
 /* 计数徽标紧跟名称（空文件夹显示 0，与「未展开」区分开）；hover 时让位给动作区 */
-.lb-tree-count { flex: none; margin-top: 1px; font-size: 10px; line-height: 1; padding: 2px 5px; border-radius: 8px; background: var(--surface-2); color: var(--text-faint); }
+.lb-tree-count { flex: none; margin-top: 1px; font-size: 10px; line-height: 1; padding: 2px 5px; border-radius: var(--r-pill); background: var(--surface-2); color: var(--text-faint); }
 .lb-tree-row.on .lb-tree-count { background: var(--bg); }
 .lb-tree-row:hover .lb-tree-count { visibility: hidden; }
 

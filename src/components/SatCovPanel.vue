@@ -209,19 +209,19 @@ function shellWhy(sh) {
         <label class="chk2"><input type="checkbox" v-model="sc.s.guides" /><span>显示壳层参照网</span></label>
         <!-- 参照网样式：全局一份（逐层只留颜色，行内不加控件） -->
         <template v-if="sc.s.guides">
-          <div class="srow gtop"><label>网格间隔</label>
+          <div class="srow sub"><label>网格间隔</label>
             <select v-model.number="sc.s.guideStep" title="经线与纬线的角度间隔">
               <option :value="10">10°</option><option :value="15">15°</option><option :value="30">30°</option><option :value="45">45°</option>
             </select></div>
-          <div class="srow"><label>纬线范围</label>
+          <div class="srow sub"><label>纬线范围</label>
             <select v-model.number="sc.s.guideLat" title="纬线只画到该纬度以内；经线始终画全程。取间隔的整倍数">
               <option :value="30">±30°</option><option :value="60">±60°</option><option :value="80">±80°</option>
             </select></div>
-          <div class="srow"><label>线宽</label>
-            <input class="rng" type="range" min="0.4" max="4" step="0.1" v-model.number="sc.s.guideWidth" title="像素线宽，与屏幕缩放/分辨率无关" /><span class="u">{{ sc.s.guideWidth.toFixed(1) }}</span></div>
-          <div class="srow"><label>透明度</label>
+          <div class="srow sub"><label>线宽</label>
+            <input class="rng" type="range" min="0.1" max="4" step="0.1" v-model.number="sc.s.guideWidth" title="像素线宽，与屏幕缩放/分辨率无关" /><span class="u">{{ sc.s.guideWidth.toFixed(1) }}</span></div>
+          <div class="srow sub"><label>透明度</label>
             <input class="rng" type="range" min="0.02" max="1" step="0.02" v-model.number="sc.s.guideAlpha" /><span class="u">{{ sc.s.guideAlpha.toFixed(2) }}</span></div>
-          <div class="srow"><label>线型</label>
+          <div class="srow sub"><label>线型</label>
             <select v-model="sc.s.guideDash" title="虚线：与壳层上的等值线区分开">
               <option :value="false">实线</option><option :value="true">虚线</option>
             </select></div>
@@ -245,52 +245,56 @@ function shellWhy(sh) {
 .cov-side { width: 286px; flex: none; border-left: 1px solid var(--border-strong); background: var(--surface); overflow-y: auto; display: flex; flex-direction: column; font-size: 12px; }
 .cov-side.docked { width: auto; border-left: 0; overflow: visible; }
 .sec { padding: 12px 16px; border-bottom: 1px solid var(--border); }
-.srow { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-.srow:last-child { margin-bottom: 0; }
+/* 竖向节奏与从属缩进：与 GrdSetSections.vue 逐字同源（口径与三处对照的说明见那边），
+   宿主页 ConstellationMap3D.vue 是同一行距的第三份，写法不同、结果一致 */
+.sec > * + * { margin-top: 8px; }
+.sec > * + .sect { margin-top: 12px; }
+.sec > .sect + * { margin-top: 6px; }
+.srow { display: flex; align-items: center; gap: 8px; }
 .srow label { color: var(--text-muted); width: 70px; flex: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.srow select, .srow .ci { flex: 1; min-width: 0; border: 1px solid var(--border); background: var(--bg); padding: 3px 6px; font-size: 12px; outline: none; color: var(--text); }
-.srow .u { color: var(--text-muted); }
-.sect { display: flex; align-items: center; margin-bottom: 6px; color: var(--text-muted); }
+.srow.sub { padding-left: 19px; }
+.srow.sub > label { width: 51px; }
+.srow select, .srow .ci { flex: 1; min-width: 0; border: 1px solid var(--border); background-color: var(--bg); padding: 3px 6px; font-size: 12px; outline: none; color: var(--text); }
+.srow .u { flex: none; min-width: 34px; text-align: right; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.sect { display: flex; align-items: center; color: var(--text-muted); }
 .sect.acc { cursor: pointer; user-select: none; gap: 5px; }
 .sect.acc:hover { color: var(--text); }
 .sect .lnk { margin-left: auto; color: var(--accent); cursor: pointer; font-size: 11.5px; }
 .sect .lnk:hover { text-decoration: underline; }
-.sect .editing { margin-left: auto; font-size: 9.5px; font-weight: 600; color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent); border-radius: 8px; padding: 1px 6px; }
+.sect .editing { margin-left: auto; font-size: 9.5px; font-weight: 600; color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent); border-radius: var(--r-pill); padding: 1px 6px; }
 .sect .editing + .lnk { margin-left: 0; }   /* 「n 已选」在时由它顶到右边，链接紧随其后（两个 auto 会把空白对半分） */
-.chk2 { display: flex; align-items: center; gap: 6px; margin-top: 8px; cursor: pointer; }
-.chk2 input, .shrow input, .gck { accent-color: var(--accent); }
+.chk2 { display: flex; align-items: center; gap: 6px; cursor: pointer; }
 /* 滑块：同 ConstellationMap3D 的 .rng（那份 scoped 进不到本组件） */
-.rng { flex: 1; min-width: 0; accent-color: var(--accent); }
-.srow.gtop { margin-top: 8px; }   /* 参照网样式组的第一行：与上面的勾选行拉开 */
+.rng { flex: 1; min-width: 0; }
 .empty { color: var(--text-faint); padding: 4px 0; }
 .ic { flex: none; cursor: pointer; color: var(--text-faint); padding: 0 1px; display: inline-flex; }
 .ic:hover { color: var(--text); }
 .ic.del:hover { color: #e66; }
 /* 卫星 / 天线树（与对地同款两级层次） */
-.gtree { margin-top: 6px; max-height: clamp(280px, 48vh, 620px); overflow-y: auto; }
-.gsat { display: flex; align-items: center; gap: 6px; padding: 4px 4px 4px 2px; color: var(--text); font-size: 13px; border-radius: 3px; }
+.gtree { max-height: clamp(280px, 48vh, 620px); overflow-y: auto; }
+.gsat { display: flex; align-items: center; gap: 6px; padding: 4px 4px 4px 2px; color: var(--text); font-size: 13px; border-radius: var(--r-box); }
 .gsat:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
 .gsat .tri { font-style: normal; flex: none; width: 12px; display: inline-flex; align-items: center; justify-content: center; color: var(--text-faint); font-size: 9px; cursor: pointer; transition: transform .12s; }
 .gsat .tri.open { transform: rotate(90deg); }
 .gsat .gsname { flex: 1; min-width: 0; white-space: normal; overflow-wrap: break-word; line-height: 1.3; cursor: pointer; }
 .gsat .gsname:hover { color: var(--accent); }
 .gsat .gsname em { font-style: normal; margin-left: 5px; color: var(--text-faint); font-family: var(--font-mono); font-size: 10.5px; }
-.gsat .gsname .simtag { font-style: normal; margin-left: 5px; padding: 0 4px; border: 1px solid var(--accent); border-radius: 2px; color: var(--accent); font-size: 10px; vertical-align: middle; }
+.gsat .gsname .simtag { font-style: normal; margin-left: 5px; padding: 0 4px; border: 1px solid var(--accent); border-radius: var(--r-ctl); color: var(--accent); font-size: 10px; vertical-align: middle; }
 .gsvg { flex: none; width: 14px; height: 14px; }
 .gsat .sat-svg { width: 18px; height: 18px; color: var(--text); opacity: .92; }
 /* 卫星行的小眼睛：与对地侧栏 .sdisp 同款（图标按钮，hover 底色淡入，点亮转 accent） */
 .sdisp { flex: none; display: flex; align-items: center; gap: 1px; margin-left: 4px; padding-left: 6px; border-left: 1px solid var(--border); }
-.sdisp .ic { display: flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 3px; color: var(--text-faint); opacity: .55; cursor: pointer; transition: opacity .12s, color .12s, background .12s; }
+.sdisp .ic { display: flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: var(--r-box); color: var(--text-faint); opacity: .55; cursor: pointer; transition: opacity .12s, color .12s, background .12s; }
 .sdisp .ic:hover { opacity: 1; color: var(--text); background: color-mix(in srgb, var(--text) 8%, transparent); }
 .sdisp .ic.on { opacity: 1; color: var(--accent); }
 .gbody { margin-left: 9px; padding-left: 12px; border-left: 1px solid var(--border); margin-bottom: 2px; }
-.gant { display: flex; align-items: center; gap: 6px; padding: 3px 6px; margin: 1px 0; color: var(--text-muted); cursor: pointer; font-size: 11.5px; border-radius: 3px; transition: background .12s, color .12s, box-shadow .12s; }
+.gant { display: flex; align-items: center; gap: 6px; padding: 3px 6px; margin: 1px 0; color: var(--text-muted); cursor: pointer; font-size: 11.5px; border-radius: var(--r-box); transition: background .12s, color .12s, box-shadow .12s; }
 .gant:hover { color: var(--text); background: color-mix(in srgb, var(--text) 6%, transparent); }
 .gant.on { color: var(--text); }
 .gant.foc { color: var(--text); background: color-mix(in srgb, var(--accent) 14%, transparent); box-shadow: inset 2px 0 0 var(--accent); font-weight: 600; }
 .gant .aname { flex: 1; min-width: 0; white-space: normal; overflow-wrap: break-word; word-break: break-word; line-height: 1.35; }
 .gant .aname-in { flex: 1; min-width: 0; border: 1px solid var(--accent); background: var(--bg); padding: 1px 5px; font-size: 11.5px; color: var(--text); outline: none; }
-.gant .afoc { flex: none; font-size: 9.5px; font-weight: 600; letter-spacing: .3px; color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent); border-radius: 8px; padding: 0 5px; line-height: 14px; }
+.gant .afoc { flex: none; font-size: 9.5px; font-weight: 600; letter-spacing: var(--ls-tight); color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent); border-radius: var(--r-pill); padding: 0 5px; line-height: 14px; }
 /* 行内次级操作（卫星行 ＋✎✕ / 天线行 ✎✕ 共用）：常驻但弱化淡灰，hover 该行变亮 */
 .sacts { flex: none; display: flex; align-items: center; gap: 8px; margin-left: auto; padding-left: 4px; }
 .sacts .ic { font-size: 11px; color: var(--text-faint); opacity: .5; cursor: pointer; padding: 0; transition: opacity .12s, color .12s; }
@@ -301,32 +305,32 @@ function shellWhy(sh) {
 .ic.ok:hover { color: #7ddc88; }
 .gant.noant { color: var(--text-faint); font-style: italic; cursor: default; padding-left: 6px; }
 .gant.noant:hover { background: none; color: var(--text-faint); }
-.gant .ant-btn { display: flex; align-items: center; justify-content: center; flex: none; width: 18px; height: 18px; margin: -2px 0; border-radius: 3px; transition: background .12s; }
+.gant .ant-btn { display: flex; align-items: center; justify-content: center; flex: none; width: 18px; height: 18px; margin: -2px 0; border-radius: var(--r-box); transition: background .12s; }
 .gant .ant-btn:hover { background: color-mix(in srgb, var(--accent) 18%, transparent); }
 .gant .ant-svg { width: 13px; height: 13px; color: var(--text-faint); transition: color .12s; }
 .gant .ant-btn.on .ant-svg { color: var(--accent); }
 .gant .ant-svg.ant-off { color: var(--text-faint); opacity: .7; }
 .gant.foc .ant-svg { color: var(--accent); }
-.gperf { display: flex; align-items: center; gap: 6px; margin: 0 0 2px 22px; padding: 2px 6px; color: var(--text-faint); cursor: pointer; font-size: 11px; border-radius: 3px; transition: background .12s, color .12s; }
+.gperf { display: flex; align-items: center; gap: 6px; margin: 0 0 2px 22px; padding: 2px 6px; color: var(--text-faint); cursor: pointer; font-size: 11px; border-radius: var(--r-box); transition: background .12s, color .12s; }
 .gperf:hover { color: var(--text-muted); background: color-mix(in srgb, var(--text) 5%, transparent); }
 .gperf .perf-svg { width: 12px; height: 12px; flex: none; }
 .gperf .gperfn { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .gperf.on { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
 /* 壳层库：与电平表同款成框列表 */
-.shlist { border: 1px solid var(--border); border-radius: 2px; margin-top: 5px; }
+.shlist { border: 1px solid var(--border); border-radius: var(--r-ctl); }
 .shrow { display: flex; align-items: center; gap: 5px; padding: 3px 6px; }
 .shrow + .shrow { border-top: 1px solid var(--border); }
-.shrow .lvclr { width: 20px; height: 18px; padding: 0; border: 1px solid var(--border); background: none; cursor: pointer; flex: none; }
+.shrow .lvclr { width: 20px; height: 18px; }
 .shrow .u { color: var(--text-faint); font-size: 10.5px; }
 .shalt { width: 58px; flex: none; background: var(--bg); border: 1px solid var(--border); color: var(--text); font-size: 11.5px; padding: 2px 4px; font-family: var(--font-mono); text-align: right; }
 .shnm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); font-size: 10.5px; }
-.shbr { flex: none; width: 56px; background: var(--bg); border: 1px solid var(--border); color: var(--text); font-size: 10.5px; padding: 1px 2px; }
+.shbr { flex: none; width: 56px; background-color: var(--bg); border: 1px solid var(--border); color: var(--text); font-size: 10.5px; padding: 1px 2px; }
 .shbr.one { color: var(--text-faint); text-align: center; border-color: transparent; }
 .shwhy { padding: 0 8px 4px 32px; font-size: 10.5px; color: #d08b5a; }
-.shadd { margin-top: 7px; gap: 6px; }
+.shadd { gap: 6px; }
 .shadd .shalt { flex: none; }
 .shadd .shpre { flex: 1; font-size: 11px; }
-.addb { flex: none; display: inline-flex; align-items: center; gap: 3px; border: 1px solid var(--border); padding: 2px 8px; font-size: 11.5px; color: var(--text-muted); cursor: pointer; border-radius: 2px; }
+.addb { flex: none; display: inline-flex; align-items: center; gap: 3px; border: 1px solid var(--border); padding: 2px 8px; font-size: 11.5px; color: var(--text-muted); cursor: pointer; border-radius: var(--r-ctl); border-radius: var(--r-ctl); }
 .addb:hover { border-color: var(--accent); color: var(--text); }
 .csfoot { margin-top: auto; display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--border); }
 .cst { font-size: 11px; color: var(--text-faint); font-family: var(--font-mono); }

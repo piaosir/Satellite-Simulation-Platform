@@ -93,15 +93,20 @@ export const FIELD_GROUPS = [
     ]
   },
   {
-    // 发信站群：站址列 + 「载波信号 / 地球站配置 / 卫星」三个选择列 + 工作点 + 卫星G/T（逐站手填）。
+    // 发信站群：「载波信号 / 卫星 / 地球站配置」三个选择列 + 站址列 + 卫星G/T（逐站手填）。
     // 发射链射频参数（天线/功放/馈线/UPC/干扰）由所选「地球站配置」提供（见 station 组）。
     key: 'uplink', title: '发信站群', icon: 'up',
     fields: [
-      // 三个「配置引用」列（载波信号 / 地球站 / 卫星）相邻排在最前，便于按列组归为「配置」组（排版更符合逻辑）；
+      // 列序＝按【实体】分段，一段一个列组（见 RegenLinkBudgetApp 的 GROUPS_STATION）：
+      //   载波（载波信号配置）｜卫星（卫星 + 该星对本站的 G/T）｜地球站（站型配置 + 站址 + 几何）｜链路（雨强/可用度）
+      // 「地球站配置」不再与载波/卫星并列成「配置」组——它就是这座站的站型（口径/功放/馈线），与站址同属这座站。
       // frozen 标记保留但链路表已按 freezeKeys=false 取消冻结（全列随横滚）。
       { key: 'basebandId', label: '载波信号配置', type: 'select', options: [], def: '', target: 'meta', frozen: true },
-      { key: 'stationId', label: '地球站配置', type: 'select', options: [], def: '', target: 'meta', frozen: true },
       { key: 'satelliteId', label: '卫星', type: 'select', options: [], def: '', target: 'meta', frozen: true },
+      // 卫星 G/T（再生式逐发信站取值）：同一颗星服务不同站因波束位置不同而 G/T 各异——「卫星×发信站」
+      // 配对量，故留在站表逐站手填（不入地球站库）；列位紧跟「卫星」，与它同属卫星列组。
+      { key: 'G_Ts', label: '卫星G/T', tip: '卫星接收品质因数 G/T（dB/K），按本站对该卫星的波束位置手动输入。MEO 预设 10 dB/K（MEO Ku 点波束量级）。', unit: 'dB/K', type: 'num', def: '10', target: 'link' },
+      { key: 'stationId', label: '地球站配置', type: 'select', options: [], def: '', target: 'meta', frozen: true },
       { key: 'earthStationLocation', label: '地球站位置', type: 'text', def: '北京', target: 'link', city: 'tx', frozen: true },
       { key: 'longitude', label: '经度', unit: '°E', type: 'num', def: '116.4074', target: 'link' },
       { key: 'latitude', label: '纬度', unit: '°N', type: 'num', def: '39.9042', target: 'link' },
@@ -113,23 +118,22 @@ export const FIELD_GROUPS = [
       { key: 'altitude', label: '海拔', unit: 'm', type: 'num', def: '0', target: 'link', auto: 'elev' },
       // 工作点（功放功率）已随站型移入「地球站配置」发射参数（opPowerW，见 station 组）
       { key: 'rainRate', label: 'R0.01%', unit: 'mm/h', type: 'num', def: '0', target: 'link', auto: 'rain' },
-      { key: 'uplinkAvailability', label: '可用度', unit: '%', type: 'num', def: '99.90', target: 'link' },
-      // 卫星 G/T（再生式逐发信站取值）：同一颗星服务不同站因波束位置不同而 G/T 各异——「卫星×发信站」
-      // 配对量，故留在站表逐站手填（不入地球站库）。
-      { key: 'G_Ts', label: '卫星G/T', tip: '卫星接收品质因数 G/T（dB/K），按本站对该卫星的波束位置手动输入。MEO 预设 10 dB/K（MEO Ku 点波束量级）。', unit: 'dB/K', type: 'num', def: '10', target: 'link' }
+      { key: 'uplinkAvailability', label: '可用度', unit: '%', type: 'num', def: '99.90', target: 'link' }
     ]
   },
   {
     // 收信站群（再生式下行）：站址列 + 三个选择列 + 卫星EIRP（逐站手填）。
     // 接收链射频参数（天线/噪温/馈线/干扰）由所选「地球站配置」提供，工作点 G/T 由其按引擎口径算出
     // （不再支持「直接输入设备 G/T」——设备 G/T 系统噪温未知，无法自洽推出雨致 G/T 劣化）。
-    // 列序：「地球站配置」排在站址组之首（不与载波/卫星并列在配置组）——下行的地球站配置就是这座收信站
-    // 的站型（口径/噪温/馈线），与站址同属「这座站」；配置组只留链路两端之外的引用（载波信号 / 卫星）。
-    // 组归属见 RegenLinkBudgetApp 的 _RX_GROUP（stationId → 'geo'）。
+    // 列序与发信站群同构（见其注）：载波｜卫星（卫星 + 该星对本站的下行 EIRP）｜地球站（站型 + 站址 + 几何）｜链路。
+    // 组归属见 RegenLinkBudgetApp 的 _STN_GROUP。
     key: 'downlink', title: '收信站群', icon: 'down',
     fields: [
       { key: 'basebandId', label: '载波信号配置', type: 'select', options: [], def: '', target: 'meta' },
       { key: 'satelliteId', label: '卫星', type: 'select', options: [], def: '', target: 'meta' },
+      // 卫星下行 EIRP（再生式逐收信站取值）：同一颗星服务不同站因波束位置不同而 EIRP 各异——
+      // 「卫星×收信站」配对量，故留在站表逐站手填；列位紧跟「卫星」，与它同属卫星列组。
+      { key: 'rxEIRP', label: '卫星EIRP', tip: '该载波的卫星下行 EIRP（dBW，再生直发口径），按本站对该卫星的波束位置手动输入。MEO 预设 25 dBW（2 Mbps 级载波量级；此处填入整波束饱和值将使 C/N 达到 50 dB 以上的非物理区间）。', unit: 'dBW', type: 'num', def: '25', target: 'link' },
       { key: 'stationId', label: '地球站配置', type: 'select', options: [], def: '', target: 'meta' },
       { key: 'rxEarthStationLocation', label: '地球站位置', type: 'text', def: '北京', target: 'link', city: 'rx' },
       { key: 'rxLongitude', label: '经度', unit: '°E', type: 'num', def: '116.4074', target: 'link' },
@@ -138,10 +142,7 @@ export const FIELD_GROUPS = [
       { key: 'rxSlantRange', label: '斜距', tip: '收信站到卫星的星地斜距。随仰角 / 纬度 / 海拔 / 轨道高度自动算出（WGS-84，取绕站一圈的最大值），也可直接改；这四项再变即重算。', unit: 'km', type: 'num', def: '', target: 'link', manualOnly: true },
       { key: 'rxAltitude', label: '海拔', unit: 'm', type: 'num', def: '0', target: 'link', auto: 'elev' },
       { key: 'rxRainRate', label: 'R0.01%', unit: 'mm/h', type: 'num', def: '0', target: 'link', auto: 'rain' },
-      { key: 'rxDownlinkAvailability', label: '可用度', unit: '%', type: 'num', def: '99.90', target: 'link' },
-      // 卫星下行 EIRP（再生式逐收信站取值）：同一颗星服务不同站因波束位置不同而 EIRP 各异——
-      // 「卫星×收信站」配对量，故留在站表逐站手填。
-      { key: 'rxEIRP', label: '卫星EIRP', tip: '该载波的卫星下行 EIRP（dBW，再生直发口径），按本站对该卫星的波束位置手动输入。MEO 预设 25 dBW（2 Mbps 级载波量级；此处填入整波束饱和值将使 C/N 达到 50 dB 以上的非物理区间）。', unit: 'dBW', type: 'num', def: '25', target: 'link' }
+      { key: 'rxDownlinkAvailability', label: '可用度', unit: '%', type: 'num', def: '99.90', target: 'link' }
     ]
   },
   {

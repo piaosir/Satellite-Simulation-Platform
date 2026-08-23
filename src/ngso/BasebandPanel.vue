@@ -273,11 +273,11 @@ function onBwInput(e) { setAnchor('bw', e.target.value) }
 /* 单位括注：从属信息，比标签名收小半档——既压住视觉权重，也给最窄一列（~87px）匀出余量，
    「频谱效率 (bps/Hz)」这类长标签才不会把括号裁掉 */
 .bb-l i { font-size: .95em; color: var(--text-faint); font-style: normal; }
-.bb-i { font: inherit; font-size: 12px; padding: 4px 7px; width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
+.bb-i { font: inherit; font-size: 12px; padding: 4px 7px; width: 100%; background-color: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
 .bb-i:focus { outline: none; border-color: var(--accent); }
 .bb-i.mono { font-family: var(--font-mono); }
 /* 速率链：非锚点＝由锚点算出来的，退一档；锚点＝用户钉住的那个，正常色 */
-.bb-rt .bb-i { background: var(--surface); color: var(--text-muted); }
+.bb-rt .bb-i { background-color: var(--surface); color: var(--text-muted); }
 .bb-rt .bb-i.bb-anch { color: var(--text); }
 /* 3GPP NTN 信道带宽提示 / 帧效率越界：正常灰字说明，超限转红并给输入框描红边 */
 .bb-rt .bb-i.bb-over, .bb-grid .bb-i.bb-over { color: var(--danger); border-color: var(--danger); }

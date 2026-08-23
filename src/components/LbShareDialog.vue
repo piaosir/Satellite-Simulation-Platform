@@ -504,10 +504,10 @@ watch(() => way.value, (w) => { if (w === 'online' && props.configured && !inbox
 /* 视觉语言与各 App 的 .lb-dlg 一致（同一套 CSS 变量），此处自带一份是因为 App 的样式是 scoped 的，
    子组件除根元素外吃不到。类名统一 lbs- 前缀，不与任何 App 内的类冲突。 */
 .lbs-mask { position: fixed; inset: 0; z-index: 300; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.28); }
-.lbs-dlg { width: 720px; max-width: 94vw; max-height: 88vh; display: flex; flex-direction: column; background: var(--bg); color: var(--text); border: 1px solid var(--border-strong); border-radius: var(--r-modal, 4px); box-shadow: 0 8px 24px rgba(0,0,0,.18); overflow: hidden; }
+.lbs-dlg { width: 720px; max-width: 94vw; max-height: 88vh; display: flex; flex-direction: column; background: var(--bg); color: var(--text); border: 1px solid var(--border-strong); border-radius: var(--r-card, 4px); box-shadow: 0 8px 24px rgba(0,0,0,.18); overflow: hidden; }
 .lbs-hd { display: flex; align-items: center; gap: 8px; padding: 10px 12px; background: var(--surface-2); border-bottom: 1px solid var(--border); }
-.lbs-hd-t { font-size: 11px; font-weight: 600; letter-spacing: 1px; text-transform: uppercase; color: var(--text-muted); }
-.lbs-mod { font-family: var(--font-mono); font-size: 10px; line-height: 15px; padding: 0 5px; color: var(--text-faint); border: 1px solid var(--border-strong); border-radius: 999px; cursor: help; }
+.lbs-hd-t { font-size: 11px; font-weight: 600; letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--text-muted); }
+.lbs-mod { font-family: var(--font-mono); font-size: 10px; line-height: 15px; padding: 0 5px; color: var(--text-faint); border: 1px solid var(--border-strong); border-radius: var(--r-pill); cursor: help; }
 .lbs-sp { flex: 1; }
 .lbs-id { font-size: 11px; color: var(--text-muted); }
 .lbs-id b { font-family: var(--font-mono); color: var(--text); }
@@ -519,7 +519,7 @@ watch(() => way.value, (w) => { if (w === 'online' && props.configured && !inbox
 .lbs-ft { display: flex; justify-content: flex-end; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--border); background: var(--surface); }
 
 /* 分节小标题 */
-.lbs-sec { display: flex; align-items: baseline; gap: 8px; font-size: 11px; font-weight: 600; color: var(--text-muted); letter-spacing: .5px; padding-top: 2px; }
+.lbs-sec { display: flex; align-items: baseline; gap: 8px; font-size: 11px; font-weight: 600; color: var(--text-muted); letter-spacing: var(--ls-tight); padding-top: 2px; }
 .lbs-src { font-weight: 400; font-size: 10.5px; color: var(--text-faint); }
 
 /* 两栏选择区（.solo＝只剩配置一栏，「发到小程序」页不带资源库） */
@@ -527,20 +527,20 @@ watch(() => way.value, (w) => { if (w === 'online' && props.configured && !inbox
 .lbs-pick.solo { grid-template-columns: 1fr; }
 .lbs-col { display: flex; flex-direction: column; min-width: 0; border: 1px solid var(--border); border-radius: var(--r-box, 3px); overflow: hidden; }
 .lbs-col-hd { display: flex; align-items: center; gap: 6px; padding: 4px 7px; font-size: 11px; color: var(--text-muted); background: var(--surface-2); border-bottom: 1px solid var(--border); }
-.lbs-n { font-family: var(--font-mono); font-size: 10px; padding: 0 5px; line-height: 15px; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 999px; }
+.lbs-n { font-family: var(--font-mono); font-size: 10px; padding: 0 5px; line-height: 15px; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-pill); }
 .lbs-hint { font-size: 10.5px; color: var(--text-faint); cursor: help; }
-.lbs-lnk { font: inherit; font-size: 10.5px; padding: 1px 4px; cursor: pointer; color: var(--text-faint); background: transparent; border: 0; border-radius: 2px; }
+.lbs-lnk { font: inherit; font-size: 10.5px; padding: 1px 4px; cursor: pointer; color: var(--text-faint); background: transparent; border: 0; border-radius: var(--r-ctl); }
 .lbs-lnk:hover:not(:disabled) { color: var(--text); background: var(--bg); }
 .lbs-lnk:disabled { opacity: .5; cursor: not-allowed; }
 .lbs-list { flex: 1; min-height: 128px; max-height: 210px; overflow-y: auto; background: var(--bg); }
 .lbs-row { display: flex; align-items: center; gap: 6px; padding: 3px 7px; font-size: 11.5px; cursor: pointer; border-bottom: 1px solid color-mix(in srgb, var(--border) 45%, transparent); }
 .lbs-row:hover { background: var(--surface); }
-.lbs-row input { margin: 0; flex: none; accent-color: var(--accent); }
+.lbs-row input { margin: 0; flex: none; }
 .lbs-nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lbs-fold { color: var(--text-muted); font-weight: 600; }
 .lbs-fi { flex: none; opacity: .65; }
 .lbs-draft { background: color-mix(in srgb, var(--accent) 5%, var(--bg)); }
-.lbs-tag { flex: none; font-size: 10px; color: var(--text-faint); border: 1px dashed var(--border-strong); border-radius: 999px; padding: 0 5px; line-height: 14px; }
+.lbs-tag { flex: none; font-size: 10px; color: var(--text-faint); border: 1px dashed var(--border-strong); border-radius: var(--r-pill); padding: 0 5px; line-height: 14px; }
 .lbs-row.lock { color: var(--text-muted); }
 .lbs-lk { flex: none; opacity: .55; }
 .lbs-grp { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 6px; padding: 3px 7px; background: var(--surface); border-bottom: 1px solid var(--border); }

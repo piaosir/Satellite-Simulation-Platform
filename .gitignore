@@ -10,6 +10,7 @@ release/
 .claude/
 
 # 离屏验证台（环境场图层的地理配准核对页 + 落盘的场数据，各 1 MB），本地开发用，不进仓库
+# .envharness/toggle.mjs 是另一台：图层总开关的取数/铺图时机（node .envharness/toggle.mjs，22 条断言）。
 .envharness/
 
 # 离屏验证台（雨衰计算页交互核对，window.api 走桩），本地开发用，不进仓库
@@ -146,3 +147,18 @@ electron/services/shareConfig.js
 # 3D 球体截图导出验证台：真 createGlobeScene + 真 exportGlobe，验 scene.snapshot 拿回的确实是
 # 「按倍率放大的那一帧」而不是黑图/拉伸图，并量一遍耗时与体积（页面直接把出的图贴出来看）。
 .shotharness/
+
+# 离屏验证台（图层显隐拨杆 .lsw：环境场总开关条 + 标记三分区标题，浅/深色 × 开/关四态并排），本地开发用，不进仓库
+.lswharness/
+# 离屏验证台（全平台控件基线：复选框/单选钮/拨杆/滑块/下拉/取色/分段/滚动条，浅深双主题并排），本地开发用，不进仓库
+.ctlharness/
+# 离屏验证台（GRD 天线设置面板的行距/对齐实测），本地开发用，不进仓库
+.grdharness/
+
+# 「显示设置 · 聚焦卫星」验证台：真模板（node .focusharness/gen.mjs 从 ConstellationMap3D.vue 抽出）
+# + 真全局样式 + 真 Icon，浅/深两主题看版式。几何数值归 packages/core/test 与两台离屏脚本。
+.focusharness/
+
+# 时间控制条验证台：真模板 + 真样式（node .tlharness/gen.mjs 从 ConstellationMap3D.vue 抽出）。
+# 页面里点「扫一遍偏移量」即量出读数块/刻度尺/右组在偏移量长短变化下的宽度与左沿——拖游标抖不抖看这个。
+.tlharness/

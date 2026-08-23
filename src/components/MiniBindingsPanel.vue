@@ -135,7 +135,7 @@ function ago(ts) {
   background: transparent; border: 1px solid transparent; border-radius: var(--r-ctl, 2px); outline: none; }
 .mb-nm:hover { border-color: var(--border); }
 .mb-nm:focus { border-color: var(--accent); background: var(--bg); }
-.mb-ch { flex: none; font-family: var(--font-mono); font-size: 10.5px; color: var(--text-muted); letter-spacing: .3px; }
+.mb-ch { flex: none; font-family: var(--font-mono); font-size: 10.5px; color: var(--text-muted); letter-spacing: var(--ls-tight); }
 .mb-at { flex: none; width: 62px; text-align: right; font-size: 10.5px; color: var(--text-faint); }
 .mb-x { flex: none; display: inline-flex; padding: 2px; cursor: pointer; color: var(--text-faint); border-radius: var(--r-ctl, 2px); }
 .mb-x:hover { color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, transparent); }
@@ -143,7 +143,7 @@ function ago(ts) {
 .mb-add { display: flex; gap: 6px; }
 .mb-add input { font: inherit; font-size: 11.5px; padding: 5px 8px; outline: none; color: var(--text);
   background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
-.mb-in-ch { flex: none; width: 150px; font-family: var(--font-mono); letter-spacing: .5px; text-transform: uppercase; }
+.mb-in-ch { flex: none; width: 150px; font-family: var(--font-mono); letter-spacing: var(--ls-tight); text-transform: uppercase; }
 .mb-in-ch.ok { border-color: var(--ok); }
 .mb-in-nm { flex: 1; min-width: 0; }
 .mb-btn { flex: none; font: inherit; font-size: 11.5px; line-height: 1; padding: 5px 11px; cursor: pointer;

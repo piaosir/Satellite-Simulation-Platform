@@ -258,7 +258,7 @@ const unresolved = computed(() => {
 
 <style scoped>
 .esp { display: flex; flex-direction: column; }
-.esp-sub { margin: 9px 0 3px; padding-bottom: 2px; font-size: 11.5px; letter-spacing: 1px; color: var(--text-muted); border-bottom: 1px solid var(--lb-rule); }
+.esp-sub { margin: 9px 0 3px; padding-bottom: 2px; font-size: 11.5px; letter-spacing: var(--ls-label); color: var(--text-muted); border-bottom: 1px solid var(--lb-rule); }
 .esp-seg { display: flex; gap: 0; margin: 4px 0 6px; }
 .esp-segb {
   font: inherit; font-size: 11.5px; line-height: 1; padding: 4px 14px; cursor: pointer;
@@ -278,7 +278,7 @@ const unresolved = computed(() => {
 .esp-pick { margin-bottom: 4px; }
 .esp-in {
   width: 100%; font: inherit; font-size: 11.5px; padding: 3px 6px;
-  color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px);
+  color: var(--text); background-color: var(--bg); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px);
 }
 .esp-in:focus { outline: none; border-color: var(--accent); }
 .esp-tip { font-size: 11px; color: var(--text-muted); line-height: 1.5; margin-top: 3px; }
@@ -290,7 +290,7 @@ const unresolved = computed(() => {
 .esp-list li.on { background: var(--surface-2); }
 .esp-li-n { display: block; font-size: 11.5px; color: var(--text); }
 .esp-li-i { display: block; font-size: 10px; color: var(--text-muted); font-family: var(--font-mono); }
-.esp-badge { display: inline-block; font-size: 9px; font-style: normal; padding: 0 5px; margin-left: 5px; border-radius: 8px; background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); vertical-align: middle; }
+.esp-badge { display: inline-block; font-size: 9px; font-style: normal; padding: 0 5px; margin-left: 5px; border-radius: var(--r-pill); background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); vertical-align: middle; }
 .esp-badge-cc { background: var(--accent); color: var(--bg); border-color: var(--accent); }
 .esp-badge.esp-rg-GEO { background: #16a34a1a; color: #16a34a; border-color: #16a34a55; }
 .esp-badge.esp-rg-IGSO { background: #0d94881a; color: #0d9488; border-color: #0d948855; }

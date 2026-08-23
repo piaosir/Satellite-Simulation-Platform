@@ -51,7 +51,8 @@ const sideViews = computed(() => [
   { key: 'gxt', label: 'GXT/KML 显示', icon: 'waves', disabled: !covNav.covAvail, hint: 'GEO 卫星覆盖等值线：显示 GXT / KML 覆盖库里的波束' },
   { key: 'markers', label: '标记', icon: 'map-pin', disabled: !pageReady.value, hint: '点标记 / 地球站 / 轨迹' },
   { key: 'env', label: '环境场', icon: 'cloud-rain', disabled: !pageReady.value, hint: 'ITU-R 环境数据场：R0.01% 降雨率 / 0°C 等温线高度 / 雨高 / 海拔 / 水汽密度 / 云液态水（栅格 + 等值线）' },
-  { key: 'geo', label: '地图设置', icon: 'sliders-horizontal', disabled: !pageReady.value, hint: '海陆配色 / 国界省界 / 名称标注' }
+  { key: 'focus', label: '聚焦卫星', icon: 'crosshair', disabled: !pageReady.value, hint: '聚焦星画什么、怎么画：轨道线 / 星下点轨迹 / 覆盖圈（口径与填充）/ 覆盖锥 / 卫星标记' },
+  { key: 'geo', label: '地图设置', icon: 'sliders-horizontal', disabled: !pageReady.value, hint: '海陆配色 / 国界省界 / 名称标注 / 晨昏线' }
 ])
 const sideTitle = computed(() => sideViews.value.find((v) => v.key === ui.side)?.label || '')
 function setSide(k) {
@@ -165,11 +166,11 @@ const stepZoom = (d) => { const t = Math.max(0, Math.min(1, zoom.value + d)); if
 // ---- 菜单栏（仿 SATSOFT 经典菜单：纯文字标题 + 下拉；不可用项置灰不隐藏）----
 const menus = computed(() => [
   { key: 'file', label: '文件', items: [
-    { label: '文件管理…', icon: 'folder-open', lock: true, hint: '管理 GRD 天线 / 频率计划 / GXT · KML 覆盖文件库（导入 / 导出 / 删除）', run: () => { fileOpen.value = true } },
-    // 频率计划是「文件」不是「计算」：它与 GRD 天线平级、同挂在卫星下，本身不产出任何计算结果，
+    { label: '文件管理…', icon: 'folder-open', lock: true, hint: '管理轨道星历 / 天线方向图 / 频率计划 / GXT · KML 覆盖文件库（导入 / 导出 / 删除）', run: () => { fileOpen.value = true } },
+    // 频率计划是「文件」不是「计算」：它与天线方向图平级、同挂在卫星下，本身不产出任何计算结果，
     // 只是被链路预算引用的一份资料。故归文件区，不留在计算菜单里。
-    { label: '转发器频率计划…', icon: 'freq-plan', lock: true, hint: '转发器频率排布与频率分配表：挂在卫星下、与 GRD 天线平级；供链路预算引用，可导出 PNG / PDF（独立窗口）', run: openFreqPlan },
-    { label: '导入 TLE 文件（CSV）…', icon: 'import', lock: true, disabled: !covNav.importTle, hint: '从本地 CSV（CelesTrak「FORMAT=csv」的 OMM 文件）导入卫星星历，离线或无法连接 CelesTrak 时使用', run: () => covNav.importTle?.() },
+    { label: '转发器频率计划…', icon: 'freq-plan', lock: true, hint: '转发器频率排布与频率分配表：挂在卫星下、与天线方向图平级；供链路预算引用，可导出 PNG / PDF（独立窗口）', run: openFreqPlan },
+    { label: '导入星历文件…', icon: 'import', lock: true, disabled: !covNav.importTle, hint: '从本地文件导入卫星星历：OMM 的 CSV / JSON / KVN / XML 与 TLE / 3LE，按内容自动识别；离线或无法连接 CelesTrak 时使用', run: () => covNav.importTle?.() },
     { sep: true },
     { label: '退出', icon: 'log-out', hint: '关闭主窗口', run: () => window.close() }
   ] },
@@ -493,7 +494,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 .mitem.dis .mico { color: var(--text-faint); }
 .msep { height: 1px; background: var(--border); margin: 3px 6px; }
 .vscope { display: flex; gap: 4px; padding: 3px 4px 6px; border-bottom: 1px solid var(--border); margin-bottom: 3px; }
-.vsp { flex: 1; text-align: center; cursor: pointer; padding: 3px 6px; border-radius: 2px; font-size: 12px; color: var(--text-muted); border: 1px solid var(--border); }
+.vsp { flex: 1; text-align: center; cursor: pointer; padding: 3px 6px; border-radius: var(--r-ctl); font-size: 12px; color: var(--text-muted); border: 1px solid var(--border); }
 .vsp:hover { color: var(--text); border-color: var(--accent); }
 .vsp.on { color: var(--bg); background: var(--accent); border-color: var(--accent); font-weight: 600; }
 .vmask { position: fixed; inset: 0; z-index: 99; }
@@ -506,7 +507,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 .tbtn {
   width: 26px; height: 26px; display: inline-flex; align-items: center; justify-content: center;
   border: 1px solid transparent; background: transparent; color: var(--text-muted);
-  border-radius: 2px; padding: 0; cursor: pointer;
+  border-radius: var(--r-ctl); padding: 0; cursor: pointer;
 }
 .tbtn:hover { border-color: var(--border-strong); background: var(--bg); color: var(--text); }
 .tbtn.on { background: var(--accent); border-color: var(--accent); color: var(--bg); }
@@ -536,8 +537,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   display: flex; align-items: center; gap: 2px; height: 26px; padding: 0 5px 0 11px;
   background: var(--surface-2); border-bottom: 1px solid var(--border); flex: none;
 }
-.dock-tt { flex: 1; font-size: 11.5px; font-weight: 600; letter-spacing: .5px; color: var(--text-muted); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.dock-x { width: 18px; height: 18px; flex: none; display: inline-flex; align-items: center; justify-content: center; color: var(--text-faint); cursor: pointer; border-radius: 2px; }
+.dock-tt { flex: 1; font-size: 11.5px; font-weight: 600; letter-spacing: var(--ls-tight); color: var(--text-muted); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.dock-x { width: 18px; height: 18px; flex: none; display: inline-flex; align-items: center; justify-content: center; color: var(--text-faint); cursor: pointer; border-radius: var(--r-ctl); }
 .dock-x:hover { background: var(--border); color: var(--text); }
 /* scrollbar-gutter: stable —— 恒定预留竖滚动条槽位：侧栏面板内容（如可见性「瞬时可见」随时间轴每帧重算，
    可见星条数变化 → 面板高度增减 → 竖滚动条忽隐忽现）时，Windows 经典滚动条占 ~15px 会令内容宽度左右跳动；
@@ -572,9 +573,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   min-width: 300px; padding: 26px 34px 22px; text-align: center;
   background: var(--surface); border: 1px solid var(--border-strong); box-shadow: 0 10px 32px rgba(0,0,0,0.3);
 }
-.ab-name { font-family: var(--font-serif); font-size: 19px; letter-spacing: .6px; }
+.ab-name { font-family: var(--font-serif); font-size: 19px; letter-spacing: var(--ls-tight); }
 .ab-ver { margin-top: 8px; font-size: 12px; color: var(--text-muted); }
-.ab-close { margin-top: 18px; padding: 4px 22px; border: 1px solid var(--border-strong); background: var(--bg); color: var(--text); cursor: pointer; border-radius: 2px; }
+.ab-close { margin-top: 18px; padding: 4px 22px; border: 1px solid var(--border-strong); background: var(--bg); color: var(--text); cursor: pointer; border-radius: var(--r-ctl); }
 .ab-close:hover { border-color: var(--accent); }
 .ab-close:disabled { opacity: .5; cursor: default; }
 .ab-id { cursor: pointer; user-select: text; font-size: 15px; }
@@ -607,9 +608,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 .cell.envval .cval { font-family: var(--font-mono); font-weight: 600; font-variant-numeric: tabular-nums; }
 .cell.coord { color: var(--text); }
 .cell.coord .cur { flex: none; }
-.cell.coord .cval { font-family: var(--font-mono); font-weight: 600; letter-spacing: .3px; min-width: 150px; }
-.zoomctl .zbtn { width: 15px; height: 15px; display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 1px solid var(--border); background: var(--surface); color: var(--text-muted); cursor: pointer; border-radius: 2px; }
+.cell.coord .cval { font-family: var(--font-mono); font-weight: 600; letter-spacing: var(--ls-tight); min-width: 150px; }
+.zoomctl .zbtn { width: 15px; height: 15px; display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 1px solid var(--border); background: var(--surface); color: var(--text-muted); cursor: pointer; border-radius: var(--r-ctl); }
 .zoomctl .zbtn:hover { color: var(--text); border-color: var(--accent); }
-.zoomctl .zrange { width: 110px; height: 3px; cursor: pointer; accent-color: var(--accent); }
+.zoomctl .zrange { width: 110px; }
 .zoomctl .zpct { width: 32px; text-align: right; font-family: var(--font-mono); color: var(--text-muted); }
 </style>

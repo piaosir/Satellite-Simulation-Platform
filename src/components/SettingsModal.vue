@@ -107,7 +107,7 @@ const speedPct = computed({
             </label>
             <div class="frow">
               <span class="fn">MSAA 抗锯齿</span>
-              <span class="sw" :class="{ on: msaaOn }" @click="toggleMsaa"><i></i></span>
+              <button type="button" class="layersw lg" :class="{ on: msaaOn }" role="switch" :aria-checked="msaaOn ? 'true' : 'false'" :aria-label="'MSAA 抗锯齿'" @click="toggleMsaa"><i></i></button>
             </div>
           </div>
         </section>
@@ -118,7 +118,7 @@ const speedPct = computed({
           <div class="grid">
             <div class="frow">
               <span class="fn">地球自转</span>
-              <span class="sw" :class="{ on: viewPrefs.autoRotate }" @click="viewPrefs.autoRotate = !viewPrefs.autoRotate"><i></i></span>
+              <button type="button" class="layersw lg" :class="{ on: viewPrefs.autoRotate }" role="switch" :aria-checked="viewPrefs.autoRotate ? 'true' : 'false'" :aria-label="'地球自转'" @click="viewPrefs.autoRotate = !viewPrefs.autoRotate"><i></i></button>
             </div>
             <label class="frow">
               <span class="fn">自转速度<em>{{ speedPct }}%</em></span>
@@ -139,17 +139,17 @@ const speedPct = computed({
 <style scoped>
 .mask { position: fixed; inset: 0; z-index: 2000; background: rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center; }
 .dlg { width: 560px; max-width: calc(100vw - 32px); max-height: calc(100vh - 64px); display: flex; flex-direction: column;
-  background: var(--surface); border: 1px solid var(--border-strong); border-radius: 4px; box-shadow: 0 12px 40px rgba(0,0,0,0.5); }
+  background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-card); box-shadow: 0 12px 40px rgba(0,0,0,0.5); }
 .dhd { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid var(--border); }
 .dt { font-family: var(--font-serif); font-size: 15px; }
 .x { cursor: pointer; color: var(--text-muted); padding: 2px 6px; display: inline-flex; align-items: center; }
 .x:hover { color: var(--text); }
 .body { padding: 14px 16px; overflow: auto; }
 .sec { margin-bottom: 18px; }
-.shd { font-size: 12px; color: var(--text-muted); letter-spacing: .5px; margin-bottom: 10px; }
+.shd { font-size: 12px; color: var(--text-muted); letter-spacing: var(--ls-tight); margin-bottom: 10px; }
 .tiers { display: flex; gap: 6px; flex-wrap: wrap; }
 .tier { flex: 1; min-width: 64px; padding: 7px 0; cursor: pointer; font-size: 13px; color: var(--text-muted);
-  background: var(--bg); border: 1px solid var(--border); border-radius: 3px; transition: all .12s; }
+  background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-box); transition: all .12s; }
 .tier.ttheme { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
 .tier:hover { color: var(--text); border-color: var(--accent); }
 .tier.on { color: var(--bg); background: var(--accent); border-color: var(--accent); font-weight: 600; }
@@ -159,14 +159,10 @@ const speedPct = computed({
 .frow { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .fn { font-size: 12.5px; color: var(--text); display: flex; flex-direction: column; }
 .fn em { font-style: normal; font-size: 11px; color: var(--text-faint); margin-top: 2px; }
-.frow select { min-width: 150px; border: 1px solid var(--border); background: var(--bg); color: var(--text); padding: 5px 8px; outline: none; }
+.frow select { min-width: 150px; border: 1px solid var(--border); background-color: var(--bg); color: var(--text); padding: 5px 8px; outline: none; }
 .frow input[type=range] { width: 150px; }
-.sw { width: 40px; height: 22px; border-radius: 12px; background: var(--border); position: relative; cursor: pointer; transition: background .15s; flex: none; }
-.sw i { position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: var(--text-faint); transition: all .15s; }
-.sw.on { background: var(--accent); }
-.sw.on i { left: 20px; background: var(--bg); }
 .dft { display: flex; align-items: center; justify-content: flex-end; gap: 10px; padding: 12px 16px; border-top: 1px solid var(--border); }
-.dft button { padding: 6px 16px; cursor: pointer; border-radius: 3px; font-size: 12.5px; }
+.dft button { padding: 6px 16px; cursor: pointer; border-radius: var(--r-box); font-size: 12.5px; }
 .ghost { background: var(--bg); border: 1px solid var(--border); color: var(--text-muted); }
 .ghost:hover { color: var(--text); border-color: var(--accent); }
 .ok { background: var(--accent); border: 1px solid var(--accent); color: var(--bg); font-weight: 600; }

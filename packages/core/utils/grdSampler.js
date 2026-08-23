@@ -149,30 +149,52 @@ function sampleBeamAt(beam, igrid, basis, lon, lat, opt, tgtAltKm) {
   return v;
 }
 
-// ===== GRASP .grd 文本解析（src/viz/grd/parse.js 同源）=====
+// ===== GRASP .grd 文本解析（src/viz/grd/parse.js 同源，改动请两处对照）=====
+// '++++' 判据、多候选重试、可读报错三项与那边逐条同源，理由见其头注：
+// '++++NNNN'（SATSOFT 文件 ID）与文本头里的装饰行同样满足官方 TEXT(1:4) 判据，故按候选逐个试读头部。
+function readHead(L, at) {
+  if (at + 1 >= L.length) return null;
+  const ktype = parseInt(L[at].trim());
+  if (!Number.isFinite(ktype)) return null;
+  const head = L[at + 1].trim().split(/\s+/).map(Number);
+  if (head.length < 4 || !head.slice(0, 4).every(Number.isFinite)) return null;
+  const nset = head[0], ncomp = head[2];
+  if (!(nset >= 1) || !(ncomp >= 1)) return null;
+  if (at + 2 + nset + 1 >= L.length) return null;
+  const b = L[at + 2 + nset].trim().split(/\s+/).map(Number);
+  const g = L[at + 3 + nset].trim().split(/\s+/).map(Number);
+  if (b.length < 4 || !b.slice(0, 4).every(Number.isFinite)) return null;
+  if (!(g[0] >= 2) || !(g[1] >= 2)) return null;
+  return { ktype: ktype, nset: nset, icomp: head[1], ncomp: ncomp, igrid: head[3], next: at + 2 };
+}
 function parseGrd(text) {
   const L = text.split(/\r\n|\n|\r/);
-  let i = 0;
-  while (i < L.length && !/^\+{4,}$/.test(L[i].trim())) i++;
-  if (i >= L.length) throw new Error('未找到结束标记 ++++：可能非 GRASP 网格或二进制');
-  i++;
-  const ktype = parseInt(L[i++].trim());
-  const head = L[i++].trim().split(/\s+/).map(Number);
-  const nset = head[0], icomp = head[1], ncomp = head[2], igrid = head[3];
+  let h = null, i = 0, marks = 0;
+  for (let k = 0; k < L.length; k++) {
+    if (!/^\+{4}/.test(L[k].trim())) continue;   // 官方判据 TEXT(1:4)=='++++'：行首 4 个 '+'，其后可跟任意内容
+    marks++;
+    h = readHead(L, k + 1);
+    if (h) { i = h.next; break; }
+  }
+  if (!marks) throw new Error('未找到结束标记 ++++：可能非 GRASP 网格或二进制');
+  if (!h) throw new Error('找到了 ++++ 但其后不是 GRASP 网格头（应为 KTYPE 与 NSET ICOMP NCOMP IGRID）：可能是 SATSOFT ++++NNNN 一类的同标记异格式文件');
+  const ktype = h.ktype, nset = h.nset, icomp = h.icomp, ncomp = h.ncomp, igrid = h.igrid;
   for (let s = 0; s < nset; s++) i++;
   const sets = [];
+  const line = (n) => { const v = L[n]; if (v === undefined) throw new Error('文件在第 ' + (n + 1) + ' 行处提前结束：网格数据不完整（可能被截断或非 GRASP 网格）'); return v; };
   for (let s = 0; s < nset; s++) {
-    const xline = L[i++].trim().split(/\s+/).map(Number);
+    const xline = line(i++).trim().split(/\s+/).map(Number);
     const XS = xline[0], YS = xline[1], XE = xline[2], YE = xline[3];
-    const dline = L[i++].trim().split(/\s+/).map(Number);
+    const dline = line(i++).trim().split(/\s+/).map(Number);
     const NX = dline[0], NY = dline[1], KLIMIT = dline[2];
+    if (!(NX >= 2) || !(NY >= 2)) throw new Error('波束 ' + (s + 1) + ' 的网格点数无效（NX=' + NX + ', NY=' + NY + '）');
     const N = NX * NY;
     const c1re = new Float32Array(N), c1im = new Float32Array(N), c2re = new Float32Array(N), c2im = new Float32Array(N);
     for (let row = 0; row < NY; row++) {
       let cs = 0, ce = NX;
-      if (KLIMIT === 1) { const p = L[i++].trim().split(/\s+/).map(Number); cs = p[0] - 1; ce = cs + p[1]; }
+      if (KLIMIT === 1) { const p = line(i++).trim().split(/\s+/).map(Number); cs = p[0] - 1; ce = cs + p[1]; }
       for (let col = cs; col < ce; col++) {
-        const r = L[i++].trim().split(/\s+/);
+        const r = line(i++).trim().split(/\s+/);
         const a = +r[0], b = +r[1], c = ncomp >= 2 ? +r[2] : 0, d = ncomp >= 2 ? +r[3] : 0;
         const idx = row * NX + col;
         c1re[idx] = a; c1im[idx] = b; c2re[idx] = c; c2im[idx] = d;

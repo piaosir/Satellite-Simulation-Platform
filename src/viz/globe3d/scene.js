@@ -15,8 +15,9 @@ import { NANHAI_DASHES, NANHAI_WIDTH_MUL, NANHAI_MIN_WIDTH } from '../nanhaiDash
 import { CHINA, ARCTIC_ISLAND_LAT, landColors, setLandPalette } from '../landPalette.js'
 import { antarcticaFillRings } from './antarctica.js'
 import { solarGeometry, terminatorRing } from '../terminator.js'
+// 顶点级几何原语：与聚焦几何 Worker 共用同一份实现（别在这里再写一份）
+import { RE, LIFT, llaToVec, pushStripSegs, pushDashed, densifyArc, DASH_SPEC, FILL_R, FILL_CELL, slerpUnit, footprintFill, coneFace, createSink } from './focusLanes.js'
 
-const RE = 6371
 
 // 画布文字（地名/大洋/波束标签）与界面同一字体栈：Times New Roman 打西文，宋体接中文。
 // 与 styles/global.css 的 --font-serif 保持一致（canvas 取不到 CSS 变量，此处手工镜像）。
@@ -32,16 +33,6 @@ function capPixelRatio(n) {
   return Math.max(0.25, Math.min(n, dpr * SS_CAP, 4))
 }
 
-function llaToVec(latDeg, lonDeg, altKm) {
-  const r = (RE + altKm) / RE
-  const phi = (90 - latDeg) * Math.PI / 180
-  const theta = (lonDeg + 180) * Math.PI / 180
-  return new THREE.Vector3(
-    -r * Math.sin(phi) * Math.cos(theta),
-    r * Math.cos(phi),
-    r * Math.sin(phi) * Math.sin(theta)
-  )
-}
 
 // 陆地配色（LAND/CHINA/ICE/基调方案/逐国覆盖）统一收拢到 ../landPalette.js（与 2D 平面图共用单一来源）
 const OCEAN = '#15426b'
@@ -628,30 +619,64 @@ export function createGlobeScene(container, quality = {}) {
     }
   }
 
-  // 选中高亮：金色圆环（与 2D 星座地图一致）。用 Sprite + 每帧反缩放成固定屏幕尺寸 ->
-  // 任何缩放级别都清晰看到选中的是哪颗；被地球挡住时隐藏。
-  function makeRingTexture() {
+  // ===================== 聚焦卫星显示样式（用户可自定义） =====================
+  // 由 3D 页「显示设置 · 聚焦卫星」经 setFocusStyle 推入；setSelectionSet / setFocusSatLLA / 高亮环
+  // 每次重建时读取（重建每拍都做，故改样式无需另开通道，页面改完再 commit 一次即可）。
+  // 颜色一律 0xRRGGBB 数值（#hex 由调用方转好，环色例外——它画进 canvas 纹理，直接用 CSS 串）；
+  // 线宽 = 屏幕像素；透明度 0~1；线型 solid | dash | dot。
+  // 在轨点像素：略大于星点云(SAT_POINT_PX≈3.2)，压在细轨道之上、落在高亮环内；非主选小一档。
+  const focusCfg = {
+    orbOn: true, orbColor: 0x6f9fc8, orbWidth: 1.3, orbOpacity: 0.9, orbDash: 'solid',
+    trkOn: true, trkColor: 0xe8c074, trkWidth: 1.6, trkOpacity: 1, trkDash: 'solid',
+    fpOn: true, fpColor: 0xb8e6fa, fpWidth: 1.6, fpOpacity: 1, fpDash: 'dash',
+    fpFillColor: 0xb8e6fa, fpFillOpacity: 0,
+    coneOn: false, coneFaceColor: 0xb8e6fa, coneFaceOpacity: 0.75,
+    coneGenCount: 0, coneGenColor: 0xb8e6fa, coneGenWidth: 1, coneGenOpacity: 0.55, coneGenDash: 'solid',
+    dotOn: true, dotPx: 13, subPx: 30, subColor: 0xffffff,
+    ringOn: true, ringColor: '#ffd27a', ringPx: 26
+  }
+  // 出厂样式快照：可见性分析的「视线斜线 + 可见星点」借同一条通道呈现，但它不是聚焦星的轨道线，
+  // 不该跟着聚焦样式一起变色/关掉 —— 那类条目标 raw:true，一律按这份出厂值画。
+  const DEF_CFG = { ...focusCfg }
+  function setFocusStyle(s) {
+    if (!s) return
+    const oldRing = focusCfg.ringColor
+    Object.assign(focusCfg, s)
+    if (focusCfg.ringColor !== oldRing) retintRing()
+    // ★ 这里【不要】调 setOrbitRingSet() 去「就地重建」轨道圈：环现在由 setFocusLanes 产出，
+    //   orbRingItems 恒为空，那个函数进去只会 disposeOrbRings() 然后早退 —— 轨道线当场消失，
+    //   之后要么等调用方那次带 ringDirty 的 commit、要么等 TTL 到期才回得来（曾如此）。
+    //   重建统一交给调用方：改样式后必跟一次 commitGeometry，且已置 ringDirty（见页面的 applyFocusStyle）。
+    //   只有「关掉」是立刻的事，不必等下一拍。
+    if (!focusCfg.orbOn) disposeOrbRings()
+  }
+
+  // 选中高亮：金色圆环（与 2D 星座地图一致），每颗聚焦星一个（主选略大一档，与在轨点/轨道线同一套主次口径）。
+  // 画法＝贴图点层（见 buildPointLayers）：固定屏幕像素、一次 draw call、被地球挡住由深度测试自然剔除。
+  // ★ 别退回「一星一个 Sprite + 每帧逐个反缩放/遮挡判定」：聚焦上千颗时那是几千个对象、几千次 draw call。
+  function makeRingTexture(color) {
     const s = 128, c = document.createElement('canvas')
     c.width = c.height = s
     const x = c.getContext('2d')
-    x.strokeStyle = '#ffd27a'; x.lineWidth = 9; x.shadowColor = 'rgba(0,0,0,0.6)'; x.shadowBlur = 4
+    x.strokeStyle = color || '#ffd27a'; x.lineWidth = 9; x.shadowColor = 'rgba(0,0,0,0.6)'; x.shadowBlur = 4
     x.beginPath(); x.arc(s / 2, s / 2, s / 2 - 12, 0, Math.PI * 2); x.stroke()
     const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace
+    // 与 makeDotTex 同一条理由：本贴图全局只此一份，而挂着它的点层（ringGroup / laneHlGroup）每拍随
+    // 几何重建、每拍走一次 disposeGroup —— 不打这个标志就会被连带 dispose 掉，此后每帧再被 three
+    // 重新上传一遍（画面看不出来，纯白烧）。释放由 retintRing 换色时显式做，不归 disposeGroup 管。
+    t._shared = true
     return t
   }
-  const RING_PX = 26  // 选中环固定屏幕像素大小，与缩放无关
-  // 环可以有多个：点选星一个 + 对星覆盖分析「聚焦特效」每颗被点亮的星各一个（源星与其对星跟踪的目标星）。
-  // 共用同一张纹理，精灵按需扩池、只增不减（多出来的隐藏），每帧逐个反缩放 + 背面剔除。
-  const ringTex = makeRingTexture()
-  const ringSprs = []
-  function ringSprite() {
-    const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: ringTex, depthTest: false, depthWrite: false, transparent: true }))
-    spr.renderOrder = 20; spr.visible = false
-    scene.add(spr); ringSprs.push(spr)
-    return spr
+  // 环色画进贴图（不是材质染色），换色即重画贴图；点层每拍随几何一起重建，故只需换掉贴图本身。
+  let ringTex = makeRingTexture(focusCfg.ringColor)
+  function retintRing() {
+    const old = ringTex
+    ringTex = makeRingTexture(focusCfg.ringColor)
+    if (ringGroup) for (const o of ringGroup.children) o.material.map = ringTex
+    if (laneHlGroup) for (const o of laneHlGroup.children) o.material.map = ringTex
+    if (old) old.dispose()
   }
-  ringSprite()
-  let hlPos = []  // 选中星/聚焦星的世界坐标列表（空=一个都不画）
+  let ringGroup = null
 
   // 选中卫星几何：轨道圈（3D）、星下点轨迹（贴地）、覆盖足迹圈（贴地）。
   // 球体不透明 + 默认深度测试 -> 背面线段被地球天然遮挡，无需手动分正/背面。
@@ -661,10 +686,6 @@ export function createGlobeScene(container, quality = {}) {
     const pts = points.map((p) => llaToVec(p.lat, p.lon, p.altKm || 0))
     return fatStrip(pts, color, width || 1.4, opacity, 6)   // 与 GRD 等值线/Polygon 线同层(6)：覆盖填充(5)之上、国界省界(6.5+)之下
   }
-  const LIFT = 12  // 轨迹/足迹抬离地表 ~12km，避免与球面 z-fighting
-  // 选中星「在轨点」大号圆点屏幕像素：略大于星点云(SAT_POINT_PX≈3.2)，压在细轨道之上、落在高亮环内；primary 更大一档
-  const SEL_DOT_PX = 11
-  const SEL_DOT_PX_PRIMARY = 13
   function setOrbit(points) {
     disposeLine(orbitLine); orbitLine = null
     if (points && points.length) { orbitLine = lineFromLLA(points, 0x6f9fc8, 0.75, 1.5); scene.add(orbitLine) }
@@ -692,46 +713,259 @@ export function createGlobeScene(container, quality = {}) {
     }
     disposeGroup(selDotGroup); selDotGroup = null   // 精灵点用 disposeGroup（连同 canvas 贴图一起释放）
   }
-  // 合批：同样式的线并进一条 LineSegments2，线对象数与聚焦颗数无关（3 条 + primary 轨道 1 条），
+  // 合批：同样式的线并进一条 LineSegments2，线对象数与聚焦颗数无关（默认样式下 3~4 条）。
   // 多选几百颗时重建与绘制都不再随颗数线性膨胀。Line2 内部本就把折线拆成相邻点对喂同一材质，
-  // 故合批后画面与逐条画完全一致（颜色/线宽/透明度照旧，primary 仍单独一条以加粗加亮）。
-  function pushStripSegs(out, pts) {
-    for (let i = 0; i + 1 < pts.length; i++) { const a = pts[i], b = pts[i + 1]; out.push(a.x, a.y, a.z, b.x, b.y, b.z) }
+  // 故合批后画面与逐条画完全一致（颜色/线宽/透明度照旧，primary 仍自成一档以加粗加亮）。
+  // 合批出来的半透明面（覆盖圈填充 / 覆盖锥锥面各一批）
+  function fillMesh(pos, color, opacity, order) {
+    const geo = new THREE.BufferGeometry()
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3))
+    const mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+      color, transparent: true, opacity: Math.max(0, Math.min(1, opacity)), side: THREE.DoubleSide, depthWrite: false
+    }))
+    mesh.renderOrder = order
+    return mesh
+  }
+  // 上一拍各桶的顶点数：这一拍照着预留，省掉 sink 从 8 KB 一路翻倍到上百 MB 的那串重分配拷贝
+  //（几何逐拍几乎同量，估得准；估歪了也只是退回翻倍，不会出错）。
+  const sinkHint = new Map()
+  const hintedSink = (key) => createSink(Math.max(4096, sinkHint.get(key) || 0))
+  // 选中星「在轨点」：合批成贴图点层，不再一星一个 Sprite。
+  // ★ 与高亮环同一条理由（见 buildPointLayers 上方那段）：聚焦上千颗时逐个 Sprite 是几千个对象、
+  //   每帧几千次 draw call，还要逐个反缩放 —— 取消颗数上限后这一层会先塌。
+  // 外观逐样保留：底盘按星点原色染（disc 贴图是白的，靠材质 color 上色），白圈单独一层压在上面
+  //（一张贴图做不到「盘染色、圈恒白」—— PointsMaterial 的 color 是整张贴图相乘）。
+  let dotDiscTex = null, dotRingTex = null
+  function makeDotTex(draw) {
+    const s = 32, c = document.createElement('canvas'); c.width = c.height = s
+    draw(c.getContext('2d'))
+    const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace
+    t._shared = true   // 两张贴图全局各一份：点层每拍重建，disposeGroup 认这个标志才不会把它们连带释放
+    return t
+  }
+  // 星点原色是 CSS 串（satDotHex），点层材质要数值
+  const hexOf = (c) => { if (Number.isFinite(c)) return c; const n = typeof c === 'string' ? parseInt(String(c).replace('#', ''), 16) : NaN; return Number.isFinite(n) ? n : 0x9fd0ef }
+  const discTex = () => (dotDiscTex || (dotDiscTex = makeDotTex((x) => { x.beginPath(); x.arc(16, 16, 9, 0, Math.PI * 2); x.fillStyle = '#fff'; x.fill() })))
+  const dotRing = () => (dotRingTex || (dotRingTex = makeDotTex((x) => { x.beginPath(); x.arc(16, 16, 9, 0, Math.PI * 2); x.lineWidth = 3; x.strokeStyle = 'rgba(255,255,255,0.92)'; x.stroke() })))
+  // list: [{lat, lon, altKm, px, colorHex}]
+  function buildDotLayer(list) {
+    if (!list.length) return null
+    const g = new THREE.Group()
+    const disc = buildPointLayers(list, discTex(), 13, 0xffffff, 7, 0)
+    const ring = buildPointLayers(list.map((q) => ({ lat: q.lat, lon: q.lon, altKm: q.altKm, px: q.px })), dotRing(), 13, 0xffffff, 7.1, 0)
+    if (disc) g.add(disc)
+    if (ring) g.add(ring)
+    return g.children.length ? g : null
   }
   function setSelectionSet(items) {
     disposeSelSet()
     if (!items || !items.length) return
     selSetGroup = new THREE.Group()
-    const dotG = new THREE.Group()
-    const orbSeg = [], trkSeg = [], fpSeg = []
+    const dotList = []
+    // 半透明面（覆盖圈填充 / 覆盖锥锥面）按「层序|色|透明度」分桶，最后各成一个几何体。
+    // 层序：填充 4.2＝Polygon 区域填充(4)之上、GRD 覆盖场(5)之下（叠加区仍以覆盖图为准）；
+    //       锥面 5.5＝覆盖场之上、数据线(6)之下（锥体悬在地表之上该盖住它罩的那块场，但线是标注不该被糊掉）。
+    const faceBuckets = new Map()
+    const faceBucket = (order, color, opacity) => {
+      const key = order + '|' + color + '|' + opacity
+      let b = faceBuckets.get(key)
+      if (!b) { b = { order, color, opacity, pos: hintedSink('f' + key) }; faceBuckets.set(key, b) }
+      return b.pos
+    }
+    // 按「色|宽|透明度」分桶合批：默认样式下轨道(主/非主) + 轨迹 + 足迹共 4 桶，与颗数无关
+    const buckets = new Map()
+    const bucket = (color, width, opacity) => {
+      const key = color + '|' + width + '|' + opacity
+      let b = buckets.get(key)
+      if (!b) { b = { color, width, opacity, seg: hintedSink('l' + key) }; buckets.set(key, b) }
+      return b.seg
+    }
     for (const it of items) {
-      // 轨道圈/星下点轨迹(金)/覆盖足迹(青) 都用与单选时相同的固定原色，多颗同时叠画；primary 仅加粗加亮以区分聚焦星（不用变色）
-      // 轨道线宽收细（primary 1.3 / 其余 1.0）：与选中星「在轨点」大号圆点配合，点更醒目、线不再吃掉点
-      if (it.orbit && it.orbit.length) {
-        if (it.primary) selSetGroup.add(lineFromLLA(it.orbit, 0x6f9fc8, 0.9, 1.3))
-        else pushStripSegs(orbSeg, it.orbit.map((p) => llaToVec(p.lat, p.lon, p.altKm || 0)))
+      const cfg = it.raw ? DEF_CFG : focusCfg   // raw=可见性的视线斜线/可见星点：钉出厂样式，不跟聚焦设置走
+      // 轨道圈/星下点轨迹/覆盖足迹各自取设置里的色/宽/透明度/线型，多颗同时叠画；
+      // primary 仅加粗加亮以区分聚焦星（不变色）：非主选按 0.77 宽、0.56 透明度收一档（=旧的 1.3→1.0 / 0.9→0.5）
+      if (cfg.orbOn && it.orbit && it.orbit.length > 1) {
+        const w = it.primary ? cfg.orbWidth : cfg.orbWidth * 0.77
+        const op = it.primary ? cfg.orbOpacity : cfg.orbOpacity * 0.56
+        pushDashed(bucket(cfg.orbColor, w, op), it.orbit.map((p) => llaToVec(p.lat, p.lon, p.altKm || 0)), cfg.orbDash)
       }
-      if (it.track && it.track.length) pushStripSegs(trkSeg, it.track.map((p) => llaToVec(p.lat, p.lon, LIFT)))
-      if (it.footprint && it.footprint.length > 1) {
-        const pts = it.footprint.map((p) => llaToVec(p.lat, p.lon, LIFT))
-        for (let i = 0; i + 1 < pts.length; i += 2) { const a = pts[i], b = pts[i + 1]; fpSeg.push(a.x, a.y, a.z, b.x, b.y, b.z) }
+      if (cfg.trkOn && it.track && it.track.length > 1) {
+        pushDashed(bucket(cfg.trkColor, cfg.trkWidth, cfg.trkOpacity), densifyArc(it.track.map((p) => llaToVec(p.lat, p.lon, LIFT))), cfg.trkDash)
+      }
+      // 覆盖圈那一圈点：覆盖圈线与覆盖锥共用（关掉线只是不画线，锥还得靠它定底边）
+      const ring = ((cfg.fpOn || cfg.coneOn) && it.footprint && it.footprint.length > 1)
+        ? it.footprint.map((p) => llaToVec(p.lat, p.lon, LIFT)) : null
+      if (ring && cfg.fpOn) {
+        pushDashed(bucket(cfg.fpColor, cfg.fpWidth, cfg.fpOpacity), densifyArc(ring), cfg.fpDash)   // 补密只给【线】：填充/锥面各自有同款补密，ring 原样传下去
+        if (cfg.fpFillOpacity > 0) footprintFill(ring, it.satPos, faceBucket(4.2, cfg.fpFillColor, cfg.fpFillOpacity))
+      }
+      // 覆盖锥：卫星本体 → 覆盖圈边界的锥面与母线。张角口径随覆盖圈定义走（波束全锥角 / 最低仰角）。
+      // 只在 3D 球体画：等距圆柱图上锥面的正投影就是覆盖圈本身，画出来只是把那个圈再描一遍。
+      if (cfg.coneOn && ring && it.satPos && Number.isFinite(it.satPos.altKm) && it.satPos.altKm > 0) {
+        const apex = llaToVec(it.satPos.lat, it.satPos.lon, it.satPos.altKm)
+        if (cfg.coneFaceOpacity > 0) coneFace(apex, ring, faceBucket(5.5, cfg.coneFaceColor, cfg.coneFaceOpacity))
+        if (cfg.coneGenCount > 0) {
+          const seg = bucket(cfg.coneGenColor, cfg.coneGenWidth, cfg.coneGenOpacity)
+          const n = ring.length - 1                                  // 环首尾同点，取 n 个不重复方位
+          const k = Math.max(1, Math.min(n, Math.round(cfg.coneGenCount)))
+          for (let i = 0; i < k; i++) pushDashed(seg, [apex, ring[Math.round(i * n / k) % n]], cfg.coneGenDash)
+        }
       }
       // 选中星「在轨点」：在卫星真实在轨位置画大号圆点，跟随星点原色。renderOrder 7 > 轨道线 6 → 同深度时点画在线之上，不被细轨道盖住；
       // makeDot 自带 depthTest 开 → 背面星点仍由不透明地球深度天然剔除（绝不能关 depthTest）。随缩放联动见 rescaleMarkers。
-      if (it.satPos && Number.isFinite(it.satPos.lat) && Number.isFinite(it.satPos.lon)) {
-        const dot = makeDot(it.satPos.color || '#9fd0ef')
-        dot.position.copy(llaToVec(it.satPos.lat, it.satPos.lon, it.satPos.altKm || 0))
-        dot._px = it.primary ? SEL_DOT_PX_PRIMARY : SEL_DOT_PX; dot._ar = 1; dot.renderOrder = 7
-        dotG.add(dot)
+      if (cfg.dotOn && it.satPos && Number.isFinite(it.satPos.lat) && Number.isFinite(it.satPos.lon)) {
+        dotList.push({
+          lat: it.satPos.lat, lon: it.satPos.lon, altKm: it.satPos.altKm || 0,
+          px: it.primary ? cfg.dotPx : Math.max(2, cfg.dotPx - 2),
+          colorHex: hexOf(it.satPos.color)
+        })
       }
     }
-    if (orbSeg.length) selSetGroup.add(fatSegments(orbSeg, 0x6f9fc8, 1.0, 0.5, 6))
-    if (trkSeg.length) selSetGroup.add(fatSegments(trkSeg, 0xe8c074, 1.6, 1, 6))
-    if (fpSeg.length) selSetGroup.add(fatSegments(fpSeg, 0xb8e6fa, 1.6, 1, 6))
+    for (const [k, b] of faceBuckets) { sinkHint.set('f' + k, b.pos.n); if (b.pos.n) selSetGroup.add(fillMesh(b.pos.view(), b.color, b.opacity, b.order)) }
+    for (const [k, b] of buckets) { sinkHint.set('l' + k, b.seg.n); if (b.seg.n) selSetGroup.add(fatSegments(b.seg.view(), b.color, b.width, b.opacity, 6)) }
     scene.add(selSetGroup)
-    if (dotG.children.length) { selDotGroup = dotG; scene.add(selDotGroup) }
+    selDotGroup = buildDotLayer(dotList)
+    if (selDotGroup) scene.add(selDotGroup)
   }
-  function clearSelectionGeom() { setOrbit(null); setGroundTrack(null); setFootprint(null); setHighlight(null); disposeSelSet() }
+  // ===================== 聚焦星轨道圈：独立一层，每拍只设一次朝向 =====================
+  // 轨道圈画的是【惯性系】里那条闭合曲线，逐拍变的只有地球转角。所以它单独成组：几何只在重建时建一次，
+  // 之后每拍给整组设一个绕极轴的四元数就位 —— 顶点不动、不重传、逐顶点计算归零。
+  // ★ 必须与足迹/填充/覆盖锥/在轨点/星下点轨迹分开：那几样要么钉在【地球】上、要么跟着卫星走，
+  //   跟着环一起转就全错了（星下点轨迹尤其 —— 它算过一次就钉死在地面上，转它等于让轨迹在地上滑）。
+  //   故本组只收轨道圈，setSelectionSet 那边的 it.orbit 留给对星聚焦/可见性那类逐拍现算的条目。
+  // 上游口径见 viz/constellation/focusGeomCache.js。
+  let orbRingGroup = null, orbRingItems = null, orbRingSpin = 0
+  const ORB_AXIS = new THREE.Vector3(0, 1, 0)      // llaToVec 里 Y 是极轴（不是 Z）
+  function disposeOrbRings() {
+    if (!orbRingGroup) return
+    for (const l of orbRingGroup.children) { l.geometry.dispose(); if (l.material) { lineMats.delete(l.material); l.material.dispose() } }
+    scene.remove(orbRingGroup); orbRingGroup = null
+  }
+  // items=[{ lla:[{lat,lon,altKm}...], primary }]，经纬高按【参考 gmst】给；省略 items 则按上次那份重建
+  //（改样式走这条：颜色/线宽/线型变了但几何没变，不必让上游把整批星的 SGP4 重推一遍）。
+  function setOrbitRingSet(items) {
+    if (items !== undefined) orbRingItems = items
+    disposeOrbRings()
+    if (!orbRingItems || !orbRingItems.length || !focusCfg.orbOn) return
+    // 与 setSelectionSet 同一套合批口径：色恒定，只按「宽|透明度」分主/非主两桶
+    const buckets = new Map()
+    for (const it of orbRingItems) {
+      if (!it || !it.lla || it.lla.length < 2) continue
+      const w = it.primary ? focusCfg.orbWidth : focusCfg.orbWidth * 0.77
+      const op = it.primary ? focusCfg.orbOpacity : focusCfg.orbOpacity * 0.56
+      const k = w + '|' + op
+      let b = buckets.get(k)
+      if (!b) { b = { w, op, seg: hintedSink('o' + k) }; buckets.set(k, b) }
+      pushDashed(b.seg, it.lla.map((p) => llaToVec(p.lat, p.lon, p.altKm || 0)), focusCfg.orbDash)
+    }
+    let any = false
+    const g = new THREE.Group()
+    for (const [k, b] of buckets) { sinkHint.set('o' + k, b.seg.n); if (b.seg.n) { g.add(fatSegments(b.seg.view(), focusCfg.orbColor, b.w, b.op, 6)); any = true } }
+    if (!any) return
+    g.quaternion.setFromAxisAngle(ORB_AXIS, orbRingSpin)
+    orbRingGroup = g
+    scene.add(orbRingGroup)
+  }
+  // 每拍一次：rad = 参考 gmst − 当前 gmst（地球东转 ΔGMST，环相对地球就该反着转这么多）
+  function setOrbitRingSpin(rad) {
+    orbRingSpin = Number.isFinite(rad) ? rad : 0
+    if (orbRingGroup) orbRingGroup.quaternion.setFromAxisAngle(ORB_AXIS, orbRingSpin)
+  }
+  // ===================== 聚焦星几何：预制顶点通道（Worker 池产出）=====================
+  // 与 setSelectionSet 的分工：
+  //   · setSelectionSet —— 逐拍现算的【少量】条目（对星覆盖聚焦特效、可见性叠加层），照旧「喂经纬度、这里算顶点」；
+  //   · setFocusLanes   —— 聚焦选中集（可上万颗），顶点已在 Worker 里按【同一份】focusLanes 原语算好，
+  //                        这里只建 BufferGeometry 上传，主线程逐顶点计算为零、逐颗建对象也为零。
+  // shards: 每个分片一份 { orb, orbP, trk, fp, gen, fill, cone, sub, hl, hlP, dots:[{px,tint,n,buf}] }，
+  //         其中 {n, buf} 是已 transfer 过来的 Float32Array 底层缓冲。
+  // opt.ringBuild: 这一拍轨道圈几何有没有重建；没重建就不碰环组（它只需每拍设一次朝向）。
+  let laneGroup = null, laneDotGroup = null, laneSubGroup = null, laneHlGroup = null
+  function disposeLanes() {
+    if (laneGroup) { for (const o of laneGroup.children) { o.geometry.dispose(); if (o.material) { lineMats.delete(o.material); o.material.dispose() } } scene.remove(laneGroup); laneGroup = null }
+    disposeGroup(laneDotGroup); laneDotGroup = null
+    disposeGroup(laneSubGroup); laneSubGroup = null
+    disposeGroup(laneHlGroup); laneHlGroup = null
+  }
+  const laneArr = (x) => (x && x.n > 0 ? new Float32Array(x.buf, 0, x.n) : null)
+  // 一批预制顶点 → 一个 THREE.Points（材质口径与 buildPointLayers 逐字一致：屏幕像素尺寸 + 着色器里剔背面）
+  function lanePoints(pos, tex, px, tint, order) {
+    if (!pos) return null
+    const geo = new THREE.BufferGeometry()
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3))
+    const mat = cullBehindGlobe(new THREE.PointsMaterial({
+      map: tex, color: tint, size: px, sizeAttenuation: false, transparent: true, depthTest: false, depthWrite: false, alphaTest: 0.02
+    }))
+    const o = new THREE.Points(geo, mat)
+    o.renderOrder = order; o._px = px
+    return o
+  }
+  function setFocusLanes(shards, opt) {
+    disposeLanes()
+    if (opt && opt.ringBuild) disposeOrbRings()
+    if (!shards || !shards.length) { if (opt && opt.ringBuild) orbRingItems = null; return }
+    const c = focusCfg
+    const g = new THREE.Group()
+    const dotG = new THREE.Group(), subG = new THREE.Group(), hlG = new THREE.Group()
+    const rg = (opt && opt.ringBuild) ? new THREE.Group() : null
+    // ★ 线必须跨分片【合成一条】：同一 renderOrder 下 three 对透明物体按深度排序，物体个数一变排法就变 ——
+    //   不合的话画面会随 Worker 数抖动（实测线交叉处 0.14% 像素）。合成后每条线通道恒是一个对象，
+    //   与 setSelectionSet 那条老路逐像素一致，也与分成几片无关。线的数据量不大（7000 颗约 6 MB），合得起。
+    // ★ 半透明【面】不必合：同一通道内颜色与透明度都相同，逐层混合的结果与先后无关，合了只是白拷贝一百 MB。
+    const cat = (k) => {
+      let n = 0
+      for (const sh of shards) n += (sh[k] && sh[k].n) || 0
+      if (!n) return null
+      if (shards.length === 1) return laneArr(shards[0][k])
+      const out = new Float32Array(n)
+      let o = 0
+      for (const sh of shards) { const a = laneArr(sh[k]); if (a) { out.set(a, o); o += a.length } }
+      return out
+    }
+    const line = (grp, a, color, w, op) => { if (a) grp.add(fatSegments(a, color, w, op, 6)) }
+    const face = (a, color, op, order) => { if (a) g.add(fillMesh(a, color, op, order)) }
+    if (rg) {
+      line(rg, cat('orb'), c.orbColor, c.orbWidth * 0.77, c.orbOpacity * 0.56)   // 非主选收一档（与 setSelectionSet 同口径）
+      line(rg, cat('orbP'), c.orbColor, c.orbWidth, c.orbOpacity)
+    }
+    line(g, cat('trk'), c.trkColor, c.trkWidth, c.trkOpacity)
+    line(g, cat('fp'), c.fpColor, c.fpWidth, c.fpOpacity)
+    line(g, cat('gen'), c.coneGenColor, c.coneGenWidth, c.coneGenOpacity)
+    for (const sh of shards) {
+      // 层序与 setSelectionSet 一致：填充 4.2（Polygon 之上、GRD 覆盖场之下）、锥面 5.5（覆盖场之上、数据线之下）
+      face(laneArr(sh.fill), c.fpFillColor, c.fpFillOpacity, 4.2)
+      face(laneArr(sh.cone), c.coneFaceColor, c.coneFaceOpacity, 5.5)
+    }
+    // ★ 点层与线同一条理由，也必须跨分片合成一个：这些图标半透明、且 depthTest 关（背面剔除在着色器里做），
+    //   叠在一起时结果取决于画的先后；对象个数一随分片数变，three 对同 renderOrder 透明物体的深度排序就变，
+    //   同一批星画出来的图便随 Worker 数抖动 —— 实测 400 颗密排 0.995% 的像素不一样（最大通道差 106），
+    //   差异点全落在星下点图标 / 高亮环 / 在轨点这三层上。合并之后与单片（就地档）逐像素相同。
+    //   在轨点按「像素大小|染色」分桶合（主选与非主选大小不同，是两个桶，不能混成一批）。
+    const dotBuckets = new Map()
+    for (const sh of shards) for (const d of (sh.dots || [])) {
+      const a = laneArr(d)
+      if (!a) continue
+      const key = d.px + '|' + d.tint
+      let b = dotBuckets.get(key)
+      if (!b) { b = { px: d.px, tint: d.tint, parts: [], n: 0 }; dotBuckets.set(key, b) }
+      b.parts.push(a); b.n += a.length
+    }
+    for (const b of dotBuckets.values()) {
+      let pos = b.parts[0]
+      if (b.parts.length > 1) { pos = new Float32Array(b.n); let o = 0; for (const a of b.parts) { pos.set(a, o); o += a.length } }
+      const disc = lanePoints(pos, discTex(), b.px, b.tint, 7); if (disc) dotG.add(disc)
+      const ring = lanePoints(pos, dotRing(), b.px, 0xffffff, 7.1); if (ring) dotG.add(ring)
+    }
+    { const o = lanePoints(cat('sub'), focusSatTexture(), Math.max(2, Number(c.subPx) || FOCUS_SAT_PX), Number.isFinite(c.subColor) ? c.subColor : 0xffffff, 17); if (o) subG.add(o) }
+    const hpx = Math.max(2, Number(c.ringPx) || 26)
+    { const o = lanePoints(cat('hl'), ringTex, hpx * 0.82, 0xffffff, 20); if (o) hlG.add(o) }
+    { const o = lanePoints(cat('hlP'), ringTex, hpx, 0xffffff, 20); if (o) hlG.add(o) }
+    if (g.children.length) { laneGroup = g; scene.add(g) }
+    if (dotG.children.length) { laneDotGroup = dotG; scene.add(dotG) }
+    if (subG.children.length) { laneSubGroup = subG; scene.add(subG) }
+    if (hlG.children.length) { laneHlGroup = hlG; scene.add(hlG) }
+    if (rg) { if (rg.children.length) { rg.quaternion.setFromAxisAngle(ORB_AXIS, orbRingSpin); orbRingGroup = rg; scene.add(rg) } orbRingItems = null }
+  }
+  function clearSelectionGeom() { setOrbit(null); setGroundTrack(null); setFootprint(null); setHighlight(null); disposeSelSet(); disposeLanes(); setOrbitRingSet(null) }
 
   // 旋转相机使指定方向正对视图（搜索定位时用），保持当前距离
   function faceTo(vec) {
@@ -1743,7 +1977,61 @@ export function createGlobeScene(container, quality = {}) {
   function disposeGroup(grp) { if (grp) { grp.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material && !o.material._shared) { lineMats.delete(o.material); if (o.material.map && !o.material.map._shared && o.material.map !== stationTex && o.material.map !== focusSatTex) o.material.map.dispose(); o.material.dispose() } }); scene.remove(grp) } }
   // 聚焦卫星当前星下点图标（与 2D 同款，固定 30px 基准——与 2D sizes.satIcon 默认值一致，随 3D 缩放联动）；
   // depthTest 关 + _dir 半球剔除，复用地球站图标同一套策略，转到背面自动隐藏，不会被地球遮挡。
-  const FOCUS_SAT_PX = 30
+  // 屏幕像素固定尺寸的「贴图点层」：同贴图、同（大小|染色）的点合成一个 THREE.Points —— 一次 draw call。
+  // sizeAttenuation:false ⇒ material.size 就是屏幕像素（three 内部已乘 pixelRatio）；点在地表/轨道高度之上，
+  // 被地球挡住由深度测试自然剔除，不再需要逐帧 occludedByGlobe / _dir 半球剔除。
+  // pts._px 记基准像素，供随缩放联动的层逐帧改 size（见 rescalePointLayers）。
+  // 背面剔除：深度测试对「点」是按点心那一个深度整片比的 —— 贴近地表的星下点图标在地平附近会被
+  // 地球啃掉半块（点心在地表之上、可屏幕方块压在更近的球面上）。故 depthTest 关掉，改在顶点着色器里
+  // 做与 occludedByGlobe 逐字相同的判定：相机→该点的线段若先穿过单位球，就把点尺寸打到 0（＝不画）。
+  // ★ 这是原来 Sprite 版「depthTest:false + 每帧 _dir 半球剔除 / occludedByGlobe」的等价物，
+  //   放进 GPU 后与颗数无关，而且比半球判据更准（卫星在轨高度时地平之外仍可见的那圈也对）。
+  const CULL_GLSL = `
+    vec3 camToP = -cameraPosition + transformed;
+    float qa = dot(camToP, camToP);
+    float qb = 2.0 * dot(cameraPosition, camToP);
+    float qc = dot(cameraPosition, cameraPosition) - 1.0;
+    float disc = qb * qb - 4.0 * qa * qc;
+    if (disc > 0.0) {
+      float t0 = (-qb - sqrt(disc)) / (2.0 * qa);
+      if (t0 > 0.0 && t0 < 1.0) gl_PointSize = 0.0;
+    }
+  `
+  function cullBehindGlobe(mat) {
+    mat.onBeforeCompile = (shader) => {
+      shader.vertexShader = shader.vertexShader.replace('#include <fog_vertex>', '#include <fog_vertex>' + CULL_GLSL)
+    }
+    mat.customProgramCacheKey = () => 'cullBehindGlobe'
+    return mat
+  }
+  function buildPointLayers(list, tex, pxDefault, tintDefault, order, liftMul) {
+    const buckets = new Map()
+    for (const q of list) {
+      const px = Number(q.px) > 0 ? Number(q.px) : pxDefault
+      const tint = Number.isFinite(q.colorHex) ? q.colorHex : tintDefault
+      const key = px + '|' + tint
+      let b = buckets.get(key)
+      if (!b) { b = { px, tint, pos: [] }; buckets.set(key, b) }
+      const v = llaToVec(q.lat, q.lon, q.altKm || 0)
+      if (liftMul) v.multiplyScalar(liftMul)
+      b.pos.push(v.x, v.y, v.z)
+    }
+    if (!buckets.size) return null
+    const g = new THREE.Group()
+    for (const b of buckets.values()) {
+      const geo = new THREE.BufferGeometry()
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(b.pos, 3))
+      const mat = cullBehindGlobe(new THREE.PointsMaterial({
+        map: tex, color: b.tint, size: b.px, sizeAttenuation: false,
+        transparent: true, depthTest: false, depthWrite: false, alphaTest: 0.02
+      }))
+      const pts = new THREE.Points(geo, mat)
+      pts.renderOrder = order; pts._px = b.px
+      g.add(pts)
+    }
+    return g
+  }
+  const FOCUS_SAT_PX = 30   // 出厂基准（focusCfg.subPx 的默认值，仅作旧签名兜底）
   // p：单个 {lat,lon} 或数组（多选时每颗聚焦星各画一个图标，同款同大小，聚焦星区分靠轨道加粗+高亮环，图标本身不再分主次）
   // sizePx/colorHex 为全局默认（旧调用签名）；单点可用 q.px / q.colorHex 覆盖 —— 供聚焦星下点(白·30)
   // 与可见性可见星星下点(面板色·滑块大小)在同一 replace-all 通道里混绘（各自样式，互不覆盖）。
@@ -1751,18 +2039,10 @@ export function createGlobeScene(container, quality = {}) {
     disposeGroup(focusSatGroup); focusSatGroup = null
     const list = (Array.isArray(p) ? p : (p ? [p] : [])).filter((q) => q && Number.isFinite(q.lat) && Number.isFinite(q.lon))
     if (!list.length) return
-    const pxG = Number(sizePx) > 0 ? Number(sizePx) : FOCUS_SAT_PX   // 可选大小（可见性分析按其滑块传入；默认 30 = 聚焦星）
-    const tintG = Number.isFinite(colorHex) ? colorHex : 0xffffff    // 可选染色（白=纹理原色；可见性传图标色 → 与 2D 一致）
-    const g = new THREE.Group()
-    for (const q of list) {
-      const px = Number(q.px) > 0 ? Number(q.px) : pxG                       // 单点大小覆盖
-      const tint = Number.isFinite(q.colorHex) ? q.colorHex : tintG          // 单点染色覆盖
-      const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: focusSatTexture(), color: tint, depthTest: false, depthWrite: false, transparent: true }))
-      spr.position.copy(llaToVec(q.lat, q.lon, 0).multiplyScalar(1.0012))
-      spr._px = px; spr._ar = 1; spr._dir = spr.position.clone().normalize(); spr.renderOrder = 17
-      g.add(spr)
-    }
-    focusSatGroup = g; scene.add(g)
+    const pxG = Number(sizePx) > 0 ? Number(sizePx) : (Number(focusCfg.subPx) > 0 ? Number(focusCfg.subPx) : FOCUS_SAT_PX)   // 可选大小（可见性分析按其滑块传入；缺省取聚焦星设置）
+    const tintG = Number.isFinite(colorHex) ? colorHex : (Number.isFinite(focusCfg.subColor) ? focusCfg.subColor : 0xffffff)      // 可选染色（默认取聚焦星设置；可见性传图标色 → 与 2D 一致）
+    focusSatGroup = buildPointLayers(list, focusSatTexture(), pxG, tintG, 17, 1.0012)
+    if (focusSatGroup) scene.add(focusSatGroup)
   }
   // 文字标签：depthTest 关 + 半球剔除 -> 不会被地球边缘裁掉一半，背面整体隐藏
   function labelSprite(text, lat, lon, color, centerY, px) {
@@ -1839,10 +2119,28 @@ export function createGlobeScene(container, quality = {}) {
         if (o._px) { const dd = camera.position.distanceTo(o.position); const h = o._px * zoomK * (2 * dd * tanH) / curH; o.scale.set(h * (o._ar || 1), h, 1) }
       }
     }
-    go(markersGroup); go(trajGroup); go(focusSatGroup); go(selDotGroup)   // selDotGroup：选中星在轨点随缩放联动（无 _dir，靠 depthTest 挡背面）
+    go(markersGroup); go(trajGroup)   // 选中星在轨点已改合批点层，随缩放联动走 rescalePointLayers
+  }
+  // 贴图点层随缩放联动：与原精灵同口径（基准 px × LABEL_REF_DIST/相机距离），上限 256px 防越过
+  // gl_PointSize 的硬件天花板。高亮环刻意不联动（固定屏幕大小，拉远也认得出选中的是哪颗）。
+  function rescalePointLayers() {
+    if (!focusSatGroup && !selDotGroup && !laneDotGroup && !laneSubGroup) return
+    const k = Math.max(0.35, Math.min(6, LABEL_REF_DIST / camera.position.distanceTo(controls.target)))
+    const go = (grp) => { if (grp) for (const o of grp.children) { if (o._px) o.material.size = Math.min(256, o._px * k); else if (o.children) for (const c of o.children) if (c._px) c.material.size = Math.min(256, c._px * k) } }
+    // 在轨点是「底盘 + 白圈」两层套一个 Group，故 go 要下探一层。
+    // ★ 高亮环（laneHlGroup / ringGroup）刻意【不】参与缩放联动 —— 它是固定屏幕尺寸的选中标记，
+    //   跟着拉远缩小就成了看不见的小点（老通道的 ringGroup 本来也不在这条链上）。
+    go(focusSatGroup); go(selDotGroup); go(laneDotGroup); go(laneSubGroup)
   }
 
   let satPoints = null
+  // 星座点云显隐（「聚焦卫星 · 卫星标记 · 星座点云」）：setSatellites 每拍重建点云，故开关记在这里、
+  // 建出来就套上；关掉的同时不再参与拾取 —— 看不见的东西点得中，等于点空白也会选中星。
+  let satPointsOn = true
+  function setSatPointsVisible(v) {
+    satPointsOn = v !== false
+    if (satPoints) satPoints.visible = satPointsOn
+  }
   // positions: [{lat,lon,altKm}]；colors（可选）: Float32Array 长度 = positions.length*3 的逐点 RGB(0..1)。
   // 传 colors 时启用逐点顶点色（自定义星座按面/按星座上色）；不传则沿用统一的默认星点色。
   function setSatellites(positions, colors) {
@@ -1863,18 +2161,24 @@ export function createGlobeScene(container, quality = {}) {
       ? new THREE.PointsMaterial({ size: SAT_POINT_PX, sizeAttenuation: false, vertexColors: true })
       : new THREE.PointsMaterial({ color: 0x9fd0ef, size: SAT_POINT_PX, sizeAttenuation: false })
     satPoints = new THREE.Points(geo, mat)
+    satPoints.visible = satPointsOn
     scene.add(satPoints)
   }
-  // vec：单个 Vector3 / Vector3 数组 / null（清空）。p 同理，收 {lat,lon,altKm} 或其数组。
-  function setHighlight(vec) {
-    const list = (Array.isArray(vec) ? vec : (vec ? [vec] : [])).filter(Boolean)
-    hlPos = list.map((v) => v.clone())
-    for (let i = hlPos.length; i < ringSprs.length; i++) ringSprs[i].visible = false   // 多余的精灵收起来
-  }
+  // p：{lat,lon,altKm,primary?} 或其数组 / null（清空）。每颗聚焦星一个环，primary=false 的收小一档。
+  // ★ 这条通道现在只剩「对星覆盖分析聚焦特效」的环在用（聚焦选中集那批已并进 setFocusLanes 的 hl/hlP）。
+  //   故【不受】focusCfg.ringOn 门控：那个开关管的是聚焦星自己的高亮环，关掉它不该把对星分析点亮的
+  //   源星/目标星一并抹掉（那是另一个功能的呈现）。颜色与大小仍跟着设置走 —— 同一件东西该长一个样。
   function setHighlightLLA(p) {
+    disposeGroup(ringGroup); ringGroup = null
     const list = (Array.isArray(p) ? p : (p ? [p] : [])).filter((q) => q && Number.isFinite(q.lat) && Number.isFinite(q.lon))
-    setHighlight(list.map((q) => llaToVec(q.lat, q.lon, q.altKm)))
+    if (!list.length) return
+    const px = Math.max(2, Number(focusCfg.ringPx) || 26)
+    const pts = list.map((q) => ({ lat: q.lat, lon: q.lon, altKm: q.altKm, px: q.primary === false ? px * 0.82 : px }))
+    ringGroup = buildPointLayers(pts, ringTex, px, 0xffffff, 20, 1)
+    if (ringGroup) scene.add(ringGroup)
   }
+  // 旧签名（Vector3 列表 / null）：现仅 clearSelectionGeom 用来清空
+  function setHighlight(vec) { if (!vec || (Array.isArray(vec) && !vec.length)) { disposeGroup(ringGroup); ringGroup = null } }
 
   // 拾取卫星：非拖拽的点击 -> 离光标最近、且未被地球遮挡的星点
   const ray = new THREE.Raycaster()
@@ -1911,7 +2215,7 @@ export function createGlobeScene(container, quality = {}) {
     if (Math.abs(e.clientX - downX) + Math.abs(e.clientY - downY) > 6) { stopAutoRotate(); return }
     // 放置模式：左键点击 = 在球面落点放置（波束合成），不当作选星
     if (placeMode) { const ll = pickGlobe(e.clientX, e.clientY); if (ll && onPlace) onPlace(ll); return }
-    if (!satPoints || !onPick) return
+    if (!satPoints || !satPoints.visible || !onPick) return   // 点云关着就不拾取（见 setSatPointsVisible）
     const r = renderer.domElement.getBoundingClientRect()
     const v = new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1)
     // 命中半径随相机距离缩放，保持屏幕上 ~14px 的固定手感（地球缩小时也好点）
@@ -1953,10 +2257,18 @@ export function createGlobeScene(container, quality = {}) {
   }
 
   const zoomDir = new THREE.Vector3()
-  let raf = 0, lastFrameT = 0, running = true
+  let raf = 0, lastFrameT = 0, running = true, frameHold = 0
+  // 出帧闸：一拍里星位是同步算的、聚焦几何要等 Worker 回来，中间若出一帧就成了「星在 t、轨道在 t−Δ」——
+  // 那正是 simClock「一次时钟回调 = 一个时刻的完整画面」明令禁止的。故整拍期间不出帧，画面停在上一拍的完整状态。
+  // ★ 计数不是布尔：simClock 的 emit() 已是 async，而 setTime/stepBy/pause 那几个入口是「发了不等」，
+  //   于是「拖游标」与「定时器那一拍」会并发跑两趟 refreshPositions，各自持一次闸。用布尔的话先算完
+  //   的那趟一放行，另一趟还在算，出的正是这道闸要防的半拍画面。计数则要等最后一趟收工才放行。
+  //   下限钳到 0：万一有不成对的 release，也只是提早放行，不会把闸永久压死。
+  function holdFrames(on) { frameHold = on ? frameHold + 1 : Math.max(0, frameHold - 1) }
   function loop(now) {
     if (!running) return   // 已暂停（切到 2D 平面图）：停掉 rAF 链，不再空转渲染被盖住的球面
     raf = requestAnimationFrame(loop)
+    if (frameHold) return
     // 帧率上限（省电）：未到间隔则跳过本帧的更新与渲染（留 1ms 余量避免临界抖动）
     if (fpsCap > 0) { if (now && (now - lastFrameT) < (1000 / fpsCap - 1)) return; lastFrameT = now || 0 }
     controls.update()   // 旋转/阻尼（半径在此保持不变）
@@ -1969,18 +2281,8 @@ export function createGlobeScene(container, quality = {}) {
     }
     // 卫星点随缩放联动：基准距离上 SAT_POINT_PX，拉近变大、拉远变小；下限 0.5×/上限 4× 钳制保证可见且不过大
     if (satPoints) satPoints.material.size = SAT_POINT_PX * Math.max(0.5, Math.min(4, LABEL_REF_DIST / cur))
-    // 选中环：固定屏幕像素大小（不随缩放变化，拉远也能看清选中的是哪颗），背面被地球挡住时隐藏
-    if (hlPos.length) {
-      const tanHalf = Math.tan(camera.fov * 0.5 * Math.PI / 180) || 1
-      for (let i = 0; i < hlPos.length; i++) {
-        const P = hlPos[i], spr = ringSprs[i] || ringSprite()
-        const d = camera.position.distanceTo(P)
-        const sz = RING_PX * (2 * d * tanHalf) / curH
-        spr.position.copy(P)
-        spr.scale.set(sz, sz, 1)
-        spr.visible = !occludedByGlobe(P)
-      }
-    }
+    // 高亮环：贴图点层本身就是固定屏幕像素 + 深度测试遮挡，逐帧无事可做（原来是每颗一次反缩放 + 遮挡射线）
+    rescalePointLayers()
     rescaleMarkers()
     updateLabels()
     renderer.render(scene, camera)
@@ -2052,20 +2354,21 @@ export function createGlobeScene(container, quality = {}) {
     clearEnv()          // 贴图/几何不随 renderer.dispose 走，显式释放（切页面重挂载时会反复走这里）
     clearTerminator()   // 同上：夜区球壳几何 + 线材质（materials 还挂在 lineMats 里）也要显式还
     clearShellField(); clearShellGuides()   // 对星覆盖壳层：标签用的 canvas 贴图同样不随 dispose 走
+    disposeOrbRings(); disposeLanes()   // 轨道圈与预制顶点各自成组：几何/线材质不随 renderer.dispose 走
     cancelAnimationFrame(raf); controls.dispose(); renderer.dispose()
     if (renderer.domElement.parentNode) renderer.domElement.parentNode.removeChild(renderer.domElement)
   }
 
   return {
     setSatellites, setLabelMode, setHighlight, setHighlightLLA, setOnPick,
-    setOrbit, setGroundTrack, setFootprint, setSelectionSet, clearSelectionGeom,
+    setOrbit, setGroundTrack, setFootprint, setSelectionSet, setFocusLanes, setOrbitRingSet, setOrbitRingSpin, clearSelectionGeom,
     setCoverage, clearCoverage, setCoverageField, updateCoverageField, patchCoverageLayers, clearCoverageField, setCoverageFieldAlpha, setCovGrid, clearCovGrid, setCovGridAlpha,
     setShellField, updateShellField, clearShellField, setShellFieldAlpha, setShellGuides, clearShellGuides, setShellRays, clearShellRays,
     setTerminator, clearTerminator,
     setEnvRaster, setEnvAlpha, setEnvContours, clearEnv,
     setSatLayer, clearSatLayer, faceLonLat, setProvinces, setProvincesVisible, setCities, setCitiesVisible, setBorderStyle, setNameScale, setLabelStyle, setOceanColor, setLandColors,
-    setPixelRatio, setRenderFps, setSphereDetail, setMapDetail,
-    setMarkers, setTrajectories, setFocusSatLLA, setOnHover, setOnRightClick, setBeamDragMode, setOnBeamDrag, setBeamDragPivot, setLabelDragMode, setOnLabelDrag, setPolyDrawMode, setOnPolyDraw, setPlaceMode, setOnPlace,
+    setPixelRatio, setRenderFps, setSphereDetail, setMapDetail, holdFrames,
+    setMarkers, setTrajectories, setFocusSatLLA, setFocusStyle, setSatPointsVisible, setOnHover, setOnRightClick, setBeamDragMode, setOnBeamDrag, setBeamDragPivot, setLabelDragMode, setOnLabelDrag, setPolyDrawMode, setOnPolyDraw, setPlaceMode, setOnPlace,
     faceTo, rotateBy, setAutoRotate, setAutoRotateSpeed, setOnAutoRotateOff, resize, pause, resume, snapshot, destroy,
     // 缩放进度条接口：getZoom 读当前进度、setZoom 设到进度 t、setOnZoom 注册滚轮缩放回填回调
     getZoom: () => distToT(zoomTarget),

@@ -83,7 +83,7 @@ const CHANNELS = [
 /* 与 MiniBindDialog / SettingsModal 同一套视觉语言 */
 .mask { position: fixed; inset: 0; z-index: 2000; background: rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center; }
 .dlg { width: 580px; max-width: calc(100vw - 32px); max-height: calc(100vh - 64px); display: flex; flex-direction: column;
-  background: var(--surface); border: 1px solid var(--border-strong); border-radius: 4px; box-shadow: 0 12px 40px rgba(0,0,0,0.5); }
+  background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-card); box-shadow: 0 12px 40px rgba(0,0,0,0.5); }
 .dhd { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid var(--border); }
 .dt { display: inline-flex; align-items: center; gap: 8px; font-family: var(--font-serif); font-size: 15px; }
 .x { cursor: pointer; color: var(--text-muted); padding: 2px 6px; display: inline-flex; align-items: center; }
@@ -97,11 +97,11 @@ const CHANNELS = [
    墨迹恰好居中且不出内切圆（实测圆形裁切 0 损失），圆片与微信里的头像呈现一致。 */
 .ava { width: 56px; height: 56px; flex: none; background: #fff; border-radius: 50%; user-select: none; -webkit-user-drag: none; }
 .idtx { min-width: 0; }
-.nm { font-family: var(--font-serif); font-size: 16px; letter-spacing: .4px; color: var(--text); }
+.nm { font-family: var(--font-serif); font-size: 16px; letter-spacing: var(--ls-tight); color: var(--text); }
 .sub { margin-top: 3px; font-size: 12px; color: var(--text-muted); }
 .find { margin-top: 5px; font-size: 11.5px; color: var(--text-faint); }
 
-.sec { font-size: 11px; letter-spacing: 1px; color: var(--text-faint); padding-bottom: 5px; margin-bottom: 8px; border-bottom: 1px solid var(--border); }
+.sec { font-size: 11px; letter-spacing: var(--ls-label); color: var(--text-faint); padding-bottom: 5px; margin-bottom: 8px; border-bottom: 1px solid var(--border); }
 /* 术语 + 说明：两节共用同一根 128px 栏名轴（够宽以容下「覆盖等值线 + 协调区」不折行） */
 .kv { display: grid; grid-template-columns: 128px 1fr; column-gap: 12px; row-gap: 7px; }
 .ch { grid-template-columns: 128px 1fr auto; }
@@ -111,7 +111,7 @@ const CHANNELS = [
 .wide { grid-column: 2 / -1; }
 
 .dft { display: flex; align-items: center; justify-content: flex-end; gap: 10px; padding: 12px 16px; border-top: 1px solid var(--border); }
-.dft button { padding: 6px 16px; cursor: pointer; border-radius: 3px; font-size: 12.5px; }
+.dft button { padding: 6px 16px; cursor: pointer; border-radius: var(--r-box); font-size: 12.5px; }
 .gh { background: var(--bg); border: 1px solid var(--border-strong); color: var(--text); }
 .gh:hover { border-color: var(--accent); }
 .ok { background: var(--accent); border: 1px solid var(--accent); color: var(--bg); font-weight: 600; }

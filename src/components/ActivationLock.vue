@@ -45,7 +45,7 @@ async function copyId() {
   background: var(--surface); border: 1px solid var(--border-strong);
   box-shadow: 0 12px 36px rgba(0, 0, 0, 0.3);
 }
-.al-tt { font-family: var(--font-serif); font-size: 20px; letter-spacing: 1px; }
+.al-tt { font-family: var(--font-serif); font-size: 20px; letter-spacing: var(--ls-tight); }
 .al-id {
   margin-top: 12px; padding: 5px 10px; display: inline-flex; align-items: center; gap: 8px;
   font-size: 15px; border: 1px solid var(--border); background: var(--bg);
@@ -57,7 +57,7 @@ async function copyId() {
 .al-btn {
   display: block; margin: 18px auto 0; padding: 5px 26px;
   border: 1px solid var(--border-strong); background: var(--bg); color: var(--text);
-  cursor: pointer; border-radius: 2px;
+  cursor: pointer; border-radius: var(--r-ctl);
 }
 .al-btn:hover { border-color: var(--accent); }
 .al-btn:disabled { opacity: .5; cursor: default; }

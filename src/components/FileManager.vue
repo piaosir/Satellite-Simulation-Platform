@@ -9,6 +9,7 @@ import { fmtGeoSlot } from '../shared/orbitClass.js'
 import { serializeGxt } from '../viz/gxt/serialize.js'
 import { serializeKml } from '../viz/kml/serialize.js'
 import { grdToStkAzEl } from '../viz/grd/stkPattern.js'
+import { grdToAcp4, grdToEutelsat } from '../viz/grd/patFormats.js'
 import { repackGrdCommonGrid } from '../viz/grd/synth.js'
 import { displaySatName } from '../viz/satName.js'
 import { logMsg } from '../stores/log'
@@ -46,6 +47,8 @@ const OMM_LABELS = {
   glonass: 'GLONASS', o3b: 'O3b', iridium: '铱星 Iridium', globalstar: 'Globalstar',
   stations: '空间站', planet: 'Planet', spire: 'Spire', active: '全部活跃卫星'
 }
+// 六种官方格式的显示名（解析/序列化在主进程 core/utils/ommFormats.js，这里只要标签）
+const EPH_FMT = { 'omm-csv': 'OMM CSV', 'omm-json': 'OMM JSON', 'omm-kvn': 'OMM KVN', 'omm-xml': 'OMM XML', tle: 'TLE', '3le': '3LE' }
 const ommRows = ref([])
 const ommBusy = ref('')
 async function loadOmm() { try { ommRows.value = api?.omm?.list ? await api.omm.list() : [] } catch { ommRows.value = [] } }
@@ -65,7 +68,7 @@ async function importOmm(row) {
 }
 async function exportOmm(row) {
   if (!api?.omm?.export) return
-  const r = await api.omm.export(row.key)
+  const r = await api.omm.export(row.key, 'omm-csv')
   if (r && r.canceled) return
   if (r && r.ok) flash('已导出：' + r.filePath)
   else flash('导出失败：' + ((r && r.error) || '未知错误'))
@@ -115,23 +118,23 @@ async function removeCustomGroup(g) {
 // 逐组导出（导入组：文件历元）
 async function exportGroup(g) {
   if (!api?.omm?.customExportGroup) return
-  const r = await api.omm.customExportGroup(g.id, g.name)
+  const r = await api.omm.customExportGroup(g.id, g.name, g.format || 'omm-csv')
   if (r && r.canceled) return
   if (r && r.ok) flash('已导出：' + r.filePath)
   else flash('导出失败：' + ((r && r.error) || '未知错误'))
 }
 // 逐座导出（自建星座：场景历元，展开为 OMM 记录传给主进程序列化保存）
 async function exportConstellation(c) {
-  if (!api?.omm?.exportOmmCsv) return
+  if (!api?.omm?.exportRecords) return
   let recs = []
   try { recs = customConstellationsToOmmRecords(c.id) } catch { recs = [] }
   if (!recs.length) { flash('该星座无可导出的卫星'); return }
-  const r = await api.omm.exportOmmCsv(recs, c.name)
+  const r = await api.omm.exportRecords(recs, c.name, 'omm-csv')
   if (r && r.canceled) return
   if (r && r.ok) flash('已导出：' + r.filePath)
   else flash('导出失败：' + ((r && r.error) || '未知错误'))
 }
-const fmtGroupMeta = (g) => `${g.count} 颗 · ${g.format === 'tle' ? 'TLE' : 'OMM'} · ${fmtTime(g.importedAt)}`
+const fmtGroupMeta = (g) => `${g.count} 颗 · ${EPH_FMT[g.format] || 'OMM'} · ${fmtTime(g.importedAt)}`
 
 // —— 逐条改名（自建星座 + 导入组，点名称/「改名」进入编辑，✓/回车提交，Esc 取消）——
 const custEdit = ref('')   // 正在改名的行键：'k'+星座id / 'g'+组id
@@ -306,31 +309,66 @@ function commitRenameGrdAnt(sat, a) {
   grdAntEdit.value = ''; grdRedraw()
 }
 function cancelRenameGrdAnt() { grdAntEdit.value = '' }
-async function exportGrdAnt(a) {
-  if (!a.imported || !a.file) { flash('预置天线无原始 GRD 可导出'); return }
+// ── 方向图导出：GRASP GRD / STK / ACP4 / Eutelsat 四选一 ──
+// 四条路都从落盘的原始 GRD 文本出发（外部格式在导入时已转成 GRASP，见 useGrdCoverage.importGrd）。
+// 菜单用 position:fixed 落点 —— .tnode 有 overflow:hidden，行内绝对定位会被裁掉。
+const expMenu = ref({ key: '', x: 0, y: 0, ant: null })
+const EXP_FMTS = [
+  { id: 'grd', label: 'GRASP GRD', ext: 'grd' },
+  { id: 'stk', label: 'STK 外部方向图', ext: 'txt' },
+  { id: 'acp4', label: 'ACP4', ext: 'pat' },
+  { id: 'eutelsat', label: 'Eutelsat', ext: 'pat' }
+]
+function toggleExpMenu(ev, sat, a) {
+  const k = grdKeyOf(sat, a)
+  if (expMenu.value.key === k) { expMenu.value = { key: '', x: 0, y: 0, ant: null }; return }
+  const r = ev.currentTarget.getBoundingClientRect()
+  const h = EXP_FMTS.length * 26 + 10
+  expMenu.value = { key: k, x: r.right, y: r.bottom + 4 + h > window.innerHeight ? r.top - 4 - h : r.bottom + 4, ant: a }
+}
+async function saveOut(text, defaultName, filters, msg) {
+  const save = await api.exportFile({ defaultName, data: toBytes(text), filters: [...filters, { name: '所有文件', extensions: ['*'] }] })
+  if (save && save.ok) flash(msg + '：' + save.filePath)
+  else if (save && save.error) flash('导出失败：' + save.error)
+}
+async function doExport(fmt) {
+  const a = expMenu.value.ant
+  expMenu.value = { key: '', x: 0, y: 0, ant: null }
+  if (!a) return
+  if (!a.imported || !a.file) { flash('预置天线无原始方向图可导出'); return }
   try {
     const r = await api.coverageGrd.raw(a.file)
-    // 合成的多馈源 .grd 各波束用各自小窗口，SATSOFT 会把全部波束摆到波束1处（见 repackGrdCommonGrid 注释）。
-    // 导出前重打包到公共网格（各波束落真实位置）；仅对本平台合成件(含 SYNTHMETA)生效，真实导入件原样导出。
-    let text = r.text
-    if (text && text.includes('SYNTHMETA')) { try { text = repackGrdCommonGrid(text) } catch (err) { console.warn('公共网格重打包失败，导出原始多窗口 .grd', err) } }
-    const save = await api.exportFile({ defaultName: `${a.name}.grd`, data: toBytes(text), filters: [{ name: 'GRASP 网格', extensions: ['grd'] }] })
-    if (save && save.ok) flash('已导出：' + save.filePath)
-    else if (save && save.error) flash('导出失败：' + save.error)
+    if (fmt === 'grd') {
+      // 合成的多馈源 .grd 各波束用各自小窗口，SATSOFT 会把全部波束摆到波束1处（见 repackGrdCommonGrid 注释）。
+      // 导出前重打包到公共网格（各波束落真实位置）；仅对本平台合成件(含 SYNTHMETA)生效，真实导入件原样导出。
+      let text = r.text
+      if (text && text.includes('SYNTHMETA')) { try { text = repackGrdCommonGrid(text) } catch (err) { console.warn('公共网格重打包失败，导出原始多窗口 .grd', err) } }
+      return await saveOut(text, `${a.name}.grd`, [{ name: 'GRASP 网格', extensions: ['grd'] }], '已导出')
+    }
+    if (fmt === 'stk') {
+      const s = grdToStkAzEl(r.text, { name: a.name })
+      return await saveOut(s.text, `${a.name}_STK.txt`, [{ name: 'STK 外部天线方向图', extensions: ['txt', 'pattern', 'ant'] }],
+        `已导出 STK 方向图（${s.nx}×${s.ny} · ${s.nBeams} 波束 · 峰值 ${s.peakDbi.toFixed(1)} dBi）`)
+    }
+    if (fmt === 'acp4') {
+      const s = grdToAcp4(r.text, { name: a.name })
+      return await saveOut(s.text, `${a.name}.pat`, [{ name: 'ACP4 方向图', extensions: ['pat', 'txt'] }],
+        `已导出 ACP4（${s.nBeams} 波束 · 峰值 ${s.peakDb.toFixed(1)} dB）`)
+    }
+    const s = grdToEutelsat(r.text, { name: a.name })
+    return await saveOut(s.text, `${a.name}_EUT.pat`, [{ name: 'Eutelsat 方向图', extensions: ['pat', 'txt'] }],
+      `已导出 Eutelsat（${s.nx}×${s.ny}${s.nBeams > 1 ? ` · ${s.nBeams} 波束取包络` : ''} · 峰值 ${s.peakDb.toFixed(1)} dB）`)
   } catch (e) { flash('导出失败：' + (e.message || e)) }
 }
-// 导出为 STK 外部天线方向图（AzElPattern，增益 dBi）：解析 GRD → az/el 增益网格 → STK ASCII。
-// 多波束合成为最大值包络（STK 每文件只读一个方向图）。文件为纯 ASCII，扩展名用 STK 常见的 .txt。
-async function exportGrdAntStk(a) {
-  if (!a.imported || !a.file) { flash('预置天线无原始 GRD 可导出'); return }
-  try {
-    const r = await api.coverageGrd.raw(a.file)
-    const stk = grdToStkAzEl(r.text, { name: a.name })
-    const save = await api.exportFile({ defaultName: `${a.name}_STK.txt`, data: toBytes(stk.text), filters: [{ name: 'STK 外部天线方向图', extensions: ['txt', 'pattern', 'ant'] }, { name: '所有文件', extensions: ['*'] }] })
-    if (save && save.ok) flash(`已导出 STK 方向图（${stk.nx}×${stk.ny} · ${stk.nBeams} 波束 · 峰值 ${stk.peakDbi.toFixed(1)} dBi）：` + save.filePath)
-    else if (save && save.error) flash('导出失败：' + save.error)
-  } catch (e) { flash('导出失败：' + (e.message || e)) }
+// 树上如实标出来源格式；ACP4/Eutelsat 只有标量幅度，AR/XPD 对它们无意义（说明放 title，不占版面）
+const SRC_LABEL = { acp4: 'ACP4', eutelsat: 'Eutelsat' }
+const srcLabel = (a) => (a.imported ? (SRC_LABEL[a.src] || '导入') : '预置')
+// 整串写死不拼接 —— 词典按整串精确匹配，拼出来的串翻不了（见 uiDict.data.js 的约定）
+const SRC_TITLE = {
+  acp4: '由 ACP4 转入：该格式只有标量幅度，无相位与交叉极化分量，轴比 AR 与 XPD 对本天线不适用',
+  eutelsat: '由 Eutelsat 转入：该格式只有标量幅度，无相位与交叉极化分量，轴比 AR 与 XPD 对本天线不适用'
 }
+const srcTitle = (a) => SRC_TITLE[a.src] || ''
 
 /* ===================== ③ 覆盖图 / GXT（用户库）===================== */
 const gxtIndex = ref({ satellites: [] })
@@ -575,8 +613,8 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
 
       <div class="wrap">
         <nav class="rail">
-          <button class="rb" :class="{ on: tab === 'omm' }" @click="tab = 'omm'">星历 OMM</button>
-          <button class="rb" :class="{ on: tab === 'grd' }" @click="tab = 'grd'">GRD 天线</button>
+          <button class="rb" :class="{ on: tab === 'omm' }" @click="tab = 'omm'">轨道星历</button>
+          <button class="rb" :class="{ on: tab === 'grd' }" @click="tab = 'grd'">天线方向图</button>
           <button class="rb" :class="{ on: tab === 'freqplan' }" @click="tab = 'freqplan'">频率计划</button>
           <button class="rb" :class="{ on: tab === 'gxt' }" @click="tab = 'gxt'">GXT/KML 管理</button>
         </nav>
@@ -667,7 +705,7 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
                     <span class="tcount">{{ grdLonText(sat) }}{{ sat.antennas.length }} 天线</span>
                     <span class="trops">
                       <button class="mini" @click="openEditGrdSat(sat)">编辑</button>
-                      <button class="mini" @click="importGrd(sat)"><Icon name="plus" :size="12" /> 导入 GRD</button>
+                      <button class="mini" title="导入 GRASP GRD / ACP4 / Eutelsat 方向图（可多选，每文件一根天线）" @click="importGrd(sat)"><Icon name="plus" :size="12" /> 导入方向图</button>
                       <button class="mini del" @click="removeGrdSat(sat)">删除卫星</button>
                     </span>
                   </div>
@@ -681,11 +719,10 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
                     </template>
                     <template v-else>
                       <span class="tname rn" title="点击重命名" @click="startRenameGrdAnt(sat, a)" data-i18n-skip>{{ a.name }}</span>
-                      <span class="tmeta">{{ a.beams }} 波束 · {{ a.imported ? '导入' : '预置' }}<template v-if="a.peakDb != null"> · 峰值 {{ Number(a.peakDb).toFixed(1) }} dB</template></span>
+                      <span class="tmeta" :title="srcTitle(a)">{{ a.beams }} 波束 · {{ srcLabel(a) }}<template v-if="a.peakDb != null"> · 峰值 {{ Number(a.peakDb).toFixed(1) }} dB</template></span>
                       <span class="trops">
                         <button class="mini ghost" @click="startRenameGrdAnt(sat, a)">改名</button>
-                        <button class="mini ghost" :disabled="!a.imported" title="导出原始 GRASP ASCII 网格" @click="exportGrdAnt(a)">导出 GRD</button>
-                        <button class="mini ghost" :disabled="!a.imported" title="导出为 STK 外部天线方向图（AzElPattern，增益 dBi）" @click="exportGrdAntStk(a)">导出 STK</button>
+                        <button class="mini ghost" :disabled="!a.imported" title="导出为 GRASP GRD / STK / ACP4 / Eutelsat" @click="toggleExpMenu($event, sat, a)">导出</button>
                         <button class="mini del" @click="removeGrdAnt(sat, a)">删除</button>
                       </span>
                     </template>
@@ -812,13 +849,19 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
     </div>
     <MiniSendDialog v-model:open="fpMiniOpen" :build="() => fpMiniPack || { name: '', items: [] }"
       :device-id="fpMiniDeviceId" :configured="fpMiniConfigured" @toast="flash" />
+    <template v-if="expMenu.key">
+      <div class="expback" @click="expMenu = { key: '', x: 0, y: 0, ant: null }"></div>
+      <div class="expmenu" :style="{ left: expMenu.x + 'px', top: expMenu.y + 'px' }">
+        <button v-for="f in EXP_FMTS" :key="f.id" @click="doExport(f.id)">{{ f.label }}</button>
+      </div>
+    </template>
   </div>
 </template>
 
 <style scoped>
 .mask { position: fixed; inset: 0; z-index: 2000; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; }
 .dlg { position: relative; width: 860px; max-width: calc(100vw - 32px); height: 620px; max-height: calc(100vh - 64px); display: flex; flex-direction: column;
-  background: var(--surface); border: 1px solid var(--border-strong); border-radius: 2px; box-shadow: 0 10px 32px rgba(0,0,0,0.45); overflow: hidden; }
+  background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-ctl); box-shadow: 0 10px 32px rgba(0,0,0,0.45); overflow: hidden; }
 .dhd { display: flex; align-items: stretch; justify-content: space-between; border-bottom: 1px solid var(--border); }
 .dt { font-family: var(--font-serif); font-size: 14px; padding: 11px 16px; align-self: center; }
 /* Windows 风格关闭：整块矩形热区，悬停变红 */
@@ -827,7 +870,7 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
 .wrap { flex: 1; min-height: 0; display: flex; }
 .rail { width: 128px; flex: none; padding: 8px; border-right: 1px solid var(--border); display: flex; flex-direction: column; gap: 2px; }
 .rb { display: flex; align-items: center; padding: 8px 11px; border: 0; background: transparent; color: var(--text-muted);
-  text-align: left; cursor: pointer; border-radius: 2px; font-size: 12.5px; border-left: 2px solid transparent; transition: background .12s, color .12s; }
+  text-align: left; cursor: pointer; border-radius: var(--r-ctl); font-size: 12.5px; border-left: 2px solid transparent; transition: background .12s, color .12s; }
 .rb:hover { background: var(--bg); color: var(--text); }
 .rb.on { background: var(--bg); color: var(--text); border-left-color: var(--accent); }
 .pane { flex: 1; min-width: 0; overflow: auto; padding: 14px 16px; }
@@ -837,12 +880,12 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
 .tbl td.nm { font-weight: 600; }
 .tbl td.dim, .dim { color: var(--text-faint); }
 .tbl td.ops { text-align: right; white-space: nowrap; }
-.badge { font-size: 11px; padding: 1px 7px; border-radius: 2px; border: 1px solid var(--border); background: transparent; color: var(--text-muted); }
+.badge { font-size: 11px; padding: 1px 7px; border-radius: var(--r-ctl); border: 1px solid var(--border); background: transparent; color: var(--text-muted); }
 .badge.off { color: var(--text-faint); }
 /* 内置兜底快照：区别于「已缓存」（用户联网数据），用低调蓝调描边表示软件自带 */
 .badge.bundled { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
 /* 统一低调描边按钮（去掉满屏亮色实心），主次靠位置与标签区分 */
-.mini { padding: 3px 10px; margin-left: 6px; cursor: pointer; font-size: 11.5px; border-radius: 2px;
+.mini { padding: 3px 10px; margin-left: 6px; cursor: pointer; font-size: 11.5px; border-radius: var(--r-ctl);
   display: inline-flex; align-items: center; justify-content: center; gap: 4px;
   background: var(--bg); border: 1px solid var(--border); color: var(--text-muted); transition: color .12s, border-color .12s; }
 .mini:hover { color: var(--text); border-color: var(--accent); }
@@ -853,7 +896,7 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
 .mini.del:hover { color: #d07a72; border-color: #d07a72; }
 .empty-hint { padding: 28px 12px; text-align: center; color: var(--text-faint); font-size: 12.5px; line-height: 1.7; }
 .tree { display: flex; flex-direction: column; gap: 10px; }
-.tnode { border: 1px solid var(--border); border-radius: 2px; overflow: hidden; }
+.tnode { border: 1px solid var(--border); border-radius: var(--r-ctl); overflow: hidden; }
 .trow { display: flex; align-items: center; gap: 10px; padding: 7px 10px; }
 .trow.sat { background: var(--bg); border-bottom: 1px solid var(--border); }
 .trow.ant { padding-left: 22px; border-bottom: 1px solid var(--border); }
@@ -862,6 +905,14 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
 .trow.ant .tname { font-weight: 500; }
 .tcount, .tmeta { font-size: 11.5px; color: var(--text-faint); }
 .trops { margin-left: auto; white-space: nowrap; display: flex; }
+/* 导出格式菜单：定位用 fixed —— .tnode 的 overflow:hidden 会裁掉行内绝对定位的浮层 */
+.expback { position: fixed; inset: 0; z-index: 2100; }
+.expmenu { position: fixed; z-index: 2101; transform: translateX(-100%); min-width: 148px; padding: 4px 0;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-ctl); box-shadow: 0 4px 14px rgba(0,0,0,0.3);
+  display: flex; flex-direction: column; }
+.expmenu button { appearance: none; border: 0; background: none; color: var(--text-muted); text-align: left;
+  padding: 5px 14px; font-size: 12px; cursor: pointer; white-space: nowrap; }
+.expmenu button:hover { background: var(--accent); color: var(--bg); }
 .noant { padding: 8px 22px; font-size: 11.5px; color: var(--text-faint); }
 .trow.sat.clk { cursor: pointer; }
 .trow.sat.clk:hover { background: var(--surface); }
@@ -874,7 +925,7 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
 .addbeam { padding: 8px 10px 8px 22px; background: var(--bg); border-bottom: 1px solid var(--border); margin: 0; }
 /* 显式允许文本选择：全局 body 设了 user-select:none，继承到输入框在 Electron 的 Chromium 下会
    阻止「点击放置光标」（表现为点不进、只能程序聚焦）。这里强制恢复，保证可点击聚焦与选词。 */
-.ci { border: 1px solid var(--border); background: var(--bg); color: var(--text); padding: 5px 8px; outline: none; font-size: 12.5px; border-radius: 2px; min-width: 0; user-select: text; -webkit-user-select: text; }
+.ci { border: 1px solid var(--border); background-color: var(--bg); color: var(--text); padding: 5px 8px; outline: none; font-size: 12.5px; border-radius: var(--r-ctl); min-width: 0; user-select: text; -webkit-user-select: text; }
 .ci:focus { border-color: var(--accent); }
 .ci.nar { width: 96px; flex: none; }
 .ci.wide { width: 150px; flex: none; }
@@ -887,13 +938,13 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
 .spacer { flex: 1; }
 /* 应用内确认弹窗（覆盖在文件管理器之上，居中） */
 .cmask { position: absolute; inset: 0; z-index: 10; background: rgba(0,0,0,0.35); display: flex; align-items: center; justify-content: center; }
-.cbox { width: 340px; max-width: calc(100% - 48px); background: var(--surface); border: 1px solid var(--border-strong); border-radius: 2px; box-shadow: 0 8px 24px rgba(0,0,0,0.4); padding: 18px 18px 14px; }
+.cbox { width: 340px; max-width: calc(100% - 48px); background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-ctl); box-shadow: 0 8px 24px rgba(0,0,0,0.4); padding: 18px 18px 14px; }
 .cmsg { font-size: 13px; color: var(--text); line-height: 1.6; margin-bottom: 16px; }
 .cbtns { display: flex; justify-content: flex-end; gap: 8px; }
 .cbtns .mini { margin-left: 0; padding: 5px 16px; }
 .dft { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-top: 1px solid var(--border); }
 .dft .msg { flex: 1; font-size: 12px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dft button { padding: 6px 18px; cursor: pointer; border-radius: 2px; font-size: 12.5px; }
+.dft button { padding: 6px 18px; cursor: pointer; border-radius: var(--r-ctl); font-size: 12.5px; }
 .ok { background: var(--accent); border: 1px solid var(--accent); color: var(--bg); }
 /* 自定义卫星：轻量分区（与星座列表同风格），非大块卡片 */
 .secbar { display: flex; align-items: center; gap: 8px; padding-bottom: 6px; margin-bottom: 8px; border-bottom: 1px solid var(--border); }
@@ -902,7 +953,7 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
 .sctag { font-size: 11px; color: var(--text-faint); }
 .secbar .mini { margin-left: 0; }
 .clist { display: flex; flex-direction: column; }
-.csub { font-size: 11px; color: var(--text-faint); padding: 8px 4px 4px; letter-spacing: .02em; }
+.csub { font-size: 11px; color: var(--text-faint); padding: 8px 4px 4px; letter-spacing: var(--ls-tight); }
 .crow { display: flex; align-items: center; gap: 8px; padding: 6px 4px; border-bottom: 1px solid var(--border); }
 .crow:last-child { border-bottom: 0; }
 .cdot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none; opacity: .85; }

@@ -1506,7 +1506,6 @@ onMounted(async () => {
   background: var(--bg); color: var(--text); font-family: var(--lb-serif);
   --ok: #4a7a62; --warn: #8a7038; --danger: #9c5751;
   --up: #3f6d8c; --dn: #97672f;
-  --r-ctl: 2px; --r-box: 3px; --r-modal: 4px;
 }
 html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c08079; --up: #82a9c6; --dn: #c9a26a; }
 
@@ -1528,7 +1527,7 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .lb-cfg-hd-t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lb-build { flex: 1; min-width: 460px; }
 
-.lb-col-hd { display: flex; align-items: center; justify-content: space-between; gap: 8px; height: 30px; flex: none; padding: 0 12px; font-size: 11px; font-weight: 600; letter-spacing: 1px; text-transform: uppercase; background: var(--surface-2); border-bottom: 1px solid var(--border); color: var(--text-muted); }
+.lb-col-hd { display: flex; align-items: center; justify-content: space-between; gap: 8px; height: 30px; flex: none; padding: 0 12px; font-size: 11px; font-weight: 600; letter-spacing: var(--ls-label); text-transform: uppercase; background: var(--surface-2); border-bottom: 1px solid var(--border); color: var(--text-muted); }
 .lb-col-bd { flex: 1; overflow: auto; padding: 12px; }
 .lb-mini { font: inherit; font-size: 11px; line-height: 1; padding: 3px 8px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl); display: inline-flex; align-items: center; justify-content: center; gap: 4px; }
 .lb-mini:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
@@ -1541,11 +1540,11 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 /* 右键菜单（.lb-ctx*）不在这儿：它同时被本组件与 ChainStrip 用，scoped 只盖得住自己那半边，
    故收进公共表 styles/lbworkbench.css（前三窗各自 scoped 的同名规则特异度更高，不受影响）。 */
 .lb-myid { flex: none; display: flex; align-items: center; gap: 4px; padding: 6px 12px; font-size: 11px; color: var(--text-muted); border-top: 1px solid var(--border); background: var(--surface); white-space: nowrap; overflow: hidden; }
-.lb-myid b { font-family: var(--font-mono); color: var(--text); letter-spacing: .5px; overflow: hidden; text-overflow: ellipsis; }
+.lb-myid b { font-family: var(--font-mono); color: var(--text); letter-spacing: var(--ls-tight); overflow: hidden; text-overflow: ellipsis; }
 
 .lb-mask { position: fixed; inset: 0; z-index: 300; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.28); }
-.lb-dlg { width: 380px; display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-modal); box-shadow: 0 8px 24px rgba(0,0,0,.18); overflow: hidden; }
-.lb-dlg-hd { display: flex; align-items: center; gap: 8px; padding: 10px 12px; font-size: 11px; font-weight: 600; letter-spacing: 1px; text-transform: uppercase; color: var(--text-muted); background: var(--surface-2); border-bottom: 1px solid var(--border); }
+.lb-dlg { width: 380px; display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-card); box-shadow: 0 8px 24px rgba(0,0,0,.18); overflow: hidden; }
+.lb-dlg-hd { display: flex; align-items: center; gap: 8px; padding: 10px 12px; font-size: 11px; font-weight: 600; letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--text-muted); background: var(--surface-2); border-bottom: 1px solid var(--border); }
 .lb-dlg-bd { padding: 12px; display: flex; flex-direction: column; gap: 8px; }
 .lb-dlg-ft { display: flex; justify-content: flex-end; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--border); background: var(--surface); }
 .lb-input { font: inherit; font-size: 12px; padding: 6px 9px; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl); }
@@ -1586,7 +1585,7 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .e2-libsel { display: inline-flex; align-items: center; gap: 3px; width: 100%; }
 .e2-sel {
   flex: 1; min-width: 0; font: inherit; font-size: inherit; padding: 1px 3px; cursor: pointer;
-  color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px);
+  color: var(--text); background-color: var(--bg); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px);
 }
 .e2-sel:focus { outline: none; border-color: var(--accent); }
 .e2-sel.wide { flex: 1; }
@@ -1615,16 +1614,16 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .e2-insp :deep(.bb-rt) { padding-top: 5px; }
 .e2-insp :deep(.bb-f) { min-height: 21px; padding: 0; gap: 8px; border-bottom: 1px solid var(--lb-rule-soft); }
 .e2-insp :deep(.bb-l) { font-size: 11.5px; line-height: 1.25; }
-.e2-insp :deep(.bb-i) { font-size: 11.5px; padding: 2px 4px; background: transparent; border-color: transparent; }
-.e2-insp :deep(.bb-i:hover) { background: var(--bg); border-color: var(--border); }
-.e2-insp :deep(.bb-i:focus) { background: var(--bg); border-color: var(--accent); }
+.e2-insp :deep(.bb-i) { font-size: 11.5px; padding: 2px 4px; background-color: transparent; border-color: transparent; }
+.e2-insp :deep(.bb-i:hover) { background-color: var(--bg); border-color: var(--border); }
+.e2-insp :deep(.bb-i:focus) { background-color: var(--bg); border-color: var(--accent); }
 /* 速率链：非锚点＝算出来的，退一档；锁定档（下游段）整列都是读数 */
 .e2-insp :deep(.bb-rt .bb-i) { color: var(--text-muted); }
 .e2-insp :deep(.bb-rt .bb-i.bb-anch) { color: var(--text); }
 .e2-insp :deep(.bb-i[readonly]) { cursor: not-allowed; }
 .e2-insp :deep(.bb-ntn) { font-size: 10.5px; line-height: 1.45; }
 .e2-insp-hd { display: flex; align-items: baseline; gap: 6px; padding-bottom: 3px; margin-bottom: 5px; border-bottom: 1px solid var(--lb-rule); }
-.e2-insp-t { font-size: 11.5px; font-weight: 700; letter-spacing: 1px; color: var(--text); }
+.e2-insp-t { font-size: 11.5px; font-weight: 700; letter-spacing: var(--ls-label); color: var(--text); }
 .e2-insp-s { font-size: 11px; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .e2-insp-none { font-size: 11.5px; color: var(--text-faint); }
 .e2-ref { display: flex; align-items: center; gap: 5px; margin-bottom: 4px; }
@@ -1654,7 +1653,7 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 /* 只读读数（入段体制 / 实际门限 / 本段速率）：与输入行同高，无框 */
 .e2-ro { flex: 1; min-width: 0; font-size: 11.5px; color: var(--text); font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .e2-tagline { font-size: 11px; color: var(--text-faint); margin: 2px 0 5px; }
-.e2-sub { margin: 8px 0 3px; padding-bottom: 2px; font-size: 11.5px; letter-spacing: 1px; color: var(--text-muted); border-bottom: 1px solid var(--lb-rule); }
+.e2-sub { margin: 8px 0 3px; padding-bottom: 2px; font-size: 11.5px; letter-spacing: var(--ls-label); color: var(--text-muted); border-bottom: 1px solid var(--lb-rule); }
 .e2-tools { margin-top: 8px; display: flex; gap: 6px; }
 /* 自动几何读数行：解出来的斜距/仰角（送进引擎的那份），与上方手动单元格并存互不覆盖 */
 .e2-auto { display: flex; align-items: baseline; gap: 6px; margin-top: 6px; font-size: 11.5px; color: var(--text); font-variant-numeric: tabular-nums; }

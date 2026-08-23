@@ -33,11 +33,11 @@ const ro = (f) => props.readonlyKeys.includes(f.key)
 .sp-l i { font-style: normal; color: var(--text-faint); }
 .sp-i {
   width: 112px; flex: none; text-align: right; font: inherit; font-size: 11.5px; padding: 2px 4px;
-  color: var(--text); background: transparent; border: 1px solid transparent; border-radius: var(--r-ctl, 2px);
+  color: var(--text); background-color: transparent; border: 1px solid transparent; border-radius: var(--r-ctl, 2px);
 }
 select.sp-i { text-align: left; }
-.sp-i:hover { background: var(--bg); border-color: var(--border); }
-.sp-i:focus { outline: none; background: var(--bg); border-color: var(--accent); }
+.sp-i:hover { background-color: var(--bg); border-color: var(--border); }
+.sp-i:focus { outline: none; background-color: var(--bg); border-color: var(--accent); }
 .sp-i::placeholder { color: var(--text-faint); }
 .sp-i.auto { color: var(--text-muted); cursor: not-allowed; }
 </style>

@@ -533,22 +533,22 @@ async function importPicksXlsx() {
 <style scoped>
 /* 与「对地覆盖分析」性能指标表浮窗同源（ConstellationMap3D.vue 的 .perf-win 一套）：那份是 scoped 的、
    进不到本组件，故这里带一份同值副本。改动请两处对照。 */
-.perf-win { position: absolute; display: flex; flex-direction: column; background: var(--panel, var(--bg)); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 12px 40px rgba(0, 0, 0, .35); z-index: 60; overflow: hidden; }
+.perf-win { position: absolute; display: flex; flex-direction: column; background: var(--panel, var(--bg)); border: 1px solid var(--border); border-radius: var(--r-float); box-shadow: 0 12px 40px rgba(0, 0, 0, .35); z-index: 60; overflow: hidden; }
 .perf-h { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border); flex: none; cursor: move; user-select: none; }
 .perf-t { flex: 1; min-width: 0; font-family: var(--font-serif); font-size: 13.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .perf-t em { font-style: normal; font-family: var(--font-mono); font-size: 11px; color: var(--text-faint); margin-left: 4px; }
 .perf-h .csx { cursor: pointer; color: var(--text-faint); padding: 0 4px; position: relative; z-index: 5; display: inline-flex; }
 .perf-h .csx:hover { color: var(--text); }
-.ptb { font-size: 11.5px; color: var(--text-muted); border: 1px solid var(--border); border-radius: 4px; padding: 2px 8px; cursor: pointer; white-space: nowrap; display: inline-flex; align-items: center; gap: 3px; }
+.ptb { font-size: 11.5px; color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-card); padding: 2px 8px; cursor: pointer; white-space: nowrap; display: inline-flex; align-items: center; gap: 3px; }
 .ptb:hover { color: var(--text); border-color: var(--accent); }
 .ptb.dis { opacity: .38; pointer-events: none; }
 .ptb.on { color: var(--accent); border-color: var(--accent); }
-.perf-q { flex: 1; min-width: 110px; border: 1px solid var(--border); background: var(--bg); padding: 2px 8px; font-size: 11.5px; color: var(--text); border-radius: 4px; outline: none; }
+.perf-q { flex: 1; min-width: 110px; border: 1px solid var(--border); background: var(--bg); padding: 2px 8px; font-size: 11.5px; color: var(--text); border-radius: var(--r-card); outline: none; }
 .perf-cnt { font-size: 10.5px; color: var(--text-faint); font-family: var(--font-mono); white-space: nowrap; margin-left: auto; }
 .perf-input { flex: none; display: flex; flex-direction: column; min-height: 0; }
 .perf-split { flex: none; height: 7px; cursor: ns-resize; background: var(--border); display: flex; align-items: center; justify-content: center; }
 .perf-split:hover { background: color-mix(in srgb, var(--accent) 45%, var(--border)); }
-.perf-split .grip { width: 30px; height: 2px; border-radius: 2px; background: color-mix(in srgb, var(--text) 35%, transparent); }
+.perf-split .grip { width: 30px; height: 2px; border-radius: var(--r-ctl); background: color-mix(in srgb, var(--text) 35%, transparent); }
 .prh { position: absolute; z-index: 3; }
 .prh-n { top: 0; left: 14px; right: 14px; height: 6px; cursor: ns-resize; }
 .prh-s { bottom: 0; left: 14px; right: 14px; height: 6px; cursor: ns-resize; }
@@ -561,14 +561,13 @@ async function importPicksXlsx() {
 .pin-h, .pr-h { display: flex; align-items: center; gap: 6px; padding: 6px 12px; flex: none; flex-wrap: wrap; }
 .pin-h { border-bottom: 1px solid var(--border); }
 .pin-t, .pr-t { font-size: 11.5px; font-weight: 600; color: var(--text-muted); white-space: nowrap; }
-.pr-t em { margin-left: 4px; font-style: normal; font-size: 10px; font-weight: 400; color: var(--text-faint); border: 1px solid var(--border); border-radius: 6px; padding: 0 5px; }
+.pr-t em { margin-left: 4px; font-style: normal; font-size: 10px; font-weight: 400; color: var(--text-faint); border: 1px solid var(--border); border-radius: var(--r-pill); padding: 0 5px; }
 .pin-body { flex: 1; overflow: auto; outline: none; }
 .perf-result { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .pr-h { border-bottom: 1px solid var(--border); }
 .pr-cov { display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--text-muted); white-space: nowrap; cursor: pointer; }
 .pr-cov.dis { opacity: .5; }
-.pr-cov input[type=checkbox] { accent-color: var(--accent); }
-.pr-cov .ci { width: 52px; border: 1px solid var(--border); background: var(--bg); padding: 1px 5px; font-size: 11px; color: var(--text); border-radius: 4px; outline: none; font-family: var(--font-mono); }
+.pr-cov .ci { width: 52px; border: 1px solid var(--border); background: var(--bg); padding: 1px 5px; font-size: 11px; color: var(--text); border-radius: var(--r-card); outline: none; font-family: var(--font-mono); }
 .pr-cov .ci:disabled { opacity: .45; }
 .pr-cov .u { color: var(--text-faint); font-size: 10.5px; }
 .pr-body { flex: 1; overflow: auto; outline: none; }
@@ -586,7 +585,7 @@ async function importPicksXlsx() {
 .sc-grid :deep(.eg-act .foc:hover) { color: var(--accent); }
 /* 两段/三段切换（当前时刻⇄时间窗口、时段⇄汇总）：与可见性分析 .seg.sm.vis-mode 同一套锐边分段语言。
    活动段文字用 var(--bg) 而非写死 #fff —— 深色主题下 accent≈白，写死白字＝白底白字。 */
-.seg2 { display: inline-flex; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; background: var(--surface); flex: none; }
+.seg2 { display: inline-flex; border: 1px solid var(--border); border-radius: var(--r-card); overflow: hidden; background: var(--surface); flex: none; }
 .seg2 .sg { padding: 2px 9px; font-size: 11.5px; color: var(--text-muted); cursor: pointer; user-select: none; white-space: nowrap; transition: background .12s ease, color .12s ease; }
 .seg2 .sg + .sg { border-left: 1px solid var(--border); }
 .seg2 .sg:hover:not(.on) { background: var(--bg); color: var(--text); }
@@ -595,14 +594,14 @@ async function importPicksXlsx() {
 /* 时窗参数条 */
 .pw-bar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 5px 12px; border-bottom: 1px solid var(--border); flex: none; }
 .pw-bar label { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
-.pw-bar .ci, .pw-bar select { border: 1px solid var(--border); background: var(--bg); padding: 1px 5px; font-size: 11px; color: var(--text); border-radius: 4px; outline: none; font-family: var(--font-mono); }
+.pw-bar .ci, .pw-bar select { border: 1px solid var(--border); background-color: var(--bg); padding: 1px 5px; font-size: 11px; color: var(--text); border-radius: var(--r-card); outline: none; font-family: var(--font-mono); }
 .pw-bar .ci.dt { width: 150px; }
 .pw-bar .w56 { width: 56px; }
 .pw-bar .u { color: var(--text-faint); font-size: 10.5px; }
 .pw-bar .ptb.sq { padding: 2px 5px; }
 .pw-bar .ptb.go { color: var(--accent); border-color: var(--accent); }
 .pw-bar .ptb.go.warn { color: var(--warn, #d08b5a); border-color: var(--warn, #d08b5a); }
-.pw-prog { flex: 1; min-width: 60px; height: 3px; background: color-mix(in srgb, var(--border) 60%, transparent); border-radius: 2px; overflow: hidden; }
+.pw-prog { flex: 1; min-width: 60px; height: 3px; background: color-mix(in srgb, var(--border) 60%, transparent); border-radius: var(--r-ctl); overflow: hidden; }
 .pw-prog i { display: block; height: 100%; background: var(--accent); transition: width .12s linear; }
 /* 可见时段条带：与可见性分析 ACCESS 甘特同款（78px 星名 + 轨道条 + 次数），条上多一根游标 */
 .sgantt { flex: none; border-bottom: 1px solid var(--border); padding: 4px 12px 6px; }
@@ -610,18 +609,18 @@ async function importPicksXlsx() {
 .sgt-ax { display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: 9.5px; color: var(--text-faint); padding: 0 32px 3px 84px; }
 .sgt-ax .mid { color: var(--text-muted); }
 .sgt-rows { display: flex; flex-direction: column; gap: 2px; max-height: 150px; overflow-y: auto; }
-.sgt-row { display: grid; grid-template-columns: 78px 1fr 26px; gap: 6px; align-items: center; font-size: 10.5px; padding: 1px 3px; border-radius: 3px; }
+.sgt-row { display: grid; grid-template-columns: 78px 1fr 26px; gap: 6px; align-items: center; font-size: 10.5px; padding: 1px 3px; border-radius: var(--r-box); }
 .sgt-row:hover, .sgt-row.hov { background: color-mix(in srgb, var(--accent) 14%, transparent); }
 .sgt-n { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); cursor: pointer; }
 .sgt-n:hover { color: var(--accent); }
-.sgt-bar { position: relative; height: 9px; background: color-mix(in srgb, var(--border) 45%, transparent); border-radius: 2px; cursor: col-resize; touch-action: none; }
+.sgt-bar { position: relative; height: 9px; background: color-mix(in srgb, var(--border) 45%, transparent); border-radius: var(--r-ctl); cursor: col-resize; touch-action: none; }
 .sgt-bar i { position: absolute; top: 1px; bottom: 1px; min-width: 1.2px; background: var(--accent); border-radius: 1px; }
 /* 游标：上下各探出 3px，正好把行间距接上，多行看着是一根通条的线 */
 .sgt-cur { position: absolute; top: -3px; bottom: -3px; width: 1px; margin-left: -0.5px; background: var(--text); pointer-events: none; }
 .sgt-c { font-family: var(--font-mono); font-size: 10px; color: var(--text-faint); text-align: right; }
 /* 游标控制条（滑块 + 读数 + 前后跳），与「星间链路距离」工具同款 */
 .swc { display: flex; align-items: center; gap: 6px; padding-top: 5px; }
-.swc-sl { flex: 1; min-width: 80px; accent-color: var(--accent); height: 12px; }
+.swc-sl { flex: 1; min-width: 80px; }
 .swc-t { font-family: var(--font-mono); font-size: 11px; color: var(--text); white-space: nowrap; user-select: text; }
 .swc .perf-cnt { margin-left: 0; }
 .po-cv { font-style: normal; font-weight: 400; color: var(--text-faint); margin-left: 5px; font-size: 10px; }
@@ -637,7 +636,7 @@ async function importPicksXlsx() {
 .sres-n .ptb { margin-left: auto; font-size: 10.5px; font-family: inherit; }
 /* 表选项弹窗 */
 .sat-mask { position: absolute; inset: 0; background: rgba(4, 8, 14, .55); display: flex; align-items: center; justify-content: center; z-index: 70; }
-.perf-opt-dlg { width: 700px; max-width: calc(100% - 32px); max-height: 88%; display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 8px; box-shadow: 0 16px 48px rgba(0, 0, 0, .55); }
+.perf-opt-dlg { width: 700px; max-width: calc(100% - 32px); max-height: 88%; display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-float); box-shadow: 0 16px 48px rgba(0, 0, 0, .55); }
 .sdh { display: flex; align-items: center; padding: 11px 14px; border-bottom: 1px solid var(--border); font-family: var(--font-serif); font-size: 14px; color: var(--text); }
 .sdh em { font-style: normal; font-family: var(--font-mono); font-size: 11.5px; color: var(--text-faint); }
 .sdh .csx { margin-left: auto; cursor: pointer; color: var(--text-faint); display: inline-flex; }
@@ -647,30 +646,28 @@ async function importPicksXlsx() {
 .sdfoot .save.ghost { background: transparent; color: var(--text); border: 1px solid var(--border); }
 .sdfoot .po-reset { margin-right: auto; margin-left: 0; }
 .perf-opt-body { display: flex; gap: 12px; padding: 12px; overflow: auto; align-items: stretch; }
-.po-card { border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; background: color-mix(in srgb, var(--text) 2.5%, transparent); }
-.po-ct { font-size: 11px; font-weight: 600; color: var(--text-muted); letter-spacing: .3px; margin-bottom: 6px; padding-bottom: 4px; border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent); }
+.po-card { border: 1px solid var(--border); border-radius: var(--r-float); padding: 8px 10px; background: color-mix(in srgb, var(--text) 2.5%, transparent); }
+.po-ct { font-size: 11px; font-weight: 600; color: var(--text-muted); letter-spacing: var(--ls-tight); margin-bottom: 6px; padding-bottom: 4px; border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent); }
 .po-cols { flex: 0 0 280px; display: flex; flex-direction: column; }
 .po-scroll { flex: 1; overflow: auto; display: grid; grid-template-columns: 1fr 1fr; gap: 0 10px; align-content: start; }
 .po-grp { display: contents; }
-.po-gt { grid-column: 1 / -1; font-size: 10px; color: var(--text-faint); margin: 6px 0 1px; letter-spacing: .5px; }
+.po-gt { grid-column: 1 / -1; font-size: 10px; color: var(--text-faint); margin: 6px 0 1px; letter-spacing: var(--ls-tight); }
 .po-gt:first-child { margin-top: 0; }
 .po-ck { display: flex; align-items: center; gap: 5px; padding: 2px 0; font-size: 11.5px; color: var(--text); cursor: pointer; min-width: 0; }
 .po-ck span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.po-ck input { flex: none; accent-color: var(--accent); }
+.po-ck input { flex: none; }
 .po-right { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
 .po-chk { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text); cursor: pointer; padding: 1px 0; }
-.po-chk input { accent-color: var(--accent); }
 .po-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 12px; }
 .po-row label { flex: 0 0 64px; color: var(--text-muted); }
-.po-row .ci, .po-row select { flex: 1; min-width: 0; border: 1px solid var(--border); background: var(--bg); padding: 2px 6px; font-size: 12px; color: var(--text); border-radius: 4px; outline: none; }
+.po-row .ci, .po-row select { flex: 1; min-width: 0; border: 1px solid var(--border); background-color: var(--bg); padding: 2px 6px; font-size: 12px; color: var(--text); border-radius: var(--r-card); outline: none; }
 .po-row .ci:disabled { opacity: .45; }
 .po-row .u { flex: none; color: var(--text-faint); font-size: 11px; }
-.po-card .ci.bq { width: 100%; box-sizing: border-box; border: 1px solid var(--border); background: var(--bg); padding: 2px 6px; font-size: 11.5px; color: var(--text); border-radius: 4px; outline: none; }
-.bplist { border: 1px solid var(--border); border-radius: 2px; margin-top: 5px; max-height: 300px; min-height: 48px; overflow-y: auto; resize: vertical; }
+.po-card .ci.bq { width: 100%; box-sizing: border-box; border: 1px solid var(--border); background: var(--bg); padding: 2px 6px; font-size: 11.5px; color: var(--text); border-radius: var(--r-card); outline: none; }
+.bplist { border: 1px solid var(--border); border-radius: var(--r-ctl); margin-top: 5px; max-height: 300px; min-height: 48px; overflow-y: auto; resize: vertical; }
 .brow { display: flex; align-items: center; gap: 6px; padding: 2px 7px; cursor: pointer; font-size: 11.5px; color: var(--text-muted); }
 .brow + .brow { border-top: 1px solid var(--border); }
 .brow:hover { background: var(--bg); }
-.brow input { accent-color: var(--accent); }
 .brow .bseq { flex: none; min-width: 20px; text-align: right; color: var(--text-faint); font-family: var(--font-mono); font-size: 10.5px; }
 .brow .bpk { flex: none; color: var(--text-faint); font-family: var(--font-mono); font-size: 10.5px; }
 .brow .pbnm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

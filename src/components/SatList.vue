@@ -282,7 +282,7 @@ function onAction(a, e) {
 /* 读数行 + 操作条 */
 .slm { display: flex; align-items: center; gap: 8px; padding: 0 10px 5px 12px; font-size: 11px; }
 .sln { flex: 1; min-width: 0; color: var(--text-faint); font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sla { flex: none; display: inline-flex; align-items: center; gap: 3px; color: var(--accent); cursor: pointer; white-space: nowrap; padding: 1px 6px; border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent); border-radius: 4px; }
+.sla { flex: none; display: inline-flex; align-items: center; gap: 3px; color: var(--accent); cursor: pointer; white-space: nowrap; padding: 1px 6px; border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent); border-radius: var(--r-card); }
 .sla:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); }
 .sla.warn { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, transparent); }
 .sla.warn:hover { background: color-mix(in srgb, var(--danger) 14%, transparent); }
@@ -296,7 +296,7 @@ function onAction(a, e) {
 .slwin { position: absolute; top: 0; left: 0; right: 0; will-change: transform; }
 .slr { height: 22px; box-sizing: border-box; display: flex; align-items: center; gap: 6px; padding: 0 10px 0 10px; font-size: 11.5px; color: var(--text-muted); cursor: default; }
 /* 勾选框：常占位不常显 —— 悬停该行、该行已选、或已有任何选中时才现身（Explorer 式，不做成常驻复选框列） */
-.slck { flex: none; width: 12px; height: 12px; box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--text-faint); border-radius: 2px; opacity: 0; }
+.slck { flex: none; width: 12px; height: 12px; box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--text-faint); border-radius: var(--r-ctl); opacity: 0; }
 .slr:hover .slck, .slr.on .slck, .sl.hassel .slck { opacity: 1; }
 .slck:hover { border-color: var(--accent); }
 .slck.on { background: var(--accent); border-color: var(--accent); color: var(--bg); }

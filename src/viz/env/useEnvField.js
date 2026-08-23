@@ -27,7 +27,7 @@ export function useEnvField(host) {
   const H = host || {}
 
   const open = ref(false)
-  const on = ref(true)                    // 图层显示总开关
+  const on = ref(false)                   // 图层显示总开关（缺省关：进入视图先不铺图层，之后按上次的选择恢复）
   const defs = ref([])                    // 字段注册表（主进程给）
   const key = ref('rain')
   const optRainy = ref(0), optP = ref(1)  // 随字段出现的口径参数（P.836 晴/雨天、P.840 超越概率）
@@ -85,11 +85,16 @@ export function useEnvField(host) {
   const fmt = (v) => fmtValue(v, field.value ? field.value.dec : 2)
 
   // ---- 取数 ----
+  // 图层关着时一律不取数（换字段/格距只落在状态里），重新打开时按这个判断已取的那张还对不对得上
+  const loadSig = () => [key.value, Number(stepDeg.value) || 0.25, Number(optRainy.value) || 0, Number(optP.value) || 1].join('|')
+  let loadedSig = ''
+  const needLoad = () => !field.value || loadedSig !== loadSig() ||
+    ((landOnly.value || (def.value && def.value.seaHint === false)) && !field.value.land)
   async function load() {
     if (!window.api?.env?.field) { msg.value = '取数通道不可用'; return }
     const seq = ++reqSeq
     busy.value = true; msg.value = ''
-    const k = key.value
+    const k = key.value, sg = loadSig()
     const wantMask = landOnly.value || (def.value && def.value.seaHint === false)
     try {
       const res = await window.api.env.field(k, {
@@ -100,7 +105,7 @@ export function useEnvField(host) {
       })
       if (seq !== reqSeq) return                     // 已被更新的请求超车，丢弃
       if (!res || res.error) { msg.value = (res && res.message) || '取数失败'; field.value = null; H.draw?.(null); return }
-      field.value = res
+      field.value = res; loadedSig = sg
       if (!res.ready) msg.value = `${res.label}：${res.precision}`
       else if (res.fallback) msg.value = `${res.label}：全精度数据缺失，已用 ${res.precision}`
       else msg.value = `${(res.nx * res.ny / 1e4).toFixed(0)} 万点 · ${res.ms} ms`
@@ -179,7 +184,8 @@ export function useEnvField(host) {
         if (Array.isArray(d)) defs.value = d
       } catch { /* 通道不可用时下面 load 会报 */ }
     }
-    if (!field.value) await load(); else redraw()
+    if (!on.value) return                          // 图层关着：只把面板支起来，不取数也不铺图
+    if (needLoad()) await load(); else redraw()
   }
   function close() {
     open.value = false
@@ -195,12 +201,15 @@ export function useEnvField(host) {
   // （不能靠标志位挡——Vue 的 watch 是异步冲刷，回调跑到时标志早复位了，故按值比对）
   let userScheme = false, autoScheme = ''
   watch(scheme, (v) => { if (v !== autoScheme) userScheme = true })
-  watch([key, stepDeg, optRainy, optP], () => { if (open.value || field.value) load() })
+  watch([key, stepDeg, optRainy, optP], () => { if (on.value && (open.value || field.value)) load() })
   watch(landOnly, (v) => {
-    if (v && field.value && !field.value.land) load()   // 掩膜没取过 → 重取一次
+    if (v && on.value && field.value && !field.value.land) load()   // 掩膜没取过 → 重取一次
     else redraw()
   })
-  watch([scheme, invert, bands, domainMode, manualLo, manualHi, on], () => redraw())
+  watch([scheme, invert, bands, domainMode, manualLo, manualHi], () => redraw())
+  // 总开关：关 → 撤图层（参数与数据都留着）；开 → 数据还对得上就直接重画，对不上（关着时改过参数）补取一次。
+  // 盯 open：面板没支起来过就不取数——恢复上次「开」的选择时不该在启动瞬间就往地图上铺一张图。
+  watch(on, (v) => { if (v && open.value && needLoad()) load(); else redraw() })
   watch(alpha, (a) => { if (on.value) H.setAlpha?.(a) })
   watch([contourOn, contourStep, contourLabel], () => redrawContours())
   // 换字段时把等值线级差交还给该字段的默认值（10 mm/h 与 0.5 km 显然不能共用一个数）
@@ -210,6 +219,7 @@ export function useEnvField(host) {
   try {
     const s = JSON.parse(localStorage.getItem(LS_KEY) || 'null')
     if (s && typeof s === 'object') {
+      if (typeof s.on === 'boolean') on.value = s.on
       if (s.key) key.value = s.key
       // 只有「用户钉过的配色」才恢复；否则让配色继续跟着字段走
       if (s.scheme && s.schemeLocked) { scheme.value = s.scheme; userScheme = true }
@@ -221,10 +231,10 @@ export function useEnvField(host) {
       contourOn.value = !!s.contourOn; contourLabel.value = s.contourLabel !== false
     }
   } catch { /* 首次运行无缓存 */ }
-  watch([key, scheme, stepDeg, alpha, bands, domainMode, invert, landOnly, contourOn, contourLabel], () => {
+  watch([on, key, scheme, stepDeg, alpha, bands, domainMode, invert, landOnly, contourOn, contourLabel], () => {
     try {
       localStorage.setItem(LS_KEY, JSON.stringify({
-        key: key.value, scheme: scheme.value, schemeLocked: userScheme, step: Number(stepDeg.value), alpha: alpha.value,
+        on: on.value, key: key.value, scheme: scheme.value, schemeLocked: userScheme, step: Number(stepDeg.value), alpha: alpha.value,
         bands: bands.value, domainMode: domainMode.value, invert: invert.value, landOnly: landOnly.value,
         contourOn: contourOn.value, contourLabel: contourLabel.value
       }))

@@ -4,7 +4,7 @@
 //   · 步长 stepSec —— 推进一拍，仿真时间走多少秒。这是【采样量子】：播放中每一帧都严格落在
 //     t₀ + k·stepSec 上，帧率抖动、卡顿、切后台都不会把时刻推到格子之间。
 //   · 倍速 speedX  —— 仿真时间比真实时间快多少倍（STK 的 x Real Time）。
-//   二者定出播放拍率：拍率 = 倍速 ÷ 步长（拍/真实秒），夹在 [0.2, 30]。
+//   二者定出播放拍率：拍率 = 倍速 ÷ 步长（拍/真实秒），夹在 [0.2, 240]。
 //
 // 为什么把「快慢」和「采样格」拆成两个量（而不是只有一个倍速）：
 //   星位/覆盖/可见性全是对时刻的确定性函数（SGP4 + GMST），任何单个时刻算出来都是准的；
@@ -13,7 +13,7 @@
 //   （真要一个不漏，用对星表的「时间窗口」时段扫描：那条路的步长由角位移反控，见 satcovScan.js。）
 //
 // ★ 倍速与步长【会互相顶】：想要 3600× 又只肯采 1 s，就得每秒画 3600 帧 —— 物理上办不到。
-//   此时拍率夹到 30，实际倍速随之降到 30×步长，由 effSpeed 如实算出、界面并列显示设定值与实际值。
+//   此时拍率夹到 240，实际倍速随之降到 240×步长，由 effSpeed 如实算出。
 //   要更快就得放大步长 —— 这正是「时间分辨率换播放速度」的真实代价，不该藏起来。
 //
 // ★ 机器跟不上时【只慢放、不跳时刻】：一拍就是一拍，攒下的拍数超过 maxBurst 的部分直接丢弃，
@@ -27,9 +27,18 @@ export const SPEED_PRESETS = [1, 10, 60, 300, 600, 1800, 3600, 10800]
 
 export const STEP_MIN = 0.1, STEP_MAX = 86400
 export const SPEED_MIN = 0.01, SPEED_MAX = 1e6
-export const RATE_MIN = 0.2, RATE_MAX = 30          // 拍/真实秒：下限保住心跳，上限到显示器刷新量级
+// 拍/真实秒。下限保住心跳（慢档下时钟不能看着像死了）。
+// ★ 上限不是性能闸 —— 真正防卡死的是 nextDelayMs 的占用底线（两拍之间留出本拍耗时，占用 ≤ 1/2），
+//   它按【实测单拍耗时】自适应回退。贵场景（几千颗星 + 覆盖场）单拍就是几十毫秒，压根够不着上限；
+//   吃得到 240 的只有便宜场景（十几颗星、没开覆盖场），那里单拍 ≤ 2 ms。
+// ★ 240 是这套定时器的物理天花板：对应间隔 4.2 ms，而 Chromium 对【定时器里再排定时器】（schedule()
+//   正是这个形状）有 4 ms 的嵌套下限 —— 再往上写只会得到一个达不到的数，effSpeed/capped 就开始骗人
+//   （它俩还喂给 followWindow 决定尺子是翻页还是连续滑）。故 TICK_MIN_MS 一并压到 4，两者必须同改。
+// ★ 拍 ≠ 帧：3D 场景走自己的 rAF 环（受 displayQuality 的 fps 档约束：30 / 60 / 不限），一拍只改状态。
+//   拍率超过出帧节奏的那部分算了不画，是纯烧 CPU 换更细的采样格 —— 由占用底线兜住不至于卡死界面。
+export const RATE_MIN = 0.2, RATE_MAX = 240
 const MAX_BURST = 8              // 单次 tick 最多补几拍（超出即丢弃 → 落后墙钟，不跳时刻）
-const TICK_MIN_MS = 16, TICK_MAX_MS = 5000
+const TICK_MIN_MS = 4, TICK_MAX_MS = 5000      // 4 ms = Chromium 嵌套 setTimeout 的下限，与 RATE_MAX 同源
 
 export const clampStep = (s) => Math.min(STEP_MAX, Math.max(STEP_MIN, Number(s) || 60))
 export const clampSpeed = (x) => Math.min(SPEED_MAX, Math.max(SPEED_MIN, Number(x) || 1))
@@ -73,9 +82,9 @@ export function nextDelayMs(wantMs, spentMs, costMs, idleK = IDLE_K) {
   return Math.max(0, Math.max(idle, left))
 }
 
-// 播放定时的目标间隔（ms）：速率的倒数，夹在 [16, 1000]。
-// 上夹 1000 ms 是为了「步长 1 h、速率 0.2 拍/s」这种慢档下时钟本身仍有心跳（读数不会看着像死了）；
-// 下夹 16 ms 是显示器上限，再密只是空转 —— 想更快请加步长，不是加速率。
+// 播放定时的目标间隔（ms）：速率的倒数，夹在 [4, 5000]。
+// 上夹 5000 ms 是为了「步长 1 h、速率 0.2 拍/s」这种慢档下时钟本身仍有心跳（读数不会看着像死了）；
+// 下夹 4 ms 与 RATE_MAX=240 同源（见上），再密浏览器也不给 —— 想更快请加步长，不是加速率。
 export function tickIntervalMs(rate) {
   return Math.min(TICK_MAX_MS, Math.max(TICK_MIN_MS, Math.round(1000 / clampRate(rate))))
 }

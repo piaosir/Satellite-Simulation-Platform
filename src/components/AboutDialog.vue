@@ -125,7 +125,7 @@ async function copyId() {
 .mask { position: fixed; inset: 0; z-index: 2000; background: rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center; }
 /* 512px：模块清单两栏里最长的那条英文（Link Budget · End-to-End Multi-Hop）刚好不折行 */
 .dlg { width: 512px; max-width: calc(100vw - 32px); max-height: calc(100vh - 64px); display: flex; flex-direction: column;
-  background: var(--surface); border: 1px solid var(--border-strong); border-radius: 4px; box-shadow: 0 12px 40px rgba(0,0,0,0.5); }
+  background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-card); box-shadow: 0 12px 40px rgba(0,0,0,0.5); }
 .dhd { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid var(--border); }
 .dt { font-family: var(--font-serif); font-size: 15px; }
 .x { cursor: pointer; color: var(--text-muted); padding: 2px 6px; display: inline-flex; align-items: center; }
@@ -139,12 +139,12 @@ async function copyId() {
 .mark { height: 26px; width: auto; flex: none; user-select: none; -webkit-user-drag: none; }
 :root[data-theme='dark'] .mark { filter: invert(1) brightness(1.06); }
 .idtx { min-width: 0; flex: 1; }
-.nm { font-family: var(--font-serif); font-size: 16.5px; letter-spacing: .4px; }
+.nm { font-family: var(--font-serif); font-size: 16.5px; letter-spacing: var(--ls-tight); }
 .sub { margin-top: 3px; font-size: 11.5px; color: var(--text-muted); }
 .vchip { flex: none; align-self: flex-start; padding: 1px 7px; font-size: 11px; color: var(--text-muted);
   border: 1px solid var(--border-strong); background: var(--bg); }
 
-.sec { font-size: 11px; letter-spacing: 1px; color: var(--text-faint); padding-bottom: 5px; margin-bottom: 9px; border-bottom: 1px solid var(--border); }
+.sec { font-size: 11px; letter-spacing: var(--ls-label); color: var(--text-faint); padding-bottom: 5px; margin-bottom: 9px; border-bottom: 1px solid var(--border); }
 /* 键值两栏共用一根 76px 栏名轴（英文「Activated」不折行） */
 .kv { display: grid; grid-template-columns: 76px 1fr; column-gap: 14px; row-gap: 7px; align-items: baseline; }
 .k { font-size: 11.5px; color: var(--text-faint); }
@@ -158,7 +158,7 @@ async function copyId() {
 .idrow { display: flex; align-items: center; gap: 10px; }
 .id { user-select: text; }
 .cp { display: inline-flex; align-items: center; gap: 4px; padding: 1px 7px; font-size: 11px; cursor: pointer;
-  color: var(--text-muted); background: var(--bg); border: 1px solid var(--border-strong); border-radius: 2px; }
+  color: var(--text-muted); background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-ctl); }
 .cp:hover { color: var(--text); border-color: var(--accent); }
 
 /* 模块清单：两栏，行首短横（无彩细线，与地物线同一口径——不抢内容的色） */
@@ -167,7 +167,7 @@ async function copyId() {
 .mods li::before { content: ''; position: absolute; left: 0; top: .62em; width: 6px; height: 1px; background: var(--border-strong); }
 
 .dft { display: flex; align-items: center; justify-content: flex-end; gap: 10px; padding: 12px 16px; border-top: 1px solid var(--border); }
-.dft button { padding: 6px 16px; cursor: pointer; border-radius: 3px; font-size: 12.5px; }
+.dft button { padding: 6px 16px; cursor: pointer; border-radius: var(--r-box); font-size: 12.5px; }
 .gh { background: var(--bg); border: 1px solid var(--border-strong); color: var(--text); }
 .gh:hover { border-color: var(--accent); }
 .gh:disabled { opacity: .5; cursor: default; }

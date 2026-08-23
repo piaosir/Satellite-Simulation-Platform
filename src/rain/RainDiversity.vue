@@ -230,7 +230,7 @@ function siteTitle(s) {
 .rv-err { color: var(--danger, #9c5751); }
 
 .rv-sec + .rv-sec { margin-top: 14px; }
-.rv-hd { display: flex; align-items: center; gap: 8px; padding: 0 0 4px; font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: var(--text-muted); font-weight: 600; }
+.rv-hd { display: flex; align-items: center; gap: 8px; padding: 0 0 4px; font-size: 11px; letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--text-muted); font-weight: 600; }
 .rv-sub { font-weight: 400; letter-spacing: 0; text-transform: none; }
 .rv-scroll { overflow-x: auto; }
 

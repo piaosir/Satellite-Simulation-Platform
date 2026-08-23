@@ -1,0 +1,239 @@
+/* 全平台控件基线 —— 表单件一律自绘，不用浏览器原生画法。
+   由 global.css 在头部 @import 进来；11 个窗口入口（主窗 / 链路预算 / NGSO / 再生式 / 端到端 /
+   干扰 / PFD / 频率计划 / 雨衰 / 报表 / 日凌）都引 global.css，故改这一处即全软件生效。
+
+   为什么全部自绘：原生件由 UA 画，accent-color 只换得了颜色、换不了几何 —— 同一个滑块在本库里
+   出现过 3px / 12px / 16px 三种高度，121 个复选框里有 38 个压根没写 accent-color、直接是浏览器蓝。
+   自绘之后尺寸、描边、圆角、悬停、焦点全部收口到 global.css 里那几个 --ctl-* / --r-ctl / --r-box token。
+
+   本文件的规则一律用元素选择器（特异度最低），组件里的 scoped 规则天然压得过它 —— 需要就地改
+   宽窄的照旧就地改，但「长什么样」的口径只在这里定义一次。 */
+
+/* ==== 复选框 / 单选钮 ==== */
+input[type="checkbox"],
+input[type="radio"] {
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
+  flex: none;
+  width: var(--ctl-box);
+  height: var(--ctl-box);
+  /* UA 默认 margin: 3px 0.5ex —— 本库的勾选行一律 flex + gap 自己管间距，留着会多出一截 */
+  margin: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-ctl);
+  background: var(--bg);
+  cursor: pointer;
+  transition: background .12s, border-color .12s;
+}
+input[type="radio"] { border-radius: 50%; }
+input[type="checkbox"]:hover,
+input[type="radio"]:hover { border-color: var(--accent); }
+input[type="checkbox"]:checked,
+input[type="radio"]:checked { border-color: var(--accent); }
+input[type="checkbox"]:checked { background: var(--accent); }
+/* 勾用 mask 不用背景图：颜色由 background 给 → 跟着 --bg 走，浅色主题白勾、深色主题黑勾，一份定义管两主题 */
+input[type="checkbox"]:checked::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--bg);
+  -webkit-mask: var(--ctl-check) center / 11px no-repeat;
+          mask: var(--ctl-check) center / 11px no-repeat;
+}
+/* 半选（表格全选列的第三态）：横杠，不是勾 */
+input[type="checkbox"]:indeterminate {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+input[type="checkbox"]:indeterminate::after {
+  content: '';
+  position: absolute;
+  inset: 50% 2px auto;
+  height: 1.5px;
+  margin-top: -0.75px;
+  background: var(--bg);
+  -webkit-mask: none;
+          mask: none;
+}
+input[type="radio"]:checked::after {
+  content: '';
+  position: absolute;
+  inset: 3px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+input[type="checkbox"]:disabled,
+input[type="radio"]:disabled { opacity: .45; cursor: not-allowed; }
+
+/* ==== 滑块 ====
+   不画「已走过」的填充：Chromium 没有 ::-webkit-slider-progress，只能把归一化值经 JS 写成 CSS 变量，
+   而 Vue 的 :value 是改 DOM 属性不派发 input 事件，监听不到 → 外部改值时填充会停在旧位置。
+   与其留个时对时错的填充，不如细轨 + 实心钮：本库每个滑块旁边本来就跟着数值读数。 */
+input[type="range"] {
+  appearance: none;
+  -webkit-appearance: none;
+  height: 14px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+}
+input[type="range"]::-webkit-slider-runnable-track {
+  height: var(--ctl-track);
+  border-radius: calc(var(--ctl-track) / 2);
+  background: var(--border-strong);
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: var(--ctl-knob);
+  height: var(--ctl-knob);
+  margin-top: calc((var(--ctl-track) - var(--ctl-knob)) / 2);
+  border: 0;
+  border-radius: 50%;
+  background: var(--accent);
+  transition: transform .12s;
+}
+input[type="range"]:hover::-webkit-slider-thumb,
+input[type="range"]:active::-webkit-slider-thumb { transform: scale(1.18); }
+input[type="range"]:disabled { cursor: not-allowed; }
+input[type="range"]:disabled::-webkit-slider-thumb { background: var(--text-faint); transform: none; }
+
+/* ==== 数字框 ====
+   原生上下箭头一律去掉：一是丑，二是它挨着输入区，工程数值改错了不容易发现。
+   滚轮误改数值的防护在 shared/ui/controls.js（纯 CSS 管不了）。 */
+input[type="number"] {
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  appearance: none;
+  margin: 0;
+}
+
+/* ==== 取色框 ====
+   原来 31 个取色框摊在 13 条各不相同的 CSS 上（宽 20/22/26/30、高 18/20/21/22/24、圆角有的 3px 有的 0）。 */
+input[type="color"] {
+  appearance: none;
+  -webkit-appearance: none;
+  flex: none;
+  width: 26px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--r-ctl);
+  background: var(--bg);
+  cursor: pointer;
+}
+input[type="color"]:hover { border-color: var(--border-strong); }
+input[type="color"]::-webkit-color-swatch-wrapper { padding: 2px; }
+input[type="color"]::-webkit-color-swatch { border: 0; border-radius: 1px; }
+
+/* ==== 下拉框 ====
+   箭头自绘：原生箭头在深色主题下由 UA 画、跟不上主题。留出 21px 右内距给它，
+   组件里若要重设 padding，右内距别小于 21px（否则文字会压到箭头上）。
+
+   ★ 组件里要改 select 的底色，一律写 background-color，不要写 background 简写 ★
+   箭头是本条规则的 background-image。简写会把 image 一并清成 none，而 appearance: none
+   已经把原生箭头拿掉了 —— 两头落空，那个 select 右边就是 21px 空白、什么指示都没有。
+   这不是假设：全库曾有 60 条组件规则正是这么写的，2026-08-22 已逐条改成 background-color。
+   其中 22 条选择器里带 select 字样（.srow select / .bar select / PFD 的裸 select …），
+   另 38 条是靠类命中的（.ci / .sp-i / .bb-i / .rsp-i / .sg-search …，选择器里根本看不出有 select，
+   查的时候要从模板里 <select class="…"> 用到的类反查过来，别只 grep 'select'）。
+   下内距那条用 !important 钉死是因为 padding 简写没有「只改一半」的写法；底色有
+   background-color 这个长手，故不钉 !important——留着让组件能正常换底色。 */
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding: 3px 21px 3px 7px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-ctl);
+  background: var(--bg) var(--ctl-caret) no-repeat right 6px center / 10px;
+  color: var(--text);
+  cursor: pointer;
+  outline: none;
+}
+select:hover { border-color: var(--border-strong); }
+select:disabled { opacity: .55; cursor: not-allowed; }
+/* 右内距是给箭头留的结构性空间，不是可调参数 —— 全库有 21 处组件规则用 padding 简写重设了
+   select 的内距（各种 1px 5px / 2px 6px / 3px 8px…），任一条漏掉右内距，文字就压到箭头上。
+   与其逐条改、还留着下次再踩的坑，不如在这里把它钉死。
+   注意：这不会把控件撑宽 —— 原生 select 的箭头本来就在自己的内容盒里占着同样一块地方，
+   appearance: none 把那块地方释放了，这里只是原样还回去。 */
+select { padding-right: 21px !important; }
+
+/* ==== 文本 / 数字 / 多行输入 ====
+   只给圆角与兜底描边，不碰 padding —— 各面板的行高口径不同，padding 留在原处。 */
+input[type="text"],
+input[type="number"],
+input:not([type]),
+textarea {
+  border: 1px solid var(--border);
+  border-radius: var(--r-ctl);
+  background: var(--bg);
+  color: var(--text);
+}
+textarea { font-family: inherit; }
+
+/* ==== 滚动条 ====
+   10px 是留白后的槽宽，实际拇指 4px：border 透明 + background-clip 让拇指缩在槽中间，
+   比原来 10px 见方的实心方块轻得多。 */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  background-clip: padding-box;
+  border: 3px solid transparent;
+  border-radius: 5px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-faint);
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-corner { background: transparent; }
+
+/* ==== 焦点环 ====
+   全库有 112 处 outline: none、却只有 7 处 :focus-visible —— 键盘 Tab 过去基本看不出焦点在哪。
+   那 112 处特异度都高过元素选择器，故这里用 !important 压一道；:where() 把特异度压到最低，
+   谁要就地改样式照旧改得动（同样带 !important 即可）。outline-offset 不加 !important，
+   留给个别控件就地内缩（如环境场开关条的 -3px）。 */
+:where(input, select, textarea, button, summary, [tabindex]):focus-visible {
+  outline: 1px solid var(--accent) !important;
+  outline-offset: 1px;
+}
+
+/* ==== 显隐拨杆 ====
+   全软件唯一一件开关：环境场总开关条、标记三分区标题、每个 Polygon 卡片、设置窗的两行开关。
+   复选框答的是「勾没勾」，眼睛图标答的是「看不看得见」—— 开关要答的是「这一项现在开着还是关着」，
+   只有拨杆把开与关两个状态都画成了确定的形。
+   .lg 是设置窗那一档（行高更松，40×22）；默认档 26×14 供密排面板行内用。
+   名字别缩成 .lsw —— 那个在主窗里已被覆盖图例的色块 .legend .lsw 占了。
+   轨道圆角取自身高度的一半，是几何值不是圆角档位，故不走 --r-* token。 */
+.layersw {
+  flex: none;
+  width: 26px;
+  height: 14px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: var(--border-strong);
+  cursor: pointer;
+  transition: background .15s;
+}
+.layersw > i {
+  display: block;
+  width: 10px;
+  height: 10px;
+  margin: 2px;
+  border-radius: 50%;
+  background: var(--bg);
+  transition: transform .15s;
+}
+.layersw.on { background: var(--accent); }
+.layersw.on > i { transform: translateX(12px); }
+.layersw:hover { background: color-mix(in srgb, var(--text) 22%, var(--border-strong)); }
+.layersw.on:hover { background: color-mix(in srgb, var(--text) 22%, var(--accent)); }
+.layersw.lg { width: 40px; height: 22px; border-radius: 11px; }
+.layersw.lg > i { width: 18px; height: 18px; }
+.layersw.lg.on > i { transform: translateX(18px); }

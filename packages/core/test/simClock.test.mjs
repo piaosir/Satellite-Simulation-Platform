@@ -69,8 +69,8 @@ const near = (a, b, eps = 1e-9) => Math.abs(a - b) <= eps
 {
   // 60 s 步长 @ 600× → 10 拍/s，达得到
   ok('②b 常规组合达得到', near(rateFor(60, 600), 10, 1e-9) && !speedCapped(60, 600) && near(effSpeed(60, 600), 600, 1e-9))
-  // 1 s 步长想要 3600× → 需要 3600 拍/s，物理上办不到 → 夹到 30 拍/s，实际只有 30×
-  ok('②b 快档被步长顶住', rateFor(1, 3600) === RATE_MAX && speedCapped(1, 3600) && near(effSpeed(1, 3600), 30, 1e-9),
+  // 1 s 步长想要 3600× → 需要 3600 拍/s，物理上办不到 → 夹到拍率上限，实际只有 RATE_MAX×（1 s 步长）
+  ok('②b 快档被步长顶住', rateFor(1, 3600) === RATE_MAX && speedCapped(1, 3600) && near(effSpeed(1, 3600), RATE_MAX, 1e-9),
     `拍率 ${rateFor(1, 3600)}, 实际 ${effSpeed(1, 3600)}×`)
   // 顶住后放大步长就能真的更快（这正是「时间分辨率换播放速度」）
   ok('②b 放大步长即真的更快', effSpeed(300, 3600) > effSpeed(1, 3600) && !speedCapped(300, 3600),
@@ -125,8 +125,13 @@ const near = (a, b, eps = 1e-9) => Math.abs(a - b) <= eps
   ok('③ 步长夹逼', clampStep(0) === 60 && clampStep(1e9) === 86400 && clampStep(-5) === 0.1,
     `${clampStep(0)} / ${clampStep(1e9)} / ${clampStep(-5)}`)
   ok('③ 拍率夹逼', clampRate(0) === 1 && clampRate(1e6) === RATE_MAX && clampRate(0.001) === RATE_MIN)
-  ok('③ 定时间隔夹在 [16,5000]', tickIntervalMs(0.2) === 5000 && tickIntervalMs(60) === 33 && tickIntervalMs(10) === 100,
-    `${tickIntervalMs(0.2)} / ${tickIntervalMs(60)} / ${tickIntervalMs(10)}`)
+  // 超过拍率上限的诉求先被 clampRate 夹住，间隔因此不会低于 1000/RATE_MAX（240 拍/s → 4 ms，
+  // 正好压在 Chromium 嵌套 setTimeout 的下限上：再快也排不出来）
+  ok('③ 定时间隔夹在 [4,5000]', tickIntervalMs(0.2) === 5000 && tickIntervalMs(1e6) === 4 && tickIntervalMs(10) === 100,
+    `${tickIntervalMs(0.2)} / ${tickIntervalMs(1e6)} / ${tickIntervalMs(10)}`)
+  // 上限与间隔下限必须同源，否则 effSpeed 会报出一个定时器根本排不出来的倍速
+  ok('③ 拍率上限与间隔下限同源', Math.round(1000 / RATE_MAX) === tickIntervalMs(RATE_MAX),
+    `1000/${RATE_MAX} = ${Math.round(1000 / RATE_MAX)} ms vs ${tickIntervalMs(RATE_MAX)} ms`)
   ok('③ 预设全部在合法域内', STEP_PRESETS.every((s) => clampStep(s) === s) && SPEED_PRESETS.every((x) => clampSpeed(x) === x))
 }
 

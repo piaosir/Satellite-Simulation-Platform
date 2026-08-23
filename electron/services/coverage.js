@@ -23,11 +23,32 @@ module.exports = function createCoverage(baseDir, saveDir) {
   function save(name, text) {
     if (!saveDir) throw new Error('未配置导入存储目录')
     fs.mkdirSync(saveDir, { recursive: true })
-    const cleaned = String(name || 'imported').replace(/\.(grd|pat)$/i, '').replace(/[^\w.\-]+/g, '_').replace(/\.+/g, '.') || 'imported'
+    const cleaned = String(name || 'imported').replace(/\.(grd|pat|txt|ant|pattern)$/i, '').replace(/[^\w.\-]+/g, '_').replace(/\.+/g, '.') || 'imported'
     let fname = cleaned + '.grd', i = 1
     while (fs.existsSync(path.join(saveDir, fname))) fname = `${cleaned}_${++i}.grd`
     fs.writeFileSync(path.join(saveDir, fname), String(text == null ? '' : text), 'latin1')
     return { file: fname }
+  }
+  // 轻量嗅探（只读头 64KB）：判断是不是 GRASP 网格。判据与 src/viz/grd/patFormats.js 的
+  // sniffPatternFormat 同源，但这里【只需要区分能不能按字节拷贝】，故不做完整解析，返回中文名或 'grasp'。
+  function sniffHead(srcPath) {
+    let buf
+    try {
+      const fd = fs.openSync(srcPath, 'r'); buf = Buffer.alloc(65536)
+      const got = fs.readSync(fd, buf, 0, 65536, 0); fs.closeSync(fd)
+      buf = buf.subarray(0, got)
+    } catch { return null }
+    const L = buf.toString('latin1').split(/\r\n|\n|\r/)
+    if (/^#CAL1/.test(L[0] || '')) return 'ACP4 方向图'
+    for (const l of L) {
+      const t = l.trim()
+      if (!/^\+{4}/.test(t)) continue
+      const id = /^\+{4}(\d{4})\s*$/.exec(t)
+      return id ? `SATSOFT ++++${id[1]} 文件` : 'grasp'
+    }
+    const f = (L[1] || '').trim().split(/[\s,]+/).filter(Boolean)
+    if (f.length === 6 && f.every((v) => v !== '' && Number.isFinite(+v))) return 'Eutelsat 方向图'
+    return null                                   // 认不出：放行，交给后面的解析器报错
   }
   // 直接把磁盘上的 .grd 拷进 saveDir（不经渲染进程搬文本）。
   // 「星座3D」页导入要在渲染端解析出投影/场，故走 open()+save(text)；链路预算只需要主进程按文件采样，
@@ -58,5 +79,5 @@ module.exports = function createCoverage(baseDir, saveDir) {
     try { fs.unlinkSync(fp) } catch { /* 已不在 */ }
     return { ok: true }
   }
-  return { index, get, save, copyIn, raw, remove }
+  return { index, get, save, copyIn, raw, remove, sniffHead }
 }

@@ -379,7 +379,7 @@ const hoverText = computed(() => hover.value
 .rp { border: 1px solid var(--border); border-radius: var(--r-box, 3px); overflow: hidden; background: var(--surface); }
 .rp-bar { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-bottom: 1px solid var(--border); background: var(--surface-2); }
 .rp-lb { font-size: 12px; color: var(--text-muted); }
-.rp-sel { font: inherit; font-size: 12px; padding: 2px 5px; border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); background: var(--surface); color: var(--text); }
+.rp-sel { font: inherit; font-size: 12px; padding: 2px 5px; border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); background-color: var(--surface); color: var(--text); }
 .rp-rng { display: inline-flex; align-items: center; gap: 3px; }
 .rp-inp { width: 58px; font: inherit; font-size: 12px; padding: 2px 4px; border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); background: var(--surface); color: var(--text); }
 /* 可用度轴要放得下 99.99999（8 字符）+ 数字输入框自带的步进箭头 */

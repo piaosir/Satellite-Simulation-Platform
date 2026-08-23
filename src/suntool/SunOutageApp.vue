@@ -321,12 +321,12 @@ const dEnd = (d) => (isLocal.value ? shiftParts(d.date, d.endTimeUTC, staOffsetM
 <style scoped>
 .shell { display: flex; flex-direction: column; height: 100vh; }
 .topbar { display: flex; align-items: center; gap: 10px; height: 40px; padding: 0 14px; background: var(--surface); border-bottom: 1px solid var(--border); flex: none; }
-.brand { font-family: var(--font-serif); font-size: 15px; letter-spacing: .4px; }
+.brand { font-family: var(--font-serif); font-size: 15px; letter-spacing: var(--ls-tight); }
 .grow { flex: 1; }
-.tzsel { display: inline-flex; border: 1px solid var(--border); border-radius: 2px; overflow: hidden; }
+.tzsel { display: inline-flex; border: 1px solid var(--border); border-radius: var(--r-ctl); overflow: hidden; }
 .tzbtn { border: 0; background: var(--bg); color: var(--text-muted); padding: 3px 10px; cursor: pointer; font-size: 12px; }
 .tzbtn.on { background: var(--accent); color: var(--bg); font-weight: 600; }
-.act { border: 1px solid var(--border); background: var(--bg); color: var(--text-muted); padding: 3px 12px; cursor: pointer; border-radius: 2px; font-size: 12.5px; }
+.act { border: 1px solid var(--border); background: var(--bg); color: var(--text-muted); padding: 3px 12px; cursor: pointer; border-radius: var(--r-ctl); font-size: 12.5px; }
 .act:hover:not(:disabled) { color: var(--text); border-color: var(--accent); }
 .act:disabled { opacity: .45; cursor: default; }
 
@@ -336,14 +336,14 @@ const dEnd = (d) => (isLocal.value ? shiftParts(d.date, d.endTimeUTC, staOffsetM
 .title { font-family: var(--font-serif); font-size: 13px; color: var(--text); margin-bottom: 8px; }
 .row { display: flex; align-items: center; gap: 8px; margin: 6px 0; font-size: 12px; color: var(--text-muted); position: relative; }
 .row > span:first-child { width: 74px; flex: none; }
-.row input, .row select { flex: 1; min-width: 0; background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 3px 7px; font-size: 12.5px; border-radius: 2px; }
+.row input, .row select { flex: 1; min-width: 0; background-color: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 3px 7px; font-size: 12.5px; border-radius: var(--r-ctl); }
 .row input:focus, .row select:focus { outline: none; border-color: var(--accent); }
 .chips { display: flex; gap: 5px; flex: 1; }
-.chip { flex: 1; border: 1px solid var(--border); background: var(--bg); color: var(--text-muted); padding: 3px 0; cursor: pointer; border-radius: 2px; font-size: 12px; }
+.chip { flex: 1; border: 1px solid var(--border); background: var(--bg); color: var(--text-muted); padding: 3px 0; cursor: pointer; border-radius: var(--r-ctl); font-size: 12px; }
 .chip:hover { border-color: var(--accent); color: var(--text); }
 .chip.on { background: var(--accent); color: var(--bg); border-color: var(--accent); font-weight: 600; }
 .hint { font-size: 11px; color: var(--text-faint); line-height: 1.6; margin-top: 6px; }
-.calc { width: 100%; border: 1px solid var(--accent); background: var(--accent); color: var(--bg); padding: 7px 0; cursor: pointer; border-radius: 2px; font-size: 13px; font-weight: 600; }
+.calc { width: 100%; border: 1px solid var(--accent); background: var(--accent); color: var(--bg); padding: 7px 0; cursor: pointer; border-radius: var(--r-ctl); font-size: 13px; font-weight: 600; }
 .calc:disabled { opacity: .6; cursor: default; }
 .err { margin-top: 8px; color: var(--danger); font-size: 12px; line-height: 1.5; }
 
@@ -355,7 +355,7 @@ const dEnd = (d) => (isLocal.value ? shiftParts(d.date, d.endTimeUTC, staOffsetM
 
 .content { flex: 1; min-width: 0; overflow-y: auto; padding: 16px 20px; position: relative; }
 .cards { display: grid; grid-template-columns: repeat(4, minmax(150px, 1fr)); gap: 8px; margin-bottom: 14px; }
-.card { border: 1px solid var(--border); background: var(--surface); padding: 8px 11px; border-radius: 2px; display: flex; flex-direction: column; gap: 4px; }
+.card { border: 1px solid var(--border); background: var(--surface); padding: 8px 11px; border-radius: var(--r-ctl); display: flex; flex-direction: column; gap: 4px; }
 .card i { font-style: normal; font-size: 11px; color: var(--text-faint); }
 .card b { font-weight: 600; font-size: 13px; color: var(--text); }
 
@@ -368,12 +368,12 @@ const dEnd = (d) => (isLocal.value ? shiftParts(d.date, d.endTimeUTC, staOffsetM
 .tbl .strong { font-weight: 600; }
 .tbl tr.peak td { background: var(--surface-2); }
 .star { color: var(--warn); }
-.badge { display: inline-block; min-width: 30px; text-align: center; padding: 1px 7px; border-radius: 2px; font-size: 11.5px; border: 1px solid var(--border); }
+.badge { display: inline-block; min-width: 30px; text-align: center; padding: 1px 7px; border-radius: var(--r-ctl); font-size: 11.5px; border: 1px solid var(--border); }
 .so-intensity-high { color: var(--danger); border-color: var(--danger); }
 .so-intensity-mid { color: var(--warn); border-color: var(--warn); }
 .so-intensity-low { color: var(--ok); border-color: var(--ok); }
 
 .empty { padding: 60px 20px; text-align: center; color: var(--text-muted); }
 .empty .dim { color: var(--text-faint); font-size: 12px; margin-top: 8px; line-height: 1.7; }
-.status { position: sticky; bottom: 0; margin-top: 10px; padding: 7px 11px; background: var(--surface); border: 1px solid var(--border); font-size: 12px; color: var(--text); border-radius: 2px; }
+.status { position: sticky; bottom: 0; margin-top: 10px; padding: 7px 11px; background: var(--surface); border: 1px solid var(--border); font-size: 12px; color: var(--text); border-radius: var(--r-ctl); }
 </style>

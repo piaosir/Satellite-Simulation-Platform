@@ -1,21 +1,25 @@
 // 自定义卫星星历库（主进程）。
-// 用户在「文件管理 · 星历」导入的 OMM CSV / TLE 文件，经 SGP4 校验、按 NORAD 去重后【按导入分组持久化】
+// 用户在「文件管理 · 轨道星历」导入的星历文件，经 SGP4 校验、按 NORAD 去重后【按导入分组持久化】
 // （userData/data/omm/custom.json，每文件一组）。文件管理是自定义卫星的唯一权威库——凡进星座地图/搜索池的
 // 导入星必落此库（「文件」菜单的「导入 TLE 文件」与文件管理的「导入星历」同走此通路，不再有临时不落库的导入）。
 // 全链路——星座地图 3D 的「自定义卫星」分组、
 // NGSO/再生/链路预算「搜索卫星」候选池——都复用既有 `parseOMMCsv → omm2satrec` 通路，与官方星历同一 SGP4 口径。
 //
-// 【为何 TLE 也存成 OMM 记录仍严格无损】satellite.js 的 twoline2satrec 与 omm2satrec 使用同一套常量/单位缩放
-// （见 src/viz/constellation/satellite.js 1678/1732 行、packages/core/vendor/satellite.js 同名函数）：
-//   no=meanMotion/xpdotp、ecco=小数、inclo/nodeo/argpo/mo=deg·deg2rad、bstar=浮点、
-//   ndot=mdot/(xpdotp*1440)、nddot=mddot/(xpdotp*1440*1440)。
-// 因此把一条 TLE 严格拆列为 OMM 记录字段（meanMotion 原样 rev/day、ecc 补前导小数点、角度原样度、
-// bstar/nddot 解包打包指数、mdot 取 TLE ndot 原印值、EPOCH 由 YYDDD.fff 转 ISO UTC），再走 omm2satrec，
-// 与直接 twoline2satrec 生成 bit 级一致的 satrec。下方解析各列区间与 twoline2satrec 逐一对齐。
+// 【格式】导入/导出的六种官方格式（OMM 的 CSV/JSON/KVN/XML 与 TLE/3LE）全部由 core/utils/ommFormats.js
+// 承担：那里有字段表、官方数值体例、六个解析器与六个序列化器，以及“与官方一致”的判据说明。本文件只管
+// 分组持久化与 SGP4 校验，不再自带解析逻辑。
+//
+// 【导出与官方逐字节一致】靠组里留的一份导入原文（rawText/rawFormat）：导出格式 == 导入格式时直接吐原文，
+// 其余格式走 ommFormats 的规范重建。原文超过 RAW_KEEP_MAX 的不留（这类大文件本就来自官方，用户手上有原件），
+// 此时同格式导出退化为规范重建——值仍逐字相同，只是行尾/列序等排版由本平台决定。
 
 const fs = require('fs')
 const path = require('path')
 const { writeJsonAtomic, readJsonSafe } = require('./jsonStore')
+const eph = require('../../packages/core/utils/ommFormats.js')
+
+// 留存导入原文的体积上限（超过则不留，见头部说明）。8MB 覆盖 CelesTrak 最大的 active 组（~3.4MB）。
+const RAW_KEEP_MAX = 8 * 1024 * 1024
 
 const MU = 398600.4418
 const RE = 6378.137
@@ -77,142 +81,20 @@ function parseOMMCsv(text) {
   return sats
 }
 
-/* ===================== OMM 记录 → CSV 序列化（标准 CelesTrak 列，供 3D/搜索复用 & 互操作导出） ===================== */
-const CSV_HEADER = ['OBJECT_NAME', 'OBJECT_ID', 'EPOCH', 'MEAN_MOTION', 'ECCENTRICITY', 'INCLINATION',
-  'RA_OF_ASC_NODE', 'ARG_OF_PERICENTER', 'MEAN_ANOMALY', 'EPHEMERIS_TYPE', 'CLASSIFICATION_TYPE',
-  'NORAD_CAT_ID', 'ELEMENT_SET_NO', 'REV_AT_EPOCH', 'BSTAR', 'MEAN_MOTION_DOT', 'MEAN_MOTION_DDOT']
-const csvEsc = (v) => { const s = String(v == null ? '' : v); return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s }
-function recordsToCsv(records) {
-  const rows = [CSV_HEADER.join(',')]
-  for (const r of records) {
-    rows.push([
-      csvEsc(r.name), csvEsc(r.objectId || ''), csvEsc(r.epoch), csvEsc(r.meanMotion), csvEsc(r.ecc),
-      csvEsc(r.incl), csvEsc(r.raan), csvEsc(r.argp), csvEsc(r.ma), '0', 'U',
-      csvEsc(r.noradId), '999', '0', csvEsc(r.bstar || '0'), csvEsc(r.mdot || '0'), csvEsc(r.mddot || '0')
-    ].join(','))
-  }
-  return rows.join('\r\n') + '\r\n'
-}
+/* ===================== 序列化 / 解析：一律走 core/utils/ommFormats.js ===================== */
+// 记录 → 指定格式文本。CSV 是内部扁平化（raw()）与旧口径导出的缺省格式。
+const recordsToText = (records, format) => eph.serializeEphemeris(records, format || 'omm-csv')
+const recordsToCsv = (records) => recordsToText(records, 'omm-csv')
 
-/* ===================== TLE 严格解析 → OMM 记录 ===================== */
-// Alpha-5：CelesTrak 5 位编号扩展，首位可为字母（去掉易混的 I、O）。A=10, B=11 … H=17, J=18 … Z=33。
-const ALPHA5 = 'ABCDEFGHJKLMNPQRSTUVWXYZ'
-function decodeSatnum(raw) {
-  const s = String(raw || '').trim()
-  if (!s) return ''
-  const c0 = s[0]
-  if (/[A-Za-z]/.test(c0)) {
-    const idx = ALPHA5.indexOf(c0.toUpperCase())
-    if (idx < 0) return String(parseInt(s.replace(/\D/g, ''), 10) || 0)   // 非 Alpha-5 字母：退回纯数字
-    return String((10 + idx) * 10000 + (parseInt(s.slice(1), 10) || 0))
-  }
-  return String(parseInt(s, 10) || 0)
-}
-// TLE 行 mod-10 校验：数字累加，'-' 计 1，其余计 0；与第 69 列(索引 68)比对。
-function tleChecksum(line) {
-  let sum = 0
-  for (let i = 0; i < 68 && i < line.length; i++) {
-    const c = line[i]
-    if (c >= '0' && c <= '9') sum += (c.charCodeAt(0) - 48)
-    else if (c === '-') sum += 1
-  }
-  return sum % 10
-}
-// YY(两位年) + 年内天(含小数) → ISO UTC 串（毫秒精度）。年份轴心 <57→20xx，与 twoline2satrec 一致。
-function tleEpochToIso(epochyr, epochdays) {
-  const year = epochyr < 57 ? epochyr + 2000 : epochyr + 1900
-  // omm2satrec 解析 ISO 时精度到毫秒（new Date(...).getUTCMilliseconds()），故此处取整到毫秒（就近，误差 ≤0.5ms）。
-  const ms = Date.UTC(year, 0, 1) + (epochdays - 1) * 86400000
-  const d = new Date(Math.round(ms))
-  return isNaN(d.getTime()) ? '' : d.toISOString()
-}
-// 国际标识(COSPAR) L1 第 10-17 列 "YYNNNPPP" → "YYYY-NNNPPP"
-function tleObjectId(l1) {
-  const yy = l1.substring(9, 11).trim()
-  const rest = l1.substring(11, 17).trim()
-  if (!/^\d{2}$/.test(yy)) return ''
-  const y = parseInt(yy, 10)
-  const full = y < 57 ? 2000 + y : 1900 + y
-  return rest ? `${full}-${rest}` : ''
-}
-const num = (sub) => { const v = parseFloat(sub); return Number.isFinite(v) ? v : NaN }
-
-// 单条 TLE(两行 + 可选名称) → OMM 记录。列区间与 satellite.js twoline2satrec 逐一对齐。
-function buildFromTle(name, l1, l2, lineNo, errors, warnings) {
-  try {
-    if (l1.length < 64 || l2.length < 64) { errors.push(`第 ${lineNo} 行：TLE 行长度不足（应 ≥69 列）`); return null }
-    const sat1 = l1.substring(2, 7).trim(), sat2 = l2.substring(2, 7).trim()
-    const noradId = decodeSatnum(sat1)
-    if (!noradId || noradId === '0') { errors.push(`第 ${lineNo} 行：无法解析 NORAD 编号`); return null }
-    if (sat1 !== sat2) warnings.push(`NORAD ${noradId}：两行编号不一致（${sat1} / ${sat2}）`)
-    // 校验和（警告级：手工/老 TLE 校验位常不准，但根数仍可用；不因此拒收）
-    const cs1 = Number(l1[68]), cs2 = Number(l2[68])
-    if (Number.isFinite(cs1) && tleChecksum(l1) !== cs1) warnings.push(`NORAD ${noradId}：第 1 行校验和不符`)
-    if (Number.isFinite(cs2) && tleChecksum(l2) !== cs2) warnings.push(`NORAD ${noradId}：第 2 行校验和不符`)
-
-    const epochyr = parseInt(l1.substring(18, 20), 10)
-    const epochdays = num(l1.substring(20, 32))
-    if (!Number.isInteger(epochyr) || !Number.isFinite(epochdays)) { errors.push(`NORAD ${noradId}：历元解析失败`); return null }
-    const epoch = tleEpochToIso(epochyr, epochdays)
-    if (!epoch) { errors.push(`NORAD ${noradId}：历元无效`); return null }
-
-    // mdot = TLE 第 1 行 ndot 原印值(rev/day²，即“n 点/2”栏)；omm2satrec 与 twoline2satrec 同样再 /(xpdotp*1440)
-    const mdot = num(l1.substring(33, 43))
-    // nddot / bstar 打包指数 → 浮点（与 twoline2satrec 完全相同的拼装式）
-    const nddot = parseFloat(`${l1.substring(44, 45)}.${l1.substring(45, 50)}E${l1.substring(50, 52)}`)
-    const bstar = parseFloat(`${l1.substring(53, 54)}.${l1.substring(54, 59)}E${l1.substring(59, 61)}`)
-
-    const incl = num(l2.substring(8, 16))
-    const raan = num(l2.substring(17, 25))
-    const ecc = parseFloat(`.${l2.substring(26, 33).replace(/\s/g, '0')}`)  // 隐含前导小数点
-    const argp = num(l2.substring(34, 42))
-    const ma = num(l2.substring(43, 51))
-    const meanMotion = num(l2.substring(52, 63))
-
-    if (!(meanMotion > 0)) { errors.push(`NORAD ${noradId}：平均运动无效`); return null }
-    if (!(ecc >= 0 && ecc < 1)) { errors.push(`NORAD ${noradId}：偏心率超范围 (${ecc})`); return null }
-    if (!(incl >= 0 && incl <= 180)) { errors.push(`NORAD ${noradId}：倾角超范围 (${incl})`); return null }
-    if (!Number.isFinite(raan) || !Number.isFinite(argp) || !Number.isFinite(ma)) { errors.push(`NORAD ${noradId}：角度根数解析失败`); return null }
-
-    return {
-      name: (name && name.trim()) || `NORAD ${noradId}`,
-      noradId, objectId: tleObjectId(l1), epoch,
-      meanMotion: String(meanMotion), ecc: String(ecc), incl: String(incl), raan: String(raan),
-      argp: String(argp), ma: String(ma),
-      bstar: String(Number.isFinite(bstar) ? bstar : 0),
-      mdot: String(Number.isFinite(mdot) ? mdot : 0),
-      mddot: String(Number.isFinite(nddot) ? nddot : 0)
-    }
-  } catch (e) { errors.push(`第 ${lineNo} 行：TLE 解析异常 ${e.message || e}`); return null }
-}
-
-// 整段 TLE 文本（支持一文件多星、2 行 / 3 行含名称、名称行可带前导 "0 "）→ { records, errors, warnings }
-function parseTleText(text) {
-  const records = [], errors = [], warnings = []
-  const raw = String(text || '').split(/\r?\n/)
-  const lines = []
-  for (let i = 0; i < raw.length; i++) { const t = raw[i].replace(/\s+$/, ''); if (t.trim()) lines.push({ t, n: i + 1 }) }
-  let i = 0, pendingName = null
-  const isL1 = (s) => s[0] === '1' && (s[1] === ' ' || s.length >= 64)
-  const isL2 = (s) => s[0] === '2' && (s[1] === ' ' || s.length >= 64)
-  while (i < lines.length) {
-    const cur = lines[i], s = cur.t
-    if (isL1(s)) {
-      const l2e = lines[i + 1]
-      if (!l2e || !isL2(l2e.t)) { errors.push(`第 ${cur.n} 行：TLE 第 1 行后缺少配对的第 2 行`); i++; pendingName = null; continue }
-      const rec = buildFromTle(pendingName, s, l2e.t, cur.n, errors, warnings)
-      if (rec) records.push(rec)
-      i += 2; pendingName = null; continue
-    }
-    if (isL2(s)) { errors.push(`第 ${cur.n} 行：孤立的 TLE 第 2 行（无配对第 1 行）`); i++; pendingName = null; continue }
-    pendingName = s.replace(/^0 /, '').trim()   // 名称行（3 行格式）
-    i++
-  }
-  return { records, errors, warnings }
-}
+// 旧库里的 format 取值只有 'omm' / 'tle' 两种，统一到 ommFormats 的六种 id 上。
+const FORMAT_MIGRATE = { omm: 'omm-csv', tle: 'tle' }
+const normFormat = (f) => FORMAT_MIGRATE[f] || (eph.FORMATS.includes(f) ? f : '')
 
 /* ===================== 校验 / 存储 / 合并 ===================== */
 // 用与全链路一致的 SGP4 引擎校验：能构 satrec 且历元处传播出有限位置（滤除衰落/病态根数）。
+// 历元串按 omm2satrec 同一条规矩补 Z —— 官方 OMM 的 EPOCH 不带时区标记，直接 new Date() 会被
+// 当本地时间解，东八区上就成了「历元 −8h 处校验」，临近衰落的星可能因此被误判掉。
+const epochDate = (rec) => new Date(/[zZ]$/.test(rec.epoch) ? rec.epoch : rec.epoch + 'Z')
 function validateRecord(getCore, rec) {
   try {
     const core = getCore && getCore()
@@ -220,9 +102,9 @@ function validateRecord(getCore, rec) {
     if (!sgp4 || !sgp4.omm2satrec) return { ok: true }   // 引擎未就绪：仅依赖解析层数值校验
     const satrec = sgp4.omm2satrec(rec)
     if (!satrec || satrec.error) return { ok: false, reason: `SGP4 初始化失败（error=${satrec && satrec.error}）` }
-    const pv = sgp4.propagate(satrec, new Date(rec.epoch))
+    const pv = sgp4.propagate(satrec, epochDate(rec))
     if (!pv || !pv.position || !['x', 'y', 'z'].every((k) => Number.isFinite(pv.position[k]))) {
-      return { ok: false, reason: '历元处无有效位置（可能已衰落或根数病态）' }
+      return { ok: false, reason: '历元处无有效位置（历元体例不受支持 / 已衰落 / 根数病态）' }
     }
     return { ok: true }
   } catch (e) { return { ok: false, reason: e.message || String(e) } }
@@ -234,9 +116,29 @@ const legacyCsvFile = () => path.join(cacheDir(), 'custom.csv')
 const CORRUPT = '星历库文件损坏'
 // 读库：优先 custom.json；无 json 但有旧版 custom.csv 时自动迁移为一个「历史导入」组，
 // 使文件管理 / 地图分组 / 搜索池一并识别历史导入（文件管理是自定义卫星的唯一权威库）。
+// 落盘只存官方字段字典 f{}（外加 TLE 原文行 / JSON 原 number / 注释 / 自定义参数），
+// 契约 13 字段全部由 f 派生，不写第二份 —— 两份同值字符串会把库撑到源文件的 5～6 倍。
+// 老库里的条目没有 f（早期只存契约字段），原样放行：导出时 fieldsFromRecord 会按官方体例补出来。
+const EXTRA_KEYS = ['tleLines', 'tleName', 'jsonNum', 'comments', 'userDefined']
+function packSat(rec) {
+  if (!rec || !rec.f) return rec
+  const o = { f: rec.f }
+  for (const k of EXTRA_KEYS) if (rec[k] != null) o[k] = rec[k]
+  return o
+}
+function unpackSat(o) {
+  if (!o || !o.f) return o
+  const rec = eph.recordFromFields(o.f)
+  if (!rec) return o
+  for (const k of EXTRA_KEYS) if (o[k] != null) rec[k] = o[k]
+  return rec
+}
+const packGroups = (groups) => groups.map((g) => Object.assign({}, g, { sats: (g.sats || []).map(packSat) }))
+const unpackGroups = (groups) => groups.map((g) => Object.assign({}, g, { sats: (g.sats || []).map(unpackSat) }))
+
 function readStore() {
   const r = readJsonSafe(storeFile(), null)
-  if (r.value && Array.isArray(r.value.groups)) return r.value
+  if (r.value && Array.isArray(r.value.groups)) return { groups: unpackGroups(r.value.groups) }
   // custom.json 与它的 .bak 都解析不出来：不当空库使——空库上的下一次写会把坏文件整份覆盖，
   // 导入过的星历再也找不回来。标出来让写侧拒写、上层显示状态。
   if (r.corrupt) return { groups: [], corrupt: true }
@@ -245,7 +147,7 @@ function readStore() {
     const recs = parseOMMCsv(fs.readFileSync(legacy, 'utf8'))
     if (recs.length) {
       let importedAt; try { importedAt = fs.statSync(legacy).mtime.toISOString() } catch { importedAt = new Date().toISOString() }
-      const store = { groups: [{ id: genId(), name: '历史导入', importedAt, format: 'omm', sats: recs }] }
+      const store = { groups: [{ id: genId(), name: '历史导入', importedAt, format: 'omm-csv', sats: recs }] }
       writeStore(store)
       try { fs.renameSync(legacy, legacy + '.migrated') } catch { /* 迁移后原文件保留亦无妨（json 已优先） */ }
       return store
@@ -260,18 +162,16 @@ function writeStore(store) {
     for (const n of [f, f + '.bak']) { try { fs.unlinkSync(n) } catch { /* 已空 */ } }
     return
   }
-  writeJsonAtomic(f, store)
+  writeJsonAtomic(f, { groups: packGroups(store.groups) })
 }
 const mtimeOf = () => { try { return fs.statSync(storeFile()).mtime.toISOString() } catch { return null } }
 let _seq = 0
 const genId = () => 'g' + Date.now().toString(36) + (_seq++).toString(36)
 
-// 解析文本 → OMM 记录 + 格式。既非 OMM 也非 TLE 返回 records=[]。
+// 解析文本 → OMM 记录 + 格式（六种官方格式按内容嗅探，扩展名不作判据）。都认不出返回 records=[]。
 function parseAny(text) {
-  const csv = parseOMMCsv(text)
-  if (csv.length) return { records: csv, format: 'omm', errors: [], warnings: [] }
-  const t = parseTleText(text)
-  return { records: t.records, format: 'tle', errors: t.errors || [], warnings: t.warnings || [] }
+  const r = eph.parseEphemeris(text)
+  return { records: r.records, format: r.format, errors: r.errors || [], warnings: r.warnings || [] }
 }
 
 // 组内派生显示量（周期/近远地点）
@@ -291,7 +191,8 @@ module.exports = function createCustomSats(getCore) {
   function list() {
     const store = readStore()
     const groups = store.groups.map((g) => ({
-      id: g.id, name: g.name, importedAt: g.importedAt, format: g.format || '',
+      id: g.id, name: g.name, importedAt: g.importedAt, format: normFormat(g.format),
+      exact: g.exact !== undefined ? !!g.exact : !!(g.rawText && g.rawCount === (g.sats || []).length),
       count: (g.sats || []).length, sats: (g.sats || []).map(satView)
     }))
     const out = { groups, count: groups.reduce((s, g) => s + g.count, 0), mtime: mtimeOf() }
@@ -310,7 +211,7 @@ module.exports = function createCustomSats(getCore) {
   // 导入一个文件 → 建/替换一个命名组（同名替换）。逐条 SGP4 校验；组内按 NORAD 去重（后者覆盖）。
   function importFile(name, text) {
     const { records, format, errors, warnings } = parseAny(text)
-    if (!records.length) return { ok: false, error: '既不是有效的 OMM CSV，也不是有效的 TLE（' + (errors[0] || '格式不符') + '）' }
+    if (!records.length) return { ok: false, error: '无法识别的星历格式（支持 OMM 的 CSV/JSON/KVN/XML 与 TLE/3LE）：' + (errors[0] || '格式不符') }
     const map = new Map(); let invalid = 0; const errs = []
     for (const r of records) {
       const v = validateRecord(getCore, r)
@@ -324,6 +225,18 @@ module.exports = function createCustomSats(getCore) {
     const gname = (name && String(name).trim()) || '导入组'
     const existing = store.groups.find((g) => g.name === gname)
     const group = { id: existing ? existing.id : genId(), name: gname, importedAt: new Date().toISOString(), format, sats }
+    // 导出同格式要与导入原文逐字节一致。先看规范重建能不能自己还原出原文——对官方 CelesTrak /
+    // Space-Track 的文件一律能（见 test/ommFormats 的 16344 颗字节级回环），此时不必再存一份原文，
+    // 库能小一倍。只有排版异于本平台的第三方文件才留原文兜底。
+    // 去重/校验剔过星的组不留：组里只剩 N 颗而原文有 N+1 颗，原文已不是这个组的内容。
+    const raw = String(text || '')
+    const intact = sats.length === records.length
+    let exact = false
+    if (intact) { try { exact = recordsToText(sats, format) === raw } catch { exact = false } }
+    if (!exact && intact && raw.length <= RAW_KEEP_MAX) { group.rawText = raw; group.rawCount = records.length }
+    else { group.rawText = null; group.rawCount = 0 }
+    // 同格式导出能否逐字节还原：重建自洽，或留了原文
+    group.exact = exact || !!group.rawText
     if (existing) Object.assign(existing, group); else store.groups.push(group)
     writeStore(store)
     return { ok: true, group: { id: group.id, name: group.name, count: sats.length, format }, replaced: !!existing, invalid, errors: errs.concat(errors || []), warnings: warnings || [] }
@@ -351,13 +264,36 @@ module.exports = function createCustomSats(getCore) {
     const g = readStore().groups.find((x) => x.id === id)
     return g ? (g.sats || []) : null
   }
-  // 序列化任意 OMM 记录为 CSV（自建星座导出用，记录由渲染进程生成传入）。
-  function recordsCsv(records) {
+  // 逐条 SGP4 校验的对外口子：给「替换内置星座组」那一路复用同一把尺（omm:import）。
+  // 返回 { valid, invalid, reason }，reason 是第一条失败的原因，供上层直接显示。
+  function checkRecords(records) {
+    let valid = 0, invalid = 0, reason = ''
+    for (const r of (Array.isArray(records) ? records : [])) {
+      const v = validateRecord(getCore, r)
+      if (v.ok) valid++
+      else { invalid++; if (!reason) reason = `${r.name || ('NORAD ' + r.noradId)}：${v.reason}` }
+    }
+    return { valid, invalid, reason }
+  }
+  // 序列化任意 OMM 记录为指定格式（自建星座导出用，记录由渲染进程生成传入）。
+  function recordsText(records, format) {
     const arr = Array.isArray(records) ? records : []
-    return arr.length ? recordsToCsv(arr) : null
+    if (!arr.length) return null
+    return recordsToText(arr, normFormat(format) || 'omm-csv')
+  }
+  const recordsCsv = (records) => recordsText(records, 'omm-csv')
+  // 某组导出为指定格式：格式与导入时相同且条数未变 → 吐原文（逐字节等同官方源文件）；否则规范重建。
+  function groupText(id, format) {
+    const g = readStore().groups.find((x) => x.id === id)
+    if (!g) return null
+    const want = normFormat(format) || 'omm-csv'
+    const sats = g.sats || []
+    if (!sats.length) return null
+    if (g.rawText && normFormat(g.format) === want && g.rawCount === sats.length) return g.rawText
+    return recordsToText(sats, want)
   }
 
-  return { list, raw, importFile, removeGroup, renameGroup, groupRecords, recordsCsv, _parseTleText: parseTleText, _parseOMMCsv: parseOMMCsv }
+  return { list, raw, importFile, removeGroup, renameGroup, groupRecords, recordsCsv, recordsText, groupText, checkRecords, _parseOMMCsv: parseOMMCsv }
 }
 
 // OMM CSV 解析器提成模块级静态导出：omm.js 的 satrecs() 也要用，

@@ -709,17 +709,21 @@ const gridVals = computed(() => {
   for (const [id, patch] of Object.entries(customVals.value)) out[id] = { ...(out[id] || null), ...patch }
   return out
 })
-// —— 列组（排版更符合逻辑）：配置引用 / 站址 / 链路参数 / 计算结果。字段按 key 归组（结果列已带 group:'res'）——
-const _STN_GROUP = { basebandId: 'ref', stationId: 'ref', satelliteId: 'ref',
-  earthStationLocation: 'geo', longitude: 'geo', latitude: 'geo', minElevation: 'geo', slantRange: 'geo', altitude: 'geo',
-  rxEarthStationLocation: 'geo', rxLongitude: 'geo', rxLatitude: 'geo', rxMinElevation: 'geo', rxSlantRange: 'geo', rxAltitude: 'geo',
-  rainRate: 'link', uplinkAvailability: 'link', G_Ts: 'link',
-  rxRainRate: 'link', rxDownlinkAvailability: 'link', rxEIRP: 'link' }
-// 收信站群另一份归组：「地球站配置」并入站址组（列序上它已排在站址组之首，见 regenParams 的 downlink 组）
-// ——下行的地球站配置＝这座收信站的站型（口径/噪温/馈线），与站址同属「这座站」；发信站群那份还带工作点
-// （功放功率），是链路的激励源，仍留在配置组。
-const _RX_GROUP = { ..._STN_GROUP, stationId: 'geo' }
-const _ISL_GROUP = { basebandId: 'ref', txSatelliteId: 'ref', rxSatelliteId: 'ref' }   // 其余（EIRP/GT/频率/损耗…）默认归 'link'
+// —— 列组：一段一个【实体】，不再有笼统的「配置」组。载波 / 卫星 / 地球站 / 链路 / 计算结果，
+// 字段按 key 归组（结果列已带 group:'res'）。上下行两张表同一份映射（rx* 键并列在内），列序见 regenParams。
+//   卫星组＝选哪颗星 + 这颗星对本站的那一个配对量（上行 G/T、下行 EIRP）——它们是卫星侧的量，
+//     不是链路条件，摆在「卫星」后面才读得出「这颗星对这座站有多强」。
+//   地球站组＝站型配置（口径/功放/噪温/馈线）+ 站址 + 几何——都是「这座站」的属性，一体不拆。
+//   链路组＝只剩传播与设计条件（雨强 / 可用度）。
+const _STN_GROUP = { basebandId: 'ref',
+  satelliteId: 'sat', G_Ts: 'sat', rxEIRP: 'sat',
+  stationId: 'es',
+  earthStationLocation: 'es', longitude: 'es', latitude: 'es', minElevation: 'es', slantRange: 'es', altitude: 'es',
+  rxEarthStationLocation: 'es', rxLongitude: 'es', rxLatitude: 'es', rxMinElevation: 'es', rxSlantRange: 'es', rxAltitude: 'es',
+  rainRate: 'link', uplinkAvailability: 'link',
+  rxRainRate: 'link', rxDownlinkAvailability: 'link' }
+// 星间/激光两张表同理：载波一组、两颗卫星一组（手动几何下选星列整组隐去，该组自然不出现）
+const _ISL_GROUP = { basebandId: 'ref', txSatelliteId: 'sat', rxSatelliteId: 'sat' }   // 其余（EIRP/GT/频率/损耗…）默认归 'link'
 const _tagGroup = (map, def) => (f) => ({ ...f, group: map[f.key] || def })
 // 几何=手动：多出「斜距」列，仰角列改称「仰角」（此时它就是本条链路的仰角，不再是最差工况的门限）；
 // 几何=自动最差：斜距由求解器给出，不占列。
@@ -729,11 +733,11 @@ function _geoCols(fields) {
   return fields.filter((f) => (f.manualOnly ? geoManual.value : (f.autoOnly ? !geoManual.value : true)))
     .map((f) => ((geoManual.value && f.manualLabel) ? { ...f, label: f.manualLabel, tip: f.manualTip || f.tip } : f))
 }
-const GROUPS_STATION = [{ key: 'ref', label: '配置' }, { key: 'geo', label: '站址' }, { key: 'link', label: '链路' }, { key: 'res', label: '计算结果' }]
-const GROUPS_ISL = [{ key: 'ref', label: '配置' }, { key: 'link', label: '星间参数' }, { key: 'res', label: '计算结果' }]
-const GROUPS_LASER = [{ key: 'ref', label: '配置' }, { key: 'link', label: '激光参数' }, { key: 'res', label: '计算结果' }]
+const GROUPS_STATION = [{ key: 'ref', label: '载波' }, { key: 'sat', label: '卫星' }, { key: 'es', label: '地球站' }, { key: 'link', label: '链路' }, { key: 'res', label: '计算结果' }]
+const GROUPS_ISL = [{ key: 'ref', label: '载波' }, { key: 'sat', label: '卫星' }, { key: 'link', label: '星间参数' }, { key: 'res', label: '计算结果' }]
+const GROUPS_LASER = [{ key: 'sat', label: '卫星' }, { key: 'link', label: '激光参数' }, { key: 'res', label: '计算结果' }]
 const txGridFields = computed(() => [..._geoCols(TX_FIELDS).map(_tagGroup(_STN_GROUP, 'link')), ...resColsOf('uplink')])
-const rxGridFields = computed(() => [..._geoCols(RX_FIELDS).map(_tagGroup(_RX_GROUP, 'link')), ...resColsOf('downlink')])
+const rxGridFields = computed(() => [..._geoCols(RX_FIELDS).map(_tagGroup(_STN_GROUP, 'link')), ...resColsOf('downlink')])
 const islGridFields = computed(() => [..._geoCols(ISL_FIELDS).map(_tagGroup(_ISL_GROUP, 'link')), ...resColsOf('isl')])
 const laserGridFields = computed(() => [..._geoCols(LASER_FIELDS).map(_tagGroup(_ISL_GROUP, 'link')), ...resColsOf('laser')])
 // 计算列取值映射 { 行_id: { _键: 值 } }：结果不写行数据 → 写回不惊动存档/脏检/过期 watcher
@@ -2297,7 +2301,6 @@ onMounted(async () => {
      TNR 数字字面天然等宽，右对齐即成列，此处不再单独覆写 --font-mono */
   --ok: #4a7a62; --warn: #8a7038; --danger: #9c5751;
   --up: #3f6d8c; --dn: #97672f;
-  --r-ctl: 2px; --r-box: 3px; --r-modal: 4px;
 }
 html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c08079; --up: #82a9c6; --dn: #c9a26a; }
 
@@ -2321,9 +2324,9 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .lb-cfg-hd-t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lb-build { flex: 1; min-width: 460px; }
 
-.lb-col-hd { display: flex; align-items: center; justify-content: space-between; gap: 8px; height: 30px; flex: none; padding: 0 12px; font-size: 11px; font-weight: 600; letter-spacing: 1px; text-transform: uppercase; background: var(--surface-2); border-bottom: 1px solid var(--border); color: var(--text-muted); }
+.lb-col-hd { display: flex; align-items: center; justify-content: space-between; gap: 8px; height: 30px; flex: none; padding: 0 12px; font-size: 11px; font-weight: 600; letter-spacing: var(--ls-label); text-transform: uppercase; background: var(--surface-2); border-bottom: 1px solid var(--border); color: var(--text-muted); }
 .lb-col-bd { flex: 1; overflow: auto; padding: 12px; }
-.lb-lang-sel { font: inherit; font-size: 11px; text-transform: none; letter-spacing: normal; line-height: 1; padding: 3px 6px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl); }
+.lb-lang-sel { font: inherit; font-size: 11px; text-transform: none; letter-spacing: 0; line-height: 1; padding: 3px 6px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl); }
 .lb-lang-sel:focus { outline: none; border-color: var(--accent); }
 .lb-mini { font: inherit; font-size: 11px; line-height: 1; padding: 3px 8px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl); display: inline-flex; align-items: center; justify-content: center; gap: 4px; }
 .lb-mini:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
@@ -2333,13 +2336,13 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .lb-mini-ico { display: inline-flex; align-items: center; justify-content: center; padding: 3px 5px; }
 .lb-ico-svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.2; stroke-linejoin: round; }
 .lb-myid { flex: none; display: flex; align-items: center; gap: 4px; padding: 6px 12px; font-size: 11px; color: var(--text-muted); border-top: 1px solid var(--border); background: var(--surface); white-space: nowrap; overflow: hidden; }
-.lb-myid b { font-family: var(--font-mono); color: var(--text); letter-spacing: .5px; overflow: hidden; text-overflow: ellipsis; }
+.lb-myid b { font-family: var(--font-mono); color: var(--text); letter-spacing: var(--ls-tight); overflow: hidden; text-overflow: ellipsis; }
 
 .lb-mask { position: fixed; inset: 0; z-index: 300; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.28); }
-.lb-dlg { width: 380px; display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-modal); box-shadow: 0 8px 24px rgba(0,0,0,.18); overflow: hidden; }
+.lb-dlg { width: 380px; display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-card); box-shadow: 0 8px 24px rgba(0,0,0,.18); overflow: hidden; }
 /* 分享弹窗自 v1.4.6 起是独立组件（components/LbShareDialog.vue，自带 lbs- 一套样式），
    原先只服务于它的 lb-tabs / lb-area / lb-inbox 系列 / lb-share-l 等已随之删去。 */
-.lb-dlg-hd { display: flex; align-items: center; gap: 8px; padding: 10px 12px; font-size: 11px; font-weight: 600; letter-spacing: 1px; text-transform: uppercase; color: var(--text-muted); background: var(--surface-2); border-bottom: 1px solid var(--border); }
+.lb-dlg-hd { display: flex; align-items: center; gap: 8px; padding: 10px 12px; font-size: 11px; font-weight: 600; letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--text-muted); background: var(--surface-2); border-bottom: 1px solid var(--border); }
 .lb-dlg-bd { padding: 12px; display: flex; flex-direction: column; gap: 8px; }
 .lb-dlg-ft { display: flex; justify-content: flex-end; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--border); background: var(--surface); }
 .lb-input { font: inherit; font-size: 12px; padding: 6px 9px; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl); }
@@ -2353,9 +2356,9 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .rlmode-i:hover:not(.disabled) { color: var(--text); border-color: var(--border-strong); }
 .rlmode-i.on { background: var(--accent); color: var(--bg); border-color: var(--accent); }
 .rlmode-i.disabled { opacity: .55; cursor: not-allowed; }
-.rlmode-todo { font-size: 9px; font-weight: 700; margin-left: 1px; padding: 1px 5px; border-radius: 999px; background: var(--surface-2); color: var(--text-faint); border: 1px solid var(--border); vertical-align: 1px; }
+.rlmode-todo { font-size: 9px; font-weight: 700; margin-left: 1px; padding: 1px 5px; border-radius: var(--r-pill); background: var(--surface-2); color: var(--text-faint); border: 1px solid var(--border); vertical-align: 1px; }
 .rlmode-i.on .rlmode-todo { background: color-mix(in srgb, var(--bg) 20%, transparent); color: var(--bg); border-color: transparent; }
-.rlmode-x { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; margin-left: 1px; border-radius: 4px; color: currentColor; opacity: .5; }
+.rlmode-x { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; margin-left: 1px; border-radius: var(--r-card); color: currentColor; opacity: .5; }
 .rlmode-x svg { stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; fill: none; }
 .rlmode-i:hover .rlmode-x { opacity: .8; }
 .rlmode-x:hover { opacity: 1; background: rgba(214,69,69,.16); color: #d64545; }
@@ -2365,8 +2368,8 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .rlmode-add svg { stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; fill: none; }
 .rlmode-add:hover, .rlmode-add.on { color: var(--accent); border-color: var(--accent); }
 .rlmode-menu-mask { position: fixed; inset: 0; z-index: 40; }
-.rlmode-menu { position: absolute; top: calc(100% + 5px); left: 0; z-index: 41; min-width: 156px; display: flex; flex-direction: column; padding: 4px; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-modal); box-shadow: 0 8px 24px rgba(0,0,0,.18); }
-.rlmode-menu-hd { font-size: 10px; font-weight: 600; letter-spacing: .5px; color: var(--text-faint); padding: 4px 8px 6px; }
+.rlmode-menu { position: absolute; top: calc(100% + 5px); left: 0; z-index: 41; min-width: 156px; display: flex; flex-direction: column; padding: 4px; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-card); box-shadow: 0 8px 24px rgba(0,0,0,.18); }
+.rlmode-menu-hd { font-size: 10px; font-weight: 600; letter-spacing: var(--ls-tight); color: var(--text-faint); padding: 4px 8px 6px; }
 .rlmode-menu-i { text-align: left; font: inherit; font-size: 12px; font-weight: 500; padding: 6px 8px; cursor: pointer; background: transparent; color: var(--text); border: none; border-radius: var(--r-ctl); }
 .rlmode-menu-i:hover { background: var(--surface-2); }
 
@@ -2382,8 +2385,8 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .geo-card { margin-bottom: 12px; border-top: 2px solid var(--lb-rule-strong); border-bottom: 2px solid var(--lb-rule-strong); }
 .geo-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 3px 2px 4px; border-bottom: 1px solid var(--lb-rule); }
 .geo-title { display: flex; align-items: baseline; gap: 7px; min-width: 0; }
-.geo-tt { font-size: calc(var(--lb-fs, 11px) + 1px); font-weight: 700; letter-spacing: .3px; color: var(--text); }
-.geo-badge { flex: none; align-self: center; font-family: var(--font-mono); font-size: 10px; font-weight: 700; letter-spacing: .5px; line-height: 1; padding: 2px 7px; border-radius: 999px; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border-strong); }
+.geo-tt { font-size: calc(var(--lb-fs, 11px) + 1px); font-weight: 700; letter-spacing: var(--ls-tight); color: var(--text); }
+.geo-badge { flex: none; align-self: center; font-family: var(--font-mono); font-size: 10px; font-weight: 700; letter-spacing: var(--ls-tight); line-height: 1; padding: 2px 7px; border-radius: var(--r-pill); background: var(--bg); color: var(--text-muted); border: 1px solid var(--border-strong); }
 .geo-tz { display: inline-flex; flex: none; border: 1px solid var(--border-strong); border-radius: var(--r-ctl); overflow: hidden; }
 .geo-tzb { font: inherit; font-size: 11px; line-height: 1; padding: 3px 9px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 0; }
 .geo-tzb + .geo-tzb { border-left: 1px solid var(--border); }
@@ -2398,11 +2401,11 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .geo-col-hd em { font-style: normal; font-weight: 500; font-size: calc(var(--lb-fs, 11px) - 1px); color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .geo-col-na { font-size: var(--lb-fs, 11px); color: var(--text-faint); padding: 10px 0; }
 .geo-col .geo-sec:first-of-type { border-top: none; padding-top: 3px; margin-top: 4px; }
-.geo-sec { display: flex; align-items: baseline; gap: 7px; font-size: calc(var(--lb-fs, 11px) - 1px); font-weight: 600; color: var(--accent); margin: 8px 0 3px; padding-top: 5px; border-top: 1px solid var(--lb-rule-soft); letter-spacing: .3px; }
-.geo-sec-x { font-weight: 400; font-size: 10px; color: var(--text-faint); letter-spacing: .2px; }
+.geo-sec { display: flex; align-items: baseline; gap: 7px; font-size: calc(var(--lb-fs, 11px) - 1px); font-weight: 600; color: var(--accent); margin: 8px 0 3px; padding-top: 5px; border-top: 1px solid var(--lb-rule-soft); letter-spacing: var(--ls-tight); }
+.geo-sec-x { font-weight: 400; font-size: 10px; color: var(--text-faint); letter-spacing: var(--ls-tight); }
 .geo-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 1.5px 0; }
 .geo-l { font-size: var(--lb-fs, 11px); color: var(--text-muted); min-width: 0; }
-.geo-l i { font-style: normal; font-size: 10px; color: var(--text-faint); margin-left: 4px; letter-spacing: .2px; }
+.geo-l i { font-style: normal; font-size: 10px; color: var(--text-faint); margin-left: 4px; letter-spacing: var(--ls-tight); }
 .geo-v { font-size: var(--lb-fs, 11px); font-weight: 700; color: var(--text); text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .geo-v i { font-style: normal; font-weight: 500; color: var(--text-faint); margin-left: 5px; }
 .geo-v.geo-inf { font-size: calc(var(--lb-fs, 11px) + 6px); line-height: 1; }
@@ -2425,6 +2428,6 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .acc-row .mono { font-family: var(--font-mono); }
 .acc-c1 { color: var(--text-faint); }
 .acc-c3, .acc-c4 { text-align: right; }
-.acc-clip { font-style: normal; font-size: 9px; color: var(--text-faint); margin-left: 5px; padding: 0 4px; border: 1px solid var(--border); border-radius: 999px; }
+.acc-clip { font-style: normal; font-size: 9px; color: var(--text-faint); margin-left: 5px; padding: 0 4px; border: 1px solid var(--border); border-radius: var(--r-pill); }
 
 </style>

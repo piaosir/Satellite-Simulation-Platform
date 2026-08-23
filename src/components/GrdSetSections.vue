@@ -123,7 +123,7 @@ const boreTip = computed(() => {
       </div>
       <template v-if="isSecOpen('grd-set')">
         <template v-if="grd.beamListOn()">
-          <div class="sect" style="margin-top:2px"><span>Beams To Plot · {{ grd.activeBeams().length }} 波束</span></div>
+          <div class="sect"><span>Beams To Plot · {{ grd.activeBeams().length }} 波束</span></div>
           <input class="ci bq" :value="grd.beamQuery.value" placeholder="搜索：波束名，或序号 1-62、1,3,5、1-10,20-30" @input="e => grd.setBeamQuery(e.target.value)" />
           <div class="bplist">
             <label class="brow ball">
@@ -149,8 +149,11 @@ const boreTip = computed(() => {
         <div class="srow"><label>增益偏置</label><input class="ci" type="number" step="0.5" v-model.number="st.gainOffset" /><span class="u">dB</span></div>
         <div class="srow"><label>路径损耗</label><select v-model="st.pathLoss"><option value="none">无</option><option value="relative">相对(h/Rs)²</option><option value="absolute">通量密度</option></select></div>
 
-        <div class="sect" style="margin-top:9px"><span>电平</span><span class="lvhdr">填充 · 线 · 值 · 绝对</span></div>
+        <div class="sect"><span>电平</span></div>
         <div class="glv">
+          <!-- 表头落在表内、用与数据行同一套列宽 —— 原来是一串靠右的「填充 · 线 · 值 · 绝对」，
+               飘在表格右上角，压根不在它命名的那几列头上，两个色块也分不出谁是填充谁是线。 -->
+          <div class="glvhd" aria-hidden="true"><span class="h-clr">填充</span><span class="h-clr">线</span><span class="h-val">值</span><span class="h-nm">名称</span><span class="h-del"></span></div>
           <div v-for="(L, i) in st.levels" :key="i" class="glvrow">
             <input class="lvclr" type="color" title="填充色" :value="lvHex(L.color)" @input="e => setLevelColor(i, e)" />
             <input class="lvclr" type="color" title="线色" :value="lvHex(L.lineColor)" @input="e => setLineColor(i, e)" />
@@ -164,14 +167,14 @@ const boreTip = computed(() => {
           </div>
           <div class="glvadd" @click="grd.addLevel()"><Icon name="plus" :size="11" /> 添加电平</div>
         </div>
-        <div class="srow"><label>线宽</label><input class="rng" type="range" min="0.5" max="8" step="0.1" v-model.number="st.lineWidth" /><span class="u">{{ st.lineWidth.toFixed(1) }}</span></div>
+        <div class="srow"><label>线宽</label><input class="rng" type="range" min="0.1" max="8" step="0.1" v-model.number="st.lineWidth" /><span class="u">{{ st.lineWidth.toFixed(1) }}</span></div>
       </template>
     </div>
 
     <div class="sec">
       <label class="chk2"><input type="checkbox" v-model="st.fill" /><span>Fill Contours（分带填充）</span></label>
       <label class="chk2"><input type="checkbox" v-model="st.line" /><span>显示等值线</span></label>
-      <div class="srow"><label>透明度</label><input class="rng" type="range" min="0" max="1" step="0.02" v-model.number="st.alpha" /><span class="u">{{ st.alpha.toFixed(2) }}</span></div>
+      <div class="srow sub"><label>透明度</label><input class="rng" type="range" min="0" max="1" step="0.02" v-model.number="st.alpha" /><span class="u">{{ st.alpha.toFixed(2) }}</span></div>
     </div>
 
     <div class="sec">
@@ -242,22 +245,22 @@ const boreTip = computed(() => {
       <div class="sect acc" :class="{ open: isSecOpen('grd-disp', false) }" @click="toggleSec('grd-disp', false)"><Icon :name="isSecOpen('grd-disp', false) ? 'chevron-down' : 'chevron-right'" :size="12" /><span>显示选项</span><span class="editing" title="对所有选中天线生效">全局</span></div>
       <template v-if="isSecOpen('grd-disp', false)">
         <label class="chk2"><input type="checkbox" v-model="st.showName" /><span>显示波束名</span></label>
-        <div v-if="st.showName" class="srow"><label>字号</label><input class="rng" type="range" min="0.5" max="32" step="0.5" v-model.number="st.nameSize" /><span class="u">{{ st.nameSize }}</span></div>
+        <div v-if="st.showName" class="srow sub"><label>字号</label><input class="rng" type="range" min="0.5" max="32" step="0.5" v-model.number="st.nameSize" /><span class="u">{{ st.nameSize }}</span></div>
         <label class="chk2"><input type="checkbox" v-model="st.showBore" /><span title="当前场的峰值格点打在地球/壳层上的位置；峰值方向越过地平时不标">显示峰值点</span></label>
-        <div v-if="st.showBore" class="srow"><label>大小</label><input class="rng" type="range" min="0.1" max="3" step="0.1" v-model.number="st.boreSize" /><span class="u">{{ st.boreSize }}</span></div>
+        <div v-if="st.showBore" class="srow sub"><label>大小</label><input class="rng" type="range" min="0.1" max="3" step="0.1" v-model.number="st.boreSize" /><span class="u">{{ st.boreSize }}</span></div>
         <label class="chk2"><input type="checkbox" v-model="st.showRay" /><span title="从卫星沿方向图 u=v=0 方向射出的一条线，一根天线一条">显示天线视轴</span></label>
         <template v-if="st.showRay">
-          <div class="srow"><label>颜色</label><input class="clr" type="color" v-model="st.rayColor" title="视轴颜色（两个视图同一套样式）" /></div>
-          <div class="srow"><label>线宽</label><input class="rng" type="range" min="0.4" max="6" step="0.1" v-model.number="st.rayWidth" /><span class="u">{{ fx(st.rayWidth, 1) }}</span></div>
-          <div class="srow"><label>透明度</label><input class="rng" type="range" min="0.05" max="1" step="0.05" v-model.number="st.rayOpacity" /><span class="u">{{ fx(st.rayOpacity) }}</span></div>
+          <div class="srow sub"><label>颜色</label><input class="clr" type="color" v-model="st.rayColor" title="视轴颜色（两个视图同一套样式）" /></div>
+          <div class="srow sub"><label>线宽</label><input class="rng" type="range" min="0.1" max="6" step="0.1" v-model.number="st.rayWidth" /><span class="u">{{ fx(st.rayWidth, 1) }}</span></div>
+          <div class="srow sub"><label>透明度</label><input class="rng" type="range" min="0.05" max="1" step="0.05" v-model.number="st.rayOpacity" /><span class="u">{{ fx(st.rayOpacity) }}</span></div>
         </template>
         <label class="chk2"><input type="checkbox" v-model="st.showPeak" /><span title="峰值点处的 dB 读数，随极化 / 增益偏置 / 路径损耗变">显示峰值电平</span></label>
-        <div v-if="st.showPeak" class="srow"><label>字号</label><input class="rng" type="range" min="0.5" max="30" step="0.5" v-model.number="st.peakSize" /><span class="u">{{ st.peakSize }}</span></div>
+        <div v-if="st.showPeak" class="srow sub"><label>字号</label><input class="rng" type="range" min="0.5" max="30" step="0.5" v-model.number="st.peakSize" /><span class="u">{{ st.peakSize }}</span></div>
         <label class="chk2"><input type="checkbox" v-model="st.showVal" /><span>显示数值标签</span></label>
-        <div v-if="st.showVal" class="srow"><label>字号</label><input class="rng" type="range" min="0.5" max="30" step="0.5" v-model.number="st.valSize" /><span class="u">{{ st.valSize }}</span></div>
+        <div v-if="st.showVal" class="srow sub"><label>字号</label><input class="rng" type="range" min="0.5" max="30" step="0.5" v-model.number="st.valSize" /><span class="u">{{ st.valSize }}</span></div>
         <!-- 拖动标签位置只在【对地】视图给：可拖标签由对地图层构建时捕获(_dragLabels)，壳层上的标签不在其中。
              壳层视图里开这个模式只会掐掉左键旋转、什么也拖不动，故不出这个入口。 -->
-        <div v-if="st.showVal && !isShell" class="srow" style="justify-content:flex-start">
+        <div v-if="st.showVal && !isShell" class="srow sub" style="justify-content:flex-start">
           <span class="lnk" :class="{ on: grd.dragLabel.value }" title="开启后在地图上按住拖动数值标签，可沿等值线滑动其位置（释放后保存；再次点击关闭）" @click="grd.setDragLabel(!grd.dragLabel.value)"><Icon v-if="grd.dragLabel.value" name="check" :size="10" /> 拖动标签位置</span>
         </div>
       </template>
@@ -269,17 +272,40 @@ const boreTip = computed(() => {
 /* 与「对地覆盖分析」侧栏（ConstellationMap3D.vue）逐条同源：本组件在两个视图里各挂一次，
    宿主页的 scoped 样式进不来，故这里自带一份。改动请两处对照，别只改一边。 */
 .sec { padding: 12px 16px; border-bottom: 1px solid var(--border); }
-.srow { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-.srow:last-child { margin-bottom: 0; }
+/* —— 竖向节奏：只有这三条 ——
+   相邻两件之间恒 8px；小标题上方拉开 12、下方收紧 6。原来是各件各给单边 margin：
+   .srow 只给下、.chk2 只给上 —— 两者相邻时中间那道缝谁也不出，实测 0px（勾选行与它的
+   参数行、电平表与线宽行，四处），另有 6/9/16 三种杂值（9 还是内联写死的）。
+   ★ 同一套行距共三份：本文件、SatCovPanel.vue、宿主页 ConstellationMap3D.vue。前两处的 .sec
+   里只有这套通用行，故写成 `> * + *`；宿主页的 .sec 还装着波束合成 / 可见性分析那些自带间距的
+   块（.bs-* / .vis-*），一刀切会把它们撑开，那份改成把同样的间距挂回 .srow/.sect/.chk2 各自的
+   margin 上 —— 结果一致，写法不同。改这里请三处对照。 */
+.sec > * + * { margin-top: 8px; }
+.sec > * + .sect { margin-top: 12px; }
+.sec > .sect + * { margin-top: 6px; }
+.srow { display: flex; align-items: center; gap: 8px; }
 .srow label { color: var(--text-muted); width: 70px; flex: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.srow select, .srow .ci { flex: 1; min-width: 0; border: 1px solid var(--border); background: var(--bg); padding: 3px 6px; font-size: 12px; outline: none; color: var(--text); }
+/* ② 勾选行的从属参数（透明度属于「显示等值线」、字号属于「显示波束名」…）：缩进 19px，
+   标签正好落在父行文字的起跑线上（复选框 13 + gap 6）；标签列同步由 70 收到 51 —— 两者相加
+   仍是 70，故控件列一动不动，三列网格不破。 */
+.srow.sub { padding-left: 19px; }
+.srow.sub > label { width: 51px; }
+.srow select, .srow .ci { flex: 1; min-width: 0; border: 1px solid var(--border); background-color: var(--bg); padding: 3px 6px; font-size: 12px; outline: none; color: var(--text); }
 .srow .ci:disabled { background: var(--surface); color: var(--text-faint); cursor: not-allowed; border-style: dashed; }
-.srow .u { color: var(--text-muted); }
-.seg { display: flex; border: 1px solid var(--border); }
-.seg .sg { padding: 3px 12px; cursor: pointer; color: var(--text-muted); }
+/* ③ 读数列：钉宽 + 右对齐 + 等宽数字。原来 .u 宽度随文字走（dB / ° / 0.56 / 5 各不同），
+   而滑杆是 flex:1 —— 读数宽一格滑杆就短一格，逐行长短不一。钉住之后所有滑杆等长。 */
+.srow .u { flex: none; min-width: 34px; text-align: right; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+/* 分段控件：连体框 + 段间细线，选中段填墨。全库四处（主窗 / GRD 设置 / 壳层选择 / 对星窗口）
+   原来各写各的——有的没圆角、有的没段间线、段内距 10 与 12 两种；此处收成一份口径，四处逐字一致。 */
+.seg { display: flex; border: 1px solid var(--border); border-radius: var(--r-ctl); overflow: hidden; }
+.seg .sg { padding: 3px 12px; cursor: pointer; color: var(--text-muted); user-select: none; white-space: nowrap; transition: background .12s, color .12s; }
+.seg .sg + .sg { border-left: 1px solid var(--border); }
+.seg .sg:hover:not(.on) { background: var(--surface-2); color: var(--text); }
 .seg .sg.on { background: var(--accent); color: var(--bg); }
+/* 选中段是实底，两侧的分隔线压在墨块边上反而脏，去掉 */
+.seg .sg.on, .seg .sg.on + .sg { border-left-color: transparent; }
 .seg.sm .sg { padding: 2px 7px; font-size: 11px; }
-.sect { display: flex; align-items: center; margin-bottom: 6px; color: var(--text-muted); }
+.sect { display: flex; align-items: center; color: var(--text-muted); }
 .sect.acc { cursor: pointer; user-select: none; gap: 5px; }
 .sect.acc:hover { color: var(--text); }
 .sect .lnk { margin-left: auto; color: var(--accent); cursor: pointer; font-size: 11.5px; }
@@ -290,27 +316,31 @@ const boreTip = computed(() => {
 .setsect .ant-svg { width: 14px; height: 14px; color: var(--accent); margin-right: 6px; flex: none; }
 .setsect .setlbl { color: var(--text); font-weight: 600; }
 .setsect .setname { margin-left: 6px; color: var(--accent); font-weight: 600; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sect .editing { margin-left: auto; font-size: 9.5px; font-weight: 600; color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent); border-radius: 8px; padding: 1px 6px; }
-.chk2 { display: flex; align-items: center; gap: 6px; margin-top: 8px; cursor: pointer; }
-.chk2 input { accent-color: var(--accent); }
+.sect .editing { margin-left: auto; font-size: 9.5px; font-weight: 600; color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent); border-radius: var(--r-pill); padding: 1px 6px; }
+.chk2 { display: flex; align-items: center; gap: 6px; cursor: pointer; }
 .empty { color: var(--text-faint); padding: 4px 0; }
-.tip { color: var(--text-faint); font-size: 11px; margin-top: 4px; line-height: 1.5; }
-.rng { flex: 1; min-width: 0; accent-color: var(--accent); }
-.srow .clr { width: 30px; height: 18px; padding: 0; border: 1px solid var(--border); background: none; cursor: pointer; flex: none; }
-.ci.bq { width: 100%; margin-top: 5px; border: 1px solid var(--border); background: var(--bg); padding: 3px 6px; font-size: 12px; outline: none; color: var(--text); }
+.tip { color: var(--text-faint); font-size: 11px; line-height: 1.5; }
+.rng { flex: 1; min-width: 0; }
+.ci.bq { width: 100%; border: 1px solid var(--border); background: var(--bg); padding: 3px 6px; font-size: 12px; outline: none; color: var(--text); }
 .ic { flex: none; cursor: pointer; color: var(--text-faint); padding: 0 1px; display: inline-flex; }
 .ic:hover { color: var(--text); }
 .ic.del:hover { color: #e66; }
 /* GRD 电平表 */
-.glv { border: 1px solid var(--border); border-radius: 2px; margin-top: 5px; }
-.lvhdr { margin-left: auto; color: var(--text-faint); font-size: 10px; font-family: var(--font-mono); }
+.glv { border: 1px solid var(--border); border-radius: var(--r-ctl); }
+/* 电平表头：与 .glvrow 同一套列宽（20 / 20 / 66 / flex / 删除），内距对齐到各列输入框的文字起点 */
+.glvhd { display: flex; align-items: center; gap: 5px; padding: 4px 6px 3px; border-bottom: 1px solid var(--border); color: var(--text-faint); font-size: 9.5px; white-space: nowrap; }
+.glvhd > span { overflow: hidden; }
+.glvhd .h-clr { flex: none; width: 20px; }
+.glvhd .h-val { flex: none; width: 66px; padding-left: 7px; }
+.glvhd .h-nm { flex: 1; min-width: 0; padding-left: 6px; }
+.glvhd .h-del { flex: none; width: 13px; }
 .glvrow { display: flex; align-items: center; gap: 5px; padding: 3px 6px; }
 .glvrow + .glvrow { border-top: 1px solid var(--border); }
-.glvrow .lvclr { width: 20px; height: 18px; padding: 0; border: 1px solid var(--border); background: none; cursor: pointer; flex: none; }
+.glvrow .lvclr { width: 20px; height: 18px; }
 .glvrow .lvval { width: 66px; flex: none; background: var(--bg); border: 1px solid var(--border); color: var(--text); font-size: 11.5px; padding: 2px 6px; font-family: var(--font-mono); }
 .glvrow .lvabs { flex: 1; color: var(--text-faint); font-family: var(--font-mono); font-size: 11px; }
 /* 电平灰色列改可编辑名：默认透明看似纯文字，hover/focus 现边框；有自定义名时字色转常规 */
-.glvrow .lvname { min-width: 0; border: 1px solid transparent; background: transparent; padding: 2px 5px; border-radius: 2px; outline: none; }
+.glvrow .lvname { min-width: 0; border: 1px solid transparent; background: transparent; padding: 2px 5px; border-radius: var(--r-ctl); outline: none; }
 .glvrow .lvname:hover { border-color: var(--border); }
 .glvrow .lvname:focus { border-color: var(--accent); background: var(--bg); color: var(--text); }
 .glvrow .lvname.named { color: var(--text); }
@@ -318,13 +348,12 @@ const boreTip = computed(() => {
 .glvadd { padding: 4px 7px; text-align: center; color: var(--text-muted); cursor: pointer; font-size: 11.5px; border-top: 1px solid var(--border); }
 .glvadd:hover { color: var(--accent); background: var(--bg); }
 /* Beams To Plot 多波束多选列表（SATSOFT 风格） */
-.bplist { border: 1px solid var(--border); border-radius: 2px; margin-top: 5px; max-height: 300px; min-height: 48px; overflow-y: auto; resize: vertical; }
+.bplist { border: 1px solid var(--border); border-radius: var(--r-ctl); max-height: 300px; min-height: 48px; overflow-y: auto; resize: vertical; }
 .brow { display: flex; align-items: center; gap: 6px; padding: 2px 7px; cursor: pointer; font-size: 11.5px; }
 .brow + .brow { border-top: 1px solid var(--border); }
 .brow:hover { background: var(--bg); }
-.brow input { accent-color: var(--accent); }
 .brow.on .bnm-in { color: var(--text); }
-.brow .bnm-in { flex: 1; min-width: 0; border: 1px solid transparent; background: transparent; color: var(--text-muted); font-size: 11.5px; padding: 1px 4px; border-radius: 2px; outline: none; }
+.brow .bnm-in { flex: 1; min-width: 0; border: 1px solid transparent; background: transparent; color: var(--text-muted); font-size: 11.5px; padding: 1px 4px; border-radius: var(--r-ctl); outline: none; }
 .brow .bnm-in:hover { border-color: var(--border); }
 .brow .bnm-in:focus { border-color: var(--accent); background: var(--bg); color: var(--text); }
 .brow .bseq { flex: none; min-width: 20px; text-align: right; color: var(--text-faint); font-family: var(--font-mono); font-size: 10.5px; }
@@ -338,7 +367,7 @@ const boreTip = computed(() => {
 .tgtnm.bad { color: #d08b5a; }
 /* 目标星搜索结果：与主界面搜索下拉（.search .panel/.item）、卫星组管理器同款——
    一行一颗、星名 + 「来源 · NORAD」副行、可滚动，底下一行命中读数。 */
-.sres { border: 1px solid var(--border); background: var(--bg); margin: -3px 0 8px; }
+.sres { border: 1px solid var(--border); background: var(--bg); }
 .sres-list { max-height: 210px; overflow-y: auto; }
 .sitem { padding: 4px 8px; border-bottom: 1px solid var(--border); cursor: pointer; }
 .sitem:last-child { border-bottom: 0; }

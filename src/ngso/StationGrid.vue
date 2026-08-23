@@ -1315,7 +1315,7 @@ function clearColContents() {
    （撤通栏线改分段 cmidrule + 组间留一道空白列距），在这种全格线密排表里读起来是「少画了根格线」
    而非「这里是分区」，已否决——留白当分隔符的前提是稀疏排版，勿再重来。
    组标题原为 --text-faint，比它管辖的列头(--text-muted)还淡、层级倒挂，一并提到 muted/700。 */
-.sg-tbl.has-g thead tr.sg-ghd th { top: 0; height: 20px; padding: 2px 7px; font-size: 10px; font-weight: 700; letter-spacing: 1.5px; color: var(--text-muted); z-index: 4; border-bottom: 1px solid var(--lb-rule); }
+.sg-tbl.has-g thead tr.sg-ghd th { top: 0; height: 20px; padding: 2px 7px; font-size: 10px; font-weight: 700; letter-spacing: var(--ls-caps); color: var(--text-muted); z-index: 4; border-bottom: 1px solid var(--lb-rule); }
 .sg-tbl.has-g thead tr.sg-ghd th.sg-gpad { z-index: 6; }
 .sg-tbl.has-g thead tr:not(.sg-ghd) th { top: 20px; }
 .sg-glbl { vertical-align: middle; }
@@ -1368,12 +1368,12 @@ function clearColContents() {
 .sg-cell.focus, .sg-cell.editing { z-index: 1; }
 .sg-cell.focus { outline: 2px solid var(--accent); outline-offset: -2px; }
 .sg-tbl tbody tr.on > td.sg-cell.sel { background: color-mix(in srgb, var(--accent) 16%, var(--surface-2)); }
-.sg-i { width: 100%; font: inherit; font-size: 12px; padding: 3px 5px; border: 0; background: var(--surface); color: var(--text); }
+.sg-i { width: 100%; font: inherit; font-size: 12px; padding: 3px 5px; border: 0; border-radius: 0; background: var(--surface); color: var(--text); }
 .sg-i.mono { font-family: var(--font-mono); }
 .sg-i:focus { outline: none; }
 /* 聚焦格常驻捕获输入框：始终存在并持有键盘/输入法焦点。导航态透明覆盖在值上、pointer-events:none 让鼠标框选穿透到 td；
    一旦键入/输入法组字即翻成不透明可见编辑框。核心作用：中文输入法从第一个拼音字母起就有真实 <input> 目标，不再吞首字母。 */
-.sg-cap { position: absolute; inset: 0; width: 100%; height: 100%; box-sizing: border-box; margin: 0; border: 0; padding: 2.5px 6px; font: inherit; line-height: normal; background: transparent; color: transparent; caret-color: transparent; pointer-events: none; z-index: 3; }
+.sg-cap { position: absolute; inset: 0; width: 100%; height: 100%; box-sizing: border-box; margin: 0; border: 0; border-radius: 0; padding: 2.5px 6px; font: inherit; line-height: normal; background: transparent; color: transparent; caret-color: transparent; pointer-events: none; z-index: 3; }
 .sg-cap.mono { font-family: var(--font-mono); }
 .sg-cap:focus { outline: none; }
 .sg-cap.editing { background: var(--surface); color: var(--text); caret-color: var(--text); pointer-events: auto; z-index: 5; }
@@ -1399,10 +1399,10 @@ function clearColContents() {
 .sg-hint { flex: none; margin: 6px 2px 0; font-size: 11px; color: var(--text-faint); }
 
 .sg-mask { position: fixed; inset: 0; z-index: 200; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.28); }
-.sg-box { width: 380px; max-height: 72vh; display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-modal, 4px); box-shadow: 0 8px 24px rgba(0,0,0,.18); overflow: hidden; }
+.sg-box { width: 380px; max-height: 72vh; display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-card, 4px); box-shadow: 0 8px 24px rgba(0,0,0,.18); overflow: hidden; }
 .sg-box-sm { width: 320px; }
-.sg-box-hd { padding: 10px 12px; font-size: 11px; font-weight: 600; letter-spacing: 1px; text-transform: uppercase; color: var(--text-muted); background: var(--surface-2); border-bottom: 1px solid var(--border); }
-.sg-search { margin: 10px 12px; padding: 6px 9px; font: inherit; font-size: 12px; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
+.sg-box-hd { padding: 10px 12px; font-size: 11px; font-weight: 600; letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--text-muted); background: var(--surface-2); border-bottom: 1px solid var(--border); }
+.sg-search { margin: 10px 12px; padding: 6px 9px; font: inherit; font-size: 12px; background-color: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
 .sg-search:focus { outline: none; border-color: var(--accent); }
 .sg-list { flex: 1; overflow: auto; padding: 0 6px 8px; }
 .sg-city { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 8px; cursor: pointer; border-radius: var(--r-ctl, 2px); font-size: 12px; }
@@ -1449,7 +1449,7 @@ function clearColContents() {
 .sg-ctx-i:hover:not(:disabled) { background: var(--surface-2); }
 .sg-ctx-i:disabled { opacity: .45; cursor: not-allowed; }
 .sg-ctx-i.danger:hover { color: var(--danger); }
-.sg-ctx-i kbd { font: inherit; font-size: 10px; color: var(--text-faint); background: var(--surface-2); border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; }
+.sg-ctx-i kbd { font: inherit; font-size: 10px; color: var(--text-faint); background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-box); padding: 0 4px; }
 .sg-ctx-sep { height: 1px; margin: 4px 6px; background: var(--border); }
 
 /* select 单元格下拉指示 chevron：单击即开的热区，pointer-events 高于透明捕获框(.sg-cap z3) */

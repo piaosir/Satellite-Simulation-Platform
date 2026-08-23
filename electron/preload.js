@@ -202,7 +202,7 @@ contextBridge.exposeInMainWorld('api', {
     csv: (group, opts) => ipcRenderer.invoke('omm:csv', group, opts),
     list: () => ipcRenderer.invoke('omm:list'),
     import: (key) => ipcRenderer.invoke('omm:import', key),
-    export: (key) => ipcRenderer.invoke('omm:export', key),
+    export: (key, format) => ipcRenderer.invoke('omm:export', key, format),
     // 自定义卫星库（导入 OMM CSV / TLE，合并去重后持久化为一份 OMM CSV，贯通 3D 分组与搜索池）
     customList: () => ipcRenderer.invoke('omm:customList'),
     customCsv: () => ipcRenderer.invoke('omm:customCsv'),
@@ -210,8 +210,8 @@ contextBridge.exposeInMainWorld('api', {
     customImport: () => ipcRenderer.invoke('omm:customImport'),
     customRemove: (groupId) => ipcRenderer.invoke('omm:customRemove', groupId),
     customRename: (groupId, name) => ipcRenderer.invoke('omm:customRename', groupId, name),
-    customExportGroup: (groupId, defaultName) => ipcRenderer.invoke('omm:customExportGroup', groupId, defaultName),
-    exportOmmCsv: (records, defaultName) => ipcRenderer.invoke('omm:exportOmmCsv', records, defaultName),
+    customExportGroup: (groupId, defaultName, format) => ipcRenderer.invoke('omm:customExportGroup', groupId, defaultName, format),
+    exportRecords: (records, defaultName, format) => ipcRenderer.invoke('omm:exportRecords', records, defaultName, format),
     // 星历取数链路的操作明细（主进程广播）→ 底部「日志」窗格；{ text, level }
     onLog: (cb) => ipcRenderer.on('omm:log', (_e, p) => cb(p))
   },

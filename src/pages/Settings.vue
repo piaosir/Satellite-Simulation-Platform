@@ -70,7 +70,7 @@ onMounted(load)
 .set h2 { font-size: 18px; margin-bottom: 16px; }
 .row { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
 .row label { width: 110px; color: var(--text-muted); font-size: 12.5px; }
-.row input, .row select { border: 1px solid var(--border); background: var(--bg); padding: 5px 8px; outline: none; min-width: 240px; }
+.row input, .row select { border: 1px solid var(--border); background-color: var(--bg); padding: 5px 8px; outline: none; min-width: 240px; }
 .row button { border: 1px solid var(--border); background: var(--bg); padding: 5px 16px; cursor: pointer; }
 .ok { color: var(--ok); font-size: 12px; }
 .empty { color: var(--text-faint); }

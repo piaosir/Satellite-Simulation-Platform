@@ -173,7 +173,7 @@ function onListKey(e) {
 .lbl-cpy { flex: none; display: inline-flex; align-items: center; justify-content: center; padding: 3px 5px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
 .lbl-cpy:hover { color: var(--text); border-color: var(--border-strong); }
 /* 自动命名标记：极轻的一枚小牌（虚线＝还没被钉住），改过名就不再出现 */
-.lbl-auto { flex: none; font-size: 10px; line-height: 15px; padding: 0 5px; cursor: help; color: var(--text-faint); background: var(--bg); border: 1px dashed var(--border-strong); border-radius: 999px; }
+.lbl-auto { flex: none; font-size: 10px; line-height: 15px; padding: 0 5px; cursor: help; color: var(--text-faint); background: var(--bg); border: 1px dashed var(--border-strong); border-radius: var(--r-pill); }
 .lbl-hint { flex: 0 1 auto; min-width: 0; font-size: 10.5px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; animation: lbl-hint-fade 2.6s ease forwards; }
 @keyframes lbl-hint-fade { 0% { opacity: 0 } 8%, 70% { opacity: 1 } 100% { opacity: 0 } }
 .lbl-ed-sp { flex: 1; }

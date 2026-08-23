@@ -35,7 +35,7 @@ html[data-theme='dark'] {
 .lbr { display: flex; align-items: stretch; flex: none; padding: 2px 6px 0; background: var(--surface); border-bottom: 1px solid var(--border-strong); overflow-x: auto; overflow-y: hidden; }
 .lbr-g { display: flex; flex-direction: column; flex: none; padding: 2px 7px 0; border-right: 1px solid var(--border); }
 .lbr-items { flex: 1; display: flex; align-items: center; gap: 2px; min-height: 46px; }
-.lbr-cap { flex: none; text-align: center; font-size: 10px; letter-spacing: 2px; color: var(--text-faint); padding: 1px 0 2px; white-space: nowrap; }
+.lbr-cap { flex: none; text-align: center; font-size: 10px; letter-spacing: var(--ls-caps); color: var(--text-faint); padding: 1px 0 2px; white-space: nowrap; }
 .lbr-big {
   position: relative;   /* 「保存」按钮右上角的未保存脏点（.lbx-dirty）定位基准 */
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
@@ -52,7 +52,7 @@ html[data-theme='dark'] {
 .lbr-form { display: flex; flex-direction: column; justify-content: center; gap: 2px; padding: 0 3px; }
 .lbr-form label { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--text-muted); white-space: nowrap; }
 .lbr-form label > span:first-child { min-width: 26px; }
-.lbr-form select, .lbr-form input { font: inherit; font-size: 11px; padding: 1px 4px; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
+.lbr-form select, .lbr-form input { font: inherit; font-size: 11px; padding: 1px 4px; background-color: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
 .lbr-form select:focus, .lbr-form input:focus { outline: none; border-color: var(--accent); }
 .lbr-form input { width: 58px; font-family: var(--font-mono); }
 .lbr-form input:disabled { color: var(--text-faint); background: var(--surface-2); }
@@ -95,7 +95,7 @@ html[data-theme='dark'] {
 .lb-shell .lb-libpane .es-common { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 4px 14px; }
 .lb-shell .lb-libpane .es-f-big { flex: 0 0 auto; min-height: 0; padding: 1px 0 0; border-bottom: none; gap: 3px; }
 .lb-shell .lb-libpane .es-f-big .es-l { font-size: 12px; font-weight: 600; color: var(--text); }
-.lb-shell .lb-libpane .es-f-big .es-i { width: 100px; font-size: 17px; padding: 3px 8px; background: var(--bg); border-color: var(--border); }
+.lb-shell .lb-libpane .es-f-big .es-i { width: 100px; font-size: 17px; padding: 3px 8px; background-color: var(--bg); border-color: var(--border); }
 .lb-shell .lb-libpane .es-f-big .es-i:focus { border-color: var(--accent); }
 /* 发/收两栏：默认宽度（460px）下并排成两张读数表（中缝竖线分隔），拖窄到放不下才上下堆叠 */
 .lb-shell .lb-libpane .es { gap: 12px; }
@@ -108,16 +108,16 @@ html[data-theme='dark'] {
 .lb-shell .lb-libpane :is(.es-l, .bb-l, .sp-l, .rsp-l) { font-size: 11.5px; line-height: 1.25; }
 /* 数值：右对齐无框，hover/focus 才浮出边框——密排下框线是噪声，数值本身才是信息 */
 .lb-shell .lb-libpane :is(.es-i, .bb-i, .sp-i, .rsp-i) {
-  width: 104px; font-size: 11.5px; padding: 2px 4px; background: transparent; border-color: transparent;
+  width: 104px; font-size: 11.5px; padding: 2px 4px; background-color: transparent; border-color: transparent;
 }
-.lb-shell .lb-libpane :is(.es-i, .bb-i, .sp-i, .rsp-i):hover { background: var(--bg); border-color: var(--border); }
-.lb-shell .lb-libpane :is(.es-i, .bb-i, .sp-i, .rsp-i):focus { background: var(--bg); border-color: var(--accent); }
+.lb-shell .lb-libpane :is(.es-i, .bb-i, .sp-i, .rsp-i):hover { background-color: var(--bg); border-color: var(--border); }
+.lb-shell .lb-libpane :is(.es-i, .bb-i, .sp-i, .rsp-i):focus { background-color: var(--bg); border-color: var(--accent); }
 .lb-shell .lb-libpane :is(select.es-i, select.bb-i, select.sp-i, select.rsp-i) { width: 118px; }
 .lb-shell .lb-libpane .bb-rt .bb-i { background: transparent; color: var(--text-muted); }        /* 速率链非锚点＝算出来的：退一档 */
 .lb-shell .lb-libpane .bb-rt .bb-i.bb-anch { color: var(--text); }                               /* 锚点＝用户钉住的那个（含信息速率） */
 /* 分组标题（发射参数 / 接收参数）：小号字距题头 + 题线，节省纵向空间又分得开 */
 .lb-shell .lb-libpane .es-hd { gap: 5px; margin: 6px 0 3px; padding-bottom: 2px; border-bottom: 1px solid var(--lb-rule); }
-.lb-shell .lb-libpane .es-hd-t { font-size: 11.5px; letter-spacing: 1px; }
+.lb-shell .lb-libpane .es-hd-t { font-size: 11.5px; letter-spacing: var(--ls-label); }
 .lb-shell .lb-libpane .es-hd-s { display: none; }       /* 「发信站引用」注脚：侧栏里让位给数据 */
 .lb-shell .lb-libpane :is(.es-common, .bb-modcod) { padding-bottom: 4px; margin-bottom: 6px; }
 .lb-shell .lb-libpane .bb-rt { padding-top: 5px; }
@@ -152,7 +152,7 @@ html[data-theme='dark'] {
 .lbx-satpick { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); }
 .lbx-satpick select {
   font: inherit; font-size: 12px; font-weight: 600; min-width: 150px; padding: 3px 6px; cursor: pointer;
-  background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px);
+  background-color: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px);
 }
 .lbx-satpick select:focus { outline: none; border-color: var(--accent); }
 .lbx-satsum { font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -173,14 +173,14 @@ html[data-theme='dark'] {
   align-items: baseline; gap: 3px 12px; padding: 5px 0; border-top: 1px solid var(--lb-rule-soft);
 }
 .lbx-satband > .lbx-satline:first-child { border-top: none; padding-top: 0; }
-.lbx-satgut { font-size: var(--lb-fs); letter-spacing: .5px; color: var(--text-faint); white-space: nowrap; }
+.lbx-satgut { font-size: var(--lb-fs); letter-spacing: var(--ls-tight); color: var(--text-faint); white-space: nowrap; }
 .lbx-satmain { display: flex; align-items: center; flex-wrap: wrap; gap: 5px 14px; min-width: 0; }
 .lbx-satsel {
   font: inherit; font-size: 12px; font-weight: 600; min-width: 160px; padding: 3px 6px; cursor: pointer;
-  background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px);
+  background-color: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px);
 }
 .lbx-satsel:focus { outline: none; border-color: var(--accent); }
-.lbx-satname { font-size: calc(var(--lb-fs) + 2px); font-weight: 700; letter-spacing: .3px; color: var(--text); }
+.lbx-satname { font-size: calc(var(--lb-fs) + 2px); font-weight: 700; letter-spacing: var(--ls-tight); color: var(--text); }
 .lbx-satnote { font-size: calc(var(--lb-fs) - 1px); color: var(--text-faint); white-space: nowrap; }
 /* 只读读数族（标签 + 值 + 单位）：与容量汇总（.lbx-cap-item）同族，字号随数据区 --lb-fs */
 .lbx-satkv { gap: 3px 16px; }
@@ -207,7 +207,7 @@ html[data-theme='dark'] {
 /* 结果列面板的「自定义列」吸底区：只管勾选；新建/编辑/删除在独立弹窗（LbCustomColsDialog），
    写公式费时间，不能放在点外即关的下拉里。负 margin 吃掉面板 4px 内衬。 */
 .lbx-ccf { position: sticky; bottom: -4px; margin: 6px -4px -4px; padding: 3px 4px 5px; background: var(--bg); border-top: 1px solid var(--border-strong); }
-.lbx-ccf-hd { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 2px 6px; font-size: 11px; color: var(--text-faint); letter-spacing: 1px; }
+.lbx-ccf-hd { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 2px 6px; font-size: 11px; color: var(--text-faint); letter-spacing: var(--ls-label); }
 .lbx-ccf-btn { border: 0; background: transparent; color: var(--accent, var(--text)); font-size: 11px; cursor: pointer; padding: 1px 2px; white-space: nowrap; }
 .lbx-ccf-btn:hover { text-decoration: underline; }
 /* 链路表结果单元格着色（StationGrid 单元格附加 class，全局规则穿透 scoped） */
@@ -380,7 +380,7 @@ html[data-theme='dark'] .sg-cell .sg-fillbar::after {
    ★ 选择器不能写 :first-of-type —— of-type 认的是标签名，.wf-seg 的头一个 div 是 .wf-title，
    段标题行永远排在它后面，那条规则一次也没命中过（这个空档就是这么来的）。 */
 .lbx-doc .wf-seg > .wf-title + .wf-row.k-head { margin-top: 0; border-top: none; }
-.lbx-doc .wf-row.k-head .wf-l { color: var(--text); font-weight: 700; letter-spacing: .3px; }
+.lbx-doc .wf-row.k-head .wf-l { color: var(--text); font-weight: 700; letter-spacing: var(--ls-tight); }
 .lbx-doc .wf-row.k-shead { margin-top: .35em; }
 .lbx-doc .wf-row.k-shead .wf-l { color: var(--text-muted); font-weight: 600; }
 .lbx-doc .wf-row:is(.k-head, .k-shead):hover { background: transparent; }
@@ -449,7 +449,7 @@ html[data-theme='dark'] .sg-cell .sg-fillbar::after {
    ——上行「容量汇总」本批次总账，下行「本行读数」当前聚焦行的全量结果指标 */
 .lbx-capblk { border-top: 2px solid var(--lb-rule-strong); border-bottom: 2px solid var(--lb-rule-strong); }
 .lbx-capline { display: flex; align-items: baseline; gap: 4px 14px; flex-wrap: wrap; padding: 3px 2px 4px; }
-.lbx-cap-t { font-size: var(--lb-fs); font-weight: 700; letter-spacing: 1px; color: var(--text); }
+.lbx-cap-t { font-size: var(--lb-fs); font-weight: 700; letter-spacing: var(--ls-label); color: var(--text); }
 .lbx-cap-big { font-size: calc(var(--lb-fs) + 4px); font-weight: 700; line-height: 1; color: var(--text); font-variant-numeric: tabular-nums; }
 .lbx-cap-big i { font-size: var(--lb-fs); font-weight: 600; font-style: normal; margin-left: 3px; color: var(--text-muted); }
 .lbx-cap-item { display: inline-flex; align-items: baseline; gap: 5px; }
@@ -474,7 +474,7 @@ html[data-theme='dark'] .sg-cell .sg-fillbar::after {
 .lbx-fold { margin-bottom: 10px; }
 .lbx-fold-hd {
   display: flex; align-items: center; gap: 6px; padding: 2px 1px 3px; cursor: pointer; user-select: none;
-  font-size: var(--lb-fs); font-weight: 700; letter-spacing: .5px; color: var(--text-muted);
+  font-size: var(--lb-fs); font-weight: 700; letter-spacing: var(--ls-tight); color: var(--text-muted);
   background: transparent; border: 0; border-bottom: 1px solid var(--lb-rule-soft);
 }
 .lbx-fold-hd:hover { color: var(--text); }

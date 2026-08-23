@@ -27,7 +27,7 @@ export const clock = reactive({
   seq: 0                // 每拍自增：给需要「时间一动就重算」的 computed 当依赖用
 })
 
-// 拍率 = 倍速 ÷ 步长（夹在 [0.2, 30] 拍/s）；夹住时实际倍速随之打折，由 speed 与 effective 并列显示
+// 拍率 = 倍速 ÷ 步长（夹在 [0.2, 240] 拍/s）；夹住时实际倍速随之打折，effective 是真能达到的那个数
 export const rate = computed(() => rateFor(clock.stepSec, clock.speed))
 export const effective = computed(() => effSpeed(clock.stepSec, clock.speed))   // 实际能达到的倍速
 export const capped = computed(() => speedCapped(clock.stepSec, clock.speed))   // 设定倍速被步长顶住了
@@ -38,25 +38,35 @@ export const isLive = computed(() => clock.mode === 'live')
 // —— 订阅者：一拍一次回调 fn(tMs)（宿主用它驱动重算/重绘）——
 // ★ 不区分「连播拍 / 离散动作」：宿主对两者的处理必须完全一样（一次调用 = 一个时刻的完整画面）。
 //   曾经给连播拍开过「可跳帧」的口子，结果就是覆盖场比星位晚一拍 —— 同一帧里两个时刻，一眼可见。
+// ★ 订阅者可以返回 Promise（宿主把逐颗几何摊给 Worker 池时就会）。emit 会等它们全部 resolve —— 这不是
+//   为了「顺序」，是为了守住上面那条铁律：一拍没画完就不算完，下一拍也不许开始，否则画面里会同时存在两个时刻。
+//   跟不上就是拍率自然掉下来，由 achieved 如实读出（本来就是这么设计的）。
 const subs = new Set()
 export function onTick(fn) { if (typeof fn === 'function') subs.add(fn); return () => subs.delete(fn) }
-function emit() {
+async function emit() {
   clock.seq++
-  for (const fn of subs) { try { fn(clock.tMs) } catch { /* 单个订阅者出错不拖垮时钟 */ } }
+  for (const fn of subs) {
+    try { const r = fn(clock.tMs); if (r && typeof r.then === 'function') await r } catch { /* 单个订阅者出错不拖垮时钟 */ }
+  }
 }
 
 // —— 定时器 ——
 let timer = null, lastReal = 0, accum = 0, lastCost = 0
 let mSim = 0, mReal = 0                 // 实测倍速的滑动窗累加器
+// 宿主页已卸载、表被收走了。★ 必须有这个标志：tick 是 async 的，releaseClock() 若落在它 await 订阅者
+// 的那一段里，光 stopTimer() 拦不住 —— 那一拍醒来照样走到末尾的 schedule()，看 mode 还是 live/play
+// 就把定时器又装了回去（表现＝离开本页后时钟仍在走，与「停表但保留时刻」的约定相反，还留一个后台定时器）。
+// pause() 不需要它：schedule() 本来就判 mode。
+let released = false
 function stopTimer() { if (timer) { clearTimeout(timer); timer = null } }
 function schedule() {
   stopTimer()
-  if (clock.mode === 'pause') return
+  if (released || clock.mode === 'pause') return
   // 自校正（扣掉本拍自身耗时，避免每拍都晚一点越积越多）+ 占用底线（两拍之间必须留出空闲，
   // 否则一拍算不完下一拍立刻接上，主线程 100% 被占，界面直接卡死）。判据见 nextDelayMs。
   timer = setTimeout(tick, nextDelayMs(intervalMs.value, perfNow() - lastReal, lastCost))
 }
-function tick() {
+async function tick() {
   timer = null
   const nowReal = perfNow()
   const dt = Math.max(0, nowReal - lastReal)
@@ -82,13 +92,14 @@ function tick() {
   if (mReal >= 500) { clock.achieved = achievedRate(mSim, mReal); mSim = 0; mReal = 0 }
   if (moved) {
     const c0 = perfNow()
-    emit()
+    await emit()                   // 等本拍画完再记账、再排下一拍：异步几何也要算进这一拍的耗时
     lastCost = perfNow() - c0      // 这一拍全场重算真花了多少：下一拍的空闲底线按它留
   } else lastCost = 0
   schedule()
 }
 function startTimer() {
   stopTimer()
+  released = false                 // 任何一次「起表」都解除卸载态（play / goLive / 改步长倍速 / resumeClock）
   lastReal = perfNow(); accum = 0; mSim = 0; mReal = 0; lastCost = 0
   timer = setTimeout(tick, intervalMs.value)
 }
@@ -132,9 +143,9 @@ export function setStep(sec) { clock.stepSec = clampStep(sec); if (clock.mode ==
 export function setSpeed(x) { clock.speed = clampSpeed(x); if (clock.mode === 'play') startTimer() }
 export function setDir(d) { clock.dir = d < 0 ? -1 : 1 }
 // 页面卸载：停表但保留模式与时刻（回到该页时接着这个时刻，不弹回「此刻」）
-export function releaseClock() { stopTimer() }
+export function releaseClock() { released = true; stopTimer() }
 // 页面重新挂载：按当前模式把表接上（上次离开时若在实时/播放，回来照旧走）
-export function resumeClock() { if (clock.mode !== 'pause') startTimer() }
+export function resumeClock() { released = false; if (clock.mode !== 'pause') startTimer() }
 
 export function getState() { return { stepSec: clock.stepSec, speed: clock.speed, live: clock.mode === 'live' } }
 export function restoreState(s) {

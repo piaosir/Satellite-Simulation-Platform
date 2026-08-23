@@ -185,7 +185,7 @@ defineExpose({
 .lk-tag { color: var(--text-muted); }
 .lk-time { color: var(--text-faint); font-variant-numeric: tabular-nums; }
 .lk-f { display: inline-flex; align-items: center; gap: 4px; color: var(--text-muted); cursor: pointer; }
-.lk-ck { margin: 0; accent-color: var(--accent); }
+.lk-ck { margin: 0; }
 .lk-btn {
   font: inherit; font-size: calc(var(--lb-fs, 11px) - 1px); color: var(--text-muted); cursor: pointer; padding: 1px 6px;
   background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px);

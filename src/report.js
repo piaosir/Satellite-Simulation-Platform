@@ -5,6 +5,7 @@
 import { createApp } from 'vue'
 import ReportApp from './report/ReportApp.vue'
 import './styles/global.css'
+import './shared/ui/controls'
 import './styles/lbworkbench.css'
 import './styles/lbreport.css'
 import './shared/i18n/runtime'

@@ -311,22 +311,22 @@ async function copyKey() {
 <style scoped>
 /* 视觉语言与 LbShareDialog 一致（同一套 CSS 变量）；类名 ms- 前缀，不与任何 App 内的类冲突 */
 .ms-mask { position: fixed; inset: 0; z-index: 320; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.28); }
-.ms-dlg { width: 460px; max-width: 92vw; max-height: 84vh; display: flex; flex-direction: column; background: var(--bg); color: var(--text); border: 1px solid var(--border-strong); border-radius: var(--r-modal, 4px); box-shadow: 0 8px 24px rgba(0,0,0,.18); overflow: hidden; }
+.ms-dlg { width: 460px; max-width: 92vw; max-height: 84vh; display: flex; flex-direction: column; background: var(--bg); color: var(--text); border: 1px solid var(--border-strong); border-radius: var(--r-card, 4px); box-shadow: 0 8px 24px rgba(0,0,0,.18); overflow: hidden; }
 .ms-hd { display: flex; align-items: center; gap: 7px; padding: 10px 12px; background: var(--surface-2); border-bottom: 1px solid var(--border); }
-.ms-hd-t { font-size: 11px; font-weight: 600; letter-spacing: 1px; text-transform: uppercase; color: var(--text-muted); }
+.ms-hd-t { font-size: 11px; font-weight: 600; letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--text-muted); }
 .ms-sp { flex: 1; }
 .ms-id { font-size: 11px; color: var(--text-muted); }
 .ms-id b { font-family: var(--font-mono); color: var(--text); }
 .ms-bd { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 7px; overflow-y: auto; }
 .ms-ft { display: flex; justify-content: flex-end; padding: 8px 12px; border-top: 1px solid var(--border); background: var(--surface); }
-.ms-sec { display: flex; align-items: baseline; gap: 8px; font-size: 11px; font-weight: 600; color: var(--text-muted); letter-spacing: .5px; }
+.ms-sec { display: flex; align-items: baseline; gap: 8px; font-size: 11px; font-weight: 600; color: var(--text-muted); letter-spacing: var(--ls-tight); }
 .ms-src { font-weight: 400; font-size: 10.5px; color: var(--text-faint); }
 .ms-list { max-height: 220px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--r-box, 3px); background: var(--bg); }
 .ms-row { display: flex; align-items: center; gap: 7px; padding: 4px 8px; font-size: 11.5px; border-bottom: 1px solid color-mix(in srgb, var(--border) 45%, transparent); }
 .ms-row:last-child { border-bottom: 0; }
 .ms-k { flex: none; width: 56px; color: var(--text-faint); }
 .ms-nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ms-tag { flex: none; font-family: var(--font-mono); font-size: 10px; line-height: 15px; padding: 0 5px; color: var(--text-faint); border: 1px solid var(--border-strong); border-radius: 999px; }
+.ms-tag { flex: none; font-family: var(--font-mono); font-size: 10px; line-height: 15px; padding: 0 5px; color: var(--text-faint); border: 1px solid var(--border-strong); border-radius: var(--r-pill); }
 .ms-pick { cursor: pointer; user-select: none; }
 .ms-pick:hover { background: var(--surface-2); }
 .ms-pick input { flex: none; margin: 0; cursor: pointer; }
@@ -339,7 +339,7 @@ async function copyKey() {
 .ms-pk { display: flex; align-items: center; gap: 8px; }
 .ms-pk-l { flex: none; width: 76px; font-size: 11.5px; color: var(--text-muted); }
 .ms-pk select { flex: 1; min-width: 0; font: inherit; font-size: 11.5px; padding: 4px 6px; outline: none;
-  color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
+  color: var(--text); background-color: var(--bg); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
 .ms-opt { display: flex; align-items: center; gap: 7px; font-size: 11.5px; cursor: pointer; user-select: none; }
 .ms-opt input { flex: none; margin: 0; cursor: pointer; }
 .ms-mng { display: flex; justify-content: flex-end; margin-top: -2px; }

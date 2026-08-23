@@ -162,7 +162,7 @@ const menuRow = computed(() => { const r = g.rect.value; return r.r0 < 0 ? 0 : r
 /* Excel 填充柄：选区右下角小方块 */
 .eg-handle { position: absolute; right: -2px; bottom: -2px; width: 6px; height: 6px; background: var(--accent); border: 1px solid var(--bg); cursor: crosshair; z-index: 6; }
 /* 常驻捕获输入框（见模板注释） */
-.eg-cap { position: absolute; inset: 0; width: 100%; height: 100%; box-sizing: border-box; margin: 0; border: 0; padding: 3px 8px; font: inherit; line-height: normal; background: transparent; color: transparent; caret-color: transparent; pointer-events: none; z-index: 3; }
+.eg-cap { position: absolute; inset: 0; width: 100%; height: 100%; box-sizing: border-box; margin: 0; border: 0; border-radius: 0; padding: 3px 8px; font: inherit; line-height: normal; background: transparent; color: transparent; caret-color: transparent; pointer-events: none; z-index: 3; }
 .eg-cap.n { font-family: var(--font-mono); text-align: right; }
 .eg-cap:focus { outline: none; }
 .eg-cap.editing { background: var(--surface, var(--bg)); color: var(--text); caret-color: var(--text); pointer-events: auto; z-index: 5; }
@@ -170,15 +170,15 @@ const menuRow = computed(() => { const r = g.rect.value; return r.r0 < 0 ? 0 : r
 .eg-tbl th.eg-pad, .eg-tbl td.eg-pad { padding: 0; }
 .eg-tbl td.eg-empty { text-align: center; color: var(--text-faint); padding: 16px 12px; cursor: default; font-style: italic; }
 .eg-tbl tr.eg-addrow td { padding: 2px 6px; border-bottom: 0; overflow: visible; }
-.eg-addlbl { position: sticky; left: 6px; display: inline-flex; align-items: center; gap: 4px; font: inherit; font-size: 11px; padding: 2px 7px; cursor: pointer; color: var(--text-faint); background: transparent; border: 1px solid transparent; border-radius: 4px; }
+.eg-addlbl { position: sticky; left: 6px; display: inline-flex; align-items: center; gap: 4px; font: inherit; font-size: 11px; padding: 2px 7px; cursor: pointer; color: var(--text-faint); background: transparent; border: 1px solid transparent; border-radius: var(--r-card); }
 .eg-addlbl:hover { color: var(--accent); border-color: var(--border); }
 </style>
 
 <style>
 /* 右键菜单 Teleport 到 body，不能用 scoped（scoped 只给组件自身 DOM 打标记，Teleport 出去的节点拿不到） */
 .eg-ctx-mask { position: fixed; inset: 0; z-index: 400; }
-.eg-ctx { position: fixed; min-width: 176px; padding: 4px; background: var(--surface, var(--bg)); border: 1px solid var(--border-strong, var(--border)); border-radius: 6px; box-shadow: 0 10px 30px rgba(0, 0, 0, .45); display: flex; flex-direction: column; }
-.eg-ctx-i { display: flex; align-items: center; gap: 12px; width: 100%; font: inherit; font-size: 12px; text-align: left; padding: 4px 9px; cursor: pointer; background: transparent; color: var(--text); border: 0; border-radius: 4px; white-space: nowrap; }
+.eg-ctx { position: fixed; min-width: 176px; padding: 4px; background: var(--surface, var(--bg)); border: 1px solid var(--border-strong, var(--border)); border-radius: var(--r-float); box-shadow: 0 10px 30px rgba(0, 0, 0, .45); display: flex; flex-direction: column; }
+.eg-ctx-i { display: flex; align-items: center; gap: 12px; width: 100%; font: inherit; font-size: 12px; text-align: left; padding: 4px 9px; cursor: pointer; background: transparent; color: var(--text); border: 0; border-radius: var(--r-card); white-space: nowrap; }
 .eg-ctx-i > span { flex: 1; }
 .eg-ctx-i kbd { font-family: var(--font-mono); font-size: 10px; color: var(--text-faint); }
 .eg-ctx-i:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 18%, transparent); }

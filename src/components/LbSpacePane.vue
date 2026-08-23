@@ -517,7 +517,7 @@ defineExpose({
 .sp-l { font-size: var(--lb-fs, 11px); color: var(--text-muted); white-space: nowrap; }
 .sp-sel, .sp-in, .sp-exp {
   font: inherit; font-size: var(--lb-fs, 11px); padding: 2px 4px;
-  background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px);
+  background-color: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px);
 }
 .sp-sel { cursor: pointer; max-width: 12em; }
 .sp-sel-z { max-width: 13em; }

@@ -868,7 +868,7 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
       const gs = isActive ? settings.value : (g.settings || [])
       const gp = isActive ? p : g.p
       const alpha = isActive ? 1 : 0.4
-      const lineW = Math.max(0.2, Number(gp.skWidth) || 1.5)
+      const lineW = Math.max(0.1, Number(gp.skWidth) || 1.5)
       const baseHex = cssNum(gp.skColor, cssNum(SKETCH_CSS))
       const numCss = isActive ? (/^#[0-9a-f]{6}$/i.test(String(gp.skNumColor || '')) ? gp.skNumColor : SKETCH_CSS) : DIM_NUM_CSS
       const fcOn = gp.fcShow !== false

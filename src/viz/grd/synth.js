@@ -345,7 +345,7 @@ export function polysUnionPeak({ satLon, satLat = 0, altKm, polysPts, effPct = 5
 
 // TICRA/GRASP ASCII 规范场值格式：±0.DDDDDDDDDDE±NN —— 尾数归一到 [0.1,1)、10 位有效数字、大写 E、
 // 2 位指数，与权威参考 300_X0*G_EIRP.grd 逐字同形（Number() 与 Fortran list-directed 皆可逆解析）。
-function fexp(v, digits = 10) {
+export function fexp(v, digits = 10) {
   if (!Number.isFinite(v)) v = 0
   const z = '0.' + '0'.repeat(digits) + 'E+00'
   if (v === 0) return z
@@ -478,7 +478,7 @@ export function repackGrdCommonGrid(text, { floorDb = -50, cap = 2_000_000, ptsP
   }
   // 头：保留原文本头（含 SYNTHMETA），沿用原 KTYPE/ICOMP/NCOMP/IGRID 与 NSET(=波束数)；各 set 现同公共网格
   const lines = text.split(/\r\n|\n|\r/)
-  let hi = 0; while (hi < lines.length && !/^\+{4,}$/.test(lines[hi].trim())) hi++
+  let hi = 0; while (hi < lines.length && !/^\+{4}/.test(lines[hi].trim())) hi++   // 与 parse.js 同源：行首 4 个 '+'
   const head = lines.slice(0, hi)
   head.push('++++', String(g.ktype), ` ${g.nset} ${g.icomp} ${g.ncomp} ${g.igrid}`)
   for (let s = 0; s < g.nset; s++) head.push('  0  0')

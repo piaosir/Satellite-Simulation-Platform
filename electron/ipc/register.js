@@ -80,32 +80,82 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   ipcMain.handle('omm:positions', (_e, group, iso) => omm.positions(group, iso))
   ipcMain.handle('omm:csv', (_e, group, opts) => omm.fetchCsv(group, opts))
 
+  // ---- 文件管理：星历导入/导出的六种官方格式 ----
+  // 格式选择走【原生对话框的文件类型下拉 + 用户敲的扩展名】：Electron 不回传用户选了哪个 filter，
+  // 故一律以最终 filePath 的扩展名为准（选了类型，文件名的扩展名就跟着变，两者天然同步）。
+  const eph = require('../../packages/core/utils/ommFormats.js')
+  // 只收无歧义的扩展名。'.txt' 不在表里是有意的：TLE/3LE/OMM 都有人存成 .txt，用它猜格式必然猜错一半。
+  const EXT2FMT = { csv: 'omm-csv', json: 'omm-json', kvn: 'omm-kvn', xml: 'omm-xml', tle: 'tle', '3le': '3le' }
+  // 扩展名认不出（手打了 .txt、或压根没打扩展名）时不硬猜，落回对话框里选中的那个格式 want——
+  // 否则「类型选 OMM CSV、文件名手打 a.txt」会静默导出成 3LE，文件打开前一点提示都没有。
+  const fmtOfPath = (fp, want) => EXT2FMT[String(fp || '').split('.').pop().toLowerCase()]
+    || (eph.FORMATS.includes(want) ? want : 'omm-csv')
+  // 保存对话框的类型下拉：把 preferred 排在首位，它决定默认扩展名与默认选中项
+  function saveFilters(preferred) {
+    const all = [
+      { name: 'OMM CSV', extensions: ['csv'] },
+      { name: 'OMM JSON', extensions: ['json'] },
+      { name: 'OMM KVN（CCSDS）', extensions: ['kvn'] },
+      { name: 'OMM XML（CCSDS）', extensions: ['xml'] },
+      { name: 'TLE（两行）', extensions: ['tle'] },
+      { name: '3LE（三行）', extensions: ['3le'] }
+    ]
+    const i = all.findIndex((f) => f.extensions[0] === preferred)
+    return i > 0 ? [all[i]].concat(all.slice(0, i), all.slice(i + 1)) : all
+  }
+  const openFilters = () => [
+    { name: '星历文件 (OMM CSV/JSON/KVN/XML · TLE/3LE)', extensions: ['csv', 'json', 'kvn', 'xml', 'tle', '3le', 'txt'] },
+    { name: '所有文件', extensions: ['*'] }
+  ]
+
   // ---- 文件管理：OMM 星座组缓存的列举 / 导入替换 / 导出 ----
   ipcMain.handle('omm:list', () => omm.listCsv())
   // 导入并替换某组 OMM：原生选 .csv → 校验 → 覆盖缓存。返回 { ok, key, mtime, count } 或 { canceled }/{ ok:false, error }
   ipcMain.handle('omm:import', async (e, key) => {
     const win = BrowserWindow.fromWebContents(e.sender)
     const { canceled, filePaths } = await dialog.showOpenDialog(win, {
-      title: `导入 OMM 文件（替换「${key}」）`, properties: ['openFile'],
-      filters: [{ name: 'CelesTrak OMM (*.csv)', extensions: ['csv'] }, { name: '所有文件', extensions: ['*'] }]
+      title: `导入星历（替换「${key}」）`, properties: ['openFile'], filters: openFilters()
     })
     if (canceled || !filePaths || !filePaths.length) return { canceled: true }
     try {
       const text = fs.readFileSync(filePaths[0], 'utf8')
-      return omm.writeCsvRaw(key, text)
+      const r = eph.parseEphemeris(text)
+      if (!r.records.length) return { ok: false, error: '文件里没有可用的星历记录：' + (r.errors[0] || '格式不符') }
+      // 逐条 SGP4 校验，与自定义库同一把尺。这一路以前只查表头有没有 MEAN_MOTION 那个词，
+      // 于是历元体例不受支持（如 CCSDS 允许的年内天 2026-230T…）或缺平均运动的 OMM 会被原样
+      // 写进星座缓存，此后该组传播全是 NaN、地图上什么都不画，还一声不吭。
+      const chk = customSats.checkRecords(r.records)
+      if (!chk.valid) return { ok: false, error: '无有效卫星（' + (chk.reason || '全部校验失败') + '）' }
+      // 星座组的缓存契约是 OMM CSV（omm.js 全链路读它），故 CSV 原样落盘保住字节，
+      // 其余五种格式解析后转 CSV 再落盘 —— 导出时可再转回任一格式，值逐字不变。
+      const res = r.format === 'omm-csv'
+        ? omm.writeCsvRaw(key, text)
+        : Object.assign(omm.writeCsvRaw(key, eph.serializeEphemeris(r.records, 'omm-csv')), { convertedFrom: r.format })
+      return chk.invalid ? Object.assign({}, res, { invalid: chk.invalid }) : res
     } catch (err) { return { ok: false, error: err.message || String(err) } }
   })
   // 导出某组缓存 OMM 到用户选定路径
-  ipcMain.handle('omm:export', async (e, key) => {
+  ipcMain.handle('omm:export', async (e, key, format) => {
     const r = omm.readCsvRaw(key)
     if (!r) return { ok: false, error: '该组暂无本地缓存，请先联网刷新或导入' }
+    const pref = eph.FORMAT_EXT[format] || 'csv'
     const win = BrowserWindow.fromWebContents(e.sender)
     const { canceled, filePath } = await dialog.showSaveDialog(win, {
-      defaultPath: `${key}_OMM.csv`, filters: [{ name: 'CSV 文件', extensions: ['csv'] }]
+      defaultPath: `${key}_OMM.${pref}`, filters: saveFilters(pref)
     })
     if (canceled || !filePath) return { ok: false, canceled: true }
-    try { fs.writeFileSync(filePath, r.text); return { ok: true, filePath } }
-    catch (err) { return { ok: false, error: err.message || String(err) } }
+    const fmt = fmtOfPath(filePath, format)
+    try {
+      // 缓存本身就是官方 CSV 原文：导 CSV 直接吐原文（逐字节等同官方），其余格式规范重建
+      let text = r.text
+      if (fmt !== 'omm-csv') {
+        const p = eph.parseEphemeris(r.text, 'omm-csv')
+        if (!p.records.length) return { ok: false, error: '缓存解析失败，无法转换格式' }
+        text = eph.serializeEphemeris(p.records, fmt)
+      }
+      fs.writeFileSync(filePath, text)
+      return { ok: true, filePath, format: fmt }
+    } catch (err) { return { ok: false, error: err.message || String(err) } }
   })
 
   // ---- 文件管理：自定义卫星星历库（逐条配置：每个导入文件一组，各自导出/删除）----
@@ -117,50 +167,50 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   // 删除 / 改名某个导入组
   ipcMain.handle('omm:customRemove', (_e, groupId) => customSats.removeGroup(groupId))
   ipcMain.handle('omm:customRename', (_e, groupId, name) => customSats.renameGroup(groupId, name))
-  // 导入星历（可多选）：每个文件 = 一个命名组（同名替换），自动识别 OMM CSV / TLE。
+  // 导入星历（可多选）：每个文件 = 一个命名组（同名替换），六种官方格式按内容自动识别。
   ipcMain.handle('omm:customImport', async (e) => {
     const win = BrowserWindow.fromWebContents(e.sender)
     const { canceled, filePaths } = await dialog.showOpenDialog(win, {
-      title: '导入星历（OMM CSV / TLE，可多选，每文件一组）', properties: ['openFile', 'multiSelections'],
-      filters: [
-        { name: 'OMM / TLE 星历 (*.csv, *.tle, *.txt)', extensions: ['csv', 'tle', 'txt'] },
-        { name: '所有文件', extensions: ['*'] }
-      ]
+      title: '导入星历（可多选，每文件一组）', properties: ['openFile', 'multiSelections'], filters: openFilters()
     })
     if (canceled || !filePaths || !filePaths.length) return { canceled: true }
     const path = require('path')
-    const acc = { ok: true, groups: 0, sats: 0, replaced: 0, invalid: 0, errors: [], warnings: [] }
+    const acc = { ok: true, groups: 0, sats: 0, replaced: 0, invalid: 0, errors: [], warnings: [], formats: [] }
     for (const fp of filePaths) {
-      const base = path.basename(fp).replace(/\.(csv|tle|txt)$/i, '')
+      const base = path.basename(fp).replace(/\.(csv|json|kvn|xml|tle|3le|txt)$/i, '')
       let text
       try { text = fs.readFileSync(fp, 'utf8') } catch (err) { acc.errors.push(path.basename(fp) + '：读取失败 ' + (err.message || err)); continue }
       const r = customSats.importFile(base, text)
       if (!r.ok) { acc.errors.push(path.basename(fp) + '：' + (r.error || '导入失败')); continue }
       acc.groups += 1; acc.sats += r.group.count; acc.replaced += r.replaced ? 1 : 0; acc.invalid += r.invalid || 0
+      if (r.group.format && acc.formats.indexOf(r.group.format) < 0) acc.formats.push(r.group.format)
       if (r.errors && r.errors.length) acc.errors.push(...r.errors)
       if (r.warnings && r.warnings.length) acc.warnings.push(...r.warnings)
     }
     return acc
   })
-  // 导出某个导入组为 OMM CSV（文件历元）
-  ipcMain.handle('omm:customExportGroup', async (e, groupId, defaultName) => {
-    const text = customSats.recordsCsv(customSats.groupRecords(groupId))
-    if (!text) return { ok: false, error: '该组无卫星可导出' }
-    return saveCsv(e, (defaultName || '导入组') + '_OMM.csv', text)
+  // 导出某个导入组（文件历元）。格式与导入时相同 → 吐原文，逐字节等同官方源文件。
+  ipcMain.handle('omm:customExportGroup', async (e, groupId, defaultName, format) => {
+    if (!customSats.groupRecords(groupId)) return { ok: false, error: '该组不存在' }
+    return saveEph(e, defaultName || '导入组', format, (fmt) => customSats.groupText(groupId, fmt), '该组无卫星可导出')
   })
-  // 导出任意 OMM 记录为 CSV（自建星座展开记录由渲染进程传入，场景历元）
-  ipcMain.handle('omm:exportOmmCsv', async (e, records, defaultName) => {
-    const text = customSats.recordsCsv(records)
-    if (!text) return { ok: false, error: '无可导出的星历记录' }
-    return saveCsv(e, (defaultName || '自定义星历') + '_OMM.csv', text)
+  // 导出任意 OMM 记录（自建星座展开记录由渲染进程传入，场景历元）
+  ipcMain.handle('omm:exportRecords', async (e, records, defaultName, format) => {
+    return saveEph(e, defaultName || '自定义星历', format, (fmt) => customSats.recordsText(records, fmt), '无可导出的星历记录')
   })
-  async function saveCsv(e, defaultName, text) {
+  // 保存对话框 → 按最终扩展名定格式 → 交给 build(fmt) 出文本
+  async function saveEph(e, baseName, format, build, emptyMsg) {
+    const pref = eph.FORMAT_EXT[format] || 'csv'
     const win = BrowserWindow.fromWebContents(e.sender)
     const { canceled, filePath } = await dialog.showSaveDialog(win, {
-      defaultPath: defaultName, filters: [{ name: 'CSV 文件', extensions: ['csv'] }]
+      defaultPath: `${baseName}_OMM.${pref}`, filters: saveFilters(pref)
     })
     if (canceled || !filePath) return { ok: false, canceled: true }
-    try { fs.writeFileSync(filePath, text); return { ok: true, filePath } }
+    const fmt = fmtOfPath(filePath, format)
+    let text
+    try { text = build(fmt) } catch (err) { return { ok: false, error: err.message || String(err) } }
+    if (!text) return { ok: false, error: emptyMsg }
+    try { fs.writeFileSync(filePath, text); return { ok: true, filePath, format: fmt } }
     catch (err) { return { ok: false, error: err.message || String(err) } }
   }
 
@@ -221,8 +271,8 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     ipcMain.handle('coverageGrd:open', async (e) => {
       const win = BrowserWindow.fromWebContents(e.sender)
       const { canceled, filePaths } = await dialog.showOpenDialog(win, {
-        title: '导入 GRD / PAT 文件（可多选）', properties: ['openFile', 'multiSelections'],
-        filters: [{ name: 'GRASP 网格 (*.grd, *.pat)', extensions: ['grd', 'pat'] }, { name: '所有文件', extensions: ['*'] }]
+        title: '导入方向图文件（GRASP GRD / ACP4 / Eutelsat，可多选）', properties: ['openFile', 'multiSelections'],
+        filters: [{ name: '方向图 (*.grd, *.pat, *.txt, *.ant, *.pattern)', extensions: ['grd', 'pat', 'txt', 'ant', 'pattern'] }, { name: '所有文件', extensions: ['*'] }]
       })
       if (canceled || !filePaths || !filePaths.length) return { canceled: true }
       const path = require('path')
@@ -244,8 +294,15 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
       const path = require('path')
       const files = filePaths.map((fp) => {
         const base = path.basename(fp)
-        try { return { base, file: coverageGrd.copyIn(fp).file } }
-        catch (err) { return { base, error: err.message } }
+        // 这条路是「不经渲染进程按字节拷贝」，拿不到 ACP4/Eutelsat 的转换器（它在 src/viz/grd/patFormats.js，是 ESM）。
+        // 故先嗅一下头，非 GRASP 的当场拒掉并指路，不要拷进去等采样器崩在后面。
+        try {
+          const head = coverageGrd.sniffHead(fp)
+          if (head && head !== 'grasp') {
+            return { base, error: `此处仅支持 GRASP 网格；${head} 请在「文件管理 · 天线方向图」导入` }
+          }
+          return { base, file: coverageGrd.copyIn(fp).file }
+        } catch (err) { return { base, error: err.message } }
       })
       return { canceled: false, files }
     })

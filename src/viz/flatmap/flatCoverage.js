@@ -108,7 +108,16 @@ export function createFlatCoverage(canvas) {
   let oceanColor = OCEAN   // 大海填充色（可调，限蓝色系），与 3D 球体同步
   let mk = { points: [], stations: [], trajectories: [] }
   let focusSats = []    // 聚焦卫星星下点列表 [{ lat, lon }...]（多选=每颗各一个图标，同款同大小，不分主次）
-  let selGeomList = []  // 聚焦卫星几何列表 [{ footprint:[{lat,lon}...], track:[{lat,lon}...] }...]，与 3D 同源（覆盖范围蓝 + 星下点轨迹黄，多颗同时叠画）
+  let selGeomList = []  // 聚焦卫星几何列表 [{ footprint:[{lat,lon}...], track:[{lat,lon}...], sub:{lat,lon} }...]，与 3D 同源（多颗同时叠画）
+  // 聚焦卫星显示样式（与 3D 同一份设置，由 3D 页 setFocusStyle 推入；线宽/图标尺寸口径与 3D 同为屏幕 px）
+  const focusCfg = {
+    trkOn: true, trkColor: '#e8c074', trkWidth: 1.6, trkOpacity: 1, trkDash: 'solid',
+    fpOn: true, fpColor: '#b8e6fa', fpWidth: 1.6, fpOpacity: 1, fpDash: 'dash',
+    fpFillColor: '#b8e6fa', fpFillOpacity: 0,
+    subOn: true, subPx: 30, subColor: '#ffffff'
+  }
+  // 线型 → canvas 虚线数组（屏幕 px；3D 那份按世界弧长切段，两边观感对齐即可，不求逐段一致）
+  const DASH_2D = { dash: [7, 5], dot: [1.2, 4] }
   let satLayer = null   // 卫星/仰角线独立图层 { lines, dots, labels, sats }（与 geom/field 互不干扰）
   const sizes = { beamFont: 16, contourFont: 12, dotSize: 5, showBore: true, nameScale: 1, provScale: 1, cityScale: 1, ptFont: 14, stIcon: 32, stFont: 17, satIcon: 30, ptDot: 3.5, trajDot: 2.5 }
   const SAT_ICON_K = 0.85   // 卫星图标：同地球站 ST_ICON_K，2D 观感偏大于 3D，收一档对齐（经验系数，可微调）
@@ -498,7 +507,7 @@ export function createFlatCoverage(canvas) {
     if (!envContours.length) return
     const iz = Math.sqrt(scale)
     for (const g of envContours) {
-      for (const ln of (g.lines || [])) drawPolyline(ln, g.color, Math.max(0.25, (g.width || 1) / Math.max(1, iz * 0.9)))
+      for (const ln of (g.lines || [])) drawPolyline(ln, g.color, Math.max(0.1, (g.width || 1) / Math.max(1, iz * 0.9)))
     }
     for (const g of envContours) {
       if (!g.text) continue
@@ -632,10 +641,15 @@ export function createFlatCoverage(canvas) {
     if (geom) {   // GXT 覆盖图标签（波束名/数值）：克制版联动 iz
       for (const l of (geom.labels || [])) drawText(l.text, l.lon, l.lat, Math.round((l.hpx || 0.03) * 533 * iz), l.color || '#fff')
     }
+    // 坐标在圆点上方、仰角在下方：与 3D 侧 setMarkers 的 sprite center.y（-0.35 / 1.35）同口径。
+    // 换算：sprite 屏幕高 H = pf / MK_FONT_K，字在其中垂直居中，center.y = c 时字心距锚点 (0.5 - c)·H；
+    // 2D textBaseline='middle'，dy 即字心偏移，canvas 向上为负 → dy = ∓(0.5 - c)·H = ∓0.85·H。
+    // 点标记是用户点/拖出来的，标签在下方会被鼠标指针（箭头本体在热点右下）当场压住。
+    const MK_UP = 0.85 / MK_FONT_K   // ≈1.122：字心到锚点的距离 ÷ 字高
     for (const p of mk.points) {
       const pf = sizes.ptFont * iz * MK_FONT_K   // 点标记文字：×MK_FONT_K 与 3D 字高对齐（与图标同用克制版 iz）
-      drawText(p.label, p.lon, p.lat, pf, '#ffffff', { dy: pf * 0.9 + 5 * iz })
-      if (p.el) drawText(p.el, p.lon, p.lat, pf * 0.9, '#ffffff', { dy: pf * 1.9 + 8 * iz })   // 聚焦卫星仰角：亮白
+      drawText(p.label, p.lon, p.lat, pf, '#ffffff', { dy: -pf * MK_UP })
+      if (p.el) drawText(p.el, p.lon, p.lat, pf * 0.9, '#ffffff', { dy: pf * 0.9 * MK_UP })   // 聚焦卫星仰角：亮白，标记下方
     }
     for (const s of mk.stations) {
       const sf = sizes.stFont * iz * MK_FONT_K   // 地球站文字：×MK_FONT_K 与 3D 字高对齐（与图标同用克制版 iz）
@@ -733,19 +747,85 @@ export function createFlatCoverage(canvas) {
   // 压在下面）
   function drawSatPolyLines() {
     if (!satLayer) return
-    for (const ln of (satLayer.lines || [])) if (ln.under && ln.p && ln.p.length > 1) drawPolyline(ln.p, hex(ln.color != null ? ln.color : 0x66ddff), Math.max(0.2, ln.width || 1.4))
+    for (const ln of (satLayer.lines || [])) if (ln.under && ln.p && ln.p.length > 1) drawPolyline(ln.p, hex(ln.color != null ? ln.color : 0x66ddff), Math.max(0.1, ln.width || 1.4))
   }
   // 数据线统一层（GXT 波束线 / 仰角线等卫星层线 / 轨迹折线 / 聚焦卫星足迹与轨迹）：与 GRD 等值线、
   // Polygon 边线同一画法同一层——画在覆盖之上、above 快照（国界/省界/市界/地名）之下 → 与国界省界共存，
   // 边界压在线上仍清晰可见。各线的圆点/标签仍留在 above 层或顶层（属标注，不遮边界线）。
   function drawDataLines() {
-    if (geom) for (const ln of (geom.lines || [])) if (ln.p && ln.p.length > 1) drawPolyline(ln.p, hex(ln.color), Math.max(0.2, ln.width || 1.6))
+    if (geom) for (const ln of (geom.lines || [])) if (ln.p && ln.p.length > 1) drawPolyline(ln.p, hex(ln.color), Math.max(0.1, ln.width || 1.6))
     for (const t of mk.trajectories) if (t.pts && t.pts.length > 1) drawPolyline(t.pts, hex(t.color != null ? t.color : 0xff5a5a), 2.2)
-    if (satLayer) for (const ln of (satLayer.lines || [])) if (!ln.under && ln.p && ln.p.length > 1) drawPolyline(ln.p, hex(ln.color != null ? ln.color : 0x66ddff), Math.max(0.2, ln.width || 1.4))   // 下限 0.2：跟随 Polygon 线粗滑杆最小档
-    // 聚焦卫星几何（实时，不入快照）：覆盖范围(浅蓝虚线，示意非精确覆盖区) + 星下点轨迹(金黄实线)，颜色与 3D 球体同源；多选=每颗都画，固定原色不按星变色
+    if (satLayer) for (const ln of (satLayer.lines || [])) if (!ln.under && ln.p && ln.p.length > 1) drawPolyline(ln.p, hex(ln.color != null ? ln.color : 0x66ddff), Math.max(0.1, ln.width || 1.4))   // 下限 0.1：跟随全库统一的线粗最细档
+    // 聚焦卫星几何（实时，不入快照）：覆盖范围 + 星下点轨迹，样式与 3D 球体同一份设置；多选=每颗都画
+    const sa = ctx.globalAlpha
     for (const g of selGeomList) {
-      if (g.footprint && g.footprint.length > 1) drawPolyline(g.footprint, '#b8e6fa', 1.8, false, [7, 5])
-      if (g.track && g.track.length > 1) drawPolyline(g.track, '#e8c074', 2.0)
+      if (focusCfg.fpOn && g.footprint && g.footprint.length > 1) {
+        ctx.globalAlpha = sa * Math.max(0, Math.min(1, focusCfg.fpOpacity))
+        drawPolyline(g.footprint, focusCfg.fpColor, Math.max(0.1, focusCfg.fpWidth), false, DASH_2D[focusCfg.fpDash] || null)
+      }
+      if (focusCfg.trkOn && g.track && g.track.length > 1) {
+        ctx.globalAlpha = sa * Math.max(0, Math.min(1, focusCfg.trkOpacity))
+        drawPolyline(g.track, focusCfg.trkColor, Math.max(0.1, focusCfg.trkWidth), false, DASH_2D[focusCfg.trkDash] || null)
+      }
+    }
+    ctx.globalAlpha = sa
+  }
+  // 覆盖圈填充（与 Polygon 区域填充同一层band：画在 GRD 覆盖场之前）。世界度坐标 + ±360 环绕副本，
+  // 与 drawSatFills 同策略；★足迹可以套住极点（极轨星过极区就是），此时解缠后经度跨满 360° 且首尾不闭合
+  //   —— 必须补两点收到极点边上，否则 canvas 自动收口成一条横穿地图的直边、填出一块假区域。
+  function drawFocusFills() {
+    if (!focusCfg.fpOn || !(focusCfg.fpFillOpacity > 0)) return
+    const kk = k()
+    ctx.save()
+    ctx.fillStyle = focusCfg.fpFillColor; ctx.globalAlpha = Math.max(0, Math.min(1, focusCfg.fpFillOpacity))
+    for (const g of selGeomList) {
+      const ring = g.footprint
+      if (!ring || ring.length < 3) continue
+      const W = []
+      let prev = WXN(ring[0].lon), lo = prev, hi = prev, latSum = 0
+      W.push([prev, 90 - ring[0].lat]); latSum += ring[0].lat
+      for (let i = 1; i < ring.length; i++) {
+        let wx = WXN(ring[i].lon)
+        while (wx - prev > 180) wx -= 360
+        while (wx - prev < -180) wx += 360
+        if (wx < lo) lo = wx
+        if (wx > hi) hi = wx
+        W.push([wx, 90 - ring[i].lat]); prev = wx; latSum += ring[i].lat
+      }
+      // 绕极判据：解缠后首尾经度差满一圈（足迹环按方位等分生成，绕极时必然单调走满 360°）
+      if (Math.abs(W[W.length - 1][0] - W[0][0]) > 300) {
+        const north = g.sub && Number.isFinite(g.sub.lat) ? g.sub.lat >= 0 : latSum >= 0
+        const py = north ? 0 : 180   // y = 90 - lat
+        W.push([W[W.length - 1][0], py], [W[0][0], py])
+      }
+      for (const s of [-360, 0, 360]) {
+        if (hi + s < 0 || lo + s > 360) continue   // 该副本完全在地图外 → 跳过
+        ctx.beginPath()
+        ctx.moveTo((W[0][0] + s) * kk + tx, W[0][1] * kk + ty)
+        for (let i = 1; i < W.length; i++) ctx.lineTo((W[i][0] + s) * kk + tx, W[i][1] * kk + ty)
+        ctx.closePath(); ctx.fill()
+      }
+    }
+    ctx.restore()
+  }
+  // 聚焦卫星星下点图标（最上层）：按 iz=√scale 克制联动（与 2D 导出/地球站/航迹一致，防止高倍放大时
+  // 膨大、更贴 3D）；多选=每颗各一个。大小/颜色取聚焦设置，单点可用 px/colorHex 覆盖（对星分析用）。
+  function drawFocusIcons() {
+    if (!focusCfg.subOn) return
+    const iz = Math.sqrt(scale) * SAT_ICON_K
+    // ★ 颗数多时改画实心点：卫星图形是十来个圆角矩形，canvas 上实测 30~60 µs/个 —— 三千颗一次重绘就是
+    //   100 ms 以上，平移/缩放会拖住整张图；而那个密度下图形本身也糊成一团。点保留位置与颜色，
+    //   一颗都不丢（3D 端已合批成贴图点层，不受此限）。
+    const dotMode = focusSats.length > 300
+    for (const p of focusSats) {
+      const px = Number(p.px) > 0 ? Number(p.px) : focusCfg.subPx
+      const color = p.color || focusCfg.subColor
+      if (dotMode) {
+        const r = Math.max(1, px * iz * 0.14)
+        ctx.beginPath(); ctx.arc(PX(p.lon), PY(p.lat), r, 0, Math.PI * 2)
+        ctx.fillStyle = color; ctx.fill()
+        ctx.lineWidth = Math.max(0.6, r * 0.5); ctx.strokeStyle = 'rgba(8,12,18,0.92)'; ctx.stroke()
+      } else drawSatIcon(p.lon, p.lat, px * iz, color)
     }
   }
 
@@ -762,6 +842,7 @@ export function createFlatCoverage(canvas) {
     drawEnvRaster()      // ITU 环境场栅格（气象/地形是背景量，谁都压得住它）
     drawEnvContours()    // 环境场等值线 + 数值标注（紧跟其场，不与覆盖层混层）
     drawSatFills()       // Polygon 区域填充（覆盖场之下：叠加区只显示覆盖图颜色）
+    drawFocusFills()     // 聚焦卫星覆盖圈填充（同上一层band，紧跟 Polygon 填充）
     drawCovGrid()        // STK Coverage FOM 热力图（Polygon 填充之上、GRD 覆盖场之下）
     drawField()          // GRD 覆盖填充面 + 等值线（在底图/Polygon 填充之上、标注之下）
     drawSatPolyLines()   // Polygon 边线（覆盖之上、国界/地名之下：叠加区仍见边线）
@@ -771,7 +852,7 @@ export function createFlatCoverage(canvas) {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     ctx.save(); ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip()
     drawFieldOverlays()   // GRD 波束名/峰值点/数值标签（覆盖层之上）
-    for (const p of focusSats) drawSatIcon(p.lon, p.lat, sizes.satIcon * Math.sqrt(scale) * SAT_ICON_K, '#ffffff')   // 聚焦卫星（最上层）：按 iz=√scale 克制联动（与 2D 导出/地球站/航迹一致，防止高倍放大时膨大、更贴 3D）；多选=每颗各一个图标
+    drawFocusIcons()      // 聚焦卫星星下点图标（最上层）
     ctx.restore()
   }
 
@@ -1110,6 +1191,8 @@ export function createFlatCoverage(canvas) {
     setFocusSat(p) { focusSats = (Array.isArray(p) ? p : (p ? [p] : [])).filter((q) => q && Number.isFinite(q.lat) && Number.isFinite(q.lon)); requestDraw() },
     // g：单个 {footprint,track} 或数组（多选=每颗都画），随时间实时，不入快照
     setSelGeom(g) { selGeomList = Array.isArray(g) ? g.filter(Boolean) : (g ? [g] : []); requestDraw() },
+    // 聚焦卫星显示样式（轨道线只在 3D 有，这里收轨迹/覆盖圈/星下点图标三项）
+    setFocusStyle(s) { Object.assign(focusCfg, s || {}); requestDraw() },
     setSatLayer(spec) { satLayer = spec; invalidateStatic(); requestDraw() },
     resize() {
       const w = canvas.clientWidth || canvas.parentElement?.clientWidth || 0, h = canvas.clientHeight || canvas.parentElement?.clientHeight || 0
@@ -1152,11 +1235,11 @@ export function createFlatCoverage(canvas) {
       if (o.background !== false) { ctx.fillStyle = BG; ctx.fillRect(0, 0, cw, ch) }
       drawBelowContent(rx, ry, rw, rh)
       // 层序必须与 draw() 逐字一致（所见即所得）：晨昏线夜区打头，与屏幕上同为最底层
-      ctx.save(); ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip(); drawTerminator(); drawEnvRaster(); drawEnvContours(); drawSatFills(); drawCovGrid(); drawField(); drawSatPolyLines(); drawDataLines(); ctx.restore()
+      ctx.save(); ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip(); drawTerminator(); drawEnvRaster(); drawEnvContours(); drawSatFills(); drawFocusFills(); drawCovGrid(); drawField(); drawSatPolyLines(); drawDataLines(); ctx.restore()
       drawAboveContent(rx, ry, rw, rh)
       ctx.save(); ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip()
       drawFieldOverlays()
-      for (const p of focusSats) drawSatIcon(p.lon, p.lat, sizes.satIcon * Math.sqrt(scale) * SAT_ICON_K, '#ffffff')
+      drawFocusIcons()
       ctx.restore()
       ctx = SV.ctx; dpr = SV.dpr; cw = SV.cw; ch = SV.ch; base = SV.base; scale = SV.scale; tx = SV.tx; ty = SV.ty; textFont = SV.font; textFontLatin = SV.fontLatin; compat = false
       staticValid = false; requestDraw()

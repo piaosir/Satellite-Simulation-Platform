@@ -1072,9 +1072,9 @@ function nudge(g, sign, big) {
 .foot b.near { color: var(--warn); }
 .foot i { font-style: normal; font-size: 10.5px; color: var(--text-faint); }
 
-.ci { width: 100%; background: transparent; border: 1px solid transparent; color: var(--text); padding: 2px 3px; font: inherit; font-family: var(--font-serif); }
+.ci { width: 100%; background-color: transparent; border: 1px solid transparent; color: var(--text); padding: 2px 3px; font: inherit; font-family: var(--font-serif); }
 .ci:hover:not(:disabled) { border-color: var(--border); }
-.ci:focus { border-color: var(--text); outline: none; background: var(--bg); }
+.ci:focus { border-color: var(--text); outline: none; background-color: var(--bg); }
 .ci:disabled { color: var(--text-faint); cursor: default; }
 .ci.num { text-align: right; font-variant-numeric: tabular-nums; }
 /* 波束那一格：色点 + 下拉。色点是只读标注（这一行在条上什么颜色），故不吃指针 */

@@ -21,32 +21,40 @@ const MAX_DEPTH = 7;      // 单段最多二分 7 层(×128)：TANGO 近地点 2
 // 推演失败的时刻直接跳过（与原实现一致）。
 // stepDeg：细分阈值，【必须随 N 一起放宽】—— 多选降采样时若仍按 4° 判，二分会把点数原样补回来，
 // 降采样等于白做。近圆轨道均匀采样的相邻跳变 ≈ 384/N 度，故调用方按 N 给相称的阈值（见 focusLod）。
+// 单时刻推演：返回 { t, pv, gd, lat, lon }（gd 为逐时刻 gmst 的大地坐标，弧度制），失败返回 null。
+// 导出供环形缓冲（focusGeomCache.js）复用 —— 细分口径必须只有一份，两处各写一遍迟早对不上。
+export function propAt(rec, t) {
+  const pv = sat.propagate(rec, t);
+  if (!pv || !pv.position) return null;
+  const gd = sat.eciToGeodetic(pv.position, sat.gstime(t));
+  return { t, pv, gd, lat: sat.degreesLat(gd.latitude), lon: sat.degreesLong(gd.longitude) };
+}
+
+// 相邻两点的地面跳变（度）。经度差先归一到 ≤180°：真实反经线穿越差值很小，不会被误细分。
+export function jumpDeg(a, b) {
+  let dl = Math.abs(a.lon - b.lon);
+  if (dl > 180) dl = 360 - dl;
+  return Math.max(dl, Math.abs(a.lat - b.lat));
+}
+
+// 递归二分加密 (a,b]，把加密点与 b 本身依次追加进 out。深度上限硬保证终止；
+// 中点推演失败则该段放弃细分退化为直连（温和降级）。
+export function refineInto(rec, a, b, maxStep, out, depth = 0) {
+  if (depth < MAX_DEPTH && jumpDeg(a, b) > maxStep) {
+    const m = propAt(rec, new Date((a.t.getTime() + b.t.getTime()) / 2));
+    if (m) { refineInto(rec, a, m, maxStep, out, depth + 1); refineInto(rec, m, b, maxStep, out, depth + 1); return }
+  }
+  out.push(b);
+}
+
 export function sampleOrbitAdaptive(rec, t0, periodMin, N = 120, stepDeg) {
   const MAX_STEP = stepDeg > 0 ? stepDeg : MAX_STEP_DEG;
-  const evalAt = (t) => {
-    const pv = sat.propagate(rec, t);
-    if (!pv || !pv.position) return null;
-    const gd = sat.eciToGeodetic(pv.position, sat.gstime(t));
-    return { t, pv, gd, lat: sat.degreesLat(gd.latitude), lon: sat.degreesLong(gd.longitude) };
-  };
-  const jumpDeg = (a, b) => {
-    let dl = Math.abs(a.lon - b.lon);
-    if (dl > 180) dl = 360 - dl;                        // 反经线穿越归一：±180 附近的真实小位移不误判
-    return Math.max(dl, Math.abs(a.lat - b.lat));
-  };
   const out = [];
-  const refine = (a, b, depth) => {                     // 追加 (a,b] 之间的加密点与 b 本身
-    if (depth < MAX_DEPTH && jumpDeg(a, b) > MAX_STEP) {
-      const m = evalAt(new Date((a.t.getTime() + b.t.getTime()) / 2));
-      if (m) { refine(a, m, depth + 1); refine(m, b, depth + 1); return }
-    }
-    out.push(b);
-  };
   let prev = null;
   for (let k = 0; k <= N; k++) {
-    const s = evalAt(new Date(t0.getTime() + (k / N) * periodMin * 60000));
+    const s = propAt(rec, new Date(t0.getTime() + (k / N) * periodMin * 60000));
     if (!s) continue;
-    if (prev) refine(prev, s, 0); else out.push(s);
+    if (prev) refineInto(rec, prev, s, MAX_STEP, out); else out.push(s);
     prev = s;
   }
   return out;

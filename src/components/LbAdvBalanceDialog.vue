@@ -274,12 +274,12 @@ function apply() {
 .ab {
   width: 760px; max-width: 96vw; max-height: 90vh; display: flex; flex-direction: column;
   font-family: var(--lb-serif, var(--font-serif));
-  background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-modal, 3px);
+  background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-card, 3px);
   box-shadow: 0 8px 24px rgba(0,0,0,.18); overflow: hidden;
 }
 .ab-hd {
   display: flex; align-items: center; gap: 6px; padding: 10px 12px;
-  font-size: 11px; font-weight: 600; letter-spacing: 1px; color: var(--text-muted);
+  font-size: 11px; font-weight: 600; letter-spacing: var(--ls-label); color: var(--text-muted);
   background: var(--surface-2); border-bottom: 1px solid var(--border);
 }
 .ab-ic { flex: none; width: 13px; height: 13px; fill: currentColor; stroke: none; vertical-align: -0.125em; }
@@ -319,7 +319,7 @@ function apply() {
 .ab-t tbody tr.on { background: var(--surface-2); }
 .ab-t tbody tr.off { color: var(--text-faint); cursor: not-allowed; }
 .ab-t .ck { width: 26px; text-align: center; }
-.ab-t .ck input { margin: 0; accent-color: var(--accent); }
+.ab-t .ck input { margin: 0; }
 .ab-t .no { width: 26px; color: var(--text-faint); }
 .ab-t .n { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .ab-t .nm { max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -345,7 +345,7 @@ function apply() {
 .ab-ctl label { display: inline-flex; align-items: center; gap: 5px; color: var(--text); }
 .ab-ctl label > span { color: var(--text-muted); }
 .ab-ctl label > i { font-style: normal; color: var(--text-faint); }
-.ab-ctl select { font: inherit; font-size: 11px; padding: 2px 4px; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
+.ab-ctl select { font: inherit; font-size: 11px; padding: 2px 4px; background-color: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
 
 .ab-out { margin-top: 8px; display: grid; grid-template-columns: 1fr 1fr; gap: 4px 18px; }
 .ab-kv { display: flex; align-items: baseline; gap: 5px; font-size: 11px; min-width: 0; }

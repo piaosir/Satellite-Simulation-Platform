@@ -219,7 +219,7 @@ onMounted(compute)
 }
 .grid input:focus { border-bottom-color: var(--accent); }
 .grid select {
-  flex: 1; border: 1px solid var(--border); background: var(--bg);
+  flex: 1; border: 1px solid var(--border); background-color: var(--bg);
   padding: 2px 4px; border-radius: 0; outline: none;
 }
 .grid label > i { color: var(--text-faint); font-style: normal; width: 34px; }
@@ -229,7 +229,7 @@ onMounted(compute)
 .wf .val { text-align: right; }
 .wf .unit { text-align: right; width: 46px; color: var(--text-faint); }
 .preview { width: 210px; flex: none; padding: 16px 16px; background: var(--surface); }
-.pv-label { font-size: 11.5px; color: var(--text-faint); letter-spacing: .5px; }
+.pv-label { font-size: 11.5px; color: var(--text-faint); letter-spacing: var(--ls-tight); }
 .pv-big { display: flex; align-items: baseline; gap: 6px; margin: 8px 0 2px; }
 .pv-big .mono { font-size: 32px; font-weight: 500; }
 .pv-big em { font-style: normal; font-size: 13px; color: var(--text-muted); }

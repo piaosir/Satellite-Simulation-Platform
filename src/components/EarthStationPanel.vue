@@ -75,10 +75,10 @@ const heroVis = computed(() => [
 /* 主参数条：一份配置的定性指标（口径 + 功放功率预设）——加重排在最前，一眼可读可改 */
 .es-common { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 6px 18px; margin-bottom: 12px; padding-bottom: 11px; border-bottom: 1px dashed var(--border); }
 .es-f-big { flex: 0 0 auto; gap: 4px; }
-.es-f-big .es-l { font-size: 11px; font-weight: 600; color: var(--text); letter-spacing: .3px; }
+.es-f-big .es-l { font-size: 11px; font-weight: 600; color: var(--text); letter-spacing: var(--ls-tight); }
 /* 输入 + 单位后缀：单位挪出标签贴在框右侧，读数区留给数字本身 */
 .es-ibox { display: flex; align-items: baseline; gap: 6px; }
-.es-f-big .es-i { font-size: 17px; font-weight: 600; line-height: 1.25; padding: 3px 9px; width: 118px; text-align: right; letter-spacing: .5px; }
+.es-f-big .es-i { font-size: 17px; font-weight: 600; line-height: 1.25; padding: 3px 9px; width: 118px; text-align: right; letter-spacing: var(--ls-tight); }
 .es-f-big select.es-i { text-align: left; }
 .es-u { font-size: 11px; color: var(--text-muted); font-style: normal; }
 .es { display: flex; gap: 14px; align-items: stretch; flex-wrap: wrap; }   /* 窄容器（库主从视图右栏）下发/收两栏自动上下堆叠 */
@@ -86,13 +86,13 @@ const heroVis = computed(() => [
 .es-div { width: 1px; flex: none; background: var(--border); }
 .es-hd { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
 .es-arrow { width: 13px; height: 13px; flex: none; fill: none; stroke: var(--text-muted); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
-.es-hd-t { font-size: 12px; font-weight: 700; color: var(--text); letter-spacing: .5px; }
+.es-hd-t { font-size: 12px; font-weight: 700; color: var(--text); letter-spacing: var(--ls-tight); }
 .es-hd-s { font-size: 11px; color: var(--text-faint); }
 .es-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px 10px; }
 .es-f { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .es-l { font-size: 12px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .es-l i { color: var(--text-faint); font-style: normal; }
-.es-i { font: inherit; font-size: 12px; padding: 4px 7px; width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
+.es-i { font: inherit; font-size: 12px; padding: 4px 7px; width: 100%; background-color: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
 .es-i:focus { outline: none; border-color: var(--accent); }
 .es-i.mono { font-family: var(--font-mono); }
 </style>

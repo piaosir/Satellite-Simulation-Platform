@@ -2403,7 +2403,7 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
    94 波束的计划里，把这一区折起来才腾得出地方编转发器。 */
 .sh { position: sticky; top: 0; z-index: 3; display: flex; align-items: center; gap: 5px;
   height: 22px; padding: 0 7px 0 3px; background: var(--surface); border-bottom: 1px solid var(--border-strong);
-  font-size: 11.5px; font-weight: 600; letter-spacing: .5px; color: var(--text-muted); cursor: pointer; user-select: none; }
+  font-size: 11.5px; font-weight: 600; letter-spacing: var(--ls-tight); color: var(--text-muted); cursor: pointer; user-select: none; }
 .sh:hover { color: var(--text); }
 .sh .shx { flex: none; color: var(--text-faint); }
 .sht { flex: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -2424,7 +2424,7 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
    ★ 类名不叫 .gh —— BeamPicker 里 .gh 已是「继承态（随上行）」的修饰类。scoped CSS 今天挡得住
    （子组件内部不带父组件的 data-v），但同名两义迟早咬人，见 FpAlloc 那次 .ghost 撞车。 */
 .fgrp { display: flex; align-items: center; gap: 5px; margin: 7px 0 3px; padding-bottom: 2px;
-  border-bottom: 1px solid var(--border); font-size: 10.5px; letter-spacing: 2px; color: var(--text-faint); }
+  border-bottom: 1px solid var(--border); font-size: 10.5px; letter-spacing: var(--ls-caps); color: var(--text-faint); }
 .fgrp .fgrp-ar { font-style: normal; font-size: 12px; letter-spacing: 0; color: var(--text-muted); }
 /* 变频那一步：图上是 UPLINK → DOWNLINK 之间的箭头，这里就是夹在两组之间的这一条 */
 .hinge { background: var(--surface); border: 1px solid var(--border); border-width: 1px 0; padding: 2px 5px; margin: 6px -5px 2px; }
@@ -2450,7 +2450,6 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
 /* 勾选行：左缩进对齐输入框那一列（78px 标题 + 6px 间距），不与上面几行的标题列错开 */
 .ck2 { display: flex; align-items: center; gap: 5px; margin: 2px 0 3px 84px; font-size: 11.5px; color: var(--text-muted); cursor: pointer; }
 .lorow { display: flex; align-items: center; gap: 4px; margin-bottom: 3px; }
-.clr { width: 26px; height: 21px; flex: none; border: 1px solid var(--border); background: none; padding: 0; cursor: pointer; }
 /* 波束一行：色块 · 名字 · 备注 · ↑ 上行带宽 · ↓ 下行带宽 · 删。与图例条目
    「■ 中国波束：36 MHz」同序，照着填完就是图上那一条。频率不在这里 —— 占哪一段是转发器的事。 */
 /* 「从波束合成导入」浮层：一行一个波束组（组名 · 色数/波束数 · 色片）。
@@ -2500,25 +2499,27 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
 .bsrow.hd span { font-size: 10.5px; color: var(--text-faint); text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .bsrow.hd span:first-of-type { text-align: left; }
 
-.ci { flex: 1; min-width: 0; background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 2px 4px; font: inherit; font-size: 12.5px; font-family: var(--font-serif); }
+.ci { flex: 1; min-width: 0; background-color: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 2px 4px; font: inherit; font-size: 12.5px; font-family: var(--font-serif); }
 /* 格级聚焦：1px 深边 + 一圈极淡的环。方角、无动效 —— 环只是把「光标在这一格」摆明，
    不是网页那种高亮。表内密排另给一套更收敛的（见下面 .t .ci:focus）。 */
 .ci:focus { border-color: var(--text); outline: none; box-shadow: 0 0 0 2px color-mix(in srgb, var(--text) 14%, transparent); }
-.ci:disabled { background: var(--surface); color: var(--text-faint); cursor: not-allowed; }
+.ci:disabled { background-color: var(--surface); color: var(--text-faint); cursor: not-allowed; }
 .ci.num { text-align: right; font-variant-numeric: tabular-nums; }
 .ci.nar { max-width: 88px; }
 .ci.xnar { max-width: 54px; }
-.t .ci { border-color: transparent; background: transparent; width: 100%; }
+.t .ci { border-color: transparent; background-color: transparent; width: 100%; }
 /* 数字列随刻度加宽（--fp-numw 由 numColW 按当前刻度下最长的读数算）。写在 .nar 之后：
    min-width 压过 max-width 是 CSS 的既定顺序，Hz 档下那一列才不会把数截掉。
    +12px 是这个框自己的左右内边距与边框（box-sizing: border-box，min-width 连它们一起算） */
 .t .ci.num { min-width: calc(var(--fp-numw, 0ch) + 12px); }
 .t .ci:hover { border-color: var(--border); }
 /* 表内的聚焦格：不外扩（密表里 2px 的环会顶到邻格），改用内侧再压一道 1px —— 双线即 Excel 的活动格 */
-.t .ci:focus { border-color: var(--text); background: var(--bg); box-shadow: inset 0 0 0 1px var(--text); }
+.t .ci:focus { border-color: var(--text); background-color: var(--bg); box-shadow: inset 0 0 0 1px var(--text); }
 
-/* ── 表内下拉的宽度 ──（必须写在上面三条之后：那三条用的是 background 简写，
-   同权重下写在后面就会把这里的箭头背景图抹掉）
+/* ── 表内下拉的宽度 ──
+   （原先这里写着「必须写在上面三条之后：那三条用的是 background 简写，同权重下写在后面就会把
+     这里的箭头背景图抹掉」。2026-08-22 全库的 select 底色已统一改用 background-color 长手，
+     顺序不再是前提；这段仍留在原位，改动它时不必再迁就顺序。）
    原生下拉的箭头在 Chromium 里恒占约 16px，而这几列的列宽是按表头那两三个字定的
    —— select 用的是 width:100%，百分比宽不计入列的固有宽度，列于是被压到比内容还窄，
    箭头一挤就把「极化」的 H/V 与 LO 名切掉半个字（这两列显示不全的根因）。故表内下拉一律：
@@ -2526,7 +2527,11 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
      · 给各自的 min-width —— min-width 才算进列的固有宽度，这才是列不再被压窄的根子 */
 .t .ci.selc {
   appearance: none; -webkit-appearance: none;
-  padding-right: 14px;
+  /* !important 是冲着 styles/controls.css 里那条 `select { padding-right: 21px !important }` 去的：
+     那条给全平台自绘的 10px 箭头留位，钉死是为了防组件用 padding 简写把它挤没。本表是全库唯一
+     自绘了另一枚箭头（7px，right 3px）的地方，21px 会白白多让出 7px 把密表的列撑开——正是本段
+     开头说的「列被压窄」的反面。故此处按自家箭头的实际占位覆盖回来。 */
+  padding-right: 14px !important;
   background-color: transparent;
   background-image: url("data:image/svg+xml;charset=utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='7' height='4' viewBox='0 0 7 4'%3E%3Cpath d='M.6.6 3.5 3.4 6.4.6' fill='none' stroke='%238a8a84' stroke-width='1.1'/%3E%3C/svg%3E");
   background-repeat: no-repeat;

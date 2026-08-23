@@ -295,7 +295,7 @@ function fill(scope) { if (canFill.value) emit('fill', { rangeKm: cur.value.rang
 .irt-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
 .irt-row .irt-f { flex: 1; }
 .irt-l { font-size: 12px; color: var(--text-muted); }
-.irt-in { font: inherit; font-size: 12px; padding: 4px 6px; width: 100%; min-width: 0; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
+.irt-in { font: inherit; font-size: 12px; padding: 4px 6px; width: 100%; min-width: 0; background-color: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
 .irt-in:focus { outline: none; border-color: var(--accent); }
 .irt-u { font-size: 11px; color: var(--text-faint); font-style: normal; }
 .irt-orb { margin-top: 4px; font-size: 11px; color: var(--text-faint); }
@@ -308,7 +308,7 @@ function fill(scope) { if (canFill.value) emit('fill', { rangeKm: cur.value.rang
 .irt-ln.blocked { stroke: var(--text-faint); stroke-dasharray: 3 2; }
 .irt-cur { stroke: var(--text-muted); stroke-width: 1; }
 .irt-dot { fill: var(--accent); }
-.irt-slider { width: 100%; margin: 2px 0 4px; accent-color: var(--accent); }
+.irt-slider { width: 100%; margin: 2px 0 4px; }
 .irt-out { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px; margin-top: 4px; }
 .irt-big { font-size: 16px; color: var(--accent); }
 .irt-out i { font-size: 11px; color: var(--text-faint); font-style: normal; }

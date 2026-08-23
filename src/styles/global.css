@@ -1,7 +1,10 @@
+@import './controls.css';
+
 /* 期刊风/仪器化主题：黑白灰 + 衬线标题 + 等宽数字。浅色为主。
    深色由 stores/theme.js 解析（跟随系统/浅色/深色）后写入 <html data-theme="dark"> 触发，
    不再直接依赖 prefers-color-scheme（手动选择时需要覆盖系统偏好）。 */
 :root {
+  color-scheme: light;
   --bg: #ffffff;
   --surface: #f7f7f5;
   --surface-2: #f0f0ed;
@@ -20,9 +23,37 @@
   --font-serif: "Times New Roman", Times, "SimSun", "宋体", serif;
   --font-sans: var(--font-serif);
   --font-mono: var(--font-serif);
+
+  /* —— 控件基线（画法在 controls.css，这里只放尺度与两主题各一份的图元）——
+     圆角尺度：控件 2px / 盒子 3px / 弹窗 4px。这三档本来就在用，只是分别写在 5 个链路预算窗口的
+     .lb-shell 里各一份，主窗、干扰、PFD、频率计划、日凌、报表够不着；提到 :root 后全窗口共用。
+     原来 1·2·3·4·5·6·7·8·11·12·999px 十一档混用，同一类东西各是各的圆角；现收成下面五档
+     （外加纯几何的那几处：拨杆轨道 7px、2px 高的小条 1px、滚动条拇指 5px —— 它们的圆角由自身
+     高度定死，不属于任何一档）。 */
+  --r-ctl: 2px;      /* 控件：按钮 / 输入 / 页签 / chip */
+  --r-box: 3px;      /* 盒子：列表项 / 面板内的块 */
+  --r-card: 4px;    /* 链路预算三窗的弹窗（该族 153 处在用，沿用其口径） */
+  --r-float: 6px;    /* 浮层：独立窗口 / 对话框 / 右键菜单 / 提示气泡 / 大卡片 */
+  --r-pill: 999px;   /* 胶囊：徽标 / 计数 / 圆角 chip */
+  /* —— 字距三档 ——
+     一律用 em 不用 px：同一个 1px 落在 10px 的分组名上是 0.1em、落在 20px 的标题上只有 0.05em，
+     「同一个值、两种松紧」正是原来看着参差不齐的根子；且链路预算三窗的字号是可调的（--lb-fs 9~16px），
+     px 字距不跟着缩放。原来 15 种取值（.2/.3/.4/.5/.6/1/1.5/2/3/7px + 0/normal + 三种 em）收成下面三档。
+     不入档的两处：报表封面（lbreport.css，pt 体系且「密　　级」有对齐约束）、密钥大字（有意分组）。 */
+  --ls-tight: .03em;   /* 标题 / 强调 / 等宽数字读数 —— 原来 .2~.6px 一片 */
+  --ls-label: .1em;    /* 面板与对话框的标题条（11~11.5px，muted/600） —— 原来 1px */
+  --ls-caps: .16em;    /* 更小一号的分组名（10~10.5px，faint） —— 原来 1.5 / 2px */
+  --ctl-box: 13px;                       /* 复选框 / 单选钮边长 */
+  --ctl-track: 3px;                      /* 滑块轨道粗细 */
+  --ctl-knob: 11px;                      /* 滑块钮径 */
+  /* 勾是 mask，颜色由 background 给（跟着 --bg 走），故两主题共用一份 */
+  --ctl-check: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2.6 6.3 4.9 8.7 9.4 3.5' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  /* 下拉箭头是 background-image，颜色写死在 SVG 里，故两主题各一份 */
+  --ctl-caret: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.9 6 7.9 9 4.9' fill='none' stroke='%236b6b66' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
 }
 
 :root[data-theme="dark"] {
+  color-scheme: dark;
   --bg: #1c1c1a;
   --surface: #232321;
   --surface-2: #2a2a27;
@@ -35,6 +66,7 @@
   --ok: #4caf82;
   --warn: #d8a73a;
   --danger: #e26a6a;
+  --ctl-caret: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.9 6 7.9 9 4.9' fill='none' stroke='%23a4a49e' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
 }
 
 * { box-sizing: border-box; }
@@ -50,10 +82,8 @@ body {
 h1, h2, h3 { font-family: var(--font-serif); font-weight: 500; margin: 0; }
 .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 input, select, button { font-family: inherit; font-size: inherit; color: inherit; }
-/* 原生 <select> 的下拉列表由 UA 画：没给显式底色时它恒按浅色画（白底），而选项文字继承上一行的
-   color:inherit —— 深色主题下就是浅灰字压白底，看不清。故给 select 一个兜底底色；组件里已显式
-   设色的（.srow select 一类）靠类选择器优先级压过本条。 */
-select { background: var(--bg); color: var(--text); }
-::-webkit-scrollbar { width: 10px; height: 10px; }
-::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 0; }
-::-webkit-scrollbar-track { background: transparent; }
+/* 表单件的画法（底色/箭头/勾/轨道/滚动条/焦点环）都在 controls.css，本文件不再重复给。
+   只有 select 的字色要在这里再钉一次：controls.css 由本文件在头部 @import，位置在上一行之前，
+   于是上一行的 color: inherit 会反过来压掉它 —— 落在 color: var(--text-muted) 的分区里，
+   下拉文字就跟着变灰。 */
+select { color: var(--text); }

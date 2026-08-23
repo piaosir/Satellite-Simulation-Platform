@@ -223,7 +223,7 @@ watch(() => props.sel.fpId, loadFpPlan)
 .sp-gf { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; }
 .sp-gl { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
 /* 188px 是常规宽度；资源库栏可拖窄，故允许压缩（min-width:0）而不撑破栏宽 */
-.sp-gi { font: inherit; font-size: 12px; flex: 0 1 188px; width: 188px; min-width: 0; padding: 3px 6px; cursor: pointer; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
+.sp-gi { font: inherit; font-size: 12px; flex: 0 1 188px; width: 188px; min-width: 0; padding: 3px 6px; cursor: pointer; background-color: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
 .sp-gi:focus { outline: none; border-color: var(--accent); }
 /* 未匹配态压成弱色：一眼看出哪一路还没接上方向图 */
 .sp-gi.unset { color: var(--text-faint); }
@@ -239,14 +239,14 @@ watch(() => props.sel.fpId, loadFpPlan)
 .sp-f { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .sp-l { font-size: 12px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sp-l i { color: var(--text-faint); font-style: normal; }
-.sp-i { font: inherit; font-size: 12px; padding: 4px 7px; width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
+.sp-i { font: inherit; font-size: 12px; padding: 4px 7px; width: 100%; background-color: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
 .sp-i:focus { outline: none; border-color: var(--accent); }
 .sp-i.mono { font-family: var(--font-mono); }
 /* 频率计划引用行：与方向图行同构，两条虚线分隔三段（方向图 / 频率计划 / 参数） */
 .sp-fp { margin-top: -2px; }
 .sp-gi.wide { flex: 0 1 300px; width: 300px; font-family: var(--font-mono); }
 /* 被频率计划托管的字段：只读 + 淡显，一眼看出「这个数不归这里管」 */
-.sp-i.managed { background: var(--surface-2); color: var(--text-muted); cursor: default; }
+.sp-i.managed { background-color: var(--surface-2); color: var(--text-muted); cursor: default; }
 .sp-i.managed:focus { border-color: var(--border); }
 .sp-lk { font-style: normal; color: var(--text-faint); font-size: 10.5px; margin-left: 3px; }
 </style>

@@ -27,7 +27,8 @@ export function resolveScenarioEpoch(blob) {
   return today8am()
 }
 // 合成 NORAD 号段：从 900000 起，每座星座占一段（明显区别于真实目录星，避免撞号）
-const NORAD_BASE = 900000
+// 导出：卫星组按真实星历核对成员时要认出「这颗不是真实目录星」，据此豁免（见 useSatGroups.reconcile）
+export const NORAD_BASE = 900000
 const NORAD_STEP = 10000
 // 按轨道面配色调色板（10 色循环）
 const PLANE_PALETTE = ['#ff6b6b', '#ffd166', '#06d6a0', '#4dabf7', '#b197fc', '#ff9f1c', '#38d9a9', '#f783ac', '#74c0fc', '#e599f7']

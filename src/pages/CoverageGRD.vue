@@ -180,7 +180,7 @@ watch(() => [s.boreLon, s.boreLat, s.yaw], () => { reproject(); recompute() })
         </label>
         <label class="row" v-if="s.ctype === 'rel'"><span>电平（dB）</span><input v-model="s.relText" /></label>
         <label class="row" v-else><span>电平（dB）</span><input v-model="s.absText" /></label>
-        <label class="row"><span>线宽</span><input type="range" min="0.5" max="8" step="0.1" v-model.number="s.lineWidth" /><b>{{ s.lineWidth.toFixed(1) }}</b></label>
+        <label class="row"><span>线宽</span><input type="range" min="0.1" max="8" step="0.1" v-model.number="s.lineWidth" /><b>{{ s.lineWidth.toFixed(1) }}</b></label>
       </div>
 
       <div class="sec">
@@ -215,13 +215,13 @@ watch(() => [s.boreLon, s.boreLat, s.yaw], () => { reproject(); recompute() })
 .row > span { width: 78px; flex: none; }
 .row > b { width: 40px; text-align: right; font-family: var(--font-mono); color: var(--text); font-weight: 500; }
 .row input[type=range] { flex: 1; }
-.row input[type=number], .row input:not([type]), .row select { flex: 1; min-width: 0; background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 2px 6px; font-size: 12px; border-radius: 2px; }
+.row input[type=number], .row input:not([type]), .row select { flex: 1; min-width: 0; background-color: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 2px 6px; font-size: 12px; border-radius: var(--r-ctl); }
 .beams { display: flex; flex-direction: column; gap: 3px; margin-top: 6px; }
-.beam { display: flex; align-items: center; gap: 6px; padding: 4px 7px; background: var(--bg); border: 1px solid var(--border); color: var(--text-muted); cursor: pointer; border-radius: 2px; font-size: 12px; }
+.beam { display: flex; align-items: center; gap: 6px; padding: 4px 7px; background: var(--bg); border: 1px solid var(--border); color: var(--text-muted); cursor: pointer; border-radius: var(--r-ctl); font-size: 12px; }
 .beam:hover { color: var(--text); border-color: var(--accent); }
 .beam.on { color: var(--text); border-color: var(--accent); background: var(--surface); }
 .beam .bn { flex: 1; text-align: left; }
-.beam .bt { font-size: 10px; padding: 0 4px; border-radius: 2px; border: 1px solid var(--border); }
+.beam .bt { font-size: 10px; padding: 0 4px; border-radius: var(--r-ctl); border: 1px solid var(--border); }
 .beam .bt.EIRP { color: #f1b829; } .beam .bt.GT { color: #5dcaa5; }
 .beam .bp { font-family: var(--font-mono); color: var(--text-faint); font-size: 11px; }
 .meta { font-size: 11px; color: var(--text-faint); margin-top: 6px; line-height: 1.5; }
