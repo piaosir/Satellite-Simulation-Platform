@@ -8,29 +8,33 @@
 // 国界从海岸线里分出来之后，它应当是最上面那条 —— 一级/二级行政区反而要退到国界与海岸之下。
 export const ORDER = { grid: 6.30, adm2: 6.40, adm1: 6.45, coast: 6.50, claim: 6.55, loc: 6.60, indefinite: 6.65, admin0: 6.70 }
 
-// 出厂默认（1.6b 二）。色系分两族：
-//   自然要素 —— 只有 coast，独立于政治线的冷灰蓝色系，最细；
-//   政治要素 —— admin0 / indefinite / loc / claim / ADM1 / ADM2 共用一个基色系（原 natColor 的灰），
-//              彼此靠【线型与线宽】区分，低等级靠【透明度】退后，不靠换颜色。
+// 出厂默认。色系分两族，且【明度就是层级】—— 越重要的线越深，一眼能排出先后：
+//   自然要素 —— 只有 coast，冷蓝灰。它比任何一档海色都深，故在浅蓝海上是一条利落的水边线；
+//                在深蓝海上又比海色浅，照样看得见。★ 原来的 #8fa6b8 比深海色还浅、线还最粗，
+//                于是海岸线成了整幅图最抢眼的一圈「毛边」，把国界压了下去 —— 层级正好反了。
+//   政治要素 —— admin0 / indefinite / loc / claim / ADM1 / ADM2 共用一族暖褐灰（配米黄陆地，
+//                这是纸质地图的老配法），彼此靠【明度 + 线宽 + 线型】三重区分。
+//
+// ★ 主张线（南海十段线）是【实线】。它本来就是十段实的短线 —— 再套一层虚线图案，每一段都被
+//   打成几个小点，画面上只剩一串灰色麻点（这正是「太丑」的那个东西）。中国标准地图上这条线与
+//   国界同色、比国界略粗，本表照此：同色 #6b6259、宽 2.0、实线。
 export const BORDER_DEF = {
-  coastColor: '#8fa6b8', coastWidth: 1.0, coastOpacity: 0.85, coastDash: 'solid',
-  admin0Color: '#a8a8a8', admin0Width: 1.6, admin0Opacity: 1.00, admin0Dash: 'solid',
-  indefColor: '#a8a8a8', indefWidth: 1.6, indefOpacity: 0.95, indefDash: 'dash',
-  locColor: '#a8a8a8', locWidth: 1.4, locOpacity: 0.90, locDash: 'dashdot',
-  claimColor: '#a8a8a8', claimWidth: 1.8, claimOpacity: 0.90, claimDash: 'dash',
-  provColor: '#a8a8a8', provWidth: 1.0, provOpacity: 0.80,
-  cityColor: '#a8a8a8', cityWidth: 0.7, cityOpacity: 0.60,
+  coastColor: '#5f86a3', coastWidth: 0.7, coastOpacity: 0.90, coastDash: 'solid',
+  admin0Color: '#6b6259', admin0Width: 1.3, admin0Opacity: 1.00, admin0Dash: 'solid',
+  indefColor: '#6b6259', indefWidth: 1.2, indefOpacity: 0.90, indefDash: 'dash',
+  locColor: '#7a7168', locWidth: 1.1, locOpacity: 0.85, locDash: 'dashdot',
+  claimColor: '#6b6259', claimWidth: 2.0, claimOpacity: 1.00, claimDash: 'solid',
+  provColor: '#8b8177', provWidth: 0.8, provOpacity: 0.85,
+  cityColor: '#a09890', cityWidth: 0.55, cityOpacity: 0.70,
   fade: true
 }
 
 // 线型的【屏幕像素】图案（画-空交替，长度任意）。3D 按相机距离、2D 按缩放各自反推成自身单位 →
 // 任意缩放下虚线视觉周期恒定，且两个视图看起来是同一种线。
-export const DASH_PX = { solid: null, dash: [6, 4], dot: [1.2, 3.2], dashdot: [8, 3, 1.5, 3] }
-// 主张线取 dash 的半周期（短虚）：它与 indefinite 的区分手段之一，不为此另立一档枚举。
-export const DASH_SCALE = { claim: 0.5 }
-// ★ claim 的 1.8 = 基准 1.2 × 1.5、下限 1 —— 沿用原 nanhaiDashes.js 的惯例（南海十段线比一般政治线略粗）。
-//   原文件把倍数挂在【那一条线】上，这里落到【整类】上：目前 claim 类只有南海十段线一条，结果一模一样；
-//   将来若再加别的主张线，它也会拿到这个宽度（要逐线不同就得把 claim 拆成按宽度分组的多批，代价不值）。
+export const DASH_PX = { solid: null, dash: [7, 5], dot: [1.2, 3.2], dashdot: [9, 3.5, 1.6, 3.5] }
+// 逐类的虚线周期倍率（1 = 用 DASH_PX 原值）。留着这张表是为了将来再要「同一种线型两种疏密」时有地方挂；
+// ★ claim 曾经是 0.5（半周期短虚）—— 那是把十段线打成麻点的直接原因，已去掉。
+export const DASH_SCALE = {}
 
 export const BORDER_CLASSES = ['coast', 'admin0', 'indefinite', 'loc', 'claim']
 // 2D 没有 renderOrder，只能靠画的先后 —— 这就是按 ORDER 从低到高排好的那一份

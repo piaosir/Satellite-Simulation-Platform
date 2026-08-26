@@ -361,7 +361,7 @@ export function createGlobeScene(container, quality = {}) {
   // 矢量边界线 + 矢量经纬网：粗线，放大/高分辨率下都锐利清晰。
   // 渲染序高于覆盖填充(5)+各类数据线(等值线/波束线/仰角线/轨迹线，统一 6)、低于点/标注：
   // 地理骨架贯穿覆盖区之上 → 覆盖与底图融为一体（平级），不再像贴纸浮在地图上面。depthWrite=false，纯绘制顺序。
-  scene.add(fatSegments(buildGraticule(), 0xffffff, 0.8, 0.12, ORDER.grid))
+  scene.add(fatSegments(buildGraticule(), 0x607488, 0.8, 0.30, ORDER.grid))   // 与 2D 的 GRID 同一口径：中性灰，深浅两种海色都留得住
   // 五类边界线：coast / admin0 / indefinite / loc / claim，各自独立的颜色/线宽/透明度/线型。
   // 保留对象引用，供 setBorderStyle 运行时改样式；换精度档 / 换视角 / 改缩放档位时按需重建。
   const borderCfg = { ...BORDER_DEF }
@@ -1813,26 +1813,11 @@ export function createGlobeScene(container, quality = {}) {
   }
 
   // 把视角转到某经纬度正对（覆盖加载后定位用）
-  function faceLonLat(lon, lat) { faceTo(llaToVec(lat || 0, lon, 0).applyAxisAngle(FRAME_AXIS, frameRot)) }
-
-  // 参考系：'ecef' 地固（缺省）| 'eci' 惯性。惯性档下把【整个场景】绕极轴转 +GMST ——
-  // 底图与卫星都是按地固坐标建的，统一转同一个角度即等于换到惯性系（点的角位置变成「经度 + GMST」
-  // 也就是赤经），于是轨道面在画面上不再随地球转、地球自转着从下面滑过。
-  // ★ 只转显示。任何几何、任何读数口径都不动 —— 拾取时把这个角减回去即可（见 vecToLatLon）。
-  const FRAME_AXIS = new THREE.Vector3(0, 1, 0)
-  let frameRot = 0
-  function setFrameOffset(deg) {
-    const v = (Number.isFinite(deg) ? deg : 0) * Math.PI / 180
-    if (Math.abs(v - frameRot) < 1e-12) return
-    frameRot = v
-    scene.rotation.y = v
-  }
+  function faceLonLat(lon, lat) { faceTo(llaToVec(lat || 0, lon, 0)) }
 
   // ===================== 鼠标拾取经纬度 / 标记 / 轨迹 =====================
-  // 渲染坐标(半径1) -> 经纬度（llaToVec 的逆）。惯性档下先把参考系旋转减回去，读数恒为地固经度。
-  const _vll = new THREE.Vector3()
-  function vecToLatLon(p0) {
-    const p = frameRot ? _vll.copy(p0).applyAxisAngle(FRAME_AXIS, -frameRot) : p0
+  // 渲染坐标(半径1) -> 经纬度（llaToVec 的逆）
+  function vecToLatLon(p) {
     const lat = 90 - Math.acos(Math.max(-1, Math.min(1, p.y))) * 180 / Math.PI
     let lon = Math.atan2(p.z, -p.x) * 180 / Math.PI - 180
     lon = ((lon % 360) + 540) % 360 - 180
@@ -2405,7 +2390,7 @@ export function createGlobeScene(container, quality = {}) {
     setTerminator, clearTerminator,
     setEnvRaster, setEnvAlpha, setEnvContours, clearEnv,
     setSatLayer, clearSatLayer, faceLonLat, setProvinces, setProvincesVisible, setCities, setCitiesVisible, setBorderStyle, setNameScale, setLabelStyle, setOceanColor, setLandColors,
-    setPixelRatio, setRenderFps, setSphereDetail, setMapDetail, setFrameOffset, holdFrames,
+    setPixelRatio, setRenderFps, setSphereDetail, setMapDetail, holdFrames,
     setMarkers, setTrajectories, setFocusSatLLA, setFocusStyle, setSatPointsVisible, setOnHover, setOnRightClick, setBeamDragMode, setOnBeamDrag, setBeamDragPivot, setLabelDragMode, setOnLabelDrag, setPolyDrawMode, setOnPolyDraw, setPlaceMode, setOnPlace,
     faceTo, rotateBy, setAutoRotate, setAutoRotateSpeed, setOnAutoRotateOff, resize, pause, resume, snapshot, destroy,
     // 缩放进度条接口：getZoom 读当前进度、setZoom 设到进度 t、setOnZoom 注册滚轮缩放回填回调

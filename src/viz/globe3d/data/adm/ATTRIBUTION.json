@@ -1,16 +1,16 @@
 {
  "CHN": {
   "adm1": {
-   "license": "Public Domain",
-   "source": "geoBoundaries, Wikimedia Commons",
-   "url": "https://github.com/wmgeolab/geoBoundaries/raw/4004e96/releaseData/gbOpen/CHN/ADM1/geoBoundaries-CHN-ADM1-all.zip",
-   "year": "2019"
+   "license": "DataV.GeoAtlas 公共服务（数据源：中华人民共和国民政部行政区划）",
+   "source": "阿里云 DataV.GeoAtlas areas_v3",
+   "url": "https://geo.datav.aliyun.com/areas_v3/bound/",
+   "note_zh": "日常仿真与内部报告适用；对外正式出版的地图须换用带审图号的底图。"
   },
   "adm2": {
-   "license": "Open Data Commons Public Domain Dedication and License (PDDL) v1.0",
-   "source": "National Administration of Surveying, Mapping and Geoinformation of China, Revolutionary GIS",
-   "url": "https://github.com/wmgeolab/geoBoundaries/raw/4004e96/releaseData/gbOpen/CHN/ADM2/geoBoundaries-CHN-ADM2-all.zip",
-   "year": "2017"
+   "license": "DataV.GeoAtlas 公共服务（数据源：中华人民共和国民政部行政区划）",
+   "source": "阿里云 DataV.GeoAtlas areas_v3",
+   "url": "https://geo.datav.aliyun.com/areas_v3/bound/",
+   "note_zh": "日常仿真与内部报告适用；对外正式出版的地图须换用带审图号的底图。"
   }
  },
  "ABW": {

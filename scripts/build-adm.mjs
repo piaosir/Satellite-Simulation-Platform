@@ -6,24 +6,20 @@
 //
 // 数据源
 //   ADM1  Natural Earth 10m admin_1_states_provinces（公有领域，251 个国家/地区、4596 个单元）
-//         ★ 中国例外：NE 的 CHN admin_1 只有 32 个（台湾/港澳被 NE 当成独立 admin_0），
-//           与本平台「台港澳属中国」的口径不符 → 中国的 ADM1 改用 geoBoundaries CHN（34 个，含台港澳）。
 //   ADM2  geoBoundaries gbOpen 逐国（CC BY 4.0 / ODbL / PDDL，逐国许可，见 ATTRIBUTION.json）
-//         中国 ADM2 = 2391 个单元，源标注国家测绘部门，许可 ODC-PDDL 公共领域奉献。
+//   ★ 中国两级都例外，改走阿里 DataV GeoAtlas（民政部行政区划），见 lib/chinaDatav.mjs 的文件头：
+//     NE 的 CHN admin_1 只有 32 个（台港澳被 NE 当独立 admin_0），geoBoundaries 的 CHN ADM2 是
+//     【县级】2391 个且全是拼音 —— 两者都不是本平台要的东西（要的是 34 省 + 333 地级市，带中文）。
 //
 // 算法与 build-provinces.js 一脉相承：只保留【被两个单元共享的边】（出现 ≥2 次），
 // 丢掉只属一个单元的外缘边（= 国境/海岸，由底图兜底）。区别是不再用 toFixed(5) 拼串比对坐标 ——
 // 坐标先按 3 位小数量化，边键直接用量化后的整数对，快且不产生浮点毛刺。
 //
-// ★ 名称（严格执行任务书的两档规则）：只有「本地名 / 英文」两档，默认英文；没有本地名就两档都用英文。
-//   不做中文，不去挂 Wikidata / GeoNames 的中文别名。两处例外都是【数据源自带的本地名】：
-//     · NE admin_1 自带 name_local / name_zh —— 直接用；
-//     · geoBoundaries 的 shapeName 全是英文/拼音（任务书假设「中国的本地名就是中文，数据源自带」，实测不成立）。
-//       中国 ADM1 的中文名由 NE admin_1 的 name_zh 按内点相交补上（台港澳三条在 CHN_SAR_ZH 里显式给），34 条全覆盖；
-//       中国 ADM2 没有任何公有领域的中文名可用 → name_local 留空，按任务书的规则两档都回落英文（拼音）。
-//       ★ 另一处实测差异：geoBoundaries 的 CHN ADM2 是【县级】2391 个（Mohexian / Tahexian …），
-//         与平台原有的「地级市」333 个不是同一层级。改用 geoBoundaries 是任务书的明确要求（商用授权更干净），
-//         照办；要换回地级市层只需把 CHN 从 ADM2 名单里去掉、另供一份包。
+// ★ 名称两档：「本地名 / 英文」，没有本地名就两档都用英文。
+//   · NE admin_1 自带 name_local / name_zh —— 直接用；
+//   · geoBoundaries 的 shapeName 全是英文/拼音 —— 只有英文这一档；
+//   · 中国走 DataV，本地名（中文简称）是数据自带的；英文这一档：省级 34 条手写通行译名，
+//     地级市按 NE populated_places 的 NAME_ZH 对上就取其 NAME，对不上的回落中文（覆盖率见构建日志）。
 //
 // ★ wv（适用视角）：某些单元在不同视角下不属于本国（如印度的阿鲁纳恰尔在中国视角下属中国）。
 //   构建期拿【运行时那份解算器】逐单元判一遍六套视角，只在本国的视角集合不是全集时才标 wv。
@@ -40,6 +36,7 @@ import { fileURLToPath } from 'node:url'
 import { neLayer, cached } from './lib/neFetch.mjs'
 import { unzip } from './lib/shapefile.mjs'
 import { polysOf, inRings, ringArea, interiorPoint } from './lib/geomUtil.mjs'
+import * as CN from './lib/chinaDatav.mjs'
 import * as R from '../src/viz/geo/povResolver.js'
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -79,11 +76,6 @@ const SENSITIVE = new Set(), DBOX = []
   R.setPov(R.DEFAULT_POV, {})
 }
 const inDbox = (x, y) => DBOX.some((b) => x >= b[0] && x <= b[1] && y >= b[2] && y <= b[3])
-
-// 台港澳的中文名：geoBoundaries 的 CHN ADM1 里这三条是英文，NE admin_1 又没有它们（NE 把它们当独立 admin_0）
-const CHN_SAR_ZH = { 'Taiwan Province': '台湾', 'Hong Kong Special Administrative Region': '香港', 'Macau Special Administrative Region': '澳门' }
-// geoBoundaries 的 CHN ADM1 里「Guangzhou Province」是广东省的笔误（源数据如此），按源名匹配中文
-const CHN_ADM1_FIX = { 'Guangzhou Province': '广东' }
 
 const q = (v) => Math.round(v * Q)
 const unq = (v) => v / Q
@@ -156,9 +148,11 @@ function shareNet(units, wvOf) {
   const done = new Set(), buckets = new Map()
   for (let i = 0; i < units.length; i++) each(i, (a, b) => {
     const k = key(a, b)
-    if ((cnt.get(k) || 0) < 2 || done.has(k)) return
-    done.add(k)
     const sides = owner.get(k) || [i]
+    // ★ 判据是「两个【不同】单元共享」而不是「出现两次」：中国地级市那一路会把省直辖县级并进地级市，
+    //   同一个单元里两块相邻子面之间的那条边会出现两次 —— 按次数判就会把它当内部界画出来（该溶解掉）。
+    if ((cnt.get(k) || 0) < 2 || sides.length < 2 || done.has(k)) return
+    done.add(k)
     let wv = null
     for (const t of sides) { const w = wvOf(t); if (w) wv = wv ? wv.filter((x) => w.includes(x)) : w.slice() }
     const kk = wv ? wv.join(',') : ''
@@ -289,6 +283,57 @@ function writePack(iso, lvl, units, names, isoOf) {
   return out
 }
 
+// 中国那两级的署名（DataV 是公开服务、数据源为民政部行政区划）
+const DATAV_CREDIT = {
+  license: 'DataV.GeoAtlas 公共服务（数据源：中华人民共和国民政部行政区划）',
+  source: '阿里云 DataV.GeoAtlas areas_v3',
+  url: 'https://geo.datav.aliyun.com/areas_v3/bound/',
+  note_zh: '日常仿真与内部报告适用；对外正式出版的地图须换用带审图号的底图。'
+}
+
+// ---------- 中国 ADM2：地级市（民政部口径） ----------
+// 27 个省/自治区逐个拉（4 直辖市与港澳台下面直接是县区，没有地级这一层）；
+// 省直辖县级（新疆兵团师市 / 海南直管县 / 湖北仙桃潜江天门神农架 / 河南济源）按共享边界最长并入邻近地级市，
+// 领地溶进去、名字不出 —— 地图上既不留空格，也不冒出「非地级」的名字。
+// 跨省的那条边在两个省文件里坐标对不上，共享边判定抓不到 → 省界不进本包，由 ADM1 那一层画（本层只在
+// 「中国」被勾进一级行政区时才可开，两层必定同时在场，接不上的问题不存在）。
+async function buildChinaAdm2(attribution) {
+  const raw = await CN.fetchPrefectures()
+  const group = CN.mergeGroups(raw, polysOf)
+  const merged = new Map()          // 归属地级市 adcode → { adcode, name, centroid, polys[] }
+  for (const f of raw) {
+    const g = group.get(f.adcode) || f.adcode
+    let u = merged.get(g)
+    if (!u) { const host = raw.find((x) => x.adcode === g) || f; u = { adcode: g, name: host.name, centroid: host.centroid || host.center, polys: [] }; merged.set(g, u) }
+    for (const rings of polysOf(f.geometry)) u.polys.push(rings)
+  }
+  const mergedIn = raw.filter((f) => CN.isMerged(f.adcode)).length
+  const units = [...merged.values()].map((u) => ({ geometry: { type: 'MultiPolygon', coordinates: u.polys }, _u: u }))
+
+  // 英文名：NE 10m populated_places 的 NAME_ZH 对上就取 NAME，对不上回落中文
+  const pp = await neLayer('10m', 'populated_places')
+  const zh2en = new Map()
+  for (const f of pp.features) {
+    const P = f.properties
+    if ((P.ADM0_A3 || P.adm0_a3) !== 'CHN') continue
+    const z = clean(P.NAME_ZH || P.name_zh), e = clean(P.NAME || P.name)
+    if (z && e) { const k = z.replace(/(市|镇|县|区)$/, ''); if (!zh2en.has(k)) zh2en.set(k, e) }
+  }
+  let hitEn = 0
+  const names = units.map((f) => {
+    const u = f._u
+    const zh = CN.cityShort(u.name)
+    const en = CN.CITY_EN[zh] || zh2en.get(zh) || null
+    if (en) hitEn++
+    const c = u.centroid || []
+    return labelOf(f, en || zh, zh, Number(c[0]), Number(c[1]))
+  })
+  console.log('  CHN adm2：拉到 ' + raw.length + ' 个单元 · 并掉省直辖县级等 ' + mergedIn + ' 个 · 地级市 ' + units.length +
+    ' · 英文名对上 ' + hitEn + '/' + units.length + '（对不上的两档都出中文）')
+  writePack('CHN', 'adm2', units, names, () => 'CHN')
+  ;(attribution.CHN || (attribution.CHN = {})).adm2 = DATAV_CREDIT
+}
+
 async function main() {
   const args = process.argv.slice(2)
   const only = args.filter((a) => /^[A-Z]{3}$/.test(a))
@@ -305,27 +350,18 @@ async function main() {
     if (!a || a === 'CHN') continue          // 中国另走 geoBoundaries（NE 少了台港澳）
     ;(byIso[a] || (byIso[a] = [])).push(f)
   }
-  // 中国 ADM1：geoBoundaries 几何 + NE 的 name_zh 按内点相交补中文
+  // 中国 ADM1：DataV（民政部行政区划）—— 34 个省级单元，中文自带，与地级市那一层同一套几何
   if (!only.length || only.includes('CHN')) {
-    const m = meta.CHN && meta.CHN.adm1
-    if (!m) console.log('  ! geoBoundaries 没有 CHN ADM1')
-    else {
-      const feats = await gbFeatures('CHN', 'ADM1', m.url)
-      if (feats.length !== 34) console.log('  ! CHN ADM1 单元数 ' + feats.length + '（预期 34，含台港澳）—— 请人工核对后再用')
-      const zhSrc = ne1.features.filter((f) => clean(f.properties.adm0_a3) === 'CHN')
-        .map((f) => ({ zh: localOf(f.properties), lon: Number(f.properties.longitude), lat: Number(f.properties.latitude) }))
-        .filter((x) => x.zh && Number.isFinite(x.lon))
-      const names = feats.map((f) => {
-        const en = clean(f.properties.shapeName) || '—'
-        let zh = CHN_SAR_ZH[en] || CHN_ADM1_FIX[en] || null
-        if (!zh) { const hit = zhSrc.find((x) => polysOf(f.geometry).some((rings) => inRings(rings, x.lon, x.lat))); if (hit) zh = hit.zh }
-        return labelOf(f, en, zh, NaN, NaN)
-      })
-      const miss = names.filter((n) => n && !n.name_local).length
-      if (miss) console.log('  ! CHN ADM1 有 ' + miss + ' 个单元没匹配到中文名（回落英文）')
-      writePack('CHN', 'adm1', feats, names, () => 'CHN')
-      attribution.CHN = { adm1: { license: m.license, source: m.source, url: m.url, year: m.year } }
-    }
+    const j = await CN.datavFull(100000)
+    const feats = j.features.filter((f) => f.geometry && f.properties && CN.isProvince(f.properties))
+    if (feats.length !== 34) console.log('  ! CHN ADM1 单元数 ' + feats.length + '（预期 34，含台港澳）—— 请人工核对后再用')
+    const names = feats.map((f) => {
+      const p0 = f.properties
+      const c = p0.centroid || p0.center || []
+      return labelOf(f, CN.PROV_EN[p0.adcode] || CN.provShort(p0.adcode, p0.name), CN.provShort(p0.adcode, p0.name), Number(c[0]), Number(c[1]))
+    })
+    writePack('CHN', 'adm1', feats, names, () => 'CHN')
+    attribution.CHN = { adm1: DATAV_CREDIT }
   }
   const isoList1 = Object.keys(byIso).filter((a) => !only.length || only.includes(a)).sort()
   for (const iso of isoList1) {
@@ -341,7 +377,8 @@ async function main() {
 
   // ---------- ADM2 ----------
   console.log('\n=== 二级行政区（ADM2） ===')
-  const isoList2 = Object.keys(meta).filter((a) => meta[a].adm2 && (!only.length || only.includes(a))).sort()
+  if (!only.length || only.includes('CHN')) await buildChinaAdm2(attribution)
+  const isoList2 = Object.keys(meta).filter((a) => a !== 'CHN' && meta[a].adm2 && (!only.length || only.includes(a))).sort()
   let done = 0
   for (const iso of isoList2) {
     const m = meta[iso].adm2

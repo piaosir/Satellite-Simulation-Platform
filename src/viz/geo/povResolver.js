@@ -94,7 +94,10 @@ export function hasDetail(d) { return !!bundles[d] }
 export async function ensureDetail(detail) {
   if (bundles[detail]) return bundles[detail]
   // 字面量 import() 让 Vite 各自打成独立 chunk（变量路径无法分析、构建后会失效）
-  const mod = detail === '110m' ? await import('../globe3d/data/basemap-110m.json', { with: { type: 'json' } }) : await import('../globe3d/data/basemap-50m.json', { with: { type: 'json' } })
+  // ★ 动态 import 不许带 with { type: 'json' }：dev 期 Vite 把 .json 转成 JS 模块再吐，
+  //   浏览器拿导入属性一核对 MIME 就整个拒掉（"Failed to fetch dynamically imported module"），
+  //   于是 50m/110m 两档在开发态一次都加载不上。静态那条不受影响（构建期就被内联掉了）。
+  const mod = detail === '110m' ? await import('../globe3d/data/basemap-110m.json') : await import('../globe3d/data/basemap-50m.json')
   bundles[detail] = prep(mod.default || mod)
   return bundles[detail]
 }

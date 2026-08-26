@@ -12,15 +12,13 @@ import { terminatorFlat } from '../terminator.js'
 const OCEAN = '#15426b'
 // 南极极冠：南极洲数据止于约 -85°，极点处留有空洞，补到 -90°。
 const SOUTH_CAP_LAT = -82
-const GRID = 'rgba(255,255,255,0.12)', BG = '#070b12'
+// 经纬网：中性灰半透明 —— 白色 0.12 在浅蓝海上等于没有（默认海色就是浅蓝），在深蓝海上又偏亮。
+// 中性灰对深浅两种海色都留得住一条淡淡的格线，正是「专业地图」该有的那层底衬。
+const GRID = 'rgba(96,116,136,0.28)', BG = '#070b12'
 // 切口（左边缘经度）：默认西经 30°，经度范围 [LON0, LON0+360)。可由「地图设置 → 坐标系」改，
 // 改后要重烘所有「世界度坐标」(x = lon − LON0) 的 Path2D —— 陆地/边界线/覆盖场/等值线/夜区都是这套坐标。
 let LON0 = -30
 // 参考系：'ecef' 地固（缺省，地球不动）| 'eci' 惯性（轨道面不动、地球自转着从下面滑过）。
-// 惯性档下把整张图按 +GMST 平移：底图与卫星都按各自的经度画，统一加同一个偏移即等于换到惯性系
-// —— 卫星的「经度 + GMST」正是它的赤经，故轨道面在画面上不再随地球转。
-// ★ 只影响画面。经纬度读数、点选、导出照旧按地固经度出（screenToLonLat 会把这个偏移减回去）。
-let eciOff = 0
 const OCEANS = [
   ['太平洋', 'Pacific Ocean', -155, 25], ['太平洋', 'Pacific Ocean', -130, -22],
   ['大西洋', 'Atlantic Ocean', -35, 28], ['大西洋', 'Atlantic Ocean', -18, -25],
@@ -183,7 +181,7 @@ export function createFlatCoverage(canvas) {
 
   function fit() { base = Math.min(cw / 360, ch / 180); scale = 1; tx = (cw - 360 * base) / 2; ty = (ch - 180 * base) / 2 }
   const k = () => base * scale
-  const WXN = (lon) => (((lon + eciOff - LON0) % 360) + 360) % 360
+  const WXN = (lon) => (((lon - LON0) % 360) + 360) % 360
   const PX = (lon) => WXN(lon) * k() + tx
   const PY = (lat) => (90 - lat) * k() + ty
 
@@ -192,9 +190,9 @@ export function createFlatCoverage(canvas) {
   // 仅填充陆地（海岸线与其余四类边界线移到覆盖之上的 drawBorders）。覆盖填充叠在陆地填充之上、按 alpha 混合 → 覆盖区底色随之透出。
   function drawLand() {
     const kk = k()
-    const wl = -tx / kk - eciOff, wr = (cw - tx) / kk - eciOff   // 视口世界 X 范围（未含 off）
+    const wl = -tx / kk, wr = (cw - tx) / kk   // 视口世界 X 范围（未含 off）
     for (const off of [-360, 0, 360]) {
-      ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * (tx + (off + eciOff) * kk), dpr * ty)
+      ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * (tx + off * kk), dpr * ty)
       if (compat) {
         // 导出：按填充色合并成「每色一条 path」（节点数不变，但 <path> 元素从「多边形数」降到「颜色数」）。
         // svg2pdf 逐节点 getComputedStyle 是导出耗时主因——10m 底图有数千多边形，不合并会产生数千节点。
@@ -242,7 +240,7 @@ export function createFlatCoverage(canvas) {
   function drawBorders() {
     const kk = k()
     const P = borderPaths || bakeBorders()
-    const wl = -tx / kk - eciOff, wr = (cw - tx) / kk - eciOff
+    const wl = -tx / kk, wr = (cw - tx) / kk
     for (const cls of BORDER_DRAW) {
       const list = P[cls]
       if (!list || !list.length) continue
@@ -253,7 +251,7 @@ export function createFlatCoverage(canvas) {
       const px = DASH_PX[borderStyle[key + 'Dash'] || 'solid']
       ctx.setLineDash(px ? px.map((v) => v * (DASH_SCALE[cls] || 1) / kk) : [])
       for (const off of [-360, 0, 360]) {
-        ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * (tx + (off + eciOff) * kk), dpr * ty)
+        ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * (tx + off * kk), dpr * ty)
         for (const sh of list) { if (sh.hi + off < wl || sh.lo + off > wr) continue; ctx.stroke(sh.path) }
       }
     }
@@ -416,12 +414,12 @@ export function createFlatCoverage(canvas) {
   // 只该压暗底图，不该把覆盖场/等值线一起蒙灰；国界地名在 aboveCanvas，天然压在其上。
   function drawTerminator() {
     if (!termData) return
-    const kk = k(), wl = -tx / kk - eciOff, wr = (cw - tx) / kk - eciOff
+    const kk = k(), wl = -tx / kk, wr = (cw - tx) / kk
     const o = termOpts
     ctx.save()
     for (const off of [-360, 0, 360]) {
       if (off + 360 < wl || off > wr) continue          // 该副本整幅落在视口外
-      ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * (tx + (off + eciOff) * kk), dpr * ty)
+      ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * (tx + off * kk), dpr * ty)
       if (o.night !== false) {
         ctx.globalAlpha = o.nightOpacity != null ? o.nightOpacity : 0.42
         ctx.fillStyle = o.nightColor || '#0a1120'
@@ -450,13 +448,13 @@ export function createFlatCoverage(canvas) {
     const kk = k()
     // 填充：把 pan/zoom 烘进变换矩阵，直接填充缓存的世界坐标 Path2D（每帧零顶点遍历），-360/0/+360 三档环绕。
     // 环绕副本按视口裁剪：放大到某区域时三份里通常只有一份可见 → 大足迹填充成本直降到 1/3（拖拽开填充提速核心）。
-    const wl = -tx / kk - eciOff, wr = (cw - tx) / kk - eciOff
+    const wl = -tx / kk, wr = (cw - tx) / kk
     ctx.save(); ctx.globalAlpha = fieldAlpha
     for (const L of fieldLayers) {
       if (!L.fillPaths || !L.fillPaths.length) continue
       for (const off of [-360, 0, 360]) {
         if (L.bounds && (L.bounds.hi + off < wl || L.bounds.lo + off > wr)) continue
-        ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * (tx + (off + eciOff) * kk), dpr * ty)
+        ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * (tx + off * kk), dpr * ty)
         if (compat) for (const fb of (L.fillBands || [])) { ctx.fillStyle = 'rgb(' + fb.color[0] + ',' + fb.color[1] + ',' + fb.color[2] + ')'; traceFillBand(fb); ctx.fill() }
         else for (const fb of L.fillPaths) { ctx.fillStyle = fb.color; ctx.fill(fb.path) }
       }
@@ -469,7 +467,7 @@ export function createFlatCoverage(canvas) {
       if (!L.segPaths || !L.segPaths.length) continue
       for (const off of [-360, 0, 360]) {
         if (L.bounds && (L.bounds.hi + off < wl || L.bounds.lo + off > wr)) continue
-        ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * (tx + (off + eciOff) * kk), dpr * ty)
+        ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * (tx + off * kk), dpr * ty)
         if (compat) for (const grp of (L.segGroups || [])) { if (!grp.segs || !grp.segs.length) continue; ctx.strokeStyle = grp.color || 'rgba(255,255,255,0.9)'; ctx.lineWidth = (grp.width || 1.2) / kk; traceSegGroup(grp); ctx.stroke() }
         else for (const sp of L.segPaths) { ctx.strokeStyle = sp.color; ctx.lineWidth = sp.width / kk; ctx.stroke(sp.path) }
       }
@@ -527,13 +525,13 @@ export function createFlatCoverage(canvas) {
   function drawCovGrid() {
     if (!covGridLayers.length) return
     const kk = k()
-    const wl = -tx / kk - eciOff, wr = (cw - tx) / kk - eciOff
+    const wl = -tx / kk, wr = (cw - tx) / kk
     ctx.save(); ctx.globalAlpha = covGridAlpha
     for (const L of covGridLayers) {
       if (!L.fillPaths || !L.fillPaths.length) continue
       for (const off of [-360, 0, 360]) {
         if (L.bounds && (L.bounds.hi + off < wl || L.bounds.lo + off > wr)) continue
-        ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * (tx + (off + eciOff) * kk), dpr * ty)
+        ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * (tx + off * kk), dpr * ty)
         if (compat) for (const fb of (L.fillBands || [])) { ctx.fillStyle = 'rgb(' + fb.color[0] + ',' + fb.color[1] + ',' + fb.color[2] + ')'; traceFillBand(fb); ctx.fill() }
         else for (const fb of L.fillPaths) { ctx.fillStyle = fb.color; ctx.fill(fb.path) }
       }
@@ -1018,7 +1016,7 @@ export function createFlatCoverage(canvas) {
     const r = canvas.getBoundingClientRect(), kk = k()
     const wx = (clientX - r.left - tx) / kk
     const wy = Math.max(0, Math.min(180, (clientY - r.top - ty) / kk))
-    let lon = wx + LON0 - eciOff; lon = ((lon % 360) + 540) % 360 - 180
+    let lon = wx + LON0; lon = ((lon % 360) + 540) % 360 - 180
     return { lat: 90 - wy, lon }
   }
   // 屏幕坐标 -> 经纬度（投影逆运算）；超出地图范围返回 null
@@ -1026,7 +1024,7 @@ export function createFlatCoverage(canvas) {
     const r = canvas.getBoundingClientRect(), kk = k()
     const wx = (clientX - r.left - tx) / kk, wy = (clientY - r.top - ty) / kk
     if (wy < 0 || wy > 180) return null
-    let lon = wx + LON0 - eciOff; lon = ((lon % 360) + 540) % 360 - 180
+    let lon = wx + LON0; lon = ((lon % 360) + 540) % 360 - 180
     return { lat: 90 - wy, lon }
   }
   let onRightClick = null, onHover = null
@@ -1167,7 +1165,8 @@ export function createFlatCoverage(canvas) {
     },
     // 销毁：退订主权解算层的广播（不退的话卸载后的画布仍会被换视角触发重建）
     destroy() { offPov() },
-    // 地图切口经度（左边缘经度，−180..180）。世界度坐标 x = lon − LON0 是烘在 Path2D 里的，
+    // 切口经度（左边缘经度，−180..180）。★ 面板上填的是【画面中心】，切口 = 中心 − 180（见 stores/mapCrs）。
+    // 世界度坐标 x = lon − LON0 是烘在 Path2D 里的，
     // 故改切口要把陆地/边界线/覆盖场/等值线全部重烘，再 fit 一次把新接缝放到边上。
     setLon0(v) {
       const nv = Number(v)
@@ -1183,13 +1182,6 @@ export function createFlatCoverage(canvas) {
       invalidateStatic(); requestDraw()
     },
     getLon0: () => LON0,
-    // 参考系偏移（度）：地固档给 0，惯性档给 +GMST。只平移画面，不动任何几何与读数口径。
-    setFrameOffset(deg) {
-      const v = Number.isFinite(deg) ? deg : 0
-      if (Math.abs(v - eciOff) < 1e-9) return
-      eciOff = v
-      invalidateStatic(); requestDraw()
-    },
     setBeamDragMode(v) { beamDragMode = !!v; beamDragging = false; canvas.style.cursor = polyDrawMode ? 'crosshair' : ((v || labelDragMode) ? 'move' : 'grab') },
     setOnBeamDrag(fn) { onBeamDrag = fn },
     setLabelDragMode(v) { labelDragMode = !!v; labelDragging = false; canvas.style.cursor = polyDrawMode ? 'crosshair' : ((v || beamDragMode) ? 'move' : 'grab') },

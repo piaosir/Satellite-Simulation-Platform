@@ -143,14 +143,23 @@ for (let i = 0; i < SEVEN.length; i++) for (let j = i + 1; j < SEVEN.length; j++
   if (sig(SEVEN[i][1]) === sig(SEVEN[j][1])) same.push(SEVEN[i][0] + '≡' + SEVEN[j][0])
 }
 ok('⑩ 出厂默认下任意两类线不同时同色+同宽+同线型', same.length === 0, same.join(' ') || SEVEN.length + ' 类两两比过')
-// 色系分两族：coast 独立于政治线；政治六类共用一个基色（靠线型/线宽/透明度分级，不靠颜色）
-const polColors = new Set(SEVEN.filter(([c]) => c !== 'coast').map(([, k]) => String(BORDER_DEF[k + 'Color']).toLowerCase()))
-ok('⑩b 政治要素共用一个基色系、海岸线自成一族',
-  polColors.size === 1 && !polColors.has(String(BORDER_DEF.coastColor).toLowerCase()),
-  '政治色 ' + [...polColors].join(',') + ' · 海岸 ' + BORDER_DEF.coastColor)
-// 低等级靠透明度退后
-const opa = ['admin0', 'indef', 'loc', 'claim', 'coast', 'prov', 'city'].map((k) => BORDER_DEF[k + 'Opacity'])
-ok('⑩c 透明度按等级单调不增', opa.every((v, i) => i === 0 || v <= opa[i - 1]), opa.join(' ≥ '))
+// 色系分两族：政治六类是暖色族（R>B）、海岸线是冷色族（B>R）—— 一眼能分出「自然要素」与「政治要素」
+const rgb = (h) => [1, 3, 5].map((i) => parseInt(String(h).slice(i, i + 2), 16))
+const warm = (h) => { const [r, , b] = rgb(h); return r > b }
+const polKeys = SEVEN.filter(([c]) => c !== 'coast').map(([, k]) => k)
+ok('⑩b 政治要素同属暖色族、海岸线自成冷色族',
+  polKeys.every((k) => warm(BORDER_DEF[k + 'Color'])) && !warm(BORDER_DEF.coastColor),
+  '政治色 ' + polKeys.map((k) => BORDER_DEF[k + 'Color']).join(',') + ' · 海岸 ' + BORDER_DEF.coastColor)
+// ★ 层级靠【明度】排：国界最深，未定界/停火线次之，两级行政区依次退后。
+//   （改造前是「政治六类同色、只靠线型线宽分」，实测那样整幅图糊成一片灰，谁也不比谁重要。）
+const lum = (k) => { const [r, g, b] = rgb(BORDER_DEF[k + 'Color']); return 0.2126 * r + 0.7152 * g + 0.0722 * b }
+const chain = ['admin0', 'loc', 'prov', 'city']
+ok('⑩c 明度按等级单调不减：国界最深 → 停火线 → 一级行政区界 → 二级行政区界',
+  chain.every((k, i) => i === 0 || lum(k) > lum(chain[i - 1])),
+  chain.map((k) => k + ' ' + lum(k).toFixed(0)).join(' < '))
+// 同一族里低等级还要再靠透明度退后一档
+const opa = ['admin0', 'prov', 'city'].map((k) => BORDER_DEF[k + 'Opacity'])
+ok('⑩c2 行政层级的透明度单调不增', opa.every((v, i) => i === 0 || v <= opa[i - 1]), opa.join(' ≥ '))
 // 2D 没有 renderOrder，只能靠画的先后 → BORDER_DRAW 必须就是按 ORDER 从低到高排好的那一份
 ok('⑩d 2D 绘制序与 3D 渲染次序一致',
   JSON.stringify(BORDER_DRAW) === JSON.stringify([...BORDER_CLASSES].sort((a, b) => ORDER[a] - ORDER[b])),
@@ -158,9 +167,13 @@ ok('⑩d 2D 绘制序与 3D 渲染次序一致',
 // 国界压在最上、一/二级行政区退到海岸之下（★ 与改造前相反，见提交信息）
 ok('⑩e 渲染次序：ADM2 < ADM1 < 海岸 < 主张 < 停火 < 未定 < 国界',
   ORDER.adm2 < ORDER.adm1 && ORDER.adm1 < ORDER.coast && ORDER.coast < ORDER.claim && ORDER.claim < ORDER.loc && ORDER.loc < ORDER.indefinite && ORDER.indefinite < ORDER.admin0)
-// 主张线取 indefinite 的半周期（短虚）：两者都是 dash 时靠这个 + 线宽区分
-ok('⑩f 主张线周期约为未定界的一半', Math.abs(DASH_SCALE.claim - 0.5) < 1e-9 && DASH_PX.dash && DASH_PX.dashdot.length === 4,
-  'claim×' + DASH_SCALE.claim + ' · dashdot 四段')
+// ★ 主张线（南海十段线）必须是【实线】：它本身就是十段实的短线，再套虚线图案会被打成一串麻点。
+//   与国界的区分靠线宽（更粗），不靠虚线周期 —— 中国标准地图上正是这个画法。
+ok('⑩f 主张线是实线且比国界粗',
+  (BORDER_DEF.claimDash || 'solid') === 'solid' && BORDER_DEF.claimWidth > BORDER_DEF.admin0Width && !DASH_SCALE.claim,
+  'claim ' + BORDER_DEF.claimDash + ' ' + BORDER_DEF.claimWidth + ' > admin0 ' + BORDER_DEF.admin0Width)
+ok('⑩g 虚线图案齐全（未定界虚线 / 停火线点划线）', Array.isArray(DASH_PX.dash) && DASH_PX.dashdot.length === 4,
+  'dash ' + DASH_PX.dash.join('/') + ' · dashdot ' + DASH_PX.dashdot.join('/'))
 
 // ---------- ⑪ 缩放淡出（1.6b 三）----------
 ok('⑪ 全球视角 ADM2 全淡出、ADM1 降到 0.3', Math.abs(admFade(fadeFactor(0.2)).adm2) < 1e-9 && Math.abs(admFade(fadeFactor(0.2)).adm1 - 0.3) < 1e-9)

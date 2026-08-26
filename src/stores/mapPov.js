@@ -20,6 +20,18 @@ export function setMapPov(v) {
   return cur
 }
 
+// 落盘：地图视角是【全局设置】（存在 settings 的 mapPov 一项里），星座地图页的侧栏改完即写回。
+// 与 setMapPov 分开是因为验证台/单测里没有 window.api —— 那边只要广播，不要落盘。
+export async function saveMapPov(v) {
+  const cfg = setMapPov(v)
+  if (typeof window === 'undefined' || !window.api || !window.api.store || !window.api.store.setSettings) return cfg
+  try {
+    const st = (await window.api.store.getSettings()) || {}
+    await window.api.store.setSettings({ ...st, mapPov: JSON.parse(JSON.stringify(cfg)) })
+  } catch (e) { console.warn('[mapPov] 落盘失败', e) }
+  return cfg
+}
+
 // 订阅：立刻回调一次当前值，返回退订函数
 export function onMapPov(fn) {
   subs.add(fn)
