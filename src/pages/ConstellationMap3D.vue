@@ -28,7 +28,8 @@ import { createFlatCoverage } from '../viz/flatmap/flatCoverage.js'
 import { LAND as LAND_MORANDI, LAND_UNIFORMS, LAND_DEFAULT, migrateLandOverrides } from '../viz/landPalette.js'
 import { countryAt, currentLandColor, countryList } from '../viz/globe3d/countryPick.js'
 import { BORDER_DEF } from '../viz/geo/borderStyle.js'
-import { onPovChange } from '../viz/geo/povResolver.js'
+import { onPovChange, getPov } from '../viz/geo/povResolver.js'
+import { admIndex, loadPack, mergePacks } from '../viz/geo/admPacks.js'
 import { useGrdCoverage } from '../viz/grd/useGrdCoverage.js'
 import { useBeamSynth } from '../viz/grd/useBeamSynth.js'
 import { useVisibility, orbitClass } from '../viz/vis/useVisibility.js'
@@ -112,11 +113,17 @@ const live = computed(() => clock.mode === 'live')
 const nowTick = ref(0)      // 每拍自增：驱动时间条上随时刻走的读数（时钟推进 / 实时 / 拖游标都算一拍）
 const autoRotate = toRef(viewPrefs, 'autoRotate')   // 自转开关：以 viewPrefs 为单一真相（设置弹窗共享）
 const nameMode = ref('off')   // 国名：'zh' | 'en' | 'off'（默认不显示）
-const showProvinces = ref(false)   // 显示中国省界/省名（默认关；勾选或存档恢复后经 ensureProvinces 加载数据）
-let provincesLoaded = false
+// 一级/二级行政区：全球逐国懒加载（src/viz/globe3d/data/adm/{ISO3}-adm{1,2}.json）。
+// 勾一个国家拉一个包，取消勾选只是不画、不卸载。默认只选中国。
+const showProvinces = ref(false)   // 显示一级行政区界 / 名称（默认关）
+const showCities = ref(false)      // 显示二级行政区界 / 名称（默认关）
+const admSel1 = ref(['CHN'])       // 一级：选中的国家（ISO3）
+const admSel2 = ref(['CHN'])       // 二级：同上
+const admName1 = ref('en')         // 名称档位：'local' 本地名 | 'en' 英文 | 'off' 不显示
+const admName2 = ref('en')
+const admQuery1 = ref('')          // 国家搜索框
+const admQuery2 = ref('')
 let provincesData = null
-const showCities = ref(false)   // 显示中国地级市界 / 地级市名（默认关）
-let citiesLoaded = false
 let citiesData = null
 // 晨昏线（昼夜分界）：默认关。时刻取时间轴当前值 calcAt()（非系统时钟）——拖时间轴 / 实时推进时随之移动，
 // 与卫星星位同一个 UTC 时刻、同一个自转相位（GMST 复用 sat.gstime，见 viz/terminator.js）。
@@ -1225,7 +1232,12 @@ const landPick = ref(null)           // 当前选中国家 { id, zh }
 const HEX6 = /^#[0-9a-fA-F]{6}$/
 // 视角/覆写改动的版本号：可搜索国家清单、取色器预填这些都跟着重算
 const povTick = ref(0)
-const offPovTick = onPovChange(() => { povTick.value++ })
+const offPovTick = onPovChange(() => {
+  povTick.value++
+  // 视角换了，行政区包里按 wv 分组的那部分（如印度视角才有的阿鲁纳恰尔邦界）要重新过滤
+  if (showProvinces.value) ensureAdm(1)
+  if (showCities.value) ensureAdm(2)
+})
 // 可搜索国家列表：口径 = 当前视角下地图上确实画出来的那些国家（台湾/港澳并入中国不单列）
 const COUNTRY_ZH = computed(() => { povTick.value; return countryList() })
 const landHits = computed(() => {
@@ -3198,25 +3210,42 @@ function applyGoto() {
 function toggleRotate() { autoRotate.value = !autoRotate.value; scene && scene.setAutoRotate(autoRotate.value) }
 function setNameMode(m) { nameMode.value = m; scene && scene.setLabelMode(m); if (flat) flat.setNameMode(m) }
 // 省界/市界：按开关加载数据（一次）并套用可见性。开关切换与「默认开启的无存档首启」共用同一路径
-async function ensureProvinces() {
-  if (showProvinces.value && !provincesLoaded) {
-    try { const mod = await import('../viz/globe3d/data/china-provinces.json'); provincesData = mod.default || mod; scene && scene.setProvinces(provincesData); if (flat) flat.setProvinces(provincesData); provincesLoaded = true }
-    catch (e) { /* 省界数据缺失 */ }
+// 行政区图层：按选中的国家集合拉包、按当前视角过滤 groups、并成一份喂给两个渲染器。
+// 字号：一级用 3D 世界高 0.02 / 2D 15px，二级更密故更小（0.012 / 11px）——与换源前一致。
+async function ensureAdm(lvl) {
+  const on = lvl === 1 ? showProvinces.value : showCities.value
+  const sel = lvl === 1 ? admSel1.value : admSel2.value
+  const mode = lvl === 1 ? admName1.value : admName2.value
+  if (on) {
+    const packs = await Promise.all(sel.map((iso) => loadPack(lvl, iso)))
+    const data = mergePacks(packs, getPov().id, mode, lvl === 1 ? 0.02 : 0.012, lvl === 1 ? 15 : 11)
+    if (lvl === 1) { provincesData = data; scene && scene.setProvinces(data); if (flat) flat.setProvinces(data) }
+    else { citiesData = data; scene && scene.setCities(data); if (flat) flat.setCities(data) }
   }
-  scene && scene.setProvincesVisible(showProvinces.value)
-  if (flat) flat.setProvincesVisible(showProvinces.value)
+  if (lvl === 1) { scene && scene.setProvincesVisible(on); if (flat) flat.setProvincesVisible(on) }
+  else { scene && scene.setCitiesVisible(on); if (flat) flat.setCitiesVisible(on) }
+  applyNameScale()   // 套用当前字号（首次加载后生效）
 }
-async function ensureCities() {
-  if (showCities.value && !citiesLoaded) {
-    try { const mod = await import('../viz/globe3d/data/china-cities.json'); citiesData = mod.default || mod; scene && scene.setCities(citiesData); if (flat) flat.setCities(citiesData); citiesLoaded = true }
-    catch (e) { /* 地级市数据缺失 */ }
-  }
-  scene && scene.setCitiesVisible(showCities.value)
-  if (flat) flat.setCitiesVisible(showCities.value)
-  applyNameScale()   // 套用当前地级市名字号（首次加载后生效）
-}
+async function ensureProvinces() { await ensureAdm(1) }
+async function ensureCities() { await ensureAdm(2) }
 async function toggleProvinces() { showProvinces.value = !showProvinces.value; await ensureProvinces() }
 async function toggleCities() { showCities.value = !showCities.value; await ensureCities() }
+// 国家多选 / 名称档位：改完整层重建（包已缓存，代价只是重建几何）
+function admToggleCountry(lvl, iso) {
+  const r = lvl === 1 ? admSel1 : admSel2
+  const i = r.value.indexOf(iso)
+  r.value = i >= 0 ? r.value.filter((x) => x !== iso) : [...r.value, iso]
+  ensureAdm(lvl)
+}
+function admSetName(lvl, m) { (lvl === 1 ? admName1 : admName2).value = m; ensureAdm(lvl) }
+// 可选国家：只列本地确实有包的那些，名字取解算器口径（与地图上的国名一致）
+const admHits = (lvl) => {
+  const q = (lvl === 1 ? admQuery1 : admQuery2).value.trim()
+  const have = new Set(admIndex['adm' + lvl] || [])
+  const list = COUNTRY_ZH.value.filter((c) => have.has(c.id))
+  return (q ? list.filter((c) => c.zh.includes(q) || c.id.includes(q.toUpperCase()) || (c.en || '').toLowerCase().includes(q.toLowerCase())) : list).slice(0, 12)
+}
+const admChips = (lvl) => (lvl === 1 ? admSel1 : admSel2).value.map((id) => ({ id, zh: (COUNTRY_ZH.value.find((c) => c.id === id) || {}).zh || id }))
 
 // ===================== 覆盖图 =====================
 let _presetCovSats = []   // 预置覆盖索引（只读）；用户 GXT 库与之合并成 covSats
@@ -5588,7 +5617,7 @@ function deserializeCov(items) {
 }
 function snapshot() {
   return {
-    nameMode: nameMode.value, countryName: countryNameSize.value, provName: provNameSize.value, cityName: cityNameSize.value, showProvinces: showProvinces.value, showCities: showCities.value, borderStyle: { ...borderStyle }, labelStyle: { ...labelStyle }, termOn: termOn.value, termNight: termNight.value, termLine: termLine.value, termStyle: { ...termStyle }, tzMode: tzMode.value, oceanColor: oceanColor.value, landScheme: landScheme.value, landOverrides: { ...landOverrides }, groupColors: { ...groupColors }, autoRotate: autoRotate.value, autoRotateSpeed: viewPrefs.autoRotateSpeed, live: live.value, clock: { stepSec: clock.stepSec, speed: clock.speed }, beamLock: beamLock.value, fpMode: fpMode.value, beam: beam.value, elevMin: elevMin.value, focusStyle: { ...focusStyle }, windowMin: windowMin.value,
+    nameMode: nameMode.value, countryName: countryNameSize.value, provName: provNameSize.value, cityName: cityNameSize.value, showProvinces: showProvinces.value, showCities: showCities.value, admSel1: [...admSel1.value], admSel2: [...admSel2.value], admName1: admName1.value, admName2: admName2.value, borderStyle: { ...borderStyle }, labelStyle: { ...labelStyle }, termOn: termOn.value, termNight: termNight.value, termLine: termLine.value, termStyle: { ...termStyle }, tzMode: tzMode.value, oceanColor: oceanColor.value, landScheme: landScheme.value, landOverrides: { ...landOverrides }, groupColors: { ...groupColors }, autoRotate: autoRotate.value, autoRotateSpeed: viewPrefs.autoRotateSpeed, live: live.value, clock: { stepSec: clock.stepSec, speed: clock.speed }, beamLock: beamLock.value, fpMode: fpMode.value, beam: beam.value, elevMin: elevMin.value, focusStyle: { ...focusStyle }, windowMin: windowMin.value,
     mkPt: markPtFont.value, mkStIcon: stIconSize.value, mkStFont: stFontSize.value, mkPtDot: markPtDot.value, mkTrajDot: trajDotSize.value,
     mkPtShow: showPtLabel.value, mkStShow: showStName.value,
     mkPtLayer: showPtLayer.value, mkStLayer: showStLayer.value, mkTrajLayer: showTrajLayer.value,
@@ -5681,6 +5710,9 @@ async function restoreSettings() {
   // 省界/市界开关：默认开，存档里的显式 false 也要恢复；数据加载统一走挂载尾部的 ensureProvinces/ensureCities
   if (typeof s.showProvinces === 'boolean') showProvinces.value = s.showProvinces
   if (typeof s.showCities === 'boolean') showCities.value = s.showCities
+  if (Array.isArray(s.admSel1)) admSel1.value = s.admSel1.filter((x) => typeof x === 'string')
+  if (Array.isArray(s.admSel2)) admSel2.value = s.admSel2.filter((x) => typeof x === 'string')
+  for (const [k, r] of [['admName1', admName1], ['admName2', admName2]]) if (s[k] === 'local' || s[k] === 'en' || s[k] === 'off') r.value = s[k]
   if (s.tzMode === 'utc' || s.tzMode === 'local') tzMode.value = s.tzMode   // 时间轴读数时区档位（仅显示）
   // 晨昏线：默认关，存档里显式 true 才开；样式逐字段合并（旧存档缺字段时保留默认值）
   if (typeof s.termOn === 'boolean') termOn.value = s.termOn
@@ -7509,9 +7541,25 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="sec">
-          <div class="sect acc" :class="{ open: isSecOpen('geo-prov', false) }" @click="toggleSec('geo-prov', false)"><Icon :name="isSecOpen('geo-prov', false) ? 'chevron-down' : 'chevron-right'" :size="12" /><span>一级行政区</span></div>
+          <div class="sect acc" :class="{ open: isSecOpen('geo-prov', false) }" @click="toggleSec('geo-prov', false)" title="省 / 州 / 邦一级；数据源为 Natural Earth（中国为 geoBoundaries，含台港澳共 34 个）"><Icon :name="isSecOpen('geo-prov', false) ? 'chevron-down' : 'chevron-right'" :size="12" /><span>一级行政区</span></div>
           <template v-if="isSecOpen('geo-prov', false)">
           <label class="chk2"><input type="checkbox" :checked="showProvinces" @change="toggleProvinces" /><span>显示一级行政区界 / 名称</span></label>
+          <div class="srow"><label>国家</label><input class="ci" v-model="admQuery1" placeholder="搜索国家（中文 / English / ISO3）" /></div>
+          <div class="mlist">
+            <div v-for="c in admHits(1)" :key="c.id" class="mrow rowlk" @click="admToggleCountry(1, c.id)">
+              <input type="checkbox" :checked="admSel1.includes(c.id)" @click.stop="admToggleCountry(1, c.id)" /><span class="mc">{{ c.zh }}</span><span class="cnt2">{{ c.id }}</span>
+            </div>
+          </div>
+          <div v-if="admChips(1).length" class="mlist">
+            <div v-for="o in admChips(1)" :key="o.id" class="mrow"><span class="mc">{{ o.zh }}</span><span class="del" @click="admToggleCountry(1, o.id)"><Icon name="x" :size="11" /></span></div>
+          </div>
+          <div class="srow"><label>名称</label>
+            <span class="seg nseg" role="group" aria-label="一级行政区名称档位">
+              <span class="sg" :class="{ on: admName1 === 'local' }" title="数据源自带的本地名；没有本地名的单元回落英文" @click="admSetName(1, 'local')">本地名</span>
+              <span class="sg" :class="{ on: admName1 === 'en' }" @click="admSetName(1, 'en')">英文</span>
+              <span class="sg" :class="{ on: admName1 === 'off' }" @click="admSetName(1, 'off')">不显示</span>
+            </span>
+          </div>
           <div class="srow"><label>名字号</label><input class="rng" type="range" min="0.3" max="2" step="0.05" :value="provNameSize" @input="setProvNameSize" /><span class="u">{{ provNameSize.toFixed(2) }}</span></div>
           <div class="srow"><label>名颜色</label><input class="clr" type="color" v-model="labelStyle.provColor" @input="applyLabelStyle" /><span class="u">{{ labelStyle.provColor }}</span></div>
           <div class="srow"><label>名透明度</label><input class="rng" type="range" min="0" max="1" step="0.05" v-model.number="labelStyle.provOpacity" @input="applyLabelStyle" /><span class="u">{{ labelStyle.provOpacity.toFixed(2) }}</span></div>
@@ -7522,9 +7570,25 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="sec">
-          <div class="sect acc" :class="{ open: isSecOpen('geo-city', false) }" @click="toggleSec('geo-city', false)"><Icon :name="isSecOpen('geo-city', false) ? 'chevron-down' : 'chevron-right'" :size="12" /><span>二级行政区</span></div>
+          <div class="sect acc" :class="{ open: isSecOpen('geo-city', false) }" @click="toggleSec('geo-city', false)" title="市 / 县一级；数据源为 geoBoundaries gbOpen，逐国许可见「关于」"><Icon :name="isSecOpen('geo-city', false) ? 'chevron-down' : 'chevron-right'" :size="12" /><span>二级行政区</span></div>
           <template v-if="isSecOpen('geo-city', false)">
           <label class="chk2"><input type="checkbox" :checked="showCities" @change="toggleCities" /><span>显示二级行政区界 / 名称</span></label>
+          <div class="srow"><label>国家</label><input class="ci" v-model="admQuery2" placeholder="搜索国家（中文 / English / ISO3）" /></div>
+          <div class="mlist">
+            <div v-for="c in admHits(2)" :key="c.id" class="mrow rowlk" @click="admToggleCountry(2, c.id)">
+              <input type="checkbox" :checked="admSel2.includes(c.id)" @click.stop="admToggleCountry(2, c.id)" /><span class="mc">{{ c.zh }}</span><span class="cnt2">{{ c.id }}</span>
+            </div>
+          </div>
+          <div v-if="admChips(2).length" class="mlist">
+            <div v-for="o in admChips(2)" :key="o.id" class="mrow"><span class="mc">{{ o.zh }}</span><span class="del" @click="admToggleCountry(2, o.id)"><Icon name="x" :size="11" /></span></div>
+          </div>
+          <div class="srow"><label>名称</label>
+            <span class="seg nseg" role="group" aria-label="二级行政区名称档位">
+              <span class="sg" :class="{ on: admName2 === 'local' }" title="数据源自带的本地名；没有本地名的单元回落英文" @click="admSetName(2, 'local')">本地名</span>
+              <span class="sg" :class="{ on: admName2 === 'en' }" @click="admSetName(2, 'en')">英文</span>
+              <span class="sg" :class="{ on: admName2 === 'off' }" @click="admSetName(2, 'off')">不显示</span>
+            </span>
+          </div>
           <div class="srow"><label>名字号</label><input class="rng" type="range" min="0.05" max="1.5" step="0.05" :value="cityNameSize" @input="setCityNameSize" /><span class="u">{{ cityNameSize.toFixed(2) }}</span></div>
           <div class="srow"><label>名颜色</label><input class="clr" type="color" v-model="labelStyle.cityColor" @input="applyLabelStyle" /><span class="u">{{ labelStyle.cityColor }}</span></div>
           <div class="srow"><label>名透明度</label><input class="rng" type="range" min="0" max="1" step="0.05" v-model.number="labelStyle.cityOpacity" @input="applyLabelStyle" /><span class="u">{{ labelStyle.cityOpacity.toFixed(2) }}</span></div>

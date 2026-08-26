@@ -542,10 +542,17 @@ export function createGlobeScene(container, quality = {}) {
     landMesh = buildLandMesh(features); scene.add(landMesh)
   }
 
-  // 中国省界 + 省名（按需由上层注入数据）
+  // 一级行政区界 + 地名（按需由上层注入数据）。★ 可反复调用：多选国家时上层把各国的包并成一份重新喂进来，
+  // 这里整层重建（原来是「建过就不再建」，多选做不了）。
   let provinceBorders = null, provinceLabels = null
+  function disposeProvinces() {
+    disposeFatLine(provinceBorders); provinceBorders = null
+    if (provinceLabels) { scene.remove(provinceLabels); provinceLabels.traverse((c) => { if (c.material) { if (c.material.map) c.material.map.dispose(); c.material.dispose() } }); provinceLabels = null }
+  }
   function setProvinces(data) {
-    if (provinceBorders || !data) return
+    const wasVisible = provinceBorders ? provinceBorders.visible : false
+    disposeProvinces()
+    if (!data) return
     const pos = []
     for (const ring of (data.borders || [])) {
       for (let i = 0; i + 1 < ring.length; i++) {
@@ -555,13 +562,11 @@ export function createGlobeScene(container, quality = {}) {
       }
     }
     provinceBorders = fatSegments(pos, borderCfg.provColor, borderCfg.provWidth, borderCfg.provOpacity, ORDER.adm1)   // 压在覆盖之上、国界与海岸之下
-    provinceBorders.visible = false; scene.add(provinceBorders)
-    provinceLabels = new THREE.Group(); provinceLabels.visible = false
+    provinceBorders.visible = wasVisible; scene.add(provinceBorders)
+    provinceLabels = new THREE.Group(); provinceLabels.visible = wasVisible
     for (const l of (data.labels || [])) {
-      // 香港/澳门很小且相邻，字号最小；直辖市（京津沪渝）面积小，字号也调小
-      const tiny = l.name === '香港' || l.name === '澳门'
-      const muni = l.name === '北京' || l.name === '上海' || l.name === '天津' || l.name === '重庆'
-      const hpx = tiny ? 0.007 : muni ? 0.013 : 0.02
+      // 面积很小的行政区（港澳、直辖市）字号调小，否则名字比辖区还大
+      const hpx = l.px != null ? l.px : 0.02
       const spr = makeLabelSprite(l.name, hpx, '#ffe6a8')
       spr.position.copy(llaToVec(l.lat, l.lon, 25)); spr._dir = spr.position.clone().normalize()
       provinceLabels.add(spr)
@@ -574,8 +579,14 @@ export function createGlobeScene(container, quality = {}) {
 
   // 二级行政区界 + 地名（按需由上层注入数据，格式同一级行政区）。渲染序最低（ORDER.adm2）：压在一级行政区之下。
   let cityBorders = null, cityLabels = null
+  function disposeCities() {
+    disposeFatLine(cityBorders); cityBorders = null
+    if (cityLabels) { scene.remove(cityLabels); cityLabels.traverse((c) => { if (c.material) { if (c.material.map) c.material.map.dispose(); c.material.dispose() } }); cityLabels = null }
+  }
   function setCities(data) {
-    if (cityBorders || !data) return
+    const wasVisible = cityBorders ? cityBorders.visible : false
+    disposeCities()
+    if (!data) return
     const pos = []
     for (const ring of (data.borders || [])) {
       for (let i = 0; i + 1 < ring.length; i++) {
@@ -585,11 +596,11 @@ export function createGlobeScene(container, quality = {}) {
       }
     }
     cityBorders = fatSegments(pos, borderCfg.cityColor, borderCfg.cityWidth, borderCfg.cityOpacity, ORDER.adm2)
-    cityBorders.visible = false; scene.add(cityBorders)
-    cityLabels = new THREE.Group(); cityLabels.visible = false
+    cityBorders.visible = wasVisible; scene.add(cityBorders)
+    cityLabels = new THREE.Group(); cityLabels.visible = wasVisible
     for (const l of (data.labels || [])) {
       // 地级市名密集 → 基准字号偏小（小空间），整体再由 nameScaleCity 缩放；黑边尽量细但保留(2px)
-      const spr = makeLabelSprite(l.name, 0.012, labelCfg.cityColor, 2)
+      const spr = makeLabelSprite(l.name, l.px != null ? l.px : 0.012, labelCfg.cityColor, 2)
       spr.position.copy(llaToVec(l.lat, l.lon, 16)); spr._dir = spr.position.clone().normalize()
       cityLabels.add(spr)
     }

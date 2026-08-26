@@ -1034,23 +1034,15 @@ export function createFlatCoverage(canvas) {
   canvas.addEventListener('contextmenu', onCtx)
   canvas.style.cursor = 'grab'
 
-  // 省界数据解析（与 3D setProvinces 同款格式）
+  // 一级行政区数据（与 3D setProvinces 同款格式）。★ 可反复调用：多选国家时上层并成一份重新喂进来。
   function setProvinces(data) {
-    if (prov || !data) return
-    const labels = (data.labels || []).map((l) => {
-      const tiny = l.name === '香港' || l.name === '澳门'
-      const muni = l.name === '北京' || l.name === '上海' || l.name === '天津' || l.name === '重庆'
-      return { name: l.name, lon: l.lon, lat: l.lat, px: tiny ? 9 : muni ? 12 : 15 }
-    })
-    prov = { borders: data.borders || [], labels }
+    prov = data ? { borders: data.borders || [], labels: (data.labels || []).map((l) => ({ name: l.name, lon: l.lon, lat: l.lat, px: l.px2d != null ? l.px2d : 15 })) } : null
     invalidateStatic(); requestDraw()
   }
 
-  // 地级市界数据解析（与 3D setCities 同款格式）。地名密集 → 基准 px 偏小（小空间）
+  // 二级行政区数据（同上）。地名密集 → 基准 px 偏小（小空间）
   function setCities(data) {
-    if (city || !data) return
-    const labels = (data.labels || []).map((l) => ({ name: l.name, lon: l.lon, lat: l.lat, px: 11 }))
-    city = { borders: data.borders || [], labels }
+    city = data ? { borders: data.borders || [], labels: (data.labels || []).map((l) => ({ name: l.name, lon: l.lon, lat: l.lat, px: l.px2d != null ? l.px2d : 11 })) } : null
     invalidateStatic(); requestDraw()
   }
 

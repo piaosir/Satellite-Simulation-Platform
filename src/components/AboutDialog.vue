@@ -12,6 +12,7 @@ import { ref, computed, onUnmounted } from 'vue'
 import Icon from './Icon.vue'
 import logoUrl from '../assets/logo.png'
 import { activation } from '../stores/activation'
+import ADM_ATTR from '../viz/globe3d/data/adm/ATTRIBUTION.json'
 import { byLang } from '../shared/i18n/lang.js'
 import { getLang, onLangChange } from '../shared/i18n/runtime.js'
 
@@ -20,6 +21,23 @@ const props = defineProps({
   actText: { type: String, default: '' }
 })
 const emit = defineEmits(['close', 'refresh', 'tap'])
+
+// 行政边界数据的逐国署名（geoBoundaries 的许可是逐国给的，CC BY 4.0 / ODbL / PDDL 都有）。
+// 按「许可 → 国家数」归并，点开看逐国清单 —— 逐国 250 多行摊开没人读，归并后一眼看清要署哪几个名。
+const attrOpen = ref(false)
+const attrRows = computed(() => {
+  const by = new Map()
+  for (const [iso, v] of Object.entries(ADM_ATTR || {})) {
+    for (const lvl of ['adm1', 'adm2']) {
+      const a = v[lvl]
+      if (!a) continue
+      const k = a.license + ' | ' + a.source
+      const g = by.get(k) || (by.set(k, { license: a.license, source: a.source, isos: [] }), by.get(k))
+      if (!g.isos.includes(iso)) g.isos.push(iso)
+    }
+  }
+  return [...by.values()].sort((a, b) => b.isos.length - a.isos.length)
+})
 
 // 本组件里少数几处在 JS 里出字的串（授权档位/期限，见下）不经 DOM 呈现层，故得自己盯着语言变：
 // 别的窗口切了语言会经 storage 事件传过来，本窗开着的对话框也要当场跟上。
@@ -110,6 +128,21 @@ async function copyId() {
             <li v-for="m in MODULES" :key="m">{{ m }}</li>
           </ul>
         </section>
+
+        <section>
+          <div class="sec">行政边界数据署名</div>
+          <div class="kv" v-for="(g, i) in attrRows" :key="i">
+            <span class="k">{{ g.license }}</span>
+            <span class="v"><em>{{ g.source }}</em>{{ g.isos.length }} 个国家/地区</span>
+          </div>
+          <div class="kv">
+            <span class="k"></span>
+            <span class="v"><button class="cp" @click="attrOpen = !attrOpen">{{ attrOpen ? '收起逐国清单' : '逐国清单' }}</button></span>
+          </div>
+          <ul v-if="attrOpen" class="mods attr">
+            <li v-for="(g, i) in attrRows" :key="'l' + i">{{ g.license }}：{{ g.isos.join(' ') }}</li>
+          </ul>
+        </section>
       </div>
 
       <footer class="dft">
@@ -144,6 +177,8 @@ async function copyId() {
 .vchip { flex: none; align-self: flex-start; padding: 1px 7px; font-size: 11px; color: var(--text-muted);
   border: 1px solid var(--border-strong); background: var(--bg); }
 
+.attr li { word-break: break-all; }
+.v em { font-style: normal; color: var(--text-muted); margin-right: 8px; }
 .sec { font-size: 11px; letter-spacing: var(--ls-label); color: var(--text-faint); padding-bottom: 5px; margin-bottom: 9px; border-bottom: 1px solid var(--border); }
 /* 键值两栏共用一根 76px 栏名轴（英文「Activated」不折行） */
 .kv { display: grid; grid-template-columns: 76px 1fr; column-gap: 14px; row-gap: 7px; align-items: baseline; }

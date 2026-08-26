@@ -196,6 +196,10 @@ contextBridge.exposeInMainWorld('api', {
   // 批量落盘到一个目录（mask 分文件 + 参数存档）
   exportFiles: (payload) => ipcRenderer.invoke('file:saveMany', payload),
   pdfFonts: () => ipcRenderer.invoke('font:pdf'),
+  adm: {
+    // 行政边界包（resources/adm）：lvl=1|2、iso=ISO3；没有该国的包返回 null
+    pack: (lvl, iso) => ipcRenderer.invoke('adm:pack', lvl, iso)
+  },
   omm: {
     load: (group, online) => ipcRenderer.invoke('omm:load', group, online),
     positions: (group, iso) => ipcRenderer.invoke('omm:positions', group, iso),

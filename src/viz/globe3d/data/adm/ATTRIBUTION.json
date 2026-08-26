@@ -1,0 +1,1766 @@
+{
+ "CHN": {
+  "adm1": {
+   "license": "Public Domain",
+   "source": "geoBoundaries, Wikimedia Commons",
+   "url": "https://github.com/wmgeolab/geoBoundaries/raw/4004e96/releaseData/gbOpen/CHN/ADM1/geoBoundaries-CHN-ADM1-all.zip",
+   "year": "2019"
+  },
+  "adm2": {
+   "license": "Open Data Commons Public Domain Dedication and License (PDDL) v1.0",
+   "source": "National Administration of Surveying, Mapping and Geoinformation of China, Revolutionary GIS",
+   "url": "https://github.com/wmgeolab/geoBoundaries/raw/4004e96/releaseData/gbOpen/CHN/ADM2/geoBoundaries-CHN-ADM2-all.zip",
+   "year": "2017"
+  }
+ },
+ "ABW": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "AFG": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "AGO": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "AIA": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "ALB": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "ALD": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "AND": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "ARE": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "ARG": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "ARM": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "ASM": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "ATA": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "ATC": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "ATF": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "ATG": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "AUS": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "AUT": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "AZE": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "BDI": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "BEL": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "BEN": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "BFA": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "BGD": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "BGR": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "BHR": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "BHS": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "BIH": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "BLM": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "BLR": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "BLZ": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "BMU": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "BOL": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "BRA": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "BRB": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "BRN": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "BTN": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "BWA": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "CAF": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "CAN": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "CHE": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "CHL": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "CIV": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "CLP": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "CMR": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "COD": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "COG": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "COK": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "COL": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "COM": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "CPV": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "CRI": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "CSI": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "CUB": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "CUW": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "CYM": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "CYN": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "CYP": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "CZE": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "DEU": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "DJI": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "DMA": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "DNK": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "DOM": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "DZA": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "ECU": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "EGY": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "ERI": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "ESB": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "ESP": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "EST": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "ETH": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "FIN": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "FJI": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "FLK": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "FRA": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "FRO": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "FSM": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "GAB": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "GBR": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "GEO": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "GGY": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "GHA": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "GIB": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "GIN": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "GMB": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "GNB": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "GNQ": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "GRC": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "GRD": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "GRL": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "GTM": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "GUM": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "GUY": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "HKG": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "HMD": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "HND": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "HRV": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "HTI": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "HUN": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "IDN": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "IMN": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "IND": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "IOA": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "IOT": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "IRL": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "IRN": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "IRQ": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "ISL": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "ISR": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "ITA": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "JAM": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "JEY": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "JOR": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "JPN": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "KAB": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "KAS": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "KAZ": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "KEN": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "KGZ": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "KHM": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "KIR": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "KNA": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "KOR": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "KOS": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "KWT": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "LAO": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "LBN": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "LBR": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "LBY": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "LCA": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "LIE": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "LKA": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "LSO": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "LTU": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "LUX": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "LVA": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "MAC": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "MAF": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "MAR": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "MCO": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "MDA": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "MDG": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "MDV": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "MEX": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "MHL": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "MKD": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "MLI": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "MLT": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "MMR": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "MNE": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "MNG": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "MNP": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "MOZ": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "MRT": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "MSR": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "MUS": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "MWI": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "MYS": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "NAM": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "NCL": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "NER": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "NFK": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "NGA": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "NIC": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "NIU": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "NLD": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "NOR": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "NPL": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "NRU": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "NZL": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "OMN": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "PAK": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "PAN": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "PCN": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "PER": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "PGA": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "PHL": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "PLW": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "PNG": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "POL": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "PRI": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "PRK": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "PRT": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "PRY": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "PSX": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "PYF": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "QAT": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "ROU": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "RUS": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "RWA": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "SAH": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "SAU": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "SDN": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "SDS": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "SEN": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "SGP": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "SGS": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "SHN": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "SLB": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "SLE": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "SLV": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "SMR": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "SOL": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "SOM": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "SPM": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "SRB": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "STP": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "SUR": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "SVK": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "SVN": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "SWE": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "SWZ": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "SXM": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "SYC": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "SYR": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "TCA": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "TCD": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "TGO": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "THA": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "TJK": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "TKM": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "TLS": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "TON": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "TTO": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "TUN": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "TUR": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "TUV": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "TWN": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "TZA": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "UGA": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "UKR": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "UMI": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "URY": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "USA": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "USG": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "UZB": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "VAT": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "VCT": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "VEN": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "VGB": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "VIR": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "VNM": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "VUT": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "WLF": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "WSB": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "WSM": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "YEM": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "ZAF": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "ZMB": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ },
+ "ZWE": {
+  "adm1": {
+   "license": "Public domain",
+   "source": "Natural Earth 10m Admin 1 – States, Provinces",
+   "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/"
+  }
+ }
+}

@@ -7,6 +7,7 @@ const path = require('path')
 const createOmm = require('../services/omm')
 const createCustomSats = require('../services/customSats')
 const createInterference = require('../services/interference')
+const admBoundaries = require('../services/admBoundaries')
 
 // 注册所有 IPC 处理器。core 为返回引擎实例的函数（延迟解析）。
 function register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget, openSunOutage, grd, confirmCloseLinkBudget, openNgso, confirmCloseNgso, openRegen, confirmCloseRegen, openE2e, confirmCloseE2e, openRain, confirmCloseRain, openCi, openPfd, freqPlan, openFreqPlan, notifyFreqPlan, activation }) {
@@ -51,6 +52,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     'freqPlan:list', 'freqPlan:get',
     'store:history:list', 'store:config:list', 'store:library:get',
     'env:defs', 'env:field',
+    'adm:pack',
     'link:cities', 'link:searchCities', 'link:baseband', 'link:outputDefs',
     // 分享的收件侧：收/删/探视是别人推过来的东西，不算本机产出；发件侧（send/boxSend/
     // gxtSnapshot/boxRevoke）不在表里，未激活不许往外发
@@ -773,6 +775,8 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     if (rejected.length) console.warn('[ipc] store:settings:set 拒绝了不可由渲染端写入的键：', rejected.join(', '))
     return storage.setSettings(patch)
   })
+  // 行政边界包（resources/adm，逐国懒加载）：只读查询
+  ipcMain.handle('adm:pack', (_e, lvl, iso) => admBoundaries.pack(lvl, iso))
   ipcMain.handle('store:library:get', (_e, ns) => storage.getLibrary(ns))
   ipcMain.handle('store:library:save', (_e, { ns, data }) => storage.saveLibrary(ns, data))
 
