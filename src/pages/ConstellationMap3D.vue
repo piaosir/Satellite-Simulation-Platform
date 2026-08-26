@@ -30,6 +30,9 @@ import { countryAt, currentLandColor, countryList } from '../viz/globe3d/country
 import { BORDER_DEF } from '../viz/geo/borderStyle.js'
 import { onPovChange, getPov } from '../viz/geo/povResolver.js'
 import { admIndex, loadPack, mergePacks } from '../viz/geo/admPacks.js'
+import { mapCrs, setMapCrs, MAP_CRS_DEF } from '../stores/mapCrs.js'
+import { DATUMS } from '../viz/geo/datum.js'
+import { FORMATS } from '../viz/geo/coordFormat.js'
 import { useGrdCoverage } from '../viz/grd/useGrdCoverage.js'
 import { useBeamSynth } from '../viz/grd/useBeamSynth.js'
 import { useVisibility, orbitClass } from '../viz/vis/useVisibility.js'
@@ -1882,6 +1885,7 @@ async function refreshPositions() {
   else followCursor()                                                  // 播放推进跑出可见窗口 → 平移尺子接回来
   // 晨昏线随时间轴/实时移动。放在早退之前：一颗星都不显示时晨昏线照样该走（它只跟时刻有关，与星无关）。
   if (termOn.value) applyTerminator()
+  applyFrame()   // 惯性档：整幅图随 GMST 走（地固档恒为 0，代价可忽略）
   // renderEntries 已含可见自定义星座（即使内置组选「无」也可能非空），故只按空判断，不再短路 'none'
   if (!renderEntries.length) {
     scene.setSatellites([]); shownCount.value = 0; _tickEcefN = 0
@@ -3207,6 +3211,29 @@ function applyGoto() {
   clockSetTime(t); baseTime.value = clock.tMs
   gotoOpen.value = false
 }
+// ===================== 坐标系（大地基准 / 坐标格式 / 参考系 / 切口经度） =====================
+// 前两项只改读数与输入的呈现，后两项改画面：参考系换到惯性系后整幅图按 +GMST 平移/旋转，
+// 切口经度决定平面图从哪条经线切开。四项都不碰任何计算与导出。
+function setCrsDatum(v) { setMapCrs({ datum: v }) }
+function setCrsFmt(v) { setMapCrs({ fmt: v }) }
+function setCrsFrame(v) { setMapCrs({ frame: v }); applyFrame() }
+function setCrsLon0(v) {
+  const n = Number(v)
+  if (!Number.isFinite(n)) return
+  setMapCrs({ lon0: n })
+  if (flat) flat.setLon0(mapCrs.lon0)
+}
+function resetCrs() { setMapCrs(MAP_CRS_DEF); if (flat) flat.setLon0(mapCrs.lon0); applyFrame() }
+// 参考系偏移：地固档 0；惯性档取当前时刻的 GMST（与星位、晨昏线同一个自转相位来源）。
+// 每拍随时钟推进调一次 —— 惯性档下地球会自转着从画面下面滑过。
+function applyFrame() {
+  const deg = mapCrs.frame === 'eci' ? sat.gstime(calcAt()) * 180 / Math.PI : 0
+  if (scene) scene.setFrameOffset(deg)
+  if (flat) flat.setFrameOffset(deg)
+}
+// 画面中心经度（读数：切口 + 180°，折算成 ±180）
+const crsCenterLon = computed(() => { const c = ((mapCrs.lon0 + 180 + 180) % 360 + 360) % 360 - 180; return (Math.abs(c).toFixed(1)) + '°' + (c >= 0 ? 'E' : 'W') })
+
 function toggleRotate() { autoRotate.value = !autoRotate.value; scene && scene.setAutoRotate(autoRotate.value) }
 function setNameMode(m) { nameMode.value = m; scene && scene.setLabelMode(m); if (flat) flat.setNameMode(m) }
 // 省界/市界：按开关加载数据（一次）并套用可见性。开关切换与「默认开启的无存档首启」共用同一路径
@@ -5617,7 +5644,7 @@ function deserializeCov(items) {
 }
 function snapshot() {
   return {
-    nameMode: nameMode.value, countryName: countryNameSize.value, provName: provNameSize.value, cityName: cityNameSize.value, showProvinces: showProvinces.value, showCities: showCities.value, admSel1: [...admSel1.value], admSel2: [...admSel2.value], admName1: admName1.value, admName2: admName2.value, borderStyle: { ...borderStyle }, labelStyle: { ...labelStyle }, termOn: termOn.value, termNight: termNight.value, termLine: termLine.value, termStyle: { ...termStyle }, tzMode: tzMode.value, oceanColor: oceanColor.value, landScheme: landScheme.value, landOverrides: { ...landOverrides }, groupColors: { ...groupColors }, autoRotate: autoRotate.value, autoRotateSpeed: viewPrefs.autoRotateSpeed, live: live.value, clock: { stepSec: clock.stepSec, speed: clock.speed }, beamLock: beamLock.value, fpMode: fpMode.value, beam: beam.value, elevMin: elevMin.value, focusStyle: { ...focusStyle }, windowMin: windowMin.value,
+    nameMode: nameMode.value, countryName: countryNameSize.value, provName: provNameSize.value, cityName: cityNameSize.value, showProvinces: showProvinces.value, showCities: showCities.value, admSel1: [...admSel1.value], admSel2: [...admSel2.value], admName1: admName1.value, admName2: admName2.value, borderStyle: { ...borderStyle }, labelStyle: { ...labelStyle }, termOn: termOn.value, termNight: termNight.value, termLine: termLine.value, termStyle: { ...termStyle }, tzMode: tzMode.value, crs: { ...mapCrs }, oceanColor: oceanColor.value, landScheme: landScheme.value, landOverrides: { ...landOverrides }, groupColors: { ...groupColors }, autoRotate: autoRotate.value, autoRotateSpeed: viewPrefs.autoRotateSpeed, live: live.value, clock: { stepSec: clock.stepSec, speed: clock.speed }, beamLock: beamLock.value, fpMode: fpMode.value, beam: beam.value, elevMin: elevMin.value, focusStyle: { ...focusStyle }, windowMin: windowMin.value,
     mkPt: markPtFont.value, mkStIcon: stIconSize.value, mkStFont: stFontSize.value, mkPtDot: markPtDot.value, mkTrajDot: trajDotSize.value,
     mkPtShow: showPtLabel.value, mkStShow: showStName.value,
     mkPtLayer: showPtLayer.value, mkStLayer: showStLayer.value, mkTrajLayer: showTrajLayer.value,
@@ -5714,6 +5741,7 @@ async function restoreSettings() {
   if (Array.isArray(s.admSel2)) admSel2.value = s.admSel2.filter((x) => typeof x === 'string')
   for (const [k, r] of [['admName1', admName1], ['admName2', admName2]]) if (s[k] === 'local' || s[k] === 'en' || s[k] === 'off') r.value = s[k]
   if (s.tzMode === 'utc' || s.tzMode === 'local') tzMode.value = s.tzMode   // 时间轴读数时区档位（仅显示）
+  if (s.crs && typeof s.crs === 'object') setMapCrs(s.crs)   // 坐标系四档（只改呈现，见 stores/mapCrs）
   // 晨昏线：默认关，存档里显式 true 才开；样式逐字段合并（旧存档缺字段时保留默认值）
   if (typeof s.termOn === 'boolean') termOn.value = s.termOn
   if (typeof s.termNight === 'boolean') termNight.value = s.termNight
@@ -7595,6 +7623,30 @@ onBeforeUnmount(() => {
           <div class="srow"><label>界线颜色</label><input class="clr" type="color" v-model="borderStyle.cityColor" @input="applyBorderStyle" /><span class="u">{{ borderStyle.cityColor }}</span></div>
           <div class="srow"><label>界线线粗</label><input class="rng" type="range" min="0.1" max="8" step="0.1" v-model.number="borderStyle.cityWidth" @input="applyBorderStyle" /><span class="u">{{ borderStyle.cityWidth.toFixed(2) }}</span></div>
           <div class="srow"><label>界线透明度</label><input class="rng" type="range" min="0" max="1" step="0.05" v-model.number="borderStyle.cityOpacity" @input="applyBorderStyle" /><span class="u">{{ borderStyle.cityOpacity.toFixed(2) }}</span></div>
+          </template>
+        </div>
+
+        <div class="sec">
+          <div class="sect acc" :class="{ open: isSecOpen('geo-crs', false) }" @click="toggleSec('geo-crs', false)"><Icon :name="isSecOpen('geo-crs', false) ? 'chevron-down' : 'chevron-right'" :size="12" /><span>坐标系</span><span class="lnk" title="本节恢复出厂设置" @click.stop="resetCrs">默认</span></div>
+          <template v-if="isSecOpen('geo-crs', false)">
+          <div class="srow"><label>大地基准</label>
+            <select :value="mapCrs.datum" title="只作用于读数与输入。CGCS2000 与 WGS-84 的差在厘米量级，低于任何一处显示精度，故不做几何变换、只标口径；GCJ-02 是真实非线性偏移，仅中国境内生效。任何存储、计算与导出都不受影响" @change="setCrsDatum($event.target.value)">
+              <option v-for="d in DATUMS" :key="d.k" :value="d.k">{{ d.zh }}</option>
+            </select>
+          </div>
+          <div class="srow"><label>坐标格式</label>
+            <select :value="mapCrs.fmt" title="只作用于地图内的坐标读数与输入框；内部照存十进制度" @change="setCrsFmt($event.target.value)">
+              <option v-for="f in FORMATS" :key="f.k" :value="f.k">{{ f.zh }}</option>
+            </select>
+          </div>
+          <div class="srow"><label>参考系</label>
+            <span class="seg nseg" role="group" aria-label="参考系">
+              <span class="sg" :class="{ on: mapCrs.frame === 'ecef' }" title="地固系 ECEF：地球不动、卫星在动" @click="setCrsFrame('ecef')">地固 ECEF</span>
+              <span class="sg" :class="{ on: mapCrs.frame === 'eci' }" title="惯性系 ECI/J2000：轨道面不动、地球自转着从下面滑过。经纬度读数与导出仍按地固出" @click="setCrsFrame('eci')">惯性 ECI</span>
+            </span>
+          </div>
+          <div class="srow"><label>地图切口经度</label><input class="rng" type="range" min="-180" max="180" step="0.5" :value="mapCrs.lon0" @input="setCrsLon0($event.target.value)" /><input class="ci cov-b" type="number" min="-180" max="180" step="0.5" :value="mapCrs.lon0" @change="setCrsLon0($event.target.value)" /></div>
+          <div class="srow"><label></label><span class="u">画面中心 {{ crsCenterLon }}</span></div>
           </template>
         </div>
 

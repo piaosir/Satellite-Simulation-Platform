@@ -1813,11 +1813,26 @@ export function createGlobeScene(container, quality = {}) {
   }
 
   // 把视角转到某经纬度正对（覆盖加载后定位用）
-  function faceLonLat(lon, lat) { faceTo(llaToVec(lat || 0, lon, 0)) }
+  function faceLonLat(lon, lat) { faceTo(llaToVec(lat || 0, lon, 0).applyAxisAngle(FRAME_AXIS, frameRot)) }
+
+  // 参考系：'ecef' 地固（缺省）| 'eci' 惯性。惯性档下把【整个场景】绕极轴转 +GMST ——
+  // 底图与卫星都是按地固坐标建的，统一转同一个角度即等于换到惯性系（点的角位置变成「经度 + GMST」
+  // 也就是赤经），于是轨道面在画面上不再随地球转、地球自转着从下面滑过。
+  // ★ 只转显示。任何几何、任何读数口径都不动 —— 拾取时把这个角减回去即可（见 vecToLatLon）。
+  const FRAME_AXIS = new THREE.Vector3(0, 1, 0)
+  let frameRot = 0
+  function setFrameOffset(deg) {
+    const v = (Number.isFinite(deg) ? deg : 0) * Math.PI / 180
+    if (Math.abs(v - frameRot) < 1e-12) return
+    frameRot = v
+    scene.rotation.y = v
+  }
 
   // ===================== 鼠标拾取经纬度 / 标记 / 轨迹 =====================
-  // 渲染坐标(半径1) -> 经纬度（llaToVec 的逆）
-  function vecToLatLon(p) {
+  // 渲染坐标(半径1) -> 经纬度（llaToVec 的逆）。惯性档下先把参考系旋转减回去，读数恒为地固经度。
+  const _vll = new THREE.Vector3()
+  function vecToLatLon(p0) {
+    const p = frameRot ? _vll.copy(p0).applyAxisAngle(FRAME_AXIS, -frameRot) : p0
     const lat = 90 - Math.acos(Math.max(-1, Math.min(1, p.y))) * 180 / Math.PI
     let lon = Math.atan2(p.z, -p.x) * 180 / Math.PI - 180
     lon = ((lon % 360) + 540) % 360 - 180
@@ -2390,7 +2405,7 @@ export function createGlobeScene(container, quality = {}) {
     setTerminator, clearTerminator,
     setEnvRaster, setEnvAlpha, setEnvContours, clearEnv,
     setSatLayer, clearSatLayer, faceLonLat, setProvinces, setProvincesVisible, setCities, setCitiesVisible, setBorderStyle, setNameScale, setLabelStyle, setOceanColor, setLandColors,
-    setPixelRatio, setRenderFps, setSphereDetail, setMapDetail, holdFrames,
+    setPixelRatio, setRenderFps, setSphereDetail, setMapDetail, setFrameOffset, holdFrames,
     setMarkers, setTrajectories, setFocusSatLLA, setFocusStyle, setSatPointsVisible, setOnHover, setOnRightClick, setBeamDragMode, setOnBeamDrag, setBeamDragPivot, setLabelDragMode, setOnLabelDrag, setPolyDrawMode, setOnPolyDraw, setPlaceMode, setOnPlace,
     faceTo, rotateBy, setAutoRotate, setAutoRotateSpeed, setOnAutoRotateOff, resize, pause, resume, snapshot, destroy,
     // 缩放进度条接口：getZoom 读当前进度、setZoom 设到进度 t、setOnZoom 注册滚轮缩放回填回调

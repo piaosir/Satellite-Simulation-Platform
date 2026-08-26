@@ -2,6 +2,7 @@
 import { computed, ref, watch, nextTick, onMounted, onBeforeUnmount, defineAsyncComponent } from 'vue'
 import { useNavStore } from './stores/nav'
 import { cursor } from './stores/cursor'
+import { mapCrs, fmtLL, datumTag } from './stores/mapCrs.js'
 import { view } from './stores/view'
 import { covNav } from './stores/coveragePanels'
 import { zoom } from './stores/zoom'
@@ -156,8 +157,13 @@ const currentLabel = computed(
   () => nav.pages.find((p) => p.key === nav.current)?.label || ''
 )
 
-// 经度在前、纬度在后，保留两位小数
-const fmtCoord = (ll) => `${Math.abs(ll.lon).toFixed(2)}°${ll.lon >= 0 ? 'E' : 'W'}  ${Math.abs(ll.lat).toFixed(2)}°${ll.lat >= 0 ? 'N' : 'S'}`
+// 光标经纬度读数：档位（大地基准 / 坐标格式）由星座地图页的「坐标系」分节定，见 stores/mapCrs。
+// 内部恒为 WGS-84 十进制度，这里只做呈现层换算。经度在前、纬度在后（十进制度档）。
+const fmtCoord = (ll) => {
+  const s = fmtLL(ll.lon, ll.lat, 2)
+  if (mapCrs.fmt !== 'deg') return s
+  return `${Math.abs(ll.lon).toFixed(2)}°${ll.lon >= 0 ? 'E' : 'W'}  ${Math.abs(ll.lat).toFixed(2)}°${ll.lat >= 0 ? 'N' : 'S'}`
+}
 
 // 底部状态栏缩放进度条：拖动/按钮 → 设回当前活动地图（zoom.apply）；地图滚轮缩放回填 zoom.value。
 const onZoomInput = (e) => { const t = Number(e.target.value); if (zoom.apply) zoom.apply(t) }
@@ -449,6 +455,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
         <span class="cell coord">
           <Icon class="cur" name="cursor-arrow" :size="13" />
           <span class="cval">{{ cursor.ll ? fmtCoord(cursor.ll) : '——°  ——°' }}</span>
+          <span v-if="cursor.ll && datumTag()" class="eunit">{{ datumTag() }}</span>
         </span>
       </span>
     </footer>
