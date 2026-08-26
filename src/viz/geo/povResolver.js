@@ -21,12 +21,11 @@
 import { feature } from 'topojson-client'
 import topo10 from '../globe3d/data/basemap-10m.json' with { type: 'json' }
 import NAMES from '../globe3d/data/country-names-zh.json' with { type: 'json' }
-import { FROZEN } from './frozen.js'
-import CN from './povs/CN.json' with { type: 'json' }
+import { FROZEN, expandOverrides } from './frozen.js'
+import { POV_FILES, DEFAULT_POV, normMapPov, povTableOf } from './povList.js'
+import { onMapPov, bootMapPov } from '../../stores/mapPov.js'
 
-// 视角文件表：新增一套只往这里加一条 import + 一条登记，解算器本身不动
-const POV_FILES = { CN }
-export const DEFAULT_POV = 'CN'
+export { DEFAULT_POV }
 
 // 中文名别名（与换源前一致）：这三个的官方长名不适合上图
 const ZH_ALIAS = { 156: '中国', 408: '朝鲜', 410: '韩国' }
@@ -42,8 +41,19 @@ function emit() { for (const fn of [...listeners]) { try { fn() } catch (e) { co
 export function onPovChange(fn) { listeners.add(fn); return () => listeners.delete(fn) }
 export function getPov() { return { id: state.id, overrides: { ...state.overrides }, layers: { ...state.layers } } }
 export function povList() { return Object.values(POV_FILES).map((p) => ({ id: p.id, zh: p.name_zh, en: p.name_en })) }
+// 生效视角 id：'custom'（以及任何不认识的 id）算作默认视角 —— 与 povTableOf 同一口径，
+// 否则自带线的 wv 门控会把「只在中国视角出现」的线在自定义视角下漏掉（南海十段线踩过）。
+const effId = () => (POV_FILES[state.id] ? state.id : DEFAULT_POV)
 
-// 设置视角。id 不在 POV_FILES 里（如 'custom'）＝不套任何视角表，只在 own0 上叠用户覆写。
+// 设置页那一坨（{ id, overrides(分组键), layers }）→ 解算器状态。分组键在这里展开成逐单元覆写，
+// FROZEN 的键在 expandOverrides 与 setPov 两处都会被剔掉（红线不给任何旁路）。
+export function applyMapPov(cfg) {
+  const c = normMapPov(cfg)
+  setPov(c.id, expandOverrides(c.overrides), c.layers)
+  return c
+}
+
+// 设置视角。id 不在 POV_FILES 里（如 'custom'）＝以中国视角的归属表为底，只在其上叠用户覆写（见 povTableOf）。
 export function setPov(id, overrides, layers) {
   let dirty = false
   if (typeof id === 'string' && id !== state.id) { state.id = id; dirty = true }
@@ -90,18 +100,26 @@ export async function ensureDetail(detail) {
 }
 const B = (d) => bundles[d] || bundles['10m']
 
+// 订阅轻量状态源：设置页改视角 → stores/mapPov 广播 → 这里重算 → 两个渲染器整份重建。
+// bootMapPov 把「设置」里存的视角读进来，只读一次；没有 window.api 时静默保持默认。
+// 放在解算器里而不是某个页面里：底图由谁先画都一样生效，且只有真要画底图的模块才拉到这条链。
+onMapPov((c) => applyMapPov(c))
+bootMapPov()
+
 
 // ---------- 归属 ----------
 function rawOwner(u, b) {
   if (FROZEN[u]) return FROZEN[u]                    // ★ 红线：最外层，谁都盖不过
   if (state.overrides[u]) return state.overrides[u]
-  const pov = POV_FILES[state.id]
+  const pov = povTableOf(state.id)
   const v = pov && pov.own ? pov.own[u] : null
   if (v) return v
   const f = b.byU.get(u)
   return f ? f.properties.own0 : null
 }
-// 'none' = 这块争议叠加不显示 → 归属落到宿主（宿主还 'none' 就继续往上，最多 8 层）
+// 'none' = 这块争议叠加不显示 → 归属落到宿主（宿主还 'none' 就继续往上，最多 8 层）。
+// 没有宿主的单元（基础分区里的国家、以及不在 map_units 里的礁岛）落回 own0 —— 它本来就不是叠加，
+// 「不显示」对它没有意义，但绝不能返回 null：那会让它的国界退化成海岸线。
 export function ownerOf(u, detail) {
   const b = B(detail)
   let cur = u
@@ -109,7 +127,8 @@ export function ownerOf(u, detail) {
     const o = rawOwner(cur, b)
     if (o !== 'none') return o || null
     const f = b.byU.get(cur)
-    if (!f || !f.properties.host) return null
+    if (!f) return null
+    if (!f.properties.host) return f.properties.own0 || null
     cur = f.properties.host
   }
   return null
@@ -178,11 +197,11 @@ export function resolvedLines(detail) {
     if (cls !== 'coast' && b.lineCls[k]) cls = b.lineCls[k]
     out[cls].push(b.arcs[+k])
   }
-  const pov = POV_FILES[state.id]
+  const pov = povTableOf(state.id)
   const claimOn = new Set((pov && pov.lines && pov.lines.claim) || [])
   for (const f of b.lines) {
     const p = f.properties
-    if (Array.isArray(p.wv) && !p.wv.includes(state.id)) continue          // 适用视角门控
+    if (Array.isArray(p.wv) && !p.wv.includes(effId())) continue           // 适用视角门控
     if (p.cls === 'claim' && !(p.id && claimOn.has(p.id))) continue        // 主张线：本视角声明了才画
     const g = f.geometry
     const cs = g.type === 'LineString' ? [g.coordinates] : g.coordinates
@@ -250,7 +269,7 @@ function zhOf(n3) {
 // 两个渲染器各自把 ext 映射成自己的字号（3D 用世界高度、2D 用像素），映射式子与换源前一字不改。
 export function labelSet(lang, detail) {
   const b = B(detail)
-  const pov = POV_FILES[state.id]
+  const pov = povTableOf(state.id)
   const hide = new Set((pov && pov.labels && pov.labels.hide) || [])
   const names = (pov && pov.names) || {}
   const acc = new Map()

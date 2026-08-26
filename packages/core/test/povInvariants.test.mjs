@@ -17,6 +17,7 @@ import { FROZEN, CUSTOMIZABLE_DISPUTES, expandOverrides } from '../../../src/viz
 import * as R from '../../../src/viz/geo/povResolver.js'
 import { BORDER_DEF, DASH_PX, DASH_SCALE, BORDER_CLASSES, BORDER_DRAW, ORDER, CFG_KEY, fadeFactor, admFade } from '../../../src/viz/geo/borderStyle.js'
 import { migrateLandOverrides } from '../../../src/viz/landPalette.js'
+import { POV_META, CUSTOM_POV, MAP_POV_DEF, normMapPov, povTableOf } from '../../../src/viz/geo/povList.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(HERE, '..', '..', '..')
@@ -174,6 +175,43 @@ ok('⑫ 数字码→ISO3：156→CHN · 840→USA · 010→ATA · 304→GRL', mi
 ok('⑫b 台湾/港澳的老键一律折进 CHN（它们的 owner 由 frozen.js 恒定）', !('TWN' in mig) && !('HKG' in mig) && mig.CHN === '#654321', 'CHN=' + mig.CHN)
 ok('⑫c 已是 ISO3 的键原样穿过（幂等）', JSON.stringify(migrateLandOverrides(mig)) === JSON.stringify(mig))
 ok('⑫d 无法映射的键与非法色一律丢弃', !('999' in mig) && !('bad' in mig) && Object.values(mig).every((v) => /^#[0-9a-fA-F]{6}$/.test(v)))
+
+// ---------- ⑬ 设置里的「地图视角」（{ id, overrides(分组键), layers }）----------
+ok('⑬ 下拉含六套预设 + 自定义', POV_META.length === povIds.length + 1 && POV_META[POV_META.length - 1].id === CUSTOM_POV,
+  POV_META.map((x) => x.zh).join(' '))
+const n1 = normMapPov({ id: '不存在的', overrides: { crimea: 'RUS', 坏的: 1 }, layers: { claim: false, loc: 'x' } })
+ok('⑬b normMapPov 规整：非法 id 回落默认、非字符串覆写丢弃、非布尔开关丢弃',
+  n1.id === R.DEFAULT_POV && n1.overrides.crimea === 'RUS' && !('坏的' in n1.overrides) && n1.layers.claim === false && n1.layers.loc === true,
+  JSON.stringify(n1))
+ok('⑬c normMapPov 对空值给出出厂档', JSON.stringify(normMapPov(null)) === JSON.stringify(MAP_POV_DEF))
+
+// ★ 'custom' 以中国视角为底：不这么做的话切到「自定义」会连南海十段线一起没了
+ok('⑬d 自定义视角继承默认视角的归属表', povTableOf(CUSTOM_POV) === povTableOf(R.DEFAULT_POV))
+R.applyMapPov({ id: CUSTOM_POV, overrides: {}, layers: MAP_POV_DEF.layers })
+ok('⑬e 自定义视角下南海十段线照画', R.resolvedLines().claim.length > 0, R.resolvedLines().claim.length + ' 段')
+
+// 端到端：设置里的分组键 → 展开成逐单元覆写 → 归属真的变了；台湾仍恒属中国
+R.applyMapPov({ id: CUSTOM_POV, overrides: { crimea: 'RUS', 'aksai-chin': 'IND', kosovo: 'none' }, layers: MAP_POV_DEF.layers })
+ok('⑬f 分组覆写端到端生效', R.ownerOf('UA-CR') === 'RUS' && R.ownerOf('CN-AKS') === 'IND', 'UA-CR=' + R.ownerOf('UA-CR') + ' CN-AKS=' + R.ownerOf('CN-AKS'))
+ok('⑬g 覆写成「不显示」时归属落到宿主 / 无宿主则回 own0，绝不为 null',
+  R.ownerOf('KOS') && R.ownerOf('KOS') !== 'none', 'KOS=' + R.ownerOf('KOS'))
+ok('⑬h 任何覆写下台湾/港澳仍属中国', FKEYS.every((f) => R.ownerOf(f) === 'CHN'))
+R.applyMapPov(null)
+ok('⑬i applyMapPov(null) 回到默认视角', R.getPov().id === R.DEFAULT_POV && Object.keys(R.getPov().overrides).length === 0)
+
+// ---------- ⑭ 六套视角确实互不相同（视角表不是摆设）----------
+const sigOf = () => { const L = R.resolvedLines(); return L.admin0.length + '/' + L.indefinite.length + '/' + L.claim.length }
+const sigs = {}
+for (const id of povIds) { R.setPov(id, {}); sigs[id] = sigOf() }
+R.setPov(R.DEFAULT_POV, {})
+ok('⑭ 六套视角解算结果互不相同', new Set(Object.values(sigs)).size >= 4, Object.entries(sigs).map(([k, v]) => k + ' ' + v).join(' · '))
+// 中国视角：藏南与阿克赛钦归中国；ISO 中立视角：两者都不归中国
+R.setPov('CN', {}); const cn = [R.ownerOf('IN-ARP'), R.ownerOf('CN-AKS')].join(',')
+R.setPov('ISO', {}); const iso = [R.ownerOf('IN-ARP'), R.ownerOf('CN-AKS')].join(',')
+R.setPov('IN', {}); const ind = [R.ownerOf('IN-ARP'), R.ownerOf('CN-AKS')].join(',')
+R.setPov(R.DEFAULT_POV, {})
+ok('⑭b 中国视角下藏南/阿克赛钦归中国，ISO 与印度视角另有归属', cn === 'CHN,CHN' && iso !== cn && ind !== cn,
+  'CN=' + cn + ' · ISO=' + iso + ' · IN=' + ind)
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed')
 if (fail) process.exit(1)

@@ -1,0 +1,41 @@
+{
+  "id": "RU",
+  "name_zh": "俄罗斯视角",
+  "name_en": "Russia",
+  "own": {
+    "CYN": "CYP",
+    "SOL": "SOM",
+    "KOS": "SRB",
+    "KAS": "IND",
+    "IN-CN-TRP": "CHN",
+    "IN-CN-BRH": "CHN",
+    "IN-CN-DMC": "CHN",
+    "IN-CN-SMD": "CHN",
+    "PK-GB": "IND",
+    "IL-GOL": "SYR",
+    "KE-ILEMI": "SDS",
+    "MA-EH": "SAH",
+    "AZ-ART": "disputed",
+    "UA-DPR": "disputed",
+    "UA-LPR": "disputed",
+    "USG": "CUB",
+    "CNM": "CYP",
+    "KAB": "KAZ",
+    "PFA": "PFA",
+    "BJN": "COL",
+    "SER": "COL",
+    "NE-B58": "LBN",
+    "SS-ILEMI": "KEN",
+    "NE-B92": "disputed",
+    "PK-AZK": "IND",
+    "NE-B21": "DEN",
+    "KR-DOK": "KOD"
+  },
+  "lines": {
+    "claim": []
+  },
+  "names": {},
+  "labels": {
+    "hide": []
+  }
+}

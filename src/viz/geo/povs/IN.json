@@ -1,0 +1,37 @@
+{
+  "id": "IN",
+  "name_zh": "印度视角",
+  "name_en": "India",
+  "own": {
+    "SAH": "MAR",
+    "CYN": "CYP",
+    "SOL": "SOM",
+    "KOS": "SRB",
+    "KAS": "IND",
+    "CN-SHK": "IND",
+    "CN-AKS": "IND",
+    "PK-GB": "IND",
+    "SD-ABY": "disputed",
+    "IL-GOL": "SYR",
+    "GE-AB": "GEO",
+    "GE-SO": "GEO",
+    "UA-CR": "UKR",
+    "CNM": "CYP",
+    "KAB": "KAZ",
+    "PFA": "PFA",
+    "BJN": "COL",
+    "SER": "COL",
+    "NE-B58": "LBN",
+    "NE-B92": "disputed",
+    "PK-AZK": "IND",
+    "NE-B21": "DEN",
+    "KR-DOK": "KOD"
+  },
+  "lines": {
+    "claim": []
+  },
+  "names": {},
+  "labels": {
+    "hide": []
+  }
+}

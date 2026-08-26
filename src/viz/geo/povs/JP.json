@@ -1,0 +1,38 @@
+{
+  "id": "JP",
+  "name_zh": "日本视角",
+  "name_en": "Japan",
+  "own": {
+    "CYN": "CYP",
+    "SOL": "SOM",
+    "KAS": "IND",
+    "SD-ABY": "disputed",
+    "IL-GOL": "disputed",
+    "KE-ILEMI": "disputed",
+    "MA-EH": "SAH",
+    "RU-KUR": "JPN",
+    "GE-AB": "GEO",
+    "GE-SO": "GEO",
+    "UA-CR": "UKR",
+    "CNM": "CYP",
+    "KAB": "KAZ",
+    "PFA": "PFA",
+    "BJN": "COL",
+    "SER": "COL",
+    "NE-B82": "UUU",
+    "NE-B58": "LBN",
+    "SS-ILEMI": "disputed",
+    "NE-B92": "disputed",
+    "NE-B73": "ARE",
+    "NE-B21": "disputed",
+    "KR-DOK": "JPN",
+    "NE-B87": "UUU"
+  },
+  "lines": {
+    "claim": []
+  },
+  "names": {},
+  "labels": {
+    "hide": []
+  }
+}

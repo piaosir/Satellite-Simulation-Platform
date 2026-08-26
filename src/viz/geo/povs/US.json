@@ -1,0 +1,36 @@
+{
+  "id": "US",
+  "name_zh": "美国视角",
+  "name_en": "United States",
+  "own": {
+    "CYN": "CYP",
+    "SOL": "SOM",
+    "KAS": "disputed",
+    "IN-CN-DMC": "CHN",
+    "SD-ABY": "disputed",
+    "KE-ILEMI": "disputed",
+    "MA-EH": "SAH",
+    "UA-CR": "UKR",
+    "GEA": "GEA",
+    "CNM": "CYP",
+    "KAB": "KAZ",
+    "PFA": "PFA",
+    "BJN": "USA",
+    "SER": "USA",
+    "NE-B82": "UUU",
+    "NE-B58": "LBN",
+    "SS-ILEMI": "disputed",
+    "NE-B92": "disputed",
+    "NE-B73": "ARE",
+    "NE-B21": "disputed",
+    "KR-DOK": "KOD",
+    "NE-B87": "UUU"
+  },
+  "lines": {
+    "claim": []
+  },
+  "names": {},
+  "labels": {
+    "hide": []
+  }
+}

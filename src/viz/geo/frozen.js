@@ -39,13 +39,23 @@ export const CUSTOMIZABLE_DISPUTES = [
   { key: 'essequibo', zh: '埃塞奎博', en: 'Essequibo', units: ['GY-ESSEQUIBO'], opts: ['GUY', 'VEN', 'disputed'] }
 ]
 
-// key → units 展开（UI 只认 key，解算器只认 unit）
+// 归属值的中文名（争议区下拉的选项文案）。只收 CUSTOMIZABLE_DISPUTES 的 opts 里出现的那些码。
+export const OWNER_ZH = {
+  CHN: '中国', IND: '印度', PAK: '巴基斯坦', UKR: '乌克兰', RUS: '俄罗斯',
+  MAR: '摩洛哥', SAH: '西撒哈拉', KOS: '科索沃', SRB: '塞尔维亚', ISR: '以色列', SYR: '叙利亚',
+  SDN: '苏丹', SDS: '南苏丹', CYN: '北塞浦路斯', CYP: '塞浦路斯', SOL: '索马里兰', SOM: '索马里',
+  GEO: '格鲁吉亚', MDA: '摩尔多瓦', AZE: '阿塞拜疆', GUY: '圭亚那', VEN: '委内瑞拉',
+  disputed: '争议', none: '不显示'
+}
+
+// key → units 展开（UI 只认分组 key，解算器只认 unit）。
+// 'none'（不显示）不在各组的 opts 里，但它对每一组都合法 —— 那是「当这块叠加不存在」的通用档。
 export function expandOverrides(byKey) {
   const out = {}
   if (!byKey || typeof byKey !== 'object') return out
   for (const g of CUSTOMIZABLE_DISPUTES) {
     const v = byKey[g.key]
-    if (!v || !g.opts.includes(v)) continue
+    if (!v || !(g.opts.includes(v) || v === 'none')) continue
     for (const u of g.units) if (!FROZEN[u]) out[u] = v
   }
   return out

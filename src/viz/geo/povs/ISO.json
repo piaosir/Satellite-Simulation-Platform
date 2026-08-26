@@ -1,0 +1,50 @@
+{
+  "id": "ISO",
+  "name_zh": "ISO 中立",
+  "name_en": "ISO neutral",
+  "own": {
+    "SAH": "disputed",
+    "PNX": "PN1",
+    "SDN": "SDZ",
+    "FLK": "disputed",
+    "NSV": "SJM",
+    "GUF": "GUF",
+    "PR1": "PR1",
+    "PNB": "PN1",
+    "CYN": "CYP",
+    "SOL": "SOM",
+    "KOS": "SRB",
+    "SDS": "SSD",
+    "IOT": "disputed",
+    "PMD": "PR1",
+    "PRX": "PR1",
+    "PAZ": "PR1",
+    "NJM": "SJM",
+    "TKL": "TKL",
+    "NLY": "NLY",
+    "MYT": "disputed",
+    "REU": "REU",
+    "MTQ": "MTQ",
+    "GLP": "GLP",
+    "CXR": "CXR",
+    "CCK": "CCK",
+    "ATC": "AUS",
+    "GE-AB": "GEO",
+    "GE-SO": "GEO",
+    "GIB": "disputed",
+    "CNM": "CYP",
+    "KAB": "KAZ",
+    "BVT": "BVT",
+    "CSI": "AUS",
+    "CLP": "FRA",
+    "NE-B44": "disputed",
+    "NE-B69": "disputed"
+  },
+  "lines": {
+    "claim": []
+  },
+  "names": {},
+  "labels": {
+    "hide": []
+  }
+}

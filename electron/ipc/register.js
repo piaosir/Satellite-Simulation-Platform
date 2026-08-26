@@ -753,12 +753,14 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   // 机器封印（DPAPI）防的是「把 settings.json 从别的机器拷过来」，防不了「从合法入口把
   // stored 改成别人的、同时把封印清掉」—— 那三个键就是这么被绕过去的。
   //
-  // 白名单只收渲染端确实在写的四项：Settings.vue 的 amapKey/units/noiseRatioMode
+  // 白名单只收渲染端确实在写的几项：Settings.vue 的 amapKey/units/noiseRatioMode/mapPov
   // （src/pages/Settings.vue 的 form），加 miniBindings（src/shared/miniBindings.js）。
+  // mapPov = 地图视角 { id, overrides(争议区分组键), layers }。★ 它只能存在这里，不许再进
+  // ConstellationMap3D 的 viewPrefs 快照 —— 两处都存的话老存档会把视角带回去、跟设置打架。
   // 授权相关的键（deviceId / mgrIdSeal / activationLic / mgrLicFloor / mgrClockAnchor /
   // mgrFirstSeen）一律只由主进程的 activation.js 自己维护，渲染端永远碰不到。
   // 新增用户偏好项时记得往这张表里加一条 —— 漏加的现象是「设置存不住」，测试时一眼可见。
-  const SETTINGS_WRITABLE = new Set(['amapKey', 'units', 'noiseRatioMode', 'miniBindings', 'miniSelfLabel'])
+  const SETTINGS_WRITABLE = new Set(['amapKey', 'units', 'noiseRatioMode', 'miniBindings', 'miniSelfLabel', 'mapPov'])
   ipcMain.handle('store:settings:set', (_e, s) => {
     const patch = {}
     const rejected = []
