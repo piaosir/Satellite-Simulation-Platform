@@ -6,13 +6,12 @@ import { LineGeometry } from 'three/addons/lines/LineGeometry.js'
 import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js'
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js'
 import earcut from 'earcut'
-import { feature } from 'topojson-client'
-import topo from './data/countries-10m.json'
-import NAMES from './data/country-names-zh.json'
-import { CHINA_IDS, NO_LABEL_IDS } from './cnClaims.js'
 import { ENV_R, envSphereParams } from '../env/envSphere.js'
-import { NANHAI_DASHES, NANHAI_WIDTH_MUL, NANHAI_MIN_WIDTH } from '../nanhaiDashes.js'
-import { CHINA, ARCTIC_ISLAND_LAT, landColors, setLandPalette } from '../landPalette.js'
+import { ARCTIC_ISLAND_LAT, landColors, setLandPalette } from '../landPalette.js'
+// 底图不再是「一份画好的国界」：面/线/标注/点选全部由主权解算层按归属实时算出（视角 = 一张归属表）
+import { resolvedFeatures, resolvedLines, labelSet, ensureDetail, onPovChange } from '../geo/povResolver.js'
+// 边界线显示规范（渲染次序 / 出厂样式 / 线型的屏幕像素图案 / 缩放淡出）：与 2D 平面图共用同一份
+import { ORDER, BORDER_DEF, DASH_PX, DASH_SCALE, BORDER_CLASSES, CFG_KEY, fadeFactor, admFade } from '../geo/borderStyle.js'
 import { antarcticaFillRings } from './antarctica.js'
 import { solarGeometry, terminatorRing } from '../terminator.js'
 // 顶点级几何原语：与聚焦几何 Worker 共用同一份实现（别在这里再写一份）
@@ -37,18 +36,6 @@ function capPixelRatio(n) {
 // 陆地配色（LAND/CHINA/ICE/基调方案/逐国覆盖）统一收拢到 ../landPalette.js（与 2D 平面图共用单一来源）
 const OCEAN = '#15426b'
 
-function centroidLonLat(geom) {
-  const polys = geom.type === 'Polygon' ? [geom.coordinates] : geom.coordinates
-  let best = null, bestLen = -1
-  for (const rings of polys) { const r = rings[0]; if (r && r.length > bestLen) { bestLen = r.length; best = r } }
-  if (!best) return null
-  let sx = 0, sy = 0
-  for (const p of best) { sx += p[0]; sy += p[1] }
-  return [sx / best.length, sy / best.length]
-}
-
-// 经度解缠：让环内相邻点经度差不超过 180°（消除跨 ±180° 的跳变），再整体平移到 [-180,180) 附近。
-// 不解缠的话，斐济/俄罗斯/南极洲等跨反子午线的多边形会在等距圆柱纹理里横向拉成长条。
 function unwrapRing(ring) {
   const out = new Array(ring.length)
   let prev = ring[0][0]
@@ -72,9 +59,12 @@ function buildLandMesh(features) {
   const MAXSEG = 3            // 三角形最长边超过该度数就细分
   const positions = [], colors = []
   const col = new THREE.Color()
+  // 争议叠加面（f.over）抬高 0.002%：它盖在宿主面上、等高会 z-fight。这个高差 ≈ 0.13 km，
+  // 肉眼与视差都看不出，却足够让深度测试分出先后。
+  let R = 1
 
   function pushVert(lon, lat) {
-    const v = llaToVec(lat, lon, 0)   // 半径 1，贴在海洋球(0.999)之上
+    const v = llaToVec(lat, lon, 0).multiplyScalar(R)   // 半径 1，贴在海洋球(0.999)之上
     positions.push(v.x, v.y, v.z)
     colors.push(col.r, col.g, col.b)   // 颜色按「多边形」决定（北极岛屿整块冰白），不再逐顶点纬度渐变
   }
@@ -124,13 +114,15 @@ function buildLandMesh(features) {
     }
   }
 
-  features.forEach((f, idx) => {
+  features.forEach((f, i) => {
     const g = f.geometry
     if (!g) return
     const id = String(f.id)
+    const idx = f.idx != null ? f.idx : i     // 取色序号按【归属】定，叠加面与其基础面取同一号 → 同一国恒同色
+    R = f.over ? 1.00002 : 1
     // 南极洲：海岸线收口到南极点直接三角化（替代普通 addPolygon + −82° 极冠）。
     // 修复 50m 本土不填充（其本土被编码为退化外环+海岸线洞，earcut 得 0），并消除 −82° 极冠对海洋的污染与接缝。
-    if (id === '010') {
+    if (id === 'ATA') {
       col.set(landColors(id, idx).base)   // 南极洲：默认冰白，可被逐国覆盖改色
       for (const ring of antarcticaFillRings(f)) {
         const flat = []
@@ -186,44 +178,18 @@ function makeLabelSprite(text, hpx, fill, strokePx = 4) {
   return spr
 }
 
-// 国家「视觉大小」近似：最大环的经纬包围盒线度（按纬度余弦修正）。用来按国家大小定标签字号——
-// 大国字大、欧洲那种小国字小，全部显示也不会糊成一片。
-function featureExtent(geom) {
-  const polys = geom.type === 'Polygon' ? [geom.coordinates] : geom.coordinates
-  let best = null, bl = -1
-  for (const rings of polys) { const r = rings[0]; if (r && r.length > bl) { bl = r.length; best = r } }
-  if (!best) return 0
-  let minLon = 180, maxLon = -180, minLat = 90, maxLat = -90
-  for (const p of best) { if (p[0] < minLon) minLon = p[0]; if (p[0] > maxLon) maxLon = p[0]; if (p[1] < minLat) minLat = p[1]; if (p[1] > maxLat) maxLat = p[1] }
-  const cl = Math.max(Math.cos((minLat + maxLat) / 2 * Math.PI / 180), 0.1)
-  return Math.sqrt((maxLon - minLon) * cl * (maxLat - minLat))  // ~ 线度(度)
-}
 
-function buildLabels(features, lang) {
+// 国名标注：位置/字号/中英两套全部来自解算器的 labelSet（按归属合并，per-POV 改名与 hide 也在那里做）。
+// 字号映射式子（线度 → 世界高度）与换源前一字不改。
+function buildLabels(lang, detail) {
   const group = new THREE.Group()
   group.visible = false
-  const seen = new Set()   // 同一国家 id 只标一次（topojson 中澳大利亚等含本体+外岛多个 feature）
-  for (const f of features) {
-    const id = String(f.id)
-    if (NO_LABEL_IDS.has(id) || seen.has(id)) continue
-    const rec = NAMES[id]
-    let zh = rec ? rec[0] : null
-    if (id === '156') zh = '中国'
-    if (id === '408') zh = '朝鲜'
-    if (id === '410') zh = '韩国'
-    if (!zh) continue   // 仅标注有中文名的国家（中/英两套用同一集合与位置）
-    let lon = rec && rec[1] != null ? rec[1] : null
-    let lat = rec && rec[2] != null ? rec[2] : null
-    if (lon == null || lat == null) { const c = centroidLonLat(f.geometry); if (!c) continue; lon = c[0]; lat = c[1] }
-    const en = (f.properties && f.properties.name) || zh   // 英文名取自 topojson
-    const name = lang === 'en' ? en : zh
-    // 字号随国家线度：小国（如欧洲诸国）更小，大国更大；夹在 [0.016, 0.030]
-    const ext = featureExtent(f.geometry)
-    const hpx = Math.max(0.016, Math.min(0.030, 0.012 + ext * 0.0016))
-    const spr = makeLabelSprite(name, hpx)
-    spr.position.copy(llaToVec(lat, lon, 25))
+  for (const l of labelSet(lang, detail)) {
+    const hpx = Math.max(0.016, Math.min(0.030, 0.012 + l.ext * 0.0016))
+    const spr = makeLabelSprite(l.name, hpx)
+    spr.position.copy(llaToVec(l.lat, l.lon, 25))
     spr._dir = spr.position.clone().normalize()
-    group.add(spr); seen.add(id)
+    group.add(spr)
   }
   return group
 }
@@ -241,27 +207,6 @@ function decimateRing(ring, minD) {
   out.push(ring[ring.length - 1])
   return out
 }
-function buildBorders(features, thin = 0.025) {
-  const pos = []
-  for (const f of features) {
-    const g = f.geometry
-    if (!g) continue
-    const polys = g.type === 'Polygon' ? [g.coordinates] : g.coordinates
-    for (const rings of polys) {
-      for (const ring0 of rings) {
-        const ring = thin > 0 ? decimateRing(ring0, thin) : ring0
-        for (let i = 0; i + 1 < ring.length; i++) {
-          // 抬高 0.04%（标准深度可分辨，视差仍小到看不出；depthWrite=false 保证不与填色 z-fight）
-          const a = llaToVec(ring[i][1], ring[i][0], 0).multiplyScalar(1.0004)
-          const b = llaToVec(ring[i + 1][1], ring[i + 1][0], 0).multiplyScalar(1.0004)
-          pos.push(a.x, a.y, a.z, b.x, b.y, b.z)
-        }
-      }
-    }
-  }
-  return pos   // 段端点坐标对，交给 fatSegments 画成可控宽度的粗线
-}
-
 // 矢量经纬网坐标（半径略低于国界线，使国界压在网格之上）
 function buildGraticule() {
   const pos = []
@@ -399,8 +344,11 @@ export function createGlobeScene(container, quality = {}) {
     const o = new Line2(g, m); o.renderOrder = order || 0; return o
   }
 
-  let features = feature(topo, topo.objects.countries).features
+  let mapDetail0 = '10m'        // 创建时恒以静态 10m 构建；切到 50m/110m 由 setMapDetail 异步换源
+  let features = resolvedFeatures(mapDetail0)
   let mapThin = quality.mapThin != null ? quality.mapThin : 0.025
+  let curLines = null           // 解算出的五组线缓存（换视角/换精度档时作废）
+  let dashRefWpp = 0            // 上次建虚线时用的「每像素多少世界单位」，变化超过一档才重建
   // 海洋：纯色球（半径 0.998，留足与陆地细分塌陷下限 ~0.9995 的间隙，标准深度下不 z-fighting）
   // 海洋球：保留几何/材质引用，供 setOceanColor 改色、setSphereDetail 改细分段数
   const oceanMat = new THREE.MeshBasicMaterial({ color: OCEAN })
@@ -410,31 +358,18 @@ export function createGlobeScene(container, quality = {}) {
   let landMesh = buildLandMesh(features)
   scene.add(landMesh)
 
-  // 矢量国界/海岸线 + 矢量经纬网：粗线，放大/高分辨率下都锐利清晰
-  // 经纬网 / 海岸线 渲染序高于覆盖填充(5)+各类数据线(等值线/波束线/仰角线/轨迹线，统一 6)、低于点/标注：
+  // 矢量边界线 + 矢量经纬网：粗线，放大/高分辨率下都锐利清晰。
+  // 渲染序高于覆盖填充(5)+各类数据线(等值线/波束线/仰角线/轨迹线，统一 6)、低于点/标注：
   // 地理骨架贯穿覆盖区之上 → 覆盖与底图融为一体（平级），不再像贴纸浮在地图上面。depthWrite=false，纯绘制顺序。
-  scene.add(fatSegments(buildGraticule(), 0xffffff, 0.8, 0.12, 6.3))
-  // 国界/海岸线：保留材质引用，供 setBorderStyle 运行时改线宽/颜色/透明度；setMapDetail 时重建
-  const borderCfg = { natColor: 0x5b7088, natWidth: 0.8, natOpacity: 1.0, provColor: 0x9aa3b0, provWidth: 1.2, provOpacity: 0.8, cityColor: 0xb6bcc6, cityWidth: 0.5, cityOpacity: 0.6 }
-  let coastBorders = fatSegments(buildBorders(features, mapThin), borderCfg.natColor, borderCfg.natWidth, borderCfg.natOpacity, 6.5)
-  scene.add(coastBorders)
-  // 南海十段线：颜色随中国国土(CHINA)、线宽/透明度随省界(borderCfg.prov*)，线宽×惯例倍数（略粗于省界）。
-  // 每段为多点折线 → 展开成相邻点对喂给 LineSegments（v0-v1, v1-v2, ...）。
-  const nanhaiPos = []
-  for (const seg of NANHAI_DASHES) {
-    for (let i = 0; i + 1 < seg.length; i++) {
-      const a = llaToVec(seg[i][1], seg[i][0], 0).multiplyScalar(1.0005)
-      const b = llaToVec(seg[i + 1][1], seg[i + 1][0], 0).multiplyScalar(1.0005)
-      nanhaiPos.push(a.x, a.y, a.z, b.x, b.y, b.z)
-    }
-  }
-  const nanhaiW = (pw) => Math.max(NANHAI_MIN_WIDTH, pw * NANHAI_WIDTH_MUL)
-  const nanhaiLine = fatSegments(nanhaiPos, CHINA, nanhaiW(borderCfg.provWidth), borderCfg.provOpacity, 6.5)
-  scene.add(nanhaiLine)
+  scene.add(fatSegments(buildGraticule(), 0xffffff, 0.8, 0.12, ORDER.grid))
+  // 五类边界线：coast / admin0 / indefinite / loc / claim，各自独立的颜色/线宽/透明度/线型。
+  // 保留对象引用，供 setBorderStyle 运行时改样式；换精度档 / 换视角 / 改缩放档位时按需重建。
+  const borderCfg = { ...BORDER_DEF }
+  const borderLines = {}     // cls → LineSegments2（首次构建在 offPov 之后 —— classPos 依赖的几个 const 还没初始化）
 
   // 国名/洋名：中、英两套（按需切换显隐），初始全隐
-  const labelsZh = buildLabels(features, 'zh'); scene.add(labelsZh)
-  const labelsEn = buildLabels(features, 'en'); scene.add(labelsEn)
+  let labelsZh = buildLabels('zh', mapDetail0); scene.add(labelsZh)
+  let labelsEn = buildLabels('en', mapDetail0); scene.add(labelsEn)
   const oceanZh = buildOceanLabels('zh'); scene.add(oceanZh)
   const oceanEn = buildOceanLabels('en'); scene.add(oceanEn)
   function setLabelMode(mode) {   // 'zh' | 'en' | 'off'
@@ -497,33 +432,107 @@ export function createGlobeScene(container, quality = {}) {
   }
   // 底图精细化：'10m'(精细) / '50m'(粗)。换 topojson 源 → 重建陆地网格 + 国界/海岸线。
   // 50m 数据按需懒加载（避免拖慢首屏）。thin=边界抽稀阈值（度）。
-  let mapDetail0 = '10m'        // 创建时恒以静态 10m 构建；切到 50m/110m 由 setMapDetail 异步换源
-  const featCache = { '10m': features }   // 各精度 features 缓存（10m 静态，其余懒加载）
-  const featsOf = (m) => { const t = m.default || m; return feature(t, t.objects.countries).features }
-  const loadFeatures = async (detail) => {
-    if (featCache[detail]) return featCache[detail]
-    // 字面量 import() 让 Vite 各自打成独立 chunk（变量路径无法分析、构建后会失效）
-    const mod = detail === '110m' ? await import('./data/countries-110m.json') : await import('./data/countries-50m.json')
-    featCache[detail] = featsOf(mod)
-    return featCache[detail]
+  // 当前分辨率下「1 屏幕像素 ≈ 多少个地球半径」：透视投影下距相机 d 处 1 px 的世界长度
+  // = 2 d tan(fov/2) / 高度像素。取球面近侧 d = 相机距地心 − 1。虚线周期与淡出档位都按它反推。
+  function worldPerPx() {
+    const d = Math.max(0.05, camera.position.length() - 1)
+    return 2 * d * Math.tan(camera.fov * Math.PI / 360) / Math.max(1, curH)
   }
+  const degPerPx = () => worldPerPx() * 180 / Math.PI
+  const linesNow = () => (curLines || (curLines = resolvedLines(mapDetail0)))
+
+  // 一类边界线的线段坐标：solid 直接连、其余按屏幕像素图案切虚线（先补密大圆，否则长弦会沉进地球）
+  const BORDER_LIFT = 1.0004
+  const _bp = []
+  function classPos(cls, polys, wpp) {
+    const kind = borderCfg[CFG_KEY[cls] + 'Dash'] || 'solid'
+    const px = DASH_PX[kind]
+    const pat = px ? px.map((v) => v * wpp * (DASH_SCALE[cls] || 1)) : null
+    const sink = createSink()
+    for (const poly of polys) {
+      const line = mapThin > 0 ? decimateRing(poly, mapThin) : poly
+      if (line.length < 2) continue
+      _bp.length = 0
+      for (const q of line) _bp.push(llaToVec(q[1], q[0], 0).multiplyScalar(BORDER_LIFT))
+      const dense = densifyArc(_bp)
+      if (pat) pushDashed(sink, dense, pat); else pushStripSegs(sink, dense)
+    }
+    return sink.view()
+  }
+  function buildBorderLines() {
+    const wpp = worldPerPx()
+    dashRefWpp = wpp
+    const L = linesNow()
+    for (const cls of BORDER_CLASSES) {
+      disposeFatLine(borderLines[cls])
+      const k = CFG_KEY[cls]
+      const o = fatSegments(classPos(cls, L[cls], wpp), borderCfg[k + 'Color'], borderCfg[k + 'Width'], borderCfg[k + 'Opacity'], ORDER[cls])
+      borderLines[cls] = o
+      scene.add(o)
+    }
+  }
+  // 缩放变了 → 只重建虚线类的几何（实线与缩放无关）。周期恒定靠这一步；6% 的死区避免逐帧重算。
+  function refreshDashScale() {
+    const wpp = worldPerPx()
+    if (dashRefWpp > 0 && Math.abs(wpp - dashRefWpp) / dashRefWpp < 0.06) return
+    dashRefWpp = wpp
+    const L = linesNow()
+    for (const cls of BORDER_CLASSES) {
+      const o = borderLines[cls]
+      if (!o || !DASH_PX[borderCfg[CFG_KEY[cls] + 'Dash'] || 'solid']) continue
+      o.geometry.dispose()
+      const g = new LineSegmentsGeometry(); g.setPositions(classPos(cls, L[cls], wpp))
+      o.geometry = g
+    }
+  }
+  // 缩放分级（1.6b 三）：全球视角下二级行政区完全淡出、一级降到 0.3，拉近后线性恢复。
+  // 政治五类不参与 —— 国界在任何尺度都在。线淡出时名字跟着淡，否则会剩一地孤字。
+  let fadeApplied = -1
+  function applyFade() {
+    const t = borderCfg.fade ? fadeFactor(degPerPx()) : 1
+    if (Math.abs(t - fadeApplied) < 0.01) return
+    fadeApplied = t
+    const { adm1: f1, adm2: f2 } = admFade(t)
+    if (provinceBorders) provinceBorders.material.opacity = borderCfg.provOpacity * f1
+    if (cityBorders) cityBorders.material.opacity = borderCfg.cityOpacity * f2
+    if (provinceLabels) provinceLabels.traverse((c) => { if (c.isSprite && c.material) c.material.opacity = (c._baseOpacity != null ? c._baseOpacity : 1) * f1 })
+    if (cityLabels) cityLabels.traverse((c) => { if (c.isSprite && c.material) c.material.opacity = (c._baseOpacity != null ? c._baseOpacity : 1) * f2 })
+  }
+  // 换精度档 / 换视角 / 改用户覆写 走同一条重建通道：陆地三角网 + 五类边界线 + 国名标注
+  function rebuildBasemap() {
+    curLines = null
+    features = resolvedFeatures(mapDetail0)
+    scene.remove(landMesh); landMesh.geometry.dispose(); landMesh.material.dispose()
+    landMesh = buildLandMesh(features); scene.add(landMesh)
+    buildBorderLines()
+    rebuildLabels()
+    fadeApplied = -1
+  }
+  function rebuildLabels() {
+    const mode = labelsZh.visible ? 'zh' : labelsEn.visible ? 'en' : 'off'
+    for (const g of [labelsZh, labelsEn]) {
+      scene.remove(g)
+      g.traverse((c) => { if (c.material) { if (c.material.map) c.material.map.dispose(); c.material.dispose() } })
+    }
+    labelsZh = buildLabels('zh', mapDetail0); scene.add(labelsZh)
+    labelsEn = buildLabels('en', mapDetail0); scene.add(labelsEn)
+    applyNameScale(labelsZh, nameScaleC); applyNameScale(labelsEn, nameScaleC)
+    applyLabelStyle(labelsZh, labelCfg.countryColor, labelCfg.countryOpacity)
+    applyLabelStyle(labelsEn, labelCfg.countryColor, labelCfg.countryOpacity)
+    setLabelMode(mode)
+  }
+  // 视角/用户覆写改动由解算器广播回来 —— 场景不关心是谁改的，一律整份重建
+  const offPov = onPovChange(rebuildBasemap)
+  buildBorderLines()   // 五类边界线首次构建（放在这里是因为 classPos 用到的 const 到此才初始化完）
+
   async function setMapDetail(detail, thin) {
     const t = (thin != null) ? thin : mapThin
     const changedThin = t !== mapThin
     if (detail === mapDetail0 && !changedThin) return
-    mapThin = t
-    let feats
-    try { feats = await loadFeatures(detail) }
+    try { await ensureDetail(detail) }
     catch (e) { console.warn(detail + ' 底图加载失败，保持当前精度', e); return }
-    mapDetail0 = detail
-    features = feats
-    // 重建陆地三角网
-    scene.remove(landMesh); landMesh.geometry.dispose(); landMesh.material.dispose()
-    landMesh = buildLandMesh(feats); scene.add(landMesh)
-    // 重建国界/海岸线（沿用当前线样式）
-    disposeFatLine(coastBorders)
-    coastBorders = fatSegments(buildBorders(feats, mapThin), borderCfg.natColor, borderCfg.natWidth, borderCfg.natOpacity, 6.5)
-    scene.add(coastBorders)
+    mapDetail0 = detail; mapThin = t
+    rebuildBasemap()
   }
   // 大地颜色（基调方案 + 逐国覆盖，与 2D 平面图同步）：写入公共色板状态后重建陆地三角网。
   // 颜色烘焙在顶点色里，改色必须重建；仅用户在设置面板操作时触发，代价可接受。
@@ -545,7 +554,7 @@ export function createGlobeScene(container, quality = {}) {
         pos.push(a.x, a.y, a.z, b.x, b.y, b.z)
       }
     }
-    provinceBorders = fatSegments(pos, borderCfg.provColor, borderCfg.provWidth, borderCfg.provOpacity, 6.6)   // 同海岸线：压在覆盖之上，与底图平级
+    provinceBorders = fatSegments(pos, borderCfg.provColor, borderCfg.provWidth, borderCfg.provOpacity, ORDER.adm1)   // 压在覆盖之上、国界与海岸之下
     provinceBorders.visible = false; scene.add(provinceBorders)
     provinceLabels = new THREE.Group(); provinceLabels.visible = false
     for (const l of (data.labels || [])) {
@@ -563,7 +572,7 @@ export function createGlobeScene(container, quality = {}) {
   }
   function setProvincesVisible(v) { if (provinceBorders) provinceBorders.visible = !!v; if (provinceLabels) provinceLabels.visible = !!v }
 
-  // 中国地级市界 + 地级市名（按需由上层注入数据，格式同省界）。渲染序 6.55：压在省界(6.6)之下、海岸/覆盖之上 → 省界更醒目。
+  // 二级行政区界 + 地名（按需由上层注入数据，格式同一级行政区）。渲染序最低（ORDER.adm2）：压在一级行政区之下。
   let cityBorders = null, cityLabels = null
   function setCities(data) {
     if (cityBorders || !data) return
@@ -575,7 +584,7 @@ export function createGlobeScene(container, quality = {}) {
         pos.push(a.x, a.y, a.z, b.x, b.y, b.z)
       }
     }
-    cityBorders = fatSegments(pos, borderCfg.cityColor, borderCfg.cityWidth, borderCfg.cityOpacity, 6.55)
+    cityBorders = fatSegments(pos, borderCfg.cityColor, borderCfg.cityWidth, borderCfg.cityOpacity, ORDER.adm2)
     cityBorders.visible = false; scene.add(cityBorders)
     cityLabels = new THREE.Group(); cityLabels.visible = false
     for (const l of (data.labels || [])) {
@@ -589,34 +598,34 @@ export function createGlobeScene(container, quality = {}) {
     scene.add(cityLabels)
   }
   function setCitiesVisible(v) { if (cityBorders) cityBorders.visible = !!v; if (cityLabels) cityLabels.visible = !!v }
-  // 国界/省界线样式（线宽 px / 颜色 / 透明度）。merge 到 borderCfg 并改对应材质 uniform；
-  // 省界材质可能尚未创建（懒加载），故同时存进 borderCfg，setProvinces 创建时套用。
-  function setBorderStyle(s) {
-    if (!s) return
-    Object.assign(borderCfg, s)
-    if (coastBorders) {
-      const m = coastBorders.material
-      if (s.natColor != null) m.color.set(s.natColor)
-      if (s.natWidth != null) m.linewidth = s.natWidth
-      if (s.natOpacity != null) m.opacity = s.natOpacity
+  // 边界线样式（五类各：颜色 / 线宽 px / 透明度 / 线型；ADM1/ADM2：颜色 / 线宽 / 透明度）。
+  // merge 到 borderCfg 后改对应材质 uniform；线型改了要重切虚线几何，故那一路走重建。
+  // ADM1/ADM2 材质可能尚未创建（懒加载），故一律先存进 borderCfg，setProvinces/setCities 创建时套用。
+  function setBorderStyle(st) {
+    if (!st) return
+    Object.assign(borderCfg, st)
+    let reDash = false
+    for (const cls of BORDER_CLASSES) {
+      const k = CFG_KEY[cls], o = borderLines[cls]
+      if (st[k + 'Dash'] != null) reDash = true
+      if (!o) continue
+      const m = o.material
+      if (st[k + 'Color'] != null) m.color.set(st[k + 'Color'])
+      if (st[k + 'Width'] != null) m.linewidth = st[k + 'Width']
+      if (st[k + 'Opacity'] != null) m.opacity = st[k + 'Opacity']
     }
-    if (nanhaiLine) {   // 南海十段线随省界透明度，线宽=省界×惯例倍数（颜色固定为国土色）
-      const m = nanhaiLine.material
-      if (s.provWidth != null) m.linewidth = nanhaiW(s.provWidth)
-      if (s.provOpacity != null) m.opacity = s.provOpacity
-    }
+    if (reDash) buildBorderLines()
     if (provinceBorders) {
       const m = provinceBorders.material
-      if (s.provColor != null) m.color.set(s.provColor)
-      if (s.provWidth != null) m.linewidth = s.provWidth
-      if (s.provOpacity != null) m.opacity = s.provOpacity
+      if (st.provColor != null) m.color.set(st.provColor)
+      if (st.provWidth != null) m.linewidth = st.provWidth
     }
     if (cityBorders) {
       const m = cityBorders.material
-      if (s.cityColor != null) m.color.set(s.cityColor)
-      if (s.cityWidth != null) m.linewidth = s.cityWidth
-      if (s.cityOpacity != null) m.opacity = s.cityOpacity
+      if (st.cityColor != null) m.color.set(st.cityColor)
+      if (st.cityWidth != null) m.linewidth = st.cityWidth
     }
+    fadeApplied = -1   // 透明度由 applyFade 统一落（它还要乘缩放淡出系数）
   }
 
   // ===================== 聚焦卫星显示样式（用户可自定义） =====================
@@ -2285,6 +2294,8 @@ export function createGlobeScene(container, quality = {}) {
     rescalePointLayers()
     rescaleMarkers()
     updateLabels()
+    refreshDashScale()   // 虚线周期按屏幕像素恒定：缩放跨过一档就重切
+    applyFade()          // 一/二级行政区随缩放淡入淡出
     renderer.render(scene, camera)
   }
   loop()
@@ -2351,6 +2362,7 @@ export function createGlobeScene(container, quality = {}) {
   }
 
   function destroy() {
+    offPov()            // 退订主权解算层的广播：不退的话卸载后的场景仍会被换视角触发重建
     clearEnv()          // 贴图/几何不随 renderer.dispose 走，显式释放（切页面重挂载时会反复走这里）
     clearTerminator()   // 同上：夜区球壳几何 + 线材质（materials 还挂在 lineMats 里）也要显式还
     clearShellField(); clearShellGuides()   // 对星覆盖壳层：标签用的 canvas 贴图同样不随 dispose 走

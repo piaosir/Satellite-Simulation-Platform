@@ -50,13 +50,14 @@ export function pushStripSegs(out, pts) {
 // 虚线/点线：沿折线按【世界弧长】切段（球半径 1 ≈ 6371 km），与采样密度无关。
 // ★ 别退回「隔段取一画一」：那招只在足迹这种固定 72 段等分采样上成立，星下点轨迹走自适应采样
 //   （近地点段自动加密），隔段取一会变成长短乱跳的碎线。
-export const DASH_SPEC = { dash: [0.018, 0.012], dot: [0.0025, 0.009] }
+// 图案是「画-空」交替的长度序列，长度任意（点划线是四段：长划-空-点-空）。
+export const DASH_SPEC = { dash: [0.018, 0.012], dot: [0.0025, 0.009], dashdot: [0.020, 0.010, 0.0025, 0.010] }
 const _dpA = new THREE.Vector3(), _dpB = new THREE.Vector3()
+// kind 可以是 DASH_SPEC 的键，也可以直接给一个长度序列数组（边界线按屏幕像素反推世界长度时走这一路）。
 export function pushDashed(out, pts, kind) {
-  const d = DASH_SPEC[kind]
-  if (!d) { pushStripSegs(out, pts); return }
-  const dl = d[0], gl = d[1]
-  let on = true, rem = dl
+  const d = Array.isArray(kind) ? kind : DASH_SPEC[kind]
+  if (!d || !d.length) { pushStripSegs(out, pts); return }
+  let seg = 0, rem = d[0]
   for (let i = 0; i + 1 < pts.length; i++) {
     const a = pts[i], b = pts[i + 1]
     const L = a.distanceTo(b)
@@ -64,12 +65,12 @@ export function pushDashed(out, pts, kind) {
     let t = 0
     while (t < L - 1e-12) {
       const step = Math.min(rem, L - t)
-      if (on) {
+      if (!(seg & 1)) {   // 偶数段 = 画
         _dpA.copy(a).lerp(b, t / L); _dpB.copy(a).lerp(b, (t + step) / L)
         out.push6(_dpA.x, _dpA.y, _dpA.z, _dpB.x, _dpB.y, _dpB.z)
       }
       t += step; rem -= step
-      if (rem <= 1e-12) { on = !on; rem = on ? dl : gl }
+      if (rem <= 1e-12) { seg = (seg + 1) % d.length; rem = d[seg] }
     }
   }
 }

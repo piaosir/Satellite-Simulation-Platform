@@ -1,19 +1,18 @@
 // 平面覆盖图渲染器（2D Canvas，等距圆柱投影 / plate carrée，从西经30°切开）。
 // 底图（陆地配色/国界/国家名/大洋名/省界省名/标记）与 3D 球体保持一致；叠加覆盖图数据。
 // 不画星座、卫星点、卫星名、卫星连线。配色常量与 globe3d/scene.js 同源。
-import { feature } from 'topojson-client'
-import topo from '../globe3d/data/countries-10m.json'
-import NAMES from '../globe3d/data/country-names-zh.json'
-import { CHINA_IDS, NO_LABEL_IDS } from '../globe3d/cnClaims.js'
-import { NANHAI_DASHES, NANHAI_WIDTH_MUL, NANHAI_MIN_WIDTH } from '../nanhaiDashes.js'
 // 陆地配色（LAND/CHINA/ICE/基调方案/逐国覆盖）统一收拢到 ../landPalette.js（与 3D 球体共用单一来源）
-import { CHINA, ARCTIC_ISLAND_LAT, landColors, setLandPalette } from '../landPalette.js'
+import { ARCTIC_ISLAND_LAT, landColors, setLandPalette } from '../landPalette.js'
+// 底图的面/线/国名/点选全部由主权解算层按归属实时算出（与 3D 球体同一份），视角 = 一张归属表
+import { resolvedFeatures, resolvedLines, labelSet, ensureDetail, onPovChange } from '../geo/povResolver.js'
+// 五类边界线的渲染次序 / 出厂样式 / 屏幕像素虚线图案 / 缩放淡出档位：与 3D 球体共用同一份常量
+import { BORDER_DEF, DASH_PX, DASH_SCALE, BORDER_DRAW, CFG_KEY, fadeFactor, admFade } from '../geo/borderStyle.js'
 import { terminatorFlat } from '../terminator.js'
 
 const OCEAN = '#15426b'
 // 南极极冠：南极洲数据止于约 -85°，极点处留有空洞，补到 -90°。
 const SOUTH_CAP_LAT = -82
-const BORDER = '#5b7088', GRID = 'rgba(255,255,255,0.12)', PROV = '#9aa3b0', BG = '#070b12'
+const GRID = 'rgba(255,255,255,0.12)', BG = '#070b12'
 const LON0 = -30          // 切口：西经30°为左边缘，经度范围 [-30, 330)
 const OCEANS = [
   ['太平洋', 'Pacific Ocean', -155, 25], ['太平洋', 'Pacific Ocean', -130, -22],
@@ -38,28 +37,11 @@ const STATION_SVG = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v))
 const hex = (c) => typeof c === 'number' ? '#' + (c & 0xffffff).toString(16).padStart(6, '0') : (c || '#fff')
+// 经度解缠：把一条折线/环上各点搬到连续窗口，避免跨 ±180 时被画成横贯全图的假线
 function unwrap(ring) {
   const out = new Array(ring.length); let prev = ring[0][0]; out[0] = [prev, ring[0][1]]
   for (let i = 1; i < ring.length; i++) { let lo = ring[i][0]; while (lo - prev > 180) lo -= 360; while (lo - prev < -180) lo += 360; out[i] = [lo, ring[i][1]]; prev = lo }
   return out
-}
-function centroidLonLat(geom) {
-  const polys = geom.type === 'Polygon' ? [geom.coordinates] : geom.coordinates
-  let best = null, bl = -1
-  for (const rings of polys) { const r = rings[0]; if (r && r.length > bl) { bl = r.length; best = r } }
-  if (!best) return null
-  let sx = 0, sy = 0; for (const p of best) { sx += p[0]; sy += p[1] }
-  return [sx / best.length, sy / best.length]
-}
-function featureExtent(geom) {
-  const polys = geom.type === 'Polygon' ? [geom.coordinates] : geom.coordinates
-  let best = null, bl = -1
-  for (const rings of polys) { const r = rings[0]; if (r && r.length > bl) { bl = r.length; best = r } }
-  if (!best) return 0
-  let a = 180, b = -180, c = 90, d = -90
-  for (const p of best) { if (p[0] < a) a = p[0]; if (p[0] > b) b = p[0]; if (p[1] < c) c = p[1]; if (p[1] > d) d = p[1] }
-  const cl = Math.max(Math.cos((c + d) / 2 * Math.PI / 180), 0.1)
-  return Math.sqrt((b - a) * cl * (d - c))
 }
 
 export function createFlatCoverage(canvas) {
@@ -102,7 +84,9 @@ export function createFlatCoverage(canvas) {
   let fieldOpts = { showName: true, nameSize: 16, showBore: true, boreSize: 0.5, showPeak: false, peakSize: 5, showVal: false, valSize: 12 }
   let nameMode = 'off', provVisible = false, prov = null, cityVisible = false, city = null
   // 国界(海岸线)/省界/地级市界线样式：线宽为恒定屏幕 px、颜色十六进制、透明度 0–1（与 3D 同步）
-  let borderStyle = { natColor: BORDER, natWidth: 0.8, natOpacity: 1.0, provColor: PROV, provWidth: 1.2, provOpacity: 0.8, cityColor: '#b6bcc6', cityWidth: 0.5, cityOpacity: 0.6 }
+  // 五类边界线 + 两级行政区的样式：出厂值与 3D 球体同源（src/viz/geo/borderStyle.js）
+  let borderStyle = { ...BORDER_DEF }
+  let borderPaths = null   // 五类线烘成的世界度坐标 Path2D（换视角/换精度档/改线型时作废）
   // 地名颜色/透明度：国家名 与 省名 与 地级市名 分开（大洋名维持固有蓝，不随国家色改）
   let labelStyle = { countryColor: '#eef2f6', countryOpacity: 1, provColor: '#ffe6a8', provOpacity: 1, cityColor: '#cdd6e0', cityOpacity: 1 }
   let oceanColor = OCEAN   // 大海填充色（可调，限蓝色系），与 3D 球体同步
@@ -135,22 +119,15 @@ export function createFlatCoverage(canvas) {
     for (let i = 1; i < ring.length - 1; i++) { const p = ring[i]; if (Math.hypot(p[0] - last[0], p[1] - last[1]) >= minD) { out.push(p); last = p } }
     out.push(ring[ring.length - 1]); return out
   }
-  let land = [], clabels = []
+  let land = [], clabels = [], borderLines = null
   let mapDetail0 = '10m', mapThin = 0
-  const featsOf = (m) => { const t = m.default || m; return feature(t, t.objects.countries).features }
-  const featCache = { '10m': feature(topo, topo.objects.countries).features }   // 10m 静态；50m/110m 懒加载
-  const loadFeatures = async (detail) => {
-    if (featCache[detail]) return featCache[detail]
-    const mod = detail === '110m' ? await import('../globe3d/data/countries-110m.json') : await import('../globe3d/data/countries-50m.json')
-    featCache[detail] = featsOf(mod)
-    return featCache[detail]
-  }
   function buildBaseGeo(feats, thin) {
     land = []; clabels = []
-    const seenLabel = new Set()   // 同一国家 id 只标一次（澳大利亚等含本体+外岛）
-    feats.forEach((f, idx) => {
+    borderLines = null
+    feats.forEach((f, i) => {
       if (!f.geometry) return
       const id = String(f.id)
+      const idx = f.idx != null ? f.idx : i     // 取色序号按【归属】定，争议叠加与其基础面取同一号
       const { base: fill, arctic } = landColors(id, idx)
       const polys = f.geometry.type === 'Polygon' ? [f.geometry.coordinates] : f.geometry.coordinates
       const shapes = [], iceShapes = []   // 普通陆地色 / 北极岛屿冰白（按多边形质心纬度分流）
@@ -172,20 +149,18 @@ export function createFlatCoverage(canvas) {
       }
       if (shapes.length) land.push({ shapes, fill })
       if (iceShapes.length) land.push({ shapes: iceShapes, fill: arctic })   // 逐国设色时 arctic=用户色（整国一色）
-      // 国家名
-      if (NO_LABEL_IDS.has(id) || seenLabel.has(id)) return
-      const rec = NAMES[id]; let zh = rec ? rec[0] : null
-      if (id === '156') zh = '中国'; if (id === '408') zh = '朝鲜'; if (id === '410') zh = '韩国'
-      if (!zh) return
-      seenLabel.add(id)
-      let lon = rec && rec[1] != null ? rec[1] : null, lat = rec && rec[2] != null ? rec[2] : null
-      if (lon == null || lat == null) { const c = centroidLonLat(f.geometry); if (!c) return; lon = c[0]; lat = c[1] }
-      const en = (f.properties && f.properties.name) || zh
-      const px = clamp(Math.round(10 + featureExtent(f.geometry) * 0.22), 10, 20)
-      clabels.push({ zh, en, lon, lat, px })
     })
+    // 国家名：位置/线度来自解算器的 labelSet（按归属合并，per-POV 改名与 hide 在那里做）；
+    // 线度→像素字号的映射式子与换源前一字不改
+    for (const l of labelSet('zh', mapDetail0)) clabels.push({ zh: l.zh, en: l.en, lon: l.lon, lat: l.lat, px: clamp(Math.round(10 + l.ext * 0.22), 10, 20) })
   }
-  buildBaseGeo(featCache['10m'], 0)
+  buildBaseGeo(resolvedFeatures('10m'), 0)
+  // 视角/用户覆写改动由解算器广播回来：底图面/线/国名整份重建 + 静态层快照作废
+  const offPov = onPovChange(() => {
+    borderPaths = null
+    buildBaseGeo(resolvedFeatures(mapDetail0), mapThin)
+    invalidateStatic(); requestDraw()
+  })
 
   // 合帧：把一帧内的多次重绘请求合并成一次 rAF 渲染（拖拽/缩放不再被高频事件淹没）。
   let rafId = 0
@@ -207,7 +182,7 @@ export function createFlatCoverage(canvas) {
 
   // 陆地：把 pan/zoom 烘进变换矩阵，直接填充缓存的 Path2D（每帧零顶点遍历）。
   // 经度环绕用 -360/0/360 三档偏移，按视口裁剪只画可见副本；描边线宽除以缩放保持 0.8px 恒定。
-  // 仅填充陆地（海岸线描边移到覆盖之上的 strokeLand）。覆盖填充叠在陆地填充之上、按 alpha 混合 → 覆盖区底色随之透出。
+  // 仅填充陆地（海岸线与其余四类边界线移到覆盖之上的 drawBorders）。覆盖填充叠在陆地填充之上、按 alpha 混合 → 覆盖区底色随之透出。
   function drawLand() {
     const kk = k()
     const wl = -tx / kk, wr = (cw - tx) / kk   // 视口世界 X 范围（未含 off）
@@ -230,32 +205,59 @@ export function createFlatCoverage(canvas) {
     }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)   // 恢复屏幕坐标，后续图层照旧
   }
-  // 海岸线描边：画在覆盖填充【之上】，使海岸线在覆盖区内外连续 → 覆盖像染进地图、与底图平级，而非浮在其上。
-  function strokeLand() {
+  // 五类边界线（coast / claim / loc / indefinite / admin0），画在覆盖填充【之上】，
+  // 使地理骨架在覆盖区内外连续 → 覆盖像染进地图、与底图平级。
+  // 与陆地填充同一套「世界度坐标 Path2D + 三档经度环绕 + 视口裁剪」，故拖拽时零顶点遍历。
+  // ★ 线宽与虚线图案都除以 kk：canvas 的 lineWidth / lineDash 都算在用户空间，除掉缩放即得恒定屏幕像素。
+  function bakeBorders() {
+    const L = resolvedLines(mapDetail0)
+    const out = {}
+    for (const cls of BORDER_DRAW) {
+      const list = []
+      for (const poly of (L[cls] || [])) {
+        if (!poly || poly.length < 2) continue
+        const u = unwrap(poly)
+        let lo = Infinity, hi = -Infinity
+        const path = new Path2D()
+        for (let i = 0; i < u.length; i++) {
+          const x = u[i][0] - LON0, y = 90 - u[i][1]
+          if (x < lo) lo = x
+          if (x > hi) hi = x
+          i === 0 ? path.moveTo(x, y) : path.lineTo(x, y)
+        }
+        list.push({ lo, hi, path })
+      }
+      out[cls] = list
+    }
+    borderPaths = out
+    return out
+  }
+  function drawBorders() {
     const kk = k()
-    ctx.strokeStyle = borderStyle.natColor; ctx.lineWidth = borderStyle.natWidth / kk   // /kk → 恒定屏幕 px
-    ctx.globalAlpha = borderStyle.natOpacity
+    const P = borderPaths || bakeBorders()
     const wl = -tx / kk, wr = (cw - tx) / kk
-    for (const off of [-360, 0, 360]) {
-      ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * (tx + off * kk), dpr * ty)
-      if (compat) {
-        // 导出：海岸线同色 → 合并成单条 path 一次描边（数千节点 → 1 节点）
-        ctx.beginPath()
-        for (const c of land) for (const sh of c.shapes) { if (sh.hi + off < wl || sh.lo + off > wr) continue; for (const r of sh.rings) { for (let i = 0; i < r.length; i++) i === 0 ? ctx.moveTo(r[i][0], r[i][1]) : ctx.lineTo(r[i][0], r[i][1]); ctx.closePath() } }
-        ctx.stroke()
-      } else for (const c of land) for (const sh of c.shapes) {
-        if (sh.hi + off < wl || sh.lo + off > wr) continue
-        ctx.stroke(sh.path)
+    for (const cls of BORDER_DRAW) {
+      const list = P[cls]
+      if (!list || !list.length) continue
+      const key = CFG_KEY[cls]
+      ctx.strokeStyle = borderStyle[key + 'Color']
+      ctx.lineWidth = borderStyle[key + 'Width'] / kk
+      ctx.globalAlpha = borderStyle[key + 'Opacity']
+      const px = DASH_PX[borderStyle[key + 'Dash'] || 'solid']
+      ctx.setLineDash(px ? px.map((v) => v * (DASH_SCALE[cls] || 1) / kk) : [])
+      for (const off of [-360, 0, 360]) {
+        ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * (tx + off * kk), dpr * ty)
+        for (const sh of list) { if (sh.hi + off < wl || sh.lo + off > wr) continue; ctx.stroke(sh.path) }
       }
     }
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.globalAlpha = 1
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.globalAlpha = 1; ctx.setLineDash([])
   }
   // 南极极冠：补 SOUTH_CAP_LAT 以南的中央空洞（取南极洲当前填色——默认冰白，被逐国设色时随用户色，无缝衔接）。
   // 北极岛屿改由 buildBaseGeo 按「多边形整块」染冰白（与 3D 同口径），不再有北极纬度渐变，故此处只剩南极极冠。
   function drawIceCaps() {
     const kk = k(), x0 = PX(LON0), w = 360 * kk
     const yCap = PY(SOUTH_CAP_LAT)
-    ctx.fillStyle = landColors('010', 0).base; ctx.fillRect(x0, yCap, w, PY(-90) - yCap)
+    ctx.fillStyle = landColors('ATA', 0).base; ctx.fillRect(x0, yCap, w, PY(-90) - yCap)
   }
   // 卫星图标（矢量复刻聚焦卫星 SVG：双侧 3×2 太阳能板 + 中央星体）。按 color 填充、size 缩放。
   // 仰角线卫星与聚焦卫星共用此函数 —— 平面图上卫星统一为同一枚图标，颜色随各自设置。
@@ -581,25 +583,24 @@ export function createFlatCoverage(canvas) {
     const MK_FONT_K = 50 / 66      // 文字：3D 实际字高 = 字号 × 50/66 ≈ 0.76
     const DOT3D_FILL = 18 / 32     // 3D 圆点：实心圆占精灵的比例（其余为留白）
     const ST_ICON_K = 0.85         // 地球站图标：2D 观感略大于 3D，收一档对齐（经验系数，可微调）
-    // 海岸线 + 经纬网画在覆盖填充之上：地理骨架贯穿覆盖区内外，覆盖与底图融为一体（平级），不再像贴纸浮在上面
-    drawGrid(); strokeLand()
-    // 南海十段线：颜色随中国国土(CHINA)，透明度随省界，线宽=省界×惯例倍数（比省界略粗）
-    ctx.globalAlpha = borderStyle.provOpacity
-    const nhW = Math.max(NANHAI_MIN_WIDTH, borderStyle.provWidth * NANHAI_WIDTH_MUL)
-    for (const seg of NANHAI_DASHES) drawPolyline(seg, CHINA, nhW)
-    ctx.globalAlpha = 1
-    // 地级市界（画在省界之下，省界更醒目）
-    if (cityVisible && city) {
-      ctx.globalAlpha = borderStyle.cityOpacity
+    // 经纬网 + 行政区界 + 五类边界线画在覆盖填充之上：地理骨架贯穿覆盖区内外，覆盖与底图融为一体（平级），
+    // 不再像贴纸浮在上面。次序从下往上：经纬网 → 二级行政区 → 一级行政区 → 海岸 → 主张 → 停火 → 未定 → 国界。
+    drawGrid()
+    // 缩放分级：全球视角下二级行政区完全淡出、一级降到 0.3（政治五类不参与——国界在任何尺度都在）
+    const admF = admFade(borderStyle.fade ? fadeFactor(1 / k()) : 1)
+    // 二级行政区界（画在一级之下，一级更醒目）
+    if (cityVisible && city && admF.adm2 > 0.01) {
+      ctx.globalAlpha = borderStyle.cityOpacity * admF.adm2
       for (const ring of city.borders) drawPolyline(ring, borderStyle.cityColor, borderStyle.cityWidth)
       ctx.globalAlpha = 1
     }
-    // 省界
+    // 一级行政区界
     if (provVisible && prov) {
-      ctx.globalAlpha = borderStyle.provOpacity
+      ctx.globalAlpha = borderStyle.provOpacity * admF.adm1
       for (const ring of prov.borders) drawPolyline(ring, borderStyle.provColor, borderStyle.provWidth)
       ctx.globalAlpha = 1
     }
+    drawBorders()   // 海岸 → 主张 → 停火 → 未定 → 国界（国界压在最上面）
     // 覆盖数据标注（GXT 波束线本体已移入 drawDataLines：与 GRD 等值线/Polygon 边线同层、压在国界省界之下）
     if (geom) {
       if (sizes.showBore) for (const d of (geom.dots || [])) dot(d.lon, d.lat, Math.max(1, sizes.dotSize) * iz, '#fff')   // GXT 波束中心点：克制版联动
@@ -1114,13 +1115,18 @@ export function createFlatCoverage(canvas) {
     setCities,
     setCitiesVisible(v) { cityVisible = !!v; invalidateStatic(); requestDraw() },
     // 国界/省界线样式（与 3D 同步）：{ natColor, natWidth, natOpacity, provColor, provWidth, provOpacity }
-    setBorderStyle(s) { Object.assign(borderStyle, s || {}); invalidateStatic(); requestDraw() },
+    setBorderStyle(s) {
+      const reDash = s && Object.keys(s).some((k) => /Dash$/.test(k))
+      Object.assign(borderStyle, s || {})
+      if (reDash) borderPaths = null   // 线型换了要重烘（虚线图案本身不入 path，但这里顺手清一次最省心）
+      invalidateStatic(); requestDraw()
+    },
     // 地名颜色/透明度（与 3D 同步）：{ countryColor, countryOpacity, provColor, provOpacity }
     setLabelStyle(s) { Object.assign(labelStyle, s || {}); invalidateStatic(); requestDraw() },
     // 大海填充色（与 3D 同步，限蓝色系）
     setOceanColor(c) { if (c) { oceanColor = c; invalidateStatic(); requestDraw() } },
     // 大地颜色（基调方案 + 逐国覆盖，与 3D 同步）：写入公共色板状态后重建陆地 Path2D 并重绘静态层
-    setLandColors(s) { setLandPalette(s); buildBaseGeo(featCache[mapDetail0] || featCache['10m'], mapThin); invalidateStatic(); requestDraw() },
+    setLandColors(s) { setLandPalette(s); buildBaseGeo(resolvedFeatures(mapDetail0), mapThin); invalidateStatic(); requestDraw() },
     setOnRightClick(fn) { onRightClick = fn },
     setOnHover(fn) { onHover = fn },
     // 缩放进度条接口：getZoom 读当前进度、setZoom 设到进度 t、setOnZoom 注册滚轮缩放回填回调
@@ -1148,17 +1154,19 @@ export function createFlatCoverage(canvas) {
     },
     // 渲染分辨率倍率（画质档位）：改后重建位图。this.resize 重算 dpr/位图尺寸并重绘。
     setRenderScale(n) { renderScale = Number.isFinite(n) ? n : null; this.resize() },
-    // 底图精细化（与 3D 同步）：'10m'/'50m'/'110m' + thin 抽稀阈值。换 topojson 源重建陆地/海岸线。50m/110m 懒加载。
+    // 底图精细化（与 3D 同步）：'10m'/'50m'/'110m' + thin 抽稀阈值。换源重建陆地面与五类边界线。50m/110m 懒加载。
     async setMapDetail(detail, thin) {
       const t = (thin != null) ? thin : mapThin
       if (detail === mapDetail0 && t === mapThin) return
-      let feats
-      try { feats = await loadFeatures(detail) }
+      try { await ensureDetail(detail) }
       catch (e) { console.warn(detail + ' 底图加载失败，保持当前精度', e); return }
       mapDetail0 = detail; mapThin = t
-      buildBaseGeo(feats, t)
+      borderPaths = null
+      buildBaseGeo(resolvedFeatures(detail), t)
       invalidateStatic(); requestDraw()
     },
+    // 销毁：退订主权解算层的广播（不退的话卸载后的画布仍会被换视角触发重建）
+    destroy() { offPov() },
     setBeamDragMode(v) { beamDragMode = !!v; beamDragging = false; canvas.style.cursor = polyDrawMode ? 'crosshair' : ((v || labelDragMode) ? 'move' : 'grab') },
     setOnBeamDrag(fn) { onBeamDrag = fn },
     setLabelDragMode(v) { labelDragMode = !!v; labelDragging = false; canvas.style.cursor = polyDrawMode ? 'crosshair' : ((v || beamDragMode) ? 'move' : 'grab') },

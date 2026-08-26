@@ -25,9 +25,10 @@ import { MINI_COVERAGE_SATS, satKey, inMiniList } from '../shared/miniSatList.js
 defineOptions({ inheritAttrs: false })   // 不把父级传入的 title 落到根节点（去掉鼠标悬停的“星座3D”原生提示）
 import { createGlobeScene } from '../viz/globe3d/scene.js'
 import { createFlatCoverage } from '../viz/flatmap/flatCoverage.js'
-import NAMES_ZH from '../viz/globe3d/data/country-names-zh.json'
-import { LAND as LAND_MORANDI, LAND_UNIFORMS, LAND_DEFAULT } from '../viz/landPalette.js'
-import { countryAt, currentLandColor } from '../viz/globe3d/countryPick.js'
+import { LAND as LAND_MORANDI, LAND_UNIFORMS, LAND_DEFAULT, migrateLandOverrides } from '../viz/landPalette.js'
+import { countryAt, currentLandColor, countryList } from '../viz/globe3d/countryPick.js'
+import { BORDER_DEF } from '../viz/geo/borderStyle.js'
+import { onPovChange } from '../viz/geo/povResolver.js'
 import { useGrdCoverage } from '../viz/grd/useGrdCoverage.js'
 import { useBeamSynth } from '../viz/grd/useBeamSynth.js'
 import { useVisibility, orbitClass } from '../viz/vis/useVisibility.js'
@@ -162,7 +163,7 @@ const focusStyle = reactive({
   ringOn: true, ringColor: '#ffd27a', ringPx: 26
 })
 const FOCUS_STYLE_DEF = { ...focusStyle }   // 出厂值快照：侧栏「恢复默认」按它回填
-const DASH_OPTS = [{ k: 'solid', label: '实线' }, { k: 'dash', label: '虚线' }, { k: 'dot', label: '点线' }]
+const DASH_OPTS = [{ k: 'solid', label: '实线' }, { k: 'dash', label: '虚线' }, { k: 'dot', label: '点线' }, { k: 'dashdot', label: '点划线' }]
 const apiOk = typeof window !== 'undefined' && !!(window.api && window.api.omm)
 const covApiOk = typeof window !== 'undefined' && !!(window.api && window.api.coverage)
 const grdApiOk = typeof window !== 'undefined' && !!(window.api && window.api.coverageGrd)
@@ -1175,7 +1176,39 @@ const provNameSize = ref(0.6)     // 省名字号倍率（0.6–2.0）
 const cityNameSize = ref(0.2)     // 地级市名字号倍率（小空间，默认偏小）
 // 国界(海岸线)/省界/地级市界线样式：线宽 px / 颜色 / 透明度，同时作用于 3D 与平面图
 // 地级市界默认更细更淡（线粗下限与全库一致，0.1），层级上从属于省界
-const borderStyle = reactive({ natColor: '#a8a8a8', natWidth: 0.5, natOpacity: 1.0, provColor: '#878787', provWidth: 0.5, provOpacity: 0.7, cityColor: '#6b7280', cityWidth: 0.5, cityOpacity: 0.15 })
+// 边界线样式：五类线（海岸/国界/未定界/停火线/主张线）各四项 + 两级行政区各三项 + 按缩放淡出开关。
+// 出厂值收在 src/viz/geo/borderStyle.js（3D 球体与 2D 平面图共用同一份，两个视图不可能长歪）。
+const borderStyle = reactive({ ...BORDER_DEF })
+// 「本节恢复出厂样式」按分组回填
+const BORDER_PARTS = {
+  coast: ['coastColor', 'coastWidth', 'coastOpacity', 'coastDash'],
+  admin0: ['admin0Color', 'admin0Width', 'admin0Opacity', 'admin0Dash'],
+  indef: ['indefColor', 'indefWidth', 'indefOpacity', 'indefDash'],
+  loc: ['locColor', 'locWidth', 'locOpacity', 'locDash'],
+  claim: ['claimColor', 'claimWidth', 'claimOpacity', 'claimDash'],
+  prov: ['provColor', 'provWidth', 'provOpacity'],
+  city: ['cityColor', 'cityWidth', 'cityOpacity']
+}
+// 五类线的呈现顺序与中文名（面板里逐组画）：与渲染次序一致，国界排最上
+const BORDER_ROWS = [
+  { k: 'admin0', zh: '国界', tip: '两侧归属不同的边界；归属由「地图视角」解算' },
+  { k: 'indef', zh: '未定界', tip: '任一侧归属为「争议」的边界，以及底图自带的未定界线' },
+  { k: 'loc', zh: '停火线', tip: '实际控制线（Line of control），底图自带几何' },
+  { k: 'claim', zh: '主张线', tip: '海上主张线；画不画由当前视角的 lines.claim 决定' },
+  { k: 'coast', zh: '海岸线', tip: '一侧无陆地邻居的边界；自然要素，与政治线分属两个色系' }
+]
+// 样式预设（一键套整组）：只动五类线的颜色与透明度，线宽/线型这类结构性区分不跟着变
+const BORDER_PRESETS = [
+  { k: 'default', zh: '默认' },
+  { k: 'print', zh: '印刷' },
+  { k: 'dark', zh: '暗色' },
+  { k: 'contrast', zh: '高对比' }
+]
+const BORDER_PRESET_VAL = {
+  print: { coastColor: '#5b7d99', admin0Color: '#3a3a3a', indefColor: '#3a3a3a', locColor: '#3a3a3a', claimColor: '#3a3a3a', provColor: '#3a3a3a', cityColor: '#3a3a3a' },
+  dark: { coastColor: '#41586b', admin0Color: '#6f6f6f', indefColor: '#6f6f6f', locColor: '#6f6f6f', claimColor: '#6f6f6f', provColor: '#6f6f6f', cityColor: '#6f6f6f' },
+  contrast: { coastColor: '#bcd7ea', admin0Color: '#ffffff', indefColor: '#ffffff', locColor: '#ffffff', claimColor: '#ffffff', provColor: '#ffffff', cityColor: '#ffffff' }
+}
 // 地名颜色/透明度：国家名 与 省名 与 地级市名 分开（大洋名维持固有蓝），同时作用于 3D 与平面图
 const labelStyle = reactive({ countryColor: '#ffffff', countryOpacity: 1.0, provColor: '#f6fa00', provOpacity: 0.25, cityColor: '#9aa3b0', cityOpacity: 0.25 })
 // 大海颜色（限蓝色系预设），同时作用于 3D 球体与平面图底色
@@ -1186,18 +1219,19 @@ const oceanColor = ref('#a3ccff')
 // 大地颜色：基调方案（'morandi' 杂色循环 | '#rrggbb' 统一单色，预设见 landPalette.LAND_UNIFORMS，首个为 SATSOFT 米绿）
 // + 逐国覆盖（优先级最高，含中国/冰盖），同时作用于 3D 球体与平面图。默认统一米黄（与 landPalette 模块默认一致）
 const landScheme = ref(LAND_DEFAULT)
-const landOverrides = reactive({})   // ISO 数字码 → '#rrggbb'
+const landOverrides = reactive({})   // 归属 ISO3 → '#rrggbb'（台湾/港澳恒并入 'CHN'）
 const landQuery = ref('')            // 逐国设色搜索框
 const landPick = ref(null)           // 当前选中国家 { id, zh }
 const HEX6 = /^#[0-9a-fA-F]{6}$/
-// 可搜索国家列表（台湾并入中国不单列；中国/朝鲜/韩国用通称，与建图口径一致）
-const COUNTRY_ZH = Object.keys(NAMES_ZH).filter((id) => id !== '158')
-  .map((id) => ({ id, zh: id === '156' ? '中国' : id === '408' ? '朝鲜' : id === '410' ? '韩国' : NAMES_ZH[id][0] }))
-  .sort((a, b) => a.zh.localeCompare(b.zh, 'zh-Hans-CN'))
+// 视角/覆写改动的版本号：可搜索国家清单、取色器预填这些都跟着重算
+const povTick = ref(0)
+const offPovTick = onPovChange(() => { povTick.value++ })
+// 可搜索国家列表：口径 = 当前视角下地图上确实画出来的那些国家（台湾/港澳并入中国不单列）
+const COUNTRY_ZH = computed(() => { povTick.value; return countryList() })
 const landHits = computed(() => {
   const q = landQuery.value.trim()
   if (!q || (landPick.value && landPick.value.zh === q)) return []
-  return COUNTRY_ZH.filter((c) => c.zh.includes(q)).slice(0, 10)
+  return COUNTRY_ZH.value.filter((c) => c.zh.includes(q)).slice(0, 10)
 })
 // 选中国家取色器预填：已覆盖→覆盖色；统一基调→基调色；莫兰迪→该国当前实际循环色
 const landPickColor = computed(() => {
@@ -1205,7 +1239,7 @@ const landPickColor = computed(() => {
   if (!p) return '#e4eccf'
   return landOverrides[p.id] || (landScheme.value !== 'morandi' ? landScheme.value : currentLandColor(p.id))
 })
-const landOvList = computed(() => Object.entries(landOverrides).map(([id, color]) => ({ id, color, zh: (COUNTRY_ZH.find((c) => c.id === id) || {}).zh || id })))
+const landOvList = computed(() => Object.entries(landOverrides).map(([id, color]) => ({ id, color, zh: (COUNTRY_ZH.value.find((c) => c.id === id) || {}).zh || id })))
 const covStatus = ref('')
 const covLegend = ref([])         // [{ name, mode, gmin, gmax, type, solid }]
 let covLoaded = false
@@ -2942,7 +2976,8 @@ const fpLegend = computed(() => {
   return b ? `覆盖范围 · 波束角 ${b}°` : '覆盖范围'
 })
 // 图例色条：跟着显示设置取色与线型（点线在 18px 的短条上按 dotted 画，观感与图上一致）
-const swStyle = (color, dash) => ({ borderColor: color, borderTopStyle: dash === 'dot' ? 'dotted' : (dash === 'dash' ? 'dashed' : 'solid') })
+// 点划线在 18px 的短条上画不出「长划-点」的节奏，退回 dashed（观感上仍是断线，与实线/点线可分）
+const swStyle = (color, dash) => ({ borderColor: color, borderTopStyle: dash === 'dot' ? 'dotted' : (dash === 'dash' || dash === 'dashdot') ? 'dashed' : 'solid' })
 const fpSwStyle = computed(() => swStyle(focusStyle.fpColor, focusStyle.fpDash))
 const trkSwStyle = computed(() => swStyle(focusStyle.trkColor, focusStyle.trkDash))
 
@@ -3527,8 +3562,19 @@ function applyNameScale() { if (scene) scene.setNameScale(countryNameSize.value,
 function setCountryNameSize(e) { countryNameSize.value = Number(e.target.value); applyNameScale() }
 function setProvNameSize(e) { provNameSize.value = Number(e.target.value); applyNameScale() }
 function setCityNameSize(e) { cityNameSize.value = Number(e.target.value); applyNameScale() }
-// 国界/省界线样式 → 3D 与平面图。{ ...borderStyle } 取响应式对象快照传入两个渲染器。
+// 边界线样式 → 3D 与平面图。{ ...borderStyle } 取响应式对象快照传入两个渲染器。
 function applyBorderStyle() { const s = { ...borderStyle }; if (scene) scene.setBorderStyle(s); if (flat) flat.setBorderStyle(s) }
+function setBorderVal(k, v) { borderStyle[k] = v; applyBorderStyle() }
+function toggleBorderFade() { borderStyle.fade = !borderStyle.fade; applyBorderStyle() }
+// 分组 / 整节恢复出厂样式
+function resetBorderPart(k) { for (const f of (BORDER_PARTS[k] || [])) borderStyle[f] = BORDER_DEF[f]; applyBorderStyle() }
+function resetBorderAll() { Object.assign(borderStyle, BORDER_DEF); applyBorderStyle() }
+// 样式预设：只套颜色，线宽与线型这类结构性区分不跟着变（那是五类线彼此可分的根据）
+function applyBorderPreset(k) {
+  if (k === 'default') return resetBorderAll()
+  Object.assign(borderStyle, BORDER_PRESET_VAL[k] || {})
+  applyBorderStyle()
+}
 // 地名颜色/透明度 → 3D 与平面图。
 function applyLabelStyle() { const s = { ...labelStyle }; if (scene) scene.setLabelStyle(s); if (flat) flat.setLabelStyle(s) }
 // 聚焦卫星样式 → 3D 与平面图。颜色两边口径不同：three.js 要数值、Canvas 要 CSS 串（同 termStyle 的做法）。
@@ -5572,9 +5618,16 @@ async function restoreSettings() {
   // 线粗下限 2026-08-22 起全库统一到 0.1（市界那档原为 0.05，是唯一一处收紧的）。旧快照里存着
   // 0.05 这类低于新下限的值时，滑杆会显示成 0.1 而实际仍按 0.05 画——读数与画面对不上，且滑一下
   // 就再也回不去。恢复时就地夹进新区间，让两者始终一致。
-  for (const k of ['natWidth', 'provWidth', 'cityWidth']) {
-    if (Number.isFinite(borderStyle[k])) borderStyle[k] = Math.min(8, Math.max(0.1, borderStyle[k]))
+  for (const k of Object.keys(borderStyle)) {
+    if (/Width$/.test(k) && Number.isFinite(borderStyle[k])) borderStyle[k] = Math.min(8, Math.max(0.1, borderStyle[k]))
   }
+  // 旧快照只有 nat*（国界+海岸合成一条）：把它落到国界那一组，海岸沿用出厂值 —— 两者已分家。
+  if (s.borderStyle && s.borderStyle.natColor != null && s.borderStyle.admin0Color == null) {
+    borderStyle.admin0Color = s.borderStyle.natColor
+    if (Number.isFinite(s.borderStyle.natWidth)) borderStyle.admin0Width = Math.min(8, Math.max(0.1, s.borderStyle.natWidth))
+    if (Number.isFinite(s.borderStyle.natOpacity)) borderStyle.admin0Opacity = s.borderStyle.natOpacity
+  }
+  for (const k of ['natColor', 'natWidth', 'natOpacity']) delete borderStyle[k]
   applyBorderStyle()
   if (s.labelStyle && typeof s.labelStyle === 'object') Object.assign(labelStyle, s.labelStyle)
   applyLabelStyle()
@@ -5583,8 +5636,9 @@ async function restoreSettings() {
   if (typeof s.oceanColor === 'string') setOceanColor(s.oceanColor === '#2a85c4' ? '#a3ccff' : s.oceanColor)
   // 大地颜色：基调 + 逐国覆盖。默认态（LAND_DEFAULT 且无覆盖）不触发陆地重建，避免启动白做一次
   if (s.landScheme === 'morandi' || (typeof s.landScheme === 'string' && HEX6.test(s.landScheme))) landScheme.value = s.landScheme
+  // 逐国大地颜色：老存档的键是 ISO 数字码（'156'），换成主权解算层后是 ISO3（'CHN'）→ 过一遍迁移
   if (s.landOverrides && typeof s.landOverrides === 'object') {
-    for (const [k, v] of Object.entries(s.landOverrides)) if (typeof v === 'string' && HEX6.test(v)) landOverrides[k] = v
+    for (const [k, v] of Object.entries(migrateLandOverrides(s.landOverrides))) landOverrides[k] = v
   }
   if (landScheme.value !== LAND_DEFAULT || Object.keys(landOverrides).length) applyLandColors(true)
   // 在轨现实星座分组配色（renderHasColor 由随后 loadGroup→rebuildRenderSet 一并算入）
@@ -7428,35 +7482,55 @@ onBeforeUnmount(() => {
           <div class="srow"><label>名字号</label><input class="rng" type="range" min="0.3" max="3" step="0.05" :value="countryNameSize" @input="setCountryNameSize" /><span class="u">{{ countryNameSize.toFixed(2) }}</span></div>
           <div class="srow"><label>名颜色</label><input class="clr" type="color" v-model="labelStyle.countryColor" @input="applyLabelStyle" /><span class="u">{{ labelStyle.countryColor }}</span></div>
           <div class="srow"><label>名透明度</label><input class="rng" type="range" min="0" max="1" step="0.05" v-model.number="labelStyle.countryOpacity" @input="applyLabelStyle" /><span class="u">{{ labelStyle.countryOpacity.toFixed(2) }}</span></div>
-          <div class="srow"><label>国界线颜色</label><input class="clr" type="color" v-model="borderStyle.natColor" @input="applyBorderStyle" /><span class="u">{{ borderStyle.natColor }}</span></div>
-          <div class="srow"><label>国界线粗</label><input class="rng" type="range" min="0.1" max="8" step="0.1" v-model.number="borderStyle.natWidth" @input="applyBorderStyle" /><span class="u">{{ borderStyle.natWidth.toFixed(1) }}</span></div>
-          <div class="srow"><label>国界透明度</label><input class="rng" type="range" min="0" max="1" step="0.05" v-model.number="borderStyle.natOpacity" @input="applyBorderStyle" /><span class="u">{{ borderStyle.natOpacity.toFixed(2) }}</span></div>
           </template>
         </div>
 
         <div class="sec">
-          <div class="sect acc" :class="{ open: isSecOpen('geo-prov', false) }" @click="toggleSec('geo-prov', false)"><Icon :name="isSecOpen('geo-prov', false) ? 'chevron-down' : 'chevron-right'" :size="12" /><span>中国省（省界）</span></div>
+          <div class="sect acc" :class="{ open: isSecOpen('geo-border', false) }" @click="toggleSec('geo-border', false)"><Icon :name="isSecOpen('geo-border', false) ? 'chevron-down' : 'chevron-right'" :size="12" /><span>边界线</span><span class="lnk" title="本节恢复出厂样式" @click.stop="resetBorderAll">默认</span></div>
+          <template v-if="isSecOpen('geo-border', false)">
+          <div class="srow"><label>样式预设</label>
+            <span class="seg nseg" role="group" aria-label="边界线样式预设">
+              <span v-for="pr in BORDER_PRESETS" :key="pr.k" class="sg" :title="pr.k === 'default' ? '回到出厂样式' : '一键套用整组配色（线宽与线型不变）'" @click="applyBorderPreset(pr.k)">{{ pr.zh }}</span>
+            </span>
+          </div>
+          <template v-for="r in BORDER_ROWS" :key="r.k">
+            <div class="bsub" :title="r.tip"><span class="bsw" :style="swStyle(borderStyle[r.k + 'Color'], borderStyle[r.k + 'Dash'])"></span><span>{{ r.zh }}</span><span class="lnk" title="本组恢复出厂样式" @click="resetBorderPart(r.k)">默认</span></div>
+            <div class="srow"><label>颜色</label><input class="clr" type="color" v-model="borderStyle[r.k + 'Color']" @input="applyBorderStyle" /><span class="u">{{ borderStyle[r.k + 'Color'] }}</span></div>
+            <div class="srow"><label>线粗</label><input class="rng" type="range" min="0.1" max="8" step="0.1" v-model.number="borderStyle[r.k + 'Width']" @input="applyBorderStyle" /><span class="u">{{ borderStyle[r.k + 'Width'].toFixed(1) }}</span></div>
+            <div class="srow"><label>透明度</label><input class="rng" type="range" min="0" max="1" step="0.05" v-model.number="borderStyle[r.k + 'Opacity']" @input="applyBorderStyle" /><span class="u">{{ borderStyle[r.k + 'Opacity'].toFixed(2) }}</span></div>
+            <div class="srow"><label>线型</label>
+              <span class="seg nseg" role="group" :aria-label="r.zh + '线型'">
+                <span v-for="d in DASH_OPTS" :key="d.k" class="sg" :class="{ on: borderStyle[r.k + 'Dash'] === d.k }" @click="setBorderVal(r.k + 'Dash', d.k)">{{ d.label }}</span>
+              </span>
+            </div>
+          </template>
+          <label class="chk2" title="全球视角下二级行政区界完全淡出、一级降到 0.3，拉近后线性恢复；国界与海岸线不参与"><input type="checkbox" :checked="borderStyle.fade" @change="toggleBorderFade" /><span>行政区界按缩放淡出</span></label>
+          </template>
+        </div>
+
+        <div class="sec">
+          <div class="sect acc" :class="{ open: isSecOpen('geo-prov', false) }" @click="toggleSec('geo-prov', false)"><Icon :name="isSecOpen('geo-prov', false) ? 'chevron-down' : 'chevron-right'" :size="12" /><span>一级行政区</span></div>
           <template v-if="isSecOpen('geo-prov', false)">
-          <label class="chk2"><input type="checkbox" :checked="showProvinces" @change="toggleProvinces" /><span>显示中国省界 / 省名</span></label>
+          <label class="chk2"><input type="checkbox" :checked="showProvinces" @change="toggleProvinces" /><span>显示一级行政区界 / 名称</span></label>
           <div class="srow"><label>名字号</label><input class="rng" type="range" min="0.3" max="2" step="0.05" :value="provNameSize" @input="setProvNameSize" /><span class="u">{{ provNameSize.toFixed(2) }}</span></div>
           <div class="srow"><label>名颜色</label><input class="clr" type="color" v-model="labelStyle.provColor" @input="applyLabelStyle" /><span class="u">{{ labelStyle.provColor }}</span></div>
           <div class="srow"><label>名透明度</label><input class="rng" type="range" min="0" max="1" step="0.05" v-model.number="labelStyle.provOpacity" @input="applyLabelStyle" /><span class="u">{{ labelStyle.provOpacity.toFixed(2) }}</span></div>
-          <div class="srow"><label>省界线颜色</label><input class="clr" type="color" v-model="borderStyle.provColor" @input="applyBorderStyle" /><span class="u">{{ borderStyle.provColor }}</span></div>
-          <div class="srow"><label>省界线粗</label><input class="rng" type="range" min="0.1" max="8" step="0.1" v-model.number="borderStyle.provWidth" @input="applyBorderStyle" /><span class="u">{{ borderStyle.provWidth.toFixed(1) }}</span></div>
-          <div class="srow"><label>省界透明度</label><input class="rng" type="range" min="0" max="1" step="0.05" v-model.number="borderStyle.provOpacity" @input="applyBorderStyle" /><span class="u">{{ borderStyle.provOpacity.toFixed(2) }}</span></div>
+          <div class="srow"><label>界线颜色</label><input class="clr" type="color" v-model="borderStyle.provColor" @input="applyBorderStyle" /><span class="u">{{ borderStyle.provColor }}</span></div>
+          <div class="srow"><label>界线线粗</label><input class="rng" type="range" min="0.1" max="8" step="0.1" v-model.number="borderStyle.provWidth" @input="applyBorderStyle" /><span class="u">{{ borderStyle.provWidth.toFixed(1) }}</span></div>
+          <div class="srow"><label>界线透明度</label><input class="rng" type="range" min="0" max="1" step="0.05" v-model.number="borderStyle.provOpacity" @input="applyBorderStyle" /><span class="u">{{ borderStyle.provOpacity.toFixed(2) }}</span></div>
           </template>
         </div>
 
         <div class="sec">
-          <div class="sect acc" :class="{ open: isSecOpen('geo-city', false) }" @click="toggleSec('geo-city', false)"><Icon :name="isSecOpen('geo-city', false) ? 'chevron-down' : 'chevron-right'" :size="12" /><span>中国地级市（地级市界）</span></div>
+          <div class="sect acc" :class="{ open: isSecOpen('geo-city', false) }" @click="toggleSec('geo-city', false)"><Icon :name="isSecOpen('geo-city', false) ? 'chevron-down' : 'chevron-right'" :size="12" /><span>二级行政区</span></div>
           <template v-if="isSecOpen('geo-city', false)">
-          <label class="chk2"><input type="checkbox" :checked="showCities" @change="toggleCities" /><span>显示中国地级市界 / 地级市名</span></label>
+          <label class="chk2"><input type="checkbox" :checked="showCities" @change="toggleCities" /><span>显示二级行政区界 / 名称</span></label>
           <div class="srow"><label>名字号</label><input class="rng" type="range" min="0.05" max="1.5" step="0.05" :value="cityNameSize" @input="setCityNameSize" /><span class="u">{{ cityNameSize.toFixed(2) }}</span></div>
           <div class="srow"><label>名颜色</label><input class="clr" type="color" v-model="labelStyle.cityColor" @input="applyLabelStyle" /><span class="u">{{ labelStyle.cityColor }}</span></div>
           <div class="srow"><label>名透明度</label><input class="rng" type="range" min="0" max="1" step="0.05" v-model.number="labelStyle.cityOpacity" @input="applyLabelStyle" /><span class="u">{{ labelStyle.cityOpacity.toFixed(2) }}</span></div>
-          <div class="srow"><label>市界线颜色</label><input class="clr" type="color" v-model="borderStyle.cityColor" @input="applyBorderStyle" /><span class="u">{{ borderStyle.cityColor }}</span></div>
-          <div class="srow"><label>市界线粗</label><input class="rng" type="range" min="0.1" max="8" step="0.1" v-model.number="borderStyle.cityWidth" @input="applyBorderStyle" /><span class="u">{{ borderStyle.cityWidth.toFixed(2) }}</span></div>
-          <div class="srow"><label>市界透明度</label><input class="rng" type="range" min="0" max="1" step="0.05" v-model.number="borderStyle.cityOpacity" @input="applyBorderStyle" /><span class="u">{{ borderStyle.cityOpacity.toFixed(2) }}</span></div>
+          <div class="srow"><label>界线颜色</label><input class="clr" type="color" v-model="borderStyle.cityColor" @input="applyBorderStyle" /><span class="u">{{ borderStyle.cityColor }}</span></div>
+          <div class="srow"><label>界线线粗</label><input class="rng" type="range" min="0.1" max="8" step="0.1" v-model.number="borderStyle.cityWidth" @input="applyBorderStyle" /><span class="u">{{ borderStyle.cityWidth.toFixed(2) }}</span></div>
+          <div class="srow"><label>界线透明度</label><input class="rng" type="range" min="0" max="1" step="0.05" v-model.number="borderStyle.cityOpacity" @input="applyBorderStyle" /><span class="u">{{ borderStyle.cityOpacity.toFixed(2) }}</span></div>
           </template>
         </div>
 
@@ -9186,6 +9260,9 @@ onBeforeUnmount(() => {
 .bsub { display: flex; align-items: center; gap: 8px; margin: 7px 0 4px; color: var(--text-muted); font-size: 11.5px; }
 .bsub .lnk { color: var(--accent); cursor: pointer; font-size: 11.5px; }
 .bsub .cnt2 { margin-left: auto; color: var(--text-faint); font-size: 11px; }
+/* 边界线分组的小色条图例：颜色/线型由 swStyle 行内给（跟着设置走），这里只留几何 */
+.bsub .bsw { width: 18px; height: 0; border-top-width: 2px; border-top-style: solid; flex: 0 0 auto; }
+.bsub .lnk { margin-left: auto; }
 .bq { display: block; width: 100%; box-sizing: border-box; margin-bottom: 5px; border: 1px solid var(--border); background: var(--bg); padding: 3px 6px; font-size: 11.5px; color: var(--text); outline: none; }
 .bq:focus { border-color: var(--accent); }
 .chip .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }

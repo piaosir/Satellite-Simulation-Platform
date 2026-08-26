@@ -165,3 +165,6 @@ electron/services/shareConfig.js
 
 # 底图/行政区构建脚本的原始数据缓存（Natural Earth / geoBoundaries 下载件），不进仓库
 scripts/_ne/
+
+# 底图边界线验证台：2D 四档缩放 + 三处放大对照（克什米尔/南海/藏南）+ 3D 球体，本地开发用，不进仓库
+.geoharness/

@@ -15,6 +15,8 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { FROZEN, CUSTOMIZABLE_DISPUTES, expandOverrides } from '../../../src/viz/geo/frozen.js'
 import * as R from '../../../src/viz/geo/povResolver.js'
+import { BORDER_DEF, DASH_PX, DASH_SCALE, BORDER_CLASSES, BORDER_DRAW, ORDER, CFG_KEY, fadeFactor, admFade } from '../../../src/viz/geo/borderStyle.js'
+import { migrateLandOverrides } from '../../../src/viz/landPalette.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(HERE, '..', '..', '..')
@@ -130,6 +132,48 @@ const labels = R.labelSet('zh')
 ok('⑨ 台湾不单独出国名标注', !labels.some((x) => x.owner === 'TWN' || x.zh === '台湾'), '共 ' + labels.length + ' 个国名')
 ok('⑨b 台北/香港/澳门点选结果都是中国',
   ['121.5,25.03', '114.15,22.35', '113.55,22.15'].every((s) => { const [x, y] = s.split(',').map(Number); const r = R.ownerAt(x, y); return r && r.owner === 'CHN' }))
+
+// ---------- ⑩ 边界线显示规范（1.6b 六 · 1）----------
+// 出厂默认下，任意两类线不得同时「同色 + 同宽 + 同线型」——否则用户根本分不出哪条是哪条。
+const SEVEN = [...BORDER_CLASSES.map((c) => [c, CFG_KEY[c]]), ['adm1', 'prov'], ['adm2', 'city']]
+const sig = (k) => [String(BORDER_DEF[k + 'Color']).toLowerCase(), BORDER_DEF[k + 'Width'], BORDER_DEF[k + 'Dash'] || 'solid'].join('|')
+let same = []
+for (let i = 0; i < SEVEN.length; i++) for (let j = i + 1; j < SEVEN.length; j++) {
+  if (sig(SEVEN[i][1]) === sig(SEVEN[j][1])) same.push(SEVEN[i][0] + '≡' + SEVEN[j][0])
+}
+ok('⑩ 出厂默认下任意两类线不同时同色+同宽+同线型', same.length === 0, same.join(' ') || SEVEN.length + ' 类两两比过')
+// 色系分两族：coast 独立于政治线；政治六类共用一个基色（靠线型/线宽/透明度分级，不靠颜色）
+const polColors = new Set(SEVEN.filter(([c]) => c !== 'coast').map(([, k]) => String(BORDER_DEF[k + 'Color']).toLowerCase()))
+ok('⑩b 政治要素共用一个基色系、海岸线自成一族',
+  polColors.size === 1 && !polColors.has(String(BORDER_DEF.coastColor).toLowerCase()),
+  '政治色 ' + [...polColors].join(',') + ' · 海岸 ' + BORDER_DEF.coastColor)
+// 低等级靠透明度退后
+const opa = ['admin0', 'indef', 'loc', 'claim', 'coast', 'prov', 'city'].map((k) => BORDER_DEF[k + 'Opacity'])
+ok('⑩c 透明度按等级单调不增', opa.every((v, i) => i === 0 || v <= opa[i - 1]), opa.join(' ≥ '))
+// 2D 没有 renderOrder，只能靠画的先后 → BORDER_DRAW 必须就是按 ORDER 从低到高排好的那一份
+ok('⑩d 2D 绘制序与 3D 渲染次序一致',
+  JSON.stringify(BORDER_DRAW) === JSON.stringify([...BORDER_CLASSES].sort((a, b) => ORDER[a] - ORDER[b])),
+  BORDER_DRAW.join('→'))
+// 国界压在最上、一/二级行政区退到海岸之下（★ 与改造前相反，见提交信息）
+ok('⑩e 渲染次序：ADM2 < ADM1 < 海岸 < 主张 < 停火 < 未定 < 国界',
+  ORDER.adm2 < ORDER.adm1 && ORDER.adm1 < ORDER.coast && ORDER.coast < ORDER.claim && ORDER.claim < ORDER.loc && ORDER.loc < ORDER.indefinite && ORDER.indefinite < ORDER.admin0)
+// 主张线取 indefinite 的半周期（短虚）：两者都是 dash 时靠这个 + 线宽区分
+ok('⑩f 主张线周期约为未定界的一半', Math.abs(DASH_SCALE.claim - 0.5) < 1e-9 && DASH_PX.dash && DASH_PX.dashdot.length === 4,
+  'claim×' + DASH_SCALE.claim + ' · dashdot 四段')
+
+// ---------- ⑪ 缩放淡出（1.6b 三）----------
+ok('⑪ 全球视角 ADM2 全淡出、ADM1 降到 0.3', Math.abs(admFade(fadeFactor(0.2)).adm2) < 1e-9 && Math.abs(admFade(fadeFactor(0.2)).adm1 - 0.3) < 1e-9)
+ok('⑪b 城市级完全恢复', Math.abs(admFade(fadeFactor(0.005)).adm2 - 1) < 1e-9 && Math.abs(admFade(fadeFactor(0.005)).adm1 - 1) < 1e-9)
+const mono = [0.2, 0.08, 0.05, 0.03, 0.02, 0.01].map((d) => fadeFactor(d))
+ok('⑪c 中间档平滑过渡、不硬切', mono.every((v, i) => i === 0 || v >= mono[i - 1]) && mono.some((v) => v > 0.01 && v < 0.99), mono.map((v) => v.toFixed(2)).join(' → '))
+
+// ---------- ⑫ 逐国大地颜色的键迁移（ISO 数字码 → ISO3）----------
+// 156/158/344 三个老键都折进 CHN，后写的赢（'#654321' 是 344 香港那条）——这正是「港澳台并入中国」的表现
+const mig = migrateLandOverrides({ 156: '#b85a52', 158: '#123456', 344: '#654321', 840: '#9fb0c0', 10: '#edf2f6', 304: '#ffffff', 999: '#000000', bad: 'zzz' })
+ok('⑫ 数字码→ISO3：156→CHN · 840→USA · 010→ATA · 304→GRL', mig.USA === '#9fb0c0' && mig.ATA === '#edf2f6' && mig.GRL === '#ffffff', JSON.stringify(mig))
+ok('⑫b 台湾/港澳的老键一律折进 CHN（它们的 owner 由 frozen.js 恒定）', !('TWN' in mig) && !('HKG' in mig) && mig.CHN === '#654321', 'CHN=' + mig.CHN)
+ok('⑫c 已是 ISO3 的键原样穿过（幂等）', JSON.stringify(migrateLandOverrides(mig)) === JSON.stringify(mig))
+ok('⑫d 无法映射的键与非法色一律丢弃', !('999' in mig) && !('bad' in mig) && Object.values(mig).every((v) => /^#[0-9a-fA-F]{6}$/.test(v)))
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed')
 if (fail) process.exit(1)

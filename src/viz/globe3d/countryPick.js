@@ -1,86 +1,36 @@
-// 经纬度 → 国家（右键地图「设置此国大地颜色」用）：对 10m topojson 各国多边形做偶奇射线判定。
-// 反子午线处理：把环上各点经度映射到「以测试点为中心的 ±180° 窗口」再计交叉，无需预解缠/复制坐标；
-// 每次点选全量扫描（约百万点量级 ≈ 数毫秒），仅用户右键触发，不建常驻索引、不额外占内存。
-// 纬度包围盒（无需解缠即可预计算）一次性缓存，扫描时先粗筛掉绝大多数多边形。
-import { feature } from 'topojson-client'
-import topo from './data/countries-10m.json'
-import NAMES from './data/country-names-zh.json'
-import { CHINA_IDS } from './cnClaims.js'
+// 经纬度 → 国家（右键地图「设置此国大地颜色」用）。
+// 射线判定与经度解缠已挪进主权解算层（src/viz/geo/povResolver.js 的 ownerAt）—— 底图画成什么样、
+// 点到的就是什么国，两边不再各写一份判定，也不会因视角/用户覆写而对不上。
+import { ownerAt, resolvedFeatures, labelSet } from '../geo/povResolver.js'
 import { landColors } from '../landPalette.js'
 
-let feats = null, latBounds = null, idxOf = null
-function init() {
-  feats = feature(topo, topo.objects.countries).features
-  idxOf = new Map()   // 国家 id → 首个 feature 序号（landColors 的 morandi 循环色取位与建图一致）
-  latBounds = feats.map((f, i) => {
-    const id = String(f.id)
-    if (!idxOf.has(id)) idxOf.set(id, i)
-    if (!f.geometry) return []
-    const polys = f.geometry.type === 'Polygon' ? [f.geometry.coordinates] : f.geometry.coordinates
-    return polys.map((rings) => {
-      let lo = 90, hi = -90
-      for (const p of rings[0]) { if (p[1] < lo) lo = p[1]; if (p[1] > hi) hi = p[1] }
-      return [lo, hi]
-    })
-  })
-}
-
-// 经度差 → (-180, 180] 内的最短夹角（带符号）
-const dlon = (l, ref) => ((l - ref + 540) % 360 + 360) % 360 - 180
-// 多边形（外环+洞）偶奇判定：对所有环统一计「向 +x 的水平射线」交叉数。
-// 环上各点先转成以 ref 为锚点的「连续展开」本地 x：逐点用与上一点的最短夹角累加，而非各自独立对 ref 取模。
-// 若各点独立取模（如 dlon(p, ref)），当测试点的对跖经线正好穿过该国国土时（如堪萨斯↔中国西部），
-// 环会被人为切成跳变的两段，导致射线交叉数算错、误判成一个毫不相关的国家（北美/南美 vs 亚洲互为对跖，故此前只有它们会错）。
-function hitPolygon(rings, lon, lat) {
-  let inside = false
-  for (const ring of rings) {
-    const n = ring.length
-    const xs = new Array(n)
-    xs[0] = dlon(ring[0][0], lon)
-    for (let k = 1; k < n; k++) xs[k] = xs[k - 1] + dlon(ring[k][0], ring[k - 1][0])
-    for (let i = 0, j = n - 1; i < n; j = i++) {
-      const yi = ring[i][1], yj = ring[j][1]
-      if ((yi > lat) === (yj > lat)) continue
-      const xi = xs[i], xj = xs[j]
-      if (xi + (lat - yi) / (yj - yi) * (xj - xi) > 0) inside = !inside
-    }
-  }
-  return inside
-}
-
-// 中文名（与建图同口径的别名：中国/朝鲜/韩国；台湾并入中国）
-function zhOf(id) {
-  if (id === '156') return '中国'
-  if (id === '408') return '朝鲜'
-  if (id === '410') return '韩国'
-  const rec = NAMES[id]
-  return rec ? rec[0] : null
-}
-
-// 返回 { id, zh }（台湾归并为中国 156）；不在任何国家内返回 null。
+// 返回 { id, zh }（id = 归属 ISO3，台湾/港澳恒为 'CHN'）；不在任何单元内返回 null。
 export function countryAt(lon, lat) {
-  if (!feats) init()
-  if (lat <= -85) { const id = '010'; return { id, zh: zhOf(id) } }   // 南极数据止于约 -85°，极冠直接判南极洲
-  for (let i = 0; i < feats.length; i++) {
-    const g = feats[i].geometry
-    if (!g) continue
-    const polys = g.type === 'Polygon' ? [g.coordinates] : g.coordinates
-    const bounds = latBounds[i]
-    for (let p = 0; p < polys.length; p++) {
-      const b = bounds[p]
-      if (lat < b[0] || lat > b[1]) continue
-      if (hitPolygon(polys[p], lon, lat)) {
-        const id0 = String(feats[i].id)
-        const id = CHINA_IDS.has(id0) ? '156' : id0
-        return { id, zh: zhOf(id) }
-      }
-    }
-  }
-  return null
+  const r = ownerAt(lon, lat)
+  return r ? { id: r.owner, zh: r.zh || r.en || r.owner } : null
 }
 
-// 国家当前实际底色（设置面板取色器预填用）：按建图同款取位（首个 feature 的循环色序号）解析
+// 归属 → 建图取色序号：与 resolvedFeatures 给出的 idx 同源，故取色器预填与地图上的颜色一致。
+// 视角/覆写改动后 resolvedFeatures 会重算，这里的缓存跟着按解算结果的长度失效（够用且零耦合）。
+let idxOf = null, idxN = -1
+function ensureIdx() {
+  const feats = resolvedFeatures()
+  if (idxOf && idxN === feats.length) return idxOf
+  idxOf = new Map()
+  for (const f of feats) if (!idxOf.has(f.id)) idxOf.set(f.id, f.idx != null ? f.idx : 0)
+  idxN = feats.length
+  return idxOf
+}
+
+// 国家当前实际底色（设置面板取色器预填用）
 export function currentLandColor(id) {
-  if (!feats) init()
-  return landColors(id, idxOf.has(id) ? idxOf.get(id) : 0).base
+  const m = ensureIdx()
+  return landColors(id, m.has(id) ? m.get(id) : 0).base
+}
+
+// 可搜索国家清单（逐国设色的下拉）：口径与地图上的国名标注完全一致 ——
+// 有中文名、且当前视角下确实作为一个国家画出来的那些。台湾/港澳并入中国，不单列。
+export function countryList() {
+  return labelSet('zh').map((l) => ({ id: l.owner, zh: l.zh, en: l.en }))
+    .sort((a, b) => a.zh.localeCompare(b.zh, 'zh-Hans-CN'))
 }
