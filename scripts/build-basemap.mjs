@@ -186,28 +186,62 @@ async function buildScale(scale) {
   const noHost = kept.filter((d) => !d.host)
   if (noHost.length) console.log('  无宿主（视为独立陆地/海上单元）：' + noHost.map((d) => d.u).join(' '))
 
-  // ---- 自带线：分类 + 与派生 arc 去重 ----
+  // ---- 自带线 + 最终拓扑（面与线共享同一个 arcs 池） ----
   const cand = []
   for (const f of BL.features) {
     const cls = LINE_CLS[f.properties.FEATURECLA]
     if (!cls) continue
     const cs = linesOf(f.geometry)
-    if (cs.length) cand.push({ cls, coords: cs, props: f.properties })
+    if (cs.length) cand.push({ cls, coords: cs, name_en: clean(f.properties.NAME) })
   }
+  const units = base.concat(kept)
+  const srcLines = cand.concat(CLAIM_LINES)
+  const topo = topology({
+    units: fc(units),
+    lines: { type: 'FeatureCollection', features: srcLines.map((l) => ({ type: 'Feature', properties: {}, geometry: l.coords.length === 1 ? { type: 'LineString', coordinates: l.coords[0] } : { type: 'MultiLineString', coordinates: l.coords } })) }
+  }, QUANT)
+
+  // ★ 第一路去重（精确、无阈值）：自带线与面共用同一个 arcs 池，凡是【同一条 arc】的段落就是同一段几何 ——
+  //   丢掉自带线那一份，改成给这条派生 arc 打一个分类标记 lineCls。这样既不双线毛边，又保住了
+  //   派生规则表达不出来的分类（停火线 loc / 未定界 indefinite）——单靠「整条丢弃」会把这个分类丢掉。
+  const uArcs = new Set()
+  for (const g of topo.objects.units.geometries) arcsOfGeom(g, uArcs)
+  const RANK = { indefinite: 1, loc: 2 }
+  const lineCls = {}
+  const runsOf = (g, keep) => {   // 把线几何按 keep(arc) 切成若干「连续保留段」，返回 arc 序列数组
+    const out = []
+    const lists = g.type === 'MultiLineString' ? g.arcs : [g.arcs]
+    for (const list of lists) {
+      let cur = []
+      for (const a of list) { if (keep(a < 0 ? ~a : a)) cur.push(a); else { if (cur.length) out.push(cur); cur = [] } }
+      if (cur.length) out.push(cur)
+    }
+    return out
+  }
+  let sharedN = 0
+  topo.objects.lines.geometries.forEach((g, i) => {
+    if (i >= cand.length) return                    // 主张线不参与去重（在海上，与任何派生 arc 都不共线）
+    const cls = cand[i].cls
+    for (const a of arcsOfGeom(g)) {
+      if (!uArcs.has(a)) continue
+      sharedN++
+      if ((RANK[cls] || 0) > (RANK[lineCls[a]] || 0)) lineCls[a] = cls
+    }
+  })
+
+  // ★ 第二路去重（ε 缓冲，兜住「几乎重合但坐标对不上」的）：自带线剩下的独有 arc 上，
+  //   若 ≥COVER_FRAC 的点落在任一条派生 arc 的 ε 邻域内，整条丢弃。ε 按精度档取。
   const eps = EPS[scale]
   const grid = new Map()
-  const gk = (x, y) => Math.floor(x / eps) + ',' + Math.floor(y / eps)
-  const put = (x, y) => { const k = gk(x, y); let a = grid.get(k); if (!a) grid.set(k, a = []); a.push(x, y) }
-  const units0 = base.concat(kept)
-  const t2a = topology({ u: fc(units0) }, QUANT)
-  for (const arc of t2a.arcs) {
-    const pts = decodeArc(t2a, arc)
+  const put = (x, y) => { const k = Math.floor(x / eps) + ',' + Math.floor(y / eps); let a = grid.get(k); if (!a) grid.set(k, a = []); a.push(x, y) }
+  for (const a of uArcs) {
+    const pts = decodeArc(topo, topo.arcs[a])
     for (let i = 0; i < pts.length; i++) {
       put(pts[i][0], pts[i][1])
       if (i + 1 < pts.length) {
-        const a = pts[i], b = pts[i + 1]
-        const n = Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / (eps / 2))
-        for (let k = 1; k < n && n < 4096; k++) put(a[0] + (b[0] - a[0]) * k / n, a[1] + (b[1] - a[1]) * k / n)
+        const p = pts[i], q = pts[i + 1]
+        const n = Math.min(4096, Math.ceil(Math.hypot(q[0] - p[0], q[1] - p[1]) / (eps / 2)))
+        for (let k = 1; k < n; k++) put(p[0] + (q[0] - p[0]) * k / n, p[1] + (q[1] - p[1]) * k / n)
       }
     }
   }
@@ -220,28 +254,30 @@ async function buildScale(scale) {
     }
     return false
   }
-  let dropN = 0, keepN = 0
-  const selfLines = []
-  for (const c of cand) {
-    let tot = 0, cov = 0
-    for (const ls of c.coords) for (const p of ls) { tot++; if (near(p[0], p[1])) cov++ }
-    if (tot && cov / tot >= COVER_FRAC) { dropN++; continue }
-    keepN++
-    selfLines.push({ id: null, cls: c.cls, wv: null, coords: c.coords, name_en: clean(c.props.NAME) })
-  }
-  for (const cl of CLAIM_LINES) selfLines.push(cl)
-  console.log('  自带线去重：候选 ' + cand.length + ' 条 → 丢弃 ' + dropN + ' 条 / 保留 ' + keepN + ' 条（另加主张线 ' + CLAIM_LINES.length + ' 条）')
-
-  // ---- 第二遍拓扑：最终 arcs 池（面 + 线共享） ----
-  const units = base.concat(kept)
-  const lineFC = {
-    type: 'FeatureCollection',
-    features: selfLines.map((l, i) => ({ type: 'Feature', properties: { i }, geometry: l.coords.length === 1 ? { type: 'LineString', coordinates: l.coords[0] } : { type: 'MultiLineString', coordinates: l.coords } }))
-  }
-  const topo = topology({ units: fc(units), lines: lineFC }, QUANT)
+  let dropWhole = 0, keepSeg = 0
+  const outLines = []
+  topo.objects.lines.geometries.forEach((g, i) => {
+    const src = srcLines[i]
+    if (i >= cand.length) { outLines.push({ g, src }); return }   // 主张线原样保留
+    const runs = runsOf(g, (a) => !uArcs.has(a))
+    if (!runs.length) { dropWhole++; return }
+    // 逐段过 ε 缓冲
+    const left = []
+    for (const run of runs) {
+      let tot = 0, cov = 0
+      for (const a of run) for (const p of decodeArc(topo, topo.arcs[a < 0 ? ~a : a])) { tot++; if (near(p[0], p[1])) cov++ }
+      if (tot && cov / tot >= COVER_FRAC) continue
+      left.push(run)
+    }
+    if (!left.length) { dropWhole++; return }
+    keepSeg += left.length
+    outLines.push({ g: left.length === 1 ? { type: 'LineString', arcs: left[0] } : { type: 'MultiLineString', arcs: left }, src })
+  })
+  topo.objects.lines.geometries = outLines.map((x) => x.g)
+  console.log('  自带线去重：候选 ' + cand.length + ' 条 → 与派生 arc 精确共享 ' + sharedN + ' 段（转成 lineCls 分类标注，不再画第二遍）· 整条丢弃 ' + dropWhole + ' 条 · 保留自带几何 ' + keepSeg + ' 段（另加主张线 ' + CLAIM_LINES.length + ' 条）')
 
   // ---- 属性回填 ----
-  const iso3n3 = {}
+  const iso3n3 = {}, iso3name = {}
   topo.objects.units.geometries.forEach((g, i) => {
     const it = units[i], p = it.props
     const n3raw = clean(String(p.ISO_N3_EH == null ? '' : p.ISO_N3_EH)) || clean(String(p.ISO_N3 == null ? '' : p.ISO_N3))
@@ -251,16 +287,21 @@ async function buildScale(scale) {
       u: it.u,
       iso: A3(p.ADM0_A3) || A3(p.ISO_A3) || null,
       n3,
-      name_en: clean(p.NAME_EN) || clean(p.NAME) || it.u,
+      name_en: clean(p.NAME) || clean(p.NAME_EN) || it.u,   // NE 的 NAME 是短显示名（China），NAME_EN 是全称（People's Republic of China）——标注要短名
       name_local: null,
       own0: own0 || 'disputed'
     }
     if (it.dispute) g.properties.dispute = true
     if (it.host) g.properties.host = it.host
-    if (!it.dispute && own0 && own0 !== 'disputed' && n3 && !iso3n3[own0]) iso3n3[own0] = n3
+    if (!it.dispute && own0 && own0 !== 'disputed') {
+      if (n3 && !iso3n3[own0]) iso3n3[own0] = n3
+      // owner（ISO3）→ 英文国名：10m 档把英法等再拆成 map subunit，此时没有 u==='GBR' 的单元，
+      // 标注要的是 admin-0 名（NE 的 ADMIN 列 = 'United Kingdom'），不是子单元名（'Scotland'）。
+      if (!iso3name[own0]) iso3name[own0] = clean(p.ADMIN) || clean(p.NAME) || own0
+    }
   })
-  topo.objects.lines.geometries.forEach((g) => {
-    const l = selfLines[g.properties.i]
+  topo.objects.lines.geometries.forEach((g, i) => {
+    const l = outLines[i].src
     g.properties = { cls: l.cls }
     if (l.id) g.properties.id = l.id
     if (l.wv) g.properties.wv = l.wv
@@ -308,19 +349,39 @@ async function buildScale(scale) {
   console.log('  校验：arc 超两侧 ' + bad.length + ' 处 · 基础单元重叠 ' + overlap + ' 处 · 无宿主争议面 ' + noHost.length + ' 条')
   if (bad.length || overlap) { console.error('拓扑校验未通过'); process.exitCode = 1 }
 
-  topo.adj = adj
+  // ---- arc 压实：丢掉的自带线会留下一批没人引用的 arc，重排索引把它们清出去 ----
+  const used = new Set()
+  for (const obj of Object.values(topo.objects)) for (const g of obj.geometries) arcsOfGeom(g, used)
+  const orphan = topo.arcs.length - used.size
+  const map = new Int32Array(topo.arcs.length).fill(-1)
+  const arcs2 = []
+  for (let i = 0; i < topo.arcs.length; i++) if (used.has(i)) { map[i] = arcs2.length; arcs2.push(topo.arcs[i]) }
+  const remap = (g) => {
+    if (!g || !g.arcs) return
+    const walk = (a) => { if (!a.length) return a; if (Array.isArray(a[0])) return a.map(walk); return a.map((i) => (i < 0 ? ~map[~i] : map[i])) }
+    g.arcs = walk(g.arcs)
+  }
+  for (const obj of Object.values(topo.objects)) for (const g of obj.geometries) remap(g)
+  const adj2 = {}, lineCls2 = {}
+  for (const k in adj) if (map[+k] >= 0) adj2[map[+k]] = adj[k]
+  for (const k in lineCls) if (map[+k] >= 0) lineCls2[map[+k]] = lineCls[k]
+  topo.arcs = arcs2
+
+  topo.adj = adj2
+  topo.lineCls = lineCls2
   topo.meta = {
     scale,
     source: 'Natural Earth 5.x (public domain) — admin_0_map_units / admin_0_disputed_areas / admin_0_boundary_lines_land',
     model: '基础分区(units 里 dispute!=true) + 争议叠加(dispute==true，落在 host 内)；面按数组顺序覆盖，线按 adj 派生',
-    iso3n3,
+    lineCls_note: 'arc 序号 → 自带线给出的分类（loc/indefinite）。派生规则算出 admin0/indefinite 时由它顶替 —— 停火线/未定界是「两侧 owner 不同」这条规则表达不出来的',
+    iso3n3, iso3name,
     claim_note_zh: '南海十段线为近似示意坐标，仅供工程显示。正式对外发布须替换为国家测绘地理信息主管部门批准的审图号底图（如天地图 / GS(xxxx)xxxx 号）坐标；替换入口在 scripts/build-basemap.mjs 的 CLAIM_LINES。'
   }
   fs.mkdirSync(OUTDIR, { recursive: true })
   const out = path.join(OUTDIR, 'basemap-' + scale + '.json')
   fs.writeFileSync(out, JSON.stringify(topo))
-  console.log('  写出 ' + path.relative(ROOT, out) + '：arcs ' + topo.arcs.length + ' · units ' + units.length + ' · lines ' + selfLines.length + ' · ' + (fs.statSync(out).size / 1e6).toFixed(2) + ' MB')
-  return { units, dropN, keepN }
+  console.log('  写出 ' + path.relative(ROOT, out) + '：arcs ' + topo.arcs.length + '（清掉无人引用的 ' + orphan + ' 条）· units ' + units.length + ' · lines ' + outLines.length + ' · lineCls 标注 ' + Object.keys(lineCls2).length + ' 段 · ' + (fs.statSync(out).size / 1e6).toFixed(2) + ' MB')
+  return { units }
 }
 
 // ---------- 视角文件（从 NE 自带的 32 套官方归属列里取六套） ----------
@@ -347,6 +408,13 @@ function writePovs(units) {
     fs.writeFileSync(f, JSON.stringify(j, null, 2) + '\n')
     console.log('  视角 ' + pov.id + '：own 差异 ' + Object.keys(own).length + ' 条 → ' + path.relative(ROOT, f))
   }
+  // ISO 数字码 → ISO3：老存档里「逐国大地颜色」的键是 world-atlas 的 ISO 数字码（'156'），
+  // 换源后键改成 ISO3（'CHN'），迁移函数要查这张表。见 src/viz/landPalette.js。
+  const n3 = {}
+  for (const it of units) { const a = owner(it.props.ADM0_A3), n = clean(String(it.props.ISO_N3_EH == null ? '' : it.props.ISO_N3_EH)) || clean(String(it.props.ISO_N3 == null ? '' : it.props.ISO_N3)); if (a && a !== 'disputed' && n && n !== '-99' && !n3[n]) n3[n] = a }
+  const nf = path.join(ROOT, 'src', 'viz', 'geo', 'isoNum.json')
+  fs.writeFileSync(nf, JSON.stringify(n3) + '\n')
+  console.log('  ISO 数字码→ISO3 映射 ' + Object.keys(n3).length + ' 条 → ' + path.relative(ROOT, nf))
 }
 
 const want = process.argv.slice(2).filter((a) => /^(110m|50m|10m)$/.test(a))

@@ -1,0 +1,47 @@
+{
+  "id": "CN",
+  "name_zh": "中国视角",
+  "name_en": "China",
+  "own": {
+    "CYN": "CYP",
+    "SOL": "SOM",
+    "KOS": "SRB",
+    "KAS": "IND",
+    "IN-ARP": "CHN",
+    "IN-CN-TRP": "CHN",
+    "IN-CN-BRH": "CHN",
+    "IN-CN-DMC": "CHN",
+    "IN-CN-SMD": "CHN",
+    "IL-GOL": "SYR",
+    "KE-ILEMI": "SDS",
+    "MA-EH": "SAH",
+    "RU-KUR": "JPN",
+    "GE-AB": "GEO",
+    "GE-SO": "GEO",
+    "UA-CR": "UKR",
+    "USG": "CUB",
+    "CNM": "CYP",
+    "KAB": "KAZ",
+    "PGA": "CHN",
+    "BJN": "COL",
+    "SER": "COL",
+    "BT-CN-NW": "CHN",
+    "BT-CN-CHUMBI": "CHN",
+    "NE-B58": "LBN",
+    "NE-B92": "disputed",
+    "JP-SEN": "CHN",
+    "NE-B21": "DEN",
+    "KR-DOK": "KOD"
+  },
+  "lines": {
+    "claim": [
+      "nanhai-ten-dash"
+    ]
+  },
+  "names": {},
+  "labels": {
+    "hide": [
+      "CN-TW"
+    ]
+  }
+}
