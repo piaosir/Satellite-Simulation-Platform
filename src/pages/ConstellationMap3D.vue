@@ -27,7 +27,7 @@ import { createGlobeScene } from '../viz/globe3d/scene.js'
 import { createFlatCoverage } from '../viz/flatmap/flatCoverage.js'
 import { LAND as LAND_MORANDI, LAND_UNIFORMS, LAND_DEFAULT, migrateLandOverrides } from '../viz/landPalette.js'
 import { countryAt, currentLandColor, countryList } from '../viz/globe3d/countryPick.js'
-import { BORDER_DEF } from '../viz/geo/borderStyle.js'
+import { BORDER_DEF, GRID_STEPS } from '../viz/geo/borderStyle.js'
 import { onPovChange, getPov } from '../viz/geo/povResolver.js'
 import { POV_META, CUSTOM_POV, povTableOf, normMapPov } from '../viz/geo/povList.js'
 import { CUSTOMIZABLE_DISPUTES, OWNER_ZH } from '../viz/geo/frozen.js'
@@ -1192,16 +1192,28 @@ const cityNameSize = ref(0.2)     // 地级市名字号倍率（小空间，默�
 // 边界线样式：五类线（海岸/国界/未定界/停火线/主张线）各四项 + 两级行政区各三项 + 按缩放淡出开关。
 // 出厂值收在 src/viz/geo/borderStyle.js（3D 球体与 2D 平面图共用同一份，两个视图不可能长歪）。
 const borderStyle = reactive({ ...BORDER_DEF })
-// 2026-08-27 之前的出厂样式，只用于「没动过就升级」的比对（见 restoreView）。不参与任何渲染。
-const BORDER_DEF_OLD = {
-  coastColor: '#8fa6b8', coastWidth: 1.0, coastOpacity: 0.85, coastDash: 'solid',
-  admin0Color: '#a8a8a8', admin0Width: 1.6, admin0Opacity: 1.00, admin0Dash: 'solid',
-  indefColor: '#a8a8a8', indefWidth: 1.6, indefOpacity: 0.95, indefDash: 'dash',
-  locColor: '#a8a8a8', locWidth: 1.4, locOpacity: 0.90, locDash: 'dashdot',
-  claimColor: '#a8a8a8', claimWidth: 1.8, claimOpacity: 0.90, claimDash: 'dash',
-  provColor: '#a8a8a8', provWidth: 1.0, provOpacity: 0.80,
-  cityColor: '#a8a8a8', cityWidth: 0.7, cityOpacity: 0.60
-}
+// 历代出厂样式，只用于「这一组没手动动过就升级」的比对（见 restoreSettings）。不参与任何渲染。
+// 出厂值每改一版就往这里加一代 —— 停留在任何一代出厂值上的存档都能升到最新。
+const BORDER_DEF_GENS = [
+  {   // ① 初版：政治六类同色 #a8a8a8，海岸线 #8fa6b8 且最粗（层级反了）
+    coastColor: '#8fa6b8', coastWidth: 1.0, coastOpacity: 0.85, coastDash: 'solid',
+    admin0Color: '#a8a8a8', admin0Width: 1.6, admin0Opacity: 1.00, admin0Dash: 'solid',
+    indefColor: '#a8a8a8', indefWidth: 1.6, indefOpacity: 0.95, indefDash: 'dash',
+    locColor: '#a8a8a8', locWidth: 1.4, locOpacity: 0.90, locDash: 'dashdot',
+    claimColor: '#a8a8a8', claimWidth: 1.8, claimOpacity: 0.90, claimDash: 'dash',
+    provColor: '#a8a8a8', provWidth: 1.0, provOpacity: 0.80,
+    cityColor: '#a8a8a8', cityWidth: 0.7, cityOpacity: 0.60
+  },
+  {   // ② 暖褐政治族 + 冷蓝海岸族（国界与海岸线不同色，用户要求改成同色）
+    coastColor: '#5f86a3', coastWidth: 0.7, coastOpacity: 0.90, coastDash: 'solid',
+    admin0Color: '#6b6259', admin0Width: 1.3, admin0Opacity: 1.00, admin0Dash: 'solid',
+    indefColor: '#6b6259', indefWidth: 1.2, indefOpacity: 0.90, indefDash: 'dash',
+    locColor: '#7a7168', locWidth: 1.1, locOpacity: 0.85, locDash: 'dashdot',
+    claimColor: '#6b6259', claimWidth: 2.0, claimOpacity: 1.00, claimDash: 'solid',
+    provColor: '#8b8177', provWidth: 0.8, provOpacity: 0.85,
+    cityColor: '#a09890', cityWidth: 0.55, cityOpacity: 0.70
+  }
+]
 const eqStyle = (a, b) => (typeof b === 'number' ? Math.abs(Number(a) - b) < 1e-6 : String(a).toLowerCase() === String(b).toLowerCase())
 // 「本节恢复出厂样式」按分组回填
 const BORDER_PARTS = {
@@ -1211,7 +1223,8 @@ const BORDER_PARTS = {
   loc: ['locColor', 'locWidth', 'locOpacity', 'locDash'],
   claim: ['claimColor', 'claimWidth', 'claimOpacity', 'claimDash'],
   prov: ['provColor', 'provWidth', 'provOpacity'],
-  city: ['cityColor', 'cityWidth', 'cityOpacity']
+  city: ['cityColor', 'cityWidth', 'cityOpacity'],
+  grid: ['gridColor', 'gridWidth', 'gridOpacity', 'gridDash', 'gridStep', 'gridOn']
 }
 // 面板「边界线」一节的主从列表：一行一类，选中哪行下面就出哪行的四项。
 // ★ 顺序＝渲染次序（国界压在最上），两级行政区界也在这张表里 —— 它们同样是「边界线」，
@@ -1223,7 +1236,8 @@ const BORDER_ROWS = [
   { k: 'claim', zh: '主张线', tip: '海上主张线（南海十段线）；画不画由「地图视角」的附加线开关决定' },
   { k: 'coast', zh: '海岸线', tip: '一侧无陆地邻居的边界；自然要素，与政治线分属两个色系' },
   { k: 'prov', zh: '一级行政区界', tip: '省 / 州 / 邦一级', nodash: true },
-  { k: 'city', zh: '二级行政区界', tip: '中国地级市', nodash: true }
+  { k: 'city', zh: '二级行政区界', tip: '中国地级市', nodash: true },
+  { k: 'grid', zh: '经纬网', tip: '经线与纬线；间隔可调，也可整层关掉', vis: true, step: true }
 ]
 const borderPick = ref('admin0')     // 主从列表当前选中的那一类
 // 地名的主从列表：名称档位 / 字号 / 颜色 / 透明度四项，三级共用一套控件
@@ -3262,16 +3276,21 @@ function applyGoto() {
 function setCrsDatum(v) { setMapCrs({ datum: v }) }
 function setCrsFmt(v) { setMapCrs({ fmt: v }) }
 // 2D 画面中心经度：填的是【正中那条经线】，切口（左边缘）由它减 180° 得到。
-const crsCenter = computed(() => lon0ToCenter(mapCrs.lon0))
+// ★ 显示值钉在这个 ref 上，不拿 lon0 反算：±180 是同一条经线的两种写法，反算会把填进去的 180
+//   折成 −180，看上去就像「填了就自己退回去」。填 180、显示 180。
+const crsCenterShown = ref(lon0ToCenter(MAP_CRS_DEF.lon0))
+const crsCenter = computed(() => crsCenterShown.value)
+const crsCenterTag = computed(() => { const c = crsCenterShown.value; return Math.abs(c).toFixed(1) + '°' + (c < 0 ? 'W' : 'E') })
 function setCrsCenter(v) {
   const n = Number(v)
   if (!Number.isFinite(n)) return
-  setMapCrs({ lon0: centerToLon0(n) })
+  crsCenterShown.value = Math.max(-180, Math.min(180, n))
+  setMapCrs({ lon0: centerToLon0(crsCenterShown.value) })
   if (flat) flat.setLon0(mapCrs.lon0)
 }
-// 常用中心：本初子午线 / 中国居中（东八区中线）/ 太平洋居中
+// 常用中心：本初子午线 / 中国居中 / 太平洋居中
 const CENTER_PRESETS = [{ v: 0, zh: '0°' }, { v: 105, zh: '105°E' }, { v: 180, zh: '180°' }]
-function resetCrs() { setMapCrs(MAP_CRS_DEF); if (flat) flat.setLon0(mapCrs.lon0) }
+function resetCrs() { setMapCrs(MAP_CRS_DEF); crsCenterShown.value = lon0ToCenter(mapCrs.lon0); if (flat) flat.setLon0(mapCrs.lon0) }
 
 function toggleRotate() { autoRotate.value = !autoRotate.value; scene && scene.setAutoRotate(autoRotate.value) }
 function setNameMode(m) { nameMode.value = m; scene && scene.setLabelMode(m); if (flat) flat.setNameMode(m) }
@@ -3313,9 +3332,11 @@ const admHits = computed(() => {
   const have = new Set(admIndex.adm1 || [])
   const list = COUNTRY_ZH.value.filter((c) => have.has(c.id))
   const hit = q ? list.filter((c) => c.zh.includes(q) || c.id.includes(q.toUpperCase()) || (c.en || '').toLowerCase().includes(q.toLowerCase())) : list
-  // 已选中的排最前：251 个国家从「阿尔巴尼亚」起只列 12 个的话，勾过的那几个永远看不见
+  // ★ 不截断：没输入就把有包的国家全列出来（251 个），清单本身可滚。
+  //   原来恒截到 12 条 —— 不打字就只能看到「阿尔巴尼亚」起那几个，等于逼着人先知道国名才能勾。
+  //   已选中的排最前，勾过的永远在第一屏。
   const sel = new Set(admSel1.value)
-  return [...hit].sort((a, b) => (sel.has(b.id) ? 1 : 0) - (sel.has(a.id) ? 1 : 0)).slice(0, 12)
+  return [...hit].sort((a, b) => (sel.has(b.id) ? 1 : 0) - (sel.has(a.id) ? 1 : 0))
 })
 const admChips = computed(() => admSel1.value.map((id) => ({ id, zh: (COUNTRY_ZH.value.find((c) => c.id === id) || {}).zh || id })))
 const admHasCN = computed(() => admSel1.value.includes('CHN'))
@@ -5742,9 +5763,11 @@ async function restoreSettings() {
   // 主张线走虚线）在实机上是「谁也不比谁重要 + 十段线打成一串麻点」。逐组比对：某一组【原样没动过】
   // 就换成新出厂值，动过的那组一个字段都不碰 —— 用户调过的样式不能被静默改掉。
   for (const [part, fields] of Object.entries(BORDER_PARTS)) {
-    if (fields.every((f) => BORDER_DEF_OLD[f] === undefined || eqStyle(borderStyle[f], BORDER_DEF_OLD[f]))) {
-      for (const f of fields) borderStyle[f] = BORDER_DEF[f]
-    }
+    // ★ 必须有字段真的对上：经纬网这一组在历代出厂表里根本没有（新加的），
+    //   只判「没定义就算过」的话它每次恢复都会被判成陈旧、把用户改过的网格样式抹掉。
+    const stale = BORDER_DEF_GENS.some((gen) => fields.some((f) => gen[f] !== undefined) &&
+      fields.every((f) => gen[f] === undefined || eqStyle(borderStyle[f], gen[f])))
+    if (stale) for (const f of fields) borderStyle[f] = BORDER_DEF[f]
   }
   applyBorderStyle()
   if (s.labelStyle && typeof s.labelStyle === 'object') Object.assign(labelStyle, s.labelStyle)
@@ -5753,7 +5776,8 @@ async function restoreSettings() {
   // 淡蓝默认 #a3ccff，让老用户更新后即用新默认海色；想要旧蓝再点回该色块即可。
   if (typeof s.oceanColor === 'string') setOceanColor(s.oceanColor === '#2a85c4' ? '#a3ccff' : s.oceanColor)
   // 大地颜色：基调 + 逐国覆盖。默认态（LAND_DEFAULT 且无覆盖）不触发陆地重建，避免启动白做一次
-  if (s.landScheme === 'morandi' || (typeof s.landScheme === 'string' && HEX6.test(s.landScheme))) landScheme.value = s.landScheme
+  // 一次性默认升级：旧默认米黄 #e8e0c9（从未手动改过大地色的旧快照）自动升到新的米绿 #e4eccf，与海色同一手法
+  if (s.landScheme === 'morandi' || (typeof s.landScheme === 'string' && HEX6.test(s.landScheme))) landScheme.value = s.landScheme === '#e8e0c9' ? LAND_DEFAULT : s.landScheme
   // 逐国大地颜色：老存档的键是 ISO 数字码（'156'），换成主权解算层后是 ISO3（'CHN'）→ 过一遍迁移
   if (s.landOverrides && typeof s.landOverrides === 'object') {
     for (const [k, v] of Object.entries(migrateLandOverrides(s.landOverrides))) landOverrides[k] = v
@@ -5802,7 +5826,7 @@ async function restoreSettings() {
   if (Array.isArray(s.admSel1)) admSel1.value = s.admSel1.filter((x) => typeof x === 'string')
   for (const [k, r] of [['admName1', admName1], ['admName2', admName2]]) if (s[k] === 'local' || s[k] === 'en' || s[k] === 'off') r.value = s[k]
   if (s.tzMode === 'utc' || s.tzMode === 'local') tzMode.value = s.tzMode   // 时间轴读数时区档位（仅显示）
-  if (s.crs && typeof s.crs === 'object') setMapCrs(s.crs)   // 坐标系四档（只改呈现，见 stores/mapCrs）
+  if (s.crs && typeof s.crs === 'object') { setMapCrs(s.crs); crsCenterShown.value = lon0ToCenter(mapCrs.lon0) }   // 坐标系三档（只改呈现，见 stores/mapCrs）
   // 晨昏线：默认关，存档里显式 true 才开；样式逐字段合并（旧存档缺字段时保留默认值）
   if (typeof s.termOn === 'boolean') termOn.value = s.termOn
   if (typeof s.termNight === 'boolean') termNight.value = s.termNight
@@ -7557,32 +7581,6 @@ onBeforeUnmount(() => {
         <div v-show="shellUi.side === 'geo'" class="sview">
         <div class="cov-side geo-side docked">
         <div class="sec">
-          <div class="sect acc" :class="{ open: isSecOpen('geo-pov') }" @click="toggleSec('geo-pov')"><Icon :name="isSecOpen('geo-pov') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>地图视角</span></div>
-          <template v-if="isSecOpen('geo-pov')">
-          <div class="srow"><label>视角</label>
-            <select :value="povCfg.id" title="底图的国界、陆地着色、点选与国名全部按该视角的归属表解算；「自定义」以中国视角为底再逐项覆写。台湾、香港、澳门恒属中国，不随视角变" @change="setPovId($event.target.value)">
-              <option v-for="p in POV_META" :key="p.id" :value="p.id">{{ byLang(p.zh, p.en) }}</option>
-            </select>
-          </div>
-          <template v-if="povCfg.id === CUSTOM_POV">
-            <div class="bsub"><span>争议区归属</span></div>
-            <div v-for="g in CUSTOMIZABLE_DISPUTES" :key="g.key" class="srow sub">
-              <label :title="g.en">{{ g.zh }}</label>
-              <select :value="povCfg.overrides[g.key] || ''" :title="g.en" @change="setPovDispute(g.key, $event.target.value)">
-                <option value="">跟随底图默认</option>
-                <option v-for="o in g.opts" :key="o" :value="o">{{ povOwnerZh(o) }}</option>
-                <option value="none">不显示</option>
-              </select>
-            </div>
-          </template>
-          <div class="bsub"><span>附加线</span></div>
-          <div v-for="L in POV_LAYERS" :key="L.k" class="swrow" :class="{ dis: L.k === 'claim' && !povClaimAvail }" :title="L.tip">
-            <span>{{ L.zh }}</span>
-            <button type="button" class="layersw" :class="{ on: povCfg.layers[L.k] }" role="switch" :aria-checked="povCfg.layers[L.k] ? 'true' : 'false'" :disabled="L.k === 'claim' && !povClaimAvail" @click="togglePovLayer(L.k)"><i></i></button>
-          </div>
-          </template>
-        </div>
-        <div class="sec">
           <div class="sect acc" :class="{ open: isSecOpen('geo-ocean') }" @click="toggleSec('geo-ocean')"><Icon :name="isSecOpen('geo-ocean') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>配色</span></div>
           <template v-if="isSecOpen('geo-ocean')">
           <div class="bsub"><span>大海</span></div>
@@ -7629,6 +7627,12 @@ onBeforeUnmount(() => {
           </div>
           <template v-for="r in BORDER_ROWS" :key="'d' + r.k">
             <template v-if="borderPick === r.k">
+              <div v-if="r.vis" class="swrow"><span>显示</span><button type="button" class="layersw" :class="{ on: borderStyle.gridOn !== false }" role="switch" :aria-checked="borderStyle.gridOn !== false ? 'true' : 'false'" @click="setBorderVal('gridOn', borderStyle.gridOn === false)"><i></i></button></div>
+              <div v-if="r.step" class="srow"><label>间隔</label>
+                <span class="seg nseg" role="group" aria-label="经纬网间隔">
+                  <span v-for="g in GRID_STEPS" :key="g" class="sg" :class="{ on: borderStyle.gridStep === g }" @click="setBorderVal('gridStep', g)">{{ g }}°</span>
+                </span>
+              </div>
               <div class="srow"><label>颜色</label><input class="clr" type="color" v-model="borderStyle[r.k + 'Color']" @input="applyBorderStyle" /><span class="u">{{ borderStyle[r.k + 'Color'] }}</span></div>
               <div class="srow"><label>线粗</label><input class="rng" type="range" min="0.1" max="8" step="0.1" v-model.number="borderStyle[r.k + 'Width']" @input="applyBorderStyle" /><span class="u">{{ borderStyle[r.k + 'Width'].toFixed(1) }}</span></div>
               <div class="srow"><label>透明度</label><input class="rng" type="range" min="0" max="1" step="0.05" v-model.number="borderStyle[r.k + 'Opacity']" @input="applyBorderStyle" /><span class="u">{{ borderStyle[r.k + 'Opacity'].toFixed(2) }}</span></div>
@@ -7671,7 +7675,7 @@ onBeforeUnmount(() => {
           <div class="sect acc" :class="{ open: isSecOpen('geo-adm', false) }" @click="toggleSec('geo-adm', false)"><Icon :name="isSecOpen('geo-adm', false) ? 'chevron-down' : 'chevron-right'" :size="12" /><span>行政区</span><button type="button" class="layersw sect-layersw" :class="{ on: showProvinces }" role="switch" :aria-checked="showProvinces ? 'true' : 'false'" :title="showProvinces ? '隐藏行政区界 / 名称' : '显示行政区界 / 名称'" @click.stop="toggleProvinces"><i></i></button></div>
           <template v-if="isSecOpen('geo-adm', false)">
           <div class="srow"><label>国家</label><input class="ci" v-model="admQuery1" placeholder="搜索国家（中文 / English / ISO3）" /></div>
-          <div class="mlist">
+          <div class="mlist tall">
             <div v-for="c in admHits" :key="c.id" class="mrow rowlk" @click="admToggleCountry(c.id)">
               <input type="checkbox" :checked="admSel1.includes(c.id)" @click.stop="admToggleCountry(c.id)" /><span class="mc">{{ c.zh }}</span><span class="cnt2">{{ c.id }}</span>
             </div>
@@ -7702,12 +7706,12 @@ onBeforeUnmount(() => {
               <option v-for="f in FORMATS" :key="f.k" :value="f.k">{{ f.zh }}</option>
             </select>
           </div>
-          <div class="srow"><label>画面中心</label><input class="ci cov-b" type="number" min="-180" max="180" step="0.5" :value="crsCenter" title="2D 平面图正中那条经线的经度（东正西负）；接缝随之落到它的对面。3D 球体没有接缝，不受影响" @change="setCrsCenter($event.target.value)" />
+          <div class="srow"><label>画面中心</label><input class="ci cov-b" type="number" min="-180" max="180" step="0.5" :value="crsCenter" title="2D 平面图正中那条经线的经度（东正西负）；接缝随之落到它的对面。3D 球体没有接缝，不受影响" @change="setCrsCenter($event.target.value)" /><span class="u">{{ crsCenterTag }}</span></div>
+          <div class="srow stack"><label>常用</label>
             <span class="seg nseg" role="group" aria-label="常用画面中心">
               <span v-for="c in CENTER_PRESETS" :key="c.v" class="sg" :class="{ on: Math.abs(crsCenter - c.v) < 0.25 }" @click="setCrsCenter(c.v)">{{ c.zh }}</span>
             </span>
           </div>
-          <div class="srow"><label></label><input class="rng" type="range" min="-180" max="180" step="0.5" :value="crsCenter" @input="setCrsCenter($event.target.value)" /></div>
           </template>
         </div>
 
@@ -7727,6 +7731,32 @@ onBeforeUnmount(() => {
             日下点 {{ termSub ? fmtSlot(termSub.lon) + ' · ' + Math.abs(termSub.lat).toFixed(2) + '°' + (termSub.lat >= 0 ? 'N' : 'S') : '—' }}。
           </div>
           </template>
+          </template>
+        </div>
+        <div class="sec">
+          <div class="sect acc" :class="{ open: isSecOpen('geo-pov') }" @click="toggleSec('geo-pov')"><Icon :name="isSecOpen('geo-pov') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>地图视角</span></div>
+          <template v-if="isSecOpen('geo-pov')">
+          <div class="srow"><label>视角</label>
+            <select :value="povCfg.id" title="底图的国界、陆地着色、点选与国名全部按该视角的归属表解算；「自定义」以中国视角为底再逐项覆写。台湾、香港、澳门恒属中国，不随视角变" @change="setPovId($event.target.value)">
+              <option v-for="p in POV_META" :key="p.id" :value="p.id">{{ byLang(p.zh, p.en) }}</option>
+            </select>
+          </div>
+          <template v-if="povCfg.id === CUSTOM_POV">
+            <div class="bsub"><span>争议区归属</span></div>
+            <div v-for="g in CUSTOMIZABLE_DISPUTES" :key="g.key" class="srow sub">
+              <label :title="g.en">{{ g.zh }}</label>
+              <select :value="povCfg.overrides[g.key] || ''" :title="g.en" @change="setPovDispute(g.key, $event.target.value)">
+                <option value="">跟随底图默认</option>
+                <option v-for="o in g.opts" :key="o" :value="o">{{ povOwnerZh(o) }}</option>
+                <option value="none">不显示</option>
+              </select>
+            </div>
+          </template>
+          <div class="bsub"><span>附加线</span></div>
+          <div v-for="L in POV_LAYERS" :key="L.k" class="swrow" :class="{ dis: L.k === 'claim' && !povClaimAvail }" :title="L.tip">
+            <span>{{ L.zh }}</span>
+            <button type="button" class="layersw" :class="{ on: povCfg.layers[L.k] }" role="switch" :aria-checked="povCfg.layers[L.k] ? 'true' : 'false'" :disabled="L.k === 'claim' && !povClaimAvail" @click="togglePovLayer(L.k)"><i></i></button>
+          </div>
           </template>
         </div>
         </div>
@@ -9518,6 +9548,8 @@ onBeforeUnmount(() => {
 .mlist { margin-top: 6px; display: flex; flex-direction: column; gap: 4px; max-height: 150px; overflow-y: auto; }
 /* 主从列表（边界线七类 / 地名三级）条目固定，不滚 —— 150px 上限是给可能几十条的国家清单的 */
 .mlist.pick { max-height: none; overflow: visible; }
+/* 国家清单：全量 251 条可滚，给足一屏的高度（150px 只够四行半，翻起来太碎） */
+.mlist.tall { max-height: 260px; }
 .mrow { display: flex; align-items: center; gap: 6px; }
 .mrow .mc { flex: 1; font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); }
 /* 主从列表里的中文条目名：不用等宽（那是给代号/坐标的），按正文字号走 */

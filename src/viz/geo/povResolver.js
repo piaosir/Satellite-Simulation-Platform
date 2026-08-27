@@ -22,7 +22,7 @@ import { feature } from 'topojson-client'
 import topo10 from '../globe3d/data/basemap-10m.json' with { type: 'json' }
 import NAMES from '../globe3d/data/country-names-zh.json' with { type: 'json' }
 import { FROZEN, expandOverrides } from './frozen.js'
-import { POV_FILES, DEFAULT_POV, normMapPov, povTableOf } from './povList.js'
+import { POV_FILES, DEFAULT_POV, POV_SOLID, normMapPov, povTableOf } from './povList.js'
 import { onMapPov, bootMapPov } from '../../stores/mapPov.js'
 
 export { DEFAULT_POV }
@@ -97,6 +97,8 @@ export async function ensureDetail(detail) {
   // ★ 动态 import 不许带 with { type: 'json' }：dev 期 Vite 把 .json 转成 JS 模块再吐，
   //   浏览器拿导入属性一核对 MIME 就整个拒掉（"Failed to fetch dynamically imported module"），
   //   于是 50m/110m 两档在开发态一次都加载不上。静态那条不受影响（构建期就被内联掉了）。
+  //   ★ 代价：Node 里这行跑不通（Node 导 JSON 必须带属性）。本函数只有两个渲染器在浏览器里调，
+  //     单测与构建脚本都只用静态的 10m —— 真要在 Node 里换档，得另走 fs.readFileSync。
   const mod = detail === '110m' ? await import('../globe3d/data/basemap-110m.json') : await import('../globe3d/data/basemap-50m.json')
   bundles[detail] = prep(mod.default || mod)
   return bundles[detail]
@@ -179,10 +181,24 @@ export function resolvedFeatures(detail) {
 }
 const geomOf = (polys) => polys.length === 1 ? { type: 'Polygon', coordinates: polys[0] } : { type: 'MultiPolygon', coordinates: polys }
 
+// 一条折线是否落在某国境内：沿线等距取至多 8 个点问 ownerAt。界线本就压在两国交界上，
+// 逐点判会两边都命中 —— 命中一次即算数（调用方要的就是「这条线跟这个国家有关」）。
+function touchesOwner(coords, iso, detail) {
+  const n = coords.length
+  if (!n) return false
+  const step = Math.max(1, Math.floor(n / 8))
+  for (let i = 0; i < n; i += step) {
+    const h = ownerAt(coords[i][0], coords[i][1], detail)
+    if (h && h.owner === iso) return true
+  }
+  return false
+}
+
 // ---------- 线：五组 ----------
 // 每组为「折线数组」，折线是 [[lon,lat], …]。相邻不同类的线共享同一个 arc 端点，接头天然严丝合缝。
 export function resolvedLines(detail) {
   const b = B(detail)
+  const solidIso = POV_SOLID[effId()] || null
   const out = { coast: [], admin0: [], indefinite: [], loc: [], claim: [] }
   for (const k in b.adj) {
     const pair = b.adj[k]
@@ -198,6 +214,8 @@ export function resolvedLines(detail) {
     // 表达不出来的，构建期已把这些自带线与派生 arc 精确对上并记进 lineCls，此处只对已成线的那些生效
     // （溶解掉的段落不复活 —— 一个国家内部不该有停火线）。海岸线不受影响。
     if (cls !== 'coast' && b.lineCls[k]) cls = b.lineCls[k]
+    // ★ 本视角声明「这个国家的国境一律实线」时，凡有一侧是它的未定界一律升格成国界（见 POV_SOLID）
+    if (cls === 'indefinite' && solidIso && (oa === solidIso || ob === solidIso)) cls = 'admin0'
     out[cls].push(b.arcs[+k])
   }
   const pov = povTableOf(state.id)
@@ -208,6 +226,11 @@ export function resolvedLines(detail) {
     if (p.cls === 'claim' && !(p.id && claimOn.has(p.id))) continue        // 主张线：本视角声明了才画
     const g = f.geometry
     const cs = g.type === 'LineString' ? [g.coordinates] : g.coordinates
+    // 自带的未定界线只有几条（藏南 / 南千岛 / 刻赤 / 温哥华岛一带），它们不是派生 arc，
+    // 上面那条「升格成国界」的规则管不到 —— 这里按落点判：线上任一采样点归属是 solidIso 就整条不画。
+    // ★ 判据必须是【归属】不是【经纬度盒子】：藏南在中国视角下属中国、在印度视角下属印度，
+    //   同一条线在两套视角下的去留正好相反，用盒子写死就错了。
+    if (solidIso && p.cls === 'indefinite' && cs.some((c) => touchesOwner(c, solidIso, detail))) continue
     for (const c of cs) out[p.cls].push(c)
   }
   for (const k of ['claim', 'loc', 'indefinite']) if (!state.layers[k]) out[k] = []

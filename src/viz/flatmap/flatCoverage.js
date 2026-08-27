@@ -12,9 +12,7 @@ import { terminatorFlat } from '../terminator.js'
 const OCEAN = '#15426b'
 // 南极极冠：南极洲数据止于约 -85°，极点处留有空洞，补到 -90°。
 const SOUTH_CAP_LAT = -82
-// 经纬网：中性灰半透明 —— 白色 0.12 在浅蓝海上等于没有（默认海色就是浅蓝），在深蓝海上又偏亮。
-// 中性灰对深浅两种海色都留得住一条淡淡的格线，正是「专业地图」该有的那层底衬。
-const GRID = 'rgba(96,116,136,0.28)', BG = '#070b12'
+const BG = '#070b12'
 // 切口（左边缘经度）：默认西经 30°，经度范围 [LON0, LON0+360)。可由「地图设置 → 坐标系」改，
 // 改后要重烘所有「世界度坐标」(x = lon − LON0) 的 Path2D —— 陆地/边界线/覆盖场/等值线/夜区都是这套坐标。
 let LON0 = -30
@@ -181,6 +179,18 @@ export function createFlatCoverage(canvas) {
 
   function fit() { base = Math.min(cw / 360, ch / 180); scale = 1; tx = (cw - 360 * base) / 2; ty = (ch - 180 * base) / 2 }
   const k = () => base * scale
+  // 世界矩形（屏幕 px）：整幅图就这一张，x∈[tx, tx+360k]、y∈[ty, ty+180k]。
+  // ★ 一切绘制都裁到它 —— 平面图是【一张完整的世界地图】，不是可以无限横向翻页的瓦片地图。
+  //   经度环绕的 ±360 副本仍然要画：跨接缝的国家（如俄罗斯）本体在右边出界，靠左边那份副本补齐，
+  //   裁剪之后两半正好拼成一张，画面上只有一个中国、一个俄罗斯。
+  const worldRect = () => { const kk = k(); return { x: tx, y: ty, w: 360 * kk, h: 180 * kk } }
+  // 平移夹紧：世界比视口大就不许拖出边（贴边即止），比视口小就居中钉住。
+  // 没有这一步的话，裁剪之后能把整张图拖到画布外，剩一片底色。
+  function clampPan() {
+    const kk = k(), ww = 360 * kk, wh = 180 * kk
+    tx = ww <= cw ? (cw - ww) / 2 : Math.min(0, Math.max(cw - ww, tx))
+    ty = wh <= ch ? (ch - wh) / 2 : Math.min(0, Math.max(ch - wh, ty))
+  }
   const WXN = (lon) => (((lon - LON0) % 360) + 360) % 360
   const PX = (lon) => WXN(lon) * k() + tx
   const PY = (lat) => (90 - lat) * k() + ty
@@ -285,11 +295,23 @@ export function createFlatCoverage(canvas) {
     ctx.restore()
   }
   function drawGrid() {
+    if (borderStyle.gridOn === false) return
     const kk = k(), x0 = tx, x1 = tx + 360 * kk
-    ctx.strokeStyle = GRID; ctx.lineWidth = 0.8; ctx.beginPath()
-    for (let lon = -180; lon <= 180; lon += 15) { const x = WXN(lon) * kk + tx; ctx.moveTo(x, PY(90)); ctx.lineTo(x, PY(-90)) }
-    for (let lat = -75; lat <= 75; lat += 15) { const y = PY(lat); ctx.moveTo(x0, y); ctx.lineTo(x1, y) }
+    const step = borderStyle.gridStep > 0 ? borderStyle.gridStep : 15
+    ctx.save()
+    ctx.strokeStyle = borderStyle.gridColor; ctx.lineWidth = borderStyle.gridWidth; ctx.globalAlpha = borderStyle.gridOpacity
+    const px = DASH_PX[borderStyle.gridDash || 'solid']
+    ctx.setLineDash(px || [])            // ★ 屏幕坐标画的（不像边界线走缩放矩阵），图案不用除 kk
+    ctx.beginPath()
+    for (let lon = -180; lon <= 180; lon += step) {
+      const wx = WXN(lon)
+      ctx.moveTo(wx * kk + tx, PY(90)); ctx.lineTo(wx * kk + tx, PY(-90))
+      // 接缝那条经线 WXN=0 只画在左边缘，右边缘（+360）得补一条，否则整张图右边没有收口线
+      if (wx < 1e-9) { const xr = 360 * kk + tx; ctx.moveTo(xr, PY(90)); ctx.lineTo(xr, PY(-90)) }
+    }
+    for (let lat = -90 + step; lat <= 90 - step + 1e-9; lat += step) { const y = PY(lat); ctx.moveTo(x0, y); ctx.lineTo(x1, y) }
     ctx.stroke()
+    ctx.restore()
   }
   function drawPolyline(p, color, width, closed, dash) {
     const kk = k()
@@ -693,7 +715,7 @@ export function createFlatCoverage(canvas) {
   }
   // 重建两张静态快照：分别渲到主画布再拷到离屏缓冲（below 不透明含底色；above 透明叠加）。
   function renderStaticLayers() {
-    const rx = PX(LON0) - 360 * k(), ry = PY(90), rw = 1080 * k(), rh = 180 * k()   // ±360 各补一圈：惯性档平移后不露底
+    const _wr = worldRect(), rx = _wr.x, ry = _wr.y, rw = _wr.w, rh = _wr.h   // 裁到世界矩形：整幅图只此一张
     const bw = belowCanvas.width, bh = belowCanvas.height
     // below：海陆/冰盖/网格（含背景底色）
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
@@ -840,7 +862,7 @@ export function createFlatCoverage(canvas) {
     if (cw < 2 || ch < 2 || !belowCanvas) return
     if (!staticValid) { renderStaticLayers(); staticValid = true }
     const bw = belowCanvas.width, bh = belowCanvas.height
-    const rx = PX(LON0) - 360 * k(), ry = PY(90), rw = 1080 * k(), rh = 180 * k()   // ±360 各补一圈：惯性档平移后不露底
+    const _wr = worldRect(), rx = _wr.x, ry = _wr.y, rw = _wr.w, rh = _wr.h   // 裁到世界矩形：整幅图只此一张
     // 复合：blit below（不透明）→ Polygon 填充 + 覆盖填充/线（夹在中间）→ blit above（透明）→ 覆盖标注 → 聚焦星
     ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, bw, bh); ctx.drawImage(belowCanvas, 0, 0)
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
@@ -874,14 +896,14 @@ export function createFlatCoverage(canvas) {
     const r = canvas.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top
     const kk = k(), wx = (mx - tx) / kk, wy = (my - ty) / kk
     scale = clamp(scale * Math.exp(-e.deltaY * 0.0015), SMIN, SMAX)
-    const k2 = k(); tx = mx - wx * k2; ty = my - wy * k2; invalidateStatic(); requestDraw()
+    const k2 = k(); tx = mx - wx * k2; ty = my - wy * k2; clampPan(); invalidateStatic(); requestDraw()
     if (onZoom) onZoom(scaleToT())
   }
   // 进度条设缩放：绕画布中心缩放（锚定中心世界点），t∈[0,1]
   function setZoomT(t) {
     const mx = cw / 2, my = ch / 2, kk = k(), wx = (mx - tx) / kk, wy = (my - ty) / kk
     scale = clamp(Math.exp(_lnS0 + Math.max(0, Math.min(1, t)) * (_lnS1 - _lnS0)), SMIN, SMAX)
-    const k2 = k(); tx = mx - wx * k2; ty = my - wy * k2; invalidateStatic(); requestDraw()
+    const k2 = k(); tx = mx - wx * k2; ty = my - wy * k2; clampPan(); invalidateStatic(); requestDraw()
   }
   let dragging = false, lx = 0, ly = 0
   let beamDragMode = false, onBeamDrag = null, beamDragging = false   // 拖拽波束（不平移地图）
@@ -980,7 +1002,7 @@ export function createFlatCoverage(canvas) {
       const dx = e.clientX - drawLX, dy = e.clientY - drawLY
       if (dx * dx + dy * dy >= POLY_DRAW_MIN2) { drawLX = e.clientX; drawLY = e.clientY; const ll = screenToLonLat(e.clientX, e.clientY); if (ll && onPolyDraw) onPolyDraw(ll, 'move') }
     }
-    else if (dragging) { tx += e.clientX - lx; ty += e.clientY - ly; lx = e.clientX; ly = e.clientY; invalidateStatic(); requestDraw() }
+    else if (dragging) { tx += e.clientX - lx; ty += e.clientY - ly; lx = e.clientX; ly = e.clientY; clampPan(); invalidateStatic(); requestDraw() }
     else if (editVerts) {   // 悬停提示：可拖顶点 / 可拖多边形内部（cursor 可覆盖命中态提示，如删除模式用 'pointer' 而非 'move'）
       canvas.style.cursor = (editVerts.move ? pointInEditPoly(e.clientX, e.clientY) : vertexAt(e.clientX, e.clientY) >= 0) ? (editVerts.cursor || 'move') : 'grab'
     }
@@ -1023,7 +1045,7 @@ export function createFlatCoverage(canvas) {
   function screenToLonLat(clientX, clientY) {
     const r = canvas.getBoundingClientRect(), kk = k()
     const wx = (clientX - r.left - tx) / kk, wy = (clientY - r.top - ty) / kk
-    if (wy < 0 || wy > 180) return null
+    if (wy < 0 || wy > 180 || wx < 0 || wx > 360) return null   // 世界矩形之外（信箱留白）没有经纬度
     let lon = wx + LON0; lon = ((lon % 360) + 540) % 360 - 180
     return { lat: 90 - wy, lon }
   }
@@ -1148,6 +1170,7 @@ export function createFlatCoverage(canvas) {
       const kk = k()
       if (Number.isFinite(v.cx)) tx = cw / 2 - v.cx * kk
       if (Number.isFinite(v.cy)) ty = ch / 2 - v.cy * kk
+      clampPan()
       invalidateStatic(); requestDraw()
     },
     // 渲染分辨率倍率（画质档位）：改后重建位图。this.resize 重算 dpr/位图尺寸并重绘。
@@ -1227,7 +1250,7 @@ export function createFlatCoverage(canvas) {
       if (!belowCanvas) { belowCanvas = document.createElement('canvas'); belowCtx = belowCanvas.getContext('2d'); aboveCanvas = document.createElement('canvas'); aboveCtx = aboveCanvas.getContext('2d') }
       if (belowCanvas.width !== canvas.width || belowCanvas.height !== canvas.height) { belowCanvas.width = canvas.width; belowCanvas.height = canvas.height; aboveCanvas.width = canvas.width; aboveCanvas.height = canvas.height }
       invalidateStatic()
-      if (firstFit) fit()
+      if (firstFit) fit(); else clampPan()   // 画布尺寸变了：原来贴着边的视图要重新贴边，不能留出白条
       draw()   // 同步立即重绘：canvas.width 重设会清空画布，若只 requestDraw 会隔一帧露出深色底 → 黑一下
     },
     reset() { fit(); invalidateStatic(); requestDraw() },
@@ -1253,7 +1276,7 @@ export function createFlatCoverage(canvas) {
       if (o.fontFamilyLatin) textFontLatin = o.fontFamilyLatin
       if (viewMode) { /* 保留当前屏幕视图（cw/ch/base/scale/tx/ty 不变） */ }
       else { cw = W; ch = H; fit() }
-      const rx = PX(LON0) - 360 * k(), ry = PY(90), rw = 1080 * k(), rh = 180 * k()   // ±360 各补一圈：惯性档平移后不露底
+      const _wr = worldRect(), rx = _wr.x, ry = _wr.y, rw = _wr.w, rh = _wr.h   // 裁到世界矩形：整幅图只此一张
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
       if (o.background !== false) { ctx.fillStyle = BG; ctx.fillRect(0, 0, cw, ch) }
       drawBelowContent(rx, ry, rw, rh)

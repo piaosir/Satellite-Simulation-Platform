@@ -207,17 +207,24 @@ function decimateRing(ring, minD) {
   out.push(ring[ring.length - 1])
   return out
 }
-// 矢量经纬网坐标（半径略低于国界线，使国界压在网格之上）
-function buildGraticule() {
-  const pos = []
-  const push = (lat, lon) => { const v = llaToVec(lat, lon, 0).multiplyScalar(1.0003); pos.push(v.x, v.y, v.z) }
-  for (let lat = -75; lat <= 75; lat += 15) {
-    for (let lon = -180; lon < 180; lon += 3) { push(lat, lon); push(lat, lon + 3) }
+// 矢量经纬网（半径略低于国界线，使国界压在网格之上）。step = 网格间隔（度，可调）。
+// 返回【折线数组】而不是散段：这样能和五类边界线走同一套虚线机器（pushDashed / pushStripSegs），
+// 于是经纬网也能选线型、虚线周期也随缩放恒定。3° 一段是为了贴住球面。
+function graticuleLines(step) {
+  const d = step > 0 ? step : 15
+  const out = []
+  const at = (lat, lon) => llaToVec(lat, lon, 0).multiplyScalar(1.0003)
+  for (let lat = -90 + d; lat <= 90 - d + 1e-9; lat += d) {
+    const line = []
+    for (let lon = -180; lon <= 180; lon += 3) line.push(at(lat, lon))
+    out.push(line)
   }
-  for (let lon = -180; lon < 180; lon += 15) {
-    for (let lat = -87; lat < 87; lat += 3) { push(lat, lon); push(lat + 3, lon) }
+  for (let lon = -180; lon < 180; lon += d) {
+    const line = []
+    for (let lat = -87; lat <= 87; lat += 3) line.push(at(lat, lon))
+    out.push(line)
   }
-  return pos
+  return out
 }
 
 // 大洋标记：斜体浅蓝、半透明，区别于国家名
@@ -361,11 +368,27 @@ export function createGlobeScene(container, quality = {}) {
   // 矢量边界线 + 矢量经纬网：粗线，放大/高分辨率下都锐利清晰。
   // 渲染序高于覆盖填充(5)+各类数据线(等值线/波束线/仰角线/轨迹线，统一 6)、低于点/标注：
   // 地理骨架贯穿覆盖区之上 → 覆盖与底图融为一体（平级），不再像贴纸浮在地图上面。depthWrite=false，纯绘制顺序。
-  scene.add(fatSegments(buildGraticule(), 0x607488, 0.8, 0.30, ORDER.grid))   // 与 2D 的 GRID 同一口径：中性灰，深浅两种海色都留得住
+  // 经纬网：与五类边界线同样是「一条可改样式、可关掉」的线，样式收在 borderCfg 的 grid* 里。
+  // 间隔变了要重建几何（点是按间隔生成的），颜色/线宽/透明度/显隐直接改材质。
+  let graticule = null
+  function gridPos(wpp) {
+    const px = DASH_PX[borderCfg.gridDash || 'solid']
+    const pat = px ? px.map((v) => v * wpp) : null
+    const sink = createSink()
+    for (const line of graticuleLines(borderCfg.gridStep)) { if (pat) pushDashed(sink, line, pat); else pushStripSegs(sink, line) }
+    return sink.view()
+  }
+  function buildGrid() {
+    disposeFatLine(graticule)
+    graticule = fatSegments(gridPos(worldPerPx()), borderCfg.gridColor, borderCfg.gridWidth, borderCfg.gridOpacity, ORDER.grid)
+    graticule.visible = borderCfg.gridOn !== false
+    scene.add(graticule)
+  }
   // 五类边界线：coast / admin0 / indefinite / loc / claim，各自独立的颜色/线宽/透明度/线型。
   // 保留对象引用，供 setBorderStyle 运行时改样式；换精度档 / 换视角 / 改缩放档位时按需重建。
   const borderCfg = { ...BORDER_DEF }
   const borderLines = {}     // cls → LineSegments2（首次构建在 offPov 之后 —— classPos 依赖的几个 const 还没初始化）
+
 
   // 国名/洋名：中、英两套（按需切换显隐），初始全隐
   let labelsZh = buildLabels('zh', mapDetail0); scene.add(labelsZh)
@@ -484,6 +507,11 @@ export function createGlobeScene(container, quality = {}) {
       const g = new LineSegmentsGeometry(); g.setPositions(classPos(cls, L[cls], wpp))
       o.geometry = g
     }
+    if (graticule && DASH_PX[borderCfg.gridDash || 'solid']) {
+      graticule.geometry.dispose()
+      const g = new LineSegmentsGeometry(); g.setPositions(gridPos(wpp))
+      graticule.geometry = g
+    }
   }
   // 缩放分级（1.6b 三）：全球视角下二级行政区完全淡出、一级降到 0.3，拉近后线性恢复。
   // 政治五类不参与 —— 国界在任何尺度都在。线淡出时名字跟着淡，否则会剩一地孤字。
@@ -524,6 +552,7 @@ export function createGlobeScene(container, quality = {}) {
   // 视角/用户覆写改动由解算器广播回来 —— 场景不关心是谁改的，一律整份重建
   const offPov = onPovChange(rebuildBasemap)
   buildBorderLines()   // 五类边界线首次构建（放在这里是因为 classPos 用到的 const 到此才初始化完）
+  buildGrid()          // 经纬网同理：disposeFatLine / fatSegments 到此才可用
 
   async function setMapDetail(detail, thin) {
     const t = (thin != null) ? thin : mapThin
@@ -626,6 +655,18 @@ export function createGlobeScene(container, quality = {}) {
       if (st[k + 'Opacity'] != null) m.opacity = st[k + 'Opacity']
     }
     if (reDash) buildBorderLines()
+    // 经纬网：间隔变了重建几何，其余就地改材质 / 显隐
+    if (graticule) {
+      if (st.gridStep != null) buildGrid()
+      else {
+        const m = graticule.material
+        if (st.gridColor != null) m.color.set(st.gridColor)
+        if (st.gridWidth != null) m.linewidth = st.gridWidth
+        if (st.gridOpacity != null) m.opacity = st.gridOpacity
+        if (st.gridDash != null) buildGrid()      // 线型走 fatSegments 重建（与边界线同路）
+        if (st.gridOn != null) graticule.visible = st.gridOn !== false
+      }
+    }
     if (provinceBorders) {
       const m = provinceBorders.material
       if (st.provColor != null) m.color.set(st.provColor)

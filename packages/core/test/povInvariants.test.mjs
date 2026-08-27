@@ -15,7 +15,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { FROZEN, CUSTOMIZABLE_DISPUTES, expandOverrides } from '../../../src/viz/geo/frozen.js'
 import * as R from '../../../src/viz/geo/povResolver.js'
-import { BORDER_DEF, DASH_PX, DASH_SCALE, BORDER_CLASSES, BORDER_DRAW, ORDER, CFG_KEY, fadeFactor, admFade } from '../../../src/viz/geo/borderStyle.js'
+import { BORDER_DEF, DASH_PX, DASH_SCALE, GRID_STEPS, BORDER_CLASSES, BORDER_DRAW, ORDER, CFG_KEY, fadeFactor, admFade } from '../../../src/viz/geo/borderStyle.js'
 import { migrateLandOverrides } from '../../../src/viz/landPalette.js'
 import { POV_META, CUSTOM_POV, MAP_POV_DEF, normMapPov, povTableOf } from '../../../src/viz/geo/povList.js'
 
@@ -142,14 +142,28 @@ let same = []
 for (let i = 0; i < SEVEN.length; i++) for (let j = i + 1; j < SEVEN.length; j++) {
   if (sig(SEVEN[i][1]) === sig(SEVEN[j][1])) same.push(SEVEN[i][0] + '≡' + SEVEN[j][0])
 }
-ok('⑩ 出厂默认下任意两类线不同时同色+同宽+同线型', same.length === 0, same.join(' ') || SEVEN.length + ' 类两两比过')
-// 色系分两族：政治六类是暖色族（R>B）、海岸线是冷色族（B>R）—— 一眼能分出「自然要素」与「政治要素」
+// ★ 出厂态下线粗一律 0.7（用户口径），故「同色 + 同宽 + 同线型」不再是禁忌 —— 国界 / 海岸线 / 主张线
+//   本来就该是同一套线符。改判「同色同宽的那几条，靠线型或透明度仍分得开」：
+//   国界 1.00 / 海岸 0.90 / 主张 1.00 —— 国界与主张线故意长一样（中国标准地图的画法），其余都还分得开。
+const sig2 = (k) => [String(BORDER_DEF[k + 'Color']).toLowerCase(), BORDER_DEF[k + 'Width'], BORDER_DEF[k + 'Dash'] || 'solid', BORDER_DEF[k + 'Opacity']].join('|')
+const dupSig = []
+for (let i = 0; i < SEVEN.length; i++) for (let j = i + 1; j < SEVEN.length; j++) {
+  if (sig2(SEVEN[i][1]) === sig2(SEVEN[j][1])) dupSig.push(SEVEN[i][0] + '≡' + SEVEN[j][0])
+}
+ok('⑩ 出厂默认下完全同款的只有「国界≡主张线」这一对（刻意如此）',
+  dupSig.length === 1 && dupSig[0] === 'admin0≡claim', dupSig.join(' ') || '无')
+// 全部线同一族【冷蓝灰】（B>R），且★国界与海岸线同色 —— 一张图上只有一种线色，靠粗细分主次。
 const rgb = (h) => [1, 3, 5].map((i) => parseInt(String(h).slice(i, i + 2), 16))
-const warm = (h) => { const [r, , b] = rgb(h); return r > b }
-const polKeys = SEVEN.filter(([c]) => c !== 'coast').map(([, k]) => k)
-ok('⑩b 政治要素同属暖色族、海岸线自成冷色族',
-  polKeys.every((k) => warm(BORDER_DEF[k + 'Color'])) && !warm(BORDER_DEF.coastColor),
-  '政治色 ' + polKeys.map((k) => BORDER_DEF[k + 'Color']).join(',') + ' · 海岸 ' + BORDER_DEF.coastColor)
+const cool = (h) => { const [r, , b] = rgb(h); return b > r }
+const allKeys = SEVEN.map(([, k]) => k)
+ok('⑩b 全部边界线同属冷蓝灰一族',
+  allKeys.every((k) => cool(BORDER_DEF[k + 'Color'])),
+  allKeys.map((k) => BORDER_DEF[k + 'Color']).join(','))
+ok('⑩b2 国界与海岸线同色（用户口径）',
+  BORDER_DEF.admin0Color.toLowerCase() === BORDER_DEF.coastColor.toLowerCase(), BORDER_DEF.admin0Color)
+// 线粗一律 0.7（用户口径）：出厂态不靠粗细分主次，全交给明度与线型
+const W = SEVEN.map(([, k]) => BORDER_DEF[k + 'Width']).concat([BORDER_DEF.gridWidth])
+ok('⑩b3 出厂线粗一律 0.7', W.every((v) => Math.abs(v - 0.7) < 1e-9), W.join(' '))
 // ★ 层级靠【明度】排：国界最深，未定界/停火线次之，两级行政区依次退后。
 //   （改造前是「政治六类同色、只靠线型线宽分」，实测那样整幅图糊成一片灰，谁也不比谁重要。）
 const lum = (k) => { const [r, g, b] = rgb(BORDER_DEF[k + 'Color']); return 0.2126 * r + 0.7152 * g + 0.0722 * b }
@@ -169,11 +183,28 @@ ok('⑩e 渲染次序：ADM2 < ADM1 < 海岸 < 主张 < 停火 < 未定 < 国界
   ORDER.adm2 < ORDER.adm1 && ORDER.adm1 < ORDER.coast && ORDER.coast < ORDER.claim && ORDER.claim < ORDER.loc && ORDER.loc < ORDER.indefinite && ORDER.indefinite < ORDER.admin0)
 // ★ 主张线（南海十段线）必须是【实线】：它本身就是十段实的短线，再套虚线图案会被打成一串麻点。
 //   与国界的区分靠线宽（更粗），不靠虚线周期 —— 中国标准地图上正是这个画法。
-ok('⑩f 主张线是实线且比国界粗',
-  (BORDER_DEF.claimDash || 'solid') === 'solid' && BORDER_DEF.claimWidth > BORDER_DEF.admin0Width && !DASH_SCALE.claim,
-  'claim ' + BORDER_DEF.claimDash + ' ' + BORDER_DEF.claimWidth + ' > admin0 ' + BORDER_DEF.admin0Width)
+ok('⑩f 主张线是实线（不是虚线）',
+  (BORDER_DEF.claimDash || 'solid') === 'solid' && !DASH_SCALE.claim, 'claim ' + (BORDER_DEF.claimDash || 'solid'))
 ok('⑩g 虚线图案齐全（未定界虚线 / 停火线点划线）', Array.isArray(DASH_PX.dash) && DASH_PX.dashdot.length === 4,
   'dash ' + DASH_PX.dash.join('/') + ' · dashdot ' + DASH_PX.dashdot.join('/'))
+// 经纬网与五类边界线同规格：颜色/线宽/透明度/线型四项齐全 + 可关 + 间隔可选，且比任何一条界线都淡
+ok('⑩h 经纬网可改样式、可关、可换间隔',
+  typeof BORDER_DEF.gridColor === 'string' && BORDER_DEF.gridWidth > 0 && BORDER_DEF.gridOn === true &&
+  GRID_STEPS.includes(BORDER_DEF.gridStep) && (BORDER_DEF.gridDash || 'solid') in DASH_PX,
+  BORDER_DEF.gridColor + ' / ' + BORDER_DEF.gridWidth + ' / ' + BORDER_DEF.gridStep + '° · 可选 ' + GRID_STEPS.join('/'))
+ok('⑩i 经纬网比任何一条界线都淡（它是底衬不是数据）',
+  SEVEN.every(([, k]) => BORDER_DEF.gridOpacity < BORDER_DEF[k + 'Opacity']),
+  '网格 ' + BORDER_DEF.gridOpacity + ' < 最淡的界线 ' + Math.min(...SEVEN.map(([, k]) => BORDER_DEF[k + 'Opacity'])))
+
+// ---------- ⑩j 中国视角下中国的国境不出未定界虚线（POV_SOLID）----------
+// 判据取每条未定界折线的【中点】归属：界线压在两国交界上，端点两边都可能命中，中点才代表这条线归谁管。
+// （克什米尔那条印巴线的北端正好顶在中巴印三交点上，端点会误报成中国。）
+const midOwner = (poly) => { const q = poly[Math.floor(poly.length / 2)]; const h = R.ownerAt(q[0], q[1], '10m'); return h && h.owner }
+const cnIndefN = (id) => { R.setPov(id, {}); return R.resolvedLines('10m').indefinite.filter((p) => midOwner(p) === 'CHN').length }
+const nCN = cnIndefN('CN'), nISO = cnIndefN('ISO'), nIN = cnIndefN('IN')
+R.setPov(R.DEFAULT_POV, {})
+ok('⑩j 中国视角下中国境内不出未定界虚线', nCN === 0, 'CN ' + nCN + ' 条')
+ok('⑩j2 别的视角照旧出（规则挂在视角上，不是写死给中国）', nISO > 0 && nIN > 0, 'ISO ' + nISO + ' 条 · 印度 ' + nIN + ' 条')
 
 // ---------- ⑪ 缩放淡出（1.6b 三）----------
 ok('⑪ 全球视角 ADM2 全淡出、ADM1 降到 0.3', Math.abs(admFade(fadeFactor(0.2)).adm2) < 1e-9 && Math.abs(admFade(fadeFactor(0.2)).adm1 - 0.3) < 1e-9)

@@ -17,8 +17,9 @@ export const ARCTIC_ISLAND_LAT = 70
 
 // 统一单色基调预设（地图设置「大地颜色」色块顺序即此）：首个为 SATSOFT 米绿，其余为纸图系浅色
 export const LAND_UNIFORMS = ['#e4eccf', '#e8e0c9', '#dcd6c0', '#ccd6c0', '#d6cfc4', '#ccd2d8', '#f0ead9']
-// 默认基调：统一米黄（LAND_UNIFORMS[1]）。改默认时须与 ConstellationMap3D 的 landScheme 初值联动（同一常量）
-export const LAND_DEFAULT = '#e8e0c9'
+// 默认基调：SATSOFT 米绿（LAND_UNIFORMS[0]）。改默认时须与 ConstellationMap3D 的 landScheme 初值联动（同一常量），
+// 并在 restoreSettings 里给老存档补一条「没手动改过就升级」（旧默认 #e8e0c9）。
+export const LAND_DEFAULT = '#e4eccf'
 
 const HEX6 = /^#[0-9a-fA-F]{6}$/
 let scheme = LAND_DEFAULT   // 'morandi' 或 '#rrggbb'（统一单色）

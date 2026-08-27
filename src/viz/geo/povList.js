@@ -25,6 +25,12 @@ export const POV_META = [
 // 不这么做的话，切到「自定义」会连南海十段线一起没了（那条线由视角表的 lines.claim 声明）。
 export const povTableOf = (id) => POV_FILES[id] || POV_FILES[DEFAULT_POV]
 
+// ★ 某套视角下「这个国家的国境一律按国界（实线）画，不出未定界虚线」。
+//   中国官方地图就是这个画法：疆域按本视角的归属表算定之后，界就是界，不再留「未定」这个中间态
+//   —— 中国视角下画着自家的未定界虚线，是自相矛盾的。
+//   挂在视角上而不是写死给 CHN：换到 ISO / 美国 / 印度那几套视角，虚线照旧出。
+export const POV_SOLID = { CN: 'CHN' }
+
 export const MAP_POV_DEF = { id: DEFAULT_POV, overrides: {}, layers: { claim: true, loc: true, indefinite: true } }
 
 // 设置里存的那一坨（{ id, overrides, layers }）→ 规整成可用值。
