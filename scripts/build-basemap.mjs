@@ -55,13 +55,11 @@ const ID_DISP = {
 // 键为单元 id：{ host } 强制宿主、'drop' 整条丢弃。留空即表示当前三档实测无需修正（校验会打印异常清单）。
 const OVERRIDE = {}
 
-// 视角 → NE 属性列。NE 官方对每个面都标了 32 套视角下的归属，本平台取其中六套。
+// 视角 → NE 属性列。NE 官方对每个面都标了 32 套视角下的归属，本平台取其中四套。
 const POVS = [
   { id: 'CN', zh: '中国视角', en: 'China', attr: 'ADM0_A3_CN' },
   { id: 'ISO', zh: 'ISO 中立', en: 'ISO neutral', attr: 'ADM0_ISO' },
   { id: 'US', zh: '美国视角', en: 'United States', attr: 'ADM0_A3_US' },
-  { id: 'IN', zh: '印度视角', en: 'India', attr: 'ADM0_A3_IN' },
-  { id: 'JP', zh: '日本视角', en: 'Japan', attr: 'ADM0_A3_JP' },
   { id: 'RU', zh: '俄罗斯视角', en: 'Russia', attr: 'ADM0_A3_RU' }
 ]
 
@@ -277,7 +275,11 @@ async function buildScale(scale) {
   console.log('  自带线去重：候选 ' + cand.length + ' 条 → 与派生 arc 精确共享 ' + sharedN + ' 段（转成 lineCls 分类标注，不再画第二遍）· 整条丢弃 ' + dropWhole + ' 条 · 保留自带几何 ' + keepSeg + ' 段（另加主张线 ' + CLAIM_LINES.length + ' 条）')
 
   // ---- 属性回填 ----
-  const iso3n3 = {}, iso3name = {}
+  // ★ 不再产出 iso3n3（ISO3 → ISO 数字码）：那张表是从 map_unit 的 ISO_N3 列「先到先得」猜出来的，
+  //   法国被拆成本土+五个海外省时取到的是子单元的码（10m 取到 254 圭亚那 / 50m 取到 249 法国本土），
+  //   正确的 250 一次都没取到；AUS/CSI/ATC 与 ATA/ATG 还会撞到同一个码，地图上就出现两个「澳大利亚」。
+  //   运行时的国名 / 数字码 / 标注锚点一律走 src/viz/geo/countryZh.js 那张按 ISO3 索引的静态表。
+  const iso3name = {}
   topo.objects.units.geometries.forEach((g, i) => {
     const it = units[i], p = it.props
     const n3raw = clean(String(p.ISO_N3_EH == null ? '' : p.ISO_N3_EH)) || clean(String(p.ISO_N3 == null ? '' : p.ISO_N3))
@@ -294,7 +296,6 @@ async function buildScale(scale) {
     if (it.dispute) g.properties.dispute = true
     if (it.host) g.properties.host = it.host
     if (!it.dispute && own0 && own0 !== 'disputed') {
-      if (n3 && !iso3n3[own0]) iso3n3[own0] = n3
       // owner（ISO3）→ 英文国名：10m 档把英法等再拆成 map subunit，此时没有 u==='GBR' 的单元，
       // 标注要的是 admin-0 名（NE 的 ADMIN 列 = 'United Kingdom'），不是子单元名（'Scotland'）。
       if (!iso3name[own0]) iso3name[own0] = clean(p.ADMIN) || clean(p.NAME) || own0
@@ -374,7 +375,7 @@ async function buildScale(scale) {
     source: 'Natural Earth 5.x (public domain) — admin_0_map_units / admin_0_disputed_areas / admin_0_boundary_lines_land',
     model: '基础分区(units 里 dispute!=true) + 争议叠加(dispute==true，落在 host 内)；面按数组顺序覆盖，线按 adj 派生',
     lineCls_note: 'arc 序号 → 自带线给出的分类（loc/indefinite）。派生规则算出 admin0/indefinite 时由它顶替 —— 停火线/未定界是「两侧 owner 不同」这条规则表达不出来的',
-    iso3n3, iso3name,
+    iso3name,
     claim_note_zh: '南海十段线为近似示意坐标，仅供工程显示。正式对外发布须替换为国家测绘地理信息主管部门批准的审图号底图（如天地图 / GS(xxxx)xxxx 号）坐标；替换入口在 scripts/build-basemap.mjs 的 CLAIM_LINES。'
   }
   fs.mkdirSync(OUTDIR, { recursive: true })
@@ -408,13 +409,9 @@ function writePovs(units) {
     fs.writeFileSync(f, JSON.stringify(j, null, 2) + '\n')
     console.log('  视角 ' + pov.id + '：own 差异 ' + Object.keys(own).length + ' 条 → ' + path.relative(ROOT, f))
   }
-  // ISO 数字码 → ISO3：老存档里「逐国大地颜色」的键是 world-atlas 的 ISO 数字码（'156'），
-  // 换源后键改成 ISO3（'CHN'），迁移函数要查这张表。见 src/viz/landPalette.js。
-  const n3 = {}
-  for (const it of units) { const a = owner(it.props.ADM0_A3), n = clean(String(it.props.ISO_N3_EH == null ? '' : it.props.ISO_N3_EH)) || clean(String(it.props.ISO_N3 == null ? '' : it.props.ISO_N3)); if (a && a !== 'disputed' && n && n !== '-99' && !n3[n]) n3[n] = a }
-  const nf = path.join(ROOT, 'src', 'viz', 'geo', 'isoNum.json')
-  fs.writeFileSync(nf, JSON.stringify(n3) + '\n')
-  console.log('  ISO 数字码→ISO3 映射 ' + Object.keys(n3).length + ' 条 → ' + path.relative(ROOT, nf))
+  // ISO 数字码 → ISO3（老存档「逐国大地颜色」的键从 world-atlas 的数字码迁到 ISO3 时要查）
+  // 不再在构建期生成：它由 src/viz/geo/countryZh.js 那张静态表反建（ISO_NUM_TO_A3），
+  // 从 NE 猜数字码正是法国丢名、澳大利亚重名的病根，见该文件头。
 }
 
 const want = process.argv.slice(2).filter((a) => /^(110m|50m|10m)$/.test(a))

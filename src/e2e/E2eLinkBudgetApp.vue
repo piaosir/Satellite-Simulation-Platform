@@ -36,6 +36,7 @@ import {
 import { useLbReport } from '../shared/useLbReport.js'
 import { syncAutoNames, adoptAutoFlag, withAutoFlag, newCfgName, newFolderName, copyNameOf } from '../shared/lbAutoName.js'
 import { byLang, isDefaultName } from '../shared/i18n/lang.js'   // 自动生成的名字是数据、呈现层翻不到，生成时就按平台语言出字
+import { cityName, citySubtitle } from '../shared/cityName.js'   // 城市名同理（英文界面报 Beijing，选中后写进站名的也是它）
 import { stableStringify } from '../shared/configDirty.js'
 import { slantWgs84Max } from '../shared/slantRange.js'
 import { pf } from '../shared/num.js'
@@ -504,14 +505,14 @@ function cityEnter(e) {
 function pickCity(c) {
   const nd = selNode.value
   if (!c || !nd || nd.kind !== 'es') return
-  nd.name = c.name
+  nd.name = cityName(c)
   nd.longitude = String(c.lon != null ? c.lon : c.longitude)
   nd.latitude = String(c.lat != null ? c.lat : c.latitude)
   cityClose(); markStale()   // 站址跟着城市走，降雨率/海拔由站址扫描接手（见下方 scanSites）
 }
 // 下拉行右侧的站址读数：与单元格同一套记法（经度恒为 °E 轴，西经记负；纬度北正南负）
 const cityGeo = (c) => `${(+c.lon).toFixed(1)}°E ${(+c.lat).toFixed(1)}°N`
-const citySub = (c) => [c.en, c.country].filter(Boolean).join(' · ')
+const citySub = citySubtitle
 watch(cityAt, async (i) => {
   if (i < 0) return
   await nextTick()
@@ -1383,7 +1384,7 @@ onMounted(async () => {
                              :class="{ up: cityUp }" :style="{ maxHeight: cityMaxH + 'px' }">
                           <button v-for="(c, ci) in cityHits" :key="c.name" class="e2-city-i" :class="{ on: ci === cityAt }"
                                   data-i18n-skip @mousedown.prevent="pickCity(c)" @mouseenter="cityAt = ci">
-                            <span class="e2-city-n">{{ c.name }}</span>
+                            <span class="e2-city-n">{{ cityName(c) }}</span>
                             <span class="e2-city-x">{{ citySub(c) }}</span>
                             <span class="e2-city-g">{{ cityGeo(c) }}</span>
                           </button>

@@ -15,14 +15,19 @@
 // 丢掉只属一个单元的外缘边（= 国境/海岸，由底图兜底）。区别是不再用 toFixed(5) 拼串比对坐标 ——
 // 坐标先按 3 位小数量化，边键直接用量化后的整数对，快且不产生浮点毛刺。
 //
-// ★ 名称两档：「本地名 / 英文」，没有本地名就两档都用英文。
-//   · NE admin_1 自带 name_local / name_zh —— 直接用；
+// ★ 名称两档：「中文 / 英文」。
+//   · 中文取 NE 的 name_zh（4589/4596 个单元有，全部含汉字）；没有才回落 name_local（本地文字，只有 430 个有）。
+//   · 英文取 NE 的 name_en，没有才回落 name。
+//     ★ 别拿 name 当英文：那是「本地拼写的拉丁转写」——德国的萨克森是 Sachsen 不是 Saxony、
+//       印尼的东加里曼丹是 Kalimantan Timur 不是 East Kalimantan、以色列的南区是 HaDarom 不是 Southern；
+//       还有 67 个单元的 name 里带非拉丁附加符（Đắk Nông / Kangwŏn-do / Ōita）。
+//       全球 1265 个单元两者不同，而 name_en 平均只长 0.3 个字符 —— 换过去不占版面。
 //   · geoBoundaries 的 shapeName 全是英文/拼音 —— 只有英文这一档；
 //   · 中国走 DataV，本地名（中文简称）是数据自带的；英文这一档：省级 34 条手写通行译名，
 //     地级市按 NE populated_places 的 NAME_ZH 对上就取其 NAME，对不上的回落中文（覆盖率见构建日志）。
 //
 // ★ wv（适用视角）：某些单元在不同视角下不属于本国（如印度的阿鲁纳恰尔在中国视角下属中国）。
-//   构建期拿【运行时那份解算器】逐单元判一遍六套视角，只在本国的视角集合不是全集时才标 wv。
+//   构建期拿【运行时那份解算器】逐单元判一遍全部预设视角，只在本国的视角集合不是全集时才标 wv。
 //   输出把这类单元的边与标注拆进 groups[]，通用的仍留在 borders/labels —— 老格式的消费方读不到 groups 也能用。
 //
 // 用法：
@@ -54,7 +59,7 @@ const Q = 1000            // 坐标量化：3 位小数（≈110 m），边键�
 const SIMPLIFY = 0.003
 const POVS = R.povList().map((p) => p.id)
 
-// 视角敏感国家 + 争议面包围盒：绝大多数国家在六套视角下疆域完全一样，逐单元判视角纯属白做。
+// 视角敏感国家 + 争议面包围盒：绝大多数国家在各套视角下疆域完全一样，逐单元判视角纯属白做。
 // 先从底图里把「有争议面牵涉到的国家」和「争议面的包围盒」算出来，只有落进盒子里的单元才逐视角判。
 const SENSITIVE = new Set(), DBOX = []
 {
@@ -82,6 +87,91 @@ const unq = (v) => v / Q
 const clean = (v) => (typeof v === 'string' && v.trim() && v !== '-99' ? v.trim() : null)
 // NE 的 name_local 有「繁體|简体」两段的写法，取简体那段
 const localOf = (p) => { const v = clean(p.name_zh) || clean(p.name_local); return v ? (v.includes('|') ? v.split('|').pop().trim() : v) : null }
+
+// ---------- NE 的 admin_1 分级不齐：这几个国家先并到真正的一级 ----------
+// NE 的 admin_1_states_provinces 对多数国家给的是省/州/邦，但对少数几个给到了更细的一层：
+//   · 英国 232 个地方议会区（正确的一级是四个构成国：英格兰/苏格兰/威尔士/北爱尔兰）
+//   · 法国 101 个省 département（正确的一级是 18 个大区 région，含五个海外大区）
+//   · 马耳他 68 个地方议会（NE 自带的上一级是三个 region）
+// 一个 8.7°×10.4° 的岛上摆 232 个名字，字直接糊成一坨 —— 那不是「密」，是分错了级。
+// 并法：按 NE 自带的上一级字段把 feature 归组，组内几何拼成一个 MultiPolygon 单元。
+// 归组之后组内的公共边成了「同一单元内部的边」，shareNet 的「两个不同单元共享」判据自然把它溶解掉，
+// 不需要另写合并逻辑（与 buildChinaAdm2 把省直辖县级并进地级市是同一条路子）。
+const ADM1_GROUP = {
+  GBR: { key: (p) => p.gu_a3 || p.geonunit, en: (p) => p.geonunit },
+  FRA: { key: (p) => p.region || p.geonunit, en: (p) => p.region || p.geonunit },
+  MLT: { key: (p) => p.region || p.geonunit, en: (p) => p.region || p.geonunit }
+}
+// 并级之后组名取自 NE 的上一级字段，那是本地文字（法国大区是法文、马耳他 region 是马耳他语）。
+// 有通行英文名的在这里给，查不到就沿用原名 —— 法国多数大区的英文就是法文原名，不硬译。
+const ADM1_GROUP_EN = {
+  FRA: {
+    'Bretagne': 'Brittany', 'Normandie': 'Normandy', 'Corse': 'Corsica', 'Guyane française': 'French Guiana',
+    'Réunion': 'Réunion', 'Centre-Val de Loire': 'Centre-Val de Loire', 'Pays de la Loire': 'Pays de la Loire'
+  },
+  MLT: { 'Malta Majjistral': 'Northern', 'Malta Xlokk': 'South Eastern', 'Gozo': 'Gozo' }
+}
+// 合并后的组名（NE 只给英文/法文，中文得自己来）。查不到就回落英文，两档都出英文。
+const ADM1_GROUP_ZH = {
+  GBR: { ENG: '英格兰', SCT: '苏格兰', WLS: '威尔士', NIR: '北爱尔兰' },
+  FRA: {
+    'Hauts-de-France': '上法兰西', 'Grand Est': '大东部', 'Normandie': '诺曼底', 'Bretagne': '布列塔尼',
+    'Pays de la Loire': '卢瓦尔河地区', 'Centre-Val de Loire': '中央-卢瓦尔河谷', 'Île-de-France': '法兰西岛',
+    'Bourgogne-Franche-Comté': '勃艮第-弗朗什-孔泰', 'Auvergne-Rhône-Alpes': '奥弗涅-罗纳-阿尔卑斯',
+    'Nouvelle-Aquitaine': '新阿基坦', 'Occitanie': '奥克西塔尼', "Provence-Alpes-Côte-d'Azur": '普罗旺斯-阿尔卑斯-蓝色海岸',
+    'Corse': '科西嘉', 'Guyane française': '法属圭亚那', 'Martinique': '马提尼克', 'Guadeloupe': '瓜德罗普',
+    'Réunion': '留尼汪', 'Mayotte': '马约特'
+  },
+  MLT: { 'Malta Majjistral': '马耳他西北', 'Malta Xlokk': '马耳他东南', 'Gozo': '戈佐' }
+}
+// 单元名覆写：NE 少数几条给的是行政级别的全称而不是地图上该写的通名。
+// 键为 ISO3 → NE 的英文 name，值为 [英文, 中文]。
+const ADM1_RENAME = {
+  NGA: { 'Federal Capital Territory': ['Abuja', '阿布贾'] }   // 地图上写首都名就够了，不写「联邦首都特区」
+}
+const renameAdm1 = (iso, en, zh) => {
+  const t = (ADM1_RENAME[iso] || {})[en]
+  return t ? { en: t[0], zh: t[1] } : { en, zh }
+}
+
+// feature 列表 → 归组后的「单元 + 名称」两份数组；无归组规则的国家原样返回。
+function groupAdm1(iso, feats) {
+  const G = ADM1_GROUP[iso]
+  if (!G) {
+    return {
+      units: feats,
+      names: feats.map((f) => {
+        const n = renameAdm1(iso, clean(f.properties.name_en) || clean(f.properties.name) || '—', localOf(f.properties))
+        return labelOf(f, n.en, n.zh, Number(f.properties.longitude), Number(f.properties.latitude), Number(f.properties.labelrank))
+      })
+    }
+  }
+  const zh = ADM1_GROUP_ZH[iso] || {}
+  const bag = new Map()
+  for (const f of feats) {
+    const k = G.key(f.properties)
+    if (!k) continue
+    let g = bag.get(k)
+    if (!g) bag.set(k, g = { k, polys: [], best: null, bestA: -1, rk: 99 })
+    for (const rings of polysOf(f.geometry)) {
+      g.polys.push(rings)
+      const a = ringArea(rings[0])
+      if (a > g.bestA) { g.bestA = a; g.best = f.properties }      // 组内最大的一块：拿它的标注点当锚点提示
+    }
+    const r = Number(f.properties.labelrank)
+    if (Number.isFinite(r) && r < g.rk) g.rk = r                    // 组的 labelrank 取组内最靠前的那个
+  }
+  const units = [], names = []
+  for (const g of bag.values()) {
+    const u = { type: 'Feature', properties: g.best, geometry: { type: 'MultiPolygon', coordinates: g.polys } }
+    const raw = G.en(g.best) || g.k
+    const n = renameAdm1(iso, ((ADM1_GROUP_EN[iso] || {})[raw] || raw), zh[g.k] || zh[raw] || null)
+    units.push(u)
+    names.push(labelOf(u, n.en, n.zh, Number(g.best.longitude), Number(g.best.latitude), g.rk))
+  }
+  console.log('  ' + iso + ' 并级：' + feats.length + ' → ' + units.length + ' 个（NE 的 admin_1 给到了更细的一层）')
+  return { units, names }
+}
 
 // ---------- geoBoundaries 元数据 ----------
 function parseCsvLine(l) {
@@ -237,12 +327,16 @@ function simplify(pts, eps) {
 }
 
 // ---------- 逐国出包 ----------
-function labelOf(f, nameEn, nameLocal, hintLon, hintLat) {
+// rk = NE 的 labelrank（越小越该先标，全球统一尺度：德国的州 3、英国的区 9、马耳他的地方议会 20）。
+// 渲染端的地名避让拿它当第一排序键 —— 屏幕上放不下时，先让位的是 NE 制图师本来就认为次要的那些。
+function labelOf(f, nameEn, nameLocal, hintLon, hintLat, rk) {
   const pt = interiorPoint(f.geometry, hintLon, hintLat)
   if (!pt) return null
-  return { name_en: nameEn, name_local: nameLocal || null, lon: Math.round(pt[0] * Q) / Q, lat: Math.round(pt[1] * Q) / Q }
+  const o = { name_en: nameEn, name_local: nameLocal || null, lon: Math.round(pt[0] * Q) / Q, lat: Math.round(pt[1] * Q) / Q }
+  if (Number.isFinite(rk)) o.rk = rk
+  return o
 }
-// 单元的适用视角：内点在六套视角下是否仍归本国。全归 → null（通用）
+// 单元的适用视角：内点在各套预设视角下是否仍归本国。全归 → null（通用）
 function wvSetOf(geom, iso, hintLon, hintLat) {
   if (!SENSITIVE.has(iso)) return null              // 该国疆域不随视角变，直接通用
   const pt = interiorPoint(geom, hintLon, hintLat)
@@ -326,7 +420,7 @@ async function buildChinaAdm2(attribution) {
     const en = CN.CITY_EN[zh] || zh2en.get(zh) || null
     if (en) hitEn++
     const c = u.centroid || []
-    return labelOf(f, en || zh, zh, Number(c[0]), Number(c[1]))
+    return labelOf(f, en || zh, zh, Number(c[0]), Number(c[1]), 12)   // rk=12：地级市，排在所有一级之后
   })
   console.log('  CHN adm2：拉到 ' + raw.length + ' 个单元 · 并掉省直辖县级等 ' + mergedIn + ' 个 · 地级市 ' + units.length +
     ' · 英文名对上 ' + hitEn + '/' + units.length + '（对不上的两档都出中文）')
@@ -358,16 +452,16 @@ async function main() {
     const names = feats.map((f) => {
       const p0 = f.properties
       const c = p0.centroid || p0.center || []
-      return labelOf(f, CN.PROV_EN[p0.adcode] || CN.provShort(p0.adcode, p0.name), CN.provShort(p0.adcode, p0.name), Number(c[0]), Number(c[1]))
+      // rk=4：中国的省与德国的州、美国的州同一量级（NE 给这类 labelrank 3~5），排在英国那 232 个区之前
+      return labelOf(f, CN.PROV_EN[p0.adcode] || CN.provShort(p0.adcode, p0.name), CN.provShort(p0.adcode, p0.name), Number(c[0]), Number(c[1]), 4)
     })
     writePack('CHN', 'adm1', feats, names, () => 'CHN')
     attribution.CHN = { adm1: DATAV_CREDIT }
   }
   const isoList1 = Object.keys(byIso).filter((a) => !only.length || only.includes(a)).sort()
   for (const iso of isoList1) {
-    const feats = byIso[iso]
-    const names = feats.map((f) => labelOf(f, clean(f.properties.name) || clean(f.properties.name_en) || '—', localOf(f.properties), Number(f.properties.longitude), Number(f.properties.latitude)))
-    writePack(iso, 'adm1', feats, names, () => iso)
+    const { units, names } = groupAdm1(iso, byIso[iso])
+    writePack(iso, 'adm1', units, names, () => iso)
     ;(attribution[iso] || (attribution[iso] = {})).adm1 = {
       license: 'Public domain', source: 'Natural Earth 10m Admin 1 – States, Provinces',
       url: 'https://www.naturalearthdata.com/downloads/10m-cultural-vectors/'
@@ -384,7 +478,7 @@ async function main() {
     const m = meta[iso].adm2
     try {
       const feats = await gbFeatures(iso, 'ADM2', m.url)
-      const names = feats.map((f) => labelOf(f, clean(f.properties.shapeName) || '—', null, NaN, NaN))
+      const names = feats.map((f) => labelOf(f, clean(f.properties.shapeName) || '—', null, NaN, NaN, 14))   // rk=14：二级，最后摆
       writePack(iso, 'adm2', feats, names, () => iso)
       ;(attribution[iso] || (attribution[iso] = {})).adm2 = { license: m.license, source: m.source, url: m.url, year: m.year }
       done++

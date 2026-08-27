@@ -17,11 +17,15 @@ import { FROZEN, CUSTOMIZABLE_DISPUTES, expandOverrides } from '../../../src/viz
 import * as R from '../../../src/viz/geo/povResolver.js'
 import { BORDER_DEF, DASH_PX, DASH_SCALE, GRID_STEPS, BORDER_CLASSES, BORDER_DRAW, ORDER, CFG_KEY, fadeFactor, admFade } from '../../../src/viz/geo/borderStyle.js'
 import { migrateLandOverrides } from '../../../src/viz/landPalette.js'
-import { POV_META, CUSTOM_POV, MAP_POV_DEF, normMapPov, povTableOf } from '../../../src/viz/geo/povList.js'
+import { POV_META, CUSTOM_POV, MAP_POV_DEF, normMapPov, povTableOf, OWNER_ALIAS } from '../../../src/viz/geo/povList.js'
+import { COUNTRY_ZH, NO_LABEL, zhOf } from '../../../src/viz/geo/countryZh.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(HERE, '..', '..', '..')
 const POVDIR = join(ROOT, 'src', 'viz', 'geo', 'povs')
+// NE 内部别名码（PR1=葡萄牙、GEA=格鲁吉亚…）：视角表里以它们作【键】的那几条，粗档用的是合并单元、
+// 本来就没有同名单元，且经 normOwner 收敛后两档同解 —— 不算「落空」。
+const ALIAS_KEYS = new Set(Object.keys(OWNER_ALIAS))
 
 let pass = 0, fail = 0
 function ok(name, cond, extra) {
@@ -201,10 +205,10 @@ ok('⑩i 经纬网比任何一条界线都淡（它是底衬不是数据）',
 // （克什米尔那条印巴线的北端正好顶在中巴印三交点上，端点会误报成中国。）
 const midOwner = (poly) => { const q = poly[Math.floor(poly.length / 2)]; const h = R.ownerAt(q[0], q[1], '10m'); return h && h.owner }
 const cnIndefN = (id) => { R.setPov(id, {}); return R.resolvedLines('10m').indefinite.filter((p) => midOwner(p) === 'CHN').length }
-const nCN = cnIndefN('CN'), nISO = cnIndefN('ISO'), nIN = cnIndefN('IN')
+const nCN = cnIndefN('CN'), nISO = cnIndefN('ISO'), nUS = cnIndefN('US')
 R.setPov(R.DEFAULT_POV, {})
 ok('⑩j 中国视角下中国境内不出未定界虚线', nCN === 0, 'CN ' + nCN + ' 条')
-ok('⑩j2 别的视角照旧出（规则挂在视角上，不是写死给中国）', nISO > 0 && nIN > 0, 'ISO ' + nISO + ' 条 · 印度 ' + nIN + ' 条')
+ok('⑩j2 别的视角照旧出（规则挂在视角上，不是写死给中国）', nISO > 0 && nUS > 0, 'ISO ' + nISO + ' 条 · 美国 ' + nUS + ' 条')
 
 // ---------- ⑪ 缩放淡出（1.6b 三）----------
 ok('⑪ 全球视角 ADM2 全淡出、ADM1 降到 0.3', Math.abs(admFade(fadeFactor(0.2)).adm2) < 1e-9 && Math.abs(admFade(fadeFactor(0.2)).adm1 - 0.3) < 1e-9)
@@ -243,19 +247,111 @@ ok('⑬h 任何覆写下台湾/港澳仍属中国', FKEYS.every((f) => R.ownerOf
 R.applyMapPov(null)
 ok('⑬i applyMapPov(null) 回到默认视角', R.getPov().id === R.DEFAULT_POV && Object.keys(R.getPov().overrides).length === 0)
 
-// ---------- ⑭ 六套视角确实互不相同（视角表不是摆设）----------
+// ---------- ⑭ 各套预设视角确实互不相同（视角表不是摆设）----------
 const sigOf = () => { const L = R.resolvedLines(); return L.admin0.length + '/' + L.indefinite.length + '/' + L.claim.length }
 const sigs = {}
 for (const id of povIds) { R.setPov(id, {}); sigs[id] = sigOf() }
 R.setPov(R.DEFAULT_POV, {})
-ok('⑭ 六套视角解算结果互不相同', new Set(Object.values(sigs)).size >= 4, Object.entries(sigs).map(([k, v]) => k + ' ' + v).join(' · '))
-// 中国视角：藏南与阿克赛钦归中国；ISO 中立视角：两者都不归中国
+ok('⑭ 各套预设视角解算结果互不相同', new Set(Object.values(sigs)).size === povIds.length, Object.entries(sigs).map(([k, v]) => k + ' ' + v).join(' · '))
+// 中国视角：藏南与阿克赛钦归中国；ISO 中立与美国视角：另有归属
 R.setPov('CN', {}); const cn = [R.ownerOf('IN-ARP'), R.ownerOf('CN-AKS')].join(',')
 R.setPov('ISO', {}); const iso = [R.ownerOf('IN-ARP'), R.ownerOf('CN-AKS')].join(',')
-R.setPov('IN', {}); const ind = [R.ownerOf('IN-ARP'), R.ownerOf('CN-AKS')].join(',')
+R.setPov('US', {}); const usa = [R.ownerOf('IN-ARP'), R.ownerOf('CN-AKS')].join(',')
 R.setPov(R.DEFAULT_POV, {})
-ok('⑭b 中国视角下藏南/阿克赛钦归中国，ISO 与印度视角另有归属', cn === 'CHN,CHN' && iso !== cn && ind !== cn,
-  'CN=' + cn + ' · ISO=' + iso + ' · IN=' + ind)
+ok('⑭b 中国视角下藏南/阿克赛钦归中国，ISO 与美国视角另有归属', cn === 'CHN,CHN' && iso !== cn && usa !== cn,
+  'CN=' + cn + ' · ISO=' + iso + ' · US=' + usa)
+
+// ---------- ⑮ 国名表：每个解算得出的归属都查得到中文名，同一视角下不重名 ----------
+// 守的是「法国从地图上消失、澳大利亚画两遍」那类事故：换源前国名要经过
+// 「ISO3 →(从 NE 的 map_unit 猜)→ ISO 数字码 → 中文名」，法国三档取到的全是子单元的码（254/249/254），
+// AUS/CSI/ATC 与 ATA/ATG 还会撞到同一个码。现在改成一张按 ISO3 索引的静态表（countryZh.js），
+// 这里把「表要盖全解算器吐得出来的每一个归属码」焊死 —— 底图换版新增单元时，漏一个当场红。
+const BASEMAPS = ['10m', '50m', '110m'].map((d) => ({ d, t: JSON.parse(readFileSync(join(ROOT, 'src/viz/globe3d/data/basemap-' + d + '.json'), 'utf8')) }))
+const allOwners = new Set()
+for (const id of [...povIds, CUSTOM_POV]) {
+  R.setPov(id, {})
+  for (const { d, t } of BASEMAPS) {
+    if (!R.hasDetail(d)) continue
+    for (const g of t.objects.units.geometries) {
+      const o = R.ownerOf(g.properties.u, d)
+      if (o && o !== 'disputed' && o !== 'none') allOwners.add(o)
+    }
+  }
+}
+R.setPov(R.DEFAULT_POV, {})
+const noZh = [...allOwners].filter((o) => !zhOf(o))
+ok('⑮ 每个归属码都查得到中文名', noZh.length === 0, noZh.join(' ') || allOwners.size + ' 个归属码全过')
+ok('⑮b 国名表的中文名互不重复', (() => {
+  const seen = new Set()
+  for (const k of Object.keys(COUNTRY_ZH)) { const z = COUNTRY_ZH[k][0]; if (seen.has(z)) return false; seen.add(z) }
+  return true
+})(), Object.keys(COUNTRY_ZH).length + ' 条')
+ok('⑮c 国名表的 ISO 数字码互不重复', (() => {
+  const seen = new Set()
+  for (const k of Object.keys(COUNTRY_ZH)) { const n = COUNTRY_ZH[k][1]; if (!n) continue; if (seen.has(n)) return false; seen.add(n) }
+  return true
+})())
+const dupPov = []
+for (const id of povIds) {
+  R.setPov(id, {})
+  const seen = new Map()
+  for (const l of R.labelSet('zh', '10m')) { if (seen.has(l.zh)) dupPov.push(id + ':' + l.zh + '=' + seen.get(l.zh) + ',' + l.owner); seen.set(l.zh, l.owner) }
+}
+R.setPov(R.DEFAULT_POV, {})
+ok('⑮d 任一视角的地图标注里没有两个同名国家', dupPov.length === 0, dupPov.join(' | ') || povIds.length + ' 套全过')
+// 关键国家必须在场：法国是这次的病例，新加坡/马耳他/梵蒂冈代表「名表只有 174 条」时整批丢掉的小国
+const NEED_ZH = ['FRA', 'SGP', 'MLT', 'VAT', 'MCO', 'LIE', 'BHR', 'MDV', 'ATG', 'AUS', 'BRA', 'USA']
+R.setPov('CN', {})
+const shownOwners = new Set(R.labelSet('zh', '10m').map((l) => l.owner))
+R.setPov(R.DEFAULT_POV, {})
+ok('⑮e 法国等小国确实出现在地图标注里', NEED_ZH.every((x) => shownOwners.has(x)),
+  NEED_ZH.filter((x) => !shownOwners.has(x)).join(' ') || NEED_ZH.length + ' 个全在')
+// 「不上图但可选」：无人礁/基地/缓冲区不写名字，但设色与勾一级行政区仍要选得到
+R.setPov('ISO', {})
+const isoLabels = new Set(R.labelSet('zh', '10m').map((l) => l.owner))
+const isoAll = new Set(R.labelSet('zh', '10m', { all: true }).map((l) => l.owner))
+R.setPov(R.DEFAULT_POV, {})
+ok('⑮f NO_LABEL 的单元不上图、但进得了国家清单', [...NO_LABEL].some((u) => isoAll.has(u)) && ![...NO_LABEL].some((u) => isoLabels.has(u)),
+  '标注 ' + isoLabels.size + ' 个 · 清单 ' + isoAll.size + ' 个')
+
+// ---------- ⑯ 精度档之间的归属口径必须一致 ----------
+// 50m 的 NE 原始数据缺南沙/西沙/黄岩岛/钓鱼岛与大半争议面，中国视角的归属表在该档有 13 条落空 ——
+// 「十段线照画、线里的岛没了」。scripts/backfill-basemap.mjs 把缺的单元从 10m 原样补进去，
+// 这里守住「补完之后两档逐单元同解」。110m 不参与：该档 NE 根本不出争议面图层、补不出来，
+// 故画质档位里已经不给选（见 stores/displayQuality.js）。
+const KEY_UNITS = ['CN-TW', 'CN-HK', 'CN-MO', 'PGA', 'PFA', 'SCR', 'JP-SEN', 'IN-ARP', 'CN-AKS', 'CN-SHK', 'UA-CR', 'KOS', 'SOL', 'CYN', 'MA-EH']
+const detailMismatch = []
+for (const id of povIds) {
+  R.setPov(id, {})
+  for (const u of KEY_UNITS) {
+    const a = R.ownerOf(u, '10m'), b = R.ownerOf(u, '50m')
+    if (a !== b) detailMismatch.push(id + ':' + u + ' 10m=' + a + ' 50m=' + b)
+  }
+}
+R.setPov(R.DEFAULT_POV, {})
+ok('⑯ 关键单元在 10m 与 50m 归属一致', detailMismatch.length === 0,
+  detailMismatch.join(' | ') || KEY_UNITS.length + ' 个单元 × ' + povIds.length + ' 套视角全过')
+const povMiss = []
+for (const id of povIds) {
+  const ownT = JSON.parse(readFileSync(join(POVDIR, id + '.json'), 'utf8')).own || {}
+  for (const { d, t } of BASEMAPS) {
+    if (d === '110m') continue
+    const all = new Set(t.objects.units.geometries.map((g) => g.properties.u))
+    const miss = Object.keys(ownT).filter((k) => !all.has(k) && !ALIAS_KEYS.has(k))
+    if (miss.length) povMiss.push(id + '/' + d + ': ' + miss.join(' '))
+  }
+}
+ok('⑯b 视角表里的单元在 10m 与 50m 都找得到', povMiss.length === 0, povMiss.join(' | ') || povIds.length + ' 套 × 两档全过')
+
+// ---------- ⑰ 南极环的极点收口边不进海岸线 ----------
+// NE 把南极大陆编成一个闭环：沿 180°E 下探到 −90°、贴 −90° 横扫一圈、再沿 180°W 爬回来。
+// 这三段不是海岸线，却因「一侧无邻」被派生成 coast —— 画出来就是一条从南极垂到图底的竖线。
+for (const d of ['10m', '50m']) {
+  if (!R.hasDetail(d)) continue
+  const L = R.resolvedLines(d)
+  const bad = L.coast.filter((c) => c.some((p) => p[1] <= -89.5 || (Math.abs(p[0]) >= 179.99 && p[1] <= -80)))
+  ok('⑰ ' + d + ' 海岸线里没有南极极点收口段', bad.length === 0, bad.length ? bad.length + ' 条' : L.coast.length + ' 条海岸线全过')
+}
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed')
 if (fail) process.exit(1)

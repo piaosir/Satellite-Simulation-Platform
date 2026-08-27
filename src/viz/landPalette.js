@@ -2,7 +2,7 @@
 // 两层取值：基调方案（'morandi' 杂色循环 / '#rrggbb' 统一单色）+ 用户逐国覆盖（优先级最高）。
 // 状态为模块级单例：设置一次后，两渲染器建图（buildLandMesh / buildBaseGeo）时自然读到同一份。
 import { FROZEN_ISO3 } from './geo/frozen.js'
-import ISO_NUM from './geo/isoNum.json' with { type: 'json' }
+import { ISO_NUM_TO_A3 as ISO_NUM } from './geo/countryZh.js'
 
 // 莫兰迪 12 色循环板（'morandi' 基调的默认杂色）
 export const LAND = ['#8fa89b', '#b0a98f', '#9fb0c0', '#c0a99f', '#a9b08f', '#9f9fb0', '#b8a0a0', '#90b0a8', '#b0b090', '#a0a8b8', '#bca890', '#98a0a8']

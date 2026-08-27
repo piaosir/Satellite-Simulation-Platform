@@ -3,6 +3,7 @@
 // 取值内核见 src/viz/grd/coverage.js：sampleBeamAt（反向采样方向图）、tiltBasis（指向误差扫描）。
 import { ref, computed } from 'vue'
 import { sampleBeamAt, perturbSpacecraft, dirToAzEl, groundLookAngles, axialRatioDb } from './coverage.js'
+import { cityNameKeys } from '../../shared/cityName.js'   // 城市名反查中英两名都收（英文界面填的是 Beijing）
 
 let _seq = 1
 const newId = () => 'st' + Date.now().toString(36) + (_seq++)
@@ -134,7 +135,8 @@ export function usePerfTable() {
   function removeStation(id) { stations.value = stations.value.filter((x) => x.id !== id) }
 
   // ===== 城市名 → 经纬度自动补全（与 GEO 链路预算 StationGrid.applyCityByName 同口径）=====
-  // 城市库（约 360 座国内城市）由页面在打开性能表时经 IPC 载入并 setCities 注入；键=城市名（去空白、小写）。
+  // 城市库（约 360 座国内城市）由页面在打开性能表时经 IPC 载入并 setCities 注入；
+  // 键=城市名（去空白、小写），中英两名各建一条——英文界面里用户填进「城市」列的是「Beijing」。
   const cityGeo = new Map()   // 归一名 → { lon, lat }；非响应式，仅供查表
   function setCities(list) {
     cityGeo.clear()
@@ -142,7 +144,7 @@ export function usePerfTable() {
       if (!c || c.name == null) continue
       const lon = num(c.lon), lat = num(c.lat)
       if (lon == null || lat == null) continue
-      cityGeo.set(String(c.name).trim().toLowerCase(), { lon, lat })
+      for (const n of cityNameKeys(c)) cityGeo.set(String(n).trim().toLowerCase(), { lon, lat })
     }
   }
   // 命中即填：站点的城市名精确命中城市库 → 写入其经纬度（覆盖原值，与链路预算一致）。返回是否命中。

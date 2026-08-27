@@ -28,9 +28,11 @@ export function currentLandColor(id) {
   return landColors(id, m.has(id) ? m.get(id) : 0).base
 }
 
-// 可搜索国家清单（逐国设色的下拉）：口径与地图上的国名标注完全一致 ——
-// 有中文名、且当前视角下确实作为一个国家画出来的那些。台湾/港澳并入中国，不单列。
+// 可搜索国家清单（逐国设色的下拉、一级行政区的国家多选）：当前视角下确实作为一个归属画出来的全部单元。
+// ★ 传 all:true —— 清单比地图标注多出「无人礁/基地/缓冲区」那一批（见 countryZh.js 的 NO_LABEL）：
+//   地图上给它们写名字没意义（字比岛大），但设色与勾一级行政区是照常要能选到的。
+// 台湾/港澳并入中国，不单列。
 export function countryList() {
-  return labelSet('zh').map((l) => ({ id: l.owner, zh: l.zh, en: l.en }))
+  return labelSet('zh', undefined, { all: true }).map((l) => ({ id: l.owner, zh: l.zh, en: l.en }))
     .sort((a, b) => a.zh.localeCompare(b.zh, 'zh-Hans-CN'))
 }

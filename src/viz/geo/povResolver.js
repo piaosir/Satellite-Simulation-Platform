@@ -20,15 +20,14 @@
 //   唯一判据是 wv 与 lines.claim 的交集。povInvariants.test.mjs 会 grep 本文件与两个渲染器。
 import { feature } from 'topojson-client'
 import topo10 from '../globe3d/data/basemap-10m.json' with { type: 'json' }
-import NAMES from '../globe3d/data/country-names-zh.json' with { type: 'json' }
+// 国名/数字码/标注锚点：一张按【ISO3 归属】索引的静态表，见 countryZh.js 文件头
+// —— 底图 meta 里那份 iso3n3 是构建期从 NE 的 map_unit 猜出来的，法国/挪威取错、澳澳巴美南极撞码，已弃用。
+import { COUNTRY_ZH, NO_LABEL, zhOf, enOf, anchorOf } from './countryZh.js'
 import { FROZEN, expandOverrides } from './frozen.js'
-import { POV_FILES, DEFAULT_POV, POV_SOLID, normMapPov, povTableOf } from './povList.js'
+import { POV_FILES, DEFAULT_POV, POV_SOLID, normMapPov, povTableOf, normOwner } from './povList.js'
 import { onMapPov, bootMapPov } from '../../stores/mapPov.js'
 
 export { DEFAULT_POV }
-
-// 中文名别名（与换源前一致）：这三个的官方长名不适合上图
-const ZH_ALIAS = { 156: '中国', 408: '朝鲜', 410: '韩国' }
 
 const state = {
   id: DEFAULT_POV,
@@ -113,14 +112,17 @@ bootMapPov()
 
 
 // ---------- 归属 ----------
+// ★ 视角表与 own0 里的归属码一律先过 normOwner：NE 的内部别名（PR1=葡萄牙、SDZ=苏丹、DEN=丹麦…）
+//   与占位码（UUU/KOD/PFA=无公认主权方）在这里收敛，见 povList.js 的 OWNER_ALIAS。
+//   FROZEN 与用户覆写不过 —— 那两处的值是本平台自己定的，本来就是规范码。
 function rawOwner(u, b) {
   if (FROZEN[u]) return FROZEN[u]                    // ★ 红线：最外层，谁都盖不过
   if (state.overrides[u]) return state.overrides[u]
   const pov = povTableOf(state.id)
-  const v = pov && pov.own ? pov.own[u] : null
+  const v = normOwner(pov && pov.own ? pov.own[u] : null)
   if (v) return v
   const f = b.byU.get(u)
-  return f ? f.properties.own0 : null
+  return f ? normOwner(f.properties.own0) : null
 }
 // 'none' = 这块争议叠加不显示 → 归属落到宿主（宿主还 'none' 就继续往上，最多 8 层）。
 // 没有宿主的单元（基础分区里的国家、以及不在 map_units 里的礁岛）落回 own0 —— 它本来就不是叠加，
@@ -133,13 +135,12 @@ export function ownerOf(u, detail) {
     if (o !== 'none') return o || null
     const f = b.byU.get(cur)
     if (!f) return null
-    if (!f.properties.host) return f.properties.own0 || null
+    if (!f.properties.host) return normOwner(f.properties.own0) || null
     cur = f.properties.host
   }
   return null
 }
 export function unitProps(u, detail) { const f = B(detail).byU.get(u); return f ? f.properties : null }
-export function iso3n3(detail) { return B(detail).meta.iso3n3 || {} }
 
 // ---------- 面：按归属合并的国家面 → 喂 buildLandMesh / buildBaseGeo ----------
 // 返回的 feature 带 { id: 归属(ISO3/单元 id), idx: 取色序号, over: 是否争议叠加 }。
@@ -171,7 +172,7 @@ export function resolvedFeatures(detail) {
       // 争议归属不重新着色：宿主的颜色透上来，靠 indefinite 虚线表达争议。
       // 没有宿主的（不在 map_units 里的礁岛）必须自己画，否则整块地不见了。
       if (p.host) continue
-      paint = p.own0 && p.own0 !== 'disputed' ? p.own0 : p.u
+      paint = p.own0 && normOwner(p.own0) !== 'disputed' ? normOwner(p.own0) : p.u
     }
     if (p.host && paint === hostOwn) continue      // 与宿主同色 → 盖了也白盖
     const g = byOwn.get(paint)
@@ -192,6 +193,24 @@ function touchesOwner(coords, iso, detail) {
     if (h && h.owner === iso) return true
   }
   return false
+}
+
+// 南极环的「极点收口边」—— Natural Earth 把南极大陆编码成一个闭环：沿 180°E 一路下探到 −90°、
+// 贴着 −90° 横扫一整圈、再沿 180°W 爬回来。这三段是为了让环闭合而造出来的，不是海岸线，
+// 却因为「一侧无邻」被派生规则判成 coast 描了出来 —— 画面上就是一条从南极海岸垂到图底的竖线
+// 加一条贴着图底的横线（三档都有，不是某一档的毛病）。
+// ★ 只能【切断】不能【删点】：把这些点删掉后首尾直接相连，会横穿整个南极拉出一条更长的假线。
+const polarCut = (p) => p[1] <= -89.5 || (Math.abs(p[0]) >= 179.99 && p[1] <= -80)
+function cutPolar(line) {
+  if (!line.some(polarCut)) return [line]
+  const out = []
+  let cur = []
+  for (const p of line) {
+    if (polarCut(p)) { if (cur.length > 1) out.push(cur); cur = [] }
+    else cur.push(p)
+  }
+  if (cur.length > 1) out.push(cur)
+  return out
 }
 
 // ---------- 线：五组 ----------
@@ -216,7 +235,8 @@ export function resolvedLines(detail) {
     if (cls !== 'coast' && b.lineCls[k]) cls = b.lineCls[k]
     // ★ 本视角声明「这个国家的国境一律实线」时，凡有一侧是它的未定界一律升格成国界（见 POV_SOLID）
     if (cls === 'indefinite' && solidIso && (oa === solidIso || ob === solidIso)) cls = 'admin0'
-    out[cls].push(b.arcs[+k])
+    if (cls === 'coast') { for (const seg of cutPolar(b.arcs[+k])) out.coast.push(seg) }
+    else out[cls].push(b.arcs[+k])
   }
   const pov = povTableOf(state.id)
   const claimOn = new Set((pov && pov.lines && pov.lines.claim) || [])
@@ -228,7 +248,7 @@ export function resolvedLines(detail) {
     const cs = g.type === 'LineString' ? [g.coordinates] : g.coordinates
     // 自带的未定界线只有几条（藏南 / 南千岛 / 刻赤 / 温哥华岛一带），它们不是派生 arc，
     // 上面那条「升格成国界」的规则管不到 —— 这里按落点判：线上任一采样点归属是 solidIso 就整条不画。
-    // ★ 判据必须是【归属】不是【经纬度盒子】：藏南在中国视角下属中国、在印度视角下属印度，
+    // ★ 判据必须是【归属】不是【经纬度盒子】：藏南在中国视角下属中国、在 ISO 中立视角下属印度，
     //   同一条线在两套视角下的去留正好相反，用盒子写死就错了。
     // ★ 但归属【一律按 10m 档问】，不按当前渲染档：50m 的争议面图层比 10m 少（110m 干脆没有），
     //   藏南在 50m 的基础分区里还挂在印度名下 —— 按当前档问的话，中国视角下 50m 会漏掉这条线，
@@ -283,20 +303,16 @@ export function ownerAt(lon, lat, detail) {
   return null
 }
 function pack(own, u, b) {
-  const n3 = (b.meta.iso3n3 || {})[own] || null
-  return { u, owner: own, n3, zh: zhOf(n3), en: (b.meta.iso3name || {})[own] || own }
-}
-function zhOf(n3) {
-  if (!n3) return null
-  if (ZH_ALIAS[+n3]) return ZH_ALIAS[+n3]
-  const rec = NAMES[n3]
-  return rec ? rec[0] : null
+  const rec = COUNTRY_ZH[own]
+  return { u, owner: own, n3: rec ? rec[1] : null, zh: zhOf(own), en: enOf(own) || own }
 }
 
 // ---------- 国名标注 ----------
 // 返回 [{ owner, n3, zh, en, name, lon, lat, ext }]，ext = 国家「视觉大小」（最大环包围盒线度，按纬度余弦修正），
 // 两个渲染器各自把 ext 映射成自己的字号（3D 用世界高度、2D 用像素），映射式子与换源前一字不改。
-export function labelSet(lang, detail) {
+// opts.all = 不套 NO_LABEL（无人礁/基地/缓冲区那一批）—— 「国家清单」要全量，地图标注不要，见 countryZh.js。
+export function labelSet(lang, detail, opts) {
+  const all = !!(opts && opts.all)
   const b = B(detail)
   const pov = povTableOf(state.id)
   const hide = new Set((pov && pov.labels && pov.labels.hide) || [])
@@ -313,14 +329,16 @@ export function labelSet(lang, detail) {
   }
   const out = []
   for (const [own, a] of acc) {
-    const n3 = (b.meta.iso3n3 || {})[own] || null
-    const zh = names[own] || zhOf(n3)
+    if (!all && NO_LABEL.has(own)) continue
+    const zh = names[own] || zhOf(own)               // 视角级改名优先，其次静态表
     if (!zh) continue                                // 仅标注有中文名的国家（中/英两套用同一集合与位置）
-    const rec = n3 ? NAMES[n3] : null
-    let lon = rec && rec[1] != null ? rec[1] : null
-    let lat = rec && rec[2] != null ? rec[2] : null
+    const rec = COUNTRY_ZH[own]
+    const anc = anchorOf(own)                        // 人工锚点；没有就落到最大环质心（补进来的小国走这条）
+    let lon = anc ? anc[0] : null
+    let lat = anc ? anc[1] : null
     if (lon == null || lat == null) { const c = centroid(a.best); if (!c) continue; lon = c[0]; lat = c[1] }
-    const en = (b.meta.iso3name || {})[own] || zh
+    const n3 = rec ? rec[1] : null
+    const en = enOf(own) || zh
     out.push({ owner: own, n3, zh, en, name: lang === 'en' ? en : zh, lon, lat, ext: extentOf(a.best) })
   }
   return out

@@ -14,6 +14,9 @@ import { theta3dbFromAperture, shapedTheta3db, shapedApertureEff, feedGeom, cros
 import { dirToAzEl, azElGround, gridDir } from './coverage.js'
 // 频率配色板与频率计划模块共用一份（见该文件头）：一个色号在两个模块里必须是同一个色
 import { FC_PALETTE, fcHex, fcCss } from '../../shared/freqReuseColors.js'
+// 组名＝生成出来的天线名，是【数据】（进 localStorage 草稿、进覆盖树天线名、画在打了 skip 的名字位上），
+// 呈现层的 i18n 观察器碰不到 ⇒ 中英各备一份、新建那一刻就按平台语言出字（同 i18n/lang.js 头注）。
+import { byLang } from '../../shared/i18n/lang.js'
 
 const KEY = 'globe3d/beamSynth'
 const BAK = KEY + '.v1bak'                        // 旧档一次性备份（首次升级到 v2 前写入，可回退）
@@ -87,7 +90,11 @@ const stGridKey = (pp) => JSON.stringify(stGridOf(pp))
 // 组级 p 只留显示/频率计划（skColor/fc*/polyId/snapTangent）与赋形档参数（taper/polyIds/站点栅 st*/shapedMode）。
 const RP_KEYS = ['fGHz', 'antD', 'eff', 'apDriver', 'bw3', 'fdDriver', 'feedSpacingWl', 'feedModel', 'feedDiaAuto', 'feedDiaWl', 'foc', 'offsetClr', 'pol', 'simSame', 'fSim', 'autoSpacing', 'spacing']
 const pickRP = (src) => { const o = {}; for (const k of RP_KEYS) o[k] = (src && src[k] !== undefined) ? src[k] : DEFAULT_P[k]; return o }
-const defName = (m) => (m === 'pam' ? '相控阵' : m === 'shaped' ? '赋形反射面' : '多馈源反射面')
+const MODE_NAMES = { pam: ['相控阵', 'Phased Array'], shaped: ['赋形反射面', 'Shaped Reflector'], gauss: ['多馈源反射面', 'Multi-Feed Reflector'] }
+const defName = (m) => byLang(...(MODE_NAMES[m] || MODE_NAMES.gauss))
+// 组内的波束设置名 / 复制副本的后缀：同样是数据，同样按语言出字
+const defSettingName = (i) => byLang('设置' + i, 'Setting ' + i)
+const copySuffix = () => byLang(' 副本', ' Copy')
 
 export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
   const polysOf = () => (getPolys() || [])
@@ -101,7 +108,7 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
   const beams = ref([])                           // 激活组波束 [{id,lon,lat,thX,thY,rot,fc?,settingId?}]（高斯）
   const settings = ref([])                        // 激活组波束设置 [{id,name,thX,thY,rot,autoTheta,color}]（高斯）
   const activeSettingId = ref(null)
-  const curName = ref('多馈源反射面')             // 激活组名（＝天线名，同名生成＝更新）
+  const curName = ref(defName('gauss'))           // 激活组名（＝天线名，同名生成＝更新）
   const placing = ref(false)                      // 放置模式：地图点击 = 放一个波束轮廓 / 拾取峰点
   const adjusting = ref(false)                    // 调整模式：平面图拖动波束中心
   const deleting = ref(false)                     // 删除模式：平面图点击命中的波束中心 = 删除该波束
@@ -328,7 +335,7 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
     const rp = pickRP(curSetting.value || DEFAULT_P)          // 新设置反射面：从当前设置拷一份（起步=当前反射面，再改口径等）
     const r = reflOf(rp)
     const w = r && r.ok && r.th3Sim > 0 ? +r.th3Sim.toFixed(3) : (Number(curSetting.value && curSetting.value.thX) || 3)
-    return { id: newId('st'), name: nameHint || ('设置' + (idx + 1)), thX: w, thY: w, rot: 0, color: SETTING_CSS[idx % SETTING_CSS.length], ...rp }
+    return { id: newId('st'), name: nameHint || defSettingName(idx + 1), thX: w, thY: w, rot: 0, color: SETTING_CSS[idx % SETTING_CSS.length], ...rp }
   }
   function load() {
     _loading = true
@@ -362,8 +369,8 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
         if (!Array.isArray(np.polyIds)) np.polyIds = []
         if (!np.polyIds.length && typeof op.polyId === 'string' && op.polyId) np.polyIds = [op.polyId]
         const sid = newId('st')
-        const setting = { id: sid, name: '默认', thX: Number(op.thX) || 3, thY: Number(op.thY) || 3, rot: Number(op.rot) || 0, color: op.skColor || SKETCH_CSS, ...pickRP(np) }
-        const nm = m === 'shaped' ? (op.shapedName || '赋形反射面') : (op.gaussName || '多馈源反射面')
+        const setting = { id: sid, name: byLang('默认', 'Default'), thX: Number(op.thX) || 3, thY: Number(op.thY) || 3, rot: Number(op.rot) || 0, color: op.skColor || SKETCH_CSS, ...pickRP(np) }
+        const nm = m === 'shaped' ? (op.shapedName || defName('shaped')) : (op.gaussName || defName('gauss'))
         const bl = (Array.isArray(d.beams) ? d.beams : []).filter((b) => b && b.id).map((b) => ({ ...b, settingId: b.settingId || sid }))
         const g = { id: newId('bg'), satFolder: d.satFolder || '', mode: m, name: nm, pinned: false, p: np, settings: m === 'gauss' ? [setting] : [], activeSettingId: m === 'gauss' ? sid : null, beams: bl, _genName: nm }
         groups.value = [g]
@@ -408,7 +415,7 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
     const r = reflOf(rp)                                             // 初始宽度 = 解析反射面 θ3
     const t = r && r.ok && r.th3Sim > 0 ? r.th3Sim : theta3dbFromAperture(simFreqOf(gp), Number(gp.antD))
     const w = Number.isFinite(t) && t > 0 ? +t.toFixed(3) : 3
-    return { id: newId('st'), name: '设置1', thX: w, thY: w, rot: 0, color: SETTING_CSS[0], ...rp }
+    return { id: newId('st'), name: defSettingName(1), thX: w, thY: w, rot: 0, color: SETTING_CSS[0], ...rp }
   }
   function addGroup(m) {
     const mm = (m === 'shaped' || m === 'pam') ? m : 'gauss'
@@ -450,7 +457,7 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
     const smap = new Map()
     const settings2 = (g.settings || []).map((s) => { const ns = { ...bareSetting(s), id: newId('st') }; smap.set(s.id, ns.id); return ns })
     const beams2 = (g.beams || []).map((b) => ({ ...bareBeam(b), id: newId('bs'), ...(b.settingId != null && smap.has(b.settingId) ? { settingId: smap.get(b.settingId) } : {}) }))
-    const g2 = { id: newId('bg'), satFolder: g.satFolder, mode: g.mode, name: uniqueGroupName((g.name || '波束组') + ' 副本', g.satFolder), pinned: false, p: { ...g.p, polyIds: [...(g.p && g.p.polyIds || [])], stOv: (g.p && g.p.stOv || []).map((o) => ({ ...o })), stAdd: (g.p && g.p.stAdd || []).map((a) => ({ ...a, id: newId('sa') })) }, settings: settings2, activeSettingId: (g.activeSettingId && smap.get(g.activeSettingId)) || (settings2[0] ? settings2[0].id : null), beams: beams2 }
+    const g2 = { id: newId('bg'), satFolder: g.satFolder, mode: g.mode, name: uniqueGroupName((g.name || byLang('波束组', 'Beam Group')) + copySuffix(), g.satFolder), pinned: false, p: { ...g.p, polyIds: [...(g.p && g.p.polyIds || [])], stOv: (g.p && g.p.stOv || []).map((o) => ({ ...o })), stAdd: (g.p && g.p.stAdd || []).map((a) => ({ ...a, id: newId('sa') })) }, settings: settings2, activeSettingId: (g.activeSettingId && smap.get(g.activeSettingId)) || (settings2[0] ? settings2[0].id : null), beams: beams2 }
     groups.value.push(g2)
     activeGroupId.value = g2.id
     satFolder.value = g2.satFolder

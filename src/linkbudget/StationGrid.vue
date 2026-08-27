@@ -10,6 +10,8 @@ import { ref, reactive, computed, watch, nextTick, onMounted, onBeforeUnmount } 
 import Icon from '../components/Icon.vue'
 import { defaultsFor } from './params.js'
 import { toHalf, halfStr } from '../shared/num.js'   // 数字列输入/粘贴归一全角→半角，避免全角减号令负数经纬度等被吞
+import { cityName, cityNameKeys } from '../shared/cityName.js'   // 城市名是数据、呈现层翻不到：英文界面下导入列表与写进站名的一律取英文名
+import { getLang, onLangChange } from '../shared/i18n/runtime.js'
 
 // 发信/收信站群 Excel 式电子表格：单元格框选（拖拽）、Ctrl+C/X/V 复制/剪切/粘贴（TSV，序号列选中时按整行）、
 // 填充柄向下填充、「＋增加」在聚焦行下方插入行、多选行批量删除/设值、清空、撤销/重做、逐行选址、点列头选整列。
@@ -225,14 +227,16 @@ function clampLatLon(val) {
 const cityKey = (s) => String(s == null ? '' : s).replace(/\s+/g, '').toLowerCase()
 const cityKeyLoose = (s) => cityKey(s).replace(/(?:特别行政区|自治区|地区|市)$/, '')
 // 按名字查城市库：先归一后精确匹配，再退一步用去后缀的宽松键。查不到返回 null（不猜、不模糊，免得静默写错坐标）。
+// 中英两名都比（cityNameKeys）：英文界面导入写进去的是「Beijing」，中文界面是「北京」，从 Excel 粘来的两种都可能。
 function findCityByName(name) {
   const k = cityKey(name)
   if (!k) return null
   const list = props.cities
-  const hit = list.find((c) => c && c.name != null && cityKey(c.name) === k)
+  const hitBy = (key) => list.find((c) => cityNameKeys(c).some((n) => cityKey(n) === key)) || null
+  const hit = hitBy(k)
   if (hit) return hit
   const lk = cityKeyLoose(name)
-  return (lk && lk !== k) ? (list.find((c) => c && c.name != null && cityKey(c.name) === lk) || null) : null
+  return (lk && lk !== k) ? hitBy(lk) : null
 }
 // 地球站名称命中城市库 → 自动带入该城市经纬度（写入所属站址组）。
 // keep：本轮已显式带入经/纬度的键（整行粘贴/填充场景）——名字反查不得覆盖它们。
@@ -880,10 +884,15 @@ const impSearchEl = ref(null)
 const impOtherGroup = computed(() => geoGroups.value.find((x) => x.kind !== imp.side) || null)
 const impOtherDefault = computed(() => { const og = impOtherGroup.value; if (!og) return ''; const f = props.fields.find((x) => x.key === og.name); return (f && f.def) || '' })
 function readMarkers() { try { return JSON.parse(localStorage.getItem('globe3d/markers') || 'null') || {} } catch (e) { return {} } }
-// 城市项稳定 id（城市名+经度）：跨关键词/搜索结果保持一致，避免勾选错位
+// 城市项稳定 id（城市名+经度）：跨关键词/搜索结果保持一致，避免勾选错位。恒取中文名——
+// 它是内部键、不上屏，换语言不改身份，已勾选的条目不会散架。
 const cityId = (c) => 'c_' + c.name + '_' + c.lon
+// 换语言时重算列表里的城市名（本组件会被 v-if 卸载重挂，故订阅要退订）
+const uiLang = ref(getLang())
+onBeforeUnmount(onLangChange((l) => { uiLang.value = l }))
 const impItems = computed(() => {
-  if (imp.source === 'city') return props.cities.map((c) => ({ id: cityId(c), name: c.name, lon: c.lon, lat: c.lat }))
+  void uiLang.value                                  // 换语言即重算城市名（cityName 自身不是响应式的）
+  if (imp.source === 'city') return props.cities.map((c) => ({ id: cityId(c), name: cityName(c), lon: c.lon, lat: c.lat }))
   const mk = readMarkers()
   if (imp.source === 'point') return (mk.points || []).map((p, i) => ({ id: p.id || 'p' + i, name: '点标记' + (i + 1), lon: p.lon, lat: p.lat }))
   if (imp.source === 'station') return (mk.stations || []).map((s, i) => ({ id: s.id || 's' + i, name: s.name || ('地球站' + (i + 1)), lon: s.lon, lat: s.lat }))
@@ -900,7 +909,7 @@ watch(() => [imp.open, imp.source, imp.query], () => {
   const q = imp.query.trim()
   clearTimeout(_cityT)
   _cityT = setTimeout(async () => {
-    try { const r = await props.citySearch(q); cityHits.value = (r || []).map((c) => ({ id: cityId(c), name: c.name, lon: c.lon, lat: c.lat })) }
+    try { const r = await props.citySearch(q); cityHits.value = (r || []).map((c) => ({ id: cityId(c), name: cityName(c), lon: c.lon, lat: c.lat })) }
     catch (e) { cityHits.value = [] }
   }, 160)
 })

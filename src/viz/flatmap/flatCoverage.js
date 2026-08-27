@@ -10,8 +10,6 @@ import { BORDER_DEF, DASH_PX, DASH_SCALE, BORDER_DRAW, CFG_KEY, fadeFactor, admF
 import { terminatorFlat } from '../terminator.js'
 
 const OCEAN = '#15426b'
-// 南极极冠：南极洲数据止于约 -85°，极点处留有空洞，补到 -90°。
-const SOUTH_CAP_LAT = -82
 const BG = '#070b12'
 // 切口（左边缘经度）：默认西经 30°，经度范围 [LON0, LON0+360)。可由「地图设置 → 坐标系」改，
 // 改后要重烘所有「世界度坐标」(x = lon − LON0) 的 Path2D —— 陆地/边界线/覆盖场/等值线/夜区都是这套坐标。
@@ -22,6 +20,8 @@ const OCEANS = [
   ['大西洋', 'Atlantic Ocean', -35, 28], ['大西洋', 'Atlantic Ocean', -18, -25],
   ['印度洋', 'Indian Ocean', 78, -28], ['北冰洋', 'Arctic Ocean', 0, 85], ['南大洋', 'Southern Ocean', 40, -62]
 ]
+// 地名避让用的统一形状：{ zh, en, lon, lat, px, pri }。大洋名恒定 15px，优先级给满（第一批摆位）。
+const OCEAN_LABELS = OCEANS.map(([zh, en, lon, lat]) => ({ zh, en, lon, lat, px: 15, pri: 1e9 }))
 // 大洋名描边色（与 3D 同：斜体浅蓝）
 const OCEAN_FILL = 'rgba(150,195,230,0.92)'
 // 地球站图标（与 3D 同一张 SVG）
@@ -155,7 +155,8 @@ export function createFlatCoverage(canvas) {
     })
     // 国家名：位置/线度来自解算器的 labelSet（按归属合并，per-POV 改名与 hide 在那里做）；
     // 线度→像素字号的映射式子与换源前一字不改
-    for (const l of labelSet('zh', mapDetail0)) clabels.push({ zh: l.zh, en: l.en, lon: l.lon, lat: l.lat, px: clamp(Math.round(10 + l.ext * 0.22), 10, 20) })
+    // pri = 国家「视觉大小」：地名避让按它排队，大国先得位、小国撞上就让（见 drawLabelLayer）
+    for (const l of labelSet('zh', mapDetail0)) clabels.push({ zh: l.zh, en: l.en, lon: l.lon, lat: l.lat, px: clamp(Math.round(10 + l.ext * 0.22), 10, 20), pri: l.ext })
   }
   buildBaseGeo(resolvedFeatures('10m'), 0)
   // 视角/用户覆写改动由解算器广播回来：底图面/线/国名整份重建 + 静态层快照作废
@@ -262,14 +263,12 @@ export function createFlatCoverage(canvas) {
     }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.globalAlpha = 1; ctx.setLineDash([])
   }
-  // 南极极冠：补 SOUTH_CAP_LAT 以南的中央空洞（取南极洲当前填色——默认冰白，被逐国设色时随用户色，无缝衔接）。
-  // 北极岛屿改由 buildBaseGeo 按「多边形整块」染冰白（与 3D 同口径），不再有北极纬度渐变，故此处只剩南极极冠。
-  function drawIceCaps() {
-    // ★ 铺满三份（−360/0/+360）：惯性档整幅图会平移，只画一份的话边上会露出画布底色
-    const kk = k(), x0 = PX(LON0) - 360 * kk, w = 1080 * kk
-    const yCap = PY(SOUTH_CAP_LAT)
-    ctx.fillStyle = landColors('ATA', 0).base; ctx.fillRect(x0, yCap, w, PY(-90) - yCap)
-  }
+  // ★ 原先这里有一个「南极极冠」：把 −82° 以南整条横带无条件涂成陆地色，用来补老底图（world-atlas）
+  //   在极点处留下的圆形空洞。换成主权解算层之后，南极大陆的环三档都自己走到了 −90°（10m 有 724 个
+  //   lat=−90 的点），空洞早就没有了 —— 那条横带只剩下副作用：把深入到 −85° 的罗斯海、威德尔海
+  //   整片糊成陆地，海陆边界被切成一条横贯全图的直线，冰架前缘的海岸线孤零零浮在陆地色上。
+  //   3D 球体那边早已改用 antarcticaFillRings 收口（见 globe3d/scene.js），这里是漏网的另一半，删掉即可。
+  //   北极岛屿由 buildBaseGeo 按「多边形整块」染冰白（与 3D 同口径），不需要极冠。
   // 卫星图标（矢量复刻聚焦卫星 SVG：双侧 3×2 太阳能板 + 中央星体）。按 color 填充、size 缩放。
   // 仰角线卫星与聚焦卫星共用此函数 —— 平面图上卫星统一为同一枚图标，颜色随各自设置。
   const SAT_BLOCKS = [[8, 41], [21, 41], [34, 41], [8, 63], [21, 63], [34, 63], [76, 41], [89, 41], [102, 41], [76, 63], [89, 63], [102, 63]]
@@ -340,6 +339,73 @@ export function createFlatCoverage(canvas) {
     if (lw > 0) { ctx.lineJoin = 'round'; ctx.miterLimit = 2; ctx.lineWidth = lw; ctx.strokeStyle = 'rgba(6,11,18,0.82)'; ctx.strokeText(text, tx0, ty0) }
     ctx.fillStyle = color; ctx.fillText(text, tx0, ty0)
     if (rot) ctx.restore()
+  }
+  // ============ 地名避让 ============
+  // 地名字号原本是纯「世界尺寸」（随缩放线性变大），位置也随缩放线性拉开 —— 整幅版面是相似放大，
+  // 重叠率与缩放【无关】：英国那 232 个地方议会区、马耳他那 68 个地方议会，放到多大都还是糊成一坨。
+  // 两条一起才管用：
+  //   ① 字号钳到屏幕像素区间 —— 有了上限，放大才真的腾得出地方（字不再跟着一起变大）；
+  //   ② 屏幕空间贪心避让 —— 按优先级逐个摆，撞上已摆的就跳过；放大后间距拉开，先前被剔掉的自己会回来。
+  // 优先级：层级为主（大洋名 > 国家名 > 一级行政区 > 二级行政区），同层内比 pri
+  //（pri = 该标注到最近邻标注的距离，由 admPacks.mergePacks 预算；辖区大的邻居远、先得位）。
+  // ★ 下限是「太小就不画」，不是「撑大到这个数」：字号倍率能调到 0.1，撑大就等于把那个档位废掉。
+  //   门槛压到 2.5px：倍率是用户自己设的，设成 0.2 就是要那一片小字，这一层只拦真正的单像素噪点。
+  //   （曾取 5px，配上出厂的省名 0.6 / 市名 0.2 倍率，等于把中国地级市这一层在 ×6 以下整层关掉。）
+  const LB_DROP = 2.5, LB_MAX = 22     // 地名字号：低于 LB_DROP 像素不画，高于 LB_MAX 像素封顶
+  const LB_DROP_KEEP = 1.2             // 常显标注的下限只剩物理的那一条：再小 canvas 连一个像素都画不出
+  // 碰撞盒：半高取 0.5 em（CJK 字面框正好一个 em，textBaseline=middle 时上下各半），加半像素间隙。
+  // 别用「行高」那种 0.62 —— 那是给排版留的行距，用在避让上等于凭空把每个名字撑大四分之一，
+  // 挤掉的全是港澳这种「小而重要」的邻居。
+  const LB_HK = 0.5, LB_PADX = 1, LB_PADY = 0.5
+  // ★ 标注一律画在单元质心上，不做「撞了挪一格」的候选位偏移：位置准确是第一位的，
+  //   名字挪出辖区（香港的字落到深圳湾）比少显示一个更糟。位置不动，改成【允许适度重叠】：
+  //   判定盒按下面两个系数收缩，相邻名字可以互相侵入这么多而仍然都画。
+  //   横向放到 35%（中文横排，左右挨紧还认得出）；纵向只放 12%（上下压住笔画就废了）。
+  //   标定依据（1600×900，出厂倍率）：不许重叠时香港要放到 ×24 才与澳门共存，这一档提前到 ×14；
+  //   中国地级市 ×6 从 291/331 提到 307/331。再放宽收益就没了，只是越来越糊。
+  const LB_OVX = 0.65, LB_OVY = 0.88
+  const SLOT_G = 64                    // 占位表网格边长（px）
+  const newSlots = () => new Map()
+  const slotRange = (s, x0, y0, x1, y1, fn) => {
+    for (let i = Math.floor(x0 / SLOT_G); i <= Math.floor(x1 / SLOT_G); i++) {
+      for (let j = Math.floor(y0 / SLOT_G); j <= Math.floor(y1 / SLOT_G); j++) { if (fn(i + ',' + j)) return true }
+    }
+    return false
+  }
+  const slotFits = (s, x0, y0, x1, y1) => !slotRange(s, x0, y0, x1, y1, (k) => {
+    const arr = s.get(k)
+    if (!arr) return false
+    for (const r of arr) if (x0 < r[2] && x1 > r[0] && y0 < r[3] && y1 > r[1]) return true
+    return false
+  })
+  const slotAdd = (s, x0, y0, x1, y1) => { slotRange(s, x0, y0, x1, y1, (k) => { let a = s.get(k); if (!a) s.set(k, a = []); a.push([x0, y0, x1, y1]); return false }) }
+  // 文本屏幕宽度估算。★ 不调 measureText：这一层每次视图变化都要重排几千条，逐条量文本太贵，
+  // 而避让只需要包围盒量级 —— 汉字按 1 em、其余按 0.55 em 估已经够准。
+  const textW = (t, px) => { let w = 0; for (const ch of t) w += CJK_RE.test(ch) ? 1 : 0.55; return w * px }
+  // 一层地名：钳字号 → 视口剔除 → 按 pri 降序 → 逐个避让 → 画。slots 三层共用，故层间也不会互撞。
+  function drawLabelLayer(list, slots, nameOf, scaleK, zf, color, opt) {
+    const arr = []
+    for (const l of list) {
+      // ★ 封顶只作用于【地图缩放带来的增长】，不作用于【用户拉的字号倍率】：
+      //   倍率是用户的直接意图，拉了就得跟着走；封顶要管的是「放大地图时字与间距同比涨、
+      //   避让永远腾不出地方」那件事。所以先对 px×zf 封顶，再乘倍率。
+      const fs = Math.round(Math.min((l.px || 12) * zf, LB_MAX) * scaleK)
+      if (fs < (l.keep ? LB_DROP_KEEP : LB_DROP)) continue   // 太小：不画，也不占位
+      const x = PX(l.lon), y = PY(l.lat)
+      if (x < -160 || x > cw + 160 || y < -40 || y > ch + 40) continue
+      const name = nameOf(l)
+      if (!name) continue
+      arr.push({ l, name, fs, x, y, hw: (textW(name, fs) / 2) * LB_OVX + LB_PADX, hh: fs * LB_HK * LB_OVY + LB_PADY })
+    }
+    // 排队：先看 rk（NE 的 labelrank，越小越该先标；构建期写进包里），再看 pri（到最近邻的距离）
+    arr.sort((a, b) => ((b.l.keep ? 1 : 0) - (a.l.keep ? 1 : 0)) ||
+      ((a.l.rk || 12) - (b.l.rk || 12)) || ((b.l.pri || 0) - (a.l.pri || 0)))
+    for (const e of arr) {
+      // 常显（KEEP_ISO 的国家）：不判碰撞，挤到也画；但照常登记占位，免得别人再压上来
+      if (!e.l.keep && !slotFits(slots, e.x - e.hw, e.y - e.hh, e.x + e.hw, e.y + e.hh)) continue
+      slotAdd(slots, e.x - e.hw, e.y - e.hh, e.x + e.hw, e.y + e.hh)
+      drawText(e.name, e.l.lon, e.l.lat, e.fs, color, opt)
+    }
   }
   function dot(lon, lat, r, fill, ring) {
     const x = PX(lon), y = PY(lat)
@@ -589,7 +655,7 @@ export function createFlatCoverage(canvas) {
     ctx.save()
     ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip()
     ctx.fillStyle = oceanColor; ctx.fillRect(rx, ry, rw, rh)
-    drawLand(); drawIceCaps()
+    drawLand()
     ctx.restore()
   }
   // field 之上的标注（省界/标记/国家名/卫星层点标注等）。透明背景，叠在覆盖填充之上。
@@ -644,22 +710,24 @@ export function createFlatCoverage(canvas) {
     // 标记/波束/数值/覆盖/卫星层等注记文字：随缩放联动（乘 mz=scale，scale=1 即当前大小，与国家名同率缩放）；
     // 卫星图标改按 mz 联动（与卫星名标签同率缩放，避免图标/标签缩放不一致），不同于地球站/点标记的克制版 iz。
     const ns = sizes.nameScale || 1, zf = k() / 13.1
+    // 四层地名共用一张占位表，按「大洋名 → 国家名 → 一级 → 二级」的先后顺序摆位：先摆的占住地方，
+    // 后摆的撞上就不画。层间也因此不会互相压 —— 省名不会盖在国名上。
+    const slots = newSlots()
     if (nameMode !== 'off') {
-      ctx.globalAlpha = labelStyle.countryOpacity
-      for (const l of clabels) drawText(nameMode === 'en' ? l.en : l.zh, l.lon, l.lat, Math.round(l.px * ns * zf), labelStyle.countryColor)
       ctx.globalAlpha = 1   // 大洋名维持固有蓝与不透明度
-      for (const [zh, en, lon, lat] of OCEANS) drawText(nameMode === 'en' ? en : zh, lon, lat, Math.round(15 * ns * zf), OCEAN_FILL, { italic: true })
-    }
-    if (cityVisible && city) {
-      const cs = sizes.cityScale || 1
-      ctx.globalAlpha = labelStyle.cityOpacity
-      for (const l of city.labels) drawText(l.name, l.lon, l.lat, Math.round(l.px * cs * zf), labelStyle.cityColor, { strokeScale: 0.07, strokeMin: 0.8 })
+      drawLabelLayer(OCEAN_LABELS, slots, (l) => (nameMode === 'en' ? l.en : l.zh), ns, zf, OCEAN_FILL, { italic: true })
+      ctx.globalAlpha = labelStyle.countryOpacity
+      drawLabelLayer(clabels, slots, (l) => (nameMode === 'en' ? l.en : l.zh), ns, zf, labelStyle.countryColor)
       ctx.globalAlpha = 1
     }
     if (provVisible && prov) {
-      const ps = sizes.provScale || 1
       ctx.globalAlpha = labelStyle.provOpacity
-      for (const l of prov.labels) drawText(l.name, l.lon, l.lat, Math.round(l.px * ps * zf), labelStyle.provColor, { strokeScale: 0.09, strokeMin: 1.0 })
+      drawLabelLayer(prov.labels, slots, (l) => l.name, sizes.provScale || 1, zf, labelStyle.provColor, { strokeScale: 0.09, strokeMin: 1.0 })
+      ctx.globalAlpha = 1
+    }
+    if (cityVisible && city) {   // 二级最后摆：一级不在场的地方它才有位子
+      ctx.globalAlpha = labelStyle.cityOpacity
+      drawLabelLayer(city.labels, slots, (l) => l.name, sizes.cityScale || 1, zf, labelStyle.cityColor, { strokeScale: 0.07, strokeMin: 0.8 })
       ctx.globalAlpha = 1
     }
     if (geom) {   // GXT 覆盖图标签（波束名/数值）：克制版联动 iz
@@ -1063,13 +1131,13 @@ export function createFlatCoverage(canvas) {
 
   // 一级行政区数据（与 3D setProvinces 同款格式）。★ 可反复调用：多选国家时上层并成一份重新喂进来。
   function setProvinces(data) {
-    prov = data ? { borders: data.borders || [], labels: (data.labels || []).map((l) => ({ name: l.name, lon: l.lon, lat: l.lat, px: l.px2d != null ? l.px2d : 15 })) } : null
+    prov = data ? { borders: data.borders || [], labels: (data.labels || []).map((l) => ({ name: l.name, lon: l.lon, lat: l.lat, px: l.px2d != null ? l.px2d : 15, pri: l.pri, rk: l.rk, keep: l.keep })) } : null
     invalidateStatic(); requestDraw()
   }
 
   // 二级行政区数据（同上）。地名密集 → 基准 px 偏小（小空间）
   function setCities(data) {
-    city = data ? { borders: data.borders || [], labels: (data.labels || []).map((l) => ({ name: l.name, lon: l.lon, lat: l.lat, px: l.px2d != null ? l.px2d : 11 })) } : null
+    city = data ? { borders: data.borders || [], labels: (data.labels || []).map((l) => ({ name: l.name, lon: l.lon, lat: l.lat, px: l.px2d != null ? l.px2d : 11, pri: l.pri, rk: l.rk, keep: l.keep })) } : null
     invalidateStatic(); requestDraw()
   }
 

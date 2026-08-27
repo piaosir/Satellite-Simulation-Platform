@@ -6,6 +6,9 @@
 import { ref } from 'vue'
 import sat from './satellite.js'
 import { generateConstellation } from './walker.js'
+// 星座名是【数据】（进 localStorage、画在打了 skip 的名字位与 <input> 上，呈现层翻不到）：
+// 名字留空时的兜底名按平台语言出字，与「生成星座」向导的出厂名同一套（见 ConstellationMap3D.defaultConstDraft）。
+import { byLang } from '../../shared/i18n/lang.js'
 
 const RE = 6378.137
 const MU = 398600.4418
@@ -55,12 +58,13 @@ function elementsToSatrec(el, epoch) {
 
 let _seq = 0
 const genId = () => 'cc' + Date.now().toString(36) + (_seq++).toString(36)
+const defConstName = () => byLang('自定义星座', 'Custom Constellation')
 
 // 规范化一条星座配置，补齐缺省字段
 function normalize(c) {
   return {
     id: c.id || genId(),
-    name: (c.name || '自定义星座').trim() || '自定义星座',
+    name: (c.name || defConstName()).trim() || defConstName(),
     params: { ...c.params },
     color: c.color || '#4dabf7',
     colorByPlane: c.colorByPlane !== false,
@@ -228,7 +232,7 @@ export function readCustomConstellationSummary() {
     return blob.items.map((c) => {
       let count = 0
       try { count = generateConstellation(c.params || {}).length } catch { count = 0 }
-      return { id: c.id, name: (c.name || '自定义星座').trim() || '自定义星座', incl: Number(c.params && c.params.incl) || 0, count, color: c.color || '#4dabf7' }
+      return { id: c.id, name: (c.name || defConstName()).trim() || defConstName(), incl: Number(c.params && c.params.incl) || 0, count, color: c.color || '#4dabf7' }
     })
   } catch { return [] }
 }
@@ -241,7 +245,7 @@ export function renameCustomConstellation(id, name) {
     if (!blob || !Array.isArray(blob.items)) return false
     const it = blob.items.find((c) => c.id === id)
     if (!it) return false
-    it.name = (name || '自定义星座').trim() || '自定义星座'
+    it.name = (name || defConstName()).trim() || defConstName()
     localStorage.setItem(STORE_KEY, JSON.stringify(blob))
     return true
   } catch { return false }

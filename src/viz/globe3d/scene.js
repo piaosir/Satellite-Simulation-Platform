@@ -174,6 +174,8 @@ function makeLabelSprite(text, hpx, fill, strokePx = 4) {
   const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, color: fill || '#eef2f6', depthTest: false, depthWrite: false, transparent: true }))
   spr.scale.set((c.width / c.height) * hpx, hpx, 1)
   spr._base = spr.scale.clone()   // 基准尺寸（供地名字号缩放）
+  spr._txtK = fs / c.height       // 画布里字本身占的高度比（其余是描边留白）：地名避让按字高钳位，不按整张画布
+  spr._wK = (c.width - pad * 2) / c.width   // 同理，宽度也要去掉两边的描边留白，否则碰撞盒凭空胖一圈
   spr.renderOrder = 10
   return spr
 }
@@ -189,6 +191,7 @@ function buildLabels(lang, detail) {
     const spr = makeLabelSprite(l.name, hpx)
     spr.position.copy(llaToVec(l.lat, l.lon, 25))
     spr._dir = spr.position.clone().normalize()
+    spr._pri = l.ext            // 地名避让的排队依据：大国先得位（见 updateLabels）
     group.add(spr)
   }
   return group
@@ -249,6 +252,8 @@ function makeOceanLabel(text) {
   const hpx = 0.034
   spr.scale.set((c.width / c.height) * hpx, hpx, 1)
   spr._base = spr.scale.clone()
+  spr._txtK = fs / c.height
+  spr._wK = (c.width - pad * 2) / c.width
   spr.renderOrder = 9
   return spr
 }
@@ -269,6 +274,7 @@ function buildOceanLabels(lang) {
     const spr = makeOceanLabel(lang === 'en' ? en : zh)
     spr.position.copy(llaToVec(lat, lon, 25))
     spr._dir = spr.position.clone().normalize()
+    spr._pri = 1e9
     group.add(spr)
   }
   return group
@@ -613,7 +619,7 @@ export function createGlobeScene(container, quality = {}) {
       // 面积很小的行政区（港澳、直辖市）字号调小，否则名字比辖区还大
       const hpx = l.px != null ? l.px : 0.02
       const spr = makeLabelSprite(l.name, hpx, '#ffe6a8')
-      spr.position.copy(llaToVec(l.lat, l.lon, 25)); spr._dir = spr.position.clone().normalize()
+      spr.position.copy(llaToVec(l.lat, l.lon, 25)); spr._dir = spr.position.clone().normalize(); spr._pri = l.pri; spr._rk = l.rk; spr._keep = !!l.keep
       provinceLabels.add(spr)
     }
     applyNameScale(provinceLabels, nameScaleP)   // 套用当前省名字号
@@ -646,7 +652,7 @@ export function createGlobeScene(container, quality = {}) {
     for (const l of (data.labels || [])) {
       // 地级市名密集 → 基准字号偏小（小空间），整体再由 nameScaleCity 缩放；黑边尽量细但保留(2px)
       const spr = makeLabelSprite(l.name, l.px != null ? l.px : 0.012, labelCfg.cityColor, 2)
-      spr.position.copy(llaToVec(l.lat, l.lon, 16)); spr._dir = spr.position.clone().normalize()
+      spr.position.copy(llaToVec(l.lat, l.lon, 16)); spr._dir = spr.position.clone().normalize(); spr._pri = l.pri; spr._rk = l.rk; spr._keep = !!l.keep
       cityLabels.add(spr)
     }
     applyNameScale(cityLabels, nameScaleCity)
@@ -2326,11 +2332,88 @@ export function createGlobeScene(container, quality = {}) {
     const base = s._baseOpacity != null ? s._baseOpacity : 1
     s.material.opacity = (dot >= 0.22 ? 1 : (dot - 0.05) / 0.17) * base
   }
+  // ============ 地名避让（与 2D flatmap/flatCoverage 同一套口径与常量）============
+  // 精灵是「世界尺寸」的：地球放大多少，字就跟着放大多少，位置也同比拉开 —— 整幅版面是相似放大，
+  // 重叠率与缩放【无关】。英国那 232 个地方议会区的名字，转到眼前放到最大，还是糊成一坨。
+  // 两条一起才管用：① 把字的屏幕高钳进 [LB_MIN, LB_MAX] —— 有了上限，放大才真的腾出地方；
+  //                ② 屏幕空间贪心避让 —— 按「层级 + _pri」排队摆位，撞上已摆的就隐藏。
+  // ★ 下限是「太小就不画」，不是「撑大到这个数」：字号倍率能调到 0.1，撑大就等于把那个档位废掉。
+  // 门槛压到 2.5px：倍率是用户自己设的，设成 0.2 就是要那一片小字，这一层只拦真正的单像素噪点。
+  //（曾取 5px，配上出厂的省名 0.6 / 市名 0.2 倍率，等于把中国地级市这一层在低倍下整层关掉。）
+  const LB_DROP = 2.5, LB_MAX = 22    // 低于 LB_DROP 像素不画，高于 LB_MAX 像素封顶
+  const LB_DROP_KEEP = 1.2            // 常显标注的下限只剩物理的那一条：再小连一个像素都画不出
+  const LB_TXT = 54 / 70              // 精灵画布里字本身占的高度比（makeLabelSprite：字号 54 / 画布高 70）
+  // 碰撞盒按【字】不按【整张精灵画布】：画布四周有描边留白，拿它当盒子等于每个名字凭空胖三成，
+  // 挤掉的全是港澳这种「小而重要」的邻居。半高 0.5 em（CJK 字面框正好一个 em）+ 半像素间隙。
+  const LB_HK = 0.5, LB_PADX = 1, LB_PADY = 0.5
+  // ★ 标注一律钉在单元质心上，不做「撞了挪一格」的候选位偏移：位置准确是第一位的，
+  //   名字挪出辖区比少显示一个更糟。位置不动，改成【允许适度重叠】：判定盒按下面两个系数收缩，
+  //   相邻名字可以互相侵入这么多而仍然都画。横向放 35%、纵向只放 12%（上下压住笔画就废了）。
+  //   与 2D flatCoverage 同一组标定值，改动请两边一起改。
+  const LB_OVX = 0.65, LB_OVY = 0.88
+  const LB_SLOT = 64                  // 占位表网格边长（px）
+  const lbSlots = new Map()
+  const lbV = new THREE.Vector3()
+  const lbBuf = []
+  const lbRange = (x0, y0, x1, y1, fn) => {
+    for (let i = Math.floor(x0 / LB_SLOT); i <= Math.floor(x1 / LB_SLOT); i++) {
+      for (let j = Math.floor(y0 / LB_SLOT); j <= Math.floor(y1 / LB_SLOT); j++) if (fn(i + ',' + j)) return true
+    }
+    return false
+  }
+  // 一层：先按半球淡出定去留，再投影 + 钳字号，收进待摆队列（层级序由调用顺序保证）
+  function lbCollect(grp, nameScale, tier, W, H, foc) {
+    if (!grp || !grp.visible) return
+    for (const s of grp.children) {
+      if (s._dir) fadeLabel(s, s._dir.dot(camDir))
+      if (!s.visible || !s._base) continue
+      const dist = camera.position.distanceTo(s.position)
+      // ★ 封顶只作用于【相机拉近带来的增长】，不作用于【用户拉的字号倍率】：倍率是用户的直接意图，
+      //   拉了就得跟着走；封顶要管的是「拉近时字与间距同比涨、避让永远腾不出地方」那件事。
+      //   故先按倍率 1.0 算屏幕高、对它封顶，再把倍率乘回去。
+      const pxH0 = s._base.y * foc / Math.max(1e-6, dist)         // 倍率 1.0 时整张精灵的屏幕高
+      const txt0 = pxH0 * (s._txtK || LB_TXT)
+      const kk = (txt0 > LB_MAX ? LB_MAX / txt0 : 1) * nameScale
+      const pxH = pxH0 * kk                                       // 实际屏幕高（已含封顶与倍率）
+      const txt = pxH * (s._txtK || LB_TXT)                       // 其中字本身的高
+      if (txt < (s._keep ? LB_DROP_KEEP : LB_DROP)) { s.visible = false; continue }   // 太小：不画，也不占位
+      s.scale.set(s._base.x * kk, s._base.y * kk, 1)
+      lbV.copy(s.position).project(camera)
+      if (lbV.z > 1) { s.visible = false; continue }
+      const x = (lbV.x * 0.5 + 0.5) * W, y = (0.5 - lbV.y * 0.5) * H
+      const sprH = pxH, sprW = (s.scale.x / s.scale.y) * sprH             // 整张精灵的屏幕尺寸
+      const hw = sprW * (s._wK != null ? s._wK : 1) * 0.5 * LB_OVX + LB_PADX   // 碰撞盒只算字，不算描边留白
+      const hh = sprH * (s._txtK || LB_TXT) * LB_HK * LB_OVY + LB_PADY
+      if (x + hw < 0 || x - hw > W || y + hh < 0 || y - hh > H) { s.visible = false; continue }
+      lbBuf.push({ s, tier, keep: !!s._keep, rk: s._rk != null ? s._rk : 12, pri: s._pri || 0, x, y, hw, hh })
+    }
+  }
   function updateLabels() {
     camDir.copy(camera.position).normalize()
-    const cull = (grp) => { if (!grp || !grp.visible) return; for (const s of grp.children) if (s._dir) fadeLabel(s, s._dir.dot(camDir)) }
-    cull(labelsZh); cull(labelsEn); cull(oceanZh); cull(oceanEn); cull(provinceLabels); cull(cityLabels)
-    cull(satLayerGroup)   // 卫星/仰角线/Polygon 独立图层里带 _dir 的标签（如 Polygon 名称数值）：同样近地平淡出、背面隐藏
+    const r = renderer.domElement
+    const W = r.clientWidth || 1, H = r.clientHeight || 1
+    const foc = H / (2 * Math.tan(camera.fov * Math.PI / 360))   // 焦距（像素）：世界高 × foc / 距离 = 屏幕高
+    lbBuf.length = 0; lbSlots.clear()
+    lbCollect(oceanZh, nameScaleC, 0, W, H, foc); lbCollect(oceanEn, nameScaleC, 0, W, H, foc)
+    lbCollect(labelsZh, nameScaleC, 1, W, H, foc); lbCollect(labelsEn, nameScaleC, 1, W, H, foc)
+    lbCollect(provinceLabels, nameScaleP, 2, W, H, foc)
+    lbCollect(cityLabels, nameScaleCity, 3, W, H, foc)
+    lbBuf.sort((a, b) => ((b.keep ? 1 : 0) - (a.keep ? 1 : 0)) || (a.tier - b.tier) || (a.rk - b.rk) || (b.pri - a.pri))
+    const lbFree = (x0, y0, x1, y1) => !lbRange(x0, y0, x1, y1, (k) => {
+      const arr = lbSlots.get(k)
+      if (!arr) return false
+      for (const q of arr) if (x0 < q[2] && x1 > q[0] && y0 < q[3] && y1 > q[1]) return true
+      return false
+    })
+    for (const e of lbBuf) {
+      const x0 = e.x - e.hw, y0 = e.y - e.hh, x1 = e.x + e.hw, y1 = e.y + e.hh
+      // 常显（KEEP_ISO 的国家）：不判碰撞，挤到也画；但照常登记占位，免得别人再压上来
+      if (!e.keep && !lbFree(x0, y0, x1, y1)) { e.s.visible = false; continue }
+      lbRange(x0, y0, x1, y1, (k) => { let a = lbSlots.get(k); if (!a) lbSlots.set(k, a = []); a.push([x0, y0, x1, y1]); return false })
+    }
+    // 卫星/仰角线/Polygon 独立图层里带 _dir 的标签（如 Polygon 名称数值）：只做半球淡出，不参与地名避让
+    // —— 那些是用户数据，该显示就得显示，不能被底图地名挤掉。
+    if (satLayerGroup && satLayerGroup.visible) for (const s of satLayerGroup.children) if (s._dir) fadeLabel(s, s._dir.dot(camDir))
   }
 
   const zoomDir = new THREE.Vector3()

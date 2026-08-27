@@ -1,1 +1,1 @@
-{"borders":[],"labels":[{"name_en":"Gaza Strip","name_local":"加沙省","lon":34.365,"lat":31.426},{"name_en":"West Bank","name_local":"约旦河西岸","lon":35.292,"lat":32.003}]}
+{"borders":[],"labels":[{"name_en":"Gaza","name_local":"加沙省","lon":34.365,"lat":31.426,"rk":20},{"name_en":"West Bank","name_local":"约旦河西岸","lon":35.292,"lat":32.003,"rk":20}]}

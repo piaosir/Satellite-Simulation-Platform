@@ -10,11 +10,15 @@ import { reactive, computed, watch } from 'vue'
 //  - msaa        MSAA 抗锯齿。WebGL 上下文创建期参数，切换需重建场景（由 3D 视图按 key 重挂载实现）。
 //  - fps         渲染帧率上限（0=不限/每帧；30/60=省电节流）。
 //  - sphereSeg   海洋球细分段数。
+// ★ 低/中两档原本用 110m，已改回 50m：NE 的 110m 根本不出争议面图层，藏南、阿克赛钦、
+//   克里米亚这类「宿主里的一块」在该档表达不出来 —— 低画质下中国疆域画的就是另一套，
+//   这不是「粗」，是错。50m 只有 82 k 顶点（110m 是 8 k），任何机器都扛得住，
+//   真正的性能杠杆是 pixelRatio 与 sphereSeg。110m 的数据文件保留，但不再有档位选得到它。
 const PRESETS = {
-  low:    { pixelRatio: 1.0,  mapDetail: '110m', mapThin: 0, gridStride: 2, msaa: true,  fps: 30, sphereSeg: 64 },
-  mid:    { pixelRatio: 1.5,  mapDetail: '110m', mapThin: 0, gridStride: 1, msaa: true,  fps: 30, sphereSeg: 96 },
+  low:    { pixelRatio: 1.0,  mapDetail: '50m',  mapThin: 0, gridStride: 2, msaa: true,  fps: 30, sphereSeg: 64 },
+  mid:    { pixelRatio: 1.5,  mapDetail: '50m',  mapThin: 0, gridStride: 1, msaa: true,  fps: 30, sphereSeg: 96 },
   high:   { pixelRatio: 2.0,  mapDetail: '50m',  mapThin: 0, gridStride: 1, msaa: true,  fps: 60, sphereSeg: 128 },
-  ultra:  { pixelRatio: 3.0,  mapDetail: '50m',  mapThin: 0, gridStride: 1, msaa: true,  fps: 0,  sphereSeg: 192 },
+  ultra:  { pixelRatio: 2.0,  mapDetail: '10m',  mapThin: 0, gridStride: 1, msaa: true,  fps: 0,  sphereSeg: 192 },
   native: { pixelRatio: 3.0,  mapDetail: '10m',  mapThin: 0, gridStride: 1, msaa: true,  fps: 0,  sphereSeg: 192 }
 }
 export const TIERS = [
@@ -24,7 +28,6 @@ export const TIERS = [
 // 底图精细化「档位」（由 50m/10m 两套 topojson + 顶点抽稀阈值 thin 组合出多级，粗→细）。
 // 单一下拉选择，内部同时落 mapDetail(数据源) 与 mapThin(抽稀阈值，度)。各档位粗→细顺序排列。
 export const MAP_LEVELS = [
-  { detail: '110m', thin: 0, label: '粗（110m）' },
   { detail: '50m',  thin: 0, label: '中（50m）' },
   { detail: '10m',  thin: 0, label: '精细（10m）' }
 ]
@@ -48,6 +51,8 @@ function loadInit() {
     if (o && typeof o === 'object') {
       const tier = TIERS.some((t) => t.key === o.tier) ? o.tier : DEFAULT_TIER
       const custom = { ...PRESETS.high, ...(o.custom || {}) }
+      // 老存档迁移：110m 那一档已下线（该档没有争议面图层，藏南/阿克赛钦归属不出来），一律升到 50m
+      if (custom.mapDetail === '110m') custom.mapDetail = '50m'
       return { tier, custom }
     }
   } catch { /* ignore */ }

@@ -67,7 +67,8 @@ import { makeSatSetItem } from '../shared/satconMiniExport.js'
 import { walkerCode, orbitPeriodMin, validateWalker } from '../viz/constellation/walker.js'
 import { classifyOrbit } from '../shared/orbitClass.js'
 import { fmtGeoSlot, geoSlotOfSatrec, geoSlotOfOmm } from '../shared/geoSlot.js'
-import { byLang } from '../shared/i18n/lang.js'   // 空名占位是界面语汇，却画在打了 skip 的名字位上（呈现层翻不到），故在这里按语言出字
+import { byLang, curLang } from '../shared/i18n/lang.js'   // 空名占位是界面语汇，却画在打了 skip 的名字位上（呈现层翻不到），故在这里按语言出字
+import { onLangChange } from '../shared/i18n/runtime.js'   // 切界面语言时，地图上的地名跟着换语言（见 syncNameLang）
 
 // 分组与「星座地图」(2D) 完全一致：同一份列表 / 顺序 / 默认「中国星网」。
 const GROUPS = [
@@ -127,8 +128,11 @@ const showProvinces = ref(false)   // 显示行政区（一级）界 / 名称（
 // 而是「行政区里选中了中国」时才出现的一个附加档 —— 见 ensureAdm(2) 的三重门。
 const showCities = ref(false)
 const admSel1 = ref(['CHN'])       // 一级：选中的国家（ISO3）
-const admName1 = ref('local')      // 名称档位：'local' 本地名 | 'en' 英文 | 'off' 不显示
-const admName2 = ref('local')
+// 名称档位：'local' 中文 | 'en' 英文 | 'off' 不显示。
+// ★ 初值跟界面语言走（英文界面首启就该是英文地名）；有存档时 restoreSettings 覆盖它，
+//   之后的切换由 syncNameLang 接手。
+const admName1 = ref(curLang() === 'en' ? 'en' : 'local')
+const admName2 = ref(curLang() === 'en' ? 'en' : 'local')
 const admQuery1 = ref('')          // 国家搜索框
 let provincesData = null
 let citiesData = null
@@ -1243,9 +1247,9 @@ const BORDER_ROWS = [
 const borderPick = ref('admin0')     // 主从列表当前选中的那一类
 // 地名的主从列表：名称档位 / 字号 / 颜色 / 透明度四项，三级共用一套控件
 const NAME_ROWS = [
-  { k: 'country', zh: '国家名', modes: [['zh', '中文'], ['en', '英文'], ['off', '不显示']], min: 0.3, max: 3, step: 0.05 },
-  { k: 'prov', zh: '一级行政区名', modes: [['local', '本地名'], ['en', '英文'], ['off', '不显示']], min: 0.1, max: 2, step: 0.05 },
-  { k: 'city', zh: '二级行政区名', modes: [['local', '中文'], ['en', '英文'], ['off', '不显示']], min: 0.01, max: 1, step: 0.01 }
+  { k: 'country', zh: '国家名', modes: [['zh', '中文'], ['en', '英文'], ['off', '不显示']], min: 0.1, max: 3, step: 0.05 },
+  { k: 'prov', zh: '一级行政区名', modes: [['local', '中文'], ['en', '英文'], ['off', '不显示']], min: 0.05, max: 3, step: 0.05 },
+  { k: 'city', zh: '二级行政区名', modes: [['local', '中文'], ['en', '英文'], ['off', '不显示']], min: 0.05, max: 3, step: 0.05 }
 ]
 const namePick = ref('country')
 // 样式预设（一键套整组）：只动五类线的颜色与透明度，线宽/线型这类结构性区分不跟着变
@@ -1298,7 +1302,7 @@ const POV_LAYERS = [
 const povTick = ref(0)
 const offPovTick = onPovChange(() => {
   povTick.value++
-  // 视角换了，行政区包里按 wv 分组的那部分（如印度视角才有的阿鲁纳恰尔邦界）要重新过滤
+  // 视角换了，行政区包里按 wv 分组的那部分（如只在「藏南不属中国」的视角下才有的阿鲁纳恰尔邦界）要重新过滤
   if (showProvinces.value) ensureAdm(1)
   if (showCities.value) ensureAdm(2)
 })
@@ -1525,7 +1529,7 @@ const hasCustomData = computed(() => customImportCount.value > 0)
 // 生成/编辑向导草稿（null=关闭）
 const constModal = ref(null)
 function defaultConstDraft() {
-  return { id: null, name: '自定义星座', pattern: 'delta', T: 24, P: 6, F: 1, incl: 53, shape: 'circ', perigeeKm: 550, apogeeKm: 550, argp: 0, raan0: 0, m0: 0, color: '#4dabf7', colorByPlane: true }
+  return { id: null, name: byLang('自定义星座', 'Custom Constellation'), pattern: 'delta', T: 24, P: 6, F: 1, incl: 53, shape: 'circ', perigeeKm: 550, apogeeKm: 550, argp: 0, raan0: 0, m0: 0, color: '#4dabf7', colorByPlane: true }
 }
 function openConstWizard(cfg) {
   if (cfg) constModal.value = { ...defaultConstDraft(), id: cfg.id, name: cfg.name, color: cfg.color, colorByPlane: cfg.colorByPlane !== false, ...cfg.params }
@@ -3300,13 +3304,16 @@ function setNameMode(m) { nameMode.value = m; scene && scene.setLabelMode(m); if
 // 字号：一级用 3D 世界高 0.02 / 2D 15px，二级更密故更小（0.012 / 11px）——与换源前一致。
 // ★ 二级只有中国：三重门 —— 行政区图层开着 + 选中的国家里有中国 + 地级市这一档打开。
 const admL2On = () => showCities.value && showProvinces.value && admSel1.value.includes('CHN')
+// 常显国家：这些国家的一级/二级地名不参与避让的碰撞剔除 —— 挤到也照画，一个都不许消失。
+// 中国的省与地级市是本平台的主用场景，宁可让相邻的名字挨得紧，也不能让某个省市在某个缩放下凭空不见。
+const KEEP_ISO = ['CHN']
 async function ensureAdm(lvl) {
   const on = lvl === 1 ? showProvinces.value : admL2On()
   const sel = lvl === 1 ? admSel1.value : ['CHN']
   const mode = lvl === 1 ? admName1.value : admName2.value
   if (on) {
     const packs = await Promise.all(sel.map((iso) => loadPack(lvl, iso)))
-    const data = mergePacks(packs, getPov().id, mode, lvl === 1 ? 0.02 : 0.012, lvl === 1 ? 15 : 11)
+    const data = mergePacks(packs, getPov().id, mode, lvl === 1 ? 0.02 : 0.012, lvl === 1 ? 15 : 11, KEEP_ISO)
     if (lvl === 1) { provincesData = data; scene && scene.setProvinces(data); if (flat) flat.setProvinces(data) }
     else { citiesData = data; scene && scene.setCities(data); if (flat) flat.setCities(data) }
   }
@@ -3327,6 +3334,18 @@ function admToggleCountry(iso) {
   if (iso === 'CHN') ensureAdm(2)
 }
 function admSetName(lvl, m) { (lvl === 1 ? admName1 : admName2).value = m; ensureAdm(lvl) }
+// 切界面语言 → 地图上的国名与两级行政区名跟着换语言。
+// 这三档的语义就是「地名用哪种语言写」：界面都切成英文了，图上还留着中文地名是割裂的。
+// ★ 选了「不显示」的那一档不动 —— 那是用户明确关掉的，换语言不该把它打开。
+// 用户想要「英文界面 + 中文地名」的话，切完语言再手动改一次即可（这三档照旧存进快照）。
+function syncNameLang() {
+  const en = curLang() === 'en'
+  if (nameMode.value !== 'off') setNameMode(en ? 'en' : 'zh')
+  if (admName1.value !== 'off') admSetName(1, en ? 'en' : 'local')
+  if (admName2.value !== 'off') admSetName(2, en ? 'en' : 'local')
+  saveSettings()
+}
+const offLang = onLangChange(syncNameLang)
 // 可选国家：只列本地确实有包的那些，名字取解算器口径（与地图上的国名一致）
 const admHits = computed(() => {
   const q = admQuery1.value.trim()
@@ -3339,7 +3358,7 @@ const admHits = computed(() => {
   const sel = new Set(admSel1.value)
   return [...hit].sort((a, b) => (sel.has(b.id) ? 1 : 0) - (sel.has(a.id) ? 1 : 0))
 })
-const admChips = computed(() => admSel1.value.map((id) => ({ id, zh: (COUNTRY_ZH.value.find((c) => c.id === id) || {}).zh || id })))
+const admChips = computed(() => admSel1.value.map((id) => { const c = COUNTRY_ZH.value.find((x) => x.id === id) || {}; return { id, zh: c.zh || id, en: c.en || id } }))
 const admHasCN = computed(() => admSel1.value.includes('CHN'))
 
 // ===================== 覆盖图 =====================
@@ -5745,6 +5764,10 @@ async function restoreSettings() {
   if (Number.isFinite(s.provName)) provNameSize.value = s.provName
   else if (Number.isFinite(s.geoName)) provNameSize.value = s.geoName
   if (Number.isFinite(s.cityName)) cityNameSize.value = s.cityName
+  // 地名字号下限：国家名 0.1、两级行政区 0.05。旧快照里存着更小的值，抬到各自下限 ——
+  // 否则滑块拖不回去，读数与滑块位置对不上。
+  if (countryNameSize.value < 0.1) countryNameSize.value = 0.1
+  for (const r of [provNameSize, cityNameSize]) if (r.value < 0.05) r.value = 0.05
   scene.setNameScale(countryNameSize.value, provNameSize.value, cityNameSize.value)
   if (s.borderStyle && typeof s.borderStyle === 'object') Object.assign(borderStyle, s.borderStyle)
   // 线粗下限 2026-08-22 起全库统一到 0.1（市界那档原为 0.05，是唯一一处收紧的）。旧快照里存着
@@ -6041,6 +6064,7 @@ onBeforeUnmount(() => {
   covNav.exportAvail = false; covNav.exportMap = null; covNav.importTle = null; covNav.sendMiniapp = null
   covNav.grdOpen = false; covNav.covOpen = false; covNav.polyOpen = false
   zoom.avail = false; zoom.apply = null   // 复位底部状态栏缩放进度条
+  offLang()
   if (_viewSaveTimer) { clearTimeout(_viewSaveTimer); _viewSaveTimer = null }
   if (el.value) el.value.removeEventListener('pointerup', saveView)
   if (flatCanvas.value) flatCanvas.value.removeEventListener('pointerup', saveView)
@@ -7661,7 +7685,7 @@ onBeforeUnmount(() => {
             <template v-if="namePick === r.k">
               <div class="srow"><label>名称</label>
                 <span class="seg nseg" role="group" :aria-label="r.zh + '档位'">
-                  <span v-for="m in r.modes" :key="m[0]" class="sg" :class="{ on: nameRowMode(r.k) === m[0] }" :title="m[0] === 'local' ? '数据源自带的本地名；没有本地名的单元回落英文' : ''" @click="setNameRowMode(r.k, m[0])">{{ m[1] }}</span>
+                  <span v-for="m in r.modes" :key="m[0]" class="sg" :class="{ on: nameRowMode(r.k) === m[0] }" :title="m[0] === 'local' ? '数据源自带的中文名；没有中文名的单元回落英文' : ''" @click="setNameRowMode(r.k, m[0])">{{ m[1] }}</span>
                 </span>
               </div>
               <div class="srow"><label>字号</label><input class="rng" type="range" :min="r.min" :max="r.max" :step="r.step" :value="nameRowSize(r.k)" @input="setNameRowSize(r.k, $event.target.value)" /><span class="u">{{ nameRowSize(r.k).toFixed(2) }}</span></div>
@@ -7678,11 +7702,11 @@ onBeforeUnmount(() => {
           <div class="srow"><label>国家</label><input class="ci" v-model="admQuery1" placeholder="搜索国家（中文 / English / ISO3）" /></div>
           <div class="mlist tall">
             <div v-for="c in admHits" :key="c.id" class="mrow rowlk" @click="admToggleCountry(c.id)">
-              <input type="checkbox" :checked="admSel1.includes(c.id)" @click.stop="admToggleCountry(c.id)" /><span class="mc">{{ c.zh }}</span><span class="cnt2">{{ c.id }}</span>
+              <input type="checkbox" :checked="admSel1.includes(c.id)" @click.stop="admToggleCountry(c.id)" /><span class="mc">{{ byLang(c.zh, c.en) }}</span><span class="cnt2">{{ c.id }}</span>
             </div>
           </div>
           <div v-if="admChips.length" class="mlist">
-            <div v-for="o in admChips" :key="o.id" class="mrow"><span class="mc">{{ o.zh }}</span><span class="del" @click="admToggleCountry(o.id)"><Icon name="x" :size="11" /></span></div>
+            <div v-for="o in admChips" :key="o.id" class="mrow"><span class="mc">{{ byLang(o.zh, o.en) }}</span><span class="del" @click="admToggleCountry(o.id)"><Icon name="x" :size="11" /></span></div>
           </div>
           <template v-if="admHasCN">
             <div class="bsub"><span>中国</span></div>
@@ -7699,12 +7723,12 @@ onBeforeUnmount(() => {
           <template v-if="isSecOpen('geo-crs', false)">
           <div class="srow"><label>大地基准</label>
             <select :value="mapCrs.datum" title="只作用于读数与输入。CGCS2000 与 WGS-84 的差在厘米量级，低于任何一处显示精度，故不做几何变换、只标口径；GCJ-02 是真实非线性偏移，仅中国境内生效。任何存储、计算与导出都不受影响" @change="setCrsDatum($event.target.value)">
-              <option v-for="d in DATUMS" :key="d.k" :value="d.k">{{ d.zh }}</option>
+              <option v-for="d in DATUMS" :key="d.k" :value="d.k">{{ byLang(d.zh, d.en) }}</option>
             </select>
           </div>
           <div class="srow"><label>坐标格式</label>
             <select :value="mapCrs.fmt" title="只作用于地图内的坐标读数与输入框；内部照存十进制度" @change="setCrsFmt($event.target.value)">
-              <option v-for="f in FORMATS" :key="f.k" :value="f.k">{{ f.zh }}</option>
+              <option v-for="f in FORMATS" :key="f.k" :value="f.k">{{ byLang(f.zh, f.en) }}</option>
             </select>
           </div>
           <div class="srow"><label>画面中心</label><NumBox class="ci cov-b" :min="-180" :max="180" :step="0.5" :model-value="crsCenter" title="2D 平面图正中那条经线的经度（东正西负）；接缝随之落到它的对面。3D 球体没有接缝，不受影响" @commit="setCrsCenter" /><span class="u">{{ crsCenterTag }}</span></div>
@@ -7744,9 +7768,9 @@ onBeforeUnmount(() => {
           </div>
           <template v-if="povCfg.id === CUSTOM_POV">
             <div class="bsub"><span>争议区归属</span></div>
-            <div v-for="g in CUSTOMIZABLE_DISPUTES" :key="g.key" class="srow sub">
-              <label :title="g.en">{{ g.zh }}</label>
-              <select :value="povCfg.overrides[g.key] || ''" :title="g.en" @change="setPovDispute(g.key, $event.target.value)">
+            <div v-for="g in CUSTOMIZABLE_DISPUTES" :key="g.key" class="srow sub dsp">
+              <label :title="(g.full || g.zh) + ' · ' + g.en">{{ g.zh }}</label>
+              <select :value="povCfg.overrides[g.key] || ''" :title="(g.full || g.zh) + ' · ' + g.en" @change="setPovDispute(g.key, $event.target.value)">
                 <option value="">跟随底图默认</option>
                 <option v-for="o in g.opts" :key="o" :value="o">{{ povOwnerZh(o) }}</option>
                 <option value="none">不显示</option>
@@ -8856,6 +8880,9 @@ onBeforeUnmount(() => {
 .srow.stack > .seg { flex: 1 1 100%; }
 .srow.stack > .seg .sg { flex: 1; text-align: center; padding-left: 4px; padding-right: 4px; }
 .srow.sub > label { width: 51px; }
+/* 争议区那一组的名字最长五个字（北塞浦路斯），51px 只装得下四个 —— 单独放宽，全称挂 title */
+.srow.sub.dsp { padding-left: 12px; }
+.srow.sub.dsp > label { width: 78px; }
 /* 固定宽度需能容纳最长标签（如「升交点赤经」5 字）且不换行，原 36px 对 3 字以上标签会折行、拖乱整排对齐 */
 .srow label { color: var(--text-muted); width: 70px; flex: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .srow select, .srow .ci { flex: 1; min-width: 0; border: 1px solid var(--border); background-color: var(--bg); padding: 3px 6px; font-size: 12px; outline: none; color: var(--text); }
