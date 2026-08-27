@@ -636,6 +636,9 @@ export function createFlatCoverage(canvas) {
       // b.hit=false ＝ 峰值方向越过地平（对星壳层视图＝没打到那层壳）：十字与峰值电平一律不画，
       // b.lon/lat 此时只是该方向的地平/相切点，仅作波束名的锚。
       const hit = b.hit !== false
+      // b.onEarth=false ＝ 波束整个越过地平，画面上这一层一条线一片色都没有 → 名字也不画
+      // （只留一个孤零零的名字浮在洋面上，是从前的残留）。对星壳层那份不给这一位 → 默认放行。
+      const named = o.showName && L.name && b.onEarth !== false
       // 十字全长(px) = 世界尺寸 × 750 × zf = boreSize × BORE_SPAN(0.024, 见 scene.js) × 750 × zf
       // → boreSize × 18 × zf。两视图恒同大；圆点那版走的是「克制版 iz」，与 3D 对不上，一并归位。
       const span = (o.boreSize != null ? o.boreSize : 0.5) * 18 * zf
@@ -646,7 +649,7 @@ export function createFlatCoverage(canvas) {
       if (crossOn) cross(b.lon, b.lat, span, '#ffffff')
       // 峰值读数与波束名自上而下码在十字【上方】（SATSOFT 排布：波束名 / 读数 / ＋）；读数只印数字不带单位
       if (peakOn) drawText(b.peak.toFixed(2), b.lon, b.lat, pf, '#cfd6df', { dy: -(lift + pf * 0.5) })
-      if (o.showName && L.name) drawText(L.name, b.lon, b.lat, nf, '#ffffff', { dy: -(lift + (peakOn ? pf * 1.15 : 0) + nf * 0.5) })
+      if (named) drawText(L.name, b.lon, b.lat, nf, '#ffffff', { dy: -(lift + (peakOn ? pf * 1.15 : 0) + nf * 0.5) })
     }
   }
 

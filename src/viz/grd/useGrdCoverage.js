@@ -846,6 +846,26 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     if (!Number.isFinite(r.lon) || !Number.isFinite(r.lat)) return null
     return { lon: r.lon, lat: r.lat, hit: r.vis >= 0 }
   }
+  // 该波束的【覆盖】（最低档以上）与地球有没有交集：逐格 (vis≥0 且 db≥L0)，命中即早退。
+  // ★ 只能扫【热区盒之内】：proj 的四个数组是全网格长度，但 projectGrid 只写盒内格点，盒外留的是
+  //   上一帧的陈旧值（首帧则是 Float32Array 的 0，而 vis=0 恰是「0°仰角线上」→ 会被误判成打到地球）。
+  // db 与 proj.vis 在同一 NX×NY 上逐格对位（field 就是按 proj 的网格算的）。按 (场, L0, 投影) 缓存，
+  // 拖拽/播放中场与投影不变则直接复用。空盒（r1<0，无覆盖）自然扫不出任何格点 → false。
+  function footOnEarth(beam, field, L0) {
+    const proj = beam.proj
+    if (!proj || !proj.vis || !field || !field.db) return false
+    const ck = beam._onE
+    if (ck && ck.field === field && ck.L0 === L0 && ck.pk === beam._projKey) return ck.v
+    const db = field.db, vis = proj.vis, NX = proj.NX, NY = proj.NY, bx = proj.box
+    const r0 = bx ? bx.r0 : 0, r1 = bx ? bx.r1 : NY - 1, c0 = bx ? bx.c0 : 0, c1 = bx ? bx.c1 : NX - 1
+    let v = false
+    for (let row = r0; row <= r1 && !v; row++) {
+      const rb = row * NX
+      for (let col = c0; col <= c1; col++) { const k = rb + col; if (vis[k] >= 0 && db[k] >= L0) { v = true; break } }
+    }
+    beam._onE = { field, L0, pk: beam._projKey, v }
+    return v
+  }
   function buildBeamLayer(c, cfg, beam, name, withLabels) {
     const field = beamField(beam, cfg)
     const lv = absLevels(field.max, cfg)
@@ -881,7 +901,14 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     // 这里只是该方向的地平点，仅作名字的锚——白点与峰值电平由渲染端按 hit 一律不画。
     // peak = 该点的峰值 dB（当前场峰值；随极化/增益/路损变）
     const pk = peakPoint(c, cfg, beam, field)
-    const bore = pk ? { lon: pk.lon, lat: pk.lat, hit: pk.hit, satLon: c.meta.satLon, satLat: c.meta.satLat || 0, satAlt: c.meta.satAlt || H, peak: field.max } : null
+    // onEarth = 这个波束在地球上到底画没画出东西 ＝【最低档以上的覆盖与地球有交集】。为假时波束名
+    // 不画：画面上这一层一条线一片色都没有，只留个孤零零的名字浮在洋面上，认不出是谁的。两种情形都归它管——
+    //   · 波束整个越过地平（峰值方向打不到地球，b.lon/lat 只是地平点）
+    //   · 峰值虽打在地球上，但整片场都低于最低档（绝对档位高于该波束峰值 / 无激励的空波束）
+    // 反之「峰值越地平、只剩一弯裙边还在地球上」的擦地波束仍出名字，锚在地平点上（原有口径不动）。
+    // 第一项是 O(1) 短路：峰值格点打到地球且峰值不低于最低档 → 必有覆盖，不必扫盒（正常波束都走这条）。
+    const L0 = asc.length ? asc[0].abs : -Infinity
+    const bore = pk ? { lon: pk.lon, lat: pk.lat, hit: pk.hit, onEarth: (pk.hit && field.max >= L0) || footOnEarth(beam, field, L0), satLon: c.meta.satLon, satLat: c.meta.satLat || 0, satAlt: c.meta.satAlt || H, peak: field.max } : null
     return { fillBands, segGroups, bore, name }
   }
   // 每个选中天线 → N 个子图层（按 Beams To Plot 选中的波束逐个出层）；所有子层共用该天线同一套设置。

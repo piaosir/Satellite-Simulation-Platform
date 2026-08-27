@@ -600,7 +600,7 @@ onMounted(async () => {
           <!-- 表格口径与链路表统一：两层表头分区（groups）+ 不冻结任何数据列（freeze-keys=false，
                全列随横滚；原先「地球站」列粘性固定，横滚时与其它列错位、和链路表也不一样） -->
           <StationGrid
-            :stations="cases" :fields="fields" :groups="GRID_GROUPS" :freeze-keys="false"
+            grid-id="rain.cases" :stations="cases" :fields="fields" :groups="GRID_GROUPS" :freeze-keys="false"
             :cities="cities" :city-search="citySearch" :auto-geo="autoGeo"
             :readonly-keys="readonlyKeys" :extra-values="extraValues" :cell-class="cellClassFn" label="算例"
             @row-focus="onRowFocus"

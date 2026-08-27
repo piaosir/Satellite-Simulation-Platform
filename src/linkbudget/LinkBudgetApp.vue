@@ -1704,7 +1704,7 @@ onMounted(async () => {
               </span>
             </template>
             <div class="lbx-grid">
-              <StationGrid :stations="linkRows" :fields="gridFields" :groups="GRID_GROUPS" :extra-values="gridVals" :cell-class="cellClassFn"
+              <StationGrid grid-id="lb.links" :stations="linkRows" :fields="gridFields" :groups="GRID_GROUPS" :extra-values="gridVals" :cell-class="cellClassFn"
                 :cell-sub="cellSubFn" :cell-tag="cellTagFn" :cell-fill="cellFillFn" :freeze-keys="false"
                 :cities="cities" :city-search="citySearch" label="链路" :auto-geo="autoGeoRow"
                 :select-options="{ basebandId: basebandSelectOptions, stationId: esSelectOptions, rxStationId: esSelectOptions }"

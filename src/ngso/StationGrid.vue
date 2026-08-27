@@ -49,8 +49,11 @@ const props = defineProps({
   // 单元格「占比填充条」钩子 (field, row) => 0..1 或 null：在格底画按值比例的数据条（链路表功率/带宽占用列）；
   // 返回 null / 非正数即不画，>1 封顶铺满（超限着色由 cellClass 的 st-bad 接手）。
   cellFill: { type: Function, default: null },
-  // 冻结「关键列」（首列起到城市列/frozen前缀的粘性左固定列）。默认 true 保持旧行为；链路表传 false 取消冻结、全列随横滚
+  // 出厂冻结「关键列」（首列起到城市列/frozen前缀的粘性左固定列）——只是缺省值，用户可在表内自行改冻结到哪一列
   freezeKeys: { type: Boolean, default: true },
+  // 冻结列的记忆键（各表一个，如 'lb.links'）：非空才把用户改过的冻结位置记进 localStorage。
+  // 留空＝不记忆（行为与旧版一致）。
+  gridId: { type: String, default: '' },
 })
 // rowFocus (行下标, 行_id)：聚焦行变化（链路表联动详细预算）
 // editLib (资源库子栏key, 条目id)：库引用列的「编辑参数」钮 → App 导航到资源库该条目
@@ -68,12 +71,19 @@ const fillLv = (f, s) => { const v = props.cellFill ? props.cellFill(f, s) : 0; 
 const headerGroups = computed(() => {
   if (!props.groups || !props.groups.length) return null
   const byKey = Object.fromEntries(props.groups.map((g) => [g.key, g.label]))
+  const nfz = frozenVisCount.value
   const out = []
-  for (const { f } of visFields.value) {
-    const label = byKey[f.group] || ''
+  visFields.value.forEach(({ f }, vi) => {
+    const g = f.group || ''
     const last = out[out.length - 1]
-    if (last && last.g === (f.group || '')) last.span++
-    else out.push({ g: f.group || '', label, span: 1 })
+    // 冻结边界处强制断开：跨边界的组头没法「一半粘住一半随滚」，得拆成两个 th。组名留在左半（冻结那半）——
+    // 组标签本就左对齐、拆点在它右边，未横滚时与拆之前逐像素一样；横滚起来组名就跟着冻结列一起钉住。
+    // 右半留空是 Excel 里合并单元格跨过冻结线的同款做法。
+    if (last && last.g === g && vi !== nfz) { last.span++; return }
+    out.push({ g, label: byKey[g] || '', span: 1, vi, fz: vi < nfz, dup: !!(last && last.g === g) })
+  })
+  for (let i = 0; i < out.length; i++) {
+    out[i].gend = i < out.length - 1 && out[i + 1].g !== out[i].g      // 分区线只画在真正的组末列（拆出来的接缝不算）
   }
   return out
 })
@@ -101,50 +111,212 @@ const geoGroups = computed(() => {
 // 某键所属的站址组（名称/经度/纬度任一命中）
 const geoOfKey = (key) => geoGroups.value.find((g) => g.name === key || g.lon === key || g.lat === key) || null
 const nCol = computed(() => props.fields.length)
-// 冻结列：优先取字段显式 frozen 标记的「前缀连续段」长度（列与城市字段位置解耦，可任意调列序仍固定冻结几列，
-// 再生式站表在用）；无 frozen 标记时回退旧启发式——从第一列起冻结到「名称/城市」字段（含）为止。
+// 出厂冻结数（原始列下标口径）：优先取字段显式 frozen 标记的「前缀连续段」长度（列与城市字段位置解耦，
+// 可任意调列序仍固定冻结几列，再生式站表在用）；无 frozen 标记时回退旧启发式——从第一列起冻结到
+// 「名称/城市」字段（含）为止。freezeKeys=false（链路表）：出厂不冻结任何数据列（序号列 sg-sel 仍单独
+// 粘性固定，属行手柄不算数据列）。
 const cityFieldIdx = computed(() => props.fields.findIndex((f) => f.city))
 const frozenPrefix = computed(() => { let n = 0; for (const f of props.fields) { if (f.frozen) n++; else break } return n })
-// freezeKeys=false（链路表）：不冻结任何数据列，全列随横滚（序号列 sg-sel 仍单独粘性固定，属行手柄不算数据列）
-const frozenCount = computed(() => (!props.freezeKeys ? 0 : (frozenPrefix.value > 0 ? frozenPrefix.value : (cityFieldIdx.value >= 0 ? cityFieldIdx.value + 1 : 1))))
-const KEY_COL_W = 90   // 冻结列统一窄宽度（原 120/108，缩窄）
-const isKeyCol = (c) => c < frozenCount.value
-function keyColStyle(c) { return { left: (40 + c * KEY_COL_W) + 'px' } }
+const defFrozen = computed(() => (!props.freezeKeys ? 0 : (frozenPrefix.value > 0 ? frozenPrefix.value : (cityFieldIdx.value >= 0 ? cityFieldIdx.value + 1 : 1))))
+// 出厂关键列恒按 90px 窄宽度排版（.sg-kw），与「当前冻不冻结」解耦——临时取消冻结不该让这几列忽然变宽。
+const isNarrowKey = (c) => c < defFrozen.value
 // 只读列(EIRP/G·T)作为「可选不可编辑」的最后一列：可框选/复制，但不可编辑/粘贴/填充。
 const roCol = computed(() => (props.roLabel ? props.fields.length : -1))   // 只读列列号，无则 -1
-const nColSel = computed(() => props.fields.length + (props.roLabel ? 1 : 0))  // 可选区总列数（含只读列）
 const isRO = (c) => c === roCol.value
 
 // —— 隐藏/显示列（仅折叠显示，不动数据与字段集；序号列、名称列 c=0、只读列不可隐藏）——
 const hiddenCols = ref([])                       // 已隐藏的字段列下标（原始 fields 下标）
 const isHidden = (c) => hiddenCols.value.includes(c)
-const visFields = computed(() => props.fields.map((f, c) => ({ f, c })).filter(({ c }) => !isHidden(c)))
+// 显示序：钉住的整体提到最左（内部仍按字段原序），其余照旧。vi＝显示位，冻结偏移与选区都按它取。
+const visFields = computed(() => {
+  const on = [], off = []
+  props.fields.forEach((f, c) => { if (!isHidden(c)) (pinnedSet.value.has(f.key) ? on : off).push({ f, c }) })
+  return on.concat(off).map((o, vi) => ({ f: o.f, c: o.c, vi }))
+})
 const visColCount = computed(() => visFields.value.length + 1 + (props.roLabel ? 1 : 0))   // 含序号列与只读列
-// 可选区中「可见」的列下标（有序）：可见字段列 +（如有）只读列。用于键盘左右移动时跳过隐藏列。
+// 可选区中「可见」的列下标，**按显示序**：可见字段列（冻结的在前）+（如有）只读末列。
+// 全表的选区/复制/粘贴/填充/左右导航一律以它的次序为准——否则钉住的列被提到最左之后，
+// 框出来的一片和复制出来的一片就对不上了。
 const visSelCols = computed(() => {
-  const out = []
-  for (let c = 0; c < props.fields.length; c++) if (!isHidden(c)) out.push(c)
+  const out = visFields.value.map((v) => v.c)
   if (props.roLabel) out.push(props.fields.length)
   return out
 })
+const dpMap = computed(() => { const m = new Map(); visSelCols.value.forEach((c, i) => m.set(c, i)); return m })
+const dp = (c) => { const i = dpMap.value.get(c); return i === undefined ? -1 : i }   // 原始列下标 → 显示位（隐藏列 -1）
+
+// ============ 冻结列：纯呈现层，不动数据、不动任何取值 ============
+// 不是 Excel 的「冻结窗格」（那个只能冻最左边连续一段），是 Airtable / AG Grid 那套**固定列**：
+// 任选一组列钉住，钉住的整体提到最左并按字段原序排，原位置不再有它——链路表要的「发信站位置 +
+// 收信站位置一起钉住、中间的经纬度方位俯仰随滚」，只有这个模型表达得出来。
+// 存的是一组**字段 key**（不是列数）：隐藏了中间某列、或父组件调了列序之后，仍钉在同一批列上。
+// null＝用户没设过（走出厂值），[]＝用户显式取消了全部冻结。
+const host = ref(null)             // 组件根：冻结线覆盖条的定位基准（不在滚动容器里，故不随横滚跑）
+const fzStore = props.gridId ? 'sg/freeze/' + props.gridId : ''
+const pinned = ref((() => {
+  if (!fzStore) return null
+  try {
+    const raw = localStorage.getItem(fzStore)
+    if (raw == null) return null
+    if (raw === '') return []
+    if (raw[0] === '[') { const a = JSON.parse(raw); return Array.isArray(a) ? a.filter((k) => typeof k === 'string') : null }
+    const oc = props.fields.findIndex((f) => f.key === raw)          // 旧存法：单个 key ＝「冻结到这一列（含左侧）」
+    return oc < 0 ? null : props.fields.slice(0, oc + 1).map((f) => f.key)
+  } catch (e) { return null }
+})())
+watch(pinned, (v) => {
+  if (!fzStore) return
+  try { v == null ? localStorage.removeItem(fzStore) : localStorage.setItem(fzStore, JSON.stringify(v)) } catch (e) { /* 配额满等忽略 */ }
+})
+// 出厂冻结集：出厂关键列那一段（freezeKeys=false 时为空）
+const pinnedKeys = computed(() => (pinned.value == null ? props.fields.slice(0, defFrozen.value).map((f) => f.key) : pinned.value))
+const pinnedSet = computed(() => new Set(pinnedKeys.value))
+const isPinned = (c) => { const f = props.fields[c]; return !!f && pinnedSet.value.has(f.key) }
+// 冻结列数（**可见列**口径）＝显示序最前那一段。至少留一列随滚：全冻结等于没冻结，还会把滚动区压没。
+const frozenVisCount = computed(() => Math.min(visFields.value.filter((v) => pinnedSet.value.has(v.f.key)).length, Math.max(0, visFields.value.length - 1)))
+// 冻结列的原始列下标集合。isKeyCol 沿用旧名与旧语义（「这一列粘住、不随横滚」），
+// 表内其它逻辑（ensureVisible / 样式）照旧问它即可。
+const frozenSet = computed(() => new Set(visFields.value.slice(0, frozenVisCount.value).map((v) => v.c)))
+const isKeyCol = (c) => frozenSet.value.has(c)
+// 写入冻结集：恒按字段原序存（先钉后钉不影响冻结区内的排列），并保证至少留一列随滚
+function setPinned(keys) {
+  const want = new Set(keys)
+  const visKeys = props.fields.filter((f, c) => !isHidden(c)).map((f) => f.key)
+  if (visKeys.length && visKeys.every((k) => want.has(k))) want.delete(visKeys[visKeys.length - 1])
+  pinned.value = props.fields.filter((f) => want.has(f.key)).map((f) => f.key)
+}
+// 拖冻结条：把**显示序**最前 n 列钉住（滚动区第一列就在线的右边，拖到哪儿钉到哪儿）
+function setFreeze(n) { setPinned(visFields.value.slice(0, Math.max(0, Math.min(n, visFields.value.length - 1))).map((v) => v.f.key)) }
+function unfreeze() { setPinned([]) }
+// 「冻结此列」作用集＝选区跨过的列（只读末列不参与）；整选区都已冻结时按钮翻成「取消冻结此列」
+const pinTargets = computed(() => selCols.value.filter((c) => c < props.fields.length))
+const pinAllOn = computed(() => pinTargets.value.length > 0 && pinTargets.value.every(isPinned))
+const canPin = computed(() => pinTargets.value.length > 0 && (pinAllOn.value || pinTargets.value.some((c) => !isPinned(c))))
+function togglePin() {
+  const keys = pinTargets.value.map((c) => props.fields[c].key)
+  if (!keys.length) return
+  const next = new Set(pinnedKeys.value)
+  if (pinAllOn.value) for (const k of keys) next.delete(k)
+  else for (const k of keys) next.add(k)
+  setPinned(next)
+}
+
+// —— 冻结列的左偏移：实测列宽逐列累加 ——
+// 列宽随内容 / 字号 / 中英文变，写死必错位。量出来后以 CSS 变量挂在 <table> 上：宽度一变只改这一个
+// 元素的 style，不惊动成千上万个格子（每个格的 left 是常量串 var(--sgfN)，不因宽度变化重渲染）。
+const fzOff = ref([34])            // [序号列宽, +第1冻结列宽, …]，长度＝冻结列数+1
+const fzW = computed(() => fzOff.value[Math.min(frozenVisCount.value, fzOff.value.length - 1)] || 0)
+const fzVars = computed(() => {
+  const o = {}
+  fzOff.value.forEach((v, i) => { o['--sgf' + i] = v.toFixed(2) + 'px' })
+  o['--sg-fzw'] = fzW.value.toFixed(2) + 'px'
+  return o
+})
+const fzStyle = (vi) => ({ left: 'var(--sgf' + vi + ')' })
+// 冻结线覆盖条的几何（相对 .sg，故与横滚无关——冻结区右缘在屏幕上本就是个定值）：
+// 高度取 clientHeight，天然让开底部横向滚动条。
+const fzBar = reactive({ x: 0, top: 0, h: 0 })
+const fzScrolled = ref(false)      // 横滚起来才投影，表明线下面压着内容（Excel 同款）
+function onScroll() { const el = root.value; if (el) fzScrolled.value = el.scrollLeft > 0 }
+const fzHeadCells = () => {
+  const el = root.value
+  return el ? { idx: el.querySelector('thead tr.sg-hrow th.sg-sel'), ths: el.querySelectorAll('thead tr.sg-hrow th.sg-hcol') } : null
+}
+function measureFrozen() {
+  const el = root.value; if (!el) return
+  const { idx, ths } = fzHeadCells()
+  let x = idx ? idx.getBoundingClientRect().width : 34     // rect 而非 offsetWidth：整数取整会攒出 1px 缝
+  const offs = [x]
+  const n = Math.min(frozenVisCount.value, ths.length)
+  for (let i = 0; i < n; i++) { x += ths[i].getBoundingClientRect().width; offs.push(x) }
+  const cur = fzOff.value
+  if (cur.length !== offs.length || offs.some((v, i) => Math.abs(v - cur[i]) > 0.05)) fzOff.value = offs
+  fzBar.x = el.offsetLeft + el.clientLeft + x
+  fzBar.top = el.offsetTop + el.clientTop
+  fzBar.h = el.clientHeight
+}
+// 只盯序号列与各冻结列自己的尺寸：它们一变宽（内容/字号/语言）就重量，代价与表体规模无关
+let fzRO = null
+function reobserveFrozen() {
+  const el = root.value
+  if (!fzRO || !el) return
+  fzRO.disconnect()
+  fzRO.observe(el)                                     // 容器本身：接住窗口缩放（覆盖条高度/拖动上限）
+  const { idx, ths } = fzHeadCells()
+  if (idx) fzRO.observe(idx)
+  for (let i = 0; i < Math.min(frozenVisCount.value, ths.length); i++) fzRO.observe(ths[i])
+}
+watch([frozenVisCount, visFields], () => nextTick(() => { reobserveFrozen(); measureFrozen() }))
+watch(() => props.stations.length, () => nextTick(measureFrozen))
+onMounted(() => {
+  fzRO = new ResizeObserver(() => measureFrozen())
+  nextTick(() => { reobserveFrozen(); measureFrozen(); onScroll() })
+})
+onBeforeUnmount(() => { if (fzRO) { fzRO.disconnect(); fzRO = null } endFzDrag() })
+
+// —— 拖动冻结线改冻结位置（Excel 拖冻结条）——
+// 按下即把横滚归零：冻结区本就钉着不动，归零后「待冻的那几列」全在眼前，往左往右都落得到实处；
+// 不归零的话，已滚出视野的列在屏幕上没有落点，往右拖会一格也走不动。
+const fzDrag = reactive({ on: false, x: 0, n: 0 })
+let fzCands = []
+function fzHost(clientX) { const h = host.value; return h ? clientX - h.getBoundingClientRect().left : clientX }
+function fzBuildCands() {
+  const el = root.value; if (!el) return []
+  const { idx, ths } = fzHeadCells()
+  const x0 = el.offsetLeft + el.clientLeft
+  let x = idx ? idx.getBoundingClientRect().width : 34
+  const out = [{ n: 0, x: x0 + x }]
+  const lim = el.clientWidth * 0.7                       // 冻结区不许吃掉七成视野，否则滚动区无处可看
+  for (let i = 0; i < ths.length - 1; i++) {
+    x += ths[i].getBoundingClientRect().width
+    if (x > lim) break
+    out.push({ n: i + 1, x: x0 + x })
+  }
+  return out
+}
+function onFzDown(e) {
+  if (e.button !== 0) return
+  e.preventDefault()
+  const el = root.value; if (!el) return
+  el.scrollLeft = 0
+  fzCands = fzBuildCands()
+  fzDrag.on = true; fzDrag.n = frozenVisCount.value; fzDrag.x = fzBar.x
+  window.addEventListener('mousemove', onFzMove)
+  window.addEventListener('mouseup', onFzUp)
+  window.addEventListener('keydown', onFzKey, true)
+}
+function onFzMove(e) {
+  if (!fzDrag.on || !fzCands.length) return
+  const px = fzHost(e.clientX)
+  let best = fzCands[0]
+  for (const c of fzCands) if (Math.abs(c.x - px) < Math.abs(best.x - px)) best = c
+  fzDrag.n = best.n; fzDrag.x = best.x
+}
+function onFzUp() { const n = fzDrag.n; endFzDrag(); setFreeze(n) }
+function onFzKey(e) { if (e.key === 'Escape') { e.stopPropagation(); endFzDrag() } }   // Esc 取消，保持原冻结位
+function endFzDrag() {
+  fzDrag.on = false
+  window.removeEventListener('mousemove', onFzMove)
+  window.removeEventListener('mouseup', onFzUp)
+  window.removeEventListener('keydown', onFzKey, true)
+}
+
 const firstVisSelCol = () => (visSelCols.value.length ? visSelCols.value[0] : 0)
 const lastVisSelCol = () => { const v = visSelCols.value; return v.length ? v[v.length - 1] : 0 }
 // 从列 c 朝 dir(±1) 取下一可见可选列；c 自身隐藏时取该方向最近可见列
 function visColAfter(c, dir) {
   const vis = visSelCols.value
   if (!vis.length) return c
-  const i = vis.indexOf(c)
+  const i = dp(c)
   if (i >= 0) return vis[Math.max(0, Math.min(vis.length - 1, i + dir))]
-  if (dir >= 0) { for (const v of vis) if (v > c) return v; return vis[vis.length - 1] }
-  for (let k = vis.length - 1; k >= 0; k--) if (vis[k] < c) return vis[k]
-  return vis[0]
+  return dir >= 0 ? vis[0] : vis[vis.length - 1]      // c 已隐藏：贴到该方向的端点
 }
 // Tab/Shift+Tab：走到本行末列换到下一行首列（反向亦然），与 Excel 一致——旧版夹在末列原地不动，
 // 一行填到头就得手动回首列。到表尾/表首无处可换时保持原地。
 function tabMove(back) {
   const vis = visSelCols.value
   if (!vis.length) return
-  const i = vis.indexOf(range.fc)
+  const i = dp(range.fc)
   if (!back && i === vis.length - 1) { if (range.fr < props.stations.length - 1) setFocus(range.fr + 1, vis[0], false); return }
   if (back && i === 0) { if (range.fr > 0) setFocus(range.fr - 1, vis[vis.length - 1], false); return }
   setFocus(range.fr, visColAfter(range.fc, back ? -1 : 1), false)
@@ -307,15 +479,20 @@ const editing = ref(null) // { r, c }
 let dragging = false
 const r0 = computed(() => Math.min(range.ar, range.fr))
 const r1 = computed(() => Math.max(range.ar, range.fr))
-const c0 = computed(() => Math.min(range.ac, range.fc))
-const c1 = computed(() => Math.max(range.ac, range.fc))
-const inSel = (r, c) => r >= r0.value && r <= r1.value && c >= c0.value && c <= c1.value
+// 列边界一律走显示位（dp）：range.ac/fc 仍存**原始列下标**（钉/取消钉之后焦点跟着那一列走），
+// 但「谁在选区里」「按什么次序遍历」都由显示序说了算。
+const dp0 = computed(() => { const a = dp(range.ac), b = dp(range.fc); return Math.min(a < 0 ? 0 : a, b < 0 ? 0 : b) })
+const dp1 = computed(() => Math.max(dp(range.ac), dp(range.fc)))
+const selCols = computed(() => visSelCols.value.slice(dp0.value, dp1.value + 1))   // 选区跨过的列，按显示序
+const c0 = computed(() => (selCols.value.length ? selCols.value[0] : 0))           // 选区最左/最右列（显示序）
+const c1 = computed(() => (selCols.value.length ? selCols.value[selCols.value.length - 1] : 0))
+const inSel = (r, c) => { const i = dp(c); return r >= r0.value && r <= r1.value && i >= dp0.value && i <= dp1.value }
 const isFocus = (r, c) => r === range.fr && c === range.fc
 const isEditing = (r, c) => editing.value && editing.value.r === r && editing.value.c === c
 
 function setFocus(r, c, extend) {
   r = Math.max(0, Math.min(props.stations.length - 1, r))
-  c = Math.max(0, Math.min(nColSel.value - 1, c))
+  if (dp(c) < 0) c = firstVisSelCol()          // 落到隐藏列/越界列上就贴回可见区（显示序下不能再按数值夹）
   const rowChanged = range.fr !== r
   range.fr = r; range.fc = c
   if (!extend) { range.ar = r; range.ac = c }
@@ -341,11 +518,11 @@ function focusGrid() {
 // 用 clientWidth/clientHeight 而非 rect 宽高，滚动条占位也自然扣除。鼠标框选/拖填充期间不介入（光标本就在格上）。
 function stickyPads() {
   const el = root.value
-  const idx = el.querySelector('thead th.sg-sel')
+  const idx = el.querySelector('thead tr.sg-hrow th.sg-sel')
   const head = el.querySelector('thead')
   const ro = props.roLabel ? el.querySelector('thead th.sg-ro') : null
   return {
-    left: frozenCount.value > 0 ? 40 + frozenCount.value * KEY_COL_W : (idx ? idx.offsetWidth : 34),   // 与 keyColStyle() 同一口径
+    left: fzW.value || (idx ? idx.offsetWidth : 34),   // 实测的序号列+冻结列总宽，与 <table> 上的 --sg-fzw 同一口径
     top: head ? head.offsetHeight : 0,
     right: ro ? ro.offsetWidth : 0
   }
@@ -460,7 +637,10 @@ function onRowEnter(i) { if (rowDragging) { selectRowRange(rowAnchor, i); syncRa
 
 // —— 列头：点击/拖拽选整列（与 Excel 一致；序号列与只读列不参与）——
 function selectCols(a, b) {
-  const lo = Math.min(a, b), hi = Math.max(a, b), last = Math.max(0, props.stations.length - 1)
+  const vis = visSelCols.value
+  const ia = dp(a) < 0 ? 0 : dp(a), ib = dp(b) < 0 ? 0 : dp(b)
+  const lo = vis[Math.min(ia, ib)], hi = vis[Math.max(ia, ib)], last = Math.max(0, props.stations.length - 1)
+  if (lo === undefined || hi === undefined) return
   sel.value = {}
   range.ar = last; range.ac = lo; range.fr = 0; range.fc = hi   // 铺满整列：锚点底行、焦点顶行
 }
@@ -474,23 +654,30 @@ function onHeaderDown(c, e) {
   focusGrid()
 }
 function onHeaderEnter(c) { if (colDragging) selectCols(colAnchor, c) }
+// 列头右键：进「整列模式」——右键列不在选区内就只选该列；菜单只留列相关项（冻结/隐藏/清列）
+function onHeaderContext(c, e) {
+  e.preventDefault(); editing.value = null; sel.value = {}
+  if (!(dp(c) >= dp0.value && dp(c) <= dp1.value)) { colAnchor = c; selectCols(c, c) }
+  focusGrid(); openMenu(e, 'col')
+}
 // 列头高亮：当前选区铺满全部行且覆盖该列时（点列头/Ctrl+A/Ctrl+Space 都会命中）
-const colHeadSel = (c) => props.stations.length > 0 && r0.value === 0 && r1.value === props.stations.length - 1 && c >= c0.value && c <= c1.value
+const colHeadSel = (c) => props.stations.length > 0 && r0.value === 0 && r1.value === props.stations.length - 1 && dp(c) >= dp0.value && dp(c) <= dp1.value
 
 // —— Excel 填充柄（选区右下角黑色方块）：拖动/双击向下填充【整个选区的列】，按选中行循环复制，与 Excel 一致 ——
-const fill = reactive({ active: false, r0: 0, r1: 0, c0: 0, c1: 0, toR: 0 })
-const inFill = (r, c) => fill.active && c >= fill.c0 && c <= fill.c1 && r > fill.r1 && r <= fill.toR
+const fill = reactive({ active: false, r0: 0, r1: 0, d0: 0, d1: 0, toR: 0 })   // d0/d1＝列的**显示位**区间
+const inFill = (r, c) => { if (!fill.active) return false; const i = dp(c); return i >= fill.d0 && i <= fill.d1 && r > fill.r1 && r <= fill.toR }
 const isFillAnchor = (r, c) => r === r1.value && c === c1.value   // 选区右下角 = 填充柄所在格
 function onFillDown(e) {
   e.stopPropagation(); e.preventDefault()
   editing.value = null
-  fill.active = true; fill.r0 = r0.value; fill.r1 = r1.value; fill.c0 = c0.value; fill.c1 = c1.value; fill.toR = r1.value
+  fill.active = true; fill.r0 = r0.value; fill.r1 = r1.value; fill.d0 = dp0.value; fill.d1 = dp1.value; fill.toR = r1.value
   focusGrid()
 }
-// 把选区(r0..r1 × c0..c1)按行循环向下填到 toR（只读列跳过）；并把选区扩展到填充范围
-function fillDownTo(r0_, r1_, c0_, c1_, toR) {
+// 把选区(r0..r1 × cols)按行循环向下填到 toR（只读列跳过）；并把选区扩展到填充范围。
+// cols 是**按显示序**的列下标数组（钉住的列被提到最左，遍历次序必须与屏幕一致）。
+function fillDownTo(r0_, r1_, cols, toR) {
   const lo = r1_ + 1, hi = toR
-  if (hi < lo) return
+  if (hi < lo || !cols.length) return
   pushUndo()
   const srcN = r1_ - r0_ + 1
   for (let r = lo; r <= hi; r++) {
@@ -499,7 +686,7 @@ function fillDownTo(r0_, r1_, c0_, c1_, toR) {
     const filledAuto = new Set()       // 填充已显式带入的降雨/海拔列：重算时跳过，不覆盖填充值
     const nameKinds = new Set()        // 填充写了哪些站址组的「地球站位置」→ 按名字反查城市库带出经纬度
     const keepCoord = new Set()        // 本轮显式填入的经/纬度键：名字反查不得覆盖
-    for (let c = c0_; c <= c1_; c++) {
+    for (const c of cols) {
       if (isRO(c) || isReadonlyCol(c)) continue
       const f = props.fields[c]; const v = srcRow[f.key]
       const g = geoOfKey(f.key)
@@ -512,14 +699,14 @@ function fillDownTo(r0_, r1_, c0_, c1_, toR) {
     applyCityForNames(row, nameKinds, keepCoord, coordKinds)
     if (props.autoGeo) for (const kind of coordKinds) props.autoGeo(row, filledAuto, kind)
   }
-  range.ar = r0_; range.ac = c0_; range.fr = hi; range.fc = c1_
+  range.ar = r0_; range.ac = cols[0]; range.fr = hi; range.fc = cols[cols.length - 1]
 }
-function applyFill() { fillDownTo(fill.r0, fill.r1, fill.c0, fill.c1, fill.toR) }
+function applyFill() { fillDownTo(fill.r0, fill.r1, visSelCols.value.slice(fill.d0, fill.d1 + 1), fill.toR) }
 // 双击填充柄 → 从选区底部向下填到最后一行（整个选区的列）
 function onFillDbl(e) {
   e.stopPropagation()
   if (r1.value >= props.stations.length - 1) return
-  fillDownTo(r0.value, r1.value, c0.value, c1.value, props.stations.length - 1)
+  fillDownTo(r0.value, r1.value, selCols.value, props.stations.length - 1)
 }
 
 let _editOrig = null   // 进入编辑时的原值：用于判断名称是否真的改动（避免无改动失焦时误覆盖经纬度）
@@ -738,13 +925,13 @@ function onDropdownKey(e) {
 
 function clearSel() {
   pushUndo()
-  for (let r = r0.value; r <= r1.value; r++) for (let c = c0.value; c <= c1.value; c++) if (!isRO(c) && !isReadonlyCol(c)) props.stations[r][props.fields[c].key] = ''
+  for (let r = r0.value; r <= r1.value; r++) for (const c of selCols.value) if (!isRO(c) && !isReadonlyCol(c)) props.stations[r][props.fields[c].key] = ''
 }
 function copyRange() {
   const lines = []
   for (let r = r0.value; r <= r1.value; r++) {
     const row = []
-    for (let c = c0.value; c <= c1.value; c++) row.push(cellText(props.stations[r], c) ?? '')   // 含只读列（取其计算值）
+    for (const c of selCols.value) row.push(cellText(props.stations[r], c) ?? '')   // 按显示序，含只读列（取其计算值）
     lines.push(row.join('\t'))
   }
   try { navigator.clipboard.writeText(lines.join('\n')) } catch (e) { /* ignore */ }
@@ -757,9 +944,9 @@ async function pasteRange() {
   const grid = rows.map((r) => r.split('\t'))
   if (!grid.length) return
   const gR = grid.length, gC = grid[0].length
-  const sr = r0.value, sc = c0.value
+  const sr = r0.value, sd = dp0.value            // 起点：行下标 + 列的**显示位**
   // Excel 平铺：目标选区比剪贴板大、且行列都是整数倍时，把源块循环铺满整个选区（如复制 1 格铺满一片）
-  const selR = r1.value - r0.value + 1, selC = c1.value - c0.value + 1
+  const selR = r1.value - r0.value + 1, selC = dp1.value - dp0.value + 1
   const tile = (selR > gR || selC > gC) && selR % gR === 0 && selC % gC === 0
   const outR = tile ? selR : gR, outC = tile ? selC : gC
   pushUndo()
@@ -772,10 +959,10 @@ async function pasteRange() {
     const nameKinds = new Set()        // 粘贴写了哪些站址组的「地球站位置」→ 按名字反查城市库带出经纬度
     const keepCoord = new Set()        // 本轮显式粘贴的经/纬度键：名字反查不得覆盖（整行复制时粘贴值优先）
     for (let j = 0; j < outC; j++) {
-      const c = sc + j
+      const c = visSelCols.value[sd + j]                 // 按显示序往右铺，与屏幕上看到的一致
       const src = grid[i % gR][j % gC]
-      if (src === undefined) continue
-      if (c < nColSel.value && !isRO(c) && !isReadonlyCol(c)) {
+      if (src === undefined || c === undefined) continue
+      if (!isRO(c) && !isReadonlyCol(c)) {
         const f = props.fields[c]
         const v = isLatLonKey(f.key) ? clampLatLon(src) : normalizeFieldValue(f, src)
         const g = geoOfKey(f.key)
@@ -789,13 +976,13 @@ async function pasteRange() {
     applyCityForNames(row, nameKinds, keepCoord, coordKinds)
     if (props.autoGeo) for (const kind of coordKinds) props.autoGeo(row, pastedAuto, kind)
   }
-  range.ar = sr; range.ac = sc
+  range.ar = sr; range.ac = visSelCols.value[sd]
   range.fr = Math.min(props.stations.length - 1, sr + outR - 1)
-  range.fc = Math.min(nColSel.value - 1, sc + outC - 1)
+  range.fc = visSelCols.value[Math.min(visSelCols.value.length - 1, sd + outC - 1)]
 }
 
 // —— 整行复制/剪切：当「序号列选中了整行」时，Ctrl+C/X 跨全部列作用于这些整行 ——
-function fullRowTSV(i) { const row = []; for (let c = 0; c < nColSel.value; c++) row.push(cellText(props.stations[i], c) ?? ''); return row.join('\t') }
+function fullRowTSV(i) { return visSelCols.value.map((c) => cellText(props.stations[i], c) ?? '').join('\t') }   // 按显示序，与整行粘贴同一次序
 function copyRows(idx) { try { navigator.clipboard.writeText(idx.map(fullRowTSV).join('\n')) } catch (e) { /* ignore */ } }
 function cutRows(idx) {
   copyRows(idx)                                   // 整行剪切＝移动语义：复制后删除这些行（可 Ctrl+V 到别处；可撤销）
@@ -1004,10 +1191,11 @@ function doBatch() {
 const batchField = computed(() => props.fields.find((f) => f.key === batch.key) || props.fields[0])
 
 // ============ 右键菜单（Excel 式）：复制/剪切/粘贴/清除内容 · 插入/删除行 · 隐藏列/清除整列 ============
-const menu = reactive({ open: false, x: 0, y: 0 })
-function openMenu(e) {
+const menu = reactive({ open: false, x: 0, y: 0, mode: 'cell' })   // mode: cell | row | col（列头右键不出行操作）
+function openMenu(e, mode) {
   menu.x = Math.min(e.clientX, window.innerWidth - 200)     // 防贴右/下边溢出
-  menu.y = Math.min(e.clientY, window.innerHeight - 320)
+  menu.y = Math.min(e.clientY, window.innerHeight - (mode === 'col' ? 200 : 380))
+  menu.mode = mode || 'cell'
   menu.open = true
 }
 function menuDo(fn) { menu.open = false; fn() }
@@ -1017,7 +1205,7 @@ function selectFullRows(lo, hi) { range.ar = lo; range.fr = hi; range.ac = first
 function onCellContext(r, c, e) {
   e.preventDefault(); editing.value = null; sel.value = {}
   if (!inSel(r, c)) setFocus(r, c, false)
-  focusGrid(); openMenu(e)
+  focusGrid(); openMenu(e, 'cell')
 }
 // 序号列右键：进入「整行模式」——右键行在已选外则只选该行；并让单元格选区覆盖选中行整行
 function onIdxContext(i, e) {
@@ -1025,7 +1213,7 @@ function onIdxContext(i, e) {
   if (!sel.value[props.stations[i]._id]) sel.value = { [props.stations[i]._id]: true }
   const idx = selectedRowIdx()
   if (idx.length) selectFullRows(Math.min(...idx), Math.max(...idx))
-  focusGrid(); openMenu(e)
+  focusGrid(); openMenu(e, 'row')
 }
 
 // 复制/剪切/粘贴/清除内容复用电子表格选区逻辑（copyRange/pasteRange/clearSel 已有）
@@ -1079,15 +1267,16 @@ function moveUp() { moveRows(-1) }
 function moveDown() { moveRows(1) }
 
 // —— 列：隐藏/显示、清除整列内容。列集 = 单元格选区跨过的列 ——
-function targetColIdx() { const out = []; for (let c = c0.value; c <= c1.value; c++) out.push(c); return out }
-const canHideSel = computed(() => targetColIdx().some((c) => c < props.fields.length && !isKeyCol(c) && !isHidden(c)))
+function targetColIdx() { return selCols.value.slice() }   // 选区跨过的列，按显示序
+const canHideSel = computed(() => targetColIdx().some((c) => c < props.fields.length && !isNarrowKey(c) && !isHidden(c)))
 function hideCols() {
-  const add = targetColIdx().filter((c) => c < props.fields.length && !isKeyCol(c) && !isHidden(c))   // 序号列、冻结列、只读列不可隐藏
+  const add = targetColIdx().filter((c) => c < props.fields.length && !isNarrowKey(c) && !isHidden(c))   // 序号列、出厂关键列、只读列不可隐藏
   if (!add.length) return
+  const pa = dp(range.ac), pf = dp(range.fc)                    // 先记住隐藏前的显示位
   hiddenCols.value = [...hiddenCols.value, ...add]
-  const vis = visSelCols.value                                  // 焦点/锚点落在刚隐藏的列上 → 贴回最近可见列
-  const snap = (c) => (vis.includes(c) ? c : visColAfter(c, -1))
-  range.ac = snap(range.ac); range.fc = snap(range.fc)
+  const vis = visSelCols.value                                  // 焦点/锚点落在刚隐藏的列上 → 贴到同一显示位（顶上来的那一列）
+  const snap = (c, p0) => (dp(c) >= 0 ? c : (vis.length ? vis[Math.max(0, Math.min(p0, vis.length - 1))] : c))
+  range.ac = snap(range.ac, pa); range.fc = snap(range.fc, pf)
 }
 function unhideAll() { hiddenCols.value = [] }
 function clearColContents() {
@@ -1099,7 +1288,7 @@ function clearColContents() {
 </script>
 
 <template>
-  <div class="sg">
+  <div ref="host" class="sg">
     <div class="sg-bar">
       <span class="sg-count">{{ stations.length }} 个{{ label }}<template v-if="selectedRows.length"> · 选中 {{ selectedRows.length }} 行</template></span>
       <span class="sg-sp"></span>
@@ -1111,25 +1300,30 @@ function clearColContents() {
       <button class="sg-btn" :disabled="!redoStack.length" title="重做" @click="redo"><Icon name="redo-2" :size="12" /></button>
       <button class="sg-btn" :disabled="!canMoveUp" title="上移一行（Alt+↑）" @click="moveUp"><Icon name="arrow-up" :size="12" /> 上移</button>
       <button class="sg-btn" :disabled="!canMoveDown" title="下移一行（Alt+↓）" @click="moveDown"><Icon name="arrow-down" :size="12" /> 下移</button>
+      <button class="sg-btn" :class="{ on: pinAllOn }" :disabled="!canPin"
+              :title="(pinAllOn ? '取消冻结当前列' : '把当前列钉在左侧，横滚时不动') + (frozenVisCount ? '（当前冻结 ' + frozenVisCount + ' 列）' : '')"
+              @click="togglePin"><Icon name="panel-left" :size="12" /> 冻结列</button>
       <button v-if="hiddenCols.length" class="sg-btn" :title="'已隐藏 ' + hiddenCols.length + ' 列，点击全部显示'" @click="unhideAll">显示隐藏列（{{ hiddenCols.length }}）</button>
     </div>
 
-    <div ref="root" class="sg-scroll" tabindex="0" @keydown="onKey" @focus="onRootFocus" @wheel="onWheel">
-      <table class="sg-tbl" :class="{ 'has-g': headerGroups }">
+    <div ref="root" class="sg-scroll" tabindex="0" @keydown="onKey" @focus="onRootFocus" @wheel="onWheel" @scroll.passive="onScroll">
+      <table class="sg-tbl" :class="{ 'has-g': headerGroups }" :style="fzVars">
         <thead>
-          <!-- 列组行（两层表头首行）：字段按 f.group 相邻归并跨列；仅顶部吸附（横滚时组名随普通列滚动属预期） -->
+          <!-- 列组行（两层表头首行）：字段按 f.group 相邻归并跨列。冻结段那半随冻结列一起粘住，其余仅顶部吸附（横滚时组名随普通列滚动属预期） -->
           <tr v-if="headerGroups" class="sg-ghd">
             <th class="sg-sel sg-gpad"></th>
             <th v-for="(g, gi) in headerGroups" :key="gi" :colspan="g.span" class="sg-gcol"
-                :class="['g-' + g.g, { 'sg-gend': gi < headerGroups.length - 1 }]">
-              <span class="sg-glbl">{{ g.label }}</span>
+                :class="['g-' + g.g, { 'sg-gend': g.gend, 'sg-fz': g.fz }]" :style="g.fz ? fzStyle(g.vi) : null">
+              <span v-if="!g.dup" class="sg-glbl">{{ g.label }}</span>
             </th>
             <th v-if="roLabel" class="sg-gcol"></th>
           </tr>
-          <tr>
+          <tr class="sg-hrow">
             <th class="sg-sel"><input type="checkbox" :checked="allSelected" @change="toggleAll" /></th>
-            <th v-for="({ f, c }) in visFields" :key="f.key" class="sg-hcol" :class="{ 'sg-key': isKeyCol(c), colsel: colHeadSel(c), 'sg-gend': isGroupEnd(c) }" :style="isKeyCol(c) ? keyColStyle(c) : null" :title="f.tip || f.label"
-                @mousedown.left="onHeaderDown(c, $event)" @mouseenter="onHeaderEnter(c)">
+            <th v-for="({ f, c, vi }) in visFields" :key="f.key" class="sg-hcol"
+                :class="{ 'sg-fz': isKeyCol(c), 'sg-kw': isNarrowKey(c), colsel: colHeadSel(c), 'sg-gend': isGroupEnd(c) }"
+                :style="isKeyCol(c) ? fzStyle(vi) : null" :title="f.tip || f.label"
+                @mousedown.left="onHeaderDown(c, $event)" @mouseenter="onHeaderEnter(c)" @contextmenu.prevent="onHeaderContext(c, $event)">
               {{ f.label }}<i v-if="f.unit"> ({{ f.unit }})</i>
               <!-- 站址组锚点列（地球站位置）：列头内联导入钮，点击按该侧（f.city='tx'/'rx'）打开导入 -->
               <button v-if="showImport && f.city" class="sg-himp" :title="'导入站址到' + (f.city === 'rx' ? '收信站' : '发信站') + '：城市库 / 点标记 / 地球站 / 航迹'"
@@ -1141,9 +1335,9 @@ function clearColContents() {
         <tbody>
           <tr v-for="(s, i) in stations" :key="s._id || i" :class="{ on: sel[s._id] }">
             <td class="sg-sel" :title="'拖拽序号可框选行 · 右键插入/删除行'" @mousedown.left="onRowDown(i, $event)" @mouseenter="onRowEnter(i)" @contextmenu.prevent="onIdxContext(i, $event)"><span class="sg-idx">{{ i + 1 }}</span></td>
-            <td v-for="({ f, c }) in visFields" :key="f.key"
-                class="sg-cell" :class="[{ 'sg-key': isKeyCol(c), 'ro-field': isReadonlyCol(c), sel: inSel(i, c), focus: isFocus(i, c), editing: isEditing(i, c), fillp: inFill(i, c), 'sg-gend': isGroupEnd(c) }, cellClass ? cellClass(f, s) : null]"
-                :style="isKeyCol(c) ? keyColStyle(c) : null"
+            <td v-for="({ f, c, vi }) in visFields" :key="f.key"
+                class="sg-cell" :class="[{ 'sg-fz': isKeyCol(c), 'sg-kw': isNarrowKey(c), 'ro-field': isReadonlyCol(c), sel: inSel(i, c), focus: isFocus(i, c), editing: isEditing(i, c), fillp: inFill(i, c), 'sg-gend': isGroupEnd(c) }, cellClass ? cellClass(f, s) : null]"
+                :style="isKeyCol(c) ? fzStyle(vi) : null"
                 @mousedown.left="onDown(i, c, $event)" @mouseenter="onEnter(i, c)" @dblclick="startEdit(i, c)" @contextmenu.prevent="onCellContext(i, c, $event)">
               <!-- 占比填充条（单色半透明，无格底衬色）：最先渲染画在格底（::after 按 --fill 比例铺色，档位类 lv1..lv4 定色），后继 .sg-v 抬为 relative 浮于其上（样式在 lbworkbench.css） -->
               <span v-if="fillFrac(f, s) != null" class="sg-fillbar" :class="fillLv(f, s)" :style="{ '--fill': (fillFrac(f, s) * 100).toFixed(2) + '%' }"></span>
@@ -1188,6 +1382,14 @@ function clearColContents() {
         </tbody>
       </table>
     </div>
+
+    <!-- 冻结线：钉在冻结区右缘的覆盖条。放在滚动容器之外——冻结区右缘在屏幕上本就是个定值，
+         这样它永远不必跟着滚动重算位置。本体即 Excel 那根可拖的冻结条，双击取消冻结。 -->
+    <div v-if="frozenVisCount" class="sg-fzbar" :class="{ scrolled: fzScrolled, drag: fzDrag.on }"
+         :style="{ left: fzBar.x + 'px', top: fzBar.top + 'px', height: fzBar.h + 'px' }"
+         :title="'已冻结 ' + frozenVisCount + ' 列 · 拖动改冻结位置 · 双击取消冻结'"
+         @mousedown="onFzDown" @dblclick="setFreeze(0)"></div>
+    <div v-if="fzDrag.on" class="sg-fzprev" :style="{ left: fzDrag.x + 'px', top: fzBar.top + 'px', height: fzBar.h + 'px' }"></div>
 
     <!-- 导入（城市库 / 点标记 / 地球站 / 航迹）—— Quick Pick 式：锚在列头导入钮下方，
          搜索自动聚焦；点条目/Enter 即入表尾一行（面板不关可连续导入，Ctrl+Z 逐步撤销）；Esc/完成 关闭 -->
@@ -1261,6 +1463,7 @@ function clearColContents() {
         <button class="sg-ctx-i" @click="menuDo(smartCut)"><span>剪切</span><kbd>Ctrl+X</kbd></button>
         <button class="sg-ctx-i" @click="menuDo(pasteRange)"><span>粘贴</span><kbd>Ctrl+V</kbd></button>
         <button class="sg-ctx-i" @click="menuDo(clearSel)"><span>清除内容</span><kbd>Del</kbd></button>
+        <template v-if="menu.mode !== 'col'">
         <div class="sg-ctx-sep"></div>
         <button class="sg-ctx-i" @click="menuDo(insertAbove)">在上方插入行</button>
         <button class="sg-ctx-i" @click="menuDo(insertBelow)">在下方插入行</button>
@@ -1268,6 +1471,10 @@ function clearColContents() {
         <div class="sg-ctx-sep"></div>
         <button class="sg-ctx-i" :disabled="!canMoveUp" @click="menuDo(moveUp)"><span>上移一行</span><kbd>Alt+↑</kbd></button>
         <button class="sg-ctx-i" :disabled="!canMoveDown" @click="menuDo(moveDown)"><span>下移一行</span><kbd>Alt+↓</kbd></button>
+        </template>
+        <div class="sg-ctx-sep"></div>
+        <button class="sg-ctx-i" :disabled="!canPin" title="把这一列钉在左侧，横滚时不动（钉住的列并排排在最左边）" @click="menuDo(togglePin)">{{ pinAllOn ? '取消冻结此列' : '冻结此列' }}</button>
+        <button class="sg-ctx-i" :disabled="!frozenVisCount" @click="menuDo(unfreeze)">取消全部冻结</button>
         <div class="sg-ctx-sep"></div>
         <button class="sg-ctx-i" :disabled="!canHideSel" @click="menuDo(hideCols)">隐藏列</button>
         <button v-if="hiddenCols.length" class="sg-ctx-i" @click="menuDo(unhideAll)">显示所有列（{{ hiddenCols.length }}）</button>
@@ -1297,7 +1504,7 @@ function clearColContents() {
 </template>
 
 <style scoped>
-.sg { display: flex; flex-direction: column; min-height: 0; height: 100%; }
+.sg { position: relative; display: flex; flex-direction: column; min-height: 0; height: 100%; }
 .sg-bar { display: flex; align-items: center; gap: 6px; padding: 4px 2px 6px; flex: none; flex-wrap: wrap; }
 .sg-count { font-size: 11px; color: var(--text-muted); }
 .sg-sp { flex: 1; }
@@ -1305,6 +1512,7 @@ function clearColContents() {
 .sg-btn:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
 .sg-btn:disabled { opacity: .4; cursor: not-allowed; }
 .sg-btn.primary { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+.sg-btn.on { color: var(--text); border-color: var(--accent); }
 
 .sg-scroll { flex: 1; overflow: auto; overscroll-behavior-x: contain; border: 1px solid var(--border); border-radius: var(--r-box, 3px); outline: none; }
 .sg-tbl { border-collapse: separate; border-spacing: 0; font-size: var(--lb-fs, 11px); white-space: nowrap; }
@@ -1312,7 +1520,8 @@ function clearColContents() {
 /* 表头：白底 + 栏目线（与结果三线表同语言），仍不透明以便 sticky 悬浮时盖住滚过的行 */
 /* —— 表内层级总表（动任一处 z-index 都先对照这里）——
      0 普通数据格 .sg-cell   < 1 聚焦/编辑格   < 2 冻结数据格（序号列/名称列/只读末列）
-   < 3 字段表头行            < 4 列组表头行    < 5 冻结列表头格   < 6 列组行的序号角格
+   < 3 字段表头行            < 4 列组表头行    < 5 冻结列表头格   < 6 列组行的序号角格与冻结组头格
+   （冻结线覆盖条 .sg-fzbar 在滚动容器之外，与本表无关）
    前提是 .sg-cell 自成层叠上下文（见下方 z-index:0）：格内浮层（下拉箭头/填充柄/捕获输入框 z3–6）
    只在格内互相排序。否则它们会越过 td 直接与表头比大小——滚动时小箭头、填充柄浮在标题行上面。 */
 .sg-tbl th { position: sticky; top: 0; z-index: 3; padding: 3px 7px; font-weight: 600; color: var(--text-muted); text-align: left; background: var(--bg); }
@@ -1354,8 +1563,14 @@ function clearColContents() {
 .sg-tbl tbody tr.on > td.sg-sel { background: var(--surface-2); }
 .sg-tbl tbody tr.on > td.sg-sel .sg-idx { color: var(--accent); font-weight: 700; }
 .sg-idx { color: var(--text-faint); font-size: 10px; display: block; }
-.sg-tbl th.sg-key, .sg-tbl td.sg-key { position: sticky; z-index: 2; width: 90px; min-width: 90px; }
-.sg-tbl thead th.sg-key { z-index: 5; }
+/* —— 冻结列（Excel 冻结窗格）——
+   .sg-fz    粘住不随横滚；左偏移由 <table> 上的 --sgfN 给（实测列宽逐列累加，见 measureFrozen）
+   .sg-kw    出厂关键列的窄宽度，与「当前冻不冻结」解耦——临时取消冻结不该让这几列忽然变宽
+   冻结线本身不画在格上：格子右框已有一根 1px 线，再画一根就叠成 2px；改由覆盖条 .sg-fzbar 正压其上。 */
+.sg-tbl th.sg-fz, .sg-tbl td.sg-fz { position: sticky; z-index: 2; }
+.sg-tbl thead th.sg-fz { z-index: 5; }
+.sg-tbl.has-g thead tr.sg-ghd th.sg-fz { z-index: 6; }
+.sg-tbl th.sg-kw, .sg-tbl td.sg-kw { width: 90px; min-width: 90px; }
 /* 单元格。z-index:0 不是为了排序，是为了让 td 自成层叠上下文，把格内浮层（下拉箭头/填充柄/
    捕获输入框）关在格子里——见上方「表内层级总表」。 */
 .sg-cell { position: relative; z-index: 0; padding: 0; cursor: cell; user-select: none; vertical-align: top; }
@@ -1363,7 +1578,7 @@ function clearColContents() {
 .sg-handle { position: absolute; right: -2px; bottom: -2px; width: 6px; height: 6px; background: var(--accent); border: 1px solid var(--bg); cursor: crosshair; z-index: 6; }
 .sg-cell.fillp { outline: 1px dashed var(--accent); outline-offset: -1px; }
 .sg-v { display: block; padding: 2.5px 6px; min-width: 76px; min-height: 19px; overflow: hidden; text-overflow: ellipsis; }
-.sg-key .sg-v { min-width: 78px; }
+.sg-kw .sg-v { min-width: 78px; }
 .sg-v.mono { font-family: var(--font-mono); }
 /* 留空单元格「浅显示」默认值（占位提示，非真实输入）——比正常内容更淡，用户一眼可辨 */
 .sg-v.ph { color: var(--text-faint); opacity: .7; }
@@ -1406,6 +1621,17 @@ function clearColContents() {
 .sg-tbl td.sg-cell.ro-field.sel { background: color-mix(in srgb, var(--accent) 14%, var(--surface)); color: var(--text); }
 .sg-cap[readonly] { cursor: default; }
 .sg-hint { flex: none; margin: 6px 2px 0; font-size: 11px; color: var(--text-faint); }
+
+/* 冻结条：7px 可拖热区（Excel 拖冻结条），::before 是那根 1px 线（正压在格子右框上，不叠成 2px），
+   ::after 在横滚起来后向右投一道浅影——影子告诉你线底下还压着内容。投影不逐格画：一格一个 box-shadow 会在每行接缝处断开。 */
+.sg-fzbar { position: absolute; width: 7px; margin-left: -3px; z-index: 8; cursor: col-resize; }
+.sg-fzbar::before { content: ''; position: absolute; left: 2px; top: 0; bottom: 0; width: 1px; background: var(--lb-rule, var(--border-strong)); }
+.sg-fzbar:hover::before, .sg-fzbar.drag::before { background: var(--accent); }
+.sg-fzbar::after { content: ''; position: absolute; left: 3px; top: 0; bottom: 0; width: 8px; pointer-events: none; opacity: 0; transition: opacity .12s;
+  background: linear-gradient(to right, color-mix(in srgb, var(--text) 15%, transparent), transparent); }
+.sg-fzbar.scrolled::after { opacity: 1; }
+/* 拖动中的落点预览线（松手才真冻结，与 Excel 拖冻结条一致） */
+.sg-fzprev { position: absolute; width: 2px; margin-left: -1px; z-index: 9; pointer-events: none; background: var(--accent); }
 
 .sg-mask { position: fixed; inset: 0; z-index: 200; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.28); }
 .sg-box { width: 380px; max-height: 72vh; display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-card, 4px); box-shadow: 0 8px 24px rgba(0,0,0,.18); overflow: hidden; }

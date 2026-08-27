@@ -1668,6 +1668,8 @@ export function createGlobeScene(container, quality = {}) {
     const b = L.bore
     if (b) {
       const hit = b.hit !== false
+      // b.onEarth=false ＝ 波束整个越过地平，地表上这一层一条线一片色都没有 → 名字也不画。
+      const named = o.showName && L.name && b.onEarth !== false
       // 峰值点锚（贴地）
       const anchor = llaToVec(b.lat, b.lon, 0).multiplyScalar(1.0012)
       // 文字锚：径向再抬出 ~45km。billboard 整体深度≈锚点深度，抬到球面之前 → 标签不再被地球模型遮挡；
@@ -1687,7 +1689,7 @@ export function createGlobeScene(container, quality = {}) {
         spr.center.set(0.5, -(lift / peakH)); spr.position.copy(labelAnchor); spr.renderOrder = 12; out.push(spr)
       }
       // 波束名：再往上一行（读数在时让开它一行高，不在时直接贴十字上方）
-      if (o.showName && L.name) {
+      if (named) {
         const spr = makeCovLabel(L.name, nameH, '#ffffff')
         spr.center.set(0.5, -((lift + (peakOn ? peakH * 1.15 : 0)) / nameH))
         spr.position.copy(labelAnchor); spr.renderOrder = 13; out.push(spr)
