@@ -13,6 +13,7 @@
 // 面向用户的字串（列名 / 读数名 / 提示 / 报错）一律走全软件的术语：系统余量、载波带宽、功率带宽、
 // 功带平衡、超发/欠发、转发器资源占用……与链路表结果列、载波配置面板同名同义，别在这儿另起一套。
 import { ref, reactive, computed, watch } from 'vue'
+import NumBox from './NumBox.vue'
 import Icon from './Icon.vue'
 import { ADV_MODES, ADV_BASES, solveAdv } from '../shared/advBalance.js'
 import { pickColumn, fmtScaled, fmtQty } from '../shared/adaptUnits.js'
@@ -220,7 +221,7 @@ function apply() {
                     <!-- 「现」单独成节点：与数字挤在一个文本节点里，英文模式下整串查不到表 -->
                     {{ d2(c.baseDb) }}<i v-if="drifted(c)" class="ab-sh"><span>现</span> {{ d2(c.fromDb) }}</i></td>
                   <td class="n dim">{{ d2(c.balanceDb) }}</td>
-                  <td class="n"><input class="ab-in" type="number" step="0.1" :value="cs(c.id).bias" @change="setCs(c.id, { bias: parseFloat($event.target.value) || 0 })" /></td>
+                  <td class="n"><NumBox class="ab-in" :step="0.1" :model-value="cs(c.id).bias" @commit="(v) => setCs(c.id, { bias: v || 0 })" /></td>
                   <td class="n st" :class="{ bad: c.toDb < 0 }">{{ d2(c.toDb) }}<i class="ab-sh">{{ sign(c.shiftDb) }}</i></td>
                 </tr>
                 <tr v-if="!res.carriers.length"><td colspan="6" class="ab-empty">未选择链路。</td></tr>

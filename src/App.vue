@@ -5,7 +5,7 @@ import { cursor } from './stores/cursor'
 import { mapCrs, fmtLL, datumTag } from './stores/mapCrs.js'
 import { view } from './stores/view'
 import { covNav } from './stores/coveragePanels'
-import { zoom } from './stores/zoom'
+import { zoom, ZOOM_TMAX } from './stores/zoom'
 import { shellUi as ui, toggleUi, sideWKey, SIDE_W_LIM } from './stores/shellUi'
 import { theme } from './stores/theme'
 import { logStore, logMsg, clearLog } from './stores/log'
@@ -167,7 +167,7 @@ const fmtCoord = (ll) => {
 
 // 底部状态栏缩放进度条：拖动/按钮 → 设回当前活动地图（zoom.apply）；地图滚轮缩放回填 zoom.value。
 const onZoomInput = (e) => { const t = Number(e.target.value); if (zoom.apply) zoom.apply(t) }
-const stepZoom = (d) => { const t = Math.max(0, Math.min(1, zoom.value + d)); if (zoom.apply) zoom.apply(t) }
+const stepZoom = (d) => { const t = Math.max(0, Math.min(ZOOM_TMAX, zoom.value + d)); if (zoom.apply) zoom.apply(t) }
 
 // ---- 菜单栏（仿 SATSOFT 经典菜单：纯文字标题 + 下拉；不可用项置灰不隐藏）----
 const menus = computed(() => [
@@ -442,7 +442,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
         <span class="cell">{{ view.flat ? '2D 平面图' : '3D 球体' }}</span>
         <span v-if="zoom.avail" class="cell zoomctl" title="地图缩放（拖动精细调节，滚轮亦可）">
           <button class="zbtn" title="缩小" @click="stepZoom(-0.01)"><Icon name="minus" :size="10" /></button>
-          <input class="zrange" type="range" min="0" max="1" step="0.001" :value="zoom.value" @input="onZoomInput" />
+          <input class="zrange" type="range" min="0" :max="ZOOM_TMAX" step="0.001" :value="zoom.value" @input="onZoomInput" />
           <button class="zbtn" title="放大" @click="stepZoom(0.01)"><Icon name="plus" :size="10" /></button>
           <span class="zpct">{{ Math.round(zoom.value * 100) }}%</span>
         </span>

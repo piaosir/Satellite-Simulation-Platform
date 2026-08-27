@@ -304,7 +304,7 @@ export function createGlobeScene(container, quality = {}) {
   const controls = new OrbitControls(camera, renderer.domElement)
   controls.enableDamping = true
   controls.dampingFactor = 0.08
-  controls.minDistance = 1.15
+  controls.minDistance = 1.02   // 贴到离地面 0.02 R（≈130 km）：进度条那 100→120% 的余量就在这一段
   controls.maxDistance = 50
   controls.rotateSpeed = 0.5
   controls.enablePan = false    // 关掉平移：右键留给“标点”，避免误平移
@@ -319,11 +319,27 @@ export function createGlobeScene(container, quality = {}) {
   // 乘性步进天然就是梯度：离地球近时每格走得少（精细），远时每格走得多（快速）。
   // 每帧把实际距离向目标距离缓动逼近，连续顺滑；累积的滚动一次到位，不必狂滚。
   let zoomTarget = camera.position.length()
-  // 缩放进度（底部状态栏进度条）：距离[min,max]对数映射到 t∈[0,1]，t=0 最远(缩小)、t=1 最近(放大)。
+  // 缩放进度（底部状态栏进度条）：距离对数映射到 t，t=0 最远(缩小)、t=1.2 最近(放大)。
   // 对数映射 → 进度条每一格的“距离倍率”恒定，靠近地球时绝对步进更小，天然支持精细化缩放。
-  const _lnMin = Math.log(controls.minDistance), _lnMax = Math.log(controls.maxDistance)
-  const distToT = (d) => (_lnMax - Math.log(d)) / (_lnMax - _lnMin)
-  const tToDist = (t) => Math.exp(_lnMax - Math.max(0, Math.min(1, t)) * (_lnMax - _lnMin))
+  // ★ 分两段：0–1 仍钉在原来的最近距离 D_T1=1.15 上（这一段与改之前逐格一致，老存档的 t 不漂）；
+  //   1–1.2 是新加的贴地余量 1.15→minDistance。纯对数一路延到 120% 会要求距离 0.54 —— 在地心里面，做不到。
+  const TMAX = 1.2, D_T1 = 1.15
+  const _lnT1 = Math.log(D_T1), _lnMin = Math.log(controls.minDistance), _lnMax = Math.log(controls.maxDistance)
+  const distToT = (d) => (d >= D_T1
+    ? (_lnMax - Math.log(d)) / (_lnMax - _lnT1)
+    : 1 + (_lnT1 - Math.log(d)) / (_lnT1 - _lnMin) * (TMAX - 1))
+  const tToDist = (t) => {
+    const tt = Math.max(0, Math.min(TMAX, t))
+    return tt <= 1 ? Math.exp(_lnMax - tt * (_lnMax - _lnT1))
+      : Math.exp(_lnT1 - (tt - 1) / (TMAX - 1) * (_lnT1 - _lnMin))
+  }
+  // 近裁剪面随距离走：贴到 1.02 时固定 near=0.1 会把整个地球裁掉（最近可视面才 0.02 远）。
+  // 按「相机到球面的距离」取一档，既不裁又不至于把 far/near 拉到 12000 那种精度（z-fighting）。
+  function syncNear(d) {
+    const n = Math.max(0.004, Math.min(0.1, (d - 1) * 0.4))
+    if (Math.abs(camera.near - n) < 1e-6) return
+    camera.near = n; camera.updateProjectionMatrix()
+  }
   let onZoom = null
   const reportZoom = () => { if (onZoom) onZoom(distToT(zoomTarget)) }
   renderer.domElement.addEventListener('wheel', (e) => {
@@ -2340,6 +2356,7 @@ export function createGlobeScene(container, quality = {}) {
       zoomDir.copy(camera.position).sub(controls.target).normalize()
       camera.position.copy(controls.target).addScaledVector(zoomDir, next)
     }
+    syncNear(cur)   // 每帧无条件跟一次（内部等值即返回）：恢复视图/直接 setZoom 落在贴地档时也不会漏
     // 卫星点随缩放联动：基准距离上 SAT_POINT_PX，拉近变大、拉远变小；下限 0.5×/上限 4× 钳制保证可见且不过大
     if (satPoints) satPoints.material.size = SAT_POINT_PX * Math.max(0.5, Math.min(4, LABEL_REF_DIST / cur))
     // 高亮环：贴图点层本身就是固定屏幕像素 + 深度测试遮挡，逐帧无事可做（原来是每颗一次反缩放 + 遮挡射线）
@@ -2436,7 +2453,7 @@ export function createGlobeScene(container, quality = {}) {
     faceTo, rotateBy, setAutoRotate, setAutoRotateSpeed, setOnAutoRotateOff, resize, pause, resume, snapshot, destroy,
     // 缩放进度条接口：getZoom 读当前进度、setZoom 设到进度 t、setOnZoom 注册滚轮缩放回填回调
     getZoom: () => distToT(zoomTarget),
-    setZoom: (t) => { zoomTarget = Math.max(controls.minDistance, Math.min(controls.maxDistance, tToDist(t))) },
+    setZoom: (t) => { zoomTarget = Math.max(controls.minDistance, Math.min(controls.maxDistance, tToDist(t))); syncNear(zoomTarget) },
     setOnZoom: (fn) => { onZoom = fn },
     // 完整视图记忆：相机朝向(单位方向)+缩放进度 t。getView 读、setView 复原（朝向+距离）。
     getView: () => { const p = camera.position; return { x: p.x, y: p.y, z: p.z, t: distToT(zoomTarget) } },

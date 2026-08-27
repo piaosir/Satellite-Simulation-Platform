@@ -19,6 +19,7 @@ import { parseGxt } from '../viz/gxt/parse.js'
 import { serializeKml } from '../viz/kml/serialize.js'
 import { parseKmlPolys } from '../viz/kml/parse.js'
 import Icon from '../components/Icon.vue'
+import NumBox from '../components/NumBox.vue'
 import SatList from '../components/SatList.vue'
 import MiniSendDialog from '../components/MiniSendDialog.vue'
 import { MINI_COVERAGE_SATS, satKey, inMiniList } from '../shared/miniSatList.js'
@@ -1243,8 +1244,8 @@ const borderPick = ref('admin0')     // 主从列表当前选中的那一类
 // 地名的主从列表：名称档位 / 字号 / 颜色 / 透明度四项，三级共用一套控件
 const NAME_ROWS = [
   { k: 'country', zh: '国家名', modes: [['zh', '中文'], ['en', '英文'], ['off', '不显示']], min: 0.3, max: 3, step: 0.05 },
-  { k: 'prov', zh: '一级行政区名', modes: [['local', '本地名'], ['en', '英文'], ['off', '不显示']], min: 0.3, max: 2, step: 0.05 },
-  { k: 'city', zh: '二级行政区名', modes: [['local', '中文'], ['en', '英文'], ['off', '不显示']], min: 0.05, max: 1.5, step: 0.05 }
+  { k: 'prov', zh: '一级行政区名', modes: [['local', '本地名'], ['en', '英文'], ['off', '不显示']], min: 0.1, max: 2, step: 0.05 },
+  { k: 'city', zh: '二级行政区名', modes: [['local', '中文'], ['en', '英文'], ['off', '不显示']], min: 0.01, max: 1, step: 0.01 }
 ]
 const namePick = ref('country')
 // 样式预设（一键套整组）：只动五类线的颜色与透明度，线宽/线型这类结构性区分不跟着变
@@ -7440,7 +7441,7 @@ onBeforeUnmount(() => {
                   <span class="sg" :class="{ on: env.bands.value === 0 }" title="连续渐变" @click="env.bands.value = 0">连续</span>
                   <span class="sg" :class="{ on: env.bands.value > 0 }" title="分级填色：档与档之间是硬边界，边界即等值线（工程读图）" @click="env.bands.value = env.bands.value > 0 ? env.bands.value : 8">分级</span>
                 </span>
-                <input v-if="env.bands.value > 0" class="ci cov-num" type="number" min="2" max="24" step="1" :value="env.bands.value" @input="e => env.bands.value = Math.max(2, Math.min(24, Number(e.target.value) || 8))" /><span v-if="env.bands.value > 0" class="u">档</span>
+                <NumBox v-if="env.bands.value > 0" class="ci cov-num" :min="2" :max="24" :step="1" :model-value="env.bands.value" @commit="v => env.bands.value = v" /><span v-if="env.bands.value > 0" class="u">档</span>
               </div>
               <div class="srow"><label>值域</label>
                 <span class="seg">
@@ -7706,7 +7707,7 @@ onBeforeUnmount(() => {
               <option v-for="f in FORMATS" :key="f.k" :value="f.k">{{ f.zh }}</option>
             </select>
           </div>
-          <div class="srow"><label>画面中心</label><input class="ci cov-b" type="number" min="-180" max="180" step="0.5" :value="crsCenter" title="2D 平面图正中那条经线的经度（东正西负）；接缝随之落到它的对面。3D 球体没有接缝，不受影响" @change="setCrsCenter($event.target.value)" /><span class="u">{{ crsCenterTag }}</span></div>
+          <div class="srow"><label>画面中心</label><NumBox class="ci cov-b" :min="-180" :max="180" :step="0.5" :model-value="crsCenter" title="2D 平面图正中那条经线的经度（东正西负）；接缝随之落到它的对面。3D 球体没有接缝，不受影响" @commit="setCrsCenter" /><span class="u">{{ crsCenterTag }}</span></div>
           <div class="srow stack"><label>常用</label>
             <span class="seg nseg" role="group" aria-label="常用画面中心">
               <span v-for="c in CENTER_PRESETS" :key="c.v" class="sg" :class="{ on: Math.abs(crsCenter - c.v) < 0.25 }" @click="setCrsCenter(c.v)">{{ c.zh }}</span>

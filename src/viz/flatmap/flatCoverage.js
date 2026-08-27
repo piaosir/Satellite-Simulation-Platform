@@ -888,6 +888,10 @@ export function createFlatCoverage(canvas) {
   // ---- 缩放进度（底部状态栏进度条）：scale[0.9,60] 对数映射到 t∈[0,1]，t=0 缩小到底、t=1 放大到底。
   // 对数映射 → 进度条每格的缩放倍率恒定，放大时绝对步进更细，支持精细化缩放。
   const SMIN = 0.9, SMAX = 60, _lnS0 = Math.log(SMIN), _lnS1 = Math.log(SMAX)
+  // ★ 进度条满格是 1.2（读数 120%）：0–100% 那一段的映射一格不改（scale=60 仍是 100%），
+  //   100–120% 是顺着同一条对数轴再往里延的放大余量 → 上限 60 → exp(lnSMIN + 1.2·(lnSMAX−lnSMIN)) ≈ 139×。
+  const TMAX = 1.2
+  const SCAP = Math.exp(_lnS0 + TMAX * (_lnS1 - _lnS0))
   const scaleToT = () => (Math.log(scale) - _lnS0) / (_lnS1 - _lnS0)
   let onZoom = null
   // ---- 交互 ----
@@ -895,14 +899,14 @@ export function createFlatCoverage(canvas) {
     e.preventDefault()
     const r = canvas.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top
     const kk = k(), wx = (mx - tx) / kk, wy = (my - ty) / kk
-    scale = clamp(scale * Math.exp(-e.deltaY * 0.0015), SMIN, SMAX)
+    scale = clamp(scale * Math.exp(-e.deltaY * 0.0015), SMIN, SCAP)
     const k2 = k(); tx = mx - wx * k2; ty = my - wy * k2; clampPan(); invalidateStatic(); requestDraw()
     if (onZoom) onZoom(scaleToT())
   }
   // 进度条设缩放：绕画布中心缩放（锚定中心世界点），t∈[0,1]
   function setZoomT(t) {
     const mx = cw / 2, my = ch / 2, kk = k(), wx = (mx - tx) / kk, wy = (my - ty) / kk
-    scale = clamp(Math.exp(_lnS0 + Math.max(0, Math.min(1, t)) * (_lnS1 - _lnS0)), SMIN, SMAX)
+    scale = clamp(Math.exp(_lnS0 + Math.max(0, Math.min(TMAX, t)) * (_lnS1 - _lnS0)), SMIN, SCAP)
     const k2 = k(); tx = mx - wx * k2; ty = my - wy * k2; clampPan(); invalidateStatic(); requestDraw()
   }
   let dragging = false, lx = 0, ly = 0
@@ -1166,7 +1170,7 @@ export function createFlatCoverage(canvas) {
     },
     setView(v) {
       if (!v || !Number.isFinite(v.scale)) return
-      scale = clamp(v.scale, SMIN, SMAX)
+      scale = clamp(v.scale, SMIN, SCAP)
       const kk = k()
       if (Number.isFinite(v.cx)) tx = cw / 2 - v.cx * kk
       if (Number.isFinite(v.cy)) ty = ch / 2 - v.cy * kk
