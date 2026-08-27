@@ -230,7 +230,10 @@ export function resolvedLines(detail) {
     // 上面那条「升格成国界」的规则管不到 —— 这里按落点判：线上任一采样点归属是 solidIso 就整条不画。
     // ★ 判据必须是【归属】不是【经纬度盒子】：藏南在中国视角下属中国、在印度视角下属印度，
     //   同一条线在两套视角下的去留正好相反，用盒子写死就错了。
-    if (solidIso && p.cls === 'indefinite' && cs.some((c) => touchesOwner(c, solidIso, detail))) continue
+    // ★ 但归属【一律按 10m 档问】，不按当前渲染档：50m 的争议面图层比 10m 少（110m 干脆没有），
+    //   藏南在 50m 的基础分区里还挂在印度名下 —— 按当前档问的话，中国视角下 50m 会漏掉这条线，
+    //   西藏东南就凭空多出一小截虚线（用户截图里那个东西）。10m 是静态常驻的，问它零代价。
+    if (solidIso && p.cls === 'indefinite' && cs.some((c) => touchesOwner(c, solidIso, '10m'))) continue
     for (const c of cs) out[p.cls].push(c)
   }
   for (const k of ['claim', 'loc', 'indefinite']) if (!state.layers[k]) out[k] = []
