@@ -184,13 +184,8 @@ export function createFlatCoverage(canvas) {
   //   经度环绕的 ±360 副本仍然要画：跨接缝的国家（如俄罗斯）本体在右边出界，靠左边那份副本补齐，
   //   裁剪之后两半正好拼成一张，画面上只有一个中国、一个俄罗斯。
   const worldRect = () => { const kk = k(); return { x: tx, y: ty, w: 360 * kk, h: 180 * kk } }
-  // 平移夹紧：世界比视口大就不许拖出边（贴边即止），比视口小就居中钉住。
-  // 没有这一步的话，裁剪之后能把整张图拖到画布外，剩一片底色。
-  function clampPan() {
-    const kk = k(), ww = 360 * kk, wh = 180 * kk
-    tx = ww <= cw ? (cw - ww) / 2 : Math.min(0, Math.max(cw - ww, tx))
-    ty = wh <= ch ? (ch - wh) / 2 : Math.min(0, Math.max(ch - wh, ty))
-  }
+  // ★ 不夹紧平移（用户口径）：拖到哪儿是哪儿，允许把整张图拖出画布 —— 双击 / 「复位」一键 fit 回来。
+  //   曾经加过 clampPan（贴边即止），实机上手感是「拖不动」，已取消。
   const WXN = (lon) => (((lon - LON0) % 360) + 360) % 360
   const PX = (lon) => WXN(lon) * k() + tx
   const PY = (lat) => (90 - lat) * k() + ty
@@ -900,14 +895,14 @@ export function createFlatCoverage(canvas) {
     const r = canvas.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top
     const kk = k(), wx = (mx - tx) / kk, wy = (my - ty) / kk
     scale = clamp(scale * Math.exp(-e.deltaY * 0.0015), SMIN, SCAP)
-    const k2 = k(); tx = mx - wx * k2; ty = my - wy * k2; clampPan(); invalidateStatic(); requestDraw()
+    const k2 = k(); tx = mx - wx * k2; ty = my - wy * k2; invalidateStatic(); requestDraw()
     if (onZoom) onZoom(scaleToT())
   }
   // 进度条设缩放：绕画布中心缩放（锚定中心世界点），t∈[0,1]
   function setZoomT(t) {
     const mx = cw / 2, my = ch / 2, kk = k(), wx = (mx - tx) / kk, wy = (my - ty) / kk
     scale = clamp(Math.exp(_lnS0 + Math.max(0, Math.min(TMAX, t)) * (_lnS1 - _lnS0)), SMIN, SCAP)
-    const k2 = k(); tx = mx - wx * k2; ty = my - wy * k2; clampPan(); invalidateStatic(); requestDraw()
+    const k2 = k(); tx = mx - wx * k2; ty = my - wy * k2; invalidateStatic(); requestDraw()
   }
   let dragging = false, lx = 0, ly = 0
   let beamDragMode = false, onBeamDrag = null, beamDragging = false   // 拖拽波束（不平移地图）
@@ -1006,7 +1001,7 @@ export function createFlatCoverage(canvas) {
       const dx = e.clientX - drawLX, dy = e.clientY - drawLY
       if (dx * dx + dy * dy >= POLY_DRAW_MIN2) { drawLX = e.clientX; drawLY = e.clientY; const ll = screenToLonLat(e.clientX, e.clientY); if (ll && onPolyDraw) onPolyDraw(ll, 'move') }
     }
-    else if (dragging) { tx += e.clientX - lx; ty += e.clientY - ly; lx = e.clientX; ly = e.clientY; clampPan(); invalidateStatic(); requestDraw() }
+    else if (dragging) { tx += e.clientX - lx; ty += e.clientY - ly; lx = e.clientX; ly = e.clientY; invalidateStatic(); requestDraw() }
     else if (editVerts) {   // 悬停提示：可拖顶点 / 可拖多边形内部（cursor 可覆盖命中态提示，如删除模式用 'pointer' 而非 'move'）
       canvas.style.cursor = (editVerts.move ? pointInEditPoly(e.clientX, e.clientY) : vertexAt(e.clientX, e.clientY) >= 0) ? (editVerts.cursor || 'move') : 'grab'
     }
@@ -1174,7 +1169,6 @@ export function createFlatCoverage(canvas) {
       const kk = k()
       if (Number.isFinite(v.cx)) tx = cw / 2 - v.cx * kk
       if (Number.isFinite(v.cy)) ty = ch / 2 - v.cy * kk
-      clampPan()
       invalidateStatic(); requestDraw()
     },
     // 渲染分辨率倍率（画质档位）：改后重建位图。this.resize 重算 dpr/位图尺寸并重绘。
@@ -1254,7 +1248,7 @@ export function createFlatCoverage(canvas) {
       if (!belowCanvas) { belowCanvas = document.createElement('canvas'); belowCtx = belowCanvas.getContext('2d'); aboveCanvas = document.createElement('canvas'); aboveCtx = aboveCanvas.getContext('2d') }
       if (belowCanvas.width !== canvas.width || belowCanvas.height !== canvas.height) { belowCanvas.width = canvas.width; belowCanvas.height = canvas.height; aboveCanvas.width = canvas.width; aboveCanvas.height = canvas.height }
       invalidateStatic()
-      if (firstFit) fit(); else clampPan()   // 画布尺寸变了：原来贴着边的视图要重新贴边，不能留出白条
+      if (firstFit) fit()
       draw()   // 同步立即重绘：canvas.width 重设会清空画布，若只 requestDraw 会隔一帧露出深色底 → 黑一下
     },
     reset() { fit(); invalidateStatic(); requestDraw() },
