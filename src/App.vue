@@ -52,6 +52,7 @@ const sideViews = computed(() => [
   { key: 'gxt', label: 'GXT/KML 显示', icon: 'waves', disabled: !covNav.covAvail, hint: 'GEO 卫星覆盖等值线：显示 GXT / KML 覆盖库里的波束' },
   { key: 'markers', label: '标记', icon: 'map-pin', disabled: !pageReady.value, hint: '点标记 / 地球站 / 轨迹' },
   { key: 'env', label: '环境场', icon: 'cloud-rain', disabled: !pageReady.value, hint: 'ITU-R 环境数据场：R0.01% 降雨率 / 0°C 等温线高度 / 雨高 / 海拔 / 水汽密度 / 云液态水（栅格 + 等值线）' },
+  { key: 'envLive', label: '实时气象', icon: 'cloud-rain-live', disabled: !pageReady.value, hint: '实时与预报气象场（NCEP GFS 栅格 + 和风天气按点值）：降水强度 / 瞬时雨衰 / 气体吸收 / 合计衰减 / 云量 / 气温 / 湿度（随时间轴更新）' },
   { key: 'focus', label: '聚焦卫星', icon: 'crosshair', disabled: !pageReady.value, hint: '聚焦星画什么、怎么画：轨道线 / 星下点轨迹 / 覆盖圈（口径与填充）/ 覆盖锥 / 卫星标记' },
   { key: 'geo', label: '地图设置', icon: 'sliders-horizontal', disabled: !pageReady.value, hint: '海陆配色 / 国界省界 / 名称标注 / 晨昏线' }
 ])
@@ -110,7 +111,7 @@ const EXP_SCOPE_KEY = 'exp-scope'
 const expScope = ref((() => { try { const v = localStorage.getItem(EXP_SCOPE_KEY); return v === 'view' || v === 'world' ? v : 'world' } catch { return 'world' } })())
 watch(expScope, (v) => { try { localStorage.setItem(EXP_SCOPE_KEY, v) } catch { /* ignore */ } })
 // GXT/KML 导的是【对地】那套覆盖等值线（对星覆盖分析的壳层投影不在其中），故名字里带上限定
-const EXP_NAME = { png2: '高清 PNG · 2×', png4: '高清 PNG · 4×', png6: '高清 PNG · 6×', pdf: '矢量 PDF', gxt: '导出 GXT（对地）', kml: '导出 KML（对地）' }
+const EXP_NAME = { png2: '高清 PNG · 2×', png4: '高清 PNG · 4×', pdf: '矢量 PDF', gxt: '导出 GXT（对地）', kml: '导出 KML（对地）' }
 function doExport(fmt) {
   if (!covNav.exportMap) return
   logMsg(`导出：${EXP_NAME[fmt] || fmt}（${expScope.value === 'view' ? '截图' : '全球图'}）`)
@@ -207,7 +208,6 @@ const menus = computed(() => [
   { key: 'export', label: '导出', items: [
     { label: EXP_NAME.png2, icon: 'image', lock: true, disabled: !covNav.exportAvail, hint: '导出 2 倍高清 PNG 图片', run: () => doExport('png2') },
     { label: EXP_NAME.png4, icon: 'image', lock: true, disabled: !covNav.exportAvail, hint: '导出 4 倍高清 PNG 图片', run: () => doExport('png4') },
-    { label: EXP_NAME.png6, icon: 'image', lock: true, disabled: !covNav.exportAvail, hint: '导出 6 倍高清 PNG 图片', run: () => doExport('png6') },
     { label: EXP_NAME.pdf, icon: 'file-text', lock: true, disabled: !covNav.exportAvail, hint: '导出矢量 PDF 文档（3D 球体截图为位图 PDF，4 倍）', run: () => doExport('pdf') },
     { sep: true },
     { label: EXP_NAME.gxt, icon: 'layers', lock: true, disabled: !covNav.exportAvail, hint: '将当前绘制的覆盖等值线 + 协调区多边形一并导出为一个 GXT 文件（所见即所得）', run: () => doExport('gxt') },
@@ -328,7 +328,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
                 @mouseenter="hint = it.disabled ? '' : (it.hint || '')" @mouseleave="hint = ''"
               >
                 <span class="ck"><Icon v-if="it.check" name="check" :size="12" /></span>
-                <span class="mico"><Icon v-if="it.icon" :name="it.icon" :size="13" /></span>
+                <span class="mico"><Icon v-if="it.icon" :name="it.icon" :size="12" /></span>
                 <span class="mlbl">{{ it.label }}</span>
               </div>
             </template>
@@ -346,10 +346,10 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
           v-else class="tbtn" :class="{ on: b.on, dis: b.disabled }" :title="b.tip"
           @mouseenter="hint = b.disabled ? '' : b.tip" @mouseleave="hint = ''"
           @click="tbClick(b)"
-        ><Icon :name="b.icon" :size="15" /></button>
+        ><Icon :name="b.icon" :size="16" /></button>
       </template>
       <span class="tgrow"></span>
-      <button class="tbtn" :class="{ on: ui.log }" title="日志窗格" @click="toggleUi('log')"><Icon name="panel-bottom" :size="15" /></button>
+      <button class="tbtn" :class="{ on: ui.log }" title="日志窗格" @click="toggleUi('log')"><Icon name="panel-bottom" :size="16" /></button>
     </div>
 
     <div class="body">
@@ -360,7 +360,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
           class="actbtn" :class="{ on: ui.side === v.key, dis: v.disabled }" :title="v.label"
           @mouseenter="hint = v.disabled ? '' : v.hint" @mouseleave="hint = ''"
           @click="!v.disabled && setSide(v.key)"
-        ><Icon :name="v.icon" :size="18" :stroke-width="1.7" /></button>
+        ><Icon :name="v.icon" :size="16" :stroke-width="1.7" /></button>
       </nav>
 
       <!-- ④ 侧栏：单视图（标题 = 当前视图名），内容由 3D 页 Teleport 挂入。
@@ -391,7 +391,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
         <div v-if="ui.log" class="dock logdock">
           <div class="dock-hd">
             <span class="dock-tt">日志</span>
-            <span class="dock-x" title="清空日志" @click="clearLog()"><Icon name="trash" :size="11" /></span>
+            <span class="dock-x" title="清空日志" @click="clearLog()"><Icon name="trash" :size="12" /></span>
             <span class="dock-x" title="关闭（视图菜单可恢复）" @click="toggleUi('log')"><Icon name="x" :size="12" /></span>
           </div>
           <div ref="logEl" class="loglines">
@@ -441,9 +441,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
       <span class="cells">
         <span class="cell">{{ view.flat ? '2D 平面图' : '3D 球体' }}</span>
         <span v-if="zoom.avail" class="cell zoomctl" title="地图缩放（拖动精细调节，滚轮亦可）">
-          <button class="zbtn" title="缩小" @click="stepZoom(-0.01)"><Icon name="minus" :size="10" /></button>
+          <button class="zbtn" title="缩小" @click="stepZoom(-0.01)"><Icon name="minus" :size="12" /></button>
           <input class="zrange" type="range" min="0" :max="ZOOM_TMAX" step="0.001" :value="zoom.value" @input="onZoomInput" />
-          <button class="zbtn" title="放大" @click="stepZoom(0.01)"><Icon name="plus" :size="10" /></button>
+          <button class="zbtn" title="放大" @click="stepZoom(0.01)"><Icon name="plus" :size="12" /></button>
           <span class="zpct">{{ Math.round(zoom.value * 100) }}%</span>
         </span>
         <!-- 环境场读数：只在图层开着且光标在图上时出现（没有图层时不占位，状态栏不留空格子） -->
@@ -453,7 +453,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
           <span class="eunit">{{ cursor.env.unit }}</span>
         </span>
         <span class="cell coord">
-          <Icon class="cur" name="cursor-arrow" :size="13" />
+          <Icon class="cur" name="cursor-arrow" :size="12" />
           <span class="cval">{{ cursor.ll ? fmtCoord(cursor.ll) : '——°  ——°' }}</span>
           <span v-if="cursor.ll && datumTag()" class="eunit">{{ datumTag() }}</span>
         </span>
@@ -484,16 +484,16 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 :root[data-theme='dark'] .brand { filter: invert(1) brightness(1.06); }
 .menus { display: flex; align-items: stretch; }
 .mwrap { position: relative; display: flex; }
-.mtitle { display: flex; align-items: center; padding: 0 11px; font-size: 12.5px; color: var(--text); cursor: default; }
+.mtitle { display: flex; align-items: center; padding: 0 11px; font-size: var(--fs-4); color: var(--text); cursor: default; }
 .mtitle:hover { background: var(--surface-2); }
-.mtitle.on { background: var(--accent); color: var(--bg); }
+.mtitle.on { background: var(--accent-ui); color: var(--bg); }
 .mpanel {
   position: absolute; top: 100%; left: 0; z-index: 100; min-width: 200px;
   background: var(--surface); border: 1px solid var(--border-strong);
-  box-shadow: 2px 4px 14px rgba(0,0,0,0.25); padding: 3px;
+  box-shadow: var(--shadow-2); padding: 3px;
 }
-.mitem { display: flex; align-items: center; gap: 6px; padding: 5px 12px 5px 6px; font-size: 12.5px; color: var(--text); cursor: default; white-space: nowrap; }
-.mitem:hover { background: var(--accent); color: var(--bg); }
+.mitem { display: flex; align-items: center; gap: 6px; padding: 5px 12px 5px 6px; font-size: var(--fs-4); color: var(--text); cursor: default; white-space: nowrap; }
+.mitem:hover { background: var(--accent-ui); color: var(--bg); }
 .mitem.dis, .mitem.dis:hover { background: transparent; color: var(--text-faint); }
 .mitem .ck { width: 14px; flex: none; display: inline-flex; justify-content: center; }
 .mitem .mico { width: 16px; flex: none; display: inline-flex; justify-content: center; color: var(--text-faint); }
@@ -501,9 +501,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 .mitem.dis .mico { color: var(--text-faint); }
 .msep { height: 1px; background: var(--border); margin: 3px 6px; }
 .vscope { display: flex; gap: 4px; padding: 3px 4px 6px; border-bottom: 1px solid var(--border); margin-bottom: 3px; }
-.vsp { flex: 1; text-align: center; cursor: pointer; padding: 3px 6px; border-radius: var(--r-ctl); font-size: 12px; color: var(--text-muted); border: 1px solid var(--border); }
+.vsp { flex: 1; text-align: center; cursor: pointer; padding: 3px 6px; border-radius: var(--r-ctl); font-size: var(--fs-3); color: var(--text-muted); border: 1px solid var(--border); }
 .vsp:hover { color: var(--text); border-color: var(--accent); }
-.vsp.on { color: var(--bg); background: var(--accent); border-color: var(--accent); font-weight: 600; }
+.vsp.on { color: var(--bg); background: var(--accent-ui); border-color: var(--accent-ui); font-weight: 600; }
 .vmask { position: fixed; inset: 0; z-index: 99; }
 
 /* ===== ② 工具栏 ===== */
@@ -517,7 +517,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   border-radius: var(--r-ctl); padding: 0; cursor: pointer;
 }
 .tbtn:hover { border-color: var(--border-strong); background: var(--bg); color: var(--text); }
-.tbtn.on { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+.tbtn.on { background: var(--accent-ui); border-color: var(--accent-ui); color: var(--bg); }
 .tbtn.dis, .tbtn.dis:hover { border-color: transparent; background: transparent; color: var(--text-faint); opacity: .45; cursor: default; }
 .tsep { width: 1px; height: 18px; background: var(--border-strong); margin: 0 5px; flex: none; }
 .tgrow { flex: 1; }
@@ -534,7 +534,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   background: transparent; color: var(--text-faint); padding: 0; cursor: pointer;
 }
 .actbtn:hover { color: var(--text); }
-.actbtn.on { color: var(--text); border-left-color: var(--accent); }
+.actbtn.on { color: var(--text); border-left-color: var(--accent-ui); }
 .actbtn.dis, .actbtn.dis:hover { color: var(--text-faint); opacity: .35; cursor: default; }
 
 /* ===== ④⑤ 停靠窗格（侧栏 / 日志） ===== */
@@ -544,7 +544,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   display: flex; align-items: center; gap: 2px; height: 26px; padding: 0 5px 0 11px;
   background: var(--surface-2); border-bottom: 1px solid var(--border); flex: none;
 }
-.dock-tt { flex: 1; font-size: 11.5px; font-weight: 600; letter-spacing: var(--ls-tight); color: var(--text-muted); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.dock-tt { flex: 1; font-size: var(--fs-3); font-weight: 600; letter-spacing: var(--ls-tight); color: var(--text-muted); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .dock-x { width: 18px; height: 18px; flex: none; display: inline-flex; align-items: center; justify-content: center; color: var(--text-faint); cursor: pointer; border-radius: var(--r-ctl); }
 .dock-x:hover { background: var(--border); color: var(--text); }
 /* scrollbar-gutter: stable —— 恒定预留竖滚动条槽位：侧栏面板内容（如可见性「瞬时可见」随时间轴每帧重算，
@@ -555,7 +555,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 .sv { display: flex; flex-direction: column; min-height: 100%; }
 .sv:empty::after {
   content: '（星座地图加载后，这里显示对应视图）';
-  padding: 12px; font-size: 12px; color: var(--text-faint);
+  padding: 12px; font-size: var(--fs-3); color: var(--text-faint);
 }
 .vsplit { width: 5px; margin: 0 -2px; cursor: col-resize; flex: none; z-index: 5; }
 .vsplit:hover { background: var(--border-strong); }
@@ -566,7 +566,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 .logdock { flex: none; height: 110px; border-top: 1px solid var(--border); }
 .loglines {
   flex: 1; overflow-y: auto; padding: 3px 9px;
-  font-family: var(--font-mono); font-size: 11.5px; line-height: 1.6; user-select: text;
+  font-family: var(--font-code); font-size: var(--fs-3); line-height: 1.6; user-select: text;
 }
 .ln { white-space: nowrap; color: var(--text-muted); }
 .ln.warn { color: var(--warn); }
@@ -578,16 +578,16 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 .about-mask { position: fixed; inset: 0; z-index: 200; background: rgba(0,0,0,0.28); display: flex; align-items: center; justify-content: center; }
 .about {
   min-width: 300px; padding: 26px 34px 22px; text-align: center;
-  background: var(--surface); border: 1px solid var(--border-strong); box-shadow: 0 10px 32px rgba(0,0,0,0.3);
+  background: var(--surface); border: 1px solid var(--border-strong); box-shadow: var(--shadow-3);
 }
-.ab-name { font-family: var(--font-serif); font-size: 19px; letter-spacing: var(--ls-tight); }
-.ab-ver { margin-top: 8px; font-size: 12px; color: var(--text-muted); }
-.ab-close { margin-top: 18px; padding: 4px 22px; border: 1px solid var(--border-strong); background: var(--bg); color: var(--text); cursor: pointer; border-radius: var(--r-ctl); }
+.ab-name { font-family: var(--font-serif); font-size: var(--fs-6); letter-spacing: var(--ls-tight); }
+.ab-ver { margin-top: 8px; font-size: var(--fs-3); color: var(--text-muted); }
+.ab-close { margin-top: 18px; height: var(--h-ctl-lg); white-space: nowrap; padding: 0 22px; border: 1px solid var(--border-strong); background: var(--bg); color: var(--text); cursor: pointer; border-radius: var(--r-ctl); }
 .ab-close:hover { border-color: var(--accent); }
 .ab-close:disabled { opacity: .5; cursor: default; }
-.ab-id { cursor: pointer; user-select: text; font-size: 15px; }
+.ab-id { cursor: pointer; user-select: text; font-size: var(--fs-5); }
 .ab-id:hover { color: var(--text); }
-.ab-copied { margin-left: 8px; color: var(--ok); font-size: 11px; }
+.ab-copied { margin-left: 8px; color: var(--ok); font-size: var(--fs-2); }
 .lk-btns { display: flex; gap: 10px; justify-content: center; }
 
 /* 状态栏激活状态（左侧纯文字，无背景框） */
@@ -600,24 +600,24 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   display: flex; align-items: center; gap: 10px; height: 26px;
   padding: 0 8px 0 12px; background: var(--surface);
   border-top: 1px solid var(--border); flex: none;
-  font-size: 11.5px; color: var(--text-muted);
+  font-size: var(--fs-3); color: var(--text-muted);
 }
 .hint { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .cells { display: flex; align-items: center; gap: 6px; flex: none; }
 .cell {
   display: inline-flex; align-items: center; gap: 6px; height: 19px; padding: 0 9px;
-  border: 1px solid var(--border-strong); background: var(--bg);
-  box-shadow: inset 0 1px 2px rgba(0,0,0,0.06); color: var(--text-muted);
+  /* 平面语言：原来这里有一道 inset 凹陷，是全库唯一一处拟物，与其余控件不同族 */
+  border: 1px solid var(--border); background: var(--bg); color: var(--text-muted);
 }
 /* 环境场读数格：量名（灰）+ 数值（等宽白）+ 单位（灰），与经纬度格同一档视觉重量 */
 .cell.envval { color: var(--text); gap: 5px; }
-.cell.envval .ekey, .cell.envval .eunit { color: var(--text-faint); font-size: 11px; }
-.cell.envval .cval { font-family: var(--font-mono); font-weight: 600; font-variant-numeric: tabular-nums; }
+.cell.envval .ekey, .cell.envval .eunit { color: var(--text-faint); font-size: var(--fs-2); }
+.cell.envval .cval { font-family: var(--font-code); font-weight: 600; font-variant-numeric: tabular-nums; }
 .cell.coord { color: var(--text); }
 .cell.coord .cur { flex: none; }
-.cell.coord .cval { font-family: var(--font-mono); font-weight: 600; letter-spacing: var(--ls-tight); min-width: 150px; }
+.cell.coord .cval { font-family: var(--font-code); font-weight: 600; letter-spacing: var(--ls-tight); min-width: 150px; }
 .zoomctl .zbtn { width: 15px; height: 15px; display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 1px solid var(--border); background: var(--surface); color: var(--text-muted); cursor: pointer; border-radius: var(--r-ctl); }
 .zoomctl .zbtn:hover { color: var(--text); border-color: var(--accent); }
 .zoomctl .zrange { width: 110px; }
-.zoomctl .zpct { width: 32px; text-align: right; font-family: var(--font-mono); color: var(--text-muted); }
+.zoomctl .zpct { width: 32px; text-align: right; font-family: var(--font-code); color: var(--text-muted); }
 </style>

@@ -266,7 +266,7 @@ C/I {{ fmt(p.ciDb, 2) }} dB<template v-if="Number.isFinite(p.sharePct)">
 .src:hover .src-lab, .src.hot .src-lab { font-weight: 700; }
 .src:hover .drop, .src.hot .drop { opacity: 1; stroke-width: 0.8; }
 
-.lg { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 6px; font-size: 11px; color: var(--text-muted); }
+.lg { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 6px; font-size: var(--fs-2); color: var(--text-muted); }
 .lg-i { display: inline-flex; align-items: center; gap: 5px; }
 .sw { display: inline-block; width: 15px; height: 0; border-top-width: 2px; border-top-style: solid; }
 .sw.mask { border-top-color: var(--danger, #a32d2d); border-top-style: dashed; }
@@ -274,6 +274,6 @@ C/I {{ fmt(p.ciDb, 2) }} dB<template v-if="Number.isFinite(p.sharePct)">
 .sw.own { border-top-color: var(--text-muted); border-top-style: dashed; }
 .sw.src { width: 7px; height: 7px; border: none; border-radius: 50%; background: var(--warn, #d08a2e); }
 
-.warn { margin: 6px 0 0; font-size: 11px; line-height: 1.5; color: var(--warn, #d08a2e); }
-.empty { margin: 8px 0 0; text-align: center; font-size: 12px; color: var(--text-muted); }
+.warn { margin: 6px 0 0; font-size: var(--fs-2); line-height: 1.5; color: var(--warn, #d08a2e); }
+.empty { margin: 8px 0 0; text-align: center; font-size: var(--fs-3); color: var(--text-muted); }
 </style>

@@ -93,7 +93,7 @@ function add() {
         <template v-for="r in rows" :key="r.altKm">
           <div class="sp-row" :class="{ on: sel.has(r.altKm) }" @click="toggle(r)">
             <span class="c-ck"><input type="checkbox" :checked="sel.has(r.altKm)" @click.stop @change="toggle(r)" /></span>
-            <i class="tri" :class="{ open: exp.has(r.altKm) }" :title="`列出该层的 ${r.n} 颗星`" @click.stop="toggleExp(r)"><Icon name="chevron-right" :size="10" /></i>
+            <i class="tri" :class="{ open: exp.has(r.altKm) }" :title="`列出该层的 ${r.n} 颗星`" @click.stop="toggleExp(r)"><Icon name="chevron-right" :size="12" /></i>
             <span class="c-alt">{{ r.altKm.toFixed(1) }}<em v-if="r.hiKm - r.loKm >= 1">±{{ ((r.hiKm - r.loKm) / 2).toFixed(0) }}</em></span>
             <span class="c-n">{{ r.n }}</span>
             <span class="c-inc">{{ incText(r) }}</span>
@@ -132,24 +132,24 @@ function add() {
 /* 弹窗外壳与「对星性能表选项」同源（SatCovWindows.vue 的 .sat-mask/.sdh/.sdfoot 一套）：
    那份是 scoped 的、进不到本组件，故这里带一份同值副本。改动请两处对照。 */
 .sat-mask { position: absolute; inset: 0; background: rgba(4, 8, 14, .55); display: flex; align-items: center; justify-content: center; z-index: 70; }
-.sp-dlg { width: 880px; max-width: calc(100% - 32px); height: 620px; max-height: 88%; display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-float); box-shadow: 0 16px 48px rgba(0, 0, 0, .55); font-size: 12px; color: var(--text); }
-.sdh { display: flex; align-items: center; padding: 11px 14px; border-bottom: 1px solid var(--border); font-family: var(--font-serif); font-size: 14px; }
+.sp-dlg { width: 880px; max-width: calc(100% - 32px); height: 620px; max-height: 88%; display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-float); box-shadow: var(--shadow-3); font-size: var(--fs-3); color: var(--text); }
+.sdh { display: flex; align-items: center; padding: 11px 14px; border-bottom: 1px solid var(--border); font-family: var(--font-serif); font-size: var(--fs-5); }
 .sdh .csx { margin-left: auto; cursor: pointer; color: var(--text-faint); display: inline-flex; }
 .sdh .csx:hover { color: var(--text); }
 .sdfoot { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-top: 1px solid var(--border); }
-.sdfoot .save { background: var(--accent); color: var(--bg); padding: 4px 18px; cursor: pointer; font-size: 12px; }
+.sdfoot .save { background: var(--accent); color: var(--bg); padding: 4px 18px; cursor: pointer; font-size: var(--fs-3); }
 .sdfoot .save.ghost { background: transparent; color: var(--text); border: 1px solid var(--border); padding: 3px 12px; }
 .sdfoot .save.ghost:hover { border-color: var(--accent); }
 .sdfoot .save.dis { opacity: .4; pointer-events: none; }
 .sdfoot .sel { margin-left: auto; }
 /* 工具条 */
 .sp-bar { display: flex; align-items: center; gap: 8px; padding: 8px 14px; border-bottom: 1px solid var(--border); flex: none; flex-wrap: wrap; }
-.ci { border: 1px solid var(--border); background-color: var(--bg); color: var(--text); padding: 3px 6px; font-size: 12px; outline: none; border-radius: var(--r-box); }
+.ci { border: 1px solid var(--field-border); background-color: var(--field-bg); color: var(--text); padding: 3px 6px; font-size: var(--fs-3); outline: none; border-radius: var(--r-box); }
 .ci.src { flex: none; width: 128px; }
 .ci.q { flex: 1; min-width: 120px; }
 .ci.n { width: 56px; font-family: var(--font-mono); text-align: right; }
 .tolb { display: flex; align-items: center; gap: 5px; color: var(--text-muted); white-space: nowrap; }
-.tolb i { font-style: normal; color: var(--text-faint); font-size: 11px; }
+.tolb i { font-style: normal; color: var(--text-faint); font-size: var(--fs-2); }
 /* 分段控件：连体框 + 段间细线，选中段填墨。全库四处（主窗 / GRD 设置 / 壳层选择 / 对星窗口）
    原来各写各的——有的没圆角、有的没段间线、段内距 10 与 12 两种；此处收成一份口径，四处逐字一致。 */
 .seg { display: flex; border: 1px solid var(--border); border-radius: var(--r-ctl); overflow: hidden; }
@@ -159,40 +159,40 @@ function add() {
 .seg .sg.on { background: var(--accent); color: var(--bg); }
 /* 选中段是实底，两侧的分隔线压在墨块边上反而脏，去掉 */
 .seg .sg.on, .seg .sg.on + .sg { border-left-color: transparent; }
-.cnt { font-family: var(--font-mono); font-size: 11px; color: var(--text-faint); white-space: nowrap; }
+.cnt { font-family: var(--font-mono); font-size: var(--fs-2); color: var(--text-faint); white-space: nowrap; }
 /* 层列表：表头与行同一套列宽 */
 .sp-head, .sp-row { display: flex; align-items: center; gap: 8px; padding: 3px 14px; }
-.sp-head { flex: none; border-bottom: 1px solid var(--border); color: var(--text-muted); font-size: 11px; padding-top: 6px; padding-bottom: 6px; }
+.sp-head { flex: none; border-bottom: 1px solid var(--border); color: var(--text-muted); font-size: var(--fs-2); padding-top: 6px; padding-bottom: 6px; }
 .sp-head .c-alt { margin-left: 20px; }   /* 对齐行里的展开三角（12px + 8px gap） */
 .c-ck { flex: none; width: 14px; display: inline-flex; }
 .tri { flex: none; width: 12px; font-style: normal; display: inline-flex; align-items: center; justify-content: center; color: var(--text-faint); cursor: pointer; transition: transform .12s; }
 .tri.open { transform: rotate(90deg); }
 .tri:hover { color: var(--text); }
 .c-alt { flex: none; width: 96px; font-family: var(--font-mono); text-align: right; }
-.c-alt em { font-style: normal; color: var(--text-faint); font-size: 10px; margin-left: 3px; }
+.c-alt em { font-style: normal; color: var(--text-faint); font-size: var(--fs-1); margin-left: 3px; }
 .c-n { flex: none; width: 52px; font-family: var(--font-mono); text-align: right; color: var(--text-muted); }
-.c-inc { flex: none; width: 92px; font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); text-align: right; }
+.c-inc { flex: none; width: 92px; font-family: var(--font-mono); font-size: var(--fs-2); color: var(--text-muted); text-align: right; }
 .c-grp { flex: 1; min-width: 0; display: flex; gap: 4px; overflow: hidden; }
 .sp-body { flex: 1; min-height: 0; overflow-y: auto; }
 .sp-row { cursor: pointer; border-bottom: 1px solid color-mix(in srgb, var(--border) 45%, transparent); }
 .sp-row:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
-.sp-row.on { background: color-mix(in srgb, var(--accent) 13%, transparent); }
-.gchip { flex: none; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border: 1px solid var(--border); border-radius: var(--r-pill); padding: 0 7px; font-size: 10.5px; line-height: 16px; color: var(--text-muted); }
+.sp-row.on { background: color-mix(in srgb, var(--accent-ui) 13%, transparent); }
+.gchip { flex: none; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border: 1px solid var(--border); border-radius: var(--r-pill); padding: 0 7px; font-size: var(--fs-2); line-height: 16px; color: var(--text-muted); }
 .gchip i { font-style: normal; margin-left: 5px; color: var(--text-faint); font-family: var(--font-mono); }
-.gmore { color: var(--text-faint); font-size: 10.5px; }
-.ecc { flex: none; font-family: var(--font-mono); font-size: 10px; color: #d08b5a; }
-.lib { flex: none; font-size: 9.5px; color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent); border-radius: var(--r-pill); padding: 0 6px; line-height: 15px; }
+.gmore { color: var(--text-faint); font-size: var(--fs-2); }
+.ecc { flex: none; font-family: var(--font-mono); font-size: var(--fs-1); color: #d08b5a; }
+.lib { flex: none; font-size: var(--fs-1); color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent); border-radius: var(--r-pill); padding: 0 6px; line-height: 15px; }
 .sp-empty { padding: 26px; text-align: center; color: var(--text-faint); }
 /* 展开：该层的卫星清单 */
 .sp-sats { background: color-mix(in srgb, var(--text) 3%, transparent); border-bottom: 1px solid var(--border); padding: 3px 0; }
-.sp-sat { display: flex; align-items: center; gap: 8px; padding: 1px 14px 1px 46px; font-size: 11px; color: var(--text-muted); }
+.sp-sat { display: flex; align-items: center; gap: 8px; padding: 1px 14px 1px 46px; font-size: var(--fs-2); color: var(--text-muted); }
 .sp-sat:hover { color: var(--text); }
 .s-nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.s-slot { font-style: normal; margin-left: 5px; font-family: var(--font-mono); font-size: 10px; color: var(--text-faint); }
-.s-id, .s-alt, .s-inc { flex: none; font-family: var(--font-mono); font-size: 10.5px; color: var(--text-faint); }
+.s-slot { font-style: normal; margin-left: 5px; font-family: var(--font-mono); font-size: var(--fs-1); color: var(--text-faint); }
+.s-id, .s-alt, .s-inc { flex: none; font-family: var(--font-mono); font-size: var(--fs-2); color: var(--text-faint); }
 .s-id { width: 56px; text-align: right; }
 .s-alt { width: 66px; text-align: right; }
 .s-inc { width: 52px; text-align: right; }
-.s-gp { flex: none; width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10.5px; color: var(--text-faint); }
-.sp-more { padding: 3px 14px 3px 46px; font-family: var(--font-mono); font-size: 10.5px; color: var(--text-faint); }
+.s-gp { flex: none; width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-2); color: var(--text-faint); }
+.sp-more { padding: 3px 14px 3px 46px; font-family: var(--font-mono); font-size: var(--fs-2); color: var(--text-faint); }
 </style>

@@ -498,10 +498,16 @@ app.whenReady().then(() => {
   const grd = require(join(root, 'electron/services/grd'))(join(app.getPath('userData'), 'coverage-grd-imported'))
   // 转发器频率计划：挂在卫星下、与 GRD 天线平级的一类「文件」
   const freqPlan = require(join(root, 'electron/services/freqPlan'))(join(app.getPath('userData'), 'freq-plans'))
+  // 和风天气 provider（实时/预报环境场的数据源）。凭据在 electron/services/weatherConfig.js（不进仓库）；
+  // 未配置时 configured() 会如实报错，界面据此提示，不影响其余功能。
+  const weather = require(join(root, 'electron/services/weather'))(app.getPath('userData'))
+  // 气象栅格 provider（实时/预报**场**的数据源）：NCEP GFS，走 NOMADS 子集服务。
+  // 公共领域数据、无需凭据、可商用 —— 与和风那条按量计费的线互不相干。
+  const gfs = require(join(root, 'electron/services/gfs'))(app.getPath('userData'))
   // 激活与设备管理：终端心跳上报 + 激活书拉取验签（对端为独立的「卫星仿真平台管理」软件）
   const activation = require(join(root, 'electron/services/activation'))(share, storage)
   const { register } = require(join(root, 'electron/ipc/register'))
-  register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget: createLinkBudgetWindow, openSunOutage: createSunOutageWindow, grd, confirmCloseLinkBudget, openNgso: createNgsoWindow, confirmCloseNgso, openRegen: createRegenWindow, confirmCloseRegen, openE2e: createE2eWindow, confirmCloseE2e, openRain: createRainWindow, confirmCloseRain, openCi: createCiWindow, openPfd: createPfdWindow, freqPlan, openFreqPlan: createFreqPlanWindow, notifyFreqPlan, activation })
+  register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget: createLinkBudgetWindow, openSunOutage: createSunOutageWindow, grd, confirmCloseLinkBudget, openNgso: createNgsoWindow, confirmCloseNgso, openRegen: createRegenWindow, confirmCloseRegen, openE2e: createE2eWindow, confirmCloseE2e, openRain: createRainWindow, confirmCloseRain, openCi: createCiWindow, openPfd: createPfdWindow, freqPlan, openFreqPlan: createFreqPlanWindow, notifyFreqPlan, activation, weather, gfs })
   // 定时心跳；激活状态变化（管理端激活/撤销被拉到）广播到所有窗口，各窗口就地上锁/解锁
   activation.start((st) => {
     for (const w of BrowserWindow.getAllWindows()) {

@@ -611,19 +611,11 @@ export function useSatPerfTable() {
     return all.filter((b) => String(b.name).toLowerCase().includes(ql))
   }
   const beamOn = (o, bi) => !o || o.beamSel == null || o.beamSel.includes(bi)
-  const beamSelCount = (o) => (!o || o.beamSel == null) ? ctxBeams.value.length : o.beamSel.length
   const allBi = () => ctxBeams.value.map((b) => b.bi)
-  const filteredAllOn = (o) => { const f = filteredBeams(); return f.length > 0 && f.every((b) => beamOn(o, b.bi)) }
-  const filteredAnyOn = (o) => filteredBeams().some((b) => beamOn(o, b.bi))
   function normSel(arr) { const all = allBi(); const st = new Set(arr); if (all.length && all.every((i) => st.has(i))) return null; return [...st].sort((a, b) => a - b) }
   const materialize = (o) => (o.beamSel == null ? allBi() : o.beamSel.slice())
-  function toggleBeam(o, bi) { if (!o) return; const st = new Set(materialize(o)); st.has(bi) ? st.delete(bi) : st.add(bi); o.beamSel = normSel([...st]) }
-  function selectFiltered(o, on) {
-    if (!o) return
-    const ids = filteredBeams().map((b) => b.bi), st = new Set(materialize(o))
-    if (on) ids.forEach((i) => st.add(i)); else ids.forEach((i) => st.delete(i))
-    o.beamSel = normSel([...st])
-  }
+  const beamSelIds = (o) => (o ? materialize(o) : [])          // 当前勾选集（null＝全集，摊开成数组）
+  const setBeamSel = (o, ids) => { if (o) o.beamSel = normSel([...new Set(ids)]) }   // 整份写回（拖刷一次落一批）
 
   // 复制为 TSV（表头 + 可见列），与对地表同款；时刻列走与网格同一条格式化口径
   function toTsv(cols) {
@@ -666,7 +658,7 @@ export function useSatPerfTable() {
     picks, pickedNames, hasPick, addTarget, addTargets, removeTarget, clearTargets,
     targetMode, beamPicks, activePicks, setBeamTargets,
     colDefs: COL_DEFS, colGroups: COL_GROUPS, getOpts, visibleColumns, rememberOpts, resetOpts,
-    beamQuery, filteredBeams, beamOn, beamSelCount, filteredAllOn, filteredAnyOn, toggleBeam, selectFiltered,
+    beamQuery, filteredBeams, beamOn, beamSelIds, setBeamSel,
     compute, toTsv, getState, restoreState, setTimeFmt, fmtCell, footNote,
     // 时间窗口
     win, winNote, winInfo, computeWindows, cancelWindows, winStaleFor, setCursor, computeAtCursor, seekCursor, clearRows

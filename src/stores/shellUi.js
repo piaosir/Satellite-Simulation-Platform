@@ -17,7 +17,9 @@ const KEY = 'shell-ui-v2'
 // 否则重开软件后 localStorage 里的值过不了 :18 的校验、静默回落到 'constellation'
 //（'env' 曾经就漏在这里，表现为「环境场不被记忆」）。
 const SIDES = ['constellation', 'antenna', 'satcov', 'beams', 'vis', 'poly', 'gxt', 'markers', 'env', 'focus', 'geo']
-export const shellUi = reactive({ toolbar: true, log: false, side: 'constellation', sideLast: 'constellation', exw: 300, exwVis: 360 })
+// 出厂宽度 340（原 300）：参数行是「标签列 + 控件 + 读数列」三段，300px 下控件那段只剩一百出头，
+// 英文标签列还要再宽一档 —— 拖过一次的用户读的是自己存的值，这里只管第一次打开时的观感。
+export const shellUi = reactive({ toolbar: true, log: false, side: 'constellation', sideLast: 'constellation', exw: 340, exwVis: 400 })
 try {
   const saved = JSON.parse(localStorage.getItem(KEY) || 'null')
   if (saved && typeof saved === 'object') {

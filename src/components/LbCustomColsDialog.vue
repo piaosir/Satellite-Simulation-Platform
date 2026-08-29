@@ -121,7 +121,7 @@ const listUnit = (c) => unitOf(c, props.pool)
       <div class="ccd-hd">
         <span class="ccd-fx">ƒx</span>自定义列<span v-if="subtitle" class="ccd-sub">· {{ subtitle }}</span>
         <span class="ccd-sp"></span>
-        <button class="ccd-x" title="关闭" aria-label="关闭" @click="emit('close')"><Icon name="x" :size="13" /></button>
+        <button class="ccd-x" title="关闭" aria-label="关闭" @click="emit('close')"><Icon name="x" :size="12" /></button>
       </div>
       <div class="ccd-bd">
         <div class="ccd-list">
@@ -180,45 +180,45 @@ const listUnit = (c) => unitOf(c, props.pool)
 
 <style scoped>
 .ccd-mask { position: fixed; inset: 0; z-index: 220; background: rgba(0, 0, 0, .32); display: flex; align-items: center; justify-content: center; }
-.ccd { width: 620px; max-width: calc(100vw - 48px); max-height: calc(100vh - 64px); display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--border-strong, rgba(128,128,128,.5)); border-radius: var(--r-box, 4px); box-shadow: 0 12px 40px rgba(0,0,0,.35); }
-.ccd-hd { display: flex; align-items: center; gap: 6px; padding: 8px 10px; font-size: 13px; font-weight: 600; color: var(--text); border-bottom: 1px solid var(--border, rgba(128,128,128,.3)); }
+.ccd { width: 620px; max-width: calc(100vw - 48px); max-height: calc(100vh - 64px); display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--border-strong, rgba(128,128,128,.5)); border-radius: var(--r-box, 4px); box-shadow: var(--shadow-3); }
+.ccd-hd { display: flex; align-items: center; gap: 6px; padding: 8px 10px; font-size: var(--fs-4); font-weight: 600; color: var(--text); border-bottom: 1px solid var(--border, rgba(128,128,128,.3)); }
 .ccd-fx { font-style: italic; font-weight: 700; color: var(--accent, var(--text)); }
-.ccd-sub { font-weight: 400; color: var(--text-faint, #888); font-size: 12px; }
+.ccd-sub { font-weight: 400; color: var(--text-faint, #888); font-size: var(--fs-3); }
 .ccd-sp { flex: 1 1 auto; }
 .ccd-x { display: inline-flex; border: 0; background: transparent; color: var(--text-faint, #888); cursor: pointer; padding: 2px; }
 .ccd-x:hover { color: var(--text); }
 .ccd-bd { display: flex; align-items: stretch; min-height: 0; overflow: hidden; }
 .ccd-list { flex: 0 0 200px; display: flex; flex-direction: column; gap: 2px; padding: 8px; border-right: 1px solid var(--border, rgba(128,128,128,.3)); overflow-y: auto; }
 .ccd-newbtn { align-self: flex-start; margin-bottom: 4px; }
-.ccd-it { display: flex; align-items: center; gap: 4px; padding: 4px 6px; font-size: 12px; color: var(--text); border-radius: var(--r-box); cursor: pointer; }
+.ccd-it { display: flex; align-items: center; gap: 4px; padding: 4px 6px; font-size: var(--fs-3); color: var(--text); border-radius: var(--r-box); cursor: pointer; }
 .ccd-it:hover { background: var(--surface-2, rgba(128,128,128,.12)); }
 .ccd-it.ccd-on { background: var(--surface-2, rgba(128,128,128,.16)); font-weight: 600; }
 .ccd-it-n { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ccd-it-n i { font-style: normal; color: var(--text-faint, #888); font-size: 11px; font-weight: 400; }
-.ccd-it-del { display: none; flex: 0 0 auto; border: 0; background: transparent; color: var(--text-faint, #888); cursor: pointer; padding: 1px 2px; }
+.ccd-it-n i { font-style: normal; color: var(--text-faint, #888); font-size: var(--fs-2); font-weight: 400; }
+.ccd-it-del { display: none; flex: 0 0 auto; border: 0; background: transparent; color: var(--text-faint, #888); cursor: pointer; height: var(--h-ctl); white-space: nowrap; padding: 0 2px; }
 .ccd-it:hover .ccd-it-del { display: inline-flex; }
 .ccd-it-del:hover { color: var(--danger, #9c5751); }
-.ccd-empty { padding: 8px 6px; font-size: 12px; color: var(--text-faint, #888); }
+.ccd-empty { padding: 8px 6px; font-size: var(--fs-3); color: var(--text-faint, #888); }
 .ccd-ed { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 7px; padding: 10px 12px; overflow-y: auto; }
 .ccd-row { display: flex; align-items: center; gap: 8px; }
 .ccd-f { display: flex; flex-direction: column; gap: 3px; }
 .ccd-grow { flex: 1 1 auto; min-width: 0; }
-.ccd-l { font-size: 10px; color: var(--text-faint, #888); letter-spacing: var(--ls-label); }
-.ccd-in { font-size: 12px; padding: 3px 6px; background-color: var(--surface-2, rgba(128,128,128,.12)); color: var(--text, inherit); border: 1px solid var(--border, rgba(128,128,128,.35)); border-radius: var(--r-box); min-width: 0; }
+.ccd-l { font-size: var(--fs-1); color: var(--text-faint, #888); letter-spacing: var(--ls-label); }
+.ccd-in { font-size: var(--fs-3); padding: 3px 6px; background-color: var(--surface-2, rgba(128,128,128,.12)); color: var(--text, inherit); border: 1px solid var(--border, rgba(128,128,128,.35)); border-radius: var(--r-box); min-width: 0; }
 .ccd-in:focus { outline: none; border-color: var(--border-strong, rgba(128,128,128,.6)); }
 .ccd-dp { width: 56px; }
 .ccd-sel { flex: 1 1 auto; }
 .ccd-unitrow { flex-wrap: wrap; }
-.ccd-unitv { font-size: 12px; color: var(--text); font-family: ui-monospace, Consolas, monospace; }
-.ccd-expr { font-size: 12px; padding: 4px 6px; background: var(--surface-2, rgba(128,128,128,.12)); color: var(--text, inherit); border: 1px solid var(--border, rgba(128,128,128,.35)); border-radius: var(--r-box); resize: vertical; font-family: ui-monospace, Consolas, monospace; }
+.ccd-unitv { font-size: var(--fs-3); color: var(--text); font-family: ui-monospace, Consolas, monospace; }
+.ccd-expr { font-size: var(--fs-3); padding: 4px 6px; background: var(--surface-2, rgba(128,128,128,.12)); color: var(--text, inherit); border: 1px solid var(--border, rgba(128,128,128,.35)); border-radius: var(--r-box); resize: vertical; font-family: ui-monospace, Consolas, monospace; }
 .ccd-expr:focus { outline: none; border-color: var(--border-strong, rgba(128,128,128,.6)); }
-.ccd-prev { font-size: 12px; color: var(--text-muted, var(--text)); }
+.ccd-prev { font-size: var(--fs-3); color: var(--text-muted, var(--text)); }
 .ccd-prev b { font-weight: 600; }
-.ccd-prev i { font-style: normal; color: var(--text-faint, #888); font-size: 11px; }
-.ccd-err { font-size: 11px; color: var(--danger, #9c5751); }
+.ccd-prev i { font-style: normal; color: var(--text-faint, #888); font-size: var(--fs-2); }
+.ccd-err { font-size: var(--fs-2); color: var(--danger, #9c5751); }
 .ccd-act { margin-top: 2px; }
 .ccd-ref { margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--border, rgba(128,128,128,.3)); display: flex; flex-direction: column; gap: 2px; }
-.ccd-ref-r { display: flex; gap: 8px; font-size: 11px; color: var(--text-faint, #888); line-height: 1.5; }
+.ccd-ref-r { display: flex; gap: 8px; font-size: var(--fs-2); color: var(--text-faint, #888); line-height: 1.5; }
 .ccd-ref-r b { flex: 0 0 34px; font-weight: 600; color: var(--text-muted, var(--text-faint, #888)); letter-spacing: var(--ls-label); }
 .ccd-ref-r span { flex: 1 1 auto; min-width: 0; font-family: ui-monospace, Consolas, monospace; }
 </style>

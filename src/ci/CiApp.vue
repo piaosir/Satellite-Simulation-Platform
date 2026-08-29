@@ -1021,34 +1021,34 @@ const run = () => {
 </template>
 
 <style scoped>
-.ci-root { display: flex; flex-direction: column; height: 100vh; background: var(--bg); color: var(--text); font-size: 13px; }
+.ci-root { display: flex; flex-direction: column; height: 100vh; background: var(--bg); color: var(--text); font-size: var(--fs-4); }
 
 .ci-bar { display: flex; align-items: center; gap: 12px; padding: 8px 14px; border-bottom: 1px solid var(--border-strong); background: var(--surface); }
-.ci-title { margin: 0; font-size: 15px; font-weight: 700; letter-spacing: var(--ls-tight); }
+.ci-title { margin: 0; font-size: var(--fs-5); font-weight: 700; letter-spacing: var(--ls-tight); }
 .ci-bar-sp { flex: 1; }
 .ci-tabs { display: flex; gap: 3px; }
-.ci-tab { font: inherit; font-size: 12px; padding: 5px 12px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 4px); }
-.ci-tab.on { background: var(--surface-2); color: var(--text); border-color: var(--border-strong); font-weight: 600; box-shadow: inset 0 -2px 0 var(--accent); }
-.ci-run { font: inherit; font-weight: 600; padding: 6px 18px; cursor: pointer; color: var(--bg); background: var(--accent); border: none; border-radius: var(--r-ctl, 4px); }
+.ci-tab { font: inherit; font-size: var(--fs-3); height: var(--h-ctl-lg); white-space: nowrap; padding: 0 12px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 4px); }
+.ci-tab.on { background: var(--surface-2); color: var(--text); border-color: var(--border-strong); font-weight: 600; box-shadow: inset 0 -2px 0 var(--accent-ui); }
+.ci-run { font: inherit; font-weight: 600; height: var(--h-ctl-lg); white-space: nowrap; padding: 0 18px; cursor: pointer; color: var(--bg); background: var(--accent); border: none; border-radius: var(--r-ctl, 4px); }
 .ci-run:disabled { opacity: 0.55; cursor: default; }
-.ci-btn { font: inherit; font-size: 12px; padding: 4px 10px; cursor: pointer; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl, 4px); }
+.ci-btn { font: inherit; font-size: var(--fs-3); height: var(--h-ctl); white-space: nowrap; padding: 0 10px; cursor: pointer; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl, 4px); }
 .ci-btn:hover:not(:disabled) { border-color: var(--border-strong); }
 .ci-btn:disabled { opacity: 0.5; cursor: default; }
 .ci-x { font: inherit; line-height: 1; padding: 1px 6px; cursor: pointer; color: var(--text-muted); background: none; border: 1px solid transparent; border-radius: var(--r-box); }
 .ci-x:hover { color: var(--text); border-color: var(--border); }
 
-.ci-msg { margin: 0; padding: 6px 14px; font-size: 12px; color: var(--text-muted); background: var(--surface-2); border-bottom: 1px solid var(--border); }
+.ci-msg { margin: 0; padding: 6px 14px; font-size: var(--fs-3); color: var(--text-muted); background: var(--surface-2); border-bottom: 1px solid var(--border); }
 
 .ci-main { flex: 1; min-height: 0; overflow-y: auto; padding: 14px 18px; }
 
 .ci-panel { margin-bottom: 20px; padding: 14px 16px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-float); }
-.ci-panel > h2, .ci-panel-hd h2 { margin: 0 0 10px; font-size: 14px; font-weight: 700; }
-.ci-panel h3 { margin: 14px 0 6px; font-size: 12.5px; font-weight: 700; color: var(--text-muted); }
+.ci-panel > h2, .ci-panel-hd h2 { margin: 0 0 10px; font-size: var(--fs-5); font-weight: 700; }
+.ci-panel h3 { margin: 14px 0 6px; font-size: var(--fs-4); font-weight: 700; color: var(--text-muted); }
 .ci-panel-hd { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
 .ci-panel-hd h2, .ci-panel-hd h3 { margin: 0; flex: none; }
 .ci-hd-tools { margin-left: auto; display: flex; align-items: center; gap: 8px; }
 /* min-width:0 不能省：flex 项默认 min-width:auto，nowrap 的长站名会把它顶出面板而不是省略号 */
-.ci-hd-sum { margin-left: auto; min-width: 0; font-family: var(--font-mono); font-size: 11.5px; color: var(--text-faint); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ci-hd-sum { margin-left: auto; min-width: 0; font-family: var(--font-mono); font-size: var(--fs-3); color: var(--text-faint); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ci-sub { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--border); }
 
 /* 「本站与本链路」输入带：按分组横排，组内是读数表（标签左、值右对齐），
@@ -1057,39 +1057,39 @@ const run = () => {
 /* 轨道上限钉死 232px：写 1fr 的话，窗口一宽或列数一少，剩余宽度全灌进标签与值之间的空当，
    一行读数拉成两头见不着的横幅。宽屏多出来的宽度宁可空在右边，也不摊给已经够宽的列。 */
 .ci-band { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 232px)); gap: 10px 26px; }
-.ci-bcol > h3 { margin: 0 0 5px; padding-bottom: 3px; font-size: 11.5px; font-weight: 700; letter-spacing: var(--ls-tight); color: var(--text-muted); border-bottom: 1px solid var(--border); }
+.ci-bcol > h3 { margin: 0 0 5px; padding-bottom: 3px; font-size: var(--fs-3); font-weight: 700; letter-spacing: var(--ls-tight); color: var(--text-muted); border-bottom: 1px solid var(--border); }
 .ci-bf { display: flex; align-items: center; gap: 8px; padding: 2px 0; }
-.ci-bf > span { flex: 1 1 auto; min-width: 0; font-size: 11.5px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ci-bf > span { flex: 1 1 auto; min-width: 0; font-size: var(--fs-3); color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ci-bf input, .ci-bf select {
-  width: 104px; flex: none; font: inherit; font-size: 12.5px; text-align: right; padding: 3px 6px;
-  color: var(--text); background-color: var(--bg); border: 1px solid var(--border); border-radius: var(--r-ctl, 4px);
+  width: 104px; flex: none; font: inherit; font-size: var(--fs-4); text-align: right; padding: 3px 6px;
+  color: var(--text); background-color: var(--field-bg); border: 1px solid var(--field-border); border-radius: var(--r-ctl, 4px);
 }
 .ci-bf select, .ci-bf input.txt { text-align: left; }
 .ci-bf input:hover, .ci-bf select:hover { border-color: var(--border-strong); }
-.ci-bf input:focus, .ci-bf select:focus { outline: none; border-color: var(--accent); }
+.ci-bf input:focus, .ci-bf select:focus { outline: none; border-color: var(--accent-ui); }
 
 .ci-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(148px, 1fr)); gap: 8px 10px; }
 .ci-grid.inline { grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); margin-bottom: 8px; }
-.ci-grid label { display: flex; flex-direction: column; gap: 3px; font-size: 11.5px; color: var(--text-muted); }
+.ci-grid label { display: flex; flex-direction: column; gap: 3px; font-size: var(--fs-3); color: var(--text-muted); }
 .ci-grid label.wide { grid-column: span 2; }
 .ci-grid label.btn-cell { justify-content: flex-end; }
-.ci-grid input, .ci-grid select { font: inherit; font-size: 12.5px; padding: 4px 6px; color: var(--text); background-color: var(--bg); border: 1px solid var(--border); border-radius: var(--r-ctl, 4px); }
-.ci-grid input:focus, .ci-grid select:focus { outline: none; border-color: var(--accent); }
+.ci-grid input, .ci-grid select { font: inherit; font-size: var(--fs-4); padding: 4px 6px; color: var(--text); background-color: var(--field-bg); border: 1px solid var(--field-border); border-radius: var(--r-ctl, 4px); }
+.ci-grid input:focus, .ci-grid select:focus { outline: none; border-color: var(--accent-ui); }
 .ci-grid input[readonly] { background: var(--surface-2); color: var(--text-muted); }
 
 .ci-chk { flex-direction: row !important; align-items: center; gap: 5px !important; }
 .ci-grid.gap-t { margin-top: 8px; }
 /* 换算出来的那一段值：填在上面、结果就在下面一行，不用等点「计算」才知道自己填的等于多少 */
-.ci-derived { margin: 9px 0 0; padding: 6px 10px; font-size: 12px; line-height: 1.5; color: var(--text); background: var(--surface-2); border-left: 3px solid var(--accent); border-radius: var(--r-box); }
-.ci-derived b { font-size: 13.5px; font-weight: 700; font-variant-numeric: tabular-nums; }
-.ci-derived span { color: var(--text-muted); font-size: 11.5px; margin-left: 4px; }
+.ci-derived { margin: 9px 0 0; padding: 6px 10px; font-size: var(--fs-3); line-height: 1.5; color: var(--text); background: var(--surface-2); border-left: 3px solid var(--accent); border-radius: var(--r-box); }
+.ci-derived b { font-size: var(--fs-4); font-weight: 700; font-variant-numeric: tabular-nums; }
+.ci-derived span { color: var(--text-muted); font-size: var(--fs-3); margin-left: 4px; }
 .ci-derived.off { color: var(--text-muted); border-left-color: var(--border-strong); }
-.ci-radios { display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 8px; font-size: 12px; }
+.ci-radios { display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 8px; font-size: var(--fs-3); }
 .ci-radios label { display: flex; align-items: center; gap: 5px; cursor: pointer; }
-.ci-mini { font: inherit; font-size: 12px; padding: 3px 6px; background-color: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl, 4px); }
+.ci-mini { font: inherit; font-size: var(--fs-3); padding: 3px 6px; background-color: var(--field-bg); color: var(--text); border: 1px solid var(--field-border); border-radius: var(--r-ctl, 4px); }
 
 .ci-tb { width: 100%; border-collapse: collapse; font-size: var(--lb-fs, 12.5px); }
-.ci-tb th { padding: 4px 6px; font-size: 11.5px; font-weight: 600; text-align: left; color: var(--text-muted); border-bottom: 1px solid var(--border-strong); white-space: nowrap; }
+.ci-tb th { padding: 4px 6px; font-size: var(--fs-3); font-weight: 600; text-align: left; color: var(--text-muted); border-bottom: 1px solid var(--border-strong); white-space: nowrap; }
 .ci-tb td { padding: 2px 4px; border-bottom: 1px solid var(--border); }
 .ci-tb tr.off { opacity: 0.45; }
 .ci-tb tr.skip { opacity: 0.55; font-style: italic; }
@@ -1099,8 +1099,8 @@ const run = () => {
   width: 100%; font: inherit; font-size: inherit; padding: 3px 5px; color: var(--text);
   background-color: transparent; border: 1px solid transparent; border-radius: var(--r-box);
 }
-.ci-tb input:hover, .ci-tb select:hover { border-color: var(--border); }
-.ci-tb input:focus, .ci-tb select:focus { outline: none; background-color: var(--bg); border-color: var(--accent); }
+.ci-tb input:hover, .ci-tb select:hover { border-color: var(--field-border-hover); }
+.ci-tb input:focus, .ci-tb select:focus { outline: none; background-color: var(--field-bg); border-color: var(--accent-ui); }
 .ci-tb.res td, .ci-tb.res th[scope], .ci-tb.res tbody th { padding: 3px 8px; }
 .ci-tb.res tbody th { text-align: left; font-weight: 500; color: var(--text-muted); border-bottom: 1px solid var(--border); }
 .ci-tb.res tr.strong { font-weight: 700; }
@@ -1120,23 +1120,23 @@ const run = () => {
 
 .ci-kpis { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 12px; }
 .ci-kpi { flex: 1 1 130px; padding: 8px 12px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-float); }
-.ci-kpi span { display: block; font-size: 11px; color: var(--text-muted); }
-.ci-kpi b { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
-.ci-kpi b.sm { font-size: 14px; }
+.ci-kpi span { display: block; font-size: var(--fs-2); color: var(--text-muted); }
+.ci-kpi b { font-size: var(--fs-6); font-weight: 700; font-variant-numeric: tabular-nums; }
+.ci-kpi b.sm { font-size: var(--fs-5); }
 /* 「样本不足」不是一个数，别把它排得像一个数 */
-.ci-kpi b.kpi-short { font-size: 15px; font-weight: 600; color: var(--text-muted); }
+.ci-kpi b.kpi-short { font-size: var(--fs-5); font-weight: 600; color: var(--text-muted); }
 
 /* 分位表的样本支撑度：不足的整行压暗并划掉数字位，弱支撑只给个上标 */
 .ci-tb.res tr.pct-none td { color: var(--text-muted); }
 .ci-tb.res tr.pct-weak td.num { color: var(--warn, #d08a2e); }
-.pct-short { font-size: 11px; color: var(--text-muted); }
+.pct-short { font-size: var(--fs-2); color: var(--text-muted); }
 .pct-flag { font-size: 8.5px; font-weight: 700; margin-left: 2px; color: var(--warn, #d08a2e); }
 .pct-flag.samp { color: var(--danger, #c0392b); }
 
 /* 单源分解的份额条：数值旁附一条细条，便于横向比较各座的贡献占比 */
 .share-bar { display: inline-block; width: 46px; height: 5px; margin-left: 6px; vertical-align: middle; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-ctl); overflow: hidden; }
 .share-bar i { display: block; height: 100%; background: var(--accent); }
-.ci-kpi i { font-size: 11px; font-style: normal; color: var(--text-muted); margin-left: 3px; }
+.ci-kpi i { font-size: var(--fs-2); font-style: normal; color: var(--text-muted); margin-left: 3px; }
 
 .ci-split { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(300px, 0.85fr); gap: 20px; align-items: start; }
 /* C/CCI 那对：图是主体，逐站取值六列全是短数字（实测自然宽 312px），给够读的宽度就行 ——
@@ -1152,41 +1152,41 @@ const run = () => {
 /* 表窄到装不下时自己横滚，别把整个 grid 顶宽（grid 项默认 min-width:auto） */
 .ci-tbwrap { min-width: 0; overflow-x: auto; }
 
-.ci-note { margin: 6px 0 0; font-size: 11.5px; line-height: 1.55; color: var(--text-muted); }
-.ci-note.sm { font-size: 11px; }
+.ci-note { margin: 6px 0 0; font-size: var(--fs-3); line-height: 1.55; color: var(--text-muted); }
+.ci-note.sm { font-size: var(--fs-2); }
 /* 取数失败的原因行：不是提示语气，要看得出是出了事 */
 .ci-note.err { color: var(--danger, #d64545); }
 .ci-note strong { color: var(--text); font-weight: 600; }
-.ci-warn { margin: 8px 0 0; padding: 7px 10px; font-size: 11.5px; line-height: 1.55; color: var(--text); background: color-mix(in srgb, var(--warn, #d08a2e) 12%, transparent); border-left: 3px solid var(--warn, #d08a2e); border-radius: var(--r-box); }
+.ci-warn { margin: 8px 0 0; padding: 7px 10px; font-size: var(--fs-3); line-height: 1.55; color: var(--text); background: color-mix(in srgb, var(--warn, #d08a2e) 12%, transparent); border-left: 3px solid var(--warn, #d08a2e); border-radius: var(--r-box); }
 .ci-warn strong { font-weight: 700; }
 
 .ci-fieldwrap { margin-top: 10px; }
 /* 星座实参速览：选了真实星座后代替 Walker 输入格 */
 .ci-stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 4px 14px; margin: 8px 0 0; padding: 8px 11px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-float); }
-.ci-stats > div { display: flex; gap: 7px; align-items: baseline; font-size: 12px; }
+.ci-stats > div { display: flex; gap: 7px; align-items: baseline; font-size: var(--fs-3); }
 .ci-stats > div.wide { grid-column: 1 / -1; }
-.ci-stats dt { flex: none; color: var(--text-muted); font-size: 11.5px; }
+.ci-stats dt { flex: none; color: var(--text-muted); font-size: var(--fs-3); }
 .ci-stats dd { margin: 0; font-variant-numeric: tabular-nums; }
 .ci-stats .dim { color: var(--text-muted); }
-.ci-tb .ci-ro.sub { font-size: 11.5px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.ci-tb .ci-ro.sub { font-size: var(--fs-3); color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .ci-prog { height: 4px; margin-top: 8px; background: var(--surface-2); border-radius: var(--r-ctl); overflow: hidden; }
 .ci-prog-bar { height: 100%; background: var(--accent); transition: width 0.12s linear; }
 
 /* 邻星搜索：结果按与本星轨位的经度差排序，最近的在前 */
 .ci-search { margin: 8px 0 10px; padding: 10px 12px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-float); }
 .ci-search-hd { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.ci-search-hd input[type=text] { flex: 1 1 200px; min-width: 160px; font: inherit; font-size: 12.5px; padding: 4px 7px; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-ctl, 4px); }
-.ci-search-hd input[type=number] { font: inherit; font-size: 12.5px; padding: 4px 5px; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-ctl, 4px); }
-.ci-search-hd label { display: flex; align-items: center; gap: 3px; font-size: 11.5px; color: var(--text-muted); white-space: nowrap; }
-.ci-search-msg { font-size: 11.5px; color: var(--text-muted); }
+.ci-search-hd input[type=text] { flex: 1 1 200px; min-width: 160px; font: inherit; font-size: var(--fs-4); padding: 4px 7px; color: var(--text); background: var(--field-bg); border: 1px solid var(--field-border); border-radius: var(--r-ctl, 4px); }
+.ci-search-hd input[type=number] { font: inherit; font-size: var(--fs-4); padding: 4px 5px; color: var(--text); background: var(--field-bg); border: 1px solid var(--field-border); border-radius: var(--r-ctl, 4px); }
+.ci-search-hd label { display: flex; align-items: center; gap: 3px; font-size: var(--fs-3); color: var(--text-muted); white-space: nowrap; }
+.ci-search-msg { font-size: var(--fs-3); color: var(--text-muted); }
 .ci-search-list { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 9px; max-height: 168px; overflow-y: auto; }
-.ci-hit { display: inline-flex; align-items: baseline; gap: 6px; font: inherit; font-size: 11.5px; padding: 3px 9px; cursor: pointer; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-pill); }
+.ci-hit { display: inline-flex; align-items: baseline; gap: 6px; font: inherit; font-size: var(--fs-3); height: var(--h-ctl); white-space: nowrap; padding: 0 9px; cursor: pointer; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-pill); }
 .ci-hit:hover { border-color: var(--accent); background: var(--surface); }
 .ci-hit b { font-weight: 600; }
 .ci-hit .lon { color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .ci-hit .dl { color: var(--accent); font-variant-numeric: tabular-nums; }
-.ci-hit .incl { padding: 0 4px; font-size: 10px; color: var(--warn, #d08a2e); border: 1px solid currentColor; border-radius: var(--r-box); }
+.ci-hit .incl { padding: 0 4px; font-size: var(--fs-1); color: var(--warn, #d08a2e); border: 1px solid currentColor; border-radius: var(--r-box); }
 .ci-btn.on { background: var(--surface-2); border-color: var(--border-strong); font-weight: 600; }
-.src-sel { font-size: 11px !important; }
+.src-sel { font-size: var(--fs-2) !important; }
 
 </style>

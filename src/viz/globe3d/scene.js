@@ -7,20 +7,42 @@ import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js'
 import earcut from 'earcut'
 import { ENV_R, envSphereParams } from '../env/envSphere.js'
-import { ARCTIC_ISLAND_LAT, landColors, setLandPalette } from '../landPalette.js'
+import { ARCTIC_ISLAND_LAT, landColors, setLandPalette, getLandPalette } from '../landPalette.js'
+// 注记描边色/粗细随底色现算：与 2D 平面图共用单一来源
+import { haloColor, haloScale, IMAGERY_HALO, IMAGERY_SCALE } from '../labelHalo.js'
 // 底图不再是「一份画好的国界」：面/线/标注/点选全部由主权解算层按归属实时算出（视角 = 一张归属表）
 import { resolvedFeatures, resolvedLines, labelSet, ensureDetail, onPovChange } from '../geo/povResolver.js'
 // 边界线显示规范（渲染次序 / 出厂样式 / 线型的屏幕像素图案 / 缩放淡出）：与 2D 平面图共用同一份
 import { ORDER, BORDER_DEF, DASH_PX, DASH_SCALE, BORDER_CLASSES, CFG_KEY, fadeFactor, admFade } from '../geo/borderStyle.js'
+// 水域注记（大洋 + 海域）：与 2D 平面图共用同一份表
+import { waterLabels } from '../geo/waterNames.js'
+// 岛链参考线：与 2D 平面图共用同一份表
+import { chainList, CHAIN_DEF, CHAIN_ORDER, CHAIN_LABEL_PX } from '../geo/islandChains.js'
 import { antarcticaFillRings } from './antarctica.js'
 import { solarGeometry, terminatorRing } from '../terminator.js'
+// 点标记序号徽标（圈 1、圈 2）：与 2D 平面图共用同一支画笔，两视图观感一致
+import { paintNumBadge, BADGE_TEX_FILL, badgeLabelUp } from '../markers/numBadge.js'
+// 地球站符号：与 2D 平面图共用同一份定义（原来两处各存一份逐字符相同的副本）
+import { stationSvg, STATION_ANCHOR_X, STATION_ANCHOR_Y } from '../stationSymbol.js'
+import { vehicleCanvas } from '../vehicleSymbol.js'
 // 顶点级几何原语：与聚焦几何 Worker 共用同一份实现（别在这里再写一份）
 import { RE, LIFT, llaToVec, pushStripSegs, pushDashed, densifyArc, DASH_SPEC, FILL_R, FILL_CELL, slerpUnit, footprintFill, coneFace, createSink } from './focusLanes.js'
 
 
-// 画布文字（地名/大洋/波束标签）与界面同一字体栈：Times New Roman 打西文，宋体接中文。
-// 与 styles/global.css 的 --font-serif 保持一致（canvas 取不到 CSS 变量，此处手工镜像）。
-const UI_FONT = '"Times New Roman", Times, "SimSun", "宋体", serif'
+// 画布文字（地名/大洋/波束标签）：无衬线，独立一档，【不跟】界面字体走
+//（原为 global.css --font-ui 的手工镜像；2026-08-29 界面字体做成设置项后两者分家）。
+// ★ 与 2D 平面图的 textFont 必须同栈 —— 同一个地名
+// 在平面图与球面上是同一个字。刻意不跟 --font-doc 的衬线栈，理由见 flatmap/flatCoverage.js 那处注释。
+const UI_FONT = '"Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif'
+
+// 注记套边（casing）粗细 / 字号。与 2D 平面图 flatmap/flatCoverage.js 的 CASE_K / CASE_K_P / CASE_K_C
+// **必须逐项同值** —— 同一个地名在平面图与球面上是同一个字，套边粗细也得是同一个。
+// ★ 一律写成「比例 × 该画布的字号」，不要在某一处退回写死像素：各处的贴图字号并不相同
+//   （地名 54 / 大洋名 40 / 覆盖标注按 hpx 折算），写死像素等于每处各是一个比例。
+//   大洋名曾经就是写死的 4px（相当于 0.10×字号），比 2D 那份细三分之一。
+const CASE_K = 0.15     // 默认档：国名 / 大洋名 / 波束名 / 数值 / 标记注记
+const CASE_K_P = 0.13   // 一级行政区
+const CASE_K_C = 0.11   // 二级行政区（字最小，套边最细）
 
 // 渲染分辨率倍率上限：实际渲染不超过显示器物理像素密度的 SS_CAP 倍。
 // 超出物理像素的超采样屏幕根本无法显示，纯属浪费 GPU——裁掉它对画质无影响（MSAA 仍负责边缘抗锯齿）。
@@ -153,8 +175,12 @@ function buildLandMesh(features) {
   return new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide }))
 }
 
-function makeLabelSprite(text, hpx, fill, strokePx = 4) {
+// strokeK = 套边粗细 / 字号，取本文件顶部那三档（与 2D 的 CASE_K 三档逐项同值）。
+// halo = 套边色、haloK = 粗细系数，都按当前底色现算（见 ../labelHalo.js）。★ 套边色是【烘进纹理】的，
+// SpriteMaterial 的乘法着色改不动它 —— 底色换档时必须整份重烘，见 refreshHalo。
+function makeLabelSprite(text, hpx, fill, strokeK = CASE_K, halo, haloK) {
   const pad = 8, fs = 54   // 高分辨率纹理：放大后文字更锐利
+  const strokePx = strokeK * fs * (haloK != null ? haloK : 1)
   const c = document.createElement('canvas')
   let cx = c.getContext('2d')
   cx.font = `${fs}px ${UI_FONT}`
@@ -164,7 +190,7 @@ function makeLabelSprite(text, hpx, fill, strokePx = 4) {
   cx.font = `${fs}px ${UI_FONT}`
   cx.textBaseline = 'middle'; cx.textAlign = 'center'
   cx.lineJoin = 'round'; cx.miterLimit = 2
-  cx.lineWidth = strokePx; cx.strokeStyle = 'rgba(0,0,0,0.8)'   // 黑色描边(casing)：strokePx 控粗细
+  cx.lineWidth = strokePx; cx.strokeStyle = halo || 'rgba(0,0,0,1)'   // 描边(casing)：strokePx 控粗细、halo 控色
   if (strokePx > 0) cx.strokeText(text, c.width / 2, c.height / 2)
   // 字面烘成纯白，颜色由 SpriteMaterial.color 着色（运行时可改）：白×色=色，黑色描边×色仍≈黑，casing 保留
   cx.fillStyle = '#ffffff'; cx.fillText(text, c.width / 2, c.height / 2)
@@ -183,12 +209,12 @@ function makeLabelSprite(text, hpx, fill, strokePx = 4) {
 
 // 国名标注：位置/字号/中英两套全部来自解算器的 labelSet（按归属合并，per-POV 改名与 hide 也在那里做）。
 // 字号映射式子（线度 → 世界高度）与换源前一字不改。
-function buildLabels(lang, detail) {
+function buildLabels(lang, detail, halo, haloK) {
   const group = new THREE.Group()
   group.visible = false
   for (const l of labelSet(lang, detail)) {
     const hpx = Math.max(0.016, Math.min(0.030, 0.012 + l.ext * 0.0016))
-    const spr = makeLabelSprite(l.name, hpx)
+    const spr = makeLabelSprite(l.name, hpx, undefined, CASE_K, halo, haloK)
     spr.position.copy(llaToVec(l.lat, l.lon, 25))
     spr._dir = spr.position.clone().normalize()
     spr._pri = l.ext            // 地名避让的排队依据：大国先得位（见 updateLabels）
@@ -230,8 +256,12 @@ function graticuleLines(step) {
   return out
 }
 
-// 大洋标记：斜体浅蓝、半透明，区别于国家名
-function makeOceanLabel(text) {
+// 水域标记（大洋 / 海域）：斜体，区别于国家名。套边按【海色】那一档算——它画在海上，而海色与陆色是
+// 两个独立设置项，同一档判到底会在「浅陆深海」这类组合上错一边。
+// px = 表里那一条的制图层级（见 ../geo/waterNames.js），大洋 15 为基准、按比例折成世界高。
+// ★ 字面烘【白】、颜色交给 SpriteMaterial.color：与国名/省名同一套路，否则用户改不动这一层的颜色
+//   （原先把浅蓝直接烘进纹理，再乘 material.color 只会越乘越暗）。出厂色见 labelCfg。
+function makeWaterLabel(text, halo, haloK, px) {
   const pad = 10, fs = 40
   const c = document.createElement('canvas')
   let cx = c.getContext('2d')
@@ -243,13 +273,14 @@ function makeOceanLabel(text) {
   cx.font = font
   cx.textBaseline = 'middle'; cx.textAlign = 'center'
   cx.lineJoin = 'round'; cx.miterLimit = 2
-  cx.lineWidth = 4; cx.strokeStyle = 'rgba(0,0,0,0.55)'
+  // 与国名同一档（CASE_K×字号）。原来是写死的 4px —— 该画布字号 40，相当于 0.10×，比 2D 那份细三分之一
+  cx.lineWidth = CASE_K * fs * (haloK != null ? haloK : 1); cx.strokeStyle = halo || 'rgba(0,0,0,0.55)'
   cx.strokeText(text, c.width / 2, c.height / 2)
-  cx.fillStyle = 'rgba(150,195,230,0.92)'; cx.fillText(text, c.width / 2, c.height / 2)
+  cx.fillStyle = '#ffffff'; cx.fillText(text, c.width / 2, c.height / 2)
   const tex = new THREE.CanvasTexture(c)
   tex.colorSpace = THREE.SRGBColorSpace
   const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, depthWrite: false, transparent: true }))
-  const hpx = 0.034
+  const hpx = 0.034 * ((px || 15) / 15)
   spr.scale.set((c.width / c.height) * hpx, hpx, 1)
   spr._base = spr.scale.clone()
   spr._txtK = fs / c.height
@@ -258,23 +289,16 @@ function makeOceanLabel(text) {
   return spr
 }
 
-// 几大洋（[中文, 英文, 经度, 纬度]）；太平洋/大西洋面积大，分东西两处各标一次
-const OCEANS = [
-  ['太平洋', 'Pacific Ocean', -155, 25], ['太平洋', 'Pacific Ocean', -130, -22],
-  ['大西洋', 'Atlantic Ocean', -35, 28], ['大西洋', 'Atlantic Ocean', -18, -25],
-  ['印度洋', 'Indian Ocean', 78, -28],
-  ['北冰洋', 'Arctic Ocean', 0, 85],
-  ['南大洋', 'Southern Ocean', 40, -62]
-]
-
-function buildOceanLabels(lang) {
+// 水域注记一档（'ocean' 大洋 | 'sea' 海域）：表在 ../geo/waterNames.js，与 2D 平面图同一份。
+// off = { id: true } 即用户逐条关掉的那些，整份重建时按当前 off 过滤。
+function buildWaterLabels(tier, lang, halo, haloK, off) {
   const group = new THREE.Group()
   group.visible = false
-  for (const [zh, en, lon, lat] of OCEANS) {
-    const spr = makeOceanLabel(lang === 'en' ? en : zh)
-    spr.position.copy(llaToVec(lat, lon, 25))
+  for (const w of waterLabels(tier, off)) {
+    const spr = makeWaterLabel(lang === 'en' ? w.en : w.zh, halo, haloK, w.px)
+    spr.position.copy(llaToVec(w.lat, w.lon, 25))
     spr._dir = spr.position.clone().normalize()
-    spr._pri = 1e9
+    spr._pri = w.pri
     group.add(spr)
   }
   return group
@@ -366,6 +390,16 @@ export function createGlobeScene(container, quality = {}) {
     const m = regMat(new LineMaterial({ color, linewidth: width, transparent: true, opacity, worldUnits: false, depthWrite: false }))
     const o = new LineSegments2(g, m); o.renderOrder = order || 0; return o
   }
+  // 覆盖场等值线：逐组显式给的透明度(grp.opacity)优先，否则用整层设置(o.lineAlpha)，都没有才回落 0.95。
+  // ★ 打 userData.covLine 标记 —— setCoverageLineAlpha 靠它认人。同一个 covFieldGroup 里还挂着
+  //   天线视轴(covRayGroup，自有 rayOpacity)与峰值点十字，都是 LineMaterial，按材质类型一刀切会把它们一起调暗。
+  // 对地(buildDeco) / 对星(buildShellDeco) 同一口径，改这里两边一起变。
+  function covContourLine(flat, grp, o) {
+    const ln = fatSegments(flat, grp.color != null ? grp.color : 0xffffff, grp.width || 1.2,
+      grp.opacity != null ? grp.opacity : ((o && o.lineAlpha != null) ? o.lineAlpha : 0.95), 6)
+    ln.userData.covLine = true
+    return ln
+  }
   function fatStrip(vecs, color, width, opacity, order) {
     const flat = []; for (const v of vecs) { flat.push(v.x, v.y, v.z) }
     const g = new LineGeometry(); g.setPositions(flat)
@@ -386,6 +420,22 @@ export function createGlobeScene(container, quality = {}) {
   // 陆地：矢量三角网填色（零虚化，替代原 8192 纹理）。保留引用供 setMapDetail 重建。
   let landMesh = buildLandMesh(features)
   scene.add(landMesh)
+  // 影像底图：整幅等经纬贴图，开启后【顶替】上面这两层（海色球 + 陆地三角网），边界线/地名/覆盖场照旧叠其上。
+  // 与海洋球同半径 0.998、同细分段数 —— 两者互斥显示，几何一致才不会在切换时看出位移。
+  // 贴图取向：图左=180°W、图上=90°N，与 SphereGeometry 的 uv 天然对齐，不需旋转（详见 viz/imagery.js）。
+  let imageryMesh = null, imageryMat = null, imageryOn = false, imageryBright = 1
+  // 注记套边：颜色与粗细都按【当前底色】现算（见 ../labelHalo.js）。陆上的注记按陆地基调、
+  // 大洋名按海色；开了真彩影像则一律退回恒定近黑（影像深浅混杂，按单一底色算不成立）。
+  const landBg = () => { const sc = getLandPalette().scheme; return sc === 'morandi' ? '#8fa89b' : sc }
+  const curHalo = () => (imageryOn ? IMAGERY_HALO : haloColor(landBg()))
+  const curHaloK = () => (imageryOn ? IMAGERY_SCALE : haloScale(landBg()))
+  const seaBg = () => '#' + oceanMat.color.getHexString()
+  const oceanHalo = () => (imageryOn ? IMAGERY_HALO : haloColor(seaBg()))
+  const oceanHaloK = () => (imageryOn ? IMAGERY_SCALE : haloScale(seaBg()))
+  // 已烘进纹理的那一套的签名：底色换档时靠它判「要不要整份重烘」
+  const haloKey = () => curHalo() + '|' + curHaloK().toFixed(3) + '|' + oceanHalo() + '|' + oceanHaloK().toFixed(3)
+  let haloNow = ''
+  let sphereSegCur = sphereSeg0        // 当前海洋球/影像球细分段数（setSphereDetail 会改，影像球须跟着走）
 
   // 矢量边界线 + 矢量经纬网：粗线，放大/高分辨率下都锐利清晰。
   // 渲染序高于覆盖填充(5)+各类数据线(等值线/波束线/仰角线/轨迹线，统一 6)、低于点/标注：
@@ -412,33 +462,60 @@ export function createGlobeScene(container, quality = {}) {
   const borderLines = {}     // cls → LineSegments2（首次构建在 offPov 之后 —— classPos 依赖的几个 const 还没初始化）
 
 
-  // 国名/洋名：中、英两套（按需切换显隐），初始全隐
-  let labelsZh = buildLabels('zh', mapDetail0); scene.add(labelsZh)
-  let labelsEn = buildLabels('en', mapDetail0); scene.add(labelsEn)
-  const oceanZh = buildOceanLabels('zh'); scene.add(oceanZh)
-  const oceanEn = buildOceanLabels('en'); scene.add(oceanEn)
+  // 国名：中、英两套（按需切换显隐），初始全隐
+  let labelsZh = buildLabels('zh', mapDetail0, curHalo(), curHaloK()); scene.add(labelsZh)
+  let labelsEn = buildLabels('en', mapDetail0, curHalo(), curHaloK()); scene.add(labelsEn)
+  // 水域注记：大洋 / 海域两档，各自中、英两套。档位与国名【分开】——用户可以只要洋名不要国名。
+  // waterOff = { id: true } 逐条关掉的那些：它决定造哪几个精灵，故改它要整份重建这四组。
+  let waterOff = {}
+  let oceanZh = buildWaterLabels('ocean', 'zh', oceanHalo(), oceanHaloK(), waterOff); scene.add(oceanZh)
+  let oceanEn = buildWaterLabels('ocean', 'en', oceanHalo(), oceanHaloK(), waterOff); scene.add(oceanEn)
+  let seaZh = buildWaterLabels('sea', 'zh', oceanHalo(), oceanHaloK(), waterOff); scene.add(seaZh)
+  let seaEn = buildWaterLabels('sea', 'en', oceanHalo(), oceanHaloK(), waterOff); scene.add(seaEn)
+  let waterMode = { ocean: 'off', sea: 'off' }
+  // 岛链参考线：一条 LineSegments2（三条链共用一份几何）+ 一组名字精灵。默认整层不画。
+  const chainCfg = { on: false, ...CHAIN_DEF }
+  let chainOff = {}, chainLine = null, chainLabels = null
+  haloNow = haloKey()
   function setLabelMode(mode) {   // 'zh' | 'en' | 'off'
-    const zh = mode === 'zh', en = mode === 'en'
-    labelsZh.visible = zh; oceanZh.visible = zh
-    labelsEn.visible = en; oceanEn.visible = en
+    labelsZh.visible = mode === 'zh'
+    labelsEn.visible = mode === 'en'
   }
-  // 地名字号缩放：国家名/大洋名(cf) 与 省名(pf) 与 地级市名(cityf) 分开
-  let nameScaleC = 1, nameScaleP = 1, nameScaleCity = 1
+  function applyWaterMode() {
+    oceanZh.visible = waterMode.ocean === 'zh'; oceanEn.visible = waterMode.ocean === 'en'
+    seaZh.visible = waterMode.sea === 'zh'; seaEn.visible = waterMode.sea === 'en'
+  }
+  // 水域注记档位：{ ocean, sea } 各自 'zh' | 'en' | 'off'（只给一个就只改那一个）
+  function setWaterMode(m) { if (!m) return; if (m.ocean != null) waterMode.ocean = m.ocean; if (m.sea != null) waterMode.sea = m.sea; applyWaterMode() }
+  // 水域注记逐条显隐：改的是「造不造这个精灵」，故整份重建（77 条，代价与一次换语言相当）
+  function setWaterOff(o) { waterOff = { ...(o || {}) }; rebuildWaterLabels() }
+  // 地名字号缩放：国家名(cf) 与 省名(pf) 与 地级市名(cityf) 与 大洋名(of) 与 海域名(sf) 分开
+  let nameScaleC = 1, nameScaleP = 1, nameScaleCity = 1, nameScaleO = 1, nameScaleS = 1
   function applyNameScale(group, f) { if (group) group.traverse((c) => { if (c._base) c.scale.copy(c._base).multiplyScalar(f) }) }
-  function setNameScale(cf, pf, cityf) {
+  function setNameScale(cf, pf, cityf, of, sf) {
     nameScaleC = cf || 1; nameScaleP = pf != null ? pf : nameScaleC
     if (cityf != null) nameScaleCity = cityf
+    if (of != null) nameScaleO = of
+    if (sf != null) nameScaleS = sf
     applyNameScale(labelsZh, nameScaleC); applyNameScale(labelsEn, nameScaleC)
-    applyNameScale(oceanZh, nameScaleC); applyNameScale(oceanEn, nameScaleC)
+    applyNameScale(oceanZh, nameScaleO); applyNameScale(oceanEn, nameScaleO)
+    applyNameScale(seaZh, nameScaleS); applyNameScale(seaEn, nameScaleS)
     applyNameScale(provinceLabels, nameScaleP)
     applyNameScale(cityLabels, nameScaleCity)
   }
-  // 地名颜色/透明度：国家名(cf) 与 省名(pf) 分开。字面已烘白 → 改 SpriteMaterial.color 即着色，opacity 控整体淡入淡出。
-  // 省名标签懒加载，故同时存进 labelCfg，setProvinces 创建时套用。大洋名维持其固有蓝，不随国家色改。
-  const labelCfg = { countryColor: '#eef2f6', countryOpacity: 1, provColor: '#ffe6a8', provOpacity: 1, cityColor: '#cdd6e0', cityOpacity: 1 }
+  // 地名颜色/透明度：五档各自分开。字面已烘白 → 改 SpriteMaterial.color 即着色，opacity 控整体淡入淡出。
+  // 省名标签懒加载，故同时存进 labelCfg，setProvinces 创建时套用。
+  const labelCfg = {
+    countryColor: '#eef2f6', countryOpacity: 1, provColor: '#ffe6a8', provOpacity: 1, cityColor: '#cdd6e0', cityOpacity: 1,
+    oceanColor: '#96c3e6', oceanOpacity: 1, seaColor: '#86b0d4', seaOpacity: 1
+  }
   function applyLabelStyle(group, color, opacity) {
     if (!group) return
     group.traverse((c) => { if (c.isSprite && c.material) { if (color != null) c.material.color.set(color); if (opacity != null) { c._baseOpacity = opacity; c.material.opacity = opacity } } })
+  }
+  function applyWaterStyle() {
+    applyLabelStyle(oceanZh, labelCfg.oceanColor, labelCfg.oceanOpacity); applyLabelStyle(oceanEn, labelCfg.oceanColor, labelCfg.oceanOpacity)
+    applyLabelStyle(seaZh, labelCfg.seaColor, labelCfg.seaOpacity); applyLabelStyle(seaEn, labelCfg.seaColor, labelCfg.seaOpacity)
   }
   function setLabelStyle(s) {
     if (!s) return
@@ -446,9 +523,64 @@ export function createGlobeScene(container, quality = {}) {
     if (s.countryColor != null || s.countryOpacity != null) { applyLabelStyle(labelsZh, s.countryColor, s.countryOpacity); applyLabelStyle(labelsEn, s.countryColor, s.countryOpacity) }
     if (s.provColor != null || s.provOpacity != null) applyLabelStyle(provinceLabels, s.provColor, s.provOpacity)
     if (s.cityColor != null || s.cityOpacity != null) applyLabelStyle(cityLabels, s.cityColor, s.cityOpacity)
+    if (s.oceanColor != null || s.oceanOpacity != null || s.seaColor != null || s.seaOpacity != null) applyWaterStyle()
   }
+  applyWaterStyle()   // 四组水域注记刚造出来是白的，先套上出厂色
   // 大海颜色（限蓝色系）：直接改海洋球材质色
-  function setOceanColor(c) { if (c) oceanMat.color.set(c) }
+  function setOceanColor(c) { if (c) { oceanMat.color.set(c); refreshHalo() } }
+  // 底图三层的互斥可见性。★ 陆地网格在 rebuildBasemap / setLandColors 里是「整份重建」的，
+  // 新建出来的 mesh 恒 visible=true，故那两处末尾都必须回头调这里，否则一改配色/换精度档，
+  // 矢量陆地就从影像底下钻出来盖住影像。
+  function applyBaseLayers() {
+    const on = imageryOn && !!imageryMesh
+    oceanMesh.visible = !on
+    landMesh.visible = !on
+    if (imageryMesh) imageryMesh.visible = on
+  }
+  // 影像底图。img=已解码的整幅等经纬 HTMLImageElement（见 viz/imagery.js），传 null 即卸载；
+  // bright=亮度乘子：MeshBasicMaterial 的 color 对纹理是逐通道乘法，压暗是为了让叠在上面的
+  // 边界线看得清 —— 满亮度的真彩影像会把冷蓝灰那族地物线整个吃掉（见 map-line-visual-hierarchy 的口径）。
+  function setImagery(o) {
+    if (!o) return
+    if (o.bright != null) {
+      imageryBright = Math.max(0.05, Math.min(2, Number(o.bright) || 1))
+      if (imageryMat) imageryMat.color.setScalar(imageryBright)
+    }
+    if (o.img !== undefined) {
+      // 换源/卸载：旧纹理连同显存一起放掉，不 dispose 会累积。
+      // 显存账：RGBA8 每像素 4 字节，含 mipmap 再 ×1.33 —— 8192×4096 ≈ 179 MB、16384×8192 ≈ 716 MB。
+      // 16K 那一档确实重，故 8K 作为低配选项保留在源清单里，不是冗余。
+      if (imageryMesh) {
+        scene.remove(imageryMesh); imageryMesh.geometry.dispose()
+        if (imageryMat.map) imageryMat.map.dispose()
+        imageryMat.dispose(); imageryMesh = null; imageryMat = null
+      }
+      if (o.img) {
+        // ★ 超出本机 GPU 纹理上限时先缩：WebGL 对超限纹理【不报错】，而是整颗球变黑 —— 最难查的一种。
+        //   16384 是多数机器的 MAX_TEXTURE_SIZE，但集显/老驱动上是 8192，这一步不能省。
+        const maxTex = renderer.capabilities.maxTextureSize || 8192
+        let src = o.img
+        const iw = o.img.naturalWidth || o.img.width, ih = o.img.naturalHeight || o.img.height
+        if (iw > maxTex) {
+          const w = maxTex, h = Math.max(1, Math.round(maxTex * ih / iw))
+          const cv = document.createElement('canvas'); cv.width = w; cv.height = h
+          cv.getContext('2d').drawImage(o.img, 0, 0, w, h)
+          src = cv
+        }
+        const tex = new THREE.Texture(src)
+        tex.colorSpace = THREE.SRGBColorSpace
+        tex.anisotropy = renderer.capabilities.getMaxAnisotropy()   // 临边（视线掠过球面处）压缩极大，各向异性采样是唯一救法
+        tex.needsUpdate = true
+        imageryMat = new THREE.MeshBasicMaterial({ map: tex })
+        imageryMat.color.setScalar(imageryBright)
+        imageryMesh = new THREE.Mesh(new THREE.SphereGeometry(0.998, sphereSegCur, sphereSegCur), imageryMat)
+        scene.add(imageryMesh)
+      }
+    }
+    if (o.on != null) imageryOn = !!o.on
+    refreshHalo()   // 影像开/关＝套边在「随底色」与「恒定近黑」之间切换
+    applyBaseLayers()
+  }
 
   // ===================== 显示画质：运行时可热切的项 =====================
   // 渲染分辨率倍率（超采样）：THREE setPixelRatio，封顶 4x、下限 0.25x。
@@ -464,9 +596,16 @@ export function createGlobeScene(container, quality = {}) {
   // 海洋球细分段数：重建球几何（材质/颜色保留）。
   function setSphereDetail(seg) {
     const s = Math.max(16, Math.min(seg | 0 || 128, 256))
+    sphereSegCur = s
     scene.remove(oceanMesh); oceanMesh.geometry.dispose()
     oceanMesh = new THREE.Mesh(new THREE.SphereGeometry(0.998, s, s), oceanMat)
     scene.add(oceanMesh)
+    if (imageryMesh) {   // 影像球与海洋球同几何，一起换段数（材质/纹理保留）
+      scene.remove(imageryMesh); imageryMesh.geometry.dispose()
+      imageryMesh = new THREE.Mesh(new THREE.SphereGeometry(0.998, s, s), imageryMat)
+      scene.add(imageryMesh)
+    }
+    applyBaseLayers()
   }
   // 释放一条粗线（LineSegments2）：移出场景 + 注销线材质 + dispose
   function disposeFatLine(o) {
@@ -534,6 +673,79 @@ export function createGlobeScene(container, quality = {}) {
       const g = new LineSegmentsGeometry(); g.setPositions(gridPos(wpp))
       graticule.geometry = g
     }
+    if (chainLine && DASH_PX[chainCfg.dash || 'solid']) {
+      chainLine.geometry.dispose()
+      const g = new LineSegmentsGeometry(); g.setPositions(chainPos(wpp))
+      chainLine.geometry = g
+    }
+  }
+  // ---- 岛链参考线 ----
+  // 顶点表已在经纬度平面加密过（见 ../geo/islandChains.js），这里再补一次大圆只是让长弦不沉进地球；
+  // 两个视图的走向由那一步加密保证一致，不是靠这里。
+  const _cp = []
+  function chainPos(wpp) {
+    const px = DASH_PX[chainCfg.dash || 'solid']
+    const pat = px ? px.map((v) => v * wpp) : null
+    const sink = createSink()
+    for (const c of chainList(chainOff)) {
+      _cp.length = 0
+      for (const q of c.pts) _cp.push(llaToVec(q[1], q[0], 0).multiplyScalar(BORDER_LIFT))
+      const dense = densifyArc(_cp)
+      if (pat) pushDashed(sink, dense, pat); else pushStripSegs(sink, dense)
+    }
+    return sink.view()
+  }
+  function buildChainLine() {
+    disposeFatLine(chainLine)
+    chainLine = fatSegments(chainPos(worldPerPx()), chainCfg.color, chainCfg.width, chainCfg.opacity, CHAIN_ORDER)
+    chainLine.visible = !!chainCfg.on
+    scene.add(chainLine)
+  }
+  // 名字：与水域注记同一支画笔（斜体 + 按海色现算的套边），故换底色时跟着 rebuildLabels 一起重烘
+  function rebuildChainLabels() {
+    if (chainLabels) disposeLabelGroup(chainLabels)
+    chainLabels = new THREE.Group()
+    const en = chainCfg.name === 'en'
+    for (const c of chainList(chainOff)) {
+      const spr = makeWaterLabel(en ? c.en : c.zh, oceanHalo(), oceanHaloK(), CHAIN_LABEL_PX)
+      spr.position.copy(llaToVec(c.label[1], c.label[0], 25))
+      spr._dir = spr.position.clone().normalize()
+      spr._pri = 1e9
+      spr.material.color.set(chainCfg.color)
+      spr._baseOpacity = chainCfg.opacity
+      spr.material.opacity = chainCfg.opacity
+      spr.scale.copy(spr._base).multiplyScalar(chainCfg.nameSize || 1)
+      chainLabels.add(spr)
+    }
+    chainLabels.visible = !!chainCfg.on && chainCfg.name !== 'off'
+    scene.add(chainLabels)
+  }
+  // { on, off, color, width, opacity, dash, name, nameSize }：只改给到的那几项。
+  // 几何只在【逐条显隐】或【线型】变了时才重建，颜色/线宽/透明度就地改材质（同 setBorderStyle 的口径）。
+  function setChains(o) {
+    if (!o) return
+    const reGeom = (o.off && JSON.stringify({ ...o.off }) !== JSON.stringify(chainOff)) || (o.dash != null && o.dash !== chainCfg.dash)
+    const reLabel = reGeom || (o.name != null && o.name !== chainCfg.name)
+    if (o.off) chainOff = { ...o.off }
+    for (const k of ['on', 'color', 'width', 'opacity', 'dash', 'name', 'nameSize']) if (o[k] != null) chainCfg[k] = o[k]
+    if (reGeom) buildChainLine()
+    else if (chainLine) {
+      const m = chainLine.material
+      if (o.color != null) m.color.set(o.color)
+      if (o.width != null) m.linewidth = o.width
+      if (o.opacity != null) m.opacity = o.opacity
+      chainLine.visible = !!chainCfg.on
+    }
+    if (chainLine) chainLine.visible = !!chainCfg.on
+    if (reLabel) rebuildChainLabels()
+    else if (chainLabels) {
+      for (const s of chainLabels.children) {
+        if (o.color != null) s.material.color.set(o.color)
+        if (o.opacity != null) { s._baseOpacity = o.opacity; s.material.opacity = o.opacity }
+        if (o.nameSize != null) s.scale.copy(s._base).multiplyScalar(o.nameSize || 1)
+      }
+      chainLabels.visible = !!chainCfg.on && chainCfg.name !== 'off'
+    }
   }
   // 缩放分级（1.6b 三）：全球视角下二级行政区完全淡出、一级降到 0.3，拉近后线性恢复。
   // 政治五类不参与 —— 国界在任何尺度都在。线淡出时名字跟着淡，否则会剩一地孤字。
@@ -556,24 +768,50 @@ export function createGlobeScene(container, quality = {}) {
     landMesh = buildLandMesh(features); scene.add(landMesh)
     buildBorderLines()
     rebuildLabels()
+    applyBaseLayers()   // 陆地是新建的 mesh，恒 visible → 影像模式下须重新压回去
     fadeApplied = -1
+  }
+  const disposeLabelGroup = (g) => {
+    scene.remove(g)
+    g.traverse((c) => { if (c.material) { if (c.material.map) c.material.map.dispose(); c.material.dispose() } })
+  }
+  // 四组水域注记整份重烘（换套边色 / 换逐条显隐都走这里），重建后把字号、颜色、档位原样套回去
+  function rebuildWaterLabels() {
+    for (const g of [oceanZh, oceanEn, seaZh, seaEn]) disposeLabelGroup(g)
+    oceanZh = buildWaterLabels('ocean', 'zh', oceanHalo(), oceanHaloK(), waterOff); scene.add(oceanZh)
+    oceanEn = buildWaterLabels('ocean', 'en', oceanHalo(), oceanHaloK(), waterOff); scene.add(oceanEn)
+    seaZh = buildWaterLabels('sea', 'zh', oceanHalo(), oceanHaloK(), waterOff); scene.add(seaZh)
+    seaEn = buildWaterLabels('sea', 'en', oceanHalo(), oceanHaloK(), waterOff); scene.add(seaEn)
+    applyNameScale(oceanZh, nameScaleO); applyNameScale(oceanEn, nameScaleO)
+    applyNameScale(seaZh, nameScaleS); applyNameScale(seaEn, nameScaleS)
+    applyWaterStyle()
+    applyWaterMode()
   }
   function rebuildLabels() {
     const mode = labelsZh.visible ? 'zh' : labelsEn.visible ? 'en' : 'off'
-    for (const g of [labelsZh, labelsEn]) {
-      scene.remove(g)
-      g.traverse((c) => { if (c.material) { if (c.material.map) c.material.map.dispose(); c.material.dispose() } })
-    }
-    labelsZh = buildLabels('zh', mapDetail0); scene.add(labelsZh)
-    labelsEn = buildLabels('en', mapDetail0); scene.add(labelsEn)
+    for (const g of [labelsZh, labelsEn]) disposeLabelGroup(g)
+    labelsZh = buildLabels('zh', mapDetail0, curHalo(), curHaloK()); scene.add(labelsZh)
+    labelsEn = buildLabels('en', mapDetail0, curHalo(), curHaloK()); scene.add(labelsEn)
     applyNameScale(labelsZh, nameScaleC); applyNameScale(labelsEn, nameScaleC)
     applyLabelStyle(labelsZh, labelCfg.countryColor, labelCfg.countryOpacity)
     applyLabelStyle(labelsEn, labelCfg.countryColor, labelCfg.countryOpacity)
     setLabelMode(mode)
+    rebuildWaterLabels()
+    rebuildChainLabels()   // 岛链名的套边也按海色烘进纹理，换底色时一起重烘
+    haloNow = haloKey()
+  }
+  // 底色换了 → 套边色/粗细跟着变，而它是【烘进纹理】的，只能整份重烘。签名不变就不动
+  // （同一色值反复推入、或改的是与套边无关的项，都不该触发几百张画布的重建）。
+  function refreshHalo() {
+    if (haloKey() === haloNow) return
+    rebuildLabels()
+    if (lastProvData) setProvinces(lastProvData)
+    if (lastCityData) setCities(lastCityData)
   }
   // 视角/用户覆写改动由解算器广播回来 —— 场景不关心是谁改的，一律整份重建
   const offPov = onPovChange(rebuildBasemap)
   buildBorderLines()   // 五类边界线首次构建（放在这里是因为 classPos 用到的 const 到此才初始化完）
+  buildChainLine(); rebuildChainLabels()   // 岛链：同上（默认整层不可见）
   buildGrid()          // 经纬网同理：disposeFatLine / fatSegments 到此才可用
 
   async function setMapDetail(detail, thin) {
@@ -591,11 +829,13 @@ export function createGlobeScene(container, quality = {}) {
     setLandPalette(s)
     scene.remove(landMesh); landMesh.geometry.dispose(); landMesh.material.dispose()
     landMesh = buildLandMesh(features); scene.add(landMesh)
+    applyBaseLayers()   // 同 rebuildBasemap：新 mesh 恒 visible，影像模式下须压回去
+    refreshHalo()       // 陆地基调变了 → 套边色/粗细跟着算
   }
 
   // 一级行政区界 + 地名（按需由上层注入数据）。★ 可反复调用：多选国家时上层把各国的包并成一份重新喂进来，
   // 这里整层重建（原来是「建过就不再建」，多选做不了）。
-  let provinceBorders = null, provinceLabels = null
+  let provinceBorders = null, provinceLabels = null, lastProvData = null
   function disposeProvinces() {
     disposeFatLine(provinceBorders); provinceBorders = null
     if (provinceLabels) { scene.remove(provinceLabels); provinceLabels.traverse((c) => { if (c.material) { if (c.material.map) c.material.map.dispose(); c.material.dispose() } }); provinceLabels = null }
@@ -603,6 +843,7 @@ export function createGlobeScene(container, quality = {}) {
   function setProvinces(data) {
     const wasVisible = provinceBorders ? provinceBorders.visible : false
     disposeProvinces()
+    lastProvData = data || null      // 套边色是烘在纹理里的，底色换档时要按同一份数据重烘（见 refreshHalo）
     if (!data) return
     const pos = []
     for (const ring of (data.borders || [])) {
@@ -618,7 +859,7 @@ export function createGlobeScene(container, quality = {}) {
     for (const l of (data.labels || [])) {
       // 面积很小的行政区（港澳、直辖市）字号调小，否则名字比辖区还大
       const hpx = l.px != null ? l.px : 0.02
-      const spr = makeLabelSprite(l.name, hpx, '#ffe6a8')
+      const spr = makeLabelSprite(l.name, hpx, '#ffe6a8', CASE_K_P, curHalo(), curHaloK())   // 一级行政区
       spr.position.copy(llaToVec(l.lat, l.lon, 25)); spr._dir = spr.position.clone().normalize(); spr._pri = l.pri; spr._rk = l.rk; spr._keep = !!l.keep
       provinceLabels.add(spr)
     }
@@ -629,7 +870,7 @@ export function createGlobeScene(container, quality = {}) {
   function setProvincesVisible(v) { if (provinceBorders) provinceBorders.visible = !!v; if (provinceLabels) provinceLabels.visible = !!v }
 
   // 二级行政区界 + 地名（按需由上层注入数据，格式同一级行政区）。渲染序最低（ORDER.adm2）：压在一级行政区之下。
-  let cityBorders = null, cityLabels = null
+  let cityBorders = null, cityLabels = null, lastCityData = null
   function disposeCities() {
     disposeFatLine(cityBorders); cityBorders = null
     if (cityLabels) { scene.remove(cityLabels); cityLabels.traverse((c) => { if (c.material) { if (c.material.map) c.material.map.dispose(); c.material.dispose() } }); cityLabels = null }
@@ -637,6 +878,7 @@ export function createGlobeScene(container, quality = {}) {
   function setCities(data) {
     const wasVisible = cityBorders ? cityBorders.visible : false
     disposeCities()
+    lastCityData = data || null
     if (!data) return
     const pos = []
     for (const ring of (data.borders || [])) {
@@ -651,7 +893,7 @@ export function createGlobeScene(container, quality = {}) {
     cityLabels = new THREE.Group(); cityLabels.visible = wasVisible
     for (const l of (data.labels || [])) {
       // 地级市名密集 → 基准字号偏小（小空间），整体再由 nameScaleCity 缩放；黑边尽量细但保留(2px)
-      const spr = makeLabelSprite(l.name, l.px != null ? l.px : 0.012, labelCfg.cityColor, 2)
+      const spr = makeLabelSprite(l.name, l.px != null ? l.px : 0.012, labelCfg.cityColor, CASE_K_C, curHalo(), curHaloK())   // 二级行政区
       spr.position.copy(llaToVec(l.lat, l.lon, 16)); spr._dir = spr.position.clone().normalize(); spr._pri = l.pri; spr._rk = l.rk; spr._keep = !!l.keep
       cityLabels.add(spr)
     }
@@ -663,29 +905,36 @@ export function createGlobeScene(container, quality = {}) {
   // 边界线样式（五类各：颜色 / 线宽 px / 透明度 / 线型；ADM1/ADM2：颜色 / 线宽 / 透明度）。
   // merge 到 borderCfg 后改对应材质 uniform；线型改了要重切虚线几何，故那一路走重建。
   // ADM1/ADM2 材质可能尚未创建（懒加载），故一律先存进 borderCfg，setProvinces/setCities 创建时套用。
+  //
+  // ★「改没改」一律与当前值【比值】，不能按「键在不在 st 里」判：调用方（页面的 applyBorderStyle）
+  //   传的是整份样式快照 {...borderStyle}，每个键恒在，按「键在不在」判等于每次都判成【线型变了】+
+  //   【间隔变了】—— 拖一下颜色滑块就把五类边界线的几何整份重切一遍（10m 档 48 万个点：逐点 llaToVec
+  //   三角函数 + densifyArc 补密 + 虚线切段 + 五次 GPU 重传）再加一次经纬网重建。这就是「调颜色很卡」
+  //   的根因。颜色 / 线宽 / 透明度本来就只是材质的事，几何一点不用动。
   function setBorderStyle(st) {
     if (!st) return
-    Object.assign(borderCfg, st)
+    const chg = (k) => st[k] != null && st[k] !== borderCfg[k]     // 必须在 Object.assign 之前问
     let reDash = false
-    for (const cls of BORDER_CLASSES) {
+    for (const cls of BORDER_CLASSES) if (chg(CFG_KEY[cls] + 'Dash')) reDash = true
+    const reGrid = chg('gridStep') || chg('gridDash')
+    Object.assign(borderCfg, st)
+    if (reDash) buildBorderLines()   // 重建即按新 borderCfg 建材质，无需再逐个改
+    else for (const cls of BORDER_CLASSES) {
       const k = CFG_KEY[cls], o = borderLines[cls]
-      if (st[k + 'Dash'] != null) reDash = true
       if (!o) continue
       const m = o.material
       if (st[k + 'Color'] != null) m.color.set(st[k + 'Color'])
       if (st[k + 'Width'] != null) m.linewidth = st[k + 'Width']
       if (st[k + 'Opacity'] != null) m.opacity = st[k + 'Opacity']
     }
-    if (reDash) buildBorderLines()
-    // 经纬网：间隔变了重建几何，其余就地改材质 / 显隐
+    // 经纬网：间隔 / 线型变了重建几何，其余就地改材质 / 显隐
     if (graticule) {
-      if (st.gridStep != null) buildGrid()
+      if (reGrid) buildGrid()
       else {
         const m = graticule.material
         if (st.gridColor != null) m.color.set(st.gridColor)
         if (st.gridWidth != null) m.linewidth = st.gridWidth
         if (st.gridOpacity != null) m.opacity = st.gridOpacity
-        if (st.gridDash != null) buildGrid()      // 线型走 fatSegments 重建（与边界线同路）
         if (st.gridOn != null) graticule.visible = st.gridOn !== false
       }
     }
@@ -1087,7 +1336,7 @@ export function createGlobeScene(container, quality = {}) {
     x = c.getContext('2d'); x.font = font; x.textBaseline = 'middle'; x.textAlign = 'center'
     // 文字描边套色(casing)：沿字形勾一圈与底色同调的窄边——专业制图标准，密集时也清晰，不用底色色块
     x.lineJoin = 'round'; x.miterLimit = 2
-    x.lineWidth = 3.5; x.strokeStyle = 'rgba(6,11,18,0.82)'; x.strokeText(text, c.width / 2, c.height / 2)
+    x.lineWidth = CASE_K * fs * curHaloK(); x.strokeStyle = curHalo(); x.strokeText(text, c.width / 2, c.height / 2)   // 与 2D 的 CASE_K 同一档；色与粗细随底色
     x.fillStyle = color || '#ffffff'; x.fillText(text, c.width / 2, c.height / 2)
     const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace
     const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: t, depthTest: true, depthWrite: false, transparent: true }))
@@ -1308,13 +1557,13 @@ export function createGlobeScene(container, quality = {}) {
         const a = llaToVec(sg[0][1], sg[0][0], la), b = llaToVec(sg[1][1], sg[1][0], la)
         flat.push(a.x, a.y, a.z, b.x, b.y, b.z)
       }
-      out.push(fatSegments(flat, grp.color != null ? grp.color : 0xffffff, grp.width || 1.2, grp.opacity != null ? grp.opacity : 0.95, 6))
+      out.push(covContourLine(flat, grp, o))
     }
     // 数值标签：每档一处（锚点由上游按等值线环给）
     if (o.showVal) for (const grp of (L.segGroups || [])) {
       if (grp.txt == null) continue
       for (const an of (grp.labels || [])) {
-        const spr = makeCovLabel(String(grp.txt), (o.valSize || 12) / 533, '#ffffff')
+        const spr = makeCovLabel(String(grp.txt), (o.valSize || 12) / 533, o.valColor || '#ffffff')
         const pos = llaToVec(an[1], an[0], la)
         pos.addScaledVector(pos.clone().normalize(), spr.scale.y * 0.6)
         spr.position.copy(pos); spr.renderOrder = 12; out.push(spr)
@@ -1333,13 +1582,13 @@ export function createGlobeScene(container, quality = {}) {
       const peakH = (o.peakSize || 5) / 533, nameH = (o.nameSize || 16) / 533
       const lift = (crossOn ? span * 0.5 : 0) + 0.0015
       // 连线不在这儿画：对星视图的射线是【天线视轴】那一条，由 setShellRays 单独出（波束打不到壳层时也得有）
-      if (crossOn) out.push(makeCovCross(anchor, span, 0xffffff))
+      if (crossOn) out.push(makeCovCross(anchor, span, o.boreColor || '#ffffff'))
       if (peakOn) {
-        const spr = makeCovLabel(b.peak.toFixed(2), peakH, '#cfd6df')
+        const spr = makeCovLabel(b.peak.toFixed(2), peakH, o.peakColor || '#cfd6df')
         spr.center.set(0.5, -(lift / peakH)); spr.position.copy(anchor); spr.renderOrder = 12; out.push(spr)
       }
       if (o.showName && L.name) {
-        const spr = makeCovLabel(L.name, nameH, '#ffffff')
+        const spr = makeCovLabel(L.name, nameH, o.nameColor || '#ffffff')
         spr.center.set(0.5, -((lift + (peakOn ? peakH * 1.15 : 0)) / nameH))
         spr.position.copy(anchor); spr.renderOrder = 13; out.push(spr)
       }
@@ -1648,14 +1897,14 @@ export function createGlobeScene(container, quality = {}) {
         const a = llaToVec(sg[0][1], sg[0][0], 0).multiplyScalar(lineLift), b = llaToVec(sg[1][1], sg[1][0], 0).multiplyScalar(lineLift)
         flat.push(a.x, a.y, a.z, b.x, b.y, b.z)
       }
-      out.push(fatSegments(flat, grp.color != null ? grp.color : 0xffffff, grp.width || 1.2, grp.opacity != null ? grp.opacity : 0.95, 6))
+      out.push(covContourLine(flat, grp, o))
     }
     // 数值标签：每条等值线最上端点处各标一次档值（相对/绝对，文本由上游决定）。
     // billboard 朝向相机，下半部分会探入地球被遮挡 → 沿径向抬出约半个标签高度（随字号缩放），整块浮在地表之上。
     if (o.showVal) for (const grp of (L.segGroups || [])) {
       if (grp.txt == null) continue
       for (const an of (grp.labels || [])) {
-        const spr = makeCovLabel(String(grp.txt), (o.valSize || 12) / 533, '#ffffff')
+        const spr = makeCovLabel(String(grp.txt), (o.valSize || 12) / 533, o.valColor || '#ffffff')
         const pos = llaToVec(an[1], an[0], 50); pos.addScaledVector(pos.clone().normalize(), spr.scale.y * 0.6)
         spr.position.copy(pos); spr.renderOrder = 12; out.push(spr)
       }
@@ -1682,15 +1931,15 @@ export function createGlobeScene(container, quality = {}) {
       const lift = (crossOn ? span * 0.5 : 0) + 0.0015     // 让开十字上臂 + 一点空隙（世界尺寸）
       // 视轴不在这儿画：它是【一根天线一条】（opts.rays，由 buildAxisRays 出），不是逐波束的连线。
       // 原先每个波束层都画一条卫星→峰值点的粗线，94 波束就是每次重建 94 次几何分配 —— 播放时的卡顿大头之一。
-      if (crossOn) out.push(makeCovCross(anchor, span, 0xffffff))
+      if (crossOn) out.push(makeCovCross(anchor, span, o.boreColor || '#ffffff'))
       // 峰值读数：十字【正上方】第一行。SATSOFT 只印数字不带单位（与等值线标注同体例），此处照办。
       if (peakOn) {
-        const spr = makeCovLabel(b.peak.toFixed(2), peakH, '#cfd6df')
+        const spr = makeCovLabel(b.peak.toFixed(2), peakH, o.peakColor || '#cfd6df')
         spr.center.set(0.5, -(lift / peakH)); spr.position.copy(labelAnchor); spr.renderOrder = 12; out.push(spr)
       }
       // 波束名：再往上一行（读数在时让开它一行高，不在时直接贴十字上方）
       if (named) {
-        const spr = makeCovLabel(L.name, nameH, '#ffffff')
+        const spr = makeCovLabel(L.name, nameH, o.nameColor || '#ffffff')
         spr.center.set(0.5, -((lift + (peakOn ? peakH * 1.15 : 0)) / nameH))
         spr.position.copy(labelAnchor); spr.renderOrder = 13; out.push(spr)
       }
@@ -1787,6 +2036,12 @@ export function createGlobeScene(container, quality = {}) {
       covFieldGroup.remove(e.group); disposeCovGroup(e.group); covLayers.delete(id)
     }
     setCovRays(covOpts.rays)
+  }
+  // 等值线透明度：只动 LineMaterial（填充走 setCoverageFieldAlpha，两者互不影响）。
+  // covOpts 同步写回 —— 下一次增量重建 deco 时才不会退回旧值。
+  function setCoverageLineAlpha(a) {
+    covOpts = { ...covOpts, lineAlpha: a }
+    for (const e of covLayers.values()) for (const d of e.deco) if (d.userData && d.userData.covLine) d.material.opacity = a
   }
   function setCoverageFieldAlpha(a) {
     if (!covFieldGroup) return
@@ -2002,24 +2257,12 @@ export function createGlobeScene(container, quality = {}) {
   renderer.domElement.addEventListener('contextmenu', (e) => { e.preventDefault(); if (onRightClick) onRightClick(pickGlobe(e.clientX, e.clientY), { x: e.clientX, y: e.clientY }) })
 
   // 地球站图标（J4：精致立体卡塞格伦天线——淡填充碟面 + 边缘高光 + 四脚馈源 + 叉臂座架 + 落影），共用一张贴图
-  const STATION_SVG = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'>" +
-    "<ellipse cx='32' cy='58' rx='12' ry='2' fill='#000000' opacity='0.18'/>" +
-    "<path d='M23 57 L28 43 L36 43 L41 57 Z' fill='#c3c8cd' stroke='#9aa1a8' stroke-width='0.6'/>" +
-    "<path d='M32 57 L36 43 L41 57 Z' fill='#000000' opacity='0.05'/>" +
-    "<ellipse cx='32' cy='43' rx='4' ry='1.5' fill='#dde1e4'/>" +
-    "<rect x='29.8' y='33' width='4.4' height='11' rx='0.9' fill='#b9bec3' stroke='#9aa1a8' stroke-width='0.5'/>" +
-    "<g transform='rotate(-26 32 26)'>" +
-    "<ellipse cx='32' cy='26' rx='16.5' ry='11' fill='#eef3f7' stroke='#2f3a48' stroke-width='1.3'/>" +
-    "<ellipse cx='32' cy='26' rx='16.5' ry='11' fill='none' stroke='#ffffff' stroke-width='0.7' opacity='0.5'/>" +
-    "<ellipse cx='32' cy='26' rx='8' ry='5' fill='none' stroke='#8696a8' stroke-width='0.8'/>" +
-    "<path d='M23.5 19.5 L32 11.5 M40.5 19.5 L32 11.5 M27 31.5 L32 11.5 M37 31.5 L32 11.5' fill='none' stroke='#aebccb' stroke-width='0.9' stroke-linecap='round'/>" +
-    "<circle cx='32' cy='11.5' r='2.4' fill='#dfe7ee' stroke='#5d6e82' stroke-width='0.8'/></g></svg>"
   let stationTex = null
   function stationTexture() {
     if (stationTex) return stationTex
     stationTex = new THREE.Texture(); stationTex.colorSpace = THREE.SRGBColorSpace
     const img = new Image(); img.onload = () => { stationTex.image = img; stationTex.needsUpdate = true }
-    img.src = 'data:image/svg+xml;base64,' + btoa(STATION_SVG)
+    img.src = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(stationSvg())))
     return stationTex
   }
 
@@ -2039,6 +2282,22 @@ export function createGlobeScene(container, quality = {}) {
     img.src = 'data:image/svg+xml;base64,' + btoa(FOCUS_SAT_SVG)
     return focusSatTex
   }
+  // 航迹载具图标（船舶 / 飞机，与 2D 平面图同一份形状 → viz/vehicleSymbol.js）：单色件，按航迹色染。
+  // 同（类型|色）共用一张贴图；打 _shared 标记，disposeGroup 见到就跳过 —— 航迹每改一次都重建整组，
+  // 贴图不该跟着一起重造重传。
+  const vehTexCache = new Map()
+  function vehicleTexture(kind, ink) {
+    const key = kind + '|' + ink
+    let t = vehTexCache.get(key)
+    if (!t) {
+      // ★ 现画在 canvas 上（同步），不走「SVG → Image → Texture」那条异步路：出图/离屏只渲有限
+      //   几帧，图片没回来那一帧上传的是空图，后面又没有帧来补传，图标会整个不出现。
+      t = new THREE.CanvasTexture(vehicleCanvas(kind, ink, 256))
+      t.colorSpace = THREE.SRGBColorSpace; t._shared = true
+      vehTexCache.set(key, t)
+    }
+    return t
+  }
   // 圆点精灵：同色共用一份贴图 + 一份材质。多选聚焦几百颗时，每次刷新都为每颗现画一张 32px canvas
   // 并上传纹理是纯固定开销；缓存后同色只做一次。共享件打 _shared 标记，disposeGroup 见到就跳过。
   // （调用处只改 position/scale/renderOrder，从不改材质属性，故材质可安全共享。）
@@ -2056,6 +2315,28 @@ export function createGlobeScene(container, quality = {}) {
       dotCache.set(hex, hit)
     }
     return new THREE.Sprite(hit.mat)
+  }
+  // 点标记序号徽标精灵（圈 1、圈 2）：贴图按编号缓存 —— setMarkers 每推进一拍就重建一次（仰角要刷新），
+  // 同一串编号不必反复现画画布 + 上传纹理。贴图打 _shared，disposeGroup 见到就跳过（同 dotCache）。
+  const badgeCache = new Map()
+  const BADGE_TEX = 128          // 贴图边长：徽标上屏一般十几到几十 px，128 足够清晰且不占显存
+  function badgeTexture(text) {
+    let t = badgeCache.get(text)
+    if (!t) {
+      const c = document.createElement('canvas'); c.width = c.height = BADGE_TEX
+      paintNumBadge(c.getContext('2d'), BADGE_TEX / 2, BADGE_TEX / 2, BADGE_TEX * BADGE_TEX_FILL, text, UI_FONT)
+      t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t._shared = true
+      badgeCache.set(text, t)
+    }
+    return t
+  }
+  // ★ depthTest 关 + 半球剔除（_dir）：与文字标签 / 地球站图标同策略。开着 depthTest 时整枚徽标按锚点
+  //   （地表）深度参与测试，而精灵是【屏幕朝向】的平面 —— 靠视野中心那一侧的地球曲面比锚点更近，会把
+  //   徽标啃掉一块（症状：每枚徽标朝球心那侧缺一角，越大越明显）。改为始终完整浮在地表之上，转到背面
+  //   由 rescaleMarkers 按 _dir 隐藏/淡出。圆点没这毛病是因为它只有几个像素，啃掉那一圈看不出来。
+  // ★ 材质逐枚新建（贴图仍按编号共享）：_dir 的近地平淡出要改 material.opacity，共享材质会被互相改写。
+  function makeNumBadge(text) {
+    return new THREE.Sprite(new THREE.SpriteMaterial({ map: badgeTexture(text), depthTest: false, depthWrite: false, transparent: true }))
   }
 
   let markersGroup = null, trajGroup = null, focusSatGroup = null
@@ -2129,6 +2410,9 @@ export function createGlobeScene(container, quality = {}) {
     focusSatGroup = buildPointLayers(list, focusSatTexture(), pxG, tintG, 17, 1.0012)
     if (focusSatGroup) scene.add(focusSatGroup)
   }
+  // 标签精灵里字高占整张的比例：makeCovLabel 字号 50、画布高 50+8×2=66，其余是留白。
+  // 标注让位要按【字高】算，不是按精灵整高。2D 侧 flatCoverage 的同名常量必须同值。
+  const MK_FONT_K = 50 / 66
   // 文字标签：depthTest 关 + 半球剔除 -> 不会被地球边缘裁掉一半，背面整体隐藏
   function labelSprite(text, lat, lon, color, centerY, px) {
     const spr = makeCovLabel(text, 0.03, color || '#ffffff')
@@ -2139,26 +2423,40 @@ export function createGlobeScene(container, quality = {}) {
     spr._px = px || 16; spr._ar = spr.scale.x / spr.scale.y; spr.renderOrder = 16
     return spr
   }
-  // points:[{lat,lon,label?}]  stations:[{lat,lon,name?}]  sizes:{ptFont,stIcon,stFont}
+  // points:[{lat,lon,label?,idx?}]  stations:[{lat,lon,name?}]  sizes:{ptFont,stIcon,stFont,ptIdx}
   function setMarkers(points, stations, sizes) {
     const sz = sizes || {}, ptFont = sz.ptFont || 14, stIcon = sz.stIcon || 32, stFont = sz.stFont || 17
     // 点标记圆点直径：用 2D 半径口径 sz.ptDot（默认 3.5）×2.2 换算到 3D 屏幕像素，保持与 2D 观感一致、可调
     const ptDotPx = (sz.ptDot != null ? sz.ptDot : 3.5) * 2.2
+    // 序号徽标直径（屏幕 px @100% 缩放，与 2D 同值）：精灵整张含留白，故 _px 要按占比放大回去
+    const idxD = sz.ptIdx != null ? sz.ptIdx : 16
     disposeGroup(markersGroup); markersGroup = null
     const g = new THREE.Group()
     for (const p of (points || [])) {
-      const dot = makeDot('#ffd24a'); dot.position.copy(llaToVec(p.lat, p.lon, 0).multiplyScalar(1.0012)); dot._px = ptDotPx; dot._ar = 1; dot.renderOrder = 15; g.add(dot)
-      if (p.label) g.add(labelSprite(p.label, p.lat, p.lon, '#ffffff', -0.35, ptFont))   // 坐标：白字
-      if (p.el) g.add(labelSprite(p.el, p.lat, p.lon, '#ffffff', 1.35, ptFont * 0.9))     // 聚焦卫星仰角：亮白，标记下方
+      const pos = llaToVec(p.lat, p.lon, 0).multiplyScalar(1.0012)
+      // p.idx 非空＝带序号：圆本身就是记号（圈心＝该点位置），不再另画圆点
+      const mark = p.idx ? makeNumBadge(p.idx) : makeDot('#ffd24a')
+      mark.position.copy(pos); mark._px = p.idx ? idxD / BADGE_TEX_FILL : ptDotPx; mark._ar = 1; mark.renderOrder = 15
+      if (p.idx) mark._dir = pos.clone().normalize()   // 徽标关了 depthTest，背面靠半球剔除隐藏（见 makeNumBadge）
+      g.add(mark)
+      // 文字锚点让位：center.y 以精灵自身高度（＝其 _px）为单位，故把 badgeLabelUp 算出的字心距离
+      // 折回该单位。0.5−0.85=−0.35 就是原来圆点那档，两视图共用同一支 badgeLabelUp、口径不会走偏。
+      const dU = badgeLabelUp(0.85 * ptFont, p.idx ? idxD : 0, ptFont * MK_FONT_K)
+      const hD = ptFont * 0.9, dD = badgeLabelUp(0.85 * hD, p.idx ? idxD : 0, hD * MK_FONT_K)
+      if (p.label) g.add(labelSprite(p.label, p.lat, p.lon, '#ffffff', 0.5 - dU / ptFont, ptFont))   // 坐标：白字
+      if (p.el) g.add(labelSprite(p.el, p.lat, p.lon, '#ffffff', 0.5 + dD / hD, hD))     // 聚焦卫星仰角：亮白，标记下方
     }
     for (const s of (stations || [])) {
       // 关闭深度测试 + 半球剔除（_dir）：与文字标签同策略。地球站图标是「从地表立起」的精灵，开 depthTest 时
       // 整张图按锚点(地表)深度参与测试，低视角/近地平边缘处上半部分会被更近的地球曲面截断遮挡。改为始终完整浮于
       // 地表之上，转到背面时由 rescaleMarkers 按 _dir 自动隐藏/淡出（不会透出地球背面的站点）。
       const st = new THREE.Sprite(new THREE.SpriteMaterial({ map: stationTexture(), depthTest: false, depthWrite: false, transparent: true }))
-      st.position.copy(llaToVec(s.lat, s.lon, 0).multiplyScalar(1.0012)); st.center.set(0.5, 0); st._px = stIcon; st._ar = 1; st._dir = st.position.clone().normalize(); st.renderOrder = 15; g.add(st)
-      if (s.name) g.add(labelSprite(s.name, s.lat, s.lon, '#ffffff', 0.82, stFont))   // 名称紧贴地球站底座下方：亮白
-      if (s.el) g.add(labelSprite(s.el, s.lat, s.lon, '#ffffff', 1.87, stFont * 0.9))   // 聚焦卫星仰角：亮白，名称下方
+      // 锚点＝符号里那颗白色址点：center.y 自底算，故取 1−STATION_ANCHOR_Y（2D 侧对应 y − si·ANCHOR_Y）
+      st.position.copy(llaToVec(s.lat, s.lon, 0).multiplyScalar(1.0012)); st.center.set(STATION_ANCHOR_X, 1 - STATION_ANCHOR_Y); st._px = stIcon; st._ar = 1; st._dir = st.position.clone().normalize(); st.renderOrder = 15; g.add(st)
+      // 字要让开「符号落在锚点下方的那一截」（址点圆的下半），换算成各自字号的倍数加到 centerY 上
+      const stUnder = stIcon * (1 - STATION_ANCHOR_Y)
+      if (s.name) g.add(labelSprite(s.name, s.lat, s.lon, '#ffffff', 0.82 + stUnder / stFont, stFont))   // 名称紧贴地球站底座下方：亮白
+      if (s.el) g.add(labelSprite(s.el, s.lat, s.lon, '#ffffff', 1.87 + stUnder / (stFont * 0.9), stFont * 0.9))   // 聚焦卫星仰角：亮白，名称下方
     }
     markersGroup = g; scene.add(g)
   }
@@ -2168,9 +2466,16 @@ export function createGlobeScene(container, quality = {}) {
     const s = Math.sin(ang)
     return a.clone().multiplyScalar(Math.sin((1 - t) * ang) / s).add(b.clone().multiplyScalar(Math.sin(t * ang) / s))
   }
-  // list:[{pts:[{lat,lon}], color, kind}]；sizes.trajDot 控制轨迹圆点大小（2D 半径口径，×2.5 换算到 3D 屏幕像素）
+  // list:[{pts:[{lat,lon}], color, kind}]
+  // sizes.trajDot / sizes.trajIconPx 同一把尺：都是【屏幕 px @100% 缩放】、同一档位区间，圆点按
+  // 【该数的一半】作可见直径（等大时实心圆比图标那种镂空剪影重得多）。而精灵整张含留白
+  // （makeDot：直径 18 的圆居中于 32 画布），故 _px 要按占比放大回去 —— 2D 侧直接按半径作画、
+  // 无留白，两视图这才一样大（同 numBadge 的 BADGE_TEX_FILL 那套换算）。
+  const DOT_SPRITE_FILL = 18 / 32
   function setTrajectories(list, sizes) {
-    const trajDotPx = ((sizes && sizes.trajDot != null) ? sizes.trajDot : 2.5) * 2.5
+    const sz = sizes || {}
+    const trajDotPx = (sz.trajDot != null ? sz.trajDot : 4) / 2 / DOT_SPRITE_FILL
+    const vehOn = sz.trajIcon !== false, vehPx = sz.trajIconPx != null ? sz.trajIconPx : 26
     disposeGroup(trajGroup); trajGroup = null
     const g = new THREE.Group()
     for (const tr of (list || [])) {
@@ -2181,14 +2486,36 @@ export function createGlobeScene(container, quality = {}) {
         const steps = Math.max(2, Math.ceil(a.angleTo(b) / (2 * Math.PI / 180)))
         for (let s = 0; s <= steps; s++) verts.push(slerp(a, b, s / steps).multiplyScalar(1.002))
       }
-      if (verts.length > 1) g.add(fatStrip(verts, tr.color != null ? tr.color : 0xff5a5a, 2.2, 0.95, 6))   // 与 GRD 等值线/Polygon 线同层(6)：压在国界(6.5)/省界(6.6)之下，与边界共存
+      // ★ 航迹线 10.5：在地名（国家/省/市 10、大洋 9）【之上】，与本层的圆点(15)/载具图标(16)同侧 ——
+      //   三样必须同侧，否则地名把线切断、圆点却浮在字上。曾经是 6（与 GRD 等值线/Polygon 线同层、
+      //   压在国界之下），那一档让底图地名整段吃掉航迹，而线的连续性本身就是信息。2D 侧同口径
+      //   （flatCoverage.drawTrajLayer 画在地名层之后）。仍低于覆盖标注(12/13)与卫星图标(14)。
+      if (verts.length > 1) g.add(fatStrip(verts, tr.color != null ? tr.color : 0xff5a5a, 2.2, 0.95, 10.5))
       for (const p of pts) { const dot = makeDot(tr.kind === 'flight' ? '#5ad1ff' : '#ff9a5a'); dot.position.copy(llaToVec(p.lat, p.lon, 0).multiplyScalar(1.002)); dot._px = trajDotPx; dot._ar = 1; dot.renderOrder = 15; g.add(dot) }
+      // 航迹头（末航点）上的载具图标。depthTest 关 + _dir 半球剔除：同地球站图标那套，转到背面自动隐藏。
+      if (vehOn && vehPx > 0 && pts.length) {
+        const hd = pts[pts.length - 1]
+        const pos = llaToVec(hd.lat, hd.lon, 0).multiplyScalar(1.0025)
+        const ink = '#' + (hexOf(tr.color != null ? tr.color : 0xff5a5a) & 0xffffff).toString(16).padStart(6, '0')
+        const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: vehicleTexture(tr.kind === 'flight' ? 'flight' : 'sea', ink), depthTest: false, depthWrite: false, transparent: true }))
+        spr.position.copy(pos); spr._px = vehPx; spr._ar = 1; spr._dir = pos.clone().normalize(); spr.renderOrder = 16
+        // 朝向＝末段的大圆切向（3D 的航迹线是大圆，图标得贴着那条线；2D 那条线是经纬直连，故另算）。
+        // 切向投到屏幕上的角度随镜头一转就变，这里只存世界向量，逐帧再求角（见 rescaleMarkers）。
+        if (pts.length > 1) {
+          const pv = llaToVec(pts[pts.length - 2].lat, pts[pts.length - 2].lon, 0).normalize()
+          const hn = spr._dir
+          const tan = pv.clone().addScaledVector(hn, -hn.dot(pv)).multiplyScalar(-1)   // 前一点 → 头 的切向
+          if (tan.lengthSq() > 1e-12) spr._tan = tan.normalize()
+        }
+        g.add(spr)
+      }
     }
     trajGroup = g; scene.add(g)
   }
   // 标记/轨迹精灵每帧随缩放「均匀」联动：屏幕像素 = 设定像素 × zoomK，zoomK = 基准距离/相机到目标距离。
   // 默认视角(相机距=LABEL_REF_DIST) zoomK=1 → 即其设定的原始像素大小；拉近 zoomK>1 变大、拉远变小，与地名同步。
   // 用「相机→目标」统一系数（而非各标记自身距离）→ 全部标记同屏幕大小，不再近大远小。带 _dir 的文字做半球剔除。
+  const _pA = new THREE.Vector3(), _pB = new THREE.Vector3()   // rescaleMarkers 里投影用的临时件（project 会改原向量）
   function rescaleMarkers() {
     const tanH = Math.tan(camera.fov * 0.5 * Math.PI / 180) || 1
     const cd = camera.position.clone().normalize()
@@ -2200,6 +2527,12 @@ export function createGlobeScene(container, quality = {}) {
           const dot = o._dir.dot(cd)
           if (dot <= 0.05) { o.visible = false; continue }
           o.visible = true; o.material.opacity = dot >= 0.22 ? 1 : (dot - 0.05) / 0.17
+        }
+        if (o._tan) {   // 载具图标：把「位置」与「位置+切向」投到屏幕求夹角 —— NDC 的 x/y 缩放不同，得先折回像素比例
+          _pA.copy(o.position).project(camera)
+          _pB.copy(o.position).addScaledVector(o._tan, 0.01).project(camera)
+          const sx = (_pB.x - _pA.x) * curW, sy = (_pB.y - _pA.y) * curH
+          if (sx * sx + sy * sy > 1e-9) o.material.rotation = Math.atan2(-sx, sy)   // 精灵自身「上」＝船首/机头
         }
         if (o._px) { const dd = camera.position.distanceTo(o.position); const h = o._px * zoomK * (2 * dd * tanH) / curH; o.scale.set(h * (o._ar || 1), h, 1) }
       }
@@ -2396,10 +2729,13 @@ export function createGlobeScene(container, quality = {}) {
     const W = r.clientWidth || 1, H = r.clientHeight || 1
     const foc = H / (2 * Math.tan(camera.fov * Math.PI / 360))   // 焦距（像素）：世界高 × foc / 距离 = 屏幕高
     lbBuf.length = 0; lbSlots.clear()
-    lbCollect(oceanZh, nameScaleC, 0, W, H, foc); lbCollect(oceanEn, nameScaleC, 0, W, H, foc)
-    lbCollect(labelsZh, nameScaleC, 1, W, H, foc); lbCollect(labelsEn, nameScaleC, 1, W, H, foc)
-    lbCollect(provinceLabels, nameScaleP, 2, W, H, foc)
-    lbCollect(cityLabels, nameScaleCity, 3, W, H, foc)
+    // 层级序（与 2D flatCoverage 的摆位次序同口径）：岛链 → 大洋 → 国家 → 海域 → 一级 → 二级
+    lbCollect(chainLabels, chainCfg.nameSize || 1, 0, W, H, foc)
+    lbCollect(oceanZh, nameScaleO, 1, W, H, foc); lbCollect(oceanEn, nameScaleO, 1, W, H, foc)
+    lbCollect(labelsZh, nameScaleC, 2, W, H, foc); lbCollect(labelsEn, nameScaleC, 2, W, H, foc)
+    lbCollect(seaZh, nameScaleS, 3, W, H, foc); lbCollect(seaEn, nameScaleS, 3, W, H, foc)
+    lbCollect(provinceLabels, nameScaleP, 4, W, H, foc)
+    lbCollect(cityLabels, nameScaleCity, 5, W, H, foc)
     lbBuf.sort((a, b) => ((b.keep ? 1 : 0) - (a.keep ? 1 : 0)) || (a.tier - b.tier) || (a.rk - b.rk) || (b.pri - a.pri))
     const lbFree = (x0, y0, x1, y1) => !lbRange(x0, y0, x1, y1, (k) => {
       const arr = lbSlots.get(k)
@@ -2475,7 +2811,7 @@ export function createGlobeScene(container, quality = {}) {
   // three 自己乘 pixelRatio、标记/标签按 curH 折算世界尺寸，都跟着等比放大，无需另行处理。
   //
   // 地名/波束标签的纹理是 fs=54 的高分辨率画布（见 makeLabelSprite），屏上约 4 倍过采样：
-  // 4× 出图正好 1:1 最锐，6× 略有放大但仍远好于按屏幕分辨率截屏。
+  // 4× 出图正好 1:1 最锐 —— 这也是出图倍率封顶 4× 的原因之一（菜单里 6× 那档已删，见 exportGlobeShot）。
   async function snapshot(factor) {
     const cv = renderer.domElement
     const gl = renderer.getContext()
@@ -2528,11 +2864,11 @@ export function createGlobeScene(container, quality = {}) {
   return {
     setSatellites, setLabelMode, setHighlight, setHighlightLLA, setOnPick,
     setOrbit, setGroundTrack, setFootprint, setSelectionSet, setFocusLanes, setOrbitRingSet, setOrbitRingSpin, clearSelectionGeom,
-    setCoverage, clearCoverage, setCoverageField, updateCoverageField, patchCoverageLayers, clearCoverageField, setCoverageFieldAlpha, setCovGrid, clearCovGrid, setCovGridAlpha,
+    setCoverage, clearCoverage, setCoverageField, updateCoverageField, patchCoverageLayers, clearCoverageField, setCoverageFieldAlpha, setCoverageLineAlpha, setCovGrid, clearCovGrid, setCovGridAlpha,
     setShellField, updateShellField, clearShellField, setShellFieldAlpha, setShellGuides, clearShellGuides, setShellRays, clearShellRays,
     setTerminator, clearTerminator,
     setEnvRaster, setEnvAlpha, setEnvContours, clearEnv,
-    setSatLayer, clearSatLayer, faceLonLat, setProvinces, setProvincesVisible, setCities, setCitiesVisible, setBorderStyle, setNameScale, setLabelStyle, setOceanColor, setLandColors,
+    setSatLayer, clearSatLayer, faceLonLat, setProvinces, setProvincesVisible, setCities, setCitiesVisible, setBorderStyle, setNameScale, setLabelStyle, setWaterMode, setWaterOff, setChains, setOceanColor, setLandColors, setImagery,
     setPixelRatio, setRenderFps, setSphereDetail, setMapDetail, holdFrames,
     setMarkers, setTrajectories, setFocusSatLLA, setFocusStyle, setSatPointsVisible, setOnHover, setOnRightClick, setBeamDragMode, setOnBeamDrag, setBeamDragPivot, setLabelDragMode, setOnLabelDrag, setPolyDrawMode, setOnPolyDraw, setPlaceMode, setOnPlace,
     faceTo, rotateBy, setAutoRotate, setAutoRotateSpeed, setOnAutoRotateOff, resize, pause, resume, snapshot, destroy,

@@ -157,7 +157,7 @@ function apply() {
         <!-- 图标与工具栏「计算 / 高级计算」两个按钮同一枚实心三角：同一件事的两档，不该长成两个族 -->
         <svg viewBox="0 0 16 16" class="ab-ic" aria-hidden="true"><path d="M4 2.5 13 8 4 13.5z" /></svg>高级计算 · 多载波组功带平衡
         <span class="ab-sp"></span>
-        <button class="ab-x" :disabled="busy" title="关闭" aria-label="关闭" @click="emit('close')"><Icon name="x" :size="13" /></button>
+        <button class="ab-x" :disabled="busy" title="关闭" aria-label="关闭" @click="emit('close')"><Icon name="x" :size="12" /></button>
       </div>
 
       <div class="ab-bd">
@@ -270,17 +270,18 @@ function apply() {
 </template>
 
 <style scoped>
-/* 与导出报告等对话框同一套控件语言（方角、细边、衬线数字），宽一档——里面是两张表 */
+/* 与其它对话框同一套控件语言（方角、细边），宽一档——里面是两张表。
+   字体走外壳档：功带平衡是求解过程，两张表不进交付文档，衬线只留给会进报告的东西。 */
 .ab-mask { position: fixed; inset: 0; z-index: 320; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.28); }
 .ab {
   width: 760px; max-width: 96vw; max-height: 90vh; display: flex; flex-direction: column;
-  font-family: var(--lb-serif, var(--font-serif));
+  font-family: var(--font-ui);
   background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-card, 3px);
-  box-shadow: 0 8px 24px rgba(0,0,0,.18); overflow: hidden;
+  box-shadow: var(--shadow-3); overflow: hidden;
 }
 .ab-hd {
   display: flex; align-items: center; gap: 6px; padding: 10px 12px;
-  font-size: 11px; font-weight: 600; letter-spacing: var(--ls-label); color: var(--text-muted);
+  font-size: var(--fs-2); font-weight: 600; letter-spacing: var(--ls-label); color: var(--text-muted);
   background: var(--surface-2); border-bottom: 1px solid var(--border);
 }
 .ab-ic { flex: none; width: 13px; height: 13px; fill: currentColor; stroke: none; vertical-align: -0.125em; }
@@ -294,7 +295,7 @@ function apply() {
 
 .ab-modes { display: flex; align-items: center; gap: 0; flex-wrap: wrap; }
 .ab-mode {
-  font: inherit; font-size: 12px; padding: 4px 12px; cursor: pointer;
+  font: inherit; font-size: var(--fs-3); height: var(--h-ctl); white-space: nowrap; padding: 0 12px; cursor: pointer;
   background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: 0;
 }
 .ab-mode + .ab-mode { border-left: none; }
@@ -304,11 +305,11 @@ function apply() {
 
 .ab-sec {
   display: flex; align-items: baseline; gap: 8px; margin: 12px 0 5px; padding-bottom: 3px;
-  font-size: 11px; font-weight: 700; color: var(--text); border-bottom: 1px solid var(--lb-rule, var(--border));
+  font-size: var(--fs-2); font-weight: 700; color: var(--text); border-bottom: 1px solid var(--lb-rule, var(--border));
 }
 
 .ab-tw { max-height: 208px; overflow: auto; border: 1px solid var(--border); }
-.ab-t { width: 100%; border-collapse: collapse; font-size: 11px; }
+.ab-t { width: 100%; border-collapse: collapse; font-size: var(--fs-2); }
 .ab-t th {
   position: sticky; top: 0; z-index: 1; padding: 4px 6px; text-align: left; font-weight: 600; white-space: nowrap;
   color: var(--text-muted); background: var(--surface-2); border-bottom: 1px solid var(--border);
@@ -329,44 +330,44 @@ function apply() {
 .ab-t .over { color: var(--warn, #b06a2c); }
 .ab-t .under { color: var(--text-muted); }
 .ab-t .bad { color: var(--danger, #b3403a); }
-.ab-sh { font-style: normal; margin-left: 5px; font-weight: 400; font-size: 10px; color: var(--text-faint); }
+.ab-sh { font-style: normal; margin-left: 5px; font-weight: 400; font-size: var(--fs-1); color: var(--text-faint); }
 /* 「此刻 → 解后」：解后那半是本对话框的结论，比现值重一档 */
 .ab-to { font-style: normal; margin-left: 3px; font-weight: 600; color: var(--text); }
 .ab-to.bad { color: var(--danger, #b3403a); }
 .ab-empty { text-align: center; color: var(--text-faint); padding: 10px; cursor: default; }
 .ab-in {
-  width: 62px; font: inherit; font-size: 11px; padding: 2px 4px; text-align: right;
-  background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px);
+  width: 62px; font: inherit; font-size: var(--fs-2); padding: 2px 4px; text-align: right;
+  background: var(--field-bg); color: var(--text); border: 1px solid var(--field-border); border-radius: var(--r-ctl, 2px);
 }
-.ab-in:focus { outline: none; border-color: var(--accent); }
+.ab-in:focus { outline: none; border-color: var(--accent-ui); }
 .ab-in:disabled { opacity: .4; }
 .ab-in.w { width: 72px; }
 
-.ab-ctl { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; font-size: 11px; }
+.ab-ctl { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; font-size: var(--fs-2); }
 .ab-ctl label { display: inline-flex; align-items: center; gap: 5px; color: var(--text); }
 .ab-ctl label > span { color: var(--text-muted); }
 .ab-ctl label > i { font-style: normal; color: var(--text-faint); }
-.ab-ctl select { font: inherit; font-size: 11px; padding: 2px 4px; background-color: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
+.ab-ctl select { font: inherit; font-size: var(--fs-2); padding: 2px 4px; background-color: var(--field-bg); color: var(--text); border: 1px solid var(--field-border); border-radius: var(--r-ctl, 2px); }
 
 .ab-out { margin-top: 8px; display: grid; grid-template-columns: 1fr 1fr; gap: 4px 18px; }
-.ab-kv { display: flex; align-items: baseline; gap: 5px; font-size: 11px; min-width: 0; }
+.ab-kv { display: flex; align-items: baseline; gap: 5px; font-size: var(--fs-2); min-width: 0; }
 .ab-kv > span { color: var(--text-muted); }
 .ab-kv > b { font-variant-numeric: tabular-nums; color: var(--text); }
-.ab-kv > b.st { font-size: 13px; }
+.ab-kv > b.st { font-size: var(--fs-4); }
 .ab-kv > b.bad { color: var(--danger, #b3403a); }
 .ab-kv > i { font-style: normal; color: var(--text-faint); }
-.ab-kv > em { font-style: normal; color: var(--text-faint); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ab-kv > em { font-style: normal; color: var(--text-faint); font-size: var(--fs-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-.ab-err { margin-top: 8px; padding: 6px 8px; font-size: 11px; line-height: 1.5; color: var(--danger, #b3403a); background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
-.ab-warn { margin-top: 6px; font-size: 10px; line-height: 1.5; color: var(--warn, #b06a2c); }
+.ab-err { margin-top: 8px; padding: 6px 8px; font-size: var(--fs-2); line-height: 1.5; color: var(--danger, #b3403a); background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
+.ab-warn { margin-top: 6px; font-size: var(--fs-1); line-height: 1.5; color: var(--warn, #b06a2c); }
 
 .ab-ft { display: flex; justify-content: flex-end; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--border); background: var(--surface); }
 .ab-btn {
-  font: inherit; font-size: 11px; line-height: 1; padding: 4px 12px; cursor: pointer;
+  font: inherit; font-size: var(--fs-2); line-height: 1; padding: 4px 12px; cursor: pointer;
   background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px);
 }
 .ab-btn:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
 .ab-btn:disabled { opacity: .45; cursor: not-allowed; }
-.ab-btn.primary { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+.ab-btn.primary { background: var(--accent-ui); color: var(--bg); border-color: var(--accent-ui); }
 .ab-btn.primary:hover:not(:disabled) { opacity: .88; }
 </style>

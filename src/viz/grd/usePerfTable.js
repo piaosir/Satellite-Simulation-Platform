@@ -480,10 +480,6 @@ export function usePerfTable() {
   }
   const allBi = () => ctxBeams.value.map((b) => b.bi)
   const beamOn = (o, bi) => !o || o.beamSel == null || o.beamSel.includes(bi)   // beamSel=null 视为全选
-  const beamSelCount = (o) => (!o || o.beamSel == null) ? ctxBeams.value.length : o.beamSel.length
-  // Excel「(全选)」三态：作用于当前筛选结果——全部已选 / 部分(半选) / 全未选
-  const filteredAllOn = (o) => { const f = filteredBeams(); return f.length > 0 && f.every((b) => beamOn(o, b.bi)) }
-  const filteredAnyOn = (o) => filteredBeams().some((b) => beamOn(o, b.bi))
   // 规整：选中集 == 全集 → 回退 null（默认/不筛选，存盘更干净）；否则升序数组
   function normSel(arr) {
     const all = allBi(); const s = new Set(arr)
@@ -491,17 +487,10 @@ export function usePerfTable() {
     return [...s].sort((a, b) => a - b)
   }
   const materialize = (o) => (o.beamSel == null ? allBi() : o.beamSel.slice())   // 从 null(全集) 起做增删
-  function toggleBeam(o, bi) {
-    if (!o) return
-    const s = new Set(materialize(o)); s.has(bi) ? s.delete(bi) : s.add(bi)
-    o.beamSel = normSel([...s])
-  }
-  function selectFiltered(o, on) {   // 「(全选)/(全选搜索结果)」：对当前筛选结果批量增删
-    if (!o) return
-    const ids = filteredBeams().map((b) => b.bi), s = new Set(materialize(o))
-    if (on) ids.forEach((i) => s.add(i)); else ids.forEach((i) => s.delete(i))
-    o.beamSel = normSel([...s])
-  }
+  const beamSelIds = (o) => (o ? materialize(o) : [])          // 当前勾选集（null＝全集，摊开成数组）
+  // 整份写回。勾选列表的点 / 拖刷 / 连选 / 全选全部归到这一个咽喉（见 shared/ui/useCheckList.js）：
+  // 一次拖刷只落一批，不是逐行落一次 —— 每落一次就要整轮重建这张表。
+  const setBeamSel = (o, ids) => { if (o) o.beamSel = normSel([...new Set(ids)]) }
 
   return {
     stations, rows, filteredRows, ctxInfo, query, optsByAnt, canUndo, canRedo,
@@ -509,7 +498,7 @@ export function usePerfTable() {
     addEmptyStation, updateStation, removeStation, removeRow, clearStations, addStationsBulk, pasteBlock, importFromMarkers, importFromTrajectories,
     setCities, applyCityGeo, applyCityGeoAll,
     cityGroups, addCityGroup, renameCityGroup, overwriteCityGroup, removeCityGroup, loadCityGroup, appendCityGroup,
-    ctxBeams, beamQuery, filteredBeams, beamOn, beamSelCount, filteredAllOn, filteredAnyOn, toggleBeam, selectFiltered,
+    ctxBeams, beamQuery, filteredBeams, beamOn, beamSelIds, setBeamSel,
     pushUndo, dropUndo, undo, redo, compute, getState, restoreState
   }
 }

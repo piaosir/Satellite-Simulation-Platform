@@ -13,6 +13,8 @@
 //
 // 6 倍：一张 640 单位宽的时序图出来是 3840 px，报告里按整幅宽（约 16 cm）放置约合 600 dpi，
 // 放大到 200% 看曲线仍不见锯齿。屏幕上的 7 px 字号同比放到 42 px，中文笔画不糊。
+import { DOC_FONT_STACK } from '../shared/lbFont.js'
+
 export const PNG_SCALE = 6
 
 // 只搬这些属性：全量 cssText 会把上千条声明抄进每个节点，SVG 体积暴涨且栅格化变慢
@@ -74,10 +76,9 @@ export async function svgToPngBlob(svgEl, opt = {}) {
   // 不写就落到栅格化器的默认尺寸（300×150）上，图会被压扁
   clone.setAttribute('width', String(w))
   clone.setAttribute('height', String(h))
-  // 字体同样要写死：屏幕上是从祖先继承来的，导出的这份没有祖先可继承
-  let ff = ''
-  try { ff = (getComputedStyle(svgEl).fontFamily || '').trim() } catch (e) { /* 取不到就用兜底栈 */ }
-  clone.setAttribute('style', 'font-family:' + (ff || '"Times New Roman", Times, "SimSun", "宋体", serif'))
+  // 字体同样要写死：屏幕上是从祖先继承来的，导出的这份没有祖先可继承。
+  // ★ 不读屏幕的计算值：屏上这四张图跟界面走无衬线，导进报告的这一份跟正文走衬线。
+  clone.setAttribute('style', 'font-family:' + DOC_FONT_STACK)
 
   const src = '<?xml version="1.0" encoding="UTF-8"?>\n' + new XMLSerializer().serializeToString(clone)
   const img = new Image()

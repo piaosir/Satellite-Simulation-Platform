@@ -2,6 +2,7 @@
 //  - PNG：离屏 canvas 按像素倍率放大后一次性绘制 → toBlob（栅格，但矢量来源放大依旧锐利）。
 //  - PDF：svgcanvas 录制为矢量 SVG → svg2pdf + jsPDF，嵌入系统中文字体（中文可显示/可选可搜）。
 // 两条路径都走 flat.exportRender 的 compat 子路径回放（不依赖 Path2D），保证 PNG 与 PDF 完全一致。
+// 唯一的例外是影像底图：PNG 传 raster:true 照画整幅影像，PDF 那路仍出矢量底图（位图 base64 进 SVG 不可用）。
 import { jsPDF } from 'jspdf'
 import { svg2pdf } from 'svg2pdf.js'
 import { Context as SvgContext } from 'svgcanvas'
@@ -46,7 +47,7 @@ export async function renderFlatPNG(flat, { base = 2000, factor = 2, view = fals
   }
   const cv = document.createElement('canvas')
   cv.width = Math.round(W * ps); cv.height = Math.round(H * ps)
-  flat.exportRender(cv.getContext('2d'), { width: W, height: H, pixelScale: ps, view })
+  flat.exportRender(cv.getContext('2d'), { width: W, height: H, pixelScale: ps, view, raster: true })
   const blob = await new Promise((res, rej) => cv.toBlob((b) => b ? res(b) : rej(new Error('toBlob 失败')), 'image/png'))
   return new Uint8Array(await blob.arrayBuffer())
 }

@@ -30,6 +30,7 @@ import { buildColorScale } from '../shared/lbColorScale.js'
 import { contourSegments, stitchSegments, contourLevels, bilinear, fieldExtent, refineField, dequantize, buildBlocks, smoothPathD, labelAnchors } from '../shared/lbContour.js'
 import { loadBasemap, basemapPaths, OCEAN, LAND, MAP_COAST, MAP_BORDER, MAP_LW, WASH, scaleInk } from '../shared/lbBasemap.js'
 import { lbDocT } from '../shared/lbDocI18n.js'
+import { DOC_FONT_STACK } from '../shared/lbFont.js'
 
 const props = defineProps({
   // —— 网格 ——
@@ -969,12 +970,10 @@ function exportSvgString(cssVars, scale) {
   else clone.insertBefore(im, clone.firstChild)
   clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg')
   // 字体必须显式写死：屏幕上这幅 SVG 的字体是从外层 .sf 继承来的，而导出的这份离开页面
-  // 后没有祖先可继承，不写就落到栅格化器的默认字体上——报告里的图与正文不是一套字，
-  // 中文还会另换一套。取屏幕上实际生效的那一栈（Times New Roman + 宋体回落）。
-  let ff = ''
-  try { ff = (getComputedStyle(svg).fontFamily || '').trim() } catch (e) { /* 取不到就用兜底栈 */ }
-  if (!ff) ff = '"Times New Roman", Times, "SimSun", "宋体", serif'
-  clone.setAttribute('style', (cssVars ? cssVars + ';' : '') + 'font-family:' + ff)
+  // 后没有祖先可继承，不写就落到栅格化器的默认字体上。
+  // ★ 这里刻意**不再**读屏幕上的计算值：屏上走界面字体（无衬线）、导出走报告字体（衬线），
+  //   两者本就应该不同；跟着屏幕读的话，导进报告的图与正文又不是一套字了。
+  clone.setAttribute('style', (cssVars ? cssVars + ';' : '') + 'font-family:' + DOC_FONT_STACK)
   return '<?xml version="1.0" encoding="UTF-8"?>\n' + new XMLSerializer().serializeToString(clone)
 }
 // SVG 尺寸（导 PNG 时按它乘倍数定位图大小）
@@ -1160,7 +1159,8 @@ defineExpose({ exportSvgString, svgSize, toCSV, svg: svgEl })
 </template>
 
 <style scoped>
-.sf { position: relative; font-family: var(--lb-serif, var(--font-serif)); font-size: var(--lb-fs, 11px); min-width: 0; }
+/* 屏上跟界面走无衬线；导出那一份在 toSVG() 里显式写 DOC_FONT_STACK */
+.sf { position: relative; font-family: var(--font-ui); font-size: var(--lb-fs, 11px); min-width: 0; }
 /* 宽度取 width 属性（= 图框 + 四周留白），而非拉满容器：地理图锁比例时图框会比容器窄，
    margin auto 把它连同色标条一起居中，而不是甩在左边 */
 /* touch-action 只在可导航时关掉：不可导航的图（环境图）要让触屏照常翻页 */

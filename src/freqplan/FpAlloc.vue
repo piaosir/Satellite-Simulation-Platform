@@ -694,7 +694,7 @@ function nudge(g, sign, big) {
 
         <!-- 收起行 = 一条转发器的身份 + 缩略占用条。点它摊开这一条（图上同步高亮） -->
         <div class="th" @click="pick(g)">
-          <span class="tw"><Icon v-if="!g.orphan" :name="isOpen(g) ? 'chevron-down' : 'chevron-right'" :size="11" /></span>
+          <span class="tw"><Icon v-if="!g.orphan" :name="isOpen(g) ? 'chevron-down' : 'chevron-right'" :size="12" /></span>
           <span class="gno">{{ g.orphan ? '未归属转发器' : (g.no || '—') }}</span>
           <template v-if="!g.orphan">
             <span class="gf" v-if="g.f1 != null">↓ {{ fu(g.f1) }}~{{ fu(g.f2) }}<i v-if="g.pol">{{ g.pol }}</i></span>
@@ -728,7 +728,7 @@ function nudge(g, sign, big) {
             <b :class="utilCls(g.bwUtil)">{{ fu(g.occSum) }}</b><i v-if="g.freeMHz != null"><span>剩</span> {{ fu(g.freeMHz) }}</i>
           </span>
           <button v-if="!g.orphan" class="gadd" @click.stop="addCarrier(g)" title="在该转发器上添加载波">
-            <Icon name="plus" :size="11" /> 载波
+            <Icon name="plus" :size="12" /> 载波
           </button>
         </div>
 
@@ -863,7 +863,7 @@ function nudge(g, sign, big) {
                     <option v-for="t in tpList" :key="t.id" :value="t.id">{{ t.label }}</option>
                   </select>
                 </td>
-                <td><button class="del" title="删除" @click.stop="removeIds([r.c.id])"><Icon name="x" :size="10" /></button></td>
+                <td><button class="del" title="删除" @click.stop="removeIds([r.c.id])"><Icon name="x" :size="12" /></button></td>
               </tr>
             </tbody>
           </table>
@@ -921,61 +921,61 @@ function nudge(g, sign, big) {
 .cbar { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-bottom: 1px solid var(--border); }
 .spacer { flex: 1; }
 .sep { width: 1px; height: 14px; background: var(--border); }
-.fld { font-size: 12px; color: var(--text-muted); display: inline-flex; align-items: center; gap: 4px; }
-.sm { font-size: 12px; color: var(--text-muted); }
+.fld { font-size: var(--fs-3); color: var(--text-muted); display: inline-flex; align-items: center; gap: 4px; }
+.sm { font-size: var(--fs-3); color: var(--text-muted); }
 .sm .bad { color: var(--danger); }
 /* 波束着色开关：按下是实底（与 .mini 同高，两者在工具栏上并排） */
-.sw { font: inherit; font-size: 12.5px; padding: 3px 9px; border: 1px solid var(--border-strong); background: var(--bg); color: var(--text-muted); cursor: pointer; }
+.sw { font: inherit; font-size: var(--fs-4); padding: 3px 9px; border: 1px solid var(--border-strong); background: var(--bg); color: var(--text-muted); cursor: pointer; }
 .sw:hover { color: var(--text); }
 .sw.on { background: var(--text); border-color: var(--text); color: var(--bg); }
 
 .body { flex: 1; overflow: auto; }
-.none { padding: 20px; text-align: center; color: var(--text-faint); font-size: 12.5px; }
+.none { padding: 20px; text-align: center; color: var(--text-faint); font-size: var(--fs-4); }
 
 /* ── 收起行 ── 一条转发器一行：身份 + 缩略占用条 + 两个读数。整页是这样一列，点开一条编排它 */
 .tp { border-bottom: 1px solid var(--border); }
 .tp.open { border-bottom: 1px solid var(--border-strong); }
-.th { display: flex; align-items: center; gap: 10px; padding: 4px 8px; font-size: 12px; cursor: pointer; background: var(--surface-2); }
+.th { display: flex; align-items: center; gap: 10px; padding: 4px 8px; font-size: var(--fs-3); cursor: pointer; background: var(--surface-2); }
 .th:hover { background: color-mix(in srgb, var(--text) 5%, var(--surface-2)); }
 .tp.open .th { border-bottom: 1px solid var(--border); }
 .tp.bad .th { background: color-mix(in srgb, var(--danger) 8%, var(--surface-2)); }
 .tp.orph .th { background: color-mix(in srgb, var(--warn) 10%, var(--surface-2)); cursor: default; }
 .tw { width: 12px; flex: none; color: var(--text-faint); display: inline-flex; }
-.gno { font-weight: 600; font-size: 12.5px; flex: none; }
+.gno { font-weight: 600; font-size: var(--fs-4); flex: none; }
 .gf { color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; flex: none; }
-.gf i { font-style: normal; margin-left: 4px; padding: 0 3px; border: 1px solid var(--border-strong); font-size: 10.5px; }
+.gf i { font-style: normal; margin-left: 4px; padding: 0 3px; border: 1px solid var(--border-strong); font-size: var(--fs-2); }
 .gbw { font-variant-numeric: tabular-nums; flex: none; }
-.gbm { color: var(--text-faint); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gbm { color: var(--text-faint); font-size: var(--fs-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .gbm em { font-style: normal; margin-right: 8px; }
 .gbm .dot { display: inline-block; width: 7px; height: 7px; margin-right: 3px; vertical-align: baseline; border: 1px solid rgba(0, 0, 0, .25); }
 /* 二选一那一组不许被挤掉：只是图例的可以省略号截断，能点的截断了就成了半个按钮 */
 .gbm.pick { flex: none; overflow: visible; }
 /* 二选一的色片钮：没选中的连色点一并压暗 —— 光靠文字深浅分不出「选中的是哪一个」 */
-.bmp { font: inherit; font-size: 11.5px; line-height: 1.1; padding: 1px 5px 1px 3px; margin-right: 4px;
+.bmp { font: inherit; font-size: var(--fs-3); line-height: 1.1; padding: 1px 5px 1px 3px; margin-right: 4px;
   border: 1px solid transparent; background: none; color: var(--text-faint); cursor: pointer; }
 .bmp .dot { opacity: .3; }
 .bmp:hover { border-color: var(--border-strong); background: var(--bg); }
 .bmp.on { color: var(--text); border-color: var(--border-strong); background: var(--bg); }
 .bmp.on .dot { opacity: 1; }
-.gn { flex: none; font-size: 11px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+.gn { flex: none; font-size: var(--fs-2); color: var(--text-faint); font-variant-numeric: tabular-nums; }
 .gsum { flex: none; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .gsum b { font-weight: 600; }
 .gsum b.over { color: var(--danger); }
 .gsum b.near { color: var(--warn); }
-.gsum i { font-style: normal; font-size: 11px; color: var(--text-faint); margin-left: 6px; }
+.gsum i { font-style: normal; font-size: var(--fs-2); color: var(--text-faint); margin-left: 6px; }
 /* 缩略占用条：收起行里那一眼。overflow 必须裁——越界的载波算出来就是负 left / 111% 宽 */
 .mini-bar { position: relative; flex: none; width: 132px; height: 9px; background: var(--bg); border: 1px solid var(--border); overflow: hidden; }
 .mseg { position: absolute; top: 1px; height: 5px; }
 .mseg.float { background-image: repeating-linear-gradient(45deg, rgba(255, 255, 255, .45) 0 3px, transparent 3px 6px); }
 .mpwr { position: absolute; bottom: 0; left: 0; height: 2px; background: var(--warn); opacity: .85; }
-.gadd { display: inline-flex; align-items: center; gap: 2px; font: inherit; font-size: 11px; padding: 0 4px; height: 17px; flex: none;
+.gadd { display: inline-flex; align-items: center; gap: 2px; font: inherit; font-size: var(--fs-2); padding: 0 4px; height: 17px; flex: none;
   border: 1px solid transparent; background: none; color: var(--text-faint); cursor: pointer; }
 .th:hover .gadd { color: var(--text); border-color: var(--border-strong); background: var(--bg); }
 .th .gadd:hover { color: var(--text); border-color: var(--text); background: var(--bg); }   /* 与上一条同权重，写在后面才压得住 */
 
 /* ── 编排面板 ── 摊开的那一条 */
 .panel { padding: 8px 0 6px; background: var(--bg); outline: none; }
-.pnone { padding: 8px 14px 10px; color: var(--text-faint); font-size: 12px; }
+.pnone { padding: 8px 14px 10px; color: var(--text-faint); font-size: var(--fs-3); }
 
 /* 频带条。左右各留 48px：起 / 止 的读数居中压在边沿上，要有地方往外探出去 */
 .stripwrap { padding: 14px 48px 0; outline: none; }
@@ -1003,8 +1003,8 @@ function nudge(g, sign, big) {
 .blk.bad { border-color: var(--danger); border-width: 2px; }
 .blk .bn, .blk .bbw { color: var(--ink, #fff); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
   padding: 0 5px; pointer-events: none; user-select: none; text-shadow: 0 1px 1px var(--shd, rgba(0, 0, 0, .35)); }
-.blk .bn { font-size: 11px; }
-.blk .bbw { font-size: 10px; opacity: .92; font-variant-numeric: tabular-nums; }
+.blk .bn { font-size: var(--fs-2); }
+.blk .bbw { font-size: var(--fs-1); opacity: .92; font-variant-numeric: tabular-nums; }
 /* 两端把手：8px 宽的抓取带，压在块的边沿上（块本身是平移，边沿是拉伸） */
 .blk .h { position: absolute; top: 0; bottom: 0; width: 8px; cursor: ew-resize; }
 .blk .h.l { left: -1px; }
@@ -1015,45 +1015,45 @@ function nudge(g, sign, big) {
    同名的话它们会被这条的 position:absolute 抓走，一起飞到页面左上角去 */
 .newblk { position: absolute; top: 7px; height: 32px; border: 1px dashed var(--text); background: rgba(91, 143, 212, .28);
   display: flex; align-items: center; justify-content: center; pointer-events: none; box-sizing: border-box; }
-.newblk .bn { font-size: 11px; color: var(--text); font-variant-numeric: tabular-nums; }
+.newblk .bn { font-size: var(--fs-2); color: var(--text); font-variant-numeric: tabular-nums; }
 
 /* 功率带宽底衬：从块的左沿起画，与占用带宽同轴上下对照 —— 探出块宽即功率限 */
 .pwr { position: absolute; bottom: 1px; height: 3px; background: var(--warn); opacity: .9; pointer-events: none; }
 
-.elab, .ax { position: absolute; font-size: 10px; font-variant-numeric: tabular-nums;
+.elab, .ax { position: absolute; font-size: var(--fs-1); font-variant-numeric: tabular-nums;
   white-space: nowrap; pointer-events: none; user-select: none; }
 .elab { top: -13px; transform: translateX(-50%); color: var(--text-faint); }
 .axis { position: relative; height: 15px; margin-top: 2px; border-top: 1px solid var(--border-strong); }
-.ax { top: 2px; transform: translateX(-50%); color: var(--text-muted); font-size: 10.5px; }
+.ax { top: 2px; transform: translateX(-50%); color: var(--text-muted); font-size: var(--fs-2); }
 
 /* 本条转发器的读数行 */
-.psum { display: flex; align-items: baseline; gap: 4px; padding: 8px 48px 2px; font-size: 12px; font-variant-numeric: tabular-nums; }
+.psum { display: flex; align-items: baseline; gap: 4px; padding: 8px 48px 2px; font-size: var(--fs-3); font-variant-numeric: tabular-nums; }
 .psum .k { color: var(--text-faint); margin-left: 14px; }
 .psum .k:first-child { margin-left: 0; }
 .psum .v { font-weight: 600; }
 .psum .v.over { color: var(--danger); }
 .psum .v.near { color: var(--warn); }
-.psum i { font-style: normal; font-size: 10.5px; color: var(--text-faint); }
+.psum i { font-style: normal; font-size: var(--fs-2); color: var(--text-faint); }
 
 .tscroll { overflow-x: auto; margin-top: 6px; }
-.t { width: 100%; min-width: 1000px; border-collapse: collapse; font-size: 12.5px; }
+.t { width: 100%; min-width: 1000px; border-collapse: collapse; font-size: var(--fs-4); }
 .t thead th { background: var(--surface); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border-strong);
   padding: 3px 6px; text-align: left; font-weight: 600; white-space: nowrap; color: var(--text-muted); }
 .t td { border-bottom: 1px solid var(--border); padding: 2px 6px; }
 .num { text-align: right; font-variant-numeric: tabular-nums; }
-.cr .rn { text-align: right; color: var(--text-faint); font-size: 11px; font-variant-numeric: tabular-nums; }
+.cr .rn { text-align: right; color: var(--text-faint); font-size: var(--fs-2); font-variant-numeric: tabular-nums; }
 .cr:hover td { background: color-mix(in srgb, var(--text) 3%, transparent); }
 .cr.on td { background: color-mix(in srgb, var(--text) 6%, transparent); }
 
-.isrow { color: var(--danger); font-size: 11.5px; padding: 3px 48px 0; }
+.isrow { color: var(--danger); font-size: var(--fs-3); padding: 3px 48px 0; }
 
 /* 右键菜单。遮罩吃掉一次点击（含右键）——菜单开着时点别处只该关菜单，不该同时选中别的东西 */
 .mmask { position: fixed; inset: 0; z-index: 40; }
 .cmenu { position: fixed; z-index: 41; min-width: 132px; padding: 3px 0; background: var(--bg);
-  border: 1px solid var(--border-strong); box-shadow: 0 6px 18px rgba(0, 0, 0, .18); }
-.cmenu button { display: flex; align-items: center; gap: 14px; width: 100%; font: inherit; font-size: 12.5px;
+  border: 1px solid var(--border-strong); box-shadow: var(--shadow-2); }
+.cmenu button { display: flex; align-items: center; gap: 14px; width: 100%; font: inherit; font-size: var(--fs-4);
   padding: 3px 10px; border: none; background: none; color: var(--text); cursor: pointer; text-align: left; }
-.cmenu button i { margin-left: auto; font-style: normal; font-size: 10.5px; color: var(--text-faint); }
+.cmenu button i { margin-left: auto; font-style: normal; font-size: var(--fs-2); color: var(--text-faint); }
 .cmenu button.bm { gap: 7px; }
 .cmenu .cdot { flex: none; width: 8px; height: 8px; border: 1px solid rgba(0, 0, 0, .25); }
 .cmenu .cdot.none { background: transparent; border-style: dashed; }
@@ -1063,18 +1063,18 @@ function nudge(g, sign, big) {
 .msep { height: 1px; margin: 3px 0; background: var(--border); }
 
 /* 表末整星合计：压双线，与上面每一条的分区线拉开层级 */
-.foot { display: flex; align-items: baseline; gap: 4px; padding: 4px 10px; font-size: 12px;
+.foot { display: flex; align-items: baseline; gap: 4px; padding: 4px 10px; font-size: var(--fs-3);
   font-variant-numeric: tabular-nums; background: var(--surface); border-top: 3px double var(--text-faint); }
 .foot .k { color: var(--text-faint); margin-left: 12px; }
 .foot .k:first-child { margin-left: 0; }
 .foot b { font-weight: 600; }
 .foot b.over { color: var(--danger); }
 .foot b.near { color: var(--warn); }
-.foot i { font-style: normal; font-size: 10.5px; color: var(--text-faint); }
+.foot i { font-style: normal; font-size: var(--fs-2); color: var(--text-faint); }
 
-.ci { width: 100%; background-color: transparent; border: 1px solid transparent; color: var(--text); padding: 2px 3px; font: inherit; font-family: var(--font-serif); }
-.ci:hover:not(:disabled) { border-color: var(--border); }
-.ci:focus { border-color: var(--text); outline: none; background-color: var(--bg); }
+.ci { width: 100%; background-color: transparent; border: 1px solid transparent; color: var(--text); padding: 2px 3px; font: inherit; }
+.ci:hover:not(:disabled) { border-color: var(--field-border-hover); }
+.ci:focus { border-color: var(--text); outline: none; background-color: var(--field-bg); }
 .ci:disabled { color: var(--text-faint); cursor: default; }
 .ci.num { text-align: right; font-variant-numeric: tabular-nums; }
 /* 波束那一格：色点 + 下拉。色点是只读标注（这一行在条上什么颜色），故不吃指针 */
@@ -1084,9 +1084,9 @@ function nudge(g, sign, big) {
 .bmcell .selc { flex: 1; min-width: 0; }
 .selc { -webkit-appearance: none; appearance: none; }
 .selc.inh { color: var(--text-faint); }
-.del { border: none; background: transparent; color: var(--text-faint); cursor: pointer; padding: 2px 4px; }
+.del { border: none; background: transparent; color: var(--text-faint); cursor: pointer; height: var(--h-ctl); white-space: nowrap; padding: 0 4px; }
 .del:hover { color: var(--danger); }
-.mini { font: inherit; font-size: 12.5px; padding: 3px 9px; border: 1px solid var(--border-strong); background: var(--bg); color: var(--text-muted); cursor: pointer; }
+.mini { font: inherit; font-size: var(--fs-4); height: var(--h-ctl); white-space: nowrap; padding: 0 9px; border: 1px solid var(--border-strong); background: var(--bg); color: var(--text-muted); cursor: pointer; }
 .mini:hover:not(:disabled) { background: var(--surface-2); color: var(--text); }
 .mini:disabled { opacity: .45; cursor: default; }
 </style>

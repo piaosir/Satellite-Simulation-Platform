@@ -1325,7 +1325,7 @@ function clearColContents() {
               {{ f.label }}<i v-if="f.unit"> ({{ f.unit }})</i>
               <!-- 站址组锚点列（地球站位置）：列头内联导入钮，点击按该侧（f.city='tx'/'rx'）打开导入 -->
               <button v-if="f.city" class="sg-himp" :title="'导入站址到' + (f.city === 'rx' ? '收信站' : '发信站') + '：城市库 / 点标记 / 地球站 / 航迹'"
-                      @mousedown.left.stop @click.stop="openImport(f.city, $event)"><Icon name="import" :size="11" /></button>
+                      @mousedown.left.stop @click.stop="openImport(f.city, $event)"><Icon name="import" :size="12" /></button>
             </th>
             <th v-if="roLabel" class="sg-ro">{{ roLabel }}<i v-if="roUnit"> ({{ roUnit }})</i></th>
           </tr>
@@ -1363,7 +1363,7 @@ function clearColContents() {
                    现形时是不透明小钮盖住值的尾部（Airtable 展开记录钮的做法），列宽不因它变化。 -->
               <button v-if="libOf(f)" type="button" class="sg-libed"
                       :title="'到资源库编辑「' + (displayValue(s, f) || ghost(s, f) || '（默认）') + '」的参数'"
-                      @mousedown.left.stop.prevent @click.stop="editLibCell(i, c)"><Icon name="pencil" :size="10" /></button>
+                      @mousedown.left.stop.prevent @click.stop="editLibCell(i, c)"><Icon name="pencil" :size="12" /></button>
               <!-- 单元格第二行小字（只读）：链路表「地球站配置」下方挂实时 EIRP/G·T。导航态透明捕获框(inset:0)不遮它、编辑 select 时才盖住，均属预期 -->
               <span v-if="cellSub && cellSub(f, s)" class="sg-sub">{{ cellSub(f, s) }}</span>
               <span v-if="isFillAnchor(i, c) && !isEditing(i, c)" class="sg-handle" title="拖动/双击向下填充" @mousedown.left.stop.prevent="onFillDown" @dblclick.stop="onFillDbl"></span>
@@ -1376,7 +1376,7 @@ function clearColContents() {
           </tr>
           <tr v-if="!stations.length"><td :colspan="visColCount" class="sg-empty">暂无{{ label }}</td></tr>
           <!-- 表尾追加行（Notion 式）：常驻，点击在表尾加一行；行中插入仍走右键菜单 -->
-          <tr class="sg-addrow"><td :colspan="visColCount"><button type="button" class="sg-addlbl" title="在表尾追加一行" @mousedown.stop @click="addRow(true)"><Icon name="plus" :size="11" /> 增加一行</button></td></tr>
+          <tr class="sg-addrow"><td :colspan="visColCount"><button type="button" class="sg-addlbl" title="在表尾追加一行" @mousedown.stop @click="addRow(true)"><Icon name="plus" :size="12" /> 增加一行</button></td></tr>
         </tbody>
       </table>
     </div>
@@ -1493,7 +1493,7 @@ function clearColContents() {
           <!-- 库引用列：每个选项挂「编辑参数」钮（悬停现形）→ 直达资源库该条目，不改变本行选择。
                走 mousedown.stop：选项本身用 mousedown 提交选值，不 stop 会先把这项选上 -->
           <button v-if="libOf(ddField)" type="button" class="sg-opt-ed" :title="'到资源库编辑「' + optLabel(o) + '」的参数（不改变本行选择）'"
-                  @mousedown.left.stop.prevent="editLibOpt(o)"><Icon name="pencil" :size="10" /></button>
+                  @mousedown.left.stop.prevent="editLibOpt(o)"><Icon name="pencil" :size="12" /></button>
         </div>
         <div v-if="!ddFiltered.length" class="sg-opt sg-opt-empty">{{ ddOptions.length ? '无匹配 · 回车录入「' + dd.query + '」' : '无选项' }}</div>
       </div>
@@ -1504,12 +1504,12 @@ function clearColContents() {
 <style scoped>
 .sg { position: relative; display: flex; flex-direction: column; min-height: 0; height: 100%; }
 .sg-bar { display: flex; align-items: center; gap: 6px; padding: 4px 2px 6px; flex: none; flex-wrap: wrap; }
-.sg-count { font-size: 11px; color: var(--text-muted); }
+.sg-count { font-size: var(--fs-2); color: var(--text-muted); }
 .sg-sp { flex: 1; }
-.sg-btn { font: inherit; font-size: 11px; padding: 3px 8px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); display: inline-flex; align-items: center; justify-content: center; gap: 4px; }
+.sg-btn { font: inherit; font-size: var(--fs-2); height: var(--h-ctl); white-space: nowrap; padding: 0 8px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); display: inline-flex; align-items: center; justify-content: center; gap: 4px; }
 .sg-btn:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
 .sg-btn:disabled { opacity: .4; cursor: not-allowed; }
-.sg-btn.primary { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+.sg-btn.primary { background: var(--accent-ui); color: var(--bg); border-color: var(--accent-ui); }
 .sg-btn.on { color: var(--text); border-color: var(--accent); }
 
 .sg-scroll { flex: 1; overflow: auto; overscroll-behavior-x: contain; border: 1px solid var(--border); border-radius: var(--r-box, 3px); outline: none; }
@@ -1531,7 +1531,7 @@ function clearColContents() {
    （撤通栏线改分段 cmidrule + 组间留一道空白列距），在这种全格线密排表里读起来是「少画了根格线」
    而非「这里是分区」，已否决——留白当分隔符的前提是稀疏排版，勿再重来。
    组标题原为 --text-faint，比它管辖的列头(--text-muted)还淡、层级倒挂，一并提到 muted/700。 */
-.sg-tbl.has-g thead tr.sg-ghd th { top: 0; height: 20px; padding: 2px 7px; font-size: 10px; font-weight: 700; letter-spacing: var(--ls-caps); color: var(--text-muted); z-index: 4; border-bottom: 1px solid var(--lb-rule); }
+.sg-tbl.has-g thead tr.sg-ghd th { top: 0; height: 20px; padding: 2px 7px; font-size: var(--fs-1); font-weight: 700; letter-spacing: var(--ls-caps); color: var(--text-muted); z-index: 4; border-bottom: 1px solid var(--lb-rule); }
 .sg-tbl.has-g thead tr.sg-ghd th.sg-gpad { z-index: 6; }
 .sg-tbl.has-g thead tr:not(.sg-ghd) th { top: 20px; }
 .sg-glbl { vertical-align: middle; }
@@ -1546,11 +1546,11 @@ function clearColContents() {
 /* 表尾「＋ 增加一行」：点击区**只是标签本身**，不是整行——整行热区紧挨底部横向滚动条，够一下滚动条就白加一行。
    标签横滚时粘住左缘；行本体只作留白，不吃点击。 */
 .sg-addrow td { padding: 2px 8px; color: var(--text-muted); user-select: none; }
-.sg-addlbl { position: sticky; left: 8px; display: inline-flex; align-items: center; gap: 4px; font: inherit; font-size: inherit; padding: 2px 7px; cursor: pointer; color: var(--text-faint); background: transparent; border: 1px solid transparent; border-radius: var(--r-ctl, 2px); }
+.sg-addlbl { position: sticky; left: 8px; display: inline-flex; align-items: center; gap: 4px; font: inherit; font-size: inherit; height: var(--h-ctl); white-space: nowrap; padding: 0 7px; cursor: pointer; color: var(--text-faint); background: transparent; border: 1px solid transparent; border-radius: var(--r-ctl, 2px); }
 .sg-addlbl:hover { color: var(--accent); border-color: var(--border); background: var(--surface); }
 .sg-tbl th.sg-hcol { cursor: pointer; }
 .sg-tbl th.sg-hcol:hover { color: var(--text); }
-.sg-tbl th.colsel { background: color-mix(in srgb, var(--accent) 24%, var(--surface-2)); color: var(--text); }
+.sg-tbl th.colsel { background: color-mix(in srgb, var(--accent-ui) 24%, var(--surface-2)); color: var(--text); }
 .sg-tbl th i { color: var(--text-faint); font-style: normal; font-weight: 400; }
 .sg-tbl tbody tr.on > td { background: var(--surface-2); }
 /* 冻结：选择列(固定 40px) + 名称区(从首列冻结到城市/名称字段，可能不止 1 列，left 由 keyColStyle() 按列动态算) */
@@ -1560,7 +1560,7 @@ function clearColContents() {
 .sg-tbl td.sg-sel:hover { background: var(--surface-2); }
 .sg-tbl tbody tr.on > td.sg-sel { background: var(--surface-2); }
 .sg-tbl tbody tr.on > td.sg-sel .sg-idx { color: var(--accent); font-weight: 700; }
-.sg-idx { color: var(--text-faint); font-size: 10px; display: block; }
+.sg-idx { color: var(--text-faint); font-size: var(--fs-1); display: block; }
 /* —— 冻结列（Excel 冻结窗格）——
    .sg-fz    粘住不随横滚；左偏移由 <table> 上的 --sgfN 给（实测列宽逐列累加，见 measureFrozen）
    .sg-kw    出厂关键列的窄宽度，与「当前冻不冻结」解耦——临时取消冻结不该让这几列忽然变宽
@@ -1585,12 +1585,12 @@ function clearColContents() {
 .sg-tag { margin-left: 6px; font-style: normal; font-size: max(9px, calc(var(--lb-fs, 11px) - 2px)); color: var(--text-faint); }
 /* 单元格第二行只读小字（如「地球站配置」下的实时 EIRP/G·T）：更小更淡、等宽、不吃鼠标（点击落到 td 选中本格） */
 .sg-sub { display: block; padding: 0 6px 2px; margin-top: -1px; font-size: max(9px, calc(var(--lb-fs, 11px) - 2px)); line-height: 1.3; color: var(--text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; }
-.sg-cell.sel { background: color-mix(in srgb, var(--accent) 12%, var(--bg)); }
+.sg-cell.sel { background: color-mix(in srgb, var(--accent-ui) 12%, var(--bg)); }
 /* 聚焦/编辑格抬一层（仍低于冻结列与表头）：让填充柄那 2px 出檐、编辑框边框压过相邻格 */
 .sg-cell.focus, .sg-cell.editing { z-index: 1; }
 .sg-cell.focus { outline: 2px solid var(--accent); outline-offset: -2px; }
-.sg-tbl tbody tr.on > td.sg-cell.sel { background: color-mix(in srgb, var(--accent) 16%, var(--surface-2)); }
-.sg-i { width: 100%; font: inherit; font-size: 12px; padding: 3px 5px; border: 0; border-radius: 0; background: var(--surface); color: var(--text); }
+.sg-tbl tbody tr.on > td.sg-cell.sel { background: color-mix(in srgb, var(--accent-ui) 16%, var(--surface-2)); }
+.sg-i { width: 100%; font: inherit; font-size: var(--fs-3); padding: 3px 5px; border: 0; border-radius: 0; background: var(--surface); color: var(--text); }
 .sg-i.mono { font-family: var(--font-mono); }
 .sg-i:focus { outline: none; }
 /* 聚焦格常驻捕获输入框：始终存在并持有键盘/输入法焦点。导航态透明覆盖在值上、pointer-events:none 让鼠标框选穿透到 td；
@@ -1602,7 +1602,7 @@ function clearColContents() {
 .sg-cap.editing::placeholder { color: var(--text-faint); opacity: .7; }   /* 编辑空格时输入框内仍浅显默认值，键入即消 */
 .sg-act { position: sticky; right: 0; z-index: 2; white-space: nowrap; padding: 0 4px; text-align: center; width: 86px; min-width: 86px; }
 .sg-tbl thead th.sg-act { z-index: 5; }
-.sg-mini { font: inherit; font-size: 11px; padding: 2px 6px; margin: 2px 1px; cursor: pointer; background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
+.sg-mini { font: inherit; font-size: var(--fs-2); padding: 2px 6px; margin: 2px 1px; cursor: pointer; background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
 .sg-mini:hover { color: var(--text); border-color: var(--border-strong); }
 .sg-mini.del:hover { color: var(--danger); border-color: var(--danger); }
 .sg-empty { padding: 12px; text-align: center; color: var(--text-faint); }
@@ -1611,14 +1611,14 @@ function clearColContents() {
 .sg-tbl thead th.sg-ro { z-index: 5; }
 .sg-tbl td.sg-ro.mono { font-family: var(--font-mono); }
 /* 只读列可框选/复制：选中高亮（基样式更具体，需在此覆写） */
-.sg-tbl td.sg-ro.sel { background: color-mix(in srgb, var(--accent) 12%, var(--surface)); }
-.sg-tbl tbody tr.on > td.sg-ro.sel { background: color-mix(in srgb, var(--accent) 16%, var(--surface-2)); }
+.sg-tbl td.sg-ro.sel { background: color-mix(in srgb, var(--accent-ui) 12%, var(--surface)); }
+.sg-tbl tbody tr.on > td.sg-ro.sel { background: color-mix(in srgb, var(--accent-ui) 16%, var(--surface-2)); }
 /* 只读字段单元格 ro-field：可选中/可复制但不可编辑（雨衰结果列 / GEO仰角 / 自动降雨率）。
    淡底 + 默认光标区分于可编辑格；选中态仍以强调色高亮以便复制。 */
 .sg-tbl td.sg-cell.ro-field { background: color-mix(in srgb, var(--surface-2) 40%, var(--bg)); color: var(--text-muted); cursor: default; }
-.sg-tbl td.sg-cell.ro-field.sel { background: color-mix(in srgb, var(--accent) 14%, var(--surface)); color: var(--text); }
+.sg-tbl td.sg-cell.ro-field.sel { background: color-mix(in srgb, var(--accent-ui) 14%, var(--surface)); color: var(--text); }
 .sg-cap[readonly] { cursor: default; }
-.sg-hint { flex: none; margin: 6px 2px 0; font-size: 11px; color: var(--text-faint); }
+.sg-hint { flex: none; margin: 6px 2px 0; font-size: var(--fs-2); color: var(--text-faint); }
 
 /* 冻结条：7px 可拖热区（Excel 拖冻结条），::before 是那根 1px 线（正压在格子右框上，不叠成 2px），
    ::after 在横滚起来后向右投一道浅影——影子告诉你线底下还压着内容。投影不逐格画：一格一个 box-shadow 会在每行接缝处断开。 */
@@ -1632,57 +1632,57 @@ function clearColContents() {
 .sg-fzprev { position: absolute; width: 2px; margin-left: -1px; z-index: 9; pointer-events: none; background: var(--accent); }
 
 .sg-mask { position: fixed; inset: 0; z-index: 200; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.28); }
-.sg-box { width: 380px; max-height: 72vh; display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-card, 4px); box-shadow: 0 8px 24px rgba(0,0,0,.18); overflow: hidden; }
+.sg-box { width: 380px; max-height: 72vh; display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-card, 4px); box-shadow: var(--shadow-3); overflow: hidden; }
 .sg-box-sm { width: 320px; }
-.sg-box-hd { padding: 10px 12px; font-size: 11px; font-weight: 600; letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--text-muted); background: var(--surface-2); border-bottom: 1px solid var(--border); }
-.sg-search { margin: 10px 12px; padding: 6px 9px; font: inherit; font-size: 12px; background-color: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
-.sg-search:focus { outline: none; border-color: var(--accent); }
+.sg-box-hd { padding: 10px 12px; font-size: var(--fs-2); font-weight: 600; letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--text-muted); background: var(--surface-2); border-bottom: 1px solid var(--border); }
+.sg-search { margin: 10px 12px; padding: 6px 9px; font: inherit; font-size: var(--fs-3); background-color: var(--field-bg); color: var(--text); border: 1px solid var(--field-border); border-radius: var(--r-ctl, 2px); }
+.sg-search:focus { outline: none; border-color: var(--accent-ui); }
 .sg-list { flex: 1; overflow: auto; padding: 0 6px 8px; }
-.sg-city { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 8px; cursor: pointer; border-radius: var(--r-ctl, 2px); font-size: 12px; }
+.sg-city { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 8px; cursor: pointer; border-radius: var(--r-ctl, 2px); font-size: var(--fs-3); }
 .sg-city:hover { background: var(--surface-2); }
-.sg-ll { font-size: 11px; color: var(--text-faint); }
+.sg-ll { font-size: var(--fs-2); color: var(--text-faint); }
 /* 导入弹窗 */
 .sg-tabs { display: flex; gap: 4px; padding: 8px 12px 0; }
-.sg-tab { flex: 1; font: inherit; font-size: 12px; padding: 5px 6px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
-.sg-tab.on { background: var(--surface-2); color: var(--text); border-color: var(--border-strong); font-weight: 600; box-shadow: inset 0 -2px 0 var(--accent); }
+.sg-tab { flex: 1; font: inherit; font-size: var(--fs-3); height: var(--h-ctl-lg); white-space: nowrap; padding: 0 6px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
+.sg-tab.on { background: var(--surface-2); color: var(--text); border-color: var(--border-strong); font-weight: 600; box-shadow: inset 0 -2px 0 var(--accent-ui); }
 /* Quick Pick 式导入面板：透明遮罩（仅拦截外点关闭）+ 锚定在列头导入钮下方的浮层 */
 .sg-mask-lite { background: transparent; display: block; }
-.sg-imppop { position: fixed; margin: 0; box-shadow: 0 8px 28px rgba(0,0,0,.24); }
+.sg-imppop { position: fixed; margin: 0; box-shadow: var(--shadow-3); }
 .sg-imphd { display: flex; align-items: center; gap: 6px; }
-.sg-sideb { font: inherit; font-size: 11px; font-weight: 400; line-height: 1; letter-spacing: 0; text-transform: none; padding: 3px 8px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
-.sg-sideb.on { background: var(--surface-2); color: var(--text); border-color: var(--border-strong); box-shadow: inset 0 -2px 0 var(--accent); font-weight: 600; }
+.sg-sideb { font: inherit; font-size: var(--fs-2); font-weight: 400; line-height: 1; letter-spacing: 0; text-transform: none; padding: 3px 8px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
+.sg-sideb.on { background: var(--surface-2); color: var(--text); border-color: var(--border-strong); box-shadow: inset 0 -2px 0 var(--accent-ui); font-weight: 600; }
 .sg-side1 { letter-spacing: 0; text-transform: none; color: var(--text); }
 /* 「另一端」行：钉住的对侧站回显 + 清除 */
-.sg-oth { display: flex; align-items: center; gap: 5px; margin: 6px 12px 0; font-size: 11px; color: var(--text-muted); white-space: nowrap; overflow: hidden; }
+.sg-oth { display: flex; align-items: center; gap: 5px; margin: 6px 12px 0; font-size: var(--fs-2); color: var(--text-muted); white-space: nowrap; overflow: hidden; }
 .sg-oth-v { color: var(--text); font-weight: 700; }
-.sg-oth-x { font: inherit; font-size: 10px; line-height: 1; padding: 1px 4px; cursor: pointer; background: transparent; color: var(--text-faint); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
+.sg-oth-x { font: inherit; font-size: var(--fs-1); line-height: 1; padding: 1px 4px; cursor: pointer; background: transparent; color: var(--text-faint); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
 .sg-oth-x:hover { color: var(--danger); border-color: var(--border-strong); }
 .sg-oth-def { color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; }
 .sg-impitem { display: flex; align-items: center; gap: 8px; padding: 3px 8px; cursor: pointer; font-size: var(--lb-fs, 11px); border-radius: var(--r-ctl, 2px); user-select: none; }
 /* 条目内 ⇄ 钉为另一端：悬停显现，钉中常亮 */
-.sg-imppin { visibility: hidden; font-size: 12px; line-height: 1; padding: 0 3px; color: var(--text-faint); cursor: pointer; border-radius: var(--r-ctl, 2px); }
+.sg-imppin { visibility: hidden; font-size: var(--fs-3); line-height: 1; padding: 0 3px; color: var(--text-faint); cursor: pointer; border-radius: var(--r-ctl, 2px); }
 .sg-impitem:hover .sg-imppin { visibility: visible; }
 .sg-imppin:hover { color: var(--accent); }
 .sg-imppin.on { visibility: visible; color: var(--accent); font-weight: 700; }
-.sg-impitem.hl { background: color-mix(in srgb, var(--accent) 14%, var(--bg)); }
+.sg-impitem.hl { background: color-mix(in srgb, var(--accent-ui) 14%, var(--bg)); }
 .sg-impitem.done .sg-impn { color: var(--text-muted); }
 .sg-impn { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sg-impck { visibility: hidden; color: var(--ok); font-weight: 700; }
 .sg-impck.show { visibility: visible; }
-.sg-impck i { font-style: normal; font-size: 10px; color: var(--text-muted); font-weight: 400; }
+.sg-impck i { font-style: normal; font-size: var(--fs-1); color: var(--text-muted); font-weight: 400; }
 .sg-impft { display: flex; align-items: center; gap: 8px; padding: 6px 12px 10px; }
-.sg-impn2 { flex: 1; min-width: 0; font-size: 10.5px; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sg-impn2 { flex: 1; min-width: 0; font-size: var(--fs-2); color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sg-batch { display: flex; flex-direction: column; }
 .sg-box-ft { display: flex; justify-content: flex-end; gap: 8px; padding: 4px 12px 12px; }
 
 /* 右键菜单（Excel 式）：满屏遮罩拦截点击关闭 + 浮层菜单 */
 .sg-ctx-mask { position: fixed; inset: 0; z-index: 400; }
-.sg-ctx { position: fixed; min-width: 168px; padding: 4px; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-box, 3px); box-shadow: 0 6px 20px rgba(0,0,0,.22); display: flex; flex-direction: column; }
-.sg-ctx-i { display: flex; align-items: center; justify-content: space-between; gap: 16px; font: inherit; font-size: 12px; text-align: left; padding: 6px 10px; cursor: pointer; background: transparent; color: var(--text); border: 0; border-radius: var(--r-ctl, 2px); white-space: nowrap; }
+.sg-ctx { position: fixed; min-width: 168px; padding: 4px; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-box, 3px); box-shadow: var(--shadow-2); display: flex; flex-direction: column; }
+.sg-ctx-i { display: flex; align-items: center; justify-content: space-between; gap: 16px; font: inherit; font-size: var(--fs-3); text-align: left; padding: 6px 10px; cursor: pointer; background: transparent; color: var(--text); border: 0; border-radius: var(--r-ctl, 2px); white-space: nowrap; }
 .sg-ctx-i:hover:not(:disabled) { background: var(--surface-2); }
 .sg-ctx-i:disabled { opacity: .45; cursor: not-allowed; }
 .sg-ctx-i.danger:hover { color: var(--danger); }
-.sg-ctx-i kbd { font: inherit; font-size: 10px; color: var(--text-faint); background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-box); padding: 0 4px; }
+.sg-ctx-i kbd { font: inherit; font-family: var(--font-code); font-size: var(--fs-1); color: var(--text-faint); background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-box); padding: 0 4px; }
 .sg-ctx-sep { height: 1px; margin: 4px 6px; background: var(--border); }
 
 /* select 单元格下拉指示 chevron：单击即开的热区，pointer-events 高于透明捕获框(.sg-cap z3) */
@@ -1694,17 +1694,17 @@ function clearColContents() {
 /* 库引用列格内「编辑参数」钮：默认隐形且不占位，悬停/聚焦本格才现形——现形时是一枚不透明小钮，
    浮在值尾部之上（Airtable 悬停「展开记录」钮的做法）。这样列宽与普通 select 列一致，不必为一个
    偶尔按一次的钮长期让出 16px。竖直上与 chevron 同基线（首行中线），横向排在它左边。 */
-.sg-libed { position: absolute; right: 17px; top: 10px; transform: translateY(-50%); display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; padding: 0; visibility: hidden; cursor: pointer; color: var(--text-faint); background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); box-shadow: 0 1px 3px rgba(0,0,0,.14); z-index: 6; }
+.sg-libed { position: absolute; right: 17px; top: 10px; transform: translateY(-50%); display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; padding: 0; visibility: hidden; cursor: pointer; color: var(--text-faint); background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); box-shadow: var(--shadow-1); z-index: 6; }
 .sg-cell:hover .sg-libed, .sg-cell.focus .sg-libed { visibility: visible; }
 .sg-libed:hover { color: var(--accent); border-color: var(--border-strong); }
 .sg-cap.combo { padding-right: 20px; }   /* 组合框输入：右留位给 chevron，打字不压住箭头 */
 /* 自建下拉列表（Teleport 到 body，fixed 定位；层级高于 sticky 表头/冻结列 z4，低于模态遮罩 z200） */
 /* Teleport 到 body 在 .lb-shell 之外，字体/字号显式跟数据区（衬线栈 + --lb-fs） */
-.sg-dd { position: fixed; z-index: 250; min-width: 96px; max-height: 320px; padding: 3px; overflow-y: auto; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-box, 3px); box-shadow: 0 6px 20px rgba(0,0,0,.22); font-family: var(--lb-serif, inherit); font-size: var(--lb-fs, 11px); }
-.sg-dd.flip { box-shadow: 0 -6px 20px rgba(0,0,0,.22); }
+.sg-dd { position: fixed; z-index: 250; min-width: 96px; max-height: 320px; padding: 3px; overflow-y: auto; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-box, 3px); box-shadow: var(--shadow-2); font-size: var(--lb-fs, 11px); }
+.sg-dd.flip { box-shadow: var(--shadow-2); }
 .sg-opt { display: flex; align-items: center; gap: 6px; padding: 5px 8px; cursor: pointer; border-radius: var(--r-ctl, 2px); color: var(--text); white-space: nowrap; user-select: none; }
 .sg-opt:hover { background: var(--surface-2); }
-.sg-opt.active { background: color-mix(in srgb, var(--accent) 16%, var(--bg)); }
+.sg-opt.active { background: color-mix(in srgb, var(--accent-ui) 16%, var(--bg)); }
 .sg-opt.sel { color: var(--accent); font-weight: 600; }
 .sg-opt-ck { flex: none; width: 12px; color: var(--accent); }
 .sg-opt:not(.sel) .sg-opt-ck { visibility: hidden; }   /* 占位对齐，未选中项留白 */

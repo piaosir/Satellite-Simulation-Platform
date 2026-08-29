@@ -2,12 +2,23 @@
 // 底图（陆地配色/国界/国家名/大洋名/省界省名/标记）与 3D 球体保持一致；叠加覆盖图数据。
 // 不画星座、卫星点、卫星名、卫星连线。配色常量与 globe3d/scene.js 同源。
 // 陆地配色（LAND/CHINA/ICE/基调方案/逐国覆盖）统一收拢到 ../landPalette.js（与 3D 球体共用单一来源）
-import { ARCTIC_ISLAND_LAT, landColors, setLandPalette } from '../landPalette.js'
+import { ARCTIC_ISLAND_LAT, landColors, setLandPalette, getLandPalette } from '../landPalette.js'
 // 底图的面/线/国名/点选全部由主权解算层按归属实时算出（与 3D 球体同一份），视角 = 一张归属表
 import { resolvedFeatures, resolvedLines, labelSet, ensureDetail, onPovChange } from '../geo/povResolver.js'
 // 五类边界线的渲染次序 / 出厂样式 / 屏幕像素虚线图案 / 缩放淡出档位：与 3D 球体共用同一份常量
 import { BORDER_DEF, DASH_PX, DASH_SCALE, BORDER_DRAW, CFG_KEY, fadeFactor, admFade } from '../geo/borderStyle.js'
 import { terminatorFlat } from '../terminator.js'
+// 点标记序号徽标（圈 1、圈 2）：与 3D 球体共用同一支画笔，两视图观感一致
+import { paintNumBadge, badgeLabelUp } from '../markers/numBadge.js'
+// 地球站符号：与 3D 球体共用同一份定义（原来两处各存一份逐字符相同的副本）
+import { stationSvg, STATION_ANCHOR_X, STATION_ANCHOR_Y } from '../stationSymbol.js'
+import { drawVehicle, flatHeading } from '../vehicleSymbol.js'
+// 注记描边色/粗细随底色现算：与 3D 球体共用单一来源
+import { haloColor, haloScale, IMAGERY_HALO, IMAGERY_SCALE } from '../labelHalo.js'
+// 水域注记（大洋 + 海域）：与 3D 球体共用同一份表（../geo/waterNames.js）
+import { waterLabels } from '../geo/waterNames.js'
+// 岛链参考线：与 3D 球体共用同一份表
+import { chainList, CHAIN_DEF, CHAIN_LABEL_PX } from '../geo/islandChains.js'
 
 const OCEAN = '#15426b'
 const BG = '#070b12'
@@ -15,28 +26,7 @@ const BG = '#070b12'
 // 改后要重烘所有「世界度坐标」(x = lon − LON0) 的 Path2D —— 陆地/边界线/覆盖场/等值线/夜区都是这套坐标。
 let LON0 = -30
 // 参考系：'ecef' 地固（缺省，地球不动）| 'eci' 惯性（轨道面不动、地球自转着从下面滑过）。
-const OCEANS = [
-  ['太平洋', 'Pacific Ocean', -155, 25], ['太平洋', 'Pacific Ocean', -130, -22],
-  ['大西洋', 'Atlantic Ocean', -35, 28], ['大西洋', 'Atlantic Ocean', -18, -25],
-  ['印度洋', 'Indian Ocean', 78, -28], ['北冰洋', 'Arctic Ocean', 0, 85], ['南大洋', 'Southern Ocean', 40, -62]
-]
-// 地名避让用的统一形状：{ zh, en, lon, lat, px, pri }。大洋名恒定 15px，优先级给满（第一批摆位）。
-const OCEAN_LABELS = OCEANS.map(([zh, en, lon, lat]) => ({ zh, en, lon, lat, px: 15, pri: 1e9 }))
-// 大洋名描边色（与 3D 同：斜体浅蓝）
-const OCEAN_FILL = 'rgba(150,195,230,0.92)'
 // 地球站图标（与 3D 同一张 SVG）
-const STATION_SVG = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'>" +
-  "<ellipse cx='32' cy='58' rx='12' ry='2' fill='#000000' opacity='0.18'/>" +
-  "<path d='M23 57 L28 43 L36 43 L41 57 Z' fill='#c3c8cd' stroke='#9aa1a8' stroke-width='0.6'/>" +
-  "<path d='M32 57 L36 43 L41 57 Z' fill='#000000' opacity='0.05'/>" +
-  "<ellipse cx='32' cy='43' rx='4' ry='1.5' fill='#dde1e4'/>" +
-  "<rect x='29.8' y='33' width='4.4' height='11' rx='0.9' fill='#b9bec3' stroke='#9aa1a8' stroke-width='0.5'/>" +
-  "<g transform='rotate(-26 32 26)'>" +
-  "<ellipse cx='32' cy='26' rx='16.5' ry='11' fill='#eef3f7' stroke='#2f3a48' stroke-width='1.3'/>" +
-  "<ellipse cx='32' cy='26' rx='16.5' ry='11' fill='none' stroke='#ffffff' stroke-width='0.7' opacity='0.5'/>" +
-  "<ellipse cx='32' cy='26' rx='8' ry='5' fill='none' stroke='#8696a8' stroke-width='0.8'/>" +
-  "<path d='M23.5 19.5 L32 11.5 M40.5 19.5 L32 11.5 M27 31.5 L32 11.5 M37 31.5 L32 11.5' fill='none' stroke='#aebccb' stroke-width='0.9' stroke-linecap='round'/>" +
-  "<circle cx='32' cy='11.5' r='2.4' fill='#dfe7ee' stroke='#5d6e82' stroke-width='0.8'/></g></svg>"
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v))
 const hex = (c) => typeof c === 'number' ? '#' + (c & 0xffffff).toString(16).padStart(6, '0') : (c || '#fff')
@@ -53,28 +43,61 @@ export function createFlatCoverage(canvas) {
   // 改为「子路径回放」（moveTo/lineTo），实时绘制仍走 Path2D 缓存（更快）。compat 同时用于离屏高清 PNG，
   // 保证 PNG 与 PDF 完全一致。textFont/textFontLatin：导出可指定字体族名（PDF 用注册名匹配嵌入的中文/西文面）。
   let compat = false
-  // 导出（PNG/PDF）物理分辨率远高于屏幕，文字描边按同一相对粗细在高清大图上观感发粗 → 导出时额外收细。
-  const EXPORT_STROKE_K = 0.6
-  // 与界面同栈（styles/global.css 的 --font-serif 手工镜像）：Times New Roman 打西文，宋体接中文
-  let textFont = '"Times New Roman", Times, "SimSun", "宋体", serif'
+  // 地图注记的深色套边（casing）：粗细 = 字号 × CASE_K，下限 CASE_MIN（px）。
+  // ★ 全平台一档：3D 球体的 makeLabelSprite / makeWaterLabel / makeCovLabel 按各自画布字号折算出同一比值
+  //   （那边同名的三个常数在 globe3d/scene.js 顶部，改这里就得改那里）—— 同一个地名
+  //   在平面图与球面上必须一样粗。
+  // ★ 屏幕与出图同值，不再对导出另乘系数：所见即所得，PNG/PDF 与在屏一致。
+  // ★ 字号越小套边越细（三档）：小字被自己的套边糊住比没有套边更难认。
+  // ★ 别再往细里调：注记是白字，压在【浅色陆地】上时套边是它唯一的对比来源 —— 实测 0.07 那一档在
+  //   出厂米绿陆地上基本看不见字。下面这三档是逐档实拍比出来的下限（深海 / 三档陆地 / Turbo 覆盖场
+  //   红橙蓝黄绿 / 夜区，共八种底色全测），再细就有底色扛不住。
+  // ★ 这三档是【浅底】的基准值；深底再乘 haloScale（见 ../labelHalo.js）收到 0.75 —— 那里字与底
+  //   已经有对比，套边只需勾个边缘，再粗就是在啃笔画了。
+  const CASE_K = 0.15, CASE_MIN = 1.2        // 默认档：国名 / 大洋名 / 波束名 / 数值 / 标记注记
+  const CASE_K_P = 0.13, CASE_MIN_P = 1.0    // 一级行政区
+  const CASE_K_C = 0.11, CASE_MIN_C = 0.9    // 二级行政区（字最小，套边最细）
+  // 地图注记字体：无衬线，独立一档，【不跟】界面字体走。
+  // ★ 原来这一串是 global.css --font-ui 的手工镜像；2026-08-29 界面字体做成设置项（设置 →
+  //   界面字体）后两者分家 —— 用户把界面换成 TNR + 宋体，地图注记也不跟。理由就是下面这段：
+  // ★ 这一层【刻意不跟】全平台的 --font-doc 衬线栈（TNR + 宋体）：那一栈是给报表正文定的，
+  //   放到地图上是最恶劣的排版环境——字号常年 10~16px、四面被边界线穿插、还压着深色套边。
+  //   宋体是明朝体，横画设计线宽约 0.04 em，13px 下只有 0.5px，抗锯齿后摊成两条浅灰，再被
+  //   套边一挤就没了；黑体横竖等宽（约 0.08~0.10 em），同样字号下笔画立得住。制图惯例
+  //   （SATSOFT / STK / 各家地图册）这一层一概是无衬线。报表 / Word / PDF 那条路另传 fontFamily，不受影响。
+  let textFont = '"Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif'
   // 导出 PDF 专用：西文/数字单独的族名。PDF 的字体按资源整体选用、不像浏览器逐字形回落，故拉丁与中文
   // 各嵌一套，此处按「这条文本里有没有汉字」二选一。null=不分面（屏幕/PNG 走上面的完整回退栈即可）。
   let textFontLatin = null
-  const CJK_RE = /[⺀-鿿㐀-䶿豈-﫿　-〿＀-￯]/   // 汉字/假名/中文标点/全角
-  // 渲染分辨率倍率（与 3D 同一画质档位）：null=跟随系统 DPR；否则为请求倍率，但封顶为「物理像素密度 × SS_CAP」。
-  // 超出物理像素的超采样屏幕无法显示、纯耗 GPU，封顶后对画质无影响（与 3D 球体同策略，见 globe3d/scene.js）。
+  const CJK_RE = /[⺀-鿿㐀-䶿豈-﫿　-〿＀-￯]/   // 汉字/假名/中文标点/全角
+  // 渲染分辨率倍率（与 3D 同一画质档位）：null=跟随系统 DPR；否则按下面的规则【吸附到 DPR 的整数倍】。
+  // ★ 决定文字锐不锐的从来不是倍率高低，是 eff/DPR —— 合成器把画布缩到屏幕的那个比例。等于 1
+  //   （像素对位）或 2（2×2 盒式降采样）才不引入重采样；1.5 / 1.33 这类非整数比会把同一根竖笔
+  //   这一列渲成 2 px、下一列渲成 1 px，中文小字整片发毛，套边边缘尤其明显。
+  //   旧式子 min(rs, dpr×1.5) 在【100% 缩放 + 出厂「高」档 200%】上正好给出 1.5 —— 最坏的那一档。
+  // ★ 故改成 eff = dpr × n，n = floor(rs / dpr) 钳在 [1, SS_MULT_MAX]。取 floor 不取 round：
+  //   性能档位只能比用户要的便宜、不能更贵（100% 缩放下「中」档 1.5 若四舍五入到 2.0，等于把一个
+  //   降档选项偷偷变成 1.78 倍开销）。
+  //   实效（出厂「高」档 200%）：100% 缩放 1.5→2.0（比例 2，代价是像素 1.78×，换来字锐）；
+  //   125% 缩放 1.875→1.25（比例 1，反而省 56%）；150% 缩放 2.0→1.5（比例 1，省 44%）；
+  //   200% 缩放 2.0 不变（本来就是 1:1）。
+  // ★ rs < dpr 时原样放行、不吸附：那是用户主动降档省性能（75% 档），吸到 1.0 等于把该档废掉。
+  // ★ 3D 球体那边仍是「不吸附的常数封顶 2」（见 globe3d/scene.js 的 SS_CAP）—— 那条路上文字是
+  //   精灵纹理、几何有 MSAA，像素栅格对位的收益远没有这里大，故不一并改。
   let renderScale = null
-  const SS_CAP = 1.5
+  const SS_MULT_MAX = 2   // 吸附后最多渲到物理像素密度的几倍
   const effDpr = () => {
     const dpr = window.devicePixelRatio || 1
-    return renderScale != null
-      ? Math.max(0.25, Math.min(renderScale, dpr * SS_CAP, 4))
-      : Math.max(1, dpr)
+    if (renderScale == null) return Math.max(1, dpr)
+    if (renderScale < dpr) return Math.max(0.25, renderScale)
+    const n = Math.min(Math.max(1, Math.floor(renderScale / dpr)), SS_MULT_MAX)
+    return Math.min(dpr * n, 4)
   }
   let dpr = effDpr()
   let cw = 1, ch = 1, base = 1, scale = 1, tx = 0, ty = 0
   let geom = null
   let fieldLayers = [], fieldAlpha = 0.8   // GRD 覆盖多层（每层=一个天线：分带填充 Path2D + 逐档等值线，独立于 geom）
+  let fieldLineAlpha = 1                  // 等值线透明度：与填充那份(fieldAlpha)分开——只填充半透、线仍要看得清是常态
   let covGridLayers = [], covGridAlpha = 0.82   // STK Coverage 覆盖分析【专用通道】：FOM 分带热力图（各胞元四角），独立于 GRD 覆盖场
   // 环境场【专用通道】：一张等经纬位图（ITU 降雨率/零度等温线/海拔…）+ 逐档等值线。
   // 位图不走分带多边形——连续场用栅格一次 drawImage 即可，缩放平移零成本、也不受多边形数量拖累。
@@ -84,15 +107,42 @@ export function createFlatCoverage(canvas) {
   // ——量级比覆盖分带小两三个数量级，缓存收益还不如省掉 compat 分支的复杂度）
   let termData = null, termOpts = {}
   // GRD 全局标注选项（与 3D 同步）：波束名 / 峰值点 / 数值标签
-  let fieldOpts = { showName: true, nameSize: 16, showBore: true, boreSize: 0.5, showPeak: false, peakSize: 5, showVal: false, valSize: 12 }
+  let fieldOpts = { showName: true, nameSize: 16, nameColor: '#ffffff', showBore: true, boreSize: 0.5, boreColor: '#ffffff', showPeak: false, peakSize: 5, peakColor: '#cfd6df', showVal: false, valSize: 12, valColor: '#ffffff' }
   let nameMode = 'off', provVisible = false, prov = null, cityVisible = false, city = null
+  // 水域注记两档（大洋 / 海域），各自的档位 'zh' | 'en' | 'off'；waterOff = { id: true } 逐条关掉的那些。
+  // 表本身是常量，过滤结果按需缓存 —— 每帧重算 77 条不贵，但没必要。
+  let oceanMode = 'off', seaMode = 'off', waterOff = {}
+  let oceanLbl = waterLabels('ocean'), seaLbl = waterLabels('sea')
+  // 岛链参考线：整层开关 + 逐条显隐 + 一套样式（线与名同色）。默认整层不画。
+  const chainCfg = { on: false, ...CHAIN_DEF }
+  let chainOff = {}
+  let chains = chainList()
+  // 名字走与地名同一套避让（chainLbl 是喂给 drawLabelLayer 的形状）
+  const chainLbls = () => chains.map((c) => ({ zh: c.zh, en: c.en, lon: c.label[0], lat: c.label[1], px: CHAIN_LABEL_PX, pri: 1e9 }))
+  let chainLbl = chainLbls()
   // 国界(海岸线)/省界/地级市界线样式：线宽为恒定屏幕 px、颜色十六进制、透明度 0–1（与 3D 同步）
   // 五类边界线 + 两级行政区的样式：出厂值与 3D 球体同源（src/viz/geo/borderStyle.js）
   let borderStyle = { ...BORDER_DEF }
   let borderPaths = null   // 五类线烘成的世界度坐标 Path2D（换视角/换精度档/改线型时作废）
-  // 地名颜色/透明度：国家名 与 省名 与 地级市名 分开（大洋名维持固有蓝，不随国家色改）
-  let labelStyle = { countryColor: '#eef2f6', countryOpacity: 1, provColor: '#ffe6a8', provOpacity: 1, cityColor: '#cdd6e0', cityOpacity: 1 }
+  // 地名颜色/透明度：五档（国家名 / 省名 / 地级市名 / 大洋名 / 海域名）各自分开
+  let labelStyle = {
+    countryColor: '#eef2f6', countryOpacity: 1, provColor: '#ffe6a8', provOpacity: 1, cityColor: '#cdd6e0', cityOpacity: 1,
+    oceanColor: '#96c3e6', oceanOpacity: 1, seaColor: '#86b0d4', seaOpacity: 1
+  }
+  // 注记套边：颜色与粗细都按【当前底色】现算（见 ../labelHalo.js）。陆上的注记按陆地基调、
+  // 大洋名按海色 —— 那是两个独立设置项，可以一浅一深。开了真彩影像则一律退回恒定近黑。
+  const landBg = () => { const sc = getLandPalette().scheme; return sc === 'morandi' ? '#8fa89b' : sc }
+  const curHalo = () => (imgOn ? IMAGERY_HALO : haloColor(landBg()))
+  const curHaloK = () => (imgOn ? IMAGERY_SCALE : haloScale(landBg()))
+  const oceanHalo = () => (imgOn ? IMAGERY_HALO : haloColor(oceanColor))
+  const oceanHaloK = () => (imgOn ? IMAGERY_SCALE : haloScale(oceanColor))
   let oceanColor = OCEAN   // 大海填充色（可调，限蓝色系），与 3D 球体同步
+  // 影像底图：整幅等经纬世界影像（见 viz/imagery.js 的取向约定）。开启后顶替「海色 + 陆地填充」这两层，
+  // 边界线/地名/覆盖场照旧叠其上。imgBright=亮度乘子，压暗是为了让冷蓝灰那族地物线在真彩影像上还看得清。
+  let imgOn = false, imgEl = null, imgBright = 1
+  // 导出时能不能画位图影像。compat 同时服务两条导出路径（PNG 走真 canvas、PDF 走 svgcanvas 录制），
+  // 而影像只对前者成立 —— 后者会把整幅图 base64 塞进 SVG，文件大到不可用。故不能只看 compat。
+  let rasterOut = false
   let mk = { points: [], stations: [], trajectories: [] }
   let focusSats = []    // 聚焦卫星星下点列表 [{ lat, lon }...]（多选=每颗各一个图标，同款同大小，不分主次）
   let selGeomList = []  // 聚焦卫星几何列表 [{ footprint:[{lat,lon}...], track:[{lat,lon}...], sub:{lat,lon} }...]，与 3D 同源（多颗同时叠画）
@@ -106,13 +156,13 @@ export function createFlatCoverage(canvas) {
   // 线型 → canvas 虚线数组（屏幕 px；3D 那份按世界弧长切段，两边观感对齐即可，不求逐段一致）
   const DASH_2D = { dash: [7, 5], dot: [1.2, 4] }
   let satLayer = null   // 卫星/仰角线独立图层 { lines, dots, labels, sats }（与 geom/field 互不干扰）
-  const sizes = { beamFont: 16, contourFont: 12, dotSize: 5, showBore: true, nameScale: 1, provScale: 1, cityScale: 1, ptFont: 14, stIcon: 32, stFont: 17, satIcon: 30, ptDot: 3.5, trajDot: 2.5 }
+  const sizes = { beamFont: 16, contourFont: 12, dotSize: 5, showBore: true, nameScale: 1, provScale: 1, cityScale: 1, oceanScale: 1, seaScale: 1, ptFont: 14, stIcon: 32, stFont: 17, satIcon: 30, ptDot: 3.5, ptIdx: 16, trajDot: 4, trajIcon: true, trajIconPx: 26 }
   const SAT_ICON_K = 0.85   // 卫星图标：同地球站 ST_ICON_K，2D 观感偏大于 3D，收一档对齐（经验系数，可微调）
 
   // 地球站图标
   const stationImg = new Image(); let stationReady = false
   stationImg.onload = () => { stationReady = true; invalidateStatic(); requestDraw() }
-  stationImg.src = 'data:image/svg+xml;base64,' + btoa(STATION_SVG)
+  stationImg.src = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(stationSvg())))
 
   // 预处理底图：陆地多边形（按国家配色）+ 国家名 + 大洋名。可经 setMapDetail 换源(10m/50m)重建。
   // 边界抽稀（thin>0，单位度）：与 3D 一致地稀疏化各环顶点，低画质档减少 Path2D 顶点。
@@ -194,6 +244,27 @@ export function createFlatCoverage(canvas) {
   // 陆地：把 pan/zoom 烘进变换矩阵，直接填充缓存的 Path2D（每帧零顶点遍历）。
   // 经度环绕用 -360/0/360 三档偏移，按视口裁剪只画可见副本；描边线宽除以缩放保持 0.8px 恒定。
   // 仅填充陆地（海岸线与其余四类边界线移到覆盖之上的 drawBorders）。覆盖填充叠在陆地填充之上、按 alpha 混合 → 覆盖区底色随之透出。
+  // 影像底图：一次 drawImage 铺整幅（缩放采样交给浏览器，随 pan/zoom 零顶点遍历）。
+  // ★ 错位：本模块的世界度坐标是 x=lon−LON0，而图像左边缘恒是 −180° → 整幅图落在世界
+  //   x ∈ [shift, shift+360]，shift 即 −180° 在世界坐标里的位置。LON0=−30 时 shift=210，
+  //   于是屏幕上看到的是「图像右段 + 图像左段」拼起来的一张 —— 与 drawLand 的三档环绕同理，
+  //   只是这里按视口精确算需要哪几档，不写死 −360/0/360（放大后一档就够，多画两次是纯浪费）。
+  function drawImagery() {
+    const kk = k()
+    const shift = (((-180 - LON0) % 360) + 360) % 360
+    const wl = -tx / kk, wr = (cw - tx) / kk           // 视口世界 X 范围
+    let n0 = Math.floor((wl - shift) / 360), n1 = Math.floor((wr - shift) / 360)
+    if (!Number.isFinite(n0) || !Number.isFinite(n1)) return
+    if (n1 - n0 > 8) n1 = n0 + 8                        // 极端 pan/缩小的兜底，正常至多两三档
+    const f = ctx.filter
+    if (imgBright !== 1) ctx.filter = 'brightness(' + imgBright + ')'
+    for (let n = n0; n <= n1; n++) {
+      ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * (tx + (shift + n * 360) * kk), dpr * ty)
+      ctx.drawImage(imgEl, 0, 0, 360, 180)
+    }
+    ctx.filter = f
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)   // 恢复屏幕坐标，后续图层照旧
+  }
   function drawLand() {
     const kk = k()
     const wl = -tx / kk, wr = (cw - tx) / kk   // 视口世界 X 范围（未含 off）
@@ -307,6 +378,17 @@ export function createFlatCoverage(canvas) {
     ctx.stroke()
     ctx.restore()
   }
+  // 岛链参考线。线宽/虚线周期都是【屏幕像素】（drawPolyline 走屏幕坐标），与边界线同一口径。
+  // ★ 表里的顶点已在经纬度平面加密过（见 geo/islandChains.js），故这里直连即可，
+  //   与 3D 那边补大圆之后的走向仍然一致。
+  function drawChains() {
+    if (!chainCfg.on || !chains.length) return
+    const sa = ctx.globalAlpha
+    ctx.globalAlpha = sa * (chainCfg.opacity != null ? chainCfg.opacity : 1)
+    const dash = DASH_PX[chainCfg.dash || 'solid']
+    for (const c of chains) drawPolyline(c.pts, chainCfg.color, chainCfg.width, false, dash || null)
+    ctx.globalAlpha = sa
+  }
   function drawPolyline(p, color, width, closed, dash) {
     const kk = k()
     ctx.strokeStyle = color; ctx.lineWidth = width; ctx.lineJoin = 'round'; ctx.lineCap = 'round'
@@ -328,16 +410,25 @@ export function createFlatCoverage(canvas) {
     ctx.font = `${o.italic ? 'italic ' : ''}${o.bold ? 'bold ' : ''}${px}px ${fam}`
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
     // 文字描边套色(casing)：沿字形勾一圈与底色同调的窄边，把字从背景里「切」出来——专业制图标准，不用底色色块
-    // 粗细 = px*strokeScale（默认 0.14），下限 strokeMin（默认 1.5）；地级市名传更细值（尽量细但保留）
-    const sScale = o.strokeScale != null ? o.strokeScale : 0.14, sMin = o.strokeMin != null ? o.strokeMin : 1.5
-    const ek = compat ? EXPORT_STROKE_K : 1
-    const lw = Math.max(sMin * ek, px * sScale * ek)
+    // 粗细 = px×strokeScale（缺省 CASE_K），下限 strokeMin（缺省 CASE_MIN）；行政区名传更细的档
+    const sScale = o.strokeScale != null ? o.strokeScale : CASE_K, sMin = o.strokeMin != null ? o.strokeMin : CASE_MIN
+    const lw = Math.max(sMin, px * sScale * (o.haloK != null ? o.haloK : curHaloK()))
     // o.rot：字随线转（等值线标注用）。转轴放在锚点上，故转后就地画在原点。
     const rot = o.rot ? o.rot * Math.PI / 180 : 0
     if (rot) { ctx.save(); ctx.translate(x, y); ctx.rotate(rot) }
     const tx0 = rot ? 0 : x, ty0 = rot ? 0 : y
-    if (lw > 0) { ctx.lineJoin = 'round'; ctx.miterLimit = 2; ctx.lineWidth = lw; ctx.strokeStyle = 'rgba(6,11,18,0.82)'; ctx.strokeText(text, tx0, ty0) }
+    // ★ o.opacity 作用于【整个注记】：套边与字面一起淡。曾经只淡字面、套边留满，那等于把滑杆调反了：
+    //   白字面淡下去之后剩的是满强度的深色套边，越往「透明」拉，浅底图上的字反而越深越扎眼
+    //   （0 处不是消失，是一圈深色空心字）。且 3D 侧的注记是「字面+套边烘成一张贴图、整张改
+    //   material.opacity」，即整个注记同步淡入淡出 —— 两视图必须同一口径。
+    //   （旧注释担心的「淡掉套边=抹掉浅底上唯一的对比来源」在现在的出厂值下不成立：三级地名
+    //   出厂透明度一律 1.0，轻重改由【颜色明度】给；拉低透明度就是要它淡。）
+    const op = o.opacity != null ? o.opacity : 1
+    const sa = ctx.globalAlpha
+    if (op < 1) ctx.globalAlpha = sa * op
+    if (lw > 0) { ctx.lineJoin = 'round'; ctx.miterLimit = 2; ctx.lineWidth = lw; ctx.strokeStyle = o.halo || curHalo(); ctx.strokeText(text, tx0, ty0) }
     ctx.fillStyle = color; ctx.fillText(text, tx0, ty0)
+    if (op < 1) ctx.globalAlpha = sa
     if (rot) ctx.restore()
   }
   // ============ 地名避让 ============
@@ -546,6 +637,7 @@ export function createFlatCoverage(canvas) {
     // 逐档等值线（多层，每层每档一色）：复用缓存的世界坐标 Path2D，setTransform 平移缩放矢量描边（每帧零构建），
     // ±360 环绕按视口裁剪只描可见副本（与填充同策略）。线宽 /kk 保持恒定屏幕 px。
     ctx.lineJoin = 'round'; ctx.lineCap = 'round'
+    ctx.save(); ctx.globalAlpha = fieldLineAlpha
     for (const L of fieldLayers) {
       if (!L.segPaths || !L.segPaths.length) continue
       for (const off of [-360, 0, 360]) {
@@ -555,7 +647,7 @@ export function createFlatCoverage(canvas) {
         else for (const sp of L.segPaths) { ctx.strokeStyle = sp.color; ctx.lineWidth = sp.width / kk; ctx.stroke(sp.path) }
       }
     }
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.globalAlpha = 1; ctx.restore()
   }
   // STK Coverage FOM 热力图填充：与 drawField 填充同款（缓存的世界坐标 Path2D + setTransform + ±360 环绕视口裁剪），
   // 用独立 covGridLayers / covGridAlpha，画在 GRD 覆盖场【之下】（叠加时 GRD 天线足迹在其上）。无等值线。
@@ -602,7 +694,7 @@ export function createFlatCoverage(canvas) {
     }
     for (const g of envContours) {
       if (!g.text) continue
-      for (const an of (g.labels || [])) drawText(g.text, an.lon, an.lat, Math.max(7, 11 * (k() / 13.1)), g.labelColor || '#ffffff', { rot: an.a, strokeScale: 0.16 })
+      for (const an of (g.labels || [])) drawText(g.text, an.lon, an.lat, Math.max(7, 11 * (k() / 13.1)), g.labelColor || '#ffffff', { rot: an.a, strokeScale: CASE_K * 1.15 })
     }
   }
   function drawCovGrid() {
@@ -631,7 +723,7 @@ export function createFlatCoverage(canvas) {
     const zf = k() / 13.1
     const covFont = (size) => Math.round(size / 533 * 750 * zf)   // 字号(valSize/peakSize/nameSize) → 2D 世界尺寸 px，与 3D makeCovLabel(字号/533) 一致
     for (const L of fieldLayers) {
-      if (o.showVal) for (const grp of (L.segGroups || [])) { if (grp.txt == null) continue; for (const an of (grp.labels || [])) drawText(String(grp.txt), an[0], an[1], covFont(o.valSize || 12), '#ffffff') }
+      if (o.showVal) for (const grp of (L.segGroups || [])) { if (grp.txt == null) continue; for (const an of (grp.labels || [])) drawText(String(grp.txt), an[0], an[1], covFont(o.valSize || 12), o.valColor || '#ffffff') }
       const b = L.bore; if (!b) continue
       // b.hit=false ＝ 峰值方向越过地平（对星壳层视图＝没打到那层壳）：十字与峰值电平一律不画，
       // b.lon/lat 此时只是该方向的地平/相切点，仅作波束名的锚。
@@ -646,10 +738,10 @@ export function createFlatCoverage(canvas) {
       const peakOn = o.showPeak && hit && b.peak != null
       const pf = covFont(o.peakSize || 5), nf = covFont(o.nameSize || 16)
       const lift = (crossOn ? span * 0.5 : 0) + 1.125 * zf     // 让开十字上臂 + 一点空隙
-      if (crossOn) cross(b.lon, b.lat, span, '#ffffff')
+      if (crossOn) cross(b.lon, b.lat, span, o.boreColor || '#ffffff')
       // 峰值读数与波束名自上而下码在十字【上方】（SATSOFT 排布：波束名 / 读数 / ＋）；读数只印数字不带单位
-      if (peakOn) drawText(b.peak.toFixed(2), b.lon, b.lat, pf, '#cfd6df', { dy: -(lift + pf * 0.5) })
-      if (named) drawText(L.name, b.lon, b.lat, nf, '#ffffff', { dy: -(lift + (peakOn ? pf * 1.15 : 0) + nf * 0.5) })
+      if (peakOn) drawText(b.peak.toFixed(2), b.lon, b.lat, pf, o.peakColor || '#cfd6df', { dy: -(lift + pf * 0.5) })
+      if (named) drawText(L.name, b.lon, b.lat, nf, o.nameColor || '#ffffff', { dy: -(lift + (peakOn ? pf * 1.15 : 0) + nf * 0.5) })
     }
   }
 
@@ -657,12 +749,20 @@ export function createFlatCoverage(canvas) {
   function drawBelowContent(rx, ry, rw, rh) {
     ctx.save()
     ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip()
-    ctx.fillStyle = oceanColor; ctx.fillRect(rx, ry, rw, rh)
-    drawLand()
+    // 影像模式：整幅影像顶替海色 + 陆地填充。
+    // 导出时分两路：PNG（raster:true，真 canvas）照画影像；PDF/SVG 矢量导出不画 ——
+    // 位图会被 svgcanvas 整幅 base64 塞进 SVG，文件大到不可用，那条路仍出矢量底图。
+    if (imgOn && imgEl && (!compat || rasterOut)) {
+      drawImagery()
+    } else {
+      ctx.fillStyle = oceanColor; ctx.fillRect(rx, ry, rw, rh)
+      drawLand()
+    }
     ctx.restore()
   }
   // field 之上的标注（省界/标记/国家名/卫星层点标注等）。透明背景，叠在覆盖填充之上。
-  // 各类数据线（GXT 波束线/仰角线/轨迹线/聚焦卫星线）不在此层——见 drawDataLines（压在国界省界之下）。
+  // 各类数据线（GXT 波束线/仰角线/聚焦卫星线）不在此层——见 drawDataLines（压在国界省界之下）。
+  // 航迹是例外：整层（线+圆点+图标）在此层的【地名之后】画，见 drawTrajLayer。
   function drawAboveContent(rx, ry, rw, rh) {
     ctx.save()
     ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip()
@@ -693,19 +793,25 @@ export function createFlatCoverage(canvas) {
       ctx.globalAlpha = 1
     }
     drawBorders()   // 海岸 → 主张 → 停火 → 未定 → 国界（国界压在最上面）
+    drawChains()    // 岛链参考线：叠在全部底图线之上（它是注记，不该被国界盖住）
     // 覆盖数据标注（GXT 波束线本体已移入 drawDataLines：与 GRD 等值线/Polygon 边线同层、压在国界省界之下）
     if (geom) {
       if (sizes.showBore) for (const d of (geom.dots || [])) dot(d.lon, d.lat, Math.max(1, sizes.dotSize) * iz, '#fff')   // GXT 波束中心点：克制版联动
     }
-    // 轨迹圆点（折线本体已移入 drawDataLines；圆点大小可调 sizes.trajDot，按克制版 iz 联动）
-    const trajR = (sizes.trajDot != null ? sizes.trajDot : 2.5) * iz * (DOT3D_FILL * 2.5 / 2)   // 3D 轨迹点 ×2.5，对齐其可见直径
-    for (const t of mk.trajectories) {
-      for (const p of (t.pts || [])) dot(p.lon, p.lat, trajR, t.kind === 'flight' ? '#5ad1ff' : '#ff9a5a', true)
-    }
+    // 航迹整层（线 + 圆点 + 载具图标）已挪到地名层之后 —— 见下方 drawTrajLayer 的调用处。
     // 点标记 + 地球站（圆点大小可调 sizes.ptDot、图标 sizes.stIcon，按克制版 iz 联动）
     const si = sizes.stIcon * iz * ST_ICON_K, ptR = (sizes.ptDot != null ? sizes.ptDot : 3.5) * iz * (DOT3D_FILL * 2.2 / 2)   // 3D 点标记 ×2.2，对齐其可见直径
-    for (const p of mk.points) dot(p.lon, p.lat, ptR, '#ffd24a', true)
-    for (const s of mk.stations) { const x = PX(s.lon), y = PY(s.lat); if (stationReady) ctx.drawImage(stationImg, x - si / 2, y - si, si, si); else dot(s.lon, s.lat, ptR, '#cfeaff', true) }
+    // 序号徽标（p.idx 非空即开）：圆本身就是记号，圈心＝该点位置，故不再另画圆点。
+    // 直径按 iz 联动、3D 侧按 zoomK 联动，同一条尺寸律（见 scene.setMarkers）。
+    const idxD = (sizes.ptIdx != null ? sizes.ptIdx : 16) * iz
+    const idxFont = textFontLatin || textFont   // 编号是纯数字 → 走西文面（出 PDF 时字体族名跟着换）
+    for (const p of mk.points) {
+      if (p.idx) paintNumBadge(ctx, PX(p.lon), PY(p.lat), idxD, p.idx, idxFont)
+      else dot(p.lon, p.lat, ptR, '#ffd24a', true)
+    }
+    // 纵向锚点走 STATION_ANCHOR_Y（符号里那颗白色址点），不再是方框底边 —— 3D 侧的
+    // sprite.center 用 1−STATION_ANCHOR_Y 对齐同一处，两视图的站址才落在同一个像素上。
+    for (const s of mk.stations) { const x = PX(s.lon), y = PY(s.lat); if (stationReady) ctx.drawImage(stationImg, x - si * STATION_ANCHOR_X, y - si * STATION_ANCHOR_Y, si, si); else dot(s.lon, s.lat, ptR, '#cfeaff', true) }
     // 地名层：字号随缩放联动，且与 3D 球体的「世界尺寸」地名严格一致。
     // 原理：3D 地名是世界尺寸（固定地理度数），其屏幕 px = 地理度数 × 每度像素。2D 同覆盖下每度像素 = k()。
     // 故 2D 字号 = 地理度数 × k()。标定：3D 普通省名 hpx=0.02→1.146°，对应 2D 基准 l.px=15 → 系数 k()/13.1。
@@ -713,26 +819,37 @@ export function createFlatCoverage(canvas) {
     // 标记/波束/数值/覆盖/卫星层等注记文字：随缩放联动（乘 mz=scale，scale=1 即当前大小，与国家名同率缩放）；
     // 卫星图标改按 mz 联动（与卫星名标签同率缩放，避免图标/标签缩放不一致），不同于地球站/点标记的克制版 iz。
     const ns = sizes.nameScale || 1, zf = k() / 13.1
-    // 四层地名共用一张占位表，按「大洋名 → 国家名 → 一级 → 二级」的先后顺序摆位：先摆的占住地方，
+    // 五层地名共用一张占位表，按「大洋名 → 国家名 → 海域名 → 一级 → 二级」的先后顺序摆位：先摆的占住地方，
     // 后摆的撞上就不画。层间也因此不会互相压 —— 省名不会盖在国名上。
+    // ★ 海域名排在国家名【之后】：边缘海/海湾比国家一级，挤不掉国名；但它画在水面上，与国名很少真撞。
+    // ★ 水域注记（大洋 + 海域）画在海上 → 套边按【海色】那一档算（海色与陆色是两个独立设置项，可以一浅一深）
+    const water = { italic: true, halo: oceanHalo(), haloK: oceanHaloK() }
     const slots = newSlots()
+    // 岛链名第一批摆位：这一层是用户特意打开的，不该被底图地名挤掉
+    if (chainCfg.on && chainCfg.name !== 'off') {
+      drawLabelLayer(chainLbl, slots, (l) => (chainCfg.name === 'en' ? l.en : l.zh), chainCfg.nameSize || 1, zf, chainCfg.color, { ...water, opacity: chainCfg.opacity })
+    }
+    if (oceanMode !== 'off') {
+      drawLabelLayer(oceanLbl, slots, (l) => (oceanMode === 'en' ? l.en : l.zh), sizes.oceanScale || 1, zf, labelStyle.oceanColor, { ...water, opacity: labelStyle.oceanOpacity })
+    }
     if (nameMode !== 'off') {
-      ctx.globalAlpha = 1   // 大洋名维持固有蓝与不透明度
-      drawLabelLayer(OCEAN_LABELS, slots, (l) => (nameMode === 'en' ? l.en : l.zh), ns, zf, OCEAN_FILL, { italic: true })
-      ctx.globalAlpha = labelStyle.countryOpacity
-      drawLabelLayer(clabels, slots, (l) => (nameMode === 'en' ? l.en : l.zh), ns, zf, labelStyle.countryColor)
-      ctx.globalAlpha = 1
+      drawLabelLayer(clabels, slots, (l) => (nameMode === 'en' ? l.en : l.zh), ns, zf, labelStyle.countryColor, { opacity: labelStyle.countryOpacity })
+    }
+    if (seaMode !== 'off') {
+      drawLabelLayer(seaLbl, slots, (l) => (seaMode === 'en' ? l.en : l.zh), sizes.seaScale || 1, zf, labelStyle.seaColor, { ...water, opacity: labelStyle.seaOpacity })
     }
     if (provVisible && prov) {
-      ctx.globalAlpha = labelStyle.provOpacity
-      drawLabelLayer(prov.labels, slots, (l) => l.name, sizes.provScale || 1, zf, labelStyle.provColor, { strokeScale: 0.09, strokeMin: 1.0 })
-      ctx.globalAlpha = 1
+      drawLabelLayer(prov.labels, slots, (l) => l.name, sizes.provScale || 1, zf, labelStyle.provColor, { strokeScale: CASE_K_P, strokeMin: CASE_MIN_P, opacity: labelStyle.provOpacity })
     }
     if (cityVisible && city) {   // 二级最后摆：一级不在场的地方它才有位子
-      ctx.globalAlpha = labelStyle.cityOpacity
-      drawLabelLayer(city.labels, slots, (l) => l.name, sizes.cityScale || 1, zf, labelStyle.cityColor, { strokeScale: 0.07, strokeMin: 0.8 })
-      ctx.globalAlpha = 1
+      drawLabelLayer(city.labels, slots, (l) => l.name, sizes.cityScale || 1, zf, labelStyle.cityColor, { strokeScale: CASE_K_C, strokeMin: CASE_MIN_C, opacity: labelStyle.cityOpacity })
     }
+    // ★ 航迹层压在【地名之上】：制图分工是「面在文字下、线/点在文字上」——
+    //   填充面盖住文字是整片消失，细线穿过文字只吃掉几个像素、字还认得出；反过来一个带套边的地名
+    //   压在航迹上一次吃掉几十像素的线，而线的连续性本身就是信息（有没有拐、是一条还是两条、
+    //   末点是不是真到那儿）。载具图标＝当前位置，等同「本船符号」，更不能被底图地名盖住。
+    //   线/圆点/图标必须同层：只提点不提线会把航迹切断、圆点却浮在字上，比整层压下去更怪。
+    drawTrajLayer(iz, ST_ICON_K)
     if (geom) {   // GXT 覆盖图标签（波束名/数值）：克制版联动 iz
       for (const l of (geom.labels || [])) drawText(l.text, l.lon, l.lat, Math.round((l.hpx || 0.03) * 533 * iz), l.color || '#fff')
     }
@@ -743,13 +860,18 @@ export function createFlatCoverage(canvas) {
     const MK_UP = 0.85 / MK_FONT_K   // ≈1.122：字心到锚点的距离 ÷ 字高
     for (const p of mk.points) {
       const pf = sizes.ptFont * iz * MK_FONT_K   // 点标记文字：×MK_FONT_K 与 3D 字高对齐（与图标同用克制版 iz）
-      drawText(p.label, p.lon, p.lat, pf, '#ffffff', { dy: -pf * MK_UP })
-      if (p.el) drawText(p.el, p.lon, p.lat, pf * 0.9, '#ffffff', { dy: pf * 0.9 * MK_UP })   // 聚焦卫星仰角：亮白，标记下方
+      // 带序号徽标时字心要让开圈（口径见 badgeLabelUp，与 3D 同一支）；没有徽标就还是圆点那档
+      const dU = badgeLabelUp(pf * MK_UP, p.idx ? idxD : 0, pf), dD = badgeLabelUp(pf * 0.9 * MK_UP, p.idx ? idxD : 0, pf * 0.9)
+      drawText(p.label, p.lon, p.lat, pf, '#ffffff', { dy: -dU })
+      if (p.el) drawText(p.el, p.lon, p.lat, pf * 0.9, '#ffffff', { dy: dD })   // 聚焦卫星仰角：亮白，标记下方
     }
     for (const s of mk.stations) {
       const sf = sizes.stFont * iz * MK_FONT_K   // 地球站文字：×MK_FONT_K 与 3D 字高对齐（与图标同用克制版 iz）
-      drawText(s.name, s.lon, s.lat, sf, '#ffffff', { dy: sf * 0.5 + 0.5 * iz })
-      if (s.el) drawText(s.el, s.lon, s.lat, sf * 0.9, '#ffffff', { dy: sf * 1.5 + 3.5 * iz })   // 聚焦卫星仰角：亮白
+      // 锚点改到址点后，符号还有 si·(1−ANCHOR_Y) 一截落在锚点下方（址点那颗圆的下半），
+      // 字要整体让开这一截，否则与址点叠在一起
+      const un = si * (1 - STATION_ANCHOR_Y)
+      drawText(s.name, s.lon, s.lat, sf, '#ffffff', { dy: un + sf * 0.5 + 0.5 * iz })
+      if (s.el) drawText(s.el, s.lon, s.lat, sf * 0.9, '#ffffff', { dy: un + sf * 1.5 + 3.5 * iz })   // 聚焦卫星仰角：亮白
     }
     // 卫星 / 仰角线独立图层：等仰角线 + 卫星图标 + 名称（在覆盖/标记之上、聚焦图标之下）
     if (satLayer) {
@@ -844,12 +966,37 @@ export function createFlatCoverage(canvas) {
     if (!satLayer) return
     for (const ln of (satLayer.lines || [])) if (ln.under && ln.p && ln.p.length > 1) drawPolyline(ln.p, hex(ln.color != null ? ln.color : 0x66ddff), Math.max(0.1, ln.width || 1.4))
   }
-  // 数据线统一层（GXT 波束线 / 仰角线等卫星层线 / 轨迹折线 / 聚焦卫星足迹与轨迹）：与 GRD 等值线、
+  // 航迹整层：折线 + 逐航点圆点 + 航迹头载具图标。★三样必须同层同序，画在 above 层的地名之后
+  // （调用处在 drawAboveContent 的地名层之下方，理由见那里的注释）。仰角线/覆盖圈等仍留在
+  // drawDataLines：那些是「场」的边界、性质近参考层，与国界同层合适；航迹是实体轨迹，不一样。
+  // iz=克制版缩放联动、stIconK=图标尺寸律，均由调用处（drawAboveContent）传入，口径与那边一致。
+  function drawTrajLayer(iz, stIconK) {
+    for (const t of mk.trajectories) if (t.pts && t.pts.length > 1) drawPolyline(t.pts, hex(t.color != null ? t.color : 0xff5a5a), 2.2)
+    // 圆点大小可调 sizes.trajDot，按克制版 iz 联动。
+    // ★ sizes.trajDot 与 sizes.trajIconPx 同一把尺（都是【屏幕 px @100% 缩放】、同一档位区间），
+    //   但圆点按【该数的一半】作直径 —— 同一个数下实心圆比图标那种镂空剪影重得多，等大时圆点抢戏。
+    //   点标记的 ptDot 仍是老的半径口径（滑块上的数不等于屏幕尺寸），两者不要互相抄。
+    const trajR = (sizes.trajDot != null ? sizes.trajDot : 4) * iz / 4
+    for (const t of mk.trajectories) {
+      for (const p of (t.pts || [])) dot(p.lon, p.lat, trajR, t.kind === 'flight' ? '#5ad1ff' : '#ff9a5a', true)
+    }
+    // 航迹头（末航点）上的载具图标：航行＝船、飞行＝飞机，形状与 3D 同一份（viz/vehicleSymbol.js）。
+    // 朝向取末段在【图上】的走向 —— 2D 的航迹是按经纬度直连画的，图标得贴着那条线（口径见 flatHeading）。
+    if (sizes.trajIcon !== false && (sizes.trajIconPx == null || sizes.trajIconPx > 0)) {
+      const vi = (sizes.trajIconPx != null ? sizes.trajIconPx : 26) * iz * stIconK   // 与地球站图标同一条尺寸律
+      for (const t of mk.trajectories) {
+        const tp = t.pts || []; if (!tp.length) continue
+        const hd = tp[tp.length - 1]
+        drawVehicle(ctx, t.kind, PX(hd.lon), PY(hd.lat), vi, flatHeading(tp[tp.length - 2], hd), hex(t.color != null ? t.color : 0xff5a5a))
+      }
+    }
+  }
+  // 数据线统一层（GXT 波束线 / 仰角线等卫星层线 / 聚焦卫星足迹与轨迹）：与 GRD 等值线、
   // Polygon 边线同一画法同一层——画在覆盖之上、above 快照（国界/省界/市界/地名）之下 → 与国界省界共存，
   // 边界压在线上仍清晰可见。各线的圆点/标签仍留在 above 层或顶层（属标注，不遮边界线）。
+  // ★航迹不在此层（已提到地名之上，见 drawTrajLayer）。
   function drawDataLines() {
     if (geom) for (const ln of (geom.lines || [])) if (ln.p && ln.p.length > 1) drawPolyline(ln.p, hex(ln.color), Math.max(0.1, ln.width || 1.6))
-    for (const t of mk.trajectories) if (t.pts && t.pts.length > 1) drawPolyline(t.pts, hex(t.color != null ? t.color : 0xff5a5a), 2.2)
     if (satLayer) for (const ln of (satLayer.lines || [])) if (!ln.under && ln.p && ln.p.length > 1) drawPolyline(ln.p, hex(ln.color != null ? ln.color : 0x66ddff), Math.max(0.1, ln.width || 1.4))   // 下限 0.1：跟随全库统一的线粗最细档
     // 聚焦卫星几何（实时，不入快照）：覆盖范围 + 星下点轨迹，样式与 3D 球体同一份设置；多选=每颗都画
     const sa = ctx.globalAlpha
@@ -941,7 +1088,7 @@ export function createFlatCoverage(canvas) {
     drawCovGrid()        // STK Coverage FOM 热力图（Polygon 填充之上、GRD 覆盖场之下）
     drawField()          // GRD 覆盖填充面 + 等值线（在底图/Polygon 填充之上、标注之下）
     drawSatPolyLines()   // Polygon 边线（覆盖之上、国界/地名之下：叠加区仍见边线）
-    drawDataLines()      // 波束线/仰角线/轨迹线/聚焦卫星线（同上：覆盖之上、国界省界之下，与边界共存）
+    drawDataLines()      // 波束线/仰角线/聚焦卫星线（同上：覆盖之上、国界省界之下，与边界共存；航迹另见 drawTrajLayer）
     ctx.restore()
     ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.drawImage(aboveCanvas, 0, 0)
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
@@ -1132,6 +1279,36 @@ export function createFlatCoverage(canvas) {
   canvas.addEventListener('contextmenu', onCtx)
   canvas.style.cursor = 'grab'
 
+  // 画布位图尺寸 = CSS 尺寸 × effDpr()。窗口尺寸变化与 DPR 变化都从这里进。
+  function resizeNow() {
+    const w = canvas.clientWidth || canvas.parentElement?.clientWidth || 0, h = canvas.clientHeight || canvas.parentElement?.clientHeight || 0
+    if (!w || !h) return
+    const firstFit = cw < 2 || ch < 2; cw = w; ch = h; dpr = effDpr()
+    const bw = Math.round(cw * dpr), bh = Math.round(ch * dpr)   // 仅在尺寸真正变化时重设位图，避免无谓清空
+    if (canvas.width !== bw || canvas.height !== bh) { canvas.width = bw; canvas.height = bh }
+    // 离屏静态快照缓冲随主画布尺寸（设备像素）创建/重建
+    if (!belowCanvas) { belowCanvas = document.createElement('canvas'); belowCtx = belowCanvas.getContext('2d'); aboveCanvas = document.createElement('canvas'); aboveCtx = aboveCanvas.getContext('2d') }
+    if (belowCanvas.width !== canvas.width || belowCanvas.height !== canvas.height) { belowCanvas.width = canvas.width; belowCanvas.height = canvas.height; aboveCanvas.width = canvas.width; aboveCanvas.height = canvas.height }
+    invalidateStatic()
+    if (firstFit) fit()
+    draw()   // 同步立即重绘：canvas.width 重设会清空画布，若只 requestDraw 会隔一帧露出深色底 → 黑一下
+  }
+  // DPR 监听：窗口拖到另一块缩放不同的显示器、或系统改了显示缩放时，devicePixelRatio 变而 CSS 尺寸不变
+  // —— ResizeObserver 那条路一声不响，位图密度就永远停在旧 DPR 上。而吸附式 effDpr 全靠 DPR 取值，
+  //   停在旧值等于比例又变回非整数，正是这次要治的那件事。
+  // ★ matchMedia 的 resolution 查询是唯一听得见这件事的接口；一个查询只盯一个具体的 dppx 值，
+  //   故每次触发后必须照新 DPR 重新挂一次。
+  let offDpr = null
+  function watchDpr() {
+    if (offDpr) { offDpr(); offDpr = null }
+    let mq
+    try { mq = window.matchMedia('(resolution: ' + (window.devicePixelRatio || 1) + 'dppx)') } catch { return }
+    const on = () => { watchDpr(); resizeNow() }
+    mq.addEventListener('change', on)
+    offDpr = () => mq.removeEventListener('change', on)
+  }
+  watchDpr()
+
   // 一级行政区数据（与 3D setProvinces 同款格式）。★ 可反复调用：多选国家时上层并成一份重新喂进来。
   function setProvinces(data) {
     prov = data ? { borders: data.borders || [], labels: (data.labels || []).map((l) => ({ name: l.name, lon: l.lon, lat: l.lat, px: l.px2d != null ? l.px2d : 15, pri: l.pri, rk: l.rk, keep: l.keep })) } : null
@@ -1150,12 +1327,12 @@ export function createFlatCoverage(canvas) {
     // opts={alpha}。setField 时把每层 fillBands 烘成各档世界坐标 Path2D 缓存（fillPaths），draw 只设变换矢量填充。整体替换。
     setField(layers, opts) {
       fieldLayers = (layers || []).map((L) => ({ ...L, fillPaths: L.fillBands ? buildFillPaths(L.fillBands) : null, segPaths: L.segGroups ? buildSegPaths(L.segGroups) : null, bounds: layerBounds(L) }))
-      if (opts) { if (opts.alpha != null) fieldAlpha = opts.alpha; fieldOpts = { ...fieldOpts, ...opts } }
+      if (opts) { if (opts.alpha != null) fieldAlpha = opts.alpha; if (opts.lineAlpha != null) fieldLineAlpha = opts.lineAlpha; fieldOpts = { ...fieldOpts, ...opts } }
       requestDraw()
     },
     // 拖拽热路径：只替换给定层（聚焦天线各波束，按 id 匹配），其余层缓存的 fillPaths 原样保留 → 不再每帧全量重建。
     patchField(layers, opts) {
-      if (opts) { if (opts.alpha != null) fieldAlpha = opts.alpha; fieldOpts = { ...fieldOpts, ...opts } }
+      if (opts) { if (opts.alpha != null) fieldAlpha = opts.alpha; if (opts.lineAlpha != null) fieldLineAlpha = opts.lineAlpha; fieldOpts = { ...fieldOpts, ...opts } }
       for (const L of (layers || [])) {
         const entry = { ...L, fillPaths: L.fillBands ? buildFillPaths(L.fillBands) : null, segPaths: L.segGroups ? buildSegPaths(L.segGroups) : null, bounds: layerBounds(L) }
         const i = L.id != null ? fieldLayers.findIndex((x) => x.id === L.id) : -1
@@ -1164,6 +1341,7 @@ export function createFlatCoverage(canvas) {
       requestDraw()
     },
     setFieldAlpha(a) { fieldAlpha = a; requestDraw() },   // 仅覆盖层透明度，静态快照不变
+    setFieldLineAlpha(a) { fieldLineAlpha = a; requestDraw() },   // 等值线透明度（同上：不动静态快照，也不重烘 Path2D）
     // STK Coverage 覆盖分析【专用通道】：layer={fillBands:[{color:[r,g,b],verts,counts}]}, opts={alpha}。整体替换（单层）。
     // ---- 环境场（ITU 气象/地形栅格 + 等值线）----
     // img = 等经纬位图（canvas/ImageBitmap），bbox = 其覆盖的经纬范围；smooth=false 走最近邻（分级填色看硬边界）
@@ -1200,14 +1378,38 @@ export function createFlatCoverage(canvas) {
     setCovGridAlpha(a) { covGridAlpha = a; requestDraw() },
     setSizes(s) { Object.assign(sizes, s || {}); invalidateStatic(); requestDraw() },
     setNameMode(m) { nameMode = m; invalidateStatic(); requestDraw() },
+    // 水域注记：{ ocean, sea } 两档各自的 'zh' | 'en' | 'off'（只给一个就只改那一个）
+    setWaterMode(m) {
+      if (!m) return
+      if (m.ocean != null) oceanMode = m.ocean
+      if (m.sea != null) seaMode = m.sea
+      invalidateStatic(); requestDraw()
+    },
+    // 逐条显隐：{ id: true } 即关掉那一条（表里的其余条目照画）
+    setWaterOff(o) {
+      waterOff = { ...(o || {}) }
+      oceanLbl = waterLabels('ocean', waterOff); seaLbl = waterLabels('sea', waterOff)
+      invalidateStatic(); requestDraw()
+    },
+    // 岛链：{ on, off, color, width, opacity, dash, name, nameSize } 一次给，只改给到的那几项
+    setChains(o) {
+      if (!o) return
+      if (o.off) { chainOff = { ...o.off }; chains = chainList(chainOff); chainLbl = chainLbls() }
+      for (const k of ['on', 'color', 'width', 'opacity', 'dash', 'name', 'nameSize']) if (o[k] != null) chainCfg[k] = o[k]
+      invalidateStatic(); requestDraw()
+    },
     setProvinces,
     setProvincesVisible(v) { provVisible = !!v; invalidateStatic(); requestDraw() },
     setCities,
     setCitiesVisible(v) { cityVisible = !!v; invalidateStatic(); requestDraw() },
     // 国界/省界线样式（与 3D 同步）：{ natColor, natWidth, natOpacity, provColor, provWidth, provOpacity }
+    // ★「线型换没换」按【值】比，不按「键在不在」：调用方传的是整份样式快照，每个 *Dash 键恒在，
+    //   按键判等于每次都作废 borderPaths —— 拖一下颜色就把五类线的 Path2D 整份重烘（10m 档 48 万个
+    //   lineTo）。与 3D 的 setBorderStyle 同一个根因，见那边的注释。
     setBorderStyle(s) {
-      const reDash = s && Object.keys(s).some((k) => /Dash$/.test(k))
-      Object.assign(borderStyle, s || {})
+      if (!s) return
+      const reDash = Object.keys(s).some((k) => /Dash$/.test(k) && s[k] !== borderStyle[k])
+      Object.assign(borderStyle, s)
       if (reDash) borderPaths = null   // 线型换了要重烘（虚线图案本身不入 path，但这里顺手清一次最省心）
       invalidateStatic(); requestDraw()
     },
@@ -1215,6 +1417,14 @@ export function createFlatCoverage(canvas) {
     setLabelStyle(s) { Object.assign(labelStyle, s || {}); invalidateStatic(); requestDraw() },
     // 大海填充色（与 3D 同步，限蓝色系）
     setOceanColor(c) { if (c) { oceanColor = c; invalidateStatic(); requestDraw() } },
+    // 影像底图。img=已解码的整幅等经纬 HTMLImageElement（传 null 卸载）、on=开关、bright=亮度乘子。
+    setImagery(o) {
+      if (!o) return
+      if (o.img !== undefined) imgEl = o.img || null
+      if (o.on != null) imgOn = !!o.on
+      if (o.bright != null) imgBright = Math.max(0.05, Math.min(2, Number(o.bright) || 1))
+      invalidateStatic(); requestDraw()
+    },
     // 大地颜色（基调方案 + 逐国覆盖，与 3D 同步）：写入公共色板状态后重建陆地 Path2D 并重绘静态层
     setLandColors(s) { setLandPalette(s); buildBaseGeo(resolvedFeatures(mapDetail0), mapThin); invalidateStatic(); requestDraw() },
     setOnRightClick(fn) { onRightClick = fn },
@@ -1255,8 +1465,6 @@ export function createFlatCoverage(canvas) {
       buildBaseGeo(resolvedFeatures(detail), t)
       invalidateStatic(); requestDraw()
     },
-    // 销毁：退订主权解算层的广播（不退的话卸载后的画布仍会被换视角触发重建）
-    destroy() { offPov() },
     // 切口经度（左边缘经度，−180..180）。★ 面板上填的是【画面中心】，切口 = 中心 − 180（见 stores/mapCrs）。
     // 世界度坐标 x = lon − LON0 是烘在 Path2D 里的，
     // 故改切口要把陆地/边界线/覆盖场/等值线全部重烘，再 fit 一次把新接缝放到边上。
@@ -1309,19 +1517,7 @@ export function createFlatCoverage(canvas) {
     // 聚焦卫星显示样式（轨道线只在 3D 有，这里收轨迹/覆盖圈/星下点图标三项）
     setFocusStyle(s) { Object.assign(focusCfg, s || {}); requestDraw() },
     setSatLayer(spec) { satLayer = spec; invalidateStatic(); requestDraw() },
-    resize() {
-      const w = canvas.clientWidth || canvas.parentElement?.clientWidth || 0, h = canvas.clientHeight || canvas.parentElement?.clientHeight || 0
-      if (!w || !h) return
-      const firstFit = cw < 2 || ch < 2; cw = w; ch = h; dpr = effDpr()
-      const bw = Math.round(cw * dpr), bh = Math.round(ch * dpr)   // 仅在尺寸真正变化时重设位图，避免无谓清空
-      if (canvas.width !== bw || canvas.height !== bh) { canvas.width = bw; canvas.height = bh }
-      // 离屏静态快照缓冲随主画布尺寸（设备像素）创建/重建
-      if (!belowCanvas) { belowCanvas = document.createElement('canvas'); belowCtx = belowCanvas.getContext('2d'); aboveCanvas = document.createElement('canvas'); aboveCtx = aboveCanvas.getContext('2d') }
-      if (belowCanvas.width !== canvas.width || belowCanvas.height !== canvas.height) { belowCanvas.width = canvas.width; belowCanvas.height = canvas.height; aboveCanvas.width = canvas.width; aboveCanvas.height = canvas.height }
-      invalidateStatic()
-      if (firstFit) fit()
-      draw()   // 同步立即重绘：canvas.width 重设会清空画布，若只 requestDraw 会隔一帧露出深色底 → 黑一下
-    },
+    resize() { resizeNow() },
     reset() { fit(); invalidateStatic(); requestDraw() },
     // 当前屏幕视图的逻辑尺寸（CSS px）：供「所见即所得」导出按当前画面比例/范围出图
     viewportSize: () => ({ w: cw, h: ch }),
@@ -1329,7 +1525,8 @@ export function createFlatCoverage(canvas) {
     // 只提像素倍率 → 恒定屏幕 px 的线宽/图标/注记与在屏整幅图完全同比例（所见即所得）。画布未就绪返回 null。
     fittedWorldSize() { const sb = Math.min(cw / 360, ch / 180); return (cw > 50 && ch > 50) ? { w: 360 * sb, h: 180 * sb } : null },
     // 导出平面图到任意 2D 上下文：离屏高清 canvas → PNG；svgcanvas → SVG/PDF。
-    // opts: { width, height, pixelScale=1, background=true, fontFamily, fontFamilyLatin, view=false }。
+    // opts: { width, height, pixelScale=1, background=true, fontFamily, fontFamilyLatin, view=false, raster=false }。
+    //   raster=true：输出目标是真 canvas（PNG），影像底图照画；缺省 false 供 svgcanvas 录制（PDF/SVG），影像跳过。
     //   fontFamily=中文面族名，fontFamilyLatin=西文面族名（仅 PDF 需分面，见 textFontLatin 注释）。
     //   view=false：整幅世界图，fit 一次性绘制；view=true：所见即所得，按当前屏幕缩放/平移出图。绘后恢复在屏视图。
     // compat=true 走子路径回放（不依赖 Path2D / evenodd 入参）→ PNG 与 PDF 完全一致。
@@ -1340,7 +1537,7 @@ export function createFlatCoverage(canvas) {
       const viewMode = o.view === true
       const W = o.width || 1600, H = o.height || (W / 2), ps = o.pixelScale || 1
       const SV = { ctx, dpr, cw, ch, base, scale, tx, ty, font: textFont, fontLatin: textFontLatin }
-      ctx = targetCtx; dpr = ps; compat = true
+      ctx = targetCtx; dpr = ps; compat = true; rasterOut = o.raster === true
       if (o.fontFamily) textFont = o.fontFamily
       if (o.fontFamilyLatin) textFontLatin = o.fontFamilyLatin
       if (viewMode) { /* 保留当前屏幕视图（cw/ch/base/scale/tx/ty 不变） */ }
@@ -1356,11 +1553,16 @@ export function createFlatCoverage(canvas) {
       drawFieldOverlays()
       drawFocusIcons()
       ctx.restore()
-      ctx = SV.ctx; dpr = SV.dpr; cw = SV.cw; ch = SV.ch; base = SV.base; scale = SV.scale; tx = SV.tx; ty = SV.ty; textFont = SV.font; textFontLatin = SV.fontLatin; compat = false
+      ctx = SV.ctx; dpr = SV.dpr; cw = SV.cw; ch = SV.ch; base = SV.base; scale = SV.scale; tx = SV.tx; ty = SV.ty; textFont = SV.font; textFontLatin = SV.fontLatin; compat = false; rasterOut = false
       staticValid = false; requestDraw()
     },
+    // 销毁：退订主权解算层的广播（不退的话卸载后的画布仍会被换视角触发重建）与 DPR 监听，再摘画布事件。
+    // ★ 这里原本有【两个 destroy 键落在同一个对象字面量里】，后一个把前一个整个盖掉 —— offPov()
+    //   从来没被调用过，卸载后的实例仍挂在主权解算层的广播上。已并成这一个。
     destroy() {
       if (rafId) cancelAnimationFrame(rafId)
+      offPov()
+      if (offDpr) { offDpr(); offDpr = null }
       canvas.removeEventListener('wheel', onWheel); canvas.removeEventListener('pointerdown', onDown); canvas.removeEventListener('pointermove', onMove)
       canvas.removeEventListener('pointerup', onUp); canvas.removeEventListener('pointercancel', onUp); canvas.removeEventListener('pointerleave', onLeave); canvas.removeEventListener('dblclick', onDbl)
       canvas.removeEventListener('contextmenu', onCtx)

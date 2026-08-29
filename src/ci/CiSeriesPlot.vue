@@ -205,10 +205,10 @@ defineExpose({ svg: svgEl, exportPng })
 
 /* 题行：图名 + 出图。与 CiCdfPlot 同一份（两图是并列的一对，样式一向各存各的） */
 .ci-fig-hd { display: flex; align-items: center; gap: 8px; margin: 14px 0 6px; }
-.ci-fig-name { font-size: 12.5px; font-weight: 700; color: var(--text-muted); }
+.ci-fig-name { font-size: var(--fs-4); font-weight: 700; color: var(--text-muted); }
 .ci-fig-sp { flex: 1; }
 .ci-fig-exp {
-  font: inherit; font-size: 11.5px; padding: 2px 9px; cursor: pointer;
+  font: inherit; font-size: var(--fs-3); height: var(--h-ctl); white-space: nowrap; padding: 0 9px; cursor: pointer;
   color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-ctl, 4px);
 }
 .ci-fig-exp:hover:not(:disabled) { border-color: var(--border-strong); }
@@ -226,5 +226,5 @@ defineExpose({ svg: svgEl, exportPng })
 .pl-thr { stroke: var(--warn, #d08a2e); stroke-width: 1; stroke-dasharray: 3 2; }
 .pl-thr-lab { font-size: 6.5px; fill: var(--warn, #d08a2e); font-weight: 600; }
 
-.ci-series-empty { margin: 6px 0 0; text-align: center; font-size: 12px; color: var(--text-muted); }
+.ci-series-empty { margin: 6px 0 0; text-align: center; font-size: var(--fs-3); color: var(--text-muted); }
 </style>

@@ -12,6 +12,7 @@ import { ref, computed, reactive, watch, onBeforeUnmount } from 'vue'
 import Icon from './Icon.vue'
 import ExcelGrid from './ExcelGrid.vue'
 import { useGridSelect } from '../viz/grd/useGridSelect.js'
+import { useCheckList } from '../shared/ui/useCheckList.js'
 import { sheetModel, exportSheets, importWorkbook, sheetToRecords, pickSheet, safeFileName } from '../shared/gridXlsx.js'
 import { appAlert } from '../stores/alert.js'
 
@@ -138,11 +139,13 @@ const beamMode = computed(() => sp.targetMode.value === 'beam')
 const pickRows = computed(() => sp.activePicks.value.map((p, i) => ({ ...p, no: i + 1 })))
 // 上：目标星列表（只读网格——目标是「点选」进来的，不像城市那样逐格键入）
 const pickGrid = useGridSelect({
+  gridId: 'satperf-pick',
   rows: () => pickRows.value, cols: () => PICK_COLS, readOnly: true,
   cellText: (r, c) => { const v = r[c.key]; return v == null ? '' : String(v) }
 })
 // 下：性能结果（只读）——框选 + 复制 + 键盘导航；与对地结果表同一套交互
 const resGrid = useGridSelect({
+  gridId: 'satperf-res',
   rows: () => sp.filteredRows.value, cols: () => tblCols.value, readOnly: true,
   cellText: (r, c) => sp.fmtCell(c, r[c.key])
 })
@@ -156,6 +159,21 @@ const resEmptyText = computed(() => {
 })
 function resetOpts() { if (!sc.active.value) return; sp.resetOpts(sc.active.value); sp.beamQuery.value = ''; emit('recompute-table') }
 watch(tblOpts, () => { if (sc.active.value) sp.rememberOpts(sc.active.value) }, { deep: true })
+
+// 「波束筛选」勾选列表：点 / 按住拖刷 / Shift 连选 / 键盘，与覆盖分析侧栏的 Beams To Plot
+// 同一份口径（shared/ui/useCheckList.js）。
+const bpEl = ref(null)
+const bRows = computed(() => sp.filteredBeams())
+const bp = useCheckList({
+  rows: () => bRows.value,
+  idOf: (b) => b.bi,
+  isOn: (bi) => sp.beamOn(tblOpts.value, bi),
+  current: () => sp.beamSelIds(tblOpts.value),
+  commit: (ids) => sp.setBeamSel(tblOpts.value, ids),
+  el: () => bpEl.value
+})
+const { isOn: beamOn, onCount: bOnCount, allOn: bAllOn, anyOn: bAnyOn, painting: bPainting, cur: bCur, onRowDown: bDown, onHeadDown: bAllDown, onKey: bKey } = bp
+watch(() => sc.active.value, () => bp.reset())   // 换天线＝换一份勾选集，暂态与锚点就地丢掉
 
 // ==================== 时间窗口 ====================
 // 起点默认跟随时间轴（startMs=null）；改过一次就钉住，⟲ 放回跟随。datetime-local 走本地时刻，
@@ -364,8 +382,8 @@ async function importPicksXlsx() {
                  :serial="false" :actions-width="46" :row-class="(r) => (hoverId && hoverId === (r.noradId || r.name) ? 'hov' : null)"
                  :empty-text="beamMode ? '当前波束内没有卫星。' : '还没有目标星。'">
         <template #actions="{ row }">
-          <span class="foc" title="聚焦该卫星（旋转地球正对它并选中）" @click="focusRow(row)"><Icon name="crosshair" :size="11" /></span>
-          <span v-if="!beamMode" class="del" title="移除该目标星" @click="sp.removeTarget(row.id)"><Icon name="x" :size="11" /></span>
+          <span class="foc" title="聚焦该卫星（旋转地球正对它并选中）" @click="focusRow(row)"><Icon name="crosshair" :size="12" /></span>
+          <span v-if="!beamMode" class="del" title="移除该目标星" @click="sp.removeTarget(row.id)"><Icon name="x" :size="12" /></span>
         </template>
       </ExcelGrid>
     </section>
@@ -387,10 +405,10 @@ async function importPicksXlsx() {
              与对地性能表同一口径，见 ConstellationMap3D.vue 同处注释。 -->
         <label v-if="tblOpts" class="pr-cov" :class="{ dis: !tblOpts.filterOn }">阈值<input class="ci" type="number" step="0.5" v-model.lazy.number="tblOpts.minDir" :disabled="!tblOpts.filterOn" /><span class="u">dB</span></label>
         <input class="perf-q" v-model="sp.query.value" placeholder="查询：卫星名 / 分组 / NORAD" />
-        <span v-if="!win.on" class="ptb" title="按当前时间轴时刻重算" @click="emit('recompute-table')"><Icon name="refresh-cw" :size="11" /> 重算</span>
-        <span class="ptb" title="复制整张结果表（含表头，TSV，可粘进 Excel）" @click="copyTsv"><Icon name="copy" :size="11" /> 复制全表</span>
-        <span class="ptb" title="导出为 Excel（结果表 + 目标星两张工作表；数字列存真数字）" @click="exportResultXlsx"><Icon name="download" :size="11" /> 导出 Excel</span>
-        <span class="ptb" :class="{ on: optsOpen }" title="显示列 / 波束筛选 / 参数计算 / 指向误差" @click="optsOpen = !optsOpen"><Icon name="settings" :size="11" /> 选项…</span>
+        <span v-if="!win.on" class="ptb" title="按当前时间轴时刻重算" @click="emit('recompute-table')"><Icon name="refresh-cw" :size="12" /> 重算</span>
+        <span class="ptb" title="复制整张结果表（含表头，TSV，可粘进 Excel）" @click="copyTsv"><Icon name="copy" :size="12" /> 复制全表</span>
+        <span class="ptb" title="导出为 Excel（结果表 + 目标星两张工作表；数字列存真数字）" @click="exportResultXlsx"><Icon name="download" :size="12" /> 导出 Excel</span>
+        <span class="ptb" :class="{ on: optsOpen }" title="显示列 / 波束筛选 / 参数计算 / 指向误差" @click="optsOpen = !optsOpen"><Icon name="settings" :size="12" /> 选项…</span>
         <span class="perf-cnt">{{ sp.filteredRows.value.length }} 行</span>
       </div>
 
@@ -398,13 +416,13 @@ async function importPicksXlsx() {
       <div v-if="win.on" class="pw-bar">
         <label>起始</label>
         <input class="ci dt" type="datetime-local" step="1" v-model="startLocal" />
-        <span class="ptb sq" :class="{ dis: win.startMs == null }" title="回到跟随时间轴当前时刻" @click="win.startMs = null"><Icon name="refresh-cw" :size="10" /></span>
+        <span class="ptb sq" :class="{ dis: win.startMs == null }" title="回到跟随时间轴当前时刻" @click="win.startMs = null"><Icon name="refresh-cw" :size="12" /></span>
         <label>时长</label>
         <input class="ci w56" type="number" step="1" min="0.02" max="720" v-model.number="win.durH" /><span class="u">h</span>
         <span v-if="!win.busy" class="ptb go" :class="{ warn: staleNow }" title="扫描全部目标星在该时窗内的可见时段" @click="emit('scan-windows')">
-          <Icon name="play" :size="11" /> {{ staleNow ? '重算' : '计算' }}
+          <Icon name="play" :size="12" /> {{ staleNow ? '重算' : '计算' }}
         </span>
-        <span v-else class="ptb" title="中止本次扫描" @click="sp.cancelWindows()"><Icon name="x" :size="11" /> 取消 {{ Math.round(win.progress * 100) }}%</span>
+        <span v-else class="ptb" title="中止本次扫描" @click="sp.cancelWindows()"><Icon name="x" :size="12" /> 取消 {{ Math.round(win.progress * 100) }}%</span>
         <span v-if="win.busy" class="pw-prog"><i :style="{ width: (win.progress * 100) + '%' }"></i></span>
         <span v-else-if="wi" class="perf-cnt">{{ wi.nLit }}/{{ wi.nTarget }} 有窗口 · {{ wi.nWin }} 个时段 · {{ durText((wi.t1Ms - wi.t0Ms) / 60000) }}</span>
       </div>
@@ -431,10 +449,10 @@ async function importPicksXlsx() {
         </div>
         <!-- 游标：滑块细调（条上像素粒度不够时）+ 读数 + 在窗口峰值间前后跳 -->
         <div class="swc">
-          <span class="ptb sq" title="上一个窗口峰值" @click="jumpPeak(-1)"><Icon name="chevron-left" :size="11" /></span>
+          <span class="ptb sq" title="上一个窗口峰值" @click="jumpPeak(-1)"><Icon name="chevron-left" :size="12" /></span>
           <input class="swc-sl" type="range" :min="wi.t0Ms" :max="wi.t1Ms" step="1000" :value="curMs"
                  @input="seek(Number($event.target.value))" />
-          <span class="ptb sq" title="下一个窗口峰值" @click="jumpPeak(1)"><Icon name="chevron-right" :size="11" /></span>
+          <span class="ptb sq" title="下一个窗口峰值" @click="jumpPeak(1)"><Icon name="chevron-right" :size="12" /></span>
           <span class="swc-t">{{ sp.fmtCell({ time: true }, curMs) }}</span>
           <span class="perf-cnt">窗口内 {{ inWinCount }} 颗</span>
           <span class="ptb" title="把主时间轴跳到游标时刻（画面上的星位随之走到这一刻）" @click="emit('seek-clock', curMs)">同步到时间轴</span>
@@ -448,7 +466,7 @@ async function importPicksXlsx() {
                  :empty-text="resEmptyText"
                  @row-enter="(r) => hoverId = r.noradId || r.tgtName" @row-leave="hoverId = ''">
         <template #actions="{ row }">
-          <span class="foc" title="聚焦该卫星（旋转地球正对它并选中）" @click="focusRow(row)"><Icon name="crosshair" :size="11" /></span>
+          <span class="foc" title="聚焦该卫星（旋转地球正对它并选中）" @click="focusRow(row)"><Icon name="crosshair" :size="12" /></span>
         </template>
       </ExcelGrid>
       <div class="pr-foot">{{ sp.footNote.value }}<span v-if="stampText" class="tl">{{ stampText }}</span></div>
@@ -485,19 +503,28 @@ async function importPicksXlsx() {
           <section v-if="sp.ctxBeams.value.length > 1" class="po-card">
             <div class="po-ct">波束筛选</div>
             <input class="ci bq" :value="sp.beamQuery.value" placeholder="搜索：波束名，或序号 1-62、1,3,5、1-10,20-30" @input="e => sp.beamQuery.value = e.target.value" />
-            <div class="bplist">
-              <label class="brow ball">
-                <input type="checkbox" :checked="sp.filteredAllOn(tblOpts)" :indeterminate.prop="sp.filteredAnyOn(tblOpts) && !sp.filteredAllOn(tblOpts)" @change="sp.selectFiltered(tblOpts, !sp.filteredAllOn(tblOpts))" />
+            <!-- 整行都是勾选热区，按住左键拖＝刷选（长按多选）；复选框只当显示件，见 useCheckList -->
+            <div
+              ref="bpEl" class="bplist" :class="{ painting: bPainting }" tabindex="0"
+              title="点一行翻勾选 · 按住拖＝刷选一片 · Shift 点＝连选一段 · Ctrl+A 全选"
+              @keydown="bKey"
+            >
+              <div class="brow ball" @mousedown="bAllDown">
+                <input type="checkbox" :checked="bAllOn()" :indeterminate.prop="bAnyOn() && !bAllOn()" />
                 <span class="balln">{{ sp.beamQuery.value.trim() ? '(全选搜索结果)' : '(全选)' }}</span>
-                <span class="bpk">{{ sp.beamSelCount(tblOpts) }}/{{ sp.ctxBeams.value.length }}</span>
-              </label>
-              <label v-for="b in sp.filteredBeams()" :key="b.seq" class="brow" :class="{ on: sp.beamOn(tblOpts, b.bi) }">
-                <input type="checkbox" :checked="sp.beamOn(tblOpts, b.bi)" @change="sp.toggleBeam(tblOpts, b.bi)" />
+                <span class="bpk">{{ bOnCount }}/{{ sp.ctxBeams.value.length }}</span>
+              </div>
+              <div
+                v-for="(b, bi) in bRows" :key="b.seq"
+                class="brow bitem" :class="{ on: beamOn(b.bi), cur: bCur === bi }"
+                @mousedown="bDown($event, bi)"
+              >
+                <input type="checkbox" :checked="beamOn(b.bi)" />
                 <span class="bseq">{{ b.seq }}</span>
                 <span class="pbnm" :title="b.name" data-i18n-skip>{{ b.name }}</span>
                 <span class="bpk">{{ b.peakDb == null ? '—' : b.peakDb.toFixed(1) }}</span>
-              </label>
-              <div v-if="!sp.filteredBeams().length" class="empty">无匹配波束</div>
+              </div>
+              <div v-if="!bRows.length" class="empty">无匹配波束</div>
             </div>
           </section>
 
@@ -533,18 +560,18 @@ async function importPicksXlsx() {
 <style scoped>
 /* 与「对地覆盖分析」性能指标表浮窗同源（ConstellationMap3D.vue 的 .perf-win 一套）：那份是 scoped 的、
    进不到本组件，故这里带一份同值副本。改动请两处对照。 */
-.perf-win { position: absolute; display: flex; flex-direction: column; background: var(--panel, var(--bg)); border: 1px solid var(--border); border-radius: var(--r-float); box-shadow: 0 12px 40px rgba(0, 0, 0, .35); z-index: 60; overflow: hidden; }
+.perf-win { position: absolute; display: flex; flex-direction: column; background: var(--panel, var(--bg)); border: 1px solid var(--border); border-radius: var(--r-float); box-shadow: var(--shadow-3); z-index: 60; overflow: hidden; }
 .perf-h { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border); flex: none; cursor: move; user-select: none; }
-.perf-t { flex: 1; min-width: 0; font-family: var(--font-serif); font-size: 13.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.perf-t em { font-style: normal; font-family: var(--font-mono); font-size: 11px; color: var(--text-faint); margin-left: 4px; }
+.perf-t { flex: 1; min-width: 0; font-family: var(--font-serif); font-size: var(--fs-4); color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.perf-t em { font-style: normal; font-family: var(--font-mono); font-size: var(--fs-2); color: var(--text-faint); margin-left: 4px; }
 .perf-h .csx { cursor: pointer; color: var(--text-faint); padding: 0 4px; position: relative; z-index: 5; display: inline-flex; }
 .perf-h .csx:hover { color: var(--text); }
-.ptb { font-size: 11.5px; color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-card); padding: 2px 8px; cursor: pointer; white-space: nowrap; display: inline-flex; align-items: center; gap: 3px; }
+.ptb { font-size: var(--fs-3); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-card); padding: 2px 8px; cursor: pointer; white-space: nowrap; display: inline-flex; align-items: center; gap: 3px; }
 .ptb:hover { color: var(--text); border-color: var(--accent); }
 .ptb.dis { opacity: .38; pointer-events: none; }
 .ptb.on { color: var(--accent); border-color: var(--accent); }
-.perf-q { flex: 1; min-width: 110px; border: 1px solid var(--border); background: var(--bg); padding: 2px 8px; font-size: 11.5px; color: var(--text); border-radius: var(--r-card); outline: none; }
-.perf-cnt { font-size: 10.5px; color: var(--text-faint); font-family: var(--font-mono); white-space: nowrap; margin-left: auto; }
+.perf-q { flex: 1; min-width: 110px; border: 1px solid var(--field-border); background: var(--field-bg); padding: 2px 8px; font-size: var(--fs-3); color: var(--text); border-radius: var(--r-card); outline: none; }
+.perf-cnt { font-size: var(--fs-2); color: var(--text-faint); font-family: var(--font-mono); white-space: nowrap; margin-left: auto; }
 .perf-input { flex: none; display: flex; flex-direction: column; min-height: 0; }
 .perf-split { flex: none; height: 7px; cursor: ns-resize; background: var(--border); display: flex; align-items: center; justify-content: center; }
 .perf-split:hover { background: color-mix(in srgb, var(--accent) 45%, var(--border)); }
@@ -560,24 +587,24 @@ async function importPicksXlsx() {
 .perf-rsz { position: absolute; right: 0; bottom: 0; width: 16px; height: 16px; cursor: nwse-resize; z-index: 4; background: linear-gradient(135deg, transparent 50%, color-mix(in srgb, var(--text) 30%, transparent) 50%, color-mix(in srgb, var(--text) 30%, transparent) 62%, transparent 62%, transparent 74%, color-mix(in srgb, var(--text) 30%, transparent) 74%, color-mix(in srgb, var(--text) 30%, transparent) 86%, transparent 86%); }
 .pin-h, .pr-h { display: flex; align-items: center; gap: 6px; padding: 6px 12px; flex: none; flex-wrap: wrap; }
 .pin-h { border-bottom: 1px solid var(--border); }
-.pin-t, .pr-t { font-size: 11.5px; font-weight: 600; color: var(--text-muted); white-space: nowrap; }
-.pr-t em { margin-left: 4px; font-style: normal; font-size: 10px; font-weight: 400; color: var(--text-faint); border: 1px solid var(--border); border-radius: var(--r-pill); padding: 0 5px; }
+.pin-t, .pr-t { font-size: var(--fs-3); font-weight: 600; color: var(--text-muted); white-space: nowrap; }
+.pr-t em { margin-left: 4px; font-style: normal; font-size: var(--fs-1); font-weight: 400; color: var(--text-faint); border: 1px solid var(--border); border-radius: var(--r-pill); padding: 0 5px; }
 .pin-body { flex: 1; overflow: auto; outline: none; }
 .perf-result { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .pr-h { border-bottom: 1px solid var(--border); }
-.pr-cov { display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--text-muted); white-space: nowrap; cursor: pointer; }
+.pr-cov { display: flex; align-items: center; gap: 4px; font-size: var(--fs-2); color: var(--text-muted); white-space: nowrap; cursor: pointer; }
 .pr-cov.dis { opacity: .5; }
-.pr-cov .ci { width: 52px; border: 1px solid var(--border); background: var(--bg); padding: 1px 5px; font-size: 11px; color: var(--text); border-radius: var(--r-card); outline: none; font-family: var(--font-mono); }
+.pr-cov .ci { width: 52px; border: 1px solid var(--field-border); background: var(--field-bg); padding: 1px 5px; font-size: var(--fs-2); color: var(--text); border-radius: var(--r-card); outline: none; font-family: var(--font-mono); }
 .pr-cov .ci:disabled { opacity: .45; }
-.pr-cov .u { color: var(--text-faint); font-size: 10.5px; }
+.pr-cov .u { color: var(--text-faint); font-size: var(--fs-2); }
 .pr-body { flex: 1; overflow: auto; outline: none; }
-.pr-foot { flex: none; padding: 3px 12px; border-top: 1px solid var(--border); font-family: var(--font-mono); font-size: 10px; color: var(--text-faint); display: flex; gap: 10px; }
+.pr-foot { flex: none; padding: 3px 12px; border-top: 1px solid var(--border); font-family: var(--font-mono); font-size: var(--fs-1); color: var(--text-faint); display: flex; gap: 10px; }
 .pr-foot .tl { margin-left: auto; }
 /* 两张网格都交给 ExcelGrid（src/components/ExcelGrid.vue）渲染，表体样式在那边；这里只补本窗口
    特有的行/格着色与操作列图标。子组件渲染出来的节点带的是【它自己】的 scoped 标记，故一律走 :deep()。 */
 .sc-grid :deep(td.occ) { color: #d08b5a; }
 .sc-grid :deep(tr.out td) { color: var(--text-faint); }
-.sc-grid :deep(tbody tr.hov > td) { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.sc-grid :deep(tbody tr.hov > td) { background: color-mix(in srgb, var(--accent-ui) 12%, transparent); }
 .sc-grid :deep(.eg-act .del), .sc-grid :deep(.eg-act .foc) { cursor: pointer; color: var(--text-faint); opacity: 0; display: inline-flex; vertical-align: middle; }
 .sc-grid :deep(.eg-act .foc) { margin-right: 4px; }
 .sc-grid :deep(tbody tr:hover .del), .sc-grid :deep(tbody tr:hover .foc) { opacity: .8; }
@@ -586,18 +613,18 @@ async function importPicksXlsx() {
 /* 两段/三段切换（当前时刻⇄时间窗口、时段⇄汇总）：与可见性分析 .seg.sm.vis-mode 同一套锐边分段语言。
    活动段文字用 var(--bg) 而非写死 #fff —— 深色主题下 accent≈白，写死白字＝白底白字。 */
 .seg2 { display: inline-flex; border: 1px solid var(--border); border-radius: var(--r-card); overflow: hidden; background: var(--surface); flex: none; }
-.seg2 .sg { padding: 2px 9px; font-size: 11.5px; color: var(--text-muted); cursor: pointer; user-select: none; white-space: nowrap; transition: background .12s ease, color .12s ease; }
+.seg2 .sg { padding: 2px 9px; font-size: var(--fs-3); color: var(--text-muted); cursor: pointer; user-select: none; white-space: nowrap; transition: background .12s ease, color .12s ease; }
 .seg2 .sg + .sg { border-left: 1px solid var(--border); }
 .seg2 .sg:hover:not(.on) { background: var(--bg); color: var(--text); }
 .seg2 .sg.on { background: var(--accent); color: var(--bg); font-weight: 600; }
 .seg2 .sg.on, .seg2 .sg.on + .sg { border-left-color: transparent; }
 /* 时窗参数条 */
 .pw-bar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 5px 12px; border-bottom: 1px solid var(--border); flex: none; }
-.pw-bar label { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
-.pw-bar .ci, .pw-bar select { border: 1px solid var(--border); background-color: var(--bg); padding: 1px 5px; font-size: 11px; color: var(--text); border-radius: var(--r-card); outline: none; font-family: var(--font-mono); }
+.pw-bar label { font-size: var(--fs-2); color: var(--text-muted); white-space: nowrap; }
+.pw-bar .ci, .pw-bar select { border: 1px solid var(--field-border); background-color: var(--field-bg); padding: 1px 5px; font-size: var(--fs-2); color: var(--text); border-radius: var(--r-card); outline: none; font-family: var(--font-mono); }
 .pw-bar .ci.dt { width: 150px; }
 .pw-bar .w56 { width: 56px; }
-.pw-bar .u { color: var(--text-faint); font-size: 10.5px; }
+.pw-bar .u { color: var(--text-faint); font-size: var(--fs-2); }
 .pw-bar .ptb.sq { padding: 2px 5px; }
 .pw-bar .ptb.go { color: var(--accent); border-color: var(--accent); }
 .pw-bar .ptb.go.warn { color: var(--warn, #d08b5a); border-color: var(--warn, #d08b5a); }
@@ -606,10 +633,10 @@ async function importPicksXlsx() {
 /* 可见时段条带：与可见性分析 ACCESS 甘特同款（78px 星名 + 轨道条 + 次数），条上多一根游标 */
 .sgantt { flex: none; border-bottom: 1px solid var(--border); padding: 4px 12px 6px; }
 /* 轴的左右内缩要与条带列宽对齐（名字 78 + 间隔 6 ｜ 次数 26 + 间隔 6），否则末端时刻标在条外 32px 处 */
-.sgt-ax { display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: 9.5px; color: var(--text-faint); padding: 0 32px 3px 84px; }
+.sgt-ax { display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: var(--fs-1); color: var(--text-faint); padding: 0 32px 3px 84px; }
 .sgt-ax .mid { color: var(--text-muted); }
 .sgt-rows { display: flex; flex-direction: column; gap: 2px; max-height: 150px; overflow-y: auto; }
-.sgt-row { display: grid; grid-template-columns: 78px 1fr 26px; gap: 6px; align-items: center; font-size: 10.5px; padding: 1px 3px; border-radius: var(--r-box); }
+.sgt-row { display: grid; grid-template-columns: 78px 1fr 26px; gap: 6px; align-items: center; font-size: var(--fs-2); padding: 1px 3px; border-radius: var(--r-box); }
 .sgt-row:hover, .sgt-row.hov { background: color-mix(in srgb, var(--accent) 14%, transparent); }
 .sgt-n { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); cursor: pointer; }
 .sgt-n:hover { color: var(--accent); }
@@ -617,63 +644,71 @@ async function importPicksXlsx() {
 .sgt-bar i { position: absolute; top: 1px; bottom: 1px; min-width: 1.2px; background: var(--accent); border-radius: 1px; }
 /* 游标：上下各探出 3px，正好把行间距接上，多行看着是一根通条的线 */
 .sgt-cur { position: absolute; top: -3px; bottom: -3px; width: 1px; margin-left: -0.5px; background: var(--text); pointer-events: none; }
-.sgt-c { font-family: var(--font-mono); font-size: 10px; color: var(--text-faint); text-align: right; }
+.sgt-c { font-family: var(--font-mono); font-size: var(--fs-1); color: var(--text-faint); text-align: right; }
 /* 游标控制条（滑块 + 读数 + 前后跳），与「星间链路距离」工具同款 */
 .swc { display: flex; align-items: center; gap: 6px; padding-top: 5px; }
 .swc-sl { flex: 1; min-width: 80px; }
-.swc-t { font-family: var(--font-mono); font-size: 11px; color: var(--text); white-space: nowrap; user-select: text; }
+.swc-t { font-family: var(--font-mono); font-size: var(--fs-2); color: var(--text); white-space: nowrap; user-select: text; }
 .swc .perf-cnt { margin-left: 0; }
-.po-cv { font-style: normal; font-weight: 400; color: var(--text-faint); margin-left: 5px; font-size: 10px; }
+.po-cv { font-style: normal; font-weight: 400; color: var(--text-faint); margin-left: 5px; font-size: var(--fs-1); }
 /* 目标星搜索结果：与主界面搜索下拉 / 卫星组管理器同款（一行一颗 + 「来源 · NORAD」副行 + 命中读数） */
 .sres { flex: none; border-bottom: 1px solid var(--border); background: var(--bg); }
 .sres-list { max-height: 168px; overflow-y: auto; }
 .sitem { padding: 4px 12px; border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent); cursor: pointer; }
 .sitem:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
-.sitem .nm { font-size: 12px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sitem .sub { font-size: 10.5px; color: var(--text-faint); font-family: var(--font-mono); }
-.sres-e { padding: 6px 12px; font-size: 11.5px; color: var(--text-faint); }
-.sres-n { display: flex; align-items: center; gap: 8px; padding: 3px 12px; border-top: 1px solid var(--border); font-size: 10px; color: var(--text-faint); font-family: var(--font-mono); }
-.sres-n .ptb { margin-left: auto; font-size: 10.5px; font-family: inherit; }
+.sitem .nm { font-size: var(--fs-3); color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sitem .sub { font-size: var(--fs-2); color: var(--text-faint); font-family: var(--font-mono); }
+.sres-e { padding: 6px 12px; font-size: var(--fs-3); color: var(--text-faint); }
+.sres-n { display: flex; align-items: center; gap: 8px; padding: 3px 12px; border-top: 1px solid var(--border); font-size: var(--fs-1); color: var(--text-faint); font-family: var(--font-mono); }
+.sres-n .ptb { margin-left: auto; font-size: var(--fs-2); font-family: inherit; }
 /* 表选项弹窗 */
 .sat-mask { position: absolute; inset: 0; background: rgba(4, 8, 14, .55); display: flex; align-items: center; justify-content: center; z-index: 70; }
-.perf-opt-dlg { width: 700px; max-width: calc(100% - 32px); max-height: 88%; display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-float); box-shadow: 0 16px 48px rgba(0, 0, 0, .55); }
-.sdh { display: flex; align-items: center; padding: 11px 14px; border-bottom: 1px solid var(--border); font-family: var(--font-serif); font-size: 14px; color: var(--text); }
-.sdh em { font-style: normal; font-family: var(--font-mono); font-size: 11.5px; color: var(--text-faint); }
+.perf-opt-dlg { width: 700px; max-width: calc(100% - 32px); max-height: 88%; display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-float); box-shadow: var(--shadow-3); }
+.sdh { display: flex; align-items: center; padding: 11px 14px; border-bottom: 1px solid var(--border); font-family: var(--font-serif); font-size: var(--fs-5); color: var(--text); }
+.sdh em { font-style: normal; font-family: var(--font-mono); font-size: var(--fs-3); color: var(--text-faint); }
 .sdh .csx { margin-left: auto; cursor: pointer; color: var(--text-faint); display: inline-flex; }
 .sdh .csx:hover { color: var(--text); }
 .sdfoot { display: flex; gap: 10px; padding: 10px 14px; border-top: 1px solid var(--border); }
-.sdfoot .save { background: var(--accent); color: var(--bg); padding: 4px 18px; cursor: pointer; font-size: 12px; margin-left: auto; }
+.sdfoot .save { background: var(--accent); color: var(--bg); padding: 4px 18px; cursor: pointer; font-size: var(--fs-3); margin-left: auto; }
 .sdfoot .save.ghost { background: transparent; color: var(--text); border: 1px solid var(--border); }
 .sdfoot .po-reset { margin-right: auto; margin-left: 0; }
 .perf-opt-body { display: flex; gap: 12px; padding: 12px; overflow: auto; align-items: stretch; }
 .po-card { border: 1px solid var(--border); border-radius: var(--r-float); padding: 8px 10px; background: color-mix(in srgb, var(--text) 2.5%, transparent); }
-.po-ct { font-size: 11px; font-weight: 600; color: var(--text-muted); letter-spacing: var(--ls-tight); margin-bottom: 6px; padding-bottom: 4px; border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent); }
+.po-ct { font-size: var(--fs-2); font-weight: 600; color: var(--text-muted); letter-spacing: var(--ls-tight); margin-bottom: 6px; padding-bottom: 4px; border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent); }
 .po-cols { flex: 0 0 280px; display: flex; flex-direction: column; }
 .po-scroll { flex: 1; overflow: auto; display: grid; grid-template-columns: 1fr 1fr; gap: 0 10px; align-content: start; }
 .po-grp { display: contents; }
-.po-gt { grid-column: 1 / -1; font-size: 10px; color: var(--text-faint); margin: 6px 0 1px; letter-spacing: var(--ls-tight); }
+.po-gt { grid-column: 1 / -1; font-size: var(--fs-1); color: var(--text-faint); margin: 6px 0 1px; letter-spacing: var(--ls-tight); }
 .po-gt:first-child { margin-top: 0; }
-.po-ck { display: flex; align-items: center; gap: 5px; padding: 2px 0; font-size: 11.5px; color: var(--text); cursor: pointer; min-width: 0; }
+.po-ck { display: flex; align-items: center; gap: 5px; padding: 2px 0; font-size: var(--fs-3); color: var(--text); cursor: pointer; min-width: 0; }
 .po-ck span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .po-ck input { flex: none; }
 .po-right { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
-.po-chk { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text); cursor: pointer; padding: 1px 0; }
-.po-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 12px; }
+.po-chk { display: flex; align-items: center; gap: 6px; font-size: var(--fs-3); color: var(--text); cursor: pointer; padding: 1px 0; }
+.po-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: var(--fs-3); }
 .po-row label { flex: 0 0 64px; color: var(--text-muted); }
-.po-row .ci, .po-row select { flex: 1; min-width: 0; border: 1px solid var(--border); background-color: var(--bg); padding: 2px 6px; font-size: 12px; color: var(--text); border-radius: var(--r-card); outline: none; }
+.po-row .ci, .po-row select { flex: 1; min-width: 0; border: 1px solid var(--field-border); background-color: var(--field-bg); padding: 2px 6px; font-size: var(--fs-3); color: var(--text); border-radius: var(--r-card); outline: none; }
 .po-row .ci:disabled { opacity: .45; }
-.po-row .u { flex: none; color: var(--text-faint); font-size: 11px; }
-.po-card .ci.bq { width: 100%; box-sizing: border-box; border: 1px solid var(--border); background: var(--bg); padding: 2px 6px; font-size: 11.5px; color: var(--text); border-radius: var(--r-card); outline: none; }
-.bplist { border: 1px solid var(--border); border-radius: var(--r-ctl); margin-top: 5px; max-height: 300px; min-height: 48px; overflow-y: auto; resize: vertical; }
-.brow { display: flex; align-items: center; gap: 6px; padding: 2px 7px; cursor: pointer; font-size: 11.5px; color: var(--text-muted); }
+.po-row .u { flex: none; color: var(--text-faint); font-size: var(--fs-2); }
+.po-card .ci.bq { width: 100%; box-sizing: border-box; border: 1px solid var(--field-border); background: var(--field-bg); padding: 2px 6px; font-size: var(--fs-3); color: var(--text); border-radius: var(--r-card); outline: none; }
+/* 波束筛选勾选列表：与覆盖分析侧栏的 Beams To Plot 同一套交互与样式（改动请两处对照）。
+   position:relative 是给 offsetTop 定基准的（刷选按行的 offsetTop 二分查行，见 useCheckList）。 */
+.bplist { position: relative; border: 1px solid var(--border); border-radius: var(--r-ctl); margin-top: 5px; max-height: 300px; min-height: 48px; overflow-y: auto; resize: vertical; outline: none; }
+.bplist:focus-visible { box-shadow: inset 0 0 0 1px var(--accent-ui); }
+.brow { display: flex; align-items: center; gap: 6px; padding: 2px 7px; cursor: default; font-size: var(--fs-3); color: var(--text-muted); user-select: none; }
 .brow + .brow { border-top: 1px solid var(--border); }
 .brow:hover { background: var(--bg); }
-.brow .bseq { flex: none; min-width: 20px; text-align: right; color: var(--text-faint); font-family: var(--font-mono); font-size: 10.5px; }
-.brow .bpk { flex: none; color: var(--text-faint); font-family: var(--font-mono); font-size: 10.5px; }
+.brow.on { background: color-mix(in srgb, var(--accent-ui) 13%, transparent); }
+.brow.on:hover { background: color-mix(in srgb, var(--accent-ui) 20%, transparent); }
+.brow.cur { outline: 1px solid color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: -1px; }
+/* 复选框只当显示件：所有指针交互都归行 —— 否则原生勾选框自带的那次切换会与刷选各翻一遍、互相抵消 */
+.brow input[type=checkbox] { pointer-events: none; }
+.brow .bseq { flex: none; min-width: 20px; text-align: right; color: var(--text-faint); font-family: var(--font-mono); font-size: var(--fs-2); }
+.brow .bpk { flex: none; color: var(--text-faint); font-family: var(--font-mono); font-size: var(--fs-2); }
 .brow .pbnm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .brow.on .pbnm { color: var(--text); }
 .brow.ball { position: sticky; top: 0; z-index: 1; background: var(--bg); border-bottom: 1px solid var(--border); }
 .brow.ball + .brow { border-top: 0; }
 .brow .balln { flex: 1; color: var(--text); font-weight: 600; }
-.empty { color: var(--text-faint); padding: 4px 8px; font-size: 11px; }
+.empty { color: var(--text-faint); padding: 4px 8px; font-size: var(--fs-2); }
 </style>

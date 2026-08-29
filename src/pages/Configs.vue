@@ -50,9 +50,9 @@ onMounted(load)
 
 <style scoped>
 .cfg { padding: 20px 24px; height: 100%; overflow-y: auto; }   /* 外层 .content 已 overflow:hidden，滚动由页内承担 */
-.cfg h2 { font-size: 18px; }
+.cfg h2 { font-size: var(--fs-6); }
 .empty { color: var(--text-faint); padding: 14px 0; }
-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+table { width: 100%; border-collapse: collapse; font-size: var(--fs-4); }
 th { text-align: left; color: var(--text-muted); font-weight: 500; border-bottom: 1px solid var(--border-strong); padding: 6px 8px; }
 td { padding: 6px 8px; border-bottom: 1px solid var(--border); }
 .ns { color: var(--text-muted); }

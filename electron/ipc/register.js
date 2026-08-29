@@ -10,7 +10,7 @@ const createInterference = require('../services/interference')
 const admBoundaries = require('../services/admBoundaries')
 
 // 注册所有 IPC 处理器。core 为返回引擎实例的函数（延迟解析）。
-function register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget, openSunOutage, grd, confirmCloseLinkBudget, openNgso, confirmCloseNgso, openRegen, confirmCloseRegen, openE2e, confirmCloseE2e, openRain, confirmCloseRain, openCi, openPfd, freqPlan, openFreqPlan, notifyFreqPlan, activation }) {
+function register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget, openSunOutage, grd, confirmCloseLinkBudget, openNgso, confirmCloseNgso, openRegen, confirmCloseRegen, openE2e, confirmCloseE2e, openRain, confirmCloseRain, openCi, openPfd, freqPlan, openFreqPlan, notifyFreqPlan, activation, weather, gfs }) {
   // 未激活拦截（主进程硬防线；渲染端菜单/工具栏的拦截只是第一道观感）：
   // 各功能窗口的 open 一律先过这里——渲染端被绕过（devtools 直调 IPC）也开不出窗。
   // （下方九处 *:open 仍显式写着 gate(...)，在新的默认全拦之下已是冗余的第二层，无副作用，
@@ -657,6 +657,94 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     catch (err) { return { error: true, message: err.message || String(err) } }
   })
 
+  // ---- 实时/预报环境场（主窗口「实时气象」视图）----
+  // 与上面的 ITU 环境场同构：整张栅格在主进程生成后一次性回传（Float32Array 走结构化克隆）。
+  // 三处不同：数据来自实时气象源而非随包分发的地图、多一个时间维、衰减场依赖卫星几何。
+  //
+  // ★ 两个 provider 各司其职，不是二选一：
+  //     gfs      栅格源。**场**只走这条 —— 一次 HTTP 拿一整块 0.25° 网格，请求数 = 帧数。
+  //     weather  和风，按点。只做**站点实况** —— 0.25° 格值是 28 km 一片的平均，
+  //              地球站站址要的是那一个点此刻的实测，两者并列显示，差多少本身就是信息。
+  // ★ 全部不进 UNGATED：既产出交付物又要联网取数，未激活一律拦下。
+  const gOk = () => { if (!gfs) throw new Error('气象栅格服务未装配'); return gfs }
+  const wOk = () => { if (!weather) throw new Error('站点实况服务未装配'); return weather }
+  ipcMain.handle('weather:providers', () => {
+    const out = { field: { id: 'gfs', label: 'NCEP GFS 0.25°', ok: false, message: '' },
+      point: { id: 'qweather', label: '和风天气', ok: false, message: '' } }
+    try { const c = gOk().configured(); out.field.ok = !!c.ok; out.field.message = c.message || c.note || '' }
+    catch (e) { out.field.message = e.message }
+    try { const c = wOk().configured(); out.point.ok = !!c.ok; out.point.message = c.message || '' }
+    catch (e) { out.point.message = e.message }
+    return out
+  })
+  ipcMain.handle('weather:test', async (_e, which) => {
+    try { return which === 'point' ? await wOk().test() : await gOk().test() }
+    catch (e) { return { ok: false, message: e.message } }
+  })
+  ipcMain.handle('weather:defs', () => { try { return core().liveFieldDefs() } catch (e) { return { error: true, message: e.message } } })
+  ipcMain.handle('weather:estimate', (_e, o) => { try { return gOk().estimate(o || {}) } catch (e) { return { error: e.message } } })
+  ipcMain.handle('weather:meta', () => { try { return gOk().meta() } catch (e) { return null } })
+  ipcMain.handle('weather:usage', () => { try { return gOk().usage() } catch (e) { return null } })
+  ipcMain.handle('weather:clearCache', () => { try { return gOk().clearCache() } catch (e) { return { ok: false, message: e.message } } })
+  // 取数：一帧一次 HTTP，几秒~几十秒。进度按帧回推，界面才有得显示（否则只能干等）。
+  ipcMain.handle('weather:load', async (e, o) => {
+    try {
+      const send = (done, total) => { try { e.sender.send('weather:progress', { done, total }) } catch { /* 窗口已关 */ } }
+      return await gOk().loadCube(o || {}, send)
+    } catch (err) { return { error: err.message || String(err) } }
+  })
+  // 逐帧取栅格：拖时间轴时每帧一次，故不能把整个立方体过 IPC —— 立方体留在主进程。
+  ipcMain.handle('weather:field', (_e, o) => {
+    try {
+      const cube = gOk().getCube()
+      if (!cube) return { error: '尚未取气象数据' }
+      return core().sampleLiveField(cube, o || {})
+    } catch (err) { return { error: err.message || String(err) } }
+  })
+  // 多站读数：一次给一批站点，值取**时间轴当前时刻**的那一帧。
+  // ★ 不经过出图栅格：那张栅格为了跑得动是降过采样的（衰减场压到 4 万点，中国区约 0.26°），
+  //   在它上面采样等于二次插值。这里直接在立方体原生格上取值再逐点跑引擎 —— 站址的读数就是站址的。
+  // ★ 一批点一次 IPC：时间轴一动全表刷新，逐点发 IPC 会把主进程打满。实测 6 站 < 1 ms。
+  ipcMain.handle('weather:points', (_e, o) => {
+    try {
+      const cube = gOk().getCube()
+      if (!cube) return { error: '尚未取气象数据' }
+      return core().sampleLivePoints(cube, o || {})
+    } catch (err) { return { error: err.message || String(err) } }
+  })
+  // 一批站点的**和风按点值**（观测或逐小时预报）+ 逐站瞬时衰减。气象指标表的「和风」列组走这条。
+  // ★ 与上面的 weather:points 是两个**数据源**，别混：那条是 NCEP GFS 0.25° 格点场在站址的插值，
+  //   这条是和风按点产品（本小时＝实况观测，未来＝逐小时预报，没有历史）。
+  // ★ allowFetch：只有用户点按钮那一次为 true（一站一次 HTTP，按站计费）。时间轴联动一律 false ——
+  //   逐小时接口一次回一整条时间轴，取过之后再拖时间轴只是查数组，不该也不会再发请求。
+  ipcMain.handle('weather:obs', async (_e, o) => {
+    try {
+      const p = o || {}
+      const pts = Array.isArray(p.pts) ? p.pts : []
+      if (!pts.length) return { rows: [] }
+      const r = await wOk().points(pts, { tMs: p.tMs, allowFetch: p.allowFetch !== false, horizonMs: p.horizonMs })
+      const C = core()
+      const satLon = Number(p.satLon)
+      // 目标星两种给法：satPos（任意轨道的星下点 + 高度，走 WGS-84 通用几何）优先于 satLon（GEO 闭式）
+      const satPos = C.instantAtten.normSatPos(p.satPos)
+      for (const row of r.rows) {
+        if (!row.ok || (!satPos && !Number.isFinite(satLon))) continue
+        const alt = C.elevation && C.elevation.queryElevation ? C.elevation.queryElevation(row.lat, row.lon) : null
+        const a = C.computeInstantAtten({
+          lat: row.lat, lon: row.lon, altKm: alt && alt.success ? Math.max(0, alt.altitude || 0) / 1000 : 0,
+          satLon: satPos ? undefined : satLon, satPos: satPos || undefined,
+          freq: Number(p.freq) || 12.5, pol: p.pol || 'C', met: row,
+          pathModel: p.pathModel || 'uniform',
+          // 和风按点产品没有柱云水（只给云量），实测档在这条路上退回统计档
+          cloudMode: p.cloudMode === 'measured' ? 'p840' : (p.cloudMode || 'p840'),
+          diameter: 1, efficiency: 60
+        })
+        if (!a.error) { row.elev = a.elevation; row.gasDb = a.gasDb; row.rainDb = a.rainDb; row.cloudDb = a.cloudDb; row.totalDb = a.totalDb }
+        else row.message = a.message || a.error
+      }
+      return r
+    } catch (err) { return { error: err.message || String(err) } }
+  })
   // ---- 日凌预报（独立窗口 + 计算 + Word/ICS 导出）----
   ipcMain.handle('suntool:open', gate(() => { if (openSunOutage) openSunOutage(); return true }))
   ipcMain.handle('sunoutage:compute', (_e, p) => {

@@ -109,7 +109,7 @@ function applyFlat(v) {
     if (v && !flat && flatCanvas.value) {
       flat = createFlatCoverage(flatCanvas.value)
       flat.setOnHover((ll) => { cursor.ll = ll })
-      flat.setNameMode('zh')
+      flat.setNameMode('zh'); flat.setWaterMode({ ocean: 'zh', sea: 'zh' })
     }
     if (v && flat) flat.resize()
     if (scene) scene.resize()
@@ -120,7 +120,7 @@ function applyFlat(v) {
 let ro = null
 onMounted(async () => {
   scene = createGlobeScene(mapEl.value)
-  scene.setLabelMode('zh')
+  scene.setLabelMode('zh'); scene.setWaterMode({ ocean: 'zh', sea: 'zh' })
   scene.setOnHover((ll) => { cursor.ll = ll })
   if (view.flat) applyFlat(true)
   ro = new ResizeObserver(() => { if (scene) scene.resize(); if (flat) flat.resize() })
@@ -210,20 +210,20 @@ watch(() => [s.boreLon, s.boreLat, s.yaw], () => { reproject(); recompute() })
 .globe :deep(canvas) { width: 100%; height: 100%; display: block; }
 .panel { width: 290px; flex: none; overflow-y: auto; background: var(--surface); border-left: 1px solid var(--border); padding: 6px 0; }
 .sec { padding: 8px 12px; border-bottom: 1px solid var(--border); }
-.title { font-family: var(--font-serif); font-size: 13px; color: var(--text); margin-bottom: 7px; }
-.row { display: flex; align-items: center; gap: 8px; margin: 5px 0; font-size: 12px; color: var(--text-muted); }
+.title { font-family: var(--font-serif); font-size: var(--fs-4); color: var(--text); margin-bottom: 7px; }
+.row { display: flex; align-items: center; gap: 8px; margin: 5px 0; font-size: var(--fs-3); color: var(--text-muted); }
 .row > span { width: 78px; flex: none; }
 .row > b { width: 40px; text-align: right; font-family: var(--font-mono); color: var(--text); font-weight: 500; }
 .row input[type=range] { flex: 1; }
-.row input[type=number], .row input:not([type]), .row select { flex: 1; min-width: 0; background-color: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 2px 6px; font-size: 12px; border-radius: var(--r-ctl); }
+.row input[type=number], .row input:not([type]), .row select { flex: 1; min-width: 0; background-color: var(--field-bg); border: 1px solid var(--field-border); color: var(--text); padding: 2px 6px; font-size: var(--fs-3); border-radius: var(--r-ctl); }
 .beams { display: flex; flex-direction: column; gap: 3px; margin-top: 6px; }
-.beam { display: flex; align-items: center; gap: 6px; padding: 4px 7px; background: var(--bg); border: 1px solid var(--border); color: var(--text-muted); cursor: pointer; border-radius: var(--r-ctl); font-size: 12px; }
+.beam { display: flex; align-items: center; gap: 6px; height: var(--h-ctl); white-space: nowrap; padding: 0 7px; background: var(--bg); border: 1px solid var(--border); color: var(--text-muted); cursor: pointer; border-radius: var(--r-ctl); font-size: var(--fs-3); }
 .beam:hover { color: var(--text); border-color: var(--accent); }
 .beam.on { color: var(--text); border-color: var(--accent); background: var(--surface); }
 .beam .bn { flex: 1; text-align: left; }
-.beam .bt { font-size: 10px; padding: 0 4px; border-radius: var(--r-ctl); border: 1px solid var(--border); }
+.beam .bt { font-size: var(--fs-1); padding: 0 4px; border-radius: var(--r-ctl); border: 1px solid var(--border); }
 .beam .bt.EIRP { color: #f1b829; } .beam .bt.GT { color: #5dcaa5; }
-.beam .bp { font-family: var(--font-mono); color: var(--text-faint); font-size: 11px; }
-.meta { font-size: 11px; color: var(--text-faint); margin-top: 6px; line-height: 1.5; }
-.loading { padding: 8px 12px; color: var(--accent); font-size: 12px; }
+.beam .bp { font-family: var(--font-mono); color: var(--text-faint); font-size: var(--fs-2); }
+.meta { font-size: var(--fs-2); color: var(--text-faint); margin-top: 6px; line-height: 1.5; }
+.loading { padding: 8px 12px; color: var(--accent); font-size: var(--fs-3); }
 </style>

@@ -192,7 +192,7 @@ function fill(scope) { if (canFill.value) emit('fill', { rangeKm: cur.value.rang
       <div class="irt-hd">
         星间链路距离<span v-if="sideLabel" class="irt-sub">· {{ sideLabel }}</span>
         <span class="irt-sp"></span>
-        <button class="irt-x" title="关闭" aria-label="关闭" @click="emit('close')"><Icon name="x" :size="13" /></button>
+        <button class="irt-x" title="关闭" aria-label="关闭" @click="emit('close')"><Icon name="x" :size="12" /></button>
       </div>
 
       <div class="irt-bd">
@@ -279,9 +279,9 @@ function fill(scope) { if (canFill.value) emit('fill', { rangeKm: cur.value.rang
 
 <style scoped>
 .irt-mask { position: fixed; inset: 0; background: rgba(0, 0, 0, .38); display: flex; align-items: center; justify-content: center; z-index: 60; }
-.irt { width: 468px; max-height: 90vh; display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--border-strong, var(--border)); border-radius: var(--r-card, 4px); box-shadow: 0 8px 30px rgba(0, 0, 0, .25); }
-.irt-hd { display: flex; align-items: center; gap: 6px; padding: 8px 10px; font-size: 13px; color: var(--text); border-bottom: 1px solid var(--border); }
-.irt-sub { color: var(--text-faint); font-size: 12px; }
+.irt { width: 468px; max-height: 90vh; display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--border-strong, var(--border)); border-radius: var(--r-card, 4px); box-shadow: var(--shadow-3); }
+.irt-hd { display: flex; align-items: center; gap: 6px; padding: 8px 10px; font-size: var(--fs-4); color: var(--text); border-bottom: 1px solid var(--border); }
+.irt-sub { color: var(--text-faint); font-size: var(--fs-3); }
 .irt-sp { flex: 1; }
 .irt-x { display: inline-flex; align-items: center; padding: 2px; background: none; border: none; color: var(--text-muted); cursor: pointer; }
 .irt-x:hover { color: var(--text); }
@@ -294,13 +294,13 @@ function fill(scope) { if (canFill.value) emit('fill', { rangeKm: cur.value.rang
 .irt-f.wide { flex: 1; }
 .irt-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
 .irt-row .irt-f { flex: 1; }
-.irt-l { font-size: 12px; color: var(--text-muted); }
-.irt-in { font: inherit; font-size: 12px; padding: 4px 6px; width: 100%; min-width: 0; background-color: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
-.irt-in:focus { outline: none; border-color: var(--accent); }
-.irt-u { font-size: 11px; color: var(--text-faint); font-style: normal; }
-.irt-orb { margin-top: 4px; font-size: 11px; color: var(--text-faint); }
+.irt-l { font-size: var(--fs-3); color: var(--text-muted); }
+.irt-in { font: inherit; font-size: var(--fs-3); padding: 4px 6px; width: 100%; min-width: 0; background-color: var(--field-bg); color: var(--text); border: 1px solid var(--field-border); border-radius: var(--r-ctl, 2px); }
+.irt-in:focus { outline: none; border-color: var(--accent-ui); }
+.irt-u { font-size: var(--fs-2); color: var(--text-faint); font-style: normal; }
+.irt-orb { margin-top: 4px; font-size: var(--fs-2); color: var(--text-faint); }
 .mono { font-family: var(--font-mono); }
-.irt-err { margin-top: 8px; font-size: 12px; color: var(--danger, #c0392b); }
+.irt-err { margin-top: 8px; font-size: var(--fs-3); color: var(--danger, #c0392b); }
 .irt-chart { width: 100%; height: auto; display: block; touch-action: none; cursor: crosshair; }
 .irt-ax { stroke: var(--border); stroke-width: 1; }
 .irt-tk { font-size: 9px; fill: var(--text-faint); font-family: var(--font-mono); }
@@ -310,16 +310,16 @@ function fill(scope) { if (canFill.value) emit('fill', { rangeKm: cur.value.rang
 .irt-dot { fill: var(--accent); }
 .irt-slider { width: 100%; margin: 2px 0 4px; }
 .irt-out { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px; margin-top: 4px; }
-.irt-big { font-size: 16px; color: var(--accent); }
-.irt-out i { font-size: 11px; color: var(--text-faint); font-style: normal; }
-.irt-aux { font-size: 11px; color: var(--text-muted); }
+.irt-big { font-size: var(--fs-5); color: var(--accent); }
+.irt-out i { font-size: var(--fs-2); color: var(--text-faint); font-style: normal; }
+.irt-aux { font-size: var(--fs-2); color: var(--text-muted); }
 .irt-aux.bad { color: var(--danger, #c0392b); }
 /* 读数可框选复制（口径同斜距工具）：只放开读数，标签/按钮仍不可选 */
 .irt-out { user-select: text; -webkit-user-select: text; }
 .irt-ft { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-top: 1px solid var(--border); }
-.irt-btn { font: inherit; font-size: 11px; line-height: 1; padding: 4px 9px; white-space: nowrap; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
+.irt-btn { font: inherit; font-size: var(--fs-2); line-height: 1; padding: 4px 9px; white-space: nowrap; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
 .irt-btn:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
 .irt-btn:disabled { opacity: .45; cursor: not-allowed; }
-.irt-btn.primary { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+.irt-btn.primary { background: var(--accent-ui); color: var(--bg); border-color: var(--accent-ui); }
 .irt-btn.primary:hover:not(:disabled) { color: var(--bg); }
 </style>

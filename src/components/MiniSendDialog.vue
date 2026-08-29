@@ -212,7 +212,7 @@ async function copyKey() {
   <div v-if="open" class="ms-mask" @click="close">
     <div class="ms-dlg" @click.stop>
       <div class="ms-hd">
-        <Icon name="external-link" :size="13" />
+        <Icon name="external-link" :size="12" />
         <span class="ms-hd-t">发送到小程序</span>
         <span class="ms-sp"></span>
         <span v-if="deviceId" class="ms-id">本机标识：<b>{{ deviceId }}</b></span>
@@ -311,48 +311,48 @@ async function copyKey() {
 <style scoped>
 /* 视觉语言与 LbShareDialog 一致（同一套 CSS 变量）；类名 ms- 前缀，不与任何 App 内的类冲突 */
 .ms-mask { position: fixed; inset: 0; z-index: 320; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.28); }
-.ms-dlg { width: 460px; max-width: 92vw; max-height: 84vh; display: flex; flex-direction: column; background: var(--bg); color: var(--text); border: 1px solid var(--border-strong); border-radius: var(--r-card, 4px); box-shadow: 0 8px 24px rgba(0,0,0,.18); overflow: hidden; }
+.ms-dlg { width: 460px; max-width: 92vw; max-height: 84vh; display: flex; flex-direction: column; background: var(--bg); color: var(--text); border: 1px solid var(--border-strong); border-radius: var(--r-card, 4px); box-shadow: var(--shadow-3); overflow: hidden; }
 .ms-hd { display: flex; align-items: center; gap: 7px; padding: 10px 12px; background: var(--surface-2); border-bottom: 1px solid var(--border); }
-.ms-hd-t { font-size: 11px; font-weight: 600; letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--text-muted); }
+.ms-hd-t { font-size: var(--fs-2); font-weight: 600; letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--text-muted); }
 .ms-sp { flex: 1; }
-.ms-id { font-size: 11px; color: var(--text-muted); }
-.ms-id b { font-family: var(--font-mono); color: var(--text); }
+.ms-id { font-size: var(--fs-2); color: var(--text-muted); }
+.ms-id b { font-family: var(--font-code); color: var(--text); }
 .ms-bd { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 7px; overflow-y: auto; }
 .ms-ft { display: flex; justify-content: flex-end; padding: 8px 12px; border-top: 1px solid var(--border); background: var(--surface); }
-.ms-sec { display: flex; align-items: baseline; gap: 8px; font-size: 11px; font-weight: 600; color: var(--text-muted); letter-spacing: var(--ls-tight); }
-.ms-src { font-weight: 400; font-size: 10.5px; color: var(--text-faint); }
+.ms-sec { display: flex; align-items: baseline; gap: 8px; font-size: var(--fs-2); font-weight: 600; color: var(--text-muted); letter-spacing: var(--ls-tight); }
+.ms-src { font-weight: 400; font-size: var(--fs-2); color: var(--text-faint); }
 .ms-list { max-height: 220px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--r-box, 3px); background: var(--bg); }
-.ms-row { display: flex; align-items: center; gap: 7px; padding: 4px 8px; font-size: 11.5px; border-bottom: 1px solid color-mix(in srgb, var(--border) 45%, transparent); }
+.ms-row { display: flex; align-items: center; gap: 7px; padding: 4px 8px; font-size: var(--fs-3); border-bottom: 1px solid color-mix(in srgb, var(--border) 45%, transparent); }
 .ms-row:last-child { border-bottom: 0; }
 .ms-k { flex: none; width: 56px; color: var(--text-faint); }
 .ms-nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ms-tag { flex: none; font-family: var(--font-mono); font-size: 10px; line-height: 15px; padding: 0 5px; color: var(--text-faint); border: 1px solid var(--border-strong); border-radius: var(--r-pill); }
+.ms-tag { flex: none; font-family: var(--font-mono); font-size: var(--fs-1); line-height: 15px; padding: 0 5px; color: var(--text-faint); border: 1px solid var(--border-strong); border-radius: var(--r-pill); }
 .ms-pick { cursor: pointer; user-select: none; }
 .ms-pick:hover { background: var(--surface-2); }
 .ms-pick input { flex: none; margin: 0; cursor: pointer; }
 /* 未勾选的行压暗但仍可读：清单是「这份配置里有哪些链路」的全貌，不是只列要发的那几条 */
 .ms-pick.off .ms-k, .ms-pick.off .ms-nm, .ms-pick.off .ms-tag { opacity: .42; }
-.ms-lnk { font-weight: 400; font-size: 10.5px; color: var(--text-faint); cursor: pointer; }
+.ms-lnk { font-weight: 400; font-size: var(--fs-2); color: var(--text-faint); cursor: pointer; }
 .ms-lnk:hover { color: var(--accent); }
-.ms-ch { flex: none; font-family: var(--font-mono); font-size: 10.5px; color: var(--text-faint); }
+.ms-ch { flex: none; font-family: var(--font-mono); font-size: var(--fs-2); color: var(--text-faint); }
 .ms-picks { display: flex; flex-direction: column; gap: 6px; }
 .ms-pk { display: flex; align-items: center; gap: 8px; }
-.ms-pk-l { flex: none; width: 76px; font-size: 11.5px; color: var(--text-muted); }
-.ms-pk select { flex: 1; min-width: 0; font: inherit; font-size: 11.5px; padding: 4px 6px; outline: none;
-  color: var(--text); background-color: var(--bg); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
-.ms-opt { display: flex; align-items: center; gap: 7px; font-size: 11.5px; cursor: pointer; user-select: none; }
+.ms-pk-l { flex: none; width: 76px; font-size: var(--fs-3); color: var(--text-muted); }
+.ms-pk select { flex: 1; min-width: 0; font: inherit; font-size: var(--fs-3); padding: 4px 6px; outline: none;
+  color: var(--text); background-color: var(--field-bg); border: 1px solid var(--field-border); border-radius: var(--r-ctl, 2px); }
+.ms-opt { display: flex; align-items: center; gap: 7px; font-size: var(--fs-3); cursor: pointer; user-select: none; }
 .ms-opt input { flex: none; margin: 0; cursor: pointer; }
 .ms-mng { display: flex; justify-content: flex-end; margin-top: -2px; }
-.ms-mng-t { font-size: 10.5px; color: var(--text-faint); cursor: pointer; }
+.ms-mng-t { font-size: var(--fs-2); color: var(--text-faint); cursor: pointer; }
 .ms-mng-t:hover { color: var(--accent); }
-.ms-empty { padding: 8px 9px; font-size: 11px; color: var(--text-faint); }
-.ms-key { font-family: var(--font-mono); font-size: 30px; font-weight: 600; letter-spacing: 7px; text-align: center; padding: 14px 8px; cursor: pointer; user-select: all; color: var(--text); background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: var(--r-box, 3px); }
+.ms-empty { padding: 8px 9px; font-size: var(--fs-2); color: var(--text-faint); }
+.ms-key { font-family: var(--font-code); font-size: 30px; font-weight: 600; letter-spacing: 7px; text-align: center; padding: 14px 8px; cursor: pointer; user-select: all; color: var(--text); background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: var(--r-box, 3px); }
 .ms-acts { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.ms-note { font-size: 10.5px; color: var(--text-faint); }
-.ms-btn { font: inherit; font-size: 11px; line-height: 1; padding: 5px 9px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
+.ms-note { font-size: var(--fs-2); color: var(--text-faint); }
+.ms-btn { font: inherit; font-size: var(--fs-2); line-height: 1; padding: 5px 9px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
 .ms-btn:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
 .ms-btn:disabled { opacity: .45; cursor: not-allowed; }
-.ms-btn.primary { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+.ms-btn.primary { background: var(--accent-ui); color: var(--bg); border-color: var(--accent-ui); }
 .ms-btn.primary:hover:not(:disabled) { opacity: .88; }
-.ms-warnbox { font-size: 11.5px; line-height: 1.6; color: var(--warn); background: color-mix(in srgb, var(--warn) 8%, var(--bg)); border: 1px solid color-mix(in srgb, var(--warn) 30%, var(--border)); border-radius: var(--r-ctl, 2px); padding: 6px 8px; }
+.ms-warnbox { font-size: var(--fs-3); line-height: 1.6; color: var(--warn); background: color-mix(in srgb, var(--warn) 8%, var(--bg)); border: 1px solid color-mix(in srgb, var(--warn) 30%, var(--border)); border-radius: var(--r-ctl, 2px); padding: 6px 8px; }
 </style>

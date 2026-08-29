@@ -204,5 +204,5 @@ C/I {{ fmt(p.ciDb, 2) }} dB<template v-if="Number.isFinite(p.sharePct)">
 .src:hover .src-lab, .src.hot .src-lab { font-weight: 700; }
 .src:hover .drop, .src.hot .drop { opacity: 1; stroke-width: 0.8; }
 
-.empty { margin: 8px 0 0; text-align: center; font-size: 12px; color: var(--text-muted); }
+.empty { margin: 8px 0 0; text-align: center; font-size: var(--fs-3); color: var(--text-muted); }
 </style>

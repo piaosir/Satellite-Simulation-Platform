@@ -43,19 +43,19 @@ async function copyId() {
 .al-card {
   min-width: 320px; padding: 30px 40px 26px; text-align: center;
   background: var(--surface); border: 1px solid var(--border-strong);
-  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.3);
+  box-shadow: var(--shadow-3);
 }
-.al-tt { font-family: var(--font-serif); font-size: 20px; letter-spacing: var(--ls-tight); }
+.al-tt { font-family: var(--font-serif); font-size: var(--fs-6); letter-spacing: var(--ls-tight); }
 .al-id {
   margin-top: 12px; padding: 5px 10px; display: inline-flex; align-items: center; gap: 8px;
-  font-size: 15px; border: 1px solid var(--border); background: var(--bg);
+  font-size: var(--fs-5); border: 1px solid var(--border); background: var(--bg);
   cursor: pointer; user-select: text;
 }
 .al-id:hover { border-color: var(--accent); }
-.al-idk { color: var(--text-faint); font-size: 11.5px; }
-.al-ok { color: var(--ok); font-size: 11.5px; }
+.al-idk { color: var(--text-faint); font-size: var(--fs-3); }
+.al-ok { color: var(--ok); font-size: var(--fs-3); }
 .al-btn {
-  display: block; margin: 18px auto 0; padding: 5px 26px;
+  display: block; margin: 18px auto 0; height: var(--h-ctl-lg); white-space: nowrap; padding: 0 26px;
   border: 1px solid var(--border-strong); background: var(--bg); color: var(--text);
   cursor: pointer; border-radius: var(--r-ctl);
 }

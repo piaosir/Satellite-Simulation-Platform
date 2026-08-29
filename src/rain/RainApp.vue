@@ -543,8 +543,8 @@ onMounted(async () => {
           <span class="lb-cfg-hd-t">配置列表</span>
           <span class="lb-cfg-acts">
             <button class="lb-mini" :title="activeId ? '保存修改到当前配置' : '保存为新配置'" :disabled="!api" @click="saveCurrent">保存</button>
-            <button class="lb-mini lb-mini-ico" title="新建文件夹" :disabled="!api" @click="addFolder(null)"><Icon name="folder-plus" :size="13" /></button>
-            <button class="lb-mini lb-mini-ico" title="添加空白配置" :disabled="!api" @click="addBlankConfig(null)"><Icon name="plus" :size="13" /></button>
+            <button class="lb-mini lb-mini-ico" title="新建文件夹" :disabled="!api" @click="addFolder(null)"><Icon name="folder-plus" :size="12" /></button>
+            <button class="lb-mini lb-mini-ico" title="添加空白配置" :disabled="!api" @click="addBlankConfig(null)"><Icon name="plus" :size="12" /></button>
           </span>
         </div>
         <div class="lb-col-bd" @contextmenu="openCtx($event, null)">
@@ -741,15 +741,15 @@ onMounted(async () => {
 .lb-shell {
   --ok: #4a7a62; --warn: #8a7038; --danger: #9c5751;
   display: flex; flex-direction: column; height: 100vh; background: var(--bg); color: var(--text);
-  font-size: 13px; overflow: hidden;
+  font-size: var(--fs-4); overflow: hidden;
 }
 :root[data-theme="dark"] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c08079; }
 
 .lb-topbar { flex: none; display: flex; align-items: baseline; gap: 10px; padding: 8px 14px; border-bottom: 1px solid var(--border); background: var(--surface); }
-.lb-brand { font-family: var(--font-serif); font-size: 16px; font-weight: 600; }
+.lb-brand { font-family: var(--font-serif); font-size: var(--fs-5); font-weight: 600; }
 .lb-flex { flex: 1 1 auto; }
-.lb-notice { font-size: 12px; color: var(--ok); }
-.lb-warn { font-size: 12px; color: var(--danger); }
+.lb-notice { font-size: var(--fs-3); color: var(--ok); }
+.lb-warn { font-size: var(--fs-3); color: var(--danger); }
 
 .lb-body { flex: 1 1 auto; display: flex; min-height: 0; }
 .lb-col { display: flex; flex-direction: column; min-height: 0; }
@@ -757,43 +757,43 @@ onMounted(async () => {
 .lb-build { flex: 1 1 auto; min-width: 0; overflow: hidden; }
 .lb-result { width: 468px; flex: none; border-left: 1px solid var(--border); background: var(--surface); }
 
-.lb-col-hd { flex: none; display: flex; align-items: center; gap: 6px; padding: 7px 10px; border-bottom: 1px solid var(--border); font-size: 11px; letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--text-muted); }
+.lb-col-hd { flex: none; display: flex; align-items: center; gap: 6px; padding: 7px 10px; border-bottom: 1px solid var(--border); font-size: var(--fs-2); letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--text-muted); }
 .lb-cfg-hd-t { font-weight: 600; }
 .lb-cfg-acts { display: inline-flex; gap: 4px; margin-left: auto; }
 .lb-col-bd { flex: 1 1 auto; overflow: auto; padding: 6px; }
 
-.lb-mini { font: inherit; font-size: 12px; padding: 3px 9px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); border-radius: var(--r-ctl); cursor: pointer; }
+.lb-mini { font: inherit; font-size: var(--fs-3); height: var(--h-ctl); white-space: nowrap; padding: 0 9px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); border-radius: var(--r-ctl); cursor: pointer; }
 .lb-mini:hover:not(:disabled) { border-color: var(--accent); }
 .lb-mini:disabled { opacity: .5; cursor: default; }
 .lb-mini.pri { background: var(--accent); color: var(--bg); border-color: var(--accent); }
-.lb-mini-ico { display: inline-flex; align-items: center; padding: 3px 6px; }
-.rain-sel { font: inherit; font-size: 12px; padding: 3px 6px; border: 1px solid var(--border); border-radius: var(--r-ctl); background-color: var(--surface-2); color: var(--text); max-width: 220px; }
+.lb-mini-ico { display: inline-flex; align-items: center; height: var(--h-ctl); white-space: nowrap; padding: 0 6px; }
+.rain-sel { font: inherit; font-size: var(--fs-3); padding: 3px 6px; border: 1px solid var(--field-border); border-radius: var(--r-ctl); background-color: var(--surface-2); color: var(--text); max-width: 220px; }
 
 /* 工具栏 */
 /* 窄栏下按整组换行、组内文字不折断（避免「链路方/向」「ITU-R 自/动」式中途断行） */
 .rain-toolbar { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--surface); }
 .rain-seg-grp { flex: none; display: inline-flex; align-items: center; gap: 7px; }
-.rain-seg-lb { flex: none; white-space: nowrap; font-size: 11px; letter-spacing: var(--ls-label); color: var(--text-muted); text-transform: uppercase; }
+.rain-seg-lb { flex: none; white-space: nowrap; font-size: var(--fs-2); letter-spacing: var(--ls-label); color: var(--text-muted); text-transform: uppercase; }
 .rain-seg { flex: none; display: inline-flex; border: 1px solid var(--border); border-radius: var(--r-ctl); overflow: hidden; }
-.rain-seg button { flex: none; white-space: nowrap; font: inherit; font-size: 12px; padding: 4px 12px; border: 0; background: var(--surface-2); color: var(--text-muted); cursor: pointer; }
+.rain-seg button { flex: none; white-space: nowrap; font: inherit; font-size: var(--fs-3); height: var(--h-ctl); padding: 0 12px; border: 0; background: var(--surface-2); color: var(--text-muted); cursor: pointer; }
 .rain-seg button + button { border-left: 1px solid var(--border); }
-.rain-seg button.on { color: var(--text); box-shadow: inset 0 -2px 0 var(--accent); background: var(--surface); }
+.rain-seg button.on { color: var(--text); box-shadow: inset 0 -2px 0 var(--accent-ui); background: var(--surface); }
 /* 全局几何输入（GEO 轨位 / NGSO 轨道三要素）：与分段按钮同高同框，标签内嵌 + 单位后缀 */
 .rain-geom { flex: none; display: inline-flex; align-items: center; gap: 5px; height: 25px; padding: 0 7px 0 8px; border: 1px solid var(--border); border-radius: var(--r-ctl); background: var(--surface-2); }
-.rain-geom:focus-within { border-color: var(--accent); background: var(--surface); }
-.rain-geom span { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
-.rain-geom input { width: 48px; padding: 0; border: 0; background: transparent; color: var(--text); font: inherit; font-size: 12px; text-align: right; outline: none; font-variant-numeric: tabular-nums; }
-.rain-geom i { font-style: normal; font-size: 10px; color: var(--text-faint); }
+.rain-geom:focus-within { border-color: var(--accent-ui); background: var(--surface); }
+.rain-geom span { font-size: var(--fs-2); color: var(--text-muted); white-space: nowrap; }
+.rain-geom input { width: 48px; padding: 0; border: 0; background: transparent; color: var(--text); font: inherit; font-size: var(--fs-3); text-align: right; outline: none; font-variant-numeric: tabular-nums; }
+.rain-geom i { font-style: normal; font-size: var(--fs-1); color: var(--text-faint); }
 
 .rain-grid { flex: 1 1 auto; min-height: 0; min-width: 0; overflow: hidden; display: flex; padding: 8px; }
 .rain-grid > * { flex: 1 1 auto; min-height: 0; min-width: 0; }
 /* 结果格算不出来时标红：走 lbworkbench.css 的 .sg-cell.st-bad（与链路表同一条规则），此处不再另写 */
 
 /* 「输入已变」小灯：出过结果后又改了计算输入 → 提醒重算（与链路预算同口径） */
-.rain-stale { flex: none; font-size: 11px; padding: 2px 7px; letter-spacing: 0; text-transform: none; color: var(--warn); border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); border-radius: var(--r-ctl); background: color-mix(in srgb, var(--warn) 8%, transparent); }
+.rain-stale { flex: none; font-size: var(--fs-2); padding: 2px 7px; letter-spacing: 0; text-transform: none; color: var(--warn); border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); border-radius: var(--r-ctl); background: color-mix(in srgb, var(--warn) 8%, transparent); }
 
 .lb-foot { flex: none; display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-top: 1px solid var(--border); background: var(--surface); }
-.lb-calc { flex: none; white-space: nowrap; font: inherit; font-size: 13px; font-weight: 600; padding: 6px 18px; border: 1px solid var(--accent); background: var(--accent); color: var(--bg); border-radius: var(--r-ctl); cursor: pointer; }
+.lb-calc { flex: none; white-space: nowrap; font: inherit; font-size: var(--fs-4); font-weight: 600; height: var(--h-ctl-lg); padding: 0 18px; border: 1px solid var(--accent); background: var(--accent); color: var(--bg); border-radius: var(--r-ctl); cursor: pointer; }
 .lb-calc:disabled { opacity: .55; cursor: default; }
 /* 底栏承载了单算例 + 多站的全部设置：窄窗口下按整组换行（组内不折断，与顶部工具栏同一套办法），
    「计算」按钮靠 lb-flex 始终推到最右，换行后仍在最后一行右端 */
@@ -802,36 +802,36 @@ onMounted(async () => {
 /* 多站开关：底栏第一项，关掉时底栏与改造前一模一样 */
 .rain-sw { flex: none; display: inline-flex; align-items: center; gap: 5px; cursor: pointer; user-select: none; white-space: nowrap; }
 .rain-sw input { margin: 0; cursor: pointer; }
-.rain-sw span { font-size: 12px; font-weight: 600; }
-.rain-sel-sm { font-size: 11px; padding: 2px 4px; max-width: 74px; }
+.rain-sw span { font-size: var(--fs-3); font-weight: 600; }
+.rain-sel-sm { font-size: var(--fs-2); padding: 2px 4px; max-width: 74px; }
 
 /* 结果栏 */
 .lb-result-bd { flex: 1 1 auto; overflow: auto; padding: 10px; }
-.rain-ph { color: var(--text-faint); font-size: 12px; line-height: 1.7; padding: 20px 8px; }
-.rain-err { color: var(--danger); font-size: 13px; padding: 16px 8px; }
+.rain-ph { color: var(--text-faint); font-size: var(--fs-3); line-height: 1.7; padding: 20px 8px; }
+.rain-err { color: var(--danger); font-size: var(--fs-4); padding: 16px 8px; }
 
 .rain-detail { margin-top: 12px; }
 .rd-sec { margin-bottom: 12px; border: 1px solid var(--border); border-radius: var(--r-box); overflow: hidden; }
-.rd-hd { padding: 5px 10px; font-size: 11px; letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--text-muted); background: var(--surface-2); border-bottom: 1px solid var(--border); font-weight: 600; }
-.rd-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 4px 10px; font-size: 12px; }
+.rd-hd { padding: 5px 10px; font-size: var(--fs-2); letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--text-muted); background: var(--surface-2); border-bottom: 1px solid var(--border); font-weight: 600; }
+.rd-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 4px 10px; font-size: var(--fs-3); }
 .rd-row + .rd-row { border-top: 1px solid color-mix(in srgb, var(--border) 55%, transparent); }
 .rd-k { color: var(--text-muted); flex: 0 1 auto; }
 .rd-v { font-family: var(--font-mono); color: var(--text); text-align: right; white-space: nowrap; }
-.rd-row.em { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+.rd-row.em { background: color-mix(in srgb, var(--accent-ui) 6%, transparent); }
 .rd-row.em .rd-k { color: var(--text); font-weight: 600; }
 .rd-row.em .rd-v { color: color-mix(in srgb, var(--accent) 82%, var(--text)); font-weight: 600; }
-.rd-note { padding: 6px 10px 7px; font-size: 11px; line-height: 1.6; color: var(--text-faint); border-top: 1px solid color-mix(in srgb, var(--border) 55%, transparent); background: color-mix(in srgb, var(--surface-2) 45%, transparent); }
+.rd-note { padding: 6px 10px 7px; font-size: var(--fs-2); line-height: 1.6; color: var(--text-faint); border-top: 1px solid color-mix(in srgb, var(--border) 55%, transparent); background: color-mix(in srgb, var(--surface-2) 45%, transparent); }
 
 /* 弹窗 / 菜单 */
 .lb-mask { position: fixed; inset: 0; background: rgba(0,0,0,.28); display: flex; align-items: center; justify-content: center; z-index: 50; }
-.lb-dlg { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-card); padding: 16px; min-width: 300px; box-shadow: 0 12px 40px rgba(0,0,0,.25); }
-.lb-dlg-hd { font-size: 13px; font-weight: 600; margin-bottom: 10px; }
-.lb-dlg-msg { font-size: 12px; color: var(--text-muted); margin-bottom: 12px; line-height: 1.6; }
-.lb-dlg-inp { width: 100%; box-sizing: border-box; font: inherit; padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--r-ctl); background: var(--bg); color: var(--text); margin-bottom: 12px; }
+.lb-dlg { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-card); padding: 16px; min-width: 300px; box-shadow: var(--shadow-3); }
+.lb-dlg-hd { font-size: var(--fs-4); font-weight: 600; margin-bottom: 10px; }
+.lb-dlg-msg { font-size: var(--fs-3); color: var(--text-muted); margin-bottom: 12px; line-height: 1.6; }
+.lb-dlg-inp { width: 100%; box-sizing: border-box; font: inherit; padding: 6px 8px; border: 1px solid var(--field-border); border-radius: var(--r-ctl); background: var(--field-bg); color: var(--text); margin-bottom: 12px; }
 .lb-dlg-acts { display: flex; justify-content: flex-end; gap: 8px; }
 .lb-ctx-mask { position: fixed; inset: 0; z-index: 60; }
-.lb-ctx { position: fixed; min-width: 160px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-box); box-shadow: 0 8px 28px rgba(0,0,0,.24); padding: 4px; display: flex; flex-direction: column; }
-.lb-ctx button { font: inherit; font-size: 12px; text-align: left; padding: 6px 10px; border: 0; background: transparent; color: var(--text); border-radius: var(--r-ctl); cursor: pointer; }
+.lb-ctx { position: fixed; min-width: 160px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-box); box-shadow: var(--shadow-3); padding: 4px; display: flex; flex-direction: column; }
+.lb-ctx button { font: inherit; font-size: var(--fs-3); text-align: left; padding: 6px 10px; border: 0; background: transparent; color: var(--text); border-radius: var(--r-ctl); cursor: pointer; }
 .lb-ctx button:hover { background: var(--surface-2); }
 .lb-ctx button.del:hover { color: var(--danger); }
 .lb-ctx-sep { height: 1px; background: var(--border); margin: 4px 0; }

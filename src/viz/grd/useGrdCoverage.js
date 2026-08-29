@@ -109,7 +109,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
   }
 
   const s = reactive({
-    fill: false, alpha: 0.78, line: true, lineWidth: 1.6,   // 默认不填充（多天线/多星叠加时按需逐个开启）
+    fill: false, alpha: 0.78, line: true, lineWidth: 1.6, lineAlpha: 1,   // 默认不填充（多天线/多星叠加时按需逐个开启）；alpha 只管填充，lineAlpha 只管等值线
     ctype: 'abs', levels: defaultLevels(),
     pol: 'RSS', gainOffset: 0, pathLoss: 'none',
     boreType: 'azel', boreLon: null, boreLat: 0, boreAz: 0, boreEl: 0, yaw: 0,
@@ -123,6 +123,9 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     // 全局显示选项（与 GXT 一致；不随聚焦天线切换，对所有选中天线生效）：波束名 / 峰值点 / 峰值电平 / 数值标签
     // 默认四项全关：新天线导入即为干净地图（无波束名/峰值点/峰值电平/数值标注），需要时再逐项开启
     showName: false, nameSize: 16, showBore: false, boreSize: 0.5, showRay: false, showPeak: false, peakSize: 5, showVal: false, valSize: 12,
+    // 逐项颜色（对地/对星两视图同一套值；出厂值即从前写死在两个渲染器里的那几个：
+    // 波束名/峰值点/数值标签白，峰值读数偏冷灰一档——读数是波束名的附属行，压一档才不抢它）
+    nameColor: '#ffffff', boreColor: '#ffffff', peakColor: '#cfd6df', valColor: '#ffffff',
     // 波束射线样式（对地＝卫星↔峰值点连线，对星＝沿视轴射出的那条线；两视图同一套值）
     rayColor: '#ffb14a', rayWidth: 1.2, rayOpacity: 0.75
   })
@@ -290,16 +293,16 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
 
   // 每个天线的独立设置（数据库）：除等仰角线(全局参考线)外的全部绘制设置都按天线保存，
   // 切换聚焦时载入该天线设置、编辑时回存，只有用户改动才变。bore 指向同样并入。
-  const PA = ['ctype', 'pol', 'gainOffset', 'pathLoss', 'fill', 'line', 'lineWidth', 'alpha', 'boreType', 'boreLon', 'boreLat', 'boreAz', 'boreEl', 'yaw', 'boreLock', 'boreSat', 'boreSatName', 'boreOffAz', 'boreOffEl', 'borePtLon', 'borePtLat', 'borePtAlt']
+  const PA = ['ctype', 'pol', 'gainOffset', 'pathLoss', 'fill', 'line', 'lineWidth', 'lineAlpha', 'alpha', 'boreType', 'boreLon', 'boreLat', 'boreAz', 'boreEl', 'yaw', 'boreLock', 'boreSat', 'boreSatName', 'boreOffAz', 'boreOffEl', 'borePtLon', 'borePtLat', 'borePtAlt']
   const copyLevels = (lv) => lv.map((L) => ({ v: L.v, name: L.name || '', labelT: (L.labelT == null ? null : L.labelT), color: L.color, lineColor: L.lineColor, locked: !!L.locked, lineSet: !!L.lineSet }))
   function defaultSettings(satLon, satLat = 0, peakDb) {
-    return { ctype: 'abs', pol: 'RSS', gainOffset: 0, pathLoss: 'none', fill: false, line: true, lineWidth: 1.6, alpha: 0.78,
+    return { ctype: 'abs', pol: 'RSS', gainOffset: 0, pathLoss: 'none', fill: false, line: true, lineWidth: 1.6, lineAlpha: 1, alpha: 0.78,
       boreType: 'azel', boreLon: satLon == null ? null : satLon, boreLat: satLat || 0, boreAz: 0, boreEl: 0, yaw: 0, boreLock: true,
       boreSat: null, boreSatName: '', boreOffAz: 0, boreOffEl: 0,
       borePtLon: satLon == null ? null : satLon, borePtLat: satLat || 0, borePtAlt: 550,
       beamsToPlot: [0], beamNames: {}, levels: defaultLevels(peakDb) }
   }
-  function applySettings(cfg) { if (!cfg) return; for (const k of PA) s[k] = cfg[k]; s.levels = copyLevels(cfg.levels || defaultLevels()); s.beamsToPlot = (cfg.beamsToPlot || []).slice(); s.beamNames = { ...(cfg.beamNames || {}) } }
+  function applySettings(cfg) { if (!cfg) return; for (const k of PA) s[k] = cfg[k]; if (!Number.isFinite(s.lineAlpha)) s.lineAlpha = 1; s.levels = copyLevels(cfg.levels || defaultLevels()); s.beamsToPlot = (cfg.beamsToPlot || []).slice(); s.beamNames = { ...(cfg.beamNames || {}) } }
   // 设置序列化（深拷贝 levels/beamsToPlot/beamNames/keptSets），供 getState 回存每个天线
   function serializeCfg(st) { return { ...st, levels: copyLevels(st.levels || []), beamsToPlot: (st.beamsToPlot || [0]).slice(), beamNames: { ...(st.beamNames || {}) }, keptSets: Array.isArray(st.keptSets) ? st.keptSets.slice() : null } }
   // 把存档 cfg 合到该天线一份完整 settings（缺省字段以 meta 默认补齐）
@@ -389,16 +392,15 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     return c.beams.map((b, i) => ({ i, seq: origIdx(c, i) + 1, label: (s.beamNames && s.beamNames[i]) || defBeamName(c, i), peakDb: b.peakDb }))
   }
   const isBeamOn = (i) => s.beamsToPlot.includes(i)
-  function toggleBeam(i) {
-    const set = new Set(s.beamsToPlot)
-    set.has(i) ? set.delete(i) : set.add(i)
-    s.beamsToPlot = [...set].sort((a, b) => a - b)   // 触发 watcher → 回存 + 重绘
+  // 整份写回。勾选列表的点 / 拖刷 / 连选 / 全选全部归到这一个咽喉（见 shared/ui/useCheckList.js）。
+  // ★ 每赋值一次就是一整轮 recompute（94 波束下那是「点播放就卡」的大头，见 recompute 注释），故一次
+  // 拖刷只落一批、不逐行落；集合没真变就原地返回，免得白跑一轮回存 + 重绘。
+  function setBeamsToPlot(list) {
+    const next = [...new Set(list)].filter((i) => Number.isInteger(i) && i >= 0).sort((a, b) => a - b)
+    const cur = s.beamsToPlot || []
+    if (cur.length === next.length && next.every((v, k) => cur[k] === v)) return
+    s.beamsToPlot = next
   }
-  function setAllBeams(on) {
-    const n = (cache.get(active.value)?.beams || []).length
-    s.beamsToPlot = on ? Array.from({ length: n }, (_, i) => i) : []
-  }
-  const allBeamsOn = () => { const n = (cache.get(active.value)?.beams || []).length; return n > 0 && s.beamsToPlot.length === n }
 
   // ===== 部分批量多选：按序号/名称筛选 + 对筛选结果 全选/取消/反选（如 94 波束里一次选 1-62）=====
   const beamQuery = ref('')
@@ -424,16 +426,6 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     if (seq) return all.filter((b) => seq.has(b.seq))
     const ql = q.toLowerCase()
     return all.filter((b) => String(b.label).toLowerCase().includes(ql))
-  }
-  // Excel 「(全选)」三态：筛选结果全部已选 / 部分已选(半选 indeterminate) / 全未选。
-  const filteredAllOn = () => { const f = filteredBeams(); return f.length > 0 && f.every((b) => s.beamsToPlot.includes(b.i)) }
-  const filteredAnyOn = () => filteredBeams().some((b) => s.beamsToPlot.includes(b.i))
-  // 勾选「(全选)/(全选搜索结果)」：作用于当前筛选结果（无查询=全部），累加进已选 → Excel 式批量选。
-  function selectFiltered(on) {
-    const ids = filteredBeams().map((b) => b.i)
-    const set = new Set(s.beamsToPlot)
-    if (on) ids.forEach((i) => set.add(i)); else ids.forEach((i) => set.delete(i))
-    s.beamsToPlot = [...set].sort((a, b) => a - b)
   }
 
   // ===== 波束删除：从聚焦天线永久移除若干波束（本地存档持久化，可重新导入原 GRD 恢复）=====
@@ -944,7 +936,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     return b ? { db: b.peak, lon: b.lon, lat: b.lat, hit: b.hit !== false } : null
   }
 
-  const fieldOpts = () => ({ alpha: s.alpha, showBore: s.showBore, boreSize: s.boreSize, showRay: s.showRay, rayColor: s.rayColor, rayWidth: s.rayWidth, rayOpacity: s.rayOpacity, showName: s.showName, nameSize: s.nameSize, showPeak: s.showPeak, peakSize: s.peakSize, showVal: s.showVal, valSize: s.valSize })
+  const fieldOpts = () => ({ alpha: s.alpha, lineAlpha: s.lineAlpha, showBore: s.showBore, boreSize: s.boreSize, boreColor: s.boreColor, showRay: s.showRay, rayColor: s.rayColor, rayWidth: s.rayWidth, rayOpacity: s.rayOpacity, showName: s.showName, nameSize: s.nameSize, nameColor: s.nameColor, showPeak: s.showPeak, peakSize: s.peakSize, peakColor: s.peakColor, showVal: s.showVal, valSize: s.valSize, valColor: s.valColor })
   // 2D 平面图只有【一块】GRD 场（flatCoverage 的 fieldLayers 是整体替换），对地与对星两个视图都往那儿画，
   // 归属由宿主页按当前活动视图裁定（hooks.ownsFlatField）——不归自己时一律不碰 flat，3D 侧两条通道
   // (setCoverageField / setShellField) 各自独立、不受此限。
@@ -1376,13 +1368,13 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
         satLon: a.satLon, satLat: a.satLat, satAlt: a.satAlt, imported: true, synth: !!a.synth, src: a.src || ''
       }))
     }))
-    const disp = { showName: s.showName, nameSize: s.nameSize, showBore: s.showBore, boreSize: s.boreSize, showRay: s.showRay, rayColor: s.rayColor, rayWidth: s.rayWidth, rayOpacity: s.rayOpacity, showPeak: s.showPeak, peakSize: s.peakSize, showVal: s.showVal, valSize: s.valSize }
+    const disp = { showName: s.showName, nameSize: s.nameSize, nameColor: s.nameColor, showBore: s.showBore, boreSize: s.boreSize, boreColor: s.boreColor, showRay: s.showRay, rayColor: s.rayColor, rayWidth: s.rayWidth, rayOpacity: s.rayOpacity, showPeak: s.showPeak, peakSize: s.peakSize, peakColor: s.peakColor, showVal: s.showVal, valSize: s.valSize, valColor: s.valColor }
     return { selected: selected.value.slice(), active: active.value, cfgs, sats: satsState, disp }
   }
   async function restoreState(st) {
     if (!st) return
     // 全局显示选项（波束名/峰值点/数值标签）：先恢复，后续 recompute 即按此绘制
-    if (st.disp) for (const k of ['showName', 'nameSize', 'showBore', 'boreSize', 'showRay', 'rayColor', 'rayWidth', 'rayOpacity', 'showPeak', 'peakSize', 'showVal', 'valSize']) if (st.disp[k] != null) s[k] = st.disp[k]
+    if (st.disp) for (const k of ['showName', 'nameSize', 'nameColor', 'showBore', 'boreSize', 'boreColor', 'showRay', 'rayColor', 'rayWidth', 'rayOpacity', 'showPeak', 'peakSize', 'peakColor', 'showVal', 'valSize', 'valColor']) if (st.disp[k] != null) s[k] = st.disp[k]
     // 先恢复卫星：自定义/星座关联星补建到树；所有星（含预置）叠加用户编辑（名称/位置/关联/仰角线）。
     // 预置星节点本身由 index 复现，这里仅叠加用户改过的字段；预置星 kind 始终保持 'preset'。
     if (Array.isArray(st.sats)) {
@@ -1530,6 +1522,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
   watch(() => s.beamsToPlot, () => { persistActive(); recompute() }, { deep: true })   // Beams To Plot 多选变更 → 回存 + 重绘
   watch(active, () => { beamQuery.value = '' })   // 切换聚焦天线：清空波束筛选词（波束数/含义随天线变）
   watch(() => s.alpha, (a) => { persistActive(); const sc = getScene(), fl = flatField(); if (sc) sc.setCoverageFieldAlpha(a); if (fl) fl.setFieldAlpha(a) })
+  watch(() => s.lineAlpha, (a) => { persistActive(); const sc = getScene(), fl = flatField(); if (sc) sc.setCoverageLineAlpha(a); if (fl) fl.setFieldLineAlpha(a) })
   // 切换 boresight 类型：把当前指向无缝换算到另一种表示，避免跳变（geo→azel 取该地表点的 az/el；azel→geo 取落地点）
   watch(() => s.boreType, (nt, ot) => {
     if (_muteSync || _dragging || nt === ot) return   // 拖拽自行管理指向，不在此换算
@@ -1548,15 +1541,15 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     reproject(); _dragging ? recomputeActive() : recompute()
   })
   // 全局显示选项（波束名/峰值点/数值标签开关与字号）：仅影响标注层，重绘即可（不回存到天线设置）
-  watch(() => [s.showName, s.nameSize, s.showBore, s.boreSize, s.showRay, s.rayColor, s.rayWidth, s.rayOpacity, s.showPeak, s.peakSize, s.showVal, s.valSize], () => recompute())
+  watch(() => [s.showName, s.nameSize, s.nameColor, s.showBore, s.boreSize, s.boreColor, s.showRay, s.rayColor, s.rayWidth, s.rayOpacity, s.showPeak, s.peakSize, s.peakColor, s.showVal, s.valSize, s.valColor], () => recompute())
   watch(() => s.showVal, (v) => { if (!v && dragLabel.value) setDragLabel(false) })   // 关掉数值标签即退出标签拖拽模式（无标签可拖）
 
   return {
     sats, expanded, selected, active, loading, s,
     keyOf, isSelected, isActive, isExpanded, antMeta, activeName, beamsCount, satState, dragBore, boreGround, boreDir, boreTip, buildAxisRays, boreModeOf, setBoreMode,
     setBoreSat, boreSatResolved, setBorePoint, syncBorePoint, shellDrag, beamBasis,
-    activeBeams, beamListOn, isBeamOn, toggleBeam, setAllBeams, allBeamsOn, renameBeam,
-    beamQuery, setBeamQuery, filteredBeams, filteredAllOn, filteredAnyOn, selectFiltered,
+    activeBeams, beamListOn, isBeamOn, setBeamsToPlot, renameBeam,
+    beamQuery, setBeamQuery, filteredBeams,
     deleteBeam, deleteCheckedBeams,
     loadIndex, setActive, toggleAnt, toggleSatAll, toggleExpand, addLevel, removeLevel, importGrd, importSynthGrd,
     addSatellite, addElevLine, updateSatellite, removeSatellite, removeAntenna, renameAntenna, setElev, onTreeKeys,

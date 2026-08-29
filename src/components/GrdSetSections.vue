@@ -7,9 +7,10 @@
 // 逐像素一致，且以后只有一处要改。变体只影响【文案】，不影响控件与口径：
 //   variant='ground' —— 对地覆盖分析（拖拽落点是地表）
 //   variant='shell'  —— 对星覆盖分析（拖拽落点是轨道壳层）
-import { ref, computed, watch, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, nextTick, onBeforeUnmount } from 'vue'
 import Icon from './Icon.vue'
 import { isSecOpen, toggleSec } from '../stores/panelSections'
+import { useCheckList } from '../shared/ui/useCheckList.js'
 
 const props = defineProps({
   grd: { type: Object, required: true },            // useGrdCoverage 活实例
@@ -32,18 +33,79 @@ const toCss = (x) => `rgb(${parseInt(x.slice(1, 3), 16)},${parseInt(x.slice(3, 5
 function setLevelColor(i, e) { const css = toCss(e.target.value); const L = st.levels[i]; L.color = css; if (!L.lineSet) L.lineColor = css; L.locked = true }
 function setLineColor(i, e) { const css = toCss(e.target.value); const L = st.levels[i]; L.lineColor = css; L.lineSet = true; L.locked = true }
 
-// ---- 内联改名（波束名 / 电平名）：草稿缓冲 ----
-// 实时时钟与星动每秒触发整组件重渲染，Vue 会把 :value 强制写回 <input>、吞掉未提交的输入。
-// 故编辑期间 :value 一律取草稿（editX/editXVal），失焦或回车才落库。
-const editBeam = ref(''), editBeamVal = ref('')
+// ================= Beams To Plot：勾选＝要绘制的波束 =================
+// 多选交互（点 / 按住拖刷 / Shift 连选 / 键盘）整套抽在 shared/ui/useCheckList.js，与两张性能指标表的
+// 「波束筛选」是同一份口径 —— 见那份文件头。本文件只管接线与改名。
+//
+// ★ 改名不再走「点名字」。原来整行是 <label>、名字是常驻 <input>：在名字里拖选文字、松手落在行上时，
+//   click 的目标就成了 <label>，那一下正好把这个波束勾掉 —— 「想改名却被选中/取消选中」的根因。
+//   现在名字是纯文本，整行都归勾选；改名是显式入口（行尾铅笔 / F2），两件事再不共用同一次点击。
+const bpEl = ref(null)
+const bRows = computed(() => grd.filteredBeams())     // 当前筛选视图（一次渲染只算一遍）
+const bCount = computed(() => grd.activeBeams().length)
+const bp = useCheckList({
+  rows: () => bRows.value,
+  idOf: (b) => b.i,
+  isOn: (i) => grd.isBeamOn(i),
+  current: () => st.beamsToPlot,
+  commit: (ids) => grd.setBeamsToPlot(ids),
+  el: () => bpEl.value,
+  beforeDown: () => { if (editBeam.value) commitRenameBeam() }   // 正改着别的行 → 先落库
+})
+// 摊到顶层：模板里只有顶层的 ref/computed 会自动解包（bp 是普通对象，bp.cur 在模板里还是个 ref）
+const { isOn: beamOn, onCount: bOnCount, allOn: bAllOn, anyOn: bAnyOn, painting: bPainting, cur: bCur, onRowDown: bDown, onHeadDown: bAllDown } = bp
+
+// ---- 内联改名：只在被显式打开的那一行渲染 <input>，草稿走 v-model ----
+// （常驻 input 时得靠草稿缓冲挡住实时时钟每秒一次的 :value 强制回写；只在编辑行渲染就没这回事了。）
+const editBeam = ref(''), editBeamVal = ref(''), bnmEl = ref(null)
 const beamEditKey = (b) => grd.active.value + '#' + b.i
-function startRenameBeam(b) { editBeam.value = beamEditKey(b); editBeamVal.value = b.label }
-function inputRenameBeam(b, v) { editBeam.value = beamEditKey(b); editBeamVal.value = v }
-function commitRenameBeam(b) {
-  if (editBeam.value === '') return                                     // 已提交（blur 与回车可能重复触发）→ 跳过
-  if (editBeamVal.value !== b.label) grd.renameBeam(b.i, editBeamVal.value)   // 未改名则跳过，省一次 live 冗余重绘
-  editBeam.value = ''; editBeamVal.value = ''
+function startRenameBeam(b) {
+  editBeam.value = beamEditKey(b); editBeamVal.value = b.label
+  // ref 挂在 v-for 里 → Vue 收成数组（v-if 之下只会有一个元素）；两种形态都兜住
+  nextTick(() => { const r = bnmEl.value, el = Array.isArray(r) ? r[0] : r; if (el) { el.focus(); el.select() } })
 }
+function commitRenameBeam() {
+  const key = editBeam.value; if (!key) return
+  const i = +key.split('#')[1]
+  const b = bRows.value.find((x) => x.i === i)
+  editBeam.value = ''
+  if (b && editBeamVal.value !== b.label) grd.renameBeam(i, editBeamVal.value)   // 未改名则跳过，省一次冗余重绘
+  editBeamVal.value = ''
+}
+function cancelRenameBeam() {
+  editBeam.value = ''; editBeamVal.value = ''
+  if (bpEl.value) bpEl.value.focus({ preventScroll: true })
+}
+// 回车 / Tab：落库并接着改下一行（94 波束连着起名，不必每行都去点一次铅笔）
+function renameStep(d) {
+  const key = editBeam.value; if (!key) return
+  const i = +key.split('#')[1]
+  const at = bRows.value.findIndex((x) => x.i === i)
+  commitRenameBeam()
+  const nxt = at >= 0 ? bRows.value[at + d] : null
+  if (nxt) { bp.cur.value = at + d; bp.ensureVisible(at + d); startRenameBeam(nxt) }
+  else if (bpEl.value) bpEl.value.focus({ preventScroll: true })
+}
+// 失焦落库。★ 必须按行核对 editBeam：renameStep 已经把编辑位挪到下一行了，被移除的旧 input 这时才
+// 冒出 blur —— 不核对就会把刚打开的下一行编辑器一起关掉。
+function onNameBlur(b) { if (editBeam.value === beamEditKey(b)) commitRenameBeam() }
+function onNameKey(e) {
+  if (e.key === 'Enter') { e.preventDefault(); renameStep(1) }
+  else if (e.key === 'Tab') { e.preventDefault(); renameStep(e.shiftKey ? -1 : 1) }
+  else if (e.key === 'Escape') { e.preventDefault(); cancelRenameBeam() }
+  e.stopPropagation()     // 这儿是打字：空格是空格，别冒到列表按键上翻勾选
+}
+// F2 改名当前行（列表拿着焦点时）；其余按键交给多选口径
+function bKey(e) {
+  if (e.key === 'F2') { e.preventDefault(); const b = bRows.value[bp.cur.value]; if (b) startRenameBeam(b); return }
+  bp.onKey(e)
+}
+// 切换聚焦天线：刷选暂态与改名都属于上一根天线，就地丢掉
+watch(() => grd.active.value, () => { bp.reset(); editBeam.value = ''; editBeamVal.value = '' })
+
+// ---- 电平名内联改名：草稿缓冲 ----
+// 实时时钟与星动每秒触发整组件重渲染，Vue 会把 :value 强制写回 <input>、吞掉未提交的输入。
+// 故编辑期间 :value 一律取草稿（editLv/editLvVal），失焦或回车才落库。
 const editLv = ref(''), editLvVal = ref('')
 const lvDefaultText = (L) => String(L.v)      // 无自定义名时的灰字＝该档在地图上的数值标签文字（所见即所得）
 function startRenameLv(i, L) { editLv.value = String(i); editLvVal.value = L.name || '' }
@@ -123,23 +185,44 @@ const boreTip = computed(() => {
       </div>
       <template v-if="isSecOpen('grd-set')">
         <template v-if="grd.beamListOn()">
-          <div class="sect"><span>Beams To Plot · {{ grd.activeBeams().length }} 波束</span></div>
+          <div class="sect"><span>Beams To Plot · {{ bCount }} 波束</span></div>
           <input class="ci bq" :value="grd.beamQuery.value" placeholder="搜索：波束名，或序号 1-62、1,3,5、1-10,20-30" @input="e => grd.setBeamQuery(e.target.value)" />
-          <div class="bplist">
-            <label class="brow ball">
-              <input type="checkbox" :checked="grd.filteredAllOn()" :indeterminate="grd.filteredAnyOn() && !grd.filteredAllOn()" @change="grd.selectFiltered(!grd.filteredAllOn())" />
+          <!-- 整行都是勾选热区，按住左键拖＝刷选（长按多选）；名字是纯文本，改名走行尾铅笔 / F2。
+               复选框只当显示件（CSS 里 pointer-events:none），指针交互一律归行处理。 -->
+          <div
+            ref="bpEl" class="bplist" :class="{ painting: bPainting }" tabindex="0"
+            title="点一行翻勾选 · 按住拖＝刷选一片 · Shift 点＝连选一段 · Ctrl+A 全选 · F2 改名"
+            @keydown="bKey"
+          >
+            <div class="brow ball" @mousedown="bAllDown">
+              <input type="checkbox" :checked="bAllOn()" :indeterminate="bAnyOn() && !bAllOn()" />
               <span class="balln">{{ grd.beamQuery.value.trim() ? '(全选搜索结果)' : '(全选)' }}</span>
-              <span class="bpk">{{ st.beamsToPlot.length }}/{{ grd.activeBeams().length }}</span>
-              <span v-if="st.beamsToPlot.length && grd.activeBeams().length > 1" class="ic del" :title="`删除勾选的 ${st.beamsToPlot.length} 个波束（可重新导入原 GRD 恢复）`" @click.stop.prevent="grd.deleteCheckedBeams()"><Icon name="x" :size="11" /></span>
-            </label>
-            <label v-for="b in grd.filteredBeams()" :key="b.seq" class="brow" :class="{ on: grd.isBeamOn(b.i) }">
-              <input type="checkbox" :checked="grd.isBeamOn(b.i)" @change="grd.toggleBeam(b.i)" />
+              <span class="bpk">{{ bOnCount }}/{{ bCount }}</span>
+              <span class="bacts">
+                <span v-if="bOnCount && bCount > 1" class="ic del" :title="`删除勾选的 ${bOnCount} 个波束（可重新导入原 GRD 恢复）`" @mousedown.stop @click.stop.prevent="grd.deleteCheckedBeams()"><Icon name="x" :size="12" /></span>
+              </span>
+            </div>
+            <div
+              v-for="(b, bi) in bRows" :key="b.seq"
+              class="brow bitem" :class="{ on: beamOn(b.i), cur: bCur === bi, editing: editBeam === grd.active.value + '#' + b.i }"
+              :title="`原始波束号 ${b.seq} · 峰值 ${b.peakDb.toFixed(1)} dB`"
+              @mousedown="bDown($event, bi)"
+            >
+              <input type="checkbox" :checked="beamOn(b.i)" />
               <span class="bseq">{{ b.seq }}</span>
-              <input class="bnm-in" :value="editBeam === grd.active.value + '#' + b.i ? editBeamVal : b.label" title="编辑波束名（地图标注同步用此名）" @click.stop @focus="startRenameBeam(b)" @input="e => inputRenameBeam(b, e.target.value)" @keydown.enter="e => e.target.blur()" @blur="commitRenameBeam(b)" />
-              <span v-if="grd.activeBeams().length > 1" class="ic del" :title="`删除该波束（峰值 ${b.peakDb.toFixed(1)} dB，可重新导入原 GRD 恢复）`" @click.stop.prevent="grd.deleteBeam(b.i)"><Icon name="x" :size="11" /></span>
-              <span v-else class="bpk" :title="`峰值 ${b.peakDb.toFixed(1)} dB`">{{ b.peakDb.toFixed(1) }}</span>
-            </label>
-            <div v-if="!grd.filteredBeams().length" class="empty">无匹配波束</div>
+              <input
+                v-if="editBeam === grd.active.value + '#' + b.i"
+                ref="bnmEl" class="bnm-in" v-model="editBeamVal" spellcheck="false"
+                @mousedown.stop @keydown="onNameKey" @blur="onNameBlur(b)"
+              />
+              <span v-else class="bnm" :title="b.label" data-i18n-skip>{{ b.label }}</span>
+              <span v-if="bCount === 1" class="bpk">{{ b.peakDb.toFixed(1) }}</span>
+              <span class="bacts">
+                <span class="ic" title="重命名波束（地图标注同步用此名）· 快捷键 F2" @mousedown.stop @click.stop.prevent="startRenameBeam(b)"><Icon name="pencil" :size="12" /></span>
+                <span v-if="bCount > 1" class="ic del" title="删除该波束（可重新导入原 GRD 恢复）" @mousedown.stop @click.stop.prevent="grd.deleteBeam(b.i)"><Icon name="x" :size="12" /></span>
+              </span>
+            </div>
+            <div v-if="!bRows.length" class="empty">无匹配波束</div>
           </div>
         </template>
         <div class="srow"><label>极化</label><select v-model="st.pol"><option value="P1">P1 共极化</option><option value="P2">P2 交叉</option><option value="RSS">RSS 合成</option><option value="P1/P2">P1/P2</option><option value="P2/P1">P2/P1</option></select></div>
@@ -163,11 +246,12 @@ const boreTip = computed(() => {
               :title="L.name ? '自定义名称（等值线数值标签用此名，清空恢复电平值）' : '点击自定义名称（默认显示电平值，作等值线数值标签）'"
               @click.stop @focus="startRenameLv(i, L)" @input="e => inputRenameLv(i, e.target.value)"
               @keydown.enter="e => e.target.blur()" @blur="commitRenameLv(i)" />
-            <span class="ic del" title="删除该档" @click="grd.removeLevel(i)"><Icon name="x" :size="11" /></span>
+            <span class="ic del" title="删除该档" @click="grd.removeLevel(i)"><Icon name="x" :size="12" /></span>
           </div>
-          <div class="glvadd" @click="grd.addLevel()"><Icon name="plus" :size="11" /> 添加电平</div>
+          <div class="glvadd" @click="grd.addLevel()"><Icon name="plus" :size="12" /> 添加电平</div>
         </div>
         <div class="srow"><label>线宽</label><input class="rng" type="range" min="0.1" max="8" step="0.1" v-model.number="st.lineWidth" /><span class="u">{{ st.lineWidth.toFixed(1) }}</span></div>
+        <div class="srow"><label>线透明度</label><input class="rng" type="range" min="0" max="1" step="0.05" v-model.number="st.lineAlpha" title="只作用于等值线，不影响分带填充" /><span class="u">{{ fx(st.lineAlpha) }}</span></div>
       </template>
     </div>
 
@@ -179,7 +263,7 @@ const boreTip = computed(() => {
 
     <div class="sec">
       <div class="sect acc" :class="{ open: isSecOpen('grd-bore') }" @click="toggleSec('grd-bore')"><Icon :name="isSecOpen('grd-bore') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>天线 boresight</span>
-        <span class="lnk" :class="{ on: grd.dragBore.value }" :title="isShell ? '开启后在 3D 上拖动可把指向点拖到轨道壳层上（对星跟踪时改的是偏置量）' : '开启后在地图上拖动可平移波束中心'" @click.stop="grd.setDragBore(!grd.dragBore.value)"><Icon v-if="grd.dragBore.value" name="check" :size="10" /> 拖拽波束</span>
+        <span class="lnk" :class="{ on: grd.dragBore.value }" :title="isShell ? '开启后在 3D 上拖动可把指向点拖到轨道壳层上（对星跟踪时改的是偏置量）' : '开启后在地图上拖动可平移波束中心'" @click.stop="grd.setDragBore(!grd.dragBore.value)"><Icon v-if="grd.dragBore.value" name="check" :size="12" /> 拖拽波束</span>
       </div>
       <template v-if="isSecOpen('grd-bore')">
         <!-- 两大类：对地指向瞄地面/相对天底，对星指向瞄空间（目标星或空间定点，可指反天底）。
@@ -211,7 +295,7 @@ const boreTip = computed(() => {
         <template v-else-if="isSatMode">
           <div class="srow"><label>目标星</label>
             <span class="tgtnm" :class="{ bad: st.boreSat && !satResolved }">{{ st.boreSatName || '未选择' }}</span>
-            <span v-if="st.boreSat" class="ic del" title="清除目标星" @click="grd.setBoreSat(null, '')"><Icon name="x" :size="11" /></span>
+            <span v-if="st.boreSat" class="ic del" title="清除目标星" @click="grd.setBoreSat(null, '')"><Icon name="x" :size="12" /></span>
           </div>
           <div class="srow"><input class="ci" v-model="bq" placeholder="搜索目标星：卫星名 / NORAD / 星座 / 卫星组" /></div>
           <div v-if="bq.trim()" class="sres">
@@ -244,24 +328,27 @@ const boreTip = computed(() => {
     <div class="sec">
       <div class="sect acc" :class="{ open: isSecOpen('grd-disp', false) }" @click="toggleSec('grd-disp', false)"><Icon :name="isSecOpen('grd-disp', false) ? 'chevron-down' : 'chevron-right'" :size="12" /><span>显示选项</span><span class="editing" title="对所有选中天线生效">全局</span></div>
       <template v-if="isSecOpen('grd-disp', false)">
-        <label class="chk2"><input type="checkbox" v-model="st.showName" /><span>显示波束名</span></label>
+        <!-- 每项自带一枚色块（钉在行尾成一列）：色块是该项的从属参数，与字号/大小同进退——勾上才出现。
+             ★ 必须放在 <label class="chk2"> 里面：取色框属于 interactive content，点它不会触发 label 的
+               activation behavior（即不会误切勾选），而放到 label 外就得另起一层 flex 容器，行距那三条
+               `.sec > * + *` 规则也跟着要改。 -->
+        <label class="chk2"><input type="checkbox" v-model="st.showName" /><span>显示波束名</span><input v-if="st.showName" class="clr sw" type="color" v-model="st.nameColor" title="波束名颜色（两个视图同一套样式）" /></label>
         <div v-if="st.showName" class="srow sub"><label>字号</label><input class="rng" type="range" min="0.5" max="32" step="0.5" v-model.number="st.nameSize" /><span class="u">{{ st.nameSize }}</span></div>
-        <label class="chk2"><input type="checkbox" v-model="st.showBore" /><span title="当前场的峰值格点打在地球/壳层上的位置；峰值方向越过地平时不标">显示峰值点</span></label>
+        <label class="chk2"><input type="checkbox" v-model="st.showBore" /><span title="当前场的峰值格点打在地球/壳层上的位置；峰值方向越过地平时不标">显示峰值点</span><input v-if="st.showBore" class="clr sw" type="color" v-model="st.boreColor" title="峰值点十字颜色（两个视图同一套样式）" /></label>
         <div v-if="st.showBore" class="srow sub"><label>大小</label><input class="rng" type="range" min="0.1" max="3" step="0.1" v-model.number="st.boreSize" /><span class="u">{{ st.boreSize }}</span></div>
-        <label class="chk2"><input type="checkbox" v-model="st.showRay" /><span title="从卫星沿方向图 u=v=0 方向射出的一条线，一根天线一条">显示天线视轴</span></label>
+        <label class="chk2"><input type="checkbox" v-model="st.showRay" /><span title="从卫星沿方向图 u=v=0 方向射出的一条线，一根天线一条">显示天线视轴</span><input v-if="st.showRay" class="clr sw" type="color" v-model="st.rayColor" title="视轴颜色（两个视图同一套样式）" /></label>
         <template v-if="st.showRay">
-          <div class="srow sub"><label>颜色</label><input class="clr" type="color" v-model="st.rayColor" title="视轴颜色（两个视图同一套样式）" /></div>
           <div class="srow sub"><label>线宽</label><input class="rng" type="range" min="0.1" max="6" step="0.1" v-model.number="st.rayWidth" /><span class="u">{{ fx(st.rayWidth, 1) }}</span></div>
           <div class="srow sub"><label>透明度</label><input class="rng" type="range" min="0.05" max="1" step="0.05" v-model.number="st.rayOpacity" /><span class="u">{{ fx(st.rayOpacity) }}</span></div>
         </template>
-        <label class="chk2"><input type="checkbox" v-model="st.showPeak" /><span title="峰值点处的 dB 读数，随极化 / 增益偏置 / 路径损耗变">显示峰值电平</span></label>
+        <label class="chk2"><input type="checkbox" v-model="st.showPeak" /><span title="峰值点处的 dB 读数，随极化 / 增益偏置 / 路径损耗变">显示峰值电平</span><input v-if="st.showPeak" class="clr sw" type="color" v-model="st.peakColor" title="峰值电平读数颜色（两个视图同一套样式）" /></label>
         <div v-if="st.showPeak" class="srow sub"><label>字号</label><input class="rng" type="range" min="0.5" max="30" step="0.5" v-model.number="st.peakSize" /><span class="u">{{ st.peakSize }}</span></div>
-        <label class="chk2"><input type="checkbox" v-model="st.showVal" /><span>显示数值标签</span></label>
+        <label class="chk2"><input type="checkbox" v-model="st.showVal" /><span>显示数值标签</span><input v-if="st.showVal" class="clr sw" type="color" v-model="st.valColor" title="数值标签颜色（两个视图同一套样式）" /></label>
         <div v-if="st.showVal" class="srow sub"><label>字号</label><input class="rng" type="range" min="0.5" max="30" step="0.5" v-model.number="st.valSize" /><span class="u">{{ st.valSize }}</span></div>
         <!-- 拖动标签位置只在【对地】视图给：可拖标签由对地图层构建时捕获(_dragLabels)，壳层上的标签不在其中。
              壳层视图里开这个模式只会掐掉左键旋转、什么也拖不动，故不出这个入口。 -->
         <div v-if="st.showVal && !isShell" class="srow sub" style="justify-content:flex-start">
-          <span class="lnk" :class="{ on: grd.dragLabel.value }" title="开启后在地图上按住拖动数值标签，可沿等值线滑动其位置（释放后保存；再次点击关闭）" @click="grd.setDragLabel(!grd.dragLabel.value)"><Icon v-if="grd.dragLabel.value" name="check" :size="10" /> 拖动标签位置</span>
+          <span class="lnk" :class="{ on: grd.dragLabel.value }" title="开启后在地图上按住拖动数值标签，可沿等值线滑动其位置（释放后保存；再次点击关闭）" @click="grd.setDragLabel(!grd.dragLabel.value)"><Icon v-if="grd.dragLabel.value" name="check" :size="12" /> 拖动标签位置</span>
         </div>
       </template>
     </div>
@@ -283,14 +370,16 @@ const boreTip = computed(() => {
 .sec > * + * { margin-top: 8px; }
 .sec > * + .sect { margin-top: 12px; }
 .sec > .sect + * { margin-top: 6px; }
-.srow { display: flex; align-items: center; gap: 8px; }
-.srow label { color: var(--text-muted); width: 70px; flex: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* ★ 换行 + 「标签列是下限不是定宽」的口径在 styles/controls.css 的 .srow 里，四份副本同改 */
+.srow { --srow-lab: 70px; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.srow label { color: var(--text-muted); min-width: var(--srow-lab); max-width: 100%; flex: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* ② 勾选行的从属参数（透明度属于「显示等值线」、字号属于「显示波束名」…）：缩进 19px，
    标签正好落在父行文字的起跑线上（复选框 13 + gap 6）；标签列同步由 70 收到 51 —— 两者相加
    仍是 70，故控件列一动不动，三列网格不破。 */
-.srow.sub { padding-left: 19px; }
-.srow.sub > label { width: 51px; }
-.srow select, .srow .ci { flex: 1; min-width: 0; border: 1px solid var(--border); background-color: var(--bg); padding: 3px 6px; font-size: 12px; outline: none; color: var(--text); }
+.srow.sub { --srow-lab: 51px; padding-left: 19px; }
+.srow select, .srow .ci { flex: 1; min-width: 0; border: 1px solid var(--field-border); background-color: var(--field-bg); padding: 3px 6px; font-size: var(--fs-3); outline: none; color: var(--text); }
+/* 下拉框的可读下限：挤到装不下最长选项时整件掉到下一行，而不是裁掉选项名 */
+.srow select { min-width: 116px; }
 .srow .ci:disabled { background: var(--surface); color: var(--text-faint); cursor: not-allowed; border-style: dashed; }
 /* ③ 读数列：钉宽 + 右对齐 + 等宽数字。原来 .u 宽度随文字走（dB / ° / 0.56 / 5 各不同），
    而滑杆是 flex:1 —— 读数宽一格滑杆就短一格，逐行长短不一。钉住之后所有滑杆等长。 */
@@ -304,11 +393,14 @@ const boreTip = computed(() => {
 .seg .sg.on { background: var(--accent); color: var(--bg); }
 /* 选中段是实底，两侧的分隔线压在墨块边上反而脏，去掉 */
 .seg .sg.on, .seg .sg.on + .sg { border-left-color: transparent; }
-.seg.sm .sg { padding: 2px 7px; font-size: 11px; }
+.seg.sm .sg { padding: 2px 7px; font-size: var(--fs-2); }
+/* 参数行里的分段控件：铺满整行、段内等分，挤不下时段文字折行而不是顶出面板（同 controls.css） */
+.srow > .seg { flex: 1 1 auto; }
+.srow > .seg > .sg { flex: 1 1 auto; text-align: center; padding-left: 4px; padding-right: 4px; white-space: normal; }
 .sect { display: flex; align-items: center; color: var(--text-muted); }
 .sect.acc { cursor: pointer; user-select: none; gap: 5px; }
 .sect.acc:hover { color: var(--text); }
-.sect .lnk { margin-left: auto; color: var(--accent); cursor: pointer; font-size: 11.5px; }
+.sect .lnk { margin-left: auto; color: var(--accent); cursor: pointer; font-size: var(--fs-3); }
 .sect .lnk.on { font-weight: 600; text-decoration: underline; }
 .sect .lnk:hover { text-decoration: underline; }
 /* 天线设置区标题：撑满分区宽度的标题条（Blender Properties / VS Code 面板头同款） */
@@ -316,19 +408,21 @@ const boreTip = computed(() => {
 .setsect .ant-svg { width: 14px; height: 14px; color: var(--accent); margin-right: 6px; flex: none; }
 .setsect .setlbl { color: var(--text); font-weight: 600; }
 .setsect .setname { margin-left: 6px; color: var(--accent); font-weight: 600; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sect .editing { margin-left: auto; font-size: 9.5px; font-weight: 600; color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent); border-radius: var(--r-pill); padding: 1px 6px; }
+.sect .editing { margin-left: auto; font-size: var(--fs-1); font-weight: 600; color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent); border-radius: var(--r-pill); padding: 1px 6px; }
 .chk2 { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+/* 勾选行行尾的色块：推到最右成一列。行文字长到要换行时它跟着掉行，不挤压文字。 */
+.chk2 > .clr.sw { margin-left: auto; }
 .empty { color: var(--text-faint); padding: 4px 0; }
-.tip { color: var(--text-faint); font-size: 11px; line-height: 1.5; }
+.tip { color: var(--text-faint); font-size: var(--fs-2); line-height: 1.5; }
 .rng { flex: 1; min-width: 0; }
-.ci.bq { width: 100%; border: 1px solid var(--border); background: var(--bg); padding: 3px 6px; font-size: 12px; outline: none; color: var(--text); }
+.ci.bq { width: 100%; border: 1px solid var(--field-border); background: var(--field-bg); padding: 3px 6px; font-size: var(--fs-3); outline: none; color: var(--text); }
 .ic { flex: none; cursor: pointer; color: var(--text-faint); padding: 0 1px; display: inline-flex; }
 .ic:hover { color: var(--text); }
 .ic.del:hover { color: #e66; }
 /* GRD 电平表 */
 .glv { border: 1px solid var(--border); border-radius: var(--r-ctl); }
 /* 电平表头：与 .glvrow 同一套列宽（20 / 20 / 66 / flex / 删除），内距对齐到各列输入框的文字起点 */
-.glvhd { display: flex; align-items: center; gap: 5px; padding: 4px 6px 3px; border-bottom: 1px solid var(--border); color: var(--text-faint); font-size: 9.5px; white-space: nowrap; }
+.glvhd { display: flex; align-items: center; gap: 5px; padding: 4px 6px 3px; border-bottom: 1px solid var(--border); color: var(--text-faint); font-size: var(--fs-1); white-space: nowrap; }
 .glvhd > span { overflow: hidden; }
 .glvhd .h-clr { flex: none; width: 20px; }
 .glvhd .h-val { flex: none; width: 66px; padding-left: 7px; }
@@ -337,27 +431,40 @@ const boreTip = computed(() => {
 .glvrow { display: flex; align-items: center; gap: 5px; padding: 3px 6px; }
 .glvrow + .glvrow { border-top: 1px solid var(--border); }
 .glvrow .lvclr { width: 20px; height: 18px; }
-.glvrow .lvval { width: 66px; flex: none; background: var(--bg); border: 1px solid var(--border); color: var(--text); font-size: 11.5px; padding: 2px 6px; font-family: var(--font-mono); }
-.glvrow .lvabs { flex: 1; color: var(--text-faint); font-family: var(--font-mono); font-size: 11px; }
+.glvrow .lvval { width: 66px; flex: none; background: var(--field-bg); border: 1px solid var(--field-border); color: var(--text); font-size: var(--fs-3); padding: 2px 6px; font-family: var(--font-mono); }
+.glvrow .lvabs { flex: 1; color: var(--text-faint); font-family: var(--font-mono); font-size: var(--fs-2); }
 /* 电平灰色列改可编辑名：默认透明看似纯文字，hover/focus 现边框；有自定义名时字色转常规 */
 .glvrow .lvname { min-width: 0; border: 1px solid transparent; background: transparent; padding: 2px 5px; border-radius: var(--r-ctl); outline: none; }
-.glvrow .lvname:hover { border-color: var(--border); }
-.glvrow .lvname:focus { border-color: var(--accent); background: var(--bg); color: var(--text); }
+.glvrow .lvname:hover { border-color: var(--field-border-hover); }
+.glvrow .lvname:focus { border-color: var(--accent-ui); background: var(--field-bg); color: var(--text); }
 .glvrow .lvname.named { color: var(--text); }
 .glvrow .ic.del:hover { color: #d66; }
-.glvadd { padding: 4px 7px; text-align: center; color: var(--text-muted); cursor: pointer; font-size: 11.5px; border-top: 1px solid var(--border); }
+.glvadd { padding: 4px 7px; text-align: center; color: var(--text-muted); cursor: pointer; font-size: var(--fs-3); border-top: 1px solid var(--border); }
 .glvadd:hover { color: var(--accent); background: var(--bg); }
-/* Beams To Plot 多波束多选列表（SATSOFT 风格） */
-.bplist { border: 1px solid var(--border); border-radius: var(--r-ctl); max-height: 300px; min-height: 48px; overflow-y: auto; resize: vertical; }
-.brow { display: flex; align-items: center; gap: 6px; padding: 2px 7px; cursor: pointer; font-size: 11.5px; }
+/* Beams To Plot 多波束多选列表（SATSOFT 风格）：勾选＝要绘制。整行都是勾选热区，按住拖＝刷选。
+   position:relative 是给 offsetTop 定基准的（拖刷按行的 offsetTop 二分查行，见脚本 bIdxAt）。 */
+.bplist { position: relative; border: 1px solid var(--border); border-radius: var(--r-ctl); max-height: 300px; min-height: 48px; overflow-y: auto; resize: vertical; outline: none; }
+.bplist:focus-visible { box-shadow: inset 0 0 0 1px var(--accent-ui); }
+.brow { display: flex; align-items: center; gap: 6px; padding: 2px 7px; cursor: default; font-size: var(--fs-3); user-select: none; }
 .brow + .brow { border-top: 1px solid var(--border); }
 .brow:hover { background: var(--bg); }
-.brow.on .bnm-in { color: var(--text); }
-.brow .bnm-in { flex: 1; min-width: 0; border: 1px solid transparent; background: transparent; color: var(--text-muted); font-size: 11.5px; padding: 1px 4px; border-radius: var(--r-ctl); outline: none; }
-.brow .bnm-in:hover { border-color: var(--border); }
-.brow .bnm-in:focus { border-color: var(--accent); background: var(--bg); color: var(--text); }
-.brow .bseq { flex: none; min-width: 20px; text-align: right; color: var(--text-faint); font-family: var(--font-mono); font-size: 10.5px; }
-.brow .bpk { flex: none; color: var(--text-faint); font-family: var(--font-mono); font-size: 10.5px; }
+.brow.on { background: color-mix(in srgb, var(--accent-ui) 13%, transparent); }
+.brow.on:hover { background: color-mix(in srgb, var(--accent-ui) 20%, transparent); }
+.brow.cur { outline: 1px solid color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: -1px; }
+/* 复选框只当显示件：所有指针交互都归行 —— 否则原生勾选框自带的那次切换会与刷选各翻一遍、互相抵消 */
+.brow input[type=checkbox] { pointer-events: none; }
+.brow .bnm { flex: 1; min-width: 0; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 1px 4px; border: 1px solid transparent; }
+.brow.on .bnm { color: var(--text); }
+.brow .bnm-in { flex: 1; min-width: 0; border: 1px solid var(--accent-ui); background: var(--field-bg); color: var(--text); font-size: var(--fs-3); padding: 1px 4px; border-radius: var(--r-ctl); outline: none; }
+/* 行上的 user-select:none 会继承进来，把「在名字里拖选一段文字」也一起禁掉 —— 编辑框里要放开 */
+.brow .bnm-in { user-select: text; }
+.brow .bseq { flex: none; min-width: 20px; text-align: right; color: var(--text-faint); font-family: var(--font-mono); font-size: var(--fs-2); }
+.brow .bpk { flex: none; color: var(--text-faint); font-family: var(--font-mono); font-size: var(--fs-2); }
+/* 行尾操作位：常占位不常显（悬停该行 / 该行正改名时才现身）—— 出现时不推动名字列，也不在
+   94 行上铺一整列小×。刷选途中一律藏起来：光标正扫过一行行，图标跟着闪没有意义。 */
+.bacts { flex: none; display: inline-flex; align-items: center; gap: 2px; visibility: hidden; }
+.brow:hover .bacts, .brow.editing .bacts { visibility: visible; }
+.bplist.painting .bacts { visibility: hidden; }
 /* Excel 式「(全选)」主行：置顶 sticky、随列表滚动常驻；三态复选框（全/半/无） */
 .brow.ball { position: sticky; top: 0; z-index: 1; background: var(--bg); border-bottom: 1px solid var(--border); }
 .brow.ball + .brow { border-top: 0; }
@@ -372,8 +479,8 @@ const boreTip = computed(() => {
 .sitem { padding: 4px 8px; border-bottom: 1px solid var(--border); cursor: pointer; }
 .sitem:last-child { border-bottom: 0; }
 .sitem:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
-.sitem .nm { font-size: 12px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sitem .sub { font-size: 10.5px; color: var(--text-faint); font-family: var(--font-mono); }
-.sres-e { padding: 6px 8px; font-size: 11.5px; color: var(--text-faint); }
-.sres-n { padding: 3px 8px; border-top: 1px solid var(--border); font-size: 10px; color: var(--text-faint); font-family: var(--font-mono); }
+.sitem .nm { font-size: var(--fs-3); color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sitem .sub { font-size: var(--fs-2); color: var(--text-faint); font-family: var(--font-mono); }
+.sres-e { padding: 6px 8px; font-size: var(--fs-3); color: var(--text-faint); }
+.sres-n { padding: 3px 8px; border-top: 1px solid var(--border); font-size: var(--fs-1); color: var(--text-faint); font-family: var(--font-mono); }
 </style>

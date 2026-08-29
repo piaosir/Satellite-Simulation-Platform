@@ -199,11 +199,11 @@ const labelOf = (f) => (props.lang === 'en' ? f.labelEn : f.label)
   <div v-if="open" class="rd-mask">
     <div class="rd" role="dialog" aria-modal="true">
       <div class="rd-hd">
-        <Icon name="file-down" :size="13" />{{ t('导出报告') }}
+        <Icon name="file-down" :size="12" />{{ t('导出报告') }}
         <span class="rd-sp"></span>
         <span class="rd-scheme">{{ schemeText }}</span>
         <button class="rd-x" :disabled="busy" :title="t('关闭')" :aria-label="t('关闭')" @click="close">
-          <Icon name="x" :size="13" />
+          <Icon name="x" :size="12" />
         </button>
       </div>
 
@@ -274,15 +274,15 @@ const labelOf = (f) => (props.lang === 'en' ? f.labelEn : f.label)
   width: 560px; max-height: 88vh; display: flex; flex-direction: column;
   font-family: var(--lb-serif, var(--font-serif));
   background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-card, 3px);
-  box-shadow: 0 8px 24px rgba(0,0,0,.18); overflow: hidden;
+  box-shadow: var(--shadow-3); overflow: hidden;
 }
 .rd-hd {
   display: flex; align-items: center; gap: 6px; padding: 10px 12px;
-  font-size: 11px; font-weight: 600; letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--text-muted);
+  font-size: var(--fs-2); font-weight: 600; letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--text-muted);
   background: var(--surface-2); border-bottom: 1px solid var(--border);
 }
 .rd-sp { flex: 1; }
-.rd-scheme { letter-spacing: 0; text-transform: none; color: var(--text-faint); font-size: 11px; }
+.rd-scheme { letter-spacing: 0; text-transform: none; color: var(--text-faint); font-size: var(--fs-2); }
 .rd-x {
   display: inline-flex; align-items: center; justify-content: center; margin: -4px -4px -4px 4px;
   padding: 3px; font: inherit; color: var(--text-faint); cursor: pointer;
@@ -294,15 +294,15 @@ const labelOf = (f) => (props.lang === 'en' ? f.labelEn : f.label)
 .rd-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px 10px; }
 .rd-f { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .rd-f.wide { grid-column: 1 / -1; }
-.rd-l { font-size: 11px; color: var(--text-muted); }
+.rd-l { font-size: var(--fs-2); color: var(--text-muted); }
 .rd-in {
-  font: inherit; font-size: 12px; padding: 3px 6px; min-width: 0;
-  background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px);
+  font: inherit; font-size: var(--fs-3); padding: 3px 6px; min-width: 0;
+  background: var(--field-bg); color: var(--text); border: 1px solid var(--field-border); border-radius: var(--r-ctl, 2px);
 }
-.rd-in:focus { outline: none; border-color: var(--accent); }
+.rd-in:focus { outline: none; border-color: var(--accent-ui); }
 .rd-area { resize: vertical; line-height: 1.45; }
 .rd-sec {
-  margin: 12px 0 6px; padding-bottom: 3px; font-size: 11px; font-weight: 700; color: var(--text);
+  margin: 12px 0 6px; padding-bottom: 3px; font-size: var(--fs-2); font-weight: 700; color: var(--text);
   border-bottom: 1px solid var(--lb-rule, var(--border));
 }
 .rd-logo { display: flex; align-items: center; gap: 8px; }
@@ -313,25 +313,25 @@ const labelOf = (f) => (props.lang === 'en' ? f.labelEn : f.label)
   border: 1px solid var(--border); border-radius: var(--r-ctl, 2px);
 }
 .rd-logo-box img { max-width: 100%; max-height: 100%; object-fit: contain; }
-.rd-logo-name { font-size: 11px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+.rd-logo-name { font-size: var(--fs-2); color: var(--text-faint); font-variant-numeric: tabular-nums; }
 .rd-file { display: none; }
-.rd-err { margin-top: 5px; font-size: 11px; color: var(--danger, #b00000); }
+.rd-err { margin-top: 5px; font-size: var(--fs-2); color: var(--danger, #b00000); }
 .rd-opts { display: flex; gap: 16px; flex-wrap: wrap; }
-.rd-ck { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text); cursor: pointer; }
+.rd-ck { display: inline-flex; align-items: center; gap: 5px; font-size: var(--fs-3); color: var(--text); cursor: pointer; }
 .rd-ck.off { color: var(--text-faint); cursor: not-allowed; }
 .rd-ck input { margin: 0; }
-.rd-hint { margin-top: 5px; font-size: 11px; color: var(--text-faint); line-height: 1.5; }
+.rd-hint { margin-top: 5px; font-size: var(--fs-2); color: var(--text-faint); line-height: 1.5; }
 .rd-prog { margin-top: 10px; }
 .rd-bar { height: 3px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-ctl); overflow: hidden; }
 .rd-bar i { display: block; height: 100%; background: var(--accent); transition: width .2s linear; }
-.rd-ptext { margin-top: 4px; font-size: 11px; color: var(--text-muted); }
+.rd-ptext { margin-top: 4px; font-size: var(--fs-2); color: var(--text-muted); }
 .rd-ft { display: flex; justify-content: flex-end; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--border); background: var(--surface); }
 .rd-btn {
-  font: inherit; font-size: 11px; line-height: 1; padding: 4px 12px; cursor: pointer;
+  font: inherit; font-size: var(--fs-2); line-height: 1; padding: 4px 12px; cursor: pointer;
   background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px);
 }
 .rd-btn:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
 .rd-btn:disabled { opacity: .45; cursor: not-allowed; }
-.rd-btn.primary { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+.rd-btn.primary { background: var(--accent-ui); color: var(--bg); border-color: var(--accent-ui); }
 .rd-btn.primary:hover:not(:disabled) { opacity: .88; }
 </style>

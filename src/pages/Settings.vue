@@ -71,12 +71,12 @@ onMounted(load)
 
 <style scoped>
 .set { padding: 20px 24px; max-width: 560px; height: 100%; overflow-y: auto; }   /* 外层 .content 已 overflow:hidden，滚动由页内承担 */
-.set h2 { font-size: 18px; margin-bottom: 16px; }
+.set h2 { font-size: var(--fs-6); margin-bottom: 16px; }
 .row { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
-.row label { width: 110px; color: var(--text-muted); font-size: 12.5px; }
-.row input, .row select { border: 1px solid var(--border); background-color: var(--bg); padding: 5px 8px; outline: none; min-width: 240px; }
-.row button { border: 1px solid var(--border); background: var(--bg); padding: 5px 16px; cursor: pointer; }
-.ok { color: var(--ok); font-size: 12px; }
+.row label { width: 110px; color: var(--text-muted); font-size: var(--fs-4); }
+.row input, .row select { border: 1px solid var(--field-border); background-color: var(--field-bg); padding: 5px 8px; outline: none; min-width: 240px; }
+.row button { border: 1px solid var(--border); background: var(--bg); height: var(--h-ctl-lg); white-space: nowrap; padding: 0 16px; cursor: pointer; }
+.ok { color: var(--ok); font-size: var(--fs-3); }
 .empty { color: var(--text-faint); }
-.hint { color: var(--text-faint); font-size: 11.5px; margin-top: 18px; }
+.hint { color: var(--text-faint); font-size: var(--fs-3); margin-top: 18px; }
 </style>

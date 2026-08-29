@@ -18,11 +18,14 @@ import { Line2 } from 'three/addons/lines/Line2.js'
 import { LineGeometry } from 'three/addons/lines/LineGeometry.js'
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js'
 import { loadBasemap, basemapPaths, OCEAN, LAND, COAST, BORDER } from '../../shared/lbBasemap.js'
+import { uiFontStack, DOC_FONT_STACK } from '../../shared/lbFont.js'
 
 const RE_KM = 6378.137
 const D2R = Math.PI / 180
-// 画布文字与界面同一字体栈（canvas 取不到 CSS 变量，此处手工镜像 --font-serif）
-const UI_FONT = '"Times New Roman", Times, "SimSun", "宋体", serif'
+// 标注字体（canvas 取不到 CSS 变量，栈定义在 shared/lbFont.js）：
+// 屏上跟界面走无衬线；出图那一瞬换成报告的衬线栈，出完再换回来（见 snapshot）。
+// 精灵的贴图是 setScene 一次性烤好的，改字体必须整场重建 —— 故用 let 而不是 const。
+let LABEL_FONT = null            // null = 跟界面字体走（用时现读）；出图期间钉成报告的衬线栈
 
 // 渲染倍率 = 物理像素密度 × 2（超采样），封顶 3。
 // 这是本图与星座 3D 那颗地球「清晰度差一大截」的头号原因：那边 viz/globe3d/scene.js 的
@@ -145,11 +148,11 @@ function labelSprite(text, color, halo) {
   const fs = 13, pad = 3
   const probe = document.createElement('canvas').getContext('2d')
   probe.__i18nSkip = true                 // 量宽与绘制同语言（报表语言），见 spriteFrom
-  probe.font = `${fs}px ${UI_FONT}`
+  probe.font = `${fs}px ${LABEL_FONT || uiFontStack()}`
   const w = Math.ceil(probe.measureText(text).width) + pad * 2
   const h = fs + pad * 2
   return spriteFrom((cx) => {
-    cx.font = `${fs}px ${UI_FONT}`
+    cx.font = `${fs}px ${LABEL_FONT || uiFontStack()}`
     cx.textBaseline = 'middle'
     cx.lineJoin = 'round'
     cx.lineWidth = 2.8
@@ -528,10 +531,16 @@ export function createLinkGlobe(container) {
       // 出图也不能只是「再画一帧」：标注与标记的世界尺寸由 syncSprites 按当前机位算，
       // 若这一帧之前恰好一帧都没画过（换了链路就立刻点出图、或窗口在后台被节流），
       // 精灵还停在默认的 1 个世界单位上——出来的图里一个站点标记有半个地球那么大。
+      // 字体：屏上是界面字体，导进报告的这一份换成报告的衬线栈。精灵贴图在 setScene 里烤死，
+      // 故先整场重建一次再渲；current 就是上一次 setScene 的入参，keepView 保住用户的机位。
+      LABEL_FONT = DOC_FONT_STACK
+      setScene(current, true)
       syncSprites()
       renderer.render(scene, camera)
       return renderer.domElement.toDataURL('image/png')
     } finally {
+      LABEL_FONT = null
+      setScene(current, true)       // 换回屏上那一份；机位不动，用户看不出中间那一帧
       renderer.setPixelRatio(dpr)   // 抛了也要还原，否则整块画布卡在出图分辨率上
       mark(6)
     }

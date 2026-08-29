@@ -4,12 +4,60 @@
 
    为什么全部自绘：原生件由 UA 画，accent-color 只换得了颜色、换不了几何 —— 同一个滑块在本库里
    出现过 3px / 12px / 16px 三种高度，121 个复选框里有 38 个压根没写 accent-color、直接是浏览器蓝。
-   自绘之后尺寸、描边、圆角、悬停、焦点全部收口到 global.css 里那几个 --ctl-* / --r-ctl / --r-box token。
+   自绘之后尺寸、描边、圆角、悬停、焦点全部收口到 global.css 里那几个 --ctl-* / --h-ctl /
+   --field-* / --r-ctl token。
 
-   本文件的规则一律用元素选择器（特异度最低），组件里的 scoped 规则天然压得过它 —— 需要就地改
-   宽窄的照旧就地改，但「长什么样」的口径只在这里定义一次。 */
+   本文件的规则一律用元素选择器或 :where()（特异度 0~1），组件里的 scoped 规则天然压得过它 ——
+   需要就地改宽窄的照旧就地改，但「长什么样」的口径只在这里定义一次。 */
 
-/* ==== 复选框 / 单选钮 ==== */
+/* ==== 控件高度 ====
+   实测：同样的 padding 下 input 恒 23px、select 恒 22px（两者行盒算法不同）；同一个面板里
+   number 有 19/21 两档、select 有 15/20/21 三档、text 有 17/19/21 三档 —— 相邻两行的控件
+   上下缘对不齐，是「不考究」最直接的视觉证据。
+
+   这里把高度显式钉死，行盒算法不再参与。密度不再是每个控件各自 padding 撞出来的结果，而是
+   容器上的一个变量：某块面板要压扁，在那块面板的根上写 --h-ctl: var(--h-ctl-sm) 即可，
+   该区内所有控件同步变矮且仍然齐平。
+
+   ★ 纵向内距一律清零并用 !important 钉死 ★
+   高度既已固定，纵向内距就不再是可调参数 —— 它只会把内容盒压得比行高还矮，把文字（尤其中文
+   与带下伸部的字母）上下切掉。全库有几十条组件规则用 padding 简写给输入框写了 1~5px 的纵距，
+   简写没有「只改一半」的写法，故在此统一清掉；横向内距不动，留给组件调。
+
+   两处例外：表格的常驻捕获输入框 .eg-cap / .sg-cap —— 它们 absolute 铺满单元格、height:100%，
+   且纵向内距必须与显示层 .eg-v / .sg-v 逐像素一致，否则进入编辑态时文字会跳一下。
+
+   ★ 下面这份类型清单在本文件里出现四次（高度 / 纵距 / 描边 / 悬停），新增一个 type 必须四处一起加。★
+   漏掉的代价不是「少一档样式」而是**反过来变矮**：组件那边是按「高度由这里给」把自己的纵向内距
+   写成 0 的（如 .ccep > .ci 由 3px 6px 改成 0 7px），类型没进清单 → 内距没了、高度也没补上，
+   那个框就比同排控件矮一截，描边还落回 UA 默认。datetime-local 就这么漏过一次（全库 4 处）。 */
+:where(input[type="text"],
+       input[type="number"],
+       input[type="search"],
+       input[type="password"],
+       input[type="datetime-local"],
+       input[type="date"],
+       input[type="time"],
+       input:not([type]):not(.eg-cap):not(.sg-cap),
+       select) {
+  height: var(--h-ctl);
+  line-height: 1.2;
+}
+input[type="text"],
+input[type="number"],
+input[type="search"],
+input[type="password"],
+input[type="datetime-local"],
+input[type="date"],
+input[type="time"],
+input:not([type]):not(.eg-cap):not(.sg-cap),
+select {
+  padding-block: 0 !important;
+}
+
+/* ==== 复选框 / 单选钮 ====
+   悬停 = 描边转深（无彩），选中 = 机位色实底，焦点 = 机位色外环 —— 三个状态三种画法，
+   互不撞脸。原来悬停与选中都走 --accent，两者只差一个填充。 */
 input[type="checkbox"],
 input[type="radio"] {
   appearance: none;
@@ -20,19 +68,21 @@ input[type="radio"] {
   height: var(--ctl-box);
   /* UA 默认 margin: 3px 0.5ex —— 本库的勾选行一律 flex + gap 自己管间距，留着会多出一截 */
   margin: 0;
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--field-border);
   border-radius: var(--r-ctl);
-  background: var(--bg);
+  background: var(--field-bg);
   cursor: pointer;
   transition: background .12s, border-color .12s;
 }
 input[type="radio"] { border-radius: 50%; }
 input[type="checkbox"]:hover,
-input[type="radio"]:hover { border-color: var(--accent); }
+input[type="radio"]:hover { border-color: var(--field-border-hover); }
 input[type="checkbox"]:checked,
-input[type="radio"]:checked { border-color: var(--accent); }
-input[type="checkbox"]:checked { background: var(--accent); }
-/* 勾用 mask 不用背景图：颜色由 background 给 → 跟着 --bg 走，浅色主题白勾、深色主题黑勾，一份定义管两主题 */
+input[type="radio"]:checked { border-color: var(--accent-ui); }
+input[type="checkbox"]:checked { background: var(--accent-ui); }
+input[type="checkbox"]:checked:hover { background: var(--accent-ui-hover); border-color: var(--accent-ui-hover); }
+/* 勾用 mask 不用背景图：颜色由 background 给。实底是机位色，勾一律取纸色（浅色主题下就是白），
+   两主题共用一份定义。 */
 input[type="checkbox"]:checked::after {
   content: '';
   position: absolute;
@@ -43,8 +93,8 @@ input[type="checkbox"]:checked::after {
 }
 /* 半选（表格全选列的第三态）：横杠，不是勾 */
 input[type="checkbox"]:indeterminate {
-  background: var(--accent);
-  border-color: var(--accent);
+  background: var(--accent-ui);
+  border-color: var(--accent-ui);
 }
 input[type="checkbox"]:indeterminate::after {
   content: '';
@@ -61,7 +111,7 @@ input[type="radio"]:checked::after {
   position: absolute;
   inset: 3px;
   border-radius: 50%;
-  background: var(--accent);
+  background: var(--accent-ui);
 }
 input[type="checkbox"]:disabled,
 input[type="radio"]:disabled { opacity: .45; cursor: not-allowed; }
@@ -69,7 +119,8 @@ input[type="radio"]:disabled { opacity: .45; cursor: not-allowed; }
 /* ==== 滑块 ====
    不画「已走过」的填充：Chromium 没有 ::-webkit-slider-progress，只能把归一化值经 JS 写成 CSS 变量，
    而 Vue 的 :value 是改 DOM 属性不派发 input 事件，监听不到 → 外部改值时填充会停在旧位置。
-   与其留个时对时错的填充，不如细轨 + 实心钮：本库每个滑块旁边本来就跟着数值读数。 */
+   与其留个时对时错的填充，不如细轨 + 实心钮：本库每个滑块旁边本来就跟着数值读数。
+   钮取机位色 —— 它是「当前值在哪」，属于选中态。 */
 input[type="range"] {
   appearance: none;
   -webkit-appearance: none;
@@ -90,7 +141,7 @@ input[type="range"]::-webkit-slider-thumb {
   margin-top: calc((var(--ctl-track) - var(--ctl-knob)) / 2);
   border: 0;
   border-radius: 50%;
-  background: var(--accent);
+  background: var(--accent-ui);
   transition: transform .12s;
 }
 input[type="range"]:hover::-webkit-slider-thumb,
@@ -100,7 +151,12 @@ input[type="range"]:disabled::-webkit-slider-thumb { background: var(--text-fain
 
 /* ==== 数字框 ====
    原生上下箭头一律去掉：一是丑，二是它挨着输入区，工程数值改错了不容易发现。
-   滚轮误改数值的防护在 shared/ui/controls.js（纯 CSS 管不了）。 */
+   滚轮误改数值的防护在 shared/ui/controls.js（纯 CSS 管不了）。
+
+   右对齐 + 等宽数字：两者只有一起用才有意义 —— 等宽数字是为了让小数点在竖直方向对齐，
+   左对齐的话「12.5」与「1250」的小数点还是错开的，等宽白开。原来表格里是右对齐 + 等宽、
+   表单里是左对齐 + 等宽，同一个量两套口径。这里统一到右对齐；:where() 零特异度，
+   个别确实要左对齐的（如自由格式的编号框）组件里照旧覆盖得动。 */
 input[type="number"] {
   appearance: textfield;
   -moz-appearance: textfield;
@@ -111,22 +167,25 @@ input[type="number"]::-webkit-outer-spin-button {
   appearance: none;
   margin: 0;
 }
+:where(input[type="number"]) {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
 
-/* ==== 取色框 ====
-   原来 31 个取色框摊在 13 条各不相同的 CSS 上（宽 20/22/26/30、高 18/20/21/22/24、圆角有的 3px 有的 0）。 */
+/* ==== 取色框 ==== */
 input[type="color"] {
   appearance: none;
   -webkit-appearance: none;
   flex: none;
   width: 26px;
-  height: 20px;
+  height: var(--h-ctl-sm);
   padding: 0;
-  border: 1px solid var(--border);
+  border: 1px solid var(--field-border);
   border-radius: var(--r-ctl);
-  background: var(--bg);
+  background: var(--field-bg);
   cursor: pointer;
 }
-input[type="color"]:hover { border-color: var(--border-strong); }
+input[type="color"]:hover { border-color: var(--field-border-hover); }
 input[type="color"]::-webkit-color-swatch-wrapper { padding: 2px; }
 input[type="color"]::-webkit-color-swatch { border: 0; border-radius: 1px; }
 
@@ -140,22 +199,20 @@ input[type="color"]::-webkit-color-swatch { border: 0; border-radius: 1px; }
    这不是假设：全库曾有 60 条组件规则正是这么写的，2026-08-22 已逐条改成 background-color。
    其中 22 条选择器里带 select 字样（.srow select / .bar select / PFD 的裸 select …），
    另 38 条是靠类命中的（.ci / .sp-i / .bb-i / .rsp-i / .sg-search …，选择器里根本看不出有 select，
-   查的时候要从模板里 <select class="…"> 用到的类反查过来，别只 grep 'select'）。
-   下内距那条用 !important 钉死是因为 padding 简写没有「只改一半」的写法；底色有
-   background-color 这个长手，故不钉 !important——留着让组件能正常换底色。 */
+   查的时候要从模板里 <select class="…"> 用到的类反查过来，别只 grep 'select'）。 */
 select {
   appearance: none;
   -webkit-appearance: none;
-  padding: 3px 21px 3px 7px;
-  border: 1px solid var(--border);
+  padding: 0 21px 0 7px;
+  border: 1px solid var(--field-border);
   border-radius: var(--r-ctl);
-  background: var(--bg) var(--ctl-caret) no-repeat right 6px center / 10px;
+  background: var(--field-bg) var(--ctl-caret) no-repeat right 6px center / 10px;
   color: var(--text);
   cursor: pointer;
   outline: none;
 }
-select:hover { border-color: var(--border-strong); }
-select:disabled { opacity: .55; cursor: not-allowed; }
+select:hover { border-color: var(--field-border-hover); }
+select:disabled { color: var(--text-faint); background-color: var(--field-disabled-bg); cursor: not-allowed; }
 /* 右内距是给箭头留的结构性空间，不是可调参数 —— 全库有 21 处组件规则用 padding 简写重设了
    select 的内距（各种 1px 5px / 2px 6px / 3px 8px…），任一条漏掉右内距，文字就压到箭头上。
    与其逐条改、还留着下次再踩的坑，不如在这里把它钉死。
@@ -164,17 +221,118 @@ select:disabled { opacity: .55; cursor: not-allowed; }
 select { padding-right: 21px !important; }
 
 /* ==== 文本 / 数字 / 多行输入 ====
-   只给圆角与兜底描边，不碰 padding —— 各面板的行高口径不同，padding 留在原处。 */
+   描边走 --field-border 而不是 --border：可输入域必须与装饰性分隔线分开一档，
+   否则「哪几格能输入」看不出来（原来输入框描边对白底只有 1.30:1，面板底与输入底又只差 1.07:1）。 */
 input[type="text"],
 input[type="number"],
+input[type="search"],
+input[type="password"],
+input[type="datetime-local"],
+input[type="date"],
+input[type="time"],
 input:not([type]),
 textarea {
-  border: 1px solid var(--border);
+  border: 1px solid var(--field-border);
   border-radius: var(--r-ctl);
-  background: var(--bg);
+  background: var(--field-bg);
   color: var(--text);
 }
-textarea { font-family: inherit; }
+input[type="text"]:hover,
+input[type="number"]:hover,
+input[type="search"]:hover,
+input[type="password"]:hover,
+input[type="datetime-local"]:hover,
+input[type="date"]:hover,
+input[type="time"]:hover,
+input:not([type]):hover,
+textarea:hover { border-color: var(--field-border-hover); }
+input:disabled,
+textarea:disabled { color: var(--text-faint); background-color: var(--field-disabled-bg); cursor: not-allowed; }
+textarea { font-family: inherit; padding: 4px 7px; }
+
+/* ==== 占位符 ====
+   全库有 161 个 placeholder 属性、原先只有 7 条 ::placeholder 规则，其余走 UA 默认
+   （约 rgba(0,0,0,.54)）—— 比 --text-faint 还深，占位符看着比真值还实。而本平台「留空 = 走
+   默认值」是有工程含义的（雨衰页按 f.def 算），这个区分不能含糊：占位一律退到次级灰。 */
+::placeholder { color: var(--text-faint); opacity: 1; }
+
+/* ==== 按钮 ====
+   全库 581 个 <button>、229 个不同类名、原先没有任何基线，同一个窗口里普通按钮量到
+   14 / 19 / 21 / 22 四种高度。这里补两层：
+   ① :where(button) —— 零特异度兜底，只管字体、光标、圆角、描边这类「长什么样」，
+      刻意不写 height：全库有一批内容撑高的大按钮（PFD 的预置卡片实测 44~124px）与
+      定死方寸的图标钮（.tbtn 26、.actbtn 32、.zbtn 15），一刀切高度会把它们压坏。
+   ② .btn 家族 —— 显式档位，行内动作按钮一律用它，高度与输入框同为 --h-ctl，天然齐平。 */
+:where(button) {
+  font: inherit;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--r-ctl);
+  cursor: pointer;
+}
+:where(button:disabled) { cursor: not-allowed; }
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  flex: none;
+  height: var(--h-ctl);
+  padding: 0 11px;
+  font: inherit;
+  white-space: nowrap;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-ctl);
+  cursor: pointer;
+  transition: border-color .12s, background .12s, color .12s;
+}
+.btn:hover:not(:disabled) { border-color: var(--accent); }
+.btn:active:not(:disabled) { background: var(--surface-2); }
+.btn:disabled { color: var(--text-faint); background: var(--field-disabled-bg); border-color: var(--border); cursor: not-allowed; }
+/* 主操作：整个对话框 / 整块分区里只允许有一个 */
+.btn.primary { color: var(--bg); background: var(--accent-ui); border-color: var(--accent-ui); }
+.btn.primary:hover:not(:disabled) { background: var(--accent-ui-hover); border-color: var(--accent-ui-hover); }
+.btn.primary:disabled { color: var(--bg); background: color-mix(in srgb, var(--accent-ui) 38%, var(--surface)); border-color: transparent; }
+.btn.danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); }
+.btn.danger:hover:not(:disabled) { color: var(--bg); background: var(--danger); border-color: var(--danger); }
+/* 次要动作：无框，悬停才现形 */
+.btn.ghost { background: transparent; border-color: transparent; color: var(--text-muted); }
+.btn.ghost:hover:not(:disabled) { color: var(--text); background: var(--surface-2); border-color: transparent; }
+.btn.sm { height: var(--h-ctl-sm); padding: 0 8px; font-size: var(--fs-2); }
+/* 图标钮：正方形，尺寸跟着高度走 */
+.btn.icon { width: var(--h-ctl); padding: 0; }
+.btn.icon.sm { width: var(--h-ctl-sm); }
+
+/* ==== 参数行 ====
+   面板里「标签 + 控件 + 单位」的标准行。全库有 230 处 .srow，原先在三个文件里各存了一份副本
+   且已经开始漂（只有 3D 那份带 margin-bottom）。这里给出唯一口径，组件里的 scoped 副本
+   特异度更高、照旧压得过来，新代码直接用这一份。 */
+/* ★ 参数行不许把内容藏起来 —— 两条：
+   ① 标签列宽是【下限】不是【定宽】（min-width，不是 width）。定宽 + ellipsis 会把长标签切成
+      「Generatrix…」，连着五行一模一样，读者分不出哪行是根数哪行是线粗 —— 这是纯粹的信息损失。
+      改成下限之后，短标签照旧对齐在同一列，个别长标签把自己撑开，字一个都不少。
+   ② 整行可换行（flex-wrap）。分段控件那类不收缩的连体件，横着装不下时整件掉到下一行铺满，
+      而不是顶出侧栏右沿被裁掉半个字。侧栏宽度用户可拖（240~420），语言又可切，
+      「什么时候装得下」不是能写死的常数，交给 flex 自己判断。
+   列宽走变量：英文标签普遍比中文长一截，整列在 html[lang="en"] 下让位加宽（见文件末尾）。 */
+.srow { --srow-lab: 70px; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-height: var(--h-ctl); }
+.srow > label { flex: none; min-width: var(--srow-lab); max-width: 100%; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 勾选行的从属参数：缩进 19px（复选框 13 + gap 6），标签正好落在父行文字的起跑线上；
+   标签列同步由 70 收到 51 —— 两者相加仍是 70，故控件列一动不动，三列网格不破。 */
+.srow.sub { --srow-lab: 51px; padding-left: 19px; }
+.srow > .u { flex: none; min-width: 30px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+/* 参数行里的分段控件：铺满它所在的那一行、段内等分；段文字在极窄处折行而不是溢出。
+   段本身 white-space: nowrap 又不收缩，装不下时既不换行也不缩，只会直接顶出容器。 */
+.srow > .seg { flex: 1 1 auto; }
+.srow > .seg > .sg { flex: 1 1 auto; text-align: center; padding-left: 4px; padding-right: 4px; white-space: normal; }
+input.ci, select.ci, textarea.ci { flex: 1; min-width: 0; font-size: var(--fs-3); }
+/* 下拉框的可读下限：挤到装不下最长选项时，整件掉到下一行铺满，而不是把选项名裁掉半截
+   —— select 的裁切发生在它自己的内容盒里，DOM 上量不出来，只有肉眼能发现。 */
+.srow select { min-width: 116px; }
 
 /* ==== 滚动条 ====
    10px 是留白后的槽宽，实际拇指 4px：border 透明 + background-clip 让拇指缩在槽中间，
@@ -197,9 +355,23 @@ textarea { font-family: inherit; }
    全库有 112 处 outline: none、却只有 7 处 :focus-visible —— 键盘 Tab 过去基本看不出焦点在哪。
    那 112 处特异度都高过元素选择器，故这里用 !important 压一道；:where() 把特异度压到最低，
    谁要就地改样式照旧改得动（同样带 !important 即可）。outline-offset 不加 !important，
-   留给个别控件就地内缩（如环境场开关条的 -3px）。 */
-:where(input, select, textarea, button, summary, [tabindex]):focus-visible {
-  outline: 1px solid var(--accent) !important;
+   留给个别控件就地内缩（如环境场开关条的 -3px）。
+   2px 机位色：原来是 1px --accent（近黑），落在本来就有 1px 深描边的控件上读起来像双层边框，
+   与悬停态分不开；WCAG 2.2 SC 2.4.11 也要求焦点指示至少 2px。
+
+   ★ 只描「自己就是焦点落点」的控件，不描「代替别人接键盘的容器」★
+   本库有一类元素：自己不可见（或就是一整块滚动区），接住键盘只是为了把按键转给内部的当前项，
+   焦点指示由那个当前项自己画。给它们再描一圈，就是用户看到的「双重聚焦框」。两类：
+   ① 表格的常驻捕获输入框 .eg-cap / .sg-cap —— 透明、absolute 铺满单元格、tabindex="-1"，
+      指示由单元格画（.eg-c.active 的内环 / .sg-cell.focus 的 outline）。它们是 <input>，
+      会从 input 这一支漏进来，故按类名显式排除。
+   ② 一切 tabindex 容器 —— 故把 [tabindex] 整支从选择器里去掉。全库 11 处 tabindex="0" 全是
+      这种键盘宿主：两张表的滚动区 .eg-scroll / .sg-scroll、资源库列表 .lbl-list、卫星列表
+      视口 .slvp、配置树列 .lb-col-bd、频率条 .stripwrap、时间轴刻度尺 .tb-track，
+      无一例外由子项画选中态，且大多本来就写了 outline: none。时间轴那处更早就为此专门做了
+      .kbf 开关（见 2026-08-23 那次），正是同一个坑。 */
+:where(input:not(.eg-cap):not(.sg-cap), select, textarea, button, summary):focus-visible {
+  outline: 2px solid var(--accent-ui) !important;
   outline-offset: 1px;
 }
 
@@ -230,10 +402,18 @@ textarea { font-family: inherit; }
   background: var(--bg);
   transition: transform .15s;
 }
-.layersw.on { background: var(--accent); }
+.layersw.on { background: var(--accent-ui); }
 .layersw.on > i { transform: translateX(12px); }
 .layersw:hover { background: color-mix(in srgb, var(--text) 22%, var(--border-strong)); }
-.layersw.on:hover { background: color-mix(in srgb, var(--text) 22%, var(--accent)); }
+.layersw.on:hover { background: var(--accent-ui-hover); }
 .layersw.lg { width: 40px; height: 22px; border-radius: 11px; }
 .layersw.lg > i { width: 18px; height: 18px; }
 .layersw.lg.on > i { transform: translateX(18px); }
+
+/* ==== 英文版式让位（根元素 lang="en" 由 i18n 运行时打上）====
+   同一个参数名，英文普遍比中文长一截（透明度 4 字 ≈ 48px，Opacity ≈ 58px；母线线型 ≈ 60px，
+   Ray Style ≈ 62px），窄标签列在英文下装不住。整列加宽而不是逐条缩字号 / 截断 ——
+   版式的账不该记到内容头上。参数行本身已经是「下限 + 可换行」，这里只是把下限抬到英文的量级，
+   让绝大多数标签仍然对齐在同一列上。 */
+html[lang="en"] .srow { --srow-lab: 92px; }
+html[lang="en"] .srow.sub { --srow-lab: 73px; }

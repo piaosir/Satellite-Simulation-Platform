@@ -262,29 +262,29 @@ const rows = computed(() => {
 <style scoped>
 .rsp { max-width: 940px; }
 .rsp-modes { display: flex; align-items: center; gap: 6px; margin-bottom: 10px; }
-.rsp-seg { font-size: 12px; padding: 4px 12px; border: 1px solid var(--border); background: var(--bg); color: var(--text-muted); border-radius: var(--r-box); cursor: pointer; }
+.rsp-seg { font-size: var(--fs-3); height: var(--h-ctl); white-space: nowrap; padding: 0 12px; border: 1px solid var(--border); background: var(--bg); color: var(--text-muted); border-radius: var(--r-box); cursor: pointer; }
 .rsp-seg.on { background: var(--accent); color: var(--bg); border-color: var(--accent); }
 .rsp-flex { flex: 1; }
-.rsp-clear { font-size: 11px; padding: 3px 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text-muted); border-radius: var(--r-box); cursor: pointer; }
+.rsp-clear { font-size: var(--fs-2); height: var(--h-ctl); white-space: nowrap; padding: 0 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text-muted); border-radius: var(--r-box); cursor: pointer; }
 .rsp-grd { margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px dashed var(--border); }
 .rsp-grd .pf { margin-bottom: 6px; }
-.rsp-tip { font-size: 11px; color: var(--text-faint); line-height: 1.5; margin-top: 2px; }
+.rsp-tip { font-size: var(--fs-2); color: var(--text-faint); line-height: 1.5; margin-top: 2px; }
 .rsp-err { color: var(--danger); }
 .rsp-list { list-style: none; margin: 4px 0; padding: 0; max-height: 200px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--r-box); }
 .rsp-list li { padding: 5px 8px; cursor: pointer; border-bottom: 1px solid var(--border); }
 .rsp-list li:last-child { border-bottom: none; }
 .rsp-list li:hover { background: var(--surface); }
 .rsp-list li.on { background: var(--surface-2); }
-.rsp-li-n { display: block; font-size: 12px; color: var(--text); }
-.rsp-li-i { display: block; font-size: 10px; color: var(--text-faint); font-family: var(--font-mono); }
-.rsp-badge { display: inline-block; font-size: 9px; font-style: normal; padding: 0 5px; margin-left: 5px; border-radius: var(--r-pill); background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); vertical-align: middle; }
+.rsp-li-n { display: block; font-size: var(--fs-3); color: var(--text); }
+.rsp-li-i { display: block; font-size: var(--fs-1); color: var(--text-faint); font-family: var(--font-mono); }
+.rsp-badge { display: inline-block; font-size: var(--fs-1); font-style: normal; padding: 0 5px; margin-left: 5px; border-radius: var(--r-pill); background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); vertical-align: middle; }
 .rsp-badge-cc { background: var(--accent); color: var(--bg); border-color: var(--accent); }
 /* 轨道区制徽标配色（列表）：GEO 绿 / IGSO 青 / MEO 蓝 / HEO 琥珀（LEO 不显示徽标） */
 .rsp-badge.rsp-rg-GEO { background: #16a34a1a; color: #16a34a; border-color: #16a34a55; }
 .rsp-badge.rsp-rg-IGSO { background: #0d94881a; color: #0d9488; border-color: #0d948855; }
 .rsp-badge.rsp-rg-MEO { background: #2563eb1a; color: #2563eb; border-color: #2563eb55; }
 .rsp-badge.rsp-rg-HEO { background: #f59f0022; color: #d98600; border-color: #f59f0055; }
-.rsp-sel { font-size: 11px; color: var(--text-muted); background: var(--surface); border-radius: var(--r-box); padding: 6px 8px; margin-bottom: 10px; }
+.rsp-sel { font-size: var(--fs-2); color: var(--text-muted); background: var(--surface); border-radius: var(--r-box); padding: 6px 8px; margin-bottom: 10px; }
 /* 卫星名可框选复制（覆盖全局 user-select:none），文本光标作可选的提示 —— 方便用户复制去改名 */
 .rsp-name { user-select: text; -webkit-user-select: text; cursor: text; }
 .rsp-shape { margin-top: 4px; padding-top: 4px; border-top: 1px dashed var(--border); }
@@ -300,19 +300,19 @@ const rows = computed(() => {
 /* 整行占位：令下一字段另起一行（上/下行干扰分行用）；零高度，仅靠栅格行距形成一点间隔，不加边框/底色 */
 .rsp-break { grid-column: 1 / -1; height: 0; }
 .rsp-f { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-.rsp-l { font-size: 12px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rsp-l { font-size: var(--fs-3); color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .rsp-l i { color: var(--text-faint); font-style: normal; }
-.rsp-i { font: inherit; font-size: 12px; padding: 4px 7px; width: 100%; background-color: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
-.rsp-i:focus { outline: none; border-color: var(--accent); }
+.rsp-i { font: inherit; font-size: var(--fs-3); padding: 4px 7px; width: 100%; background-color: var(--field-bg); color: var(--text); border: 1px solid var(--field-border); border-radius: var(--r-ctl, 2px); }
+.rsp-i:focus { outline: none; border-color: var(--accent-ui); }
 .rsp-i.mono { font-family: var(--font-mono); }
 .rsp-i.auto { background-color: var(--surface); color: var(--text-muted); cursor: not-allowed; }
 /* 取星区（树/搜索）与方向图区沿用 pf 行式，仅放宽选择列。
    标签列 108px：容得下最长的「对地EIRP 天线」，四面天线与两个取星器的输入列因此对齐同一根轴 */
 .pf { display: grid; grid-template-columns: 108px minmax(180px, 320px) 30px; align-items: center; gap: 6px; margin-bottom: 6px; }
-.pf-l { font-size: 12px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.pf-i { font: inherit; font-size: 12px; padding: 4px 7px; width: 100%; background-color: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl); }
-.pf-i:focus { outline: none; border-color: var(--accent); }
+.pf-l { font-size: var(--fs-3); color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pf-i { font: inherit; font-size: var(--fs-3); padding: 4px 7px; width: 100%; background-color: var(--field-bg); color: var(--text); border: 1px solid var(--field-border); border-radius: var(--r-ctl); }
+.pf-i:focus { outline: none; border-color: var(--accent-ui); }
 .pf-i.mono { font-family: var(--font-mono); }
 .pf-i.auto { background-color: var(--surface); color: var(--text-muted); cursor: not-allowed; }
-.pf-u { font-size: 11px; color: var(--text-faint); font-style: normal; }
+.pf-u { font-size: var(--fs-2); color: var(--text-faint); font-style: normal; }
 </style>

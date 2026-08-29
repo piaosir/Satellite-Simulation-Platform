@@ -11,8 +11,8 @@
 
 <style scoped>
 .ph { padding: 40px 32px; color: var(--text-muted); height: 100%; overflow-y: auto; }
-.ph h2 { font-size: 18px; color: var(--text); margin-bottom: 10px; }
+.ph h2 { font-size: var(--fs-6); color: var(--text); margin-bottom: 10px; }
 .ph p { margin: 6px 0; max-width: 560px; line-height: 1.7; }
-.hint { color: var(--text-faint); font-size: 12.5px; }
-code { font-family: var(--font-mono); background: var(--surface); padding: 1px 5px; }
+.hint { color: var(--text-faint); font-size: var(--fs-4); }
+code { font-family: var(--font-code); background: var(--surface); padding: 1px 5px; }
 </style>

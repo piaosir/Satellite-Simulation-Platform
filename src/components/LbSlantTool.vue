@@ -67,7 +67,7 @@ function fill(scope) { if (canFill.value) emit('fill', { altKm: hNum.value, scop
       <div class="slt-hd">
         斜距工具<span v-if="sideLabel" class="slt-sub">· {{ sideLabel }}</span>
         <span class="slt-sp"></span>
-        <button class="slt-x" title="关闭" aria-label="关闭" @click="emit('close')"><Icon name="x" :size="13" /></button>
+        <button class="slt-x" title="关闭" aria-label="关闭" @click="emit('close')"><Icon name="x" :size="12" /></button>
       </div>
 
       <div class="slt-bd">
@@ -125,9 +125,9 @@ function fill(scope) { if (canFill.value) emit('fill', { altKm: hNum.value, scop
 
 <style scoped>
 .slt-mask { position: fixed; inset: 0; background: rgba(0, 0, 0, .38); display: flex; align-items: center; justify-content: center; z-index: 60; }
-.slt { width: 360px; max-height: 88vh; display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--border-strong, var(--border)); border-radius: var(--r-card, 4px); box-shadow: 0 8px 30px rgba(0, 0, 0, .25); }
-.slt-hd { display: flex; align-items: center; gap: 6px; padding: 8px 10px; font-size: 13px; color: var(--text); border-bottom: 1px solid var(--border); }
-.slt-sub { color: var(--text-faint); font-size: 12px; }
+.slt { width: 360px; max-height: 88vh; display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--border-strong, var(--border)); border-radius: var(--r-card, 4px); box-shadow: var(--shadow-3); }
+.slt-hd { display: flex; align-items: center; gap: 6px; padding: 8px 10px; font-size: var(--fs-4); color: var(--text); border-bottom: 1px solid var(--border); }
+.slt-sub { color: var(--text-faint); font-size: var(--fs-3); }
 .slt-sp { flex: 1; }
 .slt-x { display: inline-flex; align-items: center; padding: 2px; background: none; border: none; color: var(--text-muted); cursor: pointer; }
 .slt-x:hover { color: var(--text); }
@@ -135,16 +135,16 @@ function fill(scope) { if (canFill.value) emit('fill', { altKm: hNum.value, scop
 .slt-sep { height: 1px; background: var(--border); margin: 9px 0; }
 .slt-f { display: grid; grid-template-columns: 62px 1fr 26px; align-items: center; gap: 6px; }
 .slt-f + .slt-f { margin-top: 5px; }
-.slt-l { font-size: 12px; color: var(--text-muted); }
-.slt-in { font: inherit; font-size: 12px; padding: 4px 7px; width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
-.slt-in:focus { outline: none; border-color: var(--accent); }
-.slt-u { font-size: 11px; color: var(--text-faint); font-style: normal; }
+.slt-l { font-size: var(--fs-3); color: var(--text-muted); }
+.slt-in { font: inherit; font-size: var(--fs-3); padding: 4px 7px; width: 100%; background: var(--field-bg); color: var(--text); border: 1px solid var(--field-border); border-radius: var(--r-ctl, 2px); }
+.slt-in:focus { outline: none; border-color: var(--accent-ui); }
+.slt-u { font-size: var(--fs-2); color: var(--text-faint); font-style: normal; }
 .mono { font-family: var(--font-mono); }
 .slt-out { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px; margin: 6px 0 0 68px; }
-.slt-big { font-size: 16px; color: var(--accent); }
-.slt-out i { font-size: 11px; color: var(--text-faint); font-style: normal; }
-.slt-aux { font-size: 11px; color: var(--text-muted); }
-.slt-tb { width: 100%; border-collapse: collapse; font-size: 11px; }
+.slt-big { font-size: var(--fs-5); color: var(--accent); }
+.slt-out i { font-size: var(--fs-2); color: var(--text-faint); font-style: normal; }
+.slt-aux { font-size: var(--fs-2); color: var(--text-muted); }
+.slt-tb { width: 100%; border-collapse: collapse; font-size: var(--fs-2); }
 .slt-tb th { text-align: right; font-weight: 500; color: var(--text-faint); padding: 2px 6px; border-bottom: 1px solid var(--border); }
 .slt-tb td { text-align: right; padding: 2px 6px; color: var(--text-muted); }
 .slt-tb tr.on td { color: var(--text); background: var(--surface); }
@@ -153,7 +153,7 @@ function fill(scope) { if (canFill.value) emit('fill', { altKm: hNum.value, scop
 .slt-out, .slt-tb td { user-select: text; -webkit-user-select: text; cursor: text; }
 .slt-ft { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-top: 1px solid var(--border); }
 /* 页脚按钮：与工作台 .lb-mini 同款（宿主样式是 scoped，进不到子组件，故本组件自带一份） */
-.slt-btn { font: inherit; font-size: 11px; line-height: 1; padding: 4px 9px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
+.slt-btn { font: inherit; font-size: var(--fs-2); line-height: 1; padding: 4px 9px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
 .slt-btn:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
 .slt-btn:disabled { opacity: .45; cursor: not-allowed; }
 </style>

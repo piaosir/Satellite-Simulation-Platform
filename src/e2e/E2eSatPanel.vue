@@ -258,10 +258,10 @@ const unresolved = computed(() => {
 
 <style scoped>
 .esp { display: flex; flex-direction: column; }
-.esp-sub { margin: 9px 0 3px; padding-bottom: 2px; font-size: 11.5px; letter-spacing: var(--ls-label); color: var(--text-muted); border-bottom: 1px solid var(--lb-rule); }
+.esp-sub { margin: 9px 0 3px; padding-bottom: 2px; font-size: var(--fs-3); letter-spacing: var(--ls-label); color: var(--text-muted); border-bottom: 1px solid var(--lb-rule); }
 .esp-seg { display: flex; gap: 0; margin: 4px 0 6px; }
 .esp-segb {
-  font: inherit; font-size: 11.5px; line-height: 1; padding: 4px 14px; cursor: pointer;
+  font: inherit; font-size: var(--fs-3); line-height: 1; padding: 4px 14px; cursor: pointer;
   background: var(--bg); color: var(--text-muted); border: 1px solid var(--border);
 }
 .esp-segb:first-child { border-radius: var(--r-ctl, 2px) 0 0 var(--r-ctl, 2px); }
@@ -269,34 +269,34 @@ const unresolved = computed(() => {
 .esp-segb.on { background: var(--accent); color: var(--bg); border-color: var(--accent); }
 .esp-modes { display: flex; align-items: center; gap: 6px; margin: 8px 0 5px; }
 .esp-tab {
-  font: inherit; font-size: 11px; padding: 3px 9px; cursor: pointer;
+  font: inherit; font-size: var(--fs-2); height: var(--h-ctl); white-space: nowrap; padding: 0 9px; cursor: pointer;
   background: transparent; color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px);
 }
 .esp-tab.on { color: var(--text); border-color: var(--accent); }
 .esp-flex { flex: 1; }
-.esp-clear { font: inherit; font-size: 11px; padding: 3px 8px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
+.esp-clear { font: inherit; font-size: var(--fs-2); height: var(--h-ctl); white-space: nowrap; padding: 0 8px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
 .esp-pick { margin-bottom: 4px; }
 .esp-in {
-  width: 100%; font: inherit; font-size: 11.5px; padding: 3px 6px;
-  color: var(--text); background-color: var(--bg); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px);
+  width: 100%; font: inherit; font-size: var(--fs-3); padding: 3px 6px;
+  color: var(--text); background-color: var(--field-bg); border: 1px solid var(--field-border); border-radius: var(--r-ctl, 2px);
 }
-.esp-in:focus { outline: none; border-color: var(--accent); }
-.esp-tip { font-size: 11px; color: var(--text-muted); line-height: 1.5; margin-top: 3px; }
+.esp-in:focus { outline: none; border-color: var(--accent-ui); }
+.esp-tip { font-size: var(--fs-2); color: var(--text-muted); line-height: 1.5; margin-top: 3px; }
 .esp-err { color: var(--danger); }
 .esp-list { list-style: none; margin: 4px 0 0; padding: 0; max-height: 200px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
 .esp-list li { padding: 4px 7px; cursor: pointer; border-bottom: 1px solid var(--lb-rule-soft); }
 .esp-list li:last-child { border-bottom: none; }
 .esp-list li:hover { background: var(--surface); }
 .esp-list li.on { background: var(--surface-2); }
-.esp-li-n { display: block; font-size: 11.5px; color: var(--text); }
-.esp-li-i { display: block; font-size: 10px; color: var(--text-muted); font-family: var(--font-mono); }
-.esp-badge { display: inline-block; font-size: 9px; font-style: normal; padding: 0 5px; margin-left: 5px; border-radius: var(--r-pill); background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); vertical-align: middle; }
+.esp-li-n { display: block; font-size: var(--fs-3); color: var(--text); }
+.esp-li-i { display: block; font-size: var(--fs-1); color: var(--text-muted); font-family: var(--font-mono); }
+.esp-badge { display: inline-block; font-size: var(--fs-1); font-style: normal; padding: 0 5px; margin-left: 5px; border-radius: var(--r-pill); background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); vertical-align: middle; }
 .esp-badge-cc { background: var(--accent); color: var(--bg); border-color: var(--accent); }
 .esp-badge.esp-rg-GEO { background: #16a34a1a; color: #16a34a; border-color: #16a34a55; }
 .esp-badge.esp-rg-IGSO { background: #0d94881a; color: #0d9488; border-color: #0d948855; }
 .esp-badge.esp-rg-MEO { background: #2563eb1a; color: #2563eb; border-color: #2563eb55; }
 .esp-badge.esp-rg-HEO { background: #f59f0022; color: #d98600; border-color: #f59f0055; }
-.esp-sel { font-size: 11px; color: var(--text-muted); background: var(--surface); border-radius: var(--r-ctl, 2px); padding: 5px 7px; margin: 4px 0 2px; }
+.esp-sel { font-size: var(--fs-2); color: var(--text-muted); background: var(--surface); border-radius: var(--r-ctl, 2px); padding: 5px 7px; margin: 4px 0 2px; }
 .esp-name { user-select: text; -webkit-user-select: text; cursor: text; color: var(--text); }
 .esp-shape { margin-top: 3px; padding-top: 3px; border-top: 1px dashed var(--border); }
 .esp-regime { font-weight: 700; }

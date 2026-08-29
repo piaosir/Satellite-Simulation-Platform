@@ -51,10 +51,10 @@ onMounted(load)
 <style scoped>
 .hist { padding: 20px 24px; height: 100%; overflow-y: auto; }   /* 外层 .content 已 overflow:hidden，滚动由页内承担 */
 .head { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; }
-.head h2 { font-size: 18px; }
-.head button { border: 1px solid var(--border); background: var(--bg); padding: 3px 10px; cursor: pointer; }
+.head h2 { font-size: var(--fs-6); }
+.head button { border: 1px solid var(--border); background: var(--bg); height: var(--h-ctl); white-space: nowrap; padding: 0 10px; cursor: pointer; }
 .empty { color: var(--text-faint); padding: 20px 0; }
-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+table { width: 100%; border-collapse: collapse; font-size: var(--fs-4); }
 th { text-align: left; color: var(--text-muted); font-weight: 500; border-bottom: 1px solid var(--border-strong); padding: 6px 8px; }
 td { padding: 6px 8px; border-bottom: 1px solid var(--border); }
 .link { border: 0; background: none; color: var(--danger); cursor: pointer; padding: 0; }

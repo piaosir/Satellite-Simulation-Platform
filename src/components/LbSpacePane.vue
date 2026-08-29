@@ -501,7 +501,7 @@ defineExpose({
 </template>
 
 <style scoped>
-.sp { font-family: var(--lb-serif, var(--font-serif)); min-width: 0; }
+.sp { font-family: var(--font-ui); min-width: 0; }
 /* 题行：图名用三线表的小题语言（加粗 + 1px 题线） */
 .sp-hd {
   display: flex; align-items: baseline; gap: 8px;
@@ -524,7 +524,7 @@ defineExpose({
 .sp-sel-n, .sp-sel-s { max-width: 8em; }
 /* 线密 / 地图：选项只有一两个字，按内容收窄（撑到 8em 会在控制条上白占两格） */
 .sp-sel-t { max-width: 5.6em; }
-.sp-sel:focus, .sp-in:focus { outline: none; border-color: var(--accent); }
+.sp-sel:focus, .sp-in:focus { outline: none; border-color: var(--accent-ui); }
 .sp-in { width: 4.4em; text-align: right; font-variant-numeric: tabular-nums; }
 .sp-rng { display: inline-flex; align-items: center; gap: 3px; }
 .sp-dash { color: var(--text-faint); }

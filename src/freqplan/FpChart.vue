@@ -123,7 +123,8 @@ const legendItems = computed(() => L.value.legend?.items || [])
 
 <style scoped>
 .fpc { overflow: auto; background: var(--bg); }
-.fpc-svg { display: block; font-family: var(--font-serif); }
+/* 屏上跟界面走无衬线；导出（shared/freqPlanRender.js 的 toSvg / PNG）另走 SERIF_STACK，两条路径本就分开 */
+.fpc-svg { display: block; font-family: var(--font-ui); }
 .fpc-title { fill: var(--text); font-weight: 600; }
 .fpc-dim { fill: var(--text-muted); }
 .fpc-pol { fill: var(--text); }

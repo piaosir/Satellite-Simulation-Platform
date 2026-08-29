@@ -221,15 +221,15 @@ watch(() => props.sel.fpId, loadFpPlan)
 /* 取星行内容：横排「标签 + 选择框」三组 + 尾部提示，窄窗自动折行 */
 .sp-gmain { display: flex; align-items: center; flex-wrap: wrap; gap: 5px 16px; min-width: 0; }
 .sp-gf { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; }
-.sp-gl { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
+.sp-gl { font-size: var(--fs-3); color: var(--text-muted); white-space: nowrap; }
 /* 188px 是常规宽度；资源库栏可拖窄，故允许压缩（min-width:0）而不撑破栏宽 */
-.sp-gi { font: inherit; font-size: 12px; flex: 0 1 188px; width: 188px; min-width: 0; padding: 3px 6px; cursor: pointer; background-color: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
-.sp-gi:focus { outline: none; border-color: var(--accent); }
+.sp-gi { font: inherit; font-size: var(--fs-3); flex: 0 1 188px; width: 188px; min-width: 0; padding: 3px 6px; cursor: pointer; background-color: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
+.sp-gi:focus { outline: none; border-color: var(--accent-ui); }
 /* 未匹配态压成弱色：一眼看出哪一路还没接上方向图 */
 .sp-gi.unset { color: var(--text-faint); }
-.sp-tip { font-size: 11px; color: var(--text-faint); line-height: 1.5; }
+.sp-tip { font-size: var(--fs-2); color: var(--text-faint); line-height: 1.5; }
 /* 直接导入 / 删除方向图：与取星选择框同高的小按钮 */
-.sp-gbtn { display: inline-flex; align-items: center; gap: 4px; font: inherit; font-size: 12px; padding: 3px 8px; cursor: pointer; white-space: nowrap; background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
+.sp-gbtn { display: inline-flex; align-items: center; gap: 4px; font: inherit; font-size: var(--fs-3); padding: 3px 8px; cursor: pointer; white-space: nowrap; background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
 .sp-gbtn:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
 .sp-gbtn:disabled { opacity: .55; cursor: default; }
 
@@ -237,16 +237,16 @@ watch(() => props.sel.fpId, loadFpPlan)
 /* 整行占位：令下一字段另起一行（上/下行干扰分行用）；零高度，仅靠栅格行距形成一点间隔，不加边框/底色（不做成分区块） */
 .sp-break { grid-column: 1 / -1; height: 0; }
 .sp-f { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-.sp-l { font-size: 12px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sp-l { font-size: var(--fs-3); color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sp-l i { color: var(--text-faint); font-style: normal; }
-.sp-i { font: inherit; font-size: 12px; padding: 4px 7px; width: 100%; background-color: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
-.sp-i:focus { outline: none; border-color: var(--accent); }
+.sp-i { font: inherit; font-size: var(--fs-3); padding: 4px 7px; width: 100%; background-color: var(--field-bg); color: var(--text); border: 1px solid var(--field-border); border-radius: var(--r-ctl, 2px); }
+.sp-i:focus { outline: none; border-color: var(--accent-ui); }
 .sp-i.mono { font-family: var(--font-mono); }
 /* 频率计划引用行：与方向图行同构，两条虚线分隔三段（方向图 / 频率计划 / 参数） */
 .sp-fp { margin-top: -2px; }
 .sp-gi.wide { flex: 0 1 300px; width: 300px; font-family: var(--font-mono); }
 /* 被频率计划托管的字段：只读 + 淡显，一眼看出「这个数不归这里管」 */
 .sp-i.managed { background-color: var(--surface-2); color: var(--text-muted); cursor: default; }
-.sp-i.managed:focus { border-color: var(--border); }
-.sp-lk { font-style: normal; color: var(--text-faint); font-size: 10.5px; margin-left: 3px; }
+.sp-i.managed:focus { border-color: var(--field-border); }
+.sp-lk { font-style: normal; color: var(--text-faint); font-size: var(--fs-2); margin-left: 3px; }
 </style>

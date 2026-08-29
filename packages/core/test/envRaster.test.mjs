@@ -42,9 +42,10 @@ const LAND = new Uint8Array(NX * NY).fill(1); LAND[0] = 0
 // ② 色标两端与单调性
 {
   const rgba = colorize(Z, null, { lo: 0, hi: 3, scheme: 'turbo', bands: 0, opacity: 1 })
-  const lut = colorLut('turbo', false)
+  const lut = colorLut('turbo', false)      // ★ 四通道（RGBA）：科学色图一律 alpha=255，气象色阶自带逐级 alpha
+  ok('查找表是 RGBA 四通道', lut.length === 256 * 4 && lut[3] === 255)
   ok('低端取色标首色', px(rgba, 0)[0] === lut[0] && px(rgba, 0)[2] === lut[2])
-  ok('高端取色标末色', px(rgba, 3)[0] === lut[255 * 3] && px(rgba, 3)[2] === lut[255 * 3 + 2])
+  ok('高端取色标末色', px(rgba, 3)[0] === lut[255 * 4] && px(rgba, 3)[2] === lut[255 * 4 + 2])
   const inv = colorize(Z, null, { lo: 0, hi: 3, scheme: 'turbo', invert: true, opacity: 1 })
   ok('反相 = 首末对调', px(inv, 0)[0] === px(rgba, 3)[0] && px(inv, 3)[0] === px(rgba, 0)[0])
   // 域外值夹紧（不 wrap 成另一端的颜色）
@@ -64,6 +65,45 @@ const LAND = new Uint8Array(NX * NY).fill(1); LAND[0] = 0
   ok('分档边界 = [0,1,2]', e.join() === '0,1,2')
   ok('图例分级给每档一色', legendStops('turbo', false, 2).length === 2)
   ok('图例连续给渐变采样', legendStops('turbo', false, 0).length === 32)
+}
+
+// ③b 气象业务色阶：低值透明 + 锚点归一 + 整层透明度只作乘数
+{
+  const { levelNorm, levelTicks, isMetScheme } = await import('../../../src/viz/env/metPalette.js')
+  ok('气象色阶被识别', isMetScheme('precip') && isMetScheme('atten') && !isMetScheme('turbo'))
+
+  // 低值透明是「一个矩形色块」与「一片雨区」的全部差别
+  const lut = colorLut('precip', false)
+  ok('降水色阶最低档全透明', lut[3] === 0)
+  ok('降水色阶最高档不透明', lut[255 * 4 + 3] === 255)
+  ok('alpha 单调不降', (() => { for (let i = 1; i < 256; i++) if (lut[i * 4 + 3] < lut[(i - 1) * 4 + 3]) return false; return true })())
+
+  // 锚点归一：值轴不等距、色轴等距
+  const LV = [0, 0.1, 0.5, 1, 2, 4, 8, 16, 32, 64]
+  ok('锚点最低端 → 0', levelNorm(0, LV) === 0 && levelNorm(-1, LV) === 0)
+  ok('锚点最高端 → 1（夹紧不外推）', levelNorm(64, LV) === 1 && levelNorm(9999, LV) === 1)
+  ok('第 k 个锚点 → k/(n−1)', Math.abs(levelNorm(4, LV) - 5 / 9) < 1e-9, String(levelNorm(4, LV)))
+  ok('段内线性：0.05 → 半段', Math.abs(levelNorm(0.05, LV) - 0.5 / 9) < 1e-9)
+  // ★ 这一条正是「主区糊成一个颜色」的判据：0~1 mm/h 的常见雨在线性铺色下只占色带的 1.6%
+  const lin = (1 - 0) / 64
+  ok('常见雨强段：锚点给 1/3 色带，线性只给 1.6%', Math.abs(levelNorm(1, LV) - 3 / 9) < 1e-9 && lin < 0.02)
+  ok('图例刻度色轴等距', levelTicks(LV).every((t, i) => Math.abs(t.u - i / 9) < 1e-9))
+
+  // levels 给了就不看 lo/hi
+  const V = new Float32Array([0, 1, 64])
+  const byLv = colorize(V, null, { scheme: 'precip', levels: LV, lo: -999, hi: 999, opacity: 1 })
+  ok('给了 levels 就走锚点，lo/hi 不参与', px(byLv, 2).join() === px(colorize(V, null, { scheme: 'precip', levels: LV, lo: 0, hi: 1, opacity: 1 }), 2).join())
+
+  // 整层透明度乘在逐像素 alpha 上，不是覆盖它
+  const half = colorize(V, null, { scheme: 'precip', levels: LV, opacity: 0.5 })
+  const full = colorize(V, null, { scheme: 'precip', levels: LV, opacity: 1 })
+  ok('整层透明度 = 逐像素 alpha × mul', Math.abs(half[2 * 4 + 3] - full[2 * 4 + 3] * 0.5) <= 1)
+  ok('本来就透明的格不会被 mul 变成不透明', half[3] === 0 && full[3] === 0)
+
+  // 图例照实带 alpha 出（图上半透明、图例画实色 → 人会读错）
+  const st = legendStops('precip', false, 0)
+  ok('气象色阶图例低端出 rgba', /^rgba\(/.test(st[0].css), st[0].css)
+  ok('科学色图图例仍出 rgb', /^rgb\(/.test(legendStops('turbo', false, 0)[0].css))
 }
 
 // ④ 值域：分位拉伸 vs 极值

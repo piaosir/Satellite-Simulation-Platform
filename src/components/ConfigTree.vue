@@ -184,12 +184,12 @@ function onRowClick(row) {
       <span v-for="d in row.depth" :key="'g' + d" class="lb-tree-guide" :style="{ left: (13 + (d - 1) * 14) + 'px' }"></span>
 
       <span v-if="row.isFolder" class="lb-tree-chev" @click.stop="emit('toggle', row.item)">
-        <Icon :name="expanded.has(row.item.id) ? 'chevron-down' : 'chevron-right'" :size="13" />
+        <Icon :name="expanded.has(row.item.id) ? 'chevron-down' : 'chevron-right'" :size="12" />
       </span>
       <span v-else class="lb-tree-chev empty"></span>
       <!-- ★ 两类行都占这个图标位：名称起点因此与深度严格单调（见文件头注） -->
       <span class="lb-tree-fi" :class="{ cfg: !row.isFolder }">
-        <Icon :name="row.isFolder ? (expanded.has(row.item.id) ? 'folder-open' : 'folder') : 'file-text'" :size="13" />
+        <Icon :name="row.isFolder ? (expanded.has(row.item.id) ? 'folder-open' : 'folder') : 'file-text'" :size="12" />
       </span>
 
       <input
@@ -215,25 +215,25 @@ function onRowClick(row) {
 
 <style scoped>
 .lb-tree { list-style: none; margin: 0; padding: 0; min-height: 100%; user-select: none; }
-.lb-tree.rootdrop { box-shadow: inset 0 0 0 1.5px var(--accent); border-radius: var(--r-ctl); }
+.lb-tree.rootdrop { box-shadow: inset 0 0 0 1.5px var(--accent-ui); border-radius: var(--r-ctl); }
 
 .lb-tree-row {
   position: relative; display: flex; align-items: flex-start; gap: 4px;
-  padding: 5px 6px; font-size: 12px; cursor: pointer;
+  padding: 5px 6px; font-size: var(--fs-3); cursor: pointer;
   border-radius: var(--r-ctl); color: var(--text-muted);
 }
 .lb-tree-row:hover { background: var(--surface-2); color: var(--text); }
-.lb-tree-row.on { background: var(--surface-2); color: var(--text); box-shadow: inset 2px 0 0 var(--accent); }
+.lb-tree-row.on { background: var(--surface-2); color: var(--text); box-shadow: inset 2px 0 0 var(--accent-ui); }
 .lb-tree-row.folder { color: var(--text); }
 /* 焦点项＝键盘与右键的落点，与「已载入」（.on）分开：右键时看得出在对哪一行操作 */
 .lb-tree-row.focus { box-shadow: inset 0 0 0 1px var(--border-strong); }
-.lb-tree-row.on.focus { box-shadow: inset 2px 0 0 var(--accent), inset 0 0 0 1px var(--border-strong); }
+.lb-tree-row.on.focus { box-shadow: inset 2px 0 0 var(--accent-ui), inset 0 0 0 1px var(--border-strong); }
 .lb-tree-row.cut { opacity: .5; }
 .lb-tree-row.dragging { opacity: .4; }
 /* 拖放指示：插入线（before/after）用 inset box-shadow 不占位；落入文件夹用环 + 底色 */
-.lb-tree-row.dropbefore { box-shadow: inset 0 2px 0 var(--accent); }
-.lb-tree-row.dropafter { box-shadow: inset 0 -2px 0 var(--accent); }
-.lb-tree-row.dropinside { background: var(--surface-2); box-shadow: inset 0 0 0 1.5px var(--accent); }
+.lb-tree-row.dropbefore { box-shadow: inset 0 2px 0 var(--accent-ui); }
+.lb-tree-row.dropafter { box-shadow: inset 0 -2px 0 var(--accent-ui); }
+.lb-tree-row.dropinside { background: var(--surface-2); box-shadow: inset 0 0 0 1.5px var(--accent-ui); }
 
 /* 层级导引线：top/bottom 拉满整行（含 5px 上下 padding），逐行首尾相接 */
 .lb-tree-guide { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--border); pointer-events: none; }
@@ -250,7 +250,7 @@ function onRowClick(row) {
    折行第二行从本 span 的左缘起，也就是名称起点——层级不会因此断掉。 */
 .lb-tree-nm { flex: 0 1 auto; min-width: 0; overflow-wrap: anywhere; line-height: 1.35; }
 /* 计数徽标紧跟名称（空文件夹显示 0，与「未展开」区分开）；hover 时让位给动作区 */
-.lb-tree-count { flex: none; margin-top: 1px; font-size: 10px; line-height: 1; padding: 2px 5px; border-radius: var(--r-pill); background: var(--surface-2); color: var(--text-faint); }
+.lb-tree-count { flex: none; margin-top: 1px; font-size: var(--fs-1); line-height: 1; padding: 2px 5px; border-radius: var(--r-pill); background: var(--surface-2); color: var(--text-faint); }
 .lb-tree-row.on .lb-tree-count { background: var(--bg); }
 .lb-tree-row:hover .lb-tree-count { visibility: hidden; }
 
@@ -261,8 +261,8 @@ function onRowClick(row) {
 .lb-tree-ico:hover { color: var(--text); }
 .lb-tree-ico.del:hover { color: var(--danger); }
 
-.lb-tree-rename { flex: 1; min-width: 0; font: inherit; font-size: 12px; padding: 2px 5px; background: var(--bg); color: var(--text); border: 1px solid var(--accent); border-radius: var(--r-ctl); }
+.lb-tree-rename { flex: 1; min-width: 0; font: inherit; font-size: var(--fs-3); padding: 2px 5px; background: var(--field-bg); color: var(--text); border: 1px solid var(--accent); border-radius: var(--r-ctl); }
 .lb-tree-rename:focus { outline: none; }
 
-.lb-empty { color: var(--text-faint); font-size: 12px; text-align: center; line-height: 1.7; padding: 12px 6px; }
+.lb-empty { color: var(--text-faint); font-size: var(--fs-3); text-align: center; line-height: 1.7; padding: 12px 6px; }
 </style>

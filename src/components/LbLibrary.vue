@@ -113,12 +113,12 @@ function onListKey(e) {
         <span v-if="sumOf(cfg)" class="lbl-sum" :title="sumOf(cfg)">{{ sumOf(cfg) }}</span>
         <span class="lbl-row-acts">
           <button class="lbl-ico" :class="{ done: copied === cfg.id }" title="复制名称（到链路表的配置格 Ctrl+V 即套用本条）"
-                  @click.stop="copyName(cfg)"><Icon :name="copied === cfg.id ? 'check' : 'clipboard'" :size="11" /></button>
-          <button class="lbl-ico" title="复制此配置" @click.stop="emit('duplicate', cfg)"><Icon name="copy" :size="11" /></button>
-          <button class="lbl-ico del" title="删除此配置" :disabled="items.length <= minKeep" @click.stop="emit('remove', cfg)"><Icon name="x" :size="11" /></button>
+                  @click.stop="copyName(cfg)"><Icon :name="copied === cfg.id ? 'check' : 'clipboard'" :size="12" /></button>
+          <button class="lbl-ico" title="复制此配置" @click.stop="emit('duplicate', cfg)"><Icon name="copy" :size="12" /></button>
+          <button class="lbl-ico del" title="删除此配置" :disabled="items.length <= minKeep" @click.stop="emit('remove', cfg)"><Icon name="x" :size="12" /></button>
         </span>
       </div>
-      <button class="lbl-add" @click="emit('add')"><Icon name="plus" :size="11" /> 新增</button>
+      <button class="lbl-add" @click="emit('add')"><Icon name="plus" :size="12" /> 新增</button>
     </div>
 
     <div v-if="selected" class="lbl-ed">
@@ -145,15 +145,15 @@ function onListKey(e) {
 .lbl { display: flex; align-items: stretch; gap: 0; border: 1px solid var(--border); border-radius: var(--r-box, 3px); background: var(--surface); overflow: hidden; }
 /* 容器/列表只是 Ctrl+C 的焦点落点，不该有焦点框；键盘 Tab 进来才给一道内描边 */
 .lbl:focus, .lbl-list:focus { outline: none; }
-.lbl-list:focus-visible { box-shadow: inset 0 0 0 1px var(--accent); }
+.lbl-list:focus-visible { box-shadow: inset 0 0 0 1px var(--accent-ui); }
 /* 左列表：全库速览 */
 .lbl-list { flex: none; width: 190px; display: flex; flex-direction: column; border-right: 1px solid var(--border); background: var(--bg); overflow-y: auto; max-height: 420px; }
 .lbl-row { position: relative; display: flex; flex-direction: column; gap: 1px; padding: 6px 9px 6px 11px; cursor: pointer; border-bottom: 1px solid var(--border); }
 .lbl-row:hover { background: var(--surface); }
-.lbl-row.on { background: var(--surface-2); box-shadow: inset 2px 0 0 var(--accent); }
-.lbl-nm { font-size: 12px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-right: 56px; }
+.lbl-row.on { background: var(--surface-2); box-shadow: inset 2px 0 0 var(--accent-ui); }
+.lbl-nm { font-size: var(--fs-3); font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-right: 56px; }
 .lbl-row:not(.on) .lbl-nm { color: var(--text-muted); font-weight: 400; }
-.lbl-sum { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lbl-sum { font-family: var(--font-mono); font-size: var(--fs-2); color: var(--text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .lbl-row-acts { position: absolute; top: 5px; right: 5px; display: none; gap: 2px; }
 .lbl-row:hover .lbl-row-acts { display: inline-flex; }
 .lbl-ico { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; padding: 0; cursor: pointer; background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
@@ -162,19 +162,19 @@ function onListKey(e) {
 .lbl-ico:disabled { opacity: .4; cursor: not-allowed; }
 /* 复制成功的一瞬（✓）：行内钮与名称旁的钮同一套回执色 */
 .lbl-ico.done, .lbl-cpy.done { color: var(--accent); border-color: var(--accent); }
-.lbl-add { font: inherit; font-size: 11px; display: flex; align-items: center; justify-content: center; gap: 4px; padding: 6px; margin: 6px; cursor: pointer; background: transparent; color: var(--text-muted); border: 1px dashed var(--border-strong); border-radius: var(--r-ctl, 2px); }
+.lbl-add { font: inherit; font-size: var(--fs-2); display: flex; align-items: center; justify-content: center; gap: 4px; padding: 6px; margin: 6px; cursor: pointer; background: transparent; color: var(--text-muted); border: 1px dashed var(--border-strong); border-radius: var(--r-ctl, 2px); }
 .lbl-add:hover { color: var(--text); border-color: var(--text-muted); }
 /* 右编辑器 */
 .lbl-ed { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .lbl-ed-hd { display: flex; align-items: center; gap: 6px; padding: 5px 10px; background: var(--surface-2); border-bottom: 1px solid var(--border); }
-.lbl-ed-nm { flex: none; width: 180px; font: inherit; font-size: 12px; font-weight: 600; padding: 3px 7px; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
-.lbl-ed-nm:focus { outline: none; border-color: var(--accent); }
+.lbl-ed-nm { flex: none; width: 180px; font: inherit; font-size: var(--fs-3); font-weight: 600; padding: 3px 7px; background: var(--field-bg); color: var(--text); border: 1px solid var(--field-border); border-radius: var(--r-ctl, 2px); }
+.lbl-ed-nm:focus { outline: none; border-color: var(--accent-ui); }
 /* 名称旁的「复制名称」钮：与同排的 .lb-mini（复制/删除）等高，图标独一份不带字，紧挨着名称才读得出是复制它 */
 .lbl-cpy { flex: none; display: inline-flex; align-items: center; justify-content: center; padding: 3px 5px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
 .lbl-cpy:hover { color: var(--text); border-color: var(--border-strong); }
 /* 自动命名标记：极轻的一枚小牌（虚线＝还没被钉住），改过名就不再出现 */
-.lbl-auto { flex: none; font-size: 10px; line-height: 15px; padding: 0 5px; cursor: help; color: var(--text-faint); background: var(--bg); border: 1px dashed var(--border-strong); border-radius: var(--r-pill); }
-.lbl-hint { flex: 0 1 auto; min-width: 0; font-size: 10.5px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; animation: lbl-hint-fade 2.6s ease forwards; }
+.lbl-auto { flex: none; font-size: var(--fs-1); line-height: 15px; padding: 0 5px; cursor: help; color: var(--text-faint); background: var(--bg); border: 1px dashed var(--border-strong); border-radius: var(--r-pill); }
+.lbl-hint { flex: 0 1 auto; min-width: 0; font-size: var(--fs-2); color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; animation: lbl-hint-fade 2.6s ease forwards; }
 @keyframes lbl-hint-fade { 0% { opacity: 0 } 8%, 70% { opacity: 1 } 100% { opacity: 0 } }
 .lbl-ed-sp { flex: 1; }
 .lbl-ed-bd { padding: 10px 12px 6px; overflow-x: auto; }

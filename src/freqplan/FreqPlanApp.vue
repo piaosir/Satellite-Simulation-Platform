@@ -1445,9 +1445,9 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
           <span class="dim">{{ index.length }} 份 · {{ satNodes.length }} 星</span>
         </div>
         <div class="lq" v-if="satNodes.length">
-          <Icon name="search" :size="11" class="qi-ic" />
+          <Icon name="search" :size="12" class="qi-ic" />
           <input class="qi" v-model="q" placeholder="筛选卫星 / 计划" />
-          <button v-if="q" class="qx" title="清空" @click="q = ''"><Icon name="x" :size="10" /></button>
+          <button v-if="q" class="qx" title="清空" @click="q = ''"><Icon name="x" :size="12" /></button>
         </div>
         <div class="lscroll">
           <div v-if="!satNodes.length" class="lnone">卫星树为空。</div>
@@ -1458,13 +1458,13 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
               <div class="sat" :class="{ orphan: g.orphan, bare: !g.items.length, cur: !!currentId && g.folder === plan?.satFolder }"
                 :title="g.orphan ? `${g.label}：该卫星已不在卫星树中（被删除或改名），计划仍保留在此` : (g.items.length ? g.label : `${g.label} — 点击为其新建频率计划`)"
                 @click="g.items.length ? toggleSat(g) : (!g.orphan && createPlan(g.folder))">
-                <span class="tw"><Icon v-if="g.items.length" :name="isOpen(g) ? 'chevron-down' : 'chevron-right'" :size="11" /></span>
+                <span class="tw"><Icon v-if="g.items.length" :name="isOpen(g) ? 'chevron-down' : 'chevron-right'" :size="12" /></span>
                 <Icon class="si" name="satellite" :size="12" />
                 <span class="sn">{{ g.label }}</span>
                 <span class="sc" v-if="g.items.length > 1">{{ g.items.length }}</span>
                 <button v-if="!g.orphan" class="sadd" :class="{ bare: !g.items.length }"
                   :title="`为「${g.satName}」新建频率计划`" @click.stop="createPlan(g.folder)">
-                  <Icon name="plus" :size="11" /><span v-if="!g.items.length">新建</span>
+                  <Icon name="plus" :size="12" /><span v-if="!g.items.length">新建</span>
                 </button>
               </div>
               <!-- 二级：该星下的计划。三级：这份计划的频率分配表（载波摆在哪条转发器的哪一段上） -->
@@ -1474,13 +1474,13 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
                     <div class="ln" :title="e.name">{{ shortName(e, g) }}</div>
                     <div class="lm">{{ e.band }} · {{ e.transponderCount }} 转发器<template v-if="e.beamCount"> · {{ e.beamCount }} 波束</template></div>
                     <div class="lops" @click.stop>
-                      <button class="lop" title="复制" @click="duplicatePlan(e)"><Icon name="copy" :size="11" /></button>
-                      <button class="lop del" title="删除" @click="removePlan(e)"><Icon name="trash" :size="11" /></button>
+                      <button class="lop" title="复制" @click="duplicatePlan(e)"><Icon name="copy" :size="12" /></button>
+                      <button class="lop del" title="删除" @click="removePlan(e)"><Icon name="trash" :size="12" /></button>
                     </div>
                   </div>
                   <div class="sub" :class="{ on: e.id === currentId && tab === 'alloc' }" @click="openAlloc(e.id)"
                     title="本计划的频率分配表：逐转发器列出该段频谱所分配的载波（起—中—止 · 占用带宽 · 功率带宽）">
-                    <Icon name="table" :size="11" />
+                    <Icon name="table" :size="12" />
                     <span class="sbn">频率分配表</span>
                     <span class="sbc" v-if="allocCount(e)">{{ allocCount(e) }}</span>
                   </div>
@@ -1524,7 +1524,7 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
                   <div class="bpmask" @click="addPop = false"></div>
                   <div class="bpop addpop">
                     <button v-for="k in MARK_KINDS" :key="k.key" class="apo" @click="addChannel(k.key); addPop = false">
-                      <Icon name="plus" :size="11" /> {{ k.label }}
+                      <Icon name="plus" :size="12" /> {{ k.label }}
                     </button>
                   </div>
                 </template>
@@ -1635,7 +1635,7 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
                     <th>编号</th><th>类型</th>
                     <th class="colsw" @click="tcols = tcols === 'fc' ? 'edge' : 'fc'"
                       :title="`频率列口径：现为「${tcols === 'fc' ? '中心 + 带宽' : '起 + 止'}」，点击切到「${tcols === 'fc' ? '起 + 止' : '中心 + 带宽'}」。同一段频带的两种写法，手上的计划表是哪一种就切到哪一种`">
-                      {{ tcols === 'fc' ? '上行中心' : '上行起' }} {{ U }} <Icon name="arrow-left-right" :size="10" />
+                      {{ tcols === 'fc' ? '上行中心' : '上行起' }} {{ U }} <Icon name="arrow-left-right" :size="12" />
                     </th>
                     <th>{{ tcols === 'fc' ? '带宽' : '上行止' }} {{ U }}</th><th>极化</th><th>上行波束</th>
                     <th>LO</th><th>{{ tcols === 'fc' ? '下行中心' : '下行起' }} {{ U }}</th>
@@ -1720,7 +1720,7 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
                           @change="lend(edgeKey(ch, 'dn', 'f1'), (c, m) => commitEdge(c, 'dn', 'f1', m))"
                           @blur="lend(edgeKey(ch, 'dn', 'f1'), (c, m) => commitEdge(c, 'dn', 'f1', m))" />
                         <button v-if="dnCut(ch)" class="lkb" title="下行已与 LO 解耦（cross-strap）—— 点击按 LO 重新联动"
-                          @click.stop="setCut(ch, false)"><Icon name="unlink-2" :size="11" /></button>
+                          @click.stop="setCut(ch, false)"><Icon name="unlink-2" :size="12" /></button>
                       </div>
                     </td>
                     <!-- 「起 + 止」那一档下行多出的这一格（中心 + 带宽档下没有：带宽两侧同宽，只写一遍） -->
@@ -1736,8 +1736,8 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
                       <BeamPicker v-if="!isMk(ch)" mode="chips" :beams="plan.beams" :unit="opt.unit" v-model="ch.beamDnIds" :inherit="ch.beamUpIds" />
                     </td>
                     <td class="ops" @click.stop>
-                      <button class="lop" title="复制" @click="duplicateChannel(ch.id)"><Icon name="copy" :size="11" /></button>
-                      <button class="lop del" title="删除" @click="removeChannel(ch.id)"><Icon name="x" :size="11" /></button>
+                      <button class="lop" title="复制" @click="duplicateChannel(ch.id)"><Icon name="copy" :size="12" /></button>
+                      <button class="lop del" title="删除" @click="removeChannel(ch.id)"><Icon name="x" :size="12" /></button>
                     </td>
                   </tr>
                 </tbody>
@@ -1775,7 +1775,7 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
              与栏内行线同一档，整栏读成一列连不断的表单 —— 这是「分区区分度低」的根。 -->
         <section class="sec" :class="{ closed: !secOpen('plan') }">
           <div class="sh" @click="toggleSec('plan')" title="点击折叠 / 展开本区">
-            <Icon class="shx" :name="secOpen('plan') ? 'chevron-down' : 'chevron-right'" :size="11" />
+            <Icon class="shx" :name="secOpen('plan') ? 'chevron-down' : 'chevron-right'" :size="12" />
             <span class="sht">计划</span>
           </div>
           <div class="sbd" v-show="secOpen('plan')">
@@ -1804,14 +1804,14 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
              与图上选中块的描边、表里那一行的左标是同一套语言：三处认的是同一条转发器。 -->
         <section class="sec cur" :class="{ closed: !secOpen('ch') }" v-if="selected" ref="chSecEl">
           <div class="sh" @click="toggleSec('ch')" title="点击折叠 / 展开本区">
-            <Icon class="shx" :name="secOpen('ch') ? 'chevron-down' : 'chevron-right'" :size="11" />
+            <Icon class="shx" :name="secOpen('ch') ? 'chevron-down' : 'chevron-right'" :size="12" />
             <span class="sht">{{ KIND_LABEL[selected.kind] || '转发器' }} · {{ selected.no || '—' }}</span>
             <span class="spacer"></span>
             <!-- 逐条核对参数时不必回表点：‹ › 按表上的先后翻条，图与表跟着一起走 -->
             <span class="shnav" @click.stop>
-              <button class="shb" :disabled="selIdx <= 0" title="上一条" @click="stepSel(-1)"><Icon name="chevron-left" :size="11" /></button>
+              <button class="shb" :disabled="selIdx <= 0" title="上一条" @click="stepSel(-1)"><Icon name="chevron-left" :size="12" /></button>
               <i>{{ selIdx + 1 }} / {{ plan.channels.length }}</i>
-              <button class="shb" :disabled="selIdx < 0 || selIdx >= plan.channels.length - 1" title="下一条" @click="stepSel(1)"><Icon name="chevron-right" :size="11" /></button>
+              <button class="shb" :disabled="selIdx < 0 || selIdx >= plan.channels.length - 1" title="下一条" @click="stepSel(1)"><Icon name="chevron-right" :size="12" /></button>
             </span>
           </div>
           <div class="sbd" v-show="secOpen('ch')">
@@ -2000,9 +2000,9 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
 
         <section class="sec" :class="{ closed: !secOpen('lo') }">
           <div class="sh" @click="toggleSec('lo')" title="点击折叠 / 展开本区">
-            <Icon class="shx" :name="secOpen('lo') ? 'chevron-down' : 'chevron-right'" :size="11" />
+            <Icon class="shx" :name="secOpen('lo') ? 'chevron-down' : 'chevron-right'" :size="12" />
             <span class="sht">本振 LO</span>
-            <button class="mini ghost xs" title="添加本振" @click.stop="addLo"><Icon name="plus" :size="10" /></button>
+            <button class="mini ghost xs" title="添加本振" @click.stop="addLo"><Icon name="plus" :size="12" /></button>
             <span class="spacer"></span>
             <span class="shn">{{ plan.los.length }}</span>
           </div>
@@ -2012,7 +2012,7 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
               <!-- 变频量同样跟刻度走：1750 MHz 在 kHz 档下写成 1750000（图上的 LO 注记与这里一致） -->
               <input class="ci num" :value="dval(`lo${l.id}`, l.valueMHz)" :placeholder="U"
                 @input="dput(`lo${l.id}`, $event.target.value, (m) => { l.valueMHz = m })" @blur="ddone" />
-              <button class="lop del" @click="removeLo(l.id)"><Icon name="x" :size="10" /></button>
+              <button class="lop del" @click="removeLo(l.id)"><Icon name="x" :size="12" /></button>
             </div>
           </div>
         </section>
@@ -2022,14 +2022,14 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
         <section class="sec bmsec" :class="{ closed: !secOpen('beam') }">
           <div class="sh" @click="toggleSec('beam')"
             title="每行对应图例中的一条：颜色 + 波束名 + 带宽。频率不在此设置——所占频段在转发器分区逐条录入。点击标题折叠 / 展开本区">
-            <Icon class="shx" :name="secOpen('beam') ? 'chevron-down' : 'chevron-right'" :size="11" />
+            <Icon class="shx" :name="secOpen('beam') ? 'chevron-down' : 'chevron-right'" :size="12" />
             <span class="sht">波束/带宽 · {{ U }}</span>
-            <button class="mini ghost xs" @click.stop="addBeam" title="添加波束"><Icon name="plus" :size="10" /></button>
+            <button class="mini ghost xs" @click.stop="addBeam" title="添加波束"><Icon name="plus" :size="12" /></button>
             <!-- 从天线波束合成导入：一色一条（同色 = 同频同极化，一个色号对应一批波束号）。
                  浮层现读现用，不缓存另一个窗口的旧数据。 -->
             <button class="mini ghost xs" :class="{ on: synthPop }" @click.stop="synthPop ? (synthPop = false) : openSynthPop()"
               title="从天线波束合成导入：每个频率配色（F#）生成一条，该色对应的波束编号一并导入；带宽与频率仍在本平台录入">
-              <Icon name="import" :size="10" />
+              <Icon name="import" :size="12" />
             </button>
             <span class="spacer"></span>
             <span class="shn">{{ plan.beams.length }}</span>
@@ -2062,14 +2062,14 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
               @input="lput(`bm.${b.id}.bw`, b, $event.target.value)"
               @change="lend(`bm.${b.id}.bw`, (x, m) => setBeamBw(x, m))"
               @blur="lend(`bm.${b.id}.bw`, (x, m) => setBeamBw(x, m))" />
-            <button class="lop del" @click="removeBeam(b.id)"><Icon name="x" :size="10" /></button>
+            <button class="lop del" @click="removeBeam(b.id)"><Icon name="x" :size="12" /></button>
           </div>
           </div>
         </section>
 
         <section class="sec" :class="{ closed: !secOpen('gen') }">
           <div class="sh" @click="toggleSec('gen')" title="点击折叠 / 展开本区">
-            <Icon class="shx" :name="secOpen('gen') ? 'chevron-down' : 'chevron-right'" :size="11" />
+            <Icon class="shx" :name="secOpen('gen') ? 'chevron-down' : 'chevron-right'" :size="12" />
             <span class="sht">批量生成</span>
           </div>
           <div class="sbd" v-show="secOpen('gen')">
@@ -2132,14 +2132,14 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
         <div class="mbody">
           <div class="mleft">
             <div class="lq">
-              <Icon name="search" :size="11" class="qi-ic" />
+              <Icon name="search" :size="12" class="qi-ic" />
               <input class="qi" v-model="mergeQ" placeholder="筛选卫星 / 计划" />
-              <button v-if="mergeQ" class="qx" title="清空" @click="mergeQ = ''"><Icon name="x" :size="10" /></button>
+              <button v-if="mergeQ" class="qx" title="清空" @click="mergeQ = ''"><Icon name="x" :size="12" /></button>
             </div>
             <div class="mscroll">
               <div v-if="!mergeTree.length" class="lnone">没有可合成的计划。</div>
               <section v-for="g in mergeTree" :key="g.key" class="mgrp">
-                <div class="msat"><Icon class="si" name="satellite" :size="11" /> {{ g.label }}</div>
+                <div class="msat"><Icon class="si" name="satellite" :size="12" /> {{ g.label }}</div>
                 <label v-for="e in g.items" :key="e.id" class="mrow" :class="{ on: mergeIds.includes(e.id) }">
                   <input type="checkbox" :checked="mergeIds.includes(e.id)" @change="toggleMerge(e.id)" />
                   <span class="mn" :title="e.name">{{ shortName(e, g) }}</span>
@@ -2160,9 +2160,9 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
                 <span class="oi">{{ i + 1 }}</span>
                 <span class="mn" :title="e.name" data-i18n-skip>{{ e.name }}</span>
                 <span class="mm">{{ e.band }}</span>
-                <button class="lop" :disabled="i === 0" title="上移" @click="moveMerge(i, -1)"><Icon name="chevron-up" :size="11" /></button>
-                <button class="lop" :disabled="i === mergeSelected.length - 1" title="下移" @click="moveMerge(i, 1)"><Icon name="chevron-down" :size="11" /></button>
-                <button class="lop del" title="移出" @click="toggleMerge(e.id)"><Icon name="x" :size="11" /></button>
+                <button class="lop" :disabled="i === 0" title="上移" @click="moveMerge(i, -1)"><Icon name="chevron-up" :size="12" /></button>
+                <button class="lop" :disabled="i === mergeSelected.length - 1" title="下移" @click="moveMerge(i, 1)"><Icon name="chevron-down" :size="12" /></button>
+                <button class="lop del" title="移出" @click="toggleMerge(e.id)"><Icon name="x" :size="12" /></button>
               </div>
             </div>
           </div>
@@ -2217,29 +2217,29 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
 <style scoped>
 /* 根字号写死：本窗口的表格/检查器/工具栏字号全部逐处固定，跟 --lb-fs 联动等于只动一个
    谁也继承不到的根值——原先那个「界面字号」输入框正因如此调了没反应，已连同变量一起去掉。 */
-.fp { height: 100vh; display: flex; flex-direction: column; background: var(--bg); color: var(--text); font-family: var(--font-serif); font-size: 13px; }
+.fp { height: 100vh; display: flex; flex-direction: column; background: var(--bg); color: var(--text); font-family: var(--font-ui); font-size: var(--fs-4); }
 .tb { display: flex; align-items: center; gap: 7px; padding: 6px 10px; border-bottom: 1px solid var(--border-strong); background: var(--surface); flex-wrap: wrap; }
 .brand { font-weight: 600; }
 .sep { width: 1px; height: 16px; background: var(--border-strong); margin: 0 2px; }
 .spacer { flex: 1; }
-.busy { color: var(--text-muted); font-size: 12px; }
-.msg { padding: 4px 10px; background: var(--surface-2); border-bottom: 1px solid var(--border); font-size: 12.5px; color: var(--text-muted); }
+.busy { color: var(--text-muted); font-size: var(--fs-3); }
+.msg { padding: 4px 10px; background: var(--surface-2); border-bottom: 1px solid var(--border); font-size: var(--fs-4); color: var(--text-muted); }
 
 /* 五列（列宽由 :style 出，左右两栏都可拖）；两条 0 宽轨只用来挂拖宽手柄 */
 .body { flex: 1; display: grid; grid-template-columns: 250px 0px minmax(0,1fr) 0px 396px; min-height: 0; }
 /* 三栏的分界线走 --border-strong：栏与栏的边界不该与栏内的行线同一档（区分度的第一刀） */
 .left { border-right: 1px solid var(--border-strong); display: flex; flex-direction: column; min-height: 0; }
-.lh { display: flex; align-items: center; padding: 5px 8px; border-bottom: 1px solid var(--border); font-size: 12px; color: var(--text-muted); }
+.lh { display: flex; align-items: center; padding: 5px 8px; border-bottom: 1px solid var(--border); font-size: var(--fs-3); color: var(--text-muted); }
 .lht { font-weight: 600; color: var(--text); }
 /* 筛选条：卫星一多（一整个星座就是几十行）全列出来会很长，先筛再点 */
 .lq { display: flex; align-items: center; gap: 4px; padding: 3px 8px; border-bottom: 1px solid var(--border); background: var(--surface); }
 .lq .qi-ic { color: var(--text-faint); }
-.qi { flex: 1; min-width: 0; background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 1px 4px; font: inherit; font-size: 12px; font-family: var(--font-serif); }
+.qi { flex: 1; min-width: 0; background: var(--field-bg); border: 1px solid var(--field-border); color: var(--text); padding: 1px 4px; font: inherit; font-size: var(--fs-3); }
 .qi:focus { border-color: var(--text); outline: none; }
-.qx { flex: none; border: none; background: none; color: var(--text-faint); cursor: pointer; padding: 1px 2px; display: flex; }
+.qx { flex: none; border: none; background: none; color: var(--text-faint); cursor: pointer; height: var(--h-ctl); white-space: nowrap; padding: 0 2px; display: flex; }
 .qx:hover { color: var(--text); }
 .lscroll { flex: 1; overflow: auto; }
-.lnone { padding: 14px 10px; color: var(--text-faint); font-size: 12px; line-height: 1.7; }
+.lnone { padding: 14px 10px; color: var(--text-faint); font-size: var(--fs-3); line-height: 1.7; }
 .grp { margin-bottom: 1px; }
 
 /* ── 一级：卫星行 ── 灰底 + 粗体 + 强分隔线，且吸顶；与二级的白底缩进行拉开层次。
@@ -2247,7 +2247,7 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
    卫星行 surface-2（最深）· 空星 surface · 计划行 bg（白）· 选中的计划 surface + 黑色左标。 */
 .sat { display: flex; align-items: center; gap: 4px; padding: 5px 6px 5px 4px; cursor: pointer;
   background: var(--surface-2); border-bottom: 1px solid var(--border-strong);
-  font-size: 12px; font-weight: 600; color: var(--text); position: sticky; top: 0; z-index: 1; }
+  font-size: var(--fs-3); font-weight: 600; color: var(--text); position: sticky; top: 0; z-index: 1; }
 .sat:hover { background: var(--border); }
 /* 还没有计划的星：同一层级但整体压暗（浅一档底色 + 常规字重），一眼看出「这颗还是空的」 */
 .sat.bare { background: var(--surface); font-weight: 400; color: var(--text-muted); border-bottom-color: var(--border); }
@@ -2257,9 +2257,9 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
 .sat .si { flex: none; color: var(--text-faint); }
 .sat.cur .si { color: var(--text); }            /* 当前打开的那份计划所属的星 */
 .sat .sn { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.sat .sc { flex: none; font-size: 10.5px; font-weight: 400; color: var(--text-muted); border: 1px solid var(--border-strong); padding: 0 3px; }
+.sat .sc { flex: none; font-size: var(--fs-2); font-weight: 400; color: var(--text-muted); border: 1px solid var(--border-strong); padding: 0 3px; }
 /* 新建入口：就骑在卫星名这一行，「建给哪颗星」由所在行说清楚。平时淡、悬停才实，不喧宾夺主 */
-.sadd { flex: none; display: inline-flex; align-items: center; gap: 2px; font: inherit; font-size: 11px;
+.sadd { flex: none; display: inline-flex; align-items: center; gap: 2px; font: inherit; font-size: var(--fs-2);
   padding: 0 3px; height: 17px; border: 1px solid transparent; background: none; color: var(--text-faint); cursor: pointer; }
 .sadd.bare { color: var(--text-muted); }
 .sat:hover .sadd { color: var(--text); border-color: var(--border-strong); background: var(--bg); }
@@ -2271,35 +2271,35 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
 .li:hover { background: var(--surface); }
 /* 选中：底色只提一档（不能用 surface-2，那是卫星行的底色，一撞父子两级就又糊成一片），
    靠导引线内侧那道 3px 黑标 + 加粗计划名认人 */
-.li.on { background: var(--surface); box-shadow: inset 3px 0 0 var(--text); }
+.li.on { background: var(--surface); box-shadow: inset 3px 0 0 var(--accent-ui); }
 .li.on .ln { font-weight: 600; }
-.ln { font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.lm { font-size: 11px; color: var(--text-faint); margin-top: 1px; }
+.ln { font-size: var(--fs-4); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lm { font-size: var(--fs-2); color: var(--text-faint); margin-top: 1px; }
 .lops { position: absolute; right: 4px; top: 5px; display: none; gap: 2px; }
 .li:hover .lops { display: flex; }
-.lop { border: none; background: var(--surface-2); color: var(--text-muted); cursor: pointer; padding: 2px 4px; }
+.lop { border: none; background: var(--surface-2); color: var(--text-muted); cursor: pointer; height: var(--h-ctl); white-space: nowrap; padding: 0 4px; }
 .lop:hover { color: var(--text); }
 .lop.del:hover { color: var(--danger); }
 
 /* ── 三级：这份计划的频率分配表 ── 再缩一档、字更小，且不给自己的分隔线：
    它是计划的一部分，不是与计划并列的另一个条目。选中同样是那道 3px 黑标（与二级一套认法）。 */
 .sub { display: flex; align-items: center; gap: 5px; padding: 3px 8px 3px 22px; cursor: pointer;
-  background: var(--bg); border-bottom: 1px solid var(--border); color: var(--text-muted); font-size: 11.5px; }
+  background: var(--bg); border-bottom: 1px solid var(--border); color: var(--text-muted); font-size: var(--fs-3); }
 .sub:hover { background: var(--surface); color: var(--text); }
-.sub.on { background: var(--surface); color: var(--text); box-shadow: inset 3px 0 0 var(--text); }
+.sub.on { background: var(--surface); color: var(--text); box-shadow: inset 3px 0 0 var(--accent-ui); }
 .sub.on .sbn { font-weight: 600; }
 .sbn { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.sbc { flex: none; font-size: 10.5px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+.sbc { flex: none; font-size: var(--fs-2); color: var(--text-faint); font-variant-numeric: tabular-nums; }
 
 .center { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
 .mnone { padding: 40px; color: var(--text-muted); }
-.mnone .dim { color: var(--text-faint); font-size: 12.5px; }
+.mnone .dim { color: var(--text-faint); font-size: var(--fs-4); }
 .chartbox { padding: 10px 12px; border-bottom: 1px solid var(--border-strong); overflow: auto; max-height: 52%; }
 .tabs { display: flex; align-items: center; gap: 4px; padding: 4px 8px; border-bottom: 1px solid var(--border); background: var(--surface); }
-.tb-b { font: inherit; font-size: 12.5px; padding: 3px 10px; border: 1px solid transparent; background: transparent; color: var(--text-muted); cursor: pointer; }
+.tb-b { font: inherit; font-size: var(--fs-4); height: var(--h-ctl); white-space: nowrap; padding: 0 10px; border: 1px solid transparent; background: transparent; color: var(--text-muted); cursor: pointer; }
 /* 经典连体文件页签：选中页与下方内容面同底，顶缘 2px 墨条 —— 页与它管的那片内容连成一体 */
-.tb-b.on { background: var(--bg); border-color: var(--border-strong); color: var(--text); box-shadow: inset 0 2px 0 var(--accent); }
-.tb-b i { font-style: normal; font-size: 11px; color: var(--text-faint); margin-left: 3px; }
+.tb-b.on { background: var(--bg); border-color: var(--border-strong); color: var(--text); box-shadow: inset 0 2px 0 var(--accent-ui); }
+.tb-b i { font-style: normal; font-size: var(--fs-2); color: var(--text-faint); margin-left: 3px; }
 .tb-b i.bad { color: var(--danger); }
 .tabbody { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .tscroll { flex: 1; overflow: auto; }
@@ -2310,7 +2310,7 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
   display: flex; align-items: center; flex-wrap: wrap; gap: 5px 6px;
   padding: 5px 8px; background: var(--surface-2); border-bottom: 1px solid var(--border-strong);
 }
-.bbar .bn { font-size: 12px; color: var(--text-muted); }
+.bbar .bn { font-size: var(--fs-3); color: var(--text-muted); }
 .bbar .bn b { color: var(--text); font-variant-numeric: tabular-nums; }
 .bbar .fld { gap: 3px; }
 /* 条上的下拉写全称（「逐条取上行的正交」这种），宽度随文字走 —— 不套表里那两档窄宽，
@@ -2326,20 +2326,20 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
 .bpop {
   position: absolute; left: 0; top: calc(100% + 4px); z-index: 30; min-width: 196px;
   background: var(--bg); border: 1px solid var(--border-strong); padding: 7px 8px;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, .12);
+  box-shadow: var(--shadow-2);
 }
-.bph { font-size: 11.5px; color: var(--text-muted); margin-bottom: 5px; }
+.bph { font-size: var(--fs-3); color: var(--text-muted); margin-bottom: 5px; }
 .bpo { display: flex; align-items: center; gap: 5px; margin-top: 7px; }
 /* 「+ 转发器」旁那个下拉菜单：贴右缘展开（它在工具条右端，贴左缘会探出画布） */
 .caret { padding-left: 5px; padding-right: 5px; }
 .addpop { left: auto; right: 0; min-width: 118px; padding: 4px; }
 .apo {
   display: flex; align-items: center; gap: 5px; width: 100%; padding: 5px 7px;
-  background: none; border: 0; color: var(--text); font: inherit; font-size: 12px; text-align: left; cursor: pointer;
+  background: none; border: 0; color: var(--text); font: inherit; font-size: var(--fs-3); text-align: left; cursor: pointer;
 }
 .apo:hover { background: var(--surface); }
 
-.t { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.t { width: 100%; border-collapse: collapse; font-size: var(--fs-4); }
 .t thead th { position: sticky; top: 0; z-index: 1; background: var(--surface); border-bottom: 1px solid var(--border-strong); padding: 4px 6px; text-align: left; font-weight: 600; white-space: nowrap; }
 /* 记下了但还没成段的那一端（另一端还没录，见 edgePend）：数照旧显示着，但它还没进模型、
    图上也还没有这条频带，故压成灰斜体与已落定的读数分开 */
@@ -2354,7 +2354,7 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
 .t tbody tr:hover { background: var(--surface); }
 /* 勾选行只提一档底色；当前行（.on，深一档 + 左侧黑标）写在后面才压得住，两者可同时成立 */
 .t tbody tr.ckd { background: var(--surface); }
-.t tbody tr.on { background: var(--surface-2); box-shadow: inset 2px 0 0 var(--text); }
+.t tbody tr.on { background: var(--surface-2); box-shadow: inset 2px 0 0 var(--accent-ui); }
 /* 行头槽（Excel 的行号列）：勾选 + 行号，整格都是拖选的把手，故要有点宽度、且不参与文字选择。
    勾选框自己不收鼠标事件 —— 按下即切换的活由整格干，留着它自己那次 click 会再翻一次成来回抵消 */
 .t th.ck, .t td.ck { width: 38px; padding-left: 6px; padding-right: 2px; white-space: nowrap; }
@@ -2362,7 +2362,7 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
 .t td.ck:hover { background: var(--surface-2); }
 .t .ck input { margin: 0; vertical-align: middle; }
 .t td.ck input { pointer-events: none; }
-.t .ck .rn { font-style: normal; font-size: 10.5px; color: var(--text-faint); margin-left: 3px; font-variant-numeric: tabular-nums; }
+.t .ck .rn { font-style: normal; font-size: var(--fs-2); color: var(--text-faint); margin-left: 3px; font-variant-numeric: tabular-nums; }
 .t.dragsel { cursor: pointer; }        /* 拖选途中滑过输入框也不该变成文字光标 */
 .t.dragsel .ci { pointer-events: none; }
 
@@ -2373,12 +2373,12 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
 .lkb { flex: none; display: flex; border: none; background: transparent; color: var(--warn); cursor: pointer; padding: 0 1px; }
 .lkb:hover { color: var(--text); }
 .ops { white-space: nowrap; }
-.none { padding: 22px; text-align: center; color: var(--text-faint); font-size: 12.5px; line-height: 1.7; }
+.none { padding: 22px; text-align: center; color: var(--text-faint); font-size: var(--fs-4); line-height: 1.7; }
 
 .chk { padding: 4px 0; }
-.ci-item { display: flex; gap: 8px; padding: 4px 10px; border-bottom: 1px solid var(--border); font-size: 12.5px; cursor: pointer; }
+.ci-item { display: flex; gap: 8px; padding: 4px 10px; border-bottom: 1px solid var(--border); font-size: var(--fs-4); cursor: pointer; }
 .ci-item:hover { background: var(--surface); }
-.sev { flex: none; width: 18px; text-align: center; font-size: 11px; border: 1px solid var(--border-strong); height: 16px; line-height: 14px; }
+.sev { flex: none; width: 18px; text-align: center; font-size: var(--fs-2); border: 1px solid var(--border-strong); height: 16px; line-height: 14px; }
 .ci-item.error .sev { color: var(--danger); border-color: var(--danger); }
 .ci-item.warn .sev { color: var(--warn); border-color: var(--warn); }
 .ci-item.info .sev { color: var(--text-muted); }
@@ -2403,29 +2403,29 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
    94 波束的计划里，把这一区折起来才腾得出地方编转发器。 */
 .sh { position: sticky; top: 0; z-index: 3; display: flex; align-items: center; gap: 5px;
   height: 22px; padding: 0 7px 0 3px; background: var(--surface); border-bottom: 1px solid var(--border-strong);
-  font-size: 11.5px; font-weight: 600; letter-spacing: var(--ls-tight); color: var(--text-muted); cursor: pointer; user-select: none; }
+  font-size: var(--fs-3); font-weight: 600; letter-spacing: var(--ls-tight); color: var(--text-muted); cursor: pointer; user-select: none; }
 .sh:hover { color: var(--text); }
 .sh .shx { flex: none; color: var(--text-faint); }
 .sht { flex: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.shn { flex: none; font-size: 10.5px; font-weight: 400; letter-spacing: 0; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+.shn { flex: none; font-size: var(--fs-2); font-weight: 400; letter-spacing: 0; color: var(--text-faint); font-variant-numeric: tabular-nums; }
 /* 当前这一条转发器：标题栏加深一档 + 左标；聚焦时整区左缘再压一条实心竖标。
    两者与图上选中块的描边（.fpc-blk.on）、表里那一行的左标（tr.on）同一套语言。 */
-.sec.cur > .sh { background: var(--surface-2); color: var(--text); box-shadow: inset 3px 0 0 var(--text); }
-.sec:focus-within { box-shadow: inset 3px 0 0 var(--text); }   /* 与区头那条同宽：焦点进来 = 那条标从区头一直长到区底 */
+.sec.cur > .sh { background: var(--surface-2); color: var(--text); box-shadow: inset 3px 0 0 var(--accent-ui); }
+.sec:focus-within { box-shadow: inset 3px 0 0 var(--accent-ui); }   /* 与区头那条同宽：焦点进来 = 那条标从区头一直长到区底 */
 .sec:focus-within > .sh { background: var(--surface-2); color: var(--text); }
 /* 检查器里翻条：‹ 7 / 18 › —— 逐条核对参数时不必回表点 */
 .shnav { display: inline-flex; align-items: center; gap: 1px; font-weight: 400; letter-spacing: 0; }
-.shnav i { font-style: normal; font-size: 10.5px; color: var(--text-muted); font-variant-numeric: tabular-nums; padding: 0 1px; }
+.shnav i { font-style: normal; font-size: var(--fs-2); color: var(--text-muted); font-variant-numeric: tabular-nums; padding: 0 1px; }
 .shb { flex: none; display: flex; align-items: center; border: 1px solid transparent; background: none;
-  color: var(--text-muted); cursor: pointer; padding: 1px 2px; }
+  color: var(--text-muted); cursor: pointer; height: var(--h-ctl); white-space: nowrap; padding: 0 2px; }
 .shb:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); background: var(--bg); }
 .shb:disabled { color: var(--text-faint); cursor: default; }
 /* 区内分组头（↑ 上行 / ↓ 下行 / 转发器参数）：小号字距 + 题线，把一列 13 行的长表分成图上那三段。
    ★ 类名不叫 .gh —— BeamPicker 里 .gh 已是「继承态（随上行）」的修饰类。scoped CSS 今天挡得住
    （子组件内部不带父组件的 data-v），但同名两义迟早咬人，见 FpAlloc 那次 .ghost 撞车。 */
 .fgrp { display: flex; align-items: center; gap: 5px; margin: 7px 0 3px; padding-bottom: 2px;
-  border-bottom: 1px solid var(--border); font-size: 10.5px; letter-spacing: var(--ls-caps); color: var(--text-faint); }
-.fgrp .fgrp-ar { font-style: normal; font-size: 12px; letter-spacing: 0; color: var(--text-muted); }
+  border-bottom: 1px solid var(--border); font-size: var(--fs-2); letter-spacing: var(--ls-caps); color: var(--text-faint); }
+.fgrp .fgrp-ar { font-style: normal; font-size: var(--fs-3); letter-spacing: 0; color: var(--text-muted); }
 /* 变频那一步：图上是 UPLINK → DOWNLINK 之间的箭头，这里就是夹在两组之间的这一条 */
 .hinge { background: var(--surface); border: 1px solid var(--border); border-width: 1px 0; padding: 2px 5px; margin: 6px -5px 2px; }
 .row { display: flex; align-items: center; gap: 6px; padding: 1px 5px; margin: 0 -5px 2px; }
@@ -2440,15 +2440,15 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
    留一点余量并禁止折行——名称写全、单位跟在后面，字体回落变化时也不会掉成两行把整行撑高。
    ★ 从前是 104px：那时每个名字都得前缀「上行/下行」（上行中心频率 MHz）。侧别现在由分组头
    （↑ 上行 / ↓ 下行）说清，标题列因此收窄 26px，全落给数值格。 */
-.row > span { flex: none; width: 78px; font-size: 11.5px; color: var(--text-muted); white-space: nowrap; }
+.row > span { flex: none; width: 78px; font-size: var(--fs-3); color: var(--text-muted); white-space: nowrap; }
 /* 起止那行是两格输入夹一个「~」：这个波浪号是分隔符不是标题列，得从上面那条定宽里摘出来 */
 .row > span.tw { width: auto; padding: 0 1px; color: var(--text-faint); }
 .row2 { display: flex; flex-direction: column; gap: 1px; }
-.row2 > span { font-size: 11px; color: var(--text-muted); }
+.row2 > span { font-size: var(--fs-2); color: var(--text-muted); }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 6px; margin-bottom: 4px; }
-.sum { font-size: 11px; color: var(--text-faint); margin-top: 4px; }
+.sum { font-size: var(--fs-2); color: var(--text-faint); margin-top: 4px; }
 /* 勾选行：左缩进对齐输入框那一列（78px 标题 + 6px 间距），不与上面几行的标题列错开 */
-.ck2 { display: flex; align-items: center; gap: 5px; margin: 2px 0 3px 84px; font-size: 11.5px; color: var(--text-muted); cursor: pointer; }
+.ck2 { display: flex; align-items: center; gap: 5px; margin: 2px 0 3px 84px; font-size: var(--fs-3); color: var(--text-muted); cursor: pointer; }
 .lorow { display: flex; align-items: center; gap: 4px; margin-bottom: 3px; }
 /* 波束一行：色块 · 名字 · 备注 · ↑ 上行带宽 · ↓ 下行带宽 · 删。与图例条目
    「■ 中国波束：36 MHz」同序，照着填完就是图上那一条。频率不在这里 —— 占哪一段是转发器的事。 */
@@ -2459,30 +2459,30 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
 .spop {
   position: absolute; left: 9px; right: 9px; top: 23px; z-index: 30;
   max-height: 320px; overflow: auto; padding: 6px;
-  background: var(--bg); border: 1px solid var(--border-strong); box-shadow: 0 4px 14px rgba(0, 0, 0, .12);
+  background: var(--bg); border: 1px solid var(--border-strong); box-shadow: var(--shadow-2);
 }
 .sgrow {
   display: flex; align-items: center; gap: 5px; width: 100%; padding: 4px 5px;
   background: transparent; border: 1px solid transparent; color: var(--text);
-  font: inherit; font-size: 12px; text-align: left; cursor: pointer;
+  font: inherit; font-size: var(--fs-3); text-align: left; cursor: pointer;
 }
 .sgrow:hover:not(:disabled) { background: var(--surface); border-color: var(--border); }
 .sgrow:disabled { color: var(--text-faint); cursor: not-allowed; }
 .sgrow .sgn { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* 别的星上的组才写星名（本星的不写——一整列同一个名字是噪声） */
-.sgrow .sgsat { flex: none; max-width: 96px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10.5px; color: var(--text-muted); }
-.sgrow .sgt { flex: none; font-size: 10.5px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+.sgrow .sgsat { flex: none; max-width: 96px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-2); color: var(--text-muted); }
+.sgrow .sgt { flex: none; font-size: var(--fs-2); color: var(--text-faint); font-variant-numeric: tabular-nums; }
 /* 色片一行排开：色数多到 16 个也不换行（挤窄一点即可，看的是「有几种色」而不是每一片多大） */
 .sgrow .sgc { flex: none; display: flex; gap: 1px; max-width: 74px; overflow: hidden; }
 .sgrow .sgc i { width: 7px; height: 12px; flex: none; }
-.sgnone { color: var(--text-faint); font-size: 11.5px; margin: 2px 4px; }
+.sgnone { color: var(--text-faint); font-size: var(--fs-3); margin: 2px 4px; }
 /* 末列是那个 ×：定宽 15px，数格的宽度不因它变 */
 .bmrow { display: grid; grid-template-columns: 26px minmax(0, 1.7fr) minmax(0, 1fr) 15px; gap: 4px; align-items: center; margin-bottom: 3px; }
-.bmrow .ci { padding: 1px 3px; font-size: 11.5px; }
+.bmrow .ci { padding: 1px 3px; font-size: var(--fs-3); }
 .bmrow .ci::placeholder { color: var(--text-faint); font-style: italic; }
 /* 列名行：几格挤在一起，不写列名就分不出哪格是哪格 */
 .bmrow.hd { margin-bottom: 1px; }
-.bmrow.hd span { font-size: 10.5px; color: var(--text-faint); text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bmrow.hd span { font-size: var(--fs-2); color: var(--text-faint); text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .bmrow.hd span:first-of-type { text-align: left; }
 /* 行尾的 ×：与整行同高、不撑格 */
 .bmrow .lop { padding: 1px 2px; line-height: 0; }
@@ -2491,15 +2491,15 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
    ★ 类名不能沿用浮层那套 .sg*（同一个组件里的同名类会互相盖，scoped 挡不住）。
    波束名那一列比三个数格窄：数格是要逐个 Tab 着录的，名字只用来认行。 */
 .bsrow { display: grid; grid-template-columns: 78px repeat(3, minmax(0, 1fr)); gap: 4px; align-items: center; margin-bottom: 3px; padding-left: 6px; }
-.bsrow .ci { padding: 1px 3px; font-size: 11.5px; }
+.bsrow .ci { padding: 1px 3px; font-size: var(--fs-3); }
 .bsrow .ci::placeholder { color: var(--text-faint); font-style: italic; }
-.bsrow .bsn { display: flex; align-items: center; gap: 4px; font-size: 11.5px; color: var(--text-muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bsrow .bsn { display: flex; align-items: center; gap: 4px; font-size: var(--fs-3); color: var(--text-muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bsrow .bsc { flex: none; width: 8px; height: 12px; }
 .bsrow.hd { margin-bottom: 1px; }
-.bsrow.hd span { font-size: 10.5px; color: var(--text-faint); text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bsrow.hd span { font-size: var(--fs-2); color: var(--text-faint); text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .bsrow.hd span:first-of-type { text-align: left; }
 
-.ci { flex: 1; min-width: 0; background-color: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 2px 4px; font: inherit; font-size: 12.5px; font-family: var(--font-serif); }
+.ci { flex: 1; min-width: 0; background-color: var(--field-bg); border: 1px solid var(--field-border); color: var(--text); padding: 2px 4px; font: inherit; font-size: var(--fs-4); }
 /* 格级聚焦：1px 深边 + 一圈极淡的环。方角、无动效 —— 环只是把「光标在这一格」摆明，
    不是网页那种高亮。表内密排另给一套更收敛的（见下面 .t .ci:focus）。 */
 .ci:focus { border-color: var(--text); outline: none; box-shadow: 0 0 0 2px color-mix(in srgb, var(--text) 14%, transparent); }
@@ -2512,9 +2512,9 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
    min-width 压过 max-width 是 CSS 的既定顺序，Hz 档下那一列才不会把数截掉。
    +12px 是这个框自己的左右内边距与边框（box-sizing: border-box，min-width 连它们一起算） */
 .t .ci.num { min-width: calc(var(--fp-numw, 0ch) + 12px); }
-.t .ci:hover { border-color: var(--border); }
+.t .ci:hover { border-color: var(--field-border-hover); }
 /* 表内的聚焦格：不外扩（密表里 2px 的环会顶到邻格），改用内侧再压一道 1px —— 双线即 Excel 的活动格 */
-.t .ci:focus { border-color: var(--text); background-color: var(--bg); box-shadow: inset 0 0 0 1px var(--text); }
+.t .ci:focus { border-color: var(--text); background-color: var(--bg); box-shadow: inset 0 0 0 1px var(--accent-ui); }
 
 /* ── 表内下拉的宽度 ──
    （原先这里写着「必须写在上面三条之后：那三条用的是 background 简写，同权重下写在后面就会把
@@ -2540,12 +2540,12 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
 html[data-theme="dark"] .t .ci.selc {
   background-image: url("data:image/svg+xml;charset=utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='7' height='4' viewBox='0 0 7 4'%3E%3Cpath d='M.6.6 3.5 3.4 6.4.6' fill='none' stroke='%23a4a49e' stroke-width='1.1'/%3E%3C/svg%3E");
 }
-.t .ci.selc:focus { background-color: var(--bg); }     /* 聚焦仍给白底，但别再动背景图 */
+.t .ci.selc:focus { background-color: var(--field-bg); }     /* 聚焦仍给白底，但别再动背景图 */
 .t .ci.selpol { min-width: 42px; max-width: 52px; }
 .t .ci.sello { min-width: 62px; max-width: 108px; }
 .t .ci.selkind { min-width: 86px; max-width: 96px; }
 
-.mini { font: inherit; font-size: 12.5px; padding: 3px 9px; border: 1px solid var(--border-strong); background: var(--bg); color: var(--text); cursor: pointer; white-space: nowrap; }
+.mini { font: inherit; font-size: var(--fs-4); height: var(--h-ctl); padding: 0 9px; border: 1px solid var(--border-strong); background: var(--bg); color: var(--text); cursor: pointer; white-space: nowrap; }
 .mini:hover:not(:disabled) { background: var(--surface-2); }
 .mini:disabled { opacity: .45; cursor: default; }
 .mini.imp { background: var(--text); color: var(--bg); border-color: var(--text); }
@@ -2553,15 +2553,15 @@ html[data-theme="dark"] .t .ci.selc {
 /* 分配表页的设置栏开合钮：只有一个图标，故按下态靠边框与墨色区分（同批量条那几个小钮的写法） */
 .pnb { display: inline-flex; align-items: center; padding: 3px 7px; }
 .pnb.on { border-color: var(--text); color: var(--text); }
-.mini.xs { padding: 0 5px; font-size: 11px; }
+.mini.xs { padding: 0 5px; font-size: var(--fs-2); }
 .mini.wide { width: 100%; margin-top: 5px; }
-.fld { font-size: 11.5px; color: var(--text-muted); display: inline-flex; align-items: center; gap: 4px; }
+.fld { font-size: var(--fs-3); color: var(--text-muted); display: inline-flex; align-items: center; gap: 4px; }
 .fld .pct { margin-left: -2px; }   /* 百分号紧贴输入框，别被 .fld 的 gap 推开成一个独立词 */
 
 .dd { position: relative; }
 .dd:hover .ddm { display: block; }
 .ddm { display: none; position: absolute; left: 0; top: 100%; z-index: 20; background: var(--bg); border: 1px solid var(--border-strong); min-width: 130px; }
-.ddm button { display: block; width: 100%; text-align: left; font: inherit; font-size: 12.5px; padding: 4px 10px; border: none; background: transparent; color: var(--text); cursor: pointer; }
+.ddm button { display: block; width: 100%; text-align: left; font: inherit; font-size: var(--fs-4); padding: 4px 10px; border: none; background: transparent; color: var(--text); cursor: pointer; }
 .ddm button:hover { background: var(--surface-2); }
 
 .mask { position: fixed; inset: 0; background: rgba(0,0,0,.4); display: flex; align-items: center; justify-content: center; z-index: 99; }
@@ -2580,27 +2580,27 @@ html[data-theme="dark"] .t .ci.selc {
 .mleft { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--border); }
 .mscroll { flex: 1; overflow: auto; min-height: 0; }
 .mgrp { border-bottom: 1px solid var(--border); }
-.msat { display: flex; align-items: center; gap: 4px; padding: 4px 8px; background: var(--surface-2); font-size: 11.5px; font-weight: 600; position: sticky; top: 0; z-index: 1; }
+.msat { display: flex; align-items: center; gap: 4px; padding: 4px 8px; background: var(--surface-2); font-size: var(--fs-3); font-weight: 600; position: sticky; top: 0; z-index: 1; }
 .msat .si { color: var(--text-faint); }
-.mrow { display: flex; align-items: center; gap: 6px; padding: 3px 8px 3px 14px; cursor: pointer; font-size: 12px; }
+.mrow { display: flex; align-items: center; gap: 6px; padding: 3px 8px 3px 14px; cursor: pointer; font-size: var(--fs-3); }
 .mrow:hover { background: var(--surface); }
-.mrow.on { background: var(--surface); box-shadow: inset 3px 0 0 var(--text); }
+.mrow.on { background: var(--surface); box-shadow: inset 3px 0 0 var(--accent-ui); }
 .mrow .mn { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.mrow .mm, .mordrow .mm { flex: none; font-size: 11px; color: var(--text-faint); }
-.mempty { padding: 8px 14px; font-size: 11.5px; color: var(--text-faint); }
+.mrow .mm, .mordrow .mm { flex: none; font-size: var(--fs-2); color: var(--text-faint); }
+.mempty { padding: 8px 14px; font-size: var(--fs-3); color: var(--text-faint); }
 .mempty.pad { padding: 28px; text-align: center; }
 /* 顺序列表：图上自上而下就是这里从上到下，所以它必须是一列而不是一行标签 */
-.mordh { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-top: 1px solid var(--border-strong); background: var(--surface); font-size: 11.5px; color: var(--text-muted); }
+.mordh { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-top: 1px solid var(--border-strong); background: var(--surface); font-size: var(--fs-3); color: var(--text-muted); }
 .mord { max-height: 168px; overflow: auto; border-top: 1px solid var(--border); }
-.mordrow { display: flex; align-items: center; gap: 5px; padding: 2px 6px; border-bottom: 1px solid var(--border); font-size: 12px; }
-.mordrow .oi { flex: none; width: 15px; text-align: center; font-size: 10.5px; color: var(--text-muted); border: 1px solid var(--border-strong); }
+.mordrow { display: flex; align-items: center; gap: 5px; padding: 2px 6px; border-bottom: 1px solid var(--border); font-size: var(--fs-3); }
+.mordrow .oi { flex: none; width: 15px; text-align: center; font-size: var(--fs-2); color: var(--text-muted); border: 1px solid var(--border-strong); }
 .mordrow .mn { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mordrow .lop:disabled { opacity: .3; cursor: default; }
 .mright { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
-.mprevh { display: flex; align-items: center; gap: 8px; padding: 4px 10px; border-bottom: 1px solid var(--border); background: var(--surface); font-size: 11.5px; color: var(--text-muted); }
+.mprevh { display: flex; align-items: center; gap: 8px; padding: 4px 10px; border-bottom: 1px solid var(--border); background: var(--surface); font-size: var(--fs-3); color: var(--text-muted); }
 .mprev { flex: 1; overflow: auto; background: var(--surface-2); padding: 10px; }
 /* 预览按框宽实排（不缩放），故 SVG 原尺寸落进来即可 */
-.mprevin :deep(svg) { display: block; background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,.18); }
+.mprevin :deep(svg) { display: block; background: #fff; box-shadow: var(--shadow-1); }
 .mfoot { display: flex; align-items: center; gap: 8px; padding: 7px 12px; border-top: 1px solid var(--border-strong); background: var(--surface); }
 .mfoot .ttl { flex: 1; min-width: 0; }
 .mfoot .ttl .ci { flex: 1; min-width: 0; }

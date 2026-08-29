@@ -1,48 +1,118 @@
 @import './controls.css';
 
-/* 期刊风/仪器化主题：黑白灰 + 衬线标题 + 等宽数字。浅色为主。
+/* 仪器化主题：中性灰阶 + 单一机位色。浅色为主。
    深色由 stores/theme.js 解析（跟随系统/浅色/深色）后写入 <html data-theme="dark"> 触发，
    不再直接依赖 prefers-color-scheme（手动选择时需要覆盖系统偏好）。 */
 :root {
   color-scheme: light;
   --bg: #ffffff;
-  --surface: #f7f7f5;
-  --surface-2: #f0f0ed;
+  --surface: #eeedea;
+  --surface-2: #e4e3de;
   --text: #1a1a1a;
   --text-muted: #6b6b66;
-  --text-faint: #9b9b95;
-  --border: #e2e2dd;
-  --border-strong: #c9c9c2;
+  /* 次级灰：原 #9b9b95 对白底只有 2.79:1，低于 WCAG 1.4.3 的 4.5:1、也低于大字的 3:1，
+     而它恰好被用在最小的字号（10~11px）配最宽的字距上 —— 三个不利因素叠在一起。
+     提到 3.66:1（对面板底 3.19:1）。仍是「退到后面」的那一档，但读得出来。 */
+  --text-faint: #86867f;
+  /* 装饰性分隔线（面板边、组间线）。原 #e2e2dd 对白底 1.30:1，提到 1.51:1。 */
+  --border: #d3d2cc;
+  /* 结构线（表格框、浮层边、分栏线） */
+  --border-strong: #adaca4;
   --accent: #1a1a1a;
   --ok: #1d7a52;
   --warn: #9a6a00;
   --danger: #a32d2d;
-  /* 全窗统一字体：Times New Roman 打西文/数字，宋体接中文回落（与链路预算报表同一套衬线栈，
-     主窗与各工具窗看齐）。TNR 数字字面天然等宽，故 sans / serif / mono 三个语义全指同一栈——
-     原「等宽」处的表格对齐由 font-variant-numeric: tabular-nums 保留。 */
-  --font-serif: "Times New Roman", Times, "SimSun", "宋体", serif;
-  --font-sans: var(--font-serif);
-  --font-mono: var(--font-serif);
 
-  /* —— 控件基线（画法在 controls.css，这里只放尺度与两主题各一份的图元）——
-     圆角尺度：控件 2px / 盒子 3px / 弹窗 4px。这三档本来就在用，只是分别写在 5 个链路预算窗口的
-     .lb-shell 里各一份，主窗、干扰、PFD、频率计划、日凌、报表够不着；提到 :root 后全窗口共用。
-     原来 1·2·3·4·5·6·7·8·11·12·999px 十一档混用，同一类东西各是各的圆角；现收成下面五档
-     （外加纯几何的那几处：拨杆轨道 7px、2px 高的小条 1px、滚动条拇指 5px —— 它们的圆角由自身
-     高度定死，不属于任何一档）。 */
-  --r-ctl: 2px;      /* 控件：按钮 / 输入 / 页签 / chip */
-  --r-box: 3px;      /* 盒子：列表项 / 面板内的块 */
-  --r-card: 4px;    /* 链路预算三窗的弹窗（该族 153 处在用，沿用其口径） */
-  --r-float: 6px;    /* 浮层：独立窗口 / 对话框 / 右键菜单 / 提示气泡 / 大卡片 */
-  --r-pill: 999px;   /* 胶囊：徽标 / 计数 / 圆角 chip */
+  /* —— 机位色 ——
+     全软件唯一的彩相，只用于「开 / 选 / 焦点 / 主操作」四类状态：焦点环、复选与拨杆的选中态、
+     当前页签与当前视图、表格选区与活动格、主按钮、菜单项高亮。其余一切（悬停描边、图标、
+     强调文字、分隔线）一律维持无彩，用 --accent。
+     取值与底图那套冷蓝灰同族；白字压在其上 6.88:1、它当文字压在面板上 5.87:1，两个方向都够。 */
+  --accent-ui: #2f5d8a;
+  --accent-ui-hover: #26527b;
+  --accent-ui-weak: color-mix(in srgb, var(--accent-ui) 15%, transparent);   /* 选区淡罩 */
+  --accent-ui-wash: color-mix(in srgb, var(--accent-ui) 8%, transparent);    /* 悬停淡罩 */
+
+  /* —— 可输入域 ——
+     WCAG 1.4.11 要求控件边界对相邻底色 ≥3:1。原来输入框描边走 --border（1.30:1），
+     加上面板底与输入底只差 1.07:1，「哪几格能输入」在一米开外看不出来 —— 对录入型软件
+     这是功能问题不是审美问题。故可输入控件的描边单独一档，不与装饰线共用。 */
+  --field-bg: var(--bg);
+  --field-border: #8e8d85;                 /* 对白底 3.33:1、对面板底 2.85:1 */
+  --field-border-hover: #6f6e67;
+  --field-disabled-bg: var(--surface-2);
+
+  /* —— 投影三档（两主题各一份）——
+     原来 115 处 box-shadow 里有 21 处 alpha ≥ 0.3、且没有一处按主题分开写：
+     白底上顶着为深色底调的重投影，是浅色主题里最常见的一处业余感来源。 */
+  --shadow-1: 0 1px 2px rgba(26, 26, 22, .06), 0 1px 1px rgba(26, 26, 22, .04);
+  --shadow-2: 0 4px 12px rgba(26, 26, 22, .10), 0 1px 3px rgba(26, 26, 22, .06);
+  --shadow-3: 0 12px 32px rgba(26, 26, 22, .14), 0 2px 8px rgba(26, 26, 22, .08);
+
+  /* —— 字体两族 ——
+     ui：界面外壳（菜单 / 面板 / 控件 / 表格 / 状态栏）。同类工程软件（STK、MATLAB、COMSOL、
+       Origin、Altium）的界面外壳一律无衬线，衬线只出现在输出文档里。
+       实测 13px 下 TNR 的 x 高只有 6px（无衬线为 7px），主力字号 11px 下更只有 5px；
+       且 TNR 配 SimSun 时同一行内中文字面 11px、西文小写 6px，差 83% —— 中西文混排一直不齐
+       的根子就在这里。换成无衬线后是 7 : 11，且雅黑 / 等线都没有 SimSun 那套 11~15px 的
+       内嵌点阵（那是浅色下 XP 观感的来源）。
+       ★ 2026-08-29 出厂栈由 Segoe UI + 微软雅黑 UI 改为 Arial + 等线（用户实测后定的）。
+       ★ 这一栈现在只是【出厂值】：界面字体已是设置项（设置 → 界面字体，西文 / 中文各一档），
+         用户的选择由 stores/uiFont.js 写成 <html> 的行内 --font-ui 压过这里。改本行必须同步
+         那边的 DEFAULT_STACK 与 shared/lbFont.js 的 UI_FONT_STACK（canvas 取不到 CSS 变量）。
+     doc：报表与文档面（详细预算区、报表窗、频率计划出图）。这一族保持 TNR + 宋体不动 ——
+       技术文档用衬线是排版惯例，是加分项，不动它。
+     mono：数字读数栈。Arial 与 Segoe UI 的十个数字都是等宽的，故不必另起等宽族；配合各处
+       已有的 font-variant-numeric: tabular-nums 即可对齐小数点。换字体后仍成立：数字由栈里
+       第一段西文面命中，中文面（等线 / 宋体…）排不到数字上。
+     code：真正需要等宽字母的地方（日志行、快捷键 kbd）。 */
+  --font-ui: Arial, Helvetica, DengXian, "等线", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+  --font-doc: "Times New Roman", Times, "SimSun", "宋体", serif;
+  --font-code: Consolas, "Cascadia Mono", "SF Mono", ui-monospace, monospace;
+  --font-serif: var(--font-doc);   /* 既有 36 处引用一律是标题 / 品牌 / 文档面，继续走衬线 */
+  --font-sans: var(--font-ui);
+  --font-mono: var(--font-ui);
+
+  /* —— 控件尺度 ——
+     实测 PFD 窗口里 input 恒 23px、select 恒 22px（同样的 padding，行盒算法不同），
+     SatCovPanel 里 number 有 19 与 21 两档、select 有 15/20/21 三档、text 有 17/19/21 三档。
+     这里把高度显式钉死，让行盒算法不再参与；密排档给侧栏里确实要压扁的行用。
+     画法在 controls.css，用 :where() 落到零特异度 —— 组件里已经写死高度的地方照旧生效。 */
+  --h-ctl: 22px;      /* 标准档：输入框 / 下拉 / 行内动作按钮，一行之内全部齐平 */
+  --h-ctl-sm: 18px;   /* 密排档：表格行内、状态栏、贴身工具条 */
+  --h-ctl-lg: 28px;   /* 主操作档：对话框页脚、窗口主动作条 —— 刻意与行内档拉开一级 */
+
+  /* —— 字号阶梯 ——
+     原来全库 29 个不同取值，其中相邻档在实际光栅上是同形的：12.5px 与 13px 的 x 高 / 大写高 /
+     数字高完全相同（6 / 9 / 9），只有字宽差 4%；10.5 与 11 只差 1px 大写高。29 档里能被
+     眼睛分辨的约 5 档，剩下的只在制造行高参差（实测同一面板里行高分 20.7 与 21.3 两种，
+     根子就是行内混用 11.5 与 12）。故并成六档，半像素档全部并掉。
+     --fs-1 是下限，不再更小；10px 以下的字一律不再出现在界面上。 */
+  --fs-1: 10px;    /* 分组名 / 角标 / 序号列 */
+  --fs-2: 11px;    /* 密排面板正文 */
+  --fs-3: 12px;    /* 面板正文 / 控件 */
+  --fs-4: 13px;    /* 基准正文 / 菜单 */
+  --fs-5: 15px;    /* 小标题 / 对话框题 */
+  --fs-6: 18px;    /* 标题 */
+
+  /* —— 圆角五档 ——
+     控件 2px / 盒子 3px / 弹窗 4px / 浮层 6px / 胶囊。纯几何的那几处（拨杆轨道 7px、
+     2px 高的小条 1px、滚动条拇指 5px）由自身高度定死，不属于任何一档。 */
+  --r-ctl: 2px;
+  --r-box: 3px;
+  --r-card: 4px;
+  --r-float: 6px;
+  --r-pill: 999px;
+
   /* —— 字距三档 ——
      一律用 em 不用 px：同一个 1px 落在 10px 的分组名上是 0.1em、落在 20px 的标题上只有 0.05em，
-     「同一个值、两种松紧」正是原来看着参差不齐的根子；且链路预算三窗的字号是可调的（--lb-fs 9~16px），
-     px 字距不跟着缩放。原来 15 种取值（.2/.3/.4/.5/.6/1/1.5/2/3/7px + 0/normal + 三种 em）收成下面三档。
-     不入档的两处：报表封面（lbreport.css，pt 体系且「密　　级」有对齐约束）、密钥大字（有意分组）。 */
-  --ls-tight: .03em;   /* 标题 / 强调 / 等宽数字读数 —— 原来 .2~.6px 一片 */
-  --ls-label: .1em;    /* 面板与对话框的标题条（11~11.5px，muted/600） —— 原来 1px */
-  --ls-caps: .16em;    /* 更小一号的分组名（10~10.5px，faint） —— 原来 1.5 / 2px */
+     「同一个值、两种松紧」正是原来看着参差不齐的根子；且链路预算三窗的字号是可调的（--lb-fs），
+     px 字距不跟着缩放。
+     不入档的两处：报表封面（lbreport.css，pt 体系且「密　　级」有对齐约束）、密钥大字。 */
+  --ls-tight: .01em;   /* 标题 / 强调 / 数字读数。无衬线族本身比 TNR 松，原 .03em 收一档 */
+  --ls-label: .06em;   /* 面板与对话框的标题条（11~12px，muted/600） */
+  --ls-caps: .1em;     /* 更小一号的分组名（10~11px，faint） */
+
   --ctl-box: 13px;                       /* 复选框 / 单选钮边长 */
   --ctl-track: 3px;                      /* 滑块轨道粗细 */
   --ctl-knob: 11px;                      /* 滑块钮径 */
@@ -55,34 +125,58 @@
 :root[data-theme="dark"] {
   color-scheme: dark;
   --bg: #1c1c1a;
-  --surface: #232321;
-  --surface-2: #2a2a27;
+  --surface: #2a2a27;
+  --surface-2: #333330;
   --text: #ececea;
   --text-muted: #a4a49e;
-  --text-faint: #74746f;
-  --border: #34342f;
-  --border-strong: #45453f;
+  --text-faint: #82817a;
+  --border: #3f3f39;
+  --border-strong: #5c5b54;
   --accent: #ececea;
   --ok: #4caf82;
   --warn: #d8a73a;
   --danger: #e26a6a;
+
+  --accent-ui: #6ba3d6;
+  --accent-ui-hover: #82b3df;
+
+  --field-bg: #171715;
+  --field-border: #74736b;                 /* 对输入底 3.9:1、对面板底 3.1:1 */
+  --field-border-hover: #8f8e85;
+  --field-disabled-bg: var(--surface-2);
+
+  --shadow-1: 0 1px 3px rgba(0, 0, 0, .35);
+  --shadow-2: 0 4px 14px rgba(0, 0, 0, .45), 0 1px 4px rgba(0, 0, 0, .30);
+  --shadow-3: 0 14px 40px rgba(0, 0, 0, .55), 0 3px 10px rgba(0, 0, 0, .35);
+
   --ctl-caret: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.9 6 7.9 9 4.9' fill='none' stroke='%23a4a49e' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
 }
 
 * { box-sizing: border-box; }
+/* 数字恒取等高形（lining figures）：界面字体现在可选（设置 → 界面字体），而 Georgia / Candara /
+   Garamond 这类经典面默认是 old-style 数字 —— 3、4、5、7、9 沉到基线以下，一列工程数值就排成
+   参差的一串。lnum 对本来就等高的面（Segoe UI / TNR / Arial…）是空操作，故恒开不必跟着选择走。
+   与各处已有的 font-variant-numeric: tabular-nums 并存：两者指定的 feature 合并生效。 */
+:root { font-feature-settings: 'lnum' 1; }
 html, body, #app { height: 100%; margin: 0; }
 body {
   font-family: var(--font-sans);
-  font-size: 13px;
+  font-size: var(--fs-4);
+  /* 显式行高：line-height: normal 由字体的自带度量决定，西文与中文回落各算各的，
+     换一档字体整页的行盒就跟着变。钉死之后纵向节奏与字体无关。 */
+  line-height: 1.35;
   color: var(--text);
   background: var(--bg);
   -webkit-font-smoothing: antialiased;
   user-select: none;
 }
+/* 标题保持衬线：无衬线正文配衬线标题是期刊体例，也是这套软件与通用桌面软件拉开距离的地方。 */
 h1, h2, h3 { font-family: var(--font-serif); font-weight: 500; margin: 0; }
 .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
-input, select, button { font-family: inherit; font-size: inherit; color: inherit; }
-/* 表单件的画法（底色/箭头/勾/轨道/滚动条/焦点环）都在 controls.css，本文件不再重复给。
+/* font-feature-settings 也要显式续上：UA 样式表给表单件的 font 简写会把它重置成 normal，
+   上面那条 lnum 就断在这里 —— 输入框里的数字又变回 old-style。 */
+input, select, button { font-family: inherit; font-size: inherit; color: inherit; font-feature-settings: inherit; }
+/* 表单件的画法（底色/描边/箭头/勾/轨道/滚动条/焦点环）都在 controls.css，本文件不再重复给。
    只有 select 的字色要在这里再钉一次：controls.css 由本文件在头部 @import，位置在上一行之前，
    于是上一行的 color: inherit 会反过来压掉它 —— 落在 color: var(--text-muted) 的分区里，
    下拉文字就跟着变灰。 */

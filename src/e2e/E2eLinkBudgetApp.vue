@@ -1157,9 +1157,9 @@ onMounted(async () => {
           <div class="lb-col-hd">
             <span class="lb-cfg-hd-t">配置列表</span>
             <span class="lb-cfg-acts">
-              <button class="lb-mini lb-mini-ico" title="新建文件夹" :disabled="!api" @click="addFolder(null)"><Icon name="folder-plus" :size="13" /></button>
-              <button class="lb-mini lb-mini-ico" title="添加空白配置" :disabled="!api" @click="addBlankConfig(null)"><Icon name="plus" :size="13" /></button>
-              <button class="lb-mini lb-mini-ico" title="隐藏配置列表" @click="sideView = ''"><Icon name="x" :size="13" /></button>
+              <button class="lb-mini lb-mini-ico" title="新建文件夹" :disabled="!api" @click="addFolder(null)"><Icon name="folder-plus" :size="12" /></button>
+              <button class="lb-mini lb-mini-ico" title="添加空白配置" :disabled="!api" @click="addBlankConfig(null)"><Icon name="plus" :size="12" /></button>
+              <button class="lb-mini lb-mini-ico" title="隐藏配置列表" @click="sideView = ''"><Icon name="x" :size="12" /></button>
             </span>
           </div>
           <div class="lb-col-bd" tabindex="0" @keydown="onCfgKey" @contextmenu="openCtx($event, null)">
@@ -1179,8 +1179,8 @@ onMounted(async () => {
             <span class="lb-cfg-hd-t">资源库</span>
             <span class="lb-cfg-acts">
               <button class="lb-mini lb-mini-ico" title="新增配置"
-                      @click="libTab === 'station' ? addEsConfig() : addSatConfig()"><Icon name="plus" :size="13" /></button>
-              <button class="lb-mini lb-mini-ico" title="隐藏资源库" @click="sideView = ''"><Icon name="x" :size="13" /></button>
+                      @click="libTab === 'station' ? addEsConfig() : addSatConfig()"><Icon name="plus" :size="12" /></button>
+              <button class="lb-mini lb-mini-ico" title="隐藏资源库" @click="sideView = ''"><Icon name="x" :size="12" /></button>
             </span>
           </div>
           <nav class="lb-lib-tabs">
@@ -1224,7 +1224,7 @@ onMounted(async () => {
                 <svg viewBox="0 0 16 16" class="lbr-svg"><path d="M13 8a5 5 0 1 1-1.46-3.54" /><path d="M13 2.6v2.6h-2.6" /></svg>
                 刷新
               </button>
-              <button class="lbr-big" :class="{ on: sideView === 'configs' }" title="左侧栏显示「配置列表」" @click="toggleSide('configs')"><Icon name="panel-left" :size="15" />配置列表</button>
+              <button class="lbr-big" :class="{ on: sideView === 'configs' }" title="左侧栏显示「配置列表」" @click="toggleSide('configs')"><Icon name="panel-left" :size="16" />配置列表</button>
             </div>
             <div class="lbr-cap">文件</div>
           </div>
@@ -1248,16 +1248,16 @@ onMounted(async () => {
           </div>
           <div class="lbr-g">
             <div class="lbr-items">
-              <button class="lbr-big" :class="{ on: sideView === 'library' }" :title="`资源库：地球站 ${esConfigs.length} · 卫星 ${satConfigs.length}`" @click="toggleSide('library')"><Icon name="folder-open" :size="15" />资源库</button>
-              <button class="lbr-big" :disabled="!gsHops.length || !geoManual" title="斜距工具：按站址纬度/海拔/仰角与轨道高度算 WGS-84 最大斜距（绕站一圈取最大），填入本跳或本链路全部星地跳（几何=自动时斜距由求解器给出，本工具只服务手动档）" @click="slantToolOpen = true"><Icon name="arrow-left-right" :size="15" />斜距</button>
-              <button class="lbr-big" :disabled="!spaceHops.length || !geoManual" title="星间距离工具：两星轨道在时间轴上的星间距离，填入本跳或本链路全部星间跳（几何=自动时距离由求解器给出，本工具只服务手动档）" @click="islToolOpen = true"><Icon name="satellite-dish" :size="15" />星间距离</button>
+              <button class="lbr-big" :class="{ on: sideView === 'library' }" :title="`资源库：地球站 ${esConfigs.length} · 卫星 ${satConfigs.length}`" @click="toggleSide('library')"><Icon name="folder-open" :size="16" />资源库</button>
+              <button class="lbr-big" :disabled="!gsHops.length || !geoManual" title="斜距工具：按站址纬度/海拔/仰角与轨道高度算 WGS-84 最大斜距（绕站一圈取最大），填入本跳或本链路全部星地跳（几何=自动时斜距由求解器给出，本工具只服务手动档）" @click="slantToolOpen = true"><Icon name="arrow-left-right" :size="16" />斜距</button>
+              <button class="lbr-big" :disabled="!spaceHops.length || !geoManual" title="星间距离工具：两星轨道在时间轴上的星间距离，填入本跳或本链路全部星间跳（几何=自动时距离由求解器给出，本工具只服务手动档）" @click="islToolOpen = true"><Icon name="satellite-dish" :size="16" />星间距离</button>
             </div>
             <div class="lbr-cap">视图 / 工具</div>
           </div>
           <div class="lbr-g">
             <div class="lbr-items">
-              <button class="lbr-big" :disabled="!segments.length" title="复制当前详细预算（TSV，可直接粘贴到 Excel）" @click="copyWaterfallTsv"><Icon name="file-text" :size="15" />TSV</button>
-              <button class="lbr-big" :disabled="reportDlg.busy || !reportLinks.length" :title="reportLinks.length ? '生成交付级报告：Excel（总报告 + 逐链路详情）/ Word（封面 · 目录 · 正文）/ PDF（封面 · 目录 · 总报告 · 逐链路详情）' : '尚无计算结果'" @click="openReportDialog"><Icon name="file-down" :size="15" />{{ reportDlg.busy ? '生成中…' : '报告' }}</button>
+              <button class="lbr-big" :disabled="!segments.length" title="复制当前详细预算（TSV，可直接粘贴到 Excel）" @click="copyWaterfallTsv"><Icon name="file-text" :size="16" />TSV</button>
+              <button class="lbr-big" :disabled="reportDlg.busy || !reportLinks.length" :title="reportLinks.length ? '生成交付级报告：Excel（总报告 + 逐链路详情）/ Word（封面 · 目录 · 正文）/ PDF（封面 · 目录 · 总报告 · 逐链路详情）' : '尚无计算结果'" @click="openReportDialog"><Icon name="file-down" :size="16" />{{ reportDlg.busy ? '生成中…' : '报告' }}</button>
             </div>
             <div class="lbr-cap">导出</div>
           </div>
@@ -1367,7 +1367,7 @@ onMounted(async () => {
                     <div class="e2-ref">
                       <span class="e2-ref-l">地球站</span>
                       <select v-model="selNode.esId" class="e2-sel wide"><option v-for="o in esOptions" :key="o.value" :value="o.value">{{ o.label }}</option></select>
-                      <button class="e2-edit" title="在资源库中编辑该站型" @click="editInLibrary('station', selNode.esId)"><Icon name="external-link" :size="11" /></button>
+                      <button class="e2-edit" title="在资源库中编辑该站型" @click="editInLibrary('station', selNode.esId)"><Icon name="external-link" :size="12" /></button>
                     </div>
                     <div v-if="nodeIsRelay" class="e2-tagline">地面转接站</div>
                     <!-- 功放快调：段起点（发信站 / 转接站上行侧）才有电平意义；空＝跟随库，占位显示库值 -->
@@ -1398,7 +1398,7 @@ onMounted(async () => {
                     <div class="e2-ref">
                       <span class="e2-ref-l">卫星</span>
                       <select v-model="selNode.satId" class="e2-sel wide"><option v-for="o in satOptions" :key="o.value" :value="o.value">{{ o.label }}</option></select>
-                      <button class="e2-edit" title="在资源库中编辑该卫星" @click="editInLibrary('sat', selNode.satId)"><Icon name="external-link" :size="11" /></button>
+                      <button class="e2-edit" title="在资源库中编辑该卫星" @click="editInLibrary('sat', selNode.satId)"><Icon name="external-link" :size="12" /></button>
                     </div>
                     <div class="e2-ref">
                       <span class="e2-ref-l">名称</span>
@@ -1504,7 +1504,8 @@ onMounted(async () => {
    墨色，于是「白底白字」。故照 RegenLinkBudgetApp 的同名规则原样补齐（改动须与另三窗同步）。 */
 .lb-shell {
   display: flex; flex-direction: column; height: 100vh;
-  background: var(--bg); color: var(--text); font-family: var(--lb-serif);
+  background: var(--bg); color: var(--text); font-family: var(--font-ui);
+  /* 外壳无衬线、文档面衬线：衬线只留给 .lbx-doc（详细预算），见 lbworkbench.css */
   --ok: #4a7a62; --warn: #8a7038; --danger: #9c5751;
   --up: #3f6d8c; --dn: #97672f;
 }
@@ -1513,8 +1514,8 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 /* 功能区「文件」组的刷新按钮：取数中图标旋转（按钮本体走公共 .lbr-big） */
 .lbr-big.spin .lbr-svg { animation: lb-spin .7s linear infinite; transform-origin: 50% 50%; }
 @keyframes lb-spin { to { transform: rotate(360deg); } }
-.lb-hint { color: var(--warn); font-size: 11px; display: inline-flex; align-items: center; gap: 4px; }
-.lb-note { color: var(--ok); font-size: 11px; max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lb-hint { color: var(--warn); font-size: var(--fs-2); display: inline-flex; align-items: center; gap: 4px; }
+.lb-note { color: var(--ok); font-size: var(--fs-2); max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .lb-body { flex: 1; display: flex; min-height: 0; }
 .lb-col { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--border); }
@@ -1528,30 +1529,30 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .lb-cfg-hd-t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lb-build { flex: 1; min-width: 460px; }
 
-.lb-col-hd { display: flex; align-items: center; justify-content: space-between; gap: 8px; height: 30px; flex: none; padding: 0 12px; font-size: 11px; font-weight: 600; letter-spacing: var(--ls-label); text-transform: uppercase; background: var(--surface-2); border-bottom: 1px solid var(--border); color: var(--text-muted); }
+.lb-col-hd { display: flex; align-items: center; justify-content: space-between; gap: 8px; height: 30px; flex: none; padding: 0 12px; font-size: var(--fs-2); font-weight: 600; letter-spacing: var(--ls-label); text-transform: uppercase; background: var(--surface-2); border-bottom: 1px solid var(--border); color: var(--text-muted); }
 .lb-col-bd { flex: 1; overflow: auto; padding: 12px; }
-.lb-mini { font: inherit; font-size: 11px; line-height: 1; padding: 3px 8px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl); display: inline-flex; align-items: center; justify-content: center; gap: 4px; }
+.lb-mini { font: inherit; font-size: var(--fs-2); line-height: 1; padding: 3px 8px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl); display: inline-flex; align-items: center; justify-content: center; gap: 4px; }
 .lb-mini:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
 .lb-mini:disabled { opacity: .45; cursor: not-allowed; }
-.lb-mini.primary { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+.lb-mini.primary { background: var(--accent-ui); color: var(--bg); border-color: var(--accent-ui); }
 .lb-mini.primary:hover:not(:disabled) { opacity: .88; }
-.lb-mini-ico { display: inline-flex; align-items: center; justify-content: center; padding: 3px 5px; }
-.lb-placeholder { color: var(--text-faint); font-size: 12px; text-align: center; line-height: 1.7; }
+.lb-mini-ico { display: inline-flex; align-items: center; justify-content: center; height: var(--h-ctl); white-space: nowrap; padding: 0 5px; }
+.lb-placeholder { color: var(--text-faint); font-size: var(--fs-3); text-align: center; line-height: 1.7; }
 .lb-cfg-acts { display: flex; gap: 4px; }
 /* 右键菜单（.lb-ctx*）不在这儿：它同时被本组件与 ChainStrip 用，scoped 只盖得住自己那半边，
    故收进公共表 styles/lbworkbench.css（前三窗各自 scoped 的同名规则特异度更高，不受影响）。 */
-.lb-myid { flex: none; display: flex; align-items: center; gap: 4px; padding: 6px 12px; font-size: 11px; color: var(--text-muted); border-top: 1px solid var(--border); background: var(--surface); white-space: nowrap; overflow: hidden; }
-.lb-myid b { font-family: var(--font-mono); color: var(--text); letter-spacing: var(--ls-tight); overflow: hidden; text-overflow: ellipsis; }
+.lb-myid { flex: none; display: flex; align-items: center; gap: 4px; padding: 6px 12px; font-size: var(--fs-2); color: var(--text-muted); border-top: 1px solid var(--border); background: var(--surface); white-space: nowrap; overflow: hidden; }
+.lb-myid b { font-family: var(--font-code); color: var(--text); letter-spacing: var(--ls-tight); overflow: hidden; text-overflow: ellipsis; }
 
 .lb-mask { position: fixed; inset: 0; z-index: 300; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.28); }
-.lb-dlg { width: 380px; display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-card); box-shadow: 0 8px 24px rgba(0,0,0,.18); overflow: hidden; }
-.lb-dlg-hd { display: flex; align-items: center; gap: 8px; padding: 10px 12px; font-size: 11px; font-weight: 600; letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--text-muted); background: var(--surface-2); border-bottom: 1px solid var(--border); }
+.lb-dlg { width: 380px; display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-card); box-shadow: var(--shadow-3); overflow: hidden; }
+.lb-dlg-hd { display: flex; align-items: center; gap: 8px; padding: 10px 12px; font-size: var(--fs-2); font-weight: 600; letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--text-muted); background: var(--surface-2); border-bottom: 1px solid var(--border); }
 .lb-dlg-bd { padding: 12px; display: flex; flex-direction: column; gap: 8px; }
 .lb-dlg-ft { display: flex; justify-content: flex-end; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--border); background: var(--surface); }
-.lb-input { font: inherit; font-size: 12px; padding: 6px 9px; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl); }
-.lb-input:focus { outline: none; border-color: var(--accent); }
-.lb-share-row { font-size: 12px; color: var(--text-muted); }
-.lb-err { color: var(--danger); font-size: 12px; padding: 8px; }
+.lb-input { font: inherit; font-size: var(--fs-3); padding: 6px 9px; background: var(--field-bg); color: var(--text); border: 1px solid var(--field-border); border-radius: var(--r-ctl); }
+.lb-input:focus { outline: none; border-color: var(--accent-ui); }
+.lb-share-row { font-size: var(--fs-3); color: var(--text-muted); }
+.lb-err { color: var(--danger); font-size: var(--fs-3); padding: 8px; }
 
 /* —— 链路列表：三线表（顶/底粗线 + 列头线），无竖线无底色，与详细预算同一套排版语言 —— */
 .e2-tbl-wrap { overflow-x: auto; }
@@ -1579,16 +1580,16 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
   width: 100%; font: inherit; font-size: inherit; padding: 1px 3px; color: var(--text);
   background: transparent; border: 1px solid transparent; border-radius: var(--r-ctl, 2px);
 }
-.e2-in:hover { background: var(--bg); border-color: var(--border); }
-.e2-in:focus { outline: none; background: var(--bg); border-color: var(--accent); }
+.e2-in:hover { background: var(--field-bg); border-color: var(--field-border-hover); }
+.e2-in:focus { outline: none; background: var(--field-bg); border-color: var(--accent-ui); }
 .e2-in.wide { width: 100%; }
 .e2-in.num { text-align: right; font-variant-numeric: tabular-nums; }
 .e2-libsel { display: inline-flex; align-items: center; gap: 3px; width: 100%; }
 .e2-sel {
   flex: 1; min-width: 0; font: inherit; font-size: inherit; padding: 1px 3px; cursor: pointer;
-  color: var(--text); background-color: var(--bg); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px);
+  color: var(--text); background-color: var(--field-bg); border: 1px solid var(--field-border); border-radius: var(--r-ctl, 2px);
 }
-.e2-sel:focus { outline: none; border-color: var(--accent); }
+.e2-sel:focus { outline: none; border-color: var(--accent-ui); }
 .e2-sel.wide { flex: 1; }
 /* 「去资源库编辑」小钮：可点的控件一律不用 --text-faint —— 深色下只有 3.1:1，
    而它是 11px 的纯图标，本就最难认。muted 起步，hover 再抬到 accent。 */
@@ -1614,19 +1615,19 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 }
 .e2-insp :deep(.bb-rt) { padding-top: 5px; }
 .e2-insp :deep(.bb-f) { min-height: 21px; padding: 0; gap: 8px; border-bottom: 1px solid var(--lb-rule-soft); }
-.e2-insp :deep(.bb-l) { font-size: 11.5px; line-height: 1.25; }
-.e2-insp :deep(.bb-i) { font-size: 11.5px; padding: 2px 4px; background-color: transparent; border-color: transparent; }
+.e2-insp :deep(.bb-l) { font-size: var(--fs-3); line-height: 1.25; }
+.e2-insp :deep(.bb-i) { font-size: var(--fs-3); padding: 2px 4px; background-color: transparent; border-color: transparent; }
 .e2-insp :deep(.bb-i:hover) { background-color: var(--bg); border-color: var(--border); }
-.e2-insp :deep(.bb-i:focus) { background-color: var(--bg); border-color: var(--accent); }
+.e2-insp :deep(.bb-i:focus) { background-color: var(--bg); border-color: var(--accent-ui); }
 /* 速率链：非锚点＝算出来的，退一档；锁定档（下游段）整列都是读数 */
 .e2-insp :deep(.bb-rt .bb-i) { color: var(--text-muted); }
 .e2-insp :deep(.bb-rt .bb-i.bb-anch) { color: var(--text); }
 .e2-insp :deep(.bb-i[readonly]) { cursor: not-allowed; }
-.e2-insp :deep(.bb-ntn) { font-size: 10.5px; line-height: 1.45; }
+.e2-insp :deep(.bb-ntn) { font-size: var(--fs-2); line-height: 1.45; }
 .e2-insp-hd { display: flex; align-items: baseline; gap: 6px; padding-bottom: 3px; margin-bottom: 5px; border-bottom: 1px solid var(--lb-rule); }
-.e2-insp-t { font-size: 11.5px; font-weight: 700; letter-spacing: var(--ls-label); color: var(--text); }
-.e2-insp-s { font-size: 11px; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.e2-insp-none { font-size: 11.5px; color: var(--text-faint); }
+.e2-insp-t { font-size: var(--fs-3); font-weight: 700; letter-spacing: var(--ls-label); color: var(--text); }
+.e2-insp-s { font-size: var(--fs-2); color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.e2-insp-none { font-size: var(--fs-3); color: var(--text-faint); }
 .e2-ref { display: flex; align-items: center; gap: 5px; margin-bottom: 4px; }
 /* 站名 ＝ 选址：输入框就是搜索框，命中项浮在其下（检索结果是数据，不占常驻版面） */
 .e2-city { position: relative; flex: 1; min-width: 0; }
@@ -1634,7 +1635,7 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
   position: absolute; z-index: 30; left: 0; right: 0; top: calc(100% + 2px);
   overflow-y: auto; padding: 2px;   /* 高度上界随余量算，见 cityFlip */
   background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-box, 3px);
-  box-shadow: 0 6px 18px rgba(0, 0, 0, .18);
+  box-shadow: var(--shadow-2);
 }
 .e2-city-pop.up { top: auto; bottom: calc(100% + 2px); }
 .e2-city-i {
@@ -1644,22 +1645,22 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 /* accent 实底上的字一律 var(--bg)：写死 #fff 在浅色主题下就是白底白字 */
 .e2-city-i.on { background: var(--accent); color: var(--bg); }
 .e2-city-i.on .e2-city-x, .e2-city-i.on .e2-city-g { color: var(--bg); opacity: .82; }
-.e2-city-n { flex: none; font-size: 11.5px; }
-.e2-city-x { flex: 1; min-width: 0; font-size: 10.5px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.e2-city-g { flex: none; font-size: 10.5px; color: var(--text-faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.e2-city-n { flex: none; font-size: var(--fs-3); }
+.e2-city-x { flex: 1; min-width: 0; font-size: var(--fs-2); color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.e2-city-g { flex: none; font-size: var(--fs-2); color: var(--text-faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
 /* 行首标签列：四字标签（业务速率 / 入段体制 / 解调实现…）在 42px 下会折行，给到 60px 并钉住不换行。
    ★ 是 min-width 不是 width：定死宽度时更长的标签（实际门限 C/N）会溢出去压在读数上。
    四字及以下一律吃满 60px ⇒ 读数列照旧对齐，只有超长那一行把自己的读数往右推。 */
-.e2-ref-l { flex: none; min-width: 60px; font-size: 11.5px; color: var(--text-muted); white-space: nowrap; }
+.e2-ref-l { flex: none; min-width: 60px; font-size: var(--fs-3); color: var(--text-muted); white-space: nowrap; }
 /* 只读读数（入段体制 / 实际门限 / 本段速率）：与输入行同高，无框 */
-.e2-ro { flex: 1; min-width: 0; font-size: 11.5px; color: var(--text); font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.e2-tagline { font-size: 11px; color: var(--text-faint); margin: 2px 0 5px; }
-.e2-sub { margin: 8px 0 3px; padding-bottom: 2px; font-size: 11.5px; letter-spacing: var(--ls-label); color: var(--text-muted); border-bottom: 1px solid var(--lb-rule); }
+.e2-ro { flex: 1; min-width: 0; font-size: var(--fs-3); color: var(--text); font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.e2-tagline { font-size: var(--fs-2); color: var(--text-faint); margin: 2px 0 5px; }
+.e2-sub { margin: 8px 0 3px; padding-bottom: 2px; font-size: var(--fs-3); letter-spacing: var(--ls-label); color: var(--text-muted); border-bottom: 1px solid var(--lb-rule); }
 .e2-tools { margin-top: 8px; display: flex; gap: 6px; }
 /* 自动几何读数行：解出来的斜距/仰角（送进引擎的那份），与上方手动单元格并存互不覆盖 */
-.e2-auto { display: flex; align-items: baseline; gap: 6px; margin-top: 6px; font-size: 11.5px; color: var(--text); font-variant-numeric: tabular-nums; }
-.e2-auto-l { flex: none; width: 42px; font-size: 11.5px; color: var(--text-muted); }
-.e2-auto em { font-style: normal; font-size: 10.5px; color: var(--text-muted); }
+.e2-auto { display: flex; align-items: baseline; gap: 6px; margin-top: 6px; font-size: var(--fs-3); color: var(--text); font-variant-numeric: tabular-nums; }
+.e2-auto-l { flex: none; width: 42px; font-size: var(--fs-3); color: var(--text-muted); }
+.e2-auto em { font-style: normal; font-size: var(--fs-2); color: var(--text-muted); }
 
 /* 详细预算区的端到端专属排版（.e2-doc）不在这里：PDF 打印页（src/report/ReportApp.vue）
    要画同一张表，写成本组件的 scoped 规则它就吃不到。故整块存在 styles/lbworkbench.css

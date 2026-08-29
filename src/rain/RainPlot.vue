@@ -10,6 +10,7 @@
 // 取对数后曲线接近直线。其余三轴（频率 / 降雨率 / 仰角）仍是线性。
 import { ref, reactive, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { halfStr } from '../shared/num.js'
+import { uiFontStack, DOC_FONT_STACK } from '../shared/lbFont.js'
 
 const props = defineProps({
   params: { type: Object, default: null },   // buildRainCase 输出（当前算例）
@@ -197,8 +198,10 @@ function drawTo(ctx, W, H, forExport) {
   // 导出时字号/线宽/边距整体放大，配合更高 DPI → 报告里清晰
   const FS = forExport ? 15 : 11, FSM = forExport ? 15 : 11, FST = forExport ? 19 : 14
   const LWg = forExport ? 1.2 : 1, LWa = forExport ? 1.8 : 1.2, LWc = forExport ? 3 : 2
-  // 与界面同栈（styles/global.css 的 --font-serif 手工镜像）：Times New Roman 打西文，宋体接中文
-  const font = (px, w) => (w ? w + ' ' : '') + px + 'px "Times New Roman", Times, "SimSun", "宋体", serif'
+  // 屏上跟界面（无衬线）、导出跟报告（衬线）—— canvas 取不到 CSS 变量，栈定义在 shared/lbFont.js。
+  // 这张图的其余尺度（字号 / 线宽 / 边距）本来就已按 forExport 分两档，字体是最后一项没分的。
+  const stack = forExport ? DOC_FONT_STACK : uiFontStack()
+  const font = (px, w) => (w ? w + ' ' : '') + px + 'px ' + stack
   const mL = forExport ? 68 : PAD.mL, mR = forExport ? 22 : PAD.mR, mT = forExport ? 46 : PAD.mT, mB = forExport ? 54 : PAD.mB
   const pw = W - mL - mR, ph = H - mT - mB
   const A = curAxis.value
@@ -378,21 +381,21 @@ const hoverText = computed(() => hover.value
 <style scoped>
 .rp { border: 1px solid var(--border); border-radius: var(--r-box, 3px); overflow: hidden; background: var(--surface); }
 .rp-bar { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-bottom: 1px solid var(--border); background: var(--surface-2); }
-.rp-lb { font-size: 12px; color: var(--text-muted); }
-.rp-sel { font: inherit; font-size: 12px; padding: 2px 5px; border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); background-color: var(--surface); color: var(--text); }
+.rp-lb { font-size: var(--fs-3); color: var(--text-muted); }
+.rp-sel { font: inherit; font-size: var(--fs-3); padding: 2px 5px; border: 1px solid var(--field-border); border-radius: var(--r-ctl, 2px); background-color: var(--surface); color: var(--text); }
 .rp-rng { display: inline-flex; align-items: center; gap: 3px; }
-.rp-inp { width: 58px; font: inherit; font-size: 12px; padding: 2px 4px; border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); background: var(--surface); color: var(--text); }
+.rp-inp { width: 58px; font: inherit; font-size: var(--fs-3); padding: 2px 4px; border: 1px solid var(--field-border); border-radius: var(--r-ctl, 2px); background: var(--surface); color: var(--text); }
 /* 可用度轴要放得下 99.99999（8 字符）+ 数字输入框自带的步进箭头 */
 .rp-inp.wide { width: 84px; }
 .rp-dash { color: var(--text-faint); }
-.rp-unit { font-size: 11px; color: var(--text-faint); margin-left: 2px; }
+.rp-unit { font-size: var(--fs-2); color: var(--text-faint); margin-left: 2px; }
 .rp-flex { flex: 1 1 auto; }
-.rp-png { font: inherit; font-size: 12px; padding: 3px 9px; border: 1px solid var(--border); background: var(--surface); color: var(--text); border-radius: var(--r-ctl, 2px); cursor: pointer; }
+.rp-png { font: inherit; font-size: var(--fs-3); height: var(--h-ctl); white-space: nowrap; padding: 0 9px; border: 1px solid var(--border); background: var(--surface); color: var(--text); border-radius: var(--r-ctl, 2px); cursor: pointer; }
 .rp-png:hover:not(:disabled) { border-color: var(--accent); }
 .rp-png:disabled { opacity: .5; cursor: default; }
 .rp-canvas-wrap { position: relative; padding: 4px; }
 .rp-canvas-wrap canvas { display: block; width: 100%; }
-.rp-loading { position: absolute; top: 8px; right: 12px; font-size: 11px; color: var(--text-faint); }
+.rp-loading { position: absolute; top: 8px; right: 12px; font-size: var(--fs-2); color: var(--text-faint); }
 .rp-foot { padding: 4px 10px 6px; border-top: 1px solid var(--border); min-height: 20px; }
-.rp-hover { font-size: 11px; font-family: var(--font-mono); color: var(--accent); }
+.rp-hover { font-size: var(--fs-2); font-family: var(--font-mono); color: var(--accent); }
 </style>

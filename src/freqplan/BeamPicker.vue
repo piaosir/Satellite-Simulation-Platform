@@ -77,14 +77,14 @@ function toggle(id) {
 .chip:hover { outline: 1px solid var(--text-muted); outline-offset: 1px; }
 /* 继承态（下行留空）：色片灰掉 + 虚线边 —— 与带宽那格的灰字占位同一套读法「这不是我填的，是随来的」 */
 .chip.gh { opacity: .42; border-style: dashed; }
-.bp-none { color: var(--text-faint); font-size: 11px; }
-.bp-inh { color: var(--text-faint); font-size: 10.5px; white-space: nowrap; margin: 0; }
+.bp-none { color: var(--text-faint); font-size: var(--fs-2); }
+.bp-inh { color: var(--text-faint); font-size: var(--fs-2); white-space: nowrap; margin: 0; }
 
 .bp-list { display: flex; flex-direction: column; gap: 2px; }
 .bp-row {
   display: flex; align-items: center; gap: 6px; width: 100%;
   padding: 3px 5px; background: transparent; border: 1px solid transparent;
-  color: var(--text-muted); font-size: 12px; text-align: left; cursor: pointer; border-radius: var(--r-ctl);
+  color: var(--text-muted); font-size: var(--fs-3); text-align: left; cursor: pointer; border-radius: var(--r-ctl);
 }
 .bp-row:hover { background: var(--surface); color: var(--text); }
 .bp-row.on { color: var(--text); border-color: var(--border); background: var(--surface); }

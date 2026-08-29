@@ -190,7 +190,7 @@ function onBwInput(e) { setAnchor('bw', e.target.value) }
            而那正是这枚 button（button 也是 labelable）——点标签文字、单位括注甚至行内空白都会误切口径。 -->
       <div class="bb-f bb-f-tg"><span class="bb-l">
           <button type="button" class="bb-tg" :title="`当前 ${form.noiseRatioMode === 'ebno' ? 'Eb/N₀' : 'Es/N₀'} 口径，点击换算为 ${form.noiseRatioMode === 'ebno' ? 'Es/N₀' : 'Eb/N₀'}（门限值同步换算）`"
-                  @click.prevent="toggleEbno">{{ form.noiseRatioMode === 'ebno' ? 'Eb/N₀' : 'Es/N₀' }}<Icon name="arrow-left-right" :size="10" /></button><i>(dB)</i>
+                  @click.prevent="toggleEbno">{{ form.noiseRatioMode === 'ebno' ? 'Eb/N₀' : 'Es/N₀' }}<Icon name="arrow-left-right" :size="12" /></button><i>(dB)</i>
         </span>
         <input v-model="form.ebno" class="bb-i mono" placeholder="5.50" />
       </div>
@@ -202,7 +202,7 @@ function onBwInput(e) { setAnchor('bw', e.target.value) }
       </label>
       <div class="bb-f bb-f-tg"><span class="bb-l">
           <button type="button" class="bb-tg" :title="`当前按${form.rsCodeMode === 'spectral' ? '频谱效率' : '帧效率'}填，点击切换为${form.rsCodeMode === 'spectral' ? '帧效率' : '频谱效率'}`"
-                  @click.prevent="toggleRsCode">{{ form.rsCodeMode === 'spectral' ? '频谱效率' : '帧效率' }}<Icon name="arrow-left-right" :size="10" /></button><i v-if="form.rsCodeMode === 'spectral'">(bps/Hz)</i>
+                  @click.prevent="toggleRsCode">{{ form.rsCodeMode === 'spectral' ? '频谱效率' : '帧效率' }}<Icon name="arrow-left-right" :size="12" /></button><i v-if="form.rsCodeMode === 'spectral'">(bps/Hz)</i>
         </span>
         <input :value="rsCodeDisplay" class="bb-i mono" :class="{ 'bb-over': rsAlert && rsAlert.level === 'over' }"
                :placeholder="form.rsCodeMode === 'spectral' ? '1.1520' : '188/204'" @input="onRsInput" @change="onRsChange" />
@@ -214,7 +214,7 @@ function onBwInput(e) { setAnchor('bw', e.target.value) }
 
     <!-- 帧效率越界告警 / 频谱效率夹到上限的说明（频谱效率只是帧效率的一个视角，见 script） -->
     <p v-if="rsAlert" class="bb-ntn bb-rs" :class="{ over: rsAlert.level === 'over' }">
-      <Icon v-if="rsAlert.level === 'over'" name="alert-triangle" :size="11" />
+      <Icon v-if="rsAlert.level === 'over'" name="alert-triangle" :size="12" />
       <span>{{ rsAlert.text }}</span>
     </p>
 
@@ -238,7 +238,7 @@ function onBwInput(e) { setAnchor('bw', e.target.value) }
 
     <!-- 3GPP NTN 信道带宽合规提示（仅 3GPP 体制出现） -->
     <p v-if="ntnBw" class="bb-ntn" :class="{ over: ntnBw.level === 'over' }">
-      <Icon v-if="ntnBw.level === 'over'" name="alert-triangle" :size="11" />
+      <Icon v-if="ntnBw.level === 'over'" name="alert-triangle" :size="12" />
       <span>{{ ntnBw.text }}</span>
     </p>
 
@@ -269,19 +269,19 @@ function onBwInput(e) { setAnchor('bw', e.target.value) }
 /* 计算方式：求解策略，与载波信号参数隔一条分隔线；方式名较长，首列给两倍宽 */
 .bb-cm { grid-template-columns: 2fr 1fr 1fr; padding-top: 8px; border-top: 1px dashed var(--border); }
 .bb-f { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-.bb-l { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-muted); white-space: nowrap; }
+.bb-l { display: flex; align-items: center; gap: 4px; font-size: var(--fs-3); color: var(--text-muted); white-space: nowrap; }
 /* 单位括注：从属信息，比标签名收小半档——既压住视觉权重，也给最窄一列（~87px）匀出余量，
    「频谱效率 (bps/Hz)」这类长标签才不会把括号裁掉 */
 .bb-l i { font-size: .95em; color: var(--text-faint); font-style: normal; }
-.bb-i { font: inherit; font-size: 12px; padding: 4px 7px; width: 100%; background-color: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
-.bb-i:focus { outline: none; border-color: var(--accent); }
+.bb-i { font: inherit; font-size: var(--fs-3); padding: 4px 7px; width: 100%; background-color: var(--field-bg); color: var(--text); border: 1px solid var(--field-border); border-radius: var(--r-ctl, 2px); }
+.bb-i:focus { outline: none; border-color: var(--accent-ui); }
 .bb-i.mono { font-family: var(--font-mono); }
 /* 速率链：非锚点＝由锚点算出来的，退一档；锚点＝用户钉住的那个，正常色 */
 .bb-rt .bb-i { background-color: var(--surface); color: var(--text-muted); }
 .bb-rt .bb-i.bb-anch { color: var(--text); }
 /* 3GPP NTN 信道带宽提示 / 帧效率越界：正常灰字说明，超限转红并给输入框描红边 */
 .bb-rt .bb-i.bb-over, .bb-grid .bb-i.bb-over { color: var(--danger); border-color: var(--danger); }
-.bb-ntn { display: flex; align-items: flex-start; gap: 5px; margin: -4px 0 0; font-size: 11px; line-height: 1.55; color: var(--text-faint); }
+.bb-ntn { display: flex; align-items: flex-start; gap: 5px; margin: -4px 0 0; font-size: var(--fs-2); line-height: 1.55; color: var(--text-faint); }
 .bb-ntn.bb-rs { margin: -6px 0 10px; }   /* 帧效率提示夹在两组之间，上下都要留白 */
 .bb-ntn.over { color: var(--danger); }
 .bb-ntn :deep(svg) { flex: none; margin-top: 2px; }

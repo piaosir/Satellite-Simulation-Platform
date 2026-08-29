@@ -92,6 +92,6 @@ const done = (ev, ...args) => { emit('close'); emit(ev, ...args) }
    这里只补菜单挪进组件后新增的两件事：带快捷键标签的两栏行、以及组件自身的最小宽度。 */
 .lb-ctx { min-width: 172px; }
 .lb-ctx-i { display: flex; align-items: center; gap: 18px; }
-.lb-ctx-k { margin-left: auto; font-family: var(--font-mono); font-size: 10.5px; color: var(--text-faint); }
+.lb-ctx-k { margin-left: auto; font-family: var(--font-mono); font-size: var(--fs-2); color: var(--text-faint); }
 .lb-ctx-i:disabled .lb-ctx-k { color: inherit; }
 </style>

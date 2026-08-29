@@ -5,7 +5,7 @@
 //
 // 布局口径：table-layout:fixed + 每列显式列宽（内核 widths），末尾一根无宽度的填充列吃掉剩余宽度。
 // 只有定死列宽，拖拽改宽与「装不下打省略号」才成立；auto 布局下列宽永远跟着内容走，拖不动也收不窄。
-import { computed } from 'vue'
+import { computed, ref, reactive, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import Icon from './Icon.vue'
 
 const props = defineProps({
@@ -24,31 +24,124 @@ const props = defineProps({
 const emit = defineEmits(['add', 'row-enter', 'row-leave'])
 const g = props.grid
 const rows = computed(() => g.rows.value)
+// ★ 一律按**显示序**渲染：冻结列被提到最左，而选区/复制/粘贴/填充/左右导航都以同一份次序遍历
+//   （见 useGridSelect 的 colList）。这里若还按 props.cols 画，框出来的一片就和复制出来的一片对不上。
+const vcols = computed(() => (g.visCols ? g.visCols.value : props.cols))
 const unitOf = (c) => (props.headUnit ? props.headUnit(c) : c.unit)
-const colSpanAll = computed(() => props.cols.length + (props.serial ? 1 : 0) + (props.actionsWidth > 0 ? 1 : 0) + 1)
+const colSpanAll = computed(() => vcols.value.length + (props.serial ? 1 : 0) + (props.actionsWidth > 0 ? 1 : 0) + 1)
 const menuRow = computed(() => { const r = g.rect.value; return r.r0 < 0 ? 0 : r.r1 - r.r0 + 1 })
+
+// ===== 冻结列的量与条（照搬 StationGrid：偏移实测 → CSS 变量；条画在格子之上、不随横滚跑）=====
+const fzH = ref(0)                    // 冻结条高度＝滚动容器可视高（天然让开底部横条）
+const fzScrolled = ref(false)         // 横滚起来才投影，表明线下面压着内容（Excel 同款）
+const fzDrag = reactive({ on: false, n: 0, x: 0 })
+let fzRO = null, fzCands = []
+const headCells = () => {
+  const el = g.bodyEl.value
+  return el ? { idx: el.querySelector('thead th.eg-idx'), ths: el.querySelectorAll('thead th.eg-h') } : null
+}
+function measureFrozen() {
+  const el = g.bodyEl.value; if (!el || !g.fzOff) return
+  const hc = headCells(); if (!hc) return
+  // rect 而非 offsetWidth：整数取整会攒出 1px 缝
+  let x = props.serial && hc.idx ? hc.idx.getBoundingClientRect().width : 0
+  const offs = [x]
+  const n = Math.min(g.frozenCount.value, hc.ths.length)
+  for (let i = 0; i < n; i++) { x += hc.ths[i].getBoundingClientRect().width; offs.push(x) }
+  const cur = g.fzOff.value
+  if (cur.length !== offs.length || offs.some((v, i) => Math.abs(v - cur[i]) > 0.05)) g.fzOff.value = offs
+  fzH.value = el.clientHeight
+}
+// 只盯序号列与各冻结列自己的尺寸：它们一变宽（内容/字号/语言）就重量，代价与表体规模无关
+function reobserve() {
+  const el = g.bodyEl.value
+  if (!fzRO || !el) return
+  fzRO.disconnect()
+  fzRO.observe(el)
+  const hc = headCells(); if (!hc) return
+  if (hc.idx) fzRO.observe(hc.idx)
+  for (let i = 0; i < Math.min(g.frozenCount.value, hc.ths.length); i++) fzRO.observe(hc.ths[i])
+}
+function onScroll() { const el = g.bodyEl.value; if (el) fzScrolled.value = el.scrollLeft > 0 }
+watch([() => g.frozenCount.value, vcols, () => g.widths.value], () => nextTick(() => { reobserve(); measureFrozen() }))
+onMounted(() => {
+  fzRO = new ResizeObserver(() => measureFrozen())
+  nextTick(() => { reobserve(); measureFrozen(); onScroll() })
+})
+onBeforeUnmount(() => { if (fzRO) { fzRO.disconnect(); fzRO = null } endFzDrag() })
+
+// —— 拖冻结条改冻结位置 ——
+// ★ 按下即把横滚归零：冻结区本就钉着不动，归零后「待冻的那几列」全在眼前，往左往右都落得到实处；
+//   不归零的话，已滚出视野的列在屏幕上没有落点，往右拖会一格也走不动。
+function buildCands() {
+  const el = g.bodyEl.value; if (!el) return []
+  const hc = headCells(); if (!hc) return []
+  let x = props.serial && hc.idx ? hc.idx.getBoundingClientRect().width : 0
+  const out = [{ n: 0, x }]
+  const lim = el.clientWidth * 0.7           // 冻结区不许吃掉七成视野，否则滚动区无处可看
+  for (let i = 0; i < hc.ths.length - 1; i++) {
+    x += hc.ths[i].getBoundingClientRect().width
+    if (x > lim) break
+    out.push({ n: i + 1, x })
+  }
+  return out
+}
+function onFzDown(e) {
+  if (e.button !== 0) return
+  e.preventDefault(); e.stopPropagation()
+  const el = g.bodyEl.value; if (!el) return
+  el.scrollLeft = 0
+  fzCands = buildCands()
+  fzDrag.on = true; fzDrag.n = g.frozenCount.value; fzDrag.x = g.fzW.value
+  window.addEventListener('mousemove', onFzMove)
+  window.addEventListener('mouseup', onFzUp)
+  window.addEventListener('keydown', onFzKey, true)
+}
+function onFzMove(e) {
+  if (!fzDrag.on || !fzCands.length) return
+  const el = g.bodyEl.value; if (!el) return
+  const px = e.clientX - el.getBoundingClientRect().left
+  let best = fzCands[0]
+  for (const c of fzCands) if (Math.abs(c.x - px) < Math.abs(best.x - px)) best = c
+  fzDrag.n = best.n; fzDrag.x = best.x
+}
+function onFzUp() { const n = fzDrag.n; endFzDrag(); g.setFreeze(n) }
+function onFzKey(e) { if (e.key === 'Escape') { e.stopPropagation(); endFzDrag() } }   // Esc 取消，保持原冻结位
+function endFzDrag() {
+  fzDrag.on = false
+  window.removeEventListener('mousemove', onFzMove)
+  window.removeEventListener('mouseup', onFzUp)
+  window.removeEventListener('keydown', onFzKey, true)
+}
 </script>
 
 <template>
   <div class="eg-scroll" :ref="el => g.bodyEl.value = el" tabindex="0"
-       @keydown="g.gridKey" @wheel="g.onWheel" @click="g.focusGrid">
-    <table class="eg-tbl">
+       @keydown="g.gridKey" @wheel="g.onWheel" @click="g.focusGrid" @scroll="onScroll">
+    <!-- 冻结线覆盖条：sticky 钉在滚动视口左沿再按实测偏移平移，故**不随横滚跑**；
+         height:0 不占流，线体在内部的 <i> 上。拖它改冻结位置，双击取消全部冻结。 -->
+    <div v-if="g.frozenCount.value" class="eg-fzbar" :class="{ scrolled: fzScrolled, drag: fzDrag.on }"
+         :style="{ transform: 'translateX(' + (fzDrag.on ? fzDrag.x : g.fzW.value) + 'px)' }"
+         :title="'已冻结 ' + g.frozenCount.value + ' 列 · 拖动改冻结位置 · 双击取消冻结'"
+         @mousedown="onFzDown" @dblclick.stop="g.unfreeze()"><i :style="{ height: fzH + 'px' }"></i></div>
+    <table class="eg-tbl" :style="g.fzVars.value">
       <colgroup>
         <col v-if="serial" style="width:38px" />
-        <col v-for="c in cols" :key="c.key" :style="{ width: g.widthOf(c) + 'px' }" />
+        <col v-for="c in vcols" :key="c.key" :style="{ width: g.widthOf(c) + 'px' }" />
         <col v-if="actionsWidth > 0" :style="{ width: actionsWidth + 'px' }" />
         <col />
       </colgroup>
       <thead>
         <tr>
           <th v-if="serial" class="eg-idx eg-corner" title="全选" @mousedown.left.prevent="g.selectAll(); g.focusGrid()"></th>
-          <th v-for="(c, ci) in cols" :key="c.key" class="eg-h" :data-k="c.key"
-              :class="{ n: c.num, colsel: g.colSelected(ci), sortable: g.sortable }"
+          <th v-for="(c, ci) in vcols" :key="c.key" class="eg-h" :data-k="c.key"
+              :class="{ n: c.num, colsel: g.colSelected(ci), sortable: g.sortable, froz: g.isFrozen(ci) }"
+              :style="g.fzStyle(ci)"
               :title="headTip ? headTip(c) : (c.tip || c.label)"
               @mousedown.left="g.colHeadDown($event, ci)" @mouseenter="g.colHeadEnter(ci)"
               @contextmenu="g.openMenu($event, null, ci)">
             <span class="eg-ht" @click="g.toggleSort(c)">{{ c.label }}<i v-if="unitOf(c)" class="eg-u">({{ unitOf(c) }})</i><em v-if="c.na">*</em>
-              <Icon v-if="g.sortDirOf(c.key)" class="eg-sort" :name="g.sortDirOf(c.key) > 0 ? 'chevron-up' : 'chevron-down'" :size="10" />
+              <Icon v-if="g.sortDirOf(c.key)" class="eg-sort" :name="g.sortDirOf(c.key) > 0 ? 'chevron-up' : 'chevron-down'" :size="12" />
             </span>
             <span class="eg-rz" title="拖拽改列宽 · 双击自适应" @mousedown.left.stop="g.onResizeDown($event, c)" @dblclick.stop="g.autoFitCol(c)"></span>
           </th>
@@ -62,8 +155,9 @@ const menuRow = computed(() => { const r = g.rect.value; return r.r0 < 0 ? 0 : r
           <td v-if="serial" class="eg-idx" title="点选整行 · 拖拽选多行 · 右键插入/删除行"
               @mousedown.left="g.rowHeadDown($event, ri)" @mouseenter="g.rowHeadEnter(ri)"
               @contextmenu="g.rowHeadMenu($event, ri)">{{ ri + 1 }}</td>
-          <td v-for="(c, ci) in cols" :key="c.key" class="eg-c"
-              :class="[{ n: c.num, ed: g.colEditable(c), sel: g.inSel(ri, ci), active: g.isActive(ri, ci), editing: g.isEdit(ri, ci), fillp: g.inFill(ri, ci) }, cellClass ? cellClass(r, c) : null]"
+          <td v-for="(c, ci) in vcols" :key="c.key" class="eg-c"
+              :class="[{ n: c.num, ed: g.colEditable(c), sel: g.inSel(ri, ci), active: g.isActive(ri, ci), editing: g.isEdit(ri, ci), fillp: g.inFill(ri, ci), froz: g.isFrozen(ci) }, cellClass ? cellClass(r, c) : null]"
+              :style="g.fzStyle(ci)"
               @mousedown="g.cellDown($event, ri, ci)" @mouseenter="g.cellEnter(ri, ci)"
               @dblclick="g.tryEdit(ri, ci, null)" @contextmenu="g.openMenu($event, ri, ci)">
             <span class="eg-v">{{ text(r, c) }}</span>
@@ -84,7 +178,7 @@ const menuRow = computed(() => { const r = g.rect.value; return r.r0 < 0 ? 0 : r
         <tr v-if="!rows.length"><td class="eg-empty" :colspan="colSpanAll">{{ emptyText }}</td></tr>
         <!-- 表尾追加行：热区只在标签本身，不是整行——整行热区紧挨底部横向滚动条，够一下滚动条就白加一行 -->
         <tr v-if="addLabel" class="eg-addrow"><td :colspan="colSpanAll">
-          <button type="button" class="eg-addlbl" @mousedown.stop @click="emit('add')"><Icon name="plus" :size="11" /> {{ addLabel }}</button>
+          <button type="button" class="eg-addlbl" @mousedown.stop @click="emit('add')"><Icon name="plus" :size="12" /> {{ addLabel }}</button>
         </td></tr>
       </tbody>
     </table>
@@ -114,6 +208,11 @@ const menuRow = computed(() => { const r = g.rect.value; return r.r0 < 0 ? 0 : r
             <button class="eg-ctx-i" :disabled="!g.sort.value.dir" @click="g.menuDo(g.clearSort)">取消排序</button>
           </template>
           <div class="eg-ctx-sep"></div>
+          <button class="eg-ctx-i" :disabled="!g.canPin.value"
+                  :title="g.pinAllOn.value ? '取消冻结所选列' : '把所选列钉在最左，横滚时不动'"
+                  @click="g.menuDo(() => g.togglePin())">{{ g.pinAllOn.value ? '取消冻结此列' : '冻结此列' }}</button>
+          <button class="eg-ctx-i" :disabled="!g.frozenCount.value" @click="g.menuDo(g.unfreeze)">取消全部冻结</button>
+          <div class="eg-ctx-sep"></div>
           <button v-if="g.menu.col" class="eg-ctx-i" @click="g.menuDo(() => g.autoFitCol(g.menu.col))">自动列宽</button>
           <button class="eg-ctx-i" @click="g.menuDo(g.autoFitAll)">全部列自适应</button>
         </div>
@@ -126,7 +225,7 @@ const menuRow = computed(() => { const r = g.rect.value; return r.r0 < 0 ? 0 : r
 /* 特异度提醒：基础格样式写的是 `.eg-tbl th, .eg-tbl td`（0,1,1），凡要覆盖它的（内边距/溢出）
    都必须带 .eg-tbl 前缀，否则 `.eg-c { padding:0 }`（0,1,0）压不过去，表现为内边距叠两层。 */
 .eg-scroll { overflow: auto; outline: none; }
-.eg-tbl { table-layout: fixed; width: 100%; border-collapse: separate; border-spacing: 0; font-size: 11.5px; }
+.eg-tbl { table-layout: fixed; width: 100%; border-collapse: separate; border-spacing: 0; font-size: var(--fs-3); }
 .eg-tbl th, .eg-tbl td { padding: 3px 8px; border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent); text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; box-sizing: border-box; }
 .eg-tbl th { position: sticky; top: 0; z-index: 3; background: var(--panel, var(--bg)); color: var(--text-muted); font-weight: 600; user-select: none; }
 .eg-tbl th.n, .eg-tbl td.n { text-align: right; font-family: var(--font-mono); }
@@ -140,25 +239,45 @@ const menuRow = computed(() => { const r = g.rect.value; return r.r0 < 0 ? 0 : r
 .eg-ht { display: inline-flex; align-items: center; gap: 2px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 .eg-tbl th.eg-h.sortable .eg-ht { cursor: pointer; }
 .eg-tbl th.eg-h.sortable:hover { color: var(--text); }
-.eg-tbl th.eg-h.colsel { background: color-mix(in srgb, var(--accent) 22%, var(--panel, var(--bg))); color: var(--text); }
-.eg-sort { color: var(--accent); flex: none; }
+.eg-tbl th.eg-h.colsel { background: color-mix(in srgb, var(--accent-ui) 22%, var(--panel, var(--bg))); color: var(--text); }
+.eg-sort { color: var(--accent-ui); flex: none; }
 /* 列宽把手：贴在列头右缘，鼠标压上去才现形 */
 .eg-rz { position: absolute; top: 0; right: -3px; width: 7px; height: 100%; cursor: col-resize; z-index: 4; }
 .eg-rz:hover { background: color-mix(in srgb, var(--accent) 55%, transparent); }
 /* 序号列：sticky 左固定，点/拖选整行 */
-.eg-tbl th.eg-idx, .eg-tbl td.eg-idx { position: sticky; left: 0; z-index: 2; padding: 3px 4px; text-align: right; color: var(--text-faint); font-family: var(--font-mono); font-size: 10px; background: var(--panel, var(--bg)); cursor: pointer; user-select: none; }
+.eg-tbl th.eg-idx, .eg-tbl td.eg-idx { position: sticky; left: 0; z-index: 2; padding: 3px 4px; text-align: right; color: var(--text-faint); font-family: var(--font-mono); font-size: var(--fs-1); background: var(--panel, var(--bg)); cursor: pointer; user-select: none; }
 .eg-tbl thead th.eg-idx { z-index: 5; cursor: cell; }
-.eg-tbl tbody tr.on > td.eg-idx { color: var(--accent); font-weight: 700; background: color-mix(in srgb, var(--accent) 14%, var(--panel, var(--bg))); }
+.eg-tbl tbody tr.on > td.eg-idx { color: var(--accent-ui); font-weight: 700; background: color-mix(in srgb, var(--accent-ui) 14%, var(--panel, var(--bg))); }
 .eg-tbl td.eg-idx:hover { color: var(--text-muted); }
+/* 冻结列：粘性左固定。★ 底色必须**与面板色混合**而不是用透明 —— 横滚时冻结列底下压着内容，
+   任何一处透明都会把滚过去的格子透出来。这与序号列 .eg-idx 的成例一致。
+   层级：序号列(6) > 冻结表头(5) > 普通表头(3) > 序号格(3) > 冻结格(2) > 活动格(1)。 */
+.eg-tbl th.eg-h.froz, .eg-tbl td.eg-c.froz { position: sticky; background-color: var(--panel, var(--bg)); }
+.eg-tbl thead th.eg-h.froz { z-index: 5; }
+.eg-tbl tbody td.eg-c.froz { z-index: 2; }
+.eg-tbl thead th.eg-idx { z-index: 6; }
+.eg-tbl tbody tr:hover > td.eg-c.froz { background-color: color-mix(in srgb, var(--text) 5%, var(--panel, var(--bg))); }
+.eg-tbl td.eg-c.froz.sel, .eg-tbl tbody tr:hover > td.eg-c.froz.sel { background-color: color-mix(in srgb, var(--accent-ui) 16%, var(--panel, var(--bg))); }
+.eg-tbl th.eg-h.froz.colsel { background-color: color-mix(in srgb, var(--accent-ui) 22%, var(--panel, var(--bg))); }
+/* 冻结线覆盖条：sticky 钉在滚动视口左沿，再用 transform 平移到实测偏移处 —— 故不随横滚跑。
+   height:0 不占流；线体、命中区、投影都在内部的 <i> 上。 */
+.eg-fzbar { position: sticky; top: 0; left: 0; height: 0; width: 0; z-index: 8; }
+.eg-fzbar > i { position: absolute; top: 0; left: -3px; width: 7px; cursor: col-resize; display: block; }
+.eg-fzbar > i::before { content: ''; position: absolute; left: 2px; top: 0; bottom: 0; width: 1px; background: var(--border-strong, var(--border)); }
+.eg-fzbar:hover > i::before, .eg-fzbar.drag > i::before { background: var(--accent); }
+/* 投影：横滚起来才现，表明线下面压着内容（Excel 同款） */
+.eg-fzbar > i::after { content: ''; position: absolute; left: 3px; top: 0; bottom: 0; width: 8px; pointer-events: none; opacity: 0; transition: opacity .12s;
+  background: linear-gradient(to right, color-mix(in srgb, var(--text) 15%, transparent), transparent); }
+.eg-fzbar.scrolled > i::after { opacity: 1; }
 /* 单元格：relative + overflow 放开，让捕获输入框/填充柄在格内定位且不被裁；文本省略号交给 .eg-v */
 .eg-tbl td.eg-c { position: relative; padding: 0; overflow: visible; cursor: cell; user-select: none; }
 .eg-v { display: block; padding: 3px 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .eg-v:empty::before { content: '\00a0'; }   /* 空格占位保住行高（空单元格没有文本行盒） */
-.eg-tbl td.eg-c.sel { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.eg-tbl td.eg-c.sel { background: color-mix(in srgb, var(--accent-ui) 16%, transparent); }
 .eg-tbl td.eg-c.active { box-shadow: inset 0 0 0 2px var(--accent); z-index: 1; }
 .eg-tbl td.eg-c.fillp { outline: 1px dashed var(--accent); outline-offset: -1px; }
 .eg-tbl tbody tr:hover > td { background: color-mix(in srgb, var(--text) 5%, transparent); }
-.eg-tbl tbody tr:hover > td.sel { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.eg-tbl tbody tr:hover > td.sel { background: color-mix(in srgb, var(--accent-ui) 16%, transparent); }
 /* Excel 填充柄：选区右下角小方块 */
 .eg-handle { position: absolute; right: -2px; bottom: -2px; width: 6px; height: 6px; background: var(--accent); border: 1px solid var(--bg); cursor: crosshair; z-index: 6; }
 /* 常驻捕获输入框（见模板注释） */
@@ -170,20 +289,20 @@ const menuRow = computed(() => { const r = g.rect.value; return r.r0 < 0 ? 0 : r
 .eg-tbl th.eg-pad, .eg-tbl td.eg-pad { padding: 0; }
 .eg-tbl td.eg-empty { text-align: center; color: var(--text-faint); padding: 16px 12px; cursor: default; font-style: italic; }
 .eg-tbl tr.eg-addrow td { padding: 2px 6px; border-bottom: 0; overflow: visible; }
-.eg-addlbl { position: sticky; left: 6px; display: inline-flex; align-items: center; gap: 4px; font: inherit; font-size: 11px; padding: 2px 7px; cursor: pointer; color: var(--text-faint); background: transparent; border: 1px solid transparent; border-radius: var(--r-card); }
+.eg-addlbl { position: sticky; left: 6px; display: inline-flex; align-items: center; gap: 4px; font: inherit; font-size: var(--fs-2); height: var(--h-ctl); white-space: nowrap; padding: 0 7px; cursor: pointer; color: var(--text-faint); background: transparent; border: 1px solid transparent; border-radius: var(--r-card); }
 .eg-addlbl:hover { color: var(--accent); border-color: var(--border); }
 </style>
 
 <style>
 /* 右键菜单 Teleport 到 body，不能用 scoped（scoped 只给组件自身 DOM 打标记，Teleport 出去的节点拿不到） */
 .eg-ctx-mask { position: fixed; inset: 0; z-index: 400; }
-.eg-ctx { position: fixed; min-width: 176px; padding: 4px; background: var(--surface, var(--bg)); border: 1px solid var(--border-strong, var(--border)); border-radius: var(--r-float); box-shadow: 0 10px 30px rgba(0, 0, 0, .45); display: flex; flex-direction: column; }
-.eg-ctx-i { display: flex; align-items: center; gap: 12px; width: 100%; font: inherit; font-size: 12px; text-align: left; padding: 4px 9px; cursor: pointer; background: transparent; color: var(--text); border: 0; border-radius: var(--r-card); white-space: nowrap; }
+.eg-ctx { position: fixed; min-width: 176px; padding: 4px; background: var(--surface, var(--bg)); border: 1px solid var(--border-strong, var(--border)); border-radius: var(--r-float); box-shadow: var(--shadow-3); display: flex; flex-direction: column; }
+.eg-ctx-i { display: flex; align-items: center; gap: 12px; width: 100%; font: inherit; font-size: var(--fs-3); text-align: left; padding: 4px 9px; cursor: pointer; background: transparent; color: var(--text); border: 0; border-radius: var(--r-card); white-space: nowrap; }
 .eg-ctx-i > span { flex: 1; }
-.eg-ctx-i kbd { font-family: var(--font-mono); font-size: 10px; color: var(--text-faint); }
-.eg-ctx-i:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+.eg-ctx-i kbd { font-family: var(--font-code); font-size: var(--fs-1); color: var(--text-faint); }
+.eg-ctx-i:hover:not(:disabled) { background: color-mix(in srgb, var(--accent-ui) 18%, transparent); }
 .eg-ctx-i:disabled { opacity: .4; cursor: default; }
 .eg-ctx-i.danger:hover { background: color-mix(in srgb, #ff6a6a 22%, transparent); }
-.eg-ctx-i.on { color: var(--accent); }
+.eg-ctx-i.on { color: var(--accent-ui); }
 .eg-ctx-sep { height: 1px; margin: 4px 6px; background: var(--border); }
 </style>

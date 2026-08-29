@@ -2145,11 +2145,13 @@ module.exports = {
   setOutputPrecisionBoost,            // 出参小数位增量（见文件头 FX），仅参数扫描期间临时抬高
   // ↓ 雨衰计算工具（通用，面向所有种类卫星）复用的纯物理函数。加法式导出，链路预算行为完全不变。
   calculateSinglePathRainAttenuation, // P.618-14 单路径雨衰 A(0.01%)（第8参 elevOverride 可注入仰角）
+  getCoefficients,                    // P.838-3 比衰减系数 k/α（含极化与仰角修正）——实时分支按瞬时雨强逐点求 γ_R 用
   scaleRainAttenP618_14,              // A(0.01%) → 目标时间百分比 p 的雨衰
   calculateRainXPD_P618_14,           // 雨致去极化 XPD
   calculateAtmosphericAttenuation,    // P.676 大气气体吸收
   calculateCloudAttenuation,          // P.840-9 云衰减
   cloudLWCFromLognormal,              // P.840-9 对数正态 Lred(p)（环境场图层取同一口径）
+  cloudSpecificAttenuation,           // P.840-9 云比衰减系数 Kl(f,T)——实时分支「手填柱液态水」用
   calculateScintillationFading,       // 对流层闪烁衰落
   calculatePolarizationAngle          // 极化偏转角（供 XPD 的 τ 计算）
 };

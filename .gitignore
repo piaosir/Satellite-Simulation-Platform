@@ -37,6 +37,11 @@ release/
 # 在线分享凭证（含密钥，不进仓库；随安装包打包）
 electron/services/shareConfig.js
 
+# 和风天气凭证（含 Ed25519 私钥，不进仓库；随安装包打包）
+# 生成/体检： node scripts/setup-weather-config.mjs [--genkey|--check]
+# 说明与控制台步骤见 electron/services/weatherConfig.example.js
+electron/services/weatherConfig.js
+
 # 干扰分析（C/I）UI 验证台：CiApp 挂浏览器里单跑，window.api 由真引擎产出的 fixtures 顶上
 .ciharness/
 
@@ -153,6 +158,9 @@ electron/services/shareConfig.js
 # 离屏验证台（全平台控件基线：复选框/单选钮/拨杆/滑块/下拉/取色/分段/滚动条，浅深双主题并排），本地开发用，不进仓库
 .ctlharness/
 # 离屏验证台（GRD 天线设置面板的行距/对齐实测），本地开发用，不进仓库
+# .grdharness/swatch.html 是另一台（node .grdharness/serve.js，launch.json 的 grd-swatch-harness）：
+# 「显示选项」逐项色块 —— 色块钉在行尾成一列、点色块不会连带切掉勾选（它在 <label> 里）、
+# 长标签换行时不被裁掉。中/英 × 浅/深四态并排，页面自带断言读数行。
 .grdharness/
 
 # 「显示设置 · 聚焦卫星」验证台：真模板（node .focusharness/gen.mjs 从 ConstellationMap3D.vue 抽出）
@@ -168,3 +176,43 @@ scripts/_ne/
 
 # 底图边界线验证台：2D 四档缩放 + 三处放大对照（克什米尔/南海/藏南）+ 3D 球体，本地开发用，不进仓库
 .geoharness/
+
+# 实时气象场验证台：GFS 栅格 + 气象业务色阶 → 2D/3D 双视图，肉眼核对地理配准与云图观感。
+# 落盘的 .f32/.json 是几十 MB 的现取气象数据，本地开发用，不进仓库
+.lvharness/
+
+# 地球站地图符号验证台：现状（写实插画）与 A/B 两个符号方案并排画在真实底图上
+# （海 #15426b · 陆 #e4eccf · 文字 casing rgba(6,11,18,.82)），走与实现一致的
+# SVG→Image→drawImage 位图路径，看的就是「缩到 20px 时还剩下什么」。本地开发用，不进仓库
+.stharness/
+
+# 航迹载具符号（船舶 / 飞机）验证台：三张图 —— ① 各档大小 × 海/陆底色的符号本体（2D canvas 路径，
+# 与 3D 贴图并排对拍）；② 真 createFlatCoverage 走 exportRender 的 compat 子路径（＝导出那条，
+# 不认 Path2D），看图标落在航迹头上、朝向贴着折线；③ 真 createGlobeScene，八条方位各差 45° 的
+# 航迹摆成风车，看 3D 那条「球面切向投到屏幕」的朝向算得对不对。页面自己把图 POST 到 shots/。
+.vehharness/
+
+# 地图注记可读性对照台（npx vite --config .readharness/vite.config.mjs）：现状 vs 逐项修复并排
+.readharness/
+
+# 界面字体验证台（设置 → 界面字体）：真 SettingsModal + 真全局样式，摆一组典型界面样张（侧栏参数行 /
+# 11px 密排链路表 / 中西文混排 / 报表面），换一档字体当场看中西文齐不齐、密排还读不读得出、数字列还对不对得齐。
+.fontharness/
+
+# 「地图设置 → 地名 → 透明度」验证台（npx vite --config .nameopharness/vite.config.mjs）：挂真的 flatCoverage，
+# 逐档量「注记相对无注记底图的压深/提亮/着墨像素数」，守住「三项均单调递减、op=0 恰好回到底图」。
+.nameopharness/
+
+# 水域注记 + 岛链验证台（npx vite --config .waterharness/vite.config.mjs）：2D 全球 + 2D 西太平洋近景 + 3D 球体
+# 三处同时打开大洋/海域两档，肉眼核对「名字落在水面上、层级随缩放逐档冒出、两个渲染器同一份表」。
+# 另一台（vite.app.config.mjs，无 IPC 的主窗口整页）只为核对「地图设置 → 地名」那一节的版面。
+# 岛链在两个视图里走向一致（顶点在经纬度平面加密过）也在这里看。
+# 位置对不对由 packages/core/test/mapAnnotations.test.mjs 逐点判陆地面，不靠肉眼。
+.waterharness/
+
+# 「编辑卫星」弹窗实时生效验证台（npx vite --config .satedharness/vite.config.mjs，launch.json 的 satedit-harness）：
+# 模板 / 样式 / 逻辑三段由 .satedharness/extract.mjs 从 ConstellationMap3D.vue 原样抠出（不抄一遍，锚点挪了就抛），
+# 外面套假 grd 存储 + 假地图，点「跑自动检查」跑 20 条：回车 / 失焦 / 滑块 / 勾选 / 取色是否当场落库、
+# 半截输入（只打一个负号）不许落库、滑块每帧至多提交一次且不惊动壳层、取消逐字段回滚、保存留下。
+# ★ 预览窗藏起来时浏览器把 rAF 整个停掉（被测代码那一帧合并就永远等不到），台子里给 rAF 垫了 120ms 兜底。
+.satedharness/

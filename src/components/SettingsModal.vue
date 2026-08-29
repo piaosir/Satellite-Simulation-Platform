@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import { quality, effective, setTier, setField, setMapLevel, currentMapLevelIndex, TIERS, FIELD_OPTS, MAP_LEVELS } from '../stores/displayQuality'
 import { viewPrefs } from '../stores/viewPrefs'
 import { theme, setTheme } from '../stores/theme'
+import { uiFont, setUiFont, availableFonts } from '../stores/uiFont'
 import { getLang, setLang } from '../shared/i18n/runtime'
 import Icon from './Icon.vue'
 
@@ -20,6 +21,11 @@ const LANG_OPTS = [
 ]
 const langCur = ref(getLang())
 function pickLang(k) { setLang(k); langCur.value = k }
+
+// 界面字体：西文面 / 中文面各一档，合成 --font-ui 后主窗口与各独立窗口一起换（stores/uiFont.js）。
+// 列表先过一遍可用性检测 —— 没装的面列出来选了也不生效。字体名不进翻译词典，按当前语言取本名。
+const fontOpts = availableFonts()
+const fontLabel = (f) => (langCur.value === 'en' && f.en ? f.en : f.label)
 
 const emit = defineEmits(['close'])
 
@@ -45,7 +51,7 @@ const speedPct = computed({
     <div class="dlg" role="dialog" aria-modal="true">
       <header class="dhd">
         <span class="dt">设置</span>
-        <span class="x" @click="emit('close')"><Icon name="x" :size="14" /></span>
+        <button class="winx" type="button" aria-label="关闭" title="关闭" @click="emit('close')"><Icon name="x" :size="12" /></button>
       </header>
 
       <div class="body">
@@ -54,7 +60,7 @@ const speedPct = computed({
           <div class="shd">外观</div>
           <div class="tiers">
             <button v-for="t in THEME_OPTS" :key="t.key" class="tier ttheme" :class="{ on: theme.mode === t.key }" @click="setTheme(t.key)">
-              <Icon :name="t.icon" :size="13" />{{ t.label }}
+              <Icon :name="t.icon" :size="12" />{{ t.label }}
             </button>
           </div>
         </section>
@@ -64,6 +70,25 @@ const speedPct = computed({
           <div class="shd">语言</div>
           <div class="tiers" data-i18n-skip>
             <button v-for="l in LANG_OPTS" :key="l.key" class="tier" :class="{ on: langCur === l.key }" @click="pickLang(l.key)">{{ l.label }}</button>
+          </div>
+        </section>
+
+        <!-- 界面字体 -->
+        <section class="sec">
+          <div class="shd">界面字体</div>
+          <div class="grid">
+            <label class="frow">
+              <span class="fn">西文</span>
+              <select class="fsel" data-i18n-skip :value="uiFont.latin" @change="setUiFont($event.target.value, null)">
+                <option v-for="f in fontOpts.latin" :key="f.key" :value="f.key" :style="{ fontFamily: f.stack }">{{ fontLabel(f) }}</option>
+              </select>
+            </label>
+            <label class="frow">
+              <span class="fn">中文</span>
+              <select class="fsel" data-i18n-skip :value="uiFont.cjk" @change="setUiFont(null, $event.target.value)">
+                <option v-for="f in fontOpts.cjk" :key="f.key" :value="f.key" :style="{ fontFamily: f.stack }">{{ fontLabel(f) }}</option>
+              </select>
+            </label>
           </div>
         </section>
 
@@ -139,30 +164,32 @@ const speedPct = computed({
 <style scoped>
 .mask { position: fixed; inset: 0; z-index: 2000; background: rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center; }
 .dlg { width: 560px; max-width: calc(100vw - 32px); max-height: calc(100vh - 64px); display: flex; flex-direction: column;
-  background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-card); box-shadow: 0 12px 40px rgba(0,0,0,0.5); }
-.dhd { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid var(--border); }
-.dt { font-family: var(--font-serif); font-size: 15px; }
-.x { cursor: pointer; color: var(--text-muted); padding: 2px 6px; display: inline-flex; align-items: center; }
-.x:hover { color: var(--text); }
+  background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-card); box-shadow: var(--shadow-3); }
+.dhd { display: flex; align-items: stretch; justify-content: space-between; border-bottom: 1px solid var(--border); }
+.dt { font-family: var(--font-serif); font-size: var(--fs-5); padding: 12px 16px; align-self: center; }
+/* 关闭按钮：与「文件管理」一致——Windows 风矩形热区，悬停变红 */
+.winx { width: 44px; align-self: stretch; border: 0; background: transparent; color: var(--text-muted); cursor: pointer; display: flex; align-items: center; justify-content: center; transition: background .12s, color .12s; }
+.winx:hover { background: #c42b1c; color: #fff; }
 .body { padding: 14px 16px; overflow: auto; }
 .sec { margin-bottom: 18px; }
-.shd { font-size: 12px; color: var(--text-muted); letter-spacing: var(--ls-tight); margin-bottom: 10px; }
+.shd { font-size: var(--fs-3); color: var(--text-muted); letter-spacing: var(--ls-tight); margin-bottom: 10px; }
 .tiers { display: flex; gap: 6px; flex-wrap: wrap; }
-.tier { flex: 1; min-width: 64px; padding: 7px 0; cursor: pointer; font-size: 13px; color: var(--text-muted);
+.tier { flex: 1; min-width: 64px; padding: 7px 0; cursor: pointer; font-size: var(--fs-4); color: var(--text-muted);
   background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-box); transition: all .12s; }
 .tier.ttheme { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
 .tier:hover { color: var(--text); border-color: var(--accent); }
 .tier.on { color: var(--bg); background: var(--accent); border-color: var(--accent); font-weight: 600; }
-.tip { font-size: 11.5px; color: var(--text-faint); margin: 8px 0 12px; }
+.tip { font-size: var(--fs-3); color: var(--text-faint); margin: 8px 0 12px; }
 .tiers + .grid { margin-top: 14px; }
 .grid { display: flex; flex-direction: column; gap: 11px; }
 .frow { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.fn { font-size: 12.5px; color: var(--text); display: flex; flex-direction: column; }
-.fn em { font-style: normal; font-size: 11px; color: var(--text-faint); margin-top: 2px; }
-.frow select { min-width: 150px; border: 1px solid var(--border); background-color: var(--bg); color: var(--text); padding: 5px 8px; outline: none; }
+.fn { font-size: var(--fs-4); color: var(--text); display: flex; flex-direction: column; }
+.fn em { font-style: normal; font-size: var(--fs-2); color: var(--text-faint); margin-top: 2px; }
+.frow select { min-width: 150px; border: 1px solid var(--field-border); background-color: var(--field-bg); color: var(--text); padding: 5px 8px; outline: none; }
 .frow input[type=range] { width: 150px; }
+.frow select.fsel { min-width: 176px; }
 .dft { display: flex; align-items: center; justify-content: flex-end; gap: 10px; padding: 12px 16px; border-top: 1px solid var(--border); }
-.dft button { padding: 6px 16px; cursor: pointer; border-radius: var(--r-box); font-size: 12.5px; }
+.dft button { height: var(--h-ctl-lg); white-space: nowrap; padding: 0 16px; cursor: pointer; border-radius: var(--r-box); font-size: var(--fs-4); }
 .ghost { background: var(--bg); border: 1px solid var(--border); color: var(--text-muted); }
 .ghost:hover { color: var(--text); border-color: var(--accent); }
 .ok { background: var(--accent); border: 1px solid var(--accent); color: var(--bg); font-weight: 600; }

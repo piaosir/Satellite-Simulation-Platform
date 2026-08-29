@@ -119,6 +119,25 @@ contextBridge.exposeInMainWorld('api', {
     defs: () => ipcRenderer.invoke('env:defs'),
     field: (key, opt) => ipcRenderer.invoke('env:field', key, opt)
   },
+  // 实时/预报环境场（主窗口「实时气象」视图）。两个数据源各司其职，**口径不同别混**：
+  //   场与站点模式值（estimate/load/field/points）走 NCEP GFS 栅格 —— 一次请求一整块 0.25° 网格，
+  //     跟时间轴走，免费；
+  //   obs 走和风，是**观测**，只有"现在"这一个时刻，且一站一次请求（按站计费），故只在用户点按钮时发。
+  // 立方体留在主进程，渲染端只按帧取栅格（时钟换帧时每帧一次 IPC）。
+  weather: {
+    providers: () => ipcRenderer.invoke('weather:providers'),
+    test: (which) => ipcRenderer.invoke('weather:test', which),
+    defs: () => ipcRenderer.invoke('weather:defs'),
+    estimate: (o) => ipcRenderer.invoke('weather:estimate', o),
+    load: (o) => ipcRenderer.invoke('weather:load', o),
+    meta: () => ipcRenderer.invoke('weather:meta'),
+    field: (o) => ipcRenderer.invoke('weather:field', o),
+    points: (o) => ipcRenderer.invoke('weather:points', o),   // 多站**模式**值，跟时间轴，免费
+    obs: (o) => ipcRenderer.invoke('weather:obs', o),         // 多站**和风按点值**（本小时=观测 / 未来=逐小时预报；allowFetch=false 时只查缓存）
+    usage: () => ipcRenderer.invoke('weather:usage'),
+    clearCache: () => ipcRenderer.invoke('weather:clearCache'),
+    onProgress: (cb) => ipcRenderer.on('weather:progress', (_e, p) => cb(p))
+  },
   app: {
     deviceId: () => ipcRenderer.invoke('app:deviceId'),
     version: () => ipcRenderer.invoke('app:version')

@@ -240,7 +240,7 @@ const hopBot = (i) => {
    WCAG 对「有意义图形」的 3:1；提到 55% 后明暗两主题分别 3.6 / 4.9，两头都过。 */
 .cs { display: flex; flex-direction: column; gap: 8px; min-width: 0;
       --cs-wire: color-mix(in srgb, var(--text) 55%, var(--bg)); }
-.cs-empty { font-size: 12px; color: var(--text-faint); padding: 14px 2px; }
+.cs-empty { font-size: var(--fs-3); color: var(--text-faint); padding: 14px 2px; }
 .cs-scroll { overflow-x: auto; overflow-y: hidden; padding-bottom: 2px; }
 .cs-flow { display: flex; align-items: stretch; gap: 0; min-width: min-content; }
 
@@ -252,29 +252,29 @@ const hopBot = (i) => {
   background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-box, 3px);
 }
 .cs-node:hover { border-color: var(--border-strong); }
-.cs-node.on { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.cs-node.on { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent-ui); }
 .cs-n-top { display: flex; align-items: center; justify-content: space-between; gap: 4px; }
-.cs-n-t { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
-.cs-badge { font-size: 10px; line-height: 1.5; padding: 0 4px; border-radius: var(--r-ctl); white-space: nowrap; }
+.cs-n-t { font-size: var(--fs-3); color: var(--text-muted); white-space: nowrap; }
+.cs-badge { font-size: var(--fs-1); line-height: 1.5; padding: 0 4px; border-radius: var(--r-ctl); white-space: nowrap; }
 .cs-badge.bg-accent { background: var(--accent); color: var(--bg); }
 .cs-badge.bg-out { background: transparent; color: var(--text-muted); border: 1px solid var(--border-strong); }
 /* 名字最多折两行（超长再省略）：整名比「一行齐平」重要 */
 .cs-n-name {
-  font-size: 14px; font-weight: 500; color: var(--text); margin-top: 1px; line-height: 1.25;
+  font-size: var(--fs-5); font-weight: 500; color: var(--text); margin-top: 1px; line-height: 1.25;
   overflow: hidden; word-break: break-word;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
 }
-.cs-n-sum { font-size: 12px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cs-n-sum { font-size: var(--fs-3); color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* 透明星的转发器占用条：细带 + 读数，两行（功率 / 带宽）。数轴恒为 0–100%，超发铺满转红——
    条只是把数画出来，判定仍交给读数本身（纯数字口径）。 */
 .cs-occ { margin-top: 3px; display: flex; flex-direction: column; gap: 1px; }
 .cs-occ-row { display: flex; align-items: center; gap: 3px; }
-.cs-occ-k { flex: none; font-size: 10px; color: var(--text-muted); }
+.cs-occ-k { flex: none; font-size: var(--fs-1); color: var(--text-muted); }
 .cs-occ-bar { flex: 1; min-width: 0; height: 4px; background: var(--surface-2); border: 0.5px solid var(--border); border-radius: var(--r-ctl); overflow: hidden; }
 .cs-occ-bar i { display: block; height: 100%; background: var(--accent); }
 .cs-occ-bar i.over { background: var(--danger); }
-.cs-occ-v { flex: none; font-size: 10px; color: var(--text); font-variant-numeric: tabular-nums; }
+.cs-occ-v { flex: none; font-size: var(--fs-1); color: var(--text); font-variant-numeric: tabular-nums; }
 .cs-occ-v.over { color: var(--danger); font-weight: 600; }
 .cs-occ-v em { font-style: normal; color: var(--text-muted); margin-left: 1px; }
 
@@ -283,7 +283,7 @@ const hopBot = (i) => {
 .cs-hop { flex: 1 1 96px; min-width: 96px; display: flex; flex-direction: column; justify-content: center; cursor: pointer; padding: 0 2px; }
 .cs-hop.on .cs-h-wire, .cs-hop.on .cs-h-arrow { background: var(--accent); border-left-color: var(--accent); }
 .cs-hop.on .cs-h-top { color: var(--text); }
-.cs-h-top { display: flex; align-items: baseline; justify-content: center; gap: 5px; font-size: 11px; color: var(--text-muted); white-space: nowrap; }
+.cs-h-top { display: flex; align-items: baseline; justify-content: center; gap: 5px; font-size: var(--fs-2); color: var(--text-muted); white-space: nowrap; }
 .cs-h-top b { font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
 .cs-h-line { display: flex; align-items: center; gap: 3px; padding: 3px 0; }
 .cs-h-wire { flex: 1; height: 1px; background: var(--cs-wire); }
@@ -294,8 +294,8 @@ const hopBot = (i) => {
 }
 .cs-h-add:hover { color: var(--accent); border-color: var(--accent); }
 .cs-h-add svg { fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; }
-.cs-h-bot { text-align: center; font-size: 11px; color: var(--text); font-variant-numeric: tabular-nums; min-height: 15px; }
-.cs-h-bot i { font-style: normal; font-size: 10px; color: var(--text-faint); margin-left: 2px; }
+.cs-h-bot { text-align: center; font-size: var(--fs-2); color: var(--text); font-variant-numeric: tabular-nums; min-height: 15px; }
+.cs-h-bot i { font-style: normal; font-size: var(--fs-1); color: var(--text-faint); margin-left: 2px; }
 
 /* ② 段标尺 */
 .cs-ruler { display: flex; align-items: stretch; gap: 3px; margin-top: 6px; min-width: min-content; }
@@ -307,17 +307,17 @@ const hopBot = (i) => {
   background: var(--surface); border: 0.5px solid var(--border); border-radius: var(--r-ctl, 2px); white-space: nowrap;
 }
 .cs-band.weak { border: 2px solid var(--accent); padding: 1.5px 5.5px; }
-.cs-b-n { font-size: 11px; color: var(--text-muted); }
+.cs-b-n { font-size: var(--fs-2); color: var(--text-muted); }
 /* 段号与「段」字拆成两个节点：界面翻译按整串查表，「段 1」这种带数字的串没法进词典
    （只靠一个汉字打头的模式会命中一大片，见 test/uiDict.test.mjs 的「锚定过弱」）。 */
 .cs-b-i { font-style: normal; margin-left: 3px; font-variant-numeric: tabular-nums; }
 /* 段的载波体制名：段与段之间可换（再生节点重新调制），故名字挂在段上 */
 /* 体制名上界给到 210px：「155.520 Mbps · 16APSK 5/6」这种整名在 130px 下要掉尾巴 */
-.cs-b-c { font-size: 11px; color: var(--text-muted); max-width: 210px; overflow: hidden; text-overflow: ellipsis; }
-.cs-b-v, .cs-b-m { font-size: 12px; font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
+.cs-b-c { font-size: var(--fs-2); color: var(--text-muted); max-width: 210px; overflow: hidden; text-overflow: ellipsis; }
+.cs-b-v, .cs-b-m { font-size: var(--fs-3); font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
 .cs-b-m.bad { color: var(--danger); }
 .cs-b-m.ok { color: var(--ok); }
-.cs-b-v i, .cs-b-m i { font-style: normal; font-size: 10px; font-weight: 400; color: var(--text-faint); margin-left: 1px; }
+.cs-b-v i, .cs-b-m i { font-style: normal; font-size: var(--fs-1); font-weight: 400; color: var(--text-faint); margin-left: 1px; }
 
 /* ③ 端到端汇总条 */
 .cs-sum { display: flex; gap: 10px; flex-wrap: wrap; }
@@ -325,11 +325,11 @@ const hopBot = (i) => {
   display: flex; align-items: baseline; gap: 7px; padding: 4px 10px;
   border-top: 2px solid var(--lb-rule-strong); border-bottom: 2px solid var(--lb-rule-strong);
 }
-.cs-c-l { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
-.cs-c-v { font-size: 17px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
+.cs-c-l { font-size: var(--fs-2); color: var(--text-muted); white-space: nowrap; }
+.cs-c-v { font-size: var(--fs-6); font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
 .cs-c-v.bad { color: var(--danger); }
 .cs-c-v.ok { color: var(--ok); }
-.cs-c-v i { font-style: normal; font-size: 11px; font-weight: 400; color: var(--text-faint); margin-left: 2px; }
+.cs-c-v i { font-style: normal; font-size: var(--fs-2); font-weight: 400; color: var(--text-faint); margin-left: 2px; }
 
-.cs-ins-hd { padding: 3px 12px 4px; font-size: 11px; color: var(--text-faint); letter-spacing: var(--ls-label); }
+.cs-ins-hd { padding: 3px 12px 4px; font-size: var(--fs-2); color: var(--text-faint); letter-spacing: var(--ls-label); }
 </style>

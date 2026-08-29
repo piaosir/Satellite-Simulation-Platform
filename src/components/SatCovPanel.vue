@@ -95,14 +95,14 @@ function shellWhy(sh) {
       <div class="sect acc" :class="{ open: isSecOpen('satcov-tree') }" @click="toggleSec('satcov-tree')">
         <Icon :name="isSecOpen('satcov-tree') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>卫星 / 天线</span>
         <span v-if="sc.selected.value.length" class="editing">{{ sc.selected.value.length }} 已选</span>
-        <span class="lnk" title="添加自定义卫星，或从星座点选/搜索关联卫星" @click.stop="emit('add-sat')"><Icon name="plus" :size="11" /> 卫星</span>
+        <span class="lnk" title="添加自定义卫星，或从星座点选/搜索关联卫星" @click.stop="emit('add-sat')"><Icon name="plus" :size="12" /> 卫星</span>
       </div>
       <template v-if="isSecOpen('satcov-tree')">
         <div class="gtree">
           <div v-if="!satNodes.length" class="empty">还没有卫星。</div>
           <template v-for="sat in satNodes" :key="sat.folder">
             <div class="gsat">
-              <i class="tri" :class="{ open: grd.isExpanded(sat.folder) }" @click="grd.toggleExpand(sat.folder)"><Icon name="chevron-right" :size="10" /></i>
+              <i class="tri" :class="{ open: grd.isExpanded(sat.folder) }" @click="grd.toggleExpand(sat.folder)"><Icon name="chevron-right" :size="12" /></i>
               <input type="checkbox" class="gck" :checked="sc.satState(sat) === 'all'" :indeterminate.prop="sc.satState(sat) === 'some'"
                      :disabled="!sat.antennas.length" :title="sat.antennas.length ? '全选 / 全不选该星天线' : '该星暂无天线'" @change="sc.toggleSatAll(sat)" />
               <svg class="gsvg sat-svg" viewBox="0 0 120 120" fill="currentColor" aria-hidden="true">
@@ -121,9 +121,9 @@ function shellWhy(sh) {
                 <span class="ic" :class="{ on: satVis(sat) }" title="显示 / 隐藏该卫星（图标 + 名称）；点亮时，已画波束的星连同其对星跟踪的目标星一并显示轨道圈 / 星下点轨迹 / 覆盖足迹" @click.stop="emit('toggle-eye', sat)"><Icon :name="satVis(sat) ? 'eye' : 'eye-off'" :size="12" /></span>
               </span>
               <span class="sacts">
-                <span class="ic" title="导入 GRD：在该星下新建天线（新天线自动勾选，直接画到壳层上）" @click.stop="sc.importGrd(sat)"><Icon name="plus" :size="11" /></span>
-                <span class="ic" title="编辑卫星 / 仰角线 / 颜色" @click.stop="emit('edit-sat', sat)"><Icon name="pencil" :size="11" /></span>
-                <span class="ic del" title="删除卫星（含其天线）" @click.stop="emit('remove-sat', sat)"><Icon name="x" :size="11" /></span>
+                <span class="ic" title="导入 GRD：在该星下新建天线（新天线自动勾选，直接画到壳层上）" @click.stop="sc.importGrd(sat)"><Icon name="plus" :size="12" /></span>
+                <span class="ic" title="编辑卫星 / 仰角线 / 颜色" @click.stop="emit('edit-sat', sat)"><Icon name="pencil" :size="12" /></span>
+                <span class="ic del" title="删除卫星（含其天线）" @click.stop="emit('remove-sat', sat)"><Icon name="x" :size="12" /></span>
               </span>
             </div>
             <div v-if="grd.isExpanded(sat.folder)" class="gbody">
@@ -142,14 +142,14 @@ function shellWhy(sh) {
                   </span>
                   <template v-if="editAnt === grd.keyOf(sat.folder, a.name)">
                     <input class="aname-in" v-model="editVal" @click.stop @keydown.enter="commitRenameAnt(sat, a)" @blur="commitRenameAnt(sat, a)" />
-                    <span class="ic ok" title="确认重命名" @mousedown.prevent @click.stop="commitRenameAnt(sat, a)"><Icon name="check" :size="11" /></span>
+                    <span class="ic ok" title="确认重命名" @mousedown.prevent @click.stop="commitRenameAnt(sat, a)"><Icon name="check" :size="12" /></span>
                   </template>
                   <template v-else>
                     <span class="aname" title="双击重命名" @dblclick.stop="startRenameAnt(sat, a)" data-i18n-skip>{{ a.name }}</span>
                     <span v-if="sc.isActive(grd.keyOf(sat.folder, a.name))" class="afoc">编辑中</span>
                     <span class="sacts">
-                      <span class="ic" title="重命名天线" @click.stop="startRenameAnt(sat, a)"><Icon name="pencil" :size="11" /></span>
-                      <span class="ic del" title="删除天线" @click.stop="grd.removeAntenna(sat.folder, a.name)"><Icon name="x" :size="11" /></span>
+                      <span class="ic" title="重命名天线" @click.stop="startRenameAnt(sat, a)"><Icon name="pencil" :size="12" /></span>
+                      <span class="ic del" title="删除天线" @click.stop="grd.removeAntenna(sat.folder, a.name)"><Icon name="x" :size="12" /></span>
                     </span>
                   </template>
                 </div>
@@ -190,7 +190,7 @@ function shellWhy(sh) {
                 <option value="both">近+远</option><option value="near">近侧</option><option value="far">远侧</option>
               </select>
               <span v-else class="shbr one" title="壳层高于源星：一条射线只有一个交点">单支</span>
-              <span class="ic del" title="删除壳层" @click="sc.removeShell(sh.id)"><Icon name="x" :size="11" /></span>
+              <span class="ic del" title="删除壳层" @click="sc.removeShell(sh.id)"><Icon name="x" :size="12" /></span>
             </div>
             <div v-if="sh.show && shellWhy(sh)" class="shwhy">{{ shellWhy(sh) }}</div>
           </template>
@@ -198,7 +198,7 @@ function shellWhy(sh) {
         </div>
         <div class="srow shadd">
           <input class="ci shalt" type="number" step="50" v-model.number="newAlt" /><span class="u">km</span>
-          <span class="addb" @click="addShellFromInput"><Icon name="plus" :size="11" /> 加壳层</span>
+          <span class="addb" @click="addShellFromInput"><Icon name="plus" :size="12" /> 加壳层</span>
           <select class="ci shpre" @change="addPreset($event)">
             <option value="">预置…</option>
             <option v-for="(p, i) in sc.presetShells()" :key="p.name" :value="i" data-i18n-skip>{{ p.name }}</option>
@@ -242,7 +242,7 @@ function shellWhy(sh) {
 <style scoped>
 /* 与「对地覆盖分析」侧栏同源（ConstellationMap3D.vue 的 .cov-side/.gtree 一套）：那份是 scoped 的、
    进不到本组件，故这里带一份同值副本。改动请两处对照。 */
-.cov-side { width: 286px; flex: none; border-left: 1px solid var(--border-strong); background: var(--surface); overflow-y: auto; display: flex; flex-direction: column; font-size: 12px; }
+.cov-side { width: 286px; flex: none; border-left: 1px solid var(--border-strong); background: var(--surface); overflow-y: auto; display: flex; flex-direction: column; font-size: var(--fs-3); }
 .cov-side.docked { width: auto; border-left: 0; overflow: visible; }
 .sec { padding: 12px 16px; border-bottom: 1px solid var(--border); }
 /* 竖向节奏与从属缩进：与 GrdSetSections.vue 逐字同源（口径与三处对照的说明见那边），
@@ -250,18 +250,20 @@ function shellWhy(sh) {
 .sec > * + * { margin-top: 8px; }
 .sec > * + .sect { margin-top: 12px; }
 .sec > .sect + * { margin-top: 6px; }
-.srow { display: flex; align-items: center; gap: 8px; }
-.srow label { color: var(--text-muted); width: 70px; flex: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.srow.sub { padding-left: 19px; }
-.srow.sub > label { width: 51px; }
-.srow select, .srow .ci { flex: 1; min-width: 0; border: 1px solid var(--border); background-color: var(--bg); padding: 3px 6px; font-size: 12px; outline: none; color: var(--text); }
+/* ★ 换行 + 「标签列是下限不是定宽」的口径在 styles/controls.css 的 .srow 里，四份副本同改 */
+.srow { --srow-lab: 70px; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.srow label { color: var(--text-muted); min-width: var(--srow-lab); max-width: 100%; flex: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.srow.sub { --srow-lab: 51px; padding-left: 19px; }
+.srow select, .srow .ci { flex: 1; min-width: 0; border: 1px solid var(--field-border); background-color: var(--field-bg); padding: 3px 6px; font-size: var(--fs-3); outline: none; color: var(--text); }
+/* 下拉框的可读下限：挤到装不下最长选项时整件掉到下一行，而不是裁掉选项名 */
+.srow select { min-width: 116px; }
 .srow .u { flex: none; min-width: 34px; text-align: right; color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .sect { display: flex; align-items: center; color: var(--text-muted); }
 .sect.acc { cursor: pointer; user-select: none; gap: 5px; }
 .sect.acc:hover { color: var(--text); }
-.sect .lnk { margin-left: auto; color: var(--accent); cursor: pointer; font-size: 11.5px; }
+.sect .lnk { margin-left: auto; color: var(--accent); cursor: pointer; font-size: var(--fs-3); }
 .sect .lnk:hover { text-decoration: underline; }
-.sect .editing { margin-left: auto; font-size: 9.5px; font-weight: 600; color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent); border-radius: var(--r-pill); padding: 1px 6px; }
+.sect .editing { margin-left: auto; font-size: var(--fs-1); font-weight: 600; color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent); border-radius: var(--r-pill); padding: 1px 6px; }
 .sect .editing + .lnk { margin-left: 0; }   /* 「n 已选」在时由它顶到右边，链接紧随其后（两个 auto 会把空白对半分） */
 .chk2 { display: flex; align-items: center; gap: 6px; cursor: pointer; }
 /* 滑块：同 ConstellationMap3D 的 .rng（那份 scoped 进不到本组件） */
@@ -272,14 +274,14 @@ function shellWhy(sh) {
 .ic.del:hover { color: #e66; }
 /* 卫星 / 天线树（与对地同款两级层次） */
 .gtree { max-height: clamp(280px, 48vh, 620px); overflow-y: auto; }
-.gsat { display: flex; align-items: center; gap: 6px; padding: 4px 4px 4px 2px; color: var(--text); font-size: 13px; border-radius: var(--r-box); }
+.gsat { display: flex; align-items: center; gap: 6px; padding: 4px 4px 4px 2px; color: var(--text); font-size: var(--fs-4); border-radius: var(--r-box); }
 .gsat:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
-.gsat .tri { font-style: normal; flex: none; width: 12px; display: inline-flex; align-items: center; justify-content: center; color: var(--text-faint); font-size: 9px; cursor: pointer; transition: transform .12s; }
+.gsat .tri { font-style: normal; flex: none; width: 12px; display: inline-flex; align-items: center; justify-content: center; color: var(--text-faint); font-size: var(--fs-1); cursor: pointer; transition: transform .12s; }
 .gsat .tri.open { transform: rotate(90deg); }
 .gsat .gsname { flex: 1; min-width: 0; white-space: normal; overflow-wrap: break-word; line-height: 1.3; cursor: pointer; }
 .gsat .gsname:hover { color: var(--accent); }
-.gsat .gsname em { font-style: normal; margin-left: 5px; color: var(--text-faint); font-family: var(--font-mono); font-size: 10.5px; }
-.gsat .gsname .simtag { font-style: normal; margin-left: 5px; padding: 0 4px; border: 1px solid var(--accent); border-radius: var(--r-ctl); color: var(--accent); font-size: 10px; vertical-align: middle; }
+.gsat .gsname em { font-style: normal; margin-left: 5px; color: var(--text-faint); font-family: var(--font-mono); font-size: var(--fs-2); }
+.gsat .gsname .simtag { font-style: normal; margin-left: 5px; padding: 0 4px; border: 1px solid var(--accent); border-radius: var(--r-ctl); color: var(--accent); font-size: var(--fs-1); vertical-align: middle; }
 .gsvg { flex: none; width: 14px; height: 14px; }
 .gsat .sat-svg { width: 18px; height: 18px; color: var(--text); opacity: .92; }
 /* 卫星行的小眼睛：与对地侧栏 .sdisp 同款（图标按钮，hover 底色淡入，点亮转 accent） */
@@ -288,16 +290,16 @@ function shellWhy(sh) {
 .sdisp .ic:hover { opacity: 1; color: var(--text); background: color-mix(in srgb, var(--text) 8%, transparent); }
 .sdisp .ic.on { opacity: 1; color: var(--accent); }
 .gbody { margin-left: 9px; padding-left: 12px; border-left: 1px solid var(--border); margin-bottom: 2px; }
-.gant { display: flex; align-items: center; gap: 6px; padding: 3px 6px; margin: 1px 0; color: var(--text-muted); cursor: pointer; font-size: 11.5px; border-radius: var(--r-box); transition: background .12s, color .12s, box-shadow .12s; }
+.gant { display: flex; align-items: center; gap: 6px; padding: 3px 6px; margin: 1px 0; color: var(--text-muted); cursor: pointer; font-size: var(--fs-3); border-radius: var(--r-box); transition: background .12s, color .12s, box-shadow .12s; }
 .gant:hover { color: var(--text); background: color-mix(in srgb, var(--text) 6%, transparent); }
 .gant.on { color: var(--text); }
-.gant.foc { color: var(--text); background: color-mix(in srgb, var(--accent) 14%, transparent); box-shadow: inset 2px 0 0 var(--accent); font-weight: 600; }
+.gant.foc { color: var(--text); background: color-mix(in srgb, var(--accent-ui) 14%, transparent); box-shadow: inset 2px 0 0 var(--accent-ui); font-weight: 600; }
 .gant .aname { flex: 1; min-width: 0; white-space: normal; overflow-wrap: break-word; word-break: break-word; line-height: 1.35; }
-.gant .aname-in { flex: 1; min-width: 0; border: 1px solid var(--accent); background: var(--bg); padding: 1px 5px; font-size: 11.5px; color: var(--text); outline: none; }
-.gant .afoc { flex: none; font-size: 9.5px; font-weight: 600; letter-spacing: var(--ls-tight); color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent); border-radius: var(--r-pill); padding: 0 5px; line-height: 14px; }
+.gant .aname-in { flex: 1; min-width: 0; border: 1px solid var(--accent); background: var(--field-bg); padding: 1px 5px; font-size: var(--fs-3); color: var(--text); outline: none; }
+.gant .afoc { flex: none; font-size: var(--fs-1); font-weight: 600; letter-spacing: var(--ls-tight); color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent); border-radius: var(--r-pill); padding: 0 5px; line-height: 14px; }
 /* 行内次级操作（卫星行 ＋✎✕ / 天线行 ✎✕ 共用）：常驻但弱化淡灰，hover 该行变亮 */
 .sacts { flex: none; display: flex; align-items: center; gap: 8px; margin-left: auto; padding-left: 4px; }
-.sacts .ic { font-size: 11px; color: var(--text-faint); opacity: .5; cursor: pointer; padding: 0; transition: opacity .12s, color .12s; }
+.sacts .ic { font-size: var(--fs-2); color: var(--text-faint); opacity: .5; cursor: pointer; padding: 0; transition: opacity .12s, color .12s; }
 .gsat:hover .sacts .ic, .gant:hover .sacts .ic { opacity: .9; }
 .sacts .ic:hover { color: var(--text); opacity: 1; }
 .sacts .ic.del:hover { color: #e66; }
@@ -311,29 +313,38 @@ function shellWhy(sh) {
 .gant .ant-btn.on .ant-svg { color: var(--accent); }
 .gant .ant-svg.ant-off { color: var(--text-faint); opacity: .7; }
 .gant.foc .ant-svg { color: var(--accent); }
-.gperf { display: flex; align-items: center; gap: 6px; margin: 0 0 2px 22px; padding: 2px 6px; color: var(--text-faint); cursor: pointer; font-size: 11px; border-radius: var(--r-box); transition: background .12s, color .12s; }
+.gperf { display: flex; align-items: center; gap: 6px; margin: 0 0 2px 22px; padding: 2px 6px; color: var(--text-faint); cursor: pointer; font-size: var(--fs-2); border-radius: var(--r-box); transition: background .12s, color .12s; }
 .gperf:hover { color: var(--text-muted); background: color-mix(in srgb, var(--text) 5%, transparent); }
 .gperf .perf-svg { width: 12px; height: 12px; flex: none; }
 .gperf .gperfn { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.gperf.on { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.gperf.on { color: var(--accent); background: color-mix(in srgb, var(--accent-ui) 12%, transparent); }
 /* 壳层库：与电平表同款成框列表 */
 .shlist { border: 1px solid var(--border); border-radius: var(--r-ctl); }
-.shrow { display: flex; align-items: center; gap: 5px; padding: 3px 6px; }
+/* 这一行挤了七件东西（勾选 / 颜色 / 高度 / km / 壳层名 / 支路 / 删除），名字那一格是唯一
+   会伸缩的。两条防「显示不全」：① 定宽的两件按实际内容收窄，把省下的宽度让给名字
+   （原先 58+56 把「LEO 1200」挤成「LEO 12…」）；② 整行可换行 —— 侧栏拖到最窄或换成英文时，
+   支路/删除掉到第二行，而不是顶出面板右沿。 */
+.shrow { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; padding: 3px 6px; }
 .shrow + .shrow { border-top: 1px solid var(--border); }
 .shrow .lvclr { width: 20px; height: 18px; }
-.shrow .u { color: var(--text-faint); font-size: 10.5px; }
-.shalt { width: 58px; flex: none; background: var(--bg); border: 1px solid var(--border); color: var(--text); font-size: 11.5px; padding: 2px 4px; font-family: var(--font-mono); text-align: right; }
-.shnm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); font-size: 10.5px; }
-.shbr { flex: none; width: 56px; background-color: var(--bg); border: 1px solid var(--border); color: var(--text); font-size: 10.5px; padding: 1px 2px; }
+.shrow .u { color: var(--text-faint); font-size: var(--fs-2); }
+/* 50px：等宽字体下「36000」满格 5 位 + 内距 —— 轨道高度不会有第 6 位 */
+.shalt { width: 50px; flex: none; background: var(--field-bg); border: 1px solid var(--field-border); color: var(--text); font-size: var(--fs-3); padding: 2px 4px; font-family: var(--font-mono); text-align: right; }
+.shnm { flex: 1; min-width: 3em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); font-size: var(--fs-2); }
+/* 宽度交给内容（select 自己按最长选项撑开）：写死 56px 时中文「近+远」与英文「Near+Far」
+   都超出内容盒，被 select 自己裁掉，而 select 的裁切在 DOM 上量不出来 */
+.shbr { flex: none; width: auto; background-color: var(--field-bg); border: 1px solid var(--field-border); color: var(--text); font-size: var(--fs-2); padding: 1px 2px; }
 .shbr.one { color: var(--text-faint); text-align: center; border-color: transparent; }
-.shwhy { padding: 0 8px 4px 32px; font-size: 10.5px; color: #d08b5a; }
+.shwhy { padding: 0 8px 4px 32px; font-size: var(--fs-2); color: #d08b5a; }
 .shadd { gap: 6px; }
 .shadd .shalt { flex: none; }
-.shadd .shpre { flex: 1; font-size: 11px; }
-.addb { flex: none; display: inline-flex; align-items: center; gap: 3px; border: 1px solid var(--border); padding: 2px 8px; font-size: 11.5px; color: var(--text-muted); cursor: pointer; border-radius: var(--r-ctl); border-radius: var(--r-ctl); }
+/* min-width：预置名（「MEO 20200」这类）是固定词表，缩到装不下就被 select 自己裁掉；
+   给个下限，宽度不够时整行换行（.srow 可换行），而不是把选项名切一半 */
+.shadd .shpre { flex: 1; min-width: 92px; font-size: var(--fs-2); }
+.addb { flex: none; display: inline-flex; align-items: center; gap: 3px; border: 1px solid var(--border); padding: 2px 8px; font-size: var(--fs-3); color: var(--text-muted); cursor: pointer; border-radius: var(--r-ctl); border-radius: var(--r-ctl); }
 .addb:hover { border-color: var(--accent); color: var(--text); }
 .csfoot { margin-top: auto; display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--border); }
-.cst { font-size: 11px; color: var(--text-faint); font-family: var(--font-mono); }
-.cclr { margin-left: auto; font-size: 11.5px; color: var(--text-muted); border: 1px solid var(--border); padding: 3px 10px; cursor: pointer; white-space: nowrap; }
+.cst { font-size: var(--fs-2); color: var(--text-faint); font-family: var(--font-mono); }
+.cclr { margin-left: auto; font-size: var(--fs-3); color: var(--text-muted); border: 1px solid var(--border); padding: 3px 10px; cursor: pointer; white-space: nowrap; }
 .cclr:hover { border-color: var(--accent); color: var(--text); }
 </style>

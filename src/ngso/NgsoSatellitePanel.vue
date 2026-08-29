@@ -239,29 +239,29 @@ const rows = computed(() => {
 <style scoped>
 .sp { max-width: 940px; }
 .sp-modes { display: flex; align-items: center; gap: 6px; margin-bottom: 10px; }
-.sp-seg { font-size: 12px; padding: 4px 12px; border: 1px solid var(--border); background: var(--bg); color: var(--text-muted); border-radius: var(--r-box); cursor: pointer; }
+.sp-seg { font-size: var(--fs-3); height: var(--h-ctl); white-space: nowrap; padding: 0 12px; border: 1px solid var(--border); background: var(--bg); color: var(--text-muted); border-radius: var(--r-box); cursor: pointer; }
 .sp-seg.on { background: var(--accent); color: var(--bg); border-color: var(--accent); }
 .sp-flex { flex: 1; }
-.sp-clear { font-size: 11px; padding: 3px 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text-muted); border-radius: var(--r-box); cursor: pointer; }
+.sp-clear { font-size: var(--fs-2); height: var(--h-ctl); white-space: nowrap; padding: 0 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text-muted); border-radius: var(--r-box); cursor: pointer; }
 .sp-grd { margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px dashed var(--border); }
 .sp-grd .pf { margin-bottom: 6px; }
-.sp-tip { font-size: 11px; color: var(--text-faint); line-height: 1.5; margin-top: 2px; }
+.sp-tip { font-size: var(--fs-2); color: var(--text-faint); line-height: 1.5; margin-top: 2px; }
 .sp-err { color: var(--danger); }
 .sp-list { list-style: none; margin: 4px 0; padding: 0; max-height: 200px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--r-box); }
 .sp-list li { padding: 5px 8px; cursor: pointer; border-bottom: 1px solid var(--border); }
 .sp-list li:last-child { border-bottom: none; }
 .sp-list li:hover { background: var(--surface); }
 .sp-list li.on { background: var(--surface-2); }
-.sp-li-n { display: block; font-size: 12px; color: var(--text); }
-.sp-li-i { display: block; font-size: 10px; color: var(--text-faint); font-family: var(--font-mono); }
-.sp-badge { display: inline-block; font-size: 9px; font-style: normal; padding: 0 5px; margin-left: 5px; border-radius: var(--r-pill); background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); vertical-align: middle; }
+.sp-li-n { display: block; font-size: var(--fs-3); color: var(--text); }
+.sp-li-i { display: block; font-size: var(--fs-1); color: var(--text-faint); font-family: var(--font-mono); }
+.sp-badge { display: inline-block; font-size: var(--fs-1); font-style: normal; padding: 0 5px; margin-left: 5px; border-radius: var(--r-pill); background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); vertical-align: middle; }
 .sp-badge-cc { background: var(--accent); color: var(--bg); border-color: var(--accent); }
 /* 轨道区制徽标配色（列表）：GEO 绿 / IGSO 青 / MEO 蓝 / HEO 琥珀（LEO 不显示徽标） */
 .sp-badge.sp-rg-GEO { background: #16a34a1a; color: #16a34a; border-color: #16a34a55; }
 .sp-badge.sp-rg-IGSO { background: #0d94881a; color: #0d9488; border-color: #0d948855; }
 .sp-badge.sp-rg-MEO { background: #2563eb1a; color: #2563eb; border-color: #2563eb55; }
 .sp-badge.sp-rg-HEO { background: #f59f0022; color: #d98600; border-color: #f59f0055; }
-.sp-sel { font-size: 11px; color: var(--text-muted); background: var(--surface); border-radius: var(--r-box); padding: 6px 8px; margin-bottom: 10px; }
+.sp-sel { font-size: var(--fs-2); color: var(--text-muted); background: var(--surface); border-radius: var(--r-box); padding: 6px 8px; margin-bottom: 10px; }
 /* 卫星名可框选复制（覆盖全局 user-select:none），文本光标作可选的提示 —— 方便用户复制去改名 */
 .sp-name { user-select: text; -webkit-user-select: text; cursor: text; }
 .sp-shape { margin-top: 4px; padding-top: 4px; border-top: 1px dashed var(--border); }
@@ -277,18 +277,18 @@ const rows = computed(() => {
 /* 整行占位：令下一字段另起一行（上/下行干扰分行用）；零高度，仅靠栅格行距形成一点间隔，不加边框/底色 */
 .sp-break { grid-column: 1 / -1; height: 0; }
 .sp-f { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-.sp-l { font-size: 12px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sp-l { font-size: var(--fs-3); color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sp-l i { color: var(--text-faint); font-style: normal; }
-.sp-i { font: inherit; font-size: 12px; padding: 4px 7px; width: 100%; background-color: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
-.sp-i:focus { outline: none; border-color: var(--accent); }
+.sp-i { font: inherit; font-size: var(--fs-3); padding: 4px 7px; width: 100%; background-color: var(--field-bg); color: var(--text); border: 1px solid var(--field-border); border-radius: var(--r-ctl, 2px); }
+.sp-i:focus { outline: none; border-color: var(--accent-ui); }
 .sp-i.mono { font-family: var(--font-mono); }
 .sp-i.auto { background-color: var(--surface); color: var(--text-muted); cursor: not-allowed; }
 /* 取星区（树/搜索）沿用 pf 行式，仅放宽选择列 */
 .pf { display: grid; grid-template-columns: 96px minmax(180px, 320px) 30px; align-items: center; gap: 6px; margin-bottom: 6px; }
-.pf-l { font-size: 12px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.pf-i { font: inherit; font-size: 12px; padding: 4px 7px; width: 100%; background-color: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl); }
-.pf-i:focus { outline: none; border-color: var(--accent); }
+.pf-l { font-size: var(--fs-3); color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pf-i { font: inherit; font-size: var(--fs-3); padding: 4px 7px; width: 100%; background-color: var(--field-bg); color: var(--text); border: 1px solid var(--field-border); border-radius: var(--r-ctl); }
+.pf-i:focus { outline: none; border-color: var(--accent-ui); }
 .pf-i.mono { font-family: var(--font-mono); }
 .pf-i.auto { background-color: var(--surface); color: var(--text-muted); cursor: not-allowed; }
-.pf-u { font-size: 11px; color: var(--text-faint); font-style: normal; }
+.pf-u { font-size: var(--fs-2); color: var(--text-faint); font-style: normal; }
 </style>

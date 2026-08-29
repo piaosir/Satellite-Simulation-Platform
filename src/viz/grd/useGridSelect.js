@@ -90,7 +90,92 @@ export function useGridSelect(cfg) {
     }).map((x) => x.r)
   })
   const rowList = () => rows.value
-  const colList = () => cfg.cols() || []
+
+  // ============ 冻结列：纯呈现层，不动数据、不动任何取值 ============
+  // 照搬链路预算 StationGrid 的那套（见 src/linkbudget/StationGrid.vue）。不是 Excel 的「冻结窗格」
+  // （那个只能冻最左边连续一段），是 Airtable / AG Grid 那套**固定列**：任选一组列钉住，
+  // 钉住的整体提到最左并按列的原序排，原位置不再有它。
+  //
+  // ★ 存的是一组**列 key**（不是列数）：父组件调了列序、或用户改了"显示哪些列"之后，仍钉在同一批列上。
+  //   null＝用户没设过（不冻结），[]＝用户显式取消了全部冻结。
+  // ★★ 关键不变式：colList() 出的是**显示序**。选区 / 复制 / 粘贴 / 填充 / 左右导航全部按它遍历 ——
+  //    否则钉住的列被提到最左之后，框出来的一片和复制出来的一片就对不上了。
+  const fzStore = cfg.gridId ? 'eg/freeze/' + cfg.gridId : ''
+  const pinned = ref((() => {
+    if (!fzStore) return null
+    try {
+      const raw = localStorage.getItem(fzStore)
+      if (raw == null) return null
+      if (raw === '') return []
+      const a = JSON.parse(raw)
+      return Array.isArray(a) ? a.filter((k) => typeof k === 'string') : null
+    } catch (e) { return null }
+  })())
+  watch(pinned, (v) => {
+    if (!fzStore) return
+    try { v == null ? localStorage.removeItem(fzStore) : localStorage.setItem(fzStore, JSON.stringify(v)) } catch (e) { /* 配额满等忽略 */ }
+  })
+  const pinnedSet = computed(() => new Set(pinned.value || []))
+  const isPinned = (c) => !!c && pinnedSet.value.has(c.key)
+  // 显示序：钉住的整体提到最左（内部仍按列的原序），其余照旧
+  const visCols = computed(() => {
+    const all = cfg.cols() || []
+    const on = [], off = []
+    for (const c of all) (pinnedSet.value.has(c.key) ? on : off).push(c)
+    return on.length ? on.concat(off) : all
+  })
+  // 冻结列数（显示序口径）。★ 至少留一列随滚：全冻结等于没冻结，还会把滚动区压没。
+  const frozenCount = computed(() => {
+    const v = visCols.value
+    return Math.min(v.filter((c) => pinnedSet.value.has(c.key)).length, Math.max(0, v.length - 1))
+  })
+  const isFrozen = (ci) => ci < frozenCount.value
+  // 写入冻结集：恒按列的原序存（先钉后钉不影响冻结区内的排列），并保证至少留一列随滚
+  function setPinned(keys) {
+    const want = new Set(keys)
+    const all = cfg.cols() || []
+    if (all.length && all.every((c) => want.has(c.key))) want.delete(all[all.length - 1].key)
+    pinned.value = all.filter((c) => want.has(c.key)).map((c) => c.key)
+  }
+  /** 拖冻结条：把**显示序**最前 n 列钉住（滚动区第一列就在线的右边，拖到哪儿钉到哪儿） */
+  function setFreeze(n) {
+    const v = visCols.value
+    setPinned(v.slice(0, Math.max(0, Math.min(n, v.length - 1))).map((c) => c.key))
+  }
+  function unfreeze() { setPinned([]) }
+  // 「冻结此列」作用集＝选区跨过的列；整选区都已冻结时按钮翻成「取消冻结此列」
+  const pinTargets = computed(() => {
+    const r = rect.value, v = visCols.value
+    if (r.c0 < 0) return []
+    const out = []
+    for (let c = Math.max(0, r.c0); c <= Math.min(r.c1, v.length - 1); c++) if (v[c]) out.push(v[c])
+    return out
+  })
+  const pinAllOn = computed(() => pinTargets.value.length > 0 && pinTargets.value.every(isPinned))
+  const canPin = computed(() => pinTargets.value.length > 0)
+  function togglePin(cols) {
+    const list = cols && cols.length ? cols : pinTargets.value
+    if (!list.length) return
+    const allOn = list.every(isPinned)
+    const next = new Set(pinned.value || [])
+    for (const c of list) { if (allOn) next.delete(c.key); else next.add(c.key) }
+    setPinned(next)
+  }
+
+  // 冻结列的左偏移：**实测**列宽逐列累加（列宽随内容/字号/中英文变，写死必错位）。
+  // 量出来后以 CSS 变量挂在 <table> 上：宽度一变只改这一个元素的 style，不惊动成千上万个格子
+  // （每个格的 left 是常量串 var(--egfN)，不因宽度变化重渲染）。由 ExcelGrid 负责测量并写回。
+  const fzOff = ref([38])                     // [序号列宽, +第1冻结列宽, …]，长度＝冻结列数+1
+  const fzW = computed(() => fzOff.value[Math.min(frozenCount.value, fzOff.value.length - 1)] || 0)
+  const fzVars = computed(() => {
+    const o = {}
+    fzOff.value.forEach((v, i) => { o['--egf' + i] = v.toFixed(2) + 'px' })
+    o['--eg-fzw'] = fzW.value.toFixed(2) + 'px'
+    return o
+  })
+  const fzStyle = (ci) => (ci < frozenCount.value ? { left: 'var(--egf' + ci + ')' } : null)
+
+  const colList = () => visCols.value
 
   const rect = computed(() => {
     const s = sel.value
@@ -623,6 +708,9 @@ export function useGridSelect(cfg) {
     // 填充柄
     fill, inFill, isFillAnchor, onFillDown, onFillDbl, fillDown,
     // 行增删 + 右键菜单
-    canInsert, canDelete, insertRows, deleteRows, menu, openMenu, closeMenu, menuDo
+    canInsert, canDelete, insertRows, deleteRows, menu, openMenu, closeMenu, menuDo,
+    // 冻结列（显示序由 visCols 统一给出，选区/复制/粘贴/填充全按它遍历）
+    visCols, frozenCount, isFrozen, isPinned, pinned, pinTargets, pinAllOn, canPin,
+    togglePin, setFreeze, unfreeze, fzOff, fzVars, fzStyle, fzW
   }
 }

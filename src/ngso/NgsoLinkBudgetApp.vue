@@ -1799,9 +1799,9 @@ onMounted(async () => {
           <div class="lb-col-hd">
             <span class="lb-cfg-hd-t">配置列表</span>
             <span class="lb-cfg-acts">
-              <button class="lb-mini lb-mini-ico" title="新建文件夹" :disabled="!api" @click="addFolder(null)"><Icon name="folder-plus" :size="13" /></button>
-              <button class="lb-mini lb-mini-ico" title="添加空白配置" :disabled="!api" @click="addBlankConfig(null)"><Icon name="plus" :size="13" /></button>
-              <button class="lb-mini lb-mini-ico" title="隐藏配置列表" @click="sideView = ''"><Icon name="x" :size="13" /></button>
+              <button class="lb-mini lb-mini-ico" title="新建文件夹" :disabled="!api" @click="addFolder(null)"><Icon name="folder-plus" :size="12" /></button>
+              <button class="lb-mini lb-mini-ico" title="添加空白配置" :disabled="!api" @click="addBlankConfig(null)"><Icon name="plus" :size="12" /></button>
+              <button class="lb-mini lb-mini-ico" title="隐藏配置列表" @click="sideView = ''"><Icon name="x" :size="12" /></button>
             </span>
           </div>
           <div class="lb-col-bd" tabindex="0" @keydown="onCfgKey" @contextmenu="openCtx($event, null)">
@@ -1823,8 +1823,8 @@ onMounted(async () => {
             <span class="lb-cfg-hd-t">资源库</span>
             <span class="lb-cfg-acts">
               <button class="lb-mini lb-mini-ico" :title="`新增${(LIB_TABS.find((t) => t.key === libTab) || {}).label}配置`"
-                @click="libTab === 'station' ? addEsConfig() : libTab === 'sat' ? addSatConfig() : addBasebandConfig()"><Icon name="plus" :size="13" /></button>
-              <button class="lb-mini lb-mini-ico" title="隐藏资源库" @click="sideView = ''"><Icon name="x" :size="13" /></button>
+                @click="libTab === 'station' ? addEsConfig() : libTab === 'sat' ? addSatConfig() : addBasebandConfig()"><Icon name="plus" :size="12" /></button>
+              <button class="lb-mini lb-mini-ico" title="隐藏资源库" @click="sideView = ''"><Icon name="x" :size="12" /></button>
             </span>
           </div>
           <nav class="lb-lib-tabs">
@@ -1877,12 +1877,12 @@ onMounted(async () => {
                 <svg viewBox="0 0 16 16" class="lbr-svg"><path d="M2.5 2.5h8l3 3v8h-11z" /><path d="M5 2.5v4h5v-4" /><rect x="5" y="9" width="6" height="4.5" /></svg>
                 保存<span v-if="dirtyFlag" class="lbx-dirty" title="有未保存的修改"></span>
               </button>
-              <button class="lbr-big" :disabled="!api" title="分享 / 导入：配置（可多选）+ 资源库条目（可多选）——分享码 / 文件 / 发给用户ID" @click="openShareDlg"><Icon name="external-link" :size="15" />分享</button>
+              <button class="lbr-big" :disabled="!api" title="分享 / 导入：配置（可多选）+ 资源库条目（可多选）——分享码 / 文件 / 发给用户ID" @click="openShareDlg"><Icon name="external-link" :size="16" />分享</button>
               <button class="lbr-big" :class="{ spin: refreshing }" :disabled="!api" title="刷新最新设置（卫星/天线树 / 实时星位 / 城市库 / 载波信号选项 等）" @click="refreshLatest">
                 <svg viewBox="0 0 16 16" class="lbr-svg"><path d="M13 8a5 5 0 1 1-1.46-3.54" /><path d="M13 2.6v2.6h-2.6" /></svg>
                 刷新
               </button>
-              <button class="lbr-big" :class="{ on: sideView === 'configs' }" :title="sideView === 'configs' ? '隐藏左侧「配置列表」栏（腾出工作区宽度）' : '左侧栏显示「配置列表」（场景文件树；与「资源库」二选一）'" @click="toggleSide('configs')"><Icon name="panel-left" :size="15" />配置列表</button>
+              <button class="lbr-big" :class="{ on: sideView === 'configs' }" :title="sideView === 'configs' ? '隐藏左侧「配置列表」栏（腾出工作区宽度）' : '左侧栏显示「配置列表」（场景文件树；与「资源库」二选一）'" @click="toggleSide('configs')"><Icon name="panel-left" :size="16" />配置列表</button>
             </div>
             <div class="lbr-cap">文件</div>
           </div>
@@ -1913,15 +1913,15 @@ onMounted(async () => {
           </div>
           <div class="lbr-g">
             <div class="lbr-items">
-              <button class="lbr-big" :class="{ on: sideView === 'library' }" :title="`${sideView === 'library' ? '隐藏' : '左侧栏显示'}「资源库」：地球站 ${esConfigs.length} · 卫星 ${satConfigs.length} · 载波 ${basebandConfigs.length}（全局资产，场景按 id 引用；与「配置列表」二选一）`" @click="toggleSide('library')"><Icon name="folder-open" :size="15" />资源库</button>
-              <button class="lbr-big" :class="{ on: showViz }" :title="showViz ? '隐藏详细预算的图表区（地理场图 + 链路视图）' : '显示详细预算的图表区：地理场图（站址经纬度）+ 链路视图（3D 站星几何，卫星在最差时刻星下点）'" @click="showViz = !showViz"><Icon name="chart-line" :size="15" />图表</button>
+              <button class="lbr-big" :class="{ on: sideView === 'library' }" :title="`${sideView === 'library' ? '隐藏' : '左侧栏显示'}「资源库」：地球站 ${esConfigs.length} · 卫星 ${satConfigs.length} · 载波 ${basebandConfigs.length}（全局资产，场景按 id 引用；与「配置列表」二选一）`" @click="toggleSide('library')"><Icon name="folder-open" :size="16" />资源库</button>
+              <button class="lbr-big" :class="{ on: showViz }" :title="showViz ? '隐藏详细预算的图表区（地理场图 + 链路视图）' : '显示详细预算的图表区：地理场图（站址经纬度）+ 链路视图（3D 站星几何，卫星在最差时刻星下点）'" @click="showViz = !showViz"><Icon name="chart-line" :size="16" />图表</button>
             </div>
             <div class="lbr-cap">视图</div>
           </div>
           <div class="lbr-g">
             <div class="lbr-items">
-              <button class="lbr-big" :disabled="reportDlg.busy || !links.length" :title="links.length ? '生成交付级报告：Excel（总报告 + 几何关系 + 逐链路详情）/ PDF（封面 · 目录 · 总报告 · 逐链路详情，含图）' : '尚无计算结果'" @click="openReportDialog"><Icon name="file-down" :size="15" />{{ reportDlg.busy ? '生成中…' : '报告' }}</button>
-              <button class="lbr-big" :disabled="!segments.length" title="复制当前瀑布表（TSV，可直接粘贴到 Excel / 报告）" @click="copyWaterfallTsv"><Icon name="file-text" :size="15" />TSV</button>
+              <button class="lbr-big" :disabled="reportDlg.busy || !links.length" :title="links.length ? '生成交付级报告：Excel（总报告 + 几何关系 + 逐链路详情）/ PDF（封面 · 目录 · 总报告 · 逐链路详情，含图）' : '尚无计算结果'" @click="openReportDialog"><Icon name="file-down" :size="16" />{{ reportDlg.busy ? '生成中…' : '报告' }}</button>
+              <button class="lbr-big" :disabled="!segments.length" title="复制当前瀑布表（TSV，可直接粘贴到 Excel / 报告）" @click="copyWaterfallTsv"><Icon name="file-text" :size="16" />TSV</button>
             </div>
             <div class="lbr-cap">导出</div>
           </div>
@@ -1956,7 +1956,7 @@ onMounted(async () => {
             <template #actions>
               <button v-if="geoManual" class="lb-mini" title="斜距工具：按轨道高度 × 仰角算斜距，可按各行仰角批量填入「斜距」列" @click="slantToolOpen = true">斜距工具</button>
               <span class="lbx-colpick-wrap">
-                <button class="lb-mini" title="计算结果列：勾选显示列，底部可新建自定义公式列" @click="colPickOpen = !colPickOpen">结果列 <Icon name="chevron-down" :size="11" /></button>
+                <button class="lb-mini" title="计算结果列：勾选显示列，底部可新建自定义公式列" @click="colPickOpen = !colPickOpen">结果列 <Icon name="chevron-down" :size="12" /></button>
                 <div v-if="colPickOpen" class="lbx-colpick-mask" @click="colPickOpen = false" @wheel.prevent></div>
                 <div v-if="colPickOpen" class="lbx-colpick" @wheel="onColPickWheel">
                   <label v-for="d in RESULT_DEFS" :key="d.key" class="lbx-colpick-i" :title="d.tip || d.label">
@@ -2167,9 +2167,11 @@ onMounted(async () => {
 /* 浅色精密仪器风：页内统一圆角/字号尺度，并就地覆写语义色（仅本页生效，不影响主窗口/地图）。 */
 .lb-shell {
   display: flex; flex-direction: column; height: 100vh;
-  background: var(--bg); color: var(--text); font-family: var(--lb-serif);
-  /* 报表衬线排版：--lb-serif 别名自 global.css 的 --font-serif（全软件同栈），等宽语义亦同源，
-     TNR 数字字面天然等宽，右对齐即成列，此处不再单独覆写 --font-mono */
+  background: var(--bg); color: var(--text); font-family: var(--font-ui);
+  /* 外壳无衬线、文档面衬线：本窗口的外形（功能区 / 页签 / 侧栏 / 参数面板 / 链路表）与主窗
+     一模一样，字体也必须是同一族，否则在两个窗口之间切换一眼看得出。衬线只留给「详细预算」
+     那一块（.lbx-doc 在 lbworkbench.css 里显式钉回 --lb-serif）——那是报表排版，且它的列宽是
+     按 TNR 的字面宽度用 em 调出来的，换族要连着重调十几个常数。 */
   /* 降饱和的语义色（更接近灰，避免红绿黄过艳） */
   --ok: #4a7a62; --warn: #8a7038; --danger: #9c5751;
   /* 上行/下行分列的克制冷暖角标色（仅用于图例与箭头，数值仍取中性 text） */
@@ -2182,8 +2184,8 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .lbr-big.spin .lbr-svg { animation: lb-spin .7s linear infinite; transform-origin: 50% 50%; }
 @keyframes lb-spin { to { transform: rotate(360deg); } }
 /* 功能区右缘状态位文案：操作回执（绿）/ 无引擎警示（黄） */
-.lb-hint { color: var(--warn); font-size: 11px; display: inline-flex; align-items: center; gap: 4px; }
-.lb-note { color: var(--ok); font-size: 11px; max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lb-hint { color: var(--warn); font-size: var(--fs-2); display: inline-flex; align-items: center; gap: 4px; }
+.lb-note { color: var(--ok); font-size: var(--fs-2); max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .lb-body { flex: 1; display: flex; min-height: 0; }
 .lb-col { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--border); }
@@ -2201,21 +2203,21 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .lb-cfg-hd-t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lb-build { flex: 1; min-width: 460px; }
 
-.lb-col-hd { display: flex; align-items: center; justify-content: space-between; gap: 8px; height: 30px; flex: none; padding: 0 12px; font-size: 11px; font-weight: 600; letter-spacing: var(--ls-label); text-transform: uppercase; background: var(--surface-2); border-bottom: 1px solid var(--border); color: var(--text-muted); }
+.lb-col-hd { display: flex; align-items: center; justify-content: space-between; gap: 8px; height: 30px; flex: none; padding: 0 12px; font-size: var(--fs-2); font-weight: 600; letter-spacing: var(--ls-label); text-transform: uppercase; background: var(--surface-2); border-bottom: 1px solid var(--border); color: var(--text-muted); }
 .lb-col-bd { flex: 1; overflow: auto; padding: 12px; }
-.lb-lang-sel { font: inherit; font-size: 11px; text-transform: none; letter-spacing: 0; line-height: 1; padding: 3px 6px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl); }
-.lb-lang-sel:focus { outline: none; border-color: var(--accent); }
-.lb-mini { font: inherit; font-size: 11px; line-height: 1; padding: 3px 8px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl); display: inline-flex; align-items: center; justify-content: center; gap: 4px; }
+.lb-lang-sel { font: inherit; font-size: var(--fs-2); text-transform: none; letter-spacing: 0; line-height: 1; padding: 3px 6px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl); }
+.lb-lang-sel:focus { outline: none; border-color: var(--accent-ui); }
+.lb-mini { font: inherit; font-size: var(--fs-2); line-height: 1; padding: 3px 8px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl); display: inline-flex; align-items: center; justify-content: center; gap: 4px; }
 .lb-mini:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
 .lb-mini:disabled { opacity: .45; cursor: not-allowed; }
-.lb-empty, .lb-placeholder { color: var(--text-faint); font-size: 12px; text-align: center; line-height: 1.7; }
+.lb-empty, .lb-placeholder { color: var(--text-faint); font-size: var(--fs-3); text-align: center; line-height: 1.7; }
 .lb-cfg-acts { display: flex; gap: 4px; }
 .lb-cfg-list { list-style: none; margin: 0; padding: 0; }
-.lb-cfg-list li { display: flex; align-items: center; gap: 6px; padding: 6px 6px 6px 9px; font-size: 12px; cursor: pointer; border-radius: var(--r-ctl); color: var(--text-muted); }
+.lb-cfg-list li { display: flex; align-items: center; gap: 6px; padding: 6px 6px 6px 9px; font-size: var(--fs-3); cursor: pointer; border-radius: var(--r-ctl); color: var(--text-muted); }
 .lb-cfg-list li:hover { background: var(--surface-2); color: var(--text); }
-.lb-cfg-list li.on { background: var(--surface-2); color: var(--text); box-shadow: inset 2px 0 0 var(--accent); }
+.lb-cfg-list li.on { background: var(--surface-2); color: var(--text); box-shadow: inset 2px 0 0 var(--accent-ui); }
 .lb-cfg-nm { flex: 1; min-width: 0; overflow-wrap: anywhere; line-height: 1.35; }
-.lb-cfg-ico { flex: none; font: inherit; font-size: 13px; line-height: 1; padding: 0 4px; cursor: pointer; background: transparent; color: var(--text-faint); border: 0; border-radius: var(--r-ctl); opacity: 0; display: inline-flex; align-items: center; }
+.lb-cfg-ico { flex: none; font: inherit; font-size: var(--fs-4); line-height: 1; padding: 0 4px; cursor: pointer; background: transparent; color: var(--text-faint); border: 0; border-radius: var(--r-ctl); opacity: 0; display: inline-flex; align-items: center; }
 .lb-cfg-list li:hover .lb-cfg-ico { opacity: 1; }
 .lb-cfg-ico:hover { color: var(--text); }
 .lb-cfg-ico.del:hover { color: var(--danger); }
@@ -2223,37 +2225,37 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .lb-cfg-list li { cursor: pointer; }
 .lb-cfg-list li.cut { opacity: .5; }
 /* 右键菜单 */
-.lb-cfg-rename { flex: 1; min-width: 0; font: inherit; font-size: 12px; padding: 2px 5px; background: var(--bg); color: var(--text); border: 1px solid var(--accent); border-radius: var(--r-ctl); }
+.lb-cfg-rename { flex: 1; min-width: 0; font: inherit; font-size: var(--fs-3); padding: 2px 5px; background: var(--bg); color: var(--text); border: 1px solid var(--accent); border-radius: var(--r-ctl); }
 .lb-cfg-rename:focus { outline: none; }
-.lb-cfg-hint { padding: 2px 6px 8px; font-size: 11px; color: var(--text-faint); line-height: 1.5; }
+.lb-cfg-hint { padding: 2px 6px 8px; font-size: var(--fs-2); color: var(--text-faint); line-height: 1.5; }
 .lb-cfg-acts { display: flex; gap: 3px; }
 .lb-cfg-acts i { font-style: normal; }
-.lb-mini-ico { display: inline-flex; align-items: center; justify-content: center; padding: 3px 5px; }
+.lb-mini-ico { display: inline-flex; align-items: center; justify-content: center; height: var(--h-ctl); white-space: nowrap; padding: 0 5px; }
 .lb-ico-svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.2; stroke-linejoin: round; }
-.lb-myid { flex: none; display: flex; align-items: center; gap: 4px; padding: 6px 12px; font-size: 11px; color: var(--text-muted); border-top: 1px solid var(--border); background: var(--surface); white-space: nowrap; overflow: hidden; }
-.lb-myid b { font-family: var(--font-mono); color: var(--text); letter-spacing: var(--ls-tight); overflow: hidden; text-overflow: ellipsis; }
+.lb-myid { flex: none; display: flex; align-items: center; gap: 4px; padding: 6px 12px; font-size: var(--fs-2); color: var(--text-muted); border-top: 1px solid var(--border); background: var(--surface); white-space: nowrap; overflow: hidden; }
+.lb-myid b { font-family: var(--font-code); color: var(--text); letter-spacing: var(--ls-tight); overflow: hidden; text-overflow: ellipsis; }
 
 /* 弹窗（命名 / 分享） */
 .lb-mask { position: fixed; inset: 0; z-index: 300; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.28); }
-.lb-dlg { width: 380px; display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-card); box-shadow: 0 8px 24px rgba(0,0,0,.18); overflow: hidden; }
+.lb-dlg { width: 380px; display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-card); box-shadow: var(--shadow-3); overflow: hidden; }
 /* 分享弹窗自 v1.4.6 起是独立组件（components/LbShareDialog.vue，自带 lbs- 一套样式），
    原先只服务于它的 lb-tabs / lb-area / lb-inbox 系列 / lb-share-l 等已随之删去。 */
-.lb-dlg-hd { display: flex; align-items: center; gap: 8px; padding: 10px 12px; font-size: 11px; font-weight: 600; letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--text-muted); background: var(--surface-2); border-bottom: 1px solid var(--border); }
+.lb-dlg-hd { display: flex; align-items: center; gap: 8px; padding: 10px 12px; font-size: var(--fs-2); font-weight: 600; letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--text-muted); background: var(--surface-2); border-bottom: 1px solid var(--border); }
 .lb-dlg-bd { padding: 12px; display: flex; flex-direction: column; gap: 8px; }
 .lb-dlg-ft { display: flex; justify-content: flex-end; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--border); background: var(--surface); }
-.lb-input { font: inherit; font-size: 12px; padding: 6px 9px; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl); }
-.lb-input:focus { outline: none; border-color: var(--accent); }
-.lb-mini.primary { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+.lb-input { font: inherit; font-size: var(--fs-3); padding: 6px 9px; background: var(--field-bg); color: var(--text); border: 1px solid var(--field-border); border-radius: var(--r-ctl); }
+.lb-input:focus { outline: none; border-color: var(--accent-ui); }
+.lb-mini.primary { background: var(--accent-ui); color: var(--bg); border-color: var(--accent-ui); }
 .lb-mini.primary:hover:not(:disabled) { opacity: .88; }
-.lb-share-row { font-size: 12px; color: var(--text-muted); }
+.lb-share-row { font-size: var(--fs-3); color: var(--text-muted); }
 
 /* 分段选择（链路配对等，计算栏用） */
-.seg-i { font: inherit; font-size: 12px; padding: 4px 10px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl); }
+.seg-i { font: inherit; font-size: var(--fs-3); padding: 4px 10px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl); }
 .seg-i:hover { color: var(--text); border-color: var(--border-strong); }
-.seg-i.on { background: var(--surface-2); color: var(--text); border-color: var(--border-strong); font-weight: 600; box-shadow: inset 0 -2px 0 var(--accent); }
+.seg-i.on { background: var(--surface-2); color: var(--text); border-color: var(--border-strong); font-weight: 600; box-shadow: inset 0 -2px 0 var(--accent-ui); }
 
 /* 结果 */
-.lb-err { color: var(--danger); font-size: 12px; padding: 8px; }
+.lb-err { color: var(--danger); font-size: var(--fs-3); padding: 8px; }
 
 /* 核心指标（.core-*）三线式样式统一在 styles/lbworkbench.css（三 App 共用，此处不再重复定义） */
 /* 站星几何卡：三线语言（上下双线、题注行带栏目线、无底色）；正文上行/下行分列对齐。 */
@@ -2261,9 +2263,9 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .geo-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 3px 2px 4px; border-bottom: 1px solid var(--lb-rule); }
 .geo-title { display: flex; align-items: baseline; gap: 7px; min-width: 0; }
 .geo-tt { font-size: calc(var(--lb-fs, 11px) + 1px); font-weight: 700; letter-spacing: var(--ls-tight); color: var(--text); }
-.geo-badge { flex: none; align-self: center; font-family: var(--font-mono); font-size: 10px; font-weight: 700; letter-spacing: var(--ls-tight); line-height: 1; padding: 2px 7px; border-radius: var(--r-pill); background: var(--bg); color: var(--text-muted); border: 1px solid var(--border-strong); }
+.geo-badge { flex: none; align-self: center; font-family: var(--font-mono); font-size: var(--fs-1); font-weight: 700; letter-spacing: var(--ls-tight); line-height: 1; padding: 2px 7px; border-radius: var(--r-pill); background: var(--bg); color: var(--text-muted); border: 1px solid var(--border-strong); }
 .geo-tz { display: inline-flex; flex: none; border: 1px solid var(--border-strong); border-radius: var(--r-ctl); overflow: hidden; }
-.geo-tzb { font: inherit; font-size: 11px; line-height: 1; padding: 3px 9px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 0; }
+.geo-tzb { font: inherit; font-size: var(--fs-2); line-height: 1; padding: 3px 9px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 0; }
 .geo-tzb + .geo-tzb { border-left: 1px solid var(--border); }
 .geo-tzb:hover:not(.on) { color: var(--text); }
 .geo-tzb.on { background: var(--accent); color: var(--bg); font-weight: 600; }
@@ -2271,14 +2273,14 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .geo-body { padding: 2px 2px 6px; }
 .geo-sec { display: flex; align-items: baseline; gap: 7px; font-size: calc(var(--lb-fs, 11px) - 1px); font-weight: 600; color: var(--accent); margin: 8px 0 3px; padding-top: 5px; border-top: 1px solid var(--lb-rule-soft); letter-spacing: var(--ls-tight); }
 .geo-sec:first-child { border-top: none; padding-top: 0; margin-top: 3px; }
-.geo-sec-x { font-weight: 400; font-size: 10px; color: var(--text-faint); letter-spacing: var(--ls-tight); }
+.geo-sec-x { font-weight: 400; font-size: var(--fs-1); color: var(--text-faint); letter-spacing: var(--ls-tight); }
 
 .geo-row, .geo-trow { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 1.5px 0; }
 .geo-l { font-size: var(--lb-fs, 11px); color: var(--text-muted); min-width: 0; }
-.geo-l i { font-style: normal; font-size: 10px; color: var(--text-faint); margin-left: 4px; letter-spacing: var(--ls-tight); }
+.geo-l i { font-style: normal; font-size: var(--fs-1); color: var(--text-faint); margin-left: 4px; letter-spacing: var(--ls-tight); }
 .geo-v, .geo-time { font-size: var(--lb-fs, 11px); font-weight: 700; color: var(--text); text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .geo-v i, .geo-time i { font-style: normal; font-weight: 500; color: var(--text-faint); margin-left: 5px; }
-.geo-clip { font-family: var(--font-mono); font-size: 9px; font-weight: 700; letter-spacing: var(--ls-tight); color: var(--text-faint); margin-left: 7px; padding: 1px 5px; border: 1px solid var(--border); border-radius: var(--r-pill); vertical-align: 1px; }
+.geo-clip { font-family: var(--font-mono); font-size: var(--fs-1); font-weight: 700; letter-spacing: var(--ls-tight); color: var(--text-faint); margin-left: 7px; padding: 1px 5px; border: 1px solid var(--border); border-radius: var(--r-pill); vertical-align: 1px; }
 .geo-v-updn { display: inline-flex; gap: 11px; }
 .geo-v-updn .up { color: var(--up); }
 .geo-v-updn .dn { color: var(--dn); }
@@ -2288,7 +2290,7 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 /* 多普勒行复用双列格与站星几何列对齐，但夹在卫星运动的单列行之间，去掉分节块专用的上下外边距，回归 geo-row 行距 */
 .geo-duo.geo-duo-tight { margin: 2.5px 0; }
 .geo-duo .geo-l { grid-column: 1; }
-.geo-duh { font-size: 10px; font-weight: 600; letter-spacing: var(--ls-tight); text-align: right; color: var(--text-faint); padding-bottom: 1px; }
+.geo-duh { font-size: var(--fs-1); font-weight: 600; letter-spacing: var(--ls-tight); text-align: right; color: var(--text-faint); padding-bottom: 1px; }
 .geo-duh.geo-up { color: var(--up); }
 .geo-duh.geo-dn { color: var(--dn); }
 .geo-vu, .geo-vd { font-size: var(--lb-fs, 11px); font-weight: 700; color: var(--text); text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }

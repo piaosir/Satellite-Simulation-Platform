@@ -29,15 +29,15 @@ const ro = (f) => props.readonlyKeys.includes(f.key)
 <style scoped>
 .sp-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 2px 20px; }
 .sp-f { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 21px; }
-.sp-l { font-size: 11.5px; color: var(--text-muted); flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sp-l { font-size: var(--fs-3); color: var(--text-muted); flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sp-l i { font-style: normal; color: var(--text-faint); }
 .sp-i {
-  width: 112px; flex: none; text-align: right; font: inherit; font-size: 11.5px; padding: 2px 4px;
+  width: 112px; flex: none; text-align: right; font: inherit; font-size: var(--fs-3); padding: 2px 4px;
   color: var(--text); background-color: transparent; border: 1px solid transparent; border-radius: var(--r-ctl, 2px);
 }
 select.sp-i { text-align: left; }
-.sp-i:hover { background-color: var(--bg); border-color: var(--border); }
-.sp-i:focus { outline: none; background-color: var(--bg); border-color: var(--accent); }
+.sp-i:hover { background-color: var(--field-bg); border-color: var(--field-border-hover); }
+.sp-i:focus { outline: none; background-color: var(--field-bg); border-color: var(--accent-ui); }
 .sp-i::placeholder { color: var(--text-faint); }
 .sp-i.auto { color: var(--text-muted); cursor: not-allowed; }
 </style>

@@ -16,6 +16,10 @@ const sunOutage = require('./utils/sunOutageCalculator.js');
 const icsBuilder = require('./utils/icsBuilder.js');
 const eventWindows = require('./utils/eventWindows.js');
 const rainAttenuation = require('./utils/rainAttenuation.js');
+const metSnapshot = require('./utils/metSnapshot.js');
+const instantAtten = require('./utils/instantAtten.js');
+const metFetchPlan = require('./utils/metFetchPlan.js');
+const liveField = require('./utils/liveField.js');
 const ngsoElevStats = require('./utils/ngsoElevStats.js');
 const adaptiveUnits = require('./utils/adaptiveUnits.js');
 const envField = require('./utils/envField.js');
@@ -165,6 +169,20 @@ module.exports = {
   solveMultiSite: rainAttenuation.solveMultiSite,
   rainDiversity: require('./utils/rainDiversity.js'),
   rainAttenuation,
+  // —— 实时 / 预报分支（与上面的 ITU 统计口径**并列**，两者永不混算）——
+  // computeInstant 的出参里刻意没有 availability / downtime 这类键：口径混用在数据结构上就被堵死。
+  computeInstantAtten: instantAtten.computeInstant,
+  instantPathModels: instantAtten.PATH_MODELS,
+  metSnapshot,      // 气象快照契约 + P.453 派生量（e / ρ / N_wet / 站点气压）
+  instantAtten,
+  metFetchPlan,     // 取数计划器：两级自适应加密 + 缓存复用 + 预算估算（把「场 = N 次请求」压下来）
+  // 实时/预报环境场：气象立方体的某一帧 → 栅格。出参与 envField.sampleField 同构，
+  // 故渲染端（上色/提线/2D·3D 两通道）与 ITU 气候场共用同一套代码。
+  liveField,
+  liveFieldDefs: () => liveField.FIELD_DEFS,
+  sampleLiveField: liveField.sampleField,
+  // 多站逐点读数（站点表）：在立方体原生格上直接算，不经过降采样的出图栅格
+  sampleLivePoints: liveField.samplePoints,
   ngsoElevStats,   // ITU-R P.618-14 §8 非静止轨道长期统计（仰角分布 + 等效仰角）
   rainRate,
   elevation,

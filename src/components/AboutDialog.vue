@@ -88,7 +88,7 @@ async function copyId() {
     <div class="dlg" role="dialog" aria-modal="true">
       <header class="dhd">
         <span class="dt">关于</span>
-        <span class="x" @click="emit('close')"><Icon name="x" :size="14" /></span>
+        <span class="x" @click="emit('close')"><Icon name="x" :size="16" /></span>
       </header>
 
       <div class="body">
@@ -130,14 +130,23 @@ async function copyId() {
         </section>
 
         <section>
-          <div class="sec">行政边界数据署名</div>
+          <div class="sec">第三方署名</div>
+          <!-- 图标：两条都不强制在界面署名（Apache-2.0 / ISC），列出来是留个出处 -->
+          <div class="kv">
+            <span class="k">Apache 2.0</span>
+            <span class="v"><em>Google Noto Emoji</em>地球站地图符号</span>
+          </div>
+          <div class="kv">
+            <span class="k">ISC</span>
+            <span class="v"><em>Lucide</em>界面图标</span>
+          </div>
           <div class="kv" v-for="(g, i) in attrRows" :key="i">
             <span class="k">{{ g.license }}</span>
             <span class="v"><em>{{ g.source }}</em>{{ g.isos.length }} 个国家/地区</span>
           </div>
           <div class="kv">
             <span class="k"></span>
-            <span class="v"><button class="cp" @click="attrOpen = !attrOpen">{{ attrOpen ? '收起逐国清单' : '逐国清单' }}</button></span>
+            <span class="v"><button class="cp" @click="attrOpen = !attrOpen">{{ attrOpen ? '收起边界数据逐国清单' : '边界数据逐国清单' }}</button></span>
           </div>
           <ul v-if="attrOpen" class="mods attr">
             <li v-for="(g, i) in attrRows" :key="'l' + i">{{ g.license }}：{{ g.isos.join(' ') }}</li>
@@ -158,9 +167,9 @@ async function copyId() {
 .mask { position: fixed; inset: 0; z-index: 2000; background: rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center; }
 /* 512px：模块清单两栏里最长的那条英文（Link Budget · End-to-End Multi-Hop）刚好不折行 */
 .dlg { width: 512px; max-width: calc(100vw - 32px); max-height: calc(100vh - 64px); display: flex; flex-direction: column;
-  background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-card); box-shadow: 0 12px 40px rgba(0,0,0,0.5); }
+  background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-card); box-shadow: var(--shadow-3); }
 .dhd { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid var(--border); }
-.dt { font-family: var(--font-serif); font-size: 15px; }
+.dt { font-family: var(--font-serif); font-size: var(--fs-5); }
 .x { cursor: pointer; color: var(--text-muted); padding: 2px 6px; display: inline-flex; align-items: center; }
 .x:hover { color: var(--text); }
 .body { padding: 16px; overflow: auto; display: flex; flex-direction: column; gap: 15px; }
@@ -172,18 +181,18 @@ async function copyId() {
 .mark { height: 26px; width: auto; flex: none; user-select: none; -webkit-user-drag: none; }
 :root[data-theme='dark'] .mark { filter: invert(1) brightness(1.06); }
 .idtx { min-width: 0; flex: 1; }
-.nm { font-family: var(--font-serif); font-size: 16.5px; letter-spacing: var(--ls-tight); }
-.sub { margin-top: 3px; font-size: 11.5px; color: var(--text-muted); }
-.vchip { flex: none; align-self: flex-start; padding: 1px 7px; font-size: 11px; color: var(--text-muted);
+.nm { font-family: var(--font-serif); font-size: var(--fs-5); letter-spacing: var(--ls-tight); }
+.sub { margin-top: 3px; font-size: var(--fs-3); color: var(--text-muted); }
+.vchip { flex: none; align-self: flex-start; padding: 1px 7px; font-size: var(--fs-2); color: var(--text-muted);
   border: 1px solid var(--border-strong); background: var(--bg); }
 
 .attr li { word-break: break-all; }
 .v em { font-style: normal; color: var(--text-muted); margin-right: 8px; }
-.sec { font-size: 11px; letter-spacing: var(--ls-label); color: var(--text-faint); padding-bottom: 5px; margin-bottom: 9px; border-bottom: 1px solid var(--border); }
+.sec { font-size: var(--fs-2); letter-spacing: var(--ls-label); color: var(--text-faint); padding-bottom: 5px; margin-bottom: 9px; border-bottom: 1px solid var(--border); }
 /* 键值两栏共用一根 76px 栏名轴（英文「Activated」不折行） */
 .kv { display: grid; grid-template-columns: 76px 1fr; column-gap: 14px; row-gap: 7px; align-items: baseline; }
-.k { font-size: 11.5px; color: var(--text-faint); }
-.v { font-size: 12.5px; color: var(--text); min-width: 0; overflow-wrap: anywhere; }
+.k { font-size: var(--fs-3); color: var(--text-faint); }
+.v { font-size: var(--fs-4); color: var(--text); min-width: 0; overflow-wrap: anywhere; }
 
 .st { display: inline-flex; align-items: baseline; gap: 7px; }
 .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex: none; transform: translateY(-1px); }
@@ -192,17 +201,17 @@ async function copyId() {
 
 .idrow { display: flex; align-items: center; gap: 10px; }
 .id { user-select: text; }
-.cp { display: inline-flex; align-items: center; gap: 4px; padding: 1px 7px; font-size: 11px; cursor: pointer;
+.cp { display: inline-flex; align-items: center; gap: 4px; height: var(--h-ctl-sm); white-space: nowrap; padding: 0 7px; font-size: var(--fs-2); cursor: pointer;
   color: var(--text-muted); background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-ctl); }
 .cp:hover { color: var(--text); border-color: var(--accent); }
 
 /* 模块清单：两栏，行首短横（无彩细线，与地物线同一口径——不抢内容的色） */
 .mods { margin: 0; padding: 0; list-style: none; display: grid; grid-template-columns: 1fr 1fr; column-gap: 14px; row-gap: 5px; }
-.mods li { position: relative; padding-left: 11px; font-size: 12px; color: var(--text-muted); }
+.mods li { position: relative; padding-left: 11px; font-size: var(--fs-3); color: var(--text-muted); }
 .mods li::before { content: ''; position: absolute; left: 0; top: .62em; width: 6px; height: 1px; background: var(--border-strong); }
 
 .dft { display: flex; align-items: center; justify-content: flex-end; gap: 10px; padding: 12px 16px; border-top: 1px solid var(--border); }
-.dft button { padding: 6px 16px; cursor: pointer; border-radius: var(--r-box); font-size: 12.5px; }
+.dft button { height: var(--h-ctl-lg); white-space: nowrap; padding: 0 16px; cursor: pointer; border-radius: var(--r-box); font-size: var(--fs-4); }
 .gh { background: var(--bg); border: 1px solid var(--border-strong); color: var(--text); }
 .gh:hover { border-color: var(--accent); }
 .gh:disabled { opacity: .5; cursor: default; }

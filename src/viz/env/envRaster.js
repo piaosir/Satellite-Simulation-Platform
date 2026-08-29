@@ -7,22 +7,28 @@
 // 采成 256 级查找表后逐像素查表——百万像素下比逐像素插值省一半时间。
 
 import { schemeColorsRGB, SCHEME_NAMES } from '../grd/colormap.js'
+import { isMetScheme, metLut, levelNorm } from './metPalette.js'
 
 export { SCHEME_NAMES }
+export { levelNorm, levelTicks, isMetScheme, MET_SCHEMES } from './metPalette.js'
 
 const LUT_N = 256
 const lutCache = new Map()
 
-// 256 级查找表（Uint8Array, 3 字节/级）；invert=true 时整表倒序
+// 256 级查找表（Uint8Array, **4 字节/级 RGBA**）；invert=true 时整表倒序。
+// ★ 科学色图（turbo 等）一律 alpha=255，是否透明由 colorize 的 opacity 一个数说了算；
+//   气象业务色阶自带逐级 alpha（低值透明），故这里统一成四通道 —— 两族色标走同一条上色路径，
+//   否则 colorize 里要分叉两遍循环。
 export function colorLut(scheme, invert) {
+  if (isMetScheme(scheme)) return metLut(scheme, invert)
   const key = scheme + (invert ? '|i' : '')
   let lut = lutCache.get(key)
   if (lut) return lut
   const stops = schemeColorsRGB(scheme, LUT_N)
-  lut = new Uint8Array(LUT_N * 3)
+  lut = new Uint8Array(LUT_N * 4)
   for (let i = 0; i < LUT_N; i++) {
     const c = stops[invert ? LUT_N - 1 - i : i]
-    lut[i * 3] = c[0]; lut[i * 3 + 1] = c[1]; lut[i * 3 + 2] = c[2]
+    lut[i * 4] = c[0]; lut[i * 4 + 1] = c[1]; lut[i * 4 + 2] = c[2]; lut[i * 4 + 3] = 255
   }
   lutCache.set(key, lut)
   return lut
@@ -33,7 +39,8 @@ export function colorLut(scheme, invert) {
 // 压暗一档既保住色相归属、又把线从面里分出来（不加衬底——衬底一律没有）。
 export function lutCss(scheme, invert, u, shade) {
   const lut = colorLut(scheme, invert)
-  const k = Math.max(0, Math.min(LUT_N - 1, Math.round(u * (LUT_N - 1)))) * 3
+  // 只取 RGB：等值线要在任何档位都看得见，而气象色阶低端的 alpha 接近 0 —— 线不能跟着一起隐形
+  const k = Math.max(0, Math.min(LUT_N - 1, Math.round(u * (LUT_N - 1)))) * 4
   const f = shade > 0 ? shade : 1
   return f === 1
     ? `rgb(${lut[k]},${lut[k + 1]},${lut[k + 2]})`
@@ -62,7 +69,8 @@ export function autoDomain(stats, mode) {
  * 值栅格 → RGBA 位图。
  * @param {Float32Array} values 行 0 = 北
  * @param {Uint8Array|null} land 陆海掩膜（1=陆），landOnly 时用
- * @param {object} o { lo, hi, scheme, invert, bands(0=连续), landOnly, opacity(0~1，写进 alpha 通道) }
+ * @param {object} o { lo, hi, scheme, invert, bands(0=连续), landOnly, opacity(0~1，整层再乘一道),
+ *                     levels(升序锚点数组；给了就走锚点归一，lo/hi 不参与) }
  * @returns {Uint8ClampedArray} 长度 = values.length × 4
  */
 export function colorize(values, land, o) {
@@ -70,30 +78,42 @@ export function colorize(values, land, o) {
   const lut = colorLut(o.scheme || 'turbo', !!o.invert)
   const bands = Math.max(0, Math.round(o.bands || 0))
   const landOnly = !!o.landOnly && !!land
-  const a = Math.round(Math.max(0, Math.min(1, o.opacity != null ? o.opacity : 1)) * 255)
+  // 整层不透明度在这里只作**乘数**：色阶自带的逐级 alpha 表达「这儿有没有天气」，
+  // 这个数表达「这层图压多重」，两件事各管各的，相乘才都保得住。
+  const mul = Math.max(0, Math.min(1, o.opacity != null ? o.opacity : 1))
+  const lv = Array.isArray(o.levels) && o.levels.length > 1 ? o.levels : null
   const N = values.length
   const out = new Uint8ClampedArray(N * 4)
   for (let i = 0; i < N; i++) {
     const v = values[i]
     if (v !== v || (landOnly && !land[i])) continue     // 透明（out 默认全 0）
-    let u = (v - lo) / span
+    let u = lv ? levelNorm(v, lv) : (v - lo) / span
     u = u < 0 ? 0 : u > 1 ? 1 : u
     // 分级填色：落进第 k 档 → 取该档中点色，档与档之间是硬边（边界即等值线，工程读图）
     if (bands > 0) u = (Math.min(bands - 1, Math.floor(u * bands)) + 0.5) / bands
-    const k = ((u * (LUT_N - 1) + 0.5) | 0) * 3
+    const k = ((u * (LUT_N - 1) + 0.5) | 0) * 4
     const p = i * 4
-    out[p] = lut[k]; out[p + 1] = lut[k + 1]; out[p + 2] = lut[k + 2]; out[p + 3] = a
+    out[p] = lut[k]; out[p + 1] = lut[k + 1]; out[p + 2] = lut[k + 2]; out[p + 3] = lut[k + 3] * mul
   }
   return out
 }
 
 // 图例色标：分级 → 每档一色；连续 → 32 级近似渐变。返回 [{ css, u }]（低→高）
+// ★ 气象色阶带 alpha 时，图例也**照实带 alpha 出** —— 图上低值是半透明的，图例却画成实色，
+//   人就会以为那一档在图上是纯色块，反而读错。让面板底色透上来才是真的。
 export function legendStops(scheme, invert, bands) {
   const n = bands > 0 ? bands : 32
+  const lut = colorLut(scheme, invert)
   const out = []
   for (let i = 0; i < n; i++) {
     const u = bands > 0 ? (i + 0.5) / n : i / (n - 1)
-    out.push({ css: lutCss(scheme, invert, u), u })
+    const k = Math.max(0, Math.min(LUT_N - 1, Math.round(u * (LUT_N - 1)))) * 4
+    const a = lut[k + 3]
+    out.push({
+      u,
+      css: a >= 255 ? `rgb(${lut[k]},${lut[k + 1]},${lut[k + 2]})`
+        : `rgba(${lut[k]},${lut[k + 1]},${lut[k + 2]},${(a / 255).toFixed(3)})`
+    })
   }
   return out
 }

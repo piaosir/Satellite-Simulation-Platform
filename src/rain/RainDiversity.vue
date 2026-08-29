@@ -226,28 +226,28 @@ function siteTitle(s) {
 .rv { display: flex; flex-direction: column; min-height: 0; height: 100%; }
 
 .rv-bd { flex: 1 1 auto; overflow: auto; padding: 8px; }
-.rv-ph, .rv-err { padding: 14px 4px; font-size: 12px; color: var(--text-muted); }
+.rv-ph, .rv-err { padding: 14px 4px; font-size: var(--fs-3); color: var(--text-muted); }
 .rv-err { color: var(--danger, #9c5751); }
 
 .rv-sec + .rv-sec { margin-top: 14px; }
-.rv-hd { display: flex; align-items: center; gap: 8px; padding: 0 0 4px; font-size: 11px; letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--text-muted); font-weight: 600; }
+.rv-hd { display: flex; align-items: center; gap: 8px; padding: 0 0 4px; font-size: var(--fs-2); letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--text-muted); font-weight: 600; }
 .rv-sub { font-weight: 400; letter-spacing: 0; text-transform: none; }
 .rv-scroll { overflow-x: auto; }
 
 /* 三线表（booktabs 口径：只有顶线/表头线/底线，无竖线无填充） */
-.rv-tb { border-collapse: collapse; width: 100%; font-size: 12px; }
+.rv-tb { border-collapse: collapse; width: 100%; font-size: var(--fs-3); }
 .rv-tb thead th { font-weight: 600; color: var(--text-muted); text-align: right; padding: 3px 8px; white-space: nowrap;
-  border-top: 1.4px solid var(--text); border-bottom: .8px solid var(--border); font-size: 11px; line-height: 1.25; }
+  border-top: 1.4px solid var(--text); border-bottom: .8px solid var(--border); font-size: var(--fs-2); line-height: 1.25; }
 .rv-tb tbody td { font-family: var(--font-mono); text-align: right; padding: 3px 8px; white-space: nowrap; }
 .rv-tb tbody tr:last-child td { border-bottom: 1.4px solid var(--text); }
 .rv-tb .l { text-align: left; font-family: var(--font-sans, inherit); }
-.rv-tb .u { text-align: left; color: var(--text-muted); font-size: 11px; }
+.rv-tb .u { text-align: left; color: var(--text-muted); font-size: var(--fs-2); }
 .rv-tb tbody tr.bad td { color: var(--danger, #9c5751); }
 .rv-tb tbody tr.clamped td { color: var(--warn, #8a7038); }
 .rv-tb tbody tr.dimrow td { color: var(--text-muted); }
-.rv-tb tbody tr.em td { background: color-mix(in srgb, var(--accent) 6%, transparent); font-weight: 600; }
+.rv-tb tbody tr.em td { background: color-mix(in srgb, var(--accent-ui) 6%, transparent); font-weight: 600; }
 /* 级联算式列：手算路径，弱化不抢数值 */
-.rv-tb td.f { color: var(--text-muted); font-size: 11px; }
+.rv-tb td.f { color: var(--text-muted); font-size: var(--fs-2); }
 /* 分布表中计入系统尾和（j ≥ L）的格：与「合计」行同一层强调色，两表对得上 */
-.rv-tb th.tail, .rv-tb td.tail { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+.rv-tb th.tail, .rv-tb td.tail { background: color-mix(in srgb, var(--accent-ui) 6%, transparent); }
 </style>

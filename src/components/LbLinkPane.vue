@@ -172,7 +172,7 @@ defineExpose({
 
 <style scoped>
 /* 控件语言与 LbSpacePane 一致（方角、细边、衬线数字）：两张图并排放着，题行必须是一套 */
-.lk { font-family: var(--lb-serif, var(--font-serif)); min-width: 0; }
+.lk { font-family: var(--font-ui); min-width: 0; }
 .lk-hd {
   display: flex; align-items: baseline; gap: 8px;
   padding: 0 1px 2px; font-size: var(--lb-fs, 11px); color: var(--text);
@@ -187,7 +187,7 @@ defineExpose({
 .lk-f { display: inline-flex; align-items: center; gap: 4px; color: var(--text-muted); cursor: pointer; }
 .lk-ck { margin: 0; }
 .lk-btn {
-  font: inherit; font-size: calc(var(--lb-fs, 11px) - 1px); color: var(--text-muted); cursor: pointer; padding: 1px 6px;
+  font: inherit; font-size: calc(var(--lb-fs, 11px) - 1px); color: var(--text-muted); cursor: pointer; height: var(--h-ctl); white-space: nowrap; padding: 0 6px;
   background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px);
 }
 .lk-btn:hover { color: var(--text); border-color: var(--border-strong); }

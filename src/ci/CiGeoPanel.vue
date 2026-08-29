@@ -52,10 +52,10 @@ const view = ref('down')                                // 'down' | 'up'
 <style scoped>
 .ci-geo { width: 100%; }
 .ci-geo-tabs { display: flex; gap: 3px; margin-bottom: 6px; }
-.gt { font: inherit; font-size: 11.5px; padding: 3px 14px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 4px); }
+.gt { font: inherit; font-size: var(--fs-3); height: var(--h-ctl); white-space: nowrap; padding: 0 14px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 4px); }
 .gt.on { background: var(--surface-2); color: var(--text); border-color: var(--border-strong); font-weight: 600; }
 
-.ci-note { margin: 6px 0 0; font-size: 11.5px; line-height: 1.55; color: var(--text-muted); }
-.ci-note.sm { font-size: 11px; }
+.ci-note { margin: 6px 0 0; font-size: var(--fs-3); line-height: 1.55; color: var(--text-muted); }
+.ci-note.sm { font-size: var(--fs-2); }
 .ci-note strong { color: var(--text); font-weight: 600; }
 </style>

@@ -5,6 +5,7 @@ import './styles/global.css'
 import './shared/ui/controls'
 import './styles/lbworkbench.css'
 import './stores/theme'
+import './stores/uiFont'
 import './shared/i18n/runtime'
 
 createApp(E2eLinkBudgetApp).use(createPinia()).mount('#app')

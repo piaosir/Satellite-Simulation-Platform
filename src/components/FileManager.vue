@@ -607,7 +607,7 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
       <header class="dhd">
         <span class="dt">文件管理</span>
         <button class="winx" type="button" aria-label="关闭" title="关闭" @click="emit('close')">
-          <Icon name="x" :size="11" />
+          <Icon name="x" :size="12" />
         </button>
       </header>
 
@@ -861,31 +861,31 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
 <style scoped>
 .mask { position: fixed; inset: 0; z-index: 2000; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; }
 .dlg { position: relative; width: 860px; max-width: calc(100vw - 32px); height: 620px; max-height: calc(100vh - 64px); display: flex; flex-direction: column;
-  background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-ctl); box-shadow: 0 10px 32px rgba(0,0,0,0.45); overflow: hidden; }
+  background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-ctl); box-shadow: var(--shadow-3); overflow: hidden; }
 .dhd { display: flex; align-items: stretch; justify-content: space-between; border-bottom: 1px solid var(--border); }
-.dt { font-family: var(--font-serif); font-size: 14px; padding: 11px 16px; align-self: center; }
+.dt { font-family: var(--font-serif); font-size: var(--fs-5); padding: 11px 16px; align-self: center; }
 /* Windows 风格关闭：整块矩形热区，悬停变红 */
 .winx { width: 44px; align-self: stretch; border: 0; background: transparent; color: var(--text-muted); cursor: pointer; display: flex; align-items: center; justify-content: center; transition: background .12s, color .12s; }
 .winx:hover { background: #c42b1c; color: #fff; }
 .wrap { flex: 1; min-height: 0; display: flex; }
 .rail { width: 128px; flex: none; padding: 8px; border-right: 1px solid var(--border); display: flex; flex-direction: column; gap: 2px; }
 .rb { display: flex; align-items: center; padding: 8px 11px; border: 0; background: transparent; color: var(--text-muted);
-  text-align: left; cursor: pointer; border-radius: var(--r-ctl); font-size: 12.5px; border-left: 2px solid transparent; transition: background .12s, color .12s; }
+  text-align: left; cursor: pointer; border-radius: var(--r-ctl); font-size: var(--fs-4); border-left: 2px solid transparent; transition: background .12s, color .12s; }
 .rb:hover { background: var(--bg); color: var(--text); }
 .rb.on { background: var(--bg); color: var(--text); border-left-color: var(--accent); }
 .pane { flex: 1; min-width: 0; overflow: auto; padding: 14px 16px; }
-.tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-.tbl th { text-align: left; color: var(--text-faint); font-weight: 500; padding: 6px 8px; border-bottom: 1px solid var(--border); font-size: 11.5px; }
+.tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-4); }
+.tbl th { text-align: left; color: var(--text-faint); font-weight: 500; padding: 6px 8px; border-bottom: 1px solid var(--border); font-size: var(--fs-3); }
 .tbl td { padding: 7px 8px; border-bottom: 1px solid var(--border); color: var(--text); }
 .tbl td.nm { font-weight: 600; }
 .tbl td.dim, .dim { color: var(--text-faint); }
 .tbl td.ops { text-align: right; white-space: nowrap; }
-.badge { font-size: 11px; padding: 1px 7px; border-radius: var(--r-ctl); border: 1px solid var(--border); background: transparent; color: var(--text-muted); }
+.badge { font-size: var(--fs-2); padding: 1px 7px; border-radius: var(--r-ctl); border: 1px solid var(--border); background: transparent; color: var(--text-muted); }
 .badge.off { color: var(--text-faint); }
 /* 内置兜底快照：区别于「已缓存」（用户联网数据），用低调蓝调描边表示软件自带 */
 .badge.bundled { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
 /* 统一低调描边按钮（去掉满屏亮色实心），主次靠位置与标签区分 */
-.mini { padding: 3px 10px; margin-left: 6px; cursor: pointer; font-size: 11.5px; border-radius: var(--r-ctl);
+.mini { padding: 3px 10px; margin-left: 6px; cursor: pointer; font-size: var(--fs-3); border-radius: var(--r-ctl);
   display: inline-flex; align-items: center; justify-content: center; gap: 4px;
   background: var(--bg); border: 1px solid var(--border); color: var(--text-muted); transition: color .12s, border-color .12s; }
 .mini:hover { color: var(--text); border-color: var(--accent); }
@@ -894,39 +894,39 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
 .mini.ghost { color: var(--text-muted); }
 .mini.del { color: var(--text-muted); }
 .mini.del:hover { color: #d07a72; border-color: #d07a72; }
-.empty-hint { padding: 28px 12px; text-align: center; color: var(--text-faint); font-size: 12.5px; line-height: 1.7; }
+.empty-hint { padding: 28px 12px; text-align: center; color: var(--text-faint); font-size: var(--fs-4); line-height: 1.7; }
 .tree { display: flex; flex-direction: column; gap: 10px; }
 .tnode { border: 1px solid var(--border); border-radius: var(--r-ctl); overflow: hidden; }
 .trow { display: flex; align-items: center; gap: 10px; padding: 7px 10px; }
 .trow.sat { background: var(--bg); border-bottom: 1px solid var(--border); }
 .trow.ant { padding-left: 22px; border-bottom: 1px solid var(--border); }
 .trow.ant:last-child { border-bottom: 0; }
-.tname { font-size: 12.5px; color: var(--text); font-weight: 600; }
+.tname { font-size: var(--fs-4); color: var(--text); font-weight: 600; }
 .trow.ant .tname { font-weight: 500; }
-.tcount, .tmeta { font-size: 11.5px; color: var(--text-faint); }
+.tcount, .tmeta { font-size: var(--fs-3); color: var(--text-faint); }
 .trops { margin-left: auto; white-space: nowrap; display: flex; }
 /* 导出格式菜单：定位用 fixed —— .tnode 的 overflow:hidden 会裁掉行内绝对定位的浮层 */
 .expback { position: fixed; inset: 0; z-index: 2100; }
 .expmenu { position: fixed; z-index: 2101; transform: translateX(-100%); min-width: 148px; padding: 4px 0;
-  background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-ctl); box-shadow: 0 4px 14px rgba(0,0,0,0.3);
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-ctl); box-shadow: var(--shadow-2);
   display: flex; flex-direction: column; }
 .expmenu button { appearance: none; border: 0; background: none; color: var(--text-muted); text-align: left;
-  padding: 5px 14px; font-size: 12px; cursor: pointer; white-space: nowrap; }
+  padding: 5px 14px; font-size: var(--fs-3); cursor: pointer; white-space: nowrap; }
 .expmenu button:hover { background: var(--accent); color: var(--bg); }
-.noant { padding: 8px 22px; font-size: 11.5px; color: var(--text-faint); }
+.noant { padding: 8px 22px; font-size: var(--fs-3); color: var(--text-faint); }
 .trow.sat.clk { cursor: pointer; }
 .trow.sat.clk:hover { background: var(--surface); }
 .tw { width: 12px; display: inline-flex; align-items: center; justify-content: center; color: var(--text-faint); flex: none; }
 .addbar, .addbeam { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
 .addbar.sub { margin-top: -4px; margin-bottom: 14px; }
-.mini.imp { margin-left: 0; color: var(--accent); border-color: var(--accent); padding: 4px 14px; }
+.mini.imp { margin-left: 0; color: var(--accent); border-color: var(--accent); height: var(--h-ctl-lg); white-space: nowrap; padding: 0 14px; }
 .mini.imp:hover { background: var(--accent); color: var(--bg); }
-.dimnote { font-size: 11px; color: var(--text-faint); }
+.dimnote { font-size: var(--fs-2); color: var(--text-faint); }
 .addbeam { padding: 8px 10px 8px 22px; background: var(--bg); border-bottom: 1px solid var(--border); margin: 0; }
 /* 显式允许文本选择：全局 body 设了 user-select:none，继承到输入框在 Electron 的 Chromium 下会
    阻止「点击放置光标」（表现为点不进、只能程序聚焦）。这里强制恢复，保证可点击聚焦与选词。 */
-.ci { border: 1px solid var(--border); background-color: var(--bg); color: var(--text); padding: 5px 8px; outline: none; font-size: 12.5px; border-radius: var(--r-ctl); min-width: 0; user-select: text; -webkit-user-select: text; }
-.ci:focus { border-color: var(--accent); }
+.ci { border: 1px solid var(--border); background-color: var(--bg); color: var(--text); padding: 5px 8px; outline: none; font-size: var(--fs-4); border-radius: var(--r-ctl); min-width: 0; user-select: text; -webkit-user-select: text; }
+.ci:focus { border-color: var(--accent-ui); }
 .ci.nar { width: 96px; flex: none; }
 .ci.wide { width: 150px; flex: none; }
 /* 天线名可点重命名：悬停提示可交互 */
@@ -938,33 +938,33 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
 .spacer { flex: 1; }
 /* 应用内确认弹窗（覆盖在文件管理器之上，居中） */
 .cmask { position: absolute; inset: 0; z-index: 10; background: rgba(0,0,0,0.35); display: flex; align-items: center; justify-content: center; }
-.cbox { width: 340px; max-width: calc(100% - 48px); background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-ctl); box-shadow: 0 8px 24px rgba(0,0,0,0.4); padding: 18px 18px 14px; }
-.cmsg { font-size: 13px; color: var(--text); line-height: 1.6; margin-bottom: 16px; }
+.cbox { width: 340px; max-width: calc(100% - 48px); background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-ctl); box-shadow: var(--shadow-3); padding: 18px 18px 14px; }
+.cmsg { font-size: var(--fs-4); color: var(--text); line-height: 1.6; margin-bottom: 16px; }
 .cbtns { display: flex; justify-content: flex-end; gap: 8px; }
-.cbtns .mini { margin-left: 0; padding: 5px 16px; }
+.cbtns .mini { margin-left: 0; height: var(--h-ctl-lg); white-space: nowrap; padding: 0 16px; }
 .dft { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-top: 1px solid var(--border); }
-.dft .msg { flex: 1; font-size: 12px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dft button { padding: 6px 18px; cursor: pointer; border-radius: var(--r-ctl); font-size: 12.5px; }
+.dft .msg { flex: 1; font-size: var(--fs-3); color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dft button { height: var(--h-ctl-lg); white-space: nowrap; padding: 0 18px; cursor: pointer; border-radius: var(--r-ctl); font-size: var(--fs-4); }
 .ok { background: var(--accent); border: 1px solid var(--accent); color: var(--bg); }
 /* 自定义卫星：轻量分区（与星座列表同风格），非大块卡片 */
 .secbar { display: flex; align-items: center; gap: 8px; padding-bottom: 6px; margin-bottom: 8px; border-bottom: 1px solid var(--border); }
 .secbar.top { margin-top: 18px; }
-.sect { font-size: 12.5px; color: var(--text); font-weight: 600; }
-.sctag { font-size: 11px; color: var(--text-faint); }
+.sect { font-size: var(--fs-4); color: var(--text); font-weight: 600; }
+.sctag { font-size: var(--fs-2); color: var(--text-faint); }
 .secbar .mini { margin-left: 0; }
 .clist { display: flex; flex-direction: column; }
-.csub { font-size: 11px; color: var(--text-faint); padding: 8px 4px 4px; letter-spacing: var(--ls-tight); }
+.csub { font-size: var(--fs-2); color: var(--text-faint); padding: 8px 4px 4px; letter-spacing: var(--ls-tight); }
 .crow { display: flex; align-items: center; gap: 8px; padding: 6px 4px; border-bottom: 1px solid var(--border); }
 .crow:last-child { border-bottom: 0; }
 .cdot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none; opacity: .85; }
 .cdot.imp { background: var(--text-muted); }
-.cnm { font-size: 12.5px; color: var(--text); font-weight: 500; flex: none; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cnm { font-size: var(--fs-4); color: var(--text); font-weight: 500; flex: none; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cnm.rn { cursor: pointer; }
 .cnm.rn:hover { color: var(--accent); }
 .ci.cnmedit { width: 200px; flex: none; padding: 3px 8px; }
-.cmeta { font-size: 11.5px; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cmeta { font-size: var(--fs-3); color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cops { margin-left: auto; flex: none; display: flex; align-items: center; gap: 2px; }
-.cops .mini { margin-left: 4px; padding: 2px 9px; }
-.cro { font-size: 10.5px; color: var(--text-faint); opacity: .8; margin-left: 6px; }
-.cempty { padding: 12px 4px; font-size: 11.5px; color: var(--text-faint); line-height: 1.6; }
+.cops .mini { margin-left: 4px; height: var(--h-ctl); white-space: nowrap; padding: 0 9px; }
+.cro { font-size: var(--fs-2); color: var(--text-faint); opacity: .8; margin-left: 6px; }
+.cempty { padding: 12px 4px; font-size: var(--fs-3); color: var(--text-faint); line-height: 1.6; }
 </style>

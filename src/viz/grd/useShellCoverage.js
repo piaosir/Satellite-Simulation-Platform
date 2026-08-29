@@ -384,8 +384,9 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
   const fieldOpts = () => {
     const st = grd.s
     return {
-      alpha: st.alpha, showBore: st.showBore, boreSize: st.boreSize, showName: st.showName, nameSize: st.nameSize,
-      showPeak: st.showPeak, peakSize: st.peakSize, showVal: st.showVal, valSize: st.valSize
+      alpha: st.alpha, lineAlpha: st.lineAlpha, showBore: st.showBore, boreSize: st.boreSize, boreColor: st.boreColor,
+      showName: st.showName, nameSize: st.nameSize, nameColor: st.nameColor,
+      showPeak: st.showPeak, peakSize: st.peakSize, peakColor: st.peakColor, showVal: st.showVal, valSize: st.valSize, valColor: st.valColor
     }
   }
   // 天线视轴：每根选中天线【一条】，从源星沿方向图坐标系的 z 轴射到最外一层壳。
