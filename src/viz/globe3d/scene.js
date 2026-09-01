@@ -21,10 +21,14 @@ import { chainList, CHAIN_DEF, CHAIN_ORDER, CHAIN_LABEL_PX } from '../geo/island
 import { antarcticaFillRings } from './antarctica.js'
 import { solarGeometry, terminatorRing } from '../terminator.js'
 // 点标记序号徽标（圈 1、圈 2）：与 2D 平面图共用同一支画笔，两视图观感一致
-import { paintNumBadge, BADGE_TEX_FILL, badgeLabelUp } from '../markers/numBadge.js'
+import { paintNumBadge, BADGE_TEX_FILL, BADGE_R } from '../markers/numBadge.js'
+// 标记符号（圆点/方块/三角/图钉…）：与 2D 平面图共用同一支画笔，两视图观感一致
+import { markSymbolCanvas, texCenterY, symbolUp, symbolDown, MARK_TEX_FILL } from '../markers/markSymbols.js'
 // 地球站符号：与 2D 平面图共用同一份定义（原来两处各存一份逐字符相同的副本）
 import { stationSvg, STATION_ANCHOR_X, STATION_ANCHOR_Y } from '../stationSymbol.js'
 import { vehicleCanvas } from '../vehicleSymbol.js'
+// 影像瓦片金字塔（EPSG:4326 / GIBS 网格）：网格数学与取片缓存，与 2D 平面图共用同一份
+import { TILE, span as tileSpan, tileBox, tileRange, pickZoom, getTile, isMissing, warm as warmTiles, tileGutter, tileImgSize } from '../imageryTiles.js'
 // 顶点级几何原语：与聚焦几何 Worker 共用同一份实现（别在这里再写一份）
 import { RE, LIFT, llaToVec, pushStripSegs, pushDashed, densifyArc, DASH_SPEC, FILL_R, FILL_CELL, slerpUnit, footprintFill, coneFace, createSink } from './focusLanes.js'
 
@@ -424,6 +428,234 @@ export function createGlobeScene(container, quality = {}) {
   // 与海洋球同半径 0.998、同细分段数 —— 两者互斥显示，几何一致才不会在切换时看出位移。
   // 贴图取向：图左=180°W、图上=90°N，与 SphereGeometry 的 uv 天然对齐，不需旋转（详见 viz/imagery.js）。
   let imageryMesh = null, imageryMat = null, imageryOn = false, imageryBright = 1
+  // ── 影像瓦片档 ────────────────────────────────────────────────────────────
+  // 整幅档是「一张贴图铺满整球」，受 GPU 纹理上限约束封死在 16384×8192 = 2.45 km/px；
+  // 瓦片档改成「按相机距离选级、只把视野内那几十片各贴一个球面扇区」，做到 489 m/px 且显存反而更省
+  // （整幅 16K 恒占 716 MB，瓦片档是可见片数 × 1.4 MB，实测峰值不到 100 MB）。
+  //
+  // ★ 一片＝一个 SphereGeometry 扇区：three 的 phiStart/phiLength/thetaStart/thetaLength 正好是
+  //   经度起止与极角起止，且分块几何的 uv 天然铺满 0–1 —— 不需要手搓顶点，也不需要改取向约定。
+  //     phi   = (lon + 180)·π/180     （与 vecToLatLon 的 atan2(z,−x) 互逆）
+  //     theta = (90 − lat)·π/180
+  let imgSet = null, imgMaxZ = 7, imgBaseZ = 2
+  let tileGroup = null                  // 细节层：随相机变化增删
+  let baseGroup = null                  // 底层：L2 整层常驻，保证任何时刻都没有洞
+  const tileMeshes = new Map()          // 'z/r/c' -> Mesh（细节层）
+  const tileTexes = new Map()           // 'z/r/c' -> THREE.Texture（LRU，避免 pan 回头时重传显存）
+  // 单帧最多贴多少片。全球视角下地平圈覆盖半个球，L4 那一档就要 140 片左右 —— 预算给到 160，
+  // 超了就自动降一级（片大一倍、数量降四倍），故实际峰值就在这个量级。
+  const TILE_BUDGET = 160
+  // 纹理 LRU 上限。一片 514²×4×1.33 ≈ 1.34 MB，故满配约 268 MB —— 这是【全球视角】那一档的峰值
+  // （地平圈覆盖半个球，要贴满 TILE_BUDGET）；拉近后可见片骤减，实测 minDistance 上只剩十几片≈20 MB。
+  // 对比整幅档：8K 恒 179 MB、16K 恒 716 MB 且【与缩放无关】。瓦片档是「远看贵、近看便宜」，
+  // 而近看正是要分辨率的时候 —— 分辨率还高 5 倍（489 vs 2446 m/px）。
+  const TEX_LIMIT = 200
+  // 每帧最多新建几片。换级时 want 会整批换掉，一帧建完就是上百次几何创建 + 纹理上传（实测单帧
+  // 80~100 ms，肉眼就是「卡住」）。摊成每帧 4 片后单帧成本降到毫秒级，过渡期由旧级与底层顶着。
+  const TILE_ADD_PER_FRAME = 4
+  let lastTileSig = ''                  // 可见集合签名：没变且无待办就整帧跳过
+  let pendingTiles = false              // 上一帧还有没建完/没到货的片 → 下一帧继续，不被签名早退挡住
+
+  // 瓦片纹理：gutter 靠 offset/repeat 裁掉。uv 0–1 → 纹素 [1, 513]/514，即内容区的两个边缘，
+  // 于是 uv=0 处的双线性会把 gutter 那一列（邻片的最后一列）混进来 —— 缝上因此是连续的。
+  function tileTexture(key, img) {
+    let t = tileTexes.get(key)
+    if (t) { tileTexes.delete(key); tileTexes.set(key, t); return t }
+    t = new THREE.Texture(img)
+    t.colorSpace = THREE.SRGBColorSpace
+    t.anisotropy = renderer.capabilities.getMaxAnisotropy()   // 临边处压缩极大，各向异性是唯一救法
+    const g = tileGutter(imgSet), N = tileImgSize(imgSet)
+    t.offset.set(g / N, g / N)
+    t.repeat.set(TILE / N, TILE / N)
+    t.needsUpdate = true
+    tileTexes.set(key, t)
+    // ★ 逐出时【不能】碰到在用的就 break：LRU 头部很容易正好是当前可见的一片，一 break 就
+    //   再也逐不动，纹理只增不减 —— 缩放时新片不断分配、旧片不还，显存越涨越紧，驱动开始
+    //   同步回收，表现就是「越缩放越卡、卡到一顿一顿」。改成【跳过在用的继续往后扫】。
+    if (tileTexes.size > TEX_LIMIT) {
+      let over = tileTexes.size - TEX_LIMIT
+      for (const k of [...tileTexes.keys()]) {
+        if (over <= 0) break
+        if (tileMeshes.has(k) || k === key) continue   // 在用的跳过，不是停下
+        tileTexes.get(k).dispose(); tileTexes.delete(k); over--
+      }
+    }
+    return t
+  }
+
+  // 几何缓存：一片的形状只由 (z, row) 决定 —— 同一行里所有列都是同一个曲面片，差一个绕 Y 的旋转。
+  // 于是每级每行只造一次几何，列靠 mesh.rotation.y 摆位。换级时原本要现造上百个 SphereGeometry
+  // （L4 那档 140 片 × 33×33 顶点），这一步把它降到「每行一次」，是换级卡顿的大头之一。
+  // 校验：SphereGeometry 的 x=−cos φ·sin θ、z=sin φ·sin θ，从 φ=0 绕 Y 转 a 后与直接取 φ=a 逐点相同。
+  const geoCache = new Map()
+  const GEO_LIMIT = 256
+  function tileGeometry(z, r) {
+    const k = z + '/' + r
+    let g = geoCache.get(k)
+    if (g) { geoCache.delete(k); geoCache.set(k, g); return g }
+    const b = tileBox(z, r, 0)
+    // 段数随片跨度走：L7 的 2.25° 用 4 段已经看不出折线，L0 的 288° 得 32 段才圆
+    const seg = Math.max(4, Math.min(32, Math.round(b.span / 2)))
+    g = new THREE.SphereGeometry(0.998, seg, seg,
+      0, b.span * Math.PI / 180,
+      (90 - b.north) * Math.PI / 180, b.span * Math.PI / 180)
+    geoCache.set(k, g)
+    while (geoCache.size > GEO_LIMIT) { const kk = geoCache.keys().next().value; geoCache.get(kk).dispose(); geoCache.delete(kk) }
+    return g
+  }
+
+  function makeTileMesh(z, r, c, img) {
+    const b = tileBox(z, r, c)
+    const mat = new THREE.MeshBasicMaterial({ map: tileTexture(z + '/' + r + '/' + c, img) })
+    mat.color.setScalar(imageryBright)
+    // polygonOffset 而不是抬半径：抬半径在拉到最近时会与边界线/标记产生真实视差（0.0002 R = 1.3 km），
+    // 而多边形偏移只动深度值、几何位置一动不动。
+    // ★ 偏移量随级号加深：换级过渡期新旧两级会同时在场（见 updateImageryTiles 的「填满才换」），
+    //   深一级必须压在浅一级之上，否则粗片会盖住已经到货的细片、看着像「越拉近越糊」。
+    mat.polygonOffset = true; mat.polygonOffsetFactor = -(z + 1); mat.polygonOffsetUnits = -(z + 1)
+    const m = new THREE.Mesh(tileGeometry(z, r), mat)
+    m.rotation.y = (b.west + 180) * Math.PI / 180   // 列靠旋转摆位，几何本身按 φ=0 造好后共用
+    return m
+  }
+
+  function dropTileMesh(key) {
+    const m = tileMeshes.get(key)
+    if (!m) return
+    // ★ 只 dispose 材质：几何归 geoCache 管（同级同行的片共用一份），纹理归 tileTexes 管。
+    //   这里若顺手 dispose 几何，会把还在被其它列使用的那一份销毁 —— 症状是同一行里零星几片变空白。
+    tileGroup.remove(m); m.material.dispose()
+    tileMeshes.delete(key)
+  }
+
+  // 每帧调用（有 lastTileSig 早退，正常帧几乎零开销）。
+  let tileCostMs = 0                    // 上一次真干活那帧的耗时（诊断用，见 imageryStats）
+  function updateImageryTiles() {
+    if (!imgSet || !imageryOn || !tileGroup) return
+    const _t0 = performance.now()
+    try { updateImageryTilesInner() } finally { const d = performance.now() - _t0; if (d > 0.2) tileCostMs = d }
+  }
+  function updateImageryTilesInner() {
+    const D = camera.position.length()
+    if (!(D > 1.0000001)) return
+    // 选级：按【设备像素】的角分辨率。相机到最近地表 D−1，视野高 2(D−1)tan(fov/2)，
+    // 1 个世界单位 = 1 个地球半径 = 1 弧度 = 57.2958°。传 CSS 像素会在高 DPR 屏上永远低选一级。
+    const hPx = Math.max(1, curH * (renderer.getPixelRatio() || 1))
+    const degPerPx = 2 * (D - 1) * Math.tan(camera.fov * Math.PI / 360) / hPx * 180 / Math.PI
+    // let 不是 const：下面的片数护栏会就地降级（z--）。写成 const 时护栏一触发就抛
+    // 「Assignment to constant variable」——而护栏只在【视野宽 + 级号深】时才触发，
+    // 离线包封在 L6 时压根碰不到，接上 GIBS 的 L7/L8 才炸出来。
+    let z = pickZoom(degPerPx, imgMaxZ)
+    // 可见范围：地平圈 acos(1/D) 与视锥张角取小的那个。视锥用对角线（宽屏时水平视野更大），
+    // 再留 1.25 倍余量吃掉旋转惯性与球面近似误差 —— 漏算的那一圈有底层兜着，不会露洞。
+    const aspect = Math.max(0.2, curW / Math.max(1, curH))
+    const diag = Math.tan(camera.fov * Math.PI / 360) * Math.hypot(1, aspect)
+    const alpha = Math.min(Math.acos(1 / D), (D - 1) * diag * 1.25 + 0.02) * 180 / Math.PI
+    const p = camera.position.clone().normalize()
+    const cLat = 90 - Math.acos(Math.max(-1, Math.min(1, p.y))) * 180 / Math.PI
+    let cLon = Math.atan2(p.z, -p.x) * 180 / Math.PI - 180
+    cLon = ((cLon % 360) + 540) % 360 - 180
+    const north = Math.min(90, cLat + alpha), south = Math.max(-90, cLat - alpha)
+    // 经度半宽：球面帽在纬度 φ 上的经度张角。跨极时退化为整圈。
+    const cosφ = Math.cos(Math.max(Math.abs(north), Math.abs(south)) * Math.PI / 180)
+    const full = north >= 90 || south <= -90 || cosφ <= 1e-6 || Math.sin(alpha * Math.PI / 180) >= cosφ
+    const dLon = full ? 180 : Math.asin(Math.min(1, Math.sin(alpha * Math.PI / 180) / cosφ)) * 180 / Math.PI
+
+    const collect = (zz) => {
+      const out = new Set()
+      const add = (w, e) => {
+        const q = tileRange(zz, w, e, north, south)
+        for (let r = q.r0; r <= q.r1; r++) for (let c = q.c0; c <= q.c1; c++) out.add(zz + '/' + r + '/' + c)
+      }
+      if (full) add(-180, 180)
+      else {
+        const w = cLon - dLon, e = cLon + dLon
+        // 跨 ±180 就拆两段（瓦片列号不环绕，硬算会得到负列号）
+        if (w < -180) { add(-180, e); add(w + 360, 180) }
+        else if (e > 180) { add(w, 180); add(-180, e - 360) }
+        else add(w, e)
+      }
+      return out
+    }
+    // 片数护栏：全球视角下地平圈覆盖半个球，片数会冲到几百 —— 降级重算直到进预算。
+    // ★ 这里【绝不能】动 imgMaxZ：那是用户选的档位上限，不是本帧的临时决定。曾经写成
+    //   `imgMaxZ = min(imgMaxZ, z)`，于是全球视角触发一次护栏就把上限永久钉死在 L4，
+    //   之后无论怎么拉近都停在 3.9 km/px —— 症状正是「3D 放大后一直是糊的」，且只在
+    //   「先看全球再拉近」这条路径上出现，直接拉近反而是好的，极难对着画面想明白。
+    let want = collect(z)
+    while (want.size > TILE_BUDGET && z > 0) { z--; want = collect(z) }
+
+    // 便宜的早退：相机没怎么动、且上一帧没留下未完成的活，就整帧跳过。
+    // 签名只取「级号 + 帽心量化到 1/4 片 + 片数」，不再 [...want] 展开整个 Set（那是每帧两次
+    // 上百次分配，缩放时每帧都变、等于白花）。
+    const q = tileSpan(z) / 4
+    const sig = z + ':' + Math.round(cLat / q) + ':' + Math.round(cLon / q) + ':' + want.size
+    if (sig === lastTileSig && !pendingTiles) return
+    lastTileSig = sig
+
+    // ★ 每帧只新建 TILE_ADD_PER_FRAME 片。换级时 want 会整批换掉（L4 那档 140 片），一帧内
+    //   建完＝一帧内上百次几何创建 + 上百次 514² 纹理上传，实测单帧 80~100 ms —— 那就是
+    //   「缩放时卡住」的直接成因。摊到多帧后每帧只做几片，过渡期由旧级与底层顶着，不露洞。
+    // 底层补齐：warm 那一轮撞上并发闸的片会直接返回 null 且【不产生回调】，于是那几片永远补不上
+    // （实测在线源下底层只装到 12/15）。这里顺手重试，代价是一次 Map 查表 × 15。
+    if (baseGroup && baseGroup.children.length < Math.ceil(180 / tileSpan(imgBaseZ)) * Math.ceil(360 / tileSpan(imgBaseZ))) rebuildBaseLayer()
+
+    let added = 0
+    pendingTiles = false
+    for (const key of want) {
+      if (tileMeshes.has(key)) continue
+      if (added >= TILE_ADD_PER_FRAME) { pendingTiles = true; break }
+      const [zz, rr, cc] = key.split('/').map(Number)
+      const img = getTile(imgSet, zz, rr, cc, () => { lastTileSig = ''; pendingTiles = true })
+      // 取不到分两种：还在路上（等到货回调）／确认缺片（离线包没切到这一级）。
+      // ★ 后者【不能】记成 pending，否则「填满才换级」这条永远不成立 —— 旧级永不回收，
+      //   同屏堆着三四个级号的片，越缩放堆得越多。
+      if (!img) { if (!isMissing(imgSet, zz, rr, cc)) pendingTiles = true; continue }
+      const m = makeTileMesh(zz, rr, cc, img)
+      tileGroup.add(m); tileMeshes.set(key, m)
+      added++
+    }
+
+    // 回收。同级但出了视野的立刻扔；★ 别的级号的要等本级【填满】才扔 —— 提前扔掉旧级，
+    // 新级又只填了几片，中间那几帧就是成片的空洞（底层只有 15654 m/px，糊得很明显）。
+    const complete = !pendingTiles
+    for (const key of [...tileMeshes.keys()]) {
+      if (want.has(key)) continue
+      if (key.startsWith(z + '/') || complete) dropTileMesh(key)
+    }
+  }
+  // 底层：L2 整层（15 片）常驻。没有它，换级或快速 pan 的那一两帧会露出黑色球体 ——
+  // 那是瓦片渲染「看着专不专业」的分水岭，代价只有 15 × 1.4 MB ≈ 21 MB 显存。
+  function buildImageryBase() {
+    if (!imgSet) return
+    warmTiles(imgSet, imgBaseZ, () => { rebuildBaseLayer() })
+    rebuildBaseLayer()
+  }
+  function rebuildBaseLayer() {
+    if (!baseGroup || !imgSet) return
+    const nr = Math.ceil(180 / tileSpan(imgBaseZ)), nc = Math.ceil(360 / tileSpan(imgBaseZ))
+    for (let r = 0; r < nr; r++) for (let c = 0; c < nc; c++) {
+      const key = 'B' + imgBaseZ + '/' + r + '/' + c
+      if (baseGroup.userData[key]) continue
+      const img = getTile(imgSet, imgBaseZ, r, c, null)
+      if (!img) continue
+      const m = makeTileMesh(imgBaseZ, r, c, img)
+      m.material.polygonOffset = false          // 底层不偏移，细节层压在它上面
+      baseGroup.add(m); baseGroup.userData[key] = m
+    }
+  }
+  function clearImageryTiles() {
+    for (const key of [...tileMeshes.keys()]) dropTileMesh(key)
+    if (baseGroup) {
+      // 同 dropTileMesh：几何是 geoCache 的共享件，这里只还材质
+      for (const m of [...baseGroup.children]) { baseGroup.remove(m); m.material.dispose() }
+      baseGroup.userData = {}
+    }
+    for (const t of tileTexes.values()) t.dispose()
+    tileTexes.clear()
+    for (const g of geoCache.values()) g.dispose()
+    geoCache.clear()
+    lastTileSig = ''; pendingTiles = false
+  }
   // 注记套边：颜色与粗细都按【当前底色】现算（见 ../labelHalo.js）。陆上的注记按陆地基调、
   // 大洋名按海色；开了真彩影像则一律退回恒定近黑（影像深浅混杂，按单一底色算不成立）。
   const landBg = () => { const sc = getLandPalette().scheme; return sc === 'morandi' ? '#8fa89b' : sc }
@@ -532,10 +764,12 @@ export function createGlobeScene(container, quality = {}) {
   // 新建出来的 mesh 恒 visible=true，故那两处末尾都必须回头调这里，否则一改配色/换精度档，
   // 矢量陆地就从影像底下钻出来盖住影像。
   function applyBaseLayers() {
-    const on = imageryOn && !!imageryMesh
+    const on = imageryOn && (!!imageryMesh || !!imgSet)
     oceanMesh.visible = !on
     landMesh.visible = !on
-    if (imageryMesh) imageryMesh.visible = on
+    if (imageryMesh) imageryMesh.visible = on && !imgSet
+    if (baseGroup) baseGroup.visible = on && !!imgSet
+    if (tileGroup) tileGroup.visible = on && !!imgSet
   }
   // 影像底图。img=已解码的整幅等经纬 HTMLImageElement（见 viz/imagery.js），传 null 即卸载；
   // bright=亮度乘子：MeshBasicMaterial 的 color 对纹理是逐通道乘法，压暗是为了让叠在上面的
@@ -545,6 +779,28 @@ export function createGlobeScene(container, quality = {}) {
     if (o.bright != null) {
       imageryBright = Math.max(0.05, Math.min(2, Number(o.bright) || 1))
       if (imageryMat) imageryMat.color.setScalar(imageryBright)
+      for (const m of tileMeshes.values()) m.material.color.setScalar(imageryBright)
+      if (baseGroup) for (const m of baseGroup.children) m.material.color.setScalar(imageryBright)
+    }
+    if (o.maxZ != null && Number.isFinite(o.maxZ)) imgMaxZ = Math.max(0, Math.min(11, o.maxZ | 0))   // 上限 11：GIBS 的 31.25m 矩阵集到 L11（30.6 m/px），是其真彩天花板
+    // 瓦片档：set 非空即接管，整幅档那张贴图连同它的显存一起放掉（两档不并存，省的就是那 716 MB）
+    if (o.set !== undefined) {
+      const next = o.set || null
+      if (next !== imgSet) {
+        clearImageryTiles()
+        imgSet = next
+        if (imgSet) {
+          if (!baseGroup) { baseGroup = new THREE.Group(); baseGroup.userData = {}; baseGroup.renderOrder = -2; scene.add(baseGroup) }
+          if (!tileGroup) { tileGroup = new THREE.Group(); tileGroup.renderOrder = -1; scene.add(tileGroup) }
+          if (imageryMesh) {   // 换到瓦片档：整幅那张立刻释放，别两份显存并存
+            scene.remove(imageryMesh); imageryMesh.geometry.dispose()
+            if (imageryMat.map) imageryMat.map.dispose()
+            imageryMat.dispose(); imageryMesh = null; imageryMat = null
+          }
+          buildImageryBase()
+          updateImageryTiles()
+        }
+      }
     }
     if (o.img !== undefined) {
       // 换源/卸载：旧纹理连同显存一起放掉，不 dispose 会累积。
@@ -2232,7 +2488,20 @@ export function createGlobeScene(container, quality = {}) {
   // 放置模式（波束合成）：左键点击（未拖动）在球面落点回调 onPlace(ll)；拖动仍旋转地球
   let placeMode = false, onPlace = null
   const POLY_DRAW_MIN2 = 14 * 14   // 相邻加点最小屏幕间距²（px）
-  const updateRotate = () => { controls.enableRotate = !(beamDragMode || labelDragMode || polyDrawMode) }   // 拖波束/拖标签/绘制态均停旋转
+  // 标记拖拽（点标记/地球站/航点）：状态先于 updateRotate 声明 —— 它读 markerDragging，setup 期被调到会撞 TDZ
+  const HIT_MIN = 11    // 命中半径下限（屏幕 px）：与 2D 侧同值
+  // 逐类开关：三类都只在各自的「调整位置 / 调点」态下为真，不在那个态里压住标记＝照常转地球（2D 侧同口径）。
+  // 每项 true＝整类可拖 / false＝不可拖 / 字符串＝只认归属它的那些（航点＝所属航迹 id）
+  let markerDragOn = { point: false, station: false, waypoint: false }
+  let onMarkerDrag = null, markerDragging = null, markerGrab = null
+  const markerDragAny = () => !!(markerDragOn.point || markerDragOn.station || markerDragOn.waypoint)
+  const dragOk = (kind, owner) => { const v = markerDragOn[kind]; return v === true || (!!v && v === owner) }
+  // 按下那一刻「标记与光标」的经纬差：拖动期间保持这个差，标记不会先跳到光标底下再跟着走
+  // （地球站/图钉这类立在锚点上的符号，抓的往往是形体上半，不保差就是按下即位移大半个图标）。2D 侧同口径。
+  const shortLon = (d) => ((d + 540) % 360) - 180
+  const dragLL = (ll) => (!ll || !markerGrab ? ll
+    : { lat: Math.max(-90, Math.min(90, ll.lat + markerGrab.dLat)), lon: shortLon(ll.lon + markerGrab.dLon) })
+  const updateRotate = () => { controls.enableRotate = !(beamDragMode || labelDragMode || polyDrawMode || markerDragging) }   // 拖波束/拖标签/绘制态/拖标记均停旋转
   function setBeamDragMode(v) { beamDragMode = !!v; if (!v) beamDragging = false; updateRotate(); renderer.domElement.style.cursor = beamDragMode ? 'move' : (labelDragMode ? 'move' : (polyDrawMode ? 'crosshair' : '')) }
   function setOnBeamDrag(fn) { onBeamDrag = fn }
   // 拖拽的拾取方式：给 {sat:{lon,lat,altKm}, tip:{lon,lat,altKm}} → 绕源星转方向（对星覆盖分析，
@@ -2247,7 +2516,52 @@ export function createGlobeScene(container, quality = {}) {
   function setPlaceMode(v) { placeMode = !!v; renderer.domElement.style.cursor = placeMode ? 'crosshair' : (polyDrawMode ? 'crosshair' : ((beamDragMode || labelDragMode) ? 'move' : '')) }
   function setOnPlace(fn) { onPlace = fn }
   function setOnPolyDraw(fn) { onPolyDraw = fn }
+  // ===== 标记拖拽（点标记 / 地球站 / 航点：光标压在符号上按住即拖，球体此时不转）=====
+  // 命中表由 setMarkers / setTrajectories 建（markerHits / trajHits），拖动回调
+  // onMarkerDrag(target, lonlat, 'start'|'move'|'end')，target = { kind, id, tid? }。
+  // ★ 命中半径按【图上真实画多大】折算屏幕像素（_px × zoomK），符号调大抓取区跟着大；
+  //   下限 HIT_MIN 是手感底线：出厂圆点上屏只有 4px 宽，按真实尺寸判等于抓不住。
+  const _mp = new THREE.Vector3()
+  function markerAtScreen(clientX, clientY) {
+    if (!markerDragAny()) return null
+    const r = renderer.domElement.getBoundingClientRect()
+    const mx = clientX - r.left, my = clientY - r.top
+    const zoomK = LABEL_REF_DIST / camera.position.distanceTo(controls.target)
+    let best = null, bd = Infinity
+    // 航点在最下、地球站在最上 —— 与图上的压盖次序反过来找
+    const all = markerHits.concat(trajHits)
+    for (let i = all.length - 1; i >= 0; i--) {
+      const h = all[i]
+      if (!dragOk(h.kind, h.tid)) continue     // 没进「调整位置 / 调点」态：不可拖，也不参与命中
+      if (occludedByGlobe(h.pos)) continue     // 转到地球背面的标记看不见，也不该被抓中
+      _mp.copy(h.pos).project(camera)
+      const sx = (_mp.x * 0.5 + 0.5) * r.width, sy = (-_mp.y * 0.5 + 0.5) * r.height
+      const cy = sy - (h.off || 0) * zoomK     // 立在锚点上的符号：抓的是形体中心
+      const hit = Math.max(HIT_MIN, (h.px || 6) * zoomK * 0.5 + 4)
+      const dd = Math.hypot(sx - mx, cy - my)
+      if (dd <= hit && dd < bd) { bd = dd; best = h }
+    }
+    return best
+  }
+  function endMarkerDrag() {
+    if (!markerDragging) return
+    const t = markerDragging; markerDragging = null; markerGrab = null; updateRotate()
+    if (onMarkerDrag) onMarkerDrag(t, null, 'end')
+  }
   renderer.domElement.addEventListener('pointermove', (e) => {
+    if (markerDragging) {
+      const ll = pickGlobeOrLimb(e.clientX, e.clientY)
+      if (ll && onMarkerDrag) onMarkerDrag(markerDragging, dragLL(ll), 'move')
+      if (onHover) onHover(ll)
+      return
+    }
+    // 悬停到可拖的标记上变手型（各模态自己的光标优先，不抢）
+    if (!beamDragMode && !labelDragMode) {
+      const onMk = markerDragAny() && !!markerAtScreen(e.clientX, e.clientY)
+      if (onMk) renderer.domElement.style.cursor = 'move'
+      else if (!polyDrawMode && !placeMode) renderer.domElement.style.cursor = ''
+      else renderer.domElement.style.cursor = 'crosshair'
+    }
     if (beamDragging) { const ll = pickDragMove(e.clientX, e.clientY); if (ll && onBeamDrag) onBeamDrag(ll, 'move') }
     if (labelDragging) { const ll = pickGlobeOrLimb(e.clientX, e.clientY); if (ll && onLabelDrag) onLabelDrag(ll, 'move') }
     if (polyDrawing) { const dx = e.clientX - drawLX, dy = e.clientY - drawLY; if (dx * dx + dy * dy >= POLY_DRAW_MIN2) { drawLX = e.clientX; drawLY = e.clientY; const ll = pickGlobe(e.clientX, e.clientY); if (ll && onPolyDraw) onPolyDraw(ll, 'move') } }
@@ -2256,13 +2570,40 @@ export function createGlobeScene(container, quality = {}) {
   renderer.domElement.addEventListener('pointerleave', () => { if (onHover) onHover(null) })
   renderer.domElement.addEventListener('contextmenu', (e) => { e.preventDefault(); if (onRightClick) onRightClick(pickGlobe(e.clientX, e.clientY), { x: e.clientX, y: e.clientY }) })
 
+  // ===== 贴图缓存清扫 =====
+  // 标记的颜色/形状是【滑杆与色轮】调出来的：拖一次色轮 input 连发几十上百次，每个签名一张贴图，
+  // 不清扫就是一路往显存里堆（128²/256² 一张，还都打了 _shared，disposeGroup 不会替它们收尸）。
+  // 做法：每次重建标记层时记下本轮真正用到的签名，建完把没用到的当场 dispose —— 上一组的材质此时
+  // 已被 disposeGroup 收掉，不会有人还引着它们。缓存小于 keep 时连扫都不扫（常态就三五个签名）。
+  const texUsedMk = new Set(), texUsedTj = new Set()
+  function sweepTexCache(cache, used, keep) {
+    if (cache.size <= keep) return
+    for (const [k, v] of cache) {
+      if (used.has(k)) continue
+      if (v && v.isTexture) v.dispose()
+      else if (v && v.mat) { if (v.mat.map) v.mat.map.dispose(); v.mat.dispose() }   // dotCache 存的是 { mat }
+      cache.delete(k)
+    }
+  }
+
   // 地球站图标（J4：精致立体卡塞格伦天线——淡填充碟面 + 边缘高光 + 四脚馈源 + 叉臂座架 + 落影），共用一张贴图
   let stationTex = null
+  const STATION_TEX = 256        // 贴图边长：地球站上屏一般十几到几十 px，256 足够清晰
   function stationTexture() {
-    if (stationTex) return stationTex
-    stationTex = new THREE.Texture(); stationTex.colorSpace = THREE.SRGBColorSpace
-    const img = new Image(); img.onload = () => { stationTex.image = img; stationTex.needsUpdate = true }
-    img.src = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(stationSvg())))
+    if (!stationTex) {
+      // ★ 贴图源从一开始就是一张【定尺寸】画布，SVG 解码回来只往里画一笔（不换 image）。
+      //   原来那条「先挂一张空 THREE.Texture、onload 再把 image 换上去」的路会撞 WebGL 的不可变纹理：
+      //   首帧上传的是空图（1×1 immutable storage），图片回来后 three 走 texSubImage2D 尺寸对不上 ——
+      //   实测控制台连报 texSubImage2D: bad image data / Texture is immutable，地球站图标整个不出现，
+      //   而且只在「首帧早于解码」时发作（主窗口启动慢常常侥幸躲过，换色新建的那张必中）。
+      //   同 vehicleTexture 那条注释：这一层不能依赖「后面还会有帧来补传」。
+      const c = document.createElement('canvas'); c.width = c.height = STATION_TEX
+      const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t._shared = true
+      const img = new Image()
+      img.onload = () => { c.getContext('2d').drawImage(img, 0, 0, STATION_TEX, STATION_TEX); t.needsUpdate = true }
+      img.src = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(stationSvg())))
+      stationTex = t
+    }
     return stationTex
   }
 
@@ -2288,6 +2629,7 @@ export function createGlobeScene(container, quality = {}) {
   const vehTexCache = new Map()
   function vehicleTexture(kind, ink) {
     const key = kind + '|' + ink
+    texUsedTj.add(key)
     let t = vehTexCache.get(key)
     if (!t) {
       // ★ 现画在 canvas 上（同步），不走「SVG → Image → Texture」那条异步路：出图/离屏只渲有限
@@ -2303,7 +2645,8 @@ export function createGlobeScene(container, quality = {}) {
   // （调用处只改 position/scale/renderOrder，从不改材质属性，故材质可安全共享。）
   const dotCache = new Map()
   function makeDot(hex) {
-    let hit = dotCache.get(hex)
+    texUsedTj.add('d|' + hex)
+    let hit = dotCache.get('d|' + hex)
     if (!hit) {
       const s = 32, c = document.createElement('canvas'); c.width = c.height = s
       const x = c.getContext('2d')
@@ -2312,7 +2655,7 @@ export function createGlobeScene(container, quality = {}) {
       const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t._shared = true
       const m = new THREE.SpriteMaterial({ map: t, depthTest: true, depthWrite: false, transparent: true }); m._shared = true
       hit = { mat: m }
-      dotCache.set(hex, hit)
+      dotCache.set('d|' + hex, hit)
     }
     return new THREE.Sprite(hit.mat)
   }
@@ -2320,13 +2663,17 @@ export function createGlobeScene(container, quality = {}) {
   // 同一串编号不必反复现画画布 + 上传纹理。贴图打 _shared，disposeGroup 见到就跳过（同 dotCache）。
   const badgeCache = new Map()
   const BADGE_TEX = 128          // 贴图边长：徽标上屏一般十几到几十 px，128 足够清晰且不占显存
-  function badgeTexture(text) {
-    let t = badgeCache.get(text)
+  // ★ 缓存键＝编号 + 配色：只按编号存的话，改了盘色/圈色/字色仍会拿回旧贴图（改色像没生效）
+  function badgeTexture(text, style) {
+    const st = style || {}
+    const key = text + '|' + (st.fill || '') + '|' + (st.fillOpacity != null ? st.fillOpacity : '') + '|' + (st.ring || '') + '|' + (st.ink || '')
+    texUsedMk.add('b|' + key)
+    let t = badgeCache.get('b|' + key)
     if (!t) {
       const c = document.createElement('canvas'); c.width = c.height = BADGE_TEX
-      paintNumBadge(c.getContext('2d'), BADGE_TEX / 2, BADGE_TEX / 2, BADGE_TEX * BADGE_TEX_FILL, text, UI_FONT)
+      paintNumBadge(c.getContext('2d'), BADGE_TEX / 2, BADGE_TEX / 2, BADGE_TEX * BADGE_TEX_FILL, text, UI_FONT, st)
       t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t._shared = true
-      badgeCache.set(text, t)
+      badgeCache.set('b|' + key, t)
     }
     return t
   }
@@ -2335,12 +2682,15 @@ export function createGlobeScene(container, quality = {}) {
   //   徽标啃掉一块（症状：每枚徽标朝球心那侧缺一角，越大越明显）。改为始终完整浮在地表之上，转到背面
   //   由 rescaleMarkers 按 _dir 隐藏/淡出。圆点没这毛病是因为它只有几个像素，啃掉那一圈看不出来。
   // ★ 材质逐枚新建（贴图仍按编号共享）：_dir 的近地平淡出要改 material.opacity，共享材质会被互相改写。
-  function makeNumBadge(text) {
-    return new THREE.Sprite(new THREE.SpriteMaterial({ map: badgeTexture(text), depthTest: false, depthWrite: false, transparent: true }))
+  function makeNumBadge(text, style) {
+    return new THREE.Sprite(new THREE.SpriteMaterial({ map: badgeTexture(text, style), depthTest: false, depthWrite: false, transparent: true }))
   }
 
   let markersGroup = null, trajGroup = null, focusSatGroup = null
-  function disposeGroup(grp) { if (grp) { grp.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material && !o.material._shared) { lineMats.delete(o.material); if (o.material.map && !o.material.map._shared && o.material.map !== stationTex && o.material.map !== focusSatTex) o.material.map.dispose(); o.material.dispose() } }); scene.remove(grp) } }
+  // 标记拖拽命中表：setMarkers / setTrajectories 每次重建时一并重建。pos=世界坐标，
+  // px=屏幕上的视觉直径，off=形体中心相对锚点的上移量（天线/图钉这类立在锚点上的符号，抓的是形体不是那一个像素）。
+  let markerHits = [], trajHits = []
+  function disposeGroup(grp) { if (grp) { grp.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material && !o.material._shared) { lineMats.delete(o.material); if (o.material.map && !o.material.map._shared && o.material.map !== focusSatTex) o.material.map.dispose(); o.material.dispose() } }); scene.remove(grp) } }
   // 聚焦卫星当前星下点图标（与 2D 同款，固定 30px 基准——与 2D sizes.satIcon 默认值一致，随 3D 缩放联动）；
   // depthTest 关 + _dir 半球剔除，复用地球站图标同一套策略，转到背面自动隐藏，不会被地球遮挡。
   // 屏幕像素固定尺寸的「贴图点层」：同贴图、同（大小|染色）的点合成一个 THREE.Points —— 一次 draw call。
@@ -2414,51 +2764,122 @@ export function createGlobeScene(container, quality = {}) {
   // 标注让位要按【字高】算，不是按精灵整高。2D 侧 flatCoverage 的同名常量必须同值。
   const MK_FONT_K = 50 / 66
   // 文字标签：depthTest 关 + 半球剔除 -> 不会被地球边缘裁掉一半，背面整体隐藏
-  function labelSprite(text, lat, lon, color, centerY, px) {
+  // dxPx：横向偏移（屏幕 px，>0 摆到锚点右侧、<0 左侧）—— 精灵宽度未知，故按 center.x 换算：
+  // 右摆＝把精灵左边缘推到锚点右边 dxPx 处（center.x = −dxPx/W），左摆同理取右边缘。
+  // op：用户设的标注透明度，存进 _op 供 rescaleMarkers 与近地平淡出相乘（直接写 material.opacity 会被它覆盖）。
+  function labelSprite(text, lat, lon, color, centerY, px, dxPx, op) {
     const spr = makeCovLabel(text, 0.03, color || '#ffffff')
     spr.material.depthTest = false
     spr.center.set(0.5, centerY != null ? centerY : -0.35)   // 文字浮在标记上方
     spr.position.copy(llaToVec(lat, lon, 0).multiplyScalar(1.0012))
     spr._dir = spr.position.clone().normalize()
     spr._px = px || 16; spr._ar = spr.scale.x / spr.scale.y; spr.renderOrder = 16
+    if (dxPx) {
+      const W = spr._px * spr._ar
+      spr.center.x = dxPx > 0 ? -dxPx / W : 1 + (-dxPx) / W
+    }
+    if (op != null && op < 1) { spr._op = Math.max(0, op); spr.material.opacity = spr._op }
     return spr
   }
-  // points:[{lat,lon,label?,idx?}]  stations:[{lat,lon,name?}]  sizes:{ptFont,stIcon,stFont,ptIdx}
-  function setMarkers(points, stations, sizes) {
-    const sz = sizes || {}, ptFont = sz.ptFont || 14, stIcon = sz.stIcon || 32, stFont = sz.stFont || 17
-    // 点标记圆点直径：用 2D 半径口径 sz.ptDot（默认 3.5）×2.2 换算到 3D 屏幕像素，保持与 2D 观感一致、可调
-    const ptDotPx = (sz.ptDot != null ? sz.ptDot : 3.5) * 2.2
-    // 序号徽标直径（屏幕 px @100% 缩放，与 2D 同值）：精灵整张含留白，故 _px 要按占比放大回去
-    const idxD = sz.ptIdx != null ? sz.ptIdx : 16
+  // ===== 标记层样式（与 2D 平面图 flatCoverage 的 markCfg 同一份设置，由页面 setMarkStyle 推入）=====
+  // 尺寸口径＝屏幕 px @默认视角（随缩放的联动在 rescaleMarkers 里统一乘 zoomK）。
+  // 逐条覆盖（某个点/某个站自己的颜色与形状）由页面在载荷里解析好，逐条带在 item 上。
+  const markCfg = {
+    ptShape: 'circle', ptColor: '#ffd24a', ptOpacity: 1, ptDot: 3.5, ptEdge: 0.18, ptEdgeColor: '#ffffff',
+    ptIdx: 16, idxFill: '#ffd24a', idxFillOpacity: 0.62, idxRing: '#ffffff', idxInk: '#1b1205',
+    ptFont: 14, ptLabelColor: '#ffffff', ptLabelOpacity: 1, ptLabelPos: 'up',
+    stOpacity: 1, stIcon: 16, stFont: 17, stLabelColor: '#ffffff', stLabelOpacity: 1, stLabelPos: 'down',
+    tjWidth: 2.2, tjOpacity: 0.95, tjDash: 'solid', tjDot: 4, tjIconOn: true, tjIconPx: 26,
+    tjNameOn: false, tjNameFont: 13, tjNameColor: '#ffffff'
+  }
+  function setMarkStyle(cfg) { Object.assign(markCfg, cfg || {}) }
+  const PT_DOT_K = 18 / 32 * 2.2   // 点标记：滑块值 → 视觉直径（2D 侧同值）
+  // 标记符号贴图：同（形状|色|透明度|描边）共用一张，改一个点的颜色不必把整层的贴图重造。
+  // 打 _shared 标记，disposeGroup 见到就跳过（同 dotCache / vehTexCache）。材质仍逐枚新建 ——
+  // 近地平淡出要改 material.opacity，共享材质会被互相改写（同 makeNumBadge 那条注释）。
+  const symTexCache = new Map()
+  function markSymbolTexture(o) {
+    const key = o.shape + '|' + o.fill + '|' + (o.opacity != null ? o.opacity : 1) + '|' + o.edge + '|' + o.edgeColor
+    texUsedMk.add(key)
+    let t = symTexCache.get(key)
+    if (!t) {
+      t = new THREE.CanvasTexture(markSymbolCanvas(o, 128))
+      t.colorSpace = THREE.SRGBColorSpace; t._shared = true
+      symTexCache.set(key, t)
+    }
+    return t
+  }
+  function markSymbolSprite(o) {
+    return new THREE.Sprite(new THREE.SpriteMaterial({ map: markSymbolTexture(o), depthTest: false, depthWrite: false, transparent: true }))
+  }
+  // points:[{id,lat,lon,label?,idx?,color?,shape?}]  stations:[{id,lat,lon,name?,color?,shape?}]
+  // cfg：整层样式（可选，等价于先调 setMarkStyle）。逐条的颜色/形状由载荷带过来，缺省跟整层。
+  function setMarkers(points, stations, cfg) {
+    if (cfg) setMarkStyle(cfg)
+    const ptFont = markCfg.ptFont || 14, stIcon = markCfg.stIcon || 16, stFont = markCfg.stFont || 17
+    // 点标记视觉直径（与 2D 同一换算）；精灵整张含留白，故 _px 要按占比放大回去
+    const ptD = Math.max(0.5, (markCfg.ptDot != null ? markCfg.ptDot : 3.5) * PT_DOT_K)
+    // 序号徽标直径（屏幕 px @100% 缩放，与 2D 同值）
+    const idxD = markCfg.ptIdx != null ? markCfg.ptIdx : 16
+    const ptPos = markCfg.ptLabelPos || 'up', stPos = markCfg.stLabelPos || 'down'
     disposeGroup(markersGroup); markersGroup = null
+    markerHits = []; texUsedMk.clear()
     const g = new THREE.Group()
     for (const p of (points || [])) {
       const pos = llaToVec(p.lat, p.lon, 0).multiplyScalar(1.0012)
+      const sh = markCfg.ptShape || 'circle'
       // p.idx 非空＝带序号：圆本身就是记号（圈心＝该点位置），不再另画圆点
-      const mark = p.idx ? makeNumBadge(p.idx) : makeDot('#ffd24a')
-      mark.position.copy(pos); mark._px = p.idx ? idxD / BADGE_TEX_FILL : ptDotPx; mark._ar = 1; mark.renderOrder = 15
-      if (p.idx) mark._dir = pos.clone().normalize()   // 徽标关了 depthTest，背面靠半球剔除隐藏（见 makeNumBadge）
+      const mark = p.idx
+        ? makeNumBadge(p.idx, { fill: p.color || markCfg.idxFill, fillOpacity: markCfg.idxFillOpacity, ring: markCfg.idxRing, ink: markCfg.idxInk })
+        : markSymbolSprite({ shape: sh, fill: p.color || markCfg.ptColor, opacity: markCfg.ptOpacity, edge: markCfg.ptEdge, edgeColor: markCfg.ptEdgeColor })
+      mark.position.copy(pos)
+      mark._px = p.idx ? idxD / BADGE_TEX_FILL : ptD / MARK_TEX_FILL
+      mark._ar = 1; mark.renderOrder = 15
+      if (!p.idx) mark.center.set(0.5, texCenterY(sh))   // 图钉＝针尖锚在该点，其余形心锚
+      mark._dir = pos.clone().normalize()   // 关了 depthTest，背面靠半球剔除隐藏（见 makeNumBadge）
       g.add(mark)
-      // 文字锚点让位：center.y 以精灵自身高度（＝其 _px）为单位，故把 badgeLabelUp 算出的字心距离
-      // 折回该单位。0.5−0.85=−0.35 就是原来圆点那档，两视图共用同一支 badgeLabelUp、口径不会走偏。
-      const dU = badgeLabelUp(0.85 * ptFont, p.idx ? idxD : 0, ptFont * MK_FONT_K)
-      const hD = ptFont * 0.9, dD = badgeLabelUp(0.85 * hD, p.idx ? idxD : 0, hD * MK_FONT_K)
-      if (p.label) g.add(labelSprite(p.label, p.lat, p.lon, '#ffffff', 0.5 - dU / ptFont, ptFont))   // 坐标：白字
-      if (p.el) g.add(labelSprite(p.el, p.lat, p.lon, '#ffffff', 0.5 + dD / hD, hD))     // 聚焦卫星仰角：亮白，标记下方
+      if (p.id) markerHits.push({ kind: 'point', id: p.id, pos, lat: p.lat, lon: p.lon, px: p.idx ? idxD : ptD })
+      // 文字锚点让位：center.y 以精灵自身高度（＝其 _px）为单位，故把字心距离折回该单位。
+      // 0.5−0.85=−0.35 就是原来圆点那档；换成大件符号时按其外沿外推，与 2D 同一条公式。
+      const eUp = p.idx ? idxD * BADGE_R : symbolUp(sh) * ptD, eDn = p.idx ? idxD * BADGE_R : symbolDown(sh) * ptD
+      const hD = ptFont * 0.9
+      const dU = Math.max(0.85 * ptFont, eUp + ptFont * MK_FONT_K * 0.7)
+      const dD = Math.max(0.85 * hD, eDn + hD * MK_FONT_K * 0.63)
+      const half = (p.idx ? idxD : ptD) * 0.5
+      if (p.label) {
+        const c = markCfg.ptLabelColor, op = markCfg.ptLabelOpacity
+        if (ptPos === 'up') g.add(labelSprite(p.label, p.lat, p.lon, c, 0.5 - dU / ptFont, ptFont, 0, op))
+        else if (ptPos === 'down') g.add(labelSprite(p.label, p.lat, p.lon, c, 0.5 + dD / ptFont, ptFont, 0, op))
+        else g.add(labelSprite(p.label, p.lat, p.lon, c, 0.5, ptFont, (ptPos === 'right' ? 1 : -1) * (half + ptFont * MK_FONT_K * 0.42), op))
+      }
+      // 聚焦卫星仰角：亮白，恒在符号下方（坐标也摆下方时让到第二行）
+      if (p.el) g.add(labelSprite(p.el, p.lat, p.lon, '#ffffff', 0.5 + dD / hD + ((ptPos === 'down' && p.label) ? ptFont * 1.2 / hD : 0), hD))
     }
     for (const s of (stations || [])) {
+      const pos = llaToVec(s.lat, s.lon, 0).multiplyScalar(1.0012)
       // 关闭深度测试 + 半球剔除（_dir）：与文字标签同策略。地球站图标是「从地表立起」的精灵，开 depthTest 时
       // 整张图按锚点(地表)深度参与测试，低视角/近地平边缘处上半部分会被更近的地球曲面截断遮挡。改为始终完整浮于
       // 地表之上，转到背面时由 rescaleMarkers 按 _dir 自动隐藏/淡出（不会透出地球背面的站点）。
       const st = new THREE.Sprite(new THREE.SpriteMaterial({ map: stationTexture(), depthTest: false, depthWrite: false, transparent: true }))
       // 锚点＝符号里那颗白色址点：center.y 自底算，故取 1−STATION_ANCHOR_Y（2D 侧对应 y − si·ANCHOR_Y）
-      st.position.copy(llaToVec(s.lat, s.lon, 0).multiplyScalar(1.0012)); st.center.set(STATION_ANCHOR_X, 1 - STATION_ANCHOR_Y); st._px = stIcon; st._ar = 1; st._dir = st.position.clone().normalize(); st.renderOrder = 15; g.add(st)
+      st.center.set(STATION_ANCHOR_X, 1 - STATION_ANCHOR_Y); st._px = stIcon
+      const up = stIcon * STATION_ANCHOR_Y, down = stIcon * (1 - STATION_ANCHOR_Y), half = stIcon * 0.5
+      if (markCfg.stOpacity < 1) { st._op = Math.max(0, markCfg.stOpacity); st.material.opacity = st._op }
+      st.position.copy(pos); st._ar = 1; st._dir = pos.clone().normalize(); st.renderOrder = 15; g.add(st)
+      if (s.id) markerHits.push({ kind: 'station', id: s.id, pos, lat: s.lat, lon: s.lon, px: Math.max(up + down, half * 2), off: (up - down) * 0.5 })
       // 字要让开「符号落在锚点下方的那一截」（址点圆的下半），换算成各自字号的倍数加到 centerY 上
-      const stUnder = stIcon * (1 - STATION_ANCHOR_Y)
-      if (s.name) g.add(labelSprite(s.name, s.lat, s.lon, '#ffffff', 0.82 + stUnder / stFont, stFont))   // 名称紧贴地球站底座下方：亮白
-      if (s.el) g.add(labelSprite(s.el, s.lat, s.lon, '#ffffff', 1.87 + stUnder / (stFont * 0.9), stFont * 0.9))   // 聚焦卫星仰角：亮白，名称下方
+      const eF = stFont * 0.9
+      if (s.name) {
+        const c = markCfg.stLabelColor, op = markCfg.stLabelOpacity
+        if (stPos === 'down') g.add(labelSprite(s.name, s.lat, s.lon, c, 0.82 + down / stFont, stFont, 0, op))
+        else if (stPos === 'up') g.add(labelSprite(s.name, s.lat, s.lon, c, 0.18 - up / stFont, stFont, 0, op))
+        else g.add(labelSprite(s.name, s.lat, s.lon, c, 0.5, stFont, (stPos === 'right' ? 1 : -1) * (half + stFont * MK_FONT_K * 0.42), op))
+      }
+      // 聚焦卫星仰角：亮白，恒在名称下方那一档
+      if (s.el) g.add(labelSprite(s.el, s.lat, s.lon, '#ffffff', ((stPos === 'down' && s.name) ? 1.87 : 0.82) + down / eF, eF))
     }
     markersGroup = g; scene.add(g)
+    sweepTexCache(symTexCache, texUsedMk, 16); sweepTexCache(badgeCache, texUsedMk, 64)
   }
   function slerp(a, b, t) {
     const d = Math.max(-1, Math.min(1, a.dot(b))), ang = Math.acos(d)
@@ -2472,11 +2893,16 @@ export function createGlobeScene(container, quality = {}) {
   // （makeDot：直径 18 的圆居中于 32 画布），故 _px 要按占比放大回去 —— 2D 侧直接按半径作画、
   // 无留白，两视图这才一样大（同 numBadge 的 BADGE_TEX_FILL 那套换算）。
   const DOT_SPRITE_FILL = 18 / 32
-  function setTrajectories(list, sizes) {
-    const sz = sizes || {}
-    const trajDotPx = (sz.trajDot != null ? sz.trajDot : 4) / 2 / DOT_SPRITE_FILL
-    const vehOn = sz.trajIcon !== false, vehPx = sz.trajIconPx != null ? sz.trajIconPx : 26
+  function setTrajectories(list, cfg) {
+    if (cfg) setMarkStyle(cfg)
+    const trajD = Math.max(0, (markCfg.tjDot != null ? markCfg.tjDot : 4) / 2)   // 视觉直径（2D 同一换算）
+    const trajDotPx = trajD / DOT_SPRITE_FILL
+    const vehOn = markCfg.tjIconOn !== false, vehPx = markCfg.tjIconPx != null ? markCfg.tjIconPx : 26
+    const tjW = Math.max(0.1, markCfg.tjWidth != null ? markCfg.tjWidth : 2.2)
+    const tjOp = Math.max(0, Math.min(1, markCfg.tjOpacity != null ? markCfg.tjOpacity : 0.95))
+    const tjDash = markCfg.tjDash && markCfg.tjDash !== 'solid' ? markCfg.tjDash : null
     disposeGroup(trajGroup); trajGroup = null
+    trajHits = []; texUsedTj.clear()
     const g = new THREE.Group()
     for (const tr of (list || [])) {
       const pts = tr.pts || []
@@ -2490,13 +2916,23 @@ export function createGlobeScene(container, quality = {}) {
       //   三样必须同侧，否则地名把线切断、圆点却浮在字上。曾经是 6（与 GRD 等值线/Polygon 线同层、
       //   压在国界之下），那一档让底图地名整段吃掉航迹，而线的连续性本身就是信息。2D 侧同口径
       //   （flatCoverage.drawTrajLayer 画在地名层之后）。仍低于覆盖标注(12/13)与卫星图标(14)。
-      if (verts.length > 1) g.add(fatStrip(verts, tr.color != null ? tr.color : 0xff5a5a, 2.2, 0.95, 10.5))
-      for (const p of pts) { const dot = makeDot(tr.kind === 'flight' ? '#5ad1ff' : '#ff9a5a'); dot.position.copy(llaToVec(p.lat, p.lon, 0).multiplyScalar(1.002)); dot._px = trajDotPx; dot._ar = 1; dot.renderOrder = 15; g.add(dot) }
+      const tjColor = tr.color != null ? tr.color : 0xff5a5a
+      if (verts.length > 1) {
+        // 虚线档走「按世界弧长切段」那套机器（与轨道线/边界线同一支 pushDashed），实线仍是一条连续带
+        if (tjDash) { const sink = createSink(Math.max(1024, verts.length * 6)); pushDashed(sink, verts, tjDash); g.add(fatSegments(sink.view(), tjColor, tjW, tjOp, 10.5)) }
+        else g.add(fatStrip(verts, tjColor, tjW, tjOp, 10.5))
+      }
+      if (trajD > 0) {
+        const dotHex = '#' + ((tr.dotColor != null ? tr.dotColor : tjColor) & 0xffffff).toString(16).padStart(6, '0')
+        for (const p of pts) { const dot = makeDot(dotHex); dot.position.copy(llaToVec(p.lat, p.lon, 0).multiplyScalar(1.002)); dot._px = trajDotPx; dot._ar = 1; dot.renderOrder = 15; g.add(dot) }
+      }
+      // 航点也可直接拖（与点标记/地球站同一条通道）：圆点关掉时按最小抓取区仍可抓
+      if (tr.id) for (const p of pts) if (p.id) trajHits.push({ kind: 'waypoint', id: p.id, tid: tr.id, pos: llaToVec(p.lat, p.lon, 0).multiplyScalar(1.002), lat: p.lat, lon: p.lon, px: trajD })
       // 航迹头（末航点）上的载具图标。depthTest 关 + _dir 半球剔除：同地球站图标那套，转到背面自动隐藏。
       if (vehOn && vehPx > 0 && pts.length) {
         const hd = pts[pts.length - 1]
         const pos = llaToVec(hd.lat, hd.lon, 0).multiplyScalar(1.0025)
-        const ink = '#' + (hexOf(tr.color != null ? tr.color : 0xff5a5a) & 0xffffff).toString(16).padStart(6, '0')
+        const ink = '#' + (hexOf(tr.iconColor != null ? tr.iconColor : (tr.color != null ? tr.color : 0xff5a5a)) & 0xffffff).toString(16).padStart(6, '0')
         const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: vehicleTexture(tr.kind === 'flight' ? 'flight' : 'sea', ink), depthTest: false, depthWrite: false, transparent: true }))
         spr.position.copy(pos); spr._px = vehPx; spr._ar = 1; spr._dir = pos.clone().normalize(); spr.renderOrder = 16
         // 朝向＝末段的大圆切向（3D 的航迹线是大圆，图标得贴着那条线；2D 那条线是经纬直连，故另算）。
@@ -2509,8 +2945,15 @@ export function createGlobeScene(container, quality = {}) {
         }
         g.add(spr)
       }
+      // 航迹名（默认不画）：锚在航迹头上，让开载具图标那一截；与 2D 同一条摆位公式
+      if (markCfg.tjNameOn && markCfg.tjNameFont > 0 && tr.name && pts.length) {
+        const hd = pts[pts.length - 1], nf = markCfg.tjNameFont
+        const dU = (vehOn ? vehPx : 0) * 0.5 + nf * MK_FONT_K * 0.7
+        g.add(labelSprite(tr.name, hd.lat, hd.lon, markCfg.tjNameColor, 0.5 - dU / nf, nf))
+      }
     }
     trajGroup = g; scene.add(g)
+    sweepTexCache(vehTexCache, texUsedTj, 8); sweepTexCache(dotCache, texUsedTj, 16)
   }
   // 标记/轨迹精灵每帧随缩放「均匀」联动：屏幕像素 = 设定像素 × zoomK，zoomK = 基准距离/相机到目标距离。
   // 默认视角(相机距=LABEL_REF_DIST) zoomK=1 → 即其设定的原始像素大小；拉近 zoomK>1 变大、拉远变小，与地名同步。
@@ -2526,7 +2969,9 @@ export function createGlobeScene(container, quality = {}) {
         if (o._dir) {   // 文字标签：近地平淡出，避免边缘跳变
           const dot = o._dir.dot(cd)
           if (dot <= 0.05) { o.visible = false; continue }
-          o.visible = true; o.material.opacity = dot >= 0.22 ? 1 : (dot - 0.05) / 0.17
+          // ★ 用户设的透明度(_op)是底数，淡出系数乘在它上面 —— 直接写 1 会把「标注透明度」这一档整个吃掉
+          const base = o._op != null ? o._op : 1
+          o.visible = true; o.material.opacity = base * (dot >= 0.22 ? 1 : (dot - 0.05) / 0.17)
         }
         if (o._tan) {   // 载具图标：把「位置」与「位置+切向」投到屏幕求夹角 —— NDC 的 x/y 缩放不同，得先折回像素比例
           _pA.copy(o.position).project(camera)
@@ -2620,11 +3065,26 @@ export function createGlobeScene(container, quality = {}) {
   let downX = 0, downY = 0
   renderer.domElement.addEventListener('pointerdown', (e) => {
     downX = e.clientX; downY = e.clientY
+    // ★ 排在绘制态/放置态【之前】：那两个是「按下即落点」，而光标正压在一枚可拖的标记上时，
+    //   要的多半是把它挪一挪，不是在它身上再叠一个点（2D 侧同口径）。
+    if (markerDragAny() && e.button === 0 && !beamDragMode && !labelDragMode) {
+      const h = markerAtScreen(e.clientX, e.clientY)
+      if (h) {
+        const t = { kind: h.kind, id: h.id, tid: h.tid }
+        markerDragging = t; updateRotate(); stopAutoRotate()
+        try { renderer.domElement.setPointerCapture(e.pointerId) } catch { /* ignore */ }
+        const ll = pickGlobeOrLimb(e.clientX, e.clientY)
+        markerGrab = (ll && Number.isFinite(h.lat)) ? { dLat: h.lat - ll.lat, dLon: shortLon(h.lon - ll.lon) } : null
+        if (ll && onMarkerDrag) onMarkerDrag(t, dragLL(ll), 'start')
+        return
+      }
+    }
     if (beamDragMode && e.button === 0) { beamDragging = true; const ll = pickDragStart(e.clientX, e.clientY); if (ll && onBeamDrag) onBeamDrag(ll, 'start') }
     else if (labelDragMode && e.button === 0) { labelDragging = true; const ll = pickGlobeOrLimb(e.clientX, e.clientY); if (ll && onLabelDrag) onLabelDrag(ll, 'start') }
     else if (polyDrawMode && e.button === 0) { polyDrawing = true; drawLX = e.clientX; drawLY = e.clientY; try { renderer.domElement.setPointerCapture(e.pointerId) } catch { /* ignore */ } const ll = pickGlobe(e.clientX, e.clientY); if (ll && onPolyDraw) onPolyDraw(ll, 'start') }
   })
   renderer.domElement.addEventListener('pointerup', (e) => {
+    if (markerDragging) { try { renderer.domElement.releasePointerCapture(e.pointerId) } catch { /* ignore */ } endMarkerDrag(); return }   // 拖标记结束，不当作选星
     if (polyDrawing) { polyDrawing = false; try { renderer.domElement.releasePointerCapture(e.pointerId) } catch { /* ignore */ } if (onPolyDraw) onPolyDraw(null, 'end'); return }   // 绘制笔画结束（显式释放捕获，勿只靠隐式）；不当作选星
     if (beamDragging) { beamDragging = false; if (onBeamDrag) onBeamDrag(null, 'end'); return }   // 拖波束结束，不当作选星
     if (labelDragging) { labelDragging = false; if (onLabelDrag) onLabelDrag(null, 'end'); return }   // 拖标签结束，不当作选星
@@ -2653,6 +3113,7 @@ export function createGlobeScene(container, quality = {}) {
   })
   // 指针被取消（触控/系统抢占）：复位绘制笔画并释放捕获，避免残留捕获截走之后的点击（输入框点不进）。
   renderer.domElement.addEventListener('pointercancel', (e) => {
+    if (markerDragging) endMarkerDrag()
     if (polyDrawing) { polyDrawing = false; if (onPolyDraw) onPolyDraw(null, 'end') }
     try { renderer.domElement.releasePointerCapture(e.pointerId) } catch { /* ignore */ }
   })
@@ -2786,6 +3247,7 @@ export function createGlobeScene(container, quality = {}) {
     updateLabels()
     refreshDashScale()   // 虚线周期按屏幕像素恒定：缩放跨过一档就重切
     applyFade()          // 一/二级行政区随缩放淡入淡出
+    updateImageryTiles() // 影像瓦片 LOD：可见集合没变时靠签名早退，正常帧近乎零开销
     renderer.render(scene, camera)
   }
   loop()
@@ -2812,12 +3274,16 @@ export function createGlobeScene(container, quality = {}) {
   //
   // 地名/波束标签的纹理是 fs=54 的高分辨率画布（见 makeLabelSprite），屏上约 4 倍过采样：
   // 4× 出图正好 1:1 最锐 —— 这也是出图倍率封顶 4× 的原因之一（菜单里 6× 那档已删，见 exportGlobeShot）。
-  async function snapshot(factor) {
+  // factor=倍率；targetW=想要的输出像素宽（4K/8K 这类档位），给了它就按当前画布宽折算成倍率。
+  // ★ 3D 这条上「请求多少」和「拿到多少」经常不是一回事（帧缓冲 ~32 MPix 天花板，见下面的退让循环），
+  //   故返回值里的 w/h/factor 一律是【实际渲出来的】，调用方据此写文件名，不要回显请求值。
+  async function snapshot(factor, targetW) {
     const cv = renderer.domElement
     const gl = renderer.getContext()
     // 先按驱动的帧缓冲上限收一道：超过 MAX_RENDERBUFFER_SIZE / MAX_TEXTURE_SIZE 必然分配失败
     const maxDim = Math.min(gl.getParameter(gl.MAX_RENDERBUFFER_SIZE) || 8192, gl.getParameter(gl.MAX_TEXTURE_SIZE) || 8192)
-    let s = Math.max(1, Math.min(factor || 4, maxDim / Math.max(curW, curH)))
+    const req = targetW > 0 ? targetW / Math.max(1, curW) : (factor || 4)
+    let s = Math.max(1, Math.min(req, maxDim / Math.max(curW, curH)))
     const prev = renderer.getPixelRatio()
     let cap = null, w = 0, h = 0
     try {
@@ -2869,8 +3335,26 @@ export function createGlobeScene(container, quality = {}) {
     setTerminator, clearTerminator,
     setEnvRaster, setEnvAlpha, setEnvContours, clearEnv,
     setSatLayer, clearSatLayer, faceLonLat, setProvinces, setProvincesVisible, setCities, setCitiesVisible, setBorderStyle, setNameScale, setLabelStyle, setWaterMode, setWaterOff, setChains, setOceanColor, setLandColors, setImagery,
+    // 影像瓦片诊断：当前选了哪一级、细节层挂了几片、底层几片。瓦片 LOD 出问题时（糊、露洞、
+    // 级别不跟随缩放）光看画面分不清是「没选到级」还是「选到了但没画上」，这个出口就是那把尺子。
+    imageryStats: () => ({
+      set: imgSet, maxZ: imgMaxZ, detail: tileMeshes.size, base: baseGroup ? baseGroup.children.length : 0,
+      tex: tileTexes.size, geo: geoCache.size, costMs: +tileCostMs.toFixed(1), pending: pendingTiles,
+      dist: +camera.position.length().toFixed(4),
+      z: imgSet ? pickZoom(2 * (camera.position.length() - 1) * Math.tan(camera.fov * Math.PI / 360) / Math.max(1, curH * (renderer.getPixelRatio() || 1)) * 180 / Math.PI, imgMaxZ) : null,
+      levels: [...new Set([...tileMeshes.keys()].map((k) => k.split('/')[0]))].sort()
+    }),
     setPixelRatio, setRenderFps, setSphereDetail, setMapDetail, holdFrames,
-    setMarkers, setTrajectories, setFocusSatLLA, setFocusStyle, setSatPointsVisible, setOnHover, setOnRightClick, setBeamDragMode, setOnBeamDrag, setBeamDragPivot, setLabelDragMode, setOnLabelDrag, setPolyDrawMode, setOnPolyDraw, setPlaceMode, setOnPlace,
+    setMarkers, setTrajectories, setMarkStyle, setFocusSatLLA, setFocusStyle,
+    // 布尔＝三类一起开关；对象＝逐类开关 { point, station, waypoint }（页面按「调整位置 / 调点」态给，
+    // 每项 true / false / 归属 id，见 dragOk）
+    setMarkerDrag: (v) => {
+      const o = (v && typeof v === 'object') ? v : { point: !!v, station: !!v, waypoint: !!v }
+      const norm = (x) => (typeof x === 'string' ? x : !!x)
+      markerDragOn = { point: norm(o.point), station: norm(o.station), waypoint: norm(o.waypoint) }
+      if (markerDragging && !dragOk(markerDragging.kind, markerDragging.tid)) { markerDragging = null; markerGrab = null; updateRotate() }
+    },
+    setOnMarkerDrag: (fn) => { onMarkerDrag = fn }, setSatPointsVisible, setOnHover, setOnRightClick, setBeamDragMode, setOnBeamDrag, setBeamDragPivot, setLabelDragMode, setOnLabelDrag, setPolyDrawMode, setOnPolyDraw, setPlaceMode, setOnPlace,
     faceTo, rotateBy, setAutoRotate, setAutoRotateSpeed, setOnAutoRotateOff, resize, pause, resume, snapshot, destroy,
     // 缩放进度条接口：getZoom 读当前进度、setZoom 设到进度 t、setOnZoom 注册滚轮缩放回填回调
     getZoom: () => distToT(zoomTarget),

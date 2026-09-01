@@ -83,7 +83,11 @@ const ICONS = {
   // 「端到端链路预算」专用（非 Lucide，自绘）：站→星→站 的折线跳段 + 三个节点。
   // 与 calculator（GSO）/ ngso（框中 N）/ cpu（再生式）并排时靠「折线拓扑」一眼区分——
   // 那三枚讲的是体制，这一枚讲的是链路形状，正是本窗口的主命题。
+  // 折线跳段版（自绘）：曾是端到端链路预算的图标，2026-08-31 换成下面的 share-2。留在表里，改回是一行。
   'chain-hops': '<path d="M4.7 15.1 10.5 7.6"/><path d="M13.5 7.6l5.8 7.5"/><circle cx="3" cy="17" r="2"/><circle cx="12" cy="6" r="2"/><circle cx="21" cy="17" r="2"/>',
+  // 「端到端链路预算」当前用的图标（Lucide share-2）：三节点两跳段的拓扑，与 chain-hops 同一命题，
+  // 但节点分左右两列、连线更长，16px 下比上面那版的「窄夹角折线」立得住。
+  'share-2': '<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" x2="15.42" y1="13.51" y2="17.49"/><line x1="15.41" x2="8.59" y1="6.51" y2="10.49"/>',
   'external-link': '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
   list: '<path d="M3 12h.01"/><path d="M3 18h.01"/><path d="M3 6h.01"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M8 6h13"/>',
   table: '<path d="M12 3v18"/><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M3 15h18"/>',

@@ -30,12 +30,21 @@
 // 两张都由官方 world.topo.bathy.200407.3x21600x10800.jpg（21600×10800，1.86 km/px）缩制而来 ——
 // 缩到 16384 不是随手取的整数，而是多数 GPU 的 MAX_TEXTURE_SIZE，即【整幅单张贴图这条路的物理上限】。
 // 再往上只能改用瓦片金字塔（分块纹理 + LOD 调度），那是另一档工程量。
+// ★ 瓦片档（tiles:'bmng'）是三档里唯一突破「整幅单张」天花板的：整幅受 GPU 纹理上限封死在
+//   16384×8192 = 2.45 km/px，而金字塔按视野只贴几十片，且显存从恒定 716 MB 降到「可见片数 × 1.34 MB」
+//   —— 远看几百 MB、近看只剩二十来 MB，而近看正是要分辨率的时候。
+//   代价是需要离线包 resources/imagery（不进 git，由 npm run imagery:tiles 生成）——
+//   没装包时渲染端自己回退，不会黑屏，见 flatCoverage.drawImagery。
+// ★ 出厂只切到 L6 = 978 m/px（4273 片 / 91 MB）。源数据本身支持 L7 = 489 m/px，但那一级要
+//   12800 片 / 214 MB，占整包 70% —— 装机包体积优先，砍了。要恢复：npm run imagery:tiles
+//   （默认 --max 7）并把这里的 maxZ 改回 7、resKm 改回 0.489。
 export const IMAGERY_SOURCES = [
+  { k: 'bmTiles', zh: '高精', en: 'High', tiles: 'bmng', maxZ: 6, resKm: 0.978, vramMB: 268, credit: 'NASA Blue Marble' },
   { k: 'bm16k', zh: '16K', en: '16K', w: 16384, h: 8192, resKm: 2.45, vramMB: 716, credit: 'NASA Blue Marble', url: new URL('./globe3d/textures/16k_earth_bmng.jpg', import.meta.url).href },
   { k: 'bm8k', zh: '8K', en: '8K', w: 8192, h: 4096, resKm: 4.9, vramMB: 179, credit: 'NASA Blue Marble', url: new URL('./globe3d/textures/8k_earth_bmng.jpg', import.meta.url).href }
 ]
 
-export const DEFAULT_IMAGERY = 'bm16k'
+export const DEFAULT_IMAGERY = 'bmTiles'
 
 export function imagerySource(k) {
   return IMAGERY_SOURCES.find((s) => s.k === k) || IMAGERY_SOURCES[0]

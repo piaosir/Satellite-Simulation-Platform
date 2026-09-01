@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import Icon from '../components/Icon.vue'
 import { checkNtnBandwidth } from '../shared/ntnLimits.js'
-import { MOD_FACTORS, parseFrac, rateChain, rateDisplays, infoRateFrom, anchorOf } from '../shared/carrierRate.js'
+import { modFactorOf, parseFrac, rateChain, rateDisplays, infoRateFrom, anchorOf } from '../shared/carrierRate.js'
 
 // 载波信号参数面板 —— 严格照搬小程序载波信号卡片：DVB/MODCOD 快选、Eb/N₀⇄Es/N₀ 切换（带换算）、
 // 频谱效率⇄帧效率切换、速率换算链（信息速率/码片速率/符号率/载波带宽，编辑任一个反算其余）。
@@ -19,7 +19,7 @@ const props = defineProps({
 // 调制因子/分数解析/换算链都在 shared/carrierRate.js（面板与资源库自动命名共用一份口径）
 const num = (v, d) => { const n = parseFloat(v); return isNaN(n) ? d : n }
 
-const modFactor = computed(() => MOD_FACTORS[props.form.modulation] || 2)
+const modFactor = computed(() => modFactorOf(props.form.modulation) || 2)
 const fecV = computed(() => parseFrac(props.form.fec, 0.75))
 const rsV = computed(() => parseFrac(props.form.rsCode, 188 / 204))
 const mV = computed(() => num(props.form.m, 1))
@@ -29,7 +29,15 @@ const kComb = computed(() => (fecV.value * rsV.value * modFactor.value) / mV.val
 // 频谱效率 η = 调制因子·fec·rsCode / (滚降·扩频)
 const spectralEff = computed(() => modFactor.value * fecV.value * rsV.value / (bwV.value * mV.value))
 
-const modOptions = computed(() => props.options.modulation || [{ value: 'QPSK', label: 'QPSK' }])
+// 调制方式下拉：内置那批 + 【当前这份配置正用着的那个】。
+// MODCOD 表如今可以按「制式族 + 星座阶数 M」现造出内置表里没有的档（如 1024QAM），套用它之后
+// 若下拉里没有这一项，select 会显示成空白 —— 值还在、算得也对，但看上去像没选调制方式。
+const modOptions = computed(() => {
+  const base = props.options.modulation || [{ value: 'QPSK', label: 'QPSK' }]
+  const cur = props.form.modulation
+  if (!cur || base.some((o) => o.value === cur)) return base
+  return modFactorOf(cur) != null ? base.concat([{ value: cur, label: cur }]) : base
+})
 const dvbStandards = computed(() => props.options.dvbStandards || [{ value: 'custom', label: '自定义' }])
 const modcodList = computed(() => (props.options.modcod && props.options.modcod[props.form.dvbStandard]) || [])
 
@@ -99,19 +107,32 @@ const rsAlert = computed(() => {
 })
 
 // —— DVB / MODCOD ——
+// MODCOD 表如今是用户可编辑的库（文件管理 · MODCOD 表：可增删条目、可新建整个标准），下标不再稳定：
+// 光存 modcodIndex 的话，用户在表里插一行，所有旧配置的下拉就整体指到隔壁那条去了。故【同时记名字】，
+// 回显以名字为准、老配置（没有名字）退回下标；名字在表里找不到（被删/改名）就回到「请选择」。
+// 注意这只影响下拉的回显：选中那一刻七个值已整套落进表单各字段，算出来的数与本变更无关。
+const modcodSel = computed(() => {
+  const list = modcodList.value
+  const nm = props.form.modcodLabel
+  if (nm) return list.findIndex((m) => m.label === nm)
+  const i = parseInt(props.form.modcodIndex)
+  return (i >= 0 && i < list.length) ? i : -1
+})
 function onDvbChange(e) {
   props.form.dvbStandard = e.target.value
   props.form.modcodIndex = -1
+  props.form.modcodLabel = ''
 }
 function applyModcod(e) {
   const i = parseInt(e.target.value)
   const mc = modcodList.value[i]; if (!mc) return
   props.form.modcodIndex = i
+  props.form.modcodLabel = mc.label
   props.form.modulation = mc.modulation
   props.form.fec = mc.fec
   props.form.rsCode = mc.rsCode
   props.form.bandwidthFactor = String(mc.bandwidthFactor)
-  props.form.ebno = mc.threshold.toFixed(2)
+  props.form.ebno = Number(mc.threshold).toFixed(2)
   props.form.noiseRatioMode = mc.noiseRatioMode
   rsEditing.value = null   // MODCOD 整套覆写了 rsCode，编辑中的原文作废
 }
@@ -168,7 +189,7 @@ function onBwInput(e) { setAnchor('bw', e.target.value) }
         </select>
       </label>
       <label v-if="form.dvbStandard !== 'custom'" class="bb-f bb-wide"><span class="bb-l">MODCOD</span>
-        <select :value="form.modcodIndex" class="bb-i" @change="applyModcod">
+        <select :value="modcodSel" class="bb-i" @change="applyModcod">
           <option :value="-1" disabled>请选择</option>
           <option v-for="(mc, i) in modcodList" :key="i" :value="i">{{ mc.label }}</option>
         </select>

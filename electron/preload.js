@@ -200,6 +200,12 @@ contextBridge.exposeInMainWorld('api', {
     model: () => ipcRenderer.invoke('report:print:model'),
     ready: () => ipcRenderer.send('report:print:ready')
   },
+  // MODCOD 表（文件管理 · 调制编码）：整份清单进出，主进程只落「与内置表的差异」
+  modcod: {
+    list: () => ipcRenderer.invoke('modcod:list'),
+    save: (standards) => ipcRenderer.invoke('modcod:save', standards),
+    reset: (key) => ipcRenderer.invoke('modcod:reset', key)
+  },
   // 通用表格 ⇄ Excel：模型进、工作簿出；导入回 { sheets:[{ name, rows }] }，列匹配在渲染端
   gridXlsx: {
     export: (payload) => ipcRenderer.invoke('grid:exportXlsx', payload),

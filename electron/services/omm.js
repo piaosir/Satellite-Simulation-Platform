@@ -183,18 +183,25 @@ module.exports = function createOmm(getCore) {
     return null
   }
   // 离线兜底：在「用户缓存」与「内置快照」间取更新的一版（有更新用更新）。返回 { text, fetchedAt, source } 或 null。
+  // ★先比时间戳、只读赢的那一份正文：两份都读出来只为比一个时间太贵 —— active 组明文约 5MB，
+  // 而「缓存优先即时出图」那条路（cacheOnly）要一口气过 17 组，白读 + 白解压一遍能把纯读盘的这一档
+  // 也拖成秒级，而这一档存在的全部意义就是别让用户等。赢家读出来是坏的（截断/非 OMM）才回头读另一份。
   function offlineBest(key) {
     const cf = csvCacheFile(key)
-    let cache = null
-    try { const c = fs.readFileSync(cf, 'utf8'); if (valid(c)) cache = { text: c, fetchedAt: cacheMtime(cf), source: 'cache' } } catch {}
-    const b = readBundled(key)
-    const bundled = b ? { text: b.text, fetchedAt: b.time, source: 'bundled' } : null
-    if (cache && bundled) {
-      const ct = Date.parse(cache.fetchedAt || 0) || 0
-      const bt = Date.parse(bundled.fetchedAt || 0) || 0
-      return bt > ct ? bundled : cache   // 内置快照比用户缓存新则用内置，否则用用户缓存
-    }
-    return cache || bundled || null
+    const readCache = () => { try { const c = fs.readFileSync(cf, 'utf8'); if (valid(c)) return { text: c, fetchedAt: cacheMtime(cf), source: 'cache' } } catch {} ; return null }
+    const readBun = () => { const b = readBundled(key); return b ? { text: b.text, fetchedAt: b.time, source: 'bundled' } : null }
+    // ★ 时间戳一律走 msOf：不能写 Date.parse(x || 0) —— 缺时间时那是 Date.parse("0")，V8 把它
+    //   解析成 2000-01-01（946656000000）而不是 NaN，于是「没有缓存」被当成「缓存是 2000 年的」，
+    //   下面按 0 判空的分支全部失效（现结果碰巧不受影响，因为两侧同一套兜底，但这是颗雷）。
+    const msOf = (v) => { const t = v ? Date.parse(v) : NaN; return Number.isFinite(t) ? t : 0 }
+    const ct = msOf(cacheMtime(cf))   // 用户缓存落盘时间（无缓存 → 0）
+    const man = bundledManifest()
+    const bg = man && man.groups && man.groups[key]
+    const bTime = (bg && bg.generatedAt) || (man && man.generatedAt) || null
+    const bt = hasBundled(key) ? msOf(bTime) : 0   // 内置快照生成时间（无该组 / 无 manifest → 0）
+    if (ct && bt) return bt > ct ? (readBun() || readCache()) : (readCache() || readBun())
+    if (bt && !ct) return readBun() || readCache()
+    return readCache() || readBun()   // 只有缓存、或两边时间都读不出来：按原口径依次试
   }
   // 本机是否已有可回落的数据（用户缓存 / 内置快照）——只做存在性探测，不读正文
   // （active 组明文约 5MB，判据用不着解压整份，别在直连成功的路径上白读盘）。

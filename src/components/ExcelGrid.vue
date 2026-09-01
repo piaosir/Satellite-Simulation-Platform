@@ -15,10 +15,12 @@ const props = defineProps({
   serial: { type: Boolean, default: true },   // 左侧序号列（点/拖选整行）
   rowClass: { type: Function, default: null },  // (row, ri) => class
   cellClass: { type: Function, default: null }, // (row, col) => class
+  cellTip: { type: Function, default: null },   // (row, col) => 悬停读数（不占版面，放派生量正好）
   headTip: { type: Function, default: null },   // (col) => title
   headUnit: { type: Function, default: null },  // (col) => 单位（动态单位列覆盖 col.unit）
   emptyText: { type: String, default: '暂无数据。' },
   addLabel: { type: String, default: '' },    // 非空则在表尾渲染「＋ …」追加行按钮，点击 emit('add')
+  delLabel: { type: String, default: '' },    // 非空则在追加行按钮旁渲染「删除所选行」（删的是选区跨过的那几行）
   actionsWidth: { type: Number, default: 0 }  // >0 时渲染操作列（右侧），内容走 #actions 插槽
 })
 const emit = defineEmits(['add', 'row-enter', 'row-leave'])
@@ -30,6 +32,10 @@ const vcols = computed(() => (g.visCols ? g.visCols.value : props.cols))
 const unitOf = (c) => (props.headUnit ? props.headUnit(c) : c.unit)
 const colSpanAll = computed(() => vcols.value.length + (props.serial ? 1 : 0) + (props.actionsWidth > 0 ? 1 : 0) + 1)
 const menuRow = computed(() => { const r = g.rect.value; return r.r0 < 0 ? 0 : r.r1 - r.r0 + 1 })
+// 枚举列下拉：当前格所在的列/行与它此刻的值（值用于给选中项打勾）
+const pickCol = computed(() => (g.pick.open ? vcols.value[g.pick.ci] || null : null))
+const pickRow = computed(() => (g.pick.open ? rows.value[g.pick.ri] || null : null))
+const pickCurrent = computed(() => (pickCol.value && pickRow.value ? String(props.text(pickRow.value, pickCol.value)) : ''))
 
 // ===== 冻结列的量与条（照搬 StationGrid：偏移实测 → CSS 变量；条画在格子之上、不随横滚跑）=====
 const fzH = ref(0)                    // 冻结条高度＝滚动容器可视高（天然让开底部横条）
@@ -157,7 +163,7 @@ function endFzDrag() {
               @contextmenu="g.rowHeadMenu($event, ri)">{{ ri + 1 }}</td>
           <td v-for="(c, ci) in vcols" :key="c.key" class="eg-c"
               :class="[{ n: c.num, ed: g.colEditable(c), sel: g.inSel(ri, ci), active: g.isActive(ri, ci), editing: g.isEdit(ri, ci), fillp: g.inFill(ri, ci), froz: g.isFrozen(ci) }, cellClass ? cellClass(r, c) : null]"
-              :style="g.fzStyle(ci)"
+              :style="g.fzStyle(ci)" :title="cellTip ? cellTip(r, c) : null"
               @mousedown="g.cellDown($event, ri, ci)" @mouseenter="g.cellEnter(ri, ci)"
               @dblclick="g.tryEdit(ri, ci, null)" @contextmenu="g.openMenu($event, ri, ci)">
             <span class="eg-v">{{ text(r, c) }}</span>
@@ -171,17 +177,50 @@ function endFzDrag() {
                    @copy="g.onActiveClip" @cut="g.onActiveClip" />
             <span v-if="g.isFillAnchor(ri, ci) && !g.isEdit(ri, ci)" class="eg-handle" title="拖动/双击向下填充"
                   @mousedown.left.stop.prevent="g.onFillDown" @dblclick.stop="g.onFillDbl"></span>
+            <!-- 枚举列：格右侧一枚 ▾（只在活动格与悬停行露出，免得整列挂满箭头）。
+                 单击即开列表——这类格没有「自由文本」这一层，点开就是它唯一的编辑动作。 -->
+            <span v-if="g.colOptions(c) && g.colEditable(c)" class="eg-dd" title="从列表中选择"
+                  @mousedown.left.stop.prevent="g.openPick(ri, ci, '')"><Icon name="chevron-down" :size="11" /></span>
           </td>
           <td v-if="actionsWidth > 0" class="eg-act"><slot name="actions" :row="r" :ri="ri" /></td>
           <td class="eg-pad"></td>
         </tr>
         <tr v-if="!rows.length"><td class="eg-empty" :colspan="colSpanAll">{{ emptyText }}</td></tr>
         <!-- 表尾追加行：热区只在标签本身，不是整行——整行热区紧挨底部横向滚动条，够一下滚动条就白加一行 -->
-        <tr v-if="addLabel" class="eg-addrow"><td :colspan="colSpanAll">
-          <button type="button" class="eg-addlbl" @mousedown.stop @click="emit('add')"><Icon name="plus" :size="12" /> {{ addLabel }}</button>
+        <tr v-if="addLabel || delLabel" class="eg-addrow"><td :colspan="colSpanAll">
+          <!-- sticky 钉在容器上而不是逐颗按钮上：两颗各自 sticky 到同一个 left，横滚起来会叠在一起 -->
+          <span class="eg-addwrap">
+          <button v-if="addLabel" type="button" class="eg-addlbl" @mousedown.stop @click="emit('add')"><Icon name="plus" :size="12" /> {{ addLabel }}</button>
+          <!-- 删除整行原本只在右键菜单里，那条路既藏得深、又刚被 z-index 埋过一次；摆在追加行旁边最顺手。
+               行数是运行时读数，单开一个 <i> 装 —— 按钮文案保持定串，翻译与断言都好对。 -->
+          <button v-if="delLabel && g.canDelete.value" type="button" class="eg-addlbl del" :disabled="!menuRow"
+                  @mousedown.stop @click="g.deleteRows()"><Icon name="trash" :size="12" /> {{ delLabel }}<i v-if="menuRow" class="eg-addn">{{ menuRow }}</i></button>
+          </span>
         </td></tr>
       </tbody>
     </table>
+
+    <!-- 枚举列的下拉：同样 Teleport 到 body。列表之外还给一个具名插槽，
+         让「按参数现造一项」这种业务专属的入口（如按族 + 星座阶数 M 组合出调制方式）挂在列表下方，
+         而不必把那套东西塞进这个通用组件。 -->
+    <Teleport to="body">
+      <div v-if="g.pick.open" class="eg-pick-mask" @mousedown="g.closePick()" @contextmenu.prevent="g.closePick()" @wheel.prevent>
+        <div class="eg-pick" :class="{ up: g.pick.up }"
+             :style="{ left: g.pick.x + 'px', minWidth: g.pick.w + 'px', [g.pick.up ? 'bottom' : 'top']: g.pick.y + 'px' }"
+             @mousedown.stop>
+          <div v-if="g.pick.filter" class="eg-pick-f">{{ g.pick.filter }}</div>
+          <div class="eg-pick-l">
+            <button v-for="(o, i) in g.pickList.value" :key="o.value" type="button" class="eg-pick-i"
+                    :class="{ hi: i === g.pick.hi, on: pickCurrent === String(o.value) }"
+                    @mouseenter="g.pick.hi = i" @click="g.choosePick(o.value)">
+              <span class="eg-pick-t">{{ o.label == null ? o.value : o.label }}</span>
+              <i v-if="o.note" class="eg-pick-n">{{ o.note }}</i>
+            </button>
+          </div>
+          <slot name="pick-foot" :col="pickCol" :row="pickRow" :apply="g.choosePick" />
+        </div>
+      </div>
+    </Teleport>
 
     <!-- 右键菜单：Teleport 到 body —— 浮窗本体 overflow:hidden，菜单留在窗内会被裁掉 -->
     <Teleport to="body">
@@ -222,6 +261,11 @@ function endFzDrag() {
 </template>
 
 <style scoped>
+/* 枚举列的 ▾ 把手：常态隐形，活动格与悬停行才露出（整列挂满箭头会盖住内容、也吵） */
+.eg-tbl td.eg-c .eg-dd { position: absolute; right: 0; top: 0; bottom: 0; width: 16px; display: none;
+  align-items: center; justify-content: center; color: var(--text-faint); cursor: pointer; background: inherit; }
+.eg-tbl td.eg-c.active .eg-dd, .eg-tbl tbody tr:hover td.eg-c .eg-dd { display: flex; }
+.eg-tbl td.eg-c .eg-dd:hover { color: var(--accent-ui); }
 /* 特异度提醒：基础格样式写的是 `.eg-tbl th, .eg-tbl td`（0,1,1），凡要覆盖它的（内边距/溢出）
    都必须带 .eg-tbl 前缀，否则 `.eg-c { padding:0 }`（0,1,0）压不过去，表现为内边距叠两层。 */
 .eg-scroll { overflow: auto; outline: none; }
@@ -289,13 +333,21 @@ function endFzDrag() {
 .eg-tbl th.eg-pad, .eg-tbl td.eg-pad { padding: 0; }
 .eg-tbl td.eg-empty { text-align: center; color: var(--text-faint); padding: 16px 12px; cursor: default; font-style: italic; }
 .eg-tbl tr.eg-addrow td { padding: 2px 6px; border-bottom: 0; overflow: visible; }
-.eg-addlbl { position: sticky; left: 6px; display: inline-flex; align-items: center; gap: 4px; font: inherit; font-size: var(--fs-2); height: var(--h-ctl); white-space: nowrap; padding: 0 7px; cursor: pointer; color: var(--text-faint); background: transparent; border: 1px solid transparent; border-radius: var(--r-card); }
-.eg-addlbl:hover { color: var(--accent); border-color: var(--border); }
+.eg-addwrap { position: sticky; left: 6px; display: inline-flex; align-items: center; gap: 4px; }
+.eg-addlbl { display: inline-flex; align-items: center; gap: 4px; font: inherit; font-size: var(--fs-2); height: var(--h-ctl); white-space: nowrap; padding: 0 7px; cursor: pointer; color: var(--text-faint); background: transparent; border: 1px solid transparent; border-radius: var(--r-card); }
+.eg-addlbl:hover:not(:disabled) { color: var(--accent); border-color: var(--border); }
 </style>
 
 <style>
 /* 右键菜单 Teleport 到 body，不能用 scoped（scoped 只给组件自身 DOM 打标记，Teleport 出去的节点拿不到） */
-.eg-ctx-mask { position: fixed; inset: 0; z-index: 400; }
+/* ★ 右键菜单 Teleport 到 body，与调用它的浮窗是【同级】，故 z-index 要压得过最高的那层浮窗：
+   文件管理对话框是 2000，原来的 400 会让菜单整个藏在对话框底下（看着像右键没反应）。
+   3000 与下面的枚举列下拉同档（两者互斥，不会同时开），仍低于激活遮罩的 4000。 */
+.eg-addlbl.del { color: var(--text-faint); }
+.eg-addlbl.del:hover:not(:disabled) { color: #d07a72; }
+.eg-addlbl:disabled { opacity: .4; cursor: default; }
+.eg-addn { font-style: normal; margin-left: 5px; font-family: var(--font-mono); color: var(--text-faint); }
+.eg-ctx-mask { position: fixed; inset: 0; z-index: 3000; }
 .eg-ctx { position: fixed; min-width: 176px; padding: 4px; background: var(--surface, var(--bg)); border: 1px solid var(--border-strong, var(--border)); border-radius: var(--r-float); box-shadow: var(--shadow-3); display: flex; flex-direction: column; }
 .eg-ctx-i { display: flex; align-items: center; gap: 12px; width: 100%; font: inherit; font-size: var(--fs-3); text-align: left; padding: 4px 9px; cursor: pointer; background: transparent; color: var(--text); border: 0; border-radius: var(--r-card); white-space: nowrap; }
 .eg-ctx-i > span { flex: 1; }
@@ -304,5 +356,17 @@ function endFzDrag() {
 .eg-ctx-i:disabled { opacity: .4; cursor: default; }
 .eg-ctx-i.danger:hover { background: color-mix(in srgb, #ff6a6a 22%, transparent); }
 .eg-ctx-i.on { color: var(--accent-ui); }
+/* 枚举列下拉浮层 */
+.eg-pick-mask { position: fixed; inset: 0; z-index: 3000; }
+.eg-pick { position: fixed; z-index: 3001; max-height: 260px; max-width: 340px; overflow: hidden; display: flex; flex-direction: column;
+  background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-ctl); box-shadow: var(--shadow-2); }
+.eg-pick-f { flex: none; padding: 3px 8px; font-size: var(--fs-2); color: var(--text-faint); border-bottom: 1px solid var(--border); font-family: var(--font-mono); }
+.eg-pick-l { flex: 1; min-height: 0; overflow: auto; padding: 3px 0; }
+.eg-pick-i { display: flex; align-items: center; gap: 8px; width: 100%; padding: 4px 10px; border: 0; background: none;
+  color: var(--text-muted); font-size: var(--fs-3); text-align: left; cursor: pointer; }
+.eg-pick-i.hi { background: color-mix(in srgb, var(--accent-ui) 16%, transparent); color: var(--text); }
+.eg-pick-i.on { color: var(--accent); }
+.eg-pick-t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.eg-pick-n { flex: none; font-style: normal; font-size: var(--fs-2); color: var(--text-faint); font-family: var(--font-mono); }
 .eg-ctx-sep { height: 1px; margin: 4px 6px; background: var(--border); }
 </style>

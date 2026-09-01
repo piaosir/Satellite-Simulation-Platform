@@ -10,6 +10,7 @@ import { resolveRefId } from '../shared/lbShare.js'
 import { stableStringify } from '../shared/configDirty.js'
 import { migrateLegacyEs } from '../shared/esMigrate.js'
 import { pickColumn, fmtScaled, fmtQty } from '../shared/adaptUnits.js'
+import { isUnitAdaptive, onUnitModeChange } from '../shared/lbUnitMode.js'   // 结果显示单位档（功能区「单位」，出厂锁定）
 import { lbDocT } from '../shared/lbDocI18n.js'
 import { getLang, onLangChange } from '../shared/i18n/runtime.js'   // 报表语言跟随平台语言
 import { syncAutoNames, adoptAutoFlag, withAutoFlag, isAutoNamed, newCfgName, newFolderName, copyNameOf } from '../shared/lbAutoName.js'   // 三库条目自动命名（未被用户改名时，名字随关键参数走）
@@ -28,6 +29,7 @@ import SatellitePanel from './SatellitePanel.vue'
 import WaterfallTable from './WaterfallTable.vue'
 import LbVizPane from '../components/LbVizPane.vue'
 import LbFontCtl from '../components/LbFontCtl.vue'
+import LbUnitCtl from '../components/LbUnitCtl.vue'
 import LbCapFoot from '../components/LbCapFoot.vue'
 import LbCustomColsDialog from '../components/LbCustomColsDialog.vue'
 import { buildPool, makeResolver, evalRows, customFieldDefs, loadDefs, saveDefs, unitOf, schemaInputPool } from '../shared/lbCustomCols.js'   // 自定义列：公式合成新列
@@ -103,7 +105,7 @@ const basebandOpts = ref({})
 // 发信站表新增「载波信号配置」列选择使用哪一份；同一配置可被多个发信站共用，未选(空)即用第一份。
 let _bbSeq = 1
 // nameAuto：条目名是否还随参数自动生成（见 shared/lbAutoName.js）——不传 name 即新建的空名条目，自动
-function makeBasebandConfig(name) { return withAutoFlag({ id: 'bb' + (_bbSeq++), name: name || '', form: { ...defaultsFor(CARRIER_FIELDS), rsCodeMode: 'fraction', dvbStandard: 'custom', modcodIndex: -1, rateAnchor: 'info', rateAnchorValue: null } }, 'carrier') }
+function makeBasebandConfig(name) { return withAutoFlag({ id: 'bb' + (_bbSeq++), name: name || '', form: { ...defaultsFor(CARRIER_FIELDS), rsCodeMode: 'fraction', dvbStandard: 'custom', modcodIndex: -1, modcodLabel: '', rateAnchor: 'info', rateAnchorValue: null } }, 'carrier') }
 const basebandConfigs = reactive([makeBasebandConfig('默认')])
 // 按 id 解析；正常路径（下拉选 / 粘贴 / 批量设值）StationGrid 已把存值归一化成合法 id，
 // 这里按名称兜底匹配只是双保险（防御旧数据或遗漏路径）。都没命中则退到第一份默认配置。
@@ -245,7 +247,7 @@ function applyLibrary(lib) {
   // nameAuto：旧库没存过这一位，按历史默认名推定一次（见 shared/lbAutoName.js 的 adoptAutoFlag）
   const fill = (defFields, kind, extra) => (c, i, pfx) => ({ id: c.id || (pfx + (i + 1)), name: c.name || '', nameAuto: adoptAutoFlag(kind, c), form: { ...defaultsFor(defFields), ...(extra || null), ...c.form } })
   if (Array.isArray(lib.es) && lib.es.length) esConfigs.splice(0, esConfigs.length, ...lib.es.map((c, i) => fill(ES_FIELDS, 'es')(c, i, 'esb')))
-  if (Array.isArray(lib.carrier) && lib.carrier.length) basebandConfigs.splice(0, basebandConfigs.length, ...lib.carrier.map((c, i) => fill(CARRIER_FIELDS, 'carrier', { rsCodeMode: 'fraction', dvbStandard: 'custom', modcodIndex: -1, rateAnchor: 'info', rateAnchorValue: null })(c, i, 'bbb')))
+  if (Array.isArray(lib.carrier) && lib.carrier.length) basebandConfigs.splice(0, basebandConfigs.length, ...lib.carrier.map((c, i) => fill(CARRIER_FIELDS, 'carrier', { rsCodeMode: 'fraction', dvbStandard: 'custom', modcodIndex: -1, modcodLabel: '', rateAnchor: 'info', rateAnchorValue: null })(c, i, 'bbb')))
   if (Array.isArray(lib.sat) && lib.sat.length) satConfigs.splice(0, satConfigs.length, ...lib.sat.map((c, i) => {
     const e = fill(SAT_FIELDS, 'sat')(c, i, 'satb')
     e.grd = normGrd(c.grd)   // 旧库无 grd → 空匹配（旧场景里的 grdSel 由 applyState 播种，见 adoptSceneGrd）
@@ -456,6 +458,10 @@ function cellSubFn(f, row) {
   if (v == null || v === '' || v === '—') return null
   return f.key === 'stationId' ? `EIRP ${v} dBW` : `G/T ${v} dB/K`
 }
+// 功能区「单位」档的响应式副本：模板里就地算的读数（功放尾标等）直接吃它——fmtQty 内部读的是
+// 模块态，不响应式，没算过链路时切档就不会有任何东西触发重渲染。值由 onUnitModeChange 更新。
+const unitAdaptive = ref(isUnitAdaptive())
+
 // 「地球站配置」单元格行内尾标：发端配置(stationId)名之后贴该行实时算出的功放功率（就在第二行 EIRP 之上）。
 // 只给发信站——功放是发射链的量，收端那格没有它。库里那一项是「功放功率预设」，这里是按本行几何/载波
 // 与计算方式实时解出的功放功率：口径同为引擎 paRecommendation（含回退的功放输出），故「设置功放功率」
@@ -465,7 +471,7 @@ function cellTagFn(f, row) {
   const m = computedVals.value[row._id]
   const w = m ? parseFloat(m._paW) : NaN
   // 取 4 位有效数字：尾标是一眼扫过的读数，引擎原串的 40.000 在这里读作「40 W」（精确值看结果列/瀑布）
-  return isFinite(w) ? fmtQty(Number(w.toPrecision(4)), 'W') : null
+  return isFinite(w) ? fmtQty(Number(w.toPrecision(4)), 'W', unitAdaptive.value) : null
 }
 // shallowRef：避免 Vue 把每条链路的 data(引擎结果) 深度代理成 reactive，
 // 否则传给 waterfall IPC 时结构化克隆会报 “could not be cloned”。
@@ -944,33 +950,7 @@ async function compute() {
     sweepParamsByRow.value = sweepStore
     const prevSel = sel.value
     links.value = out
-    // 结果列写回 computedVals（全部 RESULT_DEFS 都算：事后勾选新列即刻可见，无需重算）。
-    // 写入前按整列共选显示单位（见 resColUnits），值与列头单位一致
-    const colVal = (d, def) => (def.key === 'capacityMbps' ? capacityKbpsOf(d) / 1000 : parseFloat(d && d[def.key]))
-    const colAd = {}
-    for (const def of RESULT_DEFS) {
-      if (!def.unit) continue
-      const p = pickColumn(out.map((l) => (l.data ? colVal(l.data, def) : NaN)), def.unit)
-      if (p) colAd[def.key] = p
-    }
-    resColUnits.value = Object.fromEntries(Object.entries(colAd).map(([k, p]) => [k, p.unit]))
-    for (const l of out) {
-      const d = l.data
-      const patch = {}
-      for (const def of RESULT_DEFS) {
-        if (!d) { patch['_' + def.key] = '—'; continue }
-        const ad = colAd[def.key]
-        if (def.key === 'capacityMbps') {
-          const mbps = colVal(d, def)
-          patch._capacityMbps = !isFinite(mbps) ? '—' : ad ? fmtScaled(ad.conv(mbps)) : mbps.toFixed(3)
-        } else {
-          const v = d[def.key]
-          const n = parseFloat(v)
-          patch['_' + def.key] = (v === undefined || v === null || v === '') ? '—' : (ad && isFinite(n)) ? fmtScaled(ad.conv(n)) : v
-        }
-      }
-      setVals(l.rowId, patch)
-    }
+    writeResultVals(out)
     // 计算后保持当前查看位置（按行 _id 定位；行数变化则夹取原下标），不跳回第一条
     let keepIdx = prevSel ? out.findIndex((l) => l.rowId === prevSel.rowId) : -1
     if (keepIdx < 0) keepIdx = Math.min(selected.value, out.length - 1)
@@ -984,11 +964,48 @@ async function compute() {
   }
 }
 
+// 结果列写回 computedVals（全部 RESULT_DEFS 都算：事后勾选新列即刻可见，无需重算）。
+// 写入前按整列共选显示单位（见 resColUnits），值与列头单位一致——「单位」档锁定时 pickColumn
+// 恒返回 null，于是整列留在引擎基准单位上。切档位不必重算引擎，拿 links 原样再走一遍这里即可。
+function writeResultVals(out) {
+  const colVal = (d, def) => (def.key === 'capacityMbps' ? capacityKbpsOf(d) / 1000 : parseFloat(d && d[def.key]))
+  const colAd = {}
+  for (const def of RESULT_DEFS) {
+    if (!def.unit) continue
+    const p = pickColumn(out.map((l) => (l.data ? colVal(l.data, def) : NaN)), def.unit)
+    if (p) colAd[def.key] = p
+  }
+  resColUnits.value = Object.fromEntries(Object.entries(colAd).map(([k, p]) => [k, p.unit]))
+  for (const l of out) {
+    const d = l.data
+    const patch = {}
+    for (const def of RESULT_DEFS) {
+      if (!d) { patch['_' + def.key] = '—'; continue }
+      const ad = colAd[def.key]
+      if (def.key === 'capacityMbps') {
+        const mbps = colVal(d, def)
+        patch._capacityMbps = !isFinite(mbps) ? '—' : ad ? fmtScaled(ad.conv(mbps)) : mbps.toFixed(3)
+      } else {
+        const v = d[def.key]
+        const n = parseFloat(v)
+        patch['_' + def.key] = (v === undefined || v === null || v === '') ? '—' : (ad && isFinite(n)) ? fmtScaled(ad.conv(n)) : v
+      }
+    }
+    setVals(l.rowId, patch)
+  }
+}
+// 功能区「单位」档改动（本窗切换或别的链路预算窗改的）：结果列就地重排 + 详细预算重取一次。
+// 不碰引擎——档位只管显示，数值一个没变。
+let _offUnitMode = null
+onMounted(() => { _offUnitMode = onUnitModeChange((v) => { unitAdaptive.value = v; if (links.value.length) writeResultVals(links.value); loadWaterfall() }) })
+onBeforeUnmount(() => { if (_offUnitMode) _offUnitMode() })
+
 async function loadWaterfall() {
   const l = sel.value
   if (!l || !l.data) { segments.value = []; return }
   segments.value = await api.linkBudget.waterfall({
     results: JSON.parse(JSON.stringify(l.data)), lang: reportLang.value, orbitType: 'GEO',
+    adaptUnits: isUnitAdaptive(),
     txLocation: String(l.txName || ''), rxLocation: String(l.rxName || '')
   })
 }
@@ -1144,7 +1161,7 @@ function applyState(st) {
   // 内嵌库条目按内容去重并入全局库（adoptEntries 同内容⇒同 id，反复 applyState 映射稳定 → 指纹不误报）；
   // 行引用经映射改写；双表并单表（旧矩阵模式按 m×n 展开，常规按序号配对、短侧末行复用补齐）。
   // ① 载波库（更旧的单一 carrierForm 包成一份）
-  const bbUi = { rsCodeMode: 'fraction', dvbStandard: 'custom', modcodIndex: -1, rateAnchor: 'info', rateAnchorValue: null }
+  const bbUi = { rsCodeMode: 'fraction', dvbStandard: 'custom', modcodIndex: -1, modcodLabel: '', rateAnchor: 'info', rateAnchorValue: null }
   // nameAuto：旧场景条目名多是「配置1」这类占位名 → 按历史默认名推定，并库后交给自动命名接手
   const bbEntries = (Array.isArray(st.basebandConfigs) && st.basebandConfigs.length)
     ? st.basebandConfigs.map((c) => ({ id: c.id, name: c.name || '配置', nameAuto: adoptAutoFlag('carrier', c), form: { ...defaultsFor(CARRIER_FIELDS), ...bbUi, ...c.form } }))
@@ -1589,7 +1606,7 @@ onMounted(async () => {
                 保存<span v-if="dirtyFlag" class="lbx-dirty" title="有未保存的修改"></span>
               </button>
               <button class="lbr-big" :disabled="!api" title="分享 / 导入：配置（可多选）+ 资源库条目（可多选）——分享码 / 文件 / 发给用户ID" @click="openShareDlg"><Icon name="external-link" :size="16" />分享</button>
-              <button class="lbr-big" :class="{ spin: refreshing }" :disabled="!api" title="刷新最新设置（GRD 卫星树 / 天线设置 / 实时星位 等）" @click="refreshLatest">
+              <button class="lbr-big" :class="{ spin: refreshing }" :disabled="!api" title="刷新最新设置（GRD 卫星树 / 天线设置 / 实时星位 / 城市库 / 载波信号选项 等）" @click="refreshLatest">
                 <svg viewBox="0 0 16 16" class="lbr-svg"><path d="M13 8a5 5 0 1 1-1.46-3.54" /><path d="M13 2.6v2.6h-2.6" /></svg>
                 刷新
               </button>
@@ -1628,6 +1645,7 @@ onMounted(async () => {
             </div>
             <div class="lbr-cap">导出</div>
           </div>
+          <LbUnitCtl />
           <LbFontCtl />
           <div class="lbr-status">
             <span v-if="notice" class="lb-note">{{ notice }}</span>

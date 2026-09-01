@@ -11,6 +11,7 @@ import { computeVisibility, accessWindows, orbitCanReach, ringCentroid, timeCove
 import { makeCoverageGrid, createCoverageRun, buildCoverageFillBands, estimateCoverageWork, fomMeta, COVERAGE_FOMS } from './coverageGrid.js'
 import { schemeColorsRGB } from '../grd/colormap.js'
 import { geoSlotOfSatrec } from '../../shared/geoSlot.js'
+import { normTzMode } from '../../shared/tz.js'
 
 const KEY = 'globe3d/visibility'
 
@@ -50,7 +51,7 @@ export function useVisibility({
   const accessMsg = ref('')
   const accessHorizonMin = ref(24 * 60)   // 上次计算【实际使用】的时窗（分）——clamp 后的真值，供时间覆盖分母与甘特横轴（不随输入框漂移）
   const accessBaseMs = ref(0)             // 上次计算的时窗起点（绝对 ms，=按下「计算过境」时的仿真时钟）；0=尚未计算。表格/时间轴/导出的绝对时刻全锚在它上
-  const accessTz = ref('local')           // 过境时刻显示时区：'local' 本地 | 'utc'（导出 Excel 恒两者都给，此开关只管屏上）
+  const accessTz = ref('local')           // 过境时刻显示时区档位：'local' 本机 | 'utc' | 数字＝固定偏移(分)，口径见 shared/tz.js（导出 Excel 恒双时区，此档位只管屏上）
   const accOrder = ref('time')            // 过境表行序：'time'=全星按 AOS 混排（带日期分隔）| 'sat'=按星分组（与甘特同序）
   const accessScanned = ref(0)            // 上次计算实际扫描的候选星数（粗筛后），供导出摘要
   // ==================== 覆盖分析（Coverage / FOM）——「覆盖」模式（复刻 STK Coverage，与 access 同级）====================
@@ -335,7 +336,7 @@ export function useVisibility({
         if (typeof d.showLines === 'boolean') showLines.value = d.showLines
         if (typeof d.satSrc === 'string' && /^(|[gs]:[\w-]+)$/.test(d.satSrc)) satSrc.value = d.satSrc   // 宿主 watch 到非空值即解析；死 id 由宿主回退
         if (['now', 'access', 'coverage'].includes(d.mode)) mode.value = d.mode   // 记住上次模式（别每次都回瞬时可见）
-        if (d.accessTz === 'utc' || d.accessTz === 'local') accessTz.value = d.accessTz
+        if (d.accessTz != null) accessTz.value = normTzMode(d.accessTz, accessTz.value)
         if (d.accOrder === 'time' || d.accOrder === 'sat') accOrder.value = d.accOrder
         const c = d.cov
         if (c && typeof c === 'object') {

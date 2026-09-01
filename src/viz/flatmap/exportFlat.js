@@ -37,7 +37,11 @@ if (!SvgContext.prototype.__perfPatched) {
 // 否则整幅世界图：逻辑尺寸取屏幕上整幅世界图 fit 后的大小（fittedWorldSize），仅把像素倍率补足到
 // base×factor 的输出分辨率 → 恒定屏幕 px 的线宽/图标/注记与软件里整幅图完全同比例（所见即所得）。
 // 返回 PNG 字节（Uint8Array）。
-export async function renderFlatPNG(flat, { base = 2000, factor = 2, view = false } = {}) {
+// targetW：直接指定输出位图的像素宽（4K=3840 / 8K=7680），给了它就顶替 factor ——
+// 用户心里想的是「出一张 8K 图」，不是「出一张 3.2 倍图」，而 2D 这条按倍率算出来的宽度还随
+// 视口尺寸浮动（同一个 4× 在 1280 宽和 1920 宽的窗口上出的图不一样大）。
+// 上限来自 Chromium 画布：单边 ≤ 65535 且总面积 ≤ 268 MPix，超了 toBlob 直接返回 null。
+export async function renderFlatPNG(flat, { base = 2000, factor = 2, targetW = 0, view = false } = {}) {
   let W, H, ps = factor
   if (view) { const v = flat.viewportSize(); W = Math.max(1, Math.round(v.w)); H = Math.max(1, Math.round(v.h)) }
   else {
@@ -45,11 +49,22 @@ export async function renderFlatPNG(flat, { base = 2000, factor = 2, view = fals
     if (f) { W = f.w; H = f.h; ps = (base * factor) / W }   // 输出位图仍为 base×factor 宽
     else { W = base; H = Math.round(base / 2) }             // 画布未就绪的兜底：按名义尺寸出图
   }
+  if (targetW > 0) ps = targetW / W
+  // 画布面积封顶：超限时 toBlob 返回 null，报错信息又只有一句「toBlob 失败」，极难对上因果。
+  // 这里主动按面积折算回去，并把实际出图尺寸随返回值带出去，文件名写实数不写请求数。
+  const MAXPIX = 268435456, MAXDIM = 65535
+  ps = Math.min(ps, Math.sqrt(MAXPIX / (W * H)), MAXDIM / W, MAXDIM / H)
   const cv = document.createElement('canvas')
   cv.width = Math.round(W * ps); cv.height = Math.round(H * ps)
+  // 先把这次出图要用的影像瓦片等到位，再同步渲染 —— 少了这一步，导出的图上会缺一大块
+  // （exportRender 是同步的，当时不在缓存里的片就永远没画上）。没开影像时是个空操作。
+  if (flat.ensureImagery) await flat.ensureImagery({ width: W, height: H, pixelScale: ps, view })
   flat.exportRender(cv.getContext('2d'), { width: W, height: H, pixelScale: ps, view, raster: true })
   const blob = await new Promise((res, rej) => cv.toBlob((b) => b ? res(b) : rej(new Error('toBlob 失败')), 'image/png'))
-  return new Uint8Array(await blob.arrayBuffer())
+  const bytes = new Uint8Array(await blob.arrayBuffer())
+  // 兼容旧调用：返回值仍可当 Uint8Array 用（老调用方只取字节），实际尺寸挂在自有属性上。
+  bytes.outW = cv.width; bytes.outH = cv.height
+  return bytes
 }
 
 // 矢量 PDF：svgcanvas 录制 → svg2pdf。fonts={cjk,latin,latinBold,latinItalic} 各为 TTF 的 base64

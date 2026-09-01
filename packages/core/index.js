@@ -25,21 +25,16 @@ const adaptiveUnits = require('./utils/adaptiveUnits.js');
 const envField = require('./utils/envField.js');
 const linkSweep = require('./utils/linkSweep.js');
 const lbOutputDefs = require('./utils/lbOutputDefs.js');
+const modcodTables = require('./utils/modcodTables.js');
 
 // 载波信号选项（调制 / FEC / DVB 标准 / 各 MODCOD 预设表），供载波信号面板的下拉与快选用。
-function basebandOptions() {
+// store = 用户的 MODCOD 改写层（文件管理里编辑的那份，见 utils/modcodTables.js）；不传即纯内置表。
+function basebandOptions(store) {
   return {
     modulation: constants.MODULATION_OPTIONS,
     fec: constants.FEC_OPTIONS,
-    dvbStandards: constants.DVB_STANDARD_OPTIONS,
-    modcod: {
-      'DVB-S': constants.DVBS_MODCOD_TABLE,
-      'DVB-S2': constants.DVBS2_MODCOD_TABLE,
-      'DVB-S2X': constants.DVBS2X_MODCOD_TABLE,
-      'DVB-RCS2': constants.DVB_RCS2_MODCOD_TABLE,
-      '3GPP NR-NTN': constants.NR_NTN_MODCOD_TABLE,
-      '3GPP NB-IoT NTN': constants.NB_IOT_NTN_MODCOD_TABLE
-    }
+    dvbStandards: modcodTables.standardOptions(store),
+    modcod: modcodTables.modcodMap(store)
   };
 }
 
@@ -155,6 +150,8 @@ module.exports = {
   searchCities: cities.searchCities,
   // 载波信号选项（调制/FEC/DVB/MODCOD）
   basebandOptions,
+  // MODCOD 表的「内置 + 用户改写」合并层（文件管理 · 调制编码 的编辑口径）
+  modcodTables,
   // 日凌预报（v5 物理恶化门限判据）+ ICS 日历构建
   calculateSunOutage: sunOutage.calculateSunOutage,
   sunOutageBands: sunOutage.BAND_PARAMS,

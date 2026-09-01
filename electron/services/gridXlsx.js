@@ -5,26 +5,38 @@
 //   「哪一列是经度」之类的匹配全在渲染端 src/shared/gridXlsx.js 做。
 //   与频率计划那份（freqPlanXlsx.js）分工相同，区别是那份带版式、这份是给人改完再导回来的数据表。
 //
-// 导出版式刻意朴素（首行表头 + 冻结 + 筛选器 + 数字列真存数字）：这些表是「导出→在 Excel 里改→
-// 再导回来」的往返载体，任何标题条/合并格都会让「首行=表头」这条约定破功。要好看的交付件走报表模块。
+// 导出版式两档（model.style）：
+//   'plain'（缺省）—— 灰底表头 + 细竖线 + 筛选器，屏幕上一眼看清列边界，供随手改数用；
+//   'report'        —— 《技术文档标准模板》的三线表，与链路预算报告里的表逐项同款：
+//                      顶线 1.5pt / 栏目线 0.75pt / 底线 1.5pt、无竖线、无底纹、表头不加粗，
+//                      中文宋体（表头黑体）、西文与数字 Times New Roman。
+// ★ 换档只换「怎么画」，不动「首行 = 表头 + 纯数据」这条往返约定 —— 任何标题条/合并格都会让
+//   它破功，故两档都没有。三线表档因此既导得回来，拿去当交付件也不用再排一遍版。
 //
-// 字体与报表同一套（西文/数字 Times New Roman，中文靠字体链接回落宋体）——见 report.js 的 FNT。
+// 字体归位（中西文分家的富文本拆分）与报表同走 xlsxFont.js 一份实现。
 
 const ExcelJS = require('exceljs')
 const { autofitBook } = require('./reportAutofit')
+const { FNT, SONG, HEI, applyBookFont } = require('./xlsxFont')
+const { TPL: RSTY } = require('./reportStyle')
 
-const FNT = 'Times New Roman'
 const INK = 'FF17181A'
 const RULE = 'FF3A3F45'
 const HEAD_FILL = 'FFEDEFF2'
 
 const MED = { style: 'medium', color: { argb: RULE } }
 const HAIR = { style: 'hair', color: { argb: 'FFB9BEC5' } }
+// 三线表那三根线（模板口径：顶/底 1.5pt、栏目线 0.75pt，一律纯黑、无竖线）
+const R_MED = { style: 'medium', color: { argb: 'FF000000' } }
+const R_THIN = { style: 'thin', color: { argb: 'FF000000' } }
 
 // 小数位 → Excel 数字格式；fix 缺省交给 Excel 通用格式（整数不补零、长小数不截断）
 const numFmt = (fix) => (fix == null || !(fix >= 0) ? null : (fix === 0 ? '0' : '0.' + '0'.repeat(fix)))
 
-// 工作表名的非法字符（Excel 禁 : \ / ? * [ ]），且上限 31 字符；重名自动加序号由调用处保证
+// 工作表名的非法字符（Excel 禁 : \ / ? * [ ]），且上限 31 字符；重名自动加序号由调用处保证。
+// ★ 渲染端有一份逐字相同的镜像（src/shared/gridXlsx.js 的 safeSheetName），供「表名＝标准名」这类
+//   往返表在导出前预演一次改写结果 —— 两份漂了，导出的表名与导入时反查的表名就对不上号。
+//   packages/core/test/modcodXlsx.test.mjs 逐条对拍，改这里必须改那边。
 function safeSheetName(name, used) {
   let s = String(name == null ? '' : name).replace(/[:\\/?*[\]]/g, '·').trim() || 'Sheet'
   if (s.length > 31) s = s.slice(0, 31)
@@ -46,6 +58,7 @@ async function buildGridWorkbook(model) {
   const wb = new ExcelJS.Workbook()
   wb.creator = (model && model.creator) || '卫星仿真平台'
   wb.created = new Date()
+  const rpt = (model && model.style) === 'report'
   const used = new Set()
   const sheets = (model && model.sheets) || []
   for (const sh of sheets) {
@@ -59,12 +72,19 @@ async function buildGridWorkbook(model) {
     header.forEach((label, i) => {
       const cell = hr.getCell(i + 1)
       cell.value = label == null ? '' : String(label)
-      cell.font = { name: FNT, size: 10, bold: true, color: { argb: INK } }
-      cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: false }
-      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: HEAD_FILL } }
-      cell.border = { top: MED, bottom: MED, left: HAIR, right: HAIR }
+      if (rpt) {
+        // 三线表表头：黑体、不加粗、不加底纹、无竖线；上顶线 1.5pt、下栏目线 0.75pt
+        cell.font = { name: HEI, size: RSTY.size.table, color: { argb: 'FF000000' } }
+        cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true }
+        cell.border = { top: R_MED, bottom: R_THIN }
+      } else {
+        cell.font = { name: FNT, size: 10, bold: true, color: { argb: INK } }
+        cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: false }
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: HEAD_FILL } }
+        cell.border = { top: MED, bottom: MED, left: HAIR, right: HAIR }
+      }
     })
-    hr.height = 17
+    hr.height = rpt ? 22 : 17
 
     // 数据
     rows.forEach((cells, ri) => {
@@ -74,20 +94,29 @@ async function buildGridWorkbook(model) {
         const v = cells ? cells[ci] : null
         const cell = row.getCell(ci + 1)
         cell.value = (v === '' || v === undefined || v === null) ? null : v
-        cell.font = { name: FNT, size: 10, color: { argb: INK } }
-        cell.alignment = { vertical: 'middle', horizontal: c.num ? 'right' : 'left' }
-        cell.border = { left: HAIR, right: HAIR, bottom: HAIR }
+        if (rpt) {
+          // 中文格先按宋体登记意图，写盘前由 applyBookFont 把中西混排拆成富文本
+          cell.font = { name: c.num ? FNT : SONG, size: RSTY.size.table, color: { argb: 'FF000000' } }
+          // 数字右对齐；文本按列声明，缺省居中（模板表内文字即居中）
+          cell.alignment = { vertical: 'middle', horizontal: c.num ? 'right' : (c.align || 'center') }
+        } else {
+          cell.font = { name: FNT, size: 10, color: { argb: INK } }
+          cell.alignment = { vertical: 'middle', horizontal: c.num ? 'right' : (c.align || 'left') }
+          cell.border = { left: HAIR, right: HAIR, bottom: HAIR }
+        }
         if (c.num) { const f = numFmt(c.fix); if (f) cell.numFmt = f }
       }
+      if (rpt) row.height = 16
     })
     // 末行下沿收一条粗线（三线表的下横线；空表时收在表头下方）
     const last = ws.getRow(Math.max(1, rows.length + 1))
     for (let ci = 0; ci < header.length; ci++) {
       const cell = last.getCell(ci + 1)
-      cell.border = Object.assign({}, cell.border, { bottom: MED })
+      cell.border = Object.assign({}, cell.border, { bottom: rpt ? R_MED : MED })
     }
     if (header.length) {
-      ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: header.length } }
+      // 筛选器的下拉箭头是画在表头上的可见装饰，三线表不许有 —— 故只在朴素档挂
+      if (!rpt) ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: header.length } }
       header.forEach((_, i) => { const w = cols[i] && cols[i].w; if (w > 0) ws.getColumn(i + 1).width = w })
     }
   }
@@ -96,15 +125,19 @@ async function buildGridWorkbook(model) {
   const notes = sheets.filter((s) => s && s.note)
   if (notes.length) {
     const ws = wb.addWorksheet(safeSheetName('说明', used))
+    const size = rpt ? RSTY.size.table : 10
+    const ink = rpt ? 'FF000000' : INK
     notes.forEach((s, i) => {
       const row = ws.getRow(i + 1)
       row.getCell(1).value = String(s.name || '')
       row.getCell(2).value = String(s.note)
-      for (const c of [1, 2]) row.getCell(c).font = { name: FNT, size: 10, color: { argb: INK } }
-      row.getCell(1).font = { name: FNT, size: 10, bold: true, color: { argb: INK } }
+      row.getCell(2).font = { name: rpt ? SONG : FNT, size, color: { argb: ink } }
+      row.getCell(1).font = { name: rpt ? HEI : FNT, size, bold: !rpt, color: { argb: ink } }
     })
   }
   autofitBook(wb)
+  // 中西文分家：混排格拆成富文本，工作簿主题字体也换成 TNR + 宋体（用户导出后新键入的内容跟着走）
+  if (rpt) applyBookFont(wb)
   return wb.xlsx.writeBuffer()
 }
 
@@ -145,4 +178,4 @@ async function readGridWorkbook(filePath) {
   return { sheets }
 }
 
-module.exports = { buildGridWorkbook, readGridWorkbook }
+module.exports = { buildGridWorkbook, readGridWorkbook, safeSheetName }

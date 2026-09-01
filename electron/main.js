@@ -1,5 +1,15 @@
-const { app, BrowserWindow } = require('electron')
+const { app, BrowserWindow, protocol, net } = require('electron')
 const { join } = require('path')
+
+// 影像瓦片协议：resources/imagery 下的离线金字塔（见 scripts/build-imagery-tiles.mjs）以
+// imagery://tiles/<集>/<z>/<行>/<列>.jpg 供渲染端直接 <img src> 取用。
+// ★ 为什么不走 IPC：一屏最多几十片同时在飞，逐片走 IPC 就是几十次结构化克隆 + 手工造 blob URL
+//   还得自己管回收；协议方式让 Chromium 自己做磁盘/内存缓存，pan 回头看过的地方是零成本。
+// ★ registerSchemesAsPrivileged 必须在 app ready 之前调用，晚一步就静默不生效（不报错）。
+//   standard: <img> 需要它才按常规 URL 解析；supportFetchAPI 留给将来预热/探测用。
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'imagery', privileges: { standard: true, secure: true, supportFetchAPI: true, bypassCSP: true } }
+])
 
 // 强制启用硬件加速：部分老旧集显（常见于国企办公机）落在 Electron 的 GPU 黑名单内，会静默
 // 回退到 SwiftShader 软件渲染——WebGL 改由 CPU 模拟，慢几十倍，是这类机器卡顿的元凶之一。
@@ -488,6 +498,31 @@ function confirmCloseRain() {
 app.whenReady().then(() => {
   if (!gotSingleInstanceLock) return   // 第二个实例：已 app.quit()，但 ready 仍会到，别再建窗口/注册 IPC
   const root = app.getAppPath()
+
+  // imagery://tiles/<集>/<z>/<行>/<列>.jpg → 影像瓦片离线包
+  // ★ 瓦片走 extraResources 放在 app.asar【外面】：整包近 300 MB，塞进单个 asar 既让归档巨大，
+  //   也正是 v1.4.0「装上去打不开」那类目录表错位问题的高风险区。故 build.files 里显式排除、
+  //   由 build.extraResources 原样拷到 resources/imagery。
+  // ★ 用 fs 读而不是 net.fetch('file://…')：本仓库路径含中文，拼 file:// URL 要自己做百分号编码，
+  //   少编一次就是「开发机好好的、换台机器整片黑」。fs 收的是原生路径，没有这一层。
+  const fsp = require('fs/promises')
+  const IMAGERY_DIR = app.isPackaged ? join(process.resourcesPath, 'imagery') : join(root, 'resources', 'imagery')
+  // 路径逐段白名单（集名只放行 [A-Za-z0-9_-]、z/行/列必须纯数字），故 .. 之类穿越在解析阶段就没了。
+  protocol.handle('imagery', async (req) => {
+    try {
+      const u = new URL(req.url)
+      if (u.hostname !== 'tiles') return new Response('bad host', { status: 400 })
+      const seg = u.pathname.replace(/^\/+/, '').split('/')
+      if (seg.length !== 4) return new Response('bad path', { status: 400 })
+      const [set, z, row] = seg
+      const col = seg[3].replace(/\.jpg$/i, '')
+      if (!/^[A-Za-z0-9_-]+$/.test(set) || ![z, row, col].every((s) => /^\d+$/.test(s))) return new Response('bad seg', { status: 400 })
+      // 缺片返回 404 而不是抛错：渲染端按「粗档兜底」处理 —— 没装离线包时只是回退到低分档，不崩、不黑屏。
+      const buf = await fsp.readFile(join(IMAGERY_DIR, set, z, row, col + '.jpg')).catch(() => null)
+      if (!buf) return new Response('no tile', { status: 404 })
+      return new Response(buf, { status: 200, headers: { 'content-type': 'image/jpeg', 'cache-control': 'public, max-age=31536000, immutable' } })
+    } catch { return new Response('err', { status: 500 }) }
+  })
   const storage = require(join(root, 'electron/services/storage'))
   const report = require(join(root, 'electron/services/report'))
   const coverage = require(join(root, 'electron/services/coverage'))(join(root, 'resources/coverage'))

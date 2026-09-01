@@ -502,6 +502,22 @@ html[data-theme='dark'] .sg-cell .sg-fillbar::after {
 .lbf-btn:disabled { opacity: .4; cursor: not-allowed; }
 .lbf-val { min-width: 24px; text-align: center; font-size: var(--fs-3); font-weight: 600; color: var(--text); cursor: default; user-select: none; font-variant-numeric: tabular-nums; }
 
+/* —— 功能区「单位」组（LbUnitCtl）：结果显示单位的档位（锁定 / 自适应）——
+   分段控件（两档互斥、当前档自明），选中态与 .lbr-big.on 同一套语言：底色抬一档 + 底缘机位色条。
+   两枚按钮共边（margin-left:-1px），故不能吃 .lbr-items 的 gap，自己包一层 flex。 */
+.lbu-seg { display: inline-flex; }
+.lbu-seg > button {
+  font-family: var(--font-ui); font-size: var(--fs-2); line-height: 1; padding: 5px 7px; cursor: pointer;
+  background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: 0; white-space: nowrap;
+}
+.lbu-seg > button:first-child { border-radius: var(--r-ctl, 2px) 0 0 var(--r-ctl, 2px); }
+.lbu-seg > button:last-child { border-radius: 0 var(--r-ctl, 2px) var(--r-ctl, 2px) 0; margin-left: -1px; }
+.lbu-seg > button:hover:not(.on) { color: var(--text); border-color: var(--border-strong); }
+.lbu-seg > button.on {
+  position: relative; z-index: 1;
+  color: var(--text); background: var(--surface-2); border-color: var(--border-strong); box-shadow: inset 0 -2px 0 var(--accent-ui);
+}
+
 /* 分享码 / 设备ID 等代码型内容：2026-08-29 重新回钉真等宽（--font-code，Consolas）。
    撤销那次的理由是「全软件统一 Times New Roman 后不再破例」——界面换成无衬线后这条已不成立，
    而这些串是人要照着念、照着抄、跨机器传的，0/O 与 1/l/I 分不开就是支持电话。

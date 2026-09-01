@@ -1,6 +1,8 @@
 // 显示单位自适应测试（W/Hz/bps 线性换档 + dBW→dBm + 瀑布 segments 后处理）。运行：npm test
 // 关键不变式：级联算式行（base/gain/loss/sub/chk/margin）的 dBW 一律不动——瀑布「逐行可手算」
 // 依赖整条 dB 功率链同基准；只有独立参考/指标行（ref/kpi）允许 dBW→dBm。
+// ★ 换档要显式开：adaptSegments / pickColumn 的最后一参、buildWaterfallSegments 的 ctx.adaptUnits，
+//   不给一律【锁定】（＝留在引擎基准单位）——与四窗功能区「单位」档的出厂值一致，见 ⑧。
 const au = require('../utils/adaptiveUnits.js');
 const { buildWaterfallSegments } = require('../utils/waterfallBuilder.js');
 
@@ -34,12 +36,12 @@ console.log('=== 显示单位自适应测试 ===\n');
 
 // ② pickColumn：整列共选（含 dBW 全负才转 dBm）
 {
-  const p = au.pickColumn([350, 1200, NaN], 'kHz');
+  const p = au.pickColumn([350, 1200, NaN], 'kHz', true);
   ok('列按最大值挑档（1200 kHz→MHz）', p && p.unit === 'MHz' && Math.abs(p.conv(350) - 0.35) < 1e-9);
-  const d1 = au.pickColumn([-3.01, -12.5], 'dBW');
+  const d1 = au.pickColumn([-3.01, -12.5], 'dBW', true);
   ok('dBW 全负→dBm(+30)', d1 && d1.unit === 'dBm' && Math.abs(d1.conv(-3.01) - 26.99) < 1e-9);
-  ok('dBW 有正值不转', au.pickColumn([-3.01, 12], 'dBW') === null);
-  ok('全 NaN 不动', au.pickColumn([NaN, NaN], 'W') === null);
+  ok('dBW 有正值不转', au.pickColumn([-3.01, 12], 'dBW', true) === null);
+  ok('全 NaN 不动', au.pickColumn([NaN, NaN], 'W', true) === null);
 }
 
 // ③ adaptSegments：瀑布行后处理（多列共档 / 标签(W)同步 / 级联行保护）
@@ -56,7 +58,7 @@ console.log('=== 显示单位自适应测试 ===\n');
       { kind: 'kpi', label: '卫星饱和 EIRP', up: '', down: '46.00', total: '', unit: 'dBW' }
     ]
   }];
-  au.adaptSegments(segs);
+  au.adaptSegments(segs, true);
   const r = segs[0].rows;
   ok('kHz→MHz（2457.60→2.4576）', r[0].unit === 'MHz' && r[0].up === '2.4576');
   ok('W→mW + 标签(W)→(mW)', r[1].unit === 'mW' && r[1].up === '500' && r[1].label === '功放建议值(mW)');
@@ -72,7 +74,7 @@ console.log('=== 显示单位自适应测试 ===\n');
 {
   const segs = buildWaterfallSegments({
     results: { linkmargin: '3.00', allocBandwidthResult: '36000.00', paRecommendation: '0.50' },
-    lang: 'zh', orbitType: 'GEO'
+    lang: 'zh', orbitType: 'GEO', adaptUnits: true
   });
   const rows = [];
   for (const s of segs) for (const row of s.rows) rows.push(row);
@@ -95,7 +97,7 @@ console.log('=== 显示单位自适应测试 ===\n');
   const fromDb = Math.pow(10, parseFloat(r.paRecommendationdBResult) / 10);
   ok('引擎微瓦级功放线性值非零', isFinite(w) && w > 0, `paRecommendation=${r.paRecommendation}`);
   ok('线性值与 dB 侧一致（<1% 相对误差）', Math.abs(w - fromDb) / fromDb < 0.01, `W=${w}, 10^(dB/10)=${fromDb}`);
-  const segs = buildWaterfallSegments({ results: r, lang: 'zh', orbitType: 'GEO' });
+  const segs = buildWaterfallSegments({ results: r, lang: 'zh', orbitType: 'GEO', adaptUnits: true });
   const rows = [];
   for (const s of segs) for (const row of s.rows) rows.push(row);
   const pa = rows.find((row) => row.key === '功放建议值(W)');
@@ -142,7 +144,7 @@ console.log('=== 显示单位自适应测试 ===\n');
         transponderOutputEIRP: '50.00', downlinkFSLResult: '206.00', gOverTeResult: '12.90',
         downlinkInterferenceLossResult: '0.00'
       },
-      lang: 'zh', orbitType: 'GEO'
+      lang: 'zh', orbitType: 'GEO', adaptUnits: true
     });
     const w = segsW.find((s) => s.id === 'weather');
     const row = (label) => w && w.rows.find((x) => x.key === label);
@@ -171,7 +173,7 @@ console.log('=== 显示单位自适应测试 ===\n');
         transponderOutputEIRP: '50.00', downlinkFSLResult: '206.00', gOverTeResult: '5.43',
         downlinkInterferenceLossResult: '0.00'
       },
-      lang: 'zh', orbitType: 'GEO'
+      lang: 'zh', orbitType: 'GEO', adaptUnits: true
     });
     const wd = segsDry.find((s) => s.id === 'weather');
     // 无雨：晴空档与降雨档必须逐行相等（并联式重算若不以引擎值为锚，这里会差出 0.01 的假台阶）
@@ -185,10 +187,41 @@ console.log('=== 显示单位自适应测试 ===\n');
   ok('GEO 段序齐全且编号连续',
     ids === 'carrier,geometry,propagation,satellite,psd,noise,cascade,performance,weather,interference,resources' &&
     segs.every((s, i) => s.no === i + 1), ids);
-  const en = buildWaterfallSegments({ results: r, lang: 'en', orbitType: 'GEO' });
+  const en = buildWaterfallSegments({ results: r, lang: 'en', orbitType: 'GEO', adaptUnits: true });
   ok('英文报表段 id / 号不变（只有 title 变）',
     en.map((s) => s.id).join(',') === ids && en[0].title === 'Carrier & Modulation' && en[0].titleZh === '载波与调制参数',
     en[0].title);
+}
+
+// ⑧ 锁定档（缺省）：一律留在引擎基准单位。四窗功能区「单位」出厂就是这一档，
+// 且本文件不认识 localStorage——默认值一旦漂到「自适应」，就会出现「屏幕锁定、报告却换了档」。
+{
+  ok('pickColumn 不给档位 = 不换', au.pickColumn([350, 1200], 'kHz') === null);
+  ok('pickColumn 显式 false = 不换', au.pickColumn([350, 1200], 'kHz', false) === null);
+  ok('pickColumn 锁定时 dBW 也不转 dBm', au.pickColumn([-3.01, -12.5], 'dBW') === null);
+  const segs = [{
+    title: 't', cols: 1, rows: [
+      { kind: 'ref', label: '载波带宽', up: '2457.60', num: 2457.6, unit: 'kHz' },
+      { kind: 'ref', label: '功放建议值(W)', up: '0.50', num: 0.5, unit: 'W' },
+      { kind: 'ref', label: '功放实际输出', up: '-3.01', num: -3.01, unit: 'dBW' }
+    ]
+  }];
+  au.adaptSegments(segs);
+  const r = segs[0].rows;
+  ok('锁定：kHz 不换 MHz', r[0].unit === 'kHz' && r[0].up === '2457.60' && r[0].num === 2457.6);
+  ok('锁定：W 不换 mW，标签(W) 原样', r[1].unit === 'W' && r[1].up === '0.50' && r[1].label === '功放建议值(W)');
+  ok('锁定：独立行 dBW 不转 dBm', r[2].unit === 'dBW' && r[2].up === '-3.01');
+  // 走一遍真构建器：出口不给 ctx.adaptUnits 时，36000 kHz 就该原样是 36000 kHz
+  const wf = buildWaterfallSegments({
+    results: { linkmargin: '3.00', allocBandwidthResult: '36000.00', paRecommendation: '0.50' },
+    lang: 'zh', orbitType: 'GEO'
+  });
+  const rows = [];
+  for (const sg of wf) for (const row of sg.rows) rows.push(row);
+  const bw = rows.find((row) => row.key === '载波带宽');
+  ok('GEO 瀑布缺省锁定：36000 kHz 原样', bw && bw.unit === 'kHz' && bw.up === '36000.00', bw && (bw.up + ' ' + bw.unit));
+  const pa = rows.find((row) => row.key === '功放建议值(W)');
+  ok('GEO 瀑布缺省锁定：0.5 W 原样、标签不改', pa && pa.unit === 'W' && pa.label === '功放建议值(W)', pa && (pa.up + ' ' + pa.unit));
 }
 
 console.log(`\n共 ${pass + fail} 项：PASS ${pass} / FAIL ${fail}`);

@@ -20,6 +20,8 @@ import { serializeKml } from '../viz/kml/serialize.js'
 import { parseKmlPolys } from '../viz/kml/parse.js'
 import Icon from '../components/Icon.vue'
 import NumBox from '../components/NumBox.vue'
+import TzPicker from '../components/TzPicker.vue'
+import { tzOffMin, tzTag, tzParts, tzToMs, normTzMode } from '../shared/tz.js'
 import SatList from '../components/SatList.vue'
 import MiniSendDialog from '../components/MiniSendDialog.vue'
 import { MINI_COVERAGE_SATS, satKey, inMiniList } from '../shared/miniSatList.js'
@@ -27,6 +29,8 @@ defineOptions({ inheritAttrs: false })   // 不把父级传入的 title 落到�
 import { createGlobeScene } from '../viz/globe3d/scene.js'
 import { IMAGERY_SOURCES, DEFAULT_IMAGERY, imagerySource, loadImagery } from '../viz/imagery.js'
 import { createFlatCoverage } from '../viz/flatmap/flatCoverage.js'
+// 标记符号形状表（2D/3D 两个渲染器共用同一支画笔，见 viz/markers/markSymbols.js）
+import { MARK_SHAPES } from '../viz/markers/markSymbols.js'
 import { LAND as LAND_MORANDI, LAND_UNIFORMS, LAND_DEFAULT, migrateLandOverrides } from '../viz/landPalette.js'
 import { countryAt, currentLandColor, countryList } from '../viz/globe3d/countryPick.js'
 import { BORDER_DEF, GRID_STEPS } from '../viz/geo/borderStyle.js'
@@ -674,18 +678,17 @@ function visDurS(min) {
   const m = Math.floor(s / 60); s -= m * 60
   return h ? h + 'h' + p2t(m) + 'm' : m + 'm' + p2t(s) + 's'
 }
-// 本地时区标签：'UTC+8'（半时区如 'UTC+5:30'）。跟系统时区当期偏移
-function visTzTag(ms) {
-  const off = -new Date(ms || vis.accessBaseMs.value || Date.now()).getTimezoneOffset()
-  const a = Math.abs(off)
-  return 'UTC' + (off < 0 ? '-' : '+') + Math.floor(a / 60) + (a % 60 ? ':' + p2t(a % 60) : '')
-}
-// ms → 指定时区的日期分量；utc 省缺跟随显示开关（供表格），显式传值供双时区并排（详情卡 / title / 导出）
+// 双时区并排里「另一套」的档位：恒是 UTC ＋这一档。显示档位选了 UTC 时它退回本机——
+// 否则详情卡 / title / 导出里两轨会是一模一样的两列。
+const visAltTz = computed(() => (vis.accessTz.value === 'utc' ? 'local' : vis.accessTz.value))
+// 另一套时刻的时区角标：'UTC+8'（半时区如 'UTC+5:30'）
+function visTzTag(ms) { return tzTag(visAltTz.value, ms || vis.accessBaseMs.value || Date.now()) }
+// 当前显示档位的角标（时基行上那枚选择器显示的就是它）
+const visTzNow = computed(() => tzTag(vis.accessTz.value, vis.accessBaseMs.value || Date.now()))
+// ms → 指定时区的日期分量；utc 省缺跟随显示档位（供表格），显式传值供双时区并排（详情卡 / title / 导出）
 function visP(ms, utc) {
-  const u = utc == null ? vis.accessTz.value === 'utc' : utc, d = new Date(ms)
-  return u
-    ? { y: d.getUTCFullYear(), mo: d.getUTCMonth() + 1, da: d.getUTCDate(), h: d.getUTCHours(), mi: d.getUTCMinutes(), se: d.getUTCSeconds() }
-    : { y: d.getFullYear(), mo: d.getMonth() + 1, da: d.getDate(), h: d.getHours(), mi: d.getMinutes(), se: d.getSeconds() }
+  const t = tzParts(ms, utc == null ? vis.accessTz.value : (utc ? 'utc' : visAltTz.value))
+  return { y: t.y, mo: t.mo, da: t.d, h: t.h, mi: t.mi, se: t.s }
 }
 const visHms = (ms, utc) => { const p = visP(ms, utc); return p2t(p.h) + ':' + p2t(p.mi) + ':' + p2t(p.se) }
 const visYmd = (ms, utc) => { const p = visP(ms, utc); return p.y + '-' + p2t(p.mo) + '-' + p2t(p.da) }
@@ -822,7 +825,7 @@ async function exportAccessExcel() {
     satSet: (L.kind ? L.kind + ' · ' : '') + L.name, scanned: vis.accessScanned.value,
     minElevDeg: Number(vis.minElev.value) || 0,
     baseMs: base, horizonMin: k.horizonMin,
-    tzOffsetMin: -new Date(base).getTimezoneOffset(), tzTag: visTzTag(base),
+    tzOffsetMin: tzOffMin(visAltTz.value, base), tzTag: visTzTag(base),
     kpi: { pct: k.pct, coveredMin: k.coveredMin, maxGapMin: k.maxGapMin, gapCount: k.gapCount, sats: k.sats, passes: k.passes },
     sats: rows.map((s) => ({
       name: String(s.name || ''), noradId: String(s.noradId == null ? '' : s.noradId), slot: String(s.slot || ''),
@@ -2483,24 +2486,36 @@ async function loadGroup() {
     return
   }
   // 单组星历：缓存优先即时渲染 + 后台静默联网刷新（无网/慢网也不卡住进软件）
-  let shown = false
+  let shown = false, sig = ''
   try {
     const cached = await fetchGroupLiveOrSup(g.key, { cacheOnly: true })
-    if (cached && cached.sats.length) { ingest(cached.sats, g.key, cached.fetchedAt); shown = true; status.value = '' }
+    if (curKey() !== g.key) return   // 读盘期间用户已切走：整个作废，新组那一轮会自己走一遍
+    if (cached && cached.sats.length) {
+      ingest(cached.sats, g.key, cached.fetchedAt)
+      shown = true; sig = `${cached.sats.length}|${cached.fetchedAt || ''}`; status.value = ''
+    }
   } catch { /* 无缓存：继续走后台联网 */ }
   if (!shown) status.value = `加载 ${g.label} …`
   fetchGroupLiveOrSup(g.key)
     .then((payload) => {
       if (curKey() !== g.key) return   // 用户已切到别的组：丢弃过期结果
-      if (payload && payload.sats.length) { ingest(payload.sats, g.key, payload.fetchedAt); status.value = '' }
-      else if (!shown) status.value = `${g.label} 暂无数据`
+      if (!payload || !payload.sats.length) { if (!shown) status.value = `${g.label} 暂无数据`; return }
+      // 联网版与已出图那版同源（联网失败回落到同一份本机数据）→ 跳过重建，免得出图后再白卡一下
+      if (shown && `${payload.sats.length}|${payload.fetchedAt || ''}` === sig) { status.value = ''; return }
+      ingest(payload.sats, g.key, payload.fetchedAt); status.value = ''
     })
     .catch((e) => { if (curKey() === g.key && !shown) status.value = `${g.label} 获取失败：${(e && e.message) || '网络不可达'}` })
 }
 
 // 加载「全部在轨」全集并归类：各已知分组并集 ∪ active；返回归类后的卫星数组（_group 为分组或 'other'）
 // silent=true：后台构建全量搜索库用，不写主状态栏
-async function loadUniverse(silent) {
+// opts.cacheOnly=true：只读本机星历（用户缓存 / 内置快照择新者），一律不联网 —— 供「先出图、后刷新」的第一段用。
+//   联网那一版最坏要逐组付 3×30s 主端点 + 2×30s 补充端点（单组封顶两分半），17 组一轮下来能把进软件后的
+//   第一屏拖到分钟级；这一档纯读盘，秒级就能交出一份可渲染的全集，联网版随后在后台整体替换
+//   （见 loadMerged / ensureSearchPool）。cacheOnly 时某组本机无数据 → 该组返回 null，跳过不算错。
+async function loadUniverse(silent, opts = {}) {
+  const cacheOnly = !!opts.cacheOnly
+  const fopt = cacheOnly ? { cacheOnly: true } : undefined
   const setS = (t) => { if (!silent) status.value = t }
   const keys = GROUPS.filter((g) => !['all', 'other', 'none', 'custom'].includes(g.key)).map((g) => g.key)
   let done = 0
@@ -2508,8 +2523,8 @@ async function loadUniverse(silent) {
   const tick = () => { done++; setS(`加载全部卫星 ${done}/${keys.length + 1} …`) }
   const fetchedAts = []   // 各组实际下载落盘时间 → 合并视图取最新一份作为 OMM 显示时间
   let miss = 0            // 本次一份都没取到的组数（含 active）：>0 表示这份并集是残缺的
-  const tasks = keys.map((key) => fetchGroupLiveOrSup(key)
-    .then((p) => { tick(); if (p.fetchedAt) fetchedAts.push(p.fetchedAt); for (const s of p.sats) s._group = key; return p.sats })
+  const tasks = keys.map((key) => fetchGroupLiveOrSup(key, fopt)
+    .then((p) => { tick(); if (!p) { miss++; return [] }; if (p.fetchedAt) fetchedAts.push(p.fetchedAt); for (const s of p.sats) s._group = key; return p.sats })
     .catch(() => { tick(); miss++; return [] }))
   const arrs = await Promise.all(tasks)
   // 并集（NORAD 去重）+ 分组归类映射
@@ -2520,7 +2535,7 @@ async function loadUniverse(silent) {
   }
   // 全部在轨（CelesTrak GROUP=active）并入全集；active 被 403/不可达时自动退化为分组并集
   let active = []
-  try { const ap = await fetchGroupLiveOrSup('active'); active = ap.sats; if (ap.fetchedAt) fetchedAts.push(ap.fetchedAt) } catch { miss++ }
+  try { const ap = await fetchGroupLiveOrSup('active', fopt); if (ap) { active = ap.sats; if (ap.fetchedAt) fetchedAts.push(ap.fetchedAt) } else miss++ } catch { miss++ }
   tick()
   for (const s of active) if (!universe.has(s.noradId)) universe.set(s.noradId, s)
   // 本地自定义卫星库并入全集（永不联网）：以用户库为准覆盖同号目录星，归入 'custom' 组；保留文件内历元。
@@ -2535,7 +2550,9 @@ async function loadUniverse(silent) {
   universeFetchedAt = fetchedAts.length ? fetchedAts.reduce((a, b) => (b > a ? b : a)) : null
   // —— 供「卫星组按真实星历核对成员」用的两项证据（只有它俩都成立才敢判某颗星离轨，见 satGrpSweep）——
   // 完整：每组与 active 都取到了数据。缺一组 → 那组的星会整批"缺席"，拿这份并集判离轨会误伤一大片。
-  universeIntact = miss === 0 && fetchedAts.length === keys.length + 1
+  // cacheOnly 那一版一律不作数：它只是为了让第一屏立刻有星，整批可能是随包内置的旧快照，
+  // 拿它判成员离轨没有意义 —— 判决只认联网那一版（后台跑完会重写这三个变量并触发 satGrpSweep）。
+  universeIntact = !cacheOnly && miss === 0 && fetchedAts.length === keys.length + 1
   // 新鲜度按【最旧】一份算，不按最新：某组回落到旧缓存 / 内置快照时，不能拿别组的新时间去判它的星离轨。
   universeFetchedMin = fetchedAts.length ? fetchedAts.reduce((a, b) => (b < a ? b : a)) : null
   return [...universe.values()]
@@ -2543,16 +2560,35 @@ async function loadUniverse(silent) {
 let universeFetchedAt = null   // loadUniverse 产出的“各组最新下载时间”，供 loadAll/loadOther 显示
 let universeIntact = false     // 本次并集是否一组不缺（见上）
 let universeFetchedMin = null  // 本次并集里最旧一份的下载时间（见上）
-async function loadAll() {
-  const sats = await loadUniverse()
-  if (!sats.length) { status.value = '暂无卫星数据（网络不可达）'; return }
-  ingest(sats, 'all', universeFetchedAt || new Date().toISOString())
+// 「全部卫星」/「其他」：与单组同一口径的两段式 —— 先用本机星历（缓存 / 内置快照）即时出图，
+// 联网那一版在后台跑完再整体替换。这两个视图要的是【17 组的并集】，逐组联网最坏能拖到分钟级，
+// 全程空屏是这里最难受的一处。
+async function loadMerged(key) {
+  const label = key === 'all' ? '全部卫星' : '其他'
+  const pick = (sats) => (key === 'other' ? sats.filter((s) => s._group === 'other') : sats)
+  let shown = false, sig = ''   // sig=已出图那版的「颗数|下载时间」，见下的跳过判据
+  try {
+    const cached = pick(await loadUniverse(true, { cacheOnly: true }))
+    if (curKey() !== key) return   // 读盘期间用户已切走：整个作废，连后台那一版也不必再发
+    if (cached.length) {
+      ingest(cached, key, universeFetchedAt || new Date().toISOString())
+      shown = true; sig = `${cached.length}|${universeFetchedAt || ''}`; status.value = ''
+    }
+  } catch { /* 本机一份星历都没有：交给下面联网 */ }
+  loadUniverse(shown)   // 已出图 → 静默刷新，不占状态栏；否则照常显示 n/18 进度
+    .then((sats) => {
+      if (curKey() !== key) return   // 用户已切到别的组：丢弃过期结果
+      const out = pick(sats)
+      if (!out.length) { if (!shown) status.value = key === 'all' ? '暂无卫星数据（网络不可达）' : '暂无“其他”卫星（或全集未加载成功）'; return }
+      // 联网版与已出图那版逐项同源（全组都回落到同一批本机数据）→ 跳过重建：全集两万多颗，
+      // 一次 ingest 是上万次 omm2satrec + 整个点云重建，白做一遍会在出图后再卡一下。
+      if (shown && `${out.length}|${universeFetchedAt || ''}` === sig) { status.value = ''; return }
+      ingest(out, key, universeFetchedAt || new Date().toISOString()); status.value = ''
+    })
+    .catch((e) => { if (curKey() === key && !shown) status.value = `${label} 获取失败：${(e && e.message) || '网络不可达'}` })
 }
-async function loadOther() {
-  const others = (await loadUniverse()).filter((s) => s._group === 'other')
-  if (!others.length) { status.value = '暂无“其他”卫星（或全集未加载成功）'; return }
-  ingest(others, 'other', universeFetchedAt || new Date().toISOString())
-}
+const loadAll = () => loadMerged('all')
+const loadOther = () => loadMerged('other')
 
 // ===================== 选择 / 搜索 =====================
 // 全量搜索库：独立于当前组的显示集 entries，后台加载一次「全部在轨」并集，使主界面/GRD 搜索
@@ -2591,17 +2627,40 @@ async function ensureSearchPool() {
   const p = (async () => {
     poolLoading = true
     try {
-      const sats = await loadUniverse(true)   // 静默：不打扰主状态栏
-      const pool = []
-      for (const s of sats) { try { const r = sat.omm2satrec(s); if (r && !r.error) pool.push({ rec: r, name: s.name, noradId: s.noradId, group: s._group || 'other' }) } catch { /* skip */ } }
-      if (pool.length) {
-        searchPool = pool; poolReady = true; _poolByNorad = null; poolTick.value++   // 就绪信号：卫星组行内列表重映射补 GEO 定点标注
-        satGrpSweep()   // 拿到最新目录的这一刻，顺手按它核对全部卫星组的成员（自身把三道闸，不满足即空转）
-      }
+      // 第一段：本机星历（用户缓存 / 内置快照）建池 —— 等在这儿的调用方（搜索、加入组、聚焦、
+      // 可见性分析取星…）立刻放行，不必陪联网那一轮走完。单独兜错：这一段栽了也绝不能吞掉第二段。
+      let ok = false
+      try { ok = setSearchPool(await loadUniverse(true, { cacheOnly: true })) } catch { ok = false }
+      // 第二段：后台联网刷新。第一段没建起来（本机连内置快照都没有）时必须等它，否则池永远不就绪。
+      const online = refreshSearchPool()
+      if (!ok) await online
     } catch { /* 离线/失败：回退当前组 */ } finally { poolLoading = false }
   })()
   poolPromise = p
   try { await p } finally { if (poolPromise === p) poolPromise = null }
+}
+// 用一批 OMM 记录建池并挂上（一颗都建不出来则原样不动）。返回是否建成。
+function setSearchPool(sats) {
+  const pool = []
+  for (const s of sats || []) { try { const r = sat.omm2satrec(s); if (r && !r.error) pool.push({ rec: r, name: s.name, noradId: s.noradId, group: s._group || 'other' }) } catch { /* skip */ } }
+  if (!pool.length) return false
+  searchPool = pool; poolReady = true; _poolByNorad = null; poolTick.value++   // 就绪信号：卫星组行内列表重映射补 GEO 定点标注
+  grpListCache.delete('all'); grpListCache.delete('other')   // 「全部/其他」名录快照由同一份并集来，随池一起作废
+  return true
+}
+// 后台联网重建全量池：拿到新目录才替换。幂等——已在飞的那次直接搭车，不重复跑一轮 17 组。
+let poolOnlinePromise = null
+function refreshSearchPool() {
+  if (poolOnlinePromise) return poolOnlinePromise
+  const p = (async () => {
+    let sats = []
+    try { sats = await loadUniverse(true) } catch { return }   // 静默：不打扰主状态栏
+    // 只有联网这一版才敢拿去核对卫星组成员（判离轨）——缓存/内置快照那版 universeIntact 恒为假，
+    // 三道闸自己会拦，这里再显式只在联网后调一次。
+    if (setSearchPool(sats)) satGrpSweep()
+  })().finally(() => { poolOnlinePromise = null })
+  poolOnlinePromise = p
+  return p
 }
 // 全量目录（或当前组）+ 自定义星座合成星（含隐藏，见「隐藏也算数」）。自定义星放最前，
 // 确保在结果条数上限内一定先被扫到、搜得到；号段 900000+ 与真实目录不撞。
@@ -2870,7 +2929,10 @@ async function grpSatList(key) {
   if (hit) return hit
   if (!apiOk) throw new Error('需在桌面客户端中运行')
   if (key === 'all' || key === 'other') {
-    const uni = await loadUniverse(true)
+    // 本机星历优先出名录（联网那一轮最坏是分钟级）；后台刷新拿到新目录时 setSearchPool 会清掉这份快照
+    let uni = []
+    try { uni = await loadUniverse(true, { cacheOnly: true }) } catch { uni = [] }
+    if (!uni.length) uni = await loadUniverse(true)
     const all = [], oth = []
     for (const s of uni) {
       const it = expMkItem(s.noradId, s.name, `${s.name || ''} · ${GROUP_LABEL[s._group] || '其他'} · NORAD ${s.noradId}`, '', geoSlotOfOmm(s))
@@ -3492,24 +3554,22 @@ const WIN_MIN = 2, WIN_MAX = 43200
 const WINDOW_PRESETS = [{ v: 720, l: '12h' }, { v: 1440, l: '24h' }, { v: 2880, l: '2d' }, { v: 4320, l: '3d' }, { v: 10080, l: '7d' }]
 const NICE = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 14400, 21600, 43200, 86400, 172800, 345600, 604800]   // 「整齐」刻度阶梯(秒)
 const _mod = (x, y) => x - y * Math.round(x / y)
-// —— 时间轴读数时区：'local'（本机时区，默认）| 'utc' ——
-// 只影响【显示】：Date 内部是 UTC 毫秒数，星位/晨昏线全程走 getUTC*，切这个开关不改变任何计算结果。
-// 加它是因为晨昏线、星历历元、过境窗口都是 UTC 口径，对国际时刻时需要直接读 UTC 而不是心算 −8。
+// —— 时间轴读数时区：'local'（本机，默认）| 'utc' | 数字（相对 UTC 的固定偏移，分钟）——
+// 只影响【显示】：Date 内部是 UTC 毫秒数，星位/晨昏线全程走 getUTC*，换档不改变任何计算结果。
+// 加它是因为晨昏线、星历历元、过境窗口都是 UTC 口径，对国际时刻时需要直接读 UTC 而不是心算 −8；
+// 固定偏移档则用于对着别的时区（落地站所在国、境外测控站）读时间轴。档位口径见 shared/tz.js。
 const tzMode = ref('local')
-const tzUtc = () => tzMode.value === 'utc'
-// 一组「按当前时区档位取分量」的读数器：UTC 档走 getUTC*，本地档走 getXxx（口径与切换前逐字一致）
-const tYear = (d) => (tzUtc() ? d.getUTCFullYear() : d.getFullYear())
-const tMon = (d) => (tzUtc() ? d.getUTCMonth() : d.getMonth())
-const tDay = (d) => (tzUtc() ? d.getUTCDate() : d.getDate())
-const tHour = (d) => (tzUtc() ? d.getUTCHours() : d.getHours())
-const tMin = (d) => (tzUtc() ? d.getUTCMinutes() : d.getMinutes())
-const tSec = (d) => (tzUtc() ? d.getUTCSeconds() : d.getSeconds())
-// 本机时区标签（如 UTC+8）：来自 Windows「时间和语言 → 时区」，仅用于显示，不参与任何计算
-const localTzLabel = computed(() => {
-  const off = -new Date().getTimezoneOffset()
-  const s = off >= 0 ? '+' : '−', h = Math.floor(Math.abs(off) / 60), m = Math.abs(off) % 60
-  return 'UTC' + s + h + (m ? ':' + String(m).padStart(2, '0') : '')
-})
+// 一组「按当前档位取分量」的读数器：平移到「墙钟落在 UTC 字段上」再读 getUTC*，
+// 一条路径同时覆盖 UTC / 本机 / 任意固定偏移（原来那种 utc?getUTC*:get* 的两分支在固定档下必错）
+const tD = (d) => new Date(d.getTime() + tzOffMin(tzMode.value, d.getTime()) * 60000)
+const tYear = (d) => tD(d).getUTCFullYear()
+const tMon = (d) => tD(d).getUTCMonth()
+const tDay = (d) => tD(d).getUTCDate()
+const tHour = (d) => tD(d).getUTCHours()
+const tMin = (d) => tD(d).getUTCMinutes()
+const tSec = (d) => tD(d).getUTCSeconds()
+// 当前档位角标（如 UTC / UTC+8）：本机档按当刻实际偏移取，夏令时与半时区都能如实标出
+const tzLabel = computed(() => { void tzMode.value; return tzTag(tzMode.value, clock.tMs) })
 function fmtTick(ms, wMin) {
   const d = new Date(ms), p = (n) => String(n).padStart(2, '0')
   const mid = tHour(d) === 0 && tMin(d) === 0 && tSec(d) === 0
@@ -3522,9 +3582,10 @@ function computeTicks(anchorMs, wStart, wMin, trackPx) {
   const span = wMin * 60, leftMs = anchorMs + wStart * 60000
   // 以左边缘所在日的午夜为对齐基准。★必须跟着 tzMode 走：UTC 档下若仍按本地午夜对齐，
   // 刻度会落在 UTC 的非整点上（东八区就是每格差 8 小时的零头），标签一片 xx:00 之外的碎数。
-  const d = new Date(leftMs)
-  const epoch = (tzUtc() ? Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())
-    : new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()) / 1000
+  // 平移 off 后读 UTC 字段即得该档位的墙钟日期，减回 off 还原成绝对时刻（固定偏移档同理）。
+  const off = tzOffMin(tzMode.value, leftMs) * 60000
+  const d = new Date(leftMs + off)
+  const epoch = (Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) - off) / 1000
   const start = leftMs / 1000 - epoch, end = start + span
   const ideal = span / Math.max(1, trackPx / 80)
   const main = NICE.find((s) => s >= ideal) || NICE[NICE.length - 1]
@@ -3564,7 +3625,7 @@ const customWinLabel = computed(() => fmtSpan(windowMin.value))
 const timeText = computed(() => {
   void tzMode.value
   const d = new Date(clock.tMs), p = (n) => String(n).padStart(2, '0')
-  return `${tYear(d)}-${p(tMon(d) + 1)}-${p(tDay(d))} ${p(tHour(d))}:${p(tMin(d))}:${p(tSec(d))} ${tzUtc() ? 'UTC' : localTzLabel.value}`
+  return `${tYear(d)}-${p(tMon(d) + 1)}-${p(tDay(d))} ${p(tHour(d))}:${p(tMin(d))}:${p(tSec(d))} ${tzLabel.value}`
 })
 
 // 悬停幽灵线 + 时间气泡（落点前先预览该处对应时间）
@@ -3676,22 +3737,39 @@ function followCursor() {
 // —— 跳到指定时刻（精确到秒）——
 // 拖游标的吸附粒度受像素限制（24 h 窗口下 1 px = 144 s），要落在某个确切的秒上只能键入。
 // 输入按当前时区档位解释（与时间轴读数同一个开关），跳过去后窗口以该时刻重新居中。
+// 框里填过的时刻本会话记着：关掉重开照旧是它，不再被当前游标冲掉（连点几次跳转微调是常态）。
+// 记的是绝对时刻不是那串字面 —— 中途换了时区档，重开时按新档重新格式化，指的仍是同一瞬间。
 const gotoOpen = ref(false)
 const gotoVal = ref('')
+const gotoMs = ref(null)
+function fmtGotoVal(ms) {
+  const d = new Date(ms), p = (n) => String(n).padStart(2, '0')
+  return `${tYear(d)}-${p(tMon(d) + 1)}-${p(tDay(d))}T${p(tHour(d))}:${p(tMin(d))}:${p(tSec(d))}`
+}
+function parseGotoVal(v) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?/.exec(String(v || ''))
+  if (!m) return null
+  const [, Y, Mo, D, h, mi, s] = m.map(Number)
+  const t = tzToMs(tzMode.value, Y, Mo, D, h, mi, s || 0)
+  return Number.isFinite(t) ? t : null
+}
 function openGoto() {
-  const d = new Date(clock.tMs), p = (n) => String(n).padStart(2, '0')
-  gotoVal.value = `${tYear(d)}-${p(tMon(d) + 1)}-${p(tDay(d))}T${p(tHour(d))}:${p(tMin(d))}:${p(tSec(d))}`
-  gotoOpen.value = !gotoOpen.value
+  if (gotoOpen.value) { closeGoto(); return }
+  gotoVal.value = fmtGotoVal(gotoMs.value != null ? gotoMs.value : clock.tMs)
+  gotoOpen.value = true
+}
+// 每条关闭路径（遮罩 / 右键 / Esc / 再点图标）都先把框里的值收进记忆再关。
+function closeGoto() {
+  const t = parseGotoVal(gotoVal.value)
+  if (t != null) gotoMs.value = t
+  gotoOpen.value = false
 }
 function applyGoto() {
-  const v = String(gotoVal.value || '')
-  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?/.exec(v)
-  if (!m) { gotoOpen.value = false; return }
-  const [, Y, Mo, D, h, mi, s] = m.map(Number)
-  const t = tzUtc() ? Date.UTC(Y, Mo - 1, D, h, mi, s || 0) : new Date(Y, Mo - 1, D, h, mi, s || 0).getTime()
-  if (!Number.isFinite(t)) { gotoOpen.value = false; return }
+  const t = parseGotoVal(gotoVal.value)
+  if (t == null) { closeGoto(); return }
   winStartMin.value = -PAST_FRAC * windowMin.value
   clockSetTime(t); baseTime.value = clock.tMs
+  gotoMs.value = t
   gotoOpen.value = false
 }
 // ===================== 坐标系（大地基准 / 坐标格式 / 2D 画面中心） =====================
@@ -3916,6 +3994,7 @@ function ensureFlat() {
     flat.setOnRightClick(onMapRightClick); flat.setOnHover(onHoverLL); flat.setOnBeamDrag(onBeamDragAny); flat.setBeamDragMode(grd.dragBore.value)
     flat.setOnLabelDrag(grd.labelDrag); flat.setLabelDragMode(grd.dragLabel.value)   // 拖拽等值线数值标签（沿线滑动）
     flat.setOnVertexDrag(onVertexDrag)   // 拖动单个顶点/标记点（Polygon 调点 或 标记「调整点位置」，分发）
+    flat.setOnMarkerDrag(onMarkerDragged)   // 标记拖拽：压在符号上按住即拖（须先进「调整位置」/「调点」，见 markDragKinds）
     flat.setOnPolyMove(onPolyMoveDrag)       // Polygon 整体拖动：按住内部平移全部顶点
     flat.setOnPolyDraw(onPolyDraw); flat.setPolyDrawMode(!!(polyDrawId.value || activeTraj.value))   // Polygon/航迹绘制：左键按住沿路径连续加点
     flat.setOnPlace((ll) => bs.placeAt(ll)); flat.setPlaceMode(bs.placing.value)   // 波束合成放置：左键点击落波束（拖动仍平移）
@@ -3943,8 +4022,10 @@ function feedFlat() {
   flat.setOceanColor(oceanColor.value)
   if (imageryOn.value) applyImagery()
   flat.setFocusStyle(focusStyle2D())
+  flat.setMarkStyle(markSizes())
   flat.setMarkers(markerPts(), markerSts(), markerTrs())
-  flat.setSizes({ beamFont: beamLabelSize.value, contourFont: contourLabelSize.value, dotSize: boreSize.value, showBore: showBore.value, nameScale: countryNameSize.value, provScale: provNameSize.value, cityScale: cityNameSize.value, oceanScale: oceanNameSize.value, seaScale: seaNameSize.value, ptFont: markPtFont.value, stIcon: stIconSize.value, stFont: stFontSize.value, ptDot: markPtDot.value, ptIdx: markPtIdx.value, trajDot: trajDotSize.value, trajIcon: showTrajIcon.value, trajIconPx: trajIconSize.value })
+  flat.setMarkerDrag(markDragKinds())
+  flat.setSizes({ beamFont: beamLabelSize.value, contourFont: contourLabelSize.value, dotSize: boreSize.value, showBore: showBore.value, nameScale: countryNameSize.value, provScale: provNameSize.value, cityScale: cityNameSize.value, oceanScale: oceanNameSize.value, seaScale: seaNameSize.value })
   flat.setGeom(covGeom)
   grd.recompute()   // GRD 覆盖：把当前选中天线的面+线喂给 flat（recompute 同时喂 scene/flat）
   if (sideCtx() === 'satcov') satcov.recompute()   // 对星视图占着 2D 那块场（见 ownsFlatField）→ 上一行被闸住，改由它来喂
@@ -4008,12 +4089,20 @@ async function exportMap(fmt, scope) {
       const bytes = await renderFlatPDF(flat, { base: 2400, fonts, view })
       await saveExport(bytes, `覆盖图_${tag}.pdf`, [{ name: 'PDF 矢量图', extensions: ['pdf'] }])
     } else {
-      // 倍率封顶 4×：再往上是净负。这条是矢量重放，线宽与抽稀阈值都按屏幕 px 走 —— 倍率提高不多画一个
-      // 折点，内容与 4× 逐点相同（实测同一段海岸线的折点数/线粗一致），只是同样的边画在更多像素上。
-      // 4× 的笔画过渡已细到 0.45 CSS px，600dpi 下约 0.02mm；6× 的代价是文件 +61%、位图 396MB。
-      const factor = fmt === 'png4' ? 4 : 2
-      const bytes = await renderFlatPNG(flat, { base: 2400, factor, view })
-      await saveExport(bytes, `覆盖图_${tag}_${factor}x.png`, [{ name: 'PNG 图片', extensions: ['png'] }])
+      // 2×/4× 是倍率档；4K/8K 是【目标像素宽】档。后者存在的理由：倍率算出来的实际宽度随视口尺寸
+      // 浮动（同一个 4× 在 1280 与 1920 宽的窗口上出的图不一样大），而交付方要的是「一张 8K 图」。
+      //
+      // ★ 「倍率封顶 4×、再往上是净负」那条旧判据只对【整幅贴图时代】成立 —— 那时影像恒为 2.45 km/px，
+      //   放大不多一个真像素。上了瓦片金字塔后前提变了：以 L6 的 978 m/px 算，影像还能真正填满的
+      //   宽度 = 视野经度跨度 ÷ 0.0088°，全球图 40960 px、中国全境约 7054 px。故全球/洲际图出 8K
+      //   是实打实的；拉到省级以下再要 8K 仍然是空放大（矢量层照旧不多一个折点）。
+      const TARGET = { png8k: 7680 }
+      const targetW = TARGET[fmt] || 0
+      const factor = targetW ? 0 : (fmt === 'png4' ? 4 : 2)
+      const bytes = await renderFlatPNG(flat, { base: 2400, factor: factor || 2, targetW, view })
+      // 文件名写【实际】出图宽：画布面积撞上 Chromium 的 268 MPix 上限时会被折回来，不报没渲染过的数
+      const lbl = targetW ? `${bytes.outW}px` : `${factor}x`
+      await saveExport(bytes, `覆盖图_${tag}_${lbl}.png`, [{ name: 'PNG 图片', extensions: ['png'] }])
     }
   } catch (e) { console.error('导出失败', e); appAlert('导出失败：' + ((e && e.message) || e)) }
   finally { exporting.value = false; exportFlat.value = false }
@@ -4035,11 +4124,14 @@ async function exportGlobeShot(fmt) {
       // 同样封顶 4×，这条还多一层硬理由：帧缓冲 ~32 MPix 的天花板（见 scene.js 的 snapshot）会把大画布上的
       // 高倍率请求全折回同一个值 —— 1500×950 上请求 6/8/10× 拿回来的是同一张 4.73× 的图（字节级相同）。
       // 且地名/图标是 fs=54 的纹理精灵，屏上约 4 倍过采样，4× 正好 1:1，再往上只是插值放大。
-      const r = await renderGlobePNG(scene, { factor: fmt === 'png2' ? 2 : 4 })
-      // 文件名写实际倍率：画布够大时 4× 也会撞上 32 MPix 的天花板被降档（实测 1900×1150 只出得到
-      // 3.2×），此处如实反映（写 覆盖图_3D截图_3.2x.png），不报一个没渲染过的数
-      const factor = Math.round(r.factor * 10) / 10
-      await saveExport(r.bytes, `覆盖图_${tag}_${factor}x.png`, [{ name: 'PNG 图片', extensions: ['png'] }])
+      const TARGET = { png8k: 7680 }
+      const targetW = TARGET[fmt] || 0
+      const r = await renderGlobePNG(scene, { factor: fmt === 'png2' ? 2 : 4, targetW })
+      // 文件名写【实际】出图尺寸：3D 这条的 32 MPix 帧缓冲天花板会把高倍请求整体折回（实测
+      // 1900×1150 上 4× 只出得到 3.2×），8K 档在多数窗口尺寸上也到不了 7680 —— 如实写渲出来的宽，
+      // 不报一个没渲染过的数。用户看文件名就知道这台机器实际能出多大。
+      const lbl = targetW ? `${r.w}px` : `${Math.round(r.factor * 10) / 10}x`
+      await saveExport(r.bytes, `覆盖图_${tag}_${lbl}.png`, [{ name: 'PNG 图片', extensions: ['png'] }])
     }
   } catch (e) { console.error('导出失败', e); appAlert('导出失败：' + ((e && e.message) || e)) }
   finally { exporting.value = false }
@@ -4322,6 +4414,13 @@ async function applyImagery() {
     return
   }
   const src = imagerySource(imageryKey.value)
+  // 瓦片档：没有「一张要解码的大图」，故整套在飞闸/pending 都不适用 —— 直接把集名交给两个渲染器，
+  // 取片由它们按视野各自异步做（见 imageryTiles.js 的 getTile）。
+  if (src.tiles) {
+    if (scene) scene.setImagery({ on: true, set: src.tiles, maxZ: src.maxZ, img: null, bright: imageryBright.value })
+    if (flat) flat.setImagery({ on: true, set: src.tiles, maxZ: src.maxZ, img: null, bright: imageryBright.value })
+    return
+  }
   if (imageryLoading) {
     // 在飞的就是这一份 → 等它回来即可；是别的一份 → 记一笔，由它在 finally 里补跑
     if (imageryLoading !== src.url) imageryPending = true
@@ -4346,13 +4445,22 @@ async function applyImagery() {
     if (imageryPending) { imageryPending = false; applyImagery() }
   }
 }
+// 档位 title：全用符号与通用缩写 → i18n 零负担（口径见 imagery.js 的源清单注释）。
+// 瓦片档没有「整幅像素尺寸」这回事，报的是金字塔最深级与显存上界。
+function imageryTitle(im) {
+  const res = im.resKm < 1 ? Math.round(im.resKm * 1000) + ' m/px' : im.resKm + ' km/px'
+  const size = im.tiles ? 'L0–L' + im.maxZ + ' · 512² tiles' : im.w + ' × ' + im.h
+  // 在线档标出「需联网」：这台机器上首次看一片新区域要等几秒，且涉密网可能整个不通
+  return size + ' · ' + res + (im.online ? ' · 需联网' : '') + ' · ' + im.credit + ' · VRAM ≈ ' + im.vramMB + ' MB'
+}
 function toggleImagery() { imageryOn.value = !imageryOn.value; applyImagery() }
 function setImageryKey(k) {
   if (imageryKey.value === k) return
   imageryKey.value = k
-  // 换源：先把旧纹理卸掉（显存），再按新源走一遍加载
-  if (scene) scene.setImagery({ img: null, on: false })
-  if (flat) flat.setImagery({ img: null, on: false })
+  // 换源：先把旧的卸掉（显存），再按新源走一遍加载。set:null 同时把瓦片档的片与纹理一起放掉 ——
+  // 少了它，从瓦片档切到整幅档会两份显存并存（135 + 716 MB）。
+  if (scene) scene.setImagery({ img: null, set: null, on: false })
+  if (flat) flat.setImagery({ img: null, set: null, on: false })
   applyImagery()
 }
 function setImageryBright(e) {
@@ -4382,20 +4490,9 @@ function applyDisplayQuality() {
   if (flat) { flat.setRenderScale(q.pixelRatio); flat.setMapDetail(q.mapDetail, q.mapThin) }
   grd.recompute()   // gridStride 变化 → 覆盖层按新步长重建（无选中层时为空操作）
 }
-function setPtFont(e) { markPtFont.value = Number(e.target.value); syncMarkers() }
-function setPtDot(e) { markPtDot.value = Number(e.target.value); syncMarkers() }
-function setPtIdx(e) { markPtIdx.value = Number(e.target.value); syncMarkers() }
-function setStIcon(e) { stIconSize.value = Number(e.target.value); syncMarkers() }
-function setStFont(e) { stFontSize.value = Number(e.target.value); syncMarkers() }
-function setTrajDot(e) { trajDotSize.value = Number(e.target.value); syncMarkers() }
-function setTrajIcon(e) { trajIconSize.value = Number(e.target.value); syncMarkers() }
-function togglePtLabel() { showPtLabel.value = !showPtLabel.value; syncMarkers() }
-function togglePtIndex() { showPtIndex.value = !showPtIndex.value; syncMarkers() }
-function toggleStName() { showStName.value = !showStName.value; syncMarkers() }
 function togglePtLayer() { showPtLayer.value = !showPtLayer.value; syncMarkers() }
 function toggleStLayer() { showStLayer.value = !showStLayer.value; syncMarkers() }
 function toggleTrajLayer() { showTrajLayer.value = !showTrajLayer.value; syncMarkers() }
-function toggleTrajIcon() { showTrajIcon.value = !showTrajIcon.value; syncMarkers() }
 function toggleBore() { showBore.value = !showBore.value; redraw() }
 function toggleContourLabels() { showContourLabels.value = !showContourLabels.value; redraw() }
 // 以 (lat0,lon0) 为心、角半径 lambda 的地表小圆 -> [[lon,lat]...]
@@ -4869,13 +4966,11 @@ function polyMoveToggle(pg) {
   polyRefresh()
 }
 function polyMoveStop() { if (polyMoveId.value) { polyMoveId.value = ''; polyRefresh() } }
-// 把当前可拖拽的顶点/标记点（传引用，拖动实时生效）喂给平面渲染器做命中/拖拽。
-// 「调整点位置」的标记/地球站/航迹优先；否则回退到 Polygon 调点/整体拖动。三者互斥，共用同一 editVerts 槽。
+// 把当前可拖拽的顶点（传引用，拖动实时生效）喂给平面渲染器做命中/拖拽。
+// 波束合成「调整中心/删除波束」优先；否则回退到 Polygon 调点/整体拖动。二者互斥，共用同一 editVerts 槽。
+// ★ 标记（点标记/地球站/航点）不占这个槽：它们走 setMarkerDrag/setOnMarkerDrag 那条路，抓符号本体、带起手差。
 function syncEdit() {
   if (!flat) return
-  const mt = mkEditTarget()
-  if (mt) { mkEditPts = mt.src.map((p) => [p.lon, p.lat]); flat.setEditVerts({ pts: mkEditPts, px: MK_HANDLE_PX, move: false }); return }
-  mkEditPts = null
   if ((bs.adjusting.value || bs.deleting.value) && bs.open.value) {   // 波束合成调整中心/删除波束：手柄命中用波束中心快照（拖动时原地更新）
     bsEditPts = bs.beams.value.map((b) => [b.lon, b.lat])
     flat.setEditVerts({ pts: bsEditPts, px: MK_HANDLE_PX, move: false, cursor: bs.deleting.value ? 'pointer' : 'move' }); return
@@ -4884,9 +4979,8 @@ function syncEdit() {
   const pg = curEditPoly() || curMovePoly()
   flat.setEditVerts(pg ? { pts: pg.pts, px: polyDotSize.value, move: !!curMovePoly() } : null)
 }
-// 顶点拖拽回调分发：调整点位置→标记；波束合成调整中心→波束；否则→ Polygon 顶点
+// 顶点拖拽回调分发：波束合成删除波束/调整中心→波束；否则→ Polygon 顶点（标记不走这条，见 syncEdit）
 function onVertexDrag(vi, ll, phase) {
-  if (mkEditId.value) { onMkVertexDrag(vi, ll, phase); return }
   if (bs.deleting.value && bs.open.value) {   // 删除波束：命中即删（按下 'start' 触发一次，拖动/抬起阶段不再处理）
     if (phase === 'start' && vi != null) bs.removeBeamAt(vi)
     return
@@ -5781,9 +5875,8 @@ function redrawSats() {
   if (vsk) { if (vsk.lines) lines.push(...vsk.lines); if (vsk.dots) dots.push(...vsk.dots); if (vsk.labels) labels.push(...vsk.labels); if (vsk.sats) sats.push(...vsk.sats) }
   // 波束合成「调整中心」/「删除波束」：在各波束中心叠可点击手柄圆环（与标记/Polygon 调点同款，平面图交互；调整=轮廓色，删除=警示红）
   if ((bs.adjusting.value || bs.deleting.value) && bs.open.value) for (const b of bs.beams.value) { if (Number.isFinite(b.lat) && Number.isFinite(b.lon)) dots.push({ lon: b.lon, lat: b.lat, color: bs.deleting.value ? 0xe05252 : (cssToHex(bs.p.skColor) || 0x5ad1ff), px: MK_HANDLE_PX, r: MK_HANDLE_PX * 0.0018 }) }
-  // 「调整点位置」：在被编辑的标记/地球站/航迹各点上叠一圈可拖拽手柄圆环（屏幕恒定像素，仅平面图交互）
-  const mkT = mkEditTarget()
-  if (mkT) for (const p of mkT.src) { if (Number.isFinite(p.lat) && Number.isFinite(p.lon)) dots.push({ lon: p.lon, lat: p.lat, color: mkT.color, px: MK_HANDLE_PX, r: MK_HANDLE_PX * 0.0018 }) }
+  // 「调整位置」不再在标记正中叠手柄圆环：拖拽抓的是符号本体（命中区下限 11px，比 5px 手柄还大），
+  // 那一圈只剩遮挡 —— 正好压在符号中心，图钉针尖、序号徽标一类全被它盖住。
   const spec = (lines.length || sats.length || dots.length || fills.length) ? { lines, dots, labels, sats, fills } : null
   // 2D 平面图激活时不同步重建 3D 卫星层：scene 已 pause，但 setSatLayer 的组重建（每个标签新建
   // canvas+texture）是同步开销，大波束群下拖拽每帧数百次分配 → 卡手。挂起到切回 3D 时一次性补建。
@@ -5803,27 +5896,41 @@ watch([polyDrawId, activeTraj], ([pid, tid]) => { const on = !!(pid || tid); if 
 const ptLat = ref(''), ptLon = ref('')
 const stLat = ref(''), stLon = ref(''), stName = ref('')
 const wpLat = ref(''), wpLon = ref('')
-const markPtFont = ref(14)         // 点标记坐标字号（1–32）
-const markPtDot = ref(3.5)         // 点标记圆点大小（半径口径，1–12，默认偏小）
-const markPtIdx = ref(16)          // 点标记序号圈直径（屏幕 px @100% 缩放，1–40）
-const stIconSize = ref(16)         // 地球站图标大小（5–60，默认 16）
-const stFontSize = ref(17)         // 地球站名称字号（1–32）
-const trajDotSize = ref(4)         // 轨迹圆点大小（1–60，与「图标大小」同一把尺；实心圆偏重，画出来取该数的一半作直径）
-const trajIconSize = ref(26)       // 航迹头的载具图标大小（屏幕 px @100% 缩放，1–60）
-const showPtLabel = ref(false)     // 是否显示点标记坐标文字（默认不显示；圆点不受影响）
-// 点标记画成带序号的圈（圈 1、圈 2）：序号＝点标记表格的行号（数组下标 +1，坐标留空的行照样占号），
-// 图上第 7 号就是表里第 7 行。关掉退回普通圆点。
-const showPtIndex = ref(true)
-const showStName = ref(false)      // 是否显示地球站名称文字（默认不显示；图标不受影响）
-const showPtLayer = ref(true)      // 点标记图层显隐（小眼睛；隐藏仅停止渲染，数据保留并持久化）
-const showStLayer = ref(true)      // 地球站图层显隐（小眼睛）
-const showTrajLayer = ref(true)    // 航迹图层显隐（小眼睛）
-// 航迹头（末航点）上的载具图标：航行＝船舶、飞行＝飞机（形状见 viz/vehicleSymbol.js，2D/3D 同一份）
-const showTrajIcon = ref(true)
+// 标记层显示样式（侧栏「标记」三节，3D 球体与 2D 平面图同一份；出厂值＝可自定义之前写死的那套画法）。
+// 尺寸口径一律【屏幕 px @100% 缩放】，两个渲染器各自按自己的缩放律联动（2D 的 iz / 3D 的 zoomK）。
+// ★ 逐条覆盖：某个点可自带颜色（p.color，侧栏列表行内那枚色块），留空即跟这里的整层设置。
+const markStyle = reactive({
+  // 点标记：符号 / 颜色 / 透明度 / 大小 / 描边
+  ptShape: 'circle', ptColor: '#ffd24a', ptOpacity: 1, ptDot: 3.5, ptEdge: 0.18, ptEdgeColor: '#ffffff',
+  // 序号徽标（圈 1、圈 2）：序号＝点标记表格的行号（数组下标 +1，坐标留空的行照样占号），
+  // 图上第 7 号就是表里第 7 行。关掉退回普通符号。
+  ptIdxOn: true, ptIdx: 16, idxFill: '#ffd24a', idxFillOpacity: 0.62, idxRing: '#ffffff', idxInk: '#1b1205',
+  // 坐标标注（默认不显示；符号不受影响）
+  ptLabelOn: false, ptFont: 14, ptLabelColor: '#ffffff', ptLabelOpacity: 1, ptLabelPos: 'up',
+  // 地球站：符号恒是那枚 Noto 天线（六色写实件，不换形状也不着色 —— 它是这层唯一的符号）
+  stOpacity: 1, stIcon: 16,
+  stLabelOn: false, stFont: 17, stLabelColor: '#ffffff', stLabelOpacity: 1, stLabelPos: 'down',
+  // 航迹：线（航行/飞行两档色，某条航迹可自带覆盖色）+ 航点圆点 + 载具图标 + 航迹名
+  tjSea: '#ff6a4a', tjFlight: '#5ad1ff', tjWidth: 2.2, tjOpacity: 0.95, tjDash: 'solid',
+  tjDot: 4, tjDotSea: '#ff9a5a', tjDotFlight: '#5ad1ff',
+  tjIconOn: true, tjIconPx: 26, tjIconSea: '#ff6a4a', tjIconFlight: '#5ad1ff',
+  tjNameOn: false, tjNameFont: 13, tjNameColor: '#ffffff'
+})
+const MARK_STYLE_DEF = { ...markStyle }   // 出厂值快照：各节标题上那个「默认」按它回填
+// 分节恢复出厂样式：只回填本节的字段，别人调好的不动（同「聚焦卫星」那套）
+const MARK_PARTS = {
+  pt: ['ptShape', 'ptColor', 'ptOpacity', 'ptDot', 'ptEdge', 'ptEdgeColor', 'ptIdxOn', 'ptIdx', 'idxFill', 'idxFillOpacity', 'idxRing', 'idxInk', 'ptLabelOn', 'ptFont', 'ptLabelColor', 'ptLabelOpacity', 'ptLabelPos'],
+  st: ['stOpacity', 'stIcon', 'stLabelOn', 'stFont', 'stLabelColor', 'stLabelOpacity', 'stLabelPos'],
+  tj: ['tjSea', 'tjFlight', 'tjWidth', 'tjOpacity', 'tjDash', 'tjDot', 'tjDotSea', 'tjDotFlight', 'tjIconOn', 'tjIconPx', 'tjIconSea', 'tjIconFlight', 'tjNameOn', 'tjNameFont', 'tjNameColor']
+}
+// 标注摆位四档（上/下/左/右）与符号形状表：两个渲染器共用 viz/markers/markSymbols.js 那张表
+const LABEL_POS = [{ k: 'up', zh: '上', en: 'Above' }, { k: 'down', zh: '下', en: 'Below' }, { k: 'left', zh: '左', en: 'Left' }, { k: 'right', zh: '右', en: 'Right' }]
+const showPtLayer = ref(true)      // 点标记图层显隐（拨杆；隐藏仅停止渲染，数据保留并持久化）
+const showStLayer = ref(true)      // 地球站图层显隐
+const showTrajLayer = ref(true)    // 航迹图层显隐
 // 「调整点位置」（仿 Polygon 调点）：在平面图上拖动圆点改坐标。'points'|'stations'|轨迹id，''=关闭；同一时刻仅一层可调、并与 Polygon 各态互斥。
 const mkEditId = ref('')
 const MK_HANDLE_PX = 5             // 可拖拽手柄圆环半径（屏幕恒定像素，比默认圆点略大便于抓取）
-let mkEditPts = null              // 喂给 editVerts 的 [lon,lat] 快照（与 src 同序；拖动时原地更新以保持命中同步）
 let bsEditPts = null              // 波束合成「调整中心」的 editVerts 快照（同上，拖动时原地更新）
 let mkSeq = 1
 const newId = () => 'm' + Date.now().toString(36) + (mkSeq++)   // 跨会话唯一，避免与已存数据撞 key
@@ -5929,35 +6036,73 @@ function ctxSetLandColor() {
   shellUi.side = 'geo'
   pickLandCountry(c)
 }
-const markSizes = () => ({ ptFont: markPtFont.value, stIcon: stIconSize.value, stFont: stFontSize.value, ptDot: markPtDot.value, ptIdx: markPtIdx.value, trajDot: trajDotSize.value, trajIcon: showTrajIcon.value, trajIconPx: trajIconSize.value })
-// 标记载荷构造器：坐标/名称是否带文字由 showPtLabel/showStName 决定（空串=圆点/图标保留、文字隐藏）。
+// 推给两个渲染器的整层样式（渲染器只认屏幕 px 与 CSS 色串；逐条覆盖在载荷里逐条带）
+const markSizes = () => ({
+  ptShape: markStyle.ptShape, ptColor: markStyle.ptColor, ptOpacity: markStyle.ptOpacity, ptDot: markStyle.ptDot,
+  ptEdge: markStyle.ptEdge, ptEdgeColor: markStyle.ptEdgeColor,
+  ptIdx: markStyle.ptIdx, idxFill: markStyle.idxFill, idxFillOpacity: markStyle.idxFillOpacity, idxRing: markStyle.idxRing, idxInk: markStyle.idxInk,
+  ptFont: markStyle.ptFont, ptLabelColor: markStyle.ptLabelColor, ptLabelOpacity: markStyle.ptLabelOpacity, ptLabelPos: markStyle.ptLabelPos,
+  stOpacity: markStyle.stOpacity, stIcon: markStyle.stIcon,
+  stFont: markStyle.stFont, stLabelColor: markStyle.stLabelColor, stLabelOpacity: markStyle.stLabelOpacity, stLabelPos: markStyle.stLabelPos,
+  tjWidth: markStyle.tjWidth, tjOpacity: markStyle.tjOpacity, tjDash: markStyle.tjDash, tjDot: markStyle.tjDot,
+  tjIconOn: markStyle.tjIconOn, tjIconPx: markStyle.tjIconPx,
+  tjNameOn: markStyle.tjNameOn, tjNameFont: markStyle.tjNameFont, tjNameColor: markStyle.tjNameColor
+})
+// 改样式：整层设置推给两个渲染器并重画（不写盘 —— 随快照持久化，与聚焦卫星那套同口径）
+function applyMarkStyle() { pushMarkers() }   // 落盘交给 watch(snapshot, saveSettings)
+function resetMarkPart(k) { for (const f of (MARK_PARTS[k] || [])) markStyle[f] = MARK_STYLE_DEF[f]; applyMarkStyle() }
+function toggleMark(k) { markStyle[k] = !markStyle[k]; applyMarkStyle() }
+function setMarkVal(k, v) { markStyle[k] = v; applyMarkStyle() }
+// 标记载荷构造器：坐标/名称是否带文字由 markStyle.ptLabelOn / stLabelOn 决定（空串=符号/图标保留、文字隐藏）。
 // pushMarkers 与 feedFlat 共用，避免两处各写一份导致显隐口径不一致。
-// 图层隐藏（小眼睛关）时返回空数组：仅停止渲染，points/stations/trajectories 原始数据不动、照常持久化。
+// 图层隐藏（拨杆关）时返回空数组：仅停止渲染，points/stations/trajectories 原始数据不动、照常持久化。
 // finite 守卫：批量表格里坐标可能暂空(null)——只渲染坐标齐全的点/站/航点，避免 NaN 画到画布
 const finLL = (p) => Number.isFinite(p.lat) && Number.isFinite(p.lon)
 // idx：序号取【原数组下标 +1】而非过滤后的位次 —— 表格的序号列就是行号，坐标留空的行照样占一个号，
 // 按过滤后重编会让图上的号与表里的行整体错位。空串＝不画序号（退回普通圆点）。
-const markerPts = () => showPtLayer.value ? points.value.map((p, i) => ({ p, i })).filter(({ p }) => finLL(p)).map(({ p, i }) => ({ lat: p.lat, lon: p.lon, idx: showPtIndex.value ? String(i + 1) : '', label: showPtLabel.value ? fmtLL(p.lat, p.lon) : '', el: fmtElev(p.lat, p.lon) })) : []
-const markerSts = () => showStLayer.value ? stations.value.filter(finLL).map((s) => ({ lat: s.lat, lon: s.lon, name: showStName.value ? s.name : '', el: fmtElev(s.lat, s.lon) })) : []
-const markerTrs = () => showTrajLayer.value ? trajectories.value.map((t) => ({ pts: (t.pts || []).filter(finLL), kind: t.kind, color: t.kind === 'flight' ? 0x5ad1ff : 0xff6a4a })) : []
+const markerPts = () => showPtLayer.value ? points.value.map((p, i) => ({ p, i })).filter(({ p }) => finLL(p)).map(({ p, i }) => ({ id: p.id, lat: p.lat, lon: p.lon, idx: markStyle.ptIdxOn ? String(i + 1) : '', label: markStyle.ptLabelOn ? fmtLL(p.lat, p.lon) : '', el: fmtElev(p.lat, p.lon), color: p.color || '' })) : []
+const markerSts = () => showStLayer.value ? stations.value.filter(finLL).map((s) => ({ id: s.id, lat: s.lat, lon: s.lon, name: markStyle.stLabelOn ? s.name : '', el: fmtElev(s.lat, s.lon) })) : []
+// 航迹三样颜色（线/圆点/载具）在这里解析成数值：整层按航行/飞行两档，某条航迹自带 t.color 就整条改色
+// （圆点与图标随之跟到那个色上 —— 一条航迹在图上是一件东西，改色只改一处）
+const markerTrs = () => showTrajLayer.value ? trajectories.value.map((t) => {
+  const fl = t.kind === 'flight'
+  const own = hexNum2(t.color)
+  return {
+    id: t.id, name: t.name || '', pts: (t.pts || []).filter(finLL), kind: t.kind,
+    color: own != null ? own : hexNum(fl ? markStyle.tjFlight : markStyle.tjSea),
+    dotColor: own != null ? own : hexNum(fl ? markStyle.tjDotFlight : markStyle.tjDotSea),
+    iconColor: own != null ? own : hexNum(fl ? markStyle.tjIconFlight : markStyle.tjIconSea)
+  }
+}) : []
+// #rrggbb → 数值；空/非法 → null（逐条覆盖「没设」与「设成黑色」要分得开）
+const hexNum2 = (c) => (/^#[0-9a-f]{6}$/i.test(String(c || '')) ? parseInt(String(c).slice(1), 16) : null)
+// 哪几类标记此刻可以用鼠标拖：三类都【必须先点「调整位置」/ 航迹的「调点」】才解锁 —— 不进这个态时
+// 压在标记上按住照常平移地图（原来是层可见即可直接拖，看图时极易把标记误挪走）。
+// 航点给的是【航迹 id】而不是 true：正在调点的那条才可拖，别的航迹的航点不受影响。
+function markDragKinds() {
+  const id = mkEditId.value
+  const tid = (id && id !== 'points' && id !== 'stations') ? id : ''
+  return {
+    point: showPtLayer.value && id === 'points',
+    station: showStLayer.value && id === 'stations',
+    waypoint: (showTrajLayer.value && tid) ? tid : false
+  }
+}
 // 仅把标记推送到两个视图（含聚焦卫星仰角），不写入持久化；供时间推进/选星刷新仰角调用
 function pushMarkers() {
   if (!scene) return
   const pts = markerPts(), sts = markerSts(), trs = markerTrs()
-  scene.setMarkers(pts, sts, markSizes()); scene.setTrajectories(trs, markSizes())
-  if (flat) { flat.setMarkers(pts, sts, trs); flat.setSizes(markSizes()) }
+  const st = markSizes()
+  scene.setMarkStyle(st); scene.setMarkers(pts, sts); scene.setTrajectories(trs)
+  const dk = markDragKinds()
+  scene.setMarkerDrag(dk)
+  if (flat) {
+    flat.setMarkStyle(st); flat.setMarkers(pts, sts, trs)
+    flat.setMarkerDrag(dk)
+  }
 }
 function syncMarkers() { pushMarkers(); persistMarkers(); syncEdit() }   // syncEdit：增删/改名后重建可拖拽快照（无编辑态时无副作用）
-// ---- 调整点位置（点标记 / 地球站 / 航迹航点：拖动圆点改坐标，仿 Polygon 调点，2D 平面图进行） ----
-// 当前可调图层：{ kind, src:[{lat,lon,...}], color }；src 为活动数组引用（拖动直接改数据）
-function mkEditTarget() {
-  const id = mkEditId.value; if (!id) return null
-  if (id === 'points') return { kind: 'points', src: points.value, color: 0xffd27a }
-  if (id === 'stations') return { kind: 'stations', src: stations.value, color: 0x5ad1ff }
-  const t = trajectories.value.find((x) => x.id === id)
-  if (t) return { kind: 'traj', src: t.pts, color: t.kind === 'flight' ? 0x5ad1ff : 0xff6a4a }
-  return null
-}
+// ---- 调整位置（点标记 / 地球站 / 航迹航点：进此态才可用鼠标拖，见 markDragKinds）----
 const mkEditLabel = computed(() => {
   const id = mkEditId.value; if (!id) return ''
   if (id === 'points') return '点标记'
@@ -5965,7 +6110,7 @@ const mkEditLabel = computed(() => {
   const t = trajectories.value.find((x) => x.id === id)
   return t ? `航迹「${t.name || ''}」` : ''
 })
-function mkRefresh() { pushMarkers(); redrawSats(); syncEdit() }   // 重画标记（移动点）+ 手柄 + 重建命中快照；不写盘（拖动 end 时统一持久化）
+function mkRefresh() { pushMarkers(); redrawSats(); syncEdit() }   // 重画标记（移动点）+ 重建命中快照；不写盘（拖动 end 时统一持久化）
 function mkEditToggle(key) {
   if (mkEditId.value === key) { mkEditStop(); return }
   if (key !== 'points' && key !== 'stations' && !trajectories.value.some((t) => t.id === key)) return
@@ -5973,19 +6118,25 @@ function mkEditToggle(key) {
   if (key === 'points') showPtLayer.value = true
   else if (key === 'stations') showStLayer.value = true
   else showTrajLayer.value = true
-  mkEditId.value = key
-  if (!view.flat) view.flat = true     // 拖点在平面图进行（applyFlat→feedFlat 会同步编辑态到渲染器）
+  mkEditId.value = key                 // 拖拽闸：只有这一类标记在 2D / 3D 上可拖（见 markDragKinds）
   mkRefresh()
 }
-function mkEditStop() { if (mkEditId.value) { mkEditId.value = ''; mkEditPts = null; mkRefresh() } }
-// 拖动某点：'move' 改坐标 + 实时重绘（不写盘），'end' 统一持久化
-function onMkVertexDrag(vi, ll, phase) {
-  const t = mkEditTarget(); if (!t) return
+function mkEditStop() { if (mkEditId.value) { mkEditId.value = ''; mkRefresh() } }
+// 标记直接拖拽（渲染器命中后回调）：'move' 改坐标 + 实时重绘（不写盘），'end' 统一持久化。
+// target = { kind:'point'|'station'|'waypoint', id, tid }；按 id 找对象 —— 载荷是过滤过的，下标对不上原数组。
+function onMarkerDragged(target, ll, phase) {
   if (phase === 'end') { persistMarkers(); return }
-  if (vi == null || !ll || vi < 0 || vi >= t.src.length) return
-  const p = t.src[vi]; p.lat = clamp(ll.lat, -90, 90); p.lon = ll.lon
-  if (mkEditPts && mkEditPts[vi]) { mkEditPts[vi][0] = p.lon; mkEditPts[vi][1] = p.lat }   // 同步快照，保持后续命中一致
-  pushMarkers(); redrawSats()
+  if (!target || !ll) return
+  let obj = null
+  if (target.kind === 'point') obj = points.value.find((p) => p.id === target.id)
+  else if (target.kind === 'station') obj = stations.value.find((x) => x.id === target.id)
+  else if (target.kind === 'waypoint') {
+    const t = trajectories.value.find((x) => x.id === target.tid)
+    obj = t ? (t.pts || []).find((q) => q.id === target.id) : null
+  }
+  if (!obj) return
+  obj.lat = clamp(ll.lat, -90, 90); obj.lon = ll.lon
+  pushMarkers(); redrawSats()   // redrawSats：可见性叠加层等以标记为目标的图元跟着走
 }
 function persistMarkers() {
   try { localStorage.setItem(MK_KEY, JSON.stringify({ points: points.value, stations: stations.value, trajectories: trajectories.value })) } catch { /* ignore */ }
@@ -5993,7 +6144,10 @@ function persistMarkers() {
 function loadMarkers() {
   try {
     const d = JSON.parse(localStorage.getItem(MK_KEY) || 'null')
-    if (d) { points.value = d.points || []; stations.value = d.stations || []; trajectories.value = d.trajectories || [] }
+    if (d) {
+      points.value = d.points || []; stations.value = d.stations || []; trajectories.value = d.trajectories || []
+      mkTable.ensureWaypointIds()   // 老存档的航点没有 id；直接拖拽按 id 定位，进场先补齐
+    }
   } catch { /* ignore */ }
 }
 
@@ -6004,6 +6158,9 @@ function addPoint(lat, lon, face) {
 }
 function addPointInput() { addPoint(parseFloat(ptLat.value), parseFloat(ptLon.value)); ptLat.value = ''; ptLon.value = '' }
 function removePoint(id) { points.value = points.value.filter((p) => p.id !== id); syncMarkers() }
+// 逐条覆盖：某个点 / 某条航迹自己的颜色。传空串＝清除覆盖，回到整层设置（侧栏色块右键）。
+function setPointColor(id, v) { const p = points.value.find((x) => x.id === id); if (p) { p.color = v || ''; syncMarkers() } }
+function setTrajColor(id, v) { const t = trajectories.value.find((x) => x.id === id); if (t) { t.color = v || ''; syncMarkers() } }
 
 function addStation() {
   const lat = parseFloat(stLat.value), lon = parseFloat(stLon.value)
@@ -6304,14 +6461,14 @@ const atNow = computed(() => Math.abs(relNowMs.value) < 60000)
 //   块宽在 CSS 里钉死，日期与时区常显，只有偏移量那一格富余时收缩。
 const timeParts = computed(() => {
   const p = (n) => String(n).padStart(2, '0')
-  const tag = tzUtc() ? 'UTC' : localTzLabel.value
+  const tag = tzLabel.value
   const d = new Date(clock.tMs)
   const md = `${p(tMon(d) + 1)}-${p(tDay(d))}`
   const hms = `${p(tHour(d))}:${p(tMin(d))}:${p(tSec(d))}`
   const off = live.value ? '实时' : (atNow.value ? '此刻' : fmtOffset(relNowMs.value))
   return { m: hms, d: md, o: off, z: tag, s: `${md} ${off} ${tag}` }   // s 仍供 aria-valuetext 用
 })
-function toggleTz() { tzMode.value = tzUtc() ? 'local' : 'utc' }
+function setTzMode(v) { tzMode.value = normTzMode(v, tzMode.value); saveSettings() }
 
 // ===================== 持久化（记住分组 + 选中星） =====================
 function saveSelection() {
@@ -6370,8 +6527,7 @@ function snapshot() {
     oceanMode: oceanNameMode.value, seaMode: seaNameMode.value, oceanName: oceanNameSize.value, seaName: seaNameSize.value, waterOff: { ...waterOff },
     chain: { on: chainOn.value, off: { ...chainOff }, style: { ...chainStyle } },
     showProvinces: showProvinces.value, showCities: showCities.value, admSel1: [...admSel1.value], admName1: admName1.value, admName2: admName2.value, borderStyle: { ...borderStyle }, labelStyle: { ...labelStyle }, termOn: termOn.value, termNight: termNight.value, termLine: termLine.value, termStyle: { ...termStyle }, tzMode: tzMode.value, crs: { ...mapCrs }, oceanColor: oceanColor.value, imagery: { on: imageryOn.value, k: imageryKey.value, bright: imageryBright.value }, landScheme: landScheme.value, landOverrides: { ...landOverrides }, groupColors: { ...groupColors }, autoRotate: autoRotate.value, autoRotateSpeed: viewPrefs.autoRotateSpeed, live: live.value, clock: { stepSec: clock.stepSec, speed: clock.speed }, beamLock: beamLock.value, fpMode: fpMode.value, beam: beam.value, elevMin: elevMin.value, focusStyle: { ...focusStyle }, windowMin: windowMin.value,
-    mkPt: markPtFont.value, mkStIcon: stIconSize.value, mkStFont: stFontSize.value, mkPtDot: markPtDot.value, mkPtIdx: markPtIdx.value, mkTrajDotPx: trajDotSize.value, mkTrajIcon: trajIconSize.value,
-    mkPtShow: showPtLabel.value, mkPtIdxShow: showPtIndex.value, mkStShow: showStName.value, mkTrajIconShow: showTrajIcon.value,
+    markStyle: { ...markStyle },
     mkPtLayer: showPtLayer.value, mkStLayer: showStLayer.value, mkTrajLayer: showTrajLayer.value,
     covOpen: covOpen.value, polyOpen: polyOpen.value,
     grdOpen: grdOpen.value, grd: grd.getState(), perf: perf.getState(),
@@ -6475,20 +6631,31 @@ async function restoreSettings() {
   if (s.groupColors && typeof s.groupColors === 'object') {
     for (const [k, v] of Object.entries(s.groupColors)) if (groupColorable(k) && typeof v === 'string' && HEX6.test(v)) groupColors[k] = v.toLowerCase()
   }
-  if (Number.isFinite(s.mkPt)) markPtFont.value = s.mkPt
-  if (Number.isFinite(s.mkPtDot)) markPtDot.value = s.mkPtDot
-  if (Number.isFinite(s.mkPtIdx)) markPtIdx.value = s.mkPtIdx
-  if (Number.isFinite(s.mkStIcon)) stIconSize.value = s.mkStIcon
-  if (Number.isFinite(s.mkStFont)) stFontSize.value = s.mkStFont
+  // 标记层样式：老存档把尺寸/显隐散成一堆 mk* 键，先按其迁移；新的 markStyle 对象随后覆盖
+  if (Number.isFinite(s.mkPt)) markStyle.ptFont = s.mkPt
+  if (Number.isFinite(s.mkPtDot)) markStyle.ptDot = s.mkPtDot
+  if (Number.isFinite(s.mkPtIdx)) markStyle.ptIdx = s.mkPtIdx
+  if (Number.isFinite(s.mkStIcon)) markStyle.stIcon = s.mkStIcon
+  if (Number.isFinite(s.mkStFont)) markStyle.stFont = s.mkStFont
   // 圆点大小口径换过一次：老的 mkTrajDot 是半径系数（可见直径 = 值 × 18/32 × 2.5），新的 mkTrajDotPx
   // 直接就是直径。老存档按同一条换算折过来，屏上大小不变。
-  if (Number.isFinite(s.mkTrajDotPx)) trajDotSize.value = s.mkTrajDotPx
-  else if (Number.isFinite(s.mkTrajDot)) trajDotSize.value = Math.max(1, Math.min(60, Math.round(s.mkTrajDot * (18 / 32) * 2.5)))
-  if (Number.isFinite(s.mkTrajIcon)) trajIconSize.value = s.mkTrajIcon
-  if (typeof s.mkPtShow === 'boolean') showPtLabel.value = s.mkPtShow
-  if (typeof s.mkPtIdxShow === 'boolean') showPtIndex.value = s.mkPtIdxShow
-  if (typeof s.mkStShow === 'boolean') showStName.value = s.mkStShow
-  if (typeof s.mkTrajIconShow === 'boolean') showTrajIcon.value = s.mkTrajIconShow
+  if (Number.isFinite(s.mkTrajDotPx)) markStyle.tjDot = s.mkTrajDotPx
+  else if (Number.isFinite(s.mkTrajDot)) markStyle.tjDot = Math.max(1, Math.min(60, Math.round(s.mkTrajDot * (18 / 32) * 2.5)))
+  if (Number.isFinite(s.mkTrajIcon)) markStyle.tjIconPx = s.mkTrajIcon
+  if (typeof s.mkPtShow === 'boolean') markStyle.ptLabelOn = s.mkPtShow
+  if (typeof s.mkPtIdxShow === 'boolean') markStyle.ptIdxOn = s.mkPtIdxShow
+  if (typeof s.mkStShow === 'boolean') markStyle.stLabelOn = s.mkStShow
+  if (typeof s.mkTrajIconShow === 'boolean') markStyle.tjIconOn = s.mkTrajIconShow
+  // 逐字段按类型合并（旧存档没这一项时全留出厂值 / 迁移值）
+  if (s.markStyle && typeof s.markStyle === 'object') {
+    for (const [k, v] of Object.entries(s.markStyle)) {
+      const d = MARK_STYLE_DEF[k]
+      if (d === undefined) continue
+      if (typeof d === 'boolean') { if (typeof v === 'boolean') markStyle[k] = v }
+      else if (typeof d === 'number') { if (Number.isFinite(v)) markStyle[k] = v }
+      else if (typeof v === 'string' && v) markStyle[k] = v
+    }
+  }
   if (typeof s.mkPtLayer === 'boolean') showPtLayer.value = s.mkPtLayer
   if (typeof s.mkStLayer === 'boolean') showStLayer.value = s.mkStLayer
   if (typeof s.mkTrajLayer === 'boolean') showTrajLayer.value = s.mkTrajLayer
@@ -6520,7 +6687,7 @@ async function restoreSettings() {
   if (typeof s.showCities === 'boolean') showCities.value = s.showCities
   if (Array.isArray(s.admSel1)) admSel1.value = s.admSel1.filter((x) => typeof x === 'string')
   for (const [k, r] of [['admName1', admName1], ['admName2', admName2]]) if (s[k] === 'local' || s[k] === 'en' || s[k] === 'off') r.value = s[k]
-  if (s.tzMode === 'utc' || s.tzMode === 'local') tzMode.value = s.tzMode   // 时间轴读数时区档位（仅显示）
+  if (s.tzMode != null) tzMode.value = normTzMode(s.tzMode, tzMode.value)   // 时间轴读数时区档位（仅显示；可为固定偏移分钟数）
   if (s.crs && typeof s.crs === 'object') { setMapCrs(s.crs); crsCenterShown.value = lon0ToCenter(mapCrs.lon0) }   // 坐标系三档（只改呈现，见 stores/mapCrs）
   // 晨昏线：默认关，存档里显式 true 才开；样式逐字段合并（旧存档缺字段时保留默认值）
   if (typeof s.termOn === 'boolean') termOn.value = s.termOn
@@ -6673,6 +6840,7 @@ onMounted(async () => {
   scene.setOnLabelDrag(grd.labelDrag); scene.setLabelDragMode(grd.dragLabel.value)   // 拖拽等值线数值标签（沿线滑动）
   scene.setOnPolyDraw(onPolyDraw); scene.setPolyDrawMode(!!(polyDrawId.value || activeTraj.value))   // Polygon/航迹绘制：左键按住沿路径连续加点
   scene.setOnPlace((ll) => bs.placeAt(ll)); scene.setPlaceMode(bs.placing.value)   // 波束合成放置：左键点击落波束（拖动仍旋转）
+  scene.setOnMarkerDrag(onMarkerDragged)   // 标记拖拽（2D 那侧在 flat 创建处注册）
   // 缩放进度条（底部状态栏）：注册当前页缩放能力，球体滚轮缩放回填进度条 + 记忆
   scene.setOnZoom((t) => { if (!flatView.value) { zoom.value = t; saveView() } })
   if (savedView.globe) scene.setView(savedView.globe)   // 恢复上次球体视图（朝向+缩放）
@@ -7982,7 +8150,9 @@ onBeforeUnmount(() => {
                   </div>
                   <!-- 时基行：UTC/本地显示切换（导出恒双时区，此开关只管屏上）+ 本次时窗的绝对起止 -->
                   <div class="vis-tbase">
-                    <span class="vis-tzseg"><i :class="{ on: vis.accessTz.value !== 'utc' }" title="本地时区" data-i18n-skip @click="vis.accessTz.value = 'local'">{{ visTzTag() }}</i><i :class="{ on: vis.accessTz.value === 'utc' }" data-i18n-skip @click="vis.accessTz.value = 'utc'">UTC</i></span>
+                    <TzPicker class="vis-tzp" :model-value="vis.accessTz.value" :ms="vis.accessBaseMs.value"
+                              title="过境时刻的显示时区：本机 / UTC / UTC±N（导出 Excel 恒双时区，此档位只管屏上）"
+                              @update:model-value="v => vis.accessTz.value = v">{{ visTzNow }}</TzPicker>
                     <span class="vis-tspan" data-i18n-skip :title="'时窗起点 ' + visBoth(vis.accessBaseMs.value) + '\n时窗终点 ' + visBoth(accEndMs)">{{ visYmdHm(vis.accessBaseMs.value) }} → {{ visYmdHm(accEndMs) }}</span>
                   </div>
                   <div ref="accGanttEl" class="vis-gantt">
@@ -8519,7 +8689,7 @@ onBeforeUnmount(() => {
           <template v-if="isSecOpen('geo-img', false)">
           <div class="srow stack"><label>分辨率</label>
             <span class="seg nseg" role="group" aria-label="影像分辨率">
-              <span v-for="im in IMAGERY_SOURCES" :key="im.k" class="sg" :class="{ on: imageryKey === im.k }" :title="im.w + ' × ' + im.h + ' · ' + im.resKm + ' km/px · ' + im.credit + ' · VRAM ≈ ' + im.vramMB + ' MB'" @click="setImageryKey(im.k)">{{ im.zh }}</span>
+              <span v-for="im in IMAGERY_SOURCES" :key="im.k" class="sg" :class="{ on: imageryKey === im.k }" :title="imageryTitle(im)" @click="setImageryKey(im.k)">{{ im.zh }}</span>
             </span>
           </div>
           <div class="srow"><label>亮度</label><input class="rng" type="range" min="0.3" max="1.2" step="0.05" :value="imageryBright" title="压暗影像，让边界线与覆盖场看得清；100% 为原图" @input="setImageryBright" /><span class="u">{{ Math.round(imageryBright * 100) }}%</span></div>
@@ -8741,38 +8911,75 @@ onBeforeUnmount(() => {
         </div>
         </div>
 
-        <!-- 标记：点标记 / 地球站 / 轨迹 -->
+        <!-- 标记：点标记 / 地球站 / 轨迹（每节＝一层，样式整层可调 + 逐条可覆盖） -->
         <div v-show="shellUi.side === 'markers'" class="sview">
         <div class="cov-side mk-side docked">
         <div class="sec" :class="{ hid: !showPtLayer }">
-          <div class="sect acc" :class="{ open: isSecOpen('mk-points') }" @click="toggleSec('mk-points')"><Icon :name="isSecOpen('mk-points') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>点标记</span><span class="lnk" title="打开点标记批量表格（Excel：增删改 / 批量粘贴导入）" @click.stop="openMkTable('points')">表格</span><span v-if="points.length" class="lnk" :class="{ on: mkEditId === 'points' }" :title="mkEditId === 'points' ? '完成，退出拖动' : '在平面图上拖动圆点调整点标记位置'" @click.stop="mkEditToggle('points')">{{ mkEditId === 'points' ? '完成调整' : '调整位置' }}</span><button type="button" class="layersw sect-layersw" :class="{ on: showPtLayer }" role="switch" :aria-checked="showPtLayer ? 'true' : 'false'" :title="showPtLayer ? '隐藏点标记（数据保留）' : '显示点标记'" @click.stop="togglePtLayer"><i></i></button></div>
+          <div class="sect acc" :class="{ open: isSecOpen('mk-points') }" @click="toggleSec('mk-points')"><Icon :name="isSecOpen('mk-points') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>点标记</span><span class="lnk" title="打开点标记批量表格（Excel：增删改 / 批量粘贴导入）" @click.stop="openMkTable('points')">表格</span><span class="lnk" title="本节恢复出厂样式" @click.stop="resetMarkPart('pt')">默认</span><span v-if="points.length" class="lnk" :class="{ on: mkEditId === 'points' }" :title="mkEditId === 'points' ? '完成，退出拖动' : '解锁鼠标拖动：在图上直接拖标记改坐标'" @click.stop="mkEditToggle('points')">{{ mkEditId === 'points' ? '完成调整' : '调整位置' }}</span><button type="button" class="layersw sect-layersw" :class="{ on: showPtLayer }" role="switch" :aria-checked="showPtLayer ? 'true' : 'false'" :title="showPtLayer ? '隐藏点标记（数据保留）' : '显示点标记'" @click.stop="togglePtLayer"><i></i></button></div>
           <template v-if="isSecOpen('mk-points')">
           <div class="srow"><label>纬度</label><input class="ci" v-model="ptLat" placeholder="-90 ~ 90" /></div>
           <div class="srow"><label>经度</label><input class="ci" v-model="ptLon" placeholder="-180 ~ 180" /><span class="addb" @click="addPointInput">添加</span></div>
-          <label class="chk2"><input type="checkbox" :checked="showPtLabel" @change="togglePtLabel" /><span>显示坐标</span></label>
-          <div v-if="showPtLabel" class="srow"><label>坐标字号</label><input class="rng" type="range" min="1" max="32" step="1" :value="markPtFont" @input="setPtFont" /><span class="u">{{ markPtFont }}</span></div>
-          <label class="chk2" title="点标记画成带序号的圈（圈 1、圈 2）；序号即下方列表与点标记表格的行号"><input type="checkbox" :checked="showPtIndex" @change="togglePtIndex" /><span>显示序号</span></label>
-          <div v-if="showPtIndex" class="srow"><label>序号圈大小</label><input class="rng" type="range" min="1" max="40" step="1" :value="markPtIdx" @input="setPtIdx" /><span class="u">{{ markPtIdx }}</span></div>
-          <div v-else class="srow"><label>圆点大小</label><input class="rng" type="range" min="1" max="12" step="0.5" :value="markPtDot" @input="setPtDot" /><span class="u">{{ markPtDot }}</span></div>
+          <label class="chk2" title="点标记画成带序号的圈（圈 1、圈 2）；序号即下方列表与点标记表格的行号"><input type="checkbox" v-model="markStyle.ptIdxOn" @change="applyMarkStyle" /><span>显示序号</span></label>
+          <template v-if="markStyle.ptIdxOn">
+            <div class="srow sub"><label>圈大小</label><input class="rng" type="range" min="1" max="40" step="1" v-model.number="markStyle.ptIdx" @input="applyMarkStyle" /><span class="u">{{ markStyle.ptIdx }}</span></div>
+            <div class="srow sub"><label>盘颜色</label><input class="clr" type="color" v-model="markStyle.idxFill" @input="applyMarkStyle" /><span class="u">{{ markStyle.idxFill }}</span></div>
+            <div class="srow sub"><label>盘透明度</label><input class="rng" type="range" min="0.05" max="1" step="0.02" v-model.number="markStyle.idxFillOpacity" @input="applyMarkStyle" /><span class="u">{{ markStyle.idxFillOpacity.toFixed(2) }}</span></div>
+            <div class="srow sub"><label>圈颜色</label><input class="clr" type="color" v-model="markStyle.idxRing" @input="applyMarkStyle" /><span class="u">{{ markStyle.idxRing }}</span></div>
+            <div class="srow sub"><label>数字颜色</label><input class="clr" type="color" v-model="markStyle.idxInk" @input="applyMarkStyle" /><span class="u">{{ markStyle.idxInk }}</span></div>
+          </template>
+          <template v-else>
+            <div class="srow"><label>符号</label>
+              <select :value="markStyle.ptShape" @change="setMarkVal('ptShape', $event.target.value)">
+                <option v-for="sp in MARK_SHAPES" :key="sp.k" :value="sp.k">{{ byLang(sp.zh, sp.en) }}</option>
+              </select>
+            </div>
+            <div class="srow"><label>颜色</label><input class="clr" type="color" v-model="markStyle.ptColor" @input="applyMarkStyle" /><span class="u">{{ markStyle.ptColor }}</span></div>
+            <div class="srow"><label>大小</label><input class="rng" type="range" min="1" max="20" step="0.5" v-model.number="markStyle.ptDot" @input="applyMarkStyle" /><span class="u">{{ markStyle.ptDot }}</span></div>
+            <div class="srow"><label>透明度</label><input class="rng" type="range" min="0.05" max="1" step="0.05" v-model.number="markStyle.ptOpacity" @input="applyMarkStyle" /><span class="u">{{ markStyle.ptOpacity.toFixed(2) }}</span></div>
+            <div class="srow" title="描边宽 ÷ 符号直径，0＝不描边"><label>描边</label><input class="rng" type="range" min="0" max="0.4" step="0.02" v-model.number="markStyle.ptEdge" @input="applyMarkStyle" /><span class="u">{{ markStyle.ptEdge.toFixed(2) }}</span></div>
+            <div v-if="markStyle.ptEdge > 0" class="srow"><label>描边颜色</label><input class="clr" type="color" v-model="markStyle.ptEdgeColor" @input="applyMarkStyle" /><span class="u">{{ markStyle.ptEdgeColor }}</span></div>
+          </template>
+          <label class="chk2"><input type="checkbox" v-model="markStyle.ptLabelOn" @change="applyMarkStyle" /><span>显示坐标</span></label>
+          <template v-if="markStyle.ptLabelOn">
+            <div class="srow sub"><label>字号</label><input class="rng" type="range" min="1" max="32" step="1" v-model.number="markStyle.ptFont" @input="applyMarkStyle" /><span class="u">{{ markStyle.ptFont }}</span></div>
+            <div class="srow sub"><label>颜色</label><input class="clr" type="color" v-model="markStyle.ptLabelColor" @input="applyMarkStyle" /><span class="u">{{ markStyle.ptLabelColor }}</span></div>
+            <div class="srow sub"><label>透明度</label><input class="rng" type="range" min="0.05" max="1" step="0.05" v-model.number="markStyle.ptLabelOpacity" @input="applyMarkStyle" /><span class="u">{{ markStyle.ptLabelOpacity.toFixed(2) }}</span></div>
+            <div class="srow sub"><label>位置</label>
+              <span class="seg nseg" role="group" aria-label="坐标标注位置">
+                <span v-for="o in LABEL_POS" :key="o.k" class="sg" :class="{ on: markStyle.ptLabelPos === o.k }" @click="setMarkVal('ptLabelPos', o.k)">{{ byLang(o.zh, o.en) }}</span>
+              </span>
+            </div>
+          </template>
           <div class="mlist">
-            <div v-for="(p, i) in points" :key="p.id" class="mrow"><span class="mno">{{ i + 1 }}</span><span class="mc">{{ fmtLL(p.lat, p.lon) }}</span><span class="del" @click="removePoint(p.id)"><Icon name="x" :size="12" /></span></div>
+            <div v-for="(p, i) in points" :key="p.id" class="mrow"><span class="mno">{{ i + 1 }}</span><span class="mc">{{ fmtLL(p.lat, p.lon) }}</span><input class="clr mkc" :class="{ ov: !!p.color }" type="color" :value="p.color || markStyle.ptColor" :title="p.color ? '该点自己的颜色（右键清除，回到整层设置）' : '只给这一个点设颜色（右键清除）'" @input="e => setPointColor(p.id, e.target.value)" @contextmenu.prevent="setPointColor(p.id, '')" /><span class="del" @click="removePoint(p.id)"><Icon name="x" :size="12" /></span></div>
           </div>
           </template>
         </div>
 
         <div class="sec" :class="{ hid: !showStLayer }">
-          <div class="sect acc" :class="{ open: isSecOpen('mk-stations') }" @click="toggleSec('mk-stations')"><Icon :name="isSecOpen('mk-stations') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>地球站</span><span class="lnk" title="打开地球站批量表格（Excel：增删改 / 批量粘贴导入）" @click.stop="openMkTable('stations')">表格</span><span v-if="stations.length" class="lnk" :class="{ on: mkEditId === 'stations' }" :title="mkEditId === 'stations' ? '完成，退出拖动' : '在平面图上拖动图标调整地球站位置'" @click.stop="mkEditToggle('stations')">{{ mkEditId === 'stations' ? '完成调整' : '调整位置' }}</span><button type="button" class="layersw sect-layersw" :class="{ on: showStLayer }" role="switch" :aria-checked="showStLayer ? 'true' : 'false'" :title="showStLayer ? '隐藏地球站（数据保留）' : '显示地球站'" @click.stop="toggleStLayer"><i></i></button></div>
+          <div class="sect acc" :class="{ open: isSecOpen('mk-stations') }" @click="toggleSec('mk-stations')"><Icon :name="isSecOpen('mk-stations') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>地球站</span><span class="lnk" title="打开地球站批量表格（Excel：增删改 / 批量粘贴导入）" @click.stop="openMkTable('stations')">表格</span><span class="lnk" title="本节恢复出厂样式" @click.stop="resetMarkPart('st')">默认</span><span v-if="stations.length" class="lnk" :class="{ on: mkEditId === 'stations' }" :title="mkEditId === 'stations' ? '完成，退出拖动' : '解锁鼠标拖动：在图上直接拖图标改坐标'" @click.stop="mkEditToggle('stations')">{{ mkEditId === 'stations' ? '完成调整' : '调整位置' }}</span><button type="button" class="layersw sect-layersw" :class="{ on: showStLayer }" role="switch" :aria-checked="showStLayer ? 'true' : 'false'" :title="showStLayer ? '隐藏地球站（数据保留）' : '显示地球站'" @click.stop="toggleStLayer"><i></i></button></div>
           <template v-if="isSecOpen('mk-stations')">
           <div class="srow"><label>纬度</label><input class="ci" v-model="stLat" placeholder="-90 ~ 90" /></div>
           <div class="srow"><label>经度</label><input class="ci" v-model="stLon" placeholder="-180 ~ 180" /></div>
           <div class="srow"><label>名称</label><input class="ci" v-model="stName" placeholder="如 北京站" /><span class="addb" @click="addStation">添加</span></div>
-          <div class="srow"><label>图标大小</label><input class="rng" type="range" min="5" max="60" step="1" :value="stIconSize" @input="setStIcon" /><span class="u">{{ stIconSize }}</span></div>
-          <label class="chk2"><input type="checkbox" :checked="showStName" @change="toggleStName" /><span>显示名称</span></label>
-          <div v-if="showStName" class="srow"><label>名称字号</label><input class="rng" type="range" min="1" max="32" step="1" :value="stFontSize" @input="setStFont" /><span class="u">{{ stFontSize }}</span></div>
+          <div class="srow"><label>大小</label><input class="rng" type="range" min="5" max="60" step="1" v-model.number="markStyle.stIcon" @input="applyMarkStyle" /><span class="u">{{ markStyle.stIcon }}</span></div>
+          <div class="srow"><label>透明度</label><input class="rng" type="range" min="0.05" max="1" step="0.05" v-model.number="markStyle.stOpacity" @input="applyMarkStyle" /><span class="u">{{ markStyle.stOpacity.toFixed(2) }}</span></div>
+          <label class="chk2"><input type="checkbox" v-model="markStyle.stLabelOn" @change="applyMarkStyle" /><span>显示名称</span></label>
+          <template v-if="markStyle.stLabelOn">
+            <div class="srow sub"><label>字号</label><input class="rng" type="range" min="1" max="32" step="1" v-model.number="markStyle.stFont" @input="applyMarkStyle" /><span class="u">{{ markStyle.stFont }}</span></div>
+            <div class="srow sub"><label>颜色</label><input class="clr" type="color" v-model="markStyle.stLabelColor" @input="applyMarkStyle" /><span class="u">{{ markStyle.stLabelColor }}</span></div>
+            <div class="srow sub"><label>透明度</label><input class="rng" type="range" min="0.05" max="1" step="0.05" v-model.number="markStyle.stLabelOpacity" @input="applyMarkStyle" /><span class="u">{{ markStyle.stLabelOpacity.toFixed(2) }}</span></div>
+            <div class="srow sub"><label>位置</label>
+              <span class="seg nseg" role="group" aria-label="名称位置">
+                <span v-for="o in LABEL_POS" :key="o.k" class="sg" :class="{ on: markStyle.stLabelPos === o.k }" @click="setMarkVal('stLabelPos', o.k)">{{ byLang(o.zh, o.en) }}</span>
+              </span>
+            </div>
+          </template>
           <div class="mlist">
             <div v-for="s in stations" :key="s.id" class="mrow">
               <input class="sni" :value="s.name" @input="e => setStationName(s.id, e.target.value)" />
-              <span class="mc2">{{ fmtLL(s.lat, s.lon) }}</span><span class="del" @click="removeStation(s.id)"><Icon name="x" :size="12" /></span>
+              <span class="mc2">{{ fmtLL(s.lat, s.lon) }}</span>
+              <span class="del" @click="removeStation(s.id)"><Icon name="x" :size="12" /></span>
             </div>
           </div>
           </template>
@@ -8781,19 +8988,45 @@ onBeforeUnmount(() => {
         <div class="sec" :class="{ hid: !showTrajLayer }">
           <div class="sect acc" :class="{ open: isSecOpen('mk-traj') }" @click="toggleSec('mk-traj')"><Icon :name="isSecOpen('mk-traj') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>轨迹</span>
             <span class="lnk" title="打开航迹批量表格（Excel：逐航迹增删改航点 / 批量粘贴导入）" @click.stop="openMkTable('traj')">表格</span>
+            <span class="lnk" title="本节恢复出厂样式" @click.stop="resetMarkPart('tj')">默认</span>
             <span class="lnk" @click.stop="newTraj('sea')">+航行</span>
             <span class="lnk" @click.stop="newTraj('flight')">+飞行</span>
           <button type="button" class="layersw sect-layersw" :class="{ on: showTrajLayer }" role="switch" :aria-checked="showTrajLayer ? 'true' : 'false'" :title="showTrajLayer ? '隐藏航迹（数据保留）' : '显示航迹'" @click.stop="toggleTrajLayer"><i></i></button></div>
           <template v-if="isSecOpen('mk-traj')">
-          <label class="chk2" title="航迹头（末航点）上画一枚俯视矢量图标：航行＝船舶、飞行＝飞机，朝向取末段走向"><input type="checkbox" :checked="showTrajIcon" @change="toggleTrajIcon" /><span>显示图标</span></label>
-          <div v-if="showTrajIcon" class="srow"><label>图标大小</label><input class="rng" type="range" min="1" max="60" step="1" :value="trajIconSize" @input="setTrajIcon" /><span class="u">{{ trajIconSize }}</span></div>
-          <div class="srow"><label>圆点大小</label><input class="rng" type="range" min="1" max="60" step="1" :value="trajDotSize" @input="setTrajDot" /><span class="u">{{ trajDotSize }}</span></div>
+          <div class="bsub"><span>航迹线</span></div>
+          <div class="srow sub"><label>航行色</label><input class="clr" type="color" v-model="markStyle.tjSea" @input="applyMarkStyle" /><span class="u">{{ markStyle.tjSea }}</span></div>
+          <div class="srow sub"><label>飞行色</label><input class="clr" type="color" v-model="markStyle.tjFlight" @input="applyMarkStyle" /><span class="u">{{ markStyle.tjFlight }}</span></div>
+          <div class="srow sub"><label>线粗</label><input class="rng" type="range" min="0.1" max="8" step="0.1" v-model.number="markStyle.tjWidth" @input="applyMarkStyle" /><span class="u">{{ markStyle.tjWidth.toFixed(1) }}</span></div>
+          <div class="srow sub"><label>透明度</label><input class="rng" type="range" min="0.05" max="1" step="0.05" v-model.number="markStyle.tjOpacity" @input="applyMarkStyle" /><span class="u">{{ markStyle.tjOpacity.toFixed(2) }}</span></div>
+          <div class="srow sub"><label>线型</label>
+            <span class="seg nseg" role="group" aria-label="航迹线线型">
+              <span v-for="d in DASH_OPTS" :key="d.k" class="sg" :class="{ on: markStyle.tjDash === d.k }" @click="setMarkVal('tjDash', d.k)">{{ d.label }}</span>
+            </span>
+          </div>
+          <div class="bsub"><span>航点圆点</span></div>
+          <div class="srow sub" title="0＝不画航点圆点"><label>大小</label><input class="rng" type="range" min="0" max="60" step="1" v-model.number="markStyle.tjDot" @input="applyMarkStyle" /><span class="u">{{ markStyle.tjDot }}</span></div>
+          <template v-if="markStyle.tjDot > 0">
+            <div class="srow sub"><label>航行色</label><input class="clr" type="color" v-model="markStyle.tjDotSea" @input="applyMarkStyle" /><span class="u">{{ markStyle.tjDotSea }}</span></div>
+            <div class="srow sub"><label>飞行色</label><input class="clr" type="color" v-model="markStyle.tjDotFlight" @input="applyMarkStyle" /><span class="u">{{ markStyle.tjDotFlight }}</span></div>
+          </template>
+          <label class="chk2" title="航迹头（末航点）上画一枚俯视矢量图标：航行＝船舶、飞行＝飞机，朝向取末段走向"><input type="checkbox" v-model="markStyle.tjIconOn" @change="applyMarkStyle" /><span>显示图标</span></label>
+          <template v-if="markStyle.tjIconOn">
+            <div class="srow sub"><label>大小</label><input class="rng" type="range" min="1" max="60" step="1" v-model.number="markStyle.tjIconPx" @input="applyMarkStyle" /><span class="u">{{ markStyle.tjIconPx }}</span></div>
+            <div class="srow sub"><label>航行色</label><input class="clr" type="color" v-model="markStyle.tjIconSea" @input="applyMarkStyle" /><span class="u">{{ markStyle.tjIconSea }}</span></div>
+            <div class="srow sub"><label>飞行色</label><input class="clr" type="color" v-model="markStyle.tjIconFlight" @input="applyMarkStyle" /><span class="u">{{ markStyle.tjIconFlight }}</span></div>
+          </template>
+          <label class="chk2" title="在航迹头旁标出航迹名"><input type="checkbox" v-model="markStyle.tjNameOn" @change="applyMarkStyle" /><span>显示航迹名</span></label>
+          <template v-if="markStyle.tjNameOn">
+            <div class="srow sub"><label>字号</label><input class="rng" type="range" min="1" max="32" step="1" v-model.number="markStyle.tjNameFont" @input="applyMarkStyle" /><span class="u">{{ markStyle.tjNameFont }}</span></div>
+            <div class="srow sub"><label>颜色</label><input class="clr" type="color" v-model="markStyle.tjNameColor" @input="applyMarkStyle" /><span class="u">{{ markStyle.tjNameColor }}</span></div>
+          </template>
           <div v-for="t in trajectories" :key="t.id" class="tcard" :class="{ act: activeTraj === t.id }">
             <div class="trow">
-              <span class="tk" :class="t.kind"></span>
+              <span class="tk" :class="t.kind" :style="t.color ? { background: t.color } : null"></span>
               <input class="tni" :value="t.name" @input="e => setTrajName(t.id, e.target.value)" />
+              <input class="clr mkc" :class="{ ov: !!t.color }" type="color" :value="t.color || (t.kind === 'flight' ? markStyle.tjFlight : markStyle.tjSea)" :title="t.color ? '这条航迹自己的颜色（右键清除，回到整层设置）' : '只给这一条航迹设颜色（右键清除）'" @input="e => setTrajColor(t.id, e.target.value)" @contextmenu.prevent="setTrajColor(t.id, '')" />
               <span class="tsel" :class="{ on: activeTraj === t.id }" @click="activeTraj = t.id">{{ activeTraj === t.id ? '编辑中' : '编辑' }}</span>
-              <span v-if="t.pts.length" class="tsel" :class="{ on: mkEditId === t.id }" :title="mkEditId === t.id ? '完成，退出拖动' : '在平面图上拖动航点圆点调整位置'" @click="mkEditToggle(t.id)">{{ mkEditId === t.id ? '完成' : '调点' }}</span>
+              <span v-if="t.pts.length" class="tsel" :class="{ on: mkEditId === t.id }" :title="mkEditId === t.id ? '完成，退出拖动' : '解锁鼠标拖动：在图上直接拖航点改坐标'" @click="mkEditToggle(t.id)">{{ mkEditId === t.id ? '完成' : '调点' }}</span>
               <span class="del" @click="removeTraj(t.id)"><Icon name="x" :size="12" /></span>
             </div>
             <div class="twp">
@@ -8847,7 +9080,9 @@ onBeforeUnmount(() => {
         <div v-show="hoverShow" class="tb-tip" :style="{ left: hoverX + 'px' }">{{ hoverLabel }}</div>
       </div>
       <div class="tl-grp">
-        <span class="tlab2 tzsw" :title="tzMode === 'utc' ? '当前按 UTC 显示，点击切回本机时区 ' + localTzLabel + '（仅改显示；星位、晨昏线、过境窗口一律走 UTC 计算，与此开关无关）' : '当前按本机时区 ' + localTzLabel + ' 显示，点击切到 UTC（仅改显示；星位、晨昏线、过境窗口一律走 UTC 计算，与此开关无关）'" @click="toggleTz"><span class="t1">{{ timeParts.m }}</span><span class="t2"><span class="d">{{ timeParts.d }}</span><span class="o">{{ timeParts.o }}</span><span class="z">{{ timeParts.z }}</span></span></span>
+        <TzPicker class="tlab2 tzsw" :model-value="tzMode" :ms="clock.tMs" align="right"
+                  title="时刻显示时区：本机 / UTC / UTC±N 可选（仅改显示；星位、晨昏线、过境窗口一律走 UTC 计算，与此档位无关）"
+                  @update:model-value="setTzMode"><span class="t1">{{ timeParts.m }}</span><span class="t2"><span class="d">{{ timeParts.d }}</span><span class="o">{{ timeParts.o }}</span><span class="z">{{ timeParts.z }}</span></span></TzPicker>
         <!-- 仿真时钟走带：反向连播 / 步退 / 播放·暂停 / 步进 / 回到此刻 / 跳到时刻 -->
         <span class="stg" role="group" aria-label="仿真时钟">
           <span class="st tic" :class="{ act: clock.mode === 'play' && clock.dir < 0 }" title="反向播放" @click="togglePlay(-1)"><Icon name="rewind" :size="12" /></span>
@@ -8858,9 +9093,9 @@ onBeforeUnmount(() => {
           <span class="st tic" :class="{ act: gotoOpen }" title="跳到指定时刻" @click="openGoto"><Icon name="clock" :size="12" /></span>
         </span>
         <template v-if="gotoOpen">
-          <div class="lmenu-bd" @mousedown="gotoOpen = false" @contextmenu.prevent="gotoOpen = false"></div>
+          <div class="lmenu-bd" @mousedown="closeGoto" @contextmenu.prevent="closeGoto"></div>
           <div class="gotobox">
-            <input class="ci" type="datetime-local" step="1" v-model="gotoVal" @keydown.enter="applyGoto" @keydown.esc="gotoOpen = false" />
+            <input class="ci" type="datetime-local" step="1" v-model="gotoVal" @keydown.enter="applyGoto" @keydown.esc="closeGoto" />
             <span class="ptb" @click="applyGoto">跳转</span>
           </div>
         </template>
@@ -9131,9 +9366,9 @@ onBeforeUnmount(() => {
       <span class="lnk" @click="polyMoveStop">完成</span>
     </div>
 
-    <!-- 标记「调整点位置」横幅：拖动平面图上的圆点改坐标（点标记 / 地球站 / 航迹航点共用） -->
+    <!-- 标记「调整点位置」横幅：本态下该类标记才可用鼠标拖（点标记 / 地球站 / 航迹航点共用） -->
     <div v-if="mkEditId" class="traj-banner">
-      正在调整{{ mkEditLabel }}位置 · 在平面图上拖动圆点改坐标
+      正在调整{{ mkEditLabel }}位置
       <span class="lnk" @click="mkEditStop">完成</span>
     </div>
 
@@ -9163,7 +9398,7 @@ onBeforeUnmount(() => {
     <SatCovWindows
       :sc="satcov" :sp="satPerf" :table-open="satcovTableOpen"
       :time-label="timeText" :sat-search="satcovSearch" :host-size="satcovHost"
-      :tz-utc="tzMode === 'utc'" :now-ms="satcovNowMs"
+      :tz-mode="tzMode" :now-ms="satcovNowMs"
       @close-table="satcovTableOpen = false"
       @recompute-table="satcovRefreshTable" @add-in-beam="satcovAddInBeam" @seek-clock="satcovSeekClock"
       @scan-windows="satcovScanWindows" @focus-target="satcovFocusTarget" />
@@ -9618,7 +9853,7 @@ onBeforeUnmount(() => {
 .tlab2 .t2 { display: flex; align-items: baseline; gap: 4px; font-size: var(--fs-1); color: var(--text-faint); white-space: nowrap; }
 .tlab2 .t2 .d, .tlab2 .t2 .z { flex: none; }
 .tlab2 .t2 .o { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }   /* 极端偏移量(+365d…)只收缩这一格，不撑块宽 */
-/* 时区档位切换（本机时区 ⇄ UTC）：整块读数即按钮，副行末尾的档位标记就是当前态指示 */
+/* 时区档位切换（本机 / UTC / UTC±N）：整块读数即按钮，副行末尾的档位标记就是当前态指示 */
 .tlab2.tzsw { cursor: pointer; border-radius: var(--r-box); padding: 0 4px; margin: 0 -4px; }
 .tlab2.tzsw:hover { background: var(--hover, rgba(255, 255, 255, 0.06)); }
 .tlab2.tzsw:hover .t2 { color: var(--text); }
@@ -9977,6 +10212,9 @@ onBeforeUnmount(() => {
 .sect .lnk { margin-left: auto; color: var(--accent); cursor: pointer; font-size: var(--fs-3); }
 .sect .lnk.on { font-weight: 600; text-decoration: underline; }
 .sect .lnk:hover { text-decoration: underline; }   /* 与 SatCovPanel / GrdSetSections 同一手感 */
+/* 标记三节的标题行链子最多（表格 / 默认 / 调整位置 / ＋航行 / ＋飞行 + 拨杆）：侧栏拖窄时换行，
+   不许把哪一个挤出视野（同 .srow 那条「整行可换行」的处置，见 sidebar-no-truncation） */
+.mk-side .sect { flex-wrap: wrap; row-gap: 3px; }
 /* 拨杆 .layersw 的画法在 styles/controls.css（设置窗也用同一件，只是大一号）；这里只放主窗的就位规则 */
 /* 分区标题里的那颗：钉在行尾右对齐（与环境场开关条的拨杆落在同一条竖线上）。
    不能跟在分区名后面——「点标记/地球站/轨迹」名字不等长，拨杆会逐行左右错开。 */
@@ -10351,10 +10589,9 @@ onBeforeUnmount(() => {
 .vis-acc-row > span:not(.vis-lname) { text-align: right; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 /* —— 时段过境：时基行（时区切换 + 时窗绝对起止）/ 甘特刻度轴 / 日期分隔 / 行展开详情 —— */
 .vis-tbase { display: flex; align-items: center; gap: 8px; margin: 0 0 6px; min-width: 0; }
-.vis-tzseg { display: inline-flex; flex: none; border: 1px solid var(--border); border-radius: var(--r-card); overflow: hidden; }
-.vis-tzseg i { font-style: normal; padding: 1px 7px; cursor: pointer; color: var(--text-faint); font-family: var(--font-mono); font-size: var(--fs-1); line-height: 1.6; user-select: none; }
-.vis-tzseg i + i { border-left: 1px solid var(--border); }
-.vis-tzseg i.on { background: var(--accent); color: var(--bg); }
+/* 显示时区档位：一枚角标即按钮（点开是本机 / UTC / UTC±N 的列表，见 TzPicker） */
+.vis-tzp { display: inline-flex; flex: none; align-items: center; padding: 1px 7px; border: 1px solid var(--border); border-radius: var(--r-card); color: var(--text-muted); font-family: var(--font-mono); font-size: var(--fs-1); line-height: 1.6; }
+.vis-tzp:hover, .vis-tzp.open { color: var(--text); border-color: var(--border-strong); }
 .vis-tspan { color: var(--text-muted); font-size: var(--fs-2); font-family: var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .vis-gaxis { position: sticky; top: 0; z-index: 2; background: var(--surface); }
 .vis-gax { position: relative; height: 13px; }
@@ -10702,6 +10939,11 @@ onBeforeUnmount(() => {
 .geo-side .sec.hid > :not(.sect) { opacity: .5; }
 .mrow .mc2 { font-family: var(--font-mono); font-size: var(--fs-2); color: var(--text-faint); }
 .mrow .sni { flex: 1; min-width: 0; border: 1px solid var(--field-border); background: var(--field-bg); padding: 2px 6px; font-size: var(--fs-3); outline: none; color: var(--text); }
+/* 逐条颜色（列表行 / 航迹卡里那枚小色块）：显示的是这一条【当前的实际颜色】——
+   没单独设过就是整层设置那个色，设过了加一圈机位色描边，一眼看得出哪几条被单独改过。
+   右键＝清除覆盖（回到整层设置）；这一层没有「留空」这种状态可供色轮表达，故靠右键。 */
+.mrow .clr.mkc, .trow .clr.mkc { flex: none; width: 22px; height: 16px; min-width: 0; }
+.mrow .clr.mkc.ov, .trow .clr.mkc.ov { border-color: var(--accent-ui); box-shadow: 0 0 0 1px var(--accent-ui); }
 .del { flex: none; cursor: pointer; color: var(--text-faint); padding: 0 2px; }
 .del:hover { color: #e26a6a; }
 .tcard { border: 1px solid var(--border); padding: 6px; margin-bottom: 6px; }

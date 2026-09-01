@@ -2018,13 +2018,14 @@ function createBuilder(ctx) {
 // 构建链路瀑布 segments（路由：按轨道/体制类型分派到 GEO / NGSO / 再生式 / 端到端 专属构建器）。
 // 出口统一过显示单位自适应（W→mW、kHz→MHz、独立行 dBW→dBm 等；级联算式行不动），
 // UI 瀑布 / TSV 复制 / Excel 详表同源同口径。
+// 换不换档由 ctx.adaptUnits 决定（四窗功能区的「单位」档，出厂锁定；不给即锁定）。
 function buildWaterfallSegments(ctx) {
   const builder = createBuilder(ctx || {});
   let segs;
   if (ctx && ctx.orbitType === 'E2E') segs = builder.buildChain();
   else if (ctx && ctx.orbitType === 'REGEN') segs = builder.buildRegen();
   else segs = (ctx && ctx.orbitType === 'NGSO') ? builder.buildNGSO() : builder.buildGEO();
-  return adaptiveUnits.adaptSegments(segs);
+  return adaptiveUnits.adaptSegments(segs, !!(ctx && ctx.adaptUnits));
 }
 
 // 链路总览关键指标（多链路专业版报告首页对比表用）：值为引擎展示字符串，单位由报告端补

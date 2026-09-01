@@ -13,6 +13,8 @@
 
 import { anchoredRate } from './carrierRate.js'
 import { fmtQty } from './adaptUnits.js'   // 显示单位自适应（W→mW、kbps→Mbps…），与结果列同一套档位表
+// ★ 本文件调 fmtQty 一律显式传 adaptive=true：名字是【数据】，不跟功能区「单位」档走——
+//   否则切一下那个开关，全库没起过名的条目就要集体改名，存档凭空 dirty（旧名推定也会跟着错位）。
 import { byLang, isDefaultName } from './i18n/lang.js'   // 兜底名按平台语言出字（自动名是数据，呈现层翻不到）
 import { fmtGeoSlot } from './orbitClass.js'   // 轨位 °E/°W 折算（全平台同式）
 
@@ -33,7 +35,7 @@ function esLegacyAutoName(form) {
   const f = form || {}
   const d = s(f.antennaDiameter)
   const p = s(f.paPowerW) || s(f.opPowerW)
-  return [d ? d + ' m' : '', p ? fmtQty(p, 'W') : ''].filter(Boolean).join(' · ')
+  return [d ? d + ' m' : '', p ? fmtQty(p, 'W', true) : ''].filter(Boolean).join(' · ')
 }
 
 // 载波：速率 · 调制 FEC。速率报的是用户自己按的那一档——信息速率/码片速率/符号率/载波带宽是同一条

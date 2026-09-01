@@ -10,6 +10,12 @@
 //
 // 渲染端镜像：src/shared/adaptUnits.js（Vite ESM 无法直接吃本 CJS 文件；两边档位表与
 // 规则须保持一致，改这里记得同步那边）。
+//
+// ★ 换不换档是【调用方给的一个开关】，且缺省【不换】（＝锁定在引擎基准单位）：
+//   adaptSegments(segs, adaptive) / pickColumn(vals, unit, adaptive) 只有显式收到 true 才动手。
+//   开关的人机一侧是四个链路预算窗功能区的「单位」组（出厂锁定，见 src/shared/lbUnitMode.js），
+//   经 waterfall IPC 的 ctx.adaptUnits 与报告模型的 model.adaptUnits 传到这里——本文件不认识
+//   localStorage，故默认值必须与那边的出厂档一致，不然「屏幕锁定、报告却换了档」。
 
 // ============ 线性单位族（同族内 值×f 归一到基准单位） ============
 const FAMILIES = {
@@ -45,7 +51,9 @@ function fmtScaled(n) {
 
 // 一组同量纲数值（结果列 / 汇总行）共选一个显示单位：线性族按最大|值|挑档；
 // dBW 仅当全组 < 0 dBW（< 1 W）才整组转 dBm。返回 { unit, conv } 或 null（不换）。
-function pickColumn(vals, unit) {
+// adaptive 不为 true 一律返回 null（「单位」档锁定）。
+function pickColumn(vals, unit, adaptive) {
+  if (adaptive !== true) return null;                 // 缺省锁定：保持引擎基准单位
   const nums = (vals || []).filter((n) => isFinite(n));
   if (!nums.length) return null;
   if (unit === 'dBW') {
@@ -73,7 +81,8 @@ function syncNum(row, c) {
   row[f] = isFinite(n) ? n : null;
 }
 
-function adaptSegments(segments) {
+function adaptSegments(segments, adaptive) {
+  if (adaptive !== true) return segments;             // 缺省锁定：整份 segments 原样带出
   if (!Array.isArray(segments)) return segments;
   for (const seg of segments) {
     if (!seg || !Array.isArray(seg.rows)) continue;

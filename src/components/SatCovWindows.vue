@@ -14,6 +14,7 @@ import ExcelGrid from './ExcelGrid.vue'
 import { useGridSelect } from '../viz/grd/useGridSelect.js'
 import { useCheckList } from '../shared/ui/useCheckList.js'
 import { sheetModel, exportSheets, importWorkbook, sheetToRecords, pickSheet, safeFileName } from '../shared/gridXlsx.js'
+import { tzParts, tzToMs } from '../shared/tz.js'
 import { appAlert } from '../stores/alert.js'
 
 const props = defineProps({
@@ -26,7 +27,7 @@ const props = defineProps({
   //   excludeIds = 已在目标库里的身份串（'n:<NORAD>' / 'm:<名字>'），由搜索排除，不能拿回结果再滤
   satSearch: { type: Function, default: null },
   hostSize: { type: Object, default: () => ({ w: 0, h: 0 }) },  // .g3 可视尺寸（浮窗以它为参照系定位）
-  tzUtc: { type: Boolean, default: false },         // 时刻显示/输入的时区（与主界面时间轴同一开关）
+  tzMode: { type: [String, Number], default: 'local' },   // 时刻显示/输入的时区档位（与主界面时间轴同一档；口径见 shared/tz.js）
   nowMs: { type: Number, default: 0 }               // 时间轴当前时刻（时窗起点默认跟随它）
 })
 const emit = defineEmits(['close-table', 'recompute-table', 'add-in-beam', 'scan-windows', 'focus-target', 'seek-clock'])
@@ -177,24 +178,22 @@ watch(() => sc.active.value, () => bp.reset())   // 换天线＝换一份勾选�
 
 // ==================== 时间窗口 ====================
 // 起点默认跟随时间轴（startMs=null）；改过一次就钉住，⟲ 放回跟随。datetime-local 走本地时刻，
-// 主界面切到 UTC 显示时这里也按 UTC 解释输入，否则同一个读数两处差 8 小时。
+// 主界面换了时区档位时这里也按同一档位解释输入，否则同一个读数两处差几个小时。
 const p2 = (n) => String(n).padStart(2, '0')
 const winT0 = computed(() => (Number.isFinite(win.startMs) ? win.startMs : (props.nowMs || Date.now())))
 const startLocal = computed({
   // 秒也要能录：时间轴游标已经下沉到秒级，时窗起点再只到分钟就对不上（同一个「起点」两处差半分钟）
   get: () => {
-    const d = new Date(winT0.value)
-    return props.tzUtc
-      ? `${d.getUTCFullYear()}-${p2(d.getUTCMonth() + 1)}-${p2(d.getUTCDate())}T${p2(d.getUTCHours())}:${p2(d.getUTCMinutes())}:${p2(d.getUTCSeconds())}`
-      : `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}T${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`
+    const t = tzParts(winT0.value, props.tzMode)
+    return `${t.y}-${p2(t.mo)}-${p2(t.d)}T${p2(t.h)}:${p2(t.mi)}:${p2(t.s)}`
   },
   set: (v) => {
     if (!v) { win.startMs = null; return }
     const [dp, tp] = String(v).split('T'); if (!dp || !tp) return
     const [Y, M, D] = dp.split('-').map(Number), [h, m, s] = tp.split(':').map(Number)
     if (!Number.isFinite(Y) || !Number.isFinite(h)) return
-    const ss = Number.isFinite(s) ? s : 0
-    win.startMs = props.tzUtc ? Date.UTC(Y, M - 1, D, h, m, ss) : new Date(Y, M - 1, D, h, m, ss).getTime()
+    const ms = tzToMs(props.tzMode, Y, M, D, h, m, Number.isFinite(s) ? s : 0)
+    if (Number.isFinite(ms)) win.startMs = ms
   }
 })
 // 表脚的时刻 = 【这批数值算在哪一刻】：当前时刻档跟随仿真时钟（重算太贵跳拍时会比时间轴慢一两拍，

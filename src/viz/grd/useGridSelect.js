@@ -18,7 +18,8 @@ const MEASURE_ROWS = 400      // 自动列宽的取样行数上限（超大表�
 export function useGridSelect(cfg) {
   // cfg:
   //   rows:      () => Row[]            每行需有稳定 id（编辑/粘贴定位用）
-  //   cols:      () => Col[]            { key, label, num, fix, w?, editable? }；editable !== false 且非只读表时该列可编辑
+  //   cols:      () => Col[]            { key, label, num, fix, w?, editable?, options? }；editable !== false 且非只读表时该列可编辑
+  //                                     options: [{value,label,...}] 或 () => [...] —— 枚举列：只许从给定项里挑，不接受自由文本
   //   readOnly?: boolean               只读表：仅框选 + 复制 + 导航 + 排序，无编辑/粘贴/清除
   //   cellText:  (row, col) => string  显示/复制文本
   //   cellRaw?:  (row, col) => any      进入编辑时的原始值（默认 row[col.key]）
@@ -453,22 +454,89 @@ export function useGridSelect(cfg) {
     fillDownTo(rc.r0, rc.r1, rc.c0, rc.c1, n - 1)
   }
 
+  // ===== 枚举列（col.options）的下拉选择器 =====
+  // 这类列压根不进文本编辑态：F2 / 双击 / 点格右侧的 ▾ / 直接键入，一律就地开一张选项列表
+  // （键入的字符当过滤词）。于是「随手打一个不存在的值」这条路在交互层就不存在了；
+  // 粘贴与填充那条路走的是调用方的 setter，由它按同一份 options 把关（两条路都必须挡，缺一等于没挡）。
+  const colOptions = (c) => { const o = c && c.options; const v = typeof o === 'function' ? o(c) : o; return (v && v.length) ? v : null }
+  const pick = reactive({ open: false, ri: -1, ci: -1, hi: 0, filter: '', x: 0, y: 0, w: 0, up: false })
+  const pickCol = () => (pick.open ? colList()[pick.ci] : null)
+  const pickRow = () => (pick.open ? rowList()[pick.ri] : null)
+  // 过滤命中为空时退回整表：宁可让用户看见「没这一项」，也不给一张空列表（那看着像坏了）
+  const pickList = computed(() => {
+    if (!pick.open) return []
+    const all = colOptions(pickCol()) || []
+    const f = String(pick.filter || '').trim().toLowerCase()
+    if (!f) return all
+    const hit = all.filter((o) => String(o.label == null ? o.value : o.label).toLowerCase().indexOf(f) > -1)
+    return hit.length ? hit : all
+  })
+  function placePick() {
+    const el = bodyEl.value; if (!el) return
+    const tr = el.querySelectorAll('tbody tr')[pick.ri]
+    const td = tr ? tr.querySelectorAll('td.eg-c')[pick.ci] : null
+    if (!td) return
+    const r = td.getBoundingClientRect()
+    pick.w = Math.max(150, Math.round(r.width))
+    pick.x = Math.round(Math.min(r.left, window.innerWidth - Math.max(pick.w, 260) - 8))   // 插槽内容可能把浮层撑宽，按上限留位
+    pick.up = r.bottom + 244 > window.innerHeight
+    pick.y = Math.round(pick.up ? window.innerHeight - r.top : r.bottom)
+  }
+  function openPick(ri, ci, seed) {
+    const c = colList()[ci]
+    if (!colEditable(c) || !colOptions(c)) return false
+    if (edit.value.ri >= 0) commitEdit()
+    setSel(ri, ci, false)
+    pick.ri = ri; pick.ci = ci; pick.filter = String(seed == null ? '' : seed); pick.hi = 0; pick.open = true
+    nextTick(placePick)
+    return true
+  }
+  function closePick() { pick.open = false; pick.ri = -1; pick.ci = -1; pick.filter = ''; pick.hi = 0 }
+  function choosePick(value) {
+    const r = pickRow(), c = pickCol()
+    closePick()
+    focusGrid()
+    if (!r || !c) return
+    if (String(cfg.cellText ? cfg.cellText(r, c) : r[c.key]) === String(value)) return   // 选了同一项：不记撤销、不落库
+    cfg.pushUndo && cfg.pushUndo()
+    cfg.onEdit && cfg.onEdit(r.id, c.key, value)
+    cfg.refresh && cfg.refresh()
+  }
+  // 选择器开着时吃掉的按键（其余交给下面的常规导航）
+  function pickKey(e) {
+    if (e.key === 'Escape') { e.preventDefault(); closePick(); focusGrid(); return true }
+    if (e.key === 'Enter' || e.key === 'Tab') {
+      e.preventDefault()
+      const o = pickList.value[pick.hi]
+      if (o) choosePick(o.value); else { closePick(); focusGrid() }
+      return true
+    }
+    if (e.key === 'ArrowDown') { e.preventDefault(); pick.hi = Math.min(pickList.value.length - 1, pick.hi + 1); return true }
+    if (e.key === 'ArrowUp') { e.preventDefault(); pick.hi = Math.max(0, pick.hi - 1); return true }
+    if (e.key === 'Backspace') { e.preventDefault(); pick.filter = pick.filter.slice(0, -1); pick.hi = 0; return true }
+    if (!e.ctrlKey && !e.metaKey && !e.altKey && e.key.length === 1) { e.preventDefault(); pick.filter += e.key; pick.hi = 0; return true }
+    return false
+  }
+
   function tryEdit(ri, ci, seed) {   // F2/双击/Backspace 进入：由 watch 用 seed/原值重置 input（键入进入走 beginActiveEdit，不经此）
     const c = colList()[ci]; if (!colEditable(c)) return
+    if (colOptions(c)) { openPick(ri, ci, ''); return }
     sel.value = { ar: ri, ac: ci, ri, ci }; editSeed.value = seed; editTyped.value = false; editReady.value = false; edit.value = { ri, ci }
   }
   // 键入/输入法在活动格常驻捕获框内直接开始编辑：input 里已落有首字母/组字内容，故置 editTyped 让 watch 不重置、不全选。
-  function beginActiveEdit() {
+  function beginActiveEdit(el) {
     const { ri, ci } = sel.value
     if (ri < 0 || edit.value.ri >= 0 || cfg.readOnly) return false
     const c = colList()[ci]; if (!colEditable(c)) return false
+    // 枚举列：不进文本编辑，开选择器并把刚键入的字符当过滤词；返回 false 让捕获框清空
+    if (colOptions(c)) { openPick(ri, ci, el ? el.value : ''); return false }
     // editTyped 让 watch 不重置 input（保留已键入内容）；editSeed 置非空('' 而非 null) 只为标记「键入进入=Excel 回车模式」
     // → 编辑中按方向键＝提交并移动（F2/双击的 null 则方向键移光标）。'' 不会被写进 input：watch 因 editTyped 提前返回。
     editTyped.value = true; editSeed.value = ''; editReady.value = true; edit.value = { ri, ci }
     return true
   }
   function onActiveCompStart() { beginActiveEdit() }
-  function onActiveInput(e) { if (edit.value.ri < 0 && !beginActiveEdit()) e.target.value = '' }
+  function onActiveInput(e) { if (edit.value.ri < 0 && !beginActiveEdit(e.target)) e.target.value = '' }
   function onActiveBlur() { if (edit.value.ri >= 0) commitEdit() }   // 失焦提交；导航态失焦、内容未就位（见 editReady）不写
   function onActivePaste(e, r, key) { if (edit.value.ri < 0) { e.preventDefault(); return } cellPaste(e, r, key) }   // 导航态整块粘贴交给 gridKey.doPaste
   function onActiveClip(e) { if (edit.value.ri < 0) e.preventDefault() }   // 导航态屏蔽原生复制/剪切，交给 gridKey 的整块逻辑
@@ -631,6 +699,7 @@ export function useGridSelect(cfg) {
       }
       return
     }
+    if (pick.open) { if (pickKey(e)) return; return }        // 选择器开着：只认它那几个键，别让方向键把选区带跑
     if (menu.open && e.key === 'Escape') { e.preventDefault(); closeMenu(); return }
     if (ctrl && (e.key === 'c' || e.key === 'C')) { e.preventDefault(); copySel(e.shiftKey); return }   // Ctrl+Shift+C = 连表头一起复制
     if (ctrl && (e.key === 'a' || e.key === 'A')) { e.preventDefault(); selectAll(); return }
@@ -681,6 +750,8 @@ export function useGridSelect(cfg) {
   })
   // 活动格变化（键盘导航 / 鼠标框选）后把焦点移到新活动格的常驻捕获框，让输入法始终有真实编辑目标；编辑中不抢焦点。
   watch(() => [sel.value.ri, sel.value.ci], () => {
+    // 选择器跟着它那一格走：换格即关（openPick 里先 setSel 再置 pick，故开的那一下不会自杀）
+    if (pick.open && (pick.ri !== sel.value.ri || pick.ci !== sel.value.ci)) closePick()
     if (edit.value.ri >= 0) return
     nextTick(() => {
       const el = capEl()
@@ -699,6 +770,8 @@ export function useGridSelect(cfg) {
     focusGrid, ensureVisible, onWheel, cellDown, cellEnter, tryEdit, commitEdit, cancelEdit, gridKey, cellPaste,
     copySel, cutSel, doPaste, clearRange, tabMove,
     onActiveInput, onActiveCompStart, onActiveBlur, onActivePaste, onActiveClip,
+    // 枚举列下拉
+    colOptions, pick, pickList, openPick, closePick, choosePick, placePick,
     // 序号列 / 列头
     rowHeadDown, colHeadDown, rowHeadMenu, rowHeadEnter, colHeadEnter,
     // 排序

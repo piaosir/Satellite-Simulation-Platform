@@ -3,6 +3,15 @@
 // 线性族按数值大小挑档（0.5 W → 500 mW、2457.6 kHz → 2.4576 MHz）；
 // 纯功率 dBW 在整组值 <0 dBW（<1 W）时改记 dBm。只用于显示层，不碰引擎口径。
 // ★ 功率档位只有 mW 与 W 两档（无 µW / kW / MW）：<1 W 记 mW、≥1 W 记 W，与 dBW→dBm 同一条门限。
+//
+// ★ 换不换档由功能区「单位」档决定（shared/lbUnitMode.js，出厂【锁定】＝一律用引擎基准单位）：
+//   pickColumn / fmtQty 的 adaptive 参数不传即跟随该档，显式传 true 表示这一路与显示档无关、
+//   永远自适应——只有自动命名走这条（名字是数据，不该随一个显示开关被改写）。
+
+import { isUnitAdaptive } from './lbUnitMode.js'
+
+// 本次调用是否换档：不传 adaptive 跟随功能区「单位」档，显式布尔值就按它
+const on = (adaptive) => (adaptive === undefined ? isUnitAdaptive() : !!adaptive)
 
 const FAMILIES = {
   Hz: [['Hz', 1], ['kHz', 1e3], ['MHz', 1e6], ['GHz', 1e9]],
@@ -46,8 +55,9 @@ export function convertUnit(v, from, to) {
 }
 
 // 一组同量纲数值（结果列一整列）共选一个显示单位；dBW 仅全组 <0 才转 dBm。
-// 返回 { unit, conv } 或 null（保持原单位）
-export function pickColumn(vals, unit) {
+// 返回 { unit, conv } 或 null（保持原单位——「单位」档锁定时恒走这一路）
+export function pickColumn(vals, unit, adaptive) {
+  if (!on(adaptive)) return null
   const nums = (vals || []).filter((n) => isFinite(n))
   if (!nums.length) return null
   if (unit === 'dBW') {
@@ -58,10 +68,12 @@ export function pickColumn(vals, unit) {
   return p ? { unit: p.unit, conv: (v) => v * p.factor } : null
 }
 
-// 单值「数值 + 单位」直出（KPI 卡片用）：非数值原样带单位返回
-export function fmtQty(v, unit) {
+// 单值「数值 + 单位」直出（KPI 卡片用）：非数值原样带单位返回。
+// 「单位」档锁定（或显式 adaptive=false）时数值原样、单位原样。
+export function fmtQty(v, unit, adaptive) {
   const n = parseFloat(v)
   if (!isFinite(n)) return (v === undefined || v === null || v === '' ? '—' : String(v)) + (unit ? ' ' + unit : '')
+  if (!on(adaptive)) return String(v) + (unit ? ' ' + unit : '')
   if (unit === 'dBW' && n < 0) return fmtScaled(n + 30) + ' dBm'
   const p = pickUnit(Math.abs(n), unit)
   return p ? fmtScaled(n * p.factor) + ' ' + p.unit : String(v) + (unit ? ' ' + unit : '')

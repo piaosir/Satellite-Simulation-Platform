@@ -111,7 +111,8 @@ const EXP_SCOPE_KEY = 'exp-scope'
 const expScope = ref((() => { try { const v = localStorage.getItem(EXP_SCOPE_KEY); return v === 'view' || v === 'world' ? v : 'world' } catch { return 'world' } })())
 watch(expScope, (v) => { try { localStorage.setItem(EXP_SCOPE_KEY, v) } catch { /* ignore */ } })
 // GXT/KML 导的是【对地】那套覆盖等值线（对星覆盖分析的壳层投影不在其中），故名字里带上限定
-const EXP_NAME = { png2: '高清 PNG · 2×', png4: '高清 PNG · 4×', pdf: '矢量 PDF', gxt: '导出 GXT（对地）', kml: '导出 KML（对地）' }
+// 2×/4× 是倍率档（实际宽度随窗口尺寸浮动）；4K/8K 是目标像素宽档（交付方要的是「一张 8K 图」）。
+const EXP_NAME = { png2: '高清 PNG · 2×', png4: '高清 PNG · 4×', png8k: '高清 PNG · 8K', pdf: '矢量 PDF', gxt: '导出 GXT（对地）', kml: '导出 KML（对地）' }
 function doExport(fmt) {
   if (!covNav.exportMap) return
   logMsg(`导出：${EXP_NAME[fmt] || fmt}（${expScope.value === 'view' ? '截图' : '全球图'}）`)
@@ -187,7 +188,7 @@ const menus = computed(() => [
     { label: 'GSO 透明转发链路预算', icon: 'calculator', lock: true, hint: '对地静止轨道（GSO）· 透明弯管转发器：打开链路预算工作台（独立窗口）', run: openLinkBudget },
     { label: 'NGSO 透明转发链路预算', icon: 'ngso', lock: true, hint: '非对地静止轨道（NGSO，含 LEO/MEO/HEO）· 透明弯管转发器：打开链路预算工作台（独立窗口）', run: openNgso },
     { label: '再生处理（OBP）链路预算', icon: 'cpu', lock: true, hint: '星上再生处理转发器：上行 / 下行 / 星间微波 / 星间激光，链路预算解耦（独立窗口）', run: openRegen },
-    { label: '端到端链路预算（多跳 / 混合转发）', icon: 'chain-hops', lock: true, hint: '任意节点链：多颗透明星 ISL 串联 / 透明与再生混用 / 双跳地面转接，按段结算取最弱段（独立窗口）', run: openE2e },
+    { label: '端到端链路预算（多跳 / 混合转发）', icon: 'share-2', lock: true, hint: '任意节点链：多颗透明星 ISL 串联 / 透明与再生混用 / 双跳地面转接，按段结算取最弱段（独立窗口）', run: openE2e },
     { label: '日凌预报（GSO）', icon: 'sun', lock: true, hint: '打开日凌预报（独立窗口）', run: openSunOutage },
     { label: '雨衰计算', icon: 'droplets', lock: true, hint: '打开雨衰计算（独立窗口，通用于各类卫星）', run: openRain },
     { label: '干扰分析（C/I）', icon: 'radio-tower', lock: true, hint: 'C/ASI 邻星 · C/CCI 同频复用 · C/XPI 交叉极化 · NGSO 时变 CDF（独立窗口，只读计算器）', run: openCi },
@@ -208,6 +209,7 @@ const menus = computed(() => [
   { key: 'export', label: '导出', items: [
     { label: EXP_NAME.png2, icon: 'image', lock: true, disabled: !covNav.exportAvail, hint: '导出 2 倍高清 PNG 图片', run: () => doExport('png2') },
     { label: EXP_NAME.png4, icon: 'image', lock: true, disabled: !covNav.exportAvail, hint: '导出 4 倍高清 PNG 图片', run: () => doExport('png4') },
+    { label: EXP_NAME.png8k, icon: 'image', lock: true, disabled: !covNav.exportAvail, hint: '按 7680 px 宽出图；全球图/洲际图有真实细节可填，省级以下为空放大', run: () => doExport('png8k') },
     { label: EXP_NAME.pdf, icon: 'file-text', lock: true, disabled: !covNav.exportAvail, hint: '导出矢量 PDF 文档（3D 球体截图为位图 PDF，4 倍）', run: () => doExport('pdf') },
     { sep: true },
     { label: EXP_NAME.gxt, icon: 'layers', lock: true, disabled: !covNav.exportAvail, hint: '将当前绘制的覆盖等值线 + 协调区多边形一并导出为一个 GXT 文件（所见即所得）', run: () => doExport('gxt') },
@@ -242,7 +244,7 @@ const toolButtons = computed(() => [
   { icon: 'calculator', tip: 'GSO 透明转发链路预算', lock: true, run: openLinkBudget },
   { icon: 'ngso', tip: 'NGSO 透明转发链路预算', lock: true, run: openNgso },
   { icon: 'cpu', tip: '再生处理（OBP）链路预算', lock: true, run: openRegen },
-  { icon: 'chain-hops', tip: '端到端链路预算（多跳 / 混合转发）', lock: true, run: openE2e },
+  { icon: 'share-2', tip: '端到端链路预算（多跳 / 混合转发）', lock: true, run: openE2e },
   { icon: 'sun', tip: '日凌预报（GSO）', lock: true, run: openSunOutage },
   { icon: 'droplets', tip: '雨衰计算', lock: true, run: openRain },
   { icon: 'radio-tower', tip: '干扰分析（C/I）', lock: true, run: openCi },

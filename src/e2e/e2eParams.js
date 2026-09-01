@@ -46,7 +46,7 @@ export const CARRIER_FIELDS = [
 // （帧效率/频谱效率视角、DVB 标准与 MODCOD 选择、速率换算链的锚点）。
 export const defaultCarrier = () => ({
   ...defaultsFor(CARRIER_FIELDS),
-  rsCodeMode: 'fraction', dvbStandard: 'custom', modcodIndex: -1, rateAnchor: 'info', rateAnchorValue: null
+  rsCodeMode: 'fraction', dvbStandard: 'custom', modcodIndex: -1, modcodLabel: '', rateAnchor: 'info', rateAnchorValue: null
 })
 
 // ============ 地球站库（一份配置 = 一种站型的收发射频参数）============

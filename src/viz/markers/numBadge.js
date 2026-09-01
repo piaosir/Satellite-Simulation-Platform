@@ -19,6 +19,19 @@ export const BADGE_FILL = 'rgba(255,210,74,0.62)'    // 琥珀盘（半透，与
 export const BADGE_RING = 'rgba(255,255,255,0.90)'   // 白套圈：与 dot(ring) 同一条套边
 export const BADGE_CASE = 'rgba(6,11,18,0.66)'       // 外沿深色套边：亮底上给盘切出轮廓
 export const BADGE_INK = '#1b1205'                   // 圈心数字：深墨，不透
+// 出厂配色（侧栏「点标记 · 序号」那一组的默认值；用户改过就按其取值现调）
+export const BADGE_DEF = { fill: '#ffd24a', fillOpacity: 0.62, ring: '#ffffff', ink: BADGE_INK }
+const RING_A = 0.90                                  // 白套圈的透明度：跟着颜色走，不另设一档
+
+// #rgb / #rrggbb → rgba(...)。非法值原样返回（让调用方给的 rgba/命名色也能用）
+function withAlpha(c, a) {
+  const s = String(c == null ? '' : c).trim()
+  const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(s)
+  if (!m) return s || null
+  const h = m[1].length === 3 ? m[1].replace(/./g, (ch) => ch + ch) : m[1]
+  const n = parseInt(h, 16)
+  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${Math.max(0, Math.min(1, a))})`
+}
 
 const RING_W = 0.09      // 白圈线宽 / d
 const CASE_W = 0.05      // 套边比白圈各外扩的总量 / d（两侧各 CASE_W/2）
@@ -28,25 +41,19 @@ export const BADGE_R = 0.5 + (RING_W + CASE_W) / 2 + CASE_W / 2
 export const BADGE_TEX_FILL = 0.82
 
 /**
- * 标注让位：文字字心到锚点的距离。
- * 带徽标时＝盘外沿 + 半个字高 + 0.2 字高的余白；与圆点那档 base 取大 —— 圈调得比圆点还小时不必外推。
- * @param base 没有徽标时的距离（圆点那档的原口径）
- * @param d    徽标直径，0 = 没有徽标
- * @param fh   字高（2D 的 pf / 3D 的 ptFont×MK_FONT_K，两者同值）
- */
-export function badgeLabelUp(base, d, fh) {
-  return Math.max(base, d * BADGE_R + fh * 0.7)
-}
-
-/**
  * 画一枚序号徽标（白圈 + 半透琥珀盘 + 圈心数字）。
  * @param ctx   2D 上下文（2D 是主画布，3D 是贴图用的离屏画布）
  * @param x,y   盘心
  * @param d     琥珀盘的直径（与 ctx 当前单位一致；连套边的视觉直径是它的 1.19 倍）
  * @param text  编号文字
  * @param font  字体族（2D 传当前出图字体族，3D 传 UI_FONT —— 出 PDF 时字体族名要跟着换）
+ * @param style 配色 { fill, fillOpacity, ring, ink }，缺省走出厂那套（BADGE_DEF）
  */
-export function paintNumBadge(ctx, x, y, d, text, font) {
+export function paintNumBadge(ctx, x, y, d, text, font, style) {
+  const st = style || {}
+  const cFill = st.fill ? withAlpha(st.fill, st.fillOpacity != null ? st.fillOpacity : BADGE_DEF.fillOpacity) : BADGE_FILL
+  const cRing = st.ring ? withAlpha(st.ring, RING_A) : BADGE_RING
+  const cInk = st.ink || BADGE_INK
   const s = String(text == null ? '' : text)
   const r = d / 2
   ctx.save()
@@ -54,9 +61,9 @@ export function paintNumBadge(ctx, x, y, d, text, font) {
   // 半透的盘不能与白圈叠着画：白圈是压在盘沿【上】的，圆环内半区会白×琥珀叠成一层更亮的边。
   // 故盘只填到白圈内沿（r − RING_W/2 × d），盘与圈各占各的，透出来的底色也不会被叠加两次。
   ctx.beginPath(); ctx.arc(x, y, r - d * RING_W / 2, 0, Math.PI * 2)
-  ctx.fillStyle = BADGE_FILL; ctx.fill()
+  ctx.fillStyle = cFill; ctx.fill()
   ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2)
-  ctx.lineWidth = d * RING_W; ctx.strokeStyle = BADGE_RING; ctx.stroke()
+  ctx.lineWidth = d * RING_W; ctx.strokeStyle = cRing; ctx.stroke()
   ctx.beginPath(); ctx.arc(x, y, r + d * (RING_W + CASE_W) / 2, 0, Math.PI * 2)
   ctx.lineWidth = d * CASE_W; ctx.strokeStyle = BADGE_CASE; ctx.stroke()
   if (s) {
@@ -75,7 +82,7 @@ export function paintNumBadge(ctx, x, y, d, text, font) {
     const m = ctx.measureText(s)
     const asc = m.actualBoundingBoxAscent, dsc = m.actualBoundingBoxDescent
     const dy = (Number.isFinite(asc) && Number.isFinite(dsc)) ? (asc - dsc) / 2 : fs * 0.34
-    ctx.fillStyle = BADGE_INK; ctx.fillText(s, x, y + dy)
+    ctx.fillStyle = cInk; ctx.fillText(s, x, y + dy)
   }
   ctx.restore()
 }

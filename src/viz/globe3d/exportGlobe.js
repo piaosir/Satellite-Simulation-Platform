@@ -7,8 +7,8 @@ import { jsPDF } from 'jspdf'
 
 // 高清 PNG：factor=像素倍率（4/6…）。返回 { bytes, w, h, factor }，factor 为**实际**倍率
 // （显存不够时 snapshot 会自行降档，见其注释），调用方按它命名文件。
-export async function renderGlobePNG(scene, { factor = 4 } = {}) {
-  return scene.snapshot(factor)
+export async function renderGlobePNG(scene, { factor = 4, targetW = 0 } = {}) {
+  return scene.snapshot(factor, targetW)
 }
 
 // 位图 PDF：页面逻辑尺寸取球面画布的 CSS 尺寸（pt 数只是名义大小，与位图分辨率无关，同 2D 截图 PDF），

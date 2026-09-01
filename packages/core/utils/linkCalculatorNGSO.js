@@ -119,8 +119,8 @@ const CONSTANTS = {
   BOLTZMANN: -228.6 // 玻尔兹曼常数 dBW/K/Hz
 };
 
-// 调制因子 —— 取 constants.js 那份单一出处（同 linkCalculator.js，引擎不再各抄一份）
-const { MODULATION_FACTORS } = require('./constants.js');
+// 调制因子 —— 取 modulation.js 那份单一出处（同 linkCalculator.js，引擎不再各抄一份）
+const { modFactorOf } = require('./modulation.js');
 
 // ITU-R P.838 降雨衰减系数表 (完全按照 index.html)
 const P838_TABLE = {
@@ -499,7 +499,7 @@ function performCalculations(satParams, inputs) {
   const systemAvailability = (uplinkAvailability * rxDownlinkAvailability).toFixed(5 + FX);
   
   // ============ 调制与带宽计算 ============
-  const modulationFactor = MODULATION_FACTORS[modulation] || 2;
+  const modulationFactor = modFactorOf(modulation) || 2;
   const carrierRate = infoRate / rsCode / fec; // 传输速率 (kbps)
   const ChipRate = carrierRate * m; // 码片速率 (kbps)
   const symbolRate = ChipRate / modulationFactor; // 符号速率 (ksps)

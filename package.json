@@ -1,6 +1,6 @@
 {
   "name": "satellite-sim-platform",
-  "version": "1.4.1",
+  "version": "1.4.2",
   "description": "卫星仿真平台 — 桌面端卫星链路预算与可视化（Electron + Vue3 + Cesium + SQLite）",
   "author": "",
   "license": "MIT",
@@ -10,15 +10,17 @@
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "smoke": "node packages/core/smoke-test.js",
-    "test": "node packages/core/test/accuracy.test.js && node packages/core/test/rainAttenuation.test.js && node packages/core/test/instantAtten.test.js && node packages/core/test/grib2.test.js && node packages/core/test/qweatherJwt.test.js && node packages/core/test/liveField.test.js && node packages/core/test/metPointSource.test.js && node packages/core/test/rainDiversity.test.js && node packages/core/test/ngsoElevStats.test.js && node packages/core/test/s8Engine.test.js && node packages/core/test/antennaNoise.test.js && node packages/core/test/adaptiveUnits.test.js && node packages/core/test/linkSweep2D.test.js && node packages/core/test/linkSweepPrecision.test.mjs && node packages/core/test/lbContour.test.mjs && node packages/core/test/lbBasemap.test.mjs && node packages/core/test/lbLinkScene.test.mjs && node packages/core/test/envField.test.js && node packages/core/test/envRaster.test.mjs && node packages/core/test/ntnParams.test.mjs && node packages/core/test/ommFormats.test.mjs && node packages/core/test/lbGrdImport.test.mjs && node packages/core/test/islGeometry.test.mjs && node packages/core/test/regenIslManual.test.mjs && node packages/core/test/linkChain.test.js && node packages/core/test/e2eChainParams.test.mjs && node packages/core/test/lbAutoName.test.mjs && node packages/core/test/lbShare.test.mjs && node packages/core/test/lbCustomCols.test.mjs && node packages/core/test/interference.test.mjs && node packages/core/test/visTimeCoverage.test.mjs && node packages/core/test/visAccessXlsx.test.mjs && node packages/core/test/shellProj.test.mjs && node packages/core/test/covPeakPoint.test.mjs && node packages/core/test/satcovScan.test.mjs && node packages/core/test/synthStationGrid.test.mjs && node packages/core/test/simClock.test.mjs && node packages/core/test/satPerfTargets.test.mjs && node packages/core/test/pfdMask.test.js && node packages/core/test/advBalance.test.mjs && node packages/core/test/terminator.test.mjs && node packages/core/test/terminatorRender.test.mjs && node packages/core/test/freqPlan.test.mjs && node packages/core/test/freqReuse.test.mjs && node packages/core/test/fpXlsx.test.mjs && node packages/core/test/gridXlsx.test.mjs && node packages/core/test/markerTraj.test.mjs && node packages/core/test/vehicleSymbol.test.mjs && node packages/core/test/fpMini.test.mjs && node packages/core/test/kmlCoverage.test.mjs && node packages/core/test/configStore.test.mjs && node packages/core/test/configTree.test.mjs && node packages/core/test/uiDict.test.mjs && node packages/core/test/shellUiCtx.test.mjs && node packages/core/test/shellCovGates.test.mjs && node packages/core/test/patFormats.test.mjs && node packages/core/test/satGroupReconcile.test.mjs && node packages/core/test/povInvariants.test.mjs && node packages/core/test/mapAnnotations.test.mjs && node packages/core/test/coordFormat.test.mjs && node packages/core/test/imageryOrient.test.mjs",
+    "test": "node packages/core/test/accuracy.test.js && node packages/core/test/rainAttenuation.test.js && node packages/core/test/instantAtten.test.js && node packages/core/test/grib2.test.js && node packages/core/test/qweatherJwt.test.js && node packages/core/test/liveField.test.js && node packages/core/test/metPointSource.test.js && node packages/core/test/rainDiversity.test.js && node packages/core/test/ngsoElevStats.test.js && node packages/core/test/s8Engine.test.js && node packages/core/test/antennaNoise.test.js && node packages/core/test/adaptiveUnits.test.js && node packages/core/test/linkSweep2D.test.js && node packages/core/test/linkSweepPrecision.test.mjs && node packages/core/test/lbContour.test.mjs && node packages/core/test/lbBasemap.test.mjs && node packages/core/test/lbLinkScene.test.mjs && node packages/core/test/envField.test.js && node packages/core/test/envRaster.test.mjs && node packages/core/test/ntnParams.test.mjs && node packages/core/test/modulation.test.mjs && node packages/core/test/modcodTables.test.mjs && node packages/core/test/modcodXlsx.test.mjs && node packages/core/test/ommFormats.test.mjs && node packages/core/test/ommCacheFirst.test.mjs && node packages/core/test/lbGrdImport.test.mjs && node packages/core/test/islGeometry.test.mjs && node packages/core/test/regenIslManual.test.mjs && node packages/core/test/linkChain.test.js && node packages/core/test/e2eChainParams.test.mjs && node packages/core/test/lbAutoName.test.mjs && node packages/core/test/lbShare.test.mjs && node packages/core/test/lbCustomCols.test.mjs && node packages/core/test/interference.test.mjs && node packages/core/test/visTimeCoverage.test.mjs && node packages/core/test/visAccessXlsx.test.mjs && node packages/core/test/shellProj.test.mjs && node packages/core/test/covPeakPoint.test.mjs && node packages/core/test/satcovScan.test.mjs && node packages/core/test/synthStationGrid.test.mjs && node packages/core/test/simClock.test.mjs && node packages/core/test/tzMode.test.mjs && node packages/core/test/satPerfTargets.test.mjs && node packages/core/test/pfdMask.test.js && node packages/core/test/advBalance.test.mjs && node packages/core/test/terminator.test.mjs && node packages/core/test/terminatorRender.test.mjs && node packages/core/test/freqPlan.test.mjs && node packages/core/test/freqReuse.test.mjs && node packages/core/test/fpXlsx.test.mjs && node packages/core/test/gridXlsx.test.mjs && node packages/core/test/markerTraj.test.mjs && node packages/core/test/markSymbols.test.mjs && node packages/core/test/vehicleSymbol.test.mjs && node packages/core/test/fpMini.test.mjs && node packages/core/test/kmlCoverage.test.mjs && node packages/core/test/configStore.test.mjs && node packages/core/test/configTree.test.mjs && node packages/core/test/uiDict.test.mjs && node packages/core/test/shellUiCtx.test.mjs && node packages/core/test/shellCovGates.test.mjs && node packages/core/test/patFormats.test.mjs && node packages/core/test/satGroupReconcile.test.mjs && node packages/core/test/povInvariants.test.mjs && node packages/core/test/mapAnnotations.test.mjs && node packages/core/test/coordFormat.test.mjs && node packages/core/test/imageryOrient.test.mjs && node packages/core/test/imageryTiles.test.mjs",
     "verify:services": "node scripts/verify-services.js",
     "check:share": "node scripts/check-share-config.mjs",
+    "check:imagery": "node scripts/check-imagery.mjs",
     "omm:snapshot": "node scripts/fetch-omm-snapshot.mjs",
     "omm:seed": "node scripts/omm-cos.mjs seed",
     "omm:status": "node scripts/omm-cos.mjs status",
-    "dist": "node scripts/check-share-config.mjs && node -e \"require('fs').rmSync('release',{recursive:true,force:true})\" && electron-vite build && electron-builder --win && node scripts/verify-asar.mjs && node scripts/publish-cos.mjs",
+    "dist": "node scripts/check-share-config.mjs && node scripts/check-imagery.mjs && node -e \"require('fs').rmSync('release',{recursive:true,force:true})\" && electron-vite build && electron-builder --win && node scripts/verify-asar.mjs && node scripts/publish-cos.mjs",
     "publish:cos": "node scripts/publish-cos.mjs",
-    "i18n:scan": "node scripts/i18n-scan.mjs"
+    "i18n:scan": "node scripts/i18n-scan.mjs",
+    "imagery:tiles": "electron scripts/build-imagery-tiles.mjs"
   },
   "dependencies": {
     "cesium": "^1.142.0",
@@ -52,6 +54,7 @@
       "electron/**/*",
       "packages/**/*",
       "resources/**/*",
+      "!resources/imagery/**",
       "package.json",
       "!node_modules/cesium/**/*",
       "!node_modules/three/**/*"
@@ -75,7 +78,16 @@
       "createStartMenuShortcut": true,
       "shortcutName": "卫星仿真平台",
       "artifactName": "卫星仿真平台-${version}-Setup.${ext}"
-    }
+    },
+    "extraResources": [
+      {
+        "from": "resources/imagery",
+        "to": "imagery",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ]
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^5.0.4",

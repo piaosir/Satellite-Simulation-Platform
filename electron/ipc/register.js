@@ -7,6 +7,7 @@ const path = require('path')
 const createOmm = require('../services/omm')
 const createCustomSats = require('../services/customSats')
 const createInterference = require('../services/interference')
+const createModcod = require('../services/modcod')
 const admBoundaries = require('../services/admBoundaries')
 
 // 注册所有 IPC 处理器。core 为返回引擎实例的函数（延迟解析）。
@@ -68,6 +69,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   }
   const omm = createOmm(core)
   const customSats = createCustomSats(core)
+  const modcod = createModcod()
   // grd 传进去是给 NGSO 时变的「卫星发射方向图取 GRD 实测图」用的（见 resolveSatPattern）
   const interference = createInterference(omm, customSats, core, grd)
 
@@ -432,8 +434,14 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   // 城市列表（选址用）
   ipcMain.handle('link:cities', () => core().listCities())
   ipcMain.handle('link:searchCities', (_e, kw) => core().searchCities(String(kw == null ? '' : kw), {}))
-  // 载波信号选项（调制/FEC/DVB/MODCOD）
-  ipcMain.handle('link:baseband', () => core().basebandOptions())
+  // 载波信号选项（调制/FEC/DVB/MODCOD）。MODCOD 表 = 内置表叠上用户在「文件管理 · 调制编码」里的改写
+  ipcMain.handle('link:baseband', () => core().basebandOptions(modcod.store()))
+
+  // ---- MODCOD 表（文件管理 · 调制编码）----
+  // 编辑页拿到的是合并后的整份清单；存回来的也是整份，主进程只留它与内置表的差异（见 services/modcod.js）
+  ipcMain.handle('modcod:list', () => modcod.list())
+  ipcMain.handle('modcod:save', (_e, standards) => modcod.save(standards || []))
+  ipcMain.handle('modcod:reset', (_e, key) => modcod.reset(String(key == null ? '' : key)))
 
   // 打开「GEO 链路预算」独立工作台窗口（单例，由 main 注入创建函数）
   ipcMain.handle('linkbudget:open', gate(() => { if (openLinkBudget) openLinkBudget(); return true }))
@@ -1116,7 +1124,8 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
       const orbitType = (model.scheme && model.scheme.orbitType) || 'GEO'
       for (const l of (model.links || [])) {
         if (l && l.data && !(l.segments && l.segments.length)) {
-          try { l.segments = core().buildWaterfallSegments({ results: l.data, lang, orbitType, txLocation: String(l.txName || ''), rxLocation: String(l.rxName || '') }) }
+          // adaptUnits＝导出那一刻屏幕上的「单位」档（出厂锁定），详表与屏幕上的详细预算同档
+          try { l.segments = core().buildWaterfallSegments({ results: l.data, lang, orbitType, adaptUnits: model.adaptUnits === true, txLocation: String(l.txName || ''), rxLocation: String(l.rxName || '') }) }
           catch (err) { l.segments = [] }
         }
       }

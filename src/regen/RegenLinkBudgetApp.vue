@@ -7,6 +7,7 @@ import { pf } from '../shared/num.js'   // 全角容错 parseFloat：手填圆�
 import { s8LinkParams } from '../shared/s8Params.js'   // ITU-R P.618-14 §8 统计口径参数组装 + 适用性门控
 import { migrateLegacyEs } from '../shared/esMigrate.js'
 import { pickColumn, fmtScaled, fmtQty } from '../shared/adaptUnits.js'
+import { isUnitAdaptive, onUnitModeChange } from '../shared/lbUnitMode.js'   // 结果显示单位档（功能区「单位」，出厂锁定）
 import { lbDocT } from '../shared/lbDocI18n.js'
 import { getLang, onLangChange } from '../shared/i18n/runtime.js'   // 报表语言跟随平台语言
 import { syncAutoNames, adoptAutoFlag, withAutoFlag, isAutoNamed, newCfgName, newFolderName, copyNameOf } from '../shared/lbAutoName.js'   // 三库条目自动命名（未被用户改名时，名字随关键参数走）
@@ -15,6 +16,8 @@ import { loadSatTree } from '../ngso/satTree.js'   // 卫星树＝轨道来源�
 import { slantWgs84Max, altFromSlant } from '../shared/slantRange.js'   // 手动几何：斜距换算 / 等效轨道高度
 import { resolveRefId } from '../shared/lbShare.js'
 import Icon from '../components/Icon.vue'
+import TzPicker from '../components/TzPicker.vue'
+import { tzParts, tzTag, normTzMode } from '../shared/tz.js'
 import ConfigTree from '../components/ConfigTree.vue'
 import ConfigTreeMenu from '../components/ConfigTreeMenu.vue'
 import { useConfigTree } from '../shared/useConfigTree.js'
@@ -29,6 +32,7 @@ import LbVizPane from '../components/LbVizPane.vue'
 import LbReportDialog from '../components/LbReportDialog.vue'
 import { useLbReport } from '../shared/useLbReport.js'
 import LbFontCtl from '../components/LbFontCtl.vue'
+import LbUnitCtl from '../components/LbUnitCtl.vue'
 import LbCapFoot from '../components/LbCapFoot.vue'
 import LbCustomColsDialog from '../components/LbCustomColsDialog.vue'
 import LbSlantTool from '../components/LbSlantTool.vue'
@@ -146,7 +150,7 @@ function reloadSatTree() {
 
 // ============ 载波信号库 ============
 let _bbSeq = 1
-function makeBasebandConfig(name) { return withAutoFlag({ id: 'bb' + (_bbSeq++), name: name || '', form: { ...defaultsFor(CARRIER_FIELDS), rsCodeMode: 'fraction', dvbStandard: 'custom', modcodIndex: -1, rateAnchor: 'info', rateAnchorValue: null } }, 'carrier') }
+function makeBasebandConfig(name) { return withAutoFlag({ id: 'bb' + (_bbSeq++), name: name || '', form: { ...defaultsFor(CARRIER_FIELDS), rsCodeMode: 'fraction', dvbStandard: 'custom', modcodIndex: -1, modcodLabel: '', rateAnchor: 'info', rateAnchorValue: null } }, 'carrier') }
 const basebandConfigs = reactive([makeBasebandConfig('默认')])
 const basebandOpts = ref({})
 function resolveBaseband(id) {
@@ -265,7 +269,7 @@ function applyLibrary(lib) {
   migrateRegenIntfLib(lib)   // 结构迁移（干扰上移卫星），保留旧库自定义值；须在补默认值前
   // nameAuto：旧库没存过这一位，按历史默认名推定一次（见 shared/lbAutoName.js 的 adoptAutoFlag）
   if (Array.isArray(lib.es) && lib.es.length) esConfigs.splice(0, esConfigs.length, ...lib.es.map((c, i) => ({ id: c.id || ('esb' + (i + 1)), name: c.name || '', nameAuto: adoptAutoFlag('es', c), form: { ...defaultsFor(ES_FIELDS), ...c.form } })))
-  if (Array.isArray(lib.carrier) && lib.carrier.length) basebandConfigs.splice(0, basebandConfigs.length, ...lib.carrier.map((c, i) => ({ id: c.id || ('bbb' + (i + 1)), name: c.name || '', nameAuto: adoptAutoFlag('carrier', c), form: { ...defaultsFor(CARRIER_FIELDS), rsCodeMode: 'fraction', dvbStandard: 'custom', modcodIndex: -1, rateAnchor: 'info', rateAnchorValue: null, ...c.form } })))
+  if (Array.isArray(lib.carrier) && lib.carrier.length) basebandConfigs.splice(0, basebandConfigs.length, ...lib.carrier.map((c, i) => ({ id: c.id || ('bbb' + (i + 1)), name: c.name || '', nameAuto: adoptAutoFlag('carrier', c), form: { ...defaultsFor(CARRIER_FIELDS), rsCodeMode: 'fraction', dvbStandard: 'custom', modcodIndex: -1, modcodLabel: '', rateAnchor: 'info', rateAnchorValue: null, ...c.form } })))
   if (Array.isArray(lib.sat) && lib.sat.length) satConfigs.splice(0, satConfigs.length, ...lib.sat.map((c, i) => ({ id: c.id || ('satb' + (i + 1)), name: c.name || '', nameAuto: adoptAutoFlag('sat', c), form: { ...defaultsFor(SAT_FIELDS), ...c.form }, ngsoSat: normNgsoSat(c.ngsoSat) })))
   syncAutoNames(esConfigs, 'es'); syncAutoNames(basebandConfigs, 'carrier'); syncAutoNames(satConfigs, 'sat')
   if (lib.seq) { _esSeq = Math.max(_esSeq, lib.seq.es || 1); _bbSeq = Math.max(_bbSeq, lib.seq.bb || 1); _satSeq = Math.max(_satSeq, lib.seq.sat || 1) }
@@ -349,6 +353,9 @@ const txCellSub = (f, row) => {
   const eirp = powerWToEirp(resolveEs(row.stationId).form.opPowerW, resolveEs(row.stationId).form, sat ? sat.form : {})
   return isFinite(eirp) ? `EIRP ${eirp.toFixed(2)} dBW` : null
 }
+// 功能区「单位」档的响应式副本：模板里就地算的读数（功放尾标等）直接吃它——fmtQty 内部读的是
+// 模块态，不响应式，没算过链路时切档就不会有任何东西触发重渲染。值由 onUnitModeChange 更新。
+const unitAdaptive = ref(isUnitAdaptive())
 // 「地球站配置」格内行内尾标：发信站配置名之后贴该站算出的功放功率（就在第二行 EIRP 之上）。只给发信站——
 // 功放是发射链的量，收信站那格没有它。库里那一项是「功放功率预设」，这里是引擎按该站几何/载波解出的
 // paRecommendation（含回退的功放输出）：计算方式=设置功放功率时二者相等，=设置余量时报本链路真正需要的功率。
@@ -359,7 +366,7 @@ const txCellTag = (f, row) => {
   const m = computedVals.value[row._id]
   const w = m ? parseFloat(m._paW) : NaN
   // 取 4 位有效数字：尾标是一眼扫过的读数，引擎原串的 0.200 在这里读作「200 mW」（精确值看结果列/瀑布）
-  return isFinite(w) ? fmtQty(Number(w.toPrecision(4)), 'W') : null
+  return isFinite(w) ? fmtQty(Number(w.toPrecision(4)), 'W', unitAdaptive.value) : null
 }
 const rxCellSub = (f, row) => {
   if (f.key !== 'stationId') return null
@@ -867,18 +874,26 @@ function mergePlatformGeometry(d, geom) {
 const g2 = (n, p = 2) => (n == null || !isFinite(n)) ? '—' : Number(n).toFixed(p)
 const gPass = (m) => (m == null || !isFinite(m)) ? '∞' : Number(m).toFixed(2)
 
-// —— 时标格式化（访问窗口）——
-const tzMode = ref('utc')
+// —— 时标格式化（访问窗口 / 星间互视）——
+// 档位可调：本机 / UTC / UTC±N（口径与格式化在 shared/tz.js，选择器是 TzPicker）。
+// 记在本机：换算是纯显示，跟着人走不跟着配置走。
+const TZ_KEY = 'regen/geo/tz'
+const tzMode = ref(normTzMode((() => { try { return localStorage.getItem(TZ_KEY) } catch (e) { return null } })(), 'utc'))
+watch(tzMode, (v) => { try { localStorage.setItem(TZ_KEY, String(v)) } catch (e) { /* ignore */ } })
 const UTCG_MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-function localOffsetLabel() { const off = -new Date().getTimezoneOffset(); const s = off >= 0 ? '+' : '−'; const h = Math.floor(Math.abs(off) / 60); const m = Math.abs(off) % 60; return 'UTC' + s + h + (m ? ':' + String(m).padStart(2, '0') : '') }
-const tzSuffix = computed(() => (tzMode.value === 'utc' ? 'UTCG' : localOffsetLabel()))
+// 角标：UTC→'UTCG'（对标 STK），其余档位→UTC±H(:MM)（本机档按几何时刻的实际偏移取，夏令时不会标错）
+const geoRefMs = computed(() => {
+  const iso = (islGeo.value && islGeo.value.worst && islGeo.value.worst.worstISO)
+    || (access.value && access.value.windows && access.value.windows.length && access.value.windows[0].startISO)
+  const t = iso ? new Date(iso).getTime() : NaN
+  return Number.isFinite(t) ? t : Date.now()
+})
+const tzSuffix = computed(() => (tzMode.value === 'utc' ? 'UTCG' : tzTag(tzMode.value, geoRefMs.value)))
 function fmtInstant(iso, mode) {
   if (!iso) return '—'
   const d = new Date(iso); if (isNaN(d.getTime())) return String(iso)
-  const loc = mode === 'local'; const p = (n, w = 2) => String(n).padStart(w, '0')
-  const D = loc ? d.getDate() : d.getUTCDate(), MO = loc ? d.getMonth() : d.getUTCMonth(), Y = loc ? d.getFullYear() : d.getUTCFullYear()
-  const H = loc ? d.getHours() : d.getUTCHours(), MI = loc ? d.getMinutes() : d.getUTCMinutes(), S = loc ? d.getSeconds() : d.getUTCSeconds()
-  return `${D} ${UTCG_MON[MO]} ${Y} ${p(H)}:${p(MI)}:${p(S)}`
+  const t = tzParts(d.getTime(), mode), p = (n, w = 2) => String(n).padStart(w, '0')
+  return `${t.d} ${UTCG_MON[t.mo - 1]} ${t.y} ${p(t.h)}:${p(t.mi)}:${p(t.s)}`
 }
 function fmtDur(min) { if (min == null || !isFinite(min)) return '—'; return min >= 60 ? (min / 60).toFixed(2) + ' h' : min.toFixed(1) + ' min' }
 
@@ -1337,8 +1352,14 @@ async function computeLaser() {
 async function loadWaterfall() {
   const l = sel.value
   if (!l || !l.data) { segments.value = []; return }
-  segments.value = await api.linkBudget.waterfall({ results: JSON.parse(JSON.stringify(l.data)), lang: reportLang.value, orbitType: 'REGEN', txLocation: String(l.txName || '') })
+  segments.value = await api.linkBudget.waterfall({ results: JSON.parse(JSON.stringify(l.data)), lang: reportLang.value, orbitType: 'REGEN', adaptUnits: isUnitAdaptive(), txLocation: String(l.txName || '') })
 }
+// 功能区「单位」档改动（本窗切换或别的链路预算窗改的）：当前模式的结果列就地重排 + 详细预算重取一次。
+// 只管当前模式——切模式本就清空 links / computedVals（见 watch(linkMode)），别的模式没有留在屏幕上的数。
+// 不碰引擎：档位只管显示，数值一个没变。
+let _offUnitMode = null
+onMounted(() => { _offUnitMode = onUnitModeChange((v) => { unitAdaptive.value = v; if (links.value.length) writeResultVals(links.value, linkMode.value); loadWaterfall() }) })
+onBeforeUnmount(() => { if (_offUnitMode) _offUnitMode() })
 // ============ 经纬度 → 降雨率/海拔自动填 ============
 async function fillGeoRow(row, lonK, latK, rainK, elevK, skip) {
   if (!api) return
@@ -1407,7 +1428,7 @@ function applyState(st) {
     // ② 载波（补默认与 UI 态后并库）
     const bbEntries = (Array.isArray(st.basebandConfigs) ? st.basebandConfigs : []).map((c, i) => ({
       id: c.id || ('__bb' + i), name: c.name || '配置', nameAuto: adoptAutoFlag('carrier', c),
-      form: { ...defaultsFor(CARRIER_FIELDS), rsCodeMode: 'fraction', dvbStandard: 'custom', modcodIndex: -1, rateAnchor: 'info', rateAnchorValue: null, ...c.form }
+      form: { ...defaultsFor(CARRIER_FIELDS), rsCodeMode: 'fraction', dvbStandard: 'custom', modcodIndex: -1, modcodLabel: '', rateAnchor: 'info', rateAnchorValue: null, ...c.form }
     }))
     const bbMap = adoptEntries(basebandConfigs, bbEntries, () => makeBasebandConfig('载波'))
     // ③ 地球站：三代结构统一后并库（内嵌库 / 过渡版收发分口径+行上工作点展开重迁 / 行内射频 migrateLegacyEs）。
@@ -1909,6 +1930,7 @@ onMounted(async () => {
             </div>
             <div class="lbr-cap">导出</div>
           </div>
+          <LbUnitCtl />
           <LbFontCtl />
           <div class="lbr-status">
             <span v-if="notice" class="lb-note">{{ notice }}</span>
@@ -2079,10 +2101,8 @@ onMounted(async () => {
                   <span class="geo-tt">星间几何（最差工况）</span>
                   <span class="geo-badge" :title="islGeo.representative ? '手动圆轨道：几何示意' : '双 SGP4/SDP4 传播 + 地球临边遮挡'">{{ islGeo.method }}</span>
                 </div>
-                <div class="geo-tz" role="group" aria-label="时区切换">
-                  <button type="button" class="geo-tzb" :class="{ on: tzMode === 'utc' }" @click="tzMode = 'utc'">UTC</button>
-                  <button type="button" class="geo-tzb" :class="{ on: tzMode === 'local' }" @click="tzMode = 'local'">本地</button>
-                </div>
+                <TzPicker v-model="tzMode" :ms="geoRefMs" align="right" class="geo-tz"
+                          title="时刻的时标时区：本机 / UTC / UTC±N">{{ tzSuffix }}</TzPicker>
               </div>
               <div class="geo-body">
                 <div v-if="islGeo.worst.worstISO && !islGeo.representative" class="geo-row"><span class="geo-l" title="所有几何量取自这一物理瞬间（互视样本中星间距离最大 → 最差 FSL）">最差时刻 t*</span><span class="geo-v" style="white-space:normal">{{ fmtInstant(islGeo.worst.worstISO, tzMode) }}</span></div>
@@ -2146,10 +2166,8 @@ onMounted(async () => {
                   <span class="geo-tt">访问窗口</span>
                   <span class="geo-badge" :title="access.representative ? '手动圆轨道：过境节律/时长真实，绝对时刻仅示意' : '平台精确传播器 SGP4/SDP4'">{{ access.method }}{{ access.representative ? ' · 示意' : '' }}</span>
                 </div>
-                <div class="geo-tz" role="group" aria-label="时区切换">
-                  <button type="button" class="geo-tzb" :class="{ on: tzMode === 'utc' }" @click="tzMode = 'utc'">UTC</button>
-                  <button type="button" class="geo-tzb" :class="{ on: tzMode === 'local' }" @click="tzMode = 'local'">本地</button>
-                </div>
+                <TzPicker v-model="tzMode" :ms="geoRefMs" align="right" class="geo-tz"
+                          title="时刻的时标时区：本机 / UTC / UTC±N">{{ tzSuffix }}</TzPicker>
               </div>
               <div class="geo-body">
                 <div v-if="access.feasible" class="acc-sum">
@@ -2389,11 +2407,9 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .geo-title { display: flex; align-items: baseline; gap: 7px; min-width: 0; }
 .geo-tt { font-size: calc(var(--lb-fs, 11px) + 1px); font-weight: 700; letter-spacing: var(--ls-tight); color: var(--text); }
 .geo-badge { flex: none; align-self: center; font-family: var(--font-mono); font-size: var(--fs-1); font-weight: 700; letter-spacing: var(--ls-tight); line-height: 1; padding: 2px 7px; border-radius: var(--r-pill); background: var(--bg); color: var(--text-muted); border: 1px solid var(--border-strong); }
-.geo-tz { display: inline-flex; flex: none; border: 1px solid var(--border-strong); border-radius: var(--r-ctl); overflow: hidden; }
-.geo-tzb { font: inherit; font-size: var(--fs-2); line-height: 1; padding: 3px 9px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 0; }
-.geo-tzb + .geo-tzb { border-left: 1px solid var(--border); }
-.geo-tzb:hover:not(.on) { color: var(--text); }
-.geo-tzb.on { background: var(--accent); color: var(--bg); font-weight: 600; }
+/* 时区角标：一枚可点的档位标（点开是本机 / UTC / UTC±N 的列表，见 TzPicker） */
+.geo-tz { display: inline-flex; flex: none; align-items: center; padding: 3px 9px; border: 1px solid var(--border-strong); border-radius: var(--r-ctl); background: var(--bg); color: var(--text-muted); font-size: var(--fs-2); line-height: 1; font-variant-numeric: tabular-nums; }
+.geo-tz:hover, .geo-tz.open { color: var(--text); border-color: var(--accent); }
 .geo-body { padding: 2px 2px 6px; }
 .geo-2col { display: grid; grid-template-columns: 1fr 1fr; gap: 0 18px; }
 .geo-col { min-width: 0; }

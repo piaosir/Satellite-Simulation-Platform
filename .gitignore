@@ -216,3 +216,38 @@ scripts/_ne/
 # 半截输入（只打一个负号）不许落库、滑块每帧至多提交一次且不惊动壳层、取消逐字段回滚、保存留下。
 # ★ 预览窗藏起来时浏览器把 rAF 整个停掉（被测代码那一帧合并就永远等不到），台子里给 rAF 垫了 120ms 兜底。
 .satedharness/
+
+# 显示时区档位验证台（npx vite --config .tzharness/vite.config.mjs，launch.json 的 tz-harness）：
+# TzPicker 挂在三个真宿主上（时间条读数块 / 过境时基行角标 / 链路预算几何卡角标），CSS 从
+# ConstellationMap3D.vue 与 NgsoLinkBudgetApp.vue 的 <style scoped> 原文抽出注入。
+# 「换档位不许改读数块宽」那条在台子里一键量（换档必须 await nextTick 再量，否则量的是上一帧）。
+# 数值口径（往返 / 夏令时 / 午夜对齐）由 packages/core/test/tzMode.test.mjs 管，不靠肉眼。
+.tzharness/
+
+# 离屏验证台（标记层：九种符号 / 逐条颜色 / 标注四方位 / 直接拖拽；2D 真渲染器 + 3D 真球体两页），本地开发用，不进仓库
+.mkstyleharness/
+
+# 2D 渲染性能对拍台（npx vite --config .perfharness/vite.config.mjs，launch.json 的 perf-harness）：
+# 同一份内容在【当前工作区】与【v1.4.1 快照】两个 flatCoverage 上各画一遍，量同步整帧耗时与
+# 静态层重建次数（base/ cur/ 两份 src 快照 + renderStaticLayers 里插的计数器）。
+# ★ 预览窗藏起来时 rAF 被节流到 ~1Hz，台子把 requestAnimationFrame 换成手工队列同步 flush；
+#   ResizeObserver 同样不发，进场必须显式 flat.resize()，否则 cw/ch 还是 0、draw() 直接返回。
+# ★ 两版不能一前一后连着量：先量的那个会替后面那个背走上一轮积压的 GPU 光栅，实测能凭空造出 1.35×。
+.perfharness/
+
+# 影像瓦片离线包（出厂 L0–L6 = 4273 片 / 100 MB，由 npm run imagery:tiles 生成，不进 git）
+# ★ 它是【出厂默认底图】（viz/imagery.js 的 DEFAULT_IMAGERY = 'bmTiles'），漏带不会报错、只会让所有
+#   用户的「高精」档静默回退成矢量底图 —— 故 npm run dist 前置了 scripts/check-imagery.mjs 逐级点数。
+resources/imagery/
+.imagery-src/
+
+# 影像瓦片验证台（npx vite --config .imgharness/vite.config.mjs）：把 resources/imagery 挂成静态 publicDir，
+# 用 http://localhost:5933/bmng/<z>/<行>/<列>.jpg 顶替 imagery:// —— 协议注册在主进程，浏览器里没有它，
+# 这正是 imageryTiles.setTileBase 存在的理由。网格数学与选级由 packages/core/test/imageryTiles.test.mjs 管。
+.imgharness/
+
+# MODCOD 表编辑页验证台（npx vite --config .mcharness/vite.config.mjs，launch.json 的 mc-harness）：
+# 真 ExcelGrid + 真 useGridSelect 挂在假 window.api.modcod 上（stub.js），量枚举列下拉、粘贴/填充柄那条
+# 旁路、「按族 + 星座阶数 M 现造一档」的插槽。数值口径与 Excel 往返由 modcodTables / modcodXlsx 两个
+# 测试管，台子只管交互。
+.mcharness/

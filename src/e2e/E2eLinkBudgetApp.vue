@@ -5,7 +5,7 @@
 // 一行 = 一条端到端链路 = 节点序列 + hop 序列。计算只有正向电平递推一种（引擎 utils/linkChain.js），
 // 因此功能区没有「计算方式」选择器：多跳下反算欠定，「该调哪个旋钮」由逐段余量排序（弱段高亮）承担。
 // 几何全部手填（斜距 / 星间距离），留空即该行报错——不按轨道高度兜底换算。
-import { ref, reactive, computed, onMounted, watch, nextTick } from 'vue'
+import { ref, reactive, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import ActivationLock from '../components/ActivationLock.vue'
 import Icon from '../components/Icon.vue'
 import ConfigTree from '../components/ConfigTree.vue'
@@ -14,6 +14,8 @@ import { useConfigTree } from '../shared/useConfigTree.js'
 import LbSection from '../components/LbSection.vue'
 import LbLibrary from '../components/LbLibrary.vue'
 import LbFontCtl from '../components/LbFontCtl.vue'
+import LbUnitCtl from '../components/LbUnitCtl.vue'
+import { isUnitAdaptive, onUnitModeChange } from '../shared/lbUnitMode.js'   // 结果显示单位档（功能区「单位」，出厂锁定）
 import LbSlantTool from '../components/LbSlantTool.vue'
 import LbIslRangeTool from '../components/LbIslRangeTool.vue'
 import LbReportDialog from '../components/LbReportDialog.vue'
@@ -616,8 +618,11 @@ function segCarrierName(si) {
   const rate = (r !== null && isFinite(r)) ? fmtQtyRate(r) : ''
   return [rate, [f.modulation, f.fec].filter(Boolean).join(' ')].filter(Boolean).join(' · ')
 }
-// kbps 读数自适应：≥1000 报 Mbps（与三窗结果列的档位口径一致）
-const fmtQtyRate = (kbps) => (Math.abs(kbps) >= 1000 ? (kbps / 1000).toFixed(3).replace(/\.?0+$/, '') + ' Mbps' : String(Number(kbps.toFixed(3))) + ' kbps')
+// kbps 读数自适应：≥1000 报 Mbps（与三窗结果列的档位口径一致）。
+// 受功能区「单位」档节制（出厂锁定＝一律 kbps）；走 ref 而不是直接问 lbUnitMode，
+// 否则切档时模板里这些读数不会重渲染。
+const unitAdaptive = ref(isUnitAdaptive())
+const fmtQtyRate = (kbps) => (unitAdaptive.value && Math.abs(kbps) >= 1000 ? (kbps / 1000).toFixed(3).replace(/\.?0+$/, '') + ' Mbps' : String(Number(kbps.toFixed(3))) + ' kbps')
 
 // ============ 几何：手动 / 自动 ============
 // 与 NGSO / 再生式两窗同一套口径，差别只在这里逐跳各解各的（一条链上每一跳的星、站、频率都不同）：
@@ -804,9 +809,14 @@ onLangChange(() => {
 async function refreshDoc() {
   const d = curResult.value
   if (!api || !d) { segments.value = []; return }
-  try { segments.value = await api.linkBudget.waterfall({ results: JSON.parse(JSON.stringify(d)), lang: reportLang.value, orbitType: ORBIT }) } catch (e) { segments.value = [] }
+  try { segments.value = await api.linkBudget.waterfall({ results: JSON.parse(JSON.stringify(d)), lang: reportLang.value, orbitType: ORBIT, adaptUnits: isUnitAdaptive() }) } catch (e) { segments.value = [] }
 }
 watch([curResult, curIdx], refreshDoc)
+// 功能区「单位」档改动（本窗切换或别的链路预算窗改的）：速率读数就地跟上 + 详细预算重取一次。
+// 不碰引擎——档位只管显示，数值一个没变。
+let _offUnitMode = null
+onMounted(() => { _offUnitMode = onUnitModeChange((v) => { unitAdaptive.value = v; refreshDoc() }) })
+onBeforeUnmount(() => { if (_offUnitMode) _offUnitMode() })
 
 function copyWaterfallTsv() {
   const lines = []
@@ -1261,6 +1271,7 @@ onMounted(async () => {
             </div>
             <div class="lbr-cap">导出</div>
           </div>
+          <LbUnitCtl />
           <LbFontCtl />
           <div class="lbr-status">
             <span v-if="notice" class="lb-note">{{ notice }}</span>

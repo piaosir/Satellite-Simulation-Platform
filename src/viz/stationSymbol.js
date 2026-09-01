@@ -42,10 +42,9 @@ function casingPass() {
     .replace(/opacity="[\d.]+"/g, '')   // 垫底层不透明，否则边缘会露出半透的灰圈
 }
 
-// 生成符号 SVG。ink 形参留着不使用：这枚图形是 Noto 的固定六色配色，
-// 要跟标记色/分组色走得先把它重绘成单色件，那是另一件事。
-export function stationSvg(ink) {
-  void ink
+// 生成符号 SVG。这枚图形是 Noto 的固定六色配色，不着色也不换形状 —— 它是地球站这一层唯一的符号。
+// 深色套边（casingPass）保证浅底图上也切得出轮廓。
+export function stationSvg() {
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${STATION_VB} ${STATION_VB}">`
     + casingPass() + NOTO_BODY + '</svg>'
 }

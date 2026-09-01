@@ -471,12 +471,16 @@ export function labelBundle(lang) {
 export function buildReportModel(o) {
   const {
     lang = 'zh', orbitType = 'GEO', regenMode = 'uplink',
-    doc = {}, links = [], calc = {}, appVersion = '', satelliteName = '', frequencyBand = ''
+    doc = {}, links = [], calc = {}, appVersion = '', satelliteName = '', frequencyBand = '',
+    adaptUnits = false
   } = o || {}
   const scheme = schemeOf(orbitType, regenMode)
   return {
     v: 1,
     lang,
+    // 结果显示单位的档位（功能区「单位」，出厂锁定＝false）：报告与屏幕同口径——主进程据此决定
+    // 汇总行要不要整行换档（report.adaptSummaryUnits）、详表瀑布要不要换档（buildWaterfallSegments）。
+    adaptUnits: !!adaptUnits,
     scheme,
     t: labelBundle(lang),
     doc: Object.assign({}, defaultDocInfo(scheme, satelliteName, lang, frequencyBand), doc, {

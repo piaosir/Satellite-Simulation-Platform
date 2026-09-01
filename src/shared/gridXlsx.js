@@ -25,10 +25,12 @@ const isBlank = (v) => v == null || String(v).trim() === ''
 
 /**
  * 出表模型的一张工作表。
- *   cols   [{ key, label, unit, num, fix }]
+ *   cols   [{ key, label, unit, num, fix, align }]
  *   rows   数据行
  *   value  (row, col) => 值：数字列返回 number 才能在 Excel 里参与计算，返回字符串亦可
  *   unitOf (col) => 单位（动态单位列用；缺省取 col.unit）
+ * ★ col.w 是【屏上网格】的像素列宽，不往出表模型里带 —— Excel 的列宽单位是字符数，
+ *   190 这样的像素值会撑出一列半屏宽。Excel 那边的列宽交给主进程的自适应算。
  */
 export function sheetModel({ name, cols, rows, value, unitOf, note }) {
   const list = (cols || []).filter(Boolean)
@@ -37,7 +39,7 @@ export function sheetModel({ name, cols, rows, value, unitOf, note }) {
     name: name || 'Sheet1',
     note: note || '',
     header: list.map((c) => colLabel(c, unitOf)),
-    cols: list.map((c) => ({ num: !!c.num, fix: c.fix })),
+    cols: list.map((c) => ({ num: !!c.num, fix: c.fix, align: c.align })),
     rows: (rows || []).map((r) => list.map((c) => {
       const v = val(r, c)
       if (v == null || v === '') return null
@@ -49,10 +51,11 @@ export function sheetModel({ name, cols, rows, value, unitOf, note }) {
 }
 
 // 一次导出（走主进程保存框）。sheets = sheetModel() 的结果数组。返回 IPC 结果。
-export async function exportSheets({ defaultName, title, sheets }) {
+// style：'plain'（缺省，灰底表头+竖线+筛选器，供随手改数）| 'report'（三线表，与链路预算报告同款版式）
+export async function exportSheets({ defaultName, title, sheets, style }) {
   const api = typeof window !== 'undefined' && window.api && window.api.gridXlsx
   if (!api) return { ok: false, error: '当前环境不支持导出 Excel' }
-  return api.export({ defaultName, title, sheets: (sheets || []).filter(Boolean) })
+  return api.export({ defaultName, title, style, sheets: (sheets || []).filter(Boolean) })
 }
 
 // 一次导入（走主进程打开框）。返回 { ok, canceled?, error?, filePath, sheets:[{name, rows}] }
@@ -150,4 +153,24 @@ export function sheetToTsv(sheet, opts) {
 export function safeFileName(s, fallback) {
   const t = String(s == null ? '' : s).replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, ' ').trim()
   return t || (fallback || '表格')
+}
+
+/**
+ * 工作表名的合法化 —— electron/services/gridXlsx.js 里 safeSheetName 的【渲染端镜像】，
+ * 两份必须逐字一致（Excel 的硬约束：不许 : \ / ? * [ ]，且最长 31 字符；重名加 (2)(3)… ）。
+ *
+ * ★ 为什么渲染端也要有一份：以「表名＝标准名」做往返的表（MODCOD 表就是），导出时名字若被主进程
+ *   改写过（超长截断 / 非法字符换成 ·），再把同一个文件导回来就按名字对不上号了 —— 表现是
+ *   「导出→原样导入」凭空多出一个同名的自定义标准，而不是覆盖原来那个。调用方拿这一支【预演】
+ *   一遍导出名，即可用同一把尺子做匹配。
+ * used：Set，跨多张表累积已占用的名字（不传即不做重名消歧）。
+ */
+export function safeSheetName(name, used) {
+  let s = String(name == null ? '' : name).replace(/[:\\/?*[\]]/g, '·').trim() || 'Sheet'
+  if (s.length > 31) s = s.slice(0, 31)
+  if (!used) return s
+  let out = s, k = 2
+  while (used.has(out)) { const tail = '(' + k++ + ')'; out = s.slice(0, 31 - tail.length) + tail }
+  used.add(out)
+  return out
 }

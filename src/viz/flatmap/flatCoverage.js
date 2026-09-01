@@ -8,8 +8,12 @@ import { resolvedFeatures, resolvedLines, labelSet, ensureDetail, onPovChange } 
 // 五类边界线的渲染次序 / 出厂样式 / 屏幕像素虚线图案 / 缩放淡出档位：与 3D 球体共用同一份常量
 import { BORDER_DEF, DASH_PX, DASH_SCALE, BORDER_DRAW, CFG_KEY, fadeFactor, admFade } from '../geo/borderStyle.js'
 import { terminatorFlat } from '../terminator.js'
+// 影像瓦片金字塔（EPSG:4326 / GIBS 网格）：网格数学与取片缓存，与 3D 球体共用同一份
+import { TILE, span as tileSpan, tileRange, pickZoom, getTileOrParent, tileGutter, loadTiles } from '../imageryTiles.js'
 // 点标记序号徽标（圈 1、圈 2）：与 3D 球体共用同一支画笔，两视图观感一致
-import { paintNumBadge, badgeLabelUp } from '../markers/numBadge.js'
+import { paintNumBadge, BADGE_R } from '../markers/numBadge.js'
+// 标记符号（圆点/方块/三角/图钉…）：同上，2D 与 3D 共用同一支画笔
+import { paintMarkSymbol, symbolUp, symbolDown } from '../markers/markSymbols.js'
 // 地球站符号：与 3D 球体共用同一份定义（原来两处各存一份逐字符相同的副本）
 import { stationSvg, STATION_ANCHOR_X, STATION_ANCHOR_Y } from '../stationSymbol.js'
 import { drawVehicle, flatHeading } from '../vehicleSymbol.js'
@@ -139,7 +143,10 @@ export function createFlatCoverage(canvas) {
   let oceanColor = OCEAN   // 大海填充色（可调，限蓝色系），与 3D 球体同步
   // 影像底图：整幅等经纬世界影像（见 viz/imagery.js 的取向约定）。开启后顶替「海色 + 陆地填充」这两层，
   // 边界线/地名/覆盖场照旧叠其上。imgBright=亮度乘子，压暗是为了让冷蓝灰那族地物线在真彩影像上还看得清。
-  let imgOn = false, imgEl = null, imgBright = 1
+  // imgEl=整幅档的那张图；imgSet=瓦片档的集名（非空即走瓦片，此时 imgEl 不参与）。
+  // 两档并存而不是二选一：瓦片档需要离线包（resources/imagery，约 300 MB，不进 git），
+  // 没装包的开发机/精简安装仍能用整幅档，不至于「影像」这一整块功能直接消失。
+  let imgOn = false, imgEl = null, imgBright = 1, imgSet = null, imgMaxZ = 7
   // 导出时能不能画位图影像。compat 同时服务两条导出路径（PNG 走真 canvas、PDF 走 svgcanvas 录制），
   // 而影像只对前者成立 —— 后者会把整幅图 base64 塞进 SVG，文件大到不可用。故不能只看 compat。
   let rasterOut = false
@@ -153,13 +160,52 @@ export function createFlatCoverage(canvas) {
     fpFillColor: '#b8e6fa', fpFillOpacity: 0,
     subOn: true, subPx: 30, subColor: '#ffffff'
   }
-  // 线型 → canvas 虚线数组（屏幕 px；3D 那份按世界弧长切段，两边观感对齐即可，不求逐段一致）
-  const DASH_2D = { dash: [7, 5], dot: [1.2, 4] }
+  // 线型 → canvas 虚线数组（屏幕 px；3D 那份按世界弧长切段，两边观感对齐即可，不求逐段一致）。
+  // ★ 四档必须与侧栏 DASH_OPTS 一一对上：这张表少一档不会报错，只会让那一档【静默画成实线】——
+  //   曾经缺 dashdot，于是聚焦卫星与航迹选「点划线」时 3D 出点划、2D 出实线，同一条线两副样子。
+  const DASH_2D = { dash: [7, 5], dot: [1.2, 4], dashdot: [9, 3.5, 1.6, 3.5] }
   let satLayer = null   // 卫星/仰角线独立图层 { lines, dots, labels, sats }（与 geom/field 互不干扰）
-  const sizes = { beamFont: 16, contourFont: 12, dotSize: 5, showBore: true, nameScale: 1, provScale: 1, cityScale: 1, oceanScale: 1, seaScale: 1, ptFont: 14, stIcon: 32, stFont: 17, satIcon: 30, ptDot: 3.5, ptIdx: 16, trajDot: 4, trajIcon: true, trajIconPx: 26 }
+  const sizes = { beamFont: 16, contourFont: 12, dotSize: 5, showBore: true, nameScale: 1, provScale: 1, cityScale: 1, oceanScale: 1, seaScale: 1, satIcon: 30 }
   const SAT_ICON_K = 0.85   // 卫星图标：同地球站 ST_ICON_K，2D 观感偏大于 3D，收一档对齐（经验系数，可微调）
+  // 标记层样式（点标记 / 地球站 / 航迹）：与 3D 球体同一份设置，由页面 setMarkStyle 推入。
+  // 尺寸口径全是【屏幕 px @100% 缩放】，上图时再乘克制版联动系数 iz（见 drawAboveContent）。
+  // 逐条覆盖（某个点/某个站自己的颜色与形状）由页面在载荷里解析好后逐条带过来，这里只认 item 上的值。
+  const markCfg = {
+    ptShape: 'circle', ptColor: '#ffd24a', ptOpacity: 1, ptDot: 3.5, ptEdge: 0.18, ptEdgeColor: '#ffffff',
+    ptIdx: 16, idxFill: '#ffd24a', idxFillOpacity: 0.62, idxRing: '#ffffff', idxInk: '#1b1205',
+    ptFont: 14, ptLabelColor: '#ffffff', ptLabelOpacity: 1, ptLabelPos: 'up',
+    stOpacity: 1, stIcon: 16, stFont: 17, stLabelColor: '#ffffff', stLabelOpacity: 1, stLabelPos: 'down',
+    tjWidth: 2.2, tjOpacity: 0.95, tjDash: 'solid', tjDot: 4, tjIconOn: true, tjIconPx: 26,
+    tjNameOn: false, tjNameFont: 13, tjNameColor: '#ffffff'
+  }
+  const PT_DOT_K = 18 / 32 * 2.2     // 点标记：滑块值 → 视觉直径（沿用 3D 圆点精灵的占比换算，两视图同大小）
+  // 与 3D 球体标记观感对齐：3D 的文字/圆点精灵都含画布留白（makeCovLabel 字号50→画布高66；dot 直径18的圆居中于32画布），
+  // 其屏幕尺寸按整张画布计 → 实际可见的字/点偏小。2D 直接按字号/半径作画、无留白，故乘同等系数收小，两视图一致。
+  const MK_FONT_K = 50 / 66      // 文字：3D 实际字高 = 字号 × 50/66 ≈ 0.76
+  const ST_ICON_K = 0.85         // 地球站图标：2D 观感略大于 3D，收一档对齐（经验系数，可微调）
+  // 克制版缩放联动系数：点标记/地球站/航迹这类实心图标按 √scale 缓增（满速会在大缩放下膨成色块）。
+  // ★ 画图与命中判定共用这一支 —— 图上多大就按多大抓，两处各算一遍迟早走偏。
+  const izNow = () => Math.sqrt(scale)
+  // 逐条覆盖：载荷里带了自己的颜色/形状就用自己的，否则跟整层设置
+  const ptSymOf = (p) => ({ shape: markCfg.ptShape, fill: p.color || markCfg.ptColor, opacity: markCfg.ptOpacity, edge: markCfg.ptEdge, edgeColor: markCfg.ptEdgeColor })
+  const ptBadgeOf = (p) => ({ fill: p.color || markCfg.idxFill, fillOpacity: markCfg.idxFillOpacity, ring: markCfg.idxRing, ink: markCfg.idxInk })
+  // 各自的视觉直径（屏幕 px，含缩放联动）
+  const ptDiam = (iz) => Math.max(0.5, (markCfg.ptDot != null ? markCfg.ptDot : 3.5) * iz * PT_DOT_K)
+  const idxDiam = (iz) => Math.max(0.5, (markCfg.ptIdx != null ? markCfg.ptIdx : 16) * iz)
+  const stBox = (iz) => Math.max(1, (markCfg.stIcon != null ? markCfg.stIcon : 16) * iz * ST_ICON_K)
+  // 地球站符号在锚点上/下各占多少 px（址点在图形里的位置，见 stationSymbol.js 的 ANCHOR）
+  const stExtent = (box) => ({ up: box * STATION_ANCHOR_Y, down: box * (1 - STATION_ANCHOR_Y), half: box * 0.5 })
+  // 标注摆位：pos 上/下/左/右。up/down=符号在锚点上下各占的 px，half=半宽，fh=字高，
+  // gap0=主标签与符号之间的余白，step=第二行相对第一行的行距，line=第几行（0 主标签 / 1 第二行）。
+  // 左右档走 textAlign 定位（不必量文本宽度），纵向居中；上下档沿用各自原有的距离公式。
+  function labelAt(pos, ext, fh, gap0, step, line) {
+    if (pos === 'left') return { dx: -(ext.half + fh * 0.42), dy: line * (fh * 1.2), align: 'right' }
+    if (pos === 'right') return { dx: ext.half + fh * 0.42, dy: line * (fh * 1.2), align: 'left' }
+    if (pos === 'down') return { dx: 0, dy: gap0 + line * step }
+    return { dx: 0, dy: -(gap0 + line * step) }
+  }
 
-  // 地球站图标
+  // 地球站图标（Noto 天线，六色写实件；不着色、不换形状 —— 它是这层唯一的符号）
   const stationImg = new Image(); let stationReady = false
   stationImg.onload = () => { stationReady = true; invalidateStatic(); requestDraw() }
   stationImg.src = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(stationSvg())))
@@ -249,12 +295,16 @@ export function createFlatCoverage(canvas) {
   //   x ∈ [shift, shift+360]，shift 即 −180° 在世界坐标里的位置。LON0=−30 时 shift=210，
   //   于是屏幕上看到的是「图像右段 + 图像左段」拼起来的一张 —— 与 drawLand 的三档环绕同理，
   //   只是这里按视口精确算需要哪几档，不写死 −360/0/360（放大后一档就够，多画两次是纯浪费）。
+  // 返回值＝这一帧到底画出东西没有。瓦片档在离线包缺失时会一片都取不到，调用方据此回退到
+  // 矢量底图 —— 不是「黑一块」而是像没开影像一样，用户看得懂、也不至于以为软件坏了。
   function drawImagery() {
+    if (imgSet) return drawImageryTiles()
+    if (!imgEl) return false
     const kk = k()
     const shift = (((-180 - LON0) % 360) + 360) % 360
     const wl = -tx / kk, wr = (cw - tx) / kk           // 视口世界 X 范围
     let n0 = Math.floor((wl - shift) / 360), n1 = Math.floor((wr - shift) / 360)
-    if (!Number.isFinite(n0) || !Number.isFinite(n1)) return
+    if (!Number.isFinite(n0) || !Number.isFinite(n1)) return false
     if (n1 - n0 > 8) n1 = n0 + 8                        // 极端 pan/缩小的兜底，正常至多两三档
     const f = ctx.filter
     if (imgBright !== 1) ctx.filter = 'brightness(' + imgBright + ')'
@@ -264,6 +314,85 @@ export function createFlatCoverage(canvas) {
     }
     ctx.filter = f
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)   // 恢复屏幕坐标，后续图层照旧
+    return true
+  }
+
+  // 瓦片档：按当前缩放选级、只画视口内那几十片。整幅档是「一次 drawImage 铺 360×180」，
+  // 这里是「按 (z,row,col) 逐片贴」，环绕分档与 shift 的口径完全照旧，只是粒度从一整张变成一片。
+  //
+  // ★ 两个非做不可的细节：
+  //   1. 选级按【设备像素】：传 CSS px 会让高 DPR 屏永远低选一级、白糊一层（那正是「买了高分屏
+  //      反而更糊」的经典成因）。
+  //   2. 片边界【round 到整设备像素】再画：世界坐标下相邻片是严丝合缝的，但落到屏幕上若两片各自
+  //      带小数边，浏览器会在缝上留下半透明的一线或叠画一线 —— 就是那种「海面上有网格」的现象。
+  //      两片共用同一个 round 结果，缝就必然对齐。
+  // 拆成「排布 imageryPlan」与「画 drawImageryTiles」两步：导出那条要先照排布把片【等到位】
+  // 再画（见 ensureImagery），否则同步渲染只画得出当时恰好在缓存里的片 —— 那正是「导出全球图
+  // 缺一大块」的成因：导出时 fit() 重算 base、dpr 换成放大倍率，选级比屏上深好几级，
+  // 而那一级的片一张都没加载过。
+  function imageryPlan() {
+    const kk = k()
+    if (!(kk > 0)) return null
+    const shift = (((-180 - LON0) % 360) + 360) % 360
+    const wl = -tx / kk, wr = (cw - tx) / kk           // 视口世界 X（度）
+    const wt = -ty / kk, wb = (ch - ty) / kk           // 视口世界 Y（度，= 90−lat）
+    if (!Number.isFinite(wl) || !Number.isFinite(wr) || !Number.isFinite(wt)) return null
+    const north = 90 - Math.max(0, wt), south = 90 - Math.min(180, wb)
+    if (!(south < north)) return null                   // 世界矩形完全在视口外
+    const z = pickZoom(1 / (kk * dpr), imgMaxZ)
+    const s = tileSpan(z)
+    const rr = tileRange(z, -180, 180, north, south)
+    let n0 = Math.floor((wl - shift) / 360), n1 = Math.floor((wr - shift) / 360)
+    if (!Number.isFinite(n0) || !Number.isFinite(n1)) return null
+    if (n1 - n0 > 8) n1 = n0 + 8
+    const W = cw * dpr, H = ch * dpr
+    const items = []
+    for (let n = n0; n <= n1; n++) {
+      const bandX = shift + n * 360                     // 图像 −180° 在世界 X 里的位置
+      const lonW = Math.max(-180, wl - bandX - 180), lonE = Math.min(180, wr - bandX - 180)
+      if (!(lonE > lonW)) continue
+      const cc = tileRange(z, lonW, lonE, north, south)
+      for (let r = rr.r0; r <= rr.r1; r++) {
+        const y0 = Math.round((ty + r * s * kk) * dpr), y1 = Math.round((ty + (r + 1) * s * kk) * dpr)
+        if (y1 <= 0 || y0 >= H || y1 <= y0) continue
+        for (let c = cc.c0; c <= cc.c1; c++) {
+          const wx = bandX + c * s                      // 该片西边缘的世界 X
+          const x0 = Math.round((tx + wx * kk) * dpr), x1 = Math.round((tx + (wx + s) * kk) * dpr)
+          if (x1 <= 0 || x0 >= W || x1 <= x0) continue
+          items.push({ r, c, x0, y0, x1, y1 })
+        }
+      }
+    }
+    return { z, items }
+  }
+
+  function drawImageryTiles() {
+    const plan = imageryPlan()
+    if (!plan || !plan.items.length) return false
+    const f = ctx.filter
+    if (imgBright !== 1) ctx.filter = 'brightness(' + imgBright + ')'
+    ctx.setTransform(1, 0, 0, 1, 0, 0)                  // 转设备像素：片边界要落在整像素上（见上）
+    const G = tileGutter(imgSet)                        // 自切的离线包烘了 1px gutter
+    let painted = 0
+    for (const it of plan.items) {
+      const t = getTileOrParent(imgSet, plan.z, it.r, it.c, onTileReady)
+      if (!t) continue                                  // 连祖先都没有：这一片本帧留空，到货后重绘
+      ctx.drawImage(t.img,
+        G + t.u0 * TILE, G + t.v0 * TILE, (t.u1 - t.u0) * TILE, (t.v1 - t.v0) * TILE,
+        it.x0, it.y0, it.x1 - it.x0, it.y1 - it.y0)
+      painted++
+    }
+    ctx.filter = f
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)   // 恢复屏幕坐标，后续图层照旧
+    return painted > 0
+  }
+
+  // 瓦片到货 → 重绘。★ 必须去抖：影像画在 below 静态快照里，而重建那张快照要连上百个国家名一起
+  // 重画；几十片在几百毫秒里陆续到货，若逐片触发就是几十次全量静态重建，观感上就是「加载时卡死」。
+  let tileTimer = 0
+  function onTileReady() {
+    if (tileTimer) return
+    tileTimer = setTimeout(() => { tileTimer = 0; invalidateStatic(); requestDraw() }, 60)
   }
   function drawLand() {
     const kk = k()
@@ -378,6 +507,7 @@ export function createFlatCoverage(canvas) {
     ctx.stroke()
     ctx.restore()
   }
+
   // 岛链参考线。线宽/虚线周期都是【屏幕像素】（drawPolyline 走屏幕坐标），与边界线同一口径。
   // ★ 表里的顶点已在经纬度平面加密过（见 geo/islandChains.js），故这里直连即可，
   //   与 3D 那边补大圆之后的走向仍然一致。
@@ -408,7 +538,7 @@ export function createFlatCoverage(canvas) {
     const x = PX(lon) + (o.dx || 0), y = PY(lat) + (o.dy || 0)
     const fam = (textFontLatin && !CJK_RE.test(text)) ? textFontLatin : textFont
     ctx.font = `${o.italic ? 'italic ' : ''}${o.bold ? 'bold ' : ''}${px}px ${fam}`
-    ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
+    ctx.textAlign = o.align || 'center'; ctx.textBaseline = 'middle'
     // 文字描边套色(casing)：沿字形勾一圈与底色同调的窄边，把字从背景里「切」出来——专业制图标准，不用底色色块
     // 粗细 = px×strokeScale（缺省 CASE_K），下限 strokeMin（缺省 CASE_MIN）；行政区名传更细的档
     const sScale = o.strokeScale != null ? o.strokeScale : CASE_K, sMin = o.strokeMin != null ? o.strokeMin : CASE_MIN
@@ -752,8 +882,11 @@ export function createFlatCoverage(canvas) {
     // 影像模式：整幅影像顶替海色 + 陆地填充。
     // 导出时分两路：PNG（raster:true，真 canvas）照画影像；PDF/SVG 矢量导出不画 ——
     // 位图会被 svgcanvas 整幅 base64 塞进 SVG，文件大到不可用，那条路仍出矢量底图。
-    if (imgOn && imgEl && (!compat || rasterOut)) {
-      drawImagery()
+    // drawImagery 返回 false ＝ 这一帧一片都没取到（瓦片档但离线包缺失/还没到货）→ 回退矢量底图。
+    // 判据放在「画完之后」而不是「画之前探测」：探测要么多一次异步往返、要么要维护一个可用性状态机，
+    // 而这里天然自愈 —— 包补上了下一帧就自己切回影像。
+    if (imgOn && (imgSet || imgEl) && (!compat || rasterOut) && drawImagery()) {
+      /* 影像已铺满，海色与陆地填充这两层被顶替 */
     } else {
       ctx.fillStyle = oceanColor; ctx.fillRect(rx, ry, rw, rh)
       drawLand()
@@ -769,12 +902,7 @@ export function createFlatCoverage(canvas) {
     // 随缩放联动系数：mz=scale（与国家名同率，用于数值/覆盖/卫星层等注记）；scale=1 即当前大小。
     // iz=√scale 是「克制版」联动：点标记/地球站/航迹这类实心图标若按 mz 满速放大，2D 缩放幅度大(可达60×)会膨成大色块，
     // 故按 √scale 缓增——仍随缩放变化、scale=1 时不变，但放大时增长更温和、不至于过大。
-    const mz = scale, iz = Math.sqrt(scale)
-    // 与 3D 球体标记观感对齐：3D 的文字/圆点精灵都含画布留白（makeCovLabel 字号50→画布高66；dot 直径18的圆居中于32画布），
-    // 其屏幕尺寸按整张画布计 → 实际可见的字/点偏小。2D 直接按字号/半径作画、无留白，故乘同等系数收小，两视图一致。
-    const MK_FONT_K = 50 / 66      // 文字：3D 实际字高 = 字号 × 50/66 ≈ 0.76
-    const DOT3D_FILL = 18 / 32     // 3D 圆点：实心圆占精灵的比例（其余为留白）
-    const ST_ICON_K = 0.85         // 地球站图标：2D 观感略大于 3D，收一档对齐（经验系数，可微调）
+    const mz = scale, iz = izNow()
     // 经纬网 + 行政区界 + 五类边界线画在覆盖填充之上：地理骨架贯穿覆盖区内外，覆盖与底图融为一体（平级），
     // 不再像贴纸浮在上面。次序从下往上：经纬网 → 二级行政区 → 一级行政区 → 海岸 → 主张 → 停火 → 未定 → 国界。
     drawGrid()
@@ -799,19 +927,24 @@ export function createFlatCoverage(canvas) {
       if (sizes.showBore) for (const d of (geom.dots || [])) dot(d.lon, d.lat, Math.max(1, sizes.dotSize) * iz, '#fff')   // GXT 波束中心点：克制版联动
     }
     // 航迹整层（线 + 圆点 + 载具图标）已挪到地名层之后 —— 见下方 drawTrajLayer 的调用处。
-    // 点标记 + 地球站（圆点大小可调 sizes.ptDot、图标 sizes.stIcon，按克制版 iz 联动）
-    const si = sizes.stIcon * iz * ST_ICON_K, ptR = (sizes.ptDot != null ? sizes.ptDot : 3.5) * iz * (DOT3D_FILL * 2.2 / 2)   // 3D 点标记 ×2.2，对齐其可见直径
+    // 点标记 + 地球站（符号/颜色/大小/描边可调，逐条可覆盖；按克制版 iz 联动）
+    const si = stBox(iz), ptD = ptDiam(iz)
     // 序号徽标（p.idx 非空即开）：圆本身就是记号，圈心＝该点位置，故不再另画圆点。
     // 直径按 iz 联动、3D 侧按 zoomK 联动，同一条尺寸律（见 scene.setMarkers）。
-    const idxD = (sizes.ptIdx != null ? sizes.ptIdx : 16) * iz
+    const idxD = idxDiam(iz)
     const idxFont = textFontLatin || textFont   // 编号是纯数字 → 走西文面（出 PDF 时字体族名跟着换）
     for (const p of mk.points) {
-      if (p.idx) paintNumBadge(ctx, PX(p.lon), PY(p.lat), idxD, p.idx, idxFont)
-      else dot(p.lon, p.lat, ptR, '#ffd24a', true)
+      if (p.idx) paintNumBadge(ctx, PX(p.lon), PY(p.lat), idxD, p.idx, idxFont, ptBadgeOf(p))
+      else paintMarkSymbol(ctx, PX(p.lon), PY(p.lat), ptD, ptSymOf(p))
     }
     // 纵向锚点走 STATION_ANCHOR_Y（符号里那颗白色址点），不再是方框底边 —— 3D 侧的
     // sprite.center 用 1−STATION_ANCHOR_Y 对齐同一处，两视图的站址才落在同一个像素上。
-    for (const s of mk.stations) { const x = PX(s.lon), y = PY(s.lat); if (stationReady) ctx.drawImage(stationImg, x - si * STATION_ANCHOR_X, y - si * STATION_ANCHOR_Y, si, si); else dot(s.lon, s.lat, ptR, '#cfeaff', true) }
+    if (stationReady) {
+      const sa = ctx.globalAlpha
+      if (markCfg.stOpacity < 1) ctx.globalAlpha = sa * Math.max(0, markCfg.stOpacity)
+      for (const s of mk.stations) ctx.drawImage(stationImg, PX(s.lon) - si * STATION_ANCHOR_X, PY(s.lat) - si * STATION_ANCHOR_Y, si, si)
+      ctx.globalAlpha = sa
+    }
     // 地名层：字号随缩放联动，且与 3D 球体的「世界尺寸」地名严格一致。
     // 原理：3D 地名是世界尺寸（固定地理度数），其屏幕 px = 地理度数 × 每度像素。2D 同覆盖下每度像素 = k()。
     // 故 2D 字号 = 地理度数 × k()。标定：3D 普通省名 hpx=0.02→1.146°，对应 2D 基准 l.px=15 → 系数 k()/13.1。
@@ -858,20 +991,40 @@ export function createFlatCoverage(canvas) {
     // 2D textBaseline='middle'，dy 即字心偏移，canvas 向上为负 → dy = ∓(0.5 - c)·H = ∓0.85·H。
     // 点标记是用户点/拖出来的，标签在下方会被鼠标指针（箭头本体在热点右下）当场压住。
     const MK_UP = 0.85 / MK_FONT_K   // ≈1.122：字心到锚点的距离 ÷ 字高
+    // 位置可选上/下/左/右（markCfg.ptLabelPos / stLabelPos）；出厂仍是「坐标在上、仰角在下」那一档。
+    // ★ 仰角只在【坐标也摆在下方】时才让到第二行，其余档位一律留在符号正下方 —— 它是另一件事
+    //   （聚焦某颗星才出现），跟着坐标一起跑会让人以为两行是一体的。
+    const ptPos = markCfg.ptLabelPos || 'up', stPos = markCfg.stLabelPos || 'down'
     for (const p of mk.points) {
-      const pf = sizes.ptFont * iz * MK_FONT_K   // 点标记文字：×MK_FONT_K 与 3D 字高对齐（与图标同用克制版 iz）
-      // 带序号徽标时字心要让开圈（口径见 badgeLabelUp，与 3D 同一支）；没有徽标就还是圆点那档
-      const dU = badgeLabelUp(pf * MK_UP, p.idx ? idxD : 0, pf), dD = badgeLabelUp(pf * 0.9 * MK_UP, p.idx ? idxD : 0, pf * 0.9)
-      drawText(p.label, p.lon, p.lat, pf, '#ffffff', { dy: -dU })
-      if (p.el) drawText(p.el, p.lon, p.lat, pf * 0.9, '#ffffff', { dy: dD })   // 聚焦卫星仰角：亮白，标记下方
+      const pf = markCfg.ptFont * iz * MK_FONT_K   // 点标记文字：×MK_FONT_K 与 3D 字高对齐（与图标同用克制版 iz）
+      const sh = markCfg.ptShape
+      // 带序号徽标时字心要让开圈（外沿比例 BADGE_R，与 3D 同一支）；没有徽标按该形状自己的外沿
+      const eUp = p.idx ? idxD * BADGE_R : symbolUp(sh) * ptD, eDn = p.idx ? idxD * BADGE_R : symbolDown(sh) * ptD
+      const ext = { up: eUp, down: eDn, half: (p.idx ? idxD : ptD) * 0.5 }
+      const dU = Math.max(pf * MK_UP, eUp + pf * 0.7), dD = Math.max(pf * 0.9 * MK_UP, eDn + pf * 0.63)
+      if (p.label) {
+        const a = labelAt(ptPos, ext, pf, ptPos === 'down' ? dD : dU, pf * 1.2, 0)
+        drawText(p.label, p.lon, p.lat, pf, markCfg.ptLabelColor, { dx: a.dx, dy: a.dy, align: a.align, opacity: markCfg.ptLabelOpacity })
+      }
+      if (p.el) {   // 聚焦卫星仰角：亮白，标记下方（坐标也在下方时让到第二行）
+        const a = labelAt('down', ext, pf * 0.9, dD, pf * 1.2, (ptPos === 'down' && p.label) ? 1 : 0)
+        drawText(p.el, p.lon, p.lat, pf * 0.9, '#ffffff', { dx: a.dx, dy: a.dy })
+      }
     }
     for (const s of mk.stations) {
-      const sf = sizes.stFont * iz * MK_FONT_K   // 地球站文字：×MK_FONT_K 与 3D 字高对齐（与图标同用克制版 iz）
-      // 锚点改到址点后，符号还有 si·(1−ANCHOR_Y) 一截落在锚点下方（址点那颗圆的下半），
+      const sf = markCfg.stFont * iz * MK_FONT_K   // 地球站文字：×MK_FONT_K 与 3D 字高对齐（与图标同用克制版 iz）
+      // 锚点在址点上，符号还有一截落在锚点下方（址点那颗圆的下半 / 几何符号的下半），
       // 字要整体让开这一截，否则与址点叠在一起
-      const un = si * (1 - STATION_ANCHOR_Y)
-      drawText(s.name, s.lon, s.lat, sf, '#ffffff', { dy: un + sf * 0.5 + 0.5 * iz })
-      if (s.el) drawText(s.el, s.lon, s.lat, sf * 0.9, '#ffffff', { dy: un + sf * 1.5 + 3.5 * iz })   // 聚焦卫星仰角：亮白
+      const ext = stExtent(si)
+      const gapD = ext.down + sf * 0.5 + 0.5 * iz, gapU = ext.up + sf * 0.5 + 0.5 * iz, step = sf + 3 * iz
+      if (s.name) {
+        const a = labelAt(stPos, ext, sf, stPos === 'up' ? gapU : gapD, step, 0)
+        drawText(s.name, s.lon, s.lat, sf, markCfg.stLabelColor, { dx: a.dx, dy: a.dy, align: a.align, opacity: markCfg.stLabelOpacity })
+      }
+      if (s.el) {   // 聚焦卫星仰角：亮白，恒在名称之下
+        const a = labelAt('down', ext, sf * 0.9, gapD, step, (stPos === 'down' && s.name) ? 1 : 0)
+        drawText(s.el, s.lon, s.lat, sf * 0.9, '#ffffff', { dx: a.dx, dy: a.dy })
+      }
     }
     // 卫星 / 仰角线独立图层：等仰角线 + 卫星图标 + 名称（在覆盖/标记之上、聚焦图标之下）
     if (satLayer) {
@@ -971,23 +1124,44 @@ export function createFlatCoverage(canvas) {
   // drawDataLines：那些是「场」的边界、性质近参考层，与国界同层合适；航迹是实体轨迹，不一样。
   // iz=克制版缩放联动、stIconK=图标尺寸律，均由调用处（drawAboveContent）传入，口径与那边一致。
   function drawTrajLayer(iz, stIconK) {
-    for (const t of mk.trajectories) if (t.pts && t.pts.length > 1) drawPolyline(t.pts, hex(t.color != null ? t.color : 0xff5a5a), 2.2)
-    // 圆点大小可调 sizes.trajDot，按克制版 iz 联动。
-    // ★ sizes.trajDot 与 sizes.trajIconPx 同一把尺（都是【屏幕 px @100% 缩放】、同一档位区间），
+    // 线：颜色由页面逐条给（整层按航行/飞行两档，某条航迹可自带覆盖色），线粗/透明度/线型是整层设置
+    const sa0 = ctx.globalAlpha
+    ctx.globalAlpha = sa0 * Math.max(0, Math.min(1, markCfg.tjOpacity != null ? markCfg.tjOpacity : 0.95))
+    const tjDash = DASH_2D[markCfg.tjDash] || null
+    for (const t of mk.trajectories) if (t.pts && t.pts.length > 1) drawPolyline(t.pts, hex(t.color != null ? t.color : 0xff5a5a), Math.max(0.1, markCfg.tjWidth != null ? markCfg.tjWidth : 2.2), false, tjDash)
+    ctx.globalAlpha = sa0
+    // 圆点大小可调 markCfg.tjDot（0＝不画），按克制版 iz 联动。
+    // ★ tjDot 与 tjIconPx 同一把尺（都是【屏幕 px @100% 缩放】、同一档位区间），
     //   但圆点按【该数的一半】作直径 —— 同一个数下实心圆比图标那种镂空剪影重得多，等大时圆点抢戏。
     //   点标记的 ptDot 仍是老的半径口径（滑块上的数不等于屏幕尺寸），两者不要互相抄。
-    const trajR = (sizes.trajDot != null ? sizes.trajDot : 4) * iz / 4
-    for (const t of mk.trajectories) {
-      for (const p of (t.pts || [])) dot(p.lon, p.lat, trajR, t.kind === 'flight' ? '#5ad1ff' : '#ff9a5a', true)
+    const trajD = (markCfg.tjDot != null ? markCfg.tjDot : 4) * iz / 2
+    if (trajD > 0) {
+      for (const t of mk.trajectories) {
+        const c = hex(t.dotColor != null ? t.dotColor : (t.color != null ? t.color : 0xff9a5a))
+        for (const p of (t.pts || [])) paintMarkSymbol(ctx, PX(p.lon), PY(p.lat), trajD, { shape: 'circle', fill: c, opacity: markCfg.tjOpacity, edge: 0.18, edgeColor: 'rgba(255,255,255,0.92)' })
+      }
     }
     // 航迹头（末航点）上的载具图标：航行＝船、飞行＝飞机，形状与 3D 同一份（viz/vehicleSymbol.js）。
     // 朝向取末段在【图上】的走向 —— 2D 的航迹是按经纬度直连画的，图标得贴着那条线（口径见 flatHeading）。
-    if (sizes.trajIcon !== false && (sizes.trajIconPx == null || sizes.trajIconPx > 0)) {
-      const vi = (sizes.trajIconPx != null ? sizes.trajIconPx : 26) * iz * stIconK   // 与地球站图标同一条尺寸律
+    if (markCfg.tjIconOn !== false && (markCfg.tjIconPx == null || markCfg.tjIconPx > 0)) {
+      const vi = (markCfg.tjIconPx != null ? markCfg.tjIconPx : 26) * iz * stIconK   // 与地球站图标同一条尺寸律
+      const sa = ctx.globalAlpha
+      ctx.globalAlpha = sa * Math.max(0, Math.min(1, markCfg.tjOpacity != null ? markCfg.tjOpacity : 0.95))
       for (const t of mk.trajectories) {
         const tp = t.pts || []; if (!tp.length) continue
         const hd = tp[tp.length - 1]
-        drawVehicle(ctx, t.kind, PX(hd.lon), PY(hd.lat), vi, flatHeading(tp[tp.length - 2], hd), hex(t.color != null ? t.color : 0xff5a5a))
+        drawVehicle(ctx, t.kind, PX(hd.lon), PY(hd.lat), vi, flatHeading(tp[tp.length - 2], hd), hex(t.iconColor != null ? t.iconColor : (t.color != null ? t.color : 0xff5a5a)))
+      }
+      ctx.globalAlpha = sa
+    }
+    // 航迹名（默认不画）：锚在航迹头上，让开载具图标那一截
+    if (markCfg.tjNameOn && markCfg.tjNameFont > 0) {
+      const nf = markCfg.tjNameFont * iz * MK_FONT_K
+      const vi = (markCfg.tjIconOn !== false ? (markCfg.tjIconPx != null ? markCfg.tjIconPx : 26) : 0) * iz * stIconK
+      for (const t of mk.trajectories) {
+        const tp = t.pts || []; if (!tp.length || !t.name) continue
+        const hd = tp[tp.length - 1]
+        drawText(t.name, hd.lon, hd.lat, nf, markCfg.tjNameColor, { dy: -(vi * 0.5 + nf * 0.7) })
       }
     }
   }
@@ -1151,6 +1325,66 @@ export function createFlatCoverage(canvas) {
     })
     return best
   }
+  // ===== 标记拖拽（点标记 / 地球站 / 航点：光标压在符号上按住即拖）=====
+  // markerDragOn 由页面【按类别】开：{ point, station, waypoint }。三类都只在各自的「调整位置 / 调点」态下为真 ——
+  // 不在那个态里，压在标记上按住＝照常平移地图，不会把标记误挪走。每项取值：true＝整类可拖，false＝一律不可拖，
+  // 字符串＝只有归属它的那些可拖（航点用航迹 id：正在调点的那条才动，别的航迹不受影响）。
+  // 命中回调 onMarkerDrag(target, lonlat, 'start'|'move'|'end')，
+  // target = { kind:'point'|'station'|'waypoint', id, tid }（tid 仅航点：所属航迹）。
+  // ★ 命中半径按【图上真实画多大】算（同一支 ptDiam/idxDiam/stBox），符号调大了抓取区跟着大，
+  //   下限 HIT_MIN 是手感底线：出厂圆点上屏只有 4px 宽，按真实尺寸判等于抓不住，压在上面也点不中。
+  const HIT_MIN = 11    // 命中半径下限（屏幕 px）：与 3D 侧同值
+  let markerDragOn = { point: false, station: false, waypoint: false }
+  let onMarkerDrag = null, markerDragging = null, markerGrab = null
+  const markerDragAny = () => !!(markerDragOn.point || markerDragOn.station || markerDragOn.waypoint)
+  // 该标记此刻可不可拖：true＝整类开；字符串＝只认归属它的那一条（owner，航点即所属航迹 id）
+  const dragOk = (kind, owner) => { const v = markerDragOn[kind]; return v === true || (!!v && v === owner) }
+  // 按下那一刻「标记与光标」的经纬差：拖动期间保持这个差，标记不会先跳到光标底下再跟着走
+  // （地球站/图钉这类立在锚点上的符号，抓的往往是形体上半，不保差就是按下即位移大半个图标）。
+  const shortLon = (d) => ((d + 540) % 360) - 180
+  function markerLL(t) {
+    if (!t) return null
+    if (t.kind === 'point') return mk.points.find((p) => p.id === t.id)
+    if (t.kind === 'station') return mk.stations.find((x) => x.id === t.id)
+    const tr = mk.trajectories.find((x) => x.id === t.tid)
+    return tr ? (tr.pts || []).find((q) => q.id === t.id) : null
+  }
+  // 光标经纬 + 起手差 → 标记应落到的经纬
+  function dragLL(ll) {
+    if (!ll) return null
+    if (!markerGrab) return ll
+    return { lat: Math.max(-90, Math.min(90, ll.lat + markerGrab.dLat)), lon: shortLon(ll.lon + markerGrab.dLon) }
+  }
+  function markerAt(clientX, clientY) {
+    if (!markerDragAny()) return null
+    const r = canvas.getBoundingClientRect()
+    const mx = clientX - r.left, my = clientY - r.top
+    const iz = izNow()
+    let best = null, bd = Infinity
+    const test = (lon, lat, d, target) => {
+      const hit = Math.max(HIT_MIN, d * 0.5 + 4)
+      const dd = Math.hypot(PX(lon) - mx, PY(lat) - my)
+      if (dd <= hit && dd < bd) { bd = dd; best = target }
+    }
+    // 次序＝图上的压盖次序反过来：地球站画在最上，先抓它；航点在最下，最后
+    const si = stBox(iz), ptD = ptDiam(iz), idxD = idxDiam(iz)
+    if (dragOk('station')) for (const s of mk.stations) if (s.id) {
+      const ext = stExtent(si)
+      // 天线/图钉这类「立在锚点上」的符号：抓取点按其形体中心（针尖上方半个身位），不然只有针尖那一点能抓
+      test(s.lon, s.lat + (ext.up - ext.down) * 0.5 / Math.max(1e-6, k()), Math.max(ext.up + ext.down, ext.half * 2), { kind: 'station', id: s.id })
+    }
+    if (dragOk('point')) for (const p of mk.points) if (p.id) {
+      const sh = markCfg.ptShape, d = p.idx ? idxD : ptD
+      const up = p.idx ? d * BADGE_R : symbolUp(sh) * d, dn = p.idx ? d * BADGE_R : symbolDown(sh) * d
+      test(p.lon, p.lat + (up - dn) * 0.5 / Math.max(1e-6, k()), Math.max(up + dn, d), { kind: 'point', id: p.id })
+    }
+    const trajD = (markCfg.tjDot != null ? markCfg.tjDot : 4) * iz / 2
+    if (markerDragOn.waypoint) for (const t of mk.trajectories) {
+      if (!t.id || !dragOk('waypoint', t.id)) continue
+      for (const p of (t.pts || [])) if (p.id) test(p.lon, p.lat, trajD, { kind: 'waypoint', id: p.id, tid: t.id })
+    }
+    return best
+  }
   // 屏幕坐标是否落在编辑多边形内（射线法，投影后逐边判交）
   function pointInEditPoly(clientX, clientY) {
     if (!editVerts || !editVerts.pts || editVerts.pts.length < 3) return false
@@ -1175,6 +1409,19 @@ export function createFlatCoverage(canvas) {
       } else {
         const vi = vertexAt(e.clientX, e.clientY)
         if (vi >= 0) { vertDragging = vi; canvas.setPointerCapture(e.pointerId); const ll = screenToLonLat(e.clientX, e.clientY); if (ll && onVertexDrag) onVertexDrag(vi, ll, 'start'); return }
+      }
+    }
+    // ★ 标记拖拽排在绘制态/放置态【之前】：那两个是「按下即落点」，而光标正压在一枚可拖的标记上时，
+    //   要的多半是把它挪一挪，不是在它身上再叠一个点。抓取区只有十来个像素，误触概率低于「拖不动」的困扰。
+    if (markerDragAny() && e.button === 0) {
+      const t = markerAt(e.clientX, e.clientY)
+      if (t) {
+        markerDragging = t; canvas.setPointerCapture(e.pointerId); canvas.style.cursor = 'grabbing'
+        const ll = screenToLonLat(e.clientX, e.clientY)
+        const m = markerLL(t)
+        markerGrab = (ll && m && Number.isFinite(m.lat)) ? { dLat: m.lat - ll.lat, dLon: shortLon(m.lon - ll.lon) } : null
+        if (ll && onMarkerDrag) onMarkerDrag(t, dragLL(ll), 'start')
+        return
       }
     }
     if (polyDrawMode && e.button === 0) {   // 绘制态：左键按住起笔，沿路径连续加点
@@ -1219,9 +1466,15 @@ export function createFlatCoverage(canvas) {
       const dx = e.clientX - drawLX, dy = e.clientY - drawLY
       if (dx * dx + dy * dy >= POLY_DRAW_MIN2) { drawLX = e.clientX; drawLY = e.clientY; const ll = screenToLonLat(e.clientX, e.clientY); if (ll && onPolyDraw) onPolyDraw(ll, 'move') }
     }
+    else if (markerDragging) { const ll = screenToLonLat(e.clientX, e.clientY); if (ll && onMarkerDrag) onMarkerDrag(markerDragging, dragLL(ll), 'move') }
     else if (dragging) { tx += e.clientX - lx; ty += e.clientY - ly; lx = e.clientX; ly = e.clientY; invalidateStatic(); requestDraw() }
     else if (editVerts) {   // 悬停提示：可拖顶点 / 可拖多边形内部（cursor 可覆盖命中态提示，如删除模式用 'pointer' 而非 'move'）
       canvas.style.cursor = (editVerts.move ? pointInEditPoly(e.clientX, e.clientY) : vertexAt(e.clientX, e.clientY) >= 0) ? (editVerts.cursor || 'move') : 'grab'
+    }
+    // 悬停到可拖的标记上变手型（各模态自己的光标优先，不抢）
+    else if (!beamDragMode && !labelDragMode && !boxMode) {
+      const on = markerDragAny() && !!markerAt(e.clientX, e.clientY)
+      canvas.style.cursor = on ? 'move' : (polyDrawMode || placeMode ? 'crosshair' : 'grab')
     }
     if (onHover) onHover(screenToLonLat(e.clientX, e.clientY))   // 实时经纬度（拖拽时也更新）
   }
@@ -1240,6 +1493,8 @@ export function createFlatCoverage(canvas) {
     if (beamDragging && onBeamDrag) onBeamDrag(null, 'end')
     if (labelDragging && onLabelDrag) onLabelDrag(null, 'end')
     if (polyDrawing && onPolyDraw) onPolyDraw(null, 'end')
+    if (markerDragging && onMarkerDrag) onMarkerDrag(markerDragging, null, 'end')
+    markerDragging = null; markerGrab = null
     dragging = false; beamDragging = false; labelDragging = false; vertDragging = -1; moveDragging = false; moveLast = null; polyDrawing = false
     canvas.style.cursor = (polyDrawMode || placeMode) ? 'crosshair' : ((beamDragMode || labelDragMode) ? 'move' : 'grab')
     // 显式释放指针捕获（不只依赖 pointerup 的隐式释放）：pointercancel / 抬起点在画布外等边角情形下隐式释放可能不发生，
@@ -1417,11 +1672,16 @@ export function createFlatCoverage(canvas) {
     setLabelStyle(s) { Object.assign(labelStyle, s || {}); invalidateStatic(); requestDraw() },
     // 大海填充色（与 3D 同步，限蓝色系）
     setOceanColor(c) { if (c) { oceanColor = c; invalidateStatic(); requestDraw() } },
-    // 影像底图。img=已解码的整幅等经纬 HTMLImageElement（传 null 卸载）、on=开关、bright=亮度乘子。
+    // 影像底图。两档二选一：
+    //   set  = 瓦片档集名（如 'bmng'）；给了它就走金字塔，img 不再参与
+    //   img  = 整幅档已解码的等经纬 HTMLImageElement（传 null 卸载）
+    // on=开关、bright=亮度乘子、maxZ=瓦片档最深级（离线包只切到 L6 时传 6，免得一路请求必然 404 的 L7）。
     setImagery(o) {
       if (!o) return
+      if (o.set !== undefined) imgSet = o.set || null
       if (o.img !== undefined) imgEl = o.img || null
       if (o.on != null) imgOn = !!o.on
+      if (o.maxZ != null && Number.isFinite(o.maxZ)) imgMaxZ = Math.max(0, Math.min(11, o.maxZ | 0))   // 上限 11：GIBS 的 31.25m 矩阵集到 L11（30.6 m/px），是其真彩天花板
       if (o.bright != null) imgBright = Math.max(0.05, Math.min(2, Number(o.bright) || 1))
       invalidateStatic(); requestDraw()
     },
@@ -1510,6 +1770,18 @@ export function createFlatCoverage(canvas) {
     setOnBoxSelect(fn) { onBoxSelect = fn },
     setOnPolyMove(fn) { onPolyMove = fn },
     setMarkers(points, stations, trajectories) { mk = { points: points || [], stations: stations || [], trajectories: trajectories || [] }; invalidateStatic(); requestDraw() },
+    // 标记层样式（与 3D 同一份设置，见 markCfg）
+    setMarkStyle(cfg) { Object.assign(markCfg, cfg || {}); invalidateStatic(); requestDraw() },
+    // 标记直接拖拽：开关 + 回调（target, lonlat, 'start'|'move'|'end'）
+    // 布尔＝三类一起开关；对象＝逐类开关 { point, station, waypoint }（页面按「调整位置 / 调点」态给，
+    // 每项 true / false / 归属 id，见 dragOk）
+    setMarkerDrag(v) {
+      const o = (v && typeof v === 'object') ? v : { point: !!v, station: !!v, waypoint: !!v }
+      const norm = (x) => (typeof x === 'string' ? x : !!x)
+      markerDragOn = { point: norm(o.point), station: norm(o.station), waypoint: norm(o.waypoint) }
+      if (markerDragging && !dragOk(markerDragging.kind, markerDragging.tid)) { markerDragging = null; markerGrab = null }
+    },
+    setOnMarkerDrag(fn) { onMarkerDrag = fn },
     // p：单个 {lat,lon} 或数组，兼容旧单选调用；聚焦星每帧实时绘制，不在快照内
     setFocusSat(p) { focusSats = (Array.isArray(p) ? p : (p ? [p] : [])).filter((q) => q && Number.isFinite(q.lat) && Number.isFinite(q.lon)); requestDraw() },
     // g：单个 {footprint,track} 或数组（多选=每颗都画），随时间实时，不入快照
@@ -1530,6 +1802,22 @@ export function createFlatCoverage(canvas) {
     //   fontFamily=中文面族名，fontFamilyLatin=西文面族名（仅 PDF 需分面，见 textFontLatin 注释）。
     //   view=false：整幅世界图，fit 一次性绘制；view=true：所见即所得，按当前屏幕缩放/平移出图。绘后恢复在屏视图。
     // compat=true 走子路径回放（不依赖 Path2D / evenodd 入参）→ PNG 与 PDF 完全一致。
+    // 导出前预载影像瓦片。★ 必须在 exportRender 之前 await —— exportRender 是同步的，
+    //   跳过的片没有第二次机会；而导出时 fit() 重算 base、dpr 换成放大倍率，选级比屏上深好几级，
+    //   那一级的片往往一张都没加载过 → 导出的图上缺一大块（正是这个 BUG）。
+    //   这里把 exportRender 的视图状态先套上去算出排布，等片到位后再还原，故与实际画的那一批完全一致。
+    async ensureImagery(opts) {
+      if (!imgOn || !imgSet) return
+      const o = opts || {}
+      const SV = { dpr, cw, ch, base, scale, tx, ty }
+      dpr = o.pixelScale || 1
+      if (o.view !== true) { cw = o.width || cw; ch = o.height || ch; fit() }
+      let plan = null
+      try { plan = imageryPlan() } finally {
+        dpr = SV.dpr; cw = SV.cw; ch = SV.ch; base = SV.base; scale = SV.scale; tx = SV.tx; ty = SV.ty
+      }
+      if (plan && plan.items.length) await loadTiles(imgSet, plan.z, plan.items)
+    },
     exportRender(targetCtx, opts) {
       const o = opts || {}
       // view=true：所见即所得，保留当前 base/scale/tx/ty 与屏幕 cw/ch，仅按 pixelScale 放大输出；

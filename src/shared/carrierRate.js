@@ -9,7 +9,78 @@
 
 import { fmtQty } from './adaptUnits.js'   // 显示单位自适应（kbps→Mbps/Gbps、kHz→MHz/GHz…），与结果列同一套档位表
 
+// ===== 调制方式：族 + 星座阶数 M ⇄ 名字 ⇄ 调制因子（bit/符号）=====
+// ★ 本段是 packages/core/utils/modulation.js 的【渲染端手写副本】——那边是 CJS、只在主进程跑，
+//   而载波面板要在渲染端实时算符号率/带宽，走 IPC 问一次因子不现实。两份必须逐值一致，
+//   packages/core/test/modulation.test.mjs 拿同一张名字表逐条对拍，改一处必须改另一处。
 export const MOD_FACTORS = { BPSK: 1, QPSK: 2, '8PSK': 3, '8QAM': 3, '16QAM': 4, '16APSK': 4, '32APSK': 5, '64QAM': 6, '64APSK': 6, '128APSK': 7, '256APSK': 8 }
+export const MOD_FAMILIES = [
+  { key: 'psk', label: 'M-PSK', suffix: 'PSK' },
+  { key: 'apsk', label: 'M-APSK', suffix: 'APSK' },
+  { key: 'qam', label: 'M-QAM', suffix: 'QAM' }
+]
+export const ORDER_MIN = 2, ORDER_MAX = 4096
+export function isValidOrder(m) {
+  const n = Number(m)
+  return Number.isInteger(n) && n >= ORDER_MIN && n <= ORDER_MAX && (n & (n - 1)) === 0
+}
+export function ordersOf(familyKey) {
+  const out = []
+  for (let m = ORDER_MIN; m <= (familyKey === 'qam' ? 4096 : 1024); m *= 2) {
+    if (familyKey === 'apsk' && m < 16) continue   // APSK 环状星座从 16 起
+    if (familyKey === 'qam' && m < 4) continue     // 2QAM 不存在
+    out.push(m)
+  }
+  return out
+}
+export const isValidOrderFor = (familyKey, m) => isValidOrder(m) && ordersOf(familyKey).indexOf(Number(m)) > -1
+export function composeModulation(familyKey, order) {
+  const fam = MOD_FAMILIES.find((f) => f.key === familyKey)
+  if (!fam || !isValidOrderFor(familyKey, order)) return ''
+  const m = Number(order)
+  if (fam.key === 'psk') { if (m === 2) return 'BPSK'; if (m === 4) return 'QPSK' }
+  return String(m) + fam.suffix
+}
+const NAME_RE = /^(\d+)\s*(APSK|QAM|PSK)$/i
+export function parseModulation(name) {
+  const s = String(name == null ? '' : name).trim()
+  if (!s) return null
+  const up = s.toUpperCase()
+  if (up === 'BPSK') return { family: 'psk', order: 2, factor: 1 }
+  if (up === 'QPSK') return { family: 'psk', order: 4, factor: 2 }
+  const m = NAME_RE.exec(up)
+  if (!m) return null
+  const order = Number(m[1])
+  const fam = MOD_FAMILIES.find((f) => f.suffix === m[2].toUpperCase())
+  // ★ 阶数按族收紧（APSK 从 16 起、QAM 从 4 起）：全平台只有一种「合法调制方式」的口径
+  if (!fam || !isValidOrderFor(fam.key, order)) return null
+  return { family: fam.key, order, factor: Math.round(Math.log2(order)) }
+}
+// ★ 查不到返回 null 而不是回落到 2：「不知道」和「等于 QPSK」是两件事，兜底交给调用方
+export function modFactorOf(name) {
+  const s = String(name == null ? '' : name).trim()
+  if (!s) return null
+  if (MOD_FACTORS[s] != null) return MOD_FACTORS[s]
+  const up = s.toUpperCase()
+  for (const k of Object.keys(MOD_FACTORS)) if (k.toUpperCase() === up) return MOD_FACTORS[k]
+  const p = parseModulation(s)
+  return p ? p.factor : null
+}
+export const isKnownModulation = (name) => modFactorOf(name) != null
+// 下拉选项：内置项在前（顺序照 core 的 MODULATION_OPTIONS），extra 里能解析又不重复的补在后面
+export const BUILTIN_MODULATIONS = ['BPSK', 'QPSK', '8PSK', '8QAM', '16QAM', '16APSK', '32APSK', '64QAM', '64APSK', '128APSK', '256APSK']
+export function modulationOptions(extra) {
+  const seen = new Set(), out = []
+  for (const v of BUILTIN_MODULATIONS.concat(extra || [])) {
+    const key = String(v == null ? '' : v).toUpperCase()
+    const factor = modFactorOf(v)
+    if (!key || seen.has(key) || factor == null) continue
+    seen.add(key)
+    const p = parseModulation(v)
+    out.push({ value: v, label: v, family: p ? p.family : null, order: p ? p.order : null, factor })
+  }
+  return out
+}
 
 // '3/4' → 0.75；'0.75' → 0.75；空/非法 → def
 export function parseFrac(s, def) {
@@ -25,7 +96,7 @@ const num = (v, d) => { const n = parseFloat(v); return isNaN(n) ? d : n }
 export function rateFactors(form) {
   const f = form || {}
   return {
-    mf: MOD_FACTORS[f.modulation] || 2,          // 调制因子（bit/symbol）
+    mf: modFactorOf(f.modulation) || 2,          // 调制因子（bit/symbol）
     fec: parseFrac(f.fec, 0.75),
     rs: parseFrac(f.rsCode, 188 / 204),          // 帧效率
     m: num(f.m, 1),                              // 扩频增益
@@ -88,5 +159,7 @@ export function anchoredRate(form) {
   const pin = pinnedValue(form)
   const value = isNaN(pin) ? rateChain(form)[key] : pin
   const meta = RATE_ANCHORS[key]
-  return { key, label: meta.label, value, unit: meta.unit, text: isNaN(value) ? '' : fmtQty(fmtRate(value), meta.unit) }
+  // fmtQty 的第三参显式 true：本读数只喂自动命名（见 lbAutoName.carrierAutoName），条目名是数据，
+  // 不随功能区「单位」档变——那个开关一动全库载波条目就要改名，存档凭空 dirty。
+  return { key, label: meta.label, value, unit: meta.unit, text: isNaN(value) ? '' : fmtQty(fmtRate(value), meta.unit, true) }
 }

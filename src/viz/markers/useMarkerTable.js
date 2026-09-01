@@ -125,7 +125,7 @@ export function useMarkerTable({ points, stations, trajectories, newId, sync }) 
         if (lon == null || lat == null) continue
         const head = c.slice(0, c.length - 2)
         const row = makeEmpty()
-        textCols.forEach((k, i) => { row[k] = head[i] || '' })
+        textCols.forEach((k, i) => setCell(row, k, head[i] || ''))   // ★ 走 setCell：颜色/形状两列有取值规范，直接塞字符串会写进非法值
         row.lon = lon; row.lat = lat
         add.push(row)
       }
@@ -164,6 +164,7 @@ export function useMarkerTable({ points, stations, trajectories, newId, sync }) 
   }
 
   // ---- 点标记：列 [经度, 纬度] ----
+  // 逐条颜色（p.color）不进表格 —— 它在侧栏列表行内那枚色块上改，表格只管坐标
   const PT_COLS = ['lon', 'lat']
   const ptLayer = makeLayer(
     () => points.value, (a) => { points.value = a }, PT_COLS,

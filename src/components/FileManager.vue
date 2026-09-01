@@ -14,8 +14,14 @@ import { repackGrdCommonGrid } from '../viz/grd/synth.js'
 import { displaySatName } from '../viz/satName.js'
 import { logMsg } from '../stores/log'
 import Icon from './Icon.vue'
+import ExcelGrid from './ExcelGrid.vue'
 import MiniSendDialog from './MiniSendDialog.vue'
 import { fpMiniItem } from '../shared/fpMiniExport.js'
+import { useGridSelect } from '../viz/grd/useGridSelect.js'
+import { exportSheets, importWorkbook } from '../shared/gridXlsx.js'
+import { MODCOD_COLS, modcodGridCols, cellText as mcCellText, cellTip as mcCellTip, setCell, emptyRow,
+  modcodSheets, modcodSheetNames, modcodFileName, standardsFromSheets, rejectedModulations } from '../shared/modcodTable.js'
+import { MOD_FAMILIES, ordersOf, isValidOrderFor, composeModulation, parseModulation, modFactorOf } from '../shared/carrierRate.js'
 
 const emit = defineEmits(['close'])
 const api = typeof window !== 'undefined' ? window.api : null
@@ -589,9 +595,254 @@ async function exportCurrentGxt() {
   else if (save && save.error) flash('导出失败：' + save.error)
 }
 
+/* ===================== ④ MODCOD 表（调制编码标准库）=====================
+   六张内置预设表（DVB-S / S2 / RCS2 / S2X / 3GPP NR-NTN / NB-IoT NTN）原先写死在
+   packages/core/utils/constants.js 里，用户既加不了自家体制、也改不了某一档门限（各家调制解调器的
+   实测门限与标准仿真值差一两个 dB 是常态）。这里把它做成可编辑的库：
+     · 内置标准可改、可改名，改过的给「恢复默认」；★主进程只存【与内置表的差异】，
+       没动过的标准照旧跟着软件版本走（否则用户改一条 DVB-S2，其余五张表就永远冻在这个版本上）；
+     · 自定义标准可增删，key 用 usr: 前缀与内置分家，改名不会让已存配置里的 dvbStandard 指空；
+     · 整库 ⇄ Excel：一个标准一张工作表，表名即标准名，故导入一份工作簿即可一次改多个标准 +
+       一次新建多个自定义标准。导出走三线表版式（与链路预算报告里的表同款）。
+   改完在链路预算各窗口点顶栏「刷新」即生效（那按钮本就重拉 link:baseband）。          */
+const MC_STORE_KEYS = ['key', 'label', 'rows']
+const mcStds = ref([])            // [{ key, label, builtin, modified, rows:[{id,...}] }]
+const mcSel = ref('')
+const mcReadOnly = ref(false)     // 库文件损坏：只读展示，不许写回去覆盖
+let _mcRowSeq = 1
+const mcNewRowId = () => 'mc' + (_mcRowSeq++)
+const mcCur = computed(() => mcStds.value.find((s) => s.key === mcSel.value) || null)
+const mcRows = () => (mcCur.value ? mcCur.value.rows : [])
+
+async function loadModcod() {
+  if (!api?.modcod?.list) { mcStds.value = []; return }
+  try {
+    const r = await api.modcod.list()
+    mcStds.value = ((r && r.standards) || []).map((s) => ({ ...s, rows: (s.rows || []).map((x) => ({ ...x, id: mcNewRowId() })) }))
+    mcReadOnly.value = !!(r && r.readOnly)
+    if (r && r.error) flash(r.error)
+    if (!mcStds.value.some((s) => s.key === mcSel.value)) mcSel.value = mcStds.value.length ? mcStds.value[0].key : ''
+  } catch { mcStds.value = [] }
+}
+
+// 落库：改一处存一处（与「编辑卫星实时生效」同口径），合并同一串键入
+let _mcSaveT = null
+function mcSave() {
+  if (mcReadOnly.value) return
+  clearTimeout(_mcSaveT)
+  _mcSaveT = setTimeout(async () => {
+    if (!api?.modcod?.save) return
+    const payload = mcStds.value.map((s) => {
+      const o = {}
+      for (const k of MC_STORE_KEYS) o[k] = k === 'rows' ? s.rows.map((r) => ({ ...r, id: undefined })) : s[k]
+      return o
+    })
+    const r = await api.modcod.save(payload)
+    if (!r || !r.ok) { flash('MODCOD 保存失败：' + ((r && r.error) || '未知错误')); return }
+    // 只回填「改过没有」这一位：整份回填会在用户还在键入时把「1.」这类中间态归一掉
+    for (const s of r.standards || []) { const l = mcStds.value.find((x) => x.key === s.key); if (l) l.modified = s.modified }
+  }, 260)
+}
+
+/* ---- 撤销 / 重做：整库快照（六张表合起来也就几百行，够小）---- */
+const mcUndoStack = [], mcRedoStack = []
+const mcSnap = () => JSON.stringify(mcStds.value)
+const mcApply = (s) => { mcStds.value = JSON.parse(s); if (!mcStds.value.some((x) => x.key === mcSel.value)) mcSel.value = mcStds.value[0]?.key || '' }
+function mcPushUndo() { mcUndoStack.push(mcSnap()); if (mcUndoStack.length > 100) mcUndoStack.shift(); mcRedoStack.length = 0 }
+function mcDropUndo() { mcUndoStack.pop() }
+function mcUndo() { if (!mcUndoStack.length) return false; mcRedoStack.push(mcSnap()); mcApply(mcUndoStack.pop()); mcSave(); return true }
+function mcRedo() { if (!mcRedoStack.length) return false; mcUndoStack.push(mcSnap()); mcApply(mcRedoStack.pop()); mcSave(); return true }
+
+/* ---- 剪贴板：制表符 > 逗号 > 整行一格。★不退回「按空白切」——
+   MODCOD 名恒含空格（'QPSK 3/4'、'MCS0  QPSK  120/1024'），按空白切会把一个名字拆成三格。 ---- */
+const mcSplit = (t) => (t.includes('\t') ? t.split('\t') : (t.includes(',') ? t.split(',') : [t])).map((x) => x.trim())
+const mcLines = (t) => String(t || '').split(/\r?\n/).filter((l) => l.trim() !== '')
+function mcPasteBlock(anchorId, startKey, text) {
+  const cur = mcCur.value; if (!cur) return 0
+  const grid = mcLines(text).map(mcSplit); if (!grid.length) return 0
+  const c0 = Math.max(0, MODCOD_COLS.findIndex((c) => c.key === startKey))
+  let idx = anchorId ? cur.rows.findIndex((r) => r.id === anchorId) : cur.rows.length
+  if (idx < 0) idx = cur.rows.length
+  for (const cells of grid) {
+    if (idx >= cur.rows.length) cur.rows.push(emptyRow(cur.rows[cur.rows.length - 1], mcNewRowId()))
+    const row = cur.rows[idx]
+    cells.forEach((v, i) => { const c = MODCOD_COLS[c0 + i]; if (c) setCell(row, c.key, v) })
+    idx++
+  }
+  return grid.length
+}
+function mcPasteAppend(text) {
+  const cur = mcCur.value; if (!cur) return 0
+  const grid = mcLines(text).map(mcSplit); if (!grid.length) return 0
+  for (const cells of grid) {
+    const row = emptyRow(cur.rows[cur.rows.length - 1], mcNewRowId())
+    cells.forEach((v, i) => { const c = MODCOD_COLS[i]; if (c) setCell(row, c.key, v) })
+    cur.rows.push(row)
+  }
+  return grid.length
+}
+
+// 网格列＝带枚举 options 的那份：调制方式与门限口径只能从列表里挑。
+// used 把「本表已用到的调制方式」并进候选，否则用 M 现造出来的档（如 1024QAM）会从它自己那格的下拉里消失。
+const MC_GRID_COLS = modcodGridCols(() => mcRows().map((r) => r.modulation))
+const mcGrid = useGridSelect({
+  gridId: 'mc',
+  rows: mcRows,
+  cols: () => MC_GRID_COLS,
+  cellText: mcCellText,
+  // 编辑框里显示的原文＝屏上显示的那一串：门限口径列存的是 'esno'，双击进编辑却蹦出个内部值
+  // 就没法照着改了。setCell 那头两种写法都认，故所见即所改。
+  cellRaw: mcCellText,
+  onEdit: (id, key, val) => { const r = mcRows().find((x) => x.id === id); if (r) setCell(r, key, val) },
+  onClear: (cells) => cells.forEach(({ rowId, key }) => { const r = mcRows().find((x) => x.id === rowId); if (r) setCell(r, key, '') }),
+  onPasteBlock: mcPasteBlock,
+  onPasteAppend: mcPasteAppend,
+  onInsertRows: (at, n) => {
+    const cur = mcCur.value; if (!cur) return 0
+    for (let k = 0; k < n; k++) cur.rows.splice(at + k, 0, emptyRow(cur.rows[Math.max(0, at - 1)], mcNewRowId()))
+    return n
+  },
+  onDeleteRows: (ids) => {
+    const cur = mcCur.value; if (!cur) return 0
+    const s = new Set(ids), before = cur.rows.length
+    cur.rows = cur.rows.filter((r) => !s.has(r.id))
+    return before - cur.rows.length
+  },
+  pushUndo: mcPushUndo, dropUndo: mcDropUndo, refresh: mcSave, undo: mcUndo, redo: mcRedo
+})
+function mcAddRow() {
+  const cur = mcCur.value; if (!cur) return
+  mcPushUndo(); cur.rows.push(emptyRow(cur.rows[cur.rows.length - 1], mcNewRowId())); mcSave()
+}
+
+/* ---- 标准的增 / 删 / 改名 / 恢复默认 ---- */
+// 自建标准的 key 与主进程同一套（usr: + 最小空号）；主进程仍会兜底去重
+function mcNewKey() {
+  const taken = new Set(mcStds.value.map((s) => s.key))
+  let n = 1
+  while (taken.has('usr:' + n)) n++
+  return 'usr:' + n
+}
+function mcUniqLabel(base) {
+  const taken = new Set(mcStds.value.map((s) => s.label))
+  if (!taken.has(base)) return base
+  let k = 2
+  while (taken.has(base + ' ' + k)) k++
+  return base + ' ' + k
+}
+function mcAddStd() {
+  mcPushUndo()
+  const s = { key: mcNewKey(), label: mcUniqLabel('自定义标准'), builtin: false, modified: false, rows: [] }
+  mcStds.value.push(s); mcSel.value = s.key
+  mcSave(); mcRename(s)
+}
+async function mcRemoveStd(s) {
+  if (!s || s.builtin) return
+  if (!(await ask(`删除标准「${s.label}」（${s.rows.length} 条 MODCOD）？已引用它的载波配置会失去这一档快选，配置里已填好的值不受影响。`))) return
+  mcPushUndo()
+  mcStds.value = mcStds.value.filter((x) => x.key !== s.key)
+  if (mcSel.value === s.key) mcSel.value = mcStds.value[0]?.key || ''
+  mcSave(); flash(`已删除标准「${s.label}」`)
+}
+async function mcResetStd(s) {
+  if (!s || !s.builtin || !s.modified) return
+  if (!(await ask(`把「${s.label}」恢复为软件内置的出厂表？本标准下的改动将全部丢弃。`))) return
+  const r = api?.modcod?.reset ? await api.modcod.reset(s.key) : null
+  if (!r || !r.ok) { flash('恢复失败：' + ((r && r.error) || '未知错误')); return }
+  mcUndoStack.length = 0; mcRedoStack.length = 0
+  await loadModcod(); flash(`已恢复「${s.label}」的出厂表`)
+}
+// 标准改名：内置标准也允许（存的是 key，改名不影响已存配置的引用）
+const mcEdit = ref('')
+const mcVal = ref('')
+const mcInputEl = ref(null)
+const setMcInput = (el) => { mcInputEl.value = el }
+function mcRename(s) { mcEdit.value = s.key; mcVal.value = s.label; nextTick(() => { const el = mcInputEl.value; if (el) { el.focus(); el.select() } }) }
+function mcCancelRename() { mcEdit.value = ''; mcVal.value = '' }
+function mcCommitRename() {
+  const s = mcStds.value.find((x) => x.key === mcEdit.value)
+  const nm = mcVal.value.trim()
+  mcEdit.value = ''
+  if (!s || !nm || nm === s.label) return
+  if (mcStds.value.some((x) => x !== s && x.label === nm)) { flash(`已有名为「${nm}」的标准`); return }
+  mcPushUndo(); s.label = nm; mcSave()
+}
+
+/* ---- 调制方式：按「制式族 + 星座阶数 M」现造一个（挂在枚举下拉的底部插槽里）----
+   内置那 11 项覆盖不到用户自家的体制（如 1024QAM），但「随便打一串字」又是最坏的出路：
+   调制因子查不到就静默按 2 bit/符号算。故给一条受约束的生成路径 —— 族只有三个、
+   M 必须是该族允许的 2 的整数次幂，两条都满足才给「用」。 */
+const mcGenFam = ref('psk')
+const mcGenOrder = ref('4')
+const mcGenName = computed(() => composeModulation(mcGenFam.value, Number(mcGenOrder.value)))
+const mcGenBits = computed(() => modFactorOf(mcGenName.value))
+const mcGenRange = computed(() => { const o = ordersOf(mcGenFam.value); return o[0] + '–' + o[o.length - 1] })
+const mcGenBad = computed(() => !isValidOrderFor(mcGenFam.value, Number(mcGenOrder.value)))
+// 打开下拉时按该格现有的值把族与 M 摆好（改一个已有档时不必从头选）
+watch(() => mcGrid.pick.open, (on) => {
+  if (!on || mcGrid.pick.ri < 0 || mcGrid.pick.ci < 0) return   // ★ 不能写 !pick.ri：第 1 行的下标就是 0
+  const col = MC_GRID_COLS[mcGrid.pick.ci]
+  if (!col || col.key !== 'modulation') return
+  const row = mcRows()[mcGrid.pick.ri]
+  const p = row ? parseModulation(row.modulation) : null
+  if (p) { mcGenFam.value = p.family; mcGenOrder.value = String(p.order) }
+})
+function mcSetGenFam(k) {
+  mcGenFam.value = k
+  // 换族后原来的 M 可能不在新族的范围里（8 对 APSK 就不成立），钳到最近的合法档
+  const o = ordersOf(k), cur = Number(mcGenOrder.value)
+  if (!o.includes(cur)) mcGenOrder.value = String(o.reduce((b, x) => (Math.abs(x - cur) < Math.abs(b - cur) ? x : b), o[0]))
+}
+
+/* ---- 整库 ⇄ Excel ---- */
+async function mcExport() {
+  if (!mcStds.value.length) return
+  const r = await exportSheets({
+    defaultName: modcodFileName(), title: '导出 MODCOD 表',
+    style: 'report', sheets: modcodSheets(mcStds.value)
+  })
+  if (r && r.canceled) return
+  if (r && r.ok) flash('已导出：' + r.filePath)
+  else flash('导出失败：' + ((r && r.error) || '未知错误'))
+}
+async function mcImport() {
+  if (mcReadOnly.value) { flash('MODCOD 库文件损坏，导入已取消'); return }
+  const r = await importWorkbook({ title: '导入 MODCOD 表' })
+  if (!r || r.canceled) return
+  if (!r.ok) { flash('导入失败：' + (r.error || '未知错误')); return }
+  const incoming = standardsFromSheets(r.sheets)
+  if (!incoming.length) { flash('这份工作簿里没读到 MODCOD 数据'); return }
+  // 按标准名对号入座：对得上的整表替换，对不上的新建为自定义标准。
+  // ★ 两把尺子都要试 —— Excel 的表名不许超 31 字符、不许带 `: \ / ? * [ ]`，故长名/带这些字符的
+  //   自定义标准导出时表名必被改写。只比字面量的话，「导出→原样导回」会凭空多出一个重名标准而不是
+  //   覆盖原来那个。第二把尺子 modcodSheetNames 预演一遍导出名，把改写过的名字认回原标准。
+  const byExportName = modcodSheetNames(mcStds.value)
+  const hit = [], add = [], taken = new Set()
+  for (const it of incoming) {
+    let t = mcStds.value.find((s) => s.label === it.name) || byExportName.get(it.name) || null
+    if (t && taken.has(t.key)) t = null   // 一份工作簿里两张表指向同一个标准：只认第一张，其余当新建
+    if (t) { taken.add(t.key); hit.push({ target: t, rows: it.rows }) } else add.push(it)
+  }
+  const parts = []
+  if (hit.length) parts.push(`覆盖 ${hit.length} 个已有标准（${hit.map((h) => h.target.label).join('、')}）`)
+  if (add.length) parts.push(`新建 ${add.length} 个自定义标准（${add.map((a) => a.name).join('、')}）`)
+  if (!(await ask(`将${parts.join('，')}。继续？`))) return
+  mcPushUndo()
+  for (const h of hit) h.target.rows = h.rows.map((x) => ({ ...x, id: mcNewRowId() }))
+  for (const a of add) {
+    mcStds.value.push({ key: mcNewKey(), label: mcUniqLabel(a.name || '导入标准'), builtin: false, modified: false, rows: a.rows.map((x) => ({ ...x, id: mcNewRowId() })) })
+  }
+  if (add.length) mcSel.value = mcStds.value[mcStds.value.length - 1].key
+  else if (hit.length) mcSel.value = hit[0].target.key
+  mcSave()
+  const bad = rejectedModulations(incoming)
+  const tail = bad.length ? `；${bad.length} 种调制方式不认得，相关行已跳过：${bad.slice(0, 3).join('、')}${bad.length > 3 ? ' …' : ''}` : ''
+  flash(`已导入：${hit.length} 个覆盖 · ${add.length} 个新建 · 共 ${incoming.reduce((n, s) => n + s.rows.length, 0)} 条 MODCOD${tail}`)
+}
+
 const fpMiniDeviceId = ref('')
 onMounted(() => {
-  loadOmm(); loadCustomGroups(); loadCustomConsts(); loadGxt(); loadPreset(); loadFreqPlans()
+  loadOmm(); loadCustomGroups(); loadCustomConsts(); loadGxt(); loadPreset(); loadFreqPlans(); loadModcod()
   // 「发送到小程序」的凭证与本机ID（缺凭证时按钮仍在，点开即说明原因，不静默失效）
   api?.share?.configured?.().then((v) => { fpMiniConfigured.value = !!v }).catch(() => {})
   api?.app?.deviceId?.().then((v) => { fpMiniDeviceId.value = String(v || '') }).catch(() => {})
@@ -616,10 +867,11 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
           <button class="rb" :class="{ on: tab === 'omm' }" @click="tab = 'omm'">轨道星历</button>
           <button class="rb" :class="{ on: tab === 'grd' }" @click="tab = 'grd'">天线方向图</button>
           <button class="rb" :class="{ on: tab === 'freqplan' }" @click="tab = 'freqplan'">频率计划</button>
+          <button class="rb" :class="{ on: tab === 'modcod' }" @click="tab = 'modcod'">MODCOD 表</button>
           <button class="rb" :class="{ on: tab === 'gxt' }" @click="tab = 'gxt'">GXT/KML 管理</button>
         </nav>
 
-        <div class="pane">
+        <div class="pane" :class="{ fill: tab === 'modcod' }">
           <!-- ① OMM -->
           <section v-if="tab === 'omm'">
             <!-- 自定义卫星：逐条配置，各自导出/删除。自建星座(场景历元，只读镜像) + 导入组(文件历元) -->
@@ -775,6 +1027,57 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
             </div>
           </section>
 
+          <!-- ④ MODCOD 表（调制编码标准库）-->
+          <section v-else-if="tab === 'modcod'" class="mcsec">
+            <div class="addbar">
+              <button class="mini imp" @click="mcAddStd"><Icon name="plus" :size="12" /> 新建标准</button>
+              <span class="spacer"></span>
+              <button class="mini ghost" title="一个标准一张工作表，表名即标准名：名字对得上的整表替换，对不上的新建为自定义标准" @click="mcImport"><Icon name="import" :size="12" /> 导入 Excel…</button>
+              <button class="mini ghost" :disabled="!mcStds.length" @click="mcExport">导出 Excel</button>
+            </div>
+
+            <div class="mctabs">
+              <button v-for="s in mcStds" :key="s.key" class="mctab" :class="{ on: s.key === mcSel }"
+                      :title="s.rows.length + ' 条 MODCOD'" @click="mcSel = s.key">
+                <span data-i18n-skip>{{ s.label }}</span><i class="mcn">{{ s.rows.length }}</i>
+                <em v-if="s.modified" class="mcmod" title="已改写"></em>
+              </button>
+            </div>
+
+            <div v-if="!mcCur" class="empty-hint">还没有标准。</div>
+            <template v-else>
+              <div class="mcbar">
+                <input v-if="mcEdit === mcCur.key" class="ci wide" :ref="setMcInput" v-model="mcVal"
+                       @keydown.enter="mcCommitRename" @keydown.esc="mcCancelRename" @blur="mcCommitRename" />
+                <template v-else>
+                  <span class="mcname rn" title="点击改名" data-i18n-skip @click="mcRename(mcCur)">{{ mcCur.label }}</span>
+                  <span v-if="mcCur.builtin" class="badge">内置</span>
+                </template>
+                <span class="spacer"></span>
+                <button v-if="mcCur.builtin" class="mini ghost" :disabled="!mcCur.modified" @click="mcResetStd(mcCur)">恢复默认</button>
+                <button v-else class="mini del" @click="mcRemoveStd(mcCur)">删除标准</button>
+              </div>
+              <ExcelGrid class="mcgrid" :grid="mcGrid" :cols="MC_GRID_COLS" :text="mcCellText" :cell-tip="mcCellTip"
+                         :head-tip="(c) => c.tip || c.label" empty-text="还没有 MODCOD。"
+                         add-label="添加 MODCOD" del-label="删除所选行" @add="mcAddRow">
+                <template #pick-foot="{ col, apply }">
+                  <div v-if="col && col.key === 'modulation'" class="mcgen">
+                    <div class="mcgen-r">
+                      <button v-for="f in MOD_FAMILIES" :key="f.key" type="button" class="mcgen-f"
+                              :class="{ on: mcGenFam === f.key }" @click="mcSetGenFam(f.key)">{{ f.label }}</button>
+                    </div>
+                    <div class="mcgen-r">
+                      <label class="mcgen-m">M<input class="ci" v-model="mcGenOrder" @keydown.enter="mcGenName && apply(mcGenName)" /></label>
+                      <span v-if="mcGenBad" class="mcgen-o bad">须为 {{ mcGenRange }} 内 2 的整数次幂</span>
+                      <span v-else class="mcgen-o">{{ mcGenName }} · {{ mcGenBits }} bit/符号</span>
+                      <button type="button" class="mini imp" :disabled="mcGenBad" @click="apply(mcGenName)">用</button>
+                    </div>
+                  </div>
+                </template>
+              </ExcelGrid>
+            </template>
+          </section>
+
           <!-- ③ GXT -->
           <section v-else-if="tab === 'gxt'">
 
@@ -860,7 +1163,7 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
 
 <style scoped>
 .mask { position: fixed; inset: 0; z-index: 2000; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; }
-.dlg { position: relative; width: 860px; max-width: calc(100vw - 32px); height: 620px; max-height: calc(100vh - 64px); display: flex; flex-direction: column;
+.dlg { position: relative; width: 980px; max-width: calc(100vw - 32px); height: 680px; max-height: calc(100vh - 64px); display: flex; flex-direction: column;
   background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-ctl); box-shadow: var(--shadow-3); overflow: hidden; }
 .dhd { display: flex; align-items: stretch; justify-content: space-between; border-bottom: 1px solid var(--border); }
 .dt { font-family: var(--font-serif); font-size: var(--fs-5); padding: 11px 16px; align-self: center; }
@@ -967,4 +1270,32 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
 .cops .mini { margin-left: 4px; height: var(--h-ctl); white-space: nowrap; padding: 0 9px; }
 .cro { font-size: var(--fs-2); color: var(--text-faint); opacity: .8; margin-left: 6px; }
 .cempty { padding: 12px 4px; font-size: var(--fs-3); color: var(--text-faint); line-height: 1.6; }
+/* MODCOD 表：标准页签在上、网格吃掉剩余高度（整页不滚，只网格自己滚——60 行的 S2X 表若跟着整页滚，
+   列头一滚就没了）。故这一页的 .pane 关掉溢出，由 .mcsec 撑满并把高度让给网格。 */
+.pane.fill { overflow: hidden; }
+.mcsec { height: 100%; display: flex; flex-direction: column; min-height: 0; }
+.mctabs { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 10px; flex: none; }
+.mctab { display: inline-flex; align-items: center; gap: 5px; padding: 0 10px; height: var(--h-ctl); cursor: pointer;
+  background: var(--bg); border: 1px solid var(--border); color: var(--text-muted); border-radius: var(--r-ctl); font-size: var(--fs-3); }
+.mctab:hover { color: var(--text); border-color: var(--accent-ui); }
+.mctab.on { color: var(--text); border-color: var(--accent-ui); background: color-mix(in srgb, var(--accent-ui) 12%, transparent); }
+.mctab .mcn { font-style: normal; color: var(--text-faint); font-size: var(--fs-2); }
+.mctab .mcmod { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); }
+.mcbar { display: flex; align-items: center; gap: 8px; padding-bottom: 6px; margin-bottom: 8px; border-bottom: 1px solid var(--border); flex: none; }
+.mcbar .mini { margin-left: 0; }
+.mcname { font-size: var(--fs-4); color: var(--text); font-weight: 600; }
+.mcname.rn { cursor: pointer; }
+.mcname.rn:hover { color: var(--accent); }
+.mcgrid { flex: 1; min-height: 0; overflow: auto; outline: none; border: 1px solid var(--border); border-radius: var(--r-ctl); }
+/* 调制方式下拉底部的「按族 + 阶数现造」条（ExcelGrid 的 pick-foot 插槽，故不带 .mcgrid 前缀也进不到别处） */
+.mcgen { flex: none; border-top: 1px solid var(--border); padding: 6px 8px; display: flex; flex-direction: column; gap: 5px; }
+.mcgen-r { display: flex; align-items: center; gap: 5px; }
+.mcgen-f { flex: 1; padding: 2px 0; border: 1px solid var(--border); background: var(--bg); color: var(--text-muted);
+  border-radius: var(--r-ctl); font-size: var(--fs-2); cursor: pointer; }
+.mcgen-f.on { border-color: var(--accent-ui); color: var(--text); background: color-mix(in srgb, var(--accent-ui) 14%, transparent); }
+.mcgen-m { display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-2); color: var(--text-faint); flex: none; }
+.mcgen-m .ci { width: 56px; padding: 2px 6px; font-size: var(--fs-3); font-family: var(--font-mono); }
+.mcgen-o { flex: 1; min-width: 0; font-size: var(--fs-2); color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mcgen-o.bad { color: var(--warn); }
+.mcgen .mini { margin-left: 0; height: var(--h-ctl); padding: 0 10px; }
 </style>

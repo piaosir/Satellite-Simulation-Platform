@@ -9,6 +9,7 @@
 // 与用户自己导出来的是同一张；图表区关着（或这条链路画不出图）就没有图——没有就是没有。
 import { reactive } from 'vue'
 import { buildReportModel, buildInputDigest, calcBlock } from './lbReport.js'
+import { isUnitAdaptive } from './lbUnitMode.js'   // 结果显示单位档（功能区「单位」）：报告与屏幕同口径
 
 // 报告里图件的像素倍率。图上那个「出图」按钮用 4 倍，是因为它出的图不知道会被放到多大；
 // 报告里的图位是定死的（PDF 里限高 82 mm、Excel 里 460 px 宽），2 倍已合 550 dpi 以上，
@@ -77,6 +78,7 @@ export function useLbReport(o) {
       const cbOf = (l) => (o.calcFor ? calcBlock(Object.assign({}, calc, o.calcFor(l)), lang) : calcBlock(calc, lang))
       const model = buildReportModel({
         lang,
+        adaptUnits: isUnitAdaptive(),
         orbitType: o.orbitType,
         regenMode: o.regenMode ? o.regenMode() : 'uplink',
         doc: opts.doc,
