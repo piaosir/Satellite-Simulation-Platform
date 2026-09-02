@@ -26,6 +26,13 @@ const envField = require('./utils/envField.js');
 const linkSweep = require('./utils/linkSweep.js');
 const lbOutputDefs = require('./utils/lbOutputDefs.js');
 const modcodTables = require('./utils/modcodTables.js');
+// 应用场景仿真：介质目录 / 地面段物理层 / 能量账 / 模块库 / 图→链归约
+const sceneMedia = require('./utils/sceneMedia.js');
+const sceneTerrestrial = require('./utils/sceneTerrestrial.js');
+const sceneEnergy = require('./utils/sceneEnergy.js');
+const sceneLibrary = require('./utils/sceneLibrary.js');
+const sceneReduce = require('./utils/sceneReduce.js');
+const sceneTemplates = require('./utils/sceneTemplates.js');
 
 // 载波信号选项（调制 / FEC / DVB 标准 / 各 MODCOD 预设表），供载波信号面板的下拉与快选用。
 // store = 用户的 MODCOD 改写层（文件管理里编辑的那份，见 utils/modcodTables.js）；不传即纯内置表。
@@ -187,6 +194,25 @@ module.exports = {
   envFieldDefs: () => envField.FIELD_DEFS,
   sampleEnvField: envField.sampleField,
   envPointValue: envField.pointValue,
+  // ===== 应用场景仿真 =====
+  // 介质目录（三档判据 / 端口匹配 / 频段）：渲染端经 IPC 取一次缓存进 store，不另存镜像
+  sceneMedia,
+  // 地面段物理层单咽喉：光纤 / 铜缆 / 同轴中频 / 串行总线 / 电力线载波 / 地面无线 / 契约 / 供电
+  computeTerrestrialSegment: sceneTerrestrial.computeSegment,
+  sceneTerrestrial,
+  // 能量账（与 dB 账并列，绝不混算）：真太阳几何 + 离网定容
+  computeSceneEnergy: sceneEnergy.computeEnergy,
+  sceneEnergy,
+  // 模块库「内置 + 用户改写」合并层（改写层只存差异）
+  sceneLibrary,
+  // 图 → 链归约 + 端到端汇总（双向业务流各自成链）
+  sceneReduce,
+  sceneTemplates,
+  // 整场景计算：卫星段交给 linkChain，地面段交给 sceneTerrestrial，四本账并列汇总
+  computeScene: (scene, libStore, opts) => sceneReduce.computeScene(
+    scene, libStore, { chain: (c) => linkChain.computeLinkChain(c) }, opts
+  ),
+
   // 命名空间，便于按需取用其余导出
   geo,
   ngso,

@@ -30,6 +30,7 @@ import { vehicleCanvas } from '../vehicleSymbol.js'
 // 影像瓦片金字塔（EPSG:4326 / GIBS 网格）：网格数学与取片缓存，与 2D 平面图共用同一份
 import { TILE, span as tileSpan, tileBox, tileRange, pickZoom, getTile, isMissing, warm as warmTiles, tileGutter, tileImgSize } from '../imageryTiles.js'
 // 顶点级几何原语：与聚焦几何 Worker 共用同一份实现（别在这里再写一份）
+import { symbolCanvas as sceneSymbolCanvas } from '../scene/sceneSymbols.js'
 import { RE, LIFT, llaToVec, pushStripSegs, pushDashed, densifyArc, DASH_SPEC, FILL_R, FILL_CELL, slerpUnit, footprintFill, coneFace, createSink } from './focusLanes.js'
 
 
@@ -2814,6 +2815,115 @@ export function createGlobeScene(container, quality = {}) {
   }
   // points:[{id,lat,lon,label?,idx?,color?,shape?}]  stations:[{id,lat,lon,name?,color?,shape?}]
   // cfg：整层样式（可选，等价于先调 setMarkStyle）。逐条的颜色/形状由载荷带过来，缺省跟整层。
+  // ═══ 应用场景仿真 · 场景层 ═══
+  // 与 2D 平面图（flatCoverage.setScene）同一份数据、同一支画笔（viz/scene/sceneSymbols.js）。
+  // ★ 精灵贴图【同步】画在 canvas 上：走「SVG → Image → Texture」的话，出图/离屏只渲有限几帧，
+  //   贴图还没回来就已经渲完了，图标会整个不出现（载具图标踩过这个坑）。
+  let sceneGroup = null
+  const SC_TIER_HEX = { satellite: 0x3d7fbf, power: 0xc8c8c2, constraint: 0xc8c8c2, contract: 0xd8a73a, supply: 0x8a8a84 }
+  const GEO_R_KM = 42164.17 - RE      // 静止轨道离地高度（km）
+  function sceneSprite(symbol, px, color) {
+    const cv = sceneSymbolCanvas(symbol, 96, color || '#ffffff', 'rgba(6,11,18,0.82)')
+    const tex = new THREE.CanvasTexture(cv)
+    tex.colorSpace = THREE.SRGBColorSpace
+    const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, depthWrite: false, transparent: true }))
+    sp._px = px; sp._ar = 1; sp.renderOrder = 16
+    return sp
+  }
+  /**
+   * @param mods  [{ id, name, symbol, lat, lon, altM, cat, sel, color, satLonE, satAltKm }]
+   *              cat==='A' 的是卫星：GSO 按定点经度精确摆位；NGSO 没有历元定不出真位置，
+   *              故摆在它所连地面模块的平均点正上方（代表位，出参侧已如实标注）。
+   * @param links [{ aId, bId, tier, role, sel }]
+   */
+  function setScene(mods, links, cfg) {
+    disposeGroup(sceneGroup); sceneGroup = null
+    const c = cfg || {}
+    if (c.on === false) return
+    const g = new THREE.Group()
+    const iconPx = c.iconPx != null ? c.iconPx : 26
+    const fontPx = c.fontPx != null ? c.fontPx : 13
+    const ink = c.ink || '#ffffff'
+
+    // 位置解算：地面件用经纬度；卫星件按上面的口径
+    const list = mods || [], lk = links || []
+    const posOf = new Map()
+    for (const m of list) {
+      if (m.cat === 'A') continue
+      if (m.lat == null || m.lon == null) continue
+      posOf.set(m.id, llaToVec(m.lat, m.lon, LIFT))
+    }
+    for (const m of list) {
+      if (m.cat !== 'A') continue
+      if (m.satLonE != null) { posOf.set(m.id, llaToVec(0, m.satLonE, GEO_R_KM)); continue }
+      // NGSO：取所连地面件的平均方向 × 轨道高度
+      const peers = lk.filter((l) => l.aId === m.id || l.bId === m.id).map((l) => (l.aId === m.id ? l.bId : l.aId))
+      const vs = peers.map((p) => posOf.get(p)).filter(Boolean)
+      if (!vs.length) continue
+      const v = new THREE.Vector3()
+      for (const p of vs) v.add(p)
+      v.normalize().multiplyScalar((RE + (m.satAltKm || 900)) / RE)
+      posOf.set(m.id, v)
+    }
+
+    // 连线（粗线，按三档判据分档；备份边与契约边走虚线）
+    for (const l of lk) {
+      const a = posOf.get(l.aId), b = posOf.get(l.bId)
+      if (!a || !b) continue
+      const hex = l.sel ? 0x3d7fbf : (SC_TIER_HEX[l.tier] || 0xc8c8c2)
+      const w = l.tier === 'satellite' ? 2.0 : 1.4
+      // 同为地面件 → 沿球面走大圆（贴地读起来才是「地面这一段」）；有一端在天上 → 直线
+      const aGround = a.length() < 1.02, bGround = b.length() < 1.02
+      let vecs
+      if (aGround && bGround) {
+        const n = 40; vecs = []
+        for (let i = 0; i <= n; i++) vecs.push(slerpUnit(a.clone().normalize(), b.clone().normalize(), i / n).multiplyScalar(1 + LIFT / RE))
+      } else vecs = [a, b]
+      const dashed = l.tier === 'contract' || l.role === 'backup'
+      if (dashed) {
+        // 虚线：按弧长切段（与平台其余虚线同口径）
+        const flat = []
+        for (let i = 0; i + 1 < vecs.length || (vecs.length === 2 && i === 0); i++) {
+          const p = vecs[i], q = vecs[i + 1] || vecs[1]
+          if (!q) break
+          const segs = Math.max(2, Math.round(p.distanceTo(q) / 0.012))
+          for (let j = 0; j < segs; j += 2) {
+            const t0 = j / segs, t1 = Math.min(1, (j + 1) / segs)
+            const s0 = p.clone().lerp(q, t0), s1 = p.clone().lerp(q, t1)
+            flat.push(s0.x, s0.y, s0.z, s1.x, s1.y, s1.z)
+          }
+        }
+        if (flat.length) g.add(fatSegments(flat, hex, w, l.sel ? 1 : 0.85, 7))
+      } else {
+        g.add(fatStrip(vecs, hex, l.sel ? w + 0.8 : w, l.sel ? 1 : 0.9, 7))
+      }
+    }
+
+    // 模块符号 + 名称
+    for (const m of list) {
+      const pos = posOf.get(m.id)
+      if (!pos) continue
+      const sp = sceneSprite(m.symbol, iconPx * (m.sel ? 1.18 : 1), m.color || ink)
+      sp.position.copy(pos)
+      sp._dir = pos.clone().normalize()
+      if (c.opacity != null && c.opacity < 1) { sp._op = Math.max(0, c.opacity); sp.material.opacity = sp._op }
+      g.add(sp)
+      if (c.labels !== false && m.name) {
+        const isSat = m.cat === 'A'
+        // 卫星在天上，_dir 的半球剔除对它不适用（它本来就该跟着球转到背面才隐藏），
+        // labelSprite 按经纬度建点，故卫星名单独用一枚精灵贴在它自己的位置上
+        if (isSat) {
+          const t = labelSprite(m.name, 0, 0, c.labelColor || ink, 0.5 + 0.9, fontPx, 0, c.labelOpacity)
+          t.position.copy(pos); t._dir = pos.clone().normalize()
+          g.add(t)
+        } else {
+          g.add(labelSprite(m.name, m.lat, m.lon, c.labelColor || ink, 0.5 + (iconPx * 0.5 + fontPx * MK_FONT_K * 0.7) / fontPx, fontPx, 0, c.labelOpacity))
+        }
+      }
+    }
+    sceneGroup = g; scene.add(g)
+  }
+
   function setMarkers(points, stations, cfg) {
     if (cfg) setMarkStyle(cfg)
     const ptFont = markCfg.ptFont || 14, stIcon = markCfg.stIcon || 16, stFont = markCfg.stFont || 17
@@ -2982,7 +3092,7 @@ export function createGlobeScene(container, quality = {}) {
         if (o._px) { const dd = camera.position.distanceTo(o.position); const h = o._px * zoomK * (2 * dd * tanH) / curH; o.scale.set(h * (o._ar || 1), h, 1) }
       }
     }
-    go(markersGroup); go(trajGroup)   // 选中星在轨点已改合批点层，随缩放联动走 rescalePointLayers
+    go(markersGroup); go(trajGroup); go(sceneGroup)   // 选中星在轨点已改合批点层，随缩放联动走 rescalePointLayers
   }
   // 贴图点层随缩放联动：与原精灵同口径（基准 px × LABEL_REF_DIST/相机距离），上限 256px 防越过
   // gl_PointSize 的硬件天花板。高亮环刻意不联动（固定屏幕大小，拉远也认得出选中的是哪颗）。
@@ -3346,6 +3456,7 @@ export function createGlobeScene(container, quality = {}) {
     }),
     setPixelRatio, setRenderFps, setSphereDetail, setMapDetail, holdFrames,
     setMarkers, setTrajectories, setMarkStyle, setFocusSatLLA, setFocusStyle,
+    setScene,   // 应用场景仿真：模块 + 连线（与 2D 同一份数据、同一支画笔）
     // 布尔＝三类一起开关；对象＝逐类开关 { point, station, waypoint }（页面按「调整位置 / 调点」态给，
     // 每项 true / false / 归属 id，见 dragOk）
     setMarkerDrag: (v) => {

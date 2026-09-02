@@ -8,6 +8,7 @@ const createOmm = require('../services/omm')
 const createCustomSats = require('../services/customSats')
 const createInterference = require('../services/interference')
 const createModcod = require('../services/modcod')
+const createSceneLib = require('../services/sceneLib')
 const admBoundaries = require('../services/admBoundaries')
 
 // 注册所有 IPC 处理器。core 为返回引擎实例的函数（延迟解析）。
@@ -70,6 +71,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   const omm = createOmm(core)
   const customSats = createCustomSats(core)
   const modcod = createModcod()
+  const sceneLib = createSceneLib()
   // grd 传进去是给 NGSO 时变的「卫星发射方向图取 GRD 实测图」用的（见 resolveSatPattern）
   const interference = createInterference(omm, customSats, core, grd)
 
@@ -442,6 +444,42 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   ipcMain.handle('modcod:list', () => modcod.list())
   ipcMain.handle('modcod:save', (_e, standards) => modcod.save(standards || []))
   ipcMain.handle('modcod:reset', (_e, key) => modcod.reset(String(key == null ? '' : key)))
+
+  // ===== 应用场景仿真 =====
+  // 模块库（内置 + 用户改写，改写层只存差异）
+  ipcMain.handle('scene:libList', (_e, opt) => sceneLib.list(opt || {}))
+  ipcMain.handle('scene:libTree', () => sceneLib.tree())
+  ipcMain.handle('scene:libSave', (_e, modules) => sceneLib.save(modules || []))
+  ipcMain.handle('scene:libReset', (_e, id) => sceneLib.reset(String(id == null ? '' : id)))
+  ipcMain.handle('scene:libResetAll', () => sceneLib.resetAll())
+  // 介质目录 / 连接器 / 频段（静态，渲染端取一次缓存进 store，不另存镜像）
+  // ★ core 是【返回引擎实例的函数】（本文件顶部注释与其余一百多处 handler 同口径），
+  //   写成 core.xxx 拿到的是 undefined —— 表现为「模块库 0 条 + catalog 报 MEDIA of undefined」。
+  ipcMain.handle('scene:catalog', () => ({
+    media: core().sceneMedia.MEDIA, cats: core().sceneMedia.MEDIA_CATS,
+    connectors: core().sceneMedia.CONNECTORS, bands: core().sceneMedia.BANDS,
+    modCats: core().sceneLibrary.CATS, groups: core().sceneLibrary.GROUPS
+  }))
+  // 场景模板
+  ipcMain.handle('scene:templates', () => ({ list: core().sceneTemplates.listTemplates(), industries: core().sceneTemplates.industries() }))
+  ipcMain.handle('scene:template', (_e, id) => core().sceneTemplates.buildTemplate(String(id == null ? '' : id)))
+  // ★ 整场景计算：卫星段交给 linkChain、地面段交给 sceneTerrestrial、能量账另计。
+  //   模块库改写层在主进程侧取，渲染端不必传（少一次大对象结构化克隆）。
+  ipcMain.handle('scene:compute', (_e, payload) => {
+    const p = payload || {}
+    try { return { ok: true, result: core().computeScene(p.scene || {}, sceneLib.store(), p.opts || {}) } }
+    catch (err) { return { ok: false, error: err && err.message ? err.message : String(err) } }
+  })
+  // 单条地面段试算（检查器里改一个参数就重算这一段，不必整场景重跑）
+  ipcMain.handle('scene:segment', (_e, seg) => {
+    try { return { ok: true, result: core().computeTerrestrialSegment(seg || {}) } }
+    catch (err) { return { ok: false, error: err && err.message ? err.message : String(err) } }
+  })
+  // 单模块能量账
+  ipcMain.handle('scene:energy', (_e, spec) => {
+    try { return { ok: true, result: core().computeSceneEnergy(spec || {}) } }
+    catch (err) { return { ok: false, error: err && err.message ? err.message : String(err) } }
+  })
 
   // 打开「GEO 链路预算」独立工作台窗口（单例，由 main 注入创建函数）
   ipcMain.handle('linkbudget:open', gate(() => { if (openLinkBudget) openLinkBudget(); return true }))

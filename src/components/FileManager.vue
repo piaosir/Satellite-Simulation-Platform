@@ -16,6 +16,7 @@ import { logMsg } from '../stores/log'
 import Icon from './Icon.vue'
 import ExcelGrid from './ExcelGrid.vue'
 import MiniSendDialog from './MiniSendDialog.vue'
+import SceneLibEditor from './SceneLibEditor.vue'
 import { fpMiniItem } from '../shared/fpMiniExport.js'
 import { useGridSelect } from '../viz/grd/useGridSelect.js'
 import { exportSheets, importWorkbook } from '../shared/gridXlsx.js'
@@ -868,10 +869,11 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
           <button class="rb" :class="{ on: tab === 'grd' }" @click="tab = 'grd'">天线方向图</button>
           <button class="rb" :class="{ on: tab === 'freqplan' }" @click="tab = 'freqplan'">频率计划</button>
           <button class="rb" :class="{ on: tab === 'modcod' }" @click="tab = 'modcod'">MODCOD 表</button>
+          <button class="rb" :class="{ on: tab === 'scenelib' }" @click="tab = 'scenelib'">场景模块库</button>
           <button class="rb" :class="{ on: tab === 'gxt' }" @click="tab = 'gxt'">GXT/KML 管理</button>
         </nav>
 
-        <div class="pane" :class="{ fill: tab === 'modcod' }">
+        <div class="pane" :class="{ fill: tab === 'modcod' || tab === 'scenelib' }">
           <!-- ① OMM -->
           <section v-if="tab === 'omm'">
             <!-- 自定义卫星：逐条配置，各自导出/删除。自建星座(场景历元，只读镜像) + 导入组(文件历元) -->
@@ -1028,6 +1030,10 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
           </section>
 
           <!-- ④ MODCOD 表（调制编码标准库）-->
+          <section v-else-if="tab === 'scenelib'" class="mcsec">
+            <SceneLibEditor v-if="tab === 'scenelib'" />
+          </section>
+
           <section v-else-if="tab === 'modcod'" class="mcsec">
             <div class="addbar">
               <button class="mini imp" @click="mcAddStd"><Icon name="plus" :size="12" /> 新建标准</button>

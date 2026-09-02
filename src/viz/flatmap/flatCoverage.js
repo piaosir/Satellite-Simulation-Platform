@@ -17,6 +17,8 @@ import { paintMarkSymbol, symbolUp, symbolDown } from '../markers/markSymbols.js
 // 地球站符号：与 3D 球体共用同一份定义（原来两处各存一份逐字符相同的副本）
 import { stationSvg, STATION_ANCHOR_X, STATION_ANCHOR_Y } from '../stationSymbol.js'
 import { drawVehicle, flatHeading } from '../vehicleSymbol.js'
+// 应用场景仿真的模块符号（与 3D 球、拓扑图同一支画笔）
+import { drawSymbol as drawSceneSymbol } from '../scene/sceneSymbols.js'
 // 注记描边色/粗细随底色现算：与 3D 球体共用单一来源
 import { haloColor, haloScale, IMAGERY_HALO, IMAGERY_SCALE } from '../labelHalo.js'
 // 水域注记（大洋 + 海域）：与 3D 球体共用同一份表（../geo/waterNames.js）
@@ -983,6 +985,7 @@ export function createFlatCoverage(canvas) {
     //   末点是不是真到那儿）。载具图标＝当前位置，等同「本船符号」，更不能被底图地名盖住。
     //   线/圆点/图标必须同层：只提点不提线会把航迹切断、圆点却浮在字上，比整层压下去更怪。
     drawTrajLayer(iz, ST_ICON_K)
+    drawSceneLayer(iz, ST_ICON_K)   // 场景层与航迹同层序（地名之上）
     if (geom) {   // GXT 覆盖图标签（波束名/数值）：克制版联动 iz
       for (const l of (geom.labels || [])) drawText(l.text, l.lon, l.lat, Math.round((l.hpx || 0.03) * 533 * iz), l.color || '#fff')
     }
@@ -1123,6 +1126,101 @@ export function createFlatCoverage(canvas) {
   // （调用处在 drawAboveContent 的地名层之下方，理由见那里的注释）。仰角线/覆盖圈等仍留在
   // drawDataLines：那些是「场」的边界、性质近参考层，与国界同层合适；航迹是实体轨迹，不一样。
   // iz=克制版缩放联动、stIconK=图标尺寸律，均由调用处（drawAboveContent）传入，口径与那边一致。
+  // ═══ 应用场景仿真 · 场景层 ═══
+  // 与航迹同一层序（画在地名之上）：连线的连续性本身就是信息，被地名切断就读不出拓扑了。
+  // 数据由页面推入（setScene），几何一律用与标记层同一套 PX/PY 投影 —— 不另立一套。
+  let scLayer = { mods: [], links: [], cfg: {} }
+  const SC_TIER_COLOR = { satellite: '#3d7fbf', power: '#c8c8c2', constraint: '#c8c8c2', contract: '#d8a73a', supply: '#8a8a84' }
+  // ★ 场景符号走【点要素】的口径，不走地名那条「按底图明度分档」的口径 —— 两者不是一回事：
+  //   地名恒压在自己那块陆地上，故可以按陆色定深浅；场景模块（船、浮标、机巢、信关站）
+  //   哪儿都可能落，同一图上一半在陆一半在海，单挑一档必有一半读不出来。
+  //   平台自己的点要素（vehicleSymbol 的船机、stationSymbol 的地球站、地球站标注）一律是
+  //   「白面 + 深色套边」——套边把符号从任何底色里切出来，两种底都成立。这里随同一条。
+  const sceneInk = () => '#ffffff'
+  const sceneHalo = () => (imgOn ? IMAGERY_HALO : 'rgba(6,11,18,0.82)')
+  function drawSceneLayer(iz, stIconK) {
+    const cfg = scLayer.cfg || {}
+    if (cfg.on === false) return
+    const byId = new Map(scLayer.mods.map((m) => [m.id, m]))
+    const ink = cfg.ink || sceneInk()
+    const halo = cfg.case || sceneHalo()
+    // ① 连线（三档判据各一档画法，与拓扑图同一套颜色语言）
+    if (cfg.links !== false) {
+      const sa = ctx.globalAlpha
+      for (const l of scLayer.links) {
+        const a = byId.get(l.aId), b = byId.get(l.bId)
+        if (!a || !b) continue
+        const col = SC_TIER_COLOR[l.tier] || '#c8c8c2'
+        // ★ 一端定不出位置（NGSO 卫星没有历元就没有星下点）：不画一条假线，
+        //   而是从有位置那端向天顶画一段短标 + 对端名字 —— 「这条链在这里上天」是真的，
+        //   「它现在在天上哪个位置」不是本视图能说的。GEO 有星下点，由页面按定点经度给出。
+        const ga = a.lat != null && a.lon != null, gb = b.lat != null && b.lon != null
+        if (ga !== gb) {
+          const g = ga ? a : b, o = ga ? b : a
+          const x = PX(g.lon), y = PY(g.lat)
+          const len = 22 * iz * stIconK
+          ctx.save()
+          ctx.strokeStyle = col; ctx.lineWidth = 1.8; ctx.setLineDash([5, 4])
+          ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x, y - len); ctx.stroke()
+          ctx.setLineDash([])
+          ctx.restore()
+          if (cfg.labels !== false && o.name) {
+            drawText('↑ ' + o.name, g.lon, g.lat, 11 * iz * MK_FONT_K, ink,
+              { dy: -(len + 8 * iz), halo })
+          }
+          continue
+        }
+        if (!ga || !gb) continue
+        const w = l.tier === 'satellite' ? 2.2 : 1.5
+        const dash = l.tier === 'contract' ? [7, 5] : (l.role === 'backup' ? [6, 4] : null)
+        ctx.globalAlpha = sa * (l.sel ? 1 : 0.85)
+        drawPolyline([{ lat: a.lat, lon: a.lon }, { lat: b.lat, lon: b.lon }], l.sel ? '#3d7fbf' : col, l.sel ? w + 1 : w, false, dash)
+      }
+      ctx.globalAlpha = sa
+    }
+    // ② 模块符号
+    const si = (cfg.iconPx != null ? cfg.iconPx : 26) * iz * stIconK
+    const sa2 = ctx.globalAlpha
+    ctx.globalAlpha = sa2 * Math.max(0, Math.min(1, cfg.opacity != null ? cfg.opacity : 1))
+    for (const m of scLayer.mods) {
+      if (m.lat == null || m.lon == null) continue
+      const x = PX(m.lon), y = PY(m.lat)
+      if (m.sel) {
+        ctx.save(); ctx.strokeStyle = '#3d7fbf'; ctx.lineWidth = Math.max(1.2, si * 0.06)
+        ctx.beginPath(); ctx.arc(x, y, si * 0.62, 0, Math.PI * 2); ctx.stroke(); ctx.restore()
+      }
+      drawSceneSymbol(ctx, m.symbol, x, y, si, m.color || ink, 0, halo)
+    }
+    ctx.globalAlpha = sa2
+    // ③ 名称。★ 同一站址上常常摞着好几个模块（信关站与数据中心都在北京、机巢里的件都在一个点），
+    //    名字若都摆在同一位置就是一团糊 —— 按共址顺序逐条往下错开一行。
+    if (cfg.labels !== false) {
+      const nf = (cfg.fontPx != null ? cfg.fontPx : 13) * iz * MK_FONT_K
+      const seen = new Map()
+      for (const m of scLayer.mods) {
+        if (m.lat == null || m.lon == null || !m.name) continue
+        const k = m.lat.toFixed(3) + ',' + m.lon.toFixed(3)
+        const n = seen.get(k) || 0; seen.set(k, n + 1)
+        drawText(m.name, m.lon, m.lat, nf, cfg.labelColor || ink,
+          { dy: si * 0.56 + nf * 0.85 + n * nf * 1.22, halo })
+      }
+    }
+  }
+  /** 屏幕坐标 → 命中的场景模块 id（页面用来做选中与拖拽） */
+  function sceneHitAt(clientX, clientY, iz, stIconK) {
+    const r = canvas.getBoundingClientRect()
+    const sx = (clientX - r.left), sy = (clientY - r.top)
+    const si = ((scLayer.cfg && scLayer.cfg.iconPx != null ? scLayer.cfg.iconPx : 26) * (iz || 1) * (stIconK || 1))
+    let best = null
+    for (const m of scLayer.mods) {
+      if (m.lat == null || m.lon == null) continue
+      // PX/PY 出的是位图坐标（含 dpr），指针给的是 CSS 坐标 —— 换算到同一把尺再比
+      const d = Math.hypot(sx - PX(m.lon) / dpr, sy - PY(m.lat) / dpr)
+      if (d <= (si / dpr) * 0.62 && (!best || d < best.d)) best = { id: m.id, d }
+    }
+    return best ? best.id : null
+  }
+
   function drawTrajLayer(iz, stIconK) {
     // 线：颜色由页面逐条给（整层按航行/飞行两档，某条航迹可自带覆盖色），线粗/透明度/线型是整层设置
     const sa0 = ctx.globalAlpha
@@ -1763,6 +1861,12 @@ export function createFlatCoverage(canvas) {
     },
     setOnVertexDrag(fn) { onVertexDrag = fn },
     // 放置模式（波束合成）：左键点击落点；拖动仍平移
+    // 应用场景仿真：模块 + 连线（几何走与标记层同一套投影）
+    setScene(mods, links, cfg) {
+      scLayer = { mods: mods || [], links: links || [], cfg: cfg || {} }
+      requestDraw()
+    },
+    sceneHitAt,
     setPlaceMode(v) { placeMode = !!v; placeArmed = false; canvas.style.cursor = placeMode ? 'crosshair' : (polyDrawMode ? 'crosshair' : ((beamDragMode || labelDragMode) ? 'move' : 'grab')) },
     setOnPlace(fn) { onPlace = fn },
     // 框选模式（站点栅编辑）：左键拖矩形选站；开启期间不平移

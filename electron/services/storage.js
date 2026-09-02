@@ -59,8 +59,9 @@ function clearHistory() { write('history.json', []); return true }
 //   ① moveItem 会 filter+splice 重排【整份】数组 —— 某窗拖一下，另外四窗的条目顺序跟着动；
 //   ② mutate 是读-改-写，五个窗口能同时开着，后写的整份覆盖先写的（写盘窗口内的改动直接丢）。
 // 故按工作台拆成五份独立文件，各窗只读写自己那份，互不见面。
-const CFG_NS = ['geo', 'ngso', 'regen', 'e2e', 'rain']
-const NS_ORBIT = { geo: 'GEO', ngso: 'NGSO', regen: 'REGEN', e2e: 'E2E', rain: 'RAIN' }
+// 'scene' 是应用场景仿真的命名空间（第六个工作台，无历史配置需迁移）
+const CFG_NS = ['geo', 'ngso', 'regen', 'e2e', 'rain', 'scene']
+const NS_ORBIT = { geo: 'GEO', ngso: 'NGSO', regen: 'REGEN', e2e: 'E2E', rain: 'RAIN', scene: 'SCENE' }
 function cfgFile(ns) {
   // 未知命名空间宁可抛错：静默回退到某一份就是把 A 窗的配置写进 B 窗的库，比报错难查得多
   if (!CFG_NS.includes(ns)) throw new TypeError(`[storage] 未知的配置命名空间：${ns}`)

@@ -3,6 +3,20 @@ const { contextBridge, ipcRenderer } = require('electron')
 // 安全桥：渲染进程通过 window.api.* 调用主进程能力，不直接暴露 Node。
 contextBridge.exposeInMainWorld('api', {
   computeLink: (s, l) => ipcRenderer.invoke('link:compute', s, l),
+  // 应用场景仿真
+  scene: {
+    libList: (opt) => ipcRenderer.invoke('scene:libList', opt),
+    libTree: () => ipcRenderer.invoke('scene:libTree'),
+    libSave: (modules) => ipcRenderer.invoke('scene:libSave', modules),
+    libReset: (id) => ipcRenderer.invoke('scene:libReset', id),
+    libResetAll: () => ipcRenderer.invoke('scene:libResetAll'),
+    catalog: () => ipcRenderer.invoke('scene:catalog'),
+    templates: () => ipcRenderer.invoke('scene:templates'),
+    template: (id) => ipcRenderer.invoke('scene:template', id),
+    compute: (payload) => ipcRenderer.invoke('scene:compute', payload),
+    segment: (seg) => ipcRenderer.invoke('scene:segment', seg),
+    energy: (spec) => ipcRenderer.invoke('scene:energy', spec)
+  },
   computeLinkNGSO: (s, l) => ipcRenderer.invoke('link:computeNGSO', s, l),
   satelliteAngle: (lat, lon, satLon) => ipcRenderer.invoke('link:angle', lat, lon, satLon),
   linkBudget: {

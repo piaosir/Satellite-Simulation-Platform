@@ -51,6 +51,7 @@ const sideViews = computed(() => [
   { key: 'beams', label: '天线波束合成', icon: 'satellite-dish', disabled: !covNav.grdAvail, hint: '多馈源反射面 / 赋形反射面：设参数 → 点图放置轮廓 → 生成方向图天线' },
   { key: 'gxt', label: 'GXT/KML 显示', icon: 'waves', disabled: !covNav.covAvail, hint: 'GEO 卫星覆盖等值线：显示 GXT / KML 覆盖库里的波束' },
   { key: 'markers', label: '标记', icon: 'map-pin', disabled: !pageReady.value, hint: '点标记 / 地球站 / 轨迹' },
+  { key: 'scene', label: '应用场景仿真', icon: 'chain-hops', disabled: !pageReady.value, hint: '模块库 → 在图上组合成场景 → 拓扑图 → 端到端物理层分析（卫星段 + 地面段 + 能量账）' },
   { key: 'env', label: '环境场', icon: 'cloud-rain', disabled: !pageReady.value, hint: 'ITU-R 环境数据场：R0.01% 降雨率 / 0°C 等温线高度 / 雨高 / 海拔 / 水汽密度 / 云液态水（栅格 + 等值线）' },
   { key: 'envLive', label: '实时气象', icon: 'cloud-rain-live', disabled: !pageReady.value, hint: '实时与预报气象场（NCEP GFS 栅格 + 和风天气按点值）：降水强度 / 瞬时雨衰 / 气体吸收 / 合计衰减 / 云量 / 气温 / 湿度（随时间轴更新）' },
   { key: 'focus', label: '聚焦卫星', icon: 'crosshair', disabled: !pageReady.value, hint: '聚焦星画什么、怎么画：轨道线 / 星下点轨迹 / 覆盖圈（口径与填充）/ 覆盖锥 / 卫星标记' },

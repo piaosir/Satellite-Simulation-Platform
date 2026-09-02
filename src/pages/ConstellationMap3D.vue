@@ -8,6 +8,7 @@ import { effective as displayQuality } from '../stores/displayQuality'
 import { viewPrefs } from '../stores/viewPrefs'
 import { setGrdBridge, clearGrdBridge, fileBridge, bumpCustomSats } from '../stores/fileBridge'
 import { shellUi, sideCtx } from '../stores/shellUi'
+import { theme } from '../stores/theme'
 import { isSecOpen, toggleSec } from '../stores/panelSections'
 import { clock, onTick, goLive, togglePlay, setTime as clockSetTime, stepBy as clockStepBy, setStep as clockSetStep, setSpeed as clockSetSpeed, releaseClock, resumeClock, effective as clockEff, restoreState as clockRestore } from '../stores/simClock'
 import { STEP_PRESETS, SPEED_PRESETS, cursorSnapSec, followWindow, snapMs, fmtStepShort, fmtRate, fmtOffset } from '../shared/simClockCore.js'
@@ -57,6 +58,10 @@ import SatCovPanel from '../components/SatCovPanel.vue'
 import SatCovWindows from '../components/SatCovWindows.vue'
 import SatCovShellPicker from '../components/SatCovShellPicker.vue'
 import GrdSetSections from '../components/GrdSetSections.vue'
+// 应用场景仿真：侧栏面板 + 中央拓扑视图 + 场景数据（球体实例已占用 scene 这个名字，故改名导入）
+import ScenePanel from '../components/ScenePanel.vue'
+import SceneTopology from '../components/SceneTopology.vue'
+import { scene as sceneData, effective as sceneEffective, addModule as sceneAdd, moveModule as sceneMove, loadLibrary as sceneLoadLib } from '../viz/scene/sceneStore.js'
 import { useGridSelect } from '../viz/grd/useGridSelect.js'
 import { useCheckList } from '../shared/ui/useCheckList.js'
 import ExcelGrid from '../components/ExcelGrid.vue'
@@ -5342,6 +5347,9 @@ watch(() => shellUi.side, async (side) => {
   else if (vis.open.value) { vis.close(); commitGeometry() }
   // 环境场：进入只支面板，图层画不画看总开关（缺省关，之后记住上次的选择——百万点栅格不该因为点进来看一眼就取）；
   // 离开只收面板不撤图层（气象/地形是底图性质的背景，切走还得看得见）
+  // 应用场景仿真：进入即装模块库（一次）并把场景推给两个渲染器；离开撤掉图层（数据留着）
+  if (side === 'scene') { sceneLoadLib(); pushScene(); sceneApplyPlaceMode() }
+  else { pushScene(); sceneApplyPlaceMode() }
   if (side === 'env') env.openPanel()
   else if (env.open.value) env.close()
   // 实时气象：同上——进入只支面板，取数要花钱故必须用户点「取气象」，离开只收面板不撤图层
@@ -6089,6 +6097,93 @@ function markDragKinds() {
   }
 }
 // 仅把标记推送到两个视图（含聚焦卫星仰角），不写入持久化；供时间推进/选星刷新仰角调用
+// ═══ 应用场景仿真 · 把场景推给两个渲染器 ═══
+// 地理视图与拓扑图是同一份 sceneStore 的两个投影：这里只做「场景数据 → 渲染载荷」的投影，
+// 不存第二份数据。两个渲染器吃同一个载荷（viz/scene/sceneSymbols.js 是共用的那支画笔）。
+function scenePayload() {
+  const mods = [], links = []
+  const eff = new Map()
+  for (const inst of sceneData.modules) { const e = sceneEffective(inst); if (e) eff.set(inst.id, e) }
+  // 位置继承：挂载件取宿主坐标（与 core 的 resolveScene 同口径）
+  const posOf = (id) => {
+    let m = sceneData.modules.find((x) => x.id === id), d = 0
+    while (m && m.place && m.place.mode === 'mounted' && m.place.hostId && d++ < 8) m = sceneData.modules.find((x) => x.id === m.place.hostId)
+    return (m && m.place) || null
+  }
+  for (const inst of sceneData.modules) {
+    const e = eff.get(inst.id); if (!e) continue
+    const pl = posOf(inst.id) || {}
+    const sat = e.cat === 'A' ? (e.sat || {}) : null
+    mods.push({
+      id: inst.id, name: inst.name, symbol: e.symbol, cat: e.cat,
+      // ★ 2D 平面图上，静止星画在【星下点】（赤道 × 定点经度）——这是平面海图/航图的通行画法。
+      //   NGSO 没有历元就没有星下点，故留空：由渲染端画一段「↑ 卫星名」的上天短标，不编一个位置。
+      lat: sat && sat.orbitClass === 'GSO' && sat.orbitLongitude != null ? 0 : (pl.lat != null ? +pl.lat : null),
+      lon: sat && sat.orbitClass === 'GSO' && sat.orbitLongitude != null ? +sat.orbitLongitude : (pl.lon != null ? +pl.lon : null),
+      altM: pl.altM || 0,
+      sel: !!(sceneData.sel && sceneData.sel.type === 'module' && sceneData.sel.id === inst.id),
+      satLonE: sat && sat.orbitClass === 'GSO' && sat.orbitLongitude != null ? +sat.orbitLongitude : null,
+      satAltKm: sat && sat.orbitAltitude != null ? +sat.orbitAltitude : null
+    })
+  }
+  for (const l of sceneData.links) {
+    const med = (sceneData.catalog && (sceneData.catalog.media || []).find((m) => m.key === l.medium)) || null
+    links.push({
+      aId: l.a.modId, bId: l.b.modId, tier: med ? med.tier : 'power', role: l.role,
+      sel: !!(sceneData.sel && sceneData.sel.type === 'link' && sceneData.sel.id === l.id)
+    })
+  }
+  return { mods, links }
+}
+// 2D 与 3D 的样式载荷分开给：
+//   2D —— ★不给 ink / labelColor / case，交给 flatCoverage 按【底图明度】定档
+//         （浅纸底图上写白字对比度只有 1.1:1，等于没画；这条规矩与地名注记同源）；
+//   3D —— 球上没有「纸底」这回事，显式给一档跟主题走的墨色。
+function sceneStyleCfg2D() {
+  return { on: sceneData.showLayer && sideCtx() === 'scene', links: sceneData.showLinks, labels: sceneData.labels, iconPx: 26, fontPx: 13, opacity: 1 }
+}
+function sceneStyleCfg3D() {
+  const dark = theme.resolved === 'dark'
+  return {
+    on: sceneData.showLayer && sideCtx() === 'scene',
+    links: sceneData.showLinks, labels: sceneData.labels,
+    iconPx: 26, fontPx: 13, opacity: 1,
+    ink: dark ? '#e8e8e4' : '#ffffff',
+    labelColor: dark ? '#e8e8e4' : '#ffffff'
+  }
+}
+function pushScene() {
+  const { mods, links } = scenePayload()
+  if (scene && scene.setScene) scene.setScene(mods, links, sceneStyleCfg3D())
+  if (flat && flat.setScene) flat.setScene(mods, links, sceneStyleCfg2D())
+}
+// 放置：点图落点。★ 与波束合成共用 setPlaceMode/setOnPlace 两个闸，故先判归属再动
+function sceneApplyPlaceMode() {
+  const on = sideCtx() === 'scene' && !!sceneData.placing
+  if (scene && scene.setPlaceMode) { scene.setOnPlace((ll) => scenePlaceAt(ll)); scene.setPlaceMode(on) }
+  if (flat && flat.setPlaceMode) { flat.setOnPlace((ll) => scenePlaceAt(ll)); flat.setPlaceMode(on) }
+}
+function scenePlaceAt(ll) {
+  if (!sceneData.placing || !ll) return
+  const m = sceneAdd(sceneData.placing, { mode: 'fixed', lat: +ll.lat.toFixed(4), lon: +ll.lon.toFixed(4), altM: 0 })
+  if (m) sceneData.sel = { type: 'module', id: m.id }
+  sceneData.placing = null
+  pushScene()
+}
+// 在图上定位某个模块（侧栏「定位」按钮）
+function sceneFocusModule(id) {
+  const m = sceneData.modules.find((x) => x.id === id)
+  const pl = m && m.place
+  if (!pl || pl.lat == null || pl.lon == null) return
+  sceneData.sel = { type: 'module', id }
+  if (!flatView.value && scene && scene.faceTo) scene.faceTo(pl.lat, pl.lon)
+  pushScene()
+}
+
+watch(() => [sceneData.modules, sceneData.links, sceneData.sel, sceneData.showLayer, sceneData.showLinks, sceneData.labels, theme.resolved],
+  () => { pushScene() }, { deep: true })
+watch(() => sceneData.placing, () => sceneApplyPlaceMode())
+
 function pushMarkers() {
   if (!scene) return
   const pts = markerPts(), sts = markerSts(), trs = markerTrs()
@@ -6933,6 +7028,9 @@ onBeforeUnmount(() => {
       <div class="stage-wrap">
         <div ref="el" class="stage"></div>
         <canvas v-show="flatView" ref="flatCanvas" class="flat"></canvas>
+
+        <!-- 应用场景仿真 · 拓扑图：中央视图第三档（与 3D 球 / 2D 地图并列切换，同一份场景的另一个投影） -->
+        <SceneTopology v-if="sideCtx() === 'scene' && sceneData.view === 'topo'" class="scene-topo" />
 
         <!-- 聚焦卫星图例：色条＝地图上实际那两根线（颜色/线型随「显示设置 · 聚焦卫星」走），3D / 2D 同步显示 -->
         <div v-if="selected && (focusStyle.fpOn || focusStyle.trkOn)" class="focus-legend">
@@ -8912,6 +9010,11 @@ onBeforeUnmount(() => {
         </div>
 
         <!-- 标记：点标记 / 地球站 / 轨迹（每节＝一层，样式整层可调 + 逐条可覆盖） -->
+        <!-- 应用场景仿真：模块库 → 场景树 → 检查器 → 结果 -->
+        <div v-show="shellUi.side === 'scene'" class="sview">
+          <ScenePanel v-if="shellUi.side === 'scene'" @focus-module="sceneFocusModule" />
+        </div>
+
         <div v-show="shellUi.side === 'markers'" class="sview">
         <div class="cov-side mk-side docked">
         <div class="sec" :class="{ hid: !showPtLayer }">
@@ -9999,6 +10102,9 @@ onBeforeUnmount(() => {
 /* 覆盖图：右侧停靠面板（挤压地球，独占右栏） */
 /* 右侧边栏：与「设置弹窗」一致——surface 底色、统一表头/分区内边距与标题字号 */
 .cov-side { width: 286px; flex: none; border-left: 1px solid var(--border-strong); background: var(--surface); overflow-y: auto; display: flex; flex-direction: column; font-size: var(--fs-3); }
+
+/* 应用场景仿真 · 拓扑图：盖在舞台上（地图与拓扑是同一份场景的两个投影，不并排显示） */
+.scene-topo { position: absolute; inset: 0; z-index: 4; background: var(--bg); }
 
 /* ===== 侧栏视图（Teleport 到 App.vue #side-view；活动栏切换，同屏只显示一个） ===== */
 .sview { display: flex; flex-direction: column; min-height: 0; }

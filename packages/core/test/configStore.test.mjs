@@ -47,7 +47,7 @@ const LEGACY = [
   eq(storage.listConfigs('rain').map((c) => c.id), ['w1'], '雨衰只收自己那批')
 
   // 归属之和 = 旧库全量：一条都不许在拆分中蒸发
-  const total = ['geo', 'ngso', 'regen', 'e2e', 'rain'].reduce((n, ns) => n + storage.listConfigs(ns).length, 0)
+  const total = ['geo', 'ngso', 'regen', 'e2e', 'rain', 'scene'].reduce((n, ns) => n + storage.listConfigs(ns).length, 0)
   eq(total, LEGACY.length, '拆分无损：五库条目数之和等于旧库')
 
   // 跨库的 parentId 必须清空，否则在新文件里是悬空引用
@@ -121,7 +121,8 @@ const LEGACY = [
 {
   const { dir, storage } = freshStore(LEGACY)
   const all = storage.listAllConfigs()
-  eq(all.map((g) => g.ns), ['geo', 'ngso', 'regen', 'e2e', 'rain'], '总览按固定顺序给出五个命名空间')
+  // 2026-09 新增 'scene'（应用场景仿真，第六个工作台）
+  eq(all.map((g) => g.ns), ['geo', 'ngso', 'regen', 'e2e', 'rain', 'scene'], '总览按固定顺序给出六个命名空间')
   eq(all.reduce((n, g) => n + g.items.length, 0), LEGACY.length, '总览覆盖全部条目')
   rmSync(dir, { recursive: true, force: true })
 }
