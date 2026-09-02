@@ -251,3 +251,6 @@ resources/imagery/
 # 旁路、「按族 + 星座阶数 M 现造一档」的插槽。数值口径与 Excel 往返由 modcodTables / modcodXlsx 两个
 # 测试管，台子只管交互。
 .mcharness/
+
+# 应用场景仿真验证台的截图产物（node/electron .sceneharness/shot.cjs 重生成，不进库）
+.sceneharness/shots/

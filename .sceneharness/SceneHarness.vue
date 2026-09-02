@@ -7,7 +7,7 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import ScenePanel from '../src/components/ScenePanel.vue'
 import SceneTopology from '../src/components/SceneTopology.vue'
-import { scene, loadLibrary, applyTemplate, compute } from '../src/viz/scene/sceneStore.js'
+import { scene, loadLibrary, applyTemplate, compute, effective } from '../src/viz/scene/sceneStore.js'
 import { drawSymbol, iconOf } from '../src/viz/scene/sceneSymbols.js'
 import { symbolSpec } from '../src/viz/scene/sceneSymbolMap.js'
 import { createFlatCoverage } from '../src/viz/flatmap/flatCoverage.js'
@@ -58,7 +58,7 @@ function pushToMap() {
     const e = eff(m); const pl = posOf(m.id)
     const sat = e && e.cat === 'A' ? (e.sat || {}) : null
     const geo = sat && sat.orbitClass === 'GSO' && sat.orbitLongitude != null
-    return { id: m.id, name: m.name, symbol: e ? e.id : '', cat: e ? e.cat : '',
+    return { id: m.id, name: m.name, symbol: e ? (e.kind === 'sat' ? e.symbol : e.id) : '', cat: e ? e.cat : '',
       lat: geo ? 0 : (pl.lat != null ? +pl.lat : null),
       lon: geo ? +sat.orbitLongitude : (pl.lon != null ? +pl.lon : null),
       sel: !!(scene.sel && scene.sel.type === 'module' && scene.sel.id === m.id) }
@@ -67,7 +67,9 @@ function pushToMap() {
     sel: !!(scene.sel && scene.sel.type === 'link' && scene.sel.id === l.id) }))
   flat.setScene(mods, links, { on: true, links: true, labels: true, iconPx: 26, fontPx: 13 })
 }
-const eff = (m) => { const b = (scene.lib || []).find((x) => x.id === m.libId); return b || null }
+// ★ 走 store 的 effective：卫星是 kind:'sat' 的实例、没有 libId，
+//   按 libId 查模块库只会拿到 null（表现为地图上卫星整个不出现）。
+const eff = (m) => effective(m)
 const tierOfKey = (k) => { const c = scene.catalog; const md = c && (c.media || []).find((x) => x.key === k); return md ? md.tier : 'power' }
 
 onMounted(async () => {
@@ -76,6 +78,10 @@ onMounted(async () => {
     await applyTemplate(tpl.value)
     await compute()
     flat = createFlatCoverage(mapCv.value)
+    // ★ 渲染器不会自己量尺寸：容器铺开之后要显式 resize 一次，否则画布是 0×0，
+    //   表现为「地图台整片空白」（与场景层无关，底图也不画）。
+    flat.resize()
+    window.addEventListener('resize', () => flat && flat.resize())
     pushToMap()
     return
   }
