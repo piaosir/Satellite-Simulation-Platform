@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld('api', {
     satPreset: (key) => ipcRenderer.invoke('scene:satPreset', key),
     templates: () => ipcRenderer.invoke('scene:templates'),
     template: (id) => ipcRenderer.invoke('scene:template', id),
+    blueprint: (id) => ipcRenderer.invoke('scene:blueprint', id),
     compute: (payload) => ipcRenderer.invoke('scene:compute', payload),
     segment: (seg) => ipcRenderer.invoke('scene:segment', seg),
     energy: (spec) => ipcRenderer.invoke('scene:energy', spec)

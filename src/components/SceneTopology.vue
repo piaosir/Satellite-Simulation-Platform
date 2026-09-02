@@ -12,7 +12,7 @@ import Icon from './Icon.vue'
 import {
   scene, effective, modById, mediaOf, tierOf, catLabel, linkReadings,
   addModule, addSatModule, removeModule, removeLink, addLink, addFlow, portsCompatible,
-  pushUndo, undo, redo, duplicateModule, lintIndex, autoCompute
+  pushUndo, undo, redo, duplicateModule, lintIndex, autoCompute, fillSlot
 } from '../viz/scene/sceneStore.js'
 import { layout, fallbackMeasure } from '../viz/scene/topoLayout.js'
 import { routeTopology, drawTopology, hitTest, palette, handlePoints } from '../viz/scene/topoRender.js'
@@ -54,7 +54,9 @@ const mods = computed(() => {
 })
 const model = computed(() => ({
   links: scene.links, flows: scene.flows, result: scene.result, sel: scene.sel, hover: hover.value,
-  mediaOf, tierOf, catLabel, readings: linkReadings, lint: lintIndex.value
+  mediaOf, tierOf, catLabel, readings: linkReadings, lint: lintIndex.value,
+  pendingOf: (id) => { const m = modById.value.get(id); return !!(m && m.pending) },
+  slotOf: (id) => { const m = modById.value.get(id); return m && m.slot ? m.slot.zh + ' · 未选型' : '' }
 }))
 const lay = computed(() => layout(
   { mods: mods.value, links: scene.links, flows: scene.result ? scene.result.flows : [] },
@@ -245,6 +247,19 @@ function onDrop(e) {
   e.preventDefault()
   const raw = e.dataTransfer.getData('text/scene-lib')
   if (!raw) return
+  // 拖到一张【占位卡】上 = 给这一槽落型号（按图施工的主路径），不是新建一个模块
+  const { sx: dx, sy: dy } = local(e)
+  const onNode = hitTest(lay.value, model.value, routed.value, view.value, dx, dy)
+  if (onNode && onNode.type === 'module') {
+    const t = modById.value.get(onNode.id)
+    if (t && t.pending && !raw.startsWith('sat:')) {
+      pushUndo('选型')
+      const r = fillSlot(onNode.id, raw)
+      if (r.dropped) say(`已换型，${r.dropped} 条边端口对不上已删`)
+      scene.sel = { type: 'module', id: onNode.id }
+      draw(); return
+    }
+  }
   pushUndo('放置模块')
   const m = raw.startsWith('sat:') ? addSatModule(raw.slice(4)) : addModule(raw, {})
   if (!m) return
@@ -383,7 +398,8 @@ function onMenu(k) {
   if (k === 'del') { pushUndo('删除'); h.type === 'link' ? removeLink(h.id) : removeModule(h.id); return }
   if (k === 'dup') { pushUndo('复制'); const m = duplicateModule(h.id); if (m) scene.sel = { type: 'module', id: m.id }; return }
   if (k === 'backup') { pushUndo('改链路角色'); const lk = scene.links.find((l) => l.id === h.id); if (lk) { lk.role = lk.role === 'backup' ? 'main' : 'backup'; scene.dirty = true } return }
-  if (k === 'flow') { flowFrom.value = h.id; say('再点一个模块作为业务流的另一端'); return }
+  // 状态而不是教学：只报「起点是谁」，两步手势的第二步由高亮与光标承担
+  if (k === 'flow') { flowFrom.value = h.id; say('业务流起点：' + ((modById.value.get(h.id) || {}).name || '')); return }
   if (k === 'map') { scene.view = 'map'; scene.placing = null; scene.sel = { type: 'module', id: h.id }; scene.editPos = true; return }
 }
 const flowFrom = ref('')
@@ -401,6 +417,12 @@ watch(() => scene.sel, (s) => {
   <div class="topo" ref="wrap" tabindex="0" @dragover="onDragOver" @drop="onDrop">
     <canvas ref="cv" @pointerdown="onDown" @pointermove="onMove" @pointerup="onUp" @pointercancel="onUp"
             @wheel="onWheel" @contextmenu="onContext"></canvas>
+    <!-- 按图施工的步进条：每档报「已选 / 共」。★ 只有状态，没有一句「请先选…」的教学文字 -->
+    <div v-if="scene.bpSteps.length" class="steps">
+      <span v-for="(s, i) in scene.bpSteps" :key="s.role" class="stp" :class="{ done: s.done >= s.n, cur: s.done < s.n && scene.bpSteps.slice(0, i).every((x) => x.done >= x.n) }">
+        <b>{{ i + 1 }}</b>{{ s.zh }}<em>{{ s.done }} / {{ s.n }}</em>
+      </span>
+    </div>
     <div class="tbar">
       <button class="tb" title="适应窗口" @click="touched = false; fit()"><Icon name="move" :size="13" /></button>
       <button class="tb" title="自动排版（清除手动微调）" @click="resetNudge"><Icon name="undo-2" :size="13" /></button>
@@ -436,6 +458,12 @@ watch(() => scene.sel, (s) => {
 .topo { position: relative; width: 100%; height: 100%; background: var(--bg); overflow: hidden; outline: none; }
 canvas { display: block; cursor: grab; touch-action: none; }
 canvas:active { cursor: grabbing; }
+.steps { position: absolute; top: 10px; left: 10px; display: flex; gap: 4px; flex-wrap: wrap; max-width: calc(100% - 190px); z-index: 3; }
+.stp { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border: 1px solid var(--border); background: var(--bg); color: var(--text-muted); font-size: var(--fs-2, 11px); border-radius: var(--r-pill, 9px); }
+.stp b { font-weight: 600; }
+.stp em { font-style: normal; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+.stp.done { border-color: var(--ok); color: var(--text); }
+.stp.cur { border-color: var(--accent-ui); color: var(--text); font-weight: 600; }
 .tbar { position: absolute; top: 10px; right: 10px; display: flex; gap: 4px; z-index: 2; }
 .tb { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; border: 1px solid var(--border-strong); background: var(--bg); color: var(--text); cursor: pointer; border-radius: var(--r-1, 2px); }
 .tb:hover { background: var(--surface); }

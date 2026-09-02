@@ -24,6 +24,7 @@ window.api = {
     satPreset: (key) => call('satPreset', { key }),
     templates: () => call('templates'),
     template: (id) => call('template', { id }),
+    blueprint: (id) => call('blueprint', { id }),
     compute: (p) => call('compute', p),
     segment: (seg) => call('segment', { seg }),
     energy: (spec) => call('energy', { spec })

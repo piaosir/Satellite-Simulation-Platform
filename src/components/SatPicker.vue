@@ -11,7 +11,7 @@
 // 取星逻辑走 shared/satPick.js（与端到端窗口共用一份）：同一颗星在两个窗口里必须解出同一条轨道。
 import { ref, computed, onMounted, watch } from 'vue'
 import Icon from './Icon.vue'
-import { scene, addSatEntry, addSatEntryFromRec, addSatModule, scheduleSatSave } from '../viz/scene/sceneStore.js'
+import { scene, addSatEntry, addSatEntryFromRec, addSatModule, scheduleSatSave, fillSatSlot, modById } from '../viz/scene/sceneStore.js'
 import { satBrief } from '../viz/scene/sceneSatLib.js'
 import { ensureSearchPool } from '../ngso/satSearchPool.js'
 import { searchPool } from '../shared/satPick.js'
@@ -75,7 +75,16 @@ const searchRows = computed(() => searchPool(pool.value, kw.value, 60, aliases.v
 watch(tab, (t) => { if (t !== 'lib') ensurePool() })
 
 // ── 建条目 + 加入场景 ──
+// 正在给一个【卫星槽】选型（按图施工）时，落进那一槽而不是新加一颗 ——
+// 骨架上那个位置已经画好、边也连着，再加一颗就成了两颗星。
+const satSlot = computed(() => {
+  const s = scene.sel
+  if (!s || s.type !== 'module') return null
+  const m = modById.value.get(s.id)
+  return m && m.pending && m.kind === 'sat' ? m : null
+})
 function place(entry) {
+  if (satSlot.value) { fillSatSlot(satSlot.value.id, entry.id); emit('close'); return }
   const m = addSatModule(entry.id)
   emit('added', m)
   emit('close')
@@ -123,7 +132,7 @@ const presets = computed(() => scene.satPresets || [])
   <div class="spk-mask" @click="emit('close')">
     <div class="spk" @click.stop>
       <div class="spk-hd">
-        <span class="spk-t">添加卫星</span>
+        <span class="spk-t">{{ satSlot ? '为「' + satSlot.name + '」选星' : '添加卫星' }}</span>
         <span class="spk-x" @click="emit('close')"><Icon name="x" :size="14" /></span>
       </div>
 
@@ -163,7 +172,6 @@ const presets = computed(() => scene.satPresets || [])
         <template v-else>
           <div v-if="loading" class="spk-empty">正在加载星历…</div>
           <div v-else-if="poolErr" class="spk-err">{{ poolErr }}</div>
-          <div v-else-if="!kw.trim()" class="spk-empty">输入名称或 NORAD 号。</div>
           <div v-else-if="!searchRows.length" class="spk-empty">无匹配卫星。</div>
           <div v-for="r in searchRows" :key="r.noradId" class="spk-row" @click="fromSearch(r)">
             <span class="spk-n" data-i18n-skip>

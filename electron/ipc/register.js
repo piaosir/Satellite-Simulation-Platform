@@ -467,6 +467,10 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   // 场景模板
   ipcMain.handle('scene:templates', () => ({ list: core().sceneTemplates.listTemplates(), industries: core().sceneTemplates.industries() }))
   ipcMain.handle('scene:template', (_e, id) => core().sceneTemplates.buildTemplate(String(id == null ? '' : id)))
+  // 「按图施工」的角色骨架：每个模块变成一张带角色与候选型号的占位卡（候选要读模块库，
+  //  故在主进程侧连改写层一起算好再送出去，渲染端不必再拿整份库过一遍）
+  ipcMain.handle('scene:blueprint', (_e, id) => core().sceneTemplates.blueprintOf(
+    String(id == null ? '' : id), core().sceneLibrary.listModules(sceneLib.store(), {})))
   // ★ 整场景计算：卫星段交给 linkChain、地面段交给 sceneTerrestrial、能量账另计。
   //   模块库改写层在主进程侧取，渲染端不必传（少一次大对象结构化克隆）。
   ipcMain.handle('scene:compute', (_e, payload) => {

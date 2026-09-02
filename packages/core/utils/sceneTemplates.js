@@ -458,6 +458,82 @@ const TEMPLATES = [
   }
 ];
 
+// ═══════════════════════════════════════════════════════════════════════════
+// 「按图施工」：模板 → 角色骨架
+// ═══════════════════════════════════════════════════════════════════════════
+// 一期模板是「整包套用」：双击一下，8 个模块连边带流全落下来 —— 对着改还行，
+// 但它没有回答「我这个项目该选哪一款终端」。二期把同一份模板拆成【骨架 + 逐槽选型】：
+// 每个模块变成一张【虚线占位卡】（角色 + 该角色能放什么 + 推荐型号），边与流照旧先连好，
+// 用户逐槽挑型号、挑完骨架消失。★ 不必先想坐标 —— 那是最后一步，不是第一步。
+//
+// ★ 骨架是从 build() 【推】出来的，不是另写一份 15 个模板的 blueprint：
+//   两份手写数据必然分叉，而「这一槽该放什么」本来就等于「模板在这里放了什么」。
+const ROLE_OF = {
+  A: { key: 'sat', zh: '卫星' },
+  B: { key: 'access', zh: '接入站' },
+  C: { key: 'veh', zh: '载体' },
+  D: { key: 'end', zh: '感知末端' },
+  E: { key: 'edge', zh: '汇聚与边缘' },
+  F: { key: 'rf', zh: '射频件' },
+  G: { key: 'power', zh: '供电' },
+  H: { key: 'core', zh: '中心平台' }
+};
+// 信关站 / 主站在 B 类里自成一档：它与终端是同一种设备，但在图上是另一个角色
+const roleOf = (mod) => {
+  if (!mod) return { key: 'end', zh: '感知末端' };
+  if (mod.cat === 'B' && mod.group === 'hub') return { key: 'hub', zh: '信关站' };
+  return ROLE_OF[mod.cat] || { key: 'end', zh: '感知末端' };
+};
+
+/**
+ * 模板 → 骨架。出参与 buildTemplate 同构（modules / links / flows 直接可用），
+ * 差别是每个模块带 slot 元信息且 pending:true —— 渲染端据此画成虚线占位卡。
+ * @param libList 模块库清单（sceneLibrary.listModules 的结果）：用来算每一槽的候选型号
+ */
+function blueprintOf(id, libList) {
+  const t = TEMPLATES.find((x) => x.id === id);
+  if (!t) return null;
+  const s = t.build();
+  const lib = libList || [];
+  const byId = new Map(lib.map((m) => [m.id, m]));
+  const modules = s.modules.map((m, i) => {
+    if (m.kind === 'sat') {
+      // 卫星槽：候选来自平台卫星库（渲染端那份），core 这里只给角色与预置 key
+      return Object.assign({}, m, {
+        pending: true,
+        slot: { key: 'slot' + i, role: 'sat', zh: '卫星', accept: { kind: 'sat' }, recommend: [], preset: m.preset }
+      });
+    }
+    const base = byId.get(m.libId) || null;
+    const r = roleOf(base);
+    // 候选＝同类同组的全部条目（同组是最贴的一档；同组只有它自己就放宽到同类）
+    let rec = lib.filter((x) => base && x.cat === base.cat && x.group === base.group).map((x) => x.id);
+    if (rec.length < 2 && base) rec = lib.filter((x) => x.cat === base.cat).map((x) => x.id);
+    return Object.assign({}, m, {
+      pending: true,
+      slot: {
+        key: 'slot' + i, role: r.key, zh: r.zh,
+        accept: { cats: base ? [base.cat] : [], group: base ? base.group : '' },
+        recommend: rec.slice(0, 40)
+      }
+    });
+  });
+  return { name: t.zh, tplId: t.id, industry: t.industry, hint: t.hint, modules, links: s.links, flows: s.flows };
+}
+
+/** 步进条：骨架里出现过的角色，按「末端 → 接入 → 卫星 → 信关 → 中心」的读图序 */
+const ROLE_ORDER = ['end', 'veh', 'rf', 'power', 'edge', 'access', 'sat', 'hub', 'core'];
+function blueprintSteps(bp) {
+  if (!bp) return [];
+  const seen = new Map();
+  for (const m of bp.modules || []) {
+    const r = (m.slot && m.slot.role) || 'end';
+    if (!seen.has(r)) seen.set(r, { role: r, zh: (m.slot && m.slot.zh) || r, n: 0 });
+    seen.get(r).n++;
+  }
+  return [...seen.values()].sort((a, b) => ROLE_ORDER.indexOf(a.role) - ROLE_ORDER.indexOf(b.role));
+}
+
 const listTemplates = () => TEMPLATES.map((t) => ({ id: t.id, zh: t.zh, industry: t.industry, tags: t.tags, hint: t.hint }));
 const industries = () => [...new Set(TEMPLATES.map((t) => t.industry))];
 function buildTemplate(id) {
@@ -467,4 +543,4 @@ function buildTemplate(id) {
   return { name: t.zh, tplId: t.id, industry: t.industry, hint: t.hint, modules: s.modules, links: s.links, flows: s.flows };
 }
 
-module.exports = { TEMPLATES, listTemplates, industries, buildTemplate };
+module.exports = { TEMPLATES, listTemplates, industries, buildTemplate, blueprintOf, blueprintSteps, roleOf, ROLE_ORDER };

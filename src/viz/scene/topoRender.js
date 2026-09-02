@@ -211,11 +211,17 @@ export function drawTopology(ctx, lay, model, routed, view, W, H, fontPx, opt) {
     const sel = model.sel && model.sel.type === 'module' && model.sel.id === n.id
     const hov = model.hover && model.hover.type === 'module' && model.hover.id === n.id
     const x = n.x - n.w / 2, y = n.y - n.h / 2
+    // ★ 按图施工的占位卡：虚线框 + 压暗 + 副标写角色。它是【带 pending 标记的真模块】，
+    //   照旧参与布局与路由 —— 骨架不另起一套渲染路径，「槽落定＝pending 消失」。
+    const pend = !!(model.pendingOf && model.pendingOf(n.id))
+    ctx.globalAlpha = pend ? 0.62 : 1
     ctx.fillStyle = P.bg
     roundRect(ctx, x, y, n.w, n.h, 5); ctx.fill()
-    ctx.strokeStyle = sel ? P.accent : (hov ? P.borderS : P.borderS)
+    ctx.strokeStyle = sel ? P.accent : P.borderS
     ctx.lineWidth = sel ? 2 : 1
+    if (pend) ctx.setLineDash([5, 4])
     roundRect(ctx, x, y, n.w, n.h, 5); ctx.stroke()
+    ctx.setLineDash([])
     // 类别色条（无彩，只用明度分档 —— 平台既定：颜色留给状态）
     ctx.fillStyle = m.cat === 'A' ? P.accent : (m.cat === 'H' ? P.text : P.borderS)
     ctx.fillRect(x, y + 1, 3, n.h - 2)
@@ -224,8 +230,9 @@ export function drawTopology(ctx, lay, model, routed, view, W, H, fontPx, opt) {
     const tw = n.w - SYM - 26
     ctx.font = `600 ${F}px ${fam}`; ctx.fillStyle = P.text
     ctx.fillText(clipText(ctx, m.name, tw), x + SYM + 18, n.y - 8)
-    ctx.font = `${F - 2}px ${fam}`; ctx.fillStyle = P.faint
-    ctx.fillText(clipText(ctx, nodeSub(m, model), tw), x + SYM + 18, n.y + 9)
+    ctx.font = `${F - 2}px ${fam}`; ctx.fillStyle = pend ? P.accent : P.faint
+    ctx.fillText(clipText(ctx, pend ? (model.slotOf(n.id) || '未选型') : nodeSub(m, model), tw), x + SYM + 18, n.y + 9)
+    ctx.globalAlpha = 1
     // 缺参数：右上角一个红点（只是点，不写字）
     if (model.lint && model.lint.has && model.lint.has(n.id)) {
       ctx.fillStyle = P.danger

@@ -42,6 +42,7 @@ function coreApi() {
             if (op === 'libResetAll') { store = null; return send(res, { ok: true, modules: L.listModules(null, { includeHidden: true }) }) }
             if (op === 'templates') return send(res, { list: T.listTemplates(), industries: T.industries() })
             if (op === 'template') return send(res, T.buildTemplate(p.id))
+            if (op === 'blueprint') return send(res, T.blueprintOf(p.id, L.listModules(store, {})))
             if (op === 'compute') return send(res, { ok: true, result: R.computeScene(p.scene || {}, store, { chain: (c) => C.computeLinkChain(c) }, p.opts || {}) })
             if (op === 'segment') return send(res, { ok: true, result: TE.computeSegment(p.seg || {}) })
             if (op === 'energy') return send(res, { ok: true, result: EN.computeEnergy(p.spec || {}) })

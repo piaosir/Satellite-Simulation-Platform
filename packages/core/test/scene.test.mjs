@@ -499,5 +499,36 @@ function sat0(d) { return d.segments.find((s) => s.kind === 'sat') }
 }
 
 
+/* ═══════ ⑪ 按图施工（角色骨架）═══════ */
+// 一期模板是「整包套用」，回答不了「我这个项目该选哪一款终端」。二期把同一份模板拆成
+// 骨架 + 逐槽选型。★ 骨架是从 build() 推出来的，不是另写一份 —— 这里锁住两者不分叉。
+{
+  const T = require('../utils/sceneTemplates.js')
+  const libList = LIB.listModules(null, {})
+  let bad = []
+  for (const t of T.listTemplates()) {
+    const built = T.buildTemplate(t.id)
+    const bp = T.blueprintOf(t.id, libList)
+    if (!bp) { bad.push(t.id + '(无骨架)'); continue }
+    if (bp.modules.length !== built.modules.length) { bad.push(t.id + '(槽数对不上)'); continue }
+    if (bp.links.length !== built.links.length) { bad.push(t.id + '(边数对不上)'); continue }
+    if (bp.modules.some((m) => !m.pending || !m.slot || !m.slot.role)) { bad.push(t.id + '(槽缺元信息)') }
+  }
+  ok('★ 15 个模板都推得出骨架，且槽 / 边与 build() 逐条对应', bad.length === 0, bad.slice(0, 3).join(' | '))
+
+  const bp = T.blueprintOf('tpl.power.dtu', libList)
+  const roles = bp.modules.map((m) => m.slot.role)
+  ok('骨架的角色按读图序排得出步进条', T.blueprintSteps(bp).map((s) => s.role).join('>') === 'end>access>sat>hub>core', roles.join('>'))
+  ok('信关站与终端虽同属 B 类，角色分得开', roles.filter((r) => r === 'hub').length === 1 && roles.filter((r) => r === 'access').length === 1)
+  const acc = bp.modules.find((m) => m.slot.role === 'hub').slot.accept
+  ok('★ 信关站槽带着分组（只按类过滤会把十几台终端列进「信关站」那一槽）', acc.group === 'hub', JSON.stringify(acc))
+  ok('每一槽都给得出候选型号', bp.modules.filter((m) => m.slot.role !== 'sat').every((m) => m.slot.recommend.length > 0))
+  ok('卫星槽走平台卫星库（候选不在模块库里）', bp.modules.find((m) => m.slot.role === 'sat').slot.accept.kind === 'sat')
+  // 骨架落下来就是可算的（占位卡先用推荐型号顶着，边与流才有端口可挂）
+  const r = RED.computeScene({ modules: bp.modules, links: bp.links, flows: bp.flows }, null, engines, { carrier: CARRIER })
+  ok('★ 骨架本身就算得出（占位卡带着推荐型号，边有端口可挂）', r.flows.length === 1 && r.flows[0].dirs.every((d) => d.ok), (r.errors[0] || ''))
+}
+
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

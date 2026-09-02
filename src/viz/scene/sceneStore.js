@@ -56,7 +56,9 @@ export const scene = reactive({
   // 解不出（无网 / 无星历 / 缺站址）就留空，core 退回圆轨道最差几何的闭式并照旧告警。
   geo: {}, geoWarn: [], geoBusy: false,
   // 阻塞项为零时自动重算（仍保留手动「计算」；关掉即回到一期的手动档）
-  autoCalc: true
+  autoCalc: true,
+  // 按图施工：步进条（骨架里的角色 + 每档已选 / 共几个），没在施工时为空
+  bpSteps: []
 })
 
 // ── 索引 ──
@@ -381,11 +383,110 @@ function cleanSatInst(m) {
   delete m.typical; delete m.preset; delete m.orbit
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// 按图施工（角色骨架 + 逐槽选型）
+// ═══════════════════════════════════════════════════════════════════════════
+// ★ 骨架不是另一套渲染路径：占位卡就是【带 pending 标记的真模块】，照旧参与布局、路由、
+//   连线与检查器。于是「所有槽落定 → 骨架消失、场景成形」在数据上就是「没有 pending 了」，
+//   不必维护第二份图。占位卡先用推荐型号顶着，边与流才有端口可挂。
+export async function applyBlueprint(id) {
+  const bp = await scn().blueprint?.(id)
+  if (!bp) return false
+  loadScene({ name: bp.name, tplId: bp.tplId, modules: bp.modules, links: bp.links, flows: bp.flows })
+  await migrateSatModules()
+  scene.bpSteps = stepsOf()
+  scene.sel = null
+  return true
+}
+/** 步进条：骨架里出现过的角色，按读图序；每档报「已选 / 共」 */
+function stepsOf() {
+  const ORDER = ['end', 'veh', 'rf', 'power', 'edge', 'access', 'sat', 'hub', 'core']
+  const by = new Map()
+  for (const m of scene.modules) {
+    const r = (m.slot && m.slot.role) || ''
+    if (!r) continue
+    if (!by.has(r)) by.set(r, { role: r, zh: m.slot.zh || r, n: 0, done: 0 })
+    const g = by.get(r); g.n++; if (!m.pending) g.done++
+  }
+  return [...by.values()].sort((a, b) => ORDER.indexOf(a.role) - ORDER.indexOf(b.role))
+}
+export const pendingCount = computed(() => scene.modules.filter((m) => m.pending).length)
+export const refreshSteps = () => { scene.bpSteps = stepsOf() }
+
+/**
+ * 给一个槽落型号（或给任意模块换型）。
+ * ★ 换型必须重挂端口：新型号的端口 key 未必与旧的一样（RJ45 叫 lan1、串口叫 rs485），
+ *   不重挂，连在它身上的边就指向一个不存在的端口 —— 计算时报「端口不存在」，
+ *   而用户只是换了个型号。挂不上的边如实删掉并计数，不留悬空引用。
+ */
+/**
+ * 换型之后把挂在它身上的边重挂到相容的端口上。★ 换型必须做这一步：新型号的端口 key 与
+ * 介质未必与旧的一样（C 站的空口是 sat_c、Ka 站是 sat_ka），不重挂，连在它身上的边就
+ * 指向一个不存在的端口 —— 计算时报「端口不存在」，而用户只是换了个型号。
+ * 对面还是【占位卡】时不删边：它的端口只是推荐型号顺带来的，马上会被换掉；
+ * 删了，用户按顺序逐槽选型走一圈，骨架上的边就掉光了。
+ * @returns 删掉的边数
+ */
+function relinkPorts(modId) {
+  const e = effective(modById.value.get(modId))
+  let dropped = 0
+  const keep = []
+  for (const l of scene.links) {
+    const side = l.a.modId === modId ? 'a' : (l.b.modId === modId ? 'b' : '')
+    if (!side) { keep.push(l); continue }
+    const otherInst = modById.value.get(side === 'a' ? l.b.modId : l.a.modId)
+    const other = effective(otherInst)
+    const op = other && (other.ports || []).find((p) => p.key === (side === 'a' ? l.b.portKey : l.a.portKey))
+    const np = e && (e.ports || []).find((p) => op && portsCompatible(p, op).ok)
+    if (np) { l[side].portKey = np.key; l.medium = np.medium; keep.push(l); continue }
+    if (otherInst && otherInst.pending) {
+      const same = e && (e.ports || []).find((p) => {
+        const a = mediaOf(p.medium), b = mediaOf(l.medium)
+        return a && b && a.tier === b.tier
+      })
+      if (same) { l[side].portKey = same.key; l.medium = same.medium; keep.push(l); continue }
+    }
+    dropped++
+  }
+  if (dropped) scene.links = keep
+  return dropped
+}
+
+export function fillSatSlot(modId, satId) {
+  const m = modById.value.get(modId)
+  if (!m || m.kind !== 'sat') return false
+  m.satId = satId
+  m.pending = false
+  const e = satById.value.get(satId)
+  if (e) m.name = uniqName(e.name || (e.form && e.form.satelliteName) || '卫星')
+  const dropped = relinkPorts(modId)
+  refreshSteps(); touch()
+  return { ok: true, dropped }
+}
+
+export function fillSlot(modId, libId) {
+  const m = modById.value.get(modId)
+  const b = libById.value.get(libId)
+  if (!m || !b) return { ok: false, dropped: 0 }
+  m.libId = libId
+  m.name = uniqName(b.zh)
+  m.pending = false
+  m.ov = {}
+  if (!b.place || !(b.place.modes || []).includes(m.place && m.place.mode)) {
+    m.place = Object.assign({ mode: (b.place && b.place.modes && b.place.modes[0]) || 'fixed' },
+      { lat: m.place && m.place.lat, lon: m.place && m.place.lon, altM: m.place && m.place.altM })
+  }
+  const dropped = relinkPorts(modId)
+  refreshSteps(); touch()
+  return { ok: true, dropped }
+}
+
 export async function applyTemplate(id) {
   const t = await scn().template?.(id)
   if (!t) return false
   loadScene({ name: t.name, tplId: t.tplId, modules: t.modules, links: t.links, flows: t.flows })
   await migrateSatModules()
+  scene.bpSteps = []
   return true
 }
 export function newScene() {
@@ -401,7 +502,7 @@ export function loadScene(s) {
   scene.carrier = Object.assign({ ...DEFAULT_CARRIER }, s.carrier || {})
   scene.nudge = JSON.parse(JSON.stringify(s.nudge || {}))
   scene.sel = null; scene.result = null; scene.error = ''; scene.dirty = true
-  scene.geo = {}; scene.geoWarn = []
+  scene.geo = {}; scene.geoWarn = []; scene.bpSteps = []
   // 老存档里的卫星是模块库的 A 类条目（libId:'sat.*'）：进场即迁到平台卫星库的引用上。
   // 不 await —— loadScene 是同步接口（多处调用方不认 Promise）；迁移只改引用，
   // 迁完自然触发重绘，计算前 compute() 也会再看到迁好的那份。
@@ -634,6 +735,7 @@ export const lint = computed(() => {
   for (const m of scene.modules) {
     const e = effective(m)
     if (!e) { push('block', m.id, 'module', `${m.name}：库条目不存在`); continue }
+    if (m.pending) { push('block', m.id, 'module', `${m.name}：${(m.slot && m.slot.zh) || '这一槽'}未选型`); continue }
     if (e.cat === 'A') {
       if (!e.sat || !Object.keys(e.sat).length) push('block', m.id, 'module', `${m.name}：卫星库条目没有参数`)
       else if (!e.orbit) push('block', m.id, 'module', `${m.name}：没有可用轨道`)
@@ -671,6 +773,13 @@ export const lint = computed(() => {
   for (const f of scene.flows) {
     if (!f.aId || !f.bId) { push('block', f.id, 'flow', `${f.name}：端点未定`); continue }
     if (!byId.get(f.aId) || !byId.get(f.bId)) push('block', f.id, 'flow', `${f.name}：端点模块已删`)
+  }
+  // 上一次计算里报出来的逐向错误：连不通 / 缺频率这类只有跑过一遍才知道的，
+  // 也摊到清单上（这是运行时读数，不是教学文字）
+  for (const f of (scene.result && scene.result.flows) || []) {
+    for (const d of f.dirs || []) {
+      for (const e of d.errors || []) push('block', f.id, 'flow', `${f.name}（${d.dir === 'ab' ? '正向' : '返向'}）：${e}`)
+    }
   }
   if (scene.modules.length && !scene.flows.length) push('warn', '', 'scene', '还没有业务流')
   return out
@@ -711,6 +820,7 @@ if (typeof window !== 'undefined') {
     newScene, applyTemplate, compute, solveGeometry, computePayloadScene,
     addSatEntry, addSatEntryFromRec, addSatModule, addModule, addLink, addFlow,
     pushUndo, undo, redo, duplicateModule, lint, lintBlocks, autoCompute,
+    applyBlueprint, fillSlot, fillSatSlot,
     ensureSearchPool: () => import('../../ngso/satSearchPool.js').then((m) => m.ensureSearchPool())
   }
 }
