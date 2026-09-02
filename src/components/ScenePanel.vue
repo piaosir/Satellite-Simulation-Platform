@@ -3,13 +3,14 @@
 //
 // 数据直接读 viz/scene/sceneStore.js（模块级单例），不经 props —— 拓扑视图与地图渲染读的是
 // 同一份，「两种可视化是同一个场景的两个投影」这条约束在数据层就成立。
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import Icon from './Icon.vue'
 import SceneInspect from './SceneInspect.vue'
+import SatPicker from './SatPicker.vue'
 import {
   scene, loadLibrary, applyTemplate, newScene, addModule, removeModule, addLink, removeLink,
   addFlow, removeFlow, compute, effective, modById, libById, mediaLabel, tierOf, placeOf,
-  portsCompatible, snapshot, loadScene
+  portsCompatible, snapshot, loadScene, loadSatLibrary, satEntryOf
 } from '../viz/scene/sceneStore.js'
 import { drawSymbol } from '../viz/scene/sceneSymbols.js'
 import { exportSceneReport } from '../shared/sceneReport.js'
@@ -24,7 +25,16 @@ const catFilter = ref('')
 const tplOpen = ref(false)
 const tplInd = ref('')
 
-onMounted(() => loadLibrary())
+const satPickOpen = ref(false)
+
+onMounted(() => {
+  loadLibrary()
+  // 另一个窗口（端到端链路预算）可能改过同一份卫星库：回到本窗口时重读一次。
+  // 这是「最后写入者赢」那条已知边界的补偿，见 viz/scene/sceneSatLib.js 头注。
+  window.addEventListener('focus', onWinFocus)
+})
+onBeforeUnmount(() => window.removeEventListener('focus', onWinFocus))
+function onWinFocus() { loadSatLibrary(true) }
 
 // ── 模块库树（按分类 → 分组）──
 const filtered = computed(() => {
@@ -46,7 +56,8 @@ const grouped = computed(() => {
   }
   return [...g.values()].sort((a, b) => a.cat.localeCompare(b.cat))
 })
-const cats = computed(() => (scene.catalog && scene.catalog.modCats) || [])
+// lib:false 的类别不在模块库里（A 空间段＝卫星，改为引用平台卫星库）
+const cats = computed(() => ((scene.catalog && scene.catalog.modCats) || []).filter((c) => c.lib !== false))
 
 // 库条目的小图标（16px canvas，符号与地图/拓扑同一支画笔）。
 // 传的是【模块条目】不是图标名 —— 逐条映射与徽标都在 drawSymbol 里解析（sceneSymbolMap.js）。
@@ -71,7 +82,13 @@ const placingName = computed(() => (scene.placing ? (libById.value.get(scene.pla
 // ── 场景树 ──
 const modRows = computed(() => scene.modules.map((m) => {
   const e = effective(m)
-  return { m, e, sym: e, cat: e ? e.cat : '', host: m.place && m.place.mode === 'mounted' ? (modById.value.get(m.place.hostId) || {}).name : '' }
+  const sat = m.kind === 'sat' ? satEntryOf(m) : null
+  return {
+    m, e, sym: e, cat: e ? e.cat : '',
+    host: m.place && m.place.mode === 'mounted' ? (modById.value.get(m.place.hostId) || {}).name : '',
+    // 卫星引用的库条目被删了：这一行要能一眼看出来（不崩、也不静默按某颗星算）
+    miss: m.kind === 'sat' && !sat
+  }
 }))
 const selMod = computed(() => (scene.sel && scene.sel.type === 'module' ? modById.value.get(scene.sel.id) : null))
 function selectMod(id) { scene.sel = { type: 'module', id }; scene.placing = null }
@@ -187,6 +204,7 @@ const fmtRate = (b) => (b == null ? '—' : b >= 1e6 ? (b / 1e6).toFixed(2) + ' 
         <span v-else-if="scene.result && !scene.dirty">{{ scene.ms }} ms</span>
         <span v-else-if="scene.result && scene.dirty" class="warnc">输入已变</span>
       </div>
+      <div v-for="(w, i) in scene.geoWarn" :key="'g' + i" class="warnc">{{ w }}</div>
       <div class="scbar">
         <span class="seg2" role="group" aria-label="视图">
           <span :class="{ on: scene.view === 'map' }" @click="scene.view = 'map'">地图</span>
@@ -205,7 +223,8 @@ const fmtRate = (b) => (b == null ? '—' : b >= 1e6 ? (b / 1e6).toFixed(2) + ' 
     <div class="sec">
       <div class="sect acc" :class="{ open: open.lib }" @click="toggle('lib')">
         <Icon :name="open.lib ? 'chevron-down' : 'chevron-right'" :size="12" /><span>模块库</span>
-        <span class="lnk">{{ filtered.length }}</span>
+        <span class="lnk" title="添加卫星：卫星库 / 轨位目录 / 星历搜索" @click.stop="satPickOpen = true">＋ 卫星</span>
+        <span class="cnt">{{ filtered.length }}</span>
       </div>
       <template v-if="open.lib">
         <div class="srow"><input class="ci" v-model="kw" placeholder="搜模块 / 型号 / 行业" /></div>
@@ -243,7 +262,7 @@ const fmtRate = (b) => (b == null ? '—' : b >= 1e6 ? (b / 1e6).toFixed(2) + ' 
           <div v-for="r in modRows" :key="r.m.id" class="mrow2" :class="{ on: scene.sel && scene.sel.id === r.m.id, tgt: !!linkStep }"
                @click="linkStep ? targetMod(r.m.id) : selectMod(r.m.id)">
             <canvas class="lic" :ref="(el) => iconRef(el, r.sym)"></canvas>
-            <span class="mnm">{{ r.m.name }}<em v-if="r.host">@{{ r.host }}</em></span>
+            <span class="mnm">{{ r.m.name }}<em v-if="r.host">@{{ r.host }}</em><em v-if="r.miss" class="miss">卫星库条目不存在</em></span>
             <span class="mac" title="从这个模块拉一条连线" @click.stop="beginLink(r.m.id)"><Icon name="chain-hops" :size="11" /></span>
             <span class="mac" title="在图上定位" @click.stop="emit('focus-module', r.m.id)"><Icon name="crosshair" :size="11" /></span>
             <span class="del" @click.stop="removeModule(r.m.id)"><Icon name="x" :size="12" /></span>
@@ -301,6 +320,8 @@ const fmtRate = (b) => (b == null ? '—' : b >= 1e6 ? (b / 1e6).toFixed(2) + ' 
 
     <!-- ═══ 检查器 + 结果 ═══ -->
     <SceneInspect />
+
+    <SatPicker v-if="satPickOpen" @close="satPickOpen = false" />
 
     <!-- 端口选择浮层 -->
     <div v-if="portMenu" class="pmask" @click="portMenu = null">
@@ -369,6 +390,8 @@ const fmtRate = (b) => (b == null ? '—' : b >= 1e6 ? (b / 1e6).toFixed(2) + ' 
 .lnm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tpc { flex: none; font-size: 9px; padding: 0 3px; border: 1px solid var(--border-strong); color: var(--text-faint); border-radius: 2px; }
 .tpc.mod { color: var(--accent-ui); border-color: var(--accent-ui); }
+.sect .cnt { color: var(--text-faint); font-size: var(--fs-2, 11px); }
+.mnm em.miss { color: var(--danger); }
 
 /* ── 场景列表 ── */
 .mlist { max-height: 240px; overflow-y: auto; }

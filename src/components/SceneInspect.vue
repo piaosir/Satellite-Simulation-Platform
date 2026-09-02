@@ -5,17 +5,84 @@
 //   功率档 出 dB 余量；约束档 出「实际 / 上限」一对数，没有余量这一列；
 //   契约档 的数字后面钉一个「契约」标，因为它不是算出来的。
 // ★ 结果区不出现「可行 / 达标 / 受限」这类文字判定（CLAUDE.md）：只给数值与着色。
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import Icon from './Icon.vue'
 import {
-  scene, effective, modById, linkById, mediaOf, mediaLabel, tierOf, setOv, ovOf, energyOf
+  scene, effective, modById, linkById, mediaOf, mediaLabel, tierOf, setOv, ovOf, energyOf,
+  satEntryOf, scheduleSatSave
 } from '../viz/scene/sceneStore.js'
+import { ensureSearchPool } from '../ngso/satSearchPool.js'
+import { orbitFromPoolRec, applyOrbitToForm, searchPool, orbitShapeOf } from '../shared/satPick.js'
 
 const sel = computed(() => scene.sel)
 const selMod = computed(() => (sel.value && sel.value.type === 'module' ? modById.value.get(sel.value.id) : null))
 const selEff = computed(() => (selMod.value ? effective(selMod.value) : null))
 const selLink = computed(() => (sel.value && sel.value.type === 'link' ? linkById.value.get(sel.value.id) : null))
 const selFlow = computed(() => (sel.value && sel.value.type === 'flow' ? scene.flows.find((f) => f.id === sel.value.id) : null))
+
+// ═══ 卫星节点 ═══
+// ★ 两段分得开是这个检查器的要点：上半改的是【平台卫星库】那条条目（两个工作台共用，
+//   改了别处也变），下半改的是【本场景这条业务】分到的那一片（只影响这个场景）。
+//   一期把两者混在一起，用户改一个转发器带宽就把库里那颗星改了。
+const isSat = computed(() => !!(selMod.value && selMod.value.kind === 'sat'))
+const satEntry = computed(() => (selMod.value ? satEntryOf(selMod.value) : null))
+const satForm = computed(() => (satEntry.value ? satEntry.value.form : null))
+const satIsGso = computed(() => !!satForm.value && (satForm.value.orbitClass || 'GSO') === 'GSO')
+const satPicked = computed(() => {
+  const ns = satEntry.value && satEntry.value.ngsoSat
+  return !!(ns && ns.mode !== 'manual' && ns.orbit)
+})
+const satShape = computed(() => orbitShapeOf(satEntry.value && satEntry.value.ngsoSat && satEntry.value.ngsoSat.orbit))
+const BANDS = ['L', 'S', 'X', 'ExtC', 'C', 'ExtKu', 'Ku', 'Ku-BSS', 'Ka', 'Q', 'V', 'UHF']
+function setSatForm(k, v) {
+  const f = satForm.value; if (!f) return
+  f[k] = v
+  // 频段一变端口跟着变：接在旧端口上的星地边会当场判成「介质不符」，这是对的 ——
+  // 换了频段那条边本来就不成立，宁可报错也不许悄悄按新频段算旧参数
+  scheduleSatSave(); scene.dirty = true
+}
+function setSatOrbitClass(v) {
+  const f = satForm.value; if (!f || f.orbitClass === v) return
+  f.orbitClass = v
+  if (v === 'GSO') clearSatPick()
+  scheduleSatSave(); scene.dirty = true
+}
+function clearSatPick() {
+  const e = satEntry.value; if (!e) return
+  e.ngsoSat = { mode: 'manual', orbit: null, name: '', noradId: null, folder: '' }
+  scheduleSatSave(); scene.dirty = true
+}
+// 星历搜索（口径与「添加卫星」弹层、端到端窗口同一份：shared/satPick.js）
+const satKw = ref('')
+const satPool = ref(null)
+const satLoading = ref(false)
+const satPoolErr = ref('')
+const satListOpen = ref(false)
+async function satEnsurePool() {
+  if (satPool.value || satLoading.value) return
+  satLoading.value = true; satPoolErr.value = ''
+  try {
+    const r = await ensureSearchPool()
+    satPool.value = r.all
+    if (!r.all.length) satPoolErr.value = '未取到任何卫星（需联网获取 CelesTrak OMM）'
+  } catch (e) { satPoolErr.value = '卫星星历加载失败：' + ((e && e.message) || e) } finally { satLoading.value = false }
+}
+const satRes = computed(() => searchPool(satPool.value, satKw.value, 40))
+function satPick(rec) {
+  const e = satEntry.value; if (!e) return
+  e.ngsoSat = { mode: 'search', orbit: orbitFromPoolRec(rec), name: rec.name, noradId: rec.noradId || null, folder: '' }
+  e.form.satelliteName = rec.name
+  applyOrbitToForm(e.form, e.ngsoSat.orbit)
+  satKw.value = rec.name; satListOpen.value = false
+  scheduleSatSave(); scene.dirty = true
+}
+// 本场景切片：改的是实例 ov.sat（库值作占位符显示）
+const SLICE = [
+  ['transponderBandwidth', '转发器带宽', 'MHz'], ['gt', '卫星 G/T', 'dB/K'],
+  ['eirpSat', '饱和 EIRP', 'dBW'], ['eirp', '再生 EIRP', 'dBW'],
+  ['sfdRef', 'SFD', 'dBW/m²'], ['BOi', 'IBO', 'dB'], ['BOo', 'OBO', 'dB'],
+  ['procDelayMs', '处理时延', 'ms']
+]
 
 // ── 参数标签表（介质 defaults 的键 → 中文名 + 单位）──
 const PL = {
@@ -124,13 +191,13 @@ function setMount(hostId) {
     <template v-if="selMod && selEff">
       <div class="srow"><label>名称</label><input class="ci" v-model="selMod.name" /></div>
       <div class="ihd">{{ selEff.zh }}<em v-if="selEff.src" :title="selEff.src">出处</em></div>
-      <div class="srow"><label>挂载于</label>
+      <div v-if="!isSat" class="srow"><label>挂载于</label>
         <select :value="selMod.place.mode === 'mounted' ? selMod.place.hostId : ''" @change="setMount($event.target.value)">
           <option value="">（独立放置）</option>
           <option v-for="o in modOptions" :key="o.id" :value="o.id" :disabled="o.id === selMod.id">{{ o.name }}</option>
         </select>
       </div>
-      <template v-if="selMod.place.mode !== 'mounted'">
+      <template v-if="!isSat && selMod.place.mode !== 'mounted'">
         <div class="srow"><label>纬度</label><input class="ci" :value="selMod.place.lat" placeholder="-90 ~ 90" @change="setPlace('lat', $event.target.value)" /></div>
         <div class="srow"><label>经度</label><input class="ci" :value="selMod.place.lon" placeholder="-180 ~ 180" @change="setPlace('lon', $event.target.value)" /></div>
         <div class="srow"><label>海拔</label><input class="ci" :value="selMod.place.altM" @change="setPlace('altM', $event.target.value)" /><span class="u">m</span></div>
@@ -146,11 +213,55 @@ function setMount(hostId) {
           <input class="ci" :class="{ ov: ovOf(selMod.id, 'rf.' + k) !== undefined }" :value="selEff.rf[k]" @change="setOv(selMod.id, 'rf.' + k, $event.target.value === '' ? null : +$event.target.value)" />
         </div>
       </template>
-      <template v-if="selEff.sat">
-        <div class="sect sub"><span>卫星（覆盖库值）</span><span v-if="selEff.typical" class="tag">典型值</span></div>
-        <div v-for="k in ['orbitLongitude','orbitAltitude','orbitInclination','gt','eirpSat','eirp','sfdRef','BOi','BOo','transponderBandwidth','procDelayMs']" :key="k" class="srow">
-          <label>{{ ({ orbitLongitude:'定点经度', orbitAltitude:'轨道高度', orbitInclination:'倾角', gt:'卫星 G/T', eirpSat:'饱和 EIRP', eirp:'再生 EIRP', sfdRef:'SFD', BOi:'IBO', BOo:'OBO', transponderBandwidth:'转发器带宽', procDelayMs:'处理时延' })[k] }}</label>
-          <input class="ci" :class="{ ov: ovOf(selMod.id, 'sat.' + k) !== undefined }" :value="selEff.sat[k]" @change="setOv(selMod.id, 'sat.' + k, $event.target.value === '' ? null : +$event.target.value)" />
+      <!-- 卫星：上半是【平台卫星库】那条条目（与端到端窗口共用，改了两处都变），
+           下半是【本场景】这条业务分到的那一片（只影响这个场景）。两段各自标清楚。 -->
+      <template v-if="isSat && satForm">
+        <div class="sect sub"><span>卫星库</span><span class="tag lib">库</span></div>
+        <div class="srow"><label>条目名</label><input class="ci" v-model="satEntry.name" @change="scheduleSatSave()" /></div>
+        <div class="srow"><label>轨道类型</label>
+          <span class="seg3">
+            <span :class="{ on: satIsGso }" @click="setSatOrbitClass('GSO')">GSO</span>
+            <span :class="{ on: !satIsGso }" @click="setSatOrbitClass('NGSO')">NGSO</span>
+          </span>
+        </div>
+        <div class="srow"><label>工作频段</label>
+          <select :value="satForm.frequencyBand" @change="setSatForm('frequencyBand', $event.target.value)">
+            <option v-for="b in BANDS" :key="b" :value="b">{{ b }}</option>
+          </select>
+        </div>
+        <div v-if="satIsGso" class="srow"><label>定点经度</label>
+          <input class="ci" :value="satForm.orbitLongitude" @change="setSatForm('orbitLongitude', $event.target.value)" /><span class="u">°E</span>
+        </div>
+        <template v-else>
+          <div class="srow"><label>轨道高度</label>
+            <input class="ci" :value="satForm.orbitAltitude" :readonly="satPicked" @change="setSatForm('orbitAltitude', $event.target.value)" /><span class="u">{{ satPicked ? '自动' : 'km' }}</span>
+          </div>
+          <div class="srow"><label>轨道倾角</label>
+            <input class="ci" :value="satForm.orbitInclination" :readonly="satPicked" @change="setSatForm('orbitInclination', $event.target.value)" /><span class="u">{{ satPicked ? '自动' : '°' }}</span>
+          </div>
+          <div class="srow"><label>星历</label>
+            <input class="ci" v-model="satKw" placeholder="名称 / NORAD 号" @focus="satEnsurePool(); satListOpen = true" @input="satListOpen = true" />
+            <span v-if="satPicked" class="lnk" @click="clearSatPick">取消选星</span>
+          </div>
+          <div v-if="satLoading" class="est">正在加载星历…</div>
+          <div v-else-if="satPoolErr" class="errc">{{ satPoolErr }}</div>
+          <div v-else-if="satListOpen && satRes.length" class="satlist">
+            <div v-for="r in satRes" :key="r.noradId" class="satli" @mousedown.prevent="satPick(r)">
+              <span class="satn" data-i18n-skip>{{ r.name }}</span>
+              <span class="sati">NORAD {{ r.noradId }} · i={{ (+r.incl).toFixed(1) }}°</span>
+            </div>
+          </div>
+          <div v-if="satPicked" class="kv"><span>已选卫星</span><b class="tx" data-i18n-skip>{{ satEntry.ngsoSat.name }}</b></div>
+          <div v-if="satShape" class="est">{{ satShape.regime }} · {{ satShape.elliptical ? ('近 ' + Math.round(satShape.perigeeKm) + ' / 远 ' + Math.round(satShape.apogeeKm) + ' km') : ('h ≈ ' + Math.round(satShape.perigeeKm) + ' km') }} · 周期 {{ satShape.periodMin.toFixed(0) }} min</div>
+        </template>
+
+        <div class="sect sub"><span>本场景</span><span class="tag">本场景</span><span v-if="selEff.typical" class="tag">典型值</span></div>
+        <div v-for="f in SLICE" :key="f[0]" class="srow">
+          <label>{{ f[1] }}</label>
+          <input class="ci" :class="{ ov: ovOf(selMod.id, 'sat.' + f[0]) !== undefined }"
+                 :value="ovOf(selMod.id, 'sat.' + f[0])" :placeholder="satForm[f[0]]"
+                 @change="setOv(selMod.id, 'sat.' + f[0], $event.target.value === '' ? null : +$event.target.value)" />
+          <span class="u">{{ f[2] }}</span>
         </div>
       </template>
 
@@ -293,6 +404,17 @@ function setMount(hostId) {
 .tag { flex: none; font-size: 10px; padding: 0 5px; border: 1px solid var(--border-strong); color: var(--text-muted); border-radius: var(--r-pill, 9px); }
 .tag.satellite { color: var(--accent-ui); border-color: var(--accent-ui); }
 .tag.contract { color: var(--warn); border-color: var(--warn); }
+.tag.lib { color: var(--accent-ui); border-color: var(--accent-ui); }
+.seg3 { display: inline-flex; border: 1px solid var(--field-border); border-radius: var(--r-1, 2px); overflow: hidden; }
+.seg3 > span { padding: 2px 11px; cursor: pointer; color: var(--text-muted); user-select: none; }
+.seg3 > span + span { border-left: 1px solid var(--field-border); }
+.seg3 > span.on { background: var(--accent-ui); color: var(--bg); }
+.satlist { max-height: 168px; overflow-y: auto; border: 1px solid var(--border); }
+.satli { padding: 3px 7px; cursor: pointer; border-bottom: 1px solid var(--border); }
+.satli:hover { background: var(--accent-ui-wash); }
+.satn { display: block; }
+.sati { display: block; color: var(--text-faint); font-size: var(--fs-2, 11px); font-variant-numeric: tabular-nums; }
+.srow .lnk { flex: none; color: var(--accent); cursor: pointer; font-size: var(--fs-2, 11px); }
 .kv { display: flex; align-items: baseline; gap: 8px; font-variant-numeric: tabular-nums; }
 .kv > span { color: var(--text-muted); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .kv > b { font-weight: 600; }

@@ -8,7 +8,8 @@
 //
 // ============ 字段 ============
 //   id        稳定标识（改名不变，配置里存的就是它）
-//   cat       A 空间段 / B 地面固定站 / C 移动平台 / D 感知末端 / E 汇聚边缘 /
+//   cat       B 地面固定站 / C 移动平台 / D 感知末端 / E 汇聚边缘 /
+//             （A 空间段已不在模块库里：卫星改为引用平台卫星库，见 sceneSat.js）
 //             F 射频器件（天线·馈线，挂在别的模块上）/ G 供电 / H 中心平台
 //   group     二级分组（库树的第二层）
 //   zh/en     显示名。★ 型号名是数据不是界面语汇，中英一律照厂商原文，不做「翻译」
@@ -16,7 +17,6 @@
 //   ports[]   端口清单：{ key, zh, medium, dir, role }
 //               dir  'tx'|'rx'|'trx'；role 'data'|'if'|'power'|'mgmt'|'sense'
 //   rf        地球站库字段的出厂值（键名与 e2eParams.ES_FIELDS 逐字一致）
-//   sat       卫星库字段的出厂值（键名与 e2eParams.SAT_FIELDS 逐字一致）
 //   typical   true = rf/sat 里的电平类数值是【该类设备的典型值】而非该型号的实测值。
 //             ★ 波束 EIRP / G_T 只有做过对地覆盖分析才知道，本表不冒充；UI 据此打标。
 //   phy       { rateDnBps, rateUpBps }：厂商标称的接入速率上限（速率账用）
@@ -58,124 +58,121 @@ const es = (dia, w, o) => Object.assign({
 }, o || {});
 
 // ═══════════════════════════════════════════════════════════════════════════
-// A 空间段
+// 预置卫星（★ 不是模块库条目）
 // ═══════════════════════════════════════════════════════════════════════════
-// 轨位与频段是公开事实（卫通产品册 + 无线电频率使用许可证）；转发器电平类数值一律 typical。
-const GEO = (id, zh, lonE, band, o) => Object.assign({
-  id: 'sat.' + id, cat: 'A', group: o && o.group || 'geo-cn', zh, en: o && o.en || zh, symbol: 'satellite-geo',
-  ports: [p('rf', 'sat_' + band.toLowerCase().replace('-bss', ''), 'trx', 'data', band + ' 转发')],
-  typical: true,
+// 二期起，场景里的卫星【引用平台卫星库】（library.json 命名空间 'e2e' 的 sat[]，与端到端
+// 链路预算窗口共用同一份），不再是模块库的一类条目 —— 一期那种写死 20 颗星的做法，
+// 等于用户想用 AsiaSat 7 / Starlink / 北斗 / 自己导入的星就没辙。
+//
+// 这张表因此改成「一键建库条目」的出厂预置：点一下在卫星库里生成一条，之后它与用户
+// 自己建的条目没有任何区别（可改名、改参数、换轨道来源）。数据一条没删。
+//
+// 字段：key 稳定标识 / zh 中文名 / en 英文编目名（★ 轨位目录搜「中星 26」要能命中
+// CHINASAT 26，靠的就是这一列）/ group 分组 / typical 电平类数值是否为该类典型值 /
+// sat 卫星库字段出厂值（键名与 e2eParams.SAT_FIELDS 逐字一致，迁移零成本）/ src 出处。
+const GEO = (key, zh, en, lonE, band, o) => ({
+  key, zh, en, group: (o && o.group) || 'geo-cn', typical: true,
   sat: Object.assign({
-    satelliteName: zh, frequencyBand: band.replace('-BSS', '-BSS'), orbitClass: 'GSO', orbitLongitude: lonE,
+    satelliteName: zh, frequencyBand: band, orbitClass: 'GSO', orbitLongitude: lonE,
     gt: 0, sfdRef: -85, sfdGtRef: 0, BOi: 6, BOo: 3, transponderBandwidth: 36, eirpSat: 48, eirp: 30, procDelayMs: 0,
     aciUplinkFactor: 30, adjUplinkFactor: 25, xpolUplinkFactor: 26, hpaIntermodFactor: 24,
     aciDownlinkFactor: 30, adjDownlinkFactor: 25, xpolDownlinkFactor: 26, xpdrIntermodFactor: 21
   }, (o && o.sat) || {}),
-  place: { modes: ['orbit'], mountable: false },
   tags: (o && o.tags) || ['卫通'],
   src: (o && o.src) || '[卫通] 空间段资源表（轨位与频段为公开事实；转发器电平为该类典型值）'
-}, o && o.extra || {});
+});
 
-const SATS = [
-  GEO('cs15', '中星 15 号', 51.5, 'C', { sat: { transponderBandwidth: 36, eirpSat: 44 }, src: '[卫通] 轨位 51.5°E；C/Ku' }),
-  GEO('ap7', '亚太 7 号', 76.5, 'C', { tags: ['卫通', '亚太'] }),
-  GEO('cs12', '中星 12 号', 87.5, 'C'),
-  GEO('cs27', '中星 27 号', 87.5, 'Ka', {
+const SAT_PRESETS_SCENE = [
+  GEO('cs15', '中星 15 号', 'CHINASAT 15', 51.5, 'C', { sat: { transponderBandwidth: 36, eirpSat: 44 }, src: '[卫通] 轨位 51.5°E；C/Ku' }),
+  GEO('ap7', '亚太 7 号', 'APSTAR 7', 76.5, 'C', { tags: ['卫通', '亚太'] }),
+  GEO('cs12', '中星 12 号', 'CHINASAT 12', 87.5, 'C'),
+  GEO('cs27', '中星 27 号', 'CHINASAT 27', 87.5, 'Ka', {
     sat: { transponderBandwidth: 250, eirpSat: 62, gt: 14 },
     tags: ['卫通', '高通量', '在建'], src: '[卫通] 在建，容量 300 Gbps，四洲两洋；数字化处理载荷'
   }),
-  GEO('cs9c', '中星 9C', 92.2, 'Ku-BSS', { tags: ['卫通', '广电'] }),
-  GEO('cs11', '中星 11 号', 98.0, 'C', { tags: ['卫通', '物联'], src: '[卫通] 窄带物联网近期拓展载体（亚太，北京/香港站网）' }),
-  GEO('cs9b', '中星 9B', 101.4, 'Ku-BSS', { tags: ['卫通', '广电'] }),
-  GEO('cs16', '中星 16 号', 110.5, 'Ka', {
+  GEO('cs9c', '中星 9C', 'CHINASAT 9C', 92.2, 'Ku-BSS', { tags: ['卫通', '广电'] }),
+  GEO('cs11', '中星 11 号', 'CHINASAT 11', 98.0, 'C', { tags: ['卫通', '物联'], src: '[卫通] 窄带物联网近期拓展载体（亚太，北京/香港站网）' }),
+  GEO('cs9b', '中星 9B', 'CHINASAT 9B', 101.4, 'Ku-BSS', { tags: ['卫通', '广电'] }),
+  GEO('cs16', '中星 16 号', 'CHINASAT 16', 110.5, 'Ka', {
     sat: { transponderBandwidth: 250, eirpSat: 60, gt: 12 }, tags: ['卫通', '高通量'],
     src: '[卫通] 我国首颗高轨 Ka 高通量卫星（20 Gbps）'
   }),
-  GEO('cs10r', '中星 10R', 110.5, 'C'),
-  GEO('cs6e', '中星 6E', 115.5, 'C', { tags: ['卫通', '广电'] }),
-  GEO('cs6d', '中星 6D', 125.0, 'C', { tags: ['卫通', '广电'] }),
-  GEO('cs26', '中星 26 号', 125.0, 'Ka', {
+  GEO('cs10r', '中星 10R', 'CHINASAT 10R', 110.5, 'C'),
+  GEO('cs6e', '中星 6E', 'CHINASAT 6E', 115.5, 'C', { tags: ['卫通', '广电'] }),
+  GEO('cs6d', '中星 6D', 'CHINASAT 6D', 125.0, 'C', { tags: ['卫通', '广电'] }),
+  GEO('cs26', '中星 26 号', 'CHINASAT 26', 125.0, 'Ka', {
     sat: { transponderBandwidth: 250, eirpSat: 61, gt: 13 }, tags: ['卫通', '高通量'],
     src: '[卫通] 高通量 100 Gbps；94 波束'
   }),
-  GEO('cs6c', '中星 6C', 130.0, 'C', {
+  GEO('cs6c', '中星 6C', 'CHINASAT 6C', 130.0, 'C', {
     tags: ['卫通', '广电', '物联'],
     src: '[卫通] 窄带卫星物联网当前载体（覆盖中国境内及中亚，北京/怀来站网）'
   }),
-  GEO('ap6c', '亚太 6C', 134.0, 'C', { tags: ['卫通', '亚太'] }),
-  GEO('ap6e', '亚太 6E', 134.0, 'Ku', { sat: { eirpSat: 55, gt: 8 }, tags: ['卫通', '亚太', '高通量'] }),
-  GEO('ap6d', '亚太 6D', 134.0, 'Ku', { sat: { transponderBandwidth: 250, eirpSat: 58, gt: 10 }, tags: ['卫通', '亚太', '高通量'] }),
-  GEO('ap5c', '亚太 5C', 138.0, 'C', { tags: ['卫通', '亚太'] }),
-  GEO('ap9', '亚太 9 号', 142.0, 'C', { tags: ['卫通', '亚太'] }),
-  GEO('cs19', '中星 19 号', 163.0, 'Ka', { sat: { transponderBandwidth: 250, eirpSat: 58, gt: 10 }, tags: ['卫通', '高通量'] }),
+  GEO('ap6c', '亚太 6C', 'APSTAR 6C', 134.0, 'C', { tags: ['卫通', '亚太'] }),
+  GEO('ap6e', '亚太 6E', 'APSTAR 6E', 134.0, 'Ku', { sat: { eirpSat: 55, gt: 8 }, tags: ['卫通', '亚太', '高通量'] }),
+  GEO('ap6d', '亚太 6D', 'APSTAR 6D', 134.0, 'Ku', { sat: { transponderBandwidth: 250, eirpSat: 58, gt: 10 }, tags: ['卫通', '亚太', '高通量'] }),
+  GEO('ap5c', '亚太 5C', 'APSTAR 5C', 138.0, 'C', { tags: ['卫通', '亚太'] }),
+  GEO('ap9', '亚太 9 号', 'APSTAR 9', 142.0, 'C', { tags: ['卫通', '亚太'] }),
+  GEO('cs19', '中星 19 号', 'CHINASAT 19', 163.0, 'Ka', { sat: { transponderBandwidth: 250, eirpSat: 58, gt: 10 }, tags: ['卫通', '高通量'] }),
 
   // ── 天启星座（低轨窄带物联网）──
   {
-    id: 'sat.tq1', cat: 'A', group: 'leo-iot', zh: '天启星座（一期 · 低倾角）', en: 'Tianqi Phase-1 (45° plane)', symbol: 'satellite-leo',
-    ports: [p('rf', 'sat_uhf', 'trx', 'data', 'UHF 收发')],
-    typical: true,
+    key: 'tq1', zh: '天启星座（一期 · 低倾角）', en: 'Tianqi Phase-1 (45 deg plane)', group: 'leo-iot', typical: true,
     sat: {
-      satelliteName: '天启一期', frequencyBand: 'L', orbitClass: 'NGSO', orbitAltitude: 900, orbitInclination: 45,
+      // ★ 频段是 UHF 不是 L：模板与终端的星地链路频率是 0.4 GHz（UHF 段 0.3–3.0 GHz）。
+      //   一期这里写着 L、端口却写死 sat_uhf，两者不一致被硬编码的端口盖住了；二期端口按
+      //   frequencyBand 现算，写错就是「C 站接不上 C 星」那类连不上。
+      satelliteName: '天启一期', frequencyBand: 'UHF', orbitClass: 'NGSO', orbitAltitude: 900, orbitInclination: 45,
       gt: -18, eirp: 10, procDelayMs: 0,
       aciUplinkFactor: 25, adjUplinkFactor: 22, xpolUplinkFactor: 20, hpaIntermodFactor: 25,
       aciDownlinkFactor: 25, adjDownlinkFactor: 22, xpolDownlinkFactor: 20, xpdrIntermodFactor: 25
     },
-    place: { modes: ['orbit'], mountable: false },
     tags: ['天启', '物联', '低轨'],
     src: '[天启] 36 颗 900 km / 45°（六轨道面 × 6）；UHF；准实时。载荷 G/T 与 EIRP 为该类窄带低轨典型值'
   },
   {
-    id: 'sat.tq1sso', cat: 'A', group: 'leo-iot', zh: '天启星座（一期 · 太阳同步）', en: 'Tianqi Phase-1 (SSO)', symbol: 'satellite-leo',
-    ports: [p('rf', 'sat_uhf', 'trx', 'data', 'UHF 收发')],
-    typical: true,
+    key: 'tq1sso', zh: '天启星座（一期 · 太阳同步）', en: 'Tianqi Phase-1 (SSO)', group: 'leo-iot', typical: true,
     sat: {
-      satelliteName: '天启一期SSO', frequencyBand: 'L', orbitClass: 'NGSO', orbitAltitude: 900, orbitInclination: 97,
+      satelliteName: '天启一期SSO', frequencyBand: 'UHF', orbitClass: 'NGSO', orbitAltitude: 900, orbitInclination: 97,
       gt: -18, eirp: 10, procDelayMs: 0
     },
-    place: { modes: ['orbit'], mountable: false },
     tags: ['天启', '物联', '低轨'],
     src: '[天启] 2 颗 97° 倾角太阳同步轨道'
   },
   {
-    id: 'sat.tq2', cat: 'A', group: 'leo-iot', zh: '天启星座（二期 · IOT-NTN）', en: 'Tianqi Phase-2 (IoT-NTN)', symbol: 'satellite-leo',
-    ports: [p('rf', 'sat_s', 'trx', 'data', 'UHF/L/S 收发'), p('isl', 'isl_rf', 'trx', 'data', '星间链路')],
-    typical: true,
+    key: 'tq2', zh: '天启星座（二期 · IOT-NTN）', en: 'Tianqi Phase-2 (IoT-NTN)', group: 'leo-iot', typical: true,
     sat: {
       satelliteName: '天启二期', frequencyBand: 'S', orbitClass: 'NGSO', orbitAltitude: 900, orbitInclination: 45,
       gt: -14, eirp: 14, procDelayMs: 5
     },
-    place: { modes: ['orbit'], mountable: false },
     tags: ['天启', '物联', '低轨', 'NTN'],
     src: '[天启] 48 星，900 km，UHF/L/S，IOT-NTN 体制，支持星间链路，实时'
   },
 
   // ── 通用占位星（用户自填 / 从星历取）──
   {
-    id: 'sat.generic.geo', cat: 'A', group: 'generic', zh: '通用 GEO 透明转发星', en: 'Generic GEO bent-pipe', symbol: 'satellite-geo',
-    ports: [p('rf', 'sat_ku', 'trx', 'data', '转发器')],
+    key: 'generic.geo', zh: '通用 GEO 透明转发星', en: 'Generic GEO bent-pipe', group: 'generic',
     sat: {
       satelliteName: 'GEO 卫星', frequencyBand: 'Ku', orbitClass: 'GSO', orbitLongitude: 110.5,
       gt: 2, sfdRef: -84, sfdGtRef: 0, BOi: 6, BOo: 3, transponderBandwidth: 36, eirpSat: 46, eirp: 28, procDelayMs: 0
     },
-    place: { modes: ['orbit'], mountable: false }, tags: ['通用'], src: '空白模板：轨位/频段/电平全部自填'
+    tags: ['通用'], src: '空白模板：轨位/频段/电平全部自填'
   },
   {
-    id: 'sat.generic.leo', cat: 'A', group: 'generic', zh: '通用 NGSO 卫星', en: 'Generic NGSO satellite', symbol: 'satellite-leo',
-    ports: [p('rf', 'sat_ka', 'trx', 'data', '载荷'), p('isl', 'isl_rf', 'trx', 'data', '星间链路')],
+    key: 'generic.leo', zh: '通用 NGSO 卫星', en: 'Generic NGSO satellite', group: 'generic',
     sat: {
       satelliteName: 'NGSO 卫星', frequencyBand: 'Ka', orbitClass: 'NGSO', orbitAltitude: 1200, orbitInclination: 53,
       gt: 5, eirp: 30, procDelayMs: 2
     },
-    place: { modes: ['orbit'], mountable: false }, tags: ['通用'], src: '空白模板'
+    tags: ['通用'], src: '空白模板'
   },
   {
-    id: 'sat.generic.regen', cat: 'A', group: 'generic', zh: '再生式处理载荷星', en: 'Regenerative payload satellite', symbol: 'satellite-leo',
-    ports: [p('rf', 'sat_ka', 'trx', 'data', '载荷'), p('isl', 'isl_laser', 'trx', 'data', '星间激光')],
+    key: 'generic.regen', zh: '再生式处理载荷星', en: 'Regenerative payload satellite', group: 'generic',
     sat: {
       satelliteName: '再生式卫星', frequencyBand: 'Ka', orbitClass: 'NGSO', orbitAltitude: 1200, orbitInclination: 53,
       gt: 8, eirp: 32, procDelayMs: 5
     },
-    place: { modes: ['orbit'], mountable: false }, tags: ['通用', '再生'], src: '空白模板：星上解调-重调，链上按再生节点切段'
+    tags: ['通用', '再生'], src: '空白模板：星上解调-重调，链上按再生节点切段'
   }
 ];
 
@@ -411,4 +408,4 @@ const STATIONS = [
   })
 ];
 
-module.exports = { SATS, STATIONS, p, PORT_RJ45, PORT_DC, PORT_AC, PORT_485, es, B };
+module.exports = { SAT_PRESETS_SCENE, STATIONS, p, PORT_RJ45, PORT_DC, PORT_AC, PORT_485, es, B };

@@ -7,6 +7,12 @@
 // 「两种可视化是同一个场景的两个投影」这条设计约束在数据层就成立了。
 
 import { reactive, computed, watch } from 'vue'
+import { clock } from '../../stores/simClock.js'
+import { orbitFromPoolRec, applyOrbitToForm } from '../../shared/satPick.js'
+import {
+  readWholeLibrary, writeSatList, normSatEntry, blankSatEntry, maxSatSeq,
+  resolveSatNode, satOrbitSpec, satBrief
+} from './sceneSatLib.js'
 
 // ★ preload 暴露的全局名是 window.api（不是 electronAPI）—— 写错的话整个功能在真实应用里
 //   静默失效：所有 IPC 调用都变成 undefined?.() 的可选链，不报错、也永远拿不到数据。
@@ -40,18 +46,37 @@ export const scene = reactive({
   // ── 库与目录（IPC 取一次，缓存）──
   lib: [], libTree: [], catalog: null, templates: [], industries: [],
   libReady: false, libError: '',
+  // ── 平台卫星库（library.json 的 'e2e'.sat，与端到端窗口共用同一份）──
+  // ★ 卫星不在模块库里：一条卫星定义一次，两个工作台都用。见 sceneSatLib.js 的头注。
+  satLib: [], satLibReady: false, satLibError: '', satPresets: [],
 
   // ── 计算 ──
-  result: null, busy: false, error: '', dirty: true, ms: 0
+  result: null, busy: false, error: '', dirty: true, ms: 0,
+  // 几何预解：星地 / 星间边按真轨道解出的斜距与仰角（key 见 geoKeyOf）。
+  // 解不出（无网 / 无星历 / 缺站址）就留空，core 退回圆轨道最差几何的闭式并照旧告警。
+  geo: {}, geoWarn: [], geoBusy: false
 })
 
 // ── 索引 ──
 export const modById = computed(() => new Map(scene.modules.map((m) => [m.id, m])))
 export const libById = computed(() => new Map(scene.lib.map((m) => [m.id, m])))
 export const linkById = computed(() => new Map(scene.links.map((l) => [l.id, l])))
+export const satById = computed(() => new Map(scene.satLib.map((c) => [c.id, c])))
 export const libOf = (m) => (m ? libById.value.get(m.libId) || null : null)
+/** 场景实例引用的卫星库条目（kind:'sat' 的实例走这条） */
+export const satEntryOf = (m) => (m && m.kind === 'sat' ? satById.value.get(m.satId) || null : null)
+export const isSat = (m) => !!(m && m.kind === 'sat')
+
 /** 实例的有效值：库条目 + 逐条覆盖（ov）。渲染与检查器都走它，别各算各的 */
 export function effective(m) {
+  // 卫星：库在平台卫星库里，形状由 sceneSatLib.resolveSatNode 拼（与 core 的同名函数同构）
+  if (isSat(m)) {
+    const e = satEntryOf(m)
+    if (!e) return null
+    const r = resolveSatNode(e, m)
+    r.instId = m.id
+    return r
+  }
   const b = libOf(m)
   if (!b) return null
   const out = JSON.parse(JSON.stringify(b))
@@ -92,11 +117,80 @@ export async function loadLibrary(force) {
     scene.catalog = c || null
     scene.templates = (tp && tp.list) || []
     scene.industries = (tp && tp.industries) || []
+    scene.satPresets = (c && c.satPresets) || []
     scene.libReady = true
+    await loadSatLibrary(force)
   } catch (e) {
     scene.libError = e && e.message ? e.message : String(e)
   }
 }
+// ═══════════════════════════════════════════════════════════════════════════
+// 平台卫星库
+// ═══════════════════════════════════════════════════════════════════════════
+/** 读库。force=true 用于 window focus 时把另一个窗口的改动收进来 */
+export async function loadSatLibrary(force) {
+  if (scene.satLibReady && !force) return
+  try {
+    const lib = await readWholeLibrary()
+    const list = (lib && Array.isArray(lib.sat)) ? lib.sat : []
+    scene.satLib = list.map(normSatEntry)
+    scene.satLibError = ''
+    scene.satLibReady = true
+  } catch (e) {
+    scene.satLibError = (e && e.message) || String(e)
+  }
+}
+/** 写库（读 → 只改 sat 数组 → 写；不碰端到端窗口的地球站库与 seq） */
+export async function saveSatLibrary() {
+  const r = await writeSatList(scene.satLib)
+  if (!r.ok) scene.satLibError = r.error
+  return r
+}
+let _satSaveT = null
+/** 防抖写库：检查器里逐字符改参数不能每敲一下就落一次盘 */
+export function scheduleSatSave() {
+  clearTimeout(_satSaveT)
+  _satSaveT = setTimeout(() => { saveSatLibrary() }, 500)
+}
+/** 新建一条卫星库条目（form 为出厂值上的覆盖）。返回条目 */
+export function addSatEntry(name, form, ngsoSat, presetKey) {
+  const id = 'sat' + (maxSatSeq(scene.satLib) + 1)
+  const e = blankSatEntry(id, name || '')
+  if (form) Object.assign(e.form, form)
+  if (ngsoSat) e.ngsoSat = JSON.parse(JSON.stringify(ngsoSat))
+  if (presetKey) e.presetKey = presetKey       // 模板按 preset 找条目时认这个（老存档迁移同法）
+  scene.satLib.push(e)
+  scheduleSatSave()
+  return e
+}
+/**
+ * 星历池里的一条记录 → 卫星库条目。轨道来自真实根数（OMM / 六根数），
+ * ★ 电平类参数一律留默认由工程师填 —— 平台既定：卫星 EIRP / G·T 不做自动取值。
+ * @param opt { gso: 建成静止星条目, lon: 定点经度, zh: 中文名 }
+ */
+export function addSatEntryFromRec(rec, opt) {
+  if (!rec) return null
+  const o = opt || {}
+  const form = {}
+  form.satelliteName = o.zh || rec.name
+  form.orbitClass = o.gso ? 'GSO' : 'NGSO'
+  if (o.gso && o.lon != null) form.orbitLongitude = String(o.lon)
+  // 预置里有同名星就把它的频段带上（中星 / 亚太那 20 颗）；没有就留出厂默认
+  const pre = (scene.satPresets || []).find((p) => String(p.en || '').toUpperCase() === String(rec.name || '').toUpperCase())
+  if (pre && pre.band) form.frequencyBand = pre.band
+  const ngsoSat = { mode: 'search', orbit: orbitFromPoolRec(rec), name: rec.name, noradId: rec.noradId || null, folder: '' }
+  applyOrbitToForm(form, ngsoSat.orbit)
+  return addSatEntry(o.zh || rec.name, form, ngsoSat, pre ? pre.key : '')
+}
+
+export function removeSatEntry(id) {
+  scene.satLib = scene.satLib.filter((c) => c.id !== id)
+  scheduleSatSave()
+}
+/** 场景里引用某条卫星库条目的模块数（删条目前要问一句） */
+export const satRefCount = (id) => scene.modules.filter((m) => m.kind === 'sat' && m.satId === id).length
+export { satBrief, satOrbitSpec }
+
 export const mediaOf = (key) => (scene.catalog ? (scene.catalog.media || []).find((m) => m.key === key) || null : null)
 export const mediaLabel = (key) => { const m = mediaOf(key); return m ? m.zh : key }
 export const tierOf = (key) => { const m = mediaOf(key); return m ? m.tier : null }
@@ -119,6 +213,22 @@ export function addModule(libId, place, name) {
   scene.modules.push(m); touch()
   return m
 }
+/**
+ * 往场景里放一颗卫星（引用平台卫星库的一条）。
+ * ★ 与 addModule 分开：卫星没有 libId、没有站址，参数真值在卫星库里不在模块库里。
+ */
+export function addSatModule(satId, name) {
+  const e = satById.value.get(satId)
+  if (!e) return null
+  const m = {
+    id: uid('m'), kind: 'sat', satId,
+    name: name || uniqName(e.name || (e.form && e.form.satelliteName) || '卫星'),
+    place: { mode: 'orbit' }, ov: {}
+  }
+  scene.modules.push(m); touch()
+  return m
+}
+
 function uniqName(base) {
   const used = new Set(scene.modules.map((m) => m.name))
   if (!used.has(base)) return base
@@ -214,10 +324,66 @@ export function ovOf(modId, path) {
 // ═══════════════════════════════════════════════════════════════════════════
 // 模板与存档
 // ═══════════════════════════════════════════════════════════════════════════
+/**
+ * 预置 key → 平台卫星库里的条目。已经建过就复用（按 presetKey 认，改过名也认得出），
+ * 没有就建一条。★ 模板与老存档都走这条，两边不许各建一份。
+ */
+export async function ensureSatEntry(presetKey, name) {
+  await loadSatLibrary()
+  const hit = scene.satLib.find((c) => c.presetKey === presetKey)
+  if (hit) return hit
+  const p = await scn().satPreset?.(presetKey)
+  if (!p) return null
+  // 预置里的 sat 是 SAT_FIELDS 形状的出厂值，直接盖在空壳的默认值上
+  const form = {}
+  for (const k of Object.keys(p.sat || {})) form[k] = p.sat[k] == null ? '' : String(p.sat[k])
+  return addSatEntry(name || p.zh, form, null, presetKey)
+}
+
+/**
+ * 场景里的卫星实例归一：
+ *   · 模板送来的是 { kind:'sat', preset }（core 侧已内联 sat 供单测直接算）——
+ *     在这里换成对平台卫星库的引用，参数真值从此跟着库走；
+ *   · 老存档送来的是 { libId:'sat.xxx' }（一期把卫星当模块库条目）—— 同法迁移一次。
+ * 迁移只改引用，实例 ov（本场景那一片带宽 / G-T / EIRP）原样保留。
+ */
+let _migrating = null
+async function migrateSatModules() {
+  // ★ 重入保护：applyTemplate 里 loadScene 已经起过一轮（它是同步接口，只能 fire-and-forget），
+  //   外层再 await 一次时不能【又】跑一遍 —— 两轮并发各自没看见对方建的条目，
+  //   同一颗预置星就会在卫星库里建出两条。
+  if (_migrating) { await _migrating; return }
+  _migrating = (async () => { await _migrateSatModules() })()
+  try { await _migrating } finally { _migrating = null }
+}
+async function _migrateSatModules() {
+  let changed = false
+  for (const m of scene.modules) {
+    const preset = m.preset || (typeof m.libId === 'string' && m.libId.startsWith('sat.') ? m.libId.slice(4) : '')
+    if (m.kind === 'sat' && m.satId) { cleanSatInst(m); continue }
+    if (!preset) continue
+    const e = await ensureSatEntry(preset, m.name)
+    m.kind = 'sat'
+    m.satId = e ? e.id : ''
+    m.place = { mode: 'orbit' }
+    delete m.libId
+    cleanSatInst(m)
+    changed = true
+  }
+  if (changed) touch()
+}
+// core 内联进来的那几个字段（sat / ports / symbol / cat / payloadKind / preset）不进存档：
+// 它们是【库的投影】，留在实例上就成了第二份真值源，库改了实例不跟着变。
+function cleanSatInst(m) {
+  delete m.sat; delete m.ports; delete m.symbol; delete m.cat; delete m.payloadKind
+  delete m.typical; delete m.preset; delete m.orbit
+}
+
 export async function applyTemplate(id) {
   const t = await scn().template?.(id)
   if (!t) return false
   loadScene({ name: t.name, tplId: t.tplId, modules: t.modules, links: t.links, flows: t.flows })
+  await migrateSatModules()
   return true
 }
 export function newScene() {
@@ -233,6 +399,13 @@ export function loadScene(s) {
   scene.carrier = Object.assign({ ...DEFAULT_CARRIER }, s.carrier || {})
   scene.nudge = JSON.parse(JSON.stringify(s.nudge || {}))
   scene.sel = null; scene.result = null; scene.error = ''; scene.dirty = true
+  scene.geo = {}; scene.geoWarn = []
+  // 老存档里的卫星是模块库的 A 类条目（libId:'sat.*'）：进场即迁到平台卫星库的引用上。
+  // 不 await —— loadScene 是同步接口（多处调用方不认 Promise）；迁移只改引用，
+  // 迁完自然触发重绘，计算前 compute() 也会再看到迁好的那份。
+  if (scene.modules.some((m) => m.kind === 'sat' || (typeof m.libId === 'string' && m.libId.startsWith('sat.')))) {
+    migrateSatModules()
+  }
 }
 /** 存档载荷（configs.scene.json 里存的就是它） */
 export const snapshot = () => ({
@@ -244,15 +417,38 @@ export const snapshot = () => ({
 // ═══════════════════════════════════════════════════════════════════════════
 // 计算
 // ═══════════════════════════════════════════════════════════════════════════
+/**
+ * 送算的场景载荷。★ 卫星模块在这里就地解析成【已带 sat 参数的节点】——
+ * 平台卫星库在渲染端，主进程与 core 看不到也不该看到它（与「几何由调用方解好后注入」同一分工）。
+ */
+export function computePayloadScene() {
+  const modules = []
+  for (const m of scene.modules) {
+    if (m.kind === 'sat') {
+      const e = effective(m)
+      if (!e) { modules.push({ id: m.id, kind: 'sat', satId: m.satId, name: m.name, sat: {} }); continue }
+      modules.push({
+        id: m.id, kind: 'sat', satId: m.satId, name: m.name,
+        sat: e.sat, payloadKind: e.payloadKind, typical: !!e.typical, symbol: e.symbol
+      })
+    } else modules.push(m)
+  }
+  return JSON.parse(JSON.stringify({ modules, links: scene.links, flows: scene.flows }))
+}
+
 export async function compute() {
   if (scene.busy) return
   scene.busy = true; scene.error = ''
   const t0 = performance.now()
   try {
+    await solveGeometry()
     // ★ IPC 收不了 Vue 的响应式代理（结构化克隆过不去，且 invoke 会当场抛），出门前现造纯数据
     const payload = {
-      scene: JSON.parse(JSON.stringify({ modules: scene.modules, links: scene.links, flows: scene.flows })),
-      opts: { carrier: JSON.parse(JSON.stringify(scene.carrier)) }
+      scene: computePayloadScene(),
+      opts: {
+        carrier: JSON.parse(JSON.stringify(scene.carrier)),
+        geo: JSON.parse(JSON.stringify(scene.geo))
+      }
     }
     const r = await scn().compute?.(payload)
     if (!r || !r.ok) { scene.error = (r && r.error) || '计算失败'; scene.result = null }
@@ -264,6 +460,94 @@ export async function compute() {
     scene.ms = Math.round(performance.now() - t0)
     scene.busy = false
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 几何预解：星地 / 星间边走真轨道
+// ═══════════════════════════════════════════════════════════════════════════
+// 一期的星地几何只有两条闭式：GSO 静止闭式、NGSO「圆轨道高度 + 最低仰角」的最差斜距 ——
+// 后者连星历都不解，轨道高度还得手填。二期改成：卫星库条目有轨道 spec 时，把它连同站址
+// 交给主进程的 link:ngsoGeometry（core 的 solveNgsoMutualWorstCase，SGP4/SDP4 单一典型时刻
+// 最差几何），结果注入 opts.geo，与端到端窗口同一颗星同一站址逐位一致。
+//
+// ★ 解不出（无网 / 无星历 / 缺站址 / 没有轨道）不兜底编数：留空即可，
+//   core 的 buildChainDescriptor 会退回闭式并照旧报出那条「按圆轨道…最差几何计」的告警。
+//
+// ★ 缓存 key 要把「会改变几何的东西」全带上、把不相关的全排除：改一个功放功率不该重解一遍轨道。
+const geoKeyOf = (o) => JSON.stringify([o.orbit, o.st, o.t0ISO, o.horizonHours])
+
+/** 站址描述子（与端到端窗口的 stationGeoOf 同形） */
+function stationOf(mod, link) {
+  const pl = placeOf(mod.id)
+  if (!pl || pl.lat == null || pl.lon == null) return null
+  const lp = (link && link.params) || {}
+  return {
+    lonDeg: +pl.lon, latDeg: +pl.lat, altKm: (+pl.altM || 0) / 1000,
+    minElevDeg: lp.minElevDeg != null && lp.minElevDeg !== '' ? +lp.minElevDeg : 10,
+    freqGHz: +lp.freqUpGHz || +lp.freqGHz || 14
+  }
+}
+
+const _geoCache = new Map()
+
+/**
+ * 逐条卫星边解几何，写进 scene.geo。
+ * 键是 `${dir}:${linkId}`（core 侧 buildChainDescriptor 按这个键取）——最差几何与走向无关，
+ * 故 ab / ba 注同一份值。
+ */
+export async function solveGeometry() {
+  const lb = (api().linkBudget) || {}
+  scene.geoWarn = []
+  const out = {}
+  if (!lb.ngsoGeometry) { scene.geo = out; return out }
+  scene.geoBusy = true
+  const t0ISO = new Date(clock.tMs || Date.now()).toISOString()
+  const horizonHours = 24
+  try {
+    for (const lk of scene.links) {
+      const med = mediaOf(lk.medium)
+      if (!med || med.tier !== 'satellite') continue
+      const ea = effective(modById.value.get(lk.a.modId))
+      const eb = effective(modById.value.get(lk.b.modId))
+      if (!ea || !eb) continue
+      const isIsl = lk.medium === 'isl_rf' || lk.medium === 'isl_laser'
+      let req = null, kind = ''
+      if (isIsl) {
+        if (!ea.orbit || !eb.orbit) { scene.geoWarn.push(`「${ea.name} ↔ ${eb.name}」星间几何：两端须各有可用轨道`); continue }
+        req = { orbitA: ea.orbit, orbitB: eb.orbit, t0ISO, horizonHours, freqGHz: +((lk.params || {}).freqGHz) || 23 }
+        kind = 'isl'
+      } else {
+        const sat = ea.cat === 'A' ? ea : (eb.cat === 'A' ? eb : null)
+        const es = ea.cat === 'A' ? eb : ea
+        if (!sat) continue
+        if (!sat.orbit) { scene.geoWarn.push(`「${sat.name}」没有可用轨道（GSO 需定点经度；NGSO 需轨道高度或选一颗星）`); continue }
+        const st = stationOf(scene.modules.find((m) => m.id === es.instId) || {}, lk)
+        if (!st) { scene.geoWarn.push(`「${es.name}」没有站址坐标，几何按闭式最差值计`); continue }
+        req = { orbit: sat.orbit, st, t0ISO, horizonHours }
+        kind = 'es'
+      }
+      const key = kind + '|' + geoKeyOf(kind === 'isl' ? { orbit: [req.orbitA, req.orbitB], st: null, t0ISO, horizonHours } : req)
+      let g = _geoCache.get(key)
+      if (g === undefined) {
+        try {
+          g = kind === 'isl'
+            ? await lb.islGeometry({ orbitA: req.orbitA, orbitB: req.orbitB, t0ISO, horizonHours, freqGHz: req.freqGHz })
+            : await lb.ngsoGeometry({ orbit: req.orbit, tx: req.st, rx: req.st, t0ISO, horizonHours })
+        } catch { g = null }
+        _geoCache.set(key, g)
+        // 缓存无上限会随「拖时间轴 + 改站址」一路涨；几十条封顶足够一轮计算复用
+        if (_geoCache.size > 200) _geoCache.delete(_geoCache.keys().next().value)
+      }
+      if (!g || !g.feasible) { scene.geoWarn.push(`「${ea.name} ↔ ${eb.name}」几何无解：${(g && g.reason) || '求解失败'}，按闭式最差值计`); continue }
+      const v = kind === 'isl'
+        ? { rangeKm: g.worst && g.worst.rangeKm, method: g.method || '' }
+        : { slantRange: g.worst.up.slantKm, elevation: g.worst.up.elevDeg, method: g.method || '' }
+      out['ab:' + lk.id] = v
+      out['ba:' + lk.id] = v
+    }
+  } finally { scene.geoBusy = false }
+  scene.geo = out
+  return out
 }
 
 // 结果索引：按流 id 取
@@ -283,6 +567,24 @@ export function linkReadings(linkId) {
     }
   }
   return out
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 自检钩子
+// ═══════════════════════════════════════════════════════════════════════════
+// 与平台既有的 window.__reportReady / window.__i18nMisses 同一套做法：把这份模块级单例
+// 挂出来，供 .sceneharness/electron-check.mjs 在【真 Electron 窗口】里跑端到端自检。
+// ★ 这三条 vite 验证台测不了，只能在真窗口里验：星历取自主进程（内置 OMM 兜底 + 联网）、
+//   卫星库落在 userData/library.json、几何走 link:ngsoGeometry。
+// 只挂只读引用，不改变任何运行时行为。
+if (typeof window !== 'undefined') {
+  window.__sceneStore = {
+    scene, effective, satOrbitSpec,
+    loadLibrary, loadSatLibrary, saveSatLibrary,
+    newScene, applyTemplate, compute, solveGeometry, computePayloadScene,
+    addSatEntry, addSatEntryFromRec, addSatModule, addModule, addLink, addFlow,
+    ensureSearchPool: () => import('../../ngso/satSearchPool.js').then((m) => m.ensureSearchPool())
+  }
 }
 
 // 改了数据就把结果标记为过期（不自动重算：整场景重算要跑真引擎，逐字符触发会卡）

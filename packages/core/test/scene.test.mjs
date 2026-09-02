@@ -16,6 +16,7 @@ const TER = require('../utils/sceneTerrestrial.js')
 const ENG = require('../utils/sceneEnergy.js')
 const LIB = require('../utils/sceneLibrary.js')
 const RED = require('../utils/sceneReduce.js')
+const SAT = require('../utils/sceneSat.js')
 const linkChain = require('../utils/linkChain.js')
 
 let pass = 0, fail = 0
@@ -163,7 +164,8 @@ ok('内置模块库装载且全库自检干净', LIB.BUILTIN.length > 120 && LIB
   back.find((m) => m.id === 'es.ka.fixed.098').rf.antennaDiameter = 0.98
   ok('改回原样后差异清空（一轮往返不留残渣）', Object.keys(LIB.storeFromList(back).overrides).length === 0)
   ok('自建 id 带 usr: 前缀，与内置分家', LIB.blankModule('D', 'x').id.startsWith('usr:'))
-  ok('八类都有条目', LIB.libraryTree(null).length === 8)
+  ok('模块库七类都有条目（A 空间段已移出模块库：卫星引用平台卫星库）', LIB.libraryTree(null).length === 7)
+  ok('★ 模块库里不再有 A 类条目', LIB.BUILTIN.every((m) => m.cat !== 'A'), `${LIB.BUILTIN.length} 条`)
 }
 
 /* ═══════ ⑤ 可用度合成：串联 vs 并联 ═══════ */
@@ -211,7 +213,9 @@ const scene = {
     { id: 'm2', libId: 'es.c.iot.015', name: '村口 C 频段站', place: { mode: 'fixed', lat: 43.8, lon: 87.6, altM: 900, rainRate: 18, availPct: 99.5 } },
     // ★ 波束 EIRP / G_T 是【工程师经对地覆盖分析后手填】的（平台既定口径，库里只给占位）。
     //   这里用实例级 ov 填入，同时也验证了 ov 覆盖库条目这条路。
-    { id: 'm3', libId: 'sat.cs6c', name: '中星 6C', ov: { sat: { gt: 2.5, eirpSat: 44 } } },
+    // ★ 卫星是 kind:'sat' 的实例、不查模块库：它引用的是【平台卫星库】（渲染端那份），
+    //   core 吃的是调用方解析好的 sat 参数。这里内联一份预置展开，与渲染端送来的形状同构。
+    SAT.satNodeFromPreset('cs6c', { id: 'm3', name: '中星 6C', ov: { sat: { gt: 2.5, eirpSat: 44 } } }),
     { id: 'm4', libId: 'es.hub.c.11m', name: '北京信关站', place: { mode: 'fixed', lat: 39.9, lon: 116.4, altM: 50, rainRate: 42, availPct: 99.9 } },
     { id: 'm5', libId: 'ctr.dc', name: '省公司数据中心', place: { mode: 'fixed', lat: 39.9, lon: 116.4, altM: 50 } }
   ],
@@ -282,7 +286,8 @@ function sat0(d) { return d.segments.find((s) => s.kind === 'sat') }
   const r4 = RED.computeScene(s4, null, engines, { carrier: CARRIER })
   ok('断链如实报「没有连通路径」', r4.flows[0].dirs.every((d) => /没有连通路径/.test(d.errors.join(''))))
   const s5 = JSON.parse(JSON.stringify(scene))
-  s5.modules[2].libId = 'sat.cs26'          // 换成 Ka 星，C 站接不上
+  // 换成 Ka 星（中星 26 号），C 频段站接不上 —— 端口的空口介质随卫星库条目的工作频段走
+  s5.modules[2] = SAT.satNodeFromPreset('cs26', { id: 'm3', name: '中星 26 号' })
   const r5 = RED.computeScene(s5, null, engines, { carrier: CARRIER })
   ok('频段不符的连线被端口系统挡下', r5.errors.some((e) => /方向不相容|端口|介质/.test(e)) || r5.flows[0].dirs.some((d) => d.errors.length > 0))
 }
@@ -352,7 +357,7 @@ function sat0(d) { return d.segments.find((s) => s.kind === 'sat') }
   ok('★ 老符号别名表逐条指向存在的图标（一期存档的自建模块不掉图）', legacyMiss.length === 0, legacyMiss.join(' '))
   ok('老符号 id 走别名解析（不落兜底件）', symbolSpec({ id: 'usr:x', symbol: 'sensor' }).icon !== FALLBACK_ICON)
   ok('自建条目显式给的新式图标名压过映射表（改写层口径：换图标也是一条差异）',
-    symbolSpec({ id: 'sat.cs6c', symbol: 'tabler:cpu' }).icon === 'tabler:cpu')
+    symbolSpec({ id: 'es.c.iot.015', symbol: 'tabler:cpu' }).icon === 'tabler:cpu')
   ok('认不出的模块落兜底件（不伪装成某种设备）', symbolSpec({ id: 'usr:zzz' }).icon === FALLBACK_ICON)
 
   // 回放：记账用的假 2D 上下文（与 markSymbols.test.mjs 同一套做法）
@@ -402,6 +407,95 @@ function sat0(d) { return d.segments.find((s) => s.kind === 'sat') }
   ok('无人机 / 固定翼 / 直升机 / 浮空器解析出的图标都在「会飞」那一组',
     ['veh.uav.multi', 'veh.uav.fixed', 'veh.uav.heli', 'veh.balloon']
       .every((i) => /drone|plane|helicopter|balloon/.test(iconOf(LIB.BUILTIN.find((m) => m.id === i)))))
+}
+
+
+/* ═══════ ⑩ 卫星库（二期：卫星从模块库移出，改为引用平台卫星库）═══════ */
+// 锁定的是这次改动最容易破的三处：
+//   · 模块库里不再有 A 类，卫星节点由调用方解析好后送进来（core 不查任何库）；
+//   · ★ 频段 → 空口介质这张表在 core 与渲染端各有一份（core 是 CommonJS，浏览器侧进不来），
+//     错一条就是「画得出、算出来的却是另一个频段」——这里逐条对拍；
+//   · 15 个模板全部迁移后仍算得出（模板里的卫星写的是预置 key，core 侧就地展开）。
+{
+  const SATLIB = await import('../../../src/viz/scene/sceneSatLib.js')
+
+  ok('★ 模块库里没有 A 类条目（卫星已移出）', LIB.BUILTIN.every((m) => m.cat !== 'A'))
+  ok('预置卫星表 25 条（一期那 20 颗 GEO + 天启 + 通用一条没删）', SAT.SAT_PRESETS_SCENE.length === 25, `${SAT.SAT_PRESETS_SCENE.length} 条`)
+  ok('预置逐条有英文编目名（轨位目录搜中文名要靠它命中）',
+    SAT.SAT_PRESETS_SCENE.filter((p) => p.group === 'geo-cn').every((p) => /^[A-Z]/.test(p.en || '')))
+
+  // 频段 → 空口介质：core 与渲染端镜像逐条对拍
+  {
+    const a = SAT.BAND_MEDIUM, b = SATLIB.BAND_MEDIUM
+    const ka = Object.keys(a).sort(), kb = Object.keys(b).sort()
+    const diff = ka.filter((k) => a[k] !== b[k]).concat(kb.filter((k) => !(k in a)))
+    ok('★ 频段→空口介质表 core 与渲染端镜像逐条一致', ka.join() === kb.join() && diff.length === 0, diff.join(' '))
+    ok('认不出的频段返回 null（不静默按 Ku 算）', SAT.satMedium('XYZ') === null && SATLIB.satMedium('XYZ') === null)
+    ok('Ku-BSS 走 Ku 空口（广播频段物理上仍是 Ku）', SAT.satMedium('Ku-BSS') === 'sat_ku')
+  }
+  // 端口：GSO 只给空口，NGSO 另给星间微波 / 激光
+  {
+    const g = SAT.satPorts({ frequencyBand: 'C', orbitClass: 'GSO' })
+    const n = SAT.satPorts({ frequencyBand: 'Ka', orbitClass: 'NGSO' })
+    ok('GSO 卫星只有一个空口', g.length === 1 && g[0].medium === 'sat_c')
+    ok('NGSO 卫星另带星间微波 / 激光两口', n.length === 3 && n[1].medium === 'isl_rf' && n[2].medium === 'isl_laser')
+    ok('★ 端口表 core 与渲染端镜像逐条一致',
+      JSON.stringify(g) === JSON.stringify(SATLIB.satPorts({ frequencyBand: 'C', orbitClass: 'GSO' })) &&
+      JSON.stringify(n) === JSON.stringify(SATLIB.satPorts({ frequencyBand: 'Ka', orbitClass: 'NGSO' })))
+  }
+  // 解析：库条目 ⊕ 实例覆盖
+  {
+    const node = SAT.satNodeFromPreset('cs6c', { id: 'x', ov: { sat: { transponderBandwidth: 0.5, gt: 2.5 } } })
+    ok('库出厂值被实例覆盖盖住（口径 5：真值在库、场景里改的是实例）', node.sat.transponderBandwidth === 0.5 && node.sat.gt === 2.5)
+    ok('没覆盖的字段仍是库值', node.sat.orbitLongitude === 130 && node.sat.frequencyBand === 'C')
+    ok('给了 SFD 判透明转发', node.payloadKind === 'txp')
+    ok('没给 SFD 判再生', SAT.satNodeFromPreset('generic.leo', { id: 'y' }).payloadKind === 'regen')
+    ok('静止 / 非静止两档符号', node.symbol === 'tabler:satellite' && SAT.satNodeFromPreset('tq1', { id: 'z' }).symbol === 'lucide:satellite')
+    // 渲染端镜像出同一份
+    const m = SATLIB.resolveSatNode({ id: 's1', name: '中星 6C', form: SAT.satPresetOf('cs6c').sat, ngsoSat: { mode: 'manual', orbit: null } },
+      { id: 'x', satId: 's1', ov: { sat: { transponderBandwidth: 0.5, gt: 2.5 } } })
+    ok('★ 卫星节点解析 core 与渲染端镜像同构（sat / ports / payloadKind / symbol）',
+      JSON.stringify(m.sat) === JSON.stringify(node.sat) && JSON.stringify(m.ports) === JSON.stringify(node.ports) &&
+      m.payloadKind === node.payloadKind && m.symbol === node.symbol)
+    ok('渲染端镜像另给出轨道 spec（GSO → 定点经度的 snapshot）',
+      m.orbit && m.orbit.type === 'snapshot' && m.orbit.lonDeg === 130 && m.orbit.altKm === 35786)
+  }
+  // 缺参数 / 频段未知要如实报错，不静默兜底
+  {
+    const bad = { modules: [{ id: 'a', kind: 'sat', name: '怪星', sat: { frequencyBand: 'ZZZ' } }], links: [], flows: [] }
+    const r = RED.computeScene(bad, null, engines, {})
+    ok('工作频段未知如实报错', r.errors.some((e) => /频段未知/.test(e)), r.errors.join(' '))
+    const empty = { modules: [{ id: 'a', kind: 'sat', name: '空星', sat: {} }], links: [], flows: [] }
+    const r2 = RED.computeScene(empty, null, engines, {})
+    ok('卫星库条目已删（无参数）如实报错', r2.errors.some((e) => /没有参数/.test(e)), r2.errors.join(' '))
+  }
+  // 注入几何压过闭式（真轨道那条路：渲染端解好后按 `${dir}:${linkId}` 注进来）
+  {
+    const s6 = JSON.parse(JSON.stringify(scene))
+    s6.modules[2] = SAT.satNodeFromPreset('cs6c', { id: 'm3', name: '中星 6C', ov: { sat: { gt: 2.5, eirpSat: 44 } } })
+    const base = RED.computeScene(s6, null, engines, { carrier: CARRIER })
+    const inj = { 'ab:L2': { slantRange: 41000, elevation: 30 }, 'ba:L2': { slantRange: 41000, elevation: 30 },
+      'ab:L3': { slantRange: 38500, elevation: 45 }, 'ba:L3': { slantRange: 38500, elevation: 45 } }
+    const with_ = RED.computeScene(s6, null, engines, { carrier: CARRIER, geo: inj })
+    const hopOf = (r, d, i) => { const sg = r.flows[0].dirs[d].segments.find((x) => x.kind === 'sat'); return +(sg && sg.hops && sg.hops[i] || {}).distanceResult }
+    ok('★ 注入的真几何压过闭式（斜距按注入值走）', Math.abs(hopOf(with_, 0, 0) - 41000) < 1, `${hopOf(with_, 0, 0)} vs 闭式 ${hopOf(base, 0, 0)}`)
+    ok('闭式那一版确实不是这个值（说明注入真的改变了结果）', Math.abs(hopOf(base, 0, 0) - 41000) > 100, `闭式 ${hopOf(base, 0, 0)}`)
+    ok('两向注同一份值（最差几何与走向无关）', Math.abs(hopOf(with_, 1, 1) - 41000) < 1, `${hopOf(with_, 1, 1)}`)
+  }
+  // 15 个模板：卫星改写成预置引用之后仍全部算得出
+  {
+    const T = require('../utils/sceneTemplates.js')
+    const bad = []
+    for (const t of T.listTemplates()) {
+      const sc = T.buildTemplate(t.id)
+      // 机器狗管廊巡检是纯地面场景（Mesh + 光纤），本来就没有卫星段 —— 不能拿「有没有卫星」当判据
+      const satMods = sc.modules.filter((m) => m.kind === 'sat')
+      if (satMods.some((m) => !m.preset || !m.sat || !Object.keys(m.sat).length)) { bad.push(t.id + '(卫星未展开)'); continue }
+      const r = T && RED.computeScene(sc, null, engines, { carrier: CARRIER })
+      if (r.errors.length) bad.push(t.id + '：' + r.errors[0])
+    }
+    ok('★ 15 个模板迁移后全部算得出（模板里的卫星写预置 key，core 侧就地展开）', bad.length === 0, bad.slice(0, 3).join(' | ') || '15/15')
+  }
 }
 
 

@@ -15,7 +15,7 @@ import { drawSymbol, symbolIds } from '../viz/scene/sceneSymbols.js'
 const api = () => ((typeof window !== 'undefined' && window.api && window.api.scene) || {})
 
 const mods = ref([])
-const cats = ref([])
+const cats = ref([])   // 只含模块库里那几类（A 空间段已移出，见 sceneSat.js）
 const groups = ref({})
 const catalog = ref(null)
 const err = ref('')
@@ -44,7 +44,7 @@ async function reload() {
   try {
     const [l, c] = await Promise.all([api().libList?.({ includeHidden: true }), api().catalog?.()])
     mods.value = (l && l.modules) || []
-    cats.value = (l && l.cats) || []
+    cats.value = ((l && l.cats) || []).filter((c) => c.lib !== false)
     groups.value = (l && l.groups) || {}
     catalog.value = c || null
     err.value = (l && l.error) || ''
@@ -268,7 +268,7 @@ const stat = computed(() => ({
         </template>
 
         <!-- 卫星出厂值 -->
-        <template v-if="sel.sat || sel.cat === 'A'">
+        <template v-if="sel.sat">
           <div class="esec"><span>卫星出厂值</span>
             <label class="ck"><input type="checkbox" v-model="sel.typical" @change="mark" /><span>电平为该类典型值</span></label>
           </div>

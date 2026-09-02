@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('api', {
     libReset: (id) => ipcRenderer.invoke('scene:libReset', id),
     libResetAll: () => ipcRenderer.invoke('scene:libResetAll'),
     catalog: () => ipcRenderer.invoke('scene:catalog'),
+    satPreset: (key) => ipcRenderer.invoke('scene:satPreset', key),
     templates: () => ipcRenderer.invoke('scene:templates'),
     template: (id) => ipcRenderer.invoke('scene:template', id),
     compute: (payload) => ipcRenderer.invoke('scene:compute', payload),

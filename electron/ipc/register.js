@@ -458,8 +458,12 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   ipcMain.handle('scene:catalog', () => ({
     media: core().sceneMedia.MEDIA, cats: core().sceneMedia.MEDIA_CATS,
     connectors: core().sceneMedia.CONNECTORS, bands: core().sceneMedia.BANDS,
-    modCats: core().sceneLibrary.CATS, groups: core().sceneLibrary.GROUPS
+    modCats: core().sceneLibrary.CATS, groups: core().sceneLibrary.GROUPS,
+    // 预置卫星（一键在平台卫星库里建条目用）：卫星本身不在模块库里，见 utils/sceneSat.js
+    satPresets: core().sceneSat.listSatPresets()
   }))
+  // 一条预置 → 卫星库条目的出厂参数（渲染端建条目时取）
+  ipcMain.handle('scene:satPreset', (_e, key) => core().sceneSat.satPresetOf(String(key == null ? '' : key)))
   // 场景模板
   ipcMain.handle('scene:templates', () => ({ list: core().sceneTemplates.listTemplates(), industries: core().sceneTemplates.industries() }))
   ipcMain.handle('scene:template', (_e, id) => core().sceneTemplates.buildTemplate(String(id == null ? '' : id)))

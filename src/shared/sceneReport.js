@@ -73,7 +73,7 @@ export function buildSceneSheets(ctx) {
       const e = eff(m)
       const p = m.place || {}
       return {
-        name: m.name, cat: e.cat || '', lib: m.libId,
+        name: m.name, cat: e.cat || '', lib: m.libId || (m.kind === 'sat' ? '卫星库 ' + (m.satId || '') : ''),
         lat: p.mode === 'mounted' ? null : p.lat, lon: p.mode === 'mounted' ? null : p.lon, alt: p.altM,
         host: p.mode === 'mounted' ? nameOf(p.hostId) : '',
         dia: e.rf ? e.rf.antennaDiameter : null, pw: e.rf ? e.rf.opPowerW : null,

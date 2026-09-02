@@ -6117,7 +6117,8 @@ function scenePayload() {
     mods.push({
       // ★ symbol 送的是【库条目 id】不是图标名：图标由 viz/scene/sceneSymbolMap.js 逐条映射，
       //   两个渲染器各自调 drawSymbol 时现解析（含右下角徽标），这里不提前拍平。
-      id: inst.id, name: inst.name, symbol: e.id, cat: e.cat,
+      // 卫星送的是图标名（它不在模块库里、没有 libId），其余模块送库条目 id 由映射表逐条解析
+      id: inst.id, name: inst.name, symbol: e.kind === 'sat' ? e.symbol : e.id, cat: e.cat,
       // ★ 2D 平面图上，静止星画在【星下点】（赤道 × 定点经度）——这是平面海图/航图的通行画法。
       //   NGSO 没有历元就没有星下点，故留空：由渲染端画一段「↑ 卫星名」的上天短标，不编一个位置。
       lat: sat && sat.orbitClass === 'GSO' && sat.orbitLongitude != null ? 0 : (pl.lat != null ? +pl.lat : null),

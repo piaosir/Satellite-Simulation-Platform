@@ -5,6 +5,7 @@
 // 就被 7 类量纲完全不同的传感器共用（测温、舞动、渗压、GNSS 位移、裂缝、光纤 DAS、空气质量）。
 // 图上七种设备长同一个样，等于这一层信息没画。二期改成成品矢量素材，同时把映射摊开成
 // 【逐条】的：每个内置模块在这里各占一行，图标按【它测什么 / 它是什么】选，不再落到一个通用件上。
+// （表里 135 条＝模块库全部条目；一期的 160 里有 25 条是卫星，二期已移出模块库，见下面 SAT_ICONS。）
 //
 // ============ 素材来源与许可 ============
 //   tabler:        Tabler Icons，MIT，6100+，24 网格 2px 描边
@@ -59,26 +60,13 @@ export const FALLBACK_ICON = 'tabler:square-dot'
 
 const S = (icon, badge) => (badge ? { icon, badge } : { icon })
 
-export const SYMBOL_MAP = {
-  // ═══ A 空间段 ═══
-  // GEO 用 Tabler 的 satellite（碟 + 帆板，静止星的通行画法）；NGSO 用 Lucide 的 satellite
-  // （箱体 + 两翼帆板）—— 两档在 16px 下轮廓就分得开，读图不必先看副标。
-  'sat.cs15': S('tabler:satellite'), 'sat.ap7': S('tabler:satellite'),
-  'sat.cs12': S('tabler:satellite'), 'sat.cs27': S('tabler:satellite'),
-  'sat.cs9c': S('tabler:satellite'), 'sat.cs11': S('tabler:satellite'),
-  'sat.cs9b': S('tabler:satellite'), 'sat.cs16': S('tabler:satellite'),
-  'sat.cs10r': S('tabler:satellite'), 'sat.cs6e': S('tabler:satellite'),
-  'sat.cs6d': S('tabler:satellite'), 'sat.cs26': S('tabler:satellite'),
-  'sat.cs6c': S('tabler:satellite'), 'sat.ap6c': S('tabler:satellite'),
-  'sat.ap6e': S('tabler:satellite'), 'sat.ap6d': S('tabler:satellite'),
-  'sat.ap5c': S('tabler:satellite'), 'sat.ap9': S('tabler:satellite'),
-  'sat.cs19': S('tabler:satellite'),
-  'sat.tq1': S('lucide:satellite'), 'sat.tq1sso': S('lucide:satellite'),
-  'sat.tq2': S('lucide:satellite', 'tabler:transfer'),          // 二期带星间链路
-  'sat.generic.geo': S('tabler:satellite'),
-  'sat.generic.leo': S('lucide:satellite'),
-  'sat.generic.regen': S('lucide:satellite', 'tabler:cpu'),     // 再生＝星上有处理
+// 卫星节点的图标不在 SYMBOL_MAP 里：二期起卫星是【平台卫星库】的条目（library.json 的
+// 'e2e'.sat，与端到端窗口共用一份），不是模块库条目，没有稳定的 libId 可挂。
+// 图标只有两档 —— 静止星（碟 + 帆板）与非静止星（箱体 + 两翼），由 core 的 resolveSatNode
+// 直接写在节点的 symbol 上（那里也是判 GSO/NGSO 的地方，不在渲染端再判一次）。
+export const SAT_ICONS = { GSO: 'tabler:satellite', NGSO: 'lucide:satellite' }
 
+export const SYMBOL_MAP = {
   // ═══ B 地面固定站 ═══
   // 碟形站与平板站分两个主图标：口径 0.3 m 以上基本是抛物面，0.15~0.35 的物联/便携是平板。
   'es.ka.fixed.098': S('lucide:satellite-dish'),
@@ -238,7 +226,7 @@ export const SYMBOL_MAP = {
 
 /** 构建脚本要抽取的图标全集（主图标 ∪ 徽标 ∪ 老符号别名 ∪ 兜底件） */
 export const SYMBOL_ICONS = (() => {
-  const s = new Set([FALLBACK_ICON])
+  const s = new Set([FALLBACK_ICON, SAT_ICONS.GSO, SAT_ICONS.NGSO])
   for (const v of Object.values(SYMBOL_MAP)) { s.add(v.icon); if (v.badge) s.add(v.badge) }
   for (const v of Object.values(LEGACY_ALIAS)) s.add(v)
   return s

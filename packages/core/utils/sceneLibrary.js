@@ -30,8 +30,11 @@ const isUserId = (id) => String(id == null ? '' : id).startsWith(USER_PREFIX);
 //   「用户删了这个字段」，一条没改的模块也会记出 {children:null} 的差异。
 //   实测：只改一条 Ka 固定站，改写层里记出 132 条 —— 「只存差异」当场破功。
 //   在这里一次性归一，base 与 cur 从此结构可比。
+// ★ 二期起 A 空间段【不在模块库里】：卫星改为引用平台卫星库（library.json 的 'e2e'.sat，
+//   与端到端窗口共用一份），见 sceneSat.js。一期那 20 条 GEO + 天启的数据没删，
+//   改成 sceneLibData.SAT_PRESETS_SCENE —— 建库条目时的一键预置。
 const BUILTIN = JSON.parse(JSON.stringify([].concat(
-  A.SATS, A.STATIONS, B.PLATFORMS, B.SENSORS, B.EDGE, B.RFPARTS, B.POWER, B.CENTER
+  A.STATIONS, B.PLATFORMS, B.SENSORS, B.EDGE, B.RFPARTS, B.POWER, B.CENTER
 )));
 const BUILTIN_BY_ID = Object.create(null);
 for (const m of BUILTIN) {
@@ -40,8 +43,10 @@ for (const m of BUILTIN) {
 }
 
 // ── 分类 ──
+// lib:false = 这一类【不出现在模块库里】。A 空间段是场景节点的一个类别（拓扑分带、
+// 结果表都按 cat 分），但它的条目来自平台卫星库而不是模块库，故不进库树与筛选条。
 const CATS = [
-  { key: 'A', zh: '空间段', en: 'Space segment', hint: '提供转发或再生的卫星' },
+  { key: 'A', zh: '空间段', en: 'Space segment', hint: '提供转发或再生的卫星', lib: false },
   { key: 'B', zh: '地面固定站', en: 'Fixed ground station', hint: '不动的射频接入点' },
   { key: 'C', zh: '移动平台', en: 'Mobile platform', hint: '会动的载体与动中通终端' },
   { key: 'D', zh: '感知末端', en: 'Sensing endpoint', hint: '业务流的源头' },
@@ -239,7 +244,6 @@ function validateModule(m) {
     if (!M.mediaOf(pt.medium)) errors.push(`端口 ${pt.key} 的介质未知：${pt.medium}`);
     if (pt.dir && !['tx', 'rx', 'trx'].includes(pt.dir)) errors.push(`端口 ${pt.key} 方向非法：${pt.dir}`);
   }
-  if (m.cat === 'A' && !m.sat) warn.push('空间段模块没有 sat 出厂值');
   // F 类分两种：天线（要 antenna 增益）与射频部件（LNB/BUC，本来就没有方向图）
   if (m.cat === 'F' && m.group === 'antenna' && !m.antenna) warn.push('天线没有 antenna 参数');
   return { errors, warn };
@@ -271,13 +275,13 @@ function searchModules(store, kw) {
 function libraryTree(store) {
   const list = listModules(store);
   const byCat = new Map();
-  for (const c of CATS) byCat.set(c.key, { ...c, groups: new Map() });
+  for (const c of CATS) if (c.lib !== false) byCat.set(c.key, { ...c, groups: new Map() });
   for (const m of list) {
     const c = byCat.get(m.cat) || byCat.get('D');
     if (!c.groups.has(m.group)) c.groups.set(m.group, { key: m.group, zh: GROUPS[m.group] || m.group, items: [] });
     c.groups.get(m.group).items.push(m);
   }
-  return CATS.map((c) => {
+  return CATS.filter((c) => c.lib !== false).map((c) => {
     const e = byCat.get(c.key);
     return { ...c, groups: [...e.groups.values()] };
   }).filter((c) => c.groups.length);

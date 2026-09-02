@@ -31,6 +31,7 @@ const sceneMedia = require('./utils/sceneMedia.js');
 const sceneTerrestrial = require('./utils/sceneTerrestrial.js');
 const sceneEnergy = require('./utils/sceneEnergy.js');
 const sceneLibrary = require('./utils/sceneLibrary.js');
+const sceneSat = require('./utils/sceneSat.js');
 const sceneReduce = require('./utils/sceneReduce.js');
 const sceneTemplates = require('./utils/sceneTemplates.js');
 
@@ -205,6 +206,8 @@ module.exports = {
   sceneEnergy,
   // 模块库「内置 + 用户改写」合并层（改写层只存差异）
   sceneLibrary,
+  // 场景里的卫星节点：引用【平台卫星库】而不是模块库（频段→空口介质 / 端口 / 预置卫星表）
+  sceneSat,
   // 图 → 链归约 + 端到端汇总（双向业务流各自成链）
   sceneReduce,
   sceneTemplates,

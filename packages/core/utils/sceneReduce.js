@@ -34,6 +34,7 @@ const M = require('./sceneMedia.js');
 const T = require('./sceneTerrestrial.js');
 const EN = require('./sceneEnergy.js');
 const LIB = require('./sceneLibrary.js');
+const SAT = require('./sceneSat.js');
 
 // ★ Number(null) === 0、Number('') === 0 —— 「没给」与「给了 0」是两件事。
 // 这个洞漏一次，一条没有可用度的铜缆段就会当作 0% 参与串联相乘，整条链的可用度归零。
@@ -132,6 +133,25 @@ function resolveScene(scene, libStore) {
 
   for (const inst of raw) {
     if (!inst || !inst.id) { errors.push('场景里有一条模块缺 id'); continue; }
+    // ★ 卫星节点不查库：它引用的是【平台卫星库】（library.json 的 'e2e'.sat，与端到端窗口共用），
+    //   那份库在渲染端，core 看不到也不该看到 —— 调用方把 form ⊕ ov 解析好后随 payload 送进来。
+    //   这与几何的分工是同一条线：core 不解轨道、不查库，只吃解析好的入参。
+    if (inst.kind === 'sat') {
+      const r = SAT.resolveSatNode({
+        id: inst.id, satId: inst.satId, name: inst.name,
+        // 渲染端送的 sat 已是「库条目 form ⊕ 实例 ov」的合并结果；模板走 core 展开预置时
+        // 送的是 form，ov 在这里再合一次（两条路殊途同归，合并是幂等的）
+        form: inst.sat || {}, ov: inst.ov, typical: inst.typical, payloadKind: inst.payloadKind
+      });
+      r.instId = inst.id;
+      if (!r.sat || !Object.keys(r.sat).length) { errors.push(`卫星「${r.name}」没有参数（卫星库条目可能已删）`); continue; }
+      if (!SAT.satMedium(r.sat.frequencyBand)) { errors.push(`卫星「${r.name}」的工作频段未知：${r.sat.frequencyBand}`); continue; }
+      // 实例可逐口覆盖（与普通模块同口径）
+      const pov = inst.ports || {};
+      if (!Array.isArray(inst.ports)) r.ports = r.ports.map((pt) => Object.assign({}, pt, pov[pt.key] || {}));
+      mods.set(r.instId, r);
+      continue;
+    }
     const lib = LIB.moduleOf(libStore, inst.libId);
     if (!lib) { errors.push(`模块「${inst.name || inst.id}」引用的库条目不存在：${inst.libId}`); continue; }
     const r = LIB.deepMerge(lib, inst.ov || null);

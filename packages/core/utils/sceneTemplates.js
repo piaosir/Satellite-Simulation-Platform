@@ -18,8 +18,18 @@
 
 'use strict';
 
+const SAT = require('./sceneSat.js');
+
 // ── 速写 ──
 const mod = (id, libId, name, place, ov) => ({ id, libId, name, place, ov });
+// ★ 卫星节点写的是【预置 key】不是模块库 id：二期起卫星引用平台卫星库（library.json 的
+//   'e2e'.sat，与端到端窗口共用一份）。这里同时把预置展开成可算的节点（sat / ports / symbol），
+//   于是「模板 → 计算」这条路不依赖任何库，单测与验证台照旧跑得通；渲染端 applyTemplate 另有
+//   一步：按 preset 在卫星库里找条目、找不到就建一条，把 satId 填上，参数真值从此跟着库走。
+const satMod = (id, preset, name, ov) => Object.assign(
+  SAT.satNodeFromPreset(preset, { id, name, ov }) || { id, kind: 'sat', name, sat: {} },
+  { preset, ov: ov || {} }
+);
 const at = (lat, lon, altM, extra) => Object.assign({ mode: 'fixed', lat, lon, altM: altM || 0 }, extra || {});
 const on = (hostId) => ({ mode: 'mounted', hostId });
 const link = (id, aM, aP, bM, bP, medium, params, role) => ({ id, a: { modId: aM, portKey: aP }, b: { modId: bM, portKey: bP }, medium, params: params || {}, role: role || 'main' });
@@ -66,7 +76,7 @@ const TEMPLATES = [
       modules: [
         mod('dtu', 'sens.dtu', '10 kV 线路 DTU', pt('kashi')),
         mod('es', 'es.c.iot.015', 'C 频段物联站', pt('kashi', { rainRate: 12, availPct: 99.5 })),
-        mod('sat', 'sat.cs6c', '中星 6C', null, IOT_SLICE(0.5, 2.5, 44)),
+        satMod('sat', 'cs6c', '中星 6C', IOT_SLICE(0.5, 2.5, 44)),
         mod('hub', 'es.hub.c.11m', '北京信关站', pt('beijing', { rainRate: 42, availPct: 99.9 })),
         mod('ctr', 'ctr.dc', '地区调度主站', pt('beijing'))
       ],
@@ -87,7 +97,7 @@ const TEMPLATES = [
         mod('mtr', 'sens.meter.single', '台区智能电表（×200）', pt('golmud')),
         mod('con', 'sens.meter.concentrator', '台区集中器', pt('golmud')),
         mod('es', 'es.c.iot.015', 'C 频段物联站', pt('golmud', { rainRate: 8, availPct: 99.5 })),
-        mod('sat', 'sat.cs6c', '中星 6C', null, IOT_SLICE(0.2, 2.5, 44)),
+        satMod('sat', 'cs6c', '中星 6C', IOT_SLICE(0.2, 2.5, 44)),
         mod('hub', 'es.hub.c.11m', '怀来信关站', pt('huailai', { rainRate: 40, availPct: 99.9 })),
         mod('ctr', 'ctr.dc', '省公司营销系统', pt('beijing'))
       ],
@@ -110,7 +120,7 @@ const TEMPLATES = [
         mod('tmp', 'sens.line.temp', '导线测温', pt('hulunbuir')),
         mod('tq', 'es.tq.zd08', '天启 TQZD-08', pt('hulunbuir', { availPct: 99.0 })),
         mod('pv', 'pwr.pv100', '太阳能 100 Wp', on('tq')),
-        mod('sat', 'sat.tq1', '天启一期', null, { sat: { gt: -12, eirp: 12 } }),
+        satMod('sat', 'tq1', '天启一期', { sat: { gt: -12, eirp: 12 } }),
         mod('gs', 'es.hub.tq.gs', '天启地面站', pt('beijing', { availPct: 99.5 })),
         mod('ctr', 'ctr.platform', '输电运维平台', pt('beijing'))
       ],
@@ -137,7 +147,7 @@ const TEMPLATES = [
         mod('rtu', 'edge.rtu', '遥测 RTU', pt('linzhi')),
         mod('tq', 'es.tq.zd08', '天启 TQZD-08', pt('linzhi', { availPct: 99.0 })),
         mod('pv', 'pwr.pv100', '太阳能 100 Wp', on('tq')),
-        mod('sat', 'sat.tq1', '天启一期', null, { sat: { gt: -12, eirp: 12 } }),
+        satMod('sat', 'tq1', '天启一期', { sat: { gt: -12, eirp: 12 } }),
         mod('gs', 'es.hub.tq.gs', '天启地面站', pt('beijing', { availPct: 99.5 })),
         mod('ctr', 'ctr.platform', '水情平台', pt('beijing'))
       ],
@@ -163,7 +173,7 @@ const TEMPLATES = [
         mod('cam', 'sens.forest.cam', '火点双光云台', pt('songshan')),
         mod('fac', 'sens.forest.fire', '火险因子站', pt('songshan')),
         mod('pole', 'net.smartpole', '卫星智慧杆', pt('songshan', { rainRate: 38, availPct: 99.0 })),
-        mod('sat', 'sat.cs26', '中星 26 号', null, HTS_BEAM(40, 13, 61)),
+        satMod('sat', 'cs26', '中星 26 号', HTS_BEAM(40, 13, 61)),
         mod('hub', 'es.hub.ka.gw', 'Ka 信关站', pt('beijing', { rainRate: 42, availPct: 99.9 })),
         mod('ctr', 'ctr.video.platform', '林草监测平台', pt('beijing'))
       ],
@@ -190,7 +200,7 @@ const TEMPLATES = [
         mod('uav', 'veh.uav.fixed', '中型固定翼无人机', at(P.liangshan[0], P.liangshan[1], 3000)),
         mod('ka', 'mob.ka.uav.pa045', 'Ka 相控阵 0.45 m', on('uav')),
         mod('abs', 'net.airbs', 'LTE 空中基站', on('uav')),
-        mod('sat', 'sat.cs16', '中星 16 号', null, HTS_BEAM(30, 12, 60)),
+        satMod('sat', 'cs16', '中星 16 号', HTS_BEAM(30, 12, 60)),
         mod('hub', 'es.hub.ka.gw', 'Ka 信关站', pt('beijing', { rainRate: 42, availPct: 99.9 })),
         mod('cmd', 'ctr.cmd', '应急指挥中心', pt('chengdu')),
         mod('veh', 'veh.cmdcar', '前突指挥车', pt('liangshan')),
@@ -215,9 +225,9 @@ const TEMPLATES = [
         mod('pole', 'sens.emg.pole', '村口应急叫应杆', pt('motuo', { availPct: 99.0 })),
         mod('spk', 'sens.emg.broadcast', '应急广播大喇叭', pt('motuo')),
         mod('pv', 'pwr.pv200', '太阳能 200 Wp', on('pole')),
-        mod('tq', 'sat.tq1', '天启一期', null, { sat: { gt: -12, eirp: 12 } }),
+        satMod('tq', 'tq1', '天启一期', { sat: { gt: -12, eirp: 12 } }),
         mod('gs', 'es.hub.tq.gs', '天启地面站', pt('beijing', { availPct: 99.5 })),
-        mod('cs', 'sat.cs6c', '中星 6C（广播）', null, IOT_SLICE(2, 2.5, 46)),
+        satMod('cs', 'cs6c', '中星 6C（广播）', IOT_SLICE(2, 2.5, 46)),
         mod('bhub', 'es.hub.c.11m', '广播上行站', pt('beijing', { rainRate: 42, availPct: 99.9 })),
         mod('cmd', 'ctr.cmd', '县应急指挥中心', pt('lhasa'))
       ],
@@ -270,7 +280,7 @@ const TEMPLATES = [
         mod('uav', 'veh.uav.multi', '巡检多旋翼', at(P.daqing[0] + 0.05, P.daqing[1], 250)),
         mod('cam', 'sens.cam.ptz', '机载云台', on('uav')),
         mod('vtx', 'net.video.tx', '图传发射机', on('uav')),
-        mod('sat', 'sat.cs26', '中星 26 号', null, HTS_BEAM(40, 13, 61)),
+        satMod('sat', 'cs26', '中星 26 号', HTS_BEAM(40, 13, 61)),
         mod('hub', 'es.hub.ka.gw', 'Ka 信关站', pt('beijing', { rainRate: 42, availPct: 99.9 })),
         mod('ctr', 'ctr.dc', '巡检运营平台', pt('beijing'))
       ],
@@ -303,7 +313,7 @@ const TEMPLATES = [
         mod('edge', 'edge.aibox', '现场边缘盒', pt('liangshan')),
         mod('es', 'es.ka.unattended.045', 'Ka 无人值守站', pt('liangshan', { rainRate: 45, availPct: 99.0 })),
         mod('gen', 'pwr.genset', '柴油发电机', on('radar')),
-        mod('sat', 'sat.cs16', '中星 16 号', null, HTS_BEAM(20, 12, 60)),
+        satMod('sat', 'cs16', '中星 16 号', HTS_BEAM(20, 12, 60)),
         mod('hub', 'es.hub.ka.gw', 'Ka 信关站', pt('chengdu', { rainRate: 48, availPct: 99.9 })),
         mod('ctr', 'ctr.cmd', '公路应急指挥中心', pt('chengdu'))
       ],
@@ -329,7 +339,7 @@ const TEMPLATES = [
     build: () => ({
       modules: [
         mod('box', 'es.tq.container', '冷箱终端', at(25.0, 125.0, 0, { availPct: 99.0 })),
-        mod('sat', 'sat.tq1', '天启一期', null, { sat: { gt: -12, eirp: 12 } }),
+        satMod('sat', 'tq1', '天启一期', { sat: { gt: -12, eirp: 12 } }),
         mod('gs', 'es.hub.tq.gs', '天启地面站', pt('beijing', { availPct: 99.5 })),
         mod('ctr', 'ctr.platform', '冷链监控平台', pt('shenzhen'))
       ],
@@ -354,7 +364,7 @@ const TEMPLATES = [
         mod('ais', 'sens.ais.classa', 'AIS Class A', on('ship')),
         mod('sw', 'edge.sw.ind', '船载交换机', on('ship')),
         mod('cam', 'sens.cam.ptz', '甲板摄像机 ×4', on('ship')),
-        mod('sat', 'sat.cs19', '中星 19 号', null, HTS_BEAM(40, 10, 58)),
+        satMod('sat', 'cs19', '中星 19 号', HTS_BEAM(40, 10, 58)),
         mod('hub', 'es.hub.ka.gw', 'Ka 信关站', pt('shenzhen', { rainRate: 65, availPct: 99.7 })),
         mod('ctr', 'ctr.platform', '海星通平台', pt('beijing'))
       ],
@@ -382,7 +392,7 @@ const TEMPLATES = [
         mod('sw', 'edge.sw.poe8', 'PoE 交换机', pt('motuo')),
         mod('bs', 'net.4gbs', '4G 一体化基站', pt('motuo')),
         mod('ap', 'net.wifi.ap', '室外 WiFi AP', pt('motuo')),
-        mod('sat', 'sat.cs26', '中星 26 号', null, HTS_BEAM(50, 13, 61)),
+        satMod('sat', 'cs26', '中星 26 号', HTS_BEAM(50, 13, 61)),
         mod('hub', 'es.hub.ka.gw', 'Ka 信关站', pt('chengdu', { rainRate: 48, availPct: 99.9 })),
         mod('core', 'ctr.coreif', '运营商核心网对接点', pt('chengdu'))
       ],
@@ -410,7 +420,7 @@ const TEMPLATES = [
       modules: [
         mod('who', 'veh.person', '探险人员', at(35.0, 90.0, 4500)),
         mod('sos', 'es.tq.alarm', '天启 Alarm 求救终端', on('who')),
-        mod('sat', 'sat.tq1', '天启一期', null, { sat: { gt: -12, eirp: 12 } }),
+        satMod('sat', 'tq1', '天启一期', { sat: { gt: -12, eirp: 12 } }),
         mod('gs', 'es.hub.tq.gs', '天启地面站', pt('beijing', { availPct: 99.5 })),
         mod('ctr', 'ctr.cmd', '救援调度中心', pt('beijing'))
       ],
@@ -433,7 +443,7 @@ const TEMPLATES = [
         mod('tq', 'es.tq.zd10', '天启 TQZD-10', pt('golmud', { availPct: 99.0 })),
         mod('pv', 'pwr.pv100', '太阳能 100 Wp', on('tq')),
         mod('bat', 'pwr.bat.agm65', '铅酸 12 V/65 Ah', on('tq')),
-        mod('sat', 'sat.tq1', '天启一期', null, { sat: { gt: -12, eirp: 12 } }),
+        satMod('sat', 'tq1', '天启一期', { sat: { gt: -12, eirp: 12 } }),
         mod('gs', 'es.hub.tq.gs', '天启地面站', pt('beijing', { availPct: 99.5 })),
         mod('ctr', 'ctr.platform', '油田生产平台', pt('daqing'))
       ],

@@ -22,6 +22,7 @@ function coreApi() {
       const TE = require(path.join(ROOT, 'packages/core/utils/sceneTerrestrial.js'))
       const EN = require(path.join(ROOT, 'packages/core/utils/sceneEnergy.js'))
       const C = require(path.join(ROOT, 'packages/core/utils/linkChain.js'))
+      const SA = require(path.join(ROOT, 'packages/core/utils/sceneSat.js'))
       let store = null
       const send = (res, v) => { res.setHeader('content-type', 'application/json; charset=utf-8'); res.end(JSON.stringify(v)) }
       server.middlewares.use('/api/scene', (req, res, next) => {
@@ -33,7 +34,8 @@ function coreApi() {
           let p = {}
           try { p = body ? JSON.parse(body) : {} } catch { /* ignore */ }
           try {
-            if (op === 'catalog') return send(res, { media: M.MEDIA, cats: M.MEDIA_CATS, connectors: M.CONNECTORS, bands: M.BANDS, modCats: L.CATS, groups: L.GROUPS })
+            if (op === 'catalog') return send(res, { media: M.MEDIA, cats: M.MEDIA_CATS, connectors: M.CONNECTORS, bands: M.BANDS, modCats: L.CATS, groups: L.GROUPS, satPresets: SA.listSatPresets() })
+            if (op === 'satPreset') return send(res, SA.satPresetOf(p.key))
             if (op === 'libList') return send(res, { ok: true, modules: L.listModules(store, {}), cats: L.CATS, groups: L.GROUPS, error: '' })
             if (op === 'libTree') return send(res, { ok: true, tree: L.libraryTree(store) })
             if (op === 'libSave') { store = L.storeFromList(p.modules || []); return send(res, { ok: true, modules: L.listModules(store, { includeHidden: true }) }) }
