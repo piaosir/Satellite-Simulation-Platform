@@ -54,7 +54,9 @@ export const scene = reactive({
   result: null, busy: false, error: '', dirty: true, ms: 0,
   // 几何预解：星地 / 星间边按真轨道解出的斜距与仰角（key 见 geoKeyOf）。
   // 解不出（无网 / 无星历 / 缺站址）就留空，core 退回圆轨道最差几何的闭式并照旧告警。
-  geo: {}, geoWarn: [], geoBusy: false
+  geo: {}, geoWarn: [], geoBusy: false,
+  // 阻塞项为零时自动重算（仍保留手动「计算」；关掉即回到一期的手动档）
+  autoCalc: true
 })
 
 // ── 索引 ──
@@ -570,6 +572,131 @@ export function linkReadings(linkId) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// 撤销栈
+// ═══════════════════════════════════════════════════════════════════════════
+// 拓扑画布成了主编辑面之后，误删一个节点会连带它的边与业务流一起没 —— 没有撤销就不敢用。
+// ★ 存的是【整份场景数据的深拷贝】而不是操作日志：这套编辑动作里有一半会连带改动其它对象
+//   （删模块 → 清边 + 清流 + 解挂载），逐条记反操作很快就对不上；场景数据本身只有几十 KB。
+const UNDO_MAX = 50
+const _undo = [], _redo = []
+const snapOf = () => JSON.parse(JSON.stringify({
+  modules: scene.modules, links: scene.links, flows: scene.flows, carrier: scene.carrier, nudge: scene.nudge
+}))
+function restore(s) {
+  scene.modules = s.modules; scene.links = s.links; scene.flows = s.flows
+  scene.carrier = s.carrier; scene.nudge = s.nudge
+  scene.sel = null; scene.dirty = true
+}
+/** 改动【之前】调：把当前状态压栈。label 只进日志，不上界面 */
+export function pushUndo(label) {
+  _undo.push({ label: label || '', s: snapOf() })
+  if (_undo.length > UNDO_MAX) _undo.shift()
+  _redo.length = 0
+}
+export function undo() {
+  if (!_undo.length) return false
+  _redo.push({ label: '', s: snapOf() })
+  restore(_undo.pop().s)
+  return true
+}
+export function redo() {
+  if (!_redo.length) return false
+  _undo.push({ label: '', s: snapOf() })
+  restore(_redo.pop().s)
+  return true
+}
+export const canUndo = computed(() => _undo.length > 0)
+export const canRedo = computed(() => _redo.length > 0)
+
+/** 复制一个模块（连同实例覆盖与位置，不连边 —— 复制出来的是一台新设备，不是同一台） */
+export function duplicateModule(id) {
+  const m = modById.value.get(id)
+  if (!m) return null
+  const c = JSON.parse(JSON.stringify(m))
+  c.id = uid('m')
+  c.name = uniqName(String(m.name || '').replace(/\s+\d+$/, ''))
+  scene.modules.push(c); touch()
+  return c
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 校验清单
+// ═══════════════════════════════════════════════════════════════════════════
+// 一期只有「点计算 → 引擎报一串错」。二期把「这张图现在还差什么」摊在面板上，
+// 点一条就选中那个对象。★ 措辞一律「对象名：状态」的陈述句 —— 不写「请填写…」这类教学句
+// （CLAUDE.md：界面不出现解释性文字）。
+//   block 阻塞项：不解决就算不出（缺坐标 / 缺频率 / 缺轨道 / 业务流端点未定…）
+//   warn  告警项：算得出，但数是典型值或留空（工程师要知道哪几个数不是他填的）
+export const lint = computed(() => {
+  const out = []
+  const push = (level, id, type, text) => out.push({ level, id, type, text })
+  const byId = modById.value
+  for (const m of scene.modules) {
+    const e = effective(m)
+    if (!e) { push('block', m.id, 'module', `${m.name}：库条目不存在`); continue }
+    if (e.cat === 'A') {
+      if (!e.sat || !Object.keys(e.sat).length) push('block', m.id, 'module', `${m.name}：卫星库条目没有参数`)
+      else if (!e.orbit) push('block', m.id, 'module', `${m.name}：没有可用轨道`)
+      if (e.sat && (e.sat.transponderBandwidth === '' || e.sat.transponderBandwidth == null)) push('block', m.id, 'module', `${m.name}：转发器带宽未填`)
+      if (e.typical) push('warn', m.id, 'module', `${m.name}：电平为该类典型值`)
+      continue
+    }
+    // 站址：射频模块没坐标就解不出几何；纯数据模块（网络设备、中心）不要求
+    const needPos = !!(e.rf || e.cat === 'B' || e.cat === 'C')
+    const pl = placeOf(m.id)
+    if (needPos && !pl) push('block', m.id, 'module', `${m.name}：无坐标`)
+    if (e.rf && (m.place || {}).availPct == null) push('warn', m.id, 'module', `${m.name}：可用度指标留空`)
+  }
+  for (const l of scene.links) {
+    const a = byId.get(l.a.modId), b = byId.get(l.b.modId)
+    if (!a || !b) { push('block', l.id, 'link', `一条连线的端点模块不存在`); continue }
+    const med = mediaOf(l.medium)
+    const nm = `${a.name} → ${b.name}`
+    if (!med) { push('block', l.id, 'link', `${nm}：介质未知`); continue }
+    if (med.tier === 'satellite' && l.medium !== 'isl_rf' && l.medium !== 'isl_laser') {
+      const p = l.params || {}
+      if (p.freqUpGHz == null || p.freqUpGHz === '' || p.freqDnGHz == null || p.freqDnGHz === '') push('block', l.id, 'link', `${nm}：星地边缺上行 / 下行频率`)
+    }
+    if ((l.medium === 'isl_rf' || l.medium === 'isl_laser') && (l.params || {}).rangeKm == null && !scene.geo['ab:' + l.id]) {
+      push('block', l.id, 'link', `${nm}：星间链路缺距离`)
+    }
+  }
+  // 卫星段两端要有地面站：星地边只有一端是卫星才成立（core 也会报，这里提前到画布上）
+  for (const l of scene.links) {
+    const med = mediaOf(l.medium)
+    if (!med || med.tier !== 'satellite' || l.medium === 'isl_rf' || l.medium === 'isl_laser') continue
+    const a = effective(byId.get(l.a.modId)), b = effective(byId.get(l.b.modId))
+    if (a && b && (a.cat === 'A') === (b.cat === 'A')) push('block', l.id, 'link', `${a.name} → ${b.name}：星地边两端不是「一星一站」`)
+  }
+  for (const f of scene.flows) {
+    if (!f.aId || !f.bId) { push('block', f.id, 'flow', `${f.name}：端点未定`); continue }
+    if (!byId.get(f.aId) || !byId.get(f.bId)) push('block', f.id, 'flow', `${f.name}：端点模块已删`)
+  }
+  if (scene.modules.length && !scene.flows.length) push('warn', '', 'scene', '还没有业务流')
+  return out
+})
+export const lintBlocks = computed(() => lint.value.filter((x) => x.level === 'block'))
+/** 画布上给节点打红点用：出过阻塞项的对象 id */
+export const lintIndex = computed(() => {
+  const s = new Set(lintBlocks.value.map((x) => x.id).filter(Boolean))
+  s.has = Set.prototype.has.bind(s)
+  return s
+})
+
+// 自动计算：阻塞项为零时防抖跑一次。★ 仍保留手动「计算」——
+// 整场景重算要跑真引擎（卫星段逐跳正向递推 + 几何 IPC），逐字符触发会卡。
+let _autoT = null
+export function autoCompute(delay) {
+  clearTimeout(_autoT)
+  _autoT = setTimeout(() => {
+    if (scene.busy || !scene.dirty) return
+    if (lintBlocks.value.length) return
+    if (!scene.flows.length) return
+    compute()
+  }, delay == null ? 600 : delay)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // 自检钩子
 // ═══════════════════════════════════════════════════════════════════════════
 // 与平台既有的 window.__reportReady / window.__i18nMisses 同一套做法：把这份模块级单例
@@ -583,11 +710,12 @@ if (typeof window !== 'undefined') {
     loadLibrary, loadSatLibrary, saveSatLibrary,
     newScene, applyTemplate, compute, solveGeometry, computePayloadScene,
     addSatEntry, addSatEntryFromRec, addSatModule, addModule, addLink, addFlow,
+    pushUndo, undo, redo, duplicateModule, lint, lintBlocks, autoCompute,
     ensureSearchPool: () => import('../../ngso/satSearchPool.js').then((m) => m.ensureSearchPool())
   }
 }
 
 // 改了数据就把结果标记为过期（不自动重算：整场景重算要跑真引擎，逐字符触发会卡）
-watch(() => [scene.modules, scene.links, scene.flows, scene.carrier], () => { scene.dirty = true }, { deep: true })
+watch(() => [scene.modules, scene.links, scene.flows, scene.carrier], () => { scene.dirty = true; if (scene.autoCalc) autoCompute() }, { deep: true })
 
 export default scene
