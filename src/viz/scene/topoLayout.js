@@ -14,6 +14,8 @@
 // ★ 层与带是从数据【推】出来的（cat + place.mode + 流路径），不是用户排的 ——
 //   拓扑关系本来就是图的属性。允许手动微调并持久化（nudge），但不要求用户先排一遍才能看。
 
+import { iconOf } from './sceneSymbols.js'
+
 // ── 带归属 ──
 // 依据：模块类别 + 放置方式。挂载件跟宿主同带（由调用方在 resolve 后传入 hostBand）。
 export const BANDS = [
@@ -23,7 +25,9 @@ export const BANDS = [
   { key: 'edge', zh: '末端层', en: 'Field' }
 ]
 
-const AIR_SYMBOLS = new Set(['drone-multi', 'drone-fixed', 'drone-vtol', 'drone-heli', 'evtol', 'drone-tether', 'balloon'])
+// 会飞的：按【解析后的图标】判，不按库条目上的 symbol 字段 —— 后者在二期只剩自建模块的兜底档，
+// 内置模块的图标由 sceneSymbolMap 逐条给定（见 sceneSymbols.iconOf）。
+const AIR_ICONS = new Set(['tabler:drone', 'tabler:plane', 'tabler:plane-tilt', 'tabler:helicopter', 'tabler:air-balloon'])
 
 export function bandOf(mod) {
   if (!mod) return 2
@@ -31,7 +35,7 @@ export function bandOf(mod) {
   if (mod.cat === 'H') return 2
   if (mod.cat === 'D' || mod.cat === 'F' || mod.cat === 'G') return 3
   // C 类里会飞的进临空层，其余（车 / 船 / 机器人 / 动中通）留地面层
-  if (mod.cat === 'C' && (AIR_SYMBOLS.has(mod.symbol) || (mod.place && mod.place.altM > 1000))) return 1
+  if (mod.cat === 'C' && (AIR_ICONS.has(iconOf(mod)) || (mod.place && mod.place.altM > 1000))) return 1
   return 2
 }
 

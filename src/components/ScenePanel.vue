@@ -48,8 +48,9 @@ const grouped = computed(() => {
 })
 const cats = computed(() => (scene.catalog && scene.catalog.modCats) || [])
 
-// 库条目的小图标（16px canvas，符号与地图/拓扑同一支画笔）
-function iconRef(el, symbol) {
+// 库条目的小图标（16px canvas，符号与地图/拓扑同一支画笔）。
+// 传的是【模块条目】不是图标名 —— 逐条映射与徽标都在 drawSymbol 里解析（sceneSymbolMap.js）。
+function iconRef(el, mod) {
   if (!el) return
   const n = 32
   el.width = n; el.height = n
@@ -57,7 +58,7 @@ function iconRef(el, symbol) {
   ctx.clearRect(0, 0, n, n)
   const ink = getComputedStyle(document.documentElement).getPropertyValue('--text').trim() || '#000'
   const bg = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() || '#fff'
-  drawSymbol(ctx, symbol, n / 2, n / 2, n * 0.96, ink, 0, bg)
+  drawSymbol(ctx, mod, n / 2, n / 2, n * 0.96, ink, 0, bg)
 }
 
 // ── 放置 ──
@@ -70,7 +71,7 @@ const placingName = computed(() => (scene.placing ? (libById.value.get(scene.pla
 // ── 场景树 ──
 const modRows = computed(() => scene.modules.map((m) => {
   const e = effective(m)
-  return { m, e, sym: e ? e.symbol : 'sensor', cat: e ? e.cat : '', host: m.place && m.place.mode === 'mounted' ? (modById.value.get(m.place.hostId) || {}).name : '' }
+  return { m, e, sym: e, cat: e ? e.cat : '', host: m.place && m.place.mode === 'mounted' ? (modById.value.get(m.place.hostId) || {}).name : '' }
 }))
 const selMod = computed(() => (scene.sel && scene.sel.type === 'module' ? modById.value.get(scene.sel.id) : null))
 function selectMod(id) { scene.sel = { type: 'module', id }; scene.placing = null }
@@ -218,7 +219,7 @@ const fmtRate = (b) => (b == null ? '—' : b >= 1e6 ? (b / 1e6).toFixed(2) + ' 
           <template v-for="g in grouped" :key="g.key">
             <div class="lgh">{{ g.zh }}</div>
             <div v-for="m in g.items" :key="m.id" class="lgi" :class="{ on: scene.placing === m.id }" :title="m.src" @click="pick(m.id)">
-              <canvas class="lic" :ref="(el) => iconRef(el, m.symbol)"></canvas>
+              <canvas class="lic" :ref="(el) => iconRef(el, m)"></canvas>
               <span class="lnm">{{ m.zh }}</span>
               <span v-if="m.typical" class="tpc" title="电平类数值为该类设备典型值，非该型号实测">典</span>
               <span v-if="m.modified" class="tpc mod" title="已改过出厂值">改</span>

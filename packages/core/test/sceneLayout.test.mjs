@@ -4,15 +4,13 @@
 //   ① 布局是纯函数：同一份数据两次布局逐位相同（不然拖一下面板图就跳）；
 //   ② 纵轴分带按物理层走，★挂载件跟宿主同带（图传挂无人机上就该在临空层，不该掉回地面层）；
 //   ③ 横轴按业务流的信号流向定序：末端在左、中心在右；
-//   ④ 库里用到的每一个 symbol 在符号表里都画得出来（缺一个就是地图上一个空白）。
+//   ④ 库里每个模块都解析得出图标（逐条映射与回放在 scene.test.mjs 里锁）。
 import { createRequire } from 'module'
 const require = createRequire(import.meta.url)
 const core = require('../index.js')
 const RED = require('../utils/sceneReduce.js')
 const LIB = require('../utils/sceneLibrary.js')
 const { layout, bandOf } = await import('../../../src/viz/scene/topoLayout.js')
-const fs = require('fs')
-const path = require('path')
 
 let pass = 0, fail = 0
 const ok = (n, c, e) => { console.log((c ? 'PASS' : 'FAIL') + '  ' + n + (e ? `  (${e})` : '')); c ? pass++ : fail++ }
@@ -64,16 +62,13 @@ for (const t of core.sceneTemplates.listTemplates()) {
   ok(`模板「${t.zh}」布局有效`, lay.nodes.length > 0 && bad.length === 0, `${lay.nodes.length} 节点 / ${lay.bands.length} 带`)
 }
 
-/* ⑤ 符号覆盖：库里用到的每一个 symbol 都要画得出来 */
+/* ⑤ 符号：每个模块解析得出图标（逐条映射与回放的完整断言在 scene.test.mjs） */
 {
-  const src = fs.readFileSync(path.join(process.cwd(), 'src/viz/scene/sceneSymbols.js'), 'utf8')
-  const body = src.slice(src.indexOf('const SYMBOLS = {'), src.indexOf('// 别名'))
-  const have = new Set()
-  for (const m of body.matchAll(/^\s{2}'?([a-zA-Z][a-zA-Z0-9-]*)'?:/gm)) have.add(m[1])
-  for (const m of src.slice(src.indexOf('const ALIAS')).matchAll(/'?([a-zA-Z][a-zA-Z0-9-]*)'?:\s*'/g)) have.add(m[1])
-  const used = [...new Set(LIB.BUILTIN.map((x) => x.symbol))]
-  const miss = used.filter((x) => !have.has(x))
-  ok('★ 库里用到的每个符号都在符号表里（缺一个＝地图上一个空白）', miss.length === 0, miss.join(' ') || `${used.length} 种`)
+  const { iconOf } = await import('../../../src/viz/scene/sceneSymbols.js')
+  const { FALLBACK_ICON } = await import('../../../src/viz/scene/sceneSymbolMap.js')
+  const miss = LIB.BUILTIN.filter((m) => iconOf(m) === FALLBACK_ICON).map((m) => m.id)
+  ok('★ 库里每个模块都解析得出图标（落到兜底件＝地图上一个没有含义的方点）',
+    miss.length === 0, miss.join(' ') || `${LIB.BUILTIN.length} 条`)
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

@@ -73,13 +73,13 @@ const tree = computed(() => {
 })
 const catZh = (k) => { const c = cats.value.find((x) => x.key === k); return c ? c.zh : k }
 
-function icon(el, symbol) {
+function icon(el, mod) {
   if (!el) return
   const n = 36; el.width = n; el.height = n
   const ctx = el.getContext('2d'); ctx.clearRect(0, 0, n, n)
   const ink = getComputedStyle(document.documentElement).getPropertyValue('--text').trim() || '#000'
   const bg = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() || '#fff'
-  drawSymbol(ctx, symbol, n / 2, n / 2, n * 0.94, ink, 0, bg)
+  drawSymbol(ctx, mod, n / 2, n / 2, n * 0.94, ink, 0, bg)
 }
 
 // ── 编辑 ──
@@ -193,7 +193,7 @@ const stat = computed(() => ({
         <template v-for="g in tree" :key="g.key">
           <div class="tgh">{{ catZh(g.cat) }} · {{ g.zh }}</div>
           <div v-for="m in g.items" :key="m.id" class="tgi" :class="{ on: selId === m.id, hid: m.hidden }" @click="selId = m.id">
-            <canvas class="ic" :ref="(el) => icon(el, m.symbol)"></canvas>
+            <canvas class="ic" :ref="(el) => icon(el, m)"></canvas>
             <span class="nm">{{ m.zh }}</span>
             <span v-if="m.modified" class="bd mod" title="已改过出厂值">改</span>
             <span v-if="!m.builtin" class="bd usr" title="自建条目">建</span>
@@ -206,7 +206,7 @@ const stat = computed(() => ({
       <!-- 编辑器 -->
       <div v-if="sel" class="sledit">
         <div class="ehd">
-          <canvas class="ic2" :ref="(el) => icon(el, sel.symbol)"></canvas>
+          <canvas class="ic2" :ref="(el) => icon(el, sel)"></canvas>
           <div class="ehn">
             <input class="ci big" v-model="sel.zh" @input="mark" />
             <div class="eid">{{ sel.id }}</div>

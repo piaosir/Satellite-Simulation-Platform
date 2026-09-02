@@ -8,7 +8,8 @@ import { ref, computed, onMounted, watch } from 'vue'
 import ScenePanel from '../src/components/ScenePanel.vue'
 import SceneTopology from '../src/components/SceneTopology.vue'
 import { scene, loadLibrary, applyTemplate, compute } from '../src/viz/scene/sceneStore.js'
-import { drawSymbol } from '../src/viz/scene/sceneSymbols.js'
+import { drawSymbol, iconOf } from '../src/viz/scene/sceneSymbols.js'
+import { symbolSpec } from '../src/viz/scene/sceneSymbolMap.js'
 import { createFlatCoverage } from '../src/viz/flatmap/flatCoverage.js'
 
 const q = new URLSearchParams(location.search)
@@ -20,30 +21,30 @@ function flip() {
   if (mode === 'sym') paintAll()
 }
 
-// ── 符号台 ──
+// ── 符号台：全部 160 个模块，逐条一格，格内三档尺寸（64 / 32 / 16）──
+// 这三档就是符号在软件里真正出现的尺寸：拓扑卡 36、地图 26、库列表 16。
+// 明暗两主题各截一张：描边件的套边在浅底与深底上是两种效果，只看一种会漏。
 const libAll = ref([])
-const rows = computed(() => {
-  const g = new Map()
-  for (const m of libAll.value) {
-    if (!g.has(m.symbol)) g.set(m.symbol, { sym: m.symbol, names: [] })
-    g.get(m.symbol).names.push(m.zh)
-  }
-  return [...g.values()].sort((a, b) => a.sym.localeCompare(b.sym))
-})
+const catFilter = ref('')
+const rows = computed(() => libAll.value
+  .filter((m) => !catFilter.value || m.cat === catFilter.value)
+  .map((m) => ({ id: m.id, cat: m.cat, zh: m.zh, mod: m, icon: iconOf(m), badge: (symbolSpec(m).badge || '') })))
+const catList = computed(() => [...new Set(libAll.value.map((m) => m.cat))].sort())
 const cvs = ref([])
 function paintAll() {
   const ink = getComputedStyle(document.documentElement).getPropertyValue('--text').trim() || '#fff'
   const bg = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() || '#000'
+  const by = new Map(libAll.value.map((m) => [m.id, m]))
   for (const el of cvs.value) {
     if (!el) continue
-    const n = 128
-    el.width = n; el.height = n
+    const w = 132, h = 76
+    el.width = w; el.height = h
     const ctx = el.getContext('2d')
-    ctx.clearRect(0, 0, n, n)
-    // 三档尺寸并排看：64 / 32 / 20 —— 图标在地图上就是这几个尺寸
-    drawSymbol(ctx, el.dataset.sym, 34, 40, 60, ink, 0, bg)
-    drawSymbol(ctx, el.dataset.sym, 82, 34, 32, ink, 0, bg)
-    drawSymbol(ctx, el.dataset.sym, 110, 32, 20, ink, 0, bg)
+    ctx.clearRect(0, 0, w, h)
+    const mod = by.get(el.dataset.id)
+    drawSymbol(ctx, mod, 38, 38, 64, ink, 0, bg)
+    drawSymbol(ctx, mod, 88, 30, 32, ink, 0, bg)
+    drawSymbol(ctx, mod, 118, 26, 16, ink, 0, bg)
   }
 }
 // ── 地图台：真 2D 渲染器 + 真场景层 ──
@@ -57,7 +58,7 @@ function pushToMap() {
     const e = eff(m); const pl = posOf(m.id)
     const sat = e && e.cat === 'A' ? (e.sat || {}) : null
     const geo = sat && sat.orbitClass === 'GSO' && sat.orbitLongitude != null
-    return { id: m.id, name: m.name, symbol: e ? e.symbol : 'sensor', cat: e ? e.cat : '',
+    return { id: m.id, name: m.name, symbol: e ? e.id : '', cat: e ? e.cat : '',
       lat: geo ? 0 : (pl.lat != null ? +pl.lat : null),
       lon: geo ? +sat.orbitLongitude : (pl.lon != null ? +pl.lon : null),
       sel: !!(scene.sel && scene.sel.type === 'module' && scene.sel.id === m.id) }
@@ -113,13 +114,19 @@ watch(() => [scene.modules, scene.links, scene.sel], () => { if (mode === 'map')
     </div>
 
     <!-- 符号台 -->
-    <div v-if="mode === 'sym'" class="syms">
-      <div v-for="r in rows" :key="r.sym" class="symc">
-        <canvas ref="cvs" :data-sym="r.sym"></canvas>
-        <div class="sk">{{ r.sym }}</div>
-        <div class="sn">{{ r.names.slice(0, 2).join('、') }}<em v-if="r.names.length > 2"> +{{ r.names.length - 2 }}</em></div>
+    <template v-if="mode === 'sym'">
+      <div class="symbar">
+        <span class="tg" :class="{ on: !catFilter }" @click="catFilter = ''">全部 {{ libAll.length }}</span>
+        <span v-for="c in catList" :key="c" class="tg" :class="{ on: catFilter === c }" @click="catFilter = c">{{ c }}</span>
       </div>
-    </div>
+      <div class="syms">
+        <div v-for="r in rows" :key="r.id" class="symc">
+          <canvas ref="cvs" :data-id="r.id"></canvas>
+          <div class="sn">{{ r.zh }}</div>
+          <div class="sk">{{ r.icon }}<em v-if="r.badge"> + {{ r.badge }}</em></div>
+        </div>
+      </div>
+    </template>
 
     <!-- 地图台 -->
     <div v-if="mode === 'map'" class="mapw"><canvas ref="mapCv"></canvas></div>
@@ -128,7 +135,7 @@ watch(() => [scene.modules, scene.links, scene.sel], () => { if (mode === 'map')
     <div v-else-if="mode === 'topo'" class="topow"><SceneTopology /></div>
 
     <!-- 面板台 -->
-    <div v-else class="panelw">
+    <div v-else-if="mode === 'panel'" class="panelw">
       <div class="side"><ScenePanel /></div>
       <div class="main"><SceneTopology /></div>
     </div>
@@ -146,11 +153,15 @@ body { background: var(--bg); color: var(--text); font-family: var(--font-ui, sy
 .tabs a { padding: 3px 12px; border: 1px solid var(--field-border); color: var(--text-muted); text-decoration: none; }
 .tabs a.on { background: var(--accent-ui); border-color: var(--accent-ui); color: var(--bg); }
 .sp { flex: 1; }
-.syms { flex: 1; overflow-y: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(148px, 1fr)); gap: 1px; background: var(--border); padding: 1px; }
-.symc { background: var(--bg); padding: 8px 6px 10px; text-align: center; }
-.symc canvas { width: 128px; height: 128px; }
-.sk { font-family: ui-monospace, monospace; font-size: 11px; color: var(--accent-ui); }
-.sn { font-size: 11px; color: var(--text-faint); line-height: 1.4; margin-top: 2px; }
+.symbar { display: flex; flex-wrap: wrap; gap: 4px; padding: 6px 14px; border-bottom: 1px solid var(--border); flex: none; }
+.tg { padding: 1px 9px; border: 1px solid var(--border); color: var(--text-muted); cursor: pointer; font-size: 11px; border-radius: 9px; }
+.tg.on { background: var(--accent-ui); border-color: var(--accent-ui); color: var(--bg); }
+.syms { flex: 1; overflow-y: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 1px; background: var(--border); padding: 1px; align-content: start; }
+.symc { background: var(--bg); padding: 6px 4px 8px; text-align: center; }
+.symc canvas { width: 132px; height: 76px; }
+.sk { font-family: ui-monospace, monospace; font-size: 10px; color: var(--accent-ui); line-height: 1.3; word-break: break-all; }
+.sk em { font-style: normal; color: var(--text-faint); }
+.sn { font-size: 11px; color: var(--text); line-height: 1.4; margin-top: 2px; }
 .sn em { font-style: normal; }
 .topow { flex: 1; min-height: 0; }
 .mapw { flex: 1; min-height: 0; position: relative; }

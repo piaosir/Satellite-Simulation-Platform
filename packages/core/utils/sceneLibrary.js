@@ -200,7 +200,9 @@ function blankModule(cat, name) {
   return {
     id: USER_PREFIX + Math.random().toString(36).slice(2, 10),
     cat: cat || 'D', group: 'misc', zh: name || '自定义模块', en: name || 'Custom module',
-    symbol: 'sensor', ports: [], place: { modes: ['fixed'], mountable: false, hostCats: [] },
+    // symbol 是【自建模块】的图标名（'来源:名'，见 src/viz/scene/sceneSymbolMap.js）。
+    // 内置模块的图标由那张表按 id 逐条给定，本字段在内置条目上只是一期遗留的兜底档。
+    symbol: 'tabler:box', ports: [], place: { modes: ['fixed'], mountable: false, hostCats: [] },
     tags: [], src: '自建'
   };
 }

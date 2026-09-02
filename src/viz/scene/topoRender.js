@@ -164,7 +164,7 @@ export function drawTopology(ctx, lay, model, view, W, H, fontPx) {
     // 类别色条（无彩，只用明度分档 —— 平台既定：颜色留给状态）
     ctx.fillStyle = m.cat === 'A' ? P.accent : (m.cat === 'H' ? P.text : P.borderS)
     ctx.fillRect(x, y + 1, 3, NODE_H - 2)
-    drawSymbol(ctx, m.symbol, x + 8 + SYM / 2, n.y, SYM, P.text, 0, P.bg)
+    drawSymbol(ctx, m, x + 8 + SYM / 2, n.y, SYM, P.text, 0, P.bg)
     ctx.textAlign = 'left'
     ctx.font = `600 ${F}px ${fam}`; ctx.fillStyle = P.text
     ctx.fillText(clipText(ctx, m.name, NODE_W - SYM - 22), x + SYM + 16, n.y - 8)

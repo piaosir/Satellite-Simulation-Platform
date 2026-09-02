@@ -313,5 +313,97 @@ function sat0(d) { return d.segments.find((s) => s.kind === 'sat') }
   }
 }
 
+/* ═══════ ⑨ 模块符号（二期：成品矢量素材 + 逐条映射）═══════ */
+// 锁定的是「图上这一层信息还在不在」：
+//   · 160 个内置模块【逐条】有图标 —— 一期是 160 个模块共用 72 个符号，光 `sensor` 一件
+//     就被 7 类量纲不同的传感器共用，那等于这一层没画；
+//   · 映射表里没有孤儿（指向已删模块的条目，改库时最容易留下的垃圾）；
+//   · 每个用到的图标在生成的数据文件里都有，且【命令数组回放不抛】——
+//     符号是 2D 出图 / 3D 精灵 / 拓扑三处共用的那支画笔，回放崩一处就三处一起崩。
+{
+  const { SYMBOL_MAP, SYMBOL_ICONS, LEGACY_ALIAS, FALLBACK_ICON, symbolSpec } =
+    await import('../../../src/viz/scene/sceneSymbolMap.js')
+  const { SYMBOL_DATA, SYM_STROKE_W } = await import('../../../src/viz/scene/sceneSymbolData.js')
+  const { drawSymbol, iconOf } = await import('../../../src/viz/scene/sceneSymbols.js')
+
+  const ids = LIB.BUILTIN.map((m) => m.id)
+  const unmapped = ids.filter((i) => !SYMBOL_MAP[i])
+  ok('★ 每个内置模块都有自己的一条符号映射', unmapped.length === 0, unmapped.slice(0, 6).join(' ') || `${ids.length} 条`)
+  const orphan = Object.keys(SYMBOL_MAP).filter((k) => !ids.includes(k))
+  ok('★ 映射表里没有孤儿（指向已删模块的条目）', orphan.length === 0, orphan.slice(0, 6).join(' '))
+
+  const missIcon = [...SYMBOL_ICONS].filter((k) => !SYMBOL_DATA[k])
+  ok('★ 映射用到的每个图标都在生成的数据文件里（缺一个＝图上一个空白）', missIcon.length === 0, missIcon.join(' ') || `${SYMBOL_ICONS.size} 个`)
+  const unusedIcon = Object.keys(SYMBOL_DATA).filter((k) => !SYMBOL_ICONS.has(k))
+  ok('数据文件里没有多余图标（构建脚本只抽映射表用到的）', unusedIcon.length === 0, unusedIcon.join(' '))
+  ok('图标名一律带来源前缀（tabler / tabler-filled / lucide）',
+    Object.keys(SYMBOL_DATA).every((k) => /^(tabler|tabler-filled|lucide):/.test(k)))
+
+  // 一期那七类共用 `sensor` 的传感器现在各是各的
+  const seven = ['sens.line.temp', 'sens.line.galloping', 'sens.pipe.das', 'sens.dam.seepage',
+    'sens.geo.gnss', 'sens.geo.crack', 'sens.air.micro']
+  const sevenIcons = new Set(seven.map((i) => SYMBOL_MAP[i].icon))
+  ok('★ 一期共用一个 sensor 的七类传感器现在按量纲分开了', sevenIcons.size >= 6, [...sevenIcons].join(' '))
+  const distinct = new Set(Object.values(SYMBOL_MAP).map((v) => v.icon))
+  ok('内置模块的主图标种类比一期多（一期 72 种）', distinct.size > 72, `${distinct.size} 种`)
+
+  // 老手绘符号 id 的别名：一期存下来的自建条目不能退化成兜底件
+  const legacyMiss = Object.entries(LEGACY_ALIAS).filter(([, v]) => !SYMBOL_DATA[v]).map(([k]) => k)
+  ok('★ 老符号别名表逐条指向存在的图标（一期存档的自建模块不掉图）', legacyMiss.length === 0, legacyMiss.join(' '))
+  ok('老符号 id 走别名解析（不落兜底件）', symbolSpec({ id: 'usr:x', symbol: 'sensor' }).icon !== FALLBACK_ICON)
+  ok('自建条目显式给的新式图标名压过映射表（改写层口径：换图标也是一条差异）',
+    symbolSpec({ id: 'sat.cs6c', symbol: 'tabler:cpu' }).icon === 'tabler:cpu')
+  ok('认不出的模块落兜底件（不伪装成某种设备）', symbolSpec({ id: 'usr:zzz' }).icon === FALLBACK_ICON)
+
+  // 回放：记账用的假 2D 上下文（与 markSymbols.test.mjs 同一套做法）
+  const mkCtx = () => ({
+    globalAlpha: 1, fillStyle: '', strokeStyle: '', lineWidth: 0, lineJoin: '', lineCap: '',
+    _pts: [], _fills: 0, _strokes: 0, _w: [],
+    save() {}, restore() {}, translate() {}, rotate() {}, scale() {},
+    beginPath() {}, closePath() {},
+    moveTo(x, y) { this._pts.push([x, y]) }, lineTo(x, y) { this._pts.push([x, y]) },
+    rect(x, y, w, h) { this._pts.push([x, y], [x + w, y + h]) },
+    arc(x, y, r) { this._pts.push([x - r, y - r], [x + r, y + r]) },
+    ellipse(x, y, rx, ry) { this._pts.push([x - rx, y - ry], [x + rx, y + ry]) },
+    quadraticCurveTo(cx, cy, x, y) { this._pts.push([cx, cy], [x, y]) },
+    bezierCurveTo(a, b, c, d, x, y) { this._pts.push([a, b], [c, d], [x, y]) },
+    fill() { this._fills++ }, stroke() { this._strokes++; this._w.push(this.lineWidth) }
+  })
+  let threw = ''
+  const empty = [], outOfBox = []
+  for (const m of LIB.BUILTIN) {
+    const ctx = mkCtx()
+    try { drawSymbol(ctx, m, 64, 64, 128, '#000', 0, '#fff') }
+    catch (e) { threw = m.id + '：' + e.message; break }
+    if (!ctx._pts.length) empty.push(m.id)
+    // 形体连同描边整个塞进 128 视框（3D 那边是把这张贴图整体上屏的，超出就是被裁掉）
+    const mg = SYM_STROKE_W / 2 + 6
+    if (ctx._pts.some(([x, y]) => x < -mg || y < -mg || x > 128 + mg || y > 128 + mg)) outOfBox.push(m.id)
+  }
+  ok('★ 160 个模块的符号回放全不抛异常', !threw, threw)
+  ok('每个符号都真画出了笔画', empty.length === 0, empty.slice(0, 6).join(' '))
+  ok('★ 形体连同描边落在 128 视框内（3D 贴图整体上屏，超框即被裁）', outOfBox.length === 0, outOfBox.slice(0, 6).join(' '))
+
+  // 徽标：复合模块画两套图形，笔画数必须比只画主图标时多
+  {
+    const a = mkCtx(); drawSymbol(a, 'net.smartpole', 64, 64, 128, '#000', 0, '#fff')       // 杆 + 卫星回传
+    const b = mkCtx(); drawSymbol(b, 'tabler:tower', 64, 64, 128, '#000', 0, '#fff')        // 只有杆
+    ok('★ 复合模块的右下角徽标真画出来了', a._pts.length > b._pts.length, `${a._pts.length} vs ${b._pts.length}`)
+  }
+  // 套边：先用套色把整个图形描粗一圈再画本体。★ 一期的符号是实心件、靠面积压住底图，
+  // 二期换成描边件之后没有这一趟，符号线与地图底纹同粗同色就糊在一起了。
+  {
+    const a = mkCtx(); drawSymbol(a, 'tabler:satellite', 64, 64, 128, '#000', 0, '#fff')
+    const n = SYMBOL_DATA['tabler:satellite'].length          // 这枚图标全是描边件
+    ok('★ 套边是独立一趟（每个图元描两遍：套色粗的 + 本体）', a._strokes === n * 2, `${a._strokes} 笔 / ${n} 图元`)
+    ok('★ 套边比本体粗（不粗就压不住底纹）', Math.max(...a._w) > SYM_STROKE_W, `最粗 ${Math.max(...a._w).toFixed(1)} vs 本体 ${SYM_STROKE_W}`)
+  }
+  // 空中判据换成按图标判之后，会飞的还得是会飞的
+  ok('无人机 / 固定翼 / 直升机 / 浮空器解析出的图标都在「会飞」那一组',
+    ['veh.uav.multi', 'veh.uav.fixed', 'veh.uav.heli', 'veh.balloon']
+      .every((i) => /drone|plane|helicopter|balloon/.test(iconOf(LIB.BUILTIN.find((m) => m.id === i)))))
+}
+
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)
