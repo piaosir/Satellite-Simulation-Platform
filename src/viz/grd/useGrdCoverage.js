@@ -1543,6 +1543,8 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
   // 全局显示选项（波束名/峰值点/数值标签开关与字号）：仅影响标注层，重绘即可（不回存到天线设置）
   watch(() => [s.showName, s.nameSize, s.nameColor, s.showBore, s.boreSize, s.boreColor, s.showRay, s.rayColor, s.rayWidth, s.rayOpacity, s.showPeak, s.peakSize, s.peakColor, s.showVal, s.valSize, s.valColor], () => recompute())
   watch(() => s.showVal, (v) => { if (!v && dragLabel.value) setDragLabel(false) })   // 关掉数值标签即退出标签拖拽模式（无标签可拖）
+  // 切换聚焦天线即退出拖拽波束：拖的是聚焦天线的指向，带着这个模式切到别的天线，下一拖就把新天线拖歪了（对地/对星两个视图共用这一个聚焦，故在此一处收口）
+  watch(active, () => { if (dragBore.value) setDragBore(false) })
 
   return {
     sats, expanded, selected, active, loading, s,

@@ -1,5 +1,6 @@
 // 性能指标表（SATSOFT Performance Table）：独立站点库 + 逐站取值 + 选项（列/过滤/口径/指向误差）。
-// 站点库与地图标记解耦（可一键导入标记）；每个天线一张表，且每张表的选项独立保存（optsByAnt）。
+// 站点库与地图标记解耦（可一键导入标记）；每个天线一张表，站点列表（stationsByAnt）与选项（optsByAnt）
+// 都逐表独立 —— 一张表改城市不牵动别的表，新表从空白起。跨表复用走「城市组」预设（全表共享的库）。
 // 取值内核见 src/viz/grd/coverage.js：sampleBeamAt（反向采样方向图）、tiltBasis（指向误差扫描）。
 import { ref, computed } from 'vue'
 import { sampleBeamAt, perturbSpacecraft, dirToAzEl, groundLookAngles, axialRatioDb } from './coverage.js'
@@ -73,7 +74,16 @@ function defaultOpts() {
 }
 
 export function usePerfTable() {
-  const stations = ref([])     // 共享站点库 [{ id, country, city, desig, lon, lat }]
+  // 站点库【逐表独立】：天线 key → [{ id, country, city, desig, lon, lat }]。
+  // 曾是全表共享的一份，改一处所有天线的表跟着变；现在一根天线一份，各录各的。
+  // 跨表复用走「城市组」（命名预设，仍是全表共享的库）或从标记/Excel 导入。
+  const stationsByAnt = ref({})
+  const activeKey = ref('')    // 当前打开的那张表（宿主开表/切表时经 setActiveKey 设；''=没开表）
+  const NO_ST = []             // 没开表时 stations 的只读空值（恒定引用，免得每次读都换一个数组）
+  const stations = computed({
+    get: () => (activeKey.value && stationsByAnt.value[activeKey.value]) || NO_ST,
+    set: (v) => { if (activeKey.value) stationsByAnt.value = { ...stationsByAnt.value, [activeKey.value]: v || [] } }
+  })
   const rows = ref([])         // 当前天线的计算结果（compute 填充）
   const ctxInfo = ref(null)    // { satName, antName, beams }
   const ctxBeams = ref([])     // 当前天线全部波束 [{ bi, name, peakDb }]（compute 填充）——供选项面板「波束筛选」列表
@@ -118,6 +128,7 @@ export function usePerfTable() {
   }
   // Excel/链路预算式「增加行」：在 at 处插入一行空站（经纬度留空，填好后才参与取值）。返回新站。
   function addEmptyStation(at) {
+    if (!activeKey.value) return null              // 没开表＝没有哪张表收得下（stations 的 setter 此时是空转），返回值不许撒谎
     const s = { id: newId(), country: '', city: '', desig: '', lon: null, lat: null }
     const list = [...stations.value]
     const i = (at == null || at < 0 || at > list.length) ? list.length : at
@@ -188,6 +199,18 @@ export function usePerfTable() {
   function redo() { if (!redoStack.length) return false; undoStack.push(_snap()); _apply(redoStack.pop()); _sync(); return true }
   function clearHistory() { undoStack.length = 0; redoStack.length = 0; _sync() }
 
+  // 开表 / 切表：把 stations 指到这根天线自己那份（没有就现开一份空的）。
+  // 撤销栈与隐藏行都是【上一张表的】派生态，必须一起丢：撤销栈存的是整份站点列表，
+  // 留着的话在新表里按一次 Ctrl+Z 就会把上一张表的城市贴过来。
+  function setActiveKey(key) {
+    const k = key || ''
+    if (k === activeKey.value) return
+    activeKey.value = k
+    if (k && !stationsByAnt.value[k]) stationsByAnt.value = { ...stationsByAnt.value, [k]: [] }
+    hidden.value = {}
+    clearHistory()
+  }
+
   // Excel/表格粘贴：每行一站，单元格按 制表符 > 逗号 > 空白 切分；约定【末两列=经度、纬度】，
   // 之前的文本列依次填 国家/城市/代号。末两列非数字的行（表头/无效）自动跳过。返回新增条数。
   function parsePasted(text) {
@@ -204,6 +227,7 @@ export function usePerfTable() {
     return out
   }
   function addStationsBulk(text) {
+    if (!activeKey.value) return 0
     const parsed = parsePasted(text); if (!parsed.length) return 0
     const add = parsed.map((p) => ({ id: newId(), country: p.country, city: p.city, desig: p.desig, lon: p.lon, lat: p.lat }))
     stations.value = [...stations.value, ...add]
@@ -224,6 +248,7 @@ export function usePerfTable() {
     else s[key] = String(val == null ? '' : val)
   }
   function pasteBlock(startId, startKey, text) {
+    if (!activeKey.value) return 0
     const grid = parseGrid(text); if (!grid.length) return 0
     const c0 = Math.max(0, EDIT_COLS.indexOf(startKey))
     const list = [...stations.value]
@@ -265,6 +290,7 @@ export function usePerfTable() {
   function removeCityGroup(id) { cityGroups.value = cityGroups.value.filter((x) => x.id !== id) }
   // 载入组 = 用该组城市替换当前列表（新建行 id）。调用方负责 pushUndo（一次 Ctrl+Z 可还原）。返回载入的城市数。
   function loadCityGroup(id) {
+    if (!activeKey.value) return 0
     const g = findGroup(id); if (!g) return 0
     stations.value = (g.cities || []).map((c) => ({ id: newId(), country: c.country || '', city: c.city || '', desig: c.desig || '', lon: num(c.lon), lat: num(c.lat) }))
     hidden.value = {}
@@ -272,6 +298,7 @@ export function usePerfTable() {
   }
   // 追加组到当前列表：有坐标的行按 ±1e-4 去重（与从标记导入同口径），无坐标的行（仅城市名）一律追加。调用方负责 pushUndo。返回新增数。
   function appendCityGroup(id) {
+    if (!activeKey.value) return 0
     const g = findGroup(id); if (!g) return 0
     const exists = (lon, lat) => stations.value.some((s) => Number.isFinite(s.lon) && Number.isFinite(s.lat) && Math.abs(s.lon - lon) < 1e-4 && Math.abs(s.lat - lat) < 1e-4)
     const add = []
@@ -286,6 +313,7 @@ export function usePerfTable() {
 
   // 从地图标记导入：地球站 name → 城市；点标记 → 仅经纬度。±1e-4 去重。返回新增条数。
   function importFromMarkers(points = [], mkStations = []) {
+    if (!activeKey.value) return 0
     const exists = (lon, lat) => stations.value.some((s) => Math.abs(s.lon - lon) < 1e-4 && Math.abs(s.lat - lat) < 1e-4)
     const add = []
     for (const p of mkStations) { const lon = num(p.lon), lat = num(p.lat); if (lon == null || lat == null || exists(lon, lat)) continue; add.push({ id: newId(), country: '', city: (p.name || '').trim() || '地球站', desig: '', lon, lat }) }
@@ -296,6 +324,7 @@ export function usePerfTable() {
 
   // 从地图航迹导入：每个航点 → 一座城市，城市名取「航迹名#序号」。±1e-4 去重（重复导入自动跳过）。返回新增条数。
   function importFromTrajectories(trajectories = []) {
+    if (!activeKey.value) return 0
     const exists = (lon, lat) => stations.value.some((s) => Math.abs(s.lon - lon) < 1e-4 && Math.abs(s.lat - lat) < 1e-4)
     const add = []
     for (const t of trajectories) {
@@ -426,10 +455,16 @@ export function usePerfTable() {
     return base.filter((r) => [r.country, r.city, r.desig].some((v) => String(v || '').toLowerCase().includes(q)))
   })
 
-  // ===== 持久化（站点库 + 各天线选项随页面快照存盘；表为派生数据不存）=====
+  // ===== 持久化（逐天线站点库 + 各天线选项随页面快照存盘；表为派生数据不存）=====
   function getState() {
+    const sb = {}
+    for (const k of Object.keys(stationsByAnt.value)) {
+      const list = stationsByAnt.value[k]
+      if (!list || !list.length) continue                                     // 空表不写进快照
+      sb[k] = list.map((s) => ({ country: s.country, city: s.city, desig: s.desig, lon: s.lon, lat: s.lat }))
+    }
     return {
-      stations: stations.value.map((s) => ({ country: s.country, city: s.city, desig: s.desig, lon: s.lon, lat: s.lat })),
+      stationsByAnt: sb,
       optsByAnt: JSON.parse(JSON.stringify(optsByAnt.value)),
       optsTemplate: optsTemplate ? cloneOpts(optsTemplate) : null,
       cityGroups: cityGroups.value.map((g) => ({ name: g.name, cities: (g.cities || []).map((c) => ({ country: c.country, city: c.city, desig: c.desig, lon: c.lon, lat: c.lat })) }))
@@ -438,7 +473,9 @@ export function usePerfTable() {
   function restoreState(st) {
     if (!st) return
     clearHistory()
-    if (Array.isArray(st.stations)) stations.value = st.stations.map((s) => ({ id: newId(), country: s.country || '', city: s.city || '', desig: s.desig || '', lon: num(s.lon), lat: num(s.lat) }))
+    activeKey.value = ''
+    hidden.value = {}
+    const mkSt = (s) => ({ id: newId(), country: s.country || '', city: s.city || '', desig: s.desig || '', lon: num(s.lon), lat: num(s.lat) })
     if (st.optsByAnt && typeof st.optsByAnt === 'object') {
       const m = {}
       for (const k of Object.keys(st.optsByAnt)) m[k] = { ...defaultOpts(), ...st.optsByAnt[k], cols: { ...defaultOpts().cols, ...(st.optsByAnt[k].cols || {}) } }
@@ -447,6 +484,17 @@ export function usePerfTable() {
     optsTemplate = (st.optsTemplate && typeof st.optsTemplate === 'object')
       ? { ...defaultOpts(), ...st.optsTemplate, cols: { ...defaultOpts().cols, ...(st.optsTemplate.cols || {}) }, beamSel: null }
       : null
+    // 站点库：新快照逐天线存；老快照（st.stations）是全表共享的一份 → 原样复制给每一根【开过表的】天线
+    // （optsByAnt 的键就是开过表的天线，故必须在它之后恢复），此后各表各改各的。
+    if (st.stationsByAnt && typeof st.stationsByAnt === 'object') {
+      const m = {}
+      for (const k of Object.keys(st.stationsByAnt)) m[k] = (st.stationsByAnt[k] || []).map(mkSt)
+      stationsByAnt.value = m
+    } else if (Array.isArray(st.stations) && st.stations.length) {
+      const m = {}
+      for (const k of Object.keys(optsByAnt.value)) m[k] = st.stations.map(mkSt)
+      stationsByAnt.value = m
+    } else stationsByAnt.value = {}
     cityGroups.value = Array.isArray(st.cityGroups)
       ? st.cityGroups.filter((g) => g && Array.isArray(g.cities)).map((g) => ({
           id: gid(), name: String(g.name || '城市组'),
@@ -493,7 +541,7 @@ export function usePerfTable() {
   const setBeamSel = (o, ids) => { if (o) o.beamSel = normSel([...new Set(ids)]) }
 
   return {
-    stations, rows, filteredRows, ctxInfo, query, optsByAnt, canUndo, canRedo,
+    stations, rows, filteredRows, ctxInfo, query, optsByAnt, canUndo, canRedo, setActiveKey,
     colDefs: COL_DEFS, colGroups: COL_GROUPS, getOpts, visibleColumns, rememberOpts, resetOpts,
     addEmptyStation, updateStation, removeStation, removeRow, clearStations, addStationsBulk, pasteBlock, importFromMarkers, importFromTrajectories,
     setCities, applyCityGeo, applyCityGeoAll,

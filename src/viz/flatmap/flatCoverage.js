@@ -147,9 +147,12 @@ export function createFlatCoverage(canvas) {
   // 两档并存而不是二选一：瓦片档需要离线包（resources/imagery，约 300 MB，不进 git），
   // 没装包的开发机/精简安装仍能用整幅档，不至于「影像」这一整块功能直接消失。
   let imgOn = false, imgEl = null, imgBright = 1, imgSet = null, imgMaxZ = 7
-  // 导出时能不能画位图影像。compat 同时服务两条导出路径（PNG 走真 canvas、PDF 走 svgcanvas 录制），
-  // 而影像只对前者成立 —— 后者会把整幅图 base64 塞进 SVG，文件大到不可用。故不能只看 compat。
+  // 导出时能不能【逐片】画位图影像：只有输出目标是真 canvas（PNG）时成立 —— svgcanvas 会把每一片
+  // 各自 base64 成一个 <image>，SVG 体积炸掉，且片边被取整后海面上会留一格一格的白缝。故不能只看 compat。
   let rasterOut = false
+  // 矢量导出（PDF）的影像底图：整层【预合成】成的一张位图（见 bakeImagery），由 exportRender 递进来。
+  // 非空即顶替逐片绘制 —— 于是矢量 PDF 也有影像底图，而不是悄悄掉回矢量海陆。
+  let vecImg = null
   let mk = { points: [], stations: [], trajectories: [] }
   let focusSats = []    // 聚焦卫星星下点列表 [{ lat, lon }...]（多选=每颗各一个图标，同款同大小，不分主次）
   let selGeomList = []  // 聚焦卫星几何列表 [{ footprint:[{lat,lon}...], track:[{lat,lon}...], sub:{lat,lon} }...]，与 3D 同源（多颗同时叠画）
@@ -298,6 +301,7 @@ export function createFlatCoverage(canvas) {
   // 返回值＝这一帧到底画出东西没有。瓦片档在离线包缺失时会一片都取不到，调用方据此回退到
   // 矢量底图 —— 不是「黑一块」而是像没开影像一样，用户看得懂、也不至于以为软件坏了。
   function drawImagery() {
+    if (vecImg) { ctx.drawImage(vecImg, 0, 0, cw, ch); return true }   // 矢量导出：整层已合成为一张，与页面 1:1
     if (imgSet) return drawImageryTiles()
     if (!imgEl) return false
     const kk = k()
@@ -430,13 +434,15 @@ export function createFlatCoverage(canvas) {
         const u = unwrap(poly)
         let lo = Infinity, hi = -Infinity
         const path = new Path2D()
+        const pts = new Float64Array(u.length * 2)   // 导出回放用（见 drawBorders 的 compat 分支），与 path 同一份坐标
         for (let i = 0; i < u.length; i++) {
           const x = u[i][0] - LON0, y = 90 - u[i][1]
           if (x < lo) lo = x
           if (x > hi) hi = x
           i === 0 ? path.moveTo(x, y) : path.lineTo(x, y)
+          pts[i * 2] = x; pts[i * 2 + 1] = y
         }
-        list.push({ lo, hi, path })
+        list.push({ lo, hi, path, pts })
       }
       out[cls] = list
     }
@@ -458,7 +464,17 @@ export function createFlatCoverage(canvas) {
       ctx.setLineDash(px ? px.map((v) => v * (DASH_SCALE[cls] || 1) / kk) : [])
       for (const off of [-360, 0, 360]) {
         ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * (tx + off * kk), dpr * ty)
-        for (const sh of list) { if (sh.hi + off < wl || sh.lo + off > wr) continue; ctx.stroke(sh.path) }
+        // ★ 导出（compat）必须按点列回放，不能给 stroke() 递 Path2D：svgcanvas 的 stroke() 忽略入参，
+        //   转而把【上一个元素】的路径重描一遍 —— 五类线在矢量 PDF 里整个消失（图上只剩色块，没有
+        //   一条海岸线与国界），顺带把上一条 path（多半是经纬网）的线型改成边界线的。同 drawLand，
+        //   一类合并成一条 path：节点数是 svg2pdf 逐节点 getComputedStyle 的耗时主因。
+        if (compat) {
+          const vis = list.filter((sh) => !(sh.hi + off < wl || sh.lo + off > wr))
+          if (!vis.length) continue
+          ctx.beginPath()
+          for (const sh of vis) { const p = sh.pts; ctx.moveTo(p[0], p[1]); for (let i = 2; i < p.length; i += 2) ctx.lineTo(p[i], p[i + 1]) }
+          ctx.stroke()
+        } else for (const sh of list) { if (sh.hi + off < wl || sh.lo + off > wr) continue; ctx.stroke(sh.path) }
       }
     }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.globalAlpha = 1; ctx.setLineDash([])
@@ -880,12 +896,12 @@ export function createFlatCoverage(canvas) {
     ctx.save()
     ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip()
     // 影像模式：整幅影像顶替海色 + 陆地填充。
-    // 导出时分两路：PNG（raster:true，真 canvas）照画影像；PDF/SVG 矢量导出不画 ——
-    // 位图会被 svgcanvas 整幅 base64 塞进 SVG，文件大到不可用，那条路仍出矢量底图。
+    // 导出时两条路都画：PNG（raster:true，真 canvas）逐片画；矢量 PDF 画 bakeImagery 预合成的那一张
+    // （vecImg）—— 逐片塞进 SVG 才是不可用的那种，整层一张不是。
     // drawImagery 返回 false ＝ 这一帧一片都没取到（瓦片档但离线包缺失/还没到货）→ 回退矢量底图。
     // 判据放在「画完之后」而不是「画之前探测」：探测要么多一次异步往返、要么要维护一个可用性状态机，
     // 而这里天然自愈 —— 包补上了下一帧就自己切回影像。
-    if (imgOn && (imgSet || imgEl) && (!compat || rasterOut) && drawImagery()) {
+    if (imgOn && (imgSet || imgEl) && (!compat || rasterOut || vecImg) && drawImagery()) {
       /* 影像已铺满，海色与陆地填充这两层被顶替 */
     } else {
       ctx.fillStyle = oceanColor; ctx.fillRect(rx, ry, rw, rh)
@@ -1818,6 +1834,44 @@ export function createFlatCoverage(canvas) {
       }
       if (plan && plan.items.length) await loadTiles(imgSet, plan.z, plan.items)
     },
+    // 矢量导出（PDF）的影像底图：把这次出图要用的瓦片【预合成成一张位图】，再由 exportRender 当作
+    // 单张 <image> 垫在最底下。返回 Image（已 decode）或 null（没开影像 / 一片都没取到）。
+    // ★ 不逐片贴：几十上百片各自一个 base64 <image>，SVG 体积炸掉，且片边被 svg2pdf 取整后海面上
+    //   会留一格一格的白缝。整层一张只有一个 <image>，位置与页面 1:1。
+    // ★ 用 JPEG 不是图省事：同一张 7680×3840 的真彩影像，PNG base64 约 60 MB（SVG 直接不可用），
+    //   JPEG q0.86 约 4 MB。影像本就是有损来源，再压一道肉眼分不出。
+    // px = 合成位图的目标宽（默认 7680，与「8K PNG」同一档）：这一个数决定 PDF 放大到多少倍
+    // 影像层还不糊 —— 页宽 1200pt 时即 6.4×，超过它才开始软。矢量层不受此限，照旧无限清晰。
+    async bakeImagery(opts) {
+      if (!imgOn || !(imgSet || imgEl)) return null
+      const o = opts || {}
+      const W = Math.max(1, Math.round(o.width || cw)), H = Math.max(1, Math.round(o.height || ch))
+      // 画布面积封顶同 renderFlatPNG：撞上 Chromium 的 268 MPix，toDataURL 直接返回空图
+      let ps = Math.max(1, (o.px > 0 ? o.px : 7680) / W)
+      ps = Math.min(ps, Math.sqrt(268435456 / (W * H)))
+      await this.ensureImagery({ width: W, height: H, pixelScale: ps, view: o.view })
+      const SV = { ctx, dpr, cw, ch, base, scale, tx, ty }
+      const cvI = document.createElement('canvas')
+      cvI.width = Math.round(W * ps); cvI.height = Math.round(H * ps)
+      let painted = false
+      try {
+        ctx = cvI.getContext('2d'); dpr = ps
+        if (o.view !== true) { cw = W; ch = H; fit() }
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+        ctx.fillStyle = oceanColor; ctx.fillRect(0, 0, cw, ch)   // JPEG 没有 alpha：缺片处露海色，不是一块黑
+        painted = drawImagery()
+      } finally {
+        ctx = SV.ctx; dpr = SV.dpr; cw = SV.cw; ch = SV.ch; base = SV.base; scale = SV.scale; tx = SV.tx; ty = SV.ty
+      }
+      if (!painted) return null
+      const img = new Image()
+      img.src = cvI.toDataURL('image/jpeg', 0.86)
+      await img.decode()
+      img.bakedPx = cvI.width      // 调用方据此如实报出「影像层实际多少像素宽」
+      return img
+    },
+    // 当前底图精细化档（导出前临时换成最细、用完复位，见 exportFlat 的 withFinestBasemap）
+    getMapDetail: () => ({ detail: mapDetail0, thin: mapThin }),
     exportRender(targetCtx, opts) {
       const o = opts || {}
       // view=true：所见即所得，保留当前 base/scale/tx/ty 与屏幕 cw/ch，仅按 pixelScale 放大输出；
@@ -1826,6 +1880,7 @@ export function createFlatCoverage(canvas) {
       const W = o.width || 1600, H = o.height || (W / 2), ps = o.pixelScale || 1
       const SV = { ctx, dpr, cw, ch, base, scale, tx, ty, font: textFont, fontLatin: textFontLatin }
       ctx = targetCtx; dpr = ps; compat = true; rasterOut = o.raster === true
+      vecImg = (!rasterOut && o.imagery) ? o.imagery : null   // 矢量导出的影像底图（见 bakeImagery）
       if (o.fontFamily) textFont = o.fontFamily
       if (o.fontFamilyLatin) textFontLatin = o.fontFamilyLatin
       if (viewMode) { /* 保留当前屏幕视图（cw/ch/base/scale/tx/ty 不变） */ }
@@ -1841,7 +1896,7 @@ export function createFlatCoverage(canvas) {
       drawFieldOverlays()
       drawFocusIcons()
       ctx.restore()
-      ctx = SV.ctx; dpr = SV.dpr; cw = SV.cw; ch = SV.ch; base = SV.base; scale = SV.scale; tx = SV.tx; ty = SV.ty; textFont = SV.font; textFontLatin = SV.fontLatin; compat = false; rasterOut = false
+      ctx = SV.ctx; dpr = SV.dpr; cw = SV.cw; ch = SV.ch; base = SV.base; scale = SV.scale; tx = SV.tx; ty = SV.ty; textFont = SV.font; textFontLatin = SV.fontLatin; compat = false; rasterOut = false; vecImg = null
       staticValid = false; requestDraw()
     },
     // 销毁：退订主权解算层的广播（不退的话卸载后的画布仍会被换视角触发重建）与 DPR 监听，再摘画布事件。

@@ -251,3 +251,13 @@ resources/imagery/
 # 旁路、「按族 + 星座阶数 M 现造一档」的插槽。数值口径与 Excel 往返由 modcodTables / modcodXlsx 两个
 # 测试管，台子只管交互。
 .mcharness/
+
+# 2D 平面图矢量导出验证台（npx vite --config .pdfharness/vite.config.mjs，launch.json 的 pdf-harness）：
+# 同一份场景喂真 canvas（PNG 那条）与喂 svgcanvas（PDF 那条），栅格化后逐像素比 —— 差异图会把
+# 「PDF 里丢掉的那一层」直接点亮（2026-09 就是这么找到五类边界线整个不见的：svgcanvas 的 stroke()
+# 不认 Path2D 入参）。另可真出 PDF/PNG 落到 out/，view-*.html 用 Chromium 的 PDF 阅读器放大着看。
+# ★ publicDir 指到 resources/imagery，用 http 顶替 imagery:// 协议（同 .imgharness）；
+#   /__fonts 中间件按主进程 font:pdf 的口径读系统 TTF，少了它中文缺字会被误报成「层丢了」。
+# 源码级的不变量（递 Path2D 的 fill/stroke/clip 必须有 compat 分支等）归
+# packages/core/test/flatExportCompat.test.mjs，进 npm test。
+.pdfharness/

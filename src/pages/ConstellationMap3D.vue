@@ -878,6 +878,8 @@ async function openPerf(sat, a) {
   const ok = await grd.ensureAntLoaded(key)
   if (!ok) { appAlert('该天线方向图未就绪，无法生成性能表'); return }
   perfKey.value = key
+  perf.setActiveKey(key)      // 城市列表切到这根天线自己那份（每张表各一份，新表从空白起）
+  perfGroupSel.value = ''     // 「城市组」下拉记的是上一张表载入的那组，城市列表已换人
   perf.beamQuery.value = ''   // 新表：清空波束筛选搜索词（波束数/含义随天线变）
   ensurePerfCities()          // 载入城市库（供城市名→经纬度自动补全）；只载一次
   perfWinInit()
@@ -891,7 +893,7 @@ async function ensurePerfCities() {
   try { const c = window.api && window.api.linkBudget && await window.api.linkBudget.cities(); if (c && c.length) { perf.setCities(c); if (perf.applyCityGeoAll()) refreshPerf() } }
   catch { _perfCitiesLoaded = false }   // 载入失败（无 IPC 等）→ 允许下次开表重试；自动补全暂不可用
 }
-function closePerf() { perfKey.value = '' }
+function closePerf() { perfKey.value = ''; perf.setActiveKey('') }
 
 // ===================== 对星指向：目标星身份 ↔ 当前 ECEF =====================
 // 身份串用 'n:<NORAD>'，没有编号的（自定义/合成星）退用 'm:<名字>'。存进天线设置里要跨会话稳定，
@@ -1230,7 +1232,8 @@ function satcovTick(movedKeys) {
   }
 }
 // 瞬时表随手重算（便宜）；时段表只标「输入已变」等用户点重算 —— 一次扫描是几十万次取值，不能跟着抖
-watch(() => satcov.active.value, () => satcovRefreshTable())
+// 换天线＝换一张表：目标星名单 / 来源档 / 时窗设置都切到那根天线自己那份（每张表各一份，新表从空白起）
+watch(() => satcov.active.value, (k) => { satPerf.setActiveKey(k || ''); satcovRefreshTable() }, { immediate: true })
 watch(satcovTableOpen, (v) => { if (v) satcovRefreshTable() })
 // 聚焦特效的触发面：画哪些天线变了（点亮谁按此定）、指向模式/目标星变了（目标星那一端要跟着换）。
 // 时间推进不在这里管——refreshPositions 每帧都会 commitGeometry。
@@ -4016,7 +4019,10 @@ function feedFlat() {
   if (provincesData) flat.setProvinces(provincesData)
   flat.setProvincesVisible(showProvinces.value)
   if (citiesData) flat.setCities(citiesData)
-  flat.setCitiesVisible(showCities.value)
+  // ★ 二级走 admL2On() 那道三重门，不是光看 showCities —— 「地级市开着、行政区总开关关着」时
+  //   citiesData 还留在内存里（ensureAdm 只在开着时重建、从不清空），照 showCities 喂就会在切回
+  //   平面图/导出时把整层市界市名画出来，而 3D 那边是关着的。
+  flat.setCitiesVisible(admL2On())
   flat.setBorderStyle({ ...borderStyle })
   flat.setLabelStyle({ ...labelStyle })
   flat.setOceanColor(oceanColor.value)
@@ -4083,8 +4089,9 @@ async function exportMap(fmt, scope) {
     const tag = view ? '截图' : '全球图'
     const { renderFlatPNG, renderFlatPDF } = await import('../viz/flatmap/exportFlat.js')
     if (fmt === 'pdf') {
-      // 矢量 PDF 按「设置」里的底图精度导出（flat 实例已随 displayQuality 同步精度）：
-      // 10m 更清晰但点数约 5.5× → 导出更慢、文件更大；如需更快可在设置里调到 50m/110m。
+      // 矢量 PDF【不跟】「设置」里的底图精度：那一档是给屏上帧率用的（出厂「高」= 50m），
+      // 而 PDF 是拿来放大着看的交付件 —— 50m 的海岸线一放大就是折线。导出恒用 10m，画完复位
+      // （见 exportFlat 的 withFinestBasemap；PNG 同此，两份出图不会一细一粗）。
       const fonts = await getPdfFonts()
       const bytes = await renderFlatPDF(flat, { base: 2400, fonts, view })
       await saveExport(bytes, `覆盖图_${tag}.pdf`, [{ name: 'PDF 矢量图', extensions: ['pdf'] }])
