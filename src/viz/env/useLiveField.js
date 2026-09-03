@@ -586,15 +586,23 @@ export function useLiveField(host) {
    *   traj 航迹   —— ★ 航迹的顶点**不带时间戳**，故不能算「此刻这条船在哪」。
    *        逐顶点各成一行是唯一诚实的做法：读出来的是「当前时刻，沿这条航线各点的衰减」，
    *        正是航路规划要看的东西。不去凭空给顶点安一个时间再插值假装船在动。
+   *   mk   点标记 + 地球站一次导入（「导入标记…」弹窗那条路），sel = { pts, sts }
+   * sel：只导入这些 —— pt / st 给 id 集合（Set 或数组），traj 给一条航迹的 id，mk 给 { pts, sts } 两个集合；
+   *      不给（null）＝该类全部。★ 弹窗里勾了才导，不再一键把地图上的全部标记倒进表里。
    * 同坐标去重（0.01° 内视为同一点），重复导入不会把表堆爆。
    */
-  function importMarkers(kind) {
+  function importMarkers(kind, sel = null) {
     const M = H.markers?.()
     if (!M) { siteMsg.value = '读取地图标记失败' ; return }
+    const within = (set, id) => set == null || (set instanceof Set ? set.has(id) : Array.isArray(set) ? set.includes(id) : set === id)
     const add = []
-    if (kind === 'pt') for (const p of (M.pts || [])) add.push({ lon: p.lon, lat: p.lat, name: fmtLL(p.lon, p.lat), src: 'pt' })
-    if (kind === 'st') for (const s of (M.sts || [])) add.push({ lon: s.lon, lat: s.lat, name: s.name || '地球站', src: 'st' })
+    const takePts = (set) => { for (const p of (M.pts || [])) if (within(set, p.id)) add.push({ lon: p.lon, lat: p.lat, name: fmtLL(p.lon, p.lat), src: 'pt' }) }
+    const takeSts = (set) => { for (const s of (M.sts || [])) if (within(set, s.id)) add.push({ lon: s.lon, lat: s.lat, name: s.name || '地球站', src: 'st' }) }
+    if (kind === 'pt') takePts(sel)
+    if (kind === 'st') takeSts(sel)
+    if (kind === 'mk') { takePts(sel && sel.pts); takeSts(sel && sel.sts) }
     if (kind === 'traj') for (const t of (M.trs || [])) {
+      if (!within(sel, t.id)) continue
       const pts = t.pts || []
       pts.forEach((p, i) => add.push({ lon: p.lon, lat: p.lat, name: `${t.name || '航迹'} #${i + 1}`, src: 'traj' }))
     }

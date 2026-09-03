@@ -850,6 +850,52 @@ const perfNewGrpName = ref('')          // 新建城市组的名称输入
 const perfGrpRenameId = ref('')         // 正在重命名的城市组 id（''=无）
 const perfGrpRenameVal = ref('')        // 重命名输入值
 const perfGrpDelId = ref('')            // 待确认删除的城市组 id（两步删除防误删；''=无）
+// ===== 「导入标记…」弹窗（性能指标表与气象指标表共用）=====
+// 勾选具体的点标记 / 地球站再导入，不再一键把地图上的全部标记倒进表里；航迹走工具栏下拉，一次选一条（或全部）。
+// 勾选列表与「波束筛选」同一份口径（shared/ui/useCheckList.js）。★ points / stations / trajectories 声明在下方
+// 标记层那一节，这里只在回调与 computed 里【惰性】引用，不在 setup 期同步读它们（否则就是 TDZ）。
+const mkPickFor = ref('')                 // ''=关 | 'perf' 性能指标表 | 'met' 气象指标表
+const mkPickQ = ref('')                   // 过滤词：序号 / 站名 / 坐标
+const mkPickPts = ref(new Set())          // 勾选的点标记 id
+const mkPickSts = ref(new Set())          // 勾选的地球站 id
+const mkPickPtEl = ref(null), mkPickStEl = ref(null)
+const perfTrajSel = ref(''), metTrajSel = ref('')   // 两张表工具栏「导入航迹…」下拉的当前值（选完即清回占位）
+const mkPickPtRows = computed(() => {
+  const q = mkPickQ.value.trim().toLowerCase()
+  return points.value.map((p, i) => ({ id: p.id, seq: i + 1, name: envLive.fmtLL(Number(p.lon) || 0, Number(p.lat) || 0) }))
+    .filter((r) => !q || String(r.seq) === q || r.name.toLowerCase().includes(q))
+})
+const mkPickStRows = computed(() => {
+  const q = mkPickQ.value.trim().toLowerCase()
+  return stations.value.map((s, i) => ({ id: s.id, seq: i + 1, name: s.name || '', ll: envLive.fmtLL(Number(s.lon) || 0, Number(s.lat) || 0) }))
+    .filter((r) => !q || String(r.seq) === q || r.name.toLowerCase().includes(q) || r.ll.toLowerCase().includes(q))
+})
+const mkPtList = useCheckList({ rows: () => mkPickPtRows.value, idOf: (r) => r.id, isOn: (id) => mkPickPts.value.has(id), current: () => [...mkPickPts.value], commit: (ids) => { mkPickPts.value = new Set(ids) }, el: () => mkPickPtEl.value })
+const mkStList = useCheckList({ rows: () => mkPickStRows.value, idOf: (r) => r.id, isOn: (id) => mkPickSts.value.has(id), current: () => [...mkPickSts.value], commit: (ids) => { mkPickSts.value = new Set(ids) }, el: () => mkPickStEl.value })
+const { isOn: mkPtOn, onCount: mkPtCount, allOn: mkPtAllOn, anyOn: mkPtAnyOn, painting: mkPtPainting, cur: mkPtCur, onRowDown: mkPtDown, onHeadDown: mkPtHeadDown, onKey: mkPtKey } = mkPtList
+const { isOn: mkStOn, onCount: mkStCount, allOn: mkStAllOn, anyOn: mkStAnyOn, painting: mkStPainting, cur: mkStCur, onRowDown: mkStDown, onHeadDown: mkStHeadDown, onKey: mkStKey } = mkStList
+// 航迹下拉的一项：名字 · 类型 · 航点数。名字是用户数据，选项整体 data-i18n-skip，类型词自己按语言给
+const trajOptLabel = (t) => `${t.name || byLang('航迹', 'Trajectory')}（${t.kind === 'flight' ? byLang('飞行', 'Flight') : byLang('航行', 'Maritime')} · ${(t.pts || []).length}）`
+function openMkPick(target) {
+  mkPickFor.value = target; mkPickQ.value = ''
+  mkPickPts.value = new Set(); mkPickSts.value = new Set()   // 从空勾起：要什么勾什么，全要就点表头那一行
+  mkPtList.reset(); mkStList.reset()
+}
+function confirmMkPick() {
+  const pts = points.value.filter((p) => mkPickPts.value.has(p.id))
+  const sts = stations.value.filter((s) => mkPickSts.value.has(s.id))
+  if (!pts.length && !sts.length) return
+  const target = mkPickFor.value
+  mkPickFor.value = ''
+  if (target === 'perf') {
+    perf.pushUndo()
+    const n = perf.importFromMarkers(pts, sts)
+    if (!n) { perf.dropUndo(); appAlert('所选标记均已在城市列表中') }
+    refreshPerf()
+  } else if (target === 'met') {
+    envLive.importMarkers('mk', { pts: new Set(pts.map((p) => p.id)), sts: new Set(sts.map((s) => s.id)) })
+  }
+}
 // 浮窗几何（可拖拽移动 / 右下角缩放）+ 中缝分隔（城市输入区高度，px）。首次打开按视口初始化一次。
 const perfWin = ref({ x: 0, y: 0, w: 760, h: 560, init: false })
 const perfInputH = ref(190)
@@ -1358,8 +1404,24 @@ function perfAddRowEnd() {
   perf.addEmptyStation(at)
   nextTick(() => { perfInGrid.sel.value = { ar: at, ac: 0, ri: at, ci: 0 }; perfInGrid.focusGrid() })
 }
-function perfImportMarkers() { perf.pushUndo(); const n = perf.importFromMarkers(points.value, stations.value); if (!n) { perf.dropUndo(); appAlert('没有可导入的新标记（点标记/地球站）') } refreshPerf() }
-function perfImportTrajs() { perf.pushUndo(); const n = perf.importFromTrajectories(trajectories.value); if (!n) { perf.dropUndo(); appAlert('没有可导入的新航点（航迹为空或已全部导入）') } refreshPerf() }
+// 「导入航迹…」下拉：选一条即导入它的航点，'*' = 全部航迹。★ 值从事件上取、随手把下拉清回占位：
+// 下次还能选同一条，且不依赖 v-model 与 @change 谁先跑。
+function perfImportTrajSel(e) {
+  const v = e && e.target ? e.target.value : perfTrajSel.value
+  perfTrajSel.value = ''; if (e && e.target) e.target.value = ''
+  if (!v) return
+  const list = v === '*' ? trajectories.value : trajectories.value.filter((t) => t.id === v)
+  perf.pushUndo()
+  const n = perf.importFromTrajectories(list)
+  if (!n) { perf.dropUndo(); appAlert('没有可导入的新航点（航迹为空或已全部导入）') }
+  refreshPerf()
+}
+function metImportTrajSel(e) {
+  const v = e && e.target ? e.target.value : metTrajSel.value
+  metTrajSel.value = ''; if (e && e.target) e.target.value = ''
+  if (!v) return
+  envLive.importMarkers('traj', v === '*' ? null : v)
+}
 // 「粘贴」按钮：直接读剪贴板批量加站（需浏览器授权剪贴板读取）
 async function perfPasteBtn() {
   let text = ''
@@ -9433,8 +9495,12 @@ onBeforeUnmount(() => {
           <span class="ptb" :class="{ dis: !perf.canUndo.value }" title="撤销 (Ctrl+Z)" @click="perfUndo"><Icon name="undo-2" :size="12" /></span>
           <span class="ptb" :class="{ dis: !perf.canRedo.value }" title="重做 (Ctrl+Y)" @click="perfRedo"><Icon name="redo-2" :size="12" /></span>
           <span class="ptb" title="在选中行下方增加一行（直接在表格里键入或粘贴）" @click="perfAddRow"><Icon name="plus" :size="12" /> 增加</span>
-          <span class="ptb" title="将地图上的点标记 / 地球站导入为城市" @click="perfImportMarkers"><Icon name="import" :size="12" /> 从标记导入</span>
-          <span class="ptb" title="将地图上的航迹航点导入为城市（每个航点一行，城市名取「航迹名#序号」）" @click="perfImportTrajs"><Icon name="import" :size="12" /> 导入航迹</span>
+          <span class="ptb" title="勾选地图上的点标记 / 地球站导入为城市" @click="openMkPick('perf')"><Icon name="import" :size="12" /> 导入标记…</span>
+          <select class="pin-gsel" v-model="perfTrajSel" @change="perfImportTrajSel" title="选一条航迹，把它的航点导入为城市（每个航点一行，城市名取「航迹名#序号」）">
+            <option value="">导入航迹…</option>
+            <option v-for="t in trajectories" :key="t.id" :value="t.id" data-i18n-skip>{{ trajOptLabel(t) }}</option>
+            <option v-if="trajectories.length > 1" value="*">（全部航迹）</option>
+          </select>
           <span class="ptb" title="从剪贴板粘贴表格（末两列=经度、纬度，可含 国家/城市/代号）批量添加" @click="perfPasteBtn"><Icon name="clipboard" :size="12" /> 粘贴</span>
           <span class="ptb" title="从 Excel 追加城市（按表头匹配列；无表头时末两列作经纬度）" @click="perfImportCities(false)"><Icon name="import" :size="12" /> 导入 Excel</span>
           <span class="ptb" :class="{ dis: !perf.stations.value.length }" title="把城市列表导出为 Excel" @click="perfExportCities"><Icon name="download" :size="12" /> 导出 Excel</span>
@@ -9512,9 +9578,12 @@ onBeforeUnmount(() => {
         <div class="pin-h">
           <span class="pin-t">站点输入</span>
           <span class="ptb" title="在末尾增加一行（可直接键入或粘贴）" @click="metAddRow(null)"><Icon name="plus" :size="12" /> 增加</span>
-          <span class="ptb" title="导入地图点标记为站点" @click="envLive.importMarkers('pt')"><Icon name="import" :size="12" /> 点标记</span>
-          <span class="ptb" title="导入地图地球站为站点（含站名）" @click="envLive.importMarkers('st')"><Icon name="import" :size="12" /> 地球站</span>
-          <span class="ptb" title="导入地图航迹航点为站点（每航点一行，站名取「航迹名 #序号」）；读数为当前时刻沿该航线各点的衰减" @click="envLive.importMarkers('traj')"><Icon name="import" :size="12" /> 航迹</span>
+          <span class="ptb" title="勾选地图上的点标记 / 地球站导入为站点" @click="openMkPick('met')"><Icon name="import" :size="12" /> 导入标记…</span>
+          <select class="pin-gsel" v-model="metTrajSel" @change="metImportTrajSel" title="选一条航迹，把它的航点导入为站点（每航点一行，站名取「航迹名 #序号」）；读数为当前时刻沿该航线各点的衰减">
+            <option value="">导入航迹…</option>
+            <option v-for="t in trajectories" :key="t.id" :value="t.id" data-i18n-skip>{{ trajOptLabel(t) }}</option>
+            <option v-if="trajectories.length > 1" value="*">（全部航迹）</option>
+          </select>
           <span class="ptb" title="从剪贴板粘贴（每行至少两列，末两列为经度、纬度，其余作站名）" @click="metPasteBtn"><Icon name="clipboard" :size="12" /> 粘贴</span>
           <span class="ptb" title="自 Excel 追加站点（按表头匹配 站名 / 经度 / 纬度）" @click="metImportXlsx"><Icon name="import" :size="12" /> 导入 Excel</span>
           <span class="ptb" title="清空站点列表" @click="envLive.clearSites()">清空</span>
@@ -9777,6 +9846,54 @@ onBeforeUnmount(() => {
     </div>
 
     <!-- 城市组管理弹窗：把当前城市列表存成命名预设，随时载入(替换)/追加/覆盖/重命名/删除；组随页面快照存盘、跨天线共享 -->
+    <!-- 「导入标记…」（性能指标表 / 气象指标表共用）：勾选具体的点标记 / 地球站再导入；航迹在各自工具栏的下拉里选 -->
+    <div v-if="mkPickFor" class="sat-mask perf-grp-mask" @click.self="mkPickFor = ''">
+      <div class="sat-dlg grp-dlg mkpick-dlg">
+        <div class="sdh"><span>导入标记</span><span class="csx" @click="mkPickFor = ''"><Icon name="x" :size="12" /></span></div>
+        <div class="sdbody">
+          <input class="ci bq" v-model="mkPickQ" placeholder="搜索：序号、站名或坐标" />
+          <section class="po-card">
+            <div class="po-ct">点标记</div>
+            <div ref="mkPickPtEl" class="bplist" :class="{ painting: mkPtPainting }" tabindex="0"
+                 title="点一行翻勾选 · 按住拖＝刷选一片 · Shift 点＝连选一段 · Ctrl+A 全选" @keydown="mkPtKey">
+              <div class="brow ball" @mousedown="mkPtHeadDown">
+                <input type="checkbox" :checked="mkPtAllOn()" :indeterminate="mkPtAnyOn() && !mkPtAllOn()" />
+                <span class="balln">{{ mkPickQ.trim() ? '(全选搜索结果)' : '(全选)' }}</span>
+                <span class="bpk">{{ mkPtCount }}/{{ points.length }}</span>
+              </div>
+              <div v-for="(r, i) in mkPickPtRows" :key="r.id" class="brow bitem" :class="{ on: mkPtOn(r.id), cur: mkPtCur === i }" @mousedown="mkPtDown($event, i)">
+                <input type="checkbox" :checked="mkPtOn(r.id)" />
+                <span class="bseq">{{ r.seq }}</span>
+                <span class="pbnm" :title="r.name" data-i18n-skip>{{ r.name }}</span>
+              </div>
+              <div v-if="!mkPickPtRows.length" class="empty">{{ points.length ? '无匹配标记' : '暂无点标记。' }}</div>
+            </div>
+          </section>
+          <section class="po-card">
+            <div class="po-ct">地球站</div>
+            <div ref="mkPickStEl" class="bplist" :class="{ painting: mkStPainting }" tabindex="0"
+                 title="点一行翻勾选 · 按住拖＝刷选一片 · Shift 点＝连选一段 · Ctrl+A 全选" @keydown="mkStKey">
+              <div class="brow ball" @mousedown="mkStHeadDown">
+                <input type="checkbox" :checked="mkStAllOn()" :indeterminate="mkStAnyOn() && !mkStAllOn()" />
+                <span class="balln">{{ mkPickQ.trim() ? '(全选搜索结果)' : '(全选)' }}</span>
+                <span class="bpk">{{ mkStCount }}/{{ stations.length }}</span>
+              </div>
+              <div v-for="(r, i) in mkPickStRows" :key="r.id" class="brow bitem" :class="{ on: mkStOn(r.id), cur: mkStCur === i }" @mousedown="mkStDown($event, i)">
+                <input type="checkbox" :checked="mkStOn(r.id)" />
+                <span class="bseq">{{ r.seq }}</span>
+                <span class="pbnm" :title="r.name" data-i18n-skip>{{ r.name }}</span>
+                <span class="bll" data-i18n-skip>{{ r.ll }}</span>
+              </div>
+              <div v-if="!mkPickStRows.length" class="empty">{{ stations.length ? '无匹配标记' : '暂无地球站。' }}</div>
+            </div>
+          </section>
+        </div>
+        <div class="sdfoot">
+          <span class="save" :class="{ dis: !(mkPtCount + mkStCount) }" @click="confirmMkPick">导入 {{ mkPtCount + mkStCount }} 项</span>
+          <span class="cancel" @click="mkPickFor = ''">取消</span>
+        </div>
+      </div>
+    </div>
     <div v-if="perfGrpOpen" class="sat-mask perf-grp-mask" @click.self="perfGrpOpen = false">
       <div class="sat-dlg grp-dlg">
         <div class="sdh"><span>城市组</span><span class="csx" @click="perfGrpOpen = false"><Icon name="x" :size="12" /></span></div>
@@ -10766,6 +10883,12 @@ onBeforeUnmount(() => {
 .grp-row .gic.del:hover { color: #ff6a6a; }
 .grp-row .gic.del.warn { color: #ff6a6a; }
 .grp-empty { padding: 18px 8px; text-align: center; font-size: var(--fs-3); color: var(--text-faint); font-style: italic; }
+/* 「导入标记…」弹窗：两张勾选列表叠放各自限高，整窗随 .sat-dlg 滚；坐标列与波束列表的读数列同一副字 */
+.mkpick-dlg { width: 440px; }
+.mkpick-dlg .po-card + .po-card { margin-top: 8px; }
+.mkpick-dlg .bplist { max-height: 220px; margin-top: 0; }
+.mkpick-dlg .brow .bll { flex: none; color: var(--text-faint); font-family: var(--font-mono); font-size: var(--fs-2); }
+.mkpick-dlg .sdfoot .save.dis { opacity: .45; pointer-events: none; }
 
 .gck { flex: none; width: 12px; height: 12px; margin: 0; cursor: pointer; }
 .gck:disabled { opacity: .35; cursor: not-allowed; }
