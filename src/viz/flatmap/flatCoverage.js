@@ -23,6 +23,9 @@ import { haloColor, haloScale, IMAGERY_HALO, IMAGERY_SCALE } from '../labelHalo.
 import { waterLabels } from '../geo/waterNames.js'
 // 岛链参考线：与 3D 球体共用同一份表
 import { chainList, CHAIN_DEF, CHAIN_LABEL_PX } from '../geo/islandChains.js'
+import { seamCrossing } from '../geo/lineGeom.js'
+// 南极洲极区收口：与 3D 球体同源（见 buildBaseGeo 的 ATA 分支）
+import { antarcticaFillRings } from '../globe3d/antarctica.js'
 
 const OCEAN = '#15426b'
 const BG = '#070b12'
@@ -231,6 +234,29 @@ export function createFlatCoverage(canvas) {
       const id = String(f.id)
       const idx = f.idx != null ? f.idx : i     // 取色序号按【归属】定，争议叠加与其基础面取同一号
       const { base: fill, arctic } = landColors(id, idx)
+      // ★ 南极洲：海岸线收口到南极点，与 3D 球体走同一个 antarcticaFillRings（globe3d/antarctica.js）。
+      //   不能照普通国家那样直接 closePath：110m 档的 ATA 主环首尾同为 (180, −84.71)，逐点解缠后
+      //   末点落在 −180，closePath 就沿 −84.71° 直连一整圈 —— −84.71° 到 −90° 不在多边形内，
+      //   画面底部一条 5.3° 高的横带是海色（附录 A 的十一点判：该档五个极区点全判在外）。
+      //   10m / 50m 的环自身走到 −90°，没这个问题，但三档一律走收口件 —— 两个视图同源比分档写法靠得住。
+      //   ★ 这里【不】再过 unwrap：收口件返回的环已经解缠，而主环末尾那两枚 −90° 顶点正是
+      //     横跨满经度的（它们之间差一整圈），再解缠一次会把它们抓到一块、极冠当场没。
+      //   三档的 fillRings 实测无洞环、互不嵌套，故逐环各成一个 shape（evenodd 在这里等于并集），
+      //   导出合并同色 path 的 compat 路径也跟着成立。
+      if (id === 'ATA') {
+        const shs = []
+        for (const ring of antarcticaFillRings(f)) {
+          const u = thin > 0 ? decimateRing(ring, thin) : ring
+          if (u.length < 3) continue
+          let lo = Infinity, hi = -Infinity
+          const path = new Path2D(), r = new Array(u.length)
+          for (let i = 0; i < u.length; i++) { const x = u[i][0] - LON0, y = 90 - u[i][1]; if (x < lo) lo = x; if (x > hi) hi = x; i === 0 ? path.moveTo(x, y) : path.lineTo(x, y); r[i] = [x, y] }
+          path.closePath()
+          shs.push({ lo, hi, path, rings: [r] })
+        }
+        if (shs.length) land.push({ shapes: shs, fill })
+        return
+      }
       const polys = f.geometry.type === 'Polygon' ? [f.geometry.coordinates] : f.geometry.coordinates
       const shapes = [], iceShapes = []   // 普通陆地色 / 北极岛屿冰白（按多边形质心纬度分流）
       for (const rings of polys) {
@@ -485,6 +511,8 @@ export function createFlatCoverage(canvas) {
   //   整片糊成陆地，海陆边界被切成一条横贯全图的直线，冰架前缘的海岸线孤零零浮在陆地色上。
   //   3D 球体那边早已改用 antarcticaFillRings 收口（见 globe3d/scene.js），这里是漏网的另一半，删掉即可。
   //   北极岛屿由 buildBaseGeo 按「多边形整块」染冰白（与 3D 同口径），不需要极冠。
+  //   2026-09-05 补：「三档都自己走到 −90°」只对 10m / 50m 成立，110m 的主环止于 −84.71° ——
+  //   故 buildBaseGeo 已改成三档一律走 antarcticaFillRings，与 3D 同源。
   // 卫星图标（矢量复刻聚焦卫星 SVG：双侧 3×2 太阳能板 + 中央星体）。按 color 填充、size 缩放。
   // 仰角线卫星与聚焦卫星共用此函数 —— 平面图上卫星统一为同一枚图标，颜色随各自设置。
   const SAT_BLOCKS = [[8, 41], [21, 41], [34, 41], [8, 63], [21, 63], [34, 63], [76, 41], [89, 41], [102, 41], [76, 63], [89, 63], [102, 63]]
@@ -535,16 +563,27 @@ export function createFlatCoverage(canvas) {
     for (const c of chains) drawPolyline(c.pts, chainCfg.color, chainCfg.width, false, dash || null)
     ctx.globalAlpha = sa
   }
+  // ★ 跨接缝的那一段在缝上插值断开，不是整段丢掉。旧写法一到 |Δwx| > 180 就 stroke + beginPath，
+  //   两端都不画到边，留一个与那一段等宽的缺口 —— 聚焦星覆盖圈 72 点、 5° 一段就缺 5°，
+  //   航迹稀疏航点能缺几十度，改了画面中心后跨缝的省界/岛链/等仰角线同理。
+  //   算式在 geo/lineGeom.js 的 seamCrossing（纯函数、不分配：静态层每次重建要走 CHN adm2 的 4.5 万段）。
+  //   3D 没有接缝，不受影响。
   function drawPolyline(p, color, width, closed, dash) {
     const kk = k()
     ctx.strokeStyle = color; ctx.lineWidth = width; ctx.lineJoin = 'round'; ctx.lineCap = 'round'
     if (dash) ctx.setLineDash(dash)
-    ctx.beginPath(); let started = false, pwx = 0
+    ctx.beginPath(); let started = false, pwx = 0, pwy = 0
     for (let i = 0; i < p.length; i++) {
       const a = p[i], lon = Array.isArray(a) ? a[0] : a.lon, lat = Array.isArray(a) ? a[1] : a.lat
-      const wx = WXN(lon), x = wx * kk + tx, y = (90 - lat) * kk + ty
-      if (started && Math.abs(wx - pwx) > 180) { ctx.stroke(); ctx.beginPath(); started = false }
-      started ? ctx.lineTo(x, y) : (ctx.moveTo(x, y), started = true); pwx = wx
+      const wx = WXN(lon), wy = 90 - lat, x = wx * kk + tx, y = wy * kk + ty
+      if (started && Math.abs(wx - pwx) > 180) {
+        const c = seamCrossing(pwx, pwy, wx, wy)
+        ctx.lineTo(c.xOut * kk + tx, c.y * kk + ty)
+        ctx.stroke(); ctx.beginPath()
+        ctx.moveTo(c.xIn * kk + tx, c.y * kk + ty)
+        ctx.lineTo(x, y)
+      } else started ? ctx.lineTo(x, y) : ctx.moveTo(x, y)
+      started = true; pwx = wx; pwy = wy
     }
     ctx.stroke()
     if (dash) ctx.setLineDash([])

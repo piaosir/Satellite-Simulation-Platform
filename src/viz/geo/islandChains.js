@@ -27,6 +27,8 @@
 // ★ 顶点在【经纬度平面】里加密（DENSE_DEG），不是留给两个渲染器各自连线：
 //   2D 是等距圆柱下的直线，3D 走大圆 —— 顶点一疏，同一条线在两个视图里就长成两个样子
 //   （第三岛链那几段跨 20~30° 的空海段最明显）。加密之后两边逐点一致。
+import { densifyLonLat } from './lineGeom.js'
+
 const DENSE_DEG = 1.0
 
 // 岛屿锚点：[中文名, 英文名, 经度, 纬度]。逐条都能在地图上查得到 —— 改坐标前先确认查得到。
@@ -183,35 +185,14 @@ const RAW = [
   ]]
 ]
 
-// 经度解缠：顶点表按走向连续写，跨 ±180 时不许跳 360（第三岛链横跨日界线）
-function unwrapLon(pts) {
-  const out = [[pts[0][0], pts[0][1]]]
-  let prev = pts[0][0]
-  for (let i = 1; i < pts.length; i++) {
-    let lo = pts[i][0]
-    while (lo - prev > 180) lo -= 360
-    while (lo - prev < -180) lo += 360
-    out.push([lo, pts[i][1]]); prev = lo
-  }
-  return out
-}
-// 平面加密：相邻顶点间按 DENSE_DEG 线性插值（经度已解缠，故直接插值即可）
-function densify(pts) {
-  const src = unwrapLon(pts), out = [src[0]]
-  for (let i = 1; i < src.length; i++) {
-    const [x0, y0] = src[i - 1], [x1, y1] = src[i]
-    const n = Math.max(1, Math.ceil(Math.hypot(x1 - x0, y1 - y0) / DENSE_DEG))
-    for (let j = 1; j <= n; j++) out.push([x0 + (x1 - x0) * j / n, y0 + (y1 - y0) * j / n])
-  }
-  // 收尾把经度折回 [-180,180)：渲染端自己会再解缠一次，但存进来的值该是规范的
-  return out.map(([lo, la]) => [((lo + 180) % 360 + 360) % 360 - 180, la])
-}
+// 平面加密走共用件 geo/lineGeom.js（就近解缠 → 按 DENSE_DEG 线性插值 → 折回 [-180,180)）。
+// 行政区界与五类国界的 3D 路径用的是同一个函数 —— 「两个视图走向一致」那条口径本来就该只有一份。
 
 // nodes = 岛屿锚点（带名字，供核对与测试）；pts = 加密后的折线（渲染端只用这个）
 export const CHAINS = RAW.map(([id, zh, en, label, nodes]) => ({
   id, zh, en, label,
   nodes: nodes.map(([nz, ne, lon, lat]) => ({ zh: nz, en: ne, lon, lat })),
-  pts: densify(nodes.map(([, , lon, lat]) => [lon, lat]))
+  pts: densifyLonLat(nodes.map(([, , lon, lat]) => [lon, lat]), DENSE_DEG)
 }))
 
 // 逐条显隐。off = { id: true } 即这一条被用户关掉

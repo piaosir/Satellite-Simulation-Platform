@@ -19,6 +19,7 @@ import { waterLabels } from '../geo/waterNames.js'
 // 岛链参考线：与 2D 平面图共用同一份表
 import { chainList, CHAIN_DEF, CHAIN_ORDER, CHAIN_LABEL_PX } from '../geo/islandChains.js'
 import { antarcticaFillRings } from './antarctica.js'
+import { densifyLonLat } from '../geo/lineGeom.js'
 import { solarGeometry, terminatorRing } from '../terminator.js'
 // 点标记序号徽标（圈 1、圈 2）：与 2D 平面图共用同一支画笔，两视图观感一致
 import { paintNumBadge, BADGE_TEX_FILL, BADGE_R } from '../markers/numBadge.js'
@@ -28,7 +29,7 @@ import { markSymbolCanvas, texCenterY, symbolUp, symbolDown, MARK_TEX_FILL } fro
 import { stationSvg, STATION_ANCHOR_X, STATION_ANCHOR_Y } from '../stationSymbol.js'
 import { vehicleCanvas } from '../vehicleSymbol.js'
 // 影像瓦片金字塔（EPSG:4326 / GIBS 网格）：网格数学与取片缓存，与 2D 平面图共用同一份
-import { TILE, span as tileSpan, tileBox, tileRange, pickZoom, getTile, isMissing, warm as warmTiles, tileGutter, tileImgSize } from '../imageryTiles.js'
+import { TILE, span as tileSpan, tileBox, tileClip, tileRange, pickZoom, getTile, isMissing, warm as warmTiles, tileGutter, tileImgSize } from '../imageryTiles.js'
 // 顶点级几何原语：与聚焦几何 Worker 共用同一份实现（别在这里再写一份）
 import { RE, LIFT, llaToVec, pushStripSegs, pushDashed, densifyArc, DASH_SPEC, FILL_R, FILL_CELL, slerpUnit, footprintFill, coneFace, createSink } from './focusLanes.js'
 
@@ -458,15 +459,18 @@ export function createGlobeScene(container, quality = {}) {
 
   // 瓦片纹理：gutter 靠 offset/repeat 裁掉。uv 0–1 → 纹素 [1, 513]/514，即内容区的两个边缘，
   // 于是 uv=0 处的双线性会把 gutter 那一列（邻片的最后一列）混进来 —— 缝上因此是连续的。
-  function tileTexture(key, img) {
+  function tileTexture(key, img, fx = 1, fy = 1) {
     let t = tileTexes.get(key)
     if (t) { tileTexes.delete(key); tileTexes.set(key, t); return t }
     t = new THREE.Texture(img)
     t.colorSpace = THREE.SRGBColorSpace
     t.anisotropy = renderer.capabilities.getMaxAnisotropy()   // 临边处压缩极大，各向异性是唯一救法
     const g = tileGutter(imgSet), N = tileImgSize(imgSet)
-    t.offset.set(g / N, g / N)
-    t.repeat.set(TILE / N, TILE / N)
+    // 超出世界矩形的那一截补边同时从纹理窗口里剔掉（几何已由 tileClip 裁短，uv 得跟着缩）。
+    // v 轴从北边往下量：图像顶行（=北）在 v=1 那一侧，故 offset.y 要从 1 减回去。
+    // fx = fy = 1 时与旧值逐项相等：1 − (g + TILE)/N = (N − g − TILE)/N = g/N（N = TILE + 2g）。
+    t.offset.set(g / N, 1 - (g + fy * TILE) / N)
+    t.repeat.set(fx * TILE / N, fy * TILE / N)
     t.needsUpdate = true
     tileTexes.set(key, t)
     // ★ 逐出时【不能】碰到在用的就 break：LRU 头部很容易正好是当前可见的一片，一 break 就
@@ -483,38 +487,42 @@ export function createGlobeScene(container, quality = {}) {
     return t
   }
 
-  // 几何缓存：一片的形状只由 (z, row) 决定 —— 同一行里所有列都是同一个曲面片，差一个绕 Y 的旋转。
+  // 几何缓存：一片的形状只由 (z, row, spanX) 决定 —— 同一行里同宽的列都是同一个曲面片，差一个绕 Y 的旋转。
   // 于是每级每行只造一次几何，列靠 mesh.rotation.y 摆位。换级时原本要现造上百个 SphereGeometry
   // （L4 那档 140 片 × 33×33 顶点），这一步把它降到「每行一次」，是换级卡顿的大头之一。
   // 校验：SphereGeometry 的 x=−cos φ·sin θ、z=sin φ·sin θ，从 φ=0 绕 Y 转 a 后与直接取 φ=a 逐点相同。
   const geoCache = new Map()
   const GEO_LIMIT = 256
-  function tileGeometry(z, r) {
-    const k = z + '/' + r
+  // ★ 缓存键带 spanX：L0/L1 同一行里最后一列被 tileClip 裁短，一行会有两种宽度。
+  //   纵向只由 row 决定（同一行的 spanY 相同），不入键。
+  function tileGeometry(z, r, spanX, spanY) {
+    const k = z + '/' + r + '/' + spanX
     let g = geoCache.get(k)
     if (g) { geoCache.delete(k); geoCache.set(k, g); return g }
     const b = tileBox(z, r, 0)
-    // 段数随片跨度走：L7 的 2.25° 用 4 段已经看不出折线，L0 的 288° 得 32 段才圆
-    const seg = Math.max(4, Math.min(32, Math.round(b.span / 2)))
-    g = new THREE.SphereGeometry(0.998, seg, seg,
-      0, b.span * Math.PI / 180,
-      (90 - b.north) * Math.PI / 180, b.span * Math.PI / 180)
+    // 段数随实际跨度各自走：L7 的 2.25° 用 4 段已经看不出折线，L0 的 288° 得 32 段才圆
+    const segX = Math.max(4, Math.min(32, Math.round(spanX / 2)))
+    const segY = Math.max(4, Math.min(32, Math.round(spanY / 2)))
+    g = new THREE.SphereGeometry(0.998, segX, segY,
+      0, spanX * Math.PI / 180,
+      (90 - b.north) * Math.PI / 180, spanY * Math.PI / 180)
     geoCache.set(k, g)
     while (geoCache.size > GEO_LIMIT) { const kk = geoCache.keys().next().value; geoCache.get(kk).dispose(); geoCache.delete(kk) }
     return g
   }
 
   function makeTileMesh(z, r, c, img) {
-    const b = tileBox(z, r, c)
-    const mat = new THREE.MeshBasicMaterial({ map: tileTexture(z + '/' + r + '/' + c, img) })
+    const q = tileClip(z, r, c)
+    if (!q) return null                       // 整片都在世界矩形之外：不建
+    const mat = new THREE.MeshBasicMaterial({ map: tileTexture(z + '/' + r + '/' + c, img, q.fx, q.fy) })
     mat.color.setScalar(imageryBright)
     // polygonOffset 而不是抬半径：抬半径在拉到最近时会与边界线/标记产生真实视差（0.0002 R = 1.3 km），
     // 而多边形偏移只动深度值、几何位置一动不动。
     // ★ 偏移量随级号加深：换级过渡期新旧两级会同时在场（见 updateImageryTiles 的「填满才换」），
     //   深一级必须压在浅一级之上，否则粗片会盖住已经到货的细片、看着像「越拉近越糊」。
     mat.polygonOffset = true; mat.polygonOffsetFactor = -(z + 1); mat.polygonOffsetUnits = -(z + 1)
-    const m = new THREE.Mesh(tileGeometry(z, r), mat)
-    m.rotation.y = (b.west + 180) * Math.PI / 180   // 列靠旋转摆位，几何本身按 φ=0 造好后共用
+    const m = new THREE.Mesh(tileGeometry(z, r, q.spanX, q.spanY), mat)
+    m.rotation.y = (q.west + 180) * Math.PI / 180   // 列靠旋转摆位，几何本身按 φ=0 造好后共用
     return m
   }
 
@@ -611,6 +619,7 @@ export function createGlobeScene(container, quality = {}) {
       //   同屏堆着三四个级号的片，越缩放堆得越多。
       if (!img) { if (!isMissing(imgSet, zz, rr, cc)) pendingTiles = true; continue }
       const m = makeTileMesh(zz, rr, cc, img)
+      if (!m) continue
       tileGroup.add(m); tileMeshes.set(key, m)
       added++
     }
@@ -639,6 +648,7 @@ export function createGlobeScene(container, quality = {}) {
       const img = getTile(imgSet, imgBaseZ, r, c, null)
       if (!img) continue
       const m = makeTileMesh(imgBaseZ, r, c, img)
+      if (!m) continue
       m.material.polygonOffset = false          // 底层不偏移，细节层压在它上面
       baseGroup.add(m); baseGroup.userData[key] = m
     }
@@ -890,7 +900,11 @@ export function createGlobeScene(container, quality = {}) {
     const pat = px ? px.map((v) => v * wpp * (DASH_SCALE[cls] || 1)) : null
     const sink = createSink()
     for (const poly of polys) {
-      const line = mapThin > 0 ? decimateRing(poly, mapThin) : poly
+      // ★ 两道加密分工不同，缺一不可：
+      //   densifyLonLat 在经纬面里插点 —— 定的是「走向」，与 2D 的直线一致（沿纬线的
+      //     边界就该贴着纬线走，大圆会北凸）；110m 档有 42 段沿纬线超 2°，最大偏 1.4 km。
+      //   densifyArc 在球面上插点 —— 定的是「不沉球」；对 ≤1° 的段是 no-op。
+      const line = densifyLonLat(mapThin > 0 ? decimateRing(poly, mapThin) : poly)
       if (line.length < 2) continue
       _bp.length = 0
       for (const q of line) _bp.push(llaToVec(q[1], q[0], 0).multiplyScalar(BORDER_LIFT))
@@ -1102,7 +1116,13 @@ export function createGlobeScene(container, quality = {}) {
     lastProvData = data || null      // 套边色是烘在纹理里的，底色换档时要按同一份数据重烘（见 refreshHalo）
     if (!data) return
     const pos = []
-    for (const ring of (data.borders || [])) {
+    for (const ring0 of (data.borders || [])) {
+      // ★ 先在经纬面加密再投影：行政区界里沿纬线定义的那些段只给两个端点（加拿大
+      //   60°N 从 −139.06° 到 −120° 是一整段 19°，AUS 单段 16.8°）。逐点直连的后果有两层：
+      //   ① 直弦沉进球面 —— 60°N 那段中点沉到 R=1 的陆地面之下 84.7 km，看上去是「省界中间断掉」；
+      //   ② 就算补了大圆也会北凸 38 km —— 沿纬线的边界不是大圆。两层得先后治：
+      //   先 densifyLonLat 定走向（与 2D 一致），加密到 ≤1° 后弦垂 < 40 m，不必再补大圆。
+      const ring = densifyLonLat(ring0)
       for (let i = 0; i + 1 < ring.length; i++) {
         const a = llaToVec(ring[i][1], ring[i][0], 0).multiplyScalar(1.0005)
         const b = llaToVec(ring[i + 1][1], ring[i + 1][0], 0).multiplyScalar(1.0005)
@@ -1137,7 +1157,8 @@ export function createGlobeScene(container, quality = {}) {
     lastCityData = data || null
     if (!data) return
     const pos = []
-    for (const ring of (data.borders || [])) {
+    for (const ring0 of (data.borders || [])) {
+      const ring = densifyLonLat(ring0)   // 同 setProvinces：先定走向再投影（市界最长段 1.82°，但口径要一致）
       for (let i = 0; i + 1 < ring.length; i++) {
         const a = llaToVec(ring[i][1], ring[i][0], 0).multiplyScalar(1.0004)
         const b = llaToVec(ring[i + 1][1], ring[i + 1][0], 0).multiplyScalar(1.0004)

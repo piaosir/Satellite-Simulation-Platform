@@ -35,6 +35,26 @@ export function tileBox(z, row, col) {
   return { west: -180 + col * s, east: -180 + (col + 1) * s, north: 90 - row * s, south: 90 - (row + 1) * s, span: s }
 }
 
+// 一片【裁到世界矩形之内】的那一块：跨度 spanX/spanY（度）+ 它占整片的比例 fx/fy（用来设纹理窗口）。
+// ★ 为什么必须裁 —— L0/L1 的网格比世界大（L0 是 2 列 × 288° = 576°，横向越界 216°；L1 是
+//   3 列 × 144° = 432°，越界 72°），切片脚本 build-imagery-tiles.mjs 的 cutTile 把越出世界的
+//   部分按边缘复制补齐了（gutter 采样需要）。渲染端若照【整片跨度】建球面扇区，那段补边内容
+//   就绕过 ±180 压回世界另一侧：L1 第 2 列 west=108 跨 144° → 覆盖 108..252，右半等于
+//   −180..−108，与第 0 列同半径同 polygonOffset 叠画，z-fighting 出竖条纹；L0 第 1 列
+//   west=108 east=396 → 环绕覆盖 −180..+36 整整 216°。纵向同理：L0 单行跨 288° 越过南极
+//   108°，只是绕序翻转被背面剔除，看不见但顶点与纹理白算白传。
+//   （2D 不受影响：imageryPlan 画到世界矩形之外的部分被 drawBelowContent 的 clip 裁掉。）
+// L3 起世界尺寸恰是片跨度的整数倍 → fx = fy = 1，本函数对那几级是恒等。
+// 越界到整片都在世界之外（当前网格不会出现，纯防御）或行列号越界时返回 null，调用方跳过该片。
+export function tileClip(z, row, col) {
+  if (z < 0 || row < 0 || col < 0 || row >= rows(z) || col >= cols(z)) return null
+  const b = tileBox(z, row, col), s = b.span
+  const spanX = Math.min(b.east, 180) - b.west
+  const spanY = b.north - Math.max(b.south, -90)
+  if (!(spanX > 0) || !(spanY > 0)) return null
+  return { west: b.west, north: b.north, spanX, spanY, fx: spanX / s, fy: spanY / s }
+}
+
 // 按「一个屏幕像素对应多少度」选级：要 texel ≤ pixel，故取最小的 z 使 res(z) ≤ degPerPx。
 // 传的必须是【设备像素】的度数（CSS px 还要再除 dpr），否则高 DPR 屏上永远选低一级、白糊一层。
 export function pickZoom(degPerPx, maxZ = MAXZ) {
