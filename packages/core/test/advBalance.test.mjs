@@ -18,13 +18,18 @@
 // 被测的 advBalance 是渲染端 ESM，故本测试自身也是 .mjs；引擎是 CommonJS，用 createRequire 取。
 import { createRequire } from 'node:module'
 import {
-  solveAdv, validateAdv, planAdvWriteback, advBaseMargin,
+  solveAdv, validateAdv, validateCnc, planAdvWriteback, advBaseMargin,
+  cncModSpec, normCncOpt, CNC_DEFAULTS,
   ADV_MARK, ADV_ORIGIN, ADV_BASE, ADV_OUT
 } from '../../../src/shared/advBalance.js'
 
 const require = createRequire(import.meta.url)
 const { calculateLinkBudget } = require('../utils/linkCalculator.js')
 const { computeLinkMode } = require('../utils/modeSolver.js')
+const { setOutputPrecisionBoost } = require('../utils/linkCalculator.js')
+// 出参小数位增量：CnC 求解要从 carrierTotalCN 反推门限 C/N，2 位小数的量化会在
+// Σ功率带宽 上留下 ~1.4e-4 的相对残差（1.2 kHz / 8.7 MHz）。测这条时临时抬到 4 位。
+const withFx = (n, fn) => { const prev = setOutputPrecisionBoost(n); try { return fn() } finally { setOutputPrecisionBoost(prev) } }
 
 let pass = 0, fail = 0
 function ok(name, cond, extra) {
@@ -39,9 +44,20 @@ const SAT = { frequencyBand: 'Ku', satelliteName: 'TestSat', transponderBandwidt
 // VSAT 式场景：前向 TDM 大载波（高阶调制、大带宽、大站发） + 三条返向 TDMA 小载波（小站发）
 const CARRIERS = {
   fwd: { infoRate: 20000, modulation: '16APSK', fec: '3/4', ebno: 8.5, bandwidthFactor: 1.2 },
-  rtn: { infoRate: 512, modulation: 'QPSK', fec: '1/2', ebno: 3.5, bandwidthFactor: 1.35 }
+  rtn: { infoRate: 512, modulation: 'QPSK', fec: '1/2', ebno: 3.5, bandwidthFactor: 1.35 },
+  // 非对称 CnC 的返向：2048 kbps QPSK 3/4，完整落在前向 20 Mbps 16APSK 的频带内
+  rtnS: { infoRate: 2048, modulation: 'QPSK', fec: '3/4', ebno: 4.5, bandwidthFactor: 1.2 },
+  qx: { infoRate: 192, modulation: 'QPSK', fec: '3/4', ebno: 4.5, bandwidthFactor: 1.2 }
 }
+// CnC 是一对双工：hub 发出去的那条，自己也收得到（同一转发器绕一圈回来）。
+// hubD / rmtD 互为对方的收发端——老的 hub + vsatB 是「北京→上海」+「哈尔滨→北京」，
+// 收端对不上，物理上根本不是一对 CnC，正是新校验要拦下的那种。
 const STATIONS = {
+  hubD: { antennaDiameter: 9.0, latitude: 39.9042, longitude: 116.4074, rxAntennaDiameter: 1.8, rxLatitude: 23.1291, rxLongitude: 113.2644 },
+  rmtD: { antennaDiameter: 1.8, latitude: 23.1291, longitude: 113.2644, rxAntennaDiameter: 9.0, rxLatitude: 39.9042, rxLongitude: 116.4074 },
+  // CDM-Qx §9 Table 9-2 算例的两面天线（4.5 m ↔ 2.4 m）
+  qxA: { antennaDiameter: 4.5, latitude: 39.9042, longitude: 116.4074, rxAntennaDiameter: 2.4, rxLatitude: 23.1291, rxLongitude: 113.2644 },
+  qxB: { antennaDiameter: 2.4, latitude: 23.1291, longitude: 113.2644, rxAntennaDiameter: 4.5, rxLatitude: 39.9042, rxLongitude: 116.4074 },
   hub: { antennaDiameter: 9.0, latitude: 39.9, longitude: 116.4, rxAntennaDiameter: 9.0, rxLatitude: 31.2, rxLongitude: 121.5 },
   vsatA: { antennaDiameter: 1.2, latitude: 23.1, longitude: 113.3, rxAntennaDiameter: 9.0, rxLatitude: 39.9, rxLongitude: 116.4 },
   vsatB: { antennaDiameter: 1.8, latitude: 45.8, longitude: 126.5, rxAntennaDiameter: 9.0, rxLatitude: 39.9, rxLongitude: 116.4 },
@@ -69,6 +85,73 @@ function runRow(carrier, station, margin) {
     `得 ${r.resolved}`)
   ok('marginResult 仍是 2 位显示值（口径未被改动）', parseFloat(calculateLinkBudget(SAT,
     { ...CARRIERS.fwd, ...STATIONS.hub, margin: '4.567' }).data.marginResult) === 4.57)
+}
+
+// —— 引擎契约：附加 C/I（carrierExtCI）——
+// 本载波带内的额外干扰（CnC 残余自干扰等）并入载波的 C/(N+I) 要求：
+//   C/(N+I) = T 需要 C/N = T − 10lg(1 − 10^((T−C/I)/10))，退化量即后一项，T = 门限C/N + 余量。
+// 三条不变式：留空逐位 no-op、退化量闭式一致（且顺着标度律推到功率占用）、C/I ≤ T 拦下。
+{
+  const LP = { ...CARRIERS.fwd, ...STATIONS.hub, margin: '3' }
+  const r0 = calculateLinkBudget(SAT, LP)
+  if (!r0.success) throw new Error('引擎失败: ' + r0.message)
+
+  // (1) 留空 = no-op：'' / null / 干脆不传，三份出参与基线【逐键】相同（新键也在内）
+  const same = (a, b) => {
+    const ka = Object.keys(a), kb = Object.keys(b)
+    if (ka.length !== kb.length) return '键数 ' + ka.length + ' vs ' + kb.length
+    const eq = (x, y) => (x && typeof x === 'object') || (y && typeof y === 'object')
+      ? JSON.stringify(x) === JSON.stringify(y) : x === y   // 出参里有对象值（elevationValidation 等）
+    const d = ka.filter((k) => !eq(a[k], b[k]))
+    return d.length ? d.slice(0, 3).join(',') : ''
+  }
+  for (const [name, v] of [['空串', ''], ['null', null], ['undefined', undefined]]) {
+    const r = calculateLinkBudget(SAT, { ...LP, carrierExtCI: v })
+    const d = r.success ? same(r0.data, r.data) : '引擎失败'
+    ok('留空(' + name + ') 与不传逐键相同', d === '', d || '全 ' + Object.keys(r0.data).length + ' 键')
+  }
+  ok('不计入时 carrierExtDegResult = 0.00 且回显为空串',
+    r0.data.carrierExtDegResult === '0.00' && r0.data.carrierExtCIResult === '')
+
+  // (2) 退化量闭式：目标 C/N T = 门限C/N + 余量，取 C/I = T + 7.88 dB
+  const T = parseFloat(r0.data.thresholdCN) + 3
+  near('目标 C/N ≡ 引擎的 carrierTotalCN（不含本项时）', parseFloat(r0.data.carrierTotalCN), T, 5e-3)
+  const CI = T + 7.88
+  const wantDeg = -10 * Math.log10(1 - Math.pow(10, (T - CI) / 10))
+  const rE = calculateLinkBudget(SAT, { ...LP, carrierExtCI: String(CI.toFixed(4)) })
+  if (!rE.success) throw new Error('引擎失败: ' + rE.message)
+  near('退化量与闭式一致', parseFloat(rE.data.carrierExtDegResult), wantDeg, 5e-3)
+  // §3.2 的定点（任务书探针）：T = 15.92、C/I = 23.8 → 0.77 dB
+  near('§3.2 定点 T=15.92 / C/I=23.8 → 0.77 dB',
+    -10 * Math.log10(1 - Math.pow(10, (15.92 - 23.8) / 10)), 0.77, 5e-3)
+  // 抬的是 C/N 要求，不是余量：linkmargin 与系统余量出参一字不动
+  ok('linkmargin 不随附加 C/I 改（余量语义不变）', rE.data.linkmargin === r0.data.linkmargin,
+    r0.data.linkmargin + ' → ' + rE.data.linkmargin)
+  near('carrierTotalCN 抬高恰好等于退化量',
+    parseFloat(rE.data.carrierTotalCN) - parseFloat(r0.data.carrierTotalCN), wantDeg, 5e-3)
+  // 顺着 ① 的标度律往下推：C/T 要求抬 x dB ⇒ 功率占用 ×10^(x/10)（份额/功放/级联自然跟随）
+  // 比值取 dB（标度律的原式）：功率占用出参是 2 位量化值，直接比绝对值会被量化噪声顶穿
+  near('功率占用之比(dB) = 退化量（标度律照旧成立）',
+    10 * Math.log10(parseFloat(rE.data.powerUsageRatio) / parseFloat(r0.data.powerUsageRatio)), wantDeg, 5e-3)
+  ok('载波带宽不随附加 C/I 变', rE.data.allocBandwidthResult === r0.data.allocBandwidthResult)
+
+  // (3) C/I ≤ T 无解：残余干扰比目标还大，抬多少功率都到不了 —— 报错原文带上两个数
+  // T 是拿 2 位显示的 thresholdCN 拼的，比引擎内部全精度目标略高，故「等于」用 T−0.01 逼近
+  for (const [name, ci] of [['略低于', T - 0.01], ['明显低于', T - 2]]) {
+    const rBad = calculateLinkBudget(SAT, { ...LP, carrierExtCI: String(ci.toFixed(4)) })
+    ok('附加 C/I ' + name + '目标 C/N → 报错而非出数',
+      !rBad.success && String(rBad.message).includes('附加 C') && String(rBad.message).includes('目标 C'),
+      rBad.success ? '竟然算出来了' : rBad.message)
+  }
+  // 边界确实钉在目标 C/N 上：刚过一点点，退化量就急剧放大（趋于 +∞）
+  const rNear = calculateLinkBudget(SAT, { ...LP, carrierExtCI: String((T + 0.01).toFixed(4)) })
+  ok('刚高过目标 C/N 一点点 → 退化量急剧放大',
+    rNear.success && parseFloat(rNear.data.carrierExtDegResult) > 20,
+    rNear.success ? rNear.data.carrierExtDegResult + ' dB' : '报错了')
+  // 非数（用户手滑打了个字）按留空处理，不炸
+  const rJunk = calculateLinkBudget(SAT, { ...LP, carrierExtCI: 'abc' })
+  ok('非数输入按留空处理（不抛错、不计入）',
+    rJunk.success && rJunk.data.carrierExtDegResult === '0.00')
 }
 
 // —— ① 标度律：功率带宽随余量按 10^(Δ/10) 缩放，载波带宽不动 ——
@@ -128,16 +211,51 @@ for (const b of ['current', 'balance']) {
   near(`VSAT 幂等（基准=${b}）：再解 Δ≈0`, r2.deltaDb, 0, 1e-4)
 }
 
-// —— ④ CNC：两条链路同一份载波，带宽只算一份、功率相加 ——
-const CNC = [
-  { no: 1, rowId: 'r1', name: 'Hub→远端', carrierId: 'cCnc', carrierName: 'CNC载波', c: 'fwd', s: 'hub', m0: 3 },
-  { no: 2, rowId: 'r2', name: '远端→Hub', carrierId: 'cCnc', carrierName: 'CNC载波', c: 'fwd', s: 'vsatB', m0: 3 }
-]
-const cncBase = measure(CNC, (x) => x.m0)
+// —— ④ CNC：一对双工，带宽只算一份、功率相加；再叠上残余自干扰 ——
+// ★ 口径：Σ功率带宽 = 单份载波带宽，是把解出的余量【和附加 C/I】一起喂回引擎之后成立的。
+//   只喂余量会短 deg₀ 那一截——固有处理损耗是调制解调器实打实的损耗，抵消深度再深也不消失。
+// 站身份两份：hub 在北京（es配置 esHub），远端在广州（esRmt）。两条链路互为收发端。
+const SITE = {
+  hub: { id: 'esHub', name: '北京', lon: 116.4074, lat: 39.9042 },
+  rmt: { id: 'esRmt', name: '广州', lon: 113.2644, lat: 23.1291 }
+}
+// 一条 CnC 链路行：跑真引擎，把求解层要的那些量原样从出参里取出来
+function cncRow(no, rowId, carrier, station, margin, tx, rx, extra, extCI) {
+  const lp = { ...CARRIERS[carrier], ...STATIONS[station], margin: String(margin) }
+  if (isFinite(extCI)) lp.carrierExtCI = Number(extCI).toFixed(3)   // 写回口径：3 位小数
+  const r = calculateLinkBudget(SAT, lp)
+  if (!r.success) throw new Error('引擎失败: ' + r.message)
+  const d = r.data
+  return {
+    no, rowId, name: tx.name + '→' + rx.name, error: '',
+    carrierId: 'c' + carrier, carrierName: carrier,
+    bwKHz: parseFloat(d.allocBandwidthResult), pbwKHz: parseFloat(d.PowerBWResult), marginDb: margin,
+    txStationId: tx.id, rxStationId: rx.id, txStationName: tx.name, rxStationName: rx.name,
+    longitude: tx.lon, latitude: tx.lat, rxLongitude: rx.lon, rxLatitude: rx.lat,
+    symbolRateKsps: parseFloat(d.symbolRateResult), modulation: CARRIERS[carrier].modulation, isNtn: false,
+    fUpGHz: 14.0, fDnGHz: 12.5, polUp: 'V', polDn: 'H',
+    rainUpDb: parseFloat(d.uplinkRainAttenuation), upcDb: parseFloat(d.UPCmarginResult),
+    targetCN: parseFloat(d.carrierTotalCN), extDegDb: parseFloat(d.carrierExtDegResult),
+    ...extra
+  }
+}
+// 对称对：两条链路同一份载波（老口径），hub 9 m ↔ 远端 1.8 m
+const cncBase = withFx(4, () => [
+  cncRow(1, 'r1', 'fwd', 'hubD', 3, SITE.hub, SITE.rmt, { carrierId: 'cCnc', carrierName: 'CNC载波' }),
+  cncRow(2, 'r2', 'fwd', 'rmtD', 3, SITE.rmt, SITE.hub, { carrierId: 'cCnc', carrierName: 'CNC载波' })
+])
+// 「退化归零」的对照档：抵消深度 200 dB【且】固有处理损耗置 0 —— 只有两条都置了，
+// 才回到本功能改造前的纯功率账口径（deg₀ 与抵消深度无关，D 拉多高都在）
+const DEEP = { cncOpt: { cancelDb: 200, deg0: 0 } }
 const cnc = solveAdv({ mode: 'cnc', picked: cncBase, state: {}, base: 'current', overDb: 0, tpBwMHz: 36 })
 if (!cnc.ok) ok('CNC 配平', false, cnc.message)
 else {
-  const after = measure(CNC, () => cnc.carriers[0].toDb)
+  const m = cnc.carriers[0].toDb
+  const ciOf = (id) => (cnc.links.find((l) => l.rowId === id) || {}).extCI
+  const after = withFx(4, () => [
+    cncRow(1, 'r1', 'fwd', 'hubD', m, SITE.hub, SITE.rmt, null, ciOf('r1')),
+    cncRow(2, 'r2', 'fwd', 'rmtD', m, SITE.rmt, SITE.hub, null, ciOf('r2'))
+  ])
   const sumP = after.reduce((s, a) => s + a.pbwKHz, 0)
   near('CNC：Σ功率带宽 = 单份载波带宽', sumP, after[0].bwKHz, Math.max(0.01, after[0].bwKHz * 2e-5))
   ok('CNC：组占用带宽只算一份', Math.abs(cnc.occBwKHz - cncBase[0].bwKHz) < 1e-9 && Math.abs(cnc.sumBwKHz - 2 * cncBase[0].bwKHz) < 1e-6)
@@ -145,12 +263,188 @@ else {
 // CNC 下 VSAT 那边留的偏置必须被忽略：唯一未知数由方程本身定死，偏置一进来 Σ功率带宽就不等于目标了
 {
   const r = solveAdv({ mode: 'cnc', picked: cncBase, state: { cCnc: { bias: 5 } }, base: 'current', overDb: 0, tpBwMHz: 36 })
-  ok('CNC：忽略偏置', cnc.ok && r.ok && Math.abs(r.carriers[0].toDb - cnc.carriers[0].toDb) < 1e-9)
+  ok('CNC：两条链路同一份载波时偏置自然失效（唯一未知数由方程定死，被 Δ 原样抵消）',
+    cnc.ok && r.ok && Math.abs(r.carriers[0].toDb - cnc.carriers[0].toDb) < 1e-9)
+}
+
+
+// —— ⑩ CnC 双工配对：各站必须收到自己的上行回波 ——
+// 这是改造前最大的窟窿：Hub→A 与 Hub→B 两条同载波链路也能过校验，可那不是一对双工，
+// 两个远端谁也收不到自己发的东西，抵消无从谈起。
+{
+  const SITE_A = { id: 'esA', name: '上海', lon: 121.4737, lat: 31.2304 }
+  const SITE_B = { id: 'esB', name: '成都', lon: 104.0665, lat: 30.5728 }
+  const hubToA = withFx(4, () => cncRow(1, 'r1', 'fwd', 'hubD', 3, SITE.hub, SITE_A))
+  const hubToB = withFx(4, () => cncRow(2, 'r2', 'fwd', 'hubD', 3, SITE.hub, SITE_B))
+  ok('⑩ Hub→A + Hub→B 被拦下（不是一对双工）', !!validateCnc([hubToA, hubToB]))
+  ok('⑩ A→B + B→A 通过', validateCnc(cncBase) === '', validateCnc(cncBase) || '通过')
+  // 经纬度缺失时退回站址名（老存档 / 手填站没有坐标）
+  const strip = (p) => { const q = { ...p }; delete q.longitude; delete q.latitude; delete q.rxLongitude; delete q.rxLatitude; return q }
+  ok('⑩ 经纬度缺失 → 退回站址名配对', validateCnc(cncBase.map(strip)) === '')
+  ok('⑩ 站址名也没有 → 判不了身份就不放行',
+    !!validateCnc(cncBase.map((p) => { const q = strip(p); delete q.txStationName; delete q.rxStationName; delete q.txStationId; delete q.rxStationId; return q })))
+  // 同一站的经纬度差 1e-5°（约 1 m）仍算同一站
+  const jitter = cncBase.map((p, i) => (i === 1 ? { ...p, rxLongitude: p.rxLongitude + 1e-5 } : p))
+  ok('⑩ 经纬度容差 1e-4°：抖 1e-5° 仍是同一站', validateCnc(jitter) === '')
+  ok('⑩ 差 0.01°（约 1 km）判成两站', !!validateCnc(cncBase.map((p, i) => (i === 1 ? { ...p, rxLatitude: p.rxLatitude + 0.01 } : p))))
+  // 3GPP NTN 行不支持
+  ok('⑩ 3GPP NTN 载波拦下', !!validateCnc([{ ...cncBase[0], isNtn: true }, cncBase[1]]))
+}
+
+// —— ⑪ CnC 非对称：前向大载波 + 返向小载波（同频叠加，窄的完整落在宽的里面）——
+// 改造前要求「两条链路引用同一份载波配置」＝同速率同调制，真实 CnC 多数不是这样。
+const ASYM = withFx(4, () => [
+  cncRow(1, 'r1', 'fwd', 'hubD', 3, SITE.hub, SITE.rmt, { carrierId: 'cFwd', carrierName: '前向20M' }),
+  cncRow(2, 'r2', 'rtnS', 'rmtD', 3, SITE.rmt, SITE.hub, { carrierId: 'cRtnS', carrierName: '返向2M' })
+])
+{
+  ok('⑪ 非对称（20 Mbps 16APSK ⊃ 2048 kbps QPSK）频率包含通过', validateCnc(ASYM) === '',
+    validateCnc(ASYM) || `${ASYM[0].bwKHz.toFixed(0)} kHz ⊃ ${ASYM[1].bwKHz.toFixed(0)} kHz`)
+  const room = (Math.max(ASYM[0].bwKHz, ASYM[1].bwKHz) - Math.min(ASYM[0].bwKHz, ASYM[1].bwKHz)) / 2
+  const off = ASYM.map((p, i) => (i === 1 ? { ...p, fUpGHz: p.fUpGHz + 0.005 } : p))   // 偏 5 MHz
+  ok('⑪ 上行中心频率偏 5 MHz → 拦下', !!validateCnc(off), `允许 ${(room / 1000).toFixed(2)} MHz`)
+  ok('⑪ 极化不同 → 拦下', !!validateCnc(ASYM.map((p, i) => (i === 1 ? { ...p, polUp: 'H' } : p))))
+  const rA = solveAdv({ mode: 'cnc', picked: ASYM, state: {}, base: 'current', overDb: 0, tpBwMHz: 36 })
+  ok('⑪ 非对称可解', rA.ok, rA.message)
+  if (rA.ok) {
+    const ratio = Math.max(ASYM[0].symbolRateKsps / ASYM[1].symbolRateKsps, ASYM[1].symbolRateKsps / ASYM[0].symbolRateKsps)
+    ok('⑪ 符号率比超 3:1 → 告警（能算，但越界）',
+      ratio > 3 && rA.warnings.some((w) => w.includes('符号率比')), `实际 ${ratio.toFixed(2)}:1`)
+    ok('⑪ 组占用带宽取宽的那一份', Math.abs(rA.occBwKHz - Math.max(ASYM[0].bwKHz, ASYM[1].bwKHz)) < 1e-9)
+    near('⑪ 闭式 Σ功率带宽 = 目标', rA.afterPbwKHz, rA.targetKHz, 1e-6)
+    // 两份载波两个未知数 ⇒ 偏置重新有意义（对称情形下它被 Δ 抵消）
+    const rB = solveAdv({ mode: 'cnc', picked: ASYM, state: { cRtnS: { bias: 2 } }, base: 'current', overDb: 0, tpBwMHz: 36 })
+    ok('⑪ 非对称下偏置生效（两份载波 = 两个未知数）',
+      rB.ok && Math.abs(rB.carriers.find((c) => c.id === 'cRtnS').toDb - rA.carriers.find((c) => c.id === 'cRtnS').toDb) > 0.5)
+    near('⑪ 带偏置后仍然是平的', rB.afterPbwKHz, rB.targetKHz, 1e-6)
+  }
+}
+
+// —— ⑫ 残余自干扰的定点：收敛 / 幂等 / 退化为老口径 ——
+{
+  const r = solveAdv({ mode: 'cnc', picked: cncBase, state: {}, base: 'current', overDb: 0, tpBwMHz: 36 })
+  ok('⑫ 迭代收敛', r.ok && r.cnc.converged, r.ok ? `${r.cnc.iters} 轮` : r.message)
+  ok('⑫ 两收端 ρ 反号（同一个比值，站在两头看）',
+    Math.abs(r.cnc.sides[0].rhoClear + r.cnc.sides[1].rhoClear) < 1e-9,
+    `${r.cnc.sides[0].rhoClear.toFixed(3)} / ${r.cnc.sides[1].rhoClear.toFixed(3)} dB`)
+  ok('⑫ 残余 C/I = 抵消深度 − ρ_max',
+    Math.abs(r.cnc.sides[0].ciRes - (r.cnc.cancelDb - r.cnc.sides[0].rhoMax)) < 1e-9)
+  ok('⑫ 退化量与「附加 C/I 折 C/N」闭式一致', r.cnc.sides.every((sd) =>
+    Math.abs(sd.deg - (-10 * Math.log10(1 - Math.pow(10, (sd.targetCN - sd.ci) / 10)))) < 1e-9))
+  ok('⑫ hub 侧（自身回波更强）退化明显大于远端侧',
+    r.cnc.sides[0].deg > r.cnc.sides[1].deg,
+    `${r.cnc.sides[0].deg.toFixed(3)} vs ${r.cnc.sides[1].deg.toFixed(3)} dB`)
+  // 幂等：把解出的余量与附加 C/I 都喂回引擎重建行，再解一次 —— Δ 必须停在原地
+  const m = r.carriers[0].toDb
+  const ciOf2 = (id) => (r.links.find((l) => l.rowId === id) || {}).extCI
+  const again = withFx(4, () => [
+    cncRow(1, 'r1', 'fwd', 'hubD', m, SITE.hub, SITE.rmt, { carrierId: 'cCnc', carrierName: 'CNC载波', baseDb: 3 }, ciOf2('r1')),
+    cncRow(2, 'r2', 'fwd', 'rmtD', m, SITE.rmt, SITE.hub, { carrierId: 'cCnc', carrierName: 'CNC载波', baseDb: 3 }, ciOf2('r2'))
+  ])
+  const r2 = solveAdv({ mode: 'cnc', picked: again, state: {}, base: 'current', overDb: 0, tpBwMHz: 36 })
+  near('⑫ 幂等：再解 Δ ≈ 0（归一值把上一轮的退化量剥干净了）', r2.ok ? r2.carriers[0].toDb - m : NaN, 0, 5e-3)
+  // D = ∞ 且 deg₀ = 0 ⇒ 退化量归零，回到改造前的纯功率账
+  const r3 = solveAdv({ mode: 'cnc', picked: cncBase, state: {}, base: 'current', overDb: 0, tpBwMHz: 36, ...DEEP })
+  ok('⑫ D=∞ 且 deg₀=0 → 退化量归零（＝改造前的纯功率账）',
+    r3.ok && r3.cnc.sides.every((sd) => sd.deg < 1e-6) && r3.links.every((l) => l.extDeg < 1e-6))
+  near('⑫ 该口径下 Σ功率带宽 = 单份载波带宽', r3.ok ? r3.afterPbwKHz : NaN, cncBase[0].bwKHz, 1e-6)
+  // 抵消深度越浅，退化越大（单调）
+  const degAt = (D) => {
+    const x = solveAdv({ mode: 'cnc', picked: cncBase, state: {}, base: 'current', overDb: 0, tpBwMHz: 36, cncOpt: { cancelDb: D } })
+    return x.ok ? x.cnc.sides[0].deg : NaN
+  }
+  const d25 = degAt(25), d28 = degAt(28), d30 = degAt(30)
+  ok('⑫ 抵消深度 25 / 28 / 30 dB → 退化单调下降', d25 > d28 && d28 > d30,
+    `${d25.toFixed(2)} / ${d28.toFixed(2)} / ${d30.toFixed(2)} dB`)
+}
+
+// —— ⑬ 雨衰耦合：ρ 随上行雨衰漂，CnC 的可用性由 C/N 余量与 PSD 窗口两道门共同决定 ——
+{
+  const withRain = (r1, r2) => cncBase.map((p, i) => ({ ...p, rainUpDb: i === 0 ? r1 : r2, upcDb: 0 }))
+  const dry = solveAdv({ mode: 'cnc', picked: withRain(0, 0), state: {}, base: 'current', overDb: 0, tpBwMHz: 36 })
+  const wet = solveAdv({ mode: 'cnc', picked: withRain(1.5, 2.83), state: {}, base: 'current', overDb: 0, tpBwMHz: 36 })
+  ok('⑬ 无雨时 ρ 区间坍缩到晴空值',
+    dry.ok && Math.abs(dry.cnc.sides[0].rhoMin - dry.cnc.sides[0].rhoMax) < 1e-9)
+  ok('⑬ ρ_max = ρ_clear + 对端上行残余雨衰', wet.ok
+    && Math.abs(wet.cnc.sides[0].rhoMax - (wet.cnc.sides[0].rhoClear + 2.83)) < 1e-9,
+    wet.ok ? `${wet.cnc.sides[0].rhoClear.toFixed(2)} + 2.83 = ${wet.cnc.sides[0].rhoMax.toFixed(2)} dB` : wet.message)
+  ok('⑬ ρ_min = ρ_clear − 本端上行残余雨衰', wet.ok
+    && Math.abs(wet.cnc.sides[0].rhoMin - (wet.cnc.sides[0].rhoClear - 1.5)) < 1e-9)
+  // UPC 全补偿 ⇒ 残余雨衰为 0 ⇒ 区间坍缩
+  const upc = solveAdv({ mode: 'cnc', picked: cncBase.map((p, i) => ({ ...p, rainUpDb: i === 0 ? 1.5 : 2.83, upcDb: i === 0 ? 1.5 : 2.83 })),
+    state: {}, base: 'current', overDb: 0, tpBwMHz: 36 })
+  ok('⑬ UPC 全补偿 → 残余雨衰 0，区间坍缩', upc.ok
+    && Math.abs(upc.cnc.sides[0].rhoMin - upc.cnc.sides[0].rhoMax) < 1e-9)
+  // CnC-APC 开 ⇒ ρ 视为被保持，区间同样坍缩到晴空（但雨还在下）
+  const apc = solveAdv({ mode: 'cnc', picked: withRain(1.5, 2.83), state: {}, base: 'current', overDb: 0, tpBwMHz: 36, cncOpt: { apc: true } })
+  ok('⑬ CnC-APC 开 → 区间坍缩到晴空', apc.ok
+    && Math.abs(apc.cnc.sides[0].rhoMin - apc.cnc.sides[0].rhoClear) < 1e-9
+    && Math.abs(apc.cnc.sides[0].rhoMax - apc.cnc.sides[0].rhoClear) < 1e-9)
+  ok('⑬ 雨衰把退化推大（设计点取 ρ_max 而不是晴空值）',
+    wet.ok && apc.ok && wet.cnc.sides[0].deg > apc.cnc.sides[0].deg,
+    wet.ok && apc.ok ? `${wet.cnc.sides[0].deg.toFixed(3)} vs ${apc.cnc.sides[0].deg.toFixed(3)} dB` : '')
+  // PSD 窗口：16APSK 走 −7～+7 一档；窗口裕量 = min(ρ_min − 下沿, 上沿 − ρ_max)
+  const sp = cncModSpec('16APSK')
+  ok('⑬ 16APSK 查到 −7～+7 窗与 deg₀ 0.6 dB', sp.win[0] === -7 && sp.win[1] === 7 && sp.deg0 === 0.6)
+  ok('⑬ QPSK 查到 −7～+11 窗与 deg₀ 0.3 dB',
+    cncModSpec('QPSK').win[1] === 11 && cncModSpec('QPSK').deg0 === 0.3)
+  ok('⑬ 64APSK 无厂家窗（返 null）+ deg₀ 取最保守一档', cncModSpec('64APSK').win === null && !cncModSpec('64APSK').known)
+  ok('⑬ 窗口裕量 = min(ρ_min − 下沿, 上沿 − ρ_max)', wet.ok && wet.cnc.sides.every((sd) =>
+    Math.abs(sd.windowMargin - Math.min(sd.rhoMin - sd.window[0], sd.window[1] - sd.rhoMax)) < 1e-9))
+  ok('⑬ 允许对端衰落 = 上沿 − ρ_clear', wet.ok
+    && Math.abs(wet.cnc.sides[0].allowFadeDes - (wet.cnc.sides[0].window[1] - wet.cnc.sides[0].rhoClear)) < 1e-9,
+    wet.ok ? `允许 ${wet.cnc.sides[0].allowFadeDes.toFixed(2)} dB / 设计 ${wet.cnc.sides[0].designFadeDes.toFixed(2)} dB` : '')
+  // 窗口裕量为负 → 告警（C/N 余量还够，CnC 已经先掉线）
+  const over = solveAdv({ mode: 'cnc', picked: withRain(0, 9), state: {}, base: 'current', overDb: 0, tpBwMHz: 36 })
+  ok('⑬ 窗口裕量为负 → 告警', over.ok && over.warnings.some((w) => w.includes('窗口裕量')),
+    over.ok ? over.cnc.sides.map((sd) => sd.windowMargin.toFixed(2)).join(' / ') : over.message)
+  // 手填窗口覆盖查表
+  const manual = solveAdv({ mode: 'cnc', picked: cncBase, state: {}, base: 'current', overDb: 0, tpBwMHz: 36, cncOpt: { window: [-3, 3] } })
+  ok('⑬ 手填窗口覆盖查表值', manual.ok && manual.cnc.sides[0].window[1] === 3 && manual.cnc.windowManual)
+}
+
+// —— ⑭ CDM-Qx §9 Table 9-2 算例夹具：4.5 m ↔ 2.4 m、192 kbps ——
+// 只对【本平台引擎】的比值断言（两家引擎的绝对功率口径不同，不可比）。两处诚实边界：
+//
+// ① CnC 比：厂家算例是 ±5.3 dB，本平台这套参数下约 ±1.3 dB。方向一致（发往小站那条占更多
+//    转发器功率：算例 0.37 % / 0.11 %，本平台 0.188 % / 0.140 %），量级对不上是因为算例的
+//    卫星 SFD / G·T / 两端功放这些决定功率劈分的参数手册没给全，拿本平台的缺省星去凑没有意义。
+//    故这里只断言【方向】与【两侧反号】，比值本身按本平台实测记录在读数里。
+// ② 总退化：厂家两份资料互相对不上 —— CDM-625A 数据表说 QPSK 在 PSD 比 0 dB 时固有处理损耗
+//    就有 0.3 dB，而 CDM-Qx §9 算例给的总退化是 −0.1 / 0.0 dB。总退化不可能小于固有损耗，
+//    两者不能同时成立。本平台按数据表建模（固有 0.3 + 抵消残余），故总退化必 ≥ 0.3 dB；
+//    可核的是【抵消残余那一项】：置 deg₀ = 0 后它在 D = 28 dB 下应远小于 0.2 dB，这一条能测。
+{
+  const QX = withFx(4, () => [
+    cncRow(1, 'r1', 'qx', 'qxA', 3, SITE.hub, SITE.rmt, { carrierId: 'cQx', carrierName: 'Qx载波' }),
+    cncRow(2, 'r2', 'qx', 'qxB', 3, SITE.rmt, SITE.hub, { carrierId: 'cQx', carrierName: 'Qx载波' })
+  ])
+  const r = solveAdv({ mode: 'cnc', picked: QX, state: {}, base: 'current', overDb: 0, tpBwMHz: 36 })
+  ok('⑭ 算例可解', r.ok, r.message)
+  if (r.ok) {
+    const rho = r.cnc.sides[0].rhoClear
+    ok('⑭ CnC 比：发往小站那条占更多功率（与算例同向），两侧反号',
+      rho > 0 && Math.abs(rho + r.cnc.sides[1].rhoClear) < 1e-9,
+      `本平台 ${rho.toFixed(2)} dB / 厂家算例 ±5.3 dB —— 量级差见上方注释①`)
+    // 抵消残余那一项（置 deg₀ = 0 单独看）：D = 28 dB 下应远小于 0.2 dB —— 这是 D 的缺省值
+    // 由算例反推出来的依据，也是本模型唯一能与算例对上的一处
+    const resOnly = solveAdv({ mode: 'cnc', picked: QX, state: {}, base: 'current', overDb: 0, tpBwMHz: 36, cncOpt: { deg0: 0 } })
+    ok('⑭ 抵消残余项 @ D=28 dB ≤ 0.2 dB（deg₀ 单独扣掉看）',
+      resOnly.ok && resOnly.cnc.sides.every((sd) => sd.deg <= 0.2),
+      resOnly.ok ? resOnly.cnc.sides.map((sd) => sd.deg.toFixed(4)).join(' / ') + ' dB' : resOnly.message)
+    ok('⑭ 总退化 ≥ 固有处理损耗（0.3 dB，QPSK）—— 抵消再深也去不掉这一截',
+      r.cnc.sides.every((sd) => sd.deg >= 0.3),
+      r.cnc.sides.map((sd) => sd.deg.toFixed(3)).join(' / ') + ' dB')
+    near('⑭ 节省带宽 = 1 − 组占用/Σ载波带宽', r.cnc.bwSaving, 1 - r.occBwKHz / r.sumBwKHz, 1e-12)
+    near('⑭ 对称一对省掉一半带宽', r.cnc.bwSaving, 0.5, 1e-9)
+    ok('⑭ 符号率比 1:1，不触上限', Math.abs(r.cnc.rsRatio - 1) < 1e-9 && !r.warnings.some((w) => w.includes('符号率比')))
+  }
 }
 
 // —— ⑤ 拦截与不可解 ——
 ok('CNC 拦下 3 条链路', !!validateAdv('cnc', [...cncBase, { ...cncBase[0], no: 3, rowId: 'r3' }]))
-ok('CNC 拦下载波不一致', !!validateAdv('cnc', [cncBase[0], { ...cncBase[1], carrierId: 'other', carrierName: '另一载波' }]))
+ok('CNC 不再要求同一份载波配置（非对称是常态）',
+  !validateAdv('cnc', [cncBase[0], { ...cncBase[1], carrierId: 'other', carrierName: '另一载波' }]))
 ok('拦下空选择', !!validateAdv('vsat', []))
 ok('拦下无结果的行', !!validateAdv('vsat', [{ no: 1, bwKHz: NaN, pbwKHz: NaN, marginDb: NaN, error: '卫星不可见' }]))
 const noP = base.map((p) => ({ ...p, pbwKHz: 0 }))   // 带宽还在、功率带宽为 0：过得了校验，解不出来

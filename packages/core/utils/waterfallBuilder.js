@@ -75,6 +75,7 @@ const WF_DICT = {
   '门限 Es/N₀': 'Threshold Es/N₀',
   '载波噪声带宽': 'Carrier Noise Bandwidth',
   '系统余量': 'System Margin',
+  '附加 C/I 退化': 'Additional C/I Degradation',
   // —— 几何与天线 ——
   '城市': 'City',
   '频率': 'Frequency',
@@ -903,6 +904,12 @@ function createBuilder(ctx) {
       // —— 合成与余量：上行 ⊕ 下行（噪声并联）= 合计 ——
       T('kpi', 'C/(N+I)（合成）', 'uplinkCN', 'downlinkCN', 'carrierTotalCN', 'dB'),
       T('ref', '门限 C/N', null, null, 'thresholdCN', 'dB'),
+      // 附加 C/I 退化：本载波带内的额外干扰（CnC 残余自干扰等）吃掉的那部分 C/N。
+      // 引擎把它并进了 carrierTotalCN 的【要求】侧，故这里减掉它算式才闭合：
+      // 合成 C/(N+I) − 门限 C/N − 本行 = 链路余量。留空/为 0 不列，恒 0 的一行只占版面。
+      ...(num('carrierExtDegResult') > 0.005
+        ? [T('loss', '附加 C/I 退化', null, null, 'carrierExtDegResult', 'dB')]
+        : []),
       T('margin', '链路余量', null, null, 'linkmargin', 'dB')
     ], { id: 'cascade', cls: 'result' }));
 

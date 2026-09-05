@@ -39,6 +39,8 @@ const RESULT_LABEL_LIST = [
     ['linkmargin', '链路余量', 'dB'],
     ['carrierTotalCN', '合计 C/(N+I)', 'dB'],
     ['thresholdCN', '门限 C/N', 'dB'],
+    ['carrierExtCIResult', '附加 C/I', 'dB'],
+    ['carrierExtDegResult', '附加 C/I 退化', 'dB'],
     ['uplinkCN', '上行 C/(N+I)', 'dB'],
     ['downlinkCN', '下行 C/(N+I)', 'dB'],
     ['uplinkThermalCN', '上行 C/N（热噪声）', 'dB'],

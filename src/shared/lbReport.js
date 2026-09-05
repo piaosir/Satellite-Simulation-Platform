@@ -227,8 +227,11 @@ export const reportT = (lang) => (s) => translate(s, lang)
 //   ② 引用建议书与标准：编号 + 名称 + 在本报告中的具体用途（版本号对得上引擎里实现的那一版）；
 //   ③ 物理常数与基准：报告里出现的每个常数的取值与出处。
 // 只写引擎真正做了的事：没实现的不写、没核实的不写（宁可少一条，不可多一条错的）。
-export function methodology(scheme, lang) {
+export function methodology(scheme, lang, opts) {
   const en = lang === 'en'
+  // 本报告里是否真有链路计入了「附加 C/I」（CnC 残余自干扰等）。只在真用了时才列它的出处——
+  // 同本文件 §噪声与系统 里那条注释的口径：报告没算的东西不该给读者一个出处。
+  const extCI = !!(opts && opts.extCI)
   const e2e = scheme.orbitType === 'E2E'
   // ★ ngso 只管「引擎是否走 §8 仰角统计 + SGP4 站星最差工况」——端到端不在其中：
   //   它的几何是逐跳给定（手动）或逐跳解最差工况（自动），可用度是逐跳站址值连乘，
@@ -417,7 +420,9 @@ export function methodology(scheme, lang) {
     items: [
       { id: 'ETSI EN 302 307-1/-2 (DVB-S2 / S2X)', title: G('数字卫星广播第二代及其扩展', 'Second generation framing, coding and modulation for satellite broadcasting and extensions'), use: G('调制与前向纠错的门限 Es/N₀ 与频谱效率基准', 'Threshold Es/N₀ and spectral efficiency reference for modulation and FEC') },
       { id: '3GPP TS 38.101-5 / TR 38.821', title: G('非地面网络（NTN）射频与体系', 'Non-terrestrial networks: radio transmission/reception and solutions'), use: G('NTN 载波与信道带宽的参数基准', 'Parameter reference for NTN carriers and channel bandwidths') }
-    ]
+    ].concat(extCI ? [
+      { id: 'Comtech EF Data CDM-625A', title: G('先进卫星调制解调器数据表（DoubleTalk Carrier-in-Carrier）', 'Advanced Satellite Modem datasheet (DoubleTalk Carrier-in-Carrier)'), use: G('载波叠加的功率谱密度比窗口、固有处理损耗与抵消深度 —— 报告中「附加 C/I」的参数出处', 'Carrier-in-Carrier PSD-ratio window, inherent processing loss and cancellation depth — the parameter source for the additional C/I reported here') }
+    ] : [])
   })
 
   // ③ 物理常数与基准
@@ -489,7 +494,8 @@ export function buildReportModel(o) {
     }),
     calc: Object.assign({ satelliteName, frequencyBand }, calc),
     links,
-    method: methodology(scheme, lang)
+    // 附加 C/I 的出处只在有链路真用了它时列出（同上面 hasSla 的做法）
+    method: methodology(scheme, lang, { extCI: links.some((l) => l && l.data && parseFloat(l.data.carrierExtDegResult) > 0.005) })
   }
 }
 

@@ -51,6 +51,9 @@ const OUTPUT_GROUPS = [
       { key: 'downlinkThermalCN', label: '下行 C/N（热噪声）', labelEn: 'Downlink C/N (Thermal)', unit: 'dB', geoSide: 'both' },
       { key: 'uplinkInterferenceCN', label: '上行 C/I', labelEn: 'Uplink C/I', unit: 'dB', geoSide: 'both' },
       { key: 'downlinkInterferenceCN', label: '下行 C/I', labelEn: 'Downlink C/I', unit: 'dB', geoSide: 'both' },
+      // 附加 C/I 退化：本载波带内额外干扰（CnC 残余自干扰等）吃掉的 C/N 余量。留空即 0。
+      // 不进地理场图——它由行上一个手填的 C/I 定，站挪到哪儿都不变，铺成平面是一张恒定量的图。
+      { key: 'carrierExtDegResult', label: '附加 C/I 退化', labelEn: 'Additional C/I Degradation', unit: 'dB' },
       { key: 'ebnoActualResult', label: 'Eb/N₀（实际）', labelEn: 'Eb/N₀ (Actual)', unit: 'dB', geoSide: 'both', geoField: true },
       { key: 'esnoActualResult', label: 'Es/N₀（实际）', labelEn: 'Es/N₀ (Actual)', unit: 'dB', geoSide: 'both' },
       { key: 'carrierTotalCN0', label: '合计 C/N₀', labelEn: 'Combined C/N₀', unit: 'dBHz', geoSide: 'both' },

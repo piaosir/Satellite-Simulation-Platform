@@ -15,7 +15,7 @@
 import { ref, reactive, computed, watch } from 'vue'
 import NumBox from './NumBox.vue'
 import Icon from './Icon.vue'
-import { ADV_MODES, ADV_BASES, solveAdv } from '../shared/advBalance.js'
+import { ADV_MODES, ADV_BASES, solveAdv, CNC_DEFAULTS } from '../shared/advBalance.js'
 import { pickColumn, fmtScaled, fmtQty } from '../shared/adaptUnits.js'
 
 const props = defineProps({
@@ -40,6 +40,10 @@ const base = ref('current')
 const overDb = ref('0')
 const pickedIds = ref(new Set())
 const cstate = reactive({})   // { [carrierId]: { bias } }
+// CnC 的厂家约束参数：缺省值来自 CDM-625A 数据表与 CDM-Qx 手册 §9（见 shared/advBalance.js
+// 文件头的出处）。全部可改——各家调制解调器不一样，实测值该以设备为准。留空即按缺省/按调制查表。
+const cncOpt = reactive({ cancelDb: String(CNC_DEFAULTS.cancelDb), ratioMax: String(CNC_DEFAULTS.ratioMax),
+  minSymKsps: String(CNC_DEFAULTS.minSymKsps), winLo: '', winHi: '', deg0: '', apc: false })
 
 function loadSaved() {
   try {
@@ -51,17 +55,19 @@ function loadSaved() {
     if (Array.isArray(s.rowIds)) pickedIds.value = new Set(s.rowIds)
     // 旧记忆里可能还带着已删掉的 locked 位，只取 bias（多余的键读不进来自然就没了）
     if (s.carriers) for (const [k, v] of Object.entries(s.carriers)) cstate[k] = { bias: v.bias == null ? 0 : v.bias }
+    if (s.cnc) for (const k of Object.keys(cncOpt)) if (s.cnc[k] != null) cncOpt[k] = s.cnc[k]
   } catch (e) { /* 记忆坏了就用默认值 */ }
 }
 function persist() {
   try {
     localStorage.setItem(KEY.value, JSON.stringify({
       mode: mode.value, base: base.value, overDb: overDb.value,
-      rowIds: [...pickedIds.value], carriers: JSON.parse(JSON.stringify(cstate))
+      rowIds: [...pickedIds.value], carriers: JSON.parse(JSON.stringify(cstate)),
+      cnc: JSON.parse(JSON.stringify(cncOpt))
     }))
   } catch (e) { /* ignore */ }
 }
-watch([mode, base, overDb, pickedIds, cstate], persist, { deep: true })
+watch([mode, base, overDb, pickedIds, cstate, cncOpt], persist, { deep: true })
 
 // 可参与配平的行＝上次算出了带宽/功率带宽/余量的行（算失败或没算过的行只列出、不可勾）
 const usable = (r) => isFinite(r.bwKHz) && isFinite(r.pbwKHz) && isFinite(r.marginDb)
@@ -96,11 +102,20 @@ watch(() => props.carrierRemap, (m) => {
   if (!m) return
   for (const [from, to] of Object.entries(m)) if (cstate[from] && !cstate[to]) { cstate[to] = cstate[from]; delete cstate[from] }
 })
-const res = computed(() => solveAdv({
-  mode: mode.value, picked: picked.value, state: cstate, base: base.value, overDb: overDb.value, tpBwMHz: props.tpBwMhz
+// 窗口两端都填了才作数（只填一端算没填，免得半个窗把结果判成越界）
+const cncArg = computed(() => ({
+  cancelDb: cncOpt.cancelDb, ratioMax: cncOpt.ratioMax, minSymKsps: cncOpt.minSymKsps,
+  window: (cncOpt.winLo !== '' && cncOpt.winHi !== '') ? [cncOpt.winLo, cncOpt.winHi] : null,
+  deg0: cncOpt.deg0 === '' ? null : cncOpt.deg0, apc: cncOpt.apc
 }))
-// CNC 只有一份载波（校验已强制），偏置/基准都无意义 → 只在 VSAT 下露出那一栏
-const showCarrierTab = computed(() => mode.value === 'vsat')
+const res = computed(() => solveAdv({
+  mode: mode.value, picked: picked.value, state: cstate, base: base.value, overDb: overDb.value,
+  tpBwMHz: props.tpBwMhz, cncOpt: cncArg.value
+}))
+const cnc = computed(() => (res.value.ok ? res.value.cnc : null))
+// 载波表（基准 / 偏置）只在有得选时露出：VSAT 恒有；CnC 要两份载波才有意义——
+// 两条链路引用同一份配置时唯一未知数由方程定死，偏置会被 Δ 原样抵消，露出来只会误导
+const showCarrierTab = computed(() => mode.value === 'vsat' || (res.value.ok && res.value.carriers.length > 1))
 const canApply = computed(() => !props.busy && res.value.ok && res.value.carriers.length > 0)
 const baseDesc = computed(() => (ADV_BASES.find((b) => b.key === base.value) || {}).desc || '')
 // 解后余量按行索引：链路表里逐条摊出「此刻 → 解后」，CNC 下更是唯一能看到解出余量的地方（那边没有载波表）
@@ -145,7 +160,9 @@ function apply() {
   emit('apply', {
     mode: mode.value, base: base.value, overDb: parseFloat(overDb.value) || 0,
     rowIds: picked.value.map((p) => p.rowId),
-    carriers: res.value.carriers.map((c) => ({ id: c.id, name: c.name, toDb: c.toDb, fromDb: c.fromDb }))
+    carriers: res.value.carriers.map((c) => ({ id: c.id, name: c.name, toDb: c.toDb, fromDb: c.fromDb })),
+    // CnC 解出的附加 C/I 是【行】上的字段（逐收端一个数），与载波配置分开走
+    links: res.value.links.map((l) => ({ rowId: l.rowId, extCI: l.extCI }))
   })
 }
 </script>
@@ -242,6 +259,33 @@ function apply() {
             <input v-model="overDb" class="ab-in w" type="number" step="0.1" /><i>dB</i>
           </label>
         </div>
+        <!-- CnC 的厂家约束参数：缺省值出处见 shared/advBalance.js 文件头，各家设备不同故全可改 -->
+        <div v-if="mode === 'cnc'" class="ab-ctl">
+          <label title="载波抵消深度：收端把自身回波压低多少 dB。数据表不给，缺省 28 dB 按 CDM-Qx 手册 §9 的非对称算例反推；实测值请按设备填。同一转发器、同一波束回环，GEO 单跳时延恒在厂家的 0～330 ms 窗内，故不作输入">
+            <span>抵消深度</span>
+            <input v-model="cncOpt.cancelDb" class="ab-in w" type="number" step="1" /><i>dB</i>
+          </label>
+          <label title="两载波符号率之比的上限（CDM-Qx 手册 §9：非对称速率比至 3）。超过只告警，不拦下">
+            <span>符号率比上限</span>
+            <input v-model="cncOpt.ratioMax" class="ab-in w" type="number" step="0.5" /><i>:1</i>
+          </label>
+          <label title="最小符号率（CDM-Qx 手册 §9：128 ksps）。低于只告警，不拦下">
+            <span>最小符号率</span>
+            <input v-model="cncOpt.minSymKsps" class="ab-in w" type="number" step="1" /><i>ksps</i>
+          </label>
+          <label title="收端两载波功率谱密度比的允许区间。两端都留空即按期望载波的调制查厂家表：BPSK/QPSK/8PSK/8-QAM −7～+11 dB，16-QAM 与 32-ary −7～+7 dB">
+            <span>PSD 比窗口</span>
+            <input v-model="cncOpt.winLo" class="ab-in w" type="number" step="1" />
+            <input v-model="cncOpt.winHi" class="ab-in w" type="number" step="1" /><i>dB</i>
+          </label>
+          <label title="固有处理损耗：PSD 比为 0 dB 时的 Eb/N₀ 退化。留空即按期望载波的调制查厂家表：BPSK/QPSK 0.3、8-QAM 0.4、8PSK 0.5、16-QAM 与 32-ary 0.6 dB。抵消再深也去不掉这一截">
+            <span>固有损耗</span>
+            <input v-model="cncOpt.deg0" class="ab-in w" type="number" step="0.1" /><i>dB</i>
+          </label>
+          <label class="ab-ck" title="CnC-APC：两端自动测量并补偿上行雨衰、维持总合成功率。开启后 PSD 比视为被保持，区间坍缩到晴空值">
+            <input v-model="cncOpt.apc" type="checkbox" /><span>CnC-APC</span>
+          </label>
+        </div>
 
         <div v-if="!res.ok" class="ab-err">{{ res.message }}</div>
         <div v-else class="ab-out">
@@ -255,6 +299,41 @@ function apply() {
           <div class="ab-kv" title="各载波在各自基准余量上同抬同降的量，由配平方程解出"><span>统一平移量 Δ</span><b class="st">{{ sign(res.deltaDb) }}</b><i>dB</i></div>
           <div v-if="isFinite(res.bwUsePct)" class="ab-kv" title="配平后本组载波对转发器资源的占用：带宽按组占用带宽计，功率按 Σ功率带宽计"><span>转发器资源占用</span>
             <b :class="{ bad: res.pwUsePct > 100 || res.bwUsePct > 100 }">带宽 {{ d2(res.bwUsePct) }}% · 功率 {{ d2(res.pwUsePct) }}%</b></div>
+          <div v-if="cnc" class="ab-kv" title="载波叠加相对两条各占一段的常规做法省下的频谱：1 − 组占用带宽 / Σ载波带宽"><span>节省带宽</span>
+            <b>{{ d2(cnc.bwSaving * 100) }}%</b>
+            <em>抵消深度 {{ d2(cnc.cancelDb) }} dB · 符号率比 {{ isFinite(cnc.rsRatio) ? d2(cnc.rsRatio) : '—' }}:1 · 迭代 {{ cnc.iters }} 轮</em></div>
+        </div>
+
+        <!-- CnC 逐收端：各站收到的是对端那条载波，同时收到自己那条的回波，两侧的账各算各的 -->
+        <div v-if="cnc" class="ab-tw">
+          <table class="ab-t">
+            <thead>
+              <tr>
+                <th title="该收端收到的期望载波与自身回波（回波＝本站自己发出去、经转发器绕回来的那条）">收端</th>
+                <th class="n" title="晴空功率谱密度比 = 自身回波 PSD / 期望载波 PSD，正值即自身更强">PSD 比<i>dB</i></th>
+                <th class="n" title="上行雨衰下的 PSD 比区间：对端衰落把期望载波压低故上抬，本端衰落把自身回波压低故下压；下行雨衰两载波同衰、不进比值">区间<i>dB</i></th>
+                <th class="n" title="厂家允许的 PSD 比窗口（按期望载波的调制查表，或手填覆盖）">窗口<i>dB</i></th>
+                <th class="n" title="窗口裕量 = min(区间下端 − 窗口下沿, 窗口上沿 − 区间上端)，负值即区间已越出窗口">窗口裕量<i>dB</i></th>
+                <th class="n" title="允许的对端上行衰落 = 窗口上沿 − 晴空 PSD 比；与对端按其设计可用度算出的上行残余雨衰并列">允许 / 设计衰落<i>dB</i></th>
+                <th class="n" title="抵消后的残余自干扰 C/I = 抵消深度 − 区间上端的 PSD 比">残余 C/I<i>dB</i></th>
+                <th class="n" title="残余自干扰与固有处理损耗并联后的载波带内 C/I，应用后写入该收端所在行的「附加 C/I」">附加 C/I<i>dB</i></th>
+                <th class="n" title="该附加 C/I 折算到载波 C/(N+I) 上的退化量：引擎据此抬高本载波的 C/N 要求">退化<i>dB</i></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="sd in cnc.sides" :key="sd.key">
+                <td class="nm" :title="`期望 链路 #${sd.desiredNo} · 回波 链路 #${sd.ownNo}`" data-i18n-skip>{{ sd.rxName }}</td>
+                <td class="n">{{ sign(sd.rhoClear) }}</td>
+                <td class="n">{{ sign(sd.rhoMin) }} ～ {{ sign(sd.rhoMax) }}</td>
+                <td class="n">{{ sd.window ? sign(sd.window[0]) + ' ～ ' + sign(sd.window[1]) : '—' }}</td>
+                <td class="n" :class="{ bad: sd.windowMargin < 0 }">{{ d2(sd.windowMargin) }}</td>
+                <td class="n" :class="{ bad: sd.allowFadeDes < sd.designFadeDes }">{{ d2(sd.allowFadeDes) }} / {{ d2(sd.designFadeDes) }}</td>
+                <td class="n">{{ d2(sd.ciRes) }}</td>
+                <td class="n">{{ d2(sd.ci) }}</td>
+                <td class="n">{{ d2(sd.deg) }}</td>
+              </tr>
+            </tbody>
+          </table>
         </div>
         <div v-for="(w, i) in (res.warnings || [])" :key="i" class="ab-warn">{{ w }}</div>
       </div>
@@ -347,6 +426,9 @@ function apply() {
 .ab-ctl label { display: inline-flex; align-items: center; gap: 5px; color: var(--text); }
 .ab-ctl label > span { color: var(--text-muted); }
 .ab-ctl label > i { font-style: normal; color: var(--text-faint); }
+/* 复选框那一格：勾在前、名在后（参数用复选框，图层显隐才用拨杆） */
+.ab-ctl label.ab-ck { gap: 4px; }
+.ab-ctl label.ab-ck > span { color: var(--text); }
 .ab-ctl select { font: inherit; font-size: var(--fs-2); padding: 2px 4px; background-color: var(--field-bg); color: var(--text); border: 1px solid var(--field-border); border-radius: var(--r-ctl, 2px); }
 
 .ab-out { margin-top: 8px; display: grid; grid-template-columns: 1fr 1fr; gap: 4px 18px; }

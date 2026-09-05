@@ -382,6 +382,7 @@ const RESULT_DEFS = [
   { key: 'linkmargin', label: '链路余量', unit: 'dB' },
   { key: 'carrierTotalCN', label: '合计C/N', unit: 'dB' },
   { key: 'thresholdCN', label: '门限C/N', unit: 'dB' },
+  { key: 'carrierExtDegResult', label: '附加C/I退化', unit: 'dB' },
   { key: 'uplinkCN', label: '上行C/N', unit: 'dB' },
   { key: 'downlinkCN', label: '下行C/N', unit: 'dB' },
   { key: 'ebnoActualResult', label: 'Eb/N₀', unit: 'dB' },
@@ -1032,6 +1033,10 @@ const advRows = computed(() => linkRows.map((row, i) => {
   const name = l ? `${l.txName} → ${l.rxName}`
     : ([row.earthStationLocation, row.rxEarthStationLocation].filter(Boolean).join(' → ') || '链路 ' + (i + 1))
   const marginDb = d ? (isFinite(l.resolvedMargin) ? l.resolvedMargin : parseFloat(d.marginResult)) : NaN
+  // CnC 要判双工配对、共频包含、PSD 比与残余自干扰，故把这几类量一并带给求解层。
+  // 全部从行与上一次结果现取，不另跑引擎：站身份（配置 id + 经纬度，缺经纬度退回站址名）、
+  // 上下行频率与极化、符号率与调制、上行雨衰与 UPC 余量、目标 C/(N+I)、上一轮写回的附加 C/I 退化。
+  const satForm = (curSat.value && curSat.value.form) || {}
   return {
     no: i + 1, rowId: row._id, name, carrierId: bb.id, carrierName: bb.name,
     bwKHz: d ? parseFloat(d.allocBandwidthResult) : NaN,
@@ -1039,7 +1044,20 @@ const advRows = computed(() => linkRows.map((row, i) => {
     marginDb,
     // 基准余量：本功能上一轮自己写进去的余量不算「当前」（含着那一轮的偏置，再当基准就一轮叠一层）
     baseDb: advBaseMargin(bb.form, marginDb),
-    error: l ? (l.error || '') : '未计算'
+    error: l ? (l.error || '') : '未计算',
+    txStationId: row.stationId || '', rxStationId: row.rxStationId || '',
+    txStationName: row.earthStationLocation || '', rxStationName: row.rxEarthStationLocation || '',
+    longitude: row.longitude, latitude: row.latitude,
+    rxLongitude: row.rxLongitude, rxLatitude: row.rxLatitude,
+    fUpGHz: satForm.centerFrequency, fDnGHz: satForm.rxCenterFrequency,
+    polUp: satForm.uplinkPolarization || '', polDn: satForm.downlinkPolarization || '',
+    symbolRateKsps: d ? parseFloat(d.symbolRateResult) : NaN,
+    modulation: bb.form.modulation || '',
+    isNtn: (bb.form.noiseRatioMode === 'snr') || !!bb.form.phy,
+    rainUpDb: d ? parseFloat(d.uplinkRainAttenuation) : NaN,
+    upcDb: d ? parseFloat(d.UPCmarginResult) : NaN,
+    targetCN: d ? parseFloat(d.carrierTotalCN) : NaN,
+    extDegDb: d ? parseFloat(d.carrierExtDegResult) : NaN
   }
 }))
 // 转发器带宽（占用率读数用）：优先取结果里引擎回报的那份，没有结果则取当前卫星条目
@@ -1057,8 +1075,8 @@ async function openAdvDlg() {
 // （纯函数，两窗共用）：VSAT 一律派生专用副本、用户原来的载波配置一字不动，反复配平复用同一份副本；
 // CNC 两条链路本就引用同一份载波，余量是它自己的属性，故就地改（仅被未勾选链路引用时才派生）。
 async function applyAdvPlan(plan) {
-  const { ops } = planAdvWriteback({
-    mode: plan.mode, carriers: plan.carriers, rowIds: plan.rowIds,
+  const { ops, rowPatches } = planAdvWriteback({
+    mode: plan.mode, carriers: plan.carriers, rowIds: plan.rowIds, links: plan.links,
     rows: linkRows.map((r) => ({ rowId: r._id, carrierId: resolveBaseband(r.basebandId).id })),
     configs: basebandConfigs.map((c) => ({ id: c.id, name: c.name, form: c.form }))
   })
@@ -1079,11 +1097,21 @@ async function applyAdvPlan(plan) {
       if (target) Object.assign(target.form, op.formPatch)
     }
   }
+  // 行级写回：CnC 解出的附加 C/I 落到对应收端那一行（不进载波配置——同一份载波的两条
+  // 链路收端各是各的数，配置装不下；它也是这一组场景的结论，不是载波自身的属性）
+  const patched = []
+  for (const rp of (rowPatches || [])) {
+    const r = linkRows.find((x) => x._id === rp.rowId)
+    if (!r) continue
+    Object.assign(r, rp.patch)
+    patched.push(rp.patch.carrierExtCI)
+  }
   advRemap.value = remap   // 载波换了 id：把对话框里那份偏置一并搬过去
   advDlg.busy = true
   try { await compute() } finally { advDlg.busy = false }
   toast(`已按「${plan.mode === 'cnc' ? 'CNC 载波叠加' : 'VSAT 组网平衡'}」口径配平 ${plan.rowIds.length} 条链路`
-    + (forked.length ? `；配平余量写入新建载波配置「${forked.join('」「')}」，原配置未改动` : ''))
+    + (forked.length ? `；配平余量写入新建载波配置「${forked.join('」「')}」，原配置未改动` : '')
+    + (patched.length ? `；附加 C/I ${patched.join(' / ')} dB 写入对应收端行` : ''))
 }
 
 // —— 经纬度 → 降雨率/海拔自动填（与小程序一致；选址或改经纬度触发，逐站）——

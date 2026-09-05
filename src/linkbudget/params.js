@@ -114,7 +114,11 @@ export const FIELD_GROUPS = [
       { key: 'rxAltitude', label: '海拔', unit: 'm', type: 'num', def: '0', target: 'link', auto: 'elev' },
       { key: 'rxEIRP', label: '卫星EIRP', tip: '卫星下行 EIRP（随波束位置随站而异的「卫星×收信站」配对量，故留在站表；可由 GRD 天线匹配自动回填）', unit: 'dBW', type: 'num', def: '46', target: 'link' },
       { key: 'rxRainRate', label: 'R0.01%', unit: 'mm/h', type: 'num', def: '0', target: 'link', auto: 'rain' },
-      { key: 'rxDownlinkAvailability', label: '可用度', unit: '%', type: 'num', def: '99.90', target: 'link' }
+      { key: 'rxDownlinkAvailability', label: '可用度', unit: '%', type: 'num', def: '99.90', target: 'link' },
+      // 附加 C/I：本载波带内的额外干扰，与卫星那七项转发器级干扰（ACI/ASI/XPI/IM，按转发器总功率
+      // 平铺定义的 PSD 口径）不是一回事，故不在卫星分区而在收端行上——CnC 残余自干扰就是各收端
+      // 自己的一个数。留空即不计入，引擎逐位不变。「高级计算」的 CnC 配平会把解出的值写到这里。
+      { key: 'carrierExtCI', label: '附加 C/I', tip: '本载波带内的附加干扰 C/I（CnC 残余自干扰等），并入载波 C/(N+I) 要求；留空不计入', unit: 'dB', type: 'num', def: '', target: 'link' }
     ]
   }
 ]

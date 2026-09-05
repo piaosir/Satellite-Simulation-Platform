@@ -651,12 +651,32 @@ function performCalculations(satParams, inputs) {
   // 载波门限值C/T
   const carrierThreshold = ebno + CONSTANTS.BOLTZMANN + 10 * Math.log10(infoRate * 1000);
   
-  // 载波总C/T, C/N
-  const carrierTotalCT = carrierThreshold + margin;
-  const carrierTotalCN = carrierTotalCT - CONSTANTS.BOLTZMANN - RXnoiseBW;
-  
-  // 门限C/N
+  // 门限C/N（上提到载波总C/T之前：附加 C/I 要拿「门限C/N + 余量」当目标 C/(N+I)）
   const thresholdCN = ebno + 10 * Math.log10(infoRate / noiseBW);
+
+  // ============ 附加 C/I：本载波带内的额外干扰 ============
+  // 与下面 ACI/ASI/XPI/IM 那几处「转发器级」干扰并联不是一回事：那几处的 C/I 是按转发器总功率、
+  // 平铺在转发器带宽上定义的 PSD 口径（C/T_I = C/I + 10lg(k·B_tp)），载波实际 C/I 还要按
+  // 功率占用/带宽占用折算；而 carrierExtCI 是【本载波带内、按本载波功率定义】的 C/I——
+  // CnC 残余自干扰（抵消深度减去两载波 PSD 比）就是这一类。它直接抬高本载波的 C/N 要求，
+  // 功率份额 / 功放 / 级联随之自然跟随。出处见 docs/高级计算仪器级改造.md §4.2。
+  //
+  // C/(N+I) = T 要求 C/N = T − 10lg(1 − 10^((T−C/I)/10))，退化量即后一项；C/I ≤ T 时无解。
+  // 留空('' / null / undefined / 非数) = 不计入：carrierExtDeg 恒 0，与不传这个参数逐位相同。
+  const _extCI = pickNum(inputs.carrierExtCI, null);
+  const carrierExtCI = (_extCI !== null && isFinite(_extCI)) ? _extCI : null;
+  let carrierExtDeg = 0;
+  if (carrierExtCI !== null) {
+    const extTargetCN = thresholdCN + margin;   // 目标 C/(N+I) = 门限C/N + 余量（= 不含本项时的 carrierTotalCN）
+    if (carrierExtCI <= extTargetCN) {
+      throw new Error(`附加 C/I ${carrierExtCI.toFixed(2)} dB 不高于目标 C/N ${extTargetCN.toFixed(2)} dB`);
+    }
+    carrierExtDeg = -10 * Math.log10(1 - Math.pow(10, (extTargetCN - carrierExtCI) / 10));
+  }
+
+  // 载波总C/T, C/N
+  const carrierTotalCT = carrierThreshold + margin + carrierExtDeg;
+  const carrierTotalCN = carrierTotalCT - CONSTANTS.BOLTZMANN - RXnoiseBW;
   
   // ============ 其他损耗（用户输入，上下行分别设置）============
   const uplinkMiscLoss = inputs.uplinkOtherLoss !== undefined && inputs.uplinkOtherLoss !== '' && inputs.uplinkOtherLoss !== null
@@ -749,7 +769,9 @@ function performCalculations(satParams, inputs) {
 
   
   // ============ 链路余量计算 ============
-  const linkmargin = carrierTotalCN - thresholdCN;
+  // 附加 C/I 抬高的是【C/N 要求】而不是余量——余量仍是用户设的那个数（被附加干扰吃掉多少
+  // 由 carrierExtDegResult 单独出参），故这里把它减回去。留空时减的是 0，逐位不变。
+  const linkmargin = carrierTotalCN - carrierExtDeg - thresholdCN;
   
   // ============ 转发器容量计算 ============
   // 转发器容量 - 上行降雨
@@ -1265,6 +1287,8 @@ function performCalculations(satParams, inputs) {
   results.carrierTotalCN = carrierTotalCN.toFixed(2 + FX);
   results.thresholdCN = thresholdCN.toFixed(2 + FX);
   results.linkmargin = linkmargin.toFixed(2 + FX);
+  results.carrierExtCIResult = carrierExtCI === null ? '' : carrierExtCI.toFixed(2 + FX);
+  results.carrierExtDegResult = carrierExtDeg.toFixed(2 + FX);
   
   
   
