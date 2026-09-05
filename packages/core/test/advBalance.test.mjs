@@ -268,6 +268,143 @@ else {
 }
 
 
+
+// —— ⑨ 功放标度律：余量抬 x dB ⇒ 功放功率(dBW) 平移 x，选择支不翻转 ——
+// 「解后功放要开到多少瓦」在对话框里是闭式预测出来的（不再跑一遍引擎），全靠这一条：
+// 引擎里 UPPOWER 含 −转发器工作区回退、DOWNPOWER 含 +载波总C/T，两者随余量 1:1 平移；
+// 选哪一支看 uplinkPowerRatio > downlinkPowerRatio，而这两个比同乘一个因子，故不随余量翻转。
+// **引擎哪天改了功放那条链，这条先红**，那时对话框的功放读数就得改回「再跑一遍引擎」。
+// ★ 前三例的站址没设降雨，此时「上行降雨情景」与「下行降雨情景」退化成同一个晴空场景，
+//   两个功率比恒等、选择支压不出来。故第四例显式给雨（发端雨大 ⇒ 真正走上行支）。
+for (const [c, st, rain] of [['fwd', 'hub'], ['rtn', 'vsatA'], ['rtn', 'vsatB'],
+  ['fwd', 'hub', { rainRate: '60', rxRainRate: '5', uplinkAvailability: '99.9', rxDownlinkAvailability: '99.9' }],
+  ['fwd', 'hub', { rainRate: '5', rxRainRate: '80', uplinkAvailability: '99.9', rxDownlinkAvailability: '99.9' }]]) {
+  const tag = st + (rain ? '·雨' + rain.rainRate + '/' + rain.rxRainRate : '')
+  const at = (m) => {
+    const r = calculateLinkBudget(SAT, { ...CARRIERS[c], ...STATIONS[st], ...(rain || {}), margin: String(m) })
+    if (!r.success) throw new Error('引擎失败: ' + r.message)
+    return { pa: parseFloat(r.data.paRecommendationdBResult), paW: parseFloat(r.data.paRecommendation),
+      up: parseFloat(r.data.uplinkPowerRatioResult), dn: parseFloat(r.data.downlinkPowerRatioResult) }
+  }
+  const a = at(3)
+  // 防空转：键名写错时两个比都是 NaN，而 NaN > NaN 恒假 —— 下面那条「选择支不翻转」
+  // 会两边同为 false 而恒过。故先钉一条「确实取到了数」。
+  ok(`⑨ 功放标度律 ${c}/${tag}：上下行功率比取到了数`, isFinite(a.up) && isFinite(a.dn), `${a.up} / ${a.dn}`)
+  let shiftOk = true, branchOk = true, wattOk = true
+  for (const d of [-4.7, -1, 2.35, 6]) {
+    const b = at(3 + d)
+    if (Math.abs((b.pa - a.pa) - d) > 5e-3) shiftOk = false
+    if ((b.up > b.dn) !== (a.up > a.dn)) branchOk = false
+    // 瓦特侧同一条律：P_after = P_before × 10^(Δ/10)（对话框的闭式预测就是这一式）
+    // 出参 toFixed(3)：两个值各带半个 ULP，0.6 W 上就是 8e-4 的相对量，故按【绝对】量化精度判
+    if (Math.abs(b.paW - a.paW * Math.pow(10, d / 10)) > 0.0015) wattOk = false
+  }
+  ok(`⑨ 功放标度律 ${c}/${tag}：功放 dBW 随余量 1:1 平移`, shiftOk)
+  ok(`⑨ 功放标度律 ${c}/${tag}：选择支不随余量翻转`, branchOk, `上/下行功率比 ${a.up.toFixed(2)} / ${a.dn.toFixed(2)}`)
+  ok(`⑨ 功放标度律 ${c}/${tag}：瓦特侧 ×10^(Δ/10)（对话框闭式预测的依据）`, wattOk)
+}
+
+// —— ⑮ 路数：一行代表 N 路完全相同的载波 ——
+// 组网里 20 个远端跑同一份返向配置是常态，改造前要建 20 行；带路数之后一行搞定，
+// 但两种建法必须给出【逐位相同】的解 —— 否则用户会发现「怎么改个建法余量就变了」。
+{
+  const one = measure(SET, (x) => x.m0)
+  // 把返向那三条各当 7 路（共 21 路返向 + 1 路前向）
+  const K = 7
+  const withCount = one.map((p) => (p.carrierId === 'cRtn' ? { ...p, count: K } : p))
+  // 等价建法：把每条返向行原样复制 K 份
+  const expanded = []
+  let no = 0
+  for (const p of one) {
+    const k = p.carrierId === 'cRtn' ? K : 1
+    for (let i = 0; i < k; i++) { no++; expanded.push({ ...p, no, rowId: p.rowId + '_' + i }) }
+  }
+  const rc = solveAdv({ mode: 'vsat', picked: withCount, state: {}, base: 'current', overDb: 0, tpBwMHz: 36 })
+  const re = solveAdv({ mode: 'vsat', picked: expanded, state: {}, base: 'current', overDb: 0, tpBwMHz: 36 })
+  ok('⑮ 两种建法都可解', rc.ok && re.ok, (rc.message || '') + (re.message || ''))
+  if (rc.ok && re.ok) {
+    const mc = Object.fromEntries(rc.carriers.map((c) => [c.id, c.toDb]))
+    const me = Object.fromEntries(re.carriers.map((c) => [c.id, c.toDb]))
+    // 「逐位相同」做不到、也不该要：c.A 一边是 x×N、一边是 x 加 N 次，浮点末位本就不同
+    // （实测 2.7e-15 dB）。写回只留 3 位小数，1e-12 已比它小六个数量级。
+    const worst = Math.max(...Object.keys(mc).map((k) => Math.abs(mc[k] - me[k])))
+    ok('⑮ 路数 N 与 N 行等价配置：解出的余量一致到 1e-12 dB（写回只留 3 位）',
+      worst < 1e-12, '最坏差 ' + worst.toExponential(2) + ' dB · ' + Object.entries(mc).map(([k, v]) => k + ' ' + v.toFixed(6)).join(' · '))
+    near('⑮ Σ载波带宽也一致', rc.sumBwKHz, re.sumBwKHz, 1e-9)
+    near('⑮ Σ功率带宽也一致', rc.afterPbwKHz, re.afterPbwKHz, 1e-6)
+    near('⑮ 仍然是平的（Σ功率带宽 = 目标）', rc.afterPbwKHz, rc.targetKHz, 1e-9)
+    ok('⑮ 载波清单带出路数（返向 3 条 × 7 = 21 路）',
+      rc.carriers.find((c) => c.id === 'cRtn').nWays === 21 && rc.carriers.find((c) => c.id === 'cFwd').nWays === 1)
+    // 路数缺省 / 脏值一律归 1，不把整组账算没
+    for (const bad of [undefined, null, '', 0, -3, 'abc', 1.4]) {
+      const r = solveAdv({ mode: 'vsat', picked: one.map((p) => ({ ...p, count: bad })), state: {}, base: 'current', overDb: 0, tpBwMHz: 36 })
+      const b = solveAdv({ mode: 'vsat', picked: one, state: {}, base: 'current', overDb: 0, tpBwMHz: 36 })
+      if (!r.ok || Math.abs(r.carriers[0].toDb - b.carriers[0].toDb) > 1e-9) {
+        ok('⑮ 路数脏值(' + String(bad) + ')归 1', false); break
+      }
+    }
+    ok('⑮ 路数为空 / 0 / 负数 / 非数 / 小数一律归 1', true)
+  }
+}
+
+// —— ⑯ 指定带宽目标：对着租下来的那一段配，而不是对着 Σ载波带宽 ——
+// 保护带与载波间隔留白由此进账：租 9 MHz 而载波只占 8.2 MHz 时，功率该按 9 MHz 配。
+{
+  const one = measure(SET, (x) => x.m0)
+  const r = solveAdv({ mode: 'vsat', picked: one, state: {}, base: 'current', overDb: 0, tpBwMHz: 36, target: 'fixed', targetBwMHz: 9 })
+  ok('⑯ 指定带宽可解', r.ok, r.message)
+  if (r.ok) {
+    near('⑯ Σ功率带宽 = 9 MHz', r.afterPbwKHz, 9000, 1e-6)
+    near('⑯ 目标 = 9 MHz', r.targetKHz, 9000, 1e-9)
+    ok('⑯ 组占用带宽读数仍是 Σ载波带宽（目标换了，占用没换）',
+      Math.abs(r.occBwKHz - one.reduce((s, p) => s + p.bwKHz, 0)) < 1e-9)
+  }
+  const r2 = solveAdv({ mode: 'vsat', picked: one, state: {}, base: 'current', overDb: 1.5, tpBwMHz: 36, target: 'fixed', targetBwMHz: 9 })
+  near('⑯ 指定带宽 + 组超发 1.5 dB：Σ功率带宽 = 9 MHz × 10^(1.5/10)',
+    r2.ok ? r2.afterPbwKHz : NaN, 9000 * Math.pow(10, 0.15), 1e-6)
+  ok('⑯ 指定带宽为 0 / 空 → 拦下而不是算成 0',
+    !solveAdv({ mode: 'vsat', picked: one, state: {}, base: 'current', overDb: 0, target: 'fixed', targetBwMHz: 0 }).ok
+    && !solveAdv({ mode: 'vsat', picked: one, state: {}, base: 'current', overDb: 0, target: 'fixed', targetBwMHz: '' }).ok)
+  // 喂回引擎核对：解出的余量拿去真算一遍，Σ功率带宽 仍是 9 MHz
+  const back = measure(SET, (x) => r.carriers.find((c) => c.id === x.carrierId).toDb)
+  near('⑯ 闭式预测 = 引擎实测', back.reduce((s, p) => s + p.pbwKHz, 0), 9000, Math.max(0.01, 9000 * 2e-5))
+}
+
+// —— ⑰ 三条组网告警：功放超预设 / 多载波回退 / 全表占用 ——
+{
+  const one = measure(SET, (x) => x.m0)
+  // 功放：给发端站型一个偏小的预设，解后必然超
+  const withPa = one.map((p) => ({ ...p, paW: 20, paPresetW: 25 }))
+  const r = solveAdv({ mode: 'vsat', picked: withPa, state: {}, base: 'current', overDb: 6, tpBwMHz: 36 })
+  ok('⑰ 功放解后超发端站型预设 → 告警', r.ok && r.warnings.some((w) => w.includes('功放需')),
+    r.ok ? (r.warnings.find((w) => w.includes('功放需')) || '（无）') : r.message)
+  ok('⑰ 功放闭式：解后 = 此刻 × 10^(Δ余量/10)', r.ok && r.links.every((l) =>
+    Math.abs(l.paAfterW - l.paBeforeW * Math.pow(10, (l.marginAfter - l.marginBefore) / 10)) < 1e-9))
+  const rOk = solveAdv({ mode: 'vsat', picked: one.map((p) => ({ ...p, paW: 20, paPresetW: 400 })), state: {}, base: 'current', overDb: 0, tpBwMHz: 36 })
+  ok('⑰ 功放够用则不告警', rOk.ok && !rOk.warnings.some((w) => w.includes('功放需')))
+  // 转发器回退：多载波组而卫星条目上填的是单载波回退
+  const sc = one.map((p) => ({ ...p, booDb: 0.5, boiDb: 1 }))
+  ok('⑰ 多载波组 + 单载波回退 → 告警',
+    solveAdv({ mode: 'vsat', picked: sc, state: {}, base: 'current', overDb: 0, tpBwMHz: 36 }).warnings.some((w) => w.includes('多载波组')))
+  ok('⑰ 多载波回退够深则不告警',
+    !solveAdv({ mode: 'vsat', picked: one.map((p) => ({ ...p, booDb: 3, boiDb: 6 })), state: {}, base: 'current', overDb: 0, tpBwMHz: 36 })
+      .warnings.some((w) => w.includes('多载波组')))
+  ok('⑰ 卫星条目没给回退则不判', !solveAdv({ mode: 'vsat', picked: one, state: {}, base: 'current', overDb: 0, tpBwMHz: 36 })
+    .warnings.some((w) => w.includes('多载波组')))
+  // 全表占用：表里还有两条没参与配平的行
+  const others = [
+    { ...one[0], rowId: 'x1', no: 90 },
+    { ...one[1], rowId: 'x2', no: 91, count: 3 }
+  ]
+  const rAll = solveAdv({ mode: 'vsat', picked: one, state: {}, base: 'current', overDb: 0, tpBwMHz: 36, allRows: [...one, ...others] })
+  ok('⑰ 全表占用比本组高（表里还有别的载波在同一只转发器上）',
+    rAll.ok && rAll.pwUseAllPct > rAll.pwUsePct && rAll.bwUseAllPct > rAll.bwUsePct,
+    rAll.ok ? `本组 带宽 ${rAll.bwUsePct.toFixed(2)}% / 功率 ${rAll.pwUsePct.toFixed(2)}% · 全表 带宽 ${rAll.bwUseAllPct.toFixed(2)}% / 功率 ${rAll.pwUseAllPct.toFixed(2)}%` : rAll.message)
+  ok('⑰ 全表占用把未勾选行的路数也算进去', rAll.ok && rAll.allRowsN === 6)
+  ok('⑰ 宿主没给 allRows 时不出这个读数（不编数）',
+    !('bwUseAllPct' in solveAdv({ mode: 'vsat', picked: one, state: {}, base: 'current', overDb: 0, tpBwMHz: 36 })))
+}
+
 // —— ⑩ CnC 双工配对：各站必须收到自己的上行回波 ——
 // 这是改造前最大的窟窿：Hub→A 与 Hub→B 两条同载波链路也能过校验，可那不是一对双工，
 // 两个远端谁也收不到自己发的东西，抵消无从谈起。

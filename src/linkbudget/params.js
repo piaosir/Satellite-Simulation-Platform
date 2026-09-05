@@ -91,6 +91,10 @@ export const FIELD_GROUPS = [
       // （见 buildParams 的过滤）。options 为空，实际选项由 LinkBudgetApp 按当前载波信号库动态生成并
       // 通过 StationGrid 的 select-options 注入。
       { key: 'basebandId', label: '载波信号配置', type: 'select', options: [], def: '', target: 'meta' },
+      // 路数：本行代表几路完全相同的载波。组网里 20 个远端跑同一份返向配置是常态，
+      // 建 20 行既啰嗦、算得也慢；「高级计算」的组账按它 × 各条的带宽与功率。
+      // target:'meta' —— 不进引擎（引擎只算一路载波），只在组账与汇总里生效。
+      { key: 'carrierCount', label: '路数', tip: '本行代表几路完全相同的载波（同一份载波配置、同样的站型与站址）；组账与汇总按它计，单条链路的计算结果不受影响', type: 'num', def: '1', target: 'meta' },
       // 地球站配置（射频站型）：发射链参数由所选配置提供（见 station 组）；options 由 App 按地球站库动态注入
       { key: 'stationId', label: '地球站配置', type: 'select', options: [], def: '', target: 'meta' },
       { key: 'earthStationLocation', label: '地球站位置', type: 'text', def: '北京', target: 'link', city: 'tx', lonKey: 'longitude', latKey: 'latitude' },

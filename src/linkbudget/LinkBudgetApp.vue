@@ -825,19 +825,30 @@ function capacityKbpsOf(d) {
 // 总功率带宽 = Σ 各链路功率带宽（PowerBWResult = 功率占用 × 转发器带宽，kHz）——转发器资源占用的另一维：
 // 与总带宽并列着看才知道整批是受功率限还是受带宽限（Σ功率带宽 = Σ载波带宽 即整批功带平衡，见「高级计算」）。
 // pbwN = 出了这个数的链路条数；为 0（本批没一条算出功率带宽）时汇总行不出该项，而非显示一个 0。
+// 汇总按【路数】计：一行代表 N 路完全相同的载波时，它占的带宽/功率/容量都是 N 份。
+// 不乘的话「1 行 ×20 路」与「建 20 行」两种建法汇总对不上，而「高级计算」的组账已按路数算。
+// count 是行上的 meta 字段（不进引擎），故在这里乘，引擎那边一路载波的结果不受影响。
 const capacitySummary = computed(() => {
   const done = links.value.filter((l) => l && l.data && !l.error)
-  let bwKHz = 0, capKbps = 0, pbwKHz = 0, pbwN = 0
+  const wayOf = (rowId) => {
+    const r = linkRows.find((x) => x._id === rowId)
+    const n = r ? Math.round(parseFloat(r.carrierCount)) : 1
+    return (isFinite(n) && n >= 1) ? n : 1
+  }
+  let bwKHz = 0, capKbps = 0, pbwKHz = 0, pbwN = 0, ways = 0
   for (const l of done) {
+    const k = wayOf(l.rowId)
+    ways += k
     const bw = parseFloat(l.data.allocBandwidthResult)
-    if (isFinite(bw)) bwKHz += bw
+    if (isFinite(bw)) bwKHz += bw * k
     const kbps = capacityKbpsOf(l.data)
-    if (isFinite(kbps)) capKbps += kbps
+    if (isFinite(kbps)) capKbps += kbps * k
     const pbw = parseFloat(l.data.PowerBWResult)
-    if (isFinite(pbw)) { pbwKHz += pbw; pbwN++ }
+    if (isFinite(pbw)) { pbwKHz += pbw * k; pbwN++ }
   }
   return {
     count: done.length,
+    ways,
     failed: links.value.length - done.length,
     bwKHz, capKbps, pbwKHz, pbwN,
     avgEff: bwKHz > 0 ? capKbps / bwKHz : 0   // 带宽加权平均频谱效率 bps/Hz
@@ -1057,7 +1068,12 @@ const advRows = computed(() => linkRows.map((row, i) => {
     rainUpDb: d ? parseFloat(d.uplinkRainAttenuation) : NaN,
     upcDb: d ? parseFloat(d.UPCmarginResult) : NaN,
     targetCN: d ? parseFloat(d.carrierTotalCN) : NaN,
-    extDegDb: d ? parseFloat(d.carrierExtDegResult) : NaN
+    extDegDb: d ? parseFloat(d.carrierExtDegResult) : NaN,
+    // 组网语义：路数、功放（此刻实算值 + 发端站型预设）、转发器回退
+    count: row.carrierCount,
+    paW: d ? parseFloat(d.paRecommendation) : NaN,
+    paPresetW: parseFloat(resolveEs(row.stationId).form.paPowerW),
+    booDb: parseFloat(satForm.BOo), boiDb: parseFloat(satForm.BOi)
   }
 }))
 // 转发器带宽（占用率读数用）：优先取结果里引擎回报的那份，没有结果则取当前卫星条目
@@ -1067,6 +1083,14 @@ const advTpBwMHz = computed(() => {
   return isFinite(v) ? v : 0
 })
 // 参考态必须是「此刻这套输入」算出来的：没算过或输入已变，先算一遍再开
+// 对话框里改「路数」：直接落到链路表那一行。归一到 ≥1 的整数——0 或负数会把整组账算没。
+// 不重算：路数不进引擎（引擎只算一路载波），改它只影响组账与汇总，链路表的结果一行不变。
+function setAdvCount({ rowId, count }) {
+  const r = linkRows.find((x) => x._id === rowId)
+  if (!r) return
+  const n = Math.round(parseFloat(count))
+  r.carrierCount = String(isFinite(n) && n >= 1 ? n : 1)
+}
 async function openAdvDlg() {
   if (!links.value.length || resultsStale.value) await compute()
   advDlg.open = true
@@ -1788,7 +1812,8 @@ onMounted(async () => {
 
     <!-- 高级计算：多载波功带平衡（VSAT 组网 / CNC 载波叠加，GEO/NGSO 共用组件）-->
     <LbAdvBalanceDialog :open="advDlg.open" :rows="advRows" :tp-bw-mhz="advTpBwMHz" :busy="advDlg.busy || computing"
-      :stale="resultsStale" :carrier-remap="advRemap" store-key="linkbudget" @close="advDlg.open = false" @apply="applyAdvPlan" />
+      :stale="resultsStale" :carrier-remap="advRemap" store-key="linkbudget" @close="advDlg.open = false"
+      @apply="applyAdvPlan" @set-count="setAdvCount" />
 
     <!-- 导出报告：封面元信息 + 输出格式 + 是否含图（三窗共用组件）-->
     <LbCustomColsDialog :open="ccDlgOpen" :cols="customCols" :pool="customPool" :preview-fn="ccPreview"

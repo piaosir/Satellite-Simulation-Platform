@@ -57,6 +57,9 @@ const lin = (db) => Math.pow(10, db / 10)
 
 // 归一功率带宽：把一条链路的功率带宽折算到 margin = 0（此后任意余量下的功率带宽 = A × 10^(m/10)）
 const normPbw = (pbwKHz, marginDb) => pbwKHz / lin(marginDb)
+// 路数：一行代表几路完全相同的载波（组网里 20 个远端跑同一份返向配置是常态，
+// 不该逼用户建 20 行）。缺省 1，非正整数一律归 1 —— 0 或负数会把整组账算没。
+const cntOf = (p) => { const n = Math.round(num(p && p.count)); return (isFinite(n) && n >= 1) ? n : 1 }
 
 // ============================================================================
 // CnC（载波叠加）的物理约束
@@ -375,11 +378,13 @@ function groupByCarrier(picked) {
   const map = new Map()
   for (const p of picked) {
     let c = map.get(p.carrierId)
-    if (!c) { c = { id: p.carrierId, name: p.carrierName, links: [], A: 0, bwKHz: 0, margins: [], bases: [] }; map.set(p.carrierId, c) }
+    if (!c) { c = { id: p.carrierId, name: p.carrierName, links: [], A: 0, bwKHz: 0, nWays: 0, margins: [], bases: [] }; map.set(p.carrierId, c) }
+    const k = cntOf(p)
     c.links.push(p)
     c.bases.push(num(p.baseDb))
-    c.A += normPbw(p.pbwKHz, p.marginDb)
-    c.bwKHz += p.bwKHz
+    c.A += normPbw(p.pbwKHz, p.marginDb) * k
+    c.bwKHz += p.bwKHz * k
+    c.nWays += k
     c.margins.push(p.marginDb)
   }
   return [...map.values()]
@@ -407,7 +412,7 @@ export function solveAdv(o) {
   // 不可解也要把载波清单带回去：界面上的偏置输入就长在那张表里，表一空用户就没地方改了
   const fail = (message, carriers) => ({ ok: false, message, carriers: carriers || [], links: [] })
   const carrierRow = (c) => ({
-    id: c.id, name: c.name, n: c.links.length, biasDb: c.biasDb || 0,
+    id: c.id, name: c.name, n: c.links.length, nWays: c.nWays, biasDb: c.biasDb || 0,
     baseDb: c.baseDb, balanceDb: c.balanceDb, fromDb: c.currentDb, toDb: c.toDb, shiftDb: c.shiftDb
   })
 
@@ -415,11 +420,18 @@ export function solveAdv(o) {
   if (msg) return fail(msg)
 
   const carriers = groupByCarrier(picked)
-  const sumBwKHz = picked.reduce((s, p) => s + p.bwKHz, 0)
+  const sumBwKHz = picked.reduce((s, p) => s + p.bwKHz * cntOf(p), 0)
   // 组占用带宽：VSAT 各占各的 → 求和；CNC 同频叠加 → 只算一份（两条链路同载波，带宽本就相同）
   const occBwKHz = mode === 'cnc' ? Math.max(...picked.map((p) => p.bwKHz)) : sumBwKHz
   if (!(occBwKHz > 0)) return fail('所选链路的载波带宽为 0，无法配平')
-  const targetKHz = occBwKHz * lin(overDb)
+  // 配平目标二选一：Σ载波带宽（各载波紧挨着排）/ 指定带宽（对着租下来的那一段配，
+  // 保护带与载波间隔留白由此进账 —— 租 9 MHz 而载波只占 8.2 MHz 时，功率该按 9 MHz 配）。
+  // 指定带宽只对 VSAT 有意义：CnC 的组占用带宽由那一份载波定死，没有「租多少」可言。
+  const fixedKHz = num(o.targetBwMHz) * 1000
+  const useFixed = mode !== 'cnc' && o.target === 'fixed'
+  if (useFixed && !(fixedKHz > 0)) return fail('指定带宽须为正数')
+  const baseKHz = useFixed ? fixedKHz : occBwKHz
+  const targetKHz = baseKHz * lin(overDb)
 
   // 逐载波定基准：current = 该载波「进本功能之前」的原始余量（宿主给的 baseDb；缺省即此刻的余量。
   // 拿它而不是此刻的余量，反复应用才不会把偏置一层层叠上去——见文件头「幂等」一节）；
@@ -468,23 +480,49 @@ export function solveAdv(o) {
       // CnC 下归一值要把上一轮写回的附加 C/I 退化剥掉（幂等），VSAT 下照旧只剥余量
       const a = mode === 'cnc' ? p.pbwKHz / lin(p.marginDb + (num(p.extDegDb) || 0)) : normPbw(p.pbwKHz, p.marginDb)
       const degHere = degByRow[p.rowId] || 0
-      const after = a * lin(c.toDb + degHere)
+      const k = cntOf(p)
+      const after = a * lin(c.toDb + degHere) * k
       afterPbwKHz += after
+      // 功放可行性（闭式）：引擎里 UPPOWER 含 −转发器工作区回退、DOWNPOWER 含 +载波总C/T，
+      // 两者随余量 1:1 平移且选择支不随余量翻转（两个功率比同乘一个因子），故解后功放功率
+      // 可以直接由此刻的值平移预测，不必再跑一遍引擎。测试 ⑨ 钉死这条标度律。
+      const paW = num(p.paW)
+      const paAfterW = isFinite(paW) ? paW * lin(c.toDb - p.marginDb) : NaN
+      const paPresetW = num(p.paPresetW)
       outLinks.push({
         rowId: p.rowId, no: p.no, name: p.name, carrierId: c.id, carrierName: c.name,
-        bwKHz: p.bwKHz, pbwBefore: p.pbwKHz, pbwAfter: after,
+        count: k,
+        bwKHz: p.bwKHz, pbwBefore: p.pbwKHz * k, pbwAfter: after,
         marginBefore: p.marginDb, marginAfter: c.toDb,
+        paBeforeW: paW, paAfterW, paPresetW,
+        paOver: isFinite(paAfterW) && isFinite(paPresetW) && paPresetW > 0 && paAfterW > paPresetW,
         // 本行收端的附加 C/I 与它吃掉的 C/N（CnC 才有；写回时落到这一行的 carrierExtCI）
         extCI: isFinite(ciByRow[p.rowId]) ? ciByRow[p.rowId] : null,
         extDeg: degHere
       })
     }
     if (c.toDb < 0) warnings.push(`载波「${c.name}」配平余量为 ${c.toDb.toFixed(2)} dB：负余量，该载波达不到解调门限`)
+    // 无需再算：功放解后超过发端站型预设值，说明这个余量买不到
+    for (const l of outLinks) {
+      if (l.carrierId === c.id && l.paOver) {
+        warnings.push(`链路 #${l.no} 功放需 ${l.paAfterW.toFixed(1)} W，发端站型预设 ${l.paPresetW.toFixed(1)} W`)
+      }
+    }
     if (c.margins.some((m) => Math.abs(m - c.currentDb) > 0.005)) {
       warnings.push(`载波「${c.name}」各链路当前系统余量不一致（${c.margins.map((m) => m.toFixed(2)).join(' / ')} dB）：基准取首条链路，配平结果不受影响`)
     }
   }
-  const beforePbwKHz = picked.reduce((s, p) => s + p.pbwKHz, 0)
+  // 转发器工作点：整组超过一路载波，而卫星条目上的回退还是单载波那一档 —— 份额整体偏乐观。
+  // 阈值取工程常用的多载波下限（OBO ≥ 2 dB / IBO ≥ 4 dB）；卫星条目没给这两个数则不判。
+  const nWaysAll = picked.reduce((s, p) => s + cntOf(p), 0)
+  if (nWaysAll >= 2) {
+    const boo = num(picked[0].booDb), boi = num(picked[0].boiDb)
+    if ((isFinite(boo) && boo < 2) || (isFinite(boi) && boi < 4)) {
+      warnings.push(`多载波组（${nWaysAll} 路）· 转发器 OBO ${isFinite(boo) ? boo.toFixed(1) : '—'} dB / `
+        + `IBO ${isFinite(boi) ? boi.toFixed(1) : '—'} dB`)
+    }
+  }
+  const beforePbwKHz = picked.reduce((s, p) => s + p.pbwKHz * cntOf(p), 0)
   const tpBwKHz = (num(o.tpBwMHz) || 0) * 1000
 
   return {
@@ -494,9 +532,30 @@ export function solveAdv(o) {
     // 转发器占用率（解后）：带宽按组占用带宽算，功率按 Σ功率带宽算
     bwUsePct: tpBwKHz > 0 ? (occBwKHz / tpBwKHz) * 100 : NaN,
     pwUsePct: tpBwKHz > 0 ? (afterPbwKHz / tpBwKHz) * 100 : NaN,
+    ...allUse(o.allRows, outLinks, tpBwKHz),
     carriers: carriers.map(carrierRow),
     links: outLinks
   }
+}
+
+// —— 全表占用：本组之外的载波也在同一只转发器上 ——
+// 只看本组会低估转发器资源：表里还有别的行没参与这次配平，它们照样占着带宽与功率。
+// 参与本组的行取【解后】值，其余行取它们此刻的值；都按各自的路数计。
+// allRows 缺省（宿主没给）时返回空对象，读数自然不出——不编一个数。
+function allUse(allRows, outLinks, tpBwKHz) {
+  if (!Array.isArray(allRows) || !allRows.length || !(tpBwKHz > 0)) return {}
+  const solved = new Map(outLinks.map((l) => [l.rowId, l]))
+  let bw = 0, pw = 0, n = 0
+  for (const r of allRows) {
+    const hit = solved.get(r.rowId)
+    const k = cntOf(r)
+    const b = hit ? hit.bwKHz * hit.count : num(r.bwKHz) * k
+    const p = hit ? hit.pbwAfter : num(r.pbwKHz) * k
+    if (!isFinite(b) || !isFinite(p)) continue
+    bw += b; pw += p; n++
+  }
+  if (!n) return {}
+  return { bwUseAllPct: (bw / tpBwKHz) * 100, pwUseAllPct: (pw / tpBwKHz) * 100, allRowsN: n }
 }
 
 // —— 写回落点：解出的余量该写进哪份载波配置 ——

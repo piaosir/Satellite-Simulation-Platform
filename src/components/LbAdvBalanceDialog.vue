@@ -31,7 +31,7 @@ const props = defineProps({
   carrierRemap: { type: Object, default: null },
   storeKey: { type: String, default: 'lb' }
 })
-const emit = defineEmits(['close', 'apply'])
+const emit = defineEmits(['close', 'apply', 'set-count'])
 
 // —— 面板状态（按窗口记忆：一轮试错要反复开合，选择不该每次重来）——
 const KEY = computed(() => props.storeKey + '/advBalance')
@@ -42,6 +42,10 @@ const pickedIds = ref(new Set())
 const cstate = reactive({})   // { [carrierId]: { bias } }
 // CnC 的厂家约束参数：缺省值来自 CDM-625A 数据表与 CDM-Qx 手册 §9（见 shared/advBalance.js
 // 文件头的出处）。全部可改——各家调制解调器不一样，实测值该以设备为准。留空即按缺省/按调制查表。
+// 配平目标：'sum' = Σ载波带宽（各载波紧挨着排）/ 'fixed' = 指定带宽（对着租下来的那一段配，
+// 保护带与载波间隔留白由此进账）。只对 VSAT 有意义。
+const target = ref('sum')
+const targetBwMHz = ref('9')
 const cncOpt = reactive({ cancelDb: String(CNC_DEFAULTS.cancelDb), ratioMax: String(CNC_DEFAULTS.ratioMax),
   minSymKsps: String(CNC_DEFAULTS.minSymKsps), winLo: '', winHi: '', deg0: '', apc: false })
 
@@ -56,6 +60,8 @@ function loadSaved() {
     // 旧记忆里可能还带着已删掉的 locked 位，只取 bias（多余的键读不进来自然就没了）
     if (s.carriers) for (const [k, v] of Object.entries(s.carriers)) cstate[k] = { bias: v.bias == null ? 0 : v.bias }
     if (s.cnc) for (const k of Object.keys(cncOpt)) if (s.cnc[k] != null) cncOpt[k] = s.cnc[k]
+    if (s.target) target.value = s.target
+    if (s.targetBwMHz != null) targetBwMHz.value = String(s.targetBwMHz)
   } catch (e) { /* 记忆坏了就用默认值 */ }
 }
 function persist() {
@@ -63,11 +69,11 @@ function persist() {
     localStorage.setItem(KEY.value, JSON.stringify({
       mode: mode.value, base: base.value, overDb: overDb.value,
       rowIds: [...pickedIds.value], carriers: JSON.parse(JSON.stringify(cstate)),
-      cnc: JSON.parse(JSON.stringify(cncOpt))
+      cnc: JSON.parse(JSON.stringify(cncOpt)), target: target.value, targetBwMHz: targetBwMHz.value
     }))
   } catch (e) { /* ignore */ }
 }
-watch([mode, base, overDb, pickedIds, cstate, cncOpt], persist, { deep: true })
+watch([mode, base, overDb, pickedIds, cstate, cncOpt, target, targetBwMHz], persist, { deep: true })
 
 // 可参与配平的行＝上次算出了带宽/功率带宽/余量的行（算失败或没算过的行只列出、不可勾）
 const usable = (r) => isFinite(r.bwKHz) && isFinite(r.pbwKHz) && isFinite(r.marginDb)
@@ -110,7 +116,10 @@ const cncArg = computed(() => ({
 }))
 const res = computed(() => solveAdv({
   mode: mode.value, picked: picked.value, state: cstate, base: base.value, overDb: overDb.value,
-  tpBwMHz: props.tpBwMhz, cncOpt: cncArg.value
+  tpBwMHz: props.tpBwMhz, cncOpt: cncArg.value,
+  target: target.value, targetBwMHz: targetBwMHz.value,
+  // 全表占用：表里没参与本组配平的行照样占着转发器，只看本组会低估
+  allRows: props.rows
 }))
 const cnc = computed(() => (res.value.ok ? res.value.cnc : null))
 // 载波表（基准 / 偏置）只在有得选时露出：VSAT 恒有；CnC 要两份载波才有意义——
@@ -124,6 +133,15 @@ const solvedMargin = computed(() => {
   if (res.value.ok) for (const l of res.value.links) m.set(l.rowId, l.marginAfter)
   return m
 })
+// 解后功放（闭式：余量抬 x dB ⇒ 功放功率 ×10^(x/10)，见 advBalance.test.mjs ⑨）。
+// 配平出来的余量可能要远端把功放开到几百瓦 —— 那不是「解出来了」，是这条路走不通。
+const solvedPa = computed(() => {
+  const m = new Map()
+  if (res.value.ok) for (const l of res.value.links) m.set(l.rowId, l)
+  return m
+})
+const cntOfRow = (r) => { const n = Math.round(parseFloat(r.count)); return (isFinite(n) && n >= 1) ? n : 1 }
+const anyMultiWay = computed(() => props.rows.some((r) => cntOfRow(r) > 1))
 
 // —— 带宽读数的显示单位：全自动挑档（Hz/kHz/MHz/GHz，档位表同结果列，无手动开关）——
 // 分三处各挑各的，因为它们只在各自内部横向比较：
@@ -196,6 +214,8 @@ function apply() {
                 <th title="该链路引用的载波配置：系统余量即存于此，是本次配平的未知数">载波配置</th>
                 <th class="n" title="载波占用的频谱带宽，由信息速率、调制方式与滚降系数决定，与系统余量无关">载波带宽<i>{{ bwU }}</i></th>
                 <th class="n" title="功率占用 × 转发器带宽，即该载波所占转发器功率折合的等效带宽。与载波带宽比较即单条链路的功带平衡状况：大于为超发（受功率限），小于为欠发（受带宽限）">功率带宽<i>{{ bwU }}</i></th>
+                <th v-if="mode !== 'cnc'" class="n" title="本行代表几路完全相同的载波（同一份载波配置、同样的站型与站址）；组账按它计。改动直接写在链路表那一列上">路数</th>
+                <th class="n" title="发端功放功率：此刻实算值 → 配平后（闭式，余量抬 x dB 即功放功率 ×10^(x/10)）。解后超过发端站型的功放功率预设时着色">功放<i>W</i></th>
                 <th class="n" title="当前系统余量 → 配平余量。系统余量存于载波配置，引用同一份载波的各条链路共用一个取值">系统余量<i>dB</i></th>
               </tr>
             </thead>
@@ -207,10 +227,19 @@ function apply() {
                 <td class="nm" :title="r.carrierName">{{ r.carrierName }}</td>
                 <td class="n">{{ usable(r) ? bw(r.bwKHz) : '—' }}</td>
                 <td class="n" :class="{ over: r.pbwKHz > r.bwKHz, under: r.pbwKHz < r.bwKHz }">{{ usable(r) ? bw(r.pbwKHz) : '—' }}</td>
+                <td v-if="mode !== 'cnc'" class="n">
+                  <input class="ab-in n" type="number" min="1" step="1" :value="cntOfRow(r)"
+                    @click.stop @change="emit('set-count', { rowId: r.rowId, count: $event.target.value })" />
+                </td>
+                <td class="n" :class="{ bad: solvedPa.get(r.rowId) && solvedPa.get(r.rowId).paOver }"
+                  :title="solvedPa.get(r.rowId) && isFinite(solvedPa.get(r.rowId).paPresetW) ? `发端站型功放功率预设 ${d2(solvedPa.get(r.rowId).paPresetW)} W` : ''">
+                  <template v-if="isFinite(r.paW)">{{ d2(r.paW) }}<i v-if="solvedPa.get(r.rowId) && isFinite(solvedPa.get(r.rowId).paAfterW)" class="ab-to" :class="{ bad: solvedPa.get(r.rowId).paOver }">→{{ d2(solvedPa.get(r.rowId).paAfterW) }}</i></template>
+                  <template v-else>—</template>
+                </td>
                 <td v-if="usable(r)" class="n">{{ d2(r.marginDb) }}<i v-if="solvedMargin.has(r.rowId)" class="ab-to" :class="{ bad: solvedMargin.get(r.rowId) < 0 }">→{{ d2(solvedMargin.get(r.rowId)) }}</i></td>
                 <td v-else class="n">{{ r.error || '未计算' }}</td>
               </tr>
-              <tr v-if="!rows.length"><td colspan="7" class="ab-empty">链路表暂无计算结果。</td></tr>
+              <tr v-if="!rows.length"><td :colspan="mode === 'cnc' ? 8 : 9" class="ab-empty">链路表暂无计算结果。</td></tr>
             </tbody>
           </table>
         </div>
@@ -224,6 +253,7 @@ function apply() {
                 <tr>
                   <th title="一份载波配置 = 一个未知数：它的系统余量被引用它的各条链路共用">载波配置</th>
                   <th class="n" title="引用该载波配置的链路条数">链路数</th>
+                  <th v-if="anyMultiWay" class="n" title="该载波配置下的总路数（各链路的路数之和）—— 组账按路数计，不按链路条数">路数</th>
                   <th class="n" :title="'配平的起点，口径见下方「基准」：' + baseDesc">基准余量<i>dB</i></th>
                   <th class="n" title="使该载波自身功率带宽等于其载波带宽的系统余量，即单载波口径的「功带平衡」">单载波平衡点<i>dB</i></th>
                   <th class="n" title="相对基准的固定偏移量，如前向载波按设计超发 +2 dB；整组仍保持平衡，多占用的功率由统一平移量 Δ 从其余载波让出">余量偏置<i>dB</i></th>
@@ -234,6 +264,7 @@ function apply() {
                 <tr v-for="c in res.carriers" :key="c.id">
                   <td class="nm" :title="c.name" data-i18n-skip>{{ c.name }}</td>
                   <td class="n">{{ c.n }}</td>
+                  <td v-if="anyMultiWay" class="n">{{ c.nWays }}</td>
                   <td class="n" :title="drifted(c) ? '该载波的系统余量已由本功能配平写入（当前 ' + d2(c.fromDb) + ' dB）；基准仍取其配平前的原始余量，故重复应用不会累加偏置' : ''">
                     <!-- 「现」单独成节点：与数字挤在一个文本节点里，英文模式下整串查不到表 -->
                     {{ d2(c.baseDb) }}<i v-if="drifted(c)" class="ab-sh"><span>现</span> {{ d2(c.fromDb) }}</i></td>
@@ -241,7 +272,7 @@ function apply() {
                   <td class="n"><NumBox class="ab-in" :step="0.1" :model-value="cs(c.id).bias" @commit="(v) => setCs(c.id, { bias: v || 0 })" /></td>
                   <td class="n st" :class="{ bad: c.toDb < 0 }">{{ d2(c.toDb) }}<i class="ab-sh">{{ sign(c.shiftDb) }}</i></td>
                 </tr>
-                <tr v-if="!res.carriers.length"><td colspan="6" class="ab-empty">未选择链路。</td></tr>
+                <tr v-if="!res.carriers.length"><td colspan="7" class="ab-empty">未选择链路。</td></tr>
               </tbody>
             </table>
           </div>
@@ -253,6 +284,11 @@ function apply() {
           <label v-if="showCarrierTab" :title="baseDesc">
             <span>基准</span>
             <select v-model="base"><option v-for="b in ADV_BASES" :key="b.key" :value="b.key">{{ b.label }}</option></select>
+          </label>
+          <label v-if="mode !== 'cnc'" title="配平目标：Σ载波带宽＝各载波紧挨着排；指定带宽＝对着租下来的那一段配，保护带与载波间隔留白由此进账">
+            <span>目标</span>
+            <select v-model="target"><option value="sum">Σ载波带宽</option><option value="fixed">指定带宽</option></select>
+            <input v-if="target === 'fixed'" v-model="targetBwMHz" class="ab-in w" type="number" step="0.1" min="0" /><i v-if="target === 'fixed'">MHz</i>
           </label>
           <label title="目标总功率带宽相对组占用带宽抬高的 dB 数；0 为严格平衡（Σ功率带宽 = 组占用带宽）">
             <span>组超发量</span>
@@ -299,6 +335,9 @@ function apply() {
           <div class="ab-kv" title="各载波在各自基准余量上同抬同降的量，由配平方程解出"><span>统一平移量 Δ</span><b class="st">{{ sign(res.deltaDb) }}</b><i>dB</i></div>
           <div v-if="isFinite(res.bwUsePct)" class="ab-kv" title="配平后本组载波对转发器资源的占用：带宽按组占用带宽计，功率按 Σ功率带宽计"><span>转发器资源占用</span>
             <b :class="{ bad: res.pwUsePct > 100 || res.bwUsePct > 100 }">带宽 {{ d2(res.bwUsePct) }}% · 功率 {{ d2(res.pwUsePct) }}%</b></div>
+          <div v-if="isFinite(res.bwUseAllPct)" class="ab-kv" title="全表占用：链路表里所有算出结果的行（按各自路数计），参与本组配平的按解后值、其余按其此刻的值。与上一行并列着看，才知道这只转发器还剩多少"><span>全表占用</span>
+            <b :class="{ bad: res.pwUseAllPct > 100 || res.bwUseAllPct > 100 }">带宽 {{ d2(res.bwUseAllPct) }}% · 功率 {{ d2(res.pwUseAllPct) }}%</b>
+            <em>{{ res.allRowsN }} 条链路</em></div>
           <div v-if="cnc" class="ab-kv" title="载波叠加相对两条各占一段的常规做法省下的频谱：1 − 组占用带宽 / Σ载波带宽"><span>节省带宽</span>
             <b>{{ d2(cnc.bwSaving * 100) }}%</b>
             <em>抵消深度 {{ d2(cnc.cancelDb) }} dB · 符号率比 {{ isFinite(cnc.rsRatio) ? d2(cnc.rsRatio) : '—' }}:1 · 迭代 {{ cnc.iters }} 轮</em></div>
@@ -429,6 +468,9 @@ function apply() {
 /* 复选框那一格：勾在前、名在后（参数用复选框，图层显隐才用拨杆） */
 .ab-ctl label.ab-ck { gap: 4px; }
 .ab-ctl label.ab-ck > span { color: var(--text); }
+/* 表格里的数字输入（路数）：右对齐、窄、不抢眼 */
+.ab-t .ab-in.n { width: 48px; text-align: right; font: inherit; font-size: var(--fs-2); padding: 1px 3px;
+  background-color: var(--field-bg); color: var(--text); border: 1px solid var(--field-border); border-radius: var(--r-ctl, 2px); }
 .ab-ctl select { font: inherit; font-size: var(--fs-2); padding: 2px 4px; background-color: var(--field-bg); color: var(--text); border: 1px solid var(--field-border); border-radius: var(--r-ctl, 2px); }
 
 .ab-out { margin-top: 8px; display: grid; grid-template-columns: 1fr 1fr; gap: 4px 18px; }
