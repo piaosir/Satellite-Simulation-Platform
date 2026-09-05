@@ -23,12 +23,14 @@ import { geoPath, geoMercator, geoEqualEarth, geoConicEqualArea, geoGraticule } 
 import { geoRobinson } from 'd3-geo-projection'
 
 // 下拉里的顺序与名字。出厂第一档＝等距圆柱（换投影前的那一套）。
+// ★ zh / en 两栏都要是【本语言的】名字，不能中英混杂 —— 界面按平台语言档取其一（byLang）。
+//   中文用测绘学通行译名；英文用投影的通用英文名。
 export const PROJECTIONS = [
   { k: 'equirect', zh: '等距圆柱', en: 'Equirectangular' },
-  { k: 'mercator', zh: 'Mercator', en: 'Mercator' },
-  { k: 'equalEarth', zh: 'Equal Earth', en: 'Equal Earth' },
-  { k: 'robinson', zh: 'Robinson', en: 'Robinson' },
-  { k: 'albers', zh: 'Albers', en: 'Albers' }
+  { k: 'mercator', zh: '墨卡托', en: 'Mercator' },
+  { k: 'equalEarth', zh: '等积地球', en: 'Equal Earth' },
+  { k: 'robinson', zh: '罗宾逊', en: 'Robinson' },
+  { k: 'albers', zh: '阿尔伯斯', en: 'Albers' }
 ]
 export const DEFAULT_PROJECTION = 'equirect'
 export const isProjection = (k) => PROJECTIONS.some((p) => p.k === k)
@@ -167,6 +169,35 @@ export function makeProjection(kind, lon0) {
     graticule: (step) => geoGraticule().step([step, step]).stepMinor([step, step])
   }
 }
+
+/**
+ * 栅格重投影用的【经度断点】。栅格网格必须按这些断点分块，否则会出两类错：
+ *
+ *  ① 跨【切口 lon0】的那一格 —— 切口那条经线在平面上同时是 x=0 与 x=W，投影只能给出其中一个
+ *    （实测 fwd(lon0)=0 而 fwd(lon0−ε)=W）。于是那一格两端一个在 x≈W、一个在 x=0，
+ *    它的仿射把一小段源图【横拉满整幅】—— 症状是影像左右错位、一半被拉成横条。
+ *    故断点从 lon0 起排，两端各让开 eps，没有哪一格跨得到它。
+ *  ② 跨【源图接缝 ±180】的那一格 —— 源是未滚的等经纬位图，一格跨过 ±180 时取源矩形就断了。
+ *    故把 180 在 [lon0, lon0+360) 里的位置也插成断点。
+ *
+ * 返回升序的断点数组，首项 lon0+eps、末项 lon0+360−eps；相邻两项即一块。
+ */
+export function lonBreaks(lon0, coarse = 15, eps = 1e-6) {
+  const L0 = wrap180(Number(lon0) || 0)
+  const out = []
+  for (let l = L0; l < L0 + 360 - 1e-9; l += coarse) out.push(l)
+  out.push(L0 + 360)
+  const seam = L0 + ((((180 - L0) % 360) + 360) % 360)
+  // ★ 接缝可能正好就是一个网格点（lon0 是 coarse 的整数倍时就是），插重了会出一个零宽的块。
+  if (seam > L0 + 1e-6 && seam < L0 + 360 - 1e-6 && !out.some((v) => Math.abs(v - seam) < 1e-6)) {
+    out.push(seam); out.sort((a, b) => a - b)
+  }
+  out[0] = L0 + eps
+  out[out.length - 1] = L0 + 360 - eps
+  return out
+}
+// 某一块落在源图（等经纬，经度 −180..180）的哪个周期：块内经度减去 360·k 即落回 −180..180
+export const lonPeriod = (a, b) => Math.floor(((a + b) / 2 + 180) / 360)
 
 // 平面尺寸（fit 用）。等距圆柱恒 360×180。
 export const planeSize = (proj) => ({ w: proj.W, h: proj.H })

@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { feature } from 'topojson-client'
 import { geoArea } from 'd3-geo'
-import { makeProjection, PROJECTIONS, DEFAULT_PROJECTION, isProjection, MERCATOR_LAT, ALBERS_PARALLELS } from '../../../src/viz/geo/projection.js'
+import { makeProjection, PROJECTIONS, DEFAULT_PROJECTION, isProjection, MERCATOR_LAT, ALBERS_PARALLELS, lonBreaks, lonPeriod } from '../../../src/viz/geo/projection.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(HERE, '..', '..', '..')
@@ -207,7 +207,60 @@ for (const { k, zh } of PROJECTIONS) {
   }
 }
 
-// ---------- ⑩ 接线检查（源码级）----------
+// ---------- ⑩ 栅格重投影的网格：没有哪一格横跨整幅 ----------
+// ★ 这一条守的是「影像底图左右错位、半幅被拉成横条」那个 BUG。
+//   根因：切口 lon0 那条经线在平面上同时是 x=0 与 x=W，投影只能给出其中一个
+//   （实测 fwd(lon0)=0 而 fwd(lon0−ε)=W）。网格若从 −180 起排，就必然有一格【跨过切口】，
+//   它两端一个在 x≈W、一个在 x=0 —— 那一格的仿射把 15° 的源图横拉满整幅。
+//   lonBreaks 从切口起排并让开两端，本条逐格量平面跨度把它钉死。
+{
+  const COARSE = 15
+  for (const { k, zh } of PROJECTIONS) {
+    let worst = 0, worstAt = '', gaps = 0, seamBad = 0
+    for (const l0 of [-30, -75, 0, 45, 123.4, -180, 179]) {
+      const P = makeProjection(k, l0)
+      const brk = lonBreaks(P.lon0, COARSE)
+      // ① 断点必须单调、首末恰好覆盖一整圈
+      if (!(Math.abs(brk[brk.length - 1] - brk[0] - 360) < 1e-3)) gaps++
+      for (let i = 1; i < brk.length; i++) if (!(brk[i] > brk[i - 1])) gaps++
+      // ② 每一块折回源图周期后必须整块落在 [−180,180]（否则取源矩形要断成两截）
+      for (let i = 0; i + 1 < brk.length; i++) {
+        const a = brk[i], b = brk[i + 1], kp = lonPeriod(a, b)
+        if (a - 360 * kp < -180.001 || b - 360 * kp > 180.001) seamBad++
+      }
+      // ③ 逐格量平面跨度：任一格超过半幅宽即是跨了切口
+      const o = [0, 0]
+      for (let i = 0; i + 1 < brk.length; i++) {
+        for (let lat = 90; lat > -90 + 1e-9; lat -= 6) {
+          const la = Math.max(-90, lat), la1 = Math.max(-90, lat - 6)
+          let x0 = Infinity, x1 = -Infinity
+          for (const [lo, lt] of [[brk[i], la], [brk[i + 1], la], [brk[i], la1], [brk[i + 1], la1]]) {
+            P.fwd(lo, lt, o)
+            if (!Number.isFinite(o[0])) continue
+            if (o[0] < x0) x0 = o[0]; if (o[0] > x1) x1 = o[0]
+          }
+          if (x1 > x0 && x1 - x0 > worst) { worst = x1 - x0; worstAt = `lon0=${l0} 块[${brk[i].toFixed(2)},${brk[i + 1].toFixed(2)}] 纬${la.toFixed(0)}` }
+        }
+      }
+    }
+    ok('⑩ ' + zh + ' 没有哪一格横跨整幅（跨切口的格会把源图拉成横条）',
+      worst < 180 && gaps === 0 && seamBad === 0,
+      `最宽一格 ${worst.toFixed(2)} / ${360}（阈 180） · ${worstAt} · 断点异常 ${gaps} · 跨源缝 ${seamBad}`)
+  }
+  // 反证：从 −180 起排（换成对齐切口之前的写法）在 lon0 不是 COARSE 整数倍时必然出跨切口的格
+  {
+    const P = makeProjection('robinson', -75)
+    const o = [0, 0]
+    let bad = 0
+    for (let lon = -180; lon < 180 - 1e-9; lon += COARSE) {
+      const a = P.fwd(lon, 0, o)[0], b = P.fwd(Math.min(180, lon + COARSE), 0, [0, 0])[0]
+      if (Math.abs(b - a) > 180) bad++
+    }
+    ok('⑩ 反证：不对齐切口就一定有跨整幅的格（这条红了说明反证本身失效）', bad > 0, '从 −180 起排时有 ' + bad + ' 格跨整幅')
+  }
+}
+
+// ---------- ⑪ 接线检查（源码级）----------
 // 纯函数算得对不等于接上了。这五档的错都藏在「某一层忘了分叉」里：忘了就是那一层
 // 在投影档下画在错的地方（或者干脆按等距圆柱的坐标画在图外）。
 {
@@ -216,17 +269,17 @@ for (const { k, zh } of PROJECTIONS) {
   const CRS = readFileSync(join(ROOT, 'src/stores/mapCrs.js'), 'utf8')
   const seg = (src, from, to) => src.slice(src.indexOf(from), src.indexOf(to))
 
-  ok('⑩ flatCoverage 用的是投影模块，不是自己再算一份', /from '\.\.\/geo\/projection\.js'/.test(FLAT) && /makeProjection\(/.test(FLAT))
-  ok('⑩ fit / worldRect 按投影的平面尺寸算（不再写死 360×180）',
+  ok('⑪ flatCoverage 用的是投影模块，不是自己再算一份', /from '\.\.\/geo\/projection\.js'/.test(FLAT) && /makeProjection\(/.test(FLAT))
+  ok('⑪ fit / worldRect 按投影的平面尺寸算（不再写死 360×180）',
     /base = Math\.min\(cw \/ W, ch \/ H\)/.test(FLAT) && /w: PJ\.W \* kk, h: PJ\.H \* kk/.test(FLAT))
-  ok('⑩ 环绕副本改走 wraps()（非周期平面只画一份）',
+  ok('⑪ 环绕副本改走 wraps()（非周期平面只画一份）',
     /const wraps = \(\) => \(PJ\.periodX \? WRAP3 : WRAP1\)/.test(FLAT) &&
     (FLAT.match(/of wraps\(\)/g) || []).length >= 9 &&
     !/for \(const (off|s) of \[-360, 0, 360\]\)/.test(FLAT))
-  ok('⑩ 点层正算收在 PX / PY 两个口上，且都吃经纬两个参数',
+  ok('⑪ 点层正算收在 PX / PY 两个口上，且都吃经纬两个参数',
     /const PX = \(lon, lat\) => PJ\.fwd\(/.test(FLAT) && /const PY = \(lat, lon\) => PJ\.fwd\(/.test(FLAT) &&
     !/\bPX\([^,()]*\)/.test(FLAT.replace(/const PX = \(lon, lat\)[^\n]*\n/, '')))
-  ok('⑩ 逆算走 PJ.inv（点选 / 悬停 / 拖标记同一条）', /const q = PJ\.inv\(wx, wy\)/.test(seg(FLAT, 'function screenToLonLat', 'let onRightClick')))
+  ok('⑪ 逆算走 PJ.inv（点选 / 悬停 / 拖标记同一条）', /const q = PJ\.inv\(wx, wy\)/.test(seg(FLAT, 'function screenToLonLat', 'let onRightClick')))
   for (const [nm, from, to] of [
     ['陆地', 'function buildBaseGeo', 'buildBaseGeo(resolvedFeatures('],
     ['五类边界线', 'function bakeBorders', 'function drawBorders'],
@@ -235,24 +288,28 @@ for (const { k, zh } of PROJECTIONS) {
     ['经纬网', 'function drawGrid', 'function drawSphereOutline'],
     ['折线（省界/航迹/足迹线）', 'function drawPolyline', 'function drawPolylineProj'],
     ['夜区与晨昏线', 'function drawTerminator', 'function drawField']
-  ]) ok('⑩ ' + nm + ' 有投影分叉', /PJ\.identity/.test(seg(FLAT, from, to)), from)
-  ok('⑩ 绕向归正接在陆地 / 覆盖场 / 足迹三处', (FLAT.match(/asPoly\(|orientRings\(/g) || []).length >= 5)
-  ok('⑩ 海只填球面轮廓、另画图廓（否则铺满矩形，图廓当场没）',
+  ]) ok('⑪ ' + nm + ' 有投影分叉', /PJ\.identity/.test(seg(FLAT, from, to)), from)
+  ok('⑪ 绕向归正接在陆地 / 覆盖场 / 足迹三处', (FLAT.match(/asPoly\(|orientRings\(/g) || []).length >= 5)
+  ok('⑪ 海只填球面轮廓、另画图廓（否则铺满矩形，图廓当场没）',
     /PJ\.path\(\{ type: 'Sphere' \}/.test(FLAT) && /function drawSphereOutline/.test(FLAT) && /drawSphereOutline\(\)\n/.test(FLAT))
-  ok('⑩ 栅格（影像 / 环境场）在投影档走逐像素重投影',
+  ok('⑪ 栅格（影像 / 环境场）在投影档走逐像素重投影',
     /function reprojectRaster/.test(FLAT) && /reprojectRaster\(/.test(seg(FLAT, 'function drawImagery', 'function imageryPlan')) &&
     /reprojectRaster\(/.test(seg(FLAT, 'function drawEnvRaster', 'function drawFieldOverlays')))
-  ok('⑩ 瓦片档在投影档先拼整幅再重投影（出厂默认底图就是瓦片档，漏了就静默没有底图）',
-    /function tileWorldImage/.test(FLAT) && /imgSet \? tileWorldImage\(imgSet\) : imgEl/.test(FLAT) && /function releaseTileWorld/.test(FLAT))
-  ok('⑩ 换投影与换切口都作废同一批缓存并整份重烘',
+  ok('⑪ 栅格网格走 lonBreaks（对齐切口 + 插源缝），且有「一格不许横跨半幅」的防呆',
+    /lonBreaks\(L0, COARSE\)/.test(FLAT) && /while \(midLon \+ shift < S\.lonMin/.test(FLAT) && /gx1 - gx0 > PJ\.W \* 0\.5/.test(FLAT))
+  ok('⑪ 瓦片档在投影档按【可见块 + 当前分辨率】现拼（固定拼整幅 L3 会比 16K / 8K 还糊）',
+    /function tileRegionImage/.test(FLAT) && /function meshWindow/.test(FLAT) &&
+    /reprojectRaster\(imgEl, null, true, imgSet \|\| null\)/.test(FLAT) && /function releaseTileRegion/.test(FLAT) &&
+    /Math\.log2\(0\.5625 \* Math\.max\(1e-6, pxPerDeg\)\)/.test(FLAT))
+  ok('⑪ 换投影与换切口都作废同一批缓存并整份重烘',
     (FLAT.match(/gridPath = null; gridKey = ''; sphPath = null; sphKey = ''/g) || []).length === 2 &&
     /setProjection\(kind\)/.test(FLAT) && /PJ = makeProjection\(PJ\.kind, LON0\)/.test(FLAT))
-  ok('⑩ 档位存在 mapCrs 里（跟着存档走）', /proj: DEFAULT_PROJECTION/.test(CRS) && /isProjection\(patch\.proj\)/.test(CRS))
-  ok('⑩ 侧栏有「2D 投影」一节且挂在影像底图之后',
+  ok('⑪ 档位存在 mapCrs 里（跟着存档走）', /proj: DEFAULT_PROJECTION/.test(CRS) && /isProjection\(patch\.proj\)/.test(CRS))
+  ok('⑪ 侧栏有「2D 投影」一节且挂在影像底图之后',
     VUE.indexOf("isSecOpen('geo-img'") < VUE.indexOf("isSecOpen('geo-proj'") &&
     VUE.indexOf("isSecOpen('geo-proj'") < VUE.indexOf("isSecOpen('geo-ocean'") &&
     /setMapProj\(\$event\.target\.value\)/.test(VUE))
-  ok('⑩ 挂载时把档位推给 2D（否则存档恢复后按出厂档画）',
+  ok('⑪ 挂载时把档位推给 2D（否则存档恢复后按出厂档画）',
     /flat\.setProjection\(mapCrs\.proj\)/.test(VUE) && (VUE.match(/flat\.setProjection\(/g) || []).length >= 3)
 }
 

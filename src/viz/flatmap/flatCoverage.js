@@ -9,7 +9,7 @@ import { resolvedFeatures, resolvedLines, labelSet, ensureDetail, onPovChange } 
 import { BORDER_DEF, DASH_PX, DASH_SCALE, BORDER_DRAW, CFG_KEY, fadeFactor, admFade } from '../geo/borderStyle.js'
 import { terminatorFlat } from '../terminator.js'
 // 影像瓦片金字塔（EPSG:4326 / GIBS 网格）：网格数学与取片缓存，与 3D 球体共用同一份
-import { TILE, span as tileSpan, tileRange, pickZoom, getTileOrParent, tileGutter, loadTiles } from '../imageryTiles.js'
+import { TILE, span as tileSpan, rows as tileRows, cols as tileCols, tileRange, pickZoom, getTileOrParent, tileGutter, loadTiles } from '../imageryTiles.js'
 // 点标记序号徽标（圈 1、圈 2）：与 3D 球体共用同一支画笔，两视图观感一致
 import { paintNumBadge, BADGE_R } from '../markers/numBadge.js'
 // 标记符号（圆点/方块/三角/图钉…）：同上，2D 与 3D 共用同一支画笔
@@ -25,7 +25,7 @@ import { waterLabels } from '../geo/waterNames.js'
 import { chainList, CHAIN_DEF, CHAIN_LABEL_PX } from '../geo/islandChains.js'
 import { seamCrossing } from '../geo/lineGeom.js'
 // 2D 投影（世界平面的定义）—— 出厂等距圆柱，与换投影前逐位相同
-import { makeProjection, DEFAULT_PROJECTION, isProjection } from '../geo/projection.js'
+import { makeProjection, DEFAULT_PROJECTION, isProjection, lonBreaks } from '../geo/projection.js'
 import { geoArea, geoContains } from 'd3-geo'
 // 南极洲极区收口：与 3D 球体同源（见 buildBaseGeo 的 ATA 分支）
 import { antarcticaFillRings } from '../globe3d/antarctica.js'
@@ -47,52 +47,67 @@ function unwrap(ring) {
   return out
 }
 
-// 瓦片 → 整幅等经纬世界图（只在 2D 的投影档用）。
+// 瓦片 → 一块等经纬位图（只在 2D 的投影档用）。
+//
 // 瓦片是按【等经纬网格】切的，逐片重投影后拼不回一张无缝图（片边在投影里不再是直线），
-// 故先拼成整幅再走重投影那一条。取 L3：10×5 片 = 5120×2560，约 0.07°/px，
-// 与整幅 16K 档（2.45 km/px）同量级而全部来自本地离线包。
-// ★ 出厂默认底图就是瓦片档（viz/imagery.js 的 DEFAULT_IMAGERY），不接这一条换投影就静默没有底图。
-// ★ 放【模块级】共享，不是每个 flatCoverage 各存一张：它只由瓦片源决定，与实例无关，
-//   而一张 5120×2560 的离屏是 52 MB —— 星座图 / 覆盖分析 / GXT 共用这个引擎，几个视图同时活着
-//   就是两三百兆画布内存，浏览器拒绝分配之后 canvas 直接变白（实测五个实例就白了）。
-const TW_Z = 3
-let twCanvas = null, twKey = '', twGot = 0, twDirty = true, twGen = 0
-const twInvalidateAll = new Set()
-// 不用了就把那 52 MB 还回去（关影像 / 回到等距圆柱）。
-// 画布内存是整个页面共一份预算，占着不放会把别的 canvas 挤到分配失败 ——
-// 那时浏览器不报错，只是把 canvas 画成一片白。
-function releaseTileWorld() {
-  if (!twCanvas) return
-  twCanvas.width = 0; twCanvas.height = 0
-  twCanvas = null; twKey = ''; twGot = 0; twDirty = true
+// 故先拼成一块等经纬图再走重投影那一条。
+// ★ 拼的是【当前可见的那一块 + 当前需要的那一级】，不是固定拼整幅 L3。
+//   固定 L3 是 5120×2560 ≈ 0.070°/px ≈ 7.8 km/px，而整幅 16K 档是 0.022°/px ≈ 2.45 km/px ——
+//   于是「高精」反而比 16K / 8K 糊，正好把这一档的意义抵消掉（它本该是最细的那一档）。
+//   按需取级之后：世界视角取 L2（够用，16 MB），放大八倍时取 L5（0.018°/px，比 16K 还细一档），
+//   而拼图尺寸恒在同一量级 —— 又清楚又不吃内存。
+// ★ 放【模块级】共享：它只由（瓦片源 · 级 · 区块）决定，与实例无关；一张 2560×1536 是 16 MB，
+//   星座图 / 覆盖分析 / GXT 共用这个引擎，每实例一张的话几个视图同时活着就是上百兆画布内存，
+//   浏览器拒绝分配之后 canvas 直接变白。
+const TR_MAX_PX = 3200          // 拼图单边上限（超了就降一级）
+let trCanvas = null, trKey = '', trBox = null, trGot = 0, trGen = 0
+const trInvalidateAll = new Set()
+function releaseTileRegion() {
+  if (!trCanvas) return
+  trCanvas.width = 0; trCanvas.height = 0
+  trCanvas = null; trKey = ''; trBox = null; trGot = 0
 }
-function tileWorldImage(set) {
-  const key = set + '/' + TW_Z
-  if (twCanvas && twKey === key && !twDirty) return twGot ? twCanvas : null
-  const nc = Math.ceil(360 / tileSpan(TW_Z)), nr = Math.ceil(180 / tileSpan(TW_Z))
-  if (!twCanvas) twCanvas = document.createElement('canvas')
+// pxPerDeg = 目标每度多少像素；[lonA,lonB] 是【连续的】经度窗口（可越出 ±180，不折回），
+// 返回 { img, lonMin, lonMax, latMin, latMax, gen }，其经纬范围按瓦片边界对齐、必覆盖请求窗口。
+function tileRegionImage(set, pxPerDeg, lonA, lonB, latA, latB, maxZ) {
+  // 选级：要 texel ≤ 目标像素 → res(z) ≤ 1/pxPerDeg
+  let z = Math.max(0, Math.min(maxZ, Math.ceil(Math.log2(0.5625 * Math.max(1e-6, pxPerDeg)))))
+  let sp, c0, c1, r0, r1
+  for (;; z--) {
+    sp = tileSpan(z)
+    c0 = Math.floor((lonA + 180) / sp); c1 = Math.ceil((lonB + 180) / sp) - 1
+    r0 = Math.max(0, Math.floor((90 - latB) / sp)); r1 = Math.min(tileRows(z) - 1, Math.ceil((90 - latA) / sp) - 1)
+    if (c1 < c0) c1 = c0
+    if (r1 < r0) r1 = r0
+    if (z === 0) break
+    if ((c1 - c0 + 1) * TILE <= TR_MAX_PX && (r1 - r0 + 1) * TILE <= TR_MAX_PX) break
+  }
+  const nc = c1 - c0 + 1, nr = r1 - r0 + 1
+  const box = { lonMin: -180 + c0 * sp, lonMax: -180 + (c1 + 1) * sp, latMax: 90 - r0 * sp, latMin: 90 - (r1 + 1) * sp }
+  const key = set + '/' + z + '/' + c0 + ',' + c1 + '/' + r0 + ',' + r1
+  if (trCanvas && trKey === key && trGot === nc * nr) return { img: trCanvas, ...box, gen: trGen }
+  if (!trCanvas) trCanvas = document.createElement('canvas')
   const W = nc * TILE, H = nr * TILE
-  if (twCanvas.width !== W || twCanvas.height !== H) { twCanvas.width = W; twCanvas.height = H }
-  const g = twCanvas.getContext('2d')
-  if (twKey !== key) { g.clearRect(0, 0, W, H); twKey = key; twGot = 0 }
-  const G = tileGutter(set)
-  // ★ 脏标记驱动：只有「有新片到货」或「换了源」才重拼。每帧探一遍就重拼的话，
-  //   那是每帧 50 次 512² 的 drawImage（1300 万像素）+ 下游整份重烘 —— 实测每帧 300 ms，
-  //   正是「开影像特别卡」。到货回调本来就有，标脏 + 让各实例重绘即可。
-  const onReady = () => { twDirty = true; for (const fn of twInvalidateAll) fn() }
+  if (trCanvas.width !== W || trCanvas.height !== H) { trCanvas.width = W; trCanvas.height = H }
+  const g = trCanvas.getContext('2d')
+  if (trKey !== key) { g.clearRect(0, 0, W, H); trKey = key; trGot = 0 }
+  // ★ 到货回调只标脏 + 让各实例重绘；不在回调里重拼（那会变成每帧重拼，实测每帧 300 ms）
+  const onReady = () => { trKey = ''; for (const fn of trInvalidateAll) fn() }
+  const G = tileGutter(set), NC = tileCols(z)
   let got = 0
-  for (let r = 0; r < nr; r++) for (let c = 0; c < nc; c++) {
-    const t = getTileOrParent(set, TW_Z, r, c, onReady)
+  for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) {
+    const cc = ((c % NC) + NC) % NC                    // 窗口可越出 ±180：列号按整圈取模
+    const t = getTileOrParent(set, z, r, cc, onReady)
     if (!t) continue
     // gutter 与「祖先片子矩形」两件事一起折进源矩形（与 drawImageryTiles 同口径）
     g.drawImage(t.img, G + t.u0 * TILE, G + t.v0 * TILE, (t.u1 - t.u0) * TILE, (t.v1 - t.v0) * TILE,
-      c * TILE, r * TILE, TILE, TILE)
+      (c - c0) * TILE, (r - r0) * TILE, TILE, TILE)
     got++
   }
-  twDirty = false
-  if (got !== twGot) { twGen++; twCanvas.__rpGen = twGen }   // 拼图变了 → 下游重投影缓存作废（键里带它）
-  twGot = got
-  return got ? twCanvas : null
+  if (got !== trGot) trGen++
+  trGot = got
+  trBox = box
+  return got ? { img: trCanvas, ...box, gen: trGen } : null
 }
 
 export function createFlatCoverage(canvas) {
@@ -467,8 +482,8 @@ export function createFlatCoverage(canvas) {
     if (!(w > 0 && h > 0)) return null
     if (!src.__rpId) src.__rpId = ++rpSeq
     return bb
-      ? { img: src, lonMin: bb.lonMin, lonMax: bb.lonMax, latMin: bb.latMin, latMax: bb.latMax }
-      : { img: src, lonMin: -180, lonMax: 180, latMin: -90, latMax: 90 }
+      ? { img: src, lonMin: bb.lonMin, lonMax: bb.lonMax, latMin: bb.latMin, latMax: bb.latMax, gen: 0 }
+      : { img: src, lonMin: -180, lonMax: 180, latMin: -90, latMax: 90, gen: 0 }
   }
   // 一个三角形的纹理映射：把源图上的三点仿射到目标三点，裁到目标三角形之内。
   // 三点唯一确定一个仿射 → 三角网可以逼近任意光滑形变，这是标准做法（也是 GPU 干的事）。
@@ -528,8 +543,40 @@ export function createFlatCoverage(canvas) {
     g.drawImage(img, 0, 0)
     g.restore()
   }
-  function reprojectRaster(src, srcBBox, smooth) {
-    if (!src) return null
+  // tiles = 瓦片源名（影像那一路）；给了就按可见块现拼，src 忽略。
+  // 可见经纬窗口：按与网格同一套【正算】口径，取所有与烘图矩形相交的粗块的并集。
+  // ★ 不能用逆算反推：圆锥扇面之外逆算给的是外推值或 null，世界视角下窗口会缩成一条。
+  const COARSE = 15
+  function meshWindow(bx0, by0, bx1, by1, res) {
+    const L0 = PJ.lon0
+    const brk = lonBreaks(L0, COARSE)
+    const q = [0, 0], m = COARSE * 0.5
+    let lonA = Infinity, lonB = -Infinity, latA = Infinity, latB = -Infinity
+    for (let bi = 0; bi + 1 < brk.length; bi++) {
+      const a = brk[bi], b = brk[bi + 1]
+      for (let bLat = 90; bLat > -90 + 1e-9; bLat -= COARSE) {
+        const la0 = bLat, la1 = Math.max(-90, bLat - COARSE)
+        let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity, nf = false
+        for (const [lo, la] of [[a, la0], [b, la0], [a, la1], [b, la1],
+          [(a + b) / 2, la0], [(a + b) / 2, la1], [a, (la0 + la1) / 2], [b, (la0 + la1) / 2]]) {
+          PJ.fwd(lo, la, q)
+          if (!Number.isFinite(q[0]) || !Number.isFinite(q[1])) { nf = true; break }
+          if (q[0] < x0) x0 = q[0]; if (q[0] > x1) x1 = q[0]
+          if (q[1] < y0) y0 = q[1]; if (q[1] > y1) y1 = q[1]
+        }
+        if (!nf && (x1 + m < bx0 || x0 - m > bx1 || y1 + m < by0 || y0 - m > by1)) continue
+        if (a < lonA) lonA = a; if (b > lonB) lonB = b
+        if (la1 < latA) latA = la1; if (la0 > latB) latB = la0
+      }
+    }
+    if (!(lonB > lonA && latB > latA)) return null
+    const pad = COARSE * 0.5
+    lonA -= pad; lonB += pad; latA = Math.max(-90, latA - pad); latB = Math.min(90, latB + pad)
+    if (lonB - lonA > 360) { lonA = L0; lonB = L0 + 360 }
+    return { lonA, lonB, latA, latB }
+  }
+  function reprojectRaster(src, srcBBox, smooth, tiles) {
+    if (!src && !tiles) return null
     const kk = k()
     if (!(kk > 0)) return null
     const vx0 = (-tx) / kk, vx1 = (cw - tx) / kk, vy0 = (-ty) / kk, vy1 = (ch - ty) / kk
@@ -539,9 +586,14 @@ export function createFlatCoverage(canvas) {
     if (!(bx1 > bx0 && by1 > by0)) return null
     const want = Math.min(RP_MAX / Math.max(bx1 - bx0, by1 - by0), kk * dpr)
     const res = Math.pow(2, Math.round(Math.log2(Math.max(1e-6, want))))
-    const S = rolledSource(src, srcBBox)
+    // ★ 先按可见范围与当前分辨率取源，再烘。
+    //   影像那一路取【可见那一块 + 该级】的瓦片拼图（见 tileRegionImage 的文件头）——
+    //   固定拼整幅 L3 会让「高精」比 16K / 8K 还糊，正好把这一档的意义抵消掉。
+    const win = meshWindow(bx0, by0, bx1, by1, res)
+    if (!win) return null
+    const S = tiles ? tileRegionImage(tiles, res, win.lonA, win.lonB, win.latA, win.latB, imgMaxZ) : rolledSource(src, srcBBox)
     if (!S) return null
-    const key = PJ.kind + '/' + PJ.lon0 + '/' + res + '/' + (src.__rpId || 0) + '/' + (src.__rpGen || 0) + '/' + (smooth ? 1 : 0)
+    const key = PJ.kind + '/' + PJ.lon0 + '/' + res + '/' + (tiles ? 'T' + trKey : (src.__rpId || 0)) + '/' + S.gen + '/' + (smooth ? 1 : 0)
     if (rpKey === key && rpBox && vx0 >= rpBox.x0 - 1e-6 && vx1 <= rpBox.x1 + 1e-6 && vy0 >= rpBox.y0 - 1e-6 && vy1 <= rpBox.y1 + 1e-6) return rpCanvas
     const W = Math.max(1, Math.round((bx1 - bx0) * res)), H = Math.max(1, Math.round((by1 - by0) * res))
     if (!rpCanvas) { rpCanvas = document.createElement('canvas'); rpCtx = rpCanvas.getContext('2d') }
@@ -553,59 +605,72 @@ export function createFlatCoverage(canvas) {
     if ('imageSmoothingQuality' in g) g.imageSmoothingQuality = 'high'
     const sw = S.img.naturalWidth || S.img.width, sh = S.img.naturalHeight || S.img.height
     const lonSpan = S.lonMax - S.lonMin, latSpan = S.latMax - S.latMin
-    const spx = (lon) => ((lon - S.lonMin) / lonSpan) * sw
     const spy = (lat) => ((S.latMax - lat) / latSpan) * sh
     const bpx = (wx) => (wx - bx0) * res, bpy = (wy) => (wy - by0) * res
     // ★ 网格建在【经纬那一侧】、用正算 fwd 求平面位置 —— 不是在平面上反算。
     //   反算的坑：可见框的边角多半落在图幅之外（伪圆柱高纬处图比框窄），那里 invert 给的是
-    //   外推值，拿它当源经度就把整幅源图揉进一条带里 —— 症状是左半幅横条乱码。
-    //   正算这一侧永远有定义，且节点必落在图幅内。
+    //   外推值，拿它当源经度就把整幅源图揉进一条带里。正算这一侧永远有定义，节点必落在图幅内。
     const p0 = [0, 0], p1 = [0, 0], p2 = [0, 0], p3 = [0, 0]
     const latStep = Math.max(0.25, Math.min(6, RP_ROWS / res))         // 一行约 RP_ROWS 个烘图像素
-    const lonStep = Math.min(15, PJ.rowAffine ? lonSpan : Math.max(0.5, Math.min(12, RP_CELL / res)))   // 15 = COARSE：粗块内最多一格
-    // ★ 相邻格在【参数空间】多叠一点点（约 1.5 个烘图像素）。
-    //   canvas 的 clip 带抗锯齿：两个格各自裁到公共边，两边各覆盖半个像素、合起来不满一格，
-    //   缝上透出底色 —— 整幅图一层细网格线，正是「底图能看到类似拼接线的细线」。
-    //   在参数空间叠比在屏幕空间外扩三角稳：尖角、极扁的带都一视同仁，不必判几何退化。
-    // 叠量换算成度：平面上 1 单位 ≈ 1°（宽恒 360），故 1.5 个烘图像素 ≈ 1.5/res 度。
-    // 封顶到格距的三成：叠得太多反而重复画、边上发虚。
+    const lonStep = Math.min(COARSE, PJ.rowAffine ? 360 : Math.max(0.5, Math.min(12, RP_CELL / res)))
+    // 相邻格在【参数空间】多叠一点点（约 1.5 个烘图像素）：canvas 的 clip 带抗锯齿，两个格各自
+    // 裁到公共边、两边各覆盖半个像素，合起来不满一格，缝上透出底色 —— 整幅图一层细网格线。
     const ovDeg = 1.5 / res
     const latOv = Math.min(latStep * 0.3, ovDeg), lonOv = Math.min(lonStep * 0.3, ovDeg)
     let tris = 0
     const latTop = Math.min(90, S.latMax), latBot = Math.max(-90, S.latMin)
-    // ★ 两级网格：先按粗块（COARSE 度）剔一遍，只对与烘图矩形相交的块走细格。
-    //   不剔的话缩放到局部时仍要把整个球的细格走一遍 —— Albers 最细一档是 720×720 个格 ×
-    //   4 次投影 = 200 万次 d3 调用，实测缩放每帧 155 ms。
-    //   ★ 剔的判据一律用【正算】：拿逆算去反推可见经纬窗口是不成立的 —— 圆锥的扇面之外
-    //     逆算给的是外推值或 null，世界视角下四边采样大半落在图幅外，窗口会缩成一条，
-    //     整幅图只剩一个格、被它一个仿射涂白（实测就是这么白的）。
-    const COARSE = 15    // ★ 整除 360 且从 S.lonMin(=−180) 起步 → 没有哪一格跨源图的 ±180，源矩形恒连续
-    const q = [0, 0]
+
+    // 经度断点：对齐切口 + 插入源图接缝。两类坑的说明见 geo/projection.js 的 lonBreaks。
+    const L0 = PJ.lon0
+    const brk = lonBreaks(L0, COARSE)
+    const seamLon = L0 + ((((180 - L0) % 360) + 360) % 360)
+
+    // 粗块剔除：与烘图矩形不相交的整块跳过（缩放到局部时省掉九成格）。
+    // 判据一律用【正算】—— 用逆算反推可见经纬窗口不成立：圆锥扇面之外逆算给的是外推值或 null。
+    const qq = [0, 0]
     const blockHit = (lo0, lo1, la0, la1) => {
       let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity
       for (const [lo, la] of [[lo0, la0], [lo1, la0], [lo0, la1], [lo1, la1],
         [(lo0 + lo1) / 2, la0], [(lo0 + lo1) / 2, la1], [lo0, (la0 + la1) / 2], [lo1, (la0 + la1) / 2]]) {
-        PJ.fwd(lo, la, q)
-        if (!Number.isFinite(q[0]) || !Number.isFinite(q[1])) return true    // 算不准就别剔
-        if (q[0] < x0) x0 = q[0]; if (q[0] > x1) x1 = q[0]
-        if (q[1] < y0) y0 = q[1]; if (q[1] > y1) y1 = q[1]
+        PJ.fwd(lo, la, qq)
+        if (!Number.isFinite(qq[0]) || !Number.isFinite(qq[1])) return true      // 算不准就别剔
+        if (qq[0] < x0) x0 = qq[0]; if (qq[0] > x1) x1 = qq[0]
+        if (qq[1] < y0) y0 = qq[1]; if (qq[1] > y1) y1 = qq[1]
       }
-      const m = Math.max(latStep, lonStep) * 2                               // 边留一点余量：块边是曲线，八个点量不满
+      const m = Math.max(latStep, lonStep) * 2      // 块边是曲线，八个点量不满，留点余量
       return !(x1 + m < bx0 || x0 - m > bx1 || y1 + m < by0 || y0 - m > by1)
     }
-    for (let bLat = latTop; bLat > latBot + 1e-9; bLat -= COARSE) {
-      const bLa0 = bLat, bLa1 = Math.max(latBot, bLat - COARSE)
-      for (let bLon = S.lonMin; bLon < S.lonMax - 1e-9; bLon += COARSE) {
-        const bLo0 = bLon, bLo1 = Math.min(S.lonMax, bLon + COARSE)
+
+    for (let bi = 0; bi + 1 < brk.length; bi++) {
+      // 块内所有经度都在同一个源周期里（接缝已是断点）
+      const bLo0 = brk[bi], bLo1 = brk[bi + 1]
+      if (!(bLo1 > bLo0)) continue
+      // 源窗口未必是 ±180 那一周（区块拼图是瓦片对齐的任意窗口，环境场栅格又是另一个 bbox），
+      // 故【按块】算一个 360° 的整倍偏移把这一块折进源窗口 —— 整块同一个偏移，格才不会被撕开。
+      // ★ 曾经写死成「折回 ±180」（lonPeriod），换成区块拼图后就算到源外面去了 ——
+      //   症状是图上出现一块块矩形的空白 / 亮度阶。
+      let shift = 0
+      const midLon = (bLo0 + bLo1) / 2
+      while (midLon + shift < S.lonMin - 1e-9) shift += 360
+      while (midLon + shift > S.lonMax + 1e-9) shift -= 360
+      const spx = (lon) => ((lon + shift - S.lonMin) / lonSpan) * sw
+      // 允许往下一块叠一点（seam 与两个端点除外 —— 那三处不能跨）
+      const canOv = bi + 2 < brk.length && Math.abs(bLo1 - seamLon) > 1e-6
+      for (let bLat = latTop; bLat > latBot + 1e-9; bLat -= COARSE) {
+        const bLa0 = bLat, bLa1 = Math.max(latBot, bLat - COARSE)
         if (!blockHit(bLo0, bLo1, bLa0, bLa1)) continue
         for (let lat = bLa0; lat > bLa1 + 1e-9; lat -= latStep) {
-          const la0 = lat, la1 = Math.max(bLa1, lat - latStep - latOv)
+          const la0 = lat, la1 = Math.max(latBot, lat - latStep - latOv)
           for (let lon = bLo0; lon < bLo1 - 1e-9; lon += lonStep) {
-            const lo0 = lon, lo1 = Math.min(bLo1, lon + lonStep + lonOv)
+            const lo0 = lon
+            const lo1 = Math.min(canOv ? bLo1 + lonOv : bLo1, lon + lonStep + lonOv)
             PJ.fwd(lo0, la0, p0); PJ.fwd(lo1, la0, p1); PJ.fwd(lo0, la1, p2); PJ.fwd(lo1, la1, p3)
             if (!Number.isFinite(p0[0]) || !Number.isFinite(p1[0]) || !Number.isFinite(p2[0]) || !Number.isFinite(p3[0])) continue
+            // ★ 防呆：一格的平面跨度不该接近整幅宽。真出现就是又踩到「跨切口」那一类，宁可不画
+            //   也不能把源图横拉满全图（那正是影像左右错位的样子）。
             const gx0 = Math.min(p0[0], p1[0], p2[0], p3[0]), gx1 = Math.max(p0[0], p1[0], p2[0], p3[0])
             const gy0 = Math.min(p0[1], p1[1], p2[1], p3[1]), gy1 = Math.max(p0[1], p1[1], p2[1], p3[1])
+            if (gx1 - gx0 > PJ.W * 0.5) continue
             if (gx1 < bx0 || gx0 > bx1 || gy1 < by0 || gy0 > by1) continue
             const S0 = [spx(lo0), spy(la0)], S1 = [spx(lo1), spy(la0)], S2 = [spx(lo0), spy(la1)], S3 = [spx(lo1), spy(la1)]
             const D0 = [bpx(p0[0]), bpy(p0[1])], D1 = [bpx(p1[0]), bpy(p1[1])], D2 = [bpx(p2[0]), bpy(p2[1])], D3 = [bpx(p3[0]), bpy(p3[1])]
@@ -646,9 +711,8 @@ export function createFlatCoverage(canvas) {
       // 投影档：瓦片是按【等经纬网格】切的，逐片重投影后拼不回一张无缝图（片边在投影里不再是直线）。
       // 故先把瓦片拼成一张整幅等经纬世界图，再走与整幅档同一条重投影 —— 出厂默认底图就是瓦片档
       // （viz/imagery.js 的 DEFAULT_IMAGERY），不接这一条的话换投影就静默没有底图。
-      const src = imgSet ? tileWorldImage(imgSet) : imgEl
-      if (!src) return false
-      return blitReprojected(reprojectRaster(src, null, true), 1, imgBright, true)
+      if (!imgSet && !imgEl) return false
+      return blitReprojected(reprojectRaster(imgEl, null, true, imgSet || null), 1, imgBright, true)
     }
     if (imgSet) return drawImageryTiles()
     if (!imgEl) return false
@@ -743,7 +807,7 @@ export function createFlatCoverage(canvas) {
   // 重画；几十片在几百毫秒里陆续到货，若逐片触发就是几十次全量静态重建，观感上就是「加载时卡死」。
   let tileTimer = 0
   // 拼图是模块级共享的，到货时要通知【每一个】活着的实例重绘（不然别的视图停在旧图上）
-  twInvalidateAll.add(onTileReady)
+  trInvalidateAll.add(onTileReady)
   function onTileReady() {
     if (tileTimer) return
     tileTimer = setTimeout(() => { tileTimer = 0; invalidateStatic(); requestDraw() }, 60)
@@ -2212,8 +2276,8 @@ export function createFlatCoverage(canvas) {
     // on=开关、bright=亮度乘子、maxZ=瓦片档最深级（离线包只切到 L6 时传 6，免得一路请求必然 404 的 L7）。
     setImagery(o) {
       if (!o) return
-      if (o.set !== undefined) { if (o.set !== imgSet) twDirty = true; imgSet = o.set || null }
-      if (o.on != null && !o.on) releaseTileWorld()          // 关了就把拼图还回去
+      if (o.set !== undefined) { if (o.set !== imgSet) releaseTileRegion(); imgSet = o.set || null }
+      if (o.on != null && !o.on) releaseTileRegion()         // 关了就把拼图还回去
       if (o.img !== undefined) imgEl = o.img || null
       if (o.on != null) imgOn = !!o.on
       if (o.maxZ != null && Number.isFinite(o.maxZ)) imgMaxZ = Math.max(0, Math.min(11, o.maxZ | 0))   // 上限 11：GIBS 的 31.25m 矩阵集到 L11（30.6 m/px），是其真彩天花板
@@ -2285,7 +2349,7 @@ export function createFlatCoverage(canvas) {
       const kd = isProjection(kind) ? kind : DEFAULT_PROJECTION
       if (kd === PJ.kind) return
       PJ = makeProjection(kd, LON0)
-      if (PJ.identity) releaseTileWorld()                    // 回到等距圆柱：走瓦片直贴，用不上拼图
+      if (PJ.identity) releaseTileRegion()                   // 回到等距圆柱：走瓦片直贴，用不上拼图
       borderPaths = null; gridPath = null; gridKey = ''; sphPath = null; sphKey = ''
       rpKey = ''; rpBox = null                     // 栅格重投影缓存作废
       buildBaseGeo(resolvedFeatures(mapDetail0), mapThin)
@@ -2439,8 +2503,8 @@ export function createFlatCoverage(canvas) {
     // ★ 这里原本有【两个 destroy 键落在同一个对象字面量里】，后一个把前一个整个盖掉 —— offPov()
     //   从来没被调用过，卸载后的实例仍挂在主权解算层的广播上。已并成这一个。
     destroy() {
-      twInvalidateAll.delete(onTileReady)
-      if (!twInvalidateAll.size) releaseTileWorld()
+      trInvalidateAll.delete(onTileReady)
+      if (!trInvalidateAll.size) releaseTileRegion()
       if (rafId) cancelAnimationFrame(rafId)
       offPov()
       if (offDpr) { offDpr(); offDpr = null }

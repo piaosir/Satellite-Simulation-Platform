@@ -3874,14 +3874,23 @@ function resetCrs() { setMapCrs(MAP_CRS_DEF); crsCenterShown.value = lon0ToCente
 // 2D 投影档：只改平面图怎么画（3D 球体不受影响 —— 它本来就是球，没有投影这回事）
 function setMapProj(k) { setMapCrs({ proj: k }); if (flat) flat.setProjection(mapCrs.proj) }
 // 字段口径放 title（不占版面，见 CLAUDE.md）：逐档的用途与代价，以及“只改显示”这一条。
-const projTitle = [
+// ★ 写成 computed 而不是常量：title 是在 JS 里拼的串，不走 DOM 翻译层，
+//   写成常量就永远停在启动时那个语言上、切语言不跟。
+const projTitle = computed(() => (curLang() === 'en' ? [
+  'Affects only how the 2D flat map is drawn; the 3D globe and every calculation / export are untouched.',
+  'Equirectangular: factory default. Longitude and latitude used directly as Cartesian axes, so the graticule is two families of straight lines',
+  'Mercator: conformal (no local distortion), the common convention for GIS and online tiles. Latitude clamped to ±85.05°, high-latitude areas exaggerated',
+  'Equal Earth: equal-area. Use it alongside coverage-area readouts — areas are not inflated',
+  'Robinson: a compromise, neither conformal nor equal-area; looks good in print',
+  'Albers: equal-area conic, for regional sheets, standard parallels 25°N / 47°N. The central meridian follows the map centre below — set it to 105°E for the conventional map of China'
+] : [
   '只作用于 2D 平面图的画法；3D 球体与一切计算 / 导出不受影响。',
   '等距圆柱：出厂档。经纬直接当直角坐标，经纬网是两族直线',
-  'Mercator：等角（局部不变形），GIS 与在线瓦片的通用口径。纬度钳到 ±85.05°，高纬面积夹大',
-  'Equal Earth：等积。配覆盖面积读数看，面积不被拉大',
-  'Robinson：既不等角也不等积的折中画法，出图好看',
-  'Albers：等积圆锥，区域图用，标准纬线 25°N / 47°N。中央经线跟随下面的「画面中心」，设成 105°E 即得常规中国全图'
-].join('\n')
+  '墨卡托：等角（局部不变形），GIS 与在线瓦片的通用口径。纬度钳到 ±85.05°，高纬面积夹大',
+  '等积地球：等积。配覆盖面积读数看，面积不被拉大',
+  '罗宾逊：既不等角也不等积的折中画法，出图好看',
+  '阿尔伯斯：等积圆锥，区域图用，标准纬线 25°N / 47°N。中央经线跟随下面的「画面中心」，设成 105°E 即得常规中国全图'
+]).join('\n'))
 
 function toggleRotate() { autoRotate.value = !autoRotate.value; scene && scene.setAutoRotate(autoRotate.value) }
 function setNameMode(m) { nameMode.value = m; scene && scene.setLabelMode(m); if (flat) flat.setNameMode(m) }
@@ -8797,7 +8806,7 @@ onBeforeUnmount(() => {
           <template v-if="isSecOpen('geo-proj', false)">
           <div class="srow"><label>投影</label>
             <select :value="mapCrs.proj" :title="projTitle" @change="setMapProj($event.target.value)">
-              <option v-for="pj in PROJECTIONS" :key="pj.k" :value="pj.k">{{ pj.zh }}</option>
+              <option v-for="pj in PROJECTIONS" :key="pj.k" :value="pj.k">{{ byLang(pj.zh, pj.en) }}</option>
             </select>
           </div>
           <div class="srow"><label>画面中心</label><NumBox class="ci cov-b" :min="-180" :max="180" :step="0.5" :model-value="crsCenter" title="2D 平面图正中那条经线的经度（东正西负）；接缝随之落到它的对面。也是各投影的中央经线 —— Albers 设成 105°E 即得常规中国全图。3D 球体没有接缝，不受影响" @commit="setCrsCenter" /><span class="u">{{ crsCenterTag }}</span></div>
