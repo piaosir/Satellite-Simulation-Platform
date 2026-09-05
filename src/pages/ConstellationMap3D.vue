@@ -40,6 +40,7 @@ import { CUSTOMIZABLE_DISPUTES, OWNER_ZH } from '../viz/geo/frozen.js'
 import { getMapPov, onMapPov, saveMapPov } from '../stores/mapPov.js'
 import { admIndex, loadPack, mergePacks } from '../viz/geo/admPacks.js'
 import { mapCrs, setMapCrs, MAP_CRS_DEF, lon0ToCenter, centerToLon0 } from '../stores/mapCrs.js'
+import { PROJECTIONS } from '../viz/geo/projection.js'
 import { waterList } from '../viz/geo/waterNames.js'
 import { CHAINS, CHAIN_DEF } from '../viz/geo/islandChains.js'
 import { DATUMS } from '../viz/geo/datum.js'
@@ -3837,8 +3838,10 @@ function applyGoto() {
   gotoMs.value = t
   gotoOpen.value = false
 }
-// ===================== 坐标系（大地基准 / 坐标格式 / 2D 画面中心） =====================
+// ===================== 坐标系（大地基准 / 坐标格式）+ 2D 画面中心 =====================
 // 前两项只改读数与输入的呈现；画面中心决定平面图把哪条经线摆在正中（内部仍按切口 = 中心 − 180 存）。
+// ★ 画面中心的控件摆在「地图设置 → 2D 投影」那一节，与投影档挨着 —— 它就是各投影的中央经线，
+//   两个一起调才顺手；状态仍旧存在 mapCrs 里（与大地基准 / 坐标格式同一份）。
 // 三项都不碰任何计算与导出。
 function setCrsDatum(v) { setMapCrs({ datum: v }) }
 function setCrsFmt(v) { setMapCrs({ fmt: v }) }
@@ -3855,9 +3858,30 @@ function setCrsCenter(v) {
   setMapCrs({ lon0: centerToLon0(crsCenterShown.value) })
   if (flat) flat.setLon0(mapCrs.lon0)
 }
-// 常用中心：本初子午线 / 中国居中 / 太平洋居中
-const CENTER_PRESETS = [{ v: 0, zh: '0°' }, { v: 105, zh: '105°E' }, { v: 180, zh: '180°' }]
-function resetCrs() { setMapCrs(MAP_CRS_DEF); crsCenterShown.value = lon0ToCenter(mapCrs.lon0); if (flat) flat.setLon0(mapCrs.lon0) }
+// 常用画面中心。挑的是「一眼知道用来看什么」的那几条，不是均匀铺满经度：
+//   0°   本初子午线，欧非居中（Robinson / Equal Earth 出图的通行画法）
+//   60°E 印度洋 / 中东，看西亚—非洲之角一带的波束
+//   105°E 中国全图的标准中央经线（Albers 设成它即得常规中国全图）
+//   150°E 出厂档，亚太居中（本平台的主战场）
+//   180°  太平洋居中，看跨日界线的星座与航迹不被接缝切断
+//   -60°  美洲居中
+//   -100° 北美居中
+const CENTER_PRESETS = [
+  { v: 0, zh: '0°' }, { v: 60, zh: '60°E' }, { v: 105, zh: '105°E' }, { v: 150, zh: '150°E' },
+  { v: 180, zh: '180°' }, { v: -60, zh: '60°W' }, { v: -100, zh: '100°W' }
+]
+function resetCrs() { setMapCrs(MAP_CRS_DEF); crsCenterShown.value = lon0ToCenter(mapCrs.lon0); if (flat) { flat.setLon0(mapCrs.lon0); flat.setProjection(mapCrs.proj) } }
+// 2D 投影档：只改平面图怎么画（3D 球体不受影响 —— 它本来就是球，没有投影这回事）
+function setMapProj(k) { setMapCrs({ proj: k }); if (flat) flat.setProjection(mapCrs.proj) }
+// 字段口径放 title（不占版面，见 CLAUDE.md）：逐档的用途与代价，以及“只改显示”这一条。
+const projTitle = [
+  '只作用于 2D 平面图的画法；3D 球体与一切计算 / 导出不受影响。',
+  '等距圆柱：出厂档。经纬直接当直角坐标，经纬网是两族直线',
+  'Mercator：等角（局部不变形），GIS 与在线瓦片的通用口径。纬度钳到 ±85.05°，高纬面积夹大',
+  'Equal Earth：等积。配覆盖面积读数看，面积不被拉大',
+  'Robinson：既不等角也不等积的折中画法，出图好看',
+  'Albers：等积圆锥，区域图用，标准纬线 25°N / 47°N。中央经线跟随下面的「画面中心」，设成 105°E 即得常规中国全图'
+].join('\n')
 
 function toggleRotate() { autoRotate.value = !autoRotate.value; scene && scene.setAutoRotate(autoRotate.value) }
 function setNameMode(m) { nameMode.value = m; scene && scene.setLabelMode(m); if (flat) flat.setNameMode(m) }
@@ -4074,6 +4098,10 @@ function ensureFlat() {
 function feedFlat() {
   if (!flat) return
   flat.resize()
+  // ★ 切口与投影先推：两者都会触发【整份重烘 + fit】，放在后面会把下面刚套上的
+  //   视图 / 图层重新抻一遍；且存档恢复时 mapCrs 已经是目标值，不先推就按出厂档画了一帧。
+  flat.setLon0(mapCrs.lon0)
+  flat.setProjection(mapCrs.proj)
   flat.setNameMode(nameMode.value)
   flat.setWaterMode({ ocean: oceanNameMode.value, sea: seaNameMode.value })
   flat.setWaterOff({ ...waterOff })
@@ -6757,7 +6785,7 @@ async function restoreSettings() {
   if (Array.isArray(s.admSel1)) admSel1.value = s.admSel1.filter((x) => typeof x === 'string')
   for (const [k, r] of [['admName1', admName1], ['admName2', admName2]]) if (s[k] === 'local' || s[k] === 'en' || s[k] === 'off') r.value = s[k]
   if (s.tzMode != null) tzMode.value = normTzMode(s.tzMode, tzMode.value)   // 时间轴读数时区档位（仅显示；可为固定偏移分钟数）
-  if (s.crs && typeof s.crs === 'object') { setMapCrs(s.crs); crsCenterShown.value = lon0ToCenter(mapCrs.lon0) }   // 坐标系三档（只改呈现，见 stores/mapCrs）
+  if (s.crs && typeof s.crs === 'object') { setMapCrs(s.crs); crsCenterShown.value = lon0ToCenter(mapCrs.lon0) }   // 坐标系四档（只改呈现，见 stores/mapCrs）
   // 晨昏线：默认关，存档里显式 true 才开；样式逐字段合并（旧存档缺字段时保留默认值）
   if (typeof s.termOn === 'boolean') termOn.value = s.termOn
   if (typeof s.termNight === 'boolean') termNight.value = s.termNight
@@ -8765,6 +8793,22 @@ onBeforeUnmount(() => {
           </template>
         </div>
         <div class="sec">
+          <div class="sect acc" :class="{ open: isSecOpen('geo-proj', false) }" @click="toggleSec('geo-proj', false)"><Icon :name="isSecOpen('geo-proj', false) ? 'chevron-down' : 'chevron-right'" :size="12" /><span>2D 投影</span></div>
+          <template v-if="isSecOpen('geo-proj', false)">
+          <div class="srow"><label>投影</label>
+            <select :value="mapCrs.proj" :title="projTitle" @change="setMapProj($event.target.value)">
+              <option v-for="pj in PROJECTIONS" :key="pj.k" :value="pj.k">{{ pj.zh }}</option>
+            </select>
+          </div>
+          <div class="srow"><label>画面中心</label><NumBox class="ci cov-b" :min="-180" :max="180" :step="0.5" :model-value="crsCenter" title="2D 平面图正中那条经线的经度（东正西负）；接缝随之落到它的对面。也是各投影的中央经线 —— Albers 设成 105°E 即得常规中国全图。3D 球体没有接缝，不受影响" @commit="setCrsCenter" /><span class="u">{{ crsCenterTag }}</span></div>
+          <div class="srow stack"><label>常用</label>
+            <span class="seg nseg" role="group" aria-label="常用画面中心">
+              <span v-for="c in CENTER_PRESETS" :key="c.v" class="sg" :class="{ on: Math.abs(crsCenter - c.v) < 0.25 }" @click="setCrsCenter(c.v)">{{ c.zh }}</span>
+            </span>
+          </div>
+          </template>
+        </div>
+        <div class="sec">
           <div class="sect acc" :class="{ open: isSecOpen('geo-ocean') }" @click="toggleSec('geo-ocean')"><Icon :name="isSecOpen('geo-ocean') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>配色</span></div>
           <template v-if="isSecOpen('geo-ocean')">
           <div class="bsub"><span>大海</span></div>
@@ -8924,12 +8968,6 @@ onBeforeUnmount(() => {
             <select :value="mapCrs.fmt" title="只作用于地图内的坐标读数与输入框；内部照存十进制度" @change="setCrsFmt($event.target.value)">
               <option v-for="f in FORMATS" :key="f.k" :value="f.k">{{ byLang(f.zh, f.en) }}</option>
             </select>
-          </div>
-          <div class="srow"><label>画面中心</label><NumBox class="ci cov-b" :min="-180" :max="180" :step="0.5" :model-value="crsCenter" title="2D 平面图正中那条经线的经度（东正西负）；接缝随之落到它的对面。3D 球体没有接缝，不受影响" @commit="setCrsCenter" /><span class="u">{{ crsCenterTag }}</span></div>
-          <div class="srow stack"><label>常用</label>
-            <span class="seg nseg" role="group" aria-label="常用画面中心">
-              <span v-for="c in CENTER_PRESETS" :key="c.v" class="sg" :class="{ on: Math.abs(crsCenter - c.v) < 0.25 }" @click="setCrsCenter(c.v)">{{ c.zh }}</span>
-            </span>
           </div>
           </template>
         </div>

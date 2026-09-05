@@ -9,13 +9,17 @@
 import { reactive } from 'vue'
 import { toDisplay, fromDisplay, isDatum, datumZh } from '../viz/geo/datum.js'
 import { formatLonLat, parseLonLat, isFormat } from '../viz/geo/coordFormat.js'
+import { isProjection, DEFAULT_PROJECTION } from '../viz/geo/projection.js'
 
 export const mapCrs = reactive({
   datum: 'wgs84',     // wgs84 | cgcs2000 | gcj02
   fmt: 'deg',         // deg | dms | utm | mgrs | gk3 | gk6
-  lon0: -30           // 2D 平面图的切口（左边缘）经度 = 画面中心经度 − 180；UI 只出画面中心
+  lon0: -30,          // 2D 平面图的切口（左边缘）经度 = 画面中心经度 − 180；UI 只出画面中心
+  // 2D 投影档（见 viz/geo/projection.js）。与 lon0 同一族：只改平面图怎么画，不进任何计算 ——
+  // 覆盖场的数值、链路预算、导出的 KML/Excel/GXT 都与换档前字节一致。
+  proj: DEFAULT_PROJECTION
 })
-export const MAP_CRS_DEF = { datum: 'wgs84', fmt: 'deg', lon0: -30 }
+export const MAP_CRS_DEF = { datum: 'wgs84', fmt: 'deg', lon0: -30, proj: DEFAULT_PROJECTION }
 
 // 切口 ⇄ 画面中心（差 180°，各自折回 ±180）
 const wrap180 = (v) => ((v + 180) % 360 + 360) % 360 - 180
@@ -27,6 +31,7 @@ export function setMapCrs(patch) {
   if (isDatum(patch.datum)) mapCrs.datum = patch.datum
   if (isFormat(patch.fmt)) mapCrs.fmt = patch.fmt
   if (Number.isFinite(patch.lon0)) mapCrs.lon0 = wrap180(patch.lon0)
+  if (isProjection(patch.proj)) mapCrs.proj = patch.proj
 }
 
 // 内部 WGS-84 十进制度 → 显示串（先换基准、再换格式）

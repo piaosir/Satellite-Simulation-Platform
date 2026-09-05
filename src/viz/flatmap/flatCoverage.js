@@ -24,6 +24,9 @@ import { waterLabels } from '../geo/waterNames.js'
 // 岛链参考线：与 3D 球体共用同一份表
 import { chainList, CHAIN_DEF, CHAIN_LABEL_PX } from '../geo/islandChains.js'
 import { seamCrossing } from '../geo/lineGeom.js'
+// 2D 投影（世界平面的定义）—— 出厂等距圆柱，与换投影前逐位相同
+import { makeProjection, DEFAULT_PROJECTION, isProjection } from '../geo/projection.js'
+import { geoArea, geoContains } from 'd3-geo'
 // 南极洲极区收口：与 3D 球体同源（见 buildBaseGeo 的 ATA 分支）
 import { antarcticaFillRings } from '../globe3d/antarctica.js'
 
@@ -44,7 +47,67 @@ function unwrap(ring) {
   return out
 }
 
+// 瓦片 → 整幅等经纬世界图（只在 2D 的投影档用）。
+// 瓦片是按【等经纬网格】切的，逐片重投影后拼不回一张无缝图（片边在投影里不再是直线），
+// 故先拼成整幅再走重投影那一条。取 L3：10×5 片 = 5120×2560，约 0.07°/px，
+// 与整幅 16K 档（2.45 km/px）同量级而全部来自本地离线包。
+// ★ 出厂默认底图就是瓦片档（viz/imagery.js 的 DEFAULT_IMAGERY），不接这一条换投影就静默没有底图。
+// ★ 放【模块级】共享，不是每个 flatCoverage 各存一张：它只由瓦片源决定，与实例无关，
+//   而一张 5120×2560 的离屏是 52 MB —— 星座图 / 覆盖分析 / GXT 共用这个引擎，几个视图同时活着
+//   就是两三百兆画布内存，浏览器拒绝分配之后 canvas 直接变白（实测五个实例就白了）。
+const TW_Z = 3
+let twCanvas = null, twKey = '', twGot = 0, twDirty = true, twGen = 0
+const twInvalidateAll = new Set()
+// 不用了就把那 52 MB 还回去（关影像 / 回到等距圆柱）。
+// 画布内存是整个页面共一份预算，占着不放会把别的 canvas 挤到分配失败 ——
+// 那时浏览器不报错，只是把 canvas 画成一片白。
+function releaseTileWorld() {
+  if (!twCanvas) return
+  twCanvas.width = 0; twCanvas.height = 0
+  twCanvas = null; twKey = ''; twGot = 0; twDirty = true
+}
+function tileWorldImage(set) {
+  const key = set + '/' + TW_Z
+  if (twCanvas && twKey === key && !twDirty) return twGot ? twCanvas : null
+  const nc = Math.ceil(360 / tileSpan(TW_Z)), nr = Math.ceil(180 / tileSpan(TW_Z))
+  if (!twCanvas) twCanvas = document.createElement('canvas')
+  const W = nc * TILE, H = nr * TILE
+  if (twCanvas.width !== W || twCanvas.height !== H) { twCanvas.width = W; twCanvas.height = H }
+  const g = twCanvas.getContext('2d')
+  if (twKey !== key) { g.clearRect(0, 0, W, H); twKey = key; twGot = 0 }
+  const G = tileGutter(set)
+  // ★ 脏标记驱动：只有「有新片到货」或「换了源」才重拼。每帧探一遍就重拼的话，
+  //   那是每帧 50 次 512² 的 drawImage（1300 万像素）+ 下游整份重烘 —— 实测每帧 300 ms，
+  //   正是「开影像特别卡」。到货回调本来就有，标脏 + 让各实例重绘即可。
+  const onReady = () => { twDirty = true; for (const fn of twInvalidateAll) fn() }
+  let got = 0
+  for (let r = 0; r < nr; r++) for (let c = 0; c < nc; c++) {
+    const t = getTileOrParent(set, TW_Z, r, c, onReady)
+    if (!t) continue
+    // gutter 与「祖先片子矩形」两件事一起折进源矩形（与 drawImageryTiles 同口径）
+    g.drawImage(t.img, G + t.u0 * TILE, G + t.v0 * TILE, (t.u1 - t.u0) * TILE, (t.v1 - t.v0) * TILE,
+      c * TILE, r * TILE, TILE, TILE)
+    got++
+  }
+  twDirty = false
+  if (got !== twGot) { twGen++; twCanvas.__rpGen = twGen }   // 拼图变了 → 下游重投影缓存作废（键里带它）
+  twGot = got
+  return got ? twCanvas : null
+}
+
 export function createFlatCoverage(canvas) {
+  // ---- 投影 ----
+  // 世界平面 = 投影定义的那一张平面（见 geo/projection.js）。出厂等距圆柱，
+  // 此时 PJ.identity 为真 —— 下面每一处都走【换投影前那条一行没改的老路】，逐位相同。
+  // 四个投影档另走 d3 烘焙：它顺带做了日界线切割与自适应加密，且内容恒在平面盒子里
+  // → 不再需要 ±360 环绕副本（PJ.periodX = 0）。
+  let PJ = makeProjection(DEFAULT_PROJECTION, LON0)
+  const _pw = [0, 0]
+  // 经纬 → 世界平面（复用出参，当场用掉）
+  const WPT = (lon, lat) => PJ.fwd(lon, lat, _pw)
+  // 横向环绕副本的偏移档：只有周期平面（等距圆柱）才有 ±360 三档。
+  const WRAP3 = [-360, 0, 360], WRAP1 = [0]
+  const wraps = () => (PJ.periodX ? WRAP3 : WRAP1)
   let ctx = canvas.getContext('2d')   // 绘制目标上下文：导出时临时切到离屏 canvas / svgcanvas（见 exportRender）
   // 导出兼容模式：svgcanvas/canvas2svg 忽略 Path2D 与 evenodd 入参，故导出时把陆地/覆盖填充/等值线
   // 改为「子路径回放」（moveTo/lineTo），实时绘制仍走 Path2D 缓存（更快）。compat 同时用于离屏高清 PNG，
@@ -224,6 +287,37 @@ export function createFlatCoverage(canvas) {
     for (let i = 1; i < ring.length - 1; i++) { const p = ring[i]; if (Math.hypot(p[0] - last[0], p[1] - last[1]) >= minD) { out.push(p); last = p } }
     out.push(ring[ring.length - 1]); return out
   }
+  // ---- d3 烘焙的录制器（只在投影档用）----
+  // Path2D 本身就有 moveTo/lineTo/closePath，d3 的 geoPath 也只用这三个 —— 但导出（compat）
+  // 那条要点列回放，视口裁剪要 x 跨度，故包一层同时记三份，一次投影出三种产物。
+  function projRec(wantPts) {
+    const path = new Path2D()
+    const subs = wantPts ? [] : null
+    let cur = null
+    return {
+      path, subs, lo: Infinity, hi: -Infinity,
+      moveTo(x, y) { path.moveTo(x, y); if (subs) { cur = [[x, y]]; subs.push(cur) } this.pt(x) },
+      lineTo(x, y) { path.lineTo(x, y); if (cur) cur.push([x, y]); this.pt(x) },
+      closePath() { path.closePath() },
+      arc(x, y, r) { path.moveTo(x + r, y); path.arc(x, y, r, 0, Math.PI * 2); this.pt(x) },
+      pt(x) { if (x < this.lo) this.lo = x; if (x > this.hi) this.hi = x }
+    }
+  }
+  // 一组折线 → GeoJSON（投影档把什么都归成 GeoJSON 交给 d3，它顺带把日界线切割与长段加密一并做了）
+  const asLines = (list) => ({ type: 'MultiLineString', coordinates: list })
+  // ★ 绕向归正 —— 投影档最容易栽的一个坑。
+  //   d3 按【球面】口径判多边形内外：环的左侧是内部，故绕向反了填的就是补集（整个球减去这一块）。
+  //   底图里实测有 4 个小岛环（巴哈马 / 马尔代夫）是反的，d3 把它们算成 area = 4π —— 一张世界地图
+  //   被这几个小岛整个涂满，症状是「海陆颜色反了」。平面口径下（换投影前）不存在这回事：
+  //   那边是 evenodd，绕向无关。
+  //   判据用面积：真实地物没有超过半球的，故 area > 2π 必是绕反了，整份环列（外环+洞）一起翻。
+  const orientRings = (rings, insidePt) => {
+    const geo = { type: 'Polygon', coordinates: rings }
+    const bad = insidePt ? !geoContains(geo, insidePt) : geoArea(geo) > 2 * Math.PI
+    return bad ? rings.map((r) => r.slice().reverse()) : rings
+  }
+  const asPoly = (rings, insidePt) => ({ type: 'Polygon', coordinates: orientRings(rings, insidePt) })
+
   let land = [], clabels = [], borderLines = null
   let mapDetail0 = '10m', mapThin = 0
   function buildBaseGeo(feats, thin) {
@@ -243,7 +337,7 @@ export function createFlatCoverage(canvas) {
       //     横跨满经度的（它们之间差一整圈），再解缠一次会把它们抓到一块、极冠当场没。
       //   三档的 fillRings 实测无洞环、互不嵌套，故逐环各成一个 shape（evenodd 在这里等于并集），
       //   导出合并同色 path 的 compat 路径也跟着成立。
-      if (id === 'ATA') {
+      if (id === 'ATA' && PJ.identity) {
         const shs = []
         for (const ring of antarcticaFillRings(f)) {
           const u = thin > 0 ? decimateRing(ring, thin) : ring
@@ -261,14 +355,26 @@ export function createFlatCoverage(canvas) {
       const shapes = [], iceShapes = []   // 普通陆地色 / 北极岛屿冰白（按多边形质心纬度分流）
       for (const rings of polys) {
         let lo = Infinity, hi = -Infinity
-        const path = new Path2D()
-        const xy = []   // 导出回放用：该多边形各环的「世界度坐标」点列（x=lon-LON0, y=90-lat）
-        for (const ring of rings) {
-          const u = thin > 0 ? decimateRing(unwrap(ring), thin) : unwrap(ring)
-          const r = new Array(u.length)
-          for (let i = 0; i < u.length; i++) { const x = u[i][0] - LON0, y = 90 - u[i][1]; if (x < lo) lo = x; if (x > hi) hi = x; i === 0 ? path.moveTo(x, y) : path.lineTo(x, y); r[i] = [x, y] }
-          path.closePath()
-          xy.push(r)
+        let path, xy
+        if (PJ.identity) {
+          path = new Path2D()
+          xy = []   // 导出回放用：该多边形各环的「世界度坐标」点列（x=lon-LON0, y=90-lat）
+          for (const ring of rings) {
+            const u = thin > 0 ? decimateRing(unwrap(ring), thin) : unwrap(ring)
+            const r = new Array(u.length)
+            for (let i = 0; i < u.length; i++) { const x = u[i][0] - LON0, y = 90 - u[i][1]; if (x < lo) lo = x; if (x > hi) hi = x; i === 0 ? path.moveTo(x, y) : path.lineTo(x, y); r[i] = [x, y] }
+            path.closePath()
+            xy.push(r)
+          }
+        } else {
+          // ★ 投影档【不】解缠：d3 要的是规范的 ±180 经度，它自己做球面多边形裁剪 ——
+          //   跨日界线的面被【切】成两块而不是横扫全图，绕极的面（南极洲）自动补上极点。
+          //   实测三个世界投影档的南极极冠 0 漏填，故投影档不再走 antarcticaFillRings。
+          const co = thin > 0 ? rings.map((r) => decimateRing(r, thin)) : rings
+          const rec = projRec(true)
+          PJ.path(asPoly(co), rec)
+          path = rec.path; xy = rec.subs; lo = rec.lo; hi = rec.hi
+          if (!(lo <= hi)) continue                       // 被裁光了（如 Mercator 的 ±85° 以外）
         }
         // 北极岛屿（外环质心纬度 ≥ ARCTIC_ISLAND_LAT）整块染冰白；其余按国家色。与 3D 球体同口径，不再纬度渐变。
         const o = rings[0]; let sy = 0; for (const p of o) sy += p[1]
@@ -303,18 +409,21 @@ export function createFlatCoverage(canvas) {
   let staticValid = false
   function invalidateStatic() { staticValid = false }
 
-  function fit() { base = Math.min(cw / 360, ch / 180); scale = 1; tx = (cw - 360 * base) / 2; ty = (ch - 180 * base) / 2 }
+  function fit() { const W = PJ.W, H = PJ.H; base = Math.min(cw / W, ch / H); scale = 1; tx = (cw - W * base) / 2; ty = (ch - H * base) / 2 }
   const k = () => base * scale
   // 世界矩形（屏幕 px）：整幅图就这一张，x∈[tx, tx+360k]、y∈[ty, ty+180k]。
   // ★ 一切绘制都裁到它 —— 平面图是【一张完整的世界地图】，不是可以无限横向翻页的瓦片地图。
   //   经度环绕的 ±360 副本仍然要画：跨接缝的国家（如俄罗斯）本体在右边出界，靠左边那份副本补齐，
   //   裁剪之后两半正好拼成一张，画面上只有一个中国、一个俄罗斯。
-  const worldRect = () => { const kk = k(); return { x: tx, y: ty, w: 360 * kk, h: 180 * kk } }
+  const worldRect = () => { const kk = k(); return { x: tx, y: ty, w: PJ.W * kk, h: PJ.H * kk } }
   // ★ 不夹紧平移（用户口径）：拖到哪儿是哪儿，允许把整张图拖出画布 —— 双击 / 「复位」一键 fit 回来。
   //   曾经加过 clampPan（贴边即止），实机上手感是「拖不动」，已取消。
   const WXN = (lon) => (((lon - LON0) % 360) + 360) % 360
-  const PX = (lon) => WXN(lon) * k() + tx
-  const PY = (lat) => (90 - lat) * k() + ty
+  // 点 → 屏幕。★ 两个都要经绯两个参数：非圆柱投影下 x 也随纬度变、y 也随经度变，
+  //   只递一个在等距圆柱下碰巧对、换投影就错。点层（地名/标记/星位）才走这两个，
+  //   一屏几百个点，一点投两次的代价可忽（烘 Path2D 的热路径走 WPT，一点只投一次）。
+  const PX = (lon, lat) => PJ.fwd(lon, lat || 0, _pw)[0] * k() + tx
+  const PY = (lat, lon) => PJ.fwd(lon === undefined ? PJ.lon0 : lon, lat, _pw)[1] * k() + ty
 
   // 陆地：把 pan/zoom 烘进变换矩阵，直接填充缓存的 Path2D（每帧零顶点遍历）。
   // 经度环绕用 -360/0/360 三档偏移，按视口裁剪只画可见副本；描边线宽除以缩放保持 0.8px 恒定。
@@ -326,8 +435,221 @@ export function createFlatCoverage(canvas) {
   //   只是这里按视口精确算需要哪几档，不写死 −360/0/360（放大后一档就够，多画两次是纯浪费）。
   // 返回值＝这一帧到底画出东西没有。瓦片档在离线包缺失时会一片都取不到，调用方据此回退到
   // 矢量底图 —— 不是「黑一块」而是像没开影像一样，用户看得懂、也不至于以为软件坏了。
+  // ---- 栅格重投影（只在投影档走）----
+  // 影像底图与环境场栅格都是【等经纬位图】，换了投影不能再一次 drawImage 铺完。
+  // 做法是【网格仿射拉伸】，不是逐像素反算 —— 三条理由，每一条都是踩出来的：
+  //
+  //   ① 逐像素要 getImageData 读源图，而影像瓦片来自另一个源（正式包里是 imagery:// 自定义协议，
+  //      验证台上是另一个端口）→ 画布被污染，getImageData 当场抛安全错。抛了就回退矢量底图，
+  //      症状是「开了影像却还是矢量图」，一句报错都没有。网格拉伸只用 drawImage，不碰像素。
+  //   ② 逐像素是 CPU 的活，一屏一百万次逆算 + 一百万次采样；drawImage 是 GPU 的活，
+  //      一格一次、几十到几千次。这就是「开影像特别卡」与「拖得动」的差别。
+  //   ③ 圆柱与伪圆柱（等距圆柱 / Mercator / Equal Earth / Robinson）的每条纬线都是
+  //      「x 关于经度仿射、y 只由纬度定」→ 一整行就是一次仿射，整幅只要几十次 drawImage。
+  //      只有圆锥（Albers）的纬线是圆弧，才退回二维格。见 projection.js 的 rowAffine。
+  //
+  // 另外两件让它不重烘的事：
+  //   · 烘的是【平面空间】的一块（外扩 RP_PAD 一圈），不是屏幕。拖动只要没拖出这一圈就直接复用。
+  //   · 分辨率档取 2 的幂，缩放连续变化时不会每帧换一档、白重烘。
+  const RP_PAD = 0.20          // 可见矩形外扩比例：拖动余量
+  const RP_ROWS = 14           // 行仿射的条带高度（平面像素）；越小越贴合、drawImage 次数越多
+  const RP_CELL = 22           // 二维格（Albers）的格边长
+  const RP_MAX = 2400          // 烘图边长上限（源最细也就 L3 拼图 ≈ 0.07°/px，再大是白花）
+  let rpCanvas = null, rpCtx = null, rpKey = '', rpBox = null, rpSeq = 0
+  // 源图原样用，不按切口「滚」一遍。
+  // ★ 曾经滚过：整幅世界图另存一张、把 lon0 那一列转到左边缘，为的是让「一条横贯全幅的带」
+  //   在源图上是一块连续矩形。代价是【每个实例多一张 5120×2560 的离屏画布（52 MB）】——
+  //   拼图本身已经一张，两张加起来一百多兆，多开几个 2D 视图就把画布内存耗光、
+  //   浏览器拒绝分配、canvas 整个变白。改成按 ≤15° 的块走网格之后，没有哪一格会跨源图的 ±180，
+  //   滚这一步就不需要了。
+  const rolledSource = (src, bb) => {
+    const w = src.naturalWidth || src.width, h = src.naturalHeight || src.height
+    if (!(w > 0 && h > 0)) return null
+    if (!src.__rpId) src.__rpId = ++rpSeq
+    return bb
+      ? { img: src, lonMin: bb.lonMin, lonMax: bb.lonMax, latMin: bb.latMin, latMax: bb.latMax }
+      : { img: src, lonMin: -180, lonMax: 180, latMin: -90, latMax: 90 }
+  }
+  // 一个三角形的纹理映射：把源图上的三点仿射到目标三点，裁到目标三角形之内。
+  // 三点唯一确定一个仿射 → 三角网可以逼近任意光滑形变，这是标准做法（也是 GPU 干的事）。
+  // ★ 三角形【按边法线】外扩 pad 像素后再裁。
+  //   为什么非做不可：canvas 的 clip 是抗锯齿的，相邻两个三角形各自裁到公共边上，
+  //   两边各覆盖约半个像素 → 合起来仍不满一格，缝上透出底色。整幅图于是布满一层细网格线
+  //   （用户报的「底图能看到类似拼接线的细线」就是它）。让每个三角形都胀出去一点、彼此叠上，缝就没了。
+  //   ★ 必须按【边法线】外扩，不能按质心等比放大：网格里有大量又扁又长的三角（高纬处一条带
+  //     宽几百像素、高十几像素），等比放大对短边胀得远远不够，缝照旧在。
+  const TRI_PAD = 0.75
+  const _op = [[0, 0], [0, 0], [0, 0]]
+  function offsetTri(d0, d1, d2, out) {
+    // 逐边求「向外平移 pad」的直线，再两两求交得到新顶点。外侧＝背离对角顶点的那一侧。
+    const A = [d0, d1, d2]
+    const ln = []
+    for (let i = 0; i < 3; i++) {
+      const a = A[i], b = A[(i + 1) % 3], c = A[(i + 2) % 3]
+      let nx = b[1] - a[1], ny = -(b[0] - a[0])
+      const L = Math.hypot(nx, ny)
+      if (!L) return false
+      nx /= L; ny /= L
+      if (nx * (c[0] - a[0]) + ny * (c[1] - a[1]) > 0) { nx = -nx; ny = -ny }   // 指向对角顶点的反面
+      ln.push([nx, ny, nx * a[0] + ny * a[1] + TRI_PAD])
+    }
+    // ★ 极扁的三角（一条带宽几百像素、高十几）两边近乎平行，尖角处的斜接点跑到很远 ——
+    //   不加限制的话一个三角的裁剪区能盖满全图，整张图被它一个仿射涂白（实测就是这样白的）。
+    //   但也不能因此整个放弃：放弃了长边上的缝照旧在。故按【斜接限长】钳住位移 ——
+    //   长边整条都被盖住，只有尖角那一丁点略欠，肉眼无从分辨。
+    const LIM = TRI_PAD * 6
+    for (let i = 0; i < 3; i++) {
+      const l1 = ln[(i + 2) % 3], l2 = ln[i]                                   // 顶点 i 由它两侧的边决定
+      const det = l1[0] * l2[1] - l1[1] * l2[0]
+      if (!Number.isFinite(det) || Math.abs(det) < 1e-6) return false
+      let qx = (l1[2] * l2[1] - l2[2] * l1[1]) / det
+      let qy = (l1[0] * l2[2] - l2[0] * l1[2]) / det
+      if (!Number.isFinite(qx) || !Number.isFinite(qy)) return false
+      let dx = qx - A[i][0], dy = qy - A[i][1]
+      const L = Math.hypot(dx, dy)
+      if (L > LIM) { dx = dx / L * LIM; dy = dy / L * LIM }
+      out[i][0] = A[i][0] + dx; out[i][1] = A[i][1] + dy
+    }
+    return true
+  }
+  function warpTri(g, img, s0, s1, s2, d0, d1, d2) {
+    const sx1 = s1[0] - s0[0], sy1 = s1[1] - s0[1], sx2 = s2[0] - s0[0], sy2 = s2[1] - s0[1]
+    const det = sx1 * sy2 - sy1 * sx2
+    if (!det || !Number.isFinite(det)) return
+    const dx1 = d1[0] - d0[0], dy1 = d1[1] - d0[1], dx2 = d2[0] - d0[0], dy2 = d2[1] - d0[1]
+    const a = (dx1 * sy2 - dx2 * sy1) / det, b = (dy1 * sy2 - dy2 * sy1) / det
+    const c = (dx2 * sx1 - dx1 * sx2) / det, d = (dy2 * sx1 - dy1 * sx2) / det
+    const e = offsetTri(d0, d1, d2, _op) ? _op : [d0, d1, d2]
+    g.save()
+    g.beginPath()
+    g.moveTo(e[0][0], e[0][1]); g.lineTo(e[1][0], e[1][1]); g.lineTo(e[2][0], e[2][1]); g.closePath()
+    g.clip()
+    g.setTransform(a, b, c, d, d0[0] - a * s0[0] - c * s0[1], d0[1] - b * s0[0] - d * s0[1])
+    g.drawImage(img, 0, 0)
+    g.restore()
+  }
+  function reprojectRaster(src, srcBBox, smooth) {
+    if (!src) return null
+    const kk = k()
+    if (!(kk > 0)) return null
+    const vx0 = (-tx) / kk, vx1 = (cw - tx) / kk, vy0 = (-ty) / kk, vy1 = (ch - ty) / kk
+    const padX = (vx1 - vx0) * RP_PAD, padY = (vy1 - vy0) * RP_PAD
+    const bx0 = Math.max(0, vx0 - padX), bx1 = Math.min(PJ.W, vx1 + padX)
+    const by0 = Math.max(0, vy0 - padY), by1 = Math.min(PJ.H, vy1 + padY)
+    if (!(bx1 > bx0 && by1 > by0)) return null
+    const want = Math.min(RP_MAX / Math.max(bx1 - bx0, by1 - by0), kk * dpr)
+    const res = Math.pow(2, Math.round(Math.log2(Math.max(1e-6, want))))
+    const S = rolledSource(src, srcBBox)
+    if (!S) return null
+    const key = PJ.kind + '/' + PJ.lon0 + '/' + res + '/' + (src.__rpId || 0) + '/' + (src.__rpGen || 0) + '/' + (smooth ? 1 : 0)
+    if (rpKey === key && rpBox && vx0 >= rpBox.x0 - 1e-6 && vx1 <= rpBox.x1 + 1e-6 && vy0 >= rpBox.y0 - 1e-6 && vy1 <= rpBox.y1 + 1e-6) return rpCanvas
+    const W = Math.max(1, Math.round((bx1 - bx0) * res)), H = Math.max(1, Math.round((by1 - by0) * res))
+    if (!rpCanvas) { rpCanvas = document.createElement('canvas'); rpCtx = rpCanvas.getContext('2d') }
+    if (rpCanvas.width !== W || rpCanvas.height !== H) { rpCanvas.width = W; rpCanvas.height = H }
+    const g = rpCtx
+    g.setTransform(1, 0, 0, 1, 0, 0)
+    g.clearRect(0, 0, W, H)
+    g.imageSmoothingEnabled = smooth !== false
+    if ('imageSmoothingQuality' in g) g.imageSmoothingQuality = 'high'
+    const sw = S.img.naturalWidth || S.img.width, sh = S.img.naturalHeight || S.img.height
+    const lonSpan = S.lonMax - S.lonMin, latSpan = S.latMax - S.latMin
+    const spx = (lon) => ((lon - S.lonMin) / lonSpan) * sw
+    const spy = (lat) => ((S.latMax - lat) / latSpan) * sh
+    const bpx = (wx) => (wx - bx0) * res, bpy = (wy) => (wy - by0) * res
+    // ★ 网格建在【经纬那一侧】、用正算 fwd 求平面位置 —— 不是在平面上反算。
+    //   反算的坑：可见框的边角多半落在图幅之外（伪圆柱高纬处图比框窄），那里 invert 给的是
+    //   外推值，拿它当源经度就把整幅源图揉进一条带里 —— 症状是左半幅横条乱码。
+    //   正算这一侧永远有定义，且节点必落在图幅内。
+    const p0 = [0, 0], p1 = [0, 0], p2 = [0, 0], p3 = [0, 0]
+    const latStep = Math.max(0.25, Math.min(6, RP_ROWS / res))         // 一行约 RP_ROWS 个烘图像素
+    const lonStep = Math.min(15, PJ.rowAffine ? lonSpan : Math.max(0.5, Math.min(12, RP_CELL / res)))   // 15 = COARSE：粗块内最多一格
+    // ★ 相邻格在【参数空间】多叠一点点（约 1.5 个烘图像素）。
+    //   canvas 的 clip 带抗锯齿：两个格各自裁到公共边，两边各覆盖半个像素、合起来不满一格，
+    //   缝上透出底色 —— 整幅图一层细网格线，正是「底图能看到类似拼接线的细线」。
+    //   在参数空间叠比在屏幕空间外扩三角稳：尖角、极扁的带都一视同仁，不必判几何退化。
+    // 叠量换算成度：平面上 1 单位 ≈ 1°（宽恒 360），故 1.5 个烘图像素 ≈ 1.5/res 度。
+    // 封顶到格距的三成：叠得太多反而重复画、边上发虚。
+    const ovDeg = 1.5 / res
+    const latOv = Math.min(latStep * 0.3, ovDeg), lonOv = Math.min(lonStep * 0.3, ovDeg)
+    let tris = 0
+    const latTop = Math.min(90, S.latMax), latBot = Math.max(-90, S.latMin)
+    // ★ 两级网格：先按粗块（COARSE 度）剔一遍，只对与烘图矩形相交的块走细格。
+    //   不剔的话缩放到局部时仍要把整个球的细格走一遍 —— Albers 最细一档是 720×720 个格 ×
+    //   4 次投影 = 200 万次 d3 调用，实测缩放每帧 155 ms。
+    //   ★ 剔的判据一律用【正算】：拿逆算去反推可见经纬窗口是不成立的 —— 圆锥的扇面之外
+    //     逆算给的是外推值或 null，世界视角下四边采样大半落在图幅外，窗口会缩成一条，
+    //     整幅图只剩一个格、被它一个仿射涂白（实测就是这么白的）。
+    const COARSE = 15    // ★ 整除 360 且从 S.lonMin(=−180) 起步 → 没有哪一格跨源图的 ±180，源矩形恒连续
+    const q = [0, 0]
+    const blockHit = (lo0, lo1, la0, la1) => {
+      let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity
+      for (const [lo, la] of [[lo0, la0], [lo1, la0], [lo0, la1], [lo1, la1],
+        [(lo0 + lo1) / 2, la0], [(lo0 + lo1) / 2, la1], [lo0, (la0 + la1) / 2], [lo1, (la0 + la1) / 2]]) {
+        PJ.fwd(lo, la, q)
+        if (!Number.isFinite(q[0]) || !Number.isFinite(q[1])) return true    // 算不准就别剔
+        if (q[0] < x0) x0 = q[0]; if (q[0] > x1) x1 = q[0]
+        if (q[1] < y0) y0 = q[1]; if (q[1] > y1) y1 = q[1]
+      }
+      const m = Math.max(latStep, lonStep) * 2                               // 边留一点余量：块边是曲线，八个点量不满
+      return !(x1 + m < bx0 || x0 - m > bx1 || y1 + m < by0 || y0 - m > by1)
+    }
+    for (let bLat = latTop; bLat > latBot + 1e-9; bLat -= COARSE) {
+      const bLa0 = bLat, bLa1 = Math.max(latBot, bLat - COARSE)
+      for (let bLon = S.lonMin; bLon < S.lonMax - 1e-9; bLon += COARSE) {
+        const bLo0 = bLon, bLo1 = Math.min(S.lonMax, bLon + COARSE)
+        if (!blockHit(bLo0, bLo1, bLa0, bLa1)) continue
+        for (let lat = bLa0; lat > bLa1 + 1e-9; lat -= latStep) {
+          const la0 = lat, la1 = Math.max(bLa1, lat - latStep - latOv)
+          for (let lon = bLo0; lon < bLo1 - 1e-9; lon += lonStep) {
+            const lo0 = lon, lo1 = Math.min(bLo1, lon + lonStep + lonOv)
+            PJ.fwd(lo0, la0, p0); PJ.fwd(lo1, la0, p1); PJ.fwd(lo0, la1, p2); PJ.fwd(lo1, la1, p3)
+            if (!Number.isFinite(p0[0]) || !Number.isFinite(p1[0]) || !Number.isFinite(p2[0]) || !Number.isFinite(p3[0])) continue
+            const gx0 = Math.min(p0[0], p1[0], p2[0], p3[0]), gx1 = Math.max(p0[0], p1[0], p2[0], p3[0])
+            const gy0 = Math.min(p0[1], p1[1], p2[1], p3[1]), gy1 = Math.max(p0[1], p1[1], p2[1], p3[1])
+            if (gx1 < bx0 || gx0 > bx1 || gy1 < by0 || gy0 > by1) continue
+            const S0 = [spx(lo0), spy(la0)], S1 = [spx(lo1), spy(la0)], S2 = [spx(lo0), spy(la1)], S3 = [spx(lo1), spy(la1)]
+            const D0 = [bpx(p0[0]), bpy(p0[1])], D1 = [bpx(p1[0]), bpy(p1[1])], D2 = [bpx(p2[0]), bpy(p2[1])], D3 = [bpx(p3[0]), bpy(p3[1])]
+            warpTri(g, S.img, S0, S1, S2, D0, D1, D2)
+            warpTri(g, S.img, S3, S2, S1, D3, D2, D1)
+            tris += 2
+          }
+        }
+      }
+    }
+    g.setTransform(1, 0, 0, 1, 0, 0)
+    if (!tris) { rpBox = null; rpKey = ''; return null }
+    rpKey = key
+    rpBox = { x0: bx0, y0: by0, x1: bx1, y1: by1 }
+    return rpCanvas
+  }
+  // 把烘好的那块贴上去：它在【平面坐标】里有确定位置，按当前变换一次 drawImage 即可 ——
+  // 拖动/缩放只走这一步，不重烘（复用条件见 reprojectRaster 的键）。
+  function blitReprojected(c, alpha, bright, smooth) {
+    if (!c || !rpBox) return false
+    const kk = k()
+    const sm = ctx.imageSmoothingEnabled, f = ctx.filter
+    ctx.save()
+    ctx.globalAlpha = alpha
+    ctx.imageSmoothingEnabled = smooth !== false
+    if ('imageSmoothingQuality' in ctx) ctx.imageSmoothingQuality = 'high'
+    if (bright != null && bright !== 1) ctx.filter = 'brightness(' + bright + ')'
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    ctx.drawImage(c, rpBox.x0 * kk + tx, rpBox.y0 * kk + ty, (rpBox.x1 - rpBox.x0) * kk, (rpBox.y1 - rpBox.y0) * kk)
+    ctx.filter = f
+    ctx.imageSmoothingEnabled = sm
+    ctx.restore()
+    return true
+  }
   function drawImagery() {
     if (vecImg) { ctx.drawImage(vecImg, 0, 0, cw, ch); return true }   // 矢量导出：整层已合成为一张，与页面 1:1
+    if (!PJ.identity) {
+      // 投影档：瓦片是按【等经纬网格】切的，逐片重投影后拼不回一张无缝图（片边在投影里不再是直线）。
+      // 故先把瓦片拼成一张整幅等经纬世界图，再走与整幅档同一条重投影 —— 出厂默认底图就是瓦片档
+      // （viz/imagery.js 的 DEFAULT_IMAGERY），不接这一条的话换投影就静默没有底图。
+      const src = imgSet ? tileWorldImage(imgSet) : imgEl
+      if (!src) return false
+      return blitReprojected(reprojectRaster(src, null, true), 1, imgBright, true)
+    }
     if (imgSet) return drawImageryTiles()
     if (!imgEl) return false
     const kk = k()
@@ -420,6 +742,8 @@ export function createFlatCoverage(canvas) {
   // 瓦片到货 → 重绘。★ 必须去抖：影像画在 below 静态快照里，而重建那张快照要连上百个国家名一起
   // 重画；几十片在几百毫秒里陆续到货，若逐片触发就是几十次全量静态重建，观感上就是「加载时卡死」。
   let tileTimer = 0
+  // 拼图是模块级共享的，到货时要通知【每一个】活着的实例重绘（不然别的视图停在旧图上）
+  twInvalidateAll.add(onTileReady)
   function onTileReady() {
     if (tileTimer) return
     tileTimer = setTimeout(() => { tileTimer = 0; invalidateStatic(); requestDraw() }, 60)
@@ -427,7 +751,7 @@ export function createFlatCoverage(canvas) {
   function drawLand() {
     const kk = k()
     const wl = -tx / kk, wr = (cw - tx) / kk   // 视口世界 X 范围（未含 off）
-    for (const off of [-360, 0, 360]) {
+    for (const off of wraps()) {
       ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * (tx + off * kk), dpr * ty)
       if (compat) {
         // 导出：按填充色合并成「每色一条 path」（节点数不变，但 <path> 元素从「多边形数」降到「颜色数」）。
@@ -455,6 +779,28 @@ export function createFlatCoverage(canvas) {
     const out = {}
     for (const cls of BORDER_DRAW) {
       const list = []
+      if (!PJ.identity) {
+        // 投影档：一类线一次烘完（d3 按子路径切开）。导出回放与视口裁剪都要逐段的点列与跨度，
+        // 故一个子路径拆成一条（与等距圆柱下「一条 poly 一条」同形）。
+        const rec = projRec(true)
+        PJ.path(asLines((L[cls] || []).filter((q) => q && q.length >= 2)), rec)
+        for (const sp of (rec.subs || [])) {
+          if (sp.length < 2) continue
+          let lo = Infinity, hi = -Infinity
+          const pts = new Float64Array(sp.length * 2)
+          const path = new Path2D()
+          for (let i = 0; i < sp.length; i++) {
+            const x = sp[i][0], y = sp[i][1]
+            if (x < lo) lo = x
+            if (x > hi) hi = x
+            i === 0 ? path.moveTo(x, y) : path.lineTo(x, y)
+            pts[i * 2] = x; pts[i * 2 + 1] = y
+          }
+          list.push({ lo, hi, path, pts })
+        }
+        out[cls] = list
+        continue
+      }
       for (const poly of (L[cls] || [])) {
         if (!poly || poly.length < 2) continue
         const u = unwrap(poly)
@@ -488,7 +834,7 @@ export function createFlatCoverage(canvas) {
       ctx.globalAlpha = borderStyle[key + 'Opacity']
       const px = DASH_PX[borderStyle[key + 'Dash'] || 'solid']
       ctx.setLineDash(px ? px.map((v) => v * (DASH_SCALE[cls] || 1) / kk) : [])
-      for (const off of [-360, 0, 360]) {
+      for (const off of wraps()) {
         ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * (tx + off * kk), dpr * ty)
         // ★ 导出（compat）必须按点列回放，不能给 stroke() 递 Path2D：svgcanvas 的 stroke() 忽略入参，
         //   转而把【上一个元素】的路径重描一遍 —— 五类线在矢量 PDF 里整个消失（图上只剩色块，没有
@@ -518,7 +864,7 @@ export function createFlatCoverage(canvas) {
   const SAT_BLOCKS = [[8, 41], [21, 41], [34, 41], [8, 63], [21, 63], [34, 63], [76, 41], [89, 41], [102, 41], [76, 63], [89, 63], [102, 63]]
   function drawSatIcon(lon, lat, size, color) {
     if (!Number.isFinite(lon) || !Number.isFinite(lat)) return
-    const x = PX(lon), y = PY(lat), s = size || sizes.satIcon || 30
+    const x = PX(lon, lat), y = PY(lat, lon), s = size || sizes.satIcon || 30
     ctx.save()
     ctx.translate(x, y); ctx.rotate(-20 * Math.PI / 180); ctx.scale(s / 120, s / 120); ctx.translate(-60, -60)
     ctx.fillStyle = color || '#ffffff'; ctx.strokeStyle = 'rgba(8,12,18,0.92)'; ctx.lineWidth = 4; ctx.lineJoin = 'round'
@@ -532,13 +878,33 @@ export function createFlatCoverage(canvas) {
     rrect(49, 35, 22, 50, 10)
     ctx.restore()
   }
+  // 经纬网。等距圆柱下经线纬线都是直线，直接在屏幕坐标画两族直线（最省）；
+  // 投影档下它们是曲线，改用 d3 的 geoGraticule 烘一条平面 Path2D，缓存在 gridPath 里
+  // （只随投影 / 切口 / 步长变，不随 pan/zoom 变），画时走与边界线同一套 setTransform + 线宽除 kk。
+  let gridPath = null, gridKey = ''
   function drawGrid() {
     if (borderStyle.gridOn === false) return
-    const kk = k(), x0 = tx, x1 = tx + 360 * kk
+    const kk = k(), x0 = tx, x1 = tx + PJ.W * kk
     const step = borderStyle.gridStep > 0 ? borderStyle.gridStep : 15
     ctx.save()
-    ctx.strokeStyle = borderStyle.gridColor; ctx.lineWidth = borderStyle.gridWidth; ctx.globalAlpha = borderStyle.gridOpacity
+    ctx.strokeStyle = borderStyle.gridColor; ctx.globalAlpha = borderStyle.gridOpacity
     const px = DASH_PX[borderStyle.gridDash || 'solid']
+    if (!PJ.identity) {
+      const key = PJ.kind + '/' + PJ.lon0 + '/' + step
+      if (!gridPath || gridKey !== key) { gridPath = PJ.path(PJ.graticule(step)(), new Path2D()); gridKey = key }
+      ctx.lineWidth = borderStyle.gridWidth / kk
+      ctx.setLineDash(px ? px.map((v) => v / kk) : [])
+      ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * tx, dpr * ty)
+      if (compat) { /* 矢量导出：svgcanvas 的 stroke() 不认 Path2D 入参，改逐点回放 */
+        ctx.beginPath()
+        PJ.path(PJ.graticule(step)(), ctx)
+        ctx.stroke()
+      } else ctx.stroke(gridPath)
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+      ctx.restore()
+      return
+    }
+    ctx.lineWidth = borderStyle.gridWidth
     ctx.setLineDash(px || [])            // ★ 屏幕坐标画的（不像边界线走缩放矩阵），图案不用除 kk
     ctx.beginPath()
     for (let lon = -180; lon <= 180; lon += step) {
@@ -572,6 +938,7 @@ export function createFlatCoverage(canvas) {
     const kk = k()
     ctx.strokeStyle = color; ctx.lineWidth = width; ctx.lineJoin = 'round'; ctx.lineCap = 'round'
     if (dash) ctx.setLineDash(dash)
+    if (!PJ.identity) { drawPolylineProj(p); if (dash) ctx.setLineDash([]); return }
     ctx.beginPath(); let started = false, pwx = 0, pwy = 0
     for (let i = 0; i < p.length; i++) {
       const a = p[i], lon = Array.isArray(a) ? a[0] : a.lon, lat = Array.isArray(a) ? a[1] : a.lat
@@ -588,9 +955,42 @@ export function createFlatCoverage(canvas) {
     ctx.stroke()
     if (dash) ctx.setLineDash([])
   }
+  // 投影档的折线：交给 d3 —— 它按投影曲率自适应加密（省界那种沿纬线的长段在
+  // Robinson / Equal Earth 下是曲线，直连会切角），并在日界线上把折线切成两段。
+  // ★ 走的是【屏幕坐标】：d3 出的是平面坐标，这里套一层适配把它折到屏幕，
+  //   与等距圆柱那条一样，线宽/虚线周期就都还是屏幕像素、不用除 kk。
+  const _plAdapt = {
+    moveTo(x, y) { ctx.moveTo(x * _plK + _plTx, y * _plK + _plTy) },
+    lineTo(x, y) { ctx.lineTo(x * _plK + _plTx, y * _plK + _plTy) },
+    closePath() { ctx.closePath() },
+    arc() {}
+  }
+  let _plK = 1, _plTx = 0, _plTy = 0
+  function drawPolylineProj(p) {
+    const co = new Array(p.length)
+    for (let i = 0; i < p.length; i++) { const a = p[i]; co[i] = Array.isArray(a) ? [a[0], a[1]] : [a.lon, a.lat] }
+    _plK = k(); _plTx = tx; _plTy = ty
+    ctx.beginPath()
+    PJ.path({ type: 'LineString', coordinates: co }, _plAdapt)
+    ctx.stroke()
+  }
+  // 投影档的环填充（卫星层足迹 / 聚焦星足迹）。绕极的环由 d3 自己补极点 ——
+  // 等距圆柱那条要手工判「解缠后首尾差满一圈」再补两枚极点顶点，投影档不需要。
+  function fillRingProj(ring, fill, alpha) {
+    if (!ring || ring.length < 3) return
+    const co = new Array(ring.length + 1)
+    for (let i = 0; i < ring.length; i++) { const a = ring[i]; co[i] = Array.isArray(a) ? [a[0], a[1]] : [a.lon, a.lat] }
+    co[ring.length] = co[0]
+    _plK = k(); _plTx = tx; _plTy = ty
+    ctx.fillStyle = fill; ctx.globalAlpha = alpha
+    ctx.beginPath()
+    PJ.path(asPoly([co]), _plAdapt)
+    ctx.fill()
+    ctx.globalAlpha = 1
+  }
   function drawText(text, lon, lat, px, color, opt) {
     const o = opt || {}
-    const x = PX(lon) + (o.dx || 0), y = PY(lat) + (o.dy || 0)
+    const x = PX(lon, lat) + (o.dx || 0), y = PY(lat, lon) + (o.dy || 0)
     const fam = (textFontLatin && !CJK_RE.test(text)) ? textFontLatin : textFont
     ctx.font = `${o.italic ? 'italic ' : ''}${o.bold ? 'bold ' : ''}${px}px ${fam}`
     ctx.textAlign = o.align || 'center'; ctx.textBaseline = 'middle'
@@ -667,7 +1067,7 @@ export function createFlatCoverage(canvas) {
       //   避让永远腾不出地方」那件事。所以先对 px×zf 封顶，再乘倍率。
       const fs = Math.round(Math.min((l.px || 12) * zf, LB_MAX) * scaleK)
       if (fs < (l.keep ? LB_DROP_KEEP : LB_DROP)) continue   // 太小：不画，也不占位
-      const x = PX(l.lon), y = PY(l.lat)
+      const x = PX(l.lon, l.lat), y = PY(l.lat, l.lon)
       if (x < -160 || x > cw + 160 || y < -40 || y > ch + 40) continue
       const name = nameOf(l)
       if (!name) continue
@@ -684,7 +1084,7 @@ export function createFlatCoverage(canvas) {
     }
   }
   function dot(lon, lat, r, fill, ring) {
-    const x = PX(lon), y = PY(lat)
+    const x = PX(lon, lat), y = PY(lat, lon)
     ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fillStyle = fill; ctx.fill()
     if (ring) { ctx.lineWidth = Math.max(1, r * 0.35); ctx.strokeStyle = 'rgba(255,255,255,0.92)'; ctx.stroke() }
   }
@@ -694,7 +1094,7 @@ export function createFlatCoverage(canvas) {
   //   的实心加号（SATSOFT 的十字自始至终是一根细线）。与等值线同档线宽，故也不需要深色套边——等值线自己也没有。
   const CROSS_W = 1.3            // 十字线宽（屏幕 px），与 3D 侧 scene.js 的 CROSS_W 同值
   function cross(lon, lat, span, color) {
-    const x = PX(lon), y = PY(lat), a = span * 0.5
+    const x = PX(lon, lat), y = PY(lat, lon), a = span * 0.5
     ctx.save()
     ctx.lineCap = 'butt'
     ctx.lineWidth = CROSS_W; ctx.strokeStyle = color
@@ -711,13 +1111,35 @@ export function createFlatCoverage(canvas) {
   // 一层覆盖在「世界 X」(=lon-LON0) 上的经度跨度，供 drawField 的 ±360 环绕做视口裁剪（只填可见副本）。
   function layerBounds(L) {
     let lo = Infinity, hi = -Infinity
-    const upd = (lon) => { const x = lon - LON0; if (x < lo) lo = x; if (x > hi) hi = x }
-    if (L.fillBands) for (const fb of L.fillBands) { const v = fb.verts; for (let i = 0; i < v.length; i += 2) upd(v[i]) }
-    if (L.segGroups) for (const grp of L.segGroups) for (const sg of (grp.segs || [])) { upd(sg[0][0]); upd(sg[1][0]) }
+    // 投影档下平面 x 不再是 lon−LON0（非圆柱投影里 x 还随纬度变），故按真投影量；
+    // 等距圆柱仍走原式子（同一个结果，但省掉一次函数调用 × 几十万点）。
+    const upd = PJ.identity
+      ? (lon) => { const x = lon - LON0; if (x < lo) lo = x; if (x > hi) hi = x }
+      : (lon, lat) => { const x = PJ.fwd(lon, lat, _pw)[0]; if (Number.isFinite(x)) { if (x < lo) lo = x; if (x > hi) hi = x } }
+    if (L.fillBands) for (const fb of L.fillBands) { const v = fb.verts; for (let i = 0; i < v.length; i += 2) upd(v[i], v[i + 1]) }
+    if (L.segGroups) for (const grp of L.segGroups) for (const sg of (grp.segs || [])) { upd(sg[0][0], sg[0][1]); upd(sg[1][0], sg[1][1]) }
     if (lo > hi) return null
     return { lo, hi }
   }
+  // 扁平缓冲(verts/counts) → GeoJSON MultiPolygon（投影档把分带填充交给 d3 切割）
+  function bandsToGeo(fb) {
+    const verts = fb.verts, counts = fb.counts, polys = []
+    let vi = 0
+    for (let j = 0; j < counts.length; j++) {
+      const plen = counts[j], ring = new Array(plen + 1)
+      for (let q = 0; q < plen; q++) ring[q] = [verts[(vi + q) * 2], verts[(vi + q) * 2 + 1]]
+      ring[plen] = ring[0]                     // GeoJSON 的环必须闭合，否则 d3 的多边形裁剪判不出内外
+      polys.push(orientRings([ring]))
+      vi += plen
+    }
+    return { type: 'MultiPolygon', coordinates: polys }
+  }
+  const segsToGeo = (grp) => asLines((grp.segs || []).map((sg) => [[sg[0][0], sg[0][1]], [sg[1][0], sg[1][1]]]))
   function buildFillPaths(fillBands) {
+    if (!PJ.identity) return fillBands.map((fb) => ({
+      color: 'rgb(' + fb.color[0] + ',' + fb.color[1] + ',' + fb.color[2] + ')',
+      path: PJ.path(bandsToGeo(fb), new Path2D())
+    }))
     return fillBands.map((fb) => {
       const path = new Path2D()
       const verts = fb.verts, counts = fb.counts
@@ -741,6 +1163,10 @@ export function createFlatCoverage(canvas) {
   // draw() 随 pan/zoom 只用 setTransform 平移缩放矢量描边（每帧零路径构建），±360 环绕在 drawField 内按视口裁剪。
   // 段两端就近解缠（跨 ±180° 不被直线横扫全图）。线宽在描边时 /kk 保持恒定屏幕 px。
   function buildSegPaths(segGroups) {
+    if (!PJ.identity) return segGroups.map((grp) => ({
+      color: grp.color || 'rgba(255,255,255,0.9)', width: grp.width || 1.2,
+      path: PJ.path(segsToGeo(grp), new Path2D())
+    }))
     return segGroups.map((grp) => {
       const path = new Path2D()
       for (const sg of (grp.segs || [])) {
@@ -753,6 +1179,7 @@ export function createFlatCoverage(canvas) {
 
   // 导出回放：把一档填充环带 / 一组等值线段描进当前路径（与 buildFillPaths/buildSegPaths 同款就近解缠）。
   function traceFillBand(fb) {
+    if (!PJ.identity) { ctx.beginPath(); PJ.path(bandsToGeo(fb), ctx); return }
     const verts = fb.verts, counts = fb.counts
     let vi = 0; ctx.beginPath()
     for (let j = 0; j < counts.length; j++) {
@@ -764,6 +1191,7 @@ export function createFlatCoverage(canvas) {
   }
   function traceSegGroup(grp) {
     ctx.beginPath()
+    if (!PJ.identity) { PJ.path(segsToGeo(grp), ctx); return }
     for (const sg of (grp.segs || [])) { let a = sg[0][0], b = sg[1][0]; while (b - a > 180) b -= 360; while (b - a < -180) b += 360; ctx.moveTo(a - LON0, 90 - sg[0][1]); ctx.lineTo(b - LON0, 90 - sg[1][1]) }
   }
 
@@ -776,7 +1204,7 @@ export function createFlatCoverage(canvas) {
     const kk = k(), wl = -tx / kk, wr = (cw - tx) / kk
     const o = termOpts
     ctx.save()
-    for (const off of [-360, 0, 360]) {
+    for (const off of wraps()) {
       if (off + 360 < wl || off > wr) continue          // 该副本整幅落在视口外
       ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * (tx + off * kk), dpr * ty)
       if (o.night !== false) {
@@ -784,8 +1212,17 @@ export function createFlatCoverage(canvas) {
         ctx.fillStyle = o.nightColor || '#0a1120'
         ctx.beginPath()
         const ng = termData.night
-        ctx.moveTo(ng[0][0] - LON0, 90 - ng[0][1])
-        for (let i = 1; i < ng.length; i++) ctx.lineTo(ng[i][0] - LON0, 90 - ng[i][1])
+        // 夜区：投影档交给 d3 的球面多边形裁剪 —— 它自己判绕不绕极、该不该补极点，
+        // 故【不用】平面那套「沿暗极那条边封口」的收口点（那两点的经度超出 ±180，d3 认不得）。
+        // 定向靠 darkPole：暗极必在夜区里，据此判要不要把环翻过来（面积判据在这里正好是半球、靠不住）。
+        if (!PJ.identity) {
+          const ring = termData.line.map((q) => [((q[0] + 180) % 360 + 360) % 360 - 180, q[1]])
+          const dp = termData.darkPole > 0 ? 89 : -89
+          PJ.path(asPoly([ring.concat([ring[0]])], [0, dp]), ctx)
+        } else {
+          ctx.moveTo(ng[0][0] - LON0, 90 - ng[0][1])
+          for (let i = 1; i < ng.length; i++) ctx.lineTo(ng[i][0] - LON0, 90 - ng[i][1])
+        }
         ctx.closePath(); ctx.fill()
       }
       if (o.line !== false) {
@@ -795,8 +1232,11 @@ export function createFlatCoverage(canvas) {
         ctx.lineJoin = 'round'; ctx.lineCap = 'round'
         ctx.beginPath()
         const ln = termData.line
-        ctx.moveTo(ln[0][0] - LON0, 90 - ln[0][1])
-        for (let i = 1; i < ln.length; i++) ctx.lineTo(ln[i][0] - LON0, 90 - ln[i][1])
+        if (!PJ.identity) PJ.path({ type: 'LineString', coordinates: ln.map((q) => [((q[0] + 180) % 360 + 360) % 360 - 180, q[1]]) }, ctx)
+        else {
+          ctx.moveTo(ln[0][0] - LON0, 90 - ln[0][1])
+          for (let i = 1; i < ln.length; i++) ctx.lineTo(ln[i][0] - LON0, 90 - ln[i][1])
+        }
         ctx.stroke()
       }
     }
@@ -811,7 +1251,7 @@ export function createFlatCoverage(canvas) {
     ctx.save(); ctx.globalAlpha = fieldAlpha
     for (const L of fieldLayers) {
       if (!L.fillPaths || !L.fillPaths.length) continue
-      for (const off of [-360, 0, 360]) {
+      for (const off of wraps()) {
         if (L.bounds && (L.bounds.hi + off < wl || L.bounds.lo + off > wr)) continue
         ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * (tx + off * kk), dpr * ty)
         if (compat) for (const fb of (L.fillBands || [])) { ctx.fillStyle = 'rgb(' + fb.color[0] + ',' + fb.color[1] + ',' + fb.color[2] + ')'; traceFillBand(fb); ctx.fill() }
@@ -825,7 +1265,7 @@ export function createFlatCoverage(canvas) {
     ctx.save(); ctx.globalAlpha = fieldLineAlpha
     for (const L of fieldLayers) {
       if (!L.segPaths || !L.segPaths.length) continue
-      for (const off of [-360, 0, 360]) {
+      for (const off of wraps()) {
         if (L.bounds && (L.bounds.hi + off < wl || L.bounds.lo + off > wr)) continue
         ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * (tx + off * kk), dpr * ty)
         if (compat) for (const grp of (L.segGroups || [])) { if (!grp.segs || !grp.segs.length) continue; ctx.strokeStyle = grp.color || 'rgba(255,255,255,0.9)'; ctx.lineWidth = (grp.width || 1.2) / kk; traceSegGroup(grp); ctx.stroke() }
@@ -854,6 +1294,11 @@ export function createFlatCoverage(canvas) {
   }
   function drawEnvRaster() {
     if (!envImg || !envBBox) return
+    if (!PJ.identity) {
+      const img = envImageForDraw()
+      blitReprojected(reprojectRaster(img, envBBox, envSmooth), img === envImg ? envAlpha : 1, 1, envSmooth)
+      return
+    }
     const kk = k(), bb = envBBox
     const x0 = WXN(bb.lonMin), w = (bb.lonMax - bb.lonMin) * kk
     const y = PY(bb.latMax), h = (bb.latMax - bb.latMin) * kk
@@ -863,7 +1308,7 @@ export function createFlatCoverage(canvas) {
     const sm = ctx.imageSmoothingEnabled
     ctx.imageSmoothingEnabled = envSmooth
     if ('imageSmoothingQuality' in ctx) ctx.imageSmoothingQuality = 'high'
-    for (const off of [-360, 0, 360]) {
+    for (const off of wraps()) {
       const x = (x0 + off) * kk + tx
       if (x > cw || x + w < 0) continue
       ctx.drawImage(img, x, y, w, h)
@@ -889,7 +1334,7 @@ export function createFlatCoverage(canvas) {
     ctx.save(); ctx.globalAlpha = covGridAlpha
     for (const L of covGridLayers) {
       if (!L.fillPaths || !L.fillPaths.length) continue
-      for (const off of [-360, 0, 360]) {
+      for (const off of wraps()) {
         if (L.bounds && (L.bounds.hi + off < wl || L.bounds.lo + off > wr)) continue
         ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * (tx + off * kk), dpr * ty)
         if (compat) for (const fb of (L.fillBands || [])) { ctx.fillStyle = 'rgb(' + fb.color[0] + ',' + fb.color[1] + ',' + fb.color[2] + ')'; traceFillBand(fb); ctx.fill() }
@@ -943,9 +1388,32 @@ export function createFlatCoverage(canvas) {
     if (imgOn && (imgSet || imgEl) && (!compat || rasterOut || vecImg) && drawImagery()) {
       /* 影像已铺满，海色与陆地填充这两层被顶替 */
     } else {
-      ctx.fillStyle = oceanColor; ctx.fillRect(rx, ry, rw, rh)
+      // ★ 等距圆柱下世界就是那一整块矩形，铺满即可；换了投影地球只占平面里的一块
+      //   （Equal Earth / Robinson 是个椭圆样的形，Albers 是把扇面），铺满矩形就等于
+      //   把「地图之外」也涂成海色，图廓当场没了。故投影档按 d3 的 Sphere 轮廓填。
+      ctx.fillStyle = oceanColor
+      if (PJ.identity) ctx.fillRect(rx, ry, rw, rh)
+      else { const kk = k(); ctx.save(); ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * tx, dpr * ty); ctx.beginPath(); PJ.path({ type: 'Sphere' }, ctx); ctx.fill(); ctx.restore() }
       drawLand()
     }
+    ctx.restore()
+  }
+  // 图廓（地球在这张平面上的外轮廓）。等距圆柱下就是世界矩形的边，由经纬网的 ±180 那两条兼着；
+  // 投影档下是一条曲线，得单画一条，否则椭圆边缘只有海色与背景色的交界、没有线。
+  let sphPath = null, sphKey = ''
+  function drawSphereOutline() {
+    if (PJ.identity || borderStyle.gridOn === false) return
+    const kk = k()
+    const key = PJ.kind + '/' + PJ.lon0
+    if (!sphPath || sphKey !== key) { sphPath = PJ.path({ type: 'Sphere' }, new Path2D()); sphKey = key }
+    ctx.save()
+    ctx.strokeStyle = borderStyle.gridColor
+    ctx.globalAlpha = Math.min(1, (borderStyle.gridOpacity || 0.5) * 1.6)   // 图廓比网格线实一档
+    ctx.lineWidth = (borderStyle.gridWidth || 1) / kk
+    ctx.setLineDash([])
+    ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * tx, dpr * ty)
+    if (compat) { ctx.beginPath(); PJ.path({ type: 'Sphere' }, ctx); ctx.stroke() } else ctx.stroke(sphPath)
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     ctx.restore()
   }
   // field 之上的标注（省界/标记/国家名/卫星层点标注等）。透明背景，叠在覆盖填充之上。
@@ -961,6 +1429,7 @@ export function createFlatCoverage(canvas) {
     // 经纬网 + 行政区界 + 五类边界线画在覆盖填充之上：地理骨架贯穿覆盖区内外，覆盖与底图融为一体（平级），
     // 不再像贴纸浮在上面。次序从下往上：经纬网 → 二级行政区 → 一级行政区 → 海岸 → 主张 → 停火 → 未定 → 国界。
     drawGrid()
+    drawSphereOutline()
     // 缩放分级：全球视角下二级行政区完全淡出、一级降到 0.3（政治五类不参与——国界在任何尺度都在）
     const admF = admFade(borderStyle.fade ? fadeFactor(1 / k()) : 1)
     // 二级行政区界（画在一级之下，一级更醒目）
@@ -989,15 +1458,15 @@ export function createFlatCoverage(canvas) {
     const idxD = idxDiam(iz)
     const idxFont = textFontLatin || textFont   // 编号是纯数字 → 走西文面（出 PDF 时字体族名跟着换）
     for (const p of mk.points) {
-      if (p.idx) paintNumBadge(ctx, PX(p.lon), PY(p.lat), idxD, p.idx, idxFont, ptBadgeOf(p))
-      else paintMarkSymbol(ctx, PX(p.lon), PY(p.lat), ptD, ptSymOf(p))
+      if (p.idx) paintNumBadge(ctx, PX(p.lon, p.lat), PY(p.lat, p.lon), idxD, p.idx, idxFont, ptBadgeOf(p))
+      else paintMarkSymbol(ctx, PX(p.lon, p.lat), PY(p.lat, p.lon), ptD, ptSymOf(p))
     }
     // 纵向锚点走 STATION_ANCHOR_Y（符号里那颗白色址点），不再是方框底边 —— 3D 侧的
     // sprite.center 用 1−STATION_ANCHOR_Y 对齐同一处，两视图的站址才落在同一个像素上。
     if (stationReady) {
       const sa = ctx.globalAlpha
       if (markCfg.stOpacity < 1) ctx.globalAlpha = sa * Math.max(0, markCfg.stOpacity)
-      for (const s of mk.stations) ctx.drawImage(stationImg, PX(s.lon) - si * STATION_ANCHOR_X, PY(s.lat) - si * STATION_ANCHOR_Y, si, si)
+      for (const s of mk.stations) ctx.drawImage(stationImg, PX(s.lon, s.lat) - si * STATION_ANCHOR_X, PY(s.lat, s.lon) - si * STATION_ANCHOR_Y, si, si)
       ctx.globalAlpha = sa
     }
     // 地名层：字号随缩放联动，且与 3D 球体的「世界尺寸」地名严格一致。
@@ -1087,14 +1556,14 @@ export function createFlatCoverage(canvas) {
       // → 压在国界/省界/地名之下，与之共存；这里只画点/标签/卫星图标
       // d.px：屏幕恒定像素半径（Polygon 顶点手柄，不随缩放变大）；否则沿用世界联动尺寸
       for (const d of (satLayer.dots || [])) {
-        const dx = PX(d.lon), dy2 = PY(d.lat)   // 视口外剔除：波束合成大群（数百点）放大后大多在屏外，逐点画纯浪费
+        const dx = PX(d.lon, d.lat), dy2 = PY(d.lat, d.lon)   // 视口外剔除：波束合成大群（数百点）放大后大多在屏外，逐点画纯浪费
         if (dx < -24 || dx > cw + 24 || dy2 < -24 || dy2 > ch + 24) continue
         dot(d.lon, d.lat, d.px != null ? Math.max(1, d.px) : Math.max(2, d.r != null ? d.r : 4) * mz, hex(d.color != null ? d.color : 0xffd27a), true)
       }
       for (const l of (satLayer.labels || [])) {   // 世界尺寸字号：与 3D makeCovLabel 同源（套用地名标定 hpx0.02↔px15，zf=k()/13.1），2D/3D 一致
         const px = Math.round((l.hpx || 0.026) * 750 * zf)
         if (l.cullPx && px < l.cullPx) continue    // 自适应编号：小于可读下限的糊点直接不画（缩小看大群时天量文字全免）
-        const lx2 = PX(l.lon), ly2 = PY(l.lat)
+        const lx2 = PX(l.lon, l.lat), ly2 = PY(l.lat, l.lon)
         const mw = px * (String(l.text == null ? '' : l.text).length * 0.4 + 1)
         if (lx2 < -mw || lx2 > cw + mw || ly2 < -px || ly2 > ch + px) continue   // 视口外剔除（含文字宽裕量）
         drawText(l.text, l.lon, l.lat, px, l.color || '#fff')
@@ -1135,6 +1604,7 @@ export function createFlatCoverage(canvas) {
     ctx.save()
     for (const f of (satLayer.fills || [])) {
       if (!f.p || f.p.length < 3) continue
+      if (!PJ.identity) { fillRingProj(f.p, hex(f.color), f.opacity != null ? f.opacity : 0.18); continue }
       const W = []
       let prev = WXN(f.p[0][0]), lo = prev, hi = prev
       W.push([prev, 90 - f.p[0][1]])
@@ -1154,7 +1624,7 @@ export function createFlatCoverage(canvas) {
         path.closePath()
       }
       ctx.fillStyle = hex(f.color); ctx.globalAlpha = f.opacity != null ? f.opacity : 0.18
-      for (const s of [-360, 0, 360]) {
+      for (const s of wraps()) {
         if (hi + s < 0 || lo + s > 360) continue   // 该副本完全在地图外 → 跳过
         if (compat) {
           ctx.beginPath()
@@ -1193,7 +1663,7 @@ export function createFlatCoverage(canvas) {
     if (trajD > 0) {
       for (const t of mk.trajectories) {
         const c = hex(t.dotColor != null ? t.dotColor : (t.color != null ? t.color : 0xff9a5a))
-        for (const p of (t.pts || [])) paintMarkSymbol(ctx, PX(p.lon), PY(p.lat), trajD, { shape: 'circle', fill: c, opacity: markCfg.tjOpacity, edge: 0.18, edgeColor: 'rgba(255,255,255,0.92)' })
+        for (const p of (t.pts || [])) paintMarkSymbol(ctx, PX(p.lon, p.lat), PY(p.lat, p.lon), trajD, { shape: 'circle', fill: c, opacity: markCfg.tjOpacity, edge: 0.18, edgeColor: 'rgba(255,255,255,0.92)' })
       }
     }
     // 航迹头（末航点）上的载具图标：航行＝船、飞行＝飞机，形状与 3D 同一份（viz/vehicleSymbol.js）。
@@ -1205,7 +1675,7 @@ export function createFlatCoverage(canvas) {
       for (const t of mk.trajectories) {
         const tp = t.pts || []; if (!tp.length) continue
         const hd = tp[tp.length - 1]
-        drawVehicle(ctx, t.kind, PX(hd.lon), PY(hd.lat), vi, flatHeading(tp[tp.length - 2], hd), hex(t.iconColor != null ? t.iconColor : (t.color != null ? t.color : 0xff5a5a)))
+        drawVehicle(ctx, t.kind, PX(hd.lon, hd.lat), PY(hd.lat, hd.lon), vi, flatHeading(tp[tp.length - 2], hd), hex(t.iconColor != null ? t.iconColor : (t.color != null ? t.color : 0xff5a5a)))
       }
       ctx.globalAlpha = sa
     }
@@ -1252,6 +1722,7 @@ export function createFlatCoverage(canvas) {
     for (const g of selGeomList) {
       const ring = g.footprint
       if (!ring || ring.length < 3) continue
+      if (!PJ.identity) { fillRingProj(ring, focusCfg.fpFillColor, Math.max(0, Math.min(1, focusCfg.fpFillOpacity))); continue }
       const W = []
       let prev = WXN(ring[0].lon), lo = prev, hi = prev, latSum = 0
       W.push([prev, 90 - ring[0].lat]); latSum += ring[0].lat
@@ -1269,7 +1740,7 @@ export function createFlatCoverage(canvas) {
         const py = north ? 0 : 180   // y = 90 - lat
         W.push([W[W.length - 1][0], py], [W[0][0], py])
       }
-      for (const s of [-360, 0, 360]) {
+      for (const s of wraps()) {
         if (hi + s < 0 || lo + s > 360) continue   // 该副本完全在地图外 → 跳过
         ctx.beginPath()
         ctx.moveTo((W[0][0] + s) * kk + tx, W[0][1] * kk + ty)
@@ -1293,7 +1764,7 @@ export function createFlatCoverage(canvas) {
       const color = p.color || focusCfg.subColor
       if (dotMode) {
         const r = Math.max(1, px * iz * 0.14)
-        ctx.beginPath(); ctx.arc(PX(p.lon), PY(p.lat), r, 0, Math.PI * 2)
+        ctx.beginPath(); ctx.arc(PX(p.lon, p.lat), PY(p.lat, p.lon), r, 0, Math.PI * 2)
         ctx.fillStyle = color; ctx.fill()
         ctx.lineWidth = Math.max(0.6, r * 0.5); ctx.strokeStyle = 'rgba(8,12,18,0.92)'; ctx.stroke()
       } else drawSatIcon(p.lon, p.lat, px * iz, color)
@@ -1375,7 +1846,7 @@ export function createFlatCoverage(canvas) {
     const mx = clientX - r.left, my = clientY - r.top
     let best = -1, bd = Math.max(7, (editVerts.px || 3) + 5)   // 命中半径：顶点半径+5px、下限 7px
     editVerts.pts.forEach((p, i) => {
-      const d = Math.hypot(PX(p[0]) - mx, PY(p[1]) - my)
+      const d = Math.hypot(PX(p[0], p[1]) - mx, PY(p[1], p[0]) - my)
       if (d < bd) { bd = d; best = i }
     })
     return best
@@ -1418,7 +1889,7 @@ export function createFlatCoverage(canvas) {
     let best = null, bd = Infinity
     const test = (lon, lat, d, target) => {
       const hit = Math.max(HIT_MIN, d * 0.5 + 4)
-      const dd = Math.hypot(PX(lon) - mx, PY(lat) - my)
+      const dd = Math.hypot(PX(lon, lat) - mx, PY(lat, lon) - my)
       if (dd <= hit && dd < bd) { bd = dd; best = target }
     }
     // 次序＝图上的压盖次序反过来：地球站画在最上，先抓它；航点在最下，最后
@@ -1447,7 +1918,7 @@ export function createFlatCoverage(canvas) {
     const mx = clientX - r.left, my = clientY - r.top
     const pts = editVerts.pts; let inside = false
     for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
-      const xi = PX(pts[i][0]), yi = PY(pts[i][1]), xj = PX(pts[j][0]), yj = PY(pts[j][1])
+      const xi = PX(pts[i][0], pts[i][1]), yi = PY(pts[i][1], pts[i][0]), xj = PX(pts[j][0], pts[j][1]), yj = PY(pts[j][1], pts[j][0])
       if ((yi > my) !== (yj > my) && mx < (xj - xi) * (my - yi) / (yj - yi) + xi) inside = !inside
     }
     return inside
@@ -1561,20 +2032,28 @@ export function createFlatCoverage(canvas) {
   function onLeave() { placeArmed = false; onUp(); if (onHover) onHover(null) }       // 移出地图：清空读数（放置武装作废，避免离屏误落点）
   function onDbl() { fit(); invalidateStatic(); requestDraw(); if (onZoom) onZoom(scaleToT()) }
   // 屏幕坐标 -> 经纬度（夹到地图边缘，框选角点用：框拖出地图外也取有效角）
+  // 夹紧版：拖出地图边界也要给一个值（拖标记/拖顶点时手滑出去不能当场断掉）。
+  // 非等距圆柱下平面不是矩形，没法按轴夹；改成【沿屏幕向图心二分】找回最近的地图内点。
   function screenToLonLatClamp(clientX, clientY) {
+    const hit = screenToLonLat(clientX, clientY)
+    if (hit) return hit
     const r = canvas.getBoundingClientRect(), kk = k()
-    const wx = (clientX - r.left - tx) / kk
-    const wy = Math.max(0, Math.min(180, (clientY - r.top - ty) / kk))
-    let lon = wx + LON0; lon = ((lon % 360) + 540) % 360 - 180
-    return { lat: 90 - wy, lon }
+    const sx = clientX - r.left, sy = clientY - r.top
+    const cx = tx + PJ.W * kk / 2, cy = ty + PJ.H * kk / 2
+    let a = 0, b = 1, best = null
+    for (let i = 0; i < 24; i++) {
+      const t = (a + b) / 2
+      const q = PJ.inv((cx + (sx - cx) * t - tx) / kk, (cy + (sy - cy) * t - ty) / kk)
+      if (q) { best = q; a = t } else b = t
+    }
+    return best ? { lon: best[0], lat: best[1] } : { lon: PJ.lon0 + 180, lat: 0 }
   }
   // 屏幕坐标 -> 经纬度（投影逆运算）；超出地图范围返回 null
   function screenToLonLat(clientX, clientY) {
     const r = canvas.getBoundingClientRect(), kk = k()
     const wx = (clientX - r.left - tx) / kk, wy = (clientY - r.top - ty) / kk
-    if (wy < 0 || wy > 180 || wx < 0 || wx > 360) return null   // 世界矩形之外（信箱留白）没有经纬度
-    let lon = wx + LON0; lon = ((lon % 360) + 540) % 360 - 180
-    return { lat: 90 - wy, lon }
+    const q = PJ.inv(wx, wy)                                    // 平面之外（信箱留白 / 圆锥扇外）返回 null
+    return q ? { lon: q[0], lat: q[1] } : null
   }
   let onRightClick = null, onHover = null
   function onCtx(e) { e.preventDefault(); if (onRightClick) onRightClick(screenToLonLat(e.clientX, e.clientY), { x: e.clientX, y: e.clientY }) }
@@ -1733,7 +2212,8 @@ export function createFlatCoverage(canvas) {
     // on=开关、bright=亮度乘子、maxZ=瓦片档最深级（离线包只切到 L6 时传 6，免得一路请求必然 404 的 L7）。
     setImagery(o) {
       if (!o) return
-      if (o.set !== undefined) imgSet = o.set || null
+      if (o.set !== undefined) { if (o.set !== imgSet) twDirty = true; imgSet = o.set || null }
+      if (o.on != null && !o.on) releaseTileWorld()          // 关了就把拼图还回去
       if (o.img !== undefined) imgEl = o.img || null
       if (o.on != null) imgOn = !!o.on
       if (o.maxZ != null && Number.isFinite(o.maxZ)) imgMaxZ = Math.max(0, Math.min(11, o.maxZ | 0))   // 上限 11：GIBS 的 31.25m 矩阵集到 L11（30.6 m/px），是其真彩天花板
@@ -1789,7 +2269,8 @@ export function createFlatCoverage(canvas) {
       const w = ((nv + 180) % 360 + 360) % 360 - 180
       if (Math.abs(w - LON0) < 1e-9) return
       LON0 = w
-      borderPaths = null
+      PJ = makeProjection(PJ.kind, LON0)   // 切口即中央经线，投影跟着重造
+      borderPaths = null; gridPath = null; gridKey = ''; sphPath = null; sphKey = ''; rpKey = ''; rpBox = null
       buildBaseGeo(resolvedFeatures(mapDetail0), mapThin)
       fieldLayers = fieldLayers.map((L) => ({ ...L, fillPaths: L.fillBands ? buildFillPaths(L.fillBands) : null, segPaths: L.segGroups ? buildSegPaths(L.segGroups) : null, bounds: layerBounds(L) }))
       termData = null   // 夜区采样起点钉在 LON0，下一拍 setTerminator 会按新切口重算
@@ -1797,6 +2278,22 @@ export function createFlatCoverage(canvas) {
       invalidateStatic(); requestDraw()
     },
     getLon0: () => LON0,
+    // 2D 投影档。与 setLon0 同一条通路：世界平面变了 → 陆地 / 五类边界线 / 覆盖场 / 等值线
+    // 全部重烘，经纬网缓存作废，再 fit 一次把新平面摆进画布。
+    // ★ 出厂 'equirect' 走的是换投影前那条一行没改的老路（PJ.identity），逐位相同。
+    setProjection(kind) {
+      const kd = isProjection(kind) ? kind : DEFAULT_PROJECTION
+      if (kd === PJ.kind) return
+      PJ = makeProjection(kd, LON0)
+      if (PJ.identity) releaseTileWorld()                    // 回到等距圆柱：走瓦片直贴，用不上拼图
+      borderPaths = null; gridPath = null; gridKey = ''; sphPath = null; sphKey = ''
+      rpKey = ''; rpBox = null                     // 栅格重投影缓存作废
+      buildBaseGeo(resolvedFeatures(mapDetail0), mapThin)
+      fieldLayers = fieldLayers.map((L) => ({ ...L, fillPaths: L.fillBands ? buildFillPaths(L.fillBands) : null, segPaths: L.segGroups ? buildSegPaths(L.segGroups) : null, bounds: layerBounds(L) }))
+      fit()
+      invalidateStatic(); requestDraw()
+    },
+    getProjection: () => PJ.kind,
     setBeamDragMode(v) { beamDragMode = !!v; beamDragging = false; canvas.style.cursor = polyDrawMode ? 'crosshair' : ((v || labelDragMode) ? 'move' : 'grab') },
     setOnBeamDrag(fn) { onBeamDrag = fn },
     setLabelDragMode(v) { labelDragMode = !!v; labelDragging = false; canvas.style.cursor = polyDrawMode ? 'crosshair' : ((v || beamDragMode) ? 'move' : 'grab') },
@@ -1942,6 +2439,8 @@ export function createFlatCoverage(canvas) {
     // ★ 这里原本有【两个 destroy 键落在同一个对象字面量里】，后一个把前一个整个盖掉 —— offPov()
     //   从来没被调用过，卸载后的实例仍挂在主权解算层的广播上。已并成这一个。
     destroy() {
+      twInvalidateAll.delete(onTileReady)
+      if (!twInvalidateAll.size) releaseTileWorld()
       if (rafId) cancelAnimationFrame(rafId)
       offPov()
       if (offDpr) { offDpr(); offDpr = null }
