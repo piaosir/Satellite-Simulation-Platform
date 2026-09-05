@@ -12,10 +12,10 @@
 //
 // 面向用户的字串（列名 / 读数名 / 提示 / 报错）一律走全软件的术语：系统余量、载波带宽、功率带宽、
 // 功带平衡、超发/欠发、转发器资源占用……与链路表结果列、载波配置面板同名同义，别在这儿另起一套。
-import { ref, reactive, computed, watch } from 'vue'
+import { ref, reactive, computed, watch, onBeforeUnmount } from 'vue'
 import NumBox from './NumBox.vue'
 import Icon from './Icon.vue'
-import { ADV_MODES, ADV_BASES, solveAdv, CNC_DEFAULTS } from '../shared/advBalance.js'
+import { ADV_MODES, ADV_BASES, solveAdv, CNC_DEFAULTS, cncAvailTargets, cncAvailability } from '../shared/advBalance.js'
 import { pickColumn, fmtScaled, fmtQty } from '../shared/adaptUnits.js'
 
 const props = defineProps({
@@ -29,9 +29,12 @@ const props = defineProps({
   // 应用后若派生了载波副本，宿主回传 { 原载波id: 副本id }——偏置跟着搬过去，
   // 否则下一轮打开时这些值会因为载波换了 id 而悄悄归零，解出来的余量跟着变
   carrierRemap: { type: Object, default: null },
-  storeKey: { type: String, default: 'lb' }
+  storeKey: { type: String, default: 'lb' },
+  // CnC 窗口可用度：宿主反解回来的探测结果（引擎在主进程，这里只管要与显示）
+  cncAvail: { type: Object, default: null },
+  cncAvailBusy: { type: Boolean, default: false }
 })
-const emit = defineEmits(['close', 'apply', 'set-count'])
+const emit = defineEmits(['close', 'apply', 'set-count', 'scan-avail'])
 
 // —— 面板状态（按窗口记忆：一轮试错要反复开合，选择不该每次重来）——
 const KEY = computed(() => props.storeKey + '/advBalance')
@@ -141,6 +144,22 @@ const solvedPa = computed(() => {
   return m
 })
 const cntOfRow = (r) => { const n = Math.round(parseFloat(r.count)); return (isFinite(n) && n >= 1) ? n : 1 }
+
+// —— CnC 窗口可用度：请求宿主反解 ——
+// 一次反解 = 14 轮批量 IPC，不能跟着每次击键跑，故节流 400 ms；口径签名没变就不重发。
+// 引擎在主进程，本组件只出「要探哪几个目标」和「怎么显示」，算在宿主。
+const availTargets = computed(() => (mode.value === 'cnc' ? cncAvailTargets(res.value) : []))
+const availSig = computed(() => JSON.stringify(availTargets.value.map((t) => [t.key, t.rowId, t.needFadeDb.toFixed(4)])))
+let _availTimer = null
+watch(availSig, (sig, old) => {
+  if (!props.open || sig === old) return
+  if (_availTimer) clearTimeout(_availTimer)
+  _availTimer = setTimeout(() => emit('scan-avail', availTargets.value), 400)
+}, { immediate: true })
+onBeforeUnmount(() => { if (_availTimer) clearTimeout(_availTimer) })
+// 汇总：窗口两道边与两条链路的系统可用度取最小（保守近似，见 advBalance.js 的口径注释）
+const avail = computed(() => (props.cncAvail && mode.value === 'cnc'
+  ? cncAvailability(res.value, props.cncAvail.probes, props.cncAvail.sys) : null))
 const anyMultiWay = computed(() => props.rows.some((r) => cntOfRow(r) > 1))
 
 // —— 带宽读数的显示单位：全自动挑档（Hz/kHz/MHz/GHz，档位表同结果列，无手动开关）——
@@ -171,6 +190,12 @@ const sign = (v) => (isFinite(v) ? (v >= 0 ? '+' : '') + v.toFixed(2) : '—')
 // 载波表「基准余量」：取「当前余量」口径而基准与此刻的余量又不一致时——即这份载波已被本功能改过、
 // 基准仍钉在它进来之前那份原始余量上——注明现值，免得读的人以为数错了（「各自平衡点」口径下两者
 // 本就该不同，那是口径使然，不必注）
+// 逐收端的窗口可用度读数（宿主还没反解回来时给「—」，不编数）
+const availOf = (key) => {
+  const sd = avail.value && avail.value.sides.find((x) => x.key === key)
+  if (!sd || !isFinite(sd.windowPct)) return '—'
+  return sd.capped ? '≥ 99.999' : sd.windowPct.toFixed(3)
+}
 const drifted = (c) => base.value === 'current' && isFinite(c.baseDb) && isFinite(c.fromDb) && Math.abs(c.baseDb - c.fromDb) > 0.005
 
 function apply() {
@@ -341,6 +366,11 @@ function apply() {
           <div v-if="cnc" class="ab-kv" title="载波叠加相对两条各占一段的常规做法省下的频谱：1 − 组占用带宽 / Σ载波带宽"><span>节省带宽</span>
             <b>{{ d2(cnc.bwSaving * 100) }}%</b>
             <em>抵消深度 {{ d2(cnc.cancelDb) }} dB · 符号率比 {{ isFinite(cnc.rsRatio) ? d2(cnc.rsRatio) : '—' }}:1 · 迭代 {{ cnc.iters }} 轮</em></div>
+          <div v-if="cnc" class="ab-kv" title="CNC 可用度：C/N 余量与 PSD 比窗口两道门取最小。窗口那一道由反解得到——对端上行衰落吃掉窗口余地的那一档可用度，即窗口维持得住的时间占比"><span>CNC 可用度</span>
+            <b v-if="cncAvailBusy">…</b>
+            <b v-else-if="avail && isFinite(avail.pct)">{{ avail.pct >= 99.999 ? '≥ 99.999' : avail.pct.toFixed(3) }}%</b>
+            <b v-else>—</b>
+            <em v-if="avail && isFinite(avail.pct)">余量 {{ isFinite(avail.sysPct) ? avail.sysPct.toFixed(3) : '—' }}% · 窗口 {{ isFinite(avail.windowPct) ? (avail.windowPct >= 99.999 ? '≥ 99.999' : avail.windowPct.toFixed(3)) : '—' }}%</em></div>
         </div>
 
         <!-- CnC 逐收端：各站收到的是对端那条载波，同时收到自己那条的回波，两侧的账各算各的 -->
@@ -357,6 +387,7 @@ function apply() {
                 <th class="n" title="抵消后的残余自干扰 C/I = 抵消深度 − 区间上端的 PSD 比">残余 C/I<i>dB</i></th>
                 <th class="n" title="残余自干扰与固有处理损耗并联后的载波带内 C/I，应用后写入该收端所在行的「附加 C/I」">附加 C/I<i>dB</i></th>
                 <th class="n" title="该附加 C/I 折算到载波 C/(N+I) 上的退化量：引擎据此抬高本载波的 C/N 要求">退化<i>dB</i></th>
+                <th class="n" title="该收端的 PSD 比窗口维持得住的时间占比：对上下两条边各反解一次（上沿由对端上行衰落触发、下沿由本端的），取更差的那一条">窗口可用度<i>%</i></th>
               </tr>
             </thead>
             <tbody>
@@ -370,6 +401,7 @@ function apply() {
                 <td class="n">{{ d2(sd.ciRes) }}</td>
                 <td class="n">{{ d2(sd.ci) }}</td>
                 <td class="n">{{ d2(sd.deg) }}</td>
+                <td class="n">{{ availOf(sd.key) }}</td>
               </tr>
             </tbody>
           </table>

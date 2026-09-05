@@ -38,7 +38,7 @@ import LbShareDialog from '../components/LbShareDialog.vue'
 import LbReportDialog from '../components/LbReportDialog.vue'
 import LbAdvBalanceDialog from '../components/LbAdvBalanceDialog.vue'
 import { useLbReport } from '../shared/useLbReport.js'
-import { planAdvWriteback, advBaseMargin } from '../shared/advBalance.js'   // 高级计算配平结果的写回落点（新建副本 / 就地改）
+import { planAdvWriteback, advBaseMargin, cncAvailability, CNC_AVAIL_HI, CNC_AVAIL_LO, CNC_AVAIL_STEPS } from '../shared/advBalance.js'   // 高级计算配平结果的写回落点（新建副本 / 就地改）
 import { buildGeoScene } from '../shared/lbLinkScene.js'
 
 const api = typeof window !== 'undefined' ? window.api : null
@@ -1083,6 +1083,72 @@ const advTpBwMHz = computed(() => {
   return isFinite(v) ? v : 0
 })
 // 参考态必须是「此刻这套输入」算出来的：没算过或输入已变，先算一遍再开
+// —— CnC 窗口可用度反解 ——
+// ρ 越窗发生在某一端的上行衰落吃掉了窗口余地的那一刻。把那个衰落量当目标，对该行的上行
+// 可用度做二分：引擎在这条路上单调（可用度 ↑ ⇒ 上行雨衰 ↑）。二分在【中断率】的对数域做
+// ——可用度 99.9 与 99.99 在线性域只差 0.09，对数域是整整一档。
+// 每轮把全部目标打成一次批量 IPC（同 compute 的 computeModeBatch），14 轮 = 14 次往返。
+const cncAvail = ref(null)
+const cncAvailBusy = ref(false)
+let _cncAvailSeq = 0
+async function scanCncAvail(targets) {
+  const seq = ++_cncAvailSeq
+  if (!targets || !targets.length || !api.linkBudget) { cncAvail.value = null; return }
+  // 目标衰落量 ≤ 0：晴空就已经越窗，反解没有意义（窗口可用度记 0）
+  const live = targets.filter((t) => t.needFadeDb > 0 && sweepParamsByRow.value[t.rowId])
+  const dead = targets.filter((t) => t.needFadeDb <= 0)
+  const probes = {}
+  for (const t of dead) probes[t.key] = { availPct: 0, capped: false, clearSkyOut: true }
+  if (live.length) {
+    cncAvailBusy.value = true
+    try {
+      // 中断率对数域的二分边界：[100−99.999, 100−90] = [1e-3, 10] ⇒ log10 ∈ [−3, 1]
+      const st = live.map(() => ({ lo: Math.log10(100 - CNC_AVAIL_HI), hi: Math.log10(100 - CNC_AVAIL_LO) }))
+      const capped = live.map(() => true)   // 到 99.999 仍未触窗则维持 true
+      for (let it = 0; it < CNC_AVAIL_STEPS; it++) {
+        const specs = live.map((t, i) => {
+          const base = sweepParamsByRow.value[t.rowId]
+          const mid = (st[i].lo + st[i].hi) / 2
+          const link = { ...base.linkParams, uplinkAvailability: String(100 - Math.pow(10, mid)) }
+          return { sat: base.satParams, link, opt: base.opt }
+        })
+        const rs = api.linkBudget.computeModeBatch
+          ? await api.linkBudget.computeModeBatch(specs)
+          : await Promise.all(specs.map((x) => api.linkBudget.computeMode(x.sat, x.link, x.opt)))
+        if (seq !== _cncAvailSeq) return   // 期间输入又改过：这一轮的结果作废
+        for (let i = 0; i < live.length; i++) {
+          const r = rs && rs[i]
+          const mid = (st[i].lo + st[i].hi) / 2
+          if (!r || !r.success) { st[i].hi = mid; continue }   // 算不出来就往中断率大的一侧收
+          const rain = parseFloat(r.data.uplinkRainAttenuation)
+          const upc = parseFloat(r.data.UPCmarginResult)
+          const resid = Math.max(0, (isFinite(rain) ? rain : 0) - (isFinite(upc) ? upc : 0))
+          // 残余雨衰已够深 ⇒ 这一档就越窗了 ⇒ 往中断率更大（可用度更低）的一侧继续找
+          if (resid >= live[i].needFadeDb) { st[i].lo = mid; capped[i] = false } else { st[i].hi = mid }
+        }
+      }
+      for (let i = 0; i < live.length; i++) {
+        // 收敛点：中断率取区间上端（保守——宁可把可用度报低）
+        const pct = 100 - Math.pow(10, st[i].lo)
+        probes[live[i].key] = capped[i]
+          ? { availPct: CNC_AVAIL_HI, capped: true }
+          : { availPct: pct, capped: false }
+      }
+    } catch (e) {
+      if (seq === _cncAvailSeq) { cncAvail.value = null; cncAvailBusy.value = false }
+      return
+    }
+    cncAvailBusy.value = false
+  }
+  if (seq !== _cncAvailSeq) return
+  // 两条链路的系统可用度：C/N 余量那道门
+  const sys = targets.map((t) => {
+    const l = links.value.find((x) => x.rowId === t.rowId)
+    return l && l.data ? parseFloat(l.data.systemAvailabilityResult) : NaN
+  })
+  cncAvail.value = { probes, sys }
+}
+
 // 对话框里改「路数」：直接落到链路表那一行。归一到 ≥1 的整数——0 或负数会把整组账算没。
 // 不重算：路数不进引擎（引擎只算一路载波），改它只影响组账与汇总，链路表的结果一行不变。
 function setAdvCount({ rowId, count }) {
@@ -1813,7 +1879,8 @@ onMounted(async () => {
     <!-- 高级计算：多载波功带平衡（VSAT 组网 / CNC 载波叠加，GEO/NGSO 共用组件）-->
     <LbAdvBalanceDialog :open="advDlg.open" :rows="advRows" :tp-bw-mhz="advTpBwMHz" :busy="advDlg.busy || computing"
       :stale="resultsStale" :carrier-remap="advRemap" store-key="linkbudget" @close="advDlg.open = false"
-      @apply="applyAdvPlan" @set-count="setAdvCount" />
+      @apply="applyAdvPlan" @set-count="setAdvCount"
+      :cnc-avail="cncAvail" :cnc-avail-busy="cncAvailBusy" @scan-avail="scanCncAvail" />
 
     <!-- 导出报告：封面元信息 + 输出格式 + 是否含图（三窗共用组件）-->
     <LbCustomColsDialog :open="ccDlgOpen" :cols="customCols" :pool="customPool" :preview-fn="ccPreview"

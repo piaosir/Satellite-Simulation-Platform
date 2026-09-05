@@ -280,7 +280,8 @@ function solveCnc(ctx) {
       const ciEq = deg0 > 0 ? T - dB(1 - lin(-deg0)) : Infinity
       const ci = -dB(lin(-ciRes) + (deg0 > 0 ? lin(-ciEq) : 0))
       return {
-        key: s.key, rxName: s.rxName, rowId: s.desired.rowId, desiredNo: s.desired.no, ownNo: s.own.no,
+        key: s.key, rxName: s.rxName, rowId: s.desired.rowId, ownRowId: s.own.rowId,
+        desiredNo: s.desired.no, ownNo: s.own.no,
         rhoClear: rhoClear, rhoMin: rhoMin, rhoMax: rhoMax,
         window: win ? win.slice() : null, modKnown: spec.known, deg0: deg0,
         windowMargin: win ? Math.min(rhoMin - win[0], win[1] - rhoMax) : NaN,
@@ -535,6 +536,72 @@ export function solveAdv(o) {
     ...allUse(o.allRows, outLinks, tpBwKHz),
     carriers: carriers.map(carrierRow),
     links: outLinks
+  }
+}
+
+// ============================================================================
+// CnC 可用度：C/N 余量与 PSD 窗口【两道门】
+// ============================================================================
+// 改造前只有前一道：C/N 余量够就算可用。可载波叠加还有第二道——收端两载波的 PSD 比得
+// 落在厂家窗内。§2.3 那个探针里 hub 收端晴空 4.19 dB + 远端上行雨衰 2.83 dB = 7.02 dB，
+// 正压在 16-QAM 的 +7 dB 窗沿上：C/N 余量还够，CnC 已经先掉线。
+//
+// 严口径 Unavailability = P(C/(N+I) < T) ∪ P(ρ ∉ 窗)。两个事件同源（同一场雨落在同一条
+// 路径上），相关系数无从取，故取【保守近似】：
+//   CnC 可用度 = min(L1 系统可用度, L2 系统可用度, 窗口可用度_P, 窗口可用度_Q)
+// 并集的真值介于 max(各项) 与 min(各项) 之间，取 min 即取下界——工程上宁可低报。
+//
+// 窗口可用度靠【反解】：ρ 越窗发生在「对端上行衰落吃掉了 上沿 − ρ_clear」或「本端上行
+// 衰落吃掉了 ρ_clear − 下沿」的那一刻。把这个衰落量当目标，对那一行的【上行可用度】做
+// 二分即可——引擎在这条路上单调（可用度 ↑ ⇒ 上行雨衰 ↑），故必收敛。二分在【中断率】的
+// 对数域做：可用度 99.9 与 99.99 在线性域只差 0.09，在对数域是整整一档。
+
+// 反解的目标清单：每个收端两条边（上沿由对端行的雨衰触发、下沿由本端行的）。
+// needFadeDb ≤ 0 表示晴空就已经越窗，不必反解。
+export function cncAvailTargets(res) {
+  if (!res || !res.ok || !res.cnc) return []
+  const out = []
+  for (const sd of res.cnc.sides) {
+    if (!sd.window) continue
+    out.push({ key: sd.key + '.hi', side: sd.key, edge: 'hi', rowId: sd.rowId, needFadeDb: sd.window[1] - sd.rhoClear })
+    out.push({ key: sd.key + '.lo', side: sd.key, edge: 'lo', rowId: sd.ownRowId, needFadeDb: sd.rhoClear - sd.window[0] })
+  }
+  return out
+}
+
+// 二分的可用度区间与轮数。上界 99.999 是引擎雨衰模型给得出的最深一档；再往上没有数据支撑，
+// 到顶仍未触窗就记「≥ 99.999」而不是外推一个数。
+export const CNC_AVAIL_HI = 99.999
+export const CNC_AVAIL_LO = 90
+export const CNC_AVAIL_STEPS = 14   // 中断率对数域跨 [0.001, 10] 共 4 档，14 轮 ≈ 2.4e-4 档
+// 第 n 轮该探哪个可用度：在中断率的对数域二分。lo/hi 是【中断率】的对数边界。
+export function cncAvailProbe(loLog, hiLog) {
+  const mid = (loLog + hiLog) / 2
+  return 100 - Math.pow(10, mid)
+}
+
+// 汇总：把反解出的窗口可用度与两条链路的系统可用度并起来取最小。
+// probes: { [key]: { availPct, capped } } —— capped 表示到 99.999 仍未触窗。
+export function cncAvailability(res, probes, sysAvail) {
+  if (!res || !res.ok || !res.cnc) return null
+  const p = probes || {}
+  const sides = res.cnc.sides.map((sd) => {
+    const hi = p[sd.key + '.hi'], lo = p[sd.key + '.lo']
+    const vals = [hi, lo].filter((x) => x && isFinite(x.availPct))
+    if (!vals.length) return { key: sd.key, rxName: sd.rxName, windowPct: NaN, capped: false, byEdge: { hi, lo } }
+    const worst = vals.reduce((a, b) => (a.availPct <= b.availPct ? a : b))
+    return { key: sd.key, rxName: sd.rxName, windowPct: worst.availPct, capped: vals.every((x) => x.capped), byEdge: { hi, lo } }
+  })
+  const sys = (sysAvail || []).map(num).filter(isFinite)
+  const win = sides.map((x) => x.windowPct).filter(isFinite)
+  const all = sys.concat(win)
+  return {
+    pct: all.length ? Math.min(...all) : NaN,
+    // 是谁把可用度压下来的：窗口还是 C/N 余量。纯事实，不是判定。
+    limitedByWindow: win.length > 0 && sys.length > 0 && Math.min(...win) < Math.min(...sys),
+    sysPct: sys.length ? Math.min(...sys) : NaN,
+    windowPct: win.length ? Math.min(...win) : NaN,
+    sides
   }
 }
 

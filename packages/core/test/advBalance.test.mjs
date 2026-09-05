@@ -20,6 +20,7 @@ import { createRequire } from 'node:module'
 import {
   solveAdv, validateAdv, validateCnc, planAdvWriteback, advBaseMargin,
   cncModSpec, normCncOpt, CNC_DEFAULTS,
+  cncAvailTargets, cncAvailability, CNC_AVAIL_HI, CNC_AVAIL_LO, CNC_AVAIL_STEPS,
   ADV_MARK, ADV_ORIGIN, ADV_BASE, ADV_OUT
 } from '../../../src/shared/advBalance.js'
 
@@ -575,6 +576,69 @@ const ASYM = withFx(4, () => [
     near('⑭ 节省带宽 = 1 − 组占用/Σ载波带宽', r.cnc.bwSaving, 1 - r.occBwKHz / r.sumBwKHz, 1e-12)
     near('⑭ 对称一对省掉一半带宽', r.cnc.bwSaving, 0.5, 1e-9)
     ok('⑭ 符号率比 1:1，不触上限', Math.abs(r.cnc.rsRatio - 1) < 1e-9 && !r.warnings.some((w) => w.includes('符号率比')))
+  }
+}
+
+
+// —— ⑱ CnC 可用度：C/N 余量与 PSD 窗口两道门 ——
+// 改造前只有前一道。§2.3 那个探针里 hub 收端晴空 PSD 比 + 远端上行雨衰正压在 16-QAM 的
+// +7 dB 窗沿上：C/N 余量还够，CnC 已经先掉线 —— 这一段就是把第二道门补上。
+{
+  const WET = cncBase.map((p, i) => ({ ...p, rainUpDb: i === 0 ? 1.5 : 2.83, upcDb: 0 }))
+  const r = solveAdv({ mode: 'cnc', picked: WET, state: {}, base: 'current', overDb: 0, tpBwMHz: 36 })
+  ok('⑱ 反解目标：两个收端 × 上下两条边 = 4 个', r.ok && cncAvailTargets(r).length === 4)
+  const tg = cncAvailTargets(r)
+  const sdP = r.cnc.sides[0]
+  const hiP = tg.find((t) => t.key === 'P.hi'), loP = tg.find((t) => t.key === 'P.lo')
+  ok('⑱ 上沿探【对端】那条链路（期望载波是它发的，它衰落才把 ρ 抬上去）',
+    hiP.rowId === sdP.rowId && Math.abs(hiP.needFadeDb - (sdP.window[1] - sdP.rhoClear)) < 1e-9,
+    `探 ${hiP.rowId} · 需 ${hiP.needFadeDb.toFixed(3)} dB`)
+  ok('⑱ 下沿探【本端】那条链路（自身回波是它发的，它衰落才把 ρ 压下去）',
+    loP.rowId === sdP.ownRowId && Math.abs(loP.needFadeDb - (sdP.rhoClear - sdP.window[0])) < 1e-9,
+    `探 ${loP.rowId} · 需 ${loP.needFadeDb.toFixed(3)} dB`)
+  ok('⑱ 没有窗口（调制超出厂家表）就不反解',
+    cncAvailTargets(solveAdv({ mode: 'cnc', picked: WET.map((p) => ({ ...p, modulation: '64APSK' })),
+      state: {}, base: 'current', overDb: 0, tpBwMHz: 36 })).length === 0)
+
+  // 汇总：四项取最小（保守近似——并集的真值在 max 与 min 之间，取下界）
+  const mk = (P, Q) => ({ 'P.hi': { availPct: P, capped: false }, 'P.lo': { availPct: 99.99, capped: false },
+    'Q.hi': { availPct: Q, capped: false }, 'Q.lo': { availPct: 99.99, capped: false } })
+  const a1 = cncAvailability(r, mk(99.5, 99.8), [99.9, 99.95])
+  near('⑱ 四项取最小（窗口 99.5 比余量 99.9 更差）', a1.pct, 99.5, 1e-9)
+  ok('⑱ 指出是窗口那道门更紧（纯事实，不是判定）', a1.limitedByWindow === true)
+  const a2 = cncAvailability(r, mk(99.99, 99.99), [99.5, 99.95])
+  near('⑱ 余量更差时取余量', a2.pct, 99.5, 1e-9)
+  ok('⑱ 余量更紧时不说窗口', a2.limitedByWindow === false)
+  ok('⑱ 逐收端各给一个窗口可用度', a1.sides.length === 2
+    && Math.abs(a1.sides[0].windowPct - 99.5) < 1e-9 && Math.abs(a1.sides[1].windowPct - 99.8) < 1e-9)
+  const a3 = cncAvailability(r, { 'P.hi': { availPct: 99.999, capped: true }, 'P.lo': { availPct: 99.999, capped: true },
+    'Q.hi': { availPct: 99.999, capped: true }, 'Q.lo': { availPct: 99.999, capped: true } }, [99.9, 99.95])
+  ok('⑱ 到 99.999 仍未触窗 → 记 capped，不外推', a3.sides.every((x) => x.capped))
+  ok('⑱ 宿主还没反解回来 → 不编数（窗口项为 NaN，只剩余量那道门）',
+    !isFinite(cncAvailability(r, {}, [99.9, 99.95]).windowPct))
+
+  // ★ 二分反解本身：照宿主的做法在测试里用【真引擎】跑一遍，验它确实落在目标衰落量上
+  // （宿主那段在 Vue 里、走 IPC，单测碰不到；算法一致性靠这一段守）
+  {
+    const NEED = 3.0   // 目标：上行残余雨衰达到 3 dB
+    const residAt = (pct) => {
+      const d = calculateLinkBudget(SAT, { ...CARRIERS.fwd, ...STATIONS.hubD, margin: '3',
+        rainRate: '60', uplinkAvailability: String(pct) }).data
+      return Math.max(0, parseFloat(d.uplinkRainAttenuation) - parseFloat(d.UPCmarginResult))
+    }
+    let lo = Math.log10(100 - CNC_AVAIL_HI), hi = Math.log10(100 - CNC_AVAIL_LO), capped = true
+    for (let i = 0; i < CNC_AVAIL_STEPS; i++) {
+      const mid = (lo + hi) / 2
+      if (residAt(100 - Math.pow(10, mid)) >= NEED) { lo = mid; capped = false } else { hi = mid }
+    }
+    const found = 100 - Math.pow(10, lo)
+    ok('⑱ 二分反解收敛（14 轮内找到触窗的那一档可用度）', !capped, `可用度 ${found.toFixed(4)}%`)
+    const at = residAt(found)
+    ok('⑱ 反解落点处的残余雨衰 ≈ 目标衰落量', Math.abs(at - NEED) < 0.05, `实测 ${at.toFixed(3)} / 目标 ${NEED} dB`)
+    // 单调性——二分的前提。可用度越高（中断率越低）雨衰越深。
+    const seq = [95, 99, 99.5, 99.9, 99.99].map(residAt)
+    ok('⑱ 引擎单调：可用度 ↑ ⇒ 上行残余雨衰 ↑（二分的前提）',
+      seq.every((v, i) => i === 0 || v >= seq[i - 1]), seq.map((v) => v.toFixed(2)).join(' → '))
   }
 }
 
