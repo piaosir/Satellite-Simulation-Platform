@@ -1,4 +1,4 @@
-// 全球底图「主权解算层」构建：Natural Earth 5.x → src/viz/globe3d/data/basemap-{110m,50m,10m}.json
+// 全球底图「主权解算层」构建：Natural Earth → src/viz/globe3d/data/basemap-{110m,50m,10m}.json
 //
 // 与旧 countries-*.json（world-atlas，一份画好的国界）最大的不同：
 //   底图 = 「争议单元级的面」+「一张归属映射表」，国界/着色/点选/标注全部在运行时按归属解算。
@@ -10,6 +10,9 @@
 //   ne_50m_admin_0_breakaway_disputed_areas  同上，50m 档 NE 用的是这个名字
 //   （110m 档 NE 根本不出争议面图层 → 该档只有基础单元级的视角差异，见 DISPUTED_LAYER）
 //   ne_*_admin_0_boundary_lines_land   自带几何的线（停火线/未定界/主张线）
+// ★ 版本号逐图层不同，不是统一的一个（实测 scripts/_ne/*.zip 里的 VERSION.txt，2026-09-05）：
+//   map_units / disputed_areas / breakaway_disputed_areas 三档都是 5.1.1，boundary_lines_land 三档都是 5.1.0。
+//   NE_VERSION 只是记录，进 meta 供台账追溯，不参与任何几何计算 —— 重下数据后若版本变了，改这里。
 //
 // ★ 关于「重叠」——与任务书设想的「一张互斥分区」不同，NE 的实际数据模型是【基础分区 + 争议叠加】：
 //   经点判定实测，阿克赛钦/藏南/克里米亚/西撒等争议面都落在某个 map_unit 里面（宿主 host），
@@ -73,6 +76,8 @@ const LINE_CLS = {
 }
 // 去重缓冲半径（度）：自带线上的点落进任一条派生 arc 的该半径内即视为「派生线已表达」
 const EPS = { '10m': 0.02, '50m': 0.05, '110m': 0.1 }
+// NE 各图层的官方版本号（见文件头）。只写进 meta 供来源台账追溯。
+const NE_VERSION = { map_units: '5.1.1', disputed_areas: '5.1.1', breakaway_disputed_areas: '5.1.1', boundary_lines_land: '5.1.0' }
 const COVER_FRAC = 0.8   // 覆盖率达到即整条丢弃
 
 // 主张线（cls='claim'）——海上主张的通用槽位，南海十段线只是其中一条。
@@ -372,7 +377,8 @@ async function buildScale(scale) {
   topo.lineCls = lineCls2
   topo.meta = {
     scale,
-    source: 'Natural Earth 5.x (public domain) — admin_0_map_units / admin_0_disputed_areas / admin_0_boundary_lines_land',
+    source: 'Natural Earth (public domain) — admin_0_map_units / admin_0_disputed_areas / admin_0_boundary_lines_land',
+    ne_version: NE_VERSION,
     model: '基础分区(units 里 dispute!=true) + 争议叠加(dispute==true，落在 host 内)；面按数组顺序覆盖，线按 adj 派生',
     lineCls_note: 'arc 序号 → 自带线给出的分类（loc/indefinite）。派生规则算出 admin0/indefinite 时由它顶替 —— 停火线/未定界是「两侧 owner 不同」这条规则表达不出来的',
     iso3name,

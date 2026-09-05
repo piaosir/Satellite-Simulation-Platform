@@ -7,6 +7,8 @@
 // 数据源
 //   ADM1  Natural Earth 10m admin_1_states_provinces（公有领域，251 个国家/地区、4596 个单元）
 //   ADM2  geoBoundaries gbOpen 逐国（CC BY 4.0 / ODbL / PDDL，逐国许可，见 ATTRIBUTION.json）
+//         ★ 截至 2026-09-05 仓库里一份 gbOpen 产物都没有：resources/adm 只有 251 个 ADM1 + CHN-adm2（走 DataV）。
+//         要出别国 ADM2 得显式跑 node scripts/build-adm.mjs <ISO3>，那时 ATTRIBUTION 里才会出现逐国许可。
 //   ★ 中国两级都例外，改走阿里 DataV GeoAtlas（民政部行政区划），见 lib/chinaDatav.mjs 的文件头：
 //     NE 的 CHN admin_1 只有 32 个（台港澳被 NE 当独立 admin_0），geoBoundaries 的 CHN ADM2 是
 //     【县级】2391 个且全是拼音 —— 两者都不是本平台要的东西（要的是 34 省 + 333 地级市，带中文）。

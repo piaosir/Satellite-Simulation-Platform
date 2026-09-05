@@ -6960,7 +6960,7 @@ onMounted(async () => {
   // 顺序是 entries → searchPool）、meta 停在存盘位置，这一拍才把星位/视轴/壳层一并对齐。
   ensureSearchPool().finally(() => { if (poolReady) refreshPositions() })
   redrawSats()   // 恢复后立即绘制自定义卫星（关联卫星待 loadGroup 完成由 refreshPositions 跟踪）
-  applyDisplayQuality()   // 套用当前画质档位（含低/中档的 110m、高/超高档的 50m 底图按需加载）
+  applyDisplayQuality()   // 套用当前画质档位（低/中/高档的 50m 底图按需加载，超高/极致档用静态 10m；110m 已于 v1.3.32 下线）
   applyTerminator()   // 晨昏线：按恢复后的开关画一次（不依赖星历，故不等 loadGroup）
   scene.setAutoRotateSpeed(viewPrefs.autoRotateSpeed)
   if (view.flat) await applyFlat(true)   // 恢复上次退出时的 2D 平面图（watch 不触发初始值，故挂载时主动套用一次）
