@@ -129,9 +129,13 @@ const rsAlert = computed(() => {
 const modcodSel = computed(() => {
   const list = modcodList.value
   const nm = props.form.modcodLabel
-  if (nm) return list.findIndex((m) => m.label === nm)
   const i = parseInt(props.form.modcodIndex)
-  return (i >= 0 && i < list.length) ? i : -1
+  const byIdx = (i >= 0 && i < list.length) ? i : -1
+  if (!nm) return byIdx
+  const hit = list.findIndex((m) => m.label === nm)
+  // ★ 名字对不上时退回行号：内置表改过名的行（如 NB-IoT 三张表 2026-09-06 把假分数从标签里
+  //   拿掉）不该让老配置的下拉整个显示成未选中。表只增不改序，行号是可靠的兜底。
+  return hit >= 0 ? hit : byIdx
 })
 function onDvbChange(e) {
   props.form.dvbStandard = e.target.value
