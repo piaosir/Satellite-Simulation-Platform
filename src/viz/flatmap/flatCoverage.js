@@ -32,6 +32,12 @@ import { planRasterMesh } from '../geo/rasterMesh.js'
 import { createGlRaster, GL_TEX_MAX } from './glRaster.js'
 // GRD 分带填充的 GPU 后端（等距圆柱 + 屏上绘制时启用；导出/投影档/无 WebGL2 时退回 Path2D）
 import { createGlField, GL_MAX_LEVELS, meshLattice } from './glField.js'
+// 静态快照的调度口径（重不重建 / 何时补建 / 盖不住时垫哪张）：纯函数拆在这里，见其文件头
+import {
+  REBUILD_FAST_MS, PROBE_FRAMES, UNKNOWN_COST, viewCls as clsOf, makeCostTable,
+  quantPan, makePanQuant, idleMsFor, hotMsFor, clampNominal, placeSnapshot, worldCover as coverOf,
+  coversSubset, pickFallbackIdx, clipRects
+} from './rebuildPolicy.js'
 import { geoArea, geoContains } from 'd3-geo'
 // 南极洲极区收口：与 3D 球体同源（见 buildBaseGeo 的 ATA 分支）
 import { antarcticaFillRings } from '../globe3d/antarctica.js'
@@ -457,28 +463,103 @@ export function createFlatCoverage(canvas) {
   //   平移只搬位图、缩放期按比例缩位图，静止后（或盖不住时）才重建一次。判定见 snapPlace()。
   let belowCanvas = null, belowCtx = null, aboveCanvas = null, aboveCtx = null
   let staticValid = false
+  // 回退快照（§4.4）：重建时若旧的那张在世界坐标里【不是】新的子集（典型：从全图放大进来，旧的是全图），
+  // 就把它整对挪到这里留着 —— 缩回去时先贴它垫底，画面永远有东西，不出现深色空环、也不用同步重建。
+  // 上限 2 对（每对 ≈ 32 MB），按覆盖面积保留最大的；内容变（invalidateStatic）与 resize 时全清。
+  const FALLBACK_MAX = 2
+  let fallbacks = []
+  let sparePairs = []
+  function dropFallbacks() { for (const f of fallbacks) sparePairs.push(f); fallbacks.length = 0; if (sparePairs.length > 2) sparePairs.length = 2 }
   // 快照烘制时的视图指纹：k / 平移量（CSS）/ 四周余量（设备像素，恒为整数）
   let snapK = 0, snapTx = 0, snapTy = 0, snapMxDev = 0, snapMyDev = 0
+  let snapGen = -1            // 烘这张快照时的内容代（§4.5）：与 staticGen 相同才留得住当回退
   let lastRebuildMs = 0
   // 余量占视口的比例（每边）。
   // ★ 上限钉在 RP_PAD（0.20）之下：投影档的影像重投影按【真视口】外扩 RP_PAD 烘一块
   //   （见 reprojectRaster 里的 realView），余量比它大就会在快照边上露出没影像的一条。
   const OVER = 0.18
   const OVER_Q = 64          // 余量量化到 64 设备像素：免得每次重建都换一次画布尺寸（换尺寸＝重新分配 + 清空）
-  const REBUILD_FAST_MS = 8  // 上一次重建这么快就别缩位图了，直接同步重建（放大视角 / 50m 档），免得白引一帧模糊
+  // ---- 重建代价：按【光栅】口径量，不按主线程口径 ----------------------------------------
+  // Chromium 把 canvas 光栅甩到别的线程，renderStaticLayers() 末尾那个 lastRebuildMs 只记下
+  // 「记录绘制指令」的时间（1.5～6 ms），真实代价落在【后面那两个真正绘制的帧】里 —— 下一帧要等
+  // 上一帧的光栅排完才能开始，而这份等待是记在【回调开始之前】的，帧内计时一点都读不到。
+  // ★ 空 rAF 探针不行：它不画东西，光栅队列不会在它身上排队（验证台实测连排三个空 rAF 全是 0，
+  //   而随后两个【会画的】帧读到 231 ms）。故探针口径 = 「重建帧起点 → 后两个绘制帧起点」的间隔，
+  //   各自扣掉 nominal（这台机器一帧本来就要等多久：真机 = 一个刷新周期，验证台无 vsync ≈ 0）。
+  //   静止时后面没有帧可数 —— 由 armProbe 补两帧【逐像素相同的重绘】把这次重建的光栅账结掉，
+  //   顺带把那份顶住从「用户下一次手势的第一帧」挪到静止期（§4.1）。
+  let rasterGapMs = 0
+  let rasterNominal = 16.7          // 非重建帧的帧间隔滚动最小值，钳在 [4, 20]
+  let costEst = 0
+  let probeLeft = 0, probeAcc = 0, probeT = 0, probeCls = '', probeChase = 0, probeSync = 0
+  let lastDrawAt = 0
+  function noteNominal(gap) { rasterNominal = clampNominal(gap, rasterNominal) }
+  function probeTick(t0) {
+    const gap = t0 - probeT
+    rasterGapMs = +gap.toFixed(2)
+    probeAcc += Math.max(0, gap - rasterNominal)
+    probeT = t0
+    if (probeLeft <= 1) probeDone(); else probeLeft--
+  }
+  function probeDone() {
+    if (probeLeft <= 0) return
+    probeLeft = 0; probeChase = 0
+    // 帧间隔是【起点到起点】，本身已经把重建那一帧的同步耗时包在里面（Chromium 切回同步光栅
+    // 模式时那就是全部代价）——故这里取大而不是相加，别把它算两遍。
+    // 一帧都没催出来（chase 用尽）时 probeAcc 是 0，那就只剩主线程读数兜底。
+    costEst = +Math.max(probeAcc, probeSync).toFixed(2); noteCost(probeCls, costEst)
+  }
+  // 静止时把探针要的那几帧催出来（手势中自然帧会先把它们用掉，这里就一次都不催）。
+  // ★ 催不动就当场结账：探针悬着不结，下一次手势的头几帧会被算到这一次重建头上。
+  function armProbe() {
+    if (probeLeft <= 0) return
+    if (probeChase > 12) { probeDone(); return }
+    probeChase++
+    requestAnimationFrame(() => { if (probeLeft > 0) { requestDraw(); armProbe() } })
+  }
   // 烘快照期间的【真视口】：虚拟视口只该影响「画多大一块」，不该把影像重投影的烘图框也撑大 ——
   // 那会挪动重采样相位，静止画面就与改造前不逐像素相同了。见 reprojectRaster。
   let realView = null
-  function invalidateStatic() { staticValid = false }
+  // 代价按【视角类】记：底图档 + 影像开关 + 投影 + 屏上分辨率（半倍频程一档）。
+  // 换到没量过的类一律当作贵（走缩位图，静止后量到再说）。迟滞与判据见 rebuildPolicy.js。
+  const costTab = makeCostTable()
+  const noteCost = (cls, cost) => costTab.note(cls, cost)
+  const viewCls = () => clsOf(curDetail(), imgOn, PJ.kind, k() * dpr)
+  const clsCheap = (cls) => costTab.cheap(cls)
+  const clsCost = (cls) => costTab.cost(cls)
+  // ---- 「内容作废」与「视图补建」分家（§4.5）--------------------------------------------
+  // invalidateStatic 的 29 处调用【全部】是内容变了：代号 +1、回退快照作废。
+  // 只有 scheduleRebuild 到期那一条是视图补建：内容没变，代号不动、回退快照留着。
+  let staticGen = 0
+  function invalidateStatic() { staticValid = false; staticGen++; dropFallbacks() }
+  function rebuildAtRest() { staticValid = false }
+  // 手势热度：按着指针拖 / 刚滚过轮不足一个 idle。热着就不补建 —— 补建的光栅会顶住下一格。
+  // ★ 慢速滚轮（手滚一格 100～300 ms）必须整串算作【一次手势】：按 idleMs() 判热，两格之间
+  //   就会补一次建，下一格的帧要等它的光栅（实测一格 47 ms）。故【贵】的视角热窗口拉到 ZOOM_RUN_MS，
+  //   盖住整个滚轮节奏；【便宜】的视角照 idleMs()，一格滚完就清晰（那一次重建本来就 < 8 ms，
+  //   落在格间也不顶谁）。
+  let lastZoomAt = -1e9
+  const panQ = makePanQuant()          // §4.2：交互平移的整设备像素量化（带残差，见 rebuildPolicy）
+  function noteZoom() { lastZoomAt = performance.now(); panQ.reset() }
+  const hotMs = () => hotMsFor(clsCheap(viewCls()), idleMs())
+  const gestureHot = () => dragging || (performance.now() - lastZoomAt) < hotMs()
+  // 自适应静止阈值：便宜的视角 110 ms 后就清晰，贵的视角多等一点、避开滚轮格间隔。
+  const idleMs = () => idleMsFor(clsCost(viewCls()))
   // 手势静止后的一次重建（缩位图 / 位移落不到整设备像素时）。★ 只重建，不改视图。
   let idleTimer = 0
-  const IDLE_MS = 110
+  let tilesDirty = false          // 手势中到货的瓦片：不当场作废，静止补建时一并收
   function scheduleRebuild() {
     if (idleTimer) clearTimeout(idleTimer)
-    idleTimer = setTimeout(() => { idleTimer = 0; invalidateStatic(); requestDraw() }, IDLE_MS)
+    idleTimer = setTimeout(idleFire, idleMs())
+  }
+  function idleFire() {
+    idleTimer = 0
+    if (gestureHot()) { idleTimer = setTimeout(idleFire, 60); return }   // 手还热：再等一拍
+    if (tilesDirty) { tilesDirty = false; invalidateStatic() } else rebuildAtRest()
+    requestDraw()
   }
 
-  function fit() { const W = PJ.W, H = PJ.H; base = Math.min(cw / W, ch / H); scale = 1; tx = (cw - W * base) / 2; ty = (ch - H * base) / 2 }
+  function fit() { panQ.reset(); const W = PJ.W, H = PJ.H; base = Math.min(cw / W, ch / H); scale = 1; tx = (cw - W * base) / 2; ty = (ch - H * base) / 2 }
   const k = () => base * scale
   // 世界矩形（屏幕 px）：整幅图就这一张，x∈[tx, tx+360k]、y∈[ty, ty+180k]。
   // ★ 一切绘制都裁到它 —— 平面图是【一张完整的世界地图】，不是可以无限横向翻页的瓦片地图。
@@ -900,10 +981,22 @@ export function createFlatCoverage(canvas) {
 
   // 瓦片到货 → 重绘。★ 必须去抖：影像画在 below 静态快照里，而重建那张快照要连上百个国家名一起
   // 重画；几十片在几百毫秒里陆续到货，若逐片触发就是几十次全量静态重建，观感上就是「加载时卡死」。
+  // ★ 手势中到货【不作废】：作废＝下一帧整份重建，代价按 §4.1 的光栅口径付，正撞在手势里。
+  //   只记 tilesDirty，静止补建时一并收（补建本来就重画瓦片）。放大跨级时几批连着来更是如此。
   let tileTimer = 0
   function onTileReady() {
+    if (gestureHot()) { tilesDirty = true; scheduleRebuild(); return }
     if (tileTimer) return
-    tileTimer = setTimeout(() => { tileTimer = 0; invalidateStatic(); requestDraw() }, 60)
+    // ★ 走 rebuildAtRest 而不是 invalidateStatic：瓦片到货只是【多了几片影像】，不是换了内容 ——
+    //   按内容作废会把回退快照一并清掉（放大之后瓦片陆续到货，正好把「缩回去时垫底的那张全图」
+    //   清得一张不剩），于是缩回全图又露空环。少几片影像的回退快照垫在下面完全够用。
+    // ★ 到期时再判一次热：去抖期间用户可能已经开始滚轮了（实测 50m+瓦片 慢滚 8 格里漏进 2 次
+    //   补建，其中一格 62 ms —— 就是【手势之前】挂上的这个定时器到期打的）。
+    tileTimer = setTimeout(function fire() {
+      tileTimer = 0
+      if (gestureHot()) { tilesDirty = true; scheduleRebuild(); return }
+      rebuildAtRest(); requestDraw()
+    }, 120)
   }
   function drawLand() {
     const kk = k()
@@ -1997,17 +2090,44 @@ export function createFlatCoverage(canvas) {
   // 余量为 0 时【原样走老路】：渲到主画布再拷到离屏缓冲 —— 全图视角（本次改造的主战场）
   // 于是与改造前逐字节同一条指令流，逐像素相同由构造保证。
   // 余量不为 0（放大到世界伸出视口）时快照比主画布大，主画布当不了草稿，改为直接渲到离屏缓冲。
+  // 旧快照挪进 fallbacks，当前这一对换成另一对画布（双缓冲）—— 别再往同一张上画。
+  function keepFallback() {
+    const rec = curRec()
+    const c = coverOf(rec, dpr)
+    fallbacks.unshift({ ...rec, below: belowCanvas, above: aboveCanvas, cw: belowCanvas.width, ch: belowCanvas.height, area: Math.abs((c.x1 - c.x0) * (c.y1 - c.y0)) })
+    fallbacks.sort((a, b) => b.area - a.area)
+    while (fallbacks.length > FALLBACK_MAX) sparePairs.push(fallbacks.pop())
+    if (sparePairs.length > 1) sparePairs.length = 1
+    const sp = sparePairs.pop()
+    belowCanvas = sp ? sp.below : document.createElement('canvas')
+    aboveCanvas = sp ? sp.above : document.createElement('canvas')
+    belowCtx = belowCanvas.getContext('2d'); aboveCtx = aboveCanvas.getContext('2d')
+  }
   function renderStaticLayers() {
     const _t0 = performance.now()
     if (idleTimer) { clearTimeout(idleTimer); idleTimer = 0 }
+    // §4.2：静止重建时把平移量落到整设备像素上 —— 不然缩放停下后 snapTx 是分数，
+    // 第一次拖动的残差又是 0.5 px，于是拖动全程每次停顿都补一次建。挪 ≤ 0.5 设备像素肉眼不可见。
+    // 手势【进行中】不动它：缩放锚点的精度只在缩放进行中有意义（onWheel / setZoomT 的锚点数学要精确的 tx）。
+    if (!gestureHot()) { tx = quantPan(tx, dpr); ty = quantPan(ty, dpr) }
     const { mx: mxDev, my: myDev } = snapMargins()
     const bw = canvas.width + 2 * mxDev, bh = canvas.height + 2 * myDev
+    // 旧快照留不留：内容代相同、且新的那张【盖不住】它（典型：从全图放大进来，旧的是全图）就留着当回退。
+    // ★ 判据是 snapGen === staticGen 而不是 staticValid —— 静止补建（rebuildAtRest）正是
+    //   「内容没变、只是视图动了」那一条，它把 staticValid 置假，按 staticValid 判就一张也留不下。
+    // ★ 只在【缩放变了】时留：同 k 的平移留一张价值很小（盖的是挪开的那一块），代价却是每次
+    //   平移后的补建都换一对新画布 —— 新建的画布头一次光栅走的是另一档（软件光栅未提升到 GPU），
+    //   与「一直用同一对」比逐像素差 0.1% 的点、最大 6/255。静止画面的逐像素闸卡的正是这个。
+    if (snapGen === staticGen && belowCanvas.width > 1 && k() !== snapK) {
+      const oc = coverOf(curRec(), dpr), nc = coverOf({ k: k(), tx, ty, mx: mxDev, my: myDev, w: bw, h: bh }, dpr)
+      if (!coversSubset(nc, oc)) keepFallback()
+    }
     if (belowCanvas.width !== bw || belowCanvas.height !== bh) {
       belowCanvas.width = bw; belowCanvas.height = bh
       aboveCanvas.width = bw; aboveCanvas.height = bh
     }
     const SV = { ctx, cw, ch, tx, ty }
-    snapK = k(); snapTx = tx; snapTy = ty; snapMxDev = mxDev; snapMyDev = myDev
+    snapK = k(); snapTx = tx; snapTy = ty; snapMxDev = mxDev; snapMyDev = myDev; snapGen = staticGen
     if (mxDev || myDev) realView = { cw, ch, tx, ty }
     try {
       if (mxDev || myDev) { cw = bw / dpr; ch = bh / dpr; tx = SV.tx + mxDev / dpr; ty = SV.ty + myDev / dpr }
@@ -2034,37 +2154,22 @@ export function createFlatCoverage(canvas) {
     } finally {
       ctx = SV.ctx; cw = SV.cw; ch = SV.ch; tx = SV.tx; ty = SV.ty; realView = null
     }
+    tilesDirty = false          // 这一趟本来就把瓦片重画了
     lastRebuildMs = +(performance.now() - _t0).toFixed(2)
   }
   // 快照怎么摆到当前视图上。返回 null ＝ 盖不住 / 该重建。
   // ★ 判据是「盖住【世界矩形 ∩ 视口】」而不是「盖住整个视口」：世界之外快照上本就是背景（below）
   //   与透明（above），与现画一遍逐字相同 —— 故全图视角（世界整个在快照里）平移多远都命中。
-  function snapPlace() {
-    const kk = k()
-    const bw = belowCanvas.width, bh = belowCanvas.height
-    const cwD = canvas.width, chD = canvas.height
-    const wx0 = tx * dpr, wx1 = (tx + PJ.W * kk) * dpr
-    const wy0 = ty * dpr, wy1 = (ty + PJ.H * kk) * dpr
-    const nx0 = Math.max(0, wx0), nx1 = Math.min(cwD, wx1)
-    const ny0 = Math.max(0, wy0), ny1 = Math.min(chD, wy1)
-    let dx, dy, w, h, scaled, exact
-    if (kk === snapK) {
-      // 平移：只搬位图。位移取整到设备像素（不取整就是每帧对整张底图做一次双线性重采样 → 糊），
-      // 取整的残差留给 scheduleRebuild 在手势停下来后补一次精确重建。
-      const ex = (tx - snapTx) * dpr, ey = (ty - snapTy) * dpr
-      const rx = Math.round(ex), ry = Math.round(ey)
-      dx = rx - snapMxDev; dy = ry - snapMyDev; w = bw; h = bh; scaled = false
-      exact = Math.abs(ex - rx) < 1e-9 && Math.abs(ey - ry) < 1e-9
-    } else {
-      // 缩放期：按 k/snapK 缩位图贴上（锚点按【世界坐标】换算，故缩放中心在哪儿都对）
-      const r = kk / snapK
-      const px0 = (-snapMxDev / dpr - snapTx) / snapK, py0 = (-snapMyDev / dpr - snapTy) / snapK
-      dx = (px0 * kk + tx) * dpr; dy = (py0 * kk + ty) * dpr; w = bw * r; h = bh * r
-      scaled = true; exact = false
-    }
-    if (nx1 > nx0 && (dx > nx0 + 0.5 || dx + w < nx1 - 0.5)) return null
-    if (ny1 > ny0 && (dy > ny0 + 0.5 || dy + h < ny1 - 0.5)) return null
-    return { dx, dy, w, h, scaled, exact }
+  // ★ 返回值恒非 null：covers=false 只说明「盖不住」，几何照给 —— 盖不住时也要把它缩着贴上去
+  //   （下面垫一张回退快照或海色），而不是整块空着。
+  const viewNow = () => ({ k: k(), tx, ty, dpr, cwDev: canvas.width, chDev: canvas.height, W: PJ.W, H: PJ.H })
+  const placeOf = (rec) => placeSnapshot(rec, viewNow())
+  const curRec = () => ({ k: snapK, tx: snapTx, ty: snapTy, mx: snapMxDev, my: snapMyDev, w: belowCanvas.width, h: belowCanvas.height })
+  function snapPlace() { return placeOf(curRec()) }
+  // 回退快照里挑一张盖得住当前「世界矩形 ∩ 视口」的（同一套判据）。按覆盖面积从大到小挑。
+  function pickFallback() {
+    const i = pickFallbackIdx(fallbacks, viewNow())
+    return i < 0 ? null : { f: fallbacks[i], pl: placeOf(fallbacks[i]) }
   }
 
   // Polygon 区域填充：画在 GRD 覆盖场之前（叠加规则 2D/3D 统一：叠加区只显示覆盖图颜色，
@@ -2250,6 +2355,17 @@ export function createFlatCoverage(canvas) {
   //   的白拷贝（实测把平移一帧从 1.1 ms 拖到 6.5 ms 的长尾就是它）。源与目标同尺寸、坐标又都是
   //   整数，九参与三参是同一条 1:1 快路，不引入重采样。
   //   位移正好为零（刚重建完 / 全图视角没动过）时仍走三参 —— 与改造前逐字节同一条调用。
+  // 一张快照都盖不住时的垫底（§4.4）：把【世界范围】填一遍海色 —— 露出来的那一圈是海而不是
+  // 深色背景（观感上的「空环」）。等距圆柱是世界矩形，投影档是图廓路径。静止后 ≤ 350 ms 归位。
+  function paintOceanBase() {
+    const kk = k()
+    ctx.save()
+    ctx.fillStyle = oceanColor
+    if (PJ.identity) { ctx.setTransform(dpr, 0, 0, dpr, 0, 0); const r = worldRect(); ctx.fillRect(r.x, r.y, r.w, r.h) }
+    else { ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * tx, dpr * ty); traceSphere(ctx); ctx.fill() }
+    ctx.restore()
+    ctx.setTransform(1, 0, 0, 1, 0, 0)
+  }
   function blitSnap(cv, pl) {
     if (!pl) return
     if (pl.scaled) { ctx.drawImage(cv, pl.dx, pl.dy, pl.w, pl.h); return }
@@ -2261,24 +2377,53 @@ export function createFlatCoverage(canvas) {
   }
   function draw() {
     if (cw < 2 || ch < 2 || !belowCanvas) return
-    // 快照怎么用：命中就搬位图 / 缩位图，盖不住（或本来就作废）才重建。
+    const _tIn = performance.now()
+    if (probeLeft > 0) probeTick(_tIn); else noteNominal(_tIn - lastDrawAt)
+    lastDrawAt = _tIn
+    // 快照怎么用（§4.1 的判定表）：
+    //   内容变了            → 无条件重建
+    //   平移且盖得住        → 搬位图
+    //   缩放且盖得住        → 【实测便宜】的放大才同步重建（清晰优先）；其余一律缩位图 + 静止补建
+    //   盖不住              → 有回退快照就垫一张；没有且便宜才同步重建；没有且贵就海色垫底（§4.4）
+    // ★ 缩小一律不同步重建：缩小是降采样，缩位图不糊；放大才有清晰度收益。
+    // ★ 判据是 costEst 不是 lastRebuildMs —— 后者只是「记录绘制指令」的时间，所有档都读到 1.5～6 ms。
+    const cls = viewCls(), kk = k()
     let pl = staticValid ? snapPlace() : null
-    let mode = 'blit', reason = ''
-    if (!pl || (pl.scaled && lastRebuildMs < REBUILD_FAST_MS)) {
-      reason = !staticValid ? 'invalid' : (pl ? 'fast' : 'uncovered')
+    let mode = 'blit', reason = '', fb = null
+    const doRebuild = (why) => {
+      reason = why
       renderStaticLayers(); staticValid = true
-      pl = snapPlace()
+      pl = snapPlace(); fb = null
       mode = 'rebuild'
-    } else if (pl.scaled) mode = 'scaled'
-    // 缩位图 / 位移落不到整设备像素：手势停下来之后补一次精确重建
-    if (pl && !pl.exact) scheduleRebuild()
-    globalThis.__staticStat = { mode, reason, rebuildMs: lastRebuildMs, mx: snapMxDev, my: snapMyDev, w: belowCanvas.width, h: belowCanvas.height }
+      probeLeft = PROBE_FRAMES; probeAcc = 0; probeSync = lastRebuildMs; probeCls = cls; probeT = _tIn; probeChase = 0
+      armProbe()
+    }
+    if (!pl) doRebuild('invalid')
+    else if (pl.covers) {
+      if (!pl.scaled) mode = 'blit'
+      else if (clsCheap(cls) && kk > snapK) doRebuild('fast')
+      else mode = 'scaled'
+    } else {
+      fb = pickFallback()
+      if (fb) { mode = pl.scaled ? 'scaled' : 'blit'; reason = 'fallback' }
+      else if (clsCheap(cls)) doRebuild('uncovered')
+      else { mode = pl.scaled ? 'scaled' : 'blit'; reason = 'ocean' }
+    }
+    // 缩位图 / 盖不住 / 位移落不到整设备像素 / 位图搬过位置：手势停下来之后补一次精确重建。
+    // ★ 「搬过位置也补」有两个理由：① 快照的余量被这趟平移吃掉了一部分，静止下来重烘一次
+    //   才把四周的余量续满，下一次手势才不会当场撞上「盖不住」；② 静止画面的口径 ——
+    //   搬过位置的位图上，地名避让与世界矩形裁剪是按【旧位置的视口】算的，现画一遍才是这个
+    //   视图应有的那张图。补建落在【手势之外】：拖动期间 gestureHot() 恒真，idleFire 到期只会再等一拍（§4.3）。
+    if (mode !== 'rebuild' && (!pl.exact || !pl.covers || pl.dx || pl.dy || tilesDirty)) scheduleRebuild()
+    globalThis.__staticStat = { mode, reason, rebuildMs: lastRebuildMs, rasterGapMs, costEst, nominal: +rasterNominal.toFixed(2), cls, cheap: clsCheap(cls), cost: clsCost(cls), unknown: UNKNOWN_COST, fallbacks: fallbacks.length, gen: staticGen, detail: curDetail(), mx: snapMxDev, my: snapMyDev, w: belowCanvas.width, h: belowCanvas.height }
     const _wr = worldRect(), rx = _wr.x, ry = _wr.y, rw = _wr.w, rh = _wr.h   // 裁到世界矩形：整幅图只此一张
     // 复合：blit below（不透明）→ Polygon 填充 + 覆盖填充/线（夹在中间）→ blit above（透明）→ 覆盖标注 → 聚焦星
     // ★ 先铺背景色再贴：位移之后快照盖不满整块画布，露出来的那一条本就该是背景
     //   （世界矩形之外 below 上就是这个色）。余量为 0 且没位移时与老写法逐像素相同。
     ctx.setTransform(1, 0, 0, 1, 0, 0)
     ctx.fillStyle = BG; ctx.fillRect(0, 0, canvas.width, canvas.height)
+    if (reason === 'ocean') paintOceanBase()   // 一张都盖不住：露出来的那一圈填海色而不是深色背景
+    if (fb) blitSnap(fb.f.below, fb.pl)        // 回退快照垫底（below 不裁：当前快照盖在它上面）
     blitSnap(belowCanvas, pl)
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     ctx.save(); ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip()
@@ -2292,7 +2437,17 @@ export function createFlatCoverage(canvas) {
     drawSatPolyLines()   // Polygon 边线（覆盖之上、国界/地名之下：叠加区仍见边线）
     drawDataLines()      // 波束线/仰角线/聚焦卫星线（同上：覆盖之上、国界省界之下，与边界共存；航迹另见 drawTrajLayer）
     ctx.restore()
-    ctx.setTransform(1, 0, 0, 1, 0, 0); blitSnap(aboveCanvas, pl)
+    ctx.setTransform(1, 0, 0, 1, 0, 0)
+    // ★ 回退快照的 above 层必须 evenodd 裁到当前快照【之外】那一圈：不裁的话地名 / 边界线
+    //   会在重叠区叠成两层、还略有错位。below 层不裁也行（当前快照直接盖住）。
+    if (fb) {
+      ctx.save()
+      ctx.beginPath(); for (const r of clipRects(pl, canvas.width, canvas.height)) ctx.rect(r[0], r[1], r[2], r[3])
+      ctx.clip('evenodd')
+      blitSnap(fb.f.above, fb.pl)
+      ctx.restore()
+    }
+    blitSnap(aboveCanvas, pl)
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     ctx.save(); ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip()
     drawFieldOverlays()   // GRD 波束名/峰值点/数值标签（覆盖层之上）
@@ -2316,14 +2471,14 @@ export function createFlatCoverage(canvas) {
     const r = canvas.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top
     const kk = k(), wx = (mx - tx) / kk, wy = (my - ty) / kk
     scale = clamp(scale * Math.exp(-e.deltaY * 0.0015), SMIN, SCAP)
-    const k2 = k(); tx = mx - wx * k2; ty = my - wy * k2; requestDraw()   // ★ 不作废快照：缩放期缩位图，静止后由 scheduleRebuild 补一次
+    const k2 = k(); tx = mx - wx * k2; ty = my - wy * k2; noteZoom(); requestDraw()   // ★ 不作废快照：缩放期缩位图，静止后由 scheduleRebuild 补一次
     if (onZoom) onZoom(scaleToT())
   }
   // 进度条设缩放：绕画布中心缩放（锚定中心世界点），t∈[0,1]
   function setZoomT(t) {
     const mx = cw / 2, my = ch / 2, kk = k(), wx = (mx - tx) / kk, wy = (my - ty) / kk
     scale = clamp(Math.exp(_lnS0 + Math.max(0, Math.min(TMAX, t)) * (_lnS1 - _lnS0)), SMIN, SCAP)
-    const k2 = k(); tx = mx - wx * k2; ty = my - wy * k2; requestDraw()
+    const k2 = k(); tx = mx - wx * k2; ty = my - wy * k2; noteZoom(); requestDraw()
   }
   // 空闲态光标：普通箭头。地图能拖，但常态给「小手」等于把「可拖」当成这张图的主要用途 ——
   // 图上还有点选 / 框选 / 放点 / 拖顶点一堆模态，各自的光标才是提示。按下之后仍给 grabbing（那是动作反馈）。
@@ -2499,7 +2654,7 @@ export function createFlatCoverage(canvas) {
     // 其 pointerup 会被 preventDefault 的 contextmenu 手势吞掉（Chromium 行为），捕获永不释放，此后点任何输入框都被
     // canvas 截走 → 「画完 Polygon 后输入框不能聚焦」。故非左键直接返回，绝不捕获。
     if (e.button !== 0) return
-    dragging = true; lx = e.clientX; ly = e.clientY; canvas.setPointerCapture(e.pointerId); canvas.style.cursor = 'grabbing'
+    dragging = true; lx = e.clientX; ly = e.clientY; panQ.reset(); canvas.setPointerCapture(e.pointerId); canvas.style.cursor = 'grabbing'
   }
   function onMove(e) {
     if (boxDragging) {
@@ -2525,7 +2680,10 @@ export function createFlatCoverage(canvas) {
     else if (markerDragging) { const ll = screenToLonLat(e.clientX, e.clientY); if (ll && onMarkerDrag) onMarkerDrag(markerDragging, dragLL(ll), 'move') }
     // 转动：一帧最多重烘一次（pointermove 在高刷屏上一帧能来五六个，逐个重烘就是白算五遍同一帧）
     else if (rotDragging) { rotPend = { x: e.clientX, y: e.clientY }; if (!rotRaf) rotRaf = requestAnimationFrame(rotStep) }
-    else if (dragging) { tx += e.clientX - lx; ty += e.clientY - ly; lx = e.clientX; ly = e.clientY; requestDraw() }   // ★ 不作废快照：平移只搬位图
+    // ★ 不作废快照：平移只搬位图。tx/ty 落到整设备像素上（§4.2）—— DPR 1.25/1.5 下不取整，
+    //   snapPlace 的 exact 恒为假，于是拖动中每停一下就补一次建，再拖的第一帧要等它的光栅。
+    //   每次按【当前绝对值】就近取整，误差不累积。
+    else if (dragging) { const q = panQ.step(tx, ty, e.clientX - lx, e.clientY - ly, dpr); tx = q[0]; ty = q[1]; lx = e.clientX; ly = e.clientY; requestDraw() }
     else if (editVerts) {   // 悬停提示：可拖顶点 / 可拖多边形内部（cursor 可覆盖命中态提示，如删除模式用 'pointer' 而非 'move'）
       canvas.style.cursor = (editVerts.move ? pointInEditPoly(e.clientX, e.clientY) : vertexAt(e.clientX, e.clientY) >= 0) ? (editVerts.cursor || 'move') : CUR_IDLE
     }
@@ -2560,7 +2718,9 @@ export function createFlatCoverage(canvas) {
       rebuildPlane(PJ.kind, PJOPT, { refit: false, fast: false, term: PJ.identity })
       if (onRotate) onRotate({ lon0: LON0, lat0: optNum(PJOPT.lat0) || 0, live: false })
     }
+    const wasDragging = dragging
     dragging = false; beamDragging = false; labelDragging = false; vertDragging = -1; moveDragging = false; moveLast = null; polyDrawing = false
+    if (wasDragging) scheduleRebuild()   // §4.3：按着指针时不补建，松手之后按 idle 补一次
     canvas.style.cursor = (polyDrawMode || placeMode) ? 'crosshair' : (rotMode ? 'grab' : ((beamDragMode || labelDragMode) ? 'move' : CUR_IDLE))
     // 显式释放指针捕获（不只依赖 pointerup 的隐式释放）：pointercancel / 抬起点在画布外等边角情形下隐式释放可能不发生，
     // 残留捕获会把之后所有点击截给 canvas，导致输入框点不进。有 e.pointerId 就按其释放，无（onLeave 调用）则整体兜底。
@@ -2802,7 +2962,7 @@ export function createFlatCoverage(canvas) {
     panByPixels(dxPx, dyPx) {
       const dx = Number.isFinite(dxPx) ? dxPx : 0, dy = Number.isFinite(dyPx) ? dyPx : 0
       if (!dx && !dy) return
-      tx -= dx; ty -= dy
+      const q = panQ.step(tx, ty, -dx, -dy, dpr); tx = q[0]; ty = q[1]   // §4.2：整设备像素
       requestDraw()
     },
     setView(v) {
