@@ -25,7 +25,11 @@ import { waterLabels } from '../geo/waterNames.js'
 import { chainList, CHAIN_DEF, CHAIN_LABEL_PX } from '../geo/islandChains.js'
 import { seamCrossing } from '../geo/lineGeom.js'
 // 2D 投影（世界平面的定义）—— 出厂等距圆柱，与换投影前逐位相同
-import { makeProjection, DEFAULT_PROJECTION, isProjection, lonBreaks, planCells, planBlockInv, cellDrawableInv, cellCornersInv } from '../geo/projection.js'
+import { makeProjection, DEFAULT_PROJECTION, isProjection } from '../geo/projection.js'
+// 影像重投影的三角网规划器：CPU 路（导出 / 无 WebGL2 / 环境场栅格）与 GPU 路共用同一份
+import { planRasterMesh } from '../geo/rasterMesh.js'
+// 投影档影像的 GPU 后端（屏上绘制时启用；导出 / 无 WebGL2 / 深缩放退回 warpTri）
+import { createGlRaster, GL_TEX_MAX } from './glRaster.js'
 // GRD 分带填充的 GPU 后端（等距圆柱 + 屏上绘制时启用；导出/投影档/无 WebGL2 时退回 Path2D）
 import { createGlField, GL_MAX_LEVELS, meshLattice } from './glField.js'
 import { geoArea, geoContains } from 'd3-geo'
@@ -415,7 +419,7 @@ export function createFlatCoverage(canvas) {
     PJ = makeProjection(kind, LON0, PJOPT)
     rotLive = !!op.fast
     borderPaths = null; admPaths = null; gridPath = null; gridKey = ''; sphPath = null; sphKey = ''; sphOps = null; sphOpsKey = ''
-    rpKey = ''; rpBox = null
+    rpKey = ''; rpBox = null; rmKey = ''; rmBox = null
     buildBaseGeo(resolvedFeatures(curDetail()), curThin())
     // 覆盖场在转动期间不画，也就不必重烘 —— 松手那一次（fast=false）把它补回来。
     if (!rotLive) {
@@ -517,7 +521,7 @@ export function createFlatCoverage(canvas) {
   //   · 烘的是【平面空间】的一块（外扩 RP_PAD 一圈），不是屏幕。拖动只要没拖出这一圈就直接复用。
   //   · 分辨率档取 2 的幂，缩放连续变化时不会每帧换一档、白重烘。
   const RP_PAD = 0.20          // 可见矩形外扩比例：拖动余量
-  // ── 一格多大：按【投影在这一块的曲率】定，不按固定像素数 ──────────────────────────
+  // ── 一格多大：按【投影在这一块的曲率】定，不按固定像素数（判据与循环都在 ../geo/rasterMesh.js）──
   // 判据：把一段弧用直线代替，最大偏差（弓高）≤ RP_TOL 个烘图像素。弓高随跨度平方增长，
   // 故量一次参考跨度的弓高就能直接解出允许跨度，不必二分。这一条同时管住三件事：
   //   · 圆柱 / 伪圆柱的纬线是直线（弓高恒 0）→ 一块一格，与旧的 lonStep = 15° 相同；
@@ -525,7 +529,6 @@ export function createFlatCoverage(canvas) {
   //     三角形、每个都是 save + clip + setTransform + drawImage + restore —— 那就是
   //     「阿尔伯斯开了影像很卡」的全部成因，而按曲率给只要几百个；
   //   · 纬向同理：Mercator 低纬的 y 近乎线性、高纬才弯，行高随之变，不必全图按最坏处切。
-  const RP_TOL = 0.6           // 允许的弓高（烘图像素）：亚像素，肉眼分辨不出。切几段由 planCells 算
   // 烘图像素预算（不是边长上限）。烘的是「可见区 ×1.4」那一块、按【屏幕分辨率】烘，
   // 故它的自然大小恒是画布的 1.4 倍边长 ≈ 2 倍面积；预算只在超大画布 / 超高 DPR 时才咬住。
   // ★ 曾经写成「边长 ≤ 2400」，那是按屏幕尺寸一刀切 —— 画布一宽就把烘图压到比屏幕还粗，
@@ -637,35 +640,25 @@ export function createFlatCoverage(canvas) {
     g.drawImage(img, 0, 0)
     g.restore()
   }
-  // 网格先按 15° 的粗块分（块的边界＝lonBreaks 给的断点，对齐切口 + 插源图接缝），块内再按曲率细分。
-  const COARSE = 15
-  // 一块（经纬矩形）与烘图矩形相不相交 —— 一律【正算】判：逆算在图幅之外给的是外推值或 null，
-  // 拿它反推可见窗口会缩成一条（圆锥尤其）。八个采样点（四角 + 四边中点）够定包围盒，
-  // 块边是曲线故再留一点余量。
-  const _bhq = [0, 0]
-  function boxHit(lo0, lo1, la0, la1, bx0, by0, bx1, by1, margin) {
-    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity
-    for (const [lo, la] of [[lo0, la0], [lo1, la0], [lo0, la1], [lo1, la1],
-      [(lo0 + lo1) / 2, la0], [(lo0 + lo1) / 2, la1], [lo0, (la0 + la1) / 2], [lo1, (la0 + la1) / 2]]) {
-      PJ.fwd(lo, la, _bhq)
-      if (!Number.isFinite(_bhq[0]) || !Number.isFinite(_bhq[1])) return true   // 算不准就别剔
-      if (_bhq[0] < x0) x0 = _bhq[0]; if (_bhq[0] > x1) x1 = _bhq[0]
-      if (_bhq[1] < y0) y0 = _bhq[1]; if (_bhq[1] > y1) y1 = _bhq[1]
-    }
-    return !(x1 + margin < bx0 || x0 - margin > bx1 || y1 + margin < by0 || y0 - margin > by1)
-  }
-  function reprojectRaster(src, srcBBox, smooth) {
-    if (!src) return null
-    const kk = k()
-    if (!(kk > 0)) return null
-    // ★ 视口取【真视口】而非烘快照时的虚拟视口：烘图框一变，重采样的相位就跟着变，
-    //   静止画面与改造前不再逐像素相同。快照的那圈余量由 RP_PAD 兜（OVER < RP_PAD）。
+  // 要铺的那块平面矩形（CPU 与 GPU 两条路共用同一个取景，网格才对得上）。
+  // ★ 视口取【真视口】而非烘快照时的虚拟视口：烘图框一变，重采样的相位就跟着变，静止画面
+  //   与改造前不再逐像素相同。快照的那圈余量由 RP_PAD 兜（OVER < RP_PAD，见 renderStaticLayers）。
+  function rasterFrame(kk) {
     const RV = realView || { cw, ch, tx, ty }
     const vx0 = (-RV.tx) / kk, vx1 = (RV.cw - RV.tx) / kk, vy0 = (-RV.ty) / kk, vy1 = (RV.ch - RV.ty) / kk
     const padX = (vx1 - vx0) * RP_PAD, padY = (vy1 - vy0) * RP_PAD
     const bx0 = Math.max(0, vx0 - padX), bx1 = Math.min(PJ.W, vx1 + padX)
     const by0 = Math.max(0, vy0 - padY), by1 = Math.min(PJ.H, vy1 + padY)
     if (!(bx1 > bx0 && by1 > by0)) return null
+    return { bx0, bx1, by0, by1, vx0, vx1, vy0, vy1 }
+  }
+  function reprojectRaster(src, srcBBox, smooth) {
+    if (!src) return null
+    const kk = k()
+    if (!(kk > 0)) return null
+    const F = rasterFrame(kk)
+    if (!F) return null
+    const { bx0, bx1, by0, by1, vx0, vx1, vy0, vy1 } = F
     // ★ 烘图分辨率 = 屏幕分辨率，只在超出像素预算时才降。
     //   曾经写成 2^round(log2(...))：round 会往下取，实测放大 39× 时屏幕要 76.9 px/度、
     //   烘图只给 64，差 1.2 倍；再叠上边长封顶就成了 2.7 倍。量化本是为了「缩放时别每帧重烘」，
@@ -695,159 +688,28 @@ export function createFlatCoverage(canvas) {
     g.imageSmoothingEnabled = smooth !== false
     if ('imageSmoothingQuality' in g) g.imageSmoothingQuality = 'high'
     const sw = S.img.naturalWidth || S.img.width, sh = S.img.naturalHeight || S.img.height
-    const lonSpan = S.lonMax - S.lonMin, latSpan = S.latMax - S.latMin
-    const spy = (lat) => ((S.latMax - lat) / latSpan) * sh
     const bpx = (wx) => (wx - bx0) * res, bpy = (wy) => (wy - by0) * res
-    // ★ 网格建在【经纬那一侧】、用正算 fwd 求平面位置 —— 不是在平面上反算。
-    //   反算的坑：可见框的边角多半落在图幅之外（伪圆柱高纬处图比框窄），那里 invert 给的是
-    //   外推值，拿它当源经度就把整幅源图揉进一条带里。正算这一侧永远有定义，节点必落在图幅内。
-    const p0 = [0, 0], p1 = [0, 0], p2 = [0, 0], p3 = [0, 0]
-    const tolPlane = RP_TOL / res      // 允许的弓高，换算到平面单位
-    // 相邻格在【参数空间】多叠一点点（约 1.5 个烘图像素）：canvas 的 clip 带抗锯齿，两个格各自
-    // 裁到公共边、两边各覆盖半个像素，合起来不满一格，缝上透出底色 —— 整幅图一层细网格线。
-    const ovDeg = 1.5 / res
-    let tris = 0
-    const latTop = Math.min(90, S.latMax), latBot = Math.max(-90, S.latMin)
-
-    // ── 反向网格那一档（方位等距）：网格建在【平面】上，四角逆算成经纬 ──────────────
-    // 为什么这一档要翻过来，见 projection.js 的 invGrid：它的对跖点是奇点，正算方向在那里
-    // 一格被拉长上百倍（切到上限还差十万像素），反算方向反倒最温和。
+    // ── 网格来自共用的规划器（../geo/rasterMesh.js）—— GPU 路拿的是同一份，两条路几何逐字相同 ──
+    const M = planRasterMesh(PJ, { bx0, bx1, by0, by1, res, S })
+    // 源图降档（见 srcThumb）：只给反向网格档用 —— 别的档三角形本来就少，没必要为它们多担一次缩放。
+    // 拿不到缩略图（分辨率已经要到原图那一档）就照原图走。
+    let IMG = S.img, IW = sw, IH = sh
     if (PJ.invGrid) {
-      // 源图降档（见 srcThumb）：拿不到缩略图（分辨率已经要到原图那一档）就照原图走。
-      // ★ 曾按「视野小就别重缩」分过档，反了 —— 放大之后单个三角形在目标上大得多，
-      //   拿 16K 原图贴的单价反而涨到 240 μs（全平面视图才 11 μs），每次都亏；
-      //   重缩是一次性的，跨一档付一次，之后那一档全命中。
       const TH = srcThumb(S.img, sw, sh, res)
-      const IMG = TH || S.img, IW = TH ? TH.width : sw, IH = TH ? TH.height : sh
-      const spxT = (lon, sh2) => ((lon + sh2 - S.lonMin) / lonSpan) * IW
-      const spyT = (lat) => ((S.latMax - lat) / latSpan) * IH
-      const CP = COARSE                                  // 粗块边长（平面单位）
-      const ovP = 1.5 / res                              // 相邻格叠一点点，同正向：不叠则每条格缝透出底色
-      const q0 = [0, 0], q1 = [0, 0], q2 = [0, 0], q3 = [0, 0]
-      const un = (v, r) => { let t = v; while (t - r > 180) t -= 360; while (t - r < -180) t += 360; return t }
-      for (let px = Math.floor(bx0 / CP) * CP; px < bx1; px += CP) {
-        for (let py = Math.floor(by0 / CP) * CP; py < by1; py += CP) {
-          const pX1 = px + CP, pY1 = py + CP
-          if (pX1 < bx0 || px > bx1 || pY1 < by0 || py > by1) continue
-          // 整块在图幅外就跳过：取块上离图心最近的那个点判，它在圆外则整块都在
-          const nx = Math.max(px, Math.min(PJ.W / 2, pX1)), ny = Math.max(py, Math.min(PJ.H / 2, pY1))
-          if (!PJ.inPlane(nx, ny)) continue
-          // 这一块切几行几列：自适应 + 三条特例，全部口径在 projection.js 的 planBlockInv 里
-          // （渲染端与测试共用同一份）。
-          const n = planBlockInv(PJ, px, pX1, py, pY1, tolPlane, res)
-          const d = CP / n
-          for (let i = 0; i < n; i++) {
-            for (let j = 0; j < n; j++) {
-              const ax = px + i * d, ay = py + j * d
-              const bxx = Math.min(pX1, ax + d + ovP), byy = Math.min(pY1, ay + d + ovP)
-              if (!cellDrawableInv(PJ, ax, bxx, ay, byy)) continue      // 格心在图幅外 ＝ 这一格没内容
-              if (bxx < bx0 || ax > bx1 || byy < by0 || ay > by1) continue
-              // 四角先钳进图幅再逆算：跨圆周的那一格被压成贴着圆边的一片，而不是整格丢掉
-              // （整格丢的话沿圆周一圈各缺一格，实测吃掉 12.5% 的面积）
-              const cn = cellCornersInv(PJ, ax, bxx, ay, byy)
-              if (!cn) continue
-              // 经度就近解缠到第一角：跨 ±180° 的格不会被拉成横跨源图的一条带
-              const l0 = cn[0].lon, l1 = un(cn[1].lon, l0), l2 = un(cn[2].lon, l0), l3 = un(cn[3].lon, l0)
-              // ★ 防呆：跨极的那一格四角经度能差满 180°（极点处经度本就不定），取源矩形会横跨半幅源图。
-              //   宁可空着 —— 它就在极点上，且含极点的块必被细分到很密，缺口不到一个平面单位。
-              const lo = Math.min(l0, l1, l2, l3), hi = Math.max(l0, l1, l2, l3)
-              if (hi - lo > 90) continue
-              // 这一格落在源窗口的哪个 360° 周期（同正向：整格一个偏移，格才不会被撕开）
-              let shift = 0
-              const midLon = (lo + hi) / 2
-              while (midLon + shift < S.lonMin - 1e-9) shift += 360
-              while (midLon + shift > S.lonMax + 1e-9) shift -= 360
-              // ★ 跨源图接缝（±180）的那一格【画两遍】—— 反向网格建在平面上，没法像正向那样拿
-              //   lonBreaks 预先把接缝插成断点（那是经纬网格才有的自由度），于是必然有一列格骑在
-              //   接缝上。骑着的格源矩形有一半落在源图之外，drawImage 那一半画不出来，症状是沿着
-              //   接缝一条锯齿状的白带（在方位等距上是一条从北到南的弧）。
-              //   两遍的源坐标差整一个周期，各自只画得出落在源图内的那一半，合起来正好补齐；
-              //   源图宽正好 360°，故两遍在同一个 clip 里不会重叠。
-              const shifts = [shift]
-              if (lo + shift < S.lonMin - 1e-9) shifts.push(shift + 360)
-              else if (hi + shift > S.lonMax + 1e-9) shifts.push(shift - 360)
-              q0[0] = bpx(cn[0].x); q0[1] = bpy(cn[0].y); q1[0] = bpx(cn[1].x); q1[1] = bpy(cn[1].y)
-              q2[0] = bpx(cn[2].x); q2[1] = bpy(cn[2].y); q3[0] = bpx(cn[3].x); q3[1] = bpy(cn[3].y)
-              // ★ 钳过之后两个角可能压到同一点（正卡在圆周上的那一格）→ 三角形退化、仿射行列式为 0，
-              //   warpTri 里会算出 Infinity 的变换。逐个校面积，退化的那一半不画。
-              const ar1 = Math.abs((q1[0] - q0[0]) * (q2[1] - q0[1]) - (q2[0] - q0[0]) * (q1[1] - q0[1]))
-              const ar2 = Math.abs((q2[0] - q3[0]) * (q1[1] - q3[1]) - (q1[0] - q3[0]) * (q2[1] - q3[1]))
-              for (const sh of shifts) {
-                const S0 = [spxT(l0, sh), spyT(cn[0].lat)], S1 = [spxT(l1, sh), spyT(cn[1].lat)]
-                const S2 = [spxT(l2, sh), spyT(cn[2].lat)], S3 = [spxT(l3, sh), spyT(cn[3].lat)]
-                // 目标面积不到十分之一个烘图像素的也别画：同上，画不出东西，还要付一次 clip+drawImage
-                if (ar1 > 0.1) { warpTri(g, IMG, S0, S1, S2, [q0[0], q0[1]], [q1[0], q1[1]], [q2[0], q2[1]]); tris++ }
-                if (ar2 > 0.1) { warpTri(g, IMG, S3, S2, S1, [q3[0], q3[1]], [q2[0], q2[1]], [q1[0], q1[1]]); tris++ }
-              }
-            }
-          }
-        }
-      }
-      g.setTransform(1, 0, 0, 1, 0, 0)
-      globalThis.__bakeStat.tris = tris
-      globalThis.__bakeStat.ms = +(performance.now() - _t0).toFixed(1)
-      if (!tris) { rpBox = null; rpKey = ''; return null }
-      rpKey = key
-      rpBox = { x0: bx0, y0: by0, x1: bx1, y1: by1 }
-      return rpCanvas
+      if (TH) { IMG = TH; IW = TH.width; IH = TH.height }
     }
-
-    // 经度断点：对齐切口 + 插入源图接缝。两类坑的说明见 geo/projection.js 的 lonBreaks。
-    const L0 = PJ.lon0
-    const brk = lonBreaks(L0, COARSE)
-    const seamLon = L0 + ((((180 - L0) % 360) + 360) % 360)
-
-    // 粗块剔除：与烘图矩形不相交的整块跳过（缩放到局部时省掉九成格）。
-    // 判据一律用【正算】—— 用逆算反推可见经纬窗口不成立：圆锥扇面之外逆算给的是外推值或 null。
-    // 余量要盖住【整块边线的弯度】（8 个采样点的包围盒兜不住它）：实测最鼓的是 Mercator
-    // 75°–90° 那一块，弓高 7.6 个平面单位，故按一块的跨度给，宁可多画一圈也不能少一条。
-    const blkMargin = COARSE
-
-    for (let bi = 0; bi + 1 < brk.length; bi++) {
-      // 块内所有经度都在同一个源周期里（接缝已是断点）
-      const bLo0 = brk[bi], bLo1 = brk[bi + 1]
-      if (!(bLo1 > bLo0)) continue
-      // 源窗口未必是 ±180 那一周（区块拼图是瓦片对齐的任意窗口，环境场栅格又是另一个 bbox），
-      // 故【按块】算一个 360° 的整倍偏移把这一块折进源窗口 —— 整块同一个偏移，格才不会被撕开。
-      // ★ 曾经写死成「折回 ±180」（lonPeriod），换成区块拼图后就算到源外面去了 ——
-      //   症状是图上出现一块块矩形的空白 / 亮度阶。
-      let shift = 0
-      const midLon = (bLo0 + bLo1) / 2
-      while (midLon + shift < S.lonMin - 1e-9) shift += 360
-      while (midLon + shift > S.lonMax + 1e-9) shift -= 360
-      const spx = (lon) => ((lon + shift - S.lonMin) / lonSpan) * sw
-      // 允许往下一块叠一点（seam 与两个端点除外 —— 那三处不能跨）
-      const canOv = bi + 2 < brk.length && Math.abs(bLo1 - seamLon) > 1e-6
-      for (let bLat = latTop; bLat > latBot + 1e-9; bLat -= COARSE) {
-        const bLa0 = bLat, bLa1 = Math.max(latBot, bLat - COARSE)
-        if (!boxHit(bLo0, bLo1, bLa0, bLa1, bx0, by0, bx1, by1, blkMargin)) continue
-        // 这一块切几行几列：按投影在这一块的曲率算（见 projection.js 的 planCells）。
-        // 逐块量而不是全图一个值 —— 曲率随纬度差着几倍，全图按最坏处切就是几十倍的白工。
-        const { nLon, nLat } = planCells(PJ, bLo0, bLo1, bLa0, bLa1, tolPlane)
-        const lonStep = (bLo1 - bLo0) / nLon, latStep = (bLa0 - bLa1) / nLat
-        const latOv = Math.min(latStep * 0.3, ovDeg), lonOv = Math.min(lonStep * 0.3, ovDeg)
-        for (let lat = bLa0; lat > bLa1 + 1e-9; lat -= latStep) {
-          const la0 = lat, la1 = Math.max(latBot, lat - latStep - latOv)
-          for (let lon = bLo0; lon < bLo1 - 1e-9; lon += lonStep) {
-            const lo0 = lon
-            const lo1 = Math.min(canOv ? bLo1 + lonOv : bLo1, lon + lonStep + lonOv)
-            PJ.fwd(lo0, la0, p0); PJ.fwd(lo1, la0, p1); PJ.fwd(lo0, la1, p2); PJ.fwd(lo1, la1, p3)
-            if (!Number.isFinite(p0[0]) || !Number.isFinite(p1[0]) || !Number.isFinite(p2[0]) || !Number.isFinite(p3[0])) continue
-            // ★ 防呆：一格的平面跨度不该接近整幅宽。真出现就是又踩到「跨切口」那一类，宁可不画
-            //   也不能把源图横拉满全图（那正是影像左右错位的样子）。
-            const gx0 = Math.min(p0[0], p1[0], p2[0], p3[0]), gx1 = Math.max(p0[0], p1[0], p2[0], p3[0])
-            const gy0 = Math.min(p0[1], p1[1], p2[1], p3[1]), gy1 = Math.max(p0[1], p1[1], p2[1], p3[1])
-            if (gx1 - gx0 > PJ.W * 0.5) continue
-            if (gx1 < bx0 || gx0 > bx1 || gy1 < by0 || gy0 > by1) continue
-            const S0 = [spx(lo0), spy(la0)], S1 = [spx(lo1), spy(la0)], S2 = [spx(lo0), spy(la1)], S3 = [spx(lo1), spy(la1)]
-            const D0 = [bpx(p0[0]), bpy(p0[1])], D1 = [bpx(p1[0]), bpy(p1[1])], D2 = [bpx(p2[0]), bpy(p2[1])], D3 = [bpx(p3[0]), bpy(p3[1])]
-            warpTri(g, S.img, S0, S1, S2, D0, D1, D2)
-            warpTri(g, S.img, S3, S2, S1, D3, D2, D1)
-            tris += 2
-          }
-        }
-      }
+    const SA = [0, 0], SB = [0, 0], SC = [0, 0], DA = [0, 0], DB = [0, 0], DC = [0, 0]
+    for (let t = 0; t < M.n; t++) {
+      const i = t * 6
+      SA[0] = M.uv[i] * IW; SA[1] = M.uv[i + 1] * IH
+      SB[0] = M.uv[i + 2] * IW; SB[1] = M.uv[i + 3] * IH
+      SC[0] = M.uv[i + 4] * IW; SC[1] = M.uv[i + 5] * IH
+      DA[0] = bpx(M.xy[i]); DA[1] = bpy(M.xy[i + 1])
+      DB[0] = bpx(M.xy[i + 2]); DB[1] = bpy(M.xy[i + 3])
+      DC[0] = bpx(M.xy[i + 4]); DC[1] = bpy(M.xy[i + 5])
+      warpTri(g, IMG, SA, SB, SC, DA, DB, DC)
     }
+    const tris = M.n
     g.setTransform(1, 0, 0, 1, 0, 0)
     globalThis.__bakeStat.tris = tris
     globalThis.__bakeStat.ms = +(performance.now() - _t0).toFixed(1)
@@ -874,6 +736,68 @@ export function createFlatCoverage(canvas) {
     ctx.restore()
     return true
   }
+  // ---- 投影档影像的 GPU 路（见 ./glRaster.js）----
+  // 网格与 CPU 路同一个 planRasterMesh，只是把「贴图」这一步交给 GPU：平移 / 缩放期间不重建网格、
+  // 不重传纹理，只改 uniform。换平面或分辨率跨一档才重规划一次。
+  let glr = null, glrFail = false
+  const glRaster = () => {
+    if (glrFail) return null
+    if (!glr) {
+      try { glr = createGlRaster() } catch { glrFail = true; return null }
+      if (!glr.available()) { glrFail = true; glr = null; return null }
+      glr.setOnContextChange(() => { invalidateStatic(); requestDraw() })
+    }
+    return glr.available() ? glr : null
+  }
+  let rmKey = '', rmBox = null      // 网格缓存的键与覆盖范围（与 rpKey / rpBox 同一套复用判据）
+  function drawImageryGL() {
+    // 导出恒走 CPU 路：PNG/PDF 逐字节一致是硬约束，判据与 fieldBackend 同款
+    if (exporting || compat) return false
+    const kk = k()
+    if (!(kk > 0)) return false
+    const g = glRaster()
+    if (!g) return false
+    const sw = imgEl.naturalWidth || imgEl.width, sh = imgEl.naturalHeight || imgEl.height
+    if (!(sw > 0 && sh > 0)) return false
+    // 分辨率量化到 2 的幂：缩放连续变化时不会每帧换一档、白重规划
+    const res = 2 ** Math.ceil(Math.log2(Math.max(0.5, kk * dpr)))
+    // 纹理沿用 srcThumb 的分档（与 CPU 路同一张缩略图，缓存也是同一份）。
+    // 要到 8192 以上（深缩放）就让给 CPU 路 —— 那时可见区很小、warpTri 本来就便宜。
+    if (!imgEl.__rpId) imgEl.__rpId = ++rpSeq
+    const TH = srcThumb(imgEl, sw, sh, kk * dpr)
+    const TEX = TH || imgEl
+    const tw = TH ? TH.width : sw
+    if (tw > GL_TEX_MAX) return false
+    const tk = imgEl.__rpId + '/' + tw
+    if (!g.hasTexture(tk) && !g.setTexture(tk, TEX)) return false
+    const F = rasterFrame(kk)
+    if (!F) return false
+    const mk = planeKey() + '/' + res
+    // 复用判据与 reprojectRaster 一模一样：钳过的视口落在上次规划的框里就直接用
+    const qx0 = Math.max(0, F.vx0), qx1 = Math.min(PJ.W, F.vx1)
+    const qy0 = Math.max(0, F.vy0), qy1 = Math.min(PJ.H, F.vy1)
+    const hit = g.hasMesh(mk) && rmKey === mk && rmBox &&
+      qx0 >= rmBox.x0 - 1e-6 && qx1 <= rmBox.x1 + 1e-6 && qy0 >= rmBox.y0 - 1e-6 && qy1 <= rmBox.y1 + 1e-6
+    if (!hit) {
+      const _t0 = performance.now()
+      const M = planRasterMesh(PJ, { bx0: F.bx0, bx1: F.bx1, by0: F.by0, by1: F.by1, res, S: { lonMin: -180, lonMax: 180, latMin: -90, latMax: 90 } })
+      const _t1 = performance.now()
+      if (!M.n || !g.setMesh(mk, M.xy, M.uv, M.n)) { rmKey = ''; rmBox = null; return false }
+      rmKey = mk; rmBox = { x0: F.bx0, y0: F.by0, x1: F.bx1, y1: F.by1 }
+      globalThis.__rmStat = { tris: M.n, res, tex: tw, planMs: +(_t1 - _t0).toFixed(1), ms: +(performance.now() - _t0).toFixed(1) }
+    }
+    g.resize(Math.round(cw * dpr), Math.round(ch * dpr))
+    if (!g.render({ k: kk, tx, ty, dpr })) return false
+    // 合成：GL 画布与当前渲染目标同为设备像素尺寸，1:1 贴一次（与 drawFieldGL 同一套）。
+    // 亮度仍走 ctx.filter，与 CPU 路同一条乘法，不在着色器里另算一遍。
+    const f = ctx.filter
+    ctx.setTransform(1, 0, 0, 1, 0, 0)
+    if (imgBright !== 1) ctx.filter = 'brightness(' + imgBright + ')'
+    ctx.drawImage(g.canvas(), 0, 0)
+    ctx.filter = f
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)   // 恢复屏幕坐标，后续图层照旧
+    return true
+  }
   function drawImagery() {
     if (rotLive) return false    // 转动进行中：整幅影像重投影是每帧几十毫秒，先退回矢量底图（返回 false 即走那条路）
     if (vecImg) { ctx.drawImage(vecImg, 0, 0, cw, ch); return true }   // 矢量导出：整层已合成为一张，与页面 1:1
@@ -882,6 +806,7 @@ export function createFlatCoverage(canvas) {
       // 多一层重采样、多一块几十兆的拼图画布，屏上并不见得更清楚。故调用方在投影档下把瓦片档
       // 换成 16K 整幅递进来（见 viz/imagery.js 的 imageryForFlat）—— 这里只管画。
       if (!imgEl) return false
+      if (drawImageryGL()) return true
       return blitReprojected(reprojectRaster(imgEl, null, true), 1, imgBright, true)
     }
     if (imgSet) return drawImageryTiles()
@@ -3045,7 +2970,11 @@ export function createFlatCoverage(canvas) {
       let ps = Math.max(1, (o.px > 0 ? o.px : 7680) / W)
       ps = Math.min(ps, Math.sqrt(268435456 / (W * H)))
       await this.ensureImagery({ width: W, height: H, pixelScale: ps, view: o.view })
-      const SV = { ctx, dpr, cw, ch, base, scale, tx, ty }
+      // ★ 恒走 CPU 路：这张图是矢量 PDF 的影像底图，PNG/PDF 逐字节一致是硬约束。
+      //   宿主（ConstellationMap3D）在导出前本来就置了 exporting，这里再钉一次 —— 别的调用方
+      //   （验证台直接调 renderFlatPDF）没置位时也不会悄悄换成 GPU 出的那一张。
+      const SV = { ctx, dpr, cw, ch, base, scale, tx, ty, exporting }
+      exporting = true
       const cvI = document.createElement('canvas')
       cvI.width = Math.round(W * ps); cvI.height = Math.round(H * ps)
       let painted = false
@@ -3056,7 +2985,7 @@ export function createFlatCoverage(canvas) {
         ctx.fillStyle = oceanColor; ctx.fillRect(0, 0, cw, ch)   // JPEG 没有 alpha：缺片处露海色，不是一块黑
         painted = drawImagery()
       } finally {
-        ctx = SV.ctx; dpr = SV.dpr; cw = SV.cw; ch = SV.ch; base = SV.base; scale = SV.scale; tx = SV.tx; ty = SV.ty
+        ctx = SV.ctx; dpr = SV.dpr; cw = SV.cw; ch = SV.ch; base = SV.base; scale = SV.scale; tx = SV.tx; ty = SV.ty; exporting = SV.exporting
       }
       if (!painted) return null
       const img = new Image()
@@ -3103,6 +3032,7 @@ export function createFlatCoverage(canvas) {
       if (idleTimer) { clearTimeout(idleTimer); idleTimer = 0 }
       if (rotRaf) { cancelAnimationFrame(rotRaf); rotRaf = 0 }
       if (glf) { glf.dispose(); glf = null }
+      if (glr) { glr.dispose(); glr = null }
       offPov()
       if (offDpr) { offDpr(); offDpr = null }
       canvas.removeEventListener('wheel', onWheel); canvas.removeEventListener('pointerdown', onDown); canvas.removeEventListener('pointermove', onMove)

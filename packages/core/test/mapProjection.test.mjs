@@ -1,6 +1,6 @@
 // 2D 投影层的不变量（src/viz/geo/projection.js）。运行：npm test
 //
-// 五档：等距圆柱（出厂）/ Mercator / Equal Earth / Robinson / Albers。
+// 六档：等距圆柱（出厂）/ Mercator / Equal Earth / Robinson / Albers / 方位等距。
 // 这一层错了的症状都不是「报错」，而是「图看着有点怪」——地物挪了半个像素、点选读数偏了一点、
 // 海陆颜色反了。故判据一律是能算的量：平面归一、正逆算往返、绕向、切口、以及接线检查。
 //
@@ -11,12 +11,16 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { feature } from 'topojson-client'
 import { geoArea } from 'd3-geo'
-import { makeProjection, PROJECTIONS, DEFAULT_PROJECTION, isProjection, MERCATOR_LAT, ALBERS_PARALLELS, lonBreaks, lonPeriod } from '../../../src/viz/geo/projection.js'
+import { makeProjection, PROJECTIONS, DEFAULT_PROJECTION, isProjection, MERCATOR_LAT, ALBERS_PARALLELS, lonBreaks, lonPeriod, planCells, cellError, blockError, planCellsInv, planBlockInv, cellErrorInv, cellDrawableInv, cellCornersInv, projParams } from '../../../src/viz/geo/projection.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(HERE, '..', '..', '..')
 
 let pass = 0, fail = 0
+// ★ 源码扫描用的正则一律走行尾归一后的副本：工作区在 Windows 上是 CRLF（git 的 autocrlf），
+//   而判据里的 /…\n/ 假定的是 LF —— 不归一的话这几条会无缘无故地红，跟代码对不对没关系。
+const lf = (t) => t.replace(/\r\n/g, '\n')
+
 const ok = (name, cond, note) => {
   if (cond) { pass++; console.log('PASS  ' + name + (note ? '  (' + note + ')' : '')) }
   else { fail++; console.log('FAIL  ' + name + (note ? '  — ' + note : '')) }
@@ -24,7 +28,7 @@ const ok = (name, cond, note) => {
 const LON0 = -30   // 出厂切口（画面中心 150°E）
 
 // ---------- ① 档位表 ----------
-ok('① 五档齐全且出厂档在最前', PROJECTIONS.length === 5 && PROJECTIONS[0].k === DEFAULT_PROJECTION && DEFAULT_PROJECTION === 'equirect',
+ok('① 六档齐全且出厂档在最前', PROJECTIONS.length === 6 && PROJECTIONS[0].k === DEFAULT_PROJECTION && DEFAULT_PROJECTION === 'equirect',
   PROJECTIONS.map((p) => p.k).join(' / '))
 ok('① 每档都有中英名', PROJECTIONS.every((p) => p.k && p.zh && p.en))
 ok('① isProjection 认识全部档、拒掉别的', PROJECTIONS.every((p) => isProjection(p.k)) && !isProjection('mollweide') && !isProjection('') && !isProjection(null))
@@ -96,6 +100,8 @@ for (const { k, zh } of PROJECTIONS) {
 // 换切口即换中央经线；圆柱/伪圆柱下切口那条经线必落在 x=0 与 x=W 两端。
 for (const { k, zh } of PROJECTIONS) {
   if (k === 'albers') continue   // 圆锥的扇面不是矩形，切口不在包围盒的边上（见下一条单独守）
+  // ★ 方位等距：中心纬度默认 0，此时切口那条经线正过对跖点 → 落在圆的最左点 x=0，这一条仍守得住。
+  //   中心纬度非 0 时「切口」对它本就不成立（图幅边界是对跖【点】而不是一条经线）。
   for (const l0 of [-30, 0, 75, -180]) {
     const P = makeProjection(k, l0)
     const o = [0, 0]
@@ -216,6 +222,8 @@ for (const { k, zh } of PROJECTIONS) {
 {
   const COARSE = 15
   for (const { k, zh } of PROJECTIONS) {
+    // 反向网格那一档（方位等距）的网格建在平面上、根本不过 lonBreaks —— 它的不变量另立一段（⑩ᵇ）
+    if (makeProjection(k, -30).invGrid) continue
     let worst = 0, worstAt = '', gaps = 0, seamBad = 0
     for (const l0 of [-30, -75, 0, 45, 123.4, -180, 179]) {
       const P = makeProjection(k, l0)
@@ -260,6 +268,84 @@ for (const { k, zh } of PROJECTIONS) {
   }
 }
 
+// ---------- ⑩ᵇ 反向网格（方位等距）：奇点被挡住、图还铺得满 ----------
+// 这一档的网格建在【平面】上、四角逆算成经纬（见 projection.js 的 invGrid），故 ⑩ 那套
+// 「经纬块 + lonBreaks」的判据整条不适用，换成它自己的两条不变量：
+//   ① 画出来的每一格，四角经度跨度都不许接近半幅 —— 跨极那一格的四角经度能差满 180°
+//     （极点处经度本就不定），取源矩形会横扫半张源图。实现里以「跨度 > 90° 就不画」挡下。
+//   ② 圆内要铺得满。★ 这一条是拿品红色顶替垫底海色、一眼看出来的三个坑的回归闸：
+//     「四角全在内才画」吃掉 12.5% 的面积；跨边界的块走自适应会被判成一格就够 → 整块不画，
+//     圆周上一圈块那么大的三角形缺口；放宽判据却不细分 → 圆边上一圈白色的碎三角。
+//     密度口径全在 planBlockInv 里，这里就按它逐格铺一遍量覆盖率。
+{
+  const COARSE = 15
+  for (const { k, zh } of PROJECTIONS) {
+    const P = makeProjection(k, -30, { lat0: 25 })
+    if (!P.invGrid) continue
+    const un = (v, r) => { let t = v; while (t - r > 180) t -= 360; while (t - r < -180) t += 360; return t }
+    let worstSpan = 0, worstGap = 0, worstAt = '', crossSeam = 0
+    for (const res of [1, 3, 6]) {
+      const tol = 0.6 / res, ovP = 1.5 / res
+      let drawn = 0, inside = 0
+      for (let x = 0; x < P.W; x += COARSE) for (let y = 0; y < P.H; y += COARSE) {
+        const nx = Math.max(x, Math.min(P.W / 2, x + COARSE)), ny = Math.max(y, Math.min(P.H / 2, y + COARSE))
+        if (!P.inPlane(nx, ny)) continue
+        const n = planBlockInv(P, x, x + COARSE, y, y + COARSE, tol, res)
+        const d = COARSE / n
+        for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
+          const ax = x + i * d, ay = y + j * d
+          const bx = Math.min(x + COARSE, ax + d + ovP), by = Math.min(y + COARSE, ay + d + ovP)
+          // 「该有影像的面积」按格心在圆内算 —— 圆内每一小块都该被某个格盖到
+          if (P.inPlane(ax + d / 2, ay + d / 2)) inside += d * d
+          if (!cellDrawableInv(P, ax, bx, ay, by)) continue
+          const q = cellCornersInv(P, ax, bx, ay, by)
+          if (!q) continue
+          const l = q.map((v) => un(v.lon, q[0].lon))
+          const span = Math.max(...l) - Math.min(...l)
+          if (span > 90) continue                                       // 实现里的防呆：这一格不画
+          if (span > worstSpan) worstSpan = span
+          // 这一格跨没跨源图接缝（源图是等经纬位图，经度 −180..180）
+          const lmin = Math.min(...l), lmax = Math.max(...l)
+          let sft = 0
+          const mid = (lmin + lmax) / 2
+          while (mid + sft < -180 - 1e-9) sft += 360
+          while (mid + sft > 180 + 1e-9) sft -= 360
+          if (lmin + sft < -180 - 1e-9 || lmax + sft > 180 + 1e-9) crossSeam++
+          drawn += d * d
+        }
+      }
+      const gap = 1 - Math.min(1, drawn / inside)
+      if (gap > worstGap) { worstGap = gap; worstAt = 'res=' + res }
+    }
+    ok('⑩ᵇ ' + zh + ' 反向网格：画出来的格没有一个横跨半张源图（跨极那一格被挡下）',
+      worstSpan <= 90, `最宽一格的源经度跨度 ${worstSpan.toFixed(1)}°（阈 90）`)
+    ok('⑩ᵇ ' + zh + ' 反向网格：圆内铺得满（缺口只剩圆周与极点处的半格）',
+      worstGap <= 0.01, `最坏缺口 ${(worstGap * 100).toFixed(2)}%（阈 1%） · ${worstAt}`)
+    // ★ 网格建在平面上，就没法像正向那样拿 lonBreaks 把源图接缝插成断点（那是经纬网格才有的
+    //   自由度）—— 必然有一列格骑在 ±180 上。骑着的格源矩形有一半在源图外、drawImage 画不出来，
+    //   症状是沿接缝一条锯齿状的白带。实现里靠「跨接缝的格画两遍、源坐标差一个周期」补齐。
+    ok('⑩ᵇ ' + zh + ' 反向网格：确实存在跨源图接缝的格（正向躲得开，这一档躲不开）',
+      crossSeam > 0, `跨 ±180 的格 ${crossSeam} 个 —— 它们必须画两遍，否则接缝上一条白带`)
+  }
+  // 反证：跨边界的块若照走自适应，圆周上必然出现整块的缺口 —— planBlockInv 里那条特例正是为它设的
+  {
+    const P = makeProjection('azeq', -30, { lat0: 0 }), res = 2, tol = 0.6 / res
+    let rimBlocks = 0, wouldVanish = 0
+    for (let x = 0; x < P.W; x += 15) for (let y = 0; y < P.H; y += 15) {
+      const c = [[x, y], [x + 15, y], [x, y + 15], [x + 15, y + 15]].map(([a, b]) => P.inPlane(a, b))
+      if (!(c.some((v) => v) && c.some((v) => !v))) continue
+      rimBlocks++
+      // 自适应给的密度下，这一块的格心有没有一个在圆内（没有＝整块不画＝一个块那么大的洞）
+      const n = planCellsInv(P, x, x + 15, y, y + 15, tol, 2 / res), d = 15 / n
+      let any = false
+      for (let i = 0; i < n && !any; i++) for (let j = 0; j < n && !any; j++) if (P.inPlane(x + i * d + d / 2, y + j * d + d / 2)) any = true
+      if (!any) wouldVanish++
+    }
+    ok('⑩ᵇ 反证：跨边界的块照走自适应会整块消失（这条红了说明那条特例已无必要）',
+      wouldVanish > 0, `圆周上的块 ${rimBlocks} 个，其中 ${wouldVanish} 个会整块不画`)
+  }
+}
+
 // ---------- ⑪ 接线检查（源码级）----------
 // 纯函数算得对不等于接上了。这五档的错都藏在「某一层忘了分叉」里：忘了就是那一层
 // 在投影档下画在错的地方（或者干脆按等距圆柱的坐标画在图外）。
@@ -267,6 +353,11 @@ for (const { k, zh } of PROJECTIONS) {
   const FLAT = readFileSync(join(ROOT, 'src/viz/flatmap/flatCoverage.js'), 'utf8')
   const VUE = readFileSync(join(ROOT, 'src/pages/ConstellationMap3D.vue'), 'utf8')
   const CRS = readFileSync(join(ROOT, 'src/stores/mapCrs.js'), 'utf8')
+  const IMG = readFileSync(join(ROOT, 'src/viz/imagery.js'), 'utf8')
+  // 2026-09-06：影像重投影的两个网格循环从 flatCoverage 搬进了这一份共用的规划器
+  // （CPU 的 warpTri 与 GPU 的 glRaster 都从它取网格）。下面几条的判据没变，只是换了扫描对象。
+  const RMESH = readFileSync(join(ROOT, 'src/viz/geo/rasterMesh.js'), 'utf8')
+  const GRAS = readFileSync(join(ROOT, 'src/viz/flatmap/glRaster.js'), 'utf8')
   const seg = (src, from, to) => src.slice(src.indexOf(from), src.indexOf(to))
 
   ok('⑪ flatCoverage 用的是投影模块，不是自己再算一份', /from '\.\.\/geo\/projection\.js'/.test(FLAT) && /makeProjection\(/.test(FLAT))
@@ -278,7 +369,7 @@ for (const { k, zh } of PROJECTIONS) {
     !/for \(const (off|s) of \[-360, 0, 360\]\)/.test(FLAT))
   ok('⑪ 点层正算收在 PX / PY 两个口上，且都吃经纬两个参数',
     /const PX = \(lon, lat\) => PJ\.fwd\(/.test(FLAT) && /const PY = \(lat, lon\) => PJ\.fwd\(/.test(FLAT) &&
-    !/\bPX\([^,()]*\)/.test(FLAT.replace(/const PX = \(lon, lat\)[^\n]*\n/, '')))
+    !/\bPX\([^,()]*\)/.test(lf(FLAT).replace(/const PX = \(lon, lat\)[^\n]*\n/, '')))
   ok('⑪ 逆算走 PJ.inv（点选 / 悬停 / 拖标记同一条）', /const q = PJ\.inv\(wx, wy\)/.test(seg(FLAT, 'function screenToLonLat', 'let onRightClick')))
   for (const [nm, from, to] of [
     ['陆地', 'function buildBaseGeo', 'buildBaseGeo(resolvedFeatures('],
@@ -291,26 +382,192 @@ for (const { k, zh } of PROJECTIONS) {
   ]) ok('⑪ ' + nm + ' 有投影分叉', /PJ\.identity/.test(seg(FLAT, from, to)), from)
   ok('⑪ 绕向归正接在陆地 / 覆盖场 / 足迹三处', (FLAT.match(/asPoly\(|orientRings\(/g) || []).length >= 5)
   ok('⑪ 海只填球面轮廓、另画图廓（否则铺满矩形，图廓当场没）',
-    /PJ\.path\(\{ type: 'Sphere' \}/.test(FLAT) && /function drawSphereOutline/.test(FLAT) && /drawSphereOutline\(\)\n/.test(FLAT))
+    /PJ\.path\(\{ type: 'Sphere' \}/.test(FLAT) && /function drawSphereOutline/.test(FLAT) && /drawSphereOutline\(\)\n/.test(lf(FLAT)))
   ok('⑪ 栅格（影像 / 环境场）在投影档走逐像素重投影',
     /function reprojectRaster/.test(FLAT) && /reprojectRaster\(/.test(seg(FLAT, 'function drawImagery', 'function imageryPlan')) &&
     /reprojectRaster\(/.test(seg(FLAT, 'function drawEnvRaster', 'function drawFieldOverlays')))
   ok('⑪ 栅格网格走 lonBreaks（对齐切口 + 插源缝），且有「一格不许横跨半幅」的防呆',
-    /lonBreaks\(L0, COARSE\)/.test(FLAT) && /while \(midLon \+ shift < S\.lonMin/.test(FLAT) && /gx1 - gx0 > PJ\.W \* 0\.5/.test(FLAT))
-  ok('⑪ 瓦片档在投影档按【可见块 + 当前分辨率】现拼（固定拼整幅 L3 会比 16K / 8K 还糊）',
-    /function tileRegionImage/.test(FLAT) && /function meshWindow/.test(FLAT) &&
-    /reprojectRaster\(imgEl, null, true, imgSet \|\| null\)/.test(FLAT) && /function releaseTileRegion/.test(FLAT) &&
-    /Math\.log2\(0\.5625 \* Math\.max\(1e-6, pxPerDeg\)\)/.test(FLAT))
-  ok('⑪ 换投影与换切口都作废同一批缓存并整份重烘',
-    (FLAT.match(/gridPath = null; gridKey = ''; sphPath = null; sphKey = ''/g) || []).length === 2 &&
-    /setProjection\(kind\)/.test(FLAT) && /PJ = makeProjection\(PJ\.kind, LON0\)/.test(FLAT))
+    /lonBreaks\(L0, COARSE\)/.test(RMESH) && /while \(midLon \+ shift < S\.lonMin/.test(RMESH) && /gx1 - gx0 > PJ\.W \* 0\.5/.test(RMESH))
+  // 用户口径（2026-09-05）：非等距圆柱的投影档【只用 16K 整幅】，不走瓦片。
+  // 瓦片要先拼成一张等经纬图再整份重投影，多一层重采样、多一块几十兆的拼图画布，屏上并不见得更清楚。
+  ok('⑪ 投影档只吃整幅图：拼图那一套已撤，drawImagery 的投影分叉不再碰瓦片集',
+    !/tileRegionImage|releaseTileRegion|meshWindow/.test(FLAT) &&
+    /reprojectRaster\(imgEl, null, true\)/.test(FLAT) &&
+    /if \(!imgEl\) return false/.test(seg(FLAT, 'function drawImagery', 'function imageryPlan')))
+  ok('⑪ 投影档的换档在【调用方】做：瓦片档 → 16K 整幅，8K 仍是 8K',
+    /export function imageryForFlat/.test(IMG) && /proj !== 'equirect' && s\.tiles/.test(IMG) &&
+    /imageryForFlat\(imageryKey\.value, mapCrs\.proj\)/.test(VUE))
+  ok('⑪ 换投影要重推影像（2D 的档位跟着投影走，档位没变也得重来一遍）',
+    /function setMapProj\(k\) \{[^\n]*applyImagery\(\)/.test(lf(VUE)) && /function imageryWantUrl/.test(VUE))
+  ok('⑪ 网格密度走 planCells（固定像素步长那一档是「阿尔伯斯开影像很卡」的成因）',
+    /planCells\(PJ, bLo0, bLo1, bLa0, bLa1, tolPlane\)/.test(RMESH) && !/RP_CELL|RP_ROWS/.test(FLAT + RMESH) && /export const RP_TOL = /.test(RMESH))
+  // 换档 / 换切口 / 换参数（中心纬度、标准纬线）必须走【同一条】重烘通路 —— 三处各写一遍
+  // 迟早漏掉其中一样，漏了就是拿旧平面的缓存去画新平面。现在三个入口都收敛到 rebuildPlane。
+  ok('⑪ 换投影 / 换切口 / 换参数收敛到同一条重烘通路',
+    /function rebuildPlane\(kind, opts, o\)/.test(FLAT) &&
+    (FLAT.match(/rebuildPlane\(/g) || []).length >= 5 &&
+    /gridPath = null; gridKey = ''; sphPath = null; sphKey = ''/.test(seg(FLAT, 'function rebuildPlane', 'const offPov')) &&
+    /setProjection\(kind, opts\)/.test(FLAT) && /setProjParams\(opts, fast\)/.test(FLAT))
+  // 按平面缓存的三样（图廓 / 经纬网 / 栅格重投影）的键都得带上完整的平面指纹，
+  // 否则「只改了中心纬度」时键没变、缓存不作废，画出来的还是上一张平面。
+  ok('⑪ 图廓 / 经纬网 / 栅格重投影的缓存键都带平面指纹（含中心纬度与标准纬线）',
+    /const planeKey = \(\) => PJ\.kind \+ '\/' \+ PJ\.lon0 \+ '\/' \+ PJ\.lat0/.test(FLAT) &&
+    (FLAT.match(/planeKey\(\)/g) || []).length >= 4)
+  // 反向网格档的两处，都是用户实测报回来的
+  ok('⑪ 反向网格：跨源图接缝的格画两遍（源坐标差一个周期），否则接缝上一条锯齿白带',
+    /const shifts = \[shift\]/.test(RMESH) && /shifts\.push\(shift \+ 360\)/.test(RMESH) &&
+    /shifts\.push\(shift - 360\)/.test(RMESH) && /for \(const sh of shifts\)/.test(RMESH))
+  // 2026-09-06 起投影档影像屏上走 GPU 纹理网格。这一层最容易出的错是「两条路各写一份网格」
+  // 与「导出悄悄换成 GPU 出的那一张」——前者迟早走偏、后者直接违反 PNG/PDF 逐字节一致。
+  ok('⑪ 影像三角网只有一份：CPU 的 warpTri 与 GPU 的 glRaster 都从 planRasterMesh 取',
+    /from '\.\.\/geo\/rasterMesh\.js'/.test(FLAT) && (FLAT.match(/planRasterMesh\(PJ, \{/g) || []).length >= 2 &&
+    !/document\.|Path2D|getContext/.test(RMESH))   // 纯几何：碰了 DOM 就没法在 Node 里测
+  ok('⑪ 导出恒走 CPU 路（GPU 那条只在屏上）',
+    /if \(exporting \|\| compat\) return false/.test(seg(FLAT, 'function drawImageryGL', 'function drawImagery()')) &&
+    /exporting = true/.test(seg(FLAT, 'async bakeImagery', 'getMapDetail')))
+  ok('⑪ GPU 纹理只吃整幅世界图：S 向 REPEAT 补接缝、T 向 CLAMP，且有边长上限（16K 不许上到显存）',
+    /TEXTURE_WRAP_S, gl\.REPEAT/.test(GRAS) && /TEXTURE_WRAP_T, gl\.CLAMP_TO_EDGE/.test(GRAS) &&
+    /export const GL_TEX_MAX = 8192/.test(GRAS) && /tw > GL_TEX_MAX/.test(FLAT))
+  // warpTri 每个三角形都 drawImage 整张源图（靠 clip 裁），耗时几乎正比于源图面积；
+  // 而方位等距的三角形数是别的档的十倍，这一项被放大十倍 —— 实测 936 ms → 113 ms。
+  ok('⑪ 反向网格：源图按屏上分辨率先降一档再贴（16K 整张贴一万个三角形是 936 ms）',
+    /function srcThumb\(img, sw, sh, res\)/.test(FLAT) && /360 \* res/.test(FLAT) &&
+    /const TH = srcThumb\(S\.img, sw, sh, res\)/.test(FLAT) &&
+    /thumbCv\.width >= want/.test(FLAT))
   ok('⑪ 档位存在 mapCrs 里（跟着存档走）', /proj: DEFAULT_PROJECTION/.test(CRS) && /isProjection\(patch\.proj\)/.test(CRS))
   ok('⑪ 侧栏有「2D 投影」一节且挂在影像底图之后',
     VUE.indexOf("isSecOpen('geo-img'") < VUE.indexOf("isSecOpen('geo-proj'") &&
     VUE.indexOf("isSecOpen('geo-proj'") < VUE.indexOf("isSecOpen('geo-ocean'") &&
     /setMapProj\(\$event\.target\.value\)/.test(VUE))
-  ok('⑪ 挂载时把档位推给 2D（否则存档恢复后按出厂档画）',
-    /flat\.setProjection\(mapCrs\.proj\)/.test(VUE) && (VUE.match(/flat\.setProjection\(/g) || []).length >= 3)
+  ok('⑪ 挂载时把档位【连同参数】推给 2D（否则存档恢复后按出厂档 / 出厂参数画）',
+    /flat\.setProjection\(mapCrs\.proj, projOpts\(\)\)/.test(VUE) && (VUE.match(/flat\.setProjection\(/g) || []).length >= 3)
+}
+
+// ---------- ⑫ 网格密度：几何误差有界，且不做白工 ----------
+// 网格仿射拉伸是「把弧当直线用」，误差就是格心那一下的偏差（一格拆两个三角形，格心正落在
+// 公共边上，故 cellError 量的就是实际用到的那个插值）。planCells 保证它 ≤ tol。
+// ★ 这一段替掉的是「固定像素步长」那一档，它两头都不对：
+//   · 圆锥（Albers）远远过采样 —— 一屏三万多个三角形，每个都是 save+clip+drawImage+restore，
+//     那就是「阿尔伯斯开了影像很卡」；
+//   · 伪圆柱（Robinson / Equal Earth）在深放大处反而欠采样 —— 格心偏差到 2 px 以上。
+{
+  const OLD_ROWS = 14, OLD_CELL = 22, COARSE = 15      // 固定档的两个常数，只在本段作反证用
+  for (const { k, zh } of PROJECTIONS) {
+    if (k === 'equirect') continue                      // 出厂档不走重投影（PJ.identity 直接铺）
+    if (makeProjection(k, -75).invGrid) continue        // 反向网格档另立一段（⑫ᵇ）：网格建在平面上，这套经纬块的判据不适用
+    let worstNew = 0, worstOld = 0, cellsNew = 0, cellsOld = 0, atNew = ''
+    for (const res of [6, 25, 60, 160, 400]) {          // 每平面单位多少烘图像素（＝屏上分辨率）
+      const P = makeProjection(k, -75)
+      const tol = 0.6 / res
+      const oldLat = Math.max(0.25, Math.min(6, OLD_ROWS / res))
+      const oldLon = Math.min(COARSE, P.rowAffine ? 360 : Math.max(0.5, Math.min(12, OLD_CELL / res)))
+      const oLon = Math.ceil(COARSE / oldLon), oLat = Math.ceil(COARSE / oldLat)
+      for (let lon = -75; lon < 285 - 1e-9; lon += COARSE) {
+        for (let lat = 90; lat > -90 + 1e-9; lat -= COARSE) {
+          const lo0 = lon, lo1 = lon + COARSE, la0 = lat, la1 = lat - COARSE
+          const { nLon, nLat } = planCells(P, lo0, lo1, la0, la1, tol)
+          const eNew = blockError(P, lo0, lo1, la0, la1, nLon, nLat) * res
+          if (eNew > worstNew) { worstNew = eNew; atNew = `res=${res} 块[${lo0},${la0}] ${nLon}×${nLat}` }
+          cellsNew += nLon * nLat
+          worstOld = Math.max(worstOld, blockError(P, lo0, lo1, la0, la1, oLon, oLat) * res)
+          cellsOld += oLon * oLat
+        }
+      }
+    }
+    ok('⑫ ' + zh + ' 格心偏差 ≤ 0.6 烘图像素（亚像素，看不出来）', worstNew <= 0.61,
+      `最坏 ${worstNew.toFixed(2)} px · ${atNew} · 固定档同口径 ${worstOld.toFixed(2)} px · 格数 ${cellsOld} → ${cellsNew}`)
+  }
+  // ---------- ⑫ᵇ 反向网格（方位等距）的格心偏差 ----------
+  // 判据翻过来但尺子不变：格心的【插值经纬】正算回平面，与真实格心比，仍是平面单位 × res。
+  // ★ 两处豁免，都是「奇点本身那一格」，不是给算法开的后门：
+  //   · 极点那一格 —— 经度在极点上不定，等经纬源图那一圈是同一片冰盖，贴错经度看不出来；
+  //   · 贴着圆周那一格 —— 对跖点是真奇点，整条圆周对应同一个球面点，「贴得准不准」无从谈起。
+  //   除这两处之外，圆内每一格都必须守住 0.6 px。
+  for (const { k, zh } of PROJECTIONS) {
+    if (!makeProjection(k, -75).invGrid) continue
+    for (const lat0 of [0, 40]) {
+      const P = makeProjection(k, -75, { lat0 })
+      let worst = 0, at = '', cells = 0, capped = 0
+      for (const res of [1, 6, 60]) {
+        const tol = 0.6 / res
+        for (let x = 0; x < P.W; x += COARSE) for (let y = 0; y < P.H; y += COARSE) {
+          const nx = Math.max(x, Math.min(P.W / 2, x + COARSE)), ny = Math.max(y, Math.min(P.H / 2, y + COARSE))
+          if (!P.inPlane(nx, ny)) continue
+          // 密度走渲染端那一份（planBlockInv）：自适应 + 三条特例
+          const n = planBlockInv(P, x, x + COARSE, y, y + COARSE, tol, res), d = COARSE / n
+          // 同一块【纯自适应】（不设任何下限）会切到几段 —— 用来分辨这一块的密度是谁定的
+          const nAdapt = planCellsInv(P, x, x + COARSE, y, y + COARSE, tol, 0)
+          cells += n * n
+          // ★ 密度被那几条特例【压住】的块不参与精度校核：圆周一圈按缺口定密度、极点与拉伸带
+          //   按地面分辨率定格边 —— 它们管的都是「铺不铺得满 / 划不划算」，不是精度。
+          //   放进来等于拿精度的尺子去量另一件事。压住与否直接比得出来：n < 纯自适应的段数。
+          if (n < nAdapt) { capped++; continue }
+          for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
+            const ax = x + i * d, ay = y + j * d
+            if (!cellDrawableInv(P, ax, ax + d, ay, ay + d)) continue
+            // ★ 两类格豁免，都是「奇点本身那一格」，不是给算法开的后门：
+            //   · 跨图幅边界的格 —— 它靠 clampPlane 把角压回圆内才画得出来，量到的是那点形变，
+            //     不是投影的曲率；圆周（对跖点）本就是奇点，整条圆周对应同一个球面点，
+            //     「贴得准不准」无从谈起。
+            //   · 含极点的格 —— 极点处经度不定，等经纬源图那一圈是同一片冰盖，贴错经度看不出来。
+            if (!(P.inPlane(ax, ay) && P.inPlane(ax + d, ay) && P.inPlane(ax, ay + d) && P.inPlane(ax + d, ay + d))) continue
+            const q = P.invRaw(ax + d / 2, ay + d / 2)
+            if (!q || Math.abs(q[1]) > 89) continue
+            const e = cellErrorInv(P, ax, ax + d, ay, ay + d) * res
+            if (e > worst) { worst = e; at = `res=${res} 格[${ax.toFixed(1)},${ay.toFixed(1)}] 块切 ${n}×${n}` }
+          }
+        }
+      }
+      ok('⑫ᵇ ' + zh + ' 中心纬度 ' + lat0 + '° 格心偏差 ≤ 0.6 烘图像素', worst <= 0.61,
+        `最坏 ${worst.toFixed(2)} px · ${at} · 格数 ${cells} · 顶到上限的块 ${capped}`)
+    }
+  }
+  // 反证：反向网格若不细分（一块一格），对跖点那一带必然超差 —— 这条红了说明 ⑫ᵇ 白守
+  {
+    const P = makeProjection('azeq', -75, { lat0: 0 })
+    const e = cellErrorInv(P, 15, 30, 165, 180) * 6
+    ok('⑫ᵇ 反证：反向网格一块一格必然超差（圆周那一带的经纬插值不是线性的）', e > 0.6, `一块一格偏差 ${e.toFixed(2)} px`)
+  }
+  // 反证：同一带走【正算】切到上限也救不回来 —— 这就是方位等距非走反向网格不可的理由。
+  // 对跖点的切向尺度因子是 γ/sin γ：γ=179° 处一格被拉长 137 倍，经纬网格再密也追不上。
+  {
+    const P = makeProjection('azeq', -75, { lat0: 0 }), res = 6
+    const lo0 = P.lon0 + 0.001, lo1 = P.lon0 + COARSE      // 紧贴对跖点所在经线的那一块
+    const one = cellError(P, lo0, lo1, 15, 0) * res
+    const { nLon, nLat } = planCells(P, lo0, lo1, 15, 0, 0.6 / res)
+    const after = blockError(P, lo0, lo1, 15, 0, nLon, nLat) * res
+    ok('⑫ᵇ 反证：同一带走正算，切到上限仍差两个数量级（对跖点的 γ/sinγ 发散）',
+      one > 100 && after > 100, `一块一格 ${one.toFixed(0)} px → 切 ${nLon}×${nLat}（上限 128）后仍 ${after.toFixed(0)} px；反向同带 ≤ 0.6 px`)
+  }
+  // 反证一：固定档在深放大的伪圆柱上确实越界（这条红了说明反证失效、⑫ 的意义也就没了）
+  {
+    const P = makeProjection('robinson', -75), res = 400
+    const oldLat = Math.max(0.25, Math.min(6, OLD_ROWS / res))
+    let worst = 0
+    for (let lat = 90; lat > -90 + 1e-9; lat -= COARSE)
+      worst = Math.max(worst, blockError(P, 0, COARSE, lat, lat - COARSE, 1, Math.ceil(COARSE / oldLat)) * res)
+    ok('⑫ 反证：固定像素步长在 Robinson 深放大处超差', worst > 0.6, `固定档最坏 ${worst.toFixed(2)} px（阈 0.6）`)
+  }
+  // 反证二：圆锥的纬线是圆弧，一块一格必然超差 —— 也就是「不能照搬圆柱那套一块一仿射」
+  {
+    const e = cellError(makeProjection('albers', -75), 60, 75, 45, 30) * 60
+    ok('⑫ 反证：Albers 一块一格必然超差（纬线是圆弧，不是直线）', e > 0.6, `一块一格偏差 ${e.toFixed(2)} px`)
+  }
+  // 经向切几刀：Mercator 的 x = s·λ 与纬度无关 → 恒一块一格（与固定档的 lonStep = 15° 同一个结论）；
+  // 伪圆柱是 x = A(φ)·λ，A 随纬度变 → 有个交叉项，经向要切那么一两刀，但也就一两刀。
+  {
+    let merc = true, pseudo = 0
+    for (const lat of [0, 30, 60, 80]) if (planCells(makeProjection('mercator', -75), 0, 15, lat, lat - 15, 0.6 / 200).nLon !== 1) merc = false
+    for (const k of ['equalEarth', 'robinson']) {
+      const P = makeProjection(k, -75)
+      for (const lat of [0, 30, 60, 80]) pseudo = Math.max(pseudo, planCells(P, 0, 15, lat, lat - 15, 0.6 / 200).nLon)
+    }
+    ok('⑫ Mercator 经向恒一块一格（x 与纬度无关，切它一刀一点误差都不减）', merc)
+    let cone = 99
+    for (const lat of [0, 30, 60, 80]) cone = Math.min(cone, planCells(makeProjection('albers', -75), 0, 15, lat, lat - 15, 0.6 / 200).nLon)
+    ok('⑫ 伪圆柱经向切得远比圆锥少（前者只为 A(φ) 的交叉项切，后者的纬线本身就是圆弧）',
+      pseudo < cone, `伪圆柱最多 ${pseudo} 段 · 圆锥最少 ${cone} 段`)
+  }
 }
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed')
