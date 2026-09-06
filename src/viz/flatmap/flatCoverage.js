@@ -4,12 +4,12 @@
 // 陆地配色（LAND/CHINA/ICE/基调方案/逐国覆盖）统一收拢到 ../landPalette.js（与 3D 球体共用单一来源）
 import { ARCTIC_ISLAND_LAT, landColors, setLandPalette, getLandPalette } from '../landPalette.js'
 // 底图的面/线/国名/点选全部由主权解算层按归属实时算出（与 3D 球体同一份），视角 = 一张归属表
-import { resolvedFeatures, resolvedLines, labelSet, ensureDetail, onPovChange } from '../geo/povResolver.js'
+import { resolvedFeatures, resolvedLines, labelSet, ensureDetail, hasDetail, onPovChange } from '../geo/povResolver.js'
 // 五类边界线的渲染次序 / 出厂样式 / 屏幕像素虚线图案 / 缩放淡出档位：与 3D 球体共用同一份常量
 import { BORDER_DEF, DASH_PX, DASH_SCALE, BORDER_DRAW, CFG_KEY, fadeFactor, admFade } from '../geo/borderStyle.js'
 import { terminatorFlat } from '../terminator.js'
 // 影像瓦片金字塔（EPSG:4326 / GIBS 网格）：网格数学与取片缓存，与 3D 球体共用同一份
-import { TILE, span as tileSpan, tileRange, pickZoom, getTileOrParent, tileGutter, tileImgSize, loadTiles, warm as warmTiles } from '../imageryTiles.js'
+import { TILE, span as tileSpan, tileRange, pickZoom, getTileOrParent, getTileFallback, ancestorHit, prefetchParents, tileStats, tileGutter, tileImgSize, loadTiles, warm as warmTiles, MISS_TTL } from '../imageryTiles.js'
 // 投影档瓦片影像：同一份三角网按片分桶（纯几何，见其文件头）
 import { binByTiles, tileUvToPx, tileWindow } from '../geo/tileBins.js'
 // 点标记序号徽标（圈 1、圈 2）：与 3D 球体共用同一支画笔，两视图观感一致
@@ -27,9 +27,9 @@ import { waterLabels } from '../geo/waterNames.js'
 import { chainList, CHAIN_DEF, CHAIN_LABEL_PX } from '../geo/islandChains.js'
 import { seamCrossing } from '../geo/lineGeom.js'
 // 2D 投影（世界平面的定义）—— 出厂等距圆柱，与换投影前逐位相同
-import { makeProjection, DEFAULT_PROJECTION, isProjection } from '../geo/projection.js'
+import { makeProjection, DEFAULT_PROJECTION, isProjection, projParams } from '../geo/projection.js'
 // 影像重投影的三角网规划器：CPU 路（导出 / 无 WebGL2 / 环境场栅格）与 GPU 路共用同一份
-import { planRasterMesh } from '../geo/rasterMesh.js'
+import { planRasterMesh, COARSE as MESH_BLOCK } from '../geo/rasterMesh.js'
 // 投影档影像的 GPU 后端（屏上绘制时启用；导出 / 无 WebGL2 / 深缩放退回 warpTri）
 import { createGlRaster, GL_TEX_MAX } from './glRaster.js'
 // GRD 分带填充的 GPU 后端（等距圆柱 + 屏上绘制时启用；导出/投影档/无 WebGL2 时退回 Path2D）
@@ -39,7 +39,7 @@ import {
   REBUILD_FAST_MS, PROBE_FRAMES, UNKNOWN_COST, NOMINAL_MIN, viewCls as clsOf, makeCostTable,
   quantPan, makePanQuant, idleMsFor, hotMsFor, nominalFromGaps, placeSnapshot, worldCover as coverOf,
   uncoveredMode, needsRestRebuild,
-  coversSubset, pickFallbackIdx, clipRects
+  coversSubset, pickFallbackIdx, clipRects, stripRects
 } from './rebuildPolicy.js'
 import { geoArea, geoContains } from 'd3-geo'
 // 南极洲极区收口：与 3D 球体同源（见 buildBaseGeo 的 ATA 分支）
@@ -152,7 +152,7 @@ export function createFlatCoverage(canvas) {
   let onBackendChange = null
   let glDenied = false            // 几何层自己不出网格（电平数超上限）：别再拿 'gl' 去催它重算，否则死循环
   const glField = () => {
-    if (glFail) return null
+    if (glFail || dead) return null
     if (!glf) {
       try { glf = createGlField() } catch { glFail = true; return null }
       if (!glf.available()) { glFail = true; glf = null; return null }
@@ -338,8 +338,32 @@ export function createFlatCoverage(canvas) {
   // 实测一次全量重烘 50m 档 44 ms（≈23 fps，转起来是顿的），110m 档 5.6 ms —— 转动要跟手就得降这一档。
   // 覆盖场与影像另有出路：它们烘在旧平面上，重烘太贵，转动期间整层不画（见 drawField / drawImagery）。
   let rotLive = false
-  const curDetail = () => (rotLive ? '110m' : mapDetail0)
-  const curThin = () => (rotLive ? 0 : mapThin)
+  // 全图背板烘制期间也临时降到 110m（见 ensureBackplate / withLiteGeo），与「拖着转」同一档、同一条通路。
+  let liteBake = false
+  const curDetail = () => ((rotLive || liteBake) ? '110m' : mapDetail0)
+  const curThin = () => ((rotLive || liteBake) ? 0 : mapThin)
+  // 按档缓存的底图几何（面 / 国名 / 五类线的 Path2D）：背板要在 10m 与 110m 之间来回切，
+  // 每次都 buildBaseGeo 一遍 10m（48 万点进 Path2D）是几十毫秒，缓存后切换只是换四个引用。
+  // 键带 planeKey：换平面时旧几何整份作废（rebuildPlane / 视角广播 / 换配色处一并清空）。
+  const geoCache = new Map()
+  const geoKeyOf = (d, t) => d + '|' + t + '|' + planeKey()
+  function withLiteGeo(fn) {
+    if (rotLive || liteBake || mapDetail0 === '110m') { fn(); return }
+    const k0 = geoKeyOf(mapDetail0, mapThin), k1 = geoKeyOf('110m', 0)
+    geoCache.set(k0, { land, clabels, borderLines, borderPaths })
+    liteBake = true
+    try {
+      const hit = geoCache.get(k1)
+      if (hit) { land = hit.land; clabels = hit.clabels; borderLines = hit.borderLines; borderPaths = hit.borderPaths }
+      else { borderPaths = null; const f110 = resolvedFeatures('110m'); buildBaseGeo(f110, 0) }
+      fn()
+      geoCache.set(k1, { land, clabels, borderLines, borderPaths })
+    } finally {
+      const back = geoCache.get(k0)
+      land = back.land; clabels = back.clabels; borderLines = back.borderLines; borderPaths = back.borderPaths
+      liteBake = false
+    }
+  }
   function buildBaseGeo(feats, thin) {
     land = []; clabels = []
     borderLines = null
@@ -410,6 +434,13 @@ export function createFlatCoverage(canvas) {
     for (const l of labelSet('zh', curDetail())) clabels.push({ zh: l.zh, en: l.en, lon: l.lon, lat: l.lat, px: clamp(Math.round(10 + l.ext * 0.22), 10, 20), pri: l.ext })
   }
   buildBaseGeo(resolvedFeatures('10m'), 0)
+  // 全图背板要 110m 骨架：起手就把那份拉进来（几百 KB 的懒加载 chunk），第一次拖过余量时已经在手。
+  // 没到之前 ensureBackplate 返回 null，那一次走老路（同步重建 / 海色垫底），不会拿 10m 冒充 110m 烘一张贵的。
+  ensureDetail('110m').then(() => {
+    // 到手后趁空闲把 110m 的面与线烘进 geoCache（第一次要几十毫秒），免得第一次拖过余量时当场付这笔
+    const ric = (typeof window !== 'undefined' && window.requestIdleCallback) || ((f) => setTimeout(f, 800))
+    ric(() => { try { withLiteGeo(() => { if (!borderPaths) bakeBorders() }) } catch { /* 预热失败不影响功能 */ } })
+  }).catch(() => {})
 
   // ── 世界平面变了：换档 / 换切口 / 换参数走的是同一条通路 ──────────────────────
   // 烘在平面坐标里的（陆地 / 五类边界线 / 覆盖填充 / 等值线）整份重造，
@@ -419,8 +450,10 @@ export function createFlatCoverage(canvas) {
   //   term   夜区数据作废（只有换切口要 —— 它的采样起点钉在 LON0）
   //   fast   转动进行中的轻量档（见 rotLive）
   const optNum = (v) => (Number.isFinite(v) ? +v : null)
-  const optKey = (o) => [optNum(o && o.lat0), optNum(o && o.par1), optNum(o && o.par2)].join(',')
-  const samePlaneOpts = (o) => optKey(o) === optKey(PJOPT)
+  // ★ 只比【本档认的】参数（projParams：方位等距认 lat0、阿尔伯斯认两条标准纬线、其余一个都不认）：
+  //   跟随星下点时 lat0 每拍都在变，等距圆柱下全比的话每拍白重建一次（rebuildPlane 把四层缓存清光）。
+  const optKey = (o, kind) => projParams(kind || PJ.kind).map((k) => optNum(o && o[k])).join(',')
+  const samePlaneOpts = (o, kind) => optKey(o, kind) === optKey(PJOPT, kind)
   function rebuildPlane(kind, opts, o) {
     const op = o || {}
     const H0 = PJ.H
@@ -429,6 +462,7 @@ export function createFlatCoverage(canvas) {
     rotLive = !!op.fast
     borderPaths = null; admPaths = null; gridPath = null; gridKey = ''; sphPath = null; sphKey = ''; sphOps = null; sphOpsKey = ''
     rpKey = ''; rpBox = null; rmKey = ''; rmBox = null; rmKeyT = ''; rmBoxT = null; rmBinsT = null
+    geoCache.clear(); meshBlockCache.clear()
     buildBaseGeo(resolvedFeatures(curDetail()), curThin())
     // 覆盖场在转动期间不画，也就不必重烘 —— 松手那一次（fast=false）把它补回来。
     if (!rotLive) {
@@ -447,14 +481,17 @@ export function createFlatCoverage(canvas) {
 
   // 视角/用户覆写改动由解算器广播回来：底图面/线/国名整份重建 + 静态层快照作废
   const offPov = onPovChange(() => {
-    borderPaths = null; admPaths = null
+    borderPaths = null; admPaths = null; geoCache.clear()
     buildBaseGeo(resolvedFeatures(curDetail()), curThin())
     invalidateStatic(); requestDraw()
   })
 
   // 合帧：把一帧内的多次重绘请求合并成一次 rAF 渲染（拖拽/缩放不再被高频事件淹没）。
   let rafId = 0
-  function requestDraw() { if (rafId) return; rafId = requestAnimationFrame(() => { rafId = 0; draw() }) }
+  // dead：destroy() 之后置真。卸载后仍可能有到期的定时器（瓦片到货去抖 / 负缓存解锁）想重绘，
+  // 一帧 draw 会经 glRaster() 把刚 dispose 掉的 WebGL 上下文再建一个 —— 浏览器的上下文数有硬上限。
+  let dead = false
+  function requestDraw() { if (dead || rafId) return; rafId = requestAnimationFrame(() => { rafId = 0; draw() }) }
 
   // 静态层快照（拖拽波束/调覆盖参数提速核心）：底图(海陆/冰盖/网格)与标注(省界/国家名/标记/卫星层)在拖拽中
   // 完全不变，却原本每帧重画（含上百国家名描边文字，开销大）。把它们渲到离屏缓冲，只在视图变换或静态数据
@@ -465,6 +502,12 @@ export function createFlatCoverage(canvas) {
   //   快照按【带余量的虚拟视口】烘（余量 = 视口的 OVER，且只在世界矩形真伸出视口时才留），
   //   平移只搬位图、缩放期按比例缩位图，静止后（或盖不住时）才重建一次。判定见 snapPlace()。
   let belowCanvas = null, belowCtx = null, aboveCanvas = null, aboveCtx = null
+  // ★ 2026-09-07 第三张：文字 / 标记 / 卫星层（above 里线之后的那一半）单独一张快照。
+  //   理由有二：① 随时间走的东西（标记仰角、卫星图标、航迹头）每拍都变，原来一变就作废整份静态层 ——
+  //   10m 一次 100 多毫秒、还把回退快照清光；拆出来之后它们只重画这一张（几毫秒，见 invalidateText）；
+  //   ② 增量条带重建（见 renderStaticLayers）只对面与线成立 —— 地名避让是按整幅算的，条带里画半个字不成，
+  //   文字这一张每次整份重画，本来就便宜。
+  let textCanvas = null, textCtx = null, textValid = false
   let staticValid = false
   // 回退快照（§4.4）：重建时若旧的那张在世界坐标里【不是】新的子集（典型：从全图放大进来，旧的是全图），
   // 就把它整对挪到这里留着 —— 缩回去时先贴它垫底，画面永远有东西，不出现深色空环、也不用同步重建。
@@ -563,8 +606,11 @@ export function createFlatCoverage(canvas) {
   // invalidateStatic 的 29 处调用【全部】是内容变了：代号 +1、回退快照作废。
   // 只有 scheduleRebuild 到期那一条是视图补建：内容没变，代号不动、回退快照留着。
   let staticGen = 0
-  function invalidateStatic() { staticValid = false; staticGen++; dropFallbacks() }
+  function invalidateStatic() { staticValid = false; textValid = false; staticGen++; dropFallbacks() }
   function rebuildAtRest() { staticValid = false }
+  // 只有文字 / 标记 / 卫星层变了：面与线那两张不动、内容代不动、回退快照留着（它们 above 里合进去的旧文字
+  // 只在盖不住那一圈露一下，≤ 350 ms 就被补建盖掉）。下一帧只重画 textCanvas（见 renderTextLayer）。
+  function invalidateText() { textValid = false }
   // 手势热度：按着指针拖 / 刚滚过轮不足一个 idle。热着就不补建 —— 补建的光栅会顶住下一格。
   // ★ 慢速滚轮（手滚一格 100～300 ms）必须整串算作【一次手势】：按 idleMs() 判热，两格之间
   //   就会补一次建，下一格的帧要等它的光栅（实测一格 47 ms）。故【贵】的视角热窗口拉到 ZOOM_RUN_MS，
@@ -586,7 +632,12 @@ export function createFlatCoverage(canvas) {
   }
   function idleFire() {
     idleTimer = 0
-    if (gestureHot()) { idleTimer = setTimeout(idleFire, 60); return }   // 手还热：再等一拍
+    if (gestureHot()) {
+      // 手还热：再等一拍。例外 —— 按住不动（拖动中停顿）且盖不住、又能走增量条带（≈ 20 ms）时就补一次：
+      // 指尖底下停着一圈 110m 背板不好看，而条带那点代价顶不住再拖的第一帧。
+      const pause = dragging && !rotDragging && staticValid && !snapPlace().covers && stripAble()
+      if (!pause) { idleTimer = setTimeout(idleFire, 60); return }
+    }
     // ★ 瓦片到货只是【多了几片影像】，不是换了内容：两条路都走 rebuildAtRest —— 走 invalidateStatic
     //   会 gen++ 并清空回退快照，正好把「缩回去时垫底的那张全图」清光，缩回全图又露空环（§11.2）。
     tilesDirty = false; rebuildAtRest()
@@ -886,6 +937,110 @@ export function createFlatCoverage(canvas) {
     const M = planRasterMesh(PJ, { bx0: F.bx0, bx1: F.bx1, by0: F.by0, by1: F.by1, res, S: WORLD_S })
     return binByTiles(M, z, imgSet)
   }
+  // 屏上 GPU 路的分桶网格：【按块缓存】+ 放宽容差。
+  // 反向网格（方位等距）的规划器本来就按 MESH_BLOCK（15 平面单位）的固定块走，块的三角形与视框无关 ——
+  // 一块的规划就是「把 planRasterMesh 的框缩到那一块」；于是平移只规划新进入的块，其余从缓存拼。
+  // 实测 t=0.3 全图一次重规划 75～104 ms（3.8～5 万三角形、规划器占八成、分桶排序 6 ms）→ 拼接 ≈ 1 ms。
+  // 正向档（圆柱 / 伪圆柱 / 圆锥）本来就只有一两千个三角形、3 ms，不缓存（块会在切口 / 接缝上重叠）。
+  // 容差 GPU_TOL=1.2 px（导出的 CPU 路仍是 RP_TOL=0.6，不动）：影像位置差 1 px 肉眼分不出，三角形少一半。
+  const GPU_TOL = 1.2
+  const MESH_BLOCK_MAX = 900          // 每块 ≈ 10～30 KB（float32 × 12 × 三角形数），封顶约 20 MB
+  const meshBlockCache = new Map()
+  const emptyBins = () => ({ xy: new Float64Array(0), uv: new Float64Array(0), n: 0, bins: [], tiles: [] })
+  // budgetMs：本帧最多花多少毫秒规划缺的块；花完还没齐就返回 null（调用方先用整盘粗网格顶着、下一帧接着规划）。
+  // 一次规划整个视框实测 91 ms（3.4 万三角形）—— 那是松手后的一顿；分到每帧 8 ms 就看不见了。
+  function planTileBinsCached(F, res, z, budgetMs = Infinity) {
+    if (!PJ.invGrid) {
+      const M = planRasterMesh(PJ, { bx0: F.bx0, bx1: F.bx1, by0: F.by0, by1: F.by1, res, S: WORLD_S, tol: GPU_TOL })
+      return withBinBoxes(M.n ? binByTiles(M, z, imgSet) : emptyBins())
+    }
+    const CP = MESH_BLOCK, pre = planeKey() + '/' + res + '/' + z + '/' + imgSet + '/'
+    const _t0 = performance.now()
+    const parts = []
+    let total = 0
+    for (let px = Math.floor(F.bx0 / CP) * CP; px < F.bx1; px += CP) {
+      for (let py = Math.floor(F.by0 / CP) * CP; py < F.by1; py += CP) {
+        const key = pre + px + ',' + py
+        let e = meshBlockCache.get(key)
+        if (e) { meshBlockCache.delete(key); meshBlockCache.set(key, e) }   // LRU 触碰
+        else {
+          if (performance.now() - _t0 > budgetMs) return null
+          const M = planRasterMesh(PJ, { bx0: px, bx1: px + CP, by0: py, by1: py + CP, res, S: WORLD_S, tol: GPU_TOL })
+          const B = M.n ? binByTiles(M, z, imgSet) : emptyBins()
+          e = { xy: new Float32Array(B.xy), uv: new Float32Array(B.uv), n: B.n, bins: B.bins, tiles: B.tiles }
+          meshBlockCache.set(key, e)
+          while (meshBlockCache.size > MESH_BLOCK_MAX) meshBlockCache.delete(meshBlockCache.keys().next().value)
+        }
+        if (e.n) { parts.push(e); total += e.n }
+      }
+    }
+    const xy = new Float32Array(total * 6), uv = new Float32Array(total * 6)
+    const bins = [], tiles = [], seen = new Set()
+    let off = 0
+    for (const e of parts) {
+      xy.set(e.xy, off * 6); uv.set(e.uv, off * 6)
+      for (const b of e.bins) bins.push({ z: b.z, r: b.r, c: b.c, first: b.first + off, count: b.count })
+      for (const t of e.tiles) { const kk = t.r * 100000 + t.c; if (!seen.has(kk)) { seen.add(kk); tiles.push(t) } }
+      off += e.n
+    }
+    return withBinBoxes({ xy, uv, n: total, bins, tiles })
+  }
+  // 每桶的平面包围盒（bx0..by1）：画之前按视口裁桶 —— 整盘网格的桶铺满全世界，不裁就会为屏外的片发请求
+  function withBinBoxes(B) {
+    const xy = B.xy
+    for (const b of B.bins) {
+      let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity
+      for (let t = b.first; t < b.first + b.count; t++) {
+        const i = t * 6
+        for (let v = 0; v < 3; v++) { const x = xy[i + v * 2], y = xy[i + v * 2 + 1]; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y }
+      }
+      b.bx0 = x0; b.bx1 = x1; b.by0 = y0; b.by1 = y1
+    }
+    return B
+  }
+  // 整盘粗网格：整个平面（[0,W]×[0,H]）按 fit 那一档的分辨率规划一次（每个平面一份），按 z 分桶各存一份。
+  // 方位等距 1280×720 @1.5 实测 2.2 万三角形，规划一次十几毫秒，之后换级只是分桶（≈ 3 ms）。
+  const diskRes = () => 2 ** Math.ceil(Math.log2(Math.max(0.5, base * dpr)))
+  const diskKeyOf = (z) => planeKey() + '/disk' + diskRes() + '/z' + z + '/' + imgSet
+  let diskMesh = null, diskMeshKey = ''
+  const diskBinsByZ = new Map()      // z → 分桶结果（LRU，最近用的在末尾）
+  const DISK_KEEP = 3                // 最多留几档：每档几 MB 的 Float32，maxZ 调高时按 4× 递增，不封顶就是几百 MB
+  let diskIdleT = 0, imgNotReady = false
+  // hot=true（手势帧）：本档没分过桶时【不在这一帧分】（每档 13～50 ms，正落在滚轮里），先拿已分好的最近
+  // 一档顶着 —— 桶自带级号与行列号，画出来只是级号粗 / 细一档；静止后那一帧按本档补齐。
+  // 整盘网格本身（planRasterMesh，一个平面一次）与「一档都没有」时照旧同步算：一次性代价，比露矢量底图划算。
+  function diskBins(z, hot) {
+    const key = planeKey() + '/' + diskRes() + '/' + imgSet
+    if (diskMeshKey !== key) {
+      diskMesh = planRasterMesh(PJ, { bx0: 0, bx1: PJ.W, by0: 0, by1: PJ.H, res: diskRes(), S: WORLD_S, tol: GPU_TOL })
+      diskMeshKey = key; diskBinsByZ.clear()
+    }
+    let B = diskBinsByZ.get(z)
+    if (B) { diskBinsByZ.delete(z); diskBinsByZ.set(z, B); return B }
+    if (hot && diskBinsByZ.size) {
+      let best = null, bd = Infinity
+      for (const [zz, BB] of diskBinsByZ) { const d = Math.abs(zz - z) + (zz > z ? 0.5 : 0); if (d < bd) { bd = d; best = BB } }
+      if (!diskIdleT) {
+        diskIdleT = setTimeout(function fire() {
+          diskIdleT = 0
+          if (dead) return
+          if (gestureHot()) { diskIdleT = setTimeout(fire, 90); return }
+          requestDraw()                                   // 静止了：重画这一帧会按本档分桶（hot=false）
+        }, 90)
+      }
+      return best
+    }
+    const R = diskMesh.n ? binByTiles(diskMesh, z, imgSet) : emptyBins()
+    B = withBinBoxes({ xy: new Float32Array(R.xy), uv: new Float32Array(R.uv), n: R.n, bins: R.bins, tiles: R.tiles })
+    B.z = z
+    diskBinsByZ.set(z, B)
+    while (diskBinsByZ.size > DISK_KEEP) diskBinsByZ.delete(diskBinsByZ.keys().next().value)
+    return B
+  }
+  // 片纹理每帧上传限额：手势中 4 片（≈ 8 ms），静止 12 片
+  const TEX_UPLOADS_HOT = 4, TEX_UPLOADS_IDLE = 12
+  // 静止时精确网格的分帧规划：每帧最多花这么多毫秒
+  const PLAN_BUDGET_MS = 8
   // 与 reprojectRaster 同一套烘图分辨率口径（屏幕分辨率，只在超出像素预算时才降）
   function bakeRes(F, kk) {
     let res = Math.max(1e-6, kk * dpr)
@@ -973,7 +1128,7 @@ export function createFlatCoverage(canvas) {
   // 不重传纹理，只改 uniform。换平面或分辨率跨一档才重规划一次。
   let glr = null, glrFail = false
   const glRaster = () => {
-    if (glrFail) return null
+    if (glrFail || dead) return null
     if (!glr) {
       try { glr = createGlRaster() } catch { glrFail = true; return null }
       if (!glr.available()) { glrFail = true; glr = null; return null }
@@ -1042,31 +1197,66 @@ export function createFlatCoverage(canvas) {
     if (!F) return false
     const res = 2 ** Math.ceil(Math.log2(Math.max(0.5, kk * dpr)))   // 与整幅路同：量化到 2 的幂，缩放连续变化时不换网格
     const z = tileZ(kk)
-    const mk = planeKey() + '/' + res + '/z' + z + '/' + imgSet
     const qx0 = Math.max(0, F.vx0), qx1 = Math.min(PJ.W, F.vx1)
     const qy0 = Math.max(0, F.vy0), qy1 = Math.min(PJ.H, F.vy1)
-    const hit = g.hasBinMesh(mk) && rmKeyT === mk && rmBoxT &&
+    // ★ 整盘粗网格（见 diskBins）顶两种场合：① 宽视角（res 不超过它的两倍：弓高误差 ≤ 2.4 px，肉眼分不出，
+    //   而精确规划一次 55～112 ms）；② 手势期精确网格没命中（缩出框 / 换级）—— 不在手势里规划，先用它画，
+    //   静止后那一帧再换精确网格。这一条把缩放期的重规划从「每换一档一次」压到 0。
+    const dr = diskRes()
+    const wide = res <= dr * 2
+    const mk = wide ? diskKeyOf(z) : planeKey() + '/' + res + '/z' + z + '/' + imgSet
+    let hit = g.hasBinMesh(mk) && rmKeyT === mk && rmBoxT &&
       qx0 >= rmBoxT.x0 - 1e-6 && qx1 <= rmBoxT.x1 + 1e-6 && qy0 >= rmBoxT.y0 - 1e-6 && qy1 <= rmBoxT.y1 + 1e-6
-    let planMs = 0
+    let planMs = 0, replanned = false, temp = false, zDraw = z
     if (!hit) {
       const _t0 = performance.now()
-      const B = planTileBins(F, res, z)
+      let B = null
+      if (!wide && !gestureHot()) {
+        // 静止：分帧规划精确网格（每帧 ≤ PLAN_BUDGET_MS），没齐就先用整盘粗网格顶着、下一帧接着
+        B = planTileBinsCached(F, res, z, PLAN_BUDGET_MS)
+        if (!B) requestDraw()
+      }
+      if (B) {
+        if (!B.n || !g.setBinMesh(mk, B.xy, B.uv, B.n)) { rmKeyT = ''; rmBoxT = null; rmBinsT = null; return false }
+        rmKeyT = mk; rmBoxT = { x0: F.bx0, y0: F.by0, x1: F.bx1, y1: F.by1 }; rmBinsT = B.bins; rmTilesT = B.tiles; rmCountT = B.n
+        replanned = true
+      } else {
+        temp = !wide
+        // 手势里本档还没分桶时 D 是最近一档的桶（见 diskBins），级号以 D.z 为准
+        const D = diskBins(z, gestureHot())
+        const mkD = diskKeyOf(D.z)
+        if (!(g.hasBinMesh(mkD) && rmKeyT === mkD)) {
+          if (!D.n || !g.setBinMesh(mkD, D.xy, D.uv, D.n)) { rmKeyT = ''; rmBoxT = null; rmBinsT = null; imgNotReady = D.z !== z; return false }
+          rmKeyT = mkD; rmBoxT = { x0: 0, y0: 0, x1: PJ.W, y1: PJ.H }; rmBinsT = D.bins; rmTilesT = D.tiles; rmCountT = D.n
+          replanned = true
+        }
+        zDraw = D.z
+      }
       planMs = performance.now() - _t0
-      if (!B.n || !g.setBinMesh(mk, B.xy, B.uv, B.n)) { rmKeyT = ''; rmBoxT = null; rmBinsT = null; return false }
-      rmKeyT = mk; rmBoxT = { x0: F.bx0, y0: F.by0, x1: F.bx1, y1: F.by1 }; rmBinsT = B.bins; rmTilesT = B.tiles; rmCountT = B.n
     }
+    // 只画与视口相交的桶（整盘网格的桶铺满全世界，不裁就会为屏外的片发请求）
+    const px = (F.vx1 - F.vx0) * 0.05, py = (F.vy1 - F.vy0) * 0.05
+    const vis = rmBinsT.filter((b) => b.bx1 >= F.vx0 - px && b.bx0 <= F.vx1 + px && b.by1 >= F.vy0 - py && b.by0 <= F.vy1 + py)
+    if (replanned) prefetchParents(imgSet, zDraw, vis, onTileReady)   // 缩小一档要的父片顺手拉进来（只管屏上的）
     g.resize(Math.round(cw * dpr), Math.round(ch * dpr))
     const G = tileGutter(imgSet), N = tileImgSize(imgSet)
     let exact = 0
     const _t1 = performance.now()
-    const painted = g.renderBins({ k: kk, tx, ty, dpr }, rmBinsT, (bin) => {
-      const t = getTileOrParent(imgSet, bin.z, bin.r, bin.c, onTileReady)
+    const painted = g.renderBins({ k: kk, tx, ty, dpr }, vis, (bin) => {
+      const t = getTileFallback(imgSet, bin.z, bin.r, bin.c, onTileReady)
       if (!t) return null
       if (t.exact) exact++
       const w = tileWindow(bin.z, bin.r, bin.c)
-      return { img: t.img, u0: t.u0, v0: t.v0, u1: t.u1, v1: t.v1, fx: w[0], fy: w[1], G, N }
-    })
-    globalThis.__rmStat = { path: 'tiles', z, tris: rmCountT, bins: rmBinsT.length, tiles: rmTilesT.length, tilesExact: exact, painted, texMB: g.tileTexMB(), texCount: g.tileTexCount(), replanned: !hit, planMs: +planMs.toFixed(1), ms: +(performance.now() - _t1 + planMs).toFixed(1) }
+      const alt = ancestorHit(imgSet, bin.z, bin.r, bin.c)   // 纹理上传超额时先画祖先片（一般早就传过）
+      if (t.children) {
+        // 四个子片拼一片：uUvOff=−(i,j)、uUvScale=2（见 glRaster 的 FRAG_TILE），片元着色器按子片窗口丢弃
+        return { draws: t.children.map((c) => ({ img: c.img, u0: -c.i, v0: -c.j, u1: 2 - c.i, v1: 2 - c.j, sub: true })), alt, fx: w[0], fy: w[1], G, N }
+      }
+      return { img: t.img, u0: t.u0, v0: t.v0, u1: t.u1, v1: t.v1, alt: t.exact ? alt : null, fx: w[0], fy: w[1], G, N }
+    }, gestureHot() ? TEX_UPLOADS_HOT : TEX_UPLOADS_IDLE)
+    if (g.skippedUploads() > 0) requestDraw()   // 欠着的上传下一帧接着传
+    const _t2 = performance.now()
+    globalThis.__rmStat = { path: 'tiles', z: zDraw, zWant: z, tris: rmCountT, bins: vis.length, binsAll: rmBinsT.length, tiles: rmTilesT.length, tilesExact: exact, painted, texMB: g.tileTexMB(), texCount: g.tileTexCount(), replanned, disk: rmKeyT === diskKeyOf(zDraw), temp, skipped: g.skippedUploads(), planMs: +planMs.toFixed(1), submitMs: +(_t2 - _t1).toFixed(1), ms: +(_t2 - _t1 + planMs).toFixed(1) }
     if (!painted) return false
     // 合成：与 drawImageryGL 同一套（亮度仍走 ctx.filter）
     const f = ctx.filter
@@ -1075,7 +1265,46 @@ export function createFlatCoverage(canvas) {
     ctx.drawImage(g.canvas(), 0, 0)
     ctx.filter = f
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    globalThis.__rmStat.blitMs = +(performance.now() - _t2).toFixed(1)
     return true
+  }
+  // ── 实时影像（2026-09-07）────────────────────────────────────────────────
+  // 瓦片档在屏上不再烘进静态快照，而是每帧画在快照之下（快照里世界留透明，见 drawBelowContent）。
+  // 条件：瓦片档、屏上（非导出 / 非 compat / 非矢量 PDF 底图）、不在「拖着转」（那时整层退回矢量）、
+  // 没判成离线包缺失，且投影档要有 WebGL2（CPU 重投影每帧几十毫秒，那条路仍走快照）。
+  let imgLiveOff = false, imgLiveOffTimer = 0
+  const imgLiveNow = () => imgOn && !!imgSet && !exporting && !compat && !vecImg && !rotLive && !imgLiveOff && (PJ.identity || !!glRaster())
+  // 判成「离线包缺失」之后的自愈有两条路：片到货（onTileReady）立即解锁；一片都没到（404 只写负缓存、不发
+  // onReady）就等负缓存过期（imageryTiles 的 MISS_TTL）自动解锁再试 —— 否则某一级整片缺失时整层退回矢量
+  // 底图之后就再也回不来。
+  function lockImgLive() {
+    if (imgLiveOff) return
+    imgLiveOff = true
+    invalidateStatic()
+    if (imgLiveOffTimer) clearTimeout(imgLiveOffTimer)
+    imgLiveOffTimer = setTimeout(() => {
+      imgLiveOffTimer = 0
+      if (dead || !imgLiveOff) return
+      imgLiveOff = false; invalidateStatic(); requestDraw()
+    }, MISS_TTL + 200)
+  }
+  // draw() 里每帧调：先铺海色（图廓内），再贴影像；一片都取不到时用矢量陆地顶着（到货即换），
+  // 连在飞的都没有 → 离线包缺失，退回快照里的矢量底图（与原先「drawImagery 返回 false 走矢量」同一自愈口径）。
+  function drawImageryLive() {
+    const _wr = worldRect()
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    ctx.save(); ctx.beginPath(); ctx.rect(_wr.x, _wr.y, _wr.w, _wr.h); ctx.clip()
+    let ok = false
+    imgNotReady = false
+    try { ok = drawImagery() } catch (e) { ok = false; console.warn('实时影像绘制失败', e) }
+    if (!ok) {
+      drawLand()
+      // imgNotReady：这一帧只是网格 / 分桶还没备好（手势里不做整盘分桶），不是包缺失，别锁
+      if (!imgNotReady && !tileStats().loading) lockImgLive()
+    }
+    ctx.restore()
+    ctx.setTransform(1, 0, 0, 1, 0, 0)
+    return ok
   }
   function drawImagery() {
     if (rotLive) return false    // 转动进行中：整幅影像重投影是每帧几十毫秒，先退回矢量底图（返回 false 即走那条路）
@@ -1159,17 +1388,29 @@ export function createFlatCoverage(canvas) {
     return { z, items }
   }
 
+  let lastPlanZ = -1
   function drawImageryTiles() {
     const plan = imageryPlan()
     if (!plan || !plan.items.length) return false
+    if (plan.z !== lastPlanZ) { lastPlanZ = plan.z; prefetchParents(imgSet, plan.z, plan.items, onTileReady) }   // 换级：父片顺手拉进来
     const f = ctx.filter
     if (imgBright !== 1) ctx.filter = 'brightness(' + imgBright + ')'
     ctx.setTransform(1, 0, 0, 1, 0, 0)                  // 转设备像素：片边界要落在整像素上（见上）
     const G = tileGutter(imgSet)                        // 自切的离线包烘了 1px gutter
     let painted = 0
     for (const it of plan.items) {
-      const t = getTileOrParent(imgSet, plan.z, it.r, it.c, onTileReady)
+      const t = (exporting || compat) ? getTileOrParent(imgSet, plan.z, it.r, it.c, onTileReady) : getTileFallback(imgSet, plan.z, it.r, it.c, onTileReady)
       if (!t) continue                                  // 连祖先都没有：这一片本帧留空，到货后重绘
+      if (t.children) {
+        // 四个子片各占一角（中线取整到设备像素，四角共用同一条线才不留缝）
+        const xm = Math.round((it.x0 + it.x1) / 2), ym = Math.round((it.y0 + it.y1) / 2)
+        for (const c of t.children) {
+          const x0 = c.i ? xm : it.x0, x1 = c.i ? it.x1 : xm, y0 = c.j ? ym : it.y0, y1 = c.j ? it.y1 : ym
+          if (x1 > x0 && y1 > y0) ctx.drawImage(c.img, G, G, TILE, TILE, x0, y0, x1 - x0, y1 - y0)
+        }
+        painted++
+        continue
+      }
       ctx.drawImage(t.img,
         G + t.u0 * TILE, G + t.v0 * TILE, (t.u1 - t.u0) * TILE, (t.v1 - t.v0) * TILE,
         it.x0, it.y0, it.x1 - it.x0, it.y1 - it.y0)
@@ -1187,6 +1428,10 @@ export function createFlatCoverage(canvas) {
   let tileTimer = 0
   function onTileReady() {
     tileGen++                        // CPU 路（投影档瓦片）的烘图键带它：到货就得重烘
+    // 曾判「离线包缺失」退回过矢量底图：有片到货就是包在，回到实时影像
+    if (imgLiveOff) { imgLiveOff = false; invalidateStatic(); requestDraw(); return }
+    // ★ 实时影像：影像不在快照里，到货只是下一帧多贴几片 —— 一次 requestDraw 就够，不排补建、不重置 idle
+    if (imgLiveNow()) { requestDraw(); return }
     if (gestureHot()) { tilesDirty = true; scheduleRebuild(); return }
     if (tileTimer) return
     // ★ 走 rebuildAtRest 而不是 invalidateStatic：瓦片到货只是【多了几片影像】，不是换了内容 ——
@@ -2031,6 +2276,21 @@ export function createFlatCoverage(canvas) {
   function drawBelowContent(rx, ry, rw, rh) {
     ctx.save()
     ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip()
+    // ★ 实时影像（瓦片档、屏上）：影像不进快照，每帧画在快照【之下】（见 draw 的 drawImageryLive）。
+    //   快照里世界（图廓内）留成透明让它透上来；图廓之外仍是底色。缩放 / 拖动期间影像于是永远是
+    //   当前视角的真投影、当前级的瓦片，不再跟着位图一起糊、一起缩成一小块。
+    if (imgLiveNow()) {
+      if (PJ.identity) ctx.clearRect(rx, ry, rw, rh)
+      else {
+        const kk = k(); ctx.save()
+        ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * tx, dpr * ty)
+        traceSphere(ctx); ctx.clip()
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(rx, ry, rw, rh)
+        ctx.restore()
+      }
+      ctx.restore()
+      return
+    }
     // 影像模式：整幅影像顶替海色 + 陆地填充。
     // 导出时两条路都画：PNG（raster:true，真 canvas）逐片画；矢量 PDF 画 bakeImagery 预合成的那一张
     // （vecImg）—— 逐片塞进 SVG 才是不可用的那种，整层一张不是。
@@ -2117,13 +2377,13 @@ export function createFlatCoverage(canvas) {
   // field 之上的标注（省界/标记/国家名/卫星层点标注等）。透明背景，叠在覆盖填充之上。
   // 各类数据线（GXT 波束线/仰角线/聚焦卫星线）不在此层——见 drawDataLines（压在国界省界之下）。
   // 航迹是例外：整层（线+圆点+图标）在此层的【地名之后】画，见 drawTrajLayer。
-  function drawAboveContent(rx, ry, rw, rh) {
+  // 2026-09-07 拆成两半：drawLinesContent（经纬网 / 行政区界 / 五类线 / 岛链，烘进 aboveCanvas，可增量条带重建）
+  // 与 drawTextContent（标记 / 地名 / 航迹 / 卫星层，烘进 textCanvas，随时间走的东西只重画它）。
+  // drawAboveContent 仍是两半连着画（导出用）。
+  function drawAboveContent(rx, ry, rw, rh) { drawLinesContent(rx, ry, rw, rh); drawTextContent(rx, ry, rw, rh) }
+  function drawLinesContent(rx, ry, rw, rh) {
     ctx.save()
     ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip()
-    // 随缩放联动系数：mz=scale（与国家名同率，用于数值/覆盖/卫星层等注记）；scale=1 即当前大小。
-    // iz=√scale 是「克制版」联动：点标记/地球站/航迹这类实心图标若按 mz 满速放大，2D 缩放幅度大(可达60×)会膨成大色块，
-    // 故按 √scale 缓增——仍随缩放变化、scale=1 时不变，但放大时增长更温和、不至于过大。
-    const mz = scale, iz = izNow()
     // 经纬网 + 行政区界 + 五类边界线画在覆盖填充之上：地理骨架贯穿覆盖区内外，覆盖与底图融为一体（平级），
     // 不再像贴纸浮在上面。次序从下往上：经纬网 → 二级行政区 → 一级行政区 → 海岸 → 主张 → 停火 → 未定 → 国界。
     drawGrid()
@@ -2144,6 +2404,15 @@ export function createFlatCoverage(canvas) {
     }
     drawBorders()   // 海岸 → 主张 → 停火 → 未定 → 国界（国界压在最上面）
     drawChains()    // 岛链参考线：叠在全部底图线之上（它是注记，不该被国界盖住）
+    ctx.restore()
+  }
+  function drawTextContent(rx, ry, rw, rh) {
+    ctx.save()
+    ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip()
+    // 随缩放联动系数：mz=scale（与国家名同率，用于数值/覆盖/卫星层等注记）；scale=1 即当前大小。
+    // iz=√scale 是「克制版」联动：点标记/地球站/航迹这类实心图标若按 mz 满速放大，2D 缩放幅度大(可达60×)会膨成大色块，
+    // 故按 √scale 缓增——仍随缩放变化、scale=1 时不变，但放大时增长更温和、不至于过大。
+    const mz = scale, iz = izNow()
     // 覆盖数据标注（GXT 波束线本体已移入 drawDataLines：与 GRD 等值线/Polygon 边线同层、压在国界省界之下）
     if (geom) {
       if (sizes.showBore) for (const d of (geom.dots || [])) dot(d.lon, d.lat, Math.max(1, sizes.dotSize) * iz, '#fff')   // GXT 波束中心点：克制版联动
@@ -2296,6 +2565,10 @@ export function createFlatCoverage(canvas) {
   function keepFallback() {
     const rec = curRec()
     const c = coverOf(rec, dpr)
+    // 文字那一张合进 above：回退快照只留两张（below / above），当回退垫底时文字也在
+    if (textCanvas && textCanvas.width === aboveCanvas.width && textCanvas.height === aboveCanvas.height) {
+      aboveCtx.save(); aboveCtx.setTransform(1, 0, 0, 1, 0, 0); aboveCtx.drawImage(textCanvas, 0, 0); aboveCtx.restore()
+    }
     fallbacks.unshift({ ...rec, below: belowCanvas, above: aboveCanvas, cw: belowCanvas.width, ch: belowCanvas.height, area: Math.abs((c.x1 - c.x0) * (c.y1 - c.y0)) })
     fallbacks.sort((a, b) => b.area - a.area)
     while (fallbacks.length > FALLBACK_MAX) sparePairs.push(fallbacks.pop())
@@ -2324,40 +2597,169 @@ export function createFlatCoverage(canvas) {
       const oc = coverOf(curRec(), dpr), nc = coverOf({ k: k(), tx, ty, mx: mxDev, my: myDev, w: bw, h: bh }, dpr)
       if (!coversSubset(nc, oc)) keepFallback()
     }
+    // ★ 增量条带（2026-09-07）：同 k 的平移补建不整份重来 —— 旧位图搬位，只重画露出来的那一圈。
+    //   实测 10m @1920×1080：整份光栅 115～135 ms，18% 条带 19～21 ms（线的光栅代价随面积走，
+    //   逐要素 Path2D 被 Skia 按 clip 剔）。判据见 stripPlan；必须在 snapTx 被改写之前算。
+    const sp = stripPlan(bw, bh, mxDev, myDev)
+    lastStrip = !!sp
     if (belowCanvas.width !== bw || belowCanvas.height !== bh) {
       belowCanvas.width = bw; belowCanvas.height = bh
       aboveCanvas.width = bw; aboveCanvas.height = bh
     }
+    if (textCanvas.width !== bw || textCanvas.height !== bh) { textCanvas.width = bw; textCanvas.height = bh }
     const SV = { ctx, cw, ch, tx, ty }
     snapK = k(); snapTx = tx; snapTy = ty; snapMxDev = mxDev; snapMyDev = myDev; snapGen = staticGen
     if (mxDev || myDev) realView = { cw, ch, tx, ty }
     try {
       if (mxDev || myDev) { cw = bw / dpr; ch = bh / dpr; tx = SV.tx + mxDev / dpr; ty = SV.ty + myDev / dpr }
       const _wr = worldRect(), rx = _wr.x, ry = _wr.y, rw = _wr.w, rh = _wr.h   // 裁到世界矩形：整幅图只此一张
-      if (mxDev || myDev) {
+      if (sp) {
+        shiftCanvas(belowCanvas, belowCtx, sp.sx, sp.sy)
+        shiftCanvas(aboveCanvas, aboveCtx, sp.sx, sp.sy)
+        // below：只在露出来的那一圈铺底色 + 画海陆
+        ctx = belowCtx
+        ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.save(); clipRectsDev(sp.rects)
+        ctx.fillStyle = BG; for (const r of sp.rects) ctx.fillRect(r[0], r[1], r[2], r[3])
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+        drawBelowContent(rx, ry, rw, rh)
+        ctx.restore()
+        // 线：同一圈
+        ctx = aboveCtx
+        ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.save(); clipRectsDev(sp.rects)
+        for (const r of sp.rects) ctx.clearRect(r[0], r[1], r[2], r[3])
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+        drawLinesContent(rx, ry, rw, rh)
+        ctx.restore()
+        // 文字：整张重画（地名避让按整幅算，条带里画不了半个字；本来就便宜）
+        ctx = textCtx
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, cw, ch)
+        drawTextContent(rx, ry, rw, rh)
+      } else if (mxDev || myDev) {
         // below：海陆/冰盖/网格（含背景底色）
         ctx = belowCtx
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
         ctx.clearRect(0, 0, cw, ch); ctx.fillStyle = BG; ctx.fillRect(0, 0, cw, ch)
         drawBelowContent(rx, ry, rw, rh)
-        // above：省界/覆盖数据/标记/国家名/卫星层（透明）
+        // above：经纬网/行政区界/五类边界线（透明）
         ctx = aboveCtx
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, cw, ch)
-        drawAboveContent(rx, ry, rw, rh)
+        drawLinesContent(rx, ry, rw, rh)
+        // text：标记/国家名/卫星层（透明）
+        ctx = textCtx
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, cw, ch)
+        drawTextContent(rx, ry, rw, rh)
       } else {
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
         ctx.clearRect(0, 0, cw, ch); ctx.fillStyle = BG; ctx.fillRect(0, 0, cw, ch)
         drawBelowContent(rx, ry, rw, rh)
         belowCtx.setTransform(1, 0, 0, 1, 0, 0); belowCtx.clearRect(0, 0, bw, bh); belowCtx.drawImage(canvas, 0, 0)
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, cw, ch)
-        drawAboveContent(rx, ry, rw, rh)
+        drawLinesContent(rx, ry, rw, rh)
         aboveCtx.setTransform(1, 0, 0, 1, 0, 0); aboveCtx.clearRect(0, 0, bw, bh); aboveCtx.drawImage(canvas, 0, 0)
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, cw, ch)
+        drawTextContent(rx, ry, rw, rh)
+        textCtx.setTransform(1, 0, 0, 1, 0, 0); textCtx.clearRect(0, 0, bw, bh); textCtx.drawImage(canvas, 0, 0)
       }
     } finally {
       ctx = SV.ctx; cw = SV.cw; ch = SV.ch; tx = SV.tx; ty = SV.ty; realView = null
     }
+    textValid = true
     tilesDirty = false          // 这一趟本来就把瓦片重画了
     lastRebuildMs = +(performance.now() - _t0).toFixed(2)
+  }
+  // 这一次补建能不能走增量条带：内容代没变、同 k、同尺寸同余量、位移落在整设备像素上、
+  // 露出的面积不超过 STRIP_MAX（超过就整份重来更划算）、手势中到货的瓦片没有欠账（非实时影像路
+  // 那些片落在留下来的那一块里，条带补不到它们）。返回 { sx, sy, rects } 或 null。
+  const STRIP_MAX = 0.75
+  let lastStrip = false
+  function stripPlan(bw, bh, mxDev, myDev) {
+    if (snapGen !== staticGen || tilesDirty || !belowCanvas || belowCanvas.width !== bw || belowCanvas.height !== bh) return null
+    if (k() !== snapK || snapMxDev !== mxDev || snapMyDev !== myDev) return null
+    const ex = (tx - snapTx) * dpr, ey = (ty - snapTy) * dpr
+    const sx = Math.round(ex), sy = Math.round(ey)
+    if (Math.abs(ex - sx) > 1e-6 || Math.abs(ey - sy) > 1e-6) return null
+    if (!sx && !sy) return null
+    const rects = stripRects(sx, sy, bw, bh)
+    let area = 0
+    for (const r of rects) area += r[2] * r[3]
+    if (area > STRIP_MAX * bw * bh) return null
+    return { sx, sy, rects }
+  }
+  function stripAble() {
+    const { mx, my } = snapMargins()
+    return !!stripPlan(canvas.width + 2 * mx, canvas.height + 2 * my, mx, my)
+  }
+  // 设备坐标下把几块矩形并成一个 clip（调用方已置单位变换、已 save）
+  function clipRectsDev(rects) {
+    ctx.beginPath()
+    for (const r of rects) ctx.rect(r[0], r[1], r[2], r[3])
+    ctx.clip()
+  }
+  // 旧位图搬位：经一张常驻的中转画布（画布自画自己在规范里允许，但实现各异，不赌）。
+  // 'copy' 合成让没被源盖住的那一圈直接成透明，省一次 clearRect。
+  let shiftTmp = null
+  function shiftCanvas(cv, c, sx, sy) {
+    if (!shiftTmp) shiftTmp = document.createElement('canvas')
+    if (shiftTmp.width !== cv.width || shiftTmp.height !== cv.height) { shiftTmp.width = cv.width; shiftTmp.height = cv.height }
+    const t = shiftTmp.getContext('2d')
+    t.setTransform(1, 0, 0, 1, 0, 0); t.globalCompositeOperation = 'copy'; t.drawImage(cv, 0, 0); t.globalCompositeOperation = 'source-over'
+    c.setTransform(1, 0, 0, 1, 0, 0); c.globalCompositeOperation = 'copy'; c.drawImage(shiftTmp, sx, sy); c.globalCompositeOperation = 'source-over'
+  }
+  // 只重画文字 / 标记 / 卫星层那一张（invalidateText 之后）。★ 按【快照的视图】画，不按当前视图 ——
+  // 手势中两者可以不同，而这张必须与 below / above 逐像素对齐。
+  function renderTextLayer() {
+    if (!belowCanvas || belowCanvas.width < 2 || !textCanvas) return
+    const bw = belowCanvas.width, bh = belowCanvas.height
+    if (textCanvas.width !== bw || textCanvas.height !== bh) { textCanvas.width = bw; textCanvas.height = bh }
+    const SV = { ctx, cw, ch, tx, ty, scale }
+    try {
+      scale = snapK / base
+      cw = bw / dpr; ch = bh / dpr; tx = snapTx + snapMxDev / dpr; ty = snapTy + snapMyDev / dpr
+      const _wr = worldRect(), rx = _wr.x, ry = _wr.y, rw = _wr.w, rh = _wr.h
+      ctx = textCtx
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, cw, ch)
+      drawTextContent(rx, ry, rw, rh)
+    } finally {
+      ctx = SV.ctx; cw = SV.cw; ch = SV.ch; tx = SV.tx; ty = SV.ty; scale = SV.scale
+    }
+    textValid = true
+  }
+  // ── 全图背板（《2D 手势期重建治理》§11.3 的根治）──────────────────────────
+  // 110m 骨架烘一张【全图】（下：海陆，开实时影像时图廓内透明；上：只有线，不带文字 —— 缩放去用时
+  // 文字会跟着位图放大成大字）。谁都盖不住时垫它：拖动 / 缩小期间画面永远有海陆线，再也不同步整份重建。
+  // 按需烘、按键复用：内容代 / 画布尺寸 / 平面 / 影像模式任一变了才重烘，一次 ≈ 5 ms。
+  let bpBelow = null, bpAbove = null, bpKey = '', bpRec = null
+  const backplateKey = () => planeKey() + '/' + canvas.width + 'x' + canvas.height + '/' + staticGen + '/' + (imgLiveNow() ? 'L' : 'V') + '/' + mapDetail0
+  function ensureBackplate() {
+    if (!hasDetail('110m')) { ensureDetail('110m').catch(() => {}); return null }
+    if (rotLive || liteBake) return null
+    const key = backplateKey()
+    if (!(bpBelow && bpKey === key)) {
+      if (!bpBelow) { bpBelow = document.createElement('canvas'); bpAbove = document.createElement('canvas') }
+      const bw = canvas.width, bh = canvas.height
+      if (bpBelow.width !== bw || bpBelow.height !== bh) { bpBelow.width = bw; bpBelow.height = bh; bpAbove.width = bw; bpAbove.height = bh }
+      const SV = { ctx, tx, ty, scale }
+      const tx0 = (cw - PJ.W * base) / 2, ty0 = (ch - PJ.H * base) / 2
+      try {
+        withLiteGeo(() => {
+          scale = 1; tx = tx0; ty = ty0
+          const _wr = worldRect(), rx = _wr.x, ry = _wr.y, rw = _wr.w, rh = _wr.h
+          ctx = bpBelow.getContext('2d')
+          ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, cw, ch); ctx.fillStyle = BG; ctx.fillRect(0, 0, cw, ch)
+          drawBelowContent(rx, ry, rw, rh)
+          ctx = bpAbove.getContext('2d')
+          ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, cw, ch)
+          drawLinesContent(rx, ry, rw, rh)
+        })
+      } catch (e) {
+        bpKey = ''; console.warn('全图背板烘制失败', e); return null
+      } finally {
+        ctx = SV.ctx; tx = SV.tx; ty = SV.ty; scale = SV.scale
+      }
+      bpRec = { k: base, tx: tx0, ty: ty0, mx: 0, my: 0, w: bw, h: bh, cw: bw, ch: bh }
+      bpKey = key
+    }
+    return { f: { ...bpRec, below: bpBelow, above: bpAbove }, pl: placeOf(bpRec) }
   }
   // 快照怎么摆到当前视图上。返回 null ＝ 盖不住 / 该重建。
   // ★ 判据是「盖住【世界矩形 ∩ 视口】」而不是「盖住整个视口」：世界之外快照上本就是背景（below）
@@ -2368,10 +2770,12 @@ export function createFlatCoverage(canvas) {
   const placeOf = (rec) => placeSnapshot(rec, viewNow())
   const curRec = () => ({ k: snapK, tx: snapTx, ty: snapTy, mx: snapMxDev, my: snapMyDev, w: belowCanvas.width, h: belowCanvas.height })
   function snapPlace() { return placeOf(curRec()) }
-  // 回退快照里挑一张盖得住当前「世界矩形 ∩ 视口」的（同一套判据）。按覆盖面积从大到小挑。
+  // 回退快照里挑一张盖得住当前「世界矩形 ∩ 视口」的（同一套判据，缩放比最接近的优先）；
+  // 一张都没有就垫全图背板（110m 骨架，按需烘）。
   function pickFallback() {
     const i = pickFallbackIdx(fallbacks, viewNow())
-    return i < 0 ? null : { f: fallbacks[i], pl: placeOf(fallbacks[i]) }
+    if (i >= 0) return { f: fallbacks[i], pl: placeOf(fallbacks[i]) }
+    return ensureBackplate()
   }
 
   // Polygon 区域填充：画在 GRD 覆盖场之前（叠加规则 2D/3D 统一：叠加区只显示覆盖图颜色，
@@ -2568,9 +2972,17 @@ export function createFlatCoverage(canvas) {
     ctx.restore()
     ctx.setTransform(1, 0, 0, 1, 0, 0)
   }
+  // 缩位图的采样档（验证台可用 globalThis.__blitQ 覆写做对照）
+  const SCALE_Q = () => globalThis.__blitQ || 'low'
   function blitSnap(cv, pl) {
     if (!pl) return
-    if (pl.scaled) { ctx.drawImage(cv, pl.dx, pl.dy, pl.w, pl.h); return }
+    if (pl.scaled) {
+      const q = ctx.imageSmoothingQuality
+      if ('imageSmoothingQuality' in ctx) ctx.imageSmoothingQuality = SCALE_Q()
+      ctx.drawImage(cv, pl.dx, pl.dy, pl.w, pl.h)
+      if ('imageSmoothingQuality' in ctx) ctx.imageSmoothingQuality = q
+      return
+    }
     if (!pl.dx && !pl.dy) { ctx.drawImage(cv, 0, 0); return }
     const sx = Math.max(0, -pl.dx), sy = Math.max(0, -pl.dy)
     const dx = Math.max(0, pl.dx), dy = Math.max(0, pl.dy)
@@ -2596,8 +3008,11 @@ export function createFlatCoverage(canvas) {
       renderStaticLayers(); staticValid = true
       pl = snapPlace(); fb = null
       mode = 'rebuild'
-      probeLeft = PROBE_FRAMES; probeAcc = 0; probeSync = lastRebuildMs; probeCls = cls; probeT = _tIn; probeChase = 0
-      armProbe()
+      // 增量条带那一次不进代价表：它只画一圈，按它记会把贵的类误判成便宜（放大时就会同步整份重建）
+      if (!lastStrip) {
+        probeLeft = PROBE_FRAMES; probeAcc = 0; probeSync = lastRebuildMs; probeCls = cls; probeT = _tIn; probeChase = 0
+        armProbe()
+      }
     }
     if (!pl) doRebuild('invalid')
     else if (pl.covers) {
@@ -2617,16 +3032,29 @@ export function createFlatCoverage(canvas) {
     //   视图应有的那张图。补建落在【手势之外】：拖动期间 gestureHot() 恒真，idleFire 到期只会再等一拍（§4.3）。
     // ★ 判据是 pl.moved 不是 pl.dx/dy：dx 是贴图坐标（dx = rx − mx），快照带余量时一动没动也 ≠ 0
     //   → 静止时每帧 blit 都排补建、补建又催出探针帧，以 idleMs 为周期无限循环整份重建（§11.1）。
-    if (mode !== 'rebuild' && needsRestRebuild(pl, tilesDirty)) scheduleRebuild()
+    // ★ 只在没挂着定时器时才挂（2026-09-07）：scheduleRebuild 是「清掉再计时」，每帧都调就等于每帧重新计时 ——
+    //   时间轴播放（聚焦星每拍 setFocusSat → requestDraw）或任何持续重绘期间，静止补建永远轮不到，
+    //   缩放后的快照就一直停在缩位图那张（影像实时画是清晰的，线却糊着）。手势的「热」由 gestureHot 判，
+    //   定时器到期时自己再等一拍，不需要靠重新计时来延后。
+    if (mode !== 'rebuild' && !idleTimer && needsRestRebuild(pl, tilesDirty)) scheduleRebuild()
+    // 只有文字 / 标记 / 卫星层变了（invalidateText）：重画那一张就够，面与线不动
+    if (mode !== 'rebuild' && !textValid) renderTextLayer()
     drawSeq++; if (mode === 'rebuild') rebuildSeq++
-    globalThis.__staticStat = { mode, reason, drawSeq, rebuildSeq, rebuildMs: lastRebuildMs, rasterGapMs, costEst, nominal: +rasterNominal.toFixed(2), cls, cheap: clsCheap(cls), cost: clsCost(cls), unknown: UNKNOWN_COST, fallbacks: fallbacks.length, gen: staticGen, detail: curDetail(), mx: snapMxDev, my: snapMyDev, w: belowCanvas.width, h: belowCanvas.height }
+    const live = imgLiveNow()
+    globalThis.__staticStat = { mode, reason, drawSeq, rebuildSeq, rebuildMs: lastRebuildMs, strip: lastStrip, live, rasterGapMs, costEst, nominal: +rasterNominal.toFixed(2), cls, cheap: clsCheap(cls), cost: clsCost(cls), unknown: UNKNOWN_COST, fallbacks: fallbacks.length, backplate: !!(fb && fb.f.below === bpBelow), gen: staticGen, detail: curDetail(), mx: snapMxDev, my: snapMyDev, w: belowCanvas.width, h: belowCanvas.height }
     const _wr = worldRect(), rx = _wr.x, ry = _wr.y, rw = _wr.w, rh = _wr.h   // 裁到世界矩形：整幅图只此一张
     // 复合：blit below（不透明）→ Polygon 填充 + 覆盖填充/线（夹在中间）→ blit above（透明）→ 覆盖标注 → 聚焦星
     // ★ 先铺背景色再贴：位移之后快照盖不满整块画布，露出来的那一条本就该是背景
     //   （世界矩形之外 below 上就是这个色）。余量为 0 且没位移时与老写法逐像素相同。
     ctx.setTransform(1, 0, 0, 1, 0, 0)
     ctx.fillStyle = BG; ctx.fillRect(0, 0, canvas.width, canvas.height)
-    if (reason === 'ocean') paintOceanBase()   // 一张都盖不住：露出来的那一圈填海色而不是深色背景
+    // ★ 实时影像：海色 + 影像每帧画在所有快照之下（快照里世界是透明的）；缩放 / 拖动期间它永远是
+    //   当前视角的真投影，不跟位图一起缩、一起糊
+    if (live) {
+      const _ta = performance.now(); paintOceanBase(); const _tb = performance.now(); drawImageryLive()
+      globalThis.__staticStat.oceanMs = +(_tb - _ta).toFixed(1); globalThis.__staticStat.imgMs = +(performance.now() - _tb).toFixed(1)
+    }
+    else if (reason === 'ocean') paintOceanBase()   // 一张都盖不住：露出来的那一圈填海色而不是深色背景
     if (fb) blitSnap(fb.f.below, fb.pl)        // 回退快照垫底（below 不裁：当前快照盖在它上面）
     blitSnap(belowCanvas, pl)
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
@@ -2652,12 +3080,14 @@ export function createFlatCoverage(canvas) {
       ctx.restore()
     }
     blitSnap(aboveCanvas, pl)
+    blitSnap(textCanvas, pl)
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     ctx.save(); ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip()
     drawFieldOverlays()   // GRD 波束名/峰值点/数值标签（覆盖层之上）
     drawSubPoint()        // 星下点标记：压在最上面，任何图层都不许盖住它
     drawFocusIcons()      // 聚焦卫星星下点图标（最上层）
     ctx.restore()
+    if (globalThis.__staticStat) globalThis.__staticStat.drawMs = +(performance.now() - _tIn).toFixed(1)
   }
 
   // ---- 缩放进度（底部状态栏进度条）：scale[0.9,60] 对数映射到 t∈[0,1]，t=0 缩小到底、t=1 放大到底。
@@ -2980,6 +3410,7 @@ export function createFlatCoverage(canvas) {
     if (canvas.width !== bw || canvas.height !== bh) { canvas.width = bw; canvas.height = bh }
     // 离屏静态快照缓冲随主画布尺寸（设备像素）创建/重建
     if (!belowCanvas) { belowCanvas = document.createElement('canvas'); belowCtx = belowCanvas.getContext('2d'); aboveCanvas = document.createElement('canvas'); aboveCtx = aboveCanvas.getContext('2d') }
+    if (!textCanvas) { textCanvas = document.createElement('canvas'); textCtx = textCanvas.getContext('2d') }
     // 快照尺寸由 renderStaticLayers 按余量定（可比主画布大），这里不再同步
     if (glf) glf.resize(canvas.width, canvas.height)   // GPU 填充画布与主画布同为设备像素尺寸
     invalidateStatic()
@@ -3145,6 +3576,7 @@ export function createFlatCoverage(canvas) {
       if (imgSet !== prevSet) {
         // 换集 / 进出瓦片档：投影档的分桶网格与 CPU 烘图都按集缓存，片纹理 LRU 一并清
         rmKeyT = ''; rmBoxT = null; rmBinsT = null; rpKey = ''; rpBox = null
+        meshBlockCache.clear(); imgLiveOff = false; lastPlanZ = -1
         if (glr) glr.clearTiles()
         // 进瓦片路先把 L2 那 15 片拉进来（与 3D 底层同口径）：首帧有粗档兜底，不是矢量底图闪一下
         if (imgSet) warmTiles(imgSet, 2, onTileReady)
@@ -3152,7 +3584,7 @@ export function createFlatCoverage(canvas) {
       invalidateStatic(); requestDraw()
     },
     // 大地颜色（基调方案 + 逐国覆盖，与 3D 同步）：写入公共色板状态后重建陆地 Path2D 并重绘静态层
-    setLandColors(s) { setLandPalette(s); buildBaseGeo(resolvedFeatures(curDetail()), curThin()); invalidateStatic(); requestDraw() },
+    setLandColors(s) { setLandPalette(s); geoCache.clear(); buildBaseGeo(resolvedFeatures(curDetail()), curThin()); invalidateStatic(); requestDraw() },
     setOnRightClick(fn) { onRightClick = fn },
     setOnHover(fn) { onHover = fn },
     // 缩放进度条接口：getZoom 读当前进度、setZoom 设到进度 t、setOnZoom 注册滚轮缩放回填回调
@@ -3196,7 +3628,7 @@ export function createFlatCoverage(canvas) {
       try { await ensureDetail(detail) }
       catch (e) { console.warn(detail + ' 底图加载失败，保持当前精度', e); return }
       mapDetail0 = detail; mapThin = t
-      borderPaths = null
+      borderPaths = null; geoCache.clear()
       buildBaseGeo(resolvedFeatures(detail), t)
       invalidateStatic(); requestDraw()
     },
@@ -3206,14 +3638,19 @@ export function createFlatCoverage(canvas) {
     // keepView=true：只换平面，【不动视图】——缩放与平移原样留着。
     // ★ 跟随星下点非用它不可：默认那条会 fit() 一次，于是时间轴每跳一下缩放就被打回全图，
     //   用户放大看的那一块当场没了。
-    setLon0(v, keepView) {
+    // opts（可选）：连投影参数一起换（跟随星下点 = 切口 + 中心纬度一起动），只重建一次；不给就沿用当前参数
+    setLon0(v, keepView, opts) {
       const nv = Number(v)
       if (!Number.isFinite(nv)) return
       const w = ((nv + 180) % 360 + 360) % 360 - 180
-      if (Math.abs(w - LON0) < 1e-9) return
+      const op = opts || PJOPT
+      if (Math.abs(w - LON0) < 1e-9) {
+        if (opts && !samePlaneOpts(op)) rebuildPlane(PJ.kind, op, { refit: false })
+        return
+      }
       LON0 = w
       // 切口即中央经线，投影跟着重造。夜区采样起点钉在 LON0，作废后下一拍 setTerminator 按新切口重算
-      rebuildPlane(PJ.kind, PJOPT, { term: true, refit: !keepView })
+      rebuildPlane(PJ.kind, op, { term: true, refit: !keepView })
     },
     getLon0: () => LON0,
     // 2D 投影档。与 setLon0 同一条通路：世界平面变了 → 陆地 / 五类边界线 / 覆盖场 / 等值线
@@ -3279,9 +3716,11 @@ export function createFlatCoverage(canvas) {
     setBoxSelectMode(v) { boxMode = !!v; boxDragging = false; canvas.style.cursor = boxMode ? 'crosshair' : (placeMode || polyDrawMode ? 'crosshair' : ((beamDragMode || labelDragMode) ? 'move' : CUR_IDLE)) },
     setOnBoxSelect(fn) { onBoxSelect = fn },
     setOnPolyMove(fn) { onPolyMove = fn },
-    setMarkers(points, stations, trajectories) { mk = { points: points || [], stations: stations || [], trajectories: trajectories || [] }; invalidateStatic(); requestDraw() },
+    // ★ 标记 / 标记样式 / 卫星层只住在文字那一张快照里：只重画它（几毫秒），面与线、回退快照都不动 ——
+    //   这三样随时间轴每拍都会被页面重推一次（标记仰角、卫星图标），按内容作废就是每拍一次 100 ms 的整份重建。
+    setMarkers(points, stations, trajectories) { mk = { points: points || [], stations: stations || [], trajectories: trajectories || [] }; invalidateText(); requestDraw() },
     // 标记层样式（与 3D 同一份设置，见 markCfg）
-    setMarkStyle(cfg) { Object.assign(markCfg, cfg || {}); invalidateStatic(); requestDraw() },
+    setMarkStyle(cfg) { Object.assign(markCfg, cfg || {}); invalidateText(); requestDraw() },
     // 标记直接拖拽：开关 + 回调（target, lonlat, 'start'|'move'|'end'）
     // 布尔＝三类一起开关；对象＝逐类开关 { point, station, waypoint }（页面按「调整位置 / 调点」态给，
     // 每项 true / false / 归属 id，见 dragOk）
@@ -3298,7 +3737,7 @@ export function createFlatCoverage(canvas) {
     setSelGeom(g) { selGeomList = Array.isArray(g) ? g.filter(Boolean) : (g ? [g] : []); requestDraw() },
     // 聚焦卫星显示样式（轨道线只在 3D 有，这里收轨迹/覆盖圈/星下点图标三项）
     setFocusStyle(s) { Object.assign(focusCfg, s || {}); requestDraw() },
-    setSatLayer(spec) { satLayer = spec; invalidateStatic(); requestDraw() },
+    setSatLayer(spec) { satLayer = spec; invalidateText(); requestDraw() },
     resize() { resizeNow() },
     reset() { fit(); invalidateStatic(); requestDraw() },
     // 当前屏幕视图的逻辑尺寸（CSS px）：供「所见即所得」导出按当前画面比例/范围出图
@@ -3410,8 +3849,12 @@ export function createFlatCoverage(canvas) {
     // ★ 这里原本有【两个 destroy 键落在同一个对象字面量里】，后一个把前一个整个盖掉 —— offPov()
     //   从来没被调用过，卸载后的实例仍挂在主权解算层的广播上。已并成这一个。
     destroy() {
-      if (rafId) cancelAnimationFrame(rafId)
+      dead = true
+      if (rafId) { cancelAnimationFrame(rafId); rafId = 0 }
       if (idleTimer) { clearTimeout(idleTimer); idleTimer = 0 }
+      if (tileTimer) { clearTimeout(tileTimer); tileTimer = 0 }        // 瓦片到货去抖：到期会 rebuildAtRest + 重绘
+      if (imgLiveOffTimer) { clearTimeout(imgLiveOffTimer); imgLiveOffTimer = 0 }
+      if (diskIdleT) { clearTimeout(diskIdleT); diskIdleT = 0 }
       if (rotRaf) { cancelAnimationFrame(rotRaf); rotRaf = 0 }
       if (glf) { glf.dispose(); glf = null }
       if (glr) { glr.dispose(); glr = null }

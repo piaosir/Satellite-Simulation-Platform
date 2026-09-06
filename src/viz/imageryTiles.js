@@ -109,7 +109,7 @@ const inflight = new Map()
 // 却按 L7 去取时，那是每秒几百次必然 404 的请求；接在线源时更是直接打成 DoS。
 // 只记 MISS_TTL 毫秒，过期重试 → 补装离线包 / 网络恢复后仍能自愈，不需要重启。
 const misses = new Map()
-const MISS_TTL = 30000
+export const MISS_TTL = 30000
 // 同时在飞的取片数上限。浏览器对单域本就只放 6 个并行，留一点排队深度把管道喂满即可。
 const MAX_INFLIGHT = 12
 export const isMissing = (set, z, row, col) => {
@@ -153,6 +153,10 @@ export function getTile(set, z, row, col, onReady) {
 export function getTileOrParent(set, z, row, col, onReady) {
   const exact = getTile(set, z, row, col, onReady)
   if (exact) return { img: exact, u0: 0, v0: 0, u1: 1, v1: 1, exact: true }
+  return ancestorHit(set, z, row, col)
+}
+// 只查缓存的祖先片（不为任何片发请求）：GPU 路纹理上传限额时拿它顶一帧
+export function ancestorHit(set, z, row, col) {
   for (let pz = z - 1, pr = row >> 1, pc = col >> 1, d = 1; pz >= 0; pz--, pr >>= 1, pc >>= 1, d++) {
     // L0–L2 的行列数不是严格二分（2×1→3×2→5×3），故祖先只在 L3 以上按位移算；
     // 更低的档直接按经纬反查，片数极少、代价可忽略。
@@ -168,6 +172,47 @@ export function getTileOrParent(set, z, row, col, onReady) {
     }
   }
   return null
+}
+
+// 某片的【父片】(z−1)：L3 以上严格二分按位移算；更低的档按经纬反查（见 getTileOrParent 的注释）。
+export function parentOf(z, row, col) {
+  if (z <= 0) return null
+  const pz = z - 1
+  if (pz >= 3) return { z: pz, r: row >> 1, c: col >> 1 }
+  const b = tileBox(z, row, col), s = span(pz)
+  return { z: pz, r: Math.floor((90 - b.north) / s), c: Math.floor((b.west + 180) / s) }
+}
+// 屏上实时路径的取片：想要的片没到 → 先看【四个子片】（刚才放大看过的那些细片全在缓存里，
+// 缩小时用它们拼比拿祖先片清楚得多）→ 再往上找祖先。子片只在 L3 以上按严格二分找（L2→L3 行数 3→5
+// 不是二分）。返回形状：exact / 祖先片同 getTileOrParent；子片时是 { children:[{ img, i, j }×4] }，
+// i=0 西半、j=0 北半。★ 只读缓存，不为子片发请求 —— 请求只为想要的那一片发。
+export function getTileFallback(set, z, row, col, onReady) {
+  const exact = getTile(set, z, row, col, onReady)
+  if (exact) return { img: exact, u0: 0, v0: 0, u1: 1, v1: 1, exact: true }
+  if (z >= 3 && z + 1 <= MAXZ) {
+    const kids = []
+    for (let j = 0; j < 2; j++) for (let i = 0; i < 2; i++) {
+      const k = KEY(set, z + 1, row * 2 + j, col * 2 + i)
+      const img = cache.get(k)
+      if (!img) { kids.length = 0; j = 2; break }
+      kids.push({ img, i, j })
+    }
+    if (kids.length === 4) { for (const c of kids) touch(KEY(set, z + 1, row * 2 + c.j, col * 2 + c.i), c.img); return { children: kids, exact: false } }
+  }
+  return getTileOrParent(set, z, row, col, onReady)
+}
+// 顺手把一批片的父片拉进缓存：缩小一档时要的正是它们，本地读盘几毫秒就到，几乎不会再看见祖先片糊一下。
+export function prefetchParents(set, z, list, onReady) {
+  if (z <= 0 || !list || !list.length) return
+  const seen = new Set()
+  for (const t of list) {
+    const p = parentOf(z, t.r, t.c)
+    if (!p) continue
+    const k = p.r * 100000 + p.c
+    if (seen.has(k)) continue
+    seen.add(k)
+    getTile(set, p.z, p.r, p.c, onReady)
+  }
 }
 
 // ── 异步预载（导出专用）──────────────────────────────────────────────────────

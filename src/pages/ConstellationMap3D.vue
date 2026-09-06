@@ -39,8 +39,8 @@ import { POV_META, CUSTOM_POV, povTableOf, normMapPov } from '../viz/geo/povList
 import { CUSTOMIZABLE_DISPUTES, OWNER_ZH } from '../viz/geo/frozen.js'
 import { getMapPov, onMapPov, saveMapPov } from '../stores/mapPov.js'
 import { admIndex, loadPack, mergePacks } from '../viz/geo/admPacks.js'
-import { mapCrs, setMapCrs, MAP_CRS_DEF, lon0ToCenter, centerToLon0 } from '../stores/mapCrs.js'
-import { PROJECTIONS } from '../viz/geo/projection.js'
+import { mapCrs, setMapCrs, MAP_CRS_DEF, lon0ToCenter, centerToLon0, projOpts, LOOK_MODES } from '../stores/mapCrs.js'
+import { PROJECTIONS, projParams } from '../viz/geo/projection.js'
 import { waterList } from '../viz/geo/waterNames.js'
 import { CHAINS, CHAIN_DEF } from '../viz/geo/islandChains.js'
 import { DATUMS } from '../viz/geo/datum.js'
@@ -53,7 +53,7 @@ import { useLiveField } from '../viz/env/useLiveField.js'
 import { usePerfTable } from '../viz/grd/usePerfTable.js'
 import { useShellCoverage } from '../viz/grd/useShellCoverage.js'
 import { useSatPerfTable } from '../viz/grd/useSatPerfTable.js'
-import { sampleBeamAtEcef } from '../viz/grd/coverage.js'
+import { sampleBeamAtEcef, satLookAt } from '../viz/grd/coverage.js'
 import SatCovPanel from '../components/SatCovPanel.vue'
 import SatCovWindows from '../components/SatCovWindows.vue'
 import SatCovShellPicker from '../components/SatCovShellPicker.vue'
@@ -590,6 +590,34 @@ async function metPasteBtn() {
 function onHoverLL(ll) {
   cursor.ll = ll
   cursor.env = ll ? (env.readAt(ll.lat, ll.lon) || envLive.readAt(ll.lat, ll.lon)) : null
+  cursor.look = ll ? lookReadout(ll) : null
+}
+// 光标所在点【相对参考卫星】的视角读数。档位与参考卫星都在 mapCrs 里，几何走 coverage 的 satLookAt。
+// ★ 地平线以外的点照给数值（天线系是纯几何的，那里仍有定义），可见与否连同地心角、斜距一起写进 title
+//   —— 界面上只留数字，判定性的话不写（见 CLAUDE.md）。
+function lookReadout(ll) {
+  if (mapCrs.lookMode === 'off' || !mapCrs.subPt) return null      // 没设星下点就没有这一项：这两个角是相对它的
+  const p = subPtPos.value
+  if (!p) return null
+  const k = satLookAt(p.lon, p.lat, p.alt, ll.lon, ll.lat)
+  if (!k || !Number.isFinite(k.az)) return null
+  const en = curLang() === 'en'
+  const tail = ` · γ ${k.gamma.toFixed(2)}° · ${en ? 'slant range' : '斜距'} ${k.range.toFixed(0)} km`
+    + (k.vis ? '' : (en ? ' · beyond the horizon' : ' · 地平线以外'))
+  // ★ 两个量各带自己的名字（用户要的就是这个）：光看两个数分不清哪个是 az 哪个是 el
+  const sep = en ? ': ' : '：'
+  const who = p.name || (en ? 'the sub-satellite point' : '星下点')
+  return mapCrs.lookMode === 'uv'
+    ? {
+      text: 'u' + sep + k.u.toFixed(4) + '   v' + sep + k.v.toFixed(4),
+      title: (en ? 'Direction cosines of this point in the antenna frame of ' : '该点在 ')
+        + who + (en ? ' (boresight = nadir)' : ' 的天线系里的方向余弦（boresight＝星下天底）') + tail
+    }
+    : {
+      text: 'az' + sep + k.az.toFixed(2) + '°   el' + sep + k.el.toFixed(2) + '°',
+      title: (en ? 'Azimuth / elevation of this point seen from ' : '从 ')
+        + who + (en ? ' (antenna frame, boresight = nadir)' : ' 看该点的方位角 / 仰角（天线系，boresight＝星下天底）') + tail
+    }
 }
 // 陆海掩膜要靠 P.1511 地形数据，未随包分发到位时（打包漏文件）该项不可用，置灰而不是静默失效
 const envMaskAvail = computed(() => !env.field.value || env.field.value.maskAvail !== false)
@@ -3854,6 +3882,7 @@ const crsCenterTag = computed(() => { const c = crsCenterShown.value; return Mat
 function setCrsCenter(v) {
   const n = Number(v)
   if (!Number.isFinite(n)) return
+  dropFollow()                       // 自己动了画面就别再跟着星下点跑
   crsCenterShown.value = Math.max(-180, Math.min(180, n))
   setMapCrs({ lon0: centerToLon0(crsCenterShown.value) })
   if (flat) flat.setLon0(mapCrs.lon0)
@@ -3870,9 +3899,217 @@ const CENTER_PRESETS = [
   { v: 0, zh: '0°' }, { v: 60, zh: '60°E' }, { v: 105, zh: '105°E' }, { v: 150, zh: '150°E' },
   { v: 180, zh: '180°' }, { v: -60, zh: '60°W' }, { v: -100, zh: '100°W' }
 ]
-function resetCrs() { setMapCrs(MAP_CRS_DEF); crsCenterShown.value = lon0ToCenter(mapCrs.lon0); if (flat) { flat.setLon0(mapCrs.lon0); flat.setProjection(mapCrs.proj) } }
+function resetCrs() { projSpin.value = false; setMapCrs(MAP_CRS_DEF); crsCenterShown.value = lon0ToCenter(mapCrs.lon0); if (flat) { flat.setRotateMode(false); flat.setLon0(mapCrs.lon0); flat.setProjection(mapCrs.proj, projOpts()) }; if (imageryOn.value) applyImagery() }
 // 2D 投影档：只改平面图怎么画（3D 球体不受影响 —— 它本来就是球，没有投影这回事）
-function setMapProj(k) { setMapCrs({ proj: k }); if (flat) flat.setProjection(mapCrs.proj) }
+function setMapProj(k) { setMapCrs({ proj: k }); if (flat) flat.setProjection(mapCrs.proj, projOpts()); if (imageryOn.value) applyImagery() }
+
+// ── 逐投影的可调参数 ───────────────────────────────────────────────────────
+// 哪档摆哪几个控件由 projParams 说了算（见 geo/projection.js 的 PROJ_PARAMS）：
+// 方位等距有「中心纬度」，阿尔伯斯有两条「标准纬线」，其余档一个都没有。
+const projHasLat0 = computed(() => projParams(mapCrs.proj).includes('lat0'))
+const projHasPar = computed(() => projParams(mapCrs.proj).includes('par1'))
+const projLat0Tag = computed(() => { const v = mapCrs.lat0; return Math.abs(v).toFixed(1) + '°' + (v < 0 ? 'S' : 'N') })
+function setProjLat0(v) {
+  const n = Number(v)
+  if (!Number.isFinite(n)) return
+  dropFollow()
+  setMapCrs({ lat0: Math.max(-90, Math.min(90, n)) })
+  if (flat) flat.setProjParams(projOpts())
+}
+function setProjPar(i, v) {
+  const n = Number(v)
+  if (!Number.isFinite(n)) return
+  setMapCrs(i === 1 ? { par1: n } : { par2: n })
+  if (flat) flat.setProjParams(projOpts())
+}
+// ===== 星下点 =====
+// 「星下点」那一节展开着没有。★ 必须声明在下面那个 watch 之前 —— 它带 immediate，
+//   注册当场就要读这个值，晚声明会撞 TDZ。
+const subOpen = ref(false)
+// 图上一个准星标记，光标的 az/el·u/v 按它算，方位等距的圆心也钉在它上面。三种来源见 stores/mapCrs。
+// ★ sat / tree 两种来源【只存身份】，位置每拍按时钟解算 —— 存快照的话时间轴一走标记和读数就都错了。
+const subPtPos = computed(() => {
+  const sp = mapCrs.subPt
+  if (!sp) return null
+  if (sp.src === 'manual') return { lon: sp.lon, lat: sp.lat, alt: sp.alt, name: '' }
+  void clock.tMs                                     // ★ 显式依赖时钟：时间轴一动，标记与读数跟着走
+  if (sp.src === 'tree') {
+    const n = grdSats.value.find((x) => x.folder === sp.folder)
+    if (!n) return null
+    const p = satLivePos(n)                          // 关联星走星历，固定星就是它自己那对经纬度
+    if (!p || !Number.isFinite(p.lon)) return null
+    return { lon: p.lon, lat: p.lat || 0, alt: p.altKm, name: n.satName || sp.name }
+  }
+  const e = satEntryById(sp.id)
+  if (!e || !e.rec) return null
+  const t = calcAt(), tm = isCustomEntry(e) ? ccTimeAt(t) : t
+  try {
+    const pv = sat.propagate(e.rec, tm)
+    if (!pv || !pv.position) return null
+    const gd = sat.eciToGeodetic(pv.position, sat.gstime(tm))
+    const lon = sat.degreesLong(gd.longitude), lat = sat.degreesLat(gd.latitude)
+    if (!Number.isFinite(lon) || !Number.isFinite(lat)) return null
+    return { lon, lat, alt: gd.height, name: e.name || sp.name }
+  } catch { return null }
+})
+const subPtName = computed(() => {
+  const sp = mapCrs.subPt
+  if (!sp) return ''
+  if (sp.src === 'manual') return ''
+  return (subPtPos.value && subPtPos.value.name) || sp.name || ''
+})
+// 标记上印的字：卫星来源印星名，手动点不印（它就是用户自己填的那对数）
+const subPtLabel = computed(() => subPtName.value)
+// 面板上「当前」那一格：星名 + 此刻的经纬度。卫星来源时它每拍都在变，正是要给人看的那个数。
+const subPtRead = computed(() => {
+  const p = subPtPos.value
+  if (!p) return mapCrs.subPt ? '—' : ''
+  const ll = Math.abs(p.lon).toFixed(2) + '°' + (p.lon < 0 ? 'W' : 'E') + '  ' + Math.abs(p.lat).toFixed(2) + '°' + (p.lat < 0 ? 'S' : 'N')
+  return subPtName.value ? subPtName.value + '  ' + ll : ll
+})
+
+// ── 跟随 ───────────────────────────────────────────────────────────────────
+// 星下点一动，画面（投影中心）跟着走。★ 必须节流：改投影中心＝整份重烘，LEO 每拍都改会直接卡死。
+//   · 位移阈值 —— GEO 的星下点一天才漂几十分之一度，这一条让它几乎不触发；
+//   · 时间闸  —— LEO 快的时候每秒扫几度，按这个节拍跟，画面是一跳一跳地追上去。
+const FOLLOW_DEG = 0.25, FOLLOW_MS = 250
+let followT = 0, followAt = null
+// ★ keepView：跟随时【不许动缩放】—— 换平面的默认路子会 fit() 一次，时间轴每跳一下
+//   就把用户放大看的那一块打回全图。投影中心在平面上的位置是固定的（方位等距即圆心 W/2,H/2），
+//   故视图原样留着，圆心在屏幕上的位置也就不动，只有底下的地球在转。
+function centerOnSubPt(p, keepView) {
+  crsCenterShown.value = Math.max(-180, Math.min(180, p.lon))
+  setMapCrs({ lon0: centerToLon0(p.lon), lat0: p.lat })
+  // ★ 切口与投影参数一起递给 setLon0，一次重建：分开调 setLon0 + setProjParams 是两次整份重建
+  //   （每次都把静态层四层缓存清光），跟随 LEO 时每拍两遍
+  if (flat) flat.setLon0(mapCrs.lon0, keepView !== false, projOpts())
+}
+// 图上那枚准星：★ 只在「星下点」那一节【展开着】的时候画 —— 收起来就当没这回事，
+//   免得一个记号长期挂在图上碍事。数据（mapCrs.subPt）不动，再点开就还在。
+function pushSubMark() {
+  if (!flat) return
+  const p = subOpen.value ? subPtPos.value : null
+  flat.setSubPoint(p ? { lon: p.lon, lat: p.lat } : null)
+}
+watch(subOpen, pushSubMark)
+watch(subPtPos, (p) => {
+  pushSubMark()
+  refreshLook()
+  if (!p || !mapCrs.subFollow || !mapCrs.subPt || mapCrs.subPt.src === 'manual') return
+  const now = performance.now()
+  const moved = !followAt || Math.abs(p.lon - followAt.lon) > FOLLOW_DEG || Math.abs(p.lat - followAt.lat) > FOLLOW_DEG
+  if (!moved || now - followT < FOLLOW_MS) return
+  followT = now; followAt = { lon: p.lon, lat: p.lat }
+  centerOnSubPt(p, true)          // 跟随：缩放不动
+}, { immediate: true })
+// 用户自己动了画面 → 关掉跟随。否则下一拍又被拉回星下点，怎么拖都拖不走。
+function dropFollow() { if (mapCrs.subFollow) setMapCrs({ subFollow: false }) }
+
+// ── 设定星下点 ─────────────────────────────────────────────────────────────
+function applySubPt(v) {
+  setMapCrs({ subPt: v, subFollow: true })
+  followT = 0; followAt = null
+  const p = subPtPos.value
+  if (p) { centerOnSubPt(p); pushSubMark() }
+  refreshLook()
+}
+function clearSubPt() {
+  setMapCrs({ subPt: null })
+  subSrc.value = 'sat'; refQ.value = ''; refResults.value = []
+  pushSubMark()
+  cursor.look = null
+}
+// 来源页签（只是面板上摆哪一行输入，真正的来源以 mapCrs.subPt.src 为准）
+const subSrc = ref('sat')
+const SUB_SRCS = [{ k: 'manual', zh: '手动', en: 'Manual' }, { k: 'sat', zh: '搜索卫星', en: 'Search' }, { k: 'tree', zh: '卫星树', en: 'Sat tree' }]
+function setSubSrc(k) { subSrc.value = k; refQ.value = ''; refResults.value = [] }
+
+// ① 手动：经纬度 + 高度（高度不可省 —— az/el 是从卫星看的角）
+const manLon = ref(''), manLat = ref(''), manAlt = ref('')
+function applyManual() {
+  const lon = Number(manLon.value), lat = Number(manLat.value)
+  if (!Number.isFinite(lon) || !Number.isFinite(lat)) return
+  applySubPt({ src: 'manual', lon, lat, alt: Number(manAlt.value) })
+}
+// ② 搜索卫星：复用地图搜索那一套池子（ensureSearchPool + searchSource），不另建索引
+const refQ = ref('')
+const refResults = ref([])
+let refTimer = 0
+function onRefSearch(e) {
+  refQ.value = e.target.value
+  if (refTimer) clearTimeout(refTimer)
+  refTimer = setTimeout(async () => {
+    const kw = refQ.value.trim().toLowerCase()
+    if (!kw) { refResults.value = []; return }
+    await ensureSearchPool()
+    const src = searchSource(), out = []
+    for (let i = 0; i < src.length && out.length < 12; i++) {
+      const en = src[i]
+      if (en.name.toLowerCase().includes(kw) || String(en.noradId).includes(kw)) {
+        out.push({ id: en.noradId ? 'n:' + en.noradId : en.name, name: en.name, noradId: en.noradId, slot: geoSlotOfSatrec(en.rec) })
+      }
+    }
+    refResults.value = out
+  }, 200)
+}
+function pickRefSat(r) {
+  applySubPt({ src: 'sat', id: r.id, name: r.name })
+  refQ.value = ''; refResults.value = []
+}
+// ③ 卫星树：覆盖图那棵树里的节点（仰角线那种不算 —— 它不是卫星）
+const treeSats = computed(() => grdSats.value.filter((n) => n.kind !== 'elevline'))
+function pickTreeSat(folder) {
+  const n = treeSats.value.find((x) => x.folder === folder)
+  if (n) applySubPt({ src: 'tree', folder: n.folder, name: n.satName })
+}
+// 地图上选中的那颗 —— 一键来源，省得再搜一遍
+const projSatName = computed(() => (selected.value ? String(selected.value.name || '') : ''))
+function useSelectedAsRef() {
+  const e = selEntry
+  if (!e) return
+  applySubPt({ src: 'sat', id: e.noradId ? 'n:' + e.noradId : e.name, name: e.name })
+}
+// 参考卫星 / 档位一变就地重算读数 —— 否则鼠标不动的话状态栏还挂着上一颗星的数
+function refreshLook() { cursor.look = cursor.ll ? lookReadout(cursor.ll) : null }
+// 光标读数档
+function setLookMode(k) { setMapCrs({ lookMode: k }); refreshLook() }
+const subPtTitle = computed(() => (curLang() === 'en'
+  ? 'Marked with a ⊕ on the map; the cursor az/el · u/v readout is measured from it, and the azimuthal-equidistant centre is pinned to it. For a satellite source only the identity is stored — the position is solved at the clock time, so the marker follows the timeline'
+  : '图上画一个 ⊕ 标记，光标的 az/el·u/v 按它算，方位等距的圆心也钉在它上面。卫星来源只记身份，位置每拍按时钟解算，故标记跟着时间轴走'))
+const lookTitle = computed(() => (curLang() === 'en'
+  ? 'Extra cursor readout beside longitude/latitude, relative to the reference satellite: az/el is the antenna frame with boresight at nadir; u/v are the direction cosines of the same direction. Geocentric angle and slant range are in the readout tooltip'
+  : '除经纬度外，光标额外读一项【相对参考卫星】的量：az/el 是 boresight 指星下天底的天线系方位角/仰角，u/v 是同一方向的方向余弦。地心角与斜距在读数的悬停提示里'))
+// ★ 拼接串过不了 DOM 翻译层（它认的是整串），故这一条自己按语言生成
+const projSatTitle = computed(() => {
+  const nm = subPtName.value || projSatName.value
+  const en = curLang() === 'en'
+  if (!nm) return en ? 'Open the sub-satellite-point settings: source, cursor readout' : '展开星下点设置：来源、光标读数'
+  return en
+    ? 'Open the settings and put the projection centre back on the sub-satellite point of ' + nm + ', resuming follow — the radius on the map then reads the geocentric angle directly'
+    : '展开设置，并把投影中心拉回 ' + nm + ' 的星下点、重新跟随；圆心一落在星下点，图上到圆心的距离就是地心角'
+})
+// 圆心一键钉到星下点：先认参考卫星，没设过就拿地图上选中的那颗（顺带记成参考卫星）。
+// 圆心一落在星下点，图上到圆心的距离就是地心角 —— 这一档存在的理由。
+// 「星下点」按钮：切换那一节的展开 —— 三行设置不常驻，点开才有（面板本来就挤）。
+// 展开时若已经设过星下点，顺带把圆心拉回去并重新跟随（跟随关掉之后拖走了，用它拉回来）。
+function projCenterToSat() {
+  subOpen.value = !subOpen.value
+  if (!subOpen.value) return
+  const p = subPtPos.value
+  if (p) { setMapCrs({ subFollow: true }); followT = 0; followAt = null; centerOnSubPt(p, true) }
+}
+// 「拖动调整」：开着的时候左键在图上拖动改的是投影中心，不是平移画面。
+// 与 3D 的 autoRotate（面板上叫「旋转中 / 已停止」）是两回事，别混 —— 那个是地球自转。
+const projSpin = ref(false)
+function toggleProjSpin() { projSpin.value = !projSpin.value; if (flat) flat.setRotateMode(projSpin.value) }
+// 转动回调：拖动中逐帧只更新读数，松手那一次才是终值（两者都要写回 mapCrs，
+// 否则拖完切个档就弹回旧中心）。crsCenterShown 跟着走，面板上的数字与图上恒一致。
+function onFlatRotate(r) {
+  if (!r) return
+  dropFollow()
+  crsCenterShown.value = ((r.lon0 + 180 + 180) % 360 + 360) % 360 - 180
+  setMapCrs({ lon0: r.lon0, lat0: r.lat0 })
+}
 // 字段口径放 title（不占版面，见 CLAUDE.md）：逐档的用途与代价，以及“只改显示”这一条。
 // ★ 写成 computed 而不是常量：title 是在 JS 里拼的串，不走 DOM 翻译层，
 //   写成常量就永远停在启动时那个语言上、切语言不跟。
@@ -3882,14 +4119,16 @@ const projTitle = computed(() => (curLang() === 'en' ? [
   'Mercator: conformal (no local distortion), the common convention for GIS and online tiles. Latitude clamped to ±85.05°, high-latitude areas exaggerated',
   'Equal Earth: equal-area. Use it alongside coverage-area readouts — areas are not inflated',
   'Robinson: a compromise, neither conformal nor equal-area; looks good in print',
-  'Albers: equal-area conic, for regional sheets, standard parallels 25°N / 47°N. The central meridian follows the map centre below — set it to 105°E for the conventional map of China'
+  'Albers: equal-area conic, for regional sheets, both standard parallels adjustable. The central meridian follows the map centre — set it to 105°E for the conventional map of China',
+  'Azimuthal Equidistant: the whole Earth inside one circle. Distance from the centre is proportional to the true geocentric angle and the rim is the antipode — put the centre on a sub-satellite point and the radius reads off the geocentric angle'
 ] : [
   '只作用于 2D 平面图的画法；3D 球体与一切计算 / 导出不受影响。',
   '等距圆柱：出厂档。经纬直接当直角坐标，经纬网是两族直线',
   '墨卡托：等角（局部不变形），GIS 与在线瓦片的通用口径。纬度钳到 ±85.05°，高纬面积夹大',
   '等积地球：等积。配覆盖面积读数看，面积不被拉大',
   '罗宾逊：既不等角也不等积的折中画法，出图好看',
-  '阿尔伯斯：等积圆锥，区域图用，标准纬线 25°N / 47°N。中央经线跟随下面的「画面中心」，设成 105°E 即得常规中国全图'
+  '阿尔伯斯：等积圆锥，区域图用，两条标准纬线可调。中央经线跟随「画面中心」，设成 105°E 即得常规中国全图',
+  '方位等距：整个地球装在一个圆里。到圆心的图上距离正比于真实地心角、圆周即对跖点，圆心放在星下点时半径直接读地心角'
 ]).join('\n'))
 
 function toggleRotate() { autoRotate.value = !autoRotate.value; scene && scene.setAutoRotate(autoRotate.value) }
@@ -4042,6 +4281,15 @@ function navTick() {
 }
 function navStop() { navHeld.clear(); if (navRaf) { cancelAnimationFrame(navRaf); navRaf = 0 } }
 function onNavKeyDown(e) {
+  // Esc = 站点栅编辑态的出口：一次退框选/加站（选中的站保留），再一次清选。
+  // 只在波束合成面板开着、且焦点不在输入框里时接管
+  if (e.key === 'Escape' && bs.open.value) {
+    const el = e.target
+    if (!(el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable))) {
+      if (bs.stEditOn.value || bs.stPick.value) { if (bs.stEditOn.value) bs.toggleStEdit(); if (bs.stPick.value) bs.toggleStPick(); return }
+      if (bs.stSel.value.size) { bs.clearStSel(); return }
+    }
+  }
   if (e.key === 'Shift') { navHeld.add('Shift'); return }
   if (!NAV_ARROWS.includes(e.key)) return
   if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return   // 已被时间轴/表格等消费，或带修饰键 → 不接管
@@ -4097,7 +4345,12 @@ function ensureFlat() {
     flat.setOnPolyDraw(onPolyDraw); flat.setPolyDrawMode(!!(polyDrawId.value || activeTraj.value))   // Polygon/航迹绘制：左键按住沿路径连续加点
     flat.setOnPlace((ll) => bs.placeAt(ll)); flat.setPlaceMode(bs.placing.value)   // 波束合成放置：左键点击落波束（拖动仍平移）
     flat.setOnBoxSelect(bsOnBoxSelect); flat.setBoxSelectMode(bs.stEditOn.value)   // 站点栅框选（拖矩形选站，页面画橡皮筋）
+    flat.setOnRotate(onFlatRotate); flat.setRotateMode(projSpin.value)   // 「拖动调整」：左键拖动改投影中心（见地图设置 → 2D 投影）
+    pushSubMark()        // 星下点准星（切回 2D / 导出时也要有；那一节收起来时不画）
     flat.setOnZoom((t) => { if (flatView.value) { zoom.value = t; saveView() } })
+    // GRD 分带填充的后端换了（换投影档 / 导出前后 / WebGL 上下文丢失恢复）→ 重算一轮几何，
+    // 把填充换成另一种产物（GPU 网格 ↔ 分带多边形）。见 flatCoverage.fieldBackend。
+    flat.setOnBackendChange(() => { grd.recompute() })
     flatCanvas.value.addEventListener('pointerup', saveView)   // 平移结束保存视图（平移中心）
   }
   return flat
@@ -4110,7 +4363,7 @@ function feedFlat() {
   // ★ 切口与投影先推：两者都会触发【整份重烘 + fit】，放在后面会把下面刚套上的
   //   视图 / 图层重新抻一遍；且存档恢复时 mapCrs 已经是目标值，不先推就按出厂档画了一帧。
   flat.setLon0(mapCrs.lon0)
-  flat.setProjection(mapCrs.proj)
+  flat.setProjection(mapCrs.proj, projOpts())
   flat.setNameMode(nameMode.value)
   flat.setWaterMode({ ocean: oceanNameMode.value, sea: seaNameMode.value })
   flat.setWaterOff({ ...waterOff })
@@ -4183,6 +4436,10 @@ async function exportMap(fmt, scope) {
     await ensureCovIndex(); if (!covCleared.value) redraw()
     await nextTick()
     if (!ensureFlat()) { appAlert('地图渲染器未就绪，请切到 2D 平面图后重试'); return }
+    // ★ 必须在 feedFlat 之前置位：导出走 exportRender 的 compat 回放，只认 fillBands；而 compat 是
+    //   exportRender 内部才置的，几何层（feedFlat → grd.recompute）比它先跑。置位后 fieldBackend()
+    //   恒答 'paths'，这一轮就照旧出分带多边形 → PNG/PDF 与改造前逐字节相同。
+    flat.setExporting(true)
     await feedFlat()   // resize() 仅首帧 fit，已交互过的缩放/平移会保留 → view 模式即所见即所得
     await nextTick()
     const tag = view ? '截图' : '全球图'
@@ -4211,7 +4468,11 @@ async function exportMap(fmt, scope) {
       await saveExport(bytes, `覆盖图_${tag}_${lbl}.png`, [{ name: 'PNG 图片', extensions: ['png'] }])
     }
   } catch (e) { console.error('导出失败', e); appAlert('导出失败：' + ((e && e.message) || e)) }
-  finally { exporting.value = false; exportFlat.value = false }
+  finally {
+    exporting.value = false; exportFlat.value = false
+    // 复位后再重算一轮：屏上那份换回 GPU 网格（导出期间被换成了分带多边形）
+    if (flat) { flat.setExporting(false); grd.recompute() }
+  }
 }
 
 // 3D 球体截图：把渲染分辨率抬到倍率再取一帧（机位/图层/主题一概不动 → 所见即所得）。
@@ -4520,29 +4781,35 @@ async function applyImagery() {
     return
   }
   const src = imagerySource(imageryKey.value)
+  const b = imageryBright.value
   // 瓦片档：没有「一张要解码的大图」，故整套在飞闸/pending 都不适用 —— 直接把集名交给两个渲染器，
-  // 取片由它们按视野各自异步做（见 imageryTiles.js 的 getTile）。
+  // 取片由它们按视野各自异步做（见 imageryTiles.js 的 getTile）。2D 在投影档下同样直接吃瓦片
+  // （按片分桶的纹理网格，见 flatCoverage.drawImagery），不再换成 16K 整幅；投影一改仍要重跑本函数
+  // （2D 侧要清缓存 / 换路径）。
   if (src.tiles) {
-    if (scene) scene.setImagery({ on: true, set: src.tiles, maxZ: src.maxZ, img: null, bright: imageryBright.value })
-    if (flat) flat.setImagery({ on: true, set: src.tiles, maxZ: src.maxZ, img: null, bright: imageryBright.value })
+    if (scene) scene.setImagery({ on: true, set: src.tiles, maxZ: src.maxZ, img: null, bright: b })
+    if (flat) flat.setImagery({ on: true, set: src.tiles, maxZ: src.maxZ, img: null, bright: b })
     return
   }
+  const url = imageryWantUrl()
+  if (!url) return
   if (imageryLoading) {
     // 在飞的就是这一份 → 等它回来即可；是别的一份 → 记一笔，由它在 finally 里补跑
-    if (imageryLoading !== src.url) imageryPending = true
+    if (imageryLoading !== url) imageryPending = true
     return
   }
-  imageryLoading = src.url
+  imageryLoading = url
   try {
-    const img = await loadImagery(src.url)
-    // 回来时开关/档位都可能已经变了：只认「仍是当前选中的那一份」，否则丢弃（由 pending 那一路去补）
-    if (imageryOn.value && imagerySource(imageryKey.value).url === src.url) {
-      if (scene) scene.setImagery({ on: true, img, bright: imageryBright.value })
-      if (flat) flat.setImagery({ on: true, img, bright: imageryBright.value })
+    const img = await loadImagery(url)
+    // 回来时开关/档位/投影都可能已经变了：只认「仍是当前该用的那一份」，否则丢弃（由 pending 那一路去补）
+    if (imageryOn.value && imageryWantUrl() === url) {
+      // ★ set: null 必须显式给：从瓦片档切到整幅档时要把旧的瓦片集清掉
+      if (scene) scene.setImagery({ on: true, set: null, img, bright: b })
+      if (flat) flat.setImagery({ on: true, set: null, img, bright: b })
     }
   } catch (e) {
-    // 只有「失败的正是当前这一档」才关开关报错；用户已经切走的那一份失败了与他无关
-    if (imagerySource(imageryKey.value).url === src.url) {
+    // 只有「失败的正是当前该用的那一档」才关开关报错；用户已经切走的那一份失败了与他无关
+    if (imageryWantUrl() === url) {
       imageryOn.value = false
       logMsg('影像底图载入失败：' + (e && e.message ? e.message : e))
     }
@@ -4550,6 +4817,12 @@ async function applyImagery() {
     imageryLoading = ''
     if (imageryPending) { imageryPending = false; applyImagery() }
   }
+}
+// 当前【需要解码】的那一份 url（''＝两个视图都走瓦片，没有要解码的图）。
+// 在飞闸与回来后的核对都用它 —— 判据是「现在该用哪一份」，故必须同时看档位与投影。
+function imageryWantUrl() {
+  const s = imagerySource(imageryKey.value)
+  return s.tiles ? '' : s.url
 }
 // 档位 title：全用符号与通用缩写 → i18n 零负担（口径见 imagery.js 的源清单注释）。
 // 瓦片档没有「整幅像素尺寸」这回事，报的是金字塔最深级与显存上界。
@@ -5303,11 +5576,18 @@ function bsOnBoxSelect(phase, r) {
     return
   }
   bsStBox.on = false
-  if (r && r.a && r.b) bs.stBoxSelect(r.a, r.b, !!r.add)
-  else if (r && r.at) bs.stClickSelect(r.at, !!r.add)   // 原地点击：命中站点=单选/增减选；未命中=清选（Ctrl 保持）
+  if (r && r.a && r.b) bs.stBoxSelect(r.a, r.b, !!r.add, !!r.sub)
+  else if (r && r.at) bs.stClickSelect(r.at, !!r.add, !!r.sub)   // 原地点击：命中站点=单选/增减选；未命中=清选（Ctrl/Alt 保持）
   else bs.clearStSel()
 }
 watch(() => bs.stEditOn.value, (v) => { if (flat) flat.setBoxSelectMode(v); if (!v) bsStBox.on = false })
+// 「框选」开关：橡皮筋只在平面图上（3D 球面没有框选）→ 开启即切平面图 + 打开站点显示，
+// 否则按钮亮着却没有任何东西可框（与「调整中心」同款处理）
+function bsStEditToggle() {
+  const on = !bs.stEditOn.value
+  bs.toggleStEdit()
+  if (on) { if (!view.flat) view.flat = true; if (bs.p.stShow === false) bs.p.stShow = true }
+}
 // 仿真频率「同设计」开关：取消勾选且尚无有效仿真频率时，以设计频率为起点（对齐 SATSOFT Sim Frequency 复选框；
 // 已填过的仿真频率保留，反复勾选不覆写）
 function bsSimSameToggle(v) {
@@ -5467,6 +5747,16 @@ watch(() => sideCtx(), async (cur, prev) => {
     satcovPickOpen.value = false
   }
 }, { immediate: true })
+// 「拖拽波束」是【对地覆盖分析 / 对星覆盖分析】这两个视图里的一个模态：开着的时候左键在图上拖的是
+// 聚焦天线的指向，不是平移地图。带着它切到别的视图（Polygon / 标记 / 波束合成 / 地图设置…），
+// 那边一拖就把指向拖歪了，而用户在那个上下文里根本不认为自己在改天线 —— 故离开这两个视图即关掉。
+// ★ 同样盯 sideCtx 不盯 shellUi.side：收起侧栏只是把面板藏起来，模态该原样留着（与上一条同口径）。
+//   对地 ↔ 对星互切也留着：那两个共用同一个聚焦天线与同一个开关（切【聚焦天线】才关，见 useGrdCoverage 的 watch(active)）。
+const COV_SIDES = ['antenna', 'satcov']
+watch(() => sideCtx(), (cur) => { if (!COV_SIDES.includes(cur) && grd.dragBore.value) grd.setDragBore(false) })
+// 站点栅的编辑态（框选 / 加站 / 选区）属于波束合成这个视图：真离开它才退。收起侧栏时 side 为空、
+// sideCtx 仍是 beams，bs.close() 只收面板不清选区（同上一条的口径）。
+watch(() => sideCtx(), (cur, prev) => { if (prev === 'beams' && cur !== 'beams') bs.exitStEdit() })
 // 「地图放置」开关：开启即清场并进入右键放置态（与调整互斥）
 function bsPlaceToggle() {
   if (bs.placing.value) { bs.placing.value = false; return }
@@ -5514,7 +5804,7 @@ async function bsGenerateAll() {
   if (r && r.ok) { bs.placing.value = false; bs.adjusting.value = false; bs.deleting.value = false; syncEdit(); redrawSats(); grd.recompute() }
 }
 // 生成后草图仍在，可继续微调再生成（同名更新）。切换模式/关面板时退出放置与调整态。
-watch(() => bs.mode.value, () => { bs.placing.value = false; if (bs.adjusting.value || bs.deleting.value) { bs.adjusting.value = false; bs.deleting.value = false; syncEdit() } redrawSats() })
+watch(() => bs.mode.value, () => { bs.placing.value = false; bs.exitStEdit(); if (bs.adjusting.value || bs.deleting.value) { bs.adjusting.value = false; bs.deleting.value = false; syncEdit() } redrawSats() })
 watch(() => bs.open.value, (o) => { if (!o) { bs.placing.value = false; bs.adjusting.value = false; bs.deleting.value = false; syncEdit(); redrawSats() } })
 // 放置态同步到两个渲染器：左键点击=落波束（拖动仍旋转/平移；右键放置并存）
 watch(() => bs.placing.value, (v) => { if (scene) scene.setPlaceMode(v); if (flat) flat.setPlaceMode(v) })
@@ -7979,16 +8269,20 @@ onBeforeUnmount(() => {
             </div>
             <div class="srow"><label>站点大小</label><input class="ci" type="number" step="1" min="2" max="30" v-model.number="bs.p.stSizePct" title="站点符号大小（%阵面波束宽，SATSOFT Station Size）：仅显示符号，非物理量" /><span class="u">%</span></div>
             <div class="bs-strow">
-              <span class="opb sm" :class="{ on: bs.stEditOn.value }" title="平面图上拖矩形框选站点（Ctrl+拖=累加选择；点击站点=选中该站、Ctrl+点=增减选；点空处=清选；再点本钮退出）" @click="bs.toggleStEdit()"><Icon name="crosshair" :size="12" /> 框选</span>
-              <span class="opb sm" :class="{ on: bs.stPick.value }" title="地图点击添加 Contour 站点（可连续加；再点本钮退出）" @click="bs.toggleStPick()"><Icon name="plus" :size="12" /> 加站</span>
-              <span class="opb sm" title="清空选中" @click="bs.clearStSel()">清选</span>
-              <span class="opb sm" title="清除全部站点修正与手工站（回到自动站点栅）" @click="bs.resetStations()">重置</span>
+              <span class="opb sm" :class="{ on: bs.stEditOn.value }" title="平面图上拖矩形框选站点（Ctrl+拖=并入已选；Alt+拖=从已选里减掉；点站点=选中该站、Ctrl+点=增减选、Alt+点=取消该站；点空处=清选）。Esc 或再点本钮退出框选，选中的站保留" @click="bsStEditToggle"><Icon name="crosshair" :size="12" /> 框选</span>
+              <span class="opb sm" :class="{ on: bs.stPick.value }" title="地图点击添加 Contour 站点（可连续加；Esc 或再点本钮退出）" @click="bs.toggleStPick()"><Icon name="plus" :size="12" /> 加站</span>
+              <span class="opb sm" title="清除全部站点修正与手工站，回到自动站点栅（可撤销）" @click="bs.resetStations()">重置</span>
+            </div>
+            <div v-if="bs.stEditOn.value || bs.stSel.value.size" class="bs-strow">
+              <span class="opb sm" title="选中全部站点（SATSOFT Select All Stations）" @click="bs.selectAllSt()">全选</span>
+              <span class="opb sm" title="反转选中状态（SATSOFT Invert Selected State）" @click="bs.invertStSel()">反选</span>
+              <span class="opb sm" :class="{ dis: !bs.stSel.value.size }" title="清空选中（Esc）" @click="bs.clearStSel()">清选</span>
             </div>
             <template v-if="bs.stSel.value.size">
-            <div class="bs-strow">
-              <span class="opb sm" title="选中站点还原为 Contour（抬到目标；保留目标偏置）" @click="bs.applyStType('cov')">Contour</span>
-              <span class="opb sm" title="选中站点转抑制（Sidelobe：该处场强被压低）" @click="bs.applyStType('sup')">抑制</span>
-              <span class="opb sm" title="选中站点排除（不参与优化，画为灰空心；手工站=直接删除）" @click="bs.applyStType('ex')">排除</span>
+            <div class="srow"><label>类型</label>
+              <span class="opb sm" :class="{ on: bs.stSelType.value === 'cov' }" title="Contour：把该处增益抬到目标以上（生成站点栅时全部站点都是这一类；保留目标偏置）" @click="bs.applyStType('cov')">Contour</span>
+              <span class="opb sm" :class="{ on: bs.stSelType.value === 'sup' }" title="抑制（SATSOFT Sidelobe）：把该处增益压到目标以下，用来在覆盖区外或邻区挖低旁瓣" @click="bs.applyStType('sup')">抑制</span>
+              <span class="opb sm" :class="{ on: bs.stSelType.value === 'ex' }" title="排除（SATSOFT Excluded）：该站不进优化，画为灰空心；手工站=直接删除" @click="bs.applyStType('ex')">排除</span>
             </div>
             <div class="srow"><label>目标偏置</label><input class="ci" type="number" step="0.5" v-model.number="bsStGoal" title="对选中站点的目标偏置（dB，叠加在该处区域目标上）：正=局部抬高、负=压低、0=清除偏置。目标只看相对权重（SATSOFT §10.2）" /><span class="u">dB</span><span class="opb sm" @click="bs.applyStGoal(Number(bsStGoal) || 0)">应用</span></div>
             </template>
@@ -8106,16 +8400,20 @@ onBeforeUnmount(() => {
             </div>
             <div class="srow"><label>站点大小</label><input class="ci" type="number" step="1" min="2" max="30" v-model.number="bs.p.stSizePct" title="站点符号大小（%成分波束宽，SATSOFT Station Size）：仅显示符号，非物理量" /><span class="u">%</span></div>
             <div class="bs-strow">
-              <span class="opb sm" :class="{ on: bs.stEditOn.value }" title="平面图上拖矩形框选站点（Ctrl+拖=累加选择；点击站点=选中该站、Ctrl+点=增减选；点空处=清选；再点本钮退出）" @click="bs.toggleStEdit()"><Icon name="crosshair" :size="12" /> 框选</span>
-              <span class="opb sm" :class="{ on: bs.stPick.value }" title="地图点击添加 Contour 站点（可连续加；再点本钮退出）" @click="bs.toggleStPick()"><Icon name="plus" :size="12" /> 加站</span>
-              <span class="opb sm" title="清空选中" @click="bs.clearStSel()">清选</span>
-              <span class="opb sm" title="清除全部站点修正与手工站（回到自动站点栅）" @click="bs.resetStations()">重置</span>
+              <span class="opb sm" :class="{ on: bs.stEditOn.value }" title="平面图上拖矩形框选站点（Ctrl+拖=并入已选；Alt+拖=从已选里减掉；点站点=选中该站、Ctrl+点=增减选、Alt+点=取消该站；点空处=清选）。Esc 或再点本钮退出框选，选中的站保留" @click="bsStEditToggle"><Icon name="crosshair" :size="12" /> 框选</span>
+              <span class="opb sm" :class="{ on: bs.stPick.value }" title="地图点击添加 Contour 站点（可连续加；Esc 或再点本钮退出）" @click="bs.toggleStPick()"><Icon name="plus" :size="12" /> 加站</span>
+              <span class="opb sm" title="清除全部站点修正与手工站，回到自动站点栅（可撤销）" @click="bs.resetStations()">重置</span>
+            </div>
+            <div v-if="bs.stEditOn.value || bs.stSel.value.size" class="bs-strow">
+              <span class="opb sm" title="选中全部站点（SATSOFT Select All Stations）" @click="bs.selectAllSt()">全选</span>
+              <span class="opb sm" title="反转选中状态（SATSOFT Invert Selected State）" @click="bs.invertStSel()">反选</span>
+              <span class="opb sm" :class="{ dis: !bs.stSel.value.size }" title="清空选中（Esc）" @click="bs.clearStSel()">清选</span>
             </div>
             <template v-if="bs.stSel.value.size">
-            <div class="bs-strow">
-              <span class="opb sm" title="选中站点还原为 Contour（抬到目标；保留目标偏置）" @click="bs.applyStType('cov')">Contour</span>
-              <span class="opb sm" title="选中站点转抑制（Sidelobe：该处场强被压低）" @click="bs.applyStType('sup')">抑制</span>
-              <span class="opb sm" title="选中站点排除（不参与优化，画为灰空心；手工站=直接删除）" @click="bs.applyStType('ex')">排除</span>
+            <div class="srow"><label>类型</label>
+              <span class="opb sm" :class="{ on: bs.stSelType.value === 'cov' }" title="Contour：把该处增益抬到目标以上（生成站点栅时全部站点都是这一类；保留目标偏置）" @click="bs.applyStType('cov')">Contour</span>
+              <span class="opb sm" :class="{ on: bs.stSelType.value === 'sup' }" title="抑制（SATSOFT Sidelobe）：把该处增益压到目标以下，用来在覆盖区外或邻区挖低旁瓣" @click="bs.applyStType('sup')">抑制</span>
+              <span class="opb sm" :class="{ on: bs.stSelType.value === 'ex' }" title="排除（SATSOFT Excluded）：该站不进优化，画为灰空心；手工站=直接删除" @click="bs.applyStType('ex')">排除</span>
             </div>
             <div class="srow"><label>目标偏置</label><input class="ci" type="number" step="0.5" v-model.number="bsStGoal" title="对选中站点的目标偏置（dB，叠加在该处区域目标上）：正=局部抬高、负=压低、0=清除偏置。目标只看相对权重（SATSOFT §10.2）" /><span class="u">dB</span><span class="opb sm" @click="bs.applyStGoal(Number(bsStGoal) || 0)">应用</span></div>
             </template>
@@ -8810,11 +9108,65 @@ onBeforeUnmount(() => {
             </select>
           </div>
           <div class="srow"><label>画面中心</label><NumBox class="ci cov-b" :min="-180" :max="180" :step="0.5" :model-value="crsCenter" title="2D 平面图正中那条经线的经度（东正西负）；接缝随之落到它的对面。也是各投影的中央经线 —— Albers 设成 105°E 即得常规中国全图。3D 球体没有接缝，不受影响" @commit="setCrsCenter" /><span class="u">{{ crsCenterTag }}</span></div>
+          <div v-if="projHasLat0" class="srow"><label>中心纬度</label><NumBox class="ci cov-b" :min="-90" :max="90" :step="0.5" :model-value="mapCrs.lat0" title="投影中心那一点的纬度（北正南负）；配上「画面中心」那条经线即圆心。3D 球体不受影响" @commit="setProjLat0" /><span class="u">{{ projLat0Tag }}</span></div>
+          <div v-if="projHasPar" class="srow"><label>标准纬线</label>
+            <NumBox class="ci cov-b" :min="-89.5" :max="89.5" :step="0.5" :model-value="mapCrs.par1" title="圆锥与球面相割的两条纬线，其上无变形。常规中国全图取 25°N / 47°N" @commit="(v) => setProjPar(1, v)" />
+            <NumBox class="ci cov-b" :min="-89.5" :max="89.5" :step="0.5" :model-value="mapCrs.par2" title="圆锥与球面相割的两条纬线，其上无变形。常规中国全图取 25°N / 47°N" @commit="(v) => setProjPar(2, v)" />
+          </div>
           <div class="srow stack"><label>常用</label>
             <span class="seg nseg" role="group" aria-label="常用画面中心">
               <span v-for="c in CENTER_PRESETS" :key="c.v" class="sg" :class="{ on: Math.abs(crsCenter - c.v) < 0.25 }" @click="setCrsCenter(c.v)">{{ c.zh }}</span>
             </span>
           </div>
+          <div class="srow"><label>投影中心</label>
+            <span class="seg nseg" role="group" aria-label="投影中心">
+              <span class="sg" :class="{ on: projSpin }" title="开着之后在图上左键拖动改的是投影中心，不再平移画面；拖动过程中底图降到简版、覆盖场与影像暂不画，松手补全" @click="toggleProjSpin">拖动调整</span>
+              <span class="sg" :class="{ on: subOpen }" :title="projSatTitle" @click="projCenterToSat">星下点</span>
+            </span>
+          </div>
+          <template v-if="subOpen">
+          <div class="srow"><label>星下点</label>
+            <span class="seg nseg" role="group" aria-label="星下点来源">
+              <span v-for="ss in SUB_SRCS" :key="ss.k" class="sg" :class="{ on: subSrc === ss.k }" :title="subPtTitle" @click="setSubSrc(ss.k)">{{ byLang(ss.zh, ss.en) }}</span>
+            </span>
+          </div>
+          <template v-if="subSrc === 'manual'">
+            <div class="srow sub"><label>经度</label><NumBox class="ci cov-b" :min="-180" :max="180" :step="0.5" :model-value="manLon" title="星下点经度（东正西负）" @commit="(v) => { manLon = v; applyManual() }" /><span class="u">°E</span></div>
+            <div class="srow sub"><label>纬度</label><NumBox class="ci cov-b" :min="-90" :max="90" :step="0.5" :model-value="manLat" title="星下点纬度（北正南负）" @commit="(v) => { manLat = v; applyManual() }" /><span class="u">°N</span></div>
+            <div class="srow sub"><label>高度</label><NumBox class="ci cov-b" :min="100" :max="500000" :step="100" :model-value="manAlt" title="卫星轨道高度。az/el 与 u/v 是【从卫星看】的角，只给经纬度算不出来；留空按 GEO 35786 km" @commit="(v) => { manAlt = v; applyManual() }" /><span class="u">km</span></div>
+          </template>
+          <template v-else-if="subSrc === 'tree'">
+            <div class="srow sub"><label>卫星</label>
+              <select :value="mapCrs.subPt && mapCrs.subPt.src === 'tree' ? mapCrs.subPt.folder : ''" :title="subPtTitle" @change="pickTreeSat($event.target.value)">
+                <option value="" disabled>{{ byLang('从覆盖图卫星树选', 'From the coverage sat tree') }}</option>
+                <option v-for="n in treeSats" :key="n.folder" :value="n.folder">{{ n.satName }}</option>
+              </select>
+            </div>
+          </template>
+          <template v-else>
+            <div class="srow sub"><label>搜索</label>
+              <input class="ci" :value="refQ" placeholder="卫星名 / NORAD" :title="subPtTitle" @input="onRefSearch" />
+              <span v-if="projSatName" class="seg nseg"><span class="sg" :title="'用地图上选中的 ' + projSatName" @click="useSelectedAsRef">选中的</span></span>
+            </div>
+            <div v-if="refResults.length" class="ref-list">
+              <div v-for="r in refResults" :key="r.id" class="ref-it" @click="pickRefSat(r)">
+                <span class="rn">{{ r.name }}</span><span class="ru">{{ r.slot || r.noradId }}</span>
+              </div>
+            </div>
+          </template>
+          <div v-if="mapCrs.subPt" class="srow sub"><label>当前</label>
+            <span class="ci ro" :title="subPtTitle">{{ subPtRead }}</span>
+            <span class="seg nseg">
+              <span class="sg" :class="{ on: mapCrs.subFollow, dis: mapCrs.subPt.src === 'manual' }" title="星下点一动，画面跟着走。自己拖过画面就自动关掉；再按「星下点」按钮可以重新跟上" @click="setMapCrs({ subFollow: !mapCrs.subFollow })">跟随</span>
+              <span class="sg" title="取消星下点（标记与光标读数一并停掉）" @click="clearSubPt">清除</span>
+            </span>
+          </div>
+          <div class="srow"><label>光标读数</label>
+            <span class="seg nseg" role="group" aria-label="光标读数">
+              <span v-for="m in LOOK_MODES" :key="m.k" class="sg" :class="{ on: mapCrs.lookMode === m.k, dis: m.k !== 'off' && !mapCrs.subPt }" :title="lookTitle" @click="setLookMode(m.k)">{{ byLang(m.zh, m.en) }}</span>
+            </span>
+          </div>
+          </template>
           </template>
         </div>
         <div class="sec">
@@ -10370,6 +10722,16 @@ onBeforeUnmount(() => {
 .seg .sg.on { background: var(--accent); color: var(--bg); }
 /* 选中段是实底，两侧的分隔线压在墨块边上反而脏，去掉 */
 .seg .sg.on, .seg .sg.on + .sg { border-left-color: transparent; }
+/* 参考卫星：已选时那一格只显示名字（不可编辑），与输入框同高同框以免整行跳动 */
+.srow .ci.ro { display: flex; align-items: center; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; cursor: default; }
+/* 选星候选：贴在那一行下面的一小段列表，最多 12 条，超出滚动 */
+.ref-list { max-height: 168px; overflow: auto; margin: -4px 0 8px; border: 1px solid var(--border); background: var(--surface); }
+.ref-it { display: flex; align-items: center; gap: 8px; padding: 3px 8px; cursor: pointer; font-size: var(--fs-3); }
+.ref-it:hover { background: var(--surface-2); }
+.ref-it .rn { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.ref-it .ru { flex: none; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+/* 条件不成立的那一格（如没选中卫星时的「星下点」）：压暗并停掉点击，不从版面上消失 —— 一忽隐忽现按钮就会跳位 */
+.seg .sg.dis, .seg .sg.dis:hover { color: var(--text-faint); opacity: .45; cursor: default; background: none; pointer-events: none; }
 .nseg { font-size: var(--fs-3); }
 .nseg .sg { padding: 3px 8px; }
 .nseg .sg + .sg { border-left: 1px solid var(--border); }

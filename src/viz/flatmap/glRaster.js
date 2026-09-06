@@ -72,12 +72,15 @@ precision highp float;
 centroid in vec2 vUV;
 uniform sampler2D uTex;
 uniform vec2 uWin, uUvOff, uUvScale;
-uniform float uG, uN;
+uniform float uG, uN, uSub;
 out vec4 fragColor;
 const float EPS = 1.0 / 1024.0;
 void main() {
   if (any(lessThan(vUV, vec2(-EPS))) || any(greaterThan(vUV, uWin + vec2(EPS)))) discard;
   vec2 t = uUvOff + vUV * uUvScale;
+  // 子片拼一片（uSub=1）：uUvOff=−(i,j)、uUvScale=2 把本片坐标折进第 (i,j) 个子片；落在子片之外的丢掉，
+  // 由另外三次绘制各画自己那一角。半个纹素的余量与上面同理（四份复制在片界上共用同一条线）。
+  if (uSub > 0.5 && (any(lessThan(t, vec2(-EPS))) || any(greaterThan(t, vec2(1.0 + EPS))))) discard;
   fragColor = texture(uTex, (vec2(uG) + t * 512.0) / uN);
 }`
 
@@ -111,6 +114,7 @@ export function createGlRaster() {
   let aniso = null, anisoMax = 1
   const tileTexes = new Map()        // 纹理键 -> WebGLTexture（Map 的插入序即 LRU 序）
   let tileSeq = 0                    // 给 HTMLImageElement 派发的键（祖先片回退时拿不到 (z,r,c)，按图元身份记）
+  let skipped = 0                    // 上一次 renderBins 因上传限额没画成的片数
 
   const ATTRS = { alpha: true, premultipliedAlpha: true, antialias: true, preserveDrawingBuffer: false, depth: false, stencil: false }
 
@@ -119,7 +123,7 @@ export function createGlRaster() {
     if (!gl) return false
     const P = link(gl, VERT, FRAG, ['uK', 'uTx', 'uTy', 'uDpr', 'uW', 'uH', 'uTex'])
     prog = P.prog; uni = P.uni
-    const T = link(gl, VERT_TILE, FRAG_TILE, ['uK', 'uTx', 'uTy', 'uDpr', 'uW', 'uH', 'uTex', 'uWin', 'uUvOff', 'uUvScale', 'uG', 'uN'])
+    const T = link(gl, VERT_TILE, FRAG_TILE, ['uK', 'uTx', 'uTy', 'uDpr', 'uW', 'uH', 'uTex', 'uWin', 'uUvOff', 'uUvScale', 'uG', 'uN', 'uSub'])
     progT = T.prog; uniT = T.uni
     gl.disable(gl.DEPTH_TEST); gl.disable(gl.BLEND); gl.disable(gl.CULL_FACE)
     gl.clearColor(0, 0, 0, 0)
@@ -258,9 +262,14 @@ export function createGlRaster() {
       countT = n * 3; meshKeyT = key
       return true
     },
-    // 逐桶绘制。lookup(bin) 由调用方给：返回 { img, u0, v0, u1, v1, fx, fy, G, N } 或 null（连祖先都没有 → 留洞）。
+    // 逐桶绘制。lookup(bin) 由调用方给：返回 { img, u0, v0, u1, v1, fx, fy, G, N } 或 null（连祖先都没有 → 留洞）；
+    // 也可以返回 { draws: [{ img, u0, v0, u1, v1, sub }, …], fx, fy, G, N } —— 同一桶画几遍（四个子片拼一片）。
     // 返回画出的桶数；纹理 LRU 里没有的片现传，逐出时跳过本帧在用的。
-    renderBins(u, bins, lookup) {
+    // budget＝本帧最多【新上传】几片纹理（一片 514² + mipmap ≈ 2 ms；一次到货 12 片就是 25 ms 的一帧）。
+    // 超额的桶若 lookup 给了 alt（已上传的祖先片）就先画 alt，没有就留到下一帧；skippedUploads() 告诉调用方
+    // 还欠着几片，让它再请一帧。
+    renderBins(u, bins, lookup, budget = Infinity) {
+      skipped = 0
       if (!alive() || !countT || !bins || !bins.length) return 0
       gl.viewport(0, 0, W, H)
       gl.clear(gl.COLOR_BUFFER_BIT)
@@ -273,29 +282,52 @@ export function createGlRaster() {
       // 本帧要用的图元先登记，逐出时跳过它们
       const inUse = new Set()
       const hits = new Array(bins.length)
+      const reg = (img) => { if (img && img.__glTileId) inUse.add(img.__glTileId) }
       for (let i = 0; i < bins.length; i++) {
         const h = lookup(bins[i]); hits[i] = h
-        if (h && h.img && h.img.__glTileId) inUse.add(h.img.__glTileId)
+        if (!h) continue
+        if (h.draws) for (const d of h.draws) reg(d.img); else reg(h.img)
+        if (h.alt) reg(h.alt.img)
+      }
+      let uploads = 0
+      const getTex = (img) => {
+        if (!img) return null
+        const had = !!(img.__glTileId && tileTexes.has(img.__glTileId))
+        if (!had && uploads >= budget) { skipped++; return null }
+        const t = tileTexture(img, inUse)
+        if (t && !had) uploads++
+        return t
+      }
+      const drawOne = (h, d, t) => {
+        inUse.add(d.img.__glTileId)
+        gl.bindTexture(gl.TEXTURE_2D, t)
+        gl.uniform2f(uniT.uWin, h.fx, h.fy)
+        gl.uniform2f(uniT.uUvOff, d.u0, d.v0)
+        gl.uniform2f(uniT.uUvScale, d.u1 - d.u0, d.v1 - d.v0)
+        gl.uniform1f(uniT.uG, h.G); gl.uniform1f(uniT.uN, h.N)
+        gl.uniform1f(uniT.uSub, d.sub ? 1 : 0)
+        gl.drawArrays(gl.TRIANGLES, h.first * 3, h.count * 3)
       }
       let painted = 0
       for (let i = 0; i < bins.length; i++) {
         const h = hits[i]
-        if (!h || !h.img) continue
-        const t = tileTexture(h.img, inUse)
-        if (!t) continue
-        inUse.add(h.img.__glTileId)
-        gl.bindTexture(gl.TEXTURE_2D, t)
-        gl.uniform2f(uniT.uWin, h.fx, h.fy)
-        gl.uniform2f(uniT.uUvOff, h.u0, h.v0)
-        gl.uniform2f(uniT.uUvScale, h.u1 - h.u0, h.v1 - h.v0)
-        gl.uniform1f(uniT.uG, h.G); gl.uniform1f(uniT.uN, h.N)
-        gl.drawArrays(gl.TRIANGLES, bins[i].first * 3, bins[i].count * 3)
-        painted++
+        if (!h) continue
+        h.first = bins[i].first; h.count = bins[i].count
+        const list = h.draws || [h]
+        // 先把这一桶要的纹理凑齐；凑不齐（限额）就整桶改画 alt
+        const texs = []
+        let ok = true
+        for (const d of list) { const t = d.img ? getTex(d.img) : null; if (!t) { ok = false; break } texs.push(t) }
+        if (ok) { for (let j = 0; j < list.length; j++) drawOne(h, list[j], texs[j]); painted++; continue }
+        const a = h.alt
+        const ta = a && a.img ? getTex(a.img) : null
+        if (ta) { drawOne(h, a, ta); painted++ }
       }
       gl.bindVertexArray(null)
       gl.bindTexture(gl.TEXTURE_2D, null)
       return painted
     },
+    skippedUploads() { return skipped },
     clearTiles() {
       if (gl) for (const t of tileTexes.values()) gl.deleteTexture(t)
       tileTexes.clear(); meshKeyT = ''; countT = 0

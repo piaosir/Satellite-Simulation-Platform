@@ -116,10 +116,23 @@ export function placeSnapshot(rec, view) {
 //   放大视角的类几乎永远判不成「便宜」（迟滞要连续三次 < 8 ms，而 10m 中等视角一次 30～50 ms），
 //   平移也照 cheap 分支走的话，按住拖过余量就露出一条纯海色、没有海陆线的条带跟着光标一直变宽
 //   （实测 40 帧里 21 帧），松手还要再等一个 idle。同步重建「顿一下」远好过它（§11.3）。
+// ★ 2026-09-07：全图背板（flatCoverage.ensureBackplate）让 hasFallback 几乎恒真 —— 于是手势里
+//   再也不同步整份重建；只有【实测便宜】的类才当场重建（那本来就 < 8 ms，比垫背板更清晰）。
 export function uncoveredMode(pl, hasFallback, cheap) {
+  if (cheap) return 'rebuild'
   if (hasFallback) return 'fallback'
-  if (!pl.scaled || cheap) return 'rebuild'
+  if (!pl.scaled) return 'rebuild'
   return 'ocean'
+}
+// 平移之后旧位图搬了 (dx, dy) 设备像素，画布上【露出来】的那一圈是哪几块（设备像素矩形，最多两块：
+// 一竖条 + 一横条，允许重叠 —— 只拿来做 clip 与清底，重叠无害）。增量条带重建只重画这一圈。
+export function stripRects(dx, dy, w, h) {
+  const out = []
+  if (dx > 0) out.push([0, 0, Math.min(dx, w), h])
+  else if (dx < 0) out.push([Math.max(0, w + dx), 0, Math.min(-dx, w), h])
+  if (dy > 0) out.push([0, 0, w, Math.min(dy, h)])
+  else if (dy < 0) out.push([0, Math.max(0, h + dy), w, Math.min(-dy, h)])
+  return out
 }
 // 手势停下来之后要不要补一次精确重建。★ 判据是 moved 不是 dx/dy（见 placeSnapshot 的注释）。
 export function needsRestRebuild(pl, tilesDirty) {
@@ -138,14 +151,18 @@ export function coversSubset(outer, inner, eps = 1e-9) {
   return outer.x0 <= inner.x0 + eps && outer.x1 >= inner.x1 - eps &&
          outer.y0 <= inner.y0 + eps && outer.y1 >= inner.y1 - eps
 }
-// 回退快照里挑一张盖得住的（列表已按覆盖面积从大到小排好）。返回下标，没有返回 −1。
+// 回退快照里挑一张盖得住的。盖得住的里面挑【缩放比最接近当前】的那张（缩得最少 ＝ 最清楚）；
+// 同样接近时按列表序（列表已按覆盖面积从大到小排好）。返回下标，没有返回 −1。
 export function pickFallbackIdx(list, view) {
+  let best = -1, bd = Infinity
   for (let i = 0; i < list.length; i++) {
     const f = list[i]
     if (f.w !== f.cw || f.h !== f.ch) continue      // resize 之后画布尺寸对不上：不要
-    if (placeSnapshot(f, view).covers) return i
+    if (!placeSnapshot(f, view).covers) continue
+    const d = Math.abs(Math.log(view.k / f.k))
+    if (d < bd - 1e-9) { bd = d; best = i }
   }
-  return -1
+  return best
 }
 // 回退快照的 above 层必须 evenodd 裁到当前快照【之外】那一圈，否则地名 / 边界线在重叠区
 // 叠成两层、还略有错位。返回两个矩形（视口 + 当前快照摆放后的矩形），调用方 clip('evenodd')。

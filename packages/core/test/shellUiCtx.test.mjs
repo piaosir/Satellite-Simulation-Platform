@@ -92,5 +92,28 @@ async function load(saved) {
   ok('④ sideCtx 恒非空', !!m4.sideCtx() && !!m3.sideCtx() && !!m2.sideCtx())
 }
 
+// ===== ⑤ 「拖拽波束」这个模态跟着 sideCtx 走，不跟着 side 走 =====
+// 它开着的时候左键在图上拖的是聚焦天线的【指向】。带着它切到 Polygon / 标记 / 波束合成 / 地图设置，
+// 那边一拖就把天线拖歪了，而用户在那个上下文里根本不认为自己在改天线 → 离开对地/对星即关。
+// 反过来【收起侧栏不能关】：那只是把面板藏起来，人还在这个视图里。
+// 这一条的实现在 ConstellationMap3D.vue 的 watcher 里，Node 里挂不起来 → 按源码钉死
+//（跟 flatExportCompat.test.mjs 同一套做法：会犯的错就是顺手把 sideCtx() 改回 shellUi.side）。
+{
+  const { readFileSync } = await import('node:fs')
+  const { fileURLToPath } = await import('node:url')
+  const { dirname, join } = await import('node:path')
+  const HERE = dirname(fileURLToPath(import.meta.url))
+  const page = readFileSync(join(HERE, '../../../src/pages/ConstellationMap3D.vue'), 'utf8')
+
+  const m = /const COV_SIDES = (\[[^\]]*\])/.exec(page)
+  ok('⑤ 声明了「哪几个视图算覆盖分析」', !!m, m && m[1])
+  ok('⑤ 对地覆盖分析在内', !!m && m[1].includes("'antenna'"))
+  ok('⑤ 对星覆盖分析在内', !!m && m[1].includes("'satcov'"))
+  const w = /watch\(\(\) => sideCtx\(\), \(cur\) => \{ if \(!COV_SIDES\.includes\(cur\) && grd\.dragBore\.value\) grd\.setDragBore\(false\) \}\)/.test(page)
+  ok('⑤ 离开这两个视图即关掉拖拽波束', w)
+  // 盯的必须是 sideCtx()：换成 shellUi.side 就成了「收起侧栏也把模态关掉」
+  ok('⑤ 盯的是 sideCtx() 不是 shellUi.side', w && !/COV_SIDES\.includes/.test(page.replace(/watch\(\(\) => sideCtx\(\)[\s\S]*?\n/g, '')))
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 if (fail) process.exit(1)

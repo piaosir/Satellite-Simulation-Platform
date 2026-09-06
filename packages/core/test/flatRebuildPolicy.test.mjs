@@ -17,7 +17,7 @@ import {
   REBUILD_FAST_MS, IDLE_MIN_MS, IDLE_MAX_MS, ZOOM_RUN_MS, NOMINAL_MIN, NOMINAL_MAX, UNKNOWN_COST,
   viewCls, makeCostTable, quantPan, makePanQuant, idleMsFor, hotMsFor, nominalFromGaps,
   uncoveredMode, needsRestRebuild,
-  placeSnapshot, worldCover, coversSubset, pickFallbackIdx, clipRects
+  placeSnapshot, worldCover, coversSubset, pickFallbackIdx, clipRects, stripRects
 } from '../../../src/viz/flatmap/rebuildPolicy.js'
 
 let pass = 0, fail = 0
@@ -159,6 +159,27 @@ const recAt = (o = {}) => ({ k: V.k, tx: 0, ty: 40, mx: 0, my: 0, w: 1920, h: 10
   // 放大到快照之外：全图那张仍盖得住（世界整个在里面），放大那张盖不住
   eq(pickFallbackIdx([mk({ ...zoom, area: 0.1 })], { ...V, k: 40, tx: -2000 - 3000, ty: -1000 }), -1,
     '离得太远：连唯一那张回退也盖不住 → 走海色垫底')
+  // 2026-09-07：盖得住的里面挑【缩放比最接近】的（全图背板恒盖得住，但缩得最多、最糊 —— 不能因为面积大就先选它）
+  const mid = { k: 12, tx: -600, ty: -300, mx: 0, my: 0, w: 1920, h: 1080 }
+  const bp = { k: V.k, tx: 0, ty: 40, mx: 0, my: 0, w: 1920, h: 1080 }          // 全图背板（fit 比例）
+  const viewMid = { ...V, k: 13, tx: -650, ty: -325 }   // 与 mid 同一个世界锚点（dx=dy=0），只是放大了 13/12
+  ok(placeSnapshot(mk(mid), viewMid).covers && placeSnapshot(mk(bp), viewMid).covers, '两张都盖得住这个视图')
+  eq(pickFallbackIdx([mk({ ...bp, area: 1 }), mk({ ...mid, area: 0.1 })], viewMid), 1, '两张都盖得住：挑 k 最接近的那张，不是面积最大的')
+  eq(pickFallbackIdx([mk({ ...bp, area: 1 }), mk({ ...mid, area: 0.1 })], { ...V, k: 13, tx: -3000, ty: -325 }), 0, '近的那张盖不住了：退到背板')
+}
+
+// ── 增量条带：旧位图搬 (dx, dy) 之后露出来的那一圈 ────────────────────────────
+{
+  const area = (rs) => rs.reduce((a, r) => a + r[2] * r[3], 0)
+  eq(stripRects(0, 0, 100, 50).length, 0, '没搬：一块都不露')
+  eq(JSON.stringify(stripRects(10, 0, 100, 50)), JSON.stringify([[0, 0, 10, 50]]), '右搬 10：左边露一竖条')
+  eq(JSON.stringify(stripRects(-10, 0, 100, 50)), JSON.stringify([[90, 0, 10, 50]]), '左搬 10：右边露一竖条')
+  eq(JSON.stringify(stripRects(0, 7, 100, 50)), JSON.stringify([[0, 0, 100, 7]]), '下搬 7：上边露一横条')
+  eq(JSON.stringify(stripRects(0, -7, 100, 50)), JSON.stringify([[0, 43, 100, 7]]), '上搬 7：下边露一横条')
+  const L = stripRects(10, 7, 100, 50)
+  eq(L.length, 2, '斜搬：一竖条 + 一横条（允许重叠，只做 clip 与清底）')
+  ok(area(L) >= 10 * 50 + 100 * 7 - 10 * 7, '两块并起来至少盖住 L 形')
+  eq(JSON.stringify(stripRects(500, 0, 100, 50)), JSON.stringify([[0, 0, 100, 50]]), '搬出画布：整块都露（钳到画布）')
 }
 
 // ── ⑧ 盖不住时走哪一支 / 静止后要不要补建（§11.1、§11.3）──────────────────

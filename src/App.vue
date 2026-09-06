@@ -454,6 +454,11 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
           <span class="cval">{{ cursor.env.text }}</span>
           <span class="eunit">{{ cursor.env.unit }}</span>
         </span>
+        <span v-if="cursor.look" class="cell envval" :title="cursor.look.title">
+          <span class="ekey">{{ cursor.look.short }}</span>
+          <span class="cval">{{ cursor.look.text }}</span>
+          <span class="eunit">{{ cursor.look.unit }}</span>
+        </span>
         <span class="cell coord">
           <Icon class="cur" name="cursor-arrow" :size="12" />
           <span class="cval">{{ cursor.ll ? fmtCoord(cursor.ll) : '——°  ——°' }}</span>

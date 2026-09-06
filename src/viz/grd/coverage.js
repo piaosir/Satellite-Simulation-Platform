@@ -159,6 +159,35 @@ export function dirToAzEl(satLon, satLat, altKm, lon, lat) {
   const dx = dt(w, nb.x), dy = dt(w, nb.y), dz = dt(w, nb.z)
   return { az: Math.atan2(-dx, Math.hypot(dy, dz)) * R2D, el: Math.atan2(dy, dz) * R2D }
 }
+// 地表点(lon,lat) 相对某颗星的一整套视角读数 —— 光标读数用，一次算齐免得逐项各建一次基底。
+//   az / el  天线系（boresight = 星下天底），与 dirToAzEl 同一条公式（igrid 6 的口径）
+//   u / v    同一个基底的方向余弦（igrid 1 的那一对）：u = e·x，v = e·y，w = e·z
+//   gamma    地心角：地心到卫星、地心到该点两条矢量的夹角
+//   range    斜距（km）；vis  该点在不在卫星的地平线内
+// ★ u/v 与 az/el 不是两套几何，是同一个方向的两种写法 —— 换算只在天线系里做，别各算各的
+//   （gridDir(6, az, el) 回代必须等于 (u,v,w)，satLook.test.mjs 段②钉的就是这条）。
+// ★ u 与 az 【反号】：天线系的 x 轴＝crs(地轴, boresight)，对赤道上的 GEO 星那是【西】向，
+//   而 igrid 6 定义 az = atan2(−u, …) 让东为正。所以星下点以东的点 az>0 而 u<0，不是写反了。
+// ★ gamma 在【大地】星下点上不是精确的 0，差着椭球扁率那一点（45°N 处约 0.021°）：
+//   大地坐标 (lon,lat,h) 的地心方向随 h 变（z 分量加 h，x/y 分量加 N+h）。要的是「图上到圆心
+//   的角距离」时这点差可忽略；要严格的物理地心角时它才是对的那个。
+export function satLookAt(satLon, satLat, altKm, lon, lat) {
+  const nb = antennaBasis(satLon, satLon, satLat || 0, 0, satLat || 0, altKm)
+  const P = geodeticToEcef(lon, lat, 0)
+  const d = sub(P, nb.S), rng = Math.hypot(d[0], d[1], d[2])
+  const e = sc(d, 1 / (rng || 1))
+  const dx = dt(e, nb.x), dy = dt(e, nb.y), dz = dt(e, nb.z)
+  // 地心角：地心到星下点、地心到该点两条矢量的夹角。用 ECEF 归一化（与全平台的椭球口径一致）
+  const Sn = nrm(nb.S), Pn = nrm(P)
+  return {
+    az: Math.atan2(-dx, Math.hypot(dy, dz)) * R2D,
+    el: Math.atan2(dy, dz) * R2D,
+    u: dx, v: dy, w: dz,
+    gamma: Math.acos(Math.max(-1, Math.min(1, dt(Sn, Pn)))) * R2D,
+    range: rng,
+    vis: dt(e, geodeticUp(lon, lat)) < 0        // e 是星→点；与该点天顶同向即卫星在其地平线下
+  }
+}
 // 地球站(lon,lat) 看卫星的当地地平坐标：方位角 az（自正北顺时针 0–360°）、仰角 el（当地水平面以上，度）。
 // 用地球站当地 ENU 系（geodeticUp=大地天顶）；与 dirToAzEl（卫星看地面点）互为对偶。
 // el<0 表示卫星在该站地平线以下（不可见）；GEO 时 satAlt 传轨道高度，与本文件其它几何同口径。

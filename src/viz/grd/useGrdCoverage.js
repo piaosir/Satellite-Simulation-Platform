@@ -7,7 +7,7 @@ import { sniffPatternFormat, foreignPatternToGrd } from './patFormats.js'
 import { antennaBasis, antennaBasisEcef, beamBasisFrom, dirAzElAbout, dirToAzEl, azElGround, surfaceAzEl, projectGrid, projectLimb, gridDirs, fieldDb, bandGeometry, stitchLoops, dLon, loopPointAtFraction, loopLabelAnchor, nearestFractionOnLoop } from './coverage.js'
 import { boresightShellPoint } from './shellProj.js'
 import { schemeColorsRGB, rgbCss, cssRgb } from './colormap.js'
-import { RS_GEO, A, geodeticToEcef, geocentricToEcef, isoElevationContourAt } from '../wgs84.js'
+import { RS_GEO, A, B, E2, geodeticToEcef, geocentricToEcef, isoElevationContourAt } from '../wgs84.js'
 import { effective as displayQuality } from '../../stores/displayQuality.js'
 import { appAlert } from '../../stores/alert.js'   // 应用内提示，替代会夺焦点的原生 alert
 
@@ -49,9 +49,15 @@ function satHull(c) {
   const key = lon + ',' + lat + ',' + alt
   if (c._hull && c._hull.key === key) return c._hull.hull
   let hull = null
-  // 采样点数 = 地平弧凸包顶点数：越地平的填充三角形按 clipToHull 裁到此环，环越密 → 每个碎多边形顶点越多、
-  // Canvas2D 填充 tessellation 越贵。80 点在外缘平滑度与填充成本间折中（比原 120 点省约 1.5×，外缘无肉眼可见棱角）。
-  const arc = isoElevationContourAt(geodeticToEcef(lon, lat, alt), 0, 80)
+  // 采样点数 = 地平弧凸包顶点数：越地平的填充三角形按 clipToHull 裁到此环，环越密 → 外缘越接近真圆弧。
+  // 2026-09-06 实测（361×361 全地球 GRD、4 波束、12 档）：跨地平因而要走 clipToHull 的三角形只占
+  // 全部三角形的 1.24%（9358 / 76 万）—— 当年 120→80 的折中是在别的工况上量的，这里不成立。
+  // 代价曲线（bandGeometry 整轮）：80→122ms · 120→120ms · 240→139ms · 360→163~196ms。
+  // ★ 2026-09-06 分带填充 GPU 化之后这个折中的前提又变了一次：屏上 2D 那条路【根本不用 hull】
+  //   （片元逐像素按 dot(P′,Ŝ′)≥1 精确判地平，见 flatmap/glField.js），hull 只剩 3D 与导出两个用户。
+  //   于是「环密一点就拖慢在屏上拖拽」这条顾虑没了 —— 取 240：外缘比 100 点更贴真弧，代价
+  //   （3D 每次重算 +19 ms、导出一次性）换的是【出图】上那一圈边缘。
+  const arc = isoElevationContourAt(geodeticToEcef(lon, lat, alt), 0, 240)
   if (arc && arc.length >= 3) {
     const ring = convexHullCCW(arc.map((p) => [wrap180(p[0] - lon), p[1]]))
     if (ring.length >= 3) hull = { ring, satLon: lon }
@@ -858,7 +864,38 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     beam._onE = { field, L0, pk: beam._projKey, v }
     return v
   }
-  function buildBeamLayer(c, cfg, beam, name, withLabels) {
+  // 2D 走 GPU 网格着色时要的那份产物（见 flatmap/glField.js）：把已有的投影结果原样交出去，
+  // 唯一新算的量是 lonU —— 经度绕【星下点】就近解缠（连续、不跨 ±180 断，与 loadTri 的逐三角解缠等价）。
+  // ★ 一律【引用】proj / field 的 Float32Array，不拷贝也不经 Vue 响应式（响应式代理过不了结构化克隆，
+  //   且这几条数组是热路径上原地复用的那几条，复制纯属白花时间）。
+  function buildFieldMesh(c, cfg, beam, field, asc, box, stride) {
+    const proj = beam.proj
+    if (!proj || !proj.lon) return null
+    const NX = proj.NX, NY = proj.NY, N = NX * NY
+    const rA = box ? box.r0 : 0, rB = box ? Math.min(box.r1, NY - 1) : NY - 1
+    const cA = box ? box.c0 : 0, cB = box ? Math.min(box.c1, NX - 1) : NX - 1
+    if (rB < rA || cB < cA) return null
+    let lonU = beam._lonU
+    if (!lonU || lonU.length !== N) lonU = beam._lonU = new Float32Array(N)
+    const lon = proj.lon, s0 = c.meta.satLon
+    for (let row = rA; row <= rB; row++) {
+      const rb = row * NX
+      for (let col = cA; col <= cB; col++) { const q = rb + col; lonU[q] = s0 + wrap180(lon[q] - s0) }
+    }
+    const S = beamBasis(c.meta, cfg).S
+    const nb = asc.length
+    const levels = new Float32Array(nb), colors = new Float32Array(nb * 3)
+    for (let i = 0; i < nb; i++) {
+      levels[i] = asc[i].abs
+      const rgb = cssRgb(asc[i].color)
+      colors[i * 3] = rgb[0] / 255; colors[i * 3 + 1] = rgb[1] / 255; colors[i * 3 + 2] = rgb[2] / 255
+    }
+    // satN：卫星 ECEF 逐分量除以 (A, A, B)。该归一坐标下椭球即单位球 → 片元判地平只是一次点积。
+    return { NX, NY, box, stride, lonU, lat: proj.lat, db: field.db, vis: proj.vis, satN: [S[0] / A, S[1] / A, S[2] / B], e2: E2, levels, colors }
+  }
+  // glMesh=true：2D 的分带填充走 GPU 网格着色 —— 此时 bandGeometry 只出等值线（省掉逐档裁剪与
+  // 全部 Path2D 烘制），fillBands 置空，改送 fieldMesh。3D / 导出 / 投影档 / 无 WebGL2 一切照旧。
+  function buildBeamLayer(c, cfg, beam, name, withLabels, glMesh) {
     const field = beamField(beam, cfg)
     const lv = absLevels(field.max, cfg)
     const asc = [...lv].sort((a, b) => a.abs - b.abs)   // 升序档：外圈冷、内圈热（与 jet 配色一致）
@@ -866,10 +903,14 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     const box = beamBox(beam, cfg, field)
     syncBeamProj(c, beam, cfg, field)
     const need = cfg.fill || cfg.line
+    const wantFills = cfg.fill && !glMesh
+    const stride = autoStride(beam, box, _viewVm)
     // wantFills=cfg.fill：只画等值线时跳过逐档填充裁剪（关填充的大波束拖拽省一半三角化）；box：只三角化覆盖热区
-    const geo = need ? bandGeometry({ lon: beam.proj.lon, lat: beam.proj.lat, vis: beam.proj.vis, db: field.db, NX: beam.proj.NX, NY: beam.proj.NY }, asc.map((x) => x.abs), cfg.fill, box, cfg.fill ? satHull(c) : null, displayQuality.value.gridStride) : null
+    // ★ stride 必须与 fieldMesh 的索引生成用同一个值：等值线（CPU）与填充（GPU）要落在同一张三角网上。
+    const geo = need ? bandGeometry({ lon: beam.proj.lon, lat: beam.proj.lat, vis: beam.proj.vis, db: field.db, NX: beam.proj.NX, NY: beam.proj.NY }, asc.map((x) => x.abs), wantFills, box, wantFills ? satHull(c) : null, stride) : null
     // 分带填充：每档一个颜色 + 该档环带多边形（升序，逐层从外到内绘制，非嵌套→无重叠透明叠加）
-    const fillBands = cfg.fill && geo ? asc.map((x, i) => ({ color: cssRgb(x.color), verts: geo.fills[i].verts, counts: geo.fills[i].counts })).filter((b) => b.counts.length) : null
+    const fillBands = wantFills && geo ? asc.map((x, i) => ({ color: cssRgb(x.color), verts: geo.fills[i].verts, counts: geo.fills[i].counts })).filter((b) => b.counts.length) : null
+    const fieldMesh = (cfg.fill && glMesh) ? buildFieldMesh(c, cfg, beam, field, asc, box, stride) : null
     // 等值线：每档一组线段（= 填充相邻档公共边）；数值标签锚点：该档拖过（labelT 非空）则按弧长比例取点，
     // 否则默认取环最上端点。标签仅在「显示数值」开启时才拼环求锚点——关闭时跳过 stitchLoops，拖拽时省一笔。
     const segGroups = cfg.line && geo
@@ -901,7 +942,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     // 第一项是 O(1) 短路：峰值格点打到地球且峰值不低于最低档 → 必有覆盖，不必扫盒（正常波束都走这条）。
     const L0 = asc.length ? asc[0].abs : -Infinity
     const bore = pk ? { lon: pk.lon, lat: pk.lat, hit: pk.hit, onEarth: (pk.hit && field.max >= L0) || footOnEarth(beam, field, L0), satLon: c.meta.satLon, satLat: c.meta.satLat || 0, satAlt: c.meta.satAlt || H, peak: field.max } : null
-    return { fillBands, segGroups, bore, name }
+    return { fillBands, fieldMesh, segGroups, bore, name }
   }
   // 每个选中天线 → N 个子图层（按 Beams To Plot 选中的波束逐个出层）；所有子层共用该天线同一套设置。
   // 所有选中画线，每个【开启填充】的天线各自分带填充（多天线/多波束/多星可叠加）。
@@ -917,10 +958,13 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     // 仅聚焦天线 + 显示数值标签时，捕获各档各环的可拖标签（锚点+环+原档下标），供 labelDrag 就近锁定/投影
     const capturing = withLabels && key === active.value
     if (capturing) _dragCapture = []
+    // 分带填充的后端：只有「本次喂的是 2D」且渲染器回答 'gl' 时才改送网格。每次都问，不缓存
+    //（导出会显式置位 setExporting、换投影档会改答案，缓存就会拿着过期结论出错产物）。
+    const glMesh = isFlat() && (() => { const fl = flatField(); return !!(fl && fl.fieldBackend && fl.fieldBackend((cfg.levels || []).length) === 'gl') })()
     const out = plot.map((bi) => {
       // 投影同步在 buildBeamLayer 内用新场完成（覆盖 reproject 未触及/新勾选的波束，且按热区盒裁剪）
       // 标注一律用波束名（自定义或默认「波束 N」）—— 不再用「天线名+波束名」形式
-      const L = buildBeamLayer(c, cfg, c.beams[bi], beamName(c, bi), withLabels)
+      const L = buildBeamLayer(c, cfg, c.beams[bi], beamName(c, bi), withLabels, glMesh)
       L.id = `${key}#${bi}`   // 稳定层 id（天线键|波束序号）：渲染层据此做拖拽增量更新（只重建聚焦天线层）
       if (L.bore) L.bore.satShown = satShown
       return L
@@ -950,8 +994,42 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     if (hooks.flatActive && !hooks.flatActive()) return null
     return getFlat()
   }
+  // ── 按屏定步长 + 按视区裁剪（两者都要「当前视图的屏上尺度」，故共用一处取值）─────────────
+  // 取不到（视图没挂上 / 相机贴在球心内）一律退回全量老行为。
+  function viewMetricsNow() {
+    try {
+      const v = isFlat() ? flatField() : getScene()
+      return (v && v.viewMetrics) ? v.viewMetrics() : null
+    } catch { return null }
+  }
+  // 三角化步长：让一格投到屏上约 2 个【设备像素】—— 比这更细的格，棱角肉眼看不见。
+  // 画质档里选的步长是【下限】（选了 1/2 就不会更细），自适应只往粗走且封顶 4；
+  // 取样格取热区盒中心那一格（越地平格的经纬跨度会被拉伸几十倍，拿它定步长会整片过粗）。
+  function autoStride(beam, box, vm) {
+    const base = displayQuality.value.gridStride || 1
+    const p = beam && beam.proj
+    if (!vm || !(vm.pxPerDeg > 0) || !p || !p.lat) return base
+    const r = (box && box.r1 >= box.r0) ? ((box.r0 + box.r1) >> 1) : (p.NY >> 1)
+    const c = (box && box.c1 >= box.c0) ? ((box.c0 + box.c1) >> 1) : (p.NX >> 1)
+    const k0 = r * p.NX + Math.min(c, p.NX - 2), k1 = k0 + 1
+    if (!(p.vis[k0] >= 0) || !(p.vis[k1] >= 0)) return base
+    const dLat = p.lat[k1] - p.lat[k0]
+    let dLon = p.lon[k1] - p.lon[k0]
+    while (dLon > 180) dLon -= 360
+    while (dLon < -180) dLon += 360
+    const cellPx = Math.hypot(dLat, dLon * Math.cos(p.lat[k0] * Math.PI / 180)) * vm.pxPerDeg
+    if (!(cellPx > 0)) return base
+    return Math.max(base, Math.min(4, Math.floor(2 / cellPx) || 1))
+  }
+  // ★ 2026-09-06 撤掉了「按视区裁剪三角化」：裁剪一旦生效，视区一动就必须整轮重建
+  //   （这个文件一轮 280+ ms），而裁掉的那点三角形远远抵不上重建的代价 —— 净亏，实测卡到不能用。
+  //   只留下按屏定步长这一条：它不需要任何重建触发，下一次自然重算时跟上即可。
+  let _viewVm = null
+  function refreshView() { _viewVm = viewMetricsNow() }
+
   function recompute() {
     const t0 = perfNow()
+    refreshView()
     // 2D 平面图盖住球面期间（scene 已 pause）不喂 3D：切回 3D 时由 applyFlat 补一次全量。
     const sc = isFlat() ? null : getScene(), fl = flatField()
     if (!sc && !fl) { _fullMs = 0; return }   // 两侧都不收（如 2D 下对星视图占着场）：几何白算，直接跳过
@@ -976,6 +1054,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
   // 其余天线层不变（拖拽不改它们的投影），另一视图在拖拽结束时由 recompute 一次性补齐 → 每帧工作量大幅下降。
   function recomputeActive() {
     if (!active.value || !selected.value.includes(active.value)) return   // 未勾选显示的天线，编辑/拖拽时也不上图
+    refreshView()
     const layers = buildLayer(active.value, s.showVal)
     const opts = fieldOpts()
     opts.rays = buildAxisRays(selected.value, A)   // 拖指向时视轴跟着转（一天线一条，全量重建也不贵）

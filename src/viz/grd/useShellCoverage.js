@@ -49,7 +49,7 @@ function satHull(lon, lat, alt) {
   const key = lon + ',' + lat + ',' + alt
   if (_hullCache.has(key)) return _hullCache.get(key)
   let hull = null
-  const arc = isoElevationContourAt(geodeticToEcef(lon, lat || 0, alt), 0, 80)
+  const arc = isoElevationContourAt(geodeticToEcef(lon, lat || 0, alt), 0, 240)   // 与对地视图同口径，见 useGrdCoverage.satHull
   if (arc && arc.length >= 3) {
     const ring = convexHullCCW(arc.map((p) => [wrap180(p[0] - lon), p[1]]))
     if (ring.length >= 3) hull = { ring, satLon: lon }

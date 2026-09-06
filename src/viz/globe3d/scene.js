@@ -542,19 +542,16 @@ export function createGlobeScene(container, quality = {}) {
     const _t0 = performance.now()
     try { updateImageryTilesInner() } finally { const d = performance.now() - _t0; if (d > 0.2) tileCostMs = d }
   }
-  function updateImageryTilesInner() {
+  // 视区几何（影像瓦片选级 与 覆盖填充「按屏定步长 / 按视区裁剪」共用同一份口径）：
+  //   degPerPx = 每个【设备像素】的角分辨率。相机到最近地表 D−1，视野高 2(D−1)tan(fov/2)，
+  //     1 个世界单位 = 1 个地球半径 = 1 弧度 = 57.2958°。传 CSS 像素会在高 DPR 屏上永远低选一级。
+  //   (cLon,cLat) = 视轴与球面交点；alpha = 可见球冠半角(°) = 地平圈与视锥张角取小的那个，留 1.25 倍余量；
+  //   north/south/dLon/full = 该球冠的经纬度外接框（full ＝ 跨极或整圈可见，此时经度不设限）。
+  function viewSpanNow() {
     const D = camera.position.length()
-    if (!(D > 1.0000001)) return
-    // 选级：按【设备像素】的角分辨率。相机到最近地表 D−1，视野高 2(D−1)tan(fov/2)，
-    // 1 个世界单位 = 1 个地球半径 = 1 弧度 = 57.2958°。传 CSS 像素会在高 DPR 屏上永远低选一级。
+    if (!(D > 1.0000001)) return null
     const hPx = Math.max(1, curH * (renderer.getPixelRatio() || 1))
     const degPerPx = 2 * (D - 1) * Math.tan(camera.fov * Math.PI / 360) / hPx * 180 / Math.PI
-    // let 不是 const：下面的片数护栏会就地降级（z--）。写成 const 时护栏一触发就抛
-    // 「Assignment to constant variable」——而护栏只在【视野宽 + 级号深】时才触发，
-    // 离线包封在 L6 时压根碰不到，接上 GIBS 的 L7/L8 才炸出来。
-    let z = pickZoom(degPerPx, imgMaxZ)
-    // 可见范围：地平圈 acos(1/D) 与视锥张角取小的那个。视锥用对角线（宽屏时水平视野更大），
-    // 再留 1.25 倍余量吃掉旋转惯性与球面近似误差 —— 漏算的那一圈有底层兜着，不会露洞。
     const aspect = Math.max(0.2, curW / Math.max(1, curH))
     const diag = Math.tan(camera.fov * Math.PI / 360) * Math.hypot(1, aspect)
     const alpha = Math.min(Math.acos(1 / D), (D - 1) * diag * 1.25 + 0.02) * 180 / Math.PI
@@ -564,9 +561,21 @@ export function createGlobeScene(container, quality = {}) {
     cLon = ((cLon % 360) + 540) % 360 - 180
     const north = Math.min(90, cLat + alpha), south = Math.max(-90, cLat - alpha)
     // 经度半宽：球面帽在纬度 φ 上的经度张角。跨极时退化为整圈。
-    const cosφ = Math.cos(Math.max(Math.abs(north), Math.abs(south)) * Math.PI / 180)
-    const full = north >= 90 || south <= -90 || cosφ <= 1e-6 || Math.sin(alpha * Math.PI / 180) >= cosφ
-    const dLon = full ? 180 : Math.asin(Math.min(1, Math.sin(alpha * Math.PI / 180) / cosφ)) * 180 / Math.PI
+    const cosF = Math.cos(Math.max(Math.abs(north), Math.abs(south)) * Math.PI / 180)
+    const full = north >= 90 || south <= -90 || cosF <= 1e-6 || Math.sin(alpha * Math.PI / 180) >= cosF
+    const dLon = full ? 180 : Math.asin(Math.min(1, Math.sin(alpha * Math.PI / 180) / cosF)) * 180 / Math.PI
+    return { D, degPerPx, cLon, cLat, alpha, north, south, dLon, full }
+  }
+  function updateImageryTilesInner() {
+    const V = viewSpanNow()
+    if (!V) return
+    const degPerPx = V.degPerPx
+    // let 不是 const：下面的片数护栏会就地降级（z--）。写成 const 时护栏一触发就抛
+    // 「Assignment to constant variable」——而护栏只在【视野宽 + 级号深】时才触发，
+    // 离线包封在 L6 时压根碰不到，接上 GIBS 的 L7/L8 才炸出来。
+    let z = pickZoom(degPerPx, imgMaxZ)
+    // 可见范围见 viewSpanNow（与覆盖填充共用）
+    const { cLon, cLat, north, south, dLon, full } = V
 
     const collect = (zz) => {
       const out = new Set()
@@ -1779,7 +1788,13 @@ export function createGlobeScene(container, quality = {}) {
   let covLayers = new Map()   // 层 id → { group, li }：每个覆盖层(天线·波束)独立子组，支持拖拽时按层增量重建
   let covOpts = {}
   function disposeCovGroup(grp) {
-    grp.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) { lineMats.delete(o.material); if (o.material.map) o.material.map.dispose(); o.material.dispose() } })
+    grp.traverse((o) => {
+      if (o.geometry) o.geometry.dispose()
+      if (!o.material) return
+      for (const m of (Array.isArray(o.material) ? o.material : [o.material])) {   // 分带填充逐档一个材质 → 材质是数组
+        lineMats.delete(m); if (m.map) m.map.dispose(); m.dispose()
+      }
+    })
   }
   function clearCoverageField() {
     if (!covFieldGroup) return
@@ -1807,7 +1822,7 @@ export function createGlobeScene(container, quality = {}) {
     g.add(covGridFill.mesh)
     covGridGroup = g; scene.add(g)
   }
-  function setCovGridAlpha(a) { if (covGridFill) covGridFill.mat.opacity = a }
+  function setCovGridAlpha(a) { if (covGridFill) covGridFill.setAlpha(a) }
 
   // ===== 对星覆盖分析【轨道壳层专用通道】：波束打在球壳上的分带填充 + 等值线。=====
   // 与 GRD 对地覆盖(covFieldGroup)、STK Coverage(covGridGroup) 三条通道互不覆写，同屏可叠。
@@ -1886,7 +1901,7 @@ export function createGlobeScene(container, quality = {}) {
         entry.group.add(entry.fill.mesh)
       }
       updateFill(entry.fill, L.fillBands, alpha, R / RE, true) // 已在参数域预细分 → 跳过经纬度域细分
-    } else if (entry.fill) { entry.fill.mesh.visible = false; if (entry.fill.geo.index) entry.fill.geo.setDrawRange(0, 0) }
+    } else if (entry.fill) { entry.fill.mesh.visible = false; entry.fill.geo.setDrawRange(0, 0) }
     const deco = buildShellDeco(L, o)
     for (const d of deco) entry.group.add(d)
     entry.deco = deco
@@ -1921,7 +1936,7 @@ export function createGlobeScene(container, quality = {}) {
       shellGroup.remove(e.group); disposeCovGroup(e.group); shellLayers.delete(id)
     }
   }
-  function setShellFieldAlpha(a) { for (const e of shellLayers.values()) if (e.fill) e.fill.mat.opacity = a }
+  function setShellFieldAlpha(a) { for (const e of shellLayers.values()) if (e.fill) e.fill.setAlpha(a) }
 
   // 壳层参照网（稀疏球面经纬格网）：等值线悬在空中没有「面」的落点，画一层极淡的格网当参照。
   // 与场数据分开成组：改指向/电平时只重建场，参照网不动。
@@ -2068,15 +2083,22 @@ export function createGlobeScene(container, quality = {}) {
   // 持久化填充网格（拖拽热路径核心）：几何/材质/缓冲只建一次，每帧把新顶点【写回既有缓冲】并标记更新，
   // 仅在容量不足时才扩容重分配 → 不再每帧 new BufferGeometry/Material/Mesh 并整块重传 GPU（旧版每帧
   // dispose+重建是 GPU churn / command_buffer 崩溃风险的根因），同时内联 lla→vec 免去逐顶点 new Vector3。
+  // 颜色【逐档进材质】而不是逐顶点属性，且不再建索引缓冲（原来写的是 idx[n]=n 的恒等映射，
+  // 每 4 字节都在告诉 GPU「第 n 个顶点就是第 n 个顶点」）：每叶三角 84 B → 36 B。
+  // 仍是一个 geometry、一份顶点缓冲、一次写回，只是按档切成 N 个 group、N 次 draw。
   function makeFill(alpha) {
     const geo = new THREE.BufferGeometry()
     // frustumCulled=false → 该网格的 boundingSphere 永不参与裁剪/拾取，故设一个固定大球占位，
     // updateFill 不再每帧 computeBoundingSphere（大波束十几万顶点的逐帧遍历，纯属浪费）。
     geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 2)
-    const mat = new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, opacity: alpha != null ? alpha : 0.85, side: THREE.DoubleSide, depthWrite: false })
-    const mesh = new THREE.Mesh(geo, mat); mesh.renderOrder = 5; mesh.frustumCulled = false
-    return { geo, mat, mesh, posArr: null, colArr: null, idxArr: null, vcap: 0, icap: 0 }
+    const mats = []                                     // 与 mesh.material 是同一个数组实例，就地增删即生效
+    const mesh = new THREE.Mesh(geo, mats); mesh.renderOrder = 5; mesh.frustumCulled = false
+    mesh.userData.covFill = true                        // setCoverageFieldAlpha 靠这个标记认领（原来认 vertexColors）
+    const fm = { geo, mats, mesh, posArr: null, vcap: 0, alpha: alpha != null ? alpha : 0.85 }
+    fm.setAlpha = (a) => { fm.alpha = a; for (const m of fm.mats) m.opacity = a }
+    return fm
   }
+  const _fillMat = (alpha) => new THREE.MeshBasicMaterial({ transparent: true, opacity: alpha, side: THREE.DoubleSide, depthWrite: false })
   const D2R_ = Math.PI / 180
   // 覆盖填充面片贴球细分：lon/lat 平面上的大三角形直接投到球面会塌成弦、切入不透明地球被深度剔除 → 3D 上
   // 表现为覆盖区里的斜向条纹（2D 平面图无深度/无球面，不受影响）。与陆地 buildLandMesh / Polygon 填充同口径：
@@ -2089,14 +2111,14 @@ export function createGlobeScene(container, quality = {}) {
   // preTess：调用方已把多边形细分好（对星覆盖的壳层层在【参数域】里细分——见 shellProj.tessellateFills），
   //   此时必须跳过下面这套【经纬度域】细分：壳层投影可能跨极点/跨 ±180°，在经纬度域里对半劈会横穿整个球。
   function updateFill(fm, fillBands, alpha, lift, preTess = false) {
-    if (alpha != null) fm.mat.opacity = alpha
+    if (alpha != null) fm.alpha = alpha
     const St = _covSub
-    let n = 0, triN = 0, cr = 0, cg = 0, cb = 0
-    let pos = null, col = null, idx = null
+    let n = 0, triN = 0
+    let pos = null
     const emitVert = (lon, lat) => {   // 内联 llaToVec(lat,lon,0)*lift（球半径 1）→ 免逐顶点 Vector3 分配
       const phi = (90 - lat) * D2R_, theta = (lon + 180) * D2R_, sp = Math.sin(phi), o3 = n * 3
       pos[o3] = -lift * sp * Math.cos(theta); pos[o3 + 1] = lift * Math.cos(phi); pos[o3 + 2] = lift * sp * Math.sin(theta)
-      col[o3] = cr; col[o3 + 1] = cg; col[o3 + 2] = cb; idx[n] = n; n++
+      n++
     }
     const countLeaf = () => { triN++ }
     const emitLeaf = (ax, ay, bx, by, cx, cy) => { emitVert(ax, ay); emitVert(bx, by); emitVert(cx, cy) }
@@ -2126,10 +2148,12 @@ export function createGlobeScene(container, quality = {}) {
         }
       }
     }
-    // 一趟遍历：扇形三角化每个多边形，逐三角细分后交 leaf（count/emit 复用；color 逐 band 设，count 趟无害）。
-    const run = (leaf) => {
-      for (const fb of fillBands) {
-        cr = fb.color[0] / 255; cg = fb.color[1] / 255; cb = fb.color[2] / 255
+    // 一趟遍历：扇形三角化每个多边形，逐三角细分后交 leaf（count/emit 复用）。
+    // rec=true（第一趟）时顺带记下每档末尾的累计叶三角数 → 第二趟写完据此切 group。
+    const bandTri = []
+    const run = (leaf, rec) => {
+      for (let bi = 0; bi < fillBands.length; bi++) {
+        const fb = fillBands[bi]
         const verts = fb.verts, counts = fb.counts
         let vi = 0
         for (let j = 0; j < counts.length; j++) {
@@ -2143,25 +2167,33 @@ export function createGlobeScene(container, quality = {}) {
           }
           vi += plen
         }
+        if (rec) bandTri[bi] = triN
       }
     }
-    triN = 0; run(countLeaf)                  // 第一趟：数叶三角，精确定容量
-    if (!triN) { fm.mesh.visible = false; if (fm.geo.index) fm.geo.setDrawRange(0, 0); return }
+    triN = 0; bandTri.length = 0; run(countLeaf, true)   // 第一趟：数叶三角，精确定容量
+    if (!triN) { fm.mesh.visible = false; fm.geo.clearGroups(); fm.geo.setDrawRange(0, 0); return }
     fm.mesh.visible = true
     const needV = triN * 3
     if (needV > fm.vcap) {                     // 扩容：×2 预留，避免拖拽中频繁重分配
       fm.vcap = needV * 2
-      fm.posArr = new Float32Array(fm.vcap * 3); fm.colArr = new Float32Array(fm.vcap * 3)
+      fm.posArr = new Float32Array(fm.vcap * 3)
       fm.geo.setAttribute('position', new THREE.BufferAttribute(fm.posArr, 3))
-      fm.geo.setAttribute('color', new THREE.BufferAttribute(fm.colArr, 3))
-      fm.icap = fm.vcap; fm.idxArr = new Uint32Array(fm.icap); fm.geo.setIndex(new THREE.BufferAttribute(fm.idxArr, 1))
     }
-    pos = fm.posArr; col = fm.colArr; idx = fm.idxArr
-    n = 0; run(emitLeaf)                       // 第二趟：写顶点/颜色/顺序索引
+    pos = fm.posArr
+    n = 0; run(emitLeaf, false)                // 第二趟：只写顶点位置
+    // 档数变了就增删材质；每档一个 group（start/count 取自第一趟的累计数），颜色写进材质
+    while (fm.mats.length < fillBands.length) fm.mats.push(_fillMat(fm.alpha))
+    while (fm.mats.length > fillBands.length) fm.mats.pop().dispose()
+    fm.geo.clearGroups()
+    let gs = 0
+    for (let bi = 0; bi < fillBands.length; bi++) {
+      const ge = (bandTri[bi] || 0) * 3, m = fm.mats[bi], c = fillBands[bi].color
+      m.opacity = fm.alpha; m.color.setRGB(c[0] / 255, c[1] / 255, c[2] / 255)
+      if (ge > gs) fm.geo.addGroup(gs, ge - gs, bi)
+      gs = ge
+    }
     fm.geo.setDrawRange(0, n)
     fm.geo.attributes.position.needsUpdate = true
-    fm.geo.attributes.color.needsUpdate = true
-    fm.geo.index.needsUpdate = true
   }
   // 一层的「装饰」子物体（等值线 + 数值/峰值/名称标签 + 峰值点/连线）：相对填充轻量，每次 patch 重建。
   function buildDeco(L, o, li) {
@@ -2238,7 +2270,7 @@ export function createGlobeScene(container, quality = {}) {
     if (L.fillBands && L.fillBands.length) {
       if (!entry.fill) { entry.fill = makeFill(o.alpha); entry.group.add(entry.fill.mesh) }
       updateFill(entry.fill, L.fillBands, o.alpha, base)
-    } else if (entry.fill) { entry.fill.mesh.visible = false; if (entry.fill.geo.index) entry.fill.geo.setDrawRange(0, 0) }
+    } else if (entry.fill) { entry.fill.mesh.visible = false; entry.fill.geo.setDrawRange(0, 0) }
     const deco = buildDeco(L, o, li)
     for (const d of deco) entry.group.add(d)
     entry.deco = deco
@@ -2324,8 +2356,8 @@ export function createGlobeScene(container, quality = {}) {
     if (!covFieldGroup) return
     covFieldGroup.traverse((o) => {
       if (!o.material) return
+      if (o.userData && o.userData.covFill) { for (const m of (Array.isArray(o.material) ? o.material : [o.material])) m.opacity = a; return }
       if (o.material.uniforms && o.material.uniforms.uOpacity) o.material.uniforms.uOpacity.value = a
-      else if (o.material.vertexColors) o.material.opacity = a
     })
   }
 
@@ -3366,6 +3398,12 @@ export function createGlobeScene(container, quality = {}) {
       levels: [...new Set([...tileMeshes.keys()].map((k) => k.split('/')[0]))].sort()
     }),
     setPixelRatio, setRenderFps, setSphereDetail, setMapDetail, holdFrames,
+    // 覆盖填充用：屏上尺度（见 viewSpanNow），供 useGrdCoverage.autoStride 按屏定三角化步长。
+    viewMetrics: () => {
+      const V = viewSpanNow()
+      if (!V) return null
+      return { pxPerDeg: V.degPerPx > 0 ? 1 / V.degPerPx : 0 }
+    },
     setMarkers, setTrajectories, setMarkStyle, setFocusSatLLA, setFocusStyle,
     // 布尔＝三类一起开关；对象＝逐类开关 { point, station, waypoint }（页面按「调整位置 / 调点」态给，
     // 每项 true / false / 归属 id，见 dragOk）

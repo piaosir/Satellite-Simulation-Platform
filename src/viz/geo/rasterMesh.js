@@ -72,7 +72,9 @@ export function planRasterMesh(PJ, o) {
   const lonSpan = S.lonMax - S.lonMin, latSpan = S.latMax - S.latMin
   const su = (lon, shift) => (lon + shift - S.lonMin) / lonSpan
   const sv = (lat) => (S.latMax - lat) / latSpan
-  const tolPlane = RP_TOL / res      // 允许的弓高，换算到平面单位
+  // 允许的弓高（烘图像素）换算到平面单位。o.tol 可放宽（屏上 GPU 路用 1.2：影像的位置误差 1 px 肉眼分不出，
+  // 三角形少一半、规划快一倍）；不给就是 RP_TOL —— CPU 导出路一律不给，输出逐字节不变。
+  const tolPlane = (o.tol > 0 ? o.tol : RP_TOL) / res
   // 相邻格在【参数空间】多叠一点点（约 1.5 个目标像素）：canvas 的 clip 带抗锯齿，两个格各自
   // 裁到公共边、两边各覆盖半个像素，合起来不满一格 —— 整幅图一层细网格线。
   const ovDeg = 1.5 / res
