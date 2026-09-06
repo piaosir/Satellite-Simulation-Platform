@@ -22,9 +22,10 @@ const props = defineProps({
   allOn: { type: Boolean, default: true },
   error: { type: String, default: '' },          // 整批计算的报错（与详细预算同一句）
   linkError: { type: String, default: '' },      // 选中那条链路自己的报错
-  linkName: { type: String, default: '' }        // 「发信站 → 收信站」，只用于报错那一行
+  linkName: { type: String, default: '' },       // 「发信站 → 收信站」，只用于报错那一行
+  slaCount: { type: Number, default: 0 }         // 有「列入」条款的链路数：为 0 时「导出报告」不可点
 })
-const emit = defineEmits(['close', 'pick', 'adopt', 'include', 'param', 'toggle-all', 'clear'])
+const emit = defineEmits(['close', 'pick', 'adopt', 'include', 'param', 'toggle-all', 'clear', 'export'])
 
 const has = computed(() => !!props.derived)
 function onKey(e) { if (e.key === 'Escape') emit('close') }
@@ -61,6 +62,10 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
           @click="emit('toggle-all', !allOn)">{{ allOn ? '全部不列入' : '全部列入' }}</button>
         <button class="sd-btn" :disabled="!has" title="清空本条链路的采用值（各项回到建议值），SLA 参数回到缺省"
           @click="emit('clear')">重置</button>
+        <!-- 独立的《服务等级指标（SLA）》报告：不出 PDF、不带图，只印条款与档位 -->
+        <button class="sd-btn" :disabled="!has || !slaCount"
+          :title="slaCount ? '按各链路勾选的条款单出一份《服务等级指标（SLA）》报告（Excel / Word）' : '尚无 SLA 条款'"
+          @click="emit('export')"><Icon name="file-down" :size="11" />导出报告</button>
         <span class="sd-sp"></span>
         <button class="sd-btn primary" @click="emit('close')">关闭</button>
       </div>
@@ -99,6 +104,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 .sd-bd { padding: 12px; overflow: auto; }
 .sd-ft { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--border); background: var(--surface); }
 .sd-btn {
+  display: inline-flex; align-items: center; gap: 4px;
   font: inherit; font-size: var(--fs-2); line-height: 1; padding: 4px 12px; cursor: pointer;
   background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px);
 }

@@ -352,6 +352,20 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     try { return core().sweepLink2D(spec || {}, hooks) }
     catch (err) { return { xs: [], ys: [], nx: 0, ny: 0, series: {}, feas: new Float64Array(0), ok: 0, fail: 0, masked: 0, message: err.message || String(err) } }
   })
+  // SLA 可用度档位扫描：逐档把上下行设计可用度换成该档那一对，钉住当前工作点重算
+  //（口径同地理场图，见 core/utils/linkSweep.js 的 scanSlaTiers）
+  ipcMain.handle('link:slaScan', (_e, spec) => {
+    try { return core().scanSlaTiers(spec || {}) }
+    catch (err) { return { pin: null, rows: [], clear: null, message: err.message || String(err) } }
+  })
+  // 批量版（整表各行一次扫完）：逐条 try/catch 隔离，一条抛错不连累其余（照 link:computeModeBatch 的写法）
+  ipcMain.handle('link:slaScanBatch', (_e, list) => {
+    const arr = Array.isArray(list) ? list : []
+    return arr.map((spec) => {
+      try { return core().scanSlaTiers(spec || {}) }
+      catch (err) { return { pin: null, rows: [], clear: null, message: err.message || String(err) } }
+    })
+  })
   // 可绘输出量清单（扫描器的因变量池，按物理意义分组）
   ipcMain.handle('link:outputDefs', () => core().lbOutputDefs.OUTPUT_GROUPS)
   // NGSO 计算方式求解（同四种方式，切 NGSO 引擎，强制 ISL 跳数=0）
@@ -1108,13 +1122,18 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   ipcMain.handle('report:exportReport', async (e, payload) => {
     const win = BrowserWindow.fromWebContents(e.sender)
     const model = (payload && payload.model) || {}
+    // 两种模型走同一个通道：kind:'sla' 是独立的《服务等级指标（SLA）》报告——不出 PDF、
+    // 不补瀑布段、不走 enrichReportModel（那几步都是链路预算报告才要的）。
+    const isSla = model.kind === 'sla'
     const ORDER = ['xlsx', 'docx', 'pdf']
     const formats = ORDER.filter((f) => ((payload && payload.formats) || ['xlsx']).indexOf(f) > -1)
     if (!formats.length) return { ok: false, error: '未选择任何输出格式' }
+    if (isSla && formats.indexOf('pdf') > -1) return { ok: false, error: 'SLA 报告不出 PDF' }
+    if (isSla && !model.hasSla) return { ok: false, error: '没有任何链路勾选了 SLA 条款' }
     const EXT = { xlsx: { name: 'Excel 工作簿', extensions: ['xlsx'] }, docx: { name: 'Word 文档', extensions: ['docx'] }, pdf: { name: 'PDF 文档', extensions: ['pdf'] } }
     const { canceled, filePath } = await dialog.showSaveDialog(win, {
-      title: formats.length > 1 ? '保存报告（同名生成 ' + formats.map((f) => '.' + f).join(' / ') + '）' : '保存报告',
-      defaultPath: ((payload && payload.defaultName) || '链路预算报告') + '.' + formats[0],
+      title: (isSla ? '保存 SLA 报告' : '保存报告') + (formats.length > 1 ? '（同名生成 ' + formats.map((f) => '.' + f).join(' / ') + '）' : ''),
+      defaultPath: ((payload && payload.defaultName) || (isSla ? '服务等级指标' : '链路预算报告')) + '.' + formats[0],
       filters: formats.map((f) => EXT[f])
     })
     if (canceled || !filePath) return { ok: false, canceled: true }
@@ -1122,6 +1141,20 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     try {
       const lang = model.lang === 'en' ? 'en' : 'zh'
       const orbitType = (model.scheme && model.scheme.orbitType) || 'GEO'
+      if (isSla) {
+        const files = []
+        if (formats.indexOf('xlsx') > -1) {
+          const buf = await require('../services/reportSla').buildSlaWorkbook(model)
+          fs.writeFileSync(stem + '.xlsx', Buffer.from(buf))
+          files.push(stem + '.xlsx')
+        }
+        if (formats.indexOf('docx') > -1) {
+          const buf = await require('../services/reportSlaDocx').buildSlaDocx(model)
+          fs.writeFileSync(stem + '.docx', Buffer.from(buf))
+          files.push(stem + '.docx')
+        }
+        return { ok: true, files, filePath: files[0] }
+      }
       for (const l of (model.links || [])) {
         if (l && l.data && !(l.segments && l.segments.length)) {
           // adaptUnits＝导出那一刻屏幕上的「单位」档（出厂锁定），详表与屏幕上的详细预算同档

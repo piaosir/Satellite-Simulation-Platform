@@ -29,7 +29,7 @@ import SatellitePanel from './SatellitePanel.vue'
 import WaterfallTable from './WaterfallTable.vue'
 import LbVizPane from '../components/LbVizPane.vue'
 import LbSlaDialog from '../components/LbSlaDialog.vue'
-import { deriveSla, normSlaParams, applyRowSla, setAdopt, setInclude, setAllInclude, clearAdopt, slaIncludeCount, slaSamplesFor, slaReportBlock, slaParamRows, sunOutageSummary, DEFAULT_SLA_PARAMS } from '../shared/lbSla.js'   // SLA 建议（四窗共用纯逻辑）
+import { deriveSla, normSlaParams, applyRowSla, setAdopt, setInclude, setAllInclude, clearAdopt, slaIncludeCount, slaSamplesFor, slaReportBlock, slaParamRows, sunOutageSummary, DEFAULT_SLA_PARAMS , slaScanReportRows} from '../shared/lbSla.js'   // SLA 建议（四窗共用纯逻辑）
 import { getPlan, checkAgainstChannel } from '../shared/lbFreqPlanRef.js'   // 发射合规：卫星条目引用了频率计划时的数值核对
 import LbFontCtl from '../components/LbFontCtl.vue'
 import LbUnitCtl from '../components/LbUnitCtl.vue'
@@ -910,6 +910,24 @@ const slaCount = computed(() => links.value.reduce((n, l) => {
   const row = linkRows.find((r) => r._id === l.rowId)
   return n + (l.data && slaIncludeCount(slaDerivedFor(l), row && row.sla) ? 1 : 0)
 }, 0))
+
+// —— 独立《服务等级指标（SLA）》报告 ——
+// 逐链路的附加料：载波体制（决定引用哪几份标准）/ MODCOD / 档位表（综合与中断按考核周期算好）/ 日凌预计窗口
+function slaReportExtra(l) {
+  const row = linkRows.find((r) => r._id === l.rowId)
+  const f = row ? resolveBaseband(row.basebandId).form : {}
+  return {
+    carrierStd: f.dvbStandard || 'custom', modcod: f.modcodLabel || '',
+    scan: slaScanReportRows(slaDerivedFor(l)),
+    sunOutage: (slaSunByRow.value[l.rowId] || {}).sum || null
+  }
+}
+function slaDefaultNameOf(en) {
+  const s = curSat.value ? curSat.value.form.satelliteName : ''
+  return en
+    ? `GEO_SLA_${(s || 'Results').replace(/[^\w-]+/g, '_')}`
+    : `GEO服务等级指标_${(s || '结果').replace(/[\\/:*?"<>|]/g, '_')}`
+}
 // row.sla 挂在链路行上，会被「结果过期」那条深监听盯到——但采用值是【结论】不是引擎入参，
 // 改它一个字也不会让已出的结果失效。故写完把过期灯还原（深监听是 pre-flush，nextTick 时它已跑过）。
 function slaTouch(fn) { const keep = resultsStale.value; fn(); nextTick(() => { resultsStale.value = keep }) }
@@ -1730,7 +1748,7 @@ function calcOfLink(l) {
     overDb: key === 'overbalance' ? ((p && p.opt && p.opt.overDb) || '') : ''
   }
 }
-const { reportDlg, openReportDialog, runReport } = useLbReport({
+const { reportDlg, reportVariant, openReportDialog, openSlaReportDialog, submitReport } = useLbReport({
   api,
   orbitType: 'GEO',
   fieldGroups: FIELD_GROUPS,
@@ -1760,6 +1778,11 @@ const { reportDlg, openReportDialog, runReport } = useLbReport({
     }
   },
   calcFor: (l) => { const c = calcOfLink(l); return { mode: c.label, targetMargin: c.margin, overDb: c.overDb } },
+  // —— 独立《服务等级指标（SLA）》报告：不取图、不组瀑布，只把各链的 SLA 块与档位表组成模型 ——
+  slaCount: () => slaCount.value,
+  slaMonthly: () => (Number(slaParams.monthly) ? 1 : 0),
+  slaExtra: (l) => slaReportExtra(l),
+  slaDefaultName: (en) => slaDefaultNameOf(en),
   defaultName: (en) => {
     const s = curSat.value ? curSat.value.form.satelliteName : ''
     return en
@@ -2070,7 +2093,7 @@ onMounted(async () => {
       :row-sla="slaRow && slaRow.sla" :params="slaParams" :adaptive="unitAdaptive" :all-on="slaAllOn"
       :error="error" :link-error="(slaLink && slaLink.error) || ''" :link-name="slaLinkName"
       @close="slaOpen = false" @pick="slaIdx = $event" @adopt="slaSetAdopt" @include="slaSetInclude"
-      @param="slaSetParam" @toggle-all="slaToggleAll" @clear="slaClear" />
+      @param="slaSetParam" @toggle-all="slaToggleAll" :sla-count="slaCount" @clear="slaClear" @export="openSlaReportDialog" />
 
     <!-- 导出报告：封面元信息 + 输出格式 + 是否含图（三窗共用组件）-->
     <LbCustomColsDialog :open="ccDlgOpen" :cols="customCols" :pool="customPool" :preview-fn="ccPreview"
@@ -2078,7 +2101,7 @@ onMounted(async () => {
     <LbReportDialog :open="reportDlg.open" :lang="reportLang" orbit-type="GEO"
       :sat-name="curSat ? curSat.form.satelliteName : ''" :band="curSat ? curSat.form.frequencyBand : ''" :link-count="links.length"
       :viz-available="showViz" :sla-count="slaCount" store-key="linkbudget" :busy="reportDlg.busy" :progress="reportDlg.progress"
-      @close="reportDlg.open = false" @submit="runReport" />
+      @close="reportDlg.open = false" :variant="reportVariant" @submit="submitReport" />
 
     <!-- 命名弹窗：保存为新配置（替代 Electron 不支持的 window.prompt）-->
     <div v-if="cfgDlg.open" class="lb-mask" @click="cfgDlg.open = false">

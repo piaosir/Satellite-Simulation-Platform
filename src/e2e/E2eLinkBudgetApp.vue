@@ -22,6 +22,9 @@ import LbReportDialog from '../components/LbReportDialog.vue'
 import EarthStationPanel from '../components/EarthStationPanel.vue'
 import BasebandPanel from '../ngso/BasebandPanel.vue'
 import WaterfallTable from '../ngso/WaterfallTable.vue'
+import LbSlaDialog from '../components/LbSlaDialog.vue'
+import { deriveSla, normSlaParams, applyRowSla, setAdopt, setInclude, setAllInclude, clearAdopt, slaIncludeCount, slaChainSamplesFor, chainHopAvails, slaReportBlock, slaParamRows, DEFAULT_SLA_PARAMS , slaScanReportRows} from '../shared/lbSla.js'   // SLA 建议（四窗共用纯逻辑）
+import { fmtQty, fmtQtyParts } from '../shared/adaptUnits.js'
 import ChainStrip from './ChainStrip.vue'
 import E2eFields from './E2eFields.vue'
 import E2eSatPanel from './E2eSatPanel.vue'
@@ -770,6 +773,7 @@ async function compute() {
   if (!api) { toast('计算需在桌面客户端中运行'); return }
   computing.value = true
   try {
+    const chainOf = {}     // 送进引擎的那份链描述子（自动档已注入解出的几何），SLA 档位扫描要照它重跑
     for (const row of chains) {
       const chain = buildChain(row, { es: resolveEs, sat: resolveSat })
       // 自动档：先按各跳的星与站解几何，写进这份链描述子（用户单元格不动）
@@ -781,13 +785,37 @@ async function compute() {
       }
       let r
       try { r = await api.linkBudget.chainCompute(chain) } catch (err) { r = { success: false, message: (err && err.message) || String(err) } }
-      if (r && r.success) { results[row._id] = r.data; delete errors[row._id] }
+      if (r && r.success) { results[row._id] = r.data; delete errors[row._id]; chainOf[row._id] = chain }
       else { delete results[row._id]; errors[row._id] = (r && r.message) || '计算失败' }
     }
     resultsStale.value = false
     const bad = chains.filter((r) => errors[r._id]).length
     toast(bad ? `已计算 ${chains.length} 条，其中 ${bad} 条报错` : `已计算 ${chains.length} 条链路`)
+    await refreshSlaScan(chainOf)
   } finally { computing.value = false }
+}
+
+// SLA 可用度档位扫描：整表一次批量 IPC（见 core 的 scanSlaTiers）。
+// 端到端按同一个 k 缩放链上全部地球站节点的可用度（星间跳不参与），使系统可用度恰为该档；
+// 不钉工作点——正向电平递推本就没有自由变量。会话态、不入存档；随结果一起过期。
+// ★ 出 IPC 前必须现造纯数据：Vue 的 Proxy 过不了结构化克隆，invoke 当场抛且无 catch 时全静默。
+async function refreshSlaScan(chainOf) {
+  for (const k of Object.keys(slaScanByRow)) delete slaScanByRow[k]
+  if (!api || !api.linkBudget.slaScanBatch) return
+  const jobs = []
+  for (const row of chains) {
+    const d = results[row._id]
+    const chain = chainOf[row._id]
+    if (!d || !chain) continue
+    const samples = slaChainSamplesFor(chainHopAvails(d))
+    if (!samples.length) continue
+    jobs.push({ rowId: row._id, spec: { engine: 'chain', chain, samples } })
+  }
+  if (!jobs.length) return
+  try {
+    const res = await api.linkBudget.slaScanBatch(JSON.parse(JSON.stringify(jobs.map((j) => j.spec))))
+    jobs.forEach((j, i) => { if (res && res[i]) slaScanByRow[j.rowId] = res[i] })
+  } catch (e) { /* 扫不出就不出档位表，结果本身不受影响 */ }
 }
 
 // ============ 详细预算文档区 ============
@@ -828,6 +856,93 @@ function copyWaterfallTsv() {
   try { navigator.clipboard.writeText(lines.join('\n')); toast('已复制详细预算（TSV）') } catch (e) { toast('复制失败') }
 }
 
+// ============ SLA 建议 ============
+// 功能区「导出 › SLA」→ LbSlaDialog，纯逻辑在 shared/lbSla.js。建议值只从链结果推导（本窗没有
+// 「留底入参」那一层：链描述子由 buildChain 现组，可用度/频率/极化都能从 hops[] 与 transponders[]
+// 直接读回）。带宽逐透明星一行，不合成链级数；MIR = CIR（逐段体制可不同，不做 ACM 外推）。
+// 可用度构成按链上实际的实体数计：地球站几个就乘几个（链首按发信射频、其余按收信射频），卫星几颗
+// 就乘几颗 —— 三跳的链比单跳多两个环节，承诺值本就该低一截。
+// 采用值/勾选存在链上（row.sla），随场景与分享包自然带走；SLA 参数是场景级。
+// ★ 弹窗自带链路下拉（slaIdx），与左侧链列表的聚焦项（curIdx）分开走：填 SLA 不该把详细预算
+//   和拓扑图一起拽到别的链上去。打开时对齐到当前聚焦链，之后各走各的。
+const slaParams = reactive({ ...DEFAULT_SLA_PARAMS })
+const slaScanByRow = reactive({})     // 会话态：可用度档位扫描（compute 后批量求得，不入存档）
+const slaOpen = ref(false)
+const slaIdx = ref(0)
+// 只列【算过】的链（有结果或有报错）：没算过的既没有数也没有报错，进了下拉就是一片空白
+const slaOpts = computed(() => chains
+  .map((row, i) => ({ i, row, label: `#${i + 1} ${row.name || ''}` }))
+  .filter((o) => results[o.row._id] || errors[o.row._id])
+  .map((o) => ({ i: o.i, label: o.label })))
+const slaChain = computed(() => chains[slaIdx.value] || null)
+const slaLinkName = computed(() => (slaChain.value ? (slaChain.value.name || '') : ''))
+const slaLinkError = computed(() => (slaChain.value ? (errors[slaChain.value._id] || '') : ''))
+function openSlaDlg() {
+  // 对齐到当前聚焦链；它要是还没算过（不在下拉里），退到第一条算过的 —— 否则下拉框空着、
+  // 正文也空着，看着像坏了
+  const i0 = Math.min(Math.max(0, curIdx.value), Math.max(0, chains.length - 1))
+  const opts = slaOpts.value
+  slaIdx.value = opts.some((o) => o.i === i0) ? i0 : (opts.length ? opts[0].i : i0)
+  slaOpen.value = true
+}
+// 删链后下标可能越界：退回第一条，免得弹窗里一片空白、看着像算漏了
+watch(() => chains.length, (n) => { if (slaIdx.value >= n) slaIdx.value = 0 })
+function slaDerivedFor(row) {
+  const d = row ? results[row._id] : null
+  if (!d) return null
+  const nds = row.nodes || []
+  return deriveSla({
+    orbitType: 'E2E',
+    data: d, ok: !errors[row._id], error: errors[row._id] || '',
+    resolvedMargin: parseFloat(d.e2eMarginResult),
+    params: null,
+    carrierForm: (nds[0] && nds[0].carrier) || {},
+    modcodRows: [],
+    scan: slaScanByRow[row._id] || null,
+    fp: null,
+    slaParams,
+    esCount: nds.filter((n) => n && n.kind === 'es').length,
+    satCount: nds.filter((n) => n && n.kind !== 'es').length
+  })
+}
+const slaDerived = computed(() => slaDerivedFor(slaChain.value))
+const slaCount = computed(() => chains.reduce((n, row) => n + (results[row._id] && slaIncludeCount(slaDerivedFor(row), row.sla) ? 1 : 0), 0))
+
+// —— 独立《服务等级指标（SLA）》报告 ——
+// 逐链路的附加料：载波体制（决定引用哪几份标准）/ MODCOD / 档位表（综合与中断按考核周期算好）
+function slaReportExtra(l) {
+  const row = chains.find((r) => r._id === l.rowId)
+  const f = ((row && row.nodes && row.nodes[0] && row.nodes[0].carrier)) || {}
+  return { carrierStd: f.dvbStandard || 'custom', modcod: f.modcodLabel || '', scan: slaScanReportRows(row ? slaDerivedFor(row) : null) }
+}
+function slaDefaultNameOf(en) {
+  const n = (cur.value && cur.value.name) || ''
+  return en
+    ? `E2E_SLA_${(n || 'Results').replace(/[^\w-]+/g, '_')}`
+    : `端到端服务等级指标_${(n || '结果').replace(/[\\/:*?"<>|]/g, '_')}`
+}
+// row.sla 挂在链上，会被「结果过期」那条深监听盯到——但采用值是【结论】不是引擎入参，
+// 改它一个字也不会让已出的结果失效。故写完把过期灯还原（深监听是 pre-flush，nextTick 时它已跑过）。
+function slaTouch(fn) { const keep = resultsStale.value; fn(); nextTick(() => { resultsStale.value = keep }) }
+function slaSetAdopt(e) { const r = slaChain.value; if (r) slaTouch(() => applyRowSla(r, setAdopt(r.sla, e.key, e.value))) }
+function slaSetInclude(e) { const r = slaChain.value; if (r) slaTouch(() => applyRowSla(r, setInclude(r.sla, e.key, e.value))) }
+function slaSetParam(e) { if (e.value != null) slaParams[e.key] = e.value }
+function slaToggleAll(on) { const r = slaChain.value; if (r) slaTouch(() => applyRowSla(r, setAllInclude(r.sla, slaDerived.value, on))) }
+// 「重置」两件事一起做：本条链路的采用值清空（回到建议值）+ SLA 参数回到缺省 ——
+// 参数是场景级的，可它只在这个弹窗里露面，另设一颗按钮反而找不着。
+function slaClear() {
+  slaTouch(() => {
+    const r = slaChain.value
+    if (r) applyRowSla(r, clearAdopt(r.sla))
+    Object.assign(slaParams, DEFAULT_SLA_PARAMS)
+  })
+}
+const slaAllOn = computed(() => {
+  const r = slaChain.value, d = slaDerived.value
+  if (!r || !d) return true
+  return d.order.every((k) => !(r.sla && r.sla.include && r.sla.include[k] === false))
+})
+
 // ============ 交付级报告（Excel / Word / PDF）============
 // 流程与三窗共用（shared/useLbReport.js → shared/lbReport.js 组模型 → 主进程三个渲染器），
 // 此处只把本窗的数据源接上去。两处与三窗不同，都是本窗的事实而不是新口径：
@@ -854,7 +969,7 @@ const reportLinks = computed(() => chains
       data: d ? JSON.parse(JSON.stringify(d)) : null
     }
   }))
-const { reportDlg, openReportDialog, runReport } = useLbReport({
+const { reportDlg, reportVariant, openReportDialog, openSlaReportDialog, submitReport } = useLbReport({
   api,
   orbitType: ORBIT,
   fieldGroups: [],
@@ -867,9 +982,21 @@ const { reportDlg, openReportDialog, runReport } = useLbReport({
   lang: () => reportLang.value,
   appVersion: () => appVersion.value,
   paramsFor: () => null,
+  // SLA 建议（§4）：逐条链出纯数据块（标签按报表语言翻好、速率/带宽按当前单位档格式化）
+  slaFor: (l) => {
+    const row = chains.find((r) => r._id === l.rowId)
+    return slaReportBlock(slaDerivedFor(row), row && row.sla, slaParams, reportLang.value,
+      (v, u) => fmtQtyParts(v, u, unitAdaptive.value))
+  },
+  slaParams: () => slaParamRows(slaParams, reportLang.value),
   // 卫星名/频段留空：一条链跨几颗星、上下行各一个频段，取其一填进封面就是以偏概全。
   // 计算方式是本窗唯一的那一种，如实报出。
   calc: () => ({ satelliteName: '', frequencyBand: '', mode: reportLang.value === 'en' ? 'Forward level recursion' : '正向电平递推' }),
+  // —— 独立《服务等级指标（SLA）》报告：不取图、不组瀑布，只把各链的 SLA 块与档位表组成模型 ——
+  slaCount: () => slaCount.value,
+  slaMonthly: () => (Number(slaParams.monthly) ? 1 : 0),
+  slaExtra: (l) => slaReportExtra(l),
+  slaDefaultName: (en) => slaDefaultNameOf(en),
   defaultName: (en) => {
     const n = (cur.value && cur.value.name) || ''
     return en
@@ -997,7 +1124,7 @@ function migrateCarriers(row) {
 }
 // 场景出口（存盘 / 指纹 / localStorage 三处共用）。纯数据的保证在 e2eParams 那一侧，
 // 见 serializeChainsState 的头注：节点上的 carrier / ov 是嵌套对象，浅拷会漏响应式 Proxy 出去。
-function serializeState() { return serializeChainsState(chains, geoMode.value) }
+function serializeState() { return serializeChainsState(chains, geoMode.value, { ...slaParams }) }
 // 「新建空白配置」当场用出厂默认造的那份场景（见下方 blankState）：它不是【存过盘的场景】，
 // 里头的降雨率/海拔是 schema 默认值而非用户定过的数 ⇒ 载入后照站址取一遍，别把出厂值当成手改值供着。
 // 按引用认这一份：saveConfig 半路失败没走到 applyState 时，也不会误伤下一次真正的载入。
@@ -1012,11 +1139,18 @@ function applyState(st) {
   st = JSON.parse(JSON.stringify(st))
   // 老场景（无此字段）一律回手动——它们的结果本就是手填几何算出来的，不静默改口径
   geoMode.value = st.geoMode === 'auto' ? 'auto' : 'manual'
-  chains.splice(0, chains.length, ...st.chains.map((c) => ({
-    _id: uid('c'), name: c.name || '', nameAuto: c.nameAuto !== false,
-    nodes: (c.nodes || []).map((n) => ({ ...n, _id: uid('n') })),
-    hops: (c.hops || []).map((h) => ({ ...h, _id: uid('h') }))
-  })))
+  // SLA 参数：旧场景没这一项 → 补缺省（normSlaParams 幂等，非法值也退缺省）
+  Object.assign(slaParams, normSlaParams(st.slaParams))
+  for (const k of Object.keys(slaScanByRow)) delete slaScanByRow[k]
+  chains.splice(0, chains.length, ...st.chains.map((c) => {
+    const row = {
+      _id: uid('c'), name: c.name || '', nameAuto: c.nameAuto !== false,
+      nodes: (c.nodes || []).map((n) => ({ ...n, _id: uid('n') })),
+      hops: (c.hops || []).map((h) => ({ ...h, _id: uid('h') }))
+    }
+    applyRowSla(row, c.sla)   // 空的删键：留个 sla:{} 会让存量场景的指纹平白变一次
+    return row
+  }))
   for (const row of chains) migrateCarriers(row)
   scanGeoSeeds(true)   // 只记录载入态的几何指纹：存盘值优先，此后的输入改动才触发建议值回填
   scanSites(fresh ? 'all' : 'prime')   // 站址取值同理：存盘场景认存盘值，出厂空白场景照站址取
@@ -1038,7 +1172,10 @@ function scheduleSaveState() {
   clearTimeout(_stateT)
   _stateT = setTimeout(() => { flushSaveState(); dirtyFlag.value = isDirty() }, 600)
 }
+// SLA 的采用值/勾选在 chains 里（row.sla）自然被这条深监听盯住；参数是场景级，另列进来。
+// ★ 只跟存盘与指纹，不 markStale：改 SLA 建议的采用值不会让引擎结果失效（它是结论不是入参）。
 watch([chains, activeId, geoMode], () => { syncChainNames(); markStale(); scheduleSaveState() }, { deep: true })
+watch(slaParams, scheduleSaveState, { deep: true })
 // 库条目与搜索时窗同样是计算输入：改了就亮「输入已变」
 watch([esConfigs, satConfigs, geoHorizonHours], () => markStale(), { deep: true })
 
@@ -1055,7 +1192,7 @@ function isDirty() { return !!activeId.value && fingerprint() !== activeBaseline
 // 空白场景放一条默认链（站-星-站）而不是空数组：本窗口的工作对象就是链，
 // 一条都没有的场景选中后无处可编辑，反倒像「载入没生效」。
 function defaultCfgName() { return byLang(`端到端 ${chains.length} 条`, `${chains.length} End-to-End Links`) }
-function blankState() { _blankSt = serializeChainsState([defaultChain()], 'manual'); return _blankSt }
+function blankState() { _blankSt = serializeChainsState([defaultChain()], 'manual', { ...DEFAULT_SLA_PARAMS }); return _blankSt }
 
 const confirmDlg = reactive({ open: false, msg: '' })
 let _confirmResolve = null
@@ -1267,6 +1404,10 @@ onMounted(async () => {
           <div class="lbr-g">
             <div class="lbr-items">
               <button class="lbr-big" :disabled="!segments.length" title="复制当前详细预算（TSV，可直接粘贴到 Excel）" @click="copyWaterfallTsv"><Icon name="file-text" :size="16" />TSV</button>
+              <button class="lbr-big" :disabled="!reportLinks.length" :title="reportLinks.length ? '按当前计算结果给出 SLA 条款建议值：可用度 / 带宽与速率 / 时延与丢包 / 故障响应与恢复 / 发射合规（逐条可改采用值、可勾选列入报告）' : '尚无计算结果'" @click="openSlaDlg">
+                <svg viewBox="0 0 16 16" class="lbr-svg"><path d="M8 1.8 13 3.4v4.2c0 3.1-2.1 5.4-5 6.6-2.9-1.2-5-3.5-5-6.6V3.4z" /><path d="m5.6 7.9 1.7 1.7 3.3-3.3" /></svg>
+                SLA
+              </button>
               <button class="lbr-big" :disabled="reportDlg.busy || !reportLinks.length" :title="reportLinks.length ? '生成交付级报告：Excel（总报告 + 逐链路详情）/ Word（封面 · 目录 · 正文）/ PDF（封面 · 目录 · 总报告 · 逐链路详情）' : '尚无计算结果'" @click="openReportDialog"><Icon name="file-down" :size="16" />{{ reportDlg.busy ? '生成中…' : '报告' }}</button>
             </div>
             <div class="lbr-cap">导出</div>
@@ -1466,10 +1607,18 @@ onMounted(async () => {
 
     <!-- 交付级报告：元信息 / 输出格式与三窗同一个对话框。viz-available=false —— 本窗没有图表区，
          「包含图件」一栏据此置灰，导出必定无图。 -->
+    <!-- SLA 建议：条款表 + SLA 参数 + 可用度档位扫描（四窗共用组件；链由头部下拉选） -->
+    <LbSlaDialog
+      :open="slaOpen" :options="slaOpts" :index="slaIdx" :derived="slaDerived"
+      :row-sla="slaChain && slaChain.sla" :params="slaParams" :adaptive="unitAdaptive" :all-on="slaAllOn"
+      :link-error="slaLinkError" :link-name="slaLinkName"
+      @close="slaOpen = false" @pick="slaIdx = $event" @adopt="slaSetAdopt" @include="slaSetInclude"
+      @param="slaSetParam" @toggle-all="slaToggleAll" :sla-count="slaCount" @clear="slaClear" @export="openSlaReportDialog" />
+
     <LbReportDialog :open="reportDlg.open" :lang="reportLang" orbit-type="E2E"
-                    :link-count="reportLinks.length" :viz-available="false" store-key="e2e"
+                    :link-count="reportLinks.length" :viz-available="false" :sla-count="slaCount" store-key="e2e"
                     :busy="reportDlg.busy" :progress="reportDlg.progress"
-                    @close="reportDlg.open = false" @submit="runReport" />
+                    @close="reportDlg.open = false" :variant="reportVariant" @submit="submitReport" />
 
     <div v-if="cfgDlg.open" class="lb-mask" @click="cfgDlg.open = false">
       <div class="lb-dlg" @click.stop>

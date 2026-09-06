@@ -165,6 +165,15 @@ export const LB_REPORT_EN = {
   '逐参数对照': 'Parameter Comparison', '容量与统计': 'Capacity & Statistics',
   '输入参数': 'Input Parameters', '详情索引': 'Detail Index', '计算模型与参考': 'Models & References',
   '几何关系': 'Geometry', '链路详情': 'Link Details',
+  // 服务等级指标节。★ 报告里不叫「SLA 建议」：那是工作台里的说法（工具算出建议、工程师可改），
+  // 印进交付文档的是【已定稿的指标】，再写「建议」既贬低了它、读起来也像软件在替甲方拿主意。
+  '服务等级指标（SLA）': 'Service Level Metrics (SLA)',
+  'SLA 建议': 'SLA Recommendations', '条款': 'Clause', '计算依据': 'Basis',
+  '建议值': 'Recommended', '采用值': 'Adopted', 'SLA 参数': 'SLA Parameters',
+  '含服务等级指标（SLA）': 'Include service level metrics (SLA)',
+  '按各链路勾选的条款出「服务等级指标」一节：总报告一张矩阵，逐链路详情一张明细表':
+    'Adds a Service Level Metrics section from the clauses ticked on each link: one matrix in the master report and one detail table per link',
+  '没有任何链路勾选了 SLA 条款': 'No SLA clauses are ticked on any link',
   '日期': 'Date', '密级': 'Classification', '报告编号': 'Document No.',
   '编制单位': 'Organisation', '报告名称': 'Report Title',
   '生成时间': 'Generated', '软件版本': 'Software Version',
@@ -213,7 +222,28 @@ export const LB_REPORT_EN = {
   '经度': 'Longitude', '纬度': 'Latitude', '海拔': 'Altitude', '卫星G/T': 'Satellite G/T',
   'R0.01%': 'R0.01%', '可用度': 'Availability', '卫星EIRP': 'Satellite EIRP',
   '轨道高度': 'Orbit Altitude', '轨道倾角': 'Inclination', '最低仰角': 'Min Elevation',
-  '卫星编号': 'NORAD ID', '轨道根数': 'Orbital Elements'
+  '卫星编号': 'NORAD ID', '轨道根数': 'Orbital Elements',
+  // 这两条原先漏在字典外，英文报告里那两个章名/表名是中文（2026-09-06 补）
+  '详细计算结果': 'Detailed Results', '图件': 'Figures',
+  // 独立《服务等级指标（SLA）》报告
+  '服务范围': 'Service Scope', '指标定义与考核口径': 'Metric Definitions and Assessment Conventions',
+  '服务等级指标总表': 'Service Level Metrics Summary', '逐链路指标明细': 'Per-Link Metric Details',
+  '可用度档位': 'Availability Tiers', '日凌预计中断': 'Sun Outage (predicted)',
+  '日凌预计窗口': 'Predicted Sun Outage Windows', '参数与假设': 'Parameters and Assumptions',
+  '引用标准': 'Normative References', '免责事件': 'Excluded Events',
+  '定义': 'Definition', '计算式': 'Formula', '依据': 'Basis',
+  '可用度构成': 'Availability Composition', '计入次数': 'Count',
+  '考核周期': 'Assessment Period', '年平均': 'Annual mean', '最坏月': 'Worst month',
+  '单位显示': 'Unit Display', '锁定': 'Locked', '自适应': 'Adaptive',
+  '载波': 'Carrier', '速率': 'Rate', '符号率': 'Symbol Rate', '带宽': 'Bandwidth',
+  '仰角': 'Elevation', '斜距': 'Slant Range',
+  '档位': 'Tier', '综合': 'Composite', '上行雨衰': 'Uplink Rain', '下行雨衰': 'Downlink Rain',
+  '链路余量': 'Link Margin', '功率占用': 'Power Use', '带宽占用': 'Bandwidth Use', '中断时长': 'Outage',
+  '起': 'Start', '止': 'End', '时长': 'Duration', '北京时间': 'Beijing time',
+  '导出 SLA 报告': 'Export SLA Report', '导出报告（SLA）': 'Export report (SLA)',
+  '保存 SLA 报告': 'Save SLA report',
+  '按各链路勾选的条款单出一份《服务等级指标（SLA）》报告（Excel / Word）': 'Exports a standalone Service Level Metrics (SLA) report (Excel / Word) from the clauses ticked on each link',
+  '尚无 SLA 条款': 'No SLA clauses yet'
 }
 export function translate(s, lang) {
   if (lang !== 'en' || !s) return s
@@ -419,7 +449,11 @@ export function methodology(scheme, lang, opts) {
     group: G('体制与通信标准', 'Air interface and system standards'),
     items: [
       { id: 'ETSI EN 302 307-1/-2 (DVB-S2 / S2X)', title: G('数字卫星广播第二代及其扩展', 'Second generation framing, coding and modulation for satellite broadcasting and extensions'), use: G('调制与前向纠错的门限 Es/N₀ 与频谱效率基准', 'Threshold Es/N₀ and spectral efficiency reference for modulation and FEC') },
-      { id: '3GPP TS 38.101-5 / TR 38.821', title: G('非地面网络（NTN）射频与体系', 'Non-terrestrial networks: radio transmission/reception and solutions'), use: G('NTN 载波与信道带宽的参数基准', 'Parameter reference for NTN carriers and channel bandwidths') }
+      { id: '3GPP TS 38.101-5 / TR 38.821', title: G('非地面网络（NTN）射频与体系', 'Non-terrestrial networks: radio transmission/reception and solutions'), use: G('NTN 载波与信道带宽的参数基准', 'Parameter reference for NTN carriers and channel bandwidths') },
+      { id: '3GPP TS 38.214', title: G('NR 物理层数据处理规程', 'NR physical layer procedures for data'), use: G('MCS 表（调制阶数与目标码率）与传输块大小算法', 'MCS tables (modulation order and target code rate) and transport block size') },
+      { id: '3GPP TS 38.215', title: G('NR 物理层测量', 'NR physical layer measurements'), use: G('SINR 的每资源元素定义 —— 3GPP 载波门限的 SNR 口径', 'Per-resource-element SINR definition — the SNR reference for 3GPP carrier thresholds') },
+      { id: '3GPP TS 38.306', title: G('NR 用户设备无线接入能力', 'NR user equipment radio access capabilities'), use: G('数据速率近似式与系统开销系数', 'Data rate approximation and overhead factors') },
+      { id: '3GPP TS 36.213 / TR 36.763', title: G('E-UTRA 物理层规程与 IoT-NTN 研究', 'E-UTRA physical layer procedures and IoT NTN study'), use: G('NB-IoT 传输块大小表与 NTN 链路预算参数', 'NB-IoT transport block size tables and NTN link budget parameters') }
     ].concat(extCI ? [
       { id: 'Comtech EF Data CDM-625A', title: G('先进卫星调制解调器数据表（DoubleTalk Carrier-in-Carrier）', 'Advanced Satellite Modem datasheet (DoubleTalk Carrier-in-Carrier)'), use: G('载波叠加的功率谱密度比窗口、固有处理损耗与抵消深度 —— 报告中「附加 C/I」的参数出处', 'Carrier-in-Carrier PSD-ratio window, inherent processing loss and cancellation depth — the parameter source for the additional C/I reported here') }
     ] : [])
@@ -453,6 +487,9 @@ export function labelBundle(lang) {
     mId: t('编号'), mTitle: t('名称'), mUse: t('本报告中的用途'),
     mSymbol: t('符号'), mValue: t('取值'), mSrc: t('出处'), mGroup: t('类别'),
     results: t('详细计算结果'), figures: t('图件'),
+    // 服务等级指标节（§4）：矩阵与逐链路明细共用这几个栏名
+    sla: t('服务等级指标（SLA）'), slaTerm: t('条款'), slaBasis: t('计算依据'),
+    slaSuggest: t('建议值'), slaAdopt: t('采用值'), slaParams: t('SLA 参数'),
     no: t('序号'), link: t('链路'), tx: t('发信站'), rx: t('收信站'),
     param: t('参数'), value: t('数值'), unit: t('单位'), note: t('说明'),
     title: t('名称'), docNo: t('编号'), org: t('编制单位'),
@@ -466,7 +503,22 @@ export function labelBundle(lang) {
     total: lang === 'en' ? 'Total' : '合计',
     // 封面栏名（带全角空格，与模板一致：模板封面顶上就是「密级：」「文档编号：」两行）
     cvDocNo: lang === 'en' ? 'Doc. No.' : '文档编号',
-    cvClass: lang === 'en' ? 'Classification' : '密　　级'
+    cvClass: lang === 'en' ? 'Classification' : '密　　级',
+    // —— 独立《服务等级指标（SLA）》报告（lbSlaReport.js + 两个渲染器）——
+    // 章名、表头与那几个只在这份文件里出现的栏名。全报告的 §4 用的是上面 sla* 那几项，两边共用。
+    slaScope: t('服务范围'), slaDefs: t('指标定义与考核口径'), slaMatrix: t('服务等级指标总表'),
+    slaDetail: t('逐链路指标明细'), slaTiers: t('可用度档位'), slaSun: t('日凌预计窗口'),
+    slaAssump: t('参数与假设'), slaRefs: t('引用标准'), slaExcl: t('免责事件'),
+    slaDefinition: t('定义'), slaFormula: t('计算式'), slaSource: t('依据'),
+    slaComposition: t('可用度构成'), slaSlots: t('计入次数'),
+    period: t('考核周期'), periodYear: t('年平均'), periodMonth: t('最坏月'),
+    unitMode: t('单位显示'), unitLocked: t('锁定'), unitAdaptive: t('自适应'),
+    carrier: t('载波'), rate: t('速率'), modcod: 'MODCOD', symbolRate: t('符号率'),
+    bandwidth: t('带宽'), elevation: t('仰角'), slantRange: t('斜距'),
+    tier: t('档位'), composite: t('综合'), rainUp: t('上行雨衰'), rainDown: t('下行雨衰'),
+    marginCol: t('链路余量'), powerUse: t('功率占用'), bwUse: t('带宽占用'), outageCol: t('中断时长'),
+    start: t('起'), end: t('止'), duration: t('时长'), utc: 'UTC', localTime: t('北京时间'),
+    exportSla: t('导出 SLA 报告')
   }
 }
 
@@ -477,12 +529,16 @@ export function buildReportModel(o) {
   const {
     lang = 'zh', orbitType = 'GEO', regenMode = 'uplink',
     doc = {}, links = [], calc = {}, appVersion = '', satelliteName = '', frequencyBand = '',
-    adaptUnits = false
+    adaptUnits = false, slaParams = null
   } = o || {}
   const scheme = schemeOf(orbitType, regenMode)
   return {
     v: 1,
     lang,
+    // SLA 建议（§4）：逐链路的条款挂在 links[i].sla 上（导出对话框没勾「含 SLA 建议」时为 null）；
+    // 一条都没有 ⇒ hasSla 为假 ⇒ 三个渲染器整节不出、目录不列、表号不占。
+    hasSla: links.some((l) => l && l.sla && l.sla.rows && l.sla.rows.length),
+    slaParams: slaParams || null,
     // 结果显示单位的档位（功能区「单位」，出厂锁定＝false）：报告与屏幕同口径——主进程据此决定
     // 汇总行要不要整行换档（report.adaptSummaryUnits）、详表瀑布要不要换档（buildWaterfallSegments）。
     adaptUnits: !!adaptUnits,

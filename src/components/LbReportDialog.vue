@@ -10,9 +10,15 @@
 import { reactive, ref, computed, watch, onBeforeUnmount } from 'vue'
 import Icon from './Icon.vue'
 import { DOC_FIELDS, defaultDocInfo, schemeOf, schemeName, schemeSub, translate } from '../shared/lbReport.js'
+import { slaReportTitle } from '../shared/lbSlaReport.js'
 
 const props = defineProps({
   open: { type: Boolean, default: false },
+  // 'full' = 链路预算报告（原样）；'sla' = 独立的《服务等级指标（SLA）》报告：
+  // 只出 Excel / Word（不出 PDF、不取图、没有「含服务等级指标」那个开关），标题另走 slaReportTitle。
+  // 元信息（编号 / 密级 / 单位 / logo）与全报告【共用同一存储键】——同一个项目连着出两份文件，
+  // 不该填两遍；只有标题的自动命名各存一份（改过一次就钉死，两份报告的名字本就不同）。
+  variant: { type: String, default: 'full' },
   lang: { type: String, default: 'zh' },
   orbitType: { type: String, default: 'GEO' },
   regenMode: { type: String, default: 'uplink' },
@@ -22,6 +28,8 @@ const props = defineProps({
   linkCount: { type: Number, default: 0 },
   // 图表区当前是否显示：关着的时候图取不到（组件根本没挂），据此提示并默认不勾「含图」
   vizAvailable: { type: Boolean, default: true },
+  // 有「列入」条款的链路数：为 0 时「含服务等级指标（SLA）」整项不出现
+  slaCount: { type: Number, default: 0 },
   storeKey: { type: String, default: 'lb' },
   busy: { type: Boolean, default: false },
   // { text, done, total }：导出过程中的进度，由上层逐条链路推进
@@ -33,14 +41,20 @@ const t = computed(() => (s) => translate(s, props.lang))
 const scheme = computed(() => schemeOf(props.orbitType, props.regenMode))
 const schemeText = computed(() => schemeName(scheme.value, props.lang) + (schemeSub(scheme.value, props.lang) ? '　·　' + schemeSub(scheme.value, props.lang) : ''))
 
+const isSla = computed(() => props.variant === 'sla')
 const KEY = computed(() => props.storeKey + '/report/doc')
-const OPT_KEY = computed(() => props.storeKey + '/report/opt')
+const OPT_KEY = computed(() => props.storeKey + (isSla.value ? '/sla/opt' : '/report/opt'))
+// 标题的自动命名两份各存一份：全报告叫「…链路预算报告」、这一份叫「…服务等级指标（SLA）」
+const TITLE_KEY = computed(() => props.storeKey + (isSla.value ? '/report/slaTitle' : '/report/title'))
+const defTitle = () => (isSla.value
+  ? slaReportTitle(props.satName, props.band, props.lang, scheme.value.orbitType)
+  : defaultDocInfo(scheme.value, props.satName, props.lang, props.band).title)
 // ★ logo 存**全局**键，不带窗口前缀：台标是一家单位的，不是某个体制窗口的。
 //   传一次以后 GSO / NGSO / 再生式三个窗口都认，除非用户自己换掉或移除。
 const LOGO_KEY = 'lb/report/logo'
 
 const doc = reactive(defaultDocInfo(scheme.value, props.satName, props.lang, props.band))
-const opt = reactive({ xlsx: true, docx: true, pdf: true, figures: true })
+const opt = reactive({ xlsx: true, docx: true, pdf: true, figures: true, sla: true })
 
 // —— 右上角 logo ——
 // 贴在三份文件的右上角：Excel 每张工作表，Word 与 PDF 的每一页页眉。矢量图在这里就栅格化成 PNG：
@@ -125,6 +139,7 @@ const clearLogo = () => { doc.logo = null; logoName.value = ''; logoErr.value = 
 
 function loadSaved() {
   const base = defaultDocInfo(scheme.value, props.satName, props.lang, props.band)
+  base.title = defTitle()
   let saved = null
   try { saved = JSON.parse(localStorage.getItem(KEY.value) || 'null') } catch (e) { saved = null }
   for (const f of DOC_FIELDS) {
@@ -139,21 +154,26 @@ function loadSaved() {
   logoErr.value = ''
   // 报告名称按「自动命名」的规矩走（同资源库条目名，见 shared/lbAutoName.js）：用户没改过就随
   // 当前卫星/体制重算，改过一次就钉死。存的时候一并存下「当时的默认名」，据此判断改没改过。
-  if (saved && saved.title) doc.title = (saved.title === saved.titleDefault) ? base.title : saved.title
+  let ttl = null
+  try { ttl = JSON.parse(localStorage.getItem(TITLE_KEY.value) || 'null') } catch (e) { ttl = null }
+  if (ttl && ttl.title) doc.title = (ttl.title === ttl.titleDefault) ? base.title : ttl.title
   try {
     const o = JSON.parse(localStorage.getItem(OPT_KEY.value) || 'null')
-    if (o) { opt.xlsx = o.xlsx !== false; opt.docx = o.docx !== false; opt.pdf = o.pdf !== false; opt.figures = o.figures !== false }
+    if (o) { opt.xlsx = o.xlsx !== false; opt.docx = o.docx !== false; opt.pdf = o.pdf !== false; opt.figures = o.figures !== false; opt.sla = o.sla !== false }
   } catch (e) { /* 用默认 */ }
   if (!props.vizAvailable) opt.figures = false
+  if (!props.slaCount) opt.sla = false
+  if (isSla.value) opt.pdf = false      // 这一份不出 PDF
 }
 
 // 元信息落盘。提交时要存，关闭时也要存——十栏填完手一滑关掉了，再打开还在，不用从头填。
 function persist() {
   try {
-    const def = defaultDocInfo(scheme.value, props.satName, props.lang, props.band)
-    // logo 不进这一份（它在全局键里，见 saveLogo）——否则三个窗口各存一份同样的图，白白撑爆配额
-    localStorage.setItem(KEY.value, JSON.stringify(Object.assign({}, doc, { logo: null, titleDefault: def.title })))
-    localStorage.setItem(OPT_KEY.value, JSON.stringify({ xlsx: opt.xlsx, docx: opt.docx, pdf: opt.pdf, figures: opt.figures }))
+    // logo 不进这一份（它在全局键里，见 saveLogo）——否则三个窗口各存一份同样的图，白白撑爆配额。
+    // 标题另存（两份报告的自动命名各走各的），故这一份里把它剔掉。
+    localStorage.setItem(KEY.value, JSON.stringify(Object.assign({}, doc, { logo: null, title: undefined })))
+    localStorage.setItem(TITLE_KEY.value, JSON.stringify({ title: doc.title, titleDefault: defTitle() }))
+    localStorage.setItem(OPT_KEY.value, JSON.stringify({ xlsx: opt.xlsx, docx: opt.docx, pdf: opt.pdf, figures: opt.figures, sla: opt.sla }))
   } catch (e) { /* 存不下不影响导出 */ }
 }
 
@@ -177,19 +197,26 @@ watch(() => props.open, (v) => {
 }, { immediate: true })
 onBeforeUnmount(() => window.removeEventListener('keydown', onKey, KEY_OPT))
 
-const canSubmit = computed(() => (opt.xlsx || opt.docx || opt.pdf) && props.linkCount > 0 && !props.busy)
+const canSubmit = computed(() => (opt.xlsx || opt.docx || (!isSla.value && opt.pdf))
+  && props.linkCount > 0 && !props.busy && (!isSla.value || props.slaCount > 0))
 const figHint = computed(() => {
   if (!props.vizAvailable) return t.value('图表区已关闭（功能区「视图 → 图表」），本次导出没有图')
   return t.value('逐条链路生成地理场图与链路视图（每条都要重跑一次网格扫描，链路多时较慢）')
+})
+const slaHint = computed(() => {
+  if (!props.slaCount) return t.value('没有任何链路勾选了 SLA 条款')
+  return t.value('按各链路勾选的条款出「服务等级指标」一节：总报告一张矩阵，逐链路详情一张明细表')
 })
 
 function submit() {
   if (!canSubmit.value) return
   persist()
   emit('submit', {
+    variant: props.variant,
     doc: JSON.parse(JSON.stringify(doc)),
-    formats: [opt.xlsx ? 'xlsx' : null, opt.docx ? 'docx' : null, opt.pdf ? 'pdf' : null].filter(Boolean),
-    withFigures: !!opt.figures && props.vizAvailable
+    formats: [opt.xlsx ? 'xlsx' : null, opt.docx ? 'docx' : null, (!isSla.value && opt.pdf) ? 'pdf' : null].filter(Boolean),
+    withFigures: !isSla.value && !!opt.figures && props.vizAvailable,
+    withSla: isSla.value ? true : (!!opt.sla && props.slaCount > 0)
   })
 }
 const labelOf = (f) => (props.lang === 'en' ? f.labelEn : f.label)
@@ -199,7 +226,7 @@ const labelOf = (f) => (props.lang === 'en' ? f.labelEn : f.label)
   <div v-if="open" class="rd-mask">
     <div class="rd" role="dialog" aria-modal="true">
       <div class="rd-hd">
-        <Icon name="file-down" :size="12" />{{ t('导出报告') }}
+        <Icon name="file-down" :size="12" />{{ t(isSla ? '导出 SLA 报告' : '导出报告') }}
         <span class="rd-sp"></span>
         <span class="rd-scheme">{{ schemeText }}</span>
         <button class="rd-x" :disabled="busy" :title="t('关闭')" :aria-label="t('关闭')" @click="close">
@@ -242,11 +269,15 @@ const labelOf = (f) => (props.lang === 'en' ? f.labelEn : f.label)
           <label class="rd-ck" :title="t('公文格式：封面 · 文档控制 · 目录 · 五级标题正文（可在 Word 里继续编辑）')">
             <input v-model="opt.docx" type="checkbox" :disabled="busy" />Word（.docx）
           </label>
-          <label class="rd-ck" :title="t('封面 / 目录 / 总报告为 A4 纵向，逐链路详情为 A4 横向')">
+          <label v-if="!isSla" class="rd-ck" :title="t('封面 / 目录 / 总报告为 A4 纵向，逐链路详情为 A4 横向')">
             <input v-model="opt.pdf" type="checkbox" :disabled="busy" />PDF（.pdf）
           </label>
-          <label class="rd-ck" :class="{ off: !vizAvailable }" :title="figHint">
+          <label v-if="!isSla" class="rd-ck" :class="{ off: !vizAvailable }" :title="figHint">
             <input v-model="opt.figures" type="checkbox" :disabled="busy || !vizAvailable" />{{ t('包含图件') }}
+          </label>
+          <!-- 一条条款都没勾时整项不出现：留一个永远点不动的灰选项在这儿，只会让人反复去点它 -->
+          <label v-if="!isSla && slaCount" class="rd-ck" :title="slaHint">
+            <input v-model="opt.sla" type="checkbox" :disabled="busy" />{{ t('含服务等级指标（SLA）') }}
           </label>
         </div>
         <div class="rd-hint">{{ linkCount }} {{ t('条链路') }}　·　{{ t('字体') }} Times New Roman + {{ lang === 'en' ? 'SimSun / SimHei' : '宋体 / 黑体' }}　·　{{ t('语言') }} {{ lang === 'en' ? 'English' : '中文' }}</div>

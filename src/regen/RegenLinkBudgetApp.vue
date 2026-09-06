@@ -6,7 +6,7 @@ import { stableStringify } from '../shared/configDirty.js'
 import { pf } from '../shared/num.js'   // 全角容错 parseFloat：手填圆轨道高度/倾角（经 sat 面板，不过 StationGrid 归一）也能吃全角数字
 import { s8LinkParams } from '../shared/s8Params.js'   // ITU-R P.618-14 §8 统计口径参数组装 + 适用性门控
 import { migrateLegacyEs } from '../shared/esMigrate.js'
-import { pickColumn, fmtScaled, fmtQty } from '../shared/adaptUnits.js'
+import { pickColumn, fmtScaled, fmtQty, fmtQtyParts } from '../shared/adaptUnits.js'
 import { isUnitAdaptive, onUnitModeChange } from '../shared/lbUnitMode.js'   // 结果显示单位档（功能区「单位」，出厂锁定）
 import { lbDocT } from '../shared/lbDocI18n.js'
 import { getLang, onLangChange } from '../shared/i18n/runtime.js'   // 报表语言跟随平台语言
@@ -29,6 +29,8 @@ import EarthStationPanel from '../components/EarthStationPanel.vue'
 import RegenSatPanel from './RegenSatPanel.vue'
 import WaterfallTable from '../ngso/WaterfallTable.vue'
 import LbVizPane from '../components/LbVizPane.vue'
+import LbSlaDialog from '../components/LbSlaDialog.vue'
+import { deriveSla, normSlaParams, applyRowSla, setAdopt, setInclude, setAllInclude, clearAdopt, slaIncludeCount, slaSamplesFor, slaReportBlock, slaParamRows, DEFAULT_SLA_PARAMS , slaScanReportRows} from '../shared/lbSla.js'   // SLA 建议（四窗共用纯逻辑）
 import LbReportDialog from '../components/LbReportDialog.vue'
 import { useLbReport } from '../shared/useLbReport.js'
 import LbFontCtl from '../components/LbFontCtl.vue'
@@ -491,6 +493,7 @@ watch(linkMode, () => {
   links.value = []; selected.value = 0; segments.value = []; error.value = ''
   computedVals.value = {}
   rawDataByRow.value = {}   // 自定义列留底同步清：旧模式的引擎结果不许穿到新模式的自定义列上
+  slaScanByRow.value = {}   // 档位扫描同理（且星间/激光本就不扫）
 })
 
 // ============ 几何搜索时窗（选星 SGP4 典型时刻 + 全部访问窗口）============
@@ -1047,6 +1050,85 @@ const core = computed(() => (sel.value && !sel.value.error ? sel.value.data : nu
 // 扫出来的曲线就不再经过详细预算正在显示的那一点。
 const sweepParamsByRow = ref({})
 const selParams = computed(() => (sel.value ? (sweepParamsByRow.value[sel.value.rowId] || null) : null))
+
+// —— SLA 建议（功能区「导出 › SLA」→ LbSlaDialog，纯逻辑在 shared/lbSla.js）——
+// 四种子链路各出该出的组：上行有发射合规、下行/星间没有（客户端不在这一段发射）、
+// 激光连可用度组都不出（它的「可用度」是几何互视占比，与雨衰口径不是一回事）。
+// 采用值/勾选存在该子链路的行上（row.sla），四张表各存各的；SLA 参数是场景级一份。
+// ★ 弹窗自带链路下拉（slaIdx），与链路表的聚焦行（selected）分开走；切子链路时归零 ——
+//   四种模式各是各的一批链路，下标留着会指到另一批的第 n 条上。
+const slaParams = reactive({ ...DEFAULT_SLA_PARAMS })
+const slaScanByRow = ref({})          // 会话态：可用度档位扫描（compute 后批量求得，不入存档）
+const modeRows = computed(() => (linkMode.value === 'laser' ? laserLinks : linkMode.value === 'isl' ? islLinks : linkMode.value === 'downlink' ? rxStations : txStations))
+const slaOpen = ref(false)
+const slaIdx = ref(0)
+const slaLink = computed(() => links.value[slaIdx.value] || null)
+const slaOpts = computed(() => links.value.map((l, i) => ({ i, label: `#${i + 1} ${pairLabel(l)}` })))
+const slaRow = computed(() => (slaLink.value ? modeRows.value.find((r) => r._id === slaLink.value.rowId) || null : null))
+const slaLinkName = computed(() => (slaLink.value ? pairLabel(slaLink.value) : ''))
+function openSlaDlg() {
+  slaIdx.value = Math.min(Math.max(0, selected.value), Math.max(0, links.value.length - 1))
+  slaOpen.value = true
+}
+// 重算 / 换子链路后链路可能变少：下标越界就退回第一条，免得弹窗里一片空白、看着像算漏了
+watch(links, () => { if (slaIdx.value >= links.value.length) slaIdx.value = 0 })
+watch(linkMode, () => { slaIdx.value = 0 })
+function slaDerivedFor(l) {
+  if (!l || !l.data) return null
+  const row = modeRows.value.find((r) => r._id === l.rowId)
+  const form = row && row.basebandId !== undefined ? resolveBaseband(row.basebandId).form : {}
+  return deriveSla({
+    orbitType: 'REGEN', regenMode: linkMode.value,
+    data: l.data, ok: l.ok, error: l.error, resolvedMargin: l.resolvedMargin,
+    params: sweepParamsByRow.value[l.rowId] || null,
+    carrierForm: form,
+    modcodRows: (basebandOpts.value.modcod || {})[form.dvbStandard] || [],
+    scan: slaScanByRow.value[l.rowId] || null,
+    fp: null,
+    slaParams
+  })
+}
+const slaDerived = computed(() => slaDerivedFor(slaLink.value))
+const slaCount = computed(() => links.value.reduce((n, l) => {
+  const row = modeRows.value.find((r) => r._id === l.rowId)
+  return n + (l.data && slaIncludeCount(slaDerivedFor(l), row && row.sla) ? 1 : 0)
+}, 0))
+
+// —— 独立《服务等级指标（SLA）》报告 ——
+// 逐链路的附加料：载波体制（决定引用哪几份标准）/ MODCOD / 档位表（综合与中断按考核周期算好）
+function slaReportExtra(l) {
+  const row = modeRows.value.find((r) => r._id === l.rowId)
+  const f = row && row.basebandId !== undefined ? resolveBaseband(row.basebandId).form : {}
+  return { carrierStd: f.dvbStandard || 'custom', modcod: f.modcodLabel || '', scan: slaScanReportRows(slaDerivedFor(l)) }
+}
+function slaDefaultNameOf(en) {
+  const s = (satConfigs[0] && satConfigs[0].form.satelliteName) || (en ? 'Results' : '结果')
+  return en
+    ? `REGEN_SLA_${s.replace(/[^\w-]+/g, '_')}`
+    : `再生式服务等级指标_${s.replace(/[\\/:*?"<>|]/g, '_')}`
+}
+// row.sla 挂在链路行上，会被「结果过期」那条深监听盯到——但采用值是【结论】不是引擎入参，
+// 改它一个字也不会让已出的结果失效。故写完把过期灯还原（深监听是 pre-flush，nextTick 时它已跑过）。
+function slaTouch(fn) { const keep = resultsStale.value; fn(); nextTick(() => { resultsStale.value = keep }) }
+function slaSetAdopt(e) { const r = slaRow.value; if (r) slaTouch(() => applyRowSla(r, setAdopt(r.sla, e.key, e.value))) }
+function slaSetInclude(e) { const r = slaRow.value; if (r) slaTouch(() => applyRowSla(r, setInclude(r.sla, e.key, e.value))) }
+function slaSetParam(e) { if (e.value != null) slaParams[e.key] = e.value }
+function slaToggleAll(on) { const r = slaRow.value; if (r) slaTouch(() => applyRowSla(r, setAllInclude(r.sla, slaDerived.value, on))) }
+// 「重置」两件事一起做：本条链路的采用值清空（回到建议值）+ SLA 参数回到缺省 ——
+// 参数是场景级的，可它只在这个弹窗里露面，另设一颗按钮反而找不着。
+function slaClear() {
+  slaTouch(() => {
+    const r = slaRow.value
+    if (r) applyRowSla(r, clearAdopt(r.sla))
+    Object.assign(slaParams, DEFAULT_SLA_PARAMS)
+  })
+}
+const slaAllOn = computed(() => {
+  const r = slaRow.value, d = slaDerived.value
+  if (!r || !d) return true
+  return d.order.every((k) => !(r.sla && r.sla.include && r.sla.include[k] === false))
+})
+
 // 图表区显示开关（功能区「视图 → 图表」）。关掉时详细预算只剩表：图表整块不渲染，
 // 里头的扫描自然也不会跑——不出图还占着 CPU 逐格重算引擎是说不过去的。
 const showViz = ref((() => { try { return localStorage.getItem('regen/viz/show') !== '0' } catch (e) { return true } })())
@@ -1206,11 +1288,41 @@ async function compute() {
     await nextTick()
     resultsStale.value = false
     await loadWaterfall()
+    await refreshSlaScan(out, sweepStore, isDown ? 'downlink' : 'uplink')
   } catch (e) {
     error.value = String(e)
   } finally {
     computing.value = false
   }
+}
+
+// SLA 可用度档位扫描：整表一次批量 IPC（逐档钉住当前工作点重算，见 core 的 scanSlaTiers）。
+// 只有上行/下行两种子链路扫：星间的「可用度」是几何互视占比（不随雨衰档位变），激光整组不出。
+// 上行只改上行那一个入参键、下行只改下行那一个 —— 另一侧是凑几何的镜像入参，改了就把这条
+// 链路的口径悄悄换成另一件事。会话态、不入存档；随结果一起过期（重算即重扫）。
+// ★ 出 IPC 前必须现造纯数据：Vue 的 Proxy 过不了结构化克隆，invoke 当场抛且无 catch 时全静默。
+async function refreshSlaScan(out, store, mode) {
+  slaScanByRow.value = {}
+  if (!api || !api.linkBudget.slaScanBatch) return
+  if (mode !== 'uplink' && mode !== 'downlink') return
+  const engine = mode === 'downlink' ? 'regen-down' : 'regen-up'
+  const single = mode === 'downlink' ? 'dn' : 'up'
+  const jobs = []
+  for (const l of out) {
+    if (!l || !l.data) continue
+    const p = store[l.rowId]
+    if (!p) continue
+    const samples = slaSamplesFor({ up: l.data.uplinkAvailabilityResult, dn: l.data.downlinkAvailabilityResult, single })
+    if (!samples.length) continue
+    jobs.push({ rowId: l.rowId, spec: { engine, satParams: p.satParams, linkParams: p.linkParams, opt: p.opt, samples } })
+  }
+  if (!jobs.length) return
+  try {
+    const res = await api.linkBudget.slaScanBatch(JSON.parse(JSON.stringify(jobs.map((j) => j.spec))))
+    const m = {}
+    jobs.forEach((j, i) => { if (res && res[i]) m[j.rowId] = res[i] })
+    slaScanByRow.value = m
+  } catch (e) { /* 扫不出就不出档位表与 MIR，结果本身不受影响 */ }
 }
 
 // 再生式星间：逐条星间链路。几何=自动最差 时两星轨道 → 严格互视最差距离/可见度；
@@ -1383,7 +1495,9 @@ let _noticeT = null
 function toast(msg) { notice.value = msg; clearTimeout(_noticeT); _noticeT = setTimeout(() => (notice.value = ''), 4000) }
 
 // _ 前缀键（行内部 id / 表格「＋增加」按全字段建行带出的计算列空键）一律剥离，不入场景
-const stripRow = (r) => { const o = {}; for (const k of Object.keys(r)) if (!k.startsWith('_')) o[k] = r[k]; return o }
+// ★ row.sla 是嵌套对象：从响应式行上浅拷出来的是 Vue 的 Proxy，结构化克隆过不了 ——
+// saveConfig 走 IPC 当场抛「保存失败」。applyRowSla 内部 normRowSla 现造纯对象，顺手落平。
+const stripRow = (r) => { const o = {}; for (const k of Object.keys(r)) if (!k.startsWith('_')) o[k] = r[k]; if (o.sla) applyRowSla(o, o.sla); return o }
 function serializeState() {
   // v2 场景 = 关联关系：四种模式的链路行（站址/链路量 + 各列引用的库条目 id）+ 模式/时窗等计算策略。
   // 三库是全局资产（userData/library.json），不再随场景存副本。
@@ -1396,11 +1510,16 @@ function serializeState() {
     isl: islLinks.map(stripRow),
     laser: laserLinks.map(stripRow),
     geoMode: geoMode.value,
-    geoHorizonHours: geoHorizonHours.value
+    geoHorizonHours: geoHorizonHours.value,
+    // SLA：采用值/勾选随行走（row.sla 由 stripRow 的「非 _ 键全存」自然带上），参数是场景级一份
+    slaParams: { ...slaParams }
   }
 }
 function applyState(st) {
   if (!st || typeof st !== 'object') return
+  // SLA 参数：旧场景没这一项 → 补缺省（normSlaParams 幂等，非法值也退缺省）
+  Object.assign(slaParams, normSlaParams(st.slaParams))
+  slaScanByRow.value = {}
   // 隐藏模式：过滤掉未知 key；旧配置无该字段 → 全部显示
   hiddenModes.value = Array.isArray(st.hiddenModes) ? st.hiddenModes.filter((k) => LINK_MODES.some((m) => m.key === k)) : []
   if (st.linkMode) linkMode.value = st.linkMode
@@ -1515,18 +1634,22 @@ function applyState(st) {
     laserRows = laserRows && laserRows.map(remapLaser)
   }
 
+  // row.sla 逐行深拷（applyRowSla 现造新对象、空的删键）：st 常常就是配置列表里那份 state，
+  // 直接引用会让两处共用同一个 sla 对象，改采用值就地改掉了已保存的那份。
+  const mkRow = (fields, r) => { const o = { ...defaultsFor(fields), ...r, _id: 's' + (_sid++) }; applyRowSla(o, r.sla); return o }
   // 合并 TX 默认：旧配置（G/T 尚在卫星侧时保存）的发信站行缺 G_Ts，按默认补齐，避免下沉后该列为空
-  if (txRows && txRows.length) txStations.splice(0, txStations.length, ...txRows.map((r) => ({ ...defaultsFor(TX_FIELDS), ...r, _id: 's' + (_sid++) })))
+  if (txRows && txRows.length) txStations.splice(0, txStations.length, ...txRows.map((r) => mkRow(TX_FIELDS, r)))
   // 收信站群：旧配置（仅上行）无 rx 字段 → 保留默认一站，避免下行模式空表
-  if (rxRows && rxRows.length) rxStations.splice(0, rxStations.length, ...rxRows.map((r) => ({ ...defaultsFor(RX_FIELDS), ...r, _id: 's' + (_sid++) })))
+  if (rxRows && rxRows.length) rxStations.splice(0, rxStations.length, ...rxRows.map((r) => mkRow(RX_FIELDS, r)))
   // 星间链路群：旧配置无 isl 字段 → 保留默认一条
-  if (islRows && islRows.length) islLinks.splice(0, islLinks.length, ...islRows.map((r) => ({ ...defaultsFor(ISL_FIELDS), ...r, _id: 's' + (_sid++) })))
+  if (islRows && islRows.length) islLinks.splice(0, islLinks.length, ...islRows.map((r) => mkRow(ISL_FIELDS, r)))
   // 激光星间链路群：旧配置无 laser 字段 → 保留默认一条；只保留当前字段键（清除旧速率/调制/BER 等已删字段的惰性残留）
   if (laserRows && laserRows.length) {
     const lkeys = LASER_FIELDS.map((f) => f.key)
     laserLinks.splice(0, laserLinks.length, ...laserRows.map((r) => {
       const o = { ...defaultsFor(LASER_FIELDS), _id: 's' + (_sid++) }
       for (const k of lkeys) if (r[k] !== undefined) o[k] = r[k]
+      applyRowSla(o, r.sla)
       return o
     }))
   }
@@ -1535,7 +1658,7 @@ function applyState(st) {
 }
 let _stateT = null
 function scheduleSaveState() { clearTimeout(_stateT); _stateT = setTimeout(() => { try { localStorage.setItem(STATE_KEY, JSON.stringify({ ...serializeState(), activeId: activeId.value })) } catch (e) { /* ignore */ } dirtyFlag.value = isDirty() }, 600) }
-watch([txStations, rxStations, islLinks, laserLinks, geoMode, geoHorizonHours, linkMode, hiddenModes, activeId], scheduleSaveState, { deep: true })
+watch([txStations, rxStations, islLinks, laserLinks, geoMode, geoHorizonHours, linkMode, hiddenModes, activeId, slaParams], scheduleSaveState, { deep: true })
 
 // —— 命名配置 CRUD ——
 // 树本身的增删改移 / 剪贴板 / 右键 / 键盘全在 shared/useConfigTree.js（见文件上方 useConfigTree(...) 注入点）。
@@ -1558,12 +1681,14 @@ function blankState() {
     rx: [defaultsFor(RX_FIELDS)],
     isl: [defaultsFor(ISL_FIELDS)],
     laser: [defaultsFor(LASER_FIELDS)],
-    geoMode: 'manual', geoHorizonHours: 24
+    geoMode: 'manual', geoHorizonHours: 24,
+    slaParams: { ...DEFAULT_SLA_PARAMS }
   }
 }
-// 指纹只取「场景内容」字段（库是全局资产、页签/结果列勾选是视图态，均不入指纹）
+// 指纹只取「场景内容」字段（库是全局资产、页签/结果列勾选是视图态，均不入指纹）。
+// SLA：采用值/勾选在四张表的行里（row.sla）自然计入；参数是场景级，显式列进来。
 function fingerprintOf(s) {
-  return stableStringify({ tx: s.tx, rx: s.rx, isl: s.isl, laser: s.laser, geoMode: s.geoMode || 'auto', geoHorizonHours: s.geoHorizonHours, linkMode: s.linkMode, hiddenModes: s.hiddenModes })
+  return stableStringify({ tx: s.tx, rx: s.rx, isl: s.isl, laser: s.laser, geoMode: s.geoMode || 'auto', geoHorizonHours: s.geoHorizonHours, linkMode: s.linkMode, hiddenModes: s.hiddenModes, slaParams: s.slaParams })
 }
 function fingerprint() { return fingerprintOf(serializeState()) }
 let activeBaseline = ''
@@ -1708,7 +1833,7 @@ const REGEN_FILE_NAME = {
   isl: ['再生式星间链路预算报告', 'Regen_ISL_Report'],
   laser: ['再生式激光星间链路预算报告', 'Regen_Laser_ISL_Report']
 }
-const { reportDlg, openReportDialog, runReport } = useLbReport({
+const { reportDlg, reportVariant, openReportDialog, openSlaReportDialog, submitReport } = useLbReport({
   api,
   orbitType: 'REGEN',
   regenMode: () => linkMode.value,
@@ -1722,6 +1847,13 @@ const { reportDlg, openReportDialog, runReport } = useLbReport({
   lang: () => reportLang.value,
   appVersion: () => appVersion.value,
   paramsFor: (l) => sweepParamsByRow.value[l.rowId] || null,
+  // SLA 建议（§4）：逐链路出纯数据块（标签按报表语言翻好、速率/带宽按当前单位档格式化）
+  slaFor: (l) => {
+    const row = modeRows.value.find((r) => r._id === l.rowId)
+    return slaReportBlock(slaDerivedFor(l), row && row.sla, slaParams, reportLang.value,
+      (v, u) => fmtQtyParts(v, u, unitAdaptive.value))
+  },
+  slaParams: () => slaParamRows(slaParams, reportLang.value),
   // 「计算方式」一栏报的是链路类型（再生式上行/下行/星间）；求解策略随载波逐链路而定，另占「求解方式」一行
   // （取计算时留底的那份入参，此后改库不改已出结果的口径）。星间/激光无此栏——工作点由链路自身参数给定。
   calcFor: (l) => {
@@ -1762,6 +1894,11 @@ const { reportDlg, openReportDialog, runReport } = useLbReport({
       staGeo, satName: l.satName
     }
   },
+  // —— 独立《服务等级指标（SLA）》报告：不取图、不组瀑布，只把各链的 SLA 块与档位表组成模型 ——
+  slaCount: () => slaCount.value,
+  slaMonthly: () => (Number(slaParams.monthly) ? 1 : 0),
+  slaExtra: (l) => slaReportExtra(l),
+  slaDefaultName: (en) => slaDefaultNameOf(en),
   defaultName: (en) => {
     const n = REGEN_FILE_NAME[linkMode.value] || REGEN_FILE_NAME.uplink
     const s = (satConfigs[0] && satConfigs[0].form.satelliteName) || (en ? 'Results' : '结果')
@@ -1925,6 +2062,10 @@ onMounted(async () => {
           </div>
           <div class="lbr-g">
             <div class="lbr-items">
+              <button class="lbr-big" :disabled="!links.length" :title="links.length ? '按当前计算结果给出 SLA 条款建议值：可用度 / 带宽与速率 / 时延与丢包 / 故障响应与恢复 / 发射合规（逐条可改采用值、可勾选列入报告）' : '尚无计算结果'" @click="openSlaDlg">
+                <svg viewBox="0 0 16 16" class="lbr-svg"><path d="M8 1.8 13 3.4v4.2c0 3.1-2.1 5.4-5 6.6-2.9-1.2-5-3.5-5-6.6V3.4z" /><path d="m5.6 7.9 1.7 1.7 3.3-3.3" /></svg>
+                SLA
+              </button>
               <button class="lbr-big" :disabled="reportDlg.busy || !links.length" :title="links.length ? '生成交付级报告：Excel（总报告 + 几何关系 + 逐链路详情）/ PDF（封面 · 目录 · 总报告 · 逐链路详情，含图）' : '尚无计算结果'" @click="openReportDialog"><Icon name="file-down" :size="16" />{{ reportDlg.busy ? '生成中…' : '报告' }}</button>
               <button class="lbr-big" :disabled="!segments.length" title="复制当前瀑布表（TSV，可直接粘贴到 Excel / 报告）" @click="copyWaterfallTsv"><Icon name="file-text" :size="16" />TSV</button>
             </div>
@@ -2265,10 +2406,18 @@ onMounted(async () => {
       :default-hours="geoHorizonHours" :side-label="linkMode === 'laser' ? '星间激光' : '星间微波'"
       @fill="applyIslRangeFill" @close="islToolOpen = false" />
 
+    <!-- SLA 建议：条款表 + SLA 参数 + 可用度档位扫描（四窗共用组件；链路由头部下拉选） -->
+    <LbSlaDialog
+      :open="slaOpen" :options="slaOpts" :index="slaIdx" :derived="slaDerived"
+      :row-sla="slaRow && slaRow.sla" :params="slaParams" :adaptive="unitAdaptive" :all-on="slaAllOn"
+      :error="error" :link-error="(slaLink && slaLink.error) || ''" :link-name="slaLinkName"
+      @close="slaOpen = false" @pick="slaIdx = $event" @adopt="slaSetAdopt" @include="slaSetInclude"
+      @param="slaSetParam" @toggle-all="slaToggleAll" :sla-count="slaCount" @clear="slaClear" @export="openSlaReportDialog" />
+
     <LbReportDialog :open="reportDlg.open" :lang="reportLang" orbit-type="REGEN" :regen-mode="linkMode"
       :sat-name="(satConfigs[0] && satConfigs[0].form.satelliteName) || ''" :band="(satConfigs[0] && satConfigs[0].form.frequencyBand) || ''" :link-count="links.length"
-      :viz-available="showViz" store-key="regen" :busy="reportDlg.busy" :progress="reportDlg.progress"
-      @close="reportDlg.open = false" @submit="runReport" />
+      :viz-available="showViz" :sla-count="slaCount" store-key="regen" :busy="reportDlg.busy" :progress="reportDlg.progress"
+      @close="reportDlg.open = false" :variant="reportVariant" @submit="submitReport" />
 
     <div v-if="cfgDlg.open" class="lb-mask" @click="cfgDlg.open = false">
       <div class="lb-dlg" @click.stop>
