@@ -151,6 +151,7 @@ export function useLbReport(o) {
         regenMode: o.regenMode ? o.regenMode() : 'uplink',
         calc: Object.assign({ satelliteName: calc.satelliteName || '', frequencyBand: calc.frequencyBand || '' }, calc),
         slaParams: o.slaParams ? o.slaParams() : [],
+        composition: o.slaComposition ? o.slaComposition() : [],
         monthly: o.slaMonthly ? o.slaMonthly() : 0,
         hasDvb: o.slaHasDvb ? o.slaHasDvb() : false,
         hasNtn: o.slaHasNtn ? o.slaHasNtn() : false,

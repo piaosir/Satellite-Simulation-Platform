@@ -315,6 +315,8 @@ export function buildSlaReportModel(o) {
     slaParams: o.slaParams || [],
     links,
     definitions: o.definitions || slaDefinitions(seen, terms, lang, monthly),
+    // 可用度构成（§5）：本体制计入哪几项各几次，与连乘时用的那一份同源（lbSla.slaComposition）
+    composition: o.composition || [],
     exclusions: slaExclusions(lang),
     refs: o.refs || slaRefs(lang, { monthly, hasDvb, hasNtn }),
     unitMode: translate(o.adaptUnits ? '自适应' : '锁定', lang)

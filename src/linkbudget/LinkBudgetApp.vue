@@ -29,7 +29,7 @@ import SatellitePanel from './SatellitePanel.vue'
 import WaterfallTable from './WaterfallTable.vue'
 import LbVizPane from '../components/LbVizPane.vue'
 import LbSlaDialog from '../components/LbSlaDialog.vue'
-import { deriveSla, normSlaParams, applyRowSla, setAdopt, setInclude, setAllInclude, clearAdopt, slaIncludeCount, slaSamplesFor, slaReportBlock, slaParamRows, sunOutageSummary, DEFAULT_SLA_PARAMS , slaScanReportRows} from '../shared/lbSla.js'   // SLA 建议（四窗共用纯逻辑）
+import { deriveSla, normSlaParams, applyRowSla, setAdopt, setInclude, setAllInclude, clearAdopt, slaIncludeCount, slaSamplesFor, slaReportBlock, slaParamRows, sunOutageSummary, DEFAULT_SLA_PARAMS , slaScanReportRows, slaComposition} from '../shared/lbSla.js'   // SLA 建议（四窗共用纯逻辑）
 import { getPlan, checkAgainstChannel } from '../shared/lbFreqPlanRef.js'   // 发射合规：卫星条目引用了频率计划时的数值核对
 import LbFontCtl from '../components/LbFontCtl.vue'
 import LbUnitCtl from '../components/LbUnitCtl.vue'
@@ -1781,6 +1781,7 @@ const { reportDlg, reportVariant, openReportDialog, openSlaReportDialog, submitR
   // —— 独立《服务等级指标（SLA）》报告：不取图、不组瀑布，只把各链的 SLA 块与档位表组成模型 ——
   slaCount: () => slaCount.value,
   slaMonthly: () => (Number(slaParams.monthly) ? 1 : 0),
+  slaComposition: () => slaComposition({ orbitType: 'GEO', slaParams }, reportLang.value),
   slaExtra: (l) => slaReportExtra(l),
   slaDefaultName: (en) => slaDefaultNameOf(en),
   defaultName: (en) => {

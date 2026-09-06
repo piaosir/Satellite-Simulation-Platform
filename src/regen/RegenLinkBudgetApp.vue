@@ -30,7 +30,7 @@ import RegenSatPanel from './RegenSatPanel.vue'
 import WaterfallTable from '../ngso/WaterfallTable.vue'
 import LbVizPane from '../components/LbVizPane.vue'
 import LbSlaDialog from '../components/LbSlaDialog.vue'
-import { deriveSla, normSlaParams, applyRowSla, setAdopt, setInclude, setAllInclude, clearAdopt, slaIncludeCount, slaSamplesFor, slaReportBlock, slaParamRows, DEFAULT_SLA_PARAMS , slaScanReportRows} from '../shared/lbSla.js'   // SLA 建议（四窗共用纯逻辑）
+import { deriveSla, normSlaParams, applyRowSla, setAdopt, setInclude, setAllInclude, clearAdopt, slaIncludeCount, slaSamplesFor, slaReportBlock, slaParamRows, DEFAULT_SLA_PARAMS , slaScanReportRows, slaComposition} from '../shared/lbSla.js'   // SLA 建议（四窗共用纯逻辑）
 import LbReportDialog from '../components/LbReportDialog.vue'
 import { useLbReport } from '../shared/useLbReport.js'
 import LbFontCtl from '../components/LbFontCtl.vue'
@@ -1897,6 +1897,7 @@ const { reportDlg, reportVariant, openReportDialog, openSlaReportDialog, submitR
   // —— 独立《服务等级指标（SLA）》报告：不取图、不组瀑布，只把各链的 SLA 块与档位表组成模型 ——
   slaCount: () => slaCount.value,
   slaMonthly: () => (Number(slaParams.monthly) ? 1 : 0),
+  slaComposition: () => slaComposition({ orbitType: 'REGEN', regenMode: linkMode.value, slaParams }, reportLang.value),
   slaExtra: (l) => slaReportExtra(l),
   slaDefaultName: (en) => slaDefaultNameOf(en),
   defaultName: (en) => {

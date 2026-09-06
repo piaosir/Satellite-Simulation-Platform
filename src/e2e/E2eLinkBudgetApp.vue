@@ -23,7 +23,7 @@ import EarthStationPanel from '../components/EarthStationPanel.vue'
 import BasebandPanel from '../ngso/BasebandPanel.vue'
 import WaterfallTable from '../ngso/WaterfallTable.vue'
 import LbSlaDialog from '../components/LbSlaDialog.vue'
-import { deriveSla, normSlaParams, applyRowSla, setAdopt, setInclude, setAllInclude, clearAdopt, slaIncludeCount, slaChainSamplesFor, chainHopAvails, slaReportBlock, slaParamRows, DEFAULT_SLA_PARAMS , slaScanReportRows} from '../shared/lbSla.js'   // SLA 建议（四窗共用纯逻辑）
+import { deriveSla, normSlaParams, applyRowSla, setAdopt, setInclude, setAllInclude, clearAdopt, slaIncludeCount, slaChainSamplesFor, chainHopAvails, slaReportBlock, slaParamRows, DEFAULT_SLA_PARAMS , slaScanReportRows, slaComposition} from '../shared/lbSla.js'   // SLA 建议（四窗共用纯逻辑）
 import { fmtQty, fmtQtyParts } from '../shared/adaptUnits.js'
 import ChainStrip from './ChainStrip.vue'
 import E2eFields from './E2eFields.vue'
@@ -995,6 +995,15 @@ const { reportDlg, reportVariant, openReportDialog, openSlaReportDialog, submitR
   // —— 独立《服务等级指标（SLA）》报告：不取图、不组瀑布，只把各链的 SLA 块与档位表组成模型 ——
   slaCount: () => slaCount.value,
   slaMonthly: () => (Number(slaParams.monthly) ? 1 : 0),
+  slaComposition: () => {
+    const row = chains.find((r) => results[r._id]) || chains[0]
+    const nds = (row && row.nodes) || []
+    return slaComposition({
+      orbitType: ORBIT, slaParams,
+      esCount: nds.filter((n) => n && n.kind === 'es').length,
+      satCount: nds.filter((n) => n && n.kind !== 'es').length
+    }, reportLang.value)
+  },
   slaExtra: (l) => slaReportExtra(l),
   slaDefaultName: (en) => slaDefaultNameOf(en),
   defaultName: (en) => {

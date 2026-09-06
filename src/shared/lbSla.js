@@ -1253,6 +1253,24 @@ export function slaParamRows(params, lang) {
   }))
 }
 
+/**
+ * 可用度构成表（报告 §5「参数与假设」）：本体制计入哪几项、各几次、各取多少。
+ * 与 equipSlots 同一份声明 —— 报告里印的构成必须就是连乘时用的那一份。
+ * @param o { orbitType, regenMode, slaParams, esCount, satCount }
+ */
+export function slaComposition(o, lang) {
+  const sp = normSlaParams(o && o.slaParams)
+  const en = lang === 'en'
+  const byKey = Object.fromEntries(SLA_PARAM_LABELS.map((d) => [d.key, d]))
+  const on = !!num(sp.groundOn)
+  return equipSlots(o)
+    .filter((s) => !(s.key === 'groundAvail' && !on))
+    .map((s) => {
+      const d = byKey[s.key] || {}
+      return { key: s.key, label: (en ? d.labelEn : d.label) || s.key, count: s.count, value: String(sp[s.key]) + ' %' }
+    })
+}
+
 /** 场景存档里的 SLA 参数规整（旧场景缺省补齐） */
 export function normSlaParams(v) {
   const out = Object.assign({}, DEFAULT_SLA_PARAMS)

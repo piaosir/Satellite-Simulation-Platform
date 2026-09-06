@@ -1138,7 +1138,46 @@ function enrichReportModel(model) {
     doneCount: done.length,
     failCount: links.length - done.length
   }
+  // SLA 建议矩阵（§4）：条款（含单位）做行、链路做列，格里是采用值（留空即建议值）。
+  // 条款清单取【各链路条款的并集，按首次出现的次序】—— 端到端的「结算带宽」逐透明星一行，
+  // 链与链的行数本就不同；按首链的清单裁一刀会把别的链的条款默默扔掉。
+  // 标签/数值都是渲染端翻好格式化好的（见 shared/lbSla.js 的 slaReportBlock），此处只做转置。
+  model.slaMatrix = buildSlaMatrix(links, lang)
   return model
+}
+
+function buildSlaMatrix(links, lang) {
+  const order = []
+  const seen = new Map()   // key → { key, group, groupLabel, label, sub, unit, values: [] }
+  for (const l of links) {
+    for (const r of ((l && l.sla && l.sla.rows) || [])) {
+      const rec = seen.get(r.key)
+      if (rec) {
+        // 同一行在不同链路上说的不是同一颗星（端到端逐透明星那几行）→ 名字退回条款名本身，
+        // 不给一行数据挂上只对第一条链成立的星名；单位不一致同理退回空
+        if (rec.sub !== (r.sub || '')) rec.sub = ''
+        if (rec.unit !== r.unit) rec.unit = ''
+        continue
+      }
+      const add = { key: r.key, group: r.group, groupLabel: r.groupLabel, label: r.label, sub: r.sub || '', unit: r.unit, values: [] }
+      seen.set(r.key, add); order.push(add)
+    }
+  }
+  if (!order.length) return null
+  for (const l of links) {
+    const by = {}
+    for (const r of ((l && l.sla && l.sla.rows) || [])) by[r.key] = r
+    for (const rec of order) { const r = by[rec.key]; rec.values.push(r ? r.value : '') }
+  }
+  // 分组行（组名各出一次，按条款次序）：三线表不许底纹，层次靠黑体不加粗给
+  const rows = []
+  const wrap = (u) => (lang === 'en' ? ' (' + u + ')' : '（' + u + '）')
+  let cur = ''
+  for (const rec of order) {
+    if (rec.groupLabel && rec.groupLabel !== cur) { cur = rec.groupLabel; rows.push({ group: true, label: cur }) }
+    rows.push({ group: false, label: rec.label + (rec.sub ? '　' + rec.sub : '') + (rec.unit ? wrap(rec.unit) : ''), values: rec.values })
+  }
+  return { rows }
 }
 
 // PNG 的宽高：IHDR 就在头 24 字节里（8 字节签名 + 4 长度 + 4 'IHDR' + 4 宽 + 4 高），
@@ -1389,6 +1428,43 @@ function buildMasterSheet(wb, model, t, L) {
   }
   bookBox(ws, cHead, 1, r - 1, 5, cHead)
 
+  // SLA 建议（编号 4）：条款（含单位）做行、链路做列，格里是采用值（留空即建议值）。
+  // 末尾附一行 SLA 参数表（报文长度 / 处理时延预留 / 容差 / 隔离度）——它们是几条建议值的换算入参。
+  // 没有任何链路带 sla ⇒ 整节不出、表号不占（口径与 Word / PDF 一致）。
+  const slaM = model.hasSla ? model.slaMatrix : null
+  if (slaM && slaM.rows.length) {
+    section('4　' + L.sla)
+    tableCap(4, L.sla)
+    const sHead = r
+    str(r, 1, L.slaTerm, 'left', { size: RSTY.size.tableDense })
+    links.forEach((l, li) => str(r, 2 + li, '#' + (l.no || li + 1) + '\n' + (l.txName || '') + ' → ' + (l.rxName || ''), 'center', { size: RSTY.size.tableDense, wrap: true }))
+    ws.getRow(r).height = 34; r++
+    for (const row of slaM.rows) {
+      if (row.group) {
+        // 分组行（五个条款组的分界）：三线表不许底纹，改用黑体把它与条目行分开（同 3.2 的类别行）
+        ws.mergeCells(r, 1, r, Math.max(2, 1 + links.length))
+        str(r, 1, row.label, 'left', { hei: true, size: RSTY.size.table })
+        ws.getRow(r).height = 18; r++
+        continue
+      }
+      str(r, 1, row.label, 'left', { size: RSTY.size.table })
+      row.values.forEach((v, li) => {
+        const c = ws.getCell(r, 2 + li); c.value = numOrText(v)
+        c.font = { name: FNT, size: RSTY.size.table }; c.alignment = { horizontal: 'right', vertical: 'middle' }
+      })
+      ws.getRow(r).height = 18; r++
+    }
+    bookBox(ws, sHead, 1, r - 1, 1 + links.length, sHead)
+    const sp = model.slaParams || []
+    if (sp.length) {
+      r++
+      ws.mergeCells(r, 1, r, NCOL)
+      str(r, 1, L.slaParams + '　' + sp.map((x) => `${x.label} ${x.value}${x.unit ? ' ' + x.unit : ''}`).join('　·　'),
+        'left', { size: RSTY.size.table, color: 'FF666666' })
+      ws.getRow(r).height = 18; r++
+    }
+  }
+
   // 详情索引：点一下跳到该链路的详情表。
   // 「站对」一栏铺到倒数第二列、跳转链接放末列：站名长起来（尤其英文导出）时，若仍挤在第 2 列，
   // 自适应会把第 2 列一路撑宽，而上面对照表的数值列正共用着这几列——一张表的长名字不该让另一张表变形。
@@ -1487,6 +1563,35 @@ function writeReportLinkSheet(wb, ws, link, model, t, L) {
   section(L.results)
   // 端到端级联的数值定两位（见 writeSegmentBlocks 的 fixedDecimals），屏幕/TSV/Excel 三处印出来一致
   r = writeSegmentBlocks(ws, link.segments, t, r, { fixedDecimals: (model.scheme && model.scheme.orbitType) === 'E2E' })
+
+  // SLA 建议：条款 / 计算依据 / 建议值 / 采用值 / 单位 五列三线表。
+  // 表号按「链路序号-块序号」编（接在输入参数各块之后），与图号同一套编法。
+  const slaRows = (link.sla && link.sla.rows) || []
+  if (slaRows.length) {
+    section(L.sla)
+    const bi = (link.inputs || []).length + 1
+    caption(model.lang === 'en' ? `Table ${link.no}-${bi}  ${L.sla}` : `${L.table} ${link.no}-${bi}　${L.sla}`)
+    const hb = r
+    ;[L.slaTerm, L.slaBasis, L.slaSuggest, L.slaAdopt, L.unit].forEach((h, i) => str(r, i + 1, h, i === 0 ? 'left' : 'right', { size: RSTY.size.table }))
+    ws.getRow(r).height = 19; r++
+    let grp = ''
+    for (const row of slaRows) {
+      if (row.groupLabel && row.groupLabel !== grp) {
+        grp = row.groupLabel
+        ws.mergeCells(r, 1, r, MAXCOL)
+        str(r, 1, grp, 'left', { hei: true, size: RSTY.size.table })
+        ws.getRow(r).height = 18; r++
+      }
+      str(r, 1, row.label + (row.sub ? '　' + row.sub : ''), 'left', { size: RSTY.size.table })
+      str(r, 2, row.basis, 'right', { font: FNT, size: RSTY.size.table, color: 'FF333333' })
+      str(r, 3, row.suggest, 'right', { font: FNT, size: RSTY.size.table })
+      str(r, 4, row.adopt, 'right', { font: FNT, size: RSTY.size.table })
+      str(r, 5, row.unit, 'left', { font: FNT, size: RSTY.size.table, color: 'FF333333' })
+      ws.getRow(r).height = 18; r++
+    }
+    bookBox(ws, hb, 1, r - 1, MAXCOL, hb)
+    r++
+  }
 
   // 图件（与图上「出图」按钮出的是同一张）。图题在图**下方**——模板「图号格式」的口径，
   // 也是中文出版惯例（表题在上、图题在下）。
@@ -2184,5 +2289,9 @@ function buildVisAccessExcel(payload) {
 
 module.exports = {
   buildWord, buildExcel, buildSunOutageWord, buildRainAttenuationExcel, buildVisAccessExcel, ROWS,
-  enrichReportModel, buildReportWorkbook
+  enrichReportModel, buildReportWorkbook,
+  // 独立《服务等级指标（SLA）》报告的 Excel 出口（reportSla.js）复用这几件：只加导出，实现一个字不动。
+  // 版式必须与全报告一致（三线表 / 表头居中 / logo / 中西文分家），照抄一份必然漂移。
+  applyBookFont, placeLogo, bookBox, numOrText, strFor, buildSlaMatrix, sheetNameFor,
+  autofitBook, RSTY, FNT, CJK, HEI
 }
