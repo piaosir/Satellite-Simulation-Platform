@@ -388,17 +388,23 @@ for (const { k, zh } of PROJECTIONS) {
     /reprojectRaster\(/.test(seg(FLAT, 'function drawEnvRaster', 'function drawFieldOverlays')))
   ok('⑪ 栅格网格走 lonBreaks（对齐切口 + 插源缝），且有「一格不许横跨半幅」的防呆',
     /lonBreaks\(L0, COARSE\)/.test(RMESH) && /while \(midLon \+ shift < S\.lonMin/.test(RMESH) && /gx1 - gx0 > PJ\.W \* 0\.5/.test(RMESH))
-  // 用户口径（2026-09-05）：非等距圆柱的投影档【只用 16K 整幅】，不走瓦片。
-  // 瓦片要先拼成一张等经纬图再整份重投影，多一层重采样、多一块几十兆的拼图画布，屏上并不见得更清楚。
-  ok('⑪ 投影档只吃整幅图：拼图那一套已撤，drawImagery 的投影分叉不再碰瓦片集',
+  // 2026-09-06《2D 投影档高精影像》：投影档下瓦片档【真画瓦片】—— 同一份三角网按片分桶（tileBins），
+  // 不再拼成整幅（065c321 的拼图画布那一套仍不许回来），也不再由调用方换成 16K 整幅。
+  // 整幅档（16K / 8K）那两行一行不动：它们的出图要与改前逐像素 / 逐字节相同。
+  ok('⑪ 投影档吃瓦片：drawImagery 的投影分叉认 imgSet（GPU 分桶路 → CPU 分桶路），整幅两行不动',
     !/tileRegionImage|releaseTileRegion|meshWindow/.test(FLAT) &&
+    /if \(imgSet\) \{\s*if \(drawImageryTilesGL\(\)\) return true\s*return blitReprojected\(reprojectRasterTiles\(\), 1, imgBright, true\)/.test(lf(seg(FLAT, 'function drawImagery()', 'function imageryPlan'))) &&
     /reprojectRaster\(imgEl, null, true\)/.test(FLAT) &&
-    /if \(!imgEl\) return false/.test(seg(FLAT, 'function drawImagery', 'function imageryPlan')))
-  ok('⑪ 投影档的换档在【调用方】做：瓦片档 → 16K 整幅，8K 仍是 8K',
-    /export function imageryForFlat/.test(IMG) && /proj !== 'equirect' && s\.tiles/.test(IMG) &&
-    /imageryForFlat\(imageryKey\.value, mapCrs\.proj\)/.test(VUE))
-  ok('⑪ 换投影要重推影像（2D 的档位跟着投影走，档位没变也得重来一遍）',
-    /function setMapProj\(k\) \{[^\n]*applyImagery\(\)/.test(lf(VUE)) && /function imageryWantUrl/.test(VUE))
+    /if \(!imgEl\) return false/.test(seg(FLAT, 'function drawImagery()', 'function imageryPlan')) &&
+    /from '\.\.\/geo\/tileBins\.js'/.test(FLAT))
+  ok('⑪ 调用方不再换档：imagery.js 没有 imageryForFlat，2D 与 3D 同一档；换投影仍重推影像',
+    !/imageryForFlat|PROJ_IMAGERY/.test(IMG) && !/imageryForFlat/.test(VUE) &&
+    /function setMapProj\(k\) \{[^\n]*applyImagery\(\)/.test(lf(VUE)))
+  ok('⑪ 瓦片路只有一份分桶几何：CPU 与 GPU 都从 binByTiles 取，选级与等距圆柱同式，导出前把片等到位',
+    (FLAT.match(/binByTiles\(/g) || []).length >= 1 && (FLAT.match(/planTileBins\(/g) || []).length >= 3 &&
+    /const tileZ = \(kk\) => pickZoom\(1 \/ \(kk \* dpr\), imgMaxZ\)/.test(FLAT) &&
+    /if \(tilesT && tilesT\.length\) await loadTiles\(imgSet, zT, tilesT\)/.test(FLAT) &&
+    /if \(exporting \|\| compat\) return false/.test(seg(FLAT, 'function drawImageryTilesGL', 'function drawImagery()')))
   ok('⑪ 网格密度走 planCells（固定像素步长那一档是「阿尔伯斯开影像很卡」的成因）',
     /planCells\(PJ, bLo0, bLo1, bLa0, bLa1, tolPlane\)/.test(RMESH) && !/RP_CELL|RP_ROWS/.test(FLAT + RMESH) && /export const RP_TOL = /.test(RMESH))
   // 换档 / 换切口 / 换参数（中心纬度、标准纬线）必须走【同一条】重烘通路 —— 三处各写一遍
@@ -425,9 +431,13 @@ for (const { k, zh } of PROJECTIONS) {
   ok('⑪ 导出恒走 CPU 路（GPU 那条只在屏上）',
     /if \(exporting \|\| compat\) return false/.test(seg(FLAT, 'function drawImageryGL', 'function drawImagery()')) &&
     /exporting = true/.test(seg(FLAT, 'async bakeImagery', 'getMapDetail')))
-  ok('⑪ GPU 纹理只吃整幅世界图：S 向 REPEAT 补接缝、T 向 CLAMP，且有边长上限（16K 不许上到显存）',
+  ok('⑪ GPU 整幅程序不动：S 向 REPEAT 补接缝、T 向 CLAMP，且有边长上限（16K 不许上到显存）',
     /TEXTURE_WRAP_S, gl\.REPEAT/.test(GRAS) && /TEXTURE_WRAP_T, gl\.CLAMP_TO_EDGE/.test(GRAS) &&
     /export const GL_TEX_MAX = 8192/.test(GRAS) && /tw > GL_TEX_MAX/.test(FLAT))
+  ok('⑪ GPU 瓦片程序：片外 discard、有效窗 uWin、gutter 按 (G + t·512)/N 取样、片纹理两向 CLAMP + LRU',
+    /discard/.test(GRAS) && /uWin/.test(GRAS) && /\(vec2\(uG\) \+ t \* 512\.0\) \/ uN/.test(GRAS) &&
+    /export const TILE_TEX_LIMIT = /.test(GRAS) && /renderBins\(/.test(GRAS) &&
+    (GRAS.match(/TEXTURE_WRAP_S, gl\.CLAMP_TO_EDGE/g) || []).length >= 1)
   // warpTri 每个三角形都 drawImage 整张源图（靠 clip 裁），耗时几乎正比于源图面积；
   // 而方位等距的三角形数是别的档的十倍，这一项被放大十倍 —— 实测 936 ms → 113 ms。
   ok('⑪ 反向网格：源图按屏上分辨率先降一档再贴（16K 整张贴一万个三角形是 936 ms）',

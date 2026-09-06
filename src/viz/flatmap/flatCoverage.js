@@ -9,7 +9,9 @@ import { resolvedFeatures, resolvedLines, labelSet, ensureDetail, onPovChange } 
 import { BORDER_DEF, DASH_PX, DASH_SCALE, BORDER_DRAW, CFG_KEY, fadeFactor, admFade } from '../geo/borderStyle.js'
 import { terminatorFlat } from '../terminator.js'
 // 影像瓦片金字塔（EPSG:4326 / GIBS 网格）：网格数学与取片缓存，与 3D 球体共用同一份
-import { TILE, span as tileSpan, tileRange, pickZoom, getTileOrParent, tileGutter, loadTiles } from '../imageryTiles.js'
+import { TILE, span as tileSpan, tileRange, pickZoom, getTileOrParent, tileGutter, tileImgSize, loadTiles, warm as warmTiles } from '../imageryTiles.js'
+// 投影档瓦片影像：同一份三角网按片分桶（纯几何，见其文件头）
+import { binByTiles, tileUvToPx, tileWindow } from '../geo/tileBins.js'
 // 点标记序号徽标（圈 1、圈 2）：与 3D 球体共用同一支画笔，两视图观感一致
 import { paintNumBadge, BADGE_R } from '../markers/numBadge.js'
 // 标记符号（圆点/方块/三角/图钉…）：同上，2D 与 3D 共用同一支画笔
@@ -426,7 +428,7 @@ export function createFlatCoverage(canvas) {
     PJ = makeProjection(kind, LON0, PJOPT)
     rotLive = !!op.fast
     borderPaths = null; admPaths = null; gridPath = null; gridKey = ''; sphPath = null; sphKey = ''; sphOps = null; sphOpsKey = ''
-    rpKey = ''; rpBox = null; rmKey = ''; rmBox = null
+    rpKey = ''; rpBox = null; rmKey = ''; rmBox = null; rmKeyT = ''; rmBoxT = null; rmBinsT = null
     buildBaseGeo(resolvedFeatures(curDetail()), curThin())
     // 覆盖场在转动期间不画，也就不必重烘 —— 松手那一次（fast=false）把它补回来。
     if (!rotLive) {
@@ -733,6 +735,46 @@ export function createFlatCoverage(canvas) {
     }
     return true
   }
+  // 瓦片路专用：三角形先在【片内 uv 空间】裁到有效窗（u ≤ fx、v ≤ fy），再按同一个仿射映到目标。
+  // 为什么要裁：L0–L2 的边缘片在世界之外补了边（tileClip 的 fx/fy < 1），跨接缝的三角形有一份复制
+  // 落在最后一列，它越过 180° 的那一截若不裁就会把补边（复制出来的边缘像素）画到本该由第 0 列
+  // 那份复制画的地方上，且后画的盖前画的。仿射把直线映成直线，故在 uv 空间裁出的多边形映到目标
+  // 仍是多边形，直接当 clip 用；两份复制在 uv 空间共用同一条界线 → 无缝。L3 起 fx = fy = 1，
+  // 走 warpTri 那条（带 TRI_PAD 胀边）。
+  function clipPolyHalf(poly, axis, lim) {          // 保留 poly[i][axis] ≤ lim 的那一半（Sutherland–Hodgman 一条边）
+    const out = []
+    for (let i = 0; i < poly.length; i++) {
+      const a = poly[i], b = poly[(i + 1) % poly.length]
+      const ina = a[axis] <= lim, inb = b[axis] <= lim
+      if (ina) out.push(a)
+      if (ina !== inb) { const t = (lim - a[axis]) / (b[axis] - a[axis]); out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]) }
+    }
+    return out
+  }
+  function warpTriClip(g, img, s0, s1, s2, d0, d1, d2, uv, win, hit, G) {
+    let poly = [uv[0], uv[1], uv[2]]
+    if (win[0] < 1) poly = clipPolyHalf(poly, 0, win[0])
+    if (poly.length >= 3 && win[1] < 1) poly = clipPolyHalf(poly, 1, win[1])
+    if (poly.length < 3) return
+    const sx1 = s1[0] - s0[0], sy1 = s1[1] - s0[1], sx2 = s2[0] - s0[0], sy2 = s2[1] - s0[1]
+    const det = sx1 * sy2 - sy1 * sx2
+    if (!det || !Number.isFinite(det) || Math.abs(det) < 0.02) return
+    const dx1 = d1[0] - d0[0], dy1 = d1[1] - d0[1], dx2 = d2[0] - d0[0], dy2 = d2[1] - d0[1]
+    const a = (dx1 * sy2 - dx2 * sy1) / det, b = (dy1 * sy2 - dy2 * sy1) / det
+    const c = (dx2 * sx1 - dx1 * sx2) / det, d = (dy2 * sx1 - dy1 * sx2) / det
+    const e = d0[0] - a * s0[0] - c * s0[1], f = d0[1] - b * s0[0] - d * s0[1]
+    g.save()
+    g.beginPath()
+    for (let i = 0; i < poly.length; i++) {
+      const sp = tileUvToPx(poly[i][0], poly[i][1], hit, G)
+      const X = a * sp[0] + c * sp[1] + e, Y = b * sp[0] + d * sp[1] + f
+      if (i === 0) g.moveTo(X, Y); else g.lineTo(X, Y)
+    }
+    g.closePath(); g.clip()
+    g.setTransform(a, b, c, d, e, f)
+    g.drawImage(img, 0, 0)
+    g.restore()
+  }
   function warpTri(g, img, s0, s1, s2, d0, d1, d2) {
     const sx1 = s1[0] - s0[0], sy1 = s1[1] - s0[1], sx2 = s2[0] - s0[0], sy2 = s2[1] - s0[1]
     const det = sx1 * sy2 - sy1 * sx2
@@ -831,6 +873,83 @@ export function createFlatCoverage(canvas) {
     rpBox = { x0: bx0, y0: by0, x1: bx1, y1: by1 }
     return rpCanvas
   }
+  // ---- 投影档【瓦片】影像（《2D 投影档高精影像》§4）----
+  // 同一份三角网（planRasterMesh，S = 整幅世界）按片分桶（../geo/tileBins.js）：GPU 每桶一次 drawArrays
+  // 绑该片纹理、片外 discard；CPU（导出 / 无 WebGL2）每桶换一张源图逐三角 warpTri。
+  // 选级与等距圆柱 imageryPlan 同一个式子 → 同一缩放六投影同级。网格键带 z 与集名；到货【不】改键
+  // （GPU 只换纹理），CPU 路的键另带到货代（到货就得重烘）。
+  let rmKeyT = '', rmBoxT = null, rmBinsT = null, rmTilesT = null, rmCountT = 0
+  let tileGen = 0
+  const tileZ = (kk) => pickZoom(1 / (kk * dpr), imgMaxZ)
+  const WORLD_S = { lonMin: -180, lonMax: 180, latMin: -90, latMax: 90 }
+  function planTileBins(F, res, z) {
+    const M = planRasterMesh(PJ, { bx0: F.bx0, bx1: F.bx1, by0: F.by0, by1: F.by1, res, S: WORLD_S })
+    return binByTiles(M, z, imgSet)
+  }
+  // 与 reprojectRaster 同一套烘图分辨率口径（屏幕分辨率，只在超出像素预算时才降）
+  function bakeRes(F, kk) {
+    let res = Math.max(1e-6, kk * dpr)
+    const npx = (F.bx1 - F.bx0) * (F.by1 - F.by0) * res * res
+    if (npx > RP_BUDGET) res *= Math.sqrt(RP_BUDGET / npx)
+    return res
+  }
+  function reprojectRasterTiles() {
+    if (!imgSet) return null
+    const kk = k()
+    if (!(kk > 0)) return null
+    const F = rasterFrame(kk)
+    if (!F) return null
+    const { bx0, bx1, by0, by1, vx0, vx1, vy0, vy1 } = F
+    const res = bakeRes(F, kk)
+    const z = tileZ(kk)
+    const key = planeKey() + '/' + res + '/tiles/' + imgSet + '/z' + z + '/g' + tileGen
+    const qx0 = Math.max(0, vx0), qx1 = Math.min(PJ.W, vx1)
+    const qy0 = Math.max(0, vy0), qy1 = Math.min(PJ.H, vy1)
+    if (rpKey === key && rpBox && qx0 >= rpBox.x0 - 1e-6 && qx1 <= rpBox.x1 + 1e-6 && qy0 >= rpBox.y0 - 1e-6 && qy1 <= rpBox.y1 + 1e-6) return rpCanvas
+    const W = Math.max(1, Math.round((bx1 - bx0) * res)), H = Math.max(1, Math.round((by1 - by0) * res))
+    const _t0 = performance.now()
+    if (!rpCanvas) { rpCanvas = document.createElement('canvas'); rpCtx = rpCanvas.getContext('2d') }
+    if (rpCanvas.width !== W || rpCanvas.height !== H) { rpCanvas.width = W; rpCanvas.height = H }
+    const g = rpCtx
+    g.setTransform(1, 0, 0, 1, 0, 0)
+    g.clearRect(0, 0, W, H)
+    g.imageSmoothingEnabled = true
+    if ('imageSmoothingQuality' in g) g.imageSmoothingQuality = 'high'
+    const B = planTileBins(F, res, z)
+    const G = tileGutter(imgSet)
+    const bpx = (wx) => (wx - bx0) * res, bpy = (wy) => (wy - by0) * res
+    // ★ 源图是一片 514²，不是整幅：warpTri 的「0.45 μs/MPix」那一项归零，故不用也不能用 srcThumb
+    //   （它假定源宽 = 360°）。
+    const SA = [0, 0], SB = [0, 0], SC = [0, 0], DA = [0, 0], DB = [0, 0], DC = [0, 0]
+    const UV = [[0, 0], [0, 0], [0, 0]]
+    let painted = 0
+    for (const bin of B.bins) {
+      const hit = getTileOrParent(imgSet, bin.z, bin.r, bin.c, onTileReady)
+      if (!hit) continue                                   // 连祖先都没有：这一桶留空（海色垫在下面），到货后重烘
+      const win = tileWindow(bin.z, bin.r, bin.c)
+      const clip = win[0] < 1 || win[1] < 1
+      for (let t = bin.first; t < bin.first + bin.count; t++) {
+        const i = t * 6
+        let sp = tileUvToPx(B.uv[i], B.uv[i + 1], hit, G); SA[0] = sp[0]; SA[1] = sp[1]
+        sp = tileUvToPx(B.uv[i + 2], B.uv[i + 3], hit, G); SB[0] = sp[0]; SB[1] = sp[1]
+        sp = tileUvToPx(B.uv[i + 4], B.uv[i + 5], hit, G); SC[0] = sp[0]; SC[1] = sp[1]
+        DA[0] = bpx(B.xy[i]); DA[1] = bpy(B.xy[i + 1])
+        DB[0] = bpx(B.xy[i + 2]); DB[1] = bpy(B.xy[i + 3])
+        DC[0] = bpx(B.xy[i + 4]); DC[1] = bpy(B.xy[i + 5])
+        if (clip) {
+          UV[0][0] = B.uv[i]; UV[0][1] = B.uv[i + 1]; UV[1][0] = B.uv[i + 2]; UV[1][1] = B.uv[i + 3]; UV[2][0] = B.uv[i + 4]; UV[2][1] = B.uv[i + 5]
+          warpTriClip(g, hit.img, SA, SB, SC, DA, DB, DC, UV, win, hit, G)
+        } else warpTri(g, hit.img, SA, SB, SC, DA, DB, DC)
+      }
+      painted++
+    }
+    g.setTransform(1, 0, 0, 1, 0, 0)
+    globalThis.__bakeStat = { path: 'tiles', z, res, W, H, tris: B.n, bins: B.bins.length, painted, ms: +(performance.now() - _t0).toFixed(1) }
+    if (!painted) { rpBox = null; rpKey = ''; return null }
+    rpKey = key
+    rpBox = { x0: bx0, y0: by0, x1: bx1, y1: by1 }
+    return rpCanvas
+  }
   // 把烘好的那块贴上去：它在【平面坐标】里有确定位置，按当前变换一次 drawImage 即可 ——
   // 拖动/缩放只走这一步，不重烘（复用条件见 reprojectRaster 的键）。
   function blitReprojected(c, alpha, bright, smooth) {
@@ -911,13 +1030,63 @@ export function createFlatCoverage(canvas) {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)   // 恢复屏幕坐标，后续图层照旧
     return true
   }
+  // 投影档瓦片影像的 GPU 路：网格（分桶后）按【可见框 + RP_PAD】缓存，复用判据与 drawImageryGL 同款；
+  // 到货只换纹理、不改键；一帧一个 z（不做逐片 LOD）。返回 false ＝ 一桶都没画出来（缺包 / 还没到货）。
+  function drawImageryTilesGL() {
+    if (exporting || compat) return false      // 导出恒走 CPU 路（PNG/PDF 逐字节一致）
+    const kk = k()
+    if (!(kk > 0)) return false
+    const g = glRaster()
+    if (!g) return false
+    const F = rasterFrame(kk)
+    if (!F) return false
+    const res = 2 ** Math.ceil(Math.log2(Math.max(0.5, kk * dpr)))   // 与整幅路同：量化到 2 的幂，缩放连续变化时不换网格
+    const z = tileZ(kk)
+    const mk = planeKey() + '/' + res + '/z' + z + '/' + imgSet
+    const qx0 = Math.max(0, F.vx0), qx1 = Math.min(PJ.W, F.vx1)
+    const qy0 = Math.max(0, F.vy0), qy1 = Math.min(PJ.H, F.vy1)
+    const hit = g.hasBinMesh(mk) && rmKeyT === mk && rmBoxT &&
+      qx0 >= rmBoxT.x0 - 1e-6 && qx1 <= rmBoxT.x1 + 1e-6 && qy0 >= rmBoxT.y0 - 1e-6 && qy1 <= rmBoxT.y1 + 1e-6
+    let planMs = 0
+    if (!hit) {
+      const _t0 = performance.now()
+      const B = planTileBins(F, res, z)
+      planMs = performance.now() - _t0
+      if (!B.n || !g.setBinMesh(mk, B.xy, B.uv, B.n)) { rmKeyT = ''; rmBoxT = null; rmBinsT = null; return false }
+      rmKeyT = mk; rmBoxT = { x0: F.bx0, y0: F.by0, x1: F.bx1, y1: F.by1 }; rmBinsT = B.bins; rmTilesT = B.tiles; rmCountT = B.n
+    }
+    g.resize(Math.round(cw * dpr), Math.round(ch * dpr))
+    const G = tileGutter(imgSet), N = tileImgSize(imgSet)
+    let exact = 0
+    const _t1 = performance.now()
+    const painted = g.renderBins({ k: kk, tx, ty, dpr }, rmBinsT, (bin) => {
+      const t = getTileOrParent(imgSet, bin.z, bin.r, bin.c, onTileReady)
+      if (!t) return null
+      if (t.exact) exact++
+      const w = tileWindow(bin.z, bin.r, bin.c)
+      return { img: t.img, u0: t.u0, v0: t.v0, u1: t.u1, v1: t.v1, fx: w[0], fy: w[1], G, N }
+    })
+    globalThis.__rmStat = { path: 'tiles', z, tris: rmCountT, bins: rmBinsT.length, tiles: rmTilesT.length, tilesExact: exact, painted, texMB: g.tileTexMB(), texCount: g.tileTexCount(), replanned: !hit, planMs: +planMs.toFixed(1), ms: +(performance.now() - _t1 + planMs).toFixed(1) }
+    if (!painted) return false
+    // 合成：与 drawImageryGL 同一套（亮度仍走 ctx.filter）
+    const f = ctx.filter
+    ctx.setTransform(1, 0, 0, 1, 0, 0)
+    if (imgBright !== 1) ctx.filter = 'brightness(' + imgBright + ')'
+    ctx.drawImage(g.canvas(), 0, 0)
+    ctx.filter = f
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    return true
+  }
   function drawImagery() {
     if (rotLive) return false    // 转动进行中：整幅影像重投影是每帧几十毫秒，先退回矢量底图（返回 false 即走那条路）
     if (vecImg) { ctx.drawImage(vecImg, 0, 0, cw, ch); return true }   // 矢量导出：整层已合成为一张，与页面 1:1
     if (!PJ.identity) {
-      // 投影档只吃【整幅等经纬图】：瓦片是按等经纬网格切的，换了投影得先拼成一张整幅图再重投影，
-      // 多一层重采样、多一块几十兆的拼图画布，屏上并不见得更清楚。故调用方在投影档下把瓦片档
-      // 换成 16K 整幅递进来（见 viz/imagery.js 的 imageryForFlat）—— 这里只管画。
+      // 投影档：瓦片档按片分桶贴（选级与等距圆柱同式，见 drawImageryTilesGL / reprojectRasterTiles）；
+      // 整幅档（16K / 8K）下面那两行【一行不动】—— 它们的出图要与改前逐像素 / 逐字节相同。
+      if (imgSet) {
+        if (drawImageryTilesGL()) return true
+        return blitReprojected(reprojectRasterTiles(), 1, imgBright, true)
+      }
       if (!imgEl) return false
       if (drawImageryGL()) return true
       return blitReprojected(reprojectRaster(imgEl, null, true), 1, imgBright, true)
@@ -1017,6 +1186,7 @@ export function createFlatCoverage(canvas) {
   //   只记 tilesDirty，静止补建时一并收（补建本来就重画瓦片）。放大跨级时几批连着来更是如此。
   let tileTimer = 0
   function onTileReady() {
+    tileGen++                        // CPU 路（投影档瓦片）的烘图键带它：到货就得重烘
     if (gestureHot()) { tilesDirty = true; scheduleRebuild(); return }
     if (tileTimer) return
     // ★ 走 rebuildAtRest 而不是 invalidateStatic：瓦片到货只是【多了几片影像】，不是换了内容 ——
@@ -2966,11 +3136,19 @@ export function createFlatCoverage(canvas) {
     // on=开关、bright=亮度乘子、maxZ=瓦片档最深级（离线包只切到 L6 时传 6，免得一路请求必然 404 的 L7）。
     setImagery(o) {
       if (!o) return
+      const prevSet = imgSet
       if (o.set !== undefined) imgSet = o.set || null
       if (o.img !== undefined) imgEl = o.img || null
       if (o.on != null) imgOn = !!o.on
       if (o.maxZ != null && Number.isFinite(o.maxZ)) imgMaxZ = Math.max(0, Math.min(11, o.maxZ | 0))   // 上限 11：GIBS 的 31.25m 矩阵集到 L11（30.6 m/px），是其真彩天花板
       if (o.bright != null) imgBright = Math.max(0.05, Math.min(2, Number(o.bright) || 1))
+      if (imgSet !== prevSet) {
+        // 换集 / 进出瓦片档：投影档的分桶网格与 CPU 烘图都按集缓存，片纹理 LRU 一并清
+        rmKeyT = ''; rmBoxT = null; rmBinsT = null; rpKey = ''; rpBox = null
+        if (glr) glr.clearTiles()
+        // 进瓦片路先把 L2 那 15 片拉进来（与 3D 底层同口径）：首帧有粗档兜底，不是矢量底图闪一下
+        if (imgSet) warmTiles(imgSet, 2, onTileReady)
+      }
       invalidateStatic(); requestDraw()
     },
     // 大地颜色（基调方案 + 逐国覆盖，与 3D 同步）：写入公共色板状态后重建陆地 Path2D 并重绘静态层
@@ -3144,11 +3322,19 @@ export function createFlatCoverage(canvas) {
       const SV = { dpr, cw, ch, base, scale, tx, ty }
       dpr = o.pixelScale || 1
       if (o.view !== true) { cw = o.width || cw; ch = o.height || ch; fit() }
-      let plan = null
-      try { plan = imageryPlan() } finally {
+      let plan = null, zT = -1, tilesT = null
+      try {
+        if (PJ.identity) plan = imageryPlan()
+        else {
+          // 投影档：按【导出视图】算分桶，把片等到位 —— 屏上缓存里的片比导出要的粗好几级
+          const kk = k(), F = kk > 0 ? rasterFrame(kk) : null
+          if (F) { zT = tileZ(kk); tilesT = planTileBins(F, bakeRes(F, kk), zT).tiles }
+        }
+      } finally {
         dpr = SV.dpr; cw = SV.cw; ch = SV.ch; base = SV.base; scale = SV.scale; tx = SV.tx; ty = SV.ty
       }
       if (plan && plan.items.length) await loadTiles(imgSet, plan.z, plan.items)
+      if (tilesT && tilesT.length) await loadTiles(imgSet, zT, tilesT)
     },
     // 矢量导出（PDF）的影像底图：把这次出图要用的瓦片【预合成成一张位图】，再由 exportRender 当作
     // 单张 <image> 垫在最底下。返回 Image（已 decode）或 null（没开影像 / 一片都没取到）。
