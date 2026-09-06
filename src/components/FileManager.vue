@@ -605,7 +605,8 @@ async function exportCurrentGxt() {
      · 整库 ⇄ Excel：一个标准一张工作表，表名即标准名，故导入一份工作簿即可一次改多个标准 +
        一次新建多个自定义标准。导出走三线表版式（与链路预算报告里的表同款）。
    改完在链路预算各窗口点顶栏「刷新」即生效（那按钮本就重拉 link:baseband）。          */
-const MC_STORE_KEYS = ['key', 'label', 'rows']
+// phy / meta 只对自建标准有意义（内置标准的这两项是标准属性，跟着版本走、不进改写层）
+const MC_STORE_KEYS = ['key', 'label', 'rows', 'phy', 'meta']
 const mcStds = ref([])            // [{ key, label, builtin, modified, rows:[{id,...}] }]
 const mcSel = ref('')
 const mcReadOnly = ref(false)     // 库文件损坏：只读展示，不许写回去覆盖
@@ -613,6 +614,9 @@ let _mcRowSeq = 1
 const mcNewRowId = () => 'mc' + (_mcRowSeq++)
 const mcCur = computed(() => mcStds.value.find((s) => s.key === mcSel.value) || null)
 const mcRows = () => (mcCur.value ? mcCur.value.rows : [])
+// 体制骨架的候选项。与 packages/core/utils/modcodTables.js 的 PHY_KINDS 同值——那边是落库前的
+// 归一化闸（只认 nr / nbiot），这里只是下拉。三项写死在这里而不走 IPC：它就是三个字面量。
+const PHY_KINDS = [{ value: '', label: '无' }, { value: 'nr', label: 'NR' }, { value: 'nbiot', label: 'NB-IoT' }]
 
 async function loadModcod() {
   if (!api?.modcod?.list) { mcStds.value = []; return }
@@ -634,14 +638,44 @@ function mcSave() {
     if (!api?.modcod?.save) return
     const payload = mcStds.value.map((s) => {
       const o = {}
-      for (const k of MC_STORE_KEYS) o[k] = k === 'rows' ? s.rows.map((r) => ({ ...r, id: undefined })) : s[k]
+      for (const k of MC_STORE_KEYS) {
+        if (k === 'rows') o[k] = s.rows.map((r) => ({ ...r, id: undefined }))
+        // ★ phy / meta 是对象：从深响应式的 mcStds 里直接取出来的是 Vue Proxy，过不了 IPC 的结构化克隆
+        //   （DataCloneError，invoke 当场抛、库任何一格的修改都静默不落盘）。出 IPC 前现造纯数据。
+        else if (k === 'phy' || k === 'meta') o[k] = s[k] ? JSON.parse(JSON.stringify(s[k])) : null
+        else o[k] = s[k]
+      }
       return o
     })
-    const r = await api.modcod.save(payload)
+    let r
+    try { r = await api.modcod.save(payload) }
+    catch (e) { flash('MODCOD 保存失败：' + (e && e.message ? e.message : String(e))); return }
     if (!r || !r.ok) { flash('MODCOD 保存失败：' + ((r && r.error) || '未知错误')); return }
     // 只回填「改过没有」这一位：整份回填会在用户还在键入时把「1.」这类中间态归一掉
     for (const s of r.standards || []) { const l = mcStds.value.find((x) => x.key === s.key); if (l) l.modified = s.modified }
   }, 260)
+}
+
+// 标准级属性的写入（体制骨架 / 门限条件）。走与格子编辑同一条路：先压撤销栈再改，改完落库。
+// 内置标准不许改这两项 —— 它们是标准属性，不是用户偏好。
+function mcSetPhy(kind) {
+  const cur = mcCur.value
+  if (!cur || cur.builtin) return
+  mcPushUndo()
+  cur.phy = (kind === 'nr' || kind === 'nbiot') ? { kind } : null
+  mcSave()
+}
+function mcSetMeta(key, raw) {
+  const cur = mcCur.value
+  if (!cur || cur.builtin) return
+  const v = String(raw == null ? '' : raw).trim()
+  mcPushUndo()
+  const m = Object.assign({}, cur.meta || null)
+  if (key === 'bler') { const n = parseFloat(v); if (isFinite(n) && n > 0 && n < 1) m.bler = n; else delete m.bler }
+  else if (v) m[key] = v
+  else delete m[key]
+  cur.meta = Object.keys(m).length ? m : null
+  mcSave()
 }
 
 /* ---- 撤销 / 重做：整库快照（六张表合起来也就几百行，够小）---- */
@@ -1057,6 +1091,33 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
                 <button v-if="mcCur.builtin" class="mini ghost" :disabled="!mcCur.modified" @click="mcResetStd(mcCur)">恢复默认</button>
                 <button v-else class="mini del" @click="mcRemoveStd(mcCur)">删除标准</button>
               </div>
+              <!-- 标准级属性：体制骨架决定这张表的门限按什么口径用（3GPP 走每 RE SNR、噪声带宽 =
+                   占用带宽），门限条件是厂家给表时随表附的那几项，只进 title 与报表，不参与计算。
+                   内置标准的这两项是标准属性、跟着版本走，故只读。 -->
+              <div class="mcstd">
+                <label class="mcstd-f" title="这张表的门限按哪种物理层口径用：NR / NB-IoT 走每资源元素 SNR（噪声带宽 = 占用带宽），无 = 走 DVB 那条换算链">
+                  <span class="mcstd-l">体制</span>
+                  <select class="ci" :value="mcCur.phy ? mcCur.phy.kind : ''" :disabled="mcCur.builtin" @change="mcSetPhy($event.target.value)">
+                    <option v-for="k in PHY_KINDS" :key="k.value" :value="k.value">{{ k.label }}</option>
+                  </select>
+                </label>
+                <label class="mcstd-f" title="门限那一列对应的首传误块率目标（0.1 = 10%）"><span class="mcstd-l">BLER</span>
+                  <input class="ci" :value="mcCur.meta && mcCur.meta.bler != null ? mcCur.meta.bler : ''" :readonly="mcCur.builtin"
+                         placeholder="0.1" @change="mcSetMeta('bler', $event.target.value)" />
+                </label>
+                <label class="mcstd-f" title="门限那一列的信道条件（AWGN / NTN-TDL-D …）"><span class="mcstd-l">信道</span>
+                  <input class="ci" :value="(mcCur.meta && mcCur.meta.channel) || ''" :readonly="mcCur.builtin"
+                         placeholder="AWGN" @change="mcSetMeta('channel', $event.target.value)" />
+                </label>
+                <label class="mcstd-f" title="门限那一列的码块规模条件（小码块通常还要高 0.3~2.2 dB）"><span class="mcstd-l">码块</span>
+                  <input class="ci" :value="(mcCur.meta && mcCur.meta.block) || ''" :readonly="mcCur.builtin"
+                         placeholder="≥3000 bit" @change="mcSetMeta('block', $event.target.value)" />
+                </label>
+                <label class="mcstd-f wide" title="门限那一列的出处（厂家实测报告、公开仿真、标准表…）"><span class="mcstd-l">来源</span>
+                  <input class="ci" :value="(mcCur.meta && mcCur.meta.source) || ''" :readonly="mcCur.builtin"
+                         @change="mcSetMeta('source', $event.target.value)" />
+                </label>
+              </div>
               <ExcelGrid class="mcgrid" :grid="mcGrid" :cols="MC_GRID_COLS" :text="mcCellText" :cell-tip="mcCellTip"
                          :head-tip="(c) => c.tip || c.label" empty-text="还没有 MODCOD。"
                          add-label="添加 MODCOD" del-label="删除所选行" @add="mcAddRow">
@@ -1270,6 +1331,15 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
 .cops .mini { margin-left: 4px; height: var(--h-ctl); white-space: nowrap; padding: 0 9px; }
 .cro { font-size: var(--fs-2); color: var(--text-faint); opacity: .8; margin-left: 6px; }
 .cempty { padding: 12px 4px; font-size: var(--fs-3); color: var(--text-faint); line-height: 1.6; }
+/* 标准级属性行：体制骨架 + 门限条件四格。一行排开，来源那格吃掉剩余宽度 */
+.mcstd { display: flex; align-items: center; gap: 10px; margin: 0 0 8px; flex-wrap: wrap; }
+.mcstd-f { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.mcstd-f.wide { flex: 1 1 200px; }
+.mcstd-f.wide .ci { flex: 1 1 auto; width: auto; }
+.mcstd-l { font-size: var(--fs-2); color: var(--text-muted); white-space: nowrap; }
+.mcstd .ci { width: 108px; font-size: var(--fs-2); }
+.mcstd .ci[readonly], .mcstd select:disabled { color: var(--text-muted); background: var(--surface); }
+
 /* MODCOD 表：标准页签在上、网格吃掉剩余高度（整页不滚，只网格自己滚——60 行的 S2X 表若跟着整页滚，
    列头一滚就没了）。故这一页的 .pane 关掉溢出，由 .mcsec 撑满并把高度让给网格。 */
 .pane.fill { overflow: hidden; }

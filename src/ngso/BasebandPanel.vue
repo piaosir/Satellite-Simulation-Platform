@@ -134,12 +134,22 @@ const modcodSel = computed(() => {
   const nm = props.form.modcodLabel
   const i = parseInt(props.form.modcodIndex)
   const byIdx = (i >= 0 && i < list.length) ? i : -1
-  if (!nm) return byIdx
+  if (!nm) return rowAgrees(list[byIdx]) ? byIdx : -1
   const hit = list.findIndex((m) => m.label === nm)
-  // ★ 名字对不上时退回行号：内置表改过名的行（如 NB-IoT 三张表 2026-09-06 把假分数从标签里
-  //   拿掉）不该让老配置的下拉整个显示成未选中。表只增不改序，行号是可靠的兜底。
-  return hit >= 0 ? hit : byIdx
+  if (hit >= 0) return hit
+  // ★ 名字对不上时退回行号（内置表改过名的行，如 NB-IoT 三张表把假分数从标签里拿掉），但行号只在
+  //   那一行与表单里实际生效的参数【对得上】时才认：内置表并不是只增不改序（NB-IoT NTN 表 8 行 → 14 行），
+  //   盲信行号会让下拉显示成另一档，而计算用的仍是表单里的旧值。三项都对不上就回「请选择」。
+  return rowAgrees(list[byIdx]) ? byIdx : -1
 })
+// MODCOD 表的一行与表单里此刻生效的参数是不是同一档：调制 / 码率 / 门限三项（门限按 0.005 dB 容差）
+function rowAgrees(mc) {
+  if (!mc) return false
+  const same = (a, b) => String(a == null ? '' : a).trim() === String(b == null ? '' : b).trim()
+  const thr = Number(mc.threshold), fthr = Number(props.form.ebno)
+  return same(mc.modulation, props.form.modulation) && same(mc.fec, props.form.fec)
+    && Number.isFinite(thr) && Number.isFinite(fthr) && Math.abs(thr - fthr) < 0.006
+}
 function onDvbChange(e) {
   props.form.dvbStandard = e.target.value
   props.form.modcodIndex = -1
@@ -236,7 +246,10 @@ function onDir(e) {
   const p = phy.value
   if (!p || p.kind !== 'nr' || p.dir === dir) { setPhy({ dir }); return }
   if (dir === 'ul') { setPhy({ dir, chBwMHz: null, nRb: 1, nSymb: 14 }); return }
-  const first = nrBwSteps({ ...p, dir })[0] || null
+  // ★ 缺省档跳过「本版可选」的档（optional：Rel-19 新加的 3 MHz 之类）—— 挑到一个可选的档等于替用户做了
+  //   一个部署决定，与 ntnPhy 里信道带宽反查的口径一致
+  const steps = nrBwSteps({ ...p, dir })
+  const first = steps.find((s) => !s.optional) || steps[0] || null
   setPhy(first ? { dir, chBwMHz: first.mhz, nRb: first.nRb, nSymb: 12 } : { dir, nSymb: 12 })
 }
 // 该【频段 + 子载波间隔】下有哪些信道带宽档（TS 38.101-5 Table 5.3.5-1/-2）。
@@ -263,7 +276,7 @@ function onBand(e) {
   const next = nrBwSteps({ ...p, band }).filter((s) => !(s.dlOnly && p.dir === 'ul'))
   if (p.chBwMHz == null) { setPhy({ band }); return }
   const keep = next.find((s) => s.mhz === p.chBwMHz)
-  const pick = keep || next[0] || null
+  const pick = keep || next.find((s) => !s.optional) || next[0] || null
   setPhy(pick ? { band, chBwMHz: pick.mhz, nRb: pick.nRb } : { band })
 }
 // 下行按「信道带宽 + 子载波间隔」查表自动填 PRB 数；上行是一个 UE 的分配，PRB 数直填
@@ -274,7 +287,7 @@ function onScs(e) {
   if (p && p.chBwMHz != null) {
     // 换子载波间隔 = 换一张档位表：同一个 10 MHz 在 15/30/60 kHz 下的 PRB 数不同，且未必都有这一档
     const next = nrBwSteps({ ...p, scs }).filter((s) => !(s.dlOnly && p.dir === 'ul'))
-    const pick = next.find((s) => s.mhz === p.chBwMHz) || next[0] || null
+    const pick = next.find((s) => s.mhz === p.chBwMHz) || next.find((s) => !s.optional) || next[0] || null
     if (pick) { patch.chBwMHz = pick.mhz; patch.nRb = pick.nRb }
   }
   setPhy(patch)
