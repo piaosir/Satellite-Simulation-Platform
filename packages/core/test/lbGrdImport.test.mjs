@@ -250,5 +250,68 @@ ok('斜距 → 轨道高度 → 斜距 往返自洽', wRt < 1e-8, `最大偏差 
 ok('椭球入参无效 → null', slantWgs84Max(NaN, 0, 10, 8000) === null && slantWgs84Max(40, 0, 10, 0) === null
   && altFromSlantWgs84(40, 0, 10, -1) === null)
 
+// —— ⑨ 自动回填与手改值的归属（GSO 链路表「卫星EIRP / 卫星G/T」）——
+// 曾经的坑：回填无条件覆盖整列 ⇒ 用户按需手改的 EIRP / G·T 存了盘，关掉再打开又被自动取值冲掉。
+// 判据＝指纹（天线 + 天线设置 + 星位 + 本行取值站址）：头一回见那一格只在【空】或【还是缺省值】时才填。
+console.log('\n=== 自动回填与手改值 ===\n')
+const FP_A = '{"file":"a.grd"}|116.4,39.9'      // 某天线 + 某站址
+const FP_B = '{"file":"a.grd"}|121.5,31.2'      // 站址变了
+const FP_C = '{"file":"b.grd"}|116.4,39.9'      // 换了天线 / 天线设置 / 星位
+const need = geo.grdFillNeeded
+
+ok('载入场景：手改过的值不被冲掉', need(undefined, FP_A, '45.20', '46') === false)
+ok('载入场景：存档里的自动值也只登记不改写', need(undefined, FP_A, '47.31', '46') === false)
+ok('新建/重置场景：还是字段缺省值 ⇒ 照常回填', need(undefined, FP_A, '46', '46') === true
+  && need(undefined, FP_A, '2', '2') === true)
+ok('缺省值比较去空白', need(undefined, FP_A, ' 46 ', '46') === true)
+ok('空格恒填（新增行 / 清空该格＝恢复自动取值）', need(undefined, FP_A, '', '46') === true
+  && need(FP_A, FP_A, '', '46') === true && need(FP_A, FP_A, null, '46') === true)
+ok('站址变了 ⇒ 重算写回（手改值也让位：输入变了旧值必然对不上）', need(FP_A, FP_B, '45.20', '46') === true)
+ok('换天线 / 改天线设置 / 星位变了 ⇒ 重算写回', need(FP_A, FP_C, '45.20', '46') === true)
+ok('指纹没变 ⇒ 一律不动那一格', need(FP_A, FP_A, '45.20', '46') === false
+  && need(FP_A, FP_A, '47.31', '46') === false)
+ok('本来没接天线（base 空）后来接上了 ⇒ 指纹变了照常回填', need('|116.4,39.9', FP_A, '45.20', '46') === true)
+// 顶栏「刷新」(force)：只重取「现值＝本会话上次自动写入值」的格子；载入后没写过的（auto 未知）与手改过的都不碰
+ok('刷新：现值就是上次自动值 ⇒ 重取', need(FP_A, FP_A, '47.31', '46', true, '47.31') === true)
+ok('刷新：现值≠上次自动值（用户改过）⇒ 不碰', need(FP_A, FP_A, '45.20', '46', true, '47.31') === false)
+ok('刷新：存档载入、本会话没自动写过 ⇒ 不碰', need(undefined, FP_A, '47.31', '46', true, undefined) === false)
+ok('非刷新：auto 不参与判定', need(FP_A, FP_A, '47.31', '46', false, '47.31') === false)
+
+// —— ⑩ 指纹基底：实时星位与 3D 页绘制项不进指纹 ——
+// 用户报的第二种丢法：卫星是实时关联星，3D 页每 3 s 重写 globe3d/grdLive（4 位小数），链路窗口每次获得焦点
+// 都重读；星位拼进指纹 ⇒ 指纹随时会变 ⇒ 下次任何触发（加行 / 改站址 / 刷新）把整列手改值冲掉。
+console.log('\n=== 指纹基底 ===\n')
+const base = geo.grdFillBase
+const cfg0 = { ctype: 'abs', pol: 'RSS', gainOffset: 0, pathLoss: 'none', fill: false, line: true, lineWidth: 1.6, lineAlpha: 1, alpha: 0.78,
+  boreType: 'azel', boreLon: 110.5, boreLat: 0, boreAz: 0, boreEl: 0, yaw: 0, boreLock: true, boreSat: null, boreSatName: '',
+  beamsToPlot: [0], beamNames: {}, levels: [{ v: -3, color: '#f00', lineColor: '#f00' }], keptSets: null }
+const stat = (lon) => ({ node: { folder: 'CS10R', lon, lat: 0, altKm: 35786, live: false }, ant: { name: 'EIRP', file: 'a.grd', satLon: lon, satLat: 0, satAlt: 35786 } })
+const live = (lon, lat) => ({ node: { folder: 'CS10R', lon, lat, altKm: 35786.4, live: true }, ant: { name: 'EIRP', file: 'a.grd', satLon: lon, satLat: lat, satAlt: 35786.4 } })
+const b0 = base(stat(110.5).node, stat(110.5).ant, cfg0)
+ok('基底非空且含文件名', b0.includes('a.grd'))
+ok('静态星：星位进指纹（改轨位 ⇒ 变）', base(stat(115).node, stat(115).ant, cfg0) !== b0)
+ok('实时星：星位漂移不改指纹', base(live(110.52, 0.03).node, live(110.52, 0.03).ant, cfg0) === base(live(110.55, -0.04).node, live(110.55, -0.04).ant, cfg0))
+ok('实时星 ≠ 静态星（静态→实时那一次算输入变了）', base(live(110.5, 0).node, live(110.5, 0).ant, cfg0) !== b0)
+const withCfg = (patch) => base(stat(110.5).node, stat(110.5).ant, { ...cfg0, ...patch })
+ok('绘制项（电平 / 颜色 / 线宽 / 填充 / 要画哪些波束 / 波束名）不改指纹',
+  withCfg({ levels: [{ v: -1, color: '#0f0', lineColor: '#00f' }, { v: -2 }], lineWidth: 3, fill: true, alpha: 0.5, beamsToPlot: [0, 1, 2], beamNames: { 0: '华北' }, ctype: 'rel', boreLock: false }) === b0)
+ok('增益偏置 / 极化 / 路径损耗 ⇒ 变', withCfg({ gainOffset: 1.5 }) !== b0 && withCfg({ pol: 'LHCP' }) !== b0 && withCfg({ pathLoss: 'fsl' }) !== b0)
+ok('指向（boreAz / boreEl / yaw / boreType / boreLon / boreLat）⇒ 变',
+  withCfg({ boreAz: 0.5 }) !== b0 && withCfg({ boreEl: -0.2 }) !== b0 && withCfg({ yaw: 10 }) !== b0
+  && withCfg({ boreType: 'lonlat' }) !== b0 && withCfg({ boreType: 'lonlat', boreLon: 112 }) !== withCfg({ boreType: 'lonlat' }) && withCfg({ boreLat: 5 }) !== b0)
+ok('删波束（keptSets）⇒ 变', withCfg({ keptSets: [0, 2] }) !== b0)
+ok('没有 file 的天线 ⇒ 空基底', base(stat(110.5).node, { name: 'x' }, cfg0) === '')
+// 清单对拍：采样器 makeSampleCtx 里读过的每个 c.<键> 都必须在 SAMPLE_CFG_KEYS 里（反之亦然）——两边任一边加字段都会在这里露头
+{
+  const fs = await import('node:fs')
+  const src = fs.readFileSync(new URL('../utils/grdSampler.js', import.meta.url), 'utf8')
+  const i = src.indexOf('function makeSampleCtx('), j = src.indexOf('\n}\n', i)
+  const body = src.slice(i, j)
+  const used = new Set([...body.matchAll(/\bc\.([A-Za-z_]\w*)/g)].map((m) => m[1]))
+  const listed = new Set(geo.SAMPLE_CFG_KEYS)
+  const miss = [...used].filter((k) => !listed.has(k)), extra = [...listed].filter((k) => !used.has(k))
+  ok('SAMPLE_CFG_KEYS 与采样器 makeSampleCtx 读的键一致', body.length > 0 && !miss.length && !extra.length, `采样器多读: [${miss}] 清单多列: [${extra}]`)
+}
+
 console.log(`\n=== ${pass} passed, ${fail} failed ===`)
 process.exit(fail ? 1 : 0)

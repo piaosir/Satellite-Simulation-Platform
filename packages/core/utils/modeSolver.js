@@ -26,9 +26,11 @@ function calcWithMargin(satParams, inputs, margin) {
 function findBalanceMargin(satParams, inputs) {
   let lo = -50, hi = 50;
   const maxIter = 300, tol = 0.001;
+  // ★ 引擎的报错原文一路往上带：3GPP 载波参数越界一类的诊断（「I_TBS=10 的子帧数上限 4」）
+  //   要是在这里吞成「计算过程出错」，功带平衡这条路上用户就永远不知道该改哪一格。
   const test = (m) => {
     const r = calcWithMargin(satParams, inputs, m);
-    if (!r.success) return { diff: Infinity, error: true };
+    if (!r.success) return { diff: Infinity, error: true, message: r.message };
     const alloc = parseFloat(r.data.allocBandwidthResult) || 0;
     const pbw = parseFloat(r.data.PowerBWResult) || 0;
     return { diff: Math.abs(alloc - pbw), error: false };
@@ -37,15 +39,15 @@ function findBalanceMargin(satParams, inputs) {
   for (let i = 0; i < maxIter; i++) {
     mid = (lo + hi) / 2;
     const c = test(mid);
-    if (c.error) return { success: false, message: '计算过程出错' };
+    if (c.error) return { success: false, message: c.message || '计算过程出错' };
     if (c.diff <= tol) return { success: true, margin: mid };
     const plus = test(mid + 0.01);
-    if (plus.error) return { success: false, message: '计算过程出错' };
+    if (plus.error) return { success: false, message: plus.message || '计算过程出错' };
     if (plus.diff < c.diff) {
       lo = mid; // 向更高余量搜索
     } else {
       const minus = test(mid - 0.01);
-      if (minus.error) return { success: false, message: '计算过程出错' };
+      if (minus.error) return { success: false, message: minus.message || '计算过程出错' };
       if (minus.diff < c.diff) hi = mid; // 向更低余量搜索
       else return { success: true, margin: mid }; // 局部最优
     }

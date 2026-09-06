@@ -1132,7 +1132,9 @@ console.log('\n=== 12 方案二：级联精简（传播项折叠 / 手算链完�
     'phyKindResult', 'phyDirResult', 'phyDirTextResult', 'phyDirTextEnResult',
     'phyScsResult', 'phyUnitsResult', 'phySpanResult', 'phyMcsResult', 'phyMcsEnResult',
     //   2026-09-06 再加三项：NTN 频段、目标 BLER、NB-IoT 的有效码率（都只对 3GPP 行有值）
-    'phyBandResult', 'phyBlerResult', 'phyCodeRateResult']);
+    'phyBandResult', 'phyBlerResult', 'phyCodeRateResult',
+    //   2026-09-07：信息速率守恒诊断（3GPP 段速率由本段 phy 定、与链首不一致时列出；DVB 链恒为空数组）
+    'rateMismatch']);
   const canon = (v) => {
     if (Array.isArray(v)) return '[' + v.map(canon).join(',') + ']';
     if (v && typeof v === 'object') {

@@ -19,6 +19,10 @@ export const FIELD_GROUPS = [
       { key: 'bandwidthFactor', label: '滚降系数 (1+α)', type: 'num', def: '1.20', target: 'link' },
       { key: 'rsCode', label: '帧效率', type: 'text', def: '188/204', target: 'link' },
       { key: 'noiseRatioMode', label: '门限模式', def: 'ebno', target: 'link' },
+      // 3GPP NTN 的物理层描述子（对象，不是表单格）：门限模式 = snr 时由它定占用带宽 / 信息速率 / TBS。
+      // 其余体制恒为 null，引擎不看（见 packages/core/utils/ntnPhy.js）。
+      // 无 type，故 buildParams 的 put() 原样递过去；出 IPC 前那一步 JSON 深拷贝会把响应式代理剥干净。
+      { key: 'phy', label: '物理层参数', def: null, target: 'link' },
       { key: 'margin', label: '系统余量', unit: 'dB', type: 'num', def: '3.00', target: 'link' },
       // 计算方式（求解策略）随载波入库：链路表逐行按所选载波取用，故一个批次内不同载波可各按各的方式求解。
       // target:'op' 不进引擎参数——App 换算成求解器 opt（mode / overDb），功放功率仍按行取发端站型的 paPowerW。
@@ -91,17 +95,13 @@ export const FIELD_GROUPS = [
       // （见 buildParams 的过滤）。options 为空，实际选项由 LinkBudgetApp 按当前载波信号库动态生成并
       // 通过 StationGrid 的 select-options 注入。
       { key: 'basebandId', label: '载波信号配置', type: 'select', options: [], def: '', target: 'meta' },
-      // 路数：本行代表几路完全相同的载波。组网里 20 个远端跑同一份返向配置是常态，
-      // 建 20 行既啰嗦、算得也慢；「高级计算」的组账按它 × 各条的带宽与功率。
-      // target:'meta' —— 不进引擎（引擎只算一路载波），只在组账与汇总里生效。
-      { key: 'carrierCount', label: '路数', tip: '本行代表几路完全相同的载波（同一份载波配置、同样的站型与站址）；组账与汇总按它计，单条链路的计算结果不受影响', type: 'num', def: '1', target: 'meta' },
       // 地球站配置（射频站型）：发射链参数由所选配置提供（见 station 组）；options 由 App 按地球站库动态注入
       { key: 'stationId', label: '地球站配置', type: 'select', options: [], def: '', target: 'meta' },
       { key: 'earthStationLocation', label: '地球站位置', type: 'text', def: '北京', target: 'link', city: 'tx', lonKey: 'longitude', latKey: 'latitude' },
       { key: 'longitude', label: '经度', unit: '°E', type: 'num', def: '116.4074', target: 'link' },
       { key: 'latitude', label: '纬度', unit: '°N', type: 'num', def: '39.9042', target: 'link' },
       { key: 'altitude', label: '海拔', unit: 'm', type: 'num', def: '0', target: 'link', auto: 'elev' },
-      { key: 'G_Ts', label: '卫星G/T', tip: '卫星接收品质因数 G/T（随波束位置随站而异的「卫星×发信站」配对量，故留在站表；可由 GRD 天线匹配自动回填）', unit: 'dB/K', type: 'num', def: '2', target: 'link' },
+      { key: 'G_Ts', label: '卫星G/T', tip: '卫星接收品质因数 G/T（随波束位置随站而异的「卫星×发信站」配对量，故留在站表；可由 GRD 天线匹配自动回填：手改后保持不动，清空该格即恢复自动取值）', unit: 'dB/K', type: 'num', def: '2', target: 'link' },
       { key: 'rainRate', label: 'R0.01%', unit: 'mm/h', type: 'num', def: '0', target: 'link', auto: 'rain' },
       { key: 'uplinkAvailability', label: '可用度', unit: '%', type: 'num', def: '99.90', target: 'link' }
     ]
@@ -116,13 +116,9 @@ export const FIELD_GROUPS = [
       { key: 'rxLongitude', label: '经度', unit: '°E', type: 'num', def: '116.4074', target: 'link' },
       { key: 'rxLatitude', label: '纬度', unit: '°N', type: 'num', def: '39.9042', target: 'link' },
       { key: 'rxAltitude', label: '海拔', unit: 'm', type: 'num', def: '0', target: 'link', auto: 'elev' },
-      { key: 'rxEIRP', label: '卫星EIRP', tip: '卫星下行 EIRP（随波束位置随站而异的「卫星×收信站」配对量，故留在站表；可由 GRD 天线匹配自动回填）', unit: 'dBW', type: 'num', def: '46', target: 'link' },
+      { key: 'rxEIRP', label: '卫星EIRP', tip: '卫星下行 EIRP（随波束位置随站而异的「卫星×收信站」配对量，故留在站表；可由 GRD 天线匹配自动回填：手改后保持不动，清空该格即恢复自动取值）', unit: 'dBW', type: 'num', def: '46', target: 'link' },
       { key: 'rxRainRate', label: 'R0.01%', unit: 'mm/h', type: 'num', def: '0', target: 'link', auto: 'rain' },
-      { key: 'rxDownlinkAvailability', label: '可用度', unit: '%', type: 'num', def: '99.90', target: 'link' },
-      // 附加 C/I：本载波带内的额外干扰，与卫星那七项转发器级干扰（ACI/ASI/XPI/IM，按转发器总功率
-      // 平铺定义的 PSD 口径）不是一回事，故不在卫星分区而在收端行上——CnC 残余自干扰就是各收端
-      // 自己的一个数。留空即不计入，引擎逐位不变。「高级计算」的 CnC 配平会把解出的值写到这里。
-      { key: 'carrierExtCI', label: '附加 C/I', tip: '本载波带内的附加干扰 C/I（CnC 残余自干扰等），并入载波 C/(N+I) 要求；留空不计入', unit: 'dB', type: 'num', def: '', target: 'link' }
+      { key: 'rxDownlinkAvailability', label: '可用度', unit: '%', type: 'num', def: '99.90', target: 'link' }
     ]
   }
 ]

@@ -1069,6 +1069,7 @@ const slaLinkName = computed(() => (slaLink.value ? pairLabel(slaLink.value) : '
 function openSlaDlg() {
   slaIdx.value = Math.min(Math.max(0, selected.value), Math.max(0, links.value.length - 1))
   slaOpen.value = true
+  ensureSlaScan()
 }
 // 重算 / 换子链路后链路可能变少：下标越界就退回第一条，免得弹窗里一片空白、看着像算漏了
 watch(links, () => { if (slaIdx.value >= links.value.length) slaIdx.value = 0 })
@@ -1288,7 +1289,9 @@ async function compute() {
     await nextTick()
     resultsStale.value = false
     await loadWaterfall()
-    await refreshSlaScan(out, sweepStore, isDown ? 'downlink' : 'uplink')
+    // SLA 档位扫描只在用得着时跑、且不 await（每行 9 档 = 9 次引擎重算，不该跟着每次「计算」全表跑）
+    invalidateSlaScan()
+    if (slaWanted()) ensureSlaScan()
   } catch (e) {
     error.value = String(e)
   } finally {
@@ -1301,10 +1304,25 @@ async function compute() {
 // 上行只改上行那一个入参键、下行只改下行那一个 —— 另一侧是凑几何的镜像入参，改了就把这条
 // 链路的口径悄悄换成另一件事。会话态、不入存档；随结果一起过期（重算即重扫）。
 // ★ 出 IPC 前必须现造纯数据：Vue 的 Proxy 过不了结构化克隆，invoke 当场抛且无 catch 时全静默。
-async function refreshSlaScan(out, store, mode) {
-  slaScanByRow.value = {}
+let _slaScanGen = 0, _slaScanDone = -1, _slaScanRun = null, _slaScanRunGen = -1
+function invalidateSlaScan() { _slaScanGen++; slaScanByRow.value = {} }
+const slaWanted = () => slaOpen.value || slaCount.value > 0
+// 把当前这批结果的档位表补齐（已齐就直接返回）；弹窗打开、导出报告前调。按当前子链路（上行 / 下行）扫
+async function ensureSlaScan() {
+  if (_slaScanDone === _slaScanGen) return
+  if (_slaScanRun) {
+    if (_slaScanRunGen === _slaScanGen) return _slaScanRun
+    await _slaScanRun
+    return ensureSlaScan()
+  }
+  const gen = _slaScanGen
+  _slaScanRunGen = gen
+  _slaScanRun = refreshSlaScan(links.value, sweepParamsByRow.value, linkMode.value, gen).finally(() => { _slaScanRun = null })
+  return _slaScanRun
+}
+async function refreshSlaScan(out, store, mode, gen) {
   if (!api || !api.linkBudget.slaScanBatch) return
-  if (mode !== 'uplink' && mode !== 'downlink') return
+  if (mode !== 'uplink' && mode !== 'downlink') { if (gen === _slaScanGen) _slaScanDone = gen; return }
   const engine = mode === 'downlink' ? 'regen-down' : 'regen-up'
   const single = mode === 'downlink' ? 'dn' : 'up'
   const jobs = []
@@ -1316,12 +1334,14 @@ async function refreshSlaScan(out, store, mode) {
     if (!samples.length) continue
     jobs.push({ rowId: l.rowId, spec: { engine, satParams: p.satParams, linkParams: p.linkParams, opt: p.opt, samples } })
   }
-  if (!jobs.length) return
+  if (!jobs.length) { if (gen === _slaScanGen) _slaScanDone = gen; return }
   try {
     const res = await api.linkBudget.slaScanBatch(JSON.parse(JSON.stringify(jobs.map((j) => j.spec))))
+    if (gen !== _slaScanGen) return        // 期间又算过一轮：这份已过期
     const m = {}
     jobs.forEach((j, i) => { if (res && res[i]) m[j.rowId] = res[i] })
     slaScanByRow.value = m
+    _slaScanDone = gen
   } catch (e) { /* 扫不出就不出档位表与 MIR，结果本身不受影响 */ }
 }
 
@@ -1854,6 +1874,7 @@ const { reportDlg, reportVariant, openReportDialog, openSlaReportDialog, submitR
       (v, u) => fmtQtyParts(v, u, unitAdaptive.value))
   },
   slaParams: () => slaParamRows(slaParams, reportLang.value),
+  beforeSla: ensureSlaScan,   // 导出含 SLA 的报告前把惰性扫描补齐
   // 「计算方式」一栏报的是链路类型（再生式上行/下行/星间）；求解策略随载波逐链路而定，另占「求解方式」一行
   // （取计算时留底的那份入参，此后改库不改已出结果的口径）。星间/激光无此栏——工作点由链路自身参数给定。
   calcFor: (l) => {

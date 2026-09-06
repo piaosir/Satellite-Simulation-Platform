@@ -30,6 +30,10 @@ export const FIELD_GROUPS = [
       { key: 'bandwidthFactor', label: '滚降系数 (1+α)', type: 'num', def: '1.20', target: 'link' },
       { key: 'rsCode', label: '帧效率', type: 'text', def: '188/204', target: 'link' },
       { key: 'noiseRatioMode', label: '门限模式', def: 'ebno', target: 'link' },
+      // 3GPP NTN 的物理层描述子（对象，不是表单格）：门限模式 = snr 时由它定占用带宽 / 信息速率 / TBS。
+      // 其余体制恒为 null，引擎不看（见 packages/core/utils/ntnPhy.js）。与 GSO / NGSO / E2E 三份同形；
+      // 漏掉这一条时 3GPP 载波在本窗口会整条退回 DVB 换算（2026-09-07 补）。
+      { key: 'phy', label: '物理层参数', def: null, target: 'link' },
       { key: 'margin', label: '系统余量', unit: 'dB', type: 'num', def: '3.00', target: 'link' },
       // 计算方式（求解策略）随载波入库。再生式上下行解耦、无转发器功带之分，故只有两种：
       //   power  设置工作点：上行取发信站功放功率(opPowerW)、下行取收信站 G/T → 求余量（出厂默认，沿用原口径）

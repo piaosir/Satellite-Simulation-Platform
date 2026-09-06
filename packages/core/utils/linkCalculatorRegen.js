@@ -98,6 +98,9 @@ function _reframeUplinkOnly(d, sat) {
       const ebnoThr = _num(d.ebnoResult), esnoThr = _num(d.esnoResult);
       if (ebnoThr != null) d.ebnoActualResult = (ebnoThr + m).toFixed(2 + FX);
       if (esnoThr != null) d.esnoActualResult = (esnoThr + m).toFixed(2 + FX);
+      // 3GPP NTN 的 snr 行同理（DVB 行 snrThresholdEffResult 是空串，_num 给 null，这一行不动）
+      const snrThr = _num(d.snrThresholdEffResult);
+      if (snrThr != null) d.snrActualResult = (snrThr + m).toFixed(2 + FX);
     }
   }
   // 再生式：上行与下行彻底解耦，系统可用度就是上行可用度——弯管的「上行×下行」联合可用度
@@ -219,13 +222,16 @@ function _regenDownlinkThermalCN(d, gtEff) {
 
 // 再生式下行「卫星功率谱密度」与「到达地面 PFD」（再生口径：卫星下行 EIRP 直发，永远计下行雨衰）。
 // 与弯管口径的关键差异：用卫星下行 EIRP(EIRPsResult)直发，不走转发器输出 EIRP。返回 { psd, pfd }（缺量则该项为 null）。
-//   · 卫星功率谱密度(dBW/Hz) = 卫星下行 EIRP − 10·lg(载波分配带宽 Hz)         —— 与引擎 satellitePSD 同口径，仅换 EIRP 源
+//   · 卫星功率谱密度(dBW/Hz) = 卫星下行 EIRP − 10·lg(功率所在带宽 Hz)         —— 与引擎 satellitePSD 同口径，仅换 EIRP 源
 //   · 到达地面 PFD(dBW/m²)   = 到达地面载波电平 C + 10·lg(4π/λ²)             —— 与下行功率链自洽（λ 取下行波长）
 function _regenDownlinkPsdPfd(d) {
   const eirp = _num(d.EIRPsResult);
   const out = { psd: null, pfd: null };
-  // 卫星功率谱密度：卫星下行 EIRP 摊到载波分配带宽（allocBandwidthResult 单位 kHz → ×1000 得 Hz）
-  const bwKHz = _num(d.allocBandwidthResult);
+  // 卫星功率谱密度：卫星下行 EIRP 摊到【功率实际所在的带宽】（单位 kHz → ×1000 得 Hz）。
+  // ★ 3GPP 行取占用带宽（noiseBwResult），不是含保护带的信道带宽——弯管引擎的 satellitePSD 已按
+  //   占用带宽算，这里跟上，否则同一条 NR 下行链弯管与再生式差 0.46 dB。DVB 行没有 noiseBwResult，
+  //   自动落回载波带宽，一位不变。
+  const bwKHz = _num(d.noiseBwResult) != null ? _num(d.noiseBwResult) : _num(d.allocBandwidthResult);
   if (eirp != null && bwKHz != null && bwKHz > 0) {
     out.psd = eirp - 10 * Math.log10(bwKHz * 1000);
   }
@@ -269,6 +275,9 @@ function _reframeDownlinkOnly(d, sat, gtEff) {
       const ebnoThr = _num(d.ebnoResult), esnoThr = _num(d.esnoResult);
       if (ebnoThr != null) d.ebnoActualResult = (ebnoThr + m).toFixed(2 + FX);
       if (esnoThr != null) d.esnoActualResult = (esnoThr + m).toFixed(2 + FX);
+      // 3GPP NTN 的 snr 行同理（DVB 行 snrThresholdEffResult 是空串，_num 给 null，这一行不动）
+      const snrThr = _num(d.snrThresholdEffResult);
+      if (snrThr != null) d.snrActualResult = (snrThr + m).toFixed(2 + FX);
     }
   }
   // 卫星功率谱密度 / 到达地面 PFD（再生口径：卫星下行 EIRP 直发）——就地覆盖引擎弯管值（用转发器输出 EIRP 算得，再生不适用）
@@ -394,6 +403,9 @@ function _reframeIslOnly(d, availPct) {
       const ebnoThr = _num(d.ebnoResult), esnoThr = _num(d.esnoResult);
       if (ebnoThr != null) d.ebnoActualResult = (ebnoThr + m).toFixed(2 + FX);
       if (esnoThr != null) d.esnoActualResult = (esnoThr + m).toFixed(2 + FX);
+      // 3GPP NTN 的 snr 行同理（DVB 行 snrThresholdEffResult 是空串，_num 给 null，这一行不动）
+      const snrThr = _num(d.snrThresholdEffResult);
+      if (snrThr != null) d.snrActualResult = (snrThr + m).toFixed(2 + FX);
     }
   }
   // 上/下行在星间口径下不参与——清空展示字段

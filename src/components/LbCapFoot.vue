@@ -20,7 +20,7 @@ const hasCap = () => !!(props.cap && props.cap.count)
 
 <template>
   <div v-if="hasCap() || readout" class="lbx-capblk lbx-capfoot">
-    <div v-if="hasCap()" class="lbx-capline" title="汇总本批次全部已计算链路，按各行的路数计（一行代表 N 路完全相同的载波时算 N 份）">
+    <div v-if="hasCap()" class="lbx-capline" title="汇总本批次全部已计算链路">
       <span class="lbx-cap-t">容量汇总</span>
       <span class="lbx-cap-big">{{ capMain.v }}<i>{{ capMain.u }}</i></span>
       <span class="lbx-cap-item"><span class="lbx-cap-l">总带宽</span><span class="lbx-cap-v">{{ bwMain.v }}<i>{{ bwMain.u }}</i></span></span>

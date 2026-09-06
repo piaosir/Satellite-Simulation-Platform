@@ -74,6 +74,43 @@ export async function sampleAntennaParams(node, ant, cfg, points) {
   }
 }
 
+// 采样真正吃的天线设置键——镜像 core/utils/grdSampler.js 的 makeSampleCtx（指向 / 极化 / 增益偏置 / 路径损耗 /
+// 存活波束；lbGrdImport.test.mjs 拿采样器源码对拍这份清单）。设置对象里其余全是 3D 页的绘制项（等值线电平与
+// 颜色 / 线宽 / 填充 / 要画哪些波束 / 波束改名…），改它们不该动链路表。
+export const SAMPLE_CFG_KEYS = ['boreType', 'boreAz', 'boreEl', 'yaw', 'boreLon', 'boreLat', 'pol', 'gainOffset', 'pathLoss', 'keptSets']
+
+// 对外：某路天线的回填指纹「基底」（不含站址那一段）＝决定取值的输入里【用户能改的】那部分：
+// 天线文件 + 采样吃的那几项设置 + 静态星位。
+// ★ 实时关联星（node.live：星位来自 3D 页每 3 s 重写一次的 globe3d/grdLive）不把星位拼进去：GEO 日常漂移
+//   ±0.1°、窗口每次获得焦点都重读一遍，拼进去等于「指纹随时会变」——下次任何触发（加行 / 改站址 / 刷新）
+//   就把整列手改值冲掉。漂移对取值的影响远小于 0.1 dB；要按最新星位重取走「刷新」（force，见 grdFillNeeded）。
+export function grdFillBase(node, ant, cfg) {
+  const spec = antennaSampleSpec(node, ant, cfg)
+  if (!spec) return ''
+  const c = {}
+  for (const k of SAMPLE_CFG_KEYS) if (spec.cfg[k] !== undefined && spec.cfg[k] !== null) c[k] = spec.cfg[k]
+  return JSON.stringify({ file: spec.file, sat: node.live ? 'live' : spec.sat, cfg: c })
+}
+
+// 对外：链路表某一格该不该由自动取值改写（判据本身是纯函数，便于自测；用法见 LinkBudgetApp 的 fillFromAnt）。
+// 回填是派生量：值由【匹配的天线 + 采样吃的天线设置 + 卫星几何 + 本行取值站址】唯一决定，故把这几项拼成
+// 指纹 fp 逐行留底（会话态，不入场景），据此判：
+//   · 指纹变了（prev 有值且不等）⇒ 输入都变了、旧值必然对不上 ⇒ 重算写回，不问那格是不是用户改过的
+//     （口径同 NGSO/再生式斜距回填 refreshSlant、端到端几何建议值 scanGeoSeeds）
+//   · 头一回见（prev === undefined —— 载入场景/分享包/复制来的行都是这一档）⇒ 只在【空格】或【还是
+//     字段缺省值】时才填：存档里用户手改过的 EIRP / G·T 必须原样留着（「关掉再打开就被自动取值冲掉」
+//     的那个坑）。代价是手填的数正好等于缺省值时仍会被改写，可忽略。
+//   · 空格恒填 ⇒ 「清空该格」即恢复自动取值的手势。
+//   · force（顶栏「刷新」）⇒ 现值就是本会话上次自动写进去的 auto ⇒ 肯定没被用户碰过 ⇒ 按最新星位 / 天线重取；
+//     存档里载入、本会话没写过的格子（auto 为 undefined）刷新也不碰——分不清是不是手改的就当手改的。
+export function grdFillNeeded(prev, fp, cur, def, force, auto) {
+  const v = String(cur == null ? '' : cur).trim()
+  if (v === '') return true
+  if (force && auto !== undefined && v === String(auto).trim()) return true
+  if (prev === undefined) return v === String(def == null ? '' : def).trim()
+  return prev !== fp
+}
+
 // 单点便捷封装（保留旧调用点兼容）。
 export async function sampleAntennaParam(node, ant, cfg, lon, lat) {
   const [v] = await sampleAntennaParams(node, ant, cfg, [{ lon, lat }])

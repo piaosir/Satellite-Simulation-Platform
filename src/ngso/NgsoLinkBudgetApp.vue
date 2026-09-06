@@ -33,7 +33,7 @@ import NgsoSatellitePanel from './NgsoSatellitePanel.vue'
 import WaterfallTable from './WaterfallTable.vue'
 import LbVizPane from '../components/LbVizPane.vue'
 import LbSlaDialog from '../components/LbSlaDialog.vue'
-import { deriveSla, normSlaParams, applyRowSla, setAdopt, setInclude, setAllInclude, clearAdopt, slaIncludeCount, slaSamplesFor, slaReportBlock, slaParamRows, DEFAULT_SLA_PARAMS , slaScanReportRows, slaComposition} from '../shared/lbSla.js'   // SLA 建议（四窗共用纯逻辑）
+import { deriveSla, normSlaParams, applyRowSla, setAdopt, setInclude, setAllInclude, clearAdopt, slaIncludeCount, slaSamplesFor, slaLoopback, slaReportBlock, slaParamRows, DEFAULT_SLA_PARAMS , slaScanReportRows, slaComposition} from '../shared/lbSla.js'   // SLA 建议（四窗共用纯逻辑）
 import LbReportDialog from '../components/LbReportDialog.vue'
 import { useLbReport } from '../shared/useLbReport.js'
 import LbFontCtl from '../components/LbFontCtl.vue'
@@ -899,6 +899,7 @@ const slaLinkName = computed(() => (slaLink.value ? `${slaLink.value.txName} →
 function openSlaDlg() {
   slaIdx.value = Math.min(Math.max(0, selected.value), Math.max(0, links.value.length - 1))
   slaOpen.value = true
+  ensureSlaScan()
 }
 // 重算后链路可能变少：下标越界就退回第一条，免得弹窗里一片空白、看着像算漏了
 watch(links, () => { if (slaIdx.value >= links.value.length) slaIdx.value = 0 })
@@ -1312,7 +1313,9 @@ async function compute() {
     selected.value = keepIdx < 0 ? 0 : keepIdx
     resultsStale.value = false
     await loadWaterfall()
-    await refreshSlaScan(out, sweepStore)
+    // SLA 档位扫描只在用得着时跑、且不 await（NGSO 每档还带几何搜索，全表跟着每次「计算」跑会拖慢一个量级）
+    invalidateSlaScan()
+    if (slaWanted()) ensureSlaScan()
   } catch (e) {
     error.value = String(e)
   } finally {
@@ -1324,24 +1327,41 @@ async function compute() {
 // 留底入参是最差候选 worstLp，故扫出来的各档也都对应最差工况 —— 与详细预算同一条链路同一组数。
 // 会话态、不入存档；随结果一起过期（重算即重扫）。
 // ★ 出 IPC 前必须现造纯数据：Vue 的 Proxy 过不了结构化克隆，invoke 当场抛且无 catch 时全静默。
-async function refreshSlaScan(out, store) {
-  slaScanByRow.value = {}
+let _slaScanGen = 0, _slaScanDone = -1, _slaScanRun = null, _slaScanRunGen = -1
+function invalidateSlaScan() { _slaScanGen++; slaScanByRow.value = {} }
+const slaWanted = () => slaOpen.value || slaCount.value > 0
+// 把当前这批结果的档位表补齐（已齐就直接返回）；弹窗打开、导出报告前调
+async function ensureSlaScan() {
+  if (_slaScanDone === _slaScanGen) return
+  if (_slaScanRun) {
+    if (_slaScanRunGen === _slaScanGen) return _slaScanRun
+    await _slaScanRun
+    return ensureSlaScan()
+  }
+  const gen = _slaScanGen
+  _slaScanRunGen = gen
+  _slaScanRun = refreshSlaScan(links.value, sweepParamsByRow.value, gen).finally(() => { _slaScanRun = null })
+  return _slaScanRun
+}
+async function refreshSlaScan(out, store, gen) {
   if (!api || !api.linkBudget.slaScanBatch) return
   const jobs = []
   for (const l of out) {
     if (!l || !l.data) continue
     const p = store[l.rowId]
     if (!p) continue
-    const samples = slaSamplesFor({ up: l.data.uplinkAvailabilityResult, dn: l.data.downlinkAvailabilityResult })
+    const samples = slaSamplesFor({ up: l.data.uplinkAvailabilityResult, dn: l.data.downlinkAvailabilityResult, sameSite: slaLoopback(slaParams, l.data, p) })
     if (!samples.length) continue
     jobs.push({ rowId: l.rowId, spec: { engine: 'ngso', satParams: p.satParams, linkParams: p.linkParams, opt: p.opt, samples } })
   }
-  if (!jobs.length) return
+  if (!jobs.length) { if (gen === _slaScanGen) _slaScanDone = gen; return }
   try {
     const res = await api.linkBudget.slaScanBatch(JSON.parse(JSON.stringify(jobs.map((j) => j.spec))))
+    if (gen !== _slaScanGen) return        // 期间又算过一轮：这份已过期
     const m = {}
     jobs.forEach((j, i) => { if (res && res[i]) m[j.rowId] = res[i] })
     slaScanByRow.value = m
+    _slaScanDone = gen
   } catch (e) { /* 扫不出就不出档位表与 MIR，结果本身不受影响 */ }
 }
 
@@ -1788,6 +1808,7 @@ const { reportDlg, reportVariant, openReportDialog, openSlaReportDialog, submitR
       (v, u) => fmtQtyParts(v, u, unitAdaptive.value))
   },
   slaParams: () => slaParamRows(slaParams, reportLang.value),
+  beforeSla: ensureSlaScan,   // 导出含 SLA 的报告前把惰性扫描补齐
   // 计算方式随载波逐链路而定：封面/表头只在全表口径一致时报该方式（不一致则不报，各链路详情自带「计算设置」块）
   calc: () => {
     const modes = new Set(links.value.map((l) => calcOfLink(l).key).filter(Boolean))

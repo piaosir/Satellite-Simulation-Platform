@@ -172,6 +172,11 @@ function carrierInto(lp, c) {
   lp.bandwidthFactor = c.bandwidthFactor;
   lp.rsCode = c.rsCode;
   lp.noiseRatioMode = c.noiseRatioMode;
+  // 3GPP NTN 的物理层描述子（PRB 数 / 子载波间隔 / MCS / 重复…）。noiseRatioMode === 'snr' 时引擎认它，
+  // 其余体制引擎压根不看。★ phy 是【本段】载波自己的：3GPP 段的信息速率由它（TBS ÷ 时长）算出来，
+  // 链首那份 infoRate 对它不起作用。端到端要求信息速率全程守恒，故 computeLinkChain 逐段比对
+  // 段速率与链首速率，不一致时以 rateMismatch 报出（见结果装配处），不静默改数。
+  lp.phy = c.phy;
   // 余量只影响引擎的反解工作点；本模块一律正向取物理量，不读引擎余量。给个定值保持良定。
   lp.margin = '3';
   return lp;
@@ -440,6 +445,13 @@ function computeLinkChain(chain) {
   // 载波带宽按【本段】的体制取：一颗透明星占多少转发器带宽，取决于穿过它的那条载波，
   // 而那条载波是它所在段的体制（再生节点之后可能已换成另一种调制/速率）。
   const allocBWofSeg = (s) => num((segEcho[s] || carrierEcho || {}).allocBandwidthResult);
+  // 功率谱密度的参考带宽：功率实际铺在哪段频谱上。3GPP 行是占用带宽（信道带宽两侧的保护带上
+  // 没有功率），DVB 行没有 noiseBwResult，自动落回载波带宽 —— 与三个引擎的 psdBandwidth 同一把尺。
+  const psdBWofSeg = (s) => {
+    const e = segEcho[s] || carrierEcho || {};
+    const occ = num(e.noiseBwResult);
+    return occ !== null ? occ : num(e.allocBandwidthResult);
+  };
   // 透明星入账：算出该载波的转发器占用，压台账的回退算式 + 占用两行 + 出发电平那一行，
   // 返回每载波输出 EIRP。
   // 两处调用（星地上行进星 / 星间进星）共用——占用是这颗星的属性，与从哪一跳进来无关。
@@ -824,6 +836,18 @@ function computeLinkChain(chain) {
       demodLossResult: fx(sg.demodLoss, 2), RXnoiseBW: fx(bwOfSeg(sg.index), 2)
     }, sg.echo || null)),
     // 逐颗透明星的转发器占用（nodeIndex 指回链上的节点下标，供链路条画占比条）
+    // 端到端要求信息速率全程守恒。DVB 段由链首那份 infoRate 钉住；3GPP 段的速率由本段 phy（TBS ÷ 时长）定，
+    // 链首钉不住 —— 不一致时在这里报出（段号从 1 起，kbps），由窗口提示，不静默改数。
+    rateMismatch: (() => {
+      const head = num((segEcho[0] || carrierEcho || {}).infoRateResult);
+      const out = [];
+      if (head === null) return out;
+      for (let s = 1; s < segEcho.length; s++) {
+        const v = num((segEcho[s] || {}).infoRateResult);
+        if (v !== null && Math.abs(v - head) > 1e-6 * Math.max(1, Math.abs(head))) out.push({ seg: s + 1, rateKbps: v, headKbps: head });
+      }
+      return out;
+    })(),
     transponders: txpUse.map((t) => ({
       nodeIndex: t.nodeIndex, name: t.name,
       sfdsResult: fx(t.sfds, 2),
@@ -840,6 +864,18 @@ function computeLinkChain(chain) {
     hops: hops.map((r) => ({
       index: r.index, type: r.type, fromName: r.fromName, toName: r.toName,
       frequencyResult: r.freq === null || r.freq === undefined ? '' : fx(num(r.freq), 4),
+      // —— 纯回显，不进任何计算：SLA 的「发射合规」要拿链首上行跳的极化 / EIRP / PSD ——
+      // stationEirpResult 就是级联台账里「发信站 EIRP」那一行取的同一个数（h0.txEirp），逐位相等；
+      // stationPsdResult = EIRP − 10lg(B_Hz)，B 取【本段】载波功率所在的带宽（再生节点之后可能换了体制）。
+      polarizationResult: (hopsIn[r.index] && hopsIn[r.index].polarization) || '',
+      stationEirpResult: r.type === 'up' ? fx(r.txEirp === undefined ? null : r.txEirp, 2) : '',
+      stationPsdResult: (() => {
+        if (r.type !== 'up') return '';
+        const bwKHz = psdBWofSeg(r.seg);
+        const e = r.txEirp;
+        if (e === null || e === undefined || !isFinite(e) || !(bwKHz > 0)) return '';
+        return fx(e - 10 * Math.log10(bwKHz * 1000), 2);
+      })(),
       distanceResult: fx(r.distanceKm, 2),
       delayResult: fx(r.delayMs, 3),
       fslResult: fx(r.fsl, 2),
@@ -1024,7 +1060,15 @@ function directMergeIntfLinear(nodes, from, to, rec) {
 function carrierEchoOf(d) {
   const keys = ['allocBandwidthResult', 'spectralEfficiencyResult', 'infoRateResult', 'carrierRateResult',
     'symbolRateResult', 'ChipRateResult', 'modulationResult', 'modulationFactorResult', 'fecResult',
-    'berResult', 'ebnoResult', 'esnoResult'];
+    'berResult', 'ebnoResult', 'esnoResult',
+    // 3GPP NTN（snr 口径）：门限 SNR（表值 / 含重复）、占用带宽、重复次数、TBS、描述串与逐项物理层参数
+    'snrThresholdResult', 'snrThresholdEffResult', 'snrActualResult', 'noiseBwResult',
+    'phyRepResult', 'phyTbsResult', 'phyTbsUnitResult', 'phyDescResult', 'phyDescEnResult',
+    'phyKindResult', 'phyDirResult', 'phyDirTextResult', 'phyDirTextEnResult',
+    'phyScsResult', 'phyUnitsResult', 'phySpanResult',
+    'phyMcsResult', 'phyMcsEnResult',
+    // NTN 频段 / 目标 BLER / NB-IoT 有效码率（载波段的三行，漏了整行不出）
+    'phyBandResult', 'phyBlerResult', 'phyCodeRateResult'];
   const out = {};
   for (const k of keys) if (d[k] !== undefined) out[k] = d[k];
   return out;

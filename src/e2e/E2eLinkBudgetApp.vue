@@ -218,6 +218,13 @@ const sel = reactive({ type: 'node', index: 0 })
 const results = reactive({})     // _id → 引擎 data
 const errors = reactive({})      // _id → 报错文本
 const curResult = computed(() => (cur.value ? results[cur.value._id] || null : null))
+// 信息速率不守恒（3GPP 段的速率由本段物理层参数定，链首钉不住）：引擎逐段比对后报出，这里只陈述数字
+const rateMismatchText = computed(() => {
+  const d = curResult.value
+  const mm = d && Array.isArray(d.rateMismatch) ? d.rateMismatch : []
+  if (!mm.length) return ''
+  return mm.map((m) => `第 ${m.seg} 段信息速率 ${m.rateKbps.toFixed(3)} kbps ≠ 链首 ${m.headKbps.toFixed(3)} kbps`).join('；')
+})
 
 // 链路自动命名：没起过名就随节点走（「发信站→收信站 · 1星2跳」），用户改过一次即钉死。
 // 名字是数据（存进 configs.json、显示在 <input> 与打了 skip 的名字位上），呈现层翻不到 ⇒ 生成时按语言出字。
@@ -791,7 +798,10 @@ async function compute() {
     resultsStale.value = false
     const bad = chains.filter((r) => errors[r._id]).length
     toast(bad ? `已计算 ${chains.length} 条，其中 ${bad} 条报错` : `已计算 ${chains.length} 条链路`)
-    await refreshSlaScan(chainOf)
+    // SLA 档位扫描只在用得着时跑、且不 await（每链 9 档 = 9 次整链重算，不该跟着每次「计算」全表跑）
+    _slaChainOf = chainOf
+    invalidateSlaScan()
+    if (slaWanted()) ensureSlaScan()
   } finally { computing.value = false }
 }
 
@@ -799,8 +809,24 @@ async function compute() {
 // 端到端按同一个 k 缩放链上全部地球站节点的可用度（星间跳不参与），使系统可用度恰为该档；
 // 不钉工作点——正向电平递推本就没有自由变量。会话态、不入存档；随结果一起过期。
 // ★ 出 IPC 前必须现造纯数据：Vue 的 Proxy 过不了结构化克隆，invoke 当场抛且无 catch 时全静默。
-async function refreshSlaScan(chainOf) {
-  for (const k of Object.keys(slaScanByRow)) delete slaScanByRow[k]
+let _slaChainOf = {}                 // 最近一次计算送进引擎的链描述子（按行 _id），惰性扫描要照它重跑
+let _slaScanGen = 0, _slaScanDone = -1, _slaScanRun = null, _slaScanRunGen = -1
+function invalidateSlaScan() { _slaScanGen++; for (const k of Object.keys(slaScanByRow)) delete slaScanByRow[k] }
+const slaWanted = () => slaOpen.value || slaCount.value > 0
+// 把当前这批结果的档位表补齐（已齐就直接返回）；弹窗打开、导出报告前调
+async function ensureSlaScan() {
+  if (_slaScanDone === _slaScanGen) return
+  if (_slaScanRun) {
+    if (_slaScanRunGen === _slaScanGen) return _slaScanRun
+    await _slaScanRun
+    return ensureSlaScan()
+  }
+  const gen = _slaScanGen
+  _slaScanRunGen = gen
+  _slaScanRun = refreshSlaScan(_slaChainOf, gen).finally(() => { _slaScanRun = null })
+  return _slaScanRun
+}
+async function refreshSlaScan(chainOf, gen) {
   if (!api || !api.linkBudget.slaScanBatch) return
   const jobs = []
   for (const row of chains) {
@@ -811,10 +837,12 @@ async function refreshSlaScan(chainOf) {
     if (!samples.length) continue
     jobs.push({ rowId: row._id, spec: { engine: 'chain', chain, samples } })
   }
-  if (!jobs.length) return
+  if (!jobs.length) { if (gen === _slaScanGen) _slaScanDone = gen; return }
   try {
     const res = await api.linkBudget.slaScanBatch(JSON.parse(JSON.stringify(jobs.map((j) => j.spec))))
+    if (gen !== _slaScanGen) return        // 期间又算过一轮：这份已过期
     jobs.forEach((j, i) => { if (res && res[i]) slaScanByRow[j.rowId] = res[i] })
+    _slaScanDone = gen
   } catch (e) { /* 扫不出就不出档位表，结果本身不受影响 */ }
 }
 
@@ -884,6 +912,7 @@ function openSlaDlg() {
   const opts = slaOpts.value
   slaIdx.value = opts.some((o) => o.i === i0) ? i0 : (opts.length ? opts[0].i : i0)
   slaOpen.value = true
+  ensureSlaScan()
 }
 // 删链后下标可能越界：退回第一条，免得弹窗里一片空白、看着像算漏了
 watch(() => chains.length, (n) => { if (slaIdx.value >= n) slaIdx.value = 0 })
@@ -989,6 +1018,7 @@ const { reportDlg, reportVariant, openReportDialog, openSlaReportDialog, submitR
       (v, u) => fmtQtyParts(v, u, unitAdaptive.value))
   },
   slaParams: () => slaParamRows(slaParams, reportLang.value),
+  beforeSla: ensureSlaScan,   // 导出含 SLA 的报告前把惰性扫描补齐
   // 卫星名/频段留空：一条链跨几颗星、上下行各一个频段，取其一填进封面就是以偏概全。
   // 计算方式是本窗唯一的那一种，如实报出。
   calc: () => ({ satelliteName: '', frequencyBand: '', mode: reportLang.value === 'en' ? 'Forward level recursion' : '正向电平递推' }),
@@ -1478,6 +1508,7 @@ onMounted(async () => {
               </table>
             </div>
             <div v-if="cur && errors[cur._id]" class="lb-err">{{ errors[cur._id] }}</div>
+            <div v-if="rateMismatchText" class="lb-err">{{ rateMismatchText }}</div>
           </LbSection>
 
           <!-- 中：链路条编辑器 ‖ 右：检查器 -->

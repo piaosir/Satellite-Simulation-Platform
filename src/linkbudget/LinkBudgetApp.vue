@@ -4,7 +4,7 @@ import ActivationLock from '../components/ActivationLock.vue'
 import { FIELD_GROUPS, SAT_FIELDS, CARRIER_FIELDS, TX_FIELDS, RX_FIELDS, ES_FIELDS, ES_COMMON_FIELDS, ES_TX_FIELDS, ES_RX_FIELDS, defaultsFor, buildParams } from './params.js'
 import * as GEO_PARAMS from './params.js'   // 整份 schema 传给 lbMiniExport 的 target 分流（与 buildParams 同源，但不做 sfdRef 的引擎入口换算）
 import { buildMiniConfig, miniConfigItem, miniConfigName } from '../shared/lbMiniExport.js'
-import { loadSatTree, sampleAntennaParams, antennaSampleSpec } from './grdParam.js'
+import { loadSatTree, sampleAntennaParams, antennaSampleSpec, grdFillBase, grdFillNeeded } from './grdParam.js'
 import { importGrdAntennas, removeLocalAntenna, localFolderFor, isLocalFolder, syncLocalNode, antKeyOf, folderOfKey, antNameOfKey } from '../shared/lbGrdImport.js'
 import { resolveRefId } from '../shared/lbShare.js'
 import { stableStringify } from '../shared/configDirty.js'
@@ -29,7 +29,7 @@ import SatellitePanel from './SatellitePanel.vue'
 import WaterfallTable from './WaterfallTable.vue'
 import LbVizPane from '../components/LbVizPane.vue'
 import LbSlaDialog from '../components/LbSlaDialog.vue'
-import { deriveSla, normSlaParams, applyRowSla, setAdopt, setInclude, setAllInclude, clearAdopt, slaIncludeCount, slaSamplesFor, slaReportBlock, slaParamRows, sunOutageSummary, DEFAULT_SLA_PARAMS , slaScanReportRows, slaComposition} from '../shared/lbSla.js'   // SLA 建议（四窗共用纯逻辑）
+import { deriveSla, normSlaParams, applyRowSla, setAdopt, setInclude, setAllInclude, clearAdopt, slaIncludeCount, slaSamplesFor, slaLoopback, slaReportBlock, slaParamRows, sunOutageSummary, DEFAULT_SLA_PARAMS , slaScanReportRows, slaComposition} from '../shared/lbSla.js'   // SLA 建议（四窗共用纯逻辑）
 import { getPlan, checkAgainstChannel } from '../shared/lbFreqPlanRef.js'   // 发射合规：卫星条目引用了频率计划时的数值核对
 import LbFontCtl from '../components/LbFontCtl.vue'
 import LbUnitCtl from '../components/LbUnitCtl.vue'
@@ -41,7 +41,7 @@ import LbShareDialog from '../components/LbShareDialog.vue'
 import LbReportDialog from '../components/LbReportDialog.vue'
 import LbAdvBalanceDialog from '../components/LbAdvBalanceDialog.vue'
 import { useLbReport } from '../shared/useLbReport.js'
-import { planAdvWriteback, advBaseMargin, cncAvailability, CNC_AVAIL_HI, CNC_AVAIL_LO, CNC_AVAIL_STEPS } from '../shared/advBalance.js'   // 高级计算配平结果的写回落点（新建副本 / 就地改）
+import { planAdvWriteback, advBaseMargin } from '../shared/advBalance.js'   // 高级计算配平结果的写回落点（新建副本 / 就地改）
 import { buildGeoScene } from '../shared/lbLinkScene.js'
 
 const api = typeof window !== 'undefined' ? window.api : null
@@ -385,7 +385,6 @@ const RESULT_DEFS = [
   { key: 'linkmargin', label: '链路余量', unit: 'dB' },
   { key: 'carrierTotalCN', label: '合计C/N', unit: 'dB' },
   { key: 'thresholdCN', label: '门限C/N', unit: 'dB' },
-  { key: 'carrierExtDegResult', label: '附加C/I退化', unit: 'dB' },
   { key: 'uplinkCN', label: '上行C/N', unit: 'dB' },
   { key: 'downlinkCN', label: '下行C/N', unit: 'dB' },
   { key: 'ebnoActualResult', label: 'Eb/N₀', unit: 'dB' },
@@ -665,28 +664,60 @@ const grdFacts = computed(() => {
   }
 })
 let _grdT = null
+// —— 回填＝派生量：某行的卫星 EIRP / G·T 由【匹配的天线 + 采样吃的天线设置 + 卫星几何 + 本行取值站址】唯一决定 ——
+// 这几项只要有一项变，本行该格立刻重算写回——不问那格是不是用户改过的：输入都变了，旧值必然对不上
+// （口径同 NGSO/再生式的斜距 refreshSlant、端到端的 scanGeoSeeds）。格子空着也直接补上，故「清空该格」
+// ＝恢复自动取值；等于字段缺省值（46 dBW / 2 dB/K）视同没填过，新建/重置场景选上带方向图的卫星即回填。
+// grdMemo 逐行记两样东西，只活在本次会话（不入场景）：
+//   fp   上次算过的那组输入（指纹，基底见 grdParam.grdFillBase）——载入场景时各行是新 _id、指纹尚未记过
+//        ⇒ 只登记不改写，绝不覆盖存档里用户手改过的 EIRP / G·T（此前每次开窗都被自动取值冲掉）；
+//   auto 本会话上次自动写进那格的值——顶栏「刷新」(force) 只重取【现在还是这个值】的格子：肯定没被用户碰过，
+//        才按最新星位 / 天线重取。实时星位与 3D 页的绘制项刻意不进指纹（grdFillBase）：否则星位一漂、
+//        改个等值线颜色，下次任何触发（加行 / 改站址）就把整列手改值冲掉。
+const grdMemo = {}                     // { 行_id: { fp: { 字段key: 指纹 }, auto: { 字段key: 上次自动值 } } }
+const memoOf = (r) => grdMemo[r._id] || (grdMemo[r._id] = { fp: {}, auto: {} })
+const ROW_DEF = { ...defaultsFor(TX_FIELDS), ...defaultsFor(RX_FIELDS) }
+// 一路天线 → 一列格子：ptOf 给该列的取值站址（EIRP 取收端、G·T 取发端）。只对真正需要回填的行发 IPC。
+// ★ 没匹配到天线时也照样登记指纹（base 为空串）：这样「本来没接天线、后来接上了」也算指纹变了，
+//   照常回填——否则载入场景后再去卫星条目里选天线，那一列会一动不动。
+async function fillFromAnt(key, antKey, ptOf, force) {
+  const a = antByKey(antKey)
+  const base = a ? grdFillBase(a.node, a.ant, a.cfg) : ''
+  const todo = []
+  for (const r of linkRows) {
+    const pt = ptOf(r)
+    const fp = `${base}|${pt.lon},${pt.lat}`
+    const m = memoOf(r)
+    const prev = m.fp[key]
+    m.fp[key] = fp
+    if (a && grdFillNeeded(prev, fp, r[key], ROW_DEF[key], force, m.auto[key])) todo.push({ r, pt, prev })
+  }
+  if (!todo.length) return
+  const vals = await sampleAntennaParams(a.node, a.ant, a.cfg, todo.map((t) => t.pt))
+  todo.forEach((t, i) => {
+    const v = vals && vals[i]
+    const m = memoOf(t.r)
+    // 没取到值（越地平 / IPC 失败）：指纹退回原样，当这次没发生过，下次输入再变还会重试
+    if (v == null) { if (t.prev === undefined) delete m.fp[key]; else m.fp[key] = t.prev }
+    else { t.r[key] = String(v); m.auto[key] = String(v) }
+  })
+}
 // 回填前若本就「无未保存改动」，回填后把基线推进到回填结果——否则实时星/GRD 自动重算出
 // 的新值（非用户操作）会被指纹判定为改动，弹出误报的「未保存，是否保存？」。
 // 若回填前已有用户自己的改动（isDirty 为真），则不触碰基线，改动仍会被正确提示保存。
-async function refreshGrdFill() {
+// force：顶栏「刷新」——本会话自动写过、现在还没被改的格子按最新星位 / 天线重取（见 grdFillNeeded）。
+async function refreshGrdFill(force) {
   const wasClean = !isDirty()
-  // 卫星EIRP 天线 → 各行收端经纬度取最大 Parameter，回填 rxEIRP（一次 IPC 批量采样全部行）
-  const eirp = antByKey(curGrd.value && curGrd.value.eirpKey)
-  if (eirp && linkRows.length) {
-    const pts = linkRows.map((r) => ({ lon: parseFloat(r.rxLongitude), lat: parseFloat(r.rxLatitude) }))
-    const vals = await sampleAntennaParams(eirp.node, eirp.ant, eirp.cfg, pts)
-    linkRows.forEach((r, i) => { if (vals && vals[i] != null) r.rxEIRP = String(vals[i]) })
-  }
-  // 卫星G/T 天线 → 各行发端经纬度取最大 Parameter，回填 G_Ts
-  const gt = antByKey(curGrd.value && curGrd.value.gtKey)
-  if (gt && linkRows.length) {
-    const pts = linkRows.map((r) => ({ lon: parseFloat(r.longitude), lat: parseFloat(r.latitude) }))
-    const vals = await sampleAntennaParams(gt.node, gt.ant, gt.cfg, pts)
-    linkRows.forEach((r, i) => { if (vals && vals[i] != null) r.G_Ts = String(vals[i]) })
-  }
+  const g = curGrd.value
+  const f = force === true
+  // 卫星EIRP 天线 → 各行收端经纬度取最大 Parameter，回填 rxEIRP；卫星G/T 天线 → 各行发端经纬度回填 G_Ts
+  await fillFromAnt('rxEIRP', g && g.eirpKey, (r) => ({ lon: parseFloat(r.rxLongitude), lat: parseFloat(r.rxLatitude) }), f)
+  await fillFromAnt('G_Ts', g && g.gtKey, (r) => ({ lon: parseFloat(r.longitude), lat: parseFloat(r.latitude) }), f)
+  const ids = new Set(linkRows.map((r) => r._id))
+  for (const k of Object.keys(grdMemo)) if (!ids.has(k)) delete grdMemo[k]   // 删掉的行不留底
   if (wasClean) setBaseline()
 }
-function scheduleGrdFill() { clearTimeout(_grdT); _grdT = setTimeout(refreshGrdFill, 300) }
+function scheduleGrdFill() { clearTimeout(_grdT); _grdT = setTimeout(() => refreshGrdFill(false), 300) }
 
 // —— 直接导入方向图（卫星库条目编辑器里的「导入方向图」）——
 // 免去「先去星座3D页导入一趟」：选中的 GRD/PAT 由主进程按字节拷进 userData，挂在本卫星条目名下
@@ -785,17 +816,20 @@ async function refreshLatest() {
     reloadSatTree()   // 重读 globe3d/settings.grd（树/天线 cfg）+ grdLive 实时位置（数据未变则复用缓存，不重解析 GRD）
     try { const c = api && await api.linkBudget.cities(); if (c) cities.value = c } catch (e) { /* keep */ }
     try { const b = api && await api.linkBudget.baseband(); if (b) basebandOpts.value = b } catch (e) { /* keep */ }
-    try { await refreshGrdFill() } catch (e) { /* keep */ }   // 直接回填(跳过防抖)，确保 EIRP/G·T 就绪后再算
+    try { await refreshGrdFill(true) } catch (e) { /* keep */ }   // 直接回填(跳过防抖)且 force：本会话自动写过的格子按最新星位重取，手改的不碰
     _suppressRO = false
     clearTimeout(_roT)        // 丢弃抑制期间可能挂起的计时器
     await refreshReadonly()   // 守卫解除后只跑一遍扇出
     toast('已刷新最新设置')
   } finally { _suppressRO = false; refreshing.value = false }
 }
-// 换卫星条目 / 改匹配天线 / 行经纬度变化 → 重算回填。仅看经纬度（避免回填值本身再触发循环）。
+// 换卫星条目 / 改匹配天线 / 行经纬度变化 → 重算回填。值本身只看「空没空」（避免回填值再触发循环），
+// 空了就补回自动取值——这就是「清空该格＝恢复自动取值」那一手的触发处。
+const blankSig = (r, k) => (String(r[k] == null ? '' : r[k]).trim() === '' ? '1' : '0')
 watch(() => [satId.value, curGrd.value && curGrd.value.eirpKey, curGrd.value && curGrd.value.gtKey,
   linkRows.map((r) => r.longitude + ',' + r.latitude).join(';'),
-  linkRows.map((r) => r.rxLongitude + ',' + r.rxLatitude).join(';')],
+  linkRows.map((r) => r.rxLongitude + ',' + r.rxLatitude).join(';'),
+  linkRows.map((r) => blankSig(r, 'rxEIRP') + blankSig(r, 'G_Ts')).join('')],
   scheduleGrdFill)
 const sel = computed(() => links.value[selected.value] || null)
 // 核心指标（详细预算首块）：取当前选中链路的完整结果
@@ -824,6 +858,7 @@ const slaLinkName = computed(() => (slaLink.value ? `${slaLink.value.txName} →
 function openSlaDlg() {
   slaIdx.value = Math.min(Math.max(0, selected.value), Math.max(0, links.value.length - 1))
   slaOpen.value = true
+  ensureSlaScan()
   refreshSlaSun()
 }
 
@@ -972,30 +1007,19 @@ function capacityKbpsOf(d) {
 // 总功率带宽 = Σ 各链路功率带宽（PowerBWResult = 功率占用 × 转发器带宽，kHz）——转发器资源占用的另一维：
 // 与总带宽并列着看才知道整批是受功率限还是受带宽限（Σ功率带宽 = Σ载波带宽 即整批功带平衡，见「高级计算」）。
 // pbwN = 出了这个数的链路条数；为 0（本批没一条算出功率带宽）时汇总行不出该项，而非显示一个 0。
-// 汇总按【路数】计：一行代表 N 路完全相同的载波时，它占的带宽/功率/容量都是 N 份。
-// 不乘的话「1 行 ×20 路」与「建 20 行」两种建法汇总对不上，而「高级计算」的组账已按路数算。
-// count 是行上的 meta 字段（不进引擎），故在这里乘，引擎那边一路载波的结果不受影响。
 const capacitySummary = computed(() => {
   const done = links.value.filter((l) => l && l.data && !l.error)
-  const wayOf = (rowId) => {
-    const r = linkRows.find((x) => x._id === rowId)
-    const n = r ? Math.round(parseFloat(r.carrierCount)) : 1
-    return (isFinite(n) && n >= 1) ? n : 1
-  }
-  let bwKHz = 0, capKbps = 0, pbwKHz = 0, pbwN = 0, ways = 0
+  let bwKHz = 0, capKbps = 0, pbwKHz = 0, pbwN = 0
   for (const l of done) {
-    const k = wayOf(l.rowId)
-    ways += k
     const bw = parseFloat(l.data.allocBandwidthResult)
-    if (isFinite(bw)) bwKHz += bw * k
+    if (isFinite(bw)) bwKHz += bw
     const kbps = capacityKbpsOf(l.data)
-    if (isFinite(kbps)) capKbps += kbps * k
+    if (isFinite(kbps)) capKbps += kbps
     const pbw = parseFloat(l.data.PowerBWResult)
-    if (isFinite(pbw)) { pbwKHz += pbw * k; pbwN++ }
+    if (isFinite(pbw)) { pbwKHz += pbw; pbwN++ }
   }
   return {
     count: done.length,
-    ways,
     failed: links.value.length - done.length,
     bwKHz, capKbps, pbwKHz, pbwN,
     avgEff: bwKHz > 0 ? capKbps / bwKHz : 0   // 带宽加权平均频谱效率 bps/Hz
@@ -1116,7 +1140,10 @@ async function compute() {
     selected.value = keepIdx < 0 ? 0 : keepIdx
     resultsStale.value = false
     await loadWaterfall()
-    await refreshSlaScan(out, sweepStore)
+    // SLA 档位扫描只在用得着时跑（弹窗开着 / 有行勾了条款 / 导出含 SLA 的报告，见 ensureSlaScan），
+    // 且不 await：每行 9 档 = 9 次引擎重算，跟着每次「计算」全表跑等于把普通计算拖慢一个量级、还占着「计算中」
+    invalidateSlaScan()
+    if (slaWanted()) ensureSlaScan()
   } catch (e) {
     error.value = String(e)
   } finally {
@@ -1125,27 +1152,44 @@ async function compute() {
 }
 
 // SLA 可用度档位扫描：整表一次批量 IPC（逐档钉住当前工作点重算，见 core 的 scanSlaTiers）。
-// 会话态、不入存档；随结果一起过期（重算即重扫），切「单位」档不重扫（档位只管显示）。
+// 会话态、不入存档；随结果一起过期（重算即作废，下次用得着时再扫），切「单位」档不重扫（档位只管显示）。
 // ★ 出 IPC 前必须现造纯数据：Vue 的 Proxy 过不了结构化克隆，invoke 当场抛且无 catch 时全静默。
-async function refreshSlaScan(out, store) {
-  slaScanByRow.value = {}
-  slaSunByRow.value = {}
+let _slaScanGen = 0, _slaScanDone = -1, _slaScanRun = null, _slaScanRunGen = -1
+function invalidateSlaScan() { _slaScanGen++; slaScanByRow.value = {}; slaSunByRow.value = {} }
+const slaWanted = () => slaOpen.value || slaCount.value > 0
+// 把当前这批结果的档位表补齐（已齐就直接返回）；弹窗打开、导出报告前调
+async function ensureSlaScan() {
+  if (_slaScanDone === _slaScanGen) return
+  if (_slaScanRun) {
+    if (_slaScanRunGen === _slaScanGen) return _slaScanRun
+    await _slaScanRun                      // 上一批的扫描还没完：等它落地再按现在这批重扫
+    return ensureSlaScan()
+  }
+  const gen = _slaScanGen
+  _slaScanRunGen = gen
+  _slaScanRun = refreshSlaScan(links.value, sweepParamsByRow.value, gen).finally(() => { _slaScanRun = null })
+  return _slaScanRun
+}
+async function refreshSlaScan(out, store, gen) {
   if (!api || !api.linkBudget.slaScanBatch) return
   const jobs = []
   for (const l of out) {
     if (!l || !l.data) continue
     const p = store[l.rowId]
     if (!p) continue
-    const samples = slaSamplesFor({ up: l.data.uplinkAvailabilityResult, dn: l.data.downlinkAvailabilityResult })
+    // 同站回环（场景参数勾了且发收站同址）：样本两侧同取该档，与建议值同一模型
+    const samples = slaSamplesFor({ up: l.data.uplinkAvailabilityResult, dn: l.data.downlinkAvailabilityResult, sameSite: slaLoopback(slaParams, l.data, p) })
     if (!samples.length) continue
     jobs.push({ rowId: l.rowId, spec: { engine: 'geo', satParams: p.satParams, linkParams: p.linkParams, opt: p.opt, samples } })
   }
-  if (!jobs.length) return
+  if (!jobs.length) { if (gen === _slaScanGen) _slaScanDone = gen; return }
   try {
     const res = await api.linkBudget.slaScanBatch(JSON.parse(JSON.stringify(jobs.map((j) => j.spec))))
+    if (gen !== _slaScanGen) return        // 期间又算过一轮：这份已过期
     const m = {}
     jobs.forEach((j, i) => { if (res && res[i]) m[j.rowId] = res[i] })
     slaScanByRow.value = m
+    _slaScanDone = gen
   } catch (e) { /* 扫不出就不出档位表与 MIR，结果本身不受影响 */ }
 }
 
@@ -1202,9 +1246,9 @@ function onRowFocus(idx, rowId) {
   if (i >= 0 && i !== selected.value) { selected.value = i; loadWaterfall() }
 }
 
-// —— 高级计算：多载波功带平衡（VSAT 组网 / CNC 载波叠加）——
+// —— 高级计算：多载波功带平衡（VSAT 组网）——
 // 单链路的功带平衡只看自己，而转发器上跑的是一组载波：前向 TDM 超发、返向 TDMA 欠发，各自都不平衡，
-// 合起来 Σ功率带宽 = Σ载波带宽 才是要的结果（CNC 则是两条链路占同一段频谱、功率叠加）。求解在核心
+// 合起来 Σ功率带宽 = Σ载波带宽 才是要的结果。求解在核心
 // 算法外层（shared/advBalance.js，闭式解），结果落成各载波的「设置余量」，再照常走一次正常计算——
 // 屏幕上的每个数仍然出自引擎本身，这里只决定喂进去的余量。
 const advDlg = reactive({ open: false, busy: false })
@@ -1217,9 +1261,7 @@ const advRows = computed(() => linkRows.map((row, i) => {
   const name = l ? `${l.txName} → ${l.rxName}`
     : ([row.earthStationLocation, row.rxEarthStationLocation].filter(Boolean).join(' → ') || '链路 ' + (i + 1))
   const marginDb = d ? (isFinite(l.resolvedMargin) ? l.resolvedMargin : parseFloat(d.marginResult)) : NaN
-  // CnC 要判双工配对、共频包含、PSD 比与残余自干扰，故把这几类量一并带给求解层。
-  // 全部从行与上一次结果现取，不另跑引擎：站身份（配置 id + 经纬度，缺经纬度退回站址名）、
-  // 上下行频率与极化、符号率与调制、上行雨衰与 UPC 余量、目标 C/(N+I)、上一轮写回的附加 C/I 退化。
+  // 组网语义：功放（此刻实算值 + 发端站型预设）、转发器回退——都从行与上一次结果现取，不另跑引擎
   const satForm = (curSat.value && curSat.value.form) || {}
   return {
     no: i + 1, rowId: row._id, name, carrierId: bb.id, carrierName: bb.name,
@@ -1229,21 +1271,6 @@ const advRows = computed(() => linkRows.map((row, i) => {
     // 基准余量：本功能上一轮自己写进去的余量不算「当前」（含着那一轮的偏置，再当基准就一轮叠一层）
     baseDb: advBaseMargin(bb.form, marginDb),
     error: l ? (l.error || '') : '未计算',
-    txStationId: row.stationId || '', rxStationId: row.rxStationId || '',
-    txStationName: row.earthStationLocation || '', rxStationName: row.rxEarthStationLocation || '',
-    longitude: row.longitude, latitude: row.latitude,
-    rxLongitude: row.rxLongitude, rxLatitude: row.rxLatitude,
-    fUpGHz: satForm.centerFrequency, fDnGHz: satForm.rxCenterFrequency,
-    polUp: satForm.uplinkPolarization || '', polDn: satForm.downlinkPolarization || '',
-    symbolRateKsps: d ? parseFloat(d.symbolRateResult) : NaN,
-    modulation: bb.form.modulation || '',
-    isNtn: (bb.form.noiseRatioMode === 'snr') || !!bb.form.phy,
-    rainUpDb: d ? parseFloat(d.uplinkRainAttenuation) : NaN,
-    upcDb: d ? parseFloat(d.UPCmarginResult) : NaN,
-    targetCN: d ? parseFloat(d.carrierTotalCN) : NaN,
-    extDegDb: d ? parseFloat(d.carrierExtDegResult) : NaN,
-    // 组网语义：路数、功放（此刻实算值 + 发端站型预设）、转发器回退
-    count: row.carrierCount,
     paW: d ? parseFloat(d.paRecommendation) : NaN,
     paPresetW: parseFloat(resolveEs(row.stationId).form.paPowerW),
     booDb: parseFloat(satForm.BOo), boiDb: parseFloat(satForm.BOi)
@@ -1256,90 +1283,15 @@ const advTpBwMHz = computed(() => {
   return isFinite(v) ? v : 0
 })
 // 参考态必须是「此刻这套输入」算出来的：没算过或输入已变，先算一遍再开
-// —— CnC 窗口可用度反解 ——
-// ρ 越窗发生在某一端的上行衰落吃掉了窗口余地的那一刻。把那个衰落量当目标，对该行的上行
-// 可用度做二分：引擎在这条路上单调（可用度 ↑ ⇒ 上行雨衰 ↑）。二分在【中断率】的对数域做
-// ——可用度 99.9 与 99.99 在线性域只差 0.09，对数域是整整一档。
-// 每轮把全部目标打成一次批量 IPC（同 compute 的 computeModeBatch），14 轮 = 14 次往返。
-const cncAvail = ref(null)
-const cncAvailBusy = ref(false)
-let _cncAvailSeq = 0
-async function scanCncAvail(targets) {
-  const seq = ++_cncAvailSeq
-  if (!targets || !targets.length || !api.linkBudget) { cncAvail.value = null; return }
-  // 目标衰落量 ≤ 0：晴空就已经越窗，反解没有意义（窗口可用度记 0）
-  const live = targets.filter((t) => t.needFadeDb > 0 && sweepParamsByRow.value[t.rowId])
-  const dead = targets.filter((t) => t.needFadeDb <= 0)
-  const probes = {}
-  for (const t of dead) probes[t.key] = { availPct: 0, capped: false, clearSkyOut: true }
-  if (live.length) {
-    cncAvailBusy.value = true
-    try {
-      // 中断率对数域的二分边界：[100−99.999, 100−90] = [1e-3, 10] ⇒ log10 ∈ [−3, 1]
-      const st = live.map(() => ({ lo: Math.log10(100 - CNC_AVAIL_HI), hi: Math.log10(100 - CNC_AVAIL_LO) }))
-      const capped = live.map(() => true)   // 到 99.999 仍未触窗则维持 true
-      for (let it = 0; it < CNC_AVAIL_STEPS; it++) {
-        const specs = live.map((t, i) => {
-          const base = sweepParamsByRow.value[t.rowId]
-          const mid = (st[i].lo + st[i].hi) / 2
-          const link = { ...base.linkParams, uplinkAvailability: String(100 - Math.pow(10, mid)) }
-          return { sat: base.satParams, link, opt: base.opt }
-        })
-        const rs = api.linkBudget.computeModeBatch
-          ? await api.linkBudget.computeModeBatch(specs)
-          : await Promise.all(specs.map((x) => api.linkBudget.computeMode(x.sat, x.link, x.opt)))
-        if (seq !== _cncAvailSeq) return   // 期间输入又改过：这一轮的结果作废
-        for (let i = 0; i < live.length; i++) {
-          const r = rs && rs[i]
-          const mid = (st[i].lo + st[i].hi) / 2
-          if (!r || !r.success) { st[i].hi = mid; continue }   // 算不出来就往中断率大的一侧收
-          const rain = parseFloat(r.data.uplinkRainAttenuation)
-          const upc = parseFloat(r.data.UPCmarginResult)
-          const resid = Math.max(0, (isFinite(rain) ? rain : 0) - (isFinite(upc) ? upc : 0))
-          // 残余雨衰已够深 ⇒ 这一档就越窗了 ⇒ 往中断率更大（可用度更低）的一侧继续找
-          if (resid >= live[i].needFadeDb) { st[i].lo = mid; capped[i] = false } else { st[i].hi = mid }
-        }
-      }
-      for (let i = 0; i < live.length; i++) {
-        // 收敛点：中断率取区间上端（保守——宁可把可用度报低）
-        const pct = 100 - Math.pow(10, st[i].lo)
-        probes[live[i].key] = capped[i]
-          ? { availPct: CNC_AVAIL_HI, capped: true }
-          : { availPct: pct, capped: false }
-      }
-    } catch (e) {
-      if (seq === _cncAvailSeq) { cncAvail.value = null; cncAvailBusy.value = false }
-      return
-    }
-    cncAvailBusy.value = false
-  }
-  if (seq !== _cncAvailSeq) return
-  // 两条链路的系统可用度：C/N 余量那道门
-  const sys = targets.map((t) => {
-    const l = links.value.find((x) => x.rowId === t.rowId)
-    return l && l.data ? parseFloat(l.data.systemAvailabilityResult) : NaN
-  })
-  cncAvail.value = { probes, sys }
-}
-
-// 对话框里改「路数」：直接落到链路表那一行。归一到 ≥1 的整数——0 或负数会把整组账算没。
-// 不重算：路数不进引擎（引擎只算一路载波），改它只影响组账与汇总，链路表的结果一行不变。
-function setAdvCount({ rowId, count }) {
-  const r = linkRows.find((x) => x._id === rowId)
-  if (!r) return
-  const n = Math.round(parseFloat(count))
-  r.carrierCount = String(isFinite(n) && n >= 1 ? n : 1)
-}
 async function openAdvDlg() {
   if (!links.value.length || resultsStale.value) await compute()
   advDlg.open = true
 }
 // 落地：把解出的余量写进载波配置的「设置余量」，随后重算全表。写进哪一份由 planAdvWriteback 定
-// （纯函数，两窗共用）：VSAT 一律派生专用副本、用户原来的载波配置一字不动，反复配平复用同一份副本；
-// CNC 两条链路本就引用同一份载波，余量是它自己的属性，故就地改（仅被未勾选链路引用时才派生）。
+// （纯函数）：一律派生专用副本、用户原来的载波配置一字不动，反复配平复用同一份副本。
 async function applyAdvPlan(plan) {
-  const { ops, rowPatches } = planAdvWriteback({
-    mode: plan.mode, carriers: plan.carriers, rowIds: plan.rowIds, links: plan.links,
+  const { ops } = planAdvWriteback({
+    carriers: plan.carriers, rowIds: plan.rowIds,
     rows: linkRows.map((r) => ({ rowId: r._id, carrierId: resolveBaseband(r.basebandId).id })),
     configs: basebandConfigs.map((c) => ({ id: c.id, name: c.name, form: c.form }))
   })
@@ -1360,21 +1312,11 @@ async function applyAdvPlan(plan) {
       if (target) Object.assign(target.form, op.formPatch)
     }
   }
-  // 行级写回：CnC 解出的附加 C/I 落到对应收端那一行（不进载波配置——同一份载波的两条
-  // 链路收端各是各的数，配置装不下；它也是这一组场景的结论，不是载波自身的属性）
-  const patched = []
-  for (const rp of (rowPatches || [])) {
-    const r = linkRows.find((x) => x._id === rp.rowId)
-    if (!r) continue
-    Object.assign(r, rp.patch)
-    patched.push(rp.patch.carrierExtCI)
-  }
   advRemap.value = remap   // 载波换了 id：把对话框里那份偏置一并搬过去
   advDlg.busy = true
   try { await compute() } finally { advDlg.busy = false }
-  toast(`已按「${plan.mode === 'cnc' ? 'CNC 载波叠加' : 'VSAT 组网平衡'}」口径配平 ${plan.rowIds.length} 条链路`
-    + (forked.length ? `；配平余量写入新建载波配置「${forked.join('」「')}」，原配置未改动` : '')
-    + (patched.length ? `；附加 C/I ${patched.join(' / ')} dB 写入对应收端行` : ''))
+  toast(`已按「VSAT 组网平衡」口径配平 ${plan.rowIds.length} 条链路`
+    + (forked.length ? `；配平余量写入新建载波配置「${forked.join('」「')}」，原配置未改动` : ''))
 }
 
 // —— 经纬度 → 降雨率/海拔自动填（与小程序一致；选址或改经纬度触发，逐站）——
@@ -1768,6 +1710,9 @@ const { reportDlg, reportVariant, openReportDialog, openSlaReportDialog, submitR
       (v, u) => fmtQtyParts(v, u, unitAdaptive.value))
   },
   slaParams: () => slaParamRows(slaParams, reportLang.value),
+  // 导出含 SLA 的报告前把惰性会话态补齐：档位扫描（MIR / 档位表）与日凌（免责事件那一行）——
+  // 两条导出路径都走这里，条款数不再随「有没有开过 SLA 弹窗」变
+  beforeSla: async () => { await ensureSlaScan(); await refreshSlaSun() },
   // 计算方式随载波逐链路而定：封面/表头只在全表口径一致时报该方式（不一致则不报，各链路详情自带「计算设置」块）
   calc: () => {
     const modes = new Set(links.value.map((l) => calcOfLink(l).key).filter(Boolean))
@@ -1943,7 +1888,7 @@ onMounted(async () => {
               </button>
               <!-- 图标与「计算」同一枚实心三角：同一件事的两档（单条 / 整组），不该长成两个族 -->
               <button class="lbr-big" :disabled="computing || !linkRows.length"
-                title="高级计算：多载波组功带平衡（VSAT 组网 / CNC 载波叠加）——勾选多条链路，解出各载波应设的系统余量，使整组 Σ功率带宽 = Σ载波带宽"
+                title="高级计算：多载波组功带平衡（VSAT 组网）——勾选多条链路，解出各载波应设的系统余量，使整组 Σ功率带宽 = Σ载波带宽"
                 @click="openAdvDlg">
                 <svg viewBox="0 0 16 16" class="lbr-svg fill"><path d="M4 2.5 13 8 4 13.5z" /></svg>
                 高级计算
@@ -2082,11 +2027,9 @@ onMounted(async () => {
       @delete="onDeleteItem" @expand-all="expandAll" @collapse-all="collapseAll" @hide="sideView = ''"
     />
 
-    <!-- 高级计算：多载波功带平衡（VSAT 组网 / CNC 载波叠加，GEO/NGSO 共用组件）-->
+    <!-- 高级计算：多载波功带平衡（VSAT 组网，GEO 窗专用）-->
     <LbAdvBalanceDialog :open="advDlg.open" :rows="advRows" :tp-bw-mhz="advTpBwMHz" :busy="advDlg.busy || computing"
-      :stale="resultsStale" :carrier-remap="advRemap" store-key="linkbudget" @close="advDlg.open = false"
-      @apply="applyAdvPlan" @set-count="setAdvCount"
-      :cnc-avail="cncAvail" :cnc-avail-busy="cncAvailBusy" @scan-avail="scanCncAvail" />
+      :stale="resultsStale" :carrier-remap="advRemap" store-key="linkbudget" @close="advDlg.open = false" @apply="applyAdvPlan" />
 
     <!-- SLA 建议：条款表 + SLA 参数 + 可用度档位扫描（四窗共用组件；链路由头部下拉选） -->
     <LbSlaDialog

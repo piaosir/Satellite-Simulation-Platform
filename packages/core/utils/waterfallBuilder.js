@@ -92,7 +92,6 @@ const WF_DICT = {
   '传输块大小': 'Transport Block Size',
   '载波噪声带宽': 'Carrier Noise Bandwidth',
   '系统余量': 'System Margin',
-  '附加 C/I 退化': 'Additional C/I Degradation',
   // —— 几何与天线 ——
   '城市': 'City',
   '频率': 'Frequency',
@@ -542,11 +541,15 @@ function createBuilder(ctx) {
   // 3GPP NTN 行与 DVB 行合用这一张：对方没有的字段引擎出空串，_disp 给 '—'，调用处一律剔空行。
   //   · DVB 行没有：占用带宽 / 物理层那几项 / 门限 SNR
   //   · 3GPP 行没有：载波速率 / 符号速率 / 码片速率（OFDM 没有外码与滚降，符号率也不是噪声带宽）
+  //   · src：判体制用的那份记录。缺省是链级出参；端到端逐段列表时传【本段】的载波记录 —— 链级出参是
+  //     首段的回显，拿它判所有段会把 NB-IoT 段的子载波数印成「PRB 数」、把 DVB 段印出「门限 SNR」。
+  //   · power：false 时不出「功率带宽」行（再生式三支：再生星没有转发器，那是弯管功带账的量）。
   b._carrierRows = function (opt) {
     const o = opt || {};
-    const ntn = !!results.phyKindResult;              // 这条是不是 3GPP NTN 载波
-    const nr = results.phyKindResult === 'nr';
-    const ul = results.phyDirResult === 'ul';
+    const R = o.src || results;
+    const ntn = !!R.phyKindResult;                    // 这条是不是 3GPP NTN 载波
+    const nr = R.phyKindResult === 'nr';
+    const ul = R.phyDirResult === 'ul';
     const en = lang === 'en';
     const rows = [
       // ★ 3GPP 行这个数是标准里的【信道带宽】：含保护带、落在频率栅格上（NB-IoT 200 kHz、
@@ -556,7 +559,7 @@ function createBuilder(ctx) {
       [ntn ? '信道带宽' : '载波带宽', 'allocBandwidthResult', 'kHz'],
       ['占用带宽', 'noiseBwResult', 'kHz']
     ];
-    if (o.full) rows.push(['功率带宽', 'PowerBWResult', 'kHz']);
+    if (o.full && o.power !== false) rows.push(['功率带宽', 'PowerBWResult', 'kHz']);
     rows.push(
       ['频谱效率', 'spectralEfficiencyResult', 'bit/s/Hz'],
       ['信息速率', 'infoRateResult', 'kbps'],
@@ -590,7 +593,7 @@ function createBuilder(ctx) {
     // 门限那几行：3GPP 行的 Es/N₀ 与门限 SNR 恒是同一个数（每 RE SNR ≡ 占用带宽内的 C/N），
     // 并排摆两遍只会让人以为是两个量；重复 ×1 时「表值」与含重复的有效门限也同数，同理不出。
     if (!ntn) rows.push(['门限 Es/N₀', 'esnoResult', 'dB']);
-    if (ntn && results.phyRepResult !== '1') rows.push(['门限 SNR（表值）', 'snrThresholdResult', 'dB']);
+    if (ntn && R.phyRepResult !== '1') rows.push(['门限 SNR（表值）', 'snrThresholdResult', 'dB']);
     rows.push(
       ['门限 SNR', 'snrThresholdEffResult', 'dB'],
       ['载波噪声带宽', 'RXnoiseBW', 'dB-Hz']
@@ -966,12 +969,6 @@ function createBuilder(ctx) {
       // —— 合成与余量：上行 ⊕ 下行（噪声并联）= 合计 ——
       T('kpi', 'C/(N+I)（合成）', 'uplinkCN', 'downlinkCN', 'carrierTotalCN', 'dB'),
       T('ref', '门限 C/N', null, null, 'thresholdCN', 'dB'),
-      // 附加 C/I 退化：本载波带内的额外干扰（CnC 残余自干扰等）吃掉的那部分 C/N。
-      // 引擎把它并进了 carrierTotalCN 的【要求】侧，故这里减掉它算式才闭合：
-      // 合成 C/(N+I) − 门限 C/N − 本行 = 链路余量。留空/为 0 不列，恒 0 的一行只占版面。
-      ...(num('carrierExtDegResult') > 0.005
-        ? [T('loss', '附加 C/I 退化', null, null, 'carrierExtDegResult', 'dB')]
-        : []),
       T('margin', '链路余量', null, null, 'linkmargin', 'dB')
     ], { id: 'cascade', cls: 'result' }));
 
@@ -1391,7 +1388,7 @@ function createBuilder(ctx) {
     const segs = [];
 
     // ① 载波与调制参数（链路级，单列）
-    segs.push(b._refSeg('载波与调制参数', b._carrierRows({ full: true }), { id: 'carrier', cls: 'param' }));   // 实际 Eb/N₀ / Es/N₀ 与系统余量移入「性能与余量」，同 GEO
+    segs.push(b._refSeg('载波与调制参数', b._carrierRows({ full: true, power: false }), { id: 'carrier', cls: 'param' }));   // 实际 Eb/N₀ / Es/N₀ 与系统余量移入「性能与余量」，同 GEO
 
     // ② 几何与天线（上行，单列）+ 可见性几何
     const geoSeg = b._refSeg('几何与天线（上行）', [
@@ -1529,7 +1526,7 @@ function createBuilder(ctx) {
     const segs = [];
 
     // ① 载波与调制参数（链路级，单列）
-    segs.push(b._refSeg('载波与调制参数', b._carrierRows({ full: true }), { id: 'carrier', cls: 'param' }));   // 实际 Eb/N₀ / Es/N₀ 与系统余量移入「性能与余量」，同 GEO
+    segs.push(b._refSeg('载波与调制参数', b._carrierRows({ full: true, power: false }), { id: 'carrier', cls: 'param' }));   // 实际 Eb/N₀ / Es/N₀ 与系统余量移入「性能与余量」，同 GEO
 
     // ② 几何与天线（下行，单列）+ 可见性几何
     const geoSeg = b._refSeg('几何与天线（下行）', [
@@ -1661,7 +1658,7 @@ function createBuilder(ctx) {
     const manualGeo = String(r.islManualGeomResult || '') === '1';   // 手动几何：星间距离由用户逐条给定
 
     // ① 载波与调制参数（链路级，单列）
-    segs.push(b._refSeg('载波与调制参数', b._carrierRows({ full: true }), { id: 'carrier', cls: 'param' }));   // 实际 Eb/N₀ / Es/N₀ 与系统余量移入「性能与余量」，同 GEO
+    segs.push(b._refSeg('载波与调制参数', b._carrierRows({ full: true, power: false }), { id: 'carrier', cls: 'param' }));   // 实际 Eb/N₀ / Es/N₀ 与系统余量移入「性能与余量」，同 GEO
 
     // ② 星间几何（最差工况，单列）——双 SGP4 + 地球临边遮挡。
     // 手动几何（islManualGeomResult）下星间距离是用户给的一个数，没有轨道解算：段名与行名都不说
@@ -1838,16 +1835,20 @@ function createBuilder(ctx) {
     // ① 载波与调制参数。再生节点解调-重调后可换体制，故这一段按【段】给：各段体制完全相同时
     // 仍收成一组（绝大多数链就是这样），只要有一段不同就逐段列开——否则表上只剩首段那一份，
     // 读者会拿它去对后面几段的门限。
-    const CARR_ROWS = b._carrierRows({ tail: [['门限 C/N', 'thresholdCN', 'dB']] });
+    // ★ 行表按【本段】的载波记录取（src: c）：体制标签（PRB 数 / 子载波数、MCS / I_TBS、门限 SNR 还是 Es/N₀）
+    //   随段走。链级那份 CARR_ROWS 只在没有分段记录时用。
+    const CARR_TAIL = [['门限 C/N', 'thresholdCN', 'dB']];
+    const CARR_ROWS = b._carrierRows({ tail: CARR_TAIL });
+    const rowsOf = (c) => b._carrierRows({ tail: CARR_TAIL, src: c });
     const carrs = Array.isArray(r.carriers) ? r.carriers : [];
-    const sig = (c) => CARR_ROWS.map((t) => c[t[1]]).join('|');
+    const sig = (c) => rowsOf(c).map((t) => t[0] + '=' + c[t[1]]).join('|');
     const oneCarrier = carrs.length <= 1 || carrs.every((c) => sig(c) === sig(carrs[0]));
     if (oneCarrier) {
-      segs.push(b._refSeg('载波与调制参数', CARR_ROWS, { id: 'carrier', cls: 'param' }));
+      segs.push(b._refSeg('载波与调制参数', carrs.length ? rowsOf(carrs[0]) : CARR_ROWS, { id: 'carrier', cls: 'param' }));
     } else {
       const cRows = [];
       carrs.forEach((c) => {
-        groupOf(cRows, b._t('段') + ' ' + c.no + endsOf(c), CARR_ROWS.map((t) => [t[0], c[t[1]], t[2]]), 'carr');
+        groupOf(cRows, b._t('段') + ' ' + c.no + endsOf(c), rowsOf(c).map((t) => [t[0], c[t[1]], t[2]]), 'carr');
       });
       segs.push(b._seg('载波与调制参数', 1, cRows, { id: 'carrier', cls: 'param' }));
     }

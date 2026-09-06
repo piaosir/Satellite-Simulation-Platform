@@ -22,6 +22,10 @@ export const FIELD_GROUPS = [
       { key: 'bandwidthFactor', label: '滚降系数 (1+α)', type: 'num', def: '1.20', target: 'link' },
       { key: 'rsCode', label: '帧效率', type: 'text', def: '188/204', target: 'link' },
       { key: 'noiseRatioMode', label: '门限模式', def: 'ebno', target: 'link' },
+      // 3GPP NTN 的物理层描述子（对象，不是表单格）：门限模式 = snr 时由它定占用带宽 / 信息速率 / TBS。
+      // 其余体制恒为 null，引擎不看（见 packages/core/utils/ntnPhy.js）。
+      // 无 type，故 buildParams 的 put() 原样递过去；出 IPC 前那一步 JSON 深拷贝会把响应式代理剥干净。
+      { key: 'phy', label: '物理层参数', def: null, target: 'link' },
       { key: 'margin', label: '系统余量', unit: 'dB', type: 'num', def: '3.00', target: 'link' },
       // 计算方式（求解策略）随载波入库：链路表逐行按所选载波取用，故一个批次内不同载波可各按各的方式求解。
       // target:'op' 不进引擎参数——App 换算成求解器 opt（mode / overDb），功放功率仍按行取发端站型的 paPowerW。

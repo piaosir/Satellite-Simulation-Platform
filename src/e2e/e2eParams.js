@@ -14,6 +14,7 @@
 import { halfStr } from '../shared/num.js'   // 全角减号/数字归一到半角，避免负数被 parseFloat 吞掉
 import { RE_KM } from '../shared/slantRange.js'
 import { rateFactors } from '../shared/carrierRate.js'   // 调制因子/FEC/帧效率/扩频：与引擎同一套换算链
+import { normalizePhy, effectiveThresholdDb } from '../shared/ntnPhy.js'   // 3GPP NTN：门限已是占用带宽内的 C/N，只折算重复
 import { byLang } from '../shared/i18n/lang.js'          // 出厂占位站名按平台语言出字（名字是数据，呈现层翻不到）
 
 export function defaultsFor(fields) {
@@ -40,7 +41,10 @@ export const CARRIER_FIELDS = [
   { key: 'm', label: '扩频增益', type: 'num', def: '1.00' },
   { key: 'bandwidthFactor', label: '滚降系数 (1+α)', type: 'num', def: '1.20' },
   { key: 'rsCode', label: '帧效率', type: 'text', def: '188/204' },
-  { key: 'noiseRatioMode', label: '门限模式', def: 'ebno' }
+  { key: 'noiseRatioMode', label: '门限模式', def: 'ebno' },
+  // 3GPP NTN 的物理层描述子（对象，非表单格）：门限模式 = snr 时由它定占用带宽 / 信息速率 / TBS。
+  // 其余体制恒为 null，引擎不看（见 packages/core/utils/ntnPhy.js）。
+  { key: 'phy', label: '物理层参数', def: null }
 ]
 // 节点上那份体制的完整初值：CARRIER_FIELDS 之外还有 BasebandPanel 自己的几个呈现态
 // （帧效率/频谱效率视角、DVB 标准与 MODCOD 选择、速率换算链的锚点）。
@@ -267,6 +271,8 @@ export function thresholdCNOf(carrier) {
   const c = carrier || {}
   const v = pnum(c.ebno)
   if (v === null) return null
+  // 3GPP NTN：门限就是每 RE SNR ≡ 占用带宽内的 C/N，不必换算；只按 N_rep 与合并损失折算一次
+  if (c.noiseRatioMode === 'snr') return effectiveThresholdDb(v, normalizePhy(c.phy) || { nRep: 1, combLossDb: 0 })
   if (c.noiseRatioMode === 'esno') return v
   const { mf, fec, rs, m } = rateFactors(c)
   const k = (fec * rs * mf) / m
@@ -379,16 +385,23 @@ export function chainInfoRate(row) {
 // 它过不了 IPC 的结构化克隆（DataCloneError: could not be cloned），saveConfig 当场抛。
 // 三窗的行是纯扁平的（一层全是字符串），故只有本窗口会踩这个坑。
 const stripId = (o) => { const r = {}; for (const k of Object.keys(o)) if (k !== '_id') r[k] = o[k]; return r }
-export function serializeChainsState(chains, geoMode) {
-  return JSON.parse(JSON.stringify({
+export function serializeChainsState(chains, geoMode, slaParams) {
+  const st = {
     orbitType: 'E2E', v: 1,
     // 几何模式入场景（它决定这份场景的结果是怎么算出来的）；时窗只是搜索策略，留 localStorage
     geoMode: geoMode === 'auto' ? 'auto' : 'manual',
-    chains: (chains || []).map((c) => ({
-      name: c.name, nameAuto: !!c.nameAuto,
-      nodes: (c.nodes || []).map(stripId), hops: (c.hops || []).map(stripId)
-    }))
-  }))
+    chains: (chains || []).map((c) => {
+      const o = {
+        name: c.name, nameAuto: !!c.nameAuto,
+        nodes: (c.nodes || []).map(stripId), hops: (c.hops || []).map(stripId)
+      }
+      // SLA 的采用值/勾选随链走（口径同三窗的 row.sla）；空的不写，免得存量场景的指纹平白变一次
+      if (c.sla && Object.keys(c.sla).length) o.sla = c.sla
+      return o
+    })
+  }
+  if (slaParams) st.slaParams = slaParams
+  return JSON.parse(JSON.stringify(st))
 }
 
 // ============ 手动几何的派生建议值（纯闭式，渲染端就地算）============
