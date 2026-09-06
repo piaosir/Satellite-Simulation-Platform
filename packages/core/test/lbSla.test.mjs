@@ -114,6 +114,47 @@ ok('Eb/N₀ 口径换算后 MIR = 符号率 × k', near(m6.mir, 1000 * kQ, 1e-9)
 const m7 = pickMir({ modcodRows: EB, dvbStandard: 'DVB-S', form: { m: '1' }, symbolRateKsps: 1000, cirKbps: 100, marginDb: 0, esnoClear: 5.5 + dQ - 0.01 })
 ok('晴空差 0.01 dB 就选不上（门限严格）', m7.label === '')
 
+// —— ④ᵇ 3GPP NTN 的 MIR：行号按【表】判 I_MCS / I_TBS，不按当前子载波数判 ——
+// 根因同 ntnPhy 的 P1-1：单音表的行号是 I_MCS（1↔2 与 I_TBS 是反的），多音表的行号直接是 I_TBS。
+// 拿「当前 nTones === 1」当判据，改过子载波数之后这条 ACM 选档就整条错位。
+{
+  // 单音表片段（TS 36.213 Table 16.5.1.2-1：I_MCS 1 → I_TBS 2、I_MCS 2 → I_TBS 1）
+  const ST_ROWS = [
+    { label: 'I_MCS 0', modulation: 'BPSK', fec: '16/96', noiseRatioMode: 'snr', threshold: -4.2, idx: 0 },
+    { label: 'I_MCS 2', modulation: 'QPSK', fec: '24/192', noiseRatioMode: 'snr', threshold: -3.2, idx: 2 },
+    { label: 'I_MCS 1', modulation: 'BPSK', fec: '32/96', noiseRatioMode: 'snr', threshold: -2.2, idx: 1 }
+  ]
+  const stPhy = { kind: 'nbiot', dir: 'ul', st: true, scs: 15, nTones: 1, iTbs: 0, iRu: 0, nRep: 1 }
+  const mSt = pickMir({
+    modcodRows: ST_ROWS, dvbStandard: '3GPP NB-IoT NTN NPUSCH ST', form: { noiseRatioMode: 'snr' },
+    phy: stPhy, esnoClear: 0, marginDb: 0, cirKbps: 0.1
+  })
+  // I_MCS 1（门限最高、够得着）→ I_TBS 2 → TBS 32 bit / 8 ms = 4 kbps；直读成 I_TBS 1 会得 3 kbps
+  ok('SLA·单音表：选中的行经 I_MCS → I_TBS 映射（I_MCS 1 → I_TBS 2 → 4 kbps）',
+    mSt.label === 'I_MCS 1' && near(mSt.mir, 4, 1e-9), mSt.label + ' ' + mSt.mir)
+  // 多音表：行号就是 I_TBS，不经映射
+  const MT_ROWS = [
+    { label: 'I_TBS 0', modulation: 'QPSK', fec: '16/264', noiseRatioMode: 'snr', threshold: -5.8, idx: 0 },
+    { label: 'I_TBS 1', modulation: 'QPSK', fec: '24/264', noiseRatioMode: 'snr', threshold: -4.9, idx: 1 },
+    { label: 'I_TBS 2', modulation: 'QPSK', fec: '32/264', noiseRatioMode: 'snr', threshold: -3.9, idx: 2 }
+  ]
+  const mtPhy = { kind: 'nbiot', dir: 'ul', st: false, scs: 15, nTones: 12, iTbs: 0, iRu: 0, nRep: 1 }
+  const mMt = pickMir({
+    modcodRows: MT_ROWS, dvbStandard: '3GPP NB-IoT NTN NPUSCH MT', form: { noiseRatioMode: 'snr' },
+    phy: mtPhy, esnoClear: 0, marginDb: 0, cirKbps: 0.1
+  })
+  // I_TBS 2 → TBS 32 bit / 1 ms（12 音 RU 恒 1 ms）= 32 kbps
+  ok('SLA·多音表：行号直接就是 I_TBS，不经单音映射（I_TBS 2 → 32 kbps）',
+    mMt.label === 'I_TBS 2' && near(mMt.mir, 32, 1e-9), mMt.label + ' ' + mMt.mir)
+  // ★ 同一份单音表挂到 12 子载波上：st 锁死子载波数，选出来的还是单音那条链（4 kbps）
+  const mStWide = pickMir({
+    modcodRows: ST_ROWS, dvbStandard: '3GPP NB-IoT NTN NPUSCH ST', form: { noiseRatioMode: 'snr' },
+    phy: Object.assign({}, stPhy, { nTones: 12 }), esnoClear: 0, marginDb: 0, cirKbps: 0.1
+  })
+  ok('SLA·单音表被改成 12 子载波也不改口径（st 锁死，映射与速率照单音算）',
+    mStWide.label === 'I_MCS 1' && near(mStWide.mir, 4, 1e-9), mStWide.label + ' ' + mStWide.mir)
+}
+
 // —— ⑤ deriveSla：GSO 真引擎算例 ——
 // 主用例是【两地站】（北京发 → 上海收）：上下行落在两片雨区，传播可用度按乘积。
 // 引擎缺省两侧同在北京 —— 那是回环，雨衰完全相关、按 min 走，另立一条（见「同站回环」）。

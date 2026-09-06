@@ -418,7 +418,10 @@ function pickMirPhy(rows, rawPhy, form, esno, margin, cir) {
     const p = Object.assign({}, base)
     if (r.idx != null) {
       if (p.kind === 'nbiot') {
-        const st = p.nTones === 1 ? nbSingleToneMcs(r.idx) : null
+        // 行号是 I_MCS 还是 I_TBS，由【这张表是不是单音表】定（st，标准属性），不由当前子载波数定；
+        // 自建标准没有 st，仍按子载波数判（与载波面板 applyModcod 同一把尺）
+        const single = p.st === true || (p.st == null && p.nTones === 1)
+        const st = single ? nbSingleToneMcs(r.idx) : null
         p.iTbs = st ? st.iTbs : r.idx
       } else p.mcs = r.idx
     }
@@ -1173,6 +1176,24 @@ export function slaRows(derived, rowSla, params, fmt, en) {
   }
   void params   // 场景级参数已在 deriveSla 里落进各条款的建议值，此处只保留签名对称
   return rows
+}
+
+/**
+ * 报告用的档位扫描行：把「综合」与「中断」按当前考核周期与设备因子算好（与屏上那张表同一条
+ * 式子，见 LbSlaPane 的 cellOf）。晴空样本不进这张表（它只喂 MIR）。
+ * @returns { pin, rows } | null
+ */
+export function slaScanReportRows(derived) {
+  const d = derived || {}
+  const f = (typeof d.eqFactor === 'number' && isFinite(d.eqFactor) && d.eqFactor > 0) ? d.eqFactor : 1
+  const per = d.monthly ? MIN_PER_MONTH : MIN_PER_YEAR
+  const rows = ((d.scanRows || []).filter((r) => r && r.tag !== 'clear')).map((r) => {
+    const t = num(r.tier)
+    const base = t === null ? null : (d.monthly ? worstMonthAvail(t) : t)
+    const comp = base === null ? null : base * f
+    return Object.assign({}, r, { comp, outage: comp === null ? null : (100 - comp) / 100 * per })
+  })
+  return rows.length ? { pin: d.scanPin || null, rows } : null
 }
 
 /**
