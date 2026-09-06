@@ -14,7 +14,7 @@
 // var(--font-ui)（设置 → 界面字体），不走报告那条衬线栈：这是填条款的界面，不是交付文档。
 import { computed } from 'vue'
 import NumBox from './NumBox.vue'
-import { slaRows, fixed, MIN_PER_YEAR } from '../shared/lbSla.js'
+import { slaRows, fixed, worstMonthAvail, MIN_PER_YEAR, MIN_PER_MONTH } from '../shared/lbSla.js'
 import { fmtQtyParts } from '../shared/adaptUnits.js'
 
 const props = defineProps({
@@ -68,32 +68,45 @@ const SCAN_COLS = [
   { key: 'bandwidthUsageRatio', label: '带宽占用', unit: '%', dec: 2, data: true },
   { key: 'interruptionMinutes', label: '年中断', unit: 'min', dec: 0, data: true, outage: true }
 ]
+// 考核周期：年 / 最坏月（P.841）。「档位」列恒是引擎的年口径（扫描能动的只有雨衰那一份），
+// 「综合」列与中断列跟着考核周期走 —— 同一行里不该并排摆两个口径的数。
+const monthly = computed(() => !!(props.derived && props.derived.monthly))
 // 传播之外的因子（发信射频 / 收信射频 / 卫星与载荷 / 基带骨干网）的连乘系数：档位是传播域的，承诺值是综合域的，
 // 两者差的就是这个系数。表头 title 里也写着这件事。
 const eqFactor = computed(() => {
   const f = props.derived ? props.derived.eqFactor : 1
   return (typeof f === 'number' && isFinite(f) && f > 0) ? f : 1
 })
-const compOf = (r) => { const t = parseFloat(r && r.tier); return isFinite(t) ? t * eqFactor.value : NaN }
+const compOf = (r) => {
+  const t = parseFloat(r && r.tier)
+  if (!isFinite(t)) return NaN
+  const base = monthly.value ? worstMonthAvail(t) : t
+  return base === null ? NaN : base * eqFactor.value
+}
+const periodMin = computed(() => (monthly.value ? MIN_PER_MONTH : MIN_PER_YEAR))
 const cellOf = (c, r) => {
   if (c.key === 'tier') return fixed(r.tier, r.tier % 1 ? 2 : 0)
   if (c.comp) { const v = compOf(r); return isFinite(v) ? fixed(v, c.dec) : '' }
   // 年中断跟着【综合可用度】走：档位列是传播域的，年中断若还按引擎那份（同样是传播域）给，
   // 同一行里就有两个口径的数
-  if (c.outage && eqFactor.value < 1) { const v = compOf(r); return isFinite(v) ? fixed((100 - v) / 100 * MIN_PER_YEAR, c.dec) : '' }
+  if (c.outage && (eqFactor.value < 1 || monthly.value)) { const v = compOf(r); return isFinite(v) ? fixed((100 - v) / 100 * periodMin.value, c.dec) : '' }
   return c.data ? sv(r, c.key, c.dec) : fixed(r[c.key], c.dec)
 }
 const scanCols = computed(() => SCAN_COLS
-  .filter((c) => !(c.comp && eqFactor.value >= 1))
+  .map((c) => (c.outage && monthly.value ? { ...c, label: '月中断' } : c))
+  .filter((c) => !(c.comp && eqFactor.value >= 1 && !monthly.value))
   .filter((c) => scanRows.value.some((r) => cellOf(c, r) !== '')))
 // 「档位」列是传播域的（扫描能动的只有雨衰那一份），承诺值是综合域的 —— 差的就是这个系数。
 // ★ 单独挂在「综合」那一列的列头上，不与 pinTip 拼成一句：拼起来要给 pinTip 的每个分支各配
 //   一条模式，呈现层漏译一条就是英文界面上的一句中文。
-const compTip = computed(() => `综合 = 档位 × ${(eqFactor.value * 100).toFixed(3)} %`)
+const compTip = computed(() => (monthly.value
+  ? `综合 = P.841 最坏月折算 × ${(eqFactor.value * 100).toFixed(3)} %`
+  : `综合 = 档位 × ${(eqFactor.value * 100).toFixed(3)} %`))
 
 // SLA 参数条。前四项＝可用度构成（传播之外的环节，引擎不管这些，见 lbSla.equipAvails）；
 // 「基带/骨干网」带一个勾选闸：只卖空间段的场景不该把回传算进承诺，勾上才乘进去。
 const PARAMS = [
+  { key: 'monthly', gateOnly: true, label: '按月考核', tip: '勾选＝可用度按最坏月考核（ITU-R P.841 年→最坏月折算），中断上限改按月给；不勾＝年平均' },
   { key: 'esTxAvail', avail: true, label: '发信射频可用度', unit: '%', min: 0, max: 100, step: 0.01, tip: '发端地球站功放 / 上变频 / 天线一路的可用度：按设备冗余配置或运营商承诺填；100 = 不计入' },
   { key: 'esRxAvail', avail: true, label: '收信射频可用度', unit: '%', min: 0, max: 100, step: 0.01, tip: '收端地球站 LNB / 下变频 / 天线一路的可用度：按设备冗余配置或运营商承诺填；100 = 不计入' },
   { key: 'spaceAvail', avail: true, label: '卫星与载荷可用度', unit: '%', min: 0, max: 100, step: 0.01, tip: '卫星平台与转发器载荷的可用度，链上逐颗计入；100 = 不计入' },
@@ -114,7 +127,8 @@ const railParams = computed(() => {
   const has = (k) => !!(d.items && d.items[k])
   const slots = d.eqSlots || []
   return PARAMS.filter((p) => (p.avail ? slots.includes(p.key)
-    : p.needs ? p.needs.some(has) : true))
+    : p.gateOnly ? has('sysAvail')
+      : p.needs ? p.needs.some(has) : true))
 })
 </script>
 
@@ -162,13 +176,15 @@ const railParams = computed(() => {
       <div class="lbx-sla-pars">
         <div v-for="p in railParams" :key="p.key" class="lbx-sla-par" :class="{ off: !gateOn(p) }" :title="p.tip">
           <label class="lbx-sla-par-l">
-            <input v-if="p.gate" type="checkbox" :checked="gateOn(p)"
-              @change="emit('param', { key: p.gate, value: $event.target.checked ? 1 : 0 })" />
+            <input v-if="p.gate || p.gateOnly" type="checkbox" :checked="p.gateOnly ? !!Number(paramVal(p.key)) : gateOn(p)"
+              @change="emit('param', { key: p.gateOnly ? p.key : p.gate, value: $event.target.checked ? 1 : 0 })" />
             {{ p.label }}
           </label>
-          <NumBox class="lbx-sla-par-v" :model-value="paramVal(p.key)" :min="p.min" :max="p.max" :step="p.step"
-            :disabled="!gateOn(p)" @commit="emit('param', { key: p.key, value: $event })" />
-          <i>{{ p.unit }}</i>
+          <template v-if="!p.gateOnly">
+            <NumBox class="lbx-sla-par-v" :model-value="paramVal(p.key)" :min="p.min" :max="p.max" :step="p.step"
+              :disabled="!gateOn(p)" @commit="emit('param', { key: p.key, value: $event })" />
+            <i>{{ p.unit }}</i>
+          </template>
         </div>
       </div>
     </div>

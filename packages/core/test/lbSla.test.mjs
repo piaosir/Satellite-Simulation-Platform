@@ -14,8 +14,8 @@
 //      计入哪几项各几次（填 100 即不计入、地面段另有勾选闸），系统可用度 = 传播 × 各因子连乘。
 
 const {
-  AVAIL_TIERS, LOSS_TIERS, DEFAULT_SLA_PARAMS, SLA_GROUPS, SLA_ITEMS,
-  snapDown, snapUp, splitUnavailability, packetLossPct, berExpOf, pickMir,
+  AVAIL_TIERS, LOSS_TIERS, DEFAULT_SLA_PARAMS, SLA_GROUPS, SLA_ITEMS, MIN_PER_MONTH,
+  snapDown, snapUp, splitUnavailability, packetLossPct, berExpOf, pickMir, worstMonthAvail,
   deriveSla, slaRows, slaReportBlock, normSlaParams, normRowSla, slaIncludeCount, basisText,
   equipSlots, equipAvails, equipFactor, slaParamRows
 } = await import('../../../src/shared/lbSla.js')
@@ -685,6 +685,87 @@ ok('分享码往返出来的是新对象（深拷贝，不与源共用引用）'
   const hanEn = []
   for (const d of allDerived) for (const k of d.order) if (/[\u4e00-\u9fff]/.test(basisText(d.items[k].basis, true))) hanEn.push(k)
   ok('新增依据片：英文版全无汉字', hanEn.length === 0, hanEn.join(','))
+}
+
+// —— ⑩ 考核周期：年平均 vs 最坏月（ITU-R P.841）——
+{
+  // 换算表（附录 A 的六个数）：p_w = (p / 0.30)^(1/1.15)
+  const WM = [[99.5, 98.441], [99.7, 99.000], [99.8, 99.297], [99.9, 99.615], [99.95, 99.789], [99.99, 99.948]]
+  ok('P.841 年→最坏月折算与雨衰页同式',
+    WM.every(([y, m]) => near(worstMonthAvail(y), m, 1e-3)),
+    WM.map(([y]) => worstMonthAvail(y).toFixed(3)).join(' / '))
+  ok('可用度 100 % 时不折算（p = 0）', worstMonthAvail(100) === 100)
+  ok('一个考核月 = 一年的十二分之一', MIN_PER_MONTH === 525960 / 12, String(MIN_PER_MONTH))
+  ok('考核周期缺省是年（现有场景数值一个字不动）', DEFAULT_SLA_PARAMS.monthly === 0)
+  ok('monthly 是数（0/1）不是布尔', normSlaParams({ monthly: 1 }).monthly === 1 && normSlaParams({ monthly: true }).monthly === 0)
+
+  const MON = Object.assign({}, PROP_ONLY, { monthly: 1 })
+  const dMon = deriveSla(Object.assign({}, geoCtx, { slaParams: MON }))
+  ok('月口径：传播先折到最坏月（99.800 → 99.297）再向下取档 99.0',
+    dMon.items.sysAvail.suggest === 99 && /= 99\.297 % → 99\.000 %$/.test(basisText(dMon.items.sysAvail.basis)),
+    basisText(dMon.items.sysAvail.basis))
+  ok('月口径依据列把折算那一步写全',
+    /^100 − \(\(100 − 99\.800\) \/ 0\.30\)\^\(1\/1\.15\) = /.test(basisText(dMon.items.sysAvail.basis)),
+    basisText(dMon.items.sysAvail.basis))
+  ok('月口径依据列无汉字可漏（纯算式）', !/[\u4e00-\u9fff]/.test(basisText(dMon.items.sysAvail.basis, true)))
+  const rMon = slaRows(dMon, {}, MON)
+  ok('月口径条款名改「系统可用度（月）」/「月中断时长上限」',
+    rMon.find((r) => r.key === 'sysAvail').label === '系统可用度（月）'
+    && rMon.find((r) => r.key === 'outageMin').label === '月中断时长上限',
+    rMon.find((r) => r.key === 'outageMin').label)
+  ok('月口径条款英文名',
+    rMon.find((r) => r.key === 'sysAvail').labelEn === 'System availability (monthly)'
+    && rMon.find((r) => r.key === 'outageMin').labelEn === 'Monthly outage (max)')
+  ok('月中断上限 = (100 − 99.000)/100 × 43830 = 438 min',
+    rMon.find((r) => r.key === 'outageMin').suggestText === '438'
+    && /× 43830 = 438 min$/.test(rMon.find((r) => r.key === 'outageMin').basisText),
+    rMon.find((r) => r.key === 'outageMin').basisText)
+  // 设备因子在折算【之后】乘（设备可用度本就是长期平均，不折算）
+  const dMonEq = deriveSla(Object.assign({}, geoCtx, { slaParams: Object.assign({}, DEFAULT_SLA_PARAMS, { monthly: 1 }) }))
+  const wm = worstMonthAvail(parseFloat(geo.data.systemAvailabilityResult))
+  ok('月口径 + 设备：连乘的第一项是折算后的传播值',
+    near(dMonEq.items.propAvail.suggest, wm, 1e-9)
+    && basisText(dMonEq.items.sysAvail.basis).indexOf('传播 ' + wm.toFixed(3) + ' %') === 0,
+    basisText(dMonEq.items.sysAvail.basis))
+  ok('月口径把「年」的断言完全留给缺省档（monthly = 0 时逐位不变）',
+    dGeo.items.sysAvail.suggest === 99.8
+    && slaRows(dGeo, {}, PROP_ONLY).find((r) => r.key === 'outageMin').suggestText === '1052')
+  // 星间是几何互视占比，不是降雨统计 → 不折算
+  const dIslMon = deriveSla({
+    orbitType: 'REGEN', regenMode: 'isl', data: geo.data, ok: true, params: null,
+    carrierForm: {}, slaParams: Object.assign({}, PROP_ONLY, { monthly: 1 })
+  })
+  ok('星间互视可用度不做 P.841 折算（那是降雨统计的经验式）',
+    dIslMon.items.sysAvail.suggest === 99.8 && basisText(dIslMon.items.sysAvail.basis).indexOf('0.30') < 0,
+    basisText(dIslMon.items.sysAvail.basis))
+  // 端到端：各星地跳之积先算年口径，再整体折一次
+  const dE2eMon = deriveSla({ orbitType: 'E2E', data: e2eData, ok: true, resolvedMargin: 3, params: null, carrierForm: {}, slaParams: MON })
+  ok('端到端月口径：先乘完各跳再整体折算（依据列只出现一次折算式）',
+    basisText(dE2eMon.items.sysAvail.basis).split('0.30').length === 2
+    && /^100 − \(\(100 − 99\.600\)/.test(basisText(dE2eMon.items.sysAvail.basis)),
+    basisText(dE2eMon.items.sysAvail.basis))
+  // 着色参照：扫描给的是【传播域 · 年口径】的档，得折到同一个域才可比
+  {
+    const fake = { pin: { kind: 'pa', powerW: 12.3 }, rows: [{ tag: '99.9', tier: 99.9, data: { linkmargin: '1.44' } }], clear: null, message: '' }
+    const dScanMon = deriveSla(Object.assign({}, geoCtx, { scan: fake, slaParams: MON }))
+    ok('月口径下最高可行档按 P.841 折算后当参照（99.9 年 → 99.615 月）',
+      near(dScanMon.items.sysAvail.ref, worstMonthAvail(99.9), 1e-9), String(dScanMon.items.sysAvail.ref))
+    ok('月口径参照：采用 99.7 着色、99.5 不着色',
+      slaRows(dScanMon, { adopt: { sysAvail: '99.7' } }, MON).find((r) => r.key === 'sysAvail').bad
+      && !slaRows(dScanMon, { adopt: { sysAvail: '99.5' } }, MON).find((r) => r.key === 'sysAvail').bad)
+  }
+  // 报告参数行印「考核周期」
+  ok('报告参数表印考核周期（年平均 / 最坏月），不是 0 / 1',
+    slaParamRows(DEFAULT_SLA_PARAMS, 'zh').find((r) => r.label === '考核周期').value === '年平均'
+    && slaParamRows(MON, 'zh').find((r) => r.label === '考核周期').value === '最坏月'
+    && slaParamRows(MON, 'en').find((r) => r.label === 'Assessment period').value === 'Worst month')
+  // 进分享包
+  {
+    const st = { v: 3, orbitType: 'GEO', rows: [{ earthStationLocation: '北京' }], satId: 's', slaParams: normSlaParams(MON) }
+    const bk = decodeShare(encodeShare(makeBundle({ mod: 'GEO', from: 't', configs: [{ name: 'A', path: [], state: st }], lib: null })))
+    ok('monthly 随分享包往返', bk.configs[0].state.slaParams.monthly === 1)
+  }
+  ok('derived 把考核周期带给面板（档位表的综合列与中断列据此换档）', dMon.monthly === true && dGeo.monthly === false)
 }
 
 // —— 静态清单自洽 ——

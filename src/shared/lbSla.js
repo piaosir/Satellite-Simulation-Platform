@@ -65,7 +65,10 @@ export const DEFAULT_SLA_PARAMS = {
   esRxAvail: 99.99,    // 收信射频可用度 %（收端地球站的 LNB / 下变频 / 天线一路）
   spaceAvail: 99.99,   // 卫星与载荷可用度 %，链上逐颗计入
   groundOn: 0,         // 是否计入基带/骨干网（0 / 1）：只卖空间段就不勾，卖网络服务才勾
-  groundAvail: 99.99   // 基带/骨干网可用度 %（调制解调 / 回传 / 骨干）
+  groundAvail: 99.99,  // 基带/骨干网可用度 %（调制解调 / 回传 / 骨干）
+  // 考核周期（0 = 年平均 / 1 = 最坏月）。引擎那份可用度是 P.618 的【年均】统计，合同 SLA 几乎
+  // 都按月考核按月赔付：年 99.9 % 折成最坏月只有 99.62 %，承诺 99.9 % 在雨季那个月必然违约。
+  monthly: 0
 }
 
 export const SLA_GROUPS = [
@@ -85,8 +88,8 @@ export const SLA_GROUPS = [
 export const SLA_ITEMS = [
   { key: 'propAvail', group: 'avail', label: '传播可用度', labelEn: 'Propagation availability', unit: '%', kind: 'ro', dec: 3, cmp: null, tip: '引擎算的那一份：上下行设计可用度之积，只管雨衰不管设备；同站回环时取两侧较小者' },
   { key: 'visAvail', group: 'avail', label: '互视可用度', labelEn: 'Visibility availability', unit: '%', kind: 'ro', dec: 3, cmp: null, tip: '星间链路的几何互视时间占比（微波与激光同口径），不是雨衰统计' },
-  { key: 'sysAvail', group: 'avail', label: '系统可用度', labelEn: 'System availability', unit: '%', kind: 'num', dec: 3, cmp: 'gt', tip: '传播可用度 × 发信射频 × 收信射频 × 卫星与载荷（× 基带/骨干网），不是单侧输入列；建议值向下取标准档' },
-  { key: 'outageMin', group: 'avail', label: '年中断时长上限', labelEn: 'Annual outage (max)', unit: 'min', kind: 'num', dec: 0, cmp: null, tip: '(100 − 采用可用度)/100 × 365.25 × 24 × 60；随采用可用度变' },
+  { key: 'sysAvail', group: 'avail', label: '系统可用度', labelEn: 'System availability', labelMonthly: '系统可用度（月）', labelMonthlyEn: 'System availability (monthly)', unit: '%', kind: 'num', dec: 3, cmp: 'gt', tip: '传播可用度 × 发信射频 × 收信射频 × 卫星与载荷（× 基带/骨干网），不是单侧输入列；建议值向下取标准档' },
+  { key: 'outageMin', group: 'avail', label: '年中断时长上限', labelEn: 'Annual outage (max)', labelMonthly: '月中断时长上限', labelMonthlyEn: 'Monthly outage (max)', unit: 'min', kind: 'num', dec: 0, cmp: null, tip: '(100 − 采用可用度)/100 × 一个考核周期的分钟数（年 525960 / 月 43830）；随采用可用度变' },
   { key: 'settledBw', group: 'bw', label: '结算带宽', labelEn: 'Settled bandwidth', unit: 'kHz', kind: 'num', qty: true, cmp: 'lt', tip: '转发器带宽承诺＝max(载波带宽, 功率带宽)' },
   { key: 'cir', group: 'bw', label: '承诺信息速率 CIR', labelEn: 'Committed information rate (CIR)', unit: 'kbps', kind: 'num', qty: true, cmp: 'gt', tip: '设计可用度下、余量 ≥ 0 时的信息速率' },
   { key: 'mir', group: 'bw', label: '峰值信息速率 MIR', labelEn: 'Maximum information rate (MIR)', unit: 'kbps', kind: 'num', qty: true, cmp: 'gt', tip: 'ACM 在同一符号率内切到晴空可支撑的最高效率档；保留同样的系统余量。未选 MODCOD 标准时＝CIR' },
@@ -108,6 +111,21 @@ const ITEM_BY_KEY = Object.fromEntries(SLA_ITEMS.map((it) => [it.key, it]))
 const GROUP_BY_KEY = Object.fromEntries(SLA_GROUPS.map((g) => [g.key, g]))
 
 export const MIN_PER_YEAR = 365.25 * 24 * 60
+export const MIN_PER_MONTH = MIN_PER_YEAR / 12
+
+/**
+ * ITU-R P.841 全球模型：年平均时间百分比 → 最坏月时间百分比 p_w = (p / 0.30)^(1/1.15)。
+ * 与雨衰页 rainAttenuation.js 的换算逐字同一条式子。
+ * 年 99.8 % → 最坏月 99.297 %；年 99.9 % → 99.615 %；年 99.99 % → 99.948 %。
+ * @returns 最坏月可用度 %（入参非法返回 null）
+ */
+export function worstMonthAvail(availPct) {
+  const a = num(availPct)
+  if (a === null) return null
+  const p = 100 - a
+  if (!(p > 0)) return a
+  return 100 - Math.min(100, Math.pow(p / 0.30, 1 / 1.15))
+}
 // 10·lg(4000)：dBW/Hz → dBW/4 kHz（运营商与 ITU 惯用的参考带宽）
 const PSD_4K_DB = 36.02
 
@@ -521,6 +539,17 @@ function sameSite(data, params) {
   return Math.abs(la - lb) < 1e-6 && Math.abs(lo - lc) < 1e-6
 }
 
+/**
+ * 着色参照：扫描给的「最高可行档」是【传播域 · 年口径】的，采用值是综合域（且可能是月口径），
+ * 两者得换到同一个域才可比。
+ */
+function refTier(tier, toWm, factor) {
+  const t = num(tier)
+  if (t === null) return null
+  const v = toWm ? worstMonthAvail(t) : t
+  return v === null ? null : v * (factor === null || factor === undefined ? 1 : factor)
+}
+
 /** 算式自检：写出来的式子代入自己给的数，结果得等于建议值。差得过大就不摆这个式子。 */
 function bal(got, want, tol) {
   const a = num(got), b = num(want)
@@ -601,6 +630,8 @@ export function deriveSla(ctx) {
   const rm = ot === 'REGEN' ? (ctx.regenMode || 'uplink') : ''
   const e2e = ot === 'E2E'
   const scan = ctx.scan || null
+  // 考核周期：0 = 年平均（引擎那份统计的口径），1 = 最坏月（P.841 折算）
+  const monthly = !!num(sp.monthly)
 
   const items = {}
   const order = []
@@ -614,6 +645,7 @@ export function deriveSla(ctx) {
 
   const out = {
     items, order, groups: [],
+    monthly,
     scanRows: (scan && Array.isArray(scan.rows)) ? scan.rows : [],
     scanPin: (scan && scan.pin) || null,
     scanMessage: (scan && scan.message) || '',
@@ -654,6 +686,9 @@ export function deriveSla(ctx) {
     const isVis = rm === 'isl' || rm === 'laser'
     const avKey = isVis ? 'visAvail' : 'propAvail'
     const avHead = isVis ? AV_LABEL.vis : AV_LABEL.prop
+    // ★ 最坏月折算只对【传播】那一份做：P.841 是降雨时间百分比的经验式，星间互视是几何量、
+    //   设备可用度本就是长期平均，两者都不折算。
+    const toWm = monthly && !isVis
     let sys = num(data.systemAvailabilityResult)
     if (sys !== null) {
       // 传播可用度（引擎那一份）的依据：上下行两侧怎么乘出来的
@@ -682,6 +717,17 @@ export function deriveSla(ctx) {
           }
         } else propBasis.push(P(sys.toFixed(3) + ' %'))
       }
+      // 最坏月：把上面算出的年口径整体折一次（端到端也是先把各星地跳乘完再折——P.841 是对
+      // 单站降雨统计的经验式，逐跳折算再相乘会把保守叠两次；这一步是近似）。
+      if (toWm) {
+        const wm = worstMonthAvail(sys)
+        if (wm !== null) {
+          // 依据列换成折算那一步：年口径那个数就摆在式子里（档位表的「档位」列仍是它）
+          propBasis.length = 0
+          propBasis.push(P('100 − ((100 − ' + sys.toFixed(3) + ') / 0.30)^(1/1.15)'), P('='), P(wm.toFixed(3) + ' %'))
+          sys = wm
+        }
+      }
       // 传播之外的因子（设备 / 空间段 / 地面段）。一项都没有时不出「传播可用度」那一行 ——
       // 它会与「系统可用度」逐字相同，一张表里同一个数写两遍。
       const eqArgs = { orbitType: ot, regenMode: rm, slaParams: sp, esCount: ctx.esCount, satCount: ctx.satCount }
@@ -702,9 +748,9 @@ export function deriveSla(ctx) {
           cb.push(P(f.pct.toFixed(3) + ' %'))
         }
         cb.push(P('='), P(comp.toFixed(3) + ' %'))
-        put('sysAvail', { basis: cb.concat(snapStep(comp), failParts), suggest: tier, ref: out.feasibleTier === null ? null : out.feasibleTier * out.eqFactor })
+        put('sysAvail', { basis: cb.concat(snapStep(comp), failParts), suggest: tier, ref: refTier(out.feasibleTier, toWm, out.eqFactor) })
       } else {
-        put('sysAvail', { basis: propBasis.concat(snapStep(comp), failParts), suggest: tier, ref: out.feasibleTier })
+        put('sysAvail', { basis: propBasis.concat(snapStep(comp), failParts), suggest: tier, ref: refTier(out.feasibleTier, toWm, 1) })
       }
       // 依据列在 slaRows 里按【采用可用度】现拼：这一行的值就是从那个数算出来的，
       // 依据写着算出来的系统可用度、值却按取档后的那一档给，两个数对不上账
@@ -1018,7 +1064,10 @@ export function slaRows(derived, rowSla, params, fmt, en) {
     if (it.qty) return fmtScaled(v * (factor || 1))
     return fixed(v, it.dec)
   }
-  // 年中断上限跟着「采用可用度」走
+  // 考核周期：年 / 最坏月。条款名与中断上限的分母都跟着它走。
+  const monthly = !!(d.monthly)
+  const periodMin = monthly ? MIN_PER_MONTH : MIN_PER_YEAR
+  // 中断上限跟着「采用可用度」走
   const availKey = 'sysAvail'
   const availIt = d.items[availKey]
   const availEff = availIt ? (num(adoptOf(rowSla, availKey)) !== null ? num(adoptOf(rowSla, availKey)) : availIt.suggest) : null
@@ -1030,9 +1079,9 @@ export function slaRows(derived, rowSla, params, fmt, en) {
     rows.push({ kind: 'group', key: gk, label: (g && g.label) || gk, labelEn: (g && g.labelEn) || gk })
     for (const key of keys) {
       const it = d.items[key]
-      // 年中断上限＝(100 − 采用可用度)/100 × 一年分钟数：采用值改了要跟着变
+      // 中断上限＝(100 − 采用可用度)/100 × 一个考核周期的分钟数：采用值改了要跟着变
       const suggest = it.derived === 'outage'
-        ? ((availEff === null || it.bad) ? null : (100 - availEff) / 100 * MIN_PER_YEAR)
+        ? ((availEff === null || it.bad) ? null : (100 - availEff) / 100 * periodMin)
         : it.suggest
       // 只读读数（传播 / 互视可用度、设计误码率）没有采用值格：即便存量场景里留着一个 adopt，
       // 也一律按建议值走，否则屏幕上没处改、报告里却印着一个改过的数。
@@ -1053,13 +1102,15 @@ export function slaRows(derived, rowSla, params, fmt, en) {
       const { unit, factor } = partsOf(Object.assign({}, it, { suggest }))
       let basis = it.basis || []
       if (it.derived === 'outage' && availEff !== null && !it.bad) {
-        basis = [P('(100 − ' + availEff.toFixed(3) + ') / 100 × ' + Math.round(MIN_PER_YEAR)),
+        basis = [P('(100 − ' + availEff.toFixed(3) + ') / 100 × ' + Math.round(periodMin)),
           P('='), P(fixed(suggest, 0) + ' min')]
       }
       if (!basis.length) basis = [P('—')]
       rows.push({
         kind: 'item', key, group: gk,
-        label: it.label, labelEn: it.labelEn, sub: it.sub || '', tip: it.tip || '',
+        label: (monthly && it.labelMonthly) || it.label,
+        labelEn: (monthly && it.labelMonthlyEn) || it.labelEn,
+        sub: it.sub || '', tip: it.tip || '',
         unit, factor, type: it.kind || 'num', ro: readonly, dec: it.dec, qty: !!it.qty,
         basis, basisText: basisText(basis, en),
         suggest, suggestText: show(it, suggest, factor),
@@ -1116,7 +1167,9 @@ export const SLA_PARAM_LABELS = [
   { key: 'ferExp', label: '帧差错率 10⁻ⁿ', labelEn: 'Frame error ratio 10⁻ⁿ', unit: 'n' },
   { key: 'procMsPerEnd', label: '处理时延预留', labelEn: 'Processing delay allowance', unit: 'ms/单程', unitEn: 'ms/one-way' },
   { key: 'eirpTolDb', label: 'EIRP 容差', labelEn: 'EIRP tolerance', unit: 'dB' },
-  { key: 'xpdMinDb', label: '极化隔离度', labelEn: 'Polarisation isolation', unit: 'dB' }
+  { key: 'xpdMinDb', label: '极化隔离度', labelEn: 'Polarisation isolation', unit: 'dB' },
+  // 考核周期不是数值参数，值走 enumOf 出字（报告里印「年」/「最坏月」而不是 0 / 1）
+  { key: 'monthly', label: '考核周期', labelEn: 'Assessment period', unit: '', enumOf: [['年平均', 'Annual mean'], ['最坏月', 'Worst month']] }
 ]
 /** 报告 §4 末尾那一行 SLA 参数表（纯数据，标签已按 lang 翻好） */
 export function slaParamRows(params, lang) {
@@ -1125,7 +1178,7 @@ export function slaParamRows(params, lang) {
   // 没勾「基带/骨干网」就不列那一格：报告里印一个没参与连乘的数会被当成计入了
   return SLA_PARAM_LABELS.filter((d) => !d.gate || num(sp[d.gate])).map((d) => ({
     label: en ? d.labelEn : d.label,
-    value: String(sp[d.key]),
+    value: d.enumOf ? (d.enumOf[num(sp[d.key]) ? 1 : 0][en ? 1 : 0]) : String(sp[d.key]),
     unit: en ? (d.unitEn || d.unit) : d.unit
   }))
 }
