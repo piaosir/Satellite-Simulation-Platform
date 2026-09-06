@@ -22,6 +22,10 @@ release/
 
 # 离屏验证台（链路预算图表 / NTN 参数 / 取星面板核对），本地开发用，不进仓库
 .lkharness/
+# .lbntnharness 现在验两件事：3GPP 载波的物理层参数区（PRB / 子载波间隔 / MCS / 重复 → 占用带宽与
+# 信息速率读数、越界红字、门限那格从可点的钮换成定死的 SNR 标签），以及老式 esno 行的信道带宽提示。
+# 数值口径归 packages/core/test/ntnPhy.test.mjs 与 ntnSnrEngine.test.mjs，都进 npm test；
+# 这一页只看单测证明不了的：藏掉五个字段后网格排不排得开、切体制会不会跳行、只读区的退色档。
 .lbntnharness/
 .satpickharness/
 
@@ -261,3 +265,16 @@ resources/imagery/
 # 源码级的不变量（递 Path2D 的 fill/stroke/clip 必须有 compat 分支等）归
 # packages/core/test/flatExportCompat.test.mjs，进 npm test。
 .pdfharness/
+
+# 「SLA 建议」分区验证台（npx vite --config .slaharness/vite.config.mjs，launch.json 的 sla-harness）：
+# 四体制九个算例各挂一份 LbSlaPane（GSO / GSO 引频率计划 / GSO 链路不成立 / NGSO / 再生上行 /
+# 再生下行 / 星间 / 激光 / 端到端），深浅主题、中英文、单位档、字号当场切。
+# 单测证明不了的东西全在这一页上看：三线表的线级、组头的层次、依据列的红、档位表的加粗行、
+# 采用值那格的占位符（＝建议值）与换档回存、英文版式下列宽够不够。
+# 建议值本身的口径归 packages/core/test/lbSla.test.mjs，扫描归 slaScan.test.mjs，都进 npm test。
+.slaharness/
+# .fillharness/ 是离屏验证台：2D 分带填充的 Canvas2D 光栅化成本（逐三角 / 合并环 / 位图三种画法对拍）。
+# .fillharness/gl/ 是 GPU 化那一台（npx vite --config .fillharness/gl/vite.config.mjs，launch.json 的
+# fill-gl-harness）：真 GRD + 真引擎 + 真 glField.js，CPU 分带多边形 vs GPU 网格着色逐像素比对 +
+# 一次重算的几何成本（三档 stride）+ 每帧填充合成计时 + 多层半透明叠加一致性。
+.fillharness/
