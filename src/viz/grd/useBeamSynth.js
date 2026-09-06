@@ -390,13 +390,15 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
   const _stacks = new Map()                        // groupId -> { undo:[], redo:[] }
   const canUndo = ref(false), canRedo = ref(false)
   const stackFor = (id) => { let s = _stacks.get(id); if (!s) _stacks.set(id, s = { undo: [], redo: [] }); return s }
-  const _snap = () => JSON.stringify({ beams: bare(beams.value), settings: settings.value.map(bareSetting), activeSettingId: activeSettingId.value })
+  const _snap = () => JSON.stringify({ beams: bare(beams.value), settings: settings.value.map(bareSetting), activeSettingId: activeSettingId.value, stOv: p.stOv || [], stAdd: p.stAdd || [] })
   function _flags() { const s = _stacks.get(activeGroupId.value); canUndo.value = !!(s && s.undo.length); canRedo.value = !!(s && s.redo.length) }
   function _apply(str) {
     const d = JSON.parse(str)
     settings.value = Array.isArray(d.settings) ? d.settings : settings.value
     beams.value = Array.isArray(d.beams) ? d.beams : beams.value
     if (d.activeSettingId && settings.value.find((s) => s.id === d.activeSettingId)) activeSettingId.value = d.activeSettingId
+    if (Array.isArray(d.stOv)) p.stOv = d.stOv                                   // 站点修正随快照回滚（老快照没这两键 → 保持现状）
+    if (Array.isArray(d.stAdd)) p.stAdd = d.stAdd
   }
   function pushUndo() { if (!activeGroupId.value) return; const s = stackFor(activeGroupId.value); s.undo.push(_snap()); if (s.undo.length > 100) s.undo.shift(); s.redo.length = 0; _flags() }
   function dropUndo() { const s = _stacks.get(activeGroupId.value); if (s) s.undo.pop(); _flags() }
@@ -551,6 +553,8 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
     open.value = true
     refresh()
   }
+  // close ＝ 收面板（收起侧栏也会走到这里），站点栅的编辑态 / 选区照旧留着 —— 收起侧栏不算离开视图。
+  // 真正离开波束合成视图（切到别的活动栏项）由页面按 sideCtx 调 exitStEdit()。
   function close() { open.value = false; placing.value = false; adjusting.value = false; deleting.value = false; refresh() }
 
   function activeWidth() {
@@ -648,31 +652,47 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
   }
   const stInfo = computed(() => stationPreview(satPos()))
   // 框选（平面图矩形，角点经纬）：lat 直取 min/max；lon 跨 ±180° 按短弧宽度判包含。
-  // 默认=新选择；additive（Ctrl/⌘ 按住）=在已有选择上累加
-  function stBoxSelect(a, b, additive) {
+  // 默认=新选择；additive（Ctrl/⌘）=并入；subtract（Alt）=从已有选择里减掉（SATSOFT §9.2 的 select / de-select）
+  function stBoxSelect(a, b, additive, subtract) {
     const pos = satPos()
     const sp = pos ? stationPreview(pos) : null
     if (!sp || !a || !b) return
     const lat0 = Math.min(a.lat, b.lat), lat1 = Math.max(a.lat, b.lat)
     let L0 = a.lon, W = ((b.lon - a.lon) + 360) % 360
     if (W > 180) { L0 = b.lon; W = 360 - W }
-    const sel = new Set(additive ? stSel.value : [])
+    const sel = new Set((additive || subtract) ? stSel.value : [])
     for (const s of sp.squares) {
       if (s.lon == null || s.lat < lat0 || s.lat > lat1) continue
       if (((s.lon - L0) + 360) % 360 > W) continue
-      sel.add(s.id)
+      if (subtract) sel.delete(s.id); else sel.add(s.id)
     }
     stSel.value = sel
     status.value = sel.size ? `已选中 ${sel.size} 个站点` : ''
     refresh()
   }
+  // 全选 / 反选（SATSOFT §9.4 Select All Stations / §9.3 Invert Selected State）：只认当前预览里在场的站
+  function selectAllSt() {
+    const sp = stInfo.value
+    if (!sp) return
+    stSel.value = new Set(sp.squares.map((s) => s.id))
+    status.value = stSel.value.size ? `已选中 ${stSel.value.size} 个站点` : ''
+    refresh()
+  }
+  function invertStSel() {
+    const sp = stInfo.value
+    if (!sp) return
+    const cur = stSel.value
+    stSel.value = new Set(sp.squares.filter((s) => !cur.has(s.id)).map((s) => s.id))
+    status.value = stSel.value.size ? `已选中 ${stSel.value.size} 个站点` : ''
+    refresh()
+  }
   function clearStSel() { if (stSel.value.size) { stSel.value = new Set(); refresh() } }
   // 单击选站（SATSOFT §10.3.1 点站查看属性的对应交互）：命中站点符号附近 → 选中该站（Ctrl=增减选，点已选=取消）；
   // 未命中 → 普通点击清选、Ctrl 点击保持。命中半径 = 符号地面外接半径×1.6，下限 0.1°
-  function stClickSelect(ll, additive) {
+  function stClickSelect(ll, additive, subtract) {
     const pos = satPos()
     const sp = pos ? stationPreview(pos) : null
-    if (!sp || !ll) { if (!additive) clearStSel(); return }
+    if (!sp || !ll) { if (!additive && !subtract) clearStSel(); return }
     let best = null, bd = Infinity
     for (const s of sp.squares) {
       if (s.lon == null) continue
@@ -682,7 +702,8 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
       const d = Math.hypot(dLon, ll.lat - s.lat)
       if (d <= Math.max(ext * 1.6, 0.1) && d < bd) { bd = d; best = s }
     }
-    if (!best) { if (!additive) clearStSel(); return }
+    if (!best) { if (!additive && !subtract) clearStSel(); return }
+    if (subtract) { const s2 = new Set(stSel.value); s2.delete(best.id); stSel.value = s2; refresh(); return }
     const sel = new Set(additive ? stSel.value : [])
     if (additive && sel.has(best.id)) sel.delete(best.id)
     else if (!additive && stSel.value.size === 1 && stSel.value.has(best.id)) { clearStSel(); return }
@@ -700,10 +721,24 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
     const s = sp.squares.find((x) => x.id === id)
     return s ? { type: s.type, g: Number.isFinite(s.g) ? s.g : 0, add: !!s.add } : null
   })
+  // 选中站点的共同类型：全同 → 'cov'|'sup'|'ex'（对应类型钮点亮），不一致 → 'mix'，无选中 → null
+  const stSelType = computed(() => {
+    if (!stSel.value.size) return null
+    const sp = stInfo.value
+    if (!sp) return null
+    let t = null
+    for (const s of sp.squares) {
+      if (!stSel.value.has(s.id)) continue
+      if (t === null) t = s.type
+      else if (t !== s.type) return 'mix'
+    }
+    return t
+  })
   // 类型应用到选中：'cov'=还原 Contour（清类型改写，保留目标偏置）/ 'sup'=抑制 / 'ex'=排除（手工站=删除）
   function applyStType(t) {
     const sel = stSel.value
     if (!sel.size) return
+    pushUndo()
     if (!Array.isArray(p.stOv)) p.stOv = []
     if (!Array.isArray(p.stAdd)) p.stAdd = []
     const byKey = new Map(p.stOv.map((o) => [stationKey(o.az, o.el), o]))
@@ -737,6 +772,7 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
   function applyStGoal(g) {
     const sel = stSel.value
     if (!sel.size || !Number.isFinite(g)) return
+    pushUndo()
     if (!Array.isArray(p.stOv)) p.stOv = []
     if (!Array.isArray(p.stAdd)) p.stAdd = []
     const byKey = new Map(p.stOv.map((o) => [stationKey(o.az, o.el), o]))
@@ -764,6 +800,8 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
     refresh()
   }
   function resetStations() {
+    if (!(p.stOv || []).length && !(p.stAdd || []).length) return
+    pushUndo()                                     // 误点可撤销（工具条「撤销」）——此前这一下不可逆
     p.stOv = []; p.stAdd = []
     stSel.value = new Set()
     status.value = '站点修正已清空（回到自动站点栅）'
@@ -774,14 +812,23 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
     if (!pos || !ll) return
     const ae = dirToAzEl(pos.lon, pos.lat || 0, pos.altKm, ll.lon, ll.lat)
     if (!Array.isArray(p.stAdd)) p.stAdd = []
+    pushUndo()
     p.stAdd.push({ id: newId('sa'), az: +ae.az.toFixed(4), el: +ae.el.toFixed(4) })
     status.value = `已加站 ${ll.lon.toFixed(2)}°E, ${ll.lat.toFixed(2)}°N（Contour；可框选后改类型/目标）`
     refresh()
   }
+  // 框选模式开关。★ 模式与选区分家：退出框选【保留】已选中的站——退出后地图恢复左键平移，
+  // 挪到别处再进框选 Ctrl 拖可继续加选；清空选区归「清选」与 exitStEdit（离开视图 / 切组 / 切模式）。
   function toggleStEdit() {
     stEditOn.value = !stEditOn.value
     if (stEditOn.value) { placing.value = false; stPick.value = false; adjusting.value = false; deleting.value = false }
-    else stSel.value = new Set()
+    refresh()
+  }
+  // 整体退出站点编辑（框选 + 加站 + 选区）：离开波束合成视图 / 切组 / 切模式时调用——
+  // 编辑态是「此刻正在这张图上干的事」，人走了它不该还留在平面图上截着左键拖拽
+  function exitStEdit() {
+    if (!stEditOn.value && !stPick.value && !stSel.value.size) return
+    stEditOn.value = false; stPick.value = false; stSel.value = new Set()
     refresh()
   }
   function toggleStPick() {
@@ -1023,7 +1070,8 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
         }
         const expNote = expDeg > 0 ? ` · 指向误差外扩 ${expDeg}°` : ''
         const stNote = r.stStats ? ` · 站点 ${r.stStats.c0 + r.stStats.c1}（区内 ${r.stStats.c0}·边界 ${r.stStats.c1}${r.stStats.c2 ? '·抑制 ' + r.stStats.c2 : ''}${r.stStats.ovApplied ? '·修正 ' + r.stStats.ovApplied : ''}${r.stStats.added ? '·手工 ' + r.stStats.added : ''}）` : ''
-        status.value = `已生成赋形天线「${name}」：${head}${expNote}${stNote} · ${r.nBeams} 支成分波束激励优化 · 物理峰值 ${r.physPeakDbi.toFixed(1)} dBi · 边缘 ${r.value.toFixed(1)} · 平顶纹波 ±${r.rippleDb.toFixed(1)} dB · Ω=${r.omegaDeg2.toFixed(2)} deg²${pkNote}${r.warn ? ' —— ' + r.warn : ''}`
+        const mmNote = r.mm ? ` · 最低 ${r.covMin.toFixed(1)} dBi · 活跃站 ${r.mm.active}/${r.mm.nStations} · 迭代 ${r.mm.iters}` : ''
+        status.value = `已生成赋形天线「${name}」：${head}${expNote}${stNote} · ${r.nBeams} 支成分波束激励优化 · 物理峰值 ${r.physPeakDbi.toFixed(1)} dBi · 边缘 ${r.value.toFixed(1)} · 区内起伏 ±${r.rippleDb.toFixed(1)} dB${mmNote} · Ω=${r.omegaDeg2.toFixed(2)} deg²${pkNote}${r.warn ? ' —— ' + r.warn : ''}`
       }
     } else if (g.mode === 'pam') {
       const gp = g.p
@@ -1050,7 +1098,8 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
           const head = pgs.length > 1 ? `${pgs.length} 个 Polygon 并集` : (pgs[0].name || 'Polygon')
           const expNote = expDeg > 0 ? ` · 指向误差外扩 ${expDeg}°` : ''
           const stNote = r.stStats ? ` · 站点 ${r.stStats.c0 + r.stStats.c1}（区内 ${r.stStats.c0}·边界 ${r.stStats.c1}${r.stStats.c2 ? '·抑制 ' + r.stStats.c2 : ''}${r.stStats.ovApplied ? '·修正 ' + r.stStats.ovApplied : ''}${r.stStats.added ? '·手工 ' + r.stStats.added : ''}）` : ''
-          status.value = `已生成相控阵赋形天线「${name}」：${head}${expNote}${stNote} · 阵 ${pamCfg.Nx}×${pamCfg.Ny}（${pamCfg.dxWl}×${pamCfg.dyWl}λ）· ${r.nBeams} 个 Butler 端口激励优化 · 物理峰值 ${r.physPeakDbi.toFixed(1)} dBi · 边缘 ${r.value.toFixed(1)} · 电扫 ${r.scanDeg.toFixed(1)}° · 纹波 ±${r.rippleDb.toFixed(1)} dB · 星上激励指令 ${r.excit.length} 条（见下表，可导出上注）${r.warn ? ' —— ' + r.warn : ''}`
+          const mmNote = r.mm ? ` · 最低 ${r.covMin.toFixed(1)} dBi · 活跃站 ${r.mm.active}/${r.mm.nStations} · 迭代 ${r.mm.iters}` : ''
+          status.value = `已生成相控阵赋形天线「${name}」：${head}${expNote}${stNote} · 阵 ${pamCfg.Nx}×${pamCfg.Ny}（${pamCfg.dxWl}×${pamCfg.dyWl}λ）· ${r.nBeams} 个 Butler 端口激励优化 · 物理峰值 ${r.physPeakDbi.toFixed(1)} dBi · 边缘 ${r.value.toFixed(1)} · 电扫 ${r.scanDeg.toFixed(1)}° · 区内起伏 ±${r.rippleDb.toFixed(1)} dB${mmNote} · 星上激励指令 ${r.excit.length} 条${r.warn ? ' —— ' + r.warn : ''}`
         }
       } else {
         // 相控阵点波束群（SATSOFT §6.5）：每波束 → (az,el) 电扫指向，buildPamGrd 逐波束写 pamField 场（sinc 旁瓣/栅瓣/扫描损失内建）
@@ -1174,7 +1223,7 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
     thetaAuto, dirDbi, crossX, crossY, shapedTheta3, shapedEff, shapedPeak, togglePoly,
     shapedSimF, shapedRefl, refl, pam, pamScanStat, pamExcit, pamExcitCsv,
     satNode, satNodeOf, satPos, openFor, close, placeAt, dragBeam, removeBeam, removeBeamAt, clearBeams, hexFill, sketchSpec,
-    stEditOn, stPick, stSel, stInfo, stSelOne, stBoxSelect, stClickSelect, clearStSel, applyStType, applyStGoal, resetStations, toggleStEdit, toggleStPick,
+    stEditOn, stPick, stSel, stInfo, stSelOne, stSelType, stBoxSelect, stClickSelect, clearStSel, selectAllSt, invertStSel, applyStType, applyStGoal, resetStations, toggleStEdit, toggleStPick, exitStEdit,
     addGroup, removeGroup, renameGroup, duplicateGroup, toggleGroupVisible, selectGroup, setSat,
     addSetting, removeSetting, renameSetting, selectSetting, applySettingToBeams,
     generate, generateGroup, generateAll,

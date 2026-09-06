@@ -9,9 +9,10 @@
 //   仅用于 口径→波束宽度 换算 θ3dB ≈ 70·λ/D（SATSOFT 把该换算放在反射面模型档）。
 // 赋形波束（真实 contoured-beam 合成，与 SATSOFT/TICRA 赋形向导同源）：覆盖区 = 所选 Polygon
 //   并集（支持多 Polygon 组合），口径决定成分波束宽度 θ3≈70λ/D；覆盖区上铺馈源格（边界随形
-//   环 + 内部六角填充），对各馈源高斯成分波束的同相实激励做迭代加权最小二乘 minimax 优化：
-//   区内平顶 / Polygon 边界=覆盖值等值线 / 界外抑制 —— 平顶纹波、口径极限边缘滚降、界外
-//   干涉旁瓣与真实赋形一致。定标见 buildShapedGrd（物理积分方向性 | 指定覆盖值反推）。
+//   环 + 内部六角填充），对各馈源高斯成分波束的【复激励】做严格 minimax 优化（序列线性规划 +
+//   信赖域 + 内点 LP，见 minimax.js）：最大化最差站点余量 —— 区内平顶 / Polygon 边界=覆盖值
+//   等值线 / 界外抑制；区内起伏、口径极限边缘滚降、界外干涉旁瓣与真实赋形一致（等纹波活跃集
+//   是终解的自然产物，不是模板压出来的）。定标见 buildShapedGrd（物理积分方向性 | 覆盖值反推）。
 //
 // 网格用 igrid=6（az over el，与校验样本同款）：全部波束共用天底指向 basis，各波束中心
 // 以【相对星下点的 az/el】编码在各自 set 的 XS..XE 子窗口（与真实 HTS 多波束 GRD 同构）。
@@ -19,6 +20,23 @@
 // 下游 RSS/P1 取值、复场 bicubic 插值（性能表）全部自然成立。
 import { antennaBasis, gridDir, invGridDir, projectLimb, limbMargin, limbPoint, dirToAzEl, azElGround } from './coverage.js'
 import { parseGrd } from './parse.js'
+import { createMinimax } from './minimax.js'
+
+// minimax 求解的墙钟上限（每次 run）：大口径 / 密站点栅一次求解可到十几秒，同步跑在主线程上就是整窗冻死。
+// 到时即停、结果照常出、状态行如实写「未收敛 + 用时」（见 mmNote），由用户决定加密度还是降口径。
+const MM_MAX_MS = 5000
+// 求解器没收敛 / LP 出过错时接在 warn 后面的一句纯陈述（不写教学式从句，见 CLAUDE.md）
+function mmNote(mm) {
+  if (!mm || (mm.converged && !mm.lpFail)) return ''
+  const parts = []
+  if (!mm.converged) {
+    parts.push(mm.stoppedBy === 'time'
+      ? `优化 ${mm.iters} 轮、${Math.round(mm.elapsedMs)} ms 到时限未收敛`
+      : `优化 ${mm.iters} 轮未收敛`)
+  }
+  if (mm.lpFail) parts.push(`LP 子问题失败 ${mm.lpFail} 次`)
+  return parts.join('，')
+}
 
 const D2R = Math.PI / 180
 const GCOEF = 40 * Math.LN2 / Math.LN10          // 12.0412…：高斯波束相对电平系数
@@ -762,17 +780,18 @@ export function buildPamGrd({ satName = '', satLon, satLat = 0, altKm, pam, beam
 //      物理等纹波与真实边缘滚降由此自然浮现（口径越大 beamlet 越多、纹波越小，符合真实天线）。
 //   ② 站点栅（station grid ＝ 目标点）：Polygon 内六角站点 + 边界点 + 界外抑制点。站点只定义
 //      「哪里要达标」，不提供自由度（对齐 SATSOFT：station 是靶子，beamlet 才是被激励的辐射源）。
-//   ③ 复激励 minimax（交替相位）：成分场幅 gᵢ=exp[−2ln2(r/θ3)²]，合成复场 f=Σ wᵢ·gᵢ（wᵢ∈ℂ）。
-//      每轮以各站点当前相位 + 单位幅为目标，解复法方程（gᵢ 实 → 法矩阵 A 实对称，仅右端 b 复 →
-//      同一 Cholesky 分解解 Re/Im 两路，复数只进相位）；IRLS 按缺额升权最差站点 → 逼近等纹波
-//      （Chebyshev）解。不设平顶硬模板、不加大岭正则 → 纹波如实保留，不再被磨成纯净同心环。
+//   ③ 复激励【严格 minimax】（minimax.js）：成分场幅 gᵢ=exp[−2ln2(r/θ3)²]，合成复场 f=Σ wᵢ·gᵢ（wᵢ∈ℂ）。
+//      直接求解 min_w max_m r_m —— r 为站点残差（contour：目标−实得；sidelobe：实得−目标），站点增益
+//      取归一化相对值 f=10log10(|E|²/P)（对整体缩放不变）。序列线性规划 + 信赖域外环，LP 子问题走
+//      Mehrotra 原对偶内点法；终解自带【等纹波活跃集】（多站残差同时顶在最差值上）。不设平顶硬模板、
+//      不加大岭正则 → 起伏如实保留，不会被磨成纯净同心环。
 //   ④ 定标：mode='physical' 按合成方向图积分算真实方向性 D=eff·4π·P̂max/∫P̂dΩ（dBi）；
-//      mode='value' 按覆盖值反推（边界采样中位电平 = value）。峰值/纹波/角落最差值如实回报。
+//      mode='value' 按覆盖值反推（边界采样中位电平 = value）。峰值/区内起伏/角落最差值如实回报。
 // polysPts: [ [[lon,lat],...], ... ]（并集为【一个】覆盖区，不再按多 Polygon 做区内能量偏向）。
 // 返回 { text, value(边缘保证值), peakDbi, covMin, omegaDeg2, nBeams(beamlet 数), rippleDb, nx, ny, warn }。
 const BEAMLET_SP = 1.0                             // 波束栅间距 = 3dB 波束宽（SATSOFT 手册 §8/§9.1：component beam spacing = 3dB beamwidth）
 const BEAM_MARGIN = 1.0                            // 波束栅外扩量（×θ3）：手册建议「覆盖区外再铺一圈 beamlet」给边缘滚降
-const NMAX_B = 360                                 // 波束栅数量上限（复 Cholesky 规模）；超限增距降档
+const NMAX_B = 360                                 // 波束栅数量上限（LP 规模 n=2N+1，法矩阵 O(n³/3)）；超限增距降档
 const ST_DENS = 2.0                                // 站点密度缺省（＝SATSOFT 对话框缺省）：区内步距 = θ3/密度（手册 §9.1：1.7~2 足够）
 // 站点数【不设上限】——手册 §1.1.2：An unlimited number of beamlets and synthesis stations may be defined。
 // 密度加大就该一路长下去（本引擎实测线性：约 16 µs/站、1 KB/站；6 m 口径打中国、密度 96 → 177 万站 28 s / 1.8 GB 能算完）。
@@ -852,26 +871,6 @@ function polyCentroid(V) {
     return [sx / V.length, sy / V.length]
   }
   return [cx / (3 * a), cy / (3 * a)]
-}
-
-// —— Cholesky：分解与回代分离（同一 A 的 LLᵀ 可解多个右端 → 复激励 Re/Im 两路复用一次分解）——
-// cholFactor：A 就地改写为下三角 L（非正定返回 false，上层加大 λ 重铺重试）。
-function cholFactor(A, N) {
-  for (let i = 0; i < N; i++) {
-    for (let j = 0; j <= i; j++) {
-      let s = A[i * N + j]
-      for (let k = 0; k < j; k++) s -= A[i * N + k] * A[j * N + k]
-      if (i === j) { if (!(s > 1e-14)) return false; A[i * N + i] = Math.sqrt(s) }
-      else A[i * N + j] = s / A[j * N + j]
-    }
-  }
-  return true
-}
-// cholSolveL：L 已分解，就地解 b（前代 + 回代）。返回 b。
-function cholSolveL(L, b, N) {
-  for (let i = 0; i < N; i++) { let s = b[i]; for (let k = 0; k < i; k++) s -= L[i * N + k] * b[k]; b[i] = s / L[i * N + i] }
-  for (let i = N - 1; i >= 0; i--) { let s = b[i]; for (let k = i + 1; k < N; k++) s -= L[k * N + i] * b[k]; b[i] = s / L[i * N + i] }
-  return b
 }
 
 // —— ① 波束栅布放：规则六角格铺满【覆盖区 + 外扩 BEAM_MARGIN·θ3 一圈】，数量由口径(θ3)限死；
@@ -1167,94 +1166,48 @@ export function buildShapedGrd({ satName = '', satLon, satLat = 0, altKm, polysP
     nbOf.push(nb); gOf.push(g); kind.push(smp.KIND[j]); tdb.push(smp.TDB[j]); hb.push(smp.HB[j])
   }
   const M = nbOf.length
-  // 各站点相对目标幅 tAmp = 10^(TDB/20)（TDB≤0 → 内圈=1、外圈<1；无分区标签则全 1 = 全区统一）
-  const tAmp = new Float64Array(M)
-  for (let m = 0; m < M; m++) tAmp[m] = Math.pow(10, tdb[m] / 20)
-  // ③ 复激励交替相位 IRLS minimax：gᵢ 实 → 法矩阵 A 实对称，仅右端复 → 同一 Cholesky 解 Re/Im 两路。
-  //    每轮：目标场 = 各站点当前相位 + 单位幅（界外 0）→ 解 → 归一 → 评分留优 → IRLS 升权最差站点。
-  const wRe = new Float64Array(N), wIm = new Float64Array(N)   // 初值 0 → 首轮实目标（零相位、单位幅）
-  const rho = new Float64Array(M)
-  for (let m = 0; m < M; m++) rho[m] = kind[m] === 0 ? 1 : kind[m] === 1 ? 2 : 0.12
-  const dRe = new Float64Array(M), dIm = new Float64Array(M)
   const fld = (wr, wi, m) => {                      // 站点 m 的复场（返回 [Re, Im]）
     let fr = 0, fi = 0; const nb = nbOf[m], g = gOf[m]
     for (let a = 0; a < nb.length; a++) { const w = nb[a]; fr += wr[w] * g[a]; fi += wi[w] * g[a] }
     return [fr, fi]
   }
-  let bRe = null, bIm = null, scoreBest = Infinity, rippleBest = 0
-  const runIters = (iters) => {
-  for (let it = 0; it < iters && M; it++) {
-    // 目标场（实激励，对齐 SATSOFT Contour=「达标或超出」§9.12/§10.2）：区内/边界 d = max(当前场, tAmp)
-    //   —— 已达标(f≥目标)则【保留当前值不下拉】，欠额则拉到目标。这样内圈波束的高斯尾巴把外圈抬到目标以上
-    //   是被允许的(超出无罚)，无需负权去抵消 → 不产生零点/空洞；界外仍强制 d=0(压制)。
-    //   （复数交替相位实际从不激活：实权×实高斯→实场→虚部恒 0；且采纳符号会把负偏锁成零点，故直接走实正投影。）
-    for (let m = 0; m < M; m++) {
-      if (kind[m] === 2) { dRe[m] = 0; dIm[m] = 0; continue }
-      const fr = fld(wRe, wIm, m)[0]
-      dRe[m] = fr > tAmp[m] ? fr : tAmp[m]
-      dIm[m] = 0
-    }
-    // 装配实法矩阵 A0 与复右端 (BR, BI)
-    const A0 = new Float64Array(N * N), BR = new Float64Array(N), BI = new Float64Array(N)
-    for (let m = 0; m < M; m++) {
-      // 【相对残差】站点权重 = rho / tAmp²：最小化 Σ(f/tAmp − 1)² 而非 Σ(f − tAmp)²。
-      // 绝对残差会让高幅(内圈)目标主导、低幅(外圈)被忽略而塌陷 taper dB；相对残差令各档目标等权 → taper 保真、外圈不塌。
-      const nb = nbOf[m], g = gOf[m], r = rho[m] / (tAmp[m] * tAmp[m]), L = nb.length
-      for (let a = 0; a < L; a++) {
-        const ia = nb[a], gar = g[a] * r, row = ia * N
-        BR[ia] += gar * dRe[m]; BI[ia] += gar * dIm[m]
-        for (let b = 0; b < L; b++) A0[row + nb[b]] += gar * g[b]
-      }
-    }
-    let trace = 0
-    for (let i = 0; i < N; i++) trace += A0[i * N + i]
-    // 极小岭：仅数值稳定（1e-6·trace/N），不磨纹波；非正定则加大重铺重试
-    let lam = Math.max(1e-12, 1e-6 * trace / N), Lm = null
-    for (let k = 0; k < 5 && !Lm; k++, lam *= 30) {
-      const C = A0.slice()
-      for (let i = 0; i < N; i++) C[i * N + i] += lam
-      if (cholFactor(C, N)) Lm = C
-    }
-    if (!Lm) break
-    const xr = cholSolveL(Lm, Array.from(BR), N)
-    const xi = cholSolveL(Lm, Array.from(BI), N)
-    // 归一：区内+边界【余量 |f|/tAmp】的【20 分位】→ 1（meet-or-exceed：下缘≈目标、多数≥目标；避免尺度漂移）。
-    // 用中位会把一半区域压到目标以下（=空洞）；用低分位让场整体坐在目标之上。vAll 存本轮余量 dB。
-    const vAll = new Float64Array(M)
-    const covMar = []
-    for (let m = 0; m < M; m++) { const [fr, fi] = fld(xr, xi, m); vAll[m] = Math.hypot(fr, fi); if (kind[m] !== 2) covMar.push(vAll[m] / tAmp[m]) }
-    covMar.sort((a, b) => a - b)
-    const med = covMar.length ? covMar[Math.floor(covMar.length * 0.2)] : 1
-    const sc = med > 1e-9 ? 1 / med : 1
-    for (let i = 0; i < N; i++) { xr[i] *= sc; xi[i] *= sc }
-    // 评分（余量 = |f|dB − 目标dB；界外取绝对 dB）：优先消除区内【欠额】(空洞 worstShort)，再压纹波/边界/界外 → 留优
-    let dMax = -Infinity, dMin = Infinity, bShort = 0, sMax = -Infinity
-    for (let m = 0; m < M; m++) {
-      const adb = 20 * Math.log10(Math.max(vAll[m] * sc, 1e-8))
-      const mar = kind[m] === 2 ? adb : adb - tdb[m]
-      vAll[m] = mar
-      if (kind[m] === 0) { if (mar > dMax) dMax = mar; if (mar < dMin) dMin = mar }
-      else if (kind[m] === 1) { const s = Math.max(0, -mar); if (s > bShort) bShort = s }
-      else if (mar - SUP_DB > sMax) sMax = mar - SUP_DB
-    }
-    const ripple = dMin < Infinity ? dMax - dMin : 0
-    const worstShort = Math.max(0, -dMin)             // 最差区内欠额（>0 = 有空洞）
-    // 【不罚 excess/纹波】：meet-or-exceed 允许内圈波束尾巴把邻近外圈抬到目标以上（物理正常）；
-    // 若把 ripple 计入罚项，优化器会用负权把这些"超出"抵消掉 → 过渡带 Gibbs 下冲成空洞（正是"覆盖躲着 polygon"）。
-    const score = worstShort * 3 + 0.8 * bShort + 0.5 * Math.max(0, sMax)
-    if (score < scoreBest) { scoreBest = score; bRe = xr.slice(); bIm = xi.slice(); rippleBest = ripple }
-    wRe.set(xr); wIm.set(xi)
-    if (it === iters - 1) break
-    // IRLS（meet-or-exceed，对齐 SATSOFT 最大化最小余量）：区内/边界按【欠额】升权(达标则缓降)；界外按超标升权(压低)
-    for (let m = 0; m < M; m++) {
-      if (kind[m] === 2) { rho[m] = cl(rho[m] * Math.exp(0.3 * (vAll[m] - SUP_DB)), 0.02, 20); continue }
-      const short = Math.max(0, -vAll[m])
-      rho[m] = cl(rho[m] * Math.exp(0.8 * short - 0.12), kind[m] === 1 ? 0.3 : 0.2, 90)
-    }
+  // ③ 严格 minimax（minimax.js：SLP + 信赖域，LP 子问题走 Mehrotra 原对偶内点法）——
+  //    直接解 min_w max_m r_m，r 为【站点残差】：contour（区内/边界）r = T − f、sidelobe（界外抑制）r = f − T。
+  //    站点增益取归一化相对值 f_m = 10log10(|E_m|²/P)，P = wᴴQw 是合成场立体角功率（Q = ∫gⱼg_k dΩ 的闭式）：
+  //    f 对激励整体缩放不变 —— 不归一的话 LP 会沿「整体放大」方向无限走，一撞信赖域就停。
+  //    目标电平 G_ref = −10log10(Ω_cov)：理想平顶在该归一化下恰为 G_ref，故余量 −r 就是【相对理想平顶的 dB 余量】。
+  //    权重全 1（SATSOFT 生成栅时站点同权，Rel Weight 是 POS 才用的字段；边界站不再单独加权）。
+  const gRef = -10 * Math.log10(Math.max(omegaDeg2, 1e-12))
+  const goalOf = (m) => gRef + (kind[m] === 2 ? SUP_DB : tdb[m])
+  const Tv = new Float64Array(M)
+  for (let m = 0; m < M; m++) Tv[m] = goalOf(m)
+  const mmRows = new Array(M)
+  for (let m = 0; m < M; m++) mmRows[m] = { nb: nbOf[m], g: gOf[m], sign: kind[m] === 2 ? 1 : -1, T: Tv[m] }
+  // 归一化功率矩阵 Q_{jk} = ∫gⱼg_k dΩ 的平面闭式：Ω₁·exp(−ln2·d²/θ3²)，Ω₁ = πθ3²/(4ln2)（deg²）；
+  // 相邻 beamlet（d = θ3）重叠恰 0.5。对角 Q_jj = Ω₁ = 单支高斯 beamlet 立体角。
+  const omgB = Math.PI * th * th / (4 * Math.LN2)
+  const Qmm = new Float64Array(N * N)
+  for (let j = 0; j < N; j++) for (let k = 0; k <= j; k++) {
+    const qx = centers[j][0] - centers[k][0], qy = centers[j][1] - centers[k][1]
+    const v = omgB * Math.exp(-Math.LN2 * (qx * qx + qy * qy) / (th * th))
+    Qmm[j * N + k] = v; Qmm[k * N + j] = v
   }
+  // 初值 = SATSOFT 缺省 Uniform（等幅零相位）叠【确定性】对称破缺 Im_j = 0.05·(−1)^j：
+  // g 为实数时纯实初值下 ∂f/∂Im w ≡ 0，实子空间是 SLP 的不动点、复激励永远进不来（实测差 0.25~0.4 dB）。
+  // 破缺量确定（不用随机数）——同参数两次生成必须逐字节一致。
+  const x0 = new Float64Array(2 * N)
+  for (let j = 0; j < N; j++) { x0[j] = 1; x0[N + j] = (j % 2 ? -0.05 : 0.05) }
+  const solver = createMinimax({ N, rows: mmRows, Q: Qmm, x0, opts: { maxMs: MM_MAX_MS } })
+  let mm = solver.run()
+  const bRe = solver.x.subarray(0, N), bIm = solver.x.subarray(N)
+  if (!M) { solver.x.fill(0); for (let j = 0; j < N; j++) solver.x[j] = 1 }   // 数值兜底：无站点 → 等激励实数（正常流程不应触达）
+  // 区内起伏 = 区内 contour 站（kind 0）的 f − T 极差（f − T = −r）；返回值按旧口径取其半
+  const spreadIn = () => {
+    let hi = -Infinity, lo = Infinity
+    for (let m = 0; m < M; m++) if (kind[m] === 0) { const q = -mm.resid[m]; if (q > hi) hi = q; if (q < lo) lo = q }
+    return hi > -Infinity ? hi - lo : 0
   }
-  runIters(N > 250 ? 16 : 22)
-  if (!bRe) { bRe = new Float64Array(N).fill(1); bIm = new Float64Array(N) }  // 数值兜底：等激励实数（正常流程不应触达）
+  let rippleBest = spreadIn()
   // ④ 出图场（峰点引导时按真实出图场闭环自适应，见下）
   const computeField = () => {
     const F = new Float64Array(NX * NY)            // 复场幅 |f|（下游只用功率 |f|²，故只写幅）
@@ -1280,11 +1233,11 @@ export function buildShapedGrd({ satName = '', satLon, satLat = 0, altKm, polysP
   }
   let { F, Fmax, sumP, kMax } = computeField()
   if (!(Fmax > 0)) throw new Error('合成场为空：请检查 Polygon 与参数')
-  // —— 峰点引导自适应抬坡（对真实出图场闭环）：meet-or-exceed 允许区内自然超出（excess 不受罚，
-  // SATSOFT 同款），静态目标坡可能被淹没（坡 +3dB、别处自然超出 +2.6dB → argmax 不在引导点）；且站点
+  // —— 峰点引导自适应抬坡（对真实出图场闭环）：严格 minimax 只抬最低点，区内自然拱起（穹顶化，
+  // SATSOFT 同款语义），静态目标坡可能被淹没（坡 +3dB、别处自然拱到 +2.6dB → argmax 不在引导点）；且站点
   // 栅（θ3/2 步距）之间的细网格场还会高出站点采样。故直接量测出图场：argmax 不在任一正 boost 峰点
-  // 核心（0.35w）内 → 按「全场峰 − 引导点场 + 0.4dB 保护带」抬坡重跑（≤3 轮、累计 ≤12dB、激励/权重
-  // 热启动、少轮续跑）。仍然只动【优化目标】——可实现集合（口径受限激励）与 ∫P̂dΩ 守恒定标分毫未动；
+  // 核心（0.35w）内 → 按「全场峰 − 引导点场 + 0.4dB 保护带」抬坡重跑（≤3 轮、累计 ≤12dB、setGoals
+  // 换目标 + 激励热启动、run(20) 续跑）。仍然只动【优化目标】——可实现集合（口径受限激励）与 ∫P̂dΩ 守恒定标分毫未动；
   // 引导点物理上到不了（贴边/被隔离区压制/口径不足）时如实保持欠额，argmax 落点照实回报。——
   {
     let maxHB = 0
@@ -1303,10 +1256,12 @@ export function buildShapedGrd({ satName = '', satLon, satLat = 0, altKm, polysP
       if (!hNear || dNear <= 0.35 * hNear.w) break   // argmax 已落在引导点核心内
       const extra = Math.min(12 - lifted, 20 * Math.log10(Fmax / Math.max(fHot, 1e-12)) + 0.4)
       if (!(extra > 0.05)) break
-      for (let m = 0; m < M; m++) if (hb[m] > 0) { tdb[m] += extra * (hb[m] / maxHB); tAmp[m] = Math.pow(10, tdb[m] / 20) }
+      for (let m = 0; m < M; m++) if (hb[m] > 0) tdb[m] += extra * (hb[m] / maxHB)
       lifted += extra
-      scoreBest = Infinity; rippleBest = 0           // 目标变了：留优重置（rho/激励热启动续跑，少轮即收敛）
-      runIters(N > 250 ? 10 : 12)
+      for (let m = 0; m < M; m++) Tv[m] = goalOf(m)   // 只换目标；激励热启动续跑（信赖域按 0.25·max|x| 重置）
+      solver.setGoals(Tv)
+      mm = solver.run(20)
+      rippleBest = spreadIn()
       ;({ F, Fmax, sumP, kMax } = computeField())
     }
   }
@@ -1378,7 +1333,7 @@ export function buildShapedGrd({ satName = '', satLon, satLat = 0, altKm, polysP
   // GRASP ASCII 纯 ASCII 表头（对齐真实参考 .grd；非 ASCII 星名已剔除）。SYNTHMETA 为精简元数据行。
   const sn = asciiSafe(satName)
   head.push(`SatSim synthesized pattern (SATSOFT-style contour shaping)${sn ? ' - ' + sn : ''}. Sat. lon=${(+satLon).toFixed(2)}, lat=${(+(satLat || 0)).toFixed(2)}, height=${Math.round(altKm)} km, beamlets=${N}`)
-  head.push(`SYNTHMETA ${JSON.stringify({ kind: 'shaped', satLon: +satLon.toFixed(4), satLat: +(satLat || 0).toFixed(4), altKm: Math.round(altKm), mode, value: +edgeVal.toFixed(2), peak: +peakDbi.toFixed(2), physPeak: +physPeakDbi.toFixed(2), pa: +paDb.toFixed(2), theta3: +th.toFixed(4), nBeams: N, nPolys: polys.length, ...(expandDeg > 0 ? { exp: +expandDeg.toFixed(3) } : {}), ...(hots.length ? { hot: hots.length } : {}), ...(pol ? { pol } : {}) })}`)
+  head.push(`SYNTHMETA ${JSON.stringify({ kind: 'shaped', satLon: +satLon.toFixed(4), satLat: +(satLat || 0).toFixed(4), altKm: Math.round(altKm), mode, value: +edgeVal.toFixed(2), peak: +peakDbi.toFixed(2), physPeak: +physPeakDbi.toFixed(2), pa: +paDb.toFixed(2), theta3: +th.toFixed(4), nBeams: N, nPolys: polys.length, mm: { it: mm.iters, act: mm.active, marg: +(-mm.maxRes).toFixed(3) }, ...(expandDeg > 0 ? { exp: +expandDeg.toFixed(3) } : {}), ...(hots.length ? { hot: hots.length } : {}), ...(pol ? { pol } : {}) })}`)
   head.push('++++')
   head.push('1')
   head.push(' 1 3 2 6')
@@ -1404,11 +1359,14 @@ export function buildShapedGrd({ satName = '', satLon, satLat = 0, altKm, polysP
   // 站点栅统计（SATSOFT 式回报）：区内/边界/抑制站数 + 站点修正命中/孤儿（栅变了旧修正失配 → 提示重置）
   const stStats = { c0: smp.counts.c0, c1: smp.counts.c1, c2: smp.counts.c2, ovApplied: smp.ovHit, ovOrphan: edits ? Math.max(0, edits.ov.size - smp.ovHit) : 0, added: edits ? edits.add.length : 0 }
   if (stStats.ovOrphan > 0) warn = (warn ? warn + '；' : '') + `${stStats.ovOrphan} 条站点修正未命中当前站点栅（覆盖区/密度/外扩已变）——「重置站点」可清理`
-  return { text: head.join('\r\n') + '\r\n' + L.join('\r\n') + '\r\n', value: edgeVal, peakDbi, physPeakDbi, paDb, covMin, omegaDeg2, nBeams: N, rippleDb: rippleBest / 2, nx: NX, ny: NY, warn, peakAt, hotReport, stStats }
+  // 求解器自己的状态：不收敛 / LP 失败 / 到时限，一律回报（以前只落在 mm 出参里，界面上看不出「迭代 60」是撞了上限）
+  const mmMsg = mmNote(mm)
+  if (mmMsg) warn = (warn ? warn + '；' : '') + mmMsg
+  return { text: head.join('\r\n') + '\r\n' + L.join('\r\n') + '\r\n', value: edgeVal, peakDbi, physPeakDbi, paDb, covMin, omegaDeg2, nBeams: N, rippleDb: rippleBest / 2, nx: NX, ny: NY, warn, peakAt, hotReport, stStats, mm: { iters: mm.iters, accepted: mm.accepted, active: mm.active, nStations: M, marginDb: -mm.maxRes, converged: mm.converged, lpIters: mm.lpIters, lpFail: mm.lpFail, stoppedBy: mm.stoppedBy, elapsedMs: Math.round(mm.elapsedMs) } }
 }
 
 // ================= 相控阵赋形（SATSOFT §6.5 Butler beamlet + §8/§9/§10 minimax 优化器） =================
-// 与反射面赋形（buildShapedGrd）复用【同一套站点栅 + Use Polygon Labels + minimax 复激励 Cholesky】优化器
+// 与反射面赋形（buildShapedGrd）复用【同一套站点栅 + Use Polygon Labels + 严格 minimax 复激励】优化器
 // （手册明确 PAM 用同一优化器把 Butler beamlet 合成赋形等值线），仅两处换成相控阵物理：
 //   ① 成分波束（beamlet）：反射面高斯馈源 → 【Butler 正交波束】pamField（Dirichlet 阵因子 × cos^R 单元因子，
 //      首旁瓣 −13dB / 栅瓣 / 电扫增益滚降）。
@@ -1451,7 +1409,7 @@ export function layoutButlerBeamlets(geo, pam, th, marginBw = 1.0) {
 }
 
 const NMAX_PAM = 144                               // Butler 端口上限（激励指令规模 + 优化器 O(N²) 装配规模）；超限空间抽稀 + 告警
-const MAXPROD_PAM = 8e7                             // 法矩阵装配 O(M·N²)/轮 计算量守卫；超限抽稀站点保持空间均匀
+const MAXPROD_PAM = 3e7                             // LP 规模守卫 M·(2N+1)² —— 内点法每步一次法矩阵装配；超限抽稀站点保持空间均匀（如实回报）
 
 // 相控阵赋形波束群 → GRD 文本 + 星上激励指令。覆盖区＝polysPts 并集（无覆盖值；增益恒由阵面物理算出）。
 // 塑形＝站点栅（SATSOFT 原生：stGrid 栅生成参数 / stEdits 类型·目标偏置修正 / expandDeg 指向误差外扩，与 buildShapedGrd 同款）。
@@ -1503,72 +1461,45 @@ export function buildPamShapedGrd({ satName = '', satLon, satLat = 0, altKm, pol
     for (let i = 0; i < N; i++) g[i] = pamField(um[0], um[1], ports[i].u0, ports[i].v0, pam)
     nbOf.push(allIdx); gOf.push(g); kind.push(smp.KIND[j]); tdb.push(smp.TDB[j]); hb.push(smp.HB[j])
   }
-  // 计算量守卫：法矩阵装配 O(M·N²)/轮 → 超 MAXPROD 时按空间均匀抽稀站点
-  if (nbOf.length * N * N > MAXPROD_PAM) {
-    const keep = Math.max(400, Math.floor(MAXPROD_PAM / (N * N))), st = Math.ceil(nbOf.length / keep)
+  // 计算量守卫（LP 代价口径）：内点法每步一次法矩阵装配 O(M·n²)、一次 Cholesky O(n³/3)，n = 2N+1。
+  // 超 MAXPROD_PAM 时按空间均匀抽稀站点——抽稀【必须如实回报】，否则「站点密度调了没反应」看起来像收敛。
+  const M0 = nbOf.length
+  let thinWarn = ''
+  if (M0 * (2 * N + 1) * (2 * N + 1) > MAXPROD_PAM) {
+    const keep = Math.max(400, Math.floor(MAXPROD_PAM / ((2 * N + 1) * (2 * N + 1)))), st = Math.ceil(M0 / keep)
     const fnb = [], fg = [], fk = [], ft = [], fh = []
     for (let j = 0; j < nbOf.length; j++) if (j % st === 0) { fnb.push(nbOf[j]); fg.push(gOf[j]); fk.push(kind[j]); ft.push(tdb[j]); fh.push(hb[j]) }
     nbOf.length = 0; gOf.length = 0; kind.length = 0; tdb.length = 0; hb.length = 0
     nbOf.push(...fnb); gOf.push(...fg); kind.push(...fk); tdb.push(...ft); hb.push(...fh)
+    thinWarn = `站点 ${M0} → ${nbOf.length}（LP 规模守卫）`
   }
   const M = nbOf.length
-  const tAmp = new Float64Array(M)
-  for (let m = 0; m < M; m++) tAmp[m] = Math.pow(10, tdb[m] / 20)
-  // ④ 复激励交替相位 IRLS minimax（与 buildShapedGrd 同款；gᵢ=pamField 实 → 法矩阵实对称、仅右端复 → 同一
-  //    Cholesky 解 Re/Im 两路；实高斯型 basis 令虚部恒 0 → basis 域激励为实（相位 0/180°；三角晶格的
-  //    【上注】相位在 ⑦ 另补逐端口常数 ψ_p，勿省），对齐 SATSOFT 单模「Uniform,
-  //    zero phase」初值。区内/边界 meet-or-exceed、界外压制、相对残差权重、20 分位归一、IRLS 升权最差站）——
-  const wRe = new Float64Array(N), wIm = new Float64Array(N)
-  const rho = new Float64Array(M)
-  for (let m = 0; m < M; m++) rho[m] = kind[m] === 0 ? 1 : kind[m] === 1 ? 2 : 0.12
-  const dRe = new Float64Array(M), dIm = new Float64Array(M)
   const fld = (wr, wi, m) => { let fr = 0, fi = 0; const nb = nbOf[m], g = gOf[m]; for (let a = 0; a < nb.length; a++) { const w = nb[a]; fr += wr[w] * g[a]; fi += wi[w] * g[a] } return [fr, fi] }
-  let bRe = null, bIm = null, scoreBest = Infinity, rippleBest = 0
-  const runIters = (iters) => {
-  for (let it = 0; it < iters && M; it++) {
-    for (let m = 0; m < M; m++) { if (kind[m] === 2) { dRe[m] = 0; dIm[m] = 0; continue } const fr = fld(wRe, wIm, m)[0]; dRe[m] = fr > tAmp[m] ? fr : tAmp[m]; dIm[m] = 0 }
-    const A0 = new Float64Array(N * N), BR = new Float64Array(N), BI = new Float64Array(N)
-    for (let m = 0; m < M; m++) {
-      const nb = nbOf[m], g = gOf[m], r = rho[m] / (tAmp[m] * tAmp[m]), L = nb.length
-      for (let a = 0; a < L; a++) { const ia = nb[a], gar = g[a] * r, row = ia * N; BR[ia] += gar * dRe[m]; BI[ia] += gar * dIm[m]; for (let b = 0; b < L; b++) A0[row + nb[b]] += gar * g[b] }
-    }
-    let trace = 0
-    for (let i = 0; i < N; i++) trace += A0[i * N + i]
-    let lam = Math.max(1e-12, 1e-6 * trace / N), Lm = null
-    for (let k = 0; k < 5 && !Lm; k++, lam *= 30) { const C = A0.slice(); for (let i = 0; i < N; i++) C[i * N + i] += lam; if (cholFactor(C, N)) Lm = C }
-    if (!Lm) break
-    const xr = cholSolveL(Lm, Array.from(BR), N)
-    const xi = cholSolveL(Lm, Array.from(BI), N)
-    const vAll = new Float64Array(M), covMar = []
-    for (let m = 0; m < M; m++) { const [fr, fi] = fld(xr, xi, m); vAll[m] = Math.hypot(fr, fi); if (kind[m] !== 2) covMar.push(vAll[m] / tAmp[m]) }
-    covMar.sort((a, b) => a - b)
-    const med = covMar.length ? covMar[Math.floor(covMar.length * 0.2)] : 1
-    const sc = med > 1e-9 ? 1 / med : 1
-    for (let i = 0; i < N; i++) { xr[i] *= sc; xi[i] *= sc }
-    let dMax = -Infinity, dMin = Infinity, bShort = 0, sMax = -Infinity
-    for (let m = 0; m < M; m++) {
-      const adb = 20 * Math.log10(Math.max(vAll[m] * sc, 1e-8))
-      const mar = kind[m] === 2 ? adb : adb - tdb[m]
-      vAll[m] = mar
-      if (kind[m] === 0) { if (mar > dMax) dMax = mar; if (mar < dMin) dMin = mar }
-      else if (kind[m] === 1) { const s = Math.max(0, -mar); if (s > bShort) bShort = s }
-      else if (mar - SUP_DB > sMax) sMax = mar - SUP_DB
-    }
-    const ripple = dMin < Infinity ? dMax - dMin : 0
-    const worstShort = Math.max(0, -dMin)
-    const score = worstShort * 3 + 0.8 * bShort + 0.5 * Math.max(0, sMax)
-    if (score < scoreBest) { scoreBest = score; bRe = xr.slice(); bIm = xi.slice(); rippleBest = ripple }
-    wRe.set(xr); wIm.set(xi)
-    if (it === iters - 1) break
-    for (let m = 0; m < M; m++) {
-      if (kind[m] === 2) { rho[m] = cl(rho[m] * Math.exp(0.3 * (vAll[m] - SUP_DB)), 0.02, 20); continue }
-      const short = Math.max(0, -vAll[m])
-      rho[m] = cl(rho[m] * Math.exp(0.8 * short - 0.12), kind[m] === 1 ? 0.3 : 0.2, 90)
-    }
+  // ④ 严格 minimax（minimax.js，与 buildShapedGrd 同一求解器）：min_w max_m r_m，站点增益取归一化相对值
+  //    f = 10log10(|E|²/P)。归一化功率矩阵 Q = Ω_b·I —— 理想 Butler 波束【相互正交】，交叠项为零；
+  //    Ω_b = λ²/A = (180/π)²/(Nx·Ny·dx·dy) deg²（单支 Butler 波束立体角）。
+  //    激励复数：⑦ 上注指令的相位 = arg(w) + ψ_p，现在虚部非零 → phaseDeg 不再只有 0/180°。
+  const gRef = -10 * Math.log10(Math.max(omegaDeg2, 1e-12))
+  const goalOf = (m) => gRef + (kind[m] === 2 ? SUP_DB : tdb[m])
+  const Tv = new Float64Array(M)
+  for (let m = 0; m < M; m++) Tv[m] = goalOf(m)
+  const mmRows = new Array(M)
+  for (let m = 0; m < M; m++) mmRows[m] = { nb: nbOf[m], g: gOf[m], sign: kind[m] === 2 ? 1 : -1, T: Tv[m] }
+  const omgB = (180 / Math.PI) * (180 / Math.PI) / Math.max(1e-9, Math.round(pam.Nx) * Math.round(pam.Ny) * Number(pam.dxWl) * Number(pam.dyWl))
+  // 初值 Uniform（等幅零相位，SATSOFT 缺省）叠确定性对称破缺 Im_j = 0.05·(−1)^j：pamField 为实数，
+  // 纯实初值下 ∂f/∂Im w ≡ 0，实子空间是 SLP 的不动点、复激励永远进不来。不用随机数（输出须逐字节确定）。
+  const x0 = new Float64Array(2 * N)
+  for (let j = 0; j < N; j++) { x0[j] = 1; x0[N + j] = (j % 2 ? -0.05 : 0.05) }
+  const solver = createMinimax({ N, rows: mmRows, Q: { diag: omgB }, x0, opts: { maxMs: MM_MAX_MS } })
+  let mm = solver.run()
+  const bRe = solver.x.subarray(0, N), bIm = solver.x.subarray(N)
+  if (!M) { solver.x.fill(0); for (let j = 0; j < N; j++) solver.x[j] = 1 }   // 数值兜底：无站点 → 等激励实数
+  const spreadIn = () => {
+    let hi = -Infinity, lo = Infinity
+    for (let m = 0; m < M; m++) if (kind[m] === 0) { const q = -mm.resid[m]; if (q > hi) hi = q; if (q < lo) lo = q }
+    return hi > -Infinity ? hi - lo : 0
   }
-  }
-  runIters(N > 250 ? 16 : 24)
-  if (!bRe) { bRe = new Float64Array(N).fill(1); bIm = new Float64Array(N) }
+  let rippleBest = spreadIn()
   // ⑤ 出图网格几何：并集外接盒 + 滚降边距；格距 θ3/7，总量 ≤13 万点自适应放粗
   const margin = 3 * spacing + th
   const XS = bx0 - margin, XE = bx1 + margin, YS = by0 - margin, YE = by1 + margin
@@ -1617,10 +1548,12 @@ export function buildPamShapedGrd({ satName = '', satLon, satLat = 0, altKm, pol
       if (!hNear || dNear <= 0.35 * hNear.w) break     // argmax 已落在峰点核心内
       const extra = Math.min(12 - lifted, 20 * Math.log10(Fmax / Math.max(fHot, 1e-12)) + 0.4)
       if (!(extra > 0.05)) break
-      for (let m = 0; m < M; m++) if (hb[m] > 0) { tdb[m] += extra * (hb[m] / maxHB); tAmp[m] = Math.pow(10, tdb[m] / 20) }
+      for (let m = 0; m < M; m++) if (hb[m] > 0) tdb[m] += extra * (hb[m] / maxHB)
       lifted += extra
-      scoreBest = Infinity; rippleBest = 0             // 目标变了：留优重置（激励/权重热启动续跑）
-      runIters(N > 250 ? 10 : 12)
+      for (let m = 0; m < M; m++) Tv[m] = goalOf(m)     // 只换目标；激励热启动续跑（信赖域按 0.25·max|x| 重置）
+      solver.setGoals(Tv)
+      mm = solver.run(20)
+      rippleBest = spreadIn()
       ;({ F, Fmax, sumP, kMax } = computeField())
     }
   }
@@ -1712,7 +1645,7 @@ export function buildPamShapedGrd({ satName = '', satLon, satLat = 0, altKm, pol
   const head = []
   const sn = asciiSafe(satName)
   head.push(`SatSim synthesized pattern (SATSOFT-style phased-array contour shaping)${sn ? ' - ' + sn : ''}. Sat. lon=${(+satLon).toFixed(2)}, lat=${(+(satLat || 0)).toFixed(2)}, height=${Math.round(altKm)} km, ports=${N}`)
-  head.push(`SYNTHMETA ${JSON.stringify({ kind: 'pamShaped', satLon: +(+satLon).toFixed(4), satLat: +(+(satLat || 0)).toFixed(4), altKm: Math.round(altKm), Nx: Math.round(pam.Nx), Ny: Math.round(pam.Ny), dxWl: +pam.dxWl, dyWl: +pam.dyWl, R: +pam.R, tri: !!pam.tri, mode, value: +edgeVal.toFixed(2), peak: +peakDbi.toFixed(2), physPeak: +physPeakDbi.toFixed(2), pa: +paDb.toFixed(2), scan: +scanDeg.toFixed(2), nBeams: N, nPolys: polys.length, ...(expandDeg > 0 ? { exp: +expandDeg.toFixed(3) } : {}), ...(hots.length ? { hot: hots.length } : {}) })}`)
+  head.push(`SYNTHMETA ${JSON.stringify({ kind: 'pamShaped', satLon: +(+satLon).toFixed(4), satLat: +(+(satLat || 0)).toFixed(4), altKm: Math.round(altKm), Nx: Math.round(pam.Nx), Ny: Math.round(pam.Ny), dxWl: +pam.dxWl, dyWl: +pam.dyWl, R: +pam.R, tri: !!pam.tri, mode, value: +edgeVal.toFixed(2), peak: +peakDbi.toFixed(2), physPeak: +physPeakDbi.toFixed(2), pa: +paDb.toFixed(2), scan: +scanDeg.toFixed(2), nBeams: N, nPolys: polys.length, mm: { it: mm.iters, act: mm.active, marg: +(-mm.maxRes).toFixed(3) }, ...(expandDeg > 0 ? { exp: +expandDeg.toFixed(3) } : {}), ...(hots.length ? { hot: hots.length } : {}) })}`)
   head.push('++++')
   head.push('1')
   head.push(' 1 3 2 6')
@@ -1722,7 +1655,7 @@ export function buildPamShapedGrd({ satName = '', satLon, satLat = 0, altKm, pol
   const Lout = new Array(NX * NY)
   const zero = fexp(0)
   for (let k = 0; k < NX * NY; k++) { let c = F[k] * S; if (c < fAmp) c = fAmp; Lout[k] = ` ${fexp(c)} ${zero} ${zero} ${zero}` }
-  let warn = portWarn
+  let warn = [portWarn, thinWarn].filter(Boolean).join('；')
   const dropPct = 100 * unreach / Math.max(1, covCnt + unreach)
   const cornerDip = edgeVal - covMin
   if (dropPct > 2) warn = (warn ? warn + '；' : '') + `约 ${dropPct.toFixed(0)}% 覆盖细节小于 Butler 波束分辨率 θ3=${th.toFixed(2)}°（加大阵元数可改善）`
@@ -1739,7 +1672,9 @@ export function buildPamShapedGrd({ satName = '', satLon, satLat = 0, altKm, pol
   // 站点栅统计（与反射面赋形同款）：区内/边界/抑制 + 修正命中/孤儿
   const stStats = { c0: smp.counts.c0, c1: smp.counts.c1, c2: smp.counts.c2, ovApplied: smp.ovHit, ovOrphan: edits ? Math.max(0, edits.ov.size - smp.ovHit) : 0, added: edits ? edits.add.length : 0 }
   if (stStats.ovOrphan > 0) warn = (warn ? warn + '；' : '') + `${stStats.ovOrphan} 条站点修正未命中当前站点栅（覆盖区/密度/外扩已变）——「重置站点」可清理`
-  return { text: head.join('\r\n') + '\r\n' + Lout.join('\r\n') + '\r\n', value: edgeVal, peakDbi, physPeakDbi, paDb, covMin, omegaDeg2, nBeams: N, rippleDb: rippleBest / 2, nx: NX, ny: NY, warn, peakAt, scanDeg, excit, hotReport, stStats }
+  const mmMsg = mmNote(mm)
+  if (mmMsg) warn = (warn ? warn + '；' : '') + mmMsg
+  return { text: head.join('\r\n') + '\r\n' + Lout.join('\r\n') + '\r\n', value: edgeVal, peakDbi, physPeakDbi, paDb, covMin, omegaDeg2, nBeams: N, rippleDb: rippleBest / 2, nx: NX, ny: NY, warn, peakAt, scanDeg, excit, hotReport, stStats, mm: { iters: mm.iters, accepted: mm.accepted, active: mm.active, nStations: M, marginDb: -mm.maxRes, converged: mm.converged, lpIters: mm.lpIters, lpFail: mm.lpFail, stoppedBy: mm.stoppedBy, elapsedMs: Math.round(mm.elapsedMs) } }
 }
 
 // ================= 草图几何（放置阶段的轮廓预览，与场合成同一几何链 → 所见即所得） =================
