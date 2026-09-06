@@ -417,6 +417,13 @@ html[data-theme='dark'] .sg-cell .sg-fillbar::after {
 .lbx-sla-par i { font-style: normal; color: var(--text-faint); font-size: calc(var(--lb-fs) - 1px); white-space: nowrap; }
 /* 带闸的参数（基带/骨干网）：没勾就整行压暗——数还在，只是没乘进综合可用度 */
 .lbx-sla-par.off { opacity: .5; }
+/* 参数轨末尾的读数行（隐含年故障次数上限）：含运行时数据，右对齐贴着值列那一侧 */
+.lbx-sla-read {
+  margin-top: .5em; padding-top: .4em; text-align: right; white-space: nowrap;
+  color: var(--text-faint); font-variant-numeric: tabular-nums;
+  border-top: 1px solid var(--lb-rule-soft);
+}
+.lbx-sla-read i { font-style: normal; margin-left: .25em; }
 /* 档位表：单位另起一行（十列全是数，列头挤不下「上行雨衰 dB」）；窄窗时整表横向滚动，
    绝不外溢去压别的块 */
 .lbx-sla-scanbox { overflow-x: auto; }

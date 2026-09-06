@@ -17,7 +17,7 @@ const {
   AVAIL_TIERS, LOSS_TIERS, DEFAULT_SLA_PARAMS, SLA_GROUPS, SLA_ITEMS, MIN_PER_MONTH,
   snapDown, snapUp, splitUnavailability, packetLossPct, berExpOf, pickMir, worstMonthAvail,
   deriveSla, slaRows, slaReportBlock, normSlaParams, normRowSla, slaIncludeCount, basisText,
-  equipSlots, equipAvails, equipFactor, slaParamRows
+  equipSlots, equipAvails, equipFactor, slaParamRows, sunOutageSummary
 } = await import('../../../src/shared/lbSla.js')
 
 // 传播口径的参数：把设备/空间段/地面段全填 100（＝不计入），于是可用度那几条只剩雨衰统计。
@@ -766,6 +766,85 @@ ok('分享码往返出来的是新对象（深拷贝，不与源共用引用）'
     ok('monthly 随分享包往返', bk.configs[0].state.slaParams.monthly === 1)
   }
   ok('derived 把考核周期带给面板（档位表的综合列与中断列据此换档）', dMon.monthly === true && dGeo.monthly === false)
+}
+
+// —— ⑪ 免责事件（日凌）与合同条款（抖动 / 故障额度）——
+{
+  const core = require('../index.js')
+  // 固定站：北京 → 110.5°E、2.4 m、Ku 12.5 GHz、T_sys 150 K、判据 C/N 恶化 ≥ 1 dB
+  const SUN = { lat: 39.9042, lon: 116.4074, satLon: 110.5, diameter: 2.4, customFreq: 12.5, sysTemp: 150, degThreshold: 1, year: 2026 }
+  const raw = {
+    vernal: core.calculateSunOutage(Object.assign({}, SUN, { season: 'vernal' })),
+    autumnal: core.calculateSunOutage(Object.assign({}, SUN, { season: 'autumnal' }))
+  }
+  const sum = sunOutageSummary(raw)
+  ok('日凌合计 = 逐日窗口时长之和（北京 2.4 m Ku → 春分 29.98 + 秋分 32.07 min）',
+    near(sum.vernal.minutes, 29.98, 1) && near(sum.autumnal.minutes, 32.07, 1),
+    `${sum.vernal.minutes.toFixed(2)} + ${sum.autumnal.minutes.toFixed(2)}`)
+  ok('日凌逐日窗口带 UTC 与北京时两套时刻（报告那张表直接照抄）',
+    sum.vernal.rows.length === sum.vernal.days
+    && !!sum.vernal.rows[0].startUTC && !!sum.vernal.rows[0].startBJT && !!sum.vernal.rows[0].date,
+    JSON.stringify(sum.vernal.rows[0]))
+  ok('两季都算不出 → 整份为 null（不编一个 0 出来）',
+    sunOutageSummary({ vernal: { error: true }, autumnal: null }) === null)
+
+  const dSun = deriveSla(Object.assign({}, geoCtx, { sunOutage: sum }))
+  const tot = sum.vernal.minutes + sum.autumnal.minutes
+  ok('日凌单列一组「免责事件」，不并进可用度',
+    dSun.groups.includes('excl') && dSun.items.sunOutage.group === 'excl'
+    && dSun.groups.indexOf('excl') === dSun.groups.length - 1, dSun.groups.join(','))
+  ok('日凌建议值 = 两季合计 min', near(dSun.items.sunOutage.suggest, tot, 1e-9), tot.toFixed(2))
+  ok('日凌是只读条款（没有采用值格）', (() => {
+    const r = slaRows(dSun, { adopt: { sunOutage: '5' } }, PROP_ONLY).find((x) => x.key === 'sunOutage')
+    return r.ro === true && near(r.effective, tot, 1e-9)
+  })())
+  ok('日凌依据列两季各自署名',
+    basisText(dSun.items.sunOutage.basis) === `春分 ${sum.vernal.minutes.toFixed(1)} + 秋分 ${sum.autumnal.minutes.toFixed(1)} = ${tot.toFixed(1)} min`,
+    basisText(dSun.items.sunOutage.basis))
+  ok('日凌依据列英文版',
+    basisText(dSun.items.sunOutage.basis, true) === `Vernal ${sum.vernal.minutes.toFixed(1)} + Autumnal ${sum.autumnal.minutes.toFixed(1)} = ${tot.toFixed(1)} min`,
+    basisText(dSun.items.sunOutage.basis, true))
+  ok('日凌不进系统可用度连乘、也不进中断预算',
+    basisText(dSun.items.sysAvail.basis).indexOf('min') < 0
+    && slaRows(dSun, {}, PROP_ONLY).find((r) => r.key === 'outageMin').suggestText
+       === slaRows(dGeo, {}, PROP_ONLY).find((r) => r.key === 'outageMin').suggestText)
+  ok('没算日凌 → 整组不出（没有就是没有）', !dGeo.groups.includes('excl') && !dGeo.items.sunOutage)
+  ok('只有 GEO 出日凌：NGSO / 再生式 / 端到端一律不出',
+    ['NGSO'].every((o) => !deriveSla(Object.assign({}, geoCtx, { orbitType: o, sunOutage: sum })).groups.includes('excl'))
+    && !deriveSla(Object.assign({}, geoCtx, { orbitType: 'REGEN', regenMode: 'uplink', sunOutage: sum })).groups.includes('excl')
+    && !deriveSla({ orbitType: 'E2E', data: e2eData, ok: true, params: null, carrierForm: {}, slaParams: PROP_ONLY, sunOutage: sum }).groups.includes('excl'))
+
+  // 时延抖动：纯合同条款
+  ok('时延抖动取场景参数、依据「—」',
+    dGeo.items.jitter.suggest === 30 && basisText(dGeo.items.jitter.basis) === '—')
+  ok('抖动缺省 30 ms，走 normSlaParams',
+    DEFAULT_SLA_PARAMS.jitterMs === 30 && normSlaParams({ jitterMs: 50 }).jitterMs === 50 && normSlaParams({ jitterMs: 'x' }).jitterMs === 30)
+  ok('抖动进报告参数表', slaParamRows(DEFAULT_SLA_PARAMS, 'zh').some((r) => r.label === '时延抖动'))
+  ok('抖动归在「时延与差错」组、且采用值比建议更小即着色',
+    dGeo.items.jitter.group === 'delay'
+    && slaRows(dGeo, { adopt: { jitter: '10' } }, PROP_ONLY).find((r) => r.key === 'jitter').bad)
+  ok('没有单程时延（引擎没出这一列）就不出抖动那一行',
+    !deriveSla(Object.assign({}, geoCtx, { data: Object.assign({}, geo.data, { linkDelayResult: '', e2eDelayResult: '', islDelayResult: '' }) })).items.jitter)
+
+  // 隐含年故障次数上限（参数轨末尾的读数行）：三项 99.99 % → 157.8 min，恢复 4 h → 0.66 次/年
+  {
+    const f = Math.pow(0.9999, 3)
+    const mins = (1 - f) * 525960
+    ok('隐含年故障次数：157.8 min ÷ 240 min = 0.66 次/年',
+      near(mins, 157.8, 0.1) && (mins / 240).toFixed(2) === '0.66', `${mins.toFixed(1)} / ${(mins / 240).toFixed(2)}`)
+  }
+  {
+    const st = { v: 3, orbitType: 'GEO', rows: [{ earthStationLocation: '北京' }], satId: 's', slaParams: normSlaParams({ jitterMs: 50 }) }
+    const bk = decodeShare(encodeShare(makeBundle({ mod: 'GEO', from: 't', configs: [{ name: 'A', path: [], state: st }], lib: null })))
+    ok('jitterMs 随分享包往返', bk.configs[0].state.slaParams.jitterMs === 50)
+  }
+  // 依据列三条闸
+  const bad3 = []
+  for (const k of dSun.order) for (const pt of (dSun.items[k].basis || [])) {
+    if (/[\u4e00-\u9fff]/.test(pt.text) && !pt.textEn) bad3.push(k + ':' + pt.text)
+    if (/[\u4e00-\u9fff]/.test(pt.text) && /[0-9]/.test(pt.text)) bad3.push(k + '(glued):' + pt.text)
+  }
+  ok('日凌 / 抖动的依据片：带汉字的都自带英文、且不与数字同片', bad3.length === 0, bad3.join(','))
 }
 
 // —— 静态清单自洽 ——

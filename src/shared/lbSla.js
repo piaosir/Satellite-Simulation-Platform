@@ -54,6 +54,7 @@ export const DEFAULT_SLA_PARAMS = {
   // 帧差错率 10⁻ⁿ：编码标准（DVB-S2/S2X/RCS2、3GPP NTN）的门限按 QEF 定义（ETSI EN 302 307-1
   // §4.1，约合 PER < 10⁻⁷），LDPC+BCH 译码后的错误是【帧级】的，不是比特级独立随机误码。
   ferExp: 7,
+  jitterMs: 30,        // 时延抖动 ms（纯合同参数，无计算依据；IP 业务惯用 ≤ 30–50 ms）
   procMsPerEnd: 20,    // 处理时延预留 ms/单程（发端调制 + 收端解调）
   eirpTolDb: 1,        // EIRP / PSD 容差 dB
   xpdMinDb: 30,        // 极化隔离度下限 dB
@@ -76,7 +77,8 @@ export const SLA_GROUPS = [
   { key: 'bw', label: '带宽与速率', labelEn: 'Bandwidth & Rate' },
   { key: 'delay', label: '时延与差错', labelEn: 'Delay & Errors' },
   { key: 'ops', label: '故障响应与恢复', labelEn: 'Fault Response & Restoration' },
-  { key: 'tx', label: '发射合规', labelEn: 'Transmit Compliance' }
+  { key: 'tx', label: '发射合规', labelEn: 'Transmit Compliance' },
+  { key: 'excl', label: '免责事件', labelEn: 'Excluded Events' }
 ]
 
 // 条款清单。
@@ -95,6 +97,7 @@ export const SLA_ITEMS = [
   { key: 'mir', group: 'bw', label: '峰值信息速率 MIR', labelEn: 'Maximum information rate (MIR)', unit: 'kbps', kind: 'num', qty: true, cmp: 'gt', tip: 'ACM 在同一符号率内切到晴空可支撑的最高效率档；保留同样的系统余量。未选 MODCOD 标准时＝CIR' },
   { key: 'owd', group: 'delay', label: '单程时延', labelEn: 'One-way delay', unit: 'ms', kind: 'num', dec: 1, cmp: null, tip: '引擎单程链路时延；不含地面段与排队' },
   { key: 'rtt', group: 'delay', label: '往返时延上限', labelEn: 'Round-trip delay (max)', unit: 'ms', kind: 'num', dec: 0, cmp: 'lt', tip: '⌈2 × (单程 + 处理时延预留) / 10⌉ × 10；处理时延预留是单程口径（发端调制 + 收端解调）' },
+  { key: 'jitter', group: 'delay', label: '时延抖动', labelEn: 'Delay jitter', unit: 'ms', kind: 'num', dec: 0, cmp: 'lt', tip: '按运营商入网要求填；IP 业务惯用 ≤ 30–50 ms' },
   { key: 'berTarget', group: 'delay', label: '设计误码率', labelEn: 'Design BER', unit: '', kind: 'text', ro: true, cmp: null, tip: '载波配置里的设计误码率，原样带出；不是算出来的量' },
   { key: 'loss', group: 'delay', label: '丢包率上限', labelEn: 'Packet loss (max)', unit: '%', kind: 'num', dec: 3, cmp: 'lt', tip: '编码标准按帧差错：1 − (1 − 10⁻ⁿ)^N_f，n 取帧差错率、N_f = ⌈8L / K⌉；未选标准时按比特独立随机误码 1 − (1 − 10⁻ⁿ)^(8L)。只在可用时间内考核，中断时段不计入丢包统计' },
   { key: 'respond', group: 'ops', label: '故障响应时间', labelEn: 'Response time', unit: 'min', kind: 'num', dec: 0, cmp: null, tip: '合同条款，无计算依据；按运营商入网要求填' },
@@ -104,7 +107,8 @@ export const SLA_ITEMS = [
   { key: 'txEirp', group: 'tx', label: '最大 EIRP', labelEn: 'Maximum EIRP', unit: 'dBW', kind: 'num', dec: 2, cmp: 'gt', tip: '发信站晴空 EIRP + UPC 余量 + 容差；容差按运营商入网要求填' },
   { key: 'txPsd', group: 'tx', label: '最大功率谱密度', labelEn: 'Maximum PSD', unit: 'dBW/4kHz', kind: 'num', dec: 2, cmp: 'gt', tip: '发信站晴空 PSD + UPC 余量 + 容差，参考带宽 4 kHz；PSD 按分配带宽算；容差按运营商入网要求填' },
   { key: 'txPol', group: 'tx', label: '上行极化', labelEn: 'Uplink polarisation', unit: '', kind: 'text', cmp: null, tip: '引擎上行极化；与所引频率计划不一致时依据列给计划极化' },
-  { key: 'txXpd', group: 'tx', label: '极化隔离度下限', labelEn: 'Polarisation isolation (min)', unit: 'dB', kind: 'num', dec: 1, cmp: null, tip: '按运营商入网要求填' }
+  { key: 'txXpd', group: 'tx', label: '极化隔离度下限', labelEn: 'Polarisation isolation (min)', unit: 'dB', kind: 'num', dec: 1, cmp: null, tip: '按运营商入网要求填' },
+  { key: 'sunOutage', group: 'excl', label: '日凌预计中断', labelEn: 'Sun outage (predicted)', unit: 'min', kind: 'ro', dec: 1, cmp: null, tip: '春秋分两季合计，判据为收信站 C/N 恶化 ≥ 1 dB（收信站口径与下行频率定窗口）；不参与可用度连乘、不进中断预算' }
 ]
 
 const ITEM_BY_KEY = Object.fromEntries(SLA_ITEMS.map((it) => [it.key, it]))
@@ -500,6 +504,9 @@ const AV_LABEL = {
   spaceAvail: L('卫星与载荷', 'Satellite & payload'),
   groundAvail: L('基带/骨干网', 'Baseband / backbone')
 }
+
+// 日凌两季的署名（一年两段，分开摆才看得出量级）
+const SO_LABEL = { vernal: L('春分', 'Vernal'), autumnal: L('秋分', 'Autumnal') }
 
 // 时延算式里的操作数署名。「处理」在端到端里是两个不同的量：链上再生节点的【星上处理】
 // （引擎出参）与两端调制解调的【地面处理】预留（SLA 参数），并排摆着不写名字分不出。
@@ -936,6 +943,9 @@ export function deriveSla(ctx) {
     }
   }
 
+  // 时延抖动：纯合同条款，无计算依据（同响应/恢复那两条）
+  if (owd !== null) put('jitter', { basis: [P('—')], suggest: num(sp.jitterMs) })
+
   // ---- 故障响应与恢复（纯合同条款，无计算依据）----
   put('respond', { basis: [P('—')], suggest: num(sp.respondMin) })
   put('restore', { basis: [P('—')], suggest: num(sp.restoreH) })
@@ -1002,8 +1012,46 @@ export function deriveSla(ctx) {
     }
   }
 
+  // ---- 免责事件（只对 GEO 出）----
+  // 日凌每年春秋分各一段，必然发生、无法规避，量级与 99.99 % 的年预算同级（Ku 2.4 m 站
+  // 约 30 min/年，99.99 % 一年才 52.6 min）。专业 SLA 要么把它列为免责事件并给出预计窗口，
+  // 要么计入可用度 —— 这里取前者：单列一行，不参与连乘、不进中断预算。
+  // NGSO 跟踪运动星、再生式与端到端各段几何各异，都不出这一条。
+  if (ot === 'GEO' && ctx.sunOutage) {
+    const v = num(ctx.sunOutage.vernal && ctx.sunOutage.vernal.minutes)
+    const a = num(ctx.sunOutage.autumnal && ctx.sunOutage.autumnal.minutes)
+    if (v !== null || a !== null) {
+      const tot = (v === null ? 0 : v) + (a === null ? 0 : a)
+      const sb = (v !== null && a !== null)
+        ? [SO_LABEL.vernal, P(v.toFixed(1)), P('+'), SO_LABEL.autumnal, P(a.toFixed(1)), P('='), P(tot.toFixed(1) + ' min')]
+        : [v !== null ? SO_LABEL.vernal : SO_LABEL.autumnal, P(tot.toFixed(1) + ' min')]
+      put('sunOutage', { basis: sb, suggest: tot })
+    }
+  }
+
   out.groups = SLA_GROUPS.map((g) => g.key).filter((gk) => order.some((k) => items[k].group === gk))
   return out
+}
+
+/**
+ * 日凌合计：把 calculateSunOutage 的两季结果收成 deriveSla 认的形状。
+ * 每季 { minutes, days, rows }：rows 逐日给日期 / 起止 / 时长（UTC 与北京时两套），
+ * 报告的「日凌预计窗口」表直接照抄。
+ * @param res { vernal, autumnal } —— 各是 calculateSunOutage 的返回值（error:true 的那季丢掉）
+ */
+export function sunOutageSummary(res) {
+  const one = (r) => {
+    if (!r || r.error || !Array.isArray(r.dailyResults) || !r.dailyResults.length) return null
+    const rows = r.dailyResults.map((d) => ({
+      date: d.date, dateBJT: d.dateBJT,
+      startUTC: d.startTimeUTC, endUTC: d.endTimeUTC,
+      startBJT: d.startTimeBJT, endBJT: d.endTimeBJT,
+      durationSec: d.durationSec, peakCNdeg: d.peakCNdeg
+    }))
+    return { minutes: rows.reduce((n, d) => n + (num(d.durationSec) || 0), 0) / 60, days: rows.length, rows }
+  }
+  const v = one(res && res.vernal), a = one(res && res.autumnal)
+  return (v || a) ? { vernal: v, autumnal: a } : null
 }
 
 // 依据列里的误码率：整数指数写成 10⁻ⁿ，端到端那种各段之和（非整幂）照实写科学计数
@@ -1165,6 +1213,7 @@ export const SLA_PARAM_LABELS = [
   { key: 'groundAvail', label: '基带/骨干网可用度', labelEn: 'Baseband / backbone availability', unit: '%', gate: 'groundOn' },
   { key: 'pktBytes', label: 'IP 包长', labelEn: 'IP packet length', unit: 'B' },
   { key: 'ferExp', label: '帧差错率 10⁻ⁿ', labelEn: 'Frame error ratio 10⁻ⁿ', unit: 'n' },
+  { key: 'jitterMs', label: '时延抖动', labelEn: 'Delay jitter', unit: 'ms' },
   { key: 'procMsPerEnd', label: '处理时延预留', labelEn: 'Processing delay allowance', unit: 'ms/单程', unitEn: 'ms/one-way' },
   { key: 'eirpTolDb', label: 'EIRP 容差', labelEn: 'EIRP tolerance', unit: 'dB' },
   { key: 'xpdMinDb', label: '极化隔离度', labelEn: 'Polarisation isolation', unit: 'dB' },

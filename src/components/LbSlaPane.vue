@@ -114,10 +114,21 @@ const PARAMS = [
   { key: 'pktBytes', needs: ['loss'], label: 'IP 包长', unit: 'B', min: 1, max: 65535, step: 1, tip: '丢包率换算用的 IP 包长：一个包跨几个 FEC 帧就有几次被丢掉的机会' },
   { key: 'ferExp', needs: ['loss'], label: '帧差错率 10⁻ⁿ', unit: 'n', min: 1, max: 15, step: 1, tip: '编码标准的帧差错率指数：DVB-S2/S2X 与 3GPP NTN 的门限按 QEF 定义，约合 10⁻⁷；未选标准时不生效' },
   { key: 'procMsPerEnd', needs: ['rtt'], label: '处理时延预留', unit: 'ms/单程', min: 0, max: 1000, step: 1, tip: '发端调制 + 收端解调的单程处理时延预留，计入往返时延上限（往返穿两趟）' },
+  { key: 'jitterMs', needs: ['jitter'], label: '时延抖动', unit: 'ms', min: 0, max: 1000, step: 1, tip: '按运营商入网要求填；IP 业务惯用 ≤ 30–50 ms' },
   { key: 'eirpTolDb', needs: ['txEirp', 'txPsd'], label: 'EIRP 容差', unit: 'dB', min: 0, max: 20, step: 0.1, tip: '按运营商入网要求填' },
   { key: 'xpdMinDb', needs: ['txXpd'], label: '极化隔离度', unit: 'dB', min: 0, max: 60, step: 1, tip: '按运营商入网要求填' }
 ]
 const paramVal = (k) => (props.params ? props.params[k] : null)
+// 隐含年故障次数上限：设备那几项一年总共只有 (1 − 连乘系数) × 525960 min 的中断额度，
+// 一次故障要占掉「恢复时间」那么久 —— 两者一除就是「一年最多坏几次」。含运行时数据的读数行，
+// 回答的是「99.99 % × 4 h 恢复」自洽不自洽（一年坏一次就已违约）。设备一项都不计入时不出。
+const faultBudget = computed(() => {
+  const f = eqFactor.value
+  const h = Number(paramVal('restoreH'))
+  if (!(f < 1) || !isFinite(h) || !(h > 0)) return null
+  const mins = (1 - f) * MIN_PER_YEAR
+  return { mins: mins.toFixed(1), restore: (h * 60).toFixed(0), n: (mins / (h * 60)).toFixed(2) }
+})
 const gateOn = (p) => !p.gate || !!Number(paramVal(p.gate))
 // 只列【本体制真的用得上】的参数：激光星间没有可用度组也没有丢包行，把地球站可用度、IP 包长
 // 摆在那儿只会让人以为它们参与了计算；再生式上行同理不出「收信射频」。
@@ -185,6 +196,9 @@ const railParams = computed(() => {
               :disabled="!gateOn(p)" @commit="emit('param', { key: p.key, value: $event })" />
             <i>{{ p.unit }}</i>
           </template>
+        </div>
+        <div v-if="faultBudget" class="lbx-sla-read" title="设备那几项一年的中断额度 ÷ 一次故障的恢复时间 = 一年最多坏几次">
+          {{ faultBudget.mins }} min ÷ {{ faultBudget.restore }} min = {{ faultBudget.n }} <i>次/年</i>
         </div>
       </div>
     </div>

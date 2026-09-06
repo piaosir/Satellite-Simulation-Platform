@@ -9,7 +9,7 @@ import { importGrdAntennas, removeLocalAntenna, localFolderFor, isLocalFolder, s
 import { resolveRefId } from '../shared/lbShare.js'
 import { stableStringify } from '../shared/configDirty.js'
 import { migrateLegacyEs } from '../shared/esMigrate.js'
-import { pickColumn, fmtScaled, fmtQty } from '../shared/adaptUnits.js'
+import { pickColumn, fmtScaled, fmtQty, fmtQtyParts } from '../shared/adaptUnits.js'
 import { isUnitAdaptive, onUnitModeChange } from '../shared/lbUnitMode.js'   // 结果显示单位档（功能区「单位」，出厂锁定）
 import { lbDocT } from '../shared/lbDocI18n.js'
 import { getLang, onLangChange } from '../shared/i18n/runtime.js'   // 报表语言跟随平台语言
@@ -28,6 +28,9 @@ import EarthStationPanel from '../components/EarthStationPanel.vue'
 import SatellitePanel from './SatellitePanel.vue'
 import WaterfallTable from './WaterfallTable.vue'
 import LbVizPane from '../components/LbVizPane.vue'
+import LbSlaDialog from '../components/LbSlaDialog.vue'
+import { deriveSla, normSlaParams, applyRowSla, setAdopt, setInclude, setAllInclude, clearAdopt, slaIncludeCount, slaSamplesFor, slaReportBlock, slaParamRows, sunOutageSummary, DEFAULT_SLA_PARAMS } from '../shared/lbSla.js'   // SLA 建议（四窗共用纯逻辑）
+import { getPlan, checkAgainstChannel } from '../shared/lbFreqPlanRef.js'   // 发射合规：卫星条目引用了频率计划时的数值核对
 import LbFontCtl from '../components/LbFontCtl.vue'
 import LbUnitCtl from '../components/LbUnitCtl.vue'
 import LbCapFoot from '../components/LbCapFoot.vue'
@@ -803,6 +806,132 @@ const core = computed(() => (sel.value && !sel.value.error ? sel.value.data : nu
 // 扫描曲线就不再经过详细预算里正在显示的那一点了。留底则保证图、表、曲线永远同一次计算。
 const sweepParamsByRow = ref({})
 const selParams = computed(() => (sel.value ? (sweepParamsByRow.value[sel.value.rowId] || null) : null))
+
+// —— SLA 建议（功能区「导出 › SLA」→ LbSlaDialog，纯逻辑在 shared/lbSla.js）——
+// 建议值只从「本行真正送进引擎的那份入参 + 引擎出参」推导，与详细预算同源。
+// ★ 弹窗自带链路下拉（slaIdx），与链路表的聚焦行（selected）分开走：填 SLA 不该把详细预算
+//   和图表一起拽到别的链路上去。打开时对齐到当前聚焦行，之后各走各的。
+// 采用值/勾选存在链路行上（row.sla），随场景与分享包自然带走；SLA 参数是场景级。
+const slaParams = reactive({ ...DEFAULT_SLA_PARAMS })
+const slaScanByRow = ref({})          // 会话态：可用度档位扫描（compute 后批量求得，不入存档）
+const slaSunByRow = ref({})           // 会话态：日凌预计中断（惰性算，按入参哈希缓存，不入存档）
+const slaOpen = ref(false)
+const slaIdx = ref(0)
+const slaLink = computed(() => links.value[slaIdx.value] || null)
+const slaOpts = computed(() => links.value.map((l, i) => ({ i, label: `#${i + 1} ${l.txName} → ${l.rxName}` })))
+const slaRow = computed(() => (slaLink.value ? linkRows.find((r) => r._id === slaLink.value.rowId) || null : null))
+const slaLinkName = computed(() => (slaLink.value ? `${slaLink.value.txName} → ${slaLink.value.rxName}` : ''))
+function openSlaDlg() {
+  slaIdx.value = Math.min(Math.max(0, selected.value), Math.max(0, links.value.length - 1))
+  slaOpen.value = true
+  refreshSlaSun()
+}
+
+// —— 日凌预计中断（免责事件，只 GSO 有）——
+// 惰性：弹窗打开或导出报告时才算。一条链路两次 IPC（春分 + 秋分），按【入参哈希】缓存到会话态，
+// 重算即作废（同 slaScanByRow 的生命周期）。算不出来就没有这一条 —— 没有就是没有。
+// 入参一律取【留底入参 + 引擎出参】，与其余建议值同源（见 lbSla 头注口径①）。
+function slaSunSpec(l) {
+  const p = sweepParamsByRow.value[l.rowId]
+  if (!p || !l.data) return null
+  const n = (v) => { const x = parseFloat(v); return isFinite(x) ? x : null }
+  const lat = n(l.data.rxLatitudeResult) !== null ? n(l.data.rxLatitudeResult) : n(p.linkParams.rxLatitude)
+  const lon = n(l.data.rxLongitudeResult) !== null ? n(l.data.rxLongitudeResult) : n(p.linkParams.rxLongitude)
+  const dia = n(p.linkParams.rxAntennaDiameter)
+  const satLon = n(p.satParams.orbitPosition)
+  const freq = n(p.linkParams.rxCenterFrequency)
+  const sysTemp = n(l.data.systemNoiseTempKResult)
+  if (lat === null || lon === null || !(dia > 0) || satLon === null || !(freq > 0)) return null
+  // degThreshold 1 dB＝行业预报惯例口径（与日凌工具默认一致）
+  return { lat, lon, satLon, diameter: dia, customFreq: freq, sysTemp: sysTemp > 0 ? sysTemp : 0, degThreshold: 1, year: new Date().getFullYear() }
+}
+async function refreshSlaSun() {
+  if (!api || !api.sunOutage || !api.sunOutage.compute) return
+  const jobs = []
+  for (const l of links.value) {
+    if (!l || !l.data) continue
+    const spec = slaSunSpec(l)
+    if (!spec) continue
+    const key = JSON.stringify(spec)
+    const had = slaSunByRow.value[l.rowId]
+    if (had && had.key === key) continue
+    jobs.push({ rowId: l.rowId, key, spec })
+  }
+  if (!jobs.length) return
+  for (const j of jobs) {
+    try {
+      const [vernal, autumnal] = await Promise.all([
+        api.sunOutage.compute({ ...j.spec, season: 'vernal' }),
+        api.sunOutage.compute({ ...j.spec, season: 'autumnal' })
+      ])
+      const sum = sunOutageSummary({ vernal, autumnal })
+      slaSunByRow.value = { ...slaSunByRow.value, [j.rowId]: { key: j.key, sum } }
+    } catch (e) { /* 算不出就没有日凌那一行，其余条款不受影响 */ }
+  }
+}
+// 重算后链路可能变少：下标越界就退回第一条，免得弹窗里一片空白、看着像算漏了
+watch(links, () => { if (slaIdx.value >= links.value.length) slaIdx.value = 0 })
+// 频率计划核对：卫星条目引用了「计划 → 转发器」时才有；计划全文异步取，随引用变化重载
+const slaFpPlan = shallowRef(null)
+watch(() => (curSat.value && curSat.value.grd ? curSat.value.grd.fpId : ''), async (id) => {
+  slaFpPlan.value = id ? await getPlan(id) : null
+}, { immediate: true })
+const slaFpCheck = computed(() => {
+  const g = curSat.value && curSat.value.grd
+  const d = slaLink.value && slaLink.value.data
+  if (!slaFpPlan.value || !g || !g.fpNo || !d) return null
+  const bw = parseFloat(d.allocBandwidthResult), fc = parseFloat(d.uplinkFrequencyResult)
+  return checkAgainstChannel(slaFpPlan.value, g.fpNo, {
+    occBwMHz: isFinite(bw) ? bw / 1000 : undefined,
+    fcMHz: isFinite(fc) ? fc * 1000 : undefined,
+    polUp: d.uplinkPolarizationResult || undefined,
+    polDn: d.downlinkPolarizationResult || undefined
+  })
+})
+// 逐链路的建议：弹窗看 slaLink 那一条（带频率计划核对），报告要全部（fp 恒 null）
+function slaDerivedFor(l, fp) {
+  if (!l || !l.data) return null
+  const row = linkRows.find((r) => r._id === l.rowId)
+  const form = row ? resolveBaseband(row.basebandId).form : {}
+  return deriveSla({
+    orbitType: 'GEO',
+    data: l.data, ok: l.ok, error: l.error, resolvedMargin: l.resolvedMargin,
+    params: sweepParamsByRow.value[l.rowId] || null,
+    carrierForm: form,
+    modcodRows: (basebandOpts.value.modcod || {})[form.dvbStandard] || [],
+    scan: slaScanByRow.value[l.rowId] || null,
+    sunOutage: (slaSunByRow.value[l.rowId] || {}).sum || null,
+    fp: fp || null,
+    slaParams
+  })
+}
+const slaDerived = computed(() => slaDerivedFor(slaLink.value, slaFpCheck.value))
+const slaCount = computed(() => links.value.reduce((n, l) => {
+  const row = linkRows.find((r) => r._id === l.rowId)
+  return n + (l.data && slaIncludeCount(slaDerivedFor(l), row && row.sla) ? 1 : 0)
+}, 0))
+// row.sla 挂在链路行上，会被「结果过期」那条深监听盯到——但采用值是【结论】不是引擎入参，
+// 改它一个字也不会让已出的结果失效。故写完把过期灯还原（深监听是 pre-flush，nextTick 时它已跑过）。
+function slaTouch(fn) { const keep = resultsStale.value; fn(); nextTick(() => { resultsStale.value = keep }) }
+function slaSetAdopt(e) { const r = slaRow.value; if (r) slaTouch(() => applyRowSla(r, setAdopt(r.sla, e.key, e.value))) }
+function slaSetInclude(e) { const r = slaRow.value; if (r) slaTouch(() => applyRowSla(r, setInclude(r.sla, e.key, e.value))) }
+function slaSetParam(e) { if (e.value != null) slaParams[e.key] = e.value }
+function slaToggleAll(on) { const r = slaRow.value; if (r) slaTouch(() => applyRowSla(r, setAllInclude(r.sla, slaDerived.value, on))) }
+// 「重置」两件事一起做：本条链路的采用值清空（回到建议值）+ SLA 参数回到缺省 ——
+// 参数是场景级的，可它只在这个弹窗里露面，另设一颗按钮反而找不着。
+function slaClear() {
+  slaTouch(() => {
+    const r = slaRow.value
+    if (r) applyRowSla(r, clearAdopt(r.sla))
+    Object.assign(slaParams, DEFAULT_SLA_PARAMS)
+  })
+}
+const slaAllOn = computed(() => {
+  const r = slaRow.value, d = slaDerived.value
+  if (!r || !d) return true
+  return d.order.every((k) => !(r.sla && r.sla.include && r.sla.include[k] === false))
+})
+
 // 图表区显示开关（功能区「视图 → 图表」）。关掉时详细预算只剩表：图表整块不渲染，
 // 里头的扫描自然也不会跑——不出图还占着 CPU 逐格重算引擎是说不过去的。
 const showViz = ref((() => { try { return localStorage.getItem('linkbudget/viz/show') !== '0' } catch (e) { return true } })())
@@ -969,11 +1098,37 @@ async function compute() {
     selected.value = keepIdx < 0 ? 0 : keepIdx
     resultsStale.value = false
     await loadWaterfall()
+    await refreshSlaScan(out, sweepStore)
   } catch (e) {
     error.value = String(e)
   } finally {
     computing.value = false
   }
+}
+
+// SLA 可用度档位扫描：整表一次批量 IPC（逐档钉住当前工作点重算，见 core 的 scanSlaTiers）。
+// 会话态、不入存档；随结果一起过期（重算即重扫），切「单位」档不重扫（档位只管显示）。
+// ★ 出 IPC 前必须现造纯数据：Vue 的 Proxy 过不了结构化克隆，invoke 当场抛且无 catch 时全静默。
+async function refreshSlaScan(out, store) {
+  slaScanByRow.value = {}
+  slaSunByRow.value = {}
+  if (!api || !api.linkBudget.slaScanBatch) return
+  const jobs = []
+  for (const l of out) {
+    if (!l || !l.data) continue
+    const p = store[l.rowId]
+    if (!p) continue
+    const samples = slaSamplesFor({ up: l.data.uplinkAvailabilityResult, dn: l.data.downlinkAvailabilityResult })
+    if (!samples.length) continue
+    jobs.push({ rowId: l.rowId, spec: { engine: 'geo', satParams: p.satParams, linkParams: p.linkParams, opt: p.opt, samples } })
+  }
+  if (!jobs.length) return
+  try {
+    const res = await api.linkBudget.slaScanBatch(JSON.parse(JSON.stringify(jobs.map((j) => j.spec))))
+    const m = {}
+    jobs.forEach((j, i) => { if (res && res[i]) m[j.rowId] = res[i] })
+    slaScanByRow.value = m
+  } catch (e) { /* 扫不出就不出档位表与 MIR，结果本身不受影响 */ }
 }
 
 // 结果列写回 computedVals（全部 RESULT_DEFS 都算：事后勾选新列即刻可见，无需重算）。
@@ -1237,10 +1392,14 @@ function serializeState() {
   // v3 场景 = 关联关系：链路行（站址 + 库条目 id 引用）+ 卫星选择。
   // 三库是全局资产（userData/library.json），不再随场景存副本；_ 前缀键（行内部 id / 计算列）一律剥离。
   // 计算方式/系统余量/超发量自 v3 起随载波入库（求解策略是载波的属性），故不再是场景字段。
+  // SLA：采用值/勾选随行走（row.sla 由「非 _ 键全存」自然带上），参数是场景级一份。
   return {
     v: 3,
-    rows: linkRows.map((r) => { const o = {}; for (const k of Object.keys(r)) if (!k.startsWith('_')) o[k] = r[k]; return o }),
-    satId: satId.value
+    // ★ row.sla 是嵌套对象：从响应式行上浅拷出来的是 Vue 的 Proxy，结构化克隆过不了 ——
+    //   saveConfig 走 IPC 当场抛「保存失败」。applyRowSla 内部 normRowSla 现造纯对象，顺手落平。
+    rows: linkRows.map((r) => { const o = {}; for (const k of Object.keys(r)) if (!k.startsWith('_')) o[k] = r[k]; if (o.sla) applyRowSla(o, o.sla); return o }),
+    satId: satId.value,
+    slaParams: { ...slaParams }
   }
 }
 // v2 及更早：计算方式/系统余量/超发量是场景级字段 → 下沉到该场景各行所引的载波条目
@@ -1267,9 +1426,19 @@ function adoptSceneGrd(g) {
 }
 function applyState(st) {
   if (!st || typeof st !== 'object') return
+  // SLA 参数：旧场景没这一项 → 补缺省（normSlaParams 幂等，非法值也退缺省）
+  Object.assign(slaParams, normSlaParams(st.slaParams))
+  slaScanByRow.value = {}
+  slaSunByRow.value = {}
   // —— v2 场景（本版结构）：行 + 库引用直读；库是全局资产不随场景载入 ——
   if (Array.isArray(st.rows)) {
-    linkRows.splice(0, linkRows.length, ...st.rows.map((r) => ({ ...defaultsFor(TX_FIELDS), ...defaultsFor(RX_FIELDS), ...r, _id: 's' + (_sid++) })))
+    // row.sla 逐行深拷（normRowSla 现造新对象）：st 常常就是配置列表里那份 state，
+    // 直接引用会让两处共用同一个 sla 对象，改采用值就地改掉了已保存的那份。空的一律删键。
+    linkRows.splice(0, linkRows.length, ...st.rows.map((r) => {
+      const o = { ...defaultsFor(TX_FIELDS), ...defaultsFor(RX_FIELDS), ...r, _id: 's' + (_sid++) }
+      applyRowSla(o, r.sla)
+      return o
+    }))
     satId.value = st.satId || ''
     adoptSceneCalc(st)                        // v2 场景的计算策略 → 下沉到所引载波库条目
     if (st.grdSel) adoptSceneGrd(st.grdSel)   // 旧场景的方向图匹配 → 下沉到所引卫星库条目
@@ -1351,7 +1520,7 @@ let _stateT = null
 // 「上次会话」存盘要带上 activeId：否则重开窗口时配置列表没有任何一项被聚焦，
 // 但工作区却显示着上次的内容，看起来像是内容跟列表对不上号（用户反馈的困惑点）。
 function scheduleSaveState() { clearTimeout(_stateT); _stateT = setTimeout(() => { try { localStorage.setItem(STATE_KEY, JSON.stringify({ ...serializeState(), activeId: activeId.value })) } catch (e) { /* 配额满等忽略 */ } dirtyFlag.value = isDirty() }, 600) }
-watch([linkRows, satId, activeId], scheduleSaveState, { deep: true })
+watch([linkRows, satId, activeId, slaParams], scheduleSaveState, { deep: true })
 
 // —— 命名配置 CRUD ——
 // 树本身的增删改移 / 剪贴板 / 右键 / 键盘全在 shared/useConfigTree.js（见文件上方 useConfigTree(...) 注入点）。
@@ -1370,7 +1539,8 @@ function blankState() {
   return {
     v: 3,
     rows: [{ ...defaultsFor(TX_FIELDS), ...defaultsFor(RX_FIELDS), rxStationId: (esConfigs[1] && esConfigs[1].id) || '' }],
-    satId: ''
+    satId: '',
+    slaParams: { ...DEFAULT_SLA_PARAMS }
   }
 }
 
@@ -1378,8 +1548,9 @@ function blankState() {
 // 指纹只取「配置内容」字段（不含页签/结果列勾选等视图态），避免切页签/调结果列误判为改动。
 function fingerprintOf(s) {
   // 库是全局资产（自动保存、不入场景）：指纹只含场景自身内容（行/引用）；
-  // 方向图匹配已随卫星库条目走（v1.4.3）、计算策略已随载波库条目走（v1.3.8），不再是场景内容 → 不入指纹
-  return stableStringify({ rows: s.rows, satId: s.satId })
+  // 方向图匹配已随卫星库条目走（v1.4.3）、计算策略已随载波库条目走（v1.3.8），不再是场景内容 → 不入指纹。
+  // SLA：采用值/勾选在 rows 里（row.sla）自然计入；参数是场景级，显式列进来 —— 改了 SLA 就是改了场景。
+  return stableStringify({ rows: s.rows, satId: s.satId, slaParams: s.slaParams })
 }
 function fingerprint() { return fingerprintOf(serializeState()) }
 let activeBaseline = ''
@@ -1572,6 +1743,13 @@ const { reportDlg, openReportDialog, runReport } = useLbReport({
   lang: () => reportLang.value,
   appVersion: () => appVersion.value,
   paramsFor: (l) => sweepParamsByRow.value[l.rowId] || null,
+  // SLA 建议（§4）：逐链路出纯数据块（标签按报表语言翻好、速率/带宽按当前单位档格式化）
+  slaFor: (l) => {
+    const row = linkRows.find((r) => r._id === l.rowId)
+    return slaReportBlock(slaDerivedFor(l), row && row.sla, slaParams, reportLang.value,
+      (v, u) => fmtQtyParts(v, u, unitAdaptive.value))
+  },
+  slaParams: () => slaParamRows(slaParams, reportLang.value),
   // 计算方式随载波逐链路而定：封面/表头只在全表口径一致时报该方式（不一致则不报，各链路详情自带「计算设置」块）
   calc: () => {
     const modes = new Set(links.value.map((l) => calcOfLink(l).key).filter(Boolean))
@@ -1758,6 +1936,10 @@ onMounted(async () => {
           </div>
           <div class="lbr-g">
             <div class="lbr-items">
+              <button class="lbr-big" :disabled="!links.length" :title="links.length ? '按当前计算结果给出 SLA 条款建议值：可用度 / 带宽与速率 / 时延与丢包 / 故障响应与恢复 / 发射合规（逐条可改采用值、可勾选列入报告）' : '尚无计算结果'" @click="openSlaDlg">
+                <svg viewBox="0 0 16 16" class="lbr-svg"><path d="M8 1.8 13 3.4v4.2c0 3.1-2.1 5.4-5 6.6-2.9-1.2-5-3.5-5-6.6V3.4z" /><path d="m5.6 7.9 1.7 1.7 3.3-3.3" /></svg>
+                SLA
+              </button>
               <button class="lbr-big" :disabled="reportDlg.busy || !links.length" :title="links.length ? '生成交付级报告：Excel（总报告 + 逐链路详情）/ PDF（封面 · 目录 · 总报告 · 逐链路详情，含图）' : '尚无计算结果'" @click="openReportDialog"><Icon name="file-down" :size="16" />{{ reportDlg.busy ? '生成中…' : '报告' }}</button>
               <button class="lbr-big" :disabled="!segments.length" title="复制当前瀑布表（TSV，可直接粘贴到 Excel / 报告）" @click="copyWaterfallTsv"><Icon name="file-text" :size="16" />TSV</button>
             </div>
@@ -1882,12 +2064,20 @@ onMounted(async () => {
       @apply="applyAdvPlan" @set-count="setAdvCount"
       :cnc-avail="cncAvail" :cnc-avail-busy="cncAvailBusy" @scan-avail="scanCncAvail" />
 
+    <!-- SLA 建议：条款表 + SLA 参数 + 可用度档位扫描（四窗共用组件；链路由头部下拉选） -->
+    <LbSlaDialog
+      :open="slaOpen" :options="slaOpts" :index="slaIdx" :derived="slaDerived"
+      :row-sla="slaRow && slaRow.sla" :params="slaParams" :adaptive="unitAdaptive" :all-on="slaAllOn"
+      :error="error" :link-error="(slaLink && slaLink.error) || ''" :link-name="slaLinkName"
+      @close="slaOpen = false" @pick="slaIdx = $event" @adopt="slaSetAdopt" @include="slaSetInclude"
+      @param="slaSetParam" @toggle-all="slaToggleAll" @clear="slaClear" />
+
     <!-- 导出报告：封面元信息 + 输出格式 + 是否含图（三窗共用组件）-->
     <LbCustomColsDialog :open="ccDlgOpen" :cols="customCols" :pool="customPool" :preview-fn="ccPreview"
       @update:cols="customCols = $event" @close="ccDlgOpen = false" />
     <LbReportDialog :open="reportDlg.open" :lang="reportLang" orbit-type="GEO"
       :sat-name="curSat ? curSat.form.satelliteName : ''" :band="curSat ? curSat.form.frequencyBand : ''" :link-count="links.length"
-      :viz-available="showViz" store-key="linkbudget" :busy="reportDlg.busy" :progress="reportDlg.progress"
+      :viz-available="showViz" :sla-count="slaCount" store-key="linkbudget" :busy="reportDlg.busy" :progress="reportDlg.progress"
       @close="reportDlg.open = false" @submit="runReport" />
 
     <!-- 命名弹窗：保存为新配置（替代 Electron 不支持的 window.prompt）-->
