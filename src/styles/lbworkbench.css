@@ -334,6 +334,103 @@ html[data-theme='dark'] .sg-cell .sg-fillbar::after {
 .lbx-doc-ref .wf .wf-l { max-width: 15em; }         /* 超长标签折行显示全，不把整段撑宽 */   /* 165px */
 .lbx-doc > .lbx-fold { flex: 1 1 100%; max-width: 69em; }         /* 几何折叠：独占末行但内容自限宽 */
 
+/* —— SLA 建议（LbSlaPane，四窗共用，挂在 LbSlaDialog 里）——
+   三块的分工由「列数」定：条款表六列、参数轨三列，两者并排；档位表十列全是数，挤进右轨
+   就会与条款表叠在一起 → 它整幅独占一行，内部再给一层横向滚动兜底。
+   排版沿用详细预算那套（.lbx-doc 已把衬线栈与 --lb-fs 钉好）。三线表口径与 WaterfallTable 一致：
+   顶线/底线 --lb-rule-strong、列头下 --lb-rule、组头上 --lb-rule-soft，行间无框线无底纹。
+   尺寸一律 em（1em = --lb-fs），随功能区「字号」整体缩放。
+   ★ 写在公共表而不是组件 scoped 里：.lbx-doc 的栅格变量在宿主那侧。 */
+/* ★ 走【界面字体】var(--font-ui)，不走 --lb-serif：判据是「会不会进交付文档」——
+   详细预算那张级联表是报告正文的屏上预览，故跟报告走衬线；SLA 弹窗是填条款的界面，
+   跟设置里的「界面字体」走（用户 2026-09-05 指出这一条）。字号仍吃 --lb-fs（功能区「字号」）。
+   本块不再挂 .lbx-doc（那条会把衬线栈带进来），布局在这里自己写全。 */
+.lbx-sla {
+  display: flex; flex-wrap: wrap; align-items: flex-start; column-gap: 2.2em; row-gap: 1.4em;
+  font-family: var(--font-ui); font-size: var(--lb-fs);
+}
+.lbx-sla-main { flex: 1 1 40em; min-width: 0; }
+.lbx-sla-side { flex: 0 1 23em; min-width: 21.5em; }
+.lbx-sla-scanwrap { flex: 1 1 100%; min-width: 0; }
+/* 分区小标（结构名，不是说明）：与报告对话框的 .rd-sec 同一族 */
+.lbx-sla-cap {
+  margin-bottom: .45em; padding-bottom: .2em; font-size: var(--fs-2);
+  font-weight: 700; letter-spacing: var(--ls-label); color: var(--text-muted);
+  border-bottom: 1px solid var(--lb-rule);
+}
+.lbx-sla-tbl {
+  width: 100%; border-collapse: collapse; font-family: var(--font-ui); font-size: var(--lb-fs);
+  font-variant-numeric: tabular-nums; table-layout: auto;
+}
+.lbx-sla-tbl thead th {
+  padding: 2px 6px 3px; text-align: left; font-weight: 600; color: var(--text-muted); white-space: nowrap;
+  border-top: 2px solid var(--lb-rule-strong); border-bottom: 1px solid var(--lb-rule);
+}
+.lbx-sla-tbl tbody tr:last-child > * { border-bottom: 2px solid var(--lb-rule-strong); }
+.lbx-sla-tbl td { padding: 1px 6px; vertical-align: baseline; line-height: 1.5; }
+.lbx-sla-r:hover > td { background: var(--surface); }
+/* 组头行：加粗 + 发丝线，无底纹（工艺同 WaterfallTable 的 k-sub） */
+.lbx-sla-g > td {
+  padding-top: .5em; font-weight: 700; color: var(--text); letter-spacing: var(--ls-tight);
+  border-top: 1px solid var(--lb-rule-soft);
+}
+.lbx-sla-tbl tbody tr:first-child.lbx-sla-g > td { padding-top: 2px; border-top: none; }
+.lbx-sla-tbl .c-t { color: var(--text-muted); white-space: nowrap; }
+.lbx-sla-tbl .c-t i { font-style: normal; color: var(--text-faint); margin-left: .4em; }
+/* 依据列吃掉多余宽度并【按整块折行】：可用度构成连乘起来能有五六个因子，整列 nowrap 会把
+   表撑出容器、与右侧参数轨叠在一起。折行只发生在片与片之间（每片自己 nowrap），
+   数字与单位永远不会被拆开。 */
+.lbx-sla-tbl .c-b { width: 99%; color: var(--text-faint); white-space: normal; }
+.lbx-sla-tbl .c-b > span { display: inline-block; white-space: nowrap; }
+.lbx-sla-tbl .c-b > span + span { margin-left: .3em; }
+/* 紧跟在左括号那一片后面的片不另起间距（min( 上行 …） */
+.lbx-sla-tbl .c-b > span + span.tight { margin-left: 0; }
+.lbx-sla-tbl .c-v { text-align: right; color: var(--text); white-space: nowrap; }
+/* 采用值格：够放下「1777.838」这种六七位数（早先 6.6em 会把它截成 1777.） */
+.lbx-sla-tbl .c-a { width: 8.4em; }
+.lbx-sla-tbl .c-u { color: var(--text-faint); white-space: nowrap; }
+.lbx-sla-tbl .c-k { width: 3.2em; text-align: center; }
+.lbx-sla-tbl thead .c-v { text-align: right; }
+.lbx-sla-tbl thead .c-k { text-align: center; }
+.lbx-sla-in {
+  width: 100%; min-width: 0; font: inherit; font-size: var(--lb-fs); text-align: right; padding: 1px 4px;
+  background: var(--field-bg); color: var(--text); border: 1px solid var(--field-border); border-radius: var(--r-ctl, 2px);
+}
+.lbx-sla-in:focus { outline: none; border-color: var(--accent-ui); }
+.lbx-sla-tbl .c-a.st-bad .lbx-sla-in { color: var(--danger, #9c5751); font-weight: 600; }
+.lbx-sla-tbl .c-b .st-bad { color: var(--danger, #9c5751); font-weight: 600; }
+/* 参数轨：竖排定值列。三列同轨（名 / 值 / 单位）—— 早先那版是 inline-flex 自由流，八项换行后
+   每行各按自己的宽度落位，值列参差不齐。 */
+.lbx-sla-pars { display: flex; flex-direction: column; gap: 3px; }
+.lbx-sla-par {
+  display: grid; grid-template-columns: minmax(0, 1fr) 5.4em 4.2em; align-items: center; column-gap: 6px;
+  font-family: var(--font-ui); font-size: var(--lb-fs);
+}
+.lbx-sla-par-l { display: flex; align-items: center; gap: 4px; color: var(--text-muted); white-space: nowrap; min-width: 0; }
+.lbx-sla-par-l > input[type="checkbox"] { margin: 0; flex: 0 0 auto; }
+.lbx-sla-par-v {
+  width: 100%; font: inherit; font-size: var(--lb-fs); text-align: right; padding: 1px 4px;
+  font-variant-numeric: tabular-nums;
+  background: var(--field-bg); color: var(--text); border: 1px solid var(--field-border); border-radius: var(--r-ctl, 2px);
+}
+.lbx-sla-par-v:focus { outline: none; border-color: var(--accent-ui); }
+.lbx-sla-par i { font-style: normal; color: var(--text-faint); font-size: calc(var(--lb-fs) - 1px); white-space: nowrap; }
+/* 带闸的参数（基带/骨干网）：没勾就整行压暗——数还在，只是没乘进综合可用度 */
+.lbx-sla-par.off { opacity: .5; }
+/* 档位表：单位另起一行（十列全是数，列头挤不下「上行雨衰 dB」）；窄窗时整表横向滚动，
+   绝不外溢去压别的块 */
+.lbx-sla-scanbox { overflow-x: auto; }
+/* 档位表按内容取宽（不铺满整幅）：端到端只剩六列，拉满一行会把六个数摊成一片散沙 */
+.lbx-sla-scan { width: auto; }
+.lbx-sla-scan th, .lbx-sla-scan td { text-align: right; white-space: nowrap; padding: 1px 6px; }
+.lbx-sla-scan .lbx-sla-uh > th {
+  border-top: none; border-bottom: 1px solid var(--lb-rule); padding-top: 0;
+  font-weight: 400; color: var(--text-faint); font-size: calc(var(--lb-fs) - 1px);
+}
+.lbx-sla-scan tbody tr.top > td { font-weight: 700; color: var(--text); }
+.lbx-sla-scan tbody tr:hover > td { background: var(--surface); }
+.lbx-sla-scan .st-bad { color: var(--danger, #9c5751); font-weight: 600; }
+
 /* —— 详细预算 · 端到端专属排版（.e2-doc，第四窗 + 其 PDF 打印页）——
    本窗级联是【单列】瀑布，而上面那套是按三窗「上行/下行/合计」多列定的：.wf-row.cols1 的
    标签列是 1fr、左轨上限 45em —— 单列下就成了标签贴左缘、数值甩到 45em 外的右缘，
