@@ -9,7 +9,7 @@
 // ★ tocSection 的条目由调用方传入：两份报告的章节各不相同，目录该逐条对应【它自己】正文里
 //   真正出现的 H1 / H2。
 const {
-  Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell,
+  Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell, TableOfContents,
   Header, Footer, PageNumber, AlignmentType, WidthType, BorderStyle, VerticalAlign, ImageRun,
   PageOrientation, LineRuleType
 } = require('docx')
@@ -277,15 +277,24 @@ function coverSection(model) {
 // 目录页。★ 这里是【静态排版】，不是 Word 的 TOC 域：域在文档打开时是空的，要用户自己
 // 右键「更新域」才填得出来 —— 没人会去点，交付出去的报告目录就是一整页空白。
 // 页码不给：生成时不知道分页，写一个错的页码比不写更糟。
-function tocSection(model, items) {
+// opts.field = true 时改用 Word 的 TOC 域（链路预算报告沿用 v1.4.3 的做法：Document 上配
+// features.updateFields，Word 打开时提示更新域，填入页码与超链，正文改了目录自动跟）。
+function tocSection(model, items, opts) {
   const L = model.t || {}
+  const field = !!(opts && opts.field)
+  const children = [P(L.contents || '目 录', 'RptTitle')]
+  if (field) {
+    children.push(new TableOfContents('Contents', { hyperlink: true, headingStyleRange: '1-3' }))
+    children.push(P(model.lang === 'en'
+      ? '(In Word: right-click the table of contents → Update Field to fill in page numbers.)'
+      : '（在 Word 中右键目录 → 更新域，即可填入页码。）', 'RptNote'))
+  } else {
+    children.push(...(items || []).map((it) => P((it.n ? it.n + '　' : '') + it.t, it.sub ? 'RptToc2' : 'RptToc1')))
+  }
   return {
     properties: sectPage(false, { start: 1, formatType: 'upperRoman' }),
     headers: { default: logoHeader((model.doc || {}).logo) }, footers: { default: pageFooter() },
-    children: [
-      P(L.contents || '目 录', 'RptTitle'),
-      ...(items || []).map((it) => P((it.n ? it.n + '　' : '') + it.t, it.sub ? 'RptToc2' : 'RptToc1'))
-    ]
+    children
   }
 }
 // 表号全文连续（模板口径）。一张逻辑表取一次号，续表共用（表 n-1 / 表 n-2 …）；

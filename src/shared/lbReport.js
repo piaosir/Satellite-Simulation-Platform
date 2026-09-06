@@ -258,11 +258,8 @@ export const reportT = (lang) => (s) => translate(s, lang)
 //   ② 引用建议书与标准：编号 + 名称 + 在本报告中的具体用途（版本号对得上引擎里实现的那一版）；
 //   ③ 物理常数与基准：报告里出现的每个常数的取值与出处。
 // 只写引擎真正做了的事：没实现的不写、没核实的不写（宁可少一条，不可多一条错的）。
-export function methodology(scheme, lang, opts) {
+export function methodology(scheme, lang) {
   const en = lang === 'en'
-  // 本报告里是否真有链路计入了「附加 C/I」（CnC 残余自干扰等）。只在真用了时才列它的出处——
-  // 同本文件 §噪声与系统 里那条注释的口径：报告没算的东西不该给读者一个出处。
-  const extCI = !!(opts && opts.extCI)
   const e2e = scheme.orbitType === 'E2E'
   // ★ ngso 只管「引擎是否走 §8 仰角统计 + SGP4 站星最差工况」——端到端不在其中：
   //   它的几何是逐跳给定（手动）或逐跳解最差工况（自动），可用度是逐跳站址值连乘，
@@ -459,9 +456,7 @@ export function methodology(scheme, lang, opts) {
       { id: '3GPP TS 36.211', title: G('E-UTRA 物理信道与调制', 'E-UTRA physical channels and modulation'), use: G('NB-IoT 帧结构、资源单元与 NRS / DMRS —— 有效码率分母的出处', 'NB-IoT frame structure, resource units and NRS / DMRS — the source of the effective code rate denominator') },
       { id: 'Kodheli et al., AdHoc-Now 2019', title: G('基于卫星的窄带物联网系统链路预算分析', 'Link budget analysis for satellite-based narrowband IoT systems'), use: G('NB-IoT 三张表的解调门限基线（AWGN、BLER 10%、N_rep 1）', 'Demodulation threshold baseline for the three NB-IoT tables (AWGN, 10% BLER, N_rep 1)') },
       { id: 'Méndez-Monsanto et al., VTC2024-Fall', title: G('NR-NTN 链路级性能评估', 'Link-level performance evaluation for NR-NTN'), use: G('NR 五张 MCS 表的解调门限锚点', 'Demodulation threshold anchors for the five NR MCS tables') }
-    ].concat(extCI ? [
-      { id: 'Comtech EF Data CDM-625A', title: G('先进卫星调制解调器数据表（DoubleTalk Carrier-in-Carrier）', 'Advanced Satellite Modem datasheet (DoubleTalk Carrier-in-Carrier)'), use: G('载波叠加的功率谱密度比窗口、固有处理损耗与抵消深度 —— 报告中「附加 C/I」的参数出处', 'Carrier-in-Carrier PSD-ratio window, inherent processing loss and cancellation depth — the parameter source for the additional C/I reported here') }
-    ] : [])
+    ]
   })
 
   // ③ 物理常数与基准
@@ -557,8 +552,7 @@ export function buildReportModel(o) {
     }),
     calc: Object.assign({ satelliteName, frequencyBand }, calc),
     links,
-    // 附加 C/I 的出处只在有链路真用了它时列出（同上面 hasSla 的做法）
-    method: methodology(scheme, lang, { extCI: links.some((l) => l && l.data && parseFloat(l.data.carrierExtDegResult) > 0.005) })
+    method: methodology(scheme, lang)
   }
 }
 

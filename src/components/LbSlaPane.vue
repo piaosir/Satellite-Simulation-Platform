@@ -107,6 +107,7 @@ const compTip = computed(() => (monthly.value
 // 「基带/骨干网」带一个勾选闸：只卖空间段的场景不该把回传算进承诺，勾上才乘进去。
 const PARAMS = [
   { key: 'monthly', gateOnly: true, label: '按月考核', tip: '勾选＝可用度按最坏月考核（ITU-R P.841 年→最坏月折算），中断上限改按月给；不勾＝年平均' },
+  { key: 'loopback', gateOnly: true, label: '同站回环', tip: '勾选＝发信站与收信站是同一个站址（回环 / 自环测试），上下行是同一场雨，传播可用度取 min(上行, 下行)；不勾＝相乘。只对发收站坐标相同的链路起作用' },
   { key: 'esTxAvail', avail: true, label: '发信射频可用度', unit: '%', min: 0, max: 100, step: 0.01, tip: '发端地球站功放 / 上变频 / 天线一路的可用度：按设备冗余配置或运营商承诺填；100 = 不计入' },
   { key: 'esRxAvail', avail: true, label: '收信射频可用度', unit: '%', min: 0, max: 100, step: 0.01, tip: '收端地球站 LNB / 下变频 / 天线一路的可用度：按设备冗余配置或运营商承诺填；100 = 不计入' },
   { key: 'spaceAvail', avail: true, label: '卫星与载荷可用度', unit: '%', min: 0, max: 100, step: 0.01, tip: '卫星平台与转发器载荷的可用度，链上逐颗计入；100 = 不计入' },

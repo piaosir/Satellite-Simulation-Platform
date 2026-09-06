@@ -49,8 +49,14 @@ const tblNo = computed(() => {
   if (summary.value.stats && summary.value.stats.length) n.capacity = ++k
   n.refs = ++k
   n.consts = ++k
+  if (hasSla.value) n.sla = ++k
   return n
 })
+// SLA 建议（§4）：矩阵由主进程按各链路的条款并集转置好（见 report.js 的 buildSlaMatrix）；
+// 一条链路都没勾条款 ⇒ hasSla 为假 ⇒ 整节不出、目录不列、表号不占。
+const hasSla = computed(() => !!(model.value && model.value.hasSla && model.value.slaMatrix && model.value.slaMatrix.rows.length))
+const slaMatrix = computed(() => (hasSla.value ? model.value.slaMatrix : null))
+const slaParams = computed(() => (model.value && model.value.slaParams) || [])
 const capTable = (no, i, total, title) => {
   const t = en.value ? 'Table' : (L.value.table || '表')
   const seq = total > 1 ? `${no}-${i + 1}` : String(no)
@@ -62,6 +68,16 @@ const capFigure = (linkNo, i, title) => {
   return en.value ? `${t} ${linkNo}-${i + 1}  ${title}` : `${t} ${linkNo}-${i + 1}　${title}`
 }
 const linkTitle = (l) => (l.txName || '') + ' → ' + (l.rxName || '')
+// 逐链路 SLA 明细：把条款行按组切开，组名单独占一行（与总报告矩阵、Excel、Word 同一手法）
+function slaDetailRows(l) {
+  const out = []
+  let grp = ''
+  for (const r of ((l.sla && l.sla.rows) || [])) {
+    if (r.groupLabel && r.groupLabel !== grp) { grp = r.groupLabel; out.push({ group: true, label: grp }) }
+    out.push({ group: false, label: r.label + (r.sub ? '　' + r.sub : ''), basis: r.basis, suggest: r.suggest, adopt: r.adopt, unit: r.unit })
+  }
+  return out
+}
 const detailSub = computed(() => [calc.value.satelliteName, calc.value.frequencyBand, calc.value.mode].filter(Boolean).join('　·　'))
 
 // 目录：章节清单（页码交给 PDF 书签与页脚页码，此处不标——混合方向下靠估算标页码，
@@ -72,6 +88,7 @@ const toc = computed(() => {
     { n: '', t: l.master, sub: false },
     { n: '1', t: l.compare, sub: true }, { n: '2', t: l.capacity, sub: true },
     { n: '3', t: l.refs, sub: true },
+    ...(hasSla.value ? [{ n: '4', t: l.sla, sub: true }] : []),
     { n: '', t: l.detail, sub: false }
   ]
   for (const lk of links.value) items.push({ n: '#' + lk.no, t: linkTitle(lk), sub: true })
@@ -205,6 +222,29 @@ onMounted(async () => {
           </tr>
         </tbody>
       </table>
+
+      <!-- SLA 建议：条款（含单位）做行、链路做列，格里是采用值（留空即建议值）。
+           分组行走 .rp-grp（与 3.2 的类别行同一手法：黑体不加粗，三线表不许底纹）。 -->
+      <template v-if="hasSla">
+        <h2 class="rp-h2">4　{{ L.sla }}</h2>
+        <div class="rp-caption">{{ capTable(tblNo.sla, 0, 1, L.sla) }}</div>
+        <table class="rp-tb">
+          <thead><tr>
+            <th class="lbl">{{ L.slaTerm }}</th>
+            <th v-for="l in links" :key="l.no" class="num">#{{ l.no }}　{{ linkTitle(l) }}</th>
+          </tr></thead>
+          <tbody>
+            <template v-for="(row, ri) in slaMatrix.rows" :key="ri">
+              <tr v-if="row.group" class="rp-grp"><td class="lbl" :colspan="1 + links.length">{{ row.label }}</td></tr>
+              <tr v-else>
+                <td class="lbl">{{ row.label }}</td>
+                <td v-for="(v, vi) in row.values" :key="vi" class="num">{{ v || '—' }}</td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+        <div v-if="slaParams.length" class="rp-note">{{ L.slaParams }}　{{ slaParams.map((x) => x.label + ' ' + x.value + (x.unit ? ' ' + x.unit : '')).join('　·　') }}</div>
+      </template>
     </section>
 
     <!-- ——— 逐链路详情（A4 横向，屏幕排版复刻）——— -->
@@ -248,6 +288,27 @@ onMounted(async () => {
         </div>
         <div class="lbx-doc-ref"><WaterfallTable :segments="l.segments || []" pick="rest" :lang="lang" /></div>
       </div>
+
+      <!-- SLA 建议：条款 / 计算依据 / 建议值 / 采用值 / 单位 五列三线表，接在级联表之后 -->
+      <template v-if="!l.error && (l.sla && l.sla.rows || []).length">
+        <h3 class="rp-h3 rp-sla-h">{{ L.sla }}</h3>
+        <div class="rp-caption">{{ capTable(l.no + '-' + ((l.inputs || []).length + 1), 0, 1, L.sla) }}</div>
+        <table class="rp-tb rp-sla">
+          <thead><tr>
+            <th class="lbl">{{ L.slaTerm }}</th><th class="num">{{ L.slaBasis }}</th>
+            <th class="num">{{ L.slaSuggest }}</th><th class="num">{{ L.slaAdopt }}</th><th class="unit">{{ L.unit }}</th>
+          </tr></thead>
+          <tbody>
+            <template v-for="(row, ri) in slaDetailRows(l)" :key="ri">
+              <tr v-if="row.group" class="rp-grp"><td class="lbl" colspan="5">{{ row.label }}</td></tr>
+              <tr v-else>
+                <td class="lbl">{{ row.label }}</td><td class="num">{{ row.basis }}</td>
+                <td class="num">{{ row.suggest }}</td><td class="num">{{ row.adopt }}</td><td class="unit">{{ row.unit }}</td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </template>
     </section>
 
   </div>

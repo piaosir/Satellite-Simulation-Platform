@@ -148,7 +148,7 @@ const STR = {
     linkMargin: '链路余量 (dB)', allocBw: '载波带宽 (kHz)', powerBw: '功率带宽 (kHz)',
     bwUsage: '带宽占用 (%)', pwUsage: '功率占用 (%)',
     upCN: '上行 C/N (dB)', downCN: '下行 C/N (dB)', totalCN: '合计 C/N (dB)', thresholdCN: '门限 C/N (dB)',
-    ebno: 'Eb/N₀ (dB)', esno: 'Es/N₀ (dB)', psd: '载波功率谱密度 (dBW/Hz)', avail: '系统可用度 (%)', availUp: '上行可用度 (%)',
+    ebno: 'Eb/N₀ (dB)', esno: 'Es/N₀ (dB)', snr: 'SNR (dB)', psd: '载波功率谱密度 (dBW/Hz)', avail: '系统可用度 (%)', availUp: '上行可用度 (%)',
     specEff: '频谱效率 (bps/Hz)', capacity: '容量 (Mbps)',
     calcFailed: '计算失败：',
     capHeader: (n, failed) => `容量汇总（${n} 条链路${failed ? ` · ${failed} 条失败已排除` : ''}）`,
@@ -195,7 +195,7 @@ const STR = {
     linkMargin: 'Link Margin (dB)', allocBw: 'Allocated Bandwidth (kHz)', powerBw: 'Power Bandwidth (kHz)',
     bwUsage: 'Bandwidth Usage Ratio (%)', pwUsage: 'Power Usage Ratio (%)',
     upCN: 'Uplink C/N (dB)', downCN: 'Downlink C/N (dB)', totalCN: 'Combined C/N (dB)', thresholdCN: 'Threshold C/N (dB)',
-    ebno: 'Eb/N₀ (dB)', esno: 'Es/N₀ (dB)', psd: 'Satellite PSD (dBW/Hz)', avail: 'System Availability (%)', availUp: 'Uplink Availability (%)',
+    ebno: 'Eb/N₀ (dB)', esno: 'Es/N₀ (dB)', snr: 'SNR (dB)', psd: 'Satellite PSD (dBW/Hz)', avail: 'System Availability (%)', availUp: 'Uplink Availability (%)',
     specEff: 'Spectral Efficiency (bps/Hz)', capacity: 'Capacity (Mbps)',
     calcFailed: 'Calculation Failed: ',
     capHeader: (n, failed) => `Capacity Summary (${n} link${n > 1 ? 's' : ''}${failed ? `, ${failed} failed excluded` : ''})`,
@@ -1098,6 +1098,11 @@ function enrichReportModel(model) {
   const orbitType = (model.scheme && model.scheme.orbitType) || 'GEO'
   const regenMode = (model.scheme && model.scheme.regenMode) || 'uplink'
   const rows = summaryRows(t, orbitType, regenMode)
+  // 3GPP NTN 的门限口径叫 SNR（每资源元素信噪比），与 Es/N₀ 是同一个数、同一个字段。
+  // 整份报告里【每一条】链路都是 3GPP 载波时，这一行改用 SNR 这个名字；只要还混着 DVB 链路就仍写
+  // Es/N₀ —— 两者数值相同，而 Es/N₀ 是跨体制都成立的那个名字，混排时用它才不会误导。
+  const allSnr = links.length > 0 && links.every((l) => l.data && l.data.snrThresholdEffResult)
+  if (allSnr) for (const r of rows) if (r.label === t.esno) r.label = t.snr
   adaptSummaryUnits(rows, links, model.adaptUnits === true)
   const metrics = rows.map((r) => ({ label: r.label, values: links.map((l) => r.get(l)) }))
 

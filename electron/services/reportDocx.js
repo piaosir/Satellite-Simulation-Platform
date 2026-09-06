@@ -2,7 +2,7 @@
 //
 // 版式照用户给的《技术文档标准模板.docx》：
 //   封面（密级 / 文档编号 → 文档标题 / 副标题 → 编制单位 / 成文日期，右上角可贴 logo）
-//   → 文档控制（签署 + 变更记录）→ 目录（静态排版，见 tocSection 头注）
+//   → 文档控制（签署 + 变更记录）→ 目录（Word TOC 域，见 tocSection 头注）
 //   → 正文（四级标题 + 正文 / 图号表号格式 / 三线表）
 // 各样式的字号、字体、间距、缩进与表格边框全部取自 reportStyle.js（那里注了模板原值）。
 // 字体：西文与数字 Times New Roman，中文标题与题注黑体、中文正文宋体（模板本身即此口径）。
@@ -229,12 +229,12 @@ async function buildReportDocx(model) {
       },
       paragraphStyles: paragraphStyles()
     },
-    // 不设 features.updateFields：文档里已没有域（目录是静态排的，页脚只有页码），
-    // 留着只会让 Word 每次打开都弹一次「是否更新域」
+    // 目录是 Word 的 TOC 域（与 v1.4.3 同：有页码、有超链、正文改了自动跟）：Word 打开时按此提示更新域一次
+    features: { updateFields: true },
     // 封面 → 目录 → 总报告 → 逐链路详情。文档控制页（签署 / 变更记录 / 页数）2026-08-02 按用户要求去掉。
     sections: [
       coverSection(model),
-      tocSection(model, tocItems(model)),
+      tocSection(model, tocItems(model), { field: true }),
       masterTablesSection(model),
       masterTailSection(model),
       detailSection(model)

@@ -15,6 +15,9 @@ contextBridge.exposeInMainWorld('api', {
     sweep: (spec) => ipcRenderer.invoke('link:sweep', spec),
     // 二维参数扫描（设计空间图）：x×y 网格一次跑完，回各输出量的场与可行裕度场
     sweep2D: (spec) => ipcRenderer.invoke('link:sweep2D', spec),
+    // SLA 可用度档位扫描（单条 / 整表批量）：逐档钉住当前工作点重算，回各档的余量与占用
+    slaScan: (spec) => ipcRenderer.invoke('link:slaScan', spec),
+    slaScanBatch: (list) => ipcRenderer.invoke('link:slaScanBatch', list),
     outputDefs: () => ipcRenderer.invoke('link:outputDefs'),
     // NGSO：计算方式求解（切 NGSO 引擎、强制 ISL=0）+ 站星互视最差几何求解
     computeModeNGSO: (s, l, opt) => ipcRenderer.invoke('link:computeModeNGSO', s, l, opt),

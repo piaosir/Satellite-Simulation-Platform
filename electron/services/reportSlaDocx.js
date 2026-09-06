@@ -109,12 +109,25 @@ function matrixSection(model) {
     const head = [L.slaTerm, ...links.map((l) => '#' + l.no)]
     const rows = mx.rows.map((r) => (r.group ? [r.label, ...links.map(() => '')] : [r.label, ...r.values.map(S)]))
     const keyRows = mx.rows.map((r) => !!r.group)
-    const w = Math.max(10, Math.floor(58 / Math.max(1, links.length)))
-    out.push(...table(model, L.slaMatrix, head, rows, {
-      widths: [100 - w * links.length, ...links.map(() => w)],
-      align: ['left', ...links.map(() => 'right')],
-      keyRows
-    }))
+    // 列宽（%）：首列（条款）至少留 24%，其余均分给链路列。链路一多就分页——一页最多摆 8 条，
+    // 否则 ≥10 条时首列算成 0 甚至负数（写出 w:w="-20%" 的非法 OOXML）。
+    const PER_PAGE = 8
+    for (let s = 0; s < links.length; s += PER_PAGE) {
+      const part = links.slice(s, s + PER_PAGE)
+      const nCol = Math.max(1, part.length)
+      const w = Math.min(20, Math.max(6, Math.floor(76 / nCol)))
+      const first = 100 - w * nCol
+      const pick = (r) => [r[0], ...r.slice(1 + s, 1 + s + part.length)]
+      const en = model.lang === 'en'
+      const title = links.length > PER_PAGE
+        ? L.slaMatrix + (en ? ' (#' : '（#') + part[0].no + '–#' + part[part.length - 1].no + (en ? ')' : '）')
+        : L.slaMatrix
+      out.push(...table(model, title, pick(head), rows.map(pick), {
+        widths: [first, ...part.map(() => w)],
+        align: ['left', ...part.map(() => 'right')],
+        keyRows
+      }))
+    }
   }
   const pr = model.slaParams || []
   if (pr.length) {

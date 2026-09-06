@@ -26,15 +26,23 @@ const envField = require('./utils/envField.js');
 const linkSweep = require('./utils/linkSweep.js');
 const lbOutputDefs = require('./utils/lbOutputDefs.js');
 const modcodTables = require('./utils/modcodTables.js');
+const ntnPhy = require('./utils/ntnPhy.js');
 
 // 载波信号选项（调制 / FEC / DVB 标准 / 各 MODCOD 预设表），供载波信号面板的下拉与快选用。
 // store = 用户的 MODCOD 改写层（文件管理里编辑的那份，见 utils/modcodTables.js）；不传即纯内置表。
 function basebandOptions(store) {
+  // phy / meta：3GPP 各体制的物理层骨架与门限条件（DVB 与自定义为 null）。渲染端的载波面板据 phy
+  // 决定「按 PRB / 子载波间隔描述」还是「按 DVB 换算链描述」，据 meta 出门限那格的悬停口径说明。
+  // 放在这里一起给，是为了不在渲染端再抄一份 PHY_OF —— 那张表是标准属性，只该有一处。
+  const phy = {}, meta = {};
+  for (const s of modcodTables.listStandards(store)) { phy[s.key] = s.phy || null; meta[s.key] = s.meta || null; }
   return {
     modulation: constants.MODULATION_OPTIONS,
     fec: constants.FEC_OPTIONS,
     dvbStandards: modcodTables.standardOptions(store),
-    modcod: modcodTables.modcodMap(store)
+    modcod: modcodTables.modcodMap(store),
+    phy,
+    meta
   };
 }
 
@@ -114,8 +122,13 @@ module.exports = {
   sweepLink: linkSweep.sweepLink,
   // 二维参数扫描（设计空间图：x×y 平面上逐格重跑，出等值线与可行域）
   sweepLink2D: linkSweep.sweepLink2D,
+  // SLA 可用度档位扫描（逐档钉住当前工作点重算）
+  scanSlaTiers: linkSweep.scanSlaTiers,
   linkSweep,
   lbOutputDefs,
+  // 3GPP NTN 物理层口径（占用带宽 / 信道带宽 / TBS / 信息速率 / 含重复的门限）
+  // —— 渲染端另有一份逐值手写副本 src/shared/ntnPhy.js，两份由 ntnPhy.test.mjs 对拍
+  ntnPhy,
   // 计算方式求解（设置余量 / 设置瓦数 / 功带平衡 / 超发功带平衡）
   computeLinkMode: modeSolver.computeLinkMode,
   // NGSO 计算方式求解（同四种方式，切 NGSO 引擎，强制 ISL 跳数=0）

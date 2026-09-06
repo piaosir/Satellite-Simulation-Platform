@@ -17,7 +17,7 @@ const {
   AVAIL_TIERS, LOSS_TIERS, DEFAULT_SLA_PARAMS, SLA_GROUPS, SLA_ITEMS, MIN_PER_MONTH,
   snapDown, snapUp, splitUnavailability, packetLossPct, berExpOf, pickMir, worstMonthAvail,
   deriveSla, slaRows, slaReportBlock, normSlaParams, normRowSla, slaIncludeCount, basisText,
-  equipSlots, equipAvails, equipFactor, slaParamRows, sunOutageSummary
+  equipSlots, equipAvails, equipFactor, slaParamRows, sunOutageSummary, slaSamplesFor, slaLoopback
 } = await import('../../../src/shared/lbSla.js')
 
 // 传播口径的参数：把设备/空间段/地面段全填 100（＝不计入），于是可用度那几条只剩雨衰统计。
@@ -609,13 +609,15 @@ ok('分享码往返出来的是新对象（深拷贝，不与源共用引用）'
 
 // —— ⑨ 2026-09-06 审查修正 ——
 {
-  // 9.1 同站回环：上下行雨衰完全相关，传播可用度取 min 不取乘积
+  // 9.1 同站回环：场景参数勾了「同站回环」且发收站同址时，上下行雨衰完全相关，传播可用度取 min 不取乘积。
+  //     ★ 只按坐标判不行：GSO 新建行的发收站缺省都是北京那对经纬度，一开窗就换了模型、与链路表的可用度
+  //       对不上账（2026-09-07 收紧为显式勾选 loopback）；档位扫描的样本同一模型（两侧同取该档）。
   const loop = modeSolver.computeLinkMode({}, {}, { mode: 'margin' })   // 引擎缺省两侧同在北京
-  const dLoop = deriveSla(Object.assign({}, geoCtx, {
-    data: loop.data, resolvedMargin: loop.resolvedMargin,
-    params: { satParams: {}, linkParams: {}, opt: { mode: 'margin' } }
-  }))
-  ok('同站回环：传播可用度 = min(上行, 下行) 而非乘积', dLoop.items.sysAvail.suggest === 99.9,
+  const loopCtx = { data: loop.data, resolvedMargin: loop.resolvedMargin, params: { satParams: {}, linkParams: {}, opt: { mode: 'margin' } } }
+  const LOOP_ON = Object.assign({}, PROP_ONLY, { loopback: 1 })
+  const dLoop = deriveSla(Object.assign({}, geoCtx, loopCtx, { slaParams: LOOP_ON }))
+  const dLoopOff = deriveSla(Object.assign({}, geoCtx, loopCtx))
+  ok('同站回环（勾选 + 同址）：传播可用度 = min(上行, 下行) 而非乘积', dLoop.items.sysAvail.suggest === 99.9,
     String(dLoop.items.sysAvail.suggest))
   ok('同站回环依据列写成 min(…)，左括号不与署名分开',
     basisText(dLoop.items.sysAvail.basis) === 'min(上行 99.900 %, 下行 99.900 %) = 99.900 %',
@@ -623,25 +625,45 @@ ok('分享码往返出来的是新对象（深拷贝，不与源共用引用）'
   ok('同站回环依据英文版',
     basisText(dLoop.items.sysAvail.basis, true) === 'min(Uplink 99.900 %, Downlink 99.900 %) = 99.900 %',
     basisText(dLoop.items.sysAvail.basis, true))
+  ok('缺省不勾「同站回环」：发收站同址（GSO 新建行的缺省）仍走乘积，不静默换模型',
+    /^上行 [\d.]+ % × 下行 [\d.]+ % = /.test(basisText(dLoopOff.items.sysAvail.basis)) && dLoopOff.items.sysAvail.suggest < dLoop.items.sysAvail.suggest,
+    basisText(dLoopOff.items.sysAvail.basis))
+  ok('勾了「同站回环」但两地站不同址：仍走乘积（回环判据两个条件都要）',
+    /^上行 [\d.]+ % × 下行 [\d.]+ % = /.test(basisText(deriveSla(Object.assign({}, geoCtx, { slaParams: LOOP_ON })).items.sysAvail.basis))
+    && slaLoopback(LOOP_ON, loop.data, loopCtx.params) === true && slaLoopback(PROP_ONLY, loop.data, loopCtx.params) === false
+    && slaLoopback(LOOP_ON, geo.data, geoCtx.params) === false)
+  ok('同站回环的档位样本两侧同取该档（与建议值同一模型）',
+    slaSamplesFor({ up: 99.9, dn: 99.9, sameSite: true }).every((s) => s.tag === 'clear' || (s.up === s.tier && s.dn === s.tier))
+    && slaSamplesFor({ up: 99.9, dn: 99.9 }).some((s) => s.tag !== 'clear' && s.up !== s.tier))
   ok('两地站仍走乘积（回环判据只认坐标完全相同）',
     /^上行 [\d.]+ % × 下行 [\d.]+ % = /.test(basisText(dGeo.items.sysAvail.basis)),
     basisText(dGeo.items.sysAvail.basis))
 
-  // 9.2 最大 EIRP / PSD 计入 UPC 抬升（运营商核准的是雨天峰值）
+  // 9.2 最大 EIRP / PSD 与 UPC：引擎的 stationEIRP 已是「穿过上行雨衰打到星上」所需的雨天峰值（UPPOWER 含
+  //     +上行雨衰，开不开 UPC 同一个数），UPC='是' 的余量恰等于上行雨衰 → 不再往上加；只有自定义 UPC 余量
+  //     超出上行雨衰的那部分才是引擎之外的额外发射能力（2026-09-07 修正：原口径把同一段雨衰算了两遍）。
   const upcOn = modeSolver.computeLinkMode({}, Object.assign({}, RX_SH, { uplinkPowerControl: '是', rainRate: 60 }), { mode: 'margin' })
   const upcOff = modeSolver.computeLinkMode({}, Object.assign({}, RX_SH, { rainRate: 60 }), { mode: 'margin' })
+  const upcBig = modeSolver.computeLinkMode({}, Object.assign({}, RX_SH, { uplinkPowerControl: '自定义', upcValue: '9', rainRate: 60 }), { mode: 'margin' })
   const mkUpc = (r) => deriveSla(Object.assign({}, geoCtx, { data: r.data, resolvedMargin: r.resolvedMargin }))
-  const dUpcOn = mkUpc(upcOn), dUpcOff = mkUpc(upcOff)
+  const dUpcOn = mkUpc(upcOn), dUpcOff = mkUpc(upcOff), dUpcBig = mkUpc(upcBig)
   const eirp0 = parseFloat(upcOn.data.stationEIRPResult), upcDb = parseFloat(upcOn.data.UPCmarginResult)
-  ok('UPC 算例：余量 = 上行雨衰', near(upcDb, parseFloat(upcOn.data.uplinkRainAttenuation), 1e-9), String(upcDb))
-  ok('开 UPC：最大 EIRP = 晴空 EIRP + UPC 余量 + 容差',
-    near(dUpcOn.items.txEirp.suggest, eirp0 + upcDb + 1, 1e-6), String(dUpcOn.items.txEirp.suggest))
-  ok('开 UPC：最大 PSD 同样 + UPC 余量',
-    near(dUpcOn.items.txPsd.suggest, parseFloat(upcOn.data.stationPSDResult) + 36.02 + upcDb + 1, 1e-6),
+  const rainUp = parseFloat(upcOn.data.uplinkRainAttenuation)
+  ok('UPC 算例：余量 = 上行雨衰', near(upcDb, rainUp, 1e-9), String(upcDb))
+  ok('引擎 stationEIRP 已含上行雨衰（开不开 UPC 同一个数）', near(eirp0, parseFloat(upcOff.data.stationEIRPResult), 1e-9),
+    eirp0 + ' vs ' + upcOff.data.stationEIRPResult)
+  ok('开 UPC（余量 = 雨衰）：最大 EIRP = 引擎 EIRP + 容差，不再叠加 UPC 余量',
+    near(dUpcOn.items.txEirp.suggest, eirp0 + 1, 1e-6), String(dUpcOn.items.txEirp.suggest))
+  ok('开 UPC：最大 PSD 同理',
+    near(dUpcOn.items.txPsd.suggest, parseFloat(upcOn.data.stationPSDResult) + 36.02 + 1, 1e-6),
     String(dUpcOn.items.txPsd.suggest))
-  ok('开 UPC：依据列三项一片一个数',
-    basisText(dUpcOn.items.txEirp.basis) === eirp0.toFixed(2) + ' + ' + upcDb.toFixed(2) + ' + 1.0 = ' + (eirp0 + upcDb + 1).toFixed(2) + ' dBW',
+  ok('开 UPC：依据列不摆 + UPC 那一项',
+    basisText(dUpcOn.items.txEirp.basis) === eirp0.toFixed(2) + ' + 1.0 = ' + (eirp0 + 1).toFixed(2) + ' dBW',
     basisText(dUpcOn.items.txEirp.basis))
+  const bigDb = parseFloat(upcBig.data.UPCmarginResult), bigRain = parseFloat(upcBig.data.uplinkRainAttenuation)
+  ok('自定义 UPC 余量超出上行雨衰：只加超出的那部分',
+    bigDb > bigRain && near(dUpcBig.items.txEirp.suggest, parseFloat(upcBig.data.stationEIRPResult) + (bigDb - bigRain) + 1, 1e-6),
+    `UPC ${bigDb} 雨衰 ${bigRain.toFixed(2)} → ${basisText(dUpcBig.items.txEirp.basis)}`)
   ok('不开 UPC：与旧口径逐位相同（依据列不摆一个 + 0.00）',
     near(dUpcOff.items.txEirp.suggest, parseFloat(upcOff.data.stationEIRPResult) + 1, 1e-9)
     && /^[\d.]+ \+ 1\.0 = [\d.]+ dBW$/.test(basisText(dUpcOff.items.txEirp.basis)),

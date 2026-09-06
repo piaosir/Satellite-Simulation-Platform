@@ -69,7 +69,10 @@ export const DEFAULT_SLA_PARAMS = {
   groundAvail: 99.99,  // 基带/骨干网可用度 %（调制解调 / 回传 / 骨干）
   // 考核周期（0 = 年平均 / 1 = 最坏月）。引擎那份可用度是 P.618 的【年均】统计，合同 SLA 几乎
   // 都按月考核按月赔付：年 99.9 % 折成最坏月只有 99.62 %，承诺 99.9 % 在雨季那个月必然违约。
-  monthly: 0
+  monthly: 0,
+  // 同站回环（0 / 1）：发信站与收信站是同一个站址（回环 / 自环测试）时上下行是同一场雨，传播可用度取
+  // min 而不是乘积。要用户明确勾选 —— 只按坐标判的话 GSO 新建行（发收站缺省同址）一开窗就换了模型。
+  loopback: 0
 }
 
 export const SLA_GROUPS = [
@@ -226,6 +229,9 @@ export function slaSamplesFor(o) {
   for (const S of AVAIL_TIERS) {
     if (single === 'up') { out.push({ tag: String(S), tier: S, up: S, dn }) ; continue }
     if (single === 'dn') { out.push({ tag: String(S), tier: S, up, dn: S }); continue }
+    // 同站回环：A = min(上行, 下行)，要恰为该档就是两侧同取 S（与建议值同一模型；乘积模型解出的
+    // up = dn = √S 在 min 口径下是更高一档，档位表与着色参照就都对不上建议值）
+    if (o.sameSite) { out.push({ tag: String(S), tier: S, up: S, dn: S }); continue }
     const k = splitUnavailability(up, dn, S)
     if (k) out.push({ tag: String(S), tier: S, up: k.up, dn: k.dn })
   }
@@ -537,7 +543,7 @@ function availTierOf(comp) {
  * 发信站与收信站是不是同一个坐标（回环测试 / 自环）。是的话上下行雨衰完全相关，
  * 传播可用度取 min 而不是乘积。坐标优先取引擎回显（这次真正算的那一份），退到留底入参。
  */
-function sameSite(data, params) {
+export function sameSite(data, params) {
   const lp = (params && params.linkParams) || null
   const pick = (echo, key) => {
     const v = num(data && data[echo])
@@ -547,6 +553,15 @@ function sameSite(data, params) {
   const lb = pick('rxLatitudeResult', 'rxLatitude'), lc = pick('rxLongitudeResult', 'rxLongitude')
   if (la === null || lo === null || lb === null || lc === null) return false
   return Math.abs(la - lb) < 1e-6 && Math.abs(lo - lc) < 1e-6
+}
+/**
+ * 这条链路按不按「同站回环」模型算（传播可用度取 min 而不是乘积）。
+ * ★ 两个条件都要：场景参数里勾了「同站回环」，且发收站坐标真的相同。只看坐标不行 —— GSO 新建行的
+ *   发信站与收信站缺省都是北京那对经纬度，一开窗就会被判成回环，SLA 面板与链路表的可用度当场对不上账。
+ */
+export function slaLoopback(slaParams, data, params) {
+  const sp = slaParams || {}
+  return !!num(sp.loopback) && sameSite(data, params)
 }
 
 /**
@@ -715,9 +730,9 @@ export function deriveSla(ctx) {
         const up = availOf(data, params, 'uplinkAvailability', 'uplinkAvailabilityResult')
         const dn = availOf(data, params, 'rxDownlinkAvailability', 'downlinkAvailabilityResult')
         if (up !== null && dn !== null) {
-          // 同站回环（发信站与收信站同一个坐标）：两侧的雨衰是【同一场雨】，不是两件独立的事，
-          // 相乘会把可用度压低一倍不可用度。此时 A = min(上行, 下行)。
-          if (sameSite(data, params)) {
+          // 同站回环（场景参数勾了「同站回环」且发收站同一坐标）：两侧的雨衰是【同一场雨】，不是两件独立的事，
+          // 相乘会把可用度压低一倍不可用度。此时 A = min(上行, 下行)；档位扫描的样本同一模型（两侧同取该档）。
+          if (slaLoopback(sp, data, params)) {
             sys = Math.min(up, dn)
             propBasis.push(PG('min('), AV_LABEL.up, P(up.toFixed(3) + ' %,'), AV_LABEL.dn, P(dn.toFixed(3) + ' %)'),
               P('='), P(sys.toFixed(3) + ' %'))
@@ -797,7 +812,9 @@ export function deriveSla(ctx) {
       const r = settledParts(cbw, pr, tbw, pbw)
       if (r) put('settledBw:' + i, { baseKey: 'settledBw', sub: t.name || '', basis: r.parts, suggest: r.best })
     })
-  } else {
+  } else if (ot === 'GEO' || ot === 'NGSO') {
+    // ★ 只对弯管体制出：再生式星上解调再调制，没有转发器，引擎那份 PowerBWResult / 转发器带宽
+    //   是占位参数（36 MHz / BOi 6 / BOo 3）算出的弯管量，星间 / 激光更无从谈起 —— 不能写进合同条款。
     const r = settledParts(num(data.allocBandwidthResult), num(data.powerUsageRatio),
       num(data.transponderBandwidthResult), num(data.PowerBWResult))
     if (r) put('settledBw', { basis: r.parts, suggest: r.best })
@@ -990,11 +1007,16 @@ export function deriveSla(ctx) {
         put('txBw', { basis: bb, suggest: bwKHz })
       }
       const tol = num(sp.eirpTolDb) || 0
-      // ★ 引擎的 stationEIRP / stationPSD 是【晴空工作点】；开了 UPC 的站一下雨就把发射抬高
-      //   UPC 余量那么多。运营商入网核准的是雨天峰值，故建议值 = 晴空 + UPC 余量 + 容差。
-      //   取不到或为 0 时那一项不写（依据列不摆一个 + 0.00）。
+      // ★ 引擎的 stationEIRP / stationPSD 是【设计可用度下、穿过上行雨衰打到星上】所需的发射电平
+      //   （UPPOWER 含 +上行雨衰，实测 rain 0 → 46 mm/h 时 stationEIRP 恰随雨衰 1:1 上抬），本身就是雨天峰值；
+      //   UPC 只是「晴天少发、下雨补回」的运行方式，不能再往上加 —— 加了就是把同一段雨衰算两遍。
+      //   引擎之外的额外发射能力只有一种：UPC 余量【大于】上行雨衰的那部分（自定义 UPC 档给了更大的抬升空间）。
+      //   「设置功放功率」方式下 EIRP 由功放定死、不随雨衰变，这一项恒为 0。取不到或为 0 时依据列不摆 + 0.00。
       const upcRaw = e2e ? num(hop0.upcMarginResult) : num(data.UPCmarginResult)
-      const upc = (upcRaw !== null && Math.abs(upcRaw) > 1e-9) ? upcRaw : 0
+      const rainUp = e2e ? num(hop0.rainResult) : num(data.uplinkRainAttenuation)
+      const modePa = !e2e && !!(params && params.opt && params.opt.mode === 'power')
+      const rainRef = rainUp === null ? 0 : Math.max(0, rainUp)
+      const upc = (!modePa && upcRaw !== null && upcRaw > rainRef + 1e-9) ? upcRaw - rainRef : 0
       const eirp = e2e ? num(hop0.stationEirpResult) : num(data.stationEIRPResult)
       if (eirp !== null) {
         const eb = [P(eirp.toFixed(2))]
@@ -1239,7 +1261,9 @@ export const SLA_PARAM_LABELS = [
   { key: 'eirpTolDb', label: 'EIRP 容差', labelEn: 'EIRP tolerance', unit: 'dB' },
   { key: 'xpdMinDb', label: '极化隔离度', labelEn: 'Polarisation isolation', unit: 'dB' },
   // 考核周期不是数值参数，值走 enumOf 出字（报告里印「年」/「最坏月」而不是 0 / 1）
-  { key: 'monthly', label: '考核周期', labelEn: 'Assessment period', unit: '', enumOf: [['年平均', 'Annual mean'], ['最坏月', 'Worst month']] }
+  { key: 'monthly', label: '考核周期', labelEn: 'Assessment period', unit: '', enumOf: [['年平均', 'Annual mean'], ['最坏月', 'Worst month']] },
+  // 同站回环：勾了才印（gate 指向自身），没勾时报告里不该出现一个没参与的开关
+  { key: 'loopback', label: '同站回环', labelEn: 'Same-site loopback', unit: '', gate: 'loopback', enumOf: [['否', 'No'], ['是', 'Yes']] }
 ]
 /** 报告 §4 末尾那一行 SLA 参数表（纯数据，标签已按 lang 翻好） */
 export function slaParamRows(params, lang) {

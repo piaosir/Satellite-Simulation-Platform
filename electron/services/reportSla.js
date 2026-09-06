@@ -34,9 +34,12 @@ function sheetWriter(wb, ws, model, ncol) {
     c.alignment = { horizontal: align || 'left', vertical: 'middle', wrapText: !!o.wrap }
     return c
   }
+  // ★ 右对齐的格子按【字符串】写，不转成数值：这些值是 lbSla 已按单位档格式化好的读数
+  //   （「99.800」「52.6」），转成数值 Excel 会把 99.800 显示成 99.8，与全报告同表（report.js 走 str）
+  //   不一致。西文字体照旧由末尾的 applyBookFont 拆。
   const numCell = (row, col, v) => {
     const c = ws.getCell(row, col)
-    c.value = numOrText(v)
+    c.value = v == null ? '' : String(v)
     c.font = { name: FNT, size: RSTY.size.table }
     c.alignment = { horizontal: 'right', vertical: 'middle' }
     return c

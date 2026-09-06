@@ -69,6 +69,9 @@ export function useLbReport(o) {
     if (!api) { o.setError('导出需在桌面客户端中运行'); return }
     dlg.busy = true
     try {
+      // 含 SLA 时先把档位扫描 / 日凌这些【惰性算的会话态】补齐：它们只在用得着时才算，导出前必须到位，
+      // 否则报告里的条款数随「有没有开过 SLA 弹窗」变
+      if (opts.withSla && o.beforeSla) await o.beforeSla()
       const lang = o.lang()
       const en = lang === 'en'
       const links = o.links()
@@ -137,6 +140,7 @@ export function useLbReport(o) {
     if (o.slaCount && !o.slaCount()) { o.setError('没有任何链路勾选了 SLA 条款'); return }
     dlg.busy = true
     try {
+      if (o.beforeSla) await o.beforeSla()   // 档位扫描 / 日凌是惰性会话态，出报告前补齐
       const lang = o.lang()
       const en = lang === 'en'
       const links = o.links()
@@ -153,8 +157,10 @@ export function useLbReport(o) {
         slaParams: o.slaParams ? o.slaParams() : [],
         composition: o.slaComposition ? o.slaComposition() : [],
         monthly: o.slaMonthly ? o.slaMonthly() : 0,
-        hasDvb: o.slaHasDvb ? o.slaHasDvb() : false,
-        hasNtn: o.slaHasNtn ? o.slaHasNtn() : false,
+        // ★ 只在宿主真给了判定器时才带这两个键：恒传 false 会把模型里「按链路自动判有没有 DVB / 3GPP」
+        //   那一步挡死，引用标准表从此永远缺 EN 302 307 与 3GPP（四窗都没注入过判定器）。
+        ...(o.slaHasDvb ? { hasDvb: !!o.slaHasDvb() } : {}),
+        ...(o.slaHasNtn ? { hasNtn: !!o.slaHasNtn() } : {}),
         links: links.map((l, i) => Object.assign({
           no: i + 1, rowId: l.rowId, txName: l.txName, rxName: l.rxName,
           ok: !!l.ok, error: l.error || '',

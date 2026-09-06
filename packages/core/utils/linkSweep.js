@@ -561,4 +561,104 @@ function sweepLink2D(spec, hooks) {
   };
 }
 
-module.exports = { sweepLink, sweepLink2D, SYNTHETIC_AXES, MAX_STEPS, MAX_CELLS, MAX_SIDE };
+// —— SLA 可用度档位扫描 ——
+//
+// 问的是「这套硬件在可用度档 X 上还剩多少余量」：逐档把上下行的设计可用度换成该档对应的那一对，
+// **钉住当前工作点**（与地理场图同一口径，见 _pinnedOpt）重跑引擎。故功放不变、口径不变，
+// 变的只有雨衰这一路 —— 答案落在「链路余量 / 功率占用 / 带宽占用」上。
+//
+// 为什么不用 sweepLink 的 _availability 合成轴：那根轴是等距采样、且上下行只能写同一个值。
+// SLA 要的是标准档（99 / 99.5 / … / 99.99，不等距），而两侧的分配是工程师配出来的
+//（关口站带 UPC 给高、远端给低），必须按比例缩放而不是一起写成同一个数。故样本由调用方
+// 按 splitUnavailability 解好后逐个送进来，本函数只负责「照这对数重算一遍」。
+//
+// 晴空样本（tag 'clear'，两侧 100%）单独返回、不进 rows：它只喂 MIR（ACM 峰值档要的是晴空
+// Es/N₀），列进档位表会让人以为「100% 可用度」也是一个可承诺的档。
+//
+// spec = {
+//   engine   'geo' | 'ngso' | 'regen-up' | 'regen-down' | 'chain'
+//   satParams, linkParams, opt     三窗：与 sweepLink 同一份留底入参
+//   chain                          端到端：buildChain 出的链描述子
+//   samples  三窗 [{ tag, tier?, up, dn }…]；chain [{ tag, tier?, k }…]（对全部地球站节点
+//            availability ← 100 − (100 − a)·k）
+//   keys     可选：只要这些输出键（默认全清单）
+// }
+// → { pin, rows: [{ tag, tier, up, dn, ok, message, data }], clear, message }
+function scanSlaTiers(spec) {
+  spec = spec || {};
+  const samples = Array.isArray(spec.samples) ? spec.samples.slice(0, MAX_STEPS) : [];
+  const keys = (Array.isArray(spec.keys) && spec.keys.length) ? spec.keys : outputDefs.ALL_OUTPUT_KEYS;
+  const out = { pin: null, rows: [], clear: null, message: '' };
+  if (!samples.length) return out;
+
+  const pick = (d) => {
+    const o = {};
+    for (const k of keys) o[k] = _num(d[k]);
+    return o;
+  };
+  const push = (rec) => { if (rec.tag === 'clear') out.clear = rec; else out.rows.push(rec); };
+
+  // —— 端到端：正向电平递推本无自由变量，不钉工作点；逐样本深拷链、缩放地球站节点可用度 ——
+  if (spec.engine === 'chain') {
+    let chainMod = null;
+    try { chainMod = require('./linkChain.js'); } catch (e) { chainMod = null; }
+    if (!chainMod || typeof chainMod.computeLinkChain !== 'function') { out.message = '端到端链路引擎不可用'; return out; }
+    _quiet(() => _precise(() => {
+      for (const s of samples) {
+        const c = JSON.parse(JSON.stringify(spec.chain || {}));
+        const k = _num(s.k);
+        for (const nd of (Array.isArray(c.nodes) ? c.nodes : [])) {
+          if (!nd || nd.kind !== 'es') continue;
+          const a = _num(nd.availability);
+          if (a === null || k === null) continue;
+          nd.availability = String(100 - (100 - a) * k);
+        }
+        let r = null;
+        try { r = chainMod.computeLinkChain(c); } catch (e) { r = { success: false, message: e && e.message }; }
+        push({
+          tag: s.tag, tier: _num(s.tier), up: null, dn: null,
+          ok: !!(r && r.success && r.data), message: (r && r.success) ? '' : ((r && r.message) || '计算失败'),
+          data: (r && r.success && r.data) ? pick(r.data) : null
+        });
+      }
+    }));
+    return out;
+  }
+
+  // —— 三窗：钉住工作点后逐样本改可用度重算 ——
+  const solve = _solver(spec.engine);
+  if (typeof solve !== 'function') { out.message = '该体制的计算引擎不可用'; return out; }
+  const baseSat = spec.satParams || {};
+  const baseLink = spec.linkParams || {};
+  let baseOpt = Object.assign({}, spec.opt || {});
+  const p = _pinnedOpt(spec.engine, solve, baseSat, baseLink, baseOpt);
+  baseOpt = p.opt; out.pin = p.pin || null; out.message = p.message || '';
+  // 再生式上行/下行是单侧体制：只写该侧那一个键，另一侧原样留着（它是凑几何的镜像入参，
+  // 改了就把这条链路的口径悄悄换成另一件事）
+  const writeUp = spec.engine !== 'regen-down';
+  const writeDn = spec.engine !== 'regen-up';
+
+  _quiet(() => _precise(() => {
+    for (const s of samples) {
+      const sat = Object.assign({}, baseSat);
+      const link = Object.assign({}, baseLink);
+      const up = _num(s.up), dn = _num(s.dn);
+      if (writeUp && up !== null) link.uplinkAvailability = String(up);
+      if (writeDn && dn !== null) link.rxDownlinkAvailability = String(dn);
+      let r = null;
+      try { r = solve(sat, link, baseOpt); } catch (e) { r = { success: false, message: e && e.message }; }
+      // 卫星不可见的样本不出数字（同链路表口径）：负仰角下引擎照样算得完，但那是把星地距离
+      // 当成穿过地球的弦长算出来的
+      if (r && r.success && r.data && _invisible(r.data)) r = { success: false, message: '卫星不可见（仰角为负）' };
+      push({
+        tag: s.tag, tier: _num(s.tier),
+        up: writeUp ? up : null, dn: writeDn ? dn : null,
+        ok: !!(r && r.success && r.data), message: (r && r.success) ? '' : ((r && r.message) || '计算失败'),
+        data: (r && r.success && r.data) ? pick(r.data) : null
+      });
+    }
+  }));
+  return out;
+}
+
+module.exports = { sweepLink, sweepLink2D, scanSlaTiers, SYNTHETIC_AXES, MAX_STEPS, MAX_CELLS, MAX_SIDE };

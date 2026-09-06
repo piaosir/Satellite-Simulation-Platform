@@ -247,3 +247,9 @@ body {
 .rp-inputs .rp-tb td.unit, .rp-inputs .rp-tb th.unit { width: 18%; }
 /* 结果小标题：与输入之间断开一页，结果页就是屏幕上那一版（表 ‖ 图 + 参考段带） */
 .rp-h3.rp-results { break-before: page; }
+/* SLA 建议（逐链路明细，接在级联表之后）：不另起页——它只有十几行，独占一整张横向页太空。
+   条款列与依据列各占三成（依据是「99.90 × 99.90 = 99.80」这类算式，比数值列长）。 */
+.rp-h3.rp-sla-h { margin-top: 6mm; break-before: auto; }
+.rp-sla { max-width: 190mm; }
+.rp-sla .lbl { width: 26%; }
+.rp-sla td.num:first-of-type, .rp-sla th.num:first-of-type { width: 30%; color: #333; }

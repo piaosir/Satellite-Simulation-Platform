@@ -42,6 +42,19 @@ export function fmtScaled(n) {
   return isFinite(n) ? String(parseFloat(n.toFixed(4))) : String(n)
 }
 
+// fmtQty 的「值与单位分开」版：给【可编辑】的格子用。
+// fmtQty 把单位拼在数值后面，那对只读读数正好；可编辑的格子却必须把单位摆进单独一列，
+// 且要知道换了几倍档 —— 否则用户在自适应档下按「2.048 Mbps」输入，存下去的却被当成 kbps。
+// 返回 { text, unit, factor }：显示值 = 基准值 × factor，回存时除回去即可。
+// ★ 只管线性族（kHz/kbps/ksps/W 一类）；dBW→dBm 那种偏移换算不在此列，一律 factor=1 原样返回。
+export function fmtQtyParts(v, unit, adaptive) {
+  const n = parseFloat(v)
+  if (!isFinite(n)) return { text: '', unit: unit || '', factor: 1 }
+  const p = on(adaptive) ? pickUnit(Math.abs(n), unit) : null
+  if (!p) return { text: fmtScaled(n), unit: unit || '', factor: 1 }
+  return { text: fmtScaled(n * p.factor), unit: p.unit, factor: p.factor }
+}
+
 // 同族线性单位换算 + dBW↔dBm（对比列把第二条链路换算到主链路单位用）；不可换返回 null
 export function convertUnit(v, from, to) {
   if (!isFinite(v)) return null
