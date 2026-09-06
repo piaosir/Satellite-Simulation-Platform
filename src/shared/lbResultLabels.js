@@ -33,6 +33,23 @@ const RESULT_LABEL_LIST = [
     ['esnoResult', '门限 Es/N₀', 'dB'],
     ['ebnoActualResult', 'Eb/N₀（实际）', 'dB'],
     ['esnoActualResult', 'Es/N₀（实际）', 'dB'],
+    // 3GPP NTN（snr 口径）：与上面两行同一个物理量，按体制换名字（每 RE SNR ≡ Es/N₀ ≡ 占用带宽内 C/N）
+    ['snrThresholdResult', '门限 SNR（表值）', 'dB'],
+    ['snrThresholdEffResult', '门限 SNR', 'dB'],
+    ['snrActualResult', 'SNR（实际）', 'dB'],
+    ['noiseBwResult', '占用带宽', 'kHz'],
+    ['phyBandResult', 'NTN 频段', ''],
+    ['phyBlerResult', '目标 BLER', '%'],
+    ['phyCodeRateResult', '有效码率', ''],
+    ['phyRepResult', '重复次数', ''],
+    ['phyTbsResult', 'TBS', 'bit'],
+    ['phyDescResult', '物理层配置', ''],
+    // 物理层逐项（详细计算结果按体制换标签用；这里给的是通用名，链路表列头不随行变）
+    ['phyDirTextResult', '传输方向', ''],
+    ['phyScsResult', '子载波间隔', 'kHz'],
+    ['phyUnitsResult', 'PRB 数 / 子载波数', ''],
+    ['phySpanResult', '子帧数 / RU 数', ''],
+    ['phyMcsResult', 'MCS / I_TBS', ''],
     ['marginResult', '系统余量（输入）', 'dB']
   ]),
   ...G('链路质量', [
@@ -182,6 +199,7 @@ const RESULT_LABEL_LIST = [
     ['linkDelayResult', '单跳时延', 'ms'],
     ['linkDelayUpResult', '上行时延', 'ms'],
     ['linkDelayDownResult', '下行时延', 'ms'],
+    ['islDistanceResult', '星间总距离', 'km'],
     ['earthLongitudeResult', '发信站经度', '°E'],
     ['earthLatitudeResult', '发信站纬度', '°'],
     ['rxLongitudeResult', '收信站经度', '°E'],

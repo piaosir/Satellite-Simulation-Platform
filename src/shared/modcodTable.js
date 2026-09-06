@@ -13,11 +13,15 @@ import { modulationOptions, modFactorOf, parseModulation, composeModulation } fr
 
 // 门限口径的人读写法 ⇄ 内部值。Excel 里存人读写法（导出的表要能直接给人看），
 // 回表时两种写法都认（用户手搓的表常写 EsNo / Es/N0）。
-export const MODE_LABEL = { ebno: 'Eb/N₀', esno: 'Es/N₀' }
-export const MODE_OPTIONS = [{ value: 'esno', label: 'Es/N₀' }, { value: 'ebno', label: 'Eb/N₀' }]
+// ★ 与 packages/core/utils/modcodTables.js 的 normMode 逐条同值（那边是落库前的最后一道闸），
+//   modcodTables.test.mjs 对拍。SNR = 3GPP NTN 的每 RE 信噪比，噪声带宽取占用带宽（见 ntnPhy.js）。
+export const MODE_LABEL = { ebno: 'Eb/N₀', esno: 'Es/N₀', snr: 'SNR' }
+export const MODE_OPTIONS = [{ value: 'esno', label: 'Es/N₀' }, { value: 'ebno', label: 'Eb/N₀' }, { value: 'snr', label: 'SNR' }]
 export function parseMode(v) {
   const s = String(v == null ? '' : v).toLowerCase().replace(/[\s/₀0]/g, '')
-  return s.indexOf('ebn') === 0 ? 'ebno' : 'esno'
+  if (s.indexOf('ebn') === 0) return 'ebno'
+  if (s.indexOf('snr') === 0 || s.indexOf('sinr') === 0 || s === '信噪比') return 'snr'
+  return 'esno'
 }
 
 // 调制方式规范化：认得出就吐规范写法（'qpsk' → 'QPSK'），认不出吐空串。
@@ -34,11 +38,13 @@ export const modBits = (v) => modFactorOf(v)
 export const MODCOD_COLS = [
   { key: 'label', label: 'MODCOD', w: 180, align: 'left', tip: '这一档在载波信号面板 MODCOD 下拉里显示的名字' },
   { key: 'modulation', label: '调制方式', w: 108, tip: '只能从列表里选，或按制式族 + 星座阶数 M 现造一个；调制因子＝log₂M' },
-  { key: 'fec', label: 'FEC 码率', w: 96, tip: '内码码率，写分数（3/4、120/1024）或小数' },
-  { key: 'rsCode', label: '帧效率', w: 96, tip: '外码/帧开销效率，写分数（188/204）或小数（0.9）' },
-  { key: 'bandwidthFactor', label: '滚降系数', unit: '1+α', w: 96, num: true, fix: 2, tip: '占用带宽 / 符号率；3GPP 各档此列是「占用带宽→信道带宽」的换算而非滚降' },
-  { key: 'noiseRatioMode', label: '门限口径', w: 100, tip: 'Eb/N₀ 或 Es/N₀ —— 决定右侧门限值按哪种口径解读' },
-  { key: 'threshold', label: '门限', unit: 'dB', w: 96, num: true, fix: 2, tip: '解调门限，口径由左侧那一列决定' }
+  { key: 'fec', label: 'FEC 码率', w: 96, tip: '内码码率，写分数（3/4、120/1024）或小数。NB-IoT 各档 =（TBS + 24 bit CRC）/ 每传输块编码比特数，按 I_SF/I_RU = 0、独立部署、2 个 NRS 端口算（NPDSCH 304 bit、带内部署 208 bit；NPUSCH 多音 288 bit、单音 96×Qm bit）；详细预算里那一行按当前 I_SF/I_RU 与部署模式现算' },
+  { key: 'rsCode', label: '帧效率', w: 96, tip: '外码/帧开销效率，写分数（188/204）或小数（0.9）。3GPP 各档不参与计算，写 1 占位' },
+  { key: 'bandwidthFactor', label: '滚降系数', unit: '1+α', w: 96, num: true, fix: 2, tip: '载波带宽 / 符号率。3GPP 各档不参与计算，写 1 占位——那条链的信道带宽由频段与 PRB 数查表定，不靠这个系数换算' },
+  { key: 'noiseRatioMode', label: '门限口径', w: 100, tip: 'Eb/N₀ / Es/N₀ / SNR —— 决定右侧门限值按哪种口径解读。SNR = 3GPP 的每资源元素信噪比，噪声带宽取占用带宽 N_RB×12×SCS（NB-IoT 上行为音数×SCS），此时帧效率与滚降两列不参与计算' },
+  { key: 'threshold', label: '门限', unit: 'dB', w: 96, num: true, fix: 2, tip: '解调门限，口径由左侧那一列决定' },
+  // ★ 恒在最后一列：列序同时是「无表头 Excel 按位置认列」的兜底次序，插在中间会把用户手搓的老表整体错位
+  { key: 'idx', label: '索引', w: 72, num: true, fix: 0, tip: '体制内的档位序号：3GPP NR 的 MCS 序号、NB-IoT 的 I_TBS（NPUSCH 单音为 I_MCS）。载波面板据此写物理层参数；DVB 各体制没有这个概念，留空' }
 ]
 
 /**
@@ -91,7 +97,8 @@ export function emptyRow(prev, id) {
     rsCode: (prev && prev.rsCode) || '0.9',
     bandwidthFactor: (prev && prev.bandwidthFactor) != null ? prev.bandwidthFactor : 1.05,
     noiseRatioMode: (prev && prev.noiseRatioMode) || 'esno',
-    threshold: ''
+    threshold: '',
+    idx: ''
   }
 }
 
@@ -174,7 +181,8 @@ export function standardsFromSheets(sheets) {
         rsCode: r.rsCode || '',
         bandwidthFactor: r.bandwidthFactor || '',
         noiseRatioMode: parseMode(r.noiseRatioMode),
-        threshold: r.threshold || ''
+        threshold: r.threshold || '',
+        idx: r.idx || ''
       })
     }
     if (!rows.length && !bad.length) continue

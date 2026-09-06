@@ -47,24 +47,28 @@ const BUILTIN = [
 ]
 
 // 内置标准 → 该体制的物理层描述子缺省值（选中这个标准时载波面板铺的初值，见 utils/ntnPhy.js）。
+// band = NTN 频段，缺省 n256（S 频段，TR 38.821 的基线频段）：它决定该子载波间隔可选的信道带宽档
+//   （TS 38.101-5 Table 5.3.5-1）。★ 只有新选一次 MODCOD 才铺上，老配置的 phy 没有这个字段，
+//   归一化记空串 = 不指定，照旧算得通。
+// opMode = NB-IoT 部署模式，缺省独立部署（NTN 的典型形态）。
 // 缺省取「最常见的那一档」：NR 下行 = 5 MHz@15 kHz 整载波（25 PRB），NR 上行 = 一个 UE 的 1 PRB 分配；
 // NB-IoT 下行 = 整个 180 kHz 载波，上行多音 = 满 12 音、单音 = 1 音。重复次数一律从 1 起。
 // 符号数按 §11-3：下行留 2 个符号给 PDCCH（12 个），上行 14 个；DMRS 都按 12 RE。
 // ★ 内置标准的 phy 不可改（它是标准属性，不是用户偏好）；自建标准的 phy 存在 custom[].phy 里。
 const PHY_OF = {
-  '3GPP NR-NTN': { kind: 'nr', dir: 'dl', mcsTable: 't1', scs: 15, chBwMHz: 5, nRb: 25, nSymb: 12, nDmrs: 12, nOh: 0, rateModel: 'tbs', layers: 1, nRep: 1, combLossDb: 0 },
-  '3GPP NR-NTN T2': { kind: 'nr', dir: 'dl', mcsTable: 't2', scs: 15, chBwMHz: 5, nRb: 25, nSymb: 12, nDmrs: 12, nOh: 0, rateModel: 'tbs', layers: 1, nRep: 1, combLossDb: 0 },
-  '3GPP NR-NTN T3': { kind: 'nr', dir: 'dl', mcsTable: 't3', scs: 15, chBwMHz: 5, nRb: 25, nSymb: 12, nDmrs: 12, nOh: 0, rateModel: 'tbs', layers: 1, nRep: 1, combLossDb: 0 },
-  '3GPP NR-NTN TP1': { kind: 'nr', dir: 'ul', mcsTable: 'tp1', scs: 15, chBwMHz: null, nRb: 1, nSymb: 14, nDmrs: 12, nOh: 0, rateModel: 'tbs', layers: 1, q: 2, nRep: 1, combLossDb: 0 },
-  '3GPP NR-NTN TP2': { kind: 'nr', dir: 'ul', mcsTable: 'tp2', scs: 15, chBwMHz: null, nRb: 1, nSymb: 14, nDmrs: 12, nOh: 0, rateModel: 'tbs', layers: 1, q: 2, nRep: 1, combLossDb: 0 },
+  '3GPP NR-NTN': { kind: 'nr', dir: 'dl', band: 'n256', mcsTable: 't1', scs: 15, chBwMHz: 5, nRb: 25, nSymb: 12, nDmrs: 12, nOh: 0, rateModel: 'tbs', layers: 1, nRep: 1, combLossDb: 0 },
+  '3GPP NR-NTN T2': { kind: 'nr', dir: 'dl', band: 'n256', mcsTable: 't2', scs: 15, chBwMHz: 5, nRb: 25, nSymb: 12, nDmrs: 12, nOh: 0, rateModel: 'tbs', layers: 1, nRep: 1, combLossDb: 0 },
+  '3GPP NR-NTN T3': { kind: 'nr', dir: 'dl', band: 'n256', mcsTable: 't3', scs: 15, chBwMHz: 5, nRb: 25, nSymb: 12, nDmrs: 12, nOh: 0, rateModel: 'tbs', layers: 1, nRep: 1, combLossDb: 0 },
+  '3GPP NR-NTN TP1': { kind: 'nr', dir: 'ul', band: 'n256', mcsTable: 'tp1', scs: 15, chBwMHz: null, nRb: 1, nSymb: 14, nDmrs: 12, nOh: 0, rateModel: 'tbs', layers: 1, q: 2, nRep: 1, combLossDb: 0 },
+  '3GPP NR-NTN TP2': { kind: 'nr', dir: 'ul', band: 'n256', mcsTable: 'tp2', scs: 15, chBwMHz: null, nRb: 1, nSymb: 14, nDmrs: 12, nOh: 0, rateModel: 'tbs', layers: 1, q: 2, nRep: 1, combLossDb: 0 },
   // ★ st = 这张表的行号口径与子载波数是不是被标准锁死的（见 utils/ntnPhy.js 的 normalizePhy）：
   //   NPDSCH 没有单音/多音之分记 null；NPUSCH 多音表 false（3/6/12 子载波、恒 15 kHz、行号 = I_TBS）；
   //   单音表 true（恒 1 子载波、行号 = I_MCS，要经 Table 16.5.1.2-1 映射）。
   //   不锁的话，选了单音表再把子载波数改成 12，门限还是单音那一列（高 1.6~3.8 dB），
   //   而 I_MCS 又被当 I_TBS 直读 —— 配出来的是标准里没有的组合。
-  '3GPP NB-IoT NTN': { kind: 'nbiot', dir: 'dl', st: null, scs: 15, nTones: 12, iTbs: 0, iSf: 0, nRep: 1, combLossDb: 0 },
-  '3GPP NB-IoT NTN NPUSCH MT': { kind: 'nbiot', dir: 'ul', st: false, scs: 15, nTones: 12, iTbs: 0, iRu: 0, nRep: 1, combLossDb: 0 },
-  '3GPP NB-IoT NTN NPUSCH ST': { kind: 'nbiot', dir: 'ul', st: true, scs: 15, nTones: 1, iTbs: 0, iRu: 0, nRep: 1, combLossDb: 0 }
+  '3GPP NB-IoT NTN': { kind: 'nbiot', dir: 'dl', st: null, opMode: 'standalone', scs: 15, nTones: 12, iTbs: 0, iSf: 0, nRep: 1, combLossDb: 0 },
+  '3GPP NB-IoT NTN NPUSCH MT': { kind: 'nbiot', dir: 'ul', st: false, opMode: 'standalone', scs: 15, nTones: 12, iTbs: 0, iRu: 0, nRep: 1, combLossDb: 0 },
+  '3GPP NB-IoT NTN NPUSCH ST': { kind: 'nbiot', dir: 'ul', st: true, opMode: 'standalone', scs: 15, nTones: 1, iTbs: 0, iRu: 0, nRep: 1, combLossDb: 0 }
 }
 // 自建标准只让选个体制（其余物理层参数在载波面板上填），故这里只留两个骨架
 const PHY_KINDS = [

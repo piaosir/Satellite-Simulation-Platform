@@ -450,11 +450,15 @@ export function methodology(scheme, lang, opts) {
     group: G('体制与通信标准', 'Air interface and system standards'),
     items: [
       { id: 'ETSI EN 302 307-1/-2 (DVB-S2 / S2X)', title: G('数字卫星广播第二代及其扩展', 'Second generation framing, coding and modulation for satellite broadcasting and extensions'), use: G('调制与前向纠错的门限 Es/N₀ 与频谱效率基准', 'Threshold Es/N₀ and spectral efficiency reference for modulation and FEC') },
-      { id: '3GPP TS 38.101-5 / TR 38.821', title: G('非地面网络（NTN）射频与体系', 'Non-terrestrial networks: radio transmission/reception and solutions'), use: G('NTN 载波与信道带宽的参数基准', 'Parameter reference for NTN carriers and channel bandwidths') },
+      { id: '3GPP TS 38.101-5 / TR 38.821', title: G('非地面网络（NTN）射频与体系', 'Non-terrestrial networks: radio transmission/reception and solutions'), use: G('NTN 频段与逐频段信道带宽档（Table 5.3.5-1/-2）、参考终端与卫星参数', 'NTN bands and per-band channel bandwidths (Table 5.3.5-1/-2), reference terminal and satellite parameters') },
       { id: '3GPP TS 38.214', title: G('NR 物理层数据处理规程', 'NR physical layer procedures for data'), use: G('MCS 表（调制阶数与目标码率）与传输块大小算法', 'MCS tables (modulation order and target code rate) and transport block size') },
       { id: '3GPP TS 38.215', title: G('NR 物理层测量', 'NR physical layer measurements'), use: G('SINR 的每资源元素定义 —— 3GPP 载波门限的 SNR 口径', 'Per-resource-element SINR definition — the SNR reference for 3GPP carrier thresholds') },
       { id: '3GPP TS 38.306', title: G('NR 用户设备无线接入能力', 'NR user equipment radio access capabilities'), use: G('数据速率近似式与系统开销系数', 'Data rate approximation and overhead factors') },
-      { id: '3GPP TS 36.213 / TR 36.763', title: G('E-UTRA 物理层规程与 IoT-NTN 研究', 'E-UTRA physical layer procedures and IoT NTN study'), use: G('NB-IoT 传输块大小表与 NTN 链路预算参数', 'NB-IoT transport block size tables and NTN link budget parameters') }
+      { id: '3GPP TS 36.213 / TR 36.763', title: G('E-UTRA 物理层规程与 IoT-NTN 研究', 'E-UTRA physical layer procedures and IoT NTN study'), use: G('NB-IoT 传输块大小表（Rel-14 全表）与 NTN 链路预算场景参数', 'NB-IoT transport block size tables (full Rel-14) and NTN link budget scenario parameters') },
+      { id: '3GPP TS 36.102', title: G('E-UTRA 卫星接入用户设备射频收发', 'E-UTRA satellite access: UE radio transmission and reception'), use: G('IoT-NTN 终端的信道带宽与部署栅格（NB1/NB2 200 kHz、1 PRB）', 'IoT-NTN UE channel bandwidth and deployment raster (NB1/NB2 200 kHz, 1 PRB)') },
+      { id: '3GPP TS 36.211', title: G('E-UTRA 物理信道与调制', 'E-UTRA physical channels and modulation'), use: G('NB-IoT 帧结构、资源单元与 NRS / DMRS —— 有效码率分母的出处', 'NB-IoT frame structure, resource units and NRS / DMRS — the source of the effective code rate denominator') },
+      { id: 'Kodheli et al., AdHoc-Now 2019', title: G('基于卫星的窄带物联网系统链路预算分析', 'Link budget analysis for satellite-based narrowband IoT systems'), use: G('NB-IoT 三张表的解调门限基线（AWGN、BLER 10%、N_rep 1）', 'Demodulation threshold baseline for the three NB-IoT tables (AWGN, 10% BLER, N_rep 1)') },
+      { id: 'Méndez-Monsanto et al., VTC2024-Fall', title: G('NR-NTN 链路级性能评估', 'Link-level performance evaluation for NR-NTN'), use: G('NR 五张 MCS 表的解调门限锚点', 'Demodulation threshold anchors for the five NR MCS tables') }
     ].concat(extCI ? [
       { id: 'Comtech EF Data CDM-625A', title: G('先进卫星调制解调器数据表（DoubleTalk Carrier-in-Carrier）', 'Advanced Satellite Modem datasheet (DoubleTalk Carrier-in-Carrier)'), use: G('载波叠加的功率谱密度比窗口、固有处理损耗与抵消深度 —— 报告中「附加 C/I」的参数出处', 'Carrier-in-Carrier PSD-ratio window, inherent processing loss and cancellation depth — the parameter source for the additional C/I reported here') }
     ] : [])

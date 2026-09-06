@@ -56,6 +56,12 @@ const OUTPUT_GROUPS = [
       { key: 'carrierExtDegResult', label: '附加 C/I 退化', labelEn: 'Additional C/I Degradation', unit: 'dB' },
       { key: 'ebnoActualResult', label: 'Eb/N₀（实际）', labelEn: 'Eb/N₀ (Actual)', unit: 'dB', geoSide: 'both', geoField: true },
       { key: 'esnoActualResult', label: 'Es/N₀（实际）', labelEn: 'Es/N₀ (Actual)', unit: 'dB', geoSide: 'both' },
+      // 3GPP NTN（snr 口径）三列：与上面那两行是同一个物理量，只是按体制换了名字与噪声带宽的取法
+      // ——每 RE SNR ≡ Es/N₀ ≡ 占用带宽内的 C/N。DVB 各体制这三列恒为空，故都不默认勾选。
+      { key: 'snrThresholdEffResult', label: '门限 SNR', labelEn: 'Threshold SNR', unit: 'dB' },
+      // 门限那一列的目标 BLER：3GPP 各表恒 10% 首传。DVB 行为空（那条链谈的是误码率）。
+      { key: 'phyBlerResult', label: '目标 BLER', labelEn: 'Target BLER', unit: '%' },
+      { key: 'snrActualResult', label: 'SNR（实际）', labelEn: 'SNR (Actual)', unit: 'dB', geoSide: 'both' },
       { key: 'carrierTotalCN0', label: '合计 C/N₀', labelEn: 'Combined C/N₀', unit: 'dBHz', geoSide: 'both' },
       { key: 'totalCN0Result', label: '总 C/N₀（含干扰）', labelEn: 'Total C/N₀ (incl. Interference)', unit: 'dBHz', geoSide: 'both' }
     ]
@@ -74,6 +80,12 @@ const OUTPUT_GROUPS = [
       { key: 'maxCarrierCount', label: '最大载波数', labelEn: 'Max Carrier Count', unit: '', geoSide: 'both' },
       { key: 'spectralEfficiencyResult', label: '频谱效率', labelEn: 'Spectral Efficiency', unit: 'bps/Hz' },
       { key: 'symbolRateResult', label: '符号速率', labelEn: 'Symbol Rate', unit: 'kBaud' },
+      // 3GPP NTN：占用带宽 B_occ = N_RB×12×SCS，它同时【就是】这条链路的噪声带宽。
+      // 与通用列 noiseBW（DVB 行 = 符号率）刻意分成两列：那一列对所有体制都有值、叫「噪声带宽」；
+      // 这一列只有 3GPP 行才有值、叫「占用带宽」—— 它是物理层分配量，名字得跟着体制走。
+      { key: 'noiseBwResult', label: '占用带宽', labelEn: 'Occupied Bandwidth', unit: 'kHz' },
+      // NTN 频段：它决定该子载波间隔可选的信道带宽档（TS 38.101-5 Table 5.3.5-1/-2）
+      { key: 'phyBandResult', label: 'NTN 频段', labelEn: 'NTN Band', unit: '' },
       { key: 'transponderBackoffResult', label: '转发器工作区回退', labelEn: 'Transponder Operating Backoff', unit: 'dB', geoSide: 'both' }
     ]
   },

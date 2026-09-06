@@ -49,6 +49,17 @@ function setOutputPrecisionBoost(n) {
 }
 
 /**
+ * 出参收位（最多 d 位小数，随 FX 增位），保持数值类型、不补尾零。
+ * 口径与 linkCalculator.js 同名函数一致，改一处两边同改。
+ * @param {number} n 数值
+ * @param {number} d 小数位上限
+ * @returns {number} 非有限值原样返回，否则返回收位后的数
+ */
+function roundOut(n, d) {
+  return isFinite(n) ? +n.toFixed(d + FX) : n;
+}
+
+/**
  * 解析FEC码率字符串，支持任意形式的分数和小数
  * @param {string|number} fecInput - FEC码率输入（如 "3/4", "11/55", "0.75"）
  * @param {number} defaultValue - 默认值
@@ -121,6 +132,7 @@ const CONSTANTS = {
 
 // 调制因子 —— 取 modulation.js 那份单一出处（同 linkCalculator.js，引擎不再各抄一份）
 const { modFactorOf } = require('./modulation.js');
+const ntnPhy = require('./ntnPhy.js'); // 3GPP NTN 物理层口径（占用带宽 / TBS / 信息速率 / 含重复的门限）
 
 // ITU-R P.838 降雨衰减系数表 (完全按照 index.html)
 const P838_TABLE = {
@@ -327,7 +339,8 @@ function performCalculations(satParams, inputs) {
     ? parseFloat(satParams.sfdRef) : -84; // dBW/m² - SFD参考值（空回退对齐字段默认 -84）
   
   // ============ 通信参数 ============
-  const infoRate = pickNum(inputs.infoRate, 2048); // kbps - 信息速率
+  // 3GPP NTN 的 snr 行会在下方「调制与带宽计算」处被 phy 算出来的值顶掉（故不是 const）
+  let infoRate = pickNum(inputs.infoRate, 2048); // kbps - 信息速率
   const modulation = inputs.modulation || "QPSK";
   // FEC码率：支持分数和小数格式，保留原始输入用于显示
   const fecOriginal = String(inputs.fec || '0.75').trim();
@@ -339,7 +352,7 @@ function performCalculations(satParams, inputs) {
   const berExponent = ((inputs.ber !== '' && inputs.ber !== null && inputs.ber !== undefined)
     ? parseFloat(inputs.ber) : 7) * -1; // 误码率指数
   
-  // 噪声比模式：支持 'ebno' 或 'esno'
+  // 噪声比模式：'ebno' / 'esno' / 'snr'（3GPP NTN 的每 RE 信噪比，噪声带宽 = 占用带宽）
   const noiseRatioMode = inputs.noiseRatioMode || 'ebno';
   const inputNoiseRatio = inputs.ebno !== '' && inputs.ebno !== null && inputs.ebno !== undefined
     ? parseFloat(inputs.ebno) : 5.5; // dB - 输入的噪声比值（空回退对齐字段默认 5.50）
@@ -500,17 +513,39 @@ function performCalculations(satParams, inputs) {
   
   // ============ 调制与带宽计算 ============
   const modulationFactor = modFactorOf(modulation) || 2;
-  const carrierRate = infoRate / rsCode / fec; // 传输速率 (kbps)
-  const ChipRate = carrierRate * m; // 码片速率 (kbps)
-  const symbolRate = ChipRate / modulationFactor; // 符号速率 (ksps)
+  // ★ 3GPP NTN 的 snr 行不走下面这条 DVB 链。物理层描述子 phy 给了 PRB 数与子载波间隔，
+  //   占用带宽 B_occ = N_RB×12×SCS（NB-IoT 上行 = 音数×SCS）本身就是噪声带宽，信息速率由 TBS 算出
+  //   （表单里那个 infoRate 忽略），帧效率 / 滚降 / 扩频增益三项不参与。于是下方那行
+  //   thresholdCN = ebno + 10lg(infoRate / noiseBW) 恒等于门限 SNR —— 恒等式一个字不用改。
+  //   口径推导与出处见 utils/ntnPhy.js 的文件头。
+  const snrChain = noiseRatioMode === 'snr'
+    ? ntnPhy.engineChain(inputs.phy, inputNoiseRatio, modulationFactor, fec)
+    : null;
+  if (snrChain && snrChain.error) throw new Error('3GPP 载波参数无效：' + snrChain.error);
+  if (snrChain) infoRate = snrChain.infoRate;
+  const carrierRate = snrChain ? null : infoRate / rsCode / fec; // 传输速率 (kbps)
+  const ChipRate = snrChain ? null : carrierRate * m; // 码片速率 (kbps)
+  // ★ snr 行这里放的是【占用带宽】而不是符号率：下游 noiseBW = symbolRate 就是噪声带宽。
+  //   OFDM 的真符号率是 B_occ×14/15（每秒 RE 数），故这三个 DVB 读数对 snr 行一律不出参。
+  const symbolRate = snrChain ? snrChain.symbolRate : ChipRate / modulationFactor; // 符号速率 (ksps)
   // 分配带宽计算：保留三位小数
-  const allocBandwidth = Math.round(bandwidthFactor * symbolRate * 1000) / 1000; // 分配带宽 (kHz)
-  const k = (fec * rsCode * modulationFactor) / m; // 组合效率
+  const allocBandwidth = snrChain ? snrChain.allocBandwidth : Math.round(bandwidthFactor * symbolRate * 1000) / 1000; // 分配带宽 (kHz)
+  const k = snrChain ? snrChain.k : (fec * rsCode * modulationFactor) / m; // 组合效率
+  // 功率谱密度的参考带宽：snr 行按占用带宽（信道带宽含保护带，拿它算会把 PSD 低报 0.18~0.46 dB）
+  const psdBandwidth = snrChain ? snrChain.symbolRate : allocBandwidth; // kHz
   
   // 根据噪声比模式计算 ebno 和 esno
   let ebno, esno;
-  if (noiseRatioMode === 'esno') {
+  if (snrChain) {
+    // 门限值 = 每 RE SNR（已按 N_rep 折算）；Eb/N₀ 由占用带宽上的频谱效率反折，
+    // 于是 CP / DMRS / 系统开销 / 重复全都自动算进 Eb/N₀ 里，不必再乘经验系数。
+    esno = snrChain.esno;
+    ebno = snrChain.ebno;
+  } else if (noiseRatioMode === 'esno' || noiseRatioMode === 'snr') {
     // 如果输入的是 Es/N0，需要转换为 Eb/N0
+    // ★ 标了 snr 却没有 phy（老档、或用户只改了口径还没填物理层参数）也走这一支：
+    //   每 RE SNR 与 Es/N₀ 在数值上是同一个量，按 Es/N₀ 解读只是丢了「噪声带宽按分配算」这件事；
+    //   掉进下面的 Eb/N₀ 分支才是真错 —— 那会把厂家给的门限当成每比特信噪比，整条链错好几 dB。
     esno = inputNoiseRatio;
     ebno = esno - 10 * Math.log10(k);
   } else {
@@ -1110,7 +1145,7 @@ function performCalculations(satParams, inputs) {
   );
 
   // 地球站功率谱密度：EIRP - 10*log10(带宽Hz)
-  const stationPSD = stationEIRP - 10 * Math.log10(allocBandwidth * 1000);
+  const stationPSD = stationEIRP - 10 * Math.log10(psdBandwidth * 1000);
   
   // ============ 邻星离轴口径（2026-08-07 移除）============
   // 旁瓣增益/旁瓣 EIRP/旁瓣 PSD、接收旁瓣增益、离轴鉴别度与 ITU-R S.524 的 PSD 门限，
@@ -1121,7 +1156,7 @@ function performCalculations(satParams, inputs) {
 
   // 卫星功率谱密度：卫星EIRP - 10*log10(带宽Hz)
   // 使用每载波占用的卫星EIRP
-  const satellitePSD = transponderOutputEIRP - 10 * Math.log10(allocBandwidth * 1000);
+  const satellitePSD = transponderOutputEIRP - 10 * Math.log10(psdBandwidth * 1000);
   
   // ============ 卫星到地面 PFD ============
   // 统一由级联段的 arrivalPFDAtGround 给出（= 到达地面载波电平 C + 10·lg(4π/λ²)，
@@ -1272,7 +1307,10 @@ function performCalculations(satParams, inputs) {
   
   // 转换为dBW/m²（每平方米）
   // 从4kHz参考带宽转换到实际载波带宽
-  const ituPfdLimitPerM2 = ituPfdLimit4kHz + 10 * Math.log10(allocBandwidth / 4);
+  // ★ 参考带宽按【占用带宽】放大，不是信道带宽：把 4 kHz 的限值折算成整载波的限值，前提是功率在
+  //   这段带宽里均匀铺开，而信道带宽两侧的保护带上没有功率（3GPP 行差 0.46 dB，会把限值放宽）。
+  //   与上面两个 PSD 同一把尺（psdBandwidth），DVB 行 psdBandwidth ≡ allocBandwidth，一位不变。
+  const ituPfdLimitPerM2 = ituPfdLimit4kHz + 10 * Math.log10(psdBandwidth / 4);
   
   // ============ 填充结果对象 ============
   // 误码率显示
@@ -1458,6 +1496,9 @@ function performCalculations(satParams, inputs) {
   // 上/下行单程传播时延（分列展示，上下行星地斜距不同 → 时延可不同）
   results.linkDelayUpResult = (slantRange / 299792.458 * 1000).toFixed(1 + FX);     // ms，上行段传播时延
   results.linkDelayDownResult = (rxSlantRange / 299792.458 * 1000).toFixed(1 + FX); // ms，下行段传播时延
+  // ISL 段总距离（km）。走 ISL 时上行+下行两段时延加不出总时延，SLA 的「单程时延」依据列
+  // 靠这一项把三段距离摆齐：(d_up + d_ISL + d_down) / c。0 跳时为 0，依据列会把它跳过。
+  results.islDistanceResult = islTotalDistance.toFixed(2 + FX);
   // 轨道力学几何量（轨道高度/惯性速度/相对地面速度/最大多普勒/轨道周期/覆盖半角/覆盖半径/过境时长）
   // 已由单一真值源 packages/core/utils/ngsoGeometry.js 严格计算（SGP4/SDP4 真实星历 + 真实倾角 +
   // WGS84 地心半径 + max|range-rate| 多普勒），并在 NgsoLinkBudgetApp 的 mergePlatformGeometry 里覆盖进结果。
@@ -1467,22 +1508,63 @@ function performCalculations(satParams, inputs) {
   results.uplinkFrequencyResult = uplinkFrequency.toFixed(2 + FX);
   results.downlinkFrequencyResult = downlinkFrequency.toFixed(2 + FX);
   // 极化方式显示值已在上方设置（使用 polarizationDisplayMap），此处不再重复赋值
-  results.infoRateResult = infoRate;
+  // 信息速率两个来源：DVB 行是表单里那个数，3GPP NTN 行由 TBS ÷ 时长算出来（常是无限小数）。
+  // 收到 3 位并去尾零，口径同 GEO 引擎；再生式与端到端都取这份出参，故三个窗一起治。
+  results.infoRateResult = roundOut(infoRate, 3);
   results.modulationResult = modulation;
   results.modulationFactorResult = modulationFactor;
-  results.berResult = `1×10${superscriptExp}`;
+  // ★ 3GPP 各表的门限是按【BLER 10% 首传】给的，误码率这一行对它既无意义又误导（值来自 DVB 的
+  //   表单缺省），故 snr 行改出「目标 BLER」那一项，这一行留空。DVB 行照旧。
+  results.berResult = snrChain ? '' : `1×10${superscriptExp}`;
   results.ebnoResult = ebno.toFixed(2 + FX);
   results.esnoResult = esno.toFixed(2 + FX);
   // 实际 Eb/N₀ / Es/N₀：由实际合成 C/N 折算（门限值 + 链路余量，ISL 已按份额并入合成 C/N）
   results.ebnoActualResult = (ebno + linkmargin).toFixed(2 + FX);
   results.esnoActualResult = (esno + linkmargin).toFixed(2 + FX);
+  // ===== 3GPP NTN（snr 口径）专有出参 =====
+  // 每 RE SNR ≡ Es/N₀ ≡ 占用带宽内的 C/N，故 snrThresholdEff 与 esno 恒同数、snrActual 与 esnoActual 恒同数；
+  // 两套都出是为了让链路表 / 报表能按体制用对名字，不必在渲染端再判一次口径。DVB 行这几项留空。
+  results.snrThresholdResult = snrChain ? snrChain.thresholdTable.toFixed(2 + FX) : '';       // 表值（不含重复折算）
+  results.snrThresholdEffResult = snrChain ? snrChain.esno.toFixed(2 + FX) : '';              // 含 N_rep 与合并损失
+  results.snrActualResult = snrChain ? (snrChain.esno + linkmargin).toFixed(2 + FX) : '';
+  results.noiseBwResult = snrChain ? snrChain.symbolRate.toFixed(3 + FX) : '';                // kHz，= 占用带宽
+  results.phyRepResult = snrChain ? String(snrChain.nRep) : '';
+  results.phyTbsResult = (snrChain && snrChain.tbsReported != null) ? String(snrChain.tbsReported) : '';   // bit / 时隙(NR) 或 传输块(NB)
+  results.phyTbsUnitResult = snrChain ? snrChain.tbsUnit : '';
+  // 描述串是数据不是界面文案，中英两版都由引擎现造，渲染端按当前语言挑一份（自动名不许在呈现层翻译）。
+  // ★ 这一串只给【链路表】那种一行一条链路的紧凑视图用；纵向的详细计算结果拆成下面逐项出参——
+  //   压成「NB-IoT 下行 · 12 子载波 × 15 kHz · I_TBS 4 · ×1」一句，读者得自己拆开才对得上面板。
+  results.phyDescResult = snrChain ? ntnPhy.describe(snrChain.phy, 'zh') : '';
+  results.phyDescEnResult = snrChain ? ntnPhy.describe(snrChain.phy, 'en') : '';
+  // 物理层参数逐项：只出数据，标签由级联表按当前语言给（NR 叫「PRB 数」、NB-IoT 叫「子载波数」）
+  results.phyKindResult = snrChain ? snrChain.phy.kind : '';                      // 'nr' | 'nbiot'
+  results.phyDirResult = snrChain ? snrChain.phy.dir : '';                        // 'dl' | 'ul'（标签选择用）
+  results.phyDirTextResult = snrChain ? ntnPhy.dirLabel(snrChain.phy, 'zh') : '';  // 给人看的那一份，中英
+  results.phyDirTextEnResult = snrChain ? ntnPhy.dirLabel(snrChain.phy, 'en') : '';
+  results.phyScsResult = snrChain ? String(snrChain.phy.scs) : '';                // 子载波间隔 kHz
+  results.phyUnitsResult = snrChain                                               // PRB 数 / 子载波数
+    ? String(snrChain.phy.kind === 'nr' ? snrChain.phy.nRb : snrChain.phy.nTones) : '';
+  results.phySpanResult = snrChain                                                // NB-IoT 的子帧数 / RU 数
+    ? (ntnPhy.nbUnitCount(snrChain.phy) == null ? '' : String(ntnPhy.nbUnitCount(snrChain.phy))) : '';
+  results.phyMcsResult = snrChain ? ntnPhy.mcsLabel(snrChain.phy, 'zh') : '';      // NR「表1 · MCS 7」/ NB「4」
+  results.phyMcsEnResult = snrChain ? ntnPhy.mcsLabel(snrChain.phy, 'en') : '';
+  // NTN 频段（NR 才有；空串 = 老配置没指定频段）。它决定可选的信道带宽档，故要能在结果里看见。
+  results.phyBandResult = (snrChain && snrChain.phy.kind === 'nr') ? (snrChain.phy.band || '') : '';
+  // 门限那一列的目标 BLER，百分数。3GPP 各表恒 10% 首传；用户在 MODCOD 编辑页改过 meta.bler 后
+  // 重新选一次 MODCOD 才生效 —— 与门限同一个不静默口径。
+  results.phyBlerResult = snrChain ? (snrChain.blerTarget * 100).toFixed(0) : '';
+  // NB-IoT 的有效码率 = (TBS + 24 bit CRC) / 每传输块编码比特数，按【当前】I_SF/I_RU 与部署模式现算
+  //（MODCOD 表那一列只是 I_SF/I_RU = 0 的值）。NR 行照旧回显表里的 R，这一项留空。
+  results.phyCodeRateResult = (snrChain && snrChain.codeRate != null)
+    ? snrChain.codeRate.toFixed(4 + FX) : '';
   // 帧效率显示：保持原始输入格式（分数或小数）
   results.rsCodeResult = rsCodeOriginal;
   // FEC码率显示：保持原始输入格式（分数或小数）
   results.fecResult = fecOriginal;
-  results.carrierRateResult = carrierRate.toFixed(2 + FX);
-  results.ChipRateResult = ChipRate.toFixed(2 + FX);
-  results.symbolRateResult = symbolRate.toFixed(2 + FX);
+  // DVB 换算链的三个读数：snr 行没有这三个量（见上方 symbolRate 那段注释），一律留空不报假数
+  results.carrierRateResult = snrChain ? '' : carrierRate.toFixed(2 + FX);
+  results.ChipRateResult = snrChain ? '' : ChipRate.toFixed(2 + FX);
+  results.symbolRateResult = snrChain ? '' : symbolRate.toFixed(2 + FX);
   results.allocBandwidthResult = allocBandwidth;
   // 频谱效率 η = R_info(bps) / B_alloc(Hz) = infoRate(kbps) / allocBandwidth(kHz)
   const spectralEfficiency = (allocBandwidth > 0) ? (infoRate / allocBandwidth) : 0; // bps/Hz

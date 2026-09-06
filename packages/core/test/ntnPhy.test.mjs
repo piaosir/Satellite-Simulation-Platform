@@ -19,18 +19,120 @@ function ok(name, cond, extra) {
 }
 const near = (a, b, eps) => a != null && b != null && Math.abs(a - b) <= (eps == null ? 1e-9 : eps)
 
-/* ---- ① 信道带宽 ↔ N_RB（TS 38.101-5 Table 5.3.2-1）---- */
-const RB15 = { 5: 25, 10: 52, 15: 79, 20: 106, 30: 160 }
-const RB30 = { 5: 11, 10: 24, 15: 38, 20: 51, 30: 78 }
-const RB60 = { 10: 11, 15: 18, 20: 24, 30: 38, 50: 66, 100: 132, 200: 264 }
-const RB120 = { 50: 32, 100: 66, 200: 132, 400: 264 }
-ok('15 kHz 档 N_RB 逐值不变（5/10/15/20/30 MHz → 25/52/79/106/160）',
-  JSON.stringify(C.nrRbTable(15)) === JSON.stringify(RB15))
-ok('30 kHz 档 N_RB 逐值不变', JSON.stringify(C.nrRbTable(30)) === JSON.stringify(RB30))
-ok('60 kHz 档 N_RB 逐值不变（含 FR2-NTN 50/100/200 MHz）', JSON.stringify(C.nrRbTable(60)) === JSON.stringify(RB60))
-ok('120 kHz 档 N_RB 逐值不变（FR2-NTN 50/100/200/400 MHz）', JSON.stringify(C.nrRbTable(120)) === JSON.stringify(RB120))
-ok('没有 5 MHz@60 kHz 这一档（标准里就没有，别凭插值造一个）', C.nrRbTable(60)[5] === undefined)
-ok('认不出的 SCS 返回 null（不回落到 15 kHz）', C.nrRbTable(45) === null && C.nrRbTable('x') === null)
+/* ---- ① 信道带宽 ↔ N_RB（TS 38.101-5 V19.5.0 Table 5.3.2-1 / 5.3.2-2）---- */
+// FR1 与 FR2 必须分成两张：同一个 60 kHz / 50 MHz，FR1 是 65 RB、FR2 是 66 RB。
+const RB1_15 = { 3: 15, 5: 25, 10: 52, 15: 79, 20: 106, 25: 133, 30: 160, 35: 188, 50: 270 }
+const RB1_30 = { 5: 11, 10: 24, 15: 38, 20: 51, 25: 65, 30: 78, 35: 92, 50: 133, 70: 189, 100: 273 }
+const RB1_60 = { 10: 11, 15: 18, 20: 24, 25: 31, 30: 38, 35: 44, 50: 65, 70: 93, 100: 135 }
+const RB2_60 = { 50: 66, 100: 132, 200: 264 }
+const RB2_120 = { 50: 32, 100: 66, 200: 132, 400: 264 }
+ok('FR1-NTN 15 kHz 档 N_RB 逐值 = Table 5.3.2-1（3…50 MHz → 15/25/52/79/106/133/160/188/270）',
+  JSON.stringify(C.nrRbTable(15, 1)) === JSON.stringify(RB1_15))
+ok('FR1-NTN 30 kHz 档 N_RB 逐值 = 原表（到 100 MHz = 273 RB）', JSON.stringify(C.nrRbTable(30, 1)) === JSON.stringify(RB1_30))
+ok('FR1-NTN 60 kHz 档 N_RB 逐值 = 原表', JSON.stringify(C.nrRbTable(60, 1)) === JSON.stringify(RB1_60))
+ok('FR2-NTN 60 kHz 档 N_RB 逐值 = Table 5.3.2-2', JSON.stringify(C.nrRbTable(60, 2)) === JSON.stringify(RB2_60))
+ok('FR2-NTN 120 kHz 档 N_RB 逐值 = Table 5.3.2-2', JSON.stringify(C.nrRbTable(120, 2)) === JSON.stringify(RB2_120))
+// ★ 这一条是拆表的理由本身：合成一张表就是同一个键两个值，谁后写谁赢
+ok('★ 60 kHz / 50 MHz 两个 FR 不同值：FR1 = 65 RB、FR2 = 66 RB',
+  C.nrRbTable(60, 1)[50] === 65 && C.nrRbTable(60, 2)[50] === 66)
+ok('FR1 没有 120 kHz、FR2 没有 15 / 30 kHz（别凭插值造一档）',
+  C.nrRbTable(120, 1) === null && C.nrRbTable(15, 2) === null && C.nrRbTable(30, 2) === null)
+ok('没有 5 MHz@60 kHz 这一档', C.nrRbTable(60, 1)[5] === undefined)
+ok('认不出的 SCS 返回 null（不回落到 15 kHz）', C.nrRbTable(45, 1) === null && C.nrRbTable('x', 1) === null)
+
+/* ---- ①ᵇ NTN 频段表（Table 5.2.2-1 / 5.2.3-1 / 5.3.5-1 / 5.3.5-2）---- */
+// 逐频段的信道带宽档是【另一张表】：只看 N_RB 表，5 MHz@30 kHz、n254 的 20 MHz、任何频段的
+// 30 MHz 都配得出来 —— 标准里没有这些载波。
+{
+  const B = C.NTN_BANDS
+  const keys = Object.keys(B)
+  ok('NTN 频段共 14 个：FR1 九个（n256…n247）+ FR2 五个（n512…n508）',
+    keys.join(',') === 'n256,n255,n254,n253,n252,n251,n250,n248,n247,n512,n511,n510,n509,n508', keys.join(','))
+  ok('FR 归属逐条不变（n248/n247 是 FR1 的 Ku，n509/n508 是 FR2 的 Ku）',
+    keys.filter((k) => B[k].fr === 1).join(',') === 'n256,n255,n254,n253,n252,n251,n250,n248,n247' &&
+    keys.filter((k) => B[k].fr === 2).join(',') === 'n512,n511,n510,n509,n508')
+  // 频率范围逐值（Table 5.2.2-1 / 5.2.3-1，MHz，UL / DL）
+  const FREQ = {
+    n256: [[1980, 2010], [2170, 2200]], n255: [[1626.5, 1660.5], [1525, 1559]],
+    n254: [[1610, 1626.5], [2483.5, 2500]], n253: [[1668, 1675], [1518, 1525]],
+    n252: [[2000, 2020], [2180, 2200]], n251: [[1626.5, 1660.5], [1518, 1559]],
+    n250: [[1668, 1675], [1518, 1559]], n248: [[14000, 14500], [10700, 12750]],
+    n247: [[13750, 14000], [10700, 12750]], n512: [[27500, 30000], [17300, 20200]],
+    n511: [[28350, 30000], [17300, 20200]], n510: [[27500, 28350], [17300, 20200]],
+    n509: [[14000, 14500], [10700, 12750]], n508: [[13750, 14000], [10700, 12750]]
+  }
+  ok('各频段的收发频率范围逐值 = 原表',
+    keys.every((k) => JSON.stringify([B[k].ul, B[k].dl]) === JSON.stringify(FREQ[k])),
+    keys.filter((k) => JSON.stringify([B[k].ul, B[k].dl]) !== JSON.stringify(FREQ[k])).join(','))
+  // 逐频段档位：'3o' = 3 MHz 本版可选、'10d' = 10 MHz 只用于下行
+  const tag = (e) => String(e.mhz) + (e.optional ? 'o' : '') + (e.dlOnly ? 'd' : '')
+  const listOf = (k, scs) => ((B[k].bw[scs] || []).map(tag).join(' '))
+  const WANT = {
+    n256: ['3o 5 10 15 20', '10 15 20', '10 15 20'], n255: ['3o 5 10 15 20', '10 15 20', '10 15 20'],
+    n254: ['3o 5 10 15', '10 15', '10 15'], n253: ['5', '', ''],
+    n252: ['5 10 15 20', '10 15 20', '10 15 20'], n251: ['5 10 15 20', '10 15 20', '10 15 20'],
+    n250: ['5 10d 15d 20d', '10d 15d 20d', '10d 15d 20d'],
+    n248: ['10 15 25 35 50', '10 20 25 35 50 70 100', ''], n247: ['10 15 25 35 50', '10 20 25 35 50 70 100', '']
+  }
+  const badFr1 = Object.keys(WANT).filter((k) =>
+    [15, 30, 60].some((scs, i) => listOf(k, scs) !== WANT[k][i]))
+  ok('FR1-NTN 逐频段信道带宽档逐值 = Table 5.3.5-1（含 3 MHz 可选、n250 的仅下行）',
+    badFr1.length === 0, badFr1.map((k) => k + ':' + [15, 30, 60].map((c) => listOf(k, c)).join('|')).join(' '))
+  const badFr2 = ['n512', 'n511', 'n510'].filter((k) =>
+    listOf(k, 60) !== '50 100 200o' || listOf(k, 120) !== '50 100 200o 400o')
+  ok('FR2-NTN n512/n511/n510 逐值 = Table 5.3.5-2', badFr2.length === 0,
+    badFr2.map((k) => listOf(k, 60) + ' / ' + listOf(k, 120)).join(' '))
+  ok('FR2-NTN n509/n508 只有 120 kHz；n508 的 400 MHz 是可选且仅下行',
+    listOf('n509', 60) === '' && listOf('n509', 120) === '50 100 200o 400o' &&
+    listOf('n508', 60) === '' && listOf('n508', 120) === '50 100 200o 400od',
+    listOf('n509', 120) + ' / ' + listOf('n508', 120))
+  // ★ 30 MHz 在 5.3.5-1 里一个频段都没有：CR 0033 只往 N_RB 表加了一列
+  ok('★ 30 MHz 不在任何频段的档位里（N_RB 表有 160/78/38，逐频段表没有）',
+    keys.every((k) => [15, 30, 60, 120].every((scs) => (B[k].bw[scs] || []).every((e) => e.mhz !== 30))) &&
+    C.nrRbTable(15, 1)[30] === 160 && C.nrRbTable(30, 1)[30] === 78 && C.nrRbTable(60, 1)[30] === 38)
+}
+
+/* ---- ①ᶜ 频段 × 子载波间隔 × 信道带宽的组合校验 ---- */
+{
+  const rv = (o) => C.resolve(Object.assign({ kind: 'nr', dir: 'dl', scs: 15, nRb: 25 }, o), 2, 0.5)
+  ok('5 MHz@30 kHz 报错（任何 NTN 频段的 30 kHz 一行都没有 5 MHz）',
+    /没有 5 MHz 这一档/.test(rv({ scs: 30, nRb: 11, chBwMHz: 5 }).error), rv({ scs: 30, nRb: 11, chBwMHz: 5 }).error)
+  ok('n254 的 20 MHz 报错（它是 16.5 MHz 宽的频段，15 kHz 只到 15 MHz）',
+    /n254 .*没有 20 MHz/.test(rv({ band: 'n254', nRb: 106, chBwMHz: 20 }).error), rv({ band: 'n254', nRb: 106, chBwMHz: 20 }).error)
+  ok('30 MHz 对每一个频段都报错',
+    Object.keys(C.NTN_BANDS).every((b) => rv({ band: b, scs: 15, nRb: 160, chBwMHz: 30 }).error !== ''))
+  ok('n248（Ku）30 kHz / 100 MHz = 273 PRB 算得通',
+    rv({ band: 'n248', scs: 30, nRb: 273, chBwMHz: 100 }).error === '' &&
+    rv({ band: 'n248', scs: 30, nRb: 273, chBwMHz: 100 }).bOccKHz === 273 * 12 * 30)
+  ok('n250 的 10 MHz 只用于下行：上行选它报错，下行算得通',
+    /只用于下行/.test(rv({ band: 'n250', dir: 'ul', scs: 15, nRb: 52, chBwMHz: 10 }).error) &&
+    rv({ band: 'n250', dir: 'dl', scs: 15, nRb: 52, chBwMHz: 10 }).error === '')
+  ok('n253 只有 15 kHz / 5 MHz 一档；给它 30 kHz 报「没有这一档子载波间隔」',
+    rv({ band: 'n253', scs: 15, nRb: 25, chBwMHz: 5 }).error === '' &&
+    /没有 30 kHz 这一档子载波间隔/.test(rv({ band: 'n253', scs: 30, nRb: 11 }).error))
+  ok('认不出的频段名报错（不静默换一个）', /不在 TS 38.101-5 的频段表里/.test(rv({ band: 'n999' }).error))
+  ok('PRB 数按【该频段】的顶格判，不按表级上限（n256@15 kHz 顶格 20 MHz = 106 PRB）',
+    /超出 n256 .*106 PRB/.test(rv({ band: 'n256', nRb: 200 }).error) &&
+    rv({ band: 'n248', nRb: 200, scs: 15 }).error === '', rv({ band: 'n256', nRb: 200 }).error)
+  ok('老配置不指定频段：按该 FR 所有频段的并集放行（逐位照旧算得通）',
+    rv({ band: '', nRb: 25, chBwMHz: 5 }).error === '' && C.normalizePhy({ kind: 'nr' }).band === '')
+}
+
+/* ---- ①ᵈ FR 归属决定 N_RB 表与开销系数，不由子载波间隔决定 ---- */
+ok('frOf：给了频段按频段的 FR，没给按子载波间隔兜底（120 kHz 只在 FR2）',
+  C.frOf({ band: 'n510', scs: 60 }) === 2 && C.frOf({ band: 'n256', scs: 60 }) === 1 &&
+  C.frOf({ band: '', scs: 60 }) === 1 && C.frOf({ band: '', scs: 120 }) === 2)
+{
+  // ★ 原来 ohOf 按 scs >= 120 判 FR2，于是 n510-n512 的 60 kHz 配置拿的是 FR1 的开销（0.14/0.08）
+  const mk = (o) => C.normalizePhy(Object.assign({ kind: 'nr', scs: 60, nRb: 60, rateModel: 'oh38306' }, o))
+  const rate = (o, Qm, R) => C.nrInfoRateKbps(mk(o), Qm, R)
+  const ohBack = (o) => 1 - rate(o, 2, 0.5) / (C.nrOccupiedBwKHz(mk(o)) * (14 / 15) * 2 * 0.5)
+  ok('★ ohOf(n510, 60 kHz) 取 FR2 的 0.18 / 0.10（不是 FR1 的 0.14 / 0.08）',
+    near(ohBack({ band: 'n510', dir: 'dl' }), 0.18, 1e-9) && near(ohBack({ band: 'n510', dir: 'ul' }), 0.10, 1e-9),
+    ohBack({ band: 'n510', dir: 'dl' }).toFixed(4) + ' / ' + ohBack({ band: 'n510', dir: 'ul' }).toFixed(4))
+  ok('ohOf(n256, 60 kHz) 仍取 FR1 的 0.14 / 0.08',
+    near(ohBack({ band: 'n256', dir: 'dl' }), 0.14, 1e-9) && near(ohBack({ band: 'n256', dir: 'ul' }), 0.08, 1e-9))
+}
 
 const nr = (o) => C.normalizePhy(Object.assign({ kind: 'nr', dir: 'dl', scs: 15, nRb: 25 }, o))
 ok('占用带宽 = N_RB×12×SCS：25 RB@15 kHz = 4500 kHz', C.nrOccupiedBwKHz(nr({})) === 4500)
@@ -117,7 +219,17 @@ ok('调制阶数或码率无效时返回 null（不按 QPSK 静默垫）',
 
 /* ---- ④ NB-IoT ---- */
 const nb = (o) => C.normalizePhy(Object.assign({ kind: 'nbiot', dir: 'ul', scs: 15, nTones: 12 }, o))
-ok('NPUSCH TBS 表 13 行（I_TBS 0–12，Rel-13）', C.NB_TBS_UL.length === 13 && C.NB_TBS_DL.length === 13)
+ok('NB-IoT TBS 表 14 行（I_TBS 0–13，Rel-14 全表）', C.NB_TBS_UL.length === 14 && C.NB_TBS_DL.length === 14)
+ok('Rel-14 表没有空格（Rel-13 那 32 个空档全填上了）',
+  C.NB_TBS_DL.every((r) => r.length === 8 && r.every((v) => v > 0)) &&
+  C.NB_TBS_UL.every((r) => r.length === 8 && r.every((v) => v > 0)))
+ok('Rel-13 的每一格原值不变（上行 (6,7) 仍 1000、(7,5) 仍 712）',
+  C.NB_TBS_UL[6][7] === 1000 && C.NB_TBS_UL[7][5] === 712)
+ok('(I_TBS 12, I_RU 7) = 2280（Rel-13 这一格是空的）', C.NB_TBS_UL[12][7] === 2280)
+// ★ V14.2.0 印 1128、V17.4.0 / V18.3.0 印 1032 —— 以新版为准，别按 Rel-14 老文本改回去
+ok('★ (I_TBS 13, I_SF 3) = 1032（新版值，不是 V14.2.0 的 1128）',
+  C.NB_TBS_DL[13][3] === 1032 && C.NB_TBS_UL[13][3] === 1032)
+ok('(I_TBS 13, I_RU 7) = 2536', C.NB_TBS_UL[13][7] === 2536 && C.NB_TBS_DL[13][7] === 2536)
 ok('I_SF / I_RU → 子帧数/RU 数 = 1,2,3,4,5,6,8,10', C.NB_SF_COUNT.join(',') === '1,2,3,4,5,6,8,10')
 // 校验值一：单音 15 kHz、I_TBS 0、I_RU 0、N_rep 1 → 16 bit / 8 ms = 2 kbps，噪声带宽 15 kHz
 const nbA = nb({ nTones: 1, iTbs: 0, iRu: 0 })
@@ -141,14 +253,99 @@ ok('  → 下行整载波才是 200 kHz 栅格（占用仍 180）',
 ok('  → 下行强制 12 子载波 × 15 kHz：填 3.75 kHz / 单子载波也归位',
   (() => { const d = C.normalizePhy({ kind: 'nbiot', dir: 'dl', scs: 3.75, nTones: 1, iTbs: 4, iSf: 3 })
     return d.scs === 15 && d.nTones === 12 && C.nbOccupiedBwKHz(d) === 180 })())
-ok('越界返回 null：I_TBS 12 下 I_RU 7 标准表里就没有',
-  C.nbTbs(nb({ iTbs: 12, iRu: 7 })) === null && C.nbInfoRateKbps(nb({ iTbs: 12, iRu: 7 })) === null)
-ok('Rel-14 的 I_TBS 13 未收录 → TBS 返回 null（不静默按 12 档算）', C.nbTbs(nb({ iTbs: 13, iRu: 0 })) === null)
+ok('Rel-14 起 I_TBS 12 / I_RU 7 是合法格（2280 bit，Rel-13 时它是空的）',
+  C.nbTbs(nb({ iTbs: 12, iRu: 7 })) === 2280 && C.nbInfoRateKbps(nb({ iTbs: 12, iRu: 7 })) === 228)
+ok('I_TBS 13 收录了（Cat-NB2）', C.nbTbs(nb({ iTbs: 13, iRu: 0 })) === 224)
+ok('I_TBS 14 报「16QAM 档为 Rel-17 的 14–21」（不静默按 13 档算）',
+  /16QAM 档为 Rel-17/.test(C.resolve({ kind: 'nbiot', dir: 'ul', nTones: 12, iTbs: 14, iRu: 0 }, 2, 0.5).error),
+  C.resolve({ kind: 'nbiot', dir: 'ul', nTones: 12, iTbs: 14, iRu: 0 }, 2, 0.5).error)
 // 每行的合法上限：Cat-NB1 的 TBS 有天花板（下行 680 bit / 上行 1000 bit），I_TBS 越高行越短
-ok('nbMaxSfIdx 逐行给出该 I_TBS 的最大 I_SF / I_RU',
-  [7, 7, 7, 7, 7, 6, 5, 5, 4, 3, 3, 2, 2].every((m, i) => C.nbMaxSfIdx(nb({ dir: 'dl', iTbs: i })) === m) &&
-  [7, 7, 7, 7, 7, 7, 7, 6, 5, 5, 5, 4, 3].every((m, i) => C.nbMaxSfIdx(nb({ dir: 'ul', iTbs: i })) === m) &&
-  C.nbMaxSfIdx(nb({ iTbs: 13 })) === -1)
+ok('nbMaxSfIdx：Rel-14 全表没有空格，14 行一律 7',
+  [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13].every((i) =>
+    C.nbMaxSfIdx(nb({ dir: 'dl', iTbs: i })) === 7 && C.nbMaxSfIdx(nb({ dir: 'ul', iTbs: i })) === 7) &&
+  C.nbMaxSfIdx(nb({ iTbs: 14 })) === -1)
+
+/* ---- ④ᵈ 部署模式（P2-4）：带内的 NPDSCH 只到 I_TBS 10 ---- */
+ok('部署模式缺省独立（NTN 的典型形态），只认 standalone / guardband / inband',
+  nb({}).opMode === 'standalone' && nb({ opMode: 'inband' }).opMode === 'inband' &&
+  nb({ opMode: 'guardband' }).opMode === 'guardband' && nb({ opMode: 'lte' }).opMode === 'standalone')
+{
+  const dl = (o) => C.resolve(Object.assign({ kind: 'nbiot', dir: 'dl', iSf: 0 }, o), 2, 0.5)
+  const ul = (o) => C.resolve(Object.assign({ kind: 'nbiot', dir: 'ul', nTones: 12, iRu: 0 }, o), 2, 0.5)
+  ok('带内部署的 NPDSCH 只到 I_TBS 10（TS 36.213 §16.4.1.5.1）',
+    /带内部署的 NPDSCH 只到 I_TBS 10/.test(dl({ opMode: 'inband', iTbs: 11 }).error) &&
+    dl({ opMode: 'inband', iTbs: 10 }).error === '', dl({ opMode: 'inband', iTbs: 11 }).error)
+  ok('★ NPUSCH 不受这一条限制（带内 I_TBS 11/13 照旧算得通）',
+    ul({ opMode: 'inband', iTbs: 11 }).error === '' && ul({ opMode: 'inband', iTbs: 13 }).error === '')
+  ok('独立 / 保护带部署的 NPDSCH 到 I_TBS 13',
+    dl({ opMode: 'standalone', iTbs: 13 }).error === '' && dl({ opMode: 'guardband', iTbs: 13 }).error === '')
+}
+
+/* ---- ④ᵉ 有效码率（P2-5）：分母按 TS 36.211 的结构算，不是编出来的 264 ---- */
+ok('每传输块编码比特数：NPDSCH 独立 304 / 带内 208、NPUSCH 多音 288 / 单音 96×Qm',
+  JSON.stringify(C.NB_CODED_BITS) === JSON.stringify({ dlStandalone: 304, dlInband: 208, ulMulti: 288, ulSingle: 96 }) &&
+  C.NB_CRC_BITS === 24)
+{
+  const cb = (o) => C.nbCodedBitsPerUnit(C.normalizePhy(Object.assign({ kind: 'nbiot' }, o)))
+  ok('分母随部署模式与子载波数走（下行 304 / 208；多音 3/6/12 都是 288；单音 BPSK 96、QPSK 192）',
+    cb({ dir: 'dl' }) === 304 && cb({ dir: 'dl', opMode: 'inband' }) === 208 &&
+    [3, 6, 12].every((t) => cb({ dir: 'ul', nTones: t }) === 288) &&
+    cb({ dir: 'ul', nTones: 1, iTbs: 0 }) === 96 && cb({ dir: 'ul', nTones: 1, iTbs: 2 }) === 96 &&
+    cb({ dir: 'ul', nTones: 1, iTbs: 1 }) === 192 && cb({ dir: 'ul', nTones: 1, iTbs: 5 }) === 192)
+  const cr = (o) => C.nbCodeRate(C.normalizePhy(Object.assign({ kind: 'nbiot' }, o)))
+  ok('有效码率 =（TBS + 24 bit CRC）/（每单元编码比特数 × 单元数）',
+    near(cr({ dir: 'dl', iTbs: 4, iSf: 0 }), 80 / 304, 1e-12) &&
+    near(cr({ dir: 'dl', iTbs: 4, iSf: 3 }), (256 + 24) / (304 * 4), 1e-12) &&
+    near(cr({ dir: 'ul', nTones: 12, iTbs: 0, iRu: 0 }), 40 / 288, 1e-12))
+  ok('★ 带内部署 (I_TBS 10, I_SF 0) 的码率 = (144 + 24) / 208',
+    near(cr({ dir: 'dl', opMode: 'inband', iTbs: 10, iSf: 0 }), 168 / 208, 1e-12),
+    String(cr({ dir: 'dl', opMode: 'inband', iTbs: 10, iSf: 0 })))
+  ok('码率恒 ≤ 1（分母抄错会当场露馅）', (() => {
+    for (const dir of ['dl', 'ul']) for (const nTones of [1, 3, 12]) {
+      // 单子载波只到 I_TBS 10（下一条断言管这件事）
+      const top = (dir === 'ul' && nTones === 1) ? 10 : 13
+      for (let iTbs = 0; iTbs <= top; iTbs++) for (let i = 0; i <= 7; i++) {
+        const v = cr({ dir, nTones, iTbs, iSf: i, iRu: i })
+        if (v == null || !(v > 0) || v > 1) return false
+      }
+    }
+    return true
+  })())
+  // ★ 上一条断言顺手挖出来的：单音的 I_TBS 只到 10（Table 16.5.1.2-1 的单音行只有 I_MCS 0–10），
+  //   11–13 那三档单音根本取不到；放任它算，「有效码率」会算出 1.04~1.33 这种 >1 的数。
+  ok('★ NPUSCH 单子载波 I_TBS 11–13 报错（标准的单音行只到 I_MCS 10）',
+    [11, 12, 13].every((t) => /单子载波只到 I_TBS 10/.test(
+      C.resolve({ kind: 'nbiot', dir: 'ul', nTones: 1, iTbs: t, iRu: 0 }, 2, 0.5).error)) &&
+    C.resolve({ kind: 'nbiot', dir: 'ul', nTones: 1, iTbs: 10, iRu: 0 }, 2, 0.5).error === '',
+    C.resolve({ kind: 'nbiot', dir: 'ul', nTones: 1, iTbs: 11, iRu: 0 }, 2, 0.5).error)
+}
+
+/* ---- ④ᶠ Kodheli 表 3 的 SE 列反推：证明 Rel-14 表抄对了 ---- */
+// 每档取最大吞吐：max_i TBS(I_TBS, i) / (N_SF(i) × 1 ms) / 180 kHz 必须等于表 3 的 SE 列。
+// 25/28 格逐值吻合（1e-4）；三格不吻合，各有出处：
+//   · I_TBS 3 / 4 两列都差 ±0.002 —— 作者自己那一档的取整
+//   · I_TBS 12 的【下行】印 1.3889 = 1000/4/180，而 1000 是 NPUSCH 表那一格；NPDSCH 表这一格是
+//     904（→ 1.2667）。即他们的下行 SE 抄了上行的数。这一条反过来证明本平台的下行表没抄错。
+{
+  const KOD_DL = [0.1444, 0.2, 0.2667, 0.324, 0.3867, 0.4844, 0.5733, 0.68, 0.7611, 0.8722, 0.9689, 1.1244, 1.3889, 1.4333]
+  const KOD_MT = [0.1444, 0.2, 0.2667, 0.324, 0.3867, 0.4844, 0.5611, 0.6944, 0.7689, 0.8722, 0.9689, 1.1244, 1.3889, 1.4333]
+  const seOf = (row) => Math.max(...row.map((t, i) => t / C.NB_SF_COUNT[i])) / 180
+  const SKIP = [3, 4]
+  const badDl = [], badMt = []
+  for (let i = 0; i < 14; i++) {
+    if (SKIP.indexOf(i) > -1) continue
+    if (i !== 12 && Math.abs(seOf(C.NB_TBS_DL[i]) - KOD_DL[i]) > 1e-4) badDl.push(i + ':' + seOf(C.NB_TBS_DL[i]).toFixed(4))
+    if (Math.abs(seOf(C.NB_TBS_UL[i]) - KOD_MT[i]) > 1e-4) badMt.push(i + ':' + seOf(C.NB_TBS_UL[i]).toFixed(4))
+  }
+  ok('Rel-14 下行表能反推出 Kodheli 表 3 的 NPDSCH SE 列（11/12 档，1e-4）', badDl.length === 0, badDl.join(' '))
+  ok('Rel-14 上行表能反推出 Kodheli 表 3 的 NPUSCH 多音 SE 列（12/12 档，1e-4）', badMt.length === 0, badMt.join(' '))
+  ok('★ I_TBS 12 的下行 SE：表 3 印 1.3889 取自 NPUSCH 的 1000/4，NPDSCH 这一格是 904 → 1.2667',
+    near(seOf(C.NB_TBS_DL[12]), 228 / 180, 1e-9) && near(seOf(C.NB_TBS_UL[12]), 250 / 180, 1e-9) &&
+    C.NB_TBS_DL[12][3] === 904 && C.NB_TBS_UL[12][3] === 1000,
+    seOf(C.NB_TBS_DL[12]).toFixed(4) + ' vs 印 1.3889')
+  ok('I_TBS 6 的两列本就不同（下行 1032/10 = 0.5733、上行 808/8 = 0.5611）',
+    near(seOf(C.NB_TBS_DL[6]), 0.5733, 1e-4) && near(seOf(C.NB_TBS_UL[6]), 0.5611, 1e-4))
+}
 ok('RU 时长：12/6/3 音 = 1/2/4 ms，单音 15 kHz = 8 ms、3.75 kHz = 32 ms',
   C.nbRuMs(nb({ nTones: 12 })) === 1 && C.nbRuMs(nb({ nTones: 6 })) === 2 && C.nbRuMs(nb({ nTones: 3 })) === 4 &&
   C.nbRuMs(nb({ nTones: 1 })) === 8 && C.nbRuMs(nb({ scs: 3.75 })) === 32)
@@ -241,17 +438,18 @@ ok('非 3GPP 载波 → normalizePhy/resolve 返回 null（DVB 行据此走老�
 const rv = C.resolve({ kind: 'nr', dir: 'dl', scs: 15, nRb: 25, nSymb: 14, nDmrs: 12 }, 2, 679 / 1024)
 ok('resolve 一次算齐：B_occ 4500 / B_ch 5000 / TBS 5120 / 速率 5120 kbps / 无错',
   rv.bOccKHz === 4500 && rv.bChKHz === 5000 && rv.tbs === 5120 && rv.infoRateKbps === 5120 && rv.error === '')
-const rvErr = C.resolve({ kind: 'nbiot', dir: 'ul', nTones: 12, iTbs: 13, iRu: 0 }, 2, 0.5)
+const rvErr = C.resolve({ kind: 'nbiot', dir: 'ul', nTones: 12, iTbs: 14, iRu: 0 }, 2, 0.5)
 ok('resolve 越界：error 说清是哪一档，数值字段一律 null（不给半个能用的数）',
-  rvErr.error.indexOf('I_TBS=13') > -1 && rvErr.bOccKHz === null && rvErr.infoRateKbps === null && rvErr.tbs === null)
-// ★ 报的是「上限是多少、当前是多少」，且用界面上那个下拉真正显示的数（子帧数 / RU 数本身）——
-//   I_SF / I_RU 这个下标在界面上一个字都不出现，照抄下标用户无从下手。
-const rvLimDl = C.resolve({ kind: 'nbiot', dir: 'dl', nTones: 12, iTbs: 10, iSf: 7 }, 2, 0.5)
-const rvLimUl = C.resolve({ kind: 'nbiot', dir: 'ul', nTones: 12, iTbs: 12, iRu: 7 }, 2, 0.5)
-ok('resolve 越界报「上限 + 当前」，用界面上那个数而不是 I_SF / I_RU 下标',
-  rvLimDl.error === 'NB-IoT I_TBS=10 的子帧数上限 4，当前 10' && rvLimDl.tbs === null &&
-  rvLimUl.error === 'NB-IoT I_TBS=12 的 RU 数上限 4，当前 10' && rvLimUl.tbs === null,
-  rvLimDl.error + ' / ' + rvLimUl.error)
+  rvErr.error.indexOf('I_TBS=14') > -1 && rvErr.bOccKHz === null && rvErr.infoRateKbps === null && rvErr.tbs === null)
+// Rel-14 全表没有空格，「这一格没有」的错法只剩 I_TBS 越界；「上限 + 当前」那条报法留着
+// —— 16QAM 档（Rel-17）收进来之后，带内部署的 I_TBS 上限还会用到它。
+ok('Rel-14 全表下 13 行 × 8 档 × 收发两向全部算得通（不再有「这一档没有」）', (() => {
+  for (const dir of ['dl', 'ul']) for (let iTbs = 0; iTbs <= 13; iTbs++) for (let i = 0; i <= 7; i++) {
+    const r = C.resolve({ kind: 'nbiot', dir, nTones: 12, iTbs, iSf: i, iRu: i }, 2, 0.5)
+    if (r.error !== '' || !(r.tbs > 0)) return false
+  }
+  return true
+})())
 ok('normalizePhy 只读不写，返回全新对象（IPC 过来的纯数据 / 渲染端代理都吃得下）', (() => {
   const src = { kind: 'nr', dir: 'ul', scs: 30, nRb: 1, nRep: 4 }
   const a = C.normalizePhy(src)

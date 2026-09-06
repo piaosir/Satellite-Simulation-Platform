@@ -4,7 +4,7 @@ import Icon from '../components/Icon.vue'
 import { checkNtnBandwidth } from '../shared/ntnLimits.js'
 import { modFactorOf, parseFrac, rateChain, rateDisplays, infoRateFrom, anchorOf } from '../shared/carrierRate.js'
 // 3GPP NTN：载波按物理层参数描述（PRB 数 / 子载波间隔 / MCS / 重复），占用带宽与信息速率由此算
-import { normalizePhy, occupiedBwKHz, channelBwKHz, infoRateKbps, tbsOf, nrRbTable, nbSingleToneMcs, nbMaxSfIdx, NB_SF_COUNT, resolve as resolvePhy } from '../shared/ntnPhy.js'
+import { normalizePhy, occupiedBwKHz, channelBwKHz, infoRateKbps, tbsOf, nrBwSteps, NTN_BANDS, nbSingleToneMcs, nbMaxSfIdx, NB_SF_COUNT, resolve as resolvePhy } from '../shared/ntnPhy.js'
 
 // 载波信号参数面板 —— 严格照搬小程序载波信号卡片：DVB/MODCOD 快选、Eb/N₀⇄Es/N₀ 切换（带换算）、
 // 频谱效率⇄帧效率切换、速率换算链（信息速率/码片速率/符号率/载波带宽，编辑任一个反算其余）。
@@ -232,30 +232,55 @@ function onDir(e) {
   const p = phy.value
   if (!p || p.kind !== 'nr' || p.dir === dir) { setPhy({ dir }); return }
   if (dir === 'ul') { setPhy({ dir, chBwMHz: null, nRb: 1, nSymb: 14 }); return }
-  const mhz = chBwOptions.value.length ? chBwOptions.value[0] : null
-  const t = nrRbTable(p.scs)
-  setPhy({ dir, chBwMHz: mhz, nRb: (mhz != null && t && t[mhz]) || 25, nSymb: 12 })
+  const first = nrBwSteps({ ...p, dir })[0] || null
+  setPhy(first ? { dir, chBwMHz: first.mhz, nRb: first.nRb, nSymb: 12 } : { dir, nSymb: 12 })
 }
-// 该子载波间隔下有哪些信道带宽档（TS 38.101-5）
-const chBwOptions = computed(() => {
-  const t = phy.value ? nrRbTable(phy.value.scs) : null
-  return t ? Object.keys(t).map(Number).sort((a, b) => a - b) : []
+// 该【频段 + 子载波间隔】下有哪些信道带宽档（TS 38.101-5 Table 5.3.5-1/-2）。
+// ★ 不能只看 N_RB 表（5.3.2-1）：那张表只说「这个带宽在这个 SCS 下是多少 PRB」，哪个频段允许
+//   哪几档是另一张表。只看前者，5 MHz@30 kHz、n254 的 20 MHz、任何频段的 30 MHz 都配得出来。
+//   上行把「只用于下行」的档滤掉。
+const chBwSteps = computed(() => {
+  const p = phy.value
+  if (!p || p.kind !== 'nr') return []
+  return nrBwSteps(p).filter((s) => !(s.dlOnly && p.dir === 'ul'))
 })
+const chBwOptions = computed(() => chBwSteps.value.map((s) => s.mhz))
+// 频段下拉：按 FR 分两组，顺序照 NTN_BANDS 的书写序（与 TS 38.101-5 的表序一致）
+const bandOptions = computed(() => Object.keys(NTN_BANDS).map((k) => ({
+  value: k, fr: NTN_BANDS[k].fr,
+  label: k + '（' + (NTN_BANDS[k].fr === 1 ? 'FR1' : 'FR2') + '）'
+})))
+// 换频段：原来那一档信道带宽在新频段可能根本没有（n256 的 20 MHz 到 n254 就没了），
+// 就地落到新频段的最小档 —— 留着不动配出来的是标准里没有的载波，当场红字。
+function onBand(e) {
+  const band = e.target.value
+  const p = phy.value
+  if (!p) { setPhy({ band }); return }
+  const next = nrBwSteps({ ...p, band }).filter((s) => !(s.dlOnly && p.dir === 'ul'))
+  if (p.chBwMHz == null) { setPhy({ band }); return }
+  const keep = next.find((s) => s.mhz === p.chBwMHz)
+  const pick = keep || next[0] || null
+  setPhy(pick ? { band, chBwMHz: pick.mhz, nRb: pick.nRb } : { band })
+}
 // 下行按「信道带宽 + 子载波间隔」查表自动填 PRB 数；上行是一个 UE 的分配，PRB 数直填
 function onScs(e) {
   const scs = numAttr(e, 15)
-  const t = nrRbTable(scs)
   const p = phy.value
   const patch = { scs }
-  if (t && p && p.dir === 'dl' && p.chBwMHz != null && t[p.chBwMHz]) patch.nRb = t[p.chBwMHz]
+  if (p && p.chBwMHz != null) {
+    // 换子载波间隔 = 换一张档位表：同一个 10 MHz 在 15/30/60 kHz 下的 PRB 数不同，且未必都有这一档
+    const next = nrBwSteps({ ...p, scs }).filter((s) => !(s.dlOnly && p.dir === 'ul'))
+    const pick = next.find((s) => s.mhz === p.chBwMHz) || next[0] || null
+    if (pick) { patch.chBwMHz = pick.mhz; patch.nRb = pick.nRb }
+  }
   setPhy(patch)
 }
 function onChBw(e) {
   const v = e.target.value
   if (v === '') { setPhy({ chBwMHz: null }); return }
   const mhz = Number(v)
-  const t = nrRbTable(phy.value ? phy.value.scs : 15)
-  setPhy({ chBwMHz: mhz, nRb: (t && t[mhz]) || (phy.value ? phy.value.nRb : 25) })
+  const hit = chBwSteps.value.find((s) => s.mhz === mhz)
+  setPhy({ chBwMHz: mhz, nRb: hit ? hit.nRb : (phy.value ? phy.value.nRb : 25) })
 }
 // 只读读数：占用带宽 / 信道带宽 / 信息速率 / TBS / 频谱效率（按占用带宽，即门限换 Eb/N₀ 用的那个 k）
 const phyOut = computed(() => {
@@ -417,6 +442,12 @@ function onBwInput(e) { setAnchor('bw', e.target.value) }
           <option value="ul">上行</option>
         </select>
       </label>
+      <label v-if="phyIsNr" class="bb-f" title="NTN 频段——它决定该子载波间隔可选的信道带宽档（TS 38.101-5 V19.5.0 Table 5.3.5-1 / 5.3.5-2），也决定按 FR1 还是 FR2 取 N_RB 表与开销系数。留「不指定」＝按该 FR 所有频段的并集放行（老配置的缺省）"><span class="bb-l">NTN 频段</span>
+        <select :value="phy.band || ''" class="bb-i" @change="onBand">
+          <option value="">不指定</option>
+          <option v-for="b in bandOptions" :key="b.value" :value="b.value">{{ b.label }}</option>
+        </select>
+      </label>
       <label v-if="phyIsNr || phy.dir === 'ul'" class="bb-f" :title="phyIsNr ? '' : 'NPUSCH 的子载波间隔；3.75 kHz 只有单子载波一种配置（TS 36.211 §10.1.2）'"><span class="bb-l">子载波间隔 <i>(kHz)</i></span>
         <select v-if="phyIsNr" :value="String(phy.scs)" class="bb-i" @change="onScs">
           <option v-for="s in [15, 30, 60, 120]" :key="s" :value="String(s)">{{ s }}</option>
@@ -426,7 +457,7 @@ function onBwInput(e) { setAnchor('bw', e.target.value) }
           <option v-for="s in nbScsOptions" :key="s" :value="String(s)">{{ s }}</option>
         </select>
       </label>
-      <label v-if="phyIsNr" class="bb-f" title="TS 38.101-5 的信道带宽档位；选定即按该子载波间隔查表填 PRB 数。选「按 PRB 数」则直接填 PRB 数"><span class="bb-l">信道带宽 <i>(MHz)</i></span>
+      <label v-if="phyIsNr" class="bb-f" title="该频段在这个子载波间隔下允许的信道带宽档（TS 38.101-5 V19.5.0 Table 5.3.5-1 / 5.3.5-2）；下拉里列的就是全部合法档，选定即查表填 PRB 数。选「按 PRB 数」则直接填 PRB 数"><span class="bb-l">信道带宽 <i>(MHz)</i></span>
         <select :value="phy.chBwMHz == null ? '' : String(phy.chBwMHz)" class="bb-i" @change="onChBw">
           <option value="">按 PRB 数</option>
           <option v-for="b in chBwOptions" :key="b" :value="String(b)">{{ b }}</option>
@@ -435,10 +466,17 @@ function onBwInput(e) { setAnchor('bw', e.target.value) }
       <label v-if="phyIsNr" class="bb-f" title="本次分配的资源块数；占用带宽 = N_RB × 12 × 子载波间隔"><span class="bb-l">PRB 数</span>
         <input :value="phy.nRb" class="bb-i mono" @change="setPhy({ nRb: Number($event.target.value) })" />
       </label>
-      <label v-if="!phyIsNr && phy.dir === 'ul'" class="bb-f" :title="'NPUSCH 每资源单元的子载波数 N_sc^RU（TS 36.211 §10.1.2 的 single-tone / multi-tone）；占用带宽 = 子载波数 × 子载波间隔（单子载波 15 kHz 比 12 子载波低 10.8 dB、3.75 kHz 低 16.8 dB）' + (phy.st === true ? '。单音表锁 1 个子载波：门限那一列是按单音给的，行号也是 I_MCS' : (phy.st === false ? '。多音表只有 3 / 6 / 12：TS 36.213 §16.5.1.2 规定 N_sc^RU > 1 时恒 QPSK，且门限比单音低 1.6~3.8 dB' : '。自建标准不锁：行号按 I_MCS 还是 I_TBS 读，随当前子载波数判'))"><span class="bb-l">子载波数</span>
+      <label v-if="!phyIsNr && phy.dir === 'ul'" class="bb-f" :title="phy.st === true ? 'NPUSCH 每资源单元的子载波数 N_sc^RU；单音表锁死 1 个子载波——门限那一列是按单音给的，表里的行号也是 I_MCS（TS 36.213 Table 16.5.1.2-1）。占用带宽 = 子载波数 × 子载波间隔，单子载波 15 kHz 比 12 子载波低 10.8 dB、3.75 kHz 低 16.8 dB' : (phy.st === false ? 'NPUSCH 每资源单元的子载波数 N_sc^RU；多音表只有 3 / 6 / 12——TS 36.213 §16.5.1.2 规定 N_sc^RU > 1 时恒 QPSK，且门限比单音低 1.6~3.8 dB。占用带宽 = 子载波数 × 子载波间隔' : 'NPUSCH 每资源单元的子载波数 N_sc^RU（TS 36.211 §10.1.2 的 single-tone / multi-tone）；自建标准不锁死——表里的行号按 I_MCS 还是 I_TBS 读，随当前子载波数判。占用带宽 = 子载波数 × 子载波间隔')"><span class="bb-l">子载波数</span>
         <select :value="String(phy.nTones)" class="bb-i" :disabled="nbToneOptions.length < 2"
                 @change="setPhy({ nTones: Number($event.target.value) })">
           <option v-for="t in nbToneOptions" :key="t" :value="String(t)">{{ t }}</option>
+        </select>
+      </label>
+      <label v-if="!phyIsNr" class="bb-f" title="NB-IoT 载波怎么落在频谱上（TS 36.102 §5.4B）：独立部署走 200 kHz 栅格、保护带落在 LTE 载波的保护带内、带内部署嵌在 LTE 载波里。只影响下行 NPDSCH——带内部署前 3 个符号让给 LTE 控制区并被 CRS 打孔，每传输块编码比特数由 304 掉到 208、I_TBS 只到 10（TS 36.213 §16.4.1.4 / §16.4.1.5.1）。NPUSCH 不受影响"><span class="bb-l">部署模式</span>
+        <select :value="phy.opMode || 'standalone'" class="bb-i" @change="setPhy({ opMode: $event.target.value })">
+          <option value="standalone">独立</option>
+          <option value="guardband">保护带</option>
+          <option value="inband">带内</option>
         </select>
       </label>
       <label v-if="!phyIsNr" class="bb-f" :title="phy.dir === 'ul' ? '一个传输块占几个资源单元（TS 36.213 Table 16.5.1.2-2 的 I_RU 列）' : '一个传输块占几个子帧（TS 36.213 Table 16.4.1.5.1-1 的 I_SF 列）'">

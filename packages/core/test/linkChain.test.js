@@ -1117,11 +1117,22 @@ console.log('\n=== 12 方案二：级联精简（传播项折叠 / 手算链完�
 // 串再取 SHA-1 前 16 位。展示层怎么改都不该动这一串——它一变就是计算被碰了。
 {
   const crypto = require('crypto');
-  // 方案二新增的纯回显字段（右侧参考段消费）：基线里没有，排除在指纹之外
+  // 后来新增的纯回显字段（不进任何计算）：基线里没有，排除在指纹之外。
+  //   前 14 项 —— 方案二的右侧参考段消费；
+  //   后 3 项 —— SLA「发射合规」消费（极化 / 发信站 EIRP / PSD，见下方 §7.3 那组断言）。
   const ECHO_NEW = new Set(['txDiameterResult', 'txEffResult', 'paWResult', 'upcMarginResult',
     'rxDiameterResult', 'rxEffResult', 'rxAntennaGainResult', 'rxFeederLossResult', 'antennaNoiseTempResult',
     'receiverNoiseTempResult', 'rainNoiseTempResult', 'cloudNoiseTempResult', 'sysNoiseTempKResult',
-    'sysNoiseTempDbResult']);
+    'sysNoiseTempDbResult',
+    'polarizationResult', 'stationEirpResult', 'stationPsdResult',
+    //   后 18 项 —— 3GPP NTN 的 snr 口径新增（DVB 各体制恒为空串，不进任何计算）。
+    //   phy* 那一串是详细计算结果按体制换标签用的逐项物理层参数，2026-09-05 拆「物理层配置」时加的。
+    'snrThresholdResult', 'snrThresholdEffResult', 'snrActualResult', 'noiseBwResult',
+    'phyRepResult', 'phyTbsResult', 'phyTbsUnitResult', 'phyDescResult', 'phyDescEnResult',
+    'phyKindResult', 'phyDirResult', 'phyDirTextResult', 'phyDirTextEnResult',
+    'phyScsResult', 'phyUnitsResult', 'phySpanResult', 'phyMcsResult', 'phyMcsEnResult',
+    //   2026-09-06 再加三项：NTN 频段、目标 BLER、NB-IoT 的有效码率（都只对 3GPP 行有值）
+    'phyBandResult', 'phyBlerResult', 'phyCodeRateResult']);
   const canon = (v) => {
     if (Array.isArray(v)) return '[' + v.map(canon).join(',') + ']';
     if (v && typeof v === 'object') {
@@ -1184,6 +1195,25 @@ console.log('\n=== 12 方案二：级联精简（传播项折叠 / 手算链完�
   }
   ok(`★ 全部数值出参与方案二动手前逐位一致（${same}/${Object.keys(BASELINE).length} 条链指纹不变）`,
     drift.length === 0, drift.join('；'));
+}
+
+// —— ④ 链首上行跳的发射合规回显（SLA「发射合规」的数据源，纯回显不改任何计算）——
+{
+  const r = computeLinkChain({ nodes: [TX_ES, TXP_SAT, RX_ES], hops: [UP_HOP, DN_HOP], carrier: CARRIER });
+  ok('§7.3 算例可算', r.success, r.message);
+  const h0 = r.data.hops[0];
+  // 与级联台账里「发信站 EIRP」那一行逐位相等 —— 两处取的是同一个 h0.txEirp，不许各算各的
+  const led = (r.data.ledger || []).find((x) => x.label === '发信站 EIRP');
+  ok('hops[0].stationEirpResult 与级联「发信站 EIRP」行逐位相等',
+    led && h0.stationEirpResult === led.value.toFixed(2), `${h0.stationEirpResult} vs ${led && led.value}`);
+  // PSD = EIRP − 10lg(B_Hz)，B 取本段载波分配带宽
+  const bwKHz = parseFloat(r.data.allocBandwidthResult);
+  const wantPsd = (parseFloat(h0.stationEirpResult) - 10 * Math.log10(bwKHz * 1000));
+  ok('hops[0].stationPsdResult = EIRP − 10lg(B_Hz)',
+    Math.abs(parseFloat(h0.stationPsdResult) - wantPsd) < 0.006, `${h0.stationPsdResult} vs ${wantPsd.toFixed(2)}`);
+  ok('hops[0].polarizationResult 原样回显本跳极化', h0.polarizationResult === (UP_HOP.polarization || ''), h0.polarizationResult);
+  ok('下行跳不出发信站 EIRP / PSD（客户端不在这一段发射）',
+    r.data.hops[1].stationEirpResult === '' && r.data.hops[1].stationPsdResult === '');
 }
 
 console.log(`\n=== ${pass} passed, ${fail} failed ===`);

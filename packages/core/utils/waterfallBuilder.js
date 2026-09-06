@@ -20,6 +20,9 @@ const adaptiveUnits = require('./adaptiveUnits.js');
 const WF_DICT = {
   // —— 段标题 ——
   '载波与调制参数': 'Carrier & Modulation',
+  // 3GPP NTN（2026-09-06）
+  '目标 BLER': 'Target BLER',
+  'NTN 频段': 'NTN Band',
   '几何与天线（上行 / 下行）': 'Geometry & Antenna (Up / Down)',
   '传播损耗（上行 / 下行）': 'Propagation Loss (Up / Down)',
   '卫星与转发器': 'Satellite & Transponder',
@@ -73,6 +76,20 @@ const WF_DICT = {
   '误码率': 'BER',
   '门限 Eb/N₀': 'Threshold Eb/N₀',
   '门限 Es/N₀': 'Threshold Es/N₀',
+  '门限 SNR': 'Threshold SNR',
+  '门限 SNR（表值）': 'Threshold SNR (table)',
+  '信道带宽': 'Channel Bandwidth',
+  '占用带宽': 'Occupied Bandwidth',
+  '传输方向': 'Direction',
+  '子载波间隔': 'Subcarrier Spacing',
+  // ★ NB-IoT 的这个参数是 TS 36.211 §10.1.2 的 N_sc^RU（每资源单元的子载波数），不是「音数」——
+  //   single-tone / multi-tone 只是【传输模式】的名字，用在 NPUSCH 那两张 MODCOD 表的表名上。
+  '子载波数': 'Subcarriers',
+  'PRB 数': 'PRBs',
+  '子帧数': 'Subframes',
+  'RU 数': 'Resource Units',
+  '重复次数': 'Repetitions',
+  '传输块大小': 'Transport Block Size',
   '载波噪声带宽': 'Carrier Noise Bandwidth',
   '系统余量': 'System Margin',
   '附加 C/I 退化': 'Additional C/I Degradation',
@@ -521,6 +538,66 @@ function createBuilder(ctx) {
     return b._seg(title, 1, rows, meta);
   };
 
+  // 载波段的行表 —— 六处（GEO / NGSO / 再生上·下·星间 / 端到端）共用一份，别再各抄一份。
+  // 3GPP NTN 行与 DVB 行合用这一张：对方没有的字段引擎出空串，_disp 给 '—'，调用处一律剔空行。
+  //   · DVB 行没有：占用带宽 / 物理层那几项 / 门限 SNR
+  //   · 3GPP 行没有：载波速率 / 符号速率 / 码片速率（OFDM 没有外码与滚降，符号率也不是噪声带宽）
+  b._carrierRows = function (opt) {
+    const o = opt || {};
+    const ntn = !!results.phyKindResult;              // 这条是不是 3GPP NTN 载波
+    const nr = results.phyKindResult === 'nr';
+    const ul = results.phyDirResult === 'ul';
+    const en = lang === 'en';
+    const rows = [
+      // ★ 3GPP 行这个数是标准里的【信道带宽】：含保护带、落在频率栅格上（NB-IoT 200 kHz、
+      //   NR 5/10/15/20/30 MHz），转发器占用比与频谱效率按它算。紧随其后的「占用带宽」才是真正
+      //   有功率、也是定噪声的那一段（NB-IoT 180 kHz、NR 4.5 MHz）。两行并排且数不一样，名字
+      //   必须分得开——都叫「载波带宽」「占用带宽」会被读成同义词。DVB 行没有这个区分，照旧。
+      [ntn ? '信道带宽' : '载波带宽', 'allocBandwidthResult', 'kHz'],
+      ['占用带宽', 'noiseBwResult', 'kHz']
+    ];
+    if (o.full) rows.push(['功率带宽', 'PowerBWResult', 'kHz']);
+    rows.push(
+      ['频谱效率', 'spectralEfficiencyResult', 'bit/s/Hz'],
+      ['信息速率', 'infoRateResult', 'kbps'],
+      ['载波速率', 'carrierRateResult', 'kbps'],
+      ['符号速率', 'symbolRateResult', 'ksps']
+    );
+    if (o.full) rows.push(['码片速率', 'ChipRateResult', 'kcps']);
+    rows.push(['调制方式', 'modulationResult', '']);
+    if (o.full) rows.push(['调制因子', 'modulationFactorResult', '']);
+    rows.push(
+      // NB-IoT 的码率由引擎按当前 I_SF / I_RU 与部署模式现算 =（TBS + 24 bit CRC）/ 每传输块编码比特数；
+      // MODCOD 表那一列只是 I_SF/I_RU = 0 那一格的值。NR 行照旧回显表里的 R。
+      ['FEC 码率', (ntn && !nr) ? 'phyCodeRateResult' : 'fecResult', ''],
+      // ★ 3GPP 各表的门限按【BLER 10% 首传】给，误码率对它既无意义又误导（那个数来自 DVB 的表单
+      //   缺省 1×10⁻⁷）。3GPP 行出目标 BLER，DVB 行出误码率，两者互斥。
+      ntn ? ['目标 BLER', 'phyBlerResult', '%'] : ['误码率', 'berResult', ''],
+      // —— 3GPP NTN 物理层参数，逐项一行 ——
+      // 原先压成「物理层配置：NB-IoT 下行 · 12 子载波 × 15 kHz · I_TBS 4 · ×1」一句，读者得自己
+      // 拆开才对得上载波面板的那几格。标签随体制走（NR 是 PRB 数，NB-IoT 是子载波数），值全是
+      // 引擎出的数据，一个也不在这里现算。
+      ['传输方向', en ? 'phyDirTextEnResult' : 'phyDirTextResult', ''],
+      ['NTN 频段', 'phyBandResult', ''],
+      ['子载波间隔', 'phyScsResult', 'kHz'],
+      [nr ? 'PRB 数' : '子载波数', 'phyUnitsResult', ''],
+      [ul ? 'RU 数' : '子帧数', 'phySpanResult', ''],
+      [nr ? 'MCS' : 'I_TBS', en ? 'phyMcsEnResult' : 'phyMcsResult', ''],
+      ['传输块大小', 'phyTbsResult', 'bit'],
+      ['重复次数', 'phyRepResult', ''],
+      ['门限 Eb/N₀', 'ebnoResult', 'dB']
+    );
+    // 门限那几行：3GPP 行的 Es/N₀ 与门限 SNR 恒是同一个数（每 RE SNR ≡ 占用带宽内的 C/N），
+    // 并排摆两遍只会让人以为是两个量；重复 ×1 时「表值」与含重复的有效门限也同数，同理不出。
+    if (!ntn) rows.push(['门限 Es/N₀', 'esnoResult', 'dB']);
+    if (ntn && results.phyRepResult !== '1') rows.push(['门限 SNR（表值）', 'snrThresholdResult', 'dB']);
+    rows.push(
+      ['门限 SNR', 'snrThresholdEffResult', 'dB'],
+      ['载波噪声带宽', 'RXnoiseBW', 'dB-Hz']
+    );
+    return o.tail ? rows.concat(o.tail) : rows;
+  };
+
   // 级联单值行（三列布局）：value 路由到指定列 col（'up'|'down'|'total'）。
   // key 为 null 表示该格为计算检查点，值由 _cascadeTriSeg 沿链路累加后回填；
   // key 为数值时作为字面量原始值（用于 +228.6、噪声带宽、干扰损失等链路桥接项）。
@@ -717,22 +794,7 @@ function createBuilder(ctx) {
     // ① 载波与调制参数（链路级，单列）——只留「定义这条载波」的参数。
     // 实际 Eb/N₀ / Es/N₀ 与系统余量是算出来的结果，已移入 ⑧「性能与余量」：
     // 参数段里混着结果，读者分不清哪些是自己填的、哪些是平台算的。
-    segs.push(b._refSeg('载波与调制参数', [
-      ['载波带宽', 'allocBandwidthResult', 'kHz'],
-      ['功率带宽', 'PowerBWResult', 'kHz'],
-      ['频谱效率', 'spectralEfficiencyResult', 'bit/s/Hz'],
-      ['信息速率', 'infoRateResult', 'kbps'],
-      ['载波速率', 'carrierRateResult', 'kbps'],
-      ['符号速率', 'symbolRateResult', 'ksps'],
-      ['码片速率', 'ChipRateResult', 'kcps'],
-      ['调制方式', 'modulationResult', ''],
-      ['调制因子', 'modulationFactorResult', ''],
-      ['FEC 码率', 'fecResult', ''],
-      ['误码率', 'berResult', ''],
-      ['门限 Eb/N₀', 'ebnoResult', 'dB'],
-      ['门限 Es/N₀', 'esnoResult', 'dB'],
-      ['载波噪声带宽', 'RXnoiseBW', 'dB-Hz']
-    ], { id: 'carrier', cls: 'param' }));
+    segs.push(b._refSeg('载波与调制参数', b._carrierRows({ full: true }), { id: 'carrier', cls: 'param' }));
 
     // ② 几何与天线（上行 / 下行 双列）
     const geoSeg = b._dualSeg('几何与天线（上行 / 下行）', [
@@ -924,6 +986,7 @@ function createBuilder(ctx) {
     segs.push(b._refSeg('性能与余量', [
       ['Eb/N₀', 'ebnoActualResult', 'dB'],
       ['Es/N₀', 'esnoActualResult', 'dB'],
+      ['SNR', 'snrActualResult', 'dB'],
       ['上行 C/N（热噪声）', 'uplinkThermalCN', 'dB'],
       ['上行 C/I', 'uplinkInterferenceCN', 'dB'],
       ['上行 C/(N+I)', 'uplinkCN', 'dB'],
@@ -996,22 +1059,7 @@ function createBuilder(ctx) {
     const hasIsl = b._num(r.islHopsResult) > 0;
 
     // ① 载波与调制参数（链路级，单列）
-    segs.push(b._refSeg('载波与调制参数', [
-      ['载波带宽', 'allocBandwidthResult', 'kHz'],
-      ['功率带宽', 'PowerBWResult', 'kHz'],
-      ['频谱效率', 'spectralEfficiencyResult', 'bit/s/Hz'],
-      ['信息速率', 'infoRateResult', 'kbps'],
-      ['载波速率', 'carrierRateResult', 'kbps'],
-      ['符号速率', 'symbolRateResult', 'ksps'],
-      ['码片速率', 'ChipRateResult', 'kcps'],
-      ['调制方式', 'modulationResult', ''],
-      ['调制因子', 'modulationFactorResult', ''],
-      ['FEC 码率', 'fecResult', ''],
-      ['误码率', 'berResult', ''],
-      ['门限 Eb/N₀', 'ebnoResult', 'dB'],
-      ['门限 Es/N₀', 'esnoResult', 'dB'],
-      ['载波噪声带宽', 'RXnoiseBW', 'dB-Hz']
-    ], { id: 'carrier', cls: 'param' }));   // 实际 Eb/N₀ / Es/N₀ 与系统余量移入「性能与余量」，同 GEO
+    segs.push(b._refSeg('载波与调制参数', b._carrierRows({ full: true }), { id: 'carrier', cls: 'param' }));   // 实际 Eb/N₀ / Es/N₀ 与系统余量移入「性能与余量」，同 GEO
 
     // ② 几何与天线（上行 / 下行 双列）。NGSO「对卫星仰角」为最低仰角
     // 注：NGSO 不含「极化角」——卫星位置时变，GEO 式极化偏转/方位反算不适用（恒为 0，已移除）
@@ -1265,6 +1313,7 @@ function createBuilder(ctx) {
     segs.push(b._refSeg('性能与余量', [
       ['Eb/N₀', 'ebnoActualResult', 'dB'],
       ['Es/N₀', 'esnoActualResult', 'dB'],
+      ['SNR', 'snrActualResult', 'dB'],
       ['上行 C/N（热噪声）', 'uplinkThermalCN', 'dB'],
       ['上行 C/I', 'uplinkInterferenceCN', 'dB'],
       ['上行 C/(N+I)', 'uplinkCN', 'dB'],
@@ -1342,21 +1391,7 @@ function createBuilder(ctx) {
     const segs = [];
 
     // ① 载波与调制参数（链路级，单列）
-    segs.push(b._refSeg('载波与调制参数', [
-      ['载波带宽', 'allocBandwidthResult', 'kHz'],
-      ['频谱效率', 'spectralEfficiencyResult', 'bit/s/Hz'],
-      ['信息速率', 'infoRateResult', 'kbps'],
-      ['载波速率', 'carrierRateResult', 'kbps'],
-      ['符号速率', 'symbolRateResult', 'ksps'],
-      ['码片速率', 'ChipRateResult', 'kcps'],
-      ['调制方式', 'modulationResult', ''],
-      ['调制因子', 'modulationFactorResult', ''],
-      ['FEC 码率', 'fecResult', ''],
-      ['误码率', 'berResult', ''],
-      ['门限 Eb/N₀', 'ebnoResult', 'dB'],
-      ['门限 Es/N₀', 'esnoResult', 'dB'],
-      ['载波噪声带宽', 'RXnoiseBW', 'dB-Hz']
-    ], { id: 'carrier', cls: 'param' }));   // 实际 Eb/N₀ / Es/N₀ 与系统余量移入「性能与余量」，同 GEO
+    segs.push(b._refSeg('载波与调制参数', b._carrierRows({ full: true }), { id: 'carrier', cls: 'param' }));   // 实际 Eb/N₀ / Es/N₀ 与系统余量移入「性能与余量」，同 GEO
 
     // ② 几何与天线（上行，单列）+ 可见性几何
     const geoSeg = b._refSeg('几何与天线（上行）', [
@@ -1452,6 +1487,7 @@ function createBuilder(ctx) {
     segs.push(b._refSeg('性能与余量（上行）', [
       ['Eb/N₀', 'ebnoActualResult', 'dB'],
       ['Es/N₀', 'esnoActualResult', 'dB'],
+      ['SNR', 'snrActualResult', 'dB'],
       ['上行 C/N（热噪声）', 'uplinkThermalCN', 'dB'],
       ['上行 C/I', 'uplinkInterferenceCN', 'dB'],
       ['上行 C/(N+I)（再生·合计）', 'uplinkCN', 'dB'],
@@ -1493,21 +1529,7 @@ function createBuilder(ctx) {
     const segs = [];
 
     // ① 载波与调制参数（链路级，单列）
-    segs.push(b._refSeg('载波与调制参数', [
-      ['载波带宽', 'allocBandwidthResult', 'kHz'],
-      ['频谱效率', 'spectralEfficiencyResult', 'bit/s/Hz'],
-      ['信息速率', 'infoRateResult', 'kbps'],
-      ['载波速率', 'carrierRateResult', 'kbps'],
-      ['符号速率', 'symbolRateResult', 'ksps'],
-      ['码片速率', 'ChipRateResult', 'kcps'],
-      ['调制方式', 'modulationResult', ''],
-      ['调制因子', 'modulationFactorResult', ''],
-      ['FEC 码率', 'fecResult', ''],
-      ['误码率', 'berResult', ''],
-      ['门限 Eb/N₀', 'ebnoResult', 'dB'],
-      ['门限 Es/N₀', 'esnoResult', 'dB'],
-      ['载波噪声带宽', 'RXnoiseBW', 'dB-Hz']
-    ], { id: 'carrier', cls: 'param' }));   // 实际 Eb/N₀ / Es/N₀ 与系统余量移入「性能与余量」，同 GEO
+    segs.push(b._refSeg('载波与调制参数', b._carrierRows({ full: true }), { id: 'carrier', cls: 'param' }));   // 实际 Eb/N₀ / Es/N₀ 与系统余量移入「性能与余量」，同 GEO
 
     // ② 几何与天线（下行，单列）+ 可见性几何
     const geoSeg = b._refSeg('几何与天线（下行）', [
@@ -1603,6 +1625,7 @@ function createBuilder(ctx) {
     segs.push(b._refSeg('性能与余量（下行）', [
       ['Eb/N₀', 'ebnoActualResult', 'dB'],
       ['Es/N₀', 'esnoActualResult', 'dB'],
+      ['SNR', 'snrActualResult', 'dB'],
       ['下行 C/N（热噪声）', 'downlinkThermalCN', 'dB'],
       ['下行 C/I', 'downlinkInterferenceCN', 'dB'],
       ['下行 C/(N+I)（再生·合计）', 'downlinkCN', 'dB'],
@@ -1638,21 +1661,7 @@ function createBuilder(ctx) {
     const manualGeo = String(r.islManualGeomResult || '') === '1';   // 手动几何：星间距离由用户逐条给定
 
     // ① 载波与调制参数（链路级，单列）
-    segs.push(b._refSeg('载波与调制参数', [
-      ['载波带宽', 'allocBandwidthResult', 'kHz'],
-      ['频谱效率', 'spectralEfficiencyResult', 'bit/s/Hz'],
-      ['信息速率', 'infoRateResult', 'kbps'],
-      ['载波速率', 'carrierRateResult', 'kbps'],
-      ['符号速率', 'symbolRateResult', 'ksps'],
-      ['码片速率', 'ChipRateResult', 'kcps'],
-      ['调制方式', 'modulationResult', ''],
-      ['调制因子', 'modulationFactorResult', ''],
-      ['FEC 码率', 'fecResult', ''],
-      ['误码率', 'berResult', ''],
-      ['门限 Eb/N₀', 'ebnoResult', 'dB'],
-      ['门限 Es/N₀', 'esnoResult', 'dB'],
-      ['载波噪声带宽', 'RXnoiseBW', 'dB-Hz']
-    ], { id: 'carrier', cls: 'param' }));   // 实际 Eb/N₀ / Es/N₀ 与系统余量移入「性能与余量」，同 GEO
+    segs.push(b._refSeg('载波与调制参数', b._carrierRows({ full: true }), { id: 'carrier', cls: 'param' }));   // 实际 Eb/N₀ / Es/N₀ 与系统余量移入「性能与余量」，同 GEO
 
     // ② 星间几何（最差工况，单列）——双 SGP4 + 地球临边遮挡。
     // 手动几何（islManualGeomResult）下星间距离是用户给的一个数，没有轨道解算：段名与行名都不说
@@ -1706,6 +1715,7 @@ function createBuilder(ctx) {
     segs.push(b._refSeg('性能与余量（星间）', [
       ['Eb/N₀', 'ebnoActualResult', 'dB'],
       ['Es/N₀', 'esnoActualResult', 'dB'],
+      ['SNR', 'snrActualResult', 'dB'],
       // 填了星间 C/I 时这个数已是 C/(N+I)，行名跟着口径走（没填时仍是那一行「星间 C/N」）
       [islCI !== null ? '星间 C/(N+I)' : '星间 C/N', 'islPerHopCNResult', 'dB'],
       ['门限 C/N', 'thresholdCN', 'dB'],
@@ -1828,20 +1838,7 @@ function createBuilder(ctx) {
     // ① 载波与调制参数。再生节点解调-重调后可换体制，故这一段按【段】给：各段体制完全相同时
     // 仍收成一组（绝大多数链就是这样），只要有一段不同就逐段列开——否则表上只剩首段那一份，
     // 读者会拿它去对后面几段的门限。
-    const CARR_ROWS = [
-      ['载波带宽', 'allocBandwidthResult', 'kHz'],
-      ['频谱效率', 'spectralEfficiencyResult', 'bit/s/Hz'],
-      ['信息速率', 'infoRateResult', 'kbps'],
-      ['载波速率', 'carrierRateResult', 'kbps'],
-      ['符号速率', 'symbolRateResult', 'ksps'],
-      ['调制方式', 'modulationResult', ''],
-      ['FEC 码率', 'fecResult', ''],
-      ['误码率', 'berResult', ''],
-      ['门限 Eb/N₀', 'ebnoResult', 'dB'],
-      ['门限 Es/N₀', 'esnoResult', 'dB'],
-      ['载波噪声带宽', 'RXnoiseBW', 'dB-Hz'],
-      ['门限 C/N', 'thresholdCN', 'dB']
-    ];
+    const CARR_ROWS = b._carrierRows({ tail: [['门限 C/N', 'thresholdCN', 'dB']] });
     const carrs = Array.isArray(r.carriers) ? r.carriers : [];
     const sig = (c) => CARR_ROWS.map((t) => c[t[1]]).join('|');
     const oneCarrier = carrs.length <= 1 || carrs.every((c) => sig(c) === sig(carrs[0]));

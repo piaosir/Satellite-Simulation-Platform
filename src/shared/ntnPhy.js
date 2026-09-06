@@ -27,21 +27,66 @@
 // ===== 子载波间隔 → numerology μ（时隙长度 = 1 ms / 2^μ）=====
 export const MU_OF = { 15: 0, 30: 1, 60: 2, 120: 3 }
 
-// ===== 信道带宽(MHz) → N_RB（TS 38.101-5 Table 5.3.2-1，与 TS 38.101-1 同值）=====
-// FR1-NTN：n254(L) / n255(S) / n256(S)，5…30 MHz；30 MHz 是 Rel-18 给 n255 新增的档。
-// FR2-NTN：n510 / n511 / n512（Ka），50…400 MHz —— 这一段按 TS 38.101-2 的同带宽档收录，
-//   TS 38.101-5 Rel-18 的 FR2-NTN 表尚未逐值核到原文（诚实边界）。
-// 同一 SCS 下 FR1 与 FR2 的带宽档不重叠（5/10/15/20/30 vs 50/100/200/400），故并成一张表；
-// 需要分开时（例如只给 FR1 的老配置判带宽超限）用下面这两个清单，别拿数值大小去猜。
-export const NR_RB_TABLE = {
-  15: { 5: 25, 10: 52, 15: 79, 20: 106, 30: 160 },
-  30: { 5: 11, 10: 24, 15: 38, 20: 51, 30: 78 },
-  60: { 10: 11, 15: 18, 20: 24, 30: 38, 50: 66, 100: 132, 200: 264 },
+// ===== 信道带宽(MHz) → N_RB（TS 38.101-5 V19.5.0 Table 5.3.2-1 / 5.3.2-2）=====
+// * FR1 与 FR2 必须【分成两张】：同一个 60 kHz / 50 MHz，FR1-NTN 是 65 RB、FR2-NTN 是 66 RB。
+//   合成一张表就是同一个键两个值，谁后写谁赢。
+export const NR_RB_FR1 = {
+  15: { 3: 15, 5: 25, 10: 52, 15: 79, 20: 106, 25: 133, 30: 160, 35: 188, 50: 270 },
+  30: { 5: 11, 10: 24, 15: 38, 20: 51, 25: 65, 30: 78, 35: 92, 50: 133, 70: 189, 100: 273 },
+  60: { 10: 11, 15: 18, 20: 24, 25: 31, 30: 38, 35: 44, 50: 65, 70: 93, 100: 135 }
+}
+export const NR_RB_FR2 = {
+  60: { 50: 66, 100: 132, 200: 264 },
   120: { 50: 32, 100: 66, 200: 132, 400: 264 }
 }
 
-export const NR_FR1_BW_MHZ = [5, 10, 15, 20, 30]      // n254 / n255 / n256（L/S）
-export const NR_FR2_BW_MHZ = [50, 100, 200, 400]      // n510 / n511 / n512（Ka）
+// ===== NTN 频段 -> 频率范围与逐频段信道带宽档 =====
+// 出处：TS 38.101-5 V19.5.0 Table 5.2.2-1（FR1 频段）、5.2.3-1（FR2 频段）、5.3.5-1 / 5.3.5-2（逐频段带宽）。
+// 为什么要逐频段：N_RB 表（5.3.2-1）只说「这个带宽在这个子载波间隔下是多少 PRB」，【哪个频段允许哪几档】
+// 是另一张表（5.3.5-1）。只看前者，5 MHz@30 kHz、n254 的 20 MHz 这些标准里没有的载波都配得出来。
+// * 30 MHz：V18.6.0 / V18.11.0 / V19.5.0 三版的 5.3.5-1 逐频段一栏【没有任何频段有 30 MHz】，
+//   只有表头那一列带 NOTE（SAN 侧部署须先补齐射频与解调要求）。CR 0033「Adding 30 MHz CBW for NTN UE」
+//   只往 5.3.2-1 加了 N_RB 列（160/78/38）。故本表不给任何频段 30 MHz —— 平台早先「Rel-18 为 n255
+//   增加 30 MHz」的说法不成立，已删。
+// optional = 本版标记为可选（NOTE 2）；dlOnly = 只用于下行（NOTE 3）。
+export const NTN_BANDS = {
+  // —— FR1-NTN（L / S / Ku）——
+  n256: { fr: 1, ul: [1980, 2010], dl: [2170, 2200],
+    bw: { 15: [{ mhz: 3, optional: true }, { mhz: 5 }, { mhz: 10 }, { mhz: 15 }, { mhz: 20 }], 30: [{ mhz: 10 }, { mhz: 15 }, { mhz: 20 }], 60: [{ mhz: 10 }, { mhz: 15 }, { mhz: 20 }] } },
+  n255: { fr: 1, ul: [1626.5, 1660.5], dl: [1525, 1559],
+    bw: { 15: [{ mhz: 3, optional: true }, { mhz: 5 }, { mhz: 10 }, { mhz: 15 }, { mhz: 20 }], 30: [{ mhz: 10 }, { mhz: 15 }, { mhz: 20 }], 60: [{ mhz: 10 }, { mhz: 15 }, { mhz: 20 }] } },
+  n254: { fr: 1, ul: [1610, 1626.5], dl: [2483.5, 2500],
+    bw: { 15: [{ mhz: 3, optional: true }, { mhz: 5 }, { mhz: 10 }, { mhz: 15 }], 30: [{ mhz: 10 }, { mhz: 15 }], 60: [{ mhz: 10 }, { mhz: 15 }] } },
+  n253: { fr: 1, ul: [1668, 1675], dl: [1518, 1525], bw: { 15: [{ mhz: 5 }] } },
+  n252: { fr: 1, ul: [2000, 2020], dl: [2180, 2200],
+    bw: { 15: [{ mhz: 5 }, { mhz: 10 }, { mhz: 15 }, { mhz: 20 }], 30: [{ mhz: 10 }, { mhz: 15 }, { mhz: 20 }], 60: [{ mhz: 10 }, { mhz: 15 }, { mhz: 20 }] } },
+  n251: { fr: 1, ul: [1626.5, 1660.5], dl: [1518, 1559],
+    bw: { 15: [{ mhz: 5 }, { mhz: 10 }, { mhz: 15 }, { mhz: 20 }], 30: [{ mhz: 10 }, { mhz: 15 }, { mhz: 20 }], 60: [{ mhz: 10 }, { mhz: 15 }, { mhz: 20 }] } },
+  n250: { fr: 1, ul: [1668, 1675], dl: [1518, 1559],
+    bw: { 15: [{ mhz: 5 }, { mhz: 10, dlOnly: true }, { mhz: 15, dlOnly: true }, { mhz: 20, dlOnly: true }],
+      30: [{ mhz: 10, dlOnly: true }, { mhz: 15, dlOnly: true }, { mhz: 20, dlOnly: true }],
+      60: [{ mhz: 10, dlOnly: true }, { mhz: 15, dlOnly: true }, { mhz: 20, dlOnly: true }] } },
+  // Ku：n248 / n247 的下行 Region 2 限 10700-12700、美国 Mobile VSAT 限 10700-12200（本表按全球上限收）
+  n248: { fr: 1, ul: [14000, 14500], dl: [10700, 12750],
+    bw: { 15: [{ mhz: 10 }, { mhz: 15 }, { mhz: 25 }, { mhz: 35 }, { mhz: 50 }], 30: [{ mhz: 10 }, { mhz: 20 }, { mhz: 25 }, { mhz: 35 }, { mhz: 50 }, { mhz: 70 }, { mhz: 100 }] } },
+  n247: { fr: 1, ul: [13750, 14000], dl: [10700, 12750],
+    bw: { 15: [{ mhz: 10 }, { mhz: 15 }, { mhz: 25 }, { mhz: 35 }, { mhz: 50 }], 30: [{ mhz: 10 }, { mhz: 20 }, { mhz: 25 }, { mhz: 35 }, { mhz: 50 }, { mhz: 70 }, { mhz: 100 }] } },
+  // —— FR2-NTN（Ka / Ku）——
+  n512: { fr: 2, ul: [27500, 30000], dl: [17300, 20200],
+    bw: { 60: [{ mhz: 50 }, { mhz: 100 }, { mhz: 200, optional: true }], 120: [{ mhz: 50 }, { mhz: 100 }, { mhz: 200, optional: true }, { mhz: 400, optional: true }] } },
+  n511: { fr: 2, ul: [28350, 30000], dl: [17300, 20200],
+    bw: { 60: [{ mhz: 50 }, { mhz: 100 }, { mhz: 200, optional: true }], 120: [{ mhz: 50 }, { mhz: 100 }, { mhz: 200, optional: true }, { mhz: 400, optional: true }] } },
+  n510: { fr: 2, ul: [27500, 28350], dl: [17300, 20200],
+    bw: { 60: [{ mhz: 50 }, { mhz: 100 }, { mhz: 200, optional: true }], 120: [{ mhz: 50 }, { mhz: 100 }, { mhz: 200, optional: true }, { mhz: 400, optional: true }] } },
+  n509: { fr: 2, ul: [14000, 14500], dl: [10700, 12750],
+    bw: { 120: [{ mhz: 50 }, { mhz: 100 }, { mhz: 200, optional: true }, { mhz: 400, optional: true }] } },
+  n508: { fr: 2, ul: [13750, 14000], dl: [10700, 12750],
+    bw: { 120: [{ mhz: 50 }, { mhz: 100 }, { mhz: 200, optional: true }, { mhz: 400, optional: true, dlOnly: true }] } }
+}
+
+// 各 FR 出现过的信道带宽档（清单，供文案与老式判据引用；【不是】某一个频段的可选档）
+export const NR_FR1_BW_MHZ = [3, 5, 10, 15, 20, 25, 35, 50, 70, 100]
+export const NR_FR2_BW_MHZ = [50, 100, 200, 400]
 
 // ===== TS 38.214 Table 5.1.3.2-1：N_info ≤ 3824 时的 TBS 量化表（93 档）=====
 export const TBS_QUANT = [
@@ -53,26 +98,33 @@ export const TBS_QUANT = [
   2976, 3104, 3240, 3368, 3496, 3624, 3752, 3824
 ]
 
-// ===== NB-IoT TBS 表（TS 36.213 v13.2.0，Rel-13）=====
-// 行 = I_TBS 0–12，列 = I_SF / I_RU 0–7。空档（该 I_TBS 下这个子帧数/RU 数不允许）记 null。
-// ★ Rel-14 Cat-NB2 的 I_TBS=13 扩展行未收：原文未核到，不编造。门限表里 I_TBS=13 那一行照收
-//   （Kodheli 2019 表 3 给了门限），选到它时 TBS 查不到 → 引擎报错，不静默按 12 档算。
-export const NB_TBS_DL = [   // NPDSCH Table 16.4.1.5.1-1，列 I_SF 0–7 ↔ N_SF = 1,2,3,4,5,6,8,10
+// ===== NB-IoT TBS 表（TS 36.213 V17.4.0 = V18.3.0，Rel-14 全表）=====
+// 行 = I_TBS 0-13，列 = I_SF / I_RU 0-7（对应 N_SF / N_RU = 1,2,3,4,5,6,8,10）。Rel-14 起没有空格：
+// Cat-NB2 把 Rel-13 表里那 32 个空档全填上，并加了第 13 行；Rel-13 的每一格原值不变
+//（上行 (6,7) 仍是 1000、(7,5) 仍是 712）。IoT-NTN 的商用模组几乎全是 Cat-NB2，收 Rel-13 截断表
+// 等于把一半档位判成「算不出」。
+// * (I_TBS 13, I_SF/I_RU 3) 这一格：V14.2.0 印的是 1128，V17.4.0 / V18.3.0 都是 1032 —— 以新版为准。
+//   下一个人对着 Rel-14 老文本核这一格时别改回 1128。
+// 出处：Table 16.4.1.5.1-1（NPDSCH）、Table 16.5.1.2-2（NPUSCH）。
+// I_TBS 范围（§16.4.1.5.1 / §16.5.1.2）：NPDSCH 带内部署 0-10、独立 / 保护带 0-13；NPUSCH 0-13。
+// 16QAM 档（Rel-17，I_TBS 14-21）未收。
+export const NB_TBS_DL = [   // NPDSCH Table 16.4.1.5.1-1
   [16, 32, 56, 88, 120, 152, 208, 256],
   [24, 56, 88, 144, 176, 208, 256, 344],
   [32, 72, 144, 176, 208, 256, 328, 424],
   [40, 104, 176, 208, 256, 328, 440, 568],
   [56, 120, 208, 256, 328, 408, 552, 680],
-  [72, 144, 224, 328, 424, 504, 680, null],
-  [88, 176, 256, 392, 504, 600, null, null],
-  [104, 224, 328, 472, 584, 680, null, null],
-  [120, 256, 392, 536, 680, null, null, null],
-  [136, 296, 456, 616, null, null, null, null],
-  [144, 328, 504, 680, null, null, null, null],
-  [176, 376, 584, null, null, null, null, null],
-  [208, 440, 680, null, null, null, null, null]
+  [72, 144, 224, 328, 424, 504, 680, 872],
+  [88, 176, 256, 392, 504, 600, 808, 1032],
+  [104, 224, 328, 472, 584, 680, 968, 1224],
+  [120, 256, 392, 536, 680, 808, 1096, 1352],
+  [136, 296, 456, 616, 776, 936, 1256, 1544],
+  [144, 328, 504, 680, 872, 1032, 1384, 1736],
+  [176, 376, 584, 776, 1000, 1192, 1608, 2024],
+  [208, 440, 680, 904, 1128, 1352, 1800, 2280],
+  [224, 488, 744, 1032, 1256, 1544, 2024, 2536]
 ]
-export const NB_TBS_UL = [   // NPUSCH Table 16.5.1.2-2，列 I_RU 0–7 ↔ N_RU = 1,2,3,4,5,6,8,10
+export const NB_TBS_UL = [   // NPUSCH Table 16.5.1.2-2
   [16, 32, 56, 88, 120, 152, 208, 256],
   [24, 56, 88, 144, 176, 208, 256, 344],
   [32, 72, 144, 176, 208, 256, 328, 424],
@@ -80,13 +132,26 @@ export const NB_TBS_UL = [   // NPUSCH Table 16.5.1.2-2，列 I_RU 0–7 ↔ N_R
   [56, 120, 208, 256, 328, 408, 552, 680],
   [72, 144, 224, 328, 424, 504, 680, 872],
   [88, 176, 256, 392, 504, 600, 808, 1000],
-  [104, 224, 328, 472, 584, 712, 1000, null],
-  [120, 256, 392, 536, 680, 808, null, null],
-  [136, 296, 456, 616, 776, 936, null, null],
-  [144, 328, 504, 680, 872, 1000, null, null],
-  [176, 376, 584, 776, 1000, null, null, null],
-  [208, 440, 680, 1000, null, null, null, null]
+  [104, 224, 328, 472, 584, 712, 1000, 1224],
+  [120, 256, 392, 536, 680, 808, 1096, 1384],
+  [136, 296, 456, 616, 776, 936, 1256, 1544],
+  [144, 328, 504, 680, 872, 1000, 1384, 1736],
+  [176, 376, 584, 776, 1000, 1192, 1608, 2024],
+  [208, 440, 680, 1000, 1128, 1352, 1800, 2280],
+  [224, 488, 744, 1032, 1256, 1544, 2024, 2536]
 ]
+// 每传输块的编码比特数（「有效码率」那一列的分母；按 TS 36.211 的结构算，不是拍出来的数）：
+//   NPDSCH  一子帧 14 符号 x 12 子载波 = 168 RE，减 NRS（§10.2.6.2：每时隙末两个符号、每符号 2 RE
+//           -> 每端口每子帧 8 RE；2 个端口时另一端口的 NRS 位置也不载数据 -> 16 RE）= 152 RE
+//           -> 304 bit（QPSK，独立 / 保护带部署，l_DataStart = 0）。带内部署 l_DataStart = 3 再扣
+//           CRS：11x12 - 16 - 12 = 104 RE -> 208 bit（TS 36.213 §16.4.1.4）。
+//   NPUSCH 多音 一个 RU 无论 3/6/12 子载波都是 144 RE（12 子载波 2 时隙、6 子载波 4 时隙、
+//           3 子载波 8 时隙，每时隙 7 符号扣 1 个 DMRS 符号，Table 10.1.4.2-1）-> 288 bit（QPSK）。
+//   NPUSCH 单音 16 时隙 x 6 符号 x 1 子载波 = 96 RE -> 96 bit（pi/2-BPSK）/ 192 bit（pi/4-QPSK）。
+// 分子含 24 bit CRC —— 与 NR 的 R 同口径（N_info = N_RE·R·Qm ≈ TBS + CRC）。
+// * 原先三张表的 fec 列一律写成 TBS/264，264 =（14−3）x12x2 对哪张表都不是分母：编出来的数。
+export const NB_CODED_BITS = { dlStandalone: 304, dlInband: 208, ulMulti: 288, ulSingle: 96 }
+export const NB_CRC_BITS = 24
 export const NB_SF_COUNT = [1, 2, 3, 4, 5, 6, 8, 10]   // I_SF / I_RU → N_SF / N_RU
 
 // NPUSCH 单音 Table 16.5.1.2-1：I_MCS → (调制, I_TBS)。
@@ -121,10 +186,19 @@ export const NB_NREP_UL = [1, 2, 4, 8, 16, 32, 64, 128]
 export const NR_NREP_MAX_UL = 32
 export const NR_NREP_MAX_DL = 16
 
+// 这条载波落在 FR1 还是 FR2。* 判据是【频段】不是子载波间隔：60 kHz 两个 FR 都有
+// （n256 等的 60 kHz 在 FR1，n510-n512 的 60 kHz 在 FR2），按 scs >= 120 判会让 Ka 的 60 kHz
+// 配置拿到 FR1 的 N_RB 表与开销系数。没指定频段时只能退回子载波间隔判（120 kHz 只在 FR2）。
+export function frOf(phy) {
+  const b = NTN_BANDS[phy && phy.band]
+  if (b) return b.fr
+  return Number(phy && phy.scs) >= 120 ? 2 : 1
+}
+
 // ===== TS 38.306 §4.1.2 的开销系数 OH（近似速率式用）=====
-// FR1 下行 0.14 / 上行 0.08；FR2 下行 0.18 / 上行 0.10。FR1/FR2 以 SCS 分界（120 kHz 只在 FR2）。
+// FR1 下行 0.14 / 上行 0.08；FR2 下行 0.18 / 上行 0.10。
 function ohOf(phy) {
-  const fr2 = Number(phy.scs) >= 120
+  const fr2 = frOf(phy) === 2
   return phy.dir === 'ul' ? (fr2 ? 0.10 : 0.08) : (fr2 ? 0.18 : 0.14)
 }
 
@@ -150,6 +224,9 @@ export function normalizePhy(p) {
   const dir = String(p.dir || '').toLowerCase() === 'ul' ? 'ul' : 'dl'
   const nRep = Math.max(1, intOr(p.nRep, 1))
   const combLossDb = numOr(p.combLossDb, 0)
+  // 门限那一列的目标 BLER（3GPP 各表恒 10% 首传）。缺省 0.1：老配置没有这个字段，回显 10% 即实情。
+  const bt = Number(p.blerTarget)
+  const blerTarget = isFinite(bt) && bt > 0 && bt < 1 ? bt : 0.1
   if (kind === 'nr') {
     let scs = intOr(p.scs, 15)
     if (MU_OF[scs] === undefined) scs = 15
@@ -162,6 +239,11 @@ export function normalizePhy(p) {
     const nrDir = tp ? 'ul' : dir
     return {
       kind: 'nr', dir: nrDir, scs,
+      // NTN 频段：决定该子载波间隔可选的信道带宽档（TS 38.101-5 Table 5.3.5-1/-2）。
+      // * 缺省空串 = 不指定 —— 老配置没有这个字段，一律按「该 FR 下所有频段的并集」放行，
+      //   逐位照旧算得通；只有新选一次 MODCOD 才铺上内置骨架里的 n256。认不出的频段名照原样
+      //   留着，由 resolve() 报错，不静默换一个。
+      band: String(p.band == null ? '' : p.band),
       nRb: Math.max(1, intOr(p.nRb, 25)),
       chBwMHz: isFinite(chBw) && chBw > 0 ? chBw : null,
       mcsTable,
@@ -173,7 +255,7 @@ export function normalizePhy(p) {
       rateModel: String(p.rateModel || 'tbs') === 'oh38306' ? 'oh38306' : 'tbs',
       oh: (p.oh === '' || p.oh == null || !isFinite(Number(p.oh))) ? null : numOr(p.oh, null),
       layers: Math.max(1, intOr(p.layers, 1)),
-      nRep, combLossDb
+      nRep, combLossDb, blerTarget
     }
   }
   if (kind === 'nbiot') {
@@ -199,19 +281,54 @@ export function normalizePhy(p) {
     if (st === true) nTones = 1                  // 单音表锁死 1 个子载波
     // ★ st === false 且填了 1：【不归正】，留给 resolve() 报错。悄悄改成 3 音等于替用户挑了
     //   一个他没选的配置，而门限还是多音那一列的——比单音低 1.6~3.8 dB，账面上一切正常。
+    // 部署模式（TS 36.213 §16.4.1.4 / §16.4.1.5.1）：带内部署的 NPDSCH 前 3 个符号要让给 LTE 的
+    // 控制区、并被 CRS 打孔，于是每传输块的编码比特数从 304 掉到 208，I_TBS 也只到 10。
+    // 缺省独立部署 —— NTN 的典型形态（TS 36.102 §5.4B.1 的 200 kHz 独立栅格）。NPUSCH 不受影响。
+    const om = String(p.opMode || '').toLowerCase()
+    const opMode = (om === 'inband' || om === 'guardband') ? om : 'standalone'
     return {
-      kind: 'nbiot', dir, st, scs, nTones,
+      kind: 'nbiot', dir, st, scs, nTones, opMode,
       iTbs: Math.max(0, intOr(p.iTbs, 0)),
       iSf: Math.max(0, Math.min(7, intOr(p.iSf, 0))),
       iRu: Math.max(0, Math.min(7, intOr(p.iRu, 0))),
-      nRep, combLossDb
+      nRep, combLossDb, blerTarget
     }
   }
   return null
 }
 
 // ===== NR =====
-export function nrRbTable(scs) { return NR_RB_TABLE[Number(scs)] || null }
+// 某个 (子载波间隔, FR) 下的「信道带宽 -> N_RB」。fr 不给时按 FR1（60 kHz 两个 FR 都有，别猜）。
+export function nrRbTable(scs, fr) {
+  const t = (Number(fr) === 2 ? NR_RB_FR2 : NR_RB_FR1)[Number(scs)]
+  return t || null
+}
+
+// 这条载波在【它那个频段】下允许的信道带宽档：[{ mhz, nRb, optional, dlOnly }]，按带宽升序。
+// band 为空 = 不指定 -> 取同 FR 所有频段的并集（老配置照旧算得通）；并集里只要有一个频段把
+// 某档列为必选 / 收发都用，就按宽的那一份算 —— 不指定频段时本来就不该替用户挑最严的那个。
+export function nrBwSteps(phy) {
+  const rb = nrRbTable(phy.scs, frOf(phy))
+  if (!rb) return []
+  const out = []
+  const add = (e) => {
+    if (rb[e.mhz] == null) return                 // 该子载波间隔下这一档没有 N_RB（5.3.2-1 的 N/A）
+    const i = out.findIndex((x) => x.mhz === e.mhz)
+    if (i < 0) { out.push({ mhz: e.mhz, nRb: rb[e.mhz], optional: !!e.optional, dlOnly: !!e.dlOnly }); return }
+    if (!e.optional) out[i].optional = false
+    if (!e.dlOnly) out[i].dlOnly = false
+  }
+  const band = NTN_BANDS[phy.band]
+  if (band) for (const e of (band.bw[phy.scs] || [])) add(e)
+  else {
+    const fr = frOf(phy)
+    for (const k of Object.keys(NTN_BANDS)) {
+      if (NTN_BANDS[k].fr !== fr) continue
+      for (const e of (NTN_BANDS[k].bw[phy.scs] || [])) add(e)
+    }
+  }
+  return out.sort((a, b) => a.mhz - b.mhz)
+}
 
 // 占用带宽 B_occ = N_RB × 12 × SCS（kHz）—— ★ SNR / Es/N₀ / C/N 的噪声带宽就是它
 export function nrOccupiedBwKHz(phy) { return phy.nRb * 12 * phy.scs }
@@ -225,26 +342,59 @@ export function nrOccupiedBwKHz(phy) { return phy.nRb * 12 * phy.scs }
 export function nrChannelBwKHz(phy) {
   if (phy.chBwMHz != null && isFinite(phy.chBwMHz) && phy.chBwMHz > 0) return phy.chBwMHz * 1000
   if (phy.dir === 'ul') return nrOccupiedBwKHz(phy)
-  const tbl = nrRbTable(phy.scs)
-  if (tbl) {
-    let best = null
-    for (const k of Object.keys(tbl)) {
-      const bw = Number(k)
-      if (tbl[k] >= phy.nRb && (best == null || bw < best)) best = bw
-    }
-    if (best != null) return best * 1000
+  // ★ 反查【跳过本版可选的档】（Rel-19 给 L/S 各频段新加的 3 MHz 就是可选档）：反查是替用户挑，
+  //   挑到一个"可选"的档等于替他做了一个部署决定；而且这会把老配置里 1 PRB 的下行从 5 MHz
+  //   改报成 3 MHz —— 静默换数。要用可选档，在下拉里显式选。
+  let best = null
+  for (const st of nrBwSteps(phy)) {
+    if (st.optional || (st.dlOnly && phy.dir === 'ul')) continue
+    if (st.nRb >= phy.nRb && (best == null || st.mhz < best)) best = st.mhz
   }
-  return nrOccupiedBwKHz(phy)
+  return best != null ? best * 1000 : nrOccupiedBwKHz(phy)
 }
 
-// 该子载波间隔下表里最大的一档信道带宽能装几个 PRB —— 用来判「PRB 数填过了头」。
-// 返回 { nRb, bwMHz }；表里没有这个 SCS 返回 null。
-export function nrMaxRb(scs) {
-  const t = nrRbTable(scs)
+// 该 (子载波间隔, FR) 下表里最大的一档信道带宽能装几个 PRB。返回 { nRb, bwMHz }；没有这个 SCS 返回 null。
+// * 这是【表级】上限，不含逐频段的限制；判「PRB 数填过了头」用下面那个按频段来的。
+export function nrMaxRb(scs, fr) {
+  const t = nrRbTable(scs, fr)
   if (!t) return null
   let best = null
   for (const k of Object.keys(t)) if (best == null || t[k] > best.nRb) best = { nRb: t[k], bwMHz: Number(k) }
   return best
+}
+
+// 这条载波在【它那个频段】下最大的一档能装几个 PRB —— 判「PRB 数填过了头」用这个。
+// n256@15 kHz 顶格是 20 MHz = 106 PRB，而表级上限是 50 MHz = 270 PRB（那是 Ku 的 n248 才有的档）。
+export function nrBandMaxRb(phy) {
+  let best = null
+  for (const s of nrBwSteps(phy)) if (best == null || s.nRb > best.nRb) best = { nRb: s.nRb, bwMHz: s.mhz }
+  return best
+}
+
+// 频段 / 信道带宽档的组合校验。返回空串 = 这个组合在 TS 38.101-5 里存在。
+export function nrBandError(phy) {
+  if (phy.band && !NTN_BANDS[phy.band]) {
+    return 'NTN 频段 ' + phy.band + ' 不在 TS 38.101-5 的频段表里'
+  }
+  const steps = nrBwSteps(phy)
+  if (!steps.length) {
+    return (phy.band || (frOf(phy) === 2 ? 'FR2-NTN' : 'FR1-NTN')) + ' 没有 ' + phy.scs + ' kHz 这一档子载波间隔'
+  }
+  const who = phy.band || (frOf(phy) === 2 ? 'FR2-NTN' : 'FR1-NTN')
+  if (phy.chBwMHz != null) {
+    const hit = steps.find((x) => x.mhz === phy.chBwMHz)
+    if (!hit) {
+      return who + ' 在 ' + phy.scs + ' kHz 下没有 ' + phy.chBwMHz + ' MHz 这一档信道带宽（可取 ' +
+        steps.map((x) => x.mhz).join(' / ') + ' MHz）'
+    }
+    if (hit.dlOnly && phy.dir === 'ul') return who + ' 的 ' + phy.chBwMHz + ' MHz 只用于下行'
+  }
+  const mx = nrBandMaxRb(phy)
+  if (mx && phy.nRb > mx.nRb) {
+    return 'PRB 数 ' + phy.nRb + ' 超出 ' + who + ' 在 ' + phy.scs + ' kHz 下的最大信道带宽档（' +
+      mx.bwMHz + ' MHz = ' + mx.nRb + ' PRB）'
+  }
+  return ''
 }
 
 // TS 38.214 §5.1.3.2 精确 TBS（bit / 时隙）。Qm = 调制阶数(bit/符号), R = 目标码率(0–1)。
@@ -337,6 +487,33 @@ export function nbInfoRateKbps(phy) {
   return tbs / (NB_SF_COUNT[phy.iSf] * phy.nRep)
 }
 
+// 这条 NB-IoT 载波每传输块的编码比特数（一个 RU / 子帧的量，再乘 N_SF / N_RU 就是整块的）。
+export function nbCodedBitsPerUnit(phy) {
+  if (phy.dir === 'ul') {
+    // 单音按调制走：pi/2-BPSK 96 bit、pi/4-QPSK 192 bit；多音无论 3/6/12 子载波都是 288 bit
+    if (phy.nTones === 1) return NB_CODED_BITS.ulSingle * (nbSingleToneQm(phy) || 2)
+    return NB_CODED_BITS.ulMulti
+  }
+  return phy.opMode === 'inband' ? NB_CODED_BITS.dlInband : NB_CODED_BITS.dlStandalone
+}
+
+// 单音这一档是 pi/2-BPSK 还是 pi/4-QPSK：由 I_TBS 反查 Table 16.5.1.2-1（I_TBS 0 和 2 是 BPSK）。
+// * 面板上存的是 I_TBS 不是 I_MCS，故只能反查；查不到按 QPSK（表里 11 档之外没有单音配置）。
+function nbSingleToneQm(phy) {
+  for (const e of NB_ST_MCS) if (e.iTbs === phy.iTbs) return e.modulation === 'BPSK' ? 1 : 2
+  return 2
+}
+
+// NB-IoT 这条载波的【有效码率】= (TBS + 24 bit CRC) / 每传输块编码比特数。
+// 与 NR 的 R 同口径（N_info = N_RE·R·Qm ≈ TBS + CRC）。算不出返回 null。
+export function nbCodeRate(phy) {
+  const tbs = nbTbs(phy)
+  if (tbs == null) return null
+  const n = NB_SF_COUNT[phy.dir === 'ul' ? phy.iRu : phy.iSf]
+  const coded = nbCodedBitsPerUnit(phy) * n
+  return coded > 0 ? (tbs + NB_CRC_BITS) / coded : null
+}
+
 // ===== 通用 =====
 // 重复次数的值域校验。返回空串 = 合法。
 // NB-IoT 报枚举全表（合法值就那么几个，列出来用户能直接改）；NR 只报上限。
@@ -389,17 +566,24 @@ export function resolve(rawPhy, Qm, R) {
   // 多音表配单子载波：标准里没有这个组合（TS 36.213 §16.5.1.2），且门限、I_MCS↔I_TBS 映射两头都不对
   else if (phy.kind === 'nbiot' && phy.st === false && phy.nTones === 1) {
     error = 'NPUSCH 多音表不含单子载波配置'
+  } else if (phy.kind === 'nbiot' && phy.dir === 'ul' && phy.nTones === 1 && phy.iTbs > 10) {
+    // 单子载波的 I_TBS 只到 10：TS 36.213 Table 16.5.1.2-1 的单音行只有 I_MCS 0–10，映射出来的
+    // I_TBS 就是 {0…10}，11–13 那三档单音根本取不到。放任它算，「有效码率」会算出 >1 的数。
+    error = 'NPUSCH 单子载波只到 I_TBS 10（Table 16.5.1.2-1 的 I_MCS 0–10），当前 ' + phy.iTbs
   } else if (nRepError(phy)) { error = nRepError(phy) }
   // 占用带宽不能超过信道带宽：显式填了 5 MHz 信道又把 PRB 数改到 50，配出来的是标准里不存在的载波。
   // 上行的信道带宽就是占用带宽本身（见 nrChannelBwKHz），这一条对它恒不触发，故另有下面那条。
   else if (bChKHz > 0 && bOccKHz > bChKHz + 1e-9) {
     error = '占用带宽 ' + bOccKHz + ' kHz 超过信道带宽 ' + bChKHz + ' kHz'
-  } else if (phy.kind === 'nr' && (() => { const m = nrMaxRb(phy.scs); return m && phy.nRb > m.nRb })()) {
-    const m = nrMaxRb(phy.scs)
-    error = 'PRB 数 ' + phy.nRb + ' 超出 ' + phy.scs + ' kHz 的最大信道带宽档（' + m.bwMHz + ' MHz = ' + m.nRb + ' PRB）'
+  } else if (phy.kind === 'nr' && nrBandError(phy)) {
+    error = nrBandError(phy)
+  } else if (phy.kind === 'nbiot' && phy.dir === 'dl' && phy.opMode === 'inband' && phy.iTbs > 10) {
+    // 带内部署的 NPDSCH 只到 I_TBS 10（TS 36.213 §16.4.1.5.1：operationModeInfo 为 '00' / '01' 时
+    // 0 <= I_TBS <= 10）。NPUSCH 不受这一条限制。
+    error = '带内部署的 NPDSCH 只到 I_TBS 10，当前 ' + phy.iTbs
   } else if (tbs == null) {
     if (phy.kind !== 'nbiot') error = 'NR TBS 算不出（调制阶数或码率无效）'
-    else if (phy.iTbs > 12) error = 'NB-IoT I_TBS=' + phy.iTbs + ' 的 TBS 表（Rel-14 Cat-NB2）未收录'
+    else if (phy.iTbs > 13) error = 'NB-IoT I_TBS=' + phy.iTbs + ' 未收录（16QAM 档为 Rel-17 的 I_TBS 14–21）'
     else {
       // 报「上限是多少」而不是「这一格没有」：界面上那个下拉显示的是子帧数 / RU 数本身（1…10），
       // I_SF / I_RU 这个下标一个字都不出现，照抄下标等于没说。
@@ -409,6 +593,9 @@ export function resolve(rawPhy, Qm, R) {
         (mx >= 0 ? NB_SF_COUNT[mx] : 0) + '，当前 ' + NB_SF_COUNT[ul ? phy.iRu : phy.iSf]
     }
   } else if (!(rate > 0)) error = '信息速率为零'
+  // NB-IoT 的有效码率由当前 I_SF / I_RU 与部署模式现算（MODCOD 表那一列只是 I_SF/I_RU = 0 的值）；
+  // NR 的码率就是 MODCOD 表里的 R，由调用方回显，这里不重复给。
+  const codeRate = (!error && phy.kind === 'nbiot') ? nbCodeRate(phy) : null
   return {
     phy,
     bOccKHz: error ? null : bOccKHz,
@@ -416,8 +603,10 @@ export function resolve(rawPhy, Qm, R) {
     tbs: error ? null : tbs,
     tbsUnit: phy.kind === 'nr' ? 'slot' : (phy.dir === 'ul' ? 'ru' : 'sf'),
     infoRateKbps: error ? null : rate,
+    codeRate,
     nRep: phy.nRep,
     combLossDb: phy.combLossDb,
+    blerTarget: phy.blerTarget,
     error
   }
 }
@@ -440,6 +629,7 @@ export function engineChain(rawPhy, thresholdDb, Qm, R) {
   if (!rv) return null
   const out = {
     phy: rv.phy, tbs: rv.tbs, tbsUnit: rv.tbsUnit, nRep: rv.nRep, combLossDb: rv.combLossDb,
+    codeRate: rv.codeRate, blerTarget: rv.blerTarget,
     thresholdTable: null, tbsReported: null, error: rv.error,
     infoRate: null, symbolRate: null, allocBandwidth: null, k: null, esno: null, ebno: null
   }
