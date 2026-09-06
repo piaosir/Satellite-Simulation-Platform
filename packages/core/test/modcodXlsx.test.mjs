@@ -137,7 +137,7 @@ ok('调制方式候选 = 内置 11 项 + 本表已用到的自定义档', (() =>
 })())
 ok('候选项带调制因子读数（bit/符号）',
   gcols.find((c) => c.key === 'modulation').options().find((o) => o.value === '256APSK').note === '8 bit')
-ok('门限口径候选恰是两项', gcols.find((c) => c.key === 'noiseRatioMode').options().map((o) => o.value).join(',') === 'Es/N₀,Eb/N₀')
+ok('门限口径候选恰是三项（Es/N₀ / Eb/N₀ / SNR）', gcols.find((c) => c.key === 'noiseRatioMode').options().map((o) => o.value).join(',') === 'Es/N₀,Eb/N₀,SNR')
 ok('Excel 那份列定义刻意不带 options（两种用途分开）', MODCOD_COLS.every((c) => !c.options))
 
 ok('★ Excel 导入：调制方式认不出的行整行不收，并把原值报回去', (() => {

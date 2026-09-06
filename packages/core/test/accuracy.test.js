@@ -96,5 +96,43 @@ for (const [engName, calc] of [['GEO', core.calculateLinkBudget], ['NGSO', core.
     !!q && String(q.symbolRateResult) !== String(modRun(calc, 'QPSK').symbolRateResult))
 }
 
+// —— 出参不许带原始浮点尾巴 ——
+// 引擎出参一律经 toFixed 收位，界面（详细预算 / 链路表 / 报表）直接把这个串印出来。
+// 漏收一处，那一格就是 130.66666666666666 这种十几位的长串，把数值列撑破串到单位上
+// （2026-09-06 的 infoRateResult：DVB 行是表单原值不显眼，3GPP NTN 行由 TBS ÷ 时长算出来才露出来）。
+// 判据不点名字段：|值| ≥ 0.001 的数值出参一律 ≤ 6 位小数（各量按 2/3/5 位定格，留一位余地）；
+// 更小的数是功放瓦数那条「毫瓦以下保 4 位有效数字」的定点格式，位数本就该多，故排除在外。
+// ★ 本文件不动 FX（扫描期的小数位增量），故这条判据只在 FX=0 下成立。
+{
+  const NUMERIC = /^-?\d+(\.\d+)?$/
+  const decimals = (s) => (String(s).split('.')[1] || '').length
+  const CARRIERS = [
+    ['DVB 默认', {}],
+    ['DVB 非整速率', { infoRate: '1234.567', modulation: '8PSK', fec: '2/3', rsCode: '0.92', bandwidthFactor: '1.35' }],
+    // 3GPP NTN：信息速率 = TBS ÷ 时长，392 bit ÷ 3 子帧 = 130.66666666666666 kbps（本条的靶子）
+    ['NB-IoT 下行 I_TBS8', { modulation: 'QPSK', fec: '120/264', noiseRatioMode: 'snr', ebno: '1.30', phy: { kind: 'nbiot', dir: 'dl', scs: 15, nTones: 12, iTbs: 8, iSf: 2 } }],
+    ['NB-IoT 上行单音 ×16', { modulation: 'BPSK', fec: '1/16', noiseRatioMode: 'snr', ebno: '-4.2', phy: { kind: 'nbiot', dir: 'ul', scs: 15, nTones: 1, iTbs: 0, iRu: 0, nRep: 16 } }],
+    ['NR 下行 5 MHz', { modulation: 'QPSK', fec: '679/1024', noiseRatioMode: 'snr', ebno: '-0.3', phy: { kind: 'nr', dir: 'dl', scs: 15, nRb: 25, chBwMHz: 5, mcs: 9 } }],
+    ['NR 下行 38.306 速率式', { modulation: '16APSK', fec: '3/4', noiseRatioMode: 'snr', ebno: '5', phy: { kind: 'nr', dir: 'dl', scs: 30, nRb: 51, chBwMHz: 20, rateModel: 'oh38306', mcs: 9 } }]
+  ]
+  const BASE = { rainRate: 60, uplinkAvailability: 99.5, rxRainRate: 60, rxDownlinkAvailability: 99.5, margin: '3' }
+  const NGSO_BASE = Object.assign({}, BASE, { orbitAltitude: 1200, rxOrbitAltitude: 1200 })
+  for (const [engName, calc, base] of [['GEO', core.calculateLinkBudget, BASE], ['NGSO', core.calculateLinkBudgetNGSO, NGSO_BASE]]) {
+    const bad = []
+    for (const [cname, over] of CARRIERS) {
+      const rr = calc({ frequencyBand: 'Ku', satelliteName: 'FMT' }, Object.assign({}, base, over))
+      if (!rr.success) { bad.push(`${cname}: 算不出（${rr.message}）`); continue }
+      for (const k of Object.keys(rr.data)) {
+        const v = rr.data[k]
+        if (v === null || v === undefined || typeof v === 'object') continue
+        const s = String(v)
+        if (!NUMERIC.test(s) || Math.abs(Number(s)) < 0.001) continue
+        if (decimals(s) > 6) bad.push(`${cname}: ${k}=${s}`)
+      }
+    }
+    ok(`${engName} 出参无原始浮点尾巴（${CARRIERS.length} 种载波逐字段）` + (bad.length ? ' —— ' + bad.join('；') : ''), bad.length === 0)
+  }
+}
+
 console.log(`\n=== ${pass} passed, ${fail} failed ===`)
 process.exit(fail ? 1 : 0)

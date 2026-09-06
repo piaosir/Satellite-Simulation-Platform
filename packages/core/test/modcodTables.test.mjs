@@ -22,11 +22,18 @@ const sig = (rows) => JSON.stringify(rows.map((r) => [r.label, r.modulation, r.f
 /* ---- ① 空改写层 = 内置表逐值相同 ---- */
 const BUILTIN_SRC = {
   'DVB-S': C.DVBS_MODCOD_TABLE, 'DVB-S2': C.DVBS2_MODCOD_TABLE, 'DVB-RCS2': C.DVB_RCS2_MODCOD_TABLE,
-  'DVB-S2X': C.DVBS2X_MODCOD_TABLE, '3GPP NR-NTN': C.NR_NTN_MODCOD_TABLE, '3GPP NB-IoT NTN': C.NB_IOT_NTN_MODCOD_TABLE
+  'DVB-S2X': C.DVBS2X_MODCOD_TABLE, '3GPP NR-NTN': C.NR_NTN_MODCOD_TABLE,
+  '3GPP NR-NTN T2': C.NR_NTN_T2_MODCOD_TABLE, '3GPP NR-NTN T3': C.NR_NTN_T3_MODCOD_TABLE,
+  '3GPP NR-NTN TP1': C.NR_NTN_TP1_MODCOD_TABLE, '3GPP NR-NTN TP2': C.NR_NTN_TP2_MODCOD_TABLE,
+  '3GPP NB-IoT NTN': C.NB_IOT_NTN_MODCOD_TABLE,
+  '3GPP NB-IoT NTN NPUSCH MT': C.NB_IOT_NTN_MT_MODCOD_TABLE,
+  '3GPP NB-IoT NTN NPUSCH ST': C.NB_IOT_NTN_ST_MODCOD_TABLE
 }
 const base = M.listStandards(null)
-ok('内置标准共 6 个且顺序与 DVB_STANDARD_OPTIONS 一致',
-  base.length === 6 && base.every((s, i) => s.key === C.DVB_STANDARD_OPTIONS[i + 1].value),
+// 2026-09-05：3GPP 由两张表扩到八张（NR 的 MCS 表 1/2/3 + PUSCH 变换预编码表 1/2，NB-IoT 的
+// NPDSCH + NPUSCH 多音/单音），故 6 → 12。两个老 key 的字面仍不许动（老配置按它取表）。
+ok('内置标准共 12 个且顺序与 DVB_STANDARD_OPTIONS 一致',
+  base.length === 12 && base.every((s, i) => s.key === C.DVB_STANDARD_OPTIONS[i + 1].value),
   base.map((s) => s.key).join(','))
 for (const [k, src] of Object.entries(BUILTIN_SRC)) {
   const got = base.find((s) => s.key === k)
@@ -106,7 +113,7 @@ const withUser = M.storeFromList([...base, { key: '', label: '我的体制', row
 ok('自定义标准分到 usr: 前缀的 key', withUser.custom.length === 1 && M.isUserKey(withUser.custom[0].key), withUser.custom[0] && withUser.custom[0].key)
 ok('自定义标准接在内置之后、builtin=false', (() => {
   const l = M.listStandards(withUser)
-  return l.length === 7 && l[6].label === '我的体制' && l[6].builtin === false
+  return l.length === 13 && l[12].label === '我的体制' && l[12].builtin === false
 })())
 ok('自定义 key 不与内置撞车、彼此不撞车', (() => {
   const st = M.storeFromList([...base,
@@ -119,7 +126,7 @@ ok('自定义 key 不与内置撞车、彼此不撞车', (() => {
 ok('坏存档（半截/类型不对）按「没改过」处理，不抛', (() => {
   for (const bad of [undefined, null, 0, 'x', [], { overrides: 3 }, { overrides: { 'DVB-S2': {} }, custom: 'x' }]) {
     const l = M.listStandards(bad)
-    if (l.length !== 6 || sig(l[0].rows) !== sig(C.DVBS_MODCOD_TABLE)) return false
+    if (l.length !== 12 || sig(l[0].rows) !== sig(C.DVBS_MODCOD_TABLE)) return false
   }
   return true
 })())
