@@ -67,12 +67,25 @@ export function makePanQuant() {
 
 export const idleMsFor = (cost) => Math.max(IDLE_MIN_MS, Math.min(IDLE_MAX_MS, 2.5 * cost))
 export const hotMsFor = (cheap, idle) => (cheap ? idle : Math.max(idle, ZOOM_RUN_MS))
-export const clampNominal = (gap, cur) => (gap > 0 && gap < cur ? Math.max(NOMINAL_MIN, Math.min(NOMINAL_MAX, gap)) : cur)
+// 「一帧本来就要等多久」：只能从【连排的空 rAF】的时间戳差估，取中位数后钳位。
+// ★ 曾用「任意两次 draw 的间隔取滚动最小值」，在真机上是错的：resizeNow（ResizeObserver、切侧栏、
+//   换画质档）走同步 draw()，与同一拍里挂着的 rAF draw 间隔 0～3 ms → nominal 一次就钉死在下限 4，
+//   于是 60 Hz 上便宜的重建也被算出 rasterExtra ≈ 12.7 ≥ 8 →【所有类永远判贵】，§4.1 的
+//   「放大同步重建、清晰优先」在应用里根本不会启用。验证台无 vsync 本来就是 4，看不出这件事。
+export function nominalFromGaps(gaps, fallback = NOMINAL_MIN) {
+  const g = gaps.filter((v) => v > 0).sort((a, b) => a - b)
+  if (!g.length) return fallback
+  const med = g.length % 2 ? g[(g.length - 1) >> 1] : (g[g.length / 2 - 1] + g[g.length / 2]) / 2
+  return Math.max(NOMINAL_MIN, Math.min(NOMINAL_MAX, med))
+}
 
 // 快照 rec = { k, tx, ty, mx, my, w, h }（mx/my/w/h 是设备像素，tx/ty 是 CSS）
 // 视图 view = { k, tx, ty, dpr, cwDev, chDev, W, H }
-// 返回 { dx, dy, w, h, scaled, exact, covers }：covers=false 只说明盖不住，几何照给 ——
+// 返回 { dx, dy, w, h, scaled, exact, covers, moved }：covers=false 只说明盖不住，几何照给 ——
 // 盖不住时也要把它缩着贴上去（另垫回退快照 / 海色），而不是整块空着。
+// ★ moved ＝【这张位图有没有搬过位置】，与 dx/dy 分家：dx 是贴图坐标（dx = rx − mx），快照带余量时
+//   一动没动也有 dx = −mx ≠ 0。拿 dx 当「搬过位置」判据 → 任何放大视角静止后每一帧 blit 都排一次
+//   补建 → 补建又催出探针帧 → 再排补建，以 idleMs 为周期【无限循环整份重建】（实测 3～8 次/秒）。
 export function placeSnapshot(rec, view) {
   const kk = view.k, dpr = view.dpr
   const bw = rec.w, bh = rec.h
@@ -80,22 +93,37 @@ export function placeSnapshot(rec, view) {
   const wy0 = view.ty * dpr, wy1 = (view.ty + view.H * kk) * dpr
   const nx0 = Math.max(0, wx0), nx1 = Math.min(view.cwDev, wx1)
   const ny0 = Math.max(0, wy0), ny1 = Math.min(view.chDev, wy1)
-  let dx, dy, w, h, scaled, exact
+  let dx, dy, w, h, scaled, exact, moved
   if (kk === rec.k) {
     const ex = (view.tx - rec.tx) * dpr, ey = (view.ty - rec.ty) * dpr
     const rx = Math.round(ex), ry = Math.round(ey)
     dx = rx - rec.mx; dy = ry - rec.my; w = bw; h = bh; scaled = false
+    moved = rx !== 0 || ry !== 0
     exact = Math.abs(ex - rx) < 1e-9 && Math.abs(ey - ry) < 1e-9
   } else {
     const r = kk / rec.k
     const px0 = (-rec.mx / dpr - rec.tx) / rec.k, py0 = (-rec.my / dpr - rec.ty) / rec.k
     dx = (px0 * kk + view.tx) * dpr; dy = (py0 * kk + view.ty) * dpr; w = bw * r; h = bh * r
-    scaled = true; exact = false
+    scaled = true; exact = false; moved = true
   }
   let covers = true
   if (nx1 > nx0 && (dx > nx0 + 0.5 || dx + w < nx1 - 0.5)) covers = false
   if (ny1 > ny0 && (dy > ny0 + 0.5 || dy + h < ny1 - 0.5)) covers = false
-  return { dx, dy, w, h, scaled, exact, covers }
+  return { dx, dy, w, h, scaled, exact, covers, moved }
+}
+
+// 盖不住当前视图时走哪一支。★ 'ocean'（海色垫底）只留给【缩位图】，即缩小那一支：
+//   放大视角的类几乎永远判不成「便宜」（迟滞要连续三次 < 8 ms，而 10m 中等视角一次 30～50 ms），
+//   平移也照 cheap 分支走的话，按住拖过余量就露出一条纯海色、没有海陆线的条带跟着光标一直变宽
+//   （实测 40 帧里 21 帧），松手还要再等一个 idle。同步重建「顿一下」远好过它（§11.3）。
+export function uncoveredMode(pl, hasFallback, cheap) {
+  if (hasFallback) return 'fallback'
+  if (!pl.scaled || cheap) return 'rebuild'
+  return 'ocean'
+}
+// 手势停下来之后要不要补一次精确重建。★ 判据是 moved 不是 dx/dy（见 placeSnapshot 的注释）。
+export function needsRestRebuild(pl, tilesDirty) {
+  return !pl.exact || !pl.covers || pl.moved || !!tilesDirty
 }
 
 // 快照在【世界平面坐标】里盖住的那块矩形（等距圆柱下单位就是度）

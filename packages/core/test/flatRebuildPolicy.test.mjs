@@ -10,10 +10,13 @@
 //   ⑤ 快照摆放：同 k 平移量化后 exact 必真；缩放期 exact 必假；covers 判的是「世界矩形 ∩ 视口」，
 //      故全图视角（世界整个在快照里）平移多远都盖得住；
 //   ⑥ 回退快照：新的盖得住旧的就不留；挑的时候按面积从大到小、尺寸对不上的跳过；
-//   ⑦ evenodd 裁剪给的是「视口 + 当前快照矩形」两个矩形（不给就地名叠两层）。
+//   ⑦ evenodd 裁剪给的是「视口 + 当前快照矩形」两个矩形（不给就地名叠两层）；
+//   ⑧ moved 与 dx 分家：dx 是贴图坐标（＝ rx − mx），带余量的快照一动没动也 ≠ 0 ——
+//      拿 dx 当「搬过位置」判据就会在任何放大视角上静止时无限循环重建（§11.1）。
 import {
   REBUILD_FAST_MS, IDLE_MIN_MS, IDLE_MAX_MS, ZOOM_RUN_MS, NOMINAL_MIN, NOMINAL_MAX, UNKNOWN_COST,
-  viewCls, makeCostTable, quantPan, makePanQuant, idleMsFor, hotMsFor, clampNominal,
+  viewCls, makeCostTable, quantPan, makePanQuant, idleMsFor, hotMsFor, nominalFromGaps,
+  uncoveredMode, needsRestRebuild,
   placeSnapshot, worldCover, coversSubset, pickFallbackIdx, clipRects
 } from '../../../src/viz/flatmap/rebuildPolicy.js'
 
@@ -64,11 +67,16 @@ const near = (a, b, e, m) => ok(Math.abs(a - b) <= e, m + ' — 实得 ' + a + '
   eq(hotMsFor(true, 110), 110, '便宜的视角：热窗口就是静止阈值（一格滚完就清晰）')
   eq(hotMsFor(false, 110), ZOOM_RUN_MS, '贵的视角：热窗口拉到整串滚轮的节奏')
   eq(hotMsFor(false, IDLE_MAX_MS), IDLE_MAX_MS, '贵且静止阈值已到上限：取二者较大')
-  // nominal 是滚动最小值，钳在 [4,20]
-  eq(clampNominal(0.1, 16.7), NOMINAL_MIN, '验证台无 vsync（gap≈0）：钳到下限，不许算成负 extra')
-  eq(clampNominal(6.9, 16.7), 6.9, '144 Hz：跟到真实刷新周期')
-  eq(clampNominal(30, 16.7), 16.7, '比当前最小值大：不动')
-  eq(clampNominal(-5, 16.7), 16.7, '负值（时钟回拨）：不动')
+  // nominal ＝ 连排空 rAF 的时间戳差取中位数后钳在 [4,20]（§11.4：绝不能从 draw() 的间隔估）
+  eq(nominalFromGaps([0.2, 0.1, 0.3, 0.2, 0.1]), NOMINAL_MIN, '验证台无 vsync（gap≈0）：钳到下限，不许算成负 extra')
+  near(nominalFromGaps([6.9, 6.8, 7.0, 6.9, 6.9]), 6.9, 1e-9, '144 Hz：跟到真实刷新周期')
+  near(nominalFromGaps([16.7, 16.6, 16.8, 16.7, 16.7]), 16.7, 1e-9, '60 Hz：跟到真实刷新周期')
+  eq(nominalFromGaps([16.7, 16.6, 300, 16.8, 16.7]), 16.7, '中间掉一帧（300 ms）：中位数不受影响')
+  eq(nominalFromGaps([40, 45, 50]), NOMINAL_MAX, '刷新率极低 / 被节流：钳到上限')
+  eq(nominalFromGaps([], 12), 12, '一格都没量到：保持原值')
+  eq(nominalFromGaps([-3, 0, 6.9, 6.9], 12), 6.9, '负值与 0（时钟回拨 / 同一拍）剔掉再取中位数')
+  // ★ 反例：draw() 的间隔里混着 resizeNow 那种同步 draw（0～3 ms），拿它估就把 nominal 钉死在下限
+  eq(nominalFromGaps([16.7, 0.4, 16.7, 0.9, 16.6]), 16.6, '同步 draw 混进来：中位数仍是刷新周期（滚动最小值会钉死在 0.4）')
 }
 
 // ── ④ 平移量化 ─────────────────────────────────────────────────────────────
@@ -97,13 +105,25 @@ const recAt = (o = {}) => ({ k: V.k, tx: 0, ty: 40, mx: 0, my: 0, w: 1920, h: 10
   ok(!pl.scaled, '同 k：不是缩位图')
   ok(pl.exact, '量化后的位移：exact 为真（于是拖动全程不补建）')
   near(pl.dx, Math.round(pl.dx), 1e-9, '贴图位移落在整设备像素上')
+  ok(pl.moved, '搬过位置：moved 为真')
 
   // 未量化的位移 → exact 为假（这正是改造前每次停顿都补建的根因）
   ok(!placeSnapshot(recAt(), { ...V, tx: 37.3 }).exact, 'DPR 1.5 下未量化的位移：exact 为假')
 
+  // ★ §11.1：带余量的快照【一动没动】—— moved 必须为假，而 dx 恒 = −mx ≠ 0。
+  //   判据用 dx 的那一版：静止时每帧 blit 都排一次补建 → 补建又催出探针帧 → 再排补建，
+  //   以 idleMs 为周期无限循环整份重建（实测放大 t=0.3 静止 2.5 s 里 42 帧、周期 ≈ 130 ms）。
+  const held = placeSnapshot({ k: V.k, tx: 0, ty: 40, mx: 346, my: 194, w: 1920 + 692, h: 1080 + 388 }, V)
+  ok(!held.moved, '带余量、视图一动没动：moved 为假 → 静止后一次都不补建')
+  eq(held.dx, -346, '同一张的 dx 却是 −mx（正是不能拿它当判据的理由）')
+  ok(held.covers && held.exact, '同上：盖得住且 exact（画面就是这张位图）')
+  const held0 = placeSnapshot(recAt(), V)
+  ok(!held0.moved && held0.dx === 0, '余量为 0 且没动：moved 假、dx 也是 0（全图视角本来就不循环）')
+
   // 缩放期
   const z = placeSnapshot(recAt(), { ...V, k: V.k * 1.2 })
   ok(z.scaled && !z.exact, '缩放期：缩位图且 exact 恒假')
+  ok(z.moved, '缩位图：moved 恒真（缩过的位图一律静止后补建）')
   near(z.w, 1920 * 1.2, 1e-6, '缩位图宽度按 k 比例')
 
   // covers：全图视角（世界整个在快照里）平移多远都盖得住
@@ -113,6 +133,11 @@ const recAt = (o = {}) => ({ k: V.k, tx: 0, ty: 40, mx: 0, my: 0, w: 1920, h: 10
   const big = { k: 40, tx: -2000, ty: -1000, mx: 128, my: 128, w: 1920 + 256, h: 1080 + 256 }
   const off = placeSnapshot(big, { ...V, k: 40, tx: -2000 - 900, ty: -1000 })
   ok(!off.covers, '放大视角横向平移 900 px：盖不住')
+  // ★ §11.3：盖不住的这一张【不是缩位图】—— 平移盖不住且没有回退时一律同步重建，
+  //   不许走海色垫底（放大视角的类几乎永远判不成「便宜」，走海色就是一条空海跟着光标走）。
+  ok(!off.scaled && off.moved, '平移盖不住：非缩位图且搬过位置 → 走 uncovered 同步重建那一支')
+  const shrink = placeSnapshot(big, { ...V, k: 8 })
+  ok(shrink.scaled && !shrink.covers, '从放大视角缩小：缩位图且盖不住 → 才是海色垫底那一支')
 }
 
 // ── ⑥ 回退快照 ─────────────────────────────────────────────────────────────
@@ -134,6 +159,26 @@ const recAt = (o = {}) => ({ k: V.k, tx: 0, ty: 40, mx: 0, my: 0, w: 1920, h: 10
   // 放大到快照之外：全图那张仍盖得住（世界整个在里面），放大那张盖不住
   eq(pickFallbackIdx([mk({ ...zoom, area: 0.1 })], { ...V, k: 40, tx: -2000 - 3000, ty: -1000 }), -1,
     '离得太远：连唯一那张回退也盖不住 → 走海色垫底')
+}
+
+// ── ⑧ 盖不住时走哪一支 / 静止后要不要补建（§11.1、§11.3）──────────────────
+{
+  const pan = { scaled: false, exact: true, covers: false, moved: true }      // 平移出快照
+  const shrink = { scaled: true, exact: false, covers: false, moved: true }   // 缩小（缩位图）
+  eq(uncoveredMode(pan, true, false), 'fallback', '有回退：先垫回退（哪一支都一样）')
+  eq(uncoveredMode(shrink, true, false), 'fallback', '缩小且有回退：同上')
+  eq(uncoveredMode(pan, false, false), 'rebuild', '★ 平移盖不住 + 没回退 + 判贵：仍同步重建，不许走海色')
+  eq(uncoveredMode(pan, false, true), 'rebuild', '平移盖不住 + 没回退 + 判便宜：同步重建')
+  eq(uncoveredMode(shrink, false, false), 'ocean', '缩小盖不住 + 没回退 + 判贵：这一支才垫海色')
+  eq(uncoveredMode(shrink, false, true), 'rebuild', '缩小盖不住 + 没回退 + 判便宜：直接重建')
+
+  // ★ §11.1：带余量、没动过的 blit 一次都不补建 —— 这正是无限循环的那条判据
+  const held = { scaled: false, exact: true, covers: true, moved: false, dx: -346, dy: -194 }
+  ok(!needsRestRebuild(held, false), '带余量、视图没动：不排补建（拿 dx 判就会以 idleMs 为周期无限循环）')
+  ok(needsRestRebuild({ ...held, moved: true }, false), '搬过位置：补建')
+  ok(needsRestRebuild({ ...held, covers: false }, false), '盖不住：补建')
+  ok(needsRestRebuild({ ...held, exact: false }, false), '位移落不到整设备像素：补建')
+  ok(needsRestRebuild(held, true), '手势中到货的瓦片：静止后补建一并收（不作废内容，见 §11.2）')
 }
 
 // ── ⑦ evenodd 裁剪矩形 ─────────────────────────────────────────────────────

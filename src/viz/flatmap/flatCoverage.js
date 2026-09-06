@@ -34,8 +34,9 @@ import { createGlRaster, GL_TEX_MAX } from './glRaster.js'
 import { createGlField, GL_MAX_LEVELS, meshLattice } from './glField.js'
 // 静态快照的调度口径（重不重建 / 何时补建 / 盖不住时垫哪张）：纯函数拆在这里，见其文件头
 import {
-  REBUILD_FAST_MS, PROBE_FRAMES, UNKNOWN_COST, viewCls as clsOf, makeCostTable,
-  quantPan, makePanQuant, idleMsFor, hotMsFor, clampNominal, placeSnapshot, worldCover as coverOf,
+  REBUILD_FAST_MS, PROBE_FRAMES, UNKNOWN_COST, NOMINAL_MIN, viewCls as clsOf, makeCostTable,
+  quantPan, makePanQuant, idleMsFor, hotMsFor, nominalFromGaps, placeSnapshot, worldCover as coverOf,
+  uncoveredMode, needsRestRebuild,
   coversSubset, pickFallbackIdx, clipRects
 } from './rebuildPolicy.js'
 import { geoArea, geoContains } from 'd3-geo'
@@ -489,11 +490,40 @@ export function createFlatCoverage(canvas) {
   //   静止时后面没有帧可数 —— 由 armProbe 补两帧【逐像素相同的重绘】把这次重建的光栅账结掉，
   //   顺带把那份顶住从「用户下一次手势的第一帧」挪到静止期（§4.1）。
   let rasterGapMs = 0
-  let rasterNominal = 16.7          // 非重建帧的帧间隔滚动最小值，钳在 [4, 20]
+  let rasterNominal = NOMINAL_MIN   // 一帧本来就要等多久（真机＝一个刷新周期），钳在 [4, 20]
   let costEst = 0
   let probeLeft = 0, probeAcc = 0, probeT = 0, probeCls = '', probeChase = 0, probeSync = 0
-  let lastDrawAt = 0
-  function noteNominal(gap) { rasterNominal = clampNominal(gap, rasterNominal) }
+  // 单调计数（只增不减）：轮询式探针会漏帧，计数不会 —— 「静止之后到底还画不画」只能靠它数。
+  let drawSeq = 0, rebuildSeq = 0
+  // nominal 只从【连排的空 rAF】的时间戳差估（6 帧取中位数）；DPR 变化与窗口重新获得焦点时重估
+  // （换显示器＝换刷新率）。
+  // ★ 别再拿 draw() 的间隔估：resizeNow 是同步 draw()，与同一拍里挂着的 rAF draw 间隔 0～3 ms，
+  //   一次就把 nominal 钉死在下限，于是真机上所有类永远判「贵」（§11.4）。
+  // ★ 必须挑【空闲时】量：主线程忙着（启动期解析底图、手势中、探针帧未结账）时量到的是「忙」，
+  //   而 nominal 偏大 ＝ 重建代价被低估 ＝ 手势里插一次整份重建，正是两头不对称里危险的那头。
+  //   实测验证台上刚 reload 就量得到 14.5 ms（真值 ≈ 0）。故走 requestIdleCallback + 忙则改期。
+  //   量出来之前 nominal 停在下限，代价一律偏贵（安全的那头）。
+  let nominalBusy = false
+  function measureNominal() {
+    if (nominalBusy) return
+    nominalBusy = true
+    const run = () => {
+      if (dragging || probeLeft > 0 || idleTimer) { setTimeout(run, 400); return }
+      const ts = []
+      const step = () => requestAnimationFrame((t) => {
+        ts.push(typeof t === 'number' ? t : performance.now())
+        if (ts.length < 6) { step(); return }
+        const gaps = []
+        for (let i = 1; i < ts.length; i++) gaps.push(ts[i] - ts[i - 1])
+        rasterNominal = nominalFromGaps(gaps, rasterNominal)
+        nominalBusy = false
+      })
+      step()
+    }
+    const ric = typeof window !== 'undefined' && window.requestIdleCallback
+    if (ric) ric(run, { timeout: 4000 }); else setTimeout(run, 1500)
+  }
+  measureNominal()
   function probeTick(t0) {
     const gap = t0 - probeT
     rasterGapMs = +gap.toFixed(2)
@@ -555,7 +585,9 @@ export function createFlatCoverage(canvas) {
   function idleFire() {
     idleTimer = 0
     if (gestureHot()) { idleTimer = setTimeout(idleFire, 60); return }   // 手还热：再等一拍
-    if (tilesDirty) { tilesDirty = false; invalidateStatic() } else rebuildAtRest()
+    // ★ 瓦片到货只是【多了几片影像】，不是换了内容：两条路都走 rebuildAtRest —— 走 invalidateStatic
+    //   会 gen++ 并清空回退快照，正好把「缩回去时垫底的那张全图」清光，缩回全图又露空环（§11.2）。
+    tilesDirty = false; rebuildAtRest()
     requestDraw()
   }
 
@@ -2378,8 +2410,7 @@ export function createFlatCoverage(canvas) {
   function draw() {
     if (cw < 2 || ch < 2 || !belowCanvas) return
     const _tIn = performance.now()
-    if (probeLeft > 0) probeTick(_tIn); else noteNominal(_tIn - lastDrawAt)
-    lastDrawAt = _tIn
+    if (probeLeft > 0) probeTick(_tIn)
     // 快照怎么用（§4.1 的判定表）：
     //   内容变了            → 无条件重建
     //   平移且盖得住        → 搬位图
@@ -2405,17 +2436,20 @@ export function createFlatCoverage(canvas) {
       else mode = 'scaled'
     } else {
       fb = pickFallback()
-      if (fb) { mode = pl.scaled ? 'scaled' : 'blit'; reason = 'fallback' }
-      else if (clsCheap(cls)) doRebuild('uncovered')
-      else { mode = pl.scaled ? 'scaled' : 'blit'; reason = 'ocean' }
+      const u = uncoveredMode(pl, !!fb, clsCheap(cls))     // 三选一的判据见 rebuildPolicy（§11.3）
+      if (u === 'rebuild') doRebuild('uncovered')                // doRebuild 自己把 fb 清掉
+      else { mode = pl.scaled ? 'scaled' : 'blit'; reason = u }   // 'fallback' 垫回退 / 'ocean' 垫海色
     }
     // 缩位图 / 盖不住 / 位移落不到整设备像素 / 位图搬过位置：手势停下来之后补一次精确重建。
     // ★ 「搬过位置也补」有两个理由：① 快照的余量被这趟平移吃掉了一部分，静止下来重烘一次
     //   才把四周的余量续满，下一次手势才不会当场撞上「盖不住」；② 静止画面的口径 ——
     //   搬过位置的位图上，地名避让与世界矩形裁剪是按【旧位置的视口】算的，现画一遍才是这个
     //   视图应有的那张图。补建落在【手势之外】：拖动期间 gestureHot() 恒真，idleFire 到期只会再等一拍（§4.3）。
-    if (mode !== 'rebuild' && (!pl.exact || !pl.covers || pl.dx || pl.dy || tilesDirty)) scheduleRebuild()
-    globalThis.__staticStat = { mode, reason, rebuildMs: lastRebuildMs, rasterGapMs, costEst, nominal: +rasterNominal.toFixed(2), cls, cheap: clsCheap(cls), cost: clsCost(cls), unknown: UNKNOWN_COST, fallbacks: fallbacks.length, gen: staticGen, detail: curDetail(), mx: snapMxDev, my: snapMyDev, w: belowCanvas.width, h: belowCanvas.height }
+    // ★ 判据是 pl.moved 不是 pl.dx/dy：dx 是贴图坐标（dx = rx − mx），快照带余量时一动没动也 ≠ 0
+    //   → 静止时每帧 blit 都排补建、补建又催出探针帧，以 idleMs 为周期无限循环整份重建（§11.1）。
+    if (mode !== 'rebuild' && needsRestRebuild(pl, tilesDirty)) scheduleRebuild()
+    drawSeq++; if (mode === 'rebuild') rebuildSeq++
+    globalThis.__staticStat = { mode, reason, drawSeq, rebuildSeq, rebuildMs: lastRebuildMs, rasterGapMs, costEst, nominal: +rasterNominal.toFixed(2), cls, cheap: clsCheap(cls), cost: clsCost(cls), unknown: UNKNOWN_COST, fallbacks: fallbacks.length, gen: staticGen, detail: curDetail(), mx: snapMxDev, my: snapMyDev, w: belowCanvas.width, h: belowCanvas.height }
     const _wr = worldRect(), rx = _wr.x, ry = _wr.y, rw = _wr.w, rh = _wr.h   // 裁到世界矩形：整幅图只此一张
     // 复合：blit below（不透明）→ Polygon 填充 + 覆盖填充/线（夹在中间）→ blit above（透明）→ 覆盖标注 → 聚焦星
     // ★ 先铺背景色再贴：位移之后快照盖不满整块画布，露出来的那一条本就该是背景
@@ -2787,12 +2821,14 @@ export function createFlatCoverage(canvas) {
   //   停在旧值等于比例又变回非整数，正是这次要治的那件事。
   // ★ matchMedia 的 resolution 查询是唯一听得见这件事的接口；一个查询只盯一个具体的 dppx 值，
   //   故每次触发后必须照新 DPR 重新挂一次。
+  const onWinFocus = () => measureNominal()
+  window.addEventListener('focus', onWinFocus)
   let offDpr = null
   function watchDpr() {
     if (offDpr) { offDpr(); offDpr = null }
     let mq
     try { mq = window.matchMedia('(resolution: ' + (window.devicePixelRatio || 1) + 'dppx)') } catch { return }
-    const on = () => { watchDpr(); resizeNow() }
+    const on = () => { watchDpr(); resizeNow(); measureNominal() }
     mq.addEventListener('change', on)
     offDpr = () => mq.removeEventListener('change', on)
   }
@@ -3195,6 +3231,7 @@ export function createFlatCoverage(canvas) {
       if (glr) { glr.dispose(); glr = null }
       offPov()
       if (offDpr) { offDpr(); offDpr = null }
+      window.removeEventListener('focus', onWinFocus)
       canvas.removeEventListener('wheel', onWheel); canvas.removeEventListener('pointerdown', onDown); canvas.removeEventListener('pointermove', onMove)
       canvas.removeEventListener('pointerup', onUp); canvas.removeEventListener('pointercancel', onUp); canvas.removeEventListener('pointerleave', onLeave); canvas.removeEventListener('dblclick', onDbl)
       canvas.removeEventListener('contextmenu', onCtx)
