@@ -231,6 +231,7 @@ export const LB_REPORT_EN = {
   '可用度档位': 'Availability Tiers', '日凌预计中断': 'Sun Outage (predicted)',
   '日凌预计窗口': 'Predicted Sun Outage Windows', '参数与假设': 'Parameters and Assumptions',
   '引用标准': 'Normative References', '免责事件': 'Excluded Events',
+  '指标定义': 'Metric Definitions',
   '定义': 'Definition', '计算式': 'Formula', '依据': 'Basis',
   '可用度构成': 'Availability Composition', '计入次数': 'Count',
   '考核周期': 'Assessment Period', '年平均': 'Annual mean', '最坏月': 'Worst month',
@@ -509,6 +510,8 @@ export function labelBundle(lang) {
     slaScope: t('服务范围'), slaDefs: t('指标定义与考核口径'), slaMatrix: t('服务等级指标总表'),
     slaDetail: t('逐链路指标明细'), slaTiers: t('可用度档位'), slaSun: t('日凌预计窗口'),
     slaAssump: t('参数与假设'), slaRefs: t('引用标准'), slaExcl: t('免责事件'),
+    // 工作表名 Excel 上限 31 字符：英文的「指标定义与考核口径」超了，故另给一个短名
+    slaDefsSheet: t('指标定义'),
     slaDefinition: t('定义'), slaFormula: t('计算式'), slaSource: t('依据'),
     slaComposition: t('可用度构成'), slaSlots: t('计入次数'),
     period: t('考核周期'), periodYear: t('年平均'), periodMonth: t('最坏月'),
