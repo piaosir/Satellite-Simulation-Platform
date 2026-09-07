@@ -1,102 +1,102 @@
 {
-  "generatedAt": "2026-09-07T00:24:59.240Z",
+  "generatedAt": "2026-09-07T16:09:21.728Z",
   "note": "内置 OMM 兜底快照（CelesTrak GP CSV）",
   "groups": {
     "starlink": {
-      "count": 11086,
-      "bytes": 1669484,
-      "gzBytes": 545391,
-      "generatedAt": "2026-09-07T00:24:59.240Z"
+      "count": 11136,
+      "bytes": 1800910,
+      "gzBytes": 487912,
+      "generatedAt": "2026-09-07T16:09:21.728Z"
     },
     "oneweb": {
       "count": 651,
-      "bytes": 95083,
-      "gzBytes": 30827,
-      "generatedAt": "2026-09-07T00:24:59.240Z"
+      "bytes": 96989,
+      "gzBytes": 32161,
+      "generatedAt": "2026-09-07T16:09:21.728Z"
     },
     "kuiper": {
       "count": 391,
-      "bytes": 58008,
-      "gzBytes": 20100,
-      "generatedAt": "2026-09-07T00:24:59.240Z"
+      "bytes": 58655,
+      "gzBytes": 20402,
+      "generatedAt": "2026-09-07T16:09:21.728Z"
     },
     "gps": {
       "count": 32,
-      "bytes": 4840,
-      "gzBytes": 1981,
-      "generatedAt": "2026-09-07T00:24:59.240Z"
+      "bytes": 4844,
+      "gzBytes": 1974,
+      "generatedAt": "2026-09-07T16:09:21.728Z"
     },
     "beidou": {
       "count": 54,
-      "bytes": 7905,
-      "gzBytes": 3047,
-      "generatedAt": "2026-09-07T00:24:59.240Z"
+      "bytes": 7918,
+      "gzBytes": 3040,
+      "generatedAt": "2026-09-07T16:09:21.728Z"
     },
     "galileo": {
       "count": 32,
-      "bytes": 4848,
-      "gzBytes": 1865,
-      "generatedAt": "2026-09-07T00:24:59.240Z"
+      "bytes": 4851,
+      "gzBytes": 1866,
+      "generatedAt": "2026-09-07T16:09:21.728Z"
     },
     "qianfan": {
       "count": 238,
-      "bytes": 34466,
-      "gzBytes": 11630,
-      "generatedAt": "2026-09-07T00:24:59.240Z"
+      "bytes": 35069,
+      "gzBytes": 12025,
+      "generatedAt": "2026-09-07T16:09:21.728Z"
     },
     "guowang": {
       "count": 191,
-      "bytes": 29821,
-      "gzBytes": 9606,
-      "generatedAt": "2026-09-07T00:24:59.240Z"
+      "bytes": 30038,
+      "gzBytes": 9740,
+      "generatedAt": "2026-09-07T16:09:21.728Z"
     },
     "geo": {
       "count": 567,
-      "bytes": 76509,
-      "gzBytes": 28564,
-      "generatedAt": "2026-09-07T00:24:59.240Z"
+      "bytes": 76859,
+      "gzBytes": 28520,
+      "generatedAt": "2026-09-07T16:09:21.728Z"
     },
     "glonass": {
       "count": 29,
-      "bytes": 4331,
-      "gzBytes": 1768,
-      "generatedAt": "2026-09-07T00:24:59.240Z"
+      "bytes": 4335,
+      "gzBytes": 1781,
+      "generatedAt": "2026-09-07T16:09:21.728Z"
     },
     "o3b": {
       "count": 30,
-      "bytes": 4249,
-      "gzBytes": 1633,
-      "generatedAt": "2026-09-07T00:24:59.240Z"
+      "bytes": 4264,
+      "gzBytes": 1637,
+      "generatedAt": "2026-09-07T16:09:21.728Z"
     },
     "iridium": {
       "count": 80,
-      "bytes": 11798,
-      "gzBytes": 4015,
-      "generatedAt": "2026-09-07T00:24:59.240Z"
+      "bytes": 12019,
+      "gzBytes": 4154,
+      "generatedAt": "2026-09-07T16:09:21.728Z"
     },
     "globalstar": {
       "count": 36,
-      "bytes": 5651,
-      "gzBytes": 2101,
-      "generatedAt": "2026-09-07T00:24:59.240Z"
+      "bytes": 5726,
+      "gzBytes": 2125,
+      "generatedAt": "2026-09-07T16:09:21.728Z"
     },
     "stations": {
       "count": 22,
-      "bytes": 3545,
-      "gzBytes": 1281,
-      "generatedAt": "2026-09-07T00:24:59.240Z"
+      "bytes": 3567,
+      "gzBytes": 1211,
+      "generatedAt": "2026-09-07T16:09:21.728Z"
     },
     "planet": {
       "count": 119,
-      "bytes": 17690,
-      "gzBytes": 6472,
-      "generatedAt": "2026-09-07T00:24:59.240Z"
+      "bytes": 18040,
+      "gzBytes": 6691,
+      "generatedAt": "2026-09-07T16:09:21.728Z"
     },
     "spire": {
       "count": 72,
-      "bytes": 11332,
-      "gzBytes": 4643,
-      "generatedAt": "2026-09-07T00:24:59.240Z"
+      "bytes": 11441,
+      "gzBytes": 4707,
+      "generatedAt": "2026-09-07T16:09:21.728Z"
     },
     "active": {
       "count": 16511,
