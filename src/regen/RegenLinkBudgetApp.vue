@@ -2486,10 +2486,10 @@ onMounted(async () => {
 .lb-shell {
   display: flex; flex-direction: column; height: 100vh;
   background: var(--bg); color: var(--text); font-family: var(--font-ui);
-  /* 外壳无衬线、文档面衬线：本窗口的外形（功能区 / 页签 / 侧栏 / 参数面板 / 链路表）与主窗
-     一模一样，字体也必须是同一族，否则在两个窗口之间切换一眼看得出。衬线只留给「详细预算」
-     那一块（.lbx-doc 在 lbworkbench.css 里显式钉回 --lb-serif）——那是报表排版，且它的列宽是
-     按 TNR 的字面宽度用 em 调出来的，换族要连着重调十几个常数。 */
+  /* 外壳与文档面同族：本窗口的外形（功能区 / 页签 / 侧栏 / 参数面板 / 链路表 / 详细预算）与主窗
+     一模一样，字体也必须是同一族，否则在两个窗口之间切换一眼看得出。衬线只留给交付文档
+     （报告页 lbreport.css 与各图导出路径），屏上的「详细预算」自 2026-09-07 起也走 --font-ui
+     （lbworkbench.css 的 .lbx-doc）。 */
   --ok: #4a7a62; --warn: #8a7038; --danger: #9c5751;
   --up: #3f6d8c; --dn: #97672f;
 }

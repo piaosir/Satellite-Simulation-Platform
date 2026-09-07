@@ -2,13 +2,14 @@
    配合 LbSection（分节壳）/ LbLibrary（资源库主从视图）使用；lbx- 前缀为新布局专用类，
    末尾少量 .lb-shell 前缀选择器用于覆写各 App 内遗留 scoped 规则（specificity 高一级）。 */
 
-/* —— 报表排版体系（v1.4.3；2026-08-29 收窄适用范围）——
-   衬线栈：Times New Roman（西文/数字，字面天然等宽对齐）+ 宋体（中文回落），对齐工程报告排版；
-   该栈自 styles/global.css 的 --font-doc 而来，此处保留 --lb-serif 别名。
-   ★ 它只管「详细预算」那一块（.lbx-doc），不再是全窗字体 ——
-   外壳（功能区 / 页签 / 侧栏 / 参数面板 / 链路表）与主窗同族，走 --font-ui。
-   除审美外还有一条硬的：下面 .lbx-doc-ref 那几组 grid 列宽是按 TNR 的字面宽度用 em 调出来的
-   （TNR 数字宽 0.5em、无衬线 0.54em），文档区跟着换族的话十几个 em 常数要连着重调。
+/* —— 报表排版体系（v1.4.3；2026-08-29 收窄适用范围；2026-09-07 屏上全部改走界面字体）——
+   衬线栈：Times New Roman（西文/数字）+ 宋体（中文回落），对齐工程报告排版；
+   该栈自 styles/global.css 的 --font-doc 而来，此处保留 --lb-serif 别名（报告对话框与各图导出路径还在用）。
+   ★ 屏上不再有任何区块吃它：「详细预算」那一块（.lbx-doc）也跟设置里的「界面字体」走（--font-ui），
+   与外壳（功能区 / 页签 / 侧栏 / 参数面板 / 链路表）同族——用户 2026-09-07 指出结果区还是 TNR、与全局设置不一致。
+   衬线只留给交付文档：报告页（styles/lbreport.css 的 .lbx-doc.rp-doc 钉回 --rp-font-body）与各图的导出路径。
+   下面 .lbx-doc-ref 那几组 grid 列宽当初按 TNR 字面宽度用 em 调出（TNR 数字 0.5em、Arial 0.556em）：
+   数值轨 4.9em 对「−112.422」在 Arial 下约 4.2em 仍够；英文长标签在无衬线下更容易折行（.wf-l 有 max-width 兜底）。
    --lb-fs 为数据区基准字号（链路表 / 详细预算 / 容量汇总），功能区「字号」组可调（8–20px，
    shared/lbFont.js 在 <html> 上写行内变量覆盖此默认值，localStorage 三窗共享）。
    三线表（booktabs）：顶线/底线 --lb-rule-strong、栏目线 --lb-rule、段内辅助线 --lb-rule-soft，
@@ -270,8 +271,8 @@ html[data-theme='dark'] .sg-cell .sg-fillbar::after {
    尺寸一律用 em（.lbx-doc 把 font-size 钉到 --lb-fs，故 1em = 数据区基准字号）：功能区「字号」组
    把 --lb-fs 从 8px 调到 20px 时，栏宽/上限同比放大——限的是「标签到数值的字符距离」而非绝对像素。
    括号内为 --lb-fs=11px 默认档下的实测值。 */
-/* ★ font-family 必须在这里显式给：窗口根已改成无衬线，文档区不再继承得到衬线 */
-.lbx-doc { font-family: var(--lb-serif); font-size: var(--lb-fs); display: flex; flex-wrap: wrap; align-items: flex-start; gap: 14px 2em; }
+/* ★ font-family 仍显式给（不靠继承）：屏上跟界面字体 --font-ui；报告页由 lbreport.css 的 .lbx-doc.rp-doc 钉回文档衬线栈 */
+.lbx-doc { font-family: var(--font-ui); font-size: var(--lb-fs); display: flex; flex-wrap: wrap; align-items: flex-start; gap: 14px 2em; }
 .lbx-doc-main { order: -2; flex: 1 1 28em; max-width: 45em; min-width: 0; }   /* 308 / 495px */
 /* .wf 的容器改写一律带上 .lbx-doc 前缀（3 个类）：WaterfallTable 的 scoped `.wf[data-v-…]` 也是
    两位特异度，同分时谁后加载谁赢——dev 注入序与打包序不一定一致，加一级把胜负钉死。 */
@@ -280,7 +281,7 @@ html[data-theme='dark'] .sg-cell .sg-fillbar::after {
 /* flex-basis 压到 40em（≈440px）：两栏基准合计 68em + 2em 间距 = 70em（默认字号约 770px），
    常规窗口下「级联表 ‖ 图表」必定并排——这是这一节的主命题，图与表同屏才对得上。
    多出来的宽度靠 flex-grow 分：左轨吃到 45em 上限就不再长，剩下的全归图表。 */
-/* ★ 图表列走界面字体：左轨（级联表）与参考段带是文档、跟报告走衬线，右栏是图 ——
+/* ★ 图表列显式再给一次界面字体（与 .lbx-doc 同族；这里历史上是衬线/无衬线的分界，留着免得回退时漏）——
    按「屏上跟界面、导出跟报告」的口径，图在屏幕上的注记与周围界面同族，导进报告的那一份
    由各图自己在导出路径里写死衬线（LbSurfacePlot.toSVG / linkGlobe.snapshot）。 */
 .lbx-doc-side { order: -1; flex: 1 1 40em; min-width: 0; display: flex; flex-direction: column; gap: 14px; font-family: var(--font-ui); }
@@ -337,14 +338,12 @@ html[data-theme='dark'] .sg-cell .sg-fillbar::after {
 /* —— SLA 建议（LbSlaPane，四窗共用，挂在 LbSlaDialog 里）——
    三块的分工由「列数」定：条款表六列、参数轨三列，两者并排；档位表十列全是数，挤进右轨
    就会与条款表叠在一起 → 它整幅独占一行，内部再给一层横向滚动兜底。
-   排版沿用详细预算那套（.lbx-doc 已把衬线栈与 --lb-fs 钉好）。三线表口径与 WaterfallTable 一致：
+   排版沿用详细预算那套（.lbx-doc 已把字体与 --lb-fs 钉好）。三线表口径与 WaterfallTable 一致：
    顶线/底线 --lb-rule-strong、列头下 --lb-rule、组头上 --lb-rule-soft，行间无框线无底纹。
    尺寸一律 em（1em = --lb-fs），随功能区「字号」整体缩放。
    ★ 写在公共表而不是组件 scoped 里：.lbx-doc 的栅格变量在宿主那侧。 */
-/* ★ 走【界面字体】var(--font-ui)，不走 --lb-serif：判据是「会不会进交付文档」——
-   详细预算那张级联表是报告正文的屏上预览，故跟报告走衬线；SLA 弹窗是填条款的界面，
-   跟设置里的「界面字体」走（用户 2026-09-05 指出这一条）。字号仍吃 --lb-fs（功能区「字号」）。
-   本块不再挂 .lbx-doc（那条会把衬线栈带进来），布局在这里自己写全。 */
+/* ★ 走【界面字体】var(--font-ui)（用户 2026-09-05 指出这一条；2026-09-07 起详细预算区也同此口径，
+   屏上已无衬线区块）。字号仍吃 --lb-fs（功能区「字号」）。本块不挂 .lbx-doc，布局在这里自己写全。 */
 .lbx-sla {
   display: flex; flex-wrap: wrap; align-items: flex-start; column-gap: 2.2em; row-gap: 1.4em;
   font-family: var(--font-ui); font-size: var(--lb-fs);

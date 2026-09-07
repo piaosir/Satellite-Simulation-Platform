@@ -199,7 +199,8 @@ body {
 /* 选择器一律写成 .lbx-doc.rp-doc（两个类）：工作台那边是单类 .lbx-doc，同分时谁后加载谁赢，
    而打包后的 CSS 顺序不由 import 顺序决定（lbworkbench 是多入口共享块，排在后面）。
    踩过一次：display:block 被 .lbx-doc 的 display:flex 压掉，整段覆盖静默失效。 */
-.lbx-doc.rp-doc { display: block; }
+/* 工作台侧的 .lbx-doc 屏上走界面字体（2026-09-07 起）；报告是交付文档，这里钉回模板正文字体 */
+.lbx-doc.rp-doc { display: block; font-family: var(--rp-font-body); }
 .lbx-doc.rp-doc > .lbx-doc-main, .lbx-doc.rp-doc > .lbx-doc-side { display: table-cell; vertical-align: top; float: none; }
 .lbx-doc.rp-doc > .lbx-doc-main { width: 52%; max-width: none; padding-right: 7mm; }
 .lbx-doc.rp-doc > .lbx-doc-side { width: 48%; }
