@@ -812,7 +812,10 @@ async function compute() {
 let _slaChainOf = {}                 // 最近一次计算送进引擎的链描述子（按行 _id），惰性扫描要照它重跑
 let _slaScanGen = 0, _slaScanDone = -1, _slaScanRun = null, _slaScanRunGen = -1
 function invalidateSlaScan() { _slaScanGen++; for (const k of Object.keys(slaScanByRow)) delete slaScanByRow[k] }
-const slaWanted = () => slaOpen.value || slaCount.value > 0
+// ★ 只认弹窗开着。别拿 slaCount 当闸：includeOf 缺键即「入报告」，任何算出结果的行都算勾了条款，
+//   slaCount 恒等于有结果的行数 → 闸恒开，每次「计算」都全表 9 档扫一遍（2026-09-07 深审 #3）。
+//   档位表与 MIR 之外没有别的消费者：导出含 SLA 的报告走 beforeSla 现补，弹窗打开时 ensureSlaScan。
+const slaWanted = () => slaOpen.value
 // 把当前这批结果的档位表补齐（已齐就直接返回）；弹窗打开、导出报告前调
 async function ensureSlaScan() {
   if (_slaScanDone === _slaScanGen) return

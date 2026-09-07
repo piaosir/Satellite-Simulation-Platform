@@ -1140,7 +1140,7 @@ async function compute() {
     selected.value = keepIdx < 0 ? 0 : keepIdx
     resultsStale.value = false
     await loadWaterfall()
-    // SLA 档位扫描只在用得着时跑（弹窗开着 / 有行勾了条款 / 导出含 SLA 的报告，见 ensureSlaScan），
+    // SLA 档位扫描只在用得着时跑（弹窗开着；导出含 SLA 的报告前由 beforeSla 现补，见 ensureSlaScan），
     // 且不 await：每行 9 档 = 9 次引擎重算，跟着每次「计算」全表跑等于把普通计算拖慢一个量级、还占着「计算中」
     invalidateSlaScan()
     if (slaWanted()) ensureSlaScan()
@@ -1156,7 +1156,10 @@ async function compute() {
 // ★ 出 IPC 前必须现造纯数据：Vue 的 Proxy 过不了结构化克隆，invoke 当场抛且无 catch 时全静默。
 let _slaScanGen = 0, _slaScanDone = -1, _slaScanRun = null, _slaScanRunGen = -1
 function invalidateSlaScan() { _slaScanGen++; slaScanByRow.value = {}; slaSunByRow.value = {} }
-const slaWanted = () => slaOpen.value || slaCount.value > 0
+// ★ 只认弹窗开着。别拿 slaCount 当闸：includeOf 缺键即「入报告」，任何算出结果的行都算勾了条款，
+//   slaCount 恒等于有结果的行数 → 闸恒开，每次「计算」都全表 9 档扫一遍（2026-09-07 深审 #3）。
+//   档位表与 MIR 之外没有别的消费者：导出含 SLA 的报告走 beforeSla 现补，弹窗打开时 ensureSlaScan。
+const slaWanted = () => slaOpen.value
 // 把当前这批结果的档位表补齐（已齐就直接返回）；弹窗打开、导出报告前调
 async function ensureSlaScan() {
   if (_slaScanDone === _slaScanGen) return

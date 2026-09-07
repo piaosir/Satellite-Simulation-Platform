@@ -92,9 +92,14 @@ const DEFS = {
     def: D('载波配置中设定的解调门限对应的误码率。', 'Bit error ratio at which the demodulation threshold of the carrier configuration is defined.'),
     fml: '—', fmlEn: '—', basis: 'ITU-R S.1062'
   },
+  blerTarget: {
+    def: D('3GPP 载波配置中设定的目标块差错率；MCS 表的解调门限按它定义（首传，不含 HARQ 重传）。',
+      'Target block error ratio set in the 3GPP carrier configuration; the MCS-table demodulation thresholds are defined at it (first transmission, without HARQ retransmission).'),
+    fml: '—', fmlEn: '—', basis: '3GPP TS 38.214 / TS 36.213（首传 BLER 目标）', basisEn: '3GPP TS 38.214 / TS 36.213 (first-transmission BLER target)'
+  },
   loss: {
-    def: D('可用时间内 IP 分组丢失比例的上限；中断时段不计入本项统计。',
-      'Upper bound on the proportion of IP packets lost within the available time; outage periods are excluded from this statistic.'),
+    def: D('可用时间内 IP 分组丢失比例的上限；中断时段不计入本项统计。只对 DVB 家族与未编码载波给出：3GPP NTN 载波的门限是首传 BLER 目标、未建 HARQ 重传模型，不给本项建议值。',
+      'Upper bound on the proportion of IP packets lost within the available time; outage periods are excluded from this statistic. Given only for DVB-family and uncoded carriers: 3GPP NTN thresholds are first-transmission BLER targets and no HARQ retransmission model is applied, so no value is suggested.'),
     fml: 'p = 1 − (1 − FER)^N_f，N_f = ⌈8L / K⌉',
     fmlEn: 'p = 1 − (1 − FER)^N_f, N_f = ⌈8L / K⌉',
     basis: 'ETSI EN 302 307-1 §4.1（QEF）/ ITU-R S.1062',

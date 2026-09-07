@@ -113,7 +113,7 @@ const PARAMS = [
   { key: 'spaceAvail', avail: true, label: '卫星与载荷可用度', unit: '%', min: 0, max: 100, step: 0.01, tip: '卫星平台与转发器载荷的可用度，链上逐颗计入；100 = 不计入' },
   { key: 'groundAvail', avail: true, label: '基带/骨干网可用度', unit: '%', min: 0, max: 100, step: 0.01, gate: 'groundOn', tip: '调制解调 / 回传 / 骨干的可用度：只卖空间段不勾，卖网络服务才勾' },
   { key: 'pktBytes', needs: ['loss'], label: 'IP 包长', unit: 'B', min: 1, max: 65535, step: 1, tip: '丢包率换算用的 IP 包长：一个包跨几个 FEC 帧就有几次被丢掉的机会' },
-  { key: 'ferExp', needs: ['loss'], label: '帧差错率 10⁻ⁿ', unit: 'n', min: 1, max: 15, step: 1, tip: '编码标准的帧差错率指数：DVB-S2/S2X 与 3GPP NTN 的门限按 QEF 定义，约合 10⁻⁷；未选标准时不生效' },
+  { key: 'ferExp', needs: ['loss'], label: '帧差错率 10⁻ⁿ', unit: 'n', min: 1, max: 15, step: 1, tip: 'DVB 家族的帧差错率指数：DVB-S2/S2X/RCS2 的门限按 QEF 定义，约合 10⁻⁷。3GPP NTN 载波的门限是首传 BLER 目标、不出丢包率，本项不生效；未选标准时也不生效' },
   { key: 'procMsPerEnd', needs: ['rtt'], label: '处理时延预留', unit: 'ms/单程', min: 0, max: 1000, step: 1, tip: '发端调制 + 收端解调的单程处理时延预留，计入往返时延上限（往返穿两趟）' },
   { key: 'jitterMs', needs: ['jitter'], label: '时延抖动', unit: 'ms', min: 0, max: 1000, step: 1, tip: '按运营商入网要求填；IP 业务惯用 ≤ 30–50 ms' },
   { key: 'eirpTolDb', needs: ['txEirp', 'txPsd'], label: 'EIRP 容差', unit: 'dB', min: 0, max: 20, step: 0.1, tip: '按运营商入网要求填' },

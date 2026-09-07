@@ -195,7 +195,9 @@ ok('solveChainK 两节点时与 splitUnavailability 同解', (() => {
   const src = fs.readFileSync(path.join(ROOT, 'electron/ipc/register.js'), 'utf8')
   const seg = src.slice(src.indexOf("ipcMain.handle('link:slaScanBatch'"), src.indexOf("ipcMain.handle('link:outputDefs'"))
   ok('link:slaScanBatch 存在', seg.length > 0)
-  ok('批量入口逐条 try/catch（一条抛错不连累其余）', /arr\.map\(/.test(seg) && /try \{/.test(seg) && /catch \(err\)/.test(seg))
+  ok('批量入口逐条 try/catch（一条抛错不连累其余）', /for \(const spec of arr\)/.test(seg) && /try \{/.test(seg) && /catch \(err\)/.test(seg))
+  // 2026-09-07 深审 #3：整表同步 map 会把别的窗口的 IPC 全排在后面，改成逐行 await setImmediate 让出事件循环
+  ok('批量入口行间让出事件循环（async + setImmediate）', /async \(_e, list\)/.test(seg) && /setImmediate/.test(seg))
   ok('单条入口也兜住异常', /ipcMain\.handle\('link:slaScan',[\s\S]{0,300}?catch \(err\)/.test(src))
   const pre = fs.readFileSync(path.join(ROOT, 'electron/preload.js'), 'utf8')
   ok('preload 透出 slaScan / slaScanBatch', /slaScan:/.test(pre) && /slaScanBatch:/.test(pre))

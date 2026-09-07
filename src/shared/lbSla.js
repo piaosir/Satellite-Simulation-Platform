@@ -51,8 +51,9 @@ export const LOSS_TIERS = [0.001, 0.01, 0.05, 0.1, 0.5, 1]
 //   于是「含地面段」的开关状态存不进场景（groundOn 用 0/1）。
 export const DEFAULT_SLA_PARAMS = {
   pktBytes: 1500,      // IP 包长 B（丢包率换算用）
-  // 帧差错率 10⁻ⁿ：编码标准（DVB-S2/S2X/RCS2、3GPP NTN）的门限按 QEF 定义（ETSI EN 302 307-1
-  // §4.1，约合 PER < 10⁻⁷），LDPC+BCH 译码后的错误是【帧级】的，不是比特级独立随机误码。
+  // 帧差错率 10⁻ⁿ：DVB 家族（S2/S2X/RCS2）的门限按 QEF 定义（ETSI EN 302 307-1 §4.1，约合 PER < 10⁻⁷），
+  // LDPC+BCH 译码后的错误是【帧级】的，不是比特级独立随机误码。3GPP NTN 不吃这一项：那套 MCS 表的门限是
+  // 首传 BLER 目标（缺省 10 %，TS 38.214），不是 QEF，平台也没建 HARQ 重传模型 → 不出丢包率建议（见 deriveSla）。
   ferExp: 7,
   jitterMs: 30,        // 时延抖动 ms（纯合同参数，无计算依据；IP 业务惯用 ≤ 30–50 ms）
   procMsPerEnd: 20,    // 处理时延预留 ms/单程（发端调制 + 收端解调）
@@ -102,7 +103,9 @@ export const SLA_ITEMS = [
   { key: 'rtt', group: 'delay', label: '往返时延上限', labelEn: 'Round-trip delay (max)', unit: 'ms', kind: 'num', dec: 0, cmp: 'lt', tip: '⌈2 × (单程 + 处理时延预留) / 10⌉ × 10；处理时延预留是单程口径（发端调制 + 收端解调）' },
   { key: 'jitter', group: 'delay', label: '时延抖动', labelEn: 'Delay jitter', unit: 'ms', kind: 'num', dec: 0, cmp: 'lt', tip: '按运营商入网要求填；IP 业务惯用 ≤ 30–50 ms' },
   { key: 'berTarget', group: 'delay', label: '设计误码率', labelEn: 'Design BER', unit: '', kind: 'text', ro: true, cmp: null, tip: '载波配置里的设计误码率，原样带出；不是算出来的量' },
-  { key: 'loss', group: 'delay', label: '丢包率上限', labelEn: 'Packet loss (max)', unit: '%', kind: 'num', dec: 3, cmp: 'lt', tip: '编码标准按帧差错：1 − (1 − 10⁻ⁿ)^N_f，n 取帧差错率、N_f = ⌈8L / K⌉；未选标准时按比特独立随机误码 1 − (1 − 10⁻ⁿ)^(8L)。只在可用时间内考核，中断时段不计入丢包统计' },
+  // 3GPP 那一侧与 berTarget 对应的只读读数：MCS 表门限按【首传 BLER 目标】定义（缺省 10 %），引擎经 phyBlerResult 回显
+  { key: 'blerTarget', group: 'delay', label: '目标 BLER（首传）', labelEn: 'Target BLER (first transmission)', unit: '%', kind: 'text', ro: true, cmp: null, tip: '3GPP 载波配置里的目标块差错率，MCS 表的解调门限按它定义（TS 38.214，首传、不含 HARQ 重传）；原样带出，不是算出来的量' },
+  { key: 'loss', group: 'delay', label: '丢包率上限', labelEn: 'Packet loss (max)', unit: '%', kind: 'num', dec: 3, cmp: 'lt', tip: 'DVB 家族按帧差错：1 − (1 − 10⁻ⁿ)^N_f，n 取帧差错率、N_f = ⌈8L / K⌉；未选标准时按比特独立随机误码 1 − (1 − 10⁻ⁿ)^(8L)；3GPP NTN 载波不出本项（门限是首传 BLER 目标，未建 HARQ 重传模型）。只在可用时间内考核，中断时段不计入丢包统计' },
   { key: 'respond', group: 'ops', label: '故障响应时间', labelEn: 'Response time', unit: 'min', kind: 'num', dec: 0, cmp: null, tip: '合同条款，无计算依据；按运营商入网要求填' },
   { key: 'restore', group: 'ops', label: '故障恢复时间', labelEn: 'Restoration time', unit: 'h', kind: 'num', dec: 1, cmp: null, tip: '合同条款，无计算依据；按运营商入网要求填' },
   { key: 'txFreq', group: 'tx', label: '上行中心频率', labelEn: 'Uplink centre frequency', unit: 'MHz', kind: 'num', dec: 4, cmp: null, tip: '引擎上行中心频率；依据列给 fc ± B/2，引用了频率计划时再附该转发器的频带' },
@@ -920,26 +923,34 @@ export function deriveSla(ctx) {
   // 设计误码率：载波配置里的那个数原样带出（不是算出来的量，依据列留「—」）
   const berShown = e2e ? String(data.e2eBerResult || '') : String(data.berResult || '')
   if (berShown) put('berTarget', { basis: [P('—')], suggest: berShown, text: true })
+  // 3GPP NTN 载波：差错性能那一格是【首传 BLER 目标】（TS 38.214，缺省 10 %），引擎经 phyBlerResult 回显 ——
+  // 它是 berTarget 在 3GPP 这一侧的对应物，同样原样带出。判 NTN 的三个信号任一成立即算：引擎回显了 BLER 或
+  // 传输块（走了 snr 链），或载波表单本身就是 snr 口径（MODCOD 库里带体制的自建标准也在此列）。
+  const blerShown = String(data.phyBlerResult || '')
+  const ntn = blerShown !== '' || num(data.phyTbsResult) !== null
+    || (String(form.noiseRatioMode || '') === 'snr' && String(form.dvbStandard || 'custom') !== 'custom')
+  if (blerShown) put('blerTarget', { basis: [P('—')], suggest: blerShown, text: true })
 
   // 丢包率上界。分两支：
-  //   编码标准（DVB-S2/S2X/RCS2、3GPP NTN）门限按 QEF 定义，译码后的错误是【整帧】丢掉 ——
+  //   DVB 家族（S2/S2X/RCS2）门限按 QEF 定义，译码后的错误是【整帧】丢掉 ——
   //     p = 1 − (1 − FER)^N_f，N_f = ⌈8L / K⌉，K = 一帧净荷 bit；
   //   未选标准（custom）＝无编码/比特独立随机误码，保留原式 1 − (1 − BER)^(8L)。
   // 两支差三四个数量级：把随机误码模型算出的 0.5 % 写进合同是不可交付的承诺（TCP 吞吐随 1/√p 崩）。
+  // ★ 3GPP NTN 不出这一条（2026-09-07 深审 #4）：那套 MCS 表的门限是【首传 BLER 目标】（缺省 10 %），既不是 QEF，
+  //   平台也没建 HARQ 重传模型 —— 拿 10⁻⁷ 套传输块算出 0.001 % 是把 DVB 的口径硬安到 3GPP 上；拿 10 % 首传 BLER
+  //   直接算又是几十个百分点这种没有 HARQ 的数。两个都不能写进合同，差错性能那一格由上面的 blerTarget 给。
   const pkt = num(sp.pktBytes)
-  if (pkt !== null) {
+  if (pkt !== null && !ntn) {
     const coded = String(form.dvbStandard || 'custom') !== 'custom'
     let raw = null, head = null
     if (coded) {
       const fer = num(sp.ferExp)
-      const tbs = num(data.phyTbsResult)
       const fecStr = (params && params.linkParams && params.linkParams.fec !== undefined && params.linkParams.fec !== null && params.linkParams.fec !== '')
         ? params.linkParams.fec : form.fec
       const fec = parseFrac(fecStr, NaN)
-      // 3GPP NTN 一帧 = 一个传输块；DVB 家族取正常 FECFRAME 64800 bit × FEC 码率
+      // DVB 家族一帧取正常 FECFRAME 64800 bit × FEC 码率
       //（表里没有 K_bch，这条近似的误差 < 0.5 %，故依据列只写 N_f 不写 K）
-      const kBits = (tbs !== null && tbs > 0) ? tbs
-        : (Number.isFinite(fec) && fec > 0 ? DVB_FECFRAME_BITS * fec : null)
+      const kBits = Number.isFinite(fec) && fec > 0 ? DVB_FECFRAME_BITS * fec : null
       const nf = framesPerPacket(pkt, kBits)
       if (fer !== null && nf !== null) {
         raw = frameLossPct(fer, nf)

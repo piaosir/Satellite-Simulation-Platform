@@ -358,13 +358,18 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     try { return core().scanSlaTiers(spec || {}) }
     catch (err) { return { pin: null, rows: [], clear: null, message: err.message || String(err) } }
   })
-  // 批量版（整表各行一次扫完）：逐条 try/catch 隔离，一条抛错不连累其余（照 link:computeModeBatch 的写法）
-  ipcMain.handle('link:slaScanBatch', (_e, list) => {
+  // 批量版（整表各行一次扫完）：逐条 try/catch 隔离，一条抛错不连累其余（照 link:computeModeBatch 的写法）。
+  // ★ 行与行之间让出一次事件循环：每行 9 档 = 9 次引擎重算，同步 map 整表跑完前别的窗口的 IPC 全排着队
+  //   （主窗时钟播放、别的链路预算窗的「计算」都卡住）；逐行 setImmediate 后别的请求能在行间插进来。
+  ipcMain.handle('link:slaScanBatch', async (_e, list) => {
     const arr = Array.isArray(list) ? list : []
-    return arr.map((spec) => {
-      try { return core().scanSlaTiers(spec || {}) }
-      catch (err) { return { pin: null, rows: [], clear: null, message: err.message || String(err) } }
-    })
+    const out = []
+    for (const spec of arr) {
+      try { out.push(core().scanSlaTiers(spec || {})) }
+      catch (err) { out.push({ pin: null, rows: [], clear: null, message: err.message || String(err) }) }
+      if (out.length < arr.length) await new Promise((r) => setImmediate(r))
+    }
+    return out
   })
   // 可绘输出量清单（扫描器的因变量池，按物理意义分组）
   ipcMain.handle('link:outputDefs', () => core().lbOutputDefs.OUTPUT_GROUPS)

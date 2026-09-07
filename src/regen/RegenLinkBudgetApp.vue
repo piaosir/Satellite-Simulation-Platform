@@ -1306,7 +1306,10 @@ async function compute() {
 // ★ 出 IPC 前必须现造纯数据：Vue 的 Proxy 过不了结构化克隆，invoke 当场抛且无 catch 时全静默。
 let _slaScanGen = 0, _slaScanDone = -1, _slaScanRun = null, _slaScanRunGen = -1
 function invalidateSlaScan() { _slaScanGen++; slaScanByRow.value = {} }
-const slaWanted = () => slaOpen.value || slaCount.value > 0
+// ★ 只认弹窗开着。别拿 slaCount 当闸：includeOf 缺键即「入报告」，任何算出结果的行都算勾了条款，
+//   slaCount 恒等于有结果的行数 → 闸恒开，每次「计算」都全表 9 档扫一遍（2026-09-07 深审 #3）。
+//   档位表与 MIR 之外没有别的消费者：导出含 SLA 的报告走 beforeSla 现补，弹窗打开时 ensureSlaScan。
+const slaWanted = () => slaOpen.value
 // 把当前这批结果的档位表补齐（已齐就直接返回）；弹窗打开、导出报告前调。按当前子链路（上行 / 下行）扫
 async function ensureSlaScan() {
   if (_slaScanDone === _slaScanGen) return

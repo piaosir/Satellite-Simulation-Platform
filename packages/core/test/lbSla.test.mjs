@@ -684,11 +684,17 @@ ok('分享码往返出来的是新对象（深拷贝，不与源共用引用）'
   ok('自定义（无编码）保留随机误码模型：BER 10⁻⁷、1500 B → 0.5 %',
     dGeo.items.loss.suggest === 0.5 && /\^12000 /.test(basisText(dGeo.items.loss.basis)),
     basisText(dGeo.items.loss.basis))
-  // 3GPP NTN：一帧 = 一个传输块，K 取 TBS
-  const ntn = lossCtx({ dvbStandard: '3GPP NTN NR', noiseRatioMode: 'snr' }, { phyTbsResult: '3000' })
-  ok('3GPP NTN 帧差错按 TBS 分帧（8×1500 / 3000 = 4 帧）',
-    /\)\^4 = /.test(basisText(ntn.items.loss.basis)) && near(ntn.items.loss.raw, (1 - Math.pow(1 - 1e-7, 4)) * 100, 1e-12),
-    basisText(ntn.items.loss.basis))
+  // 3GPP NTN：门限是首传 BLER 目标（不是 QEF），不出丢包率；差错性能那一格给只读的「目标 BLER（首传）」（2026-09-07 深审 #4）
+  const ntn = lossCtx({ dvbStandard: '3GPP NTN NR', noiseRatioMode: 'snr' }, { phyTbsResult: '3000', phyBlerResult: '10', berResult: '' })
+  ok('3GPP NTN 不出丢包率（首传 BLER 口径与 QEF 帧差错模型不通）', !ntn.items.loss && !ntn.order.includes('loss'))
+  ok('3GPP NTN 出只读「目标 BLER（首传）」= 引擎回显的 phyBlerResult',
+    !!ntn.items.blerTarget && ntn.items.blerTarget.suggest === '10' && ntn.items.blerTarget.ro === true && ntn.order.includes('blerTarget'))
+  ok('3GPP NTN 不出设计误码率（引擎对 snr 行留空）', !ntn.items.berTarget)
+  ok('条款表里 BLER 行是只读文本、单位 %、无采用值格',
+    (() => { const r = slaRows(ntn, { adopt: { blerTarget: '1' } }, PROP_ONLY).find((x) => x.key === 'blerTarget'); return !!r && r.ro && r.type === 'text' && r.unit === '%' && r.suggestText === '10' && r.effectiveText === '10' })())
+  ok('只按表单判 NTN（引擎未回显 BLER/TBS 的 snr 口径载波）也不出丢包率',
+    !lossCtx({ dvbStandard: '3GPP NTN NB-IoT', noiseRatioMode: 'snr' }, { phyTbsResult: '', phyBlerResult: '' }).items.loss)
+  ok('DVB 行不受影响仍出丢包率、不出 BLER', !!dvb.items.loss && !dvb.items.blerTarget)
   const fer9 = deriveSla(Object.assign({}, geoCtx, {
     carrierForm: { dvbStandard: 'DVB-S2', fec: '3/4', ber: '7', m: '1' },
     slaParams: Object.assign({}, PROP_ONLY, { ferExp: 9 })
