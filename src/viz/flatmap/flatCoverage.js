@@ -44,6 +44,8 @@ import {
 import { geoArea, geoContains } from 'd3-geo'
 // 南极洲极区收口：与 3D 球体同源（见 buildBaseGeo 的 ATA 分支）
 import { antarcticaFillRings } from '../globe3d/antarctica.js'
+// 导出（compat）时陆地面的分组：基础面按色合并、争议叠加面逐面单独填（纯函数，见其文件头）
+import { groupLandForExport } from './landGroups.js'
 
 const OCEAN = '#15426b'
 const BG = '#070b12'
@@ -371,6 +373,7 @@ export function createFlatCoverage(canvas) {
       if (!f.geometry) return
       const id = String(f.id)
       const idx = f.idx != null ? f.idx : i     // 取色序号按【归属】定，争议叠加与其基础面取同一号
+      const over = !!f.over                     // 争议叠加面（落在宿主面之内）：导出时不并入同色 path，见 landGroups.js
       const { base: fill, arctic } = landColors(id, idx)
       // ★ 南极洲：海岸线收口到南极点，与 3D 球体走同一个 antarcticaFillRings（globe3d/antarctica.js）。
       //   不能照普通国家那样直接 closePath：110m 档的 ATA 主环首尾同为 (180, −84.71)，逐点解缠后
@@ -392,7 +395,7 @@ export function createFlatCoverage(canvas) {
           path.closePath()
           shs.push({ lo, hi, path, rings: [r] })
         }
-        if (shs.length) land.push({ shapes: shs, fill })
+        if (shs.length) land.push({ shapes: shs, fill, over })
         return
       }
       const polys = f.geometry.type === 'Polygon' ? [f.geometry.coordinates] : f.geometry.coordinates
@@ -425,8 +428,8 @@ export function createFlatCoverage(canvas) {
         const shape = { lo, hi, path, rings: xy }
         ;((sy / o.length) >= ARCTIC_ISLAND_LAT ? iceShapes : shapes).push(shape)
       }
-      if (shapes.length) land.push({ shapes, fill })
-      if (iceShapes.length) land.push({ shapes: iceShapes, fill: arctic })   // 逐国设色时 arctic=用户色（整国一色）
+      if (shapes.length) land.push({ shapes, fill, over })
+      if (iceShapes.length) land.push({ shapes: iceShapes, fill: arctic, over })   // 逐国设色时 arctic=用户色（整国一色）
     })
     // 国家名：位置/线度来自解算器的 labelSet（按归属合并，per-POV 改名与 hide 在那里做）；
     // 线度→像素字号的映射式子与换源前一字不改
@@ -1451,11 +1454,15 @@ export function createFlatCoverage(canvas) {
     for (const off of wraps()) {
       ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * (tx + off * kk), dpr * ty)
       if (compat) {
-        // 导出：按填充色合并成「每色一条 path」（节点数不变，但 <path> 元素从「多边形数」降到「颜色数」）。
+        // 导出：基础面按填充色合并成「每色一条 path」（节点数不变，但 <path> 元素从「多边形数」降到「颜色数」）。
         // svg2pdf 逐节点 getComputedStyle 是导出耗时主因——10m 底图有数千多边形，不合并会产生数千节点。
-        const byColor = new Map()
-        for (const c of land) for (const sh of c.shapes) { if (sh.hi + off < wl || sh.lo + off > wr) continue; let a = byColor.get(c.fill); if (!a) { a = []; byColor.set(c.fill, a) } a.push(sh) }
-        for (const [fill, shs] of byColor) { ctx.fillStyle = fill; ctx.beginPath(); for (const sh of shs) for (const r of sh.rings) { for (let i = 0; i < r.length; i++) i === 0 ? ctx.moveTo(r[i][0], r[i][1]) : ctx.lineTo(r[i][0], r[i][1]); ctx.closePath() } ctx.fill('evenodd') }
+        // ★ 争议叠加面（over）落在宿主面之内，与宿主同色时并进同一条 path 会被 evenodd 抠成洞 —— 藏南 / 典角
+        //   在导出的 PNG/PDF 上成了海色补丁、屏上却没有（屏上逐面 fill(Path2D)，叠加面只是盖上去）。
+        //   故叠加面不并色、逐面单独填；分组口径与理由见 landGroups.js。
+        const { groups, overs } = groupLandForExport(land, off, wl, wr)
+        const trace = (sh) => { for (const r of sh.rings) { for (let i = 0; i < r.length; i++) i === 0 ? ctx.moveTo(r[i][0], r[i][1]) : ctx.lineTo(r[i][0], r[i][1]); ctx.closePath() } }
+        for (const g of groups) { ctx.fillStyle = g.fill; ctx.beginPath(); for (const sh of g.shapes) trace(sh); ctx.fill('evenodd') }
+        for (const o of overs) { ctx.fillStyle = o.fill; ctx.beginPath(); trace(o.shape); ctx.fill('evenodd') }
       } else for (const c of land) {
         let colored = false
         for (const sh of c.shapes) {

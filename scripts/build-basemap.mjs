@@ -28,6 +28,9 @@
 //   本文件的 CLAIM_LINES 即为该替换入口。
 //
 // 用法：node scripts/build-basemap.mjs [110m|50m|10m ...]（缺省三档全出）。需联网，原始数据缓存在 scripts/_ne/。
+// ★ 粗档（50m / 110m）出完还要跑两步：backfill-basemap.mjs（把 10m 有、粗档没有的单元搬进来）→
+//   conflate-basemap.mjs（把叠加面 / 自带线里几乎与既有边界重合却不共享弧的段落贴成共享弧）。
+//   顺序不能反，漏了 conflate 由 packages/core/test/basemapConflation.test.mjs 抓。
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'

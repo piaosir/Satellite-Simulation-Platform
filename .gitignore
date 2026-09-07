@@ -264,6 +264,8 @@ resources/imagery/
 #   /__fonts 中间件按主进程 font:pdf 的口径读系统 TTF，少了它中文缺字会被误报成「层丢了」。
 # 源码级的不变量（递 Path2D 的 fill/stroke/clip 必须有 compat 分支等）归
 # packages/core/test/flatExportCompat.test.mjs，进 npm test。
+# ★ Desktop 这台的 .pdfharness 是取样版（?tag=before|after）：真 renderFlatPNG + svgcanvas 两条路出图后在藏南 / 典角
+#   等经纬度取样比色，局部图落 out/ —— 2026-09 争议叠加面被同色 evenodd 合并抠成海色洞，就是拿它对拍改前改后的。
 .pdfharness/
 
 # 「SLA 建议」分区验证台（npx vite --config .slaharness/vite.config.mjs，launch.json 的 sla-harness）：

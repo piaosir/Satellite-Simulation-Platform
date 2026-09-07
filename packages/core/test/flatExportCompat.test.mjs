@@ -16,6 +16,7 @@
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { groupLandForExport } from '../../../src/viz/flatmap/landGroups.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(HERE, '..', '..', '..')
@@ -68,6 +69,37 @@ ok('⑥ exportFlat 有 withFinestBasemap 并强制 10m', /withFinestBasemap/.tes
 const wrapped = (EXPORT.match(/return withFinestBasemap\(flat/g) || []).length
 ok('⑦ PNG 与 PDF 两条路都套上了它（否则两份出图一细一粗）', wrapped === 2, '套了 ' + wrapped + ' 处')
 ok('⑧ 用完复位屏上精度', /finally \{ if \(need\) await flat\.setMapDetail\(cur\.detail, cur\.thin\) \}/.test(EXPORT))
+
+// ---------- ⑤ 争议叠加面不并入同色 path ----------
+// 导出把同色陆地面合并成一条 evenodd path（省 svg2pdf 的节点数），前提是同一条 path 里的面互不重叠。
+// 争议叠加面（resolvedFeatures 的 over:true，如藏南 / 典角）整块落在宿主面（印度）之内 —— 统一底色下两者
+// 同色，并进同一条 path 后重叠处被算成偶数次 → 抠成洞，导出的 PNG/PDF 上是一块海色补丁，屏上却没有
+// （屏上逐面 fill(Path2D)）。2026-09 用户截图里藏南 / 典角一带的蓝斑就是它。分组口径见 landGroups.js。
+{
+  const C = '#e4eccf'
+  const host = { lo: 60, hi: 100, rings: [[[60, 0], [100, 0], [100, 40], [60, 40]]] }        // 宿主（印度）
+  const over = { lo: 90, hi: 96, rings: [[[90, 10], [96, 10], [96, 16], [90, 16]]] }         // 叠加（藏南），与宿主同色
+  const other = { lo: 200, hi: 220, rings: [[[200, 0], [220, 0], [220, 20], [200, 20]]] }    // 别国，另一色
+  const far = { lo: 400, hi: 420, rings: [[[400, 0], [420, 0], [420, 20], [400, 20]]] }      // 视口之外
+  const land = [
+    { shapes: [host, far], fill: C, over: false },
+    { shapes: [other], fill: '#b0a98f', over: false },
+    { shapes: [over], fill: C, over: true }
+  ]
+  const r = groupLandForExport(land, 0, 0, 360)
+  ok('⑨ 叠加面不进同色 path：同色组只含宿主，叠加面单列',
+    r.groups.length === 2 && r.groups[0].fill === C && r.groups[0].shapes.length === 1 && r.groups[0].shapes[0] === host &&
+    r.overs.length === 1 && r.overs[0].shape === over && r.overs[0].fill === C)
+  ok('⑩ 视口裁剪与实时路径同判据（视口外的面不进任何组）', !r.groups.some((g) => g.shapes.includes(far)) && !r.overs.some((o) => o.shape === far))
+  ok('⑪ 经度环绕偏移参与裁剪（off=360 时同一批面整体移出视口）', groupLandForExport(land, 360, 0, 360).groups.length === 0)
+  // 源码级：over 标记要从 resolvedFeatures 一路带到 land，drawLand 的 compat 分支要分两步画（基础组 → 叠加面）
+  const bbg = /function buildBaseGeo\s*\([\s\S]*?\n  \}/.exec(FLAT)
+  ok('⑫ buildBaseGeo 把 over 标记带进 land 的每一条', !!bbg && (bbg[0].match(/land\.push\(\{[^}]*\bover\b/g) || []).length === 3,
+    bbg ? '' : '没找到 buildBaseGeo')
+  const dl = /function drawLand\s*\(\)\s*\{[\s\S]*?\n  \}/.exec(FLAT)
+  ok('⑬ drawLand 的 compat 分支走 groupLandForExport，叠加面逐面单独 fill', !!dl && /groupLandForExport\(land/.test(dl[0]) && /for \(const o of overs\)/.test(dl[0]),
+    dl ? '' : '没找到 drawLand')
+}
 
 console.log('\n' + (fail ? 'FAILED ' : 'OK ') + pass + ' passed, ' + fail + ' failed')
 process.exit(fail ? 1 : 0)
