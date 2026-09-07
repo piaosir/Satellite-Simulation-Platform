@@ -12,10 +12,11 @@
 // 故详情章按「级联主表 → 图 → 参考段各表」顺排。数字、题注编号、章节号三处一致。
 const { Document, Packer, Paragraph, TextRun } = require('docx')
 const { TPL, half } = require('./reportStyle')
+const { sectionsOf } = require('./report')   // 分节视图（再生式多模块）：三个渲染器共用同一份切法
 // 通用排版件（样式表 / 三线表 / 图与页眉页脚 / 封面与目录 / 表号）都在 kit 里，
 // 与《服务等级指标（SLA）》那份报告共用同一套 —— 见 reportDocxKit.js 头注。
 const {
-  FN, paragraphStyles, P, docTable, bookTable, kvTable,
+  runFonts, characterStyles, paragraphStyles, P, docTable, bookTable, kvTable,
   figureParagraphs, logoHeader, pageFooter, sectPage, contentPx,
   coverSection, tocSection, nextTableNo, capTable
 } = require('./reportDocxKit')
@@ -23,41 +24,54 @@ const {
 // ============================ 正文装配 ============================
 
 // 目录条目：逐条对应下面正文里真正出现的 H1 / H2（章号的跳号也照抄 —— 没有容量统计时
-// 正文本就是 1、3、4）。
+// 正文本就是 1、3、4）。分节（再生式多模块）时 §1 / §2 各带模块小节，详情章按模块分组。
 function tocItems(model) {
   const L = model.t || {}
-  const sum = model.summary || { stats: [] }
+  const secs = sectionsOf(model)
+  const multi = secs.length > 1
   const items = [{ t: L.master }, { n: '1', t: L.compare, sub: true }]
-  if (sum.stats && sum.stats.length) items.push({ n: '2', t: L.capacity, sub: true })
+  if (multi) secs.forEach((s, i) => items.push({ n: '1.' + (i + 1), t: s.title, sub: true }))
+  const withStats = secs.filter((s) => s.summary.stats && s.summary.stats.length)
+  if (withStats.length) {
+    items.push({ n: '2', t: L.capacity, sub: true })
+    if (multi) for (const s of withStats) items.push({ n: '2.' + (secs.indexOf(s) + 1), t: s.title, sub: true })
+  }
   items.push({ n: '3', t: L.refs, sub: true })
   if (model.hasSla) items.push({ n: '4', t: L.sla, sub: true })
   items.push({ t: L.detail })
-  for (const l of (model.links || [])) {
-    items.push({ n: '#' + l.no, t: (l.txName || '') + ' → ' + (l.rxName || ''), sub: true })
+  for (const s of secs) {
+    if (multi) items.push({ n: '', t: s.title, sub: true })
+    for (const l of s.links) items.push({ n: '#' + l.no, t: (l.txName || '') + ' → ' + (l.rxName || ''), sub: true })
   }
   return items
 }
 
 
 // 链路清单 + 逐参数对照（横向：宽表）
+// 分节：每个模块一张（上行 / 下行 / 星间的指标行各不相同），小节 1.n 与模块次序对应
 function masterTablesSection(model) {
   const L = model.t || {}
-  const links = model.links || []
-  const sum = model.summary || { metrics: [] }
+  const secs = sectionsOf(model)
+  const multi = secs.length > 1
   const children = [P(L.master, 'RptH1'), P('1　' + L.compare, 'RptH2')]
   const CL = 7
-  const lchunks = []
-  for (let i = 0; i < links.length; i += CL) lchunks.push({ from: i, items: links.slice(i, i + CL) })
-  const cmpNo = nextTableNo(model)     // 续表共用一个表号（表 n-1 / 表 n-2 …）
-  lchunks.forEach((ck, ci) => {
-    children.push(P(capTable(model, cmpNo, ci, lchunks.length, L.compare), 'RptCaption'))
-    const head = [L.param, ...ck.items.map((l) => '#' + l.no + '　' + (l.txName || '') + ' → ' + (l.rxName || ''))]
-    const rows = sum.metrics.map((m) => [m.label, ...ck.items.map((l, i) => fmtVal(m.values[ck.from + i]))])
-    const rest = Math.floor(66 / ck.items.length)
-    children.push(docTable(head, rows, {
-      dense: true, widths: [34, ...ck.items.map(() => rest)],
-      align: ['left', ...ck.items.map(() => 'right')]
-    }))
+  secs.forEach((s, si) => {
+    if (multi) children.push(P('1.' + (si + 1) + '　' + s.title, 'RptH3'))
+    const links = s.links
+    const lchunks = []
+    for (let i = 0; i < links.length; i += CL) lchunks.push({ from: i, items: links.slice(i, i + CL) })
+    const cmpNo = nextTableNo(model)     // 续表共用一个表号（表 n-1 / 表 n-2 …）
+    const title = L.compare + (multi ? '　·　' + s.title : '')
+    lchunks.forEach((ck, ci) => {
+      children.push(P(capTable(model, cmpNo, ci, lchunks.length, title), 'RptCaption'))
+      const head = [L.param, ...ck.items.map((l) => '#' + l.no + '　' + (l.txName || '') + ' → ' + (l.rxName || ''))]
+      const rows = s.summary.metrics.map((m) => [m.label, ...ck.items.map((l, i) => fmtVal(m.values[ck.from + i]))])
+      const rest = Math.floor(66 / ck.items.length)
+      children.push(docTable(head, rows, {
+        dense: true, widths: [34, ...ck.items.map(() => rest)],
+        align: ['left', ...ck.items.map(() => 'right')]
+      }))
+    })
   })
   return { properties: sectPage(true, { start: 1, formatType: 'decimal' }), headers: { default: logoHeader((model.doc || {}).logo) }, footers: { default: pageFooter() }, children }
 }
@@ -65,14 +79,21 @@ function masterTablesSection(model) {
 // 容量与统计 + 计算模型与参考（纵向）
 function masterTailSection(model) {
   const L = model.t || {}
-  const sum = model.summary || { stats: [] }
+  const secs = sectionsOf(model)
+  const multi = secs.length > 1
   const m = model.method || { basis: [], refGroups: [], constants: [] }
   const children = []
-  if (sum.stats && sum.stats.length) {
+  // 分节：各节各一张；没有统计的节（星间激光）整个不出
+  const withStats = secs.filter((s) => s.summary.stats && s.summary.stats.length)
+  if (withStats.length) {
     children.push(P('2　' + L.capacity, 'RptH2'))
-    if (sum.statsTitle) children.push(P(sum.statsTitle, 'RptNote'))
-    children.push(P(capTable(model, nextTableNo(model), 0, 1, L.capacity), 'RptCaption'))
-    children.push(docTable([L.param, L.value], sum.stats.map((s) => [s.label, s.value]), { widths: [60, 40], align: ['left', 'right'] }))
+    for (const s of withStats) {
+      const sum = s.summary
+      if (multi) children.push(P('2.' + (secs.indexOf(s) + 1) + '　' + s.title, 'RptH3'))
+      if (sum.statsTitle) children.push(P(sum.statsTitle, 'RptNote'))
+      children.push(P(capTable(model, nextTableNo(model), 0, 1, L.capacity + (multi ? '　·　' + s.title : '')), 'RptCaption'))
+      children.push(docTable([L.param, L.value], sum.stats.map((st) => [st.label, st.value]), { widths: [60, 40], align: ['left', 'right'] }))
+    }
   }
   // 方法学章节：报告的权威性所在——逐段说明算法口径，再列引用建议书与常数基准
   children.push(P('3　' + L.refs, 'RptH2'))
@@ -126,18 +147,25 @@ function masterTailSection(model) {
 // 输入按块竖排（参数 / 数值 / 单位 三列），与 Excel 逐块往下排完全一致。
 function detailSection(model) {
   const L = model.t || {}
-  const links = model.links || []
+  const secs = sectionsOf(model)
+  const multi = secs.length > 1
   const children = [P(L.detail, 'RptH1')]
   const maxW = Math.round(contentPx(true) * 0.52)
   const maxH = Math.round(contentPx(true) * 0.30)
-  links.forEach((l, li) => {
-    children.push(P('#' + l.no + '　' + (l.txName || '') + ' → ' + (l.rxName || ''), 'RptH2'))
+  // 分节：模块名占一级（H2），链路降到 H3、链路内的小节降到 H4；不分节时层级与改版前一样
+  const H_LINK = multi ? 'RptH3' : 'RptH2'
+  const H_IN = multi ? 'RptH4' : 'RptH3'
+  const flat = secs.flatMap((s) => s.links.map((l) => ({ l, s })))
+  let curSec = null
+  flat.forEach(({ l, s }) => {
+    if (multi && s !== curSec) { curSec = s; children.push(P(s.title, 'RptH2')) }
+    children.push(P('#' + l.no + '　' + (l.txName || '') + ' → ' + (l.rxName || ''), H_LINK))
     if (l.error) {
       children.push(P(L.calcFailed + '：' + l.error + '　—　' + L.noResult, 'RptNote'))
       return
     }
     if (l.inputs && l.inputs.length) {
-      children.push(P(L.inputs, 'RptH3'))
+      children.push(P(L.inputs, H_IN))
       // 详情章的表号按「链路序号-块序号」编（与图号同一套），不占全文连续号——
       // 一条链路的表与图因此自成一组，读者从题注就知道它属于哪条链路。
       // 与级联表同一档字号（10.5pt）与单元格边距——输入表原来走 9pt 密排档，和结果表一样难读。
@@ -147,16 +175,16 @@ function detailSection(model) {
         children.push(docTable([L.param, L.value, L.unit], blk.rows.map((r) => [r.label, r.value, r.unit]),
           { widths: [52, 26, 22], align: ['left', 'right', 'left'], widthPct: 60 }))
       })
-      children.push(P(L.results, 'RptH3'))
+      children.push(P(L.results, H_IN))
     }
     const segs = l.segments || []
-    const cascade = segs.filter((s) => s && s.role === 'cascade')
-    const rest = segs.filter((s) => s && s.role !== 'cascade')
+    const cascade = segs.filter((sg) => sg && sg.role === 'cascade')
+    const rest = segs.filter((sg) => sg && sg.role !== 'cascade')
     for (const seg of cascade) children.push(...segTable(model, seg))
     // SLA 建议：条款 / 计算依据 / 建议值 / 采用值 / 单位 五列三线表（表号接在输入参数各块之后）
     const sr = (l.sla && l.sla.rows) || []
     if (sr.length) {
-      children.push(P(L.sla, 'RptH3'))
+      children.push(P(L.sla, H_IN))
       children.push(P(capTable(model, l.no + '-' + ((l.inputs || []).length + 1), 0, 1, L.sla), 'RptCaption'))
       const rows = [], bold = []
       let grp = ''
@@ -223,11 +251,13 @@ async function buildReportDocx(model) {
     creator: (model.doc && model.doc.org) || '',
     title: (model.doc && model.doc.title) || '',
     description: (model.scheme && model.scheme.label) || '',
+    // 字体随这份报告的模型走（导出报告对话框「字体」；缺省即模板口径）：正文两栏 + 段落样式 + 关键行字符样式
     styles: {
       default: {
-        document: { run: { font: FN, size: half(TPL.size.body) } }
+        document: { run: { font: runFonts(model.doc).FN, size: half(TPL.size.body) } }
       },
-      paragraphStyles: paragraphStyles()
+      paragraphStyles: paragraphStyles(model.doc),
+      characterStyles: characterStyles(model.doc)
     },
     // 目录是 Word 的 TOC 域（与 v1.4.3 同：有页码、有超链、正文改了自动跟）：Word 打开时按此提示更新域一次
     features: { updateFields: true },

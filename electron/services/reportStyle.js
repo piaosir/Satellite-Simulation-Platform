@@ -30,6 +30,11 @@ const TPL = {
     cjkHeading: '黑体',             // 模板 标题 1–4 / 图号格式 / 表号格式 / 文档标题 的 eastAsia
     cjkBody: '宋体'                 // 模板 docDefaults 的 eastAsia
   },
+  // —— 报告标题（Word / PDF 封面主标题、Excel 总报告与 SLA 表的首行）——
+  // ★ 固定 Arial + 黑体、20pt、加粗，不随导出报告对话框的字体三档走：四个链路预算窗口的全部报告
+  //   （含 SLA 报告）标题同一副面孔（用户 2026-09-07 定，不给选）。CSS 那份（lbreport.css .rp-cv-title）
+  //   是它的手抄镜像，改这里务必同步改那里。
+  title: { latin: 'Arial', cjk: '黑体', size: 20, bold: true },
   // —— 字号（pt；模板 w:sz 为半点，此处已折半）——
   size: {
     docTitle: 16,        // afd 文档标题：黑体 16pt 居中（正文中不参与编号的标题）
@@ -92,4 +97,19 @@ const TPL = {
 // 中文里「pt」在 docx 里一律是半点
 const half = (pt) => Math.round(pt * 2)
 
-module.exports = { TPL, TW, CM, half }
+// 这份报告实际用的三个字体：用户在导出报告对话框里改过（按窗口各存各的，渲染端 shared/lbReportFont.js
+// 随模型带来 doc.fonts）就用他的，否则模板口径。三个渲染器（xlsx / docx / PDF）都从这一处取，字体名对不上就是三份文件一起对不上。
+// cssBody / cssHead 只给 PDF 打印页与页脚模板用（西文面在前、中文面在后，浏览器逐字形回落）。
+function fontsOf(doc) {
+  const f = (doc && doc.fonts) || {}
+  const latin = String(f.latin || TPL.font.latin)
+  const cjkBody = String(f.cjkBody || TPL.font.cjkBody)
+  const cjkHeading = String(f.cjkHeading || TPL.font.cjkHeading)
+  return {
+    latin, cjkBody, cjkHeading,
+    cssBody: f.cssBody || `"${latin}", SimSun, "${cjkBody}", serif`,
+    cssHead: f.cssHead || `"${latin}", SimHei, "${cjkHeading}", serif`
+  }
+}
+
+module.exports = { TPL, TW, CM, half, fontsOf }

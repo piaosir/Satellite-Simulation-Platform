@@ -893,16 +893,25 @@ async function refreshSlaSun() {
     jobs.push({ rowId: l.rowId, key, spec })
   }
   if (!jobs.length) return
-  for (const j of jobs) {
-    try {
-      const [vernal, autumnal] = await Promise.all([
-        api.sunOutage.compute({ ...j.spec, season: 'vernal' }),
-        api.sunOutage.compute({ ...j.spec, season: 'autumnal' })
-      ])
-      const sum = sunOutageSummary({ vernal, autumnal })
-      slaSunByRow.value = { ...slaSunByRow.value, [j.rowId]: { key: j.key, sum } }
-    } catch (e) { /* 算不出就没有日凌那一行，其余条款不受影响 */ }
-  }
+  // 整表一次 IPC（主进程逐链路让出事件循环，见 sunoutage:computeBatch）；期间重算过（会话态已清）
+  // 这批结果就作废，与档位扫描同一套代号判据
+  const gen = _slaScanGen
+  try {
+    const res = api.sunOutage.computeBatch
+      ? await api.sunOutage.computeBatch(jobs.map((j) => j.spec))
+      : await Promise.all(jobs.map(async (j) => ({
+        vernal: await api.sunOutage.compute({ ...j.spec, season: 'vernal' }),
+        autumnal: await api.sunOutage.compute({ ...j.spec, season: 'autumnal' })
+      })))
+    if (gen !== _slaScanGen) return
+    const next = { ...slaSunByRow.value }
+    jobs.forEach((j, i) => {
+      const r = res && res[i]
+      if (!r) return
+      next[j.rowId] = { key: j.key, sum: sunOutageSummary({ vernal: r.vernal, autumnal: r.autumnal }) }
+    })
+    slaSunByRow.value = next
+  } catch (e) { /* 算不出就没有日凌那一行，其余条款不受影响 */ }
 }
 // 重算后链路可能变少：下标越界就退回第一条，免得弹窗里一片空白、看着像算漏了
 watch(links, () => { if (slaIdx.value >= links.value.length) slaIdx.value = 0 })
@@ -1706,6 +1715,9 @@ const { reportDlg, reportVariant, openReportDialog, openSlaReportDialog, submitR
   lang: () => reportLang.value,
   appVersion: () => appVersion.value,
   paramsFor: (l) => sweepParamsByRow.value[l.rowId] || null,
+  // 总报告「逐参数对照」头两行（标准 / 调制编码）：交出这条链路引用的载波表单，标准名由 useLbReport 解析
+  carrierOf: (l) => { const row = linkRows.find((r) => r._id === l.rowId); return row ? resolveBaseband(row.basebandId).form : null },
+  basebandOpts: () => basebandOpts.value,
   // SLA 建议（§4）：逐链路出纯数据块（标签按报表语言翻好、速率/带宽按当前单位档格式化）
   slaFor: (l) => {
     const row = linkRows.find((r) => r._id === l.rowId)

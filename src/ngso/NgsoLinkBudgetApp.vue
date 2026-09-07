@@ -1804,6 +1804,9 @@ const { reportDlg, reportVariant, openReportDialog, openSlaReportDialog, submitR
   lang: () => reportLang.value,
   appVersion: () => appVersion.value,
   paramsFor: (l) => sweepParamsByRow.value[l.rowId] || null,
+  // 总报告「逐参数对照」头两行（标准 / 调制编码）：交出这条链路引用的载波表单，标准名由 useLbReport 解析
+  carrierOf: (l) => { const row = linkRows.find((r) => r._id === l.rowId); return row ? resolveBaseband(row.basebandId).form : null },
+  basebandOpts: () => basebandOpts.value,
   // SLA 建议（§4）：逐链路出纯数据块（标签按报表语言翻好、速率/带宽按当前单位档格式化）
   slaFor: (l) => {
     const row = linkRows.find((r) => r._id === l.rowId)

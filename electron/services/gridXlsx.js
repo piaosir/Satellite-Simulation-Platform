@@ -73,9 +73,11 @@ async function buildGridWorkbook(model) {
       const cell = hr.getCell(i + 1)
       cell.value = label == null ? '' : String(label)
       if (rpt) {
-        // 三线表表头：黑体、不加粗、不加底纹、无竖线；上顶线 1.5pt、下栏目线 0.75pt
+        // 三线表表头：黑体、不加粗、不加底纹、无竖线；上顶线 1.5pt、下栏目线 0.75pt。
+        // 对齐随数据列（与下面数据行同一表达式）：数字列靠右、文本列按列声明、缺省居中
+        const c = cols[i] || {}
         cell.font = { name: HEI, size: RSTY.size.table, color: { argb: 'FF000000' } }
-        cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true }
+        cell.alignment = { vertical: 'middle', horizontal: c.num ? 'right' : (c.align || 'center'), wrapText: true }
         cell.border = { top: R_MED, bottom: R_THIN }
       } else {
         cell.font = { name: FNT, size: 10, bold: true, color: { argb: INK } }

@@ -390,6 +390,8 @@ html[data-theme='dark'] .sg-cell .sg-fillbar::after {
 .lbx-sla-tbl .c-u { color: var(--text-faint); white-space: nowrap; }
 .lbx-sla-tbl .c-k { width: 3.2em; text-align: center; }
 .lbx-sla-tbl thead .c-v { text-align: right; }
+/* 采用值格里是右对齐的输入框，表头跟着靠右——表头随数据列对齐，与报告里的三线表同一口径 */
+.lbx-sla-tbl thead .c-a { text-align: right; }
 .lbx-sla-tbl thead .c-k { text-align: center; }
 .lbx-sla-in {
   width: 100%; min-width: 0; font: inherit; font-size: var(--lb-fs); text-align: right; padding: 1px 4px;

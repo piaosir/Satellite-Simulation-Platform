@@ -77,6 +77,8 @@ contextBridge.exposeInMainWorld('api', {
   sunOutage: {
     open: () => ipcRenderer.invoke('suntool:open'),
     compute: (p) => ipcRenderer.invoke('sunoutage:compute', p),
+    // 整表批量：[{lat,lon,satLon,diameter,customFreq,sysTemp,degThreshold,year}] → [{vernal, autumnal}]
+    computeBatch: (list) => ipcRenderer.invoke('sunoutage:computeBatch', list),
     exportWord: (payload) => ipcRenderer.invoke('sunoutage:exportWord', payload),
     exportIcs: (payload) => ipcRenderer.invoke('sunoutage:exportIcs', payload)
   },

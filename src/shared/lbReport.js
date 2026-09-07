@@ -42,16 +42,38 @@ const REGEN_NAME = {
   isl: ['星间微波链路', 'Inter-Satellite Link (RF)'],
   laser: ['星间激光链路', 'Inter-Satellite Link (Optical)']
 }
+// 短名：Excel 工作表名（上限 31 字符）与多模块报告里并列时用
+const REGEN_SHORT = {
+  uplink: ['上行', 'Uplink'],
+  downlink: ['下行', 'Downlink'],
+  isl: ['星间微波', 'ISL RF'],
+  laser: ['星间激光', 'ISL Optical']
+}
+export const REGEN_MODE_KEYS = ['uplink', 'downlink', 'isl', 'laser']
+export const regenModeName = (mode, lang) => (REGEN_NAME[mode] || REGEN_NAME.uplink)[lang === 'en' ? 1 : 0]
+export const regenModeShort = (mode, lang) => (REGEN_SHORT[mode] || REGEN_SHORT.uplink)[lang === 'en' ? 1 : 0]
+// 再生式的模式参数既可以是一个 key（一份报告只讲一段链路），也可以是一组 key（一份配置装了几个
+// 计算模块，报告按模块分节）。规整成去重后的合法 key 列表；空 → ['uplink']（旧口径的缺省）。
+function normRegenModes(regenMode) {
+  const list = Array.isArray(regenMode) ? regenMode : [regenMode]
+  const out = []
+  for (const k of list) if (REGEN_NAME[k] && !out.includes(k)) out.push(k)
+  return out.length ? out : ['uplink']
+}
 
 export function schemeOf(orbitType, regenMode) {
   const ot = (orbitType === 'NGSO' || orbitType === 'REGEN' || orbitType === 'E2E') ? orbitType : 'GEO'
   const [zh, en] = SCHEME_NAME[ot]
-  const sub = ot === 'REGEN' ? (REGEN_NAME[regenMode] || REGEN_NAME.uplink) : null
+  const modes = ot === 'REGEN' ? normRegenModes(regenMode) : []
+  // 多模块：副标题把各段并列（「上行（…） · 星间微波链路 · 下行（…）」），次序即报告分节次序
+  const subs = modes.map((k) => REGEN_NAME[k])
   return {
     orbitType: ot,
-    regenMode: ot === 'REGEN' ? (regenMode || 'uplink') : '',
+    // regenMode 仍是单个 key（首个模块）——老消费者（几何表 / 汇总行）按它走；多模块时各节自带 regenMode
+    regenMode: modes[0] || '',
+    regenModes: modes,
     label: zh, labelEn: en,
-    subLabel: sub ? sub[0] : '', subLabelEn: sub ? sub[1] : ''
+    subLabel: subs.map((s) => s[0]).join(' · '), subLabelEn: subs.map((s) => s[1]).join(' · ')
   }
 }
 export const schemeName = (scheme, lang) => (lang === 'en' ? scheme.labelEn : scheme.label)
@@ -189,6 +211,9 @@ export const LB_REPORT_EN = {
   '导出报告': 'Export Report', '输出': 'Output', '包含图件': 'Include figures',
   '取消': 'Cancel', '关闭': 'Close', '生成中…': 'Generating…', '生成报告': 'Generate', '条链路': 'links',
   '字体': 'Font', '语言': 'Language',
+  // 导出报告对话框「字体」三档
+  '西文': 'Latin', '中文正文': 'Chinese Body', '中文标题': 'Chinese Headings',
+  'Excel 与 Word 只写字体名；PDF 用本机字体': 'Excel and Word carry font names only; PDF uses fonts installed on this machine',
   '选择图片': 'Choose image', '更换': 'Replace', '移除': 'Remove',
   '贴在每一页右上角': 'Placed at the top-right of every page and worksheet; remembered across windows',
   '图片读取失败': 'Could not read the image',
@@ -267,8 +292,11 @@ export function methodology(scheme, lang) {
   const ngso = scheme.orbitType === 'NGSO' || scheme.orbitType === 'REGEN'
   const orbitRefs = ngso || e2e
   const regen = scheme.orbitType === 'REGEN'
-  const isl = regen && (scheme.regenMode === 'isl' || scheme.regenMode === 'laser')
-  const laser = regen && scheme.regenMode === 'laser'
+  // 再生式按【报告里真出现的模块】取旗标：一份配置装了上行 + 星间时，几何一段要两种都说到
+  const rmodes = regen ? (Array.isArray(scheme.regenModes) && scheme.regenModes.length ? scheme.regenModes : [scheme.regenMode]) : []
+  const isl = regen && rmodes.some((m) => m === 'isl' || m === 'laser')
+  const laser = regen && rmodes.includes('laser')
+  const ground = !regen || rmodes.some((m) => m === 'uplink' || m === 'downlink')
 
   // ① 计算链路与口径
   const basis = []
@@ -374,18 +402,20 @@ export function methodology(scheme, lang) {
       + 'elevation range is binned, each bin’s visibility fraction weights the exceedance fraction at that elevation, and the result is '
       + 'expressed as an "equivalent elevation" that corresponds to no instantaneous geometry.' : '')])
 
+    // 站星与星间两句按报告里真有的模块各出各的：上行/下行有站星几何，星间微波/激光有两星几何，同装时两句都出
     put(['几何与轨道',
       ngso
         ? '轨道由 NORAD 两行根数 / OMM 经 SGP4/SDP4 传播至 TEME 惯性系，站址取 WGS84 椭球坐标；'
-        + (isl ? '星间几何在地心固连系（ECEF）内解算，互视判据为视线段最近地心距不小于地球半径加大气余量。'
-          : '站星几何取满足最低工作仰角的最差工况（最大斜距）。')
+        + (ground ? '站星几何取满足最低工作仰角的最差工况（最大斜距）。' : '')
+        + (isl ? '星间几何在地心固连系（ECEF）内解算，互视判据为视线段最近地心距不小于地球半径加大气余量。' : '')
       : '静止轨道几何按定点轨道经度与站址经纬度的闭式球面解算，取斜距、仰角与方位角；单程时延由斜距与光速给出。'],
     ['Geometry and orbits',
       ngso
         ? 'Orbits are propagated from NORAD two-line elements / OMM by SGP4/SDP4 into the TEME inertial frame; facility positions use '
-        + 'WGS84 ellipsoidal coordinates. ' + (isl ? 'Inter-satellite geometry is solved in the Earth-fixed (ECEF) frame; mutual visibility '
-          + 'requires the minimum geocentric distance of the line-of-sight segment to be no less than the Earth radius plus an atmospheric margin.'
-          : 'Station–satellite geometry is taken at the worst case (maximum slant range) satisfying the minimum operating elevation.')
+        + 'WGS84 ellipsoidal coordinates. '
+        + (ground ? 'Station–satellite geometry is taken at the worst case (maximum slant range) satisfying the minimum operating elevation. ' : '')
+        + (isl ? 'Inter-satellite geometry is solved in the Earth-fixed (ECEF) frame; mutual visibility '
+          + 'requires the minimum geocentric distance of the line-of-sight segment to be no less than the Earth radius plus an atmospheric margin.' : '')
       : 'Geostationary geometry is solved in closed form on the sphere from the orbital longitude and the site coordinates, giving slant '
         + 'range, elevation and azimuth; the one-way delay follows from slant range and the speed of light.'])
   }
@@ -524,19 +554,49 @@ export function labelBundle(lang) {
   }
 }
 
+// —— 载波「标准」的显示名（总报告「逐参数对照」表头的「标准」行）——
+// 引擎不认识「标准」（选一条 MODCOD 只是把八个值整套填进表单），这一格只能从载波表单来。
+// 内置键本身就是可读名（'DVB-S2X'），中文版取下拉里的那个名（3GPP 各表带中文注名）、英文版用键；
+// 自建标准（usr:）的键与名分家，按库里的名字；没套标准（custom）如实报「自定义」。
+export function carrierStdLabel(form, opts, lang) {
+  const key = String((form && form.dvbStandard) || 'custom')
+  const en = lang === 'en'
+  if (key === 'custom') return en ? 'Custom' : '自定义'
+  const hit = ((opts && opts.dvbStandards) || []).find((x) => x && x.value === key)
+  if (key.startsWith('usr:')) return (hit && hit.label) || key
+  return en ? key : ((hit && hit.label) || key)
+}
+// 一条链路的载波身份（link.carrier）：stds 逐段一份（端到端再生节点之后可换体制；其余体制就一段）
+export function carrierIdentity(forms, opts, lang) {
+  const list = Array.isArray(forms) ? forms : (forms ? [forms] : [])
+  return { stds: list.map((f) => carrierStdLabel(f, opts, lang)) }
+}
+
 // —— 报告模型 ——
 // links 由各窗按自己的数据结构组装好后传入（见各窗 buildReportLinks）：
-//   { no, rowId, txName, rxName, ok, error, data, segments, inputs, figures, geom, islGeo }
+//   { no, rowId, txName, rxName, ok, error, data, segments, inputs, figures, carrier, geom, islGeo }
 export function buildReportModel(o) {
   const {
     lang = 'zh', orbitType = 'GEO', regenMode = 'uplink',
     doc = {}, links = [], calc = {}, appVersion = '', satelliteName = '', frequencyBand = '',
-    adaptUnits = false, slaParams = null
+    adaptUnits = false, slaParams = null, sections = null
   } = o || {}
-  const scheme = schemeOf(orbitType, regenMode)
+  // 分节（再生式一份配置装了几个计算模块）：sections = [{ key, regenMode, title, short, count }]，
+  // 各链路以 link.sec（节下标）归属；体制描述子按全部模块取（副标题并列、方法学按并集）。
+  // 不分节的窗口（GSO / NGSO / 端到端 / 只有一个模块的再生式）照旧只传 regenMode。
+  const secs = Array.isArray(sections) && sections.length
+    ? sections.map((s) => ({
+      key: s.key, regenMode: s.regenMode || s.key,
+      title: s.title || regenModeName(s.regenMode || s.key, lang),
+      short: s.short || regenModeShort(s.regenMode || s.key, lang),
+      count: s.count != null ? s.count : links.filter((l) => l && l.sec === sections.indexOf(s)).length
+    }))
+    : null
+  const scheme = schemeOf(orbitType, secs ? secs.map((s) => s.regenMode) : regenMode)
   return {
     v: 1,
     lang,
+    ...(secs ? { sections: secs } : {}),
     // SLA 建议（§4）：逐链路的条款挂在 links[i].sla 上（导出对话框没勾「含 SLA 建议」时为 null）；
     // 一条都没有 ⇒ hasSla 为假 ⇒ 三个渲染器整节不出、目录不列、表号不占。
     hasSla: links.some((l) => l && l.sla && l.sla.rows && l.sla.rows.length),

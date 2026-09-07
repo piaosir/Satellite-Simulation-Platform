@@ -1014,6 +1014,16 @@ const { reportDlg, reportVariant, openReportDialog, openSlaReportDialog, submitR
   lang: () => reportLang.value,
   appVersion: () => appVersion.value,
   paramsFor: () => null,
+  // 总报告「逐参数对照」头两行（标准 / 调制编码）：逐段交出该段起点节点那份载波体制（段切割与
+  // buildChain 同一口径：段起点没有自己那份就照抄链首），标准名由 useLbReport 解析、调制编码取引擎逐段回显
+  carrierOf: (l) => {
+    const row = chains.find((r) => r._id === l.rowId)
+    if (!row) return null
+    const nds = row.nodes || []
+    const head = { ...defaultCarrier(), ...((nds[0] && nds[0].carrier) || null) }
+    return segmentsOf(nds).map((sg) => ({ ...head, ...((nds[sg.from] && nds[sg.from].carrier) || null) }))
+  },
+  basebandOpts: () => basebandOpts.value,
   // SLA 建议（§4）：逐条链出纯数据块（标签按报表语言翻好、速率/带宽按当前单位档格式化）
   slaFor: (l) => {
     const row = chains.find((r) => r._id === l.rowId)

@@ -597,6 +597,7 @@ function onHoverLL(ll) {
 //   —— 界面上只留数字，判定性的话不写（见 CLAUDE.md）。
 function lookReadout(ll) {
   if (mapCrs.lookMode === 'off' || !mapCrs.subPt) return null      // 没设星下点就没有这一项：这两个角是相对它的
+  if (!subOpen.value) return null                                    // 「星下点」收起＝关掉：准星不画，相对它的读数也不出
   const p = subPtPos.value
   if (!p) return null
   const k = satLookAt(p.lon, p.lat, p.alt, ll.lon, ll.lat)
@@ -3992,10 +3993,14 @@ function pushSubMark() {
   flat.setSubPoint(p ? { lon: p.lon, lat: p.lat } : null)
 }
 watch(subOpen, pushSubMark)
+watch(subOpen, refreshLook)
 watch(subPtPos, (p) => {
   pushSubMark()
   refreshLook()
-  if (!p || !mapCrs.subFollow || !mapCrs.subPt || mapCrs.subPt.src === 'manual') return
+  // ★ 跟随只在「星下点」那一节【展开着】的时候生效 —— 收起来就是关掉了：准星不画、画面也不跟。
+  //   只看 subFollow 不看 subOpen 的话，关掉星下点之后时间轴一走，画面中心照样被卫星拖着跑
+  //   （存档里带着 subPt + subFollow 读回来时同样如此）。
+  if (!subOpen.value || !p || !mapCrs.subFollow || !mapCrs.subPt || mapCrs.subPt.src === 'manual') return
   const now = performance.now()
   const moved = !followAt || Math.abs(p.lon - followAt.lon) > FOLLOW_DEG || Math.abs(p.lat - followAt.lat) > FOLLOW_DEG
   if (!moved || now - followT < FOLLOW_MS) return
@@ -4094,14 +4099,21 @@ const projSatTitle = computed(() => {
 // 展开时若已经设过星下点，顺带把圆心拉回去并重新跟随（跟随关掉之后拖走了，用它拉回来）。
 function projCenterToSat() {
   subOpen.value = !subOpen.value
-  if (!subOpen.value) return
+  if (!subOpen.value) { dropFollow(); return }        // 关掉＝画面不再跟着星下点走（数据不动，再点开还在）
+  // ★ 与「拖动调整」互斥：投影中心要么跟星下点、要么由手拖，最多开一个
+  if (projSpin.value) { projSpin.value = false; if (flat) flat.setRotateMode(false) }
   const p = subPtPos.value
   if (p) { setMapCrs({ subFollow: true }); followT = 0; followAt = null; centerOnSubPt(p, true) }
 }
 // 「拖动调整」：开着的时候左键在图上拖动改的是投影中心，不是平移画面。
 // 与 3D 的 autoRotate（面板上叫「旋转中 / 已停止」）是两回事，别混 —— 那个是地球自转。
 const projSpin = ref(false)
-function toggleProjSpin() { projSpin.value = !projSpin.value; if (flat) flat.setRotateMode(projSpin.value) }
+function toggleProjSpin() {
+  projSpin.value = !projSpin.value
+  if (flat) flat.setRotateMode(projSpin.value)
+  // ★ 与「星下点」互斥：开了手拖就收起星下点那一节（准星不画、跟随停掉），否则下一拍又被拉回去
+  if (projSpin.value && subOpen.value) { subOpen.value = false; dropFollow() }
+}
 // 转动回调：拖动中逐帧只更新读数，松手那一次才是终值（两者都要写回 mapCrs，
 // 否则拖完切个档就弹回旧中心）。crsCenterShown 跟着走，面板上的数字与图上恒一致。
 function onFlatRotate(r) {

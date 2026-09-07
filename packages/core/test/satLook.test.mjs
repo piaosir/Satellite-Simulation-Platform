@@ -189,6 +189,22 @@ const SUB = 110.5                       // 星下点经度：拿中星 6D 那个
   ok('⑧ 选星复用地图搜索那一套池子（没有第二份索引）',
     /await ensureSearchPool\(\)/.test(VUE) && /const src = searchSource\(\)/.test(VUE) &&
     (VUE.match(/searchSource\(\)/g) || []).length >= 2)
+  // ★ 2026-09-07 用户报的两条：
+  //   ①「拖动调整」与「星下点」是互斥的两种投影中心口径，最多开一个 —— 开一个就得关掉另一个；
+  //   ② 关掉「星下点」之后时间轴一走画面中心照样跟着卫星跑 —— 跟随只看 subFollow 不看 subOpen。
+  //      收起那一节＝关掉：准星不画、画面不跟、相对它的光标读数也不出。
+  const spinFn = (VUE.match(/function toggleProjSpin\(\) \{[\s\S]*?\n\}/) || [''])[0]
+  const satFn = (VUE.match(/function projCenterToSat\(\) \{[\s\S]*?\n\}/) || [''])[0]
+  ok('⑧ 「拖动调整」与「星下点」互斥：开一个就关掉另一个',
+    /subOpen\.value = false/.test(spinFn) && /dropFollow\(\)/.test(spinFn) &&
+    /projSpin\.value = false/.test(satFn) && /flat\.setRotateMode\(false\)/.test(satFn))
+  const followWatch = (VUE.match(/watch\(subPtPos, \(p\) => \{[\s\S]*?\}, \{ immediate: true \}\)/) || [''])[0]
+  ok('⑧ 跟随只在「星下点」展开着时生效（收起即停，时间轴再走画面也不跟）',
+    /if \(!subOpen\.value \|\| !p \|\| !mapCrs\.subFollow/.test(followWatch) &&
+    /if \(!subOpen\.value\) \{ dropFollow\(\); return \}/.test(satFn))
+  const lookFn = (VUE.match(/function lookReadout\(ll\) \{[\s\S]*?\n\}/) || [''])[0]
+  ok('⑧ 光标读数同样跟着那一节的开关走（收起不出，开关一变当场重算）',
+    /if \(!subOpen\.value\) return null/.test(lookFn) && /watch\(subOpen, refreshLook\)/.test(VUE))
 }
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed')

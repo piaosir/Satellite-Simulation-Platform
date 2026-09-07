@@ -34,7 +34,9 @@
   --rp-grid: #000000;
   --rp-rule-top: 1.5pt;             /* 模板三线表：顶线 / 底线 */
   --rp-rule-head: .75pt;            /* 模板三线表：栏目线 */
-  /* 西文与数字 Times New Roman；中文标题与题注黑体、中文正文宋体（模板 rFonts 口径，也是用户的要求） */
+  /* 西文与数字 Times New Roman；中文标题与题注黑体、中文正文宋体（模板 rFonts 口径，也是用户的要求）。
+     这是出厂缺省：用户在导出报告对话框里改过「字体」时，打印页按模型 doc.fonts 把这两条栈写到 <html> 上盖掉
+     （report/ReportApp.vue），主进程那边同一份字体由 reportStyle.fontsOf 给 xlsx / docx。 */
   --rp-font-head: "Times New Roman", SimHei, "黑体", serif;
   --rp-font-body: "Times New Roman", SimSun, "宋体", serif;
 }
@@ -99,8 +101,10 @@ body {
 .rp-cv-meta b { font-weight: 400; }
 /* 中区：报告名，整篇唯一的一行主标题，落在上三分之一处（没有副标题——用户 2026-08-02 定） */
 .rp-cv-mid { flex: 0 0 auto; padding: 46mm 0 0; text-align: center; }
+/* 封面主标题：固定 Arial + 黑体、20pt、加粗（reportStyle.js TPL.title 的手抄镜像，改那边要同步改这里），
+   不随导出报告对话框的字体三档走——四个链路预算窗口的全部报告标题同一副面孔（用户 2026-09-07 定） */
 .rp-cv-title {
-  font-family: var(--rp-font-head); font-size: 24pt; font-weight: 400;
+  font-family: Arial, Helvetica, SimHei, "黑体", sans-serif; font-size: 20pt; font-weight: 700;
   line-height: 1.6; letter-spacing: 1px; margin: 0;
 }
 /* 底部：编制单位压轴，成文日期跟在下面（模板末两行） */
@@ -127,9 +131,9 @@ body {
   padding: 2.4pt 5pt; text-align: right; vertical-align: middle; border: none;
 }
 /* 表头：三线表不加粗、不加底纹，只把中文换成黑体——模板自己的字体语言，
-   又刚好补上「表头 vs 数据行」这一档视觉分隔。 */
+   又刚好补上「表头 vs 数据行」这一档视觉分隔。对齐不在这里定：表头随它那一列数据走（见下）。 */
 .rp-tb thead th {
-  font-family: var(--rp-font-head); font-weight: 400; text-align: center;
+  font-family: var(--rp-font-head); font-weight: 400;
   border-bottom: var(--rp-rule-head) solid var(--rp-grid);
 }
 /* 无 thead 的表（键值型）：首行下面同样落一条栏目线 */
@@ -139,9 +143,10 @@ body {
 .rp-tb .lbl { text-align: left; }
 /* 标识列（序号 / 发信站 / 收信站）不许逐字折行：站名被压成竖排的「北\n京」是最刺眼的排版事故 */
 .rp-tb .id { text-align: left; white-space: nowrap; }
-/* ★ 表头一律居中。上面那四个列对齐类（.id/.num/.unit/.lbl）管的是数据行，但它们的特异度
-   (0,2,0) 压过 `.rp-tb thead th` 的 (0,1,2)，不显式盖一次的话表头会跟着数据行左/右对齐。 */
-.rp-tb thead th.id, .rp-tb thead th.num, .rp-tb thead th.unit, .rp-tb thead th.lbl { text-align: center; }
+/* ★ 表头随数据列对齐（用户 2026-09-07：居中的表头压在左/右对齐的数据上，看着就是「标题和数值没对齐」）。
+   上面那四个列对齐类（.id/.num/.unit/.lbl）对 th 与 td 同样生效——数值列的表头靠右、文字列的靠左；
+   thead th 自己不许再写 text-align，写了就又把表头单独拎出去了。
+   Word（reportDocxKit）与 Excel（report.js bookBox）同一口径。 */
 .rp-tb tr { break-inside: avoid; }
 .rp-tb thead { display: table-header-group; }   /* 跨页续表自动重复表头 */
 /* 引用建议书表里的「类别」行：三线表不许底纹，改用黑体通栏把三组标准分开 */
@@ -222,6 +227,8 @@ body {
 .lbx-doc.rp-doc > .lbx-doc-main .wf-seg { break-inside: auto; }
 .lbx-doc.rp-doc .wf-row { line-height: 1.38; break-inside: avoid; }
 .rp-detail-hd { break-after: avoid; }
+/* 分节详情：模块名一行（真 h2，进书签）压在该模块第一条链路的页眉之上 */
+.rp-detail-sec { margin: 0 0 8pt; padding-bottom: 3pt; border-bottom: 0.75pt solid var(--rp-rule); color: #333; }
 .rp-fig { margin: 0 0 10pt; break-inside: avoid; }
 /* 限高：地理场图是锁死 1°:1° 的正方（见 LbSurfacePlot 的 plotBox），按栏宽满铺会有 470 px 高，
    与链路视图叠起来超过横向 A4 的版心高度，第二张图就被挤到下一页。限到 82 mm 后两张同页。 */

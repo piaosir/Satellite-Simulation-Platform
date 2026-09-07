@@ -57,8 +57,12 @@ ok('表头下是 0.75pt 栏目线（thin），不是粗线',
 ok('三线表无竖线', Array.from({ length: NC }, (_, i) => hcell(i + 1)).every((c) => !c.border.left && !c.border.right) &&
   Array.from({ length: NC }, (_, i) => bcell(i + 1)).every((c) => !c.border.left && !c.border.right))
 ok('三线表无底纹', Array.from({ length: NC }, (_, i) => hcell(i + 1)).every((c) => !c.fill || c.fill.type !== 'pattern' || c.fill.pattern === 'none'))
-ok('表头中文黑体、不加粗、居中',
-  hcell(2).font.name === '黑体' && !hcell(2).font.bold && hcell(2).alignment.horizontal === 'center')
+ok('表头中文黑体、不加粗',
+  hcell(2).font.name === '黑体' && !hcell(2).font.bold)
+// 表头随数据列对齐（2026-09-07）：声明 align:'left' 的名称列靠左、数字列靠右、其余文本列缺省居中
+ok('表头随数据列对齐（名称列左 / 数字列右 / 其余居中）',
+  hcell(1).alignment.horizontal === 'left' && hcell(7).alignment.horizontal === 'right' && hcell(2).alignment.horizontal === 'center',
+  [1, 2, 7].map((c) => hcell(c).alignment.horizontal).join(' / '))
 ok('表内数字 Times New Roman 且右对齐',
   bcell(7).font.name === 'Times New Roman' && bcell(7).alignment.horizontal === 'right' && typeof bcell(7).value === 'number')
 ok('表内纯中文格走宋体', (() => {

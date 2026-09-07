@@ -383,23 +383,30 @@ function vecAngle(u, v) {
  * 太阳 apparent RA/Dec 是在赤道惯性系（指向春分点），
  * 需旋转 GAST（视恒星时）角度才能转换到 ECEF。
  * ============================================================ */
-function sunDir(jdUT, dT) {
-  var jde = jdUT + dT / SECONDS_PER_DAY;
-  var sun = solarPosition(jde);
-
-  // GAST = GMST + Δψ cos ε  （与 apparent RA 配套）
-  var gastDeg = gmst(jdUT) + sun.dpsi * Math.cos(sun.eps0 * RAD);
-  var gastR = gastDeg * RAD;
-
-  var raR = sun.ra * RAD;
-  var decR = sun.dec * RAD;
-  var cd = Math.cos(decR);
-
+// 一天的太阳方向（ECEF），按秒取值。
+// ★ 太阳的 RA / Dec 一天只走约 1° 且近乎线性：VSOP87 + 章动只在当天 0h 与 24h 各算一次，日内按秒
+//   线性插值 RA / Dec（RA 在春分附近跨 0°/360°，插值前先解卷）；GAST 仍逐秒解析算——地球自转才是
+//   分秒级的量。章动项 Δψ cos ε 一天内视作常量（主周期 18.6 年，日变化远小于 0.1″）。
+//   原先每 15 s 一个采样都整套算一遍 VSOP87 + 章动，一季 61 天 ≈ 35 万次，主进程被占 0.8～1.7 s；
+//   现在一季约 120 次。逐日对拍（test/sunOutage.test.mjs）：窗口时刻差 ≤ 1 s＝求根容差 0.5 s 的量级，
+//   峰值恶化差 ≤ 0.01 dB，天数逐日相同。
+function daySun(dayJD, dT) {
+  var a = solarPosition(dayJD + dT / SECONDS_PER_DAY);
+  var b = solarPosition(dayJD + 1 + dT / SECONDS_PER_DAY);
+  var dra = b.ra - a.ra;
+  if (dra > 180) dra -= 360; else if (dra < -180) dra += 360;
+  var nut = a.dpsi * Math.cos(a.eps0 * RAD);   // GAST = GMST + Δψ cos ε（与 apparent RA 配套）
   return {
-    d: [cd * Math.cos(raR - gastR),
-        cd * Math.sin(raR - gastR),
-        Math.sin(decR)],
-    R: sun.R
+    // 当天太阳赤纬的走向区间（逐日预筛用：绕极轴旋转不改变赤纬差）
+    decLo: Math.min(a.dec, b.dec), decHi: Math.max(a.dec, b.dec),
+    dir: function (sec) {
+      var u = sec / SECONDS_PER_DAY;
+      var raR = (a.ra + dra * u) * RAD;
+      var decR = (a.dec + (b.dec - a.dec) * u) * RAD;
+      var gastR = (gmst(dayJD + sec * JD_SEC) + nut) * RAD;
+      var cd = Math.cos(decR);
+      return [cd * Math.cos(raR - gastR), cd * Math.sin(raR - gastR), Math.sin(decR)];
+    }
   };
 }
 
@@ -472,13 +479,10 @@ function periodicSum(T) {
  * 扫描辅助
  * ============================================================ */
 
-/** 某 UT 秒偏移处的角间距 */
-function sepAtSec(dayJD, sec, stn, satU, dT, latD, lonD) {
-  var jdUT = dayJD + sec * JD_SEC;
-  var s = sunDir(jdUT, dT);
-  var sep = vecAngle(satU, s.d);
-  var up = sunUp(latD, lonD, s.d);
-  return { sep: sep, up: up };
+/** 某 UT 秒偏移处的角间距（day = daySun 出的当天太阳） */
+function sepAtSec(day, sec, satU, latD, lonD) {
+  var d = day.dir(sec);
+  return { sep: vecAngle(satU, d), up: sunUp(latD, lonD, d) };
 }
 
 /* ============================================================
@@ -617,6 +621,9 @@ function calculateSunOutage(params) {
   var scanDays = 30;
   var dailyResults = [];
   var peakIdx = null, maxDurSec = 0;
+  // 站→星方向的赤纬：一天里太阳与它的夹角下界 = |δ_sun − δ_sat|（绕极轴旋转不改变赤纬差），
+  // 太阳赤纬整天都离它超过门限角的日子不可能有事件——逐日预筛，61 天通常只剩十来天要真扫
+  var decSat = Math.asin(Math.max(-1, Math.min(1, satU[2]))) / RAD;
 
   for (var d = -scanDays; d <= scanDays; d++) {
     var dayJD = eqDayJD + d;
@@ -629,13 +636,17 @@ function calculateSunOutage(params) {
     var model = outageModel(freq, diameter, sysTemp, tSun, degTh, sunRad);
     if (model.thetaTh <= 0) continue;   // 当日即使主轴对准，恶化也不足门限 → 无事件
 
+    // 当天太阳（两端各一次 VSOP87，日内插值）+ 赤纬预筛（留 0.05° 给插值误差）
+    var day = daySun(dayJD, dT);
+    if (day.decLo - decSat > model.thetaTh + 0.05 || day.decHi - decSat < -(model.thetaTh + 0.05)) continue;
+
     // 事件求根：f(s) = θ_th − 夹角(s)，>0 在窗口内；太阳在地平线下 → NaN（窗口外）
-    var fDay = (function (jd, th) {
+    var fDay = (function (dy, th) {
       return function (s) {
-        var r = sepAtSec(jd, s, stn, satU, dT, lat, lon);
+        var r = sepAtSec(dy, s, satU, lat, lon);
         return r.up ? th - r.sep : NaN;
       };
-    })(dayJD, model.thetaTh);
+    })(day, model.thetaTh);
     var wins = findWindows(fDay, 0, 86399, { coarseStep: 15, tol: 0.5 });
     if (!wins.length) continue;
     // GEO 日凌每天至多一个真窗口；防御性取峰值最深的那个

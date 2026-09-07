@@ -335,7 +335,9 @@ function writeOrphan(wb, model, used) {
   const w = [22, 16, 16, 16, 16, 16, 30]
   w.forEach((x, i) => { ws.getColumn(i + 1).width = x })
   span(ws, 1, 1, cols.length, '未归属转发器的载波（上行域）', { size: 12, bold: true })
-  cols.forEach((h, i) => put(ws, 3, i + 1, h, { size: 10, bold: true, align: 'center', border: { top: MED, bottom: THIN } }))
+  // 表头随数据列对齐（数值列靠右、文字列靠左），与下面各行同一份
+  const al = ['left', 'right', 'right', 'right', 'left', 'right', 'left']
+  cols.forEach((h, i) => put(ws, 3, i + 1, h, { size: 10, bold: true, align: al[i], border: { top: MED, bottom: THIN } }))
   model.orphan.forEach((o, i) => {
     const rr = 4 + i
     const b = i === model.orphan.length - 1 ? { bottom: MED } : { bottom: HAIR }

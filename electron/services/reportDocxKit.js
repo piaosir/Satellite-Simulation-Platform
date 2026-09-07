@@ -15,10 +15,28 @@ const {
 } = require('docx')
 const { TPL, half } = require('./reportStyle')
 
-const FN = { ascii: TPL.font.latin, hAnsi: TPL.font.latin, cs: TPL.font.latin, eastAsia: TPL.font.cjkBody }
-const FN_H = { ascii: TPL.font.latin, hAnsi: TPL.font.latin, cs: TPL.font.latin, eastAsia: TPL.font.cjkHeading }
+const { fontsOf } = require('./reportStyle')
+// Word 的字体分「西文 / 东亚」两栏：FN = 正文（西文 + 中文正文），FN_H = 标题题注与关键行（西文 + 中文标题）。
+// 按这份报告实际用的字体现造（导出报告对话框「字体」 → 模型 doc.fonts；缺省即模板口径）。
+function runFonts(doc) {
+  const F = fontsOf(doc)
+  return {
+    FN: { ascii: F.latin, hAnsi: F.latin, cs: F.latin, eastAsia: F.cjkBody },
+    FN_H: { ascii: F.latin, hAnsi: F.latin, cs: F.latin, eastAsia: F.cjkHeading }
+  }
+}
+const { FN, FN_H } = runFonts(null)   // 模板口径的那两份（没有模型可依时用）
+// 报告标题的字体：固定 Arial + 黑体（reportStyle.TPL.title），与用户选的三档无关
+const TITLE_FN = { ascii: TPL.title.latin, hAnsi: TPL.title.latin, cs: TPL.title.latin, eastAsia: TPL.title.cjk }
+// 关键行（分组行 / 小计 / 余量）的字符样式：三线表不许底纹，层次只能靠字体给——中文换标题那一档、
+// 不加粗（黑体上再加粗会被 Word 合成成假粗体，糊成一团）。走字符样式而不是逐个 TextRun 写字体，
+// 表格件（docTable / bookTable）就不必知道这份报告选了什么字体。
+function characterStyles(doc) {
+  return [{ id: 'RptKey', name: 'Report Key Run', run: { font: runFonts(doc).FN_H } }]
+}
 // —— 样式表（id 前缀 Rpt/Cv，避免与模板自带的样式撞名）——
-function paragraphStyles() {
+function paragraphStyles(doc) {
+  const { FN, FN_H } = runFonts(doc)
   const line = { line: 360, lineRule: LineRuleType.AUTO }   // 模板 正文：1.5 倍行距
   // 模板各级标题：黑体，固定行距（标题 1/3 为 25 磅、标题 4 为 22 磅），段前后 6 磅。
   // 黑体本身已是重字面，模板未再加粗，此处照办。
@@ -68,10 +86,11 @@ function paragraphStyles() {
     { id: 'RptTd', name: 'Report Table Cell', basedOn: 'Normal', next: 'RptTd',
       run: { size: half(TPL.size.table), font: FN },
       paragraph: { spacing: { line: 240, lineRule: LineRuleType.AUTO }, indent: { firstLine: 0 }, alignment: AlignmentType.LEFT } },
-    // 表头：三线表不加粗、不加底纹，只把中文换成黑体（模板的字体语言，又刚好补上一档视觉分隔）
+    // 表头：三线表不加粗、不加底纹，只把中文换成黑体（模板的字体语言，又刚好补上一档视觉分隔）。
+    // 对齐不在样式里定：表头随它下面那一列数据走（文字列的表头靠左、数值列的靠右），由 docTable /
+    // bookTable 逐格直接给——居中的表头压在左/右对齐的数据上，看着就是「标题和数值没对齐」（用户 2026-09-07）。
     { id: 'RptTh', name: 'Report Table Head', basedOn: 'RptTd', next: 'RptTd',
-      run: { size: half(TPL.size.table), font: FN_H },
-      paragraph: { alignment: AlignmentType.CENTER } },
+      run: { size: half(TPL.size.table), font: FN_H } },
     // 密排表：只给「逐参数对照」那张链路做列的宽表用（7 条链路 8 列，10.5pt 排不开）。
     // 级联/瀑布表不再走这一档——9pt + 10pt 固定行距挤得没法读，是用户 2026-08-02 点名的问题。
     { id: 'RptTdS', name: 'Report Table Cell Small', basedOn: 'Normal', next: 'RptTdS',
@@ -79,16 +98,19 @@ function paragraphStyles() {
       paragraph: { spacing: { line: 240, lineRule: LineRuleType.AUTO }, indent: { firstLine: 0 } } },
     { id: 'RptThS', name: 'Report Table Head Small', basedOn: 'RptTdS', next: 'RptTdS',
       run: { size: half(TPL.size.tableDense), font: FN_H },
-      paragraph: { alignment: AlignmentType.CENTER, spacing: { line: 240, lineRule: LineRuleType.AUTO } } },
+      paragraph: { spacing: { line: 240, lineRule: LineRuleType.AUTO } } },
     // 封面各栏（模板封面全部是「标题（Title）」样式：黑体 16pt 居中；顶部两行密级/编号是正文样式）
     { id: 'CvMeta', name: 'Cover Meta', basedOn: 'Normal',
       run: { size: half(TPL.size.coverMeta), font: FN },
       paragraph: { alignment: AlignmentType.LEFT, indent: { firstLine: 0 }, spacing: Object.assign({}, line) } },
+    // 封面主标题：固定 Arial + 黑体、20pt、加粗（reportStyle.TPL.title），不随导出报告对话框的字体三档走——
+    // 四个链路预算窗口的全部报告标题同一副面孔（用户 2026-09-07 定）。单位与日期两行沿用 CvTitle 的段落
+    // 排版，但字体回到标题那一档、且显式不加粗（否则从 CvTitle 继承过来）。
     { id: 'CvTitle', name: 'Cover Title', basedOn: 'Normal',
-      run: { size: half(TPL.size.coverTitle), font: FN_H },
+      run: { size: half(TPL.title.size), bold: !!TPL.title.bold, font: TITLE_FN },
       paragraph: { alignment: AlignmentType.CENTER, indent: { firstLine: 0 }, spacing: { before: 120, after: 120, line: 300, lineRule: LineRuleType.AUTO } } },
-    { id: 'CvSub', name: 'Cover Subtitle', basedOn: 'CvTitle', run: { size: half(TPL.size.coverSub), font: FN_H } },
-    { id: 'CvOrg', name: 'Cover Org', basedOn: 'CvTitle', run: { size: half(TPL.size.coverOrg), font: FN_H } }
+    { id: 'CvSub', name: 'Cover Subtitle', basedOn: 'CvTitle', run: { size: half(TPL.size.coverSub), bold: false, font: FN_H } },
+    { id: 'CvOrg', name: 'Cover Org', basedOn: 'CvTitle', run: { size: half(TPL.size.coverOrg), bold: false, font: FN_H } }
   ]
 }
 // —— 段落 / 单元格辅助 ——
@@ -98,6 +120,9 @@ const P = (text, style, opts) => new Paragraph(Object.assign({
 
 const B = (sz, color) => ({ style: BorderStyle.SINGLE, size: sz, color: color || 'auto' })
 const NONE = { style: BorderStyle.NONE, size: 0, color: 'auto' }
+// 列对齐（'left' | 'right' | 'center'）→ docx 段落对齐。表头与数据行共用同一份：表头随数据列走，
+// 数值列的表头靠右、文字列的靠左（Excel 的 report.js bookBox 与 PDF 的 lbreport.css 同一口径）。
+const colAlign = (a) => (a === 'right' ? AlignmentType.RIGHT : a === 'center' ? AlignmentType.CENTER : AlignmentType.LEFT)
 // 文档类表格（模板「三线表」样式：顶线 / 底线 1.5 磅、栏目线 0.75 磅，无竖线、无底纹）。
 // 表内文字 10.5pt、垂直居中，单元格边距上下 45 / 左右 108 tw——全部照模板。
 function docTable(head, rows, opts) {
@@ -115,10 +140,10 @@ function docTable(head, rows, opts) {
     margins: { top: M.top, bottom: M.bottom, left: M.left, right: M.right },
     children: [new Paragraph({
       style: o.head ? thStyle : tdStyle,
-      alignment: o.head ? AlignmentType.CENTER : (align[i] === 'right' ? AlignmentType.RIGHT : align[i] === 'center' ? AlignmentType.CENTER : AlignmentType.LEFT),
+      alignment: colAlign(align[i]),   // ★ 表头与数据行同一对齐：表头才压得住它那一列
       // 关键行（分组行 / 小计 / 余量）换黑体，不加粗：三线表不许底纹，层次只能靠字体给，
       // 而黑体上再加粗会被 Word 合成成假粗体，糊成一团。
-      children: [new TextRun({ text: text == null ? '' : String(text), font: o.key ? FN_H : undefined })]
+      children: [new TextRun({ text: text == null ? '' : String(text), style: o.key ? 'RptKey' : undefined })]
     })]
   })
   const trs = []
@@ -157,9 +182,8 @@ function bookTable(head, rows, opts) {
     margins: { top: M.top, bottom: M.bottom, left: M.left, right: M.right },
     children: [new Paragraph({
       style: o.head ? 'RptTh' : 'RptTd',
-      alignment: o.head ? AlignmentType.CENTER
-        : (align[i] === 'right' ? AlignmentType.RIGHT : align[i] === 'center' ? AlignmentType.CENTER : AlignmentType.LEFT),
-      children: [new TextRun({ text: text == null ? '' : String(text), font: o.key ? FN_H : undefined })]
+      alignment: colAlign(align[i]),   // 表头随数据列对齐（同 docTable）
+      children: [new TextRun({ text: text == null ? '' : String(text), style: o.key ? 'RptKey' : undefined })]
     })]
   })
   const trs = []
@@ -311,7 +335,7 @@ module.exports = {
   Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell,
   Header, Footer, PageNumber, AlignmentType, WidthType, BorderStyle, VerticalAlign, ImageRun,
   PageOrientation, LineRuleType, TPL, half,
-  FN, FN_H, paragraphStyles, P, B, NONE, docTable, bookTable, kvTable,
+  FN, FN_H, runFonts, characterStyles, paragraphStyles, P, B, NONE, docTable, bookTable, kvTable,
   pngSizeOf, figureParagraphs, logoHeader, pageFooter, sectPage, contentPx,
   coverSection, tocSection, nextTableNo, capTable
 }

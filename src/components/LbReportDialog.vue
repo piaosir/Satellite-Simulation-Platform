@@ -11,6 +11,7 @@ import { reactive, ref, computed, watch, onBeforeUnmount } from 'vue'
 import Icon from './Icon.vue'
 import { DOC_FIELDS, defaultDocInfo, schemeOf, schemeName, schemeSub, translate } from '../shared/lbReport.js'
 import { slaReportTitle } from '../shared/lbSlaReport.js'
+import { REPORT_FONT_DEF, reportFontOf, normReportFontSel, reportFontOptions, composeReportFonts, reportFontLabel } from '../shared/lbReportFont.js'
 
 const props = defineProps({
   open: { type: Boolean, default: false },
@@ -21,7 +22,10 @@ const props = defineProps({
   variant: { type: String, default: 'full' },
   lang: { type: String, default: 'zh' },
   orbitType: { type: String, default: 'GEO' },
-  regenMode: { type: String, default: 'uplink' },
+  // 再生式：一个 key（只讲一段链路）或一组 key（一份配置装了几个计算模块，报告按模块分节；抬头把各段并列）
+  regenMode: { type: [String, Array], default: 'uplink' },
+  // 分节读数 [{ key, label, count }]：装了哪些模块、各几条链路（再生式多模块时给；其余窗口不传）
+  sections: { type: Array, default: null },
   satName: { type: String, default: '' },
   // 频段：只用来拼默认报告名（「CS10R 卫星 Ku 频段链路预算报告」）
   band: { type: String, default: '' },
@@ -52,6 +56,12 @@ const defTitle = () => (isSla.value
 // ★ logo 存**全局**键，不带窗口前缀：台标是一家单位的，不是某个体制窗口的。
 //   传一次以后 GSO / NGSO / 再生式三个窗口都认，除非用户自己换掉或移除。
 const LOGO_KEY = 'lb/report/logo'
+// 报告字体（三档：西文与数字 / 中文正文 / 中文标题与题注）：按窗口各存各的、与本窗的元信息同前缀——
+// GSO / NGSO / 再生式 / 端到端互相独立（用户 2026-09-07 定的）；全报告与 SLA 报告共用（同一个窗口
+// 交出去的文件一套字体）。出厂 = 模板口径（Times New Roman / 宋体 / 黑体），见 shared/lbReportFont.js。
+const FONT_KEY = computed(() => props.storeKey + '/report/font')
+const font = reactive({ ...REPORT_FONT_DEF })
+const fontOpts = ref({ latin: [], cjk: [] })   // 打开时再列（要探一遍本机装了哪些字体）
 
 const doc = reactive(defaultDocInfo(scheme.value, props.satName, props.lang, props.band))
 const opt = reactive({ xlsx: true, docx: true, pdf: true, figures: true, sla: true })
@@ -164,6 +174,11 @@ function loadSaved() {
   if (!props.vizAvailable) opt.figures = false
   if (!props.slaCount) opt.sla = false
   if (isSla.value) opt.pdf = false      // 这一份不出 PDF
+  // 报告字体：本窗上次选的（键认不出就回出厂档）；候选表按本机可用性现列（三个出厂档恒在列）
+  let fs = null
+  try { fs = JSON.parse(localStorage.getItem(FONT_KEY.value) || 'null') } catch (e) { fs = null }
+  Object.assign(font, normReportFontSel(fs))
+  fontOpts.value = reportFontOptions()
 }
 
 // 元信息落盘。提交时要存，关闭时也要存——十栏填完手一滑关掉了，再打开还在，不用从头填。
@@ -174,6 +189,7 @@ function persist() {
     localStorage.setItem(KEY.value, JSON.stringify(Object.assign({}, doc, { logo: null, title: undefined })))
     localStorage.setItem(TITLE_KEY.value, JSON.stringify({ title: doc.title, titleDefault: defTitle() }))
     localStorage.setItem(OPT_KEY.value, JSON.stringify({ xlsx: opt.xlsx, docx: opt.docx, pdf: opt.pdf, figures: opt.figures, sla: opt.sla }))
+    localStorage.setItem(FONT_KEY.value, JSON.stringify(normReportFontSel(font)))
   } catch (e) { /* 存不下不影响导出 */ }
 }
 
@@ -213,13 +229,17 @@ function submit() {
   persist()
   emit('submit', {
     variant: props.variant,
-    doc: JSON.parse(JSON.stringify(doc)),
+    // 报告字体随元信息一起进模型（三档都是出厂值时为 null：主进程走模板默认）
+    doc: Object.assign(JSON.parse(JSON.stringify(doc)), { fonts: composeReportFonts(font) }),
     formats: [opt.xlsx ? 'xlsx' : null, opt.docx ? 'docx' : null, (!isSla.value && opt.pdf) ? 'pdf' : null].filter(Boolean),
     withFigures: !isSla.value && !!opt.figures && props.vizAvailable,
     withSla: isSla.value ? true : (!!opt.sla && props.slaCount > 0)
   })
 }
 const labelOf = (f) => (props.lang === 'en' ? f.labelEn : f.label)
+const fontName = (f) => reportFontLabel(f, props.lang)
+// 页脚那一行的读数：「Times New Roman + 宋体 / 黑体」（西文 + 中文正文 / 中文标题）
+const fontText = computed(() => `${fontName(reportFontOf('latin', font.latin))} + ${fontName(reportFontOf('cjkBody', font.cjkBody))} / ${fontName(reportFontOf('cjkHead', font.cjkHead))}`)
 </script>
 
 <template>
@@ -261,6 +281,29 @@ const labelOf = (f) => (props.lang === 'en' ? f.labelEn : f.label)
         </div>
         <div v-if="logoErr" class="rd-err">{{ logoErr }}</div>
 
+        <!-- 报告字体：三档各选一款，按窗口记住（GSO / NGSO / 再生式 / 端到端互相独立） -->
+        <div class="rd-sec" :title="t('Excel 与 Word 只写字体名；PDF 用本机字体')">{{ t('字体') }}</div>
+        <div class="rd-fonts">
+          <label class="rd-f">
+            <span class="rd-l">{{ t('西文') }}</span>
+            <select v-model="font.latin" class="rd-in rd-sel" data-i18n-skip :disabled="busy">
+              <option v-for="f in fontOpts.latin" :key="f.key" :value="f.key" :style="{ fontFamily: f.stack }">{{ fontName(f) }}</option>
+            </select>
+          </label>
+          <label class="rd-f">
+            <span class="rd-l">{{ t('中文正文') }}</span>
+            <select v-model="font.cjkBody" class="rd-in rd-sel" data-i18n-skip :disabled="busy">
+              <option v-for="f in fontOpts.cjk" :key="f.key" :value="f.key" :style="{ fontFamily: f.stack }">{{ fontName(f) }}</option>
+            </select>
+          </label>
+          <label class="rd-f">
+            <span class="rd-l">{{ t('中文标题') }}</span>
+            <select v-model="font.cjkHead" class="rd-in rd-sel" data-i18n-skip :disabled="busy">
+              <option v-for="f in fontOpts.cjk" :key="f.key" :value="f.key" :style="{ fontFamily: f.stack }">{{ fontName(f) }}</option>
+            </select>
+          </label>
+        </div>
+
         <div class="rd-sec">{{ t('输出') }}</div>
         <div class="rd-opts">
           <label class="rd-ck" :title="t('第一张表为总报告，其后每条链路一张详情表')">
@@ -280,7 +323,11 @@ const labelOf = (f) => (props.lang === 'en' ? f.labelEn : f.label)
             <input v-model="opt.sla" type="checkbox" :disabled="busy" />{{ t('含服务等级指标（SLA）') }}
           </label>
         </div>
-        <div class="rd-hint">{{ linkCount }} {{ t('条链路') }}　·　{{ t('字体') }} Times New Roman + {{ lang === 'en' ? 'SimSun / SimHei' : '宋体 / 黑体' }}　·　{{ t('语言') }} {{ lang === 'en' ? 'English' : '中文' }}</div>
+        <!-- 分节读数：各模块几条链路（模块名单独成节点，DOM 翻译按整串查表才对得上） -->
+        <div v-if="sections && sections.length" class="rd-hint rd-secs">
+          <span v-for="(s, i) in sections" :key="s.key || i" class="rd-sec-i"><span>{{ s.label }}</span> <b>{{ s.count }}</b></span>
+        </div>
+        <div class="rd-hint">{{ linkCount }} {{ t('条链路') }}　·　{{ t('字体') }} {{ fontText }}　·　{{ t('语言') }} {{ lang === 'en' ? 'English' : '中文' }}</div>
 
         <div v-if="progress" class="rd-prog">
           <div class="rd-bar"><i :style="{ width: (progress.total ? Math.round(progress.done / progress.total * 100) : 0) + '%' }"></i></div>
@@ -337,6 +384,8 @@ const labelOf = (f) => (props.lang === 'en' ? f.labelEn : f.label)
   border-bottom: 1px solid var(--lb-rule, var(--border));
 }
 .rd-logo { display: flex; align-items: center; gap: 8px; }
+.rd-fonts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px 10px; }
+.rd-sel { padding: 2px 4px; }
 .rd-logo-box {
   display: flex; align-items: center; justify-content: center;
   width: 92px; height: 34px; padding: 2px; flex: 0 0 auto;
@@ -352,6 +401,9 @@ const labelOf = (f) => (props.lang === 'en' ? f.labelEn : f.label)
 .rd-ck.off { color: var(--text-faint); cursor: not-allowed; }
 .rd-ck input { margin: 0; }
 .rd-hint { margin-top: 5px; font-size: var(--fs-2); color: var(--text-faint); line-height: 1.5; }
+.rd-secs { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 8px; }
+.rd-sec-i { white-space: nowrap; }
+.rd-sec-i b { font-weight: 600; color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .rd-prog { margin-top: 10px; }
 .rd-bar { height: 3px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-ctl); overflow: hidden; }
 .rd-bar i { display: block; height: 100%; background: var(--accent); transition: width .2s linear; }

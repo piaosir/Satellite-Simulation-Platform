@@ -17,7 +17,7 @@
 const { Document, Packer } = require('docx')
 const {
   paragraphStyles, P, docTable, kvTable, coverSection, tocSection,
-  logoHeader, pageFooter, sectPage, nextTableNo, capTable, TPL, half, FN
+  logoHeader, pageFooter, sectPage, nextTableNo, capTable, TPL, half, runFonts, characterStyles
 } = require('./reportDocxKit')
 const { buildSlaMatrix } = require('./report')
 
@@ -244,7 +244,12 @@ async function buildSlaDocx(model) {
     creator: (model.doc && model.doc.org) || '',
     title: (model.doc && model.doc.title) || '',
     description: model.schemeText || '',
-    styles: { default: { document: { run: { font: FN, size: half(TPL.size.body) } } }, paragraphStyles: paragraphStyles() },
+    // 字体随这份报告的模型走（导出报告对话框「字体」；缺省即模板口径）
+    styles: {
+      default: { document: { run: { font: runFonts(model.doc).FN, size: half(TPL.size.body) } } },
+      paragraphStyles: paragraphStyles(model.doc),
+      characterStyles: characterStyles(model.doc)
+    },
     sections: [
       coverSection(model),
       tocSection(model, tocItems(model)),

@@ -1,5 +1,5 @@
 <script setup>
-import { ref, shallowRef, reactive, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
+import { ref, shallowReactive, reactive, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
 import ActivationLock from '../components/ActivationLock.vue'
 import { FIELD_GROUPS, SAT_FIELDS, CARRIER_FIELDS, TX_FIELDS, RX_FIELDS, ISL_FIELDS, LASER_FIELDS, ES_FIELDS, ES_COMMON_FIELDS, ES_TX_FIELDS, ES_RX_FIELDS, defaultsFor, buildRegenParams, buildRegenDownlinkParams, buildRegenIslParams, buildRegenLaserParams, eirpToPowerW, powerWToEirp, rxGtFromNoise } from './regenParams.js'
 import { stableStringify } from '../shared/configDirty.js'
@@ -97,32 +97,79 @@ function startResizeSide(e) {
   window.addEventListener('mousemove', move); window.addEventListener('mouseup', up)
 }
 
-// ============ 再生式体制：上行（v1）/ 下行（广播）/ 星间链路 ============
+// ============ 再生式体制：上行 / 下行（广播）/ 星间微波 / 星间激光 ============
+// 四种是【计算模块】（2026-09-07 起）：一份配置装哪几个由用户按需添加（模块栏「＋」），不要的 × 掉；
+// 空白配置一个都没有。装了的模块各有自己的链路表与结果，报告讲整份配置（按模块分节，次序 = 模块栏次序）。
 const LINK_MODES = [
-  { key: 'uplink', label: '再生式上行', ready: true, tip: '地球站 → 星上再生解调；链路总 C/N = 上行 C/(N+I)' },
-  { key: 'downlink', label: '再生式下行（广播）', ready: true, tip: '星上再生 → 地球站接收；链路总 C/N = 下行 C/(N+I)' },
-  { key: 'isl', label: '星间链路（微波）', ready: true, tip: '发射卫星 → 接收卫星，两星微波直连；几何严格（双 SGP4 + 地球临边遮挡）；合计 C/N = 星间单跳 C/N' },
-  { key: 'laser', label: '星间链路（激光）', ready: true, tip: '发射卫星 → 接收卫星，相干 DP-QPSK 激光直连；第一性原理光学预算（P_rx 链 + 光子/bit 灵敏度）；给定速率 → 链路余量；完整可用度（指向抖动+建链+相干多普勒+太阳规避）' }
+  { key: 'uplink', label: '再生式上行', tip: '地球站 → 星上再生解调；链路总 C/N = 上行 C/(N+I)' },
+  { key: 'downlink', label: '再生式下行（广播）', tip: '星上再生 → 地球站接收；链路总 C/N = 下行 C/(N+I)' },
+  { key: 'isl', label: '星间链路（微波）', tip: '发射卫星 → 接收卫星，两星微波直连；几何严格（双 SGP4 + 地球临边遮挡）；合计 C/N = 星间单跳 C/N' },
+  { key: 'laser', label: '星间链路（激光）', tip: '发射卫星 → 接收卫星，相干 DP-QPSK 激光直连；第一性原理光学预算（P_rx 链 + 光子/bit 灵敏度）；给定速率 → 链路余量；完整可用度（指向抖动+建链+相干多普勒+太阳规避）' }
 ]
-const linkMode = ref('uplink')
-
-// ============ 再生式模式标签：用户可关闭不需要的模式（× 需确认，避免误删），随配置保存/分享；「+」可恢复 ============
-// 关闭 = 隐藏该标签（当前配置范围），不删除已填参数；至少保留一个模式。
-const hiddenModes = ref([])                                                          // 当前配置下被隐藏的模式 key
-const visibleModes = computed(() => LINK_MODES.filter((m) => !hiddenModes.value.includes(m.key)))
-const hiddenModeList = computed(() => LINK_MODES.filter((m) => hiddenModes.value.includes(m.key)))
+const MODE_KEYS = LINK_MODES.map((m) => m.key)
+const modeOf = (key) => LINK_MODES.find((m) => m.key === key) || null
+// 当前配置装了哪些模块（有序；随配置存档 / 分享）与当前看着的那个（'' = 一个都没装）
+const modules = ref([])
+const linkMode = ref('')
+const activeModules = computed(() => modules.value.map(modeOf).filter(Boolean))
+const addableModes = computed(() => LINK_MODES.filter((m) => !modules.value.includes(m.key)))
 const addMenuOpen = ref(false)
-async function requestHideMode(m) {
-  if (visibleModes.value.length <= 1) { toast('至少保留一个再生式模式'); return }
-  if (!(await askConfirm(`关闭「${m.label}」？将从标签栏移除该模式（可点「+」恢复），已填的对应参数保留不删。`))) return
-  if (!hiddenModes.value.includes(m.key)) hiddenModes.value = [...hiddenModes.value, m.key]
-  if (linkMode.value === m.key) { const first = visibleModes.value[0]; if (first) linkMode.value = first.key }  // 关的是当前标签 → 切到剩下第一个
-}
-function restoreMode(m) {
-  hiddenModes.value = hiddenModes.value.filter((k) => k !== m.key)
+// 各模块的链路表 / 字段集。四张表在下文声明，这里只按 key 分发——调用全发生在 setup 之后，不撞 TDZ
+function rowsOf(key) { return key === 'laser' ? laserLinks : key === 'isl' ? islLinks : key === 'downlink' ? rxStations : key === 'uplink' ? txStations : [] }
+function fieldsOf(key) { return key === 'laser' ? LASER_FIELDS : key === 'isl' ? ISL_FIELDS : key === 'downlink' ? RX_FIELDS : TX_FIELDS }
+// 添加 = 装上并切过去；已装的再点一次只是切过去。新模块先给一条默认行（空引用 = 各库第一份）
+function addModule(key) {
   addMenuOpen.value = false
-  if (m && m.ready) linkMode.value = m.key                                          // 恢复即聚焦，让用户看到它回来了
+  if (!modeOf(key)) return
+  if (!modules.value.includes(key)) {
+    const rows = rowsOf(key)
+    if (!rows.length) rows.push(newStation(fieldsOf(key)))
+    modules.value = [...modules.value, key]
+  }
+  linkMode.value = key
 }
+// 模块有没有【内容】：多于一行 / 那一行改过默认值 / 算过。有内容才问一句，空模块直接关
+function moduleHasContent(key) {
+  const rows = rowsOf(key)
+  if (rows.length > 1 || (linksBy[key] || []).length) return true
+  const r = rows[0]
+  if (!r) return false
+  const def = defaultsFor(fieldsOf(key))
+  const s = (v) => String(v == null ? '' : v)
+  // 斜距是手动几何下软件自己按仰角/轨道高度回填的派生量（见 refreshSlant），不算用户填的内容
+  const derived = new Set(['slantRange', 'rxSlantRange', 'sla'])
+  return Object.keys(r).some((k) => !k.startsWith('_') && !derived.has(k) && s(r[k]) !== s(def[k]))
+}
+// 移除 = 模块连同它的链路行与结果一起删（配置里不留看不见的表）；关的是当前页签就切到邻近的一个
+async function removeModule(key) {
+  const m = modeOf(key)
+  if (!m || !modules.value.includes(key)) return
+  const n = rowsOf(key).length
+  if (moduleHasContent(key) && !(await askConfirm(`移除「${m.label}」？其 ${n} 条链路及计算结果将一并删除。`))) return
+  const idx = modules.value.indexOf(key)
+  modules.value = modules.value.filter((k) => k !== key)
+  clearModuleResults(key)
+  rowsOf(key).splice(0)
+  if (linkMode.value === key) linkMode.value = modules.value[Math.min(idx, modules.value.length - 1)] || ''
+}
+// 页签拖拽换序：次序即报告分节次序（上行 → 星间 → 下行 这类信号流向由用户自己排）
+const dragKey = ref('')
+function onModDragStart(key, e) {
+  dragKey.value = key
+  if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; try { e.dataTransfer.setData('text/plain', key) } catch (err) { /* ignore */ } }
+}
+function onModDragOver(key) {
+  const from = dragKey.value
+  if (!from || from === key) return
+  const list = modules.value.slice()
+  const i = list.indexOf(from), j = list.indexOf(key)
+  if (i < 0 || j < 0) return
+  list.splice(i, 1); list.splice(j, 0, from)
+  modules.value = list
+}
+function onModDragEnd() { dragKey.value = '' }
+// 页签上的状态点：'ok' 有结果且未过期 / 'stale' 有结果但输入已变 / '' 没算过
+function modStatus(key) { const n = (linksBy[key] || []).length; return !n ? '' : staleBy[key] ? 'stale' : 'ok' }
 
 // ============ 卫星库（全局；每颗 NGSO 式：搜索/天线树选星，无 EIRP 匹配；卫星 G/T 由发信站逐站手动输入）============
 let _satSeq = 1
@@ -316,7 +363,8 @@ function adoptEntries(arr, entries, makeNew, extraKeys = []) {
 // ============ 发信站群 ============
 let _sid = 1
 const newStation = (fields) => { const r = defaultsFor(fields); r._id = 's' + (_sid++); return r }
-const txStations = reactive([newStation(TX_FIELDS)])
+// 四张表起始都是空的：装上对应模块（addModule / applyState）才有行；没装的模块一行也不留
+const txStations = reactive([])
 
 // 工作点（功放功率）已随站型移入「地球站配置」发射参数（opPowerW）：给定功放功率 → 引擎 power 模式算上行余量。
 // 原「工作点列 EIRP⇄W 切换」随之退役——EIRP 仍可在结果指标「地球站 EIRP」查看。
@@ -335,7 +383,7 @@ const calcModeOf = (bbForm) => ((bbForm && bbForm.calcMode) === 'margin' ? 'marg
 // ============ 收信站群（再生式下行）============
 // 工作点 G/T 恒由天线口径/效率 + 天线噪温 + 接收机噪温 + 馈线损耗按引擎口径算得
 // （不再支持「直接输入设备 G/T」——设备 G/T 系统噪温未知，无法自洽推出雨致 G/T 劣化）。
-const rxStations = reactive([newStation(RX_FIELDS)])
+const rxStations = reactive([])
 // 收信站 G/T 只读列：随天线/噪温/馈线 + 所选卫星下行频率实时算出的晴空 G/T（与引擎 gOverTe 同口径），
 // 让用户编辑参数时即时看到 G/T，无需先计算。传给 StationGrid 的 ro-values（{ _id: 值 }）。
 const rxGtValues = computed(() => {
@@ -377,9 +425,9 @@ const rxCellSub = (f, row) => {
 }
 
 // ============ 星间链路群（再生式微波 ISL）============
-const islLinks = reactive([newStation(ISL_FIELDS)])
+const islLinks = reactive([])
 // ============ 星间激光链路群（再生式激光 / 相干 DP-QPSK）============
-const laserLinks = reactive([newStation(LASER_FIELDS)])
+const laserLinks = reactive([])
 
 // 某卫星配置 → 轨道来源 spec（选星→真实星历；未选→手动圆轨道）。上/下/星间共用。
 function orbitSpecOf(sat) {
@@ -486,14 +534,11 @@ const satSummary = (c) => [
   (c.ngsoSat && c.ngsoSat.mode !== 'manual' && c.ngsoSat.orbit) ? '选星定轨' : '手动轨道',
   `h=${c.form.orbitAltitude || '?'} km · i=${c.form.orbitInclination || '?'}°`
 ].filter(Boolean).join(' · ')
-// 切换体制：只显示该模式的表格分区。上/下行/星间各口径的链路条数与结果列都不同，旧体制的结果
-// 不再适用——切换即清空（含表格结果列映射），避免「上行结果套着下行列头」的串味显示。
+// 切换模块：只显示该模块的表格分区。各模块的结果各存各的（linksBy，按行 _id 落表），
+// 切走再切回来还在——报告要的是整份配置，屏幕上看着哪个模块不该决定别的模块有没有数。
 watch(linkMode, () => {
   nextTick(() => { const el = flowEl.value; if (el) el.scrollTop = 0 })
-  links.value = []; selected.value = 0; segments.value = []; error.value = ''
-  computedVals.value = {}
-  rawDataByRow.value = {}   // 自定义列留底同步清：旧模式的引擎结果不许穿到新模式的自定义列上
-  slaScanByRow.value = {}   // 档位扫描同理（且星间/激光本就不扫）
+  loadWaterfall()   // 详细预算跟着切到该模块的选中链路
 })
 
 // ============ 几何搜索时窗（选星 SGP4 典型时刻 + 全部访问窗口）============
@@ -526,8 +571,28 @@ function applyManualGeom(lp, slantKm, elevDeg) {
   if (h != null) { lp.orbitAltitude = h; lp.rxOrbitAltitude = h }
 }
 
-// ============ 计算结果（每个发信站一条上行链路）============
-const links = shallowRef([])  // [{ ti, txName, satName, data, geom, access, margin, powerW, ok, error }]
+// ============ 计算结果（按模块各存一份：切模块不清空，报告讲的是整份配置）============
+// linksBy[模块] = [{ ti, rowId, mode, txName, satName, data, geom, islGeo, access, margin, ok, error }]
+// 选中行 / 报错 / 过期灯同样按模块各记各的；下面四个 computed 是「当前模块」的视图，模板与旧代码照旧读写它们。
+const linksBy = shallowReactive(Object.fromEntries(MODE_KEYS.map((k) => [k, []])))
+const selectedBy = reactive(Object.fromEntries(MODE_KEYS.map((k) => [k, 0])))
+const errorBy = reactive(Object.fromEntries(MODE_KEYS.map((k) => [k, ''])))
+const staleBy = reactive(Object.fromEntries(MODE_KEYS.map((k) => [k, false])))
+const links = computed({ get: () => (linkMode.value && linksBy[linkMode.value]) || [], set: (v) => { if (linkMode.value) linksBy[linkMode.value] = v } })
+const selected = computed({ get: () => (linkMode.value ? selectedBy[linkMode.value] : 0), set: (v) => { if (linkMode.value) selectedBy[linkMode.value] = v } })
+const error = computed({ get: () => (linkMode.value ? errorBy[linkMode.value] : ''), set: (v) => { if (linkMode.value) errorBy[linkMode.value] = v } })
+const resultsStale = computed({ get: () => !!(linkMode.value && staleBy[linkMode.value]), set: (v) => { if (linkMode.value) staleBy[linkMode.value] = !!v } })
+// 清掉一个模块的全部结果态（移除模块 / 换场景）：按行 _id 落表的几张映射只删本模块那几行的键
+function clearModuleResults(key) {
+  const ids = new Set(rowsOf(key).map((r) => r._id))
+  linksBy[key] = []; selectedBy[key] = 0; errorBy[key] = ''; staleBy[key] = false
+  const drop = (obj) => { const o = { ...obj }; for (const id of ids) delete o[id]; return o }
+  computedVals.value = drop(computedVals.value)
+  rawDataByRow.value = drop(rawDataByRow.value)
+  sweepParamsByRow.value = drop(sweepParamsByRow.value)
+  slaScanByRow.value = drop(slaScanByRow.value)
+  for (const k of Object.keys(resColUnits)) if (k.startsWith(key + ':')) delete resColUnits[k]
+}
 const METRIC_OPTIONS_UP = [
   { key: 'linkmargin', label: '链路余量 (dB)' },
   { key: 'paRecommendation', label: '功放功率 (W)' },
@@ -644,7 +709,7 @@ onMounted(async () => {
     }
   } catch (e) { /* 取不到就只用结果列池 */ }
 })
-// 引擎结果按行留底（writeResultVals 顺手写入；切模式清空见 watch(linkMode)）
+// 引擎结果按行留底（writeResultVals 顺手写入；行 _id 全局唯一，四个模块共用一张表，移除模块时按行清）
 const rawDataByRow = ref({})
 const ccRowsOf = (mode) => (mode === 'laser' ? laserLinks : mode === 'isl' ? islLinks : mode === 'downlink' ? rxStations : txStations)
 // 输入参数池的策展清单（不倒整包入参对象，只收 schema 声明的数值字段）：按面板逻辑分组，
@@ -667,7 +732,8 @@ const ccRowDataOf = (rowId) => { const d = rawDataByRow.value[rowId]; if (!d) re
 const customPoolOf = (mode) => {
   // 结果列组沿用【词表】的名字与单位：同一个量在两个组里叫两个名字（功放建议/功放建议功率）
   // 会让人以为是两个量，且裸标签一歧义就报「未知字段」。词表是命名权威，表头短名只用于链路表列头。
-  const base = RESULT_DEFS_BY[mode].filter((d) => d.key !== 'capacityMbps').map((d) => { const t = RESULT_LABELS[d.key]; return { key: d.key, label: t ? t.label : d.label, unit: t ? t.unit : d.unit, group: '结果列' } })
+  // 一个模块都没装（mode 为空）时池子是空的：弹窗只在装了模块时才开得了，但 computed 在渲染期就会求值
+  const base = (RESULT_DEFS_BY[mode] || []).filter((d) => d.key !== 'capacityMbps').map((d) => { const t = RESULT_LABELS[d.key]; return { key: d.key, label: t ? t.label : d.label, unit: t ? t.unit : d.unit, group: '结果列' } })
   const rows = ccRowsOf(mode).filter((r) => rawDataByRow.value[r._id])
   if (!rows.length) return buildPool(base)
   // 键取全部行的并集：逐行出参可不同（0 雨强行的 XPD 出 '-'），单行样本会误滤别行的合法键。
@@ -803,14 +869,16 @@ function onRowFocus(idx, rowId) {
   const i = links.value.findIndex((l) => l.rowId === rowId)
   if (i >= 0 && i !== selected.value) { selected.value = i; loadWaterfall() }
 }
-const selected = ref(0)
 const segments = ref([])
 const computing = ref(false)
-const error = ref('')
-// —— 结果过期提示 ——
-const resultsStale = ref(false)
-watch([satConfigs, basebandConfigs, esConfigs, txStations, rxStations, islLinks, laserLinks, geoMode, geoHorizonHours],
-  () => { if (links.value.length) resultsStale.value = true }, { deep: true })
+// —— 结果过期提示（按模块各记各的）——
+// 三库 / 几何模式 / 时窗是四个模块共用的输入，一动全部有结果的模块都过期；四张表只让自己那个模块过期。
+const markStale = (keys) => { for (const k of keys) if ((linksBy[k] || []).length) staleBy[k] = true }
+watch([satConfigs, basebandConfigs, esConfigs, geoMode, geoHorizonHours], () => markStale(MODE_KEYS), { deep: true })
+watch(txStations, () => markStale(['uplink']), { deep: true })
+watch(rxStations, () => markStale(['downlink']), { deep: true })
+watch(islLinks, () => markStale(['isl']), { deep: true })
+watch(laserLinks, () => markStale(['laser']), { deep: true })
 // —— 瀑布表一键整表复制（TSV） ——
 async function copyWaterfallTsv() {
   if (!segments.value.length) return
@@ -833,21 +901,22 @@ async function copyWaterfallTsv() {
 // 几何/访问窗口卡折叠（记忆）
 const geoFold = ref(localStorage.getItem('regen/geoFold') === '1')
 watch(geoFold, (v) => { try { localStorage.setItem('regen/geoFold', v ? '1' : '0') } catch (e) { /* ignore */ } })
-// Ctrl+Enter 全局快捷计算（compute 内部按体制分发）
+// Ctrl+Enter 全局快捷计算（算当前模块）
 function onGlobalKey(e) {
-  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && !computing.value) { e.preventDefault(); compute() }
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && !computing.value) { e.preventDefault(); computeActive() }
 }
 onBeforeUnmount(() => window.removeEventListener('keydown', onGlobalKey))
-const nLinks = computed(() => (linkMode.value === 'laser' ? laserLinks.length : linkMode.value === 'isl' ? islLinks.length : linkMode.value === 'downlink' ? rxStations.length : txStations.length))
-// 链路方向标签：上行=站→星，下行=星→站，星间=发射星→接收星（txName=发射星, satName=接收星）
+const nLinks = computed(() => rowsOf(linkMode.value).length)
+// 链路方向标签：上行=站→星，下行=星→站，星间=发射星→接收星（txName=发射星, satName=接收星）。
+// 按链路自带的 mode 走，不看当前页签——报告把四个模块的链路排在一起，名字不能跟着页签变
 function pairLabel(l) {
   if (!l) return ''
   // 手动几何的星间/激光链路两端没有卫星身份（表上也没那两列）→ 按条数命名，不拿「发射星 → 接收星」充数
   if (l.islManual) return `星间链路 ${(l.ti || 0) + 1}`
-  return linkMode.value === 'downlink' ? `${l.satName} → ${l.txName}` : `${l.txName} → ${l.satName}`
+  return l.mode === 'downlink' ? `${l.satName} → ${l.txName}` : `${l.txName} → ${l.satName}`
 }
 // 体制短标签（上行/下行/星间）与逐条量词
-const modeLabel = computed(() => (linkMode.value === 'laser' ? '激光星间' : linkMode.value === 'isl' ? '星间' : linkMode.value === 'downlink' ? '下行' : '上行'))
+const modeLabel = computed(() => (linkMode.value === 'laser' ? '激光星间' : linkMode.value === 'isl' ? '星间' : linkMode.value === 'downlink' ? '下行' : linkMode.value === 'uplink' ? '上行' : ''))
 
 // ============ 平台精确几何覆盖引擎几何量 ============
 const _C_KMS = 299792.458
@@ -1017,8 +1086,8 @@ scheduleSlant, { immediate: true })
 
 const rowReadout = computed(() => {
   const mode = linkMode.value
-  const rows = mode === 'laser' ? laserLinks : mode === 'isl' ? islLinks : mode === 'downlink' ? rxStations : txStations
-  if (!rows.length) return null
+  const rows = rowsOf(mode)
+  if (!mode || !rows.length) return null
   let idx = rows.findIndex((r) => r._id === focusRowId.value)
   if (idx < 0 && sel.value) idx = rows.findIndex((r) => r._id === sel.value.rowId)   // 还没点过表 → 跟详细预算走
   if (idx < 0) return null
@@ -1059,7 +1128,7 @@ const selParams = computed(() => (sel.value ? (sweepParamsByRow.value[sel.value.
 //   四种模式各是各的一批链路，下标留着会指到另一批的第 n 条上。
 const slaParams = reactive({ ...DEFAULT_SLA_PARAMS })
 const slaScanByRow = ref({})          // 会话态：可用度档位扫描（compute 后批量求得，不入存档）
-const modeRows = computed(() => (linkMode.value === 'laser' ? laserLinks : linkMode.value === 'isl' ? islLinks : linkMode.value === 'downlink' ? rxStations : txStations))
+const modeRows = computed(() => rowsOf(linkMode.value))
 const slaOpen = ref(false)
 const slaIdx = ref(0)
 const slaLink = computed(() => links.value[slaIdx.value] || null)
@@ -1074,12 +1143,14 @@ function openSlaDlg() {
 // 重算 / 换子链路后链路可能变少：下标越界就退回第一条，免得弹窗里一片空白、看着像算漏了
 watch(links, () => { if (slaIdx.value >= links.value.length) slaIdx.value = 0 })
 watch(linkMode, () => { slaIdx.value = 0 })
+// 链路所属模块的行（链路自带 mode：报告把四个模块的链路排在一起，不能按当前页签找行）
+const rowOfLink = (l) => (l ? rowsOf(l.mode || linkMode.value).find((r) => r._id === l.rowId) || null : null)
 function slaDerivedFor(l) {
   if (!l || !l.data) return null
-  const row = modeRows.value.find((r) => r._id === l.rowId)
+  const row = rowOfLink(l)
   const form = row && row.basebandId !== undefined ? resolveBaseband(row.basebandId).form : {}
   return deriveSla({
-    orbitType: 'REGEN', regenMode: linkMode.value,
+    orbitType: 'REGEN', regenMode: l.mode || linkMode.value,
     data: l.data, ok: l.ok, error: l.error, resolvedMargin: l.resolvedMargin,
     params: sweepParamsByRow.value[l.rowId] || null,
     carrierForm: form,
@@ -1090,15 +1161,17 @@ function slaDerivedFor(l) {
   })
 }
 const slaDerived = computed(() => slaDerivedFor(slaLink.value))
-const slaCount = computed(() => links.value.reduce((n, l) => {
-  const row = modeRows.value.find((r) => r._id === l.rowId)
+const slaCountOf = (list) => list.reduce((n, l) => {
+  const row = rowOfLink(l)
   return n + (l.data && slaIncludeCount(slaDerivedFor(l), row && row.sla) ? 1 : 0)
-}, 0))
+}, 0)
+const slaCount = computed(() => slaCountOf(links.value))                                   // 当前模块（SLA 弹窗）
+const slaCountAll = computed(() => modules.value.reduce((n, k) => n + slaCountOf(linksBy[k] || []), 0))   // 整份配置（报告）
 
 // —— 独立《服务等级指标（SLA）》报告 ——
 // 逐链路的附加料：载波体制（决定引用哪几份标准）/ MODCOD / 档位表（综合与中断按考核周期算好）
 function slaReportExtra(l) {
-  const row = modeRows.value.find((r) => r._id === l.rowId)
+  const row = rowOfLink(l)
   const f = row && row.basebandId !== undefined ? resolveBaseband(row.basebandId).form : {}
   return { carrierStd: f.dvbStandard || 'custom', modcod: f.modcodLabel || '', scan: slaScanReportRows(slaDerivedFor(l)) }
 }
@@ -1170,16 +1243,41 @@ const geoFoldSum = computed(() => {
   return ''
 })
 
-// ============ 计算（逐发信站一条上行链路；工作点给定 → 求余量）============
-async function compute() {
-  if (!api) { error.value = '引擎需在桌面客户端中运行'; return }
-  if (linkMode.value === 'laser') return computeLaser()
-  if (linkMode.value === 'isl') return computeIsl()
-  const isDown = linkMode.value === 'downlink'
+// ============ 计算（按模块：功能区「计算」算当前模块；导出报告前把别的模块补算齐）============
+async function computeActive() { return computeModule(linkMode.value) }
+async function computeModule(mode) {
+  if (!mode || !modules.value.includes(mode)) return
+  if (mode === 'laser') return computeLaser(mode)
+  if (mode === 'isl') return computeIsl(mode)
+  return computeGround(mode)
+}
+// 计算收尾（四种模块同一套）：结果落到该模块那一份、结果列写回表格、选中行按 _id 保持、过期灯清掉；
+// 只有正看着的模块才刷详细预算（别的模块切过去时 watch(linkMode) 会刷）。
+// 入参留底按行合并进全局那张表：先删掉本模块全部行的旧留底（没算成的行不许留着上一轮的入参）。
+async function finishCompute(mode, out, sweepStore) {
+  const prevSel = (linksBy[mode] || [])[selectedBy[mode]] || null
+  for (const l of out) l.mode = mode
+  const sp = { ...sweepParamsByRow.value }
+  for (const r of rowsOf(mode)) delete sp[r._id]
+  sweepParamsByRow.value = Object.assign(sp, sweepStore || null)
+  linksBy[mode] = out
+  writeResultVals(out, mode)   // 结果列写回表格（按行 _id 映射）
+  let keepIdx = prevSel ? out.findIndex((l) => l.rowId === prevSel.rowId) : -1
+  if (keepIdx < 0) keepIdx = Math.min(selectedBy[mode], out.length - 1)
+  selectedBy[mode] = keepIdx < 0 ? 0 : keepIdx
+  // 先把「表格一动就置位」的 stale 侦听冲刷掉再清旗（本次计算自己写的数不是用户改的）
+  await nextTick()
+  staleBy[mode] = false
+  if (mode === linkMode.value) await loadWaterfall()
+}
+// 地面段（再生式上行 / 下行）：逐站一条链路；工作点给定 → 求余量
+async function computeGround(mode) {
+  if (!api) { errorBy[mode] = '引擎需在桌面客户端中运行'; return }
+  const isDown = mode === 'downlink'
   const stations = isDown ? rxStations : txStations
-  if (!stations.length) { error.value = isDown ? '请至少添加一个收信站' : '请至少添加一个发信站'; return }
-  if (!satConfigs.length) { error.value = '请至少添加一颗卫星'; return }
-  computing.value = true; error.value = ''
+  if (!stations.length) { errorBy[mode] = isDown ? '请至少添加一个收信站' : '请至少添加一个发信站'; return }
+  if (!satConfigs.length) { errorBy[mode] = '请至少添加一颗卫星'; return }
+  computing.value = true; errorBy[mode] = ''
   try {
     const out = []
     const sweepStore = {}         // 逐行留底送进引擎的入参，供图表区参数扫描原地重跑
@@ -1278,22 +1376,12 @@ async function compute() {
         out.push({ ti, rowId: st._id, txName, satName, data: null, margin: '—', error: (r && r.message) || '失败', geom: geo, access: acc })
       }
     }
-    const prevSel = sel.value
-    sweepParamsByRow.value = sweepStore
-    links.value = out
-    writeResultVals(out, isDown ? 'downlink' : 'uplink')   // 结果列写回表格（按行 _id 映射）
-    // 计算后保持当前查看位置（按行 _id 定位；行数变化则夹取原下标），不再跳回第一条
-    let keepIdx = prevSel ? out.findIndex((l) => l.rowId === prevSel.rowId) : -1
-    if (keepIdx < 0) keepIdx = Math.min(selected.value, out.length - 1)
-    selected.value = keepIdx < 0 ? 0 : keepIdx
-    await nextTick()
-    resultsStale.value = false
-    await loadWaterfall()
+    await finishCompute(mode, out, sweepStore)
     // SLA 档位扫描只在用得着时跑、且不 await（每行 9 档 = 9 次引擎重算，不该跟着每次「计算」全表跑）
-    invalidateSlaScan()
-    if (slaWanted()) ensureSlaScan()
+    invalidateSlaScan(mode)
+    if (slaWanted() && mode === linkMode.value) ensureSlaScan(mode)
   } catch (e) {
-    error.value = String(e)
+    errorBy[mode] = String(e)
   } finally {
     computing.value = false
   }
@@ -1304,28 +1392,39 @@ async function compute() {
 // 上行只改上行那一个入参键、下行只改下行那一个 —— 另一侧是凑几何的镜像入参，改了就把这条
 // 链路的口径悄悄换成另一件事。会话态、不入存档；随结果一起过期（重算即重扫）。
 // ★ 出 IPC 前必须现造纯数据：Vue 的 Proxy 过不了结构化克隆，invoke 当场抛且无 catch 时全静默。
-let _slaScanGen = 0, _slaScanDone = -1, _slaScanRun = null, _slaScanRunGen = -1
-function invalidateSlaScan() { _slaScanGen++; slaScanByRow.value = {} }
+// 扫描态按模块各记各的（代数 / 已完成代数 / 在跑的那次）：四个模块的档位表互不作废
+const _slaScan = Object.fromEntries(MODE_KEYS.map((k) => [k, { gen: 0, done: -1, run: null, runGen: -1 }]))
+function invalidateSlaScan(mode) {
+  const s = _slaScan[mode]
+  if (!s) return
+  s.gen++
+  const m = { ...slaScanByRow.value }
+  for (const r of rowsOf(mode)) delete m[r._id]
+  slaScanByRow.value = m
+}
 // ★ 只认弹窗开着。别拿 slaCount 当闸：includeOf 缺键即「入报告」，任何算出结果的行都算勾了条款，
 //   slaCount 恒等于有结果的行数 → 闸恒开，每次「计算」都全表 9 档扫一遍（2026-09-07 深审 #3）。
 //   档位表与 MIR 之外没有别的消费者：导出含 SLA 的报告走 beforeSla 现补，弹窗打开时 ensureSlaScan。
 const slaWanted = () => slaOpen.value
-// 把当前这批结果的档位表补齐（已齐就直接返回）；弹窗打开、导出报告前调。按当前子链路（上行 / 下行）扫
-async function ensureSlaScan() {
-  if (_slaScanDone === _slaScanGen) return
-  if (_slaScanRun) {
-    if (_slaScanRunGen === _slaScanGen) return _slaScanRun
-    await _slaScanRun
-    return ensureSlaScan()
+// 把某模块这批结果的档位表补齐（已齐就直接返回）；弹窗打开（当前模块）、导出报告前（全部模块）调
+async function ensureSlaScan(mode = linkMode.value) {
+  const s = _slaScan[mode]
+  if (!s || s.done === s.gen) return
+  if (s.run) {
+    if (s.runGen === s.gen) return s.run
+    await s.run
+    return ensureSlaScan(mode)
   }
-  const gen = _slaScanGen
-  _slaScanRunGen = gen
-  _slaScanRun = refreshSlaScan(links.value, sweepParamsByRow.value, linkMode.value, gen).finally(() => { _slaScanRun = null })
-  return _slaScanRun
+  const gen = s.gen
+  s.runGen = gen
+  s.run = refreshSlaScan(linksBy[mode] || [], sweepParamsByRow.value, mode, gen).finally(() => { s.run = null })
+  return s.run
 }
+async function ensureSlaScanAll() { for (const k of modules.value) await ensureSlaScan(k) }
 async function refreshSlaScan(out, store, mode, gen) {
+  const s = _slaScan[mode]
   if (!api || !api.linkBudget.slaScanBatch) return
-  if (mode !== 'uplink' && mode !== 'downlink') { if (gen === _slaScanGen) _slaScanDone = gen; return }
+  if (mode !== 'uplink' && mode !== 'downlink') { if (gen === s.gen) s.done = gen; return }
   const engine = mode === 'downlink' ? 'regen-down' : 'regen-up'
   const single = mode === 'downlink' ? 'dn' : 'up'
   const jobs = []
@@ -1337,23 +1436,24 @@ async function refreshSlaScan(out, store, mode, gen) {
     if (!samples.length) continue
     jobs.push({ rowId: l.rowId, spec: { engine, satParams: p.satParams, linkParams: p.linkParams, opt: p.opt, samples } })
   }
-  if (!jobs.length) { if (gen === _slaScanGen) _slaScanDone = gen; return }
+  if (!jobs.length) { if (gen === s.gen) s.done = gen; return }
   try {
     const res = await api.linkBudget.slaScanBatch(JSON.parse(JSON.stringify(jobs.map((j) => j.spec))))
-    if (gen !== _slaScanGen) return        // 期间又算过一轮：这份已过期
-    const m = {}
+    if (gen !== s.gen) return        // 期间又算过一轮：这份已过期
+    const m = { ...slaScanByRow.value }   // 合并：别的模块的档位表留着
     jobs.forEach((j, i) => { if (res && res[i]) m[j.rowId] = res[i] })
     slaScanByRow.value = m
-    _slaScanDone = gen
+    s.done = gen
   } catch (e) { /* 扫不出就不出档位表与 MIR，结果本身不受影响 */ }
 }
 
 // 再生式星间：逐条星间链路。几何=自动最差 时两星轨道 → 严格互视最差距离/可见度；
 // 几何=手动 时不选卫星，星间距离取本行 islRangeKm 直接算 FSL。
-async function computeIsl() {
-  if (!islLinks.length) { error.value = '请至少添加一条星间链路'; return }
-  if (!geoManual.value && !satConfigs.length) { error.value = '请至少添加一颗卫星'; return }
-  computing.value = true; error.value = ''
+async function computeIsl(mode = 'isl') {
+  if (!api) { errorBy[mode] = '引擎需在桌面客户端中运行'; return }
+  if (!islLinks.length) { errorBy[mode] = '请至少添加一条星间链路'; return }
+  if (!geoManual.value && !satConfigs.length) { errorBy[mode] = '请至少添加一颗卫星'; return }
+  computing.value = true; errorBy[mode] = ''
   try {
     const out = []
     const sweepStore = {}         // 逐行留底送进引擎的入参，供图表区参数扫描原地重跑
@@ -1398,19 +1498,9 @@ async function computeIsl() {
         out.push({ ti, rowId: link._id, txName, satName: rxName, islManual: manual, data: null, margin: '—', error: (r && r.message) || '失败', geom: null, islGeo: geo, access: null })
       }
     }
-    const prevSel = sel.value
-    sweepParamsByRow.value = sweepStore
-    links.value = out
-    writeResultVals(out, 'isl')   // 结果列写回表格（按行 _id 映射）
-    // 计算后保持当前查看位置（按行 _id 定位；行数变化则夹取原下标），不再跳回第一条
-    let keepIdx = prevSel ? out.findIndex((l) => l.rowId === prevSel.rowId) : -1
-    if (keepIdx < 0) keepIdx = Math.min(selected.value, out.length - 1)
-    selected.value = keepIdx < 0 ? 0 : keepIdx
-    await nextTick()
-    resultsStale.value = false
-    await loadWaterfall()
+    await finishCompute(mode, out, sweepStore)
   } catch (e) {
-    error.value = String(e)
+    errorBy[mode] = String(e)
   } finally {
     computing.value = false
   }
@@ -1418,10 +1508,11 @@ async function computeIsl() {
 
 // 再生式激光星间：逐条激光链路（发射卫星 → 接收卫星）。几何复用两星互视最差距离/可见度；
 // 链路预算走第一性原理光学预算（P_rx 链 + 光子/bit 灵敏度）；给定速率 → 链路余量。
-async function computeLaser() {
-  if (!laserLinks.length) { error.value = '请至少添加一条激光星间链路'; return }
-  if (!geoManual.value && !satConfigs.length) { error.value = '请至少添加一颗卫星'; return }
-  computing.value = true; error.value = ''
+async function computeLaser(mode = 'laser') {
+  if (!api) { errorBy[mode] = '引擎需在桌面客户端中运行'; return }
+  if (!laserLinks.length) { errorBy[mode] = '请至少添加一条激光星间链路'; return }
+  if (!geoManual.value && !satConfigs.length) { errorBy[mode] = '请至少添加一颗卫星'; return }
+  computing.value = true; errorBy[mode] = ''
   try {
     const out = []
     const t0ISO = searchT0ISO()
@@ -1464,21 +1555,10 @@ async function computeLaser() {
         out.push({ ti, rowId: link._id, txName, satName: rxName, islManual: manual, data: null, margin: '—', error: (r && r.message) || '失败', geom: null, islGeo: geo, access: null })
       }
     }
-    const prevSel = sel.value
-    sweepParamsByRow.value = {}     // 激光星间不走扫描通道（引擎入口两参形式），清掉上一子链路的留底免得串味
-    links.value = out
-    writeResultVals(out, 'laser')   // 结果列写回表格（按行 _id 映射）
-    // 计算后保持当前查看位置（按行 _id 定位；行数变化则夹取原下标），不再跳回第一条
-    let keepIdx = prevSel ? out.findIndex((l) => l.rowId === prevSel.rowId) : -1
-    if (keepIdx < 0) keepIdx = Math.min(selected.value, out.length - 1)
-    selected.value = keepIdx < 0 ? 0 : keepIdx
-    // 先把「表格一动就置位」的 stale 侦听冲刷掉再清旗：方向图回填也是往单元格里写数，
-    // 那是本次计算自己填的、不是用户改的，不该立刻亮「输入已变」。
-    await nextTick()
-    resultsStale.value = false
-    await loadWaterfall()
+    // 激光星间不走扫描通道（引擎入口两参形式）：不留底入参（finishCompute 会把本模块各行的旧留底删干净）
+    await finishCompute(mode, out, null)
   } catch (e) {
-    error.value = String(e)
+    errorBy[mode] = String(e)
   } finally {
     computing.value = false
   }
@@ -1489,11 +1569,10 @@ async function loadWaterfall() {
   if (!l || !l.data) { segments.value = []; return }
   segments.value = await api.linkBudget.waterfall({ results: JSON.parse(JSON.stringify(l.data)), lang: reportLang.value, orbitType: 'REGEN', adaptUnits: isUnitAdaptive(), txLocation: String(l.txName || '') })
 }
-// 功能区「单位」档改动（本窗切换或别的链路预算窗改的）：当前模式的结果列就地重排 + 详细预算重取一次。
-// 只管当前模式——切模式本就清空 links / computedVals（见 watch(linkMode)），别的模式没有留在屏幕上的数。
+// 功能区「单位」档改动（本窗切换或别的链路预算窗改的）：有结果的模块结果列全部就地重排 + 详细预算重取一次。
 // 不碰引擎：档位只管显示，数值一个没变。
 let _offUnitMode = null
-onMounted(() => { _offUnitMode = onUnitModeChange((v) => { unitAdaptive.value = v; if (links.value.length) writeResultVals(links.value, linkMode.value); loadWaterfall() }) })
+onMounted(() => { _offUnitMode = onUnitModeChange((v) => { unitAdaptive.value = v; for (const k of MODE_KEYS) if ((linksBy[k] || []).length) writeResultVals(linksBy[k], k); loadWaterfall() }) })
 onBeforeUnmount(() => { if (_offUnitMode) _offUnitMode() })
 // ============ 经纬度 → 降雨率/海拔自动填 ============
 async function fillGeoRow(row, lonK, latK, rainK, elevK, skip) {
@@ -1522,12 +1601,12 @@ function toast(msg) { notice.value = msg; clearTimeout(_noticeT); _noticeT = set
 // saveConfig 走 IPC 当场抛「保存失败」。applyRowSla 内部 normRowSla 现造纯对象，顺手落平。
 const stripRow = (r) => { const o = {}; for (const k of Object.keys(r)) if (!k.startsWith('_')) o[k] = r[k]; if (o.sla) applyRowSla(o, o.sla); return o }
 function serializeState() {
-  // v2 场景 = 关联关系：四种模式的链路行（站址/链路量 + 各列引用的库条目 id）+ 模式/时窗等计算策略。
-  // 三库是全局资产（userData/library.json），不再随场景存副本。
+  // v3 场景 = 装了哪些模块（有序）+ 各模块的链路行（站址/链路量 + 各列引用的库条目 id）+ 模式/时窗等计算策略。
+  // 三库是全局资产（userData/library.json），不再随场景存副本。没装的模块那张表就是空的。
   return {
-    orbitType: 'REGEN', v: 2,
+    orbitType: 'REGEN', v: 3,
     linkMode: linkMode.value,
-    hiddenModes: [...hiddenModes.value],
+    modules: [...modules.value],
     tx: txStations.map(stripRow),
     rx: rxStations.map(stripRow),
     isl: islLinks.map(stripRow),
@@ -1542,11 +1621,15 @@ function applyState(st) {
   if (!st || typeof st !== 'object') return
   // SLA 参数：旧场景没这一项 → 补缺省（normSlaParams 幂等，非法值也退缺省）
   Object.assign(slaParams, normSlaParams(st.slaParams))
-  slaScanByRow.value = {}
-  // 隐藏模式：过滤掉未知 key；旧配置无该字段 → 全部显示
-  hiddenModes.value = Array.isArray(st.hiddenModes) ? st.hiddenModes.filter((k) => LINK_MODES.some((m) => m.key === k)) : []
-  if (st.linkMode) linkMode.value = st.linkMode
-  if (hiddenModes.value.includes(linkMode.value)) { const first = visibleModes.value[0]; if (first) linkMode.value = first.key }  // 兜底：活动模式恰被隐藏
+  // 模块清单：v3 存 modules（有序、去重、只认四个 key）；v2 及以前按 hiddenModes 反推——四种全在，减去当时隐藏的，
+  // 老配置打开来页签一个不少（隐藏的那几个连同它们的行在下次保存时才真正不存）。
+  const mods = Array.isArray(st.modules)
+    ? st.modules.filter((k, i, a) => MODE_KEYS.includes(k) && a.indexOf(k) === i)
+    : MODE_KEYS.filter((k) => !(Array.isArray(st.hiddenModes) && st.hiddenModes.includes(k)))
+  // 换场景：四个模块的结果全清（旧场景的结果对新场景没有意义；按行 _id 落表的映射一并删干净）
+  for (const k of MODE_KEYS) clearModuleResults(k)
+  modules.value = mods
+  linkMode.value = (st.linkMode && mods.includes(st.linkMode)) ? st.linkMode : (mods[0] || '')
   let txRows = Array.isArray(st.tx) ? st.tx : null
   let rxRows = Array.isArray(st.rx) ? st.rx : null
   let islRows = Array.isArray(st.isl) ? st.isl : null
@@ -1659,35 +1742,40 @@ function applyState(st) {
 
   // row.sla 逐行深拷（applyRowSla 现造新对象、空的删键）：st 常常就是配置列表里那份 state，
   // 直接引用会让两处共用同一个 sla 对象，改采用值就地改掉了已保存的那份。
+  // 合并默认：旧配置（G/T 尚在卫星侧时保存）的发信站行缺 G_Ts 一类字段，按默认补齐
   const mkRow = (fields, r) => { const o = { ...defaultsFor(fields), ...r, _id: 's' + (_sid++) }; applyRowSla(o, r.sla); return o }
-  // 合并 TX 默认：旧配置（G/T 尚在卫星侧时保存）的发信站行缺 G_Ts，按默认补齐，避免下沉后该列为空
-  if (txRows && txRows.length) txStations.splice(0, txStations.length, ...txRows.map((r) => mkRow(TX_FIELDS, r)))
-  // 收信站群：旧配置（仅上行）无 rx 字段 → 保留默认一站，避免下行模式空表
-  if (rxRows && rxRows.length) rxStations.splice(0, rxStations.length, ...rxRows.map((r) => mkRow(RX_FIELDS, r)))
-  // 星间链路群：旧配置无 isl 字段 → 保留默认一条
-  if (islRows && islRows.length) islLinks.splice(0, islLinks.length, ...islRows.map((r) => mkRow(ISL_FIELDS, r)))
-  // 激光星间链路群：旧配置无 laser 字段 → 保留默认一条；只保留当前字段键（清除旧速率/调制/BER 等已删字段的惰性残留）
-  if (laserRows && laserRows.length) {
-    const lkeys = LASER_FIELDS.map((f) => f.key)
-    laserLinks.splice(0, laserLinks.length, ...laserRows.map((r) => {
-      const o = { ...defaultsFor(LASER_FIELDS), _id: 's' + (_sid++) }
-      for (const k of lkeys) if (r[k] !== undefined) o[k] = r[k]
-      applyRowSla(o, r.sla)
-      return o
-    }))
+  // 激光行只保留当前字段键（清除旧速率/调制/BER 等已删字段的惰性残留）
+  const mkLaser = (r) => { const o = { ...defaultsFor(LASER_FIELDS), _id: 's' + (_sid++) }; for (const f of LASER_FIELDS) if (r[f.key] !== undefined) o[f.key] = r[f.key]; applyRowSla(o, r.sla); return o }
+  // 装了的模块至少一条行（旧配置缺那张表 → 一条默认行，不留空表）；没装的模块一行也不留
+  const seed = (key, rows, mk) => {
+    const arr = rowsOf(key)
+    const src = mods.includes(key) ? ((rows && rows.length) ? rows : [defaultsFor(fieldsOf(key))]) : []
+    arr.splice(0, arr.length, ...src.map(mk))
   }
+  seed('uplink', txRows, (r) => mkRow(TX_FIELDS, r))
+  seed('downlink', rxRows, (r) => mkRow(RX_FIELDS, r))
+  seed('isl', islRows, (r) => mkRow(ISL_FIELDS, r))
+  seed('laser', laserRows, mkLaser)
   geoMode.value = st.geoMode === 'manual' ? 'manual' : 'auto'   // 旧场景无此字段 → 自动最差（原行为）
   if (st.geoHorizonHours != null) geoHorizonHours.value = Number(st.geoHorizonHours) || 24
 }
 let _stateT = null
 function scheduleSaveState() { clearTimeout(_stateT); _stateT = setTimeout(() => { try { localStorage.setItem(STATE_KEY, JSON.stringify({ ...serializeState(), activeId: activeId.value })) } catch (e) { /* ignore */ } dirtyFlag.value = isDirty() }, 600) }
-watch([txStations, rxStations, islLinks, laserLinks, geoMode, geoHorizonHours, linkMode, hiddenModes, activeId, slaParams], scheduleSaveState, { deep: true })
+watch([txStations, rxStations, islLinks, laserLinks, geoMode, geoHorizonHours, linkMode, modules, activeId, slaParams], scheduleSaveState, { deep: true })
 
 // —— 命名配置 CRUD ——
 // 树本身的增删改移 / 剪贴板 / 右键 / 键盘全在 shared/useConfigTree.js（见文件上方 useConfigTree(...) 注入点）。
 // 这里只留本窗特有的三件：保存为新配置的预填名、空白配置的内容、删除文件夹用的确认框。
 // 注意：Electron 渲染进程没有 window.prompt / confirm（静默返回 null → 早先「保存不了」的根因），一律用应用内弹窗。
-function defaultCfgName() { const s = satConfigs[0] && satConfigs[0].form.satelliteName; const kind = linkMode.value === 'laser' ? byLang('再生激光星间', 'OBP Optical ISL') : linkMode.value === 'isl' ? byLang('再生星间', 'OBP ISL') : linkMode.value === 'downlink' ? byLang('再生下行', 'OBP Downlink') : byLang('再生上行', 'OBP Uplink'); const unit = (linkMode.value === 'isl' || linkMode.value === 'laser') ? byLang('条', 'links') : byLang('站', 'stations'); return (s ? s + ' ' : '') + `${kind} ${nLinks.value} ${unit}` }
+// 预填名：卫星名 + 装了的模块（按模块栏次序并列）+ 全部链路条数
+const CFG_KIND = { uplink: ['再生上行', 'OBP Uplink'], downlink: ['再生下行', 'OBP Downlink'], isl: ['再生星间', 'OBP ISL'], laser: ['再生激光星间', 'OBP Optical ISL'] }
+function defaultCfgName() {
+  const s = satConfigs[0] && satConfigs[0].form.satelliteName
+  const kinds = modules.value.map((k) => byLang(CFG_KIND[k][0], CFG_KIND[k][1]))
+  const kind = kinds.length ? kinds.join(byLang('+', ' + ')) : byLang('再生式', 'OBP')
+  const n = modules.value.reduce((a, k) => a + rowsOf(k).length, 0)
+  return (s ? s + ' ' : '') + `${kind} ${n} ${byLang('条', 'links')}`
+}
 
 // 通用确认弹窗（Electron 渲染进程无原生 confirm）
 const confirmDlg = reactive({ open: false, msg: '' })
@@ -1695,23 +1783,20 @@ let _confirmResolve = null
 function askConfirm(msg) { confirmDlg.msg = msg; confirmDlg.open = true; return new Promise((res) => { _confirmResolve = res }) }
 function answerConfirm(ok) { confirmDlg.open = false; const r = _confirmResolve; _confirmResolve = null; if (r) r(ok) }
 
-// 默认（空白）配置内容：四种模式各一条默认行（空引用 = 各库第一份），不再内嵌三库。
+// 默认（空白）配置内容：一个计算模块都没有（用户按需从模块栏添加），四张表都是空的，不内嵌三库。
 // state.orbitType 照写：瀑布表/报表按它分体制（配置库的归属已改由文件分家决定，是另一件事）。
 function blankState() {
   return {
-    orbitType: 'REGEN', v: 2, linkMode: 'uplink', hiddenModes: [],
-    tx: [defaultsFor(TX_FIELDS)],
-    rx: [defaultsFor(RX_FIELDS)],
-    isl: [defaultsFor(ISL_FIELDS)],
-    laser: [defaultsFor(LASER_FIELDS)],
+    orbitType: 'REGEN', v: 3, linkMode: '', modules: [],
+    tx: [], rx: [], isl: [], laser: [],
     geoMode: 'manual', geoHorizonHours: 24,
     slaParams: { ...DEFAULT_SLA_PARAMS }
   }
 }
-// 指纹只取「场景内容」字段（库是全局资产、页签/结果列勾选是视图态，均不入指纹）。
+// 指纹只取「场景内容」字段（库是全局资产、结果列勾选是视图态，均不入指纹）。装了哪些模块是内容。
 // SLA：采用值/勾选在四张表的行里（row.sla）自然计入；参数是场景级，显式列进来。
 function fingerprintOf(s) {
-  return stableStringify({ tx: s.tx, rx: s.rx, isl: s.isl, laser: s.laser, geoMode: s.geoMode || 'auto', geoHorizonHours: s.geoHorizonHours, linkMode: s.linkMode, hiddenModes: s.hiddenModes, slaParams: s.slaParams })
+  return stableStringify({ tx: s.tx, rx: s.rx, isl: s.isl, laser: s.laser, geoMode: s.geoMode || 'auto', geoHorizonHours: s.geoHorizonHours, linkMode: s.linkMode, modules: s.modules, slaParams: s.slaParams })
 }
 function fingerprint() { return fingerprintOf(serializeState()) }
 let activeBaseline = ''
@@ -1839,8 +1924,9 @@ watch(reportLang, () => {
 onLangChange(() => {
   syncAutoNames(basebandConfigs, 'carrier'); syncAutoNames(esConfigs, 'es'); syncAutoNames(satConfigs, 'sat')
 })
-// 交付级报告：流程在 shared/useLbReport.js（三窗共用），此处只接本窗数据源。
-// 再生式一份报告只讲一段链路（上行 / 下行 / 星间微波 / 星间激光），故 regenMode 随当前体制走；
+// 交付级报告：流程在 shared/useLbReport.js（四窗共用），此处只接本窗数据源。
+// 报告讲【整份配置】：装了几个模块就分几节（次序 = 模块栏次序），导出前把没算过 / 已过期的模块补算
+// （beforeReport），取图时逐节切换工作台（activateSection）。链路自带 mode，各取数闭包按它找行 / 定口径。
 // 几何上下文分两族：地面-空间（上/下行）传 geom+access+staGeo，空间-空间（星间）传 islGeo。
 const vizRef = ref(null)
 const appVersion = ref('')
@@ -1854,15 +1940,43 @@ const REGEN_FILE_NAME = {
   uplink: ['再生式上行链路预算报告', 'Regen_Uplink_Report'],
   downlink: ['再生式下行链路预算报告', 'Regen_Downlink_Report'],
   isl: ['再生式星间链路预算报告', 'Regen_ISL_Report'],
-  laser: ['再生式激光星间链路预算报告', 'Regen_Laser_ISL_Report']
+  laser: ['再生式激光星间链路预算报告', 'Regen_Laser_ISL_Report'],
+  multi: ['再生式链路预算报告', 'Regen_Link_Budget_Report']
 }
+const modeCalcLabel = (k) => { const m = REGEN_MODE_LABEL[k] || REGEN_MODE_LABEL.uplink; return reportLang.value === 'en' ? m[1] : m[0] }
+// 进报告的模块 = 装了且有链路行的（空表没东西可报），次序 = 模块栏次序
+const reportModules = computed(() => modules.value.filter((k) => rowsOf(k).length))
+const canReport = computed(() => reportModules.value.length > 0)
+const reportLinkCount = computed(() => reportModules.value.reduce((n, k) => n + rowsOf(k).length, 0))
+const reportSectionInfo = computed(() => reportModules.value.map((k) => ({ key: k, label: modeOf(k).label, count: rowsOf(k).length })))
+// 导出前补算：没算过或输入已变的模块逐个算一遍（算过且未过期的原样用），进度写进对话框；
+// 模块级报错（没卫星 / 没站）就中止导出——逐行的失败照旧作为「计算失败」链路进报告
+async function computeMissing(step) {
+  const todo = reportModules.value.filter((k) => !(linksBy[k] || []).length || staleBy[k])
+  for (let i = 0; i < todo.length; i++) {
+    const k = todo[i]
+    if (step) step((reportLang.value === 'en' ? 'Computing: ' : '计算：') + modeOf(k).label, i, todo.length)
+    await computeModule(k)
+    if (errorBy[k]) throw new Error(modeOf(k).label + '：' + errorBy[k])
+  }
+}
+let _selSnap = null   // 导出前各模块的选中行：取图会逐条切过去，结束后还原
 const { reportDlg, reportVariant, openReportDialog, openSlaReportDialog, submitReport } = useLbReport({
   api,
   orbitType: 'REGEN',
-  regenMode: () => linkMode.value,
+  regenMode: () => linkMode.value || 'uplink',
   fieldGroups: FIELD_GROUPS,
   nextTick,
-  links: () => links.value,
+  links: () => reportModules.value.flatMap((k) => linksBy[k] || []),
+  canReport: () => canReport.value,
+  sections: () => reportModules.value.map((k) => ({ key: k, regenMode: k, links: linksBy[k] || [] })),
+  activeSection: () => linkMode.value,
+  activateSection: async (k) => { if (k && modules.value.includes(k)) { linkMode.value = k; await nextTick() } },
+  beforeReport: async (step) => { _selSnap = { ...selectedBy }; await computeMissing(step) },
+  afterReport: async () => {
+    if (_selSnap) { for (const k of MODE_KEYS) if (_selSnap[k] != null && _selSnap[k] < (linksBy[k] || []).length) selectedBy[k] = _selSnap[k]; _selSnap = null }
+    await loadWaterfall()
+  },
   selected: () => selected.value,
   setSelected: (i) => { selected.value = i },
   showViz: () => showViz.value,
@@ -1870,37 +1984,41 @@ const { reportDlg, reportVariant, openReportDialog, openSlaReportDialog, submitR
   lang: () => reportLang.value,
   appVersion: () => appVersion.value,
   paramsFor: (l) => sweepParamsByRow.value[l.rowId] || null,
+  // 总报告「逐参数对照」头两行（标准 / 调制编码）：交出这条链路引用的载波表单，标准名由 useLbReport 解析
+  //（四种链路行都挂 basebandId；激光那两行主进程整个不出，见 report.js summaryRows）
+  carrierOf: (l) => {
+    const row = rowOfLink(l)
+    return row && row.basebandId !== undefined ? resolveBaseband(row.basebandId).form : null
+  },
+  basebandOpts: () => basebandOpts.value,
   // SLA 建议（§4）：逐链路出纯数据块（标签按报表语言翻好、速率/带宽按当前单位档格式化）
   slaFor: (l) => {
-    const row = modeRows.value.find((r) => r._id === l.rowId)
+    const row = rowOfLink(l)
     return slaReportBlock(slaDerivedFor(l), row && row.sla, slaParams, reportLang.value,
       (v, u) => fmtQtyParts(v, u, unitAdaptive.value))
   },
   slaParams: () => slaParamRows(slaParams, reportLang.value),
-  beforeSla: ensureSlaScan,   // 导出含 SLA 的报告前把惰性扫描补齐
-  // 「计算方式」一栏报的是链路类型（再生式上行/下行/星间）；求解策略随载波逐链路而定，另占「求解方式」一行
-  // （取计算时留底的那份入参，此后改库不改已出结果的口径）。星间/激光无此栏——工作点由链路自身参数给定。
+  beforeSla: ensureSlaScanAll,   // 导出含 SLA 的报告前把每个模块的惰性扫描补齐
+  // 「计算方式」一栏报的是这条链路所属模块的口径（上行/下行/星间/激光各一句）；求解策略随载波逐链路而定，
+  // 另占「求解方式」一行（取计算时留底的那份入参，此后改库不改已出结果的口径）。星间/激光无求解方式——工作点由链路自身参数给定。
   calcFor: (l) => {
+    const out = { mode: modeCalcLabel(l && l.mode) }
     const p = l && sweepParamsByRow.value[l.rowId]
     const key = (p && p.opt && p.opt.mode) || ''
     const info = CALC_MODES.find((m) => m.key === key)
-    if (!info) return {}
-    return {
-      solveMode: reportLang.value === 'en' ? info.enLabel : info.label,
-      targetMargin: key === 'margin' ? ((p.linkParams && p.linkParams.margin) || '') : ''
-    }
+    if (!info) return out
+    out.solveMode = reportLang.value === 'en' ? info.enLabel : info.label
+    out.targetMargin = key === 'margin' ? ((p.linkParams && p.linkParams.margin) || '') : ''
+    return out
   },
-  calc: () => {
-    const en = reportLang.value === 'en'
-    const m = REGEN_MODE_LABEL[linkMode.value] || REGEN_MODE_LABEL.uplink
-    return {
-      mode: en ? m[1] : m[0],
-      satelliteName: (satConfigs[0] && satConfigs[0].form.satelliteName) || '',
-      frequencyBand: (satConfigs[0] && satConfigs[0].form.frequencyBand) || ''
-    }
-  },
+  calc: () => ({
+    // 场景级「计算方式」= 各模块口径并列（逐链路那一行由 calcFor 按各自模块给）
+    mode: [...new Set(reportModules.value.map(modeCalcLabel))].join(' / ') || modeCalcLabel('uplink'),
+    satelliteName: (satConfigs[0] && satConfigs[0].form.satelliteName) || '',
+    frequencyBand: (satConfigs[0] && satConfigs[0].form.frequencyBand) || ''
+  }),
   extraLink: (l) => {
-    const mode = linkMode.value
+    const mode = l.mode || linkMode.value
     const isDown = mode === 'downlink'
     const isSpace = mode === 'isl' || mode === 'laser'
     const clone = (x) => (x ? JSON.parse(JSON.stringify(x)) : null)
@@ -1918,19 +2036,21 @@ const { reportDlg, reportVariant, openReportDialog, openSlaReportDialog, submitR
       staGeo, satName: l.satName
     }
   },
-  // —— 独立《服务等级指标（SLA）》报告：不取图、不组瀑布，只把各链的 SLA 块与档位表组成模型 ——
-  slaCount: () => slaCount.value,
+  // —— 独立《服务等级指标（SLA）》报告：不取图、不组瀑布，只把各链的 SLA 块与档位表组成模型（整份配置）——
+  slaCount: () => slaCountAll.value,
   slaMonthly: () => (Number(slaParams.monthly) ? 1 : 0),
-  slaComposition: () => slaComposition({ orbitType: 'REGEN', regenMode: linkMode.value, slaParams }, reportLang.value),
+  slaComposition: (k) => slaComposition({ orbitType: 'REGEN', regenMode: k || linkMode.value || 'uplink', slaParams }, reportLang.value),
   slaExtra: (l) => slaReportExtra(l),
   slaDefaultName: (en) => slaDefaultNameOf(en),
+  // 文件名：只装一个模块时沿用该模块的名字，装了几个就叫「再生式链路预算报告」
   defaultName: (en) => {
-    const n = REGEN_FILE_NAME[linkMode.value] || REGEN_FILE_NAME.uplink
+    const mods = reportModules.value
+    const n = (mods.length === 1 ? REGEN_FILE_NAME[mods[0]] : null) || REGEN_FILE_NAME.multi
     const s = (satConfigs[0] && satConfigs[0].form.satelliteName) || (en ? 'Results' : '结果')
     return en ? `${n[1]}_${s.replace(/[^\w-]+/g, '_')}` : `${n[0]}_${s.replace(/[\\/:*?"<>|]/g, '_')}`
   },
   toast,
-  setError: (m) => { error.value = m }
+  setError: (m) => { if (linkMode.value) error.value = m; else toast(m) }
 })
 
 // ============ 城市库 + 启动恢复 + 关窗守卫 ============
@@ -2071,7 +2191,7 @@ onMounted(async () => {
                 </label>
                 <label title="功放与余量随站型设置——在各站所选「地球站配置」的发射参数（工作点）中"><span>工作点</span><span class="lbr-u">随站型</span></label>
               </div>
-              <button class="lbr-big primary" :disabled="computing" :title="`计算全部 ${nLinks} 条${modeLabel}链路（Ctrl+Enter）`" @click="compute">
+              <button class="lbr-big primary" :disabled="computing || !linkMode" :title="linkMode ? `计算当前模块全部 ${nLinks} 条${modeLabel}链路（Ctrl+Enter）` : '尚无计算模块'" @click="computeActive">
                 <svg viewBox="0 0 16 16" class="lbr-svg fill"><path d="M4 2.5 13 8 4 13.5z" /></svg>
                 {{ computing ? '计算中…' : '计算' }}
               </button>
@@ -2091,7 +2211,7 @@ onMounted(async () => {
                 <svg viewBox="0 0 16 16" class="lbr-svg"><path d="M8 1.8 13 3.4v4.2c0 3.1-2.1 5.4-5 6.6-2.9-1.2-5-3.5-5-6.6V3.4z" /><path d="m5.6 7.9 1.7 1.7 3.3-3.3" /></svg>
                 SLA
               </button>
-              <button class="lbr-big" :disabled="reportDlg.busy || !links.length" :title="links.length ? '生成交付级报告：Excel（总报告 + 几何关系 + 逐链路详情）/ PDF（封面 · 目录 · 总报告 · 逐链路详情，含图）' : '尚无计算结果'" @click="openReportDialog"><Icon name="file-down" :size="16" />{{ reportDlg.busy ? '生成中…' : '报告' }}</button>
+              <button class="lbr-big" :disabled="reportDlg.busy || !canReport" :title="canReport ? '生成整份配置的交付级报告（每个模块一节；没算过的模块导出前自动补算）：Excel（总报告 + 几何关系 + 逐链路详情）/ Word / PDF（封面 · 目录 · 总报告 · 逐链路详情，含图）' : '尚无计算模块'" @click="openReportDialog"><Icon name="file-down" :size="16" />{{ reportDlg.busy ? '生成中…' : '报告' }}</button>
               <button class="lbr-big" :disabled="!segments.length" title="复制当前瀑布表（TSV，可直接粘贴到 Excel / 报告）" @click="copyWaterfallTsv"><Icon name="file-text" :size="16" />TSV</button>
             </div>
             <div class="lbr-cap">导出</div>
@@ -2105,31 +2225,45 @@ onMounted(async () => {
           </div>
         </div>
 
-        <!-- 链路工作台：体制标签栏 + 全宽横向分区（当前模式链路表 → 详细预算），计算栏吸底 -->
+        <!-- 模块栏：装了的计算模块各一个页签（状态点 · 名字 · 链路数 · ×，可拖拽换序），末尾「＋ 添加模块」；
+             一个都没装时分区流里是空态。页签次序 = 报告分节次序。 -->
         <div class="rlmode">
-          <div v-for="m in visibleModes" :key="m.key" class="rlmode-i" :class="{ on: linkMode === m.key, disabled: !m.ready }" :title="m.tip"
-               @click="m.ready ? (linkMode = m.key) : null">
-            <span class="rlmode-lbl">{{ m.label }}</span><span v-if="!m.ready" class="rlmode-todo">开发中</span>
-            <span v-if="visibleModes.length > 1" class="rlmode-x" title="关闭该模式（可从「+」恢复）" @click.stop="requestHideMode(m)">
+          <div v-for="m in activeModules" :key="m.key" class="rlmode-i" :class="{ on: linkMode === m.key, dragging: dragKey === m.key }" :title="m.tip"
+               draggable="true" @click="linkMode = m.key"
+               @dragstart="onModDragStart(m.key, $event)" @dragover.prevent="onModDragOver(m.key)" @dragend="onModDragEnd" @drop.prevent="onModDragEnd">
+            <span v-if="modStatus(m.key)" class="rlmode-dot" :class="modStatus(m.key)" :title="modStatus(m.key) === 'stale' ? '输入已变' : '已计算'"></span>
+            <span class="rlmode-lbl">{{ m.label }}</span>
+            <span class="rlmode-n">{{ rowsOf(m.key).length }}</span>
+            <span class="rlmode-x" title="移除该模块" @click.stop="removeModule(m.key)">
               <svg viewBox="0 0 12 12" width="10" height="10"><path d="M3 3l6 6M9 3l-6 6" /></svg>
             </span>
           </div>
-          <div v-if="hiddenModeList.length" class="rlmode-add-wrap">
-            <button class="rlmode-add" :class="{ on: addMenuOpen }" title="恢复已关闭的再生式模式" @click.stop="addMenuOpen = !addMenuOpen">
-              <svg viewBox="0 0 12 12" width="11" height="11"><path d="M6 2v8M2 6h8" /></svg>
+          <div class="rlmode-add-wrap">
+            <button class="rlmode-add" :class="{ on: addMenuOpen }" :disabled="!addableModes.length" :title="addableModes.length ? '添加计算模块' : '四种模块已全部添加'" @click.stop="addMenuOpen = !addMenuOpen">
+              <svg viewBox="0 0 12 12" width="11" height="11"><path d="M6 2v8M2 6h8" /></svg><span class="rlmode-add-t">添加模块</span>
             </button>
             <template v-if="addMenuOpen">
               <div class="rlmode-menu-mask" @click="addMenuOpen = false"></div>
               <div class="rlmode-menu" @click.stop>
-                <div class="rlmode-menu-hd">恢复模式</div>
-                <button v-for="m in hiddenModeList" :key="m.key" class="rlmode-menu-i" @click="restoreMode(m)">{{ m.label }}</button>
+                <div class="rlmode-menu-hd">添加模块</div>
+                <button v-for="m in LINK_MODES" :key="m.key" class="rlmode-menu-i" :class="{ added: modules.includes(m.key) }" :title="m.tip" @click="addModule(m.key)">
+                  <span class="rlmode-menu-ck"><svg v-if="modules.includes(m.key)" viewBox="0 0 12 12" width="11" height="11"><path d="M2.5 6.5l2.5 2.5 4.5-5" /></svg></span>{{ m.label }}
+                </button>
               </div>
             </template>
           </div>
         </div>
 
-        <!-- 全宽分区流：当前模式的链路表分区 → 详细预算分区 -->
+        <!-- 全宽分区流：当前模块的链路表分区 → 详细预算分区；没装模块时是空态 -->
         <div ref="flowEl" class="lbx-flow lbx-cards">
+          <div v-if="!activeModules.length" class="rlmode-empty">
+            <div class="rlmode-empty-t">尚无计算模块。</div>
+            <div class="rlmode-empty-btns">
+              <button v-for="m in LINK_MODES" :key="m.key" class="rlmode-empty-b" :title="m.tip" @click="addModule(m.key)">
+                <svg viewBox="0 0 12 12" width="11" height="11"><path d="M6 2v8M2 6h8" /></svg>{{ m.label }}
+              </button>
+            </div>
+          </div>
           <LbSection v-if="linkMode === 'uplink'" id="tx" title="发信站群" :count="txStations.length" summary="一行一站：站址 + 库引用 + 结果列">
             <template #actions>
               <button v-if="geoManual" class="lb-mini" title="斜距工具：按轨道高度 × 仰角算斜距，可按各行仰角批量填入「斜距」列" @click="slantToolOpen = true">斜距工具</button>
@@ -2245,7 +2379,7 @@ onMounted(async () => {
             <!-- 激光星间不出容量汇总（载波带宽/频谱效率口径不适用），但本行读数照给 -->
             <LbCapFoot :readout="rowReadout" />
           </LbSection>
-          <LbSection id="detail" title="详细预算" :summary="sel && links.length ? pairLabel(sel) : ''">
+          <LbSection v-if="linkMode" id="detail" title="详细预算" :summary="sel && links.length ? pairLabel(sel) : ''">
             <div v-if="error" class="lb-err">{{ error }}</div>
             <div v-else-if="!links.length" class="lb-placeholder">尚无预算结果。</div>
             <div v-else-if="sel && sel.error" class="lb-err">链路 {{ pairLabel(sel) }} 计算失败：{{ sel.error }}</div>
@@ -2418,9 +2552,9 @@ onMounted(async () => {
 
     <!-- 命名弹窗 -->
     <!-- 导出报告：封面元信息 + 输出格式 + 是否含图（三窗共用组件）-->
-    <LbCustomColsDialog :open="ccDlgOpen" :cols="customColsBy[linkMode]" :pool="customPool"
-      :subtitle="(LINK_MODES.find((m) => m.key === linkMode) || {}).label || ''" :preview-fn="ccPreview"
-      @update:cols="customColsBy[linkMode] = $event" @close="ccDlgOpen = false" />
+    <LbCustomColsDialog :open="ccDlgOpen" :cols="customColsBy[linkMode] || []" :pool="customPool"
+      :subtitle="(modeOf(linkMode) || {}).label || ''" :preview-fn="ccPreview"
+      @update:cols="linkMode && (customColsBy[linkMode] = $event)" @close="ccDlgOpen = false" />
 
     <!-- 斜距工具（几何=手动 时可用）：算斜距 + 按各行仰角批量填 -->
     <LbSlantTool :open="slantToolOpen" :alt-km="slantToolAlt" :elev-deg="slantToolElev" :lat-deg="slantToolLat" :sta-alt-m="slantToolStaAlt"
@@ -2439,9 +2573,10 @@ onMounted(async () => {
       @close="slaOpen = false" @pick="slaIdx = $event" @adopt="slaSetAdopt" @include="slaSetInclude"
       @param="slaSetParam" @toggle-all="slaToggleAll" :sla-count="slaCount" @clear="slaClear" @export="openSlaReportDialog" />
 
-    <LbReportDialog :open="reportDlg.open" :lang="reportLang" orbit-type="REGEN" :regen-mode="linkMode"
-      :sat-name="(satConfigs[0] && satConfigs[0].form.satelliteName) || ''" :band="(satConfigs[0] && satConfigs[0].form.frequencyBand) || ''" :link-count="links.length"
-      :viz-available="showViz" :sla-count="slaCount" store-key="regen" :busy="reportDlg.busy" :progress="reportDlg.progress"
+    <!-- 报告讲整份配置：体制副标题按装了的模块并列、链路数是各模块之和、读数行逐模块列条数 -->
+    <LbReportDialog :open="reportDlg.open" :lang="reportLang" orbit-type="REGEN" :regen-mode="reportModules" :sections="reportSectionInfo"
+      :sat-name="(satConfigs[0] && satConfigs[0].form.satelliteName) || ''" :band="(satConfigs[0] && satConfigs[0].form.frequencyBand) || ''" :link-count="reportLinkCount"
+      :viz-available="showViz" :sla-count="slaCountAll" store-key="regen" :busy="reportDlg.busy" :progress="reportDlg.progress"
       @close="reportDlg.open = false" :variant="reportVariant" @submit="submitReport" />
 
     <div v-if="cfgDlg.open" class="lb-mask" @click="cfgDlg.open = false">
@@ -2547,25 +2682,44 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 
 .rlmode { display: flex; align-items: center; gap: 4px; flex: none; padding: 8px 12px; background: var(--surface-2); border-bottom: 1px solid var(--border); }
 .rlmode-i { position: relative; display: inline-flex; align-items: center; gap: 5px; font: inherit; font-size: var(--fs-3); font-weight: 600; padding: 6px 9px 6px 14px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl); }
-.rlmode-i:hover:not(.disabled) { color: var(--text); border-color: var(--border-strong); }
+/* 悬停只作用于未选中页签：选中页签是 accent 实底、字色恒 var(--bg)，再套一层 var(--text) 就和底同色了 */
+.rlmode-i:hover:not(.on) { color: var(--text); border-color: var(--border-strong); }
 .rlmode-i.on { background: var(--accent); color: var(--bg); border-color: var(--accent); }
-.rlmode-i.disabled { opacity: .55; cursor: not-allowed; }
-.rlmode-todo { font-size: var(--fs-1); font-weight: 700; margin-left: 1px; padding: 1px 5px; border-radius: var(--r-pill); background: var(--surface-2); color: var(--text-faint); border: 1px solid var(--border); vertical-align: 1px; }
-.rlmode-i.on .rlmode-todo { background: color-mix(in srgb, var(--bg) 20%, transparent); color: var(--bg); border-color: transparent; }
+.rlmode-i.on:hover { filter: brightness(1.06); }
+.rlmode-i.dragging { opacity: .45; }
+/* 状态点：已计算（实心）/ 输入已变（空心，警示色）；没算过不画 */
+.rlmode-dot { flex: none; width: 7px; height: 7px; margin-left: -6px; border-radius: 50%; background: var(--ok); box-sizing: border-box; }
+.rlmode-dot.stale { background: transparent; border: 1.5px solid var(--warn); }
+.rlmode-i.on .rlmode-dot { background: var(--bg); }
+.rlmode-i.on .rlmode-dot.stale { background: transparent; border-color: var(--bg); }
+/* 链路条数：小号数字，与资源库页签的计数同一语言 */
+.rlmode-n { font-family: var(--font-mono); font-size: var(--fs-1); font-weight: 600; letter-spacing: var(--ls-tight); padding: 1px 5px; border-radius: var(--r-pill); background: var(--surface-2); color: var(--text-faint); border: 1px solid var(--border); font-variant-numeric: tabular-nums; }
+.rlmode-i.on .rlmode-n { background: color-mix(in srgb, var(--bg) 20%, transparent); color: var(--bg); border-color: transparent; }
 .rlmode-x { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; margin-left: 1px; border-radius: var(--r-card); color: currentColor; opacity: .5; }
 .rlmode-x svg { stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; fill: none; }
 .rlmode-i:hover .rlmode-x { opacity: .8; }
 .rlmode-x:hover { opacity: 1; background: rgba(214,69,69,.16); color: #d64545; }
 .rlmode-i.on .rlmode-x:hover { background: color-mix(in srgb, var(--bg) 28%, transparent); color: var(--bg); }
 .rlmode-add-wrap { position: relative; display: inline-flex; }
-.rlmode-add { display: inline-flex; align-items: center; justify-content: center; width: 27px; height: 27px; padding: 0; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px dashed var(--border-strong); border-radius: var(--r-ctl); }
+.rlmode-add { display: inline-flex; align-items: center; justify-content: center; gap: 5px; height: 27px; padding: 0 10px 0 8px; font: inherit; font-size: var(--fs-3); font-weight: 600; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px dashed var(--border-strong); border-radius: var(--r-ctl); }
 .rlmode-add svg { stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; fill: none; }
-.rlmode-add:hover, .rlmode-add.on { color: var(--accent); border-color: var(--accent); }
+.rlmode-add:hover:not(:disabled), .rlmode-add.on { color: var(--accent); border-color: var(--accent); }
+.rlmode-add:disabled { opacity: .45; cursor: not-allowed; }
 .rlmode-menu-mask { position: fixed; inset: 0; z-index: 40; }
-.rlmode-menu { position: absolute; top: calc(100% + 5px); left: 0; z-index: 41; min-width: 156px; display: flex; flex-direction: column; padding: 4px; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-card); box-shadow: var(--shadow-3); }
+.rlmode-menu { position: absolute; top: calc(100% + 5px); left: 0; z-index: 41; min-width: 196px; display: flex; flex-direction: column; padding: 4px; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-card); box-shadow: var(--shadow-3); }
 .rlmode-menu-hd { font-size: var(--fs-1); font-weight: 600; letter-spacing: var(--ls-tight); color: var(--text-faint); padding: 4px 8px 6px; }
-.rlmode-menu-i { text-align: left; font: inherit; font-size: var(--fs-3); font-weight: 500; padding: 6px 8px; cursor: pointer; background: transparent; color: var(--text); border: none; border-radius: var(--r-ctl); }
+.rlmode-menu-i { display: flex; align-items: center; gap: 6px; text-align: left; font: inherit; font-size: var(--fs-3); font-weight: 500; padding: 6px 8px; cursor: pointer; background: transparent; color: var(--text); border: none; border-radius: var(--r-ctl); white-space: nowrap; }
 .rlmode-menu-i:hover { background: var(--surface-2); }
+.rlmode-menu-i.added { color: var(--text-faint); }
+.rlmode-menu-ck { display: inline-flex; align-items: center; justify-content: center; width: 12px; height: 12px; flex: none; color: var(--accent); }
+.rlmode-menu-ck svg { stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; fill: none; }
+/* 空态：一句话 + 四个添加按钮（按钮是控件，不是说明文字） */
+.rlmode-empty { display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 56px 16px; }
+.rlmode-empty-t { font-size: var(--fs-3); color: var(--text-faint); }
+.rlmode-empty-btns { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+.rlmode-empty-b { display: inline-flex; align-items: center; gap: 6px; font: inherit; font-size: var(--fs-3); font-weight: 600; padding: 7px 12px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px dashed var(--border-strong); border-radius: var(--r-ctl); }
+.rlmode-empty-b svg { stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; fill: none; }
+.rlmode-empty-b:hover { color: var(--accent); border-color: var(--accent); }
 
 /* 链路表节内的说明条 */
 .tx-optbar { display: flex; align-items: center; gap: 10px; flex: none; margin-bottom: 6px; flex-wrap: wrap; }

@@ -2,7 +2,8 @@
 //
 // 版式与链路预算报告完全同一套（都取自 report.js 的表格件，只加导出、实现一个字不动）：
 //   · 三线表（bookBox）：顶/底线 1.5 磅、栏目线 0.75 磅，无竖线、无底纹；
-//   · 表头【居中】、数据行左/右对齐（2026-08-02 用户定的口径，刻意不照模板的全左对齐）；
+//   · 表头随数据列对齐：数值列靠右、文字列靠左（用户 2026-09-07 定——居中的表头压在左/右对齐的
+//     数据上看着就是「标题和数值没对齐」；2026-08-02 那条「表头居中」作废）；
 //   · 题注整句 mergeCells 跨整幅 —— 不跨的话 autofit 会按这句话的长短去撑第 1 列；
 //   · 分组行黑体不加粗（三线表不许底纹，层次只能靠字体给）；
 //   · autofitBook 之后再 placeLogo（列宽定下来才知道版心右边界在哪），最后 applyBookFont
@@ -13,8 +14,9 @@
 const ExcelJS = require('exceljs')
 const {
   applyBookFont, placeLogo, bookBox, numOrText, buildSlaMatrix, sheetNameFor,
-  autofitBook, RSTY, FNT, CJK, HEI
+  autofitBook, RSTY, FNT, CJK, HEI, TITLE
 } = require('./report')
+const { fontsOf } = require('./reportStyle')   // 这份报告实际用的字体（导出报告对话框「字体」，缺省即模板口径）
 
 const S = (v) => (v == null || v === '' ? '—' : String(v))
 const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null }
@@ -47,13 +49,14 @@ function sheetWriter(wb, ws, model, ncol) {
   const wide = (text, align, o) => { ws.mergeCells(st.r, 1, st.r, ncol); str(st.r, 1, text, align, o); ws.getRow(st.r).height = (o && o.h) || 18; st.r++ }
   const section = (text) => { st.r++; wide(text, 'left', { hei: true, size: RSTY.size.h1, h: 26 }) }
   const cap = (no, title) => wide(en ? `Table ${no}  ${title}` : `${L.table} ${no}　${title}`, 'center', { hei: true, size: RSTY.size.caption })
-  // 一张三线表：head 是列头（居中），rows 逐行 [值…]，groupRows 标出分组行（黑体）
+  // 一张三线表：head 是列头（对齐随数据列：align[i] 为 right 则靠右、否则靠左），rows 逐行 [值…]，
+  // groupRows 标出分组行（黑体）
   const box = (head, rows, o) => {
     o = o || {}
     const align = o.align || []
     const nc = head.length
     const h0 = st.r
-    head.forEach((h, i) => str(st.r, 1 + i, h, 'center', { size: RSTY.size.table, wrap: true }))
+    head.forEach((h, i) => str(st.r, 1 + i, h, align[i] === 'right' ? 'right' : (align[i] || 'left'), { size: RSTY.size.table, wrap: true }))
     ws.getRow(st.r).height = o.headHeight || 24
     st.r++
     rows.forEach((row, ri) => {
@@ -82,7 +85,8 @@ function masterSheet(wb, model) {
   ws.columns = [{ width: 26 }, ...Array.from({ length: ncol - 1 }, () => ({ width: 16 }))]
   const W = sheetWriter(wb, ws, model, ncol)
 
-  W.wide(doc.title || L.sla, 'center', { hei: true, size: RSTY.size.docTitle, h: 30 })
+  // 报告标题固定 Arial + 黑体、20pt、加粗（reportStyle.TPL.title），不随对话框的字体三档走
+  W.wide(doc.title || L.sla, 'center', { font: TITLE, size: RSTY.title.size, bold: RSTY.title.bold, h: 30 })
   // 摘要行：Excel 没有封面，这一行就是它唯一的上下文
   W.wide([
     model.schemeText, doc.docNo, doc.classification, doc.org, doc.date,
@@ -263,7 +267,7 @@ async function build(model) {
   // ★ 先 autofit（列宽定下来）再贴 logo：版心右边界要按最终列宽算
   autofitBook(wb, { maxWidth: 56, maxHeight: 260 })
   wb.worksheets.forEach((ws, i) => placeLogo(wb, ws, (model.doc || {}).logo, widths[i] || 6))
-  return applyBookFont(wb).xlsx.writeBuffer()
+  return applyBookFont(wb, fontsOf(model.doc)).xlsx.writeBuffer()
 }
 
 module.exports = { buildSlaWorkbook: build }

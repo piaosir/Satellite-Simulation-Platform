@@ -15,6 +15,7 @@
 const { BrowserWindow, app, ipcMain } = require('electron')
 const { join } = require('path')
 const { pathToFileURL } = require('url')
+const { fontsOf } = require('./reportStyle')   // 这份报告实际用的字体（导出报告对话框「字体」，缺省即模板口径）
 
 // 模型暂存：打印页载入后向主进程要（不走 URL 传参——一份报告带着几十兆的图，URL 塞不下）。
 // 通道就在本模块注册（谁存的谁发），不必让 ipc/register.js 代管一份别人的状态。
@@ -37,8 +38,10 @@ function wire() {
 // ★ 页眉模板里的图必须给**显式的 width 和 height（px）**：Chromium 是在一个独立的迷你文档里
 //   渲染这段 HTML 的，那里没有视口也没有页面样式，mm/百分比一类相对单位与「只给高、宽 auto」
 //   都会让 <img> 量不出尺寸而整个被丢掉——实测就是这样，PDF 里连图像对象都不会有。
-function templates(logo) {
-  const font = 'font-family:\'Times New Roman\',SimSun,serif;-webkit-print-color-adjust:exact;'
+function templates(logo, fonts) {
+  // 页脚页码的字体跟这份报告的正文字体（导出报告对话框「字体」；缺省即模板口径 TNR + 宋体）
+  const stack = (fonts && fonts.cssBody) || '\'Times New Roman\',SimSun,serif'
+  const font = `font-family:${stack.replace(/"/g, '\'')};-webkit-print-color-adjust:exact;`
   const src = logo && logo.dataUrl ? String(logo.dataUrl) : ''
   let head = '<div></div>'
   if (src) {
@@ -98,7 +101,7 @@ async function buildReportPdf(model) {
     if (process.env['ELECTRON_RENDERER_URL']) await win.loadURL(process.env['ELECTRON_RENDERER_URL'] + '/report.html')
     else await win.loadURL(pathToFileURL(join(root, 'out/renderer/report.html')).href)
     await waitReady(win, 120000)
-    const { head, foot } = templates(model && model.doc && model.doc.logo)
+    const { head, foot } = templates(model && model.doc && model.doc.logo, fontsOf(model && model.doc))
     const opts = {
       printBackground: true,
       preferCSSPageSize: true,

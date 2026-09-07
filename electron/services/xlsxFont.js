@@ -41,28 +41,45 @@ function splitCjkRuns(text) {
   return out
 }
 
-// 一格的字体归位。返回 true 表示把 value 换成了富文本。
-function fixCellFont(cell) {
+// 这份文件实际用的三个字体。各表写格时仍用 HEI / SONG / FNT 三个常量表明【意图】（中文标题题注 /
+// 中文正文 / 西文与数字），到归位这一步才换成实际字体名——意图标记与实际字体分家，于是导出报告对话框里改了
+// 字体（shared/lbReportFont.js → 模型 doc.fonts → reportStyle.fontsOf）不必碰任何一处写格代码。
+const DEFAULT_FONTS = { latin: FNT, cjkBody: SONG, cjkHeading: HEI }
+const normFonts = (f) => ({
+  latin: (f && f.latin) || FNT,
+  cjkBody: (f && f.cjkBody) || SONG,
+  cjkHeading: (f && f.cjkHeading) || HEI
+})
+// 报告标题（总报告 / SLA 表的首行）的意图标记：固定 Arial + 黑体（reportStyle.TPL.title），
+// 不随导出报告对话框的字体三档走——写格时 name 写它，归位时换成那两个定死的字体。
+const { TPL: STYLE_TPL } = require('./reportStyle')
+const TITLE = 'Report Title'
+
+// 一格的字体归位。返回 true 表示把 value 换成了富文本。F = 实际字体（缺省即模板口径）。
+function fixCellFont(cell, F) {
+  F = F || DEFAULT_FONTS
   const f = Object.assign({}, cell.font)
   const v = cell.value
   // 已经是富文本（本文件不主动写，留给未来）：只补 name 缺省
   if (v && typeof v === 'object' && Array.isArray(v.richText)) return false
-  const cjkFont = (f.name === HEI) ? HEI : SONG
+  const isTitle = f.name === TITLE
+  const cjkFont = isTitle ? STYLE_TPL.title.cjk : ((f.name === HEI) ? F.cjkHeading : F.cjkBody)
+  const latinFont = isTitle ? STYLE_TPL.title.latin : F.latin
   const text = (typeof v === 'string') ? v : null
   if (text === null) {
     // 数字 / 日期 / 公式：不能走富文本。数字本来就只有西文；公式（详情索引的跳转链接）
     // 按缓存结果里有没有汉字选一种——那一格的文字是工作表名，常常是中文站名。
     const res = (v && typeof v === 'object' && v.formula !== undefined && v.result != null) ? String(v.result) : ''
-    cell.font = Object.assign(f, { name: hasCjk(res) ? cjkFont : FNT })
+    cell.font = Object.assign(f, { name: hasCjk(res) ? cjkFont : latinFont })
     return false
   }
-  if (!hasCjk(text)) { cell.font = Object.assign(f, { name: FNT }); return false }
+  if (!hasCjk(text)) { cell.font = Object.assign(f, { name: latinFont }); return false }
   if (!hasLatin(text)) { cell.font = Object.assign(f, { name: cjkFont }); return false }
   // 混排：拆富文本。cell.font 仍写中文那一档——它是这一格的「默认字体」，
   // 自适应算宽（reportAutofit）与用户导出后续打的字都按它走。
   cell.value = {
     richText: splitCjkRuns(text).map((seg) => ({
-      font: Object.assign({}, f, { name: seg.cjk ? cjkFont : FNT }),
+      font: Object.assign({}, f, { name: seg.cjk ? cjkFont : latinFont }),
       text: seg.text
     }))
   }
@@ -73,22 +90,25 @@ function fixCellFont(cell) {
 // 整本归位 + 换掉工作簿主题字体（Excel「正文/标题」的来源，exceljs 硬写 Calibri/Cambria）：
 // 空白格与用户导出后新键入的内容也跟着是 TNR + 宋体。主题那一段走 exceljs 内部模块，故 try 兜底，
 // 失败只是默认字体没换，已写入的单元格字体不受影响。
-function applyBookFont(wb) {
+// fonts = 这份文件实际用的三个字体 { latin, cjkBody, cjkHeading }（缺省 / 缺项即模板口径）。
+function applyBookFont(wb, fonts) {
+  const F = normFonts(fonts)
+  const xmlSafe = (s) => String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')
   try {
     const theme1 = require('exceljs/lib/xlsx/xml/theme1.js')
     // 注意：wb.model 的 getter 每次现造一个对象，改它的字段无效——主题存在 wb._themes 上（writer 由此取）
     wb._themes = {
       theme1: String(theme1)
-        .replace(/<a:latin typeface="(Calibri|Cambria)"\/>/g, `<a:latin typeface="${FNT}"/>`)
-        .replace(/<a:ea typeface=""\/>/g, `<a:ea typeface="${SONG}"/>`)
+        .replace(/<a:latin typeface="(Calibri|Cambria)"\/>/g, `<a:latin typeface="${xmlSafe(F.latin)}"/>`)
+        .replace(/<a:ea typeface=""\/>/g, `<a:ea typeface="${xmlSafe(F.cjkBody)}"/>`)
     }
   } catch (e) { /* exceljs 内部结构变了就跳过，不影响导出 */ }
   wb.eachSheet((ws) => {
     ws.eachRow({ includeEmpty: false }, (row) => {
-      row.eachCell({ includeEmpty: false }, (cell) => { fixCellFont(cell) })
+      row.eachCell({ includeEmpty: false }, (cell) => { fixCellFont(cell, F) })
     })
   })
   return wb
 }
 
-module.exports = { FNT, SONG, HEI, hasCjk, hasLatin, splitCjkRuns, fixCellFont, applyBookFont }
+module.exports = { FNT, SONG, HEI, TITLE, hasCjk, hasLatin, splitCjkRuns, fixCellFont, applyBookFont, normFonts }

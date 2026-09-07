@@ -29,6 +29,20 @@ const en = computed(() => lang.value === 'en')
 // 打印页与工作台屏幕共用那一套：同一个组件、同一份规则，PDF 里的表与屏幕上核对的是同一张。
 const isE2e = computed(() => !!(model.value && model.value.scheme && model.value.scheme.orbitType === 'E2E'))
 
+// 分节视图（与主进程 report.js 的 sectionsOf 同一套切法）：再生式一份配置装了几个模块时每节各一张
+// 对照表 / 统计表、详情按模块分组；不分节（或只有一节）就是一个匿名节，节标题不出、编号不变。
+const secs = computed(() => {
+  const m = model.value
+  const raw = m && Array.isArray(m.sections) && m.sections.length > 1 ? m.sections : null
+  if (!raw) return [{ title: '', links: links.value, summary: summary.value, single: true }]
+  return raw.map((s, i) => ({
+    title: s.title || '', regenMode: s.regenMode || '',
+    links: links.value.filter((l) => l && l.sec === i),
+    summary: s.summary || { metrics: [], stats: [] }, single: false
+  }))
+})
+const multi = computed(() => secs.value.length > 1)
+const secsWithStats = computed(() => secs.value.filter((s) => s.summary.stats && s.summary.stats.length))
 // 逐参数对照是链路做列的宽表：按 8 条链路一组切成续表，用「表 n-i（续）」的题注串起来。
 const CMP_CHUNK = 8
 const chunk = (arr, n) => {
@@ -36,17 +50,18 @@ const chunk = (arr, n) => {
   for (let i = 0; i < arr.length; i += n) out.push({ from: i, items: arr.slice(i, i + n) })
   return out
 }
-const cmpChunks = computed(() => chunk(links.value, CMP_CHUNK))
+const chunksOf = (s) => chunk(s.links, CMP_CHUNK)
+const secTitle = (s, base) => base + (multi.value && s.title ? '　·　' + s.title : '')
 
-// 表号全文连续（模板口径），与 Word 端同一套编法：逐参数对照 → 容量与统计 → 引用建议书 →
-// 物理常数；详情章的表另按「链路序号-块序号」编，不占这个号。
+// 表号全文连续（模板口径），与 Word 端同一套编法：逐参数对照（分节时每节一张）→ 容量与统计（每节一张）
+// → 引用建议书 → 物理常数 → SLA；详情章的表另按「链路序号-块序号」编，不占这个号。
 // 模板渲染是纯函数式的（同一份模型可能被 Vue 重算多次），故编号不能用可变计数器——
 // 在这里按固定次序一次算好，各处照名字取。
 const tblNo = computed(() => {
-  const n = {}
+  const n = { compare: [], capacity: [] }
   let k = 0
-  n.compare = ++k
-  if (summary.value.stats && summary.value.stats.length) n.capacity = ++k
+  secs.value.forEach(() => n.compare.push(++k))
+  secs.value.forEach((s) => n.capacity.push(s.summary.stats && s.summary.stats.length ? ++k : 0))
   n.refs = ++k
   n.consts = ++k
   if (hasSla.value) n.sla = ++k
@@ -78,25 +93,45 @@ function slaDetailRows(l) {
   }
   return out
 }
-const detailSub = computed(() => [calc.value.satelliteName, calc.value.frequencyBand, calc.value.mode].filter(Boolean).join('　·　'))
+// 详情页副标题：分节时写这条链路所属模块的名字（「计算方式」逐条在输入清单的「计算设置」块里）
+const secOfLink = (l) => (multi.value && l && l.sec != null ? secs.value[l.sec] : null)
+const detailSub = (l) => {
+  const s = secOfLink(l)
+  return [calc.value.satelliteName, calc.value.frequencyBand, s ? s.title : calc.value.mode].filter(Boolean).join('　·　')
+}
+// 分节时第一条链路前出一页模块名（同一节的其余链路不再重复）
+const secHeadBefore = (l, i) => { const s = secOfLink(l); return s && (i === 0 || secOfLink(links.value[i - 1]) !== s) ? s.title : '' }
 
 // 目录：章节清单（页码交给 PDF 书签与页脚页码，此处不标——混合方向下靠估算标页码，
 // 一旦某段因「表不许拦腰断开」提前换页就会差一页，宁可不标也不能标错）
 const toc = computed(() => {
   const l = L.value
-  const items = [
-    { n: '', t: l.master, sub: false },
-    { n: '1', t: l.compare, sub: true }, { n: '2', t: l.capacity, sub: true },
-    { n: '3', t: l.refs, sub: true },
-    ...(hasSla.value ? [{ n: '4', t: l.sla, sub: true }] : []),
-    { n: '', t: l.detail, sub: false }
-  ]
-  for (const lk of links.value) items.push({ n: '#' + lk.no, t: linkTitle(lk), sub: true })
+  const items = [{ n: '', t: l.master, sub: false }, { n: '1', t: l.compare, sub: true }]
+  if (multi.value) secs.value.forEach((s, i) => items.push({ n: '1.' + (i + 1), t: s.title, sub: true }))
+  if (secsWithStats.value.length) {
+    items.push({ n: '2', t: l.capacity, sub: true })
+    if (multi.value) for (const s of secsWithStats.value) items.push({ n: '2.' + (secs.value.indexOf(s) + 1), t: s.title, sub: true })
+  }
+  items.push({ n: '3', t: l.refs, sub: true })
+  if (hasSla.value) items.push({ n: '4', t: l.sla, sub: true })
+  items.push({ n: '', t: l.detail, sub: false })
+  for (const s of secs.value) {
+    if (multi.value) items.push({ n: '', t: s.title, sub: true })
+    for (const lk of s.links) items.push({ n: '#' + lk.no, t: linkTitle(lk), sub: true })
+  }
   return items
 })
 
 onMounted(async () => {
   try { model.value = api ? await api.model() : null } catch (e) { model.value = null }
+  // 报告字体（导出报告对话框「字体」，随模型 doc.fonts 带来的两条 CSS 栈）：盖掉 lbreport.css :root 的模板缺省。
+  // 写在 <html> 上而不是 .rp 上——body 的 font-family 也读这两个变量，页面里没有任何一处在它之外。
+  // 没带 fonts（出厂值）就一个字都不动，页面照旧是模板口径。
+  const fonts = model.value && model.value.doc && model.value.doc.fonts
+  if (fonts && fonts.cssBody && fonts.cssHead) {
+    document.documentElement.style.setProperty('--rp-font-body', fonts.cssBody)
+    document.documentElement.style.setProperty('--rp-font-head', fonts.cssHead)
+  }
   await nextTick()
   // 图是 data: URL，解码仍是异步的：不等它们解码完就打印，页面上会是一片空白的图框
   const imgs = Array.from(document.images || [])
@@ -150,40 +185,47 @@ onMounted(async () => {
     <!-- ——— 总报告 §1 逐参数对照（A4 横向）———
          这张表天生是宽表：链路做列，列数随链路数长。放在纵向 174mm 版心上会把列头压成三行，
          横向 269mm 才排得开；工程报告里宽表单开横向页是常规做法。 -->
+    <!-- 分节（再生式多模块）：每个模块一张对照表（上行 / 下行 / 星间的指标行各不相同），小节 1.n 与模块次序对应 -->
     <section class="rp-sheet rp-land">
       <h1 class="rp-h1">{{ L.master }}</h1>
       <h2 class="rp-h2">1　{{ L.compare }}</h2>
-      <template v-for="(ck, ci) in cmpChunks" :key="ci">
-        <div class="rp-caption">{{ capTable(tblNo.compare, ci, cmpChunks.length, L.compare) }}</div>
-        <table class="rp-tb">
-          <thead>
-            <tr>
-              <th class="id">{{ L.param }}</th>
-              <th v-for="(l, li) in ck.items" :key="li" class="num">#{{ l.no }}　{{ linkTitle(l) }}</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="(m, mi) in summary.metrics" :key="mi">
-              <td class="id">{{ m.label }}</td>
-              <td v-for="(l, li) in ck.items" :key="li" class="num">{{ m.values[ck.from + li] }}</td>
-            </tr>
-          </tbody>
-        </table>
+      <template v-for="(s, si) in secs" :key="si">
+        <h3 v-if="multi" class="rp-h3">1.{{ si + 1 }}　{{ s.title }}</h3>
+        <template v-for="(ck, ci) in chunksOf(s)" :key="ci">
+          <div class="rp-caption">{{ capTable(tblNo.compare[si], ci, chunksOf(s).length, secTitle(s, L.compare)) }}</div>
+          <table class="rp-tb">
+            <thead>
+              <tr>
+                <th class="id">{{ L.param }}</th>
+                <th v-for="(l, li) in ck.items" :key="li" class="num">#{{ l.no }}　{{ linkTitle(l) }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(m, mi) in s.summary.metrics" :key="mi">
+                <td class="id">{{ m.label }}</td>
+                <td v-for="(l, li) in ck.items" :key="li" class="num">{{ m.values[ck.from + li] }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </template>
       </template>
     </section>
 
     <!-- ——— 容量与统计 / 计算模型与参考（A4 纵向）——— -->
     <section class="rp-sheet">
-      <template v-if="summary.stats && summary.stats.length">
+      <template v-if="secsWithStats.length">
         <h2 class="rp-h2">2　{{ L.capacity }}</h2>
-        <div v-if="summary.statsTitle" class="rp-note">{{ summary.statsTitle }}</div>
-        <div class="rp-caption">{{ capTable(tblNo.capacity, 0, 1, L.capacity) }}</div>
-        <table class="rp-tb">
-          <thead><tr><th class="lbl">{{ L.param }}</th><th class="num">{{ L.value }}</th></tr></thead>
-          <tbody>
-            <tr v-for="(s, si) in summary.stats" :key="si"><td class="lbl">{{ s.label }}</td><td class="num">{{ s.value }}</td></tr>
-          </tbody>
-        </table>
+        <template v-for="s in secsWithStats" :key="secs.indexOf(s)">
+          <h3 v-if="multi" class="rp-h3">2.{{ secs.indexOf(s) + 1 }}　{{ s.title }}</h3>
+          <div v-if="s.summary.statsTitle" class="rp-note">{{ s.summary.statsTitle }}</div>
+          <div class="rp-caption">{{ capTable(tblNo.capacity[secs.indexOf(s)], 0, 1, secTitle(s, L.capacity)) }}</div>
+          <table class="rp-tb">
+            <thead><tr><th class="lbl">{{ L.param }}</th><th class="num">{{ L.value }}</th></tr></thead>
+            <tbody>
+              <tr v-for="(st, si) in s.summary.stats" :key="si"><td class="lbl">{{ st.label }}</td><td class="num">{{ st.value }}</td></tr>
+            </tbody>
+          </table>
+        </template>
       </template>
 
       <h2 class="rp-h2">3　{{ L.refs }}</h2>
@@ -247,12 +289,14 @@ onMounted(async () => {
       </template>
     </section>
 
-    <!-- ——— 逐链路详情（A4 横向，屏幕排版复刻）——— -->
-    <section v-for="l in links" :key="l.no" class="rp-detail rp-land">
+    <!-- ——— 逐链路详情（A4 横向，屏幕排版复刻）———
+         分节时每个模块的第一条链路前出一行模块名（真 <h2>，进 PDF 书签），副标题写所属模块 -->
+    <section v-for="(l, li) in links" :key="l.no" class="rp-detail rp-land">
+      <h2 v-if="secHeadBefore(l, li)" class="rp-h2 rp-detail-sec">{{ secHeadBefore(l, li) }}</h2>
       <div class="rp-detail-hd">
         <span class="rp-detail-no">#{{ l.no }}</span>
         <h1 class="rp-detail-name">{{ linkTitle(l) }}</h1>
-        <span class="rp-detail-sub">{{ detailSub }}</span>
+        <span class="rp-detail-sub">{{ detailSub(l) }}</span>
       </div>
 
       <div v-if="l.error" class="rp-fail">{{ L.calcFailed }}：{{ l.error }}　—　{{ L.noResult }}</div>

@@ -778,6 +778,22 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     try { return core().calculateSunOutage(p || {}) }
     catch (err) { return { error: true, message: err.message || String(err) } }
   })
+  // 整表批量（SLA 弹窗 / 报告：一条链路春秋两季）：一次 IPC 全算完，链路之间 setImmediate 让出，
+  // 别的窗口的 IPC 与档位扫描不必排在整批后面（同 link:slaScanBatch 的做法）。
+  // 引擎已改成日内插值 + 赤纬预筛（每季 ~8 ms），百条链路也只占主进程一秒多。
+  ipcMain.handle('sunoutage:computeBatch', async (_e, list) => {
+    const arr = Array.isArray(list) ? list : []
+    const out = []
+    for (const p of arr) {
+      const one = (season) => {
+        try { return core().calculateSunOutage(Object.assign({}, p || {}, { season })) }
+        catch (err) { return { error: true, message: err.message || String(err) } }
+      }
+      out.push({ vernal: one('vernal'), autumnal: one('autumnal') })
+      if (out.length < arr.length) await new Promise((r) => setImmediate(r))
+    }
+    return out
+  })
   // Word 报告：payload = { result, station:{name,lat,lon}, satellite:{name,lon}, tz:'bjt'|'utc' }
   ipcMain.handle('sunoutage:exportWord', async (e, payload) => {
     const win = BrowserWindow.fromWebContents(e.sender)
