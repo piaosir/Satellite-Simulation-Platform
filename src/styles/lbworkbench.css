@@ -623,6 +623,12 @@ html[data-theme='dark'] .sg-cell .sg-fillbar::after {
   color: var(--text); background: var(--surface-2); border-color: var(--border-strong); box-shadow: inset 0 -2px 0 var(--accent-ui);
 }
 
+/* 链路表 / 站表节头里的「卫星：统一指定 | 逐链路指定」分段控件（三个链路预算窗口同款）：
+   复用功能区「单位」的 .lbu-seg，按节头 .lb-mini 的尺度压扁；前面一枚栏名（.lbx-segl）说明这组按钮管的是什么。 */
+.lbx-segwrap { display: inline-flex; align-items: center; margin-right: 6px; }
+.lbx-segl { font-size: var(--fs-2); color: var(--text-muted); margin-right: 5px; white-space: nowrap; }
+.lbx-sec-acts .lbu-seg > button { padding: 3px 8px; }
+
 /* 分享码 / 设备ID 等代码型内容：2026-08-29 重新回钉真等宽（--font-code，Consolas）。
    撤销那次的理由是「全软件统一 Times New Roman 后不再破例」——界面换成无衬线后这条已不成立，
    而这些串是人要照着念、照着抄、跨机器传的，0/O 与 1/l/I 分不开就是支持电话。

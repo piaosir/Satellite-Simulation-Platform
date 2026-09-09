@@ -8,7 +8,9 @@ import { effective as displayQuality } from '../stores/displayQuality'
 import { viewPrefs } from '../stores/viewPrefs'
 import { setGrdBridge, clearGrdBridge, fileBridge, bumpCustomSats } from '../stores/fileBridge'
 import { shellUi, sideCtx } from '../stores/shellUi'
-import { isSecOpen, toggleSec } from '../stores/panelSections'
+import { isSecOpen, toggleSec, revealSection } from '../stores/panelSections'
+import { registerCommands } from '../stores/commands'
+import { kwId } from '../shared/cmdKeywords.js'
 import { clock, onTick, goLive, togglePlay, setTime as clockSetTime, stepBy as clockStepBy, setStep as clockSetStep, setSpeed as clockSetSpeed, releaseClock, resumeClock, effective as clockEff, restoreState as clockRestore } from '../stores/simClock'
 import { STEP_PRESETS, SPEED_PRESETS, cursorSnapSec, followWindow, snapMs, fmtStepShort, fmtRate, fmtOffset } from '../shared/simClockCore.js'
 import { logMsg } from '../stores/log'
@@ -7186,6 +7188,38 @@ async function importTleToLibrary() {
   bumpCustomSats()
 }
 
+// ---- 顶部搜索框命令（本页登记；App.vue 登记菜单 / 视图 / 分区那些）----
+// 带图层拨杆的分区：一条命令 = 拨一下拨杆 + 定位到该分区（勾 = 当前开着）。不带拨杆的分区由 App.vue 只做定位。
+let offCmds = null
+function pageCommands() {
+  const sw = (id, view, key, label, on, fn, group, icon, keywords) => ({ id, label, icon, group, keywords, lock: true, check: on, run: () => { fn(); revealSection(view, key) } })
+  return [
+    { id: 'const.wizard', label: '生成星座…', icon: 'satellite', group: '星座', keywords: kwId('const.wizard'), lock: true, run: () => { shellUi.side = 'constellation'; openConstWizard() } },
+    { id: 'const.rotate', label: '地球自转', icon: 'rotate-cw', group: '星座', keywords: kwId('const.rotate'), lock: true, check: autoRotate.value, run: toggleRotate },
+    { id: 'const.live', label: '实时时钟', icon: 'clock', group: '星座', keywords: kwId('const.live'), lock: true, check: live.value, run: toggleLive },
+    { id: 'const.sendMini', label: '发送卫星到小程序…', icon: 'external-link', group: '星座', keywords: kwId('const.sendMini'), lock: true, run: () => { shellUi.side = 'constellation'; sendSatsToMiniapp() } },
+    { id: 'poly.draw', label: '绘制多边形', icon: 'hexagon', group: 'Polygon（协调区）', keywords: kwId('poly.draw'), lock: true, run: () => { shellUi.side = 'poly'; polyStartDraw() } },
+    { id: 'poly.import', label: '导入多边形…', icon: 'import', group: 'Polygon（协调区）', keywords: kwId('poly.import'), lock: true, run: () => { shellUi.side = 'poly'; importPolys() } },
+    { id: 'grd.addSat', label: '添加卫星…', icon: 'plus', group: '对地覆盖分析', keywords: kwId('grd.addSat'), lock: true, disabled: !covNav.grdAvail, run: () => { shellUi.side = 'antenna'; openAddSat() } },
+    { id: 'grd.addElev', label: '添加仰角线…', icon: 'angle', group: '对地覆盖分析', keywords: kwId('grd.addElev'), lock: true, disabled: !covNav.grdAvail, run: () => { shellUi.side = 'antenna'; openAddElevLine() } },
+    { id: 'mk.pointsTable', label: '点标记表格', icon: 'table', group: '标记', keywords: kwId('mk.pointsTable'), lock: true, run: () => { shellUi.side = 'markers'; openMkTable('points') } },
+    { id: 'mk.stationsTable', label: '地球站表格', icon: 'table', group: '标记', keywords: kwId('mk.stationsTable'), lock: true, run: () => { shellUi.side = 'markers'; openMkTable('stations') } },
+    sw('mk.points', 'markers', 'mk-points', '点标记', showPtLayer.value, togglePtLayer, '标记', 'map-pin', kwId('mk.points')),
+    sw('mk.stations', 'markers', 'mk-stations', '地球站', showStLayer.value, toggleStLayer, '标记', 'map-pin', kwId('mk.stations')),
+    sw('mk.traj', 'markers', 'mk-traj', '轨迹', showTrajLayer.value, toggleTrajLayer, '标记', 'move', kwId('mk.traj')),
+    sw('geo.imagery', 'geo', 'geo-img', '影像底图', imageryOn.value, toggleImagery, '地图设置', 'image', kwId('geo.imagery')),
+    sw('geo.adm', 'geo', 'geo-adm', '行政区', showProvinces.value, toggleProvinces, '地图设置', 'map', kwId('geo.adm')),
+    sw('geo.chain', 'geo', 'geo-chain', '岛链', chainOn.value, toggleChains, '地图设置', 'map', kwId('geo.chain')),
+    sw('geo.term', 'geo', 'geo-term', '晨昏线（昼夜分界）', termOn.value, toggleTerm, '地图设置', 'sun', kwId('geo.term')),
+    { id: 'geo.proj', label: '2D 投影', icon: 'map', group: '地图设置', keywords: kwId('geo.proj'), lock: true,
+      children: PROJECTIONS.map((pj) => ({ id: 'geo.proj.' + pj.k, label: byLang(pj.zh, pj.en), keywords: [pj.en, pj.zh], check: mapCrs.proj === pj.k, run: () => { setMapProj(pj.k); revealSection('geo', 'geo-proj') } })) },
+    sw('foc.orb', 'focus', 'foc-orb', '轨道线', focusStyle.orbOn, () => toggleFocus('orbOn'), '聚焦卫星', 'orbit', kwId('foc.orb')),
+    sw('foc.trk', 'focus', 'foc-trk', '星下点轨迹', focusStyle.trkOn, () => toggleFocus('trkOn'), '聚焦卫星', 'crosshair', kwId('foc.trk')),
+    sw('foc.fp', 'focus', 'foc-fp', '覆盖圈', focusStyle.fpOn, () => toggleFocus('fpOn'), '聚焦卫星', 'crosshair', kwId('foc.fp')),
+    sw('foc.cone', 'focus', 'foc-cone', '覆盖锥', focusStyle.coneOn, () => toggleFocus('coneOn'), '聚焦卫星', 'crosshair', kwId('foc.cone'))
+  ]
+}
+
 onMounted(async () => {
   // 顶栏「视图」按钮右侧的覆盖图入口：注册可用性与切换回调（按钮渲染在 App.vue，状态走 covNav store）
   covNav.grdAvail = grdApiOk; covNav.covAvail = covApiOk
@@ -7194,6 +7228,9 @@ onMounted(async () => {
   covNav.exportAvail = true; covNav.exportMap = exportMap   // 顶栏「导出图」入口（高清 PNG / 矢量 PDF）
   covNav.sendMiniapp = sendToMiniapp   // 顶栏「导出」菜单「发送到小程序」入口（覆盖层 + 多边形一份快照）
   covNav.importTle = importTleToLibrary   // 「文件」菜单「导入星历文件」入口 → 落库自定义卫星（贯通文件管理/搜索池）
+  // 顶部搜索框：星座搜索桥（「在星座中搜索“…”」）+ 只有本页够得着的命令（图层开关 / 绘制 / 投影档…）
+  covNav.searchSats = (q) => onSearch({ target: { value: q } })
+  offCmds = registerCommands('globe3d', pageCommands)
   watch(status, (v) => { if (v) logMsg(v) })   // 加载进度/失败信息落日志窗格
   // 文件管理导入/删除自定义卫星 → 若正看 custom/all/other 分组则重载；并重建全量搜索库纳入新星。
   watch(() => fileBridge.customSatTick, () => {
@@ -7313,6 +7350,7 @@ onBeforeUnmount(() => {
   covNav.grdAvail = false; covNav.covAvail = false; covNav.toggleGrd = null; covNav.toggleCov = null
   covNav.polyAvail = false; covNav.togglePoly = null
   covNav.exportAvail = false; covNav.exportMap = null; covNav.importTle = null; covNav.sendMiniapp = null
+  covNav.searchSats = null; if (offCmds) { offCmds(); offCmds = null }
   covNav.grdOpen = false; covNav.covOpen = false; covNav.polyOpen = false
   zoom.avail = false; zoom.apply = null   // 复位底部状态栏缩放进度条
   offLang()
@@ -7756,7 +7794,7 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="sec">
-          <div class="sect acc" :class="{ open: isSecOpen('gxt-disp', false) }" @click="toggleSec('gxt-disp', false)"><Icon :name="isSecOpen('gxt-disp', false) ? 'chevron-down' : 'chevron-right'" :size="12" /><span>显示选项</span></div>
+          <div class="sect acc" data-sec="gxt-disp" :class="{ open: isSecOpen('gxt-disp', false) }" @click="toggleSec('gxt-disp', false)"><Icon :name="isSecOpen('gxt-disp', false) ? 'chevron-down' : 'chevron-right'" :size="12" /><span>显示选项</span></div>
           <template v-if="isSecOpen('gxt-disp', false)">
           <label class="chk2"><input type="checkbox" :checked="showBeamLabels" @change="toggleBeamLabels" /><span>显示波束名</span></label>
           <div v-if="showBeamLabels" class="srow"><label>字号</label><input class="rng" type="range" min="6" max="32" step="1" :value="beamLabelSize" @input="setBeamFont" /><span class="u">{{ beamLabelSize }}</span></div>
@@ -7789,7 +7827,7 @@ onBeforeUnmount(() => {
              导致侧栏有「Polygon（协调区）」标题却空白（偶发）。side==='poly' 即应显示，二者本就等价。 -->
         <div v-if="shellUi.side === 'poly'" class="cov-side poly-side docked">
         <div class="sec">
-          <div class="sect acc" :class="{ open: isSecOpen('poly-list') }" @click="toggleSec('poly-list')"><Icon :name="isSecOpen('poly-list') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>协调区多边形</span><span class="lnk" title="从标准 GXT / KML 文件导入多边形（追加到列表，不影响已有；可多选）" @click.stop="importPolys"><Icon name="import" :size="12" /> 导入</span><span class="lnk" style="margin-left:12px" @click.stop="polyStartDraw"><Icon name="plus" :size="12" /> 绘制</span></div>
+          <div class="sect acc" data-sec="poly-list" :class="{ open: isSecOpen('poly-list') }" @click="toggleSec('poly-list')"><Icon :name="isSecOpen('poly-list') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>协调区多边形</span><span class="lnk" title="从标准 GXT / KML 文件导入多边形（追加到列表，不影响已有；可多选）" @click.stop="importPolys"><Icon name="import" :size="12" /> 导入</span><span class="lnk" style="margin-left:12px" @click.stop="polyStartDraw"><Icon name="plus" :size="12" /> 绘制</span></div>
           <template v-if="isSecOpen('poly-list')">
           <div v-if="!polys.length && !polyDrawId" class="tip">暂无多边形。</div>
           <div v-for="pg in polys" :key="pg.id" class="plg" :class="{ act: polyDrawId === pg.id || polyEditId === pg.id || polyMoveId === pg.id, hid: pg.show === false }">
@@ -7839,7 +7877,7 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="sec">
-          <div class="sect acc" :class="{ open: isSecOpen('poly-disp', false) }" @click="toggleSec('poly-disp', false)"><Icon :name="isSecOpen('poly-disp', false) ? 'chevron-down' : 'chevron-right'" :size="12" /><span>显示与操作</span></div>
+          <div class="sect acc" data-sec="poly-disp" :class="{ open: isSecOpen('poly-disp', false) }" @click="toggleSec('poly-disp', false)"><Icon :name="isSecOpen('poly-disp', false) ? 'chevron-down' : 'chevron-right'" :size="12" /><span>显示与操作</span></div>
           <template v-if="isSecOpen('poly-disp', false)">
           <div class="srow"><label>顶点大小</label><input class="rng" type="range" min="1" max="12" step="0.5" :value="polyDotSize" @input="e => { polyDotSize = Number(e.target.value); polyRefresh() }" /><span class="u">{{ polyDotSize }}</span></div>
           <div class="srow"><label>扩/缩幅度</label><input class="ci" v-model="polyOffAmt" placeholder="如 0.5" @change="persistPolys" /><span class="u">°</span></div>
@@ -7858,7 +7896,7 @@ onBeforeUnmount(() => {
         <div v-show="shellUi.side === 'antenna'" class="sview">
         <div v-if="grdOpen" class="cov-side grd-side docked">
         <div class="sec">
-          <div class="sect acc" :class="{ open: isSecOpen('grd-tree') }" @click="toggleSec('grd-tree')"><Icon :name="isSecOpen('grd-tree') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>卫星 / 天线</span><span class="lnk" title="添加自定义卫星，或从星座点选/搜索关联卫星" @click.stop="openAddSat"><Icon name="plus" :size="12" /> 卫星</span><span class="lnk" title="只画等仰角线：填经纬度/轨道高度 + 仰角值即可，不建卫星图标/天线" @click.stop="openAddElevLine"><Icon name="plus" :size="12" /> 仰角线</span></div>
+          <div class="sect acc" data-sec="grd-tree" :class="{ open: isSecOpen('grd-tree') }" @click="toggleSec('grd-tree')"><Icon :name="isSecOpen('grd-tree') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>卫星 / 天线</span><span class="lnk" title="添加自定义卫星，或从星座点选/搜索关联卫星" @click.stop="openAddSat"><Icon name="plus" :size="12" /> 卫星</span><span class="lnk" title="只画等仰角线：填经纬度/轨道高度 + 仰角值即可，不建卫星图标/天线" @click.stop="openAddElevLine"><Icon name="plus" :size="12" /> 仰角线</span></div>
           <template v-if="isSecOpen('grd-tree')">
           <div class="gtree">
             <template v-for="sat in grdSats" :key="sat.folder">
@@ -7998,14 +8036,14 @@ onBeforeUnmount(() => {
         <!-- ===== 检查器：选中组的编辑器（类型由节点决定，不再切 tab） ===== -->
         <template v-if="bs.hasGroup.value">
         <div class="sec">
-          <div class="sect"><span>{{ bs.mode.value === 'pam' ? '相控阵' : bs.mode.value === 'gauss' ? '多馈源反射面' : '赋形反射面' }}</span></div>
+          <div class="sect" data-sec="bs-mode"><span>{{ bs.mode.value === 'pam' ? '相控阵' : bs.mode.value === 'gauss' ? '多馈源反射面' : '赋形反射面' }}</span></div>
           <div class="srow"><label>组名</label><input class="ci wide" :value="bsNameVal()" @input="bsNameEdit = $event.target.value" @change="bsNameCommit" @blur="bsNameCommit"
                  placeholder="天线名（同名再生成即更新；同星不可重名）" /></div>
         </div>
 
         <!-- 波束设置（波束类型选择器，上提）：每个设置 = 一种波束类型（= 一套独立反射面）；下面「天线参数」编辑当前设置的反射面 -->
         <div v-if="bs.mode.value === 'gauss'" class="sec">
-          <div class="sect acc" :class="{ open: isSecOpen('bs-settings') }" @click="toggleSec('bs-settings')"><Icon :name="isSecOpen('bs-settings') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>波束设置</span><span class="bs-cnt">{{ bs.settings.value.length }} 种波束</span></div>
+          <div class="sect acc" data-sec="bs-settings" :class="{ open: isSecOpen('bs-settings') }" @click="toggleSec('bs-settings')"><Icon :name="isSecOpen('bs-settings') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>波束设置</span><span class="bs-cnt">{{ bs.settings.value.length }} 种波束</span></div>
           <template v-if="isSecOpen('bs-settings')">
           <div class="bs-chips">
             <span v-for="s in bs.settings.value" :key="s.id" class="bs-chip" :class="{ on: s.id === bs.activeSettingId.value }" :title="'激活并按此波束类型放置：' + s.name" @click="bs.selectSetting(s.id)"><i :style="{ background: s.color }"></i>{{ s.name }}<em>{{ Number(s.thX).toFixed(2) }}°</em></span>
@@ -8019,7 +8057,7 @@ onBeforeUnmount(() => {
 
         <!-- 天线参数 = 当前波束设置的反射面（每设置一套独立反射面） -->
         <div v-if="bs.mode.value === 'gauss' && bs.curSetting.value" class="sec">
-          <div class="sect acc" :class="{ open: isSecOpen('bs-antp') }" @click="toggleSec('bs-antp')"><Icon :name="isSecOpen('bs-antp') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>天线参数</span><span class="bs-cnt">{{ bs.curSetting.value.name }} · 解析反射面</span></div>
+          <div class="sect acc" data-sec="bs-antp" :class="{ open: isSecOpen('bs-antp') }" @click="toggleSec('bs-antp')"><Icon :name="isSecOpen('bs-antp') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>天线参数</span><span class="bs-cnt">{{ bs.curSetting.value.name }} · 解析反射面</span></div>
           <template v-if="isSecOpen('bs-antp')">
           <div class="srow"><label>设计频率</label><input class="ci" type="number" step="0.1" v-model.number="bs.curSetting.value.fGHz" /><span class="u">GHz</span><span class="bs-wl">{{ bsFmt(bs.refl.value && bs.refl.value.lamDesignCm, 2) }} cm</span></div>
           <div class="srow"><label>仿真频率</label>
@@ -8096,7 +8134,7 @@ onBeforeUnmount(() => {
 
         <!-- 相控阵天线参数（对齐 SATSOFT §6.5 / §6.5.1 对话框）：阵元数 / 间距 / 单元因子 / 晶格 → 波束宽·间距·交叉·栅瓣·方向性 -->
         <div v-if="bs.mode.value === 'pam'" class="sec">
-          <div class="sect acc" :class="{ open: isSecOpen('bs-pam') }" @click="toggleSec('bs-pam')"><Icon :name="isSecOpen('bs-pam') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>天线参数</span><span class="bs-cnt">相控阵 · Butler 矩阵</span></div>
+          <div class="sect acc" data-sec="bs-pam" :class="{ open: isSecOpen('bs-pam') }" @click="toggleSec('bs-pam')"><Icon :name="isSecOpen('bs-pam') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>天线参数</span><span class="bs-cnt">相控阵 · Butler 矩阵</span></div>
           <template v-if="isSecOpen('bs-pam')">
           <div class="srow"><label>辐射单元数</label><input class="ci" type="number" step="1" min="1" v-model.number="bs.p.pamNx" title="X 向（方位）单元数 Nx" /><span class="u">×</span><input class="ci" type="number" step="1" min="1" v-model.number="bs.p.pamNy" title="Y 向（俯仰）单元数 Ny" /></div>
           <div class="srow"><label>单元间距</label><input class="ci" type="number" step="0.05" min="0.1" v-model.number="bs.p.pamDx" title="X 向单元间距 dx（波长）" /><span class="u">×</span><input class="ci" type="number" step="0.05" min="0.1" v-model.number="bs.p.pamDy" title="Y 向单元间距 dy（波长）" /><span class="u">λ</span></div>
@@ -8130,7 +8168,7 @@ onBeforeUnmount(() => {
         <!-- —— 放置波束 → 轮廓编号 / 频率计划（高斯 + 相控阵点波束群共用；后两者折叠） —— -->
         <template v-if="bs.mode.value === 'gauss' || (bs.mode.value === 'pam' && bs.p.pamCover !== 'shaped')">
           <div class="sec">
-            <div class="sect acc" :class="{ open: isSecOpen('bs-place') }" @click="toggleSec('bs-place')"><Icon :name="isSecOpen('bs-place') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>放置波束</span><span class="bs-cnt">{{ bs.beams.value.length }} 个{{ bs.curSetting.value ? ' · 设置 ' + bs.curSetting.value.name : '' }}</span></div>
+            <div class="sect acc" data-sec="bs-place" :class="{ open: isSecOpen('bs-place') }" @click="toggleSec('bs-place')"><Icon :name="isSecOpen('bs-place') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>放置波束</span><span class="bs-cnt">{{ bs.beams.value.length }} 个{{ bs.curSetting.value ? ' · 设置 ' + bs.curSetting.value.name : '' }}</span></div>
             <template v-if="isSecOpen('bs-place')">
             <div class="bs-ops">
               <span class="opb" :class="{ on: bs.placing.value }" title="开启后在地图上左键点击放置波束轮廓（拖动仍为旋转/平移，右键亦可放置；再次点击关闭）" @click="bsPlaceToggle">{{ bs.placing.value ? '放置中…点击地图' : '地图放置' }}</span>
@@ -8166,7 +8204,7 @@ onBeforeUnmount(() => {
 
           <!-- 轮廓与编号（折叠） -->
           <div class="sec">
-            <div class="sect acc" :class="{ open: isSecOpen('bs-style', false) }" @click="toggleSec('bs-style', false)"><Icon :name="isSecOpen('bs-style', false) ? 'chevron-down' : 'chevron-right'" :size="12" /><span>轮廓与编号</span></div>
+            <div class="sect acc" data-sec="bs-style" :class="{ open: isSecOpen('bs-style', false) }" @click="toggleSec('bs-style', false)"><Icon :name="isSecOpen('bs-style', false) ? 'chevron-down' : 'chevron-right'" :size="12" /><span>轮廓与编号</span></div>
             <template v-if="isSecOpen('bs-style', false)">
               <div class="srow"><label>轮廓颜色</label><input class="clr" type="color" v-model="bs.p.skColor" title="草图轮廓与中心点基础色（各波束设置色 / 频率配色开启后被其覆盖）" />
                 <span class="uw"><label class="lb2">线宽</label><input class="ci sm" type="number" step="0.1" min="0.1" max="5" v-model.number="bs.p.skWidth" /><span class="u">px</span></span>
@@ -8194,7 +8232,7 @@ onBeforeUnmount(() => {
 
           <!-- 频率计划（折叠） -->
           <div class="sec">
-            <div class="sect acc" :class="{ open: isSecOpen('bs-freq', false) }" @click="toggleSec('bs-freq', false)"><Icon :name="isSecOpen('bs-freq', false) ? 'chevron-down' : 'chevron-right'" :size="12" /><span>频率计划</span><span v-if="bs.fcStats.value.length" class="bs-cnt">{{ bs.fcStats.value.reduce((s, x) => s + x.count, 0) }} 已配色</span></div>
+            <div class="sect acc" data-sec="bs-freq" :class="{ open: isSecOpen('bs-freq', false) }" @click="toggleSec('bs-freq', false)"><Icon :name="isSecOpen('bs-freq', false) ? 'chevron-down' : 'chevron-right'" :size="12" /><span>频率计划</span><span v-if="bs.fcStats.value.length" class="bs-cnt">{{ bs.fcStats.value.reduce((s, x) => s + x.count, 0) }} 已配色</span></div>
             <template v-if="isSecOpen('bs-freq', false)">
               <!-- 颜色数：七档写成纯数字（七个「N 色」在这条窄栏里放不下），含义与可达间距进 title。
                    ★ 档位取的是【有效前沿】而不是「凡复用因子都列」：同一个可达间距上只留最省频率的
@@ -8246,7 +8284,7 @@ onBeforeUnmount(() => {
         <!-- —— 相控阵赋形：覆盖区域（Polygon + Use Polygon Labels）→ 生成后出星上激励指令（测控上注 BFN） —— -->
         <template v-if="bs.mode.value === 'pam' && bs.p.pamCover === 'shaped'">
           <div class="sec">
-            <div class="sect acc" :class="{ open: isSecOpen('bs-pcov') }" @click="toggleSec('bs-pcov')"><Icon :name="isSecOpen('bs-pcov') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>覆盖区域</span><span v-if="bs.p.polyIds.length" class="bs-cnt">{{ bs.p.polyIds.length }} 个</span></div>
+            <div class="sect acc" data-sec="bs-pcov" :class="{ open: isSecOpen('bs-pcov') }" @click="toggleSec('bs-pcov')"><Icon :name="isSecOpen('bs-pcov') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>覆盖区域</span><span v-if="bs.p.polyIds.length" class="bs-cnt">{{ bs.p.polyIds.length }} 个</span></div>
             <template v-if="isSecOpen('bs-pcov')">
             <div v-if="polys.length" class="bs-plist">
               <div v-for="pg in polys" :key="pg.id" class="bs-prow">
@@ -8263,7 +8301,7 @@ onBeforeUnmount(() => {
 
           <!-- 站点栅（与反射面赋形档同一份交互的镜像——改动须两处同步；θ3=阵面波束宽，站点/修正机制全同） -->
           <div class="sec">
-            <div class="sect acc" :class="{ open: isSecOpen('bs-st') }" @click="toggleSec('bs-st')"><Icon :name="isSecOpen('bs-st') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>站点栅</span><span v-if="bs.stInfo.value" class="bs-cnt">{{ bs.stInfo.value.over ? '约 ' + bs.stInfo.value.over + ' 站 · 超上限' : (bs.stInfo.value.counts.c0 + bs.stInfo.value.counts.c1) + ' 站' }}</span></div>
+            <div class="sect acc" data-sec="bs-st" :class="{ open: isSecOpen('bs-st') }" @click="toggleSec('bs-st')"><Icon :name="isSecOpen('bs-st') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>站点栅</span><span v-if="bs.stInfo.value" class="bs-cnt">{{ bs.stInfo.value.over ? '约 ' + bs.stInfo.value.over + ' 站 · 超上限' : (bs.stInfo.value.counts.c0 + bs.stInfo.value.counts.c1) + ' 站' }}</span></div>
             <template v-if="isSecOpen('bs-st')">
             <div class="srow"><label>显示</label>
               <label class="chk-in" title="在地图上显示站点栅（优化目标点阵）"><input type="checkbox" :checked="bs.p.stShow !== false" @change="bs.p.stShow = $event.target.checked" /><span>站点</span></label>
@@ -8304,7 +8342,7 @@ onBeforeUnmount(() => {
 
           <!-- 星上激励指令表（测控上注）：生成后可见 -->
           <div class="sec" v-if="bsPamExcitShown">
-            <div class="sect acc" :class="{ open: isSecOpen('bs-excit') }" @click="toggleSec('bs-excit')"><Icon :name="isSecOpen('bs-excit') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>星上激励指令</span><span class="bs-cnt">{{ bsPamExcitShown.rows.length }} 端口</span></div>
+            <div class="sect acc" data-sec="bs-excit" :class="{ open: isSecOpen('bs-excit') }" @click="toggleSec('bs-excit')"><Icon :name="isSecOpen('bs-excit') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>星上激励指令</span><span class="bs-cnt">{{ bsPamExcitShown.rows.length }} 端口</span></div>
             <template v-if="isSecOpen('bs-excit')">
               <div class="bs-read2">
                 <span>峰值 <b>{{ bsFmt(bsPamExcitShown.peakDbi, 2) }}</b> dBi</span>
@@ -8341,7 +8379,7 @@ onBeforeUnmount(() => {
         <!-- —— Polygon 赋形：反射面模型（对齐 SATSOFT Shaped Reflector Model 对话框）→ 覆盖区域 → 波束中心 —— -->
         <template v-if="bs.mode.value === 'shaped'">
           <div class="sec">
-            <div class="sect acc" :class="{ open: isSecOpen('bs-refl') }" @click="toggleSec('bs-refl')"><Icon :name="isSecOpen('bs-refl') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>反射面模型</span><span class="bs-cnt">单偏置反射面</span></div>
+            <div class="sect acc" data-sec="bs-refl" :class="{ open: isSecOpen('bs-refl') }" @click="toggleSec('bs-refl')"><Icon :name="isSecOpen('bs-refl') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>反射面模型</span><span class="bs-cnt">单偏置反射面</span></div>
             <template v-if="isSecOpen('bs-refl')">
             <div class="srow"><label>口径直径</label><input class="ci" type="number" step="0.1" v-model.number="bs.p.antD" /><span class="u">m</span></div>
             <div class="srow"><label>焦距</label><input class="ci" type="number" step="0.1" v-model.number="bs.p.foc" /><span class="u">m</span></div>
@@ -8376,7 +8414,7 @@ onBeforeUnmount(() => {
           </div>
 
           <div class="sec">
-            <div class="sect acc" :class="{ open: isSecOpen('bs-cov') }" @click="toggleSec('bs-cov')"><Icon :name="isSecOpen('bs-cov') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>覆盖区域</span><span v-if="bs.p.polyIds.length" class="bs-cnt">{{ bs.p.polyIds.length }} 个</span></div>
+            <div class="sect acc" data-sec="bs-cov" :class="{ open: isSecOpen('bs-cov') }" @click="toggleSec('bs-cov')"><Icon :name="isSecOpen('bs-cov') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>覆盖区域</span><span v-if="bs.p.polyIds.length" class="bs-cnt">{{ bs.p.polyIds.length }} 个</span></div>
             <template v-if="isSecOpen('bs-cov')">
             <div v-if="polys.length" class="bs-plist">
               <div v-for="pg in polys" :key="pg.id" class="bs-prow">
@@ -8394,7 +8432,7 @@ onBeforeUnmount(() => {
           <!-- 站点栅（SATSOFT Station Grid §9.1 / Edit Stations §9.12）：黄方块=优化目标站（靶子），中心=精确控制点；
                与生成共用同一 buildStations（栅参数/外扩一致，所见即所用）。框选仅平面图（Ctrl=累加）；界外抑制带（开了也）不画。 -->
           <div class="sec">
-            <div class="sect acc" :class="{ open: isSecOpen('bs-st') }" @click="toggleSec('bs-st')"><Icon :name="isSecOpen('bs-st') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>站点栅</span><span v-if="bs.stInfo.value" class="bs-cnt">{{ bs.stInfo.value.over ? '约 ' + bs.stInfo.value.over + ' 站 · 超上限' : (bs.stInfo.value.counts.c0 + bs.stInfo.value.counts.c1) + ' 站' }}</span></div>
+            <div class="sect acc" data-sec="bs-st" :class="{ open: isSecOpen('bs-st') }" @click="toggleSec('bs-st')"><Icon :name="isSecOpen('bs-st') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>站点栅</span><span v-if="bs.stInfo.value" class="bs-cnt">{{ bs.stInfo.value.over ? '约 ' + bs.stInfo.value.over + ' 站 · 超上限' : (bs.stInfo.value.counts.c0 + bs.stInfo.value.counts.c1) + ' 站' }}</span></div>
             <template v-if="isSecOpen('bs-st')">
             <div class="srow"><label>显示</label>
               <label class="chk-in" title="在地图上显示站点栅（优化目标点阵）"><input type="checkbox" :checked="bs.p.stShow !== false" @change="bs.p.stShow = $event.target.checked" /><span>站点</span></label>
@@ -8436,7 +8474,7 @@ onBeforeUnmount(() => {
         </template>
 
         <div class="sec">
-          <div class="sect"><span>生成天线</span></div>
+          <div class="sect" data-sec="bs-gen"><span>生成天线</span></div>
           <span class="bs-gen" title="按本组草图计算方向图（GRD），在所选卫星下生成/更新此组天线" @click="bsGenerate"><Icon name="check" :size="12" /> 生成 / 更新此组</span>
           <div v-if="bs.status.value" class="bs-status">{{ bs.status.value }}</div>
         </div>
@@ -8456,7 +8494,7 @@ onBeforeUnmount(() => {
 
           <!-- 分析目标 + 参数 -->
           <div class="sec">
-            <div class="sect"><span>分析目标</span></div>
+            <div class="sect" data-sec="vis-target"><span>分析目标</span></div>
             <!-- 卫星集来源可选：当前显示（跟随星座视图，悬停可见具体是谁）/ 默认卫星组（内置分组）/ 卫星组 / 自定义卫星。
                  三模式（瞬时/过境/覆盖）共用本集；非「当前显示」的来源异步解析成缓存（visSatResolve）。 -->
             <div class="srow vis-satset"><label>卫星集</label>
@@ -8495,7 +8533,7 @@ onBeforeUnmount(() => {
 
           <!-- 可见卫星 / 覆盖：瞬时可见（now）/ 时段过境（access）/ 覆盖（coverage）三模式（复刻 STK Access / Coverage）-->
           <div class="sec">
-            <div class="sect"><span>{{ vis.mode.value === 'coverage' ? '覆盖网格' : '可见卫星' }}</span><span class="vis-cnt on" :title="visCnt.title">{{ visCnt.text }}</span></div>
+            <div class="sect" data-sec="vis-list"><span>{{ vis.mode.value === 'coverage' ? '覆盖网格' : '可见卫星' }}</span><span class="vis-cnt on" :title="visCnt.title">{{ visCnt.text }}</span></div>
             <div class="seg sm vis-mode">
               <span class="sg" :class="{ on: vis.mode.value === 'now' }" @click="vis.setMode('now')">瞬时可见</span>
               <span class="sg" :class="{ on: vis.mode.value === 'access' }" title="未来一段时间内每颗星对目标的过境窗口（Access）" @click="vis.setMode('access')">时段过境</span>
@@ -8689,7 +8727,7 @@ onBeforeUnmount(() => {
             <span class="layersw" :class="{ on: env.on.value }" aria-hidden="true"><i></i></span>
           </button>
           <div class="sec">
-            <div class="sect acc" :class="{ open: isSecOpen('env-src') }" @click="toggleSec('env-src')"><Icon :name="isSecOpen('env-src') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>数据场</span></div>
+            <div class="sect acc" data-sec="env-src" :class="{ open: isSecOpen('env-src') }" @click="toggleSec('env-src')"><Icon :name="isSecOpen('env-src') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>数据场</span></div>
             <template v-if="isSecOpen('env-src')">
               <div class="srow"><label>字段</label>
                 <select :value="env.key.value" @change="e => env.key.value = e.target.value">
@@ -8715,7 +8753,7 @@ onBeforeUnmount(() => {
           </div>
 
           <div class="sec">
-            <div class="sect acc" :class="{ open: isSecOpen('env-style') }" @click="toggleSec('env-style')"><Icon :name="isSecOpen('env-style') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>配色与值域</span></div>
+            <div class="sect acc" data-sec="env-style" :class="{ open: isSecOpen('env-style') }" @click="toggleSec('env-style')"><Icon :name="isSecOpen('env-style') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>配色与值域</span></div>
             <template v-if="isSecOpen('env-style')">
               <div class="srow"><label>配色</label>
                 <select class="cov-scheme" :value="env.scheme.value" @change="e => env.scheme.value = e.target.value">
@@ -8755,7 +8793,7 @@ onBeforeUnmount(() => {
           </div>
 
           <div class="sec">
-            <div class="sect acc" :class="{ open: isSecOpen('env-contour', false) }" @click="toggleSec('env-contour', false)"><Icon :name="isSecOpen('env-contour', false) ? 'chevron-down' : 'chevron-right'" :size="12" /><span>等值线</span></div>
+            <div class="sect acc" data-sec="env-contour" :class="{ open: isSecOpen('env-contour', false) }" @click="toggleSec('env-contour', false)"><Icon :name="isSecOpen('env-contour', false) ? 'chevron-down' : 'chevron-right'" :size="12" /><span>等值线</span></div>
             <template v-if="isSecOpen('env-contour', false)">
               <label class="chk2"><input type="checkbox" v-model="env.contourOn.value" /><span>画等值线</span></label>
               <template v-if="env.contourOn.value">
@@ -8788,7 +8826,7 @@ onBeforeUnmount(() => {
           </button>
 
           <div class="sec">
-            <div class="sect acc" :class="{ open: isSecOpen('lv-fetch') }" @click="toggleSec('lv-fetch')"><Icon :name="isSecOpen('lv-fetch') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>数据获取</span></div>
+            <div class="sect acc" data-sec="lv-fetch" :class="{ open: isSecOpen('lv-fetch') }" @click="toggleSec('lv-fetch')"><Icon :name="isSecOpen('lv-fetch') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>数据获取</span></div>
             <template v-if="isSecOpen('lv-fetch')">
               <div v-if="envLive.providers.value && !envLive.providers.value.field.ok" class="srow"><span class="tip inl cov-msg">{{ envLive.providers.value.field.message }}</span></div>
               <div class="srow"><label>区域</label>
@@ -8859,7 +8897,7 @@ onBeforeUnmount(() => {
                  网络代价（请求数 / 下载量 / 缓存），而这一组一个请求都不花，只影响本地怎么算。
                ★ 目标星三档是本模块「普适性」的入口：只认 GEO 轨位等于只对静止轨道成立。 -->
           <div class="sec">
-            <div class="sect acc" :class="{ open: isSecOpen('lv-link') }" @click="toggleSec('lv-link')"><Icon :name="isSecOpen('lv-link') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>链路参数</span></div>
+            <div class="sect acc" data-sec="lv-link" :class="{ open: isSecOpen('lv-link') }" @click="toggleSec('lv-link')"><Icon :name="isSecOpen('lv-link') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>链路参数</span></div>
             <template v-if="isSecOpen('lv-link')">
               <div class="srow"><label>目标</label>
                 <select :value="envLive.satMode.value" @change="e => envLive.satMode.value = e.target.value" title="衰减逐点依赖几何。静止轨道位置走球面闭式（与链路预算 GSO 同源）；在轨卫星与手动星下点走 WGS-84 通用几何（与 NGSO 链路预算、可见性分析同源），故 LEO / MEO / HEO 与倾斜同步轨道同样适用">
@@ -8925,7 +8963,7 @@ onBeforeUnmount(() => {
           </div>
 
           <div class="sec">
-            <div class="sect acc" :class="{ open: isSecOpen('lv-src') }" @click="toggleSec('lv-src')"><Icon :name="isSecOpen('lv-src') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>数据场</span></div>
+            <div class="sect acc" data-sec="lv-src" :class="{ open: isSecOpen('lv-src') }" @click="toggleSec('lv-src')"><Icon :name="isSecOpen('lv-src') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>数据场</span></div>
             <template v-if="isSecOpen('lv-src')">
               <div class="srow"><label>字段</label>
                 <select :value="envLive.key.value" @change="e => envLive.key.value = e.target.value" title="切换字段不产生请求：单次获取已包含全部要素">
@@ -8950,7 +8988,7 @@ onBeforeUnmount(() => {
           </div>
 
           <div class="sec">
-            <div class="sect acc" :class="{ open: isSecOpen('lv-style') }" @click="toggleSec('lv-style')"><Icon :name="isSecOpen('lv-style') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>配色与值域</span></div>
+            <div class="sect acc" data-sec="lv-style" :class="{ open: isSecOpen('lv-style') }" @click="toggleSec('lv-style')"><Icon :name="isSecOpen('lv-style') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>配色与值域</span></div>
             <template v-if="isSecOpen('lv-style')">
               <div class="srow"><label>配色</label>
                 <select class="cov-scheme" :value="envLive.scheme.value" @change="e => envLive.scheme.value = e.target.value" title="前四档为气象业务色阶：低值透明、按业务档位分色，叠加于影像底图即为常规云图效果。后五档为连续科学色图，全不透明">
@@ -9006,7 +9044,7 @@ onBeforeUnmount(() => {
         <div class="cov-side focus-side docked">
 
         <div class="sec" :class="{ hid: !focusStyle.orbOn }">
-          <div class="sect acc" :class="{ open: isSecOpen('foc-orb') }" @click="toggleSec('foc-orb')"><Icon :name="isSecOpen('foc-orb') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>轨道线</span><span class="lnk" title="本节恢复出厂样式" @click.stop="resetFocusPart('orb')">默认</span><button type="button" class="layersw sect-layersw" :class="{ on: focusStyle.orbOn }" role="switch" :aria-checked="focusStyle.orbOn ? 'true' : 'false'" :title="focusStyle.orbOn ? '隐藏轨道线' : '显示轨道线'" @click.stop="toggleFocus('orbOn')"><i></i></button></div>
+          <div class="sect acc" data-sec="foc-orb" :class="{ open: isSecOpen('foc-orb') }" @click="toggleSec('foc-orb')"><Icon :name="isSecOpen('foc-orb') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>轨道线</span><span class="lnk" title="本节恢复出厂样式" @click.stop="resetFocusPart('orb')">默认</span><button type="button" class="layersw sect-layersw" :class="{ on: focusStyle.orbOn }" role="switch" :aria-checked="focusStyle.orbOn ? 'true' : 'false'" :title="focusStyle.orbOn ? '隐藏轨道线' : '显示轨道线'" @click.stop="toggleFocus('orbOn')"><i></i></button></div>
           <template v-if="isSecOpen('foc-orb')">
           <div class="srow"><label>颜色</label><input class="clr" type="color" v-model="focusStyle.orbColor" @input="applyFocusStyle" /><span class="u">{{ focusStyle.orbColor }}</span></div>
           <div class="srow"><label>线粗</label><input class="rng" type="range" min="0.1" max="8" step="0.1" v-model.number="focusStyle.orbWidth" @input="applyFocusStyle" /><span class="u">{{ focusStyle.orbWidth.toFixed(1) }}</span></div>
@@ -9020,7 +9058,7 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="sec" :class="{ hid: !focusStyle.trkOn }">
-          <div class="sect acc" :class="{ open: isSecOpen('foc-trk') }" @click="toggleSec('foc-trk')"><Icon :name="isSecOpen('foc-trk') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>星下点轨迹</span><span class="lnk" title="本节恢复出厂样式" @click.stop="resetFocusPart('trk')">默认</span><button type="button" class="layersw sect-layersw" :class="{ on: focusStyle.trkOn }" role="switch" :aria-checked="focusStyle.trkOn ? 'true' : 'false'" :title="focusStyle.trkOn ? '隐藏星下点轨迹' : '显示星下点轨迹'" @click.stop="toggleFocus('trkOn')"><i></i></button></div>
+          <div class="sect acc" data-sec="foc-trk" :class="{ open: isSecOpen('foc-trk') }" @click="toggleSec('foc-trk')"><Icon :name="isSecOpen('foc-trk') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>星下点轨迹</span><span class="lnk" title="本节恢复出厂样式" @click.stop="resetFocusPart('trk')">默认</span><button type="button" class="layersw sect-layersw" :class="{ on: focusStyle.trkOn }" role="switch" :aria-checked="focusStyle.trkOn ? 'true' : 'false'" :title="focusStyle.trkOn ? '隐藏星下点轨迹' : '显示星下点轨迹'" @click.stop="toggleFocus('trkOn')"><i></i></button></div>
           <template v-if="isSecOpen('foc-trk')">
           <div class="srow"><label>颜色</label><input class="clr" type="color" v-model="focusStyle.trkColor" @input="applyFocusStyle" /><span class="u">{{ focusStyle.trkColor }}</span></div>
           <div class="srow"><label>线粗</label><input class="rng" type="range" min="0.1" max="8" step="0.1" v-model.number="focusStyle.trkWidth" @input="applyFocusStyle" /><span class="u">{{ focusStyle.trkWidth.toFixed(1) }}</span></div>
@@ -9035,7 +9073,7 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="sec" :class="{ hid: !focusStyle.fpOn }">
-          <div class="sect acc" :class="{ open: isSecOpen('foc-fp') }" @click="toggleSec('foc-fp')"><Icon :name="isSecOpen('foc-fp') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>覆盖圈</span><span class="lnk" title="本节恢复出厂样式（不动口径）" @click.stop="resetFocusPart('fp')">默认</span><button type="button" class="layersw sect-layersw" :class="{ on: focusStyle.fpOn }" role="switch" :aria-checked="focusStyle.fpOn ? 'true' : 'false'" :title="focusStyle.fpOn ? '隐藏覆盖圈' : '显示覆盖圈'" @click.stop="toggleFocus('fpOn')"><i></i></button></div>
+          <div class="sect acc" data-sec="foc-fp" :class="{ open: isSecOpen('foc-fp') }" @click="toggleSec('foc-fp')"><Icon :name="isSecOpen('foc-fp') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>覆盖圈</span><span class="lnk" title="本节恢复出厂样式（不动口径）" @click.stop="resetFocusPart('fp')">默认</span><button type="button" class="layersw sect-layersw" :class="{ on: focusStyle.fpOn }" role="switch" :aria-checked="focusStyle.fpOn ? 'true' : 'false'" :title="focusStyle.fpOn ? '隐藏覆盖圈' : '显示覆盖圈'" @click.stop="toggleFocus('fpOn')"><i></i></button></div>
           <template v-if="isSecOpen('foc-fp')">
           <div class="srow"><label>口径</label>
             <span class="seg nseg" role="group" aria-label="覆盖圈定义">
@@ -9059,7 +9097,7 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="sec" :class="{ hid: !focusStyle.coneOn }">
-          <div class="sect acc" :class="{ open: isSecOpen('foc-cone', false) }" @click="toggleSec('foc-cone', false)" title="卫星本体到覆盖圈边界的锥体（锥面＋母线），张角随上面的口径走；仅 3D 球体绘制"><Icon :name="isSecOpen('foc-cone', false) ? 'chevron-down' : 'chevron-right'" :size="12" /><span>覆盖锥</span><span class="lnk" title="本节恢复出厂样式" @click.stop="resetFocusPart('cone')">默认</span><button type="button" class="layersw sect-layersw" :class="{ on: focusStyle.coneOn }" role="switch" :aria-checked="focusStyle.coneOn ? 'true' : 'false'" :title="focusStyle.coneOn ? '隐藏覆盖锥' : '显示覆盖锥'" @click.stop="toggleFocus('coneOn')"><i></i></button></div>
+          <div class="sect acc" data-sec="foc-cone" :class="{ open: isSecOpen('foc-cone', false) }" @click="toggleSec('foc-cone', false)" title="卫星本体到覆盖圈边界的锥体（锥面＋母线），张角随上面的口径走；仅 3D 球体绘制"><Icon :name="isSecOpen('foc-cone', false) ? 'chevron-down' : 'chevron-right'" :size="12" /><span>覆盖锥</span><span class="lnk" title="本节恢复出厂样式" @click.stop="resetFocusPart('cone')">默认</span><button type="button" class="layersw sect-layersw" :class="{ on: focusStyle.coneOn }" role="switch" :aria-checked="focusStyle.coneOn ? 'true' : 'false'" :title="focusStyle.coneOn ? '隐藏覆盖锥' : '显示覆盖锥'" @click.stop="toggleFocus('coneOn')"><i></i></button></div>
           <template v-if="isSecOpen('foc-cone', false)">
           <div class="srow" title="锥侧面填色，0＝只留母线"><label>锥面</label><input class="rng" type="range" min="0" max="1" step="0.05" v-model.number="focusStyle.coneFaceOpacity" @input="applyFocusStyle" /><span class="u">{{ focusStyle.coneFaceOpacity.toFixed(2) }}</span></div>
           <div class="srow"><label>锥面颜色</label><input class="clr" type="color" v-model="focusStyle.coneFaceColor" @input="applyFocusStyle" /><span class="u">{{ focusStyle.coneFaceColor }}</span></div>
@@ -9076,7 +9114,7 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="sec">
-          <div class="sect acc" :class="{ open: isSecOpen('foc-mk', false) }" @click="toggleSec('foc-mk', false)"><Icon :name="isSecOpen('foc-mk', false) ? 'chevron-down' : 'chevron-right'" :size="12" /><span>卫星标记</span><span class="lnk" title="本节恢复出厂样式" @click.stop="resetFocusPart('mk')">默认</span></div>
+          <div class="sect acc" data-sec="foc-mk" :class="{ open: isSecOpen('foc-mk', false) }" @click="toggleSec('foc-mk', false)"><Icon :name="isSecOpen('foc-mk', false) ? 'chevron-down' : 'chevron-right'" :size="12" /><span>卫星标记</span><span class="lnk" title="本节恢复出厂样式" @click.stop="resetFocusPart('mk')">默认</span></div>
           <template v-if="isSecOpen('foc-mk', false)">
           <label class="chk2" title="整个星座的星点（仅 3D 球体）。关掉后地图上只剩聚焦星的标记，星点也不再可点选"><input type="checkbox" v-model="focusStyle.cloudOn" @change="applyFocusStyle" /><span>星座点云</span></label>
           <label class="chk2" title="卫星真实在轨位置上的大号圆点，颜色跟随该星在星座里的配色"><input type="checkbox" v-model="focusStyle.dotOn" @change="applyFocusStyle" /><span>在轨点</span></label>
@@ -9101,7 +9139,7 @@ onBeforeUnmount(() => {
         <div v-show="shellUi.side === 'geo'" class="sview">
         <div class="cov-side geo-side docked">
         <div class="sec">
-          <div class="sect acc" :class="{ open: isSecOpen('geo-img', false) }" @click="toggleSec('geo-img', false)"><Icon :name="isSecOpen('geo-img', false) ? 'chevron-down' : 'chevron-right'" :size="12" /><span>影像底图</span><button type="button" class="layersw sect-layersw" :class="{ on: imageryOn }" role="switch" :aria-checked="imageryOn ? 'true' : 'false'" :title="imageryOn ? '关闭影像底图，回到矢量海陆配色' : '开启影像底图（真彩卫星影像，2D / 3D 同步）'" @click.stop="toggleImagery"><i></i></button></div>
+          <div class="sect acc" data-sec="geo-img" :class="{ open: isSecOpen('geo-img', false) }" @click="toggleSec('geo-img', false)"><Icon :name="isSecOpen('geo-img', false) ? 'chevron-down' : 'chevron-right'" :size="12" /><span>影像底图</span><button type="button" class="layersw sect-layersw" :class="{ on: imageryOn }" role="switch" :aria-checked="imageryOn ? 'true' : 'false'" :title="imageryOn ? '关闭影像底图，回到矢量海陆配色' : '开启影像底图（真彩卫星影像，2D / 3D 同步）'" @click.stop="toggleImagery"><i></i></button></div>
           <template v-if="isSecOpen('geo-img', false)">
           <div class="srow stack"><label>分辨率</label>
             <span class="seg nseg" role="group" aria-label="影像分辨率">
@@ -9112,7 +9150,7 @@ onBeforeUnmount(() => {
           </template>
         </div>
         <div class="sec">
-          <div class="sect acc" :class="{ open: isSecOpen('geo-proj', false) }" @click="toggleSec('geo-proj', false)"><Icon :name="isSecOpen('geo-proj', false) ? 'chevron-down' : 'chevron-right'" :size="12" /><span>2D 投影</span></div>
+          <div class="sect acc" data-sec="geo-proj" :class="{ open: isSecOpen('geo-proj', false) }" @click="toggleSec('geo-proj', false)"><Icon :name="isSecOpen('geo-proj', false) ? 'chevron-down' : 'chevron-right'" :size="12" /><span>2D 投影</span></div>
           <template v-if="isSecOpen('geo-proj', false)">
           <div class="srow"><label>投影</label>
             <select :value="mapCrs.proj" :title="projTitle" @change="setMapProj($event.target.value)">
@@ -9182,7 +9220,7 @@ onBeforeUnmount(() => {
           </template>
         </div>
         <div class="sec">
-          <div class="sect acc" :class="{ open: isSecOpen('geo-ocean') }" @click="toggleSec('geo-ocean')"><Icon :name="isSecOpen('geo-ocean') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>配色</span></div>
+          <div class="sect acc" data-sec="geo-ocean" :class="{ open: isSecOpen('geo-ocean') }" @click="toggleSec('geo-ocean')"><Icon :name="isSecOpen('geo-ocean') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>配色</span></div>
           <template v-if="isSecOpen('geo-ocean')">
           <div class="bsub"><span>大海</span></div>
           <div class="swatches">
@@ -9214,7 +9252,7 @@ onBeforeUnmount(() => {
           </template>
         </div>
         <div class="sec">
-          <div class="sect acc" :class="{ open: isSecOpen('geo-border', false) }" @click="toggleSec('geo-border', false)"><Icon :name="isSecOpen('geo-border', false) ? 'chevron-down' : 'chevron-right'" :size="12" /><span>边界线</span><span class="lnk" title="本节恢复出厂样式" @click.stop="resetBorderAll">默认</span></div>
+          <div class="sect acc" data-sec="geo-border" :class="{ open: isSecOpen('geo-border', false) }" @click="toggleSec('geo-border', false)"><Icon :name="isSecOpen('geo-border', false) ? 'chevron-down' : 'chevron-right'" :size="12" /><span>边界线</span><span class="lnk" title="本节恢复出厂样式" @click.stop="resetBorderAll">默认</span></div>
           <template v-if="isSecOpen('geo-border', false)">
           <div class="srow stack"><label>预设</label>
             <span class="seg nseg" role="group" aria-label="边界线样式预设">
@@ -9250,7 +9288,7 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="sec">
-          <div class="sect acc" :class="{ open: isSecOpen('geo-name', false) }" @click="toggleSec('geo-name', false)"><Icon :name="isSecOpen('geo-name', false) ? 'chevron-down' : 'chevron-right'" :size="12" /><span>地名</span><span class="lnk" title="本节恢复出厂设置" @click.stop="resetNameAll">默认</span></div>
+          <div class="sect acc" data-sec="geo-name" :class="{ open: isSecOpen('geo-name', false) }" @click="toggleSec('geo-name', false)"><Icon :name="isSecOpen('geo-name', false) ? 'chevron-down' : 'chevron-right'" :size="12" /><span>地名</span><span class="lnk" title="本节恢复出厂设置" @click.stop="resetNameAll">默认</span></div>
           <template v-if="isSecOpen('geo-name', false)">
           <div class="mlist pick">
             <div v-for="r in NAME_ROWS" :key="r.k" class="mrow rowlk" :class="{ active: namePick === r.k }" @click="pickNameRow(r.k)">
@@ -9282,7 +9320,7 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="sec" :class="{ hid: !showProvinces }">
-          <div class="sect acc" :class="{ open: isSecOpen('geo-adm', false) }" @click="toggleSec('geo-adm', false)"><Icon :name="isSecOpen('geo-adm', false) ? 'chevron-down' : 'chevron-right'" :size="12" /><span>行政区</span><button type="button" class="layersw sect-layersw" :class="{ on: showProvinces }" role="switch" :aria-checked="showProvinces ? 'true' : 'false'" :title="showProvinces ? '隐藏行政区界 / 名称' : '显示行政区界 / 名称'" @click.stop="toggleProvinces"><i></i></button></div>
+          <div class="sect acc" data-sec="geo-adm" :class="{ open: isSecOpen('geo-adm', false) }" @click="toggleSec('geo-adm', false)"><Icon :name="isSecOpen('geo-adm', false) ? 'chevron-down' : 'chevron-right'" :size="12" /><span>行政区</span><button type="button" class="layersw sect-layersw" :class="{ on: showProvinces }" role="switch" :aria-checked="showProvinces ? 'true' : 'false'" :title="showProvinces ? '隐藏行政区界 / 名称' : '显示行政区界 / 名称'" @click.stop="toggleProvinces"><i></i></button></div>
           <template v-if="isSecOpen('geo-adm', false)">
           <div class="srow"><label>国家</label><input class="ci" v-model="admQuery1" placeholder="搜索国家（中文 / English / ISO3）" /></div>
           <div class="mlist tall">
@@ -9304,7 +9342,7 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="sec" :class="{ hid: !chainOn }">
-          <div class="sect acc" :class="{ open: isSecOpen('geo-chain', false) }" @click="toggleSec('geo-chain', false)"><Icon :name="isSecOpen('geo-chain', false) ? 'chevron-down' : 'chevron-right'" :size="12" /><span>岛链</span><button type="button" class="layersw sect-layersw" :class="{ on: chainOn }" role="switch" :aria-checked="chainOn ? 'true' : 'false'" :title="chainOn ? '隐藏岛链' : '显示岛链'" @click.stop="toggleChains"><i></i></button></div>
+          <div class="sect acc" data-sec="geo-chain" :class="{ open: isSecOpen('geo-chain', false) }" @click="toggleSec('geo-chain', false)"><Icon :name="isSecOpen('geo-chain', false) ? 'chevron-down' : 'chevron-right'" :size="12" /><span>岛链</span><button type="button" class="layersw sect-layersw" :class="{ on: chainOn }" role="switch" :aria-checked="chainOn ? 'true' : 'false'" :title="chainOn ? '隐藏岛链' : '显示岛链'" @click.stop="toggleChains"><i></i></button></div>
           <template v-if="isSecOpen('geo-chain', false)">
           <div class="mlist">
             <div v-for="c in CHAINS" :key="c.id" class="mrow rowlk" @click="toggleChain(c.id)">
@@ -9330,7 +9368,7 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="sec">
-          <div class="sect acc" :class="{ open: isSecOpen('geo-crs', false) }" @click="toggleSec('geo-crs', false)"><Icon :name="isSecOpen('geo-crs', false) ? 'chevron-down' : 'chevron-right'" :size="12" /><span>坐标系</span><span class="lnk" title="本节恢复出厂设置" @click.stop="resetCrs">默认</span></div>
+          <div class="sect acc" data-sec="geo-crs" :class="{ open: isSecOpen('geo-crs', false) }" @click="toggleSec('geo-crs', false)"><Icon :name="isSecOpen('geo-crs', false) ? 'chevron-down' : 'chevron-right'" :size="12" /><span>坐标系</span><span class="lnk" title="本节恢复出厂设置" @click.stop="resetCrs">默认</span></div>
           <template v-if="isSecOpen('geo-crs', false)">
           <div class="srow"><label>大地基准</label>
             <select :value="mapCrs.datum" title="只作用于读数与输入。CGCS2000 与 WGS-84 的差在厘米量级，低于任何一处显示精度，故不做几何变换、只标口径；GCJ-02 是真实非线性偏移，仅中国境内生效。任何存储、计算与导出都不受影响" @change="setCrsDatum($event.target.value)">
@@ -9346,7 +9384,7 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="sec">
-          <div class="sect acc" :class="{ open: isSecOpen('geo-term', false) }" @click="toggleSec('geo-term', false)"><Icon :name="isSecOpen('geo-term', false) ? 'chevron-down' : 'chevron-right'" :size="12" /><span>晨昏线（昼夜分界）</span><button type="button" class="layersw sect-layersw" :class="{ on: termOn }" role="switch" :aria-checked="termOn ? 'true' : 'false'" :title="termOn ? '隐藏晨昏线 / 夜区' : '显示晨昏线 / 夜区'" @click.stop="toggleTerm"><i></i></button></div>
+          <div class="sect acc" data-sec="geo-term" :class="{ open: isSecOpen('geo-term', false) }" @click="toggleSec('geo-term', false)"><Icon :name="isSecOpen('geo-term', false) ? 'chevron-down' : 'chevron-right'" :size="12" /><span>晨昏线（昼夜分界）</span><button type="button" class="layersw sect-layersw" :class="{ on: termOn }" role="switch" :aria-checked="termOn ? 'true' : 'false'" :title="termOn ? '隐藏晨昏线 / 夜区' : '显示晨昏线 / 夜区'" @click.stop="toggleTerm"><i></i></button></div>
           <template v-if="isSecOpen('geo-term', false)">
           <template v-if="termOn">
           <div class="swrow"><span>夜区遮罩</span><button type="button" class="layersw" :class="{ on: termNight }" role="switch" :aria-checked="termNight ? 'true' : 'false'" @click="toggleTermNight"><i></i></button></div>
@@ -9363,7 +9401,7 @@ onBeforeUnmount(() => {
           </template>
         </div>
         <div class="sec">
-          <div class="sect acc" :class="{ open: isSecOpen('geo-pov') }" @click="toggleSec('geo-pov')"><Icon :name="isSecOpen('geo-pov') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>地图视角</span></div>
+          <div class="sect acc" data-sec="geo-pov" :class="{ open: isSecOpen('geo-pov') }" @click="toggleSec('geo-pov')"><Icon :name="isSecOpen('geo-pov') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>地图视角</span></div>
           <template v-if="isSecOpen('geo-pov')">
           <div class="srow"><label>视角</label>
             <select :value="povCfg.id" title="底图的国界、陆地着色、点选与国名全部按该视角的归属表解算；「自定义」以中国视角为底再逐项覆写。台湾、香港、澳门恒属中国，不随视角变" @change="setPovId($event.target.value)">
@@ -9395,7 +9433,7 @@ onBeforeUnmount(() => {
         <div v-show="shellUi.side === 'markers'" class="sview">
         <div class="cov-side mk-side docked">
         <div class="sec" :class="{ hid: !showPtLayer }">
-          <div class="sect acc" :class="{ open: isSecOpen('mk-points') }" @click="toggleSec('mk-points')"><Icon :name="isSecOpen('mk-points') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>点标记</span><span class="lnk" title="打开点标记批量表格（Excel：增删改 / 批量粘贴导入）" @click.stop="openMkTable('points')">表格</span><span class="lnk" title="本节恢复出厂样式" @click.stop="resetMarkPart('pt')">默认</span><span v-if="points.length" class="lnk" :class="{ on: mkEditId === 'points' }" :title="mkEditId === 'points' ? '完成，退出拖动' : '解锁鼠标拖动：在图上直接拖标记改坐标'" @click.stop="mkEditToggle('points')">{{ mkEditId === 'points' ? '完成调整' : '调整位置' }}</span><button type="button" class="layersw sect-layersw" :class="{ on: showPtLayer }" role="switch" :aria-checked="showPtLayer ? 'true' : 'false'" :title="showPtLayer ? '隐藏点标记（数据保留）' : '显示点标记'" @click.stop="togglePtLayer"><i></i></button></div>
+          <div class="sect acc" data-sec="mk-points" :class="{ open: isSecOpen('mk-points') }" @click="toggleSec('mk-points')"><Icon :name="isSecOpen('mk-points') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>点标记</span><span class="lnk" title="打开点标记批量表格（Excel：增删改 / 批量粘贴导入）" @click.stop="openMkTable('points')">表格</span><span class="lnk" title="本节恢复出厂样式" @click.stop="resetMarkPart('pt')">默认</span><span v-if="points.length" class="lnk" :class="{ on: mkEditId === 'points' }" :title="mkEditId === 'points' ? '完成，退出拖动' : '解锁鼠标拖动：在图上直接拖标记改坐标'" @click.stop="mkEditToggle('points')">{{ mkEditId === 'points' ? '完成调整' : '调整位置' }}</span><button type="button" class="layersw sect-layersw" :class="{ on: showPtLayer }" role="switch" :aria-checked="showPtLayer ? 'true' : 'false'" :title="showPtLayer ? '隐藏点标记（数据保留）' : '显示点标记'" @click.stop="togglePtLayer"><i></i></button></div>
           <template v-if="isSecOpen('mk-points')">
           <div class="srow"><label>纬度</label><input class="ci" v-model="ptLat" placeholder="-90 ~ 90" /></div>
           <div class="srow"><label>经度</label><input class="ci" v-model="ptLon" placeholder="-180 ~ 180" /><span class="addb" @click="addPointInput">添加</span></div>
@@ -9437,7 +9475,7 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="sec" :class="{ hid: !showStLayer }">
-          <div class="sect acc" :class="{ open: isSecOpen('mk-stations') }" @click="toggleSec('mk-stations')"><Icon :name="isSecOpen('mk-stations') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>地球站</span><span class="lnk" title="打开地球站批量表格（Excel：增删改 / 批量粘贴导入）" @click.stop="openMkTable('stations')">表格</span><span class="lnk" title="本节恢复出厂样式" @click.stop="resetMarkPart('st')">默认</span><span v-if="stations.length" class="lnk" :class="{ on: mkEditId === 'stations' }" :title="mkEditId === 'stations' ? '完成，退出拖动' : '解锁鼠标拖动：在图上直接拖图标改坐标'" @click.stop="mkEditToggle('stations')">{{ mkEditId === 'stations' ? '完成调整' : '调整位置' }}</span><button type="button" class="layersw sect-layersw" :class="{ on: showStLayer }" role="switch" :aria-checked="showStLayer ? 'true' : 'false'" :title="showStLayer ? '隐藏地球站（数据保留）' : '显示地球站'" @click.stop="toggleStLayer"><i></i></button></div>
+          <div class="sect acc" data-sec="mk-stations" :class="{ open: isSecOpen('mk-stations') }" @click="toggleSec('mk-stations')"><Icon :name="isSecOpen('mk-stations') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>地球站</span><span class="lnk" title="打开地球站批量表格（Excel：增删改 / 批量粘贴导入）" @click.stop="openMkTable('stations')">表格</span><span class="lnk" title="本节恢复出厂样式" @click.stop="resetMarkPart('st')">默认</span><span v-if="stations.length" class="lnk" :class="{ on: mkEditId === 'stations' }" :title="mkEditId === 'stations' ? '完成，退出拖动' : '解锁鼠标拖动：在图上直接拖图标改坐标'" @click.stop="mkEditToggle('stations')">{{ mkEditId === 'stations' ? '完成调整' : '调整位置' }}</span><button type="button" class="layersw sect-layersw" :class="{ on: showStLayer }" role="switch" :aria-checked="showStLayer ? 'true' : 'false'" :title="showStLayer ? '隐藏地球站（数据保留）' : '显示地球站'" @click.stop="toggleStLayer"><i></i></button></div>
           <template v-if="isSecOpen('mk-stations')">
           <div class="srow"><label>纬度</label><input class="ci" v-model="stLat" placeholder="-90 ~ 90" /></div>
           <div class="srow"><label>经度</label><input class="ci" v-model="stLon" placeholder="-180 ~ 180" /></div>
@@ -9466,7 +9504,7 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="sec" :class="{ hid: !showTrajLayer }">
-          <div class="sect acc" :class="{ open: isSecOpen('mk-traj') }" @click="toggleSec('mk-traj')"><Icon :name="isSecOpen('mk-traj') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>轨迹</span>
+          <div class="sect acc" data-sec="mk-traj" :class="{ open: isSecOpen('mk-traj') }" @click="toggleSec('mk-traj')"><Icon :name="isSecOpen('mk-traj') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>轨迹</span>
             <span class="lnk" title="打开航迹批量表格（Excel：逐航迹增删改航点 / 批量粘贴导入）" @click.stop="openMkTable('traj')">表格</span>
             <span class="lnk" title="本节恢复出厂样式" @click.stop="resetMarkPart('tj')">默认</span>
             <span class="lnk" @click.stop="newTraj('sea')">+航行</span>

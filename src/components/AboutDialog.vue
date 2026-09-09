@@ -8,11 +8,18 @@
 // 内核（Electron/Chromium）与运行平台曾单列一段「软件」，2026-08-16 用户定：不展示。
 //
 // 设备ID 行连点 5 次 = 刷新激活状态的「特定动作」之二（口径不变，由宿主传入 onTap）。
+//
+// 曾有过的两节，2026-09-10 用户定：不展示。
+//   「安装包」固定下载地址 —— 装着平台的人不需要再下载平台；地址只留在小程序侧。
+//   「第三方署名」—— 随包的地图 / 图标数据没有一项要求界面署名：Natural Earth 与 NASA Blue Marble
+//   是 public domain，DataV.GeoAtlas 无署名条款，Noto Emoji（Apache-2.0）与 Lucide（ISC）只要求随分发
+//   附带许可文本而非界面出字。出处记录在 docs/地图数据来源台账.md 与各消费处的代码注释里
+//   （Icon.vue / stationSymbol.js / vehicleSymbol.js）。别国 ADM2 若真从 geoBoundaries 生成（CC BY / ODbL
+//   逐国给），届时署名义务才出现，再把 ATTRIBUTION.json 接回来。
 import { ref, computed, onUnmounted } from 'vue'
 import Icon from './Icon.vue'
 import logoUrl from '../assets/logo.png'
 import { activation } from '../stores/activation'
-import ADM_ATTR from '../viz/globe3d/data/adm/ATTRIBUTION.json'
 import { byLang } from '../shared/i18n/lang.js'
 import { getLang, onLangChange } from '../shared/i18n/runtime.js'
 
@@ -21,23 +28,6 @@ const props = defineProps({
   actText: { type: String, default: '' }
 })
 const emit = defineEmits(['close', 'refresh', 'tap'])
-
-// 行政边界数据的逐国署名（geoBoundaries 的许可是逐国给的，CC BY 4.0 / ODbL / PDDL 都有）。
-// 按「许可 → 国家数」归并，点开看逐国清单 —— 逐国 250 多行摊开没人读，归并后一眼看清要署哪几个名。
-const attrOpen = ref(false)
-const attrRows = computed(() => {
-  const by = new Map()
-  for (const [iso, v] of Object.entries(ADM_ATTR || {})) {
-    for (const lvl of ['adm1', 'adm2']) {
-      const a = v[lvl]
-      if (!a) continue
-      const k = a.license + ' | ' + a.source
-      const g = by.get(k) || (by.set(k, { license: a.license, source: a.source, isos: [] }), by.get(k))
-      if (!g.isos.includes(iso)) g.isos.push(iso)
-    }
-  }
-  return [...by.values()].sort((a, b) => b.isos.length - a.isos.length)
-})
 
 // 本组件里少数几处在 JS 里出字的串（授权档位/期限，见下）不经 DOM 呈现层，故得自己盯着语言变：
 // 别的窗口切了语言会经 storage 事件传过来，本窗开着的对话框也要当场跟上。
@@ -97,7 +87,7 @@ async function copyId() {
           <img class="mark" :src="logoUrl" alt="" draggable="false" />
           <div class="idtx">
             <div class="nm">卫星仿真平台</div>
-            <div class="sub">卫星通信系统链路预算与仿真分析软件</div>
+            <div class="sub">面向 GSO / NGSO 卫星通信系统的链路预算与仿真分析软件</div>
           </div>
           <div v-if="version" class="vchip mono" data-i18n-skip>{{ version }}</div>
         </div>
@@ -129,29 +119,6 @@ async function copyId() {
           </ul>
         </section>
 
-        <section>
-          <div class="sec">第三方署名</div>
-          <!-- 图标：两条都不强制在界面署名（Apache-2.0 / ISC），列出来是留个出处 -->
-          <div class="kv">
-            <span class="k">Apache 2.0</span>
-            <span class="v"><em>Google Noto Emoji</em>地球站地图符号</span>
-          </div>
-          <div class="kv">
-            <span class="k">ISC</span>
-            <span class="v"><em>Lucide</em>界面图标</span>
-          </div>
-          <div class="kv" v-for="(g, i) in attrRows" :key="i">
-            <span class="k">{{ g.license }}</span>
-            <span class="v"><em>{{ g.source }}</em>{{ g.isos.length }} 个国家/地区</span>
-          </div>
-          <div class="kv">
-            <span class="k"></span>
-            <span class="v"><button class="cp" @click="attrOpen = !attrOpen">{{ attrOpen ? '收起边界数据逐国清单' : '边界数据逐国清单' }}</button></span>
-          </div>
-          <ul v-if="attrOpen" class="mods attr">
-            <li v-for="(g, i) in attrRows" :key="'l' + i">{{ g.license }}：{{ g.isos.join(' ') }}</li>
-          </ul>
-        </section>
       </div>
 
       <footer class="dft">
@@ -186,8 +153,6 @@ async function copyId() {
 .vchip { flex: none; align-self: flex-start; padding: 1px 7px; font-size: var(--fs-2); color: var(--text-muted);
   border: 1px solid var(--border-strong); background: var(--bg); }
 
-.attr li { word-break: break-all; }
-.v em { font-style: normal; color: var(--text-muted); margin-right: 8px; }
 .sec { font-size: var(--fs-2); letter-spacing: var(--ls-label); color: var(--text-faint); padding-bottom: 5px; margin-bottom: 9px; border-bottom: 1px solid var(--border); }
 /* 键值两栏共用一根 76px 栏名轴（英文「Activated」不折行） */
 .kv { display: grid; grid-template-columns: 76px 1fr; column-gap: 14px; row-gap: 7px; align-items: baseline; }

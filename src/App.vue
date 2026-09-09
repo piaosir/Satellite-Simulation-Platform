@@ -7,9 +7,15 @@ import { view } from './stores/view'
 import { covNav } from './stores/coveragePanels'
 import { zoom, ZOOM_TMAX } from './stores/zoom'
 import { shellUi as ui, toggleUi, sideWKey, SIDE_W_LIM } from './stores/shellUi'
-import { theme } from './stores/theme'
+import { theme, setTheme } from './stores/theme'
 import { logStore, logMsg, clearLog } from './stores/log'
-import { effective as displayQuality } from './stores/displayQuality'
+import { registerCommands, commands } from './stores/commands'
+import cmdIndex from './shared/cmdIndex.data.js'
+import { kwOf, kwId } from './shared/cmdKeywords.js'
+import { revealSection, revealRow } from './stores/panelSections'
+import { getLang, setLang } from './shared/i18n/runtime'
+import { playing as clockPlaying, isLive as clockLive, play as clockPlay, pause as clockPause, goLive as clockGoLive } from './stores/simClock'
+import { quality, effective as displayQuality, setTier, setField, TIERS } from './stores/displayQuality'
 import { activation, activationLocked, initActivation, refreshActivation, activationText, lockTitle } from './stores/activation'
 import SettingsModal from './components/SettingsModal.vue'
 import MiniBindDialog from './components/MiniBindDialog.vue'
@@ -17,6 +23,7 @@ import MiniAboutDialog from './components/MiniAboutDialog.vue'
 import AboutDialog from './components/AboutDialog.vue'
 import FileManager from './components/FileManager.vue'
 import Icon from './components/Icon.vue'
+import CmdSearch from './components/CmdSearch.vue'
 import logoUrl from './assets/linklab-avatar-dark.png'
 import LinkBudget from './pages/LinkBudget.vue'
 import Configs from './pages/Configs.vue'
@@ -33,6 +40,8 @@ const settingsOpen = ref(false)
 const bindOpen = ref(false)      // 绑定小程序账号（工具菜单，与设置平级）
 const miniAboutOpen = ref(false) // 微信小程序介绍（帮助菜单，与关于平级）
 const fileOpen = ref(false)
+const fileTab = ref('omm')      // 文件管理打开时停在哪一页（标题栏搜索「文件管理 ▸ …」定位入口传入）
+const searchOpen = ref(false)   // 标题栏搜索下拉开着：此时标题栏切成非拖拽区，点空白处才收得到 mousedown 去收起它
 const aboutOpen = ref(false)
 const appVersion = ref('')
 const openMenu = ref('')     // 当前展开的菜单 key（''=全收起）；经典菜单栏：点击展开，展开后悬停即切换
@@ -266,6 +275,115 @@ function tbClick(b) {
   b.run && b.run()
 }
 
+// ---- 标题栏搜索（仿 Office「搜索 / 告诉我你想要做什么」）：命令登记 ----
+// 登记的是 getter：菜单项的可用性 / 勾选态随程序状态走，每次取用时现算。星座地图页只有它够得着的
+// 动作（图层拨杆 / 绘制 / 投影档）由它自己登记（stores/commands.js）。
+// 关键词只参与匹配不显示：英文名 / 缩写 / 同义词，让「dark」「TLE」「暗色」都能找到对应项。
+// 侧栏 / 设置窗的分区与参数行：索引由 scripts/cmd-index.mjs 从模板静态抽出（src/shared/cmdIndex.data.js，dev / build 自动刷新）。
+// 带拨杆 / 子菜单的分区由星座地图页登记（PAGE_SECS，见其 pageCommands），这里不再登记分区本身，但其参数行照常登记。
+// 同视图同标题的分区（波束合成按模式分成 bs-antp / bs-pam、bs-cov / bs-pcov）合成一条，keys 全带上，谁在 DOM 里就定位谁。
+const PAGE_SECS = new Set(['mk-points', 'mk-stations', 'mk-traj', 'geo-img', 'geo-adm', 'geo-chain', 'geo-term', 'geo-proj', 'foc-orb', 'foc-trk', 'foc-fp', 'foc-cone'])
+// 标题是动态文本的分区，这里给个固定名；"<view>-top" 是视图里第一个分区之前的内容，缺省不带分区名（星座视图那块是生成星座向导）
+const SEC_TITLES = { 'bs-mode': '天线类型', 'vis-list': '可见卫星', 'constellation-top': '生成星座' }
+const SECTIONS = (() => {
+  const out = [], byTitle = new Map()
+  for (const s of cmdIndex) {
+    const title = s.title || SEC_TITLES[s.key] || ''
+    const id = s.view + '|' + (title || s.key)
+    let e = byTitle.get(id)
+    if (!e) { e = { view: s.view, keys: [], title, items: [] }; byTitle.set(id, e); out.push(e) }
+    e.keys.push(s.key)
+    for (const it of s.items) if (!e.items.some((x) => x.label === it.label)) e.items.push(it)
+  }
+  return out
+})()
+const THEME_CMDS = [{ key: 'system', label: '跟随系统', icon: 'monitor' }, { key: 'light', label: '浅色', icon: 'sun' }, { key: 'dark', label: '深色', icon: 'moon' }]
+const FILE_TABS = [
+  { key: 'omm', label: '轨道星历' },
+  { key: 'grd', label: '天线方向图' },
+  { key: 'freqplan', label: '频率计划' },
+  { key: 'modcod', label: 'MODCOD 表' },
+  { key: 'gxt', label: 'GXT/KML 管理' }
+]
+function showSide(k) { ui.side = k }   // 搜索命令：打开视图（活动栏 setSide 是「再点收起」的切换语义，这里不要）
+function appCommands() {
+  const out = []
+  for (const m of menus.value) {
+    if (m.key === 'display') continue   // 视图项下面单独登记（打开而非切换）
+    m.items.forEach((it, i) => {
+      if (it.sep) return
+      out.push({ id: 'menu.' + m.key + '.' + i, label: it.label, icon: it.icon, group: m.label, hint: it.hint, keywords: kwOf(it.label), lock: it.lock, disabled: it.disabled, check: it.check, run: it.run })
+    })
+  }
+  for (const v of sideViews.value) {
+    out.push({ id: 'side.' + v.key, label: v.label, icon: v.icon, group: '显示', hint: v.hint, keywords: kwOf(v.label), lock: true, disabled: v.disabled, check: ui.side === v.key, run: () => showSide(v.key) })
+  }
+  for (const sec of SECTIONS) {
+    const v = sec.view === 'settings' ? { label: '设置', icon: 'settings', disabled: false } : sideViews.value.find((x) => x.key === sec.view)
+    if (!v) continue
+    const key = sec.keys[0]
+    const top = key.endsWith('-top')
+    // 分区本身：视图顶部块 / 设置窗分区（外观 / 语言… 上面另有带子菜单的命令）/ 星座地图页登记的那些不再重复登记
+    if (!top && sec.view !== 'settings' && !sec.keys.some((k) => PAGE_SECS.has(k))) {
+      out.push({ id: 'sec.' + key, label: sec.title, icon: v.icon, group: v.label, keywords: kwId('sec.' + key), lock: true, disabled: v.disabled, run: () => revealSection(sec.view, sec.keys) })
+    }
+    // 参数行：「分区 › 行」，选中即定位到那一行
+    for (const it of sec.items) {
+      out.push({ id: 'row.' + key + '.' + it.label, label: it.label, path: sec.title, icon: v.icon, group: v.label, hint: it.hint, keywords: kwId('row.' + key + '.' + it.label), lock: sec.view !== 'settings', disabled: v.disabled, run: () => goRow(sec, it.label) })
+    }
+  }
+  for (const t of FILE_TABS) {
+    out.push({ id: 'file.' + t.key, label: t.label, icon: 'folder-open', group: '文件管理', keywords: kwOf(t.label), lock: true, run: () => { fileTab.value = t.key; fileOpen.value = true } })
+  }
+  const lang = getLang()
+  out.push(
+    { id: 'set.theme', label: '外观', icon: 'monitor', group: '设置', keywords: kwOf('外观'),
+      children: THEME_CMDS.map((t) => ({ id: 'set.theme.' + t.key, label: t.label, icon: t.icon, keywords: [t.key, 'theme'], check: theme.mode === t.key, run: () => setTheme(t.key) })) },
+    { id: 'set.lang', label: '语言', icon: 'settings', group: '设置', keywords: kwOf('语言'),
+      children: [
+        { id: 'set.lang.zh', label: '中文', keywords: ['chinese', 'zh'], check: lang === 'zh', run: () => setLang('zh') },
+        { id: 'set.lang.en', label: 'English', keywords: ['english', 'en'], check: lang === 'en', run: () => setLang('en') }
+      ] },
+    { id: 'set.font', label: '界面字体', icon: 'settings', group: '设置', keywords: kwOf('界面字体'), run: () => { settingsOpen.value = true } },
+    { id: 'set.quality', label: '显示设置', icon: 'monitor', group: '设置', keywords: kwOf('显示设置'),
+      children: TIERS.map((t) => ({ id: 'set.quality.' + t.key, label: t.label, keywords: [t.key, 'quality'], check: quality.tier === t.key, run: () => setTier(t.key) })) },
+    { id: 'set.msaa', label: 'MSAA 抗锯齿', icon: 'monitor', group: '设置', keywords: kwOf('MSAA 抗锯齿'), check: displayQuality.value.msaa !== false, run: () => setField('msaa', displayQuality.value.msaa === false) },
+    { id: 'clock.play', label: '播放仿真时钟', icon: 'play', group: '仿真时钟', keywords: kwOf('播放仿真时钟'), lock: true, check: clockPlaying.value, run: () => clockPlay() },
+    { id: 'clock.pause', label: '暂停仿真时钟', icon: 'pause', group: '仿真时钟', keywords: kwOf('暂停仿真时钟'), lock: true, check: !clockPlaying.value && !clockLive.value, run: () => clockPause() },
+    { id: 'clock.live', label: '仿真时钟回到实时', icon: 'clock', group: '仿真时钟', keywords: kwOf('仿真时钟回到实时'), lock: true, check: clockLive.value, run: () => clockGoLive() }
+  )
+  return out
+}
+registerCommands('app', appCommands)
+// 定位到参数行：设置窗的先把窗拉起来；生成星座向导里的字段先把向导拉起来；其余走侧栏
+async function goRow(sec, label) {
+  if (sec.view === 'settings') { settingsOpen.value = true; await nextTick(); await revealRow(null, sec.keys, label); return }
+  if (sec.keys[0] === 'constellation-top') {
+    const wiz = commands.value.find((c) => c.id === 'const.wizard')
+    if (wiz && wiz.run) wiz.run()
+    await nextTick()
+  }
+  await revealRow(sec.view, sec.keys, label)
+}
+// 搜索框执行：与菜单同一套闸（不可用 → 不动；受锁 → 弹「未激活」）
+function runCommand(cmd) {
+  if (!cmd || cmd.disabled) return
+  openMenu.value = ''; hint.value = ''
+  if (cmd.lock && activationLocked.value) { lockOpen.value = true; return }
+  cmd.run && cmd.run()
+}
+// 「在星座中搜索“…”」：切到星座视图，把词填进那边的搜索框（即筛选显示）
+function findInConstellation(q) {
+  if (activationLocked.value) { lockOpen.value = true; return }
+  ui.side = 'constellation'
+  nextTick(() => {
+    covNav.searchSats && covNav.searchSats(q)
+    const el = document.querySelector('#side-view .ptool .search input')
+    // 侧栏滚动容器跨视图共用，上个视图滚到哪这里就停在哪：把搜索框滚回视野再聚焦
+    if (el) { try { el.scrollIntoView({ block: 'center' }); el.focus() } catch { /* ignore */ } }
+  })
+}
+
 // 日志窗格：新条目自动滚到底
 const logEl = ref(null)
 watch(() => logStore.items.length, () => {
@@ -308,7 +426,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 <template>
   <div class="shell">
     <!-- ① 菜单栏：经典文字菜单（点击展开，展开后悬停切换，Esc/点空白收起） -->
-    <header class="menubar">
+    <header class="menubar" :class="{ 'ms-open': searchOpen }">
       <img class="brand" :src="logoUrl" alt="卫星仿真平台" title="卫星仿真平台" draggable="false" />
       <nav class="menus">
         <span v-for="m in menus" :key="m.key" class="mwrap">
@@ -337,6 +455,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
           </div>
         </span>
       </nav>
+      <!-- 标题栏搜索（仿 Office：Alt+Q 聚焦；命令 / 视图 / 分区 / 设置项按关键词检索，选中即执行） -->
+      <div class="mslot"><CmdSearch class="msearch" :find="findInConstellation" :find-avail="!!covNav.searchSats" @run="runCommand" @hint="hint = $event" @open="searchOpen = $event" /></div>
       <div v-if="openMenu" class="vmask" @click="openMenu = ''"></div>
     </header>
 
@@ -410,7 +530,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
     <MiniBindDialog v-if="bindOpen" @close="bindOpen = false" @toast="(m) => logMsg(m)" />
     <!-- 帮助 → 微信小程序：介绍页里可直接转到绑定（两者是同一件事的两步） -->
     <MiniAboutDialog v-if="miniAboutOpen" @close="miniAboutOpen = false" @bind="miniAboutOpen = false; bindOpen = true" />
-    <FileManager v-if="fileOpen" @close="fileOpen = false" />
+    <FileManager v-if="fileOpen" :tab="fileTab" @close="fileOpen = false; fileTab = 'omm'" />
 
     <!-- 帮助 → 关于（设备ID 复制钮连点 5 次 = 刷新激活状态的「特定动作」之二） -->
     <AboutDialog
@@ -484,7 +604,11 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   padding-right: calc(10px + 100vw - env(titlebar-area-width, 100vw));
 }
 /* 可交互元素排除出拖拽区，否则点击会被窗口拖拽吞掉（品牌名留作拖拽把手，不排除）。 */
-.mtitle, .mpanel, .vmask { -webkit-app-region: no-drag; }
+.mtitle, .mpanel, .vmask, .msearch { -webkit-app-region: no-drag; }
+/* 搜索下拉开着时整条标题栏不可拖：拖拽区会把 mousedown 交给系统当标题栏点击，DOM 收不到、下拉就收不起来 */
+.menubar.ms-open { -webkit-app-region: no-drag; }
+/* 搜索框居中占据菜单与窗口三键之间的余量（Office 标题栏范式）；槽本身仍是拖拽区，只有框不是 */
+.mslot { flex: 1; min-width: 0; display: flex; align-items: center; justify-content: center; }
 /* 品牌 = LOGO（原文字标题已并入原生标题栏并删除，避免与窗口标题重复）。
    logo.png 为深色墨稿：浅色主题直用；深色主题反相为浅色，避免深底不可见。 */
 .brand { align-self: center; height: 20px; width: auto; padding-right: 8px; display: block; user-select: none; -webkit-user-drag: none; }

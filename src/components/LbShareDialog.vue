@@ -7,7 +7,7 @@
 //   · 被勾选配置所引用的库条目自动进包并锁定（🔒，不可取消）——这是「对端算出来的数与我这边
 //     一致」的唯一保证，见 shared/lbShare.js 文件头记的那个静默算错的老 bug；
 //   · 顶层页签先分「分享 / 发到小程序 / 导入」（旧版是「线下 / 线上」，把"选什么"和"怎么发"混在一起了）；
-//     分享码 / 文件 / 发给用户ID 三条路共用同一份勾选结果；发到小程序走另一套载荷，故提到顶层；
+//     发给用户ID / 分享码 / 文件 三条路共用同一份勾选结果（发给用户 ID 排首位、作默认）；发到小程序走另一套载荷，故提到顶层；
 //   · 导入一律先出「包内清单」再落盘：别人的包会往本机全局资源库里塞东西，得先看一眼。
 //
 // 体制差异全部由父组件经 ctx 注入，本组件不认识任何一种体制：
@@ -45,7 +45,9 @@ const toast = (m) => emit('toast', m)
 const close = () => emit('update:open', false)
 
 const tab = ref('share')          // 'share' | 'mini' | 'import'
-const way = ref('code')           // 'code' | 'file' | 'online'
+// 分享方式默认「发给用户 ID」（在线分享配好了才有意义；没配时退到分享码，免得一打开就是一句「尚未配置」）
+const defaultWay = () => (props.configured ? 'online' : 'code')
+const way = ref(defaultWay())     // 'online' | 'code' | 'file'
 const items = ref([])             // 打开弹窗那一刻的配置树快照（模态期间不会变）
 const draft = ref(null)           // { name, state } 当前工作参数
 // 勾选态：cfg = 配置 id；es/carrier/sat = 各库显式勾选的条目 id（被引用而自动带上的另见 locked）
@@ -59,7 +61,7 @@ function reset() {
   const act = props.ctx.getActiveId && props.ctx.getActiveId()
   const hit = act && items.value.some((i) => i.id === act && i.type !== 'folder')
   if (hit) { sel.cfg.add(act); sel.draft = false } else sel.draft = !!draft.value
-  tab.value = 'share'; way.value = 'code'; recip.value = ''
+  tab.value = 'share'; way.value = defaultWay(); recip.value = ''
   imp.text = ''; imp.plan = null; imp.err = ''; imp.src = ''; imp.msgId = ''
   if (props.configured) loadInbox()
 }
@@ -402,9 +404,9 @@ watch(() => way.value, (w) => { if (w === 'online' && props.configured && !inbox
         <template v-else>
           <div class="lbs-sec">分享方式</div>
           <div class="lbs-ways">
+            <button class="lbs-way" :class="{ on: way === 'online' }" @click="way = 'online'"><Icon name="external-link" :size="12" />发给用户 ID</button>
             <button class="lbs-way" :class="{ on: way === 'code' }" @click="way = 'code'"><Icon name="clipboard" :size="12" />分享码</button>
             <button class="lbs-way" :class="{ on: way === 'file' }" @click="way = 'file'"><Icon name="file-text" :size="12" />文件 .lbcfg</button>
-            <button class="lbs-way" :class="{ on: way === 'online' }" @click="way = 'online'"><Icon name="external-link" :size="12" />发给用户 ID</button>
           </div>
 
           <template v-if="way === 'code'">

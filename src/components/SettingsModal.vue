@@ -57,7 +57,7 @@ const speedPct = computed({
       <div class="body">
         <!-- 外观 -->
         <section class="sec">
-          <div class="shd">外观</div>
+          <div class="shd" data-sec="set-look">外观</div>
           <div class="tiers">
             <button v-for="t in THEME_OPTS" :key="t.key" class="tier ttheme" :class="{ on: theme.mode === t.key }" @click="setTheme(t.key)">
               <Icon :name="t.icon" :size="12" />{{ t.label }}
@@ -67,7 +67,7 @@ const speedPct = computed({
 
         <!-- 语言 -->
         <section class="sec">
-          <div class="shd">语言</div>
+          <div class="shd" data-sec="set-lang">语言</div>
           <div class="tiers" data-i18n-skip>
             <button v-for="l in LANG_OPTS" :key="l.key" class="tier" :class="{ on: langCur === l.key }" @click="pickLang(l.key)">{{ l.label }}</button>
           </div>
@@ -75,7 +75,7 @@ const speedPct = computed({
 
         <!-- 界面字体 -->
         <section class="sec">
-          <div class="shd">界面字体</div>
+          <div class="shd" data-sec="set-font">界面字体</div>
           <div class="grid">
             <label class="frow">
               <span class="fn">西文</span>
@@ -94,7 +94,7 @@ const speedPct = computed({
 
         <!-- 显示设置 -->
         <section class="sec">
-          <div class="shd">显示设置</div>
+          <div class="shd" data-sec="set-quality">显示设置</div>
           <div class="tiers">
             <button v-for="t in TIERS" :key="t.key" class="tier" :class="{ on: quality.tier === t.key }" @click="setTier(t.key)">{{ t.label }}</button>
           </div>
@@ -139,7 +139,7 @@ const speedPct = computed({
 
         <!-- 基础设置 -->
         <section class="sec">
-          <div class="shd">基础设置</div>
+          <div class="shd" data-sec="set-basic">基础设置</div>
           <div class="grid">
             <div class="frow">
               <span class="fn">地球自转</span>

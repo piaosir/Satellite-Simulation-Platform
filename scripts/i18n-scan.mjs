@@ -100,6 +100,7 @@ const found = new Map() // 串 → 首个出处
 for (const f of files) {
   const rel = path.relative(ROOT, f).replace(/\\/g, '/')
   if (rel === 'src/shared/i18n/uiDict.data.js') continue
+  if (rel === 'src/shared/cmdKeywords.js') continue   // 标题栏搜索框的匹配关键词：只参与检索、不显示，不进词典
   const src = fs.readFileSync(f, 'utf8')
   const ext = path.extname(f)
   const put = (raw) => { const s = condense(raw); if (s && !isNoise(s) && HAN.test(s) && !found.has(s)) found.set(s, rel) }
@@ -312,7 +313,7 @@ function stripByLang(src) {
 const rt = new Map()
 for (const f of files) {
   const rel = path.relative(ROOT, f).replace(/\\/g, '/')
-  if (rel === 'src/shared/i18n/uiDict.data.js' || rel === 'packages/core/utils/cities.js') continue
+  if (rel === 'src/shared/i18n/uiDict.data.js' || rel === 'packages/core/utils/cities.js' || rel === 'src/shared/cmdKeywords.js') continue
   if (path.extname(f) === '.html') continue
   const src0 = stripByLang(fs.readFileSync(f, 'utf8'))
   const body = path.extname(f) === '.vue' ? src0.replace(/<style[\s\S]*?<\/style>/g, '') : src0

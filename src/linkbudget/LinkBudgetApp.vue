@@ -167,13 +167,35 @@ const normGrd = (g) => ({
 })
 function makeSatConfig(name) { return withAutoFlag({ id: 'sat' + (_satSeq++), name: name || '', form: { ...defaultsFor(SAT_FIELDS) }, grd: blankGrd() }, 'sat') }
 const satConfigs = reactive([makeSatConfig('默认卫星')])
-const satId = ref('')   // 场景选用的卫星库条目（空 = 第一份）
+const satId = ref('')   // 配置级归属下本场景选用的卫星库条目（空 = 第一份）
 function resolveSat(id) {
   if (!id) return satConfigs[0]
   return satConfigs.find((c) => c.id === id) || satConfigs.find((c) => c.name === id) || satConfigs[0]
 }
 const curSat = computed(() => resolveSat(satId.value))
 const satSelectOptions = computed(() => satConfigs.map((c) => ({ value: c.id, label: c.name })))
+// —— 卫星的指定方式（场景级，随场景存档；三个链路预算窗口同一套；开关在链路表节头）——
+//   'config' 统一指定：本配置只用一颗卫星（satId），在「卫星与转发器」分区选，全部链路共用——GSO 出厂口径；
+//   'link'   逐链路指定：链路表每行各选卫星（行字段 satelliteId），表首多出「卫星」列组（卫星 · 卫星G/T · 卫星EIRP），
+//            上方卫星分区随之收起（再报一颗星只会与表里的混淆）。
+// 引擎口径不变：两种方式只决定每行的 satForm 从哪里取（见 satOfRow）；方向图回填仍按「G/T 取发信站站址、
+// EIRP 取收信站站址」，只是天线来自该行所用的那颗星。
+const SAT_SCOPES = [{ v: 'config', l: '统一指定' }, { v: 'link', l: '逐链路指定' }]
+const satScope = ref(localStorage.getItem('linkbudget/satScope') === 'link' ? 'link' : 'config')
+watch(satScope, (v) => { try { localStorage.setItem('linkbudget/satScope', v) } catch (e) { /* ignore */ } })
+const satLink = computed(() => satScope.value === 'link')
+// 某行链路所用的卫星库条目：链路级取该行「卫星」列，配置级取场景单选
+const satOfRow = (row) => (satLink.value ? resolveSat(row && row.satelliteId) : curSat.value)
+// 链路表「卫星」列的选项（空 = 库中第一份，与引擎「空→第一份」口径一致）
+const satColOptions = computed(() => [{ value: '', label: '（默认）' }, ...satConfigs.map((c) => ({ value: c.id, label: c.name }))])
+// 切换归属时各行所用卫星保持不变：配置级→链路级 把场景卫星写进空着的「卫星」列；链路级→配置级 场景卫星取首行所选
+function setSatScope(v) {
+  if (v !== 'link' && v !== 'config') return
+  if (v === satScope.value) return
+  if (v === 'link') { const id = curSat.value ? curSat.value.id : ''; for (const r of linkRows) if (!r.satelliteId) r.satelliteId = id }
+  else if (linkRows.length) { const s = resolveSat(linkRows[0].satelliteId); if (s) satId.value = s.id }
+  satScope.value = v
+}
 function addSatConfig() { satConfigs.push(makeSatConfig()); syncAutoNames(satConfigs, 'sat') }
 function duplicateSatConfig(cfg) {
   satConfigs.push({ id: 'sat' + (_satSeq++), name: cfg.nameAuto ? '' : copyNameOf(cfg.name), nameAuto: !!cfg.nameAuto, form: JSON.parse(JSON.stringify(cfg.form)), grd: normGrd(cfg.grd) })
@@ -184,14 +206,16 @@ function removeSatConfig(cfg) { removeLibEntry(satConfigs, cfg, 'sat') }
 // —— 库条目删除守卫：被链路行 / 已保存场景引用时先提示引用数 ——
 function refCount(kind, id) {
   let n = 0
-  const rowHit = (r) => (kind === 'es' ? (r.stationId === id || r.rxStationId === id) : kind === 'bb' ? r.basebandId === id : false)
-  for (const r of linkRows) if (rowHit(r)) n++
-  if (kind === 'sat' && (satId.value === id || (!satId.value && satConfigs[0] && satConfigs[0].id === id))) n++
+  // 卫星：配置级看场景单选，链路级看各行「卫星」列（按该场景自己的归属判，另一种归属下的残留值不算引用）
+  const rowHit = (r, link) => (kind === 'es' ? (r.stationId === id || r.rxStationId === id) : kind === 'bb' ? r.basebandId === id : kind === 'sat' ? (link && r.satelliteId === id) : false)
+  for (const r of linkRows) if (rowHit(r, satLink.value)) n++
+  if (kind === 'sat' && !satLink.value && (satId.value === id || (!satId.value && satConfigs[0] && satConfigs[0].id === id))) n++
   for (const c of configs.value) {
     const st = c && c.state
     if (!st) continue
-    if (Array.isArray(st.rows)) for (const r of st.rows) if (r && rowHit(r)) n++
-    if (kind === 'sat' && st.satId === id) n++
+    const link = st.satScope === 'link'
+    if (Array.isArray(st.rows)) for (const r of st.rows) if (r && rowHit(r, link)) n++
+    if (kind === 'sat' && !link && st.satId === id) n++
   }
   return n
 }
@@ -309,7 +333,7 @@ const linkRows = reactive([newLinkRow()])
 
 const LIB_TABS = [
   { key: 'station', label: '地球站', tip: '站型收发射频参数库：链路表「地球站配置」列按行引用' },
-  { key: 'sat', label: '卫星', tip: '空间段参数库：主区「卫星与转发器」分区场景级单选' },
+  { key: 'sat', label: '卫星', tip: '空间段参数库：卫星统一指定时在主区「卫星与转发器」分区单选，逐链路指定时由链路表「卫星」列按行引用' },
   { key: 'carrier', label: '载波', tip: '载波信号库：链路表「载波信号配置」列按行引用' }
 ]
 const libTab = ref('station')
@@ -340,8 +364,31 @@ const SAT_FACTS = [
   { key: 'BOo', label: 'OBO' },
   { key: 'xpdrIntermodFactor', label: 'C/IM' }
 ]
+// 卫星分区所报的那颗星：配置级＝场景单选；链路级＝聚焦行（未点过表时首行）所选卫星，与表脚「本行读数」同一行
+const bandSat = computed(() => {
+  if (!satLink.value) return curSat.value
+  const row = linkRows.find((r) => r._id === focusRowId.value) || linkRows[0] || null
+  return row ? satOfRow(row) : (satConfigs[0] || null)
+})
+// 链路级：链路表引用了哪些卫星（去重计数，卫星分区首行的读数）
+const satUsage = computed(() => {
+  if (!satLink.value) return []
+  const m = new Map()
+  for (const r of linkRows) {
+    const s = satOfRow(r); if (!s) continue
+    const e = m.get(s.id) || { id: s.id, name: s.form.satelliteName || s.name || s.id, n: 0 }
+    e.n++; m.set(s.id, e)
+  }
+  return [...m.values()]
+})
+// 场景所用卫星的名字与频段（报告封面 / 默认文件名 / 配置默认名）：配置级＝场景单选那颗；链路级＝链路表引用的各星去重并列
+const sceneSatName = computed(() => (satLink.value ? satUsage.value.map((u) => u.name).join(' / ') : ((curSat.value && curSat.value.form.satelliteName) || '')))
+const sceneBand = computed(() => {
+  const sats = satLink.value ? satUsage.value.map((u) => resolveSat(u.id)) : [curSat.value]
+  return [...new Set(sats.map((s) => (s && s.form.frequencyBand) || '').filter(Boolean))].join(' / ')
+})
 const satFacts = computed(() => {
-  const f = (curSat.value && curSat.value.form) || {}
+  const f = (bandSat.value && bandSat.value.form) || {}
   const show = (v) => ((v === '' || v == null) ? '—' : String(v))
   return SAT_FACTS.map((s) => {
     const d = SAT_FIELDS.find((x) => x.key === s.key) || {}
@@ -360,7 +407,7 @@ const satFacts = computed(() => {
 function editInLibrary(kind, id) {
   sideView.value = 'library'
   libTab.value = kind
-  if (kind === 'sat') selSatId.value = id || (curSat.value && curSat.value.id) || ''
+  if (kind === 'sat') selSatId.value = id || (bandSat.value && bandSat.value.id) || ''
   else if (kind === 'station') selEsId.value = id || ''
   else if (kind === 'carrier') selBbId.value = id || ''
 }
@@ -422,13 +469,24 @@ function toggleResultKey(k) {
 // 链路表列 = 发端组 + 收端组 + 结果列组；计算列 ro:true，值走 computedVals 映射。
 // 实时 EIRP/G·T 不再占独立列（原段末的 _eirp/_gt 列已撤）——改由「地球站配置」单元格第二行小字承载
 // （见 cellSubFn，值仍来自 computedVals：发端配置下显示 EIRP、收端配置下显示 G·T）。
-const GRID_GROUPS = [{ key: 'tx', label: '发信站' }, { key: 'rx', label: '收信站' }, { key: 'res', label: '计算结果' }]
-const gridFields = computed(() => [
-  ...TX_FIELDS.map((f) => ({ ...f, group: 'tx' })),
-  ...RX_FIELDS.map((f) => ({ ...f, group: 'rx' })),
-  ...RESULT_DEFS.filter((d) => resultKeys.value.includes(d.key)).map((d) => ({ key: '_' + d.key, label: d.label, unit: resColUnits.value[d.key] || d.unit, type: d.type === 'text' ? 'text' : 'num', ro: true, group: 'res', target: 'meta', tip: d.tip || d.label })),
-  ...customFieldDefs(customCols.value, customPool.value)
-])
+// 列组随卫星的指定方式变：统一指定＝发信站 | 收信站 | 计算结果（卫星在上方分区单选，不占列）；
+// 逐链路指定＝卫星 | 发信站 | 收信站 | 计算结果——「卫星」列组放在表首（用户要求：一眼先看到这行用的哪颗星），
+// 组内三列：卫星（库引用）、该星对本行发信站的 G/T、该星对本行收信站的 EIRP（与再生式链路表的「卫星」列组同一口径）。
+const GRID_GROUPS_CONFIG = [{ key: 'tx', label: '发信站' }, { key: 'rx', label: '收信站' }, { key: 'res', label: '计算结果' }]
+const GRID_GROUPS_LINK = [{ key: 'sat', label: '卫星' }, { key: 'tx', label: '发信站' }, { key: 'rx', label: '收信站' }, { key: 'res', label: '计算结果' }]
+const gridGroups = computed(() => (satLink.value ? GRID_GROUPS_LINK : GRID_GROUPS_CONFIG))
+const SAT_COL_KEYS = ['satelliteId', 'G_Ts', 'rxEIRP']
+const gridFields = computed(() => {
+  const link = satLink.value
+  const all = [...TX_FIELDS, ...RX_FIELDS]
+  return [
+    ...(link ? SAT_COL_KEYS.map((k) => ({ ...all.find((f) => f.key === k), group: 'sat' })) : []),
+    ...TX_FIELDS.filter((f) => (link ? !SAT_COL_KEYS.includes(f.key) : f.key !== 'satelliteId')).map((f) => ({ ...f, group: 'tx' })),
+    ...RX_FIELDS.filter((f) => !(link && SAT_COL_KEYS.includes(f.key))).map((f) => ({ ...f, group: 'rx' })),
+    ...RESULT_DEFS.filter((d) => resultKeys.value.includes(d.key)).map((d) => ({ key: '_' + d.key, label: d.label, unit: resColUnits.value[d.key] || d.unit, type: d.type === 'text' ? 'text' : 'num', ro: true, group: 'res', target: 'meta', tip: d.tip || d.label })),
+    ...customFieldDefs(customCols.value, customPool.value)
+  ]
+})
 // 计算列取值映射 { 行_id: { _键: 值 } }：结果不写行数据 → 写回不惊动存档/脏检/过期 watcher
 const computedVals = ref({})
 // 结果列显示单位自适应：每次计算按整列最大|值|共选档位（W→mW、kHz→MHz、全列<0dBW→dBm），
@@ -485,7 +543,7 @@ const computing = ref(false)
 const error = ref('')
 // —— 结果过期提示：出结果后任何计算输入再变化（含库条目被改）→ 亮「输入已变」小灯，提醒重算 ——
 const resultsStale = ref(false)
-watch([satConfigs, basebandConfigs, esConfigs, linkRows, satId],
+watch([satConfigs, basebandConfigs, esConfigs, linkRows, satId, satScope],
   () => { if (links.value.length) resultsStale.value = true }, { deep: true })
 // —— 自定义列（公式把引擎出参组合成新列，语法与求值见 shared/lbCustomCols.js）——
 // 定义按窗口记忆（localStorage），不入场景配置——口径同结果列勾选集；值由 links 里留底的引擎
@@ -604,7 +662,7 @@ async function refreshReadonly() {
     try {
       const txEs = resolveEs(row.stationId).form
       const bbForm = resolveBaseband(row.basebandId).form
-      const { satParams, linkParams } = buildParams(curSat.value.form, bbForm, row, row, txEs, resolveEs(row.rxStationId).form)
+      const { satParams, linkParams } = buildParams(satOfRow(row).form, bbForm, row, row, txEs, resolveEs(row.rxStationId).form)
       const r = await api.linkBudget.computeMode(satParams, linkParams, calcOptOf(bbForm, txEs))
       // _paW＝实时功放功率（原值不 toFixed：小功率靠 fmtQty 换 mW 档显示，见 cellTagFn）
       if (r && r.success) setVals(row._id, { _eirp: fix2(r.data.stationEIRPResult), _gt: fix2(r.data.gOverTeResult), _paW: r.data.paRecommendation })
@@ -612,7 +670,7 @@ async function refreshReadonly() {
   }
 }
 function scheduleReadonly() { if (_suppressRO) return; clearTimeout(_roT); _roT = setTimeout(refreshReadonly, 350) }
-watch([satConfigs, basebandConfigs, esConfigs, linkRows, satId], scheduleReadonly, { deep: true })
+watch([satConfigs, basebandConfigs, esConfigs, linkRows, satId, satScope], scheduleReadonly, { deep: true })
 
 // 注：地球站库编辑器曾在发射/接收标题右端显示实时 EIRP / G·T 预览，已删——频率在卫星侧后，一份站型配置
 // 不再自含算这两个量所需的全部输入（预览得挑一颗星当基准，反而误导）。链路表「地球站配置」格下的第二行
@@ -625,9 +683,11 @@ watch([satConfigs, basebandConfigs, esConfigs, linkRows, satId], scheduleReadonl
 const satTreeState = loadSatTree()
 const satTree = ref(satTreeState.sats)
 let grdCfgs = satTreeState.cfgs
-// 匹配选择随卫星库条目走（curSat.grd，见上方卫星库）：本场景用哪颗星，就用那颗星自己的方向图。
+// 匹配选择随卫星库条目走（cfg.grd，见上方卫星库）：一行链路用哪颗星，就用那颗星自己的方向图——
+// 配置级全表同一颗（curGrd），链路级逐行按「卫星」列取（grdOfRow）。
 const curGrd = computed(() => (curSat.value && curSat.value.grd) || null)
-const grdSat = computed(() => (curGrd.value ? satTree.value.find((s) => s.folder === curGrd.value.satFolder) : null) || null)
+const grdOfRow = (r) => { const s = satOfRow(r); return (s && s.grd) || null }
+const grdNodeOf = (g) => (g && g.satFolder ? satTree.value.find((s) => s.folder === g.satFolder) : null) || null
 // 天线按键里自带的 folder 解析，不再钉在 satFolder 那一个节点上——树选星与本条目导入的方向图
 // 因此能同时挂在各路天线上：「导入方向图」是纯添加，不作废已选树星的匹配。
 const antByKey = (key) => {
@@ -643,8 +703,8 @@ const antByKey = (key) => {
 // 回填），并排再报一个星名只会让人以为选了两颗星。不写说明句（口径进 title），只留两个状态标记：
 //   stale    匹配还在、本机卫星树里没有这份 GRD（换机器/未导入）
 //   mismatch 星名/轨位事后被手改得与所选 GRD 节点对不上——那才是真有两颗星，必须报出来
-const grdFacts = computed(() => {
-  const g = curGrd.value, node = grdSat.value, f = (curSat.value && curSat.value.form) || {}
+function grdFactsOf(sat) {
+  const g = (sat && sat.grd) || null, node = grdNodeOf(g), f = (sat && sat.form) || {}
   const antName = (k) => (k ? antNameOfKey(k) : '')
   const eq = (a, b) => String(a == null ? '' : a).trim() === String(b == null ? '' : b).trim()
   let mismatch = ''
@@ -662,7 +722,8 @@ const grdFacts = computed(() => {
     stale: !!(g && ((g.satFolder && !node) || missing(g.eirpKey) || missing(g.gtKey))),
     mismatch
   }
-})
+}
+const grdFacts = computed(() => grdFactsOf(bandSat.value))
 let _grdT = null
 // —— 回填＝派生量：某行的卫星 EIRP / G·T 由【匹配的天线 + 采样吃的天线设置 + 卫星几何 + 本行取值站址】唯一决定 ——
 // 这几项只要有一项变，本行该格立刻重算写回——不问那格是不是用户改过的：输入都变了，旧值必然对不上
@@ -677,30 +738,34 @@ let _grdT = null
 const grdMemo = {}                     // { 行_id: { fp: { 字段key: 指纹 }, auto: { 字段key: 上次自动值 } } }
 const memoOf = (r) => grdMemo[r._id] || (grdMemo[r._id] = { fp: {}, auto: {} })
 const ROW_DEF = { ...defaultsFor(TX_FIELDS), ...defaultsFor(RX_FIELDS) }
-// 一路天线 → 一列格子：ptOf 给该列的取值站址（EIRP 取收端、G·T 取发端）。只对真正需要回填的行发 IPC。
+// 一路天线 → 一列格子：antKeyOf 给该行这一路的天线键（配置级全表同一副，链路级按该行所用卫星各取各的），
+// ptOf 给该列的取值站址（EIRP 取收端、G·T 取发端）。同一副天线的行并成一批采样，只对真正需要回填的行发 IPC。
 // ★ 没匹配到天线时也照样登记指纹（base 为空串）：这样「本来没接天线、后来接上了」也算指纹变了，
-//   照常回填——否则载入场景后再去卫星条目里选天线，那一列会一动不动。
-async function fillFromAnt(key, antKey, ptOf, force) {
-  const a = antByKey(antKey)
-  const base = a ? grdFillBase(a.node, a.ant, a.cfg) : ''
-  const todo = []
+//   照常回填——否则载入场景后再去卫星条目里选天线，那一列会一动不动。换星＝换天线＝指纹变，同理重取。
+async function fillFromAnt(key, antKeyOf, ptOf, force) {
+  const groups = new Map()   // 天线键 → { a, base, todo }
   for (const r of linkRows) {
+    const antKey = antKeyOf(r) || ''
+    let g = groups.get(antKey)
+    if (!g) { const a = antByKey(antKey); g = { a, base: a ? grdFillBase(a.node, a.ant, a.cfg) : '', todo: [] }; groups.set(antKey, g) }
     const pt = ptOf(r)
-    const fp = `${base}|${pt.lon},${pt.lat}`
+    const fp = `${g.base}|${pt.lon},${pt.lat}`
     const m = memoOf(r)
     const prev = m.fp[key]
     m.fp[key] = fp
-    if (a && grdFillNeeded(prev, fp, r[key], ROW_DEF[key], force, m.auto[key])) todo.push({ r, pt, prev })
+    if (g.a && grdFillNeeded(prev, fp, r[key], ROW_DEF[key], force, m.auto[key])) g.todo.push({ r, pt, prev })
   }
-  if (!todo.length) return
-  const vals = await sampleAntennaParams(a.node, a.ant, a.cfg, todo.map((t) => t.pt))
-  todo.forEach((t, i) => {
-    const v = vals && vals[i]
-    const m = memoOf(t.r)
-    // 没取到值（越地平 / IPC 失败）：指纹退回原样，当这次没发生过，下次输入再变还会重试
-    if (v == null) { if (t.prev === undefined) delete m.fp[key]; else m.fp[key] = t.prev }
-    else { t.r[key] = String(v); m.auto[key] = String(v) }
-  })
+  for (const g of groups.values()) {
+    if (!g.a || !g.todo.length) continue
+    const vals = await sampleAntennaParams(g.a.node, g.a.ant, g.a.cfg, g.todo.map((t) => t.pt))
+    g.todo.forEach((t, i) => {
+      const v = vals && vals[i]
+      const m = memoOf(t.r)
+      // 没取到值（越地平 / IPC 失败）：指纹退回原样，当这次没发生过，下次输入再变还会重试
+      if (v == null) { if (t.prev === undefined) delete m.fp[key]; else m.fp[key] = t.prev }
+      else { t.r[key] = String(v); m.auto[key] = String(v) }
+    })
+  }
 }
 // 回填前若本就「无未保存改动」，回填后把基线推进到回填结果——否则实时星/GRD 自动重算出
 // 的新值（非用户操作）会被指纹判定为改动，弹出误报的「未保存，是否保存？」。
@@ -708,11 +773,11 @@ async function fillFromAnt(key, antKey, ptOf, force) {
 // force：顶栏「刷新」——本会话自动写过、现在还没被改的格子按最新星位 / 天线重取（见 grdFillNeeded）。
 async function refreshGrdFill(force) {
   const wasClean = !isDirty()
-  const g = curGrd.value
   const f = force === true
-  // 卫星EIRP 天线 → 各行收端经纬度取最大 Parameter，回填 rxEIRP；卫星G/T 天线 → 各行发端经纬度回填 G_Ts
-  await fillFromAnt('rxEIRP', g && g.eirpKey, (r) => ({ lon: parseFloat(r.rxLongitude), lat: parseFloat(r.rxLatitude) }), f)
-  await fillFromAnt('G_Ts', g && g.gtKey, (r) => ({ lon: parseFloat(r.longitude), lat: parseFloat(r.latitude) }), f)
+  // 卫星EIRP 天线 → 各行收端经纬度取最大 Parameter，回填 rxEIRP；卫星G/T 天线 → 各行发端经纬度回填 G_Ts。
+  // 天线按该行所用卫星取（配置级全表同一颗）。
+  await fillFromAnt('rxEIRP', (r) => { const g = grdOfRow(r); return g && g.eirpKey }, (r) => ({ lon: parseFloat(r.rxLongitude), lat: parseFloat(r.rxLatitude) }), f)
+  await fillFromAnt('G_Ts', (r) => { const g = grdOfRow(r); return g && g.gtKey }, (r) => ({ lon: parseFloat(r.longitude), lat: parseFloat(r.latitude) }), f)
   const ids = new Set(linkRows.map((r) => r._id))
   for (const k of Object.keys(grdMemo)) if (!ids.has(k)) delete grdMemo[k]   // 删掉的行不留底
   if (wasClean) setBaseline()
@@ -771,7 +836,9 @@ async function removeImportedGrd(cfg) {
 // 地理图是把站址铺成一整面，故同一支天线要逐格重采——卫星 G/T 随发信站站址变、卫星 EIRP 随
 // 收信站站址变，两端各挂各的。仰角门限 GSO 不另设：定点星的覆盖边界就是地平线本身。
 const geoLink = computed(() => {
-  const g = curGrd.value
+  // 铺的是当前查看的那条链路：方向图取该行所用卫星的（配置级即场景单选那颗）
+  const row = sel.value ? linkRows.find((r) => r._id === sel.value.rowId) : null
+  const g = row ? grdOfRow(row) : curGrd.value
   const pat = (key, field) => {
     const a = antByKey(key)
     const spec = a ? antennaSampleSpec(a.node, a.ant, a.cfg) : null
@@ -826,7 +893,9 @@ async function refreshLatest() {
 // 换卫星条目 / 改匹配天线 / 行经纬度变化 → 重算回填。值本身只看「空没空」（避免回填值再触发循环），
 // 空了就补回自动取值——这就是「清空该格＝恢复自动取值」那一手的触发处。
 const blankSig = (r, k) => (String(r[k] == null ? '' : r[k]).trim() === '' ? '1' : '0')
-watch(() => [satId.value, curGrd.value && curGrd.value.eirpKey, curGrd.value && curGrd.value.gtKey,
+// 天线来源签名逐行拼：配置级各行同一颗星（随 satId / 该星的两路天线键变），链路级随各行「卫星」列与各自那颗星的天线键变
+watch(() => [satScope.value, satId.value,
+  linkRows.map((r) => { const g = grdOfRow(r); return (satLink.value ? (r.satelliteId || '') : '') + ':' + (g ? g.eirpKey + ':' + g.gtKey : '') }).join(';'),
   linkRows.map((r) => r.longitude + ',' + r.latitude).join(';'),
   linkRows.map((r) => r.rxLongitude + ',' + r.rxLatitude).join(';'),
   linkRows.map((r) => blankSig(r, 'rxEIRP') + blankSig(r, 'G_Ts')).join('')],
@@ -915,13 +984,15 @@ async function refreshSlaSun() {
 }
 // 重算后链路可能变少：下标越界就退回第一条，免得弹窗里一片空白、看着像算漏了
 watch(links, () => { if (slaIdx.value >= links.value.length) slaIdx.value = 0 })
-// 频率计划核对：卫星条目引用了「计划 → 转发器」时才有；计划全文异步取，随引用变化重载
+// 频率计划核对：卫星条目引用了「计划 → 转发器」时才有；计划全文异步取，随引用变化重载。
+// 卫星取弹窗正看着的那条链路所用的（配置级即场景单选那颗）
+const slaSat = computed(() => (slaRow.value ? satOfRow(slaRow.value) : curSat.value))
 const slaFpPlan = shallowRef(null)
-watch(() => (curSat.value && curSat.value.grd ? curSat.value.grd.fpId : ''), async (id) => {
+watch(() => (slaSat.value && slaSat.value.grd ? slaSat.value.grd.fpId : ''), async (id) => {
   slaFpPlan.value = id ? await getPlan(id) : null
 }, { immediate: true })
 const slaFpCheck = computed(() => {
-  const g = curSat.value && curSat.value.grd
+  const g = slaSat.value && slaSat.value.grd
   const d = slaLink.value && slaLink.value.data
   if (!slaFpPlan.value || !g || !g.fpNo || !d) return null
   const bw = parseFloat(d.allocBandwidthResult), fc = parseFloat(d.uplinkFrequencyResult)
@@ -967,7 +1038,7 @@ function slaReportExtra(l) {
   }
 }
 function slaDefaultNameOf(en) {
-  const s = curSat.value ? curSat.value.form.satelliteName : ''
+  const s = sceneSatName.value
   return en
     ? `GEO_SLA_${(s || 'Results').replace(/[^\w-]+/g, '_')}`
     : `GEO服务等级指标_${(s || '结果').replace(/[\\/:*?"<>|]/g, '_')}`
@@ -1100,7 +1171,7 @@ async function compute() {
       const row = linkRows[i]
       const txEs = resolveEs(row.stationId).form
       const bbForm = resolveBaseband(row.basebandId).form
-      const { satParams, linkParams } = buildParams(curSat.value.form, bbForm, row, row, txEs, resolveEs(row.rxStationId).form)
+      const { satParams, linkParams } = buildParams(satOfRow(row).form, bbForm, row, row, txEs, resolveEs(row.rxStationId).form)
       // 计算方式与系统余量/超发量随该行所选载波；「设置功放功率」另取发端站型的功放功率（站的硬件属性）
       const opt = calcOptOf(bbForm, txEs)
       // 留底本行真正送进引擎的那份入参，供图表区参数扫描原地重跑（见 selParams）
@@ -1273,8 +1344,8 @@ const advRows = computed(() => linkRows.map((row, i) => {
   const name = l ? `${l.txName} → ${l.rxName}`
     : ([row.earthStationLocation, row.rxEarthStationLocation].filter(Boolean).join(' → ') || '链路 ' + (i + 1))
   const marginDb = d ? (isFinite(l.resolvedMargin) ? l.resolvedMargin : parseFloat(d.marginResult)) : NaN
-  // 组网语义：功放（此刻实算值 + 发端站型预设）、转发器回退——都从行与上一次结果现取，不另跑引擎
-  const satForm = (curSat.value && curSat.value.form) || {}
+  // 组网语义：功放（此刻实算值 + 发端站型预设）、转发器回退——都从行与上一次结果现取，不另跑引擎；卫星取该行所用的
+  const satForm = (satOfRow(row) && satOfRow(row).form) || {}
   return {
     no: i + 1, rowId: row._id, name, carrierId: bb.id, carrierName: bb.name,
     bwKHz: d ? parseFloat(d.allocBandwidthResult) : NaN,
@@ -1288,10 +1359,10 @@ const advRows = computed(() => linkRows.map((row, i) => {
     booDb: parseFloat(satForm.BOo), boiDb: parseFloat(satForm.BOi)
   }
 }))
-// 转发器带宽（占用率读数用）：优先取结果里引擎回报的那份，没有结果则取当前卫星条目
+// 转发器带宽（占用率读数用）：优先取结果里引擎回报的那份，没有结果则取卫星分区那颗星（配置级即场景单选）
 const advTpBwMHz = computed(() => {
   const d = (links.value.find((l) => l.data) || {}).data
-  const v = parseFloat(d ? d.transponderBandwidthResult : (curSat.value && curSat.value.form.transponderBandwidth))
+  const v = parseFloat(d ? d.transponderBandwidthResult : (bandSat.value && bandSat.value.form.transponderBandwidth))
   return isFinite(v) ? v : 0
 })
 // 参考态必须是「此刻这套输入」算出来的：没算过或输入已变，先算一遍再开
@@ -1370,6 +1441,7 @@ function serializeState() {
     // ★ row.sla 是嵌套对象：从响应式行上浅拷出来的是 Vue 的 Proxy，结构化克隆过不了 ——
     //   saveConfig 走 IPC 当场抛「保存失败」。applyRowSla 内部 normRowSla 现造纯对象，顺手落平。
     rows: linkRows.map((r) => { const o = {}; for (const k of Object.keys(r)) if (!k.startsWith('_')) o[k] = r[k]; if (o.sla) applyRowSla(o, o.sla); return o }),
+    satScope: satScope.value,   // 卫星参数归属：'config' 配置级（satId）/ 'link' 链路级（各行 satelliteId）
     satId: satId.value,
     slaParams: { ...slaParams }
   }
@@ -1412,6 +1484,7 @@ function applyState(st) {
       return o
     }))
     satId.value = st.satId || ''
+    satScope.value = st.satScope === 'link' ? 'link' : 'config'   // 旧场景无此字段 → 配置级（原口径）
     adoptSceneCalc(st)                        // v2 场景的计算策略 → 下沉到所引载波库条目
     if (st.grdSel) adoptSceneGrd(st.grdSel)   // 旧场景的方向图匹配 → 下沉到所引卫星库条目
     return
@@ -1472,6 +1545,7 @@ function applyState(st) {
     const satMap = adoptEntries(satConfigs, [{ id: '__sat0', name: form.satelliteName || '卫星', nameAuto: true, form, grd: normGrd(st.grdSel) }], () => makeSatConfig(), ['grd'])
     satId.value = satMap.__sat0 || ''
   } else { satId.value = ''; adoptSceneGrd(st.grdSel) }
+  satScope.value = 'config'   // 旧结构只有一份 satForm：配置级
   // ④ 双表 → 单链路表（行引用经映射改写；收端引用列改名 rxStationId）
   const remapT = (r) => { const o = { ...r }; o.basebandId = (o.basebandId && bbMap[o.basebandId]) || ''; o.stationId = (o.stationId && esMap[o.stationId]) || ''; return o }
   const remapR = (r) => { const o = { ...r }; o.rxStationId = (o.stationId && esMap[o.stationId]) || ''; delete o.stationId; return o }
@@ -1492,13 +1566,13 @@ let _stateT = null
 // 「上次会话」存盘要带上 activeId：否则重开窗口时配置列表没有任何一项被聚焦，
 // 但工作区却显示着上次的内容，看起来像是内容跟列表对不上号（用户反馈的困惑点）。
 function scheduleSaveState() { clearTimeout(_stateT); _stateT = setTimeout(() => { try { localStorage.setItem(STATE_KEY, JSON.stringify({ ...serializeState(), activeId: activeId.value })) } catch (e) { /* 配额满等忽略 */ } dirtyFlag.value = isDirty() }, 600) }
-watch([linkRows, satId, activeId, slaParams], scheduleSaveState, { deep: true })
+watch([linkRows, satId, satScope, activeId, slaParams], scheduleSaveState, { deep: true })
 
 // —— 命名配置 CRUD ——
 // 树本身的增删改移 / 剪贴板 / 右键 / 键盘全在 shared/useConfigTree.js（见文件上方 useConfigTree(...) 注入点）。
 // 这里只留本窗特有的三件：保存为新配置的预填名、空白配置的内容、删除文件夹用的确认框。
 // 注意：Electron 渲染进程没有 window.prompt / confirm（静默返回 null → 早先「保存不了」的根因），一律用应用内弹窗。
-function defaultCfgName() { const nm = curSat.value && curSat.value.form.satelliteName; return (nm ? nm + ' ' : '') + byLang(`链路 ${linkRows.length} 条`, `${linkRows.length} Links`) }
+function defaultCfgName() { const nm = sceneSatName.value; return (nm ? nm + ' ' : '') + byLang(`链路 ${linkRows.length} 条`, `${linkRows.length} Links`) }
 
 // 通用确认弹窗（Electron 渲染进程无原生 confirm）
 const confirmDlg = reactive({ open: false, msg: '' })
@@ -1511,6 +1585,7 @@ function blankState() {
   return {
     v: 3,
     rows: [{ ...defaultsFor(TX_FIELDS), ...defaultsFor(RX_FIELDS), rxStationId: (esConfigs[1] && esConfigs[1].id) || '' }],
+    satScope: 'config',
     satId: '',
     slaParams: { ...DEFAULT_SLA_PARAMS }
   }
@@ -1522,7 +1597,7 @@ function fingerprintOf(s) {
   // 库是全局资产（自动保存、不入场景）：指纹只含场景自身内容（行/引用）；
   // 方向图匹配已随卫星库条目走（v1.4.3）、计算策略已随载波库条目走（v1.3.8），不再是场景内容 → 不入指纹。
   // SLA：采用值/勾选在 rows 里（row.sla）自然计入；参数是场景级，显式列进来 —— 改了 SLA 就是改了场景。
-  return stableStringify({ rows: s.rows, satId: s.satId, slaParams: s.slaParams })
+  return stableStringify({ rows: s.rows, satScope: s.satScope || 'config', satId: s.satId, slaParams: s.slaParams })
 }
 function fingerprint() { return fingerprintOf(serializeState()) }
 let activeBaseline = ''
@@ -1570,7 +1645,9 @@ function shareRefsOf(st) {
   if (!st || !Array.isArray(st.rows)) return { es: [], carrier: [], sat: [] }
   const es = [], carrier = []
   for (const r of st.rows) { es.push(r.stationId || '', r.rxStationId || ''); carrier.push(r.basebandId || '') }
-  return { es, carrier, sat: [st.satId || ''] }
+  // 卫星按该场景的归属取：链路级引用各行「卫星」列，配置级引用场景单选
+  const sat = st.satScope === 'link' ? st.rows.map((r) => r.satelliteId || '') : [st.satId || '']
+  return { es, carrier, sat }
 }
 // 打包前把空引用钉成显式 id：'' 的意思是「用库里第一份」，到了对端就成了「用他库里第一份」
 function sharePinRefs(st) {
@@ -1580,8 +1657,9 @@ function sharePinRefs(st) {
     r.stationId = resolveRefId(esConfigs, r.stationId)
     r.rxStationId = resolveRefId(esConfigs, r.rxStationId)
     r.basebandId = resolveRefId(basebandConfigs, r.basebandId)
+    if (s.satScope === 'link') r.satelliteId = resolveRefId(satConfigs, r.satelliteId)
   }
-  s.satId = resolveRefId(satConfigs, s.satId)
+  if (s.satScope !== 'link') s.satId = resolveRefId(satConfigs, s.satId)
   return s
 }
 function shareRemap(state, idMap) {
@@ -1590,6 +1668,7 @@ function shareRemap(state, idMap) {
     if (r.stationId) r.stationId = idMap.es[r.stationId] || ''
     if (r.rxStationId) r.rxStationId = idMap.es[r.rxStationId] || ''
     if (r.basebandId) r.basebandId = idMap.carrier[r.basebandId] || ''
+    if (r.satelliteId) r.satelliteId = idMap.sat[r.satelliteId] || ''
   }
   if (state.satId) state.satId = idMap.sat[state.satId] || ''
 }
@@ -1608,11 +1687,11 @@ function toMiniItems(picked) {
   for (const p of picked || []) {
     const st = p && p.state
     if (!st || !Array.isArray(st.rows) || !st.rows.length) continue
-    const sat = resolveSat(st.satId)
     // 已存配置的 st 是 configs.json 里的旧快照，fresh 却是按工作区当前参数算的：工作区一脏两者就不是
     // 一回事（行数相同不代表内容相同），结果不能贴上去，让小程序自己算
     const useRes = fresh && fresh.length === st.rows.length && (p.id === '__draft__' || (p.id === activeId.value && !isDirty()))
     st.rows.forEach((row, i) => {
+      const sat = st.satScope === 'link' ? resolveSat(row.satelliteId) : resolveSat(st.satId)   // 卫星按该场景的归属取
       const bb = resolveBaseband(row.basebandId)
       const txEs = resolveEs(row.stationId)
       const rxEs = resolveEs(row.rxStationId)
@@ -1733,8 +1812,8 @@ const { reportDlg, reportVariant, openReportDialog, openSlaReportDialog, submitR
     const modes = new Set(links.value.map((l) => calcOfLink(l).key).filter(Boolean))
     return {
       mode: modes.size === 1 ? calcOfLink(links.value[0]).label : '',
-      satelliteName: curSat.value ? curSat.value.form.satelliteName : '',
-      frequencyBand: curSat.value ? curSat.value.form.frequencyBand : ''
+      satelliteName: sceneSatName.value,
+      frequencyBand: sceneBand.value
     }
   },
   calcFor: (l) => { const c = calcOfLink(l); return { mode: c.label, targetMargin: c.margin, overDb: c.overDb } },
@@ -1745,7 +1824,7 @@ const { reportDlg, reportVariant, openReportDialog, openSlaReportDialog, submitR
   slaExtra: (l) => slaReportExtra(l),
   slaDefaultName: (en) => slaDefaultNameOf(en),
   defaultName: (en) => {
-    const s = curSat.value ? curSat.value.form.satelliteName : ''
+    const s = sceneSatName.value
     return en
       ? `GEO_Link_Budget_Report_${(s || 'Results').replace(/[^\w-]+/g, '_')}`
       : `GEO链路预算报告_${(s || '结果').replace(/[\\/:*?"<>|]/g, '_')}`
@@ -1940,7 +2019,8 @@ onMounted(async () => {
 
         <!-- 链路工作台：全宽横向分区（卫星 → 链路表 → 详细预算），计算栏吸底 -->
         <div ref="flowEl" class="lbx-flow lbx-cards">
-          <LbSection id="sat" title="卫星与转发器">
+          <!-- 卫星分区只在「统一指定」下出现：逐链路指定时卫星在链路表表首的「卫星」列组里逐行选，这里再报一颗星只会混淆 -->
+          <LbSection v-if="!satLink" id="sat" title="卫星与转发器">
             <template #actions>
               <button class="lb-mini" title="到资源库编辑当前卫星：方向图天线匹配 + 完整空间段参数" @click="editInLibrary('sat')">编辑参数</button>
             </template>
@@ -1952,11 +2032,11 @@ onMounted(async () => {
                 <span class="lbx-satgut">配置</span>
                 <div class="lbx-satmain">
                   <select class="lbx-satsel" :value="(curSat && curSat.id) || ''"
-                    title="从卫星资源库选择本场景使用的卫星（场景级单选，全部链路共用）" @change="satId = $event.target.value">
+                    title="从卫星资源库选择本配置使用的卫星（统一指定：全部链路共用）" @change="satId = $event.target.value">
                     <option v-for="o in satSelectOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
                   </select>
                   <span v-if="curSat" class="lbx-satname" title="卫星名称（随资源库条目；选中 GRD 实时星时以星历为准）">{{ curSat.form.satelliteName || '—' }}</span>
-                  <span class="lbx-satnote">场景级 · 全部 {{ linkRows.length }} 条链路共用</span>
+                  <span class="lbx-satnote">全部 {{ linkRows.length }} 条链路共用</span>
                 </div>
               </div>
               <div v-if="curSat" class="lbx-satline">
@@ -1986,6 +2066,11 @@ onMounted(async () => {
 
           <LbSection id="links" title="链路表" :count="linkRows.length" summary="一行一条链路：发端 + 收端 + 库引用 + 结果">
             <template #actions>
+              <!-- 卫星的指定方式（场景级）：统一指定＝上方分区单选一颗；逐链路指定＝表首「卫星」列组逐行选，上方分区收起 -->
+              <span class="lbx-segwrap" title="卫星的指定方式：统一指定＝本配置只用一颗卫星（在上方「卫星与转发器」分区选择，全部链路共用）；逐链路指定＝链路表每行各选卫星（表首「卫星」列组：卫星 · 卫星G/T · 卫星EIRP，上方分区随之收起）。切换时各行所用卫星保持不变，计算口径不变">
+                <span class="lbx-segl">卫星</span>
+                <span class="lbu-seg"><button v-for="s in SAT_SCOPES" :key="s.v" :class="{ on: satScope === s.v }" @click="setSatScope(s.v)">{{ s.l }}</button></span>
+              </span>
               <span class="lbx-colpick-wrap">
                 <button class="lb-mini" title="计算结果列：勾选显示列，底部可新建自定义公式列" @click="colPickOpen = !colPickOpen">结果列 <Icon name="chevron-down" :size="12" /></button>
                 <div v-if="colPickOpen" class="lbx-colpick-mask" @click="colPickOpen = false" @wheel.prevent></div>
@@ -2006,11 +2091,11 @@ onMounted(async () => {
               </span>
             </template>
             <div class="lbx-grid">
-              <StationGrid grid-id="lb.links" :stations="linkRows" :fields="gridFields" :groups="GRID_GROUPS" :extra-values="gridVals" :cell-class="cellClassFn"
+              <StationGrid grid-id="lb.links" :stations="linkRows" :fields="gridFields" :groups="gridGroups" :extra-values="gridVals" :cell-class="cellClassFn"
                 :cell-sub="cellSubFn" :cell-tag="cellTagFn" :cell-fill="cellFillFn" :freeze-keys="false"
                 :cities="cities" :city-search="citySearch" label="链路" :auto-geo="autoGeoRow"
-                :select-options="{ basebandId: basebandSelectOptions, stationId: esSelectOptions, rxStationId: esSelectOptions }"
-                :lib-fields="{ basebandId: 'carrier', stationId: 'station', rxStationId: 'station' }" @edit-lib="editInLibrary"
+                :select-options="{ basebandId: basebandSelectOptions, stationId: esSelectOptions, rxStationId: esSelectOptions, satelliteId: satColOptions }"
+                :lib-fields="{ basebandId: 'carrier', stationId: 'station', rxStationId: 'station', satelliteId: 'sat' }" @edit-lib="editInLibrary"
                 @row-focus="onRowFocus" />
             </div>
             <LbCapFoot :cap="capacitySummary" :cap-main="capMain" :bw-main="bwMain" :pbw-main="pbwMain" :readout="rowReadout" />
@@ -2058,7 +2143,7 @@ onMounted(async () => {
     <LbCustomColsDialog :open="ccDlgOpen" :cols="customCols" :pool="customPool" :preview-fn="ccPreview"
       @update:cols="customCols = $event" @close="ccDlgOpen = false" />
     <LbReportDialog :open="reportDlg.open" :lang="reportLang" orbit-type="GEO"
-      :sat-name="curSat ? curSat.form.satelliteName : ''" :band="curSat ? curSat.form.frequencyBand : ''" :link-count="links.length"
+      :sat-name="sceneSatName" :band="sceneBand" :link-count="links.length"
       :viz-available="showViz" :sla-count="slaCount" store-key="linkbudget" :busy="reportDlg.busy" :progress="reportDlg.progress"
       @close="reportDlg.open = false" :variant="reportVariant" @submit="submitReport" />
 

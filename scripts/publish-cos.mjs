@@ -45,6 +45,14 @@ const PART_SIZE = 8 * 1024 * 1024            // 分片大小 8MB（COS 单片下
 const CONCURRENCY = 4                        // 并发分片数：高 RTT 链路用多流填满管道
 const MULTIPART_THRESHOLD = 8 * 1024 * 1024  // 超过此大小走分块并发，否则单次 PUT
 
+// 固定下载地址：安装包除了按版本号命名的那一份，再在桶内复制一份到固定键名（服务端复制，零上传）。
+// 小程序「仿真平台」页、关于窗口、对外分享写的都是这一个地址，不随版本号变：
+//   https://<bucket>.cos.<region>.myqcloud.com/updates/satsim-setup.exe
+// 浏览器落盘时文件名仍是「卫星仿真平台-x.y.z-Setup.exe」——靠复制时改写的 Content-Disposition（RFC 5987 filename*）。
+// 自动更新只认 latest.yml 里列的文件，不认识这个对象，互不影响。
+const STABLE_FILE = 'satsim-setup.exe'
+const STABLE_URL = `https://${COS_BUCKET}.cos.${COS_REGION}.myqcloud.com/${PREFIX}${STABLE_FILE}`
+
 const sha1 = (s) => createHash('sha1').update(s).digest('hex')
 const hmac = (key, s) => createHmac('sha1', key).update(s).digest('hex')
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
@@ -198,6 +206,43 @@ async function abortMultipart(key, uploadId) {
   try { await signedRequest('DELETE', key, { params: { uploadId } }) } catch { /* 兜底清理，忽略失败 */ }
 }
 
+// ---- 固定下载地址：PUT Object - Copy（x-cos-copy-source），桶内服务端复制，不经本机 ----
+// 源对象是公读的，故复制只要求本密钥对 updates/* 有 PutObject（发布密钥本就有）。
+async function copyToStable(setupFile) {
+  const srcKey = PREFIX + setupFile
+  const dstKey = PREFIX + STABLE_FILE
+  // 复制源恒用常规域名（加速域名不能作 copy-source）；本请求自身仍走 HOST
+  const source = `${COS_BUCKET}.cos.${COS_REGION}.myqcloud.com${encodePath(srcKey)}`
+  const disposition = `attachment; filename="${STABLE_FILE}"; filename*=UTF-8''${encodeURIComponent(setupFile)}`
+  const res = await signedRequest('PUT', dstKey, {
+    headers: {
+      'x-cos-copy-source': source,
+      'x-cos-metadata-directive': 'Replaced',
+      'Content-Type': 'application/x-msdownload',
+      'Content-Disposition': disposition,
+      'Content-Length': 0
+    }
+  })
+  // 与 complete 同款：COS 可能 200 但 body 是 <Error>
+  if (/<Error>/.test(res.text) || !/<ETag>/.test(res.text)) throw new Error('复制到固定地址失败：' + res.text.slice(0, 300))
+  console.log(`  固定下载地址已指向 ${setupFile}\n  ${STABLE_URL}`)
+}
+
+// COS 上当前发布的安装包文件名（latest.yml 的 path；公读，无需签名）
+function fetchPublishedSetup() {
+  return new Promise((res, rej) => {
+    https.get({ host: `${COS_BUCKET}.cos.${COS_REGION}.myqcloud.com`, path: encodePath(PREFIX + 'latest.yml') }, (r) => {
+      let t = ''
+      r.on('data', (d) => (t += d))
+      r.on('end', () => {
+        const m = /^path:\s*(.+?)\s*$/m.exec(t)
+        if (r.statusCode !== 200 || !m) return rej(new Error(`读取 latest.yml 失败（HTTP ${r.statusCode}）`))
+        res(m[1].replace(/^['"]|['"]$/g, ''))
+      })
+    }).on('error', rej)
+  })
+}
+
 // 简单并发池：最多 concurrency 个 worker 同时跑，worker(i) 返回第 i 项结果
 async function runPool(count, concurrency, worker) {
   const results = new Array(count)
@@ -237,6 +282,15 @@ async function multipartUpload(file) {
 // 只上传与自动更新相关的文件（不传 portable 等无关产物）。
 // 安装包/blockmap 还要求文件名包含当前 package.json 版本号：release/ 目录不会在构建前自动清空，
 // 若目录里残留着上一次（旧版本号）的 Setup.exe，正则若不带版本号会把新旧两个版本都上传到 COS。
+// --stable-only：不上传任何文件，只把 COS 上当前发布的安装包（latest.yml 的 path）复制到固定下载地址。
+// 用于补做（旧版发布时还没有这一步）或上一次发布末尾复制失败后的修复。
+if (process.argv.includes('--stable-only')) {
+  const setup = await fetchPublishedSetup()
+  console.log(`当前发布的安装包：${setup}`)
+  await copyToStable(setup)
+  process.exit(0)
+}
+
 const { version } = JSON.parse(readFileSync(resolve('package.json'), 'utf8'))
 const setupRe = new RegExp(`-${version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-Setup\\.exe(\\.blockmap)?$`)
 const allFiles = readdirSync(RELEASE_DIR)
@@ -268,3 +322,11 @@ for (const f of ordered) {
   }
 }
 console.log('✅ 上传完成')
+
+// 固定下载地址跟上这一版。失败不算发布失败（自动更新已经可用），但要喊出来：否则固定地址会停在旧版
+const setupFile = files.find((f) => /-Setup\.exe$/.test(f))
+if (setupFile) {
+  try { await copyToStable(setupFile) } catch (e) {
+    console.warn(`⚠️  固定下载地址未更新（${e.message.split('\n')[0]}）。稍后单独执行：node scripts/publish-cos.mjs --stable-only`)
+  }
+}

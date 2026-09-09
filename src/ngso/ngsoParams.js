@@ -102,6 +102,11 @@ export const FIELD_GROUPS = [
       { key: 'basebandId', label: '载波信号配置', type: 'select', options: [], def: '', target: 'meta' },
       // 地球站配置（射频站型）：发射链参数由所选配置提供（见 station 组）；options 由 App 按地球站库动态注入
       { key: 'stationId', label: '地球站配置', type: 'select', options: [], def: '', target: 'meta' },
+      // 卫星（链路级卫星参数归属专用列）：本行链路所用的卫星库条目 id。配置级归属下此列不显示，各行一律取场景单选
+      // 的那颗星（satId）；链路级下链路表按行从卫星库选择，并与「卫星G/T」「卫星EIRP」并入「卫星」列组
+      //（列序＝信号流向：卫星 → 对本行发信站的 G/T → 对本行收信站的 EIRP，见 LinkBudgetApp 的 gridFields）。
+      // options 由 App 按卫星库动态注入；target:'meta' 不进引擎参数——两种归属只决定每行的 satForm 从哪里取。
+      { key: 'satelliteId', label: '卫星', type: 'select', options: [], def: '', target: 'meta' },
       { key: 'earthStationLocation', label: '地球站位置', type: 'text', def: '北京', target: 'link', city: 'tx', lonKey: 'longitude', latKey: 'latitude' },
       { key: 'longitude', label: '经度', unit: '°E', type: 'num', def: '116.4074', target: 'link' },
       { key: 'latitude', label: '纬度', unit: '°N', type: 'num', def: '39.9042', target: 'link' },

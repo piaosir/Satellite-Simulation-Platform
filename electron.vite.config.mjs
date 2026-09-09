@@ -2,6 +2,18 @@ import { resolve } from 'path'
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 import vue from '@vitejs/plugin-vue'
 import { viteStaticCopy } from 'vite-plugin-static-copy'
+import { writeIndex, SOURCES as CMD_INDEX_SOURCES } from './scripts/cmd-index.mjs'
+
+// 标题栏搜索框的分区 / 参数行索引：dev / build 起步时按模板重生成 src/shared/cmdIndex.data.js（内容没变不写盘），
+// dev 下模板一改随手刷新。生成的是真实文件而非虚拟模块 —— 各 harness 直接 import 也不需要本插件。
+function cmdIndexPlugin() {
+  const watched = new Set(CMD_INDEX_SOURCES.map((x) => resolve(x.file).replace(/\\/g, '/')))
+  return {
+    name: 'satsim-cmd-index',
+    buildStart() { writeIndex() },
+    handleHotUpdate({ file }) { if (watched.has(String(file).replace(/\\/g, '/'))) writeIndex() }
+  }
+}
 
 // Cesium 运行时资源目录（绝对路径 + 正斜杠，供 fast-glob 在 Windows 下正确匹配）。
 const cesiumBuild = resolve('node_modules/cesium/Build/Cesium').replace(/\\/g, '/')
@@ -53,6 +65,7 @@ export default defineConfig({
     },
     plugins: [
       vue(),
+      cmdIndexPlugin(),
       viteStaticCopy({
         targets: [
           { src: cesiumBuild + '/Workers', dest: 'cesium' },

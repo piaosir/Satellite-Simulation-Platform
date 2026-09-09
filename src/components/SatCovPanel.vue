@@ -92,7 +92,7 @@ function shellWhy(sh) {
          唯一的区别是「画哪些」各存一份：本视图勾选的天线不影响对地视图，反之亦然。
          仰角线是纯对地概念（等仰角环画在地表），本树按 kind 过滤掉，也不提供「加仰角线」。 -->
     <div class="sec">
-      <div class="sect acc" :class="{ open: isSecOpen('satcov-tree') }" @click="toggleSec('satcov-tree')">
+      <div class="sect acc" data-sec="satcov-tree" :class="{ open: isSecOpen('satcov-tree') }" @click="toggleSec('satcov-tree')">
         <Icon :name="isSecOpen('satcov-tree') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>卫星 / 天线</span>
         <span v-if="sc.selected.value.length" class="editing">{{ sc.selected.value.length }} 已选</span>
         <span class="lnk" title="添加自定义卫星，或从星座点选/搜索关联卫星" @click.stop="emit('add-sat')"><Icon name="plus" :size="12" /> 卫星</span>
@@ -168,7 +168,7 @@ function shellWhy(sh) {
 
     <!-- 轨道壳层（本视图独有）：波束投到哪些球壳上 -->
     <div class="sec">
-      <div class="sect acc" :class="{ open: isSecOpen('satcov-shell') }" @click="toggleSec('satcov-shell')">
+      <div class="sect acc" data-sec="satcov-shell" :class="{ open: isSecOpen('satcov-shell') }" @click="toggleSec('satcov-shell')">
         <Icon :name="isSecOpen('satcov-shell') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>轨道壳层</span>
         <span class="lnk" title="从全量在轨目录里挑壳层（可看清每层是哪些星座、哪些星）" @click.stop="emit('pick-shells')">从星座取…</span>
       </div>

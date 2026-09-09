@@ -24,8 +24,10 @@ import { MODCOD_COLS, modcodGridCols, cellText as mcCellText, cellTip as mcCellT
 import { MOD_FAMILIES, ordersOf, isValidOrderFor, composeModulation, parseModulation, modFactorOf } from '../shared/carrierRate.js'
 
 const emit = defineEmits(['close'])
+// tab：打开时停在哪一页（顶部搜索框「文件管理 ▸ 天线方向图」一类的定位入口传入；缺省轨道星历）
+const props = defineProps({ tab: { type: String, default: 'omm' } })
 const api = typeof window !== 'undefined' ? window.api : null
-const tab = ref('omm')
+const tab = ref(['omm', 'grd', 'freqplan', 'modcod', 'gxt'].includes(props.tab) ? props.tab : 'omm')
 const msg = ref('')
 // 面板内瞬时提示 + 落底部日志窗格（两者共用同一份文案，覆盖本文件全部 30 处导入/导出/删除反馈，无需逐处补记）
 function flash(t) { msg.value = t; logMsg(`文件管理：${t}`, /失败/.test(t) ? 'warn' : 'info'); setTimeout(() => { if (msg.value === t) msg.value = '' }, 4000) }

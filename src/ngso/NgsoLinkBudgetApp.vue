@@ -175,13 +175,34 @@ function normNgsoSat(ns, legacyGrd) {
 }
 function makeSatConfig(name) { return withAutoFlag({ id: 'sat' + (_satSeq++), name: name || '', form: { ...defaultsFor(SAT_FIELDS) }, ngsoSat: blankNgsoSat() }, 'sat') }
 const satConfigs = reactive([makeSatConfig('默认卫星')])
-const satId = ref('')   // 场景选用的卫星库条目（空 = 第一份）
+const satId = ref('')   // 配置级归属下本场景选用的卫星库条目（空 = 第一份）
 function resolveSat(id) {
   if (!id) return satConfigs[0]
   return satConfigs.find((c) => c.id === id) || satConfigs.find((c) => c.name === id) || satConfigs[0]
 }
 const curSat = computed(() => resolveSat(satId.value))
 const satSelectOptions = computed(() => satConfigs.map((c) => ({ value: c.id, label: c.name })))
+// —— 卫星的指定方式（场景级，随场景存档；三个链路预算窗口同一套；开关在链路表节头）——
+//   'config' 统一指定：本配置只用一颗卫星（satId），在「卫星与轨道」分区选，全部链路共用——NGSO 出厂口径；
+//   'link'   逐链路指定：链路表每行各选卫星（行字段 satelliteId），表首多出「卫星」列组（卫星 · 卫星G/T · 卫星EIRP），
+//            几何（轨道来源 ngsoSat / 轨道高度 / 频率）也按该行所用的那颗星解；上方卫星分区随之收起。
+// 引擎口径不变：两种方式只决定每行的 satForm 与轨道从哪里取（见 satOfRow）。
+const SAT_SCOPES = [{ v: 'config', l: '统一指定' }, { v: 'link', l: '逐链路指定' }]
+const satScope = ref(localStorage.getItem('ngso/satScope') === 'link' ? 'link' : 'config')
+watch(satScope, (v) => { try { localStorage.setItem('ngso/satScope', v) } catch (e) { /* ignore */ } })
+const satLink = computed(() => satScope.value === 'link')
+// 某行链路所用的卫星库条目：链路级取该行「卫星」列，配置级取场景单选
+const satOfRow = (row) => (satLink.value ? resolveSat(row && row.satelliteId) : curSat.value)
+// 链路表「卫星」列的选项（空 = 库中第一份，与引擎「空→第一份」口径一致）
+const satColOptions = computed(() => [{ value: '', label: '（默认）' }, ...satConfigs.map((c) => ({ value: c.id, label: c.name }))])
+// 切换归属时各行所用卫星保持不变：配置级→链路级 把场景卫星写进空着的「卫星」列；链路级→配置级 场景卫星取首行所选
+function setSatScope(v) {
+  if (v !== 'link' && v !== 'config') return
+  if (v === satScope.value) return
+  if (v === 'link') { const id = curSat.value ? curSat.value.id : ''; for (const r of linkRows) if (!r.satelliteId) r.satelliteId = id }
+  else if (linkRows.length) { const s = resolveSat(linkRows[0].satelliteId); if (s) satId.value = s.id }
+  satScope.value = v
+}
 function addSatConfig() { satConfigs.push(makeSatConfig()); syncAutoNames(satConfigs, 'sat') }
 function duplicateSatConfig(cfg) {
   satConfigs.push({ id: 'sat' + (_satSeq++), name: cfg.nameAuto ? '' : copyNameOf(cfg.name), nameAuto: !!cfg.nameAuto, form: JSON.parse(JSON.stringify(cfg.form)), ngsoSat: normNgsoSat(cfg.ngsoSat) })
@@ -192,14 +213,16 @@ function removeSatConfig(cfg) { removeLibEntry(satConfigs, cfg, 'sat') }
 // —— 库条目删除守卫：被链路行 / 已保存场景引用时先提示引用数 ——
 function refCount(kind, id) {
   let n = 0
-  const rowHit = (r) => (kind === 'es' ? (r.stationId === id || r.rxStationId === id) : kind === 'bb' ? r.basebandId === id : false)
-  for (const r of linkRows) if (rowHit(r)) n++
-  if (kind === 'sat' && (satId.value === id || (!satId.value && satConfigs[0] && satConfigs[0].id === id))) n++
+  // 卫星：配置级看场景单选，链路级看各行「卫星」列（按该场景自己的归属判，另一种归属下的残留值不算引用）
+  const rowHit = (r, link) => (kind === 'es' ? (r.stationId === id || r.rxStationId === id) : kind === 'bb' ? r.basebandId === id : kind === 'sat' ? (link && r.satelliteId === id) : false)
+  for (const r of linkRows) if (rowHit(r, satLink.value)) n++
+  if (kind === 'sat' && !satLink.value && (satId.value === id || (!satId.value && satConfigs[0] && satConfigs[0].id === id))) n++
   for (const c of configs.value) {
     const st = c && c.state
     if (!st) continue
-    if (Array.isArray(st.rows)) for (const r of st.rows) if (r && rowHit(r)) n++
-    if (kind === 'sat' && st.satId === id) n++
+    const link = st.satScope === 'link'
+    if (Array.isArray(st.rows)) for (const r of st.rows) if (r && rowHit(r, link)) n++
+    if (kind === 'sat' && !link && st.satId === id) n++
   }
   return n
 }
@@ -316,7 +339,7 @@ const linkRows = reactive([newLinkRow()])
 
 const LIB_TABS = [
   { key: 'station', label: '地球站', tip: '站型收发射频参数库：链路表「地球站配置」列按行引用' },
-  { key: 'sat', label: '卫星', tip: '空间段参数库（含轨道来源）：主区「卫星与轨道」分区场景级单选' },
+  { key: 'sat', label: '卫星', tip: '空间段参数库（含轨道来源）：卫星统一指定时在主区「卫星与轨道」分区单选，逐链路指定时由链路表「卫星」列按行引用' },
   { key: 'carrier', label: '载波', tip: '载波信号库：链路表「载波信号配置」列按行引用' }
 ]
 const libTab = ref('station')
@@ -344,14 +367,14 @@ const satLibSummary = (c) => {
 const SAT_SRC_LABEL = { tree: '卫星/天线树取星', search: '星历搜索定轨', manual: '手动轨道' }
 // 星名：全窗口唯一的卫星身份。取星后以所选星为准（ns.name），手动轨道时用表单里的卫星名称。
 // 库条目名是「配置」标签（同一颗星可有多份转发器配置），单独显示在下拉里，不与星名混排。
-const satNameShown = computed(() => {
-  const c = curSat.value; if (!c) return ''
+function satNameOf(c) {
+  if (!c) return ''
   const ns = c.ngsoSat || {}
   return (((ns.mode !== 'manual' && ns.orbit) ? (ns.name || c.form.satelliteName) : c.form.satelliteName) || '—')
-})
+}
 // 星名之外的速览：频段 · 频率/极化 · 取星来源与轨道
-const satMeta = computed(() => {
-  const c = curSat.value; if (!c) return ''
+function satMetaOf(c) {
+  if (!c) return ''
   const ns = c.ngsoSat || {}
   const picked = ns.mode !== 'manual' && !!ns.orbit
   return [
@@ -361,12 +384,37 @@ const satMeta = computed(() => {
       ? (SAT_SRC_LABEL[ns.mode] || '选星定轨') + (ns.noradId ? `（NORAD ${ns.noradId}）` : '')
       : (c.form.orbitAltitude ? '手动轨道 h=' + c.form.orbitAltitude + ' km' : '手动轨道')
   ].filter(Boolean).join(' · ')
+}
+// 卫星分区所报的那颗星：配置级＝场景单选；链路级＝聚焦行（未点过表时首行）所选卫星，与表脚「本行读数」同一行
+const bandSat = computed(() => {
+  if (!satLink.value) return curSat.value
+  const row = linkRows.find((r) => r._id === focusRowId.value) || linkRows[0] || null
+  return row ? satOfRow(row) : (satConfigs[0] || null)
+})
+const satNameShown = computed(() => satNameOf(bandSat.value))
+const satMeta = computed(() => satMetaOf(bandSat.value))
+// 链路级：链路表引用了哪些卫星（去重计数，卫星分区首行的读数）
+const satUsage = computed(() => {
+  if (!satLink.value) return []
+  const m = new Map()
+  for (const r of linkRows) {
+    const s = satOfRow(r); if (!s) continue
+    const e = m.get(s.id) || { id: s.id, name: satNameOf(s), n: 0 }
+    e.n++; m.set(s.id, e)
+  }
+  return [...m.values()]
+})
+// 场景所用卫星的名字与频段（报告封面 / 默认文件名 / 配置默认名）：配置级＝场景单选那颗；链路级＝链路表引用的各星去重并列
+const sceneSatName = computed(() => (satLink.value ? satUsage.value.map((u) => u.name).join(' / ') : ((curSat.value && curSat.value.form.satelliteName) || '')))
+const sceneBand = computed(() => {
+  const sats = satLink.value ? satUsage.value.map((u) => resolveSat(u.id)) : [curSat.value]
+  return [...new Set(sats.map((s) => (s && s.form.frequencyBand) || '').filter(Boolean))].join(' / ')
 })
 // 工作台「去资源库编辑」：展开资源库侧栏、切到对应子栏并选中当前条目
 function editInLibrary(kind, id) {
   sideView.value = 'library'
   libTab.value = kind
-  if (kind === 'sat') selSatId.value = id || (curSat.value && curSat.value.id) || ''
+  if (kind === 'sat') selSatId.value = id || (bandSat.value && bandSat.value.id) || ''
   else if (kind === 'station') selEsId.value = id || ''
   else if (kind === 'carrier') selBbId.value = id || ''
 }
@@ -468,19 +516,30 @@ function toggleResultKey(k) {
 }
 // 链路表列 = 发端组 + 收端组 + 结果列组；计算列 ro:true，值走 computedVals 映射。
 // 实时 EIRP/G·T 不再单列，改由「地球站配置」单元格第二行小字承载（cellSubFn），值仍来自 computedVals。
-const GRID_GROUPS = [{ key: 'tx', label: '发信站' }, { key: 'rx', label: '收信站' }, { key: 'res', label: '计算结果' }]
+// 列组随卫星的指定方式变：统一指定＝发信站 | 收信站 | 计算结果（卫星在上方分区单选，不占列）；
+// 逐链路指定＝卫星 | 发信站 | 收信站 | 计算结果——「卫星」列组放在表首（用户要求：一眼先看到这行用的哪颗星），
+// 组内三列：卫星（库引用）、该星对本行发信站的 G/T、该星对本行收信站的 EIRP（与再生式链路表的「卫星」列组同一口径）。
+const GRID_GROUPS_CONFIG = [{ key: 'tx', label: '发信站' }, { key: 'rx', label: '收信站' }, { key: 'res', label: '计算结果' }]
+const GRID_GROUPS_LINK = [{ key: 'sat', label: '卫星' }, { key: 'tx', label: '发信站' }, { key: 'rx', label: '收信站' }, { key: 'res', label: '计算结果' }]
+const gridGroups = computed(() => (satLink.value ? GRID_GROUPS_LINK : GRID_GROUPS_CONFIG))
+const SAT_COL_KEYS = ['satelliteId', 'G_Ts', 'rxEIRP']
 // 几何=手动：多出「斜距」列，仰角列改称「仰角」（此时它就是本条链路的仰角，不再是最差工况的门限）；
 // 几何=自动最差：斜距由求解器给出，不占列。
 function gridSideFields(fields, group) {
   return fields.filter((f) => !f.manualOnly || geoManual.value)
     .map((f) => ({ ...f, group, ...((geoManual.value && f.manualLabel) ? { label: f.manualLabel, tip: f.manualTip || f.tip } : null) }))
 }
-const gridFields = computed(() => [
-  ...gridSideFields(TX_FIELDS, 'tx'),
-  ...gridSideFields(RX_FIELDS, 'rx'),
-  ...RESULT_DEFS.filter((d) => resultKeys.value.includes(d.key)).map((d) => ({ key: '_' + d.key, label: d.label, unit: resColUnits.value[d.key] || d.unit, type: d.type === 'text' ? 'text' : 'num', ro: true, group: 'res', target: 'meta', tip: d.tip || d.label })),
-  ...customFieldDefs(customCols.value, customPool.value)
-])
+const gridFields = computed(() => {
+  const link = satLink.value
+  const all = [...TX_FIELDS, ...RX_FIELDS]
+  return [
+    ...(link ? SAT_COL_KEYS.map((k) => ({ ...all.find((f) => f.key === k), group: 'sat' })) : []),
+    ...gridSideFields(TX_FIELDS.filter((f) => (link ? !SAT_COL_KEYS.includes(f.key) : f.key !== 'satelliteId')), 'tx'),
+    ...gridSideFields(RX_FIELDS.filter((f) => !(link && SAT_COL_KEYS.includes(f.key))), 'rx'),
+    ...RESULT_DEFS.filter((d) => resultKeys.value.includes(d.key)).map((d) => ({ key: '_' + d.key, label: d.label, unit: resColUnits.value[d.key] || d.unit, type: d.type === 'text' ? 'text' : 'num', ro: true, group: 'res', target: 'meta', tip: d.tip || d.label })),
+    ...customFieldDefs(customCols.value, customPool.value)
+  ]
+})
 // 计算列取值映射 { 行_id: { _键: 值 } }：结果不写行数据 → 写回不惊动存档/脏检/过期 watcher
 const computedVals = ref({})
 // 结果列显示单位自适应：每次计算按整列最大|值|共选档位（W→mW、kHz→MHz、全列<0dBW→dBm），
@@ -536,7 +595,7 @@ const computing = ref(false)
 const error = ref('')
 // —— 结果过期提示：出结果后任何计算输入再变化（含库条目被改）→ 亮「输入已变」小灯，提醒重算 ——
 const resultsStale = ref(false)
-watch([satConfigs, basebandConfigs, esConfigs, linkRows, satId, geoHorizonHours, geoMode],
+watch([satConfigs, basebandConfigs, esConfigs, linkRows, satId, satScope, geoHorizonHours, geoMode],
   () => { if (links.value.length) resultsStale.value = true }, { deep: true })
 // —— 自定义列（公式把引擎出参组合成新列，语法与求值见 shared/lbCustomCols.js）——
 // 定义按窗口记忆（localStorage），不入场景配置——口径同结果列勾选集；值由 links 里留底的引擎
@@ -661,7 +720,7 @@ async function refreshReadonly() {
     try {
       const txEs = resolveEs(row.stationId).form
       const bbForm = resolveBaseband(row.basebandId).form
-      const { satParams, linkParams } = buildParams(curSat.value.form, bbForm, row, row, txEs, resolveEs(row.rxStationId).form)
+      const { satParams, linkParams } = buildParams(satOfRow(row).form, bbForm, row, row, txEs, resolveEs(row.rxStationId).form)
       const r = await api.linkBudget.computeModeNGSO(satParams, linkParams, calcOptOf(bbForm, txEs))
       // _paW＝实时功放功率（原值不 toFixed：小功率靠 fmtQty 换 mW 档显示，见 cellTagFn）
       if (r && r.success) setVals(row._id, { _eirp: fix2(r.data.stationEIRPResult), _gt: fix2(r.data.gOverTeResult), _paW: r.data.paRecommendation })
@@ -669,7 +728,7 @@ async function refreshReadonly() {
   }
 }
 function scheduleReadonly() { if (_suppressRO) return; clearTimeout(_roT); _roT = setTimeout(refreshReadonly, 350) }
-watch([satConfigs, basebandConfigs, esConfigs, linkRows, satId], scheduleReadonly, { deep: true })
+watch([satConfigs, basebandConfigs, esConfigs, linkRows, satId, satScope], scheduleReadonly, { deep: true })
 
 // 注：地球站库编辑器曾在发射/接收标题右端显示实时 EIRP / G·T 预览，已删——频率在卫星侧后，一份站型配置
 // 不再自含算这两个量所需的全部输入。链路表「地球站配置」格下的第二行小字仍显示逐行实时 EIRP / G·T（见 cellSubFn）。
@@ -684,7 +743,11 @@ const satTree = ref(loadSatTree().sats)
 // v1.4：轨道来源是「这颗卫星的属性」，随卫星库条目走（curSat.ngsoSat）——写它即写库（全局资产），
 // 换场景引用同一颗星，轨道来源一致。此 computed 恒返回库条目里的响应式对象（makeSatConfig/applyLibrary 保证存在）。
 const ngsoSat = computed(() => (curSat.value && curSat.value.ngsoSat) || blankNgsoSat())
-const satSelected = computed(() => ngsoSat.value.mode !== 'manual' && !!ngsoSat.value.orbit)
+// 某卫星条目是否已选星（取星定轨，有真实轨道根数）。satSelected 说的是配置级那颗；anySatSelected 按当前归属看
+// 用得着的各星里有没有选了星的（功能区「时窗」按它显隐——链路级下各行可以各选各的星）。
+const isSatSelected = (sat) => !!(sat && sat.ngsoSat && sat.ngsoSat.mode !== 'manual' && sat.ngsoSat.orbit)
+const satSelected = computed(() => isSatSelected(curSat.value))
+const anySatSelected = computed(() => (satLink.value ? linkRows.some((r) => isSatSelected(satOfRow(r))) : satSelected.value))
 
 // 天线树节点 → 轨道 spec（异步，可能要联网反解 NORAD）。按 node.kind 分派，**只有真·静止星才走 GEO 静态几何**：
 //   ① 节点带 NORAD（kind:'linked'）→ 到「从星历搜索」同一份共享候选池（findPoolByNorad）反解真实轨道根数——
@@ -719,10 +782,9 @@ async function treeNodeOrbit(node) {
   // 「本应在动」的星（linked/orbit）却拿不到轨道根数——报因而非默认 GEO 静止
   return { type: 'unresolved', noradId: node.noradId, reason: `卫星「${node.satName || node.folder}」缺少可用轨道根数，无法确定其轨道。请在「星座3D」页为其补充轨道根数（关联 NORAD 或填经典六根数），或改用手动轨道高度+倾角。` }
 }
-// 上下行频率（GHz），供几何求解算多普勒：频率在卫星侧（场景级单选的那颗星，全部链路共用）
-const _satFreqForm = () => (curSat.value && curSat.value.form) || {}
-const upFreqGHz = () => parseFloat(_satFreqForm().centerFrequency) || 14.25
-const dnFreqGHz = () => parseFloat(_satFreqForm().rxCenterFrequency) || 12.5
+// 上下行频率（GHz），供几何求解算多普勒：频率在卫星侧——取该行所用的那颗星（配置级即场景单选，全部链路共用）
+const upFreqGHz = (sat) => parseFloat(sat && sat.form && sat.form.centerFrequency) || 14.25
+const dnFreqGHz = (sat) => parseFloat(sat && sat.form && sat.form.rxCenterFrequency) || 12.5
 
 // 平均运动(rev/day) → 平均高度(km)：a=(μ/n²)^(1/3)，h≈a−Re（近圆轨道即圆轨道高度）
 const _MU_G = 398600.4418, _RE_G = 6378.137
@@ -752,8 +814,6 @@ async function applyTreeSatOrbitFor(cfg, node) {
     sf.orbitInclination = String(Math.abs(Number(orbit.latDeg) || 0).toFixed(2))
   }
 }
-// 场景选中卫星的树选星（刷新卫星树时同步其轨道用）
-const applyTreeSatOrbit = (node) => applyTreeSatOrbitFor(curSat.value, node)
 // 搜索选星 → 仅轨道根数，回显轨道高度/倾角。写到指定卫星库条目（cfg）——
 // 「从星历搜索」取星器在资源库卫星编辑器里，逐条目独立搜星（不只作用于场景选中的 curSat）。
 // 两类记录：真实目录星（orbitType 'omm'，喂原始 OMM 根数走 SGP4）与本地自定义星座
@@ -821,26 +881,27 @@ function mergePlatformGeometry(d, geom) {
 function searchT0ISO() { return new Date().toISOString() }
 // 选星（tree/search，真实轨道根数）→ 平台 SGP4 双站互视最差几何。与主计算 compute() 的「选星分支」
 // 同口径（均锚计算此刻墙钟·同时窗长）。手动圆轨道(circular)不走这里（无相位、无单一时刻）；未选星返回 null。
-function geomStations(tx, rx) {
+// sat＝这条链路所用的卫星库条目（频率取它的，多普勒按它算）
+function geomStations(sat, tx, rx) {
   return {
-    tx: { lonDeg: parseFloat(tx.longitude), latDeg: parseFloat(tx.latitude), altKm: (parseFloat(tx.altitude) || 0) / 1000, minElevDeg: parseFloat(tx.minElevation) || 0, freqGHz: upFreqGHz() },
-    rx: { lonDeg: parseFloat(rx.rxLongitude), latDeg: parseFloat(rx.rxLatitude), altKm: (parseFloat(rx.rxAltitude) || 0) / 1000, minElevDeg: parseFloat(rx.rxMinElevation) || 0, freqGHz: dnFreqGHz() }
+    tx: { lonDeg: parseFloat(tx.longitude), latDeg: parseFloat(tx.latitude), altKm: (parseFloat(tx.altitude) || 0) / 1000, minElevDeg: parseFloat(tx.minElevation) || 0, freqGHz: upFreqGHz(sat) },
+    rx: { lonDeg: parseFloat(rx.rxLongitude), latDeg: parseFloat(rx.rxLatitude), altKm: (parseFloat(rx.rxAltitude) || 0) / 1000, minElevDeg: parseFloat(rx.rxMinElevation) || 0, freqGHz: dnFreqGHz(sat) }
   }
 }
-async function solveSelectedGeom(tx, rx, t0ISO) {
-  if (!api || !satSelected.value || !ngsoSat.value.orbit) return null
-  const orbitSpec = JSON.parse(JSON.stringify(ngsoSat.value.orbit))
-  return await api.linkBudget.ngsoGeometry(Object.assign({ orbit: orbitSpec }, geomStations(tx, rx), {
+async function solveSelectedGeom(sat, tx, rx, t0ISO) {
+  if (!api || !isSatSelected(sat)) return null
+  const orbitSpec = JSON.parse(JSON.stringify(sat.ngsoSat.orbit))
+  return await api.linkBudget.ngsoGeometry(Object.assign({ orbit: orbitSpec }, geomStations(sat, tx, rx), {
     t0ISO: t0ISO || searchT0ISO(), horizonHours: geoHorizonHours.value
   }))
 }
-// 整表几何的批量请求（口径与 solveSelectedGeom 逐字一致，只是把各行的站对并成一份 pairs）。
+// 同一颗星若干行几何的批量请求（口径与 solveSelectedGeom 逐字一致，只是把各行的站对并成一份 pairs）。
 // 每行既当发端又当收端（单一链路表），故 pairs[i] 直接由第 i 行两侧字段组出。
-function geomBatchSpec(rows, t0ISO) {
-  if (!api || !satSelected.value || !ngsoSat.value.orbit || !rows.length) return null
+function geomBatchSpec(sat, rows, t0ISO) {
+  if (!api || !isSatSelected(sat) || !rows.length) return null
   return {
-    orbit: JSON.parse(JSON.stringify(ngsoSat.value.orbit)),
-    pairs: rows.map((r) => geomStations(r, r)),
+    orbit: JSON.parse(JSON.stringify(sat.ngsoSat.orbit)),
+    pairs: rows.map((r) => geomStations(sat, r, r)),
     t0ISO: t0ISO || searchT0ISO(), horizonHours: geoHorizonHours.value
   }
 }
@@ -849,11 +910,15 @@ function geomBatchSpec(rows, t0ISO) {
 async function reloadSatTree() {
   const wasClean = !isDirty()
   satTree.value = loadSatTree().sats
-  // 场景选中的这颗星若来自卫星树：刷新时同步其名称/轨道（取实时新位置，写入所引卫星库条目）。
-  // 只同步当前这一条：treeNodeOrbit 对 linked 星要联网按 NORAD 反解，遍历全库会扇出一堆网络请求。
-  const ns = ngsoSat.value
-  const cur = (ns && ns.mode === 'tree' && ns.folder) ? satTree.value.find((s) => s.folder === ns.folder) : null
-  if (cur) await applyTreeSatOrbit(cur)
+  // 场景用着的星若来自卫星树：刷新时同步其名称/轨道（取实时新位置，写入所引卫星库条目）。
+  // 只同步用得着的那几条（配置级＝场景单选那颗；链路级＝链路表引用到的各颗，去重）：
+  // treeNodeOrbit 对 linked 星要联网按 NORAD 反解，遍历全库会扇出一堆网络请求。
+  const targets = satLink.value ? [...new Set(linkRows.map((r) => satOfRow(r)))] : [curSat.value]
+  for (const c of targets) {
+    const ns = c && c.ngsoSat
+    const node = (ns && ns.mode === 'tree' && ns.folder) ? satTree.value.find((s) => s.folder === ns.folder) : null
+    if (node) await applyTreeSatOrbitFor(c, node)
+  }
   // 实时星取新位置是系统自动同步，不算用户改动；若之前本就无未保存改动，基线随之推进，
   // 避免仅仅切回本窗口或点「刷新」就被指纹判定为「未保存」。
   if (wasClean) setBaseline()
@@ -932,7 +997,7 @@ function slaReportExtra(l) {
   return { carrierStd: f.dvbStandard || 'custom', modcod: f.modcodLabel || '', scan: slaScanReportRows(slaDerivedFor(l)) }
 }
 function slaDefaultNameOf(en) {
-  const s = curSat.value ? curSat.value.form.satelliteName : ''
+  const s = sceneSatName.value
   return en
     ? `NGSO_SLA_${(s || 'Results').replace(/[^\w-]+/g, '_')}`
     : `NGSO服务等级指标_${(s || '结果').replace(/[\\/:*?"<>|]/g, '_')}`
@@ -1080,8 +1145,9 @@ const focusRowId = ref('')
 // 只做换算与填入；填多少、填哪几行由用户点。填入按【各行自己的仰角】算，不是把同一个数刷满全表。
 const slantToolOpen = ref(false)
 const slantToolRow = computed(() => linkRows.find((r) => r._id === focusRowId.value) || null)
-const slantToolAlt = computed(() => (curSat.value && curSat.value.form.orbitAltitude) || '')
 const _slantSeedRow = computed(() => slantToolRow.value || linkRows[0] || null)
+// 轨道高度取种子行所用的那颗星（配置级即场景单选）
+const slantToolAlt = computed(() => { const s = _slantSeedRow.value ? satOfRow(_slantSeedRow.value) : curSat.value; return (s && s.form.orbitAltitude) || '' })
 const slantToolElev = computed(() => (_slantSeedRow.value && _slantSeedRow.value.minElevation) || 10)
 const slantToolLat = computed(() => (_slantSeedRow.value && _slantSeedRow.value.latitude) || '')
 const slantToolStaAlt = computed(() => (_slantSeedRow.value && _slantSeedRow.value.altitude) || 0)
@@ -1107,9 +1173,9 @@ const slantSig = {}   // { 行_id: { 斜距列名: '纬度|海拔|仰角|轨道�
 function refreshSlant() {
   if (!geoManual.value) return
   const wasClean = !isDirty()
-  const h = pf(curSat.value && curSat.value.form.orbitAltitude)
   for (const r of linkRows) {
     const rec = slantSig[r._id] || (slantSig[r._id] = {})
+    const h = pf(satOfRow(r) && satOfRow(r).form.orbitAltitude)   // 轨道高度取该行所用的那颗星（配置级全表同一颗）
     for (const s of MANUAL_SIDES) {
       const sig = `${r[s.latKey]}|${r[s.staAltKey]}|${r[s.eKey]}|${h || ''}`
       const changed = rec[s.dKey] !== undefined && rec[s.dKey] !== sig
@@ -1127,8 +1193,8 @@ let _slantT = null
 function scheduleSlant() { clearTimeout(_slantT); _slantT = setTimeout(refreshSlant, 300) }
 // 只盯推荐值的【输入】（几何模式 / 所选卫星与其轨道高度 / 各行站址与仰角）——
 // 盯回填值本身会自激。immediate：切窗口/载入场景后也补一次。
-watch(() => [geoMode.value, satId.value, (curSat.value && curSat.value.form.orbitAltitude) || '',
-  linkRows.map((r) => MANUAL_SIDES.map((s) => `${r[s.latKey]},${r[s.staAltKey]},${r[s.eKey]}`).join('|')).join(';')].join('#'),
+watch(() => [geoMode.value, satScope.value, satId.value,
+  linkRows.map((r) => `${satLink.value ? (r.satelliteId || '') : ''},${(satOfRow(r) && satOfRow(r).form.orbitAltitude) || ''},` + MANUAL_SIDES.map((s) => `${r[s.latKey]},${r[s.staAltKey]},${r[s.eKey]}`).join('|')).join(';')].join('#'),
 scheduleSlant, { immediate: true })
 
 const rowReadout = computed(() => {
@@ -1171,18 +1237,33 @@ async function compute() {
     // 同批各链路的星、t0、时窗长完全一样，只有站对不同；而 SGP4 粗扫里最贵的传播部分与站址无关，
     // 主进程内各站对共享同一份采样 → 逐行各扫一遍变成整批扫一遍（12 行实测 2.4×，且逐位不变）。
     // 结果按行下标取用；批量入口不可用（老版本 preload）时留 null，下面自动回退逐行求解。
-    let geomBatch = null
-    if (!geoManual.value && satSelected.value && api.linkBudget.ngsoGeometryBatch) {
-      const spec = geomBatchSpec(linkRows, geomT0ISO)
-      if (spec) { try { geomBatch = await api.linkBudget.ngsoGeometryBatch(spec) } catch (e) { geomBatch = null } }
+    // 链路级下各行可各用各的星：按所用卫星分组，一颗星一批（批内共享传播），结果按行下标对齐回填。
+    let geomBatch = null   // 按行下标对齐；null 表示该行没有预解结果（下面逐行回退）
+    if (!geoManual.value && api.linkBudget.ngsoGeometryBatch) {
+      const groups = new Map()   // 卫星条目 id → { sat, idx[] }（配置级全表一组）
+      linkRows.forEach((r, i) => {
+        const s = satOfRow(r)
+        if (!isSatSelected(s)) return
+        if (!groups.has(s.id)) groups.set(s.id, { sat: s, idx: [] })
+        groups.get(s.id).idx.push(i)
+      })
+      if (groups.size) {
+        geomBatch = new Array(linkRows.length).fill(null)
+        for (const g of groups.values()) {
+          const spec = geomBatchSpec(g.sat, g.idx.map((i) => linkRows[i]), geomT0ISO)
+          if (!spec) continue
+          try { const res = await api.linkBudget.ngsoGeometryBatch(spec); g.idx.forEach((i, j) => { geomBatch[i] = (res && res[j]) || null }) } catch (e) { /* 留 null → 逐行回退 */ }
+        }
+      }
     }
     // 单一链路表：逐行一条链路，同一行同时当发端(tx)与收端(rx)传引擎（收端键全 rx 前缀，不冲突）
     for (let i = 0; i < linkRows.length; i++) {
       const row = linkRows[i]
       const tx = row, rx = row
+      const sat = satOfRow(row)   // 这条链路所用的卫星（配置级即场景单选）：参数、轨道来源、频率都取它的
       const txEs = resolveEs(row.stationId).form
       const bbForm = resolveBaseband(row.basebandId).form
-      const { satParams, linkParams } = buildParams(curSat.value.form, bbForm, tx, rx, txEs, resolveEs(row.rxStationId).form)
+      const { satParams, linkParams } = buildParams(sat.form, bbForm, tx, rx, txEs, resolveEs(row.rxStationId).form)
       // 计算方式与系统余量/超发量随该行所选载波；「设置功放功率」另取发端站型的功放功率（站的硬件属性）
       const opt = calcOptOf(bbForm, txEs)
       const mode = opt.mode
@@ -1203,10 +1284,10 @@ async function compute() {
         // 「有真实几何关系」了，与本模式的口径相反）。斜距可用工具栏「斜距工具」按仰角批量填。
         const bad = MANUAL_SIDES.find((s) => !(pf(row[s.dKey]) > 0))
         if (bad) { out.push({ ...base, data: null, error: `手动几何：${bad.label}斜距未填或非正数`, geom: null }); continue }
-      } else if (satSelected.value) {
+      } else if (isSatSelected(sat)) {
         // 选星→平台 SGP4 双站互视（t0/时窗口径见 solveSelectedGeom：统一锚计算此刻墙钟、与再生式同口径）。
         // 优先取本批预解结果（与逐行求解逐位一致），没有则逐行求。
-        geom = (geomBatch && geomBatch[i]) || await solveSelectedGeom(tx, rx, geomT0ISO)
+        geom = (geomBatch && geomBatch[i]) || await solveSelectedGeom(sat, tx, rx, geomT0ISO)
         if (!(geom && geom.feasible)) {
           // 时窗内两站不同时可见：本条链路单星无法建链
           out.push({ ...base, data: null, error: (geom && geom.reason) || '两站不互视', geom })
@@ -1217,9 +1298,9 @@ async function compute() {
         // 手动模式：虚拟圆轨道（轨道高度+倾角）→ 球形闭式最差几何（单候选，每站各自最低仰角，无 subSat）。
         // 每站按自身最低仰角取最差斜距；带上站址纬度 → 闭式判「纬度 vs 倾角」可见性（如赤道轨道看不到高纬站）。
         geom = await api.linkBudget.ngsoGeometry({
-          orbit: { type: 'circular', altKm: pf(curSat.value.form.orbitAltitude) || 0, inclDeg: pf(curSat.value.form.orbitInclination) || 0 },
-          tx: { latDeg: parseFloat(tx.latitude), minElevDeg: parseFloat(tx.minElevation) || 0, freqGHz: upFreqGHz() },
-          rx: { latDeg: parseFloat(rx.rxLatitude), minElevDeg: parseFloat(rx.rxMinElevation) || 0, freqGHz: dnFreqGHz() }
+          orbit: { type: 'circular', altKm: pf(sat.form.orbitAltitude) || 0, inclDeg: pf(sat.form.orbitInclination) || 0 },
+          tx: { latDeg: parseFloat(tx.latitude), minElevDeg: parseFloat(tx.minElevation) || 0, freqGHz: upFreqGHz(sat) },
+          rx: { latDeg: parseFloat(rx.rxLatitude), minElevDeg: parseFloat(rx.rxMinElevation) || 0, freqGHz: dnFreqGHz(sat) }
         })
         if (!(geom && geom.feasible)) {
           // 手动几何不可行（轨道高度≤0 / 站址纬度超出轨道覆盖带）→ 明确报错，不再用兜底假高度静默算出误导结果
@@ -1461,6 +1542,7 @@ function serializeState() {
     // ★ row.sla 是嵌套对象：从响应式行上浅拷出来的是 Vue 的 Proxy，结构化克隆过不了 ——
     //   saveConfig 走 IPC 当场抛「保存失败」。applyRowSla 内部 normRowSla 现造纯对象，顺手落平。
     rows: linkRows.map((r) => { const o = {}; for (const k of Object.keys(r)) if (!k.startsWith('_')) o[k] = r[k]; if (o.sla) applyRowSla(o, o.sla); return o }),
+    satScope: satScope.value,   // 卫星参数归属：'config' 配置级（satId）/ 'link' 链路级（各行 satelliteId）
     satId: satId.value,
     geoMode: geoMode.value,
     geoHorizonHours: geoHorizonHours.value,
@@ -1496,6 +1578,7 @@ function applyState(st) {
       return o
     }))
     satId.value = st.satId || ''
+    satScope.value = st.satScope === 'link' ? 'link' : 'config'   // 旧场景无此字段 → 配置级（原口径）
     adoptSceneCalc(st)                        // v2 场景的计算策略 → 下沉到所引载波库条目
     geoMode.value = st.geoMode === 'manual' ? 'manual' : 'auto'   // 旧场景无此字段 → 自动最差（不改它原来的口径）
     if (st.geoHorizonHours != null) geoHorizonHours.value = Number(st.geoHorizonHours) || 24
@@ -1558,6 +1641,7 @@ function applyState(st) {
     const satMap = adoptEntries(satConfigs, [{ id: '__sat0', name: form.satelliteName || '卫星', nameAuto: true, form, ngsoSat: ns }], () => makeSatConfig(), ['ngsoSat'])
     satId.value = satMap.__sat0 || ''
   } else { satId.value = '' }
+  satScope.value = 'config'   // 旧结构只有一份 satForm：配置级
   // ④ 双表 → 单链路表（行引用经映射改写；收端引用列改名 rxStationId）
   const remapT = (r) => { const o = { ...r }; o.basebandId = (o.basebandId && bbMap[o.basebandId]) || ''; o.stationId = (o.stationId && esMap[o.stationId]) || ''; return o }
   const remapR = (r) => { const o = { ...r }; o.rxStationId = (o.stationId && esMap[o.stationId]) || ''; delete o.stationId; return o }
@@ -1580,13 +1664,13 @@ let _stateT = null
 // 「上次会话」存盘要带上 activeId：否则重开窗口时配置列表没有任何一项被聚焦，
 // 但工作区却显示着上次的内容，看起来像是内容跟列表对不上号（用户反馈的困惑点）。
 function scheduleSaveState() { clearTimeout(_stateT); _stateT = setTimeout(() => { try { localStorage.setItem(STATE_KEY, JSON.stringify({ ...serializeState(), activeId: activeId.value })) } catch (e) { /* 配额满等忽略 */ } dirtyFlag.value = isDirty() }, 600) }
-watch([linkRows, satId, geoMode, geoHorizonHours, activeId, slaParams], scheduleSaveState, { deep: true })
+watch([linkRows, satId, satScope, geoMode, geoHorizonHours, activeId, slaParams], scheduleSaveState, { deep: true })
 
 // —— 命名配置 CRUD ——
 // 树本身的增删改移 / 剪贴板 / 右键 / 键盘全在 shared/useConfigTree.js（见文件上方 useConfigTree(...) 注入点）。
 // 这里只留本窗特有的三件：保存为新配置的预填名、空白配置的内容、删除文件夹用的确认框。
 // 注意：Electron 渲染进程没有 window.prompt / confirm（静默返回 null → 早先「保存不了」的根因），一律用应用内弹窗。
-function defaultCfgName() { const nm = curSat.value && curSat.value.form.satelliteName; return (nm ? nm + ' ' : '') + byLang(`链路 ${linkRows.length} 条`, `${linkRows.length} Links`) }
+function defaultCfgName() { const nm = sceneSatName.value; return (nm ? nm + ' ' : '') + byLang(`链路 ${linkRows.length} 条`, `${linkRows.length} Links`) }
 
 // 通用确认弹窗（Electron 渲染进程无原生 confirm）
 const confirmDlg = reactive({ open: false, msg: '' })
@@ -1600,7 +1684,7 @@ function blankState() {
   return {
     v: 3, orbitType: 'NGSO',
     rows: [{ ...defaultsFor(TX_FIELDS), ...defaultsFor(RX_FIELDS), rxStationId: (esConfigs[1] && esConfigs[1].id) || '' }],
-    satId: '', geoMode: 'manual', geoHorizonHours: 24,
+    satScope: 'config', satId: '', geoMode: 'manual', geoHorizonHours: 24,
     slaParams: { ...DEFAULT_SLA_PARAMS }
   }
 }
@@ -1611,7 +1695,7 @@ function blankState() {
 // 计算策略已随载波库条目走（v1.3.8），不再是场景内容 → 不入指纹。
 // SLA：采用值/勾选在 rows 里（row.sla）自然计入；参数是场景级，显式列进来 —— 改了 SLA 就是改了场景。
 function fingerprintOf(s) {
-  return stableStringify({ rows: s.rows, satId: s.satId, geoMode: s.geoMode || 'auto', geoHorizonHours: s.geoHorizonHours, slaParams: s.slaParams })
+  return stableStringify({ rows: s.rows, satScope: s.satScope || 'config', satId: s.satId, geoMode: s.geoMode || 'auto', geoHorizonHours: s.geoHorizonHours, slaParams: s.slaParams })
 }
 function fingerprint() { return fingerprintOf(serializeState()) }
 let activeBaseline = ''
@@ -1659,7 +1743,9 @@ function shareRefsOf(st) {
   if (!st || !Array.isArray(st.rows)) return { es: [], carrier: [], sat: [] }
   const es = [], carrier = []
   for (const r of st.rows) { es.push(r.stationId || '', r.rxStationId || ''); carrier.push(r.basebandId || '') }
-  return { es, carrier, sat: [st.satId || ''] }
+  // 卫星按该场景的归属取：链路级引用各行「卫星」列，配置级引用场景单选
+  const sat = st.satScope === 'link' ? st.rows.map((r) => r.satelliteId || '') : [st.satId || '']
+  return { es, carrier, sat }
 }
 // 打包前把空引用钉成显式 id：'' 的意思是「用库里第一份」，到了对端就成了「用他库里第一份」
 function sharePinRefs(st) {
@@ -1669,8 +1755,9 @@ function sharePinRefs(st) {
     r.stationId = resolveRefId(esConfigs, r.stationId)
     r.rxStationId = resolveRefId(esConfigs, r.rxStationId)
     r.basebandId = resolveRefId(basebandConfigs, r.basebandId)
+    if (s.satScope === 'link') r.satelliteId = resolveRefId(satConfigs, r.satelliteId)
   }
-  s.satId = resolveRefId(satConfigs, s.satId)
+  if (s.satScope !== 'link') s.satId = resolveRefId(satConfigs, s.satId)
   return s
 }
 function shareRemap(state, idMap) {
@@ -1679,6 +1766,7 @@ function shareRemap(state, idMap) {
     if (r.stationId) r.stationId = idMap.es[r.stationId] || ''
     if (r.rxStationId) r.rxStationId = idMap.es[r.rxStationId] || ''
     if (r.basebandId) r.basebandId = idMap.carrier[r.basebandId] || ''
+    if (r.satelliteId) r.satelliteId = idMap.sat[r.satelliteId] || ''
   }
   if (state.satId) state.satId = idMap.sat[state.satId] || ''
 }
@@ -1697,11 +1785,11 @@ function toMiniItems(picked) {
   for (const p of picked || []) {
     const st = p && p.state
     if (!st || !Array.isArray(st.rows) || !st.rows.length) continue
-    const sat = resolveSat(st.satId)
     // 已存配置的 st 是 configs.json 里的旧快照，fresh 却是按工作区当前参数算的：工作区一脏两者就不是
     // 一回事（行数相同不代表内容相同），最差路径斜距/仰角不能贴上去，让小程序退回自己的闭式几何
     const useRes = fresh && fresh.length === st.rows.length && (p.id === '__draft__' || (p.id === activeId.value && !isDirty()))
     st.rows.forEach((row, i) => {
+      const sat = st.satScope === 'link' ? resolveSat(row.satelliteId) : resolveSat(st.satId)   // 卫星按该场景的归属取
       const bb = resolveBaseband(row.basebandId)
       const txEs = resolveEs(row.stationId)
       const rxEs = resolveEs(row.rxStationId)
@@ -1820,8 +1908,8 @@ const { reportDlg, reportVariant, openReportDialog, openSlaReportDialog, submitR
     const modes = new Set(links.value.map((l) => calcOfLink(l).key).filter(Boolean))
     return {
       mode: modes.size === 1 ? calcOfLink(links.value[0]).label : '',
-      satelliteName: curSat.value ? curSat.value.form.satelliteName : '',
-      frequencyBand: curSat.value ? curSat.value.form.frequencyBand : ''
+      satelliteName: sceneSatName.value,
+      frequencyBand: sceneBand.value
     }
   },
   calcFor: (l) => { const c = calcOfLink(l); return { mode: c.label, targetMargin: c.margin, overDb: c.overDb } },
@@ -1829,6 +1917,7 @@ const { reportDlg, reportVariant, openReportDialog, openSlaReportDialog, submitR
     // 行优先按 _id 定位（计算后行可能被增删挪动），找不到退回原下标
     const row = linkRows.find((r) => r._id === l.rowId) || linkRows[l.i] || {}
     return {
+      satName: satNameOf(satOfRow(row)),   // 这条链路所用的卫星（「几何关系」sheet 按它分组列轨道根数；配置级全表同名）
       geom: l.geom ? JSON.parse(JSON.stringify(l.geom)) : null,
       txGeo: { name: l.txName, lat: parseFloat(row.latitude), lon: parseFloat(row.longitude), altM: parseFloat(row.altitude) || 0, minEl: parseFloat(row.minElevation) || 0 },
       rxGeo: { name: l.rxName, lat: parseFloat(row.rxLatitude), lon: parseFloat(row.rxLongitude), altM: parseFloat(row.rxAltitude) || 0, minEl: parseFloat(row.rxMinElevation) || 0 }
@@ -1841,7 +1930,7 @@ const { reportDlg, reportVariant, openReportDialog, openSlaReportDialog, submitR
   slaExtra: (l) => slaReportExtra(l),
   slaDefaultName: (en) => slaDefaultNameOf(en),
   defaultName: (en) => {
-    const s = curSat.value ? curSat.value.form.satelliteName : ''
+    const s = sceneSatName.value
     return en
       ? `NGSO_Link_Budget_Report_${(s || 'Results').replace(/[^\w-]+/g, '_')}`
       : `NGSO链路预算报告_${(s || '结果').replace(/[\\/:*?"<>|]/g, '_')}`
@@ -1996,7 +2085,7 @@ onMounted(async () => {
                 <label title="几何来源：自动最差＝按卫星轨道解最差工况几何（仰角字段作门限，斜距由求解器给出）；手动＝仰角与斜距由链路表逐行给定，不解算轨道"><span>几何</span>
                   <select v-model="geoMode" style="width: 86px"><option v-for="g in GEO_MODES" :key="g.v" :value="g.v">{{ g.l }}</option></select>
                 </label>
-                <label v-if="!geoManual && satSelected" title="从计算此刻起在此时窗内，比较全部互视过境，取最坏一次的工况"><span>时窗</span>
+                <label v-if="!geoManual && anySatSelected" title="从计算此刻起在此时窗内，比较全部互视过境，取最坏一次的工况"><span>时窗</span>
                   <select v-model.number="geoHorizonHours" style="width: 76px"><option v-for="h in HORIZONS" :key="h.v" :value="h.v">{{ h.l }}</option></select>
                 </label>
               </div>
@@ -2036,14 +2125,15 @@ onMounted(async () => {
 
         <!-- 链路工作台：全宽横向分区（卫星与轨道 → 链路表 → 详细预算），计算栏吸底 -->
         <div ref="flowEl" class="lbx-flow lbx-cards">
-          <LbSection id="sat" title="卫星与轨道">
+          <!-- 卫星分区只在「统一指定」下出现：逐链路指定时卫星在链路表表首的「卫星」列组里逐行选，这里再报一颗星只会混淆 -->
+          <LbSection v-if="!satLink" id="sat" title="卫星与轨道">
             <template #actions>
               <button class="lb-mini" title="到资源库编辑当前卫星：卫星/天线树选择 或 从星历搜索 定轨 + 完整参数（SFD/回退/轨道高度等）" @click="editInLibrary('sat')">编辑 / 选星</button>
             </template>
             <!-- 配置行：库单选（配置标签）+ 星名（本窗口唯一的卫星身份，加粗）+ 频率/取星来源速览。
                  星名与配置名分开呈现——同一颗星可有多份配置，但一份配置只认一颗星。 -->
             <div class="lbx-satrow">
-              <label class="lbx-satpick" title="从卫星库选择本场景使用的卫星（场景级单选，全部链路共用；轨道来源随卫星条目走）"><span>卫星配置</span>
+              <label class="lbx-satpick" title="从卫星库选择本配置使用的卫星（统一指定：全部链路共用；轨道来源随卫星条目走）"><span>卫星配置</span>
                 <select :value="(curSat && curSat.id) || ''" @change="satId = $event.target.value">
                   <option v-for="o in satSelectOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
                 </select>
@@ -2055,6 +2145,11 @@ onMounted(async () => {
 
           <LbSection id="links" title="链路表" :count="linkRows.length" summary="一行一条链路：发端 + 收端 + 库引用 + 结果">
             <template #actions>
+              <!-- 卫星的指定方式（场景级）：统一指定＝上方分区单选一颗；逐链路指定＝表首「卫星」列组逐行选，上方分区收起 -->
+              <span class="lbx-segwrap" title="卫星的指定方式：统一指定＝本配置只用一颗卫星（在上方「卫星与轨道」分区选择，全部链路共用）；逐链路指定＝链路表每行各选卫星（表首「卫星」列组：卫星 · 卫星G/T · 卫星EIRP，几何按各行所用的星解，上方分区随之收起）。切换时各行所用卫星保持不变，计算口径不变">
+                <span class="lbx-segl">卫星</span>
+                <span class="lbu-seg"><button v-for="s in SAT_SCOPES" :key="s.v" :class="{ on: satScope === s.v }" @click="setSatScope(s.v)">{{ s.l }}</button></span>
+              </span>
               <button v-if="geoManual" class="lb-mini" title="斜距工具：按轨道高度 × 仰角算斜距，可按各行仰角批量填入「斜距」列" @click="slantToolOpen = true">斜距工具</button>
               <span class="lbx-colpick-wrap">
                 <button class="lb-mini" title="计算结果列：勾选显示列，底部可新建自定义公式列" @click="colPickOpen = !colPickOpen">结果列 <Icon name="chevron-down" :size="12" /></button>
@@ -2076,11 +2171,11 @@ onMounted(async () => {
               </span>
             </template>
             <div class="lbx-grid">
-              <StationGrid grid-id="ngso.links" :stations="linkRows" :fields="gridFields" :groups="GRID_GROUPS" :extra-values="gridVals" :cell-class="cellClassFn"
+              <StationGrid grid-id="ngso.links" :stations="linkRows" :fields="gridFields" :groups="gridGroups" :extra-values="gridVals" :cell-class="cellClassFn"
                 :cell-sub="cellSubFn" :cell-tag="cellTagFn" :cell-fill="cellFillFn" :freeze-keys="false"
                 :cities="cities" :city-search="citySearch" label="链路" :auto-geo="autoGeoRow"
-                :select-options="{ basebandId: basebandSelectOptions, stationId: esSelectOptions, rxStationId: esSelectOptions }"
-                :lib-fields="{ basebandId: 'carrier', stationId: 'station', rxStationId: 'station' }" @edit-lib="editInLibrary"
+                :select-options="{ basebandId: basebandSelectOptions, stationId: esSelectOptions, rxStationId: esSelectOptions, satelliteId: satColOptions }"
+                :lib-fields="{ basebandId: 'carrier', stationId: 'station', rxStationId: 'station', satelliteId: 'sat' }" @edit-lib="editInLibrary"
                 @row-focus="onRowFocus" />
             </div>
             <LbCapFoot :cap="capacitySummary" :cap-main="capMain" :bw-main="bwMain" :pbw-main="pbwMain" :readout="rowReadout" />
@@ -2216,7 +2311,7 @@ onMounted(async () => {
       @param="slaSetParam" @toggle-all="slaToggleAll" :sla-count="slaCount" @clear="slaClear" @export="openSlaReportDialog" />
 
     <LbReportDialog :open="reportDlg.open" :lang="reportLang" orbit-type="NGSO"
-      :sat-name="curSat ? curSat.form.satelliteName : ''" :band="curSat ? curSat.form.frequencyBand : ''" :link-count="links.length"
+      :sat-name="sceneSatName" :band="sceneBand" :link-count="links.length"
       :viz-available="showViz" :sla-count="slaCount" store-key="ngso" :busy="reportDlg.busy" :progress="reportDlg.progress"
       @close="reportDlg.open = false" :variant="reportVariant" @submit="submitReport" />
 
