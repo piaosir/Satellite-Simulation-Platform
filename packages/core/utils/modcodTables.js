@@ -19,8 +19,21 @@
 // 一条 MODCOD 的字段与 BasebandPanel「套用 MODCOD」时写进载波表单的字段一一对应：
 //   label 名称 / modulation 调制方式 / fec FEC 码率 / rsCode 帧效率 / bandwidthFactor 滚降系数(1+α)
 //   / noiseRatioMode 门限口径('ebno'|'esno'|'snr') / threshold 门限(dB) / idx 体制内索引(可空)
-// 引擎本身不认识「标准」这个概念：选一条 MODCOD 只是把这八个值整套填进表单，故本模块不参与任何计算。
+//   / m 扩频增益（只对 esno 行有意义，见下）
+// 引擎本身不认识「标准」这个概念：选一条 MODCOD 只是把这九个值整套填进表单，故本模块不参与任何计算。
 // idx 是 3GPP 各表的 MCS 序号 / I_TBS：载波面板据它写 phy.mcs、phy.iTbs，不再从 label 里拿正则抠。
+//
+// ★ 名称：空串 = 自动名 =「调制方式 + FEC 码率」（'QPSK 3/4'），显示与出库时由 labelOf() 现拼；
+//   用户填了别的字才是自定义名。与自动名恰好相同的字串按自动名收（改调制/码率后名字跟着走），
+//   故存档与内置表里凡等于自动名的 label 一律归一成 ''。消费方（载波面板下拉 / SLA / 报表）
+//   拿到的是 modcodMap() 填好名字的行，不必自己兜底。
+//
+// ★ 扩频增益 m 只随 esno 行走：门限 Es/N₀ 是【扩频之后每个传输符号】的能量比，
+//   Es/N₀ = Eb/N₀ + 10·lg(FEC×帧效率×调制因子 ÷ m)，同一套调制编码换一个扩频因子，Es/N₀ 门限就差
+//   10·lg(m) —— 表里给 Es/N₀ 而不给它对应的 m，这一行就没有定义（DVB-S2X VL-SNR 的扩频档正是
+//   这样成对给的）。Eb/N₀ 口径下门限与扩频无关（AWGN 下理想解扩不改变每比特能量比），扩频是
+//   载波自己的参数，留在载波面板上；snr 行（3GPP）不走这条换算链，重复次数另有 phy.nRep。
+//   故 ebno / snr 行的 m 一律归一成 1（不参与任何计算，存 1 只为签名稳定）。
 
 const constants = require('./constants.js')
 const { parseModulation, composeModulation } = require('./modulation.js')
@@ -116,32 +129,51 @@ function canonModulation(v) {
   return p ? composeModulation(p.family, p.order) : ''
 }
 
+// 自动名 =「调制方式 + FEC 码率」；两项都空时为空串
+const autoLabel = (r) => [str(r && r.modulation), str(r && r.fec)].filter(Boolean).join(' ')
+// 显示名：自定义名优先，否则自动名，两者都拼不出来时兜底 'MODCOD'
+const labelOf = (r) => str(r && r.label) || autoLabel(r) || 'MODCOD'
+// 扩频增益的归一：只有 esno 行有意义；≥ 1（处理增益 = 码片率 ÷ 载波速率，按定义不小于 1）
+function normSpread(v, mode) {
+  if (mode !== 'esno') return 1
+  const n = num(v, 1)
+  return isFinite(n) && n >= 1 ? n : 1
+}
+
 // 一条 MODCOD 的归一化。返回 null = 这一行不该落库，调用方丢弃。两种情形：
 //   ① 整行空白；
 //   ② 调制方式填了、却不是平台认得的调制方式 —— ★ 这是最后一道闸。调制因子是符号率与载波带宽
 //      整条换算链的乘数，放一个查不到的名字进去，引擎会静默按 2 bit/符号算，账面上一切正常。
 //      界面那两条路（枚举下拉、setCell）本就挡住了，这里挡的是绕过界面直接改 modcod.json 的情形。
 // ★ 门限缺失不丢行：用户在表里先铺出调制/码率、门限待测是常见做法，此时按 0 dB 落库并照常显示。
+// ★ label 落库只留自定义名：等于自动名（按归一化后的调制/码率拼）或留空的一律收成 ''（见文件头）。
 function normalizeRow(r) {
   if (!r) return null
   const rawMod = str(r.modulation)
   const modulation = canonModulation(rawMod)
   if (rawMod && !modulation) return null
   const fec = str(r.fec)
-  const label = str(r.label) || (modulation && fec ? modulation + ' ' + fec : modulation || fec)
-  if (!label && !modulation && !fec) return null
-  return {
-    label: label || 'MODCOD',
+  const rawLabel = str(r.label)
+  if (!rawLabel && !modulation && !fec) return null
+  const out = {
+    label: '',
     modulation: modulation || 'QPSK',
     fec: fec || '1/2',
     rsCode: str(r.rsCode) || '1',
     bandwidthFactor: num(r.bandwidthFactor, 1.2),
     noiseRatioMode: normMode(r.noiseRatioMode),
     threshold: num(r.threshold, 0),
-    idx: idxOf(r.idx)
+    idx: idxOf(r.idx),
+    m: 1
   }
+  out.m = normSpread(r.m, out.noiseRatioMode)
+  // 与自动名比要用【归一化后】的调制/码率：'qpsk 3/4' 的行调制被收成 'QPSK'，名字也该跟着算自动
+  if (rawLabel && rawLabel !== autoLabel(out)) out.label = rawLabel
+  return out
 }
 const normalizeRows = (rows) => (Array.isArray(rows) ? rows : []).map(normalizeRow).filter(Boolean)
+// 消费方用的行：名字填好（自动名现拼），其余字段原样
+const withLabels = (rows) => rows.map((r) => Object.assign({}, r, { label: labelOf(r) }))
 
 // 内置表的一份归一化拷贝（内置常量恒不可变，故每次现造，绝不把用户改动写回去）
 function builtinRows(key) {
@@ -150,7 +182,7 @@ function builtinRows(key) {
 }
 
 // 逐值比较两张表：判「这个内置标准被改过没有」。键序固定，故直接比 JSON。
-const ROW_KEYS = ['label', 'modulation', 'fec', 'rsCode', 'bandwidthFactor', 'noiseRatioMode', 'threshold', 'idx']
+const ROW_KEYS = ['label', 'modulation', 'fec', 'rsCode', 'bandwidthFactor', 'noiseRatioMode', 'threshold', 'idx', 'm']
 const rowSig = (r) => ROW_KEYS.map((k) => String(r[k])).join('')
 const tableSig = (rows) => rows.map(rowSig).join('')
 
@@ -300,16 +332,17 @@ function standardOptions(store) {
   for (const s of listStandards(store)) opts.push({ value: s.key, label: s.label, group: s.group || '' })
   return opts
 }
+// ★ 出给载波面板 / SLA / 报表的行名字已填好（自动名现拼）；listStandards 给编辑页的仍是原样（'' = 自动名）
 function modcodMap(store) {
   const map = {}
-  for (const s of listStandards(store)) map[s.key] = s.rows
+  for (const s of listStandards(store)) map[s.key] = withLabels(s.rows)
   return map
 }
 
 module.exports = {
   NONE_KEY, USER_PREFIX, BUILTIN_KEYS,
   isUserKey, newUserKey, builtinLabel, builtinRows,
-  normalizeRow, normalizeRows, normalizeStore, normMode,
+  normalizeRow, normalizeRows, normalizeStore, normMode, autoLabel, labelOf, withLabels,
   PHY_OF, PHY_KINDS, phyOf, metaOf, builtinGroup,
   listStandards, storeFromList, standardOptions, modcodMap
 }

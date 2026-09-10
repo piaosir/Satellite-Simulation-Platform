@@ -495,9 +495,15 @@ function confirmCloseRain() {
   if (_rainWin && !_rainWin.isDestroyed()) _rainWin.close()
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   if (!gotSingleInstanceLock) return   // 第二个实例：已 app.quit()，但 ready 仍会到，别再建窗口/注册 IPC
   const root = app.getAppPath()
+
+  // 启动时补装：上次直接关机 / 强杀让 electron-updater 的「退出时安装」没跑 → 已下载的新版在这里装
+  // （services/updater.js applyPendingUpdate）。返回 true 表示安装器已拉起（装完它自己重开程序）或
+  // 另一个安装正在进行，本进程必须立刻退出：不建窗口、不注册 IPC，否则安装器改到一半的目录会被占用。
+  const updater = require(join(root, 'electron/services/updater'))
+  if (await updater.applyPendingUpdate()) { app.quit(); return }
 
   // imagery://tiles/<集>/<z>/<行>/<列>.jpg → 影像瓦片离线包
   // ★ 瓦片走 extraResources 放在 app.asar【外面】：整包近 300 MB，塞进单个 asar 既让归档巨大，
@@ -567,8 +573,8 @@ app.whenReady().then(() => {
 
   const win = createWindow()
 
-  // 自动更新（仅打包环境生效，dev 下自动跳过）
-  require(join(root, 'electron/services/updater')).initAutoUpdate(win)
+  // 自动更新（仅打包环境生效，dev 下自动跳过）：静默检查 / 下载，正常退出时静默装
+  updater.initAutoUpdate()
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -579,7 +585,7 @@ app.whenReady().then(() => {
 // 守卫（_*AllowClose=false → close 时 preventDefault 转问渲染进程）是为「用户点窗口 X」设计的，
 // 但它对 close 事件一视同仁，因此会把整个退出流程也一并拦下：
 //   · Windows 注销 / 关机：退出被 preventDefault 挡住 → 系统等超时后强杀，本来防丢数据反而丢；
-//   · autoUpdater.quitAndInstall()：内部走 app.quit()，被挡住 → 更新装不上且无任何提示。
+//   · 自动更新的「退出时安装」挂在 app 'quit' 上：退出被挡住 → 更新装不上且无任何提示。
 // 正常路径不受影响：唯一的主动退出入口是 window-all-closed（见下），此时窗口早已逐个关过、
 // 各自弹过「配置存了没」，走到这里已无窗口可放行 → 本处是纯兜底空转。
 app.on('before-quit', () => {

@@ -52,6 +52,21 @@ export const ALBERS_PARALLELS = [25, 47]
 //   「把某块摆到画面正中」用拖动平移即可。
 export const PROJ_PARAMS = { azeq: ['lat0'], albers: ['par1', 'par2'] }
 export const projParams = (k) => PROJ_PARAMS[k] || []
+
+// ── d3 自适应加密的弦高上限（平面单位；本平面 1 单位 ≈ 1°）──────────────────────
+// d3 出厂 √0.5 ≈ 0.707 是按「输出即屏幕像素」设的；而本平面归一到 W=360，屏上一单位是 k 个像素
+// （全图 2~3、常用 20~50、放到头 741）。0.707 单位的折角一放大就是好几个像素 —— 2026-09-10 用户截图：
+// 等积地球的图廓在 6 px/° 下弦高 3 px，整圈明显是多边形（那一圈只由 8 个控制点起算，33 段折线画完）。
+// 两档分开给，别合成一个：
+//  · PATH_PRECISION（地物 / 经纬网 / 覆盖带 / 被切口截断的陆地边）——d3 只对比 2×精度 长的段做中点检验，
+//    10m 海岸线绝大多数段比 0.1 单位短，故 0.05 实测 10m 整份一趟 +0~8%、50m +4 ms（一次 / 换平面，
+//    不是每帧），出点 +0.01%。再往细就成了「每段都检」：10m 一趟 +30~50%（+70~100 ms），星下点跟随会顿。
+//  · OUTLINE_PRECISION（只画图廓，spherePath 单独一份投影实例）——0.001 单位：真实弦高 ≤ 0.002
+//    （d3 只在弦中点检验，罗宾逊的样条上有中点恰好落回弦上的段，再细也停在 0.002），放到头 741 px/°
+//    也不到 2 px、常用 50 px/° 下 0.1 px；点数 0.8~1.5k、生成 0.1~0.5 ms，且只在换平面时算一次。
+// 判据与数字见 packages/core/test/mapProjection.test.mjs ⑬。
+export const PATH_PRECISION = 0.05
+export const OUTLINE_PRECISION = 0.001
 // Mercator 的纬度上限：ln(tan(π/4+φ/2)) 在极点发散，Web 口径一律钳到 ±85.051129°（正好使平面成正方形）。
 export const MERCATOR_LAT = 85.05112877980659
 
@@ -147,7 +162,7 @@ export function makeProjection(kind, lon0, opts) {
         if (!(y >= 0 && y <= 180) || !(x >= 0 && x <= 360)) return null
         return [wrap180(x + L0), 90 - y]
       },
-      path: null, graticule: null
+      path: null, spherePath: null, graticule: null
     }
   }
 
@@ -157,11 +172,14 @@ export function makeProjection(kind, lon0, opts) {
   const lam0 = L0 + 180                       // 中央经线
   // rotate 的前两项把中心点 (lam0, B0) 转到原点。B0 恒 0 的那几档退化成原来的纯绕极旋转，
   // 与加中心纬度之前逐位相同。
-  const d3p = d3Raw(k, o).scale(s).rotate([-lam0, -B0, 0])
   // translate 让 x∈[0,W]、y∈[0,H]：raw 是 translate=[0,0] 下量的，乘 s 后整体平移。
   // ★ Mercator 的 translate 必须在 scale 之后设 —— d3 的 geoMercator 会在这两个 setter 里
   //   按当前 scale/translate 重算 clipExtent（那是它「钳到 ±85.05」的实现方式），顺序反了就钳不住。
-  d3p.translate([-raw.x0 * s, -raw.y0 * s])
+  // 两份实例只差加密精度（见 PATH_PRECISION / OUTLINE_PRECISION 的说明）：
+  // 图廓要细到放大也不见折角，地物那份细了就是每段多一次中点检验、换平面一趟慢三到五成。
+  const build = (precision) => d3Raw(k, o).scale(s).rotate([-lam0, -B0, 0]).translate([-raw.x0 * s, -raw.y0 * s]).precision(precision)
+  const d3p = build(PATH_PRECISION)
+  const d3s = build(OUTLINE_PRECISION)
   const H = raw.h * s
   const latLim = k === 'mercator' ? MERCATOR_LAT : 90
 
@@ -244,6 +262,9 @@ export function makeProjection(kind, lon0, opts) {
     // d3 的 geoPath 顺带做了两件手搓代价很高的事：日界线切割（多边形被正确切成两半而不是横扫全图）
     // 与自适应加密（长段按投影曲率补点，不必先 densifyLonLat）。
     path: (geo, target) => { geoPath(d3p, target)(geo); return target },
+    // 图廓（地球在这张平面上的外轮廓）单独一条出口，走细精度那份实例。
+    // ★ 别拿 path({type:'Sphere'}) 画图廓：那份实例的精度是按地物的代价定的，图廓在它那里只有几十段折线。
+    spherePath: (target) => { geoPath(d3s, target)({ type: 'Sphere' }); return target },
     graticule: (step) => geoGraticule().step([step, step]).stepMinor([step, step])
   }
 }

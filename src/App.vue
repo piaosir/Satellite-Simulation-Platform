@@ -40,7 +40,7 @@ const settingsOpen = ref(false)
 const bindOpen = ref(false)      // 绑定小程序账号（工具菜单，与设置平级）
 const miniAboutOpen = ref(false) // 微信小程序介绍（帮助菜单，与关于平级）
 const fileOpen = ref(false)
-const fileTab = ref('omm')      // 文件管理打开时停在哪一页（标题栏搜索「文件管理 ▸ …」定位入口传入）
+const fileTab = ref('')         // 文件管理打开时停在哪一页（标题栏搜索「文件管理 ▸ …」定位入口传入；空 = 回到上次停的那页）
 const searchOpen = ref(false)   // 标题栏搜索下拉开着：此时标题栏切成非拖拽区，点空白处才收得到 mousedown 去收起它
 const aboutOpen = ref(false)
 const appVersion = ref('')
@@ -530,7 +530,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
     <MiniBindDialog v-if="bindOpen" @close="bindOpen = false" @toast="(m) => logMsg(m)" />
     <!-- 帮助 → 微信小程序：介绍页里可直接转到绑定（两者是同一件事的两步） -->
     <MiniAboutDialog v-if="miniAboutOpen" @close="miniAboutOpen = false" @bind="miniAboutOpen = false; bindOpen = true" />
-    <FileManager v-if="fileOpen" :tab="fileTab" @close="fileOpen = false; fileTab = 'omm'" />
+    <FileManager v-if="fileOpen" :tab="fileTab" @close="fileOpen = false; fileTab = ''" />
 
     <!-- 帮助 → 关于（设备ID 复制钮连点 5 次 = 刷新激活状态的「特定动作」之二） -->
     <AboutDialog

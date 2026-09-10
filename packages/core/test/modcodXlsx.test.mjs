@@ -7,7 +7,8 @@
 //   ② 换了版式仍导得回来：写盘 → 读回 → 解析，逐值等于导出前那份。
 //      三线表档若哪天加了标题条/合并格，「首行 = 表头」就破功，本测试会失败。
 import { createRequire } from 'module'
-import { modcodSheets, modcodSheetNames, standardsFromSheets, MODCOD_COLS, modcodGridCols, setCell, canonModulation, rejectedModulations } from '../../../src/shared/modcodTable.js'
+import { modcodSheets, modcodSheetNames, standardsFromSheets, MODCOD_COLS, modcodGridCols, setCell, canonModulation, rejectedModulations,
+  cellText, cellClass, cellEditable, emptyRow, autoLabel, isAutoLabel, labelOf } from '../../../src/shared/modcodTable.js'
 import { safeSheetName as sheetNameUi } from '../../../src/shared/gridXlsx.js'
 import fs from 'fs'
 import os from 'os'
@@ -95,7 +96,7 @@ const backSheets = standardsFromSheets(read.sheets)
 ok('读回的标准数与表名一致',
   backSheets.length === STDS.length && backSheets.every((b, i) => b.name === STDS[i].label),
   backSheets.map((b) => b.name).join(' | '))
-const sig = (rows) => JSON.stringify(M.normalizeRows(rows).map((r) => [r.label, r.modulation, r.fec, r.rsCode, r.bandwidthFactor, r.noiseRatioMode, r.threshold]))
+const sig = (rows) => JSON.stringify(M.normalizeRows(rows).map((r) => [M.labelOf(r), r.modulation, r.fec, r.rsCode, r.bandwidthFactor, r.noiseRatioMode, r.threshold, r.m]))
 ok('逐值往返不漂（含 Eb/N₀ ⇄ Es/N₀ 口径列）',
   backSheets.every((b, i) => sig(b.rows) === sig(STDS[i].rows)),
   backSheets.map((b, i) => (sig(b.rows) === sig(STDS[i].rows) ? '' : b.name)).filter(Boolean).join(',') || '全部一致')
@@ -153,6 +154,80 @@ ok('★ Excel 导入：调制方式认不出的行整行不收，并把原值报
   return r.length === 1 && r[0].rows.length === 2 &&
     r[0].rows[0].modulation === 'QPSK' && r[0].rows[1].modulation === '1024QAM' &&
     rejectedModulations(r).join(',') === '乱写'
+})())
+
+/* ---- ③b 名称列：自动名 / 自定义名 ---- */
+ok('导出的名称列写显示名（内置表 label 为空、表里仍是 QPSK 1/2）', (() => {
+  const r = STDS[0].rows[0]
+  return r.label === '' && txt(bcell(1).value) === labelOf(r) && labelOf(r) === 'QPSK 1/2'
+})(), txt(bcell(1).value))
+ok('setCell：名字等于自动名即收成空串、清空即自动名、别的字即自定义', (() => {
+  const r = { label: '', modulation: 'QPSK', fec: '3/4' }
+  setCell(r, 'label', 'QPSK 3/4'); if (r.label !== '' || !isAutoLabel(r)) return false
+  setCell(r, 'label', '低速档'); if (r.label !== '低速档' || isAutoLabel(r) || labelOf(r) !== '低速档') return false
+  setCell(r, 'label', ''); return r.label === '' && isAutoLabel(r) && labelOf(r) === 'QPSK 3/4'
+})())
+ok('★ 自动名的行改调制 / 码率后名字跟着走；自定义名的行不动', (() => {
+  const a = { label: '', modulation: 'QPSK', fec: '3/4' }
+  setCell(a, 'modulation', '8PSK'); setCell(a, 'fec', '2/3')
+  const b = { label: 'QPSK 3/4', modulation: 'QPSK', fec: '3/4' }   // 与自动名相同 → 也按自动名对待
+  setCell(b, 'modulation', '8PSK')
+  const c = { label: '低速档', modulation: 'QPSK', fec: '3/4' }
+  setCell(c, 'modulation', '8PSK')
+  return labelOf(a) === '8PSK 2/3' && a.label === '' && labelOf(b) === '8PSK 3/4' && b.label === '' && c.label === '低速档'
+})())
+ok('cellText / cellClass：自动名退一档、自定义名正常', (() => {
+  const L = MODCOD_COLS[0]
+  const a = { label: '', modulation: 'QPSK', fec: '3/4' }, c = { label: '低速档', modulation: 'QPSK', fec: '3/4' }
+  return cellText(a, L) === 'QPSK 3/4' && cellClass(a, L) === 'mc-auto' && cellText(c, L) === '低速档' && cellClass(c, L) === null
+})())
+ok('新建行名字留空（自动名）、扩频增益 1', (() => { const r = emptyRow(null, 'x'); return r.label === '' && r.m === '1' && autoLabel(r) === 'QPSK' })())
+
+/* ---- ③c 扩频增益列：只在 Es/N₀ 行开放 ---- */
+const MC = MODCOD_COLS.find((c) => c.key === 'm')
+ok('列序：前 7 列老次序不动、扩频增益紧跟门限、索引殿后',
+  MODCOD_COLS.map((c) => c.key).join(',') === 'label,modulation,fec,rsCode,bandwidthFactor,noiseRatioMode,threshold,m,idx')
+ok('屏上对齐：名称列左、其余居中（表头随列）；Excel 那份不带屏上对齐', (() => {
+  const g = modcodGridCols(() => [])
+  return g[0].align === 'left' && g.slice(1).every((c) => c.align === 'center') &&
+    MODCOD_COLS.slice(1).every((c) => !c.align)
+})())
+ok('屏上数字列按 fix 定小数位，非数字原文照显', (() => {
+  const T = MODCOD_COLS.find((c) => c.key === 'threshold'), B = MODCOD_COLS.find((c) => c.key === 'bandwidthFactor'), I = MODCOD_COLS.find((c) => c.key === 'idx')
+  const r = { noiseRatioMode: 'esno', threshold: '-1.2', bandwidthFactor: 1.05, m: '2', idx: '' }
+  return cellText(r, T) === '-1.20' && cellText(r, B) === '1.05' && cellText(r, MC) === '2.00' && cellText(r, I) === '' &&
+    cellText({ threshold: 'abc' }, T) === 'abc' && cellText({ idx: 10 }, I) === '10'
+})())
+ok('9 列合计不超过文件管理对话框的网格宽（817 − 序号列 38）', MODCOD_COLS.reduce((s, c) => s + c.w, 0) <= 817 - 38,
+  String(MODCOD_COLS.reduce((s, c) => s + c.w, 0)))
+ok('esno 行可编辑、显示原值；ebno / snr 行不可编辑、显示「—」并灰掉', (() => {
+  const e = { noiseRatioMode: 'esno', m: '2' }, b = { noiseRatioMode: 'ebno', m: '2' }, s = { noiseRatioMode: 'snr' }
+  return cellEditable(e, MC) && cellText(e, MC) === '2.00' && cellClass(e, MC) === null &&
+    !cellEditable(b, MC) && cellText(b, MC) === '—' && cellClass(b, MC) === 'mc-na' &&
+    !cellEditable(s, MC) && cellText(s, MC) === '—' &&
+    cellEditable(b, MODCOD_COLS[0])   // 其它列不受影响
+})())
+ok('setCell：非 esno 行不收 m；换成 esno 口径时 m 从 1 起', (() => {
+  const r = { noiseRatioMode: 'ebno' }
+  setCell(r, 'm', '4'); if (r.m !== undefined) return false
+  setCell(r, 'noiseRatioMode', 'Es/N₀'); if (r.m !== '1') return false
+  setCell(r, 'm', '4'); return r.m === '4'
+})())
+ok('★ Excel 往返：esno 行的 m 写数、ebno 行留空；导回后按口径归一', (() => {
+  const H = MODCOD_COLS.map((c) => c.label + (c.unit ? ' (' + c.unit + ')' : ''))
+  const r = standardsFromSheets([{ name: 'T', rows: [H,
+    ['', 'QPSK', '1/5', '0.9', 1.05, 'Es/N₀', -9.9, 2, ''],
+    ['', 'QPSK', '3/4', '188/204', 1.35, 'Eb/N₀', 5.5, 4, '']] }])
+  if (r.length !== 1 || String(r[0].rows[0].m) !== '2' || String(r[0].rows[1].m) !== '4') return false
+  const n = M.normalizeRows(r[0].rows)
+  return n[0].m === 2 && n[1].m === 1 && M.labelOf(n[0]) === 'QPSK 1/5'
+})())
+ok('导出模型：esno 行 m 是数字、ebno 行那格为空', (() => {
+  const sh = modcodSheets([{ key: 'usr:5', label: 'X', rows: [
+    { label: '', modulation: 'QPSK', fec: '1/5', rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: -9.9, m: 2 },
+    { label: '', modulation: 'QPSK', fec: '3/4', rsCode: '0.9', bandwidthFactor: 1.35, noiseRatioMode: 'ebno', threshold: 5.5, m: 1 }] }])[0]
+  const mi = MODCOD_COLS.indexOf(MC)
+  return sh.rows[0][mi] === 2 && sh.rows[1][mi] === null && sh.rows[0][0] === 'QPSK 1/5'
 })())
 
 /* ---- ④ 表名往返：Excel 会改写表名，改写后仍要认得回原标准 ---- */

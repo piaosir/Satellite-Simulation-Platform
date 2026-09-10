@@ -103,6 +103,11 @@ const m4 = pickMir(Object.assign({}, mirBase, { dvbStandard: 'custom', esnoClear
 ok('未选 MODCOD 标准（custom）→ MIR = CIR', m4.mir === 1500 && m4.label === '')
 const m5 = pickMir(Object.assign({}, mirBase, { esnoClear: null }))
 ok('晴空样本缺失 → MIR = CIR', m5.mir === 1500 && m5.label === '')
+// ★ Es/N₀ 行的扩频因子按行取（门限与它成对），载波上的 m 对这类行不起作用：
+//   QPSK 1/5 SF=2 的 Es/N₀ 门限 −9.9 dB 在符号率 1000 ksps 下 MIR = 1000 × 2 × 0.2 / 2 = 200 kbps
+const SF = [{ label: 'QPSK 1/5 SF2', modulation: 'QPSK', fec: '1/5', rsCode: '1', noiseRatioMode: 'esno', threshold: -9.9, m: 2 }]
+const mSf = pickMir({ modcodRows: SF, dvbStandard: 'DVB-S2X', form: { m: '1' }, symbolRateKsps: 1000, cirKbps: 100, marginDb: 0, esnoClear: -9 })
+ok('Es/N₀ 行的 MIR 用表行自己的扩频因子（载波 m=1 不参与）', mSf.label === 'QPSK 1/5 SF2' && near(mSf.mir, 200, 1e-9), mSf.mir.toFixed(3))
 // Eb/N₀ 口径的表行：与 linkCalculator.js 同一式 esno = ebno + 10lg(fec·rs·log2M/m)
 // QPSK 3/4、188/204、m = 1：k = 0.75 × (188/204) × 2 = 1.382353，10lg k = 1.40534 dB
 const kQ = 0.75 * (188 / 204) * 2

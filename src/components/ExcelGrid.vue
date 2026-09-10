@@ -30,6 +30,9 @@ const rows = computed(() => g.rows.value)
 //   （见 useGridSelect 的 colList）。这里若还按 props.cols 画，框出来的一片就和复制出来的一片对不上。
 const vcols = computed(() => (g.visCols ? g.visCols.value : props.cols))
 const unitOf = (c) => (props.headUnit ? props.headUnit(c) : c.unit)
+// 列级对齐：col.align = 'left' | 'center' | 'right'，表头、格子、编辑框三处同走；不给则沿用老规则（文本左、数字右）
+const ALIGN_CLS = { left: 'al', center: 'ac', right: 'ar' }
+const alignClass = (c) => (c && ALIGN_CLS[c.align]) || null
 const colSpanAll = computed(() => vcols.value.length + (props.serial ? 1 : 0) + (props.actionsWidth > 0 ? 1 : 0) + 1)
 const menuRow = computed(() => { const r = g.rect.value; return r.r0 < 0 ? 0 : r.r1 - r.r0 + 1 })
 // 枚举列下拉：当前格所在的列/行与它此刻的值（值用于给选中项打勾）
@@ -141,7 +144,7 @@ function endFzDrag() {
         <tr>
           <th v-if="serial" class="eg-idx eg-corner" title="全选" @mousedown.left.prevent="g.selectAll(); g.focusGrid()"></th>
           <th v-for="(c, ci) in vcols" :key="c.key" class="eg-h" :data-k="c.key"
-              :class="{ n: c.num, colsel: g.colSelected(ci), sortable: g.sortable, froz: g.isFrozen(ci) }"
+              :class="[{ n: c.num, colsel: g.colSelected(ci), sortable: g.sortable, froz: g.isFrozen(ci) }, alignClass(c)]"
               :style="g.fzStyle(ci)"
               :title="headTip ? headTip(c) : (c.tip || c.label)"
               @mousedown.left="g.colHeadDown($event, ci)" @mouseenter="g.colHeadEnter(ci)"
@@ -162,7 +165,7 @@ function endFzDrag() {
               @mousedown.left="g.rowHeadDown($event, ri)" @mouseenter="g.rowHeadEnter(ri)"
               @contextmenu="g.rowHeadMenu($event, ri)">{{ ri + 1 }}</td>
           <td v-for="(c, ci) in vcols" :key="c.key" class="eg-c"
-              :class="[{ n: c.num, ed: g.colEditable(c), sel: g.inSel(ri, ci), active: g.isActive(ri, ci), editing: g.isEdit(ri, ci), fillp: g.inFill(ri, ci), froz: g.isFrozen(ci) }, cellClass ? cellClass(r, c) : null]"
+              :class="[{ n: c.num, ed: g.cellEditable(r, c), sel: g.inSel(ri, ci), active: g.isActive(ri, ci), editing: g.isEdit(ri, ci), fillp: g.inFill(ri, ci), froz: g.isFrozen(ci) }, alignClass(c), cellClass ? cellClass(r, c) : null]"
               :style="g.fzStyle(ci)" :title="cellTip ? cellTip(r, c) : null"
               @mousedown="g.cellDown($event, ri, ci)" @mouseenter="g.cellEnter(ri, ci)"
               @dblclick="g.tryEdit(ri, ci, null)" @contextmenu="g.openMenu($event, ri, ci)">
@@ -170,8 +173,8 @@ function endFzDrag() {
             <!-- 活动格常驻捕获输入框：始终存在并持有键盘/输入法焦点。导航态透明覆盖在值上、pointer-events:none 让鼠标框选穿透；
                  键入/输入法组字即翻成不透明可见编辑框——中文输入法从第一个拼音字母起就落在真实 <input>，不吞首字母。
                  值由内核命令式写入（不绑 :value——实时时钟每秒重渲染会把绑定值刷回，吞掉正在键入的内容）。 -->
-            <input v-if="g.isActive(ri, ci) && g.colEditable(c)" :ref="el => g.editEl.value = el"
-                   class="eg-cap" :class="{ n: c.num, editing: g.isEdit(ri, ci) }" tabindex="-1"
+            <input v-if="g.isActive(ri, ci) && g.cellEditable(r, c)" :ref="el => g.editEl.value = el"
+                   class="eg-cap" :class="[{ n: c.num, editing: g.isEdit(ri, ci) }, alignClass(c)]" tabindex="-1"
                    @input="g.onActiveInput" @compositionstart="g.onActiveCompStart"
                    @blur="g.onActiveBlur" @paste="g.onActivePaste($event, r, c.key)"
                    @copy="g.onActiveClip" @cut="g.onActiveClip" />
@@ -179,7 +182,7 @@ function endFzDrag() {
                   @mousedown.left.stop.prevent="g.onFillDown" @dblclick.stop="g.onFillDbl"></span>
             <!-- 枚举列：格右侧一枚 ▾（只在活动格与悬停行露出，免得整列挂满箭头）。
                  单击即开列表——这类格没有「自由文本」这一层，点开就是它唯一的编辑动作。 -->
-            <span v-if="g.colOptions(c) && g.colEditable(c)" class="eg-dd" title="从列表中选择"
+            <span v-if="g.colOptions(c) && g.cellEditable(r, c)" class="eg-dd" title="从列表中选择"
                   @mousedown.left.stop.prevent="g.openPick(ri, ci, '')"><Icon name="chevron-down" :size="11" /></span>
           </td>
           <td v-if="actionsWidth > 0" class="eg-act"><slot name="actions" :row="r" :ri="ri" /></td>
@@ -273,6 +276,10 @@ function endFzDrag() {
 .eg-tbl th, .eg-tbl td { padding: 3px 8px; border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent); text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; box-sizing: border-box; }
 .eg-tbl th { position: sticky; top: 0; z-index: 3; background: var(--panel, var(--bg)); color: var(--text-muted); font-weight: 600; user-select: none; }
 .eg-tbl th.n, .eg-tbl td.n { text-align: right; font-family: var(--font-mono); }
+/* 列级对齐（col.align）压过上面「数字右」的缺省；.eg-v 与表头的 .eg-ht 都是块级/行内级盒，从格子继承 text-align */
+.eg-tbl th.al, .eg-tbl td.al { text-align: left; }
+.eg-tbl th.ac, .eg-tbl td.ac { text-align: center; }
+.eg-tbl th.ar, .eg-tbl td.ar { text-align: right; }
 .eg-tbl td { color: var(--text); }
 .eg-u { font-style: normal; color: var(--text-faint); font-weight: 400; font-size: .9em; margin-left: 2px; }
 .eg-tbl th.eg-h em { color: var(--text-faint); font-style: normal; }
@@ -327,6 +334,9 @@ function endFzDrag() {
 /* 常驻捕获输入框（见模板注释） */
 .eg-cap { position: absolute; inset: 0; width: 100%; height: 100%; box-sizing: border-box; margin: 0; border: 0; border-radius: 0; padding: 3px 8px; font: inherit; line-height: normal; background: transparent; color: transparent; caret-color: transparent; pointer-events: none; z-index: 3; }
 .eg-cap.n { font-family: var(--font-mono); text-align: right; }
+.eg-cap.al { text-align: left; }
+.eg-cap.ac { text-align: center; }
+.eg-cap.ar { text-align: right; }
 .eg-cap:focus { outline: none; }
 .eg-cap.editing { background: var(--surface, var(--bg)); color: var(--text); caret-color: var(--text); pointer-events: auto; z-index: 5; }
 .eg-tbl th.eg-act, .eg-tbl td.eg-act { text-align: center; padding: 0 4px; overflow: visible; cursor: default; }

@@ -399,14 +399,17 @@ function modcodSpec(row, m) {
   const fec = parseFrac(row.fec, NaN)
   const rs = parseFrac(row.rsCode, 1)
   if (!Number.isFinite(fec) || !(fec > 0) || !Number.isFinite(rs) || !(rs > 0)) return null
-  const mm = num(m) || 1
+  // 扩频因子：Es/N₀ 行的门限与表里的扩频因子成对（见 core/utils/modcodTables.js 文件头），按行取；
+  // Eb/N₀ 行的扩频是载波自己的参数，按当前载波取
+  const isEsno = String(row.noiseRatioMode || 'esno').toLowerCase() !== 'ebno'
+  const mm = (isEsno && num(row.m) !== null ? num(row.m) : num(m)) || 1
   const k = fec * rs * mf / (mm > 0 ? mm : 1)
   if (!(k > 0)) return null
   const th = num(row.threshold)
   if (th === null) return null
   // 表行门限若是 Eb/N₀，用引擎同一式换算到 Es/N₀。
   // ★ snr 行落在 else 支：每 RE SNR ≡ 占用带宽内的 C/N ≡ Es/N₀，本来就不用换算（乘 k 会把它抬错一截）。
-  const esnoTh = String(row.noiseRatioMode || 'esno').toLowerCase() === 'ebno' ? th + 10 * Math.log10(k) : th
+  const esnoTh = !isEsno ? th + 10 * Math.log10(k) : th
   return { label: row.label || '', k, esnoTh }
 }
 

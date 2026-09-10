@@ -33,56 +33,110 @@ export function canonModulation(v) {
 }
 export const modBits = (v) => modFactorOf(v)
 
-// 网格列。顺序 = 导出列序 = 「无表头时按位置认」的兜底列序，改这里三处一起变。
-// num 决定右对齐与「按数字存进 Excel」；fix 是 Excel 数字格式的小数位。
+// ===== 名称：自动名 vs 自定义名 =====
+// 自动名 =「调制方式 + FEC 码率」，随这两格实时拼；label 留空即自动名，填了别的字才是自定义。
+// 判据是【名字与自动名是否相同】而不是另立标志位：格子里的名字一改就能当场判出来，
+// 落库时主进程的 normalizeRow 也按同一条把等于自动名的 label 收成 ''（core/utils/modcodTables.js）。
+const trim = (v) => String(v == null ? '' : v).trim()
+export const autoLabel = (r) => [trim(r && r.modulation), trim(r && r.fec)].filter(Boolean).join(' ')
+export const isAutoLabel = (r) => { const l = trim(r && r.label); return !l || l === autoLabel(r) }
+export const labelOf = (r) => trim(r && r.label) || autoLabel(r) || 'MODCOD'
+// 扩频增益只对 Es/N₀ 口径的行有意义（门限与扩频因子成对给，见 core/utils/modcodTables.js 文件头）
+export const spreadApplies = (r) => !!r && r.noiseRatioMode === 'esno'
+
+// 网格列。顺序 = 网格显示序 = 导出列序 = 「无表头时按位置认」的兜底列序，改这里三处一起变。
+// ★ 到「门限」为止的前 7 列是手搓老表的固定次序，别动；其后两列（扩频增益 / 索引）在无表头的表里极少出现，
+//   才按语义排——扩频增益紧跟与它成对的门限，索引殿后。
+// num 决定「按数字存进 Excel」与屏上等宽字；fix 是小数位（Excel 数字格式与屏上显示同一档）。
+// w 是屏上像素（Excel 不用）：9 列合计 762 px + 序号列 38 px，正好装进文件管理对话框的网格宽（817 px）不出横向滚动条；
+//   各列 = max(表头, 最长内容) + 18 px 内边距，量法同 useGridSelect.autoWidth。
+// align 是 Excel 三线表的对齐（名称列左、数字列右、其余居中，与报告表同款）；屏上对齐另在 modcodGridCols 里给。
 export const MODCOD_COLS = [
-  { key: 'label', label: 'MODCOD', w: 180, align: 'left', tip: '这一档在载波信号面板 MODCOD 下拉里显示的名字' },
-  { key: 'modulation', label: '调制方式', w: 108, tip: '只能从列表里选，或按制式族 + 星座阶数 M 现造一个；调制因子＝log₂M' },
-  { key: 'fec', label: 'FEC 码率', w: 96, tip: '内码码率，写分数（3/4、120/1024）或小数。NB-IoT 各档 =（TBS + 24 bit CRC）/ 每传输块编码比特数，按 I_SF/I_RU = 0、独立部署、2 个 NRS 端口算（NPDSCH 304 bit、带内部署 208 bit；NPUSCH 多音 288 bit、单音 96×Qm bit）；详细预算里那一行按当前 I_SF/I_RU 与部署模式现算' },
-  { key: 'rsCode', label: '帧效率', w: 96, tip: '外码/帧开销效率，写分数（188/204）或小数（0.9）。3GPP 各档不参与计算，写 1 占位' },
-  { key: 'bandwidthFactor', label: '滚降系数', unit: '1+α', w: 96, num: true, fix: 2, tip: '载波带宽 / 符号率。3GPP 各档不参与计算，写 1 占位——那条链的信道带宽由频段与 PRB 数查表定，不靠这个系数换算' },
-  { key: 'noiseRatioMode', label: '门限口径', w: 100, tip: 'Eb/N₀ / Es/N₀ / SNR —— 决定右侧门限值按哪种口径解读。SNR = 3GPP 的每资源元素信噪比，噪声带宽取占用带宽 N_RB×12×SCS（NB-IoT 上行为音数×SCS），此时帧效率与滚降两列不参与计算' },
-  { key: 'threshold', label: '门限', unit: 'dB', w: 96, num: true, fix: 2, tip: '解调门限，口径由左侧那一列决定' },
-  // ★ 恒在最后一列：列序同时是「无表头 Excel 按位置认列」的兜底次序，插在中间会把用户手搓的老表整体错位
-  { key: 'idx', label: '索引', w: 72, num: true, fix: 0, tip: '体制内的档位序号：3GPP NR 的 MCS 序号、NB-IoT 的 I_TBS（NPUSCH 单音为 I_MCS）。载波面板据此写物理层参数；DVB 各体制没有这个概念，留空' }
+  { key: 'label', label: 'MODCOD', w: 172, align: 'left', tip: '这一档在载波信号面板 MODCOD 下拉里显示的名字。留空＝自动按「调制方式 + FEC 码率」生成并随之变化；填了别的字即为自定义名，清空恢复自动' },
+  { key: 'modulation', label: '调制方式', w: 88, tip: '只能从列表里选，或按制式族 + 星座阶数 M 现造一个；调制因子＝log₂M' },
+  { key: 'fec', label: 'FEC 码率', w: 72, tip: '内码码率，写分数（3/4、120/1024）或小数。NB-IoT 各档 =（TBS + 24 bit CRC）/ 每传输块编码比特数，按 I_SF/I_RU = 0、独立部署、2 个 NRS 端口算（NPDSCH 304 bit、带内部署 208 bit；NPUSCH 多音 288 bit、单音 96×Qm bit）；详细预算里那一行按当前 I_SF/I_RU 与部署模式现算' },
+  { key: 'rsCode', label: '帧效率', w: 66, tip: '外码/帧开销效率，写分数（188/204）或小数（0.9）。3GPP 各档不参与计算，写 1 占位' },
+  { key: 'bandwidthFactor', label: '滚降系数', unit: '1+α', w: 100, num: true, fix: 2, tip: '载波带宽 / 符号率。3GPP 各档不参与计算，写 1 占位——那条链的信道带宽由频段与 PRB 数查表定，不靠这个系数换算' },
+  { key: 'noiseRatioMode', label: '门限口径', w: 70, tip: 'Eb/N₀ / Es/N₀ / SNR —— 决定右侧门限值按哪种口径解读。SNR = 3GPP 的每资源元素信噪比，噪声带宽取占用带宽 N_RB×12×SCS（NB-IoT 上行为音数×SCS），此时帧效率与滚降两列不参与计算' },
+  { key: 'threshold', label: '门限', unit: 'dB', w: 72, num: true, fix: 2, tip: '解调门限，口径由左侧那一列决定' },
+  { key: 'm', label: '扩频增益', w: 70, num: true, fix: 2, tip: '这一档门限所对应的扩频因子（码片率 ÷ 载波速率，无扩频为 1）。只在门限口径为 Es/N₀ 时可填：Es/N₀ 是扩频之后每个传输符号的能量比，同一套调制编码每扩频 ×2 门限低 3.01 dB，故门限与扩频因子必须成对给。Eb/N₀ 口径与扩频无关（扩频是载波自己的参数，在载波面板上填）；3GPP 各档不走这条换算链' },
+  { key: 'idx', label: '索引', w: 52, num: true, fix: 0, tip: '体制内的档位序号：3GPP NR 的 MCS 序号、NB-IoT 的 I_TBS（NPUSCH 单音为 I_MCS）。载波面板据此写物理层参数；DVB 各体制没有这个概念，留空' }
 ]
 
 /**
- * 网格用的列 —— 在上面那份之上，给调制方式与门限口径挂 options（枚举列，见 useGridSelect）。
- * ★ Excel 那一份（MODCOD_COLS）刻意不挂：出表/回表只用得上列标签与列序，挂了反而让「一份列定义
- *   同时服务两种用途」这件事变糊涂。
+ * 网格用的列 —— 在上面那份之上：
+ *   · 给调制方式与门限口径挂 options（枚举列，见 useGridSelect）；
+ *   · 屏上对齐统一成「名称列靠左、其余各列居中」（表头随列）。原先文本左、数字右两种对齐在一行里来回跳，
+ *     看着零乱；这张表除名称外每格都是短值，居中最匀称，与标准文本里的 MODCOD 表（DVB-S2 表 13 /
+ *     TS 38.214 的 MCS 表）同一副样子。
+ * ★ Excel 那一份（MODCOD_COLS）刻意不挂 options、也不改 align：出表走三线表报告版式（名称左 / 数字右 /
+ *   其余居中，与链路预算报告里的表同款），两种用途各管各的。
  * used：() => 当前表里已用到的调制方式名（自定义档不能从它自己那格的下拉里消失）。
  */
 export function modcodGridCols(used) {
   return MODCOD_COLS.map((c) => {
+    const col = { ...c, align: c.key === 'label' ? 'left' : 'center' }
     if (c.key === 'modulation') {
-      return { ...c, options: () => modulationOptions(used ? used() : []).map((o) => ({ value: o.value, label: o.label, note: o.factor + ' bit' })) }
+      col.options = () => modulationOptions(used ? used() : []).map((o) => ({ value: o.value, label: o.label, note: o.factor + ' bit' }))
     }
-    if (c.key === 'noiseRatioMode') return { ...c, options: () => MODE_OPTIONS.map((o) => ({ value: o.label, label: o.label })) }
-    return c
+    if (c.key === 'noiseRatioMode') col.options = () => MODE_OPTIONS.map((o) => ({ value: o.label, label: o.label }))
+    return col
   })
 }
 
-// 格子显示文本（网格与剪贴板同一口径）
+// 格子显示文本（网格与剪贴板同一口径）。名称列：自动名现拼；扩频增益列：非 Es/N₀ 行不适用，画「—」；
+// 数字列按该列的 fix 定小数位（-1.2 → -1.20、1 → 1.00），一列里的小数位才齐；解析不成数字的原文照显
+// （用户正打到「1.」「-」这类中间态时不能当场吃掉——那些只在编辑框里，落到格子里的一律是提交过的值）。
 export function cellText(row, col) {
+  if (col.key === 'label') return labelOf(row)
+  if (col.key === 'm' && !spreadApplies(row)) return '—'
   const v = row[col.key]
   if (col.key === 'noiseRatioMode') return MODE_LABEL[v] || MODE_LABEL.esno
-  return v == null ? '' : String(v)
+  if (v == null || v === '') return ''
+  if (col.num && col.fix != null) {
+    const s = String(v).trim()
+    const n = Number(s)
+    if (s !== '' && Number.isFinite(n)) return n.toFixed(col.fix)
+  }
+  return String(v)
 }
-// 单元格悬停读数：调制方式那格报它的调制因子（符号率 = 载波速率 ÷ 它，值得随手看得见）
+// 单元格悬停读数：调制方式那格报它的调制因子（符号率 = 载波速率 ÷ 它，值得随手看得见）；
+// 名称那格说明它是自动名还是自定义名
 export function cellTip(row, col) {
+  if (col.key === 'label') return isAutoLabel(row) ? '自动名：调制方式 + FEC 码率' : '自定义名（清空即恢复自动名）'
   if (col.key !== 'modulation') return ''
   const f = modFactorOf(row.modulation)
   return f == null ? '' : `${row.modulation} · ${f} bit/符号`
 }
+// 单元格样式钩子：自动名退一档墨色（同载波面板里「由锚点算出来的」那几格）；不适用的扩频增益格灰掉
+export function cellClass(row, col) {
+  if (col.key === 'label') return isAutoLabel(row) ? 'mc-auto' : null
+  if (col.key === 'm') return spreadApplies(row) ? null : 'mc-na'
+  return null
+}
+// 逐格可编辑性：扩频增益只在 Es/N₀ 行开放（其余行既不进编辑态、也不收粘贴/填充/清空）
+export const cellEditable = (row, col) => col.key !== 'm' || spreadApplies(row)
 
 // 一格写入。数字列留原文（用户正打到「-」「1.」这类中间态时不能当场吃掉），
 // 落库前由主进程的 normalizeRows 统一转数字。
 // ★ 两个枚举列在这里【也要】把关：下拉挡住的是键盘那条路，粘贴 / 填充柄 / Excel 导入走的是本函数。
 //   认不出的调制方式一律不写（保留原值），而不是写进去等引擎按 2 bit/符号静默算错。
 export function setCell(row, key, val) {
-  if (key === 'noiseRatioMode') { row.noiseRatioMode = parseMode(val); return }
-  if (key === 'modulation') { const v = canonModulation(val); if (v) row.modulation = v; return }
+  if (key === 'noiseRatioMode') {
+    row.noiseRatioMode = parseMode(val)
+    // 换到 Es/N₀ 口径时扩频增益从 1 起（其余口径下这一格不适用，留着的旧值不显示也不落库）
+    if (spreadApplies(row) && (row.m == null || row.m === '')) row.m = '1'
+    return
+  }
+  // 自动名的行：调制/码率一改，名字跟着走（label 留空即自动名）；自定义名的行原名不动
+  if (key === 'modulation') {
+    const v = canonModulation(val); if (!v) return
+    const auto = isAutoLabel(row); row.modulation = v; if (auto) row.label = ''
+    return
+  }
+  if (key === 'fec') { const auto = isAutoLabel(row); row.fec = String(val == null ? '' : val); if (auto) row.label = ''; return }
+  if (key === 'label') { const s = String(val == null ? '' : val).trim(); row.label = s === autoLabel(row) ? '' : s; return }
+  if (key === 'm') { if (!spreadApplies(row)) return; row.m = String(val == null ? '' : val); return }
   row[key] = String(val == null ? '' : val)
 }
 
@@ -98,7 +152,8 @@ export function emptyRow(prev, id) {
     bandwidthFactor: (prev && prev.bandwidthFactor) != null ? prev.bandwidthFactor : 1.05,
     noiseRatioMode: (prev && prev.noiseRatioMode) || 'esno',
     threshold: '',
-    idx: ''
+    idx: '',
+    m: '1'
   }
 }
 
@@ -117,7 +172,11 @@ export function modcodSheets(standards) {
     name: safeSheetName(s.label || s.key, used),
     cols: MODCOD_COLS,
     rows: s.rows || [],
-    value: (r, c) => (c.key === 'noiseRatioMode' ? (MODE_LABEL[r.noiseRatioMode] || MODE_LABEL.esno) : r[c.key])
+    // 名称列写显示名（自动名现拼，导出的表要能直接给人看）；扩频增益只在 Es/N₀ 行写数，其余留空格
+    value: (r, c) => (c.key === 'noiseRatioMode' ? (MODE_LABEL[r.noiseRatioMode] || MODE_LABEL.esno)
+      : c.key === 'label' ? labelOf(r)
+        : c.key === 'm' ? (spreadApplies(r) ? r.m : '')
+          : r[c.key])
   }))
 }
 
@@ -182,7 +241,8 @@ export function standardsFromSheets(sheets) {
         bandwidthFactor: r.bandwidthFactor || '',
         noiseRatioMode: parseMode(r.noiseRatioMode),
         threshold: r.threshold || '',
-        idx: r.idx || ''
+        idx: r.idx || '',
+        m: r.m || ''
       })
     }
     if (!rows.length && !bad.length) continue

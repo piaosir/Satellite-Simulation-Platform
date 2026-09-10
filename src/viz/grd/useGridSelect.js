@@ -23,6 +23,8 @@ export function useGridSelect(cfg) {
   //   readOnly?: boolean               只读表：仅框选 + 复制 + 导航 + 排序，无编辑/粘贴/清除
   //   cellText:  (row, col) => string  显示/复制文本
   //   cellRaw?:  (row, col) => any      进入编辑时的原始值（默认 row[col.key]）
+  //   cellEditable?: (row, col) => boolean  逐格可编辑性（在列级 editable 之上再收一层）：返回 false 的格
+  //                                     不进编辑态、不开枚举下拉、也不收填充 / 清空——列上可编辑、某些行不适用时用
   //   sortValue?:(row, col) => any      排序取值（默认数字列取 row[col.key]，文本列取 cellText）
   //   sortable?: boolean               列头点击排序（默认 = readOnly：可编辑表排序会打乱插入/粘贴的行定位，故默认关）
   //   onEdit?:   (rowId, key, value)    提交单格（外部负责写库；本模块已先 pushUndo）
@@ -186,6 +188,7 @@ export function useGridSelect(cfg) {
   const isActive = (ri, ci) => sel.value.ri === ri && sel.value.ci === ci
   const isEdit = (ri, ci) => edit.value.ri === ri && edit.value.ci === ci
   const colEditable = (c) => !cfg.readOnly && !!c && c.editable !== false
+  const cellEditable = (r, c) => colEditable(c) && (!cfg.cellEditable || !r || cfg.cellEditable(r, c) !== false)
   // 整行/整列是否落在选区里（序号列与列头的高亮）
   const rowSelected = (ri) => { const r = rect.value; return r.r0 >= 0 && ri >= r.r0 && ri <= r.r1 && r.c0 === 0 && r.c1 >= colList().length - 1 }
   const colSelected = (ci) => { const r = rect.value, n = rowList().length; return n > 0 && r.r0 === 0 && r.r1 >= n - 1 && ci >= r.c0 && ci <= r.c1 }
@@ -433,7 +436,7 @@ export function useGridSelect(cfg) {
       const row = list[ri], src = list[r0 + ((ri - lo) % srcN)]
       if (!row || !src) continue
       for (let ci = c0; ci <= c1; ci++) {
-        const c = cols[ci]; if (!colEditable(c)) continue
+        const c = cols[ci]; if (!cellEditable(row, c)) continue
         const v = cfg.cellRaw ? cfg.cellRaw(src, c) : src[c.key]
         jobs.push([row.id, c.key, v == null ? '' : String(v)])
       }
@@ -484,7 +487,7 @@ export function useGridSelect(cfg) {
   }
   function openPick(ri, ci, seed) {
     const c = colList()[ci]
-    if (!colEditable(c) || !colOptions(c)) return false
+    if (!cellEditable(rowList()[ri], c) || !colOptions(c)) return false
     if (edit.value.ri >= 0) commitEdit()
     setSel(ri, ci, false)
     pick.ri = ri; pick.ci = ci; pick.filter = String(seed == null ? '' : seed); pick.hi = 0; pick.open = true
@@ -519,7 +522,7 @@ export function useGridSelect(cfg) {
   }
 
   function tryEdit(ri, ci, seed) {   // F2/双击/Backspace 进入：由 watch 用 seed/原值重置 input（键入进入走 beginActiveEdit，不经此）
-    const c = colList()[ci]; if (!colEditable(c)) return
+    const c = colList()[ci]; if (!cellEditable(rowList()[ri], c)) return
     if (colOptions(c)) { openPick(ri, ci, ''); return }
     sel.value = { ar: ri, ac: ci, ri, ci }; editSeed.value = seed; editTyped.value = false; editReady.value = false; edit.value = { ri, ci }
   }
@@ -527,7 +530,7 @@ export function useGridSelect(cfg) {
   function beginActiveEdit(el) {
     const { ri, ci } = sel.value
     if (ri < 0 || edit.value.ri >= 0 || cfg.readOnly) return false
-    const c = colList()[ci]; if (!colEditable(c)) return false
+    const c = colList()[ci]; if (!cellEditable(rowList()[ri], c)) return false
     // 枚举列：不进文本编辑，开选择器并把刚键入的字符当过滤词；返回 false 让捕获框清空
     if (colOptions(c)) { openPick(ri, ci, el ? el.value : ''); return false }
     // editTyped 让 watch 不重置 input（保留已键入内容）；editSeed 置非空('' 而非 null) 只为标记「键入进入=Excel 回车模式」
@@ -603,7 +606,7 @@ export function useGridSelect(cfg) {
     if (cfg.readOnly || !cfg.onClear) return
     const list = rowList(), cols = colList(), rc = rect.value; if (rc.r0 < 0) return
     const cells = []
-    for (let ri = rc.r0; ri <= rc.r1; ri++) { const r = list[ri]; if (!r) continue; for (let ci = rc.c0; ci <= rc.c1; ci++) { const c = cols[ci]; if (colEditable(c)) cells.push({ rowId: r.id, key: c.key }) } }
+    for (let ri = rc.r0; ri <= rc.r1; ri++) { const r = list[ri]; if (!r) continue; for (let ci = rc.c0; ci <= rc.c1; ci++) { const c = cols[ci]; if (cellEditable(r, c)) cells.push({ rowId: r.id, key: c.key }) } }
     if (!cells.length) return
     cfg.pushUndo && cfg.pushUndo(); cfg.onClear(cells); cfg.refresh && cfg.refresh()
   }
@@ -765,7 +768,7 @@ export function useGridSelect(cfg) {
 
   return {
     readOnly: !!cfg.readOnly,
-    sel, edit, editSeed, editEl, bodyEl, rect, rows, inSel, isActive, isEdit, colEditable,
+    sel, edit, editSeed, editEl, bodyEl, rect, rows, inSel, isActive, isEdit, colEditable, cellEditable,
     rowSelected, colSelected, selectAll,
     focusGrid, ensureVisible, onWheel, cellDown, cellEnter, tryEdit, commitEdit, cancelEdit, gridKey, cellPaste,
     copySel, cutSel, doPaste, clearRange, tabMove,

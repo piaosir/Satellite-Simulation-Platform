@@ -2333,6 +2333,9 @@ export function createFlatCoverage(canvas) {
   // 图廓（地球在这张平面上的外轮廓）。等距圆柱下就是世界矩形的边，由经纬网的 ±180 那两条兼着；
   // 投影档下是一条曲线，得单画一条，否则椭圆边缘只有海色与背景色的交界、没有线。
   // 图廓描边用的 Path2D（老样子）；另有一份【录下来的 moveTo/lineTo 序列】给两处海色填充用。
+  // ★ 四处一律走 PJ.spherePath（细精度那份投影实例），不再拿地物那份 PJ.path 画 Sphere：
+  //   d3 出厂精度下等积地球的图廓只有 33 段折线、弦高 0.41 平面单位，放大到 6 px/° 整圈是多边形
+  //   （2026-09-10 用户截图）。精度的两档与代价见 projection.js 的 PATH_PRECISION / OUTLINE_PRECISION。
   // ★ 为什么填充不能改用 Path2D：Path2D 是用户空间坐标、由 CTM 整体变换后再光栅化，
   //   而 `beginPath + 逐点 lineTo` 是记录时就折进设备坐标 —— 两条路的抗锯齿覆盖不逐位相同。
   //   实测在罗宾逊全图上沿图廓差出 2.8 万个像素（最大 17/255）。故填充这一侧只把
@@ -2344,7 +2347,7 @@ export function createFlatCoverage(canvas) {
     if (sphOps !== null && sphOpsKey === key) return sphOps
     const ops = []
     let bad = false
-    PJ.path({ type: 'Sphere' }, {
+    PJ.spherePath({
       moveTo(x, y) { ops.push(0, x, y) },
       lineTo(x, y) { ops.push(1, x, y) },
       closePath() { ops.push(2, 0, 0) },
@@ -2358,7 +2361,7 @@ export function createFlatCoverage(canvas) {
   function traceSphere(g) {
     const ops = compat ? null : sphereOps()
     g.beginPath()
-    if (!ops) { PJ.path({ type: 'Sphere' }, g); return }
+    if (!ops) { PJ.spherePath(g); return }
     for (let i = 0; i < ops.length; i += 3) {
       const op = ops[i]
       if (op === 0) g.moveTo(ops[i + 1], ops[i + 2])
@@ -2370,14 +2373,14 @@ export function createFlatCoverage(canvas) {
     if (PJ.identity || borderStyle.gridOn === false) return
     const kk = k()
     const key = planeKey()
-    if (!sphPath || sphKey !== key) { sphPath = PJ.path({ type: 'Sphere' }, new Path2D()); sphKey = key }
+    if (!sphPath || sphKey !== key) { sphPath = PJ.spherePath(new Path2D()); sphKey = key }
     ctx.save()
     ctx.strokeStyle = borderStyle.gridColor
     ctx.globalAlpha = Math.min(1, (borderStyle.gridOpacity || 0.5) * 1.6)   // 图廓比网格线实一档
     ctx.lineWidth = (borderStyle.gridWidth || 1) / kk
     ctx.setLineDash([])
     ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * tx, dpr * ty)
-    if (compat) { ctx.beginPath(); PJ.path({ type: 'Sphere' }, ctx); ctx.stroke() } else ctx.stroke(sphPath)
+    if (compat) { ctx.beginPath(); PJ.spherePath(ctx); ctx.stroke() } else ctx.stroke(sphPath)
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     ctx.restore()
   }

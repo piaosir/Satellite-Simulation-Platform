@@ -10,8 +10,8 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { feature } from 'topojson-client'
-import { geoArea } from 'd3-geo'
-import { makeProjection, PROJECTIONS, DEFAULT_PROJECTION, isProjection, MERCATOR_LAT, ALBERS_PARALLELS, lonBreaks, lonPeriod, planCells, cellError, blockError, planCellsInv, planBlockInv, cellErrorInv, cellDrawableInv, cellCornersInv, projParams } from '../../../src/viz/geo/projection.js'
+import { geoArea, geoPath } from 'd3-geo'
+import { makeProjection, PROJECTIONS, DEFAULT_PROJECTION, isProjection, MERCATOR_LAT, ALBERS_PARALLELS, lonBreaks, lonPeriod, planCells, cellError, blockError, planCellsInv, planBlockInv, cellErrorInv, cellDrawableInv, cellCornersInv, projParams, PATH_PRECISION, OUTLINE_PRECISION } from '../../../src/viz/geo/projection.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(HERE, '..', '..', '..')
@@ -381,8 +381,8 @@ for (const { k, zh } of PROJECTIONS) {
     ['夜区与晨昏线', 'function drawTerminator', 'function drawField']
   ]) ok('⑪ ' + nm + ' 有投影分叉', /PJ\.identity/.test(seg(FLAT, from, to)), from)
   ok('⑪ 绕向归正接在陆地 / 覆盖场 / 足迹三处', (FLAT.match(/asPoly\(|orientRings\(/g) || []).length >= 5)
-  ok('⑪ 海只填球面轮廓、另画图廓（否则铺满矩形，图廓当场没）',
-    /PJ\.path\(\{ type: 'Sphere' \}/.test(FLAT) && /function drawSphereOutline/.test(FLAT) && /drawSphereOutline\(\)\n/.test(lf(FLAT)))
+  ok('⑪ 海只填球面轮廓、另画图廓（否则铺满矩形，图廓当场没）；图廓走 spherePath（2026-09-10 起）',
+    /PJ\.spherePath\(/.test(FLAT) && /function drawSphereOutline/.test(FLAT) && /drawSphereOutline\(\)\n/.test(lf(FLAT)))
   ok('⑪ 栅格（影像 / 环境场）在投影档走逐像素重投影',
     /function reprojectRaster/.test(FLAT) && /reprojectRaster\(/.test(seg(FLAT, 'function drawImagery', 'function imageryPlan')) &&
     /reprojectRaster\(/.test(seg(FLAT, 'function drawEnvRaster', 'function drawFieldOverlays')))
@@ -577,6 +577,89 @@ for (const { k, zh } of PROJECTIONS) {
     for (const lat of [0, 30, 60, 80]) cone = Math.min(cone, planCells(makeProjection('albers', -75), 0, 15, lat, lat - 15, 0.6 / 200).nLon)
     ok('⑫ 伪圆柱经向切得远比圆锥少（前者只为 A(φ) 的交叉项切，后者的纬线本身就是圆弧）',
       pseudo < cone, `伪圆柱最多 ${pseudo} 段 · 圆锥最少 ${cone} 段`)
+  }
+}
+
+// ---------- ⑬ 图廓与加密精度（2026-09-10 用户截图：等积地球 / 罗宾逊的图廓「不圆」） ----------
+// d3 出厂精度 √0.5 是按「输出即屏幕像素」设的；本平面 1 单位 ≈ 1°、屏上是 k 个像素（放到头 741）。
+// 图廓只由 8 个控制点起算、全靠加密撑形 → 出厂精度下 Equal Earth 只有 33 段折线、弦高 0.41 单位，
+// 6 px/° 下就是 3 px 的折角。判据：弦高按【真实最大偏差】量（参考轮廓按 1e-4 精度生成，点到折线的最大距离），
+// 不信 d3 自己报的精度。
+{
+  // mv[i] = 第 i 点是 moveTo（子路径起点）：跨子路径的相邻两点不是一段，配成对会量出一条横跨整幅的假弦
+  const rec = () => { const pts = [], mv = []; return { pts, mv, moveTo(x, y) { pts.push([x, y]); mv.push(true) }, lineTo(x, y) { pts.push([x, y]); mv.push(false) }, closePath() {} } }
+  const segDist = (px, py, ax, ay, bx, by) => {
+    const dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy
+    let t = l2 > 0 ? ((px - ax) * dx + (py - ay) * dy) / l2 : 0
+    t = t < 0 ? 0 : (t > 1 ? 1 : t)
+    return Math.hypot(px - (ax + t * dx), py - (ay + t * dy))
+  }
+  // 点集到折线的最大距离（真实弦高）
+  const maxDev = (pts, poly) => {
+    let worst = 0
+    for (const [px, py] of pts) {
+      let best = Infinity
+      for (let i = 1; i < poly.length; i++) { const d = segDist(px, py, poly[i - 1][0], poly[i - 1][1], poly[i][0], poly[i][1]); if (d < best) best = d }
+      if (best > worst) worst = best
+    }
+    return worst
+  }
+  const sphereAt = (kind, opts, precision) => { const P = makeProjection(kind, LON0, opts); P.d3.precision(precision); const r = rec(); geoPath(P.d3, r)({ type: 'Sphere' }); return r.pts }
+  // ★ 真实弦高会比 d3 的精度值大一点：它只在【弦中点】量一次垂距，中点恰好落回弦上的奇对称段就不再切
+  //   （罗宾逊的表格样条上有这样的段，0.001 / 0.0005 / 0.0003 三档实测都停在 0.00201）。故判据按真实弦高
+  //   ≤ 0.0025 单位给：放到头（741 px/°）1.9 px、常用 50 px/° 下 0.13 px、全图视角 0.006 px。
+  const OUTLINE_REAL = 0.0025
+  for (const kind of ['equalEarth', 'robinson', 'albers', 'azeq']) {
+    const opts = kind === 'azeq' ? { lat0: 35 } : undefined
+    const ref = sphereAt(kind, opts, 1e-4)
+    const P = makeProjection(kind, LON0, opts)
+    const fine = rec(); P.spherePath(fine)
+    const coarse = rec(); P.path({ type: 'Sphere' }, coarse)     // 地物那份实例画出来的图廓
+    const dFine = maxDev(ref, fine.pts), dCoarse = maxDev(ref, coarse.pts)
+    ok('⑬ ' + kind + ' spherePath 图廓真实弦高 ≤ 0.0025 单位（放到头 741 px/° 也 < 2 px、50 px/° 下 0.13 px）',
+      dFine <= OUTLINE_REAL && fine.pts.length >= 200 && fine.pts.length < 4000, fine.pts.length + ' 点 · 弦高 ' + dFine.toFixed(5))
+    ok('⑬ ' + kind + ' 地物那份 path 的 Sphere 弦高 ≤ PATH_PRECISION（它比图廓粗，图廓必须另走 spherePath）',
+      dCoarse <= PATH_PRECISION * 1.05, coarse.pts.length + ' 点 · 弦高 ' + dCoarse.toFixed(4))
+  }
+  // 反证：d3 出厂精度下图廓真的只有几十段折线（这条红了说明 d3 换了默认值，上两条的意义要重新审）
+  {
+    const pts = sphereAt('equalEarth', undefined, Math.SQRT1_2)
+    const d = maxDev(sphereAt('equalEarth', undefined, 1e-4), pts)
+    ok('⑬ 反证：出厂精度 √0.5 下 Equal Earth 图廓 < 60 点、弦高 > 0.3 单位', pts.length < 60 && d > 0.3, pts.length + ' 点 · 弦高 ' + d.toFixed(3))
+  }
+  ok('⑬ 两档常数：PATH_PRECISION 0.05（10m 一趟 +0~8%）· OUTLINE_PRECISION 0.001；d3p 用的是前者',
+    PATH_PRECISION === 0.05 && OUTLINE_PRECISION === 0.001 && Math.abs(makeProjection('robinson', LON0).d3.precision() - PATH_PRECISION) < 1e-12)
+  ok('⑬ 等距圆柱不走 d3：spherePath 为 null（与 path 同款）', makeProjection('equirect', LON0).spherePath === null)
+  // 被切口截断的陆地边：格陵兰（12°W~73°W）在出厂切口 30°W 上被切成两半，人工边沿图廓走。
+  // 它是地物那份实例画的，弦高按 PATH_PRECISION；出厂精度下这条边与细图廓之间会露出 ≤ 0.4 单位的海色月牙。
+  {
+    const topo = JSON.parse(readFileSync(join(ROOT, 'src/viz/globe3d/data/basemap-50m.json'), 'utf8'))
+    const grl = feature(topo, topo.objects.units).features.find((f) => f.properties && f.properties.u === 'GRL')
+    const wrapd = (v) => ((v + 180) % 360 + 360) % 360 - 180
+    const cutDev = (precision) => {
+      const P = makeProjection('equalEarth', LON0)
+      if (precision != null) P.d3.precision(precision)
+      const r = rec(); P.path(grl, r)
+      const ref = sphereAt('equalEarth', undefined, 1e-4)
+      const onCut = (p) => { const b = P.invRaw(p[0], p[1]); return !!b && Math.abs(wrapd(b[0] - LON0)) < 1e-3 }
+      let worst = 0, n = 0
+      for (let i = 1; i < r.pts.length; i++) {
+        if (r.mv[i]) continue                      // b 是下一条子路径的起点：与 a 不成段
+        const a = r.pts[i - 1], b = r.pts[i]
+        if (!onCut(a) || !onCut(b)) continue
+        n++; worst = Math.max(worst, maxDev([[(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]], ref))
+      }
+      return { n, worst }
+    }
+    const now = cutDev(null), old = cutDev(Math.SQRT1_2)
+    ok('⑬ 格陵兰被切口截断的边：弦中点离图廓 ≤ PATH_PRECISION', !!grl && now.n > 0 && now.worst <= PATH_PRECISION * 1.05, now.n + ' 段 · 最坏 ' + now.worst.toFixed(4))
+    ok('⑬ 反证：同一条边在出厂精度下弦高 > 0.15 单位（6 px/° 下 ≥ 1 px 的月牙）', old.n > 0 && old.worst > 0.15, old.n + ' 段 · 最坏 ' + old.worst.toFixed(3))
+  }
+  // 接线：flatCoverage 的图廓（描边 / 海色填充 / 影像 clip / 垫底）一律走 spherePath，不再拿地物那份 path 画 Sphere
+  {
+    const src = lf(readFileSync(join(ROOT, 'src/viz/flatmap/flatCoverage.js'), 'utf8'))
+    const n = (src.match(/PJ\.spherePath\(/g) || []).length
+    ok('⑬ 接线：flatCoverage 图廓四处都是 PJ.spherePath、无 PJ.path(Sphere)', n >= 4 && !/PJ\.path\(\{ type: 'Sphere' \}/.test(src), n + ' 处')
   }
 }
 

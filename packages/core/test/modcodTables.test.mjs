@@ -17,7 +17,8 @@ function ok(name, cond, extra) {
   console.log((cond ? 'PASS' : 'FAIL') + '  ' + name + (extra ? `  (${extra})` : ''))
   cond ? pass++ : fail++
 }
-const sig = (rows) => JSON.stringify(rows.map((r) => [r.label, r.modulation, r.fec, r.rsCode, r.bandwidthFactor, r.noiseRatioMode, r.threshold]))
+// 名字按显示名比（自动名现拼）：内置表里等于自动名的 label 归一后是 ''，显示出来仍是 'QPSK 1/4'
+const sig = (rows) => JSON.stringify(rows.map((r) => [M.labelOf(r), r.modulation, r.fec, r.rsCode, r.bandwidthFactor, r.noiseRatioMode, r.threshold]))
 
 /* ---- ① 空改写层 = 内置表逐值相同 ---- */
 const BUILTIN_SRC = {
@@ -79,9 +80,9 @@ ok('改名也算改写（内置标准可改名，key 不变）', (() => {
 /* ---- ④ 脏数据归一 ---- */
 ok('门限口径各种写法都认', ['Eb/N₀', 'eb/n0', 'EbNo', 'ebno'].every((v) => M.normMode(v) === 'ebno') &&
   ['Es/N₀', 'es/n0', 'EsNo', '', null, '随便写'].every((v) => M.normMode(v) === 'esno'))
-ok('整行空白丢弃、有内容的行保留', (() => {
+ok('整行空白丢弃、有内容的行保留（名字留空 = 自动名）', (() => {
   const rows = M.normalizeRows([{}, { label: '', modulation: '', fec: '' }, { modulation: 'QPSK', fec: '3/4' }])
-  return rows.length === 1 && rows[0].label === 'QPSK 3/4'
+  return rows.length === 1 && rows[0].label === '' && M.labelOf(rows[0]) === 'QPSK 3/4'
 })())
 ok('门限缺失不丢行（按 0 dB 落库）', (() => {
   const rows = M.normalizeRows([{ label: 'X', modulation: '8PSK', fec: '2/3' }])
@@ -106,6 +107,72 @@ ok('自定义阶数（1024QAM）落得进来', (() => {
 ok('字符串数字转数字（Excel 里被存成文本的那种）', (() => {
   const r = M.normalizeRow({ label: 'X', modulation: 'QPSK', fec: '1/2', bandwidthFactor: '1.05', threshold: ' -1.20 ' })
   return r.bandwidthFactor === 1.05 && r.threshold === -1.2
+})())
+
+/* ---- ④b 名称：自动名 vs 自定义名 ---- */
+ok('★ 等于自动名的 label 收成空串（改调制/码率后名字跟着走），按归一化后的调制比', (() => {
+  const a = M.normalizeRow({ label: 'QPSK 3/4', modulation: 'qpsk', fec: '3/4' })
+  const b = M.normalizeRow({ label: '  16APSK 2/3 ', modulation: '16apsk', fec: '2/3' })
+  return a.label === '' && b.label === '' && M.labelOf(a) === 'QPSK 3/4' && M.labelOf(b) === '16APSK 2/3'
+})())
+ok('自定义名原样保留', (() => {
+  const r = M.normalizeRow({ label: '低速档 QPSK 1/2', modulation: 'QPSK', fec: '1/2' })
+  return r.label === '低速档 QPSK 1/2' && M.labelOf(r) === '低速档 QPSK 1/2'
+})())
+ok('内置 DVB 四表的名字全是自动名、3GPP 各表的名字带序号故是自定义名', (() => {
+  const dvb = base.filter((s) => s.key.indexOf('DVB') === 0)
+  const g3 = base.filter((s) => s.key.indexOf('3GPP') === 0)
+  return dvb.length === 4 && dvb.every((s) => s.rows.every((r) => r.label === '')) &&
+    g3.length === 8 && g3.every((s) => s.rows.every((r) => r.label !== ''))
+})())
+ok('modcodMap / basebandOptions 出给消费方的行名字已填好', (() => {
+  const rows = M.modcodMap(null)['DVB-S2']
+  const opt = core.basebandOptions().modcod['DVB-S2']
+  return rows[0].label === 'QPSK 1/4' && opt[0].label === 'QPSK 1/4' && opt.every((r) => r.label)
+})())
+ok('改名成自动名再存 → 与内置表相同、不算改写', (() => {
+  const r = JSON.parse(JSON.stringify(base))
+  r.find((s) => s.key === 'DVB-S2').rows[0].label = 'QPSK 1/4'
+  return Object.keys(M.storeFromList(r).overrides).length === 0
+})())
+ok('改成自定义名 → 算改写、往返保留', (() => {
+  const r = JSON.parse(JSON.stringify(base))
+  r.find((s) => s.key === 'DVB-S2').rows[0].label = '最低档'
+  const l = M.listStandards(M.storeFromList(r))
+  const s2 = l.find((s) => s.key === 'DVB-S2')
+  return s2.modified && s2.rows[0].label === '最低档' && M.labelOf(s2.rows[0]) === '最低档' && s2.rows[1].label === ''
+})())
+
+/* ---- ④c 扩频增益：只随 Es/N₀ 行走 ---- */
+ok('esno 行保留 m（字符串数字也认）、缺省 1、< 1 一律 1', (() => {
+  const a = M.normalizeRow({ modulation: 'QPSK', fec: '1/5', noiseRatioMode: 'esno', threshold: -9.9, m: '2' })
+  const b = M.normalizeRow({ modulation: 'QPSK', fec: '1/5', noiseRatioMode: 'esno', threshold: -2.85 })
+  const c = M.normalizeRow({ modulation: 'QPSK', fec: '1/5', noiseRatioMode: 'esno', threshold: 0, m: 0.5 })
+  return a.m === 2 && b.m === 1 && c.m === 1
+})())
+ok('★ ebno / snr 行的 m 强制为 1（门限与扩频无关，扩频是载波参数）', (() => {
+  const a = M.normalizeRow({ modulation: 'QPSK', fec: '3/4', noiseRatioMode: 'ebno', threshold: 5.5, m: 4 })
+  const b = M.normalizeRow({ modulation: 'QPSK', fec: '120/1024', noiseRatioMode: 'snr', threshold: -6, m: 4 })
+  return a.m === 1 && b.m === 1
+})())
+ok('内置表各行 m 均为 1', base.every((s) => s.rows.every((r) => r.m === 1)))
+ok('改 esno 行的 m 算改写、往返不漂', (() => {
+  const r = JSON.parse(JSON.stringify(base))
+  r.find((s) => s.key === 'DVB-S2X').rows[0].m = 2
+  const st = M.storeFromList(r)
+  const s2x = M.listStandards(st).find((s) => s.key === 'DVB-S2X')
+  return Object.keys(st.overrides).join(',') === 'DVB-S2X' && s2x.modified && s2x.rows[0].m === 2 && s2x.rows[1].m === 1
+})())
+ok('给 ebno 行填 m 不算改写（归一后与内置表相同）', (() => {
+  const r = JSON.parse(JSON.stringify(base))
+  r.find((s) => s.key === 'DVB-S').rows[0].m = 8
+  return Object.keys(M.storeFromList(r).overrides).length === 0
+})())
+ok('老存档（行里没有 m / 名字写满）读进来与新口径一致', (() => {
+  const old = { version: 1, overrides: { 'DVB-S2': { rows: C.DVBS2_MODCOD_TABLE.map((x) => Object.assign({}, x)) } }, custom: [] }
+  const l = M.listStandards(old)
+  const s2 = l.find((s) => s.key === 'DVB-S2')
+  return !s2.modified && s2.rows.every((r) => r.m === 1 && r.label === '')
 })())
 
 /* ---- ⑤ 自定义标准 ---- */

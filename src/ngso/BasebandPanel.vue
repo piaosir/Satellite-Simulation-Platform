@@ -171,6 +171,10 @@ function applyModcod(e) {
   props.form.bandwidthFactor = String(mc.bandwidthFactor)
   props.form.ebno = Number(mc.threshold).toFixed(2)
   props.form.noiseRatioMode = mc.noiseRatioMode
+  // ★ 扩频增益只随 Es/N₀ 口径的行走：Es/N₀ 是扩频之后每个传输符号的能量比，与表里的扩频因子成对
+  //   （同一套调制编码每扩频 ×2 门限低 3.01 dB），不成对套用等于把门限按错了带宽读。
+  //   Eb/N₀ 行的门限与扩频无关，扩频是载波自己的参数，这里不动它。
+  if (mc.noiseRatioMode === 'esno') props.form.m = String(Number(mc.m) >= 1 ? Number(mc.m) : 1)
   rsEditing.value = null   // MODCOD 整套覆写了 rsCode，编辑中的原文作废
   // 3GPP 行：把该行的体制内索引写进 phy（NR 的 MCS 序号 / NB-IoT 的 I_TBS 或单音 I_MCS）。
   // ★ idx 是 MODCOD 表里的一列，不再从 label 里拿正则抠。
@@ -437,7 +441,7 @@ function onBwInput(e) { setAnchor('bw', e.target.value) }
         <input :value="rsCodeDisplay" class="bb-i mono" :class="{ 'bb-over': rsAlert && rsAlert.level === 'over' }"
                :placeholder="form.rsCodeMode === 'spectral' ? '1.1520' : '188/204'" @input="onRsInput" @change="onRsChange" />
       </div>
-      <label v-if="!phyOn" class="bb-f"><span class="bb-l">扩频增益</span>
+      <label v-if="!phyOn" class="bb-f" :title="form.noiseRatioMode === 'esno' ? '码片率 ÷ 载波速率，无扩频为 1。Es/N₀ 口径下门限与它成对：套用 MODCOD 时随表取值；单独改它须同步改门限（每 ×2 门限低 3.01 dB）' : '码片率 ÷ 载波速率，无扩频为 1。Eb/N₀ 口径下门限与它无关，只改符号率 / 带宽与门限 C/N'"><span class="bb-l">扩频增益</span>
         <input v-model="form.m" class="bb-i mono" placeholder="1.00" />
       </label>
     </div>

@@ -19,15 +19,22 @@ import MiniSendDialog from './MiniSendDialog.vue'
 import { fpMiniItem } from '../shared/fpMiniExport.js'
 import { useGridSelect } from '../viz/grd/useGridSelect.js'
 import { exportSheets, importWorkbook } from '../shared/gridXlsx.js'
-import { MODCOD_COLS, modcodGridCols, cellText as mcCellText, cellTip as mcCellTip, setCell, emptyRow,
-  modcodSheets, modcodSheetNames, modcodFileName, standardsFromSheets, rejectedModulations } from '../shared/modcodTable.js'
+import { MODCOD_COLS, modcodGridCols, cellText as mcCellText, cellTip as mcCellTip, cellClass as mcCellClass, cellEditable as mcCellEditable,
+  setCell, emptyRow, modcodSheets, modcodSheetNames, modcodFileName, standardsFromSheets, rejectedModulations } from '../shared/modcodTable.js'
 import { MOD_FAMILIES, ordersOf, isValidOrderFor, composeModulation, parseModulation, modFactorOf } from '../shared/carrierRate.js'
 
 const emit = defineEmits(['close'])
-// tab：打开时停在哪一页（顶部搜索框「文件管理 ▸ 天线方向图」一类的定位入口传入；缺省轨道星历）
-const props = defineProps({ tab: { type: String, default: 'omm' } })
+// tab：打开时停在哪一页。顶部搜索框「文件管理 ▸ 天线方向图」一类的定位入口显式传入；
+// 不传（菜单 / 活动栏的「文件管理…」）则回到上次关掉时停的那一页 —— 这个对话框的常见用法是
+// 反复回来改同一张表，每次都从轨道星历页重新点起是纯体力活。记在 localStorage（视图态，不入存档）。
+const props = defineProps({ tab: { type: String, default: '' } })
 const api = typeof window !== 'undefined' ? window.api : null
-const tab = ref(['omm', 'grd', 'freqplan', 'modcod', 'gxt'].includes(props.tab) ? props.tab : 'omm')
+const TABS = ['omm', 'grd', 'freqplan', 'modcod', 'gxt']
+const TAB_KEY = 'fileManager/tab'
+const readPref = (k) => { try { return localStorage.getItem(k) || '' } catch { return '' } }
+const writePref = (k, v) => { try { localStorage.setItem(k, String(v == null ? '' : v)) } catch { /* ignore */ } }
+const tab = ref(TABS.includes(props.tab) ? props.tab : (TABS.includes(readPref(TAB_KEY)) ? readPref(TAB_KEY) : 'omm'))
+watch(tab, (t) => writePref(TAB_KEY, t))
 const msg = ref('')
 // 面板内瞬时提示 + 落底部日志窗格（两者共用同一份文案，覆盖本文件全部 30 处导入/导出/删除反馈，无需逐处补记）
 function flash(t) { msg.value = t; logMsg(`文件管理：${t}`, /失败/.test(t) ? 'warn' : 'info'); setTimeout(() => { if (msg.value === t) msg.value = '' }, 4000) }
@@ -610,7 +617,10 @@ async function exportCurrentGxt() {
 // phy / meta 只对自建标准有意义（内置标准的这两项是标准属性，跟着版本走、不进改写层）
 const MC_STORE_KEYS = ['key', 'label', 'rows', 'phy', 'meta']
 const mcStds = ref([])            // [{ key, label, builtin, modified, rows:[{id,...}] }]
-const mcSel = ref('')
+// 选中的标准同样记住（键 = 标准 key）：下次打开这一页直接回到上次改的那张表
+const MC_SEL_KEY = 'fileManager/modcodStd'
+const mcSel = ref(readPref(MC_SEL_KEY))
+watch(mcSel, (k) => { if (k) writePref(MC_SEL_KEY, k) })
 const mcReadOnly = ref(false)     // 库文件损坏：只读展示，不许写回去覆盖
 let _mcRowSeq = 1
 const mcNewRowId = () => 'mc' + (_mcRowSeq++)
@@ -731,6 +741,7 @@ const mcGrid = useGridSelect({
   cellRaw: mcCellText,
   onEdit: (id, key, val) => { const r = mcRows().find((x) => x.id === id); if (r) setCell(r, key, val) },
   onClear: (cells) => cells.forEach(({ rowId, key }) => { const r = mcRows().find((x) => x.id === rowId); if (r) setCell(r, key, '') }),
+  cellEditable: mcCellEditable,     // 扩频增益只在 Es/N₀ 行开放（见 shared/modcodTable.js）
   onPasteBlock: mcPasteBlock,
   onPasteAppend: mcPasteAppend,
   onInsertRows: (at, n) => {
@@ -1120,7 +1131,7 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
                          @change="mcSetMeta('source', $event.target.value)" />
                 </label>
               </div>
-              <ExcelGrid class="mcgrid" :grid="mcGrid" :cols="MC_GRID_COLS" :text="mcCellText" :cell-tip="mcCellTip"
+              <ExcelGrid class="mcgrid" :grid="mcGrid" :cols="MC_GRID_COLS" :text="mcCellText" :cell-tip="mcCellTip" :cell-class="mcCellClass"
                          :head-tip="(c) => c.tip || c.label" empty-text="还没有 MODCOD。"
                          add-label="添加 MODCOD" del-label="删除所选行" @add="mcAddRow">
                 <template #pick-foot="{ col, apply }">
@@ -1359,6 +1370,10 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
 .mcname.rn { cursor: pointer; }
 .mcname.rn:hover { color: var(--accent); }
 .mcgrid { flex: 1; min-height: 0; overflow: auto; outline: none; border: 1px solid var(--border); border-radius: var(--r-ctl); }
+/* 名称列：自动名（随调制 + 码率现拼）退一档墨色，自定义名正常色 —— 与载波面板速率链里「由锚点算出来的」那几格同一套语言；
+   扩频增益列：非 Es/N₀ 行不适用，「—」再退一档 */
+.mcgrid :deep(td.mc-auto .eg-v) { color: var(--text-muted); }
+.mcgrid :deep(td.mc-na .eg-v) { color: var(--text-faint); }
 /* 调制方式下拉底部的「按族 + 阶数现造」条（ExcelGrid 的 pick-foot 插槽，故不带 .mcgrid 前缀也进不到别处） */
 .mcgen { flex: none; border-top: 1px solid var(--border); padding: 6px 8px; display: flex; flex-direction: column; gap: 5px; }
 .mcgen-r { display: flex; align-items: center; gap: 5px; }
