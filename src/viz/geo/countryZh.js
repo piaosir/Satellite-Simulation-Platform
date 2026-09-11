@@ -25,7 +25,8 @@
 //   新值均已核在本国 10m 与 50m 单元内；packages/core/test/mapGeometry.test.mjs 把「每个锚点落在
 //   本国 10m 单元内」守成不变量，以后再改锚点当场就能拓出来。
 //
-// 台湾/港澳三条给了名字但永远用不到：它们的 owner 由 frozen.js 恒定为 CHN，解算器不会拿 TWN/HKG/MAC 来查名。
+// 台湾/港澳三条与南沙 PGA / 黄岩岛 SCR 两条给了名字但永远用不到：这些单元的 owner 由 frozen.js 恒定为 CHN，
+// 解算器不会拿 TWN/HKG/MAC/PGA/SCR 来查名（西沙 PFA 的 own0 本就是 CHN，从未有过条目）。
 export const COUNTRY_ZH = {
   ABW: ['阿鲁巴', '533', null, null],
   AFG: ['阿富汗', '004', 66.496586, 34.164262],
@@ -376,7 +377,9 @@ export const enOf = (iso) => COUNTRY_EN[iso] || null
 // 外加 UMI（九个彼此相距上千公里的无人环礁的聚合体，一个名字没有落点）。
 // ★ 只是不在地图上写名字 —— 它们照常进国家清单、照常可逐国设色、照常可勾一级行政区。
 //   补齐国名表之后这些单元第一次拿到了中文名，不挡住的话地图上会冒出一批比岛还大的字。
-//   科索沃 / 北塞浦路斯 / 索马里兰 / 南沙群岛 / 黄岩岛不在此列：它们在各自视角下是独立实体，该标。
+//   科索沃 / 北塞浦路斯 / 索马里兰不在此列：它们在各自视角下是独立实体，该标。
+//   南沙 PGA / 黄岩岛 SCR 也不在此列，但缘由相反：它们由 frozen.js 冻结为 CHN，根本到不了 labelSet 的归属集合
+//   （曾经到得了 —— 黄岩岛在每一套视角下都被当成一个国家标出来，见 frozen.js 文件头）。
 export const NO_LABEL = new Set([
   'ATC', 'BJN', 'BRI', 'BRT', 'BVT', 'CLP', 'CNM', 'CSI', 'ESB', 'IOA', 'KAB', 'KAS', 'SER', 'SPI', 'UMI', 'USG', 'WSB'
 ])

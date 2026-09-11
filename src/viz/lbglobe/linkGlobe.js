@@ -17,7 +17,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { Line2 } from 'three/addons/lines/Line2.js'
 import { LineGeometry } from 'three/addons/lines/LineGeometry.js'
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js'
-import { loadBasemap, basemapPaths, OCEAN, LAND, COAST, BORDER } from '../../shared/lbBasemap.js'
+import { loadBasemap, onBasemapChange, basemapPaths, OCEAN, LAND, COAST, BORDER } from '../../shared/lbBasemap.js'
 import { uiFontStack, DOC_FONT_STACK } from '../../shared/lbFont.js'
 
 const RE_KM = 6378.137
@@ -87,8 +87,9 @@ async function earthTexture(dark) {
   const view = { lon0: -180, lon1: 180, lat0: -90, lat1: 90 }, size = { w: W, h: H }
   const opt = { minPx: 1.1, minSize: 1.6 }
   const land = basemapPaths(map.land, view, size, opt)
+  const coast = basemapPaths(map.coast, view, size, opt)
   const borders = basemapPaths(map.borders, view, size, opt)
-  // 陆地面的环要闭合（内环挖空靠 evenodd）；国界是开口折线，闭合会凭空多出一条弦
+  // 陆地面的环要闭合（内环挖空靠 evenodd）；岸线与国界是开口折线，闭合会凭空多出一条弦
   const trace = (paths, close) => {
     cx.beginPath()
     for (const p of paths) {
@@ -113,7 +114,7 @@ async function earthTexture(dark) {
   // 浅海蓝 + 浅陆黄绿的球上等于没画，故这边仍是不透明的深一档灰。
   // 同族冷灰、同一层级（岸线深于国界），这才是「统一」。
   if (borders.length) { trace(borders, false); cx.strokeStyle = BORDER; cx.lineWidth = 1.9; cx.stroke() }
-  if (land.length) { trace(land, true); cx.strokeStyle = COAST; cx.lineWidth = 2.4; cx.stroke() }
+  if (coast.length) { trace(coast, false); cx.strokeStyle = COAST; cx.lineWidth = 2.4; cx.stroke() }
   const tex = new THREE.CanvasTexture(cv)
   tex.colorSpace = THREE.SRGBColorSpace
   tex.anisotropy = 16                    // 临边（视线掠过球面处）压缩极大，各向异性采样是唯一救法
@@ -569,6 +570,8 @@ export function createLinkGlobe(container) {
 
   const ro = (typeof ResizeObserver !== 'undefined') ? new ResizeObserver(resize) : null
   if (ro) ro.observe(container)
+  // 「地图视角」变了底图整份重建 → 缓存的贴图作废，按当前主题重生成（applyTheme 会重新拿 earthTexture）
+  const offBasemap = onBasemapChange(() => { _texKey = ''; applyTheme(dark).catch((e) => console.warn('[linkGlobe] 底图重建', e)) })
 
   return {
     setScene,
@@ -579,6 +582,7 @@ export function createLinkGlobe(container) {
     setAutoRotate(on) { controls.autoRotate = !!on; mark(4) },
     dispose() {
       disposed = true
+      offBasemap()
       if (raf) cancelAnimationFrame(raf)
       if (timer) clearInterval(timer)
       if (ro) ro.disconnect()

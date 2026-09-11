@@ -147,6 +147,14 @@ contextBridge.exposeInMainWorld('api', {
     deviceId: () => ipcRenderer.invoke('app:deviceId'),
     version: () => ipcRenderer.invoke('app:version')
   },
+  // 自动更新（帮助 → 检查更新）：state 读主进程快照；check 立即检查（返回检查结束后的快照，
+  // 下载进度经 onChanged 推送）；install 立即重启安装（仅已下载时有效）
+  updater: {
+    state: () => ipcRenderer.invoke('updater:state'),
+    check: () => ipcRenderer.invoke('updater:check'),
+    install: () => ipcRenderer.invoke('updater:install'),
+    onChanged: (cb) => ipcRenderer.on('updater:changed', (_e, st) => cb(st))
+  },
   // 激活状态（终端设备侧）：status 读本地缓存（快，不碰网络）；refresh 立即心跳 + 拉最新激活书；
   // onChanged 订阅主进程定时心跳发现的状态变化（管理端激活/撤销最迟一跳自动生效）
   activation: {

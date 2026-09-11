@@ -21,6 +21,7 @@ import SettingsModal from './components/SettingsModal.vue'
 import MiniBindDialog from './components/MiniBindDialog.vue'
 import MiniAboutDialog from './components/MiniAboutDialog.vue'
 import AboutDialog from './components/AboutDialog.vue'
+import UpdateDialog from './components/UpdateDialog.vue'
 import FileManager from './components/FileManager.vue'
 import Icon from './components/Icon.vue'
 import CmdSearch from './components/CmdSearch.vue'
@@ -43,6 +44,7 @@ const fileOpen = ref(false)
 const fileTab = ref('')         // 文件管理打开时停在哪一页（标题栏搜索「文件管理 ▸ …」定位入口传入；空 = 回到上次停的那页）
 const searchOpen = ref(false)   // 标题栏搜索下拉开着：此时标题栏切成非拖拽区，点空白处才收得到 mousedown 去收起它
 const aboutOpen = ref(false)
+const updateOpen = ref(false)    // 检查更新（帮助菜单，与关于平级）
 const appVersion = ref('')
 const openMenu = ref('')     // 当前展开的菜单 key（''=全收起）；经典菜单栏：点击展开，展开后悬停即切换
 const hint = ref('')         // 状态栏左侧提示文字（悬停菜单项/工具按钮时显示，默认「就绪」）
@@ -234,6 +236,7 @@ const menus = computed(() => [
   { key: 'help', label: '帮助', items: [
     { label: '微信小程序 LinkLab…', icon: 'wechat', hint: '「LinkLab星链链路计算」手机端：链路预算 / AR 对星 / 覆盖图 / 星座地图，并可接收本平台发送的覆盖快照、链路配置与频率计划', run: () => { miniAboutOpen.value = true } },
     { sep: true },
+    { label: '检查更新…', icon: 'refresh-cw', hint: '向更新服务器核对版本；有新版本即后台下载，下载完成后可立即重启安装', run: () => { updateOpen.value = true } },
     { label: '关于卫星仿真平台…', icon: 'info', hint: '版本与说明', run: () => { aboutOpen.value = true } }
   ] }
 ])
@@ -537,6 +540,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
       v-if="aboutOpen" :version="appVersion" :act-text="actText"
       @close="aboutOpen = false" @refresh="doRefreshActivation()" @tap="multiTap('about', 5, doRefreshActivation)"
     />
+    <!-- 帮助 → 检查更新（静默自动更新流水线的主动入口：打开即查一次，已下载可立即重启安装） -->
+    <UpdateDialog v-if="updateOpen" @close="updateOpen = false" />
 
     <!-- 未激活：功能入口点击统一落到这里（地图拖拽/缩放等常规操作不受限） -->
     <div v-if="lockOpen" class="about-mask" @click.self="lockOpen = false">

@@ -32,6 +32,7 @@ export const CMD_KW = {
   '绑定小程序账号…': ['bind', 'wechat', 'account', '微信', '小程序', '认证码', '账号'],
   '设置…': ['settings', 'options', 'preferences', '偏好', '选项', '主题', '语言', '字体', '画质'],
   '微信小程序 LinkLab…': ['LinkLab', 'miniapp', 'wechat', 'app', '小程序', '手机'],
+  '检查更新…': ['update', 'upgrade', 'check for updates', 'new version', '升级', '新版本', '更新', '版本'],
   '关于卫星仿真平台…': ['about', 'version', 'license', '版本', '激活', '授权', '设备ID', '关于'],
   // 活动栏视图
   '星座': ['constellation', 'satellites', 'groups', '卫星', '卫星组', '卫星搜索', '分组', '星座生成'],

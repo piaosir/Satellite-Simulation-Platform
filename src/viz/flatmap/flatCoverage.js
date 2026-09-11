@@ -241,6 +241,7 @@ export function createFlatCoverage(canvas) {
   // 聚焦卫星显示样式（与 3D 同一份设置，由 3D 页 setFocusStyle 推入；线宽/图标尺寸口径与 3D 同为屏幕 px）
   const focusCfg = {
     trkOn: true, trkColor: '#e8c074', trkWidth: 1.6, trkOpacity: 1, trkDash: 'solid',
+    trkMode: 'line', trkFillColor: '#e8c074', trkFillOpacity: 0.3,   // 轨迹形式：line＝轨迹线；swath＝轨迹面（两缘按线样式描、带内按填充色/透明度）
     fpOn: true, fpColor: '#b8e6fa', fpWidth: 1.6, fpOpacity: 1, fpDash: 'dash',
     fpFillColor: '#b8e6fa', fpFillOpacity: 0,
     subOn: true, subPx: 30, subColor: '#ffffff'
@@ -1832,11 +1833,13 @@ export function createFlatCoverage(canvas) {
       //   避让永远腾不出地方」那件事。所以先对 px×zf 封顶，再乘倍率。
       const fs = Math.round(Math.min((l.px || 12) * zf, LB_MAX) * scaleK)
       if (fs < (l.keep ? LB_DROP_KEEP : LB_DROP)) continue   // 太小：不画，也不占位
-      const x = PX(l.lon, l.lat), y = PY(l.lat, l.lon)
+      // 屏幕偏移（单位 em，见 admPacks.mergePacks）：落点与碰撞盒一起平移；随字号走、不随缩放走
+      const ox = (l.dx || 0) * fs, oy = (l.dy || 0) * fs
+      const x = PX(l.lon, l.lat) + ox, y = PY(l.lat, l.lon) + oy
       if (x < -160 || x > cw + 160 || y < -40 || y > ch + 40) continue
       const name = nameOf(l)
       if (!name) continue
-      arr.push({ l, name, fs, x, y, hw: (textW(name, fs) / 2) * LB_OVX + LB_PADX, hh: fs * LB_HK * LB_OVY + LB_PADY })
+      arr.push({ l, name, fs, x, y, ox, oy, hw: (textW(name, fs) / 2) * LB_OVX + LB_PADX, hh: fs * LB_HK * LB_OVY + LB_PADY })
     }
     // 排队：先看 rk（NE 的 labelrank，越小越该先标；构建期写进包里），再看 pri（到最近邻的距离）
     arr.sort((a, b) => ((b.l.keep ? 1 : 0) - (a.l.keep ? 1 : 0)) ||
@@ -1845,7 +1848,7 @@ export function createFlatCoverage(canvas) {
       // 常显（KEEP_ISO 的国家）：不判碰撞，挤到也画；但照常登记占位，免得别人再压上来
       if (!e.l.keep && !slotFits(slots, e.x - e.hw, e.y - e.hh, e.x + e.hw, e.y + e.hh)) continue
       slotAdd(slots, e.x - e.hw, e.y - e.hh, e.x + e.hw, e.y + e.hh)
-      drawText(e.name, e.l.lon, e.l.lat, e.fs, color, opt)
+      drawText(e.name, e.l.lon, e.l.lat, e.fs, color, (e.ox || e.oy) ? { ...opt, dx: ((opt && opt.dx) || 0) + e.ox, dy: ((opt && opt.dy) || 0) + e.oy } : opt)
     }
   }
   function dot(lon, lat, r, fill, ring) {
@@ -2901,10 +2904,92 @@ export function createFlatCoverage(canvas) {
       }
       if (focusCfg.trkOn && g.track && g.track.length > 1) {
         ctx.globalAlpha = sa * Math.max(0, Math.min(1, focusCfg.trkOpacity))
-        drawPolyline(g.track, focusCfg.trkColor, Math.max(0.1, focusCfg.trkWidth), false, DASH_2D[focusCfg.trkDash] || null)
+        const w = Math.max(0.1, focusCfg.trkWidth), dash = DASH_2D[focusCfg.trkDash] || null
+        // 轨迹面：描的是带的两条边缘（左缘 / 右缘），不再描中线
+        if (focusCfg.trkMode === 'swath' && g.swL && g.swL.length > 1) { drawPolyline(g.swL, focusCfg.trkColor, w, false, dash); drawPolyline(g.swR, focusCfg.trkColor, w, false, dash) }
+        else drawPolyline(g.track, focusCfg.trkColor, w, false, dash)
       }
     }
     ctx.globalAlpha = sa
+  }
+  // 轨迹面填充（与覆盖圈填充同一层）。相邻两条横断面围成一个「切片」多边形（前断面左→右、后断面右→左），
+  // 同一颗星的全部切片进同一条路径、一次 fill（nonzero）：切片共边不留缝、跨圈自交处也不叠加变深。
+  // ★ 为此每个切片按有向面积统一绕向 —— 绕极切片补极点边之后绕向可能反转，反转的与相邻切片重叠处 winding 归零就成了洞。
+  //   绕极判据与 drawFocusFills 同：解缠后首尾经度差满一圈，补两点收到极点边上。
+  // 横向断面只取到 8 段（步幅抽稀）：断面点在纬线图上只为极区拓扑与曲率服务，GEO 那几十段照搬是白画；
+  // 屏幕外的切片（含 ±360 副本）整片跳过。
+  function drawFocusSwaths() {
+    if (!focusCfg.trkOn || focusCfg.trkMode !== 'swath' || !(focusCfg.trkFillOpacity > 0)) return
+    const kk = k()
+    ctx.save()
+    ctx.fillStyle = focusCfg.trkFillColor; ctx.globalAlpha = Math.max(0, Math.min(1, focusCfg.trkFillOpacity))
+    for (const g of selGeomList) {
+      const sw = g.swath
+      if (!sw || !(sw.K >= 1) || !sw.ll) continue
+      const m = sw.K + 1, n = Math.floor(sw.ll.length / (m * 2))
+      if (n < 2) continue
+      const step = Math.max(1, Math.ceil(sw.K / 8)), idx = []
+      for (let j = 0; j < sw.K; j += step) idx.push(j)
+      idx.push(sw.K)
+      if (!PJ.identity) { fillSwathProj(sw.ll, m, n, idx); continue }
+      ctx.beginPath()
+      let any = false
+      const P = []
+      for (let i = 0; i + 1 < n; i++) {
+        const A = i * m * 2, B = (i + 1) * m * 2
+        P.length = 0
+        // 切片环（世界度坐标：x＝相对 LON0 归一后解缠的经度，y＝90−纬度）：前断面左→右，后断面右→左
+        let prev = 0, lo = 0, hi = 0, ymin = 0, ymax = 0, bad = false, cnt = 0
+        const put = (o) => {
+          const la = sw.ll[o], ln = sw.ll[o + 1]
+          if (!Number.isFinite(la) || !Number.isFinite(ln)) { bad = true; return }
+          let wx = WXN(ln)
+          const y = 90 - la
+          if (cnt) { while (wx - prev > 180) wx -= 360; while (wx - prev < -180) wx += 360; if (wx < lo) lo = wx; if (wx > hi) hi = wx; if (y < ymin) ymin = y; if (y > ymax) ymax = y }
+          else { lo = hi = wx; ymin = ymax = y }
+          P.push(wx, y); prev = wx; cnt++
+        }
+        for (let q = 0; q < idx.length && !bad; q++) put(A + idx[q] * 2)
+        for (let q = idx.length - 1; q >= 0 && !bad; q--) put(B + idx[q] * 2)
+        if (bad || cnt < 3) continue
+        // 绕极：解缠后首尾经度差满一圈 → 补两点收到极点边上（南北按前断面中点＝星下点附近的纬度定）
+        if (Math.abs(P[P.length - 2] - P[0]) > 300) {
+          const py = sw.ll[A + (sw.K >> 1) * 2] >= 0 ? 0 : 180
+          P.push(P[P.length - 2], py, P[0], py)
+          if (py < ymin) ymin = py; if (py > ymax) ymax = py
+        }
+        let area = 0
+        for (let q = 0, L = P.length; q < L; q += 2) { const r2 = (q + 2) % L; area += P[q] * P[r2 + 1] - P[r2] * P[q + 1] }
+        const rev = area < 0
+        for (const s of wraps()) {
+          if (hi + s < 0 || lo + s > 360) continue                                            // 该副本完全在地图外
+          if ((hi + s) * kk + tx < 0 || (lo + s) * kk + tx > cw || ymax * kk + ty < 0 || ymin * kk + ty > ch) continue   // 屏幕外
+          if (rev) { ctx.moveTo((P[P.length - 2] + s) * kk + tx, P[P.length - 1] * kk + ty); for (let q = P.length - 4; q >= 0; q -= 2) ctx.lineTo((P[q] + s) * kk + tx, P[q + 1] * kk + ty) }
+          else { ctx.moveTo((P[0] + s) * kk + tx, P[1] * kk + ty); for (let q = 2; q < P.length; q += 2) ctx.lineTo((P[q] + s) * kk + tx, P[q + 1] * kk + ty) }
+          ctx.closePath(); any = true
+        }
+      }
+      if (any) ctx.fill()
+    }
+    ctx.restore()
+  }
+  // 投影档：切片作 MultiPolygon 交给 d3（日界线切分与极点收口它自己做），每环按 orientRings 定向后一次 fill
+  function fillSwathProj(ll, m, n, idx) {
+    const polys = []
+    for (let i = 0; i + 1 < n; i++) {
+      const A = i * m * 2, B = (i + 1) * m * 2, ring = []
+      let bad = false
+      for (let q = 0; q < idx.length && !bad; q++) { const o = A + idx[q] * 2; if (!Number.isFinite(ll[o]) || !Number.isFinite(ll[o + 1])) bad = true; else ring.push([ll[o + 1], ll[o]]) }
+      for (let q = idx.length - 1; q >= 0 && !bad; q--) { const o = B + idx[q] * 2; if (!Number.isFinite(ll[o]) || !Number.isFinite(ll[o + 1])) bad = true; else ring.push([ll[o + 1], ll[o]]) }
+      if (bad || ring.length < 3) continue
+      ring.push(ring[0])
+      polys.push(orientRings([ring]))
+    }
+    if (!polys.length) return
+    _plK = k(); _plTx = tx; _plTy = ty
+    ctx.beginPath()
+    PJ.path({ type: 'MultiPolygon', coordinates: polys }, _plAdapt)
+    ctx.fill()
   }
   // 覆盖圈填充（与 Polygon 区域填充同一层band：画在 GRD 覆盖场之前）。世界度坐标 + ±360 环绕副本，
   // 与 drawSatFills 同策略；★足迹可以套住极点（极轨星过极区就是），此时解缠后经度跨满 360° 且首尾不闭合
@@ -3074,6 +3159,7 @@ export function createFlatCoverage(canvas) {
     drawEnvContours()    // 环境场等值线 + 数值标注（紧跟其场，不与覆盖层混层）
     drawSatFills()       // Polygon 区域填充（覆盖场之下：叠加区只显示覆盖图颜色）
     drawFocusFills()     // 聚焦卫星覆盖圈填充（同上一层band，紧跟 Polygon 填充）
+    drawFocusSwaths()    // 聚焦卫星轨迹面填充（与覆盖圈填充同层）
     drawCovGrid()        // STK Coverage FOM 热力图（Polygon 填充之上、GRD 覆盖场之下）
     drawField()          // GRD 覆盖填充面 + 等值线（在底图/Polygon 填充之上、标注之下）
     drawSatPolyLines()   // Polygon 边线（覆盖之上、国界/地名之下：叠加区仍见边线）
@@ -3447,14 +3533,14 @@ export function createFlatCoverage(canvas) {
 
   // 一级行政区数据（与 3D setProvinces 同款格式）。★ 可反复调用：多选国家时上层并成一份重新喂进来。
   function setProvinces(data) {
-    prov = data ? { borders: data.borders || [], labels: (data.labels || []).map((l) => ({ name: l.name, lon: l.lon, lat: l.lat, px: l.px2d != null ? l.px2d : 15, pri: l.pri, rk: l.rk, keep: l.keep })) } : null
+    prov = data ? { borders: data.borders || [], labels: (data.labels || []).map((l) => ({ name: l.name, lon: l.lon, lat: l.lat, px: l.px2d != null ? l.px2d : 15, pri: l.pri, rk: l.rk, keep: l.keep, dx: l.dx, dy: l.dy })) } : null
     admPaths = null
     invalidateStatic(); requestDraw()
   }
 
   // 二级行政区数据（同上）。地名密集 → 基准 px 偏小（小空间）
   function setCities(data) {
-    city = data ? { borders: data.borders || [], labels: (data.labels || []).map((l) => ({ name: l.name, lon: l.lon, lat: l.lat, px: l.px2d != null ? l.px2d : 11, pri: l.pri, rk: l.rk, keep: l.keep })) } : null
+    city = data ? { borders: data.borders || [], labels: (data.labels || []).map((l) => ({ name: l.name, lon: l.lon, lat: l.lat, px: l.px2d != null ? l.px2d : 11, pri: l.pri, rk: l.rk, keep: l.keep, dx: l.dx, dy: l.dy })) } : null
     admPaths = null
     invalidateStatic(); requestDraw()
   }
@@ -3845,7 +3931,7 @@ export function createFlatCoverage(canvas) {
       if (o.background !== false) { ctx.fillStyle = BG; ctx.fillRect(0, 0, cw, ch) }
       drawBelowContent(rx, ry, rw, rh)
       // 层序必须与 draw() 逐字一致（所见即所得）：晨昏线夜区打头，与屏幕上同为最底层
-      ctx.save(); ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip(); drawTerminator(); drawEnvRaster(); drawEnvContours(); drawSatFills(); drawFocusFills(); drawCovGrid(); drawField(); drawSatPolyLines(); drawDataLines(); ctx.restore()
+      ctx.save(); ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip(); drawTerminator(); drawEnvRaster(); drawEnvContours(); drawSatFills(); drawFocusFills(); drawFocusSwaths(); drawCovGrid(); drawField(); drawSatPolyLines(); drawDataLines(); ctx.restore()
       drawAboveContent(rx, ry, rw, rh)
       ctx.save(); ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip()
       drawFieldOverlays()

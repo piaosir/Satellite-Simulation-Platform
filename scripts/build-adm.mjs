@@ -45,6 +45,12 @@ import { unzip } from './lib/shapefile.mjs'
 import { polysOf, inRings, ringArea, interiorPoint } from './lib/geomUtil.mjs'
 import * as CN from './lib/chinaDatav.mjs'
 import * as R from '../src/viz/geo/povResolver.js'
+import { FROZEN, FROZEN_ISO3 } from '../src/viz/geo/frozen.js'
+
+// ★ NE 把台湾 / 香港 / 澳门 / 南沙各当成一个独立的 admin_0（TWN / HKG / MAC / PGA），逐国出包时它们会各自成为
+//   一个「国家包」。本平台这几块的归属由 frozen.js 冻结为中国：台港澳的省级单元已在 CHN 包里（DataV 的 34 省含台港澳），
+//   南沙没有一级行政区可言 —— 一律不单独出包，也不进 index.json 的国家清单。
+const FROZEN_ADM0 = new Set([...Object.keys(FROZEN_ISO3), ...Object.keys(FROZEN).filter((k) => /^[A-Z]{3}$/.test(k))])
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
 // 逐国包（两百多个文件）落 resources/adm：随安装包分发、由主进程按需读盘，不进渲染端打包 ——
@@ -338,6 +344,22 @@ function labelOf(f, nameEn, nameLocal, hintLon, hintLat, rk) {
   if (Number.isFinite(rk)) o.rk = rk
   return o
 }
+// ★ 省级标注的人工落点 / 屏幕偏移（按 adcode）。DataV 的质心都落在辖区内，但对月牙形、紧邻的辖区不是好落点：
+//   内蒙古 150000：质心 (114.08, 44.33) 在锡林郭勒北缘、离中蒙边界只有 0.5°，全国一屏时字压在国界上
+//                 → 挪到 (115.5, 43.6)：到辖区边界的净空 1.54°（质心处 0.52°），仍在锡林郭勒草原、辖区东西向的正中。
+//   河北 130000：质心 (114.50, 38.05) 贴着晋冀界（净空 0.45°），字与「山西」挤成一排
+//                 → 挪到 (115.4, 38.4)（石家庄—衡水之间）：净空 1.07°，与山西 / 北京 / 天津三处名字都拉开。
+//   香港 810000 / 澳门 820000：辖区比字还小，两个质心只差 0.6°，缩到全国一屏时两个名字必然互压
+//                 → 锚点不动（仍钉在质心），给【屏幕偏移】dx / dy（单位 em：随字号走、不随地图缩放走）：
+//                   香港向东偏 1.4 em 落到辖区东侧海面，澳门向南偏 1 em 落到辖区南侧海面；
+//                   放大后偏移量（像素）不变，名字仍贴着辖区，不会漂到深圳湾 / 珠海去。
+//   渲染端：2D flatCoverage.drawLabelLayer 与 3D scene.lbCollect 都把 dx / dy 折进落点与碰撞盒（经 admPacks.mergePacks 透传）。
+const CHN_ADM1_LABEL = {
+  150000: { lon: 115.5, lat: 43.6 },
+  130000: { lon: 115.4, lat: 38.4 },
+  810000: { dx: 1.4, dy: 0.3 },
+  820000: { dx: -0.4, dy: 1.0 }
+}
 // 单元的适用视角：内点在各套预设视角下是否仍归本国。全归 → null（通用）
 function wvSetOf(geom, iso, hintLon, hintLat) {
   if (!SENSITIVE.has(iso)) return null              // 该国疆域不随视角变，直接通用
@@ -443,7 +465,8 @@ async function main() {
   const byIso = {}
   for (const f of ne1.features) {
     const a = clean(f.properties.adm0_a3)
-    if (!a || a === 'CHN') continue          // 中国另走 geoBoundaries（NE 少了台港澳）
+    if (!a || a === 'CHN') continue          // 中国另走 DataV（NE 少了台港澳）
+    if (FROZEN_ADM0.has(a)) continue         // 台港澳 / 南沙：归属冻结为中国，不单独成「国家包」（见 FROZEN_ADM0）
     ;(byIso[a] || (byIso[a] = [])).push(f)
   }
   // 中国 ADM1：DataV（民政部行政区划）—— 34 个省级单元，中文自带，与地级市那一层同一套几何
@@ -454,8 +477,14 @@ async function main() {
     const names = feats.map((f) => {
       const p0 = f.properties
       const c = p0.centroid || p0.center || []
+      const ov = CHN_ADM1_LABEL[p0.adcode] || {}   // 人工落点 / 屏幕偏移（见 CHN_ADM1_LABEL）
+      const hx = ov.lon != null ? ov.lon : Number(c[0]), hy = ov.lat != null ? ov.lat : Number(c[1])
       // rk=4：中国的省与德国的州、美国的州同一量级（NE 给这类 labelrank 3~5），排在英国那 232 个区之前
-      return labelOf(f, CN.PROV_EN[p0.adcode] || CN.provShort(p0.adcode, p0.name), CN.provShort(p0.adcode, p0.name), Number(c[0]), Number(c[1]), 4)
+      const o = labelOf(f, CN.PROV_EN[p0.adcode] || CN.provShort(p0.adcode, p0.name), CN.provShort(p0.adcode, p0.name), hx, hy, 4)
+      if (o && ov.lon != null && (o.lon !== ov.lon || o.lat !== ov.lat)) console.log('  ! 人工落点不在辖区内，已回落到内点：' + p0.name + ' ' + JSON.stringify(ov))
+      if (o && ov.dx) o.dx = ov.dx
+      if (o && ov.dy) o.dy = ov.dy
+      return o
     })
     writePack('CHN', 'adm1', feats, names, () => 'CHN')
     attribution.CHN = { adm1: DATAV_CREDIT }
@@ -474,7 +503,7 @@ async function main() {
   // ---------- ADM2 ----------
   console.log('\n=== 二级行政区（ADM2） ===')
   if (!only.length || only.includes('CHN')) await buildChinaAdm2(attribution)
-  const isoList2 = Object.keys(meta).filter((a) => a !== 'CHN' && meta[a].adm2 && (!only.length || only.includes(a))).sort()
+  const isoList2 = Object.keys(meta).filter((a) => a !== 'CHN' && !FROZEN_ADM0.has(a) && meta[a].adm2 && (!only.length || only.includes(a))).sort()
   let done = 0
   for (const iso of isoList2) {
     const m = meta[iso].adm2

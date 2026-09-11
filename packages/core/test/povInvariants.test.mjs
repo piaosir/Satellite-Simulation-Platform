@@ -1,11 +1,12 @@
 // 底图主权解算的不变量（src/viz/geo/）。运行：npm test
 //
-// ★ 红线：台湾、香港、澳门在任何视角、任何用户自定义覆写下，主权归属一律是中国。
+// ★ 红线：台湾、香港、澳门，以及南海诸岛（西沙 / 南沙 / 黄岩岛）与钓鱼岛，在任何视角、任何用户自定义覆写下，
+//   主权归属一律是中国。
 //   这一条不靠「数据文件里写对了」保证，而是靠 povResolver.ownerOf() 最外层的冻结常量：
 //     owner = FROZEN[u] ?? userOverride[u] ?? pov.own[u] ?? baseOwner[u]
 //   本文件用「全部预设视角 × 1000 组随机覆写（含蓄意注入 FROZEN 键）」把它焊死，
-//   并同时守住三条不让红线被绕开的旁路：视角文件里不许有这三个键、可自定义争议区清单里不许有、
-//   UI 因此拿不到这个开关。
+//   并同时守住三条不让红线被绕开的旁路：视角文件里不许有这些键、可自定义争议区清单里不许有、
+//   UI 因此拿不到这个开关。岛礁四个单元进红线的缘由见 frozen.js 文件头（黄岩岛曾在每一套视角下被标成一个国家）。
 //
 // 另守两条工程约束：
 //   · 主张线（南海十段线）必须数据驱动 —— 只在 lines.claim 含它的视角下出现，不许代码里判视角 id；
@@ -38,8 +39,8 @@ const povIds = R.povList().map((p) => p.id)
 ok('① 视角清单非空', povIds.length > 0, povIds.join(','))
 
 // ---------- ② 红线：全部预设视角 × 1000 组随机覆写 ----------
-// 随机覆写池刻意混入 FROZEN 的三个键与各种归属值（含 'none' / 'disputed' / 乱码），
-// 就是要证明「无论用户怎么写，这三块地的 owner 都是 CHN」。
+// 随机覆写池刻意混入 FROZEN 的全部键与各种归属值（含 'none' / 'disputed' / 乱码），
+// 就是要证明「无论用户怎么写，这几块地的 owner 都是 CHN」。
 const POOL_U = [...FKEYS, ...CUSTOMIZABLE_DISPUTES.flatMap((g) => g.units), 'CHN', 'IND', 'PAK', 'ZZZ']
 const POOL_V = ['CHN', 'IND', 'PAK', 'USA', 'JPN', 'TWN', 'disputed', 'none', '', 'XXX']
 let rng = 20260827
@@ -58,7 +59,8 @@ for (const id of [...povIds, 'custom', 'nonexistent']) {
   }
 }
 R.setPov(R.DEFAULT_POV, {})
-ok('② 台湾/港澳的 owner 恒为 CHN', bad === 0, cases + ' 组覆写 × ' + FKEYS.length + ' 个单元，异常 ' + bad + ' 次')
+ok('② 台湾/港澳/南海诸岛/钓鱼岛的 owner 恒为 CHN', bad === 0, cases + ' 组覆写 × ' + FKEYS.length + ' 个单元，异常 ' + bad + ' 次')
+ok('②b 冻结表确实盖住了岛礁四个单元', ['PFA', 'PGA', 'SCR', 'JP-SEN'].every((u) => FROZEN[u] === 'CHN'), FKEYS.join(' '))
 
 // 覆写也不能从「分组键」那条路绕进来
 const viaGroup = expandOverrides(Object.fromEntries(CUSTOMIZABLE_DISPUTES.map((g) => [g.key, g.opts[0]])))
@@ -137,6 +139,39 @@ const labels = R.labelSet('zh')
 ok('⑨ 台湾不单独出国名标注', !labels.some((x) => x.owner === 'TWN' || x.zh === '台湾'), '共 ' + labels.length + ' 个国名')
 ok('⑨b 台北/香港/澳门点选结果都是中国',
   ['121.5,25.03', '114.15,22.35', '113.55,22.15'].every((s) => { const [x, y] = s.split(',').map(Number); const r = R.ownerAt(x, y); return r && r.owner === 'CHN' }))
+// 黄岩岛 / 南沙曾被当成一个国家标出来（黄岩岛甚至在中国视角下也是）—— NE 把它们各造成一个「自己归自己」的单元，
+// 视角表又没给归属。现在四个岛礁单元与台港澳同列冻结：任一视角下不出国名、不进国家清单、点选即中国。
+const REEF_U = ['SCR', 'PGA', 'PFA', 'JP-SEN'], REEF_ZH = ['黄岩岛', '南沙群岛', '西沙群岛', '钓鱼岛']
+ok('⑨c 四个岛礁单元在 10m 底图里确实存在（否则 ② 的断言是空转）', REEF_U.every((u) => R.unitProps(u, '10m')), REEF_U.join(' '))
+const reefBad = []
+for (const id of [...povIds, CUSTOM_POV]) {
+  R.setPov(id, {})
+  for (const l of R.labelSet('zh', '10m', { all: true })) if (REEF_U.includes(l.owner) || REEF_ZH.includes(l.zh)) reefBad.push(id + ':' + l.zh)
+}
+R.setPov(R.DEFAULT_POV, {})
+ok('⑨d 黄岩岛 / 南沙 / 西沙 / 钓鱼岛在任一视角下都不单独出国名、也不进国家清单', reefBad.length === 0, reefBad.join(' ') || (povIds.length + 1) + ' 套全过')
+// 点选：逐单元取一个环的质心（礁岛都是小凸多边形，质心落在面内）问 ownerAt，四套视角全得是中国
+const B10 = await R.ensureDetail('10m')   // 10m 是静态常驻档，这里拿到的就是解算器自己那份 bundle
+const reefPick = []
+for (const id of povIds) {
+  R.setPov(id, {})
+  for (const u of REEF_U) {
+    const f = R.unitProps(u, '10m')
+    const g = B10.byU.get(u).geometry
+    const polys = g.type === 'Polygon' ? [g.coordinates] : g.coordinates
+    let hit = null
+    for (const rings of polys) {
+      const r = rings[0]
+      let sx = 0, sy = 0
+      for (const p of r) { sx += p[0]; sy += p[1] }
+      const h = R.ownerAt(sx / r.length, sy / r.length, '10m')
+      if (h && h.u === u) { hit = h; break }
+    }
+    if (!f || !hit || hit.owner !== 'CHN' || hit.zh !== '中国') reefPick.push(id + ':' + u + '=' + (hit ? hit.owner + '/' + hit.zh : 'miss'))
+  }
+}
+R.setPov(R.DEFAULT_POV, {})
+ok('⑨e 黄岩岛 / 南沙 / 西沙 / 钓鱼岛点选结果在任一视角下都是「中国」', reefPick.length === 0, reefPick.join(' ') || REEF_U.length * povIds.length + ' 次点选全过')
 
 // ---------- ⑩ 边界线显示规范（1.6b 六 · 1）----------
 // 出厂默认下，任意两类线不得同时「同色 + 同宽 + 同线型」——否则用户根本分不出哪条是哪条。
@@ -223,6 +258,9 @@ ok('⑫ 数字码→ISO3：156→CHN · 840→USA · 010→ATA · 304→GRL', mi
 ok('⑫b 台湾/港澳的老键一律折进 CHN（它们的 owner 由 frozen.js 恒定）', !('TWN' in mig) && !('HKG' in mig) && mig.CHN === '#654321', 'CHN=' + mig.CHN)
 ok('⑫c 已是 ISO3 的键原样穿过（幂等）', JSON.stringify(migrateLandOverrides(mig)) === JSON.stringify(mig))
 ok('⑫d 无法映射的键与非法色一律丢弃', !('999' in mig) && !('bad' in mig) && Object.values(mig).every((v) => /^#[0-9a-fA-F]{6}$/.test(v)))
+// 老版本里南沙 / 黄岩岛曾以独立「国家」身份进过逐国设色清单：这类键整条丢弃，不折进 CHN（折进去会拿礁的颜色盖掉中国的）
+const mig2 = migrateLandOverrides({ PGA: '#111111', SCR: '#222222', PFA: '#444444', CHN: '#333333' })
+ok('⑫e 以冻结岛礁单元作键的老覆写整条丢弃、中国的颜色不受影响', !('PGA' in mig2) && !('SCR' in mig2) && !('PFA' in mig2) && mig2.CHN === '#333333', JSON.stringify(mig2))
 
 // ---------- ⑬ 设置里的「地图视角」（{ id, overrides(分组键), layers }）----------
 ok('⑬ 下拉含六套预设 + 自定义', POV_META.length === povIds.length + 1 && POV_META[POV_META.length - 1].id === CUSTOM_POV,

@@ -8,7 +8,8 @@
 import sat from './satellite.js'
 import { createFocusGeomCache, ringSegments } from './focusGeomCache.js'
 import { footprintRing } from './focusFootprint.js'
-import { llaToVec, pushDashed, densifyArc, footprintFill, coneFace, createSink, LIFT } from '../globe3d/focusLanes.js'
+import { swathK, swathSig, sectionOf, headingAz } from './focusSwath.js'
+import { llaToVec, pushDashed, densifyArc, footprintFill, coneFace, createSink, swathFill, swathEdges, vecToLatLon, LIFT, RE } from '../globe3d/focusLanes.js'
 
 export function createShard() {
   return { recs: new Map(), list: [], cache: createFocusGeomCache(), hint: new Map() }
@@ -27,13 +28,13 @@ export function syncShard(st, msg) {
 const sink = (st, k) => createSink(Math.max(1024, st.hint.get(k) || 0))
 const done = (st, k, s) => { st.hint.set(k, s.n); return { n: s.n, buf: s.a.buffer } }
 
-// p: { tMs, gmst, ccTMs, ccGmst, lod:{samples,stepDeg,fpSeg}, per,
+// p: { tMs, gmst, ccTMs, ccGmst, lod:{samples,stepDeg,fpSeg}, per, spanMs(时长档 >0，否则按 per×周期),
 //      ring:{on, tMs, gmst, rebuild}, fp:{mode,beamDeg,elevDeg}, style:{...}, want2d }
 export function computeTick(st, p) {
   const n = st.list.length
   const S = p.style
   const orb = sink(st, 'orb'), orbP = sink(st, 'orbP'), trk = sink(st, 'trk')
-  const fp = sink(st, 'fp'), gen = sink(st, 'gen'), fill = sink(st, 'fill'), cone = sink(st, 'cone')
+  const fp = sink(st, 'fp'), gen = sink(st, 'gen'), fill = sink(st, 'fill'), cone = sink(st, 'cone'), swa = sink(st, 'swath')
   // 点层（在轨点 / 星下点图标 / 高亮环）也在这儿分好桶：主线程收到的就是可以直接建 BufferGeometry 的顶点流，
   // 逐颗建对象那一步彻底没有了 —— 那正是取消颗数上限后第一个会塌的地方。
   const dots = new Map()                          // 'px|色' -> sink
@@ -43,7 +44,7 @@ export function computeTick(st, p) {
   //（3D 收的是顶点 sub/hl/hlP，2D 收的是下面 f2.sub）—— 每拍白算白传，已删。
   let bMaxDeg = null, clampText = null
   // 2D 平面图要的经纬折线（只在平面图真在看时才打包 —— 不看时打了也是白打）
-  const f2 = p.want2d ? { trkOff: [0], trkLL: [], fpOff: [0], fpLL: [], sub: [] } : null
+  const f2 = p.want2d ? { trkOff: [0], trkLL: [], fpOff: [0], fpLL: [], sub: [], swK: [], swOff: [0], swLL: [] } : null
   for (let i = 0; i < n; i++) {
     const e = st.list[i]
     const rec = e.rec
@@ -51,7 +52,7 @@ export function computeTick(st, p) {
     const t = new Date(tMs)
     let pv = null
     try { pv = sat.propagate(rec, t) } catch { pv = null }
-    if (!pv || !pv.position) { if (f2) { f2.trkOff.push(f2.trkLL.length / 2); f2.fpOff.push(f2.fpLL.length / 2); f2.sub.push(NaN, NaN) } continue }
+    if (!pv || !pv.position) { if (f2) { f2.trkOff.push(f2.trkLL.length / 2); f2.fpOff.push(f2.fpLL.length / 2); f2.sub.push(NaN, NaN); f2.swK.push(0); f2.swOff.push(f2.swLL.length / 2) } continue }
     const gd = sat.eciToGeodetic(pv.position, g)
     const lat = sat.degreesLat(gd.latitude), lon = sat.degreesLong(gd.longitude), h = gd.height
     // 星下点图标（贴地 ×1.0012，与 setFocusSatLLA 逐字同口径）+ 金色高亮环（套在星本体上，主选大一档）
@@ -66,13 +67,32 @@ export function computeTick(st, p) {
       }
     }
     // ② 星下点轨迹：环形缓冲，逐拍只补窗口两端（头点＝上面刚算好的星下点，白送）
-    let track = null
+    //    「轨迹面」档：同一条轨迹的每个采样点各出一条横断面（缓存在点上，口径签名对不上才重算；头尾两点每拍新算），
+    //    两缘走 trk 线通道（与轨迹线同一份样式），带面走 swath 面通道。
+    let track = null, secs = null, K = 0
+    const swathOn = S.trkOn && S.trkMode === 'swath'
     if (S.trkOn || p.want2d) {
       const periodMin = (2 * Math.PI) / rec.no
-      track = st.cache.track(e.key, rec, tMs, periodMin * p.per * 60000, periodMin * 60000 / p.lod.samples, p.lod.stepDeg,
-        { tMs, t, lat, lon })
-      // densifyArc：贴地线的直弦在节拍降档后会沉进地球（见 focusLanes.js 那段），满细节时不补一个点
-      if (S.trkOn && track.length > 1) pushDashed(trk, densifyArc(track.map((q) => llaToVec(q.lat, q.lon, LIFT))), S.trkDash)
+      // 长度：时长档（p.spanMs > 0）全体同一段；圈数档各星按自己的周期 × p.per
+      track = st.cache.track(e.key, rec, tMs, p.spanMs > 0 ? p.spanMs : periodMin * p.per * 60000, periodMin * 60000 / p.lod.samples, p.lod.stepDeg,
+        { tMs, t, lat, lon, h, az: headingAz(pv, g) })
+      if (swathOn && track.length > 1) {
+        K = swathK(Math.max(h, (rec.alta > 0 ? rec.alta : 0) * RE), p.fp)   // 按远地点高度定横向分段（rec.alta 以地球半径为单位）
+        const sig = swathSig(p.fp, K)
+        secs = new Array(track.length)
+        for (let j = 0; j < track.length; j++) {
+          const q = track[j]
+          if (q.swSig !== sig) { q.sw = sectionOf(q, p.fp, K); q.sw2 = null; q.swSig = sig }
+          secs[j] = q.sw
+        }
+        const [L, R] = swathEdges(secs, K)
+        if (L.length > 1) pushDashed(trk, densifyArc(L), S.trkDash)
+        if (R.length > 1) pushDashed(trk, densifyArc(R), S.trkDash)
+        if (S.trkFillOn) swathFill(secs, K, swa)
+      } else if (S.trkOn && track.length > 1) {
+        // densifyArc：贴地线的直弦在节拍降档后会沉进地球（见 focusLanes.js 那段），满细节时不补一个点
+        pushDashed(trk, densifyArc(track.map((q) => llaToVec(q.lat, q.lon, LIFT))), S.trkDash)
+      }
     }
     // ③ 覆盖圈（波束角 / 最低仰角两种口径）+ 圈内填充 + 覆盖锥
     const ecf = sat.eciToEcf(pv.position, g)
@@ -106,23 +126,40 @@ export function computeTick(st, p) {
       if (ring) for (const q of ring) { f2.fpLL.push(q.lat, q.lon) }
       f2.fpOff.push(f2.fpLL.length / 2)
       f2.sub.push(lat, lon)
+      // 轨迹面的横断面经纬（每点 (K+1) 对 lat/lon，也缓存在点上）：平面图按相邻断面围切片填充
+      if (secs) {
+        const m = K + 1
+        for (let j = 0; j < track.length; j++) {
+          const q = track[j]
+          let ll = q.sw2
+          if (!ll) {
+            ll = q.sw2 = new Float32Array(m * 2)
+            const s = q.sw
+            if (s) for (let a = 0; a < m; a++) { const ge = vecToLatLon(s[a * 3], s[a * 3 + 1], s[a * 3 + 2]); ll[a * 2] = ge[0]; ll[a * 2 + 1] = ge[1] }
+            else ll.fill(NaN)
+          }
+          for (let a = 0; a < ll.length; a++) f2.swLL.push(ll[a])
+        }
+        f2.swK.push(K)
+      } else f2.swK.push(0)
+      f2.swOff.push(f2.swLL.length / 2)
     }
   }
   const out = {
     n, bMaxDeg, clampText,
     orb: done(st, 'orb', orb), orbP: done(st, 'orbP', orbP), trk: done(st, 'trk', trk),
-    fp: done(st, 'fp', fp), gen: done(st, 'gen', gen), fill: done(st, 'fill', fill), cone: done(st, 'cone', cone),
+    fp: done(st, 'fp', fp), gen: done(st, 'gen', gen), fill: done(st, 'fill', fill), cone: done(st, 'cone', cone), swath: done(st, 'swath', swa),
     sub: done(st, 'sub', sub), hl: done(st, 'hl', hl), hlP: done(st, 'hlP', hlP),
     dots: [...dots.values()].map((d) => ({ px: d.px, tint: d.tint, n: d.s.n, buf: d.s.a.buffer }))
   }
-  if (f2) out.flat = { trkOff: new Int32Array(f2.trkOff), trkLL: new Float32Array(f2.trkLL), fpOff: new Int32Array(f2.fpOff), fpLL: new Float32Array(f2.fpLL), sub: new Float32Array(f2.sub) }
+  if (f2) out.flat = { trkOff: new Int32Array(f2.trkOff), trkLL: new Float32Array(f2.trkLL), fpOff: new Int32Array(f2.fpOff), fpLL: new Float32Array(f2.fpLL), sub: new Float32Array(f2.sub), swK: new Int32Array(f2.swK), swOff: new Int32Array(f2.swOff), swLL: new Float32Array(f2.swLL) }
   return out
 }
 // 这次结果里所有可 transfer 的底层缓冲（postMessage 第二参用）
 export function transfersOf(r) {
-  const t = [r.orb.buf, r.orbP.buf, r.trk.buf, r.fp.buf, r.gen.buf, r.cone.buf, r.fill.buf,
+  const t = [r.orb.buf, r.orbP.buf, r.trk.buf, r.fp.buf, r.gen.buf, r.cone.buf, r.fill.buf, r.swath.buf,
     r.sub.buf, r.hl.buf, r.hlP.buf]
   for (const d of r.dots) t.push(d.buf)
-  if (r.flat) t.push(r.flat.trkOff.buffer, r.flat.trkLL.buffer, r.flat.fpOff.buffer, r.flat.fpLL.buffer, r.flat.sub.buffer)
+  if (r.flat) t.push(r.flat.trkOff.buffer, r.flat.trkLL.buffer, r.flat.fpOff.buffer, r.flat.fpLL.buffer, r.flat.sub.buffer, r.flat.swK.buffer, r.flat.swOff.buffer, r.flat.swLL.buffer)
   return t
 }

@@ -29,7 +29,7 @@ const RAW = [
   ['sea', 'yellow-sea', '黄海', 'Yellow Sea', 123.5, 35.5, BAY],
   ['sea', 'bohai-sea', '渤海', 'Bohai Sea', 119.6, 38.6, STR],
   ['sea', 'taiwan-strait', '台湾海峡', 'Taiwan Strait', 119.3, 24.3, STR],
-  ['sea', 'gulf-of-tonkin', '北部湾', 'Gulf of Tonkin', 108.0, 19.5, BAY],
+  ['sea', 'gulf-of-tonkin', '北部湾', 'Gulf of Tonkin', 107.4, 19.6, BAY],   // 19.6°N 上湾面 105.8–109.0°E 的正中；原 108.0 偏东，字压到海南西岸
   ['sea', 'sea-of-japan', '日本海', 'Sea of Japan', 135.0, 40.0, SEA],
   ['sea', 'sea-of-okhotsk', '鄂霍次克海', 'Sea of Okhotsk', 148.0, 53.5, SEA],
   ['sea', 'bering-sea', '白令海', 'Bering Sea', -177.0, 57.5, SEA],

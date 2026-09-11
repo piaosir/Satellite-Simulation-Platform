@@ -1,7 +1,7 @@
 // 陆地配色单一来源（3D 球体 globe3d/scene.js 与 2D 平面图 flatmap/flatCoverage.js 共用，替代原双份硬编码）。
 // 两层取值：基调方案（'morandi' 杂色循环 / '#rrggbb' 统一单色）+ 用户逐国覆盖（优先级最高）。
 // 状态为模块级单例：设置一次后，两渲染器建图（buildLandMesh / buildBaseGeo）时自然读到同一份。
-import { FROZEN_ISO3 } from './geo/frozen.js'
+import { FROZEN, FROZEN_ISO3 } from './geo/frozen.js'
 import { ISO_NUM_TO_A3 as ISO_NUM } from './geo/countryZh.js'
 
 // 莫兰迪 12 色循环板（'morandi' 基调的默认杂色）
@@ -28,13 +28,15 @@ let overrides = {}       // 逐国覆盖：ISO3 归属 → '#rrggbb'（台湾/�
 // 老存档迁移：逐国覆盖的键原是 world-atlas 的 ISO 数字码（'156'），换成主权解算层后是 ISO3（'CHN'）。
 // 已是 ISO3 的键原样穿过（幂等），故 setLandPalette 里无条件过一遍即可。
 // ★ 台湾/港澳三个 ISO3 一律折算成 CHN —— 它们的 owner 由 frozen.js 恒定为中国，不可能再单独着色。
+// ★ 以冻结单元 id 作键的（老版本里南沙 PGA / 黄岩岛 SCR 曾以独立「国家」身份进过逐国设色清单）整条丢弃：
+//   它们同样不可能再单独着色，折进 CHN 反而会拿一块礁的颜色盖掉用户给中国选的色。
 export function migrateLandOverrides(ov) {
   const out = {}
   if (!ov || typeof ov !== 'object') return out
   for (const [k, v] of Object.entries(ov)) {
     if (!HEX6.test(v)) continue
     const key = /^\d{2,3}$/.test(k) ? (ISO_NUM[k.padStart(3, '0')] || null) : k
-    if (!key) continue
+    if (!key || FROZEN[key]) continue
     out[FROZEN_ISO3[key] || key] = v
   }
   return out

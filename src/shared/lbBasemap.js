@@ -4,7 +4,7 @@
 // 上面的场（余量、雨衰、降雨率……）。但参照系失真等于结论失真：读者要判断的是「这条链路
 // 搬到哪儿还成立」，答案必须落到具体的海岸、具体的国境上。故底图从简，但不从粗：
 //
-//   · 取 50m（Natural Earth 中比例尺，241 个国家/地区）。曾用 110m，那份数据的岸线在
+//   · 取 50m（Natural Earth 中比例尺）。曾用 110m，那份数据的岸线在
 //     半岛与岛链上已经是几条折线（日本列岛糊成一团、地中海东岸缺一块），链路预算
 //     常看的窗口只有几十度宽，糊在哪儿一眼就看得出。50m 的点数是 110m 的 9 倍，
 //     代价由下面的「按视图抽稀 + 小要素剔除」抵掉：抽稀后的点数只跟**屏幕上画多长**
@@ -15,8 +15,16 @@
 //   · 陆地用统一浅色而非莫兰迪杂色——杂色会与场的色标抢注意力，读者分不清一块颜色
 //     是「这里雨大」还是「这里是巴西」。
 //
-// 岸线不另取 topojson.mesh(land)：陆地面的环本身就是岸线（含内环，故里海、五大湖的
-// 轮廓自然带上），同一份投影结果填一次、描一次即可，省掉一整份等量的点。
+// ★ 数据源 = 主地图的主权解算层（viz/geo/povResolver.js 的 50m 档），不再另备一份底图。
+//   换源前这里用的是 world-atlas 的 countries-50m.json —— NE 4 时代画好的一份国界，它不认识
+//   本平台的归属口径：藏南按印度画、台湾是单独一个面、没有南海十段线，与主地图两套说法。
+//   现在陆地面取 landRings()（与视角无关，只管哪里是陆地），岸线 / 国界 / 未定界 / 停火线 /
+//   主张线取 resolvedLines()（随「地图视角」设置走；台港澳、南海诸岛、钓鱼岛按 frozen.js 恒属中国）。
+//   视角变了（onPovChange）底图整份重建，并经 onBasemapChange 通知两个消费方重画。
+//   代价：首次打开地理场图要把解算器连同 10m 静态档一起拉进这个窗口（动态 import，单独成 chunk）。
+//
+// 岸线单独一份（resolvedLines().coast，按 arc 切开的开口折线），不再拿陆地面的环去描：
+// 按单元切出来的面，环上一半是国界 —— 描环等于把国界再按岸线色描一遍，粗一倍且色不对。
 //
 // 投影：等经纬（Plate Carrée），即 x=经度、y=纬度线性映射——与扫描网格的两根轴天然同构，
 // 不需要任何投影变换，经纬度自然对得上格点。故本模块不收投影函数，只收「视图经纬范围 +
@@ -109,34 +117,53 @@ export const BORDER = '#8b939b'
 // 洗过头则是另一头的坑：留白区会看着像一块脏斑，而那里恰恰要读者看清「这是哪儿」。
 export const WASH = { light: 'rgba(255,255,255,0.30)', dark: 'rgba(0,0,0,0.34)' }
 
+const DETAIL = '50m'
 let _map = null
 let _loading = null
+const _subs = new Set()
+
+// 底图整份重建（「地图视角」变了）的订阅：回调拿到新的 { land, coast, borders }。返回退订函数。
+export function onBasemapChange(fn) { _subs.add(fn); return () => _subs.delete(fn) }
 
 /**
- * 懒加载 50m 世界地图（首次调用才拉数据，图表区没打开就不占内存）。
- * @returns Promise<{ land: Array<Path>, borders: Array<Path> }>
- *   land    陆地面的环（闭合）：填海陆色 + 描岸线，两用
- *   borders 国界（开口折线）：只取国与国之间真正共享的那些弧，不含海岸段——
- *           直接描每个国家的整圈轮廓会把沿海国的岸线又描一遍，粗一倍且色不对
+ * 懒加载底图（首次调用才把主权解算器与 50m 档拉进来，图表区没打开就不占内存）。
+ * @returns Promise<{ land: Array<Path>, coast: Array<Path>, borders: Array<Path> }>
+ *   land     陆地面的环（闭合）：只用来填海陆色（evenodd）
+ *   coast    岸线（开口折线，按 arc 切段）：单独一份，见文件头
+ *   borders  国界 + 未定界 + 停火线 + 主张线（开口折线）：这张图上一律实线（见 LbSurfacePlot），
+ *            不含海岸段 —— 由 resolvedLines 的派生规则保证（一侧无邻的 arc 是 coast，不进这里）
  */
 export function loadBasemap() {
   if (_map) return Promise.resolve(_map)
   if (_loading) return _loading
-  _loading = Promise.all([
-    import('topojson-client'),
-    import('../viz/globe3d/data/countries-50m.json')
-  ]).then(([tj, mod]) => {
-    const topo = mod.default || mod
-    _map = {
-      land: preparePaths(tj.feature(topo, topo.objects.land)),
-      borders: preparePaths(tj.mesh(topo, topo.objects.countries, (a, b) => a !== b))
-    }
+  _loading = import('../viz/geo/povResolver.js').then(async (R) => {
+    await R.ensureDetail(DETAIL)
+    _map = buildBasemap(R, DETAIL)
+    R.onPovChange(() => {
+      _map = buildBasemap(R, DETAIL)
+      for (const fn of [..._subs]) { try { fn(_map) } catch (e) { console.warn('[lbBasemap] onBasemapChange', e) } }
+    })
     return _map
-  }).catch(() => {
-    _map = { land: [], borders: [] }      // 拿不到就不画底图，图照出（场才是主角）
+  }).catch((e) => {
+    console.warn('[lbBasemap] 底图加载失败', e)
+    _map = { land: [], coast: [], borders: [] }      // 拿不到就不画底图，图照出（场才是主角）
     return _map
   })
   return _loading
+}
+
+/**
+ * 解算器 → 三层路径。单独成函数是为了 Node 侧单测能把 fs 读进来的 50m 档经 registerDetail 喂给解算器后直接验。
+ * @param R       povResolver 模块
+ * @param detail  底图档（'50m' / '10m'）
+ */
+export function buildBasemap(R, detail) {
+  const L = R.resolvedLines(detail)
+  return {
+    land: prepareLines(R.landRings(detail)),
+    coast: prepareLines(L.coast),
+    borders: prepareLines([].concat(L.admin0, L.indefinite, L.loc, L.claim))
+  }
 }
 
 // —— 载入期的一次性预处理 ——
@@ -166,6 +193,17 @@ function prepPath(pts) {
     prev = lon
   }
   return { buf, lo, hi, la, ha }
+}
+
+/**
+ * 折线 / 环的坐标清单（[[lon,lat],…][]，解算器 resolvedLines / landRings 吐出来的形状）→ 绘制用的路径清单。
+ * @returns Array<{ buf, lo, hi, la, ha }>
+ */
+export function prepareLines(list, out) {
+  const acc = out || []
+  if (!list) return acc
+  for (const pts of list) { const p = prepPath(pts); if (p) acc.push(p) }
+  return acc
 }
 
 /**

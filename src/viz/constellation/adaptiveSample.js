@@ -23,11 +23,13 @@ const MAX_DEPTH = 7;      // 单段最多二分 7 层(×128)：TANGO 近地点 2
 // 降采样等于白做。近圆轨道均匀采样的相邻跳变 ≈ 384/N 度，故调用方按 N 给相称的阈值（见 focusLod）。
 // 单时刻推演：返回 { t, pv, gd, lat, lon }（gd 为逐时刻 gmst 的大地坐标，弧度制），失败返回 null。
 // 导出供环形缓冲（focusGeomCache.js）复用 —— 细分口径必须只有一份，两处各写一遍迟早对不上。
+// gmst 一并带回：轨迹面要按该时刻的恒星时把 ECI 速度转成地面航向（见 focusSwath.headingAz），省得再算一遍。
 export function propAt(rec, t) {
   const pv = sat.propagate(rec, t);
   if (!pv || !pv.position) return null;
-  const gd = sat.eciToGeodetic(pv.position, sat.gstime(t));
-  return { t, pv, gd, lat: sat.degreesLat(gd.latitude), lon: sat.degreesLong(gd.longitude) };
+  const gmst = sat.gstime(t);
+  const gd = sat.eciToGeodetic(pv.position, gmst);
+  return { t, pv, gd, gmst, lat: sat.degreesLat(gd.latitude), lon: sat.degreesLong(gd.longitude) };
 }
 
 // 相邻两点的地面跳变（度）。经度差先归一到 ≤180°：真实反经线穿越差值很小，不会被误细分。

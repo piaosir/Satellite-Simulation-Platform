@@ -76,7 +76,11 @@ export function createFocusGeomPool(want) {
       const keep = new Set(per[i].keys)
       for (const k of [...shards[i].seen]) if (!keep.has(k)) shards[i].seen.delete(k)
       const msg = { t: 'sync', keys: per[i].keys, add: per[i].add, primary: primaryKey || null }
-      if (shards[i].w) shards[i].w.postMessage(msg); else syncShard(shards[i].st, msg)
+      if (shards[i].w) {
+        // ★ 结构化克隆失败（条目里混进了 Vue 响应式 Proxy 之类克隆不了的东西）是同步抛出的，onerror 接不到；
+        //   不接住就是整条聚焦管线哑掉。与 Worker 崩溃同一条退路：收摊退回就地同步跑，画面与数值一字不差。
+        try { shards[i].w.postMessage(msg) } catch (err) { fallbackToLocal(err); return }
+      } else syncShard(shards[i].st, msg)
     }
   }
   // 返回 Promise<[分片结果...] | null>；调用方必须等它 resolve 再出帧。
@@ -90,7 +94,7 @@ export function createFocusGeomPool(want) {
       return new Promise((res) => {
         if (s.pend) { const old = s.pend; s.pend = null; old.res(null) }
         s.pend = { seq: s0, res }
-        s.w.postMessage({ t: 'tick', seq: s0, p })
+        try { s.w.postMessage({ t: 'tick', seq: s0, p }) } catch (err) { fallbackToLocal(err) }   // 同 setSats：克隆失败退回就地档（本拍作废，下一拍就地算）
       })
     })).then((rs) => (rs.some((r) => !r) ? null : rs))
   }

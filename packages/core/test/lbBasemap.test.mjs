@@ -8,16 +8,17 @@
 //   ③ 视图外的要素整条剔掉（缩放到一国时不该还在遍历南极）；
 //   ④ 抽稀只并掉屏幕上分不出的点，且末点必须留住（闭合环靠它接回起点）；
 //   ⑤ 小要素剔除只在它确实小于一两个像素时发生——放大之后必须原样回来；
-//   ⑥ 岸线（陆地面的环）与国界（国与国共享的弧）是两份，国界里不含海岸段。
+//   ⑥ 陆地面（填色用的环）、岸线（按 arc 切段）与国界是三份，岸线与国界互不重复、国界里不含海岸段；
+//      主权口径与主地图同源：中国视角下国界层含南海十段线，台湾 / 黄岩岛周边任一视角下都只有岸线没有国界。
 //
 // ⑥ 与 50m 数据本身走真实数据验（不 mock：这一层的价值全在那份数据长什么样）。
-// Node 的 ESM 不认无属性的 JSON import，故此处用 fs + topojson 复现 loadBasemap 里的两句，
-// 再喂给被测的 preparePaths / basemapPaths。
+// Node 的 ESM 不认无属性的 JSON import，故此处 fs 读进 50m 档、经 povResolver.registerDetail 喂给解算器，
+// 再走被测的 buildBasemap / basemapPaths —— 与浏览器里 loadBasemap 的路径只差「档从哪来」这一句。
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import * as tj from 'topojson-client'
-import { preparePaths, basemapPaths } from '../../../src/shared/lbBasemap.js'
+import { preparePaths, basemapPaths, buildBasemap } from '../../../src/shared/lbBasemap.js'
+import * as R from '../../../src/viz/geo/povResolver.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(HERE, '..', '..', '..')
@@ -96,21 +97,25 @@ console.log('=== 地理图底图：解缠 / 投影 / 抽稀 / 分层测试 ===\n
   ok('细长要素不被当成小要素剔掉', basemapPaths(spit, WORLD, { w: 720, h: 360 }, { minSize: 1.5 }).length === 1)
 }
 
-// ⑥ 真实 50m 数据：岸线与国界确实分成两份，且国界里不含海岸段
+// ⑥ 真实 50m 数据（主权解算层）：陆地面 / 岸线 / 国界三份，岸线与国界互不重复、国界里不含海岸段
 {
-  const topo = JSON.parse(readFileSync(join(ROOT, 'src/viz/globe3d/data/countries-50m.json'), 'utf8'))
-  const land = preparePaths(tj.feature(topo, topo.objects.land))
-  const borders = preparePaths(tj.mesh(topo, topo.objects.countries, (a, b) => a !== b))
+  R.registerDetail('50m', JSON.parse(readFileSync(join(ROOT, 'src/viz/globe3d/data/basemap-50m.json'), 'utf8')))
+  R.setPov(R.DEFAULT_POV, {})
+  const { land, coast, borders } = buildBasemap(R, '50m')
+  const pts = (a) => a.reduce((s, x) => s + (x.buf.length >> 1), 0)
+  const lp = pts(land), cp = pts(coast), bp = pts(borders)
   ok('50m 陆地面环数在量级上对', land.length > 1000, `${land.length} 环`)
-  ok('国界只取共享弧（远少于逐国整圈轮廓）', borders.length < land.length / 5, `${borders.length} 条国界 / ${land.length} 环岸线`)
-  // 国界总点数必须远小于岸线：若误取了每个国家的整圈轮廓，海岸会被再描一遍、两者同量级
-  const lp = land.reduce((s, x) => s + (x.buf.length >> 1), 0)
-  const bp = borders.reduce((s, x) => s + (x.buf.length >> 1), 0)
-  ok('国界不含海岸段（点数远少于岸线）', bp < lp / 2, `国界 ${bp} 点 / 岸线 ${lp} 点`)
+  ok('岸线按 arc 切段，段数与陆地环同量级', coast.length > 1000, `${coast.length} 段`)
+  ok('国界远少于岸线（只有两侧归属不同的 arc 才是国界）', borders.length < coast.length / 2 && bp < cp / 2, `国界 ${borders.length} 条 ${bp} 点 / 岸线 ${coast.length} 段 ${cp} 点`)
+  // 同一段几何不许既是岸线又是国界：整段坐标做指纹跨两份比对（只取首末点会撞 —— 同一对结点之间常有多条不同的 arc）
+  const key = (it) => { const b = it.buf; let s = b.length + ':'; for (let i = 0; i < b.length; i++) s += b[i].toFixed(4) + (i & 1 ? ';' : ','); return s }
+  const ck = new Set(coast.map(key))
+  const both = borders.filter((it) => ck.has(key(it))).length
+  ok('岸线与国界没有同一段几何', both === 0, both ? both + ' 段重复' : '0 段重复')
 
   // 解缠必须清干净：任一路径内部不得留下 ±360 的跳变（留下就是横贯全图的假色带）
   let worst = 0, who = ''
-  for (const it of land.concat(borders)) {
+  for (const it of land.concat(coast, borders)) {
     const b = it.buf
     for (let i = 1; i < b.length / 2; i++) {
       const d = Math.abs(b[i * 2] - b[(i - 1) * 2])
@@ -120,30 +125,55 @@ console.log('=== 地理图底图：解缠 / 投影 / 抽稀 / 分层测试 ===\n
   ok('全量数据解缠后无 ±360 跳变', worst < 180, `最大跳 ${worst.toFixed(1)}° (${who})`)
 
   // 抽稀的实效：整幅世界图（最坏情形，一点都剔不掉）上的绝对点数必须落在
-  // 「canvas 逐帧描得动」的量级里——拖拽时这两层每帧都要按新视图重投一遍。
-  // 与旧的 110m 比不是 1:1：那份数据本就没有岸线细节、也没有独立的国界层，
-  // 3 倍是换来这两样东西的价钱，不是抽稀没做够。
+  // 「canvas 逐帧描得动」的量级里——拖拽时这三层每帧都要按新视图重投一遍。
+  // 换到解算层之后陆地面的环沿国界走（按单元切面，环上一半是国界），点数比 world-atlas 的整块陆地多；
+  // 岸线另成一份。三层合计与换源前「陆地环填一遍再描一遍 + 国界」是同一个量级。
   const size = { w: 760 * 2, h: 380 * 2 }        // 典型图框 × dpr=2
   const dec = { minPx: 1.0 * 2, minSize: 2.0 * 2 }
   const wLand = basemapPaths(land, WORLD, size, dec)
+  const wCoast = basemapPaths(coast, WORLD, size, dec)
   const wBord = basemapPaths(borders, WORLD, size, dec)
-  const drawn = nPts(wLand) + nPts(wBord)
-  const src = lp + bp
+  const drawn = nPts(wLand) + nPts(wCoast) + nPts(wBord)
+  const src = lp + cp + bp
   ok('整幅世界图：抽稀掉七成以上的点', drawn < src * 0.32, `${src} → ${drawn} 点（${(100 * drawn / src).toFixed(0)}%）`)
-  ok('整幅世界图的绝对点数在 2.5 万以内', drawn < 25000, `${drawn} 点`)
-  ok('整幅世界图的子路径数在 500 条以内', wLand.length + wBord.length < 500, `${wLand.length + wBord.length} 条`)
+  ok('整幅世界图的绝对点数在 6 万以内', drawn < 60000, `${drawn} 点`)
+  ok('整幅世界图的子路径数在 1500 条以内', wLand.length + wCoast.length + wBord.length < 1500, `${wLand.length + wCoast.length + wBord.length} 条`)
 
   // 放大到一国：细节必须真的回来（否则换 50m 白换），且总量因视图剔除反而更小
   const cn = { lon0: 73, lon1: 135, lat0: 18, lat1: 54 }
-  const zLand = basemapPaths(land, cn, size, dec)
+  const zCoast = basemapPaths(coast, cn, size, dec)
   let inWorld = 0
-  for (const p of wLand) for (let i = 0; i < p.length; i += 2) {
+  for (const p of wCoast) for (let i = 0; i < p.length; i += 2) {
     // 整幅图上落在中国那一块的点数（视图 → 像素的线性换算）
     const lon = p[i] / size.w * 360 - 180, lat = 90 - p[i + 1] / size.h * 180
     if (lon >= 73 && lon <= 135 && lat >= 18 && lat <= 54) inWorld++
   }
-  ok('放大到一国时细节真的回来了', nPts(zLand) > inWorld * 3, `同一区域 ${inWorld} → ${nPts(zLand)} 点`)
-  ok('放大后总点数仍受控（视图外已剔除）', nPts(zLand) < drawn, `${nPts(zLand)} < ${drawn}`)
+  ok('放大到一国时细节真的回来了', nPts(zCoast) > inWorld * 3, `同一区域 ${inWorld} → ${nPts(zCoast)} 点`)
+  ok('放大后总点数仍受控（视图外已剔除）', nPts(zCoast) < drawn, `${nPts(zCoast)} < ${drawn}`)
+
+  // 主权口径与主地图同源（换源的目的）：
+  //   · 国界层 = admin0 + 未定界 + 停火线 + 主张线，中国视角下含南海十段线的 10 段，ISO 中立视角下不含；
+  //   · 台湾 / 黄岩岛周边任一视角下都只有岸线、没有国界（它们由 frozen.js 恒属中国，与大陆同属就没有界）。
+  const L = R.resolvedLines('50m')
+  ok('国界层 = admin0 + indefinite + loc + claim', borders.length === L.admin0.length + L.indefinite.length + L.loc.length + L.claim.length,
+    `${borders.length} = ${L.admin0.length} + ${L.indefinite.length} + ${L.loc.length} + ${L.claim.length}`)
+  ok('中国视角下国界层含南海十段线', L.claim.length === 10, `${L.claim.length} 段`)
+  R.setPov('ISO', {})
+  const iso = buildBasemap(R, '50m')
+  ok('ISO 中立视角下国界层不含主张线、且与中国视角的国界不同', R.resolvedLines('50m').claim.length === 0 && iso.borders.length !== borders.length, `ISO ${iso.borders.length} 条 / CN ${borders.length} 条`)
+  const inBox = (it, b) => it.lo >= b[0] && it.hi <= b[1] && it.la >= b[2] && it.ha <= b[3]
+  const BOX = { 台湾: [119.3, 122.6, 21.5, 25.6], 黄岩岛: [117.5, 118.0, 15.0, 15.4] }
+  const boxBad = []
+  for (const id of R.povList().map((p) => p.id)) {
+    R.setPov(id, {})
+    const m = buildBasemap(R, '50m')
+    for (const [name, b] of Object.entries(BOX)) {
+      const nb = m.borders.filter((it) => inBox(it, b)).length, nc = m.coast.filter((it) => inBox(it, b)).length
+      if (nb !== 0 || nc === 0) boxBad.push(`${id}:${name} 国界 ${nb} 岸线 ${nc}`)
+    }
+  }
+  R.setPov(R.DEFAULT_POV, {})
+  ok('台湾 / 黄岩岛周边任一视角下都只有岸线、没有国界', boxBad.length === 0, boxBad.join(' | ') || Object.keys(BOX).join(' / ') + ' × ' + R.povList().length + ' 套视角全过')
 }
 
 // 边界情形：空输入、退化视图不得抛异常

@@ -31,7 +31,7 @@ import { vehicleCanvas } from '../vehicleSymbol.js'
 // 影像瓦片金字塔（EPSG:4326 / GIBS 网格）：网格数学与取片缓存，与 2D 平面图共用同一份
 import { TILE, span as tileSpan, tileBox, tileClip, tileRange, pickZoom, getTile, isMissing, warm as warmTiles, tileGutter, tileImgSize } from '../imageryTiles.js'
 // 顶点级几何原语：与聚焦几何 Worker 共用同一份实现（别在这里再写一份）
-import { RE, LIFT, llaToVec, pushStripSegs, pushDashed, densifyArc, DASH_SPEC, FILL_R, FILL_CELL, slerpUnit, footprintFill, coneFace, createSink } from './focusLanes.js'
+import { RE, LIFT, llaToVec, pushStripSegs, pushDashed, densifyArc, DASH_SPEC, FILL_R, FILL_CELL, slerpUnit, footprintFill, coneFace, swathFill, swathEdges, createSink } from './focusLanes.js'
 
 
 // 画布文字（地名/大洋/波束标签）：无衬线，独立一档，【不跟】界面字体走
@@ -1146,6 +1146,7 @@ export function createGlobeScene(container, quality = {}) {
       const hpx = l.px != null ? l.px : 0.02
       const spr = makeLabelSprite(l.name, hpx, '#ffe6a8', CASE_K_P, curHalo(), curHaloK())   // 一级行政区
       spr.position.copy(llaToVec(l.lat, l.lon, 25)); spr._dir = spr.position.clone().normalize(); spr._pri = l.pri; spr._rk = l.rk; spr._keep = !!l.keep
+      if (l.dx || l.dy) admOffset(spr, l.dx, l.dy)
       provinceLabels.add(spr)
     }
     applyNameScale(provinceLabels, nameScaleP)   // 套用当前省名字号
@@ -1153,6 +1154,15 @@ export function createGlobeScene(container, quality = {}) {
     scene.add(provinceLabels)
   }
   function setProvincesVisible(v) { if (provinceBorders) provinceBorders.visible = !!v; if (provinceLabels) provinceLabels.visible = !!v }
+  // 行政区名的屏幕偏移（dx / dy，单位 em = 字高，见 admPacks.mergePacks；港澳用）。精灵的 center 是按自身尺寸归一的锚点，
+  // 故偏移换算成一个常数就定住了，与相机远近、字号倍率都无关：整张精灵宽 = ar × 高、字高 = _txtK × 高，
+  // 右移 dx 个字高 ⇔ center.x 减 dx·_txtK/ar；center.y = 0 在底边，下移 dy 个字高 ⇔ center.y 加 dy·_txtK。
+  // 碰撞盒那边（lbCollect）按同一偏移量（dx·字高像素）平移，两处口径一致。
+  function admOffset(spr, dx, dy) {
+    spr._dx = dx || 0; spr._dy = dy || 0
+    const ar = spr._base.x / spr._base.y, k = spr._txtK || LB_TXT
+    spr.center.set(0.5 - spr._dx * k / ar, 0.5 + spr._dy * k)
+  }
 
   // 二级行政区界 + 地名（按需由上层注入数据，格式同一级行政区）。渲染序最低（ORDER.adm2）：压在一级行政区之下。
   let cityBorders = null, cityLabels = null, lastCityData = null
@@ -1181,6 +1191,7 @@ export function createGlobeScene(container, quality = {}) {
       // 地级市名密集 → 基准字号偏小（小空间），整体再由 nameScaleCity 缩放；黑边尽量细但保留(2px)
       const spr = makeLabelSprite(l.name, l.px != null ? l.px : 0.012, labelCfg.cityColor, CASE_K_C, curHalo(), curHaloK())   // 二级行政区
       spr.position.copy(llaToVec(l.lat, l.lon, 16)); spr._dir = spr.position.clone().normalize(); spr._pri = l.pri; spr._rk = l.rk; spr._keep = !!l.keep
+      if (l.dx || l.dy) admOffset(spr, l.dx, l.dy)
       cityLabels.add(spr)
     }
     applyNameScale(cityLabels, nameScaleCity)
@@ -1246,6 +1257,7 @@ export function createGlobeScene(container, quality = {}) {
   const focusCfg = {
     orbOn: true, orbColor: 0x6f9fc8, orbWidth: 1.3, orbOpacity: 0.9, orbDash: 'solid',
     trkOn: true, trkColor: 0xe8c074, trkWidth: 1.6, trkOpacity: 1, trkDash: 'solid',
+    trkMode: 'line', trkFillColor: 0xe8c074, trkFillOpacity: 0.3,   // 轨迹形式：line＝轨迹线；swath＝轨迹面（两缘按线样式描、带内按填充色/透明度）
     fpOn: true, fpColor: 0xb8e6fa, fpWidth: 1.6, fpOpacity: 1, fpDash: 'dash',
     fpFillColor: 0xb8e6fa, fpFillOpacity: 0,
     coneOn: false, coneFaceColor: 0xb8e6fa, coneFaceOpacity: 0.75,
@@ -1408,7 +1420,14 @@ export function createGlobeScene(container, quality = {}) {
         pushDashed(bucket(cfg.orbColor, w, op), it.orbit.map((p) => llaToVec(p.lat, p.lon, p.altKm || 0)), cfg.orbDash)
       }
       if (cfg.trkOn && it.track && it.track.length > 1) {
-        pushDashed(bucket(cfg.trkColor, cfg.trkWidth, cfg.trkOpacity), densifyArc(it.track.map((p) => llaToVec(p.lat, p.lon, LIFT))), cfg.trkDash)
+        const seg = bucket(cfg.trkColor, cfg.trkWidth, cfg.trkOpacity)
+        if (cfg.trkMode === 'swath' && it.swath && it.swath.K > 0) {
+          // 轨迹面：两缘按轨迹线样式描边，带面与覆盖圈填充同层（4.2）
+          const [L, R] = swathEdges(it.swath.secs, it.swath.K)
+          if (L.length > 1) pushDashed(seg, densifyArc(L), cfg.trkDash)
+          if (R.length > 1) pushDashed(seg, densifyArc(R), cfg.trkDash)
+          if (cfg.trkFillOpacity > 0) swathFill(it.swath.secs, it.swath.K, faceBucket(4.2, cfg.trkFillColor, cfg.trkFillOpacity))
+        } else pushDashed(seg, densifyArc(it.track.map((p) => llaToVec(p.lat, p.lon, LIFT))), cfg.trkDash)
       }
       // 覆盖圈那一圈点：覆盖圈线与覆盖锥共用（关掉线只是不画线，锥还得靠它定底边）
       const ring = ((cfg.fpOn || cfg.coneOn) && it.footprint && it.footprint.length > 1)
@@ -1551,6 +1570,7 @@ export function createGlobeScene(container, quality = {}) {
     for (const sh of shards) {
       // 层序与 setSelectionSet 一致：填充 4.2（Polygon 之上、GRD 覆盖场之下）、锥面 5.5（覆盖场之上、数据线之下）
       face(laneArr(sh.fill), c.fpFillColor, c.fpFillOpacity, 4.2)
+      face(laneArr(sh.swath), c.trkFillColor, c.trkFillOpacity, 4.2)   // 轨迹面带面：与覆盖圈填充同层
       face(laneArr(sh.cone), c.coneFaceColor, c.coneFaceOpacity, 5.5)
     }
     // ★ 点层与线同一条理由，也必须跨分片合成一个：这些图标半透明、且 depthTest 关（背面剔除在着色器里做），
@@ -3229,7 +3249,8 @@ export function createGlobeScene(container, quality = {}) {
       s.scale.set(s._base.x * kk, s._base.y * kk, 1)
       lbV.copy(s.position).project(camera)
       if (lbV.z > 1) { s.visible = false; continue }
-      const x = (lbV.x * 0.5 + 0.5) * W, y = (0.5 - lbV.y * 0.5) * H
+      // 行政区名的屏幕偏移（admOffset 把它烘进了 center，这里碰撞盒同步平移；单位 em = 字高 txt）
+      const x = (lbV.x * 0.5 + 0.5) * W + (s._dx || 0) * txt, y = (0.5 - lbV.y * 0.5) * H + (s._dy || 0) * txt
       const sprH = pxH, sprW = (s.scale.x / s.scale.y) * sprH             // 整张精灵的屏幕尺寸
       const hw = sprW * (s._wK != null ? s._wK : 1) * 0.5 * LB_OVX + LB_PADX   // 碰撞盒只算字，不算描边留白
       const hh = sprH * (s._txtK || LB_TXT) * LB_HK * LB_OVY + LB_PADY

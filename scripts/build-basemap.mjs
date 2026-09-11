@@ -37,6 +37,7 @@ import { fileURLToPath } from 'node:url'
 import { topology } from 'topojson-server'
 import { neLayer } from './lib/neFetch.mjs'
 import { polysOf, linesOf, inRings, ringArea, interiorPoint, decodeArc, arcsOfGeom } from './lib/geomUtil.mjs'
+import { FROZEN } from '../src/viz/geo/frozen.js'
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
 const OUTDIR = path.join(ROOT, 'src', 'viz', 'globe3d', 'data')
@@ -105,9 +106,9 @@ const CLAIM_LINES = [{ id: 'nanhai-ten-dash', cls: 'claim', wv: ['CN'], name_en:
 // 阿克赛钦/藏南/克里米亚这类「宿主里的一块」在 110m 表达不出来。
 const DISPUTED_LAYER = { '10m': 'admin_0_disputed_areas', '50m': 'admin_0_breakaway_disputed_areas', '110m': null }
 
-// ★ 冻结常量的键（台湾/港澳）——运行时权威在 src/viz/geo/frozen.js，这里留一份只为「视角文件里不许出现它们」。
-// 两处不一致会被 packages/core/test/povInvariants.test.mjs 当场抓出来。
-const FROZEN_KEYS = ['CN-TW', 'CN-HK', 'CN-MO']
+// ★ 冻结常量的键（台湾/港澳 + 南海诸岛 + 钓鱼岛）——直接取运行时那份 src/viz/geo/frozen.js，
+//   这里只用来做「视角文件里不许出现它们」。视角文件若含这些键，packages/core/test/povInvariants.test.mjs 当场抓出来。
+const FROZEN_KEYS = Object.keys(FROZEN)
 
 const A3 = (v) => (typeof v === 'string' && /^[A-Za-z0-9]{3}$/.test(v) ? v.toUpperCase() : null)
 // NE 用 B00…B99 / C01…C04 这段码位专表「无公认主权方」，其余三字码都是国家/属地码。
@@ -402,7 +403,7 @@ function writePovs(units) {
   for (const pov of POVS) {
     const own = {}
     for (const it of units) {
-      if (FROZEN_KEYS.includes(it.u)) continue   // ★ 台湾/港澳不进任何视角表：主权归属由 frozen.js 恒定
+      if (FROZEN_KEYS.includes(it.u)) continue   // ★ 冻结单元不进任何视角表：主权归属由 frozen.js 恒定
       const b = owner(it.props.ADM0_A3) || 'disputed'
       const v = owner(it.props[pov.attr])
       if (v && v !== b) own[it.u] = v

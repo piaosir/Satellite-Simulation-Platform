@@ -70,6 +70,9 @@ import { sampleOrbitAdaptive } from '../viz/constellation/adaptiveSample.js'
 import { ringTtlMs } from '../viz/constellation/focusGeomCache.js'
 import { createFocusGeomPool } from '../viz/constellation/focusGeomPool.js'
 import { footprintRing } from '../viz/constellation/focusFootprint.js'
+import { swathK, sectionOf, headingAz } from '../viz/constellation/focusSwath.js'
+import { pf } from '../shared/num.js'
+import { vecToLatLon } from '../viz/globe3d/focusLanes.js'
 import { solarGeometry } from '../viz/terminator.js'
 import * as W from '../viz/wgs84.js'
 import { parseOMMCsv, fetchGroupLiveOrSup } from '../viz/constellation/tle.js'
@@ -183,7 +186,10 @@ const winStartMin = ref(-1080)   // 窗口左边缘相对锚点的偏移(分钟)
 const trackWidthPx = ref(600)    // 时间轴轨道像素宽(ResizeObserver 驱动，供刻度自适应)
 const nowStamp = ref(Date.now()) // 真实当前时刻(每次刷新更新)，用于「此刻」红标记
 const keyword = ref('')
-const searchResults = ref([])
+// ★ shallowRef 不用 ref：结果项里挂着卫星条目（item.en），深层响应式会把它连同 satrec 一起包成 Proxy ——
+//   点结果聚焦时 selEntries 里存的就是 Proxy，喂给聚焦几何 Worker 时 postMessage 结构化克隆直接抛 DataCloneError，
+//   整条聚焦管线当场哑掉（轨迹 / 覆盖圈全不画、时钟拍卡住）；与在球上点选拿到的原始条目也认不出是同一颗。
+const searchResults = shallowRef([])
 const selected = ref(null)
 const cardCollapsed = ref(false)   // 信息卡收起/展开（点标题栏切换）
 // 覆盖圈定义（常驻时间条，未聚焦卫星时置灰）：按「波束角」(星上全锥角) 或「最低仰角」(地球站约束) 二选一
@@ -198,6 +204,10 @@ const elevMin = ref('')        // 最低仰角（度，空=0°地平线）
 const focusStyle = reactive({
   orbOn: true, orbColor: '#6f9fc8', orbWidth: 1.3, orbOpacity: 0.9, orbDash: 'solid',
   trkOn: true, trkColor: '#e8c074', trkWidth: 1.6, trkOpacity: 1, trkDash: 'solid', trkPeriods: 1,
+  // 轨迹长度口径：rev＝圈数（trkPeriods，各星按自己的周期）；time＝时长（trkSpanMin 分钟，全体同一段）。任意正数，不设上限
+  trkSpanMode: 'rev', trkSpanMin: 0,
+  // 轨迹形式：line＝轨迹线；swath＝轨迹面（按覆盖圈口径沿轨迹扫过的覆盖带：两缘按上面的线样式描，带内按填充色/透明度）
+  trkMode: 'line', trkFillColor: '#e8c074', trkFillOpacity: 0.3,
   fpOn: true, fpColor: '#b8e6fa', fpWidth: 1.6, fpOpacity: 1, fpDash: 'dash',
   fpFillColor: '#b8e6fa', fpFillOpacity: 0,
   // 覆盖锥（卫星→覆盖圈边界的锥体，仅 3D）：锥面透明度 0＝只留母线，母线根数 0＝只留锥面，不另设开关
@@ -2160,7 +2170,7 @@ function cardFor(e) {
     name: e.name, noradId: e.noradId, group: e.groupLabel || GROUP_LABEL[e.group] || GROUP_LABEL[curKey()] || '', kind,
     slot: geoSlotOfSatrec(e.rec),   // GEO 才有定点标注（严区制判定，与分组无关；历元值缓存，不随时钟漂移）
     alt: gd.height.toFixed(0), lat: sat.degreesLat(gd.latitude).toFixed(2), lon: sat.degreesLong(gd.longitude).toFixed(2),
-    incl: (rec.inclo / DEG).toFixed(2), ecc: rec.ecco.toFixed(5), period: periodMin.toFixed(1),
+    incl: (rec.inclo / DEG).toFixed(2), ecc: rec.ecco.toFixed(5), period: periodMin.toFixed(1), periodMinRaw: periodMin,
     perigee: perKm.toFixed(0), apogee: apoKm.toFixed(0), meanMotion: meanMotion.toFixed(4),
     raan: (((rec.nodeo / DEG) % 360 + 360) % 360).toFixed(2), argp: (((rec.argpo / DEG) % 360 + 360) % 360).toFixed(2),
     ma: (((rec.mo / DEG) % 360 + 360) % 360).toFixed(2),
@@ -2189,11 +2199,29 @@ const FOCUS_FP_MIN = 18
 // 轨迹圈数的总采样预算：圈数直接决定轨迹的点数，而这些点每拍都要重新拼成线段缓冲上传 —— 几百颗 ×
 // 十圈是每拍十几 MB 的传输，故多选时按颗数收回来（单选/少量选中时 cap 远大于 10，用户设几圈就是几圈）。
 // 恒保底 1 圈，与可自定义之前的画法一致。
-const FOCUS_TRACK_BUDGET = 12000
-const focusTrackPeriods = (n, samples) => {
-  const want = clamp(Number(focusStyle.trkPeriods) || 1, 0.25, 10)
+// 曾取 12000（十圈滑杆时代）；圈数改成自由输入后放到 48000 —— 单选可到 400 圈，≥400 颗时仍是保底那 1 圈，
+// 中间档（如 100 颗 × 4 圈）每拍多传的也只是一两 MB 的线段。
+const FOCUS_TRACK_BUDGET = 48000
+// 轨迹面另设一档顶点预算：带面是「每个采样点一条横断面 × K 段 × 两个三角形」（每格 18 个 float），比一条线重一两个
+// 量级，多选时按颗数把圈数收回来。保底 0.25 圈，不像线那样保底 1 圈 —— 几百颗星各画一圈带面已经铺满全球。
+// K 按主选星的远地点高度与当前覆盖圈口径估（与 Worker 里逐星算的同一个函数）。
+const FOCUS_SWATH_BUDGET = 6e6
+const fpOptNow = () => ({ mode: fpMode.value, beamDeg: parseFloat(beam.value), elevDeg: parseFloat(elevMin.value) })
+const focusSwathK = (e) => swathK(e && e.rec && e.rec.alta > 0 ? e.rec.alta * RE : 0, fpOptNow())
+// 轨迹长度口径：圈数档（trkSpanMode='rev'）＝每颗星各按自己的周期 × trkPeriods；时长档（'time'）＝全体同一段 trkSpanMin 分钟。
+// 两档都先折成「圈数」再过预算（时长档按 periodMin 折算 —— 调用方给主选星 / 该星的周期）。输入本身不设上限，
+// 预算夹断后实际画了多长由信息卡「轨迹周期」行如实显示。
+const focusTrackPeriods = (n, samples, periodMin) => {
+  let want
+  if (focusStyle.trkSpanMode === 'time') { const m = Number(focusStyle.trkSpanMin); want = m > 0 && periodMin > 0 ? m / periodMin : 1 }
+  else { const r = Number(focusStyle.trkPeriods); want = r > 0 ? r : 1 }
   const cap = FOCUS_TRACK_BUDGET / Math.max(1, n * Math.max(1, samples))
-  return Math.max(0.25, Math.min(want, Math.max(1, cap)))
+  let per = Math.min(want, Math.max(1, cap))
+  if (focusStyle.trkOn && focusStyle.trkMode === 'swath') {
+    const capS = FOCUS_SWATH_BUDGET / Math.max(1, n * Math.max(1, samples) * Math.max(2, focusSwathK(selEntry)) * 18)
+    per = Math.min(per, Math.max(0.25, capS))
+  }
+  return Math.max(1e-3, per)
 }
 const focusLod = (n) => {
   const samples = n <= FOCUS_FULL_N ? 120 : clamp(Math.round(FOCUS_SAMPLE_BUDGET / n), FOCUS_SAMPLE_MIN, 120)
@@ -2234,7 +2262,10 @@ function startFocusGeometry() {
   const draw = selEntries                                     // 选中集全画：几何不再有颗数上限
   syncPool(draw, selEntry)
   const lod = focusLod(draw.length)
-  const per = focusTrackPeriods(draw.length, lod.samples)      // 星下点轨迹画几个周期（用户可设）
+  // 星下点轨迹长度：圈数档给 per（各星按自己的周期），时长档给 spanMs（全体同一段；预算按主选星周期折算）
+  const pMin = selEntry && selEntry.rec ? (2 * Math.PI) / selEntry.rec.no : 0
+  const per = focusTrackPeriods(draw.length, lod.samples, pMin)
+  const spanMs = focusStyle.trkSpanMode === 'time' && pMin > 0 ? per * pMin * 60000 : 0
   const orbOn = !!focusStyle.orbOn
   // TTL 取选中集里【最短】的那个（周期越短，重建时被换掉的环长占比越大）
   let ttl = Infinity
@@ -2243,12 +2274,12 @@ function startFocusGeometry() {
   if (reRing) { ringEpoch = { tMs: nowMs, gmst: gmstNow }; ringDirty = false }
   const p = {
     tMs: nowMs, gmst: gmstNow, ccTMs: ccNow.getTime(), ccGmst: sat.gstime(ccNow),
-    lod, per,
+    lod, per, spanMs,
     ring: { on: orbOn, tMs: ringEpoch ? ringEpoch.tMs : nowMs, gmst: ringEpoch ? ringEpoch.gmst : gmstNow, rebuild: reRing, build: reRing },
-    fp: { mode: fpMode.value, beamDeg: parseFloat(beam.value), elevDeg: parseFloat(elevMin.value) },
+    fp: fpOptNow(),
     style: {
       orbDash: focusStyle.orbDash,
-      trkOn: !!focusStyle.trkOn, trkDash: focusStyle.trkDash,
+      trkOn: !!focusStyle.trkOn, trkDash: focusStyle.trkDash, trkMode: focusStyle.trkMode, trkFillOn: focusStyle.trkFillOpacity > 0,
       fpOn: !!focusStyle.fpOn, fpDash: focusStyle.fpDash,
       fillOn: focusStyle.fpFillOpacity > 0,
       coneOn: !!focusStyle.coneOn, faceOn: focusStyle.coneFaceOpacity > 0,
@@ -2285,7 +2316,19 @@ function flatGeomOf(shards) {
       const la = f.sub[i * 2], lo = f.sub[i * 2 + 1]
       const sub = Number.isFinite(la) ? { lat: la, lon: lo } : null
       if (sub) subs.push(sub)
-      geom.push({ track, footprint: footprint.length ? footprint : null, sub })
+      // 轨迹面：横断面经纬块（每点 K+1 对 lat/lon，切片填充用）+ 两条带缘折线（描边用）
+      let swath = null, swL = null, swR = null
+      const K = f.swK ? f.swK[i] : 0
+      if (K > 0) {
+        const m = K + 1, a0 = f.swOff[i] * 2, a1 = f.swOff[i + 1] * 2
+        swath = { K, ll: f.swLL.subarray(a0, a1) }
+        swL = []; swR = []
+        for (let o = a0; o + m * 2 <= a1; o += m * 2) {
+          if (!Number.isFinite(f.swLL[o])) continue
+          swL.push({ lat: f.swLL[o], lon: f.swLL[o + 1] }); swR.push({ lat: f.swLL[o + K * 2], lon: f.swLL[o + K * 2 + 1] })
+        }
+      }
+      geom.push({ track, footprint: footprint.length ? footprint : null, sub, swath, swL, swR })
     }
   }
   return { geom, subs }
@@ -2309,19 +2352,35 @@ function focusGeomOfRec(rec, isCc, color) {
     const gd = sat.eciToGeodetic(pv.position, g)
     const lat = sat.degreesLat(gd.latitude), lon = sat.degreesLong(gd.longitude), h = gd.height
     // 自适应采样，与选中星同源（含「轨迹画几个周期」那档设置：轨道圈仍只取一个整周期）
-    const periodMin = (2 * Math.PI) / rec.no, per = focusTrackPeriods(1, 120)
+    const periodMin = (2 * Math.PI) / rec.no, per = focusTrackPeriods(1, 120, periodMin)
     const samples = sampleOrbitAdaptive(rec, t, periodMin * Math.max(1, per), Math.round(120 * Math.max(1, per)))
     const t1 = t.getTime() + periodMin * 60000, tTrk = t.getTime() + periodMin * per * 60000
-    const orbit = [], track = []
+    const orbit = [], track = [], pts = []
     for (const q of samples) {
       const ms = q.t.getTime()
       if (ms <= t1 + 1) { const d = sat.eciToGeodetic(q.pv.position, g); orbit.push({ lat: sat.degreesLat(d.latitude), lon: sat.degreesLong(d.longitude), altKm: d.height }) }
-      if (ms <= tTrk + 1) track.push({ lat: q.lat, lon: q.lon })
+      if (ms <= tTrk + 1) { track.push({ lat: q.lat, lon: q.lon }); pts.push(q) }
     }
     if (orbit.length > 1) orbit.push(orbit[0])   // 同上：轨道圈收口
     const ecf = sat.eciToEcf(pv.position, g)
     const fp = footprintAtEcef([ecf.x, ecf.y, ecf.z], h)
-    return { item: { orbit, track, footprint: fp, primary: false, satPos: { lat, lon, altKm: h, color } }, sub: { lat, lon }, flat: { track, footprint: fp, sub: { lat, lon } } }
+    // 轨迹面（与聚焦选中集同一份口径：focusSwath.sectionOf）：3D 收横断面单位矢量，2D 收横断面经纬与两条带缘
+    let swath = null, sw2 = null, swL = null, swR = null
+    if (focusStyle.trkOn && focusStyle.trkMode === 'swath' && pts.length > 1) {
+      const fpo = fpOptNow(), K = swathK(Math.max(h, rec.alta > 0 ? rec.alta * RE : 0), fpo), m = K + 1
+      const secs = pts.map((q) => sectionOf({ lat: q.lat, lon: q.lon, h: q.gd.height, az: headingAz(q.pv, q.gmst) }, fpo, K))
+      swath = { K, secs }
+      const ll = new Float32Array(secs.length * m * 2)
+      swL = []; swR = []
+      for (let i = 0; i < secs.length; i++) {
+        const s = secs[i], o = i * m * 2
+        if (!s) { ll.fill(NaN, o, o + m * 2); continue }
+        for (let a = 0; a < m; a++) { const ge = vecToLatLon(s[a * 3], s[a * 3 + 1], s[a * 3 + 2]); ll[o + a * 2] = ge[0]; ll[o + a * 2 + 1] = ge[1] }
+        swL.push({ lat: ll[o], lon: ll[o + 1] }); swR.push({ lat: ll[o + K * 2], lon: ll[o + K * 2 + 1] })
+      }
+      sw2 = { K, ll }
+    }
+    return { item: { orbit, track, swath, footprint: fp, primary: false, satPos: { lat, lon, altKm: h, color } }, sub: { lat, lon }, flat: { track, swath: sw2, swL, swR, footprint: fp, sub: { lat, lon } } }
   } catch { return null }
 }
 function focusGeomStatic(node, color) {
@@ -3590,6 +3649,39 @@ function fpCommit(k) {
   if (k === 'beam') beam.value = d.text; else elevMin.value = d.text
   refreshFootprint()
 }
+// 轨迹长度两格（圈数 / 时长）：与覆盖圈口径同一套「草稿 + 失焦/回车提交」（逐键重算会按半截数字把全体轨迹重铺一遍）。
+// 任意正数都收（全角数字先归一），非数 / 非正 → 原值不动。
+const trkEdit = ref(null)             // { k:'rev'|'time', text }
+const trkVal = (k) => {
+  const d = trkEdit.value
+  if (d && d.k === k) return d.text
+  const v = Number(k === 'rev' ? focusStyle.trkPeriods : focusStyle.trkSpanMin)
+  return v > 0 ? String(+v.toFixed(3)) : ''
+}
+function trkInput(k, e) { trkEdit.value = { k, text: e.target.value } }
+function trkCommit(k) {
+  const d = trkEdit.value
+  trkEdit.value = null
+  if (!d || d.k !== k) return
+  const v = pf(d.text)
+  if (!(v > 0)) return
+  if (k === 'rev') { if (v === focusStyle.trkPeriods) return; focusStyle.trkPeriods = v }
+  else { if (v === focusStyle.trkSpanMin) return; focusStyle.trkSpanMin = v }
+  applyFocusGeom()
+}
+// 切换长度口径：按主选星周期把当前长度换算到另一档，切换前后画的轨迹不变（没有聚焦星时各留各的值）
+function setTrkSpanMode(m) {
+  if (m !== 'time') m = 'rev'
+  if (focusStyle.trkSpanMode === m) return
+  const pMin = selEntry && selEntry.rec ? (2 * Math.PI) / selEntry.rec.no : 0
+  if (pMin > 0) {
+    if (m === 'time') { const r = Number(focusStyle.trkPeriods); focusStyle.trkSpanMin = +((r > 0 ? r : 1) * pMin).toFixed(1) }
+    else { const t = Number(focusStyle.trkSpanMin); if (t > 0) focusStyle.trkPeriods = +(t / pMin).toFixed(3) }
+  } else if (m === 'time' && !(Number(focusStyle.trkSpanMin) > 0)) focusStyle.trkSpanMin = 100
+  trkEdit.value = null
+  focusStyle.trkSpanMode = m
+  applyFocusGeom()
+}
 // 波束全锥角 B(°) ↔ 最低仰角 ε(°)：同一覆盖圈的两种参数化，由卫星高度 h 唯一对应。
 //   sin(B/2) = (RE/r)·cos ε，r=RE+h；B/2 ≥ asin(RE/r)（地平）时 ε=0。切换定义方式时按此换算，覆盖圈不变。
 function selAltKm() {
@@ -3633,11 +3725,35 @@ const fpLegend = computed(() => {
   const b = beam.value || beamAuto.value
   return b ? `覆盖范围 · 波束角 ${b}°` : '覆盖范围'
 })
+// 轨迹图例：轨迹面档带上口径（带宽就是这个口径扫出来的），轨迹线档只写名字
+const trkLegend = computed(() => {
+  if (focusStyle.trkMode !== 'swath') return '星下点轨迹'
+  if (fpMode.value === 'elev') { const v = parseFloat(elevMin.value); return `轨迹面 · 最低仰角 ${v >= 0 && v < 90 ? v : 0}°` }
+  const b = beam.value || beamAuto.value
+  return b ? `轨迹面 · 波束角 ${b}°` : '轨迹面'
+})
+// 信息卡「轨迹周期」：星下点轨迹实际画了几圈、合多长时间（圈数受多选时的采样预算约束，与图上画的一致）
+const trkSpan = computed(() => {
+  const c = selected.value
+  if (!c || !(c.periodMinRaw > 0)) return null
+  const n = Math.max(1, selList.value.length)
+  const per = focusTrackPeriods(n, focusLod(n).samples, c.periodMinRaw)
+  const min = per * c.periodMinRaw
+  const f = min < 180 ? [min.toFixed(1), 'min'] : min < 72 * 60 ? [(min / 60).toFixed(2), 'h'] : [(min / 1440).toFixed(2), 'd']
+  return { rev: +per.toFixed(2), v: f[0], u: f[1] }
+})
 // 图例色条：跟着显示设置取色与线型（点线在 18px 的短条上按 dotted 画，观感与图上一致）
 // 点划线在 18px 的短条上画不出「长划-点」的节奏，退回 dashed（观感上仍是断线，与实线/点线可分）
 const swStyle = (color, dash) => ({ borderColor: color, borderTopStyle: dash === 'dot' ? 'dotted' : (dash === 'dash' || dash === 'dashdot') ? 'dashed' : 'solid' })
 const fpSwStyle = computed(() => swStyle(focusStyle.fpColor, focusStyle.fpDash))
-const trkSwStyle = computed(() => swStyle(focusStyle.trkColor, focusStyle.trkDash))
+// 轨迹面档的色条是一条「带」：上下两缘按线样式描，带内按填充色与透明度铺
+const trkSwStyle = computed(() => {
+  const s = swStyle(focusStyle.trkColor, focusStyle.trkDash)
+  if (focusStyle.trkMode !== 'swath') return s
+  const c = String(focusStyle.trkFillColor || '#e8c074').replace('#', '')
+  const r = parseInt(c.slice(0, 2), 16) || 0, gg = parseInt(c.slice(2, 4), 16) || 0, b = parseInt(c.slice(4, 6), 16) || 0
+  return { ...s, borderBottomStyle: s.borderTopStyle, backgroundColor: `rgba(${r},${gg},${b},${clamp(Number(focusStyle.trkFillOpacity) || 0, 0, 1)})` }
+})
 
 // ===================== 时间轴 =====================
 const track = ref(null)
@@ -4203,7 +4319,7 @@ const admHits = computed(() => {
   const have = new Set(admIndex.adm1 || [])
   const list = COUNTRY_ZH.value.filter((c) => have.has(c.id))
   const hit = q ? list.filter((c) => c.zh.includes(q) || c.id.includes(q.toUpperCase()) || (c.en || '').toLowerCase().includes(q.toLowerCase())) : list
-  // ★ 不截断：没输入就把有包的国家全列出来（251 个），清单本身可滚。
+  // ★ 不截断：没输入就把有包的国家全列出来（247 个），清单本身可滚。
   //   原来恒截到 12 条 —— 不打字就只能看到「阿尔巴尼亚」起那几个，等于逼着人先知道国名才能勾。
   //   已选中的排最前，勾过的永远在第一屏。
   const sel = new Set(admSel1.value)
@@ -4703,6 +4819,7 @@ function setNameRowSize(k, v) {
 const focusStyle3D = () => ({
   orbOn: focusStyle.orbOn, orbColor: hexNum(focusStyle.orbColor), orbWidth: focusStyle.orbWidth, orbOpacity: focusStyle.orbOpacity, orbDash: focusStyle.orbDash,
   trkOn: focusStyle.trkOn, trkColor: hexNum(focusStyle.trkColor), trkWidth: focusStyle.trkWidth, trkOpacity: focusStyle.trkOpacity, trkDash: focusStyle.trkDash,
+  trkMode: focusStyle.trkMode, trkFillColor: hexNum(focusStyle.trkFillColor), trkFillOpacity: focusStyle.trkFillOpacity,
   fpOn: focusStyle.fpOn, fpColor: hexNum(focusStyle.fpColor), fpWidth: focusStyle.fpWidth, fpOpacity: focusStyle.fpOpacity, fpDash: focusStyle.fpDash,
   fpFillColor: hexNum(focusStyle.fpFillColor), fpFillOpacity: focusStyle.fpFillOpacity,
   coneOn: focusStyle.coneOn, coneFaceColor: hexNum(focusStyle.coneFaceColor), coneFaceOpacity: focusStyle.coneFaceOpacity,
@@ -4712,6 +4829,7 @@ const focusStyle3D = () => ({
 })
 const focusStyle2D = () => ({
   trkOn: focusStyle.trkOn, trkColor: focusStyle.trkColor, trkWidth: focusStyle.trkWidth, trkOpacity: focusStyle.trkOpacity, trkDash: focusStyle.trkDash,
+  trkMode: focusStyle.trkMode, trkFillColor: focusStyle.trkFillColor, trkFillOpacity: focusStyle.trkFillOpacity,
   fpOn: focusStyle.fpOn, fpColor: focusStyle.fpColor, fpWidth: focusStyle.fpWidth, fpOpacity: focusStyle.fpOpacity, fpDash: focusStyle.fpDash,
   fpFillColor: focusStyle.fpFillColor, fpFillOpacity: focusStyle.fpFillOpacity,
   subOn: focusStyle.subOn, subPx: focusStyle.subPx, subColor: focusStyle.subColor
@@ -4732,7 +4850,7 @@ function applyFocusGeom() { applyFocusStyle() }
 // 覆盖圈那节不含口径（波束角/最低仰角是分析参数不是样式，见 fpMode/beam/elevMin）。
 const FOCUS_PARTS = {
   orb: ['orbOn', 'orbColor', 'orbWidth', 'orbOpacity', 'orbDash'],
-  trk: ['trkOn', 'trkColor', 'trkWidth', 'trkOpacity', 'trkDash', 'trkPeriods'],
+  trk: ['trkOn', 'trkMode', 'trkColor', 'trkWidth', 'trkOpacity', 'trkDash', 'trkFillColor', 'trkFillOpacity', 'trkPeriods', 'trkSpanMode', 'trkSpanMin'],
   fp: ['fpOn', 'fpColor', 'fpWidth', 'fpOpacity', 'fpDash', 'fpFillColor', 'fpFillOpacity'],
   cone: ['coneOn', 'coneFaceColor', 'coneFaceOpacity', 'coneGenCount', 'coneGenColor', 'coneGenWidth', 'coneGenOpacity', 'coneGenDash'],
   mk: ['cloudOn', 'dotOn', 'dotPx', 'subOn', 'subPx', 'subColor', 'ringOn', 'ringColor', 'ringPx']
@@ -7081,7 +7199,10 @@ async function restoreSettings() {
       else if (typeof d === 'number') { if (Number.isFinite(v)) focusStyle[k] = v }
       else if (typeof v === 'string') focusStyle[k] = v
     }
-    focusStyle.trkPeriods = clamp(Number(focusStyle.trkPeriods) || 1, 0.25, 10)
+    focusStyle.trkPeriods = Number(focusStyle.trkPeriods) > 0 ? Number(focusStyle.trkPeriods) : 1
+    focusStyle.trkSpanMin = Number(focusStyle.trkSpanMin) > 0 ? Number(focusStyle.trkSpanMin) : 0
+    if (focusStyle.trkSpanMode !== 'time') focusStyle.trkSpanMode = 'rev'   // 长度口径只认这两档
+    if (focusStyle.trkMode !== 'swath') focusStyle.trkMode = 'line'         // 轨迹形式只认这两档
     // 区域填充早先是「布尔开关 + 固定浓度」，现改为一根透明度滑杆（0＝不填）：老存档显式关过就归 0
     if (s.focusStyle.fpFill === false) focusStyle.fpFillOpacity = 0
   }
@@ -7383,7 +7504,7 @@ onBeforeUnmount(() => {
         <!-- 聚焦卫星图例：色条＝地图上实际那两根线（颜色/线型随「显示设置 · 聚焦卫星」走），3D / 2D 同步显示 -->
         <div v-if="selected && (focusStyle.fpOn || focusStyle.trkOn)" class="focus-legend">
           <div v-if="focusStyle.fpOn" class="fl-row"><span class="fl-sw" :style="fpSwStyle"></span>{{ fpLegend }}</div>
-          <div v-if="focusStyle.trkOn" class="fl-row"><span class="fl-sw" :style="trkSwStyle"></span>星下点轨迹</div>
+          <div v-if="focusStyle.trkOn" class="fl-row"><span class="fl-sw" :class="{ band: focusStyle.trkMode === 'swath' }" :style="trkSwStyle"></span>{{ trkLegend }}</div>
         </div>
 
         <div v-if="selected" class="card" :class="{ collapsed: cardCollapsed }">
@@ -7414,6 +7535,7 @@ onBeforeUnmount(() => {
           <div class="csec">实时状态</div>
           <div class="rows">
             <div class="row"><span class="k">星下点</span><span class="v">{{ selected.lat }}°, {{ selected.lon }}°</span></div>
+            <div v-if="focusStyle.trkOn && trkSpan" class="row" title="从当前时刻起画的轨迹圈数与时长"><span class="k">轨迹周期</span><span class="v">{{ trkSpan.rev }}<i>圈</i> · {{ trkSpan.v }}<i>{{ trkSpan.u }}</i></span></div>
             <div class="row"><span class="k">轨道高度</span><span class="v">{{ selected.alt }}<i>km</i></span></div>
             <div class="row"><span class="k">对地速度</span><span class="v">{{ selected.speedRel }}<i>km/s</i></span></div>
             <div class="row"><span class="k">惯性速度</span><span class="v">{{ selected.speedAbs }}<i>km/s</i></span></div>
@@ -9060,6 +9182,12 @@ onBeforeUnmount(() => {
         <div class="sec" :class="{ hid: !focusStyle.trkOn }">
           <div class="sect acc" data-sec="foc-trk" :class="{ open: isSecOpen('foc-trk') }" @click="toggleSec('foc-trk')"><Icon :name="isSecOpen('foc-trk') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>星下点轨迹</span><span class="lnk" title="本节恢复出厂样式" @click.stop="resetFocusPart('trk')">默认</span><button type="button" class="layersw sect-layersw" :class="{ on: focusStyle.trkOn }" role="switch" :aria-checked="focusStyle.trkOn ? 'true' : 'false'" :title="focusStyle.trkOn ? '隐藏星下点轨迹' : '显示星下点轨迹'" @click.stop="toggleFocus('trkOn')"><i></i></button></div>
           <template v-if="isSecOpen('foc-trk')">
+          <div class="srow"><label>形式</label>
+            <span class="seg nseg" role="group" aria-label="星下点轨迹形式">
+              <span class="sg" :class="{ on: focusStyle.trkMode !== 'swath' }" title="只画星下点轨迹线" @click="setFocusVal('trkMode', 'line')">轨迹线</span>
+              <span class="sg" :class="{ on: focusStyle.trkMode === 'swath' }" title="按覆盖圈口径沿轨迹扫过的覆盖带（轨迹面）" @click="setFocusVal('trkMode', 'swath')">轨迹面</span>
+            </span>
+          </div>
           <div class="srow"><label>颜色</label><input class="clr" type="color" v-model="focusStyle.trkColor" @input="applyFocusStyle" /><span class="u">{{ focusStyle.trkColor }}</span></div>
           <div class="srow"><label>线粗</label><input class="rng" type="range" min="0.1" max="8" step="0.1" v-model.number="focusStyle.trkWidth" @input="applyFocusStyle" /><span class="u">{{ focusStyle.trkWidth.toFixed(1) }}</span></div>
           <div class="srow"><label>透明度</label><input class="rng" type="range" min="0.05" max="1" step="0.05" v-model.number="focusStyle.trkOpacity" @input="applyFocusStyle" /><span class="u">{{ focusStyle.trkOpacity.toFixed(2) }}</span></div>
@@ -9068,7 +9196,18 @@ onBeforeUnmount(() => {
               <span v-for="d in DASH_OPTS" :key="d.k" class="sg" :class="{ on: focusStyle.trkDash === d.k }" @click="setFocusVal('trkDash', d.k)">{{ d.label }}</span>
             </span>
           </div>
-          <div class="srow" title="从当前时刻起画几个轨道周期的星下点轨迹（0.25 圈起，可到 10 圈）"><label>轨迹圈数</label><input class="rng" type="range" min="0.25" max="10" step="0.25" v-model.number="focusStyle.trkPeriods" @input="applyFocusGeom" /><span class="u">{{ +focusStyle.trkPeriods.toFixed(2) }}</span></div>
+          <template v-if="focusStyle.trkMode === 'swath'">
+          <div class="srow" title="带内填色；0＝不填"><label>区域填充</label><input class="rng" type="range" min="0" max="1" step="0.02" v-model.number="focusStyle.trkFillOpacity" @input="applyFocusStyle" /><span class="u">{{ focusStyle.trkFillOpacity.toFixed(2) }}</span></div>
+          <div class="srow"><label>填充颜色</label><input class="clr" type="color" v-model="focusStyle.trkFillColor" @input="applyFocusStyle" /><span class="u">{{ focusStyle.trkFillColor }}</span></div>
+          </template>
+          <div class="srow"><label>轨迹长度</label>
+            <span class="seg nseg" role="group" aria-label="星下点轨迹长度口径">
+              <span class="sg" :class="{ on: focusStyle.trkSpanMode !== 'time' }" title="按轨道周期的倍数给长度" @click="setTrkSpanMode('rev')">轨迹圈数</span>
+              <span class="sg" :class="{ on: focusStyle.trkSpanMode === 'time' }" title="按时长给长度（分钟）" @click="setTrkSpanMode('time')">轨迹周期</span>
+            </span>
+          </div>
+          <div v-if="focusStyle.trkSpanMode !== 'time'" class="srow" title="从当前时刻起画几个轨道周期的星下点轨迹"><label>轨迹圈数</label><input class="ci" :value="trkVal('rev')" placeholder="1" @input="e => trkInput('rev', e)" @change="trkCommit('rev')" @blur="trkCommit('rev')" @keyup.enter="trkCommit('rev')" /><span class="u">圈</span></div>
+          <div v-else class="srow" title="从当前时刻起画多长时间的星下点轨迹（分钟）"><label>轨迹周期</label><input class="ci" :value="trkVal('time')" placeholder="0" @input="e => trkInput('time', e)" @change="trkCommit('time')" @blur="trkCommit('time')" @keyup.enter="trkCommit('time')" /><span class="u">min</span></div>
           </template>
         </div>
 
@@ -9404,7 +9543,7 @@ onBeforeUnmount(() => {
           <div class="sect acc" data-sec="geo-pov" :class="{ open: isSecOpen('geo-pov') }" @click="toggleSec('geo-pov')"><Icon :name="isSecOpen('geo-pov') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>地图视角</span></div>
           <template v-if="isSecOpen('geo-pov')">
           <div class="srow"><label>视角</label>
-            <select :value="povCfg.id" title="底图的国界、陆地着色、点选与国名全部按该视角的归属表解算；「自定义」以中国视角为底再逐项覆写。台湾、香港、澳门恒属中国，不随视角变" @change="setPovId($event.target.value)">
+            <select :value="povCfg.id" title="底图的国界、陆地着色、点选与国名全部按该视角的归属表解算；「自定义」以中国视角为底再逐项覆写。台湾、香港、澳门、南海诸岛与钓鱼岛恒属中国，不随视角变" @change="setPovId($event.target.value)">
               <option v-for="p in POV_META" :key="p.id" :value="p.id">{{ byLang(p.zh, p.en) }}</option>
             </select>
           </div>
@@ -10520,6 +10659,8 @@ onBeforeUnmount(() => {
 .fl-row { display: flex; align-items: center; gap: 7px; white-space: nowrap; }
 /* 颜色/线型由 fpSwStyle / trkSwStyle 行内给（跟着显示设置走），这里只留几何 */
 .fl-sw { width: 18px; height: 0; border-top: 2px solid; flex: none; }
+/* 轨迹面档：色条是一条带 —— 上下两缘按线样式，带内颜色由 trkSwStyle 行内给 */
+.fl-sw.band { height: 7px; border-top-width: 1.5px; border-bottom: 1.5px solid; }
 .card {
   position: absolute; right: 14px; top: 14px; width: 256px;
   max-height: calc(100% - 28px); overflow-y: auto;
@@ -11514,7 +11655,7 @@ onBeforeUnmount(() => {
 .mlist { margin-top: 6px; display: flex; flex-direction: column; gap: 4px; max-height: 150px; overflow-y: auto; }
 /* 主从列表（边界线七类 / 地名三级）条目固定，不滚 —— 150px 上限是给可能几十条的国家清单的 */
 .mlist.pick { max-height: none; overflow: visible; }
-/* 国家清单：全量 251 条可滚，给足一屏的高度（150px 只够四行半，翻起来太碎） */
+/* 国家清单：全量 247 条可滚，给足一屏的高度（150px 只够四行半，翻起来太碎） */
 .mlist.tall { max-height: 260px; }
 .mrow { display: flex; align-items: center; gap: 6px; }
 .mrow .mc { flex: 1; font-family: var(--font-mono); font-size: var(--fs-2); color: var(--text-muted); }

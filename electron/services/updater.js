@@ -6,6 +6,9 @@
 //   3. 用户正常关闭程序 → electron-updater 挂在 quit 上的钩子静默装（--updated /S，装完不重开）
 //   4. 直接关机 / 崩溃 / 强杀让 3 没跑 → 下次启动 applyPendingUpdate() 校验标记后拉起安装器
 //      （--updated /S --force-run，装完自动重开）并退出。决策逻辑在 updaterPending.js
+//   5. 帮助 → 检查更新：同一条流水线的主动入口。checkNow() 立即跑一次 1（与例行检查共用 check，
+//      定时器随之重排）；installNow() 在已下载时走 quitAndInstall（安装器参数同 4）。状态快照
+//      （updaterState.js）经 onChange 广播到各窗口，对话框只是把它摆出来，不自己算
 //
 // 更新源地址在 package.json 的 build.publish 中配置（generic provider），打包时生成 app-update.yml。
 // 日志：<userData>/updater.log。打包后 console 不可见，静默流程出问题只能靠它。
@@ -15,6 +18,7 @@ const path = require('path')
 const fs = require('fs')
 const { spawn } = require('child_process')
 const P = require('./updaterPending')
+const S = require('./updaterState')
 
 const FIRST_CHECK_MS = 3 * 1000
 const RECHECK_OK_MS = 4 * 60 * 60 * 1000
@@ -24,6 +28,26 @@ const LOG_MAX_BYTES = 512 * 1024
 
 let started = false
 let logger = null
+
+// 「检查更新」的状态快照（口径见 updaterState.js）：主进程是唯一真源，变化经 onChange 推给各窗口
+let state = null
+const listeners = new Set()
+let runCheck = null   // initAutoUpdate 里赋值：手动检查与例行检查走同一个 check（定时器重排的逻辑只有一份）
+
+function getState() {
+  if (!state) {
+    state = S.initial(app.getVersion())
+    if (!app.isPackaged) state = S.reduce(state, { type: 'disabled' })
+  }
+  return state
+}
+function dispatch(ev) {
+  const next = S.reduce(getState(), ev)
+  if (next === state) return
+  state = next
+  for (const fn of listeners) { try { fn(state) } catch { /* 监听方自己的事 */ } }
+}
+function onChange(fn) { listeners.add(fn); return () => listeners.delete(fn) }
 
 // 追加写、超上限砍掉前一半。同步写：量小（每次检查几行、下载每 10% 一行），不值得上队列
 function createFileLogger(file) {
@@ -146,32 +170,48 @@ function initAutoUpdate() {
   autoUpdater.disableWebInstaller = true
 
   let timer = null
+  // 返回 checkForUpdates 的 promise：checkNow() 靠它等到检查结束。已有检查在飞时 electron-updater
+  // 自己去重（返回同一个 promise），手动 / 例行撞在一起也只发一次请求
   const check = () => {
-    autoUpdater.checkForUpdates().then(
+    const p = autoUpdater.checkForUpdates()
+    p.then(
       () => schedule(RECHECK_OK_MS, '例行'),
       () => schedule(RECHECK_ERR_MS, '检查失败')
     )
+    return p
   }
+  runCheck = check
   const schedule = (ms, why) => {
     clearTimeout(timer)
     timer = setTimeout(check, ms)
     log.info(`[updater] 下次检查 ${Math.round(ms / 60000)} min 后（${why}）`)
   }
 
+  autoUpdater.on('checking-for-update', () => dispatch({ type: 'checking' }))
   autoUpdater.on('error', (err) => {
     // 离线 / 源不可达 / 下载中断：记日志、稍后重试，不打扰用户。检查失败时 then 的拒绝分支也会排一次，
     // 两次 schedule 同一间隔，后者覆盖前者
     log.warn('[updater] ' + (err && err.message ? err.message : err))
+    dispatch({ type: 'error', message: err && err.message ? err.message : String(err) })
     schedule(RECHECK_ERR_MS, '出错重试')
   })
-  autoUpdater.on('update-available', (info) => log.info('[updater] 发现新版本：' + (info && info.version)))
-  autoUpdater.on('update-not-available', (info) => log.info('[updater] 已是最新（源上 ' + (info && info.version) + '）'))
+  autoUpdater.on('update-available', (info) => {
+    log.info('[updater] 发现新版本：' + (info && info.version))
+    dispatch({ type: 'available', version: info && info.version })
+  })
+  autoUpdater.on('update-not-available', (info) => {
+    log.info('[updater] 已是最新（源上 ' + (info && info.version) + '）')
+    dispatch({ type: 'not-available', version: info && info.version })
+  })
   let lastPct = -1
   autoUpdater.on('download-progress', (p) => {
     const pct = Math.floor((p && p.percent ? p.percent : 0) / 10) * 10
     if (pct !== lastPct) { lastPct = pct; log.info(`[updater] 下载 ${pct}%`) }
+    dispatch({ type: 'progress', percent: p && p.percent, transferred: p && p.transferred, total: p && p.total })
   })
   autoUpdater.on('update-downloaded', (info) => {
+    // 快照先于标记：标记写失败只影响「直接关机后的补装」，包本身已在，仍可立即重启安装 / 退出时安装
+    dispatch({ type: 'downloaded', version: info && info.version })
     const file = markerFile()
     const m = P.markerFromDownloaded(info, P.readMarker(file), Date.now())
     if (!m) { log.warn('[updater] 下载完成但事件缺版本 / 路径 / sha512，不落标记'); return }
@@ -185,4 +225,31 @@ function initAutoUpdate() {
   schedule(FIRST_CHECK_MS, '启动')
 }
 
-module.exports = { initAutoUpdate, applyPendingUpdate }
+// 帮助 → 检查更新：立即检查一次，等检查结束再返回快照（发现新版时下载已在后台开始，进度经 onChange
+// 推送）。未打包 / 尚未 initAutoUpdate：直接返回快照（disabled / idle）
+async function checkNow() {
+  if (!runCheck) return getState()
+  try { await runCheck() } catch { /* 已经过 error 事件进了快照 */ }
+  return getState()
+}
+
+// 「立即重启安装」：仅在已下载时可用。quitAndInstall(true, true) = 静默装 + 装完重开，安装器参数与
+// 退出时安装 / 启动时补装同一套（updaterPending.INSTALLER_ARGS）。随后的 app.quit() 触发 before-quit
+// → main.js 放行各功能窗口的关窗守卫 → 窗口全关 → 安装器接手；装完带 --updated 重开，启动时
+// decide() 据此清掉 pending-update.json。拉不起安装器时 electron-updater 走 error 事件（快照保持
+// downloaded，错误只记字段），这里返回 true 只表示已交给它
+function installNow() {
+  if (!started || getState().phase !== 'downloaded') return false
+  const log = getLogger()
+  try {
+    const { autoUpdater } = require('electron-updater')
+    log.info('[updater] 用户点击「立即重启安装」')
+    autoUpdater.quitAndInstall(true, true)
+    return true
+  } catch (e) {
+    log.warn('[updater] 立即安装失败：' + (e && e.message ? e.message : e))
+    return false
+  }
+}
+
+module.exports = { initAutoUpdate, applyPendingUpdate, getState, checkNow, installNow, onChange }

@@ -33,7 +33,7 @@ export default [
   {"view":"envLive","key":"lv-src","title":"数据场","items":[{"label":"字段"},{"label":"渲染格距"},{"label":"渲染点数上限"}]},
   {"view":"envLive","key":"lv-style","title":"配色与值域","items":[{"label":"配色"},{"label":"填色"},{"label":"值域"},{"label":"透明度"},{"label":"上下限"},{"label":"海洋透明（ITU-R P.1511 高程 ≤ 0 判为海域）"}]},
   {"view":"focus","key":"foc-orb","title":"轨道线","items":[{"label":"颜色"},{"label":"线粗"},{"label":"透明度"},{"label":"线型"}]},
-  {"view":"focus","key":"foc-trk","title":"星下点轨迹","items":[{"label":"颜色"},{"label":"线粗"},{"label":"透明度"},{"label":"线型"},{"label":"轨迹圈数","hint":"从当前时刻起画几个轨道周期的星下点轨迹（0.25 圈起，可到 10 圈）"}]},
+  {"view":"focus","key":"foc-trk","title":"星下点轨迹","items":[{"label":"形式"},{"label":"颜色"},{"label":"线粗"},{"label":"透明度"},{"label":"线型"},{"label":"区域填充","hint":"带内填色；0＝不填"},{"label":"填充颜色"},{"label":"轨迹长度"},{"label":"轨迹圈数"},{"label":"轨迹周期"}]},
   {"view":"focus","key":"foc-fp","title":"覆盖圈","items":[{"label":"口径"},{"label":"线颜色"},{"label":"线粗"},{"label":"透明度"},{"label":"线型"},{"label":"区域填充","hint":"圈内填色（画在 GRD 覆盖场之下，叠加区仍以覆盖图为准）；0＝不填"},{"label":"填充颜色"},{"label":"波束全锥角"},{"label":"最低仰角"}]},
   {"view":"focus","key":"foc-cone","title":"覆盖锥","items":[{"label":"锥面","hint":"锥侧面填色，0＝只留母线"},{"label":"锥面颜色"},{"label":"母线根数","hint":"沿方位等分画几条母线，0＝只留锥面"},{"label":"母线颜色"},{"label":"母线线粗"},{"label":"母线透明度"},{"label":"母线线型"}]},
   {"view":"focus","key":"foc-mk","title":"卫星标记","items":[{"label":"大小"},{"label":"颜色"},{"label":"星座点云","hint":"整个星座的星点（仅 3D 球体）。关掉后地图上只剩聚焦星的标记，星点也不再可点选"},{"label":"在轨点","hint":"卫星真实在轨位置上的大号圆点，颜色跟随该星在星座里的配色"},{"label":"星下点图标"},{"label":"高亮环","hint":"套在聚焦星本体上的圆环（在轨高度，不是星下点）"}]},

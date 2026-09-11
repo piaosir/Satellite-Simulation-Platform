@@ -28,7 +28,7 @@ import { niceScale, fmtTick, fmtVal, linScale, isFlatSpan } from '../shared/lbPl
 import { isDark } from '../shared/lbPlotTheme.js'
 import { buildColorScale } from '../shared/lbColorScale.js'
 import { contourSegments, stitchSegments, contourLevels, bilinear, fieldExtent, refineField, dequantize, buildBlocks, smoothPathD, labelAnchors } from '../shared/lbContour.js'
-import { loadBasemap, basemapPaths, OCEAN, LAND, MAP_COAST, MAP_BORDER, MAP_LW, WASH, scaleInk } from '../shared/lbBasemap.js'
+import { loadBasemap, onBasemapChange, basemapPaths, OCEAN, LAND, MAP_COAST, MAP_BORDER, MAP_LW, WASH, scaleInk } from '../shared/lbBasemap.js'
 import { lbDocT } from '../shared/lbDocI18n.js'
 import { DOC_FONT_STACK } from '../shared/lbFont.js'
 
@@ -543,12 +543,15 @@ const labBoxes = computed(() => {
 // 分三层的理由：拖拽一帧要动的只是场的位置，重画一遍场纯属浪费；而底图与线层必须
 // 立刻按新视图重投——不然缩小时四周会空着一圈，那才叫「等瓦片」。
 // 线层单独一层是因为它得压在场上面：地理参照被场糊住的话，这张图就只是块彩色方块了。
-// feats 存的是 { land, borders }（见 shared/lbBasemap），不是数组
+// feats 存的是 { land, coast, borders }（见 shared/lbBasemap），不是数组
 const feats = ref(null)
 watch(() => props.basemap, (on) => {
   if (!on || feats.value) return
   loadBasemap().then((f) => { feats.value = f; schedule('map') })
 }, { immediate: true })
+// 「地图视角」设置变了底图整份重建（国界随归属重算），跟着重画
+const offBasemap = onBasemapChange((f) => { if (feats.value) { feats.value = f; schedule('map') } })
+onBeforeUnmount(offBasemap)
 
 const DPR = () => Math.min(2, (typeof window !== 'undefined' && window.devicePixelRatio) || 1)
 function sizeCanvas(cv, W, H, dpr) {
@@ -590,7 +593,7 @@ function paintMap(base, line, ss) {
   const m = feats.value
   // 拿不到地图数据时整幅不画（loadBasemap 失败会给回空清单）——只铺一层海色而没有一根
   // 岸线，得到的是一块纯蓝底板，比没有底图更误导
-  if (!props.basemap || !m || !(m.land.length || m.borders.length)) return false
+  if (!props.basemap || !m || !(m.land.length || m.coast.length || m.borders.length)) return false
   bx.fillStyle = OCEAN
   bx.fillRect(0, 0, cw, ch)
   const [x0, x1] = xDomain.value, [y0, y1] = yDomain.value
@@ -603,6 +606,7 @@ function paintMap(base, line, ss) {
   // 缩到整幅时它们各自不足三个像素，画出来只是沿岸一圈噪点——正是「太乱」的一部分。
   const dec = { minPx: 1.1 * dpr, minSize: 2.6 * dpr }
   const land = basemapPaths(m.land, view, size, dec)
+  const coast = basemapPaths(m.coast, view, size, dec)
   const bord = basemapPaths(m.borders, view, size, dec)
   const trace = (ctx, paths, close) => {
     ctx.beginPath()
@@ -636,8 +640,9 @@ function paintMap(base, line, ss) {
     // 比线本身还吵（用户原话「看着特别乱」）。与岸线的区别只在「更淡一档、更细一档」。
     lx.strokeStyle = scaleInk(MAP_BORDER[th], ink); lx.lineWidth = lw(MAP_LW.border); lx.stroke()
   }
-  if (land.length) {
-    trace(lx, land, true)
+  if (coast.length) {
+    // 岸线是按 arc 切开的开口折线，不闭合 —— 闭合会在每段首末之间凭空拉一条弦
+    trace(lx, coast, false)
     lx.strokeStyle = scaleInk(MAP_COAST[th], ink); lx.lineWidth = lw(MAP_LW.coast); lx.stroke()
   }
   return true

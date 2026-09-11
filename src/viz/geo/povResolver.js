@@ -102,6 +102,9 @@ export async function ensureDetail(detail) {
   bundles[detail] = prep(mod.default || mod)
   return bundles[detail]
 }
+// Node 侧换档入口（单测 / 构建脚本）：上面那句 import() 在 Node 里带不了导入属性，
+// 调用方自己 fs.readFileSync 之后把 topo 喂进来，得到的与浏览器里 ensureDetail 是同一份 bundle。
+export function registerDetail(detail, topo) { bundles[detail] = prep(topo); return bundles[detail] }
 const B = (d) => bundles[d] || bundles['10m']
 
 // 订阅轻量状态源：设置页改视角 → stores/mapPov 广播 → 这里重算 → 两个渲染器整份重建。
@@ -141,6 +144,22 @@ export function ownerOf(u, detail) {
   return null
 }
 export function unitProps(u, detail) { const f = B(detail).byU.get(u); return f ? f.properties : null }
+
+// ---------- 陆地面（与视角无关）----------
+// 只回答「哪里是陆地」：基础单元的全部环 + 无宿主的争议单元（不在 map_units 里、只存在于争议图层的礁岛）。
+// 有宿主的争议叠加 ⊂ 宿主面：铺同一种陆地色时不必再画 —— 叠进同一条 evenodd 路径反而会把它抠成洞
+//（藏南、典角那块「海色补丁」就是这么来的，见 flatmap/landGroups.js）。
+// 链路预算的地理场图用它填海陆（shared/lbBasemap.js），岸线 / 国界另取 resolvedLines()。
+export function landRings(detail) {
+  const b = B(detail)
+  const out = []
+  for (const f of b.units) {
+    const p = f.properties
+    if (p.dispute && p.host) continue
+    for (const rings of polysOf(f.geometry)) for (const r of rings) out.push(r)
+  }
+  return out
+}
 
 // ---------- 面：按归属合并的国家面 → 喂 buildLandMesh / buildBaseGeo ----------
 // 返回的 feature 带 { id: 归属(ISO3/单元 id), idx: 取色序号, over: 是否争议叠加 }。

@@ -11,7 +11,7 @@ const createModcod = require('../services/modcod')
 const admBoundaries = require('../services/admBoundaries')
 
 // 注册所有 IPC 处理器。core 为返回引擎实例的函数（延迟解析）。
-function register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget, openSunOutage, grd, confirmCloseLinkBudget, openNgso, confirmCloseNgso, openRegen, confirmCloseRegen, openE2e, confirmCloseE2e, openRain, confirmCloseRain, openCi, openPfd, freqPlan, openFreqPlan, notifyFreqPlan, activation, weather, gfs }) {
+function register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget, openSunOutage, grd, confirmCloseLinkBudget, openNgso, confirmCloseNgso, openRegen, confirmCloseRegen, openE2e, confirmCloseE2e, openRain, confirmCloseRain, openCi, openPfd, freqPlan, openFreqPlan, notifyFreqPlan, activation, weather, gfs, updater }) {
   // 未激活拦截（主进程硬防线；渲染端菜单/工具栏的拦截只是第一道观感）：
   // 各功能窗口的 open 一律先过这里——渲染端被绕过（devtools 直调 IPC）也开不出窗。
   // （下方九处 *:open 仍显式写着 gate(...)，在新的默认全拦之下已是冗余的第二层，无副作用，
@@ -42,6 +42,8 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     'activation:status', 'activation:refresh', 'app:version', 'app:deviceId',
     'window:setOverlay', 'font:pdf',
     'store:settings:get', 'store:settings:set',
+    // 检查更新：拿不到激活的老版本也得能升到修好的版本
+    'updater:state', 'updater:check', 'updater:install',
     // 窗口关闭确认：拦掉会导致功能窗口关不干净（锁定期间窗口仍在，只是被遮罩盖住）
     'linkbudget:confirmClose', 'ngso:confirmClose', 'regen:confirmClose', 'e2e:confirmClose', 'rain:confirmClose',
     // ② 浏览面（只读查询，不产出交付物）
@@ -1208,6 +1210,14 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   })
   // ---- 应用版本（帮助 → 关于 对话框显示）----
   ipcMain.handle('app:version', () => require('electron').app.getVersion())
+
+  // ---- 自动更新（帮助 → 检查更新）：state 读快照；check 立即检查并等到检查结束；install 立即重启安装。
+  //      三条都在 UNGATED 里：更新入口不能锁在激活之后 ----
+  if (updater) {
+    ipcMain.handle('updater:state', () => updater.getState())
+    ipcMain.handle('updater:check', () => updater.checkNow())
+    ipcMain.handle('updater:install', () => updater.installNow())
+  }
 
   // ---- 设备 ID（按本机 MAC 派生的稳定短码，作为「用户 ID」用于配置分享与激活管理）----
   // 实现收敛到 activation 服务（心跳/激活书都用同一份 ID，含管理员身份映射表 ADMIN_IDS）。

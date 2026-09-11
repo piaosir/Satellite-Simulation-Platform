@@ -114,6 +114,18 @@ function basisAround(d0) {
   return [e1, cross(d0, e1)]
 }
 
+// 波束角口径下沿单个方向 dir 的地面边缘点（ECEF）：射线交椭球，掠地平未命中时取最近趋近点投影到椭球。
+// footprintEllipsoid 逐方位调它；轨迹面（constellation/focusSwath.js）横向左右两个方向各调一次 —— 同一份兜底口径。
+export function footprintHitDir(satEcef, dir) {
+  let hit = rayEllipsoid(satEcef, dir)
+  if (!hit) {
+    const a = dot(dir, dir)
+    const t = -dot(satEcef, dir) / a
+    hit = projectToSurface([satEcef[0] + t * dir[0], satEcef[1] + t * dir[1], satEcef[2] + t * dir[2]])
+  }
+  return hit
+}
+
 // 覆盖足迹圈（WGS84）：卫星 ECEF(km)、星上锥半角 eta(rad) -> 地面边缘 [{lat,lon}...]。
 // 以地心天底(−S 方向)为锥轴，逐方位射线交椭球；掠地平未命中时取最近趋近点投影到椭球。
 export function footprintEllipsoid(satEcef, eta, N = 72) {
@@ -127,12 +139,7 @@ export function footprintEllipsoid(satEcef, eta, N = 72) {
       ce * d0[1] + se * (c * e1[1] + s * e2[1]),
       ce * d0[2] + se * (c * e1[2] + s * e2[2])
     ]
-    let hit = rayEllipsoid(satEcef, dir)
-    if (!hit) {
-      const a = dot(dir, dir)
-      const t = -dot(satEcef, dir) / a
-      hit = projectToSurface([satEcef[0] + t * dir[0], satEcef[1] + t * dir[1], satEcef[2] + t * dir[2]])
-    }
+    const hit = footprintHitDir(satEcef, dir)
     const gd = ecefToGeodetic(hit[0], hit[1], hit[2])
     out.push({ lat: gd.lat, lon: gd.lon })
   }
@@ -143,22 +150,42 @@ export function footprintEllipsoid(satEcef, eta, N = 72) {
 // 以地心星下点方向为锥轴，逐方位在「地心角 rho」上求根，使该地面点对卫星的椭球仰角 == ElDeg。
 // 适用任意经纬度/轨道高度（GEO、IGSO、LEO…均可）。ElDeg=0 即可见地平（足迹边界）。
 export function isoElevationContourAt(satEcef, ElDeg, N = 160) {
+  const S = isoElevationSolver(satEcef, ElDeg)
+  if (!S) return null                              // 卫星须在地表之上
+  const [e1, e2] = basisAround(S.u0)
+  const ax = e1[0], ay = e1[1], az = e1[2], bx = e2[0], by = e2[1], bz = e2[2]
+  if (S.fAt(ax, ay, az, 1e-4) < 0) return null   // 目标仰角超过该星可达上限（近星下点仍达不到）
+  const out = []
+  let rhoPrev = -1                       // 上一方位的解：等仰角线沿方位是光滑的，它就是这一方位的极好初值
+  for (let k = 0; k <= N; k++) {
+    const beta = (k / N) * 2 * Math.PI
+    const cb = Math.cos(beta), sb = Math.sin(beta)
+    const dx = cb * ax + sb * bx, dy = cb * ay + sb * by, dz = cb * az + sb * bz
+    rhoPrev = S.solve(dx, dy, dz, rhoPrev)
+    out.push(S.geoOn(S.surfAt(dx, dy, dz, rhoPrev)))
+  }
+  return out
+}
+
+// 等仰角求根器（WGS84，任意卫星 ECEF）：给定目标仰角，沿【与地心星下点方向 u0 正交的任意单位方向 (dx,dy,dz)】
+// 在地心角 rho 上求根，使该地面点对卫星的椭球仰角 == ElDeg。
+// isoElevationContourAt 逐方位调它；轨迹面（constellation/focusSwath.js）只在横向左右两个方向各调一次 ——
+// 两处共用同一份判据与收敛路径，带的边缘才严格落在等仰角环上。卫星在地表之下时返回 null。
+export function isoElevationSolver(satEcef, ElDeg) {
   const sx = satEcef[0], sy = satEcef[1], sz = satEcef[2]
   const r = Math.sqrt(sx * sx + sy * sy + sz * sz)
   if (!(r > A)) return null                        // 卫星须在地表之上
   const u0 = [sx / r, sy / r, sz / r]              // 地心星下点方向（单位矢量）
-  const [e1, e2] = basisAround(u0)
   // 热循环里的量全摊成局部标量：一条线要取样上千次，数组下标与临时对象都是纯开销
   const ux = u0[0], uy = u0[1], uz = u0[2]
-  const ax = e1[0], ay = e1[1], az = e1[2], bx = e2[0], by = e2[1], bz = e2[2]
   const A2 = A * A, B2 = B * B
-  // 地心角 rho 处的椭球面点（ECEF）。复用同一块三元组，不逐次新建数组。
+  // 地心角 rho 处、方向 (dx,dy,dz) 上的椭球面点（ECEF）。复用同一块三元组，不逐次新建数组。
   const _p = [0, 0, 0]
-  const surfAt = (cb, sb, rho) => {
+  const surfAt = (dx, dy, dz, rho) => {
     const c = Math.cos(rho), s = Math.sin(rho)
-    const wx = c * ux + s * (cb * ax + sb * bx)
-    const wy = c * uy + s * (cb * ay + sb * by)
-    const wz = c * uz + s * (cb * az + sb * bz)
+    const wx = c * ux + s * dx
+    const wy = c * uy + s * dy
+    const wz = c * uz + s * dz
     const k = 1 / Math.sqrt((wx * wx + wy * wy) / A2 + (wz * wz) / B2)   // 沿地心方向投到椭球面
     _p[0] = wx * k; _p[1] = wy * k; _p[2] = wz * k
     return _p
@@ -170,53 +197,50 @@ export function isoElevationContourAt(satEcef, ElDeg, N = 160) {
   //   而求根每方位要调它几十次 —— 一条 120 点的等仰角线要跑三十万次三角函数，「最低仰角档比波束角档卡」全出在这里。
   // ★ 全用 sqrt 不用 hypot：hypot 带溢出保护的分级缩放，在这个 km 量级的热循环里是三五倍的白开销。
   const sinTarget = Math.sin(ElDeg * DEG)
-  const fAt = (cb, sb, rho) => {
+  const fAt = (dx, dy, dz, rho) => {
     const c = Math.cos(rho), s = Math.sin(rho)
-    const wx = c * ux + s * (cb * ax + sb * bx)
-    const wy = c * uy + s * (cb * ay + sb * by)
-    const wz = c * uz + s * (cb * az + sb * bz)
+    const wx = c * ux + s * dx
+    const wy = c * uy + s * dy
+    const wz = c * uz + s * dz
     const k = 1 / Math.sqrt((wx * wx + wy * wy) / A2 + (wz * wz) / B2)
     const px = wx * k, py = wy * k, pz = wz * k
-    const dx = sx - px, dy = sy - py, dz = sz - pz
+    const qx = sx - px, qy = sy - py, qz = sz - pz
     const nx = px / A2, ny = py / A2, nz = pz / B2
     const nn = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1
-    const dd = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1
-    const q = (dx * nx + dy * ny + dz * nz) / (nn * dd)
+    const dd = Math.sqrt(qx * qx + qy * qy + qz * qz) || 1
+    const q = (qx * nx + qy * ny + qz * nz) / (nn * dd)
     return (q > 1 ? 1 : q < -1 ? -1 : q) - sinTarget
   }
   // 点恒在椭球面上（surfAt 已沿地心方向投过去），大地经纬度就有闭式：法线 [x/A², y/A², z/B²] 的方位与仰角。
   // 不必再走 ecefToGeodetic 的 20 次定点迭代 —— 那是给任意高度的点用的，这里每方位白跑二十轮 sin+sqrt+atan2。
   const geoOn = (p) => [Math.atan2(p[1], p[0]) / DEG, Math.atan2(p[2] * A2, Math.sqrt(p[0] * p[0] + p[1] * p[1]) * B2) / DEG]
-  if (fAt(1, 0, 1e-4) < 0) return null   // 目标仰角超过该星可达上限（近星下点仍达不到）
   // 该高度的可见地平地心角上限（球近似 rho_limb=acos(Re/r)），留少量裕度以保 0°（地平）也能收敛到
   const rhoLimb = Math.acos(Math.max(-1, Math.min(1, A / r)))
   const RHO_MAX = Math.min(rhoLimb + 0.03, Math.PI / 2 + 0.05)
   // 收敛判据 1.5e-11 rad ≈ 0.1 mm：比改造前 26 次定步长二分的 2.4e-8 rad（≈0.15 m）还细两个量级，
   // 精度只增不减 —— 这一档改的是【收敛路径】，不是精度。
   const TOL = 1.5e-11
-  const out = []
-  let rhoPrev = -1                       // 上一方位的解：等仰角线沿方位是光滑的，它就是这一方位的极好初值
   const SPAN0 = 0.03                     // 初始括号半宽（rad）；框不住按 ×5 外扩两轮，仍不成就退回全区间
-  for (let k = 0; k <= N; k++) {
-    const beta = (k / N) * 2 * Math.PI
-    const cb = Math.cos(beta), sb = Math.sin(beta)
-    // ---- 括号：先拿上一方位的解开一个窄窗，两端符号一验就把全区间求根压成窄区间求根 ----
+  // 单方向求根：rhoPrev ≥ 0 时先在它附近开窄窗括号（上一方位的解 / 球近似初值），否则全区间。
+  // 返回 rho；地平以外仍高于目标仰角（fhi > 0）时返回 RHO_MAX —— 与改造前同一判据。
+  function solve(dx, dy, dz, rhoPrev) {
+    // ---- 括号：先拿初值开一个窄窗，两端符号一验就把全区间求根压成窄区间求根 ----
     let lo = 0, hi = RHO_MAX, flo = Infinity, fhi = Infinity
     if (rhoPrev >= 0) {
       for (let d = SPAN0, a = 0; a < 3; a++, d *= 5) {
         const x1 = Math.min(RHO_MAX, rhoPrev + d)
-        const f1 = fAt(cb, sb, x1)
+        const f1 = fAt(dx, dy, dz, x1)
         if (f1 > 0) { lo = x1; flo = f1; if (x1 >= RHO_MAX) break; continue }   // 根在窗右边：左端抬到 x1
         const x0 = Math.max(lo, rhoPrev - d)
-        const f0 = x0 > lo || flo === Infinity ? fAt(cb, sb, x0) : flo
+        const f0 = x0 > lo || flo === Infinity ? fAt(dx, dy, dz, x0) : flo
         if (f0 > 0) { lo = x0; flo = f0; hi = x1; fhi = f1; break }             // 框住了
         hi = x0; fhi = f0                                                       // 根在窗左边：右端压到 x0
       }
     }
     // hi 被收窄过时 fhi 必 ≤0（见上），故这条只在 hi 仍是 RHO_MAX 时可能成立 —— 与改造前同一判据
-    if (fhi === Infinity) fhi = fAt(cb, sb, hi)
-    if (fhi > 0) { out.push(geoOn(surfAt(cb, sb, hi))); rhoPrev = hi; continue }
-    if (flo === Infinity) flo = fAt(cb, sb, lo)
+    if (fhi === Infinity) fhi = fAt(dx, dy, dz, hi)
+    if (fhi > 0) return hi
+    if (flo === Infinity) flo = fAt(dx, dy, dz, lo)
     // ---- Illinois（带下垂的试位法）：光滑单调函数上超线性收敛，且始终保持括号。实测每方位 ~9.5 次取样（原 27 次）。
     //      wRef/stall 是停滞兜底：连着 3 步没把区间砍到一半就强制二分一次，最坏退化为二分而不是原地打转。----
     let side = 0, wRef = hi - lo, stall = 0
@@ -229,15 +253,14 @@ export function isoElevationContourAt(satEcef, ElDeg, N = 160) {
         const g = w * 1e-3                                   // 逼近端点时强制退回区间内部，避免取样落在端点上
         mid = mid < lo + g ? lo + g : (mid > hi - g ? hi - g : mid)
       }
-      const fm = fAt(cb, sb, mid)
+      const fm = fAt(dx, dy, dz, mid)
       if (fm > 0) { lo = mid; flo = fm; if (side > 0) fhi *= 0.5; side = 1 }
       else { hi = mid; fhi = fm; if (side < 0) flo *= 0.5; side = -1 }
       if (hi - lo <= wRef * 0.5) { wRef = hi - lo; stall = 0 } else stall++
     }
-    rhoPrev = (lo + hi) / 2
-    out.push(geoOn(surfAt(cb, sb, rhoPrev)))
+    return (lo + hi) / 2
   }
-  return out
+  return { u0, RHO_MAX, fAt, surfAt, geoOn, solve }
 }
 
 // 等仰角线（WGS84）：GEO 卫星(赤道, satLon)，目标仰角 ElDeg -> 地表等值线 [[lon,lat]...]。

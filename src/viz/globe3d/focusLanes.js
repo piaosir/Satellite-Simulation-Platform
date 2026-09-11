@@ -189,3 +189,66 @@ export function coneFace(apex, ring, out) {
     }
   }
 }
+
+// ===================== 轨迹面（覆盖带） =====================
+// 横断面 = Float32Array((K+1)·3) 的单位矢量（由 constellation/focusSwath.js 的 sectionOf 产出，左缘在前、右缘在后），
+// 沿轨相邻两条横断面之间逐格两个三角形，顶点抬到 FILL_R —— 与覆盖圈填充同一层半径、同一格边长约束。
+// 沿轨相邻横断面相距 δ 超过一格时按 slerp 插出中间断面：多选降采样时相邻星下点隔 15°，直连的格子会沉进地球。
+function slerpArr(a, b, t, out, m) {
+  for (let j = 0; j < m; j++) {
+    const o = j * 3
+    const ax = a[o], ay = a[o + 1], az = a[o + 2], bx = b[o], by = b[o + 1], bz = b[o + 2]
+    const d = Math.max(-1, Math.min(1, ax * bx + ay * by + az * bz))
+    const th = Math.acos(d), s = Math.sin(th)
+    let x, y, z
+    if (s < 1e-6) { x = ax + (bx - ax) * t; y = ay + (by - ay) * t; z = az + (bz - az) * t }
+    else { const w0 = Math.sin((1 - t) * th) / s, w1 = Math.sin(t * th) / s; x = ax * w0 + bx * w1; y = ay * w0 + by * w1; z = az * w0 + bz * w1 }
+    const n = Math.sqrt(x * x + y * y + z * z) || 1
+    out[o] = x / n; out[o + 1] = y / n; out[o + 2] = z / n
+  }
+}
+export function swathFill(secs, K, out) {
+  const n = secs ? secs.length : 0
+  if (n < 2 || !(K >= 1)) return
+  const m = K + 1, c = (K >> 1) * 3
+  const bufA = new Float32Array(m * 3), bufB = new Float32Array(m * 3)   // 中间断面的两块轮换缓冲（一颗星一拍两次分配，不值得池化）
+  const R = FILL_R
+  for (let i = 0; i + 1 < n; i++) {
+    const a = secs[i], b = secs[i + 1]
+    if (!a || !b) continue                                  // 断面缺失（该采样点无从下笔）：这一格不画
+    const d = Math.max(-1, Math.min(1, a[c] * b[c] + a[c + 1] * b[c + 1] + a[c + 2] * b[c + 2]))
+    const th = Math.acos(d)
+    if (th > Math.PI - 1e-3) continue                       // 近对跖：这一格本就穿过地心、不可见
+    const steps = Math.max(1, Math.min(32, Math.ceil(th / FILL_CELL)))
+    let P = a
+    for (let s = 1; s <= steps; s++) {
+      let C
+      if (s === steps) C = b
+      else { C = P === bufA ? bufB : bufA; slerpArr(a, b, s / steps, C, m) }
+      for (let j = 0; j < K; j++) {
+        const o = j * 3, q = o + 3
+        // 三角形 (P_j, C_j, C_j+1) 与 (P_j, C_j+1, P_j+1)
+        out.push3(P[o] * R, P[o + 1] * R, P[o + 2] * R); out.push3(C[o] * R, C[o + 1] * R, C[o + 2] * R); out.push3(C[q] * R, C[q + 1] * R, C[q + 2] * R)
+        out.push3(P[o] * R, P[o + 1] * R, P[o + 2] * R); out.push3(C[q] * R, C[q + 1] * R, C[q + 2] * R); out.push3(P[q] * R, P[q + 1] * R, P[q + 2] * R)
+      }
+      P = C
+    }
+  }
+}
+// 带的两条边线（左缘 / 右缘）：抬到 LIFT 的 Vector3 点列，直接喂 densifyArc → pushDashed（与星下点轨迹线同一层同样式）。
+export function swathEdges(secs, K) {
+  const L = [], R = [], rr = (RE + LIFT) / RE, k3 = K * 3
+  for (const s of (secs || [])) {
+    if (!s) continue
+    L.push(new THREE.Vector3(s[0] * rr, s[1] * rr, s[2] * rr))
+    R.push(new THREE.Vector3(s[k3] * rr, s[k3 + 1] * rr, s[k3 + 2] * rr))
+  }
+  return [L, R]
+}
+// 渲染球面单位矢量 → 大地经纬（°），llaToVec 的逆（Y 极轴、θ = lon + 180）。平面图要的是经纬折线。
+export function vecToLatLon(x, y, z) {
+  const lat = Math.asin(Math.max(-1, Math.min(1, y))) * 180 / Math.PI
+  let lon = Math.atan2(z, -x) * 180 / Math.PI - 180
+  if (lon <= -180) lon += 360
+  return [lat, lon]
+}

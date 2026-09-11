@@ -35,6 +35,9 @@ export async function loadPack(lvl, iso) {
 //   nameMode 'local' 本地名 | 'en' 英文 | 'off' 不出名字（只画界）
 //   px/px2d  3D 世界高度 / 2D 像素字号，由调用方按层级给
 //   keepIso  这些国家的标注【常显】：不参与地名避让的碰撞剔除，挤到也照画（见 KEEP_ISO 的调用方）
+// 包里的标注可带 dx / dy（屏幕偏移，单位 em = 该标注的字高）：锚点仍钉在辖区质心，画的时候整个名字连同碰撞盒
+// 平移这么多。给港澳这类「辖区比字还小、又紧挨着」的用：偏移随字号走、不随地图缩放走，放大后名字仍贴着辖区。
+// 出处见 scripts/build-adm.mjs 的 CHN_ADM1_LABEL；两个渲染器（flatCoverage.drawLabelLayer / scene.lbCollect）各自折算。
 export function mergePacks(packs, povId, nameMode, px, px2d, keepIso) {
   const keep = new Set(keepIso || [])
   const borders = [], labels = []
@@ -45,7 +48,7 @@ export function mergePacks(packs, povId, nameMode, px, px2d, keepIso) {
     const k = keep.has(iso)
     for (const l of (src.labels || [])) {
       const name = nameMode === 'local' ? (l.name_local || l.name_en) : l.name_en
-      if (name) labels.push({ name, lon: l.lon, lat: l.lat, px, px2d, rk: l.rk != null ? l.rk : 12, keep: k })
+      if (name) labels.push({ name, lon: l.lon, lat: l.lat, px, px2d, rk: l.rk != null ? l.rk : 12, keep: k, dx: l.dx || 0, dy: l.dy || 0 })
     }
   }
   for (const p of packs) {

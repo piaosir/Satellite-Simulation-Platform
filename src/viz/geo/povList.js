@@ -25,8 +25,10 @@ export const POV_META = [
 //     于是「葡萄牙」「苏丹」「南苏丹」在 ISO 视角下查不到中文名，整个从地图和国家清单里消失；
 //   · 中国/俄罗斯视角把汉斯岛记成 DEN、美国视角把阿扎尔记成 GEA —— 与 DNK/GEO 不合并，
 //     格陵兰北边和格鲁吉亚旁边会各多出一个同名标注；
-//   · UUU 是 NE 的「未定」占位（德拉戈尼亚河口、杜梅拉岛），KOD/PFA 是独岛与西沙的争议占位 ——
+//   · UUU 是 NE 的「未定」占位（德拉戈尼亚河口、杜梅拉岛），KOD 是独岛的争议占位 ——
 //     它们表达的是「没有公认主权方」，语义就是 disputed，不是国家。
+//   · 西沙的占位码 PFA 不在此列：西沙 / 南沙 / 黄岩岛 / 钓鱼岛的归属由 frozen.js 冻结为 CHN，
+//     视角表里不再出现这几个单元，也就不会再冒出 PFA 这个值。
 // ★ 只收「码不同、实体相同」与「占位码」两类。斯瓦尔巴 SJM、法属圭亚那 GUF、留尼汪 REU 这些不在此列：
 //   它们是真实的 ISO 3166-1 实体，ISO 视角把它们从宗主国里拆出来正是那套视角的本意，各自有名字。
 export const OWNER_ALIAS = {
@@ -37,7 +39,6 @@ export const OWNER_ALIAS = {
   SDZ: 'SDN',        // 苏丹
   SSD: 'SDS',        // 南苏丹（底图单元用 SDS）
   KOD: 'disputed',   // 独岛 / 竹岛：无公认主权方
-  PFA: 'disputed',   // 西沙群岛：本视角认定为争议
   UUU: 'disputed'    // NE 的「未定」占位
 }
 export const normOwner = (v) => (v && OWNER_ALIAS[v]) || v

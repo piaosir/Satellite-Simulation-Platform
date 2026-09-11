@@ -548,7 +548,7 @@ app.whenReady().then(async () => {
   // 激活与设备管理：终端心跳上报 + 激活书拉取验签（对端为独立的「卫星仿真平台管理」软件）
   const activation = require(join(root, 'electron/services/activation'))(share, storage)
   const { register } = require(join(root, 'electron/ipc/register'))
-  register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget: createLinkBudgetWindow, openSunOutage: createSunOutageWindow, grd, confirmCloseLinkBudget, openNgso: createNgsoWindow, confirmCloseNgso, openRegen: createRegenWindow, confirmCloseRegen, openE2e: createE2eWindow, confirmCloseE2e, openRain: createRainWindow, confirmCloseRain, openCi: createCiWindow, openPfd: createPfdWindow, freqPlan, openFreqPlan: createFreqPlanWindow, notifyFreqPlan, activation, weather, gfs })
+  register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget: createLinkBudgetWindow, openSunOutage: createSunOutageWindow, grd, confirmCloseLinkBudget, openNgso: createNgsoWindow, confirmCloseNgso, openRegen: createRegenWindow, confirmCloseRegen, openE2e: createE2eWindow, confirmCloseE2e, openRain: createRainWindow, confirmCloseRain, openCi: createCiWindow, openPfd: createPfdWindow, freqPlan, openFreqPlan: createFreqPlanWindow, notifyFreqPlan, activation, weather, gfs, updater })
   // 定时心跳；激活状态变化（管理端激活/撤销被拉到）广播到所有窗口，各窗口就地上锁/解锁
   activation.start((st) => {
     for (const w of BrowserWindow.getAllWindows()) {
@@ -573,7 +573,13 @@ app.whenReady().then(async () => {
 
   const win = createWindow()
 
-  // 自动更新（仅打包环境生效，dev 下自动跳过）：静默检查 / 下载，正常退出时静默装
+  // 自动更新（仅打包环境生效，dev 下自动跳过）：静默检查 / 下载，正常退出时静默装。
+  // 状态变化（检查 / 下载进度 / 下载完成）广播到所有窗口，「帮助 → 检查更新」对话框据此刷新
+  updater.onChange((st) => {
+    for (const w of BrowserWindow.getAllWindows()) {
+      try { w.webContents.send('updater:changed', st) } catch { /* 窗口正在关 */ }
+    }
+  })
   updater.initAutoUpdate()
 
   app.on('activate', () => {

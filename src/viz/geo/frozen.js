@@ -1,15 +1,26 @@
 // 主权解算的【冻结常量】—— 解算器最外层，任何视角、任何用户覆写都改不动。
 //
-// ★ 红线：台湾、香港、澳门的主权归属一律是中国。
+// ★ 红线：台湾、香港、澳门，以及南海诸岛（西沙 PFA / 南沙 PGA / 中沙黄岩岛 SCR）与钓鱼岛（JP-SEN）
+//   的主权归属一律是中国。
 //   它不是数据文件里的一条可改项，而是 povResolver.ownerOf() 优先级链最前面那一环：
 //     owner = FROZEN[u] ?? userOverride[u] ?? pov.own[u] ?? baseOwner[u]
-//   视角文件 src/viz/geo/povs/*.json 的 own 表里不许出现这三个键（构建脚本会剔除），
+//   视角文件 src/viz/geo/povs/*.json 的 own 表里不许出现这些键（构建脚本会剔除），
 //   可自定义争议区清单 CUSTOMIZABLE_DISPUTES 里也不许出现（UI 因此拿不到这个开关）。
-//   这三条由 packages/core/test/povInvariants.test.mjs 逐条守住。
-export const FROZEN = { 'CN-TW': 'CHN', 'CN-HK': 'CHN', 'CN-MO': 'CHN' }
+//   这几条由 packages/core/test/povInvariants.test.mjs 逐条守住。
+// ★ 岛礁四个单元进红线的缘由：Natural Earth 把黄岩岛、南沙各造成一个「自己归自己」的独立单元
+//   （own0 = SCR / PGA），四套视角列里只有中国视角对南沙表了态、对黄岩岛谁都没表态 ——
+//   不冻结的话，黄岩岛在【每一套视角、包括中国视角】下都会以独立实体的身份被标成一个国家名、
+//   进国家清单、被点选成「黄岩岛」；南沙在 ISO / 美 / 俄视角下同样如此，西沙在美 / 俄视角下判成争议，
+//   钓鱼岛在中国视角以外归日本。本平台的立场是中国官方地图的立场：这几块不是可切换的视角差异，
+//   与台港澳同列红线，任何视角都不再表达别的归属。
+export const FROZEN = {
+  'CN-TW': 'CHN', 'CN-HK': 'CHN', 'CN-MO': 'CHN',
+  PFA: 'CHN', PGA: 'CHN', SCR: 'CHN', 'JP-SEN': 'CHN'
+}
 
-// 老存档迁移用：这三个 ISO3 在本平台恒折算成 CHN（与 FROZEN 的三个单元一一对应）。
+// 老存档迁移用：这三个 ISO3 在本平台恒折算成 CHN（与 FROZEN 里三个 ISO 3166 单元一一对应）。
 // 「逐国大地颜色」的键从 ISO 数字码换成 ISO3 时要过一遍，见 src/viz/landPalette.js。
+// 岛礁四个单元没有 ISO 数字码、也不再可能成为归属，老存档里若以 SCR / PGA 作键则整条丢弃（同见 landPalette）。
 export const FROZEN_ISO3 = { TWN: 'CHN', HKG: 'CHN', MAC: 'CHN' }
 
 // 可自定义争议区：设置页「地图视角 → 自定义」展开的那张表。
@@ -18,9 +29,8 @@ export const FROZEN_ISO3 = { TWN: 'CHN', HKG: 'CHN', MAC: 'CHN' }
 //   units  该分组包含的底图单元 id（basemap-*.json 的 units[].properties.u）；某档没有的单元自动忽略
 //   opts   可选归属，值域同 own：<ISO3> | 'disputed' 争议 | 'none' 不显示
 //
-// ★ 只收【陆地归属】争议。岛礁与海上主张（钓鱼岛、南千岛、独岛、南沙、西沙、黄岩岛）不进这张表 ——
-//   它们只随视角走，不开放逐项自定义。
-// ★ 台湾 / 港澳一个都不在这张表里，见文件头的红线。
+// ★ 只收【陆地归属】争议。岛礁与海上主张（南千岛、独岛）不进这张表 —— 它们只随视角走，不开放逐项自定义。
+// ★ 台湾 / 港澳、南海诸岛、钓鱼岛一个都不在这张表里，见文件头的红线。
 export const CUSTOMIZABLE_DISPUTES = [
   { key: 'kashmir', zh: '克什米尔', full: '克什米尔（印巴）', en: 'Kashmir (India–Pakistan)', units: ['IN-PK-KAS', 'PK-AZK', 'PK-GB', 'KAS', 'KAS-SIA'], opts: ['IND', 'PAK', 'disputed'] },
   { key: 'aksai-chin', zh: '阿克赛钦', en: 'Aksai Chin', units: ['CN-AKS', 'CN-SHK'], opts: ['CHN', 'IND', 'disputed'] },
