@@ -57,7 +57,7 @@ import { useShellCoverage } from '../viz/grd/useShellCoverage.js'
 import { useSatPerfTable } from '../viz/grd/useSatPerfTable.js'
 import { sampleBeamAtEcef, satLookAt } from '../viz/grd/coverage.js'
 import SatCovPanel from '../components/SatCovPanel.vue'
-import SatCovWindows from '../components/SatCovWindows.vue'
+import { createPerfWinHost } from '../viz/grd/perfWinHost.js'
 import SatCovShellPicker from '../components/SatCovShellPicker.vue'
 import GrdSetSections from '../components/GrdSetSections.vue'
 import { useGridSelect } from '../viz/grd/useGridSelect.js'
@@ -265,7 +265,6 @@ watch(() => bs.activeGroupId.value, () => { bsNameEdit.value = null })
 const satcov = useShellCoverage(grd, () => scene, () => flat, () => flatView.value,
   () => shellUi.side === 'satcov', flatActive, () => sideCtx() === 'satcov')
 const satPerf = useSatPerfTable()
-const satcovTableOpen = ref(false)
 
 // 可见性分析（复刻 STK Access / Coverage）：选目标（站/点/航迹/Polygon）→ 仰角门限 → 算可见卫星。
 // 宿主能力全经 getter/箭头注入（避免 TDZ；stations/points/renderEntries 等在下方定义，仅运行时调用）。
@@ -402,200 +401,11 @@ const lvSatPosText = computed(() => {
   const ll = `${Math.abs(p.lon).toFixed(2)}°${p.lon < 0 ? 'W' : 'E'} ${Math.abs(p.lat).toFixed(2)}°${p.lat < 0 ? 'S' : 'N'}`
   return `${ll} · ${p.altKm >= 1000 ? p.altKm.toFixed(0) : p.altKm.toFixed(1)} km`
 })
-// ===== 气象指标表（浮窗，与「性能指标表」同一套外壳与交互）=====
-// 上：站点输入（可编辑 —— 站名 / 经度 / 纬度，先经后纬）；下：只读读数表，列 = 用户勾选的气象与链路指标。
-// ★ 与性能指标表的唯一结构差别：读数**跟随时间轴** —— 时钟一动，下表整表重算（见 useLiveField 的 watch）。
-const metTblOpen = ref(false)
-const metWin = ref({ x: 0, y: 0, w: 820, h: 500, init: false })
-const metInputH = ref(148)
-const metOptsOpen = ref(false)
-const metInCols = [
-  { key: 'name', label: '站名' },
-  { key: 'lon', label: '经度', num: true, unit: '°E' },
-  { key: 'lat', label: '纬度', num: true, unit: '°N' }
-]
-// 站点库写入：经纬度是数字列（空串＝清空，非数字文本不落库）；站名随便填
-function metSiteUpdate(id, key, val) {
-  const s = envLive.sites.value.find((x) => x.id === id)
-  if (!s) return
-  if (key === 'name') { s.name = String(val == null ? '' : val); return }
-  const t = String(val == null ? '' : val).trim()
-  if (t === '') { s[key] = null; return }
-  const n = Number(t)
-  if (Number.isFinite(n)) s[key] = key === 'lat' ? Math.max(-90, Math.min(90, n)) : Math.max(-180, Math.min(180, n))
-}
-// id 走 useLiveField 那一支（时间戳 + 单调自增号）：这里建的与「从标记导入」建的是同一批站点，
-// 两处必须共用同一个计数器。原先各自拼一个随机后缀，一次粘贴几十行就会撞出重复 id（见那边的注释）。
-const metNewSite = (o) => ({ id: envLive.nextSiteId(), name: '', lon: null, lat: null, src: 'manual', ...o })
-function metAddRow(at) {
-  const list = envLive.sites.value
-  const i = at == null || at < 0 || at > list.length ? list.length : at
-  list.splice(i, 0, metNewSite({}))
-}
-// 区域粘贴：以锚点为左上角按列铺开（与性能表城市输入同口径）
-function metPasteBlock(anchorId, startKey, text) {
-  const list = envLive.sites.value
-  const r0 = list.findIndex((x) => x.id === anchorId); if (r0 < 0) return 0
-  const c0 = metInCols.findIndex((c) => c.key === startKey); if (c0 < 0) return 0
-  const grid = String(text || '').replace(/\r\n?/g, '\n').replace(/\n$/, '').split('\n').map((l) => l.split('\t'))
-  grid.forEach((cells, dr) => {
-    const ri = r0 + dr
-    while (ri >= list.length) list.push(metNewSite({}))
-    cells.forEach((v, dc) => { const c = metInCols[c0 + dc]; if (c) metSiteUpdate(list[ri].id, c.key, v) })
-  })
-  return grid.length
-}
-// 整块追加：≥2 列时按「末两列 = 经度、纬度」解析（与标记表/性能表的批量粘贴约定一致），
-// 前面若还有一列就当站名。只有两列时即「经度 纬度」。
-function metPasteAppend(text) {
-  const lines = String(text || '').replace(/\r\n?/g, '\n').trim().split('\n')
-  let n = 0
-  for (const l of lines) {
-    const p = l.split(/\t|\s*,\s*|\s{2,}/).map((x) => x.trim()).filter((x) => x !== '')
-    if (p.length < 2) continue
-    const lat = Number(p[p.length - 1]), lon = Number(p[p.length - 2])
-    if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue
-    envLive.sites.value.push(metNewSite({ name: p.length > 2 ? p.slice(0, p.length - 2).join(' ') : envLive.fmtLL(lon, lat), lon, lat }))
-    n++
-  }
-  return n
-}
-const metInGrid = useGridSelect({
-  gridId: 'met-in',
-  rows: () => envLive.sites.value,
-  cols: () => metInCols,
-  cellText: (r, c) => (r[c.key] == null ? '' : String(r[c.key])),
-  onEdit: (id, key, val) => metSiteUpdate(id, key, val),
-  onPasteBlock: metPasteBlock,
-  onPasteAppend: metPasteAppend,
-  onClear: (cells) => cells.forEach(({ rowId, key }) => metSiteUpdate(rowId, key, '')),
-  onInsertRows: (at, n) => { for (let k = 0; k < n; k++) metAddRow(at + k); return n },
-  onDeleteRows: (ids) => { const s = new Set(ids); const before = envLive.sites.value.length; envLive.sites.value = envLive.sites.value.filter((x) => !s.has(x.id)); return before - envLive.sites.value.length },
-  refresh: () => envLive.refreshSites()
-})
-const metResGrid = useGridSelect({
-  gridId: 'met-res',
-  rows: () => envLive.metRows.value,
-  cols: () => envLive.metCols.value,
-  readOnly: true,
-  cellText: (r, c) => envLive.metText(r, c)
-})
+// ===== 气象指标表：独立窗口（src/perf/MetTableWin.vue），宿主端接线在 viz/grd/perfWinHost.js =====
+// 站点列表由弹窗编辑后整份发回 envLive.sites；读数随时钟由 envLive 自己刷、经 perfHost 推过去。
+function openMetTable() { if (!perfHost.has()) { appAlert('需在桌面客户端中运行'); return } perfHost.open('met', '') }
 // 站点数一变（增删行/粘贴/导入）就重算读数；深监听坐标改动同理
 watch(() => envLive.sites.value.map((s) => s.id + ':' + s.lon + ',' + s.lat).join('|'), () => envLive.refreshSites())
-
-function metWinInit() {
-  if (metWin.value.init) return
-  const { w: vw, h: vh } = g3Size()
-  const w = Math.min(820, vw - 48), h = Math.min(Math.round(vh * 0.66), vh - 48)
-  metWin.value = { x: Math.max(12, Math.round((vw - w) / 2)), y: Math.max(12, Math.round(vh * 0.14)), w, h, init: true }
-}
-function openMetTable() { metWinInit(); metTblOpen.value = true; envLive.refreshSites(true) }
-function closeMetTable() { metTblOpen.value = false; metOptsOpen.value = false }
-function metDragMove(e) {
-  if (e.button !== 0 || (e.target.closest && e.target.closest('.csx, .ptb, input, select, label'))) return
-  e.preventDefault()
-  const sx = e.clientX, sy = e.clientY, o = { ...metWin.value }
-  perfDragSession((ev) => {
-    const { w: vw, h: vh } = g3Size()
-    metWin.value = { ...metWin.value,
-      x: Math.max(-o.w + 96, Math.min(vw - 48, o.x + (ev.clientX - sx))),
-      y: Math.max(0, Math.min(vh - 32, o.y + (ev.clientY - sy))) }
-  })
-}
-function metDragResize(e, dir = 'se') {
-  if (e.button !== 0) return
-  e.preventDefault(); e.stopPropagation()
-  const sx = e.clientX, sy = e.clientY, o = { ...metWin.value }
-  const minW = 420, minH = 260
-  const E = dir.includes('e'), W = dir.includes('w'), S = dir.includes('s'), N = dir.includes('n')
-  perfDragSession((ev) => {
-    const { w: vw, h: vh } = g3Size()
-    let x = o.x, y = o.y, w = o.w, h = o.h
-    const dx = ev.clientX - sx, dy = ev.clientY - sy
-    if (E) w = Math.max(minW, Math.min(o.w + dx, vw - o.x - 6))
-    if (S) h = Math.max(minH, Math.min(o.h + dy, vh - o.y - 6))
-    if (W) { const nx = Math.min(o.x + dx, o.x + o.w - minW); w = o.w + (o.x - nx); x = nx }
-    if (N) { const ny = Math.min(o.y + dy, o.y + o.h - minH); h = o.h + (o.y - ny); y = Math.max(0, ny) }
-    metWin.value = { ...metWin.value, x, y, w, h }
-  })
-}
-function metDragSplit(e) {
-  if (e.button !== 0) return
-  e.preventDefault()
-  const sy = e.clientY, h0 = metInputH.value
-  perfDragSession((ev) => {
-    metInputH.value = Math.max(80, Math.min(metWin.value.h - 150, h0 + (ev.clientY - sy)))
-  })
-}
-// 和风列对应的时刻与口径。★ 和风与模式取的是**同一个**时刻（都跟时间轴），
-// 但和风按点源只有「本小时＝实况观测」与「未来＝逐小时预报」两段，故口径要摆出来。
-const metObsAtText = computed(() => {
-  const t = envLive.obsAt.value
-  if (!t) return ''
-  const d = new Date(t), p = (n) => String(n).padStart(2, '0')
-  const kinds = new Set()
-  for (const r of envLive.metRows.value) if (r.oKind) kinds.add(r.oKind)
-  const k = kinds.size === 1 ? [...kinds][0] : (kinds.size ? '观测＋预报' : '')
-  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}${k ? ' · ' + k : ''}`
-})
-const metColDef = (k) => envLive.MET_COL_DEFS.find((c) => c.key === k) || null
-const metColLabel = (k) => { const c = metColDef(k); return c ? c.label + (c.unit ? '（' + c.unit + '）' : '') : k }
-// 链路量离不开几何：没指定目标卫星（或选的星解算不出来）时这些指标勾了也没值，故置灰并在 title 里说明
-const metColSatOff = (k) => { const c = metColDef(k); return !!(c && c.sat) && !envLive.satReady.value }
-// 和风列要点过按钮才有值。不禁用（勾上再去取也合理），只置灰提示。
-const metColObsOff = (k) => { const c = metColDef(k); return !!(c && c.obs) && !envLive.obsAt.value }
-const metColOff = (k) => metColSatOff(k) || metColObsOff(k)
-const metColTip = (k) => {
-  const c = metColDef(k)
-  if (metColSatOff(k)) return '须先在侧栏「链路参数」指定目标卫星'
-  if (metColObsOff(k)) return '须先在表内执行「获取和风数据」'
-  return (c && c.tip) || (c ? c.label : k)
-}
-// 复制整张读数表为 TSV（含表头，可直接粘进 Excel）——行序取屏幕上排过序的那一份
-function metCopyResult() {
-  const txt = envLive.metTsv(metResGrid.rows.value)
-  perfWriteClipboard(txt)
-  logMsg('已复制气象指标表（' + metResGrid.rows.value.length + ' 行）')
-}
-async function metExportXlsx() {
-  const cols = envLive.metCols.value
-  if (!cols.length) { appAlert('当前未显示任何指标列'); return }
-  const m = envLive.siteMeta.value
-  const note = m ? `${m.model} · ${new Date(m.frameT).toISOString().slice(0, 16).replace('T', ' ')}Z` : ''
-  const sheets = [
-    sheetModel({ name: '气象指标', cols, rows: metResGrid.rows.value, value: metXlsxVal, unitOf: (c) => c.unit, note }),
-    sheetModel({ name: '站点输入', cols: metInCols, rows: envLive.sites.value, value: (r, c) => r[c.key] })
-  ]
-  const r = await exportSheets({ defaultName: safeFileName('气象指标表', '气象指标表') + '.xlsx', title: '导出气象指标表', sheets })
-  if (r && r.ok) logMsg('已导出 ' + r.path)
-}
-// 导出时数字列存真数字（不是格式化后的字符串），文本列原样
-const metXlsxVal = (r, c) => {
-  if (!c.num) return c.key === 'ptype' ? (envLive.PTYPE_ZH[r.ptype] || '') : (r[c.key] == null ? '' : String(r[c.key]))
-  const v = Number(r[c.key]) * (c.mul || 1)
-  return Number.isFinite(v) ? v : ''
-}
-async function metImportXlsx() {
-  const res = await importWorkbook({ title: '导入站点' })
-  if (!res || !res.ok) { if (res && res.message) appAlert(res.message); return }
-  const sheet = pickSheet(res.sheets, metInCols)
-  if (!sheet) { appAlert('该工作簿中没有可识别的站点表'); return }
-  const { records } = sheetToRecords(sheet, metInCols)
-  let n = 0
-  for (const rec of records) {
-    const lon = Number(rec.lon), lat = Number(rec.lat)
-    if (!Number.isFinite(lon) || !Number.isFinite(lat)) continue
-    envLive.sites.value.push(metNewSite({ name: String(rec.name || '').trim() || envLive.fmtLL(lon, lat), lon, lat }))
-    n++
-  }
-  logMsg(n ? `导入 ${n} 站` : '无可导入的行（需经度、纬度两列）')
-}
-async function metPasteBtn() {
-  let txt = ''
-  try { txt = await navigator.clipboard.readText() } catch { appAlert('无法读取剪贴板，请在表格内按 Ctrl+V'); return }
-  const n = metPasteAppend(txt)
-  logMsg(n ? `粘贴 ${n} 站` : '剪贴板中没有可解析的坐标（每行至少两列，末两列为经度、纬度）')
-}
 
 // 光标读数：经纬度（状态栏固有）+ 当前环境场值（有图层时才有）
 // 两张场互斥，故谁开着就读谁 —— 状态栏只有一格，不并列。
@@ -882,106 +692,42 @@ async function toggleGrd() {
   if (grdOpen.value) { await grd.loadIndex(); grd.recompute(); redrawSats() }
 }
 
-// ===================== 性能指标表（SATSOFT Performance Table，第 1 期）=====================
+// ===================== 性能指标表（SATSOFT Performance Table）：独立窗口 =====================
+// 三张表（对地 / 对星 / 气象）的界面都在独立窗口（src/perf/*，一根天线一窗、可多开），本页只做数据与取值：
+// perf / satPerf 是持久化桶 + 取值器，perfHost（viz/grd/perfWinHost.js）负责开窗、推状态、收操作。
 const perf = usePerfTable()
-const perfKey = ref('')                 // 当前打开表的天线 key（''=关闭）；每个天线一张独立表
-const perfOptsOpen = ref(false)         // 「性能表选项」弹窗开关
-const perfGrpOpen = ref(false)          // 「城市组」管理弹窗开关
-const perfGroupSel = ref('')            // 城市输入区工具栏「城市组」下拉当前值（=最近载入的组 id，''=未选）
-const perfNewGrpName = ref('')          // 新建城市组的名称输入
-const perfGrpRenameId = ref('')         // 正在重命名的城市组 id（''=无）
-const perfGrpRenameVal = ref('')        // 重命名输入值
-const perfGrpDelId = ref('')            // 待确认删除的城市组 id（两步删除防误删；''=无）
-// ===== 「导入标记…」弹窗（性能指标表与气象指标表共用）=====
-// 勾选具体的点标记 / 地球站再导入，不再一键把地图上的全部标记倒进表里；航迹走工具栏下拉，一次选一条（或全部）。
-// 勾选列表与「波束筛选」同一份口径（shared/ui/useCheckList.js）。★ points / stations / trajectories 声明在下方
-// 标记层那一节，这里只在回调与 computed 里【惰性】引用，不在 setup 期同步读它们（否则就是 TDZ）。
-const mkPickFor = ref('')                 // ''=关 | 'perf' 性能指标表 | 'met' 气象指标表
-const mkPickQ = ref('')                   // 过滤词：序号 / 站名 / 坐标
-const mkPickPts = ref(new Set())          // 勾选的点标记 id
-const mkPickSts = ref(new Set())          // 勾选的地球站 id
-const mkPickPtEl = ref(null), mkPickStEl = ref(null)
-const perfTrajSel = ref(''), metTrajSel = ref('')   // 两张表工具栏「导入航迹…」下拉的当前值（选完即清回占位）
-const mkPickPtRows = computed(() => {
-  const q = mkPickQ.value.trim().toLowerCase()
-  return points.value.map((p, i) => ({ id: p.id, seq: i + 1, name: envLive.fmtLL(Number(p.lon) || 0, Number(p.lat) || 0) }))
-    .filter((r) => !q || String(r.seq) === q || r.name.toLowerCase().includes(q))
+const perfHost = createPerfWinHost({
+  api: (typeof window !== 'undefined' && window.api && window.api.perfWin) || null,
+  grd, perf, satPerf, satcov, envLive,
+  scene: () => scene, flat: () => flat,
+  // 标记原始状态（不经图层开关过滤，名字不换成显示文本）：弹窗的「导入标记 / 航迹」按这份列
+  markers: () => ({ pts: points.value, sts: stations.value, trs: trajectories.value }),
+  fmtLL: (lon, lat) => envLive.fmtLL(lon, lat),
+  timeLabel: () => timeText.value, liveTimeText: () => liveTimeText.value,
+  tzMode: () => tzMode.value, nowMs: () => clock.tMs,
+  satcovSearch: (q, limit, exclude) => satcovSearch(q, limit, exclude),
+  satcovTimes: () => satcovTimes(),
+  satcovResolveTargets: (ctx, key) => satcovResolveTargets(ctx, key),
+  satcovAddInBeam: (key) => satcovAddInBeam(key),
+  satcovScanWindows: (key) => satcovScanWindows(key),
+  focusTarget: (t) => satcovFocusTarget(t), seekClock: (t) => satcovSeekClock(t)
 })
-const mkPickStRows = computed(() => {
-  const q = mkPickQ.value.trim().toLowerCase()
-  return stations.value.map((s, i) => ({ id: s.id, seq: i + 1, name: s.name || '', ll: envLive.fmtLL(Number(s.lon) || 0, Number(s.lat) || 0) }))
-    .filter((r) => !q || String(r.seq) === q || r.name.toLowerCase().includes(q) || r.ll.toLowerCase().includes(q))
-})
-const mkPtList = useCheckList({ rows: () => mkPickPtRows.value, idOf: (r) => r.id, isOn: (id) => mkPickPts.value.has(id), current: () => [...mkPickPts.value], commit: (ids) => { mkPickPts.value = new Set(ids) }, el: () => mkPickPtEl.value })
-const mkStList = useCheckList({ rows: () => mkPickStRows.value, idOf: (r) => r.id, isOn: (id) => mkPickSts.value.has(id), current: () => [...mkPickSts.value], commit: (ids) => { mkPickSts.value = new Set(ids) }, el: () => mkPickStEl.value })
-const { isOn: mkPtOn, onCount: mkPtCount, allOn: mkPtAllOn, anyOn: mkPtAnyOn, painting: mkPtPainting, cur: mkPtCur, onRowDown: mkPtDown, onHeadDown: mkPtHeadDown, onKey: mkPtKey } = mkPtList
-const { isOn: mkStOn, onCount: mkStCount, allOn: mkStAllOn, anyOn: mkStAnyOn, painting: mkStPainting, cur: mkStCur, onRowDown: mkStDown, onHeadDown: mkStHeadDown, onKey: mkStKey } = mkStList
-// 航迹下拉的一项：名字 · 类型 · 航点数。名字是用户数据，选项整体 data-i18n-skip，类型词自己按语言给
-const trajOptLabel = (t) => `${t.name || byLang('航迹', 'Trajectory')}（${t.kind === 'flight' ? byLang('飞行', 'Flight') : byLang('航行', 'Maritime')} · ${(t.pts || []).length}）`
-function openMkPick(target) {
-  mkPickFor.value = target; mkPickQ.value = ''
-  mkPickPts.value = new Set(); mkPickSts.value = new Set()   // 从空勾起：要什么勾什么，全要就点表头那一行
-  mkPtList.reset(); mkStList.reset()
-}
-function confirmMkPick() {
-  const pts = points.value.filter((p) => mkPickPts.value.has(p.id))
-  const sts = stations.value.filter((s) => mkPickSts.value.has(s.id))
-  if (!pts.length && !sts.length) return
-  const target = mkPickFor.value
-  mkPickFor.value = ''
-  if (target === 'perf') {
-    perf.pushUndo()
-    const n = perf.importFromMarkers(pts, sts)
-    if (!n) { perf.dropUndo(); appAlert('所选标记均已在城市列表中') }
-    refreshPerf()
-  } else if (target === 'met') {
-    envLive.importMarkers('mk', { pts: new Set(pts.map((p) => p.id)), sts: new Set(sts.map((s) => s.id)) })
-  }
-}
-// 浮窗几何（可拖拽移动 / 右下角缩放）+ 中缝分隔（城市输入区高度，px）。首次打开按视口初始化一次。
-const perfWin = ref({ x: 0, y: 0, w: 760, h: 560, init: false })
-const perfInputH = ref(190)
-const perfCols = computed(() => perfKey.value ? perf.visibleColumns(perf.getOpts(perfKey.value)) : [])   // 当前显示的列
-const perfOpts = computed(() => perfKey.value ? perf.getOpts(perfKey.value) : null)                      // 当前天线选项（弹窗 v-model）
-// 「波束筛选」勾选列表：点 / 按住拖刷 / Shift 连选 / 键盘，与覆盖分析侧栏的 Beams To Plot、
-// 对星性能指标表同一份口径（shared/ui/useCheckList.js）。
-const pbEl = ref(null)
-const pbRows = computed(() => perf.filteredBeams())
-const pbList = useCheckList({
-  rows: () => pbRows.value,
-  idOf: (b) => b.bi,
-  isOn: (bi) => perf.beamOn(perfOpts.value, bi),
-  current: () => perf.beamSelIds(perfOpts.value),
-  commit: (ids) => perf.setBeamSel(perfOpts.value, ids),
-  el: () => pbEl.value
-})
-const { isOn: pbOn, onCount: pbCount, allOn: pbAllOn, anyOn: pbAnyOn, painting: pbPainting, cur: pbCur, onRowDown: pbDown, onHeadDown: pbHeadDown, onKey: pbKey } = pbList
-watch(perfKey, () => pbList.reset())   // 换天线＝换一张表、换一份勾选集，暂态与锚点就地丢掉
-
-// 重算当前表（站点库/天线设置/选中波束/选项变化时调用）
-function refreshPerf() { if (perfKey.value) perf.compute(grd.getPerfContext(perfKey.value), perf.getOpts(perfKey.value)) }
-// 点天线下方「性能指标表」→ 打开该天线的表（确保其方向图已载入再取值）
+// 树里每根天线下的「性能指标表」入口：开着的天线高亮（一根天线一窗，再点＝前置）
+const perfOpenSet = computed(() => { void perfHost.ver.value; return new Set(perfHost.groundKeys()) })
+const shellOpenSet = computed(() => { void perfHost.ver.value; return new Set(perfHost.shellKeys()) })
+// 点天线下方「性能指标表」→ 开该天线的窗口（确保其方向图已载入再取值）
 async function openPerf(sat, a) {
   const key = grd.keyOf(sat.folder, a.name)
   const ok = await grd.ensureAntLoaded(key)
   if (!ok) { appAlert('该天线方向图未就绪，无法生成性能表'); return }
-  perfKey.value = key
-  perf.setActiveKey(key)      // 城市列表切到这根天线自己那份（每张表各一份，新表从空白起）
-  perfGroupSel.value = ''     // 「城市组」下拉记的是上一张表载入的那组，城市列表已换人
-  perf.beamQuery.value = ''   // 新表：清空波束筛选搜索词（波束数/含义随天线变）
-  ensurePerfCities()          // 载入城市库（供城市名→经纬度自动补全）；只载一次
-  perfWinInit()
-  refreshPerf()
+  if (!perfHost.has()) { appAlert('需在桌面客户端中运行'); return }
+  await perfHost.open('ground', key)
 }
-// 城市库（约 360 座国内城市，与 GEO 链路预算共用同一 IPC 源）：首次开表时按需载入并注入 perf。
-let _perfCitiesLoaded = false
-async function ensurePerfCities() {
-  if (_perfCitiesLoaded) return
-  _perfCitiesLoaded = true
-  try { const c = window.api && window.api.linkBudget && await window.api.linkBudget.cities(); if (c && c.length) { perf.setCities(c); if (perf.applyCityGeoAll()) refreshPerf() } }
-  catch { _perfCitiesLoaded = false }   // 载入失败（无 IPC 等）→ 允许下次开表重试；自动补全暂不可用
+// 树里「性能指标表」行的眼睛：该表城市在地图上的标记与标签总开关（不看窗口开没开；关窗标记还在，眼睛关了才清）
+function togglePerfCity(sat, a) {
+  const key = grd.keyOf(sat.folder, a.name)
+  perfHost.setCityShow(key, !perf.cityShowOf(key))
 }
-function closePerf() { perfKey.value = ''; perf.setActiveKey('') }
 
 // ===================== 对星指向：目标星身份 ↔ 当前 ECEF =====================
 // 身份串用 'n:<NORAD>'，没有编号的（自定义/合成星）退用 'm:<名字>'。存进天线设置里要跨会话稳定，
@@ -1095,9 +841,9 @@ function satcovEntries(ctx) {
 // picks（只存名字/NORAD）→ 活体条目。星历更新后按身份重新解析，解析不到的自动缺席。
 // 解析走 satEntryById 的【全量】口径（在场 → 全量目录 → 自定义星座）：目标星是从全量目录里搜进来的，
 // 若这里只认在场，加得进列表却算不出行，表面上像「这颗星没被照到」——静默算错，比报错还糟。
-function satcovResolvePicks() {
+function satcovResolvePicks(key) {
   const out = []
-  for (const p of satPerf.picks.value) {
+  for (const p of satPerf.picksOf(key)) {
     const e = satEntryById(p.noradId ? 'n:' + p.noradId : 'm:' + p.name)
       || renderEntries.find((x) => x.name === p.name)      // 编号对不上了但名字还在（星历换版）
     if (e) out.push({ rec: e.rec, name: e.name, noradId: e.noradId, group: e.group, _cc: !!isCustomEntry(e) })
@@ -1114,7 +860,7 @@ function satcovInBeamNow(ctx) {
   // 成员判据＝落在【这一轮真画出来的那个波束】的方向图域内（与「加入波束内的星」按钮同一口径，
   // 也与画面所见一致）；表里的取值仍按全部波束取最大，两者口径不同是刻意的：看到的是这个波束照到谁，
   // 报的是这颗星在这根天线上最好能拿到多少。
-  const fb = satcov.focusBeam.value                     // 没画就退回第一个
+  const fb = ctx.key === satcov.active.value ? satcov.focusBeam.value : null   // 没画（或不是聚焦天线）就退回第一个
   const bm = (fb && ctx.beams.find((b) => b.bi === fb.bi)) || ctx.beams[0]
   const dirOpts = { pol: ctx.settings.pol, gainOffset: 0, pathLoss: 'none' }
   const selfName = String(ctx.satName || '')
@@ -1143,47 +889,23 @@ function satcovInBeamNow(ctx) {
   return out
 }
 // 本轮该算哪些目标星：点选档取用户名单，波束内档取此刻的成员（并把名单回填给浮窗显示）
-function satcovResolveTargets(ctx) {
-  if (satPerf.targetMode.value !== 'beam') return satcovResolvePicks()
+function satcovResolveTargets(ctx, key) {
+  const k = key || (ctx && ctx.key) || ''
+  if (satPerf.targetModeOf(k) !== 'beam') return satcovResolvePicks(k)
   const list = satcovInBeamNow(ctx)
-  satPerf.setBeamTargets(list.map((e) => ({ name: e.name, noradId: e.noradId, group: e.group })))
+  satPerf.setBeamTargets(list.map((e) => ({ name: e.name, noradId: e.noradId, group: e.group })), k)
   return list
 }
-function satcovRefreshTable() {
-  if (!satcovTableOpen.value) return
-  const key = satcov.active.value
-  const ctx = key ? grd.getPerfContext(key) : null
-  if (!ctx) { satPerf.compute(null); satPerf.setBeamTargets([]); return }
-  // 时间窗口档：表钉在【游标时刻】，不能被「按当前时钟重算」冲掉（目标星/口径改了由「输入已变」提示重扫）；
-  // 还没扫过就空着 —— 留一批当前时刻的数在时窗档下，看着就像是时窗里的数
-  if (satPerf.win.on) {
-    if (satPerf.winInfo.value) satPerf.seekCursor(satPerf.win.cursorMs); else satPerf.clearRows()
-    return
-  }
-  satPerf.compute(ctx, satPerf.getOpts(key), satcovResolveTargets(ctx), satcovTimes(), satcov.shells.value, satcov.s.hEx)
-}
-// ===== 瞬时表跟随仿真时钟（预算自适应）=====
-// 改造前这张表只在【源星移动】时重算，时间推进它是不动的 —— 目标星在动、几何在变、取值早就不是这个数了。
-// 现在每拍跟着走。代价按实测耗时自适应：一次重算超过一拍间隔的 1/3，就按比例跳拍（宁可少刷几帧，
-// 也不能让表把时钟拖慢——时钟一慢，画面上的星就跟不上真实速率，那是把显示问题变成物理问题）。
-// 时段表（几十万次取值）不跟：它只在用户点「计算」时跑，输入变了亮「输入已变」。
-// 表也当场重算，与星位、覆盖场同一个时刻 —— 表脚的 satPerf.stampMs 因此恒等于画面时刻。
-// （曾按预算跳帧，于是表里的数比画面旧一两拍。省下的那点算力换不来这个代价：
-//   一屏之内两个时刻，比慢一点糟得多。要省算力就整体放慢，那是时钟占用底线的事。）
-function satcovClockTick() {
-  if (!satcovTableOpen.value || satPerf.win.on) return
-  satcovRefreshTable()
-}
+// 瞬时表逐窗重算 / 跟随仿真时钟：见 perfHost.refreshShell / shellClockTick（一行一颗星、当场重算，与画面同一时刻）。
 // 「加入波束内的星」：扫一遍在场卫星，把当前落在方向图域里的加进目标库。
 // 这是「全量」与「点选」之间的桥——先捞一批，再自己删到只剩关心的那几颗。
-function satcovAddInBeam() {
-  const key = satcov.active.value
-  const ctx = key ? grd.getPerfContext(key) : null
+function satcovAddInBeam(key) {
+  const k = key || satcov.active.value
+  const ctx = k ? grd.getPerfContext(k) : null
   if (!ctx || !ctx.beams.length) { status.value = '先选一根天线'; return }
   const found = satcovInBeamNow(ctx).map((e) => ({ name: e.name, noradId: e.noradId, group: e.group }))
-  const n = satPerf.addTargets(found)
+  const n = satPerf.addTargets(found, k)
   status.value = found.length ? `波束内 ${found.length} 星，新增 ${n} 个目标` : '当前波束内没有卫星'
-  satcovRefreshTable()
 }
 // ---- 时间窗口（时段扫描）----
 // 与瞬时表最大的不同：源星与目标星都要按【任意时刻】解算，故得把两者的星历（satrec）交给表模块，
@@ -1209,14 +931,14 @@ function satcovBoreRec(ctx) {
   const e = satEntryById(st.boreSat)
   return e ? { rec: e.rec, _cc: !!isCustomEntry(e) } : null
 }
-async function satcovScanWindows() {
-  const key = satcov.active.value
-  const ctx = key ? grd.getPerfContext(key) : null
+async function satcovScanWindows(key) {
+  const k = key || satcov.active.value
+  const ctx = k ? grd.getPerfContext(k) : null
   if (!ctx) { status.value = '先选一根天线'; return }
   // 波束内档：目标 = 点「计算」那一刻在波束里的那批星（成员本身随时刻变，扫描得先钉住一份名单）
-  const tgts = satcovResolveTargets(ctx)
-  if (!tgts.length) { status.value = satPerf.targetMode.value === 'beam' ? '当前波束内没有卫星' : '先加目标星'; return }
-  await satPerf.computeWindows(ctx, satPerf.getOpts(key), tgts, satcovTimes(), satcov.shells.value, satcov.s.hEx,
+  const tgts = satcovResolveTargets(ctx, k)
+  if (!tgts.length) { status.value = satPerf.targetModeOf(k) === 'beam' ? '当前波束内没有卫星' : '先加目标星'; return }
+  await satPerf.computeWindows(ctx, satPerf.getOpts(k), tgts, satcovTimes(), satcov.shells.value, satcov.s.hEx,
     { srcRec: satcovSourceRec(ctx), boreRec: satcovBoreRec(ctx) })
 }
 // 「同步到时间轴」：把主时间轴跳到时窗游标那一刻（与「跳到指定时刻」同一路径——窗口以该时刻重新居中）。
@@ -1237,12 +959,15 @@ async function satcovFocusTarget(t) {
   autoRotate.value = false
 }
 
-// 浮窗以 .g3 为参照系（与对地性能指标表同款），开窗前把当前可视尺寸递过去
-const satcovHost = ref({ w: 0, h: 0 })
-async function satcovOpenTable() {
-  if (!satcovTableOpen.value) satcovHost.value = g3Size()
-  satcovTableOpen.value = !satcovTableOpen.value
-  if (satcovTableOpen.value) { await nextTick(); satcovRefreshTable() }
+// 树里每根天线下的「对星性能指标表」入口：开该天线的独立窗口（一根天线一窗、可多开）
+async function satcovOpenTable(sat, a) {
+  if (!sat || !a) return
+  satcov.setActive(sat, a)
+  const key = grd.keyOf(sat.folder, a.name)
+  const ok = await grd.ensureAntLoaded(key)
+  if (!ok) { appAlert('该天线方向图未就绪，无法生成性能表'); return }
+  if (!perfHost.has()) { appAlert('需在桌面客户端中运行'); return }
+  await perfHost.open('shell', key)
 }
 // ---- 「从星座取」壳层挑选器 ----
 // 候选池默认取【全量在轨目录】（searchSource：与主界面搜索同一个池，后台加载一次），
@@ -1321,16 +1046,11 @@ function satcovTick(movedKeys) {
 }
 // 瞬时表随手重算（便宜）；时段表只标「输入已变」等用户点重算 —— 一次扫描是几十万次取值，不能跟着抖
 // 换天线＝换一张表：目标星名单 / 来源档 / 时窗设置都切到那根天线自己那份（每张表各一份，新表从空白起）
-watch(() => satcov.active.value, (k) => { satPerf.setActiveKey(k || ''); satcovRefreshTable() }, { immediate: true })
-watch(satcovTableOpen, (v) => { if (v) satcovRefreshTable() })
 // 聚焦特效的触发面：画哪些天线变了（点亮谁按此定）、指向模式/目标星变了（目标星那一端要跟着换）。
 // 时间推进不在这里管——refreshPositions 每帧都会 commitGeometry。
 // 不按视图门控：commitGeometry 是幂等的全量重喂，画不画由 satcov.selected 定（清空即自然收特效）——
 // 加个 side 判据反而会在【清除绘图那一下正好不在该视图】时把特效留在场景里。
 watch(() => [satcov.selected.value.join('|'), grd.active.value, grdS.boreType, grdS.boreSat], () => commitGeometry())
-// 目标库变动（加/删/清空）→ 表重算；切目标来源（点选 ↔ 波束内）同理
-watch(() => satPerf.picks.value, () => satcovRefreshTable(), { deep: true })
-watch(satPerf.targetMode, () => satcovRefreshTable())
 // ===== 目标星搜索（对星跟踪的目标星 / 指标表的目标星，两处共用）=====
 // ★【全量】搜索，不限于「在场」：池 = 全量在轨目录（内置各星座分组 ∪ active ∪ 本地自定义卫星库）
 //   ＋ 自定义星座合成星（含隐藏的座）；另按【卫星组】的组名命中该组全部成员（与自定义星座按星座名
@@ -1380,178 +1100,12 @@ function g3Size() {
   const r = g3el.value
   return r ? { w: r.clientWidth, h: r.clientHeight } : { w: window.innerWidth, h: window.innerHeight }
 }
-function perfWinInit() {
-  if (perfWin.value.init) return
-  const { w: vw, h: vh } = g3Size()
-  const w = Math.min(760, vw - 48), h = Math.min(Math.round(vh * 0.74), vh - 48)
-  perfWin.value = { x: Math.max(12, vw - w - 24), y: Math.max(12, Math.round(vh * 0.12)), w, h, init: true }
-  perfInputH.value = Math.min(190, Math.round(h * 0.34))
-}
 function perfDragSession(onMove) {
   const onUp = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); document.body.style.userSelect = '' }
   document.body.style.userSelect = 'none'
   window.addEventListener('mousemove', onMove)
   window.addEventListener('mouseup', onUp)
 }
-function perfDragMove(e) {
-  if (e.button !== 0 || (e.target.closest && e.target.closest('.csx, .ptb, input, select, label'))) return   // 标题栏空白处才拖动
-  e.preventDefault()
-  const sx = e.clientX, sy = e.clientY, o = { ...perfWin.value }
-  perfDragSession((ev) => {
-    const { w: vw, h: vh } = g3Size()
-    const x = Math.max(-o.w + 96, Math.min(vw - 48, o.x + (ev.clientX - sx)))   // 不让完全拖出 .g3 可视范围
-    const y = Math.max(0, Math.min(vh - 32, o.y + (ev.clientY - sy)))
-    perfWin.value = { ...perfWin.value, x, y }
-  })
-}
-// 8 向缩放：dir 含 n/s/e/w（角=两字母）。东/南改 w/h；西/北还要同步移动 x/y（保持对边不动）。
-function perfDragResize(e, dir = 'se') {
-  if (e.button !== 0) return
-  e.preventDefault(); e.stopPropagation()
-  const sx = e.clientX, sy = e.clientY, o = { ...perfWin.value }
-  const minW = 380, minH = 260
-  const E = dir.includes('e'), W = dir.includes('w'), S = dir.includes('s'), N = dir.includes('n')
-  perfDragSession((ev) => {
-    const { w: vw, h: vh } = g3Size()
-    let x = o.x, y = o.y, w = o.w, h = o.h
-    const dx = ev.clientX - sx, dy = ev.clientY - sy
-    if (E) w = Math.max(minW, Math.min(o.w + dx, vw - o.x - 6))
-    if (S) h = Math.max(minH, Math.min(o.h + dy, vh - o.y - 6))
-    if (W) { const right = o.x + o.w; x = Math.max(6, Math.min(o.x + dx, right - minW)); w = right - x }
-    if (N) { const bottom = o.y + o.h; y = Math.max(0, Math.min(o.y + dy, bottom - minH)); h = bottom - y }
-    perfWin.value = { ...perfWin.value, x, y, w, h }
-    if (perfInputH.value > h - 140) perfInputH.value = Math.max(64, h - 140)   // 缩小时让结果区保底
-  })
-}
-function perfDragSplit(e) {
-  if (e.button !== 0) return
-  e.preventDefault()
-  const sy = e.clientY, o = perfInputH.value
-  perfDragSession((ev) => {
-    perfInputH.value = Math.max(64, Math.min(perfWin.value.h - 140, o + (ev.clientY - sy)))
-  })
-}
-// Excel/链路预算式「＋ 增加」：在选中行下方插入一行空行（无选中则末尾），选区落到新行首列，直接键入或粘贴
-function perfAddRow() {
-  perf.pushUndo()
-  const ri = perfInGrid.sel.value.ri
-  const at = ri >= 0 ? ri + 1 : perf.stations.value.length
-  perf.addEmptyStation(at)
-  nextTick(() => { perfInGrid.sel.value = { ar: at, ac: 0, ri: at, ci: 0 }; perfInGrid.focusGrid() })
-}
-// 表尾「＋ 增加一行」：恒追加到末尾（行中插入走右键菜单 / 工具条的「增加」）
-function perfAddRowEnd() {
-  perf.pushUndo()
-  const at = perf.stations.value.length
-  perf.addEmptyStation(at)
-  nextTick(() => { perfInGrid.sel.value = { ar: at, ac: 0, ri: at, ci: 0 }; perfInGrid.focusGrid() })
-}
-// 「导入航迹…」下拉：选一条即导入它的航点，'*' = 全部航迹。★ 值从事件上取、随手把下拉清回占位：
-// 下次还能选同一条，且不依赖 v-model 与 @change 谁先跑。
-function perfImportTrajSel(e) {
-  const v = e && e.target ? e.target.value : perfTrajSel.value
-  perfTrajSel.value = ''; if (e && e.target) e.target.value = ''
-  if (!v) return
-  const list = v === '*' ? trajectories.value : trajectories.value.filter((t) => t.id === v)
-  perf.pushUndo()
-  const n = perf.importFromTrajectories(list)
-  if (!n) { perf.dropUndo(); appAlert('没有可导入的新航点（航迹为空或已全部导入）') }
-  refreshPerf()
-}
-function metImportTrajSel(e) {
-  const v = e && e.target ? e.target.value : metTrajSel.value
-  metTrajSel.value = ''; if (e && e.target) e.target.value = ''
-  if (!v) return
-  envLive.importMarkers('traj', v === '*' ? null : v)
-}
-// 「粘贴」按钮：直接读剪贴板批量加站（需浏览器授权剪贴板读取）
-async function perfPasteBtn() {
-  let text = ''
-  try { text = await navigator.clipboard.readText() } catch { appAlert('无法读取剪贴板，请检查剪贴板权限'); return }
-  perf.pushUndo()
-  const n = perf.addStationsBulk(text)
-  if (n) refreshPerf(); else { perf.dropUndo(); appAlert('剪贴板没有可识别的经纬度数据（约定末两列为 经度、纬度）') }
-}
-// ===== 城市组：把当前城市列表存成命名预设，选组即载入（替换）并重算结果，供不同天线复用 =====
-function perfOpenGroups() { perfGrpDelId.value = ''; perfGrpRenameId.value = ''; perfNewGrpName.value = ''; perfGrpOpen.value = true }
-function perfCreateGroup() {
-  if (!perf.stations.value.length) { appAlert('当前城市列表为空，无法存为组'); return }
-  const id = perf.addCityGroup(perfNewGrpName.value)
-  if (id) { perfNewGrpName.value = ''; perfGroupSel.value = id }
-}
-function perfLoadGroup(g) {
-  if (!g) return
-  perf.pushUndo()
-  const n = perf.loadCityGroup(g.id)
-  perfGroupSel.value = g.id
-  refreshPerf()
-  if (!n) appAlert('该城市组为空')
-}
-// 工具栏下拉：选中某组即载入（替换当前列表，可撤销）
-function perfLoadGroupSel() {
-  const g = perfGroupSel.value ? perf.cityGroups.value.find((x) => x.id === perfGroupSel.value) : null
-  if (g) perfLoadGroup(g)
-}
-function perfAppendGroup(g) {
-  if (!g) return
-  perf.pushUndo()
-  const n = perf.appendCityGroup(g.id)
-  if (n) refreshPerf(); else { perf.dropUndo(); appAlert('该组城市已全部在当前列表中（按坐标去重）') }
-}
-function perfOverwriteGroup(g) {
-  if (!g) return
-  if (!perf.stations.value.length) { appAlert('当前城市列表为空，无法覆盖'); return }
-  perf.overwriteCityGroup(g.id)
-}
-function perfStartRenameGroup(g) { perfGrpDelId.value = ''; perfGrpRenameId.value = g.id; perfGrpRenameVal.value = g.name }
-function perfCommitRenameGroup(g) { if (perf.renameCityGroup(g.id, perfGrpRenameVal.value)) perfGrpRenameId.value = '' }
-// 两步删除：首次点击进入「确认」态，再点一次才真正删除，避免误删已精心整理的城市组
-function perfDeleteGroup(g) {
-  if (perfGrpDelId.value !== g.id) { perfGrpDelId.value = g.id; return }
-  perf.removeCityGroup(g.id)
-  if (perfGroupSel.value === g.id) perfGroupSel.value = ''
-  perfGrpDelId.value = ''
-}
-// ===== 两张表都用 Excel 式交互（框选 / 键盘导航 / 复制 / 编辑·粘贴·清除）=====
-// 城市输入网格列（可编辑）；行 = perf.stations，行 id 即站点 id。
-const perfInCols = [
-  { key: 'country', label: '国家' },
-  { key: 'city', label: '城市' },
-  { key: 'desig', label: '代号' },
-  { key: 'lon', label: '经度', num: true, unit: '°E' },
-  { key: 'lat', label: '纬度', num: true, unit: '°N' }
-]
-// 上：城市输入（可编辑）——单格编辑/区域粘贴/清除均落到站点库，深 watch 自动重算结果表。
-const perfInGrid = useGridSelect({
-  gridId: 'perf-in',
-  rows: () => perf.stations.value,
-  cols: () => perfInCols,
-  cellText: (r, c) => { const v = r[c.key]; return v == null ? '' : String(v) },
-  // 编辑城市名后，若精确命中城市库 → 自动补全经纬度（与 GEO 链路预算一致）。commitEdit 仅在值真正改变时才调 onEdit，
-  // 故只有城市名确有变动才会触发补全；且与前面的 pushUndo 同属一次撤销（一次 Ctrl+Z 同时还原城市名与经纬度）。
-  onEdit: (id, key, val) => { perf.updateStation(id, { [key]: val }); if (key === 'city') perf.applyCityGeo(id) },
-  onPasteBlock: (anchorId, startKey, text) => perf.pasteBlock(anchorId, startKey, text),
-  onPasteAppend: (text) => perf.addStationsBulk(text),
-  onClear: (cells) => cells.forEach(({ rowId, key }) => perf.updateStation(rowId, { [key]: '' })),
-  // 右键菜单的插入/删除行（撤销快照由内核统一压，这里不再自己 pushUndo）
-  onInsertRows: (at, n) => { for (let k = 0; k < n; k++) perf.addEmptyStation(at + k); return n },
-  onDeleteRows: (ids) => { const s = new Set(ids); const before = perf.stations.value.length; perf.stations.value = perf.stations.value.filter((x) => !s.has(x.id)); return before - perf.stations.value.length },
-  pushUndo: () => perf.pushUndo(), dropUndo: () => perf.dropUndo(), refresh: () => refreshPerf(),
-  undo: () => perfUndo(), redo: () => perfRedo()   // 表内 Ctrl+Z / Ctrl+Y（与工具栏按钮同源）
-})
-// 下：性能结果（只读）——框选 + 复制 + 键盘导航；行 = filteredRows。
-const perfResGrid = useGridSelect({
-  gridId: 'perf-res',
-  rows: () => perf.filteredRows.value,
-  cols: () => perfCols.value,
-  readOnly: true,
-  cellText: (r, c) => { const v = r[c.key]; if (c.num && c.fix != null) return v == null ? '' : Number(v).toFixed(c.fix); return v == null ? '' : String(v) }
-})
-function perfDelStation(id) { perf.pushUndo(); perf.removeStation(id) }
-function perfClearStations() { if (!perf.stations.value.length) return; perf.pushUndo(); perf.clearStations() }
-function perfUndo() { if (perf.undo()) refreshPerf() }
-function perfRedo() { if (perf.redo()) refreshPerf() }
-// 复制整张只读结果表为 TSV（含表头，可直接粘进 Excel）。同步 execCommand 优先（见 useGridSelect.writeClip 同理）。
 function perfWriteClipboard(text) {
   let ok = false
   try {
@@ -1566,98 +1120,12 @@ function perfWriteClipboard(text) {
   if (!ok) { try { navigator.clipboard && navigator.clipboard.writeText(text).catch(() => {}) } catch {} }
   return ok
 }
-function perfCellText(r, c) {
-  const v = r[c.key]
-  if (c.num && c.fix != null) return v == null ? '' : Number(v).toFixed(c.fix)
-  return v == null ? '' : String(v)
-}
-function perfCopyResult() {
-  const cols = perfCols.value, rows = perf.filteredRows.value
-  if (!rows.length) { appAlert('结果表为空'); return }
-  const head = cols.map((c) => { const u = perfColUnit(c); return c.label + (u ? '(' + u + ')' : '') }).join('\t')   // 复制表头带单位，与显示一致
-  const body = rows.map((r) => cols.map((c) => perfCellText(r, c)).join('\t')).join('\n')
-  if (!perfWriteClipboard(head + '\n' + body)) appAlert('复制失败，请检查剪贴板权限')
-}
-// ===== 性能指标表 ⇄ Excel =====
-// 出表值：数字列写【真数字】（在 Excel 里能直接算），文本列原样。
-const perfXlsxVal = (r, c) => { const v = r[c.key]; if (v == null || v === '') return null; return (c.num && typeof v === 'number') ? v : String(v) }
-const perfCtxName = () => (perf.ctxInfo.value ? perf.ctxInfo.value.satName + '_' + perf.ctxInfo.value.antName : '性能指标表')
-function perfCitySheet() { return sheetModel({ name: '城市输入', cols: perfInCols, rows: perf.stations.value, value: perfXlsxVal }) }
-async function perfExportCities() {
-  if (!perf.stations.value.length) { appAlert('城市列表为空'); return }
-  const r = await exportSheets({ defaultName: safeFileName('城市列表_' + perfCtxName(), '城市列表') + '.xlsx', title: '导出城市列表', sheets: [perfCitySheet()] })
-  if (r && r.error) appAlert('导出失败：' + r.error)
-}
-async function perfExportResult() {
-  if (!perfCols.value.length) { appAlert('当前没有显示任何列'); return }
-  const c = perf.ctxInfo.value
-  const note = [c ? '卫星 ' + c.satName : '', c ? '天线 ' + c.antName : '', c ? c.beams + ' 波束' : ''].filter(Boolean).join(' · ')
-  const sheets = [
-    sheetModel({ name: '性能结果', cols: perfCols.value, rows: perfResGrid.rows.value, value: perfXlsxVal, unitOf: perfColUnit, note }),
-    perfCitySheet()
-  ]
-  const r = await exportSheets({ defaultName: safeFileName('性能指标表_' + perfCtxName(), '性能指标表') + '.xlsx', title: '导出性能指标表', sheets })
-  if (r && r.error) appAlert('导出失败：' + r.error)
-}
-// 导入城市列表：按表头匹配「国家/城市/代号/经度/纬度」；认不出表头就退回剪贴板那条位置约定（末两列=经纬度）。
-// replace=true 覆盖当前列表，否则追加。导入后对「只有城市名、没坐标」的行补一次城市库坐标（幂等，不覆盖已有坐标）。
-async function perfImportCities(replace) {
-  const res = await importWorkbook({ title: replace ? '导入城市列表（覆盖）' : '导入城市列表（追加）' })
-  if (!res || res.canceled) return
-  if (!res.ok) { appAlert('导入失败：' + (res.error || '无法读取该文件')); return }
-  const sheet = pickSheet(res.sheets, perfInCols)
-  if (!sheet) { appAlert('这份工作簿里没有数据'); return }
-  const { records } = sheetToRecords(sheet, perfInCols)
-  perf.pushUndo()
-  if (replace) perf.clearStations()
-  let n = 0
-  if (records) {
-    for (const rec of records) {
-      const s = perf.addEmptyStation()
-      perf.updateStation(s.id, { country: rec.country || '', city: rec.city || '', desig: rec.desig || '', lon: rec.lon, lat: rec.lat })
-      n++
-    }
-  } else {
-    n = perf.addStationsBulk(sheetToTsv(sheet))
-  }
-  if (!n) { perf.dropUndo(); appAlert('没有读到数据（表头需含「经度 / 纬度」，或把经纬度放在最后两列）'); return }
-  await ensurePerfCities()
-  perf.applyCityGeoAll()
-  refreshPerf()
-}
-const perfFix = (v, n) => (v == null ? '—' : v.toFixed(n == null ? 2 : n))
-// 结果表格内显示文本：数字列按列定义的小数位，取不到值显示破折号（复制/导出走各自口径，见 perfResGrid.cellText / perfXlsxVal）
-function perfResText(r, c) {
-  if (c.num) return c.fix != null ? perfFix(r[c.key], c.fix) : (r[c.key] == null ? '—' : String(r[c.key]))
-  return r[c.key] || ''
-}
-const perfColDef = (k) => perf.colDefs.find((c) => c.key === k)
-// 列单位：param（Parameter）随参数计算口径动态——dB / 功率 / 电压（与选项弹窗单位切换同口径，Same as Antenna 恒 dB）；
-// 其余列取列定义里的静态 unit（经纬度/角度 °、dir/xpol/slope/ar/min·maxPt 等 dB/…）。无量纲列（u/v）返回空。
-function perfColUnit(c) {
-  if (!c) return ''
-  if (c.key === 'param') {
-    const o = perfOpts.value
-    if (!o || o.sameAsAnt || o.unit === 'dB') return 'dB'
-    return o.unit === 'power' ? '功率' : o.unit === 'voltage' ? '电压' : 'dB'
-  }
-  return c.unit || ''
-}
-const perfColLabel = (k) => { const c = perfColDef(k); if (!c) return k; return c.label + (c.unit ? '(' + c.unit + ')' : '') }   // 选项弹窗列名带（静态）单位
-const perfColNa = (k) => { const c = perfColDef(k); return !!(c && c.na) }
-// 逃生口：把当前天线的表选项重置为出厂默认（列/口径/指向误差/波束筛选）——继承机制不合意时一键回默认
-function perfResetOpts() { if (!perfKey.value) return; perf.resetOpts(perfKey.value); perf.beamQuery.value = ''; refreshPerf() }
-// 站点库 / 天线设置（极化/增益/路损/相对绝对）/ 选中波束 / 表选项 变化 → 表重算（仅表开启时）
-watch(() => perf.stations.value, () => refreshPerf(), { deep: true })
-watch(() => perf.optsByAnt.value, () => refreshPerf(), { deep: true })
-// 记住当前表的列/口径/指向误差设置，作为「下一个新天线」的默认模板 → 换天线不必重设（beamSel 在 rememberOpts 内已剔除，不跨天线继承）
-watch(perfOpts, () => { if (perfKey.value) perf.rememberOpts(perfKey.value) }, { deep: true })
-watch(() => [grdS.pol, grdS.gainOffset, grdS.pathLoss, grdS.ctype, grdS.beamsToPlot], () => { if (perfKey.value === grd.active.value) refreshPerf() }, { deep: true })
-// 拖拽波束/改指向时性能表随图实时刷新（取值依赖指向推出的 basis）。boresight 每帧变 → rAF 合帧，一帧最多重算一次，
-// 避免逐帧全量取值（每站×每波束，含 Min/Max Pointing 的椭圆扫描）把主线程打满。仅当该表正是聚焦天线才刷。
+// 聚焦天线的设置（极化 / 增益 / 路损 / 相对绝对 / 画哪些波束 / 指向）变了 → 该天线开着的表（对地 / 对星）与城市框重算。
+// 指向每帧在变（拖拽）→ rAF 合帧，一帧最多重算一次。
+watch(() => [grdS.pol, grdS.gainOffset, grdS.pathLoss, grdS.ctype, grdS.beamsToPlot], () => perfHost.onSettingsChanged(grd.active.value), { deep: true })
 let _perfDragRaf = 0
-function scheduleRefreshPerf() { if (_perfDragRaf) return; _perfDragRaf = requestAnimationFrame(() => { _perfDragRaf = 0; refreshPerf() }) }
-watch(() => [grdS.boreType, grdS.boreLon, grdS.boreLat, grdS.boreAz, grdS.boreEl, grdS.yaw], () => { if (perfKey.value && perfKey.value === grd.active.value) scheduleRefreshPerf() })
+watch(() => [grdS.boreType, grdS.boreLon, grdS.boreLat, grdS.boreAz, grdS.boreEl, grdS.yaw, grdS.boreLock, grdS.boreSat, grdS.boreOffAz, grdS.boreOffEl, grdS.borePtLon, grdS.borePtLat, grdS.borePtAlt],
+  () => { if (_perfDragRaf) return; _perfDragRaf = requestAnimationFrame(() => { _perfDragRaf = 0; perfHost.onSettingsChanged(grd.active.value) }) })
 // 电平配色 / 指向模式 / 波束名与电平名的内联改名都在 GrdSetSections.vue 里（两个覆盖分析视图共用那份 UI）
 const covSats = ref([])           // 索引：[{folder,displayName,satName,lon,beams:[{band,beam,type,gains,file}...]}]
 const covItems = ref([])          // 已添加卫星（两级结构）
@@ -2534,10 +2002,10 @@ async function refreshPositions() {
     // 与正常分支同款带 extras 并接 satcovTick：GRD 关联星按星历解算不依赖在场星（satLivePos 走
     // 全量目录），「无」分组下时间推进照样要修 meta。早先这里无参 tickLive 且不接对星，对星那份
     // meta 停在恢复时的存盘位置——视轴/壳层错位，切分组前怎么播放都修不回来。
-    const tk = grd.tickLive([perfKey.value || null, satcov.active.value || null, ...satcov.selected.value])
-    if (perfKey.value && tk.moved && tk.moved.has(perfKey.value)) refreshPerf()
+    const tk = grd.tickLive([...perfHost.liveKeys(), satcov.active.value || null, ...satcov.selected.value])
+    perfHost.onMoved(tk.moved)
     satcovTick(tk.moved)
-    satcovClockTick()
+    perfHost.shellClockTick()
     await geomPending
     return
   }
@@ -2550,7 +2018,7 @@ async function refreshPositions() {
   // 本拍的在场星 ECEF 快照：只在【真有人要】时才存 ——「波束内的星」那个档开着才用得上。
   // ★ 无条件存是笔白账：7000 颗星每拍多 7000 次 ECI→ECEF 旋转 + 一次 168 KB 的写入，
   //   而绝大多数时候那张表根本没开。（这条是本轮改动自己引入的回归，别再无条件做。）
-  const wantEcef = satcovTableOpen.value && satPerf.targetMode.value === 'beam'
+  const wantEcef = perfHost.shellBeamModeOpen()
   if (wantEcef) {
     if (!_tickEcef || _tickEcef.length < n * 3) _tickEcef = new Float64Array(Math.max(1024, n * 3))
     _tickEcefN = n
@@ -2581,11 +2049,11 @@ async function refreshPositions() {
   if (hasLinkedElev() || vis.open.value) redrawSats()   // 星座关联星仰角线 / 可见性目标点：随时间轴/实时跟踪
   // 星动 → GRD 覆盖随时间轴移动；两张性能指标表与对星壳层也随之重算（取值/几何都依赖星位推出的 basis）
   {
-    const tk = grd.tickLive([perfKey.value || null, satcov.active.value || null, ...satcov.selected.value])
+    const tk = grd.tickLive([...perfHost.liveKeys(), satcov.active.value || null, ...satcov.selected.value])
     const mv = tk.moved
-    if (perfKey.value && mv && mv.has(perfKey.value)) refreshPerf()
+    perfHost.onMoved(mv)
     satcovTick(mv)
-    satcovClockTick()   // 对星侧的表与「波束内的星」跟随时钟（与画面同一时刻，见其注释）
+    perfHost.shellClockTick()   // 对星侧的表与「波束内的星」跟随时钟（与画面同一时刻）
   }
   if (satModal.value && satModal.value.noradId) liveTick.value++   // 关联星编辑中：驱动弹窗经纬度/高度刷新
   persistGrdLive()   // 写实时关联星当前星下点到轻量缓存，供链路预算窗口「导入时取新位置」
@@ -4466,6 +3934,7 @@ async function applyFlat(v) {
 function ensureFlat() {
   if (!flat && flatCanvas.value) {
     flat = createFlatCoverage(flatCanvas.value)
+    perfHost.pushBoxes()   // 平面渲染器是按需建的：性能指标表的城市层（框 + 标签）之前只推给了 3D，这里补推一份，否则切到平面图不见框
     flat.setRenderScale(displayQuality.value.pixelRatio); flat.setMapDetail(displayQuality.value.mapDetail, displayQuality.value.mapThin)
     flat.setOnRightClick(onMapRightClick); flat.setOnHover(onHoverLL); flat.setOnBeamDrag(onBeamDragAny); flat.setBeamDragMode(grd.dragBore.value)
     flat.setOnLabelDrag(grd.labelDrag); flat.setLabelDragMode(grd.dragLabel.value)   // 拖拽等值线数值标签（沿线滑动）
@@ -5875,7 +5344,6 @@ watch(() => sideCtx(), async (cur, prev) => {
   if (cur === 'satcov') { await grd.loadIndex(false); satcov.recompute(); commitGeometry() }
   else if (prev === 'satcov') {
     grd.recompute(); commitGeometry()          // 交还 2D 平面图
-    satcovTableOpen.value = false
     satcovPickOpen.value = false
   }
 }, { immediate: true })
@@ -7060,7 +6528,7 @@ function snapshot() {
     covOpen: covOpen.value, polyOpen: polyOpen.value,
     grdOpen: grdOpen.value, grd: grd.getState(), perf: perf.getState(),
     satcov: satcov.getState(), satPerf: satPerf.getState(),
-    satcovUi: { table: satcovTableOpen.value, pickSrc: satcovPickSrc.value },
+    satcovUi: { pickSrc: satcovPickSrc.value },
     cov: {
       items: serializeCov(), cleared: covCleared.value,
       beamLabels: showBeamLabels.value, beamFont: beamLabelSize.value, bore: showBore.value, boreSize: boreSize.value,
@@ -7267,11 +6735,6 @@ async function restoreSettings() {
     // 判据同样走 sideCtx：上次是「停在对星视图但把侧栏收起来了」的话，表照样跟着回来。
     if (s.satcovUi) {
       if (s.satcovUi.pickSrc === 'live' || s.satcovUi.pickSrc === 'all') satcovPickSrc.value = s.satcovUi.pickSrc
-      if (s.satcovUi.table && sideCtx() === 'satcov') {
-        satcovHost.value = g3Size()
-        satcovTableOpen.value = true
-        await nextTick(); satcovRefreshTable()
-      }
     }
     redrawSats()
     // 恢复链路把各天线 cache 的星位（meta）建在【存盘位置】上；星历缓存若抢先完成了第一次
@@ -7342,6 +6805,7 @@ function pageCommands() {
 }
 
 onMounted(async () => {
+  perfHost.attach()   // 性能指标表窗口：收弹窗操作 / 关窗通知，认领主窗口重载前就开着的窗
   // 顶栏「视图」按钮右侧的覆盖图入口：注册可用性与切换回调（按钮渲染在 App.vue，状态走 covNav store）
   covNav.grdAvail = grdApiOk; covNav.covAvail = covApiOk
   covNav.toggleGrd = toggleGrd; covNav.toggleCov = toggleCoverage
@@ -8084,11 +7548,15 @@ onBeforeUnmount(() => {
                     </span>
                   </template>
                 </div>
-                <div class="gperf" :class="{ on: perfKey === grd.keyOf(sat.folder, a.name) }" title="打开该天线的性能指标表" @click.stop="openPerf(sat, a)">
+                <div class="gperf" :class="{ on: perfOpenSet.has(grd.keyOf(sat.folder, a.name)) }" title="打开该天线的性能指标表（独立窗口；再点＝前置）" @click.stop="openPerf(sat, a)">
                   <svg class="gsvg perf-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                     <rect x="3" y="3" width="18" height="18" rx="2" /><path d="M3 9h18" /><path d="M3 15h18" /><path d="M9 3v18" />
                   </svg>
                   <span class="gperfn">性能指标表</span>
+                  <!-- 眼睛：这张表的城市在地图上的标记与标签（总开关，随选项存盘；与表窗口开没开无关，关窗标记还在） -->
+                  <span class="sdisp">
+                    <span class="ic" :class="{ on: perf.cityShowOf(grd.keyOf(sat.folder, a.name)) }" title="显示/隐藏该表城市在地图上的标记与标签；只隐藏其一，在表窗口「城市设置」里勾选" @click.stop="togglePerfCity(sat, a)"><Icon :name="perf.cityShowOf(grd.keyOf(sat.folder, a.name)) ? 'eye' : 'eye-off'" :size="12" /></span>
+                  </span>
                 </div>
                 </template>
               </div>
@@ -8113,7 +7581,7 @@ onBeforeUnmount(() => {
           <SatCovPanel
             v-if="shellUi.side === 'satcov'"
             :sc="satcov" :grd="grd" :sat-count="shownCount" :sat-search="satcovSearch"
-            :table-open="satcovTableOpen" :sat-vis="satVisible"
+            :table-open-keys="shellOpenSet" :sat-vis="satVisible"
             @open-table="satcovOpenTable" @pick-shells="satcovOpenPick" @toggle-eye="toggleSatLabel"
             @add-sat="openAddSat()" @edit-sat="editSat" @remove-sat="removeSat" />
         </div>
@@ -10051,201 +9519,12 @@ onBeforeUnmount(() => {
       </div>
     </template>
 
-    <!-- 对星覆盖分析：对星性能指标表浮窗 -->
-    <SatCovWindows
-      :sc="satcov" :sp="satPerf" :table-open="satcovTableOpen"
-      :time-label="timeText" :sat-search="satcovSearch" :host-size="satcovHost"
-      :tz-mode="tzMode" :now-ms="satcovNowMs"
-      @close-table="satcovTableOpen = false"
-      @recompute-table="satcovRefreshTable" @add-in-beam="satcovAddInBeam" @seek-clock="satcovSeekClock"
-      @scan-windows="satcovScanWindows" @focus-target="satcovFocusTarget" />
 
     <!-- 「从星座取」壳层挑选器（全量在轨目录 → 归并成层 → 勾哪层加哪层） -->
     <SatCovShellPicker
       v-if="satcovPickOpen"
       :sats="satcovPickPool" :loading="satcovPickLoading" :source="satcovPickSrc" :existing="satcovShellAlts"
       @close="satcovPickOpen = false" @set-source="satcovSetPickSrc" @add="satcovAddPicked" />
-
-    <!-- 性能指标表（独立浮窗，每个天线一张）。对标 SATSOFT 两步法、合为一窗：
-         上 = 城市输入区（增删改）；下 = 只读性能结果表（仅列覆盖该城市的波束）。 -->
-    <div v-if="perfKey" class="perf-win" :style="{ left: perfWin.x + 'px', top: perfWin.y + 'px', width: perfWin.w + 'px', height: perfWin.h + 'px' }">
-      <div class="perf-h" @mousedown="perfDragMove">
-        <span class="perf-t">性能指标表
-          <em v-if="perf.ctxInfo.value">· {{ perf.ctxInfo.value.satName }} / {{ perf.ctxInfo.value.antName }} · {{ perf.ctxInfo.value.beams }} 波束</em>
-        </span>
-        <span class="csx" @click="closePerf"><Icon name="x" :size="12" /></span>
-      </div>
-
-      <!-- 上：城市输入区（第一步——输入城市列表；每个经纬度 = 一行城市，不随波束膨胀） -->
-      <section class="perf-input" :style="{ height: perfInputH + 'px' }">
-        <div class="pin-h">
-          <span class="pin-t">城市输入</span>
-          <span class="ptb" :class="{ dis: !perf.canUndo.value }" title="撤销 (Ctrl+Z)" @click="perfUndo"><Icon name="undo-2" :size="12" /></span>
-          <span class="ptb" :class="{ dis: !perf.canRedo.value }" title="重做 (Ctrl+Y)" @click="perfRedo"><Icon name="redo-2" :size="12" /></span>
-          <span class="ptb" title="在选中行下方增加一行（直接在表格里键入或粘贴）" @click="perfAddRow"><Icon name="plus" :size="12" /> 增加</span>
-          <span class="ptb" title="勾选地图上的点标记 / 地球站导入为城市" @click="openMkPick('perf')"><Icon name="import" :size="12" /> 导入标记…</span>
-          <select class="pin-gsel" v-model="perfTrajSel" @change="perfImportTrajSel" title="选一条航迹，把它的航点导入为城市（每个航点一行，城市名取「航迹名#序号」）">
-            <option value="">导入航迹…</option>
-            <option v-for="t in trajectories" :key="t.id" :value="t.id" data-i18n-skip>{{ trajOptLabel(t) }}</option>
-            <option v-if="trajectories.length > 1" value="*">（全部航迹）</option>
-          </select>
-          <span class="ptb" title="从剪贴板粘贴表格（末两列=经度、纬度，可含 国家/城市/代号）批量添加" @click="perfPasteBtn"><Icon name="clipboard" :size="12" /> 粘贴</span>
-          <span class="ptb" title="从 Excel 追加城市（按表头匹配列；无表头时末两列作经纬度）" @click="perfImportCities(false)"><Icon name="import" :size="12" /> 导入 Excel</span>
-          <span class="ptb" :class="{ dis: !perf.stations.value.length }" title="把城市列表导出为 Excel" @click="perfExportCities"><Icon name="download" :size="12" /> 导出 Excel</span>
-          <span class="ptb" title="清空城市列表" @click="perfClearStations">清空</span>
-          <span class="pin-sep"></span>
-          <select class="pin-gsel" v-model="perfGroupSel" @change="perfLoadGroupSel" title="选择一个已存的城市组即载入（替换当前城市列表）进行查询">
-            <option value="">载入城市组…</option>
-            <option v-for="g in perf.cityGroups.value" :key="g.id" :value="g.id">{{ g.name }}（{{ g.cities.length }}）</option>
-          </select>
-          <span class="ptb" title="城市组：将当前城市列表存为新组，或重命名 / 覆盖 / 删除已有组" @click="perfOpenGroups"><Icon name="layers" :size="12" /> 城市组…</span>
-          <span class="perf-cnt">{{ perf.stations.value.length }} 城市</span>
-        </div>
-        <!-- Excel 式网格（见 src/components/ExcelGrid.vue）：序号列选行 / 拖拽框选 / 键盘导航 / 复制粘贴 / 填充柄 / 右键插入删除行 -->
-        <ExcelGrid class="pin-body eg-host" :grid="perfInGrid" :cols="perfInCols" :text="(r, c) => (r[c.key] == null ? '' : String(r[c.key]))"
-                   :actions-width="26" empty-text="暂无城市。" add-label="增加一行"
-                   @add="perfAddRowEnd">
-          <template #actions="{ row }">
-            <span class="del" title="删除该城市" @click="perfDelStation(row.id)"><Icon name="x" :size="12" /></span>
-          </template>
-        </ExcelGrid>
-      </section>
-
-      <!-- 中缝：上下拖拽调整城市输入区 / 结果区的高度比例 -->
-      <div class="perf-split" title="拖拽调整上下高度" @mousedown="perfDragSplit"><span class="grip"></span></div>
-
-      <!-- 下：只读性能结果表（第二步——输出；仅列覆盖该城市的波束） -->
-      <section class="perf-result">
-        <div class="pr-h">
-          <span class="pr-t">性能结果<em>只读</em></span>
-          <label class="pr-cov"><input type="checkbox" v-model="perfOpts.filterOn" title="仅列方向性≥阈值（覆盖该城市）的波束" /> 仅覆盖波束</label>
-          <!-- 选项里的数字框一律 .lazy（绑 change 而非 input）：optsByAnt 上挂着深 watch → 每敲一个字符就
-               整表重算一次（逐站×逐波束重采方向图，指向误差那几项更是每格 72 次），而且中途拿的是半截数字
-               （想输 63.6，途中先按 6 / 63 / 636 各算一遍）。失焦或回车才生效；▲▼ 微调与上下方向键仍即时
-               生效——它们按规范 input 与 change 一起发（已实测）。 -->
-          <label class="pr-cov" :class="{ dis: !perfOpts.filterOn }">阈值<input class="ci" type="number" step="0.5" v-model.lazy.number="perfOpts.minDir" :disabled="!perfOpts.filterOn" /><span class="u">dB</span></label>
-          <input class="perf-q" v-model="perf.query.value" placeholder="查询：国家 / 城市 / 代号" />
-          <span class="ptb" title="复制整张结果表（含表头，TSV，可粘进 Excel）" @click="perfCopyResult"><Icon name="copy" :size="12" /> 复制全表</span>
-          <span class="ptb" title="导出为 Excel（性能结果 + 城市输入两张工作表；数字列存真数字）" @click="perfExportResult"><Icon name="download" :size="12" /> 导出 Excel</span>
-          <span class="ptb" :class="{ on: perfOptsOpen }" title="显示列 / 计算口径 / 指向误差" @click="perfOptsOpen = !perfOptsOpen"><Icon name="settings" :size="12" /> 选项…</span>
-          <span class="perf-cnt">{{ perf.filteredRows.value.length }} 行</span>
-        </div>
-        <!-- 只读 Excel 网格：框选 / 键盘导航 / Ctrl+A 全选 / Ctrl+C 复制选区 / 点列头排序（不可编辑） -->
-        <ExcelGrid class="pr-body eg-host" :grid="perfResGrid" :cols="perfCols" :text="perfResText"
-                   :serial="!perfCols.some((c) => c.key === 'no')" :head-unit="perfColUnit"
-                   :head-tip="(c) => (c.na ? '本数据仅含功率（无相位），AR 暂不可算' : (c.tip || c.label))"
-                   :row-class="(r) => (r.inPattern ? null : 'out')"
-                   :empty-text="perf.stations.value.length ? '没有波束覆盖这些城市。' : '暂无城市。'" />
-      </section>
-
-      <!-- 8 向缩放手柄（窗口 overflow:hidden，故均贴边在框内） -->
-      <div class="prh prh-n" @mousedown="perfDragResize($event, 'n')"></div>
-      <div class="prh prh-s" @mousedown="perfDragResize($event, 's')"></div>
-      <div class="prh prh-w" @mousedown="perfDragResize($event, 'w')"></div>
-      <div class="prh prh-e" @mousedown="perfDragResize($event, 'e')"></div>
-      <div class="prh prh-nw" @mousedown="perfDragResize($event, 'nw')"></div>
-      <div class="prh prh-ne" @mousedown="perfDragResize($event, 'ne')"></div>
-      <div class="prh prh-sw" @mousedown="perfDragResize($event, 'sw')"></div>
-      <div class="perf-rsz" title="拖拽缩放窗口" @mousedown="perfDragResize($event, 'se')"></div>
-    </div>
-
-
-    <!-- 气象指标表（浮窗，与性能指标表同一套外壳）：上＝站点输入（可编辑，先经后纬），
-         下＝只读读数表，列由「选项」勾选。★ 读数跟随时间轴 —— 时钟一动整表重算。 -->
-    <div v-if="metTblOpen" class="perf-win mk-win" :style="{ left: metWin.x + 'px', top: metWin.y + 'px', width: metWin.w + 'px', height: metWin.h + 'px' }">
-      <div class="perf-h" @mousedown="metDragMove">
-        <span class="perf-t">气象指标表
-          <em v-if="envLive.siteMeta.value">· {{ envLive.siteMeta.value.model }} · {{ liveTimeText }}</em>
-          <em v-else-if="!envLive.meta.value">· 尚未获取气象数据</em>
-        </span>
-        <span class="csx" @click="closeMetTable"><Icon name="x" :size="12" /></span>
-      </div>
-
-      <!-- 上：站点输入 -->
-      <section class="perf-input" :style="{ height: metInputH + 'px' }">
-        <div class="pin-h">
-          <span class="pin-t">站点输入</span>
-          <span class="ptb" title="在末尾增加一行（可直接键入或粘贴）" @click="metAddRow(null)"><Icon name="plus" :size="12" /> 增加</span>
-          <span class="ptb" title="勾选地图上的点标记 / 地球站导入为站点" @click="openMkPick('met')"><Icon name="import" :size="12" /> 导入标记…</span>
-          <select class="pin-gsel" v-model="metTrajSel" @change="metImportTrajSel" title="选一条航迹，把它的航点导入为站点（每航点一行，站名取「航迹名 #序号」）；读数为当前时刻沿该航线各点的衰减">
-            <option value="">导入航迹…</option>
-            <option v-for="t in trajectories" :key="t.id" :value="t.id" data-i18n-skip>{{ trajOptLabel(t) }}</option>
-            <option v-if="trajectories.length > 1" value="*">（全部航迹）</option>
-          </select>
-          <span class="ptb" title="从剪贴板粘贴（每行至少两列，末两列为经度、纬度，其余作站名）" @click="metPasteBtn"><Icon name="clipboard" :size="12" /> 粘贴</span>
-          <span class="ptb" title="自 Excel 追加站点（按表头匹配 站名 / 经度 / 纬度）" @click="metImportXlsx"><Icon name="import" :size="12" /> 导入 Excel</span>
-          <span class="ptb" title="清空站点列表" @click="envLive.clearSites()">清空</span>
-          <span class="perf-cnt">{{ envLive.sites.value.length }} 站</span>
-        </div>
-        <ExcelGrid class="pin-body eg-host" :grid="metInGrid" :cols="metInCols"
-                   :text="(r, c) => (r[c.key] == null ? '' : String(r[c.key]))"
-                   :actions-width="26" empty-text="还没有站点。" add-label="增加一行"
-                   @add="metAddRow(null)">
-          <template #actions="{ row }">
-            <span class="del" title="删除该站" @click="envLive.delSite(row.id)"><Icon name="x" :size="12" /></span>
-          </template>
-        </ExcelGrid>
-      </section>
-
-      <div class="perf-split" title="拖拽调整上下高度" @mousedown="metDragSplit"><span class="grip"></span></div>
-
-      <!-- 下：只读读数表 -->
-      <section class="perf-result">
-        <div class="pr-h">
-          <span class="pr-t">计算结果<em>只读 · 随时间轴更新</em></span>
-          <!-- 和风与左侧模式列是两个数据源，都取时间轴当前时刻。花钱的只有点这一下：逐小时接口
-               一次回一整条时间轴，取过之后再拖时间轴只在已取序列里查值，不再发请求。 -->
-          <span class="ptb" :class="{ dis: envLive.obsBusy.value || !envLive.sites.value.length || (envLive.providers.value && !envLive.providers.value.point.ok) }"
-                :title="(envLive.providers.value && !envLive.providers.value.point.ok) ? envLive.providers.value.point.message : '向和风天气请求各站在时间轴当前时刻的值，写入「和风」列组（逐站各一次请求，按站计费；本小时取实况观测，未来取逐小时预报，无历史数据。取一次即覆盖整条时间轴，之后拖动时间轴不再发请求）'"
-                @click="(envLive.obsBusy.value || !envLive.sites.value.length || (envLive.providers.value && !envLive.providers.value.point.ok)) ? null : envLive.fetchObsAll()">
-            <!-- 这里用不带字样的那朵云：11px 下 LIVE 四个字母只有 3 px 高，糊成一团反而更脏 -->
-            <Icon name="cloud-rain" :size="12" /> {{ envLive.obsBusy.value ? '获取中…' : `获取和风数据（${envLive.sites.value.length} 站）` }}</span>
-          <!-- 「和风」单独成元素：与后面的时刻挤在同一个文本节点里就查不到词典（见 i18n 的三类漏译） -->
-          <span v-if="metObsAtText" class="perf-cnt" :title="'和风列对应的时刻与口径，与左侧模式列同一时刻'"><span>和风</span> {{ metObsAtText }}</span>
-          <span v-if="envLive.siteMsg.value" class="perf-cnt">{{ envLive.siteMsg.value }}</span>
-          <span class="ptb" title="复制整张结果表（含表头，TSV，可粘贴至 Excel）" @click="metCopyResult"><Icon name="copy" :size="12" /> 复制全表</span>
-          <span class="ptb" title="导出为 Excel（计算结果 + 站点输入两张工作表；数字列写入数值）" @click="metExportXlsx"><Icon name="download" :size="12" /> 导出 Excel</span>
-          <span class="ptb" :class="{ on: metOptsOpen }" title="选择显示的气象与链路指标" @click="metOptsOpen = !metOptsOpen"><Icon name="settings" :size="12" /> 指标…</span>
-          <span v-if="envLive.siteBusy.value" class="perf-cnt">计算中…</span>
-          <span v-else class="perf-cnt">{{ envLive.metRows.value.length }} 行</span>
-        </div>
-        <ExcelGrid class="pr-body eg-host" :grid="metResGrid" :cols="envLive.metCols.value" :text="envLive.metText"
-                   :head-tip="(c) => (c.tip || c.label)"
-                   :row-class="(r) => (r.note && r.totalDb == null ? 'out' : null)"
-                   :empty-text="envLive.sites.value.length ? (envLive.meta.value ? '当前时刻不在已获取的气象时段内。' : '尚未获取气象数据。') : '还没有站点。'" />
-      </section>
-
-      <div class="prh prh-n" @mousedown="metDragResize($event, 'n')"></div>
-      <div class="prh prh-s" @mousedown="metDragResize($event, 's')"></div>
-      <div class="prh prh-w" @mousedown="metDragResize($event, 'w')"></div>
-      <div class="prh prh-e" @mousedown="metDragResize($event, 'e')"></div>
-      <div class="prh prh-nw" @mousedown="metDragResize($event, 'nw')"></div>
-      <div class="prh prh-ne" @mousedown="metDragResize($event, 'ne')"></div>
-      <div class="prh prh-sw" @mousedown="metDragResize($event, 'sw')"></div>
-      <div class="perf-rsz" title="拖拽缩放窗口" @mousedown="metDragResize($event, 'se')"></div>
-    </div>
-
-    <!-- 指标选择：只换「看哪些量」，表的其余交互与性能指标表完全一致 -->
-    <div v-if="metOptsOpen" class="sat-mask perf-opt-mask" @click.self="metOptsOpen = false">
-      <div class="perf-opt-dlg met-opt-dlg">
-        <div class="sdh"><span>显示指标</span><span class="csx" @click="metOptsOpen = false"><Icon name="x" :size="12" /></span></div>
-        <div class="perf-opt-body">
-          <section class="po-card po-cols met-po-cols">
-            <div class="po-scroll">
-              <div v-for="grp in envLive.MET_COL_GROUPS" :key="grp.title" class="po-grp">
-                <div class="po-gt">{{ grp.title }}</div>
-                <label v-for="k in grp.keys" :key="k" class="po-ck"
-                       :class="{ dis: metColOff(k) }" :title="metColTip(k)">
-                  <input type="checkbox" :checked="envLive.siteCols.value.includes(k)" @change="envLive.toggleSiteCol(k)" />
-                  <span>{{ metColLabel(k) }}</span>
-                </label>
-              </div>
-            </div>
-          </section>
-        </div>
-        <div class="sdfoot"><span class="save ghost po-reset" title="恢复出厂勾选" @click="envLive.resetSiteCols()">恢复默认</span><span class="save" @click="metOptsOpen = false">完成</span></div>
-      </div>
-    </div>
 
     <!-- 标记批量表格（Excel 模块，仿性能表浮窗）：点标记 / 地球站 / 航迹 三分页，Excel 式框选·键盘导航·复制·编辑·区域粘贴，支持批量导入 -->
     <div v-if="mkTableOpen" class="perf-win mk-win" :style="{ left: mkWin.x + 'px', top: mkWin.y + 'px', width: mkWin.w + 'px', height: mkWin.h + 'px' }">
@@ -10355,164 +9634,6 @@ onBeforeUnmount(() => {
     </div>
 
     <!-- 性能表选项弹窗（对标 SATSOFT Performance Table Options）：显示列 / 过滤 / 波束类型 / 计算口径 / 指向误差 -->
-    <div v-if="perfOptsOpen && perfOpts" class="sat-mask perf-opt-mask" @click.self="perfOptsOpen = false">
-      <div class="perf-opt-dlg">
-        <div class="sdh"><span>性能表选项<em v-if="perf.ctxInfo.value"> · {{ perf.ctxInfo.value.antName }}</em></span><span class="csx" @click="perfOptsOpen = false"><Icon name="x" :size="12" /></span></div>
-        <div class="perf-opt-body">
-          <!-- 左：显示列 -->
-          <section class="po-card po-cols">
-            <div class="po-ct">显示列</div>
-            <div class="po-scroll">
-              <div v-for="g in perf.colGroups" :key="g.title" class="po-grp">
-                <div class="po-gt">{{ g.title }}</div>
-                <label v-for="k in g.keys" :key="k" class="po-ck" :class="{ dis: perfColNa(k) }">
-                  <input type="checkbox" v-model="perfOpts.cols[k]" :disabled="perfColNa(k)" />
-                  <span>{{ perfColLabel(k) }}<em v-if="perfColNa(k)"> *</em></span>
-                </label>
-              </div>
-            </div>
-          </section>
-
-          <!-- 右：计算设置 -->
-          <div class="po-right">
-            <!-- 波束筛选（复用卫星天线树同款「搜索+全选+勾选列表」模块）：默认全选=不筛选，仅勾选的波束进表 -->
-            <section v-if="perf.ctxBeams.value.length > 1" class="po-card">
-              <div class="po-ct">波束筛选</div>
-              <input class="ci bq" :value="perf.beamQuery.value" placeholder="搜索：波束名，或序号 1-62、1,3,5、1-10,20-30" @input="e => perf.beamQuery.value = e.target.value" />
-              <!-- 整行都是勾选热区，按住左键拖＝刷选（长按多选）；复选框只当显示件，见 useCheckList -->
-              <div
-                ref="pbEl" class="bplist" :class="{ painting: pbPainting }" tabindex="0"
-                title="点一行翻勾选 · 按住拖＝刷选一片 · Shift 点＝连选一段 · Ctrl+A 全选"
-                @keydown="pbKey"
-              >
-                <div class="brow ball" @mousedown="pbHeadDown">
-                  <input type="checkbox" :checked="pbAllOn()" :indeterminate="pbAnyOn() && !pbAllOn()" />
-                  <span class="balln">{{ perf.beamQuery.value.trim() ? '(全选搜索结果)' : '(全选)' }}</span>
-                  <span class="bpk">{{ pbCount }}/{{ perf.ctxBeams.value.length }}</span>
-                </div>
-                <div
-                  v-for="(b, bi) in pbRows" :key="b.seq"
-                  class="brow bitem" :class="{ on: pbOn(b.bi), cur: pbCur === bi }"
-                  @mousedown="pbDown($event, bi)"
-                >
-                  <input type="checkbox" :checked="pbOn(b.bi)" />
-                  <span class="bseq">{{ b.seq }}</span>
-                  <span class="pbnm" :title="b.name" data-i18n-skip>{{ b.name }}</span>
-                  <span class="bpk">{{ b.peakDb == null ? '—' : b.peakDb.toFixed(1) }}</span>
-                </div>
-                <div v-if="!pbRows.length" class="empty">无匹配波束</div>
-              </div>
-            </section>
-
-            <section class="po-card">
-              <div class="po-ct">过滤</div>
-              <label class="po-chk"><input type="checkbox" v-model="perfOpts.filterOn" /><span>剔除低于最低方向性的记录</span></label>
-              <div class="po-row"><label>最低方向性</label><input class="ci" type="number" step="0.5" v-model.lazy.number="perfOpts.minDir" :disabled="!perfOpts.filterOn" /><span class="u">dB</span></div>
-            </section>
-
-            <section class="po-card">
-              <div class="po-ct">参数计算</div>
-              <label class="po-chk"><input type="checkbox" v-model="perfOpts.sameAsAnt" /><span>与天线当前设置一致</span></label>
-              <template v-if="!perfOpts.sameAsAnt">
-                <div class="po-row"><label>极化</label><select v-model="perfOpts.pol"><option value="P1">P1 共极化</option><option value="P2">P2 交叉</option><option value="RSS">RSS 合成</option><option value="P1/P2">P1/P2</option><option value="P2/P1">P2/P1</option></select></div>
-                <div class="po-row"><label>单位</label><span class="seg sm"><span class="sg" :class="{ on: perfOpts.unit === 'dB' }" @click="perfOpts.unit = 'dB'">dB</span><span class="sg" :class="{ on: perfOpts.unit === 'power' }" @click="perfOpts.unit = 'power'">功率</span><span class="sg" :class="{ on: perfOpts.unit === 'voltage' }" @click="perfOpts.unit = 'voltage'">电压</span></span></div>
-                <div class="po-row"><label>路径损耗</label><select v-model="perfOpts.pathLoss"><option value="none">无</option><option value="relative">相对(h/Rs)²</option><option value="absolute">通量密度</option></select></div>
-                <div class="po-row"><label>增益偏置</label><input class="ci" type="number" step="0.5" v-model.lazy.number="perfOpts.gainOffset" /><span class="u">dB</span></div>
-              </template>
-            </section>
-
-            <section class="po-card">
-              <div class="po-ct">指向误差 · Min/Max Pointing</div>
-              <div class="po-row"><label>方位 Az</label><input class="ci" type="number" step="any" min="0" v-model.lazy.number="perfOpts.pointAz" /><span class="u">°</span></div>
-              <div class="po-row"><label>俯仰 El</label><input class="ci" type="number" step="any" min="0" v-model.lazy.number="perfOpts.pointEl" /><span class="u">°</span></div>
-              <div class="po-row"><label>偏航 Yaw</label><input class="ci" type="number" step="any" min="0" v-model.lazy.number="perfOpts.pointYaw" /><span class="u">°</span></div>
-            </section>
-          </div>
-        </div>
-        <div class="sdfoot"><span class="save ghost po-reset" title="将当前天线的表选项恢复为默认值（列 / 口径 / 指向误差 / 波束筛选）" @click="perfResetOpts">恢复默认</span><span class="save" @click="perfOptsOpen = false">完成</span></div>
-      </div>
-    </div>
-
-    <!-- 城市组管理弹窗：把当前城市列表存成命名预设，随时载入(替换)/追加/覆盖/重命名/删除；组随页面快照存盘、跨天线共享 -->
-    <!-- 「导入标记…」（性能指标表 / 气象指标表共用）：勾选具体的点标记 / 地球站再导入；航迹在各自工具栏的下拉里选 -->
-    <div v-if="mkPickFor" class="sat-mask perf-grp-mask" @click.self="mkPickFor = ''">
-      <div class="sat-dlg grp-dlg mkpick-dlg">
-        <div class="sdh"><span>导入标记</span><span class="csx" @click="mkPickFor = ''"><Icon name="x" :size="12" /></span></div>
-        <div class="sdbody">
-          <input class="ci bq" v-model="mkPickQ" placeholder="搜索：序号、站名或坐标" />
-          <section class="po-card">
-            <div class="po-ct">点标记</div>
-            <div ref="mkPickPtEl" class="bplist" :class="{ painting: mkPtPainting }" tabindex="0"
-                 title="点一行翻勾选 · 按住拖＝刷选一片 · Shift 点＝连选一段 · Ctrl+A 全选" @keydown="mkPtKey">
-              <div class="brow ball" @mousedown="mkPtHeadDown">
-                <input type="checkbox" :checked="mkPtAllOn()" :indeterminate="mkPtAnyOn() && !mkPtAllOn()" />
-                <span class="balln">{{ mkPickQ.trim() ? '(全选搜索结果)' : '(全选)' }}</span>
-                <span class="bpk">{{ mkPtCount }}/{{ points.length }}</span>
-              </div>
-              <div v-for="(r, i) in mkPickPtRows" :key="r.id" class="brow bitem" :class="{ on: mkPtOn(r.id), cur: mkPtCur === i }" @mousedown="mkPtDown($event, i)">
-                <input type="checkbox" :checked="mkPtOn(r.id)" />
-                <span class="bseq">{{ r.seq }}</span>
-                <span class="pbnm" :title="r.name" data-i18n-skip>{{ r.name }}</span>
-              </div>
-              <div v-if="!mkPickPtRows.length" class="empty">{{ points.length ? '无匹配标记' : '暂无点标记。' }}</div>
-            </div>
-          </section>
-          <section class="po-card">
-            <div class="po-ct">地球站</div>
-            <div ref="mkPickStEl" class="bplist" :class="{ painting: mkStPainting }" tabindex="0"
-                 title="点一行翻勾选 · 按住拖＝刷选一片 · Shift 点＝连选一段 · Ctrl+A 全选" @keydown="mkStKey">
-              <div class="brow ball" @mousedown="mkStHeadDown">
-                <input type="checkbox" :checked="mkStAllOn()" :indeterminate="mkStAnyOn() && !mkStAllOn()" />
-                <span class="balln">{{ mkPickQ.trim() ? '(全选搜索结果)' : '(全选)' }}</span>
-                <span class="bpk">{{ mkStCount }}/{{ stations.length }}</span>
-              </div>
-              <div v-for="(r, i) in mkPickStRows" :key="r.id" class="brow bitem" :class="{ on: mkStOn(r.id), cur: mkStCur === i }" @mousedown="mkStDown($event, i)">
-                <input type="checkbox" :checked="mkStOn(r.id)" />
-                <span class="bseq">{{ r.seq }}</span>
-                <span class="pbnm" :title="r.name" data-i18n-skip>{{ r.name }}</span>
-                <span class="bll" data-i18n-skip>{{ r.ll }}</span>
-              </div>
-              <div v-if="!mkPickStRows.length" class="empty">{{ stations.length ? '无匹配标记' : '暂无地球站。' }}</div>
-            </div>
-          </section>
-        </div>
-        <div class="sdfoot">
-          <span class="save" :class="{ dis: !(mkPtCount + mkStCount) }" @click="confirmMkPick">导入 {{ mkPtCount + mkStCount }} 项</span>
-          <span class="cancel" @click="mkPickFor = ''">取消</span>
-        </div>
-      </div>
-    </div>
-    <div v-if="perfGrpOpen" class="sat-mask perf-grp-mask" @click.self="perfGrpOpen = false">
-      <div class="sat-dlg grp-dlg">
-        <div class="sdh"><span>城市组</span><span class="csx" @click="perfGrpOpen = false"><Icon name="x" :size="12" /></span></div>
-        <div class="sdbody">
-          <div class="grp-save">
-            <input class="grp-name" v-model="perfNewGrpName" :placeholder="'新组名称（默认：城市组 ' + (perf.cityGroups.value.length + 1) + '）'" @keydown.enter="perfCreateGroup" />
-            <span class="save" :class="{ dis: !perf.stations.value.length }" @click="perfCreateGroup">存当前 {{ perf.stations.value.length }} 城市为新组</span>
-          </div>
-          <div class="grp-list">
-            <div v-for="g in perf.cityGroups.value" :key="g.id" class="grp-row" :class="{ cur: perfGroupSel === g.id }">
-              <template v-if="perfGrpRenameId === g.id">
-                <input class="grp-name f1" v-model="perfGrpRenameVal" @keydown.enter="perfCommitRenameGroup(g)" @keydown.esc="perfGrpRenameId = ''" />
-                <span class="gic ok" title="确认重命名" @click="perfCommitRenameGroup(g)"><Icon name="check" :size="12" /></span>
-                <span class="gic" title="取消" @click="perfGrpRenameId = ''"><Icon name="x" :size="12" /></span>
-              </template>
-              <template v-else>
-                <span class="grp-nm" :title="g.name" data-i18n-skip>{{ g.name }}</span>
-                <span class="grp-cnt">{{ g.cities.length }} 城市</span>
-                <span class="gbtn" title="载入：用此组城市替换当前列表（可撤销）" @click="perfLoadGroup(g)">载入</span>
-                <span class="gbtn" title="追加此组城市到当前列表（按坐标去重）" @click="perfAppendGroup(g)">追加</span>
-                <span class="gbtn" title="用当前城市列表覆盖此组" @click="perfOverwriteGroup(g)">覆盖</span>
-                <span class="gic" title="重命名" @click="perfStartRenameGroup(g)"><Icon name="pencil" :size="12" /></span>
-                <span class="gic del" :class="{ warn: perfGrpDelId === g.id }" :title="perfGrpDelId === g.id ? '再次点击确认删除' : '删除此组'" @click="perfDeleteGroup(g)"><Icon name="trash" :size="12" /></span>
-              </template>
-            </div>
-            <div v-if="!perf.cityGroups.value.length" class="grp-empty">还没有城市组。</div>
-          </div>
-        </div>
-        <div class="sdfoot"><span class="save" @click="perfGrpOpen = false">完成</span></div>
-      </div>
-    </div>
   </div>
 </template>
 
@@ -10999,6 +10120,9 @@ onBeforeUnmount(() => {
 .gperf .gperfn { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .gperf.on { color: var(--accent); background: color-mix(in srgb, var(--accent-ui) 12%, transparent); }
 .gperf.on .perf-svg { color: var(--accent); }
+/* 行尾的眼睛（城市标记总开关）：与卫星行 .sdisp 同一件，贴右；负外边距抵掉 18px 的按钮高，行高不变 */
+.gperf .sdisp { margin-left: auto; }
+.gperf .sdisp .ic { margin: -2px 0; }
 
 /* 性能指标表浮窗（几何由 JS 控制：可拖拽移动 / 右下角缩放 / 中缝分隔） */
 .perf-win { position: absolute; left: 24px; top: 64px; display: flex; flex-direction: column; background: var(--panel, var(--bg)); border: 1px solid var(--border); border-radius: var(--r-float); box-shadow: var(--shadow-3); z-index: 60; overflow: hidden; }

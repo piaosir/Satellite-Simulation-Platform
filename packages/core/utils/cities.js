@@ -470,7 +470,7 @@ const CITIES_DATA = [
   { name: "绥芬河", en: "Suifenhe", py: "sfh", lat: 44.412, lon: 131.157, alt: 480.0 },  // 中俄口岸
   { name: "东兴", en: "Dongxing", py: "dx", lat: 21.547, lon: 107.972, alt: 10.0 },      // 中越口岸
 
-  // ========== 国际知名城市 / 航天与地面站所在地 (170个) ==========
+  // ========== 国际知名城市 / 航天与地面站所在地 (582个) ==========
   // ★ 必须整块追加在国内城市之后：PROVINCE_MAPPING 按【下标区间】切省，CHINA_CITIES_COUNT
   //   也是按下标切中外，往中间插一条会把两处一起错位。
   // 多一个 en / country / countryEn：检索走中文名、英文名、国家名三路（见 searchCities）。
@@ -483,23 +483,59 @@ const CITIES_DATA = [
   { name: "福冈", en: "Fukuoka", country: "日本", countryEn: "Japan", py: "fukuoka", lat: 33.590, lon: 130.402, alt: 8.0 },
   { name: "札幌", en: "Sapporo", country: "日本", countryEn: "Japan", py: "sapporo", lat: 43.062, lon: 141.354, alt: 26.0 },
   { name: "种子岛", en: "Tanegashima", country: "日本", countryEn: "Japan", py: "tanegashima", lat: 30.400, lon: 130.968, alt: 30.0 },  // 航天发射场
+  { name: "横滨", en: "Yokohama", country: "日本", countryEn: "Japan", py: "yokohama", lat: 35.444, lon: 139.638, alt: 40.0 },
+  { name: "仙台", en: "Sendai", country: "日本", countryEn: "Japan", py: "sendai", lat: 38.268, lon: 140.872, alt: 45.0 },
+  { name: "广岛", en: "Hiroshima", country: "日本", countryEn: "Japan", py: "hiroshima", lat: 34.385, lon: 132.455, alt: 5.0 },
+  { name: "新潟", en: "Niigata", country: "日本", countryEn: "Japan", py: "niigata", lat: 37.916, lon: 139.036, alt: 5.0 },
+  { name: "鹿儿岛", en: "Kagoshima", country: "日本", countryEn: "Japan", py: "kagoshima", lat: 31.597, lon: 130.557, alt: 5.0 },
+  { name: "那霸", en: "Naha", country: "日本", countryEn: "Japan", py: "naha", lat: 26.212, lon: 127.679, alt: 10.0 },
+  { name: "筑波", en: "Tsukuba", country: "日本", countryEn: "Japan", py: "tsukuba", lat: 36.083, lon: 140.112, alt: 25.0 },  // JAXA 筑波宇宙中心
+  { name: "内之浦", en: "Uchinoura", country: "日本", countryEn: "Japan", py: "uchinoura", lat: 31.251, lon: 131.079, alt: 220.0 },  // 航天发射场
   { name: "首尔", en: "Seoul", country: "韩国", countryEn: "South Korea", py: "seoul", lat: 37.567, lon: 126.978, alt: 38.0 },
   { name: "釜山", en: "Busan", country: "韩国", countryEn: "South Korea", py: "busan", lat: 35.180, lon: 129.075, alt: 10.0 },
+  { name: "仁川", en: "Incheon", country: "韩国", countryEn: "South Korea", py: "incheon", lat: 37.456, lon: 126.705, alt: 20.0 },
+  { name: "大田", en: "Daejeon", country: "韩国", countryEn: "South Korea", py: "daejeon", lat: 36.351, lon: 127.385, alt: 60.0 },  // KARI
+  { name: "济州", en: "Jeju", country: "韩国", countryEn: "South Korea", py: "jeju", lat: 33.500, lon: 126.531, alt: 30.0 },
+  { name: "高兴", en: "Goheung", country: "韩国", countryEn: "South Korea", py: "goheung", lat: 34.432, lon: 127.535, alt: 20.0 },  // 罗老宇航中心
   { name: "平壤", en: "Pyongyang", country: "朝鲜", countryEn: "North Korea", py: "pyongyang", lat: 39.019, lon: 125.738, alt: 27.0 },
   { name: "乌兰巴托", en: "Ulaanbaatar", country: "蒙古", countryEn: "Mongolia", py: "ulaanbaatar", lat: 47.886, lon: 106.906, alt: 1350.0 },
 
   // —— 东南亚 ——
   { name: "新加坡", en: "Singapore", country: "新加坡", countryEn: "Singapore", py: "singapore", lat: 1.352, lon: 103.820, alt: 15.0 },
   { name: "曼谷", en: "Bangkok", country: "泰国", countryEn: "Thailand", py: "bangkok", lat: 13.756, lon: 100.502, alt: 2.0 },
+  { name: "清迈", en: "Chiang Mai", country: "泰国", countryEn: "Thailand", py: "chiangmai", lat: 18.788, lon: 98.985, alt: 310.0 },
+  { name: "普吉", en: "Phuket", country: "泰国", countryEn: "Thailand", py: "phuket", lat: 7.881, lon: 98.392, alt: 10.0 },
   { name: "吉隆坡", en: "Kuala Lumpur", country: "马来西亚", countryEn: "Malaysia", py: "kualalumpur", lat: 3.139, lon: 101.687, alt: 56.0 },
+  { name: "槟城", en: "Penang", country: "马来西亚", countryEn: "Malaysia", py: "penang", lat: 5.414, lon: 100.329, alt: 5.0 },
+  { name: "新山", en: "Johor Bahru", country: "马来西亚", countryEn: "Malaysia", py: "johorbahru", lat: 1.464, lon: 103.762, alt: 30.0 },
+  { name: "古晋", en: "Kuching", country: "马来西亚", countryEn: "Malaysia", py: "kuching", lat: 1.553, lon: 110.359, alt: 27.0 },
+  { name: "亚庇", en: "Kota Kinabalu", country: "马来西亚", countryEn: "Malaysia", py: "kotakinabalu", lat: 5.980, lon: 116.073, alt: 10.0 },
   { name: "雅加达", en: "Jakarta", country: "印度尼西亚", countryEn: "Indonesia", py: "jakarta", lat: -6.208, lon: 106.846, alt: 8.0 },
   { name: "泗水", en: "Surabaya", country: "印度尼西亚", countryEn: "Indonesia", py: "surabaya", lat: -7.258, lon: 112.752, alt: 5.0 },
+  { name: "棉兰", en: "Medan", country: "印度尼西亚", countryEn: "Indonesia", py: "medan", lat: 3.595, lon: 98.672, alt: 25.0 },
+  { name: "万隆", en: "Bandung", country: "印度尼西亚", countryEn: "Indonesia", py: "bandung", lat: -6.917, lon: 107.619, alt: 768.0 },
+  { name: "三宝垄", en: "Semarang", country: "印度尼西亚", countryEn: "Indonesia", py: "semarang", lat: -6.966, lon: 110.417, alt: 5.0 },
+  { name: "巨港", en: "Palembang", country: "印度尼西亚", countryEn: "Indonesia", py: "palembang", lat: -2.976, lon: 104.775, alt: 8.0 },
+  { name: "望加锡", en: "Makassar", country: "印度尼西亚", countryEn: "Indonesia", py: "makassar", lat: -5.147, lon: 119.432, alt: 5.0 },
+  { name: "登巴萨", en: "Denpasar", country: "印度尼西亚", countryEn: "Indonesia", py: "denpasar", lat: -8.670, lon: 115.212, alt: 10.0 },
+  { name: "巴厘巴板", en: "Balikpapan", country: "印度尼西亚", countryEn: "Indonesia", py: "balikpapan", lat: -1.265, lon: 116.831, alt: 10.0 },
+  { name: "查亚普拉", en: "Jayapura", country: "印度尼西亚", countryEn: "Indonesia", py: "jayapura", lat: -2.533, lon: 140.717, alt: 10.0 },
+  { name: "比亚克", en: "Biak", country: "印度尼西亚", countryEn: "Indonesia", py: "biak", lat: -1.190, lon: 136.108, alt: 15.0 },  // 地面站
   { name: "马尼拉", en: "Manila", country: "菲律宾", countryEn: "Philippines", py: "manila", lat: 14.599, lon: 120.984, alt: 16.0 },
+  { name: "宿务", en: "Cebu", country: "菲律宾", countryEn: "Philippines", py: "cebu", lat: 10.316, lon: 123.891, alt: 10.0 },
+  { name: "达沃", en: "Davao", country: "菲律宾", countryEn: "Philippines", py: "davao", lat: 7.191, lon: 125.455, alt: 20.0 },
   { name: "河内", en: "Hanoi", country: "越南", countryEn: "Vietnam", py: "hanoi", lat: 21.028, lon: 105.854, alt: 16.0 },
   { name: "胡志明市", en: "Ho Chi Minh City", country: "越南", countryEn: "Vietnam", py: "hochiminh", lat: 10.823, lon: 106.630, alt: 19.0 },
+  { name: "岘港", en: "Da Nang", country: "越南", countryEn: "Vietnam", py: "danang", lat: 16.054, lon: 108.202, alt: 5.0 },
+  { name: "海防", en: "Hai Phong", country: "越南", countryEn: "Vietnam", py: "haiphong", lat: 20.865, lon: 106.683, alt: 5.0 },
+  { name: "芹苴", en: "Can Tho", country: "越南", countryEn: "Vietnam", py: "cantho", lat: 10.045, lon: 105.746, alt: 3.0 },
   { name: "金边", en: "Phnom Penh", country: "柬埔寨", countryEn: "Cambodia", py: "phnompenh", lat: 11.556, lon: 104.928, alt: 12.0 },
+  { name: "西哈努克", en: "Sihanoukville", country: "柬埔寨", countryEn: "Cambodia", py: "sihanoukville", lat: 10.627, lon: 103.523, alt: 10.0 },
   { name: "万象", en: "Vientiane", country: "老挝", countryEn: "Laos", py: "vientiane", lat: 17.975, lon: 102.633, alt: 174.0 },
+  { name: "琅勃拉邦", en: "Luang Prabang", country: "老挝", countryEn: "Laos", py: "luangprabang", lat: 19.885, lon: 102.135, alt: 300.0 },
   { name: "仰光", en: "Yangon", country: "缅甸", countryEn: "Myanmar", py: "yangon", lat: 16.866, lon: 96.195, alt: 15.0 },
+  { name: "内比都", en: "Naypyidaw", country: "缅甸", countryEn: "Myanmar", py: "naypyidaw", lat: 19.745, lon: 96.129, alt: 115.0 },
+  { name: "曼德勒", en: "Mandalay", country: "缅甸", countryEn: "Myanmar", py: "mandalay", lat: 21.975, lon: 96.083, alt: 76.0 },
   { name: "斯里巴加湾市", en: "Bandar Seri Begawan", country: "文莱", countryEn: "Brunei", py: "bandarseribegawan", lat: 4.903, lon: 114.939, alt: 2.0 },
   { name: "帝力", en: "Dili", country: "东帝汶", countryEn: "Timor-Leste", py: "dili", lat: -8.557, lon: 125.578, alt: 5.0 },
 
@@ -510,18 +546,41 @@ const CITIES_DATA = [
   { name: "加尔各答", en: "Kolkata", country: "印度", countryEn: "India", py: "kolkata", lat: 22.573, lon: 88.364, alt: 9.0 },
   { name: "钦奈", en: "Chennai", country: "印度", countryEn: "India", py: "chennai", lat: 13.083, lon: 80.270, alt: 6.0 },
   { name: "斯里赫里戈达", en: "Sriharikota", country: "印度", countryEn: "India", py: "sriharikota", lat: 13.720, lon: 80.230, alt: 10.0 },  // 航天发射场
+  { name: "海得拉巴", en: "Hyderabad", country: "印度", countryEn: "India", py: "hyderabad", lat: 17.385, lon: 78.487, alt: 542.0 },
+  { name: "艾哈迈达巴德", en: "Ahmedabad", country: "印度", countryEn: "India", py: "ahmedabad", lat: 23.023, lon: 72.571, alt: 53.0 },
+  { name: "浦那", en: "Pune", country: "印度", countryEn: "India", py: "pune", lat: 18.520, lon: 73.856, alt: 560.0 },
+  { name: "斋浦尔", en: "Jaipur", country: "印度", countryEn: "India", py: "jaipur", lat: 26.912, lon: 75.787, alt: 431.0 },
+  { name: "勒克瑙", en: "Lucknow", country: "印度", countryEn: "India", py: "lucknow", lat: 26.847, lon: 80.947, alt: 123.0 },
+  { name: "科钦", en: "Kochi", country: "印度", countryEn: "India", py: "kochi", lat: 9.931, lon: 76.267, alt: 5.0 },
+  { name: "维沙卡帕特南", en: "Visakhapatnam", country: "印度", countryEn: "India", py: "visakhapatnam", lat: 17.687, lon: 83.219, alt: 10.0 },
+  { name: "古瓦哈提", en: "Guwahati", country: "印度", countryEn: "India", py: "guwahati", lat: 26.144, lon: 91.736, alt: 55.0 },
+  { name: "特里凡得琅", en: "Thiruvananthapuram", country: "印度", countryEn: "India", py: "thiruvananthapuram", lat: 8.524, lon: 76.937, alt: 10.0 },  // VSSC
+  { name: "布莱尔港", en: "Port Blair", country: "印度", countryEn: "India", py: "portblair", lat: 11.667, lon: 92.736, alt: 10.0 },
   { name: "达卡", en: "Dhaka", country: "孟加拉国", countryEn: "Bangladesh", py: "dhaka", lat: 23.811, lon: 90.413, alt: 8.0 },
+  { name: "吉大港", en: "Chittagong", country: "孟加拉国", countryEn: "Bangladesh", py: "chittagong", lat: 22.357, lon: 91.783, alt: 10.0 },
   { name: "卡拉奇", en: "Karachi", country: "巴基斯坦", countryEn: "Pakistan", py: "karachi", lat: 24.861, lon: 67.010, alt: 8.0 },
   { name: "伊斯兰堡", en: "Islamabad", country: "巴基斯坦", countryEn: "Pakistan", py: "islamabad", lat: 33.684, lon: 73.048, alt: 540.0 },
+  { name: "拉合尔", en: "Lahore", country: "巴基斯坦", countryEn: "Pakistan", py: "lahore", lat: 31.550, lon: 74.344, alt: 217.0 },
+  { name: "白沙瓦", en: "Peshawar", country: "巴基斯坦", countryEn: "Pakistan", py: "peshawar", lat: 34.015, lon: 71.525, alt: 359.0 },
+  { name: "奎达", en: "Quetta", country: "巴基斯坦", countryEn: "Pakistan", py: "quetta", lat: 30.184, lon: 67.001, alt: 1680.0 },
+  { name: "瓜达尔", en: "Gwadar", country: "巴基斯坦", countryEn: "Pakistan", py: "gwadar", lat: 25.126, lon: 62.323, alt: 10.0 },
   { name: "科伦坡", en: "Colombo", country: "斯里兰卡", countryEn: "Sri Lanka", py: "colombo", lat: 6.927, lon: 79.861, alt: 5.0 },
+  { name: "汉班托塔", en: "Hambantota", country: "斯里兰卡", countryEn: "Sri Lanka", py: "hambantota", lat: 6.124, lon: 81.119, alt: 10.0 },
   { name: "加德满都", en: "Kathmandu", country: "尼泊尔", countryEn: "Nepal", py: "kathmandu", lat: 27.717, lon: 85.324, alt: 1400.0 },
   { name: "马累", en: "Male", country: "马尔代夫", countryEn: "Maldives", py: "male", lat: 4.175, lon: 73.509, alt: 2.0 },
+  { name: "喀布尔", en: "Kabul", country: "阿富汗", countryEn: "Afghanistan", py: "kabul", lat: 34.526, lon: 69.178, alt: 1790.0 },
+  { name: "廷布", en: "Thimphu", country: "不丹", countryEn: "Bhutan", py: "thimphu", lat: 27.472, lon: 89.639, alt: 2320.0 },
 
   // —— 中亚 ——
   { name: "阿拉木图", en: "Almaty", country: "哈萨克斯坦", countryEn: "Kazakhstan", py: "almaty", lat: 43.238, lon: 76.889, alt: 780.0 },
   { name: "阿斯塔纳", en: "Astana", country: "哈萨克斯坦", countryEn: "Kazakhstan", py: "astana", lat: 51.169, lon: 71.449, alt: 347.0 },
   { name: "拜科努尔", en: "Baikonur", country: "哈萨克斯坦", countryEn: "Kazakhstan", py: "baikonur", lat: 45.965, lon: 63.305, alt: 90.0 },  // 航天发射场
+  { name: "卡拉干达", en: "Karaganda", country: "哈萨克斯坦", countryEn: "Kazakhstan", py: "karaganda", lat: 49.806, lon: 73.085, alt: 553.0 },
+  { name: "希姆肯特", en: "Shymkent", country: "哈萨克斯坦", countryEn: "Kazakhstan", py: "shymkent", lat: 42.318, lon: 69.596, alt: 506.0 },
+  { name: "阿克套", en: "Aktau", country: "哈萨克斯坦", countryEn: "Kazakhstan", py: "aktau", lat: 43.651, lon: 51.160, alt: -20.0 },
+  { name: "阿特劳", en: "Atyrau", country: "哈萨克斯坦", countryEn: "Kazakhstan", py: "atyrau", lat: 47.107, lon: 51.918, alt: -20.0 },
   { name: "塔什干", en: "Tashkent", country: "乌兹别克斯坦", countryEn: "Uzbekistan", py: "tashkent", lat: 41.299, lon: 69.240, alt: 455.0 },
+  { name: "撒马尔罕", en: "Samarkand", country: "乌兹别克斯坦", countryEn: "Uzbekistan", py: "samarkand", lat: 39.655, lon: 66.976, alt: 705.0 },
   { name: "比什凯克", en: "Bishkek", country: "吉尔吉斯斯坦", countryEn: "Kyrgyzstan", py: "bishkek", lat: 42.874, lon: 74.570, alt: 800.0 },
   { name: "杜尚别", en: "Dushanbe", country: "塔吉克斯坦", countryEn: "Tajikistan", py: "dushanbe", lat: 38.560, lon: 68.787, alt: 800.0 },
   { name: "阿什哈巴德", en: "Ashgabat", country: "土库曼斯坦", countryEn: "Turkmenistan", py: "ashgabat", lat: 37.960, lon: 58.326, alt: 219.0 },
@@ -532,20 +591,38 @@ const CITIES_DATA = [
   { name: "多哈", en: "Doha", country: "卡塔尔", countryEn: "Qatar", py: "doha", lat: 25.286, lon: 51.535, alt: 10.0 },
   { name: "利雅得", en: "Riyadh", country: "沙特阿拉伯", countryEn: "Saudi Arabia", py: "riyadh", lat: 24.713, lon: 46.675, alt: 612.0 },
   { name: "吉达", en: "Jeddah", country: "沙特阿拉伯", countryEn: "Saudi Arabia", py: "jeddah", lat: 21.486, lon: 39.192, alt: 12.0 },
+  { name: "达曼", en: "Dammam", country: "沙特阿拉伯", countryEn: "Saudi Arabia", py: "dammam", lat: 26.434, lon: 50.103, alt: 10.0 },
+  { name: "麦加", en: "Mecca", country: "沙特阿拉伯", countryEn: "Saudi Arabia", py: "mecca", lat: 21.389, lon: 39.858, alt: 277.0 },
+  { name: "麦地那", en: "Medina", country: "沙特阿拉伯", countryEn: "Saudi Arabia", py: "medina", lat: 24.470, lon: 39.612, alt: 620.0 },
   { name: "科威特城", en: "Kuwait City", country: "科威特", countryEn: "Kuwait", py: "kuwaitcity", lat: 29.376, lon: 47.978, alt: 5.0 },
   { name: "马斯喀特", en: "Muscat", country: "阿曼", countryEn: "Oman", py: "muscat", lat: 23.588, lon: 58.408, alt: 10.0 },
+  { name: "塞拉莱", en: "Salalah", country: "阿曼", countryEn: "Oman", py: "salalah", lat: 17.015, lon: 54.092, alt: 20.0 },
   { name: "麦纳麦", en: "Manama", country: "巴林", countryEn: "Bahrain", py: "manama", lat: 26.229, lon: 50.586, alt: 5.0 },
   { name: "德黑兰", en: "Tehran", country: "伊朗", countryEn: "Iran", py: "tehran", lat: 35.689, lon: 51.389, alt: 1189.0 },
+  { name: "马什哈德", en: "Mashhad", country: "伊朗", countryEn: "Iran", py: "mashhad", lat: 36.297, lon: 59.606, alt: 995.0 },
+  { name: "伊斯法罕", en: "Isfahan", country: "伊朗", countryEn: "Iran", py: "isfahan", lat: 32.655, lon: 51.668, alt: 1575.0 },
+  { name: "设拉子", en: "Shiraz", country: "伊朗", countryEn: "Iran", py: "shiraz", lat: 29.592, lon: 52.584, alt: 1500.0 },
+  { name: "大不里士", en: "Tabriz", country: "伊朗", countryEn: "Iran", py: "tabriz", lat: 38.080, lon: 46.292, alt: 1350.0 },
+  { name: "阿巴斯港", en: "Bandar Abbas", country: "伊朗", countryEn: "Iran", py: "bandarabbas", lat: 27.183, lon: 56.267, alt: 10.0 },
   { name: "巴格达", en: "Baghdad", country: "伊拉克", countryEn: "Iraq", py: "baghdad", lat: 33.315, lon: 44.366, alt: 34.0 },
+  { name: "巴士拉", en: "Basra", country: "伊拉克", countryEn: "Iraq", py: "basra", lat: 30.508, lon: 47.783, alt: 5.0 },
+  { name: "埃尔比勒", en: "Erbil", country: "伊拉克", countryEn: "Iraq", py: "erbil", lat: 36.191, lon: 44.009, alt: 420.0 },
   { name: "安曼", en: "Amman", country: "约旦", countryEn: "Jordan", py: "amman", lat: 31.956, lon: 35.945, alt: 780.0 },
+  { name: "亚喀巴", en: "Aqaba", country: "约旦", countryEn: "Jordan", py: "aqaba", lat: 29.532, lon: 35.006, alt: 10.0 },
   { name: "贝鲁特", en: "Beirut", country: "黎巴嫩", countryEn: "Lebanon", py: "beirut", lat: 33.889, lon: 35.494, alt: 30.0 },
   { name: "大马士革", en: "Damascus", country: "叙利亚", countryEn: "Syria", py: "damascus", lat: 33.513, lon: 36.292, alt: 690.0 },
+  { name: "阿勒颇", en: "Aleppo", country: "叙利亚", countryEn: "Syria", py: "aleppo", lat: 36.202, lon: 37.161, alt: 380.0 },
   { name: "特拉维夫", en: "Tel Aviv", country: "以色列", countryEn: "Israel", py: "telaviv", lat: 32.086, lon: 34.781, alt: 15.0 },
   { name: "伊斯坦布尔", en: "Istanbul", country: "土耳其", countryEn: "Turkey", py: "istanbul", lat: 41.008, lon: 28.978, alt: 39.0 },
   { name: "安卡拉", en: "Ankara", country: "土耳其", countryEn: "Turkey", py: "ankara", lat: 39.933, lon: 32.859, alt: 938.0 },
+  { name: "伊兹密尔", en: "Izmir", country: "土耳其", countryEn: "Turkey", py: "izmir", lat: 38.423, lon: 27.143, alt: 25.0 },
+  { name: "安塔利亚", en: "Antalya", country: "土耳其", countryEn: "Turkey", py: "antalya", lat: 36.897, lon: 30.713, alt: 30.0 },
   { name: "巴库", en: "Baku", country: "阿塞拜疆", countryEn: "Azerbaijan", py: "baku", lat: 40.409, lon: 49.867, alt: -20.0 },
   { name: "第比利斯", en: "Tbilisi", country: "格鲁吉亚", countryEn: "Georgia", py: "tbilisi", lat: 41.716, lon: 44.783, alt: 450.0 },
   { name: "埃里温", en: "Yerevan", country: "亚美尼亚", countryEn: "Armenia", py: "yerevan", lat: 40.183, lon: 44.513, alt: 990.0 },
+  { name: "萨那", en: "Sanaa", country: "也门", countryEn: "Yemen", py: "sanaa", lat: 15.369, lon: 44.191, alt: 2250.0 },
+  { name: "亚丁", en: "Aden", country: "也门", countryEn: "Yemen", py: "aden", lat: 12.786, lon: 45.037, alt: 10.0 },
+  { name: "尼科西亚", en: "Nicosia", country: "塞浦路斯", countryEn: "Cyprus", py: "nicosia", lat: 35.185, lon: 33.382, alt: 150.0 },
 
   // —— 俄罗斯 / 东欧 ——
   { name: "莫斯科", en: "Moscow", country: "俄罗斯", countryEn: "Russia", py: "moscow", lat: 55.756, lon: 37.617, alt: 156.0 },
@@ -553,71 +630,255 @@ const CITIES_DATA = [
   { name: "新西伯利亚", en: "Novosibirsk", country: "俄罗斯", countryEn: "Russia", py: "novosibirsk", lat: 55.030, lon: 82.921, alt: 150.0 },
   { name: "叶卡捷琳堡", en: "Yekaterinburg", country: "俄罗斯", countryEn: "Russia", py: "yekaterinburg", lat: 56.839, lon: 60.605, alt: 255.0 },
   { name: "符拉迪沃斯托克", en: "Vladivostok", country: "俄罗斯", countryEn: "Russia", py: "vladivostok", lat: 43.116, lon: 131.882, alt: 30.0 },
+  { name: "喀山", en: "Kazan", country: "俄罗斯", countryEn: "Russia", py: "kazan", lat: 55.796, lon: 49.106, alt: 60.0 },
+  { name: "下诺夫哥罗德", en: "Nizhny Novgorod", country: "俄罗斯", countryEn: "Russia", py: "nizhnynovgorod", lat: 56.327, lon: 44.006, alt: 130.0 },
+  { name: "萨马拉", en: "Samara", country: "俄罗斯", countryEn: "Russia", py: "samara", lat: 53.195, lon: 50.100, alt: 100.0 },
+  { name: "乌法", en: "Ufa", country: "俄罗斯", countryEn: "Russia", py: "ufa", lat: 54.735, lon: 55.958, alt: 160.0 },
+  { name: "彼尔姆", en: "Perm", country: "俄罗斯", countryEn: "Russia", py: "perm", lat: 58.010, lon: 56.229, alt: 150.0 },
+  { name: "伏尔加格勒", en: "Volgograd", country: "俄罗斯", countryEn: "Russia", py: "volgograd", lat: 48.708, lon: 44.514, alt: 80.0 },
+  { name: "顿河畔罗斯托夫", en: "Rostov-on-Don", country: "俄罗斯", countryEn: "Russia", py: "rostovondon", lat: 47.222, lon: 39.720, alt: 70.0 },
+  { name: "克拉斯诺达尔", en: "Krasnodar", country: "俄罗斯", countryEn: "Russia", py: "krasnodar", lat: 45.035, lon: 38.975, alt: 30.0 },
+  { name: "索契", en: "Sochi", country: "俄罗斯", countryEn: "Russia", py: "sochi", lat: 43.586, lon: 39.723, alt: 30.0 },
+  { name: "加里宁格勒", en: "Kaliningrad", country: "俄罗斯", countryEn: "Russia", py: "kaliningrad", lat: 54.710, lon: 20.452, alt: 10.0 },
+  { name: "摩尔曼斯克", en: "Murmansk", country: "俄罗斯", countryEn: "Russia", py: "murmansk", lat: 68.970, lon: 33.075, alt: 50.0 },
+  { name: "阿尔汉格尔斯克", en: "Arkhangelsk", country: "俄罗斯", countryEn: "Russia", py: "arkhangelsk", lat: 64.540, lon: 40.518, alt: 10.0 },
+  { name: "普列谢茨克", en: "Plesetsk", country: "俄罗斯", countryEn: "Russia", py: "plesetsk", lat: 62.926, lon: 40.577, alt: 100.0 },  // 航天发射场
+  { name: "车里雅宾斯克", en: "Chelyabinsk", country: "俄罗斯", countryEn: "Russia", py: "chelyabinsk", lat: 55.160, lon: 61.403, alt: 230.0 },
+  { name: "秋明", en: "Tyumen", country: "俄罗斯", countryEn: "Russia", py: "tyumen", lat: 57.153, lon: 65.534, alt: 100.0 },
+  { name: "鄂木斯克", en: "Omsk", country: "俄罗斯", countryEn: "Russia", py: "omsk", lat: 54.989, lon: 73.369, alt: 90.0 },
+  { name: "诺里尔斯克", en: "Norilsk", country: "俄罗斯", countryEn: "Russia", py: "norilsk", lat: 69.349, lon: 88.201, alt: 90.0 },
+  { name: "克拉斯诺亚尔斯克", en: "Krasnoyarsk", country: "俄罗斯", countryEn: "Russia", py: "krasnoyarsk", lat: 56.015, lon: 92.893, alt: 150.0 },
+  { name: "伊尔库茨克", en: "Irkutsk", country: "俄罗斯", countryEn: "Russia", py: "irkutsk", lat: 52.287, lon: 104.281, alt: 440.0 },
+  { name: "乌兰乌德", en: "Ulan-Ude", country: "俄罗斯", countryEn: "Russia", py: "ulanude", lat: 51.834, lon: 107.584, alt: 500.0 },
+  { name: "赤塔", en: "Chita", country: "俄罗斯", countryEn: "Russia", py: "chita", lat: 52.034, lon: 113.499, alt: 650.0 },
+  { name: "雅库茨克", en: "Yakutsk", country: "俄罗斯", countryEn: "Russia", py: "yakutsk", lat: 62.028, lon: 129.732, alt: 100.0 },
+  { name: "布拉戈维申斯克", en: "Blagoveshchensk", country: "俄罗斯", countryEn: "Russia", py: "blagoveshchensk", lat: 50.278, lon: 127.540, alt: 130.0 },
+  { name: "东方发射场", en: "Vostochny", country: "俄罗斯", countryEn: "Russia", py: "vostochny", lat: 51.884, lon: 128.334, alt: 250.0 },  // 航天发射场
+  { name: "哈巴罗夫斯克", en: "Khabarovsk", country: "俄罗斯", countryEn: "Russia", py: "khabarovsk", lat: 48.480, lon: 135.072, alt: 70.0 },
+  { name: "南萨哈林斯克", en: "Yuzhno-Sakhalinsk", country: "俄罗斯", countryEn: "Russia", py: "yuzhnosakhalinsk", lat: 46.959, lon: 142.738, alt: 30.0 },
+  { name: "马加丹", en: "Magadan", country: "俄罗斯", countryEn: "Russia", py: "magadan", lat: 59.561, lon: 150.808, alt: 50.0 },
+  { name: "堪察加彼得罗巴甫洛夫斯克", en: "Petropavlovsk-Kamchatsky", country: "俄罗斯", countryEn: "Russia", py: "petropavlovskkamchatsky", lat: 53.037, lon: 158.655, alt: 40.0 },
+  { name: "阿纳德尔", en: "Anadyr", country: "俄罗斯", countryEn: "Russia", py: "anadyr", lat: 64.734, lon: 177.497, alt: 30.0 },
+  { name: "蒂克西", en: "Tiksi", country: "俄罗斯", countryEn: "Russia", py: "tiksi", lat: 71.643, lon: 128.868, alt: 10.0 },
+  { name: "迪克森", en: "Dikson", country: "俄罗斯", countryEn: "Russia", py: "dikson", lat: 73.507, lon: 80.525, alt: 10.0 },
   { name: "基辅", en: "Kyiv", country: "乌克兰", countryEn: "Ukraine", py: "kyiv", lat: 50.450, lon: 30.523, alt: 179.0 },
+  { name: "哈尔科夫", en: "Kharkiv", country: "乌克兰", countryEn: "Ukraine", py: "kharkiv", lat: 49.994, lon: 36.231, alt: 150.0 },
+  { name: "敖德萨", en: "Odesa", country: "乌克兰", countryEn: "Ukraine", py: "odesa", lat: 46.483, lon: 30.723, alt: 40.0 },
+  { name: "第聂伯罗", en: "Dnipro", country: "乌克兰", countryEn: "Ukraine", py: "dnipro", lat: 48.464, lon: 35.046, alt: 100.0 },
+  { name: "利沃夫", en: "Lviv", country: "乌克兰", countryEn: "Ukraine", py: "lviv", lat: 49.840, lon: 24.030, alt: 296.0 },
   { name: "明斯克", en: "Minsk", country: "白俄罗斯", countryEn: "Belarus", py: "minsk", lat: 53.902, lon: 27.562, alt: 220.0 },
+  { name: "基希讷乌", en: "Chisinau", country: "摩尔多瓦", countryEn: "Moldova", py: "chisinau", lat: 47.010, lon: 28.864, alt: 85.0 },
 
   // —— 欧洲 ——
   { name: "伦敦", en: "London", country: "英国", countryEn: "United Kingdom", py: "london", lat: 51.507, lon: -0.128, alt: 11.0 },
   { name: "曼彻斯特", en: "Manchester", country: "英国", countryEn: "United Kingdom", py: "manchester", lat: 53.480, lon: -2.243, alt: 38.0 },
   { name: "古恩希利", en: "Goonhilly", country: "英国", countryEn: "United Kingdom", py: "goonhilly", lat: 50.048, lon: -5.182, alt: 100.0 },  // 卫星地面站
+  { name: "伯明翰", en: "Birmingham", country: "英国", countryEn: "United Kingdom", py: "birmingham", lat: 52.486, lon: -1.890, alt: 140.0 },
+  { name: "爱丁堡", en: "Edinburgh", country: "英国", countryEn: "United Kingdom", py: "edinburgh", lat: 55.953, lon: -3.189, alt: 47.0 },
+  { name: "格拉斯哥", en: "Glasgow", country: "英国", countryEn: "United Kingdom", py: "glasgow", lat: 55.864, lon: -4.252, alt: 20.0 },
+  { name: "贝尔法斯特", en: "Belfast", country: "英国", countryEn: "United Kingdom", py: "belfast", lat: 54.597, lon: -5.930, alt: 5.0 },
+  { name: "哈密尔顿（百慕大）", en: "Hamilton (Bermuda)", country: "英国", countryEn: "United Kingdom", py: "hamiltonbermuda", lat: 32.294, lon: -64.782, alt: 20.0 },
+  { name: "阿森松岛", en: "Ascension Island", country: "英国", countryEn: "United Kingdom", py: "ascensionisland", lat: -7.947, lon: -14.356, alt: 80.0 },  // 地面站
   { name: "巴黎", en: "Paris", country: "法国", countryEn: "France", py: "paris", lat: 48.857, lon: 2.352, alt: 35.0 },
   { name: "图卢兹", en: "Toulouse", country: "法国", countryEn: "France", py: "toulouse", lat: 43.605, lon: 1.444, alt: 146.0 },  // CNES / 航天工业
+  { name: "马赛", en: "Marseille", country: "法国", countryEn: "France", py: "marseille", lat: 43.296, lon: 5.370, alt: 10.0 },
+  { name: "里昂", en: "Lyon", country: "法国", countryEn: "France", py: "lyon", lat: 45.764, lon: 4.836, alt: 170.0 },
+  { name: "尼斯", en: "Nice", country: "法国", countryEn: "France", py: "nice", lat: 43.710, lon: 7.262, alt: 10.0 },
+  { name: "波尔多", en: "Bordeaux", country: "法国", countryEn: "France", py: "bordeaux", lat: 44.838, lon: -0.579, alt: 10.0 },
+  { name: "斯特拉斯堡", en: "Strasbourg", country: "法国", countryEn: "France", py: "strasbourg", lat: 48.573, lon: 7.752, alt: 140.0 },
   { name: "柏林", en: "Berlin", country: "德国", countryEn: "Germany", py: "berlin", lat: 52.520, lon: 13.405, alt: 34.0 },
   { name: "法兰克福", en: "Frankfurt", country: "德国", countryEn: "Germany", py: "frankfurt", lat: 50.110, lon: 8.682, alt: 112.0 },
   { name: "慕尼黑", en: "Munich", country: "德国", countryEn: "Germany", py: "munich", lat: 48.135, lon: 11.582, alt: 519.0 },
   { name: "达姆施塔特", en: "Darmstadt", country: "德国", countryEn: "Germany", py: "darmstadt", lat: 49.872, lon: 8.651, alt: 144.0 },  // ESOC 测控中心
+  { name: "汉堡", en: "Hamburg", country: "德国", countryEn: "Germany", py: "hamburg", lat: 53.551, lon: 9.994, alt: 10.0 },
+  { name: "科隆", en: "Cologne", country: "德国", countryEn: "Germany", py: "cologne", lat: 50.938, lon: 6.960, alt: 50.0 },
+  { name: "杜塞尔多夫", en: "Dusseldorf", country: "德国", countryEn: "Germany", py: "dusseldorf", lat: 51.228, lon: 6.773, alt: 40.0 },
+  { name: "斯图加特", en: "Stuttgart", country: "德国", countryEn: "Germany", py: "stuttgart", lat: 48.776, lon: 9.183, alt: 245.0 },
+  { name: "莱比锡", en: "Leipzig", country: "德国", countryEn: "Germany", py: "leipzig", lat: 51.340, lon: 12.375, alt: 113.0 },
+  { name: "不来梅", en: "Bremen", country: "德国", countryEn: "Germany", py: "bremen", lat: 53.079, lon: 8.802, alt: 10.0 },
+  { name: "韦尔海姆", en: "Weilheim", country: "德国", countryEn: "Germany", py: "weilheim", lat: 47.881, lon: 11.084, alt: 590.0 },  // DLR 地面站
+  { name: "赖斯廷", en: "Raisting", country: "德国", countryEn: "Germany", py: "raisting", lat: 47.902, lon: 11.113, alt: 560.0 },  // 地面站
+  { name: "乌辛根", en: "Usingen", country: "德国", countryEn: "Germany", py: "usingen", lat: 50.335, lon: 8.537, alt: 380.0 },  // 地面站
   { name: "罗马", en: "Rome", country: "意大利", countryEn: "Italy", py: "rome", lat: 41.903, lon: 12.496, alt: 21.0 },
   { name: "米兰", en: "Milan", country: "意大利", countryEn: "Italy", py: "milan", lat: 45.464, lon: 9.190, alt: 120.0 },
   { name: "富奇诺", en: "Fucino", country: "意大利", countryEn: "Italy", py: "fucino", lat: 42.000, lon: 13.600, alt: 680.0 },  // 卫星地面站
+  { name: "那不勒斯", en: "Naples", country: "意大利", countryEn: "Italy", py: "naples", lat: 40.852, lon: 14.268, alt: 17.0 },
+  { name: "都灵", en: "Turin", country: "意大利", countryEn: "Italy", py: "turin", lat: 45.070, lon: 7.687, alt: 239.0 },
+  { name: "威尼斯", en: "Venice", country: "意大利", countryEn: "Italy", py: "venice", lat: 45.438, lon: 12.327, alt: 1.0 },
+  { name: "巴勒莫", en: "Palermo", country: "意大利", countryEn: "Italy", py: "palermo", lat: 38.116, lon: 13.361, alt: 14.0 },
+  { name: "卡利亚里", en: "Cagliari", country: "意大利", countryEn: "Italy", py: "cagliari", lat: 39.223, lon: 9.121, alt: 4.0 },
+  { name: "弗拉斯卡蒂", en: "Frascati", country: "意大利", countryEn: "Italy", py: "frascati", lat: 41.807, lon: 12.681, alt: 320.0 },  // ESA ESRIN
+  { name: "马泰拉", en: "Matera", country: "意大利", countryEn: "Italy", py: "matera", lat: 40.667, lon: 16.604, alt: 400.0 },  // ASI 地面站
   { name: "马德里", en: "Madrid", country: "西班牙", countryEn: "Spain", py: "madrid", lat: 40.417, lon: -3.704, alt: 667.0 },
   { name: "巴塞罗那", en: "Barcelona", country: "西班牙", countryEn: "Spain", py: "barcelona", lat: 41.385, lon: 2.173, alt: 12.0 },
+  { name: "瓦伦西亚", en: "Valencia", country: "西班牙", countryEn: "Spain", py: "valencia", lat: 39.470, lon: -0.377, alt: 15.0 },
+  { name: "塞维利亚", en: "Seville", country: "西班牙", countryEn: "Spain", py: "seville", lat: 37.389, lon: -5.984, alt: 7.0 },
+  { name: "拉斯帕尔马斯", en: "Las Palmas", country: "西班牙", countryEn: "Spain", py: "laspalmas", lat: 28.124, lon: -15.430, alt: 8.0 },
+  { name: "马斯帕洛马斯", en: "Maspalomas", country: "西班牙", countryEn: "Spain", py: "maspalomas", lat: 27.763, lon: -15.634, alt: 160.0 },  // ESA 地面站
+  { name: "塞夫雷罗斯", en: "Cebreros", country: "西班牙", countryEn: "Spain", py: "cebreros", lat: 40.453, lon: -4.368, alt: 800.0 },  // ESA 深空站
+  { name: "罗夫莱多", en: "Robledo de Chavela", country: "西班牙", countryEn: "Spain", py: "robledodechavela", lat: 40.427, lon: -4.249, alt: 830.0 },  // NASA 深空网
   { name: "里斯本", en: "Lisbon", country: "葡萄牙", countryEn: "Portugal", py: "lisbon", lat: 38.722, lon: -9.139, alt: 100.0 },
+  { name: "波尔图", en: "Porto", country: "葡萄牙", countryEn: "Portugal", py: "porto", lat: 41.150, lon: -8.611, alt: 100.0 },
+  { name: "丰沙尔", en: "Funchal", country: "葡萄牙", countryEn: "Portugal", py: "funchal", lat: 32.650, lon: -16.908, alt: 25.0 },
+  { name: "蓬塔德尔加达", en: "Ponta Delgada", country: "葡萄牙", countryEn: "Portugal", py: "pontadelgada", lat: 37.741, lon: -25.675, alt: 20.0 },
+  { name: "圣玛丽亚（亚速尔）", en: "Santa Maria (Azores)", country: "葡萄牙", countryEn: "Portugal", py: "santamariaazores", lat: 36.997, lon: -25.136, alt: 280.0 },  // ESA 地面站
   { name: "阿姆斯特丹", en: "Amsterdam", country: "荷兰", countryEn: "Netherlands", py: "amsterdam", lat: 52.370, lon: 4.895, alt: 2.0 },
+  { name: "鹿特丹", en: "Rotterdam", country: "荷兰", countryEn: "Netherlands", py: "rotterdam", lat: 51.924, lon: 4.478, alt: 0.0 },
+  { name: "诺德韦克", en: "Noordwijk", country: "荷兰", countryEn: "Netherlands", py: "noordwijk", lat: 52.239, lon: 4.436, alt: 5.0 },  // ESA ESTEC
+  { name: "布吕姆", en: "Burum", country: "荷兰", countryEn: "Netherlands", py: "burum", lat: 53.283, lon: 6.211, alt: 0.0 },  // 地面站
   { name: "布鲁塞尔", en: "Brussels", country: "比利时", countryEn: "Belgium", py: "brussels", lat: 50.851, lon: 4.352, alt: 56.0 },
+  { name: "安特卫普", en: "Antwerp", country: "比利时", countryEn: "Belgium", py: "antwerp", lat: 51.220, lon: 4.402, alt: 8.0 },
+  { name: "勒迪", en: "Redu", country: "比利时", countryEn: "Belgium", py: "redu", lat: 50.002, lon: 5.146, alt: 350.0 },  // ESA 地面站
   { name: "卢森堡", en: "Luxembourg", country: "卢森堡", countryEn: "Luxembourg", py: "luxembourg", lat: 49.611, lon: 6.130, alt: 305.0 },
+  { name: "贝茨多夫", en: "Betzdorf", country: "卢森堡", countryEn: "Luxembourg", py: "betzdorf", lat: 49.683, lon: 6.348, alt: 320.0 },  // SES 地面站
   { name: "苏黎世", en: "Zurich", country: "瑞士", countryEn: "Switzerland", py: "zurich", lat: 47.377, lon: 8.542, alt: 408.0 },
   { name: "日内瓦", en: "Geneva", country: "瑞士", countryEn: "Switzerland", py: "geneva", lat: 46.204, lon: 6.143, alt: 375.0 },  // ITU 所在地
+  { name: "伯尔尼", en: "Bern", country: "瑞士", countryEn: "Switzerland", py: "bern", lat: 46.948, lon: 7.447, alt: 540.0 },
+  { name: "洛伊克", en: "Leuk", country: "瑞士", countryEn: "Switzerland", py: "leuk", lat: 46.318, lon: 7.634, alt: 950.0 },  // 地面站
   { name: "维也纳", en: "Vienna", country: "奥地利", countryEn: "Austria", py: "vienna", lat: 48.209, lon: 16.373, alt: 170.0 },
+  { name: "格拉茨", en: "Graz", country: "奥地利", countryEn: "Austria", py: "graz", lat: 47.071, lon: 15.439, alt: 353.0 },
   { name: "布拉格", en: "Prague", country: "捷克", countryEn: "Czechia", py: "prague", lat: 50.076, lon: 14.438, alt: 200.0 },
+  { name: "布尔诺", en: "Brno", country: "捷克", countryEn: "Czechia", py: "brno", lat: 49.195, lon: 16.608, alt: 237.0 },
   { name: "华沙", en: "Warsaw", country: "波兰", countryEn: "Poland", py: "warsaw", lat: 52.230, lon: 21.012, alt: 100.0 },
+  { name: "克拉科夫", en: "Krakow", country: "波兰", countryEn: "Poland", py: "krakow", lat: 50.064, lon: 19.945, alt: 219.0 },
+  { name: "格但斯克", en: "Gdansk", country: "波兰", countryEn: "Poland", py: "gdansk", lat: 54.352, lon: 18.646, alt: 7.0 },
   { name: "布达佩斯", en: "Budapest", country: "匈牙利", countryEn: "Hungary", py: "budapest", lat: 47.498, lon: 19.040, alt: 102.0 },
   { name: "布加勒斯特", en: "Bucharest", country: "罗马尼亚", countryEn: "Romania", py: "bucharest", lat: 44.427, lon: 26.103, alt: 70.0 },
+  { name: "克卢日", en: "Cluj-Napoca", country: "罗马尼亚", countryEn: "Romania", py: "clujnapoca", lat: 46.771, lon: 23.624, alt: 340.0 },
+  { name: "康斯坦察", en: "Constanta", country: "罗马尼亚", countryEn: "Romania", py: "constanta", lat: 44.160, lon: 28.635, alt: 25.0 },
   { name: "索菲亚", en: "Sofia", country: "保加利亚", countryEn: "Bulgaria", py: "sofia", lat: 42.698, lon: 23.322, alt: 550.0 },
+  { name: "瓦尔纳", en: "Varna", country: "保加利亚", countryEn: "Bulgaria", py: "varna", lat: 43.205, lon: 27.911, alt: 30.0 },
   { name: "贝尔格莱德", en: "Belgrade", country: "塞尔维亚", countryEn: "Serbia", py: "belgrade", lat: 44.787, lon: 20.449, alt: 117.0 },
   { name: "雅典", en: "Athens", country: "希腊", countryEn: "Greece", py: "athens", lat: 37.984, lon: 23.728, alt: 70.0 },
+  { name: "塞萨洛尼基", en: "Thessaloniki", country: "希腊", countryEn: "Greece", py: "thessaloniki", lat: 40.640, lon: 22.944, alt: 10.0 },
+  { name: "伊拉克利翁", en: "Heraklion", country: "希腊", countryEn: "Greece", py: "heraklion", lat: 35.339, lon: 25.144, alt: 20.0 },
   { name: "斯德哥尔摩", en: "Stockholm", country: "瑞典", countryEn: "Sweden", py: "stockholm", lat: 59.329, lon: 18.069, alt: 28.0 },
+  { name: "哥德堡", en: "Gothenburg", country: "瑞典", countryEn: "Sweden", py: "gothenburg", lat: 57.709, lon: 11.975, alt: 10.0 },
+  { name: "马尔默", en: "Malmo", country: "瑞典", countryEn: "Sweden", py: "malmo", lat: 55.605, lon: 13.003, alt: 10.0 },
+  { name: "基律纳", en: "Kiruna", country: "瑞典", countryEn: "Sweden", py: "kiruna", lat: 67.856, lon: 20.225, alt: 530.0 },  // Esrange / ESA 地面站
   { name: "奥斯陆", en: "Oslo", country: "挪威", countryEn: "Norway", py: "oslo", lat: 59.914, lon: 10.752, alt: 23.0 },
   { name: "朗伊尔城", en: "Longyearbyen", country: "挪威", countryEn: "Norway", py: "longyearbyen", lat: 78.223, lon: 15.648, alt: 30.0 },  // 斯瓦尔巴极地地面站
+  { name: "卑尔根", en: "Bergen", country: "挪威", countryEn: "Norway", py: "bergen", lat: 60.392, lon: 5.324, alt: 10.0 },
+  { name: "特隆赫姆", en: "Trondheim", country: "挪威", countryEn: "Norway", py: "trondheim", lat: 63.430, lon: 10.395, alt: 10.0 },
+  { name: "特罗姆瑟", en: "Tromso", country: "挪威", countryEn: "Norway", py: "tromso", lat: 69.649, lon: 18.956, alt: 10.0 },  // KSAT 地面站
+  { name: "安岛", en: "Andoya", country: "挪威", countryEn: "Norway", py: "andoya", lat: 69.294, lon: 16.021, alt: 10.0 },  // 航天发射场
+  { name: "新奥勒松", en: "Ny-Alesund", country: "挪威", countryEn: "Norway", py: "nyalesund", lat: 78.923, lon: 11.923, alt: 10.0 },
   { name: "哥本哈根", en: "Copenhagen", country: "丹麦", countryEn: "Denmark", py: "copenhagen", lat: 55.676, lon: 12.568, alt: 14.0 },
+  { name: "奥胡斯", en: "Aarhus", country: "丹麦", countryEn: "Denmark", py: "aarhus", lat: 56.162, lon: 10.204, alt: 10.0 },
   { name: "赫尔辛基", en: "Helsinki", country: "芬兰", countryEn: "Finland", py: "helsinki", lat: 60.170, lon: 24.938, alt: 26.0 },
+  { name: "坦佩雷", en: "Tampere", country: "芬兰", countryEn: "Finland", py: "tampere", lat: 61.498, lon: 23.761, alt: 90.0 },
+  { name: "罗瓦涅米", en: "Rovaniemi", country: "芬兰", countryEn: "Finland", py: "rovaniemi", lat: 66.503, lon: 25.729, alt: 100.0 },
+  { name: "索丹屈莱", en: "Sodankyla", country: "芬兰", countryEn: "Finland", py: "sodankyla", lat: 67.368, lon: 26.633, alt: 180.0 },  // 地面站
   { name: "都柏林", en: "Dublin", country: "爱尔兰", countryEn: "Ireland", py: "dublin", lat: 53.350, lon: -6.260, alt: 20.0 },
+  { name: "科克", en: "Cork", country: "爱尔兰", countryEn: "Ireland", py: "cork", lat: 51.898, lon: -8.476, alt: 10.0 },
   { name: "雷克雅未克", en: "Reykjavik", country: "冰岛", countryEn: "Iceland", py: "reykjavik", lat: 64.147, lon: -21.940, alt: 61.0 },
+  { name: "维尔纽斯", en: "Vilnius", country: "立陶宛", countryEn: "Lithuania", py: "vilnius", lat: 54.687, lon: 25.280, alt: 112.0 },
+  { name: "里加", en: "Riga", country: "拉脱维亚", countryEn: "Latvia", py: "riga", lat: 56.950, lon: 24.106, alt: 10.0 },
+  { name: "塔林", en: "Tallinn", country: "爱沙尼亚", countryEn: "Estonia", py: "tallinn", lat: 59.437, lon: 24.754, alt: 10.0 },
+  { name: "布拉迪斯拉发", en: "Bratislava", country: "斯洛伐克", countryEn: "Slovakia", py: "bratislava", lat: 48.149, lon: 17.107, alt: 134.0 },
+  { name: "卢布尔雅那", en: "Ljubljana", country: "斯洛文尼亚", countryEn: "Slovenia", py: "ljubljana", lat: 46.056, lon: 14.506, alt: 298.0 },
+  { name: "萨格勒布", en: "Zagreb", country: "克罗地亚", countryEn: "Croatia", py: "zagreb", lat: 45.815, lon: 15.982, alt: 158.0 },
+  { name: "萨拉热窝", en: "Sarajevo", country: "波黑", countryEn: "Bosnia and Herzegovina", py: "sarajevo", lat: 43.856, lon: 18.413, alt: 518.0 },
+  { name: "波德戈里察", en: "Podgorica", country: "黑山", countryEn: "Montenegro", py: "podgorica", lat: 42.441, lon: 19.263, alt: 44.0 },
+  { name: "地拉那", en: "Tirana", country: "阿尔巴尼亚", countryEn: "Albania", py: "tirana", lat: 41.328, lon: 19.819, alt: 110.0 },
+  { name: "斯科普里", en: "Skopje", country: "北马其顿", countryEn: "North Macedonia", py: "skopje", lat: 41.997, lon: 21.428, alt: 240.0 },
+  { name: "瓦莱塔", en: "Valletta", country: "马耳他", countryEn: "Malta", py: "valletta", lat: 35.899, lon: 14.514, alt: 56.0 },
+  { name: "摩纳哥", en: "Monaco", country: "摩纳哥", countryEn: "Monaco", py: "monaco", lat: 43.738, lon: 7.425, alt: 40.0 },
+  { name: "安道尔城", en: "Andorra la Vella", country: "安道尔", countryEn: "Andorra", py: "andorralavella", lat: 42.507, lon: 1.522, alt: 1023.0 },
+  { name: "瓦杜兹", en: "Vaduz", country: "列支敦士登", countryEn: "Liechtenstein", py: "vaduz", lat: 47.141, lon: 9.521, alt: 455.0 },
+  { name: "圣马力诺", en: "San Marino", country: "圣马力诺", countryEn: "San Marino", py: "sanmarino", lat: 43.936, lon: 12.447, alt: 650.0 },
 
   // —— 非洲 ——
   { name: "开罗", en: "Cairo", country: "埃及", countryEn: "Egypt", py: "cairo", lat: 30.044, lon: 31.236, alt: 23.0 },
   { name: "亚历山大", en: "Alexandria", country: "埃及", countryEn: "Egypt", py: "alexandria", lat: 31.200, lon: 29.918, alt: 12.0 },
+  { name: "阿斯旺", en: "Aswan", country: "埃及", countryEn: "Egypt", py: "aswan", lat: 24.089, lon: 32.899, alt: 100.0 },
+  { name: "塞得港", en: "Port Said", country: "埃及", countryEn: "Egypt", py: "portsaid", lat: 31.257, lon: 32.284, alt: 3.0 },
   { name: "拉各斯", en: "Lagos", country: "尼日利亚", countryEn: "Nigeria", py: "lagos", lat: 6.524, lon: 3.379, alt: 41.0 },
   { name: "阿布贾", en: "Abuja", country: "尼日利亚", countryEn: "Nigeria", py: "abuja", lat: 9.058, lon: 7.495, alt: 476.0 },
+  { name: "卡诺", en: "Kano", country: "尼日利亚", countryEn: "Nigeria", py: "kano", lat: 12.002, lon: 8.592, alt: 470.0 },
+  { name: "伊巴丹", en: "Ibadan", country: "尼日利亚", countryEn: "Nigeria", py: "ibadan", lat: 7.378, lon: 3.947, alt: 230.0 },
+  { name: "哈科特港", en: "Port Harcourt", country: "尼日利亚", countryEn: "Nigeria", py: "portharcourt", lat: 4.816, lon: 7.050, alt: 15.0 },
   { name: "内罗毕", en: "Nairobi", country: "肯尼亚", countryEn: "Kenya", py: "nairobi", lat: -1.286, lon: 36.817, alt: 1795.0 },
+  { name: "蒙巴萨", en: "Mombasa", country: "肯尼亚", countryEn: "Kenya", py: "mombasa", lat: -4.043, lon: 39.668, alt: 50.0 },
+  { name: "马林迪", en: "Malindi", country: "肯尼亚", countryEn: "Kenya", py: "malindi", lat: -3.218, lon: 40.117, alt: 10.0 },  // ASI 地面站
   { name: "亚的斯亚贝巴", en: "Addis Ababa", country: "埃塞俄比亚", countryEn: "Ethiopia", py: "addisababa", lat: 9.005, lon: 38.763, alt: 2355.0 },
   { name: "约翰内斯堡", en: "Johannesburg", country: "南非", countryEn: "South Africa", py: "johannesburg", lat: -26.204, lon: 28.047, alt: 1753.0 },
   { name: "开普敦", en: "Cape Town", country: "南非", countryEn: "South Africa", py: "capetown", lat: -33.925, lon: 18.424, alt: 25.0 },
   { name: "比勒陀利亚", en: "Pretoria", country: "南非", countryEn: "South Africa", py: "pretoria", lat: -25.746, lon: 28.188, alt: 1339.0 },
+  { name: "德班", en: "Durban", country: "南非", countryEn: "South Africa", py: "durban", lat: -29.858, lon: 31.022, alt: 10.0 },
+  { name: "伊丽莎白港", en: "Gqeberha (Port Elizabeth)", country: "南非", countryEn: "South Africa", py: "gqeberhaportelizabeth", lat: -33.958, lon: 25.600, alt: 10.0 },
+  { name: "布隆方丹", en: "Bloemfontein", country: "南非", countryEn: "South Africa", py: "bloemfontein", lat: -29.117, lon: 26.216, alt: 1395.0 },
+  { name: "哈特比斯胡克", en: "Hartebeesthoek", country: "南非", countryEn: "South Africa", py: "hartebeesthoek", lat: -25.887, lon: 27.707, alt: 1400.0 },  // 地面站
   { name: "卡萨布兰卡", en: "Casablanca", country: "摩洛哥", countryEn: "Morocco", py: "casablanca", lat: 33.573, lon: -7.590, alt: 50.0 },
   { name: "拉巴特", en: "Rabat", country: "摩洛哥", countryEn: "Morocco", py: "rabat", lat: 34.021, lon: -6.842, alt: 75.0 },
+  { name: "马拉喀什", en: "Marrakech", country: "摩洛哥", countryEn: "Morocco", py: "marrakech", lat: 31.630, lon: -7.992, alt: 466.0 },
+  { name: "丹吉尔", en: "Tangier", country: "摩洛哥", countryEn: "Morocco", py: "tangier", lat: 35.760, lon: -5.834, alt: 20.0 },
   { name: "阿尔及尔", en: "Algiers", country: "阿尔及利亚", countryEn: "Algeria", py: "algiers", lat: 36.754, lon: 3.060, alt: 25.0 },
+  { name: "奥兰", en: "Oran", country: "阿尔及利亚", countryEn: "Algeria", py: "oran", lat: 35.698, lon: -0.636, alt: 10.0 },
+  { name: "塔曼拉塞特", en: "Tamanrasset", country: "阿尔及利亚", countryEn: "Algeria", py: "tamanrasset", lat: 22.785, lon: 5.523, alt: 1320.0 },
   { name: "突尼斯", en: "Tunis", country: "突尼斯", countryEn: "Tunisia", py: "tunis", lat: 36.807, lon: 10.181, alt: 25.0 },
   { name: "达喀尔", en: "Dakar", country: "塞内加尔", countryEn: "Senegal", py: "dakar", lat: 14.717, lon: -17.467, alt: 22.0 },
   { name: "阿克拉", en: "Accra", country: "加纳", countryEn: "Ghana", py: "accra", lat: 5.604, lon: -0.187, alt: 61.0 },
+  { name: "库马西", en: "Kumasi", country: "加纳", countryEn: "Ghana", py: "kumasi", lat: 6.688, lon: -1.624, alt: 250.0 },
   { name: "阿比让", en: "Abidjan", country: "科特迪瓦", countryEn: "Cote d'Ivoire", py: "abidjan", lat: 5.360, lon: -4.008, alt: 18.0 },
+  { name: "亚穆苏克罗", en: "Yamoussoukro", country: "科特迪瓦", countryEn: "Cote d'Ivoire", py: "yamoussoukro", lat: 6.827, lon: -5.289, alt: 210.0 },
   { name: "金沙萨", en: "Kinshasa", country: "刚果（金）", countryEn: "DR Congo", py: "kinshasa", lat: -4.322, lon: 15.307, alt: 240.0 },
+  { name: "卢本巴希", en: "Lubumbashi", country: "刚果（金）", countryEn: "DR Congo", py: "lubumbashi", lat: -11.660, lon: 27.479, alt: 1230.0 },
+  { name: "基桑加尼", en: "Kisangani", country: "刚果（金）", countryEn: "DR Congo", py: "kisangani", lat: 0.517, lon: 25.204, alt: 400.0 },
   { name: "罗安达", en: "Luanda", country: "安哥拉", countryEn: "Angola", py: "luanda", lat: -8.839, lon: 13.234, alt: 6.0 },
   { name: "达累斯萨拉姆", en: "Dar es Salaam", country: "坦桑尼亚", countryEn: "Tanzania", py: "daressalaam", lat: -6.792, lon: 39.208, alt: 24.0 },
+  { name: "多多马", en: "Dodoma", country: "坦桑尼亚", countryEn: "Tanzania", py: "dodoma", lat: -6.163, lon: 35.752, alt: 1120.0 },
+  { name: "桑给巴尔", en: "Zanzibar", country: "坦桑尼亚", countryEn: "Tanzania", py: "zanzibar", lat: -6.165, lon: 39.199, alt: 15.0 },
   { name: "哈拉雷", en: "Harare", country: "津巴布韦", countryEn: "Zimbabwe", py: "harare", lat: -17.825, lon: 31.033, alt: 1490.0 },
+  { name: "布拉瓦约", en: "Bulawayo", country: "津巴布韦", countryEn: "Zimbabwe", py: "bulawayo", lat: -20.150, lon: 28.583, alt: 1358.0 },
   { name: "卢萨卡", en: "Lusaka", country: "赞比亚", countryEn: "Zambia", py: "lusaka", lat: -15.387, lon: 28.323, alt: 1279.0 },
   { name: "喀土穆", en: "Khartoum", country: "苏丹", countryEn: "Sudan", py: "khartoum", lat: 15.501, lon: 32.559, alt: 385.0 },
+  { name: "苏丹港", en: "Port Sudan", country: "苏丹", countryEn: "Sudan", py: "portsudan", lat: 19.616, lon: 37.216, alt: 10.0 },
   { name: "马普托", en: "Maputo", country: "莫桑比克", countryEn: "Mozambique", py: "maputo", lat: -25.966, lon: 32.581, alt: 47.0 },
+  { name: "贝拉", en: "Beira", country: "莫桑比克", countryEn: "Mozambique", py: "beira", lat: -19.833, lon: 34.839, alt: 10.0 },
+  { name: "楠普拉", en: "Nampula", country: "莫桑比克", countryEn: "Mozambique", py: "nampula", lat: -15.117, lon: 39.267, alt: 440.0 },
   { name: "安塔那那利佛", en: "Antananarivo", country: "马达加斯加", countryEn: "Madagascar", py: "antananarivo", lat: -18.879, lon: 47.508, alt: 1276.0 },
+  { name: "图阿马西纳", en: "Toamasina", country: "马达加斯加", countryEn: "Madagascar", py: "toamasina", lat: -18.150, lon: 49.400, alt: 10.0 },
+  { name: "的黎波里", en: "Tripoli", country: "利比亚", countryEn: "Libya", py: "tripoli", lat: 32.887, lon: 13.191, alt: 10.0 },
+  { name: "班加西", en: "Benghazi", country: "利比亚", countryEn: "Libya", py: "benghazi", lat: 32.117, lon: 20.068, alt: 20.0 },
+  { name: "努瓦克肖特", en: "Nouakchott", country: "毛里塔尼亚", countryEn: "Mauritania", py: "nouakchott", lat: 18.079, lon: -15.965, alt: 7.0 },
+  { name: "巴马科", en: "Bamako", country: "马里", countryEn: "Mali", py: "bamako", lat: 12.639, lon: -8.003, alt: 350.0 },
+  { name: "尼亚美", en: "Niamey", country: "尼日尔", countryEn: "Niger", py: "niamey", lat: 13.512, lon: 2.112, alt: 207.0 },
+  { name: "恩贾梅纳", en: "N'Djamena", country: "乍得", countryEn: "Chad", py: "ndjamena", lat: 12.135, lon: 15.055, alt: 298.0 },
+  { name: "瓦加杜古", en: "Ouagadougou", country: "布基纳法索", countryEn: "Burkina Faso", py: "ouagadougou", lat: 12.371, lon: -1.520, alt: 305.0 },
+  { name: "班珠尔", en: "Banjul", country: "冈比亚", countryEn: "Gambia", py: "banjul", lat: 13.454, lon: -16.579, alt: 0.0 },
+  { name: "比绍", en: "Bissau", country: "几内亚比绍", countryEn: "Guinea-Bissau", py: "bissau", lat: 11.863, lon: -15.598, alt: 30.0 },
+  { name: "科纳克里", en: "Conakry", country: "几内亚", countryEn: "Guinea", py: "conakry", lat: 9.641, lon: -13.578, alt: 20.0 },
+  { name: "弗里敦", en: "Freetown", country: "塞拉利昂", countryEn: "Sierra Leone", py: "freetown", lat: 8.484, lon: -13.229, alt: 30.0 },
+  { name: "蒙罗维亚", en: "Monrovia", country: "利比里亚", countryEn: "Liberia", py: "monrovia", lat: 6.301, lon: -10.797, alt: 10.0 },
+  { name: "洛美", en: "Lome", country: "多哥", countryEn: "Togo", py: "lome", lat: 6.131, lon: 1.222, alt: 25.0 },
+  { name: "科托努", en: "Cotonou", country: "贝宁", countryEn: "Benin", py: "cotonou", lat: 6.367, lon: 2.418, alt: 8.0 },
+  { name: "雅温得", en: "Yaounde", country: "喀麦隆", countryEn: "Cameroon", py: "yaounde", lat: 3.848, lon: 11.502, alt: 726.0 },
+  { name: "杜阿拉", en: "Douala", country: "喀麦隆", countryEn: "Cameroon", py: "douala", lat: 4.051, lon: 9.768, alt: 13.0 },
+  { name: "马拉博", en: "Malabo", country: "赤道几内亚", countryEn: "Equatorial Guinea", py: "malabo", lat: 3.750, lon: 8.783, alt: 30.0 },
+  { name: "圣多美", en: "Sao Tome", country: "圣多美和普林西比", countryEn: "Sao Tome and Principe", py: "saotome", lat: 0.336, lon: 6.731, alt: 10.0 },
+  { name: "利伯维尔", en: "Libreville", country: "加蓬", countryEn: "Gabon", py: "libreville", lat: 0.416, lon: 9.467, alt: 15.0 },
+  { name: "布拉柴维尔", en: "Brazzaville", country: "刚果（布）", countryEn: "Republic of the Congo", py: "brazzaville", lat: -4.263, lon: 15.243, alt: 320.0 },
+  { name: "黑角", en: "Pointe-Noire", country: "刚果（布）", countryEn: "Republic of the Congo", py: "pointenoire", lat: -4.795, lon: 11.851, alt: 10.0 },
+  { name: "班吉", en: "Bangui", country: "中非", countryEn: "Central African Republic", py: "bangui", lat: 4.395, lon: 18.558, alt: 369.0 },
+  { name: "朱巴", en: "Juba", country: "南苏丹", countryEn: "South Sudan", py: "juba", lat: 4.859, lon: 31.571, alt: 550.0 },
+  { name: "阿斯马拉", en: "Asmara", country: "厄立特里亚", countryEn: "Eritrea", py: "asmara", lat: 15.322, lon: 38.925, alt: 2325.0 },
+  { name: "吉布提", en: "Djibouti", country: "吉布提", countryEn: "Djibouti", py: "djibouti", lat: 11.589, lon: 43.145, alt: 10.0 },
+  { name: "摩加迪沙", en: "Mogadishu", country: "索马里", countryEn: "Somalia", py: "mogadishu", lat: 2.047, lon: 45.318, alt: 10.0 },
+  { name: "坎帕拉", en: "Kampala", country: "乌干达", countryEn: "Uganda", py: "kampala", lat: 0.347, lon: 32.582, alt: 1190.0 },
+  { name: "基加利", en: "Kigali", country: "卢旺达", countryEn: "Rwanda", py: "kigali", lat: -1.944, lon: 30.062, alt: 1567.0 },
+  { name: "布琼布拉", en: "Bujumbura", country: "布隆迪", countryEn: "Burundi", py: "bujumbura", lat: -3.383, lon: 29.362, alt: 774.0 },
+  { name: "利隆圭", en: "Lilongwe", country: "马拉维", countryEn: "Malawi", py: "lilongwe", lat: -13.963, lon: 33.774, alt: 1050.0 },
+  { name: "温得和克", en: "Windhoek", country: "纳米比亚", countryEn: "Namibia", py: "windhoek", lat: -22.559, lon: 17.083, alt: 1655.0 },
+  { name: "沃尔维斯湾", en: "Walvis Bay", country: "纳米比亚", countryEn: "Namibia", py: "walvisbay", lat: -22.958, lon: 14.506, alt: 5.0 },
+  { name: "哈博罗内", en: "Gaborone", country: "博茨瓦纳", countryEn: "Botswana", py: "gaborone", lat: -24.654, lon: 25.909, alt: 1010.0 },
+  { name: "马塞卢", en: "Maseru", country: "莱索托", countryEn: "Lesotho", py: "maseru", lat: -29.316, lon: 27.483, alt: 1600.0 },
+  { name: "姆巴巴内", en: "Mbabane", country: "斯威士兰", countryEn: "Eswatini", py: "mbabane", lat: -26.317, lon: 31.133, alt: 1150.0 },
+  { name: "路易港", en: "Port Louis", country: "毛里求斯", countryEn: "Mauritius", py: "portlouis", lat: -20.162, lon: 57.499, alt: 10.0 },
+  { name: "维多利亚（塞舌尔）", en: "Victoria (Seychelles)", country: "塞舌尔", countryEn: "Seychelles", py: "victoriaseychelles", lat: -4.620, lon: 55.452, alt: 10.0 },
+  { name: "莫罗尼", en: "Moroni", country: "科摩罗", countryEn: "Comoros", py: "moroni", lat: -11.702, lon: 43.256, alt: 10.0 },
+  { name: "圣但尼", en: "Saint-Denis", country: "留尼汪", countryEn: "Reunion", py: "saintdenis", lat: -20.879, lon: 55.448, alt: 20.0 },
+  { name: "普拉亚", en: "Praia", country: "佛得角", countryEn: "Cape Verde", py: "praia", lat: 14.933, lon: -23.513, alt: 30.0 },
 
   // —— 北美 ——
   { name: "纽约", en: "New York", country: "美国", countryEn: "United States", py: "newyork", lat: 40.713, lon: -74.006, alt: 10.0 },
@@ -638,29 +899,127 @@ const CITIES_DATA = [
   { name: "檀香山", en: "Honolulu", country: "美国", countryEn: "United States", py: "honolulu", lat: 21.307, lon: -157.858, alt: 6.0 },
   { name: "安克雷奇", en: "Anchorage", country: "美国", countryEn: "United States", py: "anchorage", lat: 61.218, lon: -149.900, alt: 31.0 },
   { name: "关岛", en: "Guam", country: "美国", countryEn: "United States", py: "guam", lat: 13.475, lon: 144.751, alt: 75.0 },
+  { name: "菲尼克斯", en: "Phoenix", country: "美国", countryEn: "United States", py: "phoenix", lat: 33.448, lon: -112.074, alt: 331.0 },
+  { name: "费城", en: "Philadelphia", country: "美国", countryEn: "United States", py: "philadelphia", lat: 39.953, lon: -75.165, alt: 12.0 },
+  { name: "圣迭戈", en: "San Diego", country: "美国", countryEn: "United States", py: "sandiego", lat: 32.716, lon: -117.161, alt: 20.0 },
+  { name: "圣何塞（加州）", en: "San Jose (California)", country: "美国", countryEn: "United States", py: "sanjosecalifornia", lat: 37.339, lon: -121.895, alt: 25.0 },
+  { name: "圣安东尼奥", en: "San Antonio", country: "美国", countryEn: "United States", py: "sanantonio", lat: 29.424, lon: -98.494, alt: 198.0 },
+  { name: "奥斯汀", en: "Austin", country: "美国", countryEn: "United States", py: "austin", lat: 30.267, lon: -97.743, alt: 150.0 },
+  { name: "底特律", en: "Detroit", country: "美国", countryEn: "United States", py: "detroit", lat: 42.331, lon: -83.046, alt: 183.0 },
+  { name: "明尼阿波利斯", en: "Minneapolis", country: "美国", countryEn: "United States", py: "minneapolis", lat: 44.978, lon: -93.265, alt: 264.0 },
+  { name: "圣路易斯", en: "St. Louis", country: "美国", countryEn: "United States", py: "stlouis", lat: 38.627, lon: -90.199, alt: 142.0 },
+  { name: "堪萨斯城", en: "Kansas City", country: "美国", countryEn: "United States", py: "kansascity", lat: 39.100, lon: -94.578, alt: 275.0 },
+  { name: "纳什维尔", en: "Nashville", country: "美国", countryEn: "United States", py: "nashville", lat: 36.163, lon: -86.782, alt: 170.0 },
+  { name: "夏洛特", en: "Charlotte", country: "美国", countryEn: "United States", py: "charlotte", lat: 35.227, lon: -80.843, alt: 230.0 },
+  { name: "匹兹堡", en: "Pittsburgh", country: "美国", countryEn: "United States", py: "pittsburgh", lat: 40.441, lon: -79.996, alt: 230.0 },
+  { name: "新奥尔良", en: "New Orleans", country: "美国", countryEn: "United States", py: "neworleans", lat: 29.951, lon: -90.072, alt: 2.0 },
+  { name: "奥兰多", en: "Orlando", country: "美国", countryEn: "United States", py: "orlando", lat: 28.538, lon: -81.379, alt: 25.0 },
+  { name: "坦帕", en: "Tampa", country: "美国", countryEn: "United States", py: "tampa", lat: 27.951, lon: -82.457, alt: 15.0 },
+  { name: "盐湖城", en: "Salt Lake City", country: "美国", countryEn: "United States", py: "saltlakecity", lat: 40.761, lon: -111.891, alt: 1288.0 },
+  { name: "波特兰", en: "Portland", country: "美国", countryEn: "United States", py: "portland", lat: 45.515, lon: -122.678, alt: 15.0 },
+  { name: "阿尔伯克基", en: "Albuquerque", country: "美国", countryEn: "United States", py: "albuquerque", lat: 35.084, lon: -106.651, alt: 1619.0 },
+  { name: "帕萨迪纳", en: "Pasadena", country: "美国", countryEn: "United States", py: "pasadena", lat: 34.148, lon: -118.144, alt: 260.0 },  // JPL
+  { name: "亨茨维尔", en: "Huntsville", country: "美国", countryEn: "United States", py: "huntsville", lat: 34.730, lon: -86.586, alt: 190.0 },  // NASA MSFC
+  { name: "戈尔德斯通", en: "Goldstone", country: "美国", countryEn: "United States", py: "goldstone", lat: 35.427, lon: -116.890, alt: 1000.0 },  // NASA 深空网
+  { name: "白沙", en: "White Sands", country: "美国", countryEn: "United States", py: "whitesands", lat: 32.541, lon: -106.612, alt: 1470.0 },  // NASA 地面站
+  { name: "沃洛普斯", en: "Wallops Island", country: "美国", countryEn: "United States", py: "wallopsisland", lat: 37.940, lon: -75.466, alt: 3.0 },  // 航天发射场
+  { name: "博卡奇卡", en: "Boca Chica", country: "美国", countryEn: "United States", py: "bocachica", lat: 25.997, lon: -97.155, alt: 3.0 },  // SpaceX 星舰基地
+  { name: "科迪亚克", en: "Kodiak", country: "美国", countryEn: "United States", py: "kodiak", lat: 57.790, lon: -152.407, alt: 30.0 },  // 航天发射场
+  { name: "费尔班克斯", en: "Fairbanks", country: "美国", countryEn: "United States", py: "fairbanks", lat: 64.838, lon: -147.716, alt: 136.0 },  // 极轨地面站
+  { name: "圣胡安", en: "San Juan", country: "美国", countryEn: "United States", py: "sanjuan", lat: 18.466, lon: -66.106, alt: 10.0 },  // 波多黎各
+  { name: "塞班", en: "Saipan", country: "美国", countryEn: "United States", py: "saipan", lat: 15.178, lon: 145.751, alt: 20.0 },  // 北马里亚纳
+  { name: "帕果帕果", en: "Pago Pago", country: "美国", countryEn: "United States", py: "pagopago", lat: -14.276, lon: -170.702, alt: 5.0 },  // 美属萨摩亚
+  { name: "乌特恰维克", en: "Utqiagvik (Barrow)", country: "美国", countryEn: "United States", py: "utqiagvikbarrow", lat: 71.290, lon: -156.789, alt: 5.0 },
   { name: "多伦多", en: "Toronto", country: "加拿大", countryEn: "Canada", py: "toronto", lat: 43.653, lon: -79.383, alt: 76.0 },
   { name: "温哥华", en: "Vancouver", country: "加拿大", countryEn: "Canada", py: "vancouver", lat: 49.283, lon: -123.121, alt: 70.0 },
   { name: "蒙特利尔", en: "Montreal", country: "加拿大", countryEn: "Canada", py: "montreal", lat: 45.502, lon: -73.567, alt: 36.0 },
   { name: "渥太华", en: "Ottawa", country: "加拿大", countryEn: "Canada", py: "ottawa", lat: 45.421, lon: -75.697, alt: 70.0 },
   { name: "卡尔加里", en: "Calgary", country: "加拿大", countryEn: "Canada", py: "calgary", lat: 51.045, lon: -114.057, alt: 1045.0 },
   { name: "伊努维克", en: "Inuvik", country: "加拿大", countryEn: "Canada", py: "inuvik", lat: 68.361, lon: -133.730, alt: 15.0 },  // 极地地面站
+  { name: "埃德蒙顿", en: "Edmonton", country: "加拿大", countryEn: "Canada", py: "edmonton", lat: 53.546, lon: -113.494, alt: 645.0 },
+  { name: "温尼伯", en: "Winnipeg", country: "加拿大", countryEn: "Canada", py: "winnipeg", lat: 49.895, lon: -97.138, alt: 239.0 },
+  { name: "魁北克城", en: "Quebec City", country: "加拿大", countryEn: "Canada", py: "quebeccity", lat: 46.813, lon: -71.208, alt: 98.0 },
+  { name: "哈利法克斯", en: "Halifax", country: "加拿大", countryEn: "Canada", py: "halifax", lat: 44.649, lon: -63.575, alt: 30.0 },
+  { name: "圣约翰斯", en: "St. John's", country: "加拿大", countryEn: "Canada", py: "stjohns", lat: 47.562, lon: -52.713, alt: 70.0 },
+  { name: "加蒂诺", en: "Gatineau", country: "加拿大", countryEn: "Canada", py: "gatineau", lat: 45.477, lon: -75.701, alt: 60.0 },  // 地面站
+  { name: "阿尔伯特王子城", en: "Prince Albert", country: "加拿大", countryEn: "Canada", py: "princealbert", lat: 53.203, lon: -105.753, alt: 430.0 },  // 地面站
+  { name: "丘吉尔", en: "Churchill", country: "加拿大", countryEn: "Canada", py: "churchill", lat: 58.768, lon: -94.165, alt: 10.0 },
+  { name: "黄刀", en: "Yellowknife", country: "加拿大", countryEn: "Canada", py: "yellowknife", lat: 62.454, lon: -114.372, alt: 206.0 },
+  { name: "白马", en: "Whitehorse", country: "加拿大", countryEn: "Canada", py: "whitehorse", lat: 60.721, lon: -135.057, alt: 670.0 },
+  { name: "伊魁特", en: "Iqaluit", country: "加拿大", countryEn: "Canada", py: "iqaluit", lat: 63.749, lon: -68.522, alt: 30.0 },
+  { name: "阿勒特", en: "Alert", country: "加拿大", countryEn: "Canada", py: "alert", lat: 82.501, lon: -62.348, alt: 30.0 },
   { name: "墨西哥城", en: "Mexico City", country: "墨西哥", countryEn: "Mexico", py: "mexicocity", lat: 19.433, lon: -99.133, alt: 2240.0 },
+  { name: "瓜达拉哈拉", en: "Guadalajara", country: "墨西哥", countryEn: "Mexico", py: "guadalajara", lat: 20.677, lon: -103.347, alt: 1566.0 },
+  { name: "蒙特雷", en: "Monterrey", country: "墨西哥", countryEn: "Mexico", py: "monterrey", lat: 25.686, lon: -100.316, alt: 540.0 },
+  { name: "蒂华纳", en: "Tijuana", country: "墨西哥", countryEn: "Mexico", py: "tijuana", lat: 32.514, lon: -117.038, alt: 20.0 },
+  { name: "梅里达", en: "Merida", country: "墨西哥", countryEn: "Mexico", py: "merida", lat: 20.967, lon: -89.624, alt: 10.0 },
+  { name: "坎昆", en: "Cancun", country: "墨西哥", countryEn: "Mexico", py: "cancun", lat: 21.161, lon: -86.851, alt: 10.0 },
   { name: "哈瓦那", en: "Havana", country: "古巴", countryEn: "Cuba", py: "havana", lat: 23.113, lon: -82.366, alt: 59.0 },
+  { name: "圣地亚哥（古巴）", en: "Santiago de Cuba", country: "古巴", countryEn: "Cuba", py: "santiagodecuba", lat: 20.020, lon: -75.822, alt: 50.0 },
   { name: "巴拿马城", en: "Panama City", country: "巴拿马", countryEn: "Panama", py: "panamacity", lat: 8.983, lon: -79.517, alt: 2.0 },
+  { name: "努克", en: "Nuuk", country: "格陵兰", countryEn: "Greenland", py: "nuuk", lat: 64.175, lon: -51.738, alt: 30.0 },
+  { name: "皮图菲克", en: "Pituffik (Thule)", country: "格陵兰", countryEn: "Greenland", py: "pituffikthule", lat: 76.531, lon: -68.703, alt: 77.0 },  // 地面站
+  { name: "危地马拉城", en: "Guatemala City", country: "危地马拉", countryEn: "Guatemala", py: "guatemalacity", lat: 14.634, lon: -90.507, alt: 1500.0 },
+  { name: "贝尔莫潘", en: "Belmopan", country: "伯利兹", countryEn: "Belize", py: "belmopan", lat: 17.251, lon: -88.759, alt: 76.0 },
+  { name: "特古西加尔巴", en: "Tegucigalpa", country: "洪都拉斯", countryEn: "Honduras", py: "tegucigalpa", lat: 14.072, lon: -87.192, alt: 990.0 },
+  { name: "圣萨尔瓦多", en: "San Salvador", country: "萨尔瓦多", countryEn: "El Salvador", py: "sansalvador", lat: 13.699, lon: -89.191, alt: 658.0 },
+  { name: "马那瓜", en: "Managua", country: "尼加拉瓜", countryEn: "Nicaragua", py: "managua", lat: 12.115, lon: -86.236, alt: 83.0 },
+  { name: "圣何塞（哥斯达黎加）", en: "San Jose (Costa Rica)", country: "哥斯达黎加", countryEn: "Costa Rica", py: "sanjosecostarica", lat: 9.928, lon: -84.091, alt: 1170.0 },
+  { name: "圣多明各", en: "Santo Domingo", country: "多米尼加", countryEn: "Dominican Republic", py: "santodomingo", lat: 18.486, lon: -69.931, alt: 14.0 },
+  { name: "太子港", en: "Port-au-Prince", country: "海地", countryEn: "Haiti", py: "portauprince", lat: 18.594, lon: -72.307, alt: 40.0 },
+  { name: "金斯敦", en: "Kingston", country: "牙买加", countryEn: "Jamaica", py: "kingston", lat: 17.997, lon: -76.793, alt: 10.0 },
+  { name: "拿骚", en: "Nassau", country: "巴哈马", countryEn: "Bahamas", py: "nassau", lat: 25.048, lon: -77.355, alt: 5.0 },
+  { name: "西班牙港", en: "Port of Spain", country: "特立尼达和多巴哥", countryEn: "Trinidad and Tobago", py: "portofspain", lat: 10.667, lon: -61.517, alt: 20.0 },
+  { name: "布里奇敦", en: "Bridgetown", country: "巴巴多斯", countryEn: "Barbados", py: "bridgetown", lat: 13.098, lon: -59.617, alt: 10.0 },
 
   // —— 南美 ——
   { name: "圣保罗", en: "Sao Paulo", country: "巴西", countryEn: "Brazil", py: "saopaulo", lat: -23.551, lon: -46.633, alt: 760.0 },
   { name: "里约热内卢", en: "Rio de Janeiro", country: "巴西", countryEn: "Brazil", py: "riodejaneiro", lat: -22.907, lon: -43.173, alt: 11.0 },
   { name: "巴西利亚", en: "Brasilia", country: "巴西", countryEn: "Brazil", py: "brasilia", lat: -15.794, lon: -47.883, alt: 1172.0 },
+  { name: "贝洛奥里藏特", en: "Belo Horizonte", country: "巴西", countryEn: "Brazil", py: "belohorizonte", lat: -19.917, lon: -43.935, alt: 852.0 },
+  { name: "萨尔瓦多", en: "Salvador", country: "巴西", countryEn: "Brazil", py: "salvador", lat: -12.972, lon: -38.501, alt: 8.0 },
+  { name: "福塔莱萨", en: "Fortaleza", country: "巴西", countryEn: "Brazil", py: "fortaleza", lat: -3.732, lon: -38.527, alt: 16.0 },
+  { name: "累西腓", en: "Recife", country: "巴西", countryEn: "Brazil", py: "recife", lat: -8.054, lon: -34.881, alt: 4.0 },
+  { name: "纳塔尔", en: "Natal", country: "巴西", countryEn: "Brazil", py: "natal", lat: -5.795, lon: -35.211, alt: 30.0 },
+  { name: "贝伦", en: "Belem", country: "巴西", countryEn: "Brazil", py: "belem", lat: -1.456, lon: -48.490, alt: 10.0 },
+  { name: "马瑙斯", en: "Manaus", country: "巴西", countryEn: "Brazil", py: "manaus", lat: -3.119, lon: -60.022, alt: 92.0 },
+  { name: "库里蒂巴", en: "Curitiba", country: "巴西", countryEn: "Brazil", py: "curitiba", lat: -25.429, lon: -49.267, alt: 934.0 },
+  { name: "阿雷格里港", en: "Porto Alegre", country: "巴西", countryEn: "Brazil", py: "portoalegre", lat: -30.035, lon: -51.218, alt: 10.0 },
+  { name: "圣若泽杜斯坎波斯", en: "Sao Jose dos Campos", country: "巴西", countryEn: "Brazil", py: "saojosedoscampos", lat: -23.180, lon: -45.887, alt: 600.0 },  // INPE
+  { name: "库亚巴", en: "Cuiaba", country: "巴西", countryEn: "Brazil", py: "cuiaba", lat: -15.601, lon: -56.098, alt: 165.0 },  // INPE 地面站
+  { name: "阿尔坎塔拉", en: "Alcantara", country: "巴西", countryEn: "Brazil", py: "alcantara", lat: -2.373, lon: -44.396, alt: 30.0 },  // 航天发射场
   { name: "库鲁", en: "Kourou", country: "法属圭亚那", countryEn: "French Guiana", py: "kourou", lat: 5.159, lon: -52.650, alt: 10.0 },  // 圭亚那航天中心
+  { name: "卡宴", en: "Cayenne", country: "法属圭亚那", countryEn: "French Guiana", py: "cayenne", lat: 4.922, lon: -52.313, alt: 5.0 },
   { name: "布宜诺斯艾利斯", en: "Buenos Aires", country: "阿根廷", countryEn: "Argentina", py: "buenosaires", lat: -34.604, lon: -58.382, alt: 25.0 },
+  { name: "科尔多瓦", en: "Cordoba", country: "阿根廷", countryEn: "Argentina", py: "cordoba", lat: -31.420, lon: -64.188, alt: 390.0 },
+  { name: "罗萨里奥", en: "Rosario", country: "阿根廷", countryEn: "Argentina", py: "rosario", lat: -32.945, lon: -60.639, alt: 25.0 },
+  { name: "门多萨", en: "Mendoza", country: "阿根廷", countryEn: "Argentina", py: "mendoza", lat: -32.889, lon: -68.846, alt: 750.0 },
+  { name: "马拉圭", en: "Malargue", country: "阿根廷", countryEn: "Argentina", py: "malargue", lat: -35.476, lon: -69.585, alt: 1550.0 },  // ESA 深空站
+  { name: "乌斯怀亚", en: "Ushuaia", country: "阿根廷", countryEn: "Argentina", py: "ushuaia", lat: -54.802, lon: -68.303, alt: 25.0 },
   { name: "圣地亚哥", en: "Santiago", country: "智利", countryEn: "Chile", py: "santiago", lat: -33.449, lon: -70.669, alt: 570.0 },
+  { name: "瓦尔帕莱索", en: "Valparaiso", country: "智利", countryEn: "Chile", py: "valparaiso", lat: -33.047, lon: -71.620, alt: 20.0 },
+  { name: "康塞普西翁", en: "Concepcion", country: "智利", countryEn: "Chile", py: "concepcion", lat: -36.827, lon: -73.050, alt: 10.0 },
+  { name: "安托法加斯塔", en: "Antofagasta", country: "智利", countryEn: "Chile", py: "antofagasta", lat: -23.652, lon: -70.398, alt: 40.0 },
+  { name: "蓬塔阿雷纳斯", en: "Punta Arenas", country: "智利", countryEn: "Chile", py: "puntaarenas", lat: -53.163, lon: -70.908, alt: 30.0 },  // 极轨地面站
+  { name: "复活节岛", en: "Easter Island", country: "智利", countryEn: "Chile", py: "easterisland", lat: -27.150, lon: -109.433, alt: 50.0 },
   { name: "利马", en: "Lima", country: "秘鲁", countryEn: "Peru", py: "lima", lat: -12.046, lon: -77.043, alt: 154.0 },
+  { name: "库斯科", en: "Cusco", country: "秘鲁", countryEn: "Peru", py: "cusco", lat: -13.532, lon: -71.967, alt: 3400.0 },
+  { name: "伊基托斯", en: "Iquitos", country: "秘鲁", countryEn: "Peru", py: "iquitos", lat: -3.749, lon: -73.254, alt: 105.0 },
   { name: "波哥大", en: "Bogota", country: "哥伦比亚", countryEn: "Colombia", py: "bogota", lat: 4.711, lon: -74.072, alt: 2640.0 },
+  { name: "麦德林", en: "Medellin", country: "哥伦比亚", countryEn: "Colombia", py: "medellin", lat: 6.244, lon: -75.581, alt: 1495.0 },
+  { name: "卡利", en: "Cali", country: "哥伦比亚", countryEn: "Colombia", py: "cali", lat: 3.452, lon: -76.532, alt: 1000.0 },
+  { name: "巴兰基亚", en: "Barranquilla", country: "哥伦比亚", countryEn: "Colombia", py: "barranquilla", lat: 10.964, lon: -74.797, alt: 18.0 },
   { name: "加拉加斯", en: "Caracas", country: "委内瑞拉", countryEn: "Venezuela", py: "caracas", lat: 10.481, lon: -66.904, alt: 900.0 },
+  { name: "马拉开波", en: "Maracaibo", country: "委内瑞拉", countryEn: "Venezuela", py: "maracaibo", lat: 10.654, lon: -71.640, alt: 6.0 },
   { name: "基多", en: "Quito", country: "厄瓜多尔", countryEn: "Ecuador", py: "quito", lat: -0.180, lon: -78.468, alt: 2850.0 },
+  { name: "瓜亚基尔", en: "Guayaquil", country: "厄瓜多尔", countryEn: "Ecuador", py: "guayaquil", lat: -2.190, lon: -79.887, alt: 4.0 },
+  { name: "加拉帕戈斯", en: "Galapagos", country: "厄瓜多尔", countryEn: "Ecuador", py: "galapagos", lat: -0.742, lon: -90.313, alt: 10.0 },
   { name: "蒙得维的亚", en: "Montevideo", country: "乌拉圭", countryEn: "Uruguay", py: "montevideo", lat: -34.901, lon: -56.164, alt: 43.0 },
   { name: "拉巴斯", en: "La Paz", country: "玻利维亚", countryEn: "Bolivia", py: "lapaz", lat: -16.500, lon: -68.150, alt: 3640.0 },
+  { name: "圣克鲁斯", en: "Santa Cruz de la Sierra", country: "玻利维亚", countryEn: "Bolivia", py: "santacruzdelasierra", lat: -17.784, lon: -63.182, alt: 416.0 },
+  { name: "亚松森", en: "Asuncion", country: "巴拉圭", countryEn: "Paraguay", py: "asuncion", lat: -25.264, lon: -57.576, alt: 43.0 },
+  { name: "乔治敦", en: "Georgetown", country: "圭亚那", countryEn: "Guyana", py: "georgetown", lat: 6.801, lon: -58.155, alt: 0.0 },
+  { name: "帕拉马里博", en: "Paramaribo", country: "苏里南", countryEn: "Suriname", py: "paramaribo", lat: 5.852, lon: -55.204, alt: 3.0 },
 
   // —— 大洋洲 ——
   { name: "悉尼", en: "Sydney", country: "澳大利亚", countryEn: "Australia", py: "sydney", lat: -33.869, lon: 151.209, alt: 58.0 },
@@ -670,17 +1029,58 @@ const CITIES_DATA = [
   { name: "珀斯", en: "Perth", country: "澳大利亚", countryEn: "Australia", py: "perth", lat: -31.953, lon: 115.857, alt: 15.0 },
   { name: "阿德莱德", en: "Adelaide", country: "澳大利亚", countryEn: "Australia", py: "adelaide", lat: -34.929, lon: 138.601, alt: 50.0 },
   { name: "达尔文", en: "Darwin", country: "澳大利亚", countryEn: "Australia", py: "darwin", lat: -12.463, lon: 130.846, alt: 30.0 },
+  { name: "霍巴特", en: "Hobart", country: "澳大利亚", countryEn: "Australia", py: "hobart", lat: -42.882, lon: 147.324, alt: 5.0 },
+  { name: "凯恩斯", en: "Cairns", country: "澳大利亚", countryEn: "Australia", py: "cairns", lat: -16.920, lon: 145.771, alt: 5.0 },
+  { name: "汤斯维尔", en: "Townsville", country: "澳大利亚", countryEn: "Australia", py: "townsville", lat: -19.259, lon: 146.817, alt: 10.0 },
+  { name: "爱丽斯泉", en: "Alice Springs", country: "澳大利亚", countryEn: "Australia", py: "alicesprings", lat: -23.698, lon: 133.881, alt: 580.0 },
+  { name: "卡那封", en: "Carnarvon", country: "澳大利亚", countryEn: "Australia", py: "carnarvon", lat: -24.884, lon: 113.661, alt: 5.0 },
+  { name: "蒂德宾比拉", en: "Tidbinbilla", country: "澳大利亚", countryEn: "Australia", py: "tidbinbilla", lat: -35.401, lon: 148.982, alt: 660.0 },  // NASA 深空网
+  { name: "新诺西亚", en: "New Norcia", country: "澳大利亚", countryEn: "Australia", py: "newnorcia", lat: -31.048, lon: 116.191, alt: 250.0 },  // ESA 深空站
+  { name: "东加拉", en: "Dongara", country: "澳大利亚", countryEn: "Australia", py: "dongara", lat: -29.046, lon: 115.349, alt: 30.0 },  // 地面站
+  { name: "伍默拉", en: "Woomera", country: "澳大利亚", countryEn: "Australia", py: "woomera", lat: -31.199, lon: 136.825, alt: 165.0 },  // 靶场
+  { name: "圣诞岛", en: "Christmas Island", country: "澳大利亚", countryEn: "Australia", py: "christmasisland", lat: -10.421, lon: 105.679, alt: 260.0 },
+  { name: "布鲁姆", en: "Broome", country: "澳大利亚", countryEn: "Australia", py: "broome", lat: -17.955, lon: 122.240, alt: 10.0 },
   { name: "奥克兰", en: "Auckland", country: "新西兰", countryEn: "New Zealand", py: "auckland", lat: -36.848, lon: 174.763, alt: 26.0 },
   { name: "惠灵顿", en: "Wellington", country: "新西兰", countryEn: "New Zealand", py: "wellington", lat: -41.286, lon: 174.776, alt: 31.0 },
+  { name: "基督城", en: "Christchurch", country: "新西兰", countryEn: "New Zealand", py: "christchurch", lat: -43.531, lon: 172.637, alt: 20.0 },
+  { name: "马希亚", en: "Mahia", country: "新西兰", countryEn: "New Zealand", py: "mahia", lat: -39.261, lon: 177.865, alt: 30.0 },  // 航天发射场
   { name: "苏瓦", en: "Suva", country: "斐济", countryEn: "Fiji", py: "suva", lat: -18.141, lon: 178.442, alt: 15.0 },
+  { name: "楠迪", en: "Nadi", country: "斐济", countryEn: "Fiji", py: "nadi", lat: -17.775, lon: 177.416, alt: 20.0 },
   { name: "莫尔兹比港", en: "Port Moresby", country: "巴布亚新几内亚", countryEn: "Papua New Guinea", py: "portmoresby", lat: -9.478, lon: 147.150, alt: 40.0 },
   { name: "帕皮提", en: "Papeete", country: "法属波利尼西亚", countryEn: "French Polynesia", py: "papeete", lat: -17.535, lon: -149.570, alt: 10.0 },
+  { name: "努美阿", en: "Noumea", country: "新喀里多尼亚", countryEn: "New Caledonia", py: "noumea", lat: -22.276, lon: 166.458, alt: 10.0 },
+  { name: "霍尼亚拉", en: "Honiara", country: "所罗门群岛", countryEn: "Solomon Islands", py: "honiara", lat: -9.446, lon: 159.972, alt: 10.0 },
+  { name: "维拉港", en: "Port Vila", country: "瓦努阿图", countryEn: "Vanuatu", py: "portvila", lat: -17.734, lon: 168.322, alt: 15.0 },
+  { name: "阿皮亚", en: "Apia", country: "萨摩亚", countryEn: "Samoa", py: "apia", lat: -13.833, lon: -171.762, alt: 5.0 },
+  { name: "努库阿洛法", en: "Nuku'alofa", country: "汤加", countryEn: "Tonga", py: "nukualofa", lat: -21.139, lon: -175.204, alt: 5.0 },
+  { name: "塔拉瓦", en: "Tarawa", country: "基里巴斯", countryEn: "Kiribati", py: "tarawa", lat: 1.451, lon: 172.977, alt: 3.0 },
+  { name: "马朱罗", en: "Majuro", country: "马绍尔群岛", countryEn: "Marshall Islands", py: "majuro", lat: 7.090, lon: 171.380, alt: 3.0 },
+  { name: "夸贾林", en: "Kwajalein", country: "马绍尔群岛", countryEn: "Marshall Islands", py: "kwajalein", lat: 8.717, lon: 167.733, alt: 3.0 },  // 靶场
+  { name: "帕利基尔", en: "Palikir", country: "密克罗尼西亚", countryEn: "Micronesia", py: "palikir", lat: 6.918, lon: 158.159, alt: 90.0 },
+  { name: "科罗尔", en: "Koror", country: "帕劳", countryEn: "Palau", py: "koror", lat: 7.342, lon: 134.479, alt: 20.0 },
+  { name: "富纳富提", en: "Funafuti", country: "图瓦卢", countryEn: "Tuvalu", py: "funafuti", lat: -8.521, lon: 179.196, alt: 2.0 },
+  { name: "亚伦", en: "Yaren", country: "瑙鲁", countryEn: "Nauru", py: "yaren", lat: -0.547, lon: 166.921, alt: 20.0 },
+  { name: "拉罗汤加", en: "Rarotonga", country: "库克群岛", countryEn: "Cook Islands", py: "rarotonga", lat: -21.207, lon: -159.776, alt: 10.0 },
 
   // —— 极地（高纬 / 极轨过顶站）——
   { name: "麦克默多站", en: "McMurdo Station", country: "南极洲", countryEn: "Antarctica", py: "mcmurdo", lat: -77.846, lon: 166.669, alt: 10.0 },
   { name: "中山站", en: "Zhongshan Station", country: "南极洲", countryEn: "Antarctica", py: "zhongshan", lat: -69.373, lon: 76.377, alt: 15.0 },
   { name: "长城站", en: "Great Wall Station", country: "南极洲", countryEn: "Antarctica", py: "greatwall", lat: -62.216, lon: -58.961, alt: 10.0 },
-  { name: "昆仑站", en: "Kunlun Station", country: "南极洲", countryEn: "Antarctica", py: "kunlun", lat: -80.417, lon: 77.117, alt: 4087.0 }
+  { name: "昆仑站", en: "Kunlun Station", country: "南极洲", countryEn: "Antarctica", py: "kunlun", lat: -80.417, lon: 77.117, alt: 4087.0 },
+  { name: "泰山站", en: "Taishan Station", country: "南极洲", countryEn: "Antarctica", py: "taishanstation", lat: -73.863, lon: 76.975, alt: 2621.0 },
+  { name: "秦岭站", en: "Qinling Station", country: "南极洲", countryEn: "Antarctica", py: "qinlingstation", lat: -74.933, lon: 163.700, alt: 20.0 },
+  { name: "阿蒙森-斯科特站", en: "Amundsen-Scott South Pole Station", country: "南极洲", countryEn: "Antarctica", py: "amundsenscottsouthpolestation", lat: -90.000, lon: 0.000, alt: 2835.0 },
+  { name: "特罗尔站", en: "Troll Station", country: "南极洲", countryEn: "Antarctica", py: "trollstation", lat: -72.012, lon: 2.535, alt: 1275.0 },  // KSAT 地面站
+  { name: "凯西站", en: "Casey Station", country: "南极洲", countryEn: "Antarctica", py: "caseystation", lat: -66.283, lon: 110.528, alt: 40.0 },
+  { name: "戴维斯站", en: "Davis Station", country: "南极洲", countryEn: "Antarctica", py: "davisstation", lat: -68.577, lon: 77.969, alt: 15.0 },
+  { name: "罗瑟拉站", en: "Rothera Station", country: "南极洲", countryEn: "Antarctica", py: "rotherastation", lat: -67.568, lon: -68.127, alt: 16.0 },
+  { name: "迪蒙·迪维尔站", en: "Dumont d'Urville Station", country: "南极洲", countryEn: "Antarctica", py: "dumontdurvillestation", lat: -66.663, lon: 140.001, alt: 40.0 },
+  { name: "昭和站", en: "Syowa Station", country: "南极洲", countryEn: "Antarctica", py: "syowastation", lat: -69.004, lon: 39.581, alt: 29.0 },
+  { name: "东方站", en: "Vostok Station", country: "南极洲", countryEn: "Antarctica", py: "vostokstation", lat: -78.464, lon: 106.837, alt: 3488.0 },
+  { name: "康宏站", en: "Concordia Station", country: "南极洲", countryEn: "Antarctica", py: "concordiastation", lat: -75.100, lon: 123.333, alt: 3233.0 },
+  { name: "新拉扎列夫站", en: "Novolazarevskaya Station", country: "南极洲", countryEn: "Antarctica", py: "novolazarevskayastation", lat: -70.777, lon: 11.833, alt: 100.0 },
+  { name: "马兰比奥站", en: "Marambio Station", country: "南极洲", countryEn: "Antarctica", py: "marambiostation", lat: -64.241, lon: -56.627, alt: 200.0 },
+  { name: "帕尔默站", en: "Palmer Station", country: "南极洲", countryEn: "Antarctica", py: "palmerstation", lat: -64.774, lon: -64.053, alt: 10.0 }
   ];
 
 /**
@@ -771,6 +1171,56 @@ const PROVINCE_MAPPING = {
 
 // 获取所有省份列表
 const PROVINCES = Object.keys(PROVINCE_MAPPING);
+
+// 省份英文名（分层城市库的组名；国际组的国家名自带 countryEn）
+const PROVINCE_EN = {
+  '北京': 'Beijing', '上海': 'Shanghai', '天津': 'Tianjin', '重庆': 'Chongqing', '香港': 'Hong Kong', '澳门': 'Macao', '台湾': 'Taiwan',
+  '黑龙江': 'Heilongjiang', '吉林': 'Jilin', '辽宁': 'Liaoning', '内蒙古': 'Inner Mongolia', '河北': 'Hebei', '山西': 'Shanxi', '山东': 'Shandong',
+  '河南': 'Henan', '江苏': 'Jiangsu', '浙江': 'Zhejiang', '安徽': 'Anhui', '福建': 'Fujian', '江西': 'Jiangxi', '湖北': 'Hubei', '湖南': 'Hunan',
+  '广东': 'Guangdong', '广西': 'Guangxi', '海南': 'Hainan', '四川': 'Sichuan', '贵州': 'Guizhou', '云南': 'Yunnan', '西藏': 'Tibet',
+  '陕西': 'Shaanxi', '甘肃': 'Gansu', '青海': 'Qinghai', '宁夏': 'Ningxia', '新疆': 'Xinjiang', '其他': 'Other'
+};
+// PROVINCE_MAPPING 是按下标区间切省的，区间之外的国内条目（信关站 / 航天城市 / 极点 / 口岸 / 县级市）
+// 在这里逐条给省。新加国内条目若不在任何区间里又没写进来 → 落「其他」组，不会丢。
+const EXTRA_PROVINCE = {
+  '怀来': '河北', '西昌': '四川', '文昌': '海南', '敦煌': '甘肃',
+  '漠河': '黑龙江', '抚远': '黑龙江', '乌恰': '新疆', '曾母暗沙': '海南',
+  '东风': '内蒙古', '密云': '北京', '佘山': '上海',
+  '义乌': '浙江', '昆山': '江苏', '库尔勒': '新疆', '满洲里': '内蒙古', '二连浩特': '内蒙古', '瑞丽': '云南', '绥芬河': '黑龙江', '东兴': '广西'
+};
+function provinceOfIndex(i) {
+  for (const p of PROVINCES) { const m = PROVINCE_MAPPING[p]; if (i >= m.start && i < m.start + m.count) return p; }
+  return EXTRA_PROVINCE[CITIES_DATA[i].name] || '其他';
+}
+
+/**
+ * 分层城市库（性能指标表 / 气象指标表「典型城市」选点用）：
+ *   china — 按省份分组，组序 = PROVINCE_MAPPING 的键序（直辖市 / 港澳台 / 各省），组内按数据原序；
+ *   intl  — 按国家分组，组序 = 数据里首次出现的顺序（东亚 → 东南亚 → … → 大洋洲）。
+ * 条目原样带 name / en / py / lat / lon / alt（国际条目另带 country / countryEn）。
+ */
+let _groupedCache = null;
+function listCitiesGrouped() {
+  if (_groupedCache) return _groupedCache;
+  const chinaMap = new Map();
+  for (let i = 0; i < CHINA_CITIES_COUNT; i++) {
+    const p = provinceOfIndex(i);
+    if (!chinaMap.has(p)) chinaMap.set(p, []);
+    chinaMap.get(p).push(CITIES_DATA[i]);
+  }
+  const order = PROVINCES.slice();
+  for (const p of chinaMap.keys()) if (!order.includes(p)) order.push(p);
+  const china = order.filter((p) => chinaMap.has(p)).map((p) => ({ province: p, provinceEn: PROVINCE_EN[p] || p, cities: chinaMap.get(p) }));
+  const intlMap = new Map();
+  for (let i = CHINA_CITIES_COUNT; i < CITIES_DATA.length; i++) {
+    const c = CITIES_DATA[i];
+    const k = c.country || '其他';
+    if (!intlMap.has(k)) intlMap.set(k, { country: k, countryEn: c.countryEn || k, cities: [] });
+    intlMap.get(k).cities.push(c);
+  }
+  _groupedCache = { china, intl: [...intlMap.values()] };
+  return _groupedCache;
+}
 
 /**
  * 根据关键词匹配省份
@@ -947,6 +1397,7 @@ module.exports = {
   getDisplayOrderCities,
   getChinaCities,
   getInternationalCities,
+  listCitiesGrouped,
   getCityByName,
   searchCities,
   searchByPinyin,

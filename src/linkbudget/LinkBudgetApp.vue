@@ -36,6 +36,8 @@ import LbUnitCtl from '../components/LbUnitCtl.vue'
 import LbCapFoot from '../components/LbCapFoot.vue'
 import LbCustomColsDialog from '../components/LbCustomColsDialog.vue'
 import { buildPool, makeResolver, evalRows, customFieldDefs, loadDefs, saveDefs, unitOf, schemaInputPool } from '../shared/lbCustomCols.js'   // 自定义列：公式合成新列
+import { createPreviewJob } from '../shared/lbPreview.js'   // 链路表实时预览作业（分块批量 IPC + 代际取消 + 「计算」优先）
+import { loadOrder, saveOrder, makeDragOrder } from '../shared/lbResultOrder.js'   // 结果列的显示顺序 + 拖动排序
 import { labeledResultPool, RESULT_LABELS } from '../shared/lbResultLabels.js'   // 引擎出参中文名与单位（全量词表）
 import LbShareDialog from '../components/LbShareDialog.vue'
 import LbReportDialog from '../components/LbReportDialog.vue'
@@ -436,6 +438,10 @@ const RESULT_DEFS = [
   { key: 'downlinkCN', label: '下行C/N', unit: 'dB' },
   { key: 'ebnoActualResult', label: 'Eb/N₀', unit: 'dB' },
   { key: 'esnoActualResult', label: 'Es/N₀', unit: 'dB' },
+  // 文字型三列（引擎回显的载波体制）：本行用的调制 / 码率 / MODCOD 档名——看余量时不必回头翻载波库
+  { key: 'modulationResult', label: '调制方式', type: 'text', tip: '本行载波的调制方式（引擎回显）' },
+  { key: 'fecResult', label: 'FEC 码率', type: 'text', tip: '本行载波的 FEC 码率（引擎回显，保持录入写法）' },
+  { key: 'modcodResult', label: 'MODCOD', type: 'text', tip: 'MODCOD 库里选的那一档的名称；未从库里选则按「调制方式 + FEC 码率」拼出' },
   { key: 'powerUsageRatio', label: '功率占用', unit: '%' },
   { key: 'bandwidthUsageRatio', label: '带宽占用', unit: '%' },
   { key: 'allocBandwidthResult', label: '载波带宽', unit: 'kHz' },
@@ -453,6 +459,14 @@ const resultKeys = ref((() => {
   try { const v = JSON.parse(localStorage.getItem('linkbudget/resultCols') || ''); return Array.isArray(v) && v.length ? v : DEFAULT_RESULT_KEYS.slice() } catch (e) { return DEFAULT_RESULT_KEYS.slice() }
 })())
 watch(resultKeys, (v) => { try { localStorage.setItem('linkbudget/resultCols', JSON.stringify(v)) } catch (e) { /* ignore */ } }, { deep: true })
+// 结果列的显示顺序：全量 key 序（含未勾选的）另存，「结果列」面板里拖把手换位；表列与本行读数都按它排
+const RESULT_DEF_BY_KEY = Object.fromEntries(RESULT_DEFS.map((d) => [d.key, d]))
+const resultOrder = ref(loadOrder('linkbudget/resultOrder', RESULT_DEFS))
+watch(resultOrder, (v) => saveOrder('linkbudget/resultOrder', v))
+const resultDefsOrdered = computed(() => resultOrder.value.map((k) => RESULT_DEF_BY_KEY[k]).filter(Boolean))
+const resultDefsOn = computed(() => resultDefsOrdered.value.filter((d) => resultKeys.value.includes(d.key)))
+const colDrag = reactive({ key: '' })
+const colDragH = makeDragOrder({ state: colDrag, getOrder: () => resultOrder.value, setOrder: (v) => { resultOrder.value = v } })
 const colPickOpen = ref(false)
 // 面板打开期间拦滚轮：面板内滚到边界即止（遮罩上另行全拦）。否则滚轮默认动作沿 DOM 链滚动底下的
 // 分节流，页面在遮罩下乱滚、面板随宿主节头滚出视野。
@@ -461,10 +475,10 @@ function onColPickWheel(e) {
   const canScroll = e.deltaY > 0 ? el.scrollTop + el.clientHeight < el.scrollHeight - 1 : el.scrollTop > 0
   if (!canScroll) e.preventDefault()
 }
-// 勾选/取消结果列（保持 RESULT_DEFS 声明序，避免列序随点击顺序漂移）
+// 勾选/取消结果列（勾选集按显示顺序表排，列序不随点击顺序漂移）
 function toggleResultKey(k) {
   if (resultKeys.value.includes(k)) resultKeys.value = resultKeys.value.filter((x) => x !== k)
-  else resultKeys.value = RESULT_DEFS.map((d) => d.key).filter((x) => x === k || resultKeys.value.includes(x))
+  else resultKeys.value = resultOrder.value.filter((x) => x === k || resultKeys.value.includes(x))
 }
 // 链路表列 = 发端组 + 收端组 + 结果列组；计算列 ro:true，值走 computedVals 映射。
 // 实时 EIRP/G·T 不再占独立列（原段末的 _eirp/_gt 列已撤）——改由「地球站配置」单元格第二行小字承载
@@ -483,7 +497,7 @@ const gridFields = computed(() => {
     ...(link ? SAT_COL_KEYS.map((k) => ({ ...all.find((f) => f.key === k), group: 'sat' })) : []),
     ...TX_FIELDS.filter((f) => (link ? !SAT_COL_KEYS.includes(f.key) : f.key !== 'satelliteId')).map((f) => ({ ...f, group: 'tx' })),
     ...RX_FIELDS.filter((f) => !(link && SAT_COL_KEYS.includes(f.key))).map((f) => ({ ...f, group: 'rx' })),
-    ...RESULT_DEFS.filter((d) => resultKeys.value.includes(d.key)).map((d) => ({ key: '_' + d.key, label: d.label, unit: resColUnits.value[d.key] || d.unit, type: d.type === 'text' ? 'text' : 'num', ro: true, group: 'res', target: 'meta', tip: d.tip || d.label })),
+    ...resultDefsOn.value.map((d) => ({ key: '_' + d.key, label: d.label, unit: resColUnits.value[d.key] || d.unit, type: d.type === 'text' ? 'text' : 'num', ro: true, group: 'res', target: 'meta', tip: d.tip || d.label })),
     ...customFieldDefs(customCols.value, customPool.value)
   ]
 })
@@ -493,6 +507,8 @@ const computedVals = ref({})
 // 列头单位跟随；写入 computedVals 的值已按所选档位换算（复制出去的数与列头一致）
 const resColUnits = ref({})
 function setVals(id, patch) { computedVals.value = { ...computedVals.value, [id]: { ...(computedVals.value[id] || null), ...patch } } }
+// 多行一次合并（预览按块回填用）：逐行 setVals 每次都整份复制 computedVals，万行表一块下来就是 O(块长×行数)
+function patchVals(m) { const next = { ...computedVals.value }; for (const id in m) next[id] = { ...(next[id] || null), ...m[id] }; computedVals.value = next }
 // 结果单元格着色：负余量 / 超占用标红（纯数字口径，不设文字判定列）
 function cellClassFn(f, row) {
   if (!f.ro) return null
@@ -510,7 +526,7 @@ function cellFillFn(f, row) {
   return isFinite(v) && v > 0 ? v / 100 : null
 }
 // 「地球站配置」单元格第二行小字：发端配置(stationId)下显示实时 EIRP、收端配置(rxStationId)下显示实时 G·T。
-// 值取自 computedVals（refreshReadonly 实时回填，dBW/dB·K 为 dB 量纲不做单位自适应）；未算出则不显示第二行。
+// 值取自 computedVals（预览作业 preview 按块回填，dBW/dB·K 为 dB 量纲不做单位自适应）；未算出则不显示第二行。
 function cellSubFn(f, row) {
   if (f.key !== 'stationId' && f.key !== 'rxStationId') return null
   const m = computedVals.value[row._id]
@@ -583,7 +599,8 @@ const ccRowData = (l) => (l && l.data ? { ...(ccInputsOf(l) || null), ...l.data 
 const customPool = computed(() => {
   // 结果列组沿用【词表】的名字与单位：同一个量在两个组里叫两个名字（功放建议/功放建议功率）
   // 会让人以为是两个量，且裸标签一歧义就报「未知字段」。词表是命名权威，表头短名只用于链路表列头。
-  const base = RESULT_DEFS.filter((d) => d.key !== 'capacityMbps').map((d) => { const t = RESULT_LABELS[d.key]; return { key: d.key, label: t ? t.label : d.label, unit: t ? t.unit : d.unit, group: '结果列' } })
+  // 文字型结果列（调制方式 / FEC / MODCOD）不是量，不进公式字段池
+  const base = RESULT_DEFS.filter((d) => d.key !== 'capacityMbps' && d.type !== 'text').map((d) => { const t = RESULT_LABELS[d.key]; return { key: d.key, label: t ? t.label : d.label, unit: t ? t.unit : d.unit, group: '结果列' } })
   const rows = links.value.filter((x) => x.data)
   if (!rows.length) return buildPool(base, customCurated.value)
   // 键取全部行的并集：逐行出参可不同（0 雨强行的 XPD 出 '-'），单行样本会误滤别行的合法键。
@@ -648,29 +665,41 @@ async function copyWaterfallTsv() {
 function onGlobalKey(e) {
   if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && !computing.value) { e.preventDefault(); compute() }
 }
-onBeforeUnmount(() => { window.removeEventListener('keydown', onGlobalKey); window.removeEventListener('focus', reloadSatTree) })
+onBeforeUnmount(() => { preview.dispose(); window.removeEventListener('keydown', onGlobalKey); window.removeEventListener('focus', reloadSatTree) })
 
-// 链路表实时列：发端 EIRP / 收端 G/T —— 输入变化即逐行重算（无需点「计算」），写入 computedVals。
-let _roT = null
-let _suppressRO = false   // 刷新编排期间静默 watcher，避免表单/站点回填触发的重复扇出
-async function refreshReadonly() {
-  if (!api || !linkRows.length) return
-  // EIRP 用该行载波的计算方式（与主计算一致，否则功带平衡等模式下解出的功率不同 → EIRP 对不上）；
-  // G/T 只与收端天线/噪温有关 → 固定走最便宜的「设置余量」单算，避免平衡/超发模式白跑二分搜索。
-  const fix2 = (v) => { const n = parseFloat(v); return isNaN(n) ? v : n.toFixed(2) }
-  for (const row of linkRows) {
+// 链路表实时列：发端 EIRP / 收端 G/T / 功放尾标 —— 输入变化即逐行重算（无需点「计算」），写入 computedVals。
+// 作业本体在 shared/lbPreview.js（分块批量 IPC + 代际取消 + 「计算」优先：computing 一亮就挂起、算完续跑），
+// 这里只给它四件事：行数、第 i 行的入参、一块怎么发、一块回来怎么写。
+// EIRP 用该行载波的计算方式（与主计算一致，否则功带平衡等模式下解出的功率不同 → EIRP 对不上）；
+// G/T 只与收端天线/噪温有关，同一次调用顺带取出。
+const fix2 = (v) => { const n = parseFloat(v); return isNaN(n) ? v : n.toFixed(2) }
+const preview = createPreviewJob({
+  count: () => (api ? linkRows.length : 0),
+  build: (i) => {
+    const row = linkRows[i]
     try {
       const txEs = resolveEs(row.stationId).form
       const bbForm = resolveBaseband(row.basebandId).form
       const { satParams, linkParams } = buildParams(satOfRow(row).form, bbForm, row, row, txEs, resolveEs(row.rxStationId).form)
-      const r = await api.linkBudget.computeMode(satParams, linkParams, calcOptOf(bbForm, txEs))
-      // _paW＝实时功放功率（原值不 toFixed：小功率靠 fmtQty 换 mW 档显示，见 cellTagFn）
-      if (r && r.success) setVals(row._id, { _eirp: fix2(r.data.stationEIRPResult), _gt: fix2(r.data.gOverTeResult), _paW: r.data.paRecommendation })
-    } catch (e) { /* skip */ }
+      return { id: row._id, spec: { engine: 'geo', sat: satParams, link: linkParams, opt: calcOptOf(bbForm, txEs) } }
+    } catch (e) { return null }
+  },
+  // 老 preload 没有批量入口时逐条回退（口径相同，只是没了行间让出与取消）
+  send: (specs, token) => (api.linkBudget.previewBatch
+    ? api.linkBudget.previewBatch(specs, token)
+    : Promise.all(specs.map((s) => api.linkBudget.computeMode(s.sat, s.link, s.opt)))),
+  cancel: (token) => { if (api.linkBudget.previewCancel) api.linkBudget.previewCancel(token) },
+  apply: (list) => {
+    const m = {}
+    // _paW＝实时功放功率（原值不 toFixed：小功率靠 fmtQty 换 mW 档显示，见 cellTagFn）
+    for (const { id, r } of list) if (r && r.success) m[id] = { _eirp: fix2(r.data.stationEIRPResult), _gt: fix2(r.data.gOverTeResult), _paW: r.data.paRecommendation }
+    patchVals(m)
   }
-}
-function scheduleReadonly() { if (_suppressRO) return; clearTimeout(_roT); _roT = setTimeout(refreshReadonly, 350) }
-watch([satConfigs, basebandConfigs, esConfigs, linkRows, satId, satScope], scheduleReadonly, { deep: true })
+})
+watch([satConfigs, basebandConfigs, esConfigs, linkRows, satId, satScope], () => preview.schedule(), { deep: true })
+// 「计算」优先：computing 一亮就挂起预览、算完（含瀑布表）再续跑。同步 watcher——取消令牌要赶在 compute 发出
+// 批量 IPC 之前送到主进程，在算的那块才会在下一个让出点停手给「计算」腾地方；计算期间改了输入，恢复时重排一次。
+watch(computing, (v) => { if (v) preview.pause(); else preview.resume() }, { flush: 'sync' })
 
 // 注：地球站库编辑器曾在发射/接收标题右端显示实时 EIRP / G·T 预览，已删——频率在卫星侧后，一份站型配置
 // 不再自含算这两个量所需的全部输入（预览得挑一颗星当基准，反而误导）。链路表「地球站配置」格下的第二行
@@ -877,18 +906,16 @@ function reloadSatTree() {
 const refreshing = ref(false)
 async function refreshLatest() {
   refreshing.value = true
-  _suppressRO = true        // 抑制下方表单/站点回填触发的 watcher，整套扇出最后只跑一次
-  clearTimeout(_roT)
+  preview.suppress(true)    // 抑制下方表单/站点回填触发的 watcher，整套扇出最后只跑一次
   try {
     reloadSatTree()   // 重读 globe3d/settings.grd（树/天线 cfg）+ grdLive 实时位置（数据未变则复用缓存，不重解析 GRD）
     try { const c = api && await api.linkBudget.cities(); if (c) cities.value = c } catch (e) { /* keep */ }
     try { const b = api && await api.linkBudget.baseband(); if (b) basebandOpts.value = b } catch (e) { /* keep */ }
     try { await refreshGrdFill(true) } catch (e) { /* keep */ }   // 直接回填(跳过防抖)且 force：本会话自动写过的格子按最新星位重取，手改的不碰
-    _suppressRO = false
-    clearTimeout(_roT)        // 丢弃抑制期间可能挂起的计时器
-    await refreshReadonly()   // 守卫解除后只跑一遍扇出
+    preview.suppress(false)   // 抑制期间挂起的计时器已随之丢弃
+    await preview.refresh()   // 守卫解除后只跑一遍扇出
     toast('已刷新最新设置')
-  } finally { _suppressRO = false; refreshing.value = false }
+  } finally { preview.suppress(false); refreshing.value = false }
 }
 // 换卫星条目 / 改匹配天线 / 行经纬度变化 → 重算回填。值本身只看「空没空」（避免回填值再触发循环），
 // 空了就补回自动取值——这就是「清空该格＝恢复自动取值」那一手的触发处。
@@ -1138,7 +1165,7 @@ const rowReadout = computed(() => {
   const link = links.value.find((l) => l.rowId === row._id) || null
   const m = computedVals.value[row._id] || null
   const items = []
-  for (const def of (m ? RESULT_DEFS.filter((d) => resultKeys.value.includes(d.key)) : [])) {
+  for (const def of (m ? resultDefsOn.value : [])) {
     const v = m['_' + def.key]
     if (v === undefined || v === null || v === '' || v === '—') continue
     const n = parseFloat(v)   // 着色口径同结果单元格（见 cellClassFn）：负余量 / 超占用转红
@@ -1276,6 +1303,16 @@ async function refreshSlaScan(out, store, gen) {
   } catch (e) { /* 扫不出就不出档位表与 MIR，结果本身不受影响 */ }
 }
 
+// MODCOD 列：本行载波从 MODCOD 库里选的那一档（名字可自定义），且与引擎回显的调制 / 码率仍一致才用它；
+// 否则（自定义体制、或选完又手改过调制 / 码率）按「调制方式 + FEC 码率」拼出来
+function modcodNameOf(rowId, d) {
+  const row = linkRows.find((r) => r._id === rowId)
+  const f = row ? resolveBaseband(row.basebandId).form : null
+  const same = (a, b) => String(a == null ? '' : a).trim() === String(b == null ? '' : b).trim()
+  const mc = f && f.modcodLabel ? ((basebandOpts.value.modcod || {})[f.dvbStandard] || []).find((r) => r.label === f.modcodLabel) : null
+  if (mc && same(mc.modulation, d.modulationResult) && same(mc.fec, d.fecResult)) return mc.label
+  return [d.modulationResult, d.fecResult].map((x) => String(x == null ? '' : x).trim()).filter(Boolean).join(' ') || '—'
+}
 // 结果列写回 computedVals（全部 RESULT_DEFS 都算：事后勾选新列即刻可见，无需重算）。
 // 写入前按整列共选显示单位（见 resColUnits），值与列头单位一致——「单位」档锁定时 pickColumn
 // 恒返回 null，于是整列留在引擎基准单位上。切档位不必重算引擎，拿 links 原样再走一遍这里即可。
@@ -1297,6 +1334,8 @@ function writeResultVals(out) {
       if (def.key === 'capacityMbps') {
         const mbps = colVal(d, def)
         patch._capacityMbps = !isFinite(mbps) ? '—' : ad ? fmtScaled(ad.conv(mbps)) : mbps.toFixed(3)
+      } else if (def.key === 'modcodResult') {
+        patch._modcodResult = modcodNameOf(l.rowId, d)
       } else {
         const v = d[def.key]
         const n = parseFloat(v)
@@ -1861,7 +1900,7 @@ onMounted(async () => {
   } catch (e) { /* 损坏忽略 */ }
   try { deviceId.value = (api && await api.app.deviceId()) || '' } catch (e) { deviceId.value = '' }
   try { shareConfigured.value = !!(api && await api.share.configured()) } catch (e) { shareConfigured.value = false }
-  refreshReadonly()
+  preview.refresh()
   // 关窗守卫：主进程拦截原生关闭动作后转发到这里，复用与内部切换配置同一套「取消/不保存/保存」
   // 弹窗（guardedLeave/isDirty），答完（或本就无未保存改动）才回调 confirmClose() 真正关闭窗口。
   api?.linkBudget?.onCloseRequested?.(async () => {
@@ -2074,8 +2113,10 @@ onMounted(async () => {
               <span class="lbx-colpick-wrap">
                 <button class="lb-mini" title="计算结果列：勾选显示列，底部可新建自定义公式列" @click="colPickOpen = !colPickOpen">结果列 <Icon name="chevron-down" :size="12" /></button>
                 <div v-if="colPickOpen" class="lbx-colpick-mask" @click="colPickOpen = false" @wheel.prevent></div>
-                <div v-if="colPickOpen" class="lbx-colpick" @wheel="onColPickWheel">
-                  <label v-for="d in RESULT_DEFS" :key="d.key" class="lbx-colpick-i" :title="d.tip || d.label">
+                <div v-if="colPickOpen" class="lbx-colpick" :class="{ dragging: !!colDrag.key }" @wheel="onColPickWheel">
+                  <!-- 拖左侧把手换位＝改表里结果列的次序（本行读数同序）；勾选框只管显示与否 -->
+                  <label v-for="d in resultDefsOrdered" :key="d.key" class="lbx-colpick-i" :class="{ dragging: colDrag.key === d.key }" :title="d.tip || d.label" @mousemove="colDragH.over($event, d.key)">
+                    <span class="lbx-colpick-grip" title="拖动调整列序" @mousedown.left.prevent.stop="colDragH.start($event, d.key)" @click.prevent.stop><Icon name="grip-vertical" :size="12" /></span>
                     <input type="checkbox" :checked="resultKeys.includes(d.key)" @change="toggleResultKey(d.key)" />
                     <span>{{ d.label }}<i v-if="d.unit"> ({{ d.unit }})</i></span>
                   </label>

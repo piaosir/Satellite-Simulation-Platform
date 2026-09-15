@@ -22,6 +22,11 @@
 //     与「当前时刻」共用同一套列与同一条取值路径（buildRows），两种口径逐位可比。
 //   · 扫描步长【由角位移反控】，不是固定秒数 —— 波束比地平锥窄两个量级，固定步长必漏短穿越。见 satcovScan.js。
 //   · 源星与目标星【两头都按各自星历走】；天线指向随之重算（锁定/跟随/对星跟踪各按其语义，见 boreSettingsAtPos）。
+//
+// ★ 2026-09-15 逐表会话化：表的界面搬进独立窗口后可以【多开】（一根天线一窗），故每根天线的
+//   瞬时结果 / 时窗结果 / 游标 / 波束内成员 / 读数各存一份（sessions），切 activeKey 不再作废任何一张表的结果。
+//   对外的 rows / win / winInfo … 仍是「当前 activeKey 那张表」的视图（旧调用点与单测不用改），
+//   宿主按窗口逐 key 读 session(key)。
 import { ref, reactive, computed } from 'vue'
 import sat from '../constellation/satellite.js'
 import { sampleBeamAtEcef, sampleBeamAtParam, invGridDir, perturbSpacecraft, antennaBasis, axialRatioDb, beamBasisFrom, boreSettingsAtPos } from './coverage.js'
@@ -92,17 +97,74 @@ function defaultOpts() {
     beamSel: null                    // null = 在全部波束里取最大；否则只在选中的波束里取
   }
 }
+// 老快照里的 winCols/sumCols（时段/汇总两套视图已删）就地丢掉，不让它们跟着存回去
+function fillOpts(c0) {
+  const { winCols, sumCols, ...c } = (c0 || {})
+  return { ...defaultOpts(), ...c, cols: { ...defaultOpts().cols, ...(c.cols || {}) }, beamSel: Array.isArray(c.beamSel) ? c.beamSel.slice() : null }
+}
+
+// ===== 纯函数（弹窗 / 宿主两边都要用，不依赖实例）=====
+export const SAT_COL_DEFS = COL_DEFS
+export const SAT_COL_GROUPS = COL_GROUPS
+export const satDefaultOpts = defaultOpts
+export const fillSatOpts = fillOpts
+export const satVisibleColumns = (o) => COL_DEFS.filter((c) => o && o.cols && o.cols[c.key])
+export const SAT_WIN_DEFAULT = { on: false, startMs: null, durH: 24, cursorMs: null, busy: false, progress: 0, msg: '' }
 
 export function useSatPerfTable() {
-  const rows = ref([])
-  // 这批数值算在哪一刻。表跟着仿真时钟走，但重算太贵时会跳拍（宿主的预算自适应），
-  // 那几拍里表脚要报的是【取值时刻】而不是「现在几点」—— 否则读数与数值对不上。
-  const stampMs = ref(null)
-  const ctxInfo = ref(null)
-  const ctxBeams = ref([])
-  const query = ref('')
+  // ===== 逐表会话：一根天线一份瞬时结果 / 时窗结果 / 游标 / 波束内成员 =====
+  const sessions = new Map()
+  function newSession() {
+    return {
+      rows: ref([]),
+      // 这批数值算在哪一刻。表跟着仿真时钟走，但重算太贵时会跳拍（宿主的预算自适应），
+      // 那几拍里表脚要报的是【取值时刻】而不是「现在几点」—— 否则读数与数值对不上。
+      stampMs: ref(null),
+      ctxInfo: ref(null), ctxBeams: ref([]), query: ref(''), beamQuery: ref(''),
+      note: ref(''),              // 运行时读数（目标星数 / 截断 / 耗时），面板一行显示
+      beamPicks: ref([]),
+      win: reactive({ ...SAT_WIN_DEFAULT }),
+      winNote: ref(''),
+      winInfo: ref(null),         // { t0Ms, t1Ms, bands, nTarget, nLit, nWin, samples, ms, budgetHit, minStepHit, truncated }
+      winFp: ref(''),
+      winToken: 0,
+      winEnv: null                // 扫完留下的取值环境：游标每挪一下按它现算一张瞬时表
+    }
+  }
+  const winByAnt = ref({})        // 未开过会话的天线的时窗设置（快照恢复暂存；开会话时搬进 session.win）
+  function sess(key) {
+    const k = key || ''
+    let s = sessions.get(k)
+    if (!s) {
+      s = newSession()
+      const w = k && winByAnt.value[k]
+      if (w) { s.win.on = !!w.on; s.win.startMs = Number.isFinite(w.startMs) ? w.startMs : null; s.win.durH = Number.isFinite(w.durH) ? w.durH : 24 }
+      sessions.set(k, s)
+    }
+    return s
+  }
+  const activeKey = ref('')          // 当前打开的那张表（宿主开表/切表时经 setActiveKey 设；''=没开表）
+  const active = () => sess(activeKey.value)
+  // 对外仍是「当前表」的视图（旧调用点 / 单测不改）
+  const rows = computed(() => active().rows.value)
+  const stampMs = computed(() => active().stampMs.value)
+  const ctxInfo = computed(() => active().ctxInfo.value)
+  const ctxBeams = computed(() => active().ctxBeams.value)
+  const query = computed({ get: () => active().query.value, set: (v) => { active().query.value = v } })
+  const beamQuery = computed({ get: () => active().beamQuery.value, set: (v) => { active().beamQuery.value = v } })
+  const note = computed(() => active().note.value)
+  const beamPicks = computed(() => active().beamPicks.value)
+  const winNote = computed(() => active().winNote.value)
+  const winInfo = computed(() => active().winInfo.value)
+  // win 是「当前表的时窗参数」——转发到当前会话那份 reactive（读写都过 Proxy，切表即换目标）
+  const win = new Proxy({}, {
+    get: (_, k) => active().win[k],
+    set: (_, k, v) => { active().win[k] = v; return true },
+    has: (_, k) => k in active().win,
+    ownKeys: () => Reflect.ownKeys(active().win),
+    getOwnPropertyDescriptor: (_, k) => ({ enumerable: true, configurable: true, writable: true, value: active().win[k] })
+  })
   const optsByAnt = ref({})
-  const note = ref('')               // 运行时读数（目标星数 / 截断 / 耗时），面板一行显示
 
   // ===== 目标星（两种来源，随页面快照存盘）=====
   // 'pick' 点选  —— 用户自己加的名单，不随时间变（原有口径）；
@@ -113,50 +175,71 @@ export function useSatPerfTable() {
   //   现在一根天线一份，新表从空白起；来源档（点选/波束内）与时间窗口设置同样逐表各存各的。
   const picksByAnt = ref({})
   const targetModeByAnt = ref({})
-  const activeKey = ref('')          // 当前打开的那张表（宿主开表/切表时经 setActiveKey 设；''=没开表）
   const NO_PICK = []                 // 没开表时 picks 的只读空值（恒定引用）
+  const picksOf = (key) => (key && picksByAnt.value[key]) || NO_PICK
+  const targetModeOf = (key) => (key && targetModeByAnt.value[key]) || 'pick'
   const picks = computed({
-    get: () => (activeKey.value && picksByAnt.value[activeKey.value]) || NO_PICK,
+    get: () => picksOf(activeKey.value),
     set: (v) => { if (activeKey.value) picksByAnt.value = { ...picksByAnt.value, [activeKey.value]: v || [] } }
   })
+  function setTargetModeOf(key, v) { if (key && (v === 'pick' || v === 'beam')) targetModeByAnt.value = { ...targetModeByAnt.value, [key]: v } }
   const targetMode = computed({
-    get: () => (activeKey.value && targetModeByAnt.value[activeKey.value]) || 'pick',
-    set: (v) => { if (activeKey.value && (v === 'pick' || v === 'beam')) targetModeByAnt.value = { ...targetModeByAnt.value, [activeKey.value]: v } }
+    get: () => targetModeOf(activeKey.value),
+    set: (v) => setTargetModeOf(activeKey.value, v)
   })
-  const beamPicks = ref([])
-  function setBeamTargets(list) {
+  function setBeamTargets(list, key) {
+    const s = sess(key || activeKey.value)
     const next = (list || []).map((e, i) => ({ id: 'bm' + (e.noradId || e.name || i), name: e.name, noradId: e.noradId || null, group: e.group || '' }))
     // 成员没变就不换引用：每拍换一次数组会把浮窗的只读网格整片重渲，选区跟着丢
-    const a = beamPicks.value
+    const a = s.beamPicks.value
     if (a.length === next.length && a.every((p, i) => p.id === next[i].id)) return
-    beamPicks.value = next
+    s.beamPicks.value = next
   }
   // 当前生效的目标名单（浮窗列表 / 计数读数都读它）
-  const activePicks = computed(() => (targetMode.value === 'beam' ? beamPicks.value : picks.value))
+  const activePicksOf = (key) => (targetModeOf(key) === 'beam' ? sess(key).beamPicks.value : picksOf(key))
+  const activePicks = computed(() => activePicksOf(activeKey.value))
 
   const pickedNames = computed(() => picks.value.map((p) => p.name))
-  const hasPick = (name, noradId) => picks.value.some((p) => (noradId && p.noradId === noradId) || p.name === name)
-  function addTarget(e) {
-    if (!activeKey.value) return false          // 没开表＝没有哪张表收得下它；返回 true 会让调用方误报「已加入」
-    if (!e || !e.name || hasPick(e.name, e.noradId)) return false
-    picks.value = [...picks.value, { id: newTid(), name: e.name, noradId: e.noradId || null, group: e.group || '' }]
+  const hasPickIn = (list, name, noradId) => list.some((p) => (noradId && p.noradId === noradId) || p.name === name)
+  const hasPick = (name, noradId) => hasPickIn(picks.value, name, noradId)
+  function addTarget(e, key) {
+    const k = key || activeKey.value
+    if (!k) return false          // 没开表＝没有哪张表收得下它；返回 true 会让调用方误报「已加入」
+    if (!e || !e.name || hasPickIn(picksOf(k), e.name, e.noradId)) return false
+    picksByAnt.value = { ...picksByAnt.value, [k]: [...picksOf(k), { id: newTid(), name: e.name, noradId: e.noradId || null, group: e.group || '' }] }
     return true
   }
   // 批量加入（「加入波束内的星」）：返回真正新增的数量；超上限即截断，由调用方在读数行说明
-  function addTargets(list) {
-    if (!activeKey.value) return 0
+  function addTargets(list, key) {
+    const k = key || activeKey.value
+    if (!k) return 0
     let n = 0
-    const next = picks.value.slice()
+    const next = picksOf(k).slice()
     for (const e of (list || [])) {
       if (next.length >= MAX_TARGETS) break
       if (!e || !e.name || next.some((p) => (e.noradId && p.noradId === e.noradId) || p.name === e.name)) continue
       next.push({ id: newTid(), name: e.name, noradId: e.noradId || null, group: e.group || '' }); n++
     }
-    if (n) picks.value = next
+    if (n) picksByAnt.value = { ...picksByAnt.value, [k]: next }
     return n
   }
-  function removeTarget(id) { picks.value = picks.value.filter((p) => p.id !== id) }
-  function clearTargets() { picks.value = [] }
+  function removeTarget(id, key) { const k = key || activeKey.value; if (k) picksByAnt.value = { ...picksByAnt.value, [k]: picksOf(k).filter((p) => p.id !== id) } }
+  // 批量移除（表窗口「删除选中」/ 右键「删除 N 行」/ Delete）：sel = { ids?: pick id[], keys?: { name, noradId }[] }。
+  // 结果表的行没有 pick id（行 id 是 NORAD / 星名），按 keys 对名单：两边都有 NORAD 就比 NORAD，否则比星名
+  // （只按名加的星，结果行会带解析出的 NORAD，仍得按名对上）。返回真正移除的数量。
+  function removeTargets(sel, key) {
+    const k = key || activeKey.value
+    if (!k || !sel) return 0
+    const ids = new Set((Array.isArray(sel.ids) ? sel.ids : []).map(String))
+    const keys = (Array.isArray(sel.keys) ? sel.keys : []).filter((q) => q && (q.name || q.noradId != null))
+    if (!ids.size && !keys.length) return 0
+    const hit = (p) => ids.has(String(p.id)) || keys.some((q) => ((q.noradId != null && p.noradId != null) ? p.noradId === q.noradId : (!!q.name && p.name === q.name)))
+    const before = picksOf(k), next = before.filter((p) => !hit(p))
+    if (next.length === before.length) return 0
+    picksByAnt.value = { ...picksByAnt.value, [k]: next }
+    return before.length - next.length
+  }
+  function clearTargets(key) { const k = key || activeKey.value; if (k) picksByAnt.value = { ...picksByAnt.value, [k]: [] } }
 
   let optsTemplate = null
   const cloneOpts = (o) => JSON.parse(JSON.stringify(o))
@@ -170,9 +253,10 @@ export function useSatPerfTable() {
     }
     return optsByAnt.value[key]
   }
+  function setOptsOf(key, o) { if (!key) return null; optsByAnt.value = { ...optsByAnt.value, [key]: fillOpts(o) }; return optsByAnt.value[key] }
   function rememberOpts(key) { const o = key && optsByAnt.value[key]; if (o) optsTemplate = cloneOpts({ ...o, beamSel: null }) }
   function resetOpts(key) { if (key) optsByAnt.value = { ...optsByAnt.value, [key]: defaultOpts() } }
-  const visibleColumns = (o) => COL_DEFS.filter((c) => o && o.cols && o.cols[c.key])
+  const visibleColumns = satVisibleColumns
 
   // ===== 单元格文本：网格显示 / TSV 导出 / 复制走同一条口径（时刻列的时区由宿主注入）=====
   let _fmtTime = (ms) => {
@@ -383,17 +467,19 @@ export function useSatPerfTable() {
   }
 
   // ==================== 当前时刻：逐星取值（一行 = 一颗目标星，波束取最大）====================
-  // ctx     — grd.getPerfContext(key)（含 basis / meta / settings / beams）
+  // ctx     — grd.getPerfContext(key)（含 basis / meta / settings / beams）；结果落进 ctx.key 那张表
   // targets — [{rec, name, noradId, group, _cc}]：调用方按 picks 解析出来的活体条目（解析不到的自动缺席）
   // times   — { now, gmst, ccNow, ccGmst }（双历元：真实星按 now、合成/自定义星按 ccNow）
   // shells  — [{altKm, name}]（只用于「壳层」列的就近归属，不参与取值）
   // hExKm   — 遮挡判据的大气排除高度
-  function compute(ctx, opts, targets, times, shells, hExKm = 0) {
-    if (!ctx) { rows.value = []; ctxInfo.value = null; ctxBeams.value = []; note.value = ''; stampMs.value = null; return }
+  // keyForNull — ctx 为 null（清表）时指哪张表；缺省当前表
+  function compute(ctx, opts, targets, times, shells, hExKm = 0, keyForNull) {
+    if (!ctx) { const s = sess(keyForNull || activeKey.value); s.rows.value = []; s.ctxInfo.value = null; s.ctxBeams.value = []; s.note.value = ''; s.stampMs.value = null; return }
+    const s = sess(ctx.key || activeKey.value)
     const t0 = (typeof performance !== 'undefined' ? performance.now() : 0)
-    stampMs.value = times && times.now ? times.now.getTime() : null
+    s.stampMs.value = times && times.now ? times.now.getTime() : null
     const o = opts || defaultOpts()
-    ctxBeams.value = ctx.beams.map((b) => ({ bi: b.bi, seq: b.seq || b.bi + 1, name: b.name, peakDb: b.peakDb }))
+    s.ctxBeams.value = ctx.beams.map((b) => ({ bi: b.bi, seq: b.seq || b.bi + 1, name: b.name, peakDb: b.peakDb }))
     const calc = perfCalc(ctx, o, shells, hExKm)
     const want = (k) => o.cols[k]
     const basis = ctx.basis, meta = ctx.meta
@@ -411,58 +497,56 @@ export function useSatPerfTable() {
       return { P: [ecf.x, ecf.y, ecf.z], lon: g.lon, lat: g.lat, alt: g.alt }
     }
     const r = buildRows(ctx, o, calc, want, basis, meta, use, posOf, hExKm)
-    rows.value = r.out
-    ctxInfo.value = { satName: ctx.satName, antName: ctx.antName, beams: ctx.beams.length }
+    s.rows.value = r.out
+    s.ctxInfo.value = { satName: ctx.satName, antName: ctx.antName, beams: ctx.beams.length }
     const ms = Math.round((typeof performance !== 'undefined' ? performance.now() : 0) - t0)
-    note.value = `${all.length} 目标 · ${r.inBeam} 落入方向图 · ${r.occluded} 被遮挡 · ${r.out.length} 行 · ${ms} ms`
+    s.note.value = `${all.length} 目标 · ${r.inBeam} 落入方向图 · ${r.occluded} 被遮挡 · ${r.out.length} 行 · ${ms} ms`
       + (all.length > MAX_TARGETS ? ` · 已截断至前 ${MAX_TARGETS} 个` : '')
   }
 
   // ==================== 时间窗口：可见时段扫描 + 时窗游标 ====================
   // 参数只剩【起点 + 时长】。扫描出的是每颗目标星的可见时段（域内 && 视线通，见文件头），
   // 表里的数由【游标那一刻】现算，与「当前时刻」共用 buildRows —— 两种口径逐位可比。
-  const win = reactive({
-    on: false,              // false = 当前时刻，true = 时间窗口
-    startMs: null,          // null = 跟随时间轴当前时刻
-    durH: 24,
-    cursorMs: null,         // 游标时刻（属于结果，不入快照）
-    busy: false, progress: 0, msg: ''
-  })
-  const winNote = ref('')
-  const winInfo = ref(null)   // { t0Ms, t1Ms, bands, nTarget, nLit, nWin, samples, ms, budgetHit, minStepHit, truncated }
   // 「输入已变」＝当前输入的指纹 ≠ 出这份结果时的指纹。用指纹而不是一个 stale 标志位 + watcher：
   // 标志位靠 watcher 时序，「改完参数当场点计算」这种同一拍里的操作，watcher 可能在扫描【之后】才刷，
   // 结果刚算完就自称过期。指纹是当场比对，谁先谁后都不会错判。
-  const winFp = ref('')
   // ★ 波束内档不把成员名单计入指纹：成员本来就每拍在变（星进星出），计入就等于每拍都自称过期，
   //   「输入已变」会一直闪。扫描用的是点「计算」那一刻钉住的名单，想按新名单重扫再点一次即可。
-  const winSig = (key) => [key || '', win.durH, win.startMs,
-    targetMode.value === 'beam' ? 'beam' : picks.value.map((p) => p.noradId || p.name).join(',')].join('|')
-  const winStaleFor = (key) => !winInfo.value || winFp.value !== winSig(key)
-  let _winToken = 0
-  let _winEnv = null          // 扫完留下的取值环境：游标每挪一下按它现算一张瞬时表
-  function cancelWindows() { _winToken++; win.busy = false; win.msg = '已取消' }
+  const winSig = (key) => { const s = sess(key); return [key || '', s.win.durH, s.win.startMs,
+    targetModeOf(key) === 'beam' ? 'beam' : picksOf(key).map((p) => p.noradId || p.name).join(',')].join('|') }
+  const winStaleFor = (key) => { const s = sess(key); return !s.winInfo.value || s.winFp.value !== winSig(key) }
+  function cancelWindows(key) { const s = sess(key || activeKey.value); s.winToken++; s.win.busy = false; s.win.msg = '已取消' }
 
   // 开表 / 切表：目标星名单、来源档、时窗设置都切到这根天线自己那份（没有就现开一份空的）。
-  // 时窗【结果】（扫描出的时段、游标、那一刻的行）是上一张表的，一律作废 —— 留着的话切完表
-  // 表里还是上一根天线那批星的数，看着像是新表算出来的。在跑的扫描也一并取消。
-  const winByAnt = ref({})
+  // 结果逐表各存（sessions），切表不作废任何一张表的结果 —— 多开的窗口各看各的。
   function setActiveKey(key) {
     const k = key || ''
     if (k === activeKey.value) return
-    const prev = activeKey.value
-    if (prev) winByAnt.value = { ...winByAnt.value, [prev]: { on: win.on, startMs: win.startMs, durH: win.durH } }
     activeKey.value = k
     if (k && !picksByAnt.value[k]) picksByAnt.value = { ...picksByAnt.value, [k]: [] }
-    const w = (k && winByAnt.value[k]) || null
-    win.on = !!(w && w.on)
-    win.startMs = (w && Number.isFinite(w.startMs)) ? w.startMs : null
-    win.durH = (w && Number.isFinite(w.durH)) ? w.durH : 24
-    _winToken++                                  // 在跑的扫描作废（结果落回来时 token 已对不上）
-    win.busy = false; win.progress = 0; win.msg = ''; win.cursorMs = null
-    winInfo.value = null; _winEnv = null; winNote.value = ''; winFp.value = ''
-    beamPicks.value = []
-    clearRows()
+    sess(k)
+  }
+  // 逐 key 视图（宿主按窗口取）：返回的就是会话对象本身（refs / reactive），读它们即建立依赖
+  const session = (key) => sess(key)
+  // 关窗：丢掉该表的运行时结果（名单 / 档位 / 时窗设置仍在桶里，重开原样回来）
+  function dropSession(key) {
+    const s = sessions.get(key || '')
+    if (!s) return
+    s.winToken++
+    winByAnt.value = { ...winByAnt.value, [key]: { on: s.win.on, startMs: s.win.startMs, durH: s.win.durH } }
+    sessions.delete(key || '')
+  }
+  // 天线改名（树里换 key）：名单 / 来源档 / 选项 / 时窗设置 / 运行中的会话整体搬到新 key（宿主 perfWinHost.onTreeKey 调）。
+  // 会话不作废 —— 改名的表窗口还开着，结果与扫描原样接着用；旧 key 上什么都不留（09-16 审查：原先只搬名单与选项，
+  // 会话与来源档留在旧 key 上，窗口的 watcher 钉着旧会话，改名后表不再刷新）。
+  function renameKey(from, to) {
+    if (!from || !to || from === to) return false
+    const mv = (o) => { if (o.value[from] !== undefined && o.value[to] === undefined) { const m = { ...o.value }; m[to] = m[from]; delete m[from]; o.value = m } }
+    mv(picksByAnt); mv(targetModeByAnt); mv(optsByAnt); mv(winByAnt)
+    const s = sessions.get(from)
+    if (s && !sessions.has(to)) { sessions.set(to, s); sessions.delete(from) }
+    if (activeKey.value === from) activeKey.value = to
+    return true
   }
 
   // —— 任意时刻的几何（扫描逐拍、游标逐次都走它）——
@@ -503,20 +587,22 @@ export function useSatPerfTable() {
 
   // ctx/opts/targets/times/shells/hExKm 同 compute；env 见 makeGeom，另有 env.onDone（扫完回调）
   async function computeWindows(ctx, opts, targets, times, shells, hExKm = 0, env = {}) {
-    const token = ++_winToken
-    const clear = () => { winInfo.value = null; _winEnv = null; win.msg = ''; winNote.value = ''; win.cursorMs = null; clearRows() }
-    if (!ctx) { clear(); return }
+    if (!ctx) return
+    const key = ctx.key || activeKey.value
+    const s = sess(key)
+    const token = ++s.winToken
+    const clear = () => { s.winInfo.value = null; s.winEnv = null; s.win.msg = ''; s.winNote.value = ''; s.win.cursorMs = null; clearRows(key) }
     const o = opts || defaultOpts()
-    ctxBeams.value = ctx.beams.map((b) => ({ bi: b.bi, seq: b.seq || b.bi + 1, name: b.name, peakDb: b.peakDb }))
-    ctxInfo.value = { satName: ctx.satName, antName: ctx.antName, beams: ctx.beams.length }
+    s.ctxBeams.value = ctx.beams.map((b) => ({ bi: b.bi, seq: b.seq || b.bi + 1, name: b.name, peakDb: b.peakDb }))
+    s.ctxInfo.value = { satName: ctx.satName, antName: ctx.antName, beams: ctx.beams.length }
     const all = targets || []
-    if (!all.length) { clear(); winFp.value = ''; return }
+    if (!all.length) { clear(); s.winFp.value = ''; return }
 
     const t0 = (typeof performance !== 'undefined' ? performance.now() : 0)
-    win.busy = true; win.progress = 0; win.msg = ''
+    s.win.busy = true; s.win.progress = 0; s.win.msg = ''
     const calc = perfCalc(ctx, o, shells, hExKm)
-    const t0Ms = Number.isFinite(win.startMs) ? win.startMs : times.now.getTime()
-    const durH = Math.max(0.02, Math.min(720, Number(win.durH) || 24))
+    const t0Ms = Number.isFinite(s.win.startMs) ? s.win.startMs : times.now.getTime()
+    const durH = Math.max(0.02, Math.min(720, Number(s.win.durH) || 24))
     const t1Ms = t0Ms + durH * 3600 * 1000
     const angStep = Math.max(0.01, Math.min(1, ANG_STEP_CELLS * calc.gridCell))
     const geom = makeGeom(ctx, times, env)
@@ -525,7 +611,7 @@ export function useSatPerfTable() {
     const bands = []
     let samples = 0, nWin = 0, budgetHit = false, minStepHit = false, lastYield = t0
     for (let i = 0; i < use.length; i++) {
-      if (token !== _winToken) return                    // 被新的计算或取消作废
+      if (token !== s.winToken) return                    // 被新的计算或取消作废
       const e = use[i]
       const tOff = e._cc ? geom.ccOff : 0
       // 判据 = 落在方向图域内 && 视线没被地球挡。val 只用来找窗内峰值时刻（拖游标的落点），不参与判据。
@@ -544,10 +630,10 @@ export function useSatPerfTable() {
       const r = scanWindows(evalAt, t0Ms, t1Ms, { domRadDeg: calc.domRadDeg, angStepDeg: angStep })
       samples += r.samples; nWin += r.windows.length
       budgetHit = budgetHit || r.budgetHit; minStepHit = minStepHit || r.minStepHit
-      const s = summarize(r.windows, t0Ms, t1Ms)
+      const sm = summarize(r.windows, t0Ms, t1Ms)
       bands.push({
         id: e.noradId || e.name, name: e.name, noradId: e.noradId, nWin: r.windows.length,
-        totMin: s.totMin, pct: s.pct,
+        totMin: sm.totMin, pct: sm.pct,
         // a/b = 条带上的位置（0~1）；ms 三件套供游标吸附与读数
         segs: r.windows.map((w, k) => ({
           k: k + 1, a: (w.startMs - t0Ms) / (t1Ms - t0Ms), b: (w.endMs - t0Ms) / (t1Ms - t0Ms),
@@ -556,63 +642,69 @@ export function useSatPerfTable() {
       })
 
       const now = (typeof performance !== 'undefined' ? performance.now() : 0)
-      win.progress = (i + 1) / use.length
-      win.msg = `扫描 ${i + 1} / ${use.length}`
+      s.win.progress = (i + 1) / use.length
+      s.win.msg = `扫描 ${i + 1} / ${use.length}`
       if (now - lastYield > 24) { await new Promise((res) => setTimeout(res, 0)); lastYield = (typeof performance !== 'undefined' ? performance.now() : 0) }
     }
-    if (token !== _winToken) return
+    if (token !== s.winToken) return
     const ms = Math.round((typeof performance !== 'undefined' ? performance.now() : 0) - t0)
-    winInfo.value = {
+    s.winInfo.value = {
       t0Ms, t1Ms, angStep, bands,
       nTarget: use.length, nWin, nLit: bands.filter((x) => x.nWin > 0).length,
       samples, ms, budgetHit, minStepHit, truncated: all.length > MAX_TARGETS
     }
-    _winEnv = { ctx, o, shells, hExKm, targets: use, geom, t0Ms, t1Ms }
-    win.busy = false; win.progress = 1; winFp.value = winSig(ctx.key)
-    win.msg = ''
+    s.winEnv = { ctx, o, shells, hExKm, targets: use, geom, t0Ms, t1Ms }
+    s.win.busy = false; s.win.progress = 1; s.winFp.value = winSig(key)
+    s.win.msg = ''
     // 读数分两份：瞬时表随手重算会覆盖 note，扫描结果的读数得单独存，否则一刷新就没了
-    winNote.value = `${use.length} 目标 · ${winInfo.value.nLit} 有窗口 · ${nWin} 个时段 · 取值 ${samples.toLocaleString()} 次 · ${ms} ms`
+    s.winNote.value = `${use.length} 目标 · ${s.winInfo.value.nLit} 有窗口 · ${nWin} 个时段 · 取值 ${samples.toLocaleString()} 次 · ${ms} ms`
       + (budgetHit ? ' · 已达取值预算（可能漏窗）' : '') + (minStepHit ? ' · 已到步长下限（可能漏窗）' : '')
       + (all.length > MAX_TARGETS ? ` · 已截断至前 ${MAX_TARGETS} 个` : '')
     // 游标落在最早的那次窗口峰值上（没有窗口就落时窗起点）——一扫完表里就是「第一次照到时最好的那一刻」
     const firstPeak = bands.reduce((a, b) => (b.segs.length && (a == null || b.segs[0].peakMs < a) ? b.segs[0].peakMs : a), null)
-    seekCursor(firstPeak == null ? t0Ms : firstPeak)
+    seekCursor(firstPeak == null ? t0Ms : firstPeak, key)
     if (typeof env.onDone === 'function') env.onDone()
   }
 
   // 游标 → 表：按该时刻现算一张瞬时表（列、口径、取值路径与「当前时刻」完全一致）。
   // 扫描结果本身不动 —— 拖游标只是换一个取值时刻，不重扫。
-  function computeAtCursor(tMs) {
-    const env = _winEnv
+  // ★ 口径（极化 / 路径损耗 / 波束筛选 / 显示列）按【当前选项】现取：选项弹窗里能随时改，钉在扫描那一刻就改不动了
+  function computeAtCursor(tMs, key, opts) {
+    const k = key || activeKey.value
+    const s = sess(k)
+    const env = s.winEnv
     if (!env || !Number.isFinite(tMs)) return
     const t = Math.max(env.t0Ms, Math.min(env.t1Ms, tMs))
-    const { ctx, o, shells, hExKm, targets, geom } = env
+    const { ctx, shells, hExKm, targets, geom } = env
+    const o = opts || (optsByAnt.value[k] ? optsByAnt.value[k] : env.o)
     const t1 = (typeof performance !== 'undefined' ? performance.now() : 0)
     const m = geom.srcMetaAt(t)
-    if (!m) { rows.value = []; note.value = '源星星历在该时刻无解'; stampMs.value = t; return }
-    // calc 每次现建：口径（极化 / 路径损耗 / 波束筛选）是选项弹窗里能随时改的，钉在扫描那一刻就改不动了
+    if (!m) { s.rows.value = []; s.note.value = '源星星历在该时刻无解'; s.stampMs.value = t; return }
     const calc = perfCalc(ctx, o, shells, hExKm)
-    const want = (k) => o.cols[k]
+    const want = (kk) => o.cols[kk]
     const basis = geom.basisAt(t, m)
     const posOf = (e) => geom.geoAt(e.rec, t + (e._cc ? geom.ccOff : 0))
     const r = buildRows(ctx, o, calc, want, basis, m, targets, posOf, hExKm)
-    rows.value = r.out
-    stampMs.value = t
+    s.rows.value = r.out
+    s.stampMs.value = t
     const ms = Math.round((typeof performance !== 'undefined' ? performance.now() : 0) - t1)
-    note.value = `${targets.length} 目标 · ${r.inBeam} 落入方向图 · ${r.occluded} 被遮挡 · ${r.out.length} 行 · ${ms} ms`
+    s.note.value = `${targets.length} 目标 · ${r.inBeam} 落入方向图 · ${r.occluded} 被遮挡 · ${r.out.length} 行 · ${ms} ms`
   }
   // 清表（不动 ctxInfo/扫描结果）：切到「时间窗口」却还没扫过时用 —— 留着上一档那一刻的数会被当成时窗里的数
-  function clearRows() { rows.value = []; note.value = ''; stampMs.value = null }
+  function clearRows(key) { const s = sess(key || activeKey.value); s.rows.value = []; s.note.value = ''; s.stampMs.value = null }
   // 只挪游标（夹在时窗内），不重算 —— 拖动时游标线与读数当场跟手，贵的那一步交给调用方按帧节流。
   // ★ 两件事必须分开：都塞进节流里的话，「上一窗/下一窗」连点两下读到的还是上一帧的游标，第二下就白点了。
-  function setCursor(tMs) {
-    if (!winInfo.value || !Number.isFinite(tMs)) return
-    win.cursorMs = Math.max(winInfo.value.t0Ms, Math.min(winInfo.value.t1Ms, tMs))
+  function setCursor(tMs, key) {
+    const s = sess(key || activeKey.value)
+    if (!s.winInfo.value || !Number.isFinite(tMs)) return
+    s.win.cursorMs = Math.max(s.winInfo.value.t0Ms, Math.min(s.winInfo.value.t1Ms, tMs))
   }
   // 挪游标并当场重算（跳转类操作、扫描完落位用；连续拖动走 setCursor + 按帧调 computeAtCursor）
-  function seekCursor(tMs) {
-    setCursor(tMs)
-    if (Number.isFinite(win.cursorMs)) computeAtCursor(win.cursorMs)
+  function seekCursor(tMs, key) {
+    const k = key || activeKey.value
+    setCursor(tMs, k)
+    const s = sess(k)
+    if (Number.isFinite(s.win.cursorMs)) computeAtCursor(s.win.cursorMs, k)
   }
 
   // ===== 行：两种时间口径（当前时刻 / 时窗游标）共用一套列、渲染与复制路径 =====
@@ -626,7 +718,6 @@ export function useSatPerfTable() {
   })
 
   // ==================== 波束筛选（与对地表同款）====================
-  const beamQuery = ref('')
   function parseBeamSeq(qs) {
     const set = new Set()
     for (const part of qs.split(/[,，\s]+/)) {
@@ -667,9 +758,9 @@ export function useSatPerfTable() {
       if (!list || !list.length) continue                                     // 空表不写进快照
       pb[k] = list.map((p) => ({ name: p.name, noradId: p.noradId, group: p.group }))
     }
-    // 时窗设置：当前这张表的还在 win 里（切表才会写回桶），存盘前先并进去
+    // 时窗设置：开过会话的表从会话取（那是最新的），没开过的沿用恢复时暂存的那份
     const wb = { ...winByAnt.value }
-    if (activeKey.value) wb[activeKey.value] = { on: win.on, startMs: win.startMs, durH: win.durH }
+    for (const [k, s] of sessions) if (k) wb[k] = { on: s.win.on, startMs: s.win.startMs, durH: s.win.durH }
     return {
       optsByAnt: JSON.parse(JSON.stringify(optsByAnt.value)),
       optsTemplate: optsTemplate ? cloneOpts(optsTemplate) : null,
@@ -683,15 +774,14 @@ export function useSatPerfTable() {
   function restoreState(st) {
     if (!st) return
     activeKey.value = ''
-    beamPicks.value = []
-    // 老快照里的 winCols/sumCols（时段/汇总两套视图已删）就地丢掉，不让它们跟着存回去
-    const fill = (c0) => { const { winCols, sumCols, ...c } = (c0 || {}); return { ...defaultOpts(), ...c, cols: { ...defaultOpts().cols, ...(c.cols || {}) } } }
+    for (const [, s] of sessions) s.winToken++
+    sessions.clear()
     if (st.optsByAnt && typeof st.optsByAnt === 'object') {
       const m = {}
-      for (const k of Object.keys(st.optsByAnt)) m[k] = fill(st.optsByAnt[k])
+      for (const k of Object.keys(st.optsByAnt)) m[k] = fillOpts(st.optsByAnt[k])
       optsByAnt.value = m
     }
-    optsTemplate = (st.optsTemplate && typeof st.optsTemplate === 'object') ? { ...fill(st.optsTemplate), beamSel: null } : null
+    optsTemplate = (st.optsTemplate && typeof st.optsTemplate === 'object') ? { ...fillOpts(st.optsTemplate), beamSel: null } : null
     // 目标星名单 / 来源档 / 时窗设置：新快照逐天线存；老快照是全表共享的一份 → 复制给每一根
     // 【开过表的】天线（optsByAnt 的键就是开过表的天线，故必须在它之后恢复），此后各表各改各的。
     const mkPick = (p) => ({ id: newTid(), name: p.name, noradId: p.noradId || null, group: p.group || '' })
@@ -726,17 +816,13 @@ export function useSatPerfTable() {
       for (const k of legacyKeys) m[k] = { ...w }
       winByAnt.value = m
     } else winByAnt.value = {}
-    // 没开表时 win 回到出厂档；开表由 setActiveKey 从桶里载
-    win.on = false; win.startMs = null; win.durH = 24
-    win.cursorMs = null; win.busy = false; win.progress = 0; win.msg = ''
-    winInfo.value = null; _winEnv = null; winNote.value = ''; winFp.value = ''
   }
 
   return {
-    rows, filteredRows, ctxInfo, ctxBeams, query, note, optsByAnt, stampMs,
-    picks, pickedNames, hasPick, addTarget, addTargets, removeTarget, clearTargets,
-    targetMode, beamPicks, activePicks, setBeamTargets, setActiveKey,
-    colDefs: COL_DEFS, colGroups: COL_GROUPS, getOpts, visibleColumns, rememberOpts, resetOpts,
+    rows, filteredRows, ctxInfo, ctxBeams, query, note, optsByAnt, stampMs, activeKey, picksByAnt,
+    picks, pickedNames, hasPick, addTarget, addTargets, removeTarget, removeTargets, clearTargets, picksOf, targetModeOf, setTargetModeOf, activePicksOf,
+    targetMode, beamPicks, activePicks, setBeamTargets, setActiveKey, session, dropSession, renameKey,
+    colDefs: COL_DEFS, colGroups: COL_GROUPS, getOpts, setOptsOf, visibleColumns, rememberOpts, resetOpts,
     beamQuery, filteredBeams, beamOn, beamSelIds, setBeamSel,
     compute, toTsv, getState, restoreState, setTimeFmt, fmtCell, footNote,
     // 时间窗口

@@ -590,7 +590,7 @@ function onBwInput(e) { setAnchor('bw', e.target.value) }
          故同一批次里不同载波可各按各的方式求解。系统余量只在「设置余量」下为输入，其余方式下是解出的结果。 -->
     <div v-if="calcModes.length" class="bb-cm">
       <label class="bb-f"><span class="bb-l">计算方式</span>
-        <select v-model="form.calcMode" class="bb-i">
+        <select v-model="form.calcMode" class="bb-i" :title="(calcModes.find((m) => m.key === form.calcMode) || {}).tip">
           <option v-for="m in calcModes" :key="m.key" :value="m.key">{{ m.label }}</option>
         </select>
       </label>

@@ -180,5 +180,41 @@ const names = (arr) => arr.map((p) => p.name).join(',')
   ok('⑤ 无天线上下文清掉时刻戳', sp.stampMs.value === null)
 }
 
+// ==================== ⑦ 批量移除：按 id（名单表）或按 NORAD / 星名（结果表的行没有 pick id）====================
+{
+  const sp = useSatPerfTable()
+  sp.setActiveKey('sat|ant')
+  sp.addTargets([{ name: 'R-1', noradId: 1 }, { name: 'R-2', noradId: 2 }, { name: 'R-3' }, { name: 'R-4', noradId: 4 }])
+  const idOf = (n) => sp.picks.value.find((p) => p.name === n).id
+  ok('⑦ 按 id 批量移除', sp.removeTargets({ ids: [idOf('R-1'), idOf('R-2')] }) === 2 && names(sp.picks.value) === 'R-3,R-4', names(sp.picks.value))
+  ok('⑦ 按 NORAD 对上结果行', sp.removeTargets({ keys: [{ name: 'R-4', noradId: 4 }] }) === 1 && names(sp.picks.value) === 'R-3', names(sp.picks.value))
+  ok('⑦ 只按名加的星：结果行带解析出的 NORAD 也按名对上', sp.removeTargets({ keys: [{ name: 'R-3', noradId: 33 }] }) === 1 && sp.picks.value.length === 0)
+  sp.addTarget({ name: 'R-5', noradId: 5 })
+  ok('⑦ 同名不同 NORAD 不算命中', sp.removeTargets({ keys: [{ name: 'R-5', noradId: 55 }] }) === 0 && names(sp.picks.value) === 'R-5')
+  ok('⑦ 没命中返回 0 且名单不动', sp.removeTargets({ ids: ['nope'], keys: [{ name: 'X', noradId: 99 }] }) === 0 && names(sp.picks.value) === 'R-5')
+  ok('⑦ 空参数返回 0', sp.removeTargets(null) === 0 && sp.removeTargets({}) === 0 && sp.removeTargets({ ids: [], keys: [] }) === 0)
+  sp.setActiveKey('sat|other')
+  sp.addTarget({ name: 'O-1', noradId: 7 })
+  ok('⑦ 指定 key 只动那张表', sp.removeTargets({ ids: [idOf('O-1')] }, 'sat|ant') === 0 && sp.removeTargets({ keys: [{ name: 'R-5', noradId: 5 }] }, 'sat|ant') === 1 && names(sp.picks.value) === 'O-1', names(sp.picks.value))
+  ok('⑦ 没开表返回 0', useSatPerfTable().removeTargets({ ids: ['x'] }) === 0)
+}
+
+// ==================== ⑧ 天线改名：名单 / 来源档 / 选项 / 时窗 / 会话整体搬到新 key，会话不作废 ====================
+{
+  const sp = useSatPerfTable()
+  sp.setActiveKey('sat|old')
+  sp.addTarget({ name: 'T-1', noradId: 1 })
+  sp.targetMode.value = 'beam'
+  sp.getOpts('sat|old').filterOn = true
+  sp.win.durH = 6
+  const s0 = sp.session('sat|old')
+  ok('⑧ 改名成功', sp.renameKey('sat|old', 'sat|new') === true)
+  ok('⑧ 名单跟到新 key、旧 key 清空', sp.picksOf('sat|new').length === 1 && sp.picksOf('sat|old').length === 0)
+  ok('⑧ 来源档与选项跟到新 key', sp.targetModeOf('sat|new') === 'beam' && sp.getOpts('sat|new').filterOn === true && sp.targetModeOf('sat|old') === 'pick')
+  ok('⑧ 会话是同一份（结果不作废）、时窗设置在会话里', sp.session('sat|new') === s0 && sp.session('sat|new').win.durH === 6)
+  ok('⑧ 当前表指向新 key', sp.activeKey.value === 'sat|new')
+  ok('⑧ 无效入参返回 false', sp.renameKey('', 'x') === false && sp.renameKey('a', 'a') === false)
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 if (fail) process.exit(1)

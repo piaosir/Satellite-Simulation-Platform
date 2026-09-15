@@ -236,6 +236,9 @@ export function createFlatCoverage(canvas) {
   // 非空即顶替逐片绘制 —— 于是矢量 PDF 也有影像底图，而不是悄悄掉回矢量海陆。
   let vecImg = null
   let mk = { points: [], stations: [], trajectories: [] }
+  // 性能指标表的城市层（每张开着的表一层）：[{ key, color, width, markOn, labelOn, labelPt, labelAlign,
+  //   items:[{ lon, lat, ring:[[lon,lat],…]|null, text }] }]。与标记同住文字快照（页面按表推、随天线移动重推）
+  let cityBoxes = []
   let focusSats = []    // 聚焦卫星星下点列表 [{ lat, lon }...]（多选=每颗各一个图标，同款同大小，不分主次）
   let selGeomList = []  // 聚焦卫星几何列表 [{ footprint:[{lat,lon}...], track:[{lat,lon}...], sub:{lat,lon} }...]，与 3D 同源（多颗同时叠画）
   // 聚焦卫星显示样式（与 3D 同一份设置，由 3D 页 setFocusStyle 推入；线宽/图标尺寸口径与 3D 同为屏幕 px）
@@ -1756,7 +1759,8 @@ export function createFlatCoverage(canvas) {
   }
   function drawText(text, lon, lat, px, color, opt) {
     const o = opt || {}
-    const x = PX(lon, lat) + (o.dx || 0), y = PY(lat, lon) + (o.dy || 0)
+    // o.sx / o.sy：直接给屏幕坐标当锚点（城市标签贴框边那种，锚点不是某个经纬度而是框的屏幕包围盒）
+    const x = (o.sx != null ? o.sx : PX(lon, lat)) + (o.dx || 0), y = (o.sy != null ? o.sy : PY(lat, lon)) + (o.dy || 0)
     const fam = (textFontLatin && !CJK_RE.test(text)) ? textFontLatin : textFont
     ctx.font = `${o.italic ? 'italic ' : ''}${o.bold ? 'bold ' : ''}${px}px ${fam}`
     ctx.textAlign = o.align || 'center'; ctx.textBaseline = 'middle'
@@ -2487,6 +2491,7 @@ export function createFlatCoverage(canvas) {
     //   末点是不是真到那儿）。载具图标＝当前位置，等同「本船符号」，更不能被底图地名盖住。
     //   线/圆点/图标必须同层：只提点不提线会把航迹切断、圆点却浮在字上，比整层压下去更怪。
     drawTrajLayer(iz, ST_ICON_K)
+    drawCityBoxes(iz)
     if (geom) {   // GXT 覆盖图标签（波束名/数值）：克制版联动 iz
       for (const l of (geom.labels || [])) drawText(l.text, l.lon, l.lat, Math.round((l.hpx || 0.03) * 533 * iz), l.color || '#fff')
     }
@@ -2885,6 +2890,57 @@ export function createFlatCoverage(canvas) {
         const tp = t.pts || []; if (!tp.length || !t.name) continue
         const hd = tp[tp.length - 1]
         drawText(t.name, hd.lon, hd.lat, nf, markCfg.tjNameColor, { dy: -(vi * 0.5 + nf * 0.7) })
+      }
+    }
+  }
+  // 性能指标表的城市层：指向误差框 + 城市标签。椭圆（it.ring，卫星视角下的 Az/El 误差投到地面的闭合环）走 drawPolyline；
+  // ★ 矩形（it.rect = 半宽 / 半高，度）＝屏幕矩形：以城市的屏幕位置为中心、半宽半高 = 度 × k()。全部投影档的平面都归一到
+  //   W=360（geo/projection.js），k() 恒为像素/度 —— Mercator / Robinson / 方位档下与等距圆柱同一尺寸、同一形状，四边水平竖直。
+  // 与航迹同层（地名之上）：框是用户特意摆上去的注记，不该被底图地名吃掉。字号按 pt 给（SATSOFT 口径），
+  // 与地球站名同一条尺寸律（× iz × MK_FONT_K，两视图同大）；标签摆位 right / left / above（SATSOFT Alignment）。
+  // ★ 标签贴着框的【屏幕包围盒】边缘、留 CB_GAP 像素（不随缩放）：框随缩放线性变大，
+  //   标签若锚在城市点上按字号偏移，放大后陷进框里、缩小后又飘远。没有框（标记关 / 误差全 0）就贴城市点。
+  const CB_GAP = 3
+  function drawCityBoxes(iz) {
+    if (!cityBoxes.length) return
+    for (const L of cityBoxes) {
+      const items = L.items || []
+      if (!items.length) continue
+      const color = L.color || '#ff2a2a', width = Math.max(0.1, Number(L.width) || 1.2), markOn = L.markOn !== false
+      const kk = k()
+      if (markOn) {
+        for (const it of items) {
+          if (it.rect) {
+            const cx = PX(it.lon, it.lat), cy = PY(it.lat, it.lon)
+            if (!Number.isFinite(cx) || !Number.isFinite(cy)) continue
+            const hw = it.rect.w * kk, hh = it.rect.h * kk
+            ctx.strokeStyle = color; ctx.lineWidth = width; ctx.lineJoin = 'miter'
+            ctx.strokeRect(cx - hw, cy - hh, 2 * hw, 2 * hh)
+          } else if (it.ring && it.ring.length > 1) drawPolyline(it.ring, color, width, true)
+        }
+      }
+      if (L.labelOn !== false && L.labelPt > 0) {
+        const pf = L.labelPt * 4 / 3 * iz * MK_FONT_K, al = L.labelAlign || 'right'
+        const lim = 90 * kk                      // 跨接缝被甩到另一头的顶点不进包围盒（一座城市的框跨不过 90°）
+        for (const it of items) {
+          if (!it.text) continue
+          const cx = PX(it.lon, it.lat), cy = PY(it.lat, it.lon)
+          if (!Number.isFinite(cx) || !Number.isFinite(cy)) continue
+          let x0 = cx, x1 = cx, y0 = cy, y1 = cy
+          if (markOn && it.rect) { const hw = it.rect.w * kk, hh = it.rect.h * kk; x0 = cx - hw; x1 = cx + hw; y0 = cy - hh; y1 = cy + hh }
+          else if (markOn && it.ring && it.ring.length > 1) {
+            for (const p of it.ring) {
+              const x = PX(p[0], p[1]), y = PY(p[1], p[0])
+              if (!Number.isFinite(x) || !Number.isFinite(y) || Math.abs(x - cx) > lim) continue
+              if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y
+            }
+          }
+          // 左右：贴边、竖直对齐框心；上下：贴边、水平对齐框心（textBaseline 是 middle，再让开半个字高）
+          if (al === 'left') drawText(it.text, it.lon, it.lat, pf, color, { sx: x0 - CB_GAP, sy: cy, align: 'right' })
+          else if (al === 'above') drawText(it.text, it.lon, it.lat, pf, color, { sx: cx, sy: y0 - CB_GAP - pf * 0.5 })
+          else if (al === 'below') drawText(it.text, it.lon, it.lat, pf, color, { sx: cx, sy: y1 + CB_GAP + pf * 0.5 })
+          else drawText(it.text, it.lon, it.lat, pf, color, { sx: x1 + CB_GAP, sy: cy, align: 'left' })
+        }
       }
     }
   }
@@ -3815,6 +3871,8 @@ export function createFlatCoverage(canvas) {
     // ★ 标记 / 标记样式 / 卫星层只住在文字那一张快照里：只重画它（几毫秒），面与线、回退快照都不动 ——
     //   这三样随时间轴每拍都会被页面重推一次（标记仰角、卫星图标），按内容作废就是每拍一次 100 ms 的整份重建。
     setMarkers(points, stations, trajectories) { mk = { points: points || [], stations: stations || [], trajectories: trajectories || [] }; invalidateText(); requestDraw() },
+    // 性能指标表的城市层（指向误差框 + 城市标签），与标记同住文字快照
+    setCityBoxes(list) { cityBoxes = Array.isArray(list) ? list : []; invalidateText(); requestDraw() },
     // 标记层样式（与 3D 同一份设置，见 markCfg）
     setMarkStyle(cfg) { Object.assign(markCfg, cfg || {}); invalidateText(); requestDraw() },
     // 标记直接拖拽：开关 + 回调（target, lonlat, 'start'|'move'|'end'）

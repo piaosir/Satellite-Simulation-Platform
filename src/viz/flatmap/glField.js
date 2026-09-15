@@ -104,18 +104,70 @@ function compile(gl, type, src) {
 //       一个网格格子跨不了半张图，跨了就一定是从切口的一侧接到了另一侧（跨切口 ≈ 整个 W）。
 export function buildMeshIndices(mesh, plane = null) {
   const { NX, NY, box, stride, db, vis, lonU, lat } = mesh
-  const empty = { idx: new Uint32Array(0), lonLo: NaN, lonHi: NaN, latLo: NaN, latHi: NaN, pxLo: NaN, pxHi: NaN, pyLo: NaN, pyHi: NaN }
+  const empty = { idx: new Uint32Array(0), lonLo: NaN, lonHi: NaN, latLo: NaN, latHi: NaN, pxLo: NaN, pxHi: NaN, pyLo: NaN, pyHi: NaN, extra: null }
   const rA = box ? box.r0 : 0, rB = box ? Math.min(box.r1, NY - 1) : NY - 1
   const cA = box ? box.c0 : 0, cB = box ? Math.min(box.c1, NX - 1) : NX - 1
   if (rB <= rA || cB <= cA) return empty
   const st = Math.max(1, stride | 0)
   const rowOff = rA * NX
   const nCells = (Math.ceil((rB - rA) / st) + 1) * (Math.ceil((cB - cA) / st) + 1)
-  const idx = new Uint32Array(nCells * 6)
+  // 交点细化（与 bandGeometry 同一张表、同一启用条件：stride 1、表与网格 / 档表尺寸相符）。有细化时索引数没有闭式
+  // 上界（跨档三角形按档切成环带多边形再扇形化），缓冲按需翻倍。
+  const rf = (mesh.refine && mesh.refine.n && st === 1 && mesh.refine.NX === NX && mesh.refine.NY === NY && mesh.levels && mesh.levels.length === mesh.refine.nb) ? mesh.refine : null
+  const levels = rf ? mesh.levels : null, nb = rf ? rf.nb : 0
+  const len = (rB - rA + 1) * NX                       // 上传的节点顶点数；细化顶点排在其后（下标 len + 记录号）
+  // 索引上界：不细化 ≤ 每格 2 三角；细化后一个 m 顶点凸多边形无论切成几带、扇形三角总数恒为 m−2
+  //（各带顶点数之和 = m + 2·(带数−1)，各带扇形 m_k−2 → 求和抵消），即每条细化记录最多多出 2 个三角（它两侧的三角形各 +1）。
+  // 弦中点再各加最多 2 个（所在带插一个顶点 +1、邻带的薄片 +1）。
+  const idx = new Uint32Array(nCells * 6 + (rf ? (rf.n + (rf.nm || 0)) * 6 : 0))
   let n = 0, loMin = Infinity, loMax = -Infinity, laMin = Infinity, laMax = -Infinity
   let pxMin = Infinity, pxMax = -Infinity, pyMin = Infinity, pyMax = -Infinity
   const xy = plane ? plane.xy : null
   const spanX = plane ? plane.W / 2 : 0, spanY = plane ? plane.H / 2 : 0
+  // 细化顶点的属性：沿所在格边在两端节点间线性插到 s*（lonU 已按星下点解缠，可直接插）；dB 精确 = 档值
+  // （float32，与 uLevels 同一份数 → 片元在该顶点上恰落档边界）；投影档的平面坐标同样沿边线性插。
+  // 只算起点在上传行区间内的记录，其余顶点不会被引用（留 0）。
+  // 顶点号：格边交点 = len + 记录号；弦中点 = len + 记录数 + 中点号。
+  // 位置：pos（projectRefine，掠地格子逐点求交）里有精确解就用它（经度按所在节点的 lonU 解缠），否则格边交点沿边线性插、
+  // 弦中点按三角形三个角重心插；投影档的平面坐标一律插节点的预投坐标（与 CPU 路逐点 PJ.fwd 的差只在地平附近、亚像素）。
+  // 薄片三角形另配 3 个专属顶点（位置抄 P/M/Q，d 取带内值）：薄片的三个顶点 d 若恰等于档值，片元按「最后一个 ≤ d 的档」
+  // 分档会落到相邻档（上弦薄片）或因 1 ulp 舍入掉到档外 —— 专属顶点让它稳稳落在本档。
+  let extra = null
+  const nR = rf ? rf.n : 0, nM = rf ? (rf.nm || 0) : 0
+  if (rf) {
+    const nE = nR + nM + 3 * nM, en = rf.en, et = rf.et, ek = rf.ek, es = rf.es
+    const pos = (mesh.pos && mesh.pos.lon && mesh.pos.lon.length === nR && mesh.pos.mlon && mesh.pos.mlon.length === nM) ? mesh.pos : null
+    extra = { n: nE, lon: new Float32Array(nE), lat: new Float32Array(nE), db: new Float32Array(nE), xy: xy ? new Float32Array(nE * 2) : null }
+    const iEnd = Math.min(NX * NY, (rB + 1) * NX)
+    const unwrapTo = (l, ref) => { while (l - ref > 180) l -= 360; while (l - ref < -180) l += 360; return l }
+    for (let p = 0; p < nR; p++) {                                   // 逐记录（O(记录数)，不扫节点）
+      const i = en[p]
+      if (i < rowOff || i >= iEnd) continue
+      const t = et[p], f = t === 0 ? i + 1 : (t === 1 ? i + NX : i + NX + 1), s = es[p]
+      if (f >= iEnd) continue
+      if (pos && pos.lon[p] === pos.lon[p]) { extra.lon[p] = unwrapTo(pos.lon[p], lonU[i]); extra.lat[p] = pos.lat[p] }
+      else { extra.lon[p] = lonU[i] + (lonU[f] - lonU[i]) * s; extra.lat[p] = lat[i] + (lat[f] - lat[i]) * s }
+      extra.db[p] = levels[ek[p]]
+      if (xy) { const a = (i - rowOff) * 2, b = (f - rowOff) * 2; extra.xy[p * 2] = xy[a] + (xy[b] - xy[a]) * s; extra.xy[p * 2 + 1] = xy[a + 1] + (xy[b + 1] - xy[a + 1]) * s }
+    }
+    if (nM) {
+      const { cells, moff, mt, mk, mu, mv } = rf
+      for (let ci = 0; ci < cells.length; ci++) {
+        const a = moff[ci], b = moff[ci + 1]; if (a === b) continue
+        const i00 = cells[ci], i10 = i00 + 1, i01 = i00 + NX, i11 = i01 + 1
+        if (i00 < rowOff || i11 >= iEnd) continue
+        for (let q = a; q < b; q++) {
+          const isB = mt[q] === 1, iB = isB ? i11 : i10, iC = isB ? i01 : i11, u = mu[q], v = mv[q]
+          const lA = isB ? 1 - v : 1 - u, lB = isB ? u : u - v, lC = isB ? v - u : v
+          const e = nR + q
+          if (pos && pos.mlon[q] === pos.mlon[q]) { extra.lon[e] = unwrapTo(pos.mlon[q], lonU[i00]); extra.lat[e] = pos.mlat[q] }
+          else { extra.lon[e] = lA * lonU[i00] + lB * lonU[iB] + lC * lonU[iC]; extra.lat[e] = lA * lat[i00] + lB * lat[iB] + lC * lat[iC] }
+          extra.db[e] = levels[mk[q]]
+          if (xy) { const oa = (i00 - rowOff) * 2, ob = (iB - rowOff) * 2, oc = (iC - rowOff) * 2; extra.xy[e * 2] = lA * xy[oa] + lB * xy[ob] + lC * xy[oc]; extra.xy[e * 2 + 1] = lA * xy[oa + 1] + lB * xy[ob + 1] + lC * xy[oc + 1] }
+        }
+      }
+    }
+  }
   // loadTri 的前两条：任一角 dB 为 NaN → 跳；三个角 vis 全 < 0 → 跳（整三角越地平）。
   // ★ 第二条必须做：limbOutside 的越地平顶点落在地平【外】，且极远离轴处 pRaw 会折回星下点附近
   //   —— 不剔就会把地平外的方向图值糊到地球上。
@@ -150,20 +202,103 @@ export function buildMeshIndices(mesh, plane = null) {
     idx[n] = i0 - rowOff; idx[n + 1] = i1 - rowOff; idx[n + 2] = i2 - rowOff; n += 3
     ext(i0); ext(i1); ext(i2)
   }
+  // 跨档三角形（三条边上有细化交点）：与 bandGeometry.augment 同序插点成凸多边形 → 每档取「d∈[Lk,Lk+1] 的顶点子列」
+  // 即该档的环带多边形（相邻档共用细化交点为弦端）→ 逐带扇形三角化。GPU 在每个扇形三角形内线性插值，档边界即弦
+  // = CPU 等值线段（同一对细化交点）；带内顶点 d 全在 [Lk,Lk+1] → 片元分档与 CPU 填充逐带一致。
+  // 顶点号：节点 = 全局下标 − rowOff；细化顶点 = len + 记录号。d 一律拿 float32 档值 / 节点值比较（与片元同一份数）。
+  // 表内同边记录按档升序、s* 沿边单调 → 沿 (ia→ib) 要 s 升序只看 d 沿边升还是降：升取表序、降取倒序。
+  const pv = rf ? new Int32Array(8 + 3 * nb) : null, pd = rf ? new Float64Array(8 + 3 * nb) : null
+  const rOff = rf ? rf.off : null, rEt = rf ? rf.et : null, rEk = rf ? rf.ek : null
+  const pushEdge = (m, ia, ib, node, type) => {
+    let p = rOff[node]; const pe = rOff[node + 1]
+    while (p < pe && rEt[p] !== type) p++
+    if (p === pe) return m
+    let q = p + 1; while (q < pe && rEt[q] === type) q++
+    if (db[ia] < db[ib]) { for (let i = p; i < q; i++) { pv[m] = len + i; pd[m] = levels[rEk[i]]; m++ } }
+    else { for (let i = q - 1; i >= p; i--) { pv[m] = len + i; pd[m] = levels[rEk[i]]; m++ } }
+    return m
+  }
+  const upperB = (arr, cnt, v) => { let lo = 0, hi = cnt; while (lo < hi) { const mid = (lo + hi) >> 1; if (arr[mid] <= v) lo = mid + 1; else hi = mid } return lo }
+  // isB=格内第二个三角形。三条边在表里的定位与 coverage.bandGeometry 的 augment 逐字同序：
+  //   A=(i00,i10,i11)：底边 h@i00、右边 v@i10、对角 d@i00；B=(i00,i11,i01)：对角 d@i00、顶边 h@i01、左边 v@i00
+  // 弦中点（与 coverage.bandGeometry.pushBand 同一套规则）：某档在本三角形的弦 P–Q 若有中点 M，弧鼓进哪一档，
+  // 那一档就在弦上插 M 开凹口（扇心取凹口顶点，既不漏画也不重叠），另一档得薄片三角形 (P,M,Q)。
+  const rMt = rf ? rf.mt : null, rMk = rf ? rf.mk : null, rMs = rf ? rf.ms : null
+  const mBase = len + nR
+  const bv = rf ? new Int32Array(12 + 3 * nb) : null, bd = rf ? new Float64Array(12 + 3 * nb) : null
+  const midOf = (m0, m1, tri, k) => { for (let p = m0; p < m1; p++) if (rMt[p] === tri && rMk[p] === k) return p; return -1 }
+  // 薄片 (P,M,Q) 归第 k 档：三顶点位置抄自 P/M/Q，d 取带内值 → 片元稳落第 k 档
+  const copyV = (id, s) => {
+    if (id < len) { const i = id + rowOff; extra.lon[s] = lonU[i]; extra.lat[s] = lat[i]; if (xy) { const o = id * 2; extra.xy[s * 2] = xy[o]; extra.xy[s * 2 + 1] = xy[o + 1] } }
+    else { const e = id - len; extra.lon[s] = extra.lon[e]; extra.lat[s] = extra.lat[e]; if (xy) { extra.xy[s * 2] = extra.xy[e * 2]; extra.xy[s * 2 + 1] = extra.xy[e * 2 + 1] } }
+  }
+  const sliver = (q, k, idA, idM, idB) => {
+    const s = nR + nM + 3 * q, dIn = k < nb - 1 ? 0.5 * (levels[k] + levels[k + 1]) : levels[k] + 1
+    copyV(idA, s); copyV(idM, s + 1); copyV(idB, s + 2)
+    extra.db[s] = dIn; extra.db[s + 1] = dIn; extra.db[s + 2] = dIn
+    idx[n] = len + s; idx[n + 1] = len + s + 1; idx[n + 2] = len + s + 2; n += 3
+  }
+  const putR = (i0, i1, i2, isB, m0, m1) => {
+    let m = 0
+    pv[m] = i0 - rowOff; pd[m++] = db[i0]; m = isB ? pushEdge(m, i0, i1, i0, 2) : pushEdge(m, i0, i1, i0, 0)
+    pv[m] = i1 - rowOff; pd[m++] = db[i1]; m = isB ? pushEdge(m, i1, i2, i2, 0) : pushEdge(m, i1, i2, i1, 1)
+    pv[m] = i2 - rowOff; pd[m++] = db[i2]; m = isB ? pushEdge(m, i2, i0, i0, 1) : pushEdge(m, i2, i0, i0, 2)
+    if (m === 3) { put(i0, i1, i2); return }
+    const d0 = db[i0], d1 = db[i1], d2 = db[i2]
+    const dmin = Math.min(d0, d1, d2), dmax = Math.max(d0, d1, d2)
+    const kHi = upperB(levels, nb, dmax) - 1                          // 三个角全低于最低档 → 什么都不出（片元本来也 discard）
+    if (kHi >= 0) {
+      const kLo = Math.max(0, upperB(levels, nb, dmin) - 1), tri = isB ? 1 : 0
+      for (let k = kLo; k <= kHi; k++) {
+        const lo = levels[k], hi = k < nb - 1 ? levels[k + 1] : Infinity
+        let c2 = 0
+        for (let q = 0; q < m; q++) { const d = pd[q]; if (d < lo || d > hi) continue; bv[c2] = pv[q]; bd[c2] = d; c2++ }   // 本档顶点子列（环序）
+        if (c2 < 3) continue
+        let apex = 0
+        if (m1 > m0) for (let pass = 0; pass < 2; pass++) {
+          const q = pass === 0 ? midOf(m0, m1, tri, k) : (k < nb - 1 ? midOf(m0, m1, tri, k + 1) : -1)
+          if (q < 0) continue
+          const L = pass === 0 ? lo : hi
+          let ia = -1
+          for (let i = 0; i < c2; i++) { if (bd[i] === L && bd[(i + 1) % c2] === L) { ia = i; break } }   // 弦 = 相邻两个 d===L
+          if (ia < 0) continue
+          const idM = mBase + q, ib = (ia + 1) % c2
+          if (pass === 0 ? rMs[q] === 1 : rMs[q] === 0) {            // 弧鼓进本档 → 插 M 开凹口
+            for (let i = c2 - 1; i > ia; i--) { bv[i + 1] = bv[i]; bd[i + 1] = bd[i] }
+            bv[ia + 1] = idM; bd[ia + 1] = L; c2++
+            if (apex === 0) apex = ia + 1; else if (apex > ia) apex++
+          } else sliver(q, k, bv[ia], idM, bv[ib])                       // 薄片归本档
+        }
+        for (let i = 1; i < c2 - 1; i++) { idx[n] = bv[apex]; idx[n + 1] = bv[(apex + i) % c2]; idx[n + 2] = bv[(apex + i + 1) % c2]; n += 3 }
+      }
+    }
+    ext(i0); ext(i1); ext(i2)
+  }
+  // 细化：格子按行主序、i00 单调递增，指针 rp 顺着 rf.cells（五条边上有记录的格子，升序）走，每格 O(1) 判要不要进 putR。
+  const rCells = rf ? rf.cells : null, nrc = rf ? rf.cells.length : 0, rMoff = (rf && rf.nm) ? rf.moff : null
+  let rp = 0
   for (let row = rA; row < rB; row += st) {
     const r2 = Math.min(row + st, rB)
     for (let col = cA; col < cB; col += st) {
       const c2 = Math.min(col + st, cB)
       const i00 = row * NX + col, i10 = row * NX + c2, i01 = r2 * NX + col, i11 = r2 * NX + c2
-      if (keep(i00, i10, i11)) put(i00, i10, i11)
-      if (keep(i00, i11, i01)) put(i00, i11, i01)
+      let aug = false, m0 = 0, m1 = 0
+      if (rf) { while (rp < nrc && rCells[rp] < i00) rp++; aug = rp < nrc && rCells[rp] === i00; if (aug && rMoff) { m0 = rMoff[rp]; m1 = rMoff[rp + 1] } }
+      if (aug) {
+        if (keep(i00, i10, i11)) putR(i00, i10, i11, false, m0, m1)
+        if (keep(i00, i11, i01)) putR(i00, i11, i01, true, m0, m1)
+      } else {
+        if (keep(i00, i10, i11)) put(i00, i10, i11)
+        if (keep(i00, i11, i01)) put(i00, i11, i01)
+      }
     }
   }
   if (!n) return empty
   return {
     idx: n === idx.length ? idx : idx.subarray(0, n),
     lonLo: loMin, lonHi: loMax, latLo: laMin, latHi: laMax,
-    pxLo: pxMin, pxHi: pxMax, pyLo: pyMin, pyHi: pyMax
+    pxLo: pxMin, pxHi: pxMax, pyLo: pyMin, pyHi: pyMax,
+    extra
   }
 }
 
@@ -284,16 +419,32 @@ export function createGlField() {
         tris: idx.length / 3, proj: !!plane
       }
       if (!len || !idx.length) { e.count = 0; return ret }
-      uploadAttr(e.vLon, mesh.lonU, off, len)
-      uploadAttr(e.vLat, mesh.lat, off, len)
-      uploadAttr(e.vDb, mesh.db, off, len)
+      // 细化顶点（buildMeshIndices 的 extra）排在节点区间之后：拼成一份再传（拼接缓冲按层复用、只增不减）；
+      // 没有细化时仍是零拷贝子数组。
+      const ex = mi.extra, nE = ex ? ex.n : 0, tot = len + nE
+      const join = (key, src, srcOff, add, w) => {
+        const cat = e.cat || (e.cat = {})
+        let a = cat[key]; if (!a || a.length < tot * w) a = cat[key] = new Float32Array(tot * w)
+        a.set(src.subarray(srcOff * w, (srcOff + len) * w), 0); a.set(add, len * w); return a
+      }
+      if (nE) {
+        uploadAttr(e.vLon, join('lon', mesh.lonU, off, ex.lon, 1), 0, tot)
+        uploadAttr(e.vLat, join('lat', mesh.lat, off, ex.lat, 1), 0, tot)
+        uploadAttr(e.vDb, join('db', mesh.db, off, ex.db, 1), 0, tot)
+      } else {
+        uploadAttr(e.vLon, mesh.lonU, off, len)
+        uploadAttr(e.vLat, mesh.lat, off, len)
+        uploadAttr(e.vDb, mesh.db, off, len)
+      }
       gl.bindVertexArray(e.vao)
       gl.bindBuffer(gl.ARRAY_BUFFER, e.vLon); gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 1, gl.FLOAT, false, 0, 0)
       gl.bindBuffer(gl.ARRAY_BUFFER, e.vLat); gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 1, gl.FLOAT, false, 0, 0)
       gl.bindBuffer(gl.ARRAY_BUFFER, e.vDb); gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2, 1, gl.FLOAT, false, 0, 0)
       // 等距圆柱档不喂 aPlane：关掉这条属性数组，着色器那边 uProj=0 也不读它
       if (plane) {
-        gl.bindBuffer(gl.ARRAY_BUFFER, e.vPl); gl.bufferData(gl.ARRAY_BUFFER, plane.xy, gl.STATIC_DRAW)
+        gl.bindBuffer(gl.ARRAY_BUFFER, e.vPl)
+        if (nE) gl.bufferData(gl.ARRAY_BUFFER, join('xy', plane.xy, 0, ex.xy, 2), gl.STATIC_DRAW, 0, tot * 2)
+        else gl.bufferData(gl.ARRAY_BUFFER, plane.xy, gl.STATIC_DRAW)
         gl.enableVertexAttribArray(3); gl.vertexAttribPointer(3, 2, gl.FLOAT, false, 0, 0)
       } else gl.disableVertexAttribArray(3)
       gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, e.ebo)

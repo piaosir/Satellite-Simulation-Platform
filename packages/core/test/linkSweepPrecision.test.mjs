@@ -36,7 +36,7 @@ function quiet(fn) {
   console.log = noop; console.info = noop; console.debug = noop
   try { return fn() } finally { console.log = log; console.info = info; console.debug = debug }
 }
-// 字符串出参的小数位数（"12.99"→2、"35786"→0）
+// 字符串出参的小数位数（"12.80"→2、"35786"→0）。默认场景基线随 accuracy.test 同步：2026-09-16 可用度出厂 100%（晴天）后 上行 12.80 / 下行 13.04
 const decimals = (s) => { const i = String(s).indexOf('.'); return i < 0 ? 0 : String(s).length - i - 1 }
 
 console.log('=== 扫描期出参精度（引擎小数位增量）测试 ===\n')
@@ -47,7 +47,7 @@ const N = 21
 // ① 默认不抬精度：单点计算的位数与从前逐字相同
 {
   const d = quiet(() => geo.calculateLinkBudget(SAT, {}).data)
-  ok('默认 GEO 出参仍是 2 位小数', d.uplinkCN === '12.99' && d.downlinkCN === '12.84', `${d.uplinkCN} / ${d.downlinkCN}`)
+  ok('默认 GEO 出参仍是 2 位小数', d.uplinkCN === '12.80' && d.downlinkCN === '13.04', `${d.uplinkCN} / ${d.downlinkCN}`)
   ok('默认 GEO 三位量仍是 3 位小数', decimals(d.PowerBWResult) === 3, d.PowerBWResult)
   ok('默认 GEO 可用度仍是 5 位小数', decimals(d.systemAvailabilityResult) === 5, d.systemAvailabilityResult)
   ok('三个引擎都给出了增量开关', [geo, ngso, regen].every((m) => typeof m.setOutputPrecisionBoost === 'function'))
@@ -191,7 +191,7 @@ const GEO_PLANE = {
   ok('构造的异常确实穿出了扫描（否则本项测不到东西）', threw)
 
   const d = quiet(() => geo.calculateLinkBudget(SAT, {}).data)
-  ok('异常之后 GEO 已复位到 2 位小数', d.uplinkCN === '12.99', d.uplinkCN)
+  ok('异常之后 GEO 已复位到 2 位小数', d.uplinkCN === '12.80', d.uplinkCN)
   // setOutputPrecisionBoost 返回改动前的值：置 0 时回来的若不是 0，就说明增量漏在了外面
   const left = [geo, ngso, regen].map((m) => m.setOutputPrecisionBoost(0))
   ok('异常之后三个引擎的增量都已归零', left.every((v) => v === 0), `[${left.join(', ')}]`)
@@ -201,7 +201,7 @@ const GEO_PLANE = {
 {
   quiet(() => sweepLink2D(GEO_PLANE))
   const d = quiet(() => geo.calculateLinkBudget(SAT, {}).data)
-  ok('扫描结束后单点计算仍是 2 位小数', d.uplinkCN === '12.99' && d.linkmargin === '3.00', `${d.uplinkCN} / ${d.linkmargin}`)
+  ok('扫描结束后单点计算仍是 2 位小数', d.uplinkCN === '12.80' && d.linkmargin === '3.00', `${d.uplinkCN} / ${d.linkmargin}`)
   ok('扫描结束后瓦数仍是 3 位小数', decimals(d.paRecommendation) === 3, d.paRecommendation)
 }
 

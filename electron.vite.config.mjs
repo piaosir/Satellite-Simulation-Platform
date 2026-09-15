@@ -58,6 +58,8 @@ export default defineConfig({
           ci: resolve('src/ci.html'),
           pfd: resolve('src/pfd.html'),
           freqplan: resolve('src/freqplan.html'),
+          // 性能指标表窗口（对地 / 对星 / 气象三张表共用一个入口，按 ?kind= 装表）
+          perf: resolve('src/perf.html'),
           // 报告打印页：隐藏窗口载入、printToPDF 取材（见 electron/services/reportPdf.js）
           report: resolve('src/report.html')
         }

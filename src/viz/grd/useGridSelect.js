@@ -32,7 +32,9 @@ export function useGridSelect(cfg) {
   //   onPasteAppend?:(text) => number   无选区/空表时的整块追加，返回新增行数
   //   onClear?:  (cells:{rowId,key}[])  批量清空（已先 pushUndo）
   //   onInsertRows?: (atIndex, count) => number   在下标处插入空行（已先 pushUndo）；不给则右键菜单无插入项
-  //   onDeleteRows?: (rowIds[]) => number         删除这些行（已先 pushUndo）；不给则无删除项
+  //   onDeleteRows?: (rowIds[]) => number         删除这些行（已先 pushUndo）；不给则无删除项。
+  //                                     只读表也可给（目标星名单这类「只能整行移除」的列表）：右键「删除 N 行」/ Ctrl+- / Delete 都走它
+  //   deletable?: () => boolean         删除入口的动态开关（如目标星「波束内」档成员随时钟重算、不可移除）；不给则恒开
   //   pushUndo? / dropUndo? / refresh?  撤销快照 / 撤回空操作快照 / 变更后重算
   //   undo? / redo?                     Ctrl+Z / Ctrl+Y(Ctrl+Shift+Z) 的处理（外部负责恢复+重算）
   const sel = ref({ ar: -1, ac: -1, ri: -1, ci: -1 })
@@ -194,9 +196,27 @@ export function useGridSelect(cfg) {
   const colSelected = (ci) => { const r = rect.value, n = rowList().length; return n > 0 && r.r0 === 0 && r.r1 >= n - 1 && ci >= r.c0 && ci <= r.c1 }
 
   // ===== 列宽（table-layout:fixed + 显式列宽 → 才真的可拖、可省略号）=====
-  const widths = ref({})                     // colKey → px
+  // 列宽记忆：同冻结列，按 gridId 落 localStorage。只记用户定过的列（拖过 / 自动列宽过）；fitMissing 量出来的
+  // 是随数据走的派生值，不记——记了就把「当时恰好全是 —」的窄列钉死了。
+  const wStore = cfg.gridId ? 'eg/widths/' + cfg.gridId : ''
+  const userW = (() => {
+    if (!wStore) return {}
+    try {
+      const o = JSON.parse(localStorage.getItem(wStore) || 'null')
+      if (!o || typeof o !== 'object') return {}
+      const out = {}
+      for (const k of Object.keys(o)) { const v = Number(o[k]); if (Number.isFinite(v) && v >= MIN_W) out[k] = Math.round(v) }
+      return out
+    } catch (e) { return {} }
+  })()
+  const widths = ref({ ...userW })           // colKey → px
   const widthOf = (c) => (c ? (widths.value[c.key] || c.w || DEFAULT_W) : DEFAULT_W)
   const setWidth = (c, px) => { if (c) widths.value = { ...widths.value, [c.key]: Math.max(MIN_W, Math.round(px)) } }
+  function commitWidths(keys) {
+    if (!wStore) return
+    for (const k of keys) if (widths.value[k] != null) userW[k] = widths.value[k]
+    try { localStorage.setItem(wStore, JSON.stringify(userW)) } catch (e) { /* 配额满等忽略 */ }
+  }
   // 文本量宽：拿单元格的真实字体走 canvas 量，避免「改 table-layout 再读回布局」的抖动。
   let _mctx = null
   function measureCtx() {
@@ -243,8 +263,8 @@ export function useGridSelect(cfg) {
     for (const c of miss) next[c.key] = Math.max(c.w || 0, autoWidth(c))
     widths.value = next
   }
-  function autoFitCol(col) { if (col) setWidth(col, autoWidth(col)) }
-  function autoFitAll() { const next = {}; for (const c of colList()) next[c.key] = autoWidth(c); widths.value = next }
+  function autoFitCol(col) { if (col) { setWidth(col, autoWidth(col)); commitWidths([col.key]) } }
+  function autoFitAll() { const next = {}; for (const c of colList()) next[c.key] = autoWidth(c); widths.value = next; commitWidths(Object.keys(next)) }
   // 列宽拖拽（列头右缘那道把手）
   let rzCol = null, rzX = 0, rzW = 0
   const resizing = ref(false)
@@ -253,7 +273,7 @@ export function useGridSelect(cfg) {
     e.preventDefault(); e.stopPropagation()
     rzCol = col; rzX = e.clientX; rzW = widthOf(col); resizing.value = true
     const mv = (ev) => { if (rzCol) setWidth(rzCol, rzW + (ev.clientX - rzX)) }
-    const up = () => { rzCol = null; resizing.value = false; window.removeEventListener('mousemove', mv); window.removeEventListener('mouseup', up); document.body.style.cursor = '' }
+    const up = () => { const c = rzCol; rzCol = null; resizing.value = false; window.removeEventListener('mousemove', mv); window.removeEventListener('mouseup', up); document.body.style.cursor = ''; if (c) commitWidths([c.key]) }
     document.body.style.cursor = 'col-resize'
     window.addEventListener('mousemove', mv); window.addEventListener('mouseup', up)
   }
@@ -636,8 +656,10 @@ export function useGridSelect(cfg) {
 
   // ===== 插入 / 删除行（右键菜单与工具条共用；行集 = 当前选区跨过的行）=====
   const canInsert = computed(() => !cfg.readOnly && !!cfg.onInsertRows)
-  const canDelete = computed(() => !cfg.readOnly && !!cfg.onDeleteRows)
+  const canDelete = computed(() => !!cfg.onDeleteRows && (!cfg.deletable || cfg.deletable() !== false))
   function selRowSpan() { const rc = rect.value; return rc.r0 < 0 ? null : { lo: rc.r0, hi: Math.min(rc.r1, rowList().length - 1) } }
+  // 选区跨过的行数（工具条「删除选中」的可用态与计数）；没有选区、或选区已整个落到表外＝0
+  const selRowCount = computed(() => { const sp = selRowSpan(); return sp ? Math.max(0, sp.hi - sp.lo + 1) : 0 })
   function insertRows(below) {
     if (!canInsert.value) return
     const sp = selRowSpan()
@@ -728,7 +750,10 @@ export function useGridSelect(cfg) {
       case 'Enter': e.preventDefault(); move(ext ? -1 : 1, 0, false); break
       case 'Tab': e.preventDefault(); tabMove(ext); break
       case 'F2': if (!cfg.readOnly) { e.preventDefault(); tryEdit(ri, ci, null) } break
-      case 'Delete': if (!cfg.readOnly) { e.preventDefault(); clearRange() } break
+      case 'Delete':   // 可编辑表：清空选区内容（Excel）；只读的列表表（目标星名单 / 读数表）：Delete＝移除选中行
+        if (!cfg.readOnly) { e.preventDefault(); clearRange() }
+        else if (canDelete.value) { e.preventDefault(); deleteRows() }
+        break
       case 'Backspace': if (!cfg.readOnly) { e.preventDefault(); tryEdit(ri, ci, '') } break   // Excel：Backspace=清空活动格并进入编辑
       default: break
         // 可见字符 / 输入法：不在此合成编辑、不 preventDefault——放行让按键自然落进活动格那个已获焦的常驻捕获框，
@@ -780,11 +805,11 @@ export function useGridSelect(cfg) {
     // 排序
     sortable, sort, sortDirOf, setSort, toggleSort, clearSort,
     // 列宽
-    widths, widthOf, setWidth, autoFitCol, autoFitAll, onResizeDown, resizing,
+    widths, widthOf, setWidth, commitWidths, autoFitCol, autoFitAll, onResizeDown, resizing,
     // 填充柄
     fill, inFill, isFillAnchor, onFillDown, onFillDbl, fillDown,
     // 行增删 + 右键菜单
-    canInsert, canDelete, insertRows, deleteRows, menu, openMenu, closeMenu, menuDo,
+    canInsert, canDelete, selRowCount, insertRows, deleteRows, menu, openMenu, closeMenu, menuDo,
     // 冻结列（显示序由 visCols 统一给出，选区/复制/粘贴/填充全按它遍历）
     visCols, frozenCount, isFrozen, isPinned, pinned, pinTargets, pinAllOn, canPin,
     togglePin, setFreeze, unfreeze, fzOff, fzVars, fzStyle, fzW

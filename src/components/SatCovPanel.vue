@@ -15,7 +15,7 @@ const props = defineProps({
   grd: { type: Object, required: true },     // useGrdCoverage
   satCount: { type: Number, default: 0 },
   satSearch: { type: Function, default: null },    // 目标星搜索（对星跟踪选目标用，全量：星座目录 + 卫星组 + 自定义星座）
-  tableOpen: { type: Boolean, default: false },
+  tableOpenKeys: { type: Object, default: () => new Set() },   // 开着对星性能指标表窗口的天线 key 集（一根天线一窗）
   satVis: { type: Function, default: () => true }  // 小眼睛状态（与对地视图同一份 iconShow/labelShow）
 })
 const emit = defineEmits(['open-table', 'pick-shells', 'toggle-eye', 'add-sat', 'edit-sat', 'remove-sat'])
@@ -153,7 +153,7 @@ function shellWhy(sh) {
                     </span>
                   </template>
                 </div>
-                <div class="gperf" :class="{ on: tableOpen && sc.isActive(grd.keyOf(sat.folder, a.name)) }" title="打开该天线的对星性能指标表" @click.stop="sc.setActive(sat, a); emit('open-table')">
+                <div class="gperf" :class="{ on: tableOpenKeys.has(grd.keyOf(sat.folder, a.name)) }" title="打开该天线的对星性能指标表（独立窗口；再点＝前置）" @click.stop="emit('open-table', sat, a)">
                   <svg class="gsvg perf-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                     <rect x="3" y="3" width="18" height="18" rx="2" /><path d="M3 9h18" /><path d="M3 15h18" /><path d="M9 3v18" />
                   </svg>

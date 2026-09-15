@@ -159,6 +159,8 @@ module.exports = {
   loadFullPrecisionData,
   // 城市列表（选址 → 自动填经纬度，进而联动降雨率/海拔）
   listCities: cities.getAllCities,
+  // 分层城市库：中国按省份、国际按国家（性能指标表 / 气象指标表「典型城市」选点）
+  listCitiesGrouped: cities.listCitiesGrouped,
   // 城市关键词检索：支持 城市名 / 省份名(含别名) / 拼音首字母缩写（与小程序口径一致）
   searchCities: cities.searchCities,
   // 载波信号选项（调制/FEC/DVB/MODCOD）

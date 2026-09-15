@@ -3028,6 +3028,73 @@ export function createGlobeScene(container, quality = {}) {
     trajGroup = g; scene.add(g)
     sweepTexCache(vehTexCache, texUsedTj, 8); sweepTexCache(dotCache, texUsedTj, 16)
   }
+  // 性能指标表的城市层：指向误差框 + 城市标签。与 2D flatCoverage.drawCityBoxes 同一份载荷：
+  //   [{ key, color, width, markOn, labelOn, labelPt, labelAlign, items:[{ lon, lat, ring, rect, text }] }]
+  // 椭圆（ring）走粗线基建（线宽=屏幕 px，与航迹同 10.5 层，压在地名之上）；标签走 labelSprite（随缩放联动、背面剔除）。
+  // ★ 矩形（rect = 半宽 / 半高，度）＝屏幕矩形（billboard）：四角每帧在 rescaleMarkers 里按相机重算，尺寸律与 2D 等距圆柱
+  //   同一条 —— 半宽像素 = 度 × 星下点处的像素/度，所有城市同一像素尺寸、随缩放与地球同比例变，任何视角下四边水平竖直。
+  //   depthTest 关（近地平的框半边会陷进球面），背面靠 _dir 半球剔除。
+  // ★ 标签贴着框的边、留 CB_GAP 像素（不随缩放）：椭圆取框在该方向上的最远处（右/左＝极东/极西经度、纬度取城市；
+  //   上/下＝极北/极南纬度、经度取城市）再按像素偏移；矩形的标签锚在城市上，偏移＝框的半宽/半高像素 + CB_GAP，
+  //   框的像素尺寸随缩放在变，故也在 rescaleMarkers 里每帧改 sprite.center（见 _rectAl）。
+  //   贴图四周有 8/70 的描边留白（makeLabelSprite pad=8、画布高 70），从间距里扣掉，字的边才是 CB_GAP。
+  const CB_GAP = 3
+  let cityBoxGroup = null
+  // 屏幕矩形：Line2 四段闭合。位置先留 0，由 rescaleMarkers 每帧写进 instanceStart/instanceEnd 共用的交错缓冲
+  //（原地改 + needsUpdate，不重建属性 —— 逐帧 setPositions 会把旧 GPU 缓冲留成泄漏）；包围球随之失效，关掉视锥剔除。
+  function rectBillboard(center, hw, hh, hexc, width) {
+    const g = new LineGeometry(); g.setPositions(new Array(15).fill(0))   // 5 点 → 4 段
+    const m = regMat(new LineMaterial({ color: hexc, linewidth: width, transparent: true, opacity: 1, worldUnits: false, depthWrite: false, depthTest: false }))
+    const o = new Line2(g, m); o.renderOrder = 10.5; o.frustumCulled = false
+    o._rect = { hw, hh }; o._ctr = center.clone(); o._dir = center.clone().normalize()
+    return o
+  }
+  function setCityBoxes(list) {
+    disposeGroup(cityBoxGroup); cityBoxGroup = null
+    if (!Array.isArray(list) || !list.length) return
+    const g = new THREE.Group()
+    for (const L of list) {
+      const items = L.items || []
+      if (!items.length) continue
+      const hexc = hexOf(L.color || '#ff2a2a'), width = Math.max(0.1, Number(L.width) || 1.2), markOn = L.markOn !== false
+      if (markOn) {
+        for (const it of items) {
+          if (it.rect) { g.add(rectBillboard(llaToVec(it.lat, it.lon, 0).multiplyScalar(1.0015), it.rect.w, it.rect.h, hexc, width)); continue }
+          if (!it.ring || it.ring.length < 2) continue
+          const verts = it.ring.map((p) => llaToVec(p[1], p[0], 0).multiplyScalar(1.0015))
+          g.add(fatStrip(verts, hexc, width, 1, 10.5))
+        }
+      }
+      if (L.labelOn !== false && L.labelPt > 0) {
+        const px = L.labelPt * 4 / 3, al = L.labelAlign || 'right', color = L.color || '#ff2a2a'
+        const pad = px * 8 / 70, gp = Math.max(0.5, CB_GAP - pad)   // 字边到框边 = CB_GAP
+        for (const it of items) {
+          if (!it.text) continue
+          if (markOn && it.rect) {
+            // 矩形：锚在城市上，偏移随框此刻的像素尺寸每帧重算（rescaleMarkers 的 _rectAl 分支）；先按居中建出来
+            const spr = labelSprite(it.text, it.lat, it.lon, color, 0.5, px, 0)
+            spr._rectAl = al; spr._rectHw = it.rect.w; spr._rectHh = it.rect.h; spr._gp = gp
+            g.add(spr); continue
+          }
+          let lonR = it.lon, lonL = it.lon, latU = it.lat, latD = it.lat
+          if (markOn && it.ring && it.ring.length > 1) {
+            let dmax = 0, dmin = 0
+            for (const p of it.ring) {
+              const dl = ((p[0] - it.lon + 540) % 360) - 180
+              if (dl > dmax) dmax = dl; if (dl < dmin) dmin = dl
+              if (p[1] > latU) latU = p[1]; if (p[1] < latD) latD = p[1]
+            }
+            lonR = it.lon + dmax; lonL = it.lon + dmin
+          }
+          if (al === 'left') g.add(labelSprite(it.text, it.lat, lonL, color, 0.5, px, -gp))
+          else if (al === 'above') g.add(labelSprite(it.text, latU, it.lon, color, 0.5 - (gp + px * 0.5) / px, px, 0))
+          else if (al === 'below') g.add(labelSprite(it.text, latD, it.lon, color, 0.5 + (gp + px * 0.5) / px, px, 0))
+          else g.add(labelSprite(it.text, it.lat, lonR, color, 0.5, px, gp))
+        }
+      }
+    }
+    cityBoxGroup = g; scene.add(g)
+  }
   // 标记/轨迹精灵每帧随缩放「均匀」联动：屏幕像素 = 设定像素 × zoomK，zoomK = 基准距离/相机到目标距离。
   // 默认视角(相机距=LABEL_REF_DIST) zoomK=1 → 即其设定的原始像素大小；拉近 zoomK>1 变大、拉远变小，与地名同步。
   // 用「相机→目标」统一系数（而非各标记自身距离）→ 全部标记同屏幕大小，不再近大远小。带 _dir 的文字做半球剔除。
@@ -3036,6 +3103,12 @@ export function createGlobeScene(container, quality = {}) {
     const tanH = Math.tan(camera.fov * 0.5 * Math.PI / 180) || 1
     const cd = camera.position.clone().normalize()
     const zoomK = LABEL_REF_DIST / camera.position.distanceTo(controls.target)
+    // 城市矩形（屏幕矩形，见 setCityBoxes）：像素/度取星下点处 —— 相机到最近地表 D−1、视野高 2(D−1)tanH 占 curH 像素，
+    // 1 弧度 = 1 世界单位 = 1 地球半径；某城市（距相机 dd）上「等价于星下点处 1° 的像素数」折成世界长度 = (π/180)·dd/(D−1)。
+    const D = camera.position.length(), Dn = Math.max(1e-6, D - 1)
+    const pxPerDeg = curH * (Math.PI / 180) / (2 * Dn * tanH)
+    const me = camera.matrixWorld.elements
+    const rx = me[0], ry = me[1], rz = me[2], ux = me[4], uy = me[5], uz = me[6]   // 相机的右 / 上（世界系）→ 矩形四边水平竖直
     const go = (grp) => {
       if (!grp) return
       for (const o of grp.children) {
@@ -3053,9 +3126,33 @@ export function createGlobeScene(container, quality = {}) {
           if (sx * sx + sy * sy > 1e-9) o.material.rotation = Math.atan2(-sx, sy)   // 精灵自身「上」＝船首/机头
         }
         if (o._px) { const dd = camera.position.distanceTo(o.position); const h = o._px * zoomK * (2 * dd * tanH) / curH; o.scale.set(h * (o._ar || 1), h, 1) }
+        if (o._rect) {   // 城市矩形：四角 = 城市 ± 右·w ± 上·h（世界长度按该城市距离折算 → 屏幕上恰为 度×像素/度）
+          const c = o._ctr, s = (Math.PI / 180) * camera.position.distanceTo(c) / Dn
+          const w = o._rect.hw * s, h = o._rect.hh * s
+          const X = [
+            c.x - rx * w - ux * h, c.y - ry * w - uy * h, c.z - rz * w - uz * h,   // 左下
+            c.x + rx * w - ux * h, c.y + ry * w - uy * h, c.z + rz * w - uz * h,   // 右下
+            c.x + rx * w + ux * h, c.y + ry * w + uy * h, c.z + rz * w + uz * h,   // 右上
+            c.x - rx * w + ux * h, c.y - ry * w + uy * h, c.z - rz * w + uz * h    // 左上
+          ]
+          const buf = o.geometry.attributes.instanceStart.data, P = buf.array   // 4 段 × (起 xyz, 止 xyz)
+          for (let i = 0; i < 4; i++) {
+            const a = i * 3, b = ((i + 1) % 4) * 3, q = i * 6
+            P[q] = X[a]; P[q + 1] = X[a + 1]; P[q + 2] = X[a + 2]; P[q + 3] = X[b]; P[q + 4] = X[b + 1]; P[q + 5] = X[b + 2]
+          }
+          buf.needsUpdate = true
+        }
+        if (o._rectAl) {   // 城市矩形的标签：偏移 = 框此刻的半宽/半高像素 + 间距，按字此刻的像素尺寸折成 center 分数
+          const H = o._px * zoomK, W = H * (o._ar || 1)
+          const dx = o._rectHw * pxPerDeg + o._gp, dy = o._rectHh * pxPerDeg + o._gp
+          if (o._rectAl === 'left') o.center.set(1 + dx / W, 0.5)
+          else if (o._rectAl === 'above') o.center.set(0.5, -dy / H)
+          else if (o._rectAl === 'below') o.center.set(0.5, 1 + dy / H)
+          else o.center.set(-dx / W, 0.5)
+        }
       }
     }
-    go(markersGroup); go(trajGroup)   // 选中星在轨点已改合批点层，随缩放联动走 rescalePointLayers
+    go(markersGroup); go(trajGroup); go(cityBoxGroup)   // 选中星在轨点已改合批点层，随缩放联动走 rescalePointLayers
   }
   // 贴图点层随缩放联动：与原精灵同口径（基准 px × LABEL_REF_DIST/相机距离），上限 256px 防越过
   // gl_PointSize 的硬件天花板。高亮环刻意不联动（固定屏幕大小，拉远也认得出选中的是哪颗）。
@@ -3425,7 +3522,7 @@ export function createGlobeScene(container, quality = {}) {
       if (!V) return null
       return { pxPerDeg: V.degPerPx > 0 ? 1 / V.degPerPx : 0 }
     },
-    setMarkers, setTrajectories, setMarkStyle, setFocusSatLLA, setFocusStyle,
+    setMarkers, setTrajectories, setCityBoxes, setMarkStyle, setFocusSatLLA, setFocusStyle,
     // 布尔＝三类一起开关；对象＝逐类开关 { point, station, waypoint }（页面按「调整位置 / 调点」态给，
     // 每项 true / false / 归属 id，见 dragOk）
     setMarkerDrag: (v) => {

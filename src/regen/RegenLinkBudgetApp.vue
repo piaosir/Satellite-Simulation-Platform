@@ -40,6 +40,7 @@ import LbCustomColsDialog from '../components/LbCustomColsDialog.vue'
 import LbSlantTool from '../components/LbSlantTool.vue'
 import LbIslRangeTool from '../components/LbIslRangeTool.vue'
 import { buildPool, makeResolver, evalRows, customFieldDefs, loadDefs, saveDefs, unitOf, schemaInputPool } from '../shared/lbCustomCols.js'   // 自定义列：公式合成新列
+import { loadOrder, saveOrder, makeDragOrder } from '../shared/lbResultOrder.js'   // 结果列的显示顺序 + 拖动排序
 import { labeledResultPool, RESULT_LABELS } from '../shared/lbResultLabels.js'   // 引擎出参中文名与单位（全量词表）
 import LbShareDialog from '../components/LbShareDialog.vue'
 import { buildRegenScene } from '../shared/lbLinkScene.js'
@@ -403,12 +404,14 @@ const txStations = reactive([])
 
 // —— 计算方式 ——（enLabel 供导出报告选英文时用）
 // 求解策略随载波入库（资源库「载波」条目的 calcMode / margin，见 regenParams.js CARRIER_FIELDS），
-// 逐行按该行所选载波取用。再生式上下行解耦、无转发器功带之分，故只有两种；工作点仍是硬件属性
-// （上行＝发信站功放功率 opPowerW，下行＝收信站天线/噪温算出的 G/T），留在地球站库。
+// 逐行按该行所选载波取用。再生式上下行解耦、无转发器功带之分，故只有两种：power＝设置工作点（按设备实配求余量：
+// 上行工作点＝功放功率预设、下行没有功放则工作点＝收信站 G/T）、margin＝设置余量（按目标余量反解设备）。
+// 不叫「设置功放功率」：下行钉住的是 G/T 而非功放，故用两侧通用的「工作点」（2026-09-16 用户拍板），口径写在 tip 里。
+// 功放功率 / G/T 是硬件属性（上行＝发信站功放功率 opPowerW，下行＝收信站天线/噪温算出的 G/T），留在地球站库。
 // 星间/激光链路不受此约束：其工作点由链路自身参数给定（见 computeIsl / computeLaser）。
 const CALC_MODES = [
-  { key: 'power', label: '设置工作点', enLabel: 'Fixed Operating Point' },
-  { key: 'margin', label: '设置余量', enLabel: 'Fixed Margin' }
+  { key: 'power', label: '设置工作点', enLabel: 'Fixed Operating Point', tip: '工作点固定：上行取地球站配置的功放功率预设、下行取收信站算得的 G/T，求链路余量' },
+  { key: 'margin', label: '设置余量', enLabel: 'Fixed Margin', tip: '给定系统余量，上行反解所需功放功率、下行反解所需 G/T' }
 ]
 const calcModeOf = (bbForm) => ((bbForm && bbForm.calcMode) === 'margin' ? 'margin' : 'power')
 
@@ -440,7 +443,7 @@ const txCellSub = (f, row) => {
 const unitAdaptive = ref(isUnitAdaptive())
 // 「地球站配置」格内行内尾标：发信站配置名之后贴该站算出的功放功率（就在第二行 EIRP 之上）。只给发信站——
 // 功放是发射链的量，收信站那格没有它。库里那一项是「功放功率预设」，这里是引擎按该站几何/载波解出的
-// paRecommendation（含回退的功放输出）：计算方式=设置功放功率时二者相等，=设置余量时报本链路真正需要的功率。
+// paRecommendation（含回退的功放输出）：计算方式=设置工作点时二者相等，=设置余量时报本链路真正需要的功率。
 // 与 GSO/NGSO 的差别：再生式上行几何要跑 SGP4 最差互视，太贵故不做逐键实时——此值随「计算」更新
 // （输入再改会亮「输入已变」，与结果列同一口径）。
 const txCellTag = (f, row) => {
@@ -670,6 +673,10 @@ const METRIC_OPTIONS_UP = [
   { key: 'carrierTotalCN', label: '上行 C/N (dB)' },
   { key: 'ebnoActualResult', label: 'Eb/N₀ (dB)' },
   { key: 'esnoActualResult', label: 'Es/N₀ (dB)' },
+  // 文字型三列（引擎回显的载波体制）：本行用的调制 / 码率 / MODCOD 档名——看余量时不必回头翻载波库
+  { key: 'modulationResult', label: '调制方式', type: 'text', tip: '本行载波的调制方式（引擎回显）' },
+  { key: 'fecResult', label: 'FEC 码率', type: 'text', tip: '本行载波的 FEC 码率（引擎回显，保持录入写法）' },
+  { key: 'modcodResult', label: 'MODCOD', type: 'text', tip: 'MODCOD 库里选的那一档的名称；未从库里选则按「调制方式 + FEC 码率」拼出' },
   { key: 'allocBandwidthResult', label: '载波带宽 (kHz)' },
   { key: 'stationEIRPResult', label: '地球站 EIRP (dBW)' },
   { key: 'stationPSDResult', label: '功率谱密度 (dBW/Hz)' }
@@ -682,6 +689,10 @@ const METRIC_OPTIONS_DN = [
   { key: 'carrierTotalCN', label: '下行 C/N (dB)' },
   { key: 'ebnoActualResult', label: 'Eb/N₀ (dB)' },
   { key: 'esnoActualResult', label: 'Es/N₀ (dB)' },
+  // 文字型三列（引擎回显的载波体制）：本行用的调制 / 码率 / MODCOD 档名——看余量时不必回头翻载波库
+  { key: 'modulationResult', label: '调制方式', type: 'text', tip: '本行载波的调制方式（引擎回显）' },
+  { key: 'fecResult', label: 'FEC 码率', type: 'text', tip: '本行载波的 FEC 码率（引擎回显，保持录入写法）' },
+  { key: 'modcodResult', label: 'MODCOD', type: 'text', tip: 'MODCOD 库里选的那一档的名称；未从库里选则按「调制方式 + FEC 码率」拼出' },
   { key: 'allocBandwidthResult', label: '载波带宽 (kHz)' },
   { key: 'satellitePSDResult', label: '卫星功率谱密度 (dBW/Hz)' },
   { key: 'arrivalPFDAtGroundResult', label: '到达地面 PFD (dBW/m²)' }
@@ -694,6 +705,10 @@ const METRIC_OPTIONS_ISL = [
   { key: 'spectralEfficiencyResult', label: '频谱效率 (bps/Hz)' },
   { key: 'ebnoActualResult', label: 'Eb/N₀ (dB)' },
   { key: 'esnoActualResult', label: 'Es/N₀ (dB)' },
+  // 文字型三列（引擎回显的载波体制）：本行用的调制 / 码率 / MODCOD 档名——看余量时不必回头翻载波库
+  { key: 'modulationResult', label: '调制方式', type: 'text', tip: '本行载波的调制方式（引擎回显）' },
+  { key: 'fecResult', label: 'FEC 码率', type: 'text', tip: '本行载波的 FEC 码率（引擎回显，保持录入写法）' },
+  { key: 'modcodResult', label: 'MODCOD', type: 'text', tip: 'MODCOD 库里选的那一档的名称；未从库里选则按「调制方式 + FEC 码率」拼出' },
   { key: 'allocBandwidthResult', label: '载波带宽 (kHz)' },
   { key: 'islRfEirpResult', label: '发射 EIRP (dBW)' },
   { key: 'islVisibleFracResult', label: '互视可见度 (%)' }
@@ -714,7 +729,7 @@ const METRIC_OPTIONS_LASER = [
 // 纯数字口径：不设文字判定列。勾选集按模式分别持久化（localStorage 'regen/resultCols.<模式>'，视图态不入场景配置）。
 function parseMetricLabel(label) { const m = /^(.*?)\s*\(([^)]+)\)$/.exec(label || ''); return m ? { title: m[1], unit: m[2] } : { title: label || '', unit: '' } }
 const mkResultDefs = (opts) =>
-  opts.map((o) => { const { title, unit } = parseMetricLabel(o.label); return { key: o.key, label: title, unit } })
+  opts.map((o) => { const { title, unit } = parseMetricLabel(o.label); return { key: o.key, label: title, unit, type: o.type, tip: o.tip } })
 const RESULT_DEFS_BY = {
   uplink: mkResultDefs(METRIC_OPTIONS_UP),
   downlink: mkResultDefs(METRIC_OPTIONS_DN),
@@ -732,6 +747,14 @@ const resultKeys = reactive(Object.fromEntries(LINK_MODES.map((m) => {
   catch (e) { return [m.key, DEFAULT_RESULT_KEYS[m.key].slice()] }
 })))
 watch(resultKeys, () => { try { for (const m of LINK_MODES) localStorage.setItem('regen/resultCols.' + m.key, JSON.stringify(resultKeys[m.key])) } catch (e) { /* ignore */ } }, { deep: true })
+// 结果列的显示顺序（按模式各记各的）：全量 key 序另存，「结果列」面板里拖把手换位；表列与本行读数都按它排
+const RESULT_DEF_BY_KEY = Object.fromEntries(LINK_MODES.map((m) => [m.key, Object.fromEntries((RESULT_DEFS_BY[m.key] || []).map((d) => [d.key, d]))]))
+const resultOrderBy = reactive(Object.fromEntries(LINK_MODES.map((m) => [m.key, loadOrder('regen/resultOrder.' + m.key, RESULT_DEFS_BY[m.key] || [])])))
+watch(resultOrderBy, () => { for (const m of LINK_MODES) saveOrder('regen/resultOrder.' + m.key, resultOrderBy[m.key]) }, { deep: true })
+const resultDefsOrderedOf = (mode) => (resultOrderBy[mode] || []).map((k) => (RESULT_DEF_BY_KEY[mode] || {})[k]).filter(Boolean)
+const resultDefsOnOf = (mode) => resultDefsOrderedOf(mode).filter((d) => (resultKeys[mode] || []).includes(d.key))
+const colDrag = reactive({ key: '' })
+const colDragH = makeDragOrder({ state: colDrag, getOrder: () => resultOrderBy[linkMode.value] || [], setOrder: (v) => { if (linkMode.value) resultOrderBy[linkMode.value] = v } })
 const colPickOpen = ref(false)
 // 面板打开期间拦滚轮：面板内滚到边界即止（遮罩上另行全拦）。否则滚轮默认动作沿 DOM 链滚动底下的
 // 分节流，页面在遮罩下乱滚、面板随宿主节头滚出视野。
@@ -740,21 +763,20 @@ function onColPickWheel(e) {
   const canScroll = e.deltaY > 0 ? el.scrollTop + el.clientHeight < el.scrollHeight - 1 : el.scrollTop > 0
   if (!canScroll) e.preventDefault()
 }
-const curResultDefs = computed(() => RESULT_DEFS_BY[linkMode.value] || [])
-// 勾选/取消结果列（保持声明序，避免列序随点击顺序漂移）
+const curResultDefs = computed(() => resultDefsOrderedOf(linkMode.value))
+// 勾选/取消结果列（勾选集按显示顺序表排，列序不随点击顺序漂移）
 function toggleResultKey(k) {
   const mode = linkMode.value
   const cur = resultKeys[mode]
   if (cur.includes(k)) resultKeys[mode] = cur.filter((x) => x !== k)
-  else resultKeys[mode] = RESULT_DEFS_BY[mode].map((d) => d.key).filter((x) => x === k || cur.includes(x))
+  else resultKeys[mode] = (resultOrderBy[mode] || []).filter((x) => x === k || cur.includes(x))
 }
 // 各模式表格列 = 输入列 + 已勾选结果列（计算列 ro:true，值走 computedVals 映射，不写行数据）。
 // 结果列显示单位自适应：每次计算按整列最大|值|共选档位（W→mW、kHz→MHz、全列<0dBW→dBm），
 // 列头单位跟随（resColUnits 按 '模式:键' 记录）；写入 computedVals 的值已按所选档位换算
 const resColUnits = reactive({})
 const resColsOf = (mode) => [
-  ...RESULT_DEFS_BY[mode]
-    .filter((d) => resultKeys[mode].includes(d.key))
+  ...resultDefsOnOf(mode)
     .map((d) => ({ key: '_' + d.key, label: d.label, unit: resColUnits[mode + ':' + d.key] || d.unit, type: d.type === 'text' ? 'text' : 'num', ro: true, group: 'res', target: 'meta', tip: d.tip || d.label })),
   ...customFieldDefs(customColsBy[mode], customPoolOf(mode))
 ]
@@ -802,7 +824,8 @@ const customPoolOf = (mode) => {
   // 结果列组沿用【词表】的名字与单位：同一个量在两个组里叫两个名字（功放建议/功放建议功率）
   // 会让人以为是两个量，且裸标签一歧义就报「未知字段」。词表是命名权威，表头短名只用于链路表列头。
   // 一个模块都没装（mode 为空）时池子是空的：弹窗只在装了模块时才开得了，但 computed 在渲染期就会求值
-  const base = (RESULT_DEFS_BY[mode] || []).filter((d) => d.key !== 'capacityMbps').map((d) => { const t = RESULT_LABELS[d.key]; return { key: d.key, label: t ? t.label : d.label, unit: t ? t.unit : d.unit, group: '结果列' } })
+  // 文字型结果列（调制方式 / FEC / MODCOD）不是量，不进公式字段池
+  const base = (RESULT_DEFS_BY[mode] || []).filter((d) => d.key !== 'capacityMbps' && d.type !== 'text').map((d) => { const t = RESULT_LABELS[d.key]; return { key: d.key, label: t ? t.label : d.label, unit: t ? t.unit : d.unit, group: '结果列' } })
   const rows = ccRowsOf(mode).filter((r) => rawDataByRow.value[r._id])
   if (!rows.length) return buildPool(base)
   // 键取全部行的并集：逐行出参可不同（0 雨强行的 XPD 出 '-'），单行样本会误滤别行的合法键。
@@ -898,6 +921,16 @@ function cellClassFn(f, row) {
   if (f.key === '_linkmargin') { const v = parseFloat(m._linkmargin); return isFinite(v) && v < 0 ? 'st-bad' : null }
   return null
 }
+// MODCOD 列：本行载波从 MODCOD 库里选的那一档（名字可自定义），且与引擎回显的调制 / 码率仍一致才用它；
+// 否则（自定义体制、或选完又手改过调制 / 码率）按「调制方式 + FEC 码率」拼出来
+function modcodNameOf(rowId, d, mode) {
+  const row = rowsOf(mode).find((r) => r._id === rowId)
+  const f = row && row.basebandId !== undefined ? resolveBaseband(row.basebandId).form : null
+  const same = (a, b) => String(a == null ? '' : a).trim() === String(b == null ? '' : b).trim()
+  const mc = f && f.modcodLabel ? ((basebandOpts.value.modcod || {})[f.dvbStandard] || []).find((r) => r.label === f.modcodLabel) : null
+  if (mc && same(mc.modulation, d.modulationResult) && same(mc.fec, d.fecResult)) return mc.label
+  return [d.modulationResult, d.fecResult].map((x) => String(x == null ? '' : x).trim()).filter(Boolean).join(' ') || '—'
+}
 // compute 后把该模式全量结果指标写入 computedVals（含未勾选列：事后勾选新列即刻可见，无需重算）。
 // 写入前按整列共选显示单位（见 resColUnits），值与列头单位一致
 function writeResultVals(out, mode) {
@@ -922,6 +955,8 @@ function writeResultVals(out, mode) {
       if (def.key === 'capacityMbps') {
         const mbps = colVal(d, def)
         patch._capacityMbps = !isFinite(mbps) ? '—' : ad ? fmtScaled(ad.conv(mbps)) : mbps.toFixed(3)
+      } else if (def.key === 'modcodResult') {
+        patch._modcodResult = modcodNameOf(l.rowId, d, mode)
       } else {
         const v = d[def.key]
         const n = parseFloat(v)
@@ -1167,7 +1202,7 @@ const rowReadout = computed(() => {
   const link = links.value.find((l) => l.rowId === row._id) || null
   const m = computedVals.value[row._id] || null
   const items = []
-  for (const def of (m ? RESULT_DEFS_BY[mode].filter((d) => resultKeys[mode].includes(d.key)) : [])) {
+  for (const def of (m ? resultDefsOnOf(mode) : [])) {
     const v = m['_' + def.key]
     if (v === undefined || v === null || v === '' || v === '—') continue
     const n = parseFloat(v)   // 着色口径同结果单元格（见 cellClassFn）：负余量转红
@@ -2375,8 +2410,10 @@ onMounted(async () => {
               <span class="lbx-colpick-wrap">
                 <button class="lb-mini" title="计算结果列：勾选显示列，底部可新建自定义公式列" @click="colPickOpen = !colPickOpen">结果列 <Icon name="chevron-down" :size="12" /></button>
                 <div v-if="colPickOpen" class="lbx-colpick-mask" @click="colPickOpen = false" @wheel.prevent></div>
-                <div v-if="colPickOpen" class="lbx-colpick" @wheel="onColPickWheel">
-                  <label v-for="d in curResultDefs" :key="d.key" class="lbx-colpick-i" :title="d.tip || d.label">
+                <div v-if="colPickOpen" class="lbx-colpick" :class="{ dragging: !!colDrag.key }" @wheel="onColPickWheel">
+                  <!-- 拖左侧把手换位＝改表里结果列的次序（本行读数同序）；勾选框只管显示与否 -->
+                  <label v-for="d in curResultDefs" :key="d.key" class="lbx-colpick-i" :class="{ dragging: colDrag.key === d.key }" :title="d.tip || d.label" @mousemove="colDragH.over($event, d.key)">
+                    <span class="lbx-colpick-grip" title="拖动调整列序" @mousedown.left.prevent.stop="colDragH.start($event, d.key)" @click.prevent.stop><Icon name="grip-vertical" :size="12" /></span>
                     <input type="checkbox" :checked="resultKeys[linkMode].includes(d.key)" @change="toggleResultKey(d.key)" />
                     <span>{{ d.label }}<i v-if="d.unit"> ({{ d.unit }})</i></span>
                   </label>
@@ -2409,8 +2446,10 @@ onMounted(async () => {
               <span class="lbx-colpick-wrap">
                 <button class="lb-mini" title="计算结果列：勾选显示列，底部可新建自定义公式列" @click="colPickOpen = !colPickOpen">结果列 <Icon name="chevron-down" :size="12" /></button>
                 <div v-if="colPickOpen" class="lbx-colpick-mask" @click="colPickOpen = false" @wheel.prevent></div>
-                <div v-if="colPickOpen" class="lbx-colpick" @wheel="onColPickWheel">
-                  <label v-for="d in curResultDefs" :key="d.key" class="lbx-colpick-i" :title="d.tip || d.label">
+                <div v-if="colPickOpen" class="lbx-colpick" :class="{ dragging: !!colDrag.key }" @wheel="onColPickWheel">
+                  <!-- 拖左侧把手换位＝改表里结果列的次序（本行读数同序）；勾选框只管显示与否 -->
+                  <label v-for="d in curResultDefs" :key="d.key" class="lbx-colpick-i" :class="{ dragging: colDrag.key === d.key }" :title="d.tip || d.label" @mousemove="colDragH.over($event, d.key)">
+                    <span class="lbx-colpick-grip" title="拖动调整列序" @mousedown.left.prevent.stop="colDragH.start($event, d.key)" @click.prevent.stop><Icon name="grip-vertical" :size="12" /></span>
                     <input type="checkbox" :checked="resultKeys[linkMode].includes(d.key)" @change="toggleResultKey(d.key)" />
                     <span>{{ d.label }}<i v-if="d.unit"> ({{ d.unit }})</i></span>
                   </label>
@@ -2439,8 +2478,10 @@ onMounted(async () => {
               <span class="lbx-colpick-wrap">
                 <button class="lb-mini" title="计算结果列：勾选显示列，底部可新建自定义公式列" @click="colPickOpen = !colPickOpen">结果列 <Icon name="chevron-down" :size="12" /></button>
                 <div v-if="colPickOpen" class="lbx-colpick-mask" @click="colPickOpen = false" @wheel.prevent></div>
-                <div v-if="colPickOpen" class="lbx-colpick" @wheel="onColPickWheel">
-                  <label v-for="d in curResultDefs" :key="d.key" class="lbx-colpick-i" :title="d.tip || d.label">
+                <div v-if="colPickOpen" class="lbx-colpick" :class="{ dragging: !!colDrag.key }" @wheel="onColPickWheel">
+                  <!-- 拖左侧把手换位＝改表里结果列的次序（本行读数同序）；勾选框只管显示与否 -->
+                  <label v-for="d in curResultDefs" :key="d.key" class="lbx-colpick-i" :class="{ dragging: colDrag.key === d.key }" :title="d.tip || d.label" @mousemove="colDragH.over($event, d.key)">
+                    <span class="lbx-colpick-grip" title="拖动调整列序" @mousedown.left.prevent.stop="colDragH.start($event, d.key)" @click.prevent.stop><Icon name="grip-vertical" :size="12" /></span>
                     <input type="checkbox" :checked="resultKeys[linkMode].includes(d.key)" @change="toggleResultKey(d.key)" />
                     <span>{{ d.label }}<i v-if="d.unit"> ({{ d.unit }})</i></span>
                   </label>
@@ -2466,8 +2507,10 @@ onMounted(async () => {
               <span class="lbx-colpick-wrap">
                 <button class="lb-mini" title="计算结果列：勾选显示列，底部可新建自定义公式列" @click="colPickOpen = !colPickOpen">结果列 <Icon name="chevron-down" :size="12" /></button>
                 <div v-if="colPickOpen" class="lbx-colpick-mask" @click="colPickOpen = false" @wheel.prevent></div>
-                <div v-if="colPickOpen" class="lbx-colpick" @wheel="onColPickWheel">
-                  <label v-for="d in curResultDefs" :key="d.key" class="lbx-colpick-i" :title="d.tip || d.label">
+                <div v-if="colPickOpen" class="lbx-colpick" :class="{ dragging: !!colDrag.key }" @wheel="onColPickWheel">
+                  <!-- 拖左侧把手换位＝改表里结果列的次序（本行读数同序）；勾选框只管显示与否 -->
+                  <label v-for="d in curResultDefs" :key="d.key" class="lbx-colpick-i" :class="{ dragging: colDrag.key === d.key }" :title="d.tip || d.label" @mousemove="colDragH.over($event, d.key)">
+                    <span class="lbx-colpick-grip" title="拖动调整列序" @mousedown.left.prevent.stop="colDragH.start($event, d.key)" @click.prevent.stop><Icon name="grip-vertical" :size="12" /></span>
                     <input type="checkbox" :checked="resultKeys[linkMode].includes(d.key)" @change="toggleResultKey(d.key)" />
                     <span>{{ d.label }}<i v-if="d.unit"> ({{ d.unit }})</i></span>
                   </label>

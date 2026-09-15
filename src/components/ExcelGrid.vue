@@ -21,7 +21,10 @@ const props = defineProps({
   emptyText: { type: String, default: '暂无数据。' },
   addLabel: { type: String, default: '' },    // 非空则在表尾渲染「＋ …」追加行按钮，点击 emit('add')
   delLabel: { type: String, default: '' },    // 非空则在追加行按钮旁渲染「删除所选行」（删的是选区跨过的那几行）
-  actionsWidth: { type: Number, default: 0 }  // >0 时渲染操作列（右侧），内容走 #actions 插槽
+  actionsWidth: { type: Number, default: 0 }, // >0 时渲染操作列（右侧），内容走 #actions 插槽
+  // 右键菜单的业务专属项（排在最上面）：({ row, rows, col }) => [{ key, label, kbd?, dis?, run }]
+  // row = 活动格所在行、rows = 选区跨过的行。由本组件自己渲染——.eg-ctx-i 是 scoped 样式，用插槽从外面挂的按钮套不上它
+  menuItems: { type: Function, default: null }
 })
 const emit = defineEmits(['add', 'row-enter', 'row-leave'])
 const g = props.grid
@@ -35,6 +38,10 @@ const ALIGN_CLS = { left: 'al', center: 'ac', right: 'ar' }
 const alignClass = (c) => (c && ALIGN_CLS[c.align]) || null
 const colSpanAll = computed(() => vcols.value.length + (props.serial ? 1 : 0) + (props.actionsWidth > 0 ? 1 : 0) + 1)
 const menuRow = computed(() => { const r = g.rect.value; return r.r0 < 0 ? 0 : r.r1 - r.r0 + 1 })
+// 业务专属菜单项：菜单开着时按活动行 / 选区行现问一次调用方
+const menuActiveRow = computed(() => (g.sel.value.ri >= 0 ? rows.value[g.sel.value.ri] || null : null))
+const menuRows = computed(() => { const r = g.rect.value; return r.r0 < 0 ? [] : rows.value.slice(r.r0, r.r1 + 1) })
+const extraMenu = computed(() => (props.menuItems && g.menu.open ? (props.menuItems({ row: menuActiveRow.value, rows: menuRows.value, col: g.menu.col }) || []) : []))
 // 枚举列下拉：当前格所在的列/行与它此刻的值（值用于给选中项打勾）
 const pickCol = computed(() => (g.pick.open ? vcols.value[g.pick.ci] || null : null))
 const pickRow = computed(() => (g.pick.open ? rows.value[g.pick.ri] || null : null))
@@ -229,6 +236,10 @@ function endFzDrag() {
     <Teleport to="body">
       <div v-if="g.menu.open" class="eg-ctx-mask" @mousedown="g.closeMenu()" @contextmenu.prevent="g.closeMenu()">
         <div class="eg-ctx" :style="{ left: g.menu.x + 'px', top: g.menu.y + 'px' }" @mousedown.stop @contextmenu.stop.prevent>
+          <template v-if="extraMenu.length">
+            <button v-for="it in extraMenu" :key="it.key" class="eg-ctx-i" :disabled="!!it.dis" @click="g.menuDo(it.run)"><span>{{ it.label }}</span><kbd v-if="it.kbd">{{ it.kbd }}</kbd></button>
+            <div class="eg-ctx-sep"></div>
+          </template>
           <button class="eg-ctx-i" @click="g.menuDo(() => g.copySel(false))"><span>复制</span><kbd>Ctrl+C</kbd></button>
           <button class="eg-ctx-i" @click="g.menuDo(() => g.copySel(true))"><span>复制（含表头）</span><kbd>Ctrl+Shift+C</kbd></button>
           <template v-if="!g.readOnly">

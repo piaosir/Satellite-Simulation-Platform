@@ -306,7 +306,7 @@ function performCalculations(satParams, inputs) {
     ? parseFloat(inputs.feederLoss)
     : 3.5; // dB (支持输入0；空回退对齐字段默认 3.5)
   const uplinkAvailability = (inputs.uplinkAvailability !== '' && inputs.uplinkAvailability !== null && inputs.uplinkAvailability !== undefined)
-    ? parseFloat(inputs.uplinkAvailability) : 99.90; // %
+    ? parseFloat(inputs.uplinkAvailability) : 100; // %（留空按出厂 100%＝晴天）
   const rainRate = parseFloat(inputs.rainRate) || 0; // mm/h
   const altitude = (parseFloat(inputs.altitude) || 0) / 1000; // km
   const earthStationLocation = inputs.earthStationLocation || "上行站";
@@ -322,7 +322,7 @@ function performCalculations(satParams, inputs) {
     ? parseFloat(inputs.rxFeederLoss) 
     : 0.2; // dB (支持输入0)
   const rxDownlinkAvailability = ((inputs.rxDownlinkAvailability !== '' && inputs.rxDownlinkAvailability !== null && inputs.rxDownlinkAvailability !== undefined)
-    ? parseFloat(inputs.rxDownlinkAvailability) : 99.90) / 100;
+    ? parseFloat(inputs.rxDownlinkAvailability) : 100) / 100;
   const rxRainRate = parseFloat(inputs.rxRainRate) || 0; // mm/h
   const rxAltitude = (parseFloat(inputs.rxAltitude) || 0) / 1000; // km
   

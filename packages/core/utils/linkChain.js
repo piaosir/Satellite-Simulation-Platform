@@ -150,13 +150,13 @@ const INTF_PLACEHOLDER = {
 };
 const UP_LINK_DEFAULTS = {
   antennaDiameter: '6.2', antennaEfficiency: '65', G_Ts: '2',
-  uplinkAvailability: '99.90', uplinkPowerControl: '否', upcValue: '0',
+  uplinkAvailability: '100', uplinkPowerControl: '否', upcValue: '0',
   paBackoff: '0', feederLoss: '3.5', uplinkOtherLoss: '0.3'
 };
 const DL_LINK_DEFAULTS = {
   rxCenterFrequency: '12.5', downlinkPolarization: 'H',
   rxAntennaDiameter: '3.7', rxAntennaEfficiency: '65', rxEIRP: '46',
-  rxAntennaNoiseTemp: '35', rxReceiverNoiseTemp: '75', rxDownlinkAvailability: '99.90',
+  rxAntennaNoiseTemp: '35', rxReceiverNoiseTemp: '75', rxDownlinkAvailability: '100',
   rxFeederLoss: '0.2', downlinkOtherLoss: '0.3'
 };
 

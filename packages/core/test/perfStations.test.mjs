@@ -7,7 +7,7 @@
 //   ③ 撤销栈不跨表 —— 栈里存的是整份城市列表，切表不丢的话在新表按一次 Ctrl+Z 就把上一张表的城市贴过来了；
 //   ④ 老快照（全表共享一份）迁移：原样复制给每一根【开过表的】天线，此后各改各的；
 //   ⑤ 「城市组」仍是全表共享的预设库 —— 那正是分家之后跨表复用的手段。
-import { usePerfTable } from '../../../src/viz/grd/usePerfTable.js'
+import { usePerfTable, fillOpts } from '../../../src/viz/grd/usePerfTable.js'
 
 let pass = 0, fail = 0
 function ok(name, cond, extra) {
@@ -123,6 +123,37 @@ function addCity(p, city, lon, lat) {
   const p2 = usePerfTable()
   p2.restoreState(st)
   ok('⑤ 组随快照回来', p2.cityGroups.value.length === 1 && p2.cityGroups.value[0].cities.length === 2)
+}
+
+// ==================== ⑥ 城市层总开关（树里「性能指标表」行的眼睛）====================
+{
+  const A = 'satY|ant1', B = 'satY|ant2'
+  const p = usePerfTable()
+  ok('⑥ 没建过桶也读得出：出厂关，且读不建桶', p.cityShowOf(A) === false && !p.hasOpts(A))
+  p.setCityShow(A, true)
+  ok('⑥ 打开后读回 true，只动这一根', p.cityShowOf(A) === true && p.getOpts(A).cityShow === true && p.cityShowOf(B) === false)
+  p.rememberOpts(A)
+  ok('⑥ 眼睛不进「记住上次选择」模板：新天线的表从关起', p.getOpts(B).cityShow === false)
+  const st = JSON.parse(JSON.stringify(p.getState()))
+  const p2 = usePerfTable(); p2.restoreState(st)
+  ok('⑥ 随快照存盘', st.cityDefault === 'off' && p2.cityShowOf(A) === true && p2.cityShowOf(B) === false)
+  ok('⑥ 老快照缺键 → 关', fillOpts({}).cityShow === false && fillOpts({ cityShow: true }).cityShow === true)
+  const p3 = usePerfTable()
+  p3.restoreState({ optsByAnt: { [A]: { cityShow: true } }, optsTemplate: { cityShow: true }, stationsByAnt: {} })   // 没有 cityDefault 标记：中间版本落下的 true 归零
+  ok('⑥ 没有标记的快照里的 cityShow:true 一次性归零', p3.cityShowOf(A) === false && p3.getOpts(B).cityShow === false)
+}
+
+// ==================== ⑦ 「仅覆盖波束」默认关 + 老快照一次性归零 ====================
+{
+  ok('⑦ 出厂默认关', usePerfTable().getOpts('s|a').filterOn === false)
+  const p = usePerfTable()
+  p.restoreState({ optsByAnt: { 's|a': { filterOn: true, minDir: 60 } }, optsTemplate: { filterOn: true, minDir: 60 }, stationsByAnt: {} })   // 老快照：没有 filterDefault 标记
+  ok('⑦ 老快照里的 filterOn:true 归零、阈值保留', p.getOpts('s|a').filterOn === false && p.getOpts('s|a').minDir === 60)
+  ok('⑦ 老快照的模板也归零：新天线不再继承旧出厂默认', p.getOpts('s|b').filterOn === false && p.getOpts('s|b').minDir === 60)
+  p.getOpts('s|a').filterOn = true
+  const st = JSON.parse(JSON.stringify(p.getState()))
+  const p2 = usePerfTable(); p2.restoreState(st)
+  ok('⑦ 新快照带标记：用户勾上的原样回来', st.filterDefault === 'off' && p2.getOpts('s|a').filterOn === true)
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

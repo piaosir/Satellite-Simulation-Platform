@@ -163,7 +163,8 @@ ok('晴空差 0.01 dB 就选不上（门限严格）', m7.label === '')
 // —— ⑤ deriveSla：GSO 真引擎算例 ——
 // 主用例是【两地站】（北京发 → 上海收）：上下行落在两片雨区，传播可用度按乘积。
 // 引擎缺省两侧同在北京 —— 那是回环，雨衰完全相关、按 min 走，另立一条（见「同站回环」）。
-const RX_SH = { rxLatitude: 31.2304, rxLongitude: 121.4737 }
+// 可用度显式给 99.90（2026-09-16 起引擎缺省改 100%＝晴天）：本节全部断言按 99.9 × 99.9 = 99.8001 构造
+const RX_SH = { rxLatitude: 31.2304, rxLongitude: 121.4737, uplinkAvailability: '99.90', rxDownlinkAvailability: '99.90' }
 const geo = modeSolver.computeLinkMode({}, RX_SH, { mode: 'margin' })
 ok('GSO 两地站算例可算', !!(geo && geo.success), geo && geo.message)
 const geoCtx = {
@@ -617,8 +618,9 @@ ok('分享码往返出来的是新对象（深拷贝，不与源共用引用）'
   // 9.1 同站回环：场景参数勾了「同站回环」且发收站同址时，上下行雨衰完全相关，传播可用度取 min 不取乘积。
   //     ★ 只按坐标判不行：GSO 新建行的发收站缺省都是北京那对经纬度，一开窗就换了模型、与链路表的可用度
   //       对不上账（2026-09-07 收紧为显式勾选 loopback）；档位扫描的样本同一模型（两侧同取该档）。
-  const loop = modeSolver.computeLinkMode({}, {}, { mode: 'margin' })   // 引擎缺省两侧同在北京
-  const loopCtx = { data: loop.data, resolvedMargin: loop.resolvedMargin, params: { satParams: {}, linkParams: {}, opt: { mode: 'margin' } } }
+  const LOOP_LP = { uplinkAvailability: '99.90', rxDownlinkAvailability: '99.90' }   // 两侧同在北京（引擎缺省站址）＝回环；可用度显式 99.9（引擎缺省已改 100%）
+  const loop = modeSolver.computeLinkMode({}, LOOP_LP, { mode: 'margin' })
+  const loopCtx = { data: loop.data, resolvedMargin: loop.resolvedMargin, params: { satParams: {}, linkParams: Object.assign({}, LOOP_LP), opt: { mode: 'margin' } } }
   const LOOP_ON = Object.assign({}, PROP_ONLY, { loopback: 1 })
   const dLoop = deriveSla(Object.assign({}, geoCtx, loopCtx, { slaParams: LOOP_ON }))
   const dLoopOff = deriveSla(Object.assign({}, geoCtx, loopCtx))

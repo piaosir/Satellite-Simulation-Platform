@@ -11,7 +11,7 @@ import Icon from '../components/Icon.vue'
 import { defaultsFor } from './params.js'
 import { toHalf, halfStr } from '../shared/num.js'   // 数字列输入/粘贴归一全角→半角，避免全角减号令负数经纬度等被吞
 import { cityName, cityNameKeys } from '../shared/cityName.js'   // 城市名是数据、呈现层翻不到：英文界面下导入列表与写进站名的一律取英文名
-import { getLang, onLangChange } from '../shared/i18n/runtime.js'
+import CityPicker from '../components/CityPicker.vue'   // 导入站址对话框（与性能指标表「典型城市」同一份）
 
 // 发信/收信站群 Excel 式电子表格：单元格框选（拖拽）、Ctrl+C/X/V 复制/剪切/粘贴（TSV，序号列选中时按整行）、
 // 填充柄向下填充、「＋增加」在聚焦行下方插入行、多选行批量删除/设值、清空、撤销/重做、逐行选址、点列头选整列。
@@ -40,6 +40,7 @@ const props = defineProps({
   groups: { type: Array, default: null },
   // 单元格附加 class 钩子 (field, row) => class：结果列按合格/超限着色等
   cellClass: { type: Function, default: null },
+  showImport: { type: Boolean, default: true },        // 导入城市库/点标记/地球站/航迹——纯地理点导入；星间链路（星→星，无经纬度）表关掉
   // 单元格「第二行小字」钩子 (field, row) => string|null：在单元格值下方渲染一行只读小字
   // （链路表用它把实时 EIRP/G·T 挂到「地球站配置」格下方，替代原独立列）；返回空即不加第二行。
   cellSub: { type: Function, default: null },
@@ -251,6 +252,126 @@ onMounted(() => {
   nextTick(() => { reobserveFrozen(); measureFrozen(); onScroll() })
 })
 onBeforeUnmount(() => { if (fzRO) { fzRO.disconnect(); fzRO = null } endFzDrag() })
+
+// —— 列宽：用户拖过的列才定宽，其余仍由浏览器按内容自适应（auto 布局）——
+// 记忆同冻结列：按 gridId 落 localStorage['sg/widths/<gridId>']，键＝字段 key（隐藏 / 调序 / 增减结果列后仍认得同一列）。
+// 定宽走 CSS 变量：<table> 上挂 --sgw<原始列号>，该列每个格的内联 style 只是常量串 var(--sgw<c>)——
+// 拖动时只改 table 一个元素的 style，格子逐帧 diff 到的都是同一串，不落 DOM 写。
+// ★ auto 布局下列宽 = max(表头定宽, 各格内容最小宽)，只给 th 定宽往窄拖会纹丝不动：格内 .sg-v / .sg-sub
+//   与表头文字 .sg-ht 也随之定宽（见 .sg-wset 规则），装不下的按省略号裁——这才是「拖得动」的那一半。
+const MIN_COL_W = 36
+const wStore = props.gridId ? 'sg/widths/' + props.gridId : ''
+const colW = ref((() => {
+  if (!wStore) return {}
+  try {
+    const o = JSON.parse(localStorage.getItem(wStore) || 'null')
+    const out = {}
+    if (o && typeof o === 'object') for (const k of Object.keys(o)) { const v = Number(o[k]); if (Number.isFinite(v) && v >= MIN_COL_W) out[k] = Math.round(v) }
+    return out
+  } catch (e) { return {} }
+})())
+function saveWidths() {
+  if (!wStore) return
+  try { Object.keys(colW.value).length ? localStorage.setItem(wStore, JSON.stringify(colW.value)) : localStorage.removeItem(wStore) } catch (e) { /* 配额满等忽略 */ }
+}
+const widthOfCol = (c) => { const f = props.fields[c]; return f ? (colW.value[f.key] || 0) : 0 }
+const hasW = (c) => widthOfCol(c) > 0
+const anyW = computed(() => Object.keys(colW.value).length > 0)
+const tblVars = computed(() => {
+  const o = { ...fzVars.value }
+  props.fields.forEach((f, c) => { const w = colW.value[f.key]; if (w) o['--sgw' + c] = w + 'px' })
+  return o
+})
+// 格 / 表头的内联 style：冻结列的 left + 定宽列的 --sgw，都是常量串（宽度本体在 <table> 上）
+const colStyle = (c, vi) => {
+  const fz = isKeyCol(c), w = hasW(c)
+  if (!fz && !w) return null
+  const s = fz ? fzStyle(vi) : {}
+  if (w) s['--sgw'] = 'var(--sgw' + c + ')'
+  return s
+}
+// 恢复按内容自适应＝删掉定宽（auto 布局本身就是「按内容定宽」，不必再量文本）
+function autoFitCol(c) {
+  const f = props.fields[c]
+  if (!f || !colW.value[f.key]) return
+  const n = { ...colW.value }; delete n[f.key]; colW.value = n; saveWidths()
+}
+function autoFitAll() { if (anyW.value) { colW.value = {}; saveWidths() } }
+// —— 列边界线拖拽（Excel 手感）——
+// 光标压到任一列的右边界线 ±RZ_TOL 内就转 col-resize：表头两行与数据行上都行（不是只有表头格里靠右那一小条）；
+// 按下即开拖——在滚动容器的 capture 阶段截住，不进格子的框选 / 列头的整列选择；拖动时列宽实时改、
+// 另有一条贯穿整表高的引导线跟着光标（.sg-rzline，同冻结预览线画法）；双击边界线＝恢复按内容自适应；
+// 被拖的列若在「整列选中」的选区里，选区内各列一起设成同一宽度（Excel：选中多列后拖任一条边界）。
+// 冻结区右缘那条线归冻结条 .sg-fzbar（浮在容器之上先接到鼠标），拖它是改冻结位置不是改列宽。
+const RZ_TOL = 4
+const rz = reactive({ on: false, c: -1, hover: -1, x: 0 })
+let rzX0 = 0, rzW0 = 0, rzRight0 = 0, rzNext = 0, rzRaf = 0, rzCols = []
+// 光标处最近的列边界 { c: 原始列下标, right: 边界线 clientX }；不在任何边界 ±RZ_TOL 内、或压在格内控件上 → null
+function rzHit(e) {
+  const t = e.target
+  if (!t || !t.closest) return null
+  const cell = t.closest('td, th')
+  if (!cell || cell.classList.contains('sg-sel') || cell.classList.contains('sg-gpad') || cell.classList.contains('sg-ro')) return null
+  if (t.closest('button, .sg-caret, .sg-handle, .sg-libed, .sg-cap.editing')) return null
+  const { ths } = fzHeadCells()
+  const vf = visFields.value
+  let best = null
+  for (let i = 0; i < ths.length && i < vf.length; i++) {
+    const r = ths[i].getBoundingClientRect()
+    if (r.width <= 0) continue
+    const d = Math.abs(e.clientX - r.right)
+    if (d <= RZ_TOL && (!best || d < best.d)) best = { c: vf[i].c, right: r.right, d }
+  }
+  return best
+}
+// 与被拖列同宽的那批列：整列选区里拖其中一条边界 → 选区内全部列；否则只有这一列
+const rzGroupOf = (c) => (colHeadSel(c) ? visFields.value.filter((o) => colHeadSel(o.c)).map((o) => o.c) : [c])
+function onRzMove(e) {
+  if (rz.on || e.buttons) return             // 拖动中 / 按着键（框选、填充、列选）不改悬停态
+  const h = rzHit(e)
+  rz.hover = h ? h.c : -1
+}
+function onRzLeave() { if (!rz.on) rz.hover = -1 }
+function onRzDownCap(e) {
+  if (e.button !== 0 || rz.on) return
+  const h = rzHit(e); if (!h) return
+  e.preventDefault(); e.stopPropagation()
+  if (editing.value) endEdit()
+  const th = fzHeadCells().ths[visFields.value.findIndex((o) => o.c === h.c)]
+  rz.on = true; rz.c = h.c; rz.hover = h.c
+  rzX0 = e.clientX; rzRight0 = h.right; rzW0 = th ? th.getBoundingClientRect().width : widthOfCol(h.c); rzNext = 0
+  rz.x = fzHost(rzRight0)
+  rzCols = rzGroupOf(h.c)
+  document.body.style.cursor = 'col-resize'
+  window.addEventListener('mousemove', onResizeMove)
+  window.addEventListener('mouseup', onResizeUp)
+}
+function onRzDblCap(e) {
+  if (e.button !== 0) return
+  const h = rzHit(e); if (!h) return
+  e.preventDefault(); e.stopPropagation()
+  for (const c of rzGroupOf(h.c)) autoFitCol(c)
+}
+function onResizeMove(e) {
+  rzNext = Math.max(MIN_COL_W, Math.round(rzW0 + e.clientX - rzX0))
+  rz.x = fzHost(rzRight0 + rzNext - rzW0)      // 引导线＝边界线的新位置：跟光标走，撞到最小宽就停在那
+  if (!rzRaf) rzRaf = requestAnimationFrame(() => { rzRaf = 0; if (rz.on) setColWidths(rzCols, rzNext) })
+}
+function onResizeUp() {
+  window.removeEventListener('mousemove', onResizeMove)
+  window.removeEventListener('mouseup', onResizeUp)
+  if (rzRaf) { cancelAnimationFrame(rzRaf); rzRaf = 0 }
+  document.body.style.cursor = ''
+  if (rz.on && rzNext) setColWidths(rzCols, rzNext)   // 只点没拖：不定宽
+  rz.on = false; rz.c = -1; rz.hover = -1; rzCols = []
+  saveWidths()
+}
+function setColWidths(cols, px) {
+  const n = { ...colW.value }
+  for (const c of cols) { const f = props.fields[c]; if (f) n[f.key] = Math.max(MIN_COL_W, Math.round(px)) }
+  colW.value = n
+}
+onBeforeUnmount(onResizeUp)
 
 // —— 拖动冻结线改冻结位置（Excel 拖冻结条）——
 // 按下即把横滚归零：冻结区本就钉着不动，归零后「待冻的那几列」全在眼前，往左往右都落得到实处；
@@ -654,7 +775,7 @@ function onHeaderDown(c, e) {
 function onHeaderEnter(c) { if (colDragging) selectCols(colAnchor, c) }
 // 列头右键：进「整列模式」——右键列不在选区内就只选该列；菜单只留列相关项（冻结/隐藏/清列）
 function onHeaderContext(c, e) {
-  e.preventDefault(); editing.value = null; sel.value = {}
+  e.preventDefault(); editing.value = null; sel.value = {}; menu.c = c
   if (!(dp(c) >= dp0.value && dp(c) <= dp1.value)) { colAnchor = c; selectCols(c, c) }
   focusGrid(); openMenu(e, 'col')
 }
@@ -1052,122 +1173,126 @@ watch(() => [range.fr, range.fc], () => {
 onMounted(() => { window.addEventListener('mouseup', onUp); window.addEventListener('mousemove', onDragMove) })
 onBeforeUnmount(() => { window.removeEventListener('mouseup', onUp); window.removeEventListener('mousemove', onDragMove); stopAutoScroll(); closeDropdown() })
 
-// —— 导入（城市库 / 点标记 / 地球站 / 航迹）——
-// 点标记/地球站/航迹来自主窗口 localStorage('globe3d/markers')（同源共享，无需 IPC）。
-const IMPORT_SOURCES = [
-  { key: 'city', label: '城市库' },
-  { key: 'point', label: '点标记' },
-  { key: 'station', label: '地球站' },
-  { key: 'traj', label: '航迹' }
-]
-// Quick Pick 式（对齐 VS Code）：面板锚在列头导入钮下方，即点即入、可连续导入；
-// hl=键盘高亮下标，added=本会话各项已导入次数（√×N 回显），addedN=本次共加行数；
-// other=钉住的「另一端」站（{id,name,lon,lat}，null=对侧用字段默认如北京）——解决
-// 「导入发信站后收信站全是默认北京」：先 ⇄ 钉某站为另一端，再连点导入，每行对侧都写它
-const imp = reactive({ open: false, source: 'city', query: '', side: '', hl: 0, added: {}, addedN: 0, style: null, other: null })
-const impSearchEl = ref(null)
+// —— 导入站址（典型城市 + 点标记 / 地球站 / 航迹）——
+// 对话框走共用的 components/CityPicker.vue（与性能指标表「典型城市」同一份）：左栏国家 / 省份，右栏勾选后一次加入。
+// 点标记 / 地球站 / 航迹来自主窗口 localStorage('globe3d/markers')（同源共享，无需 IPC），作为附加分区挂在左栏「标记」下。
+// side=站址写入侧（链路表发 / 收两组时可切）；addedN / filledN=本次新增 / 填入行数；lastId=最后写的行（关对话框焦点落它）；
+// other=钉住的「另一端」站（{id,name,lon,lat}，null=新增的行对侧留白）——一站对多站：先 ⇄ 钉某站为另一端再连点导入，每行对侧都写它。
+// at=光标模式的目标行下标（工具条「导入站址」：停在哪改哪——从光标所在行写起，写完一行目标下移一行，越过表尾再新增；null=按下面的配对口径）。
+// 「已加」按当前写入侧的经纬度判（±1e-4），只做标记不禁选：链路表同一站址配不同载波是常事。
+const imp = reactive({ open: false, side: '', addedN: 0, filledN: 0, other: null, lastId: null, at: null })
+// ★ 链路表（一行含发 / 收两个站址组）的配对口径：一侧导入时新建的行**对侧留白**（表内灰显默认站址、引擎按默认计算，
+// 与写实值北京等价、但语义是「未指定」）；之后切到对侧导入，站址**按行序先填进留白的行**，填满才新增——两侧各导一批，行行对得上，
+// 不再出现「导完发信站再导收信站，行数翻倍且对不上」。单站址表（雨衰页 / 再生式收发表）只有一组，恒新增、行带字段默认，口径不变。
+const impPaired = computed(() => geoGroups.value.length > 1)
+const blankV = (v) => v == null || String(v).trim() === ''
+// 某行在站址组 g 上留白：名 + 经纬度都为空（只缺名字或只缺一个坐标的不算，免得盖掉手填的坐标）
+const siteBlank = (s, g) => blankV(s[g.name]) && (!g.lon || blankV(s[g.lon])) && (!g.lat || blankV(s[g.lat]))
+const impGroup = computed(() => geoGroups.value.find((x) => x.kind === imp.side) || geoGroups.value[0] || null)
+// 写入侧留白的行（按行序）；单站址表恒空
+const impBlankRows = computed(() => { const g = impGroup.value; return (impPaired.value && g) ? props.stations.filter((s) => siteBlank(s, g)) : [] })
+const sideLabel = (k) => (k === 'rx' ? '收信站' : (k === 'tx' ? '发信站' : '地球站'))
+// 读数：下一条站址的去向——第 n 行（括注该行已有的站名：配对模式本侧留白故只见对侧、看得出配到谁；光标模式两侧都列、看得出改写谁）或新增行
+const impNextText = computed(() => {
+  let r = null, n = 0
+  if (imp.at != null) { r = props.stations[imp.at] || null; n = imp.at + 1 }
+  else { r = impBlankRows.value[0] || null; n = r ? props.stations.indexOf(r) + 1 : 0 }
+  if (!r) return `下一条 → 新增第 ${props.stations.length + 1} 行`
+  const names = geoGroups.value.map((g) => { const v = String(r[g.name] == null ? '' : r[g.name]).trim(); return v ? `${sideLabel(g.kind)} ${v}` : '' }).filter(Boolean)
+  return names.length ? `下一条 → 第 ${n} 行（${names.join(' · ')}）` : `下一条 → 第 ${n} 行`
+})
+// 工具条「导入站址」：光标停在「地球站位置」列且表非空才现；点击从光标所在行写起
+const focusGeo = computed(() => { const f = props.fields[range.fc]; return (f && f.city && props.stations.length) ? f : null })
+const focusImpTitle = computed(() => (focusGeo.value ? `导入站址到第 ${range.fr + 1} 行的${sideLabel(focusGeo.value.city)}：停在哪改哪，写完一行目标下移一行，越过表尾再新增` : ''))
+const impExtra = ref([])
 // 对侧站址组（链路表发/收两组时才有）与其字段默认站名（另一端未钉时的去向，用于回显）
 const impOtherGroup = computed(() => geoGroups.value.find((x) => x.kind !== imp.side) || null)
-const impOtherDefault = computed(() => { const og = impOtherGroup.value; if (!og) return ''; const f = props.fields.find((x) => x.key === og.name); return (f && f.def) || '' })
+const impNote = computed(() => {
+  const f = imp.filledN, n = imp.addedN
+  if (f && n) return `本次已填 ${f} 行 · 已加 ${n} 行`
+  return f ? `本次已填 ${f} 行` : (n ? `本次已加 ${n} 行` : '')
+})
 function readMarkers() { try { return JSON.parse(localStorage.getItem('globe3d/markers') || 'null') || {} } catch (e) { return {} } }
-// 城市项稳定 id（城市名+经度）：跨关键词/搜索结果保持一致，避免勾选错位。恒取中文名——
-// 它是内部键、不上屏，换语言不改身份，已勾选的条目不会散架。
-const cityId = (c) => 'c_' + c.name + '_' + c.lon
-// 换语言时重算列表里的城市名（本组件会被 v-if 卸载重挂，故订阅要退订）
-const uiLang = ref(getLang())
-onBeforeUnmount(onLangChange((l) => { uiLang.value = l }))
-const impItems = computed(() => {
-  void uiLang.value                                  // 换语言即重算城市名（cityName 自身不是响应式的）
-  if (imp.source === 'city') return props.cities.map((c) => ({ id: cityId(c), name: cityName(c), lon: c.lon, lat: c.lat }))
+// 标记分区：点标记 / 地球站各一组，航迹按整条各成一组（每个航点一项，名取「航迹名#序号」）；空组不列
+function markerSections() {
   const mk = readMarkers()
-  if (imp.source === 'point') return (mk.points || []).map((p, i) => ({ id: p.id || 'p' + i, name: '点标记' + (i + 1), lon: p.lon, lat: p.lat }))
-  if (imp.source === 'station') return (mk.stations || []).map((s, i) => ({ id: s.id || 's' + i, name: s.name || ('地球站' + (i + 1)), lon: s.lon, lat: s.lat }))
-  if (imp.source === 'traj') { const out = []; for (const t of (mk.trajectories || [])) (t.pts || []).forEach((p, j) => out.push({ id: (t.id || 't') + '_' + j, name: (t.name || '航迹') + '#' + (j + 1), lon: p.lon, lat: p.lat })); return out }
-  return []
-})
-// 城市关键词检索（城市名 / 省份名含别名 / 拼音首字母缩写）：交给引擎 core.searchCities（与小程序口径一致）。
-// 仅「城市库」源、传入了 citySearch、且有关键词时启用；否则退回本地名称/经度过滤。
-const cityHits = ref([])
-const useCitySearch = computed(() => imp.source === 'city' && !!props.citySearch && imp.query.trim() !== '')
-let _cityT = null
-watch(() => [imp.open, imp.source, imp.query], () => {
-  if (!useCitySearch.value) { cityHits.value = []; return }
-  const q = imp.query.trim()
-  clearTimeout(_cityT)
-  _cityT = setTimeout(async () => {
-    try { const r = await props.citySearch(q); cityHits.value = (r || []).map((c) => ({ id: cityId(c), name: cityName(c), lon: c.lon, lat: c.lat })) }
-    catch (e) { cityHits.value = [] }
-  }, 160)
-})
-const IMPORT_LIST_CAP = 1000   // 导入列表展示上限（城市库 349 项可一次看全，亦留余量给点标记/航迹）
-const impResults = computed(() => {
-  if (useCitySearch.value) return cityHits.value.slice(0, IMPORT_LIST_CAP)
-  const q = imp.query.trim().toLowerCase()
-  const l = q ? impItems.value.filter((it) => it.name.toLowerCase().includes(q) || String(it.lon).includes(q)) : impItems.value
-  return l.slice(0, IMPORT_LIST_CAP)
-})
-// kind（'tx'/'rx'，来自「地球站位置」列头导入钮）：预选站址写入侧；ev 用于把面板锚在按钮下方
-function openImport(kind, ev) {
-  imp.open = true; imp.query = ''; imp.hl = 0; imp.added = {}; imp.addedN = 0; imp.other = null
-  imp.side = (typeof kind === 'string' && kind) ? kind : ((geoGroups.value[0] || {}).kind || '')
-  const W = 380
-  const r = ev && ev.currentTarget ? ev.currentTarget.getBoundingClientRect() : null
-  if (r) {
-    const left = Math.max(8, Math.min(r.left - 10, window.innerWidth - W - 8))
-    const top = Math.min(r.bottom + 4, window.innerHeight - 180)
-    imp.style = { left: left + 'px', top: top + 'px', width: W + 'px', maxHeight: Math.max(220, window.innerHeight - top - 12) + 'px' }
-  } else {
-    imp.style = { left: '50%', top: '110px', transform: 'translateX(-50%)', width: W + 'px' }   // 防御：无锚事件时居中
-  }
-  nextTick(() => { if (impSearchEl.value) impSearchEl.value.focus({ preventScroll: true }) })
+  const groups = []
+  const pts = (mk.points || []).map((p, i) => ({ id: 'pt:' + (p.id || i), name: '点标记' + (i + 1), lon: p.lon, lat: p.lat }))
+  const sts = (mk.stations || []).map((s, i) => ({ id: 'st:' + (s.id || i), name: s.name || ('地球站' + (i + 1)), lon: s.lon, lat: s.lat }))
+  if (pts.length) groups.push({ id: 'points', name: '点标记', nameEn: 'Points', items: pts })
+  if (sts.length) groups.push({ id: 'stations', name: '地球站', nameEn: 'Earth Stations', items: sts })
+  ;(mk.trajectories || []).forEach((t, k) => {
+    const items = (t.pts || []).map((p, j) => ({ id: 'tr:' + (t.id || k) + ':' + j, name: (t.name || '航迹') + '#' + (j + 1), lon: p.lon, lat: p.lat }))
+    if (items.length) groups.push({ id: 'traj:' + (t.id || k), name: t.name || '航迹', nameEn: t.name || 'Track', items })
+  })
+  return groups.length ? [{ label: '标记', labelEn: 'Markers', groups }] : []
 }
-function setSource(k) { imp.source = k; imp.query = ''; imp.hl = 0 }
-// 关闭：有导入过则把网格焦点落到最后加的行的该侧站址列（接着就能改別的列）
+const nearLL = (a, b) => { const x = parseFloat(halfStr(a)); return Number.isFinite(x) && Math.abs(x - b) < 1e-4 }
+function impHas(lon, lat) {
+  const g = geoGroups.value.find((x) => x.kind === imp.side) || geoGroups.value[0] || null
+  if (!g || !g.lon || !g.lat) return false
+  return props.stations.some((s) => nearLL(s[g.lon], lon) && nearLL(s[g.lat], lat))
+}
+// kind（'tx'/'rx'，来自「地球站位置」列头导入钮）：预选站址写入侧
+function openImport(kind) {
+  imp.open = true; imp.addedN = 0; imp.filledN = 0; imp.other = null; imp.lastId = null; imp.at = null
+  imp.side = (typeof kind === 'string' && kind) ? kind : ((geoGroups.value[0] || {}).kind || '')
+  impExtra.value = markerSections()
+}
+// 工具条「导入站址」：停在哪改哪——目标行＝光标所在行，侧＝光标所在的站址组
+function openImportAt() {
+  const f = focusGeo.value
+  if (!f) return
+  openImport(f.city)
+  imp.at = range.fr
+}
+// 关闭：有写入过则把网格焦点落到最后写的那行的该侧站址列（接着就能改别的列）
 function closeImport() {
   imp.open = false
-  if (imp.addedN > 0 && props.stations.length) {
-    const g = geoGroups.value.find((x) => x.kind === imp.side) || geoGroups.value[0] || null
+  if (imp.addedN + imp.filledN > 0 && props.stations.length) {
+    const g = impGroup.value
     const ci = g ? props.fields.findIndex((f) => f.key === g.name) : -1
-    setFocus(props.stations.length - 1, ci >= 0 ? ci : (cityFieldIdx.value >= 0 ? cityFieldIdx.value : firstVisSelCol()), false)
+    let r = props.stations.findIndex((s) => s._id === imp.lastId); if (r < 0) r = props.stations.length - 1
+    setFocus(r, ci >= 0 ? ci : (cityFieldIdx.value >= 0 ? cityFieldIdx.value : firstVisSelCol()), false)
   }
 }
-// 即点即入：每批一步 undo（单点=1 行，「全部导入」=一步撤全批）；面板不关，可连续导入
+// 一批一步 undo（勾选多加＝一步撤全批，双击单加＝1 行）；对话框不关，可接着选。
+// 链路表：先填本侧留白的行（对侧导入时新建的），填满才新增；单站址表恒新增。
 function importItems(items) {
-  if (!items.length) return
-  // 目标站址组：多站址表（链路表发/收两组）按面板所选一侧写入，单站址表即唯一一组
-  const g = geoGroups.value.find((x) => x.kind === imp.side) || geoGroups.value[0] || null
+  if (!items || !items.length) return
+  // 目标站址组：多站址表（链路表发/收两组）按对话框所选一侧写入，单站址表即唯一一组
+  const g = impGroup.value
   const og = impOtherGroup.value
   pushUndo()
   for (const it of items) {
-    const row = defaultsFor(props.fields); row._id = 'r' + (_rowSeq++)
+    // 目标行：光标模式从 imp.at 起逐行向下（越过表尾新建）；否则链路表先填本侧留白的行（写完本侧后该行不再留白，下一轮自然取下一条）
+    let row = imp.at != null ? (props.stations[imp.at] || null) : (impBlankRows.value[0] || null)
+    if (row) imp.filledN++
+    else {
+      // 新行：链路表对侧留白（等对侧导入按行填；钉了「另一端」才写它），单站址表带字段默认（口径不变）
+      row = impPaired.value ? makeRow() : Object.assign(defaultsFor(props.fields), { _id: 'r' + (_rowSeq++) })
+      props.stations.push(row)
+      row = props.stations[props.stations.length - 1]   // 取回响应式代理：之后的写入（含 autoGeo 异步回填的降雨 / 海拔）才触发重绘
+      if (imp.other && og) {
+        row[og.name] = imp.other.name
+        if (og.lon && imp.other.lon != null) row[og.lon] = clampLatLon(imp.other.lon)
+        if (og.lat && imp.other.lat != null) row[og.lat] = clampLatLon(imp.other.lat)
+      }
+      if (props.autoGeo && og && imp.other) props.autoGeo(row, undefined, og.kind)
+      imp.addedN++
+    }
     if (g) {
-      row[g.name] = it.name
+      row[g.name] = cityName(it)   // 城市条目按界面语言取名（英文界面写 Beijing）；标记条目没有 en，原名照写
       if (g.lon && it.lon != null) row[g.lon] = clampLatLon(it.lon)
       if (g.lat && it.lat != null) row[g.lat] = clampLatLon(it.lat)
     }
-    // 对侧：钉了「另一端」则写它（覆盖字段默认的北京），未钉维持默认
-    if (imp.other && og) {
-      row[og.name] = imp.other.name
-      if (og.lon && imp.other.lon != null) row[og.lon] = clampLatLon(imp.other.lon)
-      if (og.lat && imp.other.lat != null) row[og.lat] = clampLatLon(imp.other.lat)
-    }
-    props.stations.push(row)
     if (props.autoGeo && g) props.autoGeo(row, undefined, g.kind)
-    if (props.autoGeo && og && imp.other) props.autoGeo(row, undefined, og.kind)
-    imp.added[it.id] = (imp.added[it.id] || 0) + 1
-    imp.addedN++
+    imp.lastId = row._id
+    if (imp.at != null) imp.at++   // 光标模式：写完一行目标下移一行
   }
 }
-function importAll() { importItems(impResults.value) }
-// 搜索框键盘流：↑/↓ 移动高亮（循环）、Enter 导入高亮项、Esc 关闭；焦点始终留在搜索框
-function onImpKey(e) {
-  const n = impResults.value.length
-  if (e.key === 'ArrowDown') { e.preventDefault(); if (n) { imp.hl = (imp.hl + 1) % n; scrollImpHl() } }
-  else if (e.key === 'ArrowUp') { e.preventDefault(); if (n) { imp.hl = (imp.hl - 1 + n) % n; scrollImpHl() } }
-  else if (e.key === 'Enter') { e.preventDefault(); const it = impResults.value[Math.min(imp.hl, n - 1)]; if (it) importItems([it]) }
-  else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeImport() }
-}
-function scrollImpHl() { nextTick(() => { const el = document.querySelector('.sg-imppop .sg-impitem.hl'); if (el) el.scrollIntoView({ block: 'nearest', inline: 'nearest' }) }) }
+// 列表行上的 ⇄：把该站钉为另一端（行是 CityPicker 归一后的条目：id / name / lon / lat）
+function pinOther(r) { imp.other = { id: r.id, name: r.name, lon: r.lon, lat: r.lat } }
 
 // —— 批量设值（选中行）——
 const batch = reactive({ open: false, key: '', value: '' })
@@ -1189,7 +1314,7 @@ function doBatch() {
 const batchField = computed(() => props.fields.find((f) => f.key === batch.key) || props.fields[0])
 
 // ============ 右键菜单（Excel 式）：复制/剪切/粘贴/清除内容 · 插入/删除行 · 隐藏列/清除整列 ============
-const menu = reactive({ open: false, x: 0, y: 0, mode: 'cell' })   // mode: cell | row | col（列头右键不出行操作）
+const menu = reactive({ open: false, x: 0, y: 0, mode: 'cell', c: -1 })   // mode: cell | row | col（列头右键不出行操作）；c＝右键落在哪一列（列宽菜单项用）
 function openMenu(e, mode) {
   menu.x = Math.min(e.clientX, window.innerWidth - 200)     // 防贴右/下边溢出
   menu.y = Math.min(e.clientY, window.innerHeight - (mode === 'col' ? 200 : 380))
@@ -1201,13 +1326,13 @@ function selectedRowIdx() { const out = []; props.stations.forEach((s, i) => { i
 function selectFullRows(lo, hi) { range.ar = lo; range.fr = hi; range.ac = firstVisSelCol(); range.fc = lastVisSelCol() }
 // 单元格右键：进入「单元格模式」——清行勾选；右键落在选区外则选区跳到该格（与 Excel 一致）
 function onCellContext(r, c, e) {
-  e.preventDefault(); editing.value = null; sel.value = {}
+  e.preventDefault(); editing.value = null; sel.value = {}; menu.c = c
   if (!inSel(r, c)) setFocus(r, c, false)
   focusGrid(); openMenu(e, 'cell')
 }
 // 序号列右键：进入「整行模式」——右键行在已选外则只选该行；并让单元格选区覆盖选中行整行
 function onIdxContext(i, e) {
-  e.preventDefault(); editing.value = null
+  e.preventDefault(); editing.value = null; menu.c = -1
   if (!sel.value[props.stations[i]._id]) sel.value = { [props.stations[i]._id]: true }
   const idx = selectedRowIdx()
   if (idx.length) selectFullRows(Math.min(...idx), Math.max(...idx))
@@ -1291,6 +1416,7 @@ function clearColContents() {
       <span class="sg-count">{{ stations.length }} 个{{ label }}<template v-if="selectedRows.length"> · 选中 {{ selectedRows.length }} 行</template></span>
       <span class="sg-sp"></span>
       <button class="sg-btn" title="在聚焦行下方插入一行（表为空则新建首行）" @click="addRow()"><Icon name="plus" :size="12" /> 增加行</button>
+      <button v-if="showImport && focusGeo" class="sg-btn" :title="focusImpTitle" @click="openImportAt"><Icon name="import" :size="12" /> 导入站址</button>
       <button class="sg-btn" :disabled="!selectedRows.length" @click="openBatch">批量设值</button>
       <button class="sg-btn" :disabled="!selectedRows.length" @click="removeSelected">删除选中</button>
       <button class="sg-btn" :disabled="!stations.length" @click="clearAll">清空</button>
@@ -1304,8 +1430,9 @@ function clearColContents() {
       <button v-if="hiddenCols.length" class="sg-btn" :title="'已隐藏 ' + hiddenCols.length + ' 列，点击全部显示'" @click="unhideAll">显示隐藏列（{{ hiddenCols.length }}）</button>
     </div>
 
-    <div ref="root" class="sg-scroll" tabindex="0" @keydown="onKey" @focus="onRootFocus" @wheel="onWheel" @scroll.passive="onScroll">
-      <table class="sg-tbl" :class="{ 'has-g': headerGroups }" :style="fzVars">
+    <div ref="root" class="sg-scroll" :class="{ 'rz-hover': rz.hover >= 0 || rz.on }" tabindex="0" @keydown="onKey" @focus="onRootFocus" @wheel="onWheel" @scroll.passive="onScroll"
+         @mousemove="onRzMove" @mouseleave="onRzLeave" @mousedown.capture="onRzDownCap" @dblclick.capture="onRzDblCap">
+      <table class="sg-tbl" :class="{ 'has-g': headerGroups }" :style="tblVars">
         <thead>
           <!-- 列组行（两层表头首行）：字段按 f.group 相邻归并跨列。冻结段那半随冻结列一起粘住，其余仅顶部吸附（横滚时组名随普通列滚动属预期） -->
           <tr v-if="headerGroups" class="sg-ghd">
@@ -1319,13 +1446,13 @@ function clearColContents() {
           <tr class="sg-hrow">
             <th class="sg-sel"><input type="checkbox" :checked="allSelected" @change="toggleAll" /></th>
             <th v-for="({ f, c, vi }) in visFields" :key="f.key" class="sg-hcol"
-                :class="{ 'sg-fz': isKeyCol(c), 'sg-kw': isNarrowKey(c), colsel: colHeadSel(c), 'sg-gend': isGroupEnd(c) }"
-                :style="isKeyCol(c) ? fzStyle(vi) : null" :title="f.tip || f.label"
+                :class="{ 'sg-fz': isKeyCol(c), 'sg-kw': isNarrowKey(c), 'sg-wset': hasW(c), colsel: colHeadSel(c), 'sg-gend': isGroupEnd(c) }"
+                :style="colStyle(c, vi)" :title="f.tip || f.label"
                 @mousedown.left="onHeaderDown(c, $event)" @mouseenter="onHeaderEnter(c)" @contextmenu.prevent="onHeaderContext(c, $event)">
-              {{ f.label }}<i v-if="f.unit"> ({{ f.unit }})</i>
+              <span class="sg-ht">{{ f.label }}<i v-if="f.unit"> ({{ f.unit }})</i>
               <!-- 站址组锚点列（地球站位置）：列头内联导入钮，点击按该侧（f.city='tx'/'rx'）打开导入 -->
-              <button v-if="f.city" class="sg-himp" :title="'导入站址到' + (f.city === 'rx' ? '收信站' : '发信站') + '：城市库 / 点标记 / 地球站 / 航迹'"
-                      @mousedown.left.stop @click.stop="openImport(f.city, $event)"><Icon name="import" :size="12" /></button>
+              <button v-if="showImport && f.city" class="sg-himp" :title="'导入站址到' + (f.city === 'rx' ? '收信站' : '发信站') + '：城市库 / 点标记 / 地球站 / 航迹'"
+                      @mousedown.left.stop @click.stop="openImport(f.city, $event)"><Icon name="import" :size="12" /></button></span>
             </th>
             <th v-if="roLabel" class="sg-ro">{{ roLabel }}<i v-if="roUnit"> ({{ roUnit }})</i></th>
           </tr>
@@ -1334,8 +1461,8 @@ function clearColContents() {
           <tr v-for="(s, i) in stations" :key="s._id || i" :class="{ on: sel[s._id] }">
             <td class="sg-sel" :title="'拖拽序号可框选行 · 右键插入/删除行'" @mousedown.left="onRowDown(i, $event)" @mouseenter="onRowEnter(i)" @contextmenu.prevent="onIdxContext(i, $event)"><span class="sg-idx">{{ i + 1 }}</span></td>
             <td v-for="({ f, c, vi }) in visFields" :key="f.key"
-                class="sg-cell" :class="[{ 'sg-fz': isKeyCol(c), 'sg-kw': isNarrowKey(c), 'ro-field': isReadonlyCol(c), sel: inSel(i, c), focus: isFocus(i, c), editing: isEditing(i, c), fillp: inFill(i, c), 'sg-gend': isGroupEnd(c) }, cellClass ? cellClass(f, s) : null]"
-                :style="isKeyCol(c) ? fzStyle(vi) : null"
+                class="sg-cell" :class="[{ 'sg-fz': isKeyCol(c), 'sg-kw': isNarrowKey(c), 'sg-wset': hasW(c), 'ro-field': isReadonlyCol(c), sel: inSel(i, c), focus: isFocus(i, c), editing: isEditing(i, c), fillp: inFill(i, c), 'sg-gend': isGroupEnd(c) }, cellClass ? cellClass(f, s) : null]"
+                :style="colStyle(c, vi)"
                 @mousedown.left="onDown(i, c, $event)" @mouseenter="onEnter(i, c)" @dblclick="startEdit(i, c)" @contextmenu.prevent="onCellContext(i, c, $event)">
               <!-- 占比填充条（单色半透明，无格底衬色）：最先渲染画在格底（::after 按 --fill 比例铺色，档位类 lv1..lv4 定色），后继 .sg-v 抬为 relative 浮于其上（样式在 lbworkbench.css） -->
               <span v-if="fillFrac(f, s) != null" class="sg-fillbar" :class="fillLv(f, s)" :style="{ '--fill': (fillFrac(f, s) * 100).toFixed(2) + '%' }"></span>
@@ -1388,54 +1515,37 @@ function clearColContents() {
          :title="'已冻结 ' + frozenVisCount + ' 列 · 拖动改冻结位置 · 双击取消冻结'"
          @mousedown="onFzDown" @dblclick="setFreeze(0)"></div>
     <div v-if="fzDrag.on" class="sg-fzprev" :style="{ left: fzDrag.x + 'px', top: fzBar.top + 'px', height: fzBar.h + 'px' }"></div>
+    <div v-if="rz.on" class="sg-rzline" :style="{ left: rz.x + 'px', top: fzBar.top + 'px', height: fzBar.h + 'px' }"></div>
 
-    <!-- 导入（城市库 / 点标记 / 地球站 / 航迹）—— Quick Pick 式：锚在列头导入钮下方，
-         搜索自动聚焦；点条目/Enter 即入表尾一行（面板不关可连续导入，Ctrl+Z 逐步撤销）；Esc/完成 关闭 -->
-    <div v-if="imp.open" class="sg-mask sg-mask-lite" @click="closeImport">
-      <div class="sg-box sg-imppop" :style="imp.style" @click.stop>
-        <div class="sg-box-hd sg-imphd">
-          <span>导入站址 →</span>
-          <template v-if="geoGroups.length > 1">
-            <button v-for="gg in geoGroups" :key="gg.kind" class="sg-sideb" :class="{ on: imp.side === gg.kind }"
-                    :title="'新行站址写入' + (gg.kind === 'rx' ? '收信站' : '发信站') + '侧'" @click="imp.side = gg.kind">{{ gg.kind === 'rx' ? '收信站' : '发信站' }}</button>
+    <!-- 导入站址：共用 CityPicker（典型城市 + 标记分区）。头部切写入侧；搜索框下一行是「另一端」；行上 ⇄ 钉另一端 -->
+    <CityPicker v-if="imp.open" title="导入站址" :has="impHas" dup :extra="impExtra" :note="impNote" @add="importItems" @close="closeImport">
+      <template #head>
+        <template v-if="geoGroups.length > 1">
+          <button v-for="gg in geoGroups" :key="gg.kind" class="sg-sideb" :class="{ on: imp.side === gg.kind }"
+                  :title="gg.kind === 'rx' ? '站址写入收信站侧' : '站址写入发信站侧'" @click="imp.side = gg.kind">{{ gg.kind === 'rx' ? '收信站' : '发信站' }}</button>
+        </template>
+        <span v-else class="sg-side1">{{ imp.side === 'rx' ? '收信站' : '发信站' }}</span>
+      </template>
+      <!-- 链路表：另一端（钉住某站后，新增的每行对侧都写它；未钉＝新增的行对侧留白）+ 读数「下一条 → 第 n 行（对侧站名）/ 新增第 n 行」 -->
+      <template v-if="impOtherGroup || imp.at != null" #bar>
+        <div class="sg-oth">
+          <template v-if="impOtherGroup">
+            <span class="sg-oth-l">另一端（{{ imp.side === 'rx' ? '发信站' : '收信站' }}）</span>
+            <template v-if="imp.other">
+              <b class="sg-oth-v" :title="imp.other.lon + '°E ' + imp.other.lat + '°N'" data-i18n-skip>{{ imp.other.name }}</b>
+              <button class="sg-oth-x" title="清除另一端：新增的行对侧留白" @click="imp.other = null">✕</button>
+            </template>
+            <span v-else class="sg-oth-def" title="未指定另一端：新增的行对侧留白（表内灰显默认站址、计算按默认），切到对侧导入即按行填入。悬停列表条目点 ⇄ 可将该站设为另一端">留白</span>
           </template>
-          <span v-else class="sg-side1">{{ imp.side === 'rx' ? '收信站' : '发信站' }}</span>
+          <span class="sg-oth-next" :title="imp.at != null ? '从光标所在行写起，写完一行目标下移一行，越过表尾再新增' : '导入的站址先按行序填入本侧留白的行，填满才新增行'">{{ impNextText }}</span>
         </div>
-        <div class="sg-tabs">
-          <button v-for="s in IMPORT_SOURCES" :key="s.key" class="sg-tab" :class="{ on: imp.source === s.key }" @click="setSource(s.key)">{{ s.label }}</button>
-        </div>
-        <!-- 另一端：钉住某站后，每导入一行对侧站址都写它（未钉=对侧用字段默认，如北京） -->
-        <div v-if="impOtherGroup" class="sg-oth">
-          <span class="sg-oth-l">另一端（{{ imp.side === 'rx' ? '发信站' : '收信站' }}）</span>
-          <template v-if="imp.other">
-            <b class="sg-oth-v" :title="imp.other.lon + '°E ' + imp.other.lat + '°N'" data-i18n-skip>{{ imp.other.name }}</b>
-            <button class="sg-oth-x" title="清除另一端，恢复用默认站址" @click="imp.other = null">✕</button>
-          </template>
-          <span v-else class="sg-oth-def" title="未指定另一端：新行对侧用默认站址。悬停列表条目点 ⇄ 可将该站设为另一端">默认（{{ impOtherDefault }}）</span>
-        </div>
-        <input ref="impSearchEl" v-model="imp.query" class="sg-search" :placeholder="imp.source === 'city' ? '搜索城市 / 省份 / 拼音缩写（如 北京 / 江苏 / bj）' : '搜索名称 / 经度'"
-               @keydown="onImpKey" @input="imp.hl = 0" />
-        <div class="sg-list">
-          <!-- mousedown.prevent：点击不夺走搜索框焦点，点完接着打字/回车连续导入 -->
-          <div v-for="(it, ii) in impResults" :key="it.id" class="sg-impitem" :class="{ hl: ii === imp.hl, done: imp.added[it.id] }"
-               :title="'点击加为新行（写入' + (imp.side === 'rx' ? '收信站' : '发信站') + '侧）'"
-               @mousedown.prevent @click="importItems([it])" @mouseenter="imp.hl = ii">
-            <span class="sg-impn" data-i18n-skip>{{ it.name }}</span>
-            <span class="mono sg-ll">{{ it.lon }}°E  {{ it.lat }}°N</span>
-            <span v-if="impOtherGroup" class="sg-imppin" :class="{ on: imp.other && imp.other.id === it.id }"
-                  :title="'设为另一端：之后导入的每行，' + (imp.side === 'rx' ? '发信站' : '收信站') + '侧都写「' + it.name + '」'"
-                  @mousedown.prevent.stop @click.stop="imp.other = it">⇄</span>
-            <span class="sg-impck" :class="{ show: imp.added[it.id] }">✓<i v-if="imp.added[it.id] > 1"> ×{{ imp.added[it.id] }}</i></span>
-          </div>
-          <div v-if="!impResults.length" class="sg-empty">无可导入项</div>
-        </div>
-        <div class="sg-box-ft sg-impft">
-          <span class="sg-impn2">{{ imp.addedN ? '本次已加 ' + imp.addedN + ' 行（Ctrl+Z 可撤销）' : '↑↓ 高亮 · Enter 导入' }}</span>
-          <button class="sg-btn" :disabled="!impResults.length" :title="'将当前列出的 ' + impResults.length + ' 项全部加为新行（一步可撤销）'" @click="importAll">全部导入（{{ impResults.length }}）</button>
-          <button class="sg-btn primary" @click="closeImport">完成</button>
-        </div>
-      </div>
-    </div>
+      </template>
+      <template v-if="impOtherGroup" #row="{ row }">
+        <span class="sg-imppin cpk-hov" :class="{ on: imp.other && imp.other.id === row.id }"
+              :title="'设为另一端：之后新增的每行，' + (imp.side === 'rx' ? '发信站' : '收信站') + '侧都写「' + row.name + '」'"
+              @mousedown.stop.prevent @click.stop="pinOther(row)">⇄</span>
+      </template>
+    </CityPicker>
 
     <!-- 批量设值 -->
     <div v-if="batch.open" class="sg-mask" @click="batch.open = false">
@@ -1477,6 +1587,9 @@ function clearColContents() {
         <button class="sg-ctx-i" :disabled="!canHideSel" @click="menuDo(hideCols)">隐藏列</button>
         <button v-if="hiddenCols.length" class="sg-ctx-i" @click="menuDo(unhideAll)">显示所有列（{{ hiddenCols.length }}）</button>
         <button class="sg-ctx-i" @click="menuDo(clearColContents)">清除整列内容</button>
+        <div class="sg-ctx-sep"></div>
+        <button class="sg-ctx-i" :disabled="!hasW(menu.c)" title="恢复这一列按内容自适应宽度" @click="menuDo(() => autoFitCol(menu.c))">自动列宽</button>
+        <button class="sg-ctx-i" :disabled="!anyW" title="恢复全部列按内容自适应宽度" @click="menuDo(autoFitAll)">全部列自适应</button>
       </div>
     </div>
 
@@ -1569,6 +1682,18 @@ function clearColContents() {
 .sg-tbl thead th.sg-fz { z-index: 5; }
 .sg-tbl.has-g thead tr.sg-ghd th.sg-fz { z-index: 6; }
 .sg-tbl th.sg-kw, .sg-tbl td.sg-kw { width: 90px; min-width: 90px; }
+/* —— 列宽（用户拖过的列 .sg-wset，见 colW）——
+   th 定宽（border-box）；格内值 / 第二行小字与表头文字随之定宽、装不下按省略号裁。auto 布局下列宽 =
+   max(定宽, 各格内容最小宽)，内容不跟着定宽的话往窄拖纹丝不动。宽度值只挂在 <table> 的 --sgw<c> 上，
+   格子引用 var(--sgw)（常量串）。规则放在 .sg-kw 之后：同特异度，定过宽的出厂关键列以定宽为准。 */
+.sg-tbl th.sg-wset { width: var(--sgw); min-width: var(--sgw); max-width: var(--sgw); }
+.sg-ht { display: block; overflow: hidden; text-overflow: ellipsis; }
+.sg-tbl th.sg-wset .sg-ht { width: calc(var(--sgw) - 15px); }   /* 7px×2 内边距 + 1px 右框 */
+.sg-tbl td.sg-wset .sg-v, .sg-tbl td.sg-wset .sg-sub { box-sizing: border-box; width: calc(var(--sgw) - 1px); min-width: 0; }
+/* 列边界线拖拽：光标压在边界 ±4px 内整个容器转 col-resize（格子自带的 cell / pointer 光标要 !important 才压得过）；
+   拖动中 .sg-rzline 是跟着光标走、贯穿整表高的引导线（同冻结预览线画法，放在滚动容器之外） */
+.sg-scroll.rz-hover, .sg-scroll.rz-hover * { cursor: col-resize !important; }
+.sg-rzline { position: absolute; width: 2px; margin-left: -1px; z-index: 9; pointer-events: none; background: var(--accent); opacity: .85; }
 /* 单元格。z-index:0 不是为了排序，是为了让 td 自成层叠上下文，把格内浮层（下拉箭头/填充柄/
    捕获输入框）关在格子里——见上方「表内层级总表」。 */
 .sg-cell { position: relative; z-index: 0; padding: 0; cursor: cell; user-select: none; vertical-align: top; }
@@ -1637,41 +1762,22 @@ function clearColContents() {
 .sg-box-hd { padding: 10px 12px; font-size: var(--fs-2); font-weight: 600; letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--text-muted); background: var(--surface-2); border-bottom: 1px solid var(--border); }
 .sg-search { margin: 10px 12px; padding: 6px 9px; font: inherit; font-size: var(--fs-3); background-color: var(--field-bg); color: var(--text); border: 1px solid var(--field-border); border-radius: var(--r-ctl, 2px); }
 .sg-search:focus { outline: none; border-color: var(--accent-ui); }
-.sg-list { flex: 1; overflow: auto; padding: 0 6px 8px; }
-.sg-city { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 8px; cursor: pointer; border-radius: var(--r-ctl, 2px); font-size: var(--fs-3); }
-.sg-city:hover { background: var(--surface-2); }
-.sg-ll { font-size: var(--fs-2); color: var(--text-faint); }
-/* 导入弹窗 */
-.sg-tabs { display: flex; gap: 4px; padding: 8px 12px 0; }
-.sg-tab { flex: 1; font: inherit; font-size: var(--fs-3); height: var(--h-ctl-lg); white-space: nowrap; padding: 0 6px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
-.sg-tab.on { background: var(--surface-2); color: var(--text); border-color: var(--border-strong); font-weight: 600; box-shadow: inset 0 -2px 0 var(--accent-ui); }
-/* Quick Pick 式导入面板：透明遮罩（仅拦截外点关闭）+ 锚定在列头导入钮下方的浮层 */
-.sg-mask-lite { background: transparent; display: block; }
-.sg-imppop { position: fixed; margin: 0; box-shadow: var(--shadow-3); }
-.sg-imphd { display: flex; align-items: center; gap: 6px; }
+/* 导入站址对话框（components/CityPicker.vue）里由本组件插入的控件：头部写入侧切换、「另一端」行、行上 ⇄ 钉钮 */
 .sg-sideb { font: inherit; font-size: var(--fs-2); font-weight: 400; line-height: 1; letter-spacing: 0; text-transform: none; padding: 3px 8px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
 .sg-sideb.on { background: var(--surface-2); color: var(--text); border-color: var(--border-strong); box-shadow: inset 0 -2px 0 var(--accent-ui); font-weight: 600; }
-.sg-side1 { letter-spacing: 0; text-transform: none; color: var(--text); }
+.sg-sideb + .sg-sideb { margin-left: -4px; }
+.sg-side1 { font-family: var(--font-ui); font-size: var(--fs-3); color: var(--text-muted); }
 /* 「另一端」行：钉住的对侧站回显 + 清除 */
-.sg-oth { display: flex; align-items: center; gap: 5px; margin: 6px 12px 0; font-size: var(--fs-2); color: var(--text-muted); white-space: nowrap; overflow: hidden; }
+.sg-oth { display: flex; align-items: center; gap: 5px; flex: none; margin: 0 0 8px; font-size: var(--fs-2); color: var(--text-muted); white-space: nowrap; overflow: hidden; }
 .sg-oth-v { color: var(--text); font-weight: 700; }
 .sg-oth-x { font: inherit; font-size: var(--fs-1); line-height: 1; padding: 1px 4px; cursor: pointer; background: transparent; color: var(--text-faint); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
 .sg-oth-x:hover { color: var(--danger); border-color: var(--border-strong); }
 .sg-oth-def { color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; }
-.sg-impitem { display: flex; align-items: center; gap: 8px; padding: 3px 8px; cursor: pointer; font-size: var(--lb-fs, 11px); border-radius: var(--r-ctl, 2px); user-select: none; }
-/* 条目内 ⇄ 钉为另一端：悬停显现，钉中常亮 */
-.sg-imppin { visibility: hidden; font-size: var(--fs-3); line-height: 1; padding: 0 3px; color: var(--text-faint); cursor: pointer; border-radius: var(--r-ctl, 2px); }
-.sg-impitem:hover .sg-imppin { visibility: visible; }
+.sg-oth-next { margin-left: auto; flex: none; color: var(--text); }
+/* 行上 ⇄ 钉为另一端：悬停该行才现形（cpk-hov 由 CityPicker 管），钉中常亮 */
+.sg-imppin { flex: none; font-size: var(--fs-3); line-height: 1; padding: 0 3px; color: var(--text-faint); cursor: pointer; border-radius: var(--r-ctl, 2px); }
 .sg-imppin:hover { color: var(--accent); }
-.sg-imppin.on { visibility: visible; color: var(--accent); font-weight: 700; }
-.sg-impitem.hl { background: color-mix(in srgb, var(--accent-ui) 14%, var(--bg)); }
-.sg-impitem.done .sg-impn { color: var(--text-muted); }
-.sg-impn { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sg-impck { visibility: hidden; color: var(--ok); font-weight: 700; }
-.sg-impck.show { visibility: visible; }
-.sg-impck i { font-style: normal; font-size: var(--fs-1); color: var(--text-muted); font-weight: 400; }
-.sg-impft { display: flex; align-items: center; gap: 8px; padding: 6px 12px 10px; }
-.sg-impn2 { flex: 1; min-width: 0; font-size: var(--fs-2); color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sg-imppin.on { color: var(--accent); font-weight: 700; }
 .sg-batch { display: flex; flex-direction: column; }
 .sg-box-ft { display: flex; justify-content: flex-end; gap: 8px; padding: 4px 12px 12px; }
 

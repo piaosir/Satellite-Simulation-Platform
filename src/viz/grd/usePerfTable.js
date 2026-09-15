@@ -1,9 +1,17 @@
-// 性能指标表（SATSOFT Performance Table）：独立站点库 + 逐站取值 + 选项（列/过滤/口径/指向误差）。
+// 性能指标表（SATSOFT Performance Table）：独立站点库 + 逐站取值 + 选项（列/过滤/口径/城市设置）。
 // 站点库与地图标记解耦（可一键导入标记）；每个天线一张表，站点列表（stationsByAnt）与选项（optsByAnt）
 // 都逐表独立 —— 一张表改城市不牵动别的表，新表从空白起。跨表复用走「城市组」预设（全表共享的库）。
 // 取值内核见 src/viz/grd/coverage.js：sampleBeamAt（反向采样方向图）、tiltBasis（指向误差扫描）。
+//
+// ★ 2026-09-15 起表的界面搬进独立窗口（src/perf/GroundPerfWin.vue），本模块同时在两处实例化：
+//   · 宿主（3D 页）那份只当【持久化桶 + 取值器】：stationsByAnt / optsByAnt / cityGroups 随页面快照存盘，
+//     computeRows 按弹窗发来的城市与选项算行；
+//   · 弹窗里那份是【编辑模型】：城市网格的增删改 / 撤销重做 / 粘贴解析 / 城市组操作都在本地同步完成
+//     （ExcelGrid 的回调要当场拿到行数），改完把整份城市列表 / 选项发回宿主。
+//   两处共用同一份代码，口径不会岔开；宿主侧靠 stationsOf / setStationsOf / setOptsOf 逐 key 读写桶，
+//   不再借 activeKey 切表。
 import { ref, computed } from 'vue'
-import { sampleBeamAt, perturbSpacecraft, dirToAzEl, groundLookAngles, axialRatioDb } from './coverage.js'
+import { sampleBeamAt, perturbSpacecraft, dirToAzEl, groundLookAngles, axialRatioDb, refinedPeakDb } from './coverage.js'
 import { cityNameKeys } from '../../shared/cityName.js'   // 城市名反查中英两名都收（英文界面填的是 Beijing）
 
 let _seq = 1
@@ -57,6 +65,9 @@ const COL_GROUPS = [
   { title: '性能', keys: ['dir', 'param', 'minPt', 'maxPt', 'xpol', 'slope', 'ar'] }
 ]
 
+// 城市输入网格的可编辑列（弹窗与粘贴解析共用同一份列序）
+const EDIT_COLS = ['country', 'city', 'desig', 'lon', 'lat']
+
 function defaultOpts() {
   const cols = {}
   for (const c of COL_DEFS) cols[c.key] = false
@@ -64,13 +75,68 @@ function defaultOpts() {
   for (const k of ['no', 'beamNo', 'city', 'desig', 'lon', 'lat', 'gsAz', 'gsEl', 'dir', 'param', 'minPt', 'maxPt']) cols[k] = true
   return {
     cols,
-    // 覆盖过滤默认开：结果表只列「覆盖该城市的波束」（方向性≥阈值）。城市仍完整保留在上方输入区，
-    // 故一个经纬度不再因多波束而膨胀成大量行——单波束→1 行，重叠区→数行（对标 SATSOFT）。
-    filterOn: true, minDir: 50,                  // 过滤：低于最低方向性的记录不显示
+    // 覆盖过滤默认关：结果表列出每座城市对全部波束的取值；勾上「仅覆盖波束」才只留方向性≥阈值的波束
+    // （单波束→1 行，重叠区→数行）。老快照里由旧出厂默认落下的 filterOn:true 在 restoreState 里一次性归零。
+    filterOn: false, minDir: 50,                 // 过滤：低于最低方向性的记录不显示
     sameAsAnt: true, pol: 'RSS', unit: 'dB', pathLoss: 'none', gainOffset: 0,   // 参数计算口径
-    pointAz: 0, pointEl: 0, pointYaw: 0,          // 指向误差：方位/俯仰/偏航各自半幅(°)，完全自定 → Min/Max Pointing（误差区恒按椭圆算）
-    beamSel: null                                 // 波束筛选：null=全部波束（默认，等同不筛选）；否则=选中的 bi 数组，仅这些波束进表
+    // 指向误差（SATSOFT Cities 页「Pointing Error」）：方位/俯仰/偏航各自【全幅】(°)，取值时按半幅 ±输入/2 用
+    // → 既驱动 Min/Max Pointing 列，也定地图上每座城市的指向误差框的大小
+    pointAz: 0, pointEl: 0, pointYaw: 0,
+    beamSel: null,                                // 波束筛选：null=全部波束（默认，等同不筛选）；否则=选中的 bi 数组，仅这些波束进表
+    // 城市设置（SATSOFT §4.2.2 Cities：Label / Marker），随本表的选项逐天线存
+    cityLabelOn: true, cityLabelType: 'city', cityLabelAlign: 'right', cityLabelPt: 8,   // 标签：显示 / 城市名或代号 / 摆位 / 字号(pt)
+    cityMarkOn: true, cityMarkType: 'rect', cityMarkColor: '#ff2a2a', cityMarkWidth: 1.2,  // 标记：显示 / 矩形或椭圆 / 颜色 / 线宽(px)
+    // 地图上这张表的城市层（标记 + 标签）总开关：对地覆盖分析树里「性能指标表」行的眼睛。与表窗口开没开无关，
+    // 关了两样都不画；只关其一仍走上面两个 *On。出厂关；不进「记住上次选择」模板（新天线的表恒从关起）。
+    cityShow: false
   }
+}
+
+// ===== 纯函数（弹窗 / 宿主两边都要用，不依赖实例）=====
+export const PERF_COL_DEFS = COL_DEFS
+export const PERF_COL_GROUPS = COL_GROUPS
+export const PERF_EDIT_COLS = EDIT_COLS
+export const perfDefaultOpts = defaultOpts
+export const perfVisibleColumns = (o) => COL_DEFS.filter((c) => o && o.cols && o.cols[c.key])
+// 波束筛选：纯序号语法（"1-62"/"1,3,5"/"1-10,20-30"）→ 1-based 序号集合，否则 null（当作波束名文字搜索）
+function parseBeamSeq(q) {
+  const set = new Set()
+  for (const part of q.split(/[,，\s]+/)) {
+    if (!part) continue
+    const m = part.match(/^(\d+)\s*[-~]\s*(\d+)$/)
+    if (m) { const a = +m[1], b = +m[2]; for (let i = Math.min(a, b); i <= Math.max(a, b); i++) set.add(i) }
+    else if (/^\d+$/.test(part)) set.add(+part)
+    else return null
+  }
+  return set.size ? set : null
+}
+// 按搜索词过滤波束：序号语法按 1-based 序号(bi+1)，否则按波束名（大小写不敏感）。空词=全部。
+export function filterBeamsByQuery(all, query) {
+  const q = String(query || '').trim()
+  if (!q) return all
+  const seq = parseBeamSeq(q)
+  if (seq) return all.filter((b) => seq.has(b.seq || b.bi + 1))   // 序号语法按原始波束号（与覆盖面板同口径）
+  const ql = q.toLowerCase()
+  return all.filter((b) => String(b.name).toLowerCase().includes(ql))
+}
+export const beamSelOn = (o, bi) => !o || o.beamSel == null || o.beamSel.includes(bi)   // beamSel=null 视为全选
+// 规整：选中集 == 全集 → 回退 null（默认/不筛选，存盘更干净）；否则升序数组
+export function normBeamSel(allBi, arr) {
+  const s = new Set(arr)
+  if (allBi.length && allBi.every((i) => s.has(i))) return null
+  return [...s].sort((a, b) => a - b)
+}
+export const beamSelIdsOf = (o, allBi) => (!o || o.beamSel == null ? allBi.slice() : o.beamSel.slice())   // 当前勾选集（null＝全集，摊开成数组）
+// 选项合并：老快照 / 弹窗发来的对象缺的键一律补默认值（新加的城市设置键就是这么进老存档的）
+export function fillOpts(o) {
+  const base = defaultOpts()
+  const c = o && typeof o === 'object' ? o : {}
+  return { ...base, ...c, cols: { ...base.cols, ...(c.cols || {}) }, beamSel: Array.isArray(c.beamSel) ? c.beamSel.slice() : null }
+}
+// 一座城市在地图上的标签文字（SATSOFT Label Type：designator / city）
+export function cityLabelText(s, type) {
+  const city = String(s.city == null ? '' : s.city).trim(), desig = String(s.desig == null ? '' : s.desig).trim()
+  return type === 'desig' ? (desig || city) : (city || desig)
 }
 
 export function usePerfTable() {
@@ -100,11 +166,18 @@ export function usePerfTable() {
   function newOptsFromTemplate() {
     const base = defaultOpts()
     if (!optsTemplate) return base
-    return { ...base, ...cloneOpts(optsTemplate), cols: { ...base.cols, ...(optsTemplate.cols || {}) }, beamSel: null }
+    return { ...base, ...cloneOpts(optsTemplate), cols: { ...base.cols, ...(optsTemplate.cols || {}) }, beamSel: null, cityShow: base.cityShow }
   }
   function getOpts(key) {
     if (!key) return defaultOpts()
     if (!optsByAnt.value[key]) optsByAnt.value[key] = newOptsFromTemplate()
+    return optsByAnt.value[key]
+  }
+  const hasOpts = (key) => !!(key && optsByAnt.value[key])
+  // 弹窗发回的整份选项落桶（缺键补默认）。返回落下去的那份（响应式，供 watcher）。
+  function setOptsOf(key, o) {
+    if (!key) return null
+    optsByAnt.value = { ...optsByAnt.value, [key]: fillOpts(o) }
     return optsByAnt.value[key]
   }
   // 把某天线当前选项记成模板（供下一个新天线继承）。beamSel 剔除。页面在选项变化时调用。
@@ -117,7 +190,32 @@ export function usePerfTable() {
     if (!key) return
     optsByAnt.value = { ...optsByAnt.value, [key]: defaultOpts() }
   }
-  const visibleColumns = (o) => COL_DEFS.filter((c) => o && o.cols && o.cols[c.key])
+  const visibleColumns = perfVisibleColumns
+  // 城市层总开关（树里「性能指标表」行的眼睛，出厂关）。cityShowOf 只读不建桶：模板里逐行读，渲染期不能往响应式桶里造键。
+  const cityShowOf = (key) => { const o = key && optsByAnt.value[key]; return !!o && o.cityShow === true }
+  function setCityShow(key, on) { if (!key) return; getOpts(key).cityShow = !!on }
+
+  // ===== 逐 key 读写站点桶（宿主侧：不必借 activeKey 切表）=====
+  const stationsOf = (key) => (key && stationsByAnt.value[key]) || NO_ST
+  // 弹窗发回的整份城市列表落桶：保留弹窗给的 id（结果行 id = 站 id#波束，两边要对得上），缺的补一个
+  function setStationsOf(key, list) {
+    if (!key) return
+    const seen = new Set()
+    const out = (Array.isArray(list) ? list : []).map((s) => {
+      let id = s && s.id ? String(s.id) : ''
+      if (!id || seen.has(id)) id = newId()
+      seen.add(id)
+      return { id, country: String(s.country == null ? '' : s.country), city: String(s.city == null ? '' : s.city), desig: String(s.desig == null ? '' : s.desig), lon: num(s.lon), lat: num(s.lat) }
+    })
+    stationsByAnt.value = { ...stationsByAnt.value, [key]: out }
+  }
+  // 宿主推来的城市组整份替换（弹窗侧的镜像；组 id 沿用宿主的，两边对得上）
+  function setCityGroups(list) {
+    cityGroups.value = (Array.isArray(list) ? list : []).filter((g) => g && Array.isArray(g.cities)).map((g) => ({
+      id: g.id || gid(), name: String(g.name || '城市组'),
+      cities: g.cities.map((c) => ({ country: c.country || '', city: c.city || '', desig: c.desig || '', lon: num(c.lon), lat: num(c.lat) }))
+    }))
+  }
 
   // ===== 站点库 CRUD =====
   // 经纬度写入：合法数字→写入；空串→清空(null，该行暂不参与取值)；非数字文本→保留原值（坐标列不存文本）
@@ -144,6 +242,19 @@ export function usePerfTable() {
     stations.value = [...stations.value]
   }
   function removeStation(id) { stations.value = stations.value.filter((x) => x.id !== id) }
+  // 批量追加（典型城市 / 城市库选点）：[{country,city,desig,lon,lat}]，有坐标的按 ±1e-4 去重。返回新增数。
+  function addStations(list) {
+    if (!activeKey.value) return 0
+    const exists = (lon, lat) => stations.value.some((s) => Number.isFinite(s.lon) && Number.isFinite(s.lat) && Math.abs(s.lon - lon) < 1e-4 && Math.abs(s.lat - lat) < 1e-4)
+    const add = []
+    for (const c of (list || [])) {
+      const lon = num(c.lon), lat = num(c.lat)
+      if (lon != null && lat != null && (exists(lon, lat) || add.some((a) => Math.abs(a.lon - lon) < 1e-4 && Math.abs(a.lat - lat) < 1e-4))) continue
+      add.push({ id: newId(), country: String(c.country || ''), city: String(c.city || ''), desig: String(c.desig || ''), lon, lat })
+    }
+    if (add.length) stations.value = [...stations.value, ...add]
+    return add.length
+  }
 
   // ===== 城市名 → 经纬度自动补全（与 GEO 链路预算 StationGrid.applyCityByName 同口径）=====
   // 城市库（约 360 座国内城市）由页面在打开性能表时经 IPC 载入并 setCities 注入；
@@ -238,7 +349,6 @@ export function usePerfTable() {
   // 超出现有站点的行自动新建。startKey 决定起始列，列序固定见 EDIT_COLS。
   // 切列只认制表符（与 Excel 完全一致）——含逗号的单元格值（如 "Washington, DC"）不会被误拆；
   // CSV 逗号格式仍由「粘贴」按钮/追加导入（parsePasted）支持。
-  const EDIT_COLS = ['country', 'city', 'desig', 'lon', 'lat']
   function parseGrid(text) {
     return String(text || '').split(/\r?\n/).filter((l) => l.trim() !== '')
       .map((l) => l.split('\t').map((x) => x.trim()))
@@ -369,32 +479,15 @@ export function usePerfTable() {
     return { min: baseDb + lo, max: baseDb + hi }
   }
 
-  // 波束真峰值 dB（物理：真峰值在网格点之间，离散最大低估）。在所选极化的功率网格上找离散最大，
-  // 再沿行/列各做抛物线顶点细化（可分离二次近似）后转 dB。按 beam×pol 记忆化（峰值与指向无关，
-  // = 网格上场的最大值）。供「相对峰值」口径作扣减基准——同时修正旧 bm.peakDb 恒为 RSS 极化的不一致。
-  function refinedPeakDb(beam, pol) {
-    const k = '_pk_' + pol
-    if (beam[k] !== undefined) return beam[k]
-    const { P1, P2, grid } = beam, NX = grid.NX, NY = grid.NY, N = NX * NY
-    const pw = (i) => { const a = P1[i], b = P2 ? P2[i] : 0
-      return pol === 'P1' ? a : pol === 'P2' ? b : pol === 'RSS' ? a + b : pol === 'P1/P2' ? (b > 0 ? a / b : 0) : pol === 'P2/P1' ? (a > 0 ? b / a : 0) : a }
-    let mi = 0, mv = -Infinity
-    for (let i = 0; i < N; i++) { const v = pw(i); if (v > mv) { mv = v; mi = i } }
-    if (!(mv > 0)) { beam[k] = null; return null }
-    const r = (mi / NX) | 0, c = mi % NX
-    const inc = (fm, f0, fp) => { const den = 2 * f0 - fm - fp; return den > 0 ? (fp - fm) * (fp - fm) / (8 * den) : 0 }   // 抛物线顶点相对 f0 的增量（concave 才有效）
-    let peak = mv
-    if (c > 0 && c < NX - 1) peak += inc(pw(mi - 1), mv, pw(mi + 1))
-    if (r > 0 && r < NY - 1) peak += inc(pw(mi - NX), mv, pw(mi + NX))
-    const db = peak > 0 ? 10 * Math.log10(peak) : null
-    beam[k] = db
-    return db
-  }
+  // 波束真峰值 dB（抛物线顶点细化）：本体在 coverage.refinedPeakDb —— 覆盖的相对档 / 峰值读数与这里的「相对峰值」
+  // 扣减基准同一份数（按 beam×pol 记忆化，峰值与指向无关）。
 
-  function compute(ctx, opts) {
-    if (!ctx) { rows.value = []; ctxInfo.value = null; ctxBeams.value = []; return }
+  // 纯取值：给定天线上下文、选项与城市列表 → { rows, ctxInfo, ctxBeams }。不碰任何响应式状态，
+  // 宿主按弹窗发来的城市与选项逐 key 调它；compute 只是把结果落进当前表的那层薄包装。
+  function computeRows(ctx, opts, stationList) {
+    if (!ctx) return { rows: [], ctxInfo: null, ctxBeams: [] }
     const o = opts || defaultOpts()
-    ctxBeams.value = ctx.beams.map((b) => ({ bi: b.bi, seq: b.seq || b.bi + 1, name: b.name, peakDb: b.peakDb }))   // 供选项面板波束筛选列表（含波束名/峰值）；seq=原始波束号（删除波束后不重排）
+    const ctxBeamsOut = ctx.beams.map((b) => ({ bi: b.bi, seq: b.seq || b.bi + 1, name: b.name, peakDb: b.peakDb }))   // 供选项面板波束筛选列表（含波束名/峰值）；seq=原始波束号（删除波束后不重排）
     const beamAllow = Array.isArray(o.beamSel) ? new Set(o.beamSel) : null                  // null=全部波束（默认，不筛选）；否则仅这些 bi 进表
     const st = ctx.settings, same = o.sameAsAnt, igrid = ctx.igrid, icomp = ctx.icomp, basis = ctx.basis, meta = ctx.meta
     const polD = same ? st.pol : o.pol
@@ -407,7 +500,7 @@ export function usePerfTable() {
     const unitOf = (db) => (same || o.unit === 'dB') ? db : (o.unit === 'power' ? Math.pow(10, db / 10) : Math.pow(10, db / 20))
 
     const out = []; let no = 1
-    stations.value.forEach((s, si) => {
+    ;(stationList || []).forEach((s, si) => {
       if (!Number.isFinite(s.lon) || !Number.isFinite(s.lat)) return   // 空行/经纬度未填全：不参与取值（行号 stationNo 仍按输入区行计）
       const geo = wantGeo ? dirToAzEl(meta.satLon, meta.satLat || 0, meta.satAlt, s.lon, s.lat) : null
       const gls = wantGS ? groundLookAngles(meta.satLon, meta.satLat || 0, meta.satAlt, s.lon, s.lat) : null   // 地球站看卫星的方位/仰角
@@ -419,7 +512,7 @@ export function usePerfTable() {
         const p = (want('param') || wantPt) ? sampleBeamAt(bm.beam, igrid, basis, s.lon, s.lat, parOpts) : null
         let param = p ? p.db : null
         if (param != null && rel) { const pk = refinedPeakDb(bm.beam, polD); if (pk != null) param -= pk }
-        // Min/Max Pointing = 一阶梯度法，以 param 为中心对称展开（ΔG 是差分、与 rel/增益偏置等常数无关）。
+        // Min/Max Pointing：误差区上真实重采样取极值（见 pointMinMax），以 param 为中心。
         // 输入按【全幅误差】解释：实际半幅 = 输入/2（与 SATSOFT 一致，输入 0.06 → 用 ±0.03）。
         const pt = wantPt ? pointMinMax(bm.beam, igrid, basis, s.lon, s.lat, parOpts, param, o.pointAz / 2, o.pointEl / 2, o.pointYaw / 2) : { min: null, max: null }
         // Xpol C/I = 共极化/交叉极化 功率比（dB）
@@ -442,8 +535,15 @@ export function usePerfTable() {
         })
       }
     })
-    rows.value = out
-    ctxInfo.value = { satName: ctx.satName, antName: ctx.antName, beams: ctx.beams.length }
+    return { rows: out, ctxInfo: { satName: ctx.satName, antName: ctx.antName, beams: ctx.beams.length }, ctxBeams: ctxBeamsOut }
+  }
+
+  function compute(ctx, opts) {
+    if (!ctx) { rows.value = []; ctxInfo.value = null; ctxBeams.value = []; return }
+    const r = computeRows(ctx, opts, stations.value)
+    ctxBeams.value = r.ctxBeams
+    rows.value = r.rows
+    ctxInfo.value = r.ctxInfo
   }
 
   // 表内查询：国家/城市/代号 模糊（大小写不敏感）；空查询=全部。
@@ -467,6 +567,8 @@ export function usePerfTable() {
       stationsByAnt: sb,
       optsByAnt: JSON.parse(JSON.stringify(optsByAnt.value)),
       optsTemplate: optsTemplate ? cloneOpts(optsTemplate) : null,
+      filterDefault: 'off',   // 标记：本快照已按「仅覆盖波束默认关」存；没有它的老快照恢复时把 filterOn 一次性归零
+      cityDefault: 'off',     // 同上：眼睛（cityShow）出厂关，没有标记的快照恢复时一次性归零
       cityGroups: cityGroups.value.map((g) => ({ name: g.name, cities: (g.cities || []).map((c) => ({ country: c.country, city: c.city, desig: c.desig, lon: c.lon, lat: c.lat })) }))
     }
   }
@@ -476,13 +578,16 @@ export function usePerfTable() {
     activeKey.value = ''
     hidden.value = {}
     const mkSt = (s) => ({ id: newId(), country: s.country || '', city: s.city || '', desig: s.desig || '', lon: num(s.lon), lat: num(s.lat) })
+    // 老快照（没有 filterDefault 标记）：filterOn:true 是旧出厂默认落下的、分不清是不是用户勾的 → 一次性归零；阈值保留
+    const legacyFilter = st.filterDefault !== 'off', legacyCity = st.cityDefault !== 'off'
+    const fill = (o) => { const f = fillOpts(o); if (legacyFilter) f.filterOn = false; if (legacyCity) f.cityShow = false; return f }
     if (st.optsByAnt && typeof st.optsByAnt === 'object') {
       const m = {}
-      for (const k of Object.keys(st.optsByAnt)) m[k] = { ...defaultOpts(), ...st.optsByAnt[k], cols: { ...defaultOpts().cols, ...(st.optsByAnt[k].cols || {}) } }
+      for (const k of Object.keys(st.optsByAnt)) m[k] = fill(st.optsByAnt[k])
       optsByAnt.value = m
     }
     optsTemplate = (st.optsTemplate && typeof st.optsTemplate === 'object')
-      ? { ...defaultOpts(), ...st.optsTemplate, cols: { ...defaultOpts().cols, ...(st.optsTemplate.cols || {}) }, beamSel: null }
+      ? { ...fill(st.optsTemplate), beamSel: null }
       : null
     // 站点库：新快照逐天线存；老快照（st.stations）是全表共享的一份 → 原样复制给每一根【开过表的】天线
     // （optsByAnt 的键就是开过表的天线，故必须在它之后恢复），此后各表各改各的。
@@ -504,49 +609,22 @@ export function usePerfTable() {
   }
 
   // ===== 波束筛选（选项面板；默认 beamSel=null 即全部波束 = 不筛选，与旧行为一致）=====
-  // 纯序号语法（"1-62"/"1,3,5"/"1-10,20-30"）→ 1-based 序号集合，否则 null（当作波束名文字搜索）
-  function parseBeamSeq(q) {
-    const set = new Set()
-    for (const part of q.split(/[,，\s]+/)) {
-      if (!part) continue
-      const m = part.match(/^(\d+)\s*[-~]\s*(\d+)$/)
-      if (m) { const a = +m[1], b = +m[2]; for (let i = Math.min(a, b); i <= Math.max(a, b); i++) set.add(i) }
-      else if (/^\d+$/.test(part)) set.add(+part)
-      else return null
-    }
-    return set.size ? set : null
-  }
-  // 按搜索词过滤波束：序号语法按 1-based 序号(bi+1)，否则按波束名（大小写不敏感）。空词=全部。
-  function filteredBeams() {
-    const all = ctxBeams.value
-    const q = beamQuery.value.trim()
-    if (!q) return all
-    const seq = parseBeamSeq(q)
-    if (seq) return all.filter((b) => seq.has(b.seq || b.bi + 1))   // 序号语法按原始波束号（与覆盖面板同口径）
-    const ql = q.toLowerCase()
-    return all.filter((b) => String(b.name).toLowerCase().includes(ql))
-  }
+  function filteredBeams() { return filterBeamsByQuery(ctxBeams.value, beamQuery.value) }
   const allBi = () => ctxBeams.value.map((b) => b.bi)
-  const beamOn = (o, bi) => !o || o.beamSel == null || o.beamSel.includes(bi)   // beamSel=null 视为全选
-  // 规整：选中集 == 全集 → 回退 null（默认/不筛选，存盘更干净）；否则升序数组
-  function normSel(arr) {
-    const all = allBi(); const s = new Set(arr)
-    if (all.length && all.every((i) => s.has(i))) return null
-    return [...s].sort((a, b) => a - b)
-  }
-  const materialize = (o) => (o.beamSel == null ? allBi() : o.beamSel.slice())   // 从 null(全集) 起做增删
-  const beamSelIds = (o) => (o ? materialize(o) : [])          // 当前勾选集（null＝全集，摊开成数组）
+  const beamOn = beamSelOn
+  const beamSelIds = (o) => (o ? beamSelIdsOf(o, allBi()) : [])          // 当前勾选集（null＝全集，摊开成数组）
   // 整份写回。勾选列表的点 / 拖刷 / 连选 / 全选全部归到这一个咽喉（见 shared/ui/useCheckList.js）：
   // 一次拖刷只落一批，不是逐行落一次 —— 每落一次就要整轮重建这张表。
-  const setBeamSel = (o, ids) => { if (o) o.beamSel = normSel([...new Set(ids)]) }
+  const setBeamSel = (o, ids) => { if (o) o.beamSel = normBeamSel(allBi(), [...new Set(ids)]) }
 
   return {
-    stations, rows, filteredRows, ctxInfo, query, optsByAnt, canUndo, canRedo, setActiveKey,
-    colDefs: COL_DEFS, colGroups: COL_GROUPS, getOpts, visibleColumns, rememberOpts, resetOpts,
-    addEmptyStation, updateStation, removeStation, removeRow, clearStations, addStationsBulk, pasteBlock, importFromMarkers, importFromTrajectories,
+    stations, stationsByAnt, rows, filteredRows, ctxInfo, query, optsByAnt, canUndo, canRedo, setActiveKey, activeKey,
+    colDefs: COL_DEFS, colGroups: COL_GROUPS, getOpts, hasOpts, setOptsOf, visibleColumns, rememberOpts, resetOpts, cityShowOf, setCityShow,
+    stationsOf, setStationsOf, setCityGroups,
+    addEmptyStation, updateStation, removeStation, removeRow, clearStations, addStationsBulk, addStations, pasteBlock, importFromMarkers, importFromTrajectories,
     setCities, applyCityGeo, applyCityGeoAll,
     cityGroups, addCityGroup, renameCityGroup, overwriteCityGroup, removeCityGroup, loadCityGroup, appendCityGroup,
     ctxBeams, beamQuery, filteredBeams, beamOn, beamSelIds, setBeamSel,
-    pushUndo, dropUndo, undo, redo, compute, getState, restoreState
+    pushUndo, dropUndo, undo, redo, compute, computeRows, getState, restoreState
   }
 }

@@ -11,7 +11,7 @@ const createModcod = require('../services/modcod')
 const admBoundaries = require('../services/admBoundaries')
 
 // 注册所有 IPC 处理器。core 为返回引擎实例的函数（延迟解析）。
-function register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget, openSunOutage, grd, confirmCloseLinkBudget, openNgso, confirmCloseNgso, openRegen, confirmCloseRegen, openE2e, confirmCloseE2e, openRain, confirmCloseRain, openCi, openPfd, freqPlan, openFreqPlan, notifyFreqPlan, activation, weather, gfs, updater }) {
+function register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget, openSunOutage, grd, confirmCloseLinkBudget, openNgso, confirmCloseNgso, openRegen, confirmCloseRegen, openE2e, confirmCloseE2e, openRain, confirmCloseRain, openCi, openPfd, freqPlan, openFreqPlan, notifyFreqPlan, activation, weather, gfs, updater, perfWin }) {
   // 未激活拦截（主进程硬防线；渲染端菜单/工具栏的拦截只是第一道观感）：
   // 各功能窗口的 open 一律先过这里——渲染端被绕过（devtools 直调 IPC）也开不出窗。
   // （下方九处 *:open 仍显式写着 gate(...)，在新的默认全拦之下已是冗余的第二层，无副作用，
@@ -46,6 +46,8 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     'updater:state', 'updater:check', 'updater:install',
     // 窗口关闭确认：拦掉会导致功能窗口关不干净（锁定期间窗口仍在，只是被遮罩盖住）
     'linkbudget:confirmClose', 'ngso:confirmClose', 'regen:confirmClose', 'e2e:confirmClose', 'rain:confirmClose',
+    // 性能指标表窗口的中继（开窗 perfwin:open 仍在锁内；这几条只搬运两窗之间的消息，不产出交付物）
+    'perfwin:push', 'perfwin:act', 'perfwin:close', 'perfwin:setTitle', 'perfwin:list', 'perfwin:self',
     // ② 浏览面（只读查询，不产出交付物）
     'omm:load', 'omm:positions', 'omm:csv', 'omm:list',
     'omm:customList', 'omm:customCsv', 'omm:customGroupRecords',
@@ -56,7 +58,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     'store:history:list', 'store:config:list', 'store:library:get',
     'env:defs', 'env:field',
     'adm:pack',
-    'link:cities', 'link:searchCities', 'link:baseband', 'link:outputDefs',
+    'link:cities', 'link:cityGroups', 'link:searchCities', 'link:baseband', 'link:outputDefs',
     // 分享的收件侧：收/删/探视是别人推过来的东西，不算本机产出；发件侧（send/boxSend/
     // gxtSnapshot/boxRevoke）不在表里，未激活不许往外发
     'share:configured', 'share:inbox', 'share:delete', 'share:boxPeek'
@@ -334,6 +336,39 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
       catch (err) { return { success: false, message: err.message || String(err) } }
     })
   })
+  // 链路表实时预览（「地球站配置」格的 EIRP / G·T / 功放尾标，作业见 src/shared/lbPreview.js）：一块行一次算完。
+  // 每项自带 engine（'ngso' 走 NGSO 引擎，其余走 GEO），逐条口径与 link:computeMode / link:computeModeNGSO 完全一致。
+  // 与 computeModeBatch 的两点不同，都因为预览是后台活：
+  //   ① 每跑满 ~4 ms 让出一次事件循环——别的窗口的 IPC（主窗时钟拍、别的预算窗的「计算」）能在行间插进来；
+  //   ② 带取消令牌：渲染端点了「计算」就 link:previewCancel(token)，本块在下一个让出点停手，把算完的部分交回
+  //      （没算的留 null，渲染端恢复后重发），主进程随即空出来给「计算」。令牌只在本块在算期间有效，
+  //      迟到的取消不落进集合里（否则集合只增不减）。
+  const previewActive = new Set(), previewCancelled = new Set()
+  ipcMain.on('link:previewCancel', (_e, token) => { if (previewActive.has(token)) previewCancelled.add(token) })
+  ipcMain.handle('link:previewBatch', async (_e, list, token) => {
+    const arr = Array.isArray(list) ? list : []
+    const out = new Array(arr.length).fill(null)
+    const tok = token == null ? null : String(token)
+    if (tok) previewActive.add(tok)
+    try {
+      let last = performance.now()
+      for (let i = 0; i < arr.length; i++) {
+        const it = arr[i] || {}
+        try {
+          const fn = it.engine === 'ngso' ? core().computeLinkModeNGSO : core().computeLinkMode
+          out[i] = fn ? fn(it.sat || {}, it.link || {}, it.opt || {}) : { success: false, message: '引擎未加载' }
+        } catch (err) { out[i] = { success: false, message: err.message || String(err) } }
+        if (i + 1 < arr.length && performance.now() - last >= 4) {
+          await new Promise((r) => setImmediate(r))
+          last = performance.now()
+          if (tok && previewCancelled.has(tok)) break
+        }
+      }
+    } finally {
+      if (tok) { previewActive.delete(tok); previewCancelled.delete(tok) }
+    }
+    return out
+  })
   // 参数扫描（可视化「直角坐标系」的算力层）：整段区间在主进程一次跑完，
   // 一次往返带回全部可绘输出量，前端换纵轴变量无需重算（同 rain:sweep 的思路）
   ipcMain.handle('link:sweep', (_e, spec) => {
@@ -454,6 +489,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   ipcMain.handle('link:grdSampleCci', (_e, req) => (grd ? grd.sampleCci(req || {}) : { ok: false, error: 'GRD 服务未加载', cci: ((req && req.points) || []).map(() => null) }))
   // 城市列表（选址用）
   ipcMain.handle('link:cities', () => core().listCities())
+  ipcMain.handle('link:cityGroups', () => core().listCitiesGrouped())
   ipcMain.handle('link:searchCities', (_e, kw) => core().searchCities(String(kw == null ? '' : kw), {}))
   // 载波信号选项（调制/FEC/DVB/MODCOD）。MODCOD 表 = 内置表叠上用户在「文件管理 · 调制编码」里的改写
   ipcMain.handle('link:baseband', () => core().basebandOptions(modcod.store()))
@@ -486,6 +522,16 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   // 干扰分析（C/I）独立窗口：只读消费者——读三库与 GRD，不写回任何库
   ipcMain.handle('ci:open', gate(() => { if (openCi) openCi(); return true }))
   ipcMain.handle('pfd:open', gate(() => { if (openPfd) openPfd() }))
+  // ---- 性能指标表窗口（对地 / 对星 / 气象）：主进程只中继，数据与取值都在主窗口 ----
+  if (perfWin) {
+    ipcMain.handle('perfwin:open', gate((_e, o) => perfWin.open(o || {})))
+    ipcMain.handle('perfwin:push', (_e, id, msg) => perfWin.push(id, msg))
+    ipcMain.handle('perfwin:act', (e, msg) => perfWin.act(e.sender, msg))
+    ipcMain.handle('perfwin:close', (_e, id) => perfWin.close(id))
+    ipcMain.handle('perfwin:setTitle', (_e, id, title) => perfWin.setTitle(id, title))
+    ipcMain.handle('perfwin:list', () => perfWin.list())
+    ipcMain.handle('perfwin:self', (e) => perfWin.self(e.sender))
+  }
 
   // ---- 转发器频率计划 ----
   ipcMain.handle('freqPlan:open', gate((_e, planId) => {

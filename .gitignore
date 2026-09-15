@@ -280,3 +280,7 @@ resources/imagery/
 # fill-gl-harness）：真 GRD + 真引擎 + 真 glField.js，CPU 分带多边形 vs GPU 网格着色逐像素比对 +
 # 一次重算的几何成本（三档 stride）+ 每帧填充合成计时 + 多层半透明叠加一致性。
 .fillharness/
+# .pwharness/ 是性能指标表窗口（src/perf/*）的离屏验证台：假 window.api.perfWin 扮演主窗口，三张表按 ?kind= 装（launch.json 的 pw-harness，端口 5877）。
+.pwharness/
+# .lbcolharness/ 是链路表列宽 / 结果列排序 / 本行读数排版的验证台：整页挂真 GSO 窗口，window.api 桩掉、引擎结果合成（launch.json 的 lbcol-harness，端口 5977）。
+.lbcolharness/

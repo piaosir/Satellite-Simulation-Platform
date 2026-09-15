@@ -11,6 +11,10 @@ contextBridge.exposeInMainWorld('api', {
     computeMode: (s, l, opt) => ipcRenderer.invoke('link:computeMode', s, l, opt),
     // 批量版：[{ sat, link, opt }] → 各行结果数组（口径同单条，只把 N 次往返压成 1 次）
     computeModeBatch: (list) => ipcRenderer.invoke('link:computeModeBatch', list),
+    // 链路表实时预览（「地球站配置」格的 EIRP / G·T / 功放尾标）：一块行一次算完，每项按 engine 分派 GEO / NGSO 引擎，
+    // 逐条口径同单条；主进程行间让出事件循环。令牌给「计算」优先用——点了「计算」就把在算那块取消掉
+    previewBatch: (list, token) => ipcRenderer.invoke('link:previewBatch', list, token),
+    previewCancel: (token) => ipcRenderer.send('link:previewCancel', token),
     // 参数扫描（可视化直角坐标系）：一次 IPC 跑完整段区间，回全部可绘输出量
     sweep: (spec) => ipcRenderer.invoke('link:sweep', spec),
     // 二维参数扫描（设计空间图）：x×y 网格一次跑完，回各输出量的场与可行裕度场
@@ -48,6 +52,8 @@ contextBridge.exposeInMainWorld('api', {
     // 导入方向图后取其波束数（并预编译 .grdbin）
     grdMeta: (file) => ipcRenderer.invoke('link:grdMeta', file),
     cities: () => ipcRenderer.invoke('link:cities'),
+    // 分层城市库（中国按省份 / 国际按国家）：性能指标表与气象指标表的「典型城市」选点
+    cityGroups: () => ipcRenderer.invoke('link:cityGroups'),
     searchCities: (kw) => ipcRenderer.invoke('link:searchCities', kw),
     baseband: () => ipcRenderer.invoke('link:baseband'),
     waterfall: (ctx) => ipcRenderer.invoke('link:waterfall', ctx),
@@ -118,6 +124,20 @@ contextBridge.exposeInMainWorld('api', {
     searchCities: (kw) => ipcRenderer.invoke('link:searchCities', kw),
     onCloseRequested: (cb) => ipcRenderer.on('rain:closeRequested', cb),
     confirmClose: () => ipcRenderer.invoke('rain:confirmClose')
+  },
+  // 性能指标表窗口（对地 / 对星 / 气象）：一根天线一窗、可多开。主进程只中继：
+  //   主窗口侧 open / push / close / setTitle / list + onAct / onClosed；弹窗侧 self / act + onMsg。
+  perfWin: {
+    open: (o) => ipcRenderer.invoke('perfwin:open', o),
+    push: (id, msg) => ipcRenderer.invoke('perfwin:push', id, msg),
+    close: (id) => ipcRenderer.invoke('perfwin:close', id),
+    setTitle: (id, title) => ipcRenderer.invoke('perfwin:setTitle', id, title),
+    list: () => ipcRenderer.invoke('perfwin:list'),
+    onAct: (cb) => ipcRenderer.on('perfwin:act', (_e, m) => cb(m)),
+    onClosed: (cb) => ipcRenderer.on('perfwin:closed', (_e, m) => cb(m)),
+    self: () => ipcRenderer.invoke('perfwin:self'),
+    act: (msg) => ipcRenderer.invoke('perfwin:act', msg),
+    onMsg: (cb) => ipcRenderer.on('perfwin:msg', (_e, m) => cb(m))
   },
   // 环境场图层（主窗口「环境场」视图）：ITU 环境数据整张等经纬栅格一次取回（Float32Array 直传）
   env: {

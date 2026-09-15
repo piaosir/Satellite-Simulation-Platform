@@ -8,6 +8,7 @@
 import { ref, reactive, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import ActivationLock from '../components/ActivationLock.vue'
 import Icon from '../components/Icon.vue'
+import CityPicker from '../components/CityPicker.vue'   // 站名旁「典型城市…」：与三窗 / 性能指标表同一份选点对话框
 import ConfigTree from '../components/ConfigTree.vue'
 import ConfigTreeMenu from '../components/ConfigTreeMenu.vue'
 import { useConfigTree } from '../shared/useConfigTree.js'
@@ -454,6 +455,7 @@ const cityOpen = ref(false)
 const cityHits = ref([])
 const cityAt = ref(-1)
 const cityPopEl = ref(null)
+const cityDlg = ref(false)   // 「典型城市…」对话框（CityPicker 单选：点一行即把站名与站址写入当前节点）
 let cityTimer = null
 // 检索走引擎 core.searchCities（与三窗、雨衰页同一套口径）；拿不到就退回本地城市表过滤
 function cityLocal(q) {
@@ -1581,10 +1583,13 @@ onMounted(async () => {
                     <div class="e2-ref">
                       <span class="e2-ref-l" title="站名。输入城市名（中文 / 拼音首字母 / 英文 / 国家）即检索，选中后站址经纬度一并填入">站名</span>
                       <div class="e2-city">
-                        <input v-model="selNode.name" class="e2-in wide" data-i18n-skip
-                               @focus="cityFocus" @input="cityInput" @blur="cityClose"
-                               @keydown.down.prevent="cityMove(1)" @keydown.up.prevent="cityMove(-1)"
-                               @keydown.enter="cityEnter" @keydown.esc="cityClose" />
+                        <div class="e2-city-row">
+                          <input v-model="selNode.name" class="e2-in wide" data-i18n-skip
+                                 @focus="cityFocus" @input="cityInput" @blur="cityClose"
+                                 @keydown.down.prevent="cityMove(1)" @keydown.up.prevent="cityMove(-1)"
+                                 @keydown.enter="cityEnter" @keydown.esc="cityClose" />
+                          <button class="e2-cityb" title="典型城市…" @click="cityDlg = true"><Icon name="globe" :size="12" /></button>
+                        </div>
                         <div v-if="cityOpen && cityHits.length" ref="cityPopEl" class="e2-city-pop"
                              :class="{ up: cityUp }" :style="{ maxHeight: cityMaxH + 'px' }">
                           <button v-for="(c, ci) in cityHits" :key="c.name" class="e2-city-i" :class="{ on: ci === cityAt }"
@@ -1667,6 +1672,9 @@ onMounted(async () => {
       :link-error="slaLinkError" :link-name="slaLinkName"
       @close="slaOpen = false" @pick="slaIdx = $event" @adopt="slaSetAdopt" @include="slaSetInclude"
       @param="slaSetParam" @toggle-all="slaToggleAll" :sla-count="slaCount" @clear="slaClear" @export="openSlaReportDialog" />
+
+    <!-- 典型城市…（站名旁的按钮）：CityPicker 单选，点一行即把站名与站址一并写入当前节点 -->
+    <CityPicker v-if="cityDlg" single @add="pickCity($event[0])" @close="cityDlg = false" />
 
     <LbReportDialog :open="reportDlg.open" :lang="reportLang" orbit-type="E2E"
                     :link-count="reportLinks.length" :viz-available="false" :sla-count="slaCount" store-key="e2e"
@@ -1844,6 +1852,9 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .e2-ref { display: flex; align-items: center; gap: 5px; margin-bottom: 4px; }
 /* 站名 ＝ 选址：输入框就是搜索框，命中项浮在其下（检索结果是数据，不占常驻版面） */
 .e2-city { position: relative; flex: 1; min-width: 0; }
+.e2-city-row { display: flex; align-items: stretch; gap: 4px; }
+.e2-cityb { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 20px; padding: 0; cursor: pointer; color: var(--text-faint); background: transparent; border: 1px solid transparent; border-radius: var(--r-ctl, 2px); }
+.e2-cityb:hover { color: var(--accent); background: var(--field-bg); border-color: var(--field-border-hover); }
 .e2-city-pop {
   position: absolute; z-index: 30; left: 0; right: 0; top: calc(100% + 2px);
   overflow-y: auto; padding: 2px;   /* 高度上界随余量算，见 cityFlip */

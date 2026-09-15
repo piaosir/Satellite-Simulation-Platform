@@ -204,13 +204,18 @@ html[data-theme='dark'] {
 .lbx-sec-hd:has(.lbx-colpick) { z-index: 60; }
 .lbx-colpick-mask { position: fixed; inset: 0; z-index: 90; }
 .lbx-colpick {
-  position: absolute; right: 0; top: calc(100% + 3px); z-index: 95; min-width: 180px; max-height: 320px; overflow: auto; overscroll-behavior: contain;
+  position: absolute; right: 0; top: calc(100% + 3px); z-index: 95; min-width: 180px; max-height: min(72vh, 520px); overflow: auto; overscroll-behavior: contain;
   padding: 4px; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-box, 3px); box-shadow: var(--shadow-2);
   display: flex; flex-direction: column;
 }
 .lbx-colpick-i { display: flex; align-items: center; gap: 6px; padding: 3px 6px; font-size: var(--fs-3); color: var(--text); cursor: pointer; white-space: nowrap; }
 .lbx-colpick-i:hover { background: var(--surface-2); }
 .lbx-colpick-i i { font-style: normal; color: var(--text-faint); font-size: var(--fs-2); }
+/* 结果列条目左侧的拖动把手：拖着换位＝改列序。常态半透明、悬停显形；拖动中整面板转抓手光标、禁文字选择 */
+.lbx-colpick-grip { display: inline-flex; align-items: center; margin: 0 -2px 0 -3px; color: var(--text-faint); opacity: .45; cursor: grab; }
+.lbx-colpick-i:hover .lbx-colpick-grip { opacity: 1; }
+.lbx-colpick-i.dragging { background: color-mix(in srgb, var(--accent-ui) 16%, var(--bg)); }
+.lbx-colpick.dragging, .lbx-colpick.dragging * { cursor: grabbing; user-select: none; }
 /* 结果列面板的「自定义列」吸底区：只管勾选；新建/编辑/删除在独立弹窗（LbCustomColsDialog），
    写公式费时间，不能放在点外即关的下拉里。负 margin 吃掉面板 4px 内衬。 */
 .lbx-ccf { position: sticky; bottom: -4px; margin: 6px -4px -4px; padding: 3px 4px 5px; background: var(--bg); border-top: 1px solid var(--border-strong); }
@@ -572,18 +577,26 @@ html[data-theme='dark'] .sg-cell .sg-fillbar::after {
 .lbx-cap-v { font-size: calc(var(--lb-fs) + 1px); font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
 .lbx-cap-v i { font-size: calc(var(--lb-fs) - 1px); font-weight: 400; font-style: normal; color: var(--text-faint); margin-left: 2px; }
 .lbx-cap-n { margin-left: auto; font-size: calc(var(--lb-fs) - 1px); color: var(--text-faint); white-space: nowrap; }
-/* 本行读数：与容量汇总同起首（两个四字标签对齐成一列），指标按声明序平铺、超宽自然折行。
-   值比标签重一档、单位退到最轻，密排下仍能一眼分出「哪个数是哪个」；着色口径同结果单元格（负余量/超占用转红）。 */
-.lbx-rowline { display: flex; align-items: baseline; gap: 3px 13px; flex-wrap: wrap; padding: 3px 2px 4px; border-top: 1px solid var(--lb-rule-soft); }
-.lbx-rr-id { font-size: calc(var(--lb-fs) - 1px); color: var(--text-faint); white-space: nowrap; font-variant-numeric: tabular-nums; }
+/* 本行读数：左栏＝标题 + 行号/站对（定宽 148px，与上一行「容量汇总」同起首），右栏＝指标网格。
+   指标按「结果列」次序平铺进等宽格（auto-fill），格内标签靠左、数值靠右、中间一道点线引导——
+   二十来个「标签 数值」自由折行时哪个数是哪个的全靠猜，等宽格 + 引导线把每一格框成一条读数，
+   数值在各列里齐成一竖行。值比标签重一档、单位退到最轻；着色口径同结果单元格（负余量/超占用转红）。 */
+.lbx-rowline { display: grid; grid-template-columns: 148px minmax(0, 1fr); column-gap: 14px; align-items: start; padding: 3px 2px 4px; border-top: 1px solid var(--lb-rule-soft); }
+.lbx-rr-hd { display: flex; flex-direction: column; gap: 1px; min-width: 0; padding-top: 2px; }
+/* 行号 + 站对名：定宽栏里长站名折行显示，不裁 */
+.lbx-rr-id { font-size: calc(var(--lb-fs) - 1px); color: var(--text-faint); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .lbx-rr-id em { font-style: normal; margin-left: 5px; font-weight: 600; color: var(--text-muted); }
-.lbx-rr-i { display: inline-flex; align-items: baseline; gap: 4px; }
-.lbx-rr-l { font-size: calc(var(--lb-fs) - 1px); color: var(--text-muted); }
-.lbx-rr-v { font-size: var(--lb-fs); font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
+/* 列宽下限 --lbx-rr-w 由 LbCapFoot 量最宽的一格挂上来（标签 + 数值 + 引导线），没量到前先按 168px；
+   min(…, 100%) 防极窄时一格撑破网格。标签 flex:none 不裁不缩——格宽本来就是按它量的 */
+.lbx-rr-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(var(--lbx-rr-w, 168px), 100%), 1fr)); column-gap: 18px; row-gap: 0; min-width: 0; }
+.lbx-rr-i { display: flex; align-items: baseline; gap: 5px; min-width: 0; overflow: hidden; padding: 2px 0; }
+.lbx-rr-l { flex: none; font-size: calc(var(--lb-fs) - 1px); color: var(--text-muted); white-space: nowrap; }
+.lbx-rr-ld { flex: 1 0 8px; height: .6em; border-bottom: 1px dotted var(--lb-rule-soft); }
+.lbx-rr-v { flex: none; font-size: var(--lb-fs); font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .lbx-rr-v i { font-size: calc(var(--lb-fs) - 1px); font-weight: 400; font-style: normal; color: var(--text-faint); margin-left: 2px; }
 .lbx-rr-v.bad { color: var(--danger, #9c5751); }
-.lbx-rr-err { font-size: var(--lb-fs); color: var(--danger, #9c5751); }
-.lbx-rr-none { font-size: calc(var(--lb-fs) - 1px); color: var(--text-faint); }
+.lbx-rr-err { font-size: var(--lb-fs); color: var(--danger, #9c5751); padding-top: 2px; }
+.lbx-rr-none { font-size: calc(var(--lb-fs) - 1px); color: var(--text-faint); padding-top: 2px; }
 
 /* 文档区折叠小节（卫星几何等）：细头退为带下缘线的题注行，与三线表题注同语言 */
 .lbx-fold { margin-bottom: 10px; }

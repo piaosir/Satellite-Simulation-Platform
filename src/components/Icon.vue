@@ -137,6 +137,7 @@ const ICONS = {
   // 手机（Lucide smartphone）：「发送到小程序」那条路的图标
   smartphone: '<rect x="5" y="2" width="14" height="20" rx="2"/><path d="M12 18h.01"/>',
   // 微信标识（Simple Icons, CC0）：「绑定小程序账号」入口，标明这个功能连的是微信。
+  'grip-vertical': '<circle cx="9" cy="12" r="1"/><circle cx="9" cy="5" r="1"/><circle cx="9" cy="19" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="15" cy="5" r="1"/><circle cx="15" cy="19" r="1"/>',
   // ★ 全表唯一一枚实心品牌标记，故显式覆盖父 svg 的 fill="none" stroke="currentColor"，
   //   否则实心路径会被描成一团轮廓。
   // ★★ 颜色写死微信绿 #07C160，不跟 currentColor：跟了就是 14px 下黑压压一坨，

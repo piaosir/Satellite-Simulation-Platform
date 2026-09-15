@@ -146,7 +146,7 @@ export const NODE_ES_FIELDS = [
   { key: 'latitude', label: '纬度', unit: '°N', type: 'num', def: '39.9042' },
   { key: 'altitude', label: '海拔', tip: '站址海拔（m）。填好经纬度即按 ITU-R P.1511 地形高程自动取值，也可直接改；站址再变即重取', unit: 'm', type: 'num', def: '0' },
   { key: 'rainRate', label: 'R0.01%', tip: '站址年 0.01% 时间降雨率（mm/h）。填好经纬度即按 ITU-R P.837 自动取值，也可直接改；站址再变即重取', unit: 'mm/h', type: 'num', def: '54' },
-  { key: 'availability', label: '可用度', tip: '本站的链路可用度（%）。系统可用度 = 各星地 hop 站址可用度之积；星间段不参与', unit: '%', type: 'num', def: '99.90' }
+  { key: 'availability', label: '可用度', tip: '本站的链路可用度（%）。系统可用度 = 各星地 hop 站址可用度之积；星间段不参与', unit: '%', type: 'num', def: '100' }   // 出厂 100%＝晴天（2026-09-16 用户拍板）
 ]
 // 段起点电平的快调入口：功放功率可在【节点上】覆盖库条目（空＝跟随库）。
 // 只在该站作为段起点（发信站 / 地面转接站的上行侧）时有物理意义，检查器按此显示。

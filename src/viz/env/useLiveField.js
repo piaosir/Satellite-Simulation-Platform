@@ -154,6 +154,16 @@ const MET_COL_GROUPS = [
 const MET_COLS_DEFAULT = ['name', 'lon', 'lat', 'elev', 'totalDb', 'rainDb', 'rainMmH', 'note']
 // 相态码 → 中文。★ 雪与冰上 P.838 不适用，表里必须看得出这一行为什么没有雨衰。
 const PTYPE_ZH = { none: '无', rain: '雨', snow: '雪', ice: '冰', mixed: '混合', unknown: '未知' }
+// 气象指标表窗口（src/perf/MetTableWin.vue）不实例化本模块，只要列定义与格式化口径 → 单独导出
+export { MET_COL_DEFS, MET_COL_GROUPS, MET_COLS_DEFAULT, PTYPE_ZH }
+/** 一格的显示文本（与复制/导出同口径：数字按列定义的小数位，取不到值给破折号）—— 表窗口与宿主同一份 */
+export function metCellText(r, c) {
+  if (c.key === 'ptype') return PTYPE_ZH[r.ptype] || (r.ptype ? String(r.ptype) : '')
+  const v = r[c.key]
+  if (!c.num) return v == null ? '' : String(v)
+  const n = Number(v) * (c.mul || 1)
+  return Number.isFinite(n) ? n.toFixed(c.fix == null ? 2 : c.fix) : '—'
+}
 
 export function useLiveField(host) {
   const H = host || {}

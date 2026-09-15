@@ -34,7 +34,8 @@ console.log('=== SLA 档位扫描 ===\n')
 
 // —— ①②③⑦ GSO 算例 ——
 // 用有雨的一组入参：出厂默认降雨率为 0，各档雨衰恒 0、余量恒等，单调性那几条会退化成空转。
-const GEO_LP = { rainRate: '40', rxRainRate: '60' }
+// 可用度显式给 99.9（2026-09-16 起引擎缺省改 100%＝晴天：两侧 100% 时 splitUnavailability 无解、slaSamplesFor 出 0 样本）
+const GEO_LP = { rainRate: '40', rxRainRate: '60', uplinkAvailability: '99.9', rxDownlinkAvailability: '99.9' }
 const base = modeSolver.computeLinkMode({}, GEO_LP, { mode: 'margin' })
 ok('GSO 算例可算', !!(base && base.success))
 const up0 = parseFloat(base.data.uplinkAvailabilityResult), dn0 = parseFloat(base.data.downlinkAvailabilityResult)

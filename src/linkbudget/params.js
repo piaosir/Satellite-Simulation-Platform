@@ -108,7 +108,7 @@ export const FIELD_GROUPS = [
       { key: 'altitude', label: '海拔', unit: 'm', type: 'num', def: '0', target: 'link', auto: 'elev' },
       { key: 'G_Ts', label: '卫星G/T', tip: '卫星接收品质因数 G/T（随波束位置随站而异的「卫星×发信站」配对量，故留在站表；可由 GRD 天线匹配自动回填：手改后保持不动，清空该格即恢复自动取值）', unit: 'dB/K', type: 'num', def: '2', target: 'link' },
       { key: 'rainRate', label: 'R0.01%', unit: 'mm/h', type: 'num', def: '0', target: 'link', auto: 'rain' },
-      { key: 'uplinkAvailability', label: '可用度', unit: '%', type: 'num', def: '99.90', target: 'link' }
+      { key: 'uplinkAvailability', label: '可用度', unit: '%', type: 'num', def: '100', target: 'link' }   // 出厂 100%＝晴天（p=0：雨衰 / 云衰 / XPD 全不计入，2026-09-16 用户拍板）
     ]
   },
   {
@@ -123,7 +123,7 @@ export const FIELD_GROUPS = [
       { key: 'rxAltitude', label: '海拔', unit: 'm', type: 'num', def: '0', target: 'link', auto: 'elev' },
       { key: 'rxEIRP', label: '卫星EIRP', tip: '卫星下行 EIRP（随波束位置随站而异的「卫星×收信站」配对量，故留在站表；可由 GRD 天线匹配自动回填：手改后保持不动，清空该格即恢复自动取值）', unit: 'dBW', type: 'num', def: '46', target: 'link' },
       { key: 'rxRainRate', label: 'R0.01%', unit: 'mm/h', type: 'num', def: '0', target: 'link', auto: 'rain' },
-      { key: 'rxDownlinkAvailability', label: '可用度', unit: '%', type: 'num', def: '99.90', target: 'link' }
+      { key: 'rxDownlinkAvailability', label: '可用度', unit: '%', type: 'num', def: '100', target: 'link' }   // 出厂 100%＝晴天（p=0：雨衰 / 云衰 / XPD 全不计入，2026-09-16 用户拍板）
     ]
   }
 ]

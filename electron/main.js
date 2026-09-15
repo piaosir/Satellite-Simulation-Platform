@@ -91,7 +91,11 @@ function createWindow() {
     win.loadFile(join(__dirname, '../renderer/index.html'))
   }
   bindDevTools(win)
-  win.on('closed', () => { if (_mainWin === win) _mainWin = null })
+  win.on('closed', () => {
+    if (_mainWin === win) _mainWin = null
+    // 性能指标表窗口的数据全靠主窗口推，主窗口没了它们就是一堆停在旧数上的空壳 → 一并关掉
+    for (const [, p] of _perfWins) { try { if (!p.win.isDestroyed()) p.win.close() } catch { /* 正在关 */ } }
+  })
   _mainWin = win
 
   return win
@@ -490,6 +494,105 @@ function createRainWindow() {
   _rainWin = win
   return win
 }
+// ---- 性能指标表窗口（对地 / 对星 / 气象）：一根天线一窗、可多开；主进程只当【中继】----
+// 表的数据与取值全在主窗口（3D 页）：它算好行推给弹窗（perfwin:push → perfwin:msg），弹窗上的每个
+// 操作发回主窗口（perfwin:act），主窗口改了状态再推回来。窗口本身只有一份 perf.html，按
+// ?kind=ground|shell|met 决定装哪张表。同一 (kind,key) 只开一个，再开＝前置。
+const _perfWins = new Map()   // id → { win, kind, key }
+let _perfSeq = 1
+// 几何记忆：按表的种类各记一份（尺寸 / 位置 / 是否最大化），落 <userData>/perfwin-bounds.json，下次开同类表原样回来。
+// 位置只在仍落在某块屏幕的工作区内时才用（外接屏拔掉后别把窗口开到屏外）；同类多扇窗以最后动过的那扇为准。
+const PW_DEFAULT = { ground: [980, 660], shell: [1040, 660], met: [980, 660] }
+function pwStore() { return require(join(app.getAppPath(), 'electron/services/jsonStore')) }
+function pwBoundsFile() { return join(app.getPath('userData'), 'perfwin-bounds.json') }
+function pwBoundsAll() { try { const v = pwStore().readJsonSafe(pwBoundsFile(), {}).value; return v && typeof v === 'object' ? v : {} } catch { return {} } }
+function perfWinGeometry(kind) {
+  const [w0, h0] = PW_DEFAULT[kind] || PW_DEFAULT.ground
+  const opt = { width: w0, height: h0 }
+  const s = pwBoundsAll()[kind]
+  if (!s || !Number.isFinite(s.width) || !Number.isFinite(s.height)) return { opt, maximized: false }
+  opt.width = Math.max(640, Math.round(s.width)); opt.height = Math.max(420, Math.round(s.height))
+  if (Number.isFinite(s.x) && Number.isFinite(s.y)) {
+    try {
+      const { screen } = require('electron')
+      const a = screen.getDisplayMatching({ x: Math.round(s.x), y: Math.round(s.y), width: opt.width, height: opt.height }).workArea
+      // 标题栏左上角一小段仍在工作区内才认这个位置
+      if (s.x + 80 > a.x && s.x + 80 < a.x + a.width && s.y + 20 > a.y && s.y + 40 < a.y + a.height) { opt.x = Math.round(s.x); opt.y = Math.round(s.y) }
+    } catch { /* 无屏信息：只用尺寸 */ }
+  }
+  return { opt, maximized: !!s.maximized }
+}
+function perfWinRemember(win, kind) {
+  let t = 0
+  const save = () => {
+    if (win.isDestroyed() || win.isMinimized()) return
+    const b = win.getNormalBounds()
+    const all = pwBoundsAll(); all[kind] = { x: b.x, y: b.y, width: b.width, height: b.height, maximized: win.isMaximized() }
+    try { pwStore().writeJsonAtomic(pwBoundsFile(), all, 0) } catch { /* 尽力而为 */ }
+  }
+  const later = () => { clearTimeout(t); t = setTimeout(save, 400) }
+  win.on('resize', later); win.on('move', later)
+  win.on('close', () => { clearTimeout(t); save() })
+}
+function perfWinOf(sender) { for (const [id, p] of _perfWins) if (p.win.webContents === sender) return { id, ...p }; return null }
+function createPerfWindow({ kind, key, title }) {
+  const k = String(kind || 'ground'), kk = String(key || '')
+  for (const [id, p] of _perfWins) {
+    if (p.kind === k && p.key === kk && !p.win.isDestroyed()) {
+      if (p.win.isMinimized()) p.win.restore()
+      p.win.focus()
+      return { id, created: false }
+    }
+  }
+  const id = 'pw' + (_perfSeq++)
+  const geo = perfWinGeometry(k)
+  const win = new BrowserWindow({
+    ...geo.opt,
+    minWidth: 640,
+    minHeight: 420,
+    title: String(title || '性能指标表'),
+    backgroundColor: '#ffffff',
+    autoHideMenuBar: true,
+    webPreferences: {
+      preload: join(__dirname, '../preload/preload.js'),
+      contextIsolation: true,
+      sandbox: false,
+      devTools: !app.isPackaged
+    }
+  })
+  const q = `?id=${encodeURIComponent(id)}&kind=${encodeURIComponent(k)}&key=${encodeURIComponent(kk)}`
+  if (process.env['ELECTRON_RENDERER_URL']) win.loadURL(process.env['ELECTRON_RENDERER_URL'] + '/perf.html' + q)
+  else win.loadFile(join(__dirname, '../renderer/perf.html'), { search: q })
+  bindDevTools(win)
+  if (geo.maximized) win.maximize()
+  perfWinRemember(win, k)
+  // 标题由主窗口按「表 · 卫星 / 天线」定（开窗时给、改名后 setTitle 跟进），页面自己的 <title> 不许盖掉它
+  win.on('page-title-updated', (e) => e.preventDefault())
+  _perfWins.set(id, { win, kind: k, key: kk })
+  win.on('closed', () => {
+    _perfWins.delete(id)
+    if (_mainWin && !_mainWin.isDestroyed()) { try { _mainWin.webContents.send('perfwin:closed', { id, kind: k, key: kk }) } catch { /* 主窗口正在关 */ } }
+  })
+  return { id, created: true }
+}
+// 主窗口 → 弹窗
+function perfWinPush(id, msg) {
+  const p = _perfWins.get(String(id)); if (!p || p.win.isDestroyed()) return false
+  try { p.win.webContents.send('perfwin:msg', msg) } catch { return false }
+  return true
+}
+// 弹窗 → 主窗口（带上是哪扇窗发来的）
+function perfWinAct(sender, msg) {
+  const p = perfWinOf(sender); if (!p) return false
+  if (!_mainWin || _mainWin.isDestroyed()) return false
+  try { _mainWin.webContents.send('perfwin:act', { id: p.id, kind: p.kind, key: p.key, ...(msg || {}) }) } catch { return false }
+  return true
+}
+function perfWinClose(id) { const p = _perfWins.get(String(id)); if (p && !p.win.isDestroyed()) p.win.close(); return !!p }
+function perfWinSetTitle(id, title) { const p = _perfWins.get(String(id)); if (p && !p.win.isDestroyed()) p.win.setTitle(String(title || '')); return !!p }
+function perfWinList() { const out = []; for (const [id, p] of _perfWins) if (!p.win.isDestroyed()) out.push({ id, kind: p.kind, key: p.key }); return out }
+function perfWinSelf(sender) { const p = perfWinOf(sender); return p ? { id: p.id, kind: p.kind, key: p.key } : null }
+
 function confirmCloseRain() {
   _rainAllowClose = true
   if (_rainWin && !_rainWin.isDestroyed()) _rainWin.close()
@@ -548,7 +651,8 @@ app.whenReady().then(async () => {
   // 激活与设备管理：终端心跳上报 + 激活书拉取验签（对端为独立的「卫星仿真平台管理」软件）
   const activation = require(join(root, 'electron/services/activation'))(share, storage)
   const { register } = require(join(root, 'electron/ipc/register'))
-  register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget: createLinkBudgetWindow, openSunOutage: createSunOutageWindow, grd, confirmCloseLinkBudget, openNgso: createNgsoWindow, confirmCloseNgso, openRegen: createRegenWindow, confirmCloseRegen, openE2e: createE2eWindow, confirmCloseE2e, openRain: createRainWindow, confirmCloseRain, openCi: createCiWindow, openPfd: createPfdWindow, freqPlan, openFreqPlan: createFreqPlanWindow, notifyFreqPlan, activation, weather, gfs, updater })
+  register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget: createLinkBudgetWindow, openSunOutage: createSunOutageWindow, grd, confirmCloseLinkBudget, openNgso: createNgsoWindow, confirmCloseNgso, openRegen: createRegenWindow, confirmCloseRegen, openE2e: createE2eWindow, confirmCloseE2e, openRain: createRainWindow, confirmCloseRain, openCi: createCiWindow, openPfd: createPfdWindow, freqPlan, openFreqPlan: createFreqPlanWindow, notifyFreqPlan, activation, weather, gfs, updater,
+    perfWin: { open: createPerfWindow, push: perfWinPush, act: perfWinAct, close: perfWinClose, setTitle: perfWinSetTitle, list: perfWinList, self: perfWinSelf } })
   // 定时心跳；激活状态变化（管理端激活/撤销被拉到）广播到所有窗口，各窗口就地上锁/解锁
   activation.start((st) => {
     for (const w of BrowserWindow.getAllWindows()) {

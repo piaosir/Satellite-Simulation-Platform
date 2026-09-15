@@ -4,7 +4,7 @@
 import { ref, reactive, watch, nextTick } from 'vue'
 import { parseGrd } from './parse.js'
 import { sniffPatternFormat, foreignPatternToGrd } from './patFormats.js'
-import { antennaBasis, antennaBasisEcef, beamBasisFrom, dirAzElAbout, dirToAzEl, azElGround, surfaceAzEl, projectGrid, projectLimb, gridDirs, fieldDb, bandGeometry, stitchLoops, dLon, loopPointAtFraction, loopLabelAnchor, nearestFractionOnLoop } from './coverage.js'
+import { antennaBasis, antennaBasisEcef, beamBasisFrom, dirAzElAbout, dirToAzEl, azElGround, surfaceAzEl, projectGrid, projectLimb, gridDirs, fieldDb, bandGeometry, edgeRefineFor, projectRefine, peakRefDb, stitchLoops, dLon, loopPointAtFraction, loopLabelAnchor, nearestFractionOnLoop } from './coverage.js'
 import { boresightShellPoint } from './shellProj.js'
 import { schemeColorsRGB, rgbCss, cssRgb } from './colormap.js'
 import { RS_GEO, A, B, E2, geodeticToEcef, geocentricToEcef, isoElevationContourAt } from '../wgs84.js'
@@ -662,9 +662,18 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     } catch (e) { console.error('coverageGrd index 失败', e) }
   }
 
-  async function ensureLoaded(folder, a) {
+  // ★ 同一根天线并发载入去重：恢复链（restoreState 载勾选 / 聚焦的天线）与城市层（perfWinHost.ensureAntLoaded）可能同时
+  //   要同一根 —— 两份都跑完的话，后到的 cache.set 会把先到那份已套用（并删除）的存档设置冲成出厂值。
+  const _inflight = new Map()
+  function ensureLoaded(folder, a) {
     const key = keyOf(folder, a.name)
-    if (cache.has(key)) return key
+    if (cache.has(key)) return Promise.resolve(key)
+    if (_inflight.has(key)) return _inflight.get(key)
+    const p = loadAntenna(folder, a, key).finally(() => _inflight.delete(key))
+    _inflight.set(key, p)
+    return p
+  }
+  async function loadAntenna(folder, a, key) {
     // 导入天线：从存盘的原始 GRD 重建（解析与导入同源）。无 file（旧版仅内存导入）或读盘失败 → 不缓存，
     // 由调用方按 cache 缺失跳过（不抛出，避免中断整体恢复）。
     if (a.imported) {
@@ -784,9 +793,19 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     return { r0: Math.max(0, r0 - 1), r1: Math.min(NY - 1, r1 + 1), c0: Math.max(0, c0 - 1), c1: Math.min(NX - 1, c1 + 1) }
   }
   // 取该波束在给定场/电平下的热区盒（按 field 引用 + L0 缓存）。pathLoss≠none 时 db 随指向变 → 不裁剪（返回 null）。
+  // 峰值基准（相对档的 0 dB、热区盒最低档、峰值读数）：与性能指标表「相对峰值」同一份细化峰值（coverage.peakRefDb）
+  const peakOf = (beam, field, cfg) => peakRefDb(beam, field, cfg.pol, cfg.gainOffset, cfg.pathLoss)
+  // 细化顶点在本帧投影下的精确位置（掠地格子逐点求交，coverage.projectRefine）：随 (投影键, 细化表) 缓存在波束上
+  function beamRefPos(c, beam, cfg, refine) {
+    const cp = beam._refPos
+    if (cp && cp.ref === refine && cp.pk === beam._projKey) return cp.pos
+    const pos = projectRefine(refine, beam.grid, c.meta.igrid, beamBasis(c.meta, cfg), beam.proj, cp ? cp.pos : null)
+    beam._refPos = { ref: refine, pk: beam._projKey, pos }
+    return pos
+  }
   function beamBox(beam, cfg, field) {
     if (cfg.pathLoss !== 'none' || !field) return null
-    const L0 = lowestAbs(field.max, cfg)
+    const L0 = lowestAbs(peakOf(beam, field, cfg), cfg)
     if (beam._box && beam._box.field === field && beam._box.L0 === L0) return beam._box.box
     const box = computeBox(field.db, field.NX, field.NY, L0)
     beam._box = { field, L0, box }
@@ -868,7 +887,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
   // 唯一新算的量是 lonU —— 经度绕【星下点】就近解缠（连续、不跨 ±180 断，与 loadTri 的逐三角解缠等价）。
   // ★ 一律【引用】proj / field 的 Float32Array，不拷贝也不经 Vue 响应式（响应式代理过不了结构化克隆，
   //   且这几条数组是热路径上原地复用的那几条，复制纯属白花时间）。
-  function buildFieldMesh(c, cfg, beam, field, asc, box, stride) {
+  function buildFieldMesh(c, cfg, beam, field, asc, box, stride, refine = null, pos = null) {
     const proj = beam.proj
     if (!proj || !proj.lon) return null
     const NX = proj.NX, NY = proj.NY, N = NX * NY
@@ -891,13 +910,15 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
       colors[i * 3] = rgb[0] / 255; colors[i * 3 + 1] = rgb[1] / 255; colors[i * 3 + 2] = rgb[2] / 255
     }
     // satN：卫星 ECEF 逐分量除以 (A, A, B)。该归一坐标下椭球即单位球 → 片元判地平只是一次点积。
-    return { NX, NY, box, stride, lonU, lat: proj.lat, db: field.db, vis: proj.vis, satN: [S[0] / A, S[1] / A, S[2] / B], e2: E2, levels, colors }
+    // refine / pos：与 bandGeometry 同一张交点细化表与同一份精确位置（glField.buildMeshIndices 据此插顶点、按档扇形化，填充边界 = CPU 等值线）
+    return { NX, NY, box, stride, lonU, lat: proj.lat, db: field.db, vis: proj.vis, satN: [S[0] / A, S[1] / A, S[2] / B], e2: E2, levels, colors, refine, pos }
   }
   // glMesh=true：2D 的分带填充走 GPU 网格着色 —— 此时 bandGeometry 只出等值线（省掉逐档裁剪与
   // 全部 Path2D 烘制），fillBands 置空，改送 fieldMesh。3D / 导出 / 投影档 / 无 WebGL2 一切照旧。
   function buildBeamLayer(c, cfg, beam, name, withLabels, glMesh) {
     const field = beamField(beam, cfg)
-    const lv = absLevels(field.max, cfg)
+    const peakRef = peakOf(beam, field, cfg)
+    const lv = absLevels(peakRef, cfg)
     const asc = [...lv].sort((a, b) => a.abs - b.abs)   // 升序档：外圈冷、内圈热（与 jet 配色一致）
     // 用新场算热区盒并确保投影覆盖它（权威同步：处理电平/极化变化导致盒变大、未过 reproject 的情形）
     const box = beamBox(beam, cfg, field)
@@ -905,12 +926,17 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     const need = cfg.fill || cfg.line
     const wantFills = cfg.fill && !glMesh
     const stride = autoStride(beam, box, _viewVm)
+    const ascAbs = asc.map((x) => x.abs)
+    // 交点细化表（线 = 表，见 coverage.buildEdgeRefine）：无路损 + 全分辨率三角化时启用；按 (极化, 增益, 档) 缓存在
+    // 波束上，拖拽 / 播放每帧零求根。★ 同一张表也交给 fieldMesh：等值线（CPU）与填充（GPU）的细化顶点必须是同一批。
+    const refine = (need && cfg.pathLoss === 'none' && stride === 1) ? edgeRefineFor(beam, field, ascAbs, cfg.pol, cfg.gainOffset) : null
+    const pos = refine ? beamRefPos(c, beam, cfg, refine) : null
     // wantFills=cfg.fill：只画等值线时跳过逐档填充裁剪（关填充的大波束拖拽省一半三角化）；box：只三角化覆盖热区
     // ★ stride 必须与 fieldMesh 的索引生成用同一个值：等值线（CPU）与填充（GPU）要落在同一张三角网上。
-    const geo = need ? bandGeometry({ lon: beam.proj.lon, lat: beam.proj.lat, vis: beam.proj.vis, db: field.db, NX: beam.proj.NX, NY: beam.proj.NY }, asc.map((x) => x.abs), wantFills, box, wantFills ? satHull(c) : null, stride) : null
+    const geo = need ? bandGeometry({ lon: beam.proj.lon, lat: beam.proj.lat, vis: beam.proj.vis, db: field.db, NX: beam.proj.NX, NY: beam.proj.NY }, ascAbs, wantFills, box, wantFills ? satHull(c) : null, stride, refine, pos) : null
     // 分带填充：每档一个颜色 + 该档环带多边形（升序，逐层从外到内绘制，非嵌套→无重叠透明叠加）
     const fillBands = wantFills && geo ? asc.map((x, i) => ({ color: cssRgb(x.color), verts: geo.fills[i].verts, counts: geo.fills[i].counts })).filter((b) => b.counts.length) : null
-    const fieldMesh = (cfg.fill && glMesh) ? buildFieldMesh(c, cfg, beam, field, asc, box, stride) : null
+    const fieldMesh = (cfg.fill && glMesh) ? buildFieldMesh(c, cfg, beam, field, asc, box, stride, refine, pos) : null
     // 等值线：每档一组线段（= 填充相邻档公共边）；数值标签锚点：该档拖过（labelT 非空）则按弧长比例取点，
     // 否则默认取环最上端点。标签仅在「显示数值」开启时才拼环求锚点——关闭时跳过 stitchLoops，拖拽时省一笔。
     const segGroups = cfg.line && geo
@@ -941,7 +967,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     // 反之「峰值越地平、只剩一弯裙边还在地球上」的擦地波束仍出名字，锚在地平点上（原有口径不动）。
     // 第一项是 O(1) 短路：峰值格点打到地球且峰值不低于最低档 → 必有覆盖，不必扫盒（正常波束都走这条）。
     const L0 = asc.length ? asc[0].abs : -Infinity
-    const bore = pk ? { lon: pk.lon, lat: pk.lat, hit: pk.hit, onEarth: (pk.hit && field.max >= L0) || footOnEarth(beam, field, L0), satLon: c.meta.satLon, satLat: c.meta.satLat || 0, satAlt: c.meta.satAlt || H, peak: field.max } : null
+    const bore = pk ? { lon: pk.lon, lat: pk.lat, hit: pk.hit, onEarth: (pk.hit && field.max >= L0) || footOnEarth(beam, field, L0), satLon: c.meta.satLon, satLat: c.meta.satLat || 0, satAlt: c.meta.satAlt || H, peak: peakRef } : null
     return { fillBands, fieldMesh, segGroups, bore, name }
   }
   // 每个选中天线 → N 个子图层（按 Beams To Plot 选中的波束逐个出层）；所有子层共用该天线同一套设置。
@@ -1569,10 +1595,13 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
       for (const bi of plot) {
         const beam = c.beams[bi]
         const field = beamField(beam, cfg)
-        const asc = [...absLevels(field.max, cfg)].sort((a, b) => a.abs - b.abs)
+        const asc = [...absLevels(peakOf(beam, field, cfg), cfg)].sort((a, b) => a.abs - b.abs)
         const box = beamBox(beam, cfg, field)
         syncBeamProj(c, beam, cfg, field)
-        const geo = bandGeometry({ lon: beam.proj.lon, lat: beam.proj.lat, vis: beam.proj.vis, db: field.db, NX: beam.proj.NX, NY: beam.proj.NY }, asc.map((x) => x.abs), false, box, null, displayQuality.value.gridStride)
+        const ascAbs = asc.map((x) => x.abs), stride = displayQuality.value.gridStride || 1
+        const refine = (cfg.pathLoss === 'none' && stride === 1) ? edgeRefineFor(beam, field, ascAbs, cfg.pol, cfg.gainOffset) : null   // 导出的线与屏上同一份细化
+        const pos = refine ? beamRefPos(c, beam, cfg, refine) : null
+        const geo = bandGeometry({ lon: beam.proj.lon, lat: beam.proj.lat, vis: beam.proj.vis, db: field.db, NX: beam.proj.NX, NY: beam.proj.NY }, ascAbs, false, box, null, stride, refine, pos)
         const contours = []
         asc.forEach((x, i) => {
           for (const loop of stitchLoops(geo.lines[i])) {

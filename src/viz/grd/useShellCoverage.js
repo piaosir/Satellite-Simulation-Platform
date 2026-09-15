@@ -9,7 +9,7 @@
 // 几何走参数域（见 shellProj.js 文件头）：bandGeometry 直接吃 gridXY 的 (X,Y)，切出来的顶点再逐壳投影。
 // 2D 平面地图（flatView）另走一条【对地投影】：同一批波束按对地那套投到 WGS84 椭球，与「对地覆盖分析」画法完全相同。
 import { ref, reactive, computed, watch } from 'vue'
-import { fieldDb, bandGeometry, stitchLoops, gridXY, projectGrid, projectLimb, gridDirs, loopLabelAnchor } from './coverage.js'
+import { fieldDb, bandGeometry, edgeRefineFor, projectRefine, peakRefDb, stitchLoops, gridXY, projectGrid, projectLimb, gridDirs, loopLabelAnchor } from './coverage.js'
 import { shellGeom, shellGrid, shellMapper, tessellateFills, tessellateSegs } from './shellProj.js'
 import { cssRgb } from './colormap.js'
 import { A, geodeticToEcef, isoElevationContourAt } from '../wgs84.js'
@@ -240,7 +240,7 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
         // 用 pat.db 的对象身份 + L0 当键：方向图或档位一变，键自然不命中。
         let box = null
         if (st.pathLoss === 'none') {
-          const L0 = lowestAbs(pat.max, st), ck = beam._shbox
+          const L0 = lowestAbs(peakRefDb(beam, pat, st.pol, st.gainOffset, 'none'), st), ck = beam._shbox   // 峰值基准与对地 / 性能表同一份细化峰值
           if (ck && ck.db === pat.db && ck.L0 === L0) box = ck.box
           else { box = computeBox(pat.db, set.NX, set.NY, L0); beam._shbox = { db: pat.db, L0, box } }
           if (!box) continue
@@ -276,11 +276,15 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
           const sg = shellGrid(set, igrid, basis, g, br, box, beam._shbuf)
           beam._shbuf = sg
           const field = lossField(beam, st, sg.slant)
-          const asc = [...absLevels(field.max, st)].sort((a, b) => a.abs - b.abs)
+          const peakRef = peakRefDb(beam, field, st.pol, st.gainOffset, st.pathLoss)
+          const asc = [...absLevels(peakRef, st)].sort((a, b) => a.abs - b.abs)
           if (!asc.length) continue
+          const ascAbs = asc.map((x) => x.abs), stride = displayQuality.value.gridStride || 1
+          // 交点细化（线 = 表）：与对地覆盖同一张表（edgeRefineFor 按波束缓存）；路损模式下场随斜距变，不细化
+          const refine = (st.pathLoss === 'none' && stride === 1) ? edgeRefineFor(beam, field, ascAbs, st.pol, st.gainOffset) : null
           const geo = bandGeometry(
             { lon: gx, lat: gy, vis: sg.vis, db: field.db, NX: set.NX, NY: set.NY },
-            asc.map((x) => x.abs), st.fill, box, null, displayQuality.value.gridStride
+            ascAbs, st.fill, box, null, stride, refine
           )
           if (key === active.value && !focus) focus = { bi: bm.bi, name: bm.name }
           const map = shellMapper(igrid, basis, g, br)
@@ -314,7 +318,7 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
             fillBands, segGroups,
             bore: pk && Number.isFinite(field.max) ? {
               lon: pk.lon, lat: pk.lat, hit: !!pkHit, satLon: ctx.meta.satLon, satLat: ctx.meta.satLat || 0, satAlt: ctx.meta.satAlt,
-              peak: field.max, satShown
+              peak: peakRef, satShown
             } : null
           }
           if (key === grd.active.value) mine.push(layer)   // 面板 tip 的实时峰值读数（聚焦天线这一份）
@@ -341,12 +345,16 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
       const proj = projectGrid(set, igrid, basis, box, beam._gbuf, true)
       beam._gbuf = proj
       const field = lossField(beam, st, proj.slant)
-      const asc = [...absLevels(field.max, st)].sort((a, b) => a.abs - b.abs)
+      const peakRef = peakRefDb(beam, field, st.pol, st.gainOffset, st.pathLoss)
+      const asc = [...absLevels(peakRef, st)].sort((a, b) => a.abs - b.abs)
       if (!asc.length) continue
       const hull = st.fill ? satHull(ctx.meta.satLon, ctx.meta.satLat || 0, ctx.meta.satAlt) : null
+      const ascAbs = asc.map((x) => x.abs), stride = displayQuality.value.gridStride || 1
+      const refine = (st.pathLoss === 'none' && stride === 1) ? edgeRefineFor(beam, field, ascAbs, st.pol, st.gainOffset) : null
+      const pos = refine ? (beam._gpos = projectRefine(refine, set, igrid, basis, proj, beam._gpos)) : null   // 掠地格子的精确位置（随投影每拍重算）
       const geo = bandGeometry(
         { lon: proj.lon, lat: proj.lat, vis: proj.vis, db: field.db, NX: set.NX, NY: set.NY },
-        asc.map((x) => x.abs), st.fill, box, hull, displayQuality.value.gridStride
+        ascAbs, st.fill, box, hull, stride, refine, pos
       )
       const fillBands = st.fill
         ? asc.map((x, i) => ({ color: cssRgb(x.color), verts: geo.fills[i].verts, counts: geo.fills[i].counts })).filter((b) => b.counts.length)
@@ -371,7 +379,7 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
         bore: pr && Number.isFinite(pr.lon) && Number.isFinite(pr.lat) ? {
           lon: pr.lon, lat: pr.lat, hit: pr.vis >= 0,
           satLon: ctx.meta.satLon, satLat: ctx.meta.satLat || 0, satAlt: ctx.meta.satAlt,
-          peak: field.max, satShown
+          peak: peakRef, satShown
         } : null
       }
       if (key === grd.active.value) mine.push(layer)   // 面板 tip 的实时峰值读数（聚焦天线这一份）

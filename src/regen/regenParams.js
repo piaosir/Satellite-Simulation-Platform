@@ -84,7 +84,8 @@ export const FIELD_GROUPS = [
       { key: 'upcValue', label: 'UPC值', tip: '仅「UPC = 自定义」时生效', side: 'tx', unit: 'dB', type: 'num', def: '0', target: 'link' },
       { key: 'uplinkOtherLoss', label: '综合损耗', tip: '综合损耗：指向/极化/天线罩/接头等未单列损耗之综合', side: 'tx', unit: 'dB', type: 'num', def: '0.3', target: 'link' },
       // —— 工作点（再生上行的功放，随站型入库；target:'op' 不进 linkParams，由 App 换成引擎 power 模式）——
-      //   给定功放功率(W) → 引擎 power 模式算上行余量。（已删「设置余量」反解模式，工作点只按功放功率。）
+      //   载波「计算方式」=设置工作点(power) 时按此值走引擎 power 模式算上行余量；=设置余量(margin) 时它不参与，
+      //   功放由目标余量反解（见 CARRIER_FIELDS 的 calcMode；v1.3.6 曾删过反解档，v1.3.8 随载波入库加回）。
       // hero:true 仅指渲染位置——与口径并列排在配置面板顶部主参数条（功放是站型的另一个定性指标），side 仍为 'tx'。
       { key: 'opPowerW', label: '功放功率预设', tip: '功放输出功率预设值（W）；MEO 预设 0.2 W ≈ 2.4 m 站工作点 EIRP 42 dBW（馈线 0.5 dB）。按给定功放功率计算上行余量；各站算出的功放功率显示在发信站表「地球站配置」格内配置名之后。', side: 'tx', hero: true, unit: 'W', type: 'num', def: '0.2', target: 'op' },
       // —— 接收链（工作点 G/T 的构成量）：天线（口径共用公共字段）+ 噪温 + 馈线 → 引擎按 gOverTe = 天线增益 − 系统噪温dB − 馈线损耗 算 G/T（含精确雨致 G/T 劣化）——
@@ -122,7 +123,7 @@ export const FIELD_GROUPS = [
       { key: 'altitude', label: '海拔', unit: 'm', type: 'num', def: '0', target: 'link', auto: 'elev' },
       // 工作点（功放功率）已随站型移入「地球站配置」发射参数（opPowerW，见 station 组）
       { key: 'rainRate', label: 'R0.01%', unit: 'mm/h', type: 'num', def: '0', target: 'link', auto: 'rain' },
-      { key: 'uplinkAvailability', label: '可用度', unit: '%', type: 'num', def: '99.90', target: 'link' }
+      { key: 'uplinkAvailability', label: '可用度', unit: '%', type: 'num', def: '100', target: 'link' }   // 出厂 100%＝晴天（p=0：雨衰 / 云衰 / XPD 全不计入，2026-09-16 用户拍板）
     ]
   },
   {
@@ -146,7 +147,7 @@ export const FIELD_GROUPS = [
       { key: 'rxSlantRange', label: '斜距', tip: '收信站到卫星的星地斜距。随仰角 / 纬度 / 海拔 / 轨道高度自动算出（WGS-84，取绕站一圈的最大值），也可直接改；这四项再变即重算。', unit: 'km', type: 'num', def: '', target: 'link', manualOnly: true },
       { key: 'rxAltitude', label: '海拔', unit: 'm', type: 'num', def: '0', target: 'link', auto: 'elev' },
       { key: 'rxRainRate', label: 'R0.01%', unit: 'mm/h', type: 'num', def: '0', target: 'link', auto: 'rain' },
-      { key: 'rxDownlinkAvailability', label: '可用度', unit: '%', type: 'num', def: '99.90', target: 'link' }
+      { key: 'rxDownlinkAvailability', label: '可用度', unit: '%', type: 'num', def: '100', target: 'link' }   // 出厂 100%＝晴天（p=0：雨衰 / 云衰 / XPD 全不计入，2026-09-16 用户拍板）
     ]
   },
   {
@@ -238,7 +239,7 @@ const INTF_PLACEHOLDER = {
 const DL_LINK_DEFAULTS = {
   rxCenterFrequency: '12.5', downlinkPolarization: 'H',
   rxAntennaDiameter: '3.7', rxAntennaEfficiency: '65', rxEIRP: '46',
-  rxAntennaNoiseTemp: '35', rxReceiverNoiseTemp: '75', rxDownlinkAvailability: '99.90',
+  rxAntennaNoiseTemp: '35', rxReceiverNoiseTemp: '75', rxDownlinkAvailability: '100',
   rxFeederLoss: '0.2', downlinkOtherLoss: '0.3'
 }
 
@@ -322,7 +323,7 @@ export function powerWToEirp(powerW, station, satForm) {
 // 上行站占位（不含 centerFrequency/uplinkPolarization——那两项由卫星群供给 linkParams）
 const UP_LINK_DEFAULTS = {
   antennaDiameter: '6.2', antennaEfficiency: '65', G_Ts: '2',
-  uplinkAvailability: '99.90', uplinkPowerControl: '否', upcValue: '0',
+  uplinkAvailability: '100', uplinkPowerControl: '否', upcValue: '0',
   paBackoff: '0', feederLoss: '3.5', uplinkOtherLoss: '0.3'
 }
 
