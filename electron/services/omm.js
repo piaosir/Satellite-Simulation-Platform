@@ -8,6 +8,8 @@ const ommCloud = require('./ommCloud')   // 众包云镜像（腾讯云 COS）�
 const log = require('./ommLog')          // 取数链路的操作明细 → 主进程 console + 底部「日志」窗格
 // OMM CSV 解析：与渲染端 viz/constellation/tle.js 的 parseOMMCsv 同源同结果，勿另写一份
 const { parseOMMCsv } = require('./customSats')
+// SATCAT 编目 CSV 的有效性判据：与 scripts/fetch-omm-snapshot.mjs、ommCacheFirst 测试共用同一份实现
+const { validSatcat } = require('../../packages/core/utils/satcatValid.js')
 const { fmtBytes, fmtSec, fmtTime } = log
 
 // 内置样例 TLE（保证完全离线也能渲染星座）：ISS、两颗 Starlink、一颗 GEO。
@@ -37,8 +39,27 @@ const GROUP_QUERY = {
   spire: 'GROUP=spire', active: 'GROUP=active'
 }
 const SUP_FILE = { starlink: 'starlink', oneweb: 'oneweb', kuiper: 'kuiper', planet: 'planet', iridium: 'iridium', gps: 'gps' }
-const csvUrl = (k) => `https://celestrak.org/NORAD/elements/gp.php?${GROUP_QUERY[k]}&FORMAT=csv`
+
+// 非 GP 数据集：走与星历分组【同一条】四级链路（当日缓存 → CelesTrak 直连 → 云镜像 → 本地缓存/内置快照）、
+// 同一个日志窗格、同一套当日记账与熔断，只有 URL / 判据 / 标签不同。
+// SATCAT 是全量编目不是星历：没有 MEAN_MOTION 列（判据另给），也没有补充端点（sup-gp.php 只发星历）——
+// 故 SUP_FILE 不给它加条目，fetchCsvOnce 里那段补充端点靠 `SUP_FILE[key]` 为 undefined 天然跳过。
+// badWhy = 导入替换时的报错文案（星历那句「缺 MEAN_MOTION 列」对编目文件是错的）。
+const DATASETS = {
+  satcat: {
+    url: 'https://celestrak.org/pub/satcat.csv',
+    label: 'SATCAT 卫星编目',
+    valid: validSatcat,
+    badWhy: '不是有效的 SATCAT 编目 CSV（表头缺 NORAD_CAT_ID / OPS_STATUS_CODE 等列，或行数不足）——请用 celestrak.org/pub/satcat.csv'
+  }
+}
+// 本服务认得的键 = GP 分组 ∪ 数据集（三处「未知键」守卫共用）。
+// satrecs() 那处守卫【不】改：编目里没有根数，SATCAT 本就不该进 SGP4。
+const known = (k) => !!GROUP_QUERY[k] || !!DATASETS[k]
+const csvUrl = (k) => (DATASETS[k] ? DATASETS[k].url : `https://celestrak.org/NORAD/elements/gp.php?${GROUP_QUERY[k]}&FORMAT=csv`)
 const supCsvUrl = (k) => `https://celestrak.org/NORAD/elements/supplemental/sup-gp.php?FILE=${SUP_FILE[k]}&FORMAT=csv`
+// 直连日志里的端点名：GP 打 gp.php + 查询串，数据集打自己的路径（satcat 即 pub/satcat.csv）
+const epName = (k) => (DATASETS[k] ? DATASETS[k].url.replace(/^https?:\/\/[^/]+\//, '') : `gp.php · ${GROUP_QUERY[k]}`)
 
 // 日志用中文分组名（与 src/pages/ConstellationMap3D.vue 的 GROUPS 标签逐字一致，改一处要同步）
 const GROUP_LABEL = {
@@ -46,7 +67,7 @@ const GROUP_LABEL = {
   qianfan: '千帆星座', guowang: '中国星网', geo: 'GEO', glonass: 'GLONASS', o3b: 'O3b', iridium: '铱星',
   globalstar: 'Globalstar', stations: '空间站', planet: 'Planet', spire: 'Spire', active: '全部在轨'
 }
-const GL = (k) => GROUP_LABEL[k] || k
+const GL = (k) => GROUP_LABEL[k] || (DATASETS[k] && DATASETS[k].label) || k
 // 数据来源在日志里的统一叫法（offlineBest 的 source）
 const SRC_NAME = { cache: '本地历史缓存', bundled: '随安装包内置的星历快照' }
 
@@ -151,6 +172,8 @@ module.exports = function createOmm(getCore) {
   const csvCacheFile = (k) => path.join(cacheDir(), `csv_${k}.csv`)
 
   const valid = (t) => t && /MEAN_MOTION/i.test(t)
+  // 判据按键分派：GP 分组一律走上面那条正则（逐位不变），DATASETS 各带各的（SATCAT 见 satcatValid.js）
+  const validOf = (k) => (DATASETS[k] ? DATASETS[k].valid : valid)
   const isToday = (d) => { const n = new Date(), t = new Date(d); return n.getFullYear() === t.getFullYear() && n.getMonth() === t.getMonth() && n.getDate() === t.getDate() }
 
   // 缓存文件的写入时间 = 该份数据真正从官网下载落盘的时刻 → 作为“OMM 下载时间”回传（离线复用旧缓存时即旧时间）。
@@ -178,8 +201,8 @@ module.exports = function createOmm(getCore) {
     const man = bundledManifest()
     const g = man && man.groups && man.groups[key]
     const time = (g && g.generatedAt) || (man && man.generatedAt) || null
-    try { const gz = path.join(d, `csv_${key}.csv.gz`); if (fs.existsSync(gz)) { const t = zlib.gunzipSync(fs.readFileSync(gz)).toString('utf8'); if (valid(t)) return { text: t, time, count: (g && g.count) || csvCount(t) } } } catch {}
-    try { const t = fs.readFileSync(path.join(d, `csv_${key}.csv`), 'utf8'); if (valid(t)) return { text: t, time, count: csvCount(t) } } catch {}
+    try { const gz = path.join(d, `csv_${key}.csv.gz`); if (fs.existsSync(gz)) { const t = zlib.gunzipSync(fs.readFileSync(gz)).toString('utf8'); if (validOf(key)(t)) return { text: t, time, count: (g && g.count) || csvCount(t) } } } catch {}
+    try { const t = fs.readFileSync(path.join(d, `csv_${key}.csv`), 'utf8'); if (validOf(key)(t)) return { text: t, time, count: csvCount(t) } } catch {}
     return null
   }
   // 离线兜底：在「用户缓存」与「内置快照」间取更新的一版（有更新用更新）。返回 { text, fetchedAt, source } 或 null。
@@ -188,7 +211,7 @@ module.exports = function createOmm(getCore) {
   // 也拖成秒级，而这一档存在的全部意义就是别让用户等。赢家读出来是坏的（截断/非 OMM）才回头读另一份。
   function offlineBest(key) {
     const cf = csvCacheFile(key)
-    const readCache = () => { try { const c = fs.readFileSync(cf, 'utf8'); if (valid(c)) return { text: c, fetchedAt: cacheMtime(cf), source: 'cache' } } catch {} ; return null }
+    const readCache = () => { try { const c = fs.readFileSync(cf, 'utf8'); if (validOf(key)(c)) return { text: c, fetchedAt: cacheMtime(cf), source: 'cache' } } catch {} ; return null }
     const readBun = () => { const b = readBundled(key); return b ? { text: b.text, fetchedAt: b.time, source: 'bundled' } : null }
     // ★ 时间戳一律走 msOf：不能写 Date.parse(x || 0) —— 缺时间时那是 Date.parse("0")，V8 把它
     //   解析成 2000-01-01（946656000000）而不是 NaN，于是「没有缓存」被当成「缓存是 2000 年的」，
@@ -247,27 +270,32 @@ module.exports = function createOmm(getCore) {
     if (kind !== 'net') { _netFails = 0; _breakerOpen = false; return }   // 只要有 HTTP 响应就说明通
     if (++_netFails < BREAK_AT || _breakerOpen) return
     _breakerOpen = true
-    markTried(Object.keys(GROUP_QUERY))
+    markTried(Object.keys(GROUP_QUERY).concat(Object.keys(DATASETS)))   // 同一个 celestrak.org：数据集一并记账
     log.emit(`星历：CelesTrak 连续 ${_netFails} 次连接层失败，判定本机当前网络不可达 —— 本次运行剩余分组直接走云镜像，今日不再重试直连（重启软件的次日会重新探测）`, 'warn')
   }
 
-  // 取某组 OMM CSV：返回 { text, fetchedAt }。fetchedAt 恒为缓存文件 mtime（= 该数据实际从 CelesTrak 下载落盘的时间），
+  // 取某组 OMM CSV：返回 { text, fetchedAt, source }。fetchedAt 恒为缓存文件 mtime（= 该数据实际从 CelesTrak 下载落盘的时间），
   // 而非“此刻”——这样复用今日/旧缓存时显示的也是真实下载时间。本地有“今天”的缓存 → 直接用（一天一次）；
   // 否则联网（主端点重试3次→补充端点重试2次）→ 命中落盘 + 众包回传云镜像；
   // 直连全失败 → 云镜像（腾讯云 COS，别人今天传上去的那份；国内不被墙）→ 本地缓存 / 内置快照（离线优先）。
+  // source 标明这一份到底是从哪条腿拿到的：'today' 当日缓存 / 'network' 直连 / 'cloud' 云镜像 /
+  // 'cache' 用户缓存 / 'bundled' 内置快照 —— 调用方（如空间态势窗口的数据时间读数）要如实显示来源。
   async function fetchCsvOnce(key, opts = {}) {
-    if (!GROUP_QUERY[key]) throw new Error('unknown group: ' + key)
+    if (!known(key)) throw new Error('unknown group: ' + key)
     const cf = csvCacheFile(key)
     const tag = `星历「${GL(key)}」：`   // 日志前缀，全链路统一，便于按星座检索
+    // 量词随数据集分档：GP 组数的是卫星（颗），SATCAT 数的是空间目标（条）—— 编目里碎片与
+    // 火箭体占大半，一律说「颗」是错的。其余措辞不分档（同一条链路，按前缀检索得到同一组行）。
+    const unit = DATASETS[key] ? ' 条' : ' 颗'
     if (opts.force) { _netFails = 0; _breakerOpen = false }   // 用户显式刷新：清熔断、绕过所有闸门，硬走一遍全链路
     // 一天一次：缓存文件是今天写的就直接用，不再联网
     try {
       const st = opts.force ? null : fs.statSync(cf)
       if (st && isToday(st.mtime)) {
         const c = fs.readFileSync(cf, 'utf8')
-        if (valid(c)) {
-          log.emit(`${tag}命中当日本地缓存 —— ${csvCount(c)} 颗 · ${fmtBytes(c.length)} · 数据时间 ${fmtTime(st.mtime)}`)
-          return { text: c, fetchedAt: st.mtime.toISOString() }
+        if (validOf(key)(c)) {
+          log.emit(`${tag}命中当日本地缓存 —— ${csvCount(c)}${unit} · ${fmtBytes(c.length)} · 数据时间 ${fmtTime(st.mtime)}`)
+          return { text: c, fetchedAt: st.mtime.toISOString(), source: 'today' }
         }
       }
     } catch {}
@@ -275,8 +303,8 @@ module.exports = function createOmm(getCore) {
     if (opts.cacheOnly) {
       const best = offlineBest(key)
       if (best) {
-        log.emit(`${tag}先以${SRC_NAME[best.source]}即时渲染（${csvCount(best.text)} 颗 · 数据时间 ${fmtTime(best.fetchedAt)}），随后后台联网刷新`)
-        return { text: best.text, fetchedAt: best.fetchedAt }
+        log.emit(`${tag}先以${SRC_NAME[best.source]}即时渲染（${csvCount(best.text)}${unit} · 数据时间 ${fmtTime(best.fetchedAt)}），随后后台联网刷新`)
+        return { text: best.text, fetchedAt: best.fetchedAt, source: best.source }
       }
       return null
     }
@@ -293,42 +321,42 @@ module.exports = function createOmm(getCore) {
     if (skipDirect) {
       log.emit(`${tag}${_breakerOpen ? '本次运行已判定 CelesTrak 不可达' : '今天已完整试过 CelesTrak 直连'}，跳过直连，直接查云镜像`)
     } else {
-      log.emit(`${tag}本地无当日数据，开始连接 CelesTrak 主端点（gp.php · ${GROUP_QUERY[key]}）`)
+      log.emit(`${tag}本地无当日数据，开始连接 CelesTrak 主端点（${epName(key)}）`)
       let tries = 0
-      for (let i = 0; i < 3 && !valid(text) && !bail(); i++) { tries++; const r = await httpGetText(csvUrl(key)); text = r.text; why = r.why; noteNet(r.kind) }
-      if (!valid(text)) log.emit(`${tag}CelesTrak 主端点 ${tries} 次尝试均失败（${why || '返回内容非有效 OMM'}）`, 'warn')
+      for (let i = 0; i < 3 && !validOf(key)(text) && !bail(); i++) { tries++; const r = await httpGetText(csvUrl(key)); text = r.text; why = r.why; noteNet(r.kind) }
+      if (!validOf(key)(text)) log.emit(`${tag}CelesTrak 主端点 ${tries} 次尝试均失败（${why || '返回内容非有效 OMM'}）`, 'warn')
       // 补充端点同样在 celestrak.org：熔断已开（=根本连不上）时再试 2×30s 是纯浪费，直接跳过
-      if (!valid(text) && !bail() && SUP_FILE[key]) {
+      if (!validOf(key)(text) && !bail() && SUP_FILE[key]) {
         let supTries = 0
         log.emit(`${tag}转 CelesTrak 补充星历端点（sup-gp.php · FILE=${SUP_FILE[key]}，与主端点限流独立）`)
-        for (let i = 0; i < 2 && !valid(text) && !bail(); i++) { supTries++; const r = await httpGetText(supCsvUrl(key)); text = r.text; why = r.why; noteNet(r.kind) }
-        if (!valid(text)) log.emit(`${tag}CelesTrak 补充端点 ${supTries} 次尝试均失败（${why || '返回内容非有效 OMM'}）`, 'warn')
+        for (let i = 0; i < 2 && !validOf(key)(text) && !bail(); i++) { supTries++; const r = await httpGetText(supCsvUrl(key)); text = r.text; why = r.why; noteNet(r.kind) }
+        if (!validOf(key)(text)) log.emit(`${tag}CelesTrak 补充端点 ${supTries} 次尝试均失败（${why || '返回内容非有效 OMM'}）`, 'warn')
       }
       markTried(key)   // 无论结果：本组今天已完整试过直连 —— 下次启动不再重付这段超时（次日自动过期）
     }
-    if (valid(text)) {
+    if (validOf(key)(text)) {
       try { fs.writeFileSync(cf, text) } catch (e) { log.emit(`${tag}缓存写入失败（${e.message}），本次数据仅在内存中`, 'warn') }
-      log.emit(`${tag}CelesTrak 直连获取成功 —— ${csvCount(text)} 颗 · ${fmtBytes(text.length)} · 耗时 ${fmtSec(Date.now() - t0)}，已写入本地缓存`)
+      log.emit(`${tag}CelesTrak 直连获取成功 —— ${csvCount(text)}${unit} · ${fmtBytes(text.length)} · 耗时 ${fmtSec(Date.now() - t0)}，已写入本地缓存`)
       // 众包：本机拿到了新数据 → best-effort 回传云镜像（云端那份还够新则自动跳过），供屏蔽 celestrak 的用户兜底。
       // 不 await：上传慢/失败都不该拖住星座渲染。
-      ommCloud.maybeUpload(key, text, GL(key)).catch(() => {})
-      return { text, fetchedAt: cacheMtime(cf) || new Date().toISOString() }
+      ommCloud.maybeUpload(key, text, GL(key), validOf(key)).catch(() => {})
+      return { text, fetchedAt: cacheMtime(cf) || new Date().toISOString(), source: 'network' }
     }
     // 直连失败/被跳过 → 云镜像兜底。先算本地最优，把它的时间交给云端做闸门：云端不比本地新就不下载（省流量，也不用旧盖新）。
     const best = offlineBest(key)
-    const cloud = await ommCloud.download(key, { newerThan: opts.force ? null : (best && best.fetchedAt), label: GL(key) })
+    const cloud = await ommCloud.download(key, { newerThan: opts.force ? null : (best && best.fetchedAt), label: GL(key), valid: validOf(key) })
     if (cloud) {
       // 落盘缓存，并把 mtime 改成云端那份的上传时间：既让「今日缓存」判据成立（当天不再反复联网），
       // 界面显示的「OMM 下载时间」也如实反映数据自身的时间，而不是本机取回的此刻。
       let cached = true
       try { fs.writeFileSync(cf, cloud.text); const t = new Date(cloud.fetchedAt); fs.utimesSync(cf, t, t) } catch { cached = false }
-      log.emit(`${tag}改用云镜像数据 —— ${csvCount(cloud.text)} 颗 · 数据时间 ${fmtTime(cloud.fetchedAt)} · 全程耗时 ${fmtSec(Date.now() - t0)}${cached ? '，已写入本地缓存' : ''}`)
-      return { text: cloud.text, fetchedAt: cloud.fetchedAt }
+      log.emit(`${tag}改用云镜像数据 —— ${csvCount(cloud.text)}${unit} · 数据时间 ${fmtTime(cloud.fetchedAt)} · 全程耗时 ${fmtSec(Date.now() - t0)}${cached ? '，已写入本地缓存' : ''}`)
+      return { text: cloud.text, fetchedAt: cloud.fetchedAt, source: 'cloud' }
     }
     // 云镜像也拿不到 → 静默回落本地：用户缓存 / 内置快照，取更新的一版（无网设备靠内置快照兜底）。
     if (best) {
-      log.emit(`${tag}联网与云镜像均不可用，回落${SRC_NAME[best.source]} —— ${csvCount(best.text)} 颗 · 数据时间 ${fmtTime(best.fetchedAt)}（星历越旧，轨道位置误差越大）`, 'warn')
-      return { text: best.text, fetchedAt: best.fetchedAt }
+      log.emit(`${tag}联网与云镜像均不可用，回落${SRC_NAME[best.source]} —— ${csvCount(best.text)}${unit} · 数据时间 ${fmtTime(best.fetchedAt)}（星历越旧，轨道位置误差越大）`, 'warn')
+      return { text: best.text, fetchedAt: best.fetchedAt, source: best.source }
     }
     log.emit(`${tag}获取失败 —— CelesTrak、云镜像、本地缓存、内置快照四路均不可用`, 'error')
     throw new Error('celestrak.org 与云镜像均不可达，且无本地缓存与内置快照')
@@ -354,7 +382,7 @@ module.exports = function createOmm(getCore) {
   // 列出全部内置组及其可用性（source: 'cache' 用户缓存 / 'bundled' 内置快照 / 'none' 无）。
   // 无用户缓存时回落到内置快照的统计，让文件管理如实显示「内置」可用、可导出（离线设备也能看到有数据）。
   function listCsv() {
-    return Object.keys(GROUP_QUERY).map((key) => {
+    const probe = (key) => {
       const cf = csvCacheFile(key)
       let exists = false, mtime = null, count = 0, source = 'none'
       try { const st = fs.statSync(cf); exists = true; source = 'cache'; mtime = st.mtime.toISOString(); count = csvCount(fs.readFileSync(cf, 'utf8')) } catch {}
@@ -362,21 +390,28 @@ module.exports = function createOmm(getCore) {
         const b = readBundled(key)
         if (b) { source = 'bundled'; count = b.count || 0; mtime = b.time || null }
       }
-      return { key, file: `csv_${key}.csv`, exists, source, mtime, count }
-    })
+      return { exists, source, mtime, count }
+    }
+    const rows = Object.keys(GROUP_QUERY).map((key) => ({ key, file: `csv_${key}.csv`, ...probe(key) }))
+    // 非星历数据集（SATCAT）：缓存/内置那套口径完全一样，只是它不是星座组 —— 排在末尾并带 kind，
+    // 让文件管理能把它从星座表里拆出来单独成节（GP 行不带 kind，判据就是有没有这个字段）。
+    // count 与 GP 同口径：CSV 数据行数（satcat 即编目条目数，含碎片与火箭体）。
+    for (const key of Object.keys(DATASETS)) rows.push({ key, kind: key, file: `csv_${key}.csv`, ...probe(key) })
+    return rows
   }
   // 读出某组 CSV 原文（导出用）：优先用户缓存，无则回落内置快照；都无返回 null。
   function readCsvRaw(key) {
-    if (!GROUP_QUERY[key]) throw new Error('unknown group: ' + key)
+    if (!known(key)) throw new Error('unknown group: ' + key)
     try { return { text: fs.readFileSync(csvCacheFile(key), 'utf8'), file: `csv_${key}.csv` } } catch {}
     const b = readBundled(key)
     if (b) return { text: b.text, file: `csv_${key}.csv`, bundled: true }
     return null
   }
-  // 导入并替换某组 OMM CSV：校验为 CelesTrak OMM（含 MEAN_MOTION 表头），写入缓存覆盖，使该星座改用用户文件渲染。
+  // 导入并替换某组 OMM CSV：按该键自己的判据校验（GP 组＝含 MEAN_MOTION 表头，SATCAT 见 satcatValid.js），
+  // 写入缓存覆盖，使该星座（或该数据集）改用用户文件。
   function writeCsvRaw(key, text) {
-    if (!GROUP_QUERY[key]) throw new Error('unknown group: ' + key)
-    if (!valid(text)) throw new Error('不是有效的 OMM CSV（缺 MEAN_MOTION 列）——请用 CelesTrak「FORMAT=csv」导出的文件')
+    if (!known(key)) throw new Error('unknown group: ' + key)
+    if (!validOf(key)(text)) throw new Error((DATASETS[key] && DATASETS[key].badWhy) || '不是有效的 OMM CSV（缺 MEAN_MOTION 列）——请用 CelesTrak「FORMAT=csv」导出的文件')
     const cf = csvCacheFile(key)
     fs.writeFileSync(cf, String(text))
     const st = fs.statSync(cf)

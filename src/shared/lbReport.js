@@ -269,7 +269,9 @@ export const LB_REPORT_EN = {
   '导出 SLA 报告': 'Export SLA Report', '导出报告（SLA）': 'Export report (SLA)',
   '保存 SLA 报告': 'Save SLA report',
   '按各链路勾选的条款单出一份《服务等级指标（SLA）》报告（Excel / Word）': 'Exports a standalone Service Level Metrics (SLA) report (Excel / Word) from the clauses ticked on each link',
-  '尚无 SLA 条款': 'No SLA clauses yet'
+  '尚无 SLA 条款': 'No SLA clauses yet',
+  '平台标志': 'Platform mark',
+  '用本软件自己的标志（与「关于」窗口同一枚）': 'Use this application’s own mark (the same one shown in the About window)'
 }
 export function translate(s, lang) {
   if (lang !== 'en' || !s) return s

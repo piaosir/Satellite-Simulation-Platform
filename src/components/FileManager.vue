@@ -10,7 +10,7 @@ import { serializeGxt } from '../viz/gxt/serialize.js'
 import { serializeKml } from '../viz/kml/serialize.js'
 import { grdToStkAzEl } from '../viz/grd/stkPattern.js'
 import { grdToAcp4, grdToEutelsat } from '../viz/grd/patFormats.js'
-import { repackGrdCommonGrid } from '../viz/grd/synth.js'
+import { repackGrdCommonGridParts } from '../viz/grd/synth.js'
 import { displaySatName } from '../viz/satName.js'
 import { logMsg } from '../stores/log'
 import Icon from './Icon.vue'
@@ -47,7 +47,15 @@ function ask(message) { confirmMsg.value = message; return new Promise((res) => 
 function answerConfirm(ok) { confirmMsg.value = ''; const r = _confirmResolve; _confirmResolve = null; if (r) r(ok) }
 
 // latin1 字符串 → 原始字节（保真导出 GRD/GXT 二进制原文）
-const toBytes = (s) => Uint8Array.from(String(s == null ? '' : s), (c) => c.charCodeAt(0) & 0xff)
+// ★ 不许写成 Uint8Array.from(s, fn)：带 mapfn 的 %TypedArray%.from 对可迭代源先走 IterableToList，
+//   把整份字符串物化成【逐字符一个元素】的 JSArray；243 MB 的真实方向图 → 2.4 亿元素的 FixedArray，
+//   渲染进程当场 FATAL「invalid array length」白屏（复现过）。逐字符写入没有中间数组。
+const toBytes = (s) => {
+  const str = String(s == null ? '' : s)
+  const u = new Uint8Array(str.length)
+  for (let i = 0; i < str.length; i++) u[i] = str.charCodeAt(i) & 0xff
+  return u
+}
 function fmtTime(iso) {
   if (!iso) return '—'
   const d = new Date(iso); if (isNaN(d)) return '—'
@@ -66,7 +74,16 @@ const OMM_LABELS = {
 const EPH_FMT = { 'omm-csv': 'OMM CSV', 'omm-json': 'OMM JSON', 'omm-kvn': 'OMM KVN', 'omm-xml': 'OMM XML', tle: 'TLE', '3le': '3LE' }
 const ommRows = ref([])
 const ommBusy = ref('')
-async function loadOmm() { try { ommRows.value = api?.omm?.list ? await api.omm.list() : [] } catch { ommRows.value = [] } }
+// omm:list 回的是两类：17 个星座组（无 kind）与卫星编目 SATCAT（kind:'satcat'）——后者不是星座组，
+// 走同一条取数链路但列在独立一节里（空间态势报告吃它，星座页不用）。
+const satcatRow = ref(null)
+async function loadOmm() {
+  try {
+    const all = api?.omm?.list ? await api.omm.list() : []
+    ommRows.value = all.filter((r) => r.kind !== 'satcat')
+    satcatRow.value = all.find((r) => r.kind === 'satcat') || null
+  } catch { ommRows.value = []; satcatRow.value = null }
+}
 // 该组是否有可用数据（用户缓存或内置快照）；兼容旧主进程仅返回 exists 的情形。
 const ommAvail = (row) => row.source ? row.source !== 'none' : !!row.exists
 // 状态徽标：已缓存（用户联网下载）/ 内置（软件自带兜底快照）/ 未下载。
@@ -77,7 +94,12 @@ async function importOmm(row) {
   try {
     const r = await api.omm.import(row.key)
     if (r && r.canceled) return
-    if (r && r.ok) { flash(`已替换「${OMM_LABELS[row.key] || row.key}」：${r.count} 颗卫星`); await loadOmm() }
+    if (r && r.ok) {
+      // 编目是「空间目标」不是「卫星」：碎片与火箭体占大半，量词跟着换
+      const isCat = row.kind === 'satcat'
+      flash(`已替换「${isCat ? 'CelesTrak SATCAT' : (OMM_LABELS[row.key] || row.key)}」：${r.count} ${isCat ? '条编目' : '颗卫星'}`)
+      await loadOmm()
+    }
     else flash('导入失败：' + ((r && r.error) || '未知错误'))
   } finally { ommBusy.value = '' }
 }
@@ -341,8 +363,10 @@ function toggleExpMenu(ev, sat, a) {
   const h = EXP_FMTS.length * 26 + 10
   expMenu.value = { key: k, x: r.right, y: r.bottom + 4 + h > window.innerHeight ? r.top - 4 - h : r.bottom + 4, ant: a }
 }
+// text 收字符串或字符串分片数组；按 latin1 逐字节写盘（方向图管线全程「latin1 字节串」，
+// 与旧的 toBytes 逐字符取低 8 位逐字节等价），大文本不在渲染端转字节、也不必拼成整串。
 async function saveOut(text, defaultName, filters, msg) {
-  const save = await api.exportFile({ defaultName, data: toBytes(text), filters: [...filters, { name: '所有文件', extensions: ['*'] }] })
+  const save = await api.exportFile({ defaultName, data: text, encoding: 'latin1', filters: [...filters, { name: '所有文件', extensions: ['*'] }] })
   if (save && save.ok) flash(msg + '：' + save.filePath)
   else if (save && save.error) flash('导出失败：' + save.error)
 }
@@ -352,14 +376,23 @@ async function doExport(fmt) {
   if (!a) return
   if (!a.imported || !a.file) { flash('预置天线无原始方向图可导出'); return }
   try {
-    const r = await api.coverageGrd.raw(a.file)
     if (fmt === 'grd') {
+      // 真实导入件原样导出：保存框与拷贝全在主进程做，原文一个字节都不进渲染进程
+      //（实测件 243 MB，搬进来再转字节就是本页那条白屏崩溃）。合成件回 { synth:true }，落到下面那条。
+      const cp = await api.coverageGrd.exportRaw(a.file, `${a.name}.grd`)
+      if (!cp || !cp.synth) {                       // 只有「这是合成件」才继续往下；取消/出错/未激活都到此为止
+        if (cp && cp.ok) flash('已导出：' + cp.filePath)
+        else if (cp && cp.error) flash('导出失败：' + cp.error)
+        return
+      }
       // 合成的多馈源 .grd 各波束用各自小窗口，SATSOFT 会把全部波束摆到波束1处（见 repackGrdCommonGrid 注释）。
-      // 导出前重打包到公共网格（各波束落真实位置）；仅对本平台合成件(含 SYNTHMETA)生效，真实导入件原样导出。
-      let text = r.text
-      if (text && text.includes('SYNTHMETA')) { try { text = repackGrdCommonGrid(text) } catch (err) { console.warn('公共网格重打包失败，导出原始多窗口 .grd', err) } }
-      return await saveOut(text, `${a.name}.grd`, [{ name: 'GRASP 网格', extensions: ['grd'] }], '已导出')
+      // 导出前重打包到公共网格（各波束落真实位置）；分片写盘，不拼成一个整串。
+      const rg = await api.coverageGrd.raw(a.file)
+      let parts = [rg.text]
+      if (rg.text && rg.text.includes('SYNTHMETA')) { try { parts = repackGrdCommonGridParts(rg.text) } catch (err) { console.warn('公共网格重打包失败，导出原始多窗口 .grd', err) } }
+      return await saveOut(parts, `${a.name}.grd`, [{ name: 'GRASP 网格', extensions: ['grd'] }], '已导出')
     }
+    const r = await api.coverageGrd.raw(a.file)
     if (fmt === 'stk') {
       const s = grdToStkAzEl(r.text, { name: a.name })
       return await saveOut(s.text, `${a.name}_STK.txt`, [{ name: 'STK 外部天线方向图', extensions: ['txt', 'pattern', 'ant'] }],
@@ -985,6 +1018,24 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
                     <button class="mini ghost" :disabled="!ommAvail(row)" @click="exportOmm(row)">导出</button>
                   </td>
                 </tr>
+              </tbody>
+            </table>
+
+            <div class="secbar top"><span class="sect">卫星编目（SATCAT）</span></div>
+            <table class="tbl">
+              <thead><tr><th>编目</th><th>条数</th><th>数据时间</th><th>状态</th><th></th></tr></thead>
+              <tbody>
+                <tr v-if="satcatRow">
+                  <td class="nm" title="CelesTrak 卫星编目：全部空间目标的所有者 / 类型 / 状态 / 发射与陨落日期 / 轨道概要">CelesTrak SATCAT</td>
+                  <td>{{ ommAvail(satcatRow) ? satcatRow.count : '—' }}</td>
+                  <td class="dim">{{ fmtTime(satcatRow.mtime) }}</td>
+                  <td><span class="badge" :class="{ off: !ommAvail(satcatRow), bundled: satcatRow.source === 'bundled' }">{{ ommStatus(satcatRow) }}</span></td>
+                  <td class="ops">
+                    <button class="mini" :disabled="ommBusy === satcatRow.key" @click="importOmm(satcatRow)">{{ ommBusy === satcatRow.key ? '导入中…' : '导入替换' }}</button>
+                    <button class="mini ghost" :disabled="!ommAvail(satcatRow)" @click="exportOmm(satcatRow)">导出</button>
+                  </td>
+                </tr>
+                <tr v-else><td colspan="5" class="dim">尚无卫星编目。</td></tr>
               </tbody>
             </table>
           </section>

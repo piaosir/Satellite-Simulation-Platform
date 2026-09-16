@@ -371,6 +371,49 @@ function createPfdWindow() {
   return win
 }
 
+// 空间态势报告：独立 BrowserWindow，单例复用。
+// 设关窗守卫（与三个链路预算窗口、雨衰窗口同套）——报告的「配置」是一整套攒到最后才存的输入
+// （范围 / 章节开关 / Top N 一类），不是频率计划那种改一下即落盘的文件，关窗有可丢之物。
+let _ssaWin = null
+let _ssaAllowClose = false
+function createSsaWindow() {
+  if (_ssaWin && !_ssaWin.isDestroyed()) {
+    if (_ssaWin.isMinimized()) _ssaWin.restore()
+    _ssaWin.focus()
+    return _ssaWin
+  }
+  const win = new BrowserWindow({
+    width: 1500,
+    height: 950,
+    minWidth: 1160,
+    minHeight: 720,
+    title: '空间态势报告',
+    backgroundColor: '#ffffff',
+    autoHideMenuBar: true,
+    webPreferences: {
+      preload: join(__dirname, '../preload/preload.js'),
+      contextIsolation: true,
+      sandbox: false,
+      devTools: !app.isPackaged
+    }
+  })
+  if (process.env['ELECTRON_RENDERER_URL']) {
+    win.loadURL(process.env['ELECTRON_RENDERER_URL'] + '/ssa.html')
+  } else {
+    win.loadFile(join(__dirname, '../renderer/ssa.html'))
+  }
+  bindDevTools(win)
+  _ssaAllowClose = false
+  win.on('close', (e) => {
+    if (_ssaAllowClose) return
+    e.preventDefault()
+    win.webContents.send('ssa:closeRequested')
+  })
+  win.on('closed', () => { _ssaWin = null })
+  _ssaWin = win
+  return win
+}
+
 // 转发器频率计划：独立 BrowserWindow，单例复用。
 // 不设关窗守卫——编辑器每次改动即存盘（频率计划是「文件」不是「会话」，与三个链路预算窗口
 // 那种「一整套输入攒到最后才存」的形态不同），关窗无可丢之物。
@@ -598,6 +641,11 @@ function confirmCloseRain() {
   if (_rainWin && !_rainWin.isDestroyed()) _rainWin.close()
 }
 
+function confirmCloseSsa() {
+  _ssaAllowClose = true
+  if (_ssaWin && !_ssaWin.isDestroyed()) _ssaWin.close()
+}
+
 app.whenReady().then(async () => {
   if (!gotSingleInstanceLock) return   // 第二个实例：已 app.quit()，但 ready 仍会到，别再建窗口/注册 IPC
   const root = app.getAppPath()
@@ -651,7 +699,7 @@ app.whenReady().then(async () => {
   // 激活与设备管理：终端心跳上报 + 激活书拉取验签（对端为独立的「卫星仿真平台管理」软件）
   const activation = require(join(root, 'electron/services/activation'))(share, storage)
   const { register } = require(join(root, 'electron/ipc/register'))
-  register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget: createLinkBudgetWindow, openSunOutage: createSunOutageWindow, grd, confirmCloseLinkBudget, openNgso: createNgsoWindow, confirmCloseNgso, openRegen: createRegenWindow, confirmCloseRegen, openE2e: createE2eWindow, confirmCloseE2e, openRain: createRainWindow, confirmCloseRain, openCi: createCiWindow, openPfd: createPfdWindow, freqPlan, openFreqPlan: createFreqPlanWindow, notifyFreqPlan, activation, weather, gfs, updater,
+  register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget: createLinkBudgetWindow, openSunOutage: createSunOutageWindow, grd, confirmCloseLinkBudget, openNgso: createNgsoWindow, confirmCloseNgso, openRegen: createRegenWindow, confirmCloseRegen, openE2e: createE2eWindow, confirmCloseE2e, openRain: createRainWindow, confirmCloseRain, openCi: createCiWindow, openPfd: createPfdWindow, openSsa: createSsaWindow, confirmCloseSsa, freqPlan, openFreqPlan: createFreqPlanWindow, notifyFreqPlan, activation, weather, gfs, updater,
     perfWin: { open: createPerfWindow, push: perfWinPush, act: perfWinAct, close: perfWinClose, setTitle: perfWinSetTitle, list: perfWinList, self: perfWinSelf } })
   // 定时心跳；激活状态变化（管理端激活/撤销被拉到）广播到所有窗口，各窗口就地上锁/解锁
   activation.start((st) => {
@@ -691,7 +739,9 @@ app.whenReady().then(async () => {
   })
 })
 
-// 退出前统一放行四个窗口的关窗守卫。
+// 退出前统一放行【全部】带关窗守卫的窗口。
+// ★ 新加一扇带守卫的窗口就必须在下面补一行 —— 漏了的那扇会把整个退出流程顶回去，
+//   而症状（关机卡住 / 更新装不上）离这里很远，极难回溯到是少写了一行。
 // 守卫（_*AllowClose=false → close 时 preventDefault 转问渲染进程）是为「用户点窗口 X」设计的，
 // 但它对 close 事件一视同仁，因此会把整个退出流程也一并拦下：
 //   · Windows 注销 / 关机：退出被 preventDefault 挡住 → 系统等超时后强杀，本来防丢数据反而丢；
@@ -704,6 +754,7 @@ app.on('before-quit', () => {
   _regenAllowClose = true
   _e2eAllowClose = true
   _rainAllowClose = true
+  _ssaAllowClose = true
 })
 
 app.on('window-all-closed', () => {

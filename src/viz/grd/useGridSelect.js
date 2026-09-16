@@ -232,7 +232,7 @@ export function useGridSelect(cfg) {
     const el = bodyEl.value
     if (!el || !col) return col && col.w ? col.w : DEFAULT_W
     const th = el.querySelector('thead th[data-k="' + cssEsc(col.key) + '"]')
-    const td = el.querySelector('tbody td')
+    const td = el.querySelector('tbody td.eg-c')   // ★ 不能用 'tbody td'：那是序号列（等宽字体 + fs-1），量出来一律偏窄
     const ctx = measureCtx()
     const pad = 18                                   // 左右各 8px 内边距 + 2px 余量（与 .perf-tbl td 一致）
     let w = 0
@@ -263,20 +263,18 @@ export function useGridSelect(cfg) {
     for (const c of miss) next[c.key] = Math.max(c.w || 0, autoWidth(c))
     widths.value = next
   }
+  // 一次写多列（拖一条边界改整片选中列）：只落一次 widths —— 逐列 setWidth 会把 watcher 与重绘各触发一轮
+  function setWidths(cols, px) {
+    const w = Math.max(MIN_W, Math.round(px))
+    const next = { ...widths.value }
+    for (const c of cols) if (c) next[c.key] = w
+    widths.value = next
+  }
   function autoFitCol(col) { if (col) { setWidth(col, autoWidth(col)); commitWidths([col.key]) } }
   function autoFitAll() { const next = {}; for (const c of colList()) next[c.key] = autoWidth(c); widths.value = next; commitWidths(Object.keys(next)) }
-  // 列宽拖拽（列头右缘那道把手）
-  let rzCol = null, rzX = 0, rzW = 0
+  // 列宽拖拽本体在 ExcelGrid.vue（整条列边界线可拖，表头与数据行上都行）：命中判定要量 DOM，归渲染层；
+  // 本内核只出宽度的读写、自动列宽与持久化，外加这面「正在拖列宽」的旗（ensureVisible 据它让开，见那里）。
   const resizing = ref(false)
-  function onResizeDown(e, col) {
-    if (e.button !== 0) return
-    e.preventDefault(); e.stopPropagation()
-    rzCol = col; rzX = e.clientX; rzW = widthOf(col); resizing.value = true
-    const mv = (ev) => { if (rzCol) setWidth(rzCol, rzW + (ev.clientX - rzX)) }
-    const up = () => { const c = rzCol; rzCol = null; resizing.value = false; window.removeEventListener('mousemove', mv); window.removeEventListener('mouseup', up); document.body.style.cursor = ''; if (c) commitWidths([c.key]) }
-    document.body.style.cursor = 'col-resize'
-    window.addEventListener('mousemove', mv); window.addEventListener('mouseup', up)
-  }
   watch(() => colList().map((c) => c.key).join('\u0001'), () => { nextTick(fitMissing) })
   onMounted(() => nextTick(fitMissing))
 
@@ -805,7 +803,7 @@ export function useGridSelect(cfg) {
     // 排序
     sortable, sort, sortDirOf, setSort, toggleSort, clearSort,
     // 列宽
-    widths, widthOf, setWidth, commitWidths, autoFitCol, autoFitAll, onResizeDown, resizing,
+    widths, widthOf, setWidth, setWidths, commitWidths, autoFitCol, autoFitAll, resizing,
     // 填充柄
     fill, inFill, isFillAnchor, onFillDown, onFillDbl, fillDown,
     // 行增删 + 右键菜单

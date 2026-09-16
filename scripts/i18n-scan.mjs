@@ -82,6 +82,36 @@ function isNoise(s) {
   return false
 }
 
+// ══ 两关共用的两道「不归词典管」的判据 ═══════════════════════════════════════
+// 有意保持中文的（不是漏译）：写进存档的默认名、控制台日志、导出文件名、生成时已按语言分流的
+const INTENDED = [
+  /^\[PDF导出\]/, /^\[ssa\]/,                               // 控制台日志
+  /^(点|发|收|地球站|点标记|设置|站型|城市组|批次|算例|副本)\s?\$\{/,   // 新建对象的默认名 = 数据
+  /^\$\{[^}]*\}dBW·/,                                       // 生成的预设名 = 数据
+  /报告_\$\{|曲线_\$\{|图_\$\{/,                            // 导出文件名
+  /^图 \$\{no\} \$\{title\}$/,                              // 报告文档区的图题：生成时已按 lang 出「Figure n」
+  /^(当日缓存|直连|云镜像|本地缓存|旧缓存|内置快照|示例)$/,  // 取数来源读数词：byLang / D(zh,en) 自己出中英
+  /^\$\{[^}]*\}星\$\{[^}]*\}跳$/, /^端到端 \$\{/, /^\$\{Number\(/, /^(永久|永久授权|自定义期限)$/  // byLang 自己出中英
+]
+// byLang(中文, English) 已在生成时按平台语言出字，里面的中文不归呈现层管 —— 整个调用挖掉
+function stripByLang(src) {
+  let out = '', i = 0
+  for (;;) {
+    const k = src.indexOf('byLang(', i)
+    if (k < 0) { out += src.slice(i); return out }
+    out += src.slice(i, k) + 'byLang()'
+    let d = 1, j = k + 7, q = ''
+    for (; j < src.length && d > 0; j++) {
+      const c = src[j]
+      if (q) { if (c === q && src[j - 1] !== '\\') q = ''; continue }
+      if (c === '"' || c === "'" || c === '`') { q = c; continue }
+      if (c === '(') d++
+      else if (c === ')') d--
+    }
+    i = j
+  }
+}
+
 const SCAN_DIRS = ['src', 'electron', 'packages/core/utils', 'packages/core/data']
 const files = []
 for (const d of SCAN_DIRS) {
@@ -101,7 +131,8 @@ for (const f of files) {
   const rel = path.relative(ROOT, f).replace(/\\/g, '/')
   if (rel === 'src/shared/i18n/uiDict.data.js') continue
   if (rel === 'src/shared/cmdKeywords.js') continue   // 标题栏搜索框的匹配关键词：只参与检索、不显示，不进词典
-  const src = fs.readFileSync(f, 'utf8')
+  // 与下面那关同一口径：byLang 的整段调用挖掉（已双语的不算缺口，不必进词典）
+  const src = stripByLang(fs.readFileSync(f, 'utf8'))
   const ext = path.extname(f)
   const put = (raw) => { const s = condense(raw); if (s && !isNoise(s) && HAN.test(s) && !found.has(s)) found.set(s, rel) }
   if (ext === '.vue') {
@@ -132,6 +163,7 @@ const misses = []
 for (const [s, at] of found) {
   if (dict.EXACT[s] !== undefined) { hitE++; continue }
   if (pats.some((re) => re.test(s))) { hitP++; continue }
+  if (INTENDED.some((re) => re.test(s))) { hitP++; continue }   // 有意保持中文的不算缺口
   misses.push([s, at])
 }
 const total = found.size
@@ -284,32 +316,6 @@ function tplTextNodes(tpl) {
   return out
 }
 
-// 有意保持中文的（不是漏译）：写进存档的默认名、控制台日志、导出文件名、生成时已按语言分流的
-const INTENDED = [
-  /^\[PDF导出\]/,
-  /^(点|发|收|地球站|点标记|设置|站型|城市组|批次|算例|副本)\s?\$\{/,   // 新建对象的默认名 = 数据
-  /^\$\{[^}]*\}dBW·/,                                       // 生成的预设名 = 数据
-  /报告_\$\{|曲线_\$\{|图_\$\{/,                            // 导出文件名
-  /^\$\{[^}]*\}星\$\{[^}]*\}跳$/, /^端到端 \$\{/, /^\$\{Number\(/, /^(永久|永久授权|自定义期限)$/  // byLang 自己出中英
-]
-// byLang(中文, English) 已在生成时按平台语言出字，里面的中文不归呈现层管 —— 整个调用挖掉
-function stripByLang(src) {
-  let out = '', i = 0
-  for (;;) {
-    const k = src.indexOf('byLang(', i)
-    if (k < 0) { out += src.slice(i); return out }
-    out += src.slice(i, k) + 'byLang()'
-    let d = 1, j = k + 7, q = ''
-    for (; j < src.length && d > 0; j++) {
-      const c = src[j]
-      if (q) { if (c === q && src[j - 1] !== '\\') q = ''; continue }
-      if (c === '"' || c === "'" || c === '`') { q = c; continue }
-      if (c === '(') d++
-      else if (c === ')') d--
-    }
-    i = j
-  }
-}
 const rt = new Map()
 for (const f of files) {
   const rel = path.relative(ROOT, f).replace(/\\/g, '/')

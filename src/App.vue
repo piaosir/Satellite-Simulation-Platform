@@ -146,6 +146,7 @@ function openRain() { window.api?.rainAttenuation?.open?.() }
 function openCi() { window.api?.interference?.open?.() }
 function openPfdMask() { window.api?.pfdMask?.open?.() }
 function openFreqPlan() { window.api?.freqPlan?.open?.() }
+function openSsa() { window.api?.ssa?.open?.() }
 
 function pickView(flat) {
   if (view.flat === flat) return
@@ -186,6 +187,8 @@ const stepZoom = (d) => { const t = Math.max(0, Math.min(ZOOM_TMAX, zoom.value +
 const menus = computed(() => [
   { key: 'file', label: '文件', items: [
     { label: '文件管理…', icon: 'folder-open', lock: true, hint: '管理轨道星历 / 天线方向图 / 频率计划 / GXT · KML 覆盖文件库（导入 / 导出 / 删除）', run: () => { fileOpen.value = true } },
+    // 与文件管理同组：编目与星历都是「已有的资料」，本模块只统计不计算，不产出任何工程结论
+    { label: '空间态势报告…', icon: 'insert-chart', lock: true, hint: 'CelesTrak 卫星编目（SATCAT）与星历统计：全量或聚焦我的卫星组，生成电子报告并可导出 Word（独立窗口）', run: openSsa },
     // 频率计划是「文件」不是「计算」：它与天线方向图平级、同挂在卫星下，本身不产出任何计算结果，
     // 只是被链路预算引用的一份资料。故归文件区，不留在计算菜单里。
     { label: '转发器频率计划…', icon: 'freq-plan', lock: true, hint: '转发器频率排布与频率分配表：挂在卫星下、与天线方向图平级；供链路预算引用，可导出 PNG / PDF（独立窗口）', run: openFreqPlan },
@@ -250,6 +253,7 @@ function runItem(it) {
 // ---- 工具栏（只放侧栏覆盖不到的动作：文件 / 计算窗口 / 视图切换 / 导出 / 设置；面板切换交给活动栏，不重复）----
 const toolButtons = computed(() => [
   { icon: 'folder-open', tip: '文件管理', lock: true, run: () => { fileOpen.value = true } },
+  { icon: 'insert-chart', tip: '空间态势报告', lock: true, run: openSsa },
   // 与文件管理同组：频率计划挂在卫星下、与 GRD 天线平级，属文件区而非计算区
   { icon: 'freq-plan', tip: '转发器频率计划', lock: true, run: openFreqPlan },
   { sep: true },

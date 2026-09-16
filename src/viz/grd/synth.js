@@ -457,14 +457,17 @@ export function buildGaussGrd({ satName = '', satLon, satLat = 0, altKm, effPct 
 //   故取 8（-3dB 环≈8 格宽、半径≈4 格 → 圆滑）。θ 取 SYNTHMETA.theta3（生成时写入的真值）；老档无该字段时
 //   由窗宽反推，换算因子随窗口 span 而异（高斯 span=1.8 → 窗全宽 3.6θ；相控阵 span=4.0 → 8θ）。总点数封顶防
 //   文本/解析失控（各 set 现为全幅公共网格、波束外为地板，比原「贴身小窗口」体积大，属 SATSOFT 同网格前提下的必然代价）。
-export function repackGrdCommonGrid(text, { floorDb = -50, cap = 2_000_000, ptsPerBw = 8 } = {}) {
+// 分片版：返回若干文本片，拼起来（parts.join('')）与 repackGrdCommonGrid 逐字节相同。
+// 封顶 2e6 点的公共网格拼成一个整串就是一百多 MB，V8 里既是一次大分配、又要在写盘时再复制一遍；
+// 导出走分片直接逐片写盘，峰值只有一片的大小。
+export function repackGrdCommonGridParts(text, { floorDb = -50, cap = 2_000_000, ptsPerBw = 8, rowsPerPart = 65536 } = {}) {
   let g
-  try { g = parseGrd(text) } catch { return text }
+  try { g = parseGrd(text) } catch { return [text] }
   const sets = (g && g.sets) || []
-  if (sets.length <= 1) return text                            // 单 set：无歧义，原样返回
+  if (sets.length <= 1) return [text]                          // 单 set：无歧义，原样返回
   const s0 = sets[0]
   const sameGrid = sets.every((s) => s.XS === s0.XS && s.YS === s0.YS && s.XE === s0.XE && s.YE === s0.YE && s.NX === s0.NX && s.NY === s0.NY)
-  if (sameGrid) return text                                    // 已是公共网格（真实多波束/多频文件）→ 不动
+  if (sameGrid) return [text]                                  // 已是公共网格（真实多波束/多频文件）→ 不动
   let meta = null
   const mm = /^SYNTHMETA\s+(\{.*\})\s*$/m.exec(text)
   if (mm) { try { meta = JSON.parse(mm[1]) } catch { /* 元数据不可解析 → 走窗宽反推 */ } }
@@ -505,6 +508,7 @@ export function repackGrdCommonGrid(text, { floorDb = -50, cap = 2_000_000, ptsP
   const dimLine = ` ${NX} ${NY} 0`
   const parts = [head.join('\r\n')]
   const NN = NX * NY, a1buf = new Float64Array(NN), a2buf = new Float64Array(NN)
+  const rowsCap = Math.max(1, Math.round(rowsPerPart))
   for (const s of sets) {
     const peakAmp = Math.sqrt(Math.max(0, s.peakLin))                                  // 原始波束峰值幅度（= 本平台原生读到的峰）
     const floorAmp = peakAmp * Math.pow(10, floorDb / 20)                              // 窗外地板幅度（相对该 set 峰值 floorDb）
@@ -527,13 +531,19 @@ export function repackGrdCommonGrid(text, { floorDb = -50, cap = 2_000_000, ptsP
     // 峰值守恒：整体缩放使网格峰 = 原峰 → 重导入/SATSOFT 读到的峰值与本平台原生一致（否则重采样丢 ~0.1 dB，
     // 出现「原生 47.77 / 导出 47.66」）。dB 域为平移常量：波束形状、相对等值线位置完全不变，仅补回被格点离散吃掉的峰。
     const boost = aMax > 0 ? peakAmp / aMax : 1
-    const L = new Array(NN + 2)
-    L[0] = gridLim; L[1] = dimLine
-    for (let idx = 0; idx < NN; idx++) L[idx + 2] = ` ${fexp(a1buf[idx] * boost)} ${zero} ${fexp(a2buf[idx] * boost)} ${zero}`
-    parts.push(L.join('\r\n'))
+    parts.push(`\r\n${gridLim}\r\n${dimLine}`)
+    let L = []
+    for (let idx = 0; idx < NN; idx++) {
+      L.push(` ${fexp(a1buf[idx] * boost)} ${zero} ${fexp(a2buf[idx] * boost)} ${zero}`)
+      if (L.length >= rowsCap) { parts.push('\r\n' + L.join('\r\n')); L = [] }
+    }
+    if (L.length) parts.push('\r\n' + L.join('\r\n'))
   }
-  return parts.join('\r\n') + '\r\n'
+  parts.push('\r\n')
+  return parts
 }
+
+export function repackGrdCommonGrid(text, opts) { return repackGrdCommonGridParts(text, opts).join('') }
 
 // ================= 相控阵模型（SATSOFT/PAM Analytic Phased Array，手册 §6.5） =================
 // 矩形阵列 + Butler 矩阵：波束方向图 = 两向【归一化阵因子(Dirichlet 核)】× 单元因子 cos^R(θ)（eq 6.13）。

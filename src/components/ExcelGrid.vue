@@ -1,5 +1,5 @@
 <script setup>
-// Excel 式数据网格（渲染层）：序号列 + 列头（选列/排序/拖宽）+ 单元格（框选/编辑/填充柄）+ 右键菜单。
+// Excel 式数据网格（渲染层）：序号列 + 列头（选列/排序）+ 列边界线（拖宽/双击自适应）+ 单元格（框选/编辑/填充柄）+ 右键菜单。
 // 交互内核全在 src/viz/grd/useGridSelect.js，本组件只负责把它铺成 DOM —— 对地性能表、对星性能表、
 // 标记批量表格、波束批量表格共用这一份，改一处四处同步（此前是四份近乎同源的 <table> 各写一遍）。
 //
@@ -78,8 +78,9 @@ function reobserve() {
   if (hc.idx) fzRO.observe(hc.idx)
   for (let i = 0; i < Math.min(g.frozenCount.value, hc.ths.length); i++) fzRO.observe(hc.ths[i])
 }
-function onScroll() { const el = g.bodyEl.value; if (el) fzScrolled.value = el.scrollLeft > 0 }
-watch([() => g.frozenCount.value, vcols, () => g.widths.value], () => nextTick(() => { reobserve(); measureFrozen() }))
+function onScroll() { const el = g.bodyEl.value; if (el) fzScrolled.value = el.scrollLeft > 0; rzLastX = -1 }
+watch([() => g.frozenCount.value, vcols], () => nextTick(() => { reobserve(); measureFrozen() }))
+watch(() => g.widths.value, () => nextTick(measureFrozen))   // 只是宽度变了（拖动中每帧都变）：观察对象没换，重量即可
 onMounted(() => {
   fzRO = new ResizeObserver(() => measureFrozen())
   nextTick(() => { reobserve(); measureFrozen(); onScroll() })
@@ -129,17 +130,132 @@ function endFzDrag() {
   window.removeEventListener('mouseup', onFzUp)
   window.removeEventListener('keydown', onFzKey, true)
 }
+
+// ===== 列宽：整条列边界线可拖（照搬链路预算 StationGrid.vue 的那套）=====
+// 光标压到任一列的右边界线 ±RZ_TOL 内就转 col-resize：**表头与数据行上都行**，不是只有表头格里靠右那一小条；
+// 按下即开拖 —— 在滚动容器的 capture 阶段截住，不进格子的框选 / 列头的整列选择；拖动中列宽实时改，
+// 另有一条贯穿整表高的引导线跟着光标（.eg-rzline，同冻结条画法）；双击边界线＝自动列宽；
+// 被拖的列若在「整列选中」的选区里，选区内各列一起设成同一宽度（Excel：选中多列后拖任一条边界）。
+// ★ 冻结条 .eg-fzbar 不在任何 td / th 里 —— rzHit 一律落空，故拖它仍是改冻结位置而不是改列宽。
+const RZ_TOL = 4
+const MIN_COL_W = 40                        // 与内核 MIN_W 同档（真正的钳位在 setWidths 里）
+const rz = reactive({ on: false, hover: -1, x: 0 })
+let rzX0 = 0, rzW0 = 0, rzRight0 = 0, rzNext = 0, rzRaf = 0, rzCols = [], rzLastX = -1, rzCi = -1
+// 屏幕 x → 容器内容盒 x（引导线是 sticky 在滚动视口左沿的，故与横滚无关）。clientLeft＝左边框，.mcgrid 那台有 1px
+const hostX = (clientX) => { const el = g.bodyEl.value; return el ? clientX - el.getBoundingClientRect().left - el.clientLeft : clientX }
+// 光标处最近的列边界 { ci: 显示序列号, col, right: 边界线 clientX }；不在任何边界 ±RZ_TOL 内、或压在格内控件上 → null
+function rzHit(e) {
+  const t = e.target
+  if (!t || !t.closest) return null
+  const cell = t.closest('td, th')
+  if (!cell) return null                     // 冻结条 / 空白处：不是格子，不接管
+  const k = cell.classList
+  if (k.contains('eg-idx') || k.contains('eg-act') || k.contains('eg-pad') || k.contains('eg-empty')) return null
+  if (cell.closest('tr.eg-addrow')) return null
+  // 格内控件贴着右缘的（填充柄、枚举列 ▾、操作按钮、编辑框）优先归它们自己
+  // ★ .eg-dd 是 16px 宽、贴着格子右缘，且悬停行上整行都现形：枚举列（col.options）不要排在最末一列，
+  //   否则那条边界在悬停行上只剩右侧 4px 可抓。
+  if (t.closest('button, input, select, textarea, .eg-handle, .eg-dd')) return null
+  const el = g.bodyEl.value, hc = headCells()
+  if (!el || !hc) return null
+  const fzRight = el.getBoundingClientRect().left + el.clientLeft + (g.fzW.value || 0)
+  const n = Math.min(hc.ths.length, vcols.value.length)
+  let best = null
+  for (let i = 0; i < n; i++) {
+    const r = hc.ths[i].getBoundingClientRect()
+    if (r.width <= 0) continue
+    // 边界横滚到冻结区底下了：屏幕上看不见，不许命中。冻结列自己的边界不在此列 ——
+    // ★ 冻结区最后一列的右缘＝冻结缝，冻结条 .eg-fzbar 压在上面（[缝-3, 缝+4]）先接到鼠标，只剩最外侧 1px 落到格子上；
+    //   那 1px 仍按改列宽走，否则冻结起来的列就再也拖不动宽了。
+    if (!g.isFrozen(i) && r.right <= fzRight + RZ_TOL) continue
+    const d = Math.abs(e.clientX - r.right)
+    if (d <= RZ_TOL && (!best || d < best.d)) best = { ci: i, col: vcols.value[i], right: r.right, d }
+  }
+  return best
+}
+// 与被拖列同宽的那批列：整列选区里拖其中一条边界 → 选区内全部列；否则只有这一列。
+// ★ 出的是**列对象**不是列号：列号是显示序，拖动中列集若变了（气象表的列由主窗口推过来、冻结/取消冻结）就指错人；
+//   列对象只按 col.key 落宽度，换了身份也认得同一列。
+function rzGroupOf(ci) {
+  const vc = vcols.value
+  if (!g.colSelected(ci)) return [vc[ci]].filter(Boolean)
+  const out = []
+  for (let i = 0; i < vc.length; i++) if (g.colSelected(i)) { if (vc[i]) out.push(vc[i]) }
+  return out
+}
+// 补发的 click 不拦：边界 ±RZ_TOL 内没有任何带 click 的东西 —— 列头文字 .eg-ht 被 th 的 8px 内边距挡在外面，
+// 格子只有 dblclick。拦了反而把容器的 @click=focusGrid 一并拦掉，拖完列宽键盘焦点就丢了。
+function onRzMove(e) {
+  if (rz.on || e.buttons) return             // 拖动中 / 按着键（框选、填充、列选）不改悬停态
+  if (e.clientX === rzLastX) return          // 纵向移动不必重量：边界是竖线，只跟 x 走（横滚会挪边界，见 onScroll）
+  rzLastX = e.clientX
+  const h = rzHit(e)
+  rz.hover = h ? h.ci : -1
+}
+function onRzLeave() { if (!rz.on) rz.hover = -1 }
+function onRzDownCap(e) {
+  if (e.button !== 0 || rz.on) return
+  const h = rzHit(e); if (!h) return
+  e.preventDefault(); e.stopPropagation()
+  if (g.edit.value.ri >= 0) g.commitEdit()
+  const el = g.bodyEl.value, th = headCells().ths[h.ci]
+  rz.on = true; rz.hover = h.ci; rzCi = h.ci; g.resizing.value = true   // 内核的 ensureVisible 据此让开，别在拖动中把表滚走
+  rzX0 = e.clientX; rzRight0 = h.right; rzW0 = th ? th.getBoundingClientRect().width : g.widthOf(h.col); rzNext = 0
+  rz.x = hostX(rzRight0)
+  rzCols = rzGroupOf(h.ci)
+  if (el) fzH.value = el.clientHeight         // 引导线贯穿可视高（拖动中不重量）
+  document.body.style.cursor = 'col-resize'
+  window.addEventListener('mousemove', onResizeMove)
+  window.addEventListener('mouseup', onResizeUp)
+}
+function onRzDblCap(e) {
+  if (e.button !== 0) return
+  const h = rzHit(e); if (!h) return
+  e.preventDefault(); e.stopPropagation()
+  for (const c of rzGroupOf(h.ci)) g.autoFitCol(c)
+}
+function onResizeMove(e) {
+  rzNext = Math.max(MIN_COL_W, Math.round(rzW0 + e.clientX - rzX0))
+  rz.x = hostX(rzRight0 + rzNext - rzW0)      // 引导线＝边界线的新位置：跟光标走，撞到最小宽就停在那
+  if (!rzRaf) rzRaf = requestAnimationFrame(() => {
+    rzRaf = 0
+    if (!rz.on) return
+    g.setWidths(rzCols, rzNext)
+    // ★ 宽度落地后按**实测边界**重钉一次引导线：已经横滚到最右头时收窄列，表总宽一缩、浏览器把 scrollLeft 往回夹，
+    //   内容整体右移而边界其实没跟着光标走 —— 只按光标推算的话，线会离边界越来越远（偏移量＝整段拖动距离）。
+    nextTick(() => {
+      if (!rz.on) return
+      const hc = headCells(), th = hc && hc.ths[rzCi]
+      if (th) rz.x = hostX(th.getBoundingClientRect().right)
+    })
+  })
+}
+function onResizeUp() {
+  window.removeEventListener('mousemove', onResizeMove)
+  window.removeEventListener('mouseup', onResizeUp)
+  if (rzRaf) { cancelAnimationFrame(rzRaf); rzRaf = 0 }
+  document.body.style.cursor = ''
+  if (rz.on && rzNext) {                      // 只点没拖：不改宽，也不落盘
+    g.setWidths(rzCols, rzNext)
+    g.commitWidths(rzCols.map((c) => c.key))
+  }
+  rz.on = false; rz.hover = -1; rzCols = []; rzCi = -1; g.resizing.value = false
+}
+onBeforeUnmount(onResizeUp)
 </script>
 
 <template>
-  <div class="eg-scroll" :ref="el => g.bodyEl.value = el" tabindex="0"
-       @keydown="g.gridKey" @wheel="g.onWheel" @click="g.focusGrid" @scroll="onScroll">
+  <div class="eg-scroll" :class="{ 'rz-hover': rz.hover >= 0 || rz.on }" :ref="el => g.bodyEl.value = el" tabindex="0"
+       @keydown="g.gridKey" @wheel="g.onWheel" @click="g.focusGrid" @scroll="onScroll"
+       @mousemove="onRzMove" @mouseleave="onRzLeave" @mousedown.capture="onRzDownCap" @dblclick.capture="onRzDblCap">
     <!-- 冻结线覆盖条：sticky 钉在滚动视口左沿再按实测偏移平移，故**不随横滚跑**；
          height:0 不占流，线体在内部的 <i> 上。拖它改冻结位置，双击取消全部冻结。 -->
     <div v-if="g.frozenCount.value" class="eg-fzbar" :class="{ scrolled: fzScrolled, drag: fzDrag.on }"
          :style="{ transform: 'translateX(' + (fzDrag.on ? fzDrag.x : g.fzW.value) + 'px)' }"
          :title="'已冻结 ' + g.frozenCount.value + ' 列 · 拖动改冻结位置 · 双击取消冻结'"
          @mousedown="onFzDown" @dblclick.stop="g.unfreeze()"><i :style="{ height: fzH + 'px' }"></i></div>
+    <!-- 拖列宽时跟着光标走、贯穿整表高的引导线：同冻结条画法（sticky 钉在滚动视口左沿再 translateX），故不随横滚跑 -->
+    <div v-if="rz.on" class="eg-rzline" :style="{ transform: 'translateX(' + rz.x + 'px)' }"><i :style="{ height: fzH + 'px' }"></i></div>
     <table class="eg-tbl" :style="g.fzVars.value">
       <colgroup>
         <col v-if="serial" style="width:38px" />
@@ -159,7 +275,6 @@ function endFzDrag() {
             <span class="eg-ht" @click="g.toggleSort(c)">{{ c.label }}<i v-if="unitOf(c)" class="eg-u">({{ unitOf(c) }})</i><em v-if="c.na">*</em>
               <Icon v-if="g.sortDirOf(c.key)" class="eg-sort" :name="g.sortDirOf(c.key) > 0 ? 'chevron-up' : 'chevron-down'" :size="12" />
             </span>
-            <span class="eg-rz" title="拖拽改列宽 · 双击自适应" @mousedown.left.stop="g.onResizeDown($event, c)" @dblclick.stop="g.autoFitCol(c)"></span>
           </th>
           <th v-if="actionsWidth > 0" class="eg-act"></th>
           <th class="eg-pad"></th>
@@ -294,18 +409,21 @@ function endFzDrag() {
 .eg-tbl td { color: var(--text); }
 .eg-u { font-style: normal; color: var(--text-faint); font-weight: 400; font-size: .9em; margin-left: 2px; }
 .eg-tbl th.eg-h em { color: var(--text-faint); font-style: normal; }
-/* 列头：overflow 必须放开，否则右缘那道列宽把手（-3px 出檐）被裁掉；省略号交给内部的 .eg-ht。
+/* 列头：省略号交给内部的 .eg-ht，故 th 自身 overflow 放开即可（列宽把手已撤，改为整条边界线可拖，见 .eg-rzline）。
    ★ 不许在这里写 position:relative —— 它比基础规则的 position:sticky 更具体，会把粘性表头打回普通流
-   （症状：滚动时表头跟着滚走）。sticky 本身就是定位元素，把手用 absolute 已经能锚在它上面。 */
+   （症状：滚动时表头跟着滚走）。 */
 .eg-tbl th.eg-h { overflow: visible; }
 .eg-ht { display: inline-flex; align-items: center; gap: 2px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 .eg-tbl th.eg-h.sortable .eg-ht { cursor: pointer; }
 .eg-tbl th.eg-h.sortable:hover { color: var(--text); }
 .eg-tbl th.eg-h.colsel { background: color-mix(in srgb, var(--accent-ui) 22%, var(--panel, var(--bg))); color: var(--text); }
 .eg-sort { color: var(--accent-ui); flex: none; }
-/* 列宽把手：贴在列头右缘，鼠标压上去才现形 */
-.eg-rz { position: absolute; top: 0; right: -3px; width: 7px; height: 100%; cursor: col-resize; z-index: 4; }
-.eg-rz:hover { background: color-mix(in srgb, var(--accent) 55%, transparent); }
+/* 列边界线拖拽：光标压在任一列右边界 ±4px 内，整个容器转 col-resize（格子自带的 cell / pointer 光标要 !important 才压得过）；
+   拖动中 .eg-rzline 是跟着光标走、贯穿整表高的引导线。scoped 下 `*` 只罩得住本组件的节点，插槽里的（操作列按钮）罩不着——
+   那几列本就不接管边界拖拽，正好。 */
+.eg-scroll.rz-hover, .eg-scroll.rz-hover * { cursor: col-resize !important; }
+.eg-rzline { position: sticky; top: 0; left: 0; height: 0; width: 0; z-index: 9; pointer-events: none; }
+.eg-rzline > i { position: absolute; top: 0; left: -1px; width: 2px; display: block; background: var(--accent); opacity: .85; }
 /* 序号列：sticky 左固定，点/拖选整行 */
 .eg-tbl th.eg-idx, .eg-tbl td.eg-idx { position: sticky; left: 0; z-index: 2; padding: 3px 4px; text-align: right; color: var(--text-faint); font-family: var(--font-mono); font-size: var(--fs-1); background: var(--panel, var(--bg)); cursor: pointer; user-select: none; }
 .eg-tbl thead th.eg-idx { z-index: 5; cursor: cell; }

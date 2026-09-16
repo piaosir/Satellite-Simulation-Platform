@@ -1527,7 +1527,7 @@ onMounted(async () => {
           </LbSection>
 
           <!-- 中：链路条编辑器 ‖ 右：检查器 -->
-          <LbSection id="chain" title="链路构成" flow="chain" :summary="cur ? cur.name : ''">
+          <LbSection id="chain" title="链路构成" flow="chain" :no="cur ? curIdx + 1 : 0" :summary="cur ? cur.name : ''">
             <div class="e2-mid">
               <div class="e2-strip">
                 <ChainStrip :row="cur" :result="curResult" :sel="sel"
@@ -1641,7 +1641,7 @@ onMounted(async () => {
           </LbSection>
 
           <!-- 下：结果文档区 -->
-          <LbSection id="detail" title="详细预算" :summary="cur ? cur.name : ''">
+          <LbSection id="detail" title="详细预算" :no="cur ? curIdx + 1 : 0" :summary="cur ? cur.name : ''">
             <div v-if="cur && errors[cur._id]" class="lb-err">{{ errors[cur._id] }}</div>
             <div v-else-if="!segments.length" class="lb-placeholder">尚无预算结果。</div>
             <div v-else class="lbx-doc e2-doc">
@@ -1784,6 +1784,9 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .e2-tbl tbody tr:last-child { border-bottom: 2px solid var(--lb-rule-strong); }
 .e2-tbl tbody tr:hover { background: var(--surface); }
 .e2-tbl tbody tr.on { background: var(--surface-2); }
+/* 当前行的序号格整格点亮——与另三窗 StationGrid 的 tr.cur > td.sg-sel 同一枚标记，
+   下方「链路构成」「详细预算」节头那两枚 #n 与它同形。tr.on 原有的整行灰底保留。 */
+.e2-tbl tbody tr.on > td.c-idx { background: var(--accent-ui); color: var(--bg); font-weight: 700; }
 .e2-tbl td { padding: 2px 8px; text-align: right; color: var(--text); white-space: nowrap; }
 /* 行号列：--text-faint 在明暗两主题分别只有 2.5 / 3.1，而它是「第几条链路」的定位列，
    不是装饰——退一档到 muted（5.4 / 6.8），全窗其余文本与控件也一律 ≥4.5。 */

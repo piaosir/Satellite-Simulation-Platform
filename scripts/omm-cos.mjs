@@ -54,6 +54,8 @@ function request(method, key, body, auth) {
   })
 }
 
+// 按文件名枚举快照里的键（不读 manifest、不比对 GROUP_QUERY）：GP 的 17 个星座组之外，
+// 非星历的数据集（csv_satcat.csv.gz）也因此自动进 seed / status，桶键与客户端 ommCloud.objKey 同形。
 const groupsInSnapshot = () => {
   if (!existsSync(SNAP_DIR)) return []
   return readdirSync(SNAP_DIR).filter((f) => /^csv_.+\.csv\.gz$/.test(f)).map((f) => f.slice(4, -7)).sort()

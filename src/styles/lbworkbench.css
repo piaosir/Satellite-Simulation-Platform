@@ -584,8 +584,12 @@ html[data-theme='dark'] .sg-cell .sg-fillbar::after {
 .lbx-rowline { display: grid; grid-template-columns: 148px minmax(0, 1fr); column-gap: 14px; align-items: start; padding: 3px 2px 4px; border-top: 1px solid var(--lb-rule-soft); }
 .lbx-rr-hd { display: flex; flex-direction: column; gap: 1px; min-width: 0; padding-top: 2px; }
 /* 行号 + 站对名：定宽栏里长站名折行显示，不裁 */
-.lbx-rr-id { font-size: calc(var(--lb-fs) - 1px); color: var(--text-faint); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-.lbx-rr-id em { font-style: normal; margin-left: 5px; font-weight: 600; color: var(--text-muted); }
+/* 「#3」＝链路表里被点亮那一行的行号，与表里那一格严格同形（实底 accent-ui + var(--bg) 的字，
+   见 StationGrid 的 tr.cur > td.sg-sel）——读数与表格靠这枚同形的小标对上号。
+   底色只能罩在行号自己的元素上：站对名在 <em> 里，连着罩就成了一整条蓝带。 */
+.lbx-rr-id { font-size: var(--lb-fs); color: var(--text-muted); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.lbx-rr-no { display: inline-block; padding: 0 5px; border-radius: var(--r-ctl, 2px); background: var(--accent-ui); color: var(--bg); font-weight: 700; }
+.lbx-rr-id em { font-style: normal; margin-left: 5px; font-size: calc(var(--lb-fs) - 1px); font-weight: 600; color: var(--text-muted); }
 /* 列宽下限 --lbx-rr-w 由 LbCapFoot 量最宽的一格挂上来（标签 + 数值 + 引导线），没量到前先按 168px；
    min(…, 100%) 防极窄时一格撑破网格。标签 flex:none 不裁不缩——格宽本来就是按它量的 */
 .lbx-rr-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(var(--lbx-rr-w, 168px), 100%), 1fr)); column-gap: 18px; row-gap: 0; min-width: 0; }

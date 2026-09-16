@@ -1249,7 +1249,15 @@ const rowReadout = computed(() => {
   }
   const name = link ? `${link.txName} → ${link.rxName}`
     : [row.earthStationLocation, row.rxEarthStationLocation].filter(Boolean).join(' → ')
-  return { no: idx + 1, name, err: (link && link.error) || '', items }
+  return { no: idx + 1, rowId: row._id, name, err: (link && link.error) || '', items }
+})
+// 「详细预算」节头那枚行号：由 sel 反算，与该节自己的摘要（站对名）同源。
+// 不能照搬 rowReadout.no —— onRowFocus 只在该行**已算出结果**时才推进 selected，聚焦到一条尚未
+// 计算的新行时详细预算画的仍是原来那条链路，两处编号本就该不同，同源才不会出现自相矛盾的节头。
+const detailNo = computed(() => {
+  const s = sel.value
+  if (!s || !links.value.length) return 0
+  return linkRows.findIndex((r) => r._id === s.rowId) + 1
 })
 
 async function compute() {
@@ -2212,7 +2220,7 @@ onMounted(async () => {
               </span>
             </template>
             <div class="lbx-grid">
-              <StationGrid grid-id="ngso.links" :stations="linkRows" :fields="gridFields" :groups="gridGroups" :extra-values="gridVals" :cell-class="cellClassFn"
+              <StationGrid grid-id="ngso.links" :focus-id="rowReadout ? rowReadout.rowId : ''" :stations="linkRows" :fields="gridFields" :groups="gridGroups" :extra-values="gridVals" :cell-class="cellClassFn"
                 :cell-sub="cellSubFn" :cell-tag="cellTagFn" :cell-fill="cellFillFn" :freeze-keys="false"
                 :cities="cities" :city-search="citySearch" label="链路" :auto-geo="autoGeoRow"
                 :select-options="{ basebandId: basebandSelectOptions, stationId: esSelectOptions, rxStationId: esSelectOptions, satelliteId: satColOptions }"
@@ -2221,7 +2229,7 @@ onMounted(async () => {
             </div>
             <LbCapFoot :cap="capacitySummary" :cap-main="capMain" :bw-main="bwMain" :pbw-main="pbwMain" :readout="rowReadout" />
           </LbSection>
-          <LbSection id="detail" title="详细预算" :summary="sel && links.length ? `${sel.txName} → ${sel.rxName}` : ''">
+          <LbSection id="detail" title="详细预算" :no="detailNo" :summary="sel && links.length ? `${sel.txName} → ${sel.rxName}` : ''">
             <div v-if="error" class="lb-err">{{ error }}</div>
             <div v-else-if="!links.length" class="lb-placeholder">尚无预算结果。</div>
             <div v-else-if="sel && sel.error" class="lb-err">链路 {{ sel.txName }} → {{ sel.rxName }} 计算失败：{{ sel.error }}</div>

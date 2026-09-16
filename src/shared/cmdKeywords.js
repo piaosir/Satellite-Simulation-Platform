@@ -7,6 +7,7 @@
 export const CMD_KW = {
   '文件管理…': ['file manager', 'library', 'files', '星历', '方向图', 'GRD', 'GXT', 'KML', 'MODCOD', '导入', '导出', '资料库'],
   '转发器频率计划…': ['frequency plan', 'transponder', 'freq plan', '频率分配', '转发器', '频率', '信标'],
+  '空间态势报告…': ['ssa', 'space situational awareness', 'satcat', 'catalog', 'celestrak', '编目', '态势', '在轨', '发射', '陨落', '卫星组', 'report', '碎片', '所有者'],
   '导入星历文件…': ['TLE', 'OMM', '3LE', 'CSV', 'KVN', 'import', 'ephemeris', 'CelesTrak', '星历', '两行根数', '离线'],
   '退出': ['exit', 'quit', 'close', '关闭窗口'],
   'GSO 透明转发链路预算': ['GEO', 'link budget', 'bent pipe', 'transparent', '透明转发', '链路预算', '同步轨道', '静止轨道', '弯管'],

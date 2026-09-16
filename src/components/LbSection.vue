@@ -7,6 +7,7 @@
 defineProps({
   id: { type: String, required: true },        // 节 id（滚动定位锚，与模块 key 一致）
   title: { type: String, required: true },
+  no: { type: Number, default: 0 },            // 本节讲的是链路表第几行（0 = 不显示）；与表脚「本行读数」同一枚编号
   count: { type: Number, default: -1 },        // -1 = 不显示计数
   summary: { type: String, default: '' },      // 节头一行摘要（mono）
   flow: { type: String, default: '' }          // 'chain' = 链路构成节（节头左缘画信号流标记）
@@ -17,6 +18,7 @@ defineProps({
   <section class="lbx-sec" :data-sec="id">
     <header class="lbx-sec-hd" :class="{ chain: flow === 'chain' }">
       <span class="lbx-sec-t">{{ title }}</span>
+      <span v-if="no" class="lbx-sec-no">#{{ no }}</span>
       <span v-if="count >= 0" class="lbx-sec-n">{{ count }}</span>
       <span v-if="summary" class="lbx-sec-sum" :title="summary">{{ summary }}</span>
       <span class="lbx-sec-sp"></span>
@@ -43,6 +45,10 @@ defineProps({
   user-select: none;
 }
 .lbx-sec-t { font-size: calc(var(--lb-fs, 11px) + 2px); font-weight: 700; letter-spacing: var(--ls-tight); color: var(--text); white-space: nowrap; }
+/* 行号小标：与链路表里被点亮那一行的序号格、与表脚「本行读数」的 .lbx-rr-no 三处严格同形
+   （实底 accent-ui + var(--bg) 的字）。字号取数据区基准而不是节标题的 +2px —— 实底块跟着标题
+   放大就成了一大块蓝，压过节名本身。 */
+.lbx-sec-no { padding: 0 5px; border-radius: var(--r-ctl, 2px); background: var(--accent-ui); color: var(--bg); font-size: var(--lb-fs, 11px); font-weight: 700; letter-spacing: var(--ls-tight); font-variant-numeric: tabular-nums; }
 .lbx-sec-n { font-size: calc(var(--lb-fs, 11px) - 1px); line-height: 1; color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .lbx-sec-n::before { content: '('; }
 .lbx-sec-n::after { content: ')'; }

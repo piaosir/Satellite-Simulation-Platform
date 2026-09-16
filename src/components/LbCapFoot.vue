@@ -61,7 +61,7 @@ watch(() => props.readout, () => nextTick(() => { observe(); measure() }))
     <div v-if="readout" class="lbx-rowline" title="表格中当前聚焦行的计算结果（指标随「结果列」勾选；点选另一行即切换）">
       <div class="lbx-rr-hd">
         <span class="lbx-cap-t">本行读数</span>
-        <span class="lbx-rr-id" :title="readout.name || ''">#{{ readout.no }}<em v-if="readout.name" data-i18n-skip>{{ readout.name }}</em></span>
+        <span class="lbx-rr-id" :title="readout.name || ''"><b class="lbx-rr-no">#{{ readout.no }}</b><em v-if="readout.name" data-i18n-skip>{{ readout.name }}</em></span>
       </div>
       <div v-if="readout.err" class="lbx-rr-err">{{ readout.err }}</div>
       <div v-else-if="readout.items.length" ref="gridEl" class="lbx-rr-grid">

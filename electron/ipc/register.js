@@ -10,8 +10,13 @@ const createInterference = require('../services/interference')
 const createModcod = require('../services/modcod')
 const admBoundaries = require('../services/admBoundaries')
 
+// 写盘失败的友好文案：目标文件被其他程序占用（PDF/图片查看器打开着）→ EBUSY/EPERM/EACCES。
+const writeErrText = (err) => (err && (err.code === 'EBUSY' || err.code === 'EPERM' || err.code === 'EACCES')
+  ? '文件可能正被其他程序打开（如 PDF 查看器），请关闭后重试'
+  : (err && err.message) || String(err))
+
 // 注册所有 IPC 处理器。core 为返回引擎实例的函数（延迟解析）。
-function register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget, openSunOutage, grd, confirmCloseLinkBudget, openNgso, confirmCloseNgso, openRegen, confirmCloseRegen, openE2e, confirmCloseE2e, openRain, confirmCloseRain, openCi, openPfd, freqPlan, openFreqPlan, notifyFreqPlan, activation, weather, gfs, updater, perfWin }) {
+function register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget, openSunOutage, grd, confirmCloseLinkBudget, openNgso, confirmCloseNgso, openRegen, confirmCloseRegen, openE2e, confirmCloseE2e, openRain, confirmCloseRain, openCi, openPfd, openSsa, confirmCloseSsa, freqPlan, openFreqPlan, notifyFreqPlan, activation, weather, gfs, updater, perfWin }) {
   // 未激活拦截（主进程硬防线；渲染端菜单/工具栏的拦截只是第一道观感）：
   // 各功能窗口的 open 一律先过这里——渲染端被绕过（devtools 直调 IPC）也开不出窗。
   // （下方九处 *:open 仍显式写着 gate(...)，在新的默认全拦之下已是冗余的第二层，无副作用，
@@ -45,7 +50,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     // 检查更新：拿不到激活的老版本也得能升到修好的版本
     'updater:state', 'updater:check', 'updater:install',
     // 窗口关闭确认：拦掉会导致功能窗口关不干净（锁定期间窗口仍在，只是被遮罩盖住）
-    'linkbudget:confirmClose', 'ngso:confirmClose', 'regen:confirmClose', 'e2e:confirmClose', 'rain:confirmClose',
+    'linkbudget:confirmClose', 'ngso:confirmClose', 'regen:confirmClose', 'e2e:confirmClose', 'rain:confirmClose', 'ssa:confirmClose',
     // 性能指标表窗口的中继（开窗 perfwin:open 仍在锁内；这几条只搬运两窗之间的消息，不产出交付物）
     'perfwin:push', 'perfwin:act', 'perfwin:close', 'perfwin:setTitle', 'perfwin:list', 'perfwin:self',
     // ② 浏览面（只读查询，不产出交付物）
@@ -87,6 +92,10 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   ipcMain.handle('omm:load', (_e, group, online) => omm.load(group, online))
   ipcMain.handle('omm:positions', (_e, group, iso) => omm.positions(group, iso))
   ipcMain.handle('omm:csv', (_e, group, opts) => omm.fetchCsv(group, opts))
+  // CelesTrak 卫星编目（SATCAT）：与 17 个 GP 组同一个 fetchCsv、同一条四级众包链路，只是 URL /
+  // 判据 / 标签不同（见 services/omm.js 的 DATASETS）。不在 UNGATED 里 —— 它只服务空间态势报告
+  // 这一个锁内功能，主窗口的浏览面用不到它。
+  ipcMain.handle('satcat:csv', (_e, opts) => omm.fetchCsv('satcat', opts))
 
   // ---- 文件管理：星历导入/导出的六种官方格式 ----
   // 格式选择走【原生对话框的文件类型下拉 + 用户敲的扩展名】：Electron 不回传用户选了哪个 filter，
@@ -119,14 +128,27 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   // ---- 文件管理：OMM 星座组缓存的列举 / 导入替换 / 导出 ----
   ipcMain.handle('omm:list', () => omm.listCsv())
   // 导入并替换某组 OMM：原生选 .csv → 校验 → 覆盖缓存。返回 { ok, key, mtime, count } 或 { canceled }/{ ok:false, error }
+  // 两类数据集共用这一条：17 个星座组的内容是【星历】（走六种官方格式的解析与互转），
+  // SATCAT 的内容是【编目】—— 它没有根数，喂给 parseEphemeris 必然是「无法识别的星历格式」。
+  // 故 satcat 单走一条：判据就是 omm.writeCsvRaw 内部那把尺（validOf → validSatcat），
+  // 原文落盘、不转任何格式。
+  const isCatalog = (key) => key === 'satcat'
+  const CATALOG_LABEL = 'CelesTrak 卫星编目（SATCAT）'
   ipcMain.handle('omm:import', async (e, key) => {
     const win = BrowserWindow.fromWebContents(e.sender)
+    const cat = isCatalog(key)
     const { canceled, filePaths } = await dialog.showOpenDialog(win, {
-      title: `导入星历（替换「${key}」）`, properties: ['openFile'], filters: openFilters()
+      title: cat ? `导入编目（替换「${CATALOG_LABEL}」）` : `导入星历（替换「${key}」）`,
+      properties: ['openFile'],
+      filters: cat ? [{ name: '卫星编目 CSV（CelesTrak satcat.csv）', extensions: ['csv'] }, { name: '所有文件', extensions: ['*'] }] : openFilters()
     })
     if (canceled || !filePaths || !filePaths.length) return { canceled: true }
     try {
       const text = fs.readFileSync(filePaths[0], 'utf8')
+      if (cat) {
+        // writeCsvRaw 自带判据（首行列名 + 行数下限 + 末行 17 列防截断），不合格它会抛
+        return omm.writeCsvRaw(key, text)
+      }
       const r = eph.parseEphemeris(text)
       if (!r.records.length) return { ok: false, error: '文件里没有可用的星历记录：' + (r.errors[0] || '格式不符') }
       // 逐条 SGP4 校验，与自定义库同一把尺。这一路以前只查表头有没有 MEAN_MOTION 那个词，
@@ -146,6 +168,20 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   ipcMain.handle('omm:export', async (e, key, format) => {
     const r = omm.readCsvRaw(key)
     if (!r) return { ok: false, error: '该组暂无本地缓存，请先联网刷新或导入' }
+    const cat = isCatalog(key)
+    // 编目只出原文 CSV：那六种是星历格式，对一份没有根数的编目一个都不适用，
+    // 给出下拉只会让用户选中 .tle 之后拿到一句「缓存解析失败」
+    if (cat) {
+      const win2 = BrowserWindow.fromWebContents(e.sender)
+      const { canceled: c2, filePath: fp2 } = await dialog.showSaveDialog(win2, {
+        defaultPath: 'satcat.csv', filters: [{ name: '卫星编目 CSV（CelesTrak satcat.csv）', extensions: ['csv'] }]
+      })
+      if (c2 || !fp2) return { ok: false, canceled: true }
+      try {
+        fs.writeFileSync(fp2, r.text)
+        return { ok: true, filePath: fp2, format: 'satcat-csv' }
+      } catch (err) { return { ok: false, error: writeErrText(err) } }
+    }
     const pref = eph.FORMAT_EXT[format] || 'csv'
     const win = BrowserWindow.fromWebContents(e.sender)
     const { canceled, filePath } = await dialog.showSaveDialog(win, {
@@ -275,6 +311,22 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     ipcMain.handle('coverageGrd:save', (_e, name, text) => coverageGrd.save(name, text))
     ipcMain.handle('coverageGrd:raw', (_e, file) => coverageGrd.raw(file))
     ipcMain.handle('coverageGrd:remove', (_e, file) => coverageGrd.remove(file))
+    // 方向图原样导出：保存框 + 主进程按字节拷贝，原文一个字节都不进渲染进程（实测件 243 MB）。
+    // 合成件（表头有 SYNTHMETA）要先重打包到公共网格，转换器在渲染端（ESM），故只回 { synth:true }
+    // 让调用方走文本那条；此时尚未弹保存框，不会出现两次框。
+    ipcMain.handle('coverageGrd:exportRaw', async (e, file, defaultName) => {
+      let src
+      try { src = coverageGrd.exportSrc(file) } catch (err) { return { ok: false, error: err.message || String(err) } }
+      if (src.synth) return { ok: false, synth: true }
+      const win = BrowserWindow.fromWebContents(e.sender)
+      const { canceled, filePath } = await dialog.showSaveDialog(win, {
+        defaultPath: defaultName || 'pattern.grd',
+        filters: [{ name: 'GRASP 网格', extensions: ['grd'] }, { name: '所有文件', extensions: ['*'] }]
+      })
+      if (canceled || !filePath) return { ok: false, canceled: true }
+      try { fs.copyFileSync(src.path, filePath); return { ok: true, filePath } }
+      catch (err) { return { ok: false, error: writeErrText(err) } }
+    })
     // 用户导入：原生文件框选 .grd/.pat（支持多选，一次导入多个天线）→ 逐个读文本返回渲染进程解析
     ipcMain.handle('coverageGrd:open', async (e) => {
       const win = BrowserWindow.fromWebContents(e.sender)
@@ -522,6 +574,9 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   // 干扰分析（C/I）独立窗口：只读消费者——读三库与 GRD，不写回任何库
   ipcMain.handle('ci:open', gate(() => { if (openCi) openCi(); return true }))
   ipcMain.handle('pfd:open', gate(() => { if (openPfd) openPfd() }))
+  // 空间态势报告（独立窗口）：CelesTrak 卫星编目 SATCAT + 平台既有 GP 星历 → 电子报告 / Word
+  ipcMain.handle('ssa:open', gate(() => { if (openSsa) openSsa(); return true }))
+  ipcMain.handle('ssa:confirmClose', () => { if (confirmCloseSsa) confirmCloseSsa(); return true })
   // ---- 性能指标表窗口（对地 / 对星 / 气象）：主进程只中继，数据与取值都在主窗口 ----
   if (perfWin) {
     ipcMain.handle('perfwin:open', gate((_e, o) => perfWin.open(o || {})))
@@ -969,12 +1024,28 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     })
     if (canceled || !filePath) return { ok: false, canceled: true }
     try {
-      fs.writeFileSync(filePath, Buffer.from(payload.data))
+      // data 收三种：字节（Uint8Array/Buffer）、字符串、字符串分片数组。
+      // 分片是给大文本用的——渲染端不必先拼成一个几百 MB 的整串、更不必逐字符转字节数组
+      //（Uint8Array.from(text, fn) 会把整份文本物化成逐字符的 JSArray，上百 MB 的文本必崩）。
+      // encoding 只对字符串生效，缺省 utf8；方向图管线全程「latin1 字节串」，那边显式传 latin1。
+      const enc = payload.encoding || 'utf8'
+      const chunk = (d) => (typeof d === 'string' ? Buffer.from(d, enc) : Buffer.from(d))
+      // 只有【整个数组都是字符串】才当文本分片；数字数组仍按字节走老路（Buffer.from([...])）
+      if (Array.isArray(payload.data) && payload.data.every((p) => typeof p === 'string')) {
+        const fd = fs.openSync(filePath, 'w')
+        try {
+          for (const part of payload.data) {
+            const b = chunk(part)
+            // writeSync 不保证一次写完（同 fs.writeFileSync 内部的写法），按返回的字节数续写
+            for (let off = 0; off < b.length;) off += fs.writeSync(fd, b, off, b.length - off)
+          }
+        } finally { fs.closeSync(fd) }
+      } else {
+        fs.writeFileSync(filePath, chunk(payload.data))
+      }
       return { ok: true, filePath }
     } catch (err) {
-      // 目标文件被其他程序占用（PDF/图片查看器打开着）→ EBUSY/EPERM。返回友好错误，不抛出。
-      const busy = err && (err.code === 'EBUSY' || err.code === 'EPERM' || err.code === 'EACCES')
-      return { ok: false, error: busy ? '文件可能正被其他程序打开（如 PDF 查看器），请关闭后重试' : (err.message || String(err)) }
+      return { ok: false, error: writeErrText(err) }   // 占用/权限 → 友好错误，不抛出
     }
   })
 
@@ -1194,15 +1265,19 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     // 两种模型走同一个通道：kind:'sla' 是独立的《服务等级指标（SLA）》报告——不出 PDF、
     // 不补瀑布段、不走 enrichReportModel（那几步都是链路预算报告才要的）。
     const isSla = model.kind === 'sla'
+    // kind:'ssa' 是《空间态势报告》——同样是独立报告：只出 Word，模型在渲染端就已算全
+    // （见 src/shared/ssaReport.js），这里一个数都不补。
+    const isSsa = model.kind === 'ssa'
     const ORDER = ['xlsx', 'docx', 'pdf']
     const formats = ORDER.filter((f) => ((payload && payload.formats) || ['xlsx']).indexOf(f) > -1)
     if (!formats.length) return { ok: false, error: '未选择任何输出格式' }
     if (isSla && formats.indexOf('pdf') > -1) return { ok: false, error: 'SLA 报告不出 PDF' }
     if (isSla && !model.hasSla) return { ok: false, error: '没有任何链路勾选了 SLA 条款' }
+    if (isSsa && (formats.length !== 1 || formats[0] !== 'docx')) return { ok: false, error: '空间态势报告只出 Word' }
     const EXT = { xlsx: { name: 'Excel 工作簿', extensions: ['xlsx'] }, docx: { name: 'Word 文档', extensions: ['docx'] }, pdf: { name: 'PDF 文档', extensions: ['pdf'] } }
     const { canceled, filePath } = await dialog.showSaveDialog(win, {
-      title: (isSla ? '保存 SLA 报告' : '保存报告') + (formats.length > 1 ? '（同名生成 ' + formats.map((f) => '.' + f).join(' / ') + '）' : ''),
-      defaultPath: ((payload && payload.defaultName) || (isSla ? '服务等级指标' : '链路预算报告')) + '.' + formats[0],
+      title: (isSsa ? '保存空间态势报告' : isSla ? '保存 SLA 报告' : '保存报告') + (formats.length > 1 ? '（同名生成 ' + formats.map((f) => '.' + f).join(' / ') + '）' : ''),
+      defaultPath: ((payload && payload.defaultName) || (isSsa ? '空间态势报告' : isSla ? '服务等级指标' : '链路预算报告')) + '.' + formats[0],
       filters: formats.map((f) => EXT[f])
     })
     if (canceled || !filePath) return { ok: false, canceled: true }
@@ -1210,6 +1285,11 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     try {
       const lang = model.lang === 'en' ? 'en' : 'zh'
       const orbitType = (model.scheme && model.scheme.orbitType) || 'GEO'
+      if (isSsa) {
+        const buf = await require('../services/reportSsaDocx').buildSsaDocx(model)
+        fs.writeFileSync(stem + '.docx', Buffer.from(buf))
+        return { ok: true, files: [stem + '.docx'], filePath: stem + '.docx' }
+      }
       if (isSla) {
         const files = []
         if (formats.indexOf('xlsx') > -1) {

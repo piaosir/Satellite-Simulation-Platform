@@ -21,12 +21,14 @@ const DEFAULT_REGION = 'ap-beijing'
 const PREFIX = 'omm/'
 const objKey = (g) => `${PREFIX}csv_${g}.csv.gz`
 
-const MAX_GZ = 8 * 1024 * 1024          // 下载体积上限：桶被写脏也不至于拖垮客户端（active 组 gz 约 0.8MB）
+const MAX_GZ = 8 * 1024 * 1024          // 下载体积上限：桶被写脏也不至于拖垮客户端（现最大的两件：active 组 gz 约 0.8MB、satcat 约 1.4MB）
 const MAX_RAW = 64 * 1024 * 1024        // 解压后上限（zip bomb 防护）
 const STALE_HOURS = 6                   // 云端副本超过此时长才允许回传：一天最多几次覆盖，够新就不动
 const TIMEOUT = 20000
 
-// 与 omm.js / fetch-omm-snapshot.mjs 同一判据：是 CelesTrak OMM CSV 才算数据有效
+// 与 omm.js / fetch-omm-snapshot.mjs 同一判据：是 CelesTrak OMM CSV 才算数据有效。
+// 这是【缺省档】——桶里还躺着非星历的数据集（omm/csv_satcat.csv.gz，编目里没有 MEAN_MOTION 列），
+// 那类键由调用方（omm.js 的 validOf(key)）把自己的判据传进 download / maybeUpload。
 const valid = (t) => t && /MEAN_MOTION/i.test(t)
 
 // ---- 凭证（仅上传用；缺失即只读模式，下载不受影响）----
@@ -143,8 +145,10 @@ async function head(group) {
 
 // 从桶下载某组 → { text, fetchedAt } ；任何环节不成立都返回 null（对用户无感，但每一步都写日志）。
 // newerThan：本地已有副本的时间，云端不比它新就不下载（省流量，且不用旧数据覆盖新数据）。
+// valid：该键自己的有效性判据（缺省＝OMM 的 MEAN_MOTION 正则）。
 async function download(group, opts = {}) {
   const tag = `星历「${opts.label || group}」：`
+  const isValid = opts.valid || valid
   const t0 = Date.now()
   try {
     log.emit(`${tag}转查云镜像 ${host()}/${objKey(group)}`)
@@ -160,7 +164,7 @@ async function download(group, opts = {}) {
     let text = ''
     try { text = zlib.gunzipSync(r.body, { maxOutputLength: MAX_RAW }).toString('utf8') }
     catch { text = r.body.toString('utf8') }   // 兼容万一存成了明文 CSV
-    if (!valid(text)) { log.emit(`${tag}云镜像内容非有效 OMM CSV，已丢弃`, 'warn'); return null }
+    if (!isValid(text)) { log.emit(`${tag}云镜像内容非有效 OMM CSV，已丢弃`, 'warn'); return null }
     log.emit(`${tag}云镜像下载成功 —— ${fmtBytes(r.body.length)}(gz) 解压 ${fmtBytes(text.length)} · 对象时间 ${fmtTime(meta.lastModified)} · 耗时 ${fmtSec(Date.now() - t0)}`)
     return { text, fetchedAt: meta.lastModified || new Date().toISOString() }
   } catch (e) {
@@ -193,10 +197,13 @@ let _permDenied = false
 
 // 众包回传：把刚从 CelesTrak 拉到的 CSV 传上桶。best-effort —— 无凭证 / 云端够新 / 网络失败一律返回 false
 // 且不打断主流程；但每种跳过原因都写进日志，便于现场判断「众包这条腿到底有没有在跑」。
-async function maybeUpload(group, text, label) {
+// 第四参 checkValid：该键自己的有效性判据（缺省＝OMM 的 MEAN_MOTION 正则）——别把非星历数据集
+// 当成坏数据默默丢掉，也别把坏数据当好的传上去污染别人的兜底。
+async function maybeUpload(group, text, label, checkValid) {
   const tag = `星历「${label || group}」：`
+  const isValid = checkValid || valid
   try {
-    if (_permDenied || _uploaded.has(group) || !valid(text)) return false
+    if (_permDenied || _uploaded.has(group) || !isValid(text)) return false
     if (!canUpload()) {
       if (!_noCredWarned) { _noCredWarned = true; log.emit('星历回传：本机未配置云镜像凭证，不参与众包回传（仅下载，不影响使用）') }
       return false

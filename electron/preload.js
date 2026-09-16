@@ -277,6 +277,17 @@ contextBridge.exposeInMainWorld('api', {
     // 星历取数链路的操作明细（主进程广播）→ 底部「日志」窗格；{ text, level }
     onLog: (cb) => ipcRenderer.on('omm:log', (_e, p) => cb(p))
   },
+  // CelesTrak 卫星编目（SATCAT）：与 omm.csv 同一条四级众包链路的第二种数据集，
+  // 返回 { text, fetchedAt, source } 或 null（cacheOnly 且本机什么都没有时）。
+  satcat: {
+    csv: (opts) => ipcRenderer.invoke('satcat:csv', opts)
+  },
+  // 空间态势报告（独立窗口）：开窗 + 关窗守卫（与 rainAttenuation 同套）
+  ssa: {
+    open: () => ipcRenderer.invoke('ssa:open'),
+    onCloseRequested: (cb) => ipcRenderer.on('ssa:closeRequested', cb),
+    confirmClose: () => ipcRenderer.invoke('ssa:confirmClose')
+  },
   // 转发器频率计划：挂在卫星下、与 GRD 天线平级的一类「文件」。
   // 主进程只负责存取与原生对话框，模型/校验/容量/出图全在渲染端 src/shared/freqPlan*.js。
   freqPlan: {
@@ -307,6 +318,8 @@ contextBridge.exposeInMainWorld('api', {
     import: () => ipcRenderer.invoke('coverageGrd:import'),
     save: (name, text) => ipcRenderer.invoke('coverageGrd:save', name, text),
     raw: (file) => ipcRenderer.invoke('coverageGrd:raw', file),
+    // 原样导出：保存框 + 主进程按字节拷贝（原文不进渲染进程）。合成件回 { synth:true }，需渲染端重打包
+    exportRaw: (file, defaultName) => ipcRenderer.invoke('coverageGrd:exportRaw', file, defaultName),
     remove: (file) => ipcRenderer.invoke('coverageGrd:remove', file)
   },
   coverageGxt: {

@@ -6,6 +6,7 @@ const path = require('path')
 // baseDir：预置覆盖数据（只读）。saveDir：用户导入的原始 GRD 持久化目录（可写，通常在 userData），
 // 仅 coverageGrd 实例传入；用户每次导入的 .grd 原文存盘，重载后据此重建天线。
 module.exports = function createCoverage(baseDir, saveDir) {
+  saveDir = saveDir ? path.resolve(saveDir) : saveDir   // 规范化（统一分隔符），使下面的路径前缀校验稳健（同 services/grd.js）
   function index() {
     try { return JSON.parse(fs.readFileSync(path.join(baseDir, 'index.json'), 'utf8')) }
     catch (e) { return { satellites: [], error: e.message } }
@@ -62,22 +63,38 @@ module.exports = function createCoverage(baseDir, saveDir) {
     fs.copyFileSync(srcPath, path.join(saveDir, fname))
     return { file: fname }
   }
-  // 读回导入的原始 GRD 文本（限定在 saveDir 内，防路径穿越）
-  function raw(file) {
+  // saveDir 内的绝对路径（防路径穿越）
+  function resolveSaved(file) {
     if (!saveDir) throw new Error('未配置导入存储目录')
     const safe = String(file || '').replace(/\\/g, '/').replace(/\.\.+/g, '').replace(/^\/+/, '')
     const fp = path.join(saveDir, safe)
     if (!fp.startsWith(saveDir)) throw new Error('非法路径')
-    return { text: fs.readFileSync(fp, 'latin1') }
+    return fp
+  }
+  // 读回导入的原始 GRD 文本
+  function raw(file) { return { text: fs.readFileSync(resolveSaved(file), 'latin1') } }
+  // 导出直通用：原文件绝对路径 + 是不是本平台的合成件（表头有 SYNTHMETA，只读头 64KB 判）。
+  // 合成件导出前要重打包到公共网格（转换器是渲染端 ESM），只有它才需要把文本搬过 IPC；
+  // 真实导入件按字节拷贝即可 —— 实测件 243 MB，搬进渲染进程再转字节必崩（见 FileManager.toBytes 的注释）。
+  function exportSrc(file) {
+    const fp = resolveSaved(file)
+    fs.statSync(fp)                                 // 文件不在 → 抛错，上层给准话
+    let synth = false, fd = null
+    try {
+      fd = fs.openSync(fp, 'r')
+      const buf = Buffer.alloc(65536)
+      const got = fs.readSync(fd, buf, 0, 65536, 0)
+      synth = buf.subarray(0, got).includes('SYNTHMETA')
+    } catch { /* 头读不到就当真实导入件，走按字节拷贝 */ }
+    finally { if (fd !== null) { try { fs.closeSync(fd) } catch { /* 已关 */ } } }
+    return { path: fp, synth }
   }
   // 删除已持久化的导入 GRD（删天线/卫星时清理；不存在则静默）
   function remove(file) {
     if (!saveDir || !file) return { ok: false }
-    const safe = String(file).replace(/\\/g, '/').replace(/\.\.+/g, '').replace(/^\/+/, '')
-    const fp = path.join(saveDir, safe)
-    if (!fp.startsWith(saveDir)) throw new Error('非法路径')
+    const fp = resolveSaved(file)                   // 非法路径照旧抛错，不吞
     try { fs.unlinkSync(fp) } catch { /* 已不在 */ }
     return { ok: true }
   }
-  return { index, get, save, copyIn, raw, remove, sniffHead }
+  return { index, get, save, copyIn, raw, exportSrc, remove, sniffHead }
 }

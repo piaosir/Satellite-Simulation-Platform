@@ -12,6 +12,10 @@ import Icon from './Icon.vue'
 import { DOC_FIELDS, defaultDocInfo, schemeOf, schemeName, schemeSub, translate } from '../shared/lbReport.js'
 import { slaReportTitle } from '../shared/lbSlaReport.js'
 import { REPORT_FONT_DEF, reportFontOf, normReportFontSel, reportFontOptions, composeReportFonts, reportFontLabel } from '../shared/lbReportFont.js'
+// 台标的栅格化与存取（2026-09-16 从本文件搬进 shared/reportLogo.js，零行为改动）：
+// 空间态势报告那个导出对话框要用同一枚台标——它存的是全局键，抄一份必然漂移。
+import { fileToPng, urlToPng, saveLogo, loadLogo } from '../shared/reportLogo.js'
+import appLogoUrl from '../assets/logo.png'
 
 const props = defineProps({
   open: { type: Boolean, default: false },
@@ -53,9 +57,8 @@ const TITLE_KEY = computed(() => props.storeKey + (isSla.value ? '/report/slaTit
 const defTitle = () => (isSla.value
   ? slaReportTitle(props.satName, props.band, props.lang, scheme.value.orbitType)
   : defaultDocInfo(scheme.value, props.satName, props.lang, props.band).title)
-// ★ logo 存**全局**键，不带窗口前缀：台标是一家单位的，不是某个体制窗口的。
-//   传一次以后 GSO / NGSO / 再生式三个窗口都认，除非用户自己换掉或移除。
-const LOGO_KEY = 'lb/report/logo'
+// logo 存**全局**键（'lb/report/logo'，见 shared/reportLogo.js）：台标是一家单位的，
+// 不是某个体制窗口的——传一次以后各窗口都认，除非用户自己换掉或移除。
 // 报告字体（三档：西文与数字 / 中文正文 / 中文标题与题注）：按窗口各存各的、与本窗的元信息同前缀——
 // GSO / NGSO / 再生式 / 端到端互相独立（用户 2026-09-07 定的）；全报告与 SLA 报告共用（同一个窗口
 // 交出去的文件一套字体）。出厂 = 模板口径（Times New Roman / 宋体 / 黑体），见 shared/lbReportFont.js。
@@ -67,68 +70,11 @@ const doc = reactive(defaultDocInfo(scheme.value, props.satName, props.lang, pro
 const opt = reactive({ xlsx: true, docx: true, pdf: true, figures: true, sla: true })
 
 // —— 右上角 logo ——
-// 贴在三份文件的右上角：Excel 每张工作表，Word 与 PDF 的每一页页眉。矢量图在这里就栅格化成 PNG：
-// xlsx 与 docx 的图都只吃位图，且 Excel 要靠 PNG 的 IHDR 读原始宽高来等比缩放。
-const LOGO_MAX = 600      // 栅格化后的最长边（px）。报告里最大只用到 ~190px 宽，600 已是 3 倍余量
-const LOGO_STORE_MAX = 3e6   // 超过这个大小就不往 localStorage 里塞（本次导出照用）
+// 贴在三份文件的右上角：Excel 每张工作表，Word 与 PDF 的每一页页眉。选图 → PNG dataURL 的
+// 栅格化与存取都在 shared/reportLogo.js（矢量图也在那里转成 PNG：xlsx 与 docx 的图只吃位图）。
 const logoErr = ref('')
 const logoInput = ref(null)
 const logoName = ref('')
-
-// SVG 的内在尺寸：优先 width/height 属性，没有就取 viewBox 的宽高。
-// （只有 viewBox 的 SVG 画进 <img> 时，Chromium 会按 300×150 的默认值出图，必须自己给尺寸。）
-function svgSize(text) {
-  const num = (s) => { const v = parseFloat(s); return isFinite(v) && v > 0 ? v : 0 }
-  const wm = /<svg[^>]*\bwidth\s*=\s*["']([\d.]+)/i.exec(text)
-  const hm = /<svg[^>]*\bheight\s*=\s*["']([\d.]+)/i.exec(text)
-  const vb = /viewBox\s*=\s*["']\s*[-\d.]+[\s,]+[-\d.]+[\s,]+([\d.]+)[\s,]+([\d.]+)/i.exec(text)
-  const w = wm ? num(wm[1]) : (vb ? num(vb[1]) : 0)
-  const h = hm ? num(hm[1]) : (vb ? num(vb[2]) : 0)
-  return (w && h) ? { w, h } : null
-}
-
-// 位图 / 矢量图 → PNG dataURL（等比缩到最长边 LOGO_MAX 以内）
-async function fileToPng(file) {
-  const isSvg = /svg/i.test(file.type || '') || /\.svg$/i.test(file.name || '')
-  let url = null, hint = null
-  try {
-    if (isSvg) {
-      const text = await file.text()
-      hint = svgSize(text)
-      url = URL.createObjectURL(new Blob([text], { type: 'image/svg+xml' }))
-    } else {
-      url = URL.createObjectURL(file)
-    }
-    const img = await new Promise((res, rej) => {
-      const im = new Image()
-      im.onload = () => res(im)
-      im.onerror = () => rej(new Error('decode'))
-      im.src = url
-    })
-    const nw = (hint && hint.w) || img.naturalWidth || img.width
-    const nh = (hint && hint.h) || img.naturalHeight || img.height
-    if (!nw || !nh) throw new Error('size')
-    const k = Math.min(1, LOGO_MAX / Math.max(nw, nh))
-    const w = Math.max(1, Math.round(nw * k)), h = Math.max(1, Math.round(nh * k))
-    const cv = document.createElement('canvas')
-    cv.width = w; cv.height = h
-    cv.getContext('2d').drawImage(img, 0, 0, w, h)
-    return { dataUrl: cv.toDataURL('image/png'), w, h }
-  } finally {
-    if (url) URL.revokeObjectURL(url)
-  }
-}
-
-// 换一枚 logo 就当场落盘（不等提交/关窗）：下次打开——无论哪个窗口——它已经在了。
-function saveLogo() {
-  try {
-    if (doc.logo && doc.logo.dataUrl && doc.logo.dataUrl.length <= LOGO_STORE_MAX) {
-      localStorage.setItem(LOGO_KEY, JSON.stringify(Object.assign({}, doc.logo, { name: logoName.value })))
-    } else {
-      localStorage.removeItem(LOGO_KEY)
-    }
-  } catch (e) { /* 存不下（配额满）不影响本次导出 */ }
-}
 
 async function pickLogo(e) {
   const file = e.target.files && e.target.files[0]
@@ -138,14 +84,27 @@ async function pickLogo(e) {
   try {
     doc.logo = await fileToPng(file)
     logoName.value = file.name || ''
-    saveLogo()
+    saveLogo(doc.logo, logoName.value)
   } catch (err) {
     doc.logo = null
     logoName.value = ''
     logoErr.value = t.value('图片读取失败') + '：' + ((err && err.message) || String(err))
   }
 }
-const clearLogo = () => { doc.logo = null; logoName.value = ''; logoErr.value = ''; saveLogo() }
+const clearLogo = () => { doc.logo = null; logoName.value = ''; logoErr.value = ''; saveLogo(doc.logo, logoName.value) }
+// 「用平台标志」：台标槽位空着时报告右上角就是空的，而多数场合用户要的只是「先放个能看的」。
+// 用的是本软件自己的标志（src/assets/logo.png，同「关于」窗口那一枚），不涉任何第三方品牌；
+// 换成本单位的台标仍走「选择图片」，两个入口写的是同一个全局键 lb/report/logo。
+async function useAppLogo() {
+  logoErr.value = ''
+  try {
+    doc.logo = await urlToPng(appLogoUrl, 'logo.png')
+    logoName.value = t.value('平台标志')
+    saveLogo(doc.logo, logoName.value)
+  } catch (err) {
+    logoErr.value = t.value('图片读取失败') + '：' + ((err && err.message) || String(err))
+  }
+}
 
 function loadSaved() {
   const base = defaultDocInfo(scheme.value, props.satName, props.lang, props.band)
@@ -156,11 +115,10 @@ function loadSaved() {
     // 日期每次取今天；其余（编号、项目、单位、签署）沿用上次填的
     doc[f.key] = (f.key === 'title' || f.key === 'date') ? base[f.key] : ((saved && saved[f.key]) || base[f.key])
   }
-  // logo 从全局键取（与本窗口的元信息分开存），三窗共用同一枚
-  let lg = null
-  try { lg = JSON.parse(localStorage.getItem(LOGO_KEY) || 'null') } catch (e) { lg = null }
-  doc.logo = (lg && lg.dataUrl) ? { dataUrl: lg.dataUrl, w: lg.w, h: lg.h } : null
-  logoName.value = (lg && lg.name) || ''
+  // logo 从全局键取（与本窗口的元信息分开存），各窗口共用同一枚
+  const lg = loadLogo()
+  doc.logo = lg.logo
+  logoName.value = lg.name
   logoErr.value = ''
   // 报告名称按「自动命名」的规矩走（同资源库条目名，见 shared/lbAutoName.js）：用户没改过就随
   // 当前卫星/体制重算，改过一次就钉死。存的时候一并存下「当时的默认名」，据此判断改没改过。
@@ -273,6 +231,7 @@ const fontText = computed(() => `${fontName(reportFontOf('latin', font.latin))} 
             <Icon v-else name="image" :size="16" />
           </div>
           <button class="rd-btn" :disabled="busy" @click="logoInput && logoInput.click()">{{ t(doc.logo ? '更换' : '选择图片') }}</button>
+          <button class="rd-btn" :disabled="busy" :title="t('用本软件自己的标志（与「关于」窗口同一枚）')" @click="useAppLogo">{{ t('平台标志') }}</button>
           <button class="rd-btn" :disabled="busy || !doc.logo" @click="clearLogo">{{ t('移除') }}</button>
           <span v-if="doc.logo" class="rd-logo-name">{{ logoName }}<template v-if="logoName">　</template>{{ doc.logo.w }} × {{ doc.logo.h }} px</span>
           <input

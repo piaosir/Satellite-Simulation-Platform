@@ -55,6 +55,10 @@ const props = defineProps({
   // 冻结列的记忆键（各表一个，如 'lb.links'）：非空才把用户改过的冻结位置记进 localStorage。
   // 留空＝不记忆（行为与旧版一致）。
   gridId: { type: String, default: '' },
+  // 当前行的行 _id（＝表脚「本行读数」/「详细预算」正在讲的那一行），由宿主传入，序号格据此点亮。
+  // 不取组件内部的 range.fr：点列头 / 粘贴 / Ctrl+A / 整行选择几条路径会直接改写它且不 emit rowFocus，
+  // 绑它就会出现「表里标这行、读数写那行」。留空即不标（不传的表，如雨衰页，行为与改动前完全一致）。
+  focusId: { type: String, default: '' },
 })
 // rowFocus (行下标, 行_id)：聚焦行变化（链路表联动详细预算）
 // editLib (资源库子栏key, 条目id)：库引用列的「编辑参数」钮 → App 导航到资源库该条目
@@ -1458,7 +1462,7 @@ function clearColContents() {
           </tr>
         </thead>
         <tbody>
-          <tr v-for="(s, i) in stations" :key="s._id || i" :class="{ on: sel[s._id] }">
+          <tr v-for="(s, i) in stations" :key="s._id || i" :class="{ on: sel[s._id], cur: !!focusId && s._id === focusId }">
             <td class="sg-sel" :title="'拖拽序号可框选行 · 右键插入/删除行'" @mousedown.left="onRowDown(i, $event)" @mouseenter="onRowEnter(i)" @contextmenu.prevent="onIdxContext(i, $event)"><span class="sg-idx">{{ i + 1 }}</span></td>
             <td v-for="({ f, c, vi }) in visFields" :key="f.key"
                 class="sg-cell" :class="[{ 'sg-fz': isKeyCol(c), 'sg-kw': isNarrowKey(c), 'sg-wset': hasW(c), 'ro-field': isReadonlyCol(c), sel: inSel(i, c), focus: isFocus(i, c), editing: isEditing(i, c), fillp: inFill(i, c), 'sg-gend': isGroupEnd(c) }, cellClass ? cellClass(f, s) : null]"
@@ -1673,6 +1677,15 @@ function clearColContents() {
 .sg-tbl td.sg-sel:hover { background: var(--surface-2); }
 .sg-tbl tbody tr.on > td.sg-sel { background: var(--surface-2); }
 .sg-tbl tbody tr.on > td.sg-sel .sg-idx { color: var(--accent); font-weight: 700; }
+/* 当前行＝把它的序号格整格点亮成「活动行表头」（Excel 活动行列表头、Calc 行号表头恒高亮的老惯例）：
+   只动 34px 序号格，数据格一个像素不改，结果列的红字与档位色不受影响。
+   ★ 走实底而不是淡底：accent-ui 14% 兑白恰好落在 --surface-2（勾选行那档灰）的明度上，浅色主题里
+     两个通道撞在一起等于白做；实底 + var(--bg) 的字两套主题都一眼看见，也与表脚 / 节头那两枚
+     同款小标（.lbx-rr-no / .lbx-sec-no）严格同形。实底字色用 var(--bg) 是全平台铁律。
+   ★ 写在 tr.on 两条之后：同特异度、后来居上，既被勾选又是当前行的那行才显示当前态。
+   ★ 特异度也压得过 td.sg-sel:hover，鼠标扫过当前行的序号格不会把标记洗掉。 */
+.sg-tbl tbody tr.cur > td.sg-sel { background: var(--accent-ui); }
+.sg-tbl tbody tr.cur > td.sg-sel .sg-idx { color: var(--bg); font-weight: 700; }
 .sg-idx { color: var(--text-faint); font-size: var(--fs-1); display: block; }
 /* —— 冻结列（Excel 冻结窗格）——
    .sg-fz    粘住不随横滚；左偏移由 <table> 上的 --sgfN 给（实测列宽逐列累加，见 measureFrozen）

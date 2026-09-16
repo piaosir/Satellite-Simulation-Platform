@@ -284,3 +284,11 @@ resources/imagery/
 .pwharness/
 # .lbcolharness/ 是链路表列宽 / 结果列排序 / 本行读数排版的验证台：整页挂真 GSO 窗口，window.api 桩掉、引擎结果合成（launch.json 的 lbcol-harness，端口 5977）。
 .lbcolharness/
+# 空间态势报告验证台（npx vite --config .ssaharness/vite.config.mjs，端口 5812）：
+# 整个 SsaApp 挂浏览器里跑，window.api 走桩、编目与星历喂 packages/core/test/fixtures 那两份夹具
+# （?raw 直接引，不另抄一份 —— 两边分家就会「台上看着对、单测里是另一组数」）。
+# 独立窗口在真软件里改一行要重启整个 Electron，renderer 档又没有 IPC，故整壳只能在这里看：
+# 三线表的线级、目录导轨高亮、11 张图在暗色下可不可读、19 列成员表怎么排、英文版列宽。
+# 导出一次会把真模型落成 .ssaharness/model.json（vite 中间件 /__model），再
+# node .ssaharness/docx.mjs 出 out.docx —— 图放大后糊不糊、表跨页断在哪，只有打开 Word 才知道。
+.ssaharness/

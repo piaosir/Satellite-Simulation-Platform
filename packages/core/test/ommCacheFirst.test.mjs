@@ -200,6 +200,74 @@ if (fs.existsSync(path.join(BUNDLE, 'manifest.json'))) {
   ok(hits.length === 0, `omm.js 里不该有 Date.parse(… || 0)：${hits.join(' / ')}`)
 }
 
+// ===================== ⑥ SATCAT 编目：判据与 GP 那条链路互不串味 =====================
+// SATCAT 不是星历 —— 整份文件没有 MEAN_MOTION 列。判据若还用 GP 那条正则，四级链路每一级都会把
+// 下载回来的编目判成「内容非有效 OMM」丢掉，表现为 SATCAT 永远取不到而且不报错。
+// 三条判据见 packages/core/utils/satcatValid.js：表头五列 / 数据行下限 / 末行恰好 17 列（防截断）。
+const V = require(path.join(ROOT, 'packages/core/utils/satcatValid.js'))
+// 附录 A 的 17 列表头与行体例（2026-09-16 实测）
+const SC_HEAD = 'OBJECT_NAME,OBJECT_ID,NORAD_CAT_ID,OBJECT_TYPE,OPS_STATUS_CODE,OWNER,LAUNCH_DATE,LAUNCH_SITE,DECAY_DATE,PERIOD,INCLINATION,APOGEE,PERIGEE,RCS,DATA_STATUS_CODE,ORBIT_CENTER,ORBIT_TYPE'
+const scRow = (i) => `OBJECT ${i},2026-${String(100 + (i % 800)).padStart(3, '0')}A,${40000 + i},PAY,+,PRC,2026-09-13,TYMSC,,96.19,65.10,938,214,20.4200,,EA,ORB`
+const scOf = (n) => {
+  const rows = []
+  for (let i = 0; i < n; i++) rows.push(scRow(i))
+  return SC_HEAD + '\n' + rows.join('\n') + '\n'
+}
+{
+  ok(V.validSatcat(scOf(5), { minRows: 3 }), 'SATCAT 夹具（17 列）判为有效')
+  ok(!V.validSatcat(csvOf('GP', 5), { minRows: 3 }), 'GP 星历 CSV 不被当成 SATCAT（表头没有 NORAD_CAT_ID / OPS_STATUS_CODE 等列）')
+  ok(!V.validSatcat(scOf(5)), '数据行不足出厂门槛（50000 行）→ 无效')
+  ok(!V.validSatcat(scOf(5).replace(/,EA,ORB\n$/, ',EA\n'), { minRows: 3 }), '末行缺列（下载被截断）→ 无效')
+  ok(!V.validSatcat(SC_HEAD + '\n', { minRows: 0 }), '只有表头没有数据行 → 无效')
+  ok(!V.validSatcat('<html>403 Forbidden</html>', { minRows: 0 }), 'HTML 错误页 → 无效')
+  // 现在的 satcat.csv 没有带引号的行，但用户从 Excel 另存的文件一定会有：字段里的逗号不许把列拆多
+  const q = SC_HEAD + '\n' + scRow(0).replace(/^OBJECT 0/, '"OBJECT 0, MOD"') + '\n' + scRow(1) + '\n' + scRow(2) + '\n'
+  ok(V.validSatcat(q, { minRows: 3 }), '字段带引号（内含逗号）仍判为有效')
+  eq(V.splitCsvLine(q.split('\n')[1]).length, 17, '带引号的行仍拆出 17 列')
+  eq(V.splitCsvLine('a,"b,c","d""e",f').join('|'), 'a|b,c|d"e|f', 'RFC 4180：引号内的逗号与 "" 转义都按规矩拆')
+}
+
+// ===================== ⑦ SATCAT 走与 GP 同一条 cacheOnly 路 =====================
+// 内置快照那份刻意做到过【出厂判据】（≥ 5 万行）：线上走的就是这条路，不许在这里把门槛调低放水。
+{
+  const dataDir = mkdir(path.join(TMP, 'e-data')), bundleDir = path.join(TMP, 'e-bundle')
+  writeBundle(bundleDir, {
+    satcat: { text: scOf(50001), time: '2026-02-02T00:00:00.000Z' },
+    geo: { text: csvOf('BUNDLED', 3), time: '2026-01-01T00:00:00.000Z' }
+  })
+  const omm = makeOmm({ dataDir, bundleDir })
+  netCalls = 0
+  const r = await omm.fetchCsv('satcat', { cacheOnly: true })
+  eq(netCalls, 0, 'satcat 的 cacheOnly 未发起任何 HTTP 请求')
+  ok(r && r.text.startsWith('OBJECT_NAME,OBJECT_ID,NORAD_CAT_ID'), 'satcat 从内置快照取到编目正文')
+  eq(r && r.fetchedAt, '2026-02-02T00:00:00.000Z', 'satcat 回传的是快照自身的时间')
+  eq(r && r.source, 'bundled', 'satcat 的来源如实标为内置快照')
+  // 新增的 source 字段对 GP 键同样成立（'cache' / 'bundled' 取自 offlineBest 那一版）
+  const g = await omm.fetchCsv('geo', { cacheOnly: true })
+  eq(g && g.source, 'bundled', 'GP 组回内置快照时 source=bundled')
+  const omm2 = makeOmm({ dataDir: mkdir(path.join(TMP, 'e2-data')), bundleDir })
+  writeCache(path.join(TMP, 'e2-data'), 'geo', csvOf('CACHED'), '2026-06-01T00:00:00.000Z')
+  const g2 = await omm2.fetchCsv('geo', { cacheOnly: true })
+  eq(g2 && g2.source, 'cache', 'GP 组用用户缓存时 source=cache')
+  // 未知键仍按原措辞抛错（known() 只多认了 DATASETS 里的键，没把守卫放开）
+  let why = ''
+  try { await omm.fetchCsv('nosuch', { cacheOnly: true }) } catch (e) { why = e.message }
+  eq(why, 'unknown group: nosuch', '未知键的抛错措辞不变')
+  // 文件管理列表：satcat 排在末尾、带 kind；GP 行不带 kind（文件管理就按这个字段把它拆成单独一节）
+  const list = omm.listCsv()
+  const last = list[list.length - 1]
+  eq(list.length, 18, 'listCsv 行数 = 17 个 GP 组 + 1 个数据集')
+  eq(last.key, 'satcat', 'satcat 行排在末尾')
+  eq(last.kind, 'satcat', 'satcat 行带 kind')
+  eq(last.file, 'csv_satcat.csv', 'satcat 的缓存文件名与 GP 同形')
+  eq(last.source, 'bundled', 'satcat 行的可用性取自内置快照')
+  eq(list[0].kind, undefined, 'GP 行不带 kind')
+  // 导入替换：编目文件走自己的判据与自己的报错文案，别拿「缺 MEAN_MOTION 列」糊弄用户
+  let bad = ''
+  try { omm.writeCsvRaw('satcat', csvOf('GP', 3)) } catch (e) { bad = e.message }
+  ok(/SATCAT/.test(bad), `导入非编目文件的报错指向 SATCAT（实得：${bad}）`)
+}
+
 https.get = realGet
 cleanup()
 console.log(`\n${fail ? '✗' : '✓'} 通过 ${pass}，失败 ${fail}`)

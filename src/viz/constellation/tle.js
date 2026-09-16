@@ -1,7 +1,7 @@
 // 桌面端 TLE 数据层：CSV 由主进程直连 CelesTrak 取回（无 CORS），此处仅解析。
 // parseOMMCsv / splitCsvLine 与小程序 tleStore 逐字一致，保证解析结果完全相同。
 
-function splitCsvLine(line) {
+export function splitCsvLine(line) {
   const out = []
   let cur = '', inQ = false
   for (let i = 0; i < line.length; i++) {

@@ -3,11 +3,16 @@
 // 发版前跑一次刷新即可（npm run omm:snapshot）。单组下载失败时保留已有的旧快照，绝不用空数据覆盖。
 //
 // 数据流与主进程 electron/services/omm.js 完全一致：同一组映射、同一主/补充端点、同一 valid() 判据。
+// 非 GP 的数据集（SATCAT 全量编目）同样在这里出快照，判据不抄第二份 —— 直接 require 那边共用的实现。
 import fs from 'fs'
 import path from 'path'
 import zlib from 'zlib'
 import https from 'https'
+import { createRequire } from 'module'
 import { fileURLToPath } from 'url'
+
+const require = createRequire(import.meta.url)
+const { validSatcat } = require('../packages/core/utils/satcatValid.js')   // 与 omm.js 共用的 SATCAT 判据（CJS）
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const OUT_DIR = path.join(__dirname, '..', 'resources', 'omm')
@@ -22,10 +27,18 @@ const GROUP_QUERY = {
   spire: 'GROUP=spire', active: 'GROUP=active'
 }
 const SUP_FILE = { starlink: 'starlink', oneweb: 'oneweb', kuiper: 'kuiper', planet: 'planet', iridium: 'iridium', gps: 'gps' }
-const csvUrl = (k) => `https://celestrak.org/NORAD/elements/gp.php?${GROUP_QUERY[k]}&FORMAT=csv`
+// 与 omm.js 的 DATASETS 逐字一致（改这里也要同步改 omm.js）。SATCAT 无补充端点，SUP_FILE 不加条目。
+const DATASETS = {
+  satcat: { url: 'https://celestrak.org/pub/satcat.csv', label: 'SATCAT 卫星编目', valid: validSatcat }
+}
+// 本脚本要出快照的全部键：GP 分组在前、数据集在后（manifest 的键序＝这里的顺序）
+const ALL_KEYS = Object.keys(GROUP_QUERY).concat(Object.keys(DATASETS))
+const csvUrl = (k) => (DATASETS[k] ? DATASETS[k].url : `https://celestrak.org/NORAD/elements/gp.php?${GROUP_QUERY[k]}&FORMAT=csv`)
 const supCsvUrl = (k) => `https://celestrak.org/NORAD/elements/supplemental/sup-gp.php?FILE=${SUP_FILE[k]}&FORMAT=csv`
 
 const valid = (t) => t && /MEAN_MOTION/i.test(t)
+const validOf = (k) => (DATASETS[k] ? DATASETS[k].valid : valid)
+const unit = (k) => (DATASETS[k] ? '条' : '颗')   // GP 是卫星、SATCAT 是编目条目（含火箭体与碎片）
 const csvCount = (t) => { if (!t) return 0; const n = t.split(/\r?\n/).filter((l) => l.trim().length).length; return Math.max(0, n - 1) }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
@@ -43,11 +56,13 @@ function httpGetText(url) {
 }
 
 // 取某组：主端点重试 3 次 → 补充端点重试 2 次（与 omm.js fetchCsv 同策略）。
+// 判据按键分派：GP 组认 MEAN_MOTION，SATCAT 认编目表头 + 行数 + 末行列数（防截断，见 satcatValid.js）。
 async function fetchGroup(key) {
+  const isValid = validOf(key)
   let text = null
-  for (let i = 0; i < 3 && !valid(text); i++) { if (i) await sleep(1500); text = await httpGetText(csvUrl(key)) }
-  if (!valid(text) && SUP_FILE[key]) for (let i = 0; i < 2 && !valid(text); i++) { await sleep(1500); text = await httpGetText(supCsvUrl(key)) }
-  return valid(text) ? text : null
+  for (let i = 0; i < 3 && !isValid(text); i++) { if (i) await sleep(1500); text = await httpGetText(csvUrl(key)) }
+  if (!isValid(text) && SUP_FILE[key]) for (let i = 0; i < 2 && !isValid(text); i++) { await sleep(1500); text = await httpGetText(supCsvUrl(key)) }
+  return isValid(text) ? text : null
 }
 
 async function main() {
@@ -55,7 +70,7 @@ async function main() {
   const generatedAt = new Date().toISOString()
   const groups = {}
   let okCount = 0, failCount = 0
-  for (const key of Object.keys(GROUP_QUERY)) {
+  for (const key of ALL_KEYS) {
     process.stdout.write(`[omm-snapshot] ${key} … `)
     const text = await fetchGroup(key)
     const gzPath = path.join(OUT_DIR, `csv_${key}.csv.gz`)
@@ -65,7 +80,7 @@ async function main() {
       const count = csvCount(text)
       groups[key] = { count, bytes: text.length, gzBytes: gz.length }
       okCount++
-      console.log(`${count} 颗 · ${(text.length / 1024).toFixed(0)}KB → ${(gz.length / 1024).toFixed(0)}KB gz`)
+      console.log(`${count} ${unit(key)} · ${(text.length / 1024).toFixed(0)}KB → ${(gz.length / 1024).toFixed(0)}KB gz`)
     } else {
       failCount++
       // 保留旧快照：若已有 gz，沿用其数据统计（下面 manifest 合并旧值）；否则记 0。
@@ -80,14 +95,14 @@ async function main() {
   try { prev = JSON.parse(fs.readFileSync(path.join(OUT_DIR, 'manifest.json'), 'utf8')) } catch {}
   const prevGroups = (prev && prev.groups) || {}
   const merged = {}
-  for (const key of Object.keys(GROUP_QUERY)) {
+  for (const key of ALL_KEYS) {
     if (groups[key]) merged[key] = { ...groups[key], generatedAt }
     else if (prevGroups[key] && fs.existsSync(path.join(OUT_DIR, `csv_${key}.csv.gz`))) merged[key] = prevGroups[key]
   }
-  const manifest = { generatedAt, note: '内置 OMM 兜底快照（CelesTrak GP CSV）', groups: merged }
+  const manifest = { generatedAt, note: '内置 OMM 兜底快照（CelesTrak GP CSV + SATCAT 编目 CSV）', groups: merged }
   fs.writeFileSync(path.join(OUT_DIR, 'manifest.json'), JSON.stringify(manifest, null, 2))
 
-  const totalGz = Object.keys(GROUP_QUERY).reduce((s, k) => { try { return s + fs.statSync(path.join(OUT_DIR, `csv_${k}.csv.gz`)).size } catch { return s } }, 0)
+  const totalGz = ALL_KEYS.reduce((s, k) => { try { return s + fs.statSync(path.join(OUT_DIR, `csv_${k}.csv.gz`)).size } catch { return s } }, 0)
   console.log(`\n[omm-snapshot] 完成：成功 ${okCount} 组 · 失败 ${failCount} 组 · 快照总大小 ${(totalGz / 1024 / 1024).toFixed(2)}MB`)
   console.log(`[omm-snapshot] 输出：${OUT_DIR}`)
   if (okCount === 0) process.exitCode = 1
