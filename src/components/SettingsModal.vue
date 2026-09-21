@@ -149,7 +149,7 @@ const FRAME_OPTS = [
               </div>
             </div>
             <label class="frow">
-              <span class="fn" title="松手后滑行的衰减：100% 立即停住，0% 滑得最远">拖拽阻尼<em>{{ viewPrefs.dragDamping }}%</em></span>
+              <span class="fn" title="拖动的粘滞感：0% 直连，越大越重、停得越柔；地面不会滑过光标">拖拽阻尼<em>{{ viewPrefs.dragDamping }}%</em></span>
               <input type="range" min="0" max="100" step="5" v-model.number="viewPrefs.dragDamping" />
             </label>
             <label class="frow">

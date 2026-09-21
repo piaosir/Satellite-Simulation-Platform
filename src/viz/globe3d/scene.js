@@ -348,7 +348,10 @@ export function createGlobeScene(container, quality = {}) {
   // 松手后没有自由滑行；30 / 60 / 不限三档轨迹逐点相同。早先那份常数 0.08（≈208 ms @60fps、随帧率变）
   // 就是被判「滑溜」的根因之一，另一个是与距离无关的 rotateSpeed（见下）。
   controls.enableDamping = true
-  controls.dampingFactor = 1   // 开场值：第一帧之前若来了 pointermove，全额生效即可；之后每帧由 loop 现算
+  // ★ 帧间恒为 0，只在 loop 里 update() 的那一刻设成 1 − e^{−dt/τ}、用完立刻归零：OrbitControls 在每个
+  //   pointermove / touchmove 里自己也会 update() 一次，若那一次也施加，拖动中每帧就多施加了「鼠标回报次数」份
+  //   —— 实测滞后只剩理论值的一半，且 125 Hz 与 1000 Hz 的鼠标手感不同（验证台 A7 抓出来的）。
+  controls.dampingFactor = 0
   controls.minDistance = 1.02   // 贴到离地面 0.02 R（≈130 km）：进度条那 100→120% 的余量就在这一段
   controls.maxDistance = 50
   // 旋转灵敏度每帧在 loop 里按当前相机距离重算（见 earthSpin.rotateSpeedFor）。这里给个开场值，
@@ -3484,7 +3487,8 @@ export function createGlobeScene(container, quality = {}) {
     controls.dampingFactor = dampingFor(dtSec, followTau)
     const az0 = controls.getAzimuthalAngle(), po0 = controls.getPolarAngle()
     controls.update()   // 旋转（半径在此保持不变）
-    camMoved = Math.abs(controls.getAzimuthalAngle() - az0) > 1e-7 || Math.abs(controls.getPolarAngle() - po0) > 1e-7
+    controls.dampingFactor = 0   // 归零：pointermove 里的那次 update() 不施加（见 controls 初始化处）
+    camMoved =Math.abs(controls.getAzimuthalAngle() - az0) > 1e-7 || Math.abs(controls.getPolarAngle() - po0) > 1e-7
     const cur = camera.position.distanceTo(controls.target)
     // 距离感知的旋转灵敏度：每像素转角 = 屏幕中心处地面每像素位移 / 半径（见 earthSpin.rotateSpeedFor）。
     // 贴地时每像素转得少、拉远时多 —— 抓住的地面点始终跟着指针走，不再「贴地时地面在指针下飞过」。

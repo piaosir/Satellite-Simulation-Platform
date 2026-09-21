@@ -8,7 +8,7 @@ export const viewPrefs = reactive({
   // 逐位等于 v1.4.11 的画面）| 'inertial' 惯性视角（相机固定在惯性空间，地球随仿真时钟东转）。
   // ★ 没有「自转速度」：转过的角度恒等于两拍 GMST 之差，见 viz/globe3d/earthSpin.js。
   frame: 'fixed',
-  dragDamping: 50,   // 3D 拖拽阻尼 %：100 = 松手即停，0 = 滑得最远（→ λ 见 viz/globe3d/dragInertia.js）
+  dragDamping: 50,   // 3D 拖拽阻尼 %（粘滞感）：0 = 直连，越大越重、停得越柔；→ τ 见 viz/globe3d/dragFollow.js
   wheelStep3d: 3,    // 一格滚轮 = 底部状态栏缩放读数走几个百分点（3D）
   wheelStep2d: 3     // 同上（2D 平面图）
 })
