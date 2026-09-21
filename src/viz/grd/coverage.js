@@ -1281,29 +1281,39 @@ export function bandGeometry(field, levelsAsc, wantFills = true, box = null, hul
 // 相对峰值电平 → 绝对电平（rel 一般为负，如 [-1,-2,-3,-4,-5]）
 export const relLevels = (max, rels) => rels.map((r) => max + r)
 
-// 把某电平的 marching-squares 线段拼成闭合环（端点量化匹配）。用于「分带填充多边形」，
-// 使填充边界与等值线由同一组线段构成 → 填充与线精确重合、无网格毛刺。
+// 把某电平的 marching-squares 线段拼成连通链（端点量化匹配）。用于「分带填充多边形」与
+// 数值标签 / 导出，使填充边界与等值线由同一组线段构成 → 填充与线精确重合、无网格毛刺。
+// 双向拼链：起始段先从 s[1] 向前走到断头或闭合；未闭合再从 s[0] 向后走，反转后前插。
+// 只向前走的老做法会把开口链（被地平 / 热区盒切断的等值线）剥成十几段（起始段取「行主序第一条未用段」，
+// 通常落在链的中段），下游“一环一标签”于是一档印十几遍。闭合环输出与老实现逐位相同（先走的那一圈完全一致）。
 export function stitchLoops(segs) {
   if (!segs || !segs.length) return []
   const key = (p) => Math.round(p[0] * 20000) + ',' + Math.round(p[1] * 20000)
   const ends = new Map()
   segs.forEach((s, i) => { for (const p of s) { const k = key(p); if (!ends.has(k)) ends.set(k, []); ends.get(k).push(i) } })
-  const used = new Array(segs.length).fill(false), loops = []
-  for (let i = 0; i < segs.length; i++) {
-    if (used[i]) continue
-    used[i] = true
-    const loop = [segs[i][0], segs[i][1]]
-    let curK = key(segs[i][1]); const startK = key(segs[i][0])
+  const used = new Uint8Array(segs.length), loops = []
+  // 从端点 k0 顺未用段一直走，逐点推进 acc；踩到 stopK 返回 true（闭合），走到断头返回 false。
+  const walk = (k0, stopK, acc) => {
+    let k = k0
     for (let g = 0; g < segs.length; g++) {
       let nj = -1
-      for (const j of (ends.get(curK) || [])) { if (!used[j]) { nj = j; break } }
-      if (nj < 0) break
-      used[nj] = true
-      const s = segs[nj], next = key(s[0]) === curK ? s[1] : s[0]
-      loop.push(next); curK = key(next)
-      if (curK === startK) break
+      for (const j of (ends.get(k) || [])) { if (!used[j]) { nj = j; break } }
+      if (nj < 0) return false
+      used[nj] = 1
+      const s = segs[nj], next = key(s[0]) === k ? s[1] : s[0]
+      acc.push(next); k = key(next)
+      if (k === stopK) return true
     }
-    loops.push(loop)
+    return false
+  }
+  for (let i = 0; i < segs.length; i++) {
+    if (used[i]) continue
+    used[i] = 1
+    const fwd = [segs[i][0], segs[i][1]]
+    if (walk(key(segs[i][1]), key(segs[i][0]), fwd)) { loops.push(fwd); continue }
+    const back = []
+    walk(key(segs[i][0]), '', back)      // '' 永不匹配任何量化键 → 走到断头为止
+    loops.push(back.reverse().concat(fwd))
   }
   return loops
 }

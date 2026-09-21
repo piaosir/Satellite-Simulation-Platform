@@ -4,7 +4,8 @@
 //   ① 取值内核重构后逐位不变：sampleBeamAtParam ≡ 旧实现（4 次 bicubicAt 逐分量），随机 3000 点、四种极化、AR 分量
 //   ② 细化表：每条「两端节点跨档」的格边恰有一条记录，交点在表的插值下 |Δ| ≤ 1e-4 dB，同边各档 s* 单调
 //   ③ bandGeometry(refine)：等值线每个顶点在表的插值下 |Δ| ≤ 1e-4 dB（不细化时同一份数据差 >0.05 dB，证明测的不是空话）；
-//      填充与线由构造重合（线的每个顶点都是相邻两档填充多边形的顶点）；线的拓扑不变（各档线段数 / 拼环数与不细化时一致）
+//      填充与线由构造重合（线的每个顶点都是相邻两档填充多边形的顶点）；线的拓扑不变（各档线段数 / 拼链数与不细化时一致）
+//   ⑪ stitchLoops 双向拼链：一条连通链恰一条折线（链数 = 闭合环数 + 度 1 端点数 / 2）；闭合环与只向前走的老实现逐位相同
 //   ④ 不细化那条路逐位不变（金标准 fixtures/bandGeometry.golden.json）
 //   ⑤ GPU 网格(refine)：每个三角形的三个顶点 d 落在同一档内（带纯度）；CPU 每块填充多边形的质心都在某个 GPU 三角形内
 //      且 GPU 线性插值出的 dB 落同一档（全量、不抽样）；索引不越界、细化顶点属性有限
@@ -171,13 +172,13 @@ const geoL = bandGeometry(fieldI, levels, true, null, null, 1, null)
   const a = worstOf(geoR), b = worstOf(geoL)
   ok(a.n > 1000 && a.w <= 1e-4, `细化后等值线每个顶点在表的插值下恰等于档值（${a.n} 个顶点，最大 |Δ| ${a.w.toExponential(2)} dB）`)
   ok(b.w > 0.05, `同一份数据不细化时差得出来（最大 |Δ| ${b.w.toFixed(3)} dB）——测的不是空话`)
-  // 拓扑：各档拼环数一致（细化只挪交点、在弦上加中点，不增删穿越）；线段数只多不少（有弦中点的段一分为二）
+  // 拓扑：各档拼链数一致（细化只挪交点、在弦上加中点，不增删穿越）；线段数只多不少（有弦中点的段一分为二）
   let segLess = 0, loopMis = 0
   for (let k = 0; k < NB; k++) {
     if (geoR.lines[k].length < geoL.lines[k].length) segLess++
     if (stitchLoops(geoR.lines[k]).length !== stitchLoops(geoL.lines[k]).length) loopMis++
   }
-  ok(segLess === 0 && loopMis === 0, `各档拼环数与不细化时一致、线段只多不少（少 ${segLess} / 环 ${loopMis} 档不同）`)
+  ok(segLess === 0 && loopMis === 0, `各档拼链数与不细化时一致、线段只多不少（少 ${segLess} / 链 ${loopMis} 档不同）`)
   // 填充与线重合：线的每个顶点都是相邻两档填充多边形的顶点（k 档的下边界 = k−1 档的上边界）
   const keyOf = (x, y) => x.toFixed(9) + ',' + y.toFixed(9)
   const vertSets = geoR.fills.map((f) => { const s = new Set(); for (let i = 0; i < f.verts.length; i += 2) s.add(keyOf(f.verts[i], f.verts[i + 1])); return s })
@@ -198,6 +199,65 @@ const geoL = bandGeometry(fieldI, levels, true, null, null, 1, null)
   // 细化只在 stride 1 生效：stride 2 下带不带表逐位一样
   const s2a = bandGeometry(fieldI, levels, true, null, null, 2, ref), s2b = bandGeometry(fieldI, levels, true, null, null, 2, null)
   ok(JSON.stringify(s2a.lines) === JSON.stringify(s2b.lines), 'stride 2 时忽略细化表（线逐位一致）')
+}
+
+// ============ ⑪ stitchLoops 双向拼链 ============
+// 开口链（被热区盒 / 地平 / 无效格切断的等值线）过去被只向前走的拼法剥成十几段，下游「一环一标签」于是一档印十几遍。
+{
+  const key = (p) => Math.round(p[0] * 20000) + ',' + Math.round(p[1] * 20000)
+  // 老实现（只从 s[1] 向前走，走到断头就停）——留在测试里作逐位比对的基准
+  const stitchFwdOnly = (segs) => {
+    if (!segs || !segs.length) return []
+    const ends = new Map()
+    segs.forEach((s2, i) => { for (const p of s2) { const k = key(p); if (!ends.has(k)) ends.set(k, []); ends.get(k).push(i) } })
+    const used = new Array(segs.length).fill(false), loops = []
+    for (let i = 0; i < segs.length; i++) {
+      if (used[i]) continue
+      used[i] = true
+      const loop = [segs[i][0], segs[i][1]]
+      let curK = key(segs[i][1]); const startK = key(segs[i][0])
+      for (let g = 0; g < segs.length; g++) {
+        let nj = -1
+        for (const j of (ends.get(curK) || [])) { if (!used[j]) { nj = j; break } }
+        if (nj < 0) break
+        used[nj] = true
+        const s2 = segs[nj], next = key(s2[0]) === curK ? s2[1] : s2[0]
+        loop.push(next); curK = key(next)
+        if (curK === startK) break
+      }
+      loops.push(loop)
+    }
+    return loops
+  }
+  const isClosed = (l) => l.length > 2 && key(l[0]) === key(l[l.length - 1])
+  // 三种拓扑：全网格（多为闭合环 + 无效块边上的开口链）、热区盒切断（大量开口链）、细化与否
+  const boxes = [null, { r0: 12, r1: NY - 13, c0: 12, c1: NX - 13 }]
+  let cases = 0, misCount = 0, misCover = 0, misClosed = 0, openSeen = 0, fwdFrag = 0, newChains = 0
+  for (const bx of boxes) for (const rr of [ref, null]) {
+    const gg = bandGeometry(fieldI, levels, false, bx, null, 1, rr)
+    for (let k = 0; k < NB; k++) {
+      const segs = gg.lines[k]; if (!segs.length) continue
+      const deg = new Map(); for (const sg of segs) for (const p of sg) { const kk = key(p); deg.set(kk, (deg.get(kk) || 0) + 1) }
+      let e1 = 0, junc = 0; for (const d of deg.values()) { if (d === 1) e1++; if (d >= 3) junc++ }
+      const chains = stitchLoops(segs)
+      const closed = chains.filter(isClosed).length
+      cases++; openSeen += e1 / 2; newChains += chains.length
+      fwdFrag += stitchFwdOnly(segs).length
+      // 链数 = 闭合环数 + 度 1 端点数 / 2（无度 ≥ 3 结点时成立）
+      if (!junc && chains.length !== closed + e1 / 2) misCount++
+      // 每条线段恰属一条链：Σ(链点数 − 1) == 线段数
+      if (!junc && chains.reduce((a, l) => a + l.length - 1, 0) !== segs.length) misCover++
+      // 闭合环与老实现逐位相同（先走的那一圈完全一致）
+      const co = stitchFwdOnly(segs).filter(isClosed).map((l) => JSON.stringify(l)).sort()
+      const cn = chains.filter(isClosed).map((l) => JSON.stringify(l)).sort()
+      if (JSON.stringify(co) !== JSON.stringify(cn)) misClosed++
+    }
+  }
+  ok(cases > 20 && openSeen > 5, `覆盖 ${cases} 个（盒 × 细化 × 档）组合、其中开口链 ${openSeen} 条`)
+  ok(misCount === 0, `链数 = 闭合环数 + 度 1 端点数 / 2（${misCount} 档不符）`)
+  ok(misCover === 0, `无度 ≥ 3 结点时每条线段恰属一条链（${misCover} 档不符）`)
+  ok(misClosed === 0, `闭合环坐标序列与只向前走的老实现逐位相同（${misClosed} 档不同）`)
+  ok(newChains < fwdFrag, `开口链不再被剥成碎片：老 ${fwdFrag} 段 → 新 ${newChains} 链`)
 }
 
 // ============ ④ 不细化那条路逐位不变（金标准） ============
