@@ -9,7 +9,7 @@
 // 几何走参数域（见 shellProj.js 文件头）：bandGeometry 直接吃 gridXY 的 (X,Y)，切出来的顶点再逐壳投影。
 // 2D 平面地图（flatView）另走一条【对地投影】：同一批波束按对地那套投到 WGS84 椭球，与「对地覆盖分析」画法完全相同。
 import { ref, reactive, computed, watch } from 'vue'
-import { fieldDb, bandGeometry, edgeRefineFor, projectRefine, peakRefDb, stitchLoops, gridXY, projectGrid, projectLimb, gridDirs, loopLabelAnchor } from './coverage.js'
+import { fieldDb, bandGeometry, edgeRefineFor, projectRefine, peakRefDb, stitchLoops, gridXY, projectGrid, projectLimb, gridDirs, loopLabelAnchor, loopLabelsAtInterval } from './coverage.js'
 import { shellGeom, shellGrid, shellMapper, tessellateFills, tessellateSegs } from './shellProj.js'
 import { cssRgb } from './colormap.js'
 import { A, geodeticToEcef, isoElevationContourAt } from '../wgs84.js'
@@ -188,6 +188,13 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
       { pol: st.pol, gainOffset: st.gainOffset, pathLoss: st.pathLoss })
   }
   const absOf = (peak, st, v) => (st.ctype === 'abs' ? v : (st.ctype === 'relInput' ? (+st.refDb || 0) + v : peak + v))
+  // 标签文字与沿线布点：与对地（useGrdCoverage）逐字同口径
+  const labelWDeg = (txt, size) => ((+size || 12) / 533) * (180 / Math.PI) * 0.62 * Math.max(1, String(txt).length)
+  const labelTxt = (x) => ((grd.s.labelWithName && x.name) ? (String(x.lab) + ' ' + x.name) : (x.name || String(x.lab)))
+  const labelsOn = (loop, x, i, nb) => {
+    if (grd.s.labelMode === 'interval') return loopLabelsAtInterval(loop, labelWDeg(labelTxt(x), grd.s.valSize), grd.s.labelGap)
+    return [loopLabelAnchor(loop, i, nb)]
+  }
   const lowestAbs = (max, st) => { let lo = Infinity; for (const L of st.levels) { const a = absOf(max, st, L.v); if (a < lo) lo = a }; return lo }
   function computeBox(db, NX, NY, L0) {
     let r0 = NY, r1 = -1, c0 = NX, c1 = -1
@@ -300,8 +307,8 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
             ? asc.map((x, i) => {
               const segs = tessellateSegs(geo.lines[i], map)
               const labels = []
-              if (wl) for (const loop of stitchLoops(segs)) { if (loop.length >= 4) labels.push(loopLabelAnchor(loop, i, asc.length)) }
-              return { segs, color: x.lineColor, width: (x.width == null ? st.lineWidth : x.width), dash: (x.dash || st.lineStyle || null), txt: (x.name || String(x.lab)), labels }
+              if (wl) for (const loop of stitchLoops(segs)) { if (loop.length >= 4) for (const an of labelsOn(loop, x, i, asc.length)) labels.push(an) }
+              return { segs, color: x.lineColor, width: (x.width == null ? st.lineWidth : x.width), dash: (x.dash || st.lineStyle || null), txt: labelTxt(x), labels }
             }).filter((gp) => gp.segs.length)
             : []
           if (!(fillBands && fillBands.length) && !segGroups.length) {
@@ -368,8 +375,8 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
         ? asc.map((x, i) => {
           const segs = geo.lines[i]
           const labels = []
-          if (wl) for (const loop of stitchLoops(segs)) { if (loop.length >= 4) labels.push(loopLabelAnchor(loop, i, asc.length)) }
-          return { segs, color: x.lineColor, width: (x.width == null ? st.lineWidth : x.width), dash: (x.dash || st.lineStyle || null), txt: (x.name || String(x.lab)), labels }
+          if (wl) for (const loop of stitchLoops(segs)) { if (loop.length >= 4) for (const an of labelsOn(loop, x, i, asc.length)) labels.push(an) }
+          return { segs, color: x.lineColor, width: (x.width == null ? st.lineWidth : x.width), dash: (x.dash || st.lineStyle || null), txt: labelTxt(x), labels }
         }).filter((gp) => gp.segs.length)
         : []
       if (!(fillBands && fillBands.length) && !segGroups.length) continue

@@ -386,6 +386,7 @@ const boreTip = computed(() => {
              ★ 必须放在 <label class="chk2"> 里面：取色框属于 interactive content，点它不会触发 label 的
                activation behavior（即不会误切勾选），而放到 label 外就得另起一层 flex 容器，行距那三条
                `.sec > * + *` 规则也跟着要改。 -->
+        <label class="chk2"><input type="checkbox" v-model="st.fontBold" /><span title="波束名 / 峰值电平 / 数值标签共用">标签粗体</span></label>
         <label class="chk2"><input type="checkbox" v-model="st.showName" /><span>显示波束名</span><input v-if="st.showName" class="clr sw" type="color" v-model="st.nameColor" title="波束名颜色（两个视图同一套样式）" /></label>
         <div v-if="st.showName" class="srow sub"><label>字号</label><input class="rng" type="range" min="0.5" max="32" step="0.5" v-model.number="st.nameSize" /><span class="u">{{ st.nameSize }}</span></div>
         <label class="chk2"><input type="checkbox" v-model="st.showBore" /><span title="当前场的峰值格点打在地球/壳层上的位置；峰值方向越过地平时不标">显示峰值点</span><input v-if="st.showBore" class="clr sw" type="color" v-model="st.boreColor" title="峰值点十字颜色（两个视图同一套样式）" /></label>
@@ -399,6 +400,9 @@ const boreTip = computed(() => {
         <div v-if="st.showPeak" class="srow sub"><label>字号</label><input class="rng" type="range" min="0.5" max="30" step="0.5" v-model.number="st.peakSize" /><span class="u">{{ st.peakSize }}</span></div>
         <label class="chk2"><input type="checkbox" v-model="st.showVal" /><span>显示数值标签</span><input v-if="st.showVal" class="clr sw" type="color" v-model="st.valColor" title="数值标签颜色（两个视图同一套样式）" /></label>
         <div v-if="st.showVal" class="srow sub"><label>字号</label><input class="rng" type="range" min="0.5" max="30" step="0.5" v-model.number="st.valSize" /><span class="u">{{ st.valSize }}</span></div>
+        <div v-if="st.showVal" class="srow sub"><label>标签</label><select v-model="st.labelMode"><option value="single">单个</option><option value="interval">沿线间隔</option></select></div>
+        <div v-if="st.showVal && st.labelMode === 'interval'" class="srow sub"><label>间隔</label><input class="ci" type="number" step="1" min="2" max="200" v-model.number="st.labelGap" title="两个标签之间隔几个标签宽（SATSOFT Interval）" /></div>
+        <label v-if="st.showVal" class="chk2 sub"><input type="checkbox" v-model="st.labelWithName" /><span title="该档起过名时，标签印「值 名称」">值 + 名称</span></label>
         <!-- 拖动标签位置只在【对地】视图给：可拖标签由对地图层构建时捕获(_dragLabels)，壳层上的标签不在其中。
              壳层视图里开这个模式只会掐掉左键旋转、什么也拖不动，故不出这个入口。 -->
         <div v-if="st.showVal && !isShell" class="srow sub" style="justify-content:flex-start">

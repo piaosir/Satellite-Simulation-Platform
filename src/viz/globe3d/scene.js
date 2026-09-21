@@ -1708,8 +1708,8 @@ export function createGlobeScene(container, quality = {}) {
   // ===================== GEO 卫星覆盖（仿小程序卫星覆盖，移到 3D 地球） =====================
   let covGroup = null
   // 覆盖用小标签（波束名）：白字描边，depthTest 开 -> 背面被地球遮挡
-  function makeCovLabel(text, hpx, color) {
-    const fs = 50, pad = 8, font = `${fs}px ${UI_FONT}`, c = document.createElement('canvas')
+  function makeCovLabel(text, hpx, color, bold) {
+    const fs = 50, pad = 8, font = `${bold ? 'bold ' : ''}${fs}px ${UI_FONT}`, c = document.createElement('canvas')
     let x = c.getContext('2d'); x.font = font
     c.width = Math.ceil(x.measureText(text).width) + pad * 2; c.height = fs + pad * 2
     x = c.getContext('2d'); x.font = font; x.textBaseline = 'middle'; x.textAlign = 'center'
@@ -1948,7 +1948,7 @@ export function createGlobeScene(container, quality = {}) {
     if (o.showVal) for (const grp of (L.segGroups || [])) {
       if (grp.txt == null) continue
       for (const an of (grp.labels || [])) {
-        const spr = makeCovLabel(String(grp.txt), (o.valSize || 12) / 533, o.valColor || '#ffffff')
+        const spr = makeCovLabel(String(grp.txt), (o.valSize || 12) / 533, o.valColor || '#ffffff', !!o.fontBold)
         const pos = llaToVec(an[1], an[0], la)
         pos.addScaledVector(pos.clone().normalize(), spr.scale.y * 0.6)
         spr.position.copy(pos); spr.renderOrder = 12; out.push(spr)
@@ -1969,11 +1969,11 @@ export function createGlobeScene(container, quality = {}) {
       // 连线不在这儿画：对星视图的射线是【天线视轴】那一条，由 setShellRays 单独出（波束打不到壳层时也得有）
       if (crossOn) out.push(makeCovCross(anchor, span, o.boreColor || '#ffffff'))
       if (peakOn) {
-        const spr = makeCovLabel(b.peak.toFixed(2), peakH, o.peakColor || '#cfd6df')
+        const spr = makeCovLabel(b.peak.toFixed(2), peakH, o.peakColor || '#cfd6df', !!o.fontBold)
         spr.center.set(0.5, -(lift / peakH)); spr.position.copy(anchor); spr.renderOrder = 12; out.push(spr)
       }
       if (o.showName && L.name) {
-        const spr = makeCovLabel(L.name, nameH, o.nameColor || '#ffffff')
+        const spr = makeCovLabel(L.name, nameH, o.nameColor || '#ffffff', !!o.fontBold)
         spr.center.set(0.5, -((lift + (peakOn ? peakH * 1.15 : 0)) / nameH))
         spr.position.copy(anchor); spr.renderOrder = 13; out.push(spr)
       }
@@ -2306,7 +2306,7 @@ export function createGlobeScene(container, quality = {}) {
     if (o.showVal) for (const grp of (L.segGroups || [])) {
       if (grp.txt == null) continue
       for (const an of (grp.labels || [])) {
-        const spr = makeCovLabel(String(grp.txt), (o.valSize || 12) / 533, o.valColor || '#ffffff')
+        const spr = makeCovLabel(String(grp.txt), (o.valSize || 12) / 533, o.valColor || '#ffffff', !!o.fontBold)
         const pos = llaToVec(an[1], an[0], 50); pos.addScaledVector(pos.clone().normalize(), spr.scale.y * 0.6)
         spr.position.copy(pos); spr.renderOrder = 12; out.push(spr)
       }
@@ -2336,12 +2336,12 @@ export function createGlobeScene(container, quality = {}) {
       if (crossOn) out.push(makeCovCross(anchor, span, o.boreColor || '#ffffff'))
       // 峰值读数：十字【正上方】第一行。SATSOFT 只印数字不带单位（与等值线标注同体例），此处照办。
       if (peakOn) {
-        const spr = makeCovLabel(b.peak.toFixed(2), peakH, o.peakColor || '#cfd6df')
+        const spr = makeCovLabel(b.peak.toFixed(2), peakH, o.peakColor || '#cfd6df', !!o.fontBold)
         spr.center.set(0.5, -(lift / peakH)); spr.position.copy(labelAnchor); spr.renderOrder = 12; out.push(spr)
       }
       // 波束名：再往上一行（读数在时让开它一行高，不在时直接贴十字上方）
       if (named) {
-        const spr = makeCovLabel(L.name, nameH, o.nameColor || '#ffffff')
+        const spr = makeCovLabel(L.name, nameH, o.nameColor || '#ffffff', !!o.fontBold)
         spr.center.set(0.5, -((lift + (peakOn ? peakH * 1.15 : 0)) / nameH))
         spr.position.copy(labelAnchor); spr.renderOrder = 13; out.push(spr)
       }

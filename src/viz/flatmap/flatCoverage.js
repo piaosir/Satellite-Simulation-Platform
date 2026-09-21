@@ -2270,7 +2270,8 @@ export function createFlatCoverage(canvas) {
     const zf = k() / 13.1
     const covFont = (size) => Math.round(size / 533 * 750 * zf)   // 字号(valSize/peakSize/nameSize) → 2D 世界尺寸 px，与 3D makeCovLabel(字号/533) 一致
     for (const L of fieldLayers) {
-      if (o.showVal) for (const grp of (L.segGroups || [])) { if (grp.txt == null) continue; for (const an of (grp.labels || [])) drawText(String(grp.txt), an[0], an[1], covFont(o.valSize || 12), o.valColor || '#ffffff') }
+      const bold = !!o.fontBold   // 三类标签共用的字重（SATSOFT Font Weight）
+      if (o.showVal) for (const grp of (L.segGroups || [])) { if (grp.txt == null) continue; for (const an of (grp.labels || [])) drawText(String(grp.txt), an[0], an[1], covFont(o.valSize || 12), o.valColor || '#ffffff', { bold }) }
       const b = L.bore; if (!b) continue
       // b.hit=false ＝ 峰值方向越过地平（对星壳层视图＝没打到那层壳）：十字与峰值电平一律不画，
       // b.lon/lat 此时只是该方向的地平/相切点，仅作波束名的锚。
@@ -2287,8 +2288,8 @@ export function createFlatCoverage(canvas) {
       const lift = (crossOn ? span * 0.5 : 0) + 1.125 * zf     // 让开十字上臂 + 一点空隙
       if (crossOn) cross(b.lon, b.lat, span, o.boreColor || '#ffffff')
       // 峰值读数与波束名自上而下码在十字【上方】（SATSOFT 排布：波束名 / 读数 / ＋）；读数只印数字不带单位
-      if (peakOn) drawText(b.peak.toFixed(2), b.lon, b.lat, pf, o.peakColor || '#cfd6df', { dy: -(lift + pf * 0.5) })
-      if (named) drawText(L.name, b.lon, b.lat, nf, o.nameColor || '#ffffff', { dy: -(lift + (peakOn ? pf * 1.15 : 0) + nf * 0.5) })
+      if (peakOn) drawText(b.peak.toFixed(2), b.lon, b.lat, pf, o.peakColor || '#cfd6df', { dy: -(lift + pf * 0.5), bold })
+      if (named) drawText(L.name, b.lon, b.lat, nf, o.nameColor || '#ffffff', { dy: -(lift + (peakOn ? pf * 1.15 : 0) + nf * 0.5), bold })
     }
   }
 

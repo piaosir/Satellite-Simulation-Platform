@@ -4,7 +4,7 @@
 import { ref, reactive, watch, nextTick } from 'vue'
 import { parseGrd } from './parse.js'
 import { sniffPatternFormat, foreignPatternToGrd } from './patFormats.js'
-import { antennaBasis, antennaBasisEcef, beamBasisFrom, dirAzElAbout, dirToAzEl, azElGround, surfaceAzEl, projectGrid, projectLimb, gridDirs, fieldDb, bandGeometry, edgeRefineFor, projectRefine, peakRefDb, stitchLoops, dLon, loopPointAtFraction, loopLabelAnchor, nearestFractionOnLoop } from './coverage.js'
+import { antennaBasis, antennaBasisEcef, beamBasisFrom, dirAzElAbout, dirToAzEl, azElGround, surfaceAzEl, projectGrid, projectLimb, gridDirs, fieldDb, bandGeometry, edgeRefineFor, projectRefine, peakRefDb, stitchLoops, dLon, loopPointAtFraction, loopLabelAnchor, loopLabelsAtInterval, nearestFractionOnLoop } from './coverage.js'
 import { boresightShellPoint } from './shellProj.js'
 import { schemeColorsRGB, rgbCss, cssRgb } from './colormap.js'
 import { parseLevelValues, levelValuesText, levelValues } from './levelTable.js'
@@ -134,6 +134,10 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     // 全局显示选项（与 GXT 一致；不随聚焦天线切换，对所有选中天线生效）：波束名 / 峰值点 / 峰值电平 / 数值标签
     // 默认四项全关：新天线导入即为干净地图（无波束名/峰值点/峰值电平/数值标注），需要时再逐项开启
     showName: false, nameSize: 16, showBore: false, boreSize: 0.5, showRay: false, showPeak: false, peakSize: 5, showVal: false, valSize: 12,
+    // 数值标签排布（SATSOFT Contour Labels）：single 一档一个（现行默认，可拖）/ interval 沿线按间隔重复；
+    // labelGap = 间隔，单位是「标签宽」（SATSOFT 的 Interval，默认 35）。labelWithName：有自定义名时印「值 名称」。
+    // fontBold：三类标签（波束名 / 峰值电平 / 数值）共用的字重（SATSOFT Font Weight）。
+    labelMode: 'single', labelGap: 35, labelWithName: false, fontBold: false,
     // 逐项颜色（对地/对星两视图同一套值；出厂值即从前写死在两个渲染器里的那几个：
     // 波束名/峰值点/数值标签白，峰值读数偏冷灰一档——读数是波束名的附属行，压一档才不抢它）
     nameColor: '#ffffff', boreColor: '#ffffff', peakColor: '#cfd6df', valColor: '#ffffff',
@@ -342,6 +346,9 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
 
   // 每个天线的独立设置（数据库）：除等仰角线(全局参考线)外的全部绘制设置都按天线保存，
   // 切换聚焦时载入该天线设置、编辑时回存，只有用户改动才变。bore 指向同样并入。
+  // 全局显示选项的回存名单（不随聚焦天线走，整份存在快照的 disp 里；老快照缺的键落出厂值）
+  const DISP_KEYS = ['showName', 'nameSize', 'nameColor', 'showBore', 'boreSize', 'boreColor', 'showRay', 'rayColor', 'rayWidth', 'rayOpacity',
+    'showPeak', 'peakSize', 'peakColor', 'showVal', 'valSize', 'valColor', 'labelMode', 'labelGap', 'labelWithName', 'fontBold']
   const PA = ['ctype', 'refDb', 'labelAbs', 'pol', 'gainOffset', 'pathLoss', 'fill', 'line', 'lineWidth', 'lineStyle', 'lineAlpha', 'alpha', 'boreType', 'boreLon', 'boreLat', 'boreAz', 'boreEl', 'yaw', 'boreLock', 'boreSat', 'boreSatName', 'boreOffAz', 'boreOffEl', 'borePtLon', 'borePtLat', 'borePtAlt']
   const copyLevels = (lv) => lv.map((L) => ({ v: L.v, name: L.name || '', labelT: (L.labelT == null ? null : L.labelT), color: L.color, lineColor: L.lineColor, locked: !!L.locked, lineSet: !!L.lineSet, dash: L.dash || null, width: (L.width == null ? null : +L.width), fillAlpha: (L.fillAlpha == null ? null : +L.fillAlpha) }))
   function defaultSettings(satLon, satLat = 0, peakDb) {
@@ -891,6 +898,9 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     })
   }
 
+  // 一个标签在图面上的宽度（度）：与 3D 精灵同一口径——字高 = valSize/533（地球半径为 1 的世界单位），
+  // 折成球面度数 ×180/π，再按字宽比 0.62 × 字数。锚点在重算时定下，故不能取随视角变的屏上尺寸。
+  const labelWDeg = (txt, size) => ((+size || 12) / 533) * (180 / Math.PI) * 0.62 * Math.max(1, String(txt).length)
   // 数值标签锚点/沿环拖动（loopTop·loopPointAtFraction·nearestFractionOnLoop：把标签位置存成
   // 「沿环弧长的比例 t∈[0,1)」，几何每帧重算也始终贴在线上）的几何本体在 coverage.js —— 对星覆盖
   // （useShellCoverage）共用同一份，两视图标签落点口径逐字一致。
@@ -1004,8 +1014,13 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
       ? asc.map((x, i) => {
         const segs = geo.lines[i]
         const labels = []
+        const txt0 = (s.labelWithName && x.name) ? (String(x.lab) + ' ' + x.name) : (x.name || String(x.lab))
+        const byGap = s.labelMode === 'interval'
+        const wDeg = byGap ? labelWDeg(txt0, s.valSize) : 0
         if (withLabels) for (const loop of stitchLoops(segs)) {
           if (loop.length < 4) continue
+          // 沿线间隔重复：一条线上按 labelGap 个标签宽铺一排（拖动位置在这一档没有意义，故不进 _dragCapture）。
+          if (byGap) { for (const an of loopLabelsAtInterval(loop, wDeg, s.labelGap)) labels.push(an); continue }
           // 默认锚点见 loopLabelAnchor（单档取顶部、多档沿环错开）；该档拖过则按存下的弧长比例取点。
           const anchor = (x.labelT != null) ? loopPointAtFraction(loop, x.labelT) : loopLabelAnchor(loop, i, asc.length)
           labels.push(anchor)
@@ -1014,7 +1029,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
         // txt：该档【自定义名称】优先（电平表灰色列可改名），为空则回退电平值 x.v = L.v。
         // 数值回退不做小数位裁剪——绝对模式下 x.abs 恒等于 x.v，之前用 toFixed(1) 会把用户输入的
         // 更高精度电平（如 42.567）显示成 42.6，与输入框对不上。
-        return { segs, color: x.lineColor, width: (x.width == null ? cfg.lineWidth : x.width), dash: (x.dash || cfg.lineStyle || null), txt: (x.name || String(x.lab)), labels }
+        return { segs, color: x.lineColor, width: (x.width == null ? cfg.lineWidth : x.width), dash: (x.dash || cfg.lineStyle || null), txt: txt0, labels }
       }).filter((g) => g.segs.length)
       : []
     // 峰值点（随指向/拖拽实时变化）：波束名标签贴在此处。hit=false（峰值方向越过地平）时
@@ -1067,7 +1082,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     return b ? { db: b.peak, lon: b.lon, lat: b.lat, hit: b.hit !== false } : null
   }
 
-  const fieldOpts = () => ({ alpha: s.alpha, lineAlpha: s.lineAlpha, showBore: s.showBore, boreSize: s.boreSize, boreColor: s.boreColor, showRay: s.showRay, rayColor: s.rayColor, rayWidth: s.rayWidth, rayOpacity: s.rayOpacity, showName: s.showName, nameSize: s.nameSize, nameColor: s.nameColor, showPeak: s.showPeak, peakSize: s.peakSize, peakColor: s.peakColor, showVal: s.showVal, valSize: s.valSize, valColor: s.valColor })
+  const fieldOpts = () => ({ alpha: s.alpha, lineAlpha: s.lineAlpha, showBore: s.showBore, boreSize: s.boreSize, boreColor: s.boreColor, showRay: s.showRay, rayColor: s.rayColor, rayWidth: s.rayWidth, rayOpacity: s.rayOpacity, showName: s.showName, nameSize: s.nameSize, nameColor: s.nameColor, showPeak: s.showPeak, peakSize: s.peakSize, peakColor: s.peakColor, showVal: s.showVal, valSize: s.valSize, valColor: s.valColor, fontBold: s.fontBold })
   // 2D 平面图只有【一块】GRD 场（flatCoverage 的 fieldLayers 是整体替换），对地与对星两个视图都往那儿画，
   // 归属由宿主页按当前活动视图裁定（hooks.ownsFlatField）——不归自己时一律不碰 flat，3D 侧两条通道
   // (setCoverageField / setShellField) 各自独立、不受此限。
@@ -1562,13 +1577,14 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
         satLon: a.satLon, satLat: a.satLat, satAlt: a.satAlt, imported: true, synth: !!a.synth, src: a.src || ''
       }))
     }))
-    const disp = { showName: s.showName, nameSize: s.nameSize, nameColor: s.nameColor, showBore: s.showBore, boreSize: s.boreSize, boreColor: s.boreColor, showRay: s.showRay, rayColor: s.rayColor, rayWidth: s.rayWidth, rayOpacity: s.rayOpacity, showPeak: s.showPeak, peakSize: s.peakSize, peakColor: s.peakColor, showVal: s.showVal, valSize: s.valSize, valColor: s.valColor }
+    const disp = {}
+    for (const k of DISP_KEYS) disp[k] = s[k]
     return { selected: selected.value.slice(), active: active.value, cfgs, sats: satsState, disp }
   }
   async function restoreState(st) {
     if (!st) return
     // 全局显示选项（波束名/峰值点/数值标签）：先恢复，后续 recompute 即按此绘制
-    if (st.disp) for (const k of ['showName', 'nameSize', 'nameColor', 'showBore', 'boreSize', 'boreColor', 'showRay', 'rayColor', 'rayWidth', 'rayOpacity', 'showPeak', 'peakSize', 'peakColor', 'showVal', 'valSize', 'valColor']) if (st.disp[k] != null) s[k] = st.disp[k]
+    if (st.disp) for (const k of DISP_KEYS) if (st.disp[k] != null) s[k] = st.disp[k]   // 老快照缺的键保持出厂值
     // 先恢复卫星：自定义/星座关联星补建到树；所有星（含预置）叠加用户编辑（名称/位置/关联/仰角线）。
     // 预置星节点本身由 index 复现，这里仅叠加用户改过的字段；预置星 kind 始终保持 'preset'。
     if (Array.isArray(st.sats)) {
@@ -1738,7 +1754,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     reproject(); _dragging ? recomputeActive() : recompute()
   })
   // 全局显示选项（波束名/峰值点/数值标签开关与字号）：仅影响标注层，重绘即可（不回存到天线设置）
-  watch(() => [s.showName, s.nameSize, s.nameColor, s.showBore, s.boreSize, s.boreColor, s.showRay, s.rayColor, s.rayWidth, s.rayOpacity, s.showPeak, s.peakSize, s.peakColor, s.showVal, s.valSize, s.valColor], () => recompute())
+  watch(() => DISP_KEYS.map((k) => s[k]), () => recompute())
   watch(() => s.showVal, (v) => { if (!v && dragLabel.value) setDragLabel(false) })   // 关掉数值标签即退出标签拖拽模式（无标签可拖）
   // 切换聚焦天线即退出拖拽波束：拖的是聚焦天线的指向，带着这个模式切到别的天线，下一拖就把新天线拖歪了（对地/对星两个视图共用这一个聚焦，故在此一处收口）
   watch(active, () => { if (dragBore.value) setDragBore(false) })
