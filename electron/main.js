@@ -294,8 +294,9 @@ function confirmCloseE2e() {
   if (_e2eWin && !_e2eWin.isDestroyed()) _e2eWin.close()
 }
 
-// 日凌预报：独立 BrowserWindow，单例复用（与链路预算工作台同模式）。
+// 日凌预报：独立 BrowserWindow，单例复用（与链路预算工作台同模式，带关窗守卫）。
 let _soWin = null
+let _soAllowClose = false
 function createSunOutageWindow() {
   if (_soWin && !_soWin.isDestroyed()) {
     if (_soWin.isMinimized()) _soWin.restore()
@@ -303,10 +304,10 @@ function createSunOutageWindow() {
     return _soWin
   }
   const win = new BrowserWindow({
-    width: 1240,
-    height: 840,
-    minWidth: 980,
-    minHeight: 640,
+    width: 1500,
+    height: 900,
+    minWidth: 1160,
+    minHeight: 700,
     title: '日凌预报 · GSO',
     backgroundColor: '#ffffff',
     autoHideMenuBar: true,
@@ -326,9 +327,19 @@ function createSunOutageWindow() {
     win.loadFile(join(__dirname, '../renderer/suntool.html'))
   }
   bindDevTools(win)
+  _soAllowClose = false
+  win.on('close', (e) => {
+    if (_soAllowClose) return
+    e.preventDefault()
+    win.webContents.send('suntool:closeRequested')
+  })
   win.on('closed', () => { _soWin = null })
   _soWin = win
   return win
+}
+function confirmCloseSunOutage() {
+  _soAllowClose = true
+  if (_soWin && !_soWin.isDestroyed()) _soWin.close()
 }
 
 // 干扰分析（C/I）：独立 BrowserWindow，单例复用。
@@ -699,7 +710,7 @@ app.whenReady().then(async () => {
   // 激活与设备管理：终端心跳上报 + 激活书拉取验签（对端为独立的「卫星仿真平台管理」软件）
   const activation = require(join(root, 'electron/services/activation'))(share, storage)
   const { register } = require(join(root, 'electron/ipc/register'))
-  register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget: createLinkBudgetWindow, openSunOutage: createSunOutageWindow, grd, confirmCloseLinkBudget, openNgso: createNgsoWindow, confirmCloseNgso, openRegen: createRegenWindow, confirmCloseRegen, openE2e: createE2eWindow, confirmCloseE2e, openRain: createRainWindow, confirmCloseRain, openCi: createCiWindow, openPfd: createPfdWindow, openSsa: createSsaWindow, confirmCloseSsa, freqPlan, openFreqPlan: createFreqPlanWindow, notifyFreqPlan, activation, weather, gfs, updater,
+  register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget: createLinkBudgetWindow, openSunOutage: createSunOutageWindow, confirmCloseSunOutage, grd, confirmCloseLinkBudget, openNgso: createNgsoWindow, confirmCloseNgso, openRegen: createRegenWindow, confirmCloseRegen, openE2e: createE2eWindow, confirmCloseE2e, openRain: createRainWindow, confirmCloseRain, openCi: createCiWindow, openPfd: createPfdWindow, openSsa: createSsaWindow, confirmCloseSsa, freqPlan, openFreqPlan: createFreqPlanWindow, notifyFreqPlan, activation, weather, gfs, updater,
     perfWin: { open: createPerfWindow, push: perfWinPush, act: perfWinAct, close: perfWinClose, setTitle: perfWinSetTitle, list: perfWinList, self: perfWinSelf } })
   // 定时心跳；激活状态变化（管理端激活/撤销被拉到）广播到所有窗口，各窗口就地上锁/解锁
   activation.start((st) => {

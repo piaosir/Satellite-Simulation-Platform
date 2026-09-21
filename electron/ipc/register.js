@@ -16,7 +16,7 @@ const writeErrText = (err) => (err && (err.code === 'EBUSY' || err.code === 'EPE
   : (err && err.message) || String(err))
 
 // 注册所有 IPC 处理器。core 为返回引擎实例的函数（延迟解析）。
-function register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget, openSunOutage, grd, confirmCloseLinkBudget, openNgso, confirmCloseNgso, openRegen, confirmCloseRegen, openE2e, confirmCloseE2e, openRain, confirmCloseRain, openCi, openPfd, openSsa, confirmCloseSsa, freqPlan, openFreqPlan, notifyFreqPlan, activation, weather, gfs, updater, perfWin }) {
+function register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget, openSunOutage, confirmCloseSunOutage, grd, confirmCloseLinkBudget, openNgso, confirmCloseNgso, openRegen, confirmCloseRegen, openE2e, confirmCloseE2e, openRain, confirmCloseRain, openCi, openPfd, openSsa, confirmCloseSsa, freqPlan, openFreqPlan, notifyFreqPlan, activation, weather, gfs, updater, perfWin }) {
   // 未激活拦截（主进程硬防线；渲染端菜单/工具栏的拦截只是第一道观感）：
   // 各功能窗口的 open 一律先过这里——渲染端被绕过（devtools 直调 IPC）也开不出窗。
   // （下方九处 *:open 仍显式写着 gate(...)，在新的默认全拦之下已是冗余的第二层，无副作用，
@@ -50,7 +50,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     // 检查更新：拿不到激活的老版本也得能升到修好的版本
     'updater:state', 'updater:check', 'updater:install',
     // 窗口关闭确认：拦掉会导致功能窗口关不干净（锁定期间窗口仍在，只是被遮罩盖住）
-    'linkbudget:confirmClose', 'ngso:confirmClose', 'regen:confirmClose', 'e2e:confirmClose', 'rain:confirmClose', 'ssa:confirmClose',
+    'linkbudget:confirmClose', 'ngso:confirmClose', 'regen:confirmClose', 'e2e:confirmClose', 'rain:confirmClose', 'ssa:confirmClose', 'suntool:confirmClose',
     // 性能指标表窗口的中继（开窗 perfwin:open 仍在锁内；这几条只搬运两窗之间的消息，不产出交付物）
     'perfwin:push', 'perfwin:act', 'perfwin:close', 'perfwin:setTitle', 'perfwin:list', 'perfwin:self',
     // ② 浏览面（只读查询，不产出交付物）
@@ -875,27 +875,82 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
       return r
     } catch (err) { return { error: err.message || String(err) } }
   })
-  // ---- 日凌预报（独立窗口 + 计算 + Word/ICS 导出）----
+  // ---- 日凌预报：轨道源与逐日轨迹的跨 IPC 缓存（容量 2 的 LRU，键 = 轨道 spec 串）----
+  // 渲染端按 8 行一块分批算，块与块之间是两次 IPC；轨迹与地球站无关，一颗星一季只该采样一次，
+  // 故缓存必须活在 handler 外面。容量 2 = 手上这颗星 + 刚切走的那颗，够用且不占内存。
+  const SO_LRU = []
+  function soCtxFor(orbit) {
+    if (!orbit) return undefined
+    const key = JSON.stringify(orbit)
+    const i = SO_LRU.findIndex((x) => x.key === key)
+    if (i >= 0) { const hit = SO_LRU.splice(i, 1)[0]; SO_LRU.unshift(hit); return hit.ctx }
+    let src = null
+    try { src = core().orbitSource(orbit) }
+    catch { return { satTrack: new Map() } }        // 建不出来就让引擎自己去建、自己报错
+    const ctx = { satTrack: new Map(), orbitSource: src }
+    SO_LRU.unshift({ key, ctx })
+    if (SO_LRU.length > 2) SO_LRU.length = 2
+    return ctx
+  }
+  // ★ 将来「外部星历导入」接进来的唯一落点：配置里超过 4 KB 的星历只存引用 { type, ref:{groupId,satId} }，
+  //   由主进程按引用去自定义卫星库取正文——星历正文不过 IPC。本期不会出现 ref，故直接报「不在库中」。
+  function resolveOrbitSpec(orbit) {
+    if (!orbit || typeof orbit !== 'object') return null
+    if (!orbit.ref) return orbit
+    return { error: true, message: '星历不在库中' }
+  }
+  function resolveOrbitParams(p) {
+    if (!p || !p.orbit) return p
+    const spec = resolveOrbitSpec(p.orbit)
+    if (spec && spec.error) throw new Error(spec.message)
+    return Object.assign({}, p, { orbit: spec })
+  }
+
+  // ---- 日凌预报（独立窗口 + 计算 + Excel/Word/ICS 导出）----
   ipcMain.handle('suntool:open', gate(() => { if (openSunOutage) openSunOutage(); return true }))
+  ipcMain.handle('suntool:confirmClose', () => { if (confirmCloseSunOutage) confirmCloseSunOutage(); return true })
   ipcMain.handle('sunoutage:compute', (_e, p) => {
-    try { return core().calculateSunOutage(p || {}) }
+    try { return core().calculateSunOutage(resolveOrbitParams(p || {}), soCtxFor(p && p.orbit)) }
     catch (err) { return { error: true, message: err.message || String(err) } }
   })
-  // 整表批量（SLA 弹窗 / 报告：一条链路春秋两季）：一次 IPC 全算完，链路之间 setImmediate 让出，
+  // 整表批量（站表整页 / SLA 弹窗与报告）：一次 IPC 全算完，站与站之间 setImmediate 让出，
   // 别的窗口的 IPC 与档位扫描不必排在整批后面（同 link:slaScanBatch 的做法）。
-  // 引擎已改成日内插值 + 赤纬预筛（每季 ~8 ms），百条链路也只占主进程一秒多。
+  // 每项可带 seasons（缺省两季；SLA 那条链路不传 → 行为不变），未选的季回 null。
+  // 星历档的轨道源与逐日轨迹表按轨道 spec 串缓存（容量 2 的 LRU，跨 IPC 复用）——
+  // 渲染端按 8 行一块分批发过来，每块都重新采样一遍轨迹的话，缓存就白建了。
   ipcMain.handle('sunoutage:computeBatch', async (_e, list) => {
     const arr = Array.isArray(list) ? list : []
     const out = []
     for (const p of arr) {
-      const one = (season) => {
-        try { return core().calculateSunOutage(Object.assign({}, p || {}, { season })) }
-        catch (err) { return { error: true, message: err.message || String(err) } }
+      let one
+      try {
+        one = core().calculateSunOutageSeasons(resolveOrbitParams(p || {}), soCtxFor(p && p.orbit))
+      } catch (err) {
+        const e1 = { error: true, message: err.message || String(err) }
+        const want = (p && Array.isArray(p.seasons) && p.seasons.length) ? p.seasons : ['vernal', 'autumnal']
+        one = { vernal: want.includes('vernal') ? e1 : null, autumnal: want.includes('autumnal') ? e1 : null }
       }
-      out.push({ vernal: one('vernal'), autumnal: one('autumnal') })
+      out.push(one)
       if (out.length < arr.length) await new Promise((r) => setImmediate(r))
     }
     return out
+  })
+  // 模板版 Excel：整本只有两张表（地球站参数 / 逐日日凌窗口），版式见 report.buildSunOutageExcel
+  ipcMain.handle('sunoutage:exportExcel', async (e, payload) => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    const { canceled, filePath } = await dialog.showSaveDialog(win, {
+      defaultPath: (payload && payload.defaultName) || '日凌预报.xlsx',
+      filters: [{ name: 'Excel 工作簿', extensions: ['xlsx'] }]
+    })
+    if (canceled || !filePath) return { ok: false, canceled: true }
+    try {
+      const buf = await report.buildSunOutageExcel(payload || {})
+      fs.writeFileSync(filePath, Buffer.from(buf))
+      return { ok: true, filePath }
+    } catch (err) {
+      const busy = err && (err.code === 'EBUSY' || err.code === 'EPERM' || err.code === 'EACCES')
+      return { ok: false, error: busy ? '文件可能正被其他程序打开（如 Excel），请关闭后重试' : (err.message || String(err)) }
+    }
   })
   // Word 报告：payload = { result, station:{name,lat,lon}, satellite:{name,lon}, tz:'bjt'|'utc' }
   ipcMain.handle('sunoutage:exportWord', async (e, payload) => {

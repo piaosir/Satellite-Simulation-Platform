@@ -62,8 +62,9 @@ function clearHistory() { write('history.json', []); return true }
 // 后来又添了两个不是「链路预算」的工作台（雨衰、空间态势），但拆库的理由一模一样，故同一套机制。
 // ssa 的 orbitType 写作 'SSA' 只是为了复用 belongsTo 这套归属判定 —— 空间态势报告与轨道体制无关，
 // 而且它是拆库【之后】才有的功能，旧 configs.json 里绝不可能有它的条目，migrateNs 必然拆出空表。
-const CFG_NS = ['geo', 'ngso', 'regen', 'e2e', 'rain', 'ssa']
-const NS_ORBIT = { geo: 'GEO', ngso: 'NGSO', regen: 'REGEN', e2e: 'E2E', rain: 'RAIN', ssa: 'SSA' }
+// sun（日凌预报）同理：'SUN' 也只是归属标记，且同样是拆库之后才有的工作台。
+const CFG_NS = ['geo', 'ngso', 'regen', 'e2e', 'rain', 'ssa', 'sun']
+const NS_ORBIT = { geo: 'GEO', ngso: 'NGSO', regen: 'REGEN', e2e: 'E2E', rain: 'RAIN', ssa: 'SSA', sun: 'SUN' }
 function cfgFile(ns) {
   // 未知命名空间宁可抛错：静默回退到某一份就是把 A 窗的配置写进 B 窗的库，比报错难查得多
   if (!CFG_NS.includes(ns)) throw new TypeError(`[storage] 未知的配置命名空间：${ns}`)

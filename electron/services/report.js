@@ -8,7 +8,7 @@ const ExcelJS = require('exceljs')
 const adaptiveUnits = require('../../packages/core/utils/adaptiveUnits.js')
 // 列宽/行高自适应：各表的宽高常数按「常见内容」定，遇到长站名 / 长标签 / 英文导出会被截断，
 // 故写盘前整本过一遍，只把装不下的列与行放大到刚好装下（只增不减，版式不变）。
-const { autofitBook } = require('./reportAutofit')
+const { autofitBook, maxLineUnits } = require('./reportAutofit')
 
 // 报告字段表：标签 / 结果键 / 单位
 const ROWS = [
@@ -2294,6 +2294,132 @@ async function buildRainAttenuationExcel(payload) {
   return applyBookFont(wb).xlsx.writeBuffer()
 }
 
+// ==================== 日凌预报导出（模板版 Excel）====================
+// 《三线表模板_TimesNewRoman_11pt.xlsx》口径，★ 与模板一模一样：整本只有两张表、各自从 A1 起，
+// 没有页首标题、没有空行、没有表注、没有筛选器、不冻结、不贴 logo。只用 tplSheet 的
+// caption / headRow / dataRow / endTable 四件（heading / note / skip 一概不调）——三线、行高、
+// 对齐、字体全由它保证，别绕开它手画边框。
+//
+// 时刻口径：payload 里的 date 与 *Sec（当天 0 时起的秒）都已在渲染端按显示时区平移好，
+// 主进程只写不算。日期写真日期值（Date，yyyy-mm-dd），三个时刻写 Excel 时间序列值（sec/86400，
+// hh:mm:ss）——xlsx 的日期序列号没有时区概念，本地墙钟只能靠平移伪装，与过境导出同一做法。
+const SO_SEASON_CN = { vernal: '春分', autumnal: '秋分' }
+// 列宽：显式给（模板是 20 / 12 一类的整数），但不得窄于表头一行放得下的宽度 ——
+// tplSheet 的表头带 wrapText，表头一折行，autofitBook 就会把那一行拔高，
+// 模板钉死的 21.75 磅就保不住了。1.3 = autofitSheet 的 padWidth 0.9 + 死区 0.35 再留一点。
+function soCols(cols) {
+  return cols.map((c) => Object.assign({}, c, { w: Math.max(c.w, Math.ceil((maxLineUnits(c.h, 11) + 1.3) * 10) / 10) }))
+}
+function buildSunOutageExcel(payload) {
+  const p = payload || {}
+  const sat = p.sat || {}
+  const seasons = (Array.isArray(p.seasons) && p.seasons.length ? p.seasons : ['vernal', 'autumnal'])
+    .filter((s) => s === 'vernal' || s === 'autumnal')
+  const stations = Array.isArray(p.stations) ? p.stations : []
+  const year = p.year != null ? p.year : ''
+  const tzLabel = p.tzLabel || 'UTC'
+  const crit = p.criterion || {}
+  const critTxt = crit.mode === 'geometric'
+    ? '判据：纯几何，θ_th = θ_3dB'
+    : `判据：C/N 恶化 ≥ ${crit.degDb != null && crit.degDb !== '' ? crit.degDb : 1} dB`
+  const satTitle = `${sat.name || '—'}（${sat.slotText || '—'}）${year} 年`
+  const wb = new ExcelJS.Workbook()
+  wb.creator = '卫星仿真平台'; wb.created = new Date()
+
+  // —— 表 1：地球站参数 ——
+  const cols1 = [
+    { h: '地球站', w: 16, text: true },
+    { h: '纬度 (°N)', w: 12, fmt: '0.0000' },
+    { h: '经度 (°E)', w: 12, fmt: '0.0000' },
+    { h: '频段', w: 8, text: true },
+    { h: '频率 (GHz)', w: 12, fmt: '0.00' },
+    { h: '口径 (m)', w: 10, fmt: '0.00' },
+    { h: 'T_sys (K)', w: 10, fmt: '0' },
+    { h: '方位 (°)', w: 10, fmt: '0.00' },
+    { h: '仰角 (°)', w: 10, fmt: '0.00' },
+    { h: '3 dB 波束宽 (°)', w: 15, fmt: '0.000' },
+    { h: '门限角 (°)', w: 12, fmt: '0.000' }
+  ]
+  for (const s of seasons) {
+    const cn = SO_SEASON_CN[s]
+    cols1.push({ h: `${cn}·天数`, w: 10, fmt: '0', season: s, key: 'days' })
+    cols1.push({ h: `${cn}·单日最长 (min)`, w: 16, fmt: '0.0', season: s, key: 'maxMin' })
+  }
+  const ws1 = wb.addWorksheet('地球站', { views: [{ showGridLines: false }] })
+  soCols(cols1).forEach((c, i) => { ws1.getColumn(i + 1).width = c.w })
+  const T1 = tplSheet(ws1)
+  T1.caption(`${satTitle}日凌预报 · 地球站参数（${critTxt}）`, cols1.length)
+  T1.headRow(cols1.map((c) => c.h))
+  const fmts1 = cols1.map((c) => c.fmt || '')
+  for (const st of stations) {
+    const vals = [
+      st.name == null ? '' : String(st.name),
+      numOrText(st.lat), numOrText(st.lon),
+      st.band == null ? '' : String(st.band),
+      numOrText(st.freq), numOrText(st.diameter), numOrText(st.sysTemp),
+      numOrText(st.satAz), numOrText(st.satEl), numOrText(st.beamWidth), numOrText(st.thresholdAngle)
+    ]
+    for (const c of cols1) {
+      if (!c.season) continue
+      const sea = st[c.season]
+      vals.push(sea ? numOrText(sea[c.key]) : '—')
+    }
+    T1.dataRow(vals, fmts1)
+  }
+  if (stations.length) T1.endTable(cols1.length)
+
+  // —— 表 2：逐日日凌窗口（跨 sheet 连号，故 tplSheet(ws2, 1)）——
+  const cols2 = [
+    { h: '地球站', w: 16 },
+    { h: '分点', w: 8 },
+    { h: '日期', w: 13, fmt: 'yyyy-mm-dd' },
+    { h: `开始 (${tzLabel})`, w: 13, fmt: 'hh:mm:ss' },
+    { h: `峰值 (${tzLabel})`, w: 13, fmt: 'hh:mm:ss' },
+    { h: `结束 (${tzLabel})`, w: 13, fmt: 'hh:mm:ss' },
+    { h: '时长 (min)', w: 12, fmt: '0.0' },
+    { h: '峰值恶化 (dB)', w: 14, fmt: '0.00' },
+    { h: '最小夹角 (°)', w: 14, fmt: '0.000' }
+  ]
+  const ws2 = wb.addWorksheet('日凌窗口', { views: [{ showGridLines: false }] })
+  soCols(cols2).forEach((c, i) => { ws2.getColumn(i + 1).width = c.w })
+  const T2 = tplSheet(ws2, 1)
+  T2.caption(`${satTitle}逐日日凌窗口`, cols2.length)
+  T2.headRow(cols2.map((c) => c.h))
+  const fmts2 = cols2.map((c) => c.fmt || '')
+  let nRows = 0
+  // 行序：站表顺序 → 春分在前 → 日期升序
+  for (const st of stations) {
+    for (const s of seasons) {
+      const sea = st[s]
+      const rows = (sea && Array.isArray(sea.rows)) ? sea.rows : []
+      for (const d of rows) {
+        T2.dataRow([
+          st.name == null ? '' : String(st.name),
+          SO_SEASON_CN[s],
+          soDateVal(d.date),
+          soTimeVal(d.startSec), soTimeVal(d.peakSec), soTimeVal(d.endSec),
+          numOrText(d.durMin), numOrText(d.peakDb), numOrText(d.sep)
+        ], fmts2)
+        nRows++
+      }
+    }
+  }
+  if (nRows) T2.endTable(cols2.length)
+
+  autofitBook(wb)                       // 只增不减：装不下才放宽，版式逐格不变
+  return applyBookFont(wb).xlsx.writeBuffer()
+}
+// 'yyyy-mm-dd' → 真日期值（UTC 分量入格；已在渲染端按显示时区平移好，此处不再动）
+function soDateVal(s) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(s || ''))
+  return m ? new Date(Date.UTC(+m[1], +m[2] - 1, +m[3])) : (s == null ? '' : String(s))
+}
+// 当天 0 时起的秒 → Excel 时间序列值（0~1）
+function soTimeVal(sec) {
+  const n = Number(sec)
+  return Number.isFinite(n) ? (((n % 86400) + 86400) % 86400) / 86400 : '—'
+}
+
 // ==================== 可见性分析 · 时段过境导出 ====================
 // 《三线表模板_TimesNewRoman_11pt.xlsx》版式，三张工作表：摘要（项目/数值/单位）、过境明细
 // （两级表头含辅助线：UTC 组与本地组各 开始/结束/峰值，真日期值 + 同列统一数字格式）、逐星汇总。
@@ -2465,7 +2591,7 @@ function buildVisAccessExcel(payload) {
 }
 
 module.exports = {
-  buildWord, buildExcel, buildSunOutageWord, buildRainAttenuationExcel, buildVisAccessExcel, ROWS,
+  buildWord, buildExcel, buildSunOutageWord, buildSunOutageExcel, buildRainAttenuationExcel, buildVisAccessExcel, ROWS,
   enrichReportModel, buildReportWorkbook, sectionsOf, linkSectionTitle,
   // 独立《服务等级指标（SLA）》报告的 Excel 出口（reportSla.js）复用这几件：只加导出，实现一个字不动。
   // 版式必须与全报告一致（三线表 / 表头随数据列对齐 / logo / 中西文分家），照抄一份必然漂移。

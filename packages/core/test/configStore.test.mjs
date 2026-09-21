@@ -121,9 +121,10 @@ const LEGACY = [
 {
   const { dir, storage } = freshStore(LEGACY)
   const all = storage.listAllConfigs()
-  eq(all.map((g) => g.ns), ['geo', 'ngso', 'regen', 'e2e', 'rain', 'ssa'], '总览按固定顺序给出六个命名空间')
-  // ssa 是拆库之后才有的工作台：旧 configs.json 里不可能有它的条目，迁移必然拆出空表
+  eq(all.map((g) => g.ns), ['geo', 'ngso', 'regen', 'e2e', 'rain', 'ssa', 'sun'], '总览按固定顺序给出七个命名空间')
+  // ssa / sun 都是拆库之后才有的工作台：旧 configs.json 里不可能有它们的条目，迁移必然拆出空表
   eq(all.find((g) => g.ns === 'ssa').items.length, 0, '空间态势库从旧库迁不出任何条目')
+  eq(all.find((g) => g.ns === 'sun').items.length, 0, '日凌库从旧库迁不出任何条目')
   eq(all.reduce((n, g) => n + g.items.length, 0), LEGACY.length, '总览覆盖全部条目')
   rmSync(dir, { recursive: true, force: true })
 }

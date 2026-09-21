@@ -169,7 +169,11 @@ module.exports = {
   modcodTables,
   // 日凌预报（v5 物理恶化门限判据）+ ICS 日历构建
   calculateSunOutage: sunOutage.calculateSunOutage,
+  // 一站一星的春秋两季（批量入口）：seasons 缺省两季、未选的季回 null；ctx 让一批站共用轨道源与轨迹表
+  calculateSunOutageSeasons: sunOutage.calculateSunOutageSeasons,
   sunOutageBands: sunOutage.BAND_PARAMS,
+  // 轨道源（日凌星历档 / 将来的外部星历共用的唯一接口，见 utils/orbitSource.js）
+  orbitSource: require('./utils/orbitSource.js').orbitSource,
   buildIcs: icsBuilder.buildIcs,
   // 通用事件窗口求解器（日凌先行验证；后续 Access/ISL 复用）
   findWindows: eventWindows.findWindows,

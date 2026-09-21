@@ -83,10 +83,17 @@ contextBridge.exposeInMainWorld('api', {
   sunOutage: {
     open: () => ipcRenderer.invoke('suntool:open'),
     compute: (p) => ipcRenderer.invoke('sunoutage:compute', p),
-    // 整表批量：[{lat,lon,satLon,diameter,customFreq,sysTemp,degThreshold,year}] → [{vernal, autumnal}]
+    // 整表批量：[{lat,lon,satLon|orbit,diameter,customFreq,sysTemp,criterion,degThreshold,year,seasons}]
+    //   → [{vernal, autumnal}]，未选的季为 null（不传 seasons 即两季，SLA 那条链路行为不变）
     computeBatch: (list) => ipcRenderer.invoke('sunoutage:computeBatch', list),
+    exportExcel: (payload) => ipcRenderer.invoke('sunoutage:exportExcel', payload),
     exportWord: (payload) => ipcRenderer.invoke('sunoutage:exportWord', payload),
-    exportIcs: (payload) => ipcRenderer.invoke('sunoutage:exportIcs', payload)
+    exportIcs: (payload) => ipcRenderer.invoke('sunoutage:exportIcs', payload),
+    // 城市库（转发链路预算那条通道，与 rainAttenuation 同法）
+    searchCities: (kw) => ipcRenderer.invoke('link:searchCities', kw),
+    cityGroups: () => ipcRenderer.invoke('link:cityGroups'),
+    onCloseRequested: (cb) => ipcRenderer.on('suntool:closeRequested', cb),
+    confirmClose: () => ipcRenderer.invoke('suntool:confirmClose')
   },
   // 干扰分析（C/I）独立窗口：C/ASI 邻星 · C/XPI 交叉极化 · C/CCI 同频复用 · NGSO 时变 CDF。
   // 纯只读——读三库（store.getLibrary）与 GRD（linkBudget.grd*），不写回任何库。
