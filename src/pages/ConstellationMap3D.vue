@@ -66,6 +66,10 @@ import ExcelGrid from '../components/ExcelGrid.vue'
 import { sheetModel, exportSheets, importWorkbook, sheetToRecords, sheetToTsv, pickSheet, safeFileName } from '../shared/gridXlsx.js'
 import { useMarkerTable, trajsFromSheets } from '../viz/markers/useMarkerTable.js'
 import sat from '../viz/constellation/satellite.js'
+// 取位的唯一入口：satrec（SGP4）与星历点序列（插值）两种传播体都走它。
+// 本文件从前有 15 处 sat.propagate，全部改到这里 —— 少改一处，点序列星就在那处静默出 NaN。
+import { posAt, isEphemEntry, propagatorLabel } from '../viz/constellation/satPos.js'
+import { tableFrom } from '../viz/constellation/ephemTable.js'
 import { sampleOrbitAdaptive } from '../viz/constellation/adaptiveSample.js'
 import { ringTtlMs } from '../viz/constellation/focusGeomCache.js'
 import { createFocusGeomPool } from '../viz/constellation/focusGeomPool.js'
@@ -790,7 +794,7 @@ function liveSatPosAt(id, tMs) {
     const e = satEntryById(id)
     if (!e || !e.rec) return null
     const t = new Date(Number(tMs) || Date.now())
-    const pv = sat.propagate(e.rec, t)
+    const pv = posAt(e, t)
     if (!pv || !pv.position) return null
     const gd = sat.eciToGeodetic(pv.position, sat.gstime(t))
     const lat = sat.degreesLat(gd.latitude), lon = sat.degreesLong(gd.longitude), altKm = gd.height
@@ -811,7 +815,7 @@ function satTargetEcef(id) {
   if (e) {
     const cc = isCustomEntry(e), tm = cc ? ccTimeAt(t) : t
     try {
-      const pv = sat.propagate(e.rec, tm)
+      const pv = posAt(e, tm)
       if (pv && pv.position) { const ecf = sat.eciToEcf(pv.position, sat.gstime(tm)); P = [ecf.x, ecf.y, ecf.z] }
     } catch { P = null }
   }
@@ -876,8 +880,7 @@ function satcovInBeamNow(ctx) {
       if (!Number.isFinite(x)) continue                 // 本拍传播失败的星（占位）
       P[0] = x; P[1] = _tickEcef[k * 3 + 1]; P[2] = _tickEcef[k * 3 + 2]
     } else {
-      let pv
-      try { pv = sat.propagate(e.rec, cc ? t.ccNow : t.now) } catch { continue }
+      const pv = posAt(e, cc ? t.ccNow : t.now)
       if (!pv || !pv.position) continue
       const ecf = sat.eciToEcf(pv.position, cc ? t.ccGmst : t.gmst)
       P[0] = ecf.x; P[1] = ecf.y; P[2] = ecf.z
@@ -1512,11 +1515,46 @@ const SGM_MAX = 300               // 搜索结果条数上限（侧栏下拉是 
 // 一旦并入，生成一座星座就会多出一行点开必空（还提示「暂无自定义卫星」）的孤儿分组。自建星座在下方
 // 「自定义星座」区独立管理与显隐，不占内置组列表的行。
 const customImportCount = ref(0)
+// 导入组清单（侧栏「导入星历」区块的数据源）：id / name / kind / format / visible / color / count / 时段
+const importGroups = ref([])
 async function refreshCustomImportCount() {
-  try { const r = (apiOk && window.api.omm.customList) ? await window.api.omm.customList() : null; customImportCount.value = (r && r.count) || 0 }
-  catch { customImportCount.value = 0 }
+  try {
+    const r = (apiOk && window.api.omm.customList) ? await window.api.omm.customList() : null
+    customImportCount.value = (r && r.count) || 0
+    importGroups.value = (r && r.groups) || []
+  } catch { customImportCount.value = 0; importGroups.value = [] }
 }
-const hasCustomData = computed(() => customImportCount.value > 0)
+// 「自定义卫星」这一行有没有数据，判据是【组数 > 0】而不是星数：
+// 点序列组的星不进 custom.json 的 count（那是 OMM 记录数），只数星数会让纯点序列的库看起来是空的。
+const hasCustomData = computed(() => importGroups.value.length > 0)
+
+// 星历点序列的采样表缓存（组 id -> [{ key,name,noradId,eph }]）。表由主进程按 TEME 采好经 IPC 传来，
+// 渲染端只插值（见 ephemTable.js 头注）。组内容一变就作废。
+const ephTables = new Map()
+function invalidateEphTables(id) { if (id) ephTables.delete(id); else ephTables.clear() }
+async function ephemEntriesOf(gid) {
+  if (ephTables.has(gid)) return ephTables.get(gid)
+  let out = []
+  try {
+    const t = apiOk && window.api.omm.ephemTable ? await window.api.omm.ephemTable(gid) : null
+    for (const s of ((t && t.sats) || [])) {
+      const tab = tableFrom(s)
+      if (!tab) continue
+      out.push({ eph: tab, name: s.name, noradId: s.noradId, group: 'ci:' + gid, _ephGroup: gid })
+    }
+  } catch { out = [] }
+  ephTables.set(gid, out)
+  return out
+}
+// 全部【可见】点序列组的星（「自定义卫星」分组与全集视图共用）
+async function loadEphemEntries() {
+  const out = []
+  for (const g of importGroups.value) {
+    if (g.kind !== 'ephem' || g.visible === false) continue
+    for (const e of await ephemEntriesOf(g.id)) out.push(e)
+  }
+  return out
+}
 
 // 生成/编辑向导草稿（null=关闭）
 const constModal = ref(null)
@@ -1620,7 +1658,7 @@ const fmtDate = (d) => { const p = (n) => String(n).padStart(2, '0'); return `${
 // ===================== 信息卡（字段/顺序与 2D 完全一致） =====================
 function cardFor(e) {
   const now = isCustomEntry(e) ? ccTimeAt() : calcAt(), gmst = sat.gstime(now)   // 合成星按场景历元解算
-  const pv = sat.propagate(e.rec, now)
+  const pv = posAt(e, now)
   if (!pv || !pv.position) return null
   const gd = sat.eciToGeodetic(pv.position, gmst), v = pv.velocity, r = pv.position
   const WE = 7.2921159e-5
@@ -1813,7 +1851,7 @@ function focusGeomOfRec(rec, isCc, color) {
   if (!rec) return null
   const now = calcAt(), t = isCc ? ccTimeAt(now) : now, g = sat.gstime(t)   // 合成星按场景历元解算
   try {
-    const pv = sat.propagate(rec, t)
+    const pv = posAt(rec, t)
     if (!pv || !pv.position) return null
     const gd = sat.eciToGeodetic(pv.position, g)
     const lat = sat.degreesLat(gd.latitude), lon = sat.degreesLong(gd.longitude), h = gd.height
@@ -1959,7 +1997,7 @@ function rebuildRenderSet() {
   const base = filtering ? filterEntries : entries   // 搜索筛选态：渲染命中星（跨分组），否则渲染当前分组
   const valid = []
   for (const e of base) {
-    try { const pv = sat.propagate(e.rec, now); if (pv && pv.position) valid.push(e) } catch { /* skip */ }
+    const pv = posAt(e, now); if (pv && pv.position) valid.push(e)
   }
   if (filtering) {
     renderEntries = valid          // 只显示命中星（含命中的自定义星；不再叠加全部自定义星座）
@@ -2030,7 +2068,7 @@ async function refreshPositions() {
     const cc = isCustomEntry(e), t = cc ? ccNow : now, g = cc ? ccGmst : gmst
     let pos
     try {
-      const pv = sat.propagate(e.rec, t)
+      const pv = posAt(e, t)
       if (pv && pv.position) {
         const gd = sat.eciToGeodetic(pv.position, g); pos = { lat: sat.degreesLat(gd.latitude), lon: sat.degreesLong(gd.longitude), altKm: gd.height }
         if (wantEcef) { const ecf = sat.eciToEcf(pv.position, g); _tickEcef[k * 3] = ecf.x; _tickEcef[k * 3 + 1] = ecf.y; _tickEcef[k * 3 + 2] = ecf.z }
@@ -2063,11 +2101,14 @@ async function refreshPositions() {
 }
 
 // ===================== 数据加载 =====================
-function ingest(sats, payloadGroup, fetchedAt) {
+// extra：星历点序列星（带 eph 表，没有根数），与 OMM 星并列进 entries。
+// 两种 entry 的差别只有一个字段：rec（satrec）还是 eph（采样表）—— 取位一律走 posAt(e, t)。
+function ingest(sats, payloadGroup, fetchedAt, extra) {
   entries = []
   for (const s of sats) {
     try { const r = sat.omm2satrec(s); if (r && !r.error) entries.push({ rec: r, name: s.name, noradId: s.noradId, group: s._group || payloadGroup || '' }) } catch { /* skip */ }
   }
+  for (const e of (extra || [])) entries.push(e)
   dataTime.value = fetchedAt ? fmtDate(new Date(fetchedAt)) : '—'
   rebuildRenderSet()
   status.value = entries.length ? '' : '无有效卫星'
@@ -2102,12 +2143,17 @@ async function loadGroup() {
   }
   // 「自定义卫星」：读本地库 OMM CSV（文件管理导入的 OMM/TLE），永不联网。导入的星历【保留文件内历元】，
   // 与内置真实组同口径按各自历元正向传播到此刻（自建星座才用场景历元，二者互不影响）。
+  // 【口径】这一行 =【全部可见导入组的并集】（星座栏「导入星历」区块的眼睛控制哪几组进来）。
+  //   点某一行不切分组，只是显隐叠加 —— 与「自定义星座」的「点行单独显示」不是一回事。
   if (g.key === 'custom') {
     try {
-      const rawC = await window.api.omm.customCsv()
+      const rawC = await window.api.omm.customRawVisible()
       const sats = rawC && rawC.text ? parseOMMCsv(rawC.text) : []
-      if (sats.length) { ingest(sats, 'custom', (rawC && rawC.fetchedAt) || new Date().toISOString()); status.value = '' }
-      else { entries = []; rebuildRenderSet(); redrawSats(); dataTime.value = '—'; status.value = '暂无自定义卫星——请在「文件管理 · 星历」导入 OMM / TLE' }
+      const groupOf = (rawC && rawC.groupOf) || {}
+      for (const s of sats) s._group = groupOf[String(s.noradId)] || 'custom'
+      const eph = await loadEphemEntries()
+      if (sats.length || eph.length) { ingest(sats, 'custom', (rawC && rawC.fetchedAt) || new Date().toISOString(), eph); status.value = '' }
+      else { entries = []; rebuildRenderSet(); redrawSats(); dataTime.value = '—'; status.value = importGroups.value.length ? '导入组都已隐藏。' : '还没有导入星历。' }
     } catch (e) { entries = []; rebuildRenderSet(); status.value = '自定义卫星读取失败：' + ((e && e.message) || e) }
     return
   }
@@ -2165,6 +2211,8 @@ async function loadUniverse(silent, opts = {}) {
   tick()
   for (const s of active) if (!universe.has(s.noradId)) universe.set(s.noradId, s)
   // 本地自定义卫星库并入全集（永不联网）：以用户库为准覆盖同号目录星，归入 'custom' 组；保留文件内历元。
+  // 这里只并 gp 组（customCsv 本就只吐 gp）：全集是一份 OMM 记录表，点序列星没有根数塞不进来，
+  // 它们由 loadMerged 另外挂在 extra 上。
   try {
     const rawC = await window.api.omm.customCsv()
     const cs = rawC && rawC.text ? parseOMMCsv(rawC.text) : []
@@ -2197,7 +2245,7 @@ async function loadMerged(key) {
     const cached = pick(await loadUniverse(true, { cacheOnly: true }))
     if (curKey() !== key) return   // 读盘期间用户已切走：整个作废，连后台那一版也不必再发
     if (cached.length) {
-      ingest(cached, key, universeFetchedAt || new Date().toISOString())
+      ingest(cached, key, universeFetchedAt || new Date().toISOString(), key === 'all' ? await loadEphemEntries() : null)
       shown = true; sig = `${cached.length}|${universeFetchedAt || ''}`; status.value = ''
     }
   } catch { /* 本机一份星历都没有：交给下面联网 */ }
@@ -2209,7 +2257,7 @@ async function loadMerged(key) {
       // 联网版与已出图那版逐项同源（全组都回落到同一批本机数据）→ 跳过重建：全集两万多颗，
       // 一次 ingest 是上万次 omm2satrec + 整个点云重建，白做一遍会在出图后再卡一下。
       if (shown && `${out.length}|${universeFetchedAt || ''}` === sig) { status.value = ''; return }
-      ingest(out, key, universeFetchedAt || new Date().toISOString()); status.value = ''
+      loadEphemEntries().then((ex) => { if (curKey() !== key) return; ingest(out, key, universeFetchedAt || new Date().toISOString(), key === 'all' ? ex : null); status.value = '' })
     })
     .catch((e) => { if (curKey() === key && !shown) status.value = `${label} 获取失败：${(e && e.message) || '网络不可达'}` })
 }
@@ -2320,7 +2368,7 @@ function refreshSelection() {
 // 旋转地球使某星正对视图
 function faceEntry(e) {
   const now = isCustomEntry(e) ? ccTimeAt() : calcAt(), gmst = sat.gstime(now)   // 合成星按场景历元定位朝向
-  const pv = sat.propagate(e.rec, now)
+  const pv = posAt(e, now)
   if (!pv || !pv.position) return
   const gd = sat.eciToGeodetic(pv.position, gmst)
   const lat = sat.degreesLat(gd.latitude), lon = sat.degreesLong(gd.longitude)
@@ -2453,8 +2501,7 @@ function faceEntries(list) {
   let x = 0, y = 0, z = 0, n = 0
   for (const e of list) {
     const cc = isCustomEntry(e), t = cc ? ccNow : now, g = cc ? ccGmst : gmst
-    let pv = null
-    try { pv = sat.propagate(e.rec, t) } catch { pv = null }
+    const pv = posAt(e, t)
     if (!pv || !pv.position) continue
     const gd = sat.eciToGeodetic(pv.position, g)
     const phi = (90 - sat.degreesLat(gd.latitude)) * DEG, theta = (sat.degreesLong(gd.longitude) + 180) * DEG
@@ -3154,7 +3201,7 @@ function setTrkSpanMode(m) {
 //   sin(B/2) = (RE/r)·cos ε，r=RE+h；B/2 ≥ asin(RE/r)（地平）时 ε=0。切换定义方式时按此换算，覆盖圈不变。
 function selAltKm() {
   if (!selEntry) return null
-  const now = isCustomEntry(selEntry) ? ccTimeAt() : calcAt(); const pv = sat.propagate(selEntry.rec, now)
+  const now = isCustomEntry(selEntry) ? ccTimeAt() : calcAt(); const pv = posAt(selEntry, now)
   if (!pv || !pv.position) return null
   const gd = sat.eciToGeodetic(pv.position, sat.gstime(now))
   return gd.height > 0 ? gd.height : null
@@ -3531,7 +3578,7 @@ const subPtPos = computed(() => {
   if (!e || !e.rec) return null
   const t = calcAt(), tm = isCustomEntry(e) ? ccTimeAt(t) : t
   try {
-    const pv = sat.propagate(e.rec, tm)
+    const pv = posAt(e, tm)
     if (!pv || !pv.position) return null
     const gd = sat.eciToGeodetic(pv.position, sat.gstime(tm))
     const lon = sat.degreesLong(gd.longitude), lat = sat.degreesLat(gd.latitude)
@@ -3948,7 +3995,7 @@ function ensureFlat() {
     flat.setOnBoxSelect(bsOnBoxSelect); flat.setBoxSelectMode(bs.stEditOn.value)   // 站点栅框选（拖矩形选站，页面画橡皮筋）
     flat.setOnRotate(onFlatRotate); flat.setRotateMode(projSpin.value)   // 「拖动调整」：左键拖动改投影中心（见地图设置 → 2D 投影）
     pushSubMark()        // 星下点准星（切回 2D / 导出时也要有；那一节收起来时不画）
-    flat.setOnZoom((t) => { if (flatView.value) { zoom.value = t; saveView() } })
+    flat.setOnZoom((t) => { if (flatView.value) { zoom.value = t; saveView(); grd.onZoomEnd() } })
     // GRD 分带填充的后端换了（换投影档 / 导出前后 / WebGL 上下文丢失恢复）→ 重算一轮几何，
     // 把填充换成另一种产物（GPU 网格 ↔ 分带多边形）。见 flatCoverage.fieldBackend。
     flat.setOnBackendChange(() => { grd.recompute() })
@@ -5660,7 +5707,7 @@ function satPatchFrom(m, alert) {
     elements = { altKm: alt, ecc, incl, raan: Number(el.raan) || 0, argp: Number(el.argp) || 0, ma: Number(el.ma) || 0 }
     let rec; try { rec = elementsToSatrec(elements) } catch { rec = null }
     if (!rec || rec.error) { if (alert) appAlert('该组根数无法构造有效轨道（可能已衰减或超界），请调整'); return null }
-    const now = calcAt(); const pv = sat.propagate(rec, now)
+    const now = calcAt(); const pv = posAt(rec, now)
     if (!pv || !pv.position) { if (alert) appAlert('轨道传播失败，请检查根数'); return null }
     const gd = sat.eciToGeodetic(pv.position, sat.gstime(now))
     lon = sat.degreesLong(gd.longitude); lat = sat.degreesLat(gd.latitude); altKm = gd.height
@@ -5753,9 +5800,9 @@ function orbitSatrec(node) {
 function satLivePos(node) {
   if (node.noradId) {
     const en = liveEntryOf(node.noradId)   // 自定义星座合成星(含隐藏)：关联后按合成星历实时跟踪
-    if (en) { const now = isCustomEntry(en) ? ccTimeAt() : calcAt(); const pv = sat.propagate(en.rec, now); if (pv && pv.position) { const gd = sat.eciToGeodetic(pv.position, sat.gstime(now)); return { lon: sat.degreesLong(gd.longitude), lat: sat.degreesLat(gd.latitude), altKm: gd.height } } }
+    if (en) { const now = isCustomEntry(en) ? ccTimeAt() : calcAt(); const pv = posAt(en, now); if (pv && pv.position) { const gd = sat.eciToGeodetic(pv.position, sat.gstime(now)); return { lon: sat.degreesLong(gd.longitude), lat: sat.degreesLat(gd.latitude), altKm: gd.height } } }
   } else if (node.elements) {
-    try { const now = calcAt(); const pv = sat.propagate(orbitSatrec(node), now); if (pv && pv.position) { const gd = sat.eciToGeodetic(pv.position, sat.gstime(now)); return { lon: sat.degreesLong(gd.longitude), lat: sat.degreesLat(gd.latitude), altKm: gd.height } } } catch { /* 根数异常 → 回退静态值 */ }
+    try { const now = calcAt(); const pv = posAt(orbitSatrec(node), now); if (pv && pv.position) { const gd = sat.eciToGeodetic(pv.position, sat.gstime(now)); return { lon: sat.degreesLong(gd.longitude), lat: sat.degreesLat(gd.latitude), altKm: gd.height } } } catch { /* 根数异常 → 回退静态值 */ }
   }
   return { lon: node.lon, lat: node.lat, altKm: node.altKm }
 }
@@ -5947,7 +5994,7 @@ function satElevAt(lat, lon) {
   let best = null
   for (const e of selEntries) {
     const cc = isCustomEntry(e), t = cc ? ccNow : now, g = cc ? ccGmst : gmst
-    const pv = sat.propagate(e.rec, t)
+    const pv = posAt(e, t)
     if (!pv || !pv.position) continue
     const el = sat.ecfToLookAngles(gs, sat.eciToEcf(pv.position, g)).elevation / DEG
     if (best == null || el > best) best = el
@@ -6880,7 +6927,7 @@ onMounted(async () => {
   scene.setOnPlace((ll) => bs.placeAt(ll)); scene.setPlaceMode(bs.placing.value)   // 波束合成放置：左键点击落波束（拖动仍旋转）
   scene.setOnMarkerDrag(onMarkerDragged)   // 标记拖拽（2D 那侧在 flat 创建处注册）
   // 缩放进度条（底部状态栏）：注册当前页缩放能力，球体滚轮缩放回填进度条 + 记忆
-  scene.setOnZoom((t) => { if (!flatView.value) { zoom.value = t; saveView() } })
+  scene.setOnZoom((t) => { if (!flatView.value) { zoom.value = t; saveView(); grd.onZoomEnd() } })
   if (savedView.globe) scene.setView(savedView.globe)   // 恢复上次球体视图（朝向+缩放）
   // 平移/旋转结束也保存视图（滚轮已由 onZoom 覆盖；拖拽无回调，故监听 pointerup）
   el.value.addEventListener('pointerup', saveView)

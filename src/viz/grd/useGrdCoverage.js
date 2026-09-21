@@ -1028,24 +1028,50 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
       return (v && v.viewMetrics) ? v.viewMetrics() : null
     } catch { return null }
   }
-  // 三角化步长：让一格投到屏上约 2 个【设备像素】—— 比这更细的格，棱角肉眼看不见。
-  // 画质档里选的步长是【下限】（选了 1/2 就不会更细），自适应只往粗走且封顶 4；
-  // 取样格取热区盒中心那一格（越地平格的经纬跨度会被拉伸几十倍，拿它定步长会整片过粗）。
-  function autoStride(beam, box, vm) {
-    const base = displayQuality.value.gridStride || 1
+  // 一格（热区盒中心那一格）的经纬跨度，度。越地平格的跨度会被拉伸几十倍，拿它定步长会整片过粗，故取盒心。
+  // 只随投影变（缩放不改它）→ 缩放结束时拿它 × 新的 pxPerDeg 复算步长，不必重建图层。
+  function cellDegOf(beam, box) {
     const p = beam && beam.proj
-    if (!vm || !(vm.pxPerDeg > 0) || !p || !p.lat) return base
+    if (!p || !p.lat) return NaN
     const r = (box && box.r1 >= box.r0) ? ((box.r0 + box.r1) >> 1) : (p.NY >> 1)
     const c = (box && box.c1 >= box.c0) ? ((box.c0 + box.c1) >> 1) : (p.NX >> 1)
     const k0 = r * p.NX + Math.min(c, p.NX - 2), k1 = k0 + 1
-    if (!(p.vis[k0] >= 0) || !(p.vis[k1] >= 0)) return base
+    if (!(p.vis[k0] >= 0) || !(p.vis[k1] >= 0)) return NaN
     const dLat = p.lat[k1] - p.lat[k0]
     let dLon = p.lon[k1] - p.lon[k0]
     while (dLon > 180) dLon -= 360
     while (dLon < -180) dLon += 360
-    const cellPx = Math.hypot(dLat, dLon * Math.cos(p.lat[k0] * Math.PI / 180)) * vm.pxPerDeg
+    return Math.hypot(dLat, dLon * Math.cos(p.lat[k0] * Math.PI / 180))
+  }
+  // 三角化步长：让一格投到屏上约 2 个【设备像素】—— 比这更细的格，棱角肉眼看不见。
+  // 画质档里选的步长是【下限】（选了 1/2 就不会更细），自适应只往粗走且封顶 4。
+  // 一格 ≥ 8 px 时无视画质档强制全分辨率：细化表只在 stride === 1 启用，否则放大到一格几十像素仍是旧的粗线。
+  function strideOf(cellDeg, vm) {
+    const base = displayQuality.value.gridStride || 1
+    if (!vm || !(vm.pxPerDeg > 0) || !(cellDeg > 0)) return base
+    const cellPx = cellDeg * vm.pxPerDeg
     if (!(cellPx > 0)) return base
+    if (cellPx >= 8) return 1
     return Math.max(base, Math.min(4, Math.floor(2 / cellPx) || 1))
+  }
+  let _strideCells = null          // recompute 期间收集各波束的一格跨度（缩放结束时据此复算步长）
+  function autoStride(beam, box, vm) {
+    const cd = cellDegOf(beam, box)
+    if (_strideCells) _strideCells.push(cd)
+    return strideOf(cd, vm)
+  }
+  // 缩放结束：步长档位跨越了才整轮重建一次（不变则不动，保持 09-06「视区一动不整轮重建」的原则）。
+  // 缩小时定下的 stride 2~4 放大后仍是这份、且细化被关掉 —— 转角 > 8° 的顶点占 34~84%，就是屏上看到的锯齿。
+  let _strideDone = [], _strideSig = '', _zoomTimer = 0
+  const strideSigOf = (cells, vm) => cells.map((cd) => strideOf(cd, vm)).join(',')
+  function onZoomEnd() {
+    if (_zoomTimer) clearTimeout(_zoomTimer)
+    _zoomTimer = setTimeout(() => {
+      _zoomTimer = 0
+      if (!_strideDone.length) return
+      if (strideSigOf(_strideDone, viewMetricsNow()) === _strideSig) return
+      recompute()
+    }, 180)
   }
   // ★ 2026-09-06 撤掉了「按视区裁剪三角化」：裁剪一旦生效，视区一动就必须整轮重建
   //   （这个文件一轮 280+ ms），而裁掉的那点三角形远远抵不上重建的代价 —— 净亏，实测卡到不能用。
@@ -1056,9 +1082,10 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
   function recompute() {
     const t0 = perfNow()
     refreshView()
+    _strideCells = []
     // 2D 平面图盖住球面期间（scene 已 pause）不喂 3D：切回 3D 时由 applyFlat 补一次全量。
     const sc = isFlat() ? null : getScene(), fl = flatField()
-    if (!sc && !fl) { _fullMs = 0; return }   // 两侧都不收（如 2D 下对星视图占着场）：几何白算，直接跳过
+    if (!sc && !fl) { _strideCells = null; _fullMs = 0; return }   // 两侧都不收（如 2D 下对星视图占着场）：几何白算，直接跳过
     // 聚焦（编辑中）天线排到最后 → 填充叠加时位于最上层，最醒目（其余按选中顺序在下）
     const ks = [...selected.value].sort((a, b) => (a === active.value ? 1 : 0) - (b === active.value ? 1 : 0))
     if (!ks.includes(active.value)) setLivePeak('ground', null)   // 聚焦天线没画出来 → 面板读数留空，不留上一次的陈值
@@ -1068,6 +1095,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     // 增量更新：图层按 id 复用 GPU 缓冲，只有真消失的层才销毁（94 波束下这是「点播放就卡」的大头）
     if (sc) (sc.updateCoverageField || sc.setCoverageField)(layers, opts)
     if (fl) fl.setField(layers, opts)
+    _strideDone = _strideCells || []; _strideCells = null; _strideSig = strideSigOf(_strideDone, _viewVm)
     _fullMs = perfNow() - t0            // 整轮耗时（几何 + GPU 重建都算在内）：面板读数用
   }
   // ★ 【一帧一个时刻】：覆盖场的重算永远与星位在同一次调用里做完，绝不延后。
@@ -1663,7 +1691,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     deleteBeam, deleteCheckedBeams,
     loadIndex, setActive, toggleAnt, toggleSatAll, toggleExpand, addLevel, removeLevel, importGrd, importSynthGrd,
     addSatellite, addElevLine, updateSatellite, removeSatellite, removeAntenna, renameAntenna, setElev, onTreeKeys,
-    setDragBore, beamDrag, dragLabel, setDragLabel, labelDrag, getState, restoreState, recompute, clearAll, clearDrawing, setActiveKey,
+    setDragBore, beamDrag, dragLabel, setDragLabel, labelDrag, getState, restoreState, recompute, onZoomEnd, clearAll, clearDrawing, setActiveKey,
     setLivePos, tickLive, getPerfContext, ensureAntLoaded, exportContours,
     livePeak, setLivePeak, bestPeakOf
   }
