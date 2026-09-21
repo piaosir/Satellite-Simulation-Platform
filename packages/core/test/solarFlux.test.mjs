@@ -161,6 +161,27 @@ const LONG = JSON.parse(read('solar-flux.json'))      // 只有月均 + 预测�
   ok('⑤ 离线开关下 refresh() 立刻返回、不发请求', r && r.source === 'offline' && r.ok === false, JSON.stringify(r))
   ok('⑤ 读路径不在数据目录里造文件', fs.readdirSync(TMP).length === 0, fs.readdirSync(TMP).join())
 
+  // ★ 并发去重不能把 force 吞掉：普通刷新飞行中时，refresh({force:true}) 必须另起一次
+  //   （原来直接 return 那个飞行中的 promise —— 那一次可能被当日闸 / 会话闸挡掉，force 就白给了）。
+  //   离线开关下每一次 doRefresh 都立刻回 offline，故这里只钉「排了几次」与「先后顺序」。
+  {
+    const order = []
+    const pn = svc.refresh()                        // 普通刷新，飞行中
+    const pf = svc.refresh({ force: true })         // 强制：不能复用飞行中那一次普通刷新
+    const pn2 = svc.refresh()                       // 普通的复用飞行中那一次强制刷新
+    const pf2 = svc.refresh({ force: true })        // 强制的复用飞行中那一次强制刷新
+    ok('⑤ force 遇到飞行中的普通刷新 → 另起一次，不复用', pf !== pn)
+    ok('⑤ 普通刷新复用飞行中的强制刷新', pn2 === pf)
+    ok('⑤ 强制刷新之间仍并发去重', pf2 === pf)
+    pn.then(() => order.push('normal'))
+    pf.then(() => order.push('force'))
+    const [, rf] = await Promise.all([pn, pf, pn2, pf2])
+    await Promise.resolve(); await Promise.resolve()
+    ok('⑤ 强制那次排在普通那次之后跑（不并发）', order.join(',') === 'normal,force', order.join(','))
+    ok('⑤ 强制那次也走离线短路', rf && rf.source === 'offline', JSON.stringify(rf))
+    ok('⑤ 跑完后飞行标志清干净', svc.status().refreshing === false, String(svc.status().refreshing))
+  }
+
   // 用户缓存更新时压过内置快照（择新，同 omm.js offlineBest）
   fs.mkdirSync(path.join(TMP, 'space-weather'), { recursive: true })
   const newer = pick.mergeProducts(JSON.parse(read('solar-flux.json')), {}, null)

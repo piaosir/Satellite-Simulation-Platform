@@ -152,6 +152,7 @@ function httpGetText(url) {
 let _mem = null              // 当前内存中的合并数据 { data, source, fetchedAt }
 let _loaded = false
 let _refreshing = null       // 飞行中的 refresh（并发去重）
+let _refreshingForce = false // 飞行中那一次是不是强制刷新（决定新来的 force 能不能复用它）
 let _cycledMs = 0            // 本次运行最近一次跑完整轮取数的时刻（见 doRefresh 的会话闸）
 
 /** 当前可用的合并数据（首次调用读盘），永不联网、同步返回 */
@@ -190,12 +191,20 @@ function status() {
  */
 function refresh(opts) {
   const o = opts || {}
-  if (_refreshing) return _refreshing
-  _refreshing = doRefresh(o).catch((e) => {
+  // 并发去重：飞行中那一次已经「不弱于」这一次，就复用它。
+  // ★ force 不能复用飞行中的普通刷新 —— 普通那次可能被当日闸 / 会话闸挡掉直接返回，
+  //   复用它等于把 force 吞了。排到它后面再真跑一次强制刷新（不并发，避免两轮同时打 SWPC）。
+  if (_refreshing && (!o.force || _refreshingForce)) return _refreshing
+  const run = () => doRefresh(o).catch((e) => {
     log.emit(`${TAG}刷新异常（${(e && e.message) || e}）`, 'warn')
     return { ok: false, source: null, fetchedAt: null }
-  }).finally(() => { _refreshing = null })
-  return _refreshing
+  })
+  const prev = _refreshing
+  const p = prev ? prev.then(run, run) : run()
+  _refreshing = p
+  _refreshingForce = !!o.force
+  p.finally(() => { if (_refreshing === p) { _refreshing = null; _refreshingForce = false } })
+  return p
 }
 
 async function doRefresh(o) {
