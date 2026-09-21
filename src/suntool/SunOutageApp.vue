@@ -17,6 +17,7 @@ import { stableStringify } from '../shared/configDirty.js'
 import { tzParts, tzTag, normTzMode } from '../shared/tz.js'
 import { byLang } from '../shared/i18n/lang.js'
 import { halfStr } from '../shared/num.js'
+import { epochMs } from '../shared/epochMs.js'
 import { fmtGeoSlot, classifyOrbit } from '../shared/orbitClass.js'
 import { SAT_PRESETS } from '../linkbudget/satPresets.js'
 import { ensureSearchPool, findPoolByNorad, orbitSpecOf, slotLonOf } from '../ngso/satSearchPool.js'
@@ -302,7 +303,7 @@ const slotText = computed(() => fmtGeoSlot(pf(sat.slotLon)) || (sat.slotLon ? sa
 // 星历档读数：历元 · 距各分点天数 · 倾角（含运行时数据的读数行，口径说明放 title）
 const epochRead = computed(() => {
   if (sat.source !== 'ephemeris' || !sat.epoch) return null
-  const ms = Date.parse(sat.epoch)
+  const ms = epochMs(sat.epoch)          // OMM 历元不带 Z，裸 Date.parse 会按本机时区解，差几小时
   if (!Number.isFinite(ms)) return null
   const t = tzParts(ms, tzMode.value)
   const y = parseInt(String(halfStr(year.value)), 10)

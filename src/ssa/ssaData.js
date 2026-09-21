@@ -12,6 +12,7 @@ import { ref, reactive, shallowRef, onBeforeUnmount } from 'vue'
 import { parseOMMCsv } from '../viz/constellation/tle.js'
 import { parseSatcatCsv } from '../shared/ssaStats.js'
 import { byLang } from '../shared/i18n/lang.js'
+import { epochMs } from '../shared/epochMs.js'
 
 // 「我的卫星组」：星座 3D 页的组管理器写的那份（viz/constellation/useSatGroups.js）。
 // 本窗口与主窗口同源，localStorage 直接读得到 —— ★ 只读、永不写回：组的真值源在 3D 页，
@@ -42,7 +43,7 @@ function weakestSrc(list) {
   return out
 }
 // 历元时刻：同号多组取最新的那一条根数，比的是这个
-const epochMs = (r) => { const t = Date.parse(r && r.epoch); return Number.isFinite(t) ? t : -Infinity }
+const recEpochMs = (r) => { const t = epochMs(r && r.epoch); return Number.isFinite(t) ? t : -Infinity }
 
 // 取一组 GP 星历并解析。
 // ★ 没有走 tle.js 的 fetchGroupLiveOrSup：它把主进程回的 source（直连 / 云镜像 / 内置快照…）吞掉了，
@@ -159,7 +160,7 @@ export function useSsaData() {
       for (const s of p.sats) {
         if (!groupOf.has(s.noradId)) groupOf.set(s.noradId, keys[i])
         const old = recs.get(s.noradId)
-        if (!old || epochMs(s) > epochMs(old)) recs.set(s.noradId, s)
+        if (!old || recEpochMs(s) > recEpochMs(old)) recs.set(s.noradId, s)
       }
     }
     if (!got) return false                                 // 一组都没取到：留着上一段那份数据，不清空

@@ -18,6 +18,7 @@ import { classifyOrbit, foldInclination, fmtGeoSlot } from './orbitClass.js'
 import { geoLonAtEpoch } from './geoSlot.js'
 import sat from '../viz/constellation/satellite.js'
 import { ACTIVE_STATUS } from './satcatCodes.js'
+import { epochMs } from './epochMs.js'
 
 const RE_KM = 6378.137        // WGS84 赤道半径，与 orbitClass.js 同源（区制判据要逐位一致）
 const MU = 398600.4418        // 地心引力常数 μ (km³/s²)，同源
@@ -653,7 +654,7 @@ export function epochAgeStats(gpRecs, asOf) {
   const all = []
   const byKey = new Map()
   for (const g of gpRecs) {
-    const e = Date.parse(String(g && g.epoch || '').replace(/Z?$/i, 'Z'))
+    const e = epochMs(g && g.epoch)
     if (!Number.isFinite(e) || !fin(t)) continue
     const age = (t - e) / DAY_MS
     all.push(age)
@@ -853,7 +854,7 @@ export function groupMembers(group, gpIndex, satcatIndex, opts) {
       if (Number.isFinite(raan)) m.raanDeg = r2(raan)
       if (mm > 0) m.periodMin = r2(1440 / mm)
       m.regime = classifyOrbit({ e: Number.isFinite(e) ? e : 0, inclDeg: Number.isFinite(inc) ? inc : 0, periodMin: mm > 0 ? 1440 / mm : undefined })
-      const ep = Date.parse(String(g.epoch || '').replace(/Z?$/i, 'Z'))
+      const ep = epochMs(g.epoch)
       if (Number.isFinite(ep) && fin(t)) m.epochAgeDays = r1((t - ep) / DAY_MS)
       const lon = geoLonOfOmm(g)
       if (Number.isFinite(lon)) { m.geoSlot = fmtGeoSlot(lon); m.lon = r3(lon) }

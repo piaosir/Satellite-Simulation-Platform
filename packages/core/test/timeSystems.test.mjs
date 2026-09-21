@@ -2,8 +2,10 @@
 // 判据全部是外部可查的定值：闰秒表边界、GPS-UTC=18、TT-TAI=32.184、GPS 周 1000 的已知 UTC。
 
 import { createRequire } from 'node:module'
+import { epochMs as EM } from '../../../src/shared/epochMs.js'
 const require = createRequire(import.meta.url)
 const T = require('../utils/timeSystems.js')
+const sat = require('../vendor/satellite.js')
 
 let pass = 0, fail = 0
 const ok = (cond, msg, extra) => { if (cond) { pass++ } else { fail++; console.error('  ✗ ' + msg + (extra ? '\n      ' + extra : '')) } }
@@ -86,6 +88,23 @@ ok(T.parseIsoYmd('2026-01-01') === Date.UTC(2026, 0, 1), '月日写法不受影�
 ok(Number.isNaN(T.parseIsoYmd('2026-12')), '「年-月」不当年积日解')
 ok(T.parseEpochLoose('2026-264T12:34:56') === Date.UTC(2026, 8, 21, 12, 34, 56), 'parseEpochLoose 认年积日')
 ok(T.parseTimeToken('2026-264T00:00:00', 'ISO-YMD', ep) === Date.UTC(2026, 8, 21), 'parseTimeToken ISO-YMD 也认年积日')
+
+/* ===== ③c 渲染端读 OMM 历元串（src/shared/epochMs.js，与 omm2satrec 同口径） ===== */
+section('OMM 历元串')
+ok(EM('2026-09-20T12:34:56.123456') === Date.UTC(2026, 8, 20, 12, 34, 56, 123), '不带 Z 的 OMM 历元按 UTC 解（裸 Date.parse 会按本机时区差几小时）',
+  String(EM('2026-09-20T12:34:56.123456')) + ' vs ' + Date.parse('2026-09-20T12:34:56.123456'))
+ok(EM('2026-09-20T12:34:56.123456Z') === Date.UTC(2026, 8, 20, 12, 34, 56, 123), '带 Z 的串结果不变')
+ok(EM('2026-09-20T12:34:56+08:00') === Date.UTC(2026, 8, 20, 4, 34, 56), '带偏移的串照原偏移解，不再补 Z')
+ok(EM('2026-09-20 12:34:56') === Date.UTC(2026, 8, 20, 12, 34, 56), '空格分隔也按 UTC')
+ok(EM('2026-09-20') === Date.UTC(2026, 8, 20), '只有日期（ECMAScript 已按 UTC）不补 Z')
+ok(Number.isNaN(EM('')) && Number.isNaN(EM(null)) && Number.isNaN(EM('随便什么')), '空串 / null / 乱串回 NaN，不编数')
+// 与引擎口径逐字对拍：satellite.js 的 omm2satrec 走的是 jdsatepoch
+{
+  const rec = { noradId: '99999', epoch: '2026-09-20T12:34:56.123456', meanMotion: 15.5, ecc: 0.0001, incl: 51.6, raan: 100, argp: 90, ma: 270, bstar: 0, mdot: 0, mddot: 0 }
+  const sr = sat.omm2satrec(rec)
+  const engineMs = (sr.jdsatepoch + (sr.jdsatepochF || 0) - 2440587.5) * 86400000
+  near(EM(rec.epoch), engineMs, 1, 'epochMs 与 omm2satrec 的 jdsatepoch 同一时刻（毫秒内）')
+}
 
 /* ===== ④ GPS 周 ===== */
 section('GPS 周')
