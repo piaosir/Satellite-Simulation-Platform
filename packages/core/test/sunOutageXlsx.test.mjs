@@ -178,9 +178,14 @@ for (const [ws, season, cn] of [[wsV, 'vernal', '春季'], [wsA, 'autumnal', '�
   ok(`⑨ ${cn} 不冻结`, v.state !== 'frozen', String(v.state))
   ok(`⑨ ${cn} 无筛选器`, !ws.autoFilter)
   const W = [8.45, 8.45, 8.45, 10, 12, 9, 9, 10]   // 第 2 列（地点）允许只增不减，单列
-  // ★ exceljs 的默认列宽恰是 9：宽度等于 9 的列它不写 <col>，读回来是 undefined —— 渲染出来仍是 9。
+  // ★ exceljs 把宽度 9 当成自己的默认列宽：等于 9 的列它【不写 <col>】，读回来是 undefined。
+  //   而 Excel 自己的默认列宽是 8.43 —— 不补一句 defaultColWidth，原件里宽 9 的「开始时间 /
+  //   结束时间」两列打开后就按 8.43 渲染，与原件差 0.57 字符。故写出 <sheetFormatPr
+  //   defaultColWidth="9">，读回来是 ws.properties.defaultColWidth，下面单独断言。
   const gotW = [1, 3, 4, 5, 6, 7, 8, 9].map((c) => { const w = ws.getColumn(c).width; return w == null ? 9 : w })
   ok(`⑨ ${cn} 列宽照原件（地点列除外）`, gotW.join(',') === W.join(','), gotW.join(','))
+  ok(`⑨ ${cn} defaultColWidth = 9（宽度 9 的列不写 <col>，靠它渲染成 9 而不是 8.43）`,
+    ws.properties.defaultColWidth === 9, String(ws.properties.defaultColWidth))
   ok(`⑨ ${cn} 地点列只增不减`, ws.getColumn(2).width >= 8.45, String(ws.getColumn(2).width))
 }
 

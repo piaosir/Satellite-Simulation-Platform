@@ -1847,6 +1847,17 @@ function soKV(k, v) {
     new TableCell({ width: { size: 70, type: WidthType.PERCENTAGE }, children: [new Paragraph({ children: [new TextRun({ text: String(v), size: 18 })] })] })
   ] })
 }
+// 太阳亮温那一行：亮温 + F10.7 取值与出处（渲染端 stationExport 把 model 里那几个字段带过来）
+const SO_F107_SRC = {
+  daily: '观测', forecast45: '45 天预报', monthly: '观测月均',
+  predicted: '预测', 'predicted-tail': '预测末值', default: '缺省'
+}
+function soSunTempText(st, f) {
+  const t = f(st.solarTemp, 0, 'K')
+  if (!(st.f107 > 0)) return t
+  const src = SO_F107_SRC[st.f107Source] || ''
+  return `${t}（F10.7 ${Number(st.f107).toFixed(1)}${src ? ' · ' + src : ''}${st.f107At ? ' ' + st.f107At : ''}）`
+}
 function soTd(text, opts) {
   opts = opts || {}
   return new TableCell({ children: [new Paragraph({
@@ -1903,7 +1914,9 @@ async function buildSunOutageWord(payload) {
       soKV('卫星', `${sat.name || '—'} · ${srcTxt}`),
       soKV('指向', `方位 ${f(st.satAz, 2, '°')} · 仰角 ${f(st.satEl, 2, '°')}`),
       soKV('频率 / 口径', `${st.band || '—'} ${f(st.freq, 2, 'GHz')} · ${f(st.diameter, 2, 'm')}（3dB 波束宽 ${f(st.beamWidth, 3, '°')}）`),
-      soKV('判据', `${critTxt}（T_sys = ${f(st.sysTemp, 0, 'K')}，门限角 ${f(st.thresholdAngle, 3, '°')}）`),
+      soKV('判据', `${critTxt}（门限角 ${f(st.thresholdAngle, 3, '°')}）`),
+      soKV('接收系统噪声温度', f(st.sysTemp, 0, 'K')),
+      soKV('太阳亮温', soSunTempText(st, f)),
       soKV('时标', tzLabel)
     ] }))
     if (st.error) {
@@ -1935,12 +1948,21 @@ async function buildSunOutageWord(payload) {
   }
 
   kids.push(new Paragraph({ children: [new TextRun({
-    text: '方法：太阳视位置 VSOP87+IAU1980 章动（黄经精度 ≈1″）；窗口判据为 C/N 恶化门限——太阳均匀盘（当日视直径）与天线高斯主瓣（3dB 波束宽 70λ/D）作精确卷积得 ΔT(θ)，D(θ)=10lg(1+ΔT/T_sys)≥门限即计入窗口（纯几何档改以 θ_th ≡ θ_3dB 定窗，峰值恶化 dB 仍按同一物理模型算出）。太阳亮温由太阳射电流量指数 F10.7（2.8GHz 实测，NOAA SWPC 每日发布）锚定、按 (2.8/f)^1.8 谱外推（光球层 6000K floor）。采用当日实测 F10.7 与本站实测 T_sys 时峰值恶化不确定度约 ±1dB；起止时刻对噪温仅对数敏感（±数十秒）。星历档按该星 GP 根数逐时刻 SGP4/SDP4 推算，含倾角、偏心率与漂移，不含轨道保持机动 —— 历元离分点越远越偏。',
+    text: `方法：太阳视位置 VSOP87+IAU1980 章动（黄经精度 ≈1″）；窗口判据为 C/N 恶化门限——太阳均匀盘（当日视直径）与天线高斯主瓣（3dB 波束宽 70λ/D）作精确卷积得 ΔT(θ)，D(θ)=10lg(1+ΔT/T_sys)≥门限即计入窗口（纯几何档改以 θ_th ≡ θ_3dB 定窗，峰值恶化 dB 仍按同一物理模型算出）。太阳亮温：野边山射电偏振计 1–17 GHz 逐日总流量对 DRAO F10.7 的线性回归谱（2004–2026），锚点间按对数插值，17 GHz 以上按 NoRP 35 / 80 GHz 标定值锚定；F10.7 取 NOAA SWPC 目标日期的观测值 / 45 天预报 / 观测月均 / 太阳周预测${soF107Note(stations)}。采用当日实测 F10.7 与本站实测 T_sys 时峰值恶化不确定度约 ±0.2dB；起止时刻对噪温仅对数敏感（±数十秒）。星历档按该星 GP 根数逐时刻 SGP4/SDP4 推算，含倾角、偏心率与漂移，不含轨道保持机动 —— 历元离分点越远越偏。`,
     size: 16, color: '999999'
   })] }))
 
   const doc = new Document({ styles: wordStyles(p.fonts), sections: [{ children: kids }] })
   return Packer.toBuffer(doc)
+}
+
+// 方法段里「本报告采用 …」那一句：多站同一份 F10.7 时写一次，不同就不写（各站参数表里已逐站写明）
+function soF107Note(stations) {
+  const set = new Set()
+  for (const st of stations) if (st && st.f107 > 0) set.add(`${Number(st.f107).toFixed(1)}|${st.f107Source || ''}|${st.f107At || ''}`)
+  if (set.size !== 1) return ''
+  const [v, src, at] = [...set][0].split('|')
+  return `（本报告采用 ${v}${src ? '，' + (SO_F107_SRC[src] || src) : ''}${at ? ' ' + at : ''}）`
 }
 
 // ============================ 雨衰计算 批量结果 Excel（通用，面向各类卫星）============================
@@ -2344,7 +2366,8 @@ function sunOutageIcsEvents(payload) {
             `窗口(UTC): ${d.startUtc} ~ ${d.endUtc}（峰值 ${d.peakUtc}）`,
             `窗口(${tzLbl}): ${d.startDisp} ~ ${d.endDisp}（峰值 ${d.peakDisp}）`,
             `时长: ${d.durStr || (d.durMin + ' min')} · 峰值 C/N 恶化: ${d.peakDb} dB`,
-            `判据: ${critTxt} · 频率 ${f2(st.freq)} GHz · 口径 ${f2(st.diameter)} m`,
+            `判据: ${critTxt} · 频率 ${f2(st.freq)} GHz · 口径 ${f2(st.diameter)} m` +
+              (st.solarTemp > 0 ? ` · 太阳亮温 ${Math.round(st.solarTemp)} K${st.f107 > 0 ? `（F10.7 ${Number(st.f107).toFixed(1)}）` : ''}` : ''),
             '由 卫星仿真平台 生成'
           ].join('\n'),
           location: stnName,
@@ -2424,6 +2447,11 @@ function soSeasonSheet(wb, payload, season) {
   //   本仓库别的 Excel 出口都顺手带了 views（多是 showGridLines:false），所以从没撞上这一条。
   //   原件的网格线是开着的，故这里给 true —— 要的只是让 <sheetViews> 这个元素存在。
   const ws = wb.addWorksheet(`${year}年${seasonCn}`, { views: [{ showGridLines: true }] })
+  // ★ 必须显式写 defaultColWidth：exceljs 把宽度 9 当成默认值，等于 9 的列它【不写 <col>】，
+  //   而 Excel 自己的默认列宽是 8.43 —— 于是原件里宽度 9 的「开始时间 / 结束时间」两列打开后
+  //   渲染成 8.43，与原件差 0.57 字符。写进 <sheetFormatPr defaultColWidth="9"> 后，这两列
+  //   不写 <col> 也照 9 渲染。列宽数组照旧（其余列的宽度都不是 9，各自照写 <col>）。
+  ws.properties.defaultColWidth = 9
   SO_COL_W.forEach((w, i) => { ws.getColumn(i + 1).width = w })
 
   // R1 页首标题

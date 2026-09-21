@@ -66,14 +66,15 @@ function ok(name, cond, extra) {
 
 // ── ⑤ buildSpec：纯数据、structuredClone 不抛、两档取星互斥 ──
 {
-  const G = { satSource: 'slot', slotLon: '130.5', orbit: null, year: '2026', seasons: SEASONS, criterion: { mode: 'degradation', degDb: '1', solarTemp: '' } }
+  const G = { satSource: 'slot', slotLon: '130.5', orbit: null, year: '2026', seasons: SEASONS, criterion: { mode: 'degradation', degDb: '1' } }
   const s = buildSpec(defaultRow(), G)
   let cloneOk = true
   try { structuredClone(s) } catch { cloneOk = false }
   ok('⑤ 定轨档 spec 过 structuredClone', cloneOk)
   ok('⑤ 定轨档给 satLon 不给 orbit', s.satLon === 130.5 && s.orbit === undefined)
   ok('⑤ 数值全是 number', typeof s.lat === 'number' && typeof s.diameter === 'number' && typeof s.customFreq === 'number' && typeof s.year === 'number')
-  ok('⑤ 未填 T_sun 不带 solarTemp 键', !('solarTemp' in s))
+  // 太阳亮温已不是入参（引擎按 F10.7 自己算，F10.7 又由主进程按分点日取），spec 里不许有这个键
+  ok('⑤ 不产 solarTemp 键', !('solarTemp' in s))
   ok('⑤ JSON 往返无损', JSON.stringify(JSON.parse(JSON.stringify(s))) === JSON.stringify(s))
 
   const orbit = { type: 'omm', noradId: '44067', epoch: '2026-09-16T07:28:42Z', meanMotion: 1.00269682, ecc: 0.0001, incl: 0.0493, raan: 80, argp: 120, ma: 200, bstar: 0, mdot: 0, mddot: 0 }
@@ -84,7 +85,7 @@ function ok(name, cond, extra) {
   ok('⑤ 选了星历却没有根数 → 回定轨', noOrb.satLon === 130.5 && !noOrb.orbit)
 
   const g2 = buildSpec(defaultRow(), { ...G, criterion: { mode: 'geometric', degDb: '', solarTemp: '9000' } })
-  ok('⑤ 纯几何档 + T_sun 覆盖', g2.criterion === 'geometric' && g2.degThreshold === 1 && g2.solarTemp === 9000)
+  ok('⑤ 纯几何档；老 criterion 里残留的 solarTemp 也不带出去', g2.criterion === 'geometric' && g2.degThreshold === 1 && !('solarTemp' in g2))
   ok('⑤ seasons 空数组不会送到引擎', buildSpec(defaultRow(), { ...G, seasons: [] }).seasons.join() === SEASONS.join())
   // 负号 / 全角：西经站址不能被吞成东经
   const w = buildSpec({ ...defaultRow(), longitude: '－61.5' }, G)
@@ -109,12 +110,14 @@ function ok(name, cond, extra) {
   const messy = {
     sat: { name: 'ZHONGXING-6C', noradId: 44067, source: 'ephemeris', slotLon: 130.5, orbit: { type: 'omm', incl: 0.05 }, epoch: null, inclDeg: '0.05' },
     year: 2027, seasons: ['autumnal', 'vernal', 'bogus'],
-    criterion: { mode: 'geometric', degDb: 3, solarTemp: null },
+    criterion: { mode: 'geometric', degDb: 3, solarTemp: '9000' },
     stations: [{ stationName: '喀什', longitude: 75.99, latitude: 39.47, band: 'C', frequency: 3.7, diameter: 4.5, sysTemp: 65, 阴影列: 'x', vDays: 5 }]
   }
   const m = normState(messy)
   ok('⑦ 杂 state 规范化后幂等', JSON.stringify(m) === JSON.stringify(normState(m)))
   ok('⑦ 数字全转成串', m.year === '2027' && m.sat.slotLon === '130.5' && m.criterion.degDb === '3' && m.stations[0].longitude === '75.99')
+  // 老存档带 solarTemp：载入后直接丢掉，于是「序列化 → 载入 → 再序列化」的指纹里不含它
+  ok('⑦ 老存档里的 criterion.solarTemp 被丢掉（指纹不含）', !('solarTemp' in m.criterion) && !JSON.stringify(m).includes('solarTemp'), JSON.stringify(m.criterion))
   ok('⑦ 行里只剩输入列（结果列与野列被剥）', Object.keys(m.stations[0]).join() === INPUT_KEYS.join(), Object.keys(m.stations[0]).join())
   ok('⑦ 分点重排成固定顺序', m.seasons.join() === 'vernal,autumnal')
   ok('⑦ 有根数才认星历档', m.sat.source === 'ephemeris')

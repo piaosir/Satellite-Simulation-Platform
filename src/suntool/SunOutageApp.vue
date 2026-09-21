@@ -68,7 +68,7 @@ function startResize(which, e) {
 const sat = reactive({ name: 'CHINASAT 6C', noradId: '', source: 'slot', slotLon: '130.5', orbit: null, epoch: '', inclDeg: null, groupLabel: '' })
 const year = ref(String(new Date().getFullYear()))
 const seasons = ref(SEASONS.slice())
-const criterion = reactive({ mode: 'degradation', degDb: '1', solarTemp: '' })
+const criterion = reactive({ mode: 'degradation', degDb: '1' })
 const DEG_PRESETS = ['0.5', '1', '3']
 
 function toggleSeason(s) {
@@ -97,10 +97,47 @@ const selectedId = ref(stations[0]._id)
 const globals = () => ({
   satSource: sat.source, slotLon: sat.slotLon, orbit: sat.orbit,
   year: year.value, seasons: seasons.value,
-  criterion: { mode: criterion.mode, degDb: criterion.degDb, solarTemp: criterion.solarTemp }
+  criterion: { mode: criterion.mode, degDb: criterion.degDb }
 })
 
+// ============ F10.7 数据（顶栏读数）============
+// 太阳亮温按野边山回归谱 + F10.7 算出来，F10.7 由主进程按分点日从 NOAA SWPC 取。
+// 这一行只报【本机这份 SWPC 数据的时间与来源】；点一下硬刷一遍全链路。
+// 刷新完不自动重算 —— 结果卡里那一行写的是算的时候用的值。
+const sfStatus = shallowRef(null)
+const sfBusy = ref(false)
+async function loadSolarFlux() {
+  if (!api || !api.solarFlux) return
+  try { sfStatus.value = await api.solarFlux() } catch (e) { /* 取不到就不显示这一行 */ }
+}
+async function refreshSolarFlux() {
+  if (!api || !api.solarFluxRefresh || sfBusy.value) return
+  sfBusy.value = true
+  try { sfStatus.value = await api.solarFluxRefresh() } catch (e) { /* 失败照旧显示原读数 */ }
+  finally { sfBusy.value = false }
+}
+const SF_SRC = { network: ['直连', 'Direct'], cloud: ['云镜像', 'Cloud mirror'], cache: ['本地缓存', 'Local cache'], bundled: ['内置快照', 'Bundled snapshot'] }
+const sfText = computed(() => {
+  const s = sfStatus.value
+  if (!s || !s.source) return ''
+  const src = SF_SRC[s.source] ? byLang(SF_SRC[s.source][0], SF_SRC[s.source][1]) : s.source
+  const d = s.fetchedAt ? String(s.fetchedAt).slice(0, 10) : '—'
+  return `${d} · ${src}`
+})
+// F10.7 的来源词表（结果卡里那一行；与主进程 solarFluxPick 的 source 一一对应）
+const F107_SRC = {
+  daily: ['观测', 'Observed'], forecast45: ['45 天预报', '45-day forecast'],
+  monthly: ['观测月均', 'Monthly mean'], predicted: ['预测', 'Predicted'],
+  'predicted-tail': ['预测末值', 'Predicted (tail)'], default: ['缺省', 'Default']
+}
+function f107Line(m) {
+  if (!m || !(m.f107 > 0)) return ''
+  const s = F107_SRC[m.f107Source] ? byLang(F107_SRC[m.f107Source][0], F107_SRC[m.f107Source][1]) : (m.f107Source || '')
+  return `F10.7 ${m.f107.toFixed(1)} · ${s}${m.f107At ? ' ' + m.f107At : ''}`
+}
+
 // 任一计算输入变化 → 亮「输入已变」（不做打字防抖自动重算，与雨衰页同口径）
+// ★ F10.7 不在其中：它不是用户输入，刷新它也不该把结果判作过期。
 watch([sat, year, seasons, criterion, stations], () => { if (hasResults.value) resultsStale.value = true }, { deep: true })
 
 // —— 表内结果列取值 ——
@@ -162,6 +199,7 @@ async function compute() {
       resultById.value = { ...acc }
     }
     resultsStale.value = false
+    loadSolarFlux()        // 算完再取一次：主进程算的时候可能顺手把 SWPC 刷新了
     const errs = Object.values(acc).filter((x) => { const a = x && (x.vernal || x.autumnal); return !a || a.error }).length
     toast(errs ? byLang(`完成，${errs}/${ids.length} 个地球站算不出（见表内 ✕）`, `Done, ${errs}/${ids.length} stations failed`)
       : byLang(`完成，共 ${ids.length} 个地球站`, `Done, ${ids.length} stations`))
@@ -365,6 +403,10 @@ function stationExport(row) {
     beamWidth: good ? any.beamWidth : null, thresholdAngle: good ? any.thresholdAngle : null,
     boresightDeg: good && any.model ? any.model.boresightDeg : null,
     solarTemp: good && any.model ? any.model.solarTemp : null,
+    // F10.7 的取值与出处（Word 参数表「太阳亮温」行 + 方法段那一句、ICS 描述行）
+    f107: good && any.model ? any.model.f107 : null,
+    f107Source: good && any.model ? any.model.f107Source : null,
+    f107At: good && any.model ? any.model.f107At : null,
     error: good ? '' : ((any && any.message) || '')
   }
   for (const s of seasons.value) {
@@ -437,7 +479,7 @@ function serializeState() {
     orbitType: ORBIT_TYPE, name: '',
     sat: { name: sat.name, noradId: sat.noradId, source: sat.source, slotLon: sat.slotLon, orbit: satOrbitForSave(), epoch: sat.epoch, inclDeg: sat.inclDeg, groupLabel: sat.groupLabel },
     year: year.value, seasons: seasons.value,
-    criterion: { mode: criterion.mode, degDb: criterion.degDb, solarTemp: criterion.solarTemp },
+    criterion: { mode: criterion.mode, degDb: criterion.degDb },
     stations: stations.map((r) => { const o = {}; for (const k in r) if (k !== '_id') o[k] = r[k]; return o })
   })
 }
@@ -447,7 +489,7 @@ function applyState(st) {
   Object.assign(sat, s.sat)
   year.value = s.year
   seasons.value = s.seasons.slice()
-  criterion.mode = s.criterion.mode; criterion.degDb = s.criterion.degDb; criterion.solarTemp = s.criterion.solarTemp
+  criterion.mode = s.criterion.mode; criterion.degDb = s.criterion.degDb
   stations.splice(0, stations.length, ...s.stations.map((r) => mkRow(r)))
   selectedId.value = stations[0] ? stations[0]._id : null
   resultById.value = {}        // 换一份配置就把结果撤掉（重算是秒级的）
@@ -510,6 +552,7 @@ const showConfigs = ref(true)
 onMounted(async () => {
   // 城市库全量：StationGrid 拿它做「站名 → 经纬度」反查（CityPicker 自己走 window.api.linkBudget，与本窗口无关）
   try { cities.value = (api && await api.cities()) || [] } catch (e) { cities.value = [] }
+  loadSolarFlux()          // 不 await：这一行只是读数，开窗不必等它
   await loadConfigs()
   try {
     const raw = localStorage.getItem(STATE_KEY)
@@ -547,6 +590,9 @@ onMounted(async () => {
       <span class="lb-flex"></span>
       <span v-if="notice" class="lb-notice">{{ notice }}</span>
       <span v-if="!api" class="lb-warn">需在桌面客户端中运行</span>
+      <button v-if="sfText" class="so-sf" :disabled="sfBusy" title="重新联网取 SWPC 太阳射电流量" @click="refreshSolarFlux">
+        <span>F10.7 数据</span> <b data-i18n-skip>{{ sfText }}</b>
+      </button>
       <TzPicker v-model="tzMode" align="right" title="逐日表与报告的时标（ICS 日历事件恒用 UTC，导入后由日历软件换算）" />
       <button class="lb-mini" :disabled="!api || !hasResults" title="导出 Excel（两张三线表：地球站参数 / 逐日日凌窗口）" @click="runExport('excel')">导出 Excel</button>
       <button class="lb-mini" :disabled="!api || !hasResults" title="导出 Word 报告（逐站一节）" @click="runExport('word')">导出 Word</button>
@@ -648,10 +694,6 @@ onMounted(async () => {
               <button v-for="p in DEG_PRESETS" :key="p" class="chip" :class="{ on: criterion.degDb === p }" @click="criterion.degDb = p">{{ p }} dB</button>
             </span>
           </div>
-          <div class="rain-seg-grp">
-            <span class="rain-seg-lb nocap">T_sun</span>
-            <label class="rain-geom" title="太阳射电亮温：留空按 F10.7（周期均值 120）与当日太阳视直径逐日推算"><input v-model="criterion.solarTemp" spellcheck="false" /><i>K</i></label>
-          </div>
         </div>
 
         <div class="rain-grid">
@@ -681,7 +723,9 @@ onMounted(async () => {
           </select>
         </div>
         <div class="lb-result-bd">
-          <div v-if="selError" class="rain-err" data-i18n-skip>{{ selError }}</div>
+          <!-- 不挂 data-i18n-skip：引擎报错串是固定文案，交给呈现层查词典（词条在 uiDict.data.js 的 EXACT）。
+               词典里没有的串原样返回，与挂 skip 时的表现一致。 -->
+          <div v-if="selError" class="rain-err">{{ selError }}</div>
           <template v-else-if="sections.length">
             <section v-for="sec in sections" :key="sec.key" class="so-sec">
               <h3 class="so-sec-t"><span>{{ sec.label }}</span> <b data-i18n-skip>{{ sec.r.equinoxDate }}</b></h3>
@@ -693,8 +737,9 @@ onMounted(async () => {
                 <div class="card" title="70λ/D（全宽）"><i>3 dB 波束宽</i><b data-i18n-skip>{{ sec.r.model.beamWidth3dB }}°</b></div>
                 <div class="card"><i>门限角</i><b data-i18n-skip>{{ sec.r.thresholdAngle }}°</b></div>
                 <div class="card"><i>卫星指向</i><b data-i18n-skip>Az {{ sec.r.satAz }}° · El {{ sec.r.satEl }}°</b></div>
-                <div class="card"><i>判据与噪温</i><b data-i18n-skip>{{ sec.r.model.criterion === 'geometric' ? 'θ_th = θ_3dB' : '≥' + sec.r.model.degThreshold + ' dB' }} · T_sys {{ sec.r.model.sysTemp }} K</b></div>
-                <div class="card" title="默认由太阳射电流量 F10.7=120（周期均值）按频率外推；太阳活动峰年实际值可高约 30%"><i>T_sun</i><b data-i18n-skip>{{ sec.r.model.solarTemp }} K</b></div>
+                <div class="card"><i>判据</i><b data-i18n-skip>{{ sec.r.model.criterion === 'geometric' ? 'θ_th = θ_3dB' : '≥' + sec.r.model.degThreshold + ' dB' }}</b></div>
+                <div class="card"><i>接收系统噪声温度</i><b data-i18n-skip>{{ sec.r.model.sysTemp }} K</b></div>
+                <div class="card" title="野边山 1–17 GHz 逐日流量对 F10.7 回归谱 · 17 GHz 以上按 NoRP 35/80 GHz 标定锚定"><i>太阳亮温</i><b data-i18n-skip>{{ sec.r.model.solarTemp }} K</b><span v-if="f107Line(sec.r.model)" class="card-u" data-i18n-skip>{{ f107Line(sec.r.model) }}</span></div>
                 <div v-if="sec.r.satSource === 'ephemeris'" class="card" title="星历档：分点日正午（UT）的星下点经度"><i>星下点</i><b data-i18n-skip>{{ sec.r.satLonEff }}°E</b></div>
               </div>
 
@@ -813,6 +858,11 @@ onMounted(async () => {
 .lb-mini:disabled { opacity: .5; cursor: default; }
 .lb-mini.pri { background: var(--accent); color: var(--bg); border-color: var(--accent); }
 .lb-mini-ico { padding: 0 6px; }
+/* F10.7 数据读数：外观是读数（无边框），行为是按钮（点一下重新联网取） */
+.so-sf { font: inherit; font-size: var(--fs-2); height: var(--h-ctl); white-space: nowrap; padding: 0 6px; border: 1px solid transparent; background: none; color: var(--text-faint); border-radius: var(--r-ctl); cursor: pointer; display: inline-flex; align-items: center; gap: 5px; }
+.so-sf:hover:not(:disabled) { border-color: var(--border); color: var(--text); }
+.so-sf:disabled { opacity: .5; cursor: default; }
+.so-sf b { font-weight: 500; color: var(--text-dim); font-family: var(--font-mono); }
 .rain-sel { font: inherit; font-size: var(--fs-3); padding: 3px 6px; border: 1px solid var(--field-border); border-radius: var(--r-ctl); background-color: var(--surface-2); color: var(--text); margin-left: auto; max-width: 220px; }
 
 /* 工具栏（两行：卫星 / 时间与判据） */

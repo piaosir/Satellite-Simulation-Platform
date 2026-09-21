@@ -5,7 +5,9 @@
 //   ro:true   → 计算列：值走 extraValues 映射，不写回行、不进撤销与存档
 //
 // 全局量（一份配置一颗星、一个年份、一套判据）不进表，由窗口持有：
-//   卫星（定轨轨位 / 星历根数）· 年份 · 分点多选 · 判据（恶化门限 dB / 纯几何）· T_sun 覆盖
+//   卫星（定轨轨位 / 星历根数）· 年份 · 分点多选 · 判据（恶化门限 dB / 纯几何）
+// ★ 太阳亮温不再是入参：引擎 v5.3 按野边山回归谱 + 主进程按分点日取的 F10.7 自动算出来。
+//   引擎侧的 solarTemp 覆盖仍在（第三方口径对齐用），界面不给入口，buildSpec 也不产这个键。
 // 引擎入参在 buildSpec 里组装 —— 出 IPC 的一律是纯数据（Vue Proxy 过不了结构化克隆）。
 
 import { halfStr } from '../shared/num.js'
@@ -48,8 +50,8 @@ const F = {
   },
   diameter: { key: 'diameter', label: '口径', unit: 'm', type: 'num', def: '2.4', group: 'ant' },
   sysTemp: {
-    key: 'sysTemp', label: 'T_sys', unit: 'K', type: 'num', def: '', group: 'rx',
-    title: '系统噪声温度（晴空）：天线噪温 + LNA/LNB 噪温，折算到 LNA 输入端，即 G/T 中的 T，决定日凌恶化深度。留空按频段典型值：C 65 / Ku 150 / Ka 270 / Q 450 K'
+    key: 'sysTemp', label: '接收系统噪声温度', unit: 'K', type: 'num', def: '', group: 'rx',
+    title: '接收系统噪声温度 T_sys（晴空）：天线噪温 + LNA/LNB 噪温折算到 LNA 输入端，即 G/T 中的 T，决定日凌恶化深度。留空按频段典型值：C 65 / Ku 150 / Ka 270 / Q 450 K'
   }
 }
 
@@ -119,8 +121,9 @@ export function effectiveRow(row) {
 
 /**
  * 行 + 全局量 → 引擎入参（纯数据，structuredClone 安全）。
- * globals：{ satSource:'slot'|'ephemeris', slotLon, orbit, year, seasons, criterion:{mode,degDb,solarTemp} }
+ * globals：{ satSource:'slot'|'ephemeris', slotLon, orbit, year, seasons, criterion:{mode,degDb} }
  * ★ 给了 orbit 就走星历档、satLon 让位；两者都不给由引擎报错，不在这里编数。
+ * ★ 不产 solarTemp 键：太阳亮温由引擎按 F10.7 自己算（F10.7 又由主进程按分点日取）。
  */
 export function buildSpec(row, globals) {
   const g = globals || {}
@@ -139,8 +142,6 @@ export function buildSpec(row, globals) {
     criterion: c.mode === 'geometric' ? 'geometric' : 'degradation',
     degThreshold: n(c.degDb) > 0 ? n(c.degDb) : 1
   }
-  const ts = n(c.solarTemp)
-  if (ts > 0) spec.solarTemp = ts
   if (g.satSource === 'ephemeris' && g.orbit) spec.orbit = JSON.parse(JSON.stringify(g.orbit))
   else spec.satLon = n(g.slotLon)
   return spec
@@ -226,7 +227,7 @@ export function blankState() {
     sat: { name: 'CHINASAT 6C', noradId: '', source: 'slot', slotLon: '130.5', orbit: null, epoch: '', inclDeg: null, groupLabel: '' },
     year: String(new Date().getFullYear()),
     seasons: SEASONS.slice(),
-    criterion: { mode: 'degradation', degDb: '1', solarTemp: '' },
+    criterion: { mode: 'degradation', degDb: '1' },
     stations: [defaultRow()]
   }
 }
@@ -264,10 +265,11 @@ export function normState(st) {
     },
     year: str(s.year, b.year),
     seasons: normSeasons(s.seasons),
+    // 老存档里的 criterion.solarTemp 直接丢（与 SSA 处理 pinOwner 同法）：太阳亮温已不是入参，
+    // 留着只会让「载入 → 再序列化」的指纹带上一个再也不参与计算的键。
     criterion: {
       mode: cr.mode === 'geometric' ? 'geometric' : 'degradation',
-      degDb: str(cr.degDb, b.criterion.degDb),
-      solarTemp: str(cr.solarTemp)
+      degDb: str(cr.degDb, b.criterion.degDb)
     },
     // 行里只留输入列（结果列是计算列、从不入档），缺的键一律空串 —— 空＝入算时按 effectiveRow 回退
     stations: (rows.length ? rows : [defaultRow()]).map((r) => {
