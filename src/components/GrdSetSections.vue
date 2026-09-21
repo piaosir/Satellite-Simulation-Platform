@@ -118,6 +118,9 @@ function commitRenameLv(i) {
   editLv.value = ''; editLvVal.value = ''
 }
 
+// 路损补偿从天底到地平的变化量（SATSOFT 印在 Path Loss 下拉右边的读数）
+const plSpan = computed(() => { const d = grd.pathLossSpanDb(); return Number.isFinite(d) ? d.toFixed(2) + ' dB' : '' })
+
 // ---- 电平表：当前行 / 行内样式 / 工具条 / 生成器（SATSOFT Contour Levels 那一栏）----
 const curLv = ref(0)          // 工具条作用的那一行
 const styLv = ref(-1)         // 展开样式编辑的那一行
@@ -246,10 +249,12 @@ const boreTip = computed(() => {
         </template>
         <div class="srow"><label>极化</label><select v-model="st.pol"><option value="P1">P1 共极化</option><option value="P2">P2 交叉</option><option value="RSS">RSS 合成</option><option value="P1/P2">P1/P2</option><option value="P2/P1">P2/P1</option></select></div>
         <div class="srow"><label>类型</label>
-          <span class="seg sm"><span class="sg" :class="{ on: st.ctype === 'rel' }" @click="st.ctype = 'rel'">相对峰值</span><span class="sg" :class="{ on: st.ctype === 'abs' }" @click="st.ctype = 'abs'">绝对</span></span>
+          <span class="seg sm"><span class="sg" :class="{ on: st.ctype === 'rel' }" @click="st.ctype = 'rel'">相对峰值</span><span class="sg" :class="{ on: st.ctype === 'relInput' }" @click="st.ctype = 'relInput'">相对输入值</span><span class="sg" :class="{ on: st.ctype === 'abs' }" @click="st.ctype = 'abs'">绝对</span></span>
         </div>
+        <div v-if="st.ctype === 'relInput'" class="srow sub"><label>参考电平</label><input class="ci" type="number" step="0.5" v-model.number="st.refDb" title="电平表里的值相对此值（而非波束峰值）" /><span class="u">dB</span></div>
+        <label v-if="st.ctype !== 'abs'" class="chk2"><input type="checkbox" v-model="st.labelAbs" /><span title="等值线数值标签印绝对 dB（档值仍按相对填）">绝对标签</span></label>
         <div class="srow"><label>增益偏置</label><input class="ci" type="number" step="0.5" v-model.number="st.gainOffset" /><span class="u">dB</span></div>
-        <div class="srow"><label>路径损耗</label><select v-model="st.pathLoss"><option value="none">无</option><option value="relative">相对(h/Rs)²</option><option value="absolute">通量密度</option></select></div>
+        <div class="srow"><label>路径损耗</label><select v-model="st.pathLoss"><option value="none">无</option><option value="relative">相对(h/Rs)²</option><option value="absolute">通量密度</option></select><span class="u">{{ plSpan }}</span></div>
 
         <div class="sect"><span>电平</span></div>
         <div class="glv">

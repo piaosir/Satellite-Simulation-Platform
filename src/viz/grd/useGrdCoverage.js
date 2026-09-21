@@ -119,7 +119,9 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
 
   const s = reactive({
     fill: false, alpha: 0.78, line: true, lineWidth: 1.6, lineAlpha: 1,   // 默认不填充（多天线/多星叠加时按需逐个开启）；alpha 只管填充，lineAlpha 只管等值线
-    ctype: 'abs', levels: defaultLevels(),
+    // ctype（SATSOFT Contour Type）：rel 相对峰值 | relInput 相对输入值(refDb) | abs 绝对。
+    // labelAbs：相对档时数值标签印【绝对 dB】（SATSOFT 的 relative dB w/ absolute levels 两档）。
+    ctype: 'abs', refDb: 0, labelAbs: false, levels: defaultLevels(),
     pol: 'RSS', gainOffset: 0, pathLoss: 'none',
     boreType: 'azel', boreLon: null, boreLat: 0, boreAz: 0, boreEl: 0, yaw: 0,
     boreSat: null, boreSatName: '',   // 对星指向（boreType='sat'/'satoff'）的目标星身份 + 显示名
@@ -287,9 +289,9 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     const lv = s.levels
     const m = antMeta(), peak = m ? m.peakDb : NaN
     let v
-    if (!lv.length) v = s.ctype === 'rel' ? -1 : (Number.isFinite(peak) ? Math.floor(peak) - 1 : 50)
+    if (!lv.length) v = s.ctype !== 'abs' ? -1 : (Number.isFinite(peak) ? Math.floor(peak) - 1 : 50)
     else if (lv.length === 1) v = Math.floor(lv[0].v) - 1
-    else { const dir = Math.sign(lv[lv.length - 1].v - lv[lv.length - 2].v) || (s.ctype === 'rel' ? -1 : 1); v = Math.floor(lv[lv.length - 1].v) + dir * STEP }
+    else { const dir = Math.sign(lv[lv.length - 1].v - lv[lv.length - 2].v) || (s.ctype === 'abs' ? 1 : -1); v = Math.floor(lv[lv.length - 1].v) + dir * STEP }
     lv.push({ v, ...LV_BLANK })
     recolorList(lv)
   }
@@ -338,10 +340,10 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
 
   // 每个天线的独立设置（数据库）：除等仰角线(全局参考线)外的全部绘制设置都按天线保存，
   // 切换聚焦时载入该天线设置、编辑时回存，只有用户改动才变。bore 指向同样并入。
-  const PA = ['ctype', 'pol', 'gainOffset', 'pathLoss', 'fill', 'line', 'lineWidth', 'lineAlpha', 'alpha', 'boreType', 'boreLon', 'boreLat', 'boreAz', 'boreEl', 'yaw', 'boreLock', 'boreSat', 'boreSatName', 'boreOffAz', 'boreOffEl', 'borePtLon', 'borePtLat', 'borePtAlt']
+  const PA = ['ctype', 'refDb', 'labelAbs', 'pol', 'gainOffset', 'pathLoss', 'fill', 'line', 'lineWidth', 'lineAlpha', 'alpha', 'boreType', 'boreLon', 'boreLat', 'boreAz', 'boreEl', 'yaw', 'boreLock', 'boreSat', 'boreSatName', 'boreOffAz', 'boreOffEl', 'borePtLon', 'borePtLat', 'borePtAlt']
   const copyLevels = (lv) => lv.map((L) => ({ v: L.v, name: L.name || '', labelT: (L.labelT == null ? null : L.labelT), color: L.color, lineColor: L.lineColor, locked: !!L.locked, lineSet: !!L.lineSet, dash: L.dash || null, width: (L.width == null ? null : +L.width), fillAlpha: (L.fillAlpha == null ? null : +L.fillAlpha) }))
   function defaultSettings(satLon, satLat = 0, peakDb) {
-    return { ctype: 'abs', pol: 'RSS', gainOffset: 0, pathLoss: 'none', fill: false, line: true, lineWidth: 1.6, lineAlpha: 1, alpha: 0.78,
+    return { ctype: 'abs', refDb: 0, labelAbs: false, pol: 'RSS', gainOffset: 0, pathLoss: 'none', fill: false, line: true, lineWidth: 1.6, lineAlpha: 1, alpha: 0.78,
       boreType: 'azel', boreLon: satLon == null ? null : satLon, boreLat: satLat || 0, boreAz: 0, boreEl: 0, yaw: 0, boreLock: true,
       boreSat: null, boreSatName: '', boreOffAz: 0, boreOffEl: 0,
       borePtLon: satLon == null ? null : satLon, borePtLat: satLat || 0, borePtAlt: 550,
@@ -386,6 +388,14 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     pendingCfgs.delete(key)
   }
   let _muteSync = false
+  // 路损补偿在「天底 → 地平」之间的变化量（SATSOFT 把它印在 Path Loss 下拉右边）：
+  // 20·lg(Rs_edge / h)，Rs_edge = √((R+h)² − R²)。GEO 1.32 dB、1200 km 10.6 dB，与手册一致。
+  function pathLossSpanDb() {
+    const m = antMeta(); const h = m ? +m.satAlt : NaN
+    if (!(h > 0)) return NaN
+    const rs = Math.sqrt((A + h) * (A + h) - A * A)
+    return 20 * Math.log10(rs / h)
+  }
   function persistActive() {     // 把当前面板设置回存到聚焦天线
     if (_muteSync) return
     const c = cache.get(active.value); if (!c || !c.settings) return
@@ -822,7 +832,10 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     return p + ',' + (b.yaw || 0) + ',' + m.satLon + ',' + (m.satLat || 0) + ',' + (m.satAlt || 0)
   }
   // 最低绝对档（相对模式 = 峰值 + 最低相对值）：低于它的点无覆盖、不参与绘制。
-  const lowestAbs = (max, cfg) => { let lo = Infinity; for (const L of cfg.levels) { const a = cfg.ctype === 'rel' ? max + L.v : L.v; if (a < lo) lo = a }; return lo }
+  // 档值 → 绝对 dB：相对峰值 / 相对输入值 / 绝对三档（SATSOFT Contour Type）。三处取值（热区盒、
+  // 分带、导出）必须走同一个，不然「最低档」与实际画的档对不上，热区盒会切掉本该画的一圈。
+  const absOf = (peak, cfg, v) => (cfg.ctype === 'abs' ? v : (cfg.ctype === 'relInput' ? (+cfg.refDb || 0) + v : peak + v))
+  const lowestAbs = (max, cfg) => { let lo = Infinity; for (const L of cfg.levels) { const a = absOf(max, cfg, L.v); if (a < lo) lo = a }; return lo }
   // 覆盖热区子矩形：db ≥ L0 的点的包围盒，各向外扩 1（含边界格的 <L0 角，等值线插值需要）。
   // db 与指向无关（pathLoss='none'），故拖拽中此盒不变 → 缓存。其余区域不投影/不三角化。
   function computeBox(db, NX, NY, L0) {
@@ -868,7 +881,13 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     for (const bi of plot) { const beam = c.beams[bi]; if (beam) syncBeamProj(c, beam, c.settings, (c.settings.pathLoss === 'none' && beam._fld) ? beam._fld.field : null) }
   }
 
-  function absLevels(peak, cfg) { return cfg.levels.map((L, idx) => ({ idx, abs: cfg.ctype === 'rel' ? peak + L.v : L.v, v: L.v, name: L.name || '', labelT: (L.labelT == null ? null : L.labelT), color: L.color, lineColor: L.lineColor, dash: L.dash || null, width: (L.width == null ? null : +L.width), fillAlpha: (L.fillAlpha == null ? null : +L.fillAlpha) })) }
+  // lab = 数值标签要印的数：绝对档恒是档值本身；相对档默认印相对值，勾了「绝对标签」则印绝对 dB。
+  function absLevels(peak, cfg) {
+    return cfg.levels.map((L, idx) => {
+      const abs = absOf(peak, cfg, L.v)
+      return { idx, abs, v: L.v, lab: (cfg.ctype !== 'abs' && cfg.labelAbs) ? +abs.toFixed(2) : L.v, name: L.name || '', labelT: (L.labelT == null ? null : L.labelT), color: L.color, lineColor: L.lineColor, dash: L.dash || null, width: (L.width == null ? null : +L.width), fillAlpha: (L.fillAlpha == null ? null : +L.fillAlpha) }
+    })
+  }
 
   // 数值标签锚点/沿环拖动（loopTop·loopPointAtFraction·nearestFractionOnLoop：把标签位置存成
   // 「沿环弧长的比例 t∈[0,1)」，几何每帧重算也始终贴在线上）的几何本体在 coverage.js —— 对星覆盖
@@ -993,7 +1012,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
         // txt：该档【自定义名称】优先（电平表灰色列可改名），为空则回退电平值 x.v = L.v。
         // 数值回退不做小数位裁剪——绝对模式下 x.abs 恒等于 x.v，之前用 toFixed(1) 会把用户输入的
         // 更高精度电平（如 42.567）显示成 42.6，与输入框对不上。
-        return { segs, color: x.lineColor, width: (x.width == null ? cfg.lineWidth : x.width), dash: x.dash || null, txt: (x.name || String(x.v)), labels }
+        return { segs, color: x.lineColor, width: (x.width == null ? cfg.lineWidth : x.width), dash: x.dash || null, txt: (x.name || String(x.lab)), labels }
       }).filter((g) => g.segs.length)
       : []
     // 峰值点（随指向/拖拽实时变化）：波束名标签贴在此处。hit=false（峰值方向越过地平）时
@@ -1673,7 +1692,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
         const contours = []
         asc.forEach((x, i) => {
           for (const loop of stitchLoops(geo.lines[i])) {
-            if (loop.length >= 4) contours.push({ g: cfg.ctype === 'rel' ? x.v : +x.abs.toFixed(2), p: loop.map((p) => [+p[0].toFixed(3), +p[1].toFixed(3)]) })
+            if (loop.length >= 4) contours.push({ g: cfg.ctype === 'abs' ? +x.abs.toFixed(2) : x.v, p: loop.map((p) => [+p[0].toFixed(3), +p[1].toFixed(3)]) })
           }
         })
         // 峰值点：与 buildBeamLayer 画面显示同源（随指向拖拽/极化/增益实时变化）。
@@ -1731,7 +1750,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     deleteBeam, deleteCheckedBeams,
     loadIndex, setActive, toggleAnt, toggleSatAll, toggleExpand, addLevel, removeLevel, moveLevel, insertLevel, levelsText, pasteLevels, generateLevels, importGrd, importSynthGrd,
     addSatellite, addElevLine, updateSatellite, removeSatellite, removeAntenna, renameAntenna, setElev, onTreeKeys,
-    setDragBore, beamDrag, dragLabel, setDragLabel, labelDrag, getState, restoreState, recompute, onZoomEnd, clearAll, clearDrawing, setActiveKey,
+    setDragBore, beamDrag, dragLabel, setDragLabel, labelDrag, getState, restoreState, recompute, onZoomEnd, clearAll, clearDrawing, setActiveKey, pathLossSpanDb,
     setLivePos, tickLive, getPerfContext, ensureAntLoaded, exportContours,
     livePeak, setLivePeak, bestPeakOf
   }

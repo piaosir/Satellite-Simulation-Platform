@@ -187,16 +187,20 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
     return fieldDb({ P1: beam.P1, P2: beam.P2, NX: beam.grid.NX, NY: beam.grid.NY }, { slant },
       { pol: st.pol, gainOffset: st.gainOffset, pathLoss: st.pathLoss })
   }
-  const lowestAbs = (max, st) => { let lo = Infinity; for (const L of st.levels) { const a = st.ctype === 'rel' ? max + L.v : L.v; if (a < lo) lo = a }; return lo }
+  const absOf = (peak, st, v) => (st.ctype === 'abs' ? v : (st.ctype === 'relInput' ? (+st.refDb || 0) + v : peak + v))
+  const lowestAbs = (max, st) => { let lo = Infinity; for (const L of st.levels) { const a = absOf(max, st, L.v); if (a < lo) lo = a }; return lo }
   function computeBox(db, NX, NY, L0) {
     let r0 = NY, r1 = -1, c0 = NX, c1 = -1
     for (let r = 0; r < NY; r++) { const rb = r * NX; for (let c = 0; c < NX; c++) { if (db[rb + c] >= L0) { if (r < r0) r0 = r; if (r > r1) r1 = r; if (c < c0) c0 = c; if (c > c1) c1 = c } } }
     if (r1 < 0) return null
     return { r0: Math.max(0, r0 - 1), r1: Math.min(NY - 1, r1 + 1), c0: Math.max(0, c0 - 1), c1: Math.min(NX - 1, c1 + 1) }
   }
-  const absLevels = (peak, st) => st.levels.map((L, idx) => ({
-    idx, abs: st.ctype === 'rel' ? peak + L.v : L.v, v: L.v, name: L.name || '', color: L.color, lineColor: L.lineColor || L.color
-  }))
+  // 与对地（useGrdCoverage.absLevels）逐项同口径：绝对值、标签用数、每档线型 / 线宽 / 填充透明度
+  const absLevels = (peak, st) => st.levels.map((L, idx) => {
+    const abs = absOf(peak, st, L.v)
+    return { idx, abs, v: L.v, lab: (st.ctype !== 'abs' && st.labelAbs) ? +abs.toFixed(2) : L.v, name: L.name || '', color: L.color, lineColor: L.lineColor || L.color,
+      dash: L.dash || null, width: (L.width == null ? null : +L.width), fillAlpha: (L.fillAlpha == null ? null : +L.fillAlpha) }
+  })
   // 数值标签：开关是【全局显示选项】，只活在 grd.s 上 —— 它不在 persistActive 的回存名单(PA)里，
   // 天线设置 ctx.settings 永远没有 showVal 这个键。早先这里按 st.showVal 取，恒为 undefined →
   // labels 恒空，勾「显示数值标签」怎么点都不出字（渲染端的 showVal 倒是从 grd.s 取的，对得上）。
@@ -297,7 +301,7 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
               const segs = tessellateSegs(geo.lines[i], map)
               const labels = []
               if (wl) for (const loop of stitchLoops(segs)) { if (loop.length >= 4) labels.push(loopLabelAnchor(loop, i, asc.length)) }
-              return { segs, color: x.lineColor, width: (x.width == null ? st.lineWidth : x.width), dash: x.dash || null, txt: (x.name || String(x.v)), labels }
+              return { segs, color: x.lineColor, width: (x.width == null ? st.lineWidth : x.width), dash: x.dash || null, txt: (x.name || String(x.lab)), labels }
             }).filter((gp) => gp.segs.length)
             : []
           if (!(fillBands && fillBands.length) && !segGroups.length) {
@@ -365,7 +369,7 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
           const segs = geo.lines[i]
           const labels = []
           if (wl) for (const loop of stitchLoops(segs)) { if (loop.length >= 4) labels.push(loopLabelAnchor(loop, i, asc.length)) }
-          return { segs, color: x.lineColor, width: (x.width == null ? st.lineWidth : x.width), dash: x.dash || null, txt: (x.name || String(x.v)), labels }
+          return { segs, color: x.lineColor, width: (x.width == null ? st.lineWidth : x.width), dash: x.dash || null, txt: (x.name || String(x.lab)), labels }
         }).filter((gp) => gp.segs.length)
         : []
       if (!(fillBands && fillBands.length) && !segGroups.length) continue
