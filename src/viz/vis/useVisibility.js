@@ -41,6 +41,7 @@ export function useVisibility({
   const iconSize = ref(12)           // 星下点图标大小（星多时调小缓解重叠）
   const showName = ref(false)        // 显示卫星名（默认关——Starlink 等星多时名字会糊成一片）
   const nameSize = ref(10)           // 卫星名字号（显示名字时可调）
+  const nameBold = ref(false)        // 卫星名粗体（与字号同走 satLayer.sats 的 labelBold）
   const iconColor = ref('#4caf82')   // 星下点图标 / 名字颜色（可自定义；3D 与 2D 一致）
   const showLines = ref(true)        // 3D 目标→卫星视线连线（星多时连线糊成扇面，可关）
   // ACCESS 时段过境（P2）
@@ -146,7 +147,7 @@ export function useVisibility({
       if (!Number.isFinite(r.subLon) || !Number.isFinite(r.subLat)) continue
       const hot = hid && String(r.noradId) === hid
       const nm = r.slot ? r.name + ' ' + r.slot : r.name   // GEO 星地图标签带定点经度
-      sats.push({ lon: r.subLon, lat: r.subLat, altKm: r.altKm, name: (showName.value || hot) ? nm : '', color: hot ? HL_HEX : iconHex, nameColor: hot ? '#efeae0' : (iconColor.value || VIS_CSS), iconSize: Number(iconSize.value) || 12, labelSize: Number(nameSize.value) || 10, labelShow: showName.value || hot, iconShow: true })
+      sats.push({ lon: r.subLon, lat: r.subLat, altKm: r.altKm, name: (showName.value || hot) ? nm : '', color: hot ? HL_HEX : iconHex, nameColor: hot ? '#efeae0' : (iconColor.value || VIS_CSS), iconSize: Number(iconSize.value) || 12, labelSize: Number(nameSize.value) || 10, labelBold: !!nameBold.value, labelShow: showName.value || hot, iconShow: true })
     }
     return (dots.length || sats.length) ? { dots, sats } : null
   }
@@ -312,7 +313,7 @@ export function useVisibility({
   watch([minElev, targetKind, targetId], () => { recompute(); refresh(); persist() })
   watch(satSrc, () => persist())   // 来源变：解析与重算在宿主（异步取星历），这里只存
   watch([accessTz, accOrder], () => persist()) // 时区/行序显示偏好：纯呈现层，只存不算
-  watch([iconSize, showName, nameSize, iconColor, showLines], () => { refresh(); persist() })   // 星下点样式/连线变：只重绘（不重算）+ 存
+  watch([iconSize, showName, nameSize, nameBold, iconColor, showLines], () => { refresh(); persist() })   // 星下点样式/连线变：只重绘（不重算）+ 存
   watch([covFom, covScheme, covBands], () => { drawCovNow(); persist() })            // 换指标/配色/档数：只重建热力图（不重算）
   watch(covAlpha, () => { if (setCovAlpha) setCovAlpha(Number(covAlpha.value) || 0.82); persist() })
   watch([covRegionKind, covLatMin, covLatMax, covLonMin, covLonMax, covPolyId, covStep, covHorizonH, covSample], () => persist())   // 区域/参数变：仅存（需手动点「计算」）
@@ -332,6 +333,7 @@ export function useVisibility({
         if (Number.isFinite(d.iconSize)) iconSize.value = d.iconSize
         if (typeof d.showName === 'boolean') showName.value = d.showName
         if (Number.isFinite(d.nameSize)) nameSize.value = d.nameSize
+        if (typeof d.nameBold === 'boolean') nameBold.value = d.nameBold
         if (typeof d.iconColor === 'string' && /^#[0-9a-f]{6}$/i.test(d.iconColor)) iconColor.value = d.iconColor
         if (typeof d.showLines === 'boolean') showLines.value = d.showLines
         if (typeof d.satSrc === 'string' && /^(|[gs]:[\w-]+)$/.test(d.satSrc)) satSrc.value = d.satSrc   // 宿主 watch 到非空值即解析；死 id 由宿主回退
@@ -361,7 +363,7 @@ export function useVisibility({
     try {
       localStorage.setItem(KEY, JSON.stringify({
         minElev: Number(minElev.value) || 0, targetKind: targetKind.value, targetId: targetId.value, sortKey: sortKey.value, mode: mode.value, accessTz: accessTz.value, accOrder: accOrder.value,
-        iconSize: Number(iconSize.value) || 12, showName: !!showName.value, nameSize: Number(nameSize.value) || 10, iconColor: iconColor.value,
+        iconSize: Number(iconSize.value) || 12, showName: !!showName.value, nameSize: Number(nameSize.value) || 10, nameBold: !!nameBold.value, iconColor: iconColor.value,
         showLines: !!showLines.value, satSrc: satSrc.value,
         cov: {
           regionKind: covRegionKind.value, latMin: Number(covLatMin.value), latMax: Number(covLatMax.value), lonMin: Number(covLonMin.value), lonMax: Number(covLonMax.value),
@@ -376,7 +378,7 @@ export function useVisibility({
     open, minElev, targetKind, targetId, results, sortedResults, hoveredId, sortKey,
     hasTarget, satCount, kpi, skyPoints, skyThrR,
     mode, horizonH, accessResults, accessBusy, accessMsg, accessHorizonMin, accessBaseMs, accessTz, accOrder, accessScanned, accessKpi, computeAccess, setMode,
-    iconSize, showName, nameSize, iconColor, showLines, satSrc,
+    iconSize, showName, nameSize, nameBold, iconColor, showLines, satSrc,
     // 覆盖分析（Coverage）
     covRegionKind, covLatMin, covLatMax, covLonMin, covLonMax, covPolyId, covStep, covHorizonH, covSample,
     covFom, covScheme, covAlpha, covBands, covBusy, covMsg, covData, covLegend, covKpi,

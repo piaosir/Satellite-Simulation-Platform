@@ -7,8 +7,8 @@
 //   带的两条边上。球近似只用来定网格密度（swathK）与求根初值。
 // ★ 纯计算、不碰 DOM：主线程（对星聚焦特效）与 Worker（聚焦选中集）跑同一份。
 import * as W from '../wgs84.js'
-import { beamHalfAngle, elevOf, coverHalfAngleSph } from './focusFootprint.js'
-import { llaToVec, FILL_CELL } from '../globe3d/focusLanes.js'
+import { beamHalfAngle, elevOf, coverHalfAngleSph, footprintRing } from './focusFootprint.js'
+import { llaToVec, vecToLatLon, pushDashed, densifyArc, footprintFill, swathFill, swathEdges, FILL_CELL, LIFT } from '../globe3d/focusLanes.js'
 
 const WE = 7.2921159e-5     // 地球自转角速度 rad/s（与信息卡的对地速度同一常数）
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v))
@@ -92,4 +92,146 @@ export function sectionOf(pt, fpOpt, K) {
     out[j * 3] = x / m; out[j * 3 + 1] = y / m; out[j * 3 + 2] = z / m
   }
   return out
+}
+
+// ===================== 横断面序列 → 可画的带（三处消费方共用） =====================
+// 消费方：computeTick（聚焦选中集，Worker/主线程同一份）、对星覆盖的聚焦特效（页面 focusGeomOfRec →
+// scene.setSelectionSet）、2D 平面图（经 swathFlatGeom 出的数据）。逐条横断面直接连四边形有两种退化：
+//  ① 航向掉头（星下点轨迹折返处、GEO 原地抖动）：sectionOf 的左右缘随航向互换，相邻断面「左→右」反向，
+//     边线在带两侧跳来跳去、四边形自交。→ 相邻断面按「本条左缘更靠近前一条的左缘还是右缘」翻回来（rev）。
+//  ② 原地打转：星下点位移抵不过航向转动（GEO 全程如此、Molniya 远地点环、图-8 折返点），相邻两断面围成的
+//     四边形是蝴蝶结、逐步叠加把带内涂深（GEO 上那道赤道横带就是它）；而覆盖圈沿轨扫过的并集在这里就是
+//     覆盖圈本身。→ 判据：星下点位移不足半宽的 STILL_FRAC（原地）、或沿前进方向左右两缘任一缘没有前进
+//     （pL ≤ 0 / pR ≤ 0，四边形自交）即为打转步；连续打转步成一段 run，整段用覆盖圆盘代替四边形（圆心每挪
+//     DISC_STEP×半宽补一个盘），边线在 run 处断开。原地那一档是为了 GEO 抖动：逐步位移随机，光看两缘进退会把
+//     一整段抖动切成许多小段、每段各落一个盘、段间冒出零长的小边线；按位移量判则整段稳稳归为一个 run。
+//     整条轨迹都在打转（GEO）时带面就是一个圆盘，轮廓按轨迹线样式描；覆盖圈层开着时轮廓与它重合，
+//     由调用方（outlineOn=false）关掉；带面本身由渲染端压在覆盖圈填充之下不叠色（3D 模板缓冲、2D evenodd 裁剪）。
+const DISC_STEP = 0.1
+const STILL_FRAC = 1e-3      // 星下点一步挪不到半宽的千分之一（GEO 45° 口径≈0.04°）就算原地；LEO 一步走 3° 以上，碰不到
+const reversedSection = (s, K) => {
+  const o = new Float32Array(s.length)
+  for (let j = 0; j <= K; j++) { const a = j * 3, b = (K - j) * 3; o[a] = s[b]; o[a + 1] = s[b + 1]; o[a + 2] = s[b + 2] }
+  return o
+}
+// secs: 每个采样点一条横断面（sectionOf 产出，可为 null）。返回 { n, K, secs(定向后), rev, kind, spans, runs, allRot }
+//  kind[i]：步 i→i+1 的性质，1＝平移、2＝打转、0＝断面缺失；spans / runs：连续平移步 / 打转步覆盖的断面下标区间 [a, b]
+export function swathLayout(secs, K) {
+  const n = secs ? secs.length : 0
+  const out = new Array(n), rev = new Uint8Array(n), kind = new Int8Array(Math.max(0, n - 1))
+  const c = (K >> 1) * 3, k3 = K * 3
+  let p = null
+  for (let i = 0; i < n; i++) {
+    const s = secs[i]
+    if (!s) { out[i] = null; continue }
+    let o = s
+    if (p) {
+      const dL = s[0] * p[0] + s[1] * p[1] + s[2] * p[2], dR = s[0] * p[k3] + s[1] * p[k3 + 1] + s[2] * p[k3 + 2]
+      if (dR > dL) { o = reversedSection(s, K); rev[i] = 1 }
+    }
+    out[i] = o; p = o
+  }
+  let nT = 0, nR = 0
+  for (let i = 0; i + 1 < n; i++) {
+    const a = out[i], b = out[i + 1]
+    if (!a || !b) continue
+    const fx = b[c] - a[c], fy = b[c + 1] - a[c + 1], fz = b[c + 2] - a[c + 2]
+    const w = Math.acos(clamp(a[c] * a[0] + a[c + 1] * a[1] + a[c + 2] * a[2], -1, 1))   // 半宽（弧度；单位球上弦长≈弧长）
+    let r = Math.sqrt(fx * fx + fy * fy + fz * fz) < STILL_FRAC * w   // 原地
+    if (!r) {
+      const pL = (b[0] - a[0]) * fx + (b[1] - a[1]) * fy + (b[2] - a[2]) * fz
+      const pR = (b[k3] - a[k3]) * fx + (b[k3 + 1] - a[k3 + 1]) * fy + (b[k3 + 2] - a[k3 + 2]) * fz
+      r = pL <= 0 || pR <= 0
+    }
+    kind[i] = r ? 2 : 1
+    if (r) nR++; else nT++
+  }
+  const spans = [], runs = []
+  for (let i = 0; i + 1 < n;) {
+    const kd = kind[i]
+    if (!kd) { i++; continue }
+    let j = i
+    while (j + 1 < n && kind[j] === kd) j++
+    ;(kd === 1 ? spans : runs).push([i, j])
+    i = j
+  }
+  return { n, K, secs: out, rev, kind, spans, runs, allRot: nT === 0 && nR > 0 }
+}
+// 打转段的覆盖圆盘：pts[i] = { lat, lon, h }（与 secs 同下标的采样点），fpOpt 同 footprintRing，seg 为环的分段数。
+// 每段从首点起落一个盘，圆心每挪 DISC_STEP×半宽再补一个。返回 [{ i, lat, lon, ring:[{lat,lon}...](闭合) }]
+export function swathDiscs(layout, pts, fpOpt, seg) {
+  const discs = []
+  if (!layout || !layout.runs.length || !pts) return discs
+  const K = layout.K, c = (K >> 1) * 3
+  for (const [a, b] of layout.runs) {
+    let lx = 0, ly = 0, lz = 0, has = false
+    for (let i = a; i <= b; i++) {
+      const s = layout.secs[i], q = pts[i]
+      if (!s || !q) continue
+      const mx = s[c], my = s[c + 1], mz = s[c + 2]
+      if (has) {
+        const w = Math.acos(clamp(mx * s[0] + my * s[1] + mz * s[2], -1, 1))        // 半宽：中点到左缘的角
+        const d = Math.acos(clamp(mx * lx + my * ly + mz * lz, -1, 1))
+        if (d <= DISC_STEP * w) continue
+      }
+      const h = q.h != null ? q.h : (q.gd ? q.gd.height : NaN)
+      if (!(h > 0) || !Number.isFinite(q.lat) || !Number.isFinite(q.lon)) continue
+      const ring = footprintRing(W.geodeticToEcef(q.lon, q.lat, h), h, seg > 0 ? seg : 72, fpOpt)
+      if (!ring || ring.length < 3) continue
+      const f = ring[0], l = ring[ring.length - 1]
+      if (Math.abs(f.lat - l.lat) > 1e-9 || Math.abs(f.lon - l.lon) > 1e-9) ring.push({ lat: f.lat, lon: f.lon })
+      discs.push({ i, lat: q.lat, lon: q.lon, ring })
+      lx = mx; ly = my; lz = mz; has = true
+    }
+  }
+  return discs
+}
+// 3D：平移段两缘描边 + 四边形带面；打转段圆盘填充（+ 轮廓，仅 outlineOn）。o = { edge, fill, dash, outlineOn }，sink 可为 null
+export function emitSwath3D(layout, discs, o) {
+  if (!layout || !(layout.K >= 1)) return
+  const K = layout.K
+  for (const [a, b] of layout.spans) {
+    const part = layout.secs.slice(a, b + 1)
+    if (o.edge) {
+      const [L, R] = swathEdges(part, K)
+      if (L.length > 1) pushDashed(o.edge, densifyArc(L), o.dash)
+      if (R.length > 1) pushDashed(o.edge, densifyArc(R), o.dash)
+    }
+    if (o.fill) swathFill(part, K, o.fill)
+  }
+  for (const d of (discs || [])) {
+    const rv = d.ring.map((q) => llaToVec(q.lat, q.lon, LIFT))
+    if (o.fill) footprintFill(rv, { lat: d.lat, lon: d.lon }, o.fill)
+    if (o.edge && o.outlineOn) pushDashed(o.edge, densifyArc(rv), o.dash)
+  }
+}
+// 2D 平面图要的形态：swath.ll＝定向后的横断面经纬（每条 K+1 对 lat/lon，缺失为 NaN）、swath.skip＝步 i 不是平移步，
+// swL / swR＝两缘折线按平移段切开（[[{lat,lon}...]...]）、swRings＝圆盘环、swOutline＝整轨打转且要描轮廓
+export function swathFlatGeom(layout, discs, outlineOn) {
+  const K = layout.K, m = K + 1, n = layout.n
+  const ll = new Float32Array(n * m * 2)
+  for (let i = 0; i < n; i++) {
+    const s = layout.secs[i], o = i * m * 2
+    if (!s) { ll.fill(NaN, o, o + m * 2); continue }
+    for (let a = 0; a < m; a++) { const ge = vecToLatLon(s[a * 3], s[a * 3 + 1], s[a * 3 + 2]); ll[o + a * 2] = ge[0]; ll[o + a * 2 + 1] = ge[1] }
+  }
+  const skip = new Uint8Array(Math.max(0, n - 1))
+  for (let i = 0; i + 1 < n; i++) skip[i] = layout.kind[i] === 1 ? 0 : 1
+  const [swL, swR] = swathEdgePolylines(ll, K, skip)
+  return { swath: { K, ll, skip }, swL, swR, swRings: (discs || []).map((d) => d.ring), swOutline: !!outlineOn }
+}
+// 两缘折线：沿断面序列走，skip[i] 为真处断开（打转段不横穿圆盘）。只留 ≥2 点的折线
+export function swathEdgePolylines(ll, K, skip) {
+  const m = K + 1, n = Math.floor(ll.length / (m * 2))
+  const L = [], R = []
+  let curL = null, curR = null
+  for (let i = 0; i < n; i++) {
+    const o = i * m * 2
+    if (Number.isFinite(ll[o]) && Number.isFinite(ll[o + 1])) {
+      if (!curL) { curL = []; curR = []; L.push(curL); R.push(curR) }
+      curL.push({ lat: ll[o], lon: ll[o + 1] }); curR.push({ lat: ll[o + K * 2], lon: ll[o + K * 2 + 1] })
+    } else { curL = null; curR = null }
+    if (i + 1 < n && skip && skip[i]) { curL = null; curR = null }
+  }
+  return [L.filter((p) => p.length > 1), R.filter((p) => p.length > 1)]
 }

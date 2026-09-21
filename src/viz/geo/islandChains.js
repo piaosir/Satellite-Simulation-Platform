@@ -203,7 +203,7 @@ export function chainList(off) {
 
 // 出厂样式。参考线自成一族【暖红】，与地物线（冷蓝灰）、政治线两族都分得开；虚线进一步表明
 // 「这不是一条边界」。名字与线同色 —— 一眼看得出是同一个东西。
-export const CHAIN_DEF = { color: '#c0564a', width: 1.4, opacity: 0.90, dash: 'dash', name: 'zh', nameSize: 1 }
+export const CHAIN_DEF = { color: '#c0564a', width: 1.4, opacity: 0.90, dash: 'dash', name: 'zh', nameSize: 1, nameBold: false }
 // 3D 渲染次序：压在国界(6.70)之上 —— 它是叠加的参考线，不该被底图线盖住
 export const CHAIN_ORDER = 6.75
 // 名字的基准字号（同 waterNames 的口径：每度 13.1 像素那一档下的 px；3D 按 0.034 × px/15 折世界高）

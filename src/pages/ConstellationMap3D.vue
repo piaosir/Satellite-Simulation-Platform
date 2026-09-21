@@ -82,7 +82,7 @@ import { sampleOrbitAdaptive } from '../viz/constellation/adaptiveSample.js'
 import { ringTtlMs } from '../viz/constellation/focusGeomCache.js'
 import { createFocusGeomPool } from '../viz/constellation/focusGeomPool.js'
 import { footprintRing } from '../viz/constellation/focusFootprint.js'
-import { swathK, sectionOf, headingAz } from '../viz/constellation/focusSwath.js'
+import { swathK, sectionOf, headingAz, swathLayout, swathDiscs, swathFlatGeom, swathEdgePolylines } from '../viz/constellation/focusSwath.js'
 import { pf } from '../shared/num.js'
 import { vecToLatLon } from '../viz/globe3d/focusLanes.js'
 import { solarGeometry } from '../viz/terminator.js'
@@ -1969,6 +1969,7 @@ function flatGeomOf(shards) {
   for (const sh of shards) {
     const f = sh.flat
     if (!f) continue
+    let sk = 0   // swSk 游标：逐星断面数−1 顺排
     for (let i = 0; i + 1 < f.trkOff.length; i++) {
       const track = [], footprint = []
       for (let j = f.trkOff[i]; j < f.trkOff[i + 1]; j++) track.push({ lat: f.trkLL[j * 2], lon: f.trkLL[j * 2 + 1] })
@@ -1976,19 +1977,26 @@ function flatGeomOf(shards) {
       const la = f.sub[i * 2], lo = f.sub[i * 2 + 1]
       const sub = Number.isFinite(la) ? { lat: la, lon: lo } : null
       if (sub) subs.push(sub)
-      // 轨迹面：横断面经纬块（每点 K+1 对 lat/lon，切片填充用）+ 两条带缘折线（描边用）
-      let swath = null, swL = null, swR = null
+      // 轨迹面：横断面经纬块（每点 K+1 对 lat/lon）+ 逐步「非平移步」标志（切片填充用）+ 两缘折线（按平移段切开，描边用）
+      //        + 打转段圆盘环 + 整轨打转轮廓标志（见 focusSwath.swathFlatGeom）
+      let swath = null, swL = null, swR = null, swRings = null, swOutline = false
       const K = f.swK ? f.swK[i] : 0
       if (K > 0) {
         const m = K + 1, a0 = f.swOff[i] * 2, a1 = f.swOff[i + 1] * 2
-        swath = { K, ll: f.swLL.subarray(a0, a1) }
-        swL = []; swR = []
-        for (let o = a0; o + m * 2 <= a1; o += m * 2) {
-          if (!Number.isFinite(f.swLL[o])) continue
-          swL.push({ lat: f.swLL[o], lon: f.swLL[o + 1] }); swR.push({ lat: f.swLL[o + K * 2], lon: f.swLL[o + K * 2 + 1] })
+        const ll = f.swLL.subarray(a0, a1), ns = Math.floor(ll.length / (m * 2)), nSt = Math.max(0, ns - 1)
+        const skip = f.swSk ? f.swSk.subarray(sk, sk + nSt) : null
+        sk += nSt
+        swath = { K, ll, skip }
+        ;[swL, swR] = swathEdgePolylines(ll, K, skip)
+        swRings = []
+        if (f.swRgOff) for (let r = f.swRgOff[i]; r < f.swRgOff[i + 1]; r++) {
+          const ring = []
+          for (let q = f.swRgPt[r]; q < f.swRgPt[r + 1]; q++) ring.push({ lat: f.swRgLL[q * 2], lon: f.swRgLL[q * 2 + 1] })
+          swRings.push(ring)
         }
+        swOutline = !!(f.swOut && f.swOut[i])
       }
-      geom.push({ track, footprint: footprint.length ? footprint : null, sub, swath, swL, swR })
+      geom.push({ track, footprint: footprint.length ? footprint : null, sub, swath, swL, swR, swRings, swOutline })
     }
   }
   return { geom, subs }
@@ -2026,23 +2034,19 @@ function focusGeomOfRec(rec, isCc, color) {
     if (orbit.length > 1) orbit.push(orbit[0])   // 同上：轨道圈收口
     const ecf = sat.eciToEcf(pv.position, g)
     const fp = footprintAtEcef([ecf.x, ecf.y, ecf.z], h)
-    // 轨迹面（与聚焦选中集同一份口径：focusSwath.sectionOf）：3D 收横断面单位矢量，2D 收横断面经纬与两条带缘
-    let swath = null, sw2 = null, swL = null, swR = null
+    // 轨迹面（与聚焦选中集同一份口径与同一套整理：focusSwath.sectionOf → swathLayout）：3D 收定向后的横断面 +
+    // 打转段圆盘，2D 收 swathFlatGeom 出的经纬 / 逐步标志 / 两缘折线 / 圆盘环
+    let swath = null, flatSw = null
     if (focusStyle.trkOn && focusStyle.trkMode === 'swath' && pts.length > 1) {
-      const fpo = fpOptNow(), K = swathK(Math.max(h, rec.alta > 0 ? rec.alta * RE : 0), fpo), m = K + 1
+      const fpo = fpOptNow(), K = swathK(Math.max(h, rec.alta > 0 ? rec.alta * RE : 0), fpo)
       const secs = pts.map((q) => sectionOf({ lat: q.lat, lon: q.lon, h: q.gd.height, az: headingAz(q.pv, q.gmst) }, fpo, K))
-      swath = { K, secs }
-      const ll = new Float32Array(secs.length * m * 2)
-      swL = []; swR = []
-      for (let i = 0; i < secs.length; i++) {
-        const s = secs[i], o = i * m * 2
-        if (!s) { ll.fill(NaN, o, o + m * 2); continue }
-        for (let a = 0; a < m; a++) { const ge = vecToLatLon(s[a * 3], s[a * 3 + 1], s[a * 3 + 2]); ll[o + a * 2] = ge[0]; ll[o + a * 2 + 1] = ge[1] }
-        swL.push({ lat: ll[o], lon: ll[o + 1] }); swR.push({ lat: ll[o + K * 2], lon: ll[o + K * 2 + 1] })
-      }
-      sw2 = { K, ll }
+      const lay = swathLayout(secs, K)
+      const discs = swathDiscs(lay, pts.map((q) => ({ lat: q.lat, lon: q.lon, h: q.gd.height })), fpo, 72)
+      const outlineOn = lay.allRot && !focusStyle.fpOn
+      swath = { K, layout: lay, discs, outlineOn }
+      flatSw = swathFlatGeom(lay, discs, outlineOn)
     }
-    return { item: { orbit, track, swath, footprint: fp, primary: false, satPos: { lat, lon, altKm: h, color } }, sub: { lat, lon }, flat: { track, swath: sw2, swL, swR, footprint: fp, sub: { lat, lon } } }
+    return { item: { orbit, track, swath, footprint: fp, primary: false, satPos: { lat, lon, altKm: h, color } }, sub: { lat, lon }, flat: { track, ...(flatSw || {}), footprint: fp, sub: { lat, lon } } }
   } catch { return null }
 }
 function focusGeomStatic(node, color) {

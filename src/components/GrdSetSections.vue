@@ -262,6 +262,7 @@ const boreTip = computed(() => {
         <label v-if="st.ctype !== 'abs'" class="chk2"><input type="checkbox" v-model="st.labelAbs" /><span title="等值线数值标签印绝对 dB（档值仍按相对填）">绝对标签</span></label>
         <div class="srow"><label>增益偏置</label><input class="ci" type="number" step="0.5" v-model.number="st.gainOffset" /><span class="u">dB</span></div>
         <div class="srow"><label>路径损耗</label><select v-model="st.pathLoss"><option value="none">无</option><option value="relative">相对(h/Rs)²</option><option value="absolute">通量密度</option></select><span class="u">{{ plSpan }}</span></div>
+        <div class="srow"><label>Whittaker 密度</label><input class="ci" type="number" min="1" max="10" step="1" v-model.lazy.number="st.whitDens" title="Whittaker Interpolation Density（SATSOFT 同名项）：1 = 关；N = 复场按周期 sinc 上采样 N 倍后再画等值线与填充，交点细化在该档不启用" /></div>
 
         <div class="sect"><span>电平</span></div>
         <div class="glv">

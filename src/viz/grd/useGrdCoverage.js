@@ -8,6 +8,7 @@ import { antennaBasis, antennaBasisEcef, beamBasisFrom, dirAzElAbout, dirToAzEl,
 import { boresightShellPoint } from './shellProj.js'
 import { schemeColorsRGB, rgbCss, cssRgb } from './colormap.js'
 import { parseLevelValues, levelValuesText, levelValues } from './levelTable.js'
+import { whittakerBeam, upsampledPts, clampDensity } from './whittaker.js'   // Whittaker 插值密度（SATSOFT 同名项）
 import { RS_GEO, A, B, E2, geodeticToEcef, geocentricToEcef, isoElevationContourAt } from '../wgs84.js'
 import { effective as displayQuality } from '../../stores/displayQuality.js'
 import { appAlert } from '../../stores/alert.js'   // 应用内提示，替代会夺焦点的原生 alert
@@ -122,7 +123,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     // ctype（SATSOFT Contour Type）：rel 相对峰值 | relInput 相对输入值(refDb) | abs 绝对。
     // labelAbs：相对档时数值标签印【绝对 dB】（SATSOFT 的 relative dB w/ absolute levels 两档）。
     ctype: 'abs', refDb: 0, labelAbs: false, levels: defaultLevels(),
-    pol: 'RSS', gainOffset: 0, pathLoss: 'none',
+    pol: 'RSS', gainOffset: 0, pathLoss: 'none', whitDens: 1,   // whitDens：Whittaker 插值密度，1 = 关（见 whittaker.js）
     boreType: 'azel', boreLon: null, boreLat: 0, boreAz: 0, boreEl: 0, yaw: 0,
     boreSat: null, boreSatName: '',   // 对星指向（boreType='sat'/'satoff'）的目标星身份 + 显示名
     boreOffAz: 0, boreOffEl: 0,       // 对星跟踪 + 偏置（boreType='satoff'）：相对目标星方向的 az/el 偏置
@@ -349,16 +350,16 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
   // 全局显示选项的回存名单（不随聚焦天线走，整份存在快照的 disp 里；老快照缺的键落出厂值）
   const DISP_KEYS = ['showName', 'nameSize', 'nameColor', 'showBore', 'boreSize', 'boreColor', 'showRay', 'rayColor', 'rayWidth', 'rayOpacity',
     'showPeak', 'peakSize', 'peakColor', 'showVal', 'valSize', 'valColor', 'labelMode', 'labelGap', 'labelWithName', 'fontBold']
-  const PA = ['ctype', 'refDb', 'labelAbs', 'pol', 'gainOffset', 'pathLoss', 'fill', 'line', 'lineWidth', 'lineStyle', 'lineAlpha', 'alpha', 'boreType', 'boreLon', 'boreLat', 'boreAz', 'boreEl', 'yaw', 'boreLock', 'boreSat', 'boreSatName', 'boreOffAz', 'boreOffEl', 'borePtLon', 'borePtLat', 'borePtAlt']
+  const PA = ['ctype', 'refDb', 'labelAbs', 'pol', 'gainOffset', 'pathLoss', 'whitDens', 'fill', 'line', 'lineWidth', 'lineStyle', 'lineAlpha', 'alpha', 'boreType', 'boreLon', 'boreLat', 'boreAz', 'boreEl', 'yaw', 'boreLock', 'boreSat', 'boreSatName', 'boreOffAz', 'boreOffEl', 'borePtLon', 'borePtLat', 'borePtAlt']
   const copyLevels = (lv) => lv.map((L) => ({ v: L.v, name: L.name || '', labelT: (L.labelT == null ? null : L.labelT), color: L.color, lineColor: L.lineColor, locked: !!L.locked, lineSet: !!L.lineSet, dash: L.dash || null, width: (L.width == null ? null : +L.width), fillAlpha: (L.fillAlpha == null ? null : +L.fillAlpha) }))
   function defaultSettings(satLon, satLat = 0, peakDb) {
-    return { ctype: 'abs', refDb: 0, labelAbs: false, pol: 'RSS', gainOffset: 0, pathLoss: 'none', fill: false, line: true, lineWidth: 1.6, lineStyle: 'solid', lineAlpha: 1, alpha: 0.78,
+    return { ctype: 'abs', refDb: 0, labelAbs: false, pol: 'RSS', gainOffset: 0, pathLoss: 'none', whitDens: 1, fill: false, line: true, lineWidth: 1.6, lineStyle: 'solid', lineAlpha: 1, alpha: 0.78,
       boreType: 'azel', boreLon: satLon == null ? null : satLon, boreLat: satLat || 0, boreAz: 0, boreEl: 0, yaw: 0, boreLock: true,
       boreSat: null, boreSatName: '', boreOffAz: 0, boreOffEl: 0,
       borePtLon: satLon == null ? null : satLon, borePtLat: satLat || 0, borePtAlt: 550,
       beamsToPlot: [0], beamNames: {}, levels: defaultLevels(peakDb) }
   }
-  function applySettings(cfg) { if (!cfg) return; for (const k of PA) s[k] = cfg[k]; if (!Number.isFinite(s.lineAlpha)) s.lineAlpha = 1; if (!s.lineStyle) s.lineStyle = 'solid'; if (!Number.isFinite(s.refDb)) s.refDb = 0; s.labelAbs = !!s.labelAbs; s.levels = copyLevels(cfg.levels || defaultLevels()); s.beamsToPlot = (cfg.beamsToPlot || []).slice(); s.beamNames = { ...(cfg.beamNames || {}) } }
+  function applySettings(cfg) { if (!cfg) return; for (const k of PA) s[k] = cfg[k]; if (!Number.isFinite(s.lineAlpha)) s.lineAlpha = 1; if (!s.lineStyle) s.lineStyle = 'solid'; if (!Number.isFinite(s.refDb)) s.refDb = 0; s.labelAbs = !!s.labelAbs; s.whitDens = clampDensity(s.whitDens); s.levels = copyLevels(cfg.levels || defaultLevels()); s.beamsToPlot = (cfg.beamsToPlot || []).slice(); s.beamNames = { ...(cfg.beamNames || {}) } }
   // 设置序列化（深拷贝 levels/beamsToPlot/beamNames/keptSets），供 getState 回存每个天线
   function serializeCfg(st) { return { ...st, levels: copyLevels(st.levels || []), beamsToPlot: (st.beamsToPlot || [0]).slice(), beamNames: { ...(st.beamNames || {}) }, keptSets: Array.isArray(st.keptSets) ? st.keptSets.slice() : null } }
   // 把存档 cfg 合到该天线一份完整 settings（缺省字段以 meta 默认补齐）
@@ -400,7 +401,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
   // ---- 等值线方案（SATSOFT Apply to Antennas / Save to File / Load from File）----
   // 方案 = 一根天线里【与指向、与选波束无关】的那部分设置 + 三类标签的全局显示设置。
   // 不含 beamsToPlot 与任何指向字段：换一根天线用的是同一套档位与样式，选哪些波束、指哪儿各归各的。
-  const SCHEME_KEYS = ['ctype', 'refDb', 'labelAbs', 'pol', 'gainOffset', 'pathLoss', 'fill', 'line', 'lineWidth', 'lineStyle', 'lineAlpha', 'alpha']
+  const SCHEME_KEYS = ['ctype', 'refDb', 'labelAbs', 'pol', 'gainOffset', 'pathLoss', 'whitDens', 'fill', 'line', 'lineWidth', 'lineStyle', 'lineAlpha', 'alpha']
   const SCHEME_DISP = ['showVal', 'valSize', 'valColor', 'labelMode', 'labelGap', 'labelWithName', 'fontBold', 'showName', 'nameSize', 'nameColor', 'showPeak', 'peakSize', 'peakColor']
   function schemeOf() {
     const o = { kind: 'satsim.grd.contours', v: 1, levels: copyLevels(s.levels), disp: {} }
@@ -593,7 +594,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
   let _colorSeq = 0
   const nextElevColor = () => SAT_PALETTE[_colorSeq++ % SAT_PALETTE.length]
   // 预置星（index）补齐统一节点字段：GEO 定点(lon,0,GEO_ALT)、仰角线默认关、卫星名默认开、颜色默认白
-  const normPreset = (s) => ({ ...s, kind: 'preset', lat: 0, altKm: GEO_ALT, noradId: null, els: '5,10', elevColor: '#ffffff', elevShow: false, elevWidth: 1.3, elevLabelSize: 18, iconSize: 10, labelSize: 4, iconShow: true, labelShow: true })
+  const normPreset = (s) => ({ ...s, kind: 'preset', lat: 0, altKm: GEO_ALT, noradId: null, els: '5,10', elevColor: '#ffffff', elevShow: false, elevWidth: 1.3, elevLabelSize: 18, iconSize: 10, labelSize: 4, iconShow: true, labelShow: true, labelBold: false, elevLabelBold: false })
 
   // ===== 用户自定义卫星持久化（localStorage）=====
   // 覆盖分析里【添加的卫星】(custom/linked/orbit/elevline，非磁盘 index 的 preset) 只在内存 → 关闭重开丢失，
@@ -601,7 +602,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
   // preset 星（loadIndex 从磁盘 index 重建）不存，避免与 index 重复；恢复时用户星与 index 星按 folder 去重合并（index 优先）。
   const SATS_KEY = 'globe3d/grdSats'
   const SAT_FIELDS = ['folder', 'satName', 'kind', 'lon', 'lat', 'altKm', 'noradId', 'elements', 'els',
-    'elevColor', 'elevShow', 'elevWidth', 'elevLabelSize', 'iconSize', 'labelSize', 'iconShow', 'labelShow']
+    'elevColor', 'elevShow', 'elevWidth', 'elevLabelSize', 'iconSize', 'labelSize', 'iconShow', 'labelShow', 'labelBold', 'elevLabelBold']
   const bareSat = (s) => { const o = {}; for (const k of SAT_FIELDS) o[k] = s[k]; return o }
   function persistSats() {
     try { localStorage.setItem(SATS_KEY, JSON.stringify(sats.value.filter((s) => s && s.kind && s.kind !== 'preset').map(bareSat))) } catch { /* ignore */ }
@@ -622,7 +623,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
         noradId: s.noradId || null, elements: s.elements || null, els: s.els != null ? s.els : '5,10',
         elevColor: s.elevColor || '#ffffff', elevShow: !!s.elevShow, elevWidth: Number(s.elevWidth) || 1.3,
         elevLabelSize: Number(s.elevLabelSize) || 18, iconSize: Number(s.iconSize) || 10, labelSize: Number(s.labelSize) || 4,
-        iconShow: s.iconShow !== false, labelShow: s.labelShow !== false, antennas: []
+        iconShow: s.iconShow !== false, labelShow: s.labelShow !== false, labelBold: !!s.labelBold, elevLabelBold: !!s.elevLabelBold, antennas: []
       })
     }
     if (add.length) { sats.value = [...sats.value, ...add]; for (const s of add) expanded.value = { ...expanded.value, [s.folder]: true } }
@@ -656,6 +657,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
       elevColor: draft.color || '#ffffff', elevShow: false, elevWidth: Number(draft.elevWidth) || 1.3,
       elevLabelSize: Number(draft.elevLabelSize) || 18,
       iconSize: Number(draft.iconSize) || 10, labelSize: Number(draft.labelSize) || 4, iconShow: draft.iconShow !== false, labelShow: draft.labelShow !== false,
+      labelBold: !!draft.labelBold, elevLabelBold: !!draft.elevLabelBold,
       antennas: []
     }
     sats.value = [...sats.value, node]
@@ -675,7 +677,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
       els: draft.els != null ? draft.els : '5,10',
       elevColor: draft.elevColor || draft.color || '#ffffff', elevShow: true, elevWidth: Number(draft.elevWidth) || 1.3,
       elevLabelSize: Number(draft.elevLabelSize) || 18,
-      iconShow: false, labelShow: false, iconSize: 10, labelSize: 4,
+      iconShow: false, labelShow: false, iconSize: 10, labelSize: 4, labelBold: false, elevLabelBold: !!draft.elevLabelBold,
       antennas: []
     }
     sats.value = [...sats.value, node]
@@ -929,7 +931,8 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     persistActive()   // 回存该天线全部设置（含指向）
     const plot = (s.beamsToPlot || [])
     // 预投影绘制中的波束（拖拽每帧核心）：用已缓存的场算热区盒（拖拽中 pol/gain 不变 → 场稳定）
-    for (const bi of plot) { const beam = c.beams[bi]; if (beam) syncBeamProj(c, beam, c.settings, (c.settings.pathLoss === 'none' && beam._fld) ? beam._fld.field : null) }
+    const dens = densOf(active.value, c, c.settings, plot.filter((i) => i < c.beams.length))
+    for (const bi of plot) { const beam = beamFor(c, c.settings, c.beams[bi], dens); if (beam) syncBeamProj(c, beam, c.settings, (c.settings.pathLoss === 'none' && beam._fld) ? beam._fld.field : null) }
   }
 
   // lab = 数值标签要印的数：绝对档恒是档值本身；相对档默认印相对值，勾了「绝对标签」则印绝对 dB。
@@ -960,6 +963,37 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     const field = fieldDb(arg, beam.proj, { pol: cfg.pol, gainOffset: cfg.gainOffset, pathLoss: 'none' })
     beam._fld = { pol: cfg.pol, gain: cfg.gainOffset, field }
     return field
+  }
+  // ---- Whittaker 插值密度（SATSOFT Contour Dialog「Whittaker Interpolation Density」，1 = 关）----
+  // 密度 N > 1：复场按周期 sinc 上采样成 N 倍细的网格（whittaker.js），下游投影 / 场 / 热区盒 / 分带 / 峰值全部在细网格上跑，
+  // 与 SATSOFT 一样直接在细网格上做线性 marching squares —— 交点细化表在这一档不启用（N=5 时表要大 25 倍，肉眼无差）。
+  // 派生波束缓存在原波束上（beam._whit），换密度才重算；投影 / 场等缓存挂在派生对象自己身上。性能指标表仍按原网格取值。
+  // 预算：绘制中的波束上采样后总点数 > WHIT_BUDGET 则本次按 1 画并提示一次（HTS 94 波束 × 密度 5 ≈ 7700 万点，内存吃不消）。
+  const WHIT_BUDGET = 8e6
+  const _whitWarned = new Set()
+  function densOf(key, c, cfg, plot) {
+    const N = clampDensity(cfg.whitDens)
+    if (N <= 1) return 1
+    let pts = 0
+    for (const bi of plot) { const b = c.beams[bi]; if (b) pts += upsampledPts(b, N) }
+    if (pts <= WHIT_BUDGET) return N
+    const tag = key + '|' + N + '|' + plot.length
+    if (!_whitWarned.has(tag)) { _whitWarned.add(tag); appAlert(`Whittaker 密度 ${N}：${plot.length} 个波束共 ${(pts / 1e6).toFixed(1)} M 点，超出 ${WHIT_BUDGET / 1e6} M 上限，已按 1 绘制`) }
+    return 1
+  }
+  function beamFor(c, cfg, beam, dens) {
+    if (!beam || !(dens > 1)) return beam
+    const b = whittakerBeam(beam, dens)
+    // 与载入时的原波束同款：先有一份全网格投影（beamField 读 proj.NX、路损读 slant），syncBeamProj 再按热区盒原地重投
+    if (!b.proj) b.proj = projectGrid(b.grid, c.meta.igrid, beamBasis(c.meta, cfg), null, null, true)
+    return b
+  }
+  // 对星视图（useShellCoverage）取派生波束：它自己按壳层 / 对地投影，不要这里的 proj
+  function beamAtDensity(key, beam) {
+    const c = cache.get(key); if (!c || !c.settings || !c.beams) return beam
+    const cfg = c.settings, plot = (cfg.beamsToPlot || []).filter((i) => i < c.beams.length)
+    const dens = densOf(key, c, cfg, plot)
+    return dens > 1 ? whittakerBeam(beam, dens) : beam
   }
   // 峰值点 = 当前场的 argmax 格点【打在地球上的那个点】。★ 不能直接读 beam.proj.lon/lat[maxIdx]：
   // 那张投影是 limbOutside=true 投的，射线打不到椭球时返回的是「射线到地心的垂足」（rayEllipsoidMargin
@@ -1042,7 +1076,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     const ascAbs = asc.map((x) => x.abs)
     // 交点细化表（线 = 表，见 coverage.buildEdgeRefine）：无路损 + 全分辨率三角化时启用；按 (极化, 增益, 档) 缓存在
     // 波束上，拖拽 / 播放每帧零求根。★ 同一张表也交给 fieldMesh：等值线（CPU）与填充（GPU）的细化顶点必须是同一批。
-    const refine = (need && cfg.pathLoss === 'none' && stride === 1) ? edgeRefineFor(beam, field, ascAbs, cfg.pol, cfg.gainOffset) : null
+    const refine = (need && cfg.pathLoss === 'none' && stride === 1 && !(beam._dens > 1)) ? edgeRefineFor(beam, field, ascAbs, cfg.pol, cfg.gainOffset) : null   // Whittaker 密度 > 1：细网格上直接线性 marching，不建细化表
     const pos = refine ? beamRefPos(c, beam, cfg, refine) : null
     // wantFills=cfg.fill：只画等值线时跳过逐档填充裁剪（关填充的大波束拖拽省一半三角化）；box：只三角化覆盖热区
     // ★ stride 必须与 fieldMesh 的索引生成用同一个值：等值线（CPU）与填充（GPU）要落在同一张三角网上。
@@ -1071,7 +1105,8 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
         // txt：该档【自定义名称】优先（电平表灰色列可改名），为空则回退电平值 x.v = L.v。
         // 数值回退不做小数位裁剪——绝对模式下 x.abs 恒等于 x.v，之前用 toFixed(1) 会把用户输入的
         // 更高精度电平（如 42.567）显示成 42.6，与输入框对不上。
-        return { segs, color: x.lineColor, width: (x.width == null ? cfg.lineWidth : x.width), dash: (x.dash || cfg.lineStyle || null), txt: txt0, labels }
+        // idx = 该档在 cfg.levels 里的下标：restyleActive 改线宽 / 线型时按它认档（2D segPaths / 3D LineMaterial 都靠它）
+        return { idx: x.idx, segs, color: x.lineColor, width: (x.width == null ? cfg.lineWidth : x.width), dash: (x.dash || cfg.lineStyle || null), txt: txt0, labels }
       }).filter((g) => g.segs.length)
       : []
     // 峰值点（随指向/拖拽实时变化）：波束名标签贴在此处。hit=false（峰值方向越过地平）时
@@ -1105,10 +1140,11 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     // 分带填充的后端：只有「本次喂的是 2D」且渲染器回答 'gl' 时才改送网格。每次都问，不缓存
     //（导出会显式置位 setExporting、换投影档会改答案，缓存就会拿着过期结论出错产物）。
     const glMesh = isFlat() && (() => { const fl = flatField(); return !!(fl && fl.fieldBackend && fl.fieldBackend((cfg.levels || []).length) === 'gl') })()
+    const dens = densOf(key, c, cfg, plot)   // Whittaker 插值密度（预算内才生效）
     const out = plot.map((bi) => {
       // 投影同步在 buildBeamLayer 内用新场完成（覆盖 reproject 未触及/新勾选的波束，且按热区盒裁剪）
       // 标注一律用波束名（自定义或默认「波束 N」）—— 不再用「天线名+波束名」形式
-      const L = buildBeamLayer(c, cfg, c.beams[bi], beamName(c, bi), withLabels, glMesh)
+      const L = buildBeamLayer(c, cfg, beamFor(c, cfg, c.beams[bi], dens), beamName(c, bi), withLabels, glMesh)
       L.id = `${key}#${bi}`   // 稳定层 id（天线键|波束序号）：渲染层据此做拖拽增量更新（只重建聚焦天线层）
       if (L.bore) L.bore.satShown = satShown
       return L
@@ -1232,6 +1268,20 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     opts.rays = buildAxisRays(selected.value, A)   // 拖指向时视轴跟着转（一天线一条，全量重建也不贵）
     if (isFlat()) { const fl = flatField(); if (fl) fl.patchField(layers, opts) }
     else { const sc = getScene(); if (sc) sc.patchCoverageLayers(layers, opts) }
+  }
+  // 样式热路径：线宽 / 线型只改【现有图层】的样式，不重算几何、不重烘 Path2D、不重传 GPU 网格。
+  // 每档取值与 buildBeamLayer 的 segGroups 同口径（每档覆盖优先，缺省跟全局）；图层按 id（天线键#波束序号）认，
+  // 档按 segGroup.idx（cfg.levels 下标）认。只动当前可见视图，另一视图切换时由 applyFlat 的 recompute 补齐（与 recomputeActive 同策略）。
+  // 原先线宽跟 fill / ctype 一起整轮 recompute：55 档时拖一格滑杆就是细化表 163 ms + bandGeometry 66 ms + 拼链 82 ms。
+  function restyleActive() {
+    const key = active.value
+    const c = cache.get(key); if (!c || !c.settings || !selected.value.includes(key)) return
+    const cfg = c.settings
+    const byIdx = {}
+    ;(cfg.levels || []).forEach((L, idx) => { byIdx[idx] = { width: (L.width == null ? cfg.lineWidth : +L.width), dash: (L.dash || cfg.lineStyle || null) } })
+    const ids = (cfg.beamsToPlot || []).map((bi) => `${key}#${bi}`)
+    if (isFlat()) { const fl = flatField(); if (fl && fl.restyleFieldLines) fl.restyleFieldLines(ids, byIdx) }
+    else { const sc = getScene(); if (sc && sc.restyleCoverageLines) sc.restyleCoverageLines(ids, byIdx) }
   }
   // rAF 合帧的聚焦层重算（与拖拽同策略）：<input type=color> 的 @input 在挑色时高频连发，
   // 逐事件同步 recomputeActive 会把主线程打满 → 卡。合帧后一帧最多重算一次，挑色与拖拽同样顺滑。
@@ -1611,7 +1661,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     const satsState = sats.value.map((s) => ({
       folder: s.folder, kind: s.kind, satName: s.satName,
       lon: s.lon, lat: s.lat, altKm: s.altKm, noradId: s.noradId, elements: s.elements || null,
-      els: s.els, elevColor: s.elevColor, elevShow: s.elevShow, elevWidth: s.elevWidth, elevLabelSize: s.elevLabelSize, iconSize: s.iconSize, labelSize: s.labelSize, labelShow: s.labelShow !== false, iconShow: s.iconShow !== false,
+      els: s.els, elevColor: s.elevColor, elevShow: s.elevShow, elevWidth: s.elevWidth, elevLabelSize: s.elevLabelSize, iconSize: s.iconSize, labelSize: s.labelSize, labelShow: s.labelShow !== false, iconShow: s.iconShow !== false, labelBold: !!s.labelBold, elevLabelBold: !!s.elevLabelBold,
       // src（来源格式 grasp/acp4/eutelsat）必须一起存：它是文件管理里那行「ACP4 / Eutelsat」标注与
       // 「AR/XPD 不适用」提示的唯一来源，漏了它重开软件后这两样就一声不吭地退回成「导入」。
       antennas: s.antennas.filter((a) => a.imported && a.file).map((a) => ({
@@ -1636,7 +1686,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
           if (!ss.kind || ss.kind === 'preset') continue   // 预置星已不在 index（如已删/改版）→ 跳过
           node = { folder: ss.folder, satName: ss.satName || '卫星', kind: ss.kind, antennas: [],
             lon: ss.lon, lat: ss.lat, altKm: ss.altKm, noradId: ss.noradId || null, elements: ss.elements || null,
-            els: '5,10', elevColor: '#ffffff', elevShow: false, elevWidth: 1.3, elevLabelSize: 18, iconSize: 10, labelSize: 4, labelShow: true, iconShow: true }
+            els: '5,10', elevColor: '#ffffff', elevShow: false, elevWidth: 1.3, elevLabelSize: 18, iconSize: 10, labelSize: 4, labelShow: true, iconShow: true, labelBold: false, elevLabelBold: false }
           sats.value = [...sats.value, node]
         }
         if (ss.satName) node.satName = ss.satName
@@ -1644,6 +1694,8 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
         if (Number.isFinite(ss.elevLabelSize)) node.elevLabelSize = ss.elevLabelSize
         if (Number.isFinite(ss.iconSize)) node.iconSize = ss.iconSize
         if (Number.isFinite(ss.labelSize)) node.labelSize = ss.labelSize
+        if (typeof ss.labelBold === 'boolean') node.labelBold = ss.labelBold
+        if (typeof ss.elevLabelBold === 'boolean') node.elevLabelBold = ss.elevLabelBold
         if (typeof ss.labelShow === 'boolean') node.labelShow = ss.labelShow
         if (typeof ss.iconShow === 'boolean') node.iconShow = ss.iconShow
         if (Number.isFinite(ss.lon)) node.lon = ss.lon
@@ -1739,14 +1791,15 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
       const cfg = c.settings
       const node = sats.value.find((x) => x.folder === key.split('|')[0])
       const plot = (cfg.beamsToPlot || []).filter((i) => i < c.beams.length)
+      const dens = densOf(key, c, cfg, plot)
       for (const bi of plot) {
-        const beam = c.beams[bi]
+        const beam = beamFor(c, cfg, c.beams[bi], dens)   // 导出的线与屏上同一份网格（含 Whittaker 密度）
         const field = beamField(beam, cfg)
         const asc = [...absLevels(peakOf(beam, field, cfg), cfg)].sort((a, b) => a.abs - b.abs)
         const box = beamBox(beam, cfg, field)
         syncBeamProj(c, beam, cfg, field)
         const ascAbs = asc.map((x) => x.abs), stride = displayQuality.value.gridStride || 1
-        const refine = (cfg.pathLoss === 'none' && stride === 1) ? edgeRefineFor(beam, field, ascAbs, cfg.pol, cfg.gainOffset) : null   // 导出的线与屏上同一份细化
+        const refine = (cfg.pathLoss === 'none' && stride === 1 && !(beam._dens > 1)) ? edgeRefineFor(beam, field, ascAbs, cfg.pol, cfg.gainOffset) : null   // 导出的线与屏上同一份细化
         const pos = refine ? beamRefPos(c, beam, cfg, refine) : null
         const geo = bandGeometry({ lon: beam.proj.lon, lat: beam.proj.lat, vis: beam.proj.vis, db: field.db, NX: beam.proj.NX, NY: beam.proj.NY }, ascAbs, false, box, null, stride, refine, pos)
         const contours = []
@@ -1770,7 +1823,9 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
   // 一键清除绘图：抹掉地图上的填充/线，但保留各天线设置（数据库）与聚焦项 → 再次勾选天线即按原设置重绘。
   function clearDrawing() { selected.value = []; const sc = getScene(), fl = flatField(); if (sc) sc.setCoverageField([], {}); if (fl) fl.setField([], {}) }
 
-  watch(() => [s.fill, s.line, s.lineWidth, s.lineStyle, s.ctype, s.refDb, s.labelAbs, s.pol, s.gainOffset, s.pathLoss], () => { persistActive(); recompute() }, { deep: true })
+  watch(() => [s.fill, s.line, s.ctype, s.refDb, s.labelAbs, s.pol, s.gainOffset, s.pathLoss, s.whitDens], () => { persistActive(); recompute() }, { deep: true })
+  // 线宽 / 线型是纯样式 → restyleActive（不重算几何）；线透明度早已是同类（下面的 setFieldLineAlpha）
+  watch(() => [s.lineWidth, s.lineStyle], () => { persistActive(); restyleActive() })
   // 电平改动只影响聚焦天线这一层（persistActive 仅写 active）→ 走单层快路径 recomputeActive，只 patch 当前可见视图。
   // 另一视图（2D/3D）在切换时由 applyFlat 的 recompute 一次性补齐（与拖拽波束同策略，避免每次编辑全量重算所有选中层）。
   watch(() => s.levels, () => { persistActive(); scheduleRecomputeActive() }, { deep: true })   // 合帧：挑色高频连发不再卡（persistActive 同步保证状态最新，重算合到下一帧）
@@ -1812,6 +1867,6 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     addSatellite, addElevLine, updateSatellite, removeSatellite, removeAntenna, renameAntenna, setElev, onTreeKeys,
     setDragBore, beamDrag, dragLabel, setDragLabel, labelDrag, getState, restoreState, recompute, onZoomEnd, clearAll, clearDrawing, setActiveKey, pathLossSpanDb,
     setLivePos, tickLive, getPerfContext, ensureAntLoaded, exportContours,
-    livePeak, setLivePeak, bestPeakOf
+    livePeak, setLivePeak, bestPeakOf, beamAtDensity
   }
 }

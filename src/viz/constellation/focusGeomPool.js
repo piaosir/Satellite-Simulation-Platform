@@ -31,12 +31,12 @@ export function createFocusGeomPool(want) {
     if (!(want < 0) && typeof Worker !== 'undefined') {
       for (let i = 0; i < N; i++) {
         const w = new Worker(new URL('./focusGeomWorker.js', import.meta.url), { type: 'module' })
-        shards.push({ w, pend: null, seen: new Set() })
+        shards.push({ w, pend: null, seen: new Map() })
       }
       ok = true
     }
   } catch { for (const s of shards) { try { s.w.terminate() } catch { /* 建到一半的先收掉 */ } } shards.length = 0; ok = false }
-  if (!ok) { shards.length = 0; shards.push({ w: null, st: createShard(), seen: new Set() }) }
+  if (!ok) { shards.length = 0; shards.push({ w: null, st: createShard(), seen: new Map() }) }
   let nShard = shards.length
   for (const s of shards) bind(s)
   let seq = 0
@@ -57,24 +57,34 @@ export function createFocusGeomPool(want) {
     const pend = shards.map((s) => s.pend).filter(Boolean)   // 挂起的那次先攒下来，收摊后统一作废
     for (const s of shards) { s.pend = null; if (s.w) { try { s.w.terminate() } catch { /* 已经没了就算了 */ } } }
     shards.length = 0
-    shards.push({ w: null, st: createShard(), seen: new Set() })
+    shards.push({ w: null, st: createShard(), seen: new Map() })
     nShard = 1
     if (lastList) setSats(lastList, lastPrimary)             // 分片没了，选中集得重新喂给这一片
     for (const p of pend) p.res(null)                        // null＝本拍作废、不画；下一拍就地算，照常出图
   }
 
   // list: [{ key, rec, cc, color:[r,g,b] }]，primaryKey 为主选那颗的 key
+  // seen: key → 分片手里那份 { rec, cc, color }。satrec 只在分片【没有这份】时才传（结构化克隆一颗要几十个字段），
+  // 「没有」按对象同一性判，不按 key 判：同一个 key 换了 satrec 也得重传 ——
+  // ★ 星座向导的预览星合成号固定（1800000 起），改轨道类型 / 高度 / 倾角时 key 一个不变、satrec 全换；
+  //   早先只看 key，分片就一直拿头一次见到的那颗（默认草稿 550 km 低轨）画轨道线与覆盖圈，而信息卡读的是
+  //   主线程的新 satrec —— 卡片写着 GEO、球上画的是低轨。场景历元改动 / 星座更新 / 目录刷新换 satrec 同理。
+  //   颜色同样在这一份里（在轨点按它分色桶），向导里改色也得跟着传。
   function setSats(list, primaryKey) {
     lastList = list; lastPrimary = primaryKey
     const per = shards.map(() => ({ keys: [], add: [] }))
     for (const e of list) {
       const i = nShard === 1 ? 0 : hash(e.key) % nShard
       per[i].keys.push(e.key)
-      if (!shards[i].seen.has(e.key)) { shards[i].seen.add(e.key); per[i].add.push({ key: e.key, rec: e.rec, cc: e.cc, color: e.color }) }
+      const had = shards[i].seen.get(e.key)
+      if (!had || had.rec !== e.rec || had.cc !== !!e.cc || had.color !== e.color) {
+        shards[i].seen.set(e.key, { rec: e.rec, cc: !!e.cc, color: e.color })
+        per[i].add.push({ key: e.key, rec: e.rec, cc: e.cc, color: e.color })
+      }
     }
     for (let i = 0; i < nShard; i++) {
       const keep = new Set(per[i].keys)
-      for (const k of [...shards[i].seen]) if (!keep.has(k)) shards[i].seen.delete(k)
+      for (const k of [...shards[i].seen.keys()]) if (!keep.has(k)) shards[i].seen.delete(k)
       const msg = { t: 'sync', keys: per[i].keys, add: per[i].add, primary: primaryKey || null }
       if (shards[i].w) {
         // ★ 结构化克隆失败（条目里混进了 Vue 响应式 Proxy 之类克隆不了的东西）是同步抛出的，onerror 接不到；

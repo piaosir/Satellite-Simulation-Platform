@@ -38,7 +38,7 @@ export function useEnvField(host) {
   const manualLo = ref(''), manualHi = ref('')
   const alpha = ref(0.78)
   const landOnly = ref(false)
-  const contourOn = ref(false), contourStep = ref(''), contourLabel = ref(true)
+  const contourOn = ref(false), contourStep = ref(''), contourLabel = ref(true), contourBold = ref(false)
   const busy = ref(false), msg = ref('')
   const field = ref(null)                 // 当前栅格（含 values/stats/bbox/精度标注）
   const contours = ref([])                // [{level, lines, ...}]
@@ -158,6 +158,7 @@ export function useEnvField(host) {
         text: contourLabel.value ? fmt(g.level) : '',
         color: lutCss(scheme.value, invert.value, u, 0.55),
         labelColor: lutCss(scheme.value, invert.value, u, 1.0),
+        bold: contourBold.value,
         width: 1.1,
         lines: g.lines,
         labels: contourLabel.value ? labelPoints(g.lines, { max: 3 }) : []
@@ -211,7 +212,7 @@ export function useEnvField(host) {
   // 盯 open：面板没支起来过就不取数——恢复上次「开」的选择时不该在启动瞬间就往地图上铺一张图。
   watch(on, (v) => { if (v && open.value && needLoad()) load(); else redraw() })
   watch(alpha, (a) => { if (on.value) H.setAlpha?.(a) })
-  watch([contourOn, contourStep, contourLabel], () => redrawContours())
+  watch([contourOn, contourStep, contourLabel, contourBold], () => redrawContours())
   // 换字段时把等值线级差交还给该字段的默认值（10 mm/h 与 0.5 km 显然不能共用一个数）
   watch(key, () => { contourStep.value = '' })
 
@@ -228,15 +229,15 @@ export function useEnvField(host) {
       if (Number.isFinite(s.bands)) bands.value = s.bands
       if (s.domainMode) domainMode.value = s.domainMode
       invert.value = !!s.invert; landOnly.value = !!s.landOnly
-      contourOn.value = !!s.contourOn; contourLabel.value = s.contourLabel !== false
+      contourOn.value = !!s.contourOn; contourLabel.value = s.contourLabel !== false; contourBold.value = !!s.contourBold
     }
   } catch { /* 首次运行无缓存 */ }
-  watch([on, key, scheme, stepDeg, alpha, bands, domainMode, invert, landOnly, contourOn, contourLabel], () => {
+  watch([on, key, scheme, stepDeg, alpha, bands, domainMode, invert, landOnly, contourOn, contourLabel, contourBold], () => {
     try {
       localStorage.setItem(LS_KEY, JSON.stringify({
         on: on.value, key: key.value, scheme: scheme.value, schemeLocked: userScheme, step: Number(stepDeg.value), alpha: alpha.value,
         bands: bands.value, domainMode: domainMode.value, invert: invert.value, landOnly: landOnly.value,
-        contourOn: contourOn.value, contourLabel: contourLabel.value
+        contourOn: contourOn.value, contourLabel: contourLabel.value, contourBold: contourBold.value
       }))
     } catch { /* 隐私模式等写不进去，忽略 */ }
   })
@@ -245,7 +246,7 @@ export function useEnvField(host) {
     // 状态
     open, on, defs, key, optRainy, optP, stepDeg, scheme, invert, bands,
     domainMode, manualLo, manualHi, alpha, landOnly,
-    contourOn, contourStep, contourLabel,
+    contourOn, contourStep, contourLabel, contourBold,
     busy, msg, field, contours,
     // 派生
     def, fieldOpt, stats, domain, legend, srcNote,

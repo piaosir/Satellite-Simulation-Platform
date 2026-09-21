@@ -34,6 +34,8 @@ import { planRasterMesh, COARSE as MESH_BLOCK } from '../geo/rasterMesh.js'
 import { createGlRaster, GL_TEX_MAX } from './glRaster.js'
 // GRD 分带填充的 GPU 后端（等距圆柱 + 屏上绘制时启用；导出/投影档/无 WebGL2 时退回 Path2D）
 import { createGlField, GL_MAX_LEVELS, meshLattice } from './glField.js'
+// 等值线拼链（每链一个子路径烘 Path2D）：与几何层的数值标签 / 导出用的是同一个 stitchLoops
+import { stitchLoops } from '../grd/coverage.js'
 // 静态快照的调度口径（重不重建 / 何时补建 / 盖不住时垫哪张）：纯函数拆在这里，见其文件头
 import {
   REBUILD_FAST_MS, PROBE_FRAMES, UNKNOWN_COST, NOMINAL_MIN, viewCls as clsOf, makeCostTable,
@@ -213,7 +215,8 @@ export function createFlatCoverage(canvas) {
   // 地名颜色/透明度：五档（国家名 / 省名 / 地级市名 / 大洋名 / 海域名）各自分开
   let labelStyle = {
     countryColor: '#eef2f6', countryOpacity: 1, provColor: '#ffe6a8', provOpacity: 1, cityColor: '#cdd6e0', cityOpacity: 1,
-    oceanColor: '#96c3e6', oceanOpacity: 1, seaColor: '#86b0d4', seaOpacity: 1
+    oceanColor: '#96c3e6', oceanOpacity: 1, seaColor: '#86b0d4', seaOpacity: 1,
+    countryBold: false, provBold: false, cityBold: false, oceanBold: false, seaBold: false   // 五档各自的字重（与 3D 同步；2D 逐次画字现取，不必重烘）
   }
   // 注记套边：颜色与粗细都按【当前底色】现算（见 ../labelHalo.js）。陆上的注记按陆地基调、
   // 大洋名按海色 —— 那是两个独立设置项，可以一浅一深。开了真彩影像则一律退回恒定近黑。
@@ -262,10 +265,10 @@ export function createFlatCoverage(canvas) {
   const markCfg = {
     ptShape: 'circle', ptColor: '#ffd24a', ptOpacity: 1, ptDot: 3.5, ptEdge: 0.18, ptEdgeColor: '#ffffff',
     ptIdx: 16, idxFill: '#ffd24a', idxFillOpacity: 0.62, idxRing: '#ffffff', idxInk: '#1b1205',
-    ptFont: 14, ptLabelColor: '#ffffff', ptLabelOpacity: 1, ptLabelPos: 'up',
-    stOpacity: 1, stIcon: 16, stFont: 17, stLabelColor: '#ffffff', stLabelOpacity: 1, stLabelPos: 'down',
+    ptFont: 14, ptLabelColor: '#ffffff', ptLabelOpacity: 1, ptLabelPos: 'up', ptBold: false,
+    stOpacity: 1, stIcon: 16, stFont: 17, stLabelColor: '#ffffff', stLabelOpacity: 1, stLabelPos: 'down', stBold: false,
     tjWidth: 2.2, tjOpacity: 0.95, tjDash: 'solid', tjDot: 4, tjIconOn: true, tjIconPx: 26,
-    tjNameOn: false, tjNameFont: 13, tjNameColor: '#ffffff'
+    tjNameOn: false, tjNameFont: 13, tjNameColor: '#ffffff', tjNameBold: false
   }
   const PT_DOT_K = 18 / 32 * 2.2     // 点标记：滑块值 → 视觉直径（沿用 3D 圆点精灵的占比换算，两视图同大小）
   // 与 3D 球体标记观感对齐：3D 的文字/圆点精灵都含画布留白（makeCovLabel 字号50→画布高66；dot 直径18的圆居中于32画布），
@@ -2002,7 +2005,12 @@ export function createFlatCoverage(canvas) {
     }
     return { type: 'MultiPolygon', coordinates: polys }
   }
-  const segsToGeo = (grp) => asLines((grp.segs || []).map((sg) => [[sg[0][0], sg[0][1]], [sg[1][0], sg[1][1]]]))
+  // 一档的线段 → 连通链（stitchLoops，端点量化匹配），缓存在组对象上：烘 Path2D / 导出回放 / 投影档切割三处共用一份。
+  // ★ 每链一个子路径，不再每段一个：55 档的单波束有 11 万条线段，每段一个两点子路径 × 两个圆帽是慢路描边的大头
+  //   （设备线宽 ≥ 1 px 时 Skia 走完整描边器，实测 130～170 ms/帧；拼成几百条折线后 54～82 ms）。
+  //   圆角接头与逐段圆帽的并集是同一个形状，画面不变；线宽 < 1 设备 px 的 hairline 快路两种烘法都是 10 ms 上下。
+  const chainsOf = (grp) => { if (!grp._chains) grp._chains = stitchLoops(grp.segs || []); return grp._chains }
+  const chainsToGeo = (grp) => asLines(chainsOf(grp).map((ch) => ch.map((p) => [p[0], p[1]])))
   // 每档线型（SATSOFT Line Style）：花样复用边界线那张表（DASH_PX，屏上 px），按线宽等比放大，
   // 再除以 kk 折回世界坐标 —— 与线宽同款，缩放时屏上疏密不变。
   const dashOf = (style, w, kk) => { const p = DASH_PX[style]; return p ? p.map((x) => x * Math.max(0.6, w) / 1.2 / kk) : null }
@@ -2032,17 +2040,21 @@ export function createFlatCoverage(canvas) {
   }
   // 等值线：与填充同策略——每档一条「世界坐标」Path2D（x=lon-LON0, y=90-lat），仅在 setField/patchField 时烘一次。
   // draw() 随 pan/zoom 只用 setTransform 平移缩放矢量描边（每帧零路径构建），±360 环绕在 drawField 内按视口裁剪。
-  // 段两端就近解缠（跨 ±180° 不被直线横扫全图）。线宽在描边时 /kk 保持恒定屏幕 px。
+  // 链上逐点就近解缠（跨 ±180° 不被直线横扫全图）。线宽在描边时 /kk 保持恒定屏幕 px。
   function buildSegPaths(segGroups) {
     if (!PJ.identity) return segGroups.map((grp) => ({
       color: grp.color || 'rgba(255,255,255,0.9)', width: grp.width || 1.2, dash: grp.dash || null,
-      path: PJ.path(segsToGeo(grp), new Path2D())
+      path: PJ.path(chainsToGeo(grp), new Path2D())
     }))
     return segGroups.map((grp) => {
       const path = new Path2D()
-      for (const sg of (grp.segs || [])) {
-        let a = sg[0][0], b = sg[1][0]; while (b - a > 180) b -= 360; while (b - a < -180) b += 360
-        path.moveTo(a - LON0, 90 - sg[0][1]); path.lineTo(b - LON0, 90 - sg[1][1])
+      for (const ch of chainsOf(grp)) {
+        let prev = ch[0][0]
+        path.moveTo(prev - LON0, 90 - ch[0][1])
+        for (let i = 1; i < ch.length; i++) {
+          let lo = ch[i][0]; while (lo - prev > 180) lo -= 360; while (lo - prev < -180) lo += 360
+          path.lineTo(lo - LON0, 90 - ch[i][1]); prev = lo
+        }
       }
       return { color: grp.color || 'rgba(255,255,255,0.9)', width: grp.width || 1.2, dash: grp.dash || null, path }
     })
@@ -2062,8 +2074,12 @@ export function createFlatCoverage(canvas) {
   }
   function traceSegGroup(grp) {
     ctx.beginPath()
-    if (!PJ.identity) { PJ.path(segsToGeo(grp), ctx); return }
-    for (const sg of (grp.segs || [])) { let a = sg[0][0], b = sg[1][0]; while (b - a > 180) b -= 360; while (b - a < -180) b += 360; ctx.moveTo(a - LON0, 90 - sg[0][1]); ctx.lineTo(b - LON0, 90 - sg[1][1]) }
+    if (!PJ.identity) { PJ.path(chainsToGeo(grp), ctx); return }
+    for (const ch of chainsOf(grp)) {
+      let prev = ch[0][0]
+      ctx.moveTo(prev - LON0, 90 - ch[0][1])
+      for (let i = 1; i < ch.length; i++) { let lo = ch[i][0]; while (lo - prev > 180) lo -= 360; while (lo - prev < -180) lo += 360; ctx.lineTo(lo - LON0, 90 - ch[i][1]); prev = lo }
+    }
   }
 
   // 夜区填充 + 晨昏分界线。世界坐标 x=lon−LON0、y=90−lat，与覆盖层同一套 setTransform + ±360 环绕。
@@ -2239,7 +2255,7 @@ export function createFlatCoverage(canvas) {
     }
     for (const g of envContours) {
       if (!g.text) continue
-      for (const an of (g.labels || [])) drawText(g.text, an.lon, an.lat, Math.max(7, 11 * (k() / 13.1)), g.labelColor || '#ffffff', { rot: an.a, strokeScale: CASE_K * 1.15 })
+      for (const an of (g.labels || [])) drawText(g.text, an.lon, an.lat, Math.max(7, 11 * (k() / 13.1)), g.labelColor || '#ffffff', { rot: an.a, strokeScale: CASE_K * 1.15, bold: !!g.bold })
     }
   }
   function drawCovGrid() {
@@ -2475,22 +2491,22 @@ export function createFlatCoverage(canvas) {
     const slots = newSlots()
     // 岛链名第一批摆位：这一层是用户特意打开的，不该被底图地名挤掉
     if (chainCfg.on && chainCfg.name !== 'off') {
-      drawLabelLayer(chainLbl, slots, (l) => (chainCfg.name === 'en' ? l.en : l.zh), chainCfg.nameSize || 1, zf, chainCfg.color, { ...water, opacity: chainCfg.opacity })
+      drawLabelLayer(chainLbl, slots, (l) => (chainCfg.name === 'en' ? l.en : l.zh), chainCfg.nameSize || 1, zf, chainCfg.color, { ...water, opacity: chainCfg.opacity, bold: !!chainCfg.nameBold })
     }
     if (oceanMode !== 'off') {
-      drawLabelLayer(oceanLbl, slots, (l) => (oceanMode === 'en' ? l.en : l.zh), sizes.oceanScale || 1, zf, labelStyle.oceanColor, { ...water, opacity: labelStyle.oceanOpacity })
+      drawLabelLayer(oceanLbl, slots, (l) => (oceanMode === 'en' ? l.en : l.zh), sizes.oceanScale || 1, zf, labelStyle.oceanColor, { ...water, opacity: labelStyle.oceanOpacity, bold: !!labelStyle.oceanBold })
     }
     if (nameMode !== 'off') {
-      drawLabelLayer(clabels, slots, (l) => (nameMode === 'en' ? l.en : l.zh), ns, zf, labelStyle.countryColor, { opacity: labelStyle.countryOpacity })
+      drawLabelLayer(clabels, slots, (l) => (nameMode === 'en' ? l.en : l.zh), ns, zf, labelStyle.countryColor, { opacity: labelStyle.countryOpacity, bold: !!labelStyle.countryBold })
     }
     if (seaMode !== 'off') {
-      drawLabelLayer(seaLbl, slots, (l) => (seaMode === 'en' ? l.en : l.zh), sizes.seaScale || 1, zf, labelStyle.seaColor, { ...water, opacity: labelStyle.seaOpacity })
+      drawLabelLayer(seaLbl, slots, (l) => (seaMode === 'en' ? l.en : l.zh), sizes.seaScale || 1, zf, labelStyle.seaColor, { ...water, opacity: labelStyle.seaOpacity, bold: !!labelStyle.seaBold })
     }
     if (provVisible && prov) {
-      drawLabelLayer(prov.labels, slots, (l) => l.name, sizes.provScale || 1, zf, labelStyle.provColor, { strokeScale: CASE_K_P, strokeMin: CASE_MIN_P, opacity: labelStyle.provOpacity })
+      drawLabelLayer(prov.labels, slots, (l) => l.name, sizes.provScale || 1, zf, labelStyle.provColor, { strokeScale: CASE_K_P, strokeMin: CASE_MIN_P, opacity: labelStyle.provOpacity, bold: !!labelStyle.provBold })
     }
     if (cityVisible && city) {   // 二级最后摆：一级不在场的地方它才有位子
-      drawLabelLayer(city.labels, slots, (l) => l.name, sizes.cityScale || 1, zf, labelStyle.cityColor, { strokeScale: CASE_K_C, strokeMin: CASE_MIN_C, opacity: labelStyle.cityOpacity })
+      drawLabelLayer(city.labels, slots, (l) => l.name, sizes.cityScale || 1, zf, labelStyle.cityColor, { strokeScale: CASE_K_C, strokeMin: CASE_MIN_C, opacity: labelStyle.cityOpacity, bold: !!labelStyle.cityBold })
     }
     // ★ 航迹层压在【地名之上】：制图分工是「面在文字下、线/点在文字上」——
     //   填充面盖住文字是整片消失，细线穿过文字只吃掉几个像素、字还认得出；反过来一个带套边的地名
@@ -2500,7 +2516,7 @@ export function createFlatCoverage(canvas) {
     drawTrajLayer(iz, ST_ICON_K)
     drawCityBoxes(iz)
     if (geom) {   // GXT 覆盖图标签（波束名/数值）：克制版联动 iz
-      for (const l of (geom.labels || [])) drawText(l.text, l.lon, l.lat, Math.round((l.hpx || 0.03) * 533 * iz), l.color || '#fff')
+      for (const l of (geom.labels || [])) drawText(l.text, l.lon, l.lat, Math.round((l.hpx || 0.03) * 533 * iz), l.color || '#fff', { bold: !!l.bold })
     }
     // 坐标在圆点上方、仰角在下方：与 3D 侧 setMarkers 的 sprite center.y（-0.35 / 1.35）同口径。
     // 换算：sprite 屏幕高 H = pf / MK_FONT_K，字在其中垂直居中，center.y = c 时字心距锚点 (0.5 - c)·H；
@@ -2520,11 +2536,11 @@ export function createFlatCoverage(canvas) {
       const dU = Math.max(pf * MK_UP, eUp + pf * 0.7), dD = Math.max(pf * 0.9 * MK_UP, eDn + pf * 0.63)
       if (p.label) {
         const a = labelAt(ptPos, ext, pf, ptPos === 'down' ? dD : dU, pf * 1.2, 0)
-        drawText(p.label, p.lon, p.lat, pf, markCfg.ptLabelColor, { dx: a.dx, dy: a.dy, align: a.align, opacity: markCfg.ptLabelOpacity })
+        drawText(p.label, p.lon, p.lat, pf, markCfg.ptLabelColor, { dx: a.dx, dy: a.dy, align: a.align, opacity: markCfg.ptLabelOpacity, bold: !!markCfg.ptBold })
       }
       if (p.el) {   // 聚焦卫星仰角：亮白，标记下方（坐标也在下方时让到第二行）
         const a = labelAt('down', ext, pf * 0.9, dD, pf * 1.2, (ptPos === 'down' && p.label) ? 1 : 0)
-        drawText(p.el, p.lon, p.lat, pf * 0.9, '#ffffff', { dx: a.dx, dy: a.dy })
+        drawText(p.el, p.lon, p.lat, pf * 0.9, '#ffffff', { dx: a.dx, dy: a.dy, bold: !!markCfg.ptBold })
       }
     }
     for (const s of mk.stations) {
@@ -2535,11 +2551,11 @@ export function createFlatCoverage(canvas) {
       const gapD = ext.down + sf * 0.5 + 0.5 * iz, gapU = ext.up + sf * 0.5 + 0.5 * iz, step = sf + 3 * iz
       if (s.name) {
         const a = labelAt(stPos, ext, sf, stPos === 'up' ? gapU : gapD, step, 0)
-        drawText(s.name, s.lon, s.lat, sf, markCfg.stLabelColor, { dx: a.dx, dy: a.dy, align: a.align, opacity: markCfg.stLabelOpacity })
+        drawText(s.name, s.lon, s.lat, sf, markCfg.stLabelColor, { dx: a.dx, dy: a.dy, align: a.align, opacity: markCfg.stLabelOpacity, bold: !!markCfg.stBold })
       }
       if (s.el) {   // 聚焦卫星仰角：亮白，恒在名称之下
         const a = labelAt('down', ext, sf * 0.9, gapD, step, (stPos === 'down' && s.name) ? 1 : 0)
-        drawText(s.el, s.lon, s.lat, sf * 0.9, '#ffffff', { dx: a.dx, dy: a.dy })
+        drawText(s.el, s.lon, s.lat, sf * 0.9, '#ffffff', { dx: a.dx, dy: a.dy, bold: !!markCfg.stBold })
       }
     }
     // 卫星 / 仰角线独立图层：等仰角线 + 卫星图标 + 名称（在覆盖/标记之上、聚焦图标之下）
@@ -2558,14 +2574,14 @@ export function createFlatCoverage(canvas) {
         const lx2 = PX(l.lon, l.lat), ly2 = PY(l.lat, l.lon)
         const mw = px * (String(l.text == null ? '' : l.text).length * 0.4 + 1)
         if (lx2 < -mw || lx2 > cw + mw || ly2 < -px || ly2 > ch + px) continue   // 视口外剔除（含文字宽裕量）
-        drawText(l.text, l.lon, l.lat, px, l.color || '#fff')
+        drawText(l.text, l.lon, l.lat, px, l.color || '#fff', { bold: !!l.bold })
       }
       for (const s of (satLayer.sats || [])) { if (s.lon == null || s.lat == null || s.iconShow === false) continue; drawSatIcon(s.lon, s.lat, (s.iconSize || sizes.satIcon || 30) * mz * SAT_ICON_K, hex(s.color != null ? s.color : 0xffd27a)) }   // 颜色/大小随各星设置；图标按 mz 联动，与卫星名标签同率缩放；iconShow 单独控制显隐
       for (const s of (satLayer.sats || [])) {
         if (!s.name || s.lon == null || s.lat == null || s.labelShow === false) continue
         const ls = (s.labelSize || 9) * mz
         // 名称紧贴图标：间隙=0，只留图标半高的偏移（无图标时名称直接锚在星位置）
-        drawText(s.name, s.lon, s.lat, ls, hex(s.color != null ? s.color : 0xffd27a), { dy: -(s.iconShow !== false ? (s.iconSize || sizes.satIcon || 30) * mz * SAT_ICON_K * 0.5 : 0) })
+        drawText(s.name, s.lon, s.lat, ls, hex(s.color != null ? s.color : 0xffd27a), { dy: -(s.iconShow !== false ? (s.iconSize || sizes.satIcon || 30) * mz * SAT_ICON_K * 0.5 : 0), bold: !!s.labelBold })
       }
     }
     ctx.restore()
@@ -2896,7 +2912,7 @@ export function createFlatCoverage(canvas) {
       for (const t of mk.trajectories) {
         const tp = t.pts || []; if (!tp.length || !t.name) continue
         const hd = tp[tp.length - 1]
-        drawText(t.name, hd.lon, hd.lat, nf, markCfg.tjNameColor, { dy: -(vi * 0.5 + nf * 0.7) })
+        drawText(t.name, hd.lon, hd.lat, nf, markCfg.tjNameColor, { dy: -(vi * 0.5 + nf * 0.7), bold: !!markCfg.tjNameBold })
       }
     }
   }
@@ -2927,7 +2943,7 @@ export function createFlatCoverage(canvas) {
         }
       }
       if (L.labelOn !== false && L.labelPt > 0) {
-        const pf = L.labelPt * 4 / 3 * iz * MK_FONT_K, al = L.labelAlign || 'right'
+        const pf = L.labelPt * 4 / 3 * iz * MK_FONT_K, al = L.labelAlign || 'right', bold = !!L.labelBold
         const lim = 90 * kk                      // 跨接缝被甩到另一头的顶点不进包围盒（一座城市的框跨不过 90°）
         for (const it of items) {
           if (!it.text) continue
@@ -2943,10 +2959,10 @@ export function createFlatCoverage(canvas) {
             }
           }
           // 左右：贴边、竖直对齐框心；上下：贴边、水平对齐框心（textBaseline 是 middle，再让开半个字高）
-          if (al === 'left') drawText(it.text, it.lon, it.lat, pf, color, { sx: x0 - CB_GAP, sy: cy, align: 'right' })
-          else if (al === 'above') drawText(it.text, it.lon, it.lat, pf, color, { sx: cx, sy: y0 - CB_GAP - pf * 0.5 })
-          else if (al === 'below') drawText(it.text, it.lon, it.lat, pf, color, { sx: cx, sy: y1 + CB_GAP + pf * 0.5 })
-          else drawText(it.text, it.lon, it.lat, pf, color, { sx: x1 + CB_GAP, sy: cy, align: 'left' })
+          if (al === 'left') drawText(it.text, it.lon, it.lat, pf, color, { sx: x0 - CB_GAP, sy: cy, align: 'right', bold })
+          else if (al === 'above') drawText(it.text, it.lon, it.lat, pf, color, { sx: cx, sy: y0 - CB_GAP - pf * 0.5, bold })
+          else if (al === 'below') drawText(it.text, it.lon, it.lat, pf, color, { sx: cx, sy: y1 + CB_GAP + pf * 0.5, bold })
+          else drawText(it.text, it.lon, it.lat, pf, color, { sx: x1 + CB_GAP, sy: cy, align: 'left', bold })
         }
       }
     }
@@ -2968,9 +2984,13 @@ export function createFlatCoverage(canvas) {
       if (focusCfg.trkOn && g.track && g.track.length > 1) {
         ctx.globalAlpha = sa * Math.max(0, Math.min(1, focusCfg.trkOpacity))
         const w = Math.max(0.1, focusCfg.trkWidth), dash = DASH_2D[focusCfg.trkDash] || null
-        // 轨迹面：描的是带的两条边缘（左缘 / 右缘），不再描中线
-        if (focusCfg.trkMode === 'swath' && g.swL && g.swL.length > 1) { drawPolyline(g.swL, focusCfg.trkColor, w, false, dash); drawPolyline(g.swR, focusCfg.trkColor, w, false, dash) }
-        else drawPolyline(g.track, focusCfg.trkColor, w, false, dash)
+        // 轨迹面：描的是带的两条边缘（左缘 / 右缘，按平移段切开的折线组），不再描中线；
+        // 整轨打转（GEO）且覆盖圈层关着时描圆盘轮廓（开着就与覆盖圈重合，不描）
+        if (focusCfg.trkMode === 'swath' && g.swath) {
+          if (g.swL) for (const pl of g.swL) if (pl && pl.length > 1) drawPolyline(pl, focusCfg.trkColor, w, false, dash)
+          if (g.swR) for (const pl of g.swR) if (pl && pl.length > 1) drawPolyline(pl, focusCfg.trkColor, w, false, dash)
+          if (g.swOutline && g.swRings) for (const ring of g.swRings) if (ring && ring.length > 2) drawPolyline(ring, focusCfg.trkColor, w, false, dash)
+        } else drawPolyline(g.track, focusCfg.trkColor, w, false, dash)
       }
     }
     ctx.globalAlpha = sa
@@ -2981,24 +3001,39 @@ export function createFlatCoverage(canvas) {
   //   绕极判据与 drawFocusFills 同：解缠后首尾经度差满一圈，补两点收到极点边上。
   // 横向断面只取到 8 段（步幅抽稀）：断面点在纬线图上只为极区拓扑与曲率服务，GEO 那几十段照搬是白画；
   // 屏幕外的切片（含 ±360 副本）整片跳过。
+  // ★ 打转步（sw.skip[i]，见 focusSwath.swathLayout）不围切片，该段由圆盘环（g.swRings）补上，进同一条路径一次 fill。
+  // ★ 覆盖圈填充开着时带面不叠到覆盖圈上（覆盖圈为准，与 3D 端模板缓冲同口径）：先按每个覆盖圈 evenodd 裁掉再填。
+  //   svgcanvas 不认 evenodd 入参（见文件头），矢量导出不裁；裁剪成本按圈走，聚焦全部时圈数超 64 不裁。
   function drawFocusSwaths() {
     if (!focusCfg.trkOn || focusCfg.trkMode !== 'swath' || !(focusCfg.trkFillOpacity > 0)) return
     const kk = k()
     ctx.save()
+    if (focusCfg.fpOn && focusCfg.fpFillOpacity > 0 && (!compat || rasterOut) && selGeomList.length <= 64) {
+      for (const g of selGeomList) {
+        const ring = g.footprint
+        if (!ring || ring.length < 3) continue
+        ctx.beginPath(); ctx.rect(-1, -1, cw + 2, ch + 2)
+        if (PJ.identity) { const r = fpWorldRing(ring, g.sub && Number.isFinite(g.sub.lat) ? g.sub.lat >= 0 : null); traceWorldRing(r.W, r.lo, r.hi, kk, false) }
+        else { _plK = kk; _plTx = tx; _plTy = ty; PJ.path(asPoly([ringCoords(ring)]), _plAdapt) }
+        ctx.clip('evenodd')
+      }
+    }
     ctx.fillStyle = focusCfg.trkFillColor; ctx.globalAlpha = Math.max(0, Math.min(1, focusCfg.trkFillOpacity))
     for (const g of selGeomList) {
       const sw = g.swath
       if (!sw || !(sw.K >= 1) || !sw.ll) continue
       const m = sw.K + 1, n = Math.floor(sw.ll.length / (m * 2))
-      if (n < 2) continue
+      const rings = g.swRings || []
+      if (n < 2 && !rings.length) continue
       const step = Math.max(1, Math.ceil(sw.K / 8)), idx = []
       for (let j = 0; j < sw.K; j += step) idx.push(j)
       idx.push(sw.K)
-      if (!PJ.identity) { fillSwathProj(sw.ll, m, n, idx); continue }
+      if (!PJ.identity) { fillSwathProj(sw.ll, m, n, idx, sw.skip, rings); continue }
       ctx.beginPath()
       let any = false
       const P = []
       for (let i = 0; i + 1 < n; i++) {
+        if (sw.skip && sw.skip[i]) continue
         const A = i * m * 2, B = (i + 1) * m * 2
         P.length = 0
         // 切片环（世界度坐标：x＝相对 LON0 归一后解缠的经度，y＝90−纬度）：前断面左→右，后断面右→左
@@ -3032,14 +3067,25 @@ export function createFlatCoverage(canvas) {
           ctx.closePath(); any = true
         }
       }
+      // 打转段的覆盖圆盘：与切片同一条路径、同一绕向（有向面积为正），并集一次 fill 不叠色
+      for (const ring of rings) {
+        if (!ring || ring.length < 3) continue
+        const r = fpWorldRing(ring, null), Wp = r.W
+        let area = 0
+        for (let q = 0, L = Wp.length; q < L; q++) { const b = Wp[(q + 1) % L]; area += Wp[q][0] * b[1] - b[0] * Wp[q][1] }
+        traceWorldRing(Wp, r.lo, r.hi, kk, area < 0); any = true
+      }
       if (any) ctx.fill()
     }
     ctx.restore()
   }
-  // 投影档：切片作 MultiPolygon 交给 d3（日界线切分与极点收口它自己做），每环按 orientRings 定向后一次 fill
-  function fillSwathProj(ll, m, n, idx) {
+  // 投影档：切片作 MultiPolygon 交给 d3（日界线切分与极点收口它自己做），每环按 orientRings 定向后一次 fill；
+  // 打转步（skip[i]）不围切片，圆盘环（rings）一并进 MultiPolygon
+  function fillSwathProj(ll, m, n, idx, skip, rings) {
     const polys = []
+    for (const ring of (rings || [])) if (ring && ring.length >= 3) polys.push(orientRings([ringCoords(ring)]))
     for (let i = 0; i + 1 < n; i++) {
+      if (skip && skip[i]) continue
       const A = i * m * 2, B = (i + 1) * m * 2, ring = []
       let bad = false
       for (let q = 0; q < idx.length && !bad; q++) { const o = A + idx[q] * 2; if (!Number.isFinite(ll[o]) || !Number.isFinite(ll[o + 1])) bad = true; else ring.push([ll[o + 1], ll[o]]) }
@@ -3057,6 +3103,43 @@ export function createFlatCoverage(canvas) {
   // 覆盖圈填充（与 Polygon 区域填充同一层band：画在 GRD 覆盖场之前）。世界度坐标 + ±360 环绕副本，
   // 与 drawSatFills 同策略；★足迹可以套住极点（极轨星过极区就是），此时解缠后经度跨满 360° 且首尾不闭合
   //   —— 必须补两点收到极点边上，否则 canvas 自动收口成一条横穿地图的直边、填出一块假区域。
+  // 覆盖圈（{lat,lon} 环）→ 世界度多边形 W=[[wx, y]...]（wx＝相对 LON0 解缠的经度、y＝90−纬度）与经度范围 lo/hi。
+  // 绕极判据：解缠后首尾经度差满一圈（足迹环按方位等分生成，绕极时必然单调走满 360°）→ 补两点收到极点边上，
+  // 南北按 north（星下点在北半球）定，没给就按环的纬度均值。
+  function fpWorldRing(ring, north) {
+    const W = []
+    let prev = WXN(ring[0].lon), lo = prev, hi = prev, latSum = 0
+    W.push([prev, 90 - ring[0].lat]); latSum += ring[0].lat
+    for (let i = 1; i < ring.length; i++) {
+      let wx = WXN(ring[i].lon)
+      while (wx - prev > 180) wx -= 360
+      while (wx - prev < -180) wx += 360
+      if (wx < lo) lo = wx
+      if (wx > hi) hi = wx
+      W.push([wx, 90 - ring[i].lat]); prev = wx; latSum += ring[i].lat
+    }
+    if (Math.abs(W[W.length - 1][0] - W[0][0]) > 300) {
+      const py = (north != null ? north : latSum >= 0) ? 0 : 180   // y = 90 - lat
+      W.push([W[W.length - 1][0], py], [W[0][0], py])
+    }
+    return { W, lo, hi }
+  }
+  // 把世界度多边形的各 ±360 副本追加进【当前路径】（不 beginPath / 不 fill，调用方决定是填还是裁）；rev＝反向绕
+  function traceWorldRing(W, lo, hi, kk, rev) {
+    for (const s of wraps()) {
+      if (hi + s < 0 || lo + s > 360) continue   // 该副本完全在地图外 → 跳过
+      if (rev) { ctx.moveTo((W[W.length - 1][0] + s) * kk + tx, W[W.length - 1][1] * kk + ty); for (let i = W.length - 2; i >= 0; i--) ctx.lineTo((W[i][0] + s) * kk + tx, W[i][1] * kk + ty) }
+      else { ctx.moveTo((W[0][0] + s) * kk + tx, W[0][1] * kk + ty); for (let i = 1; i < W.length; i++) ctx.lineTo((W[i][0] + s) * kk + tx, W[i][1] * kk + ty) }
+      ctx.closePath()
+    }
+  }
+  // {lat,lon} 环 → 闭合的 GeoJSON 坐标环 [[lon, lat]...]
+  function ringCoords(ring) {
+    const co = new Array(ring.length + 1)
+    for (let i = 0; i < ring.length; i++) co[i] = [ring[i].lon, ring[i].lat]
+    co[ring.length] = co[0]
+    return co
+  }
   function drawFocusFills() {
     if (!focusCfg.fpOn || !(focusCfg.fpFillOpacity > 0)) return
     const kk = k()
@@ -3066,30 +3149,8 @@ export function createFlatCoverage(canvas) {
       const ring = g.footprint
       if (!ring || ring.length < 3) continue
       if (!PJ.identity) { fillRingProj(ring, focusCfg.fpFillColor, Math.max(0, Math.min(1, focusCfg.fpFillOpacity))); continue }
-      const W = []
-      let prev = WXN(ring[0].lon), lo = prev, hi = prev, latSum = 0
-      W.push([prev, 90 - ring[0].lat]); latSum += ring[0].lat
-      for (let i = 1; i < ring.length; i++) {
-        let wx = WXN(ring[i].lon)
-        while (wx - prev > 180) wx -= 360
-        while (wx - prev < -180) wx += 360
-        if (wx < lo) lo = wx
-        if (wx > hi) hi = wx
-        W.push([wx, 90 - ring[i].lat]); prev = wx; latSum += ring[i].lat
-      }
-      // 绕极判据：解缠后首尾经度差满一圈（足迹环按方位等分生成，绕极时必然单调走满 360°）
-      if (Math.abs(W[W.length - 1][0] - W[0][0]) > 300) {
-        const north = g.sub && Number.isFinite(g.sub.lat) ? g.sub.lat >= 0 : latSum >= 0
-        const py = north ? 0 : 180   // y = 90 - lat
-        W.push([W[W.length - 1][0], py], [W[0][0], py])
-      }
-      for (const s of wraps()) {
-        if (hi + s < 0 || lo + s > 360) continue   // 该副本完全在地图外 → 跳过
-        ctx.beginPath()
-        ctx.moveTo((W[0][0] + s) * kk + tx, W[0][1] * kk + ty)
-        for (let i = 1; i < W.length; i++) ctx.lineTo((W[i][0] + s) * kk + tx, W[i][1] * kk + ty)
-        ctx.closePath(); ctx.fill()
-      }
+      const r = fpWorldRing(ring, g.sub && Number.isFinite(g.sub.lat) ? g.sub.lat >= 0 : null)
+      ctx.beginPath(); traceWorldRing(r.W, r.lo, r.hi, kk, false); ctx.fill()
     }
     ctx.restore()
   }
@@ -3639,6 +3700,21 @@ export function createFlatCoverage(canvas) {
     },
     setFieldAlpha(a) { fieldAlpha = a; requestDraw() },   // 仅覆盖层透明度，静态快照不变
     setFieldLineAlpha(a) { fieldLineAlpha = a; requestDraw() },   // 等值线透明度（同上：不动静态快照，也不重烘 Path2D）
+    // 线宽 / 线型（样式热路径，几何层 restyleActive 调）：只改缓存的 segGroups / segPaths 的 width 与 dash，
+    // Path2D 是纯几何不重烘。ids=要改的层 id 列表；byIdx=档下标 → { width, dash }（档下标在 segGroup.idx 上，没带的组不动）。
+    restyleFieldLines(ids, byIdx) {
+      const want = ids ? new Set(ids) : null
+      for (const L of fieldLayers) {
+        if (want && !want.has(L.id)) continue
+        const groups = L.segGroups || [], paths = L.segPaths || []
+        for (let i = 0; i < groups.length; i++) {
+          const st = groups[i].idx != null ? byIdx[groups[i].idx] : null; if (!st) continue
+          groups[i].width = st.width; groups[i].dash = st.dash
+          if (paths[i]) { paths[i].width = st.width || 1.2; paths[i].dash = st.dash || null }
+        }
+      }
+      requestDraw()
+    },
     // ---- 分带填充的后端（见文件头 glField 那段）----
     // 几何层每次组装图层前问一次：'gl' → 只出等值线 + fieldMesh；'paths' → 出老的 fillBands。不缓存。
     // nLevels 是本次的档数（超过 GL_MAX_LEVELS 退回 CPU 路）。
@@ -3697,11 +3773,11 @@ export function createFlatCoverage(canvas) {
       oceanLbl = waterLabels('ocean', waterOff); seaLbl = waterLabels('sea', waterOff)
       invalidateStatic(); requestDraw()
     },
-    // 岛链：{ on, off, color, width, opacity, dash, name, nameSize } 一次给，只改给到的那几项
+    // 岛链：{ on, off, color, width, opacity, dash, name, nameSize, nameBold } 一次给，只改给到的那几项
     setChains(o) {
       if (!o) return
       if (o.off) { chainOff = { ...o.off }; chains = chainList(chainOff); chainLbl = chainLbls() }
-      for (const k of ['on', 'color', 'width', 'opacity', 'dash', 'name', 'nameSize']) if (o[k] != null) chainCfg[k] = o[k]
+      for (const k of ['on', 'color', 'width', 'opacity', 'dash', 'name', 'nameSize', 'nameBold']) if (o[k] != null) chainCfg[k] = o[k]
       invalidateStatic(); requestDraw()
     },
     setProvinces,

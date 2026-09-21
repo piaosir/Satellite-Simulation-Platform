@@ -1,15 +1,18 @@
 // 真实 GRD 上的覆盖分析回归（本机有文件才跑，否则整份跳过）。四组统计来自 .covharness 的离线复现台：
 //   ① 拼链：开口链恰一条折线（链数 = 闭合环数 + 度 1 端点数 / 2），碎片数对老实现的降幅
-//   ② 转角：折线在顶点处的转角分布（> 8° 占比 = 「放大后像多边形」的量化口径）
-//   ③ 贴合：线顶点是否落在填充边界上（近地平跨地平格子）
-//   ④ 与 SATSOFT（Whittaker 密度 5 重建 + 细网格 marching squares）线的距离
-// 口径与阈值出自《覆盖分析五项修复与等值线终极优化任务书_2026-09-21.md》，数字见各组打印。
+//   ② 转角：折线在顶点处的转角分布（> 8° 占比 = 「放大后像多边形」的量化口径）—— 只报告
+//   ③ 贴合：线顶点是否落在填充边界上（近地平跨地平格子）—— 只报告；断言的是「线不随填充的地平裁法变」
+//   ④ 与 SATSOFT 线的距离：Whittaker Interpolation Density = 1（关），即原网格上的线性 marching squares
+//   ⑤ 密度 5：本平台派生波束（whittaker.js 周期 sinc 上采样）与 DFT 零填充复现逐点一致；细网格线与 SATSOFT 同密度线的距离
+// 2026-09-22 等值线 / 填充画法回退到 v1.4.11（弦中点 P–M–Q、地平走 clipToHull）后，②③ 的弧点 / 贴合阈值失去对象，
+// 改为报告；④ 的对比基准按用户定的密度 1。口径出自《覆盖分析五项修复与等值线终极优化任务书_2026-09-21.md》。
 // 运行：npm test
 import assert from 'node:assert'
 import { readFileSync, existsSync } from 'node:fs'
 import { parseGrd } from '../../../src/viz/grd/parse.js'
 import { fieldDb, bandGeometry, buildEdgeRefine, peakRefDb, stitchLoops, antennaBasis, projectGrid, projectRefine } from '../../../src/viz/grd/coverage.js'
 import { geodeticToEcef, elevationDeg, isoElevationContourAt } from '../../../src/viz/wgs84.js'
+import { whittakerBeam } from '../../../src/viz/grd/whittaker.js'
 
 let pass = 0
 const ok = (c, m) => { assert.ok(c, m); pass++ }
@@ -112,7 +115,7 @@ function loadCase(f) {
   }
   const SAT_LON = 130, SAT_ALT = 35786
   console.log('  ③ 贴合：线顶点不在填充顶点集的个数（地平端点 / 内部）与到填充边的距离')
-  let worstOff = 0, worstGap = 0, vertsAll = 0
+  let worstOff = 0, worstGap = 0, vertsAll = 0, totHull = 0, totNoHull = 0
   for (const f of have) {
     const c = loadCase(f)
     const basis = antennaBasis(SAT_LON, SAT_LON, 0, 0, 0, SAT_ALT)
@@ -153,10 +156,11 @@ function loadCase(f) {
         }
       }
       console.log(`     ${f.tag} · ${name}：线顶点 ${tot}，不在填充顶点集 地平 ${offLimb} / 内部 ${offIn}，最大间隙 ${gapMax ? gapMax.toFixed(2) + ' km' : '—'}`)
-      vertsAll += tot; worstOff = Math.max(worstOff, offLimb + offIn); worstGap = Math.max(worstGap, gapMax)
+      vertsAll += tot; if (hull) totHull += tot; else totNoHull += tot
+      worstOff = Math.max(worstOff, offLimb + offIn); worstGap = Math.max(worstGap, gapMax)
     }
   }
-  ok(vertsAll > 1000 && worstOff === 0, `近地平：${vertsAll} 个线顶点全部落在填充多边形顶点上（最坏 ${worstOff} 个不在，最大间隙 ${worstGap.toFixed(2)} km）`)
+  ok(vertsAll > 1000 && totHull === totNoHull, `近地平：${vertsAll} 个线顶点，hull 路与无 hull 路的线同数（线不随填充的地平裁法变）；不在填充顶点集最坏 ${worstOff} 个、最大间隙 ${worstGap.toFixed(2)} km —— v1.4.11 画法的已知口径，只报告`)
 }
 
 // ============ ② 转角（对应任务书 §2）============
@@ -170,7 +174,7 @@ function loadCase(f) {
     return Math.acos(Math.max(-1, Math.min(1, (ax * bx + ay * by) / (na * nb)))) * 180 / Math.PI
   }
   const q = (a, f) => { if (!a.length) return NaN; const s = Float64Array.from(a).sort(); return s[Math.min(s.length - 1, Math.floor(f * s.length))] }
-  console.log('  ② 转角：档组 | 旧路(不细化) p95 / >8° | 现行(自适应弧点) p95 / >8° / 顶点')
+  console.log('  ② 转角：档组 | 旧路(不细化) p95 / >8° | 现行(弦中点 P–M–Q) p95 / >8° / 顶点')
   const GRP = [['峰附近 −1~−3 dB', -3.5, 0], ['中间档 −4~−10 dB', -10.5, -3.5], ['副瓣 −12~−20 dB', -99, -10.5]]
   let worstP95 = 0, worstGt8 = 0, better = 0, total = 0
   for (const f of have) {
@@ -192,15 +196,15 @@ function loadCase(f) {
       worstP95 = Math.max(worstP95, q(A, 0.95)); worstGt8 = Math.max(worstGt8, gA)
     })
   }
-  ok(total >= 6 && better === total, `每个档组的 > 8° 顶点占比都不高于旧路（${better} / ${total}）`)
-  ok(worstP95 <= 12 && worstGt8 <= 8, `最差档组：转角 p95 ${worstP95.toFixed(1)}° ≤ 12°、> 8° 占比 ${worstGt8.toFixed(1)}% ≤ 8%`)
+  ok(total >= 6, `转角分布只报告（画法已回退到 v1.4.11 的弦中点）：${total} 个档组，> 8° 占比不高于旧路的 ${better} 个，最差 p95 ${worstP95.toFixed(1)}°、> 8° 占比 ${worstGt8.toFixed(1)}%`)
 }
 
 // ============ ④ 与 SATSOFT 线的距离（对应任务书 §2.5 因素 C）============
-// 复现 SATSOFT §11.1：四个复场分量各自 FFT 零填充 ×5 的 Whittaker 重建 → RSS 功率 dB → 5 倍细网格线性 marching squares。
-// 与本平台线逐点比距离：剩余差全部来自插值核（sinc vs bicubic），与折线密度无关。只跑一份文件（重建 ~2 s）。
+// 复现 SATSOFT §11.1：Whittaker Interpolation Density = N 时四个复场分量各自 FFT 零填充 ×N 的 Whittaker 重建 → RSS 功率 dB
+// → N 倍细网格线性 marching squares。N = 1 即手册所说的「关」：SATSOFT 直接在原网格上做线性 marching squares，
+// 2026-08-22 用户实测该档与本平台一致，2026-09-22 定为对比基准。与本平台线逐点比距离。只跑一份文件。
 {
-  const N5 = 5
+  const N5 = 1   // SATSOFT Whittaker Interpolation Density（1 = 关）
   // 实序列 → DFT → 零填充 → 逆变换（可分离直接求和；N 与网格尺寸无关）
   const whittaker2D = (x, NX, NY, N) => {
     const W = N * NX, H = N * NY
@@ -223,7 +227,7 @@ function loadCase(f) {
     const FY = freqs(NY), FX = freqs(NX)
     const Cr = new Float64Array(NX * H), Ci = new Float64Array(NX * H)
     const icy = new Float64Array(NY * H), isy = new Float64Array(NY * H)
-    for (let l = 0; l < NY; l++) for (let m = 0; m < H; m++) { const a = 2 * Math.PI * FY.f[l] * m / H; icy[l * H + m] = Math.cos(a) * FY.w[l]; isy[l * H + m] = Math.sin(a) * FY.w[l] * (FY.w[l] < 1 ? 0 : 1) }
+    for (let l = 0; l < NY; l++) for (let m = 0; m < H; m++) { const a = 2 * Math.PI * FY.f[l] * m / H; icy[l * H + m] = Math.cos(a); isy[l * H + m] = Math.sin(a) * (FY.w[l] < 1 ? 0 : 1) }
     for (let k = 0; k < NX; k++) for (let m = 0; m < H; m++) {
       let re = 0, im = 0
       for (let l = 0; l < NY; l++) { const br = Br[l * NX + k], bi = Bi[l * NX + k], cc = icy[l * H + m], ss = isy[l * H + m]; re += br * cc - bi * ss; im += br * ss + bi * cc }
@@ -231,7 +235,7 @@ function loadCase(f) {
     }
     const out = new Float32Array(W * H)
     const icx = new Float64Array(NX * W), isx = new Float64Array(NX * W)
-    for (let k = 0; k < NX; k++) for (let n2 = 0; n2 < W; n2++) { const a = 2 * Math.PI * FX.f[k] * n2 / W; icx[k * W + n2] = Math.cos(a) * FX.w[k]; isx[k * W + n2] = Math.sin(a) * FX.w[k] * (FX.w[k] < 1 ? 0 : 1) }
+    for (let k = 0; k < NX; k++) for (let n2 = 0; n2 < W; n2++) { const a = 2 * Math.PI * FX.f[k] * n2 / W; icx[k * W + n2] = Math.cos(a); isx[k * W + n2] = Math.sin(a) * (FX.w[k] < 1 ? 0 : 1) }
     for (let m = 0; m < H; m++) {
       const mb = m * NX, ob = m * W
       for (let n2 = 0; n2 < W; n2++) { let re = 0; for (let k = 0; k < NX; k++) re += Cr[mb + k] * icx[k * W + n2] - Ci[mb + k] * isx[k * W + n2]; out[ob + n2] = re / NX }
@@ -269,14 +273,18 @@ function loadCase(f) {
     const c = loadCase({ ...f, rels: [-1, -3, -6, -10] })
     const s = c.set, NX = c.NX, NY = c.NY, W = N5 * NX, H = N5 * NY
     const t0 = Date.now()
-    const f1r = whittaker2D(s.c1re, NX, NY, N5), f1i = whittaker2D(s.c1im, NX, NY, N5)
-    const f2r = whittaker2D(s.c2re, NX, NY, N5), f2i = whittaker2D(s.c2im, NX, NY, N5)
-    const dS = new Float32Array(W * H)
-    for (let i = 0; i < W * H; i++) { const P = f1r[i] * f1r[i] + f1i[i] * f1i[i] + f2r[i] * f2r[i] + f2i[i] * f2i[i]; dS[i] = P > 0 ? 10 * Math.log10(P) : NaN }
-    // 节点处 sinc 重建应逐点等于原场（插值型）
-    let nodeErr = 0
-    for (let r = 0; r < NY; r++) for (let cc = 0; cc < NX; cc++) { const v = c.field.db[r * NX + cc]; if (v === v) nodeErr = Math.max(nodeErr, Math.abs(dS[(r * N5) * W + cc * N5] - v)) }
-    ok(nodeErr < 1e-3, `Whittaker 密度 ${N5} 重建在网格节点上复现原场（最大 |Δ| ${nodeErr.toExponential(1)} dB）`)
+    let dS
+    if (N5 === 1) dS = c.field.db   // 密度 1 = 不重建：原网格节点上的 RSS 功率 dB 直接做 marching squares
+    else {
+      const f1r = whittaker2D(s.c1re, NX, NY, N5), f1i = whittaker2D(s.c1im, NX, NY, N5)
+      const f2r = whittaker2D(s.c2re, NX, NY, N5), f2i = whittaker2D(s.c2im, NX, NY, N5)
+      dS = new Float32Array(W * H)
+      for (let i = 0; i < W * H; i++) { const P = f1r[i] * f1r[i] + f1i[i] * f1i[i] + f2r[i] * f2r[i] + f2i[i] * f2i[i]; dS[i] = P > 0 ? 10 * Math.log10(P) : NaN }
+      // 节点处 sinc 重建应逐点等于原场（插值型）
+      let nodeErr = 0
+      for (let r = 0; r < NY; r++) for (let cc = 0; cc < NX; cc++) { const v = c.field.db[r * NX + cc]; if (v === v) nodeErr = Math.max(nodeErr, Math.abs(dS[(r * N5) * W + cc * N5] - v)) }
+      ok(nodeErr < 1e-3, `Whittaker 密度 ${N5} 重建在网格节点上复现原场（最大 |Δ| ${nodeErr.toExponential(1)} dB）`)
+    }
     const geo = bandGeometry(c.gridField, c.levels, false, null, null, 1, c.refine, null)
     const dAll = []
     for (let k = 0; k < c.levels.length; k++) {
@@ -307,6 +315,42 @@ function loadCase(f) {
     const p50 = qq(dAll, 0.5), p95 = qq(dAll, 0.95), mx = Math.max(...dAll)
     console.log(`  ④ 与 SATSOFT（Whittaker 密度 ${N5}）线的距离：${dAll.length} 个顶点 p50/p95/max = ${p50.toFixed(4)}/${p95.toFixed(4)}/${mx.toFixed(3)} 格（重建 ${((Date.now() - t0) / 1000).toFixed(1)} s）`)
     ok(dAll.length > 1000 && p50 <= 0.06 && p95 <= 0.35, `本平台线与 SATSOFT 线的距离 p50 ≤ 0.06 格、p95 ≤ 0.35 格（剩余差来自插值核 sinc vs bicubic）`)
+  }
+  // ============ ⑤ 密度 5（对应 2026-09-22「Whittaker 密度可调」）============
+  // 两边都是「复场周期 sinc 上采样 5 倍 → 细网格线性 marching」：本平台走派生波束 + 三角形线性（无细化表），
+  // 复现走 DFT 零填充 + 方格 marching squares，差别只剩同一方格内三角形线性与双线性的交点差 → 不超过一个细格（1/N 原格）。
+  if (f) {
+    const N = 5
+    const c = loadCase({ ...f, rels: [-1, -3, -6, -10] })
+    const b = whittakerBeam(c.beam, N), NX2 = b.grid.NX, NY2 = b.grid.NY
+    const fld = fieldDb({ P1: b.P1, P2: b.P2, NX: NX2, NY: NY2 }, null, { pol: 'RSS' })
+    const n2 = NX2 * NY2, lon2 = new Float32Array(n2), lat2 = new Float32Array(n2), vis2 = new Float32Array(n2).fill(1)
+    for (let r = 0; r < NY2; r++) for (let cc = 0; cc < NX2; cc++) { lon2[r * NX2 + cc] = cc / N; lat2[r * NX2 + cc] = r / N }   // 以原网格格为单位
+    const geo5 = bandGeometry({ lon: lon2, lat: lat2, vis: vis2, db: fld.db, NX: NX2, NY: NY2 }, c.levels, false, null, null, 1, null, null)
+    const s = c.set, NX = c.NX, NY = c.NY, W = N * NX, H = N * NY
+    const t5 = Date.now()
+    const f1r = whittaker2D(s.c1re, NX, NY, N), f1i = whittaker2D(s.c1im, NX, NY, N), f2r = whittaker2D(s.c2re, NX, NY, N), f2i = whittaker2D(s.c2im, NX, NY, N)
+    const dS = new Float32Array(W * H)
+    for (let i = 0; i < W * H; i++) { const P = f1r[i] * f1r[i] + f1i[i] * f1i[i] + f2r[i] * f2r[i] + f2i[i] * f2i[i]; dS[i] = P > 0 ? 10 * Math.log10(P) : NaN }
+    let up = 0
+    for (let r = 0; r < NY2; r++) for (let cc = 0; cc < NX2; cc++) { const a = fld.db[r * NX2 + cc], v = dS[r * W + cc]; if (a === a && v === v) up = Math.max(up, Math.abs(a - v)) }
+    ok(up < 1e-3, `密度 ${N}：whittakerBeam 的细网格 dB 与 DFT 零填充复现逐点一致（最大 |Δ| ${up.toExponential(1)} dB）`)
+    const dseg = (p, a, bb) => { const dx = bb[0] - a[0], dy = bb[1] - a[1], l2 = dx * dx + dy * dy; let t = l2 > 0 ? ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / l2 : 0; t = t < 0 ? 0 : t > 1 ? 1 : t; return Math.hypot(p[0] - a[0] - dx * t, p[1] - a[1] - dy * t) }
+    const d5 = []
+    for (let k = 0; k < c.levels.length; k++) {
+      const segS = marching(dS, W, H, c.levels[k]).map((sg) => [[sg[0][0] / N, sg[0][1] / N], [sg[1][0] / N, sg[1][1] / N]])
+      if (!segS.length) continue
+      const bucket = new Map(), put = (kk, i) => { let a = bucket.get(kk); if (!a) { a = []; bucket.set(kk, a) } a.push(i) }
+      segS.forEach((sg, i) => { const x0 = Math.floor(Math.min(sg[0][0], sg[1][0])), x1 = Math.floor(Math.max(sg[0][0], sg[1][0])), y0 = Math.floor(Math.min(sg[0][1], sg[1][1])), y1 = Math.floor(Math.max(sg[0][1], sg[1][1])); for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) put(x + ',' + y, i) })
+      for (const sg of geo5.lines[k]) for (const p of sg) {
+        const cx2 = Math.floor(p[0]), cy2 = Math.floor(p[1]); let best = Infinity
+        for (let rad = 1; rad <= 3 && !(best < rad - 0.5); rad++) for (let x = cx2 - rad; x <= cx2 + rad; x++) for (let y = cy2 - rad; y <= cy2 + rad; y++) { const a = bucket.get(x + ',' + y); if (!a) continue; for (const i of a) { const d = dseg(p, segS[i][0], segS[i][1]); if (d < best) best = d } }
+        if (best < Infinity) d5.push(best)
+      }
+    }
+    const q5 = (a, fr) => { const s2 = Float64Array.from(a).sort(); return s2[Math.min(s2.length - 1, Math.floor(fr * s2.length))] }
+    console.log(`  ⑤ 密度 ${N}：本平台细网格线 → SATSOFT 同密度线 ${d5.length} 个顶点 p50/p95/max = ${q5(d5, 0.5).toFixed(4)}/${q5(d5, 0.95).toFixed(4)}/${q5(d5, 1).toFixed(3)} 格（复现 ${((Date.now() - t5) / 1000).toFixed(1)} s）`)
+    ok(d5.length > 1000 && q5(d5, 0.95) <= 1 / N, `密度 ${N} 两边同一份上采样：线距离 p95 ≤ 1/N 格（三角形线性 vs 方格双线性的交点差不出一个细格）`)
   }
 }
 

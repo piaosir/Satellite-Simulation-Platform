@@ -364,6 +364,7 @@ const ptText = computed(() => { const o = opts.value; return o ? `Az ${Number(o.
           <div class="po-row"><label>类型</label><select v-model="opts.cityLabelType"><option value="city">城市名</option><option value="desig">代号</option></select></div>
           <div class="po-row"><label>位置</label><select v-model="opts.cityLabelAlign"><option value="right">右侧</option><option value="left">左侧</option><option value="above">上方</option><option value="below">下方</option></select></div>
           <div class="po-row"><label>字号</label><input class="ci" type="number" step="1" min="4" max="36" v-model.lazy.number="opts.cityLabelPt" /><span class="u">pt</span></div>
+          <div class="po-row"><label>字重</label><label class="po-chk"><input type="checkbox" v-model="opts.cityLabelBold" /><span>粗体</span></label></div>
         </section>
         <section class="po-card">
           <label class="po-ct po-chk"><input type="checkbox" v-model="opts.cityMarkOn" /><span>标记</span></label>

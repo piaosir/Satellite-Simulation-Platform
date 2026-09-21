@@ -244,7 +244,7 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
       const satShown = !node || node.labelShow !== false
       for (const bi of (st.beamsToPlot || [])) {
         const bm = ctx.beams.find((b) => b.bi === bi); if (!bm) continue
-        const beam = bm.beam, set = beam.grid
+        const beam = grd.beamAtDensity ? grd.beamAtDensity(key, bm.beam) : bm.beam, set = beam.grid   // Whittaker 密度 > 1 → 派生的细网格波束（与对地同一份）
         const pat = patternField(beam, st)
         // 热区盒【与星位无关】：只由方向图本身（pat.db，已按 pol/增益记忆化）和最低档电平定。
         // 播放时每拍逐波束全网格扫一遍纯属白做——94 波束 × 101×101 就是每帧近百万次比较。
@@ -292,7 +292,7 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
           if (!asc.length) continue
           const ascAbs = asc.map((x) => x.abs), stride = displayQuality.value.gridStride || 1
           // 交点细化（线 = 表）：与对地覆盖同一张表（edgeRefineFor 按波束缓存）；路损模式下场随斜距变，不细化
-          const refine = (st.pathLoss === 'none' && stride === 1) ? edgeRefineFor(beam, field, ascAbs, st.pol, st.gainOffset) : null
+          const refine = (st.pathLoss === 'none' && stride === 1 && !(beam._dens > 1)) ? edgeRefineFor(beam, field, ascAbs, st.pol, st.gainOffset) : null
           const geo = bandGeometry(
             { lon: gx, lat: gy, vis: sg.vis, db: field.db, NX: set.NX, NY: set.NY },
             ascAbs, st.fill, box, null, stride, refine
@@ -361,7 +361,7 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
       if (!asc.length) continue
       const hull = st.fill ? satHull(ctx.meta.satLon, ctx.meta.satLat || 0, ctx.meta.satAlt) : null
       const ascAbs = asc.map((x) => x.abs), stride = displayQuality.value.gridStride || 1
-      const refine = (st.pathLoss === 'none' && stride === 1) ? edgeRefineFor(beam, field, ascAbs, st.pol, st.gainOffset) : null
+      const refine = (st.pathLoss === 'none' && stride === 1 && !(beam._dens > 1)) ? edgeRefineFor(beam, field, ascAbs, st.pol, st.gainOffset) : null
       const pos = refine ? (beam._gpos = projectRefine(refine, set, igrid, basis, proj, beam._gpos)) : null   // 掠地格子的精确位置（随投影每拍重算）
       const geo = bandGeometry(
         { lon: proj.lon, lat: proj.lat, vis: proj.vis, db: field.db, NX: set.NX, NY: set.NY },
@@ -404,7 +404,7 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
     const st = grd.s
     return {
       alpha: st.alpha, lineAlpha: st.lineAlpha, showBore: st.showBore, boreSize: st.boreSize, boreColor: st.boreColor,
-      showName: st.showName, nameSize: st.nameSize, nameColor: st.nameColor,
+      showName: st.showName, nameSize: st.nameSize, nameColor: st.nameColor, fontBold: st.fontBold,
       showPeak: st.showPeak, peakSize: st.peakSize, peakColor: st.peakColor, showVal: st.showVal, valSize: st.valSize, valColor: st.valColor
     }
   }

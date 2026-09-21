@@ -84,7 +84,7 @@ function defaultOpts() {
     pointAz: 0, pointEl: 0, pointYaw: 0,
     beamSel: null,                                // 波束筛选：null=全部波束（默认，等同不筛选）；否则=选中的 bi 数组，仅这些波束进表
     // 城市设置（SATSOFT §4.2.2 Cities：Label / Marker），随本表的选项逐天线存
-    cityLabelOn: true, cityLabelType: 'city', cityLabelAlign: 'right', cityLabelPt: 8,   // 标签：显示 / 城市名或代号 / 摆位 / 字号(pt)
+    cityLabelOn: true, cityLabelType: 'city', cityLabelAlign: 'right', cityLabelPt: 8, cityLabelBold: false,   // 标签：显示 / 城市名或代号 / 摆位 / 字号(pt) / 粗体
     cityMarkOn: true, cityMarkType: 'rect', cityMarkColor: '#ff2a2a', cityMarkWidth: 1.2,  // 标记：显示 / 矩形或椭圆 / 颜色 / 线宽(px)
     // 地图上这张表的城市层（标记 + 标签）总开关：对地覆盖分析树里「性能指标表」行的眼睛。与表窗口开没开无关，
     // 关了两样都不画；只关其一仍走上面两个 *On。出厂关；不进「记住上次选择」模板（新天线的表恒从关起）。

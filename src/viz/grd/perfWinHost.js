@@ -178,7 +178,7 @@ export function createPerfWinHost(D) {
         }
         const items = cityBoxItems(ctx.basis, D.perf.stationsOf(key), o, (s) => (o.cityLabelOn === false ? '' : cityLabelText(s, o.cityLabelType)))
         if (!items.length) continue
-        layers.push({ key, color: o.cityMarkColor || '#ff2a2a', width: Number(o.cityMarkWidth) || 1.2, markOn: o.cityMarkOn !== false, labelOn: o.cityLabelOn !== false, labelPt: Number(o.cityLabelPt) || 8, labelAlign: o.cityLabelAlign || 'right', items })
+        layers.push({ key, color: o.cityMarkColor || '#ff2a2a', width: Number(o.cityMarkWidth) || 1.2, markOn: o.cityMarkOn !== false, labelOn: o.cityLabelOn !== false, labelPt: Number(o.cityLabelPt) || 8, labelAlign: o.cityLabelAlign || 'right', labelBold: !!o.cityLabelBold, items })
       }
       const sc = D.scene(), fl = D.flat()
       if (sc && sc.setCityBoxes) sc.setCityBoxes(layers)

@@ -40,7 +40,7 @@ const DEFAULT_P = {
   autoSpacing: true, spacing: 3,                 // 蜂窝布满角间距（Auto = 激活设置 θx → 交叠 −3.01 dB）
   snapTangent: true,                             // SATSOFT 式相切吸附
   skColor: SKETCH_CSS, skWidth: 1.5, skDash: false,
-  skNumShow: true, skNumMode: 'auto', skNumScale: 100, skNumSize: 14, skNumColor: SKETCH_CSS,
+  skNumShow: true, skNumMode: 'auto', skNumScale: 100, skNumSize: 14, skNumColor: SKETCH_CSS, skNumBold: false,
   fcN: 4, fcShow: true, fcOpacity: 0.3,          // 频率计划：颜色数（3/4/7/16）/ 显隐 / 填充透明度
   polyId: '',                                    // 蜂窝布满目标 Polygon（高斯档）
   polyIds: [],                                   // 赋形：覆盖区 Polygon（多选）；各区目标电平 = 该 Polygon 的「数值」栏
@@ -50,6 +50,7 @@ const DEFAULT_P = {
   stNum: false,                                  // 站点编号（SATSOFT Plot Station Number）
   stGNum: false,                                 // 偏置数值标注（默认关：偏置站只着色 绿=正/紫=负）
   stNumSize: 9,                                  // 站点数字字号（px，编号与偏置数值共用）
+  stNumBold: false,                              // 站点数字粗体（编号与偏置数值共用）
   stDens: 2,                                     // 栅密度（站/成分波束宽，SATSOFT Grid Density）：区内步距=θ3/密度；0=每 Polygon 质心单站；无上限
   stType: 'tri',                                 // 栅类型（SATSOFT Type）：'tri'=三角（缺省）| 'rect'=矩形
   stRot: 0,                                      // 栅朝向（°，SATSOFT Rotation）
@@ -967,7 +968,7 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
           const hpx = gp.skNumMode === 'fixed'
             ? (Number(gp.skNumSize) || 14) / 533
             : (b._ring.ext || 1) * Math.min(0.55, 1.3 / text.length) * ((Number(gp.skNumScale) || 100) / 100) / 57.2958
-          labels.push({ lon: b.lon, lat: b.lat, text, hpx, color: numCss, alt: 40, top: true, cullPx: 5 })
+          labels.push({ lon: b.lon, lat: b.lat, text, hpx, color: numCss, alt: 40, top: true, cullPx: 5, bold: !!gp.skNumBold })
         }
       }
     }
@@ -988,8 +989,8 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
           lines.push({ p: s.ground, color: sel ? ST_SEL : col, width: sel ? 1.6 : 1, opacity: sel ? 1 : 0.8, closed: false, under: true })
           // 标注（默认全关，偏置站只靠颜色认）：「数值」开=偏置站标 ±dB（优先于序号）；「编号」开=标序号；字号共用 stNumSize
           const hpx = (Number(p.stNumSize) > 0 ? Number(p.stNumSize) : 9) / 533
-          if (p.stGNum === true && hasG && s.lon != null) labels.push({ lon: s.lon, lat: s.lat, text: (s.g > 0 ? '+' : '') + s.g, hpx, color: s.g > 0 ? '#3fb77f' : '#a06fdc', alt: 40, top: true, cullPx: 3 })
-          else if (p.stNum === true && s.lon != null) labels.push({ lon: s.lon, lat: s.lat, text: String(si + 1), hpx, color: '#f2c14e', alt: 40, top: true, cullPx: 4 })
+          if (p.stGNum === true && hasG && s.lon != null) labels.push({ lon: s.lon, lat: s.lat, text: (s.g > 0 ? '+' : '') + s.g, hpx, color: s.g > 0 ? '#3fb77f' : '#a06fdc', alt: 40, top: true, cullPx: 3, bold: !!p.stNumBold })
+          else if (p.stNum === true && s.lon != null) labels.push({ lon: s.lon, lat: s.lat, text: String(si + 1), hpx, color: '#f2c14e', alt: 40, top: true, cullPx: 4, bold: !!p.stNumBold })
         })
       }
     }

@@ -619,13 +619,12 @@ let _bgP = new Float64Array(_BG_CAP * 6)      // 逐档填充裁剪 ping-pong
 let _bgQ = new Float64Array(_BG_CAP * 6)
 const _bgTri = new Float64Array(18)            // 三角形三个角的 [x,y,d,m,u,v]（细化插点时各边的两端；u,v=格坐标）
 let _bgN = new Float64Array(_BG_CAP * 6)      // 带弦中点凹口的填充多边形
-let _bgA = new Float64Array(_BG_CAP * 6)      // 地平边换成 hull 弧点后的填充多边形
 const _cc = new Float64Array(4)                // 当前格子四角的格坐标 [col, row, c2, r2]（loadTri 取 u,v 用）
 function _bgEnsure(cap) {
   if (cap <= _BG_CAP) return
   while (_BG_CAP < cap) _BG_CAP *= 2
   _bgBase = new Float64Array(_BG_CAP * 6); _bgVis = new Float64Array(_BG_CAP * 6)
-  _bgP = new Float64Array(_BG_CAP * 6); _bgQ = new Float64Array(_BG_CAP * 6); _bgN = new Float64Array(_BG_CAP * 6); _bgA = new Float64Array(_BG_CAP * 6)
+  _bgP = new Float64Array(_BG_CAP * 6); _bgQ = new Float64Array(_BG_CAP * 6); _bgN = new Float64Array(_BG_CAP * 6)
 }
 // 分带填充输出零分配：各档顶点累加进复用的模块级 scratch（扁平 [x,y,...]），档内每个多边形的顶点数记入 _fillCnt。
 // bandGeometry 末尾各档一次性 slice 成定长返回缓冲 → 每帧仅 ~2·nb 次分配，替代旧版逐多边形 new Array+[x,y]
@@ -664,10 +663,45 @@ function _fillPush3(k, x0, y0, x1, y1, x2, y2) {   // 弦与弧之间的薄片�
   buf[o++] = x0; buf[o++] = y0; buf[o++] = x1; buf[o++] = y1; buf[o++] = x2; buf[o++] = y2
   _fillBufN[k] = o; _fillPushCount(k, 3)
 }
+function _fillPushLL(k, poly) {              // 从 [[lon,lat],...]（clipToHull 结果）追加
+  const len = poly.length, buf = _fillGrowBuf(k, _fillBufN[k] + len * 2); let o = _fillBufN[k]
+  for (let i = 0; i < len; i++) { buf[o++] = poly[i][0]; buf[o++] = poly[i][1] }
+  _fillBufN[k] = o; _fillPushCount(k, len)
+}
 const wrap180 = (x) => ((x % 360) + 540) % 360 - 180
 // 升序数组 arr[0..nb) 中首个 > v 的下标（upper_bound，二分）。供按三角形 dB 跨度快速定位相交档区间。
 const upperBound = (arr, nb, v) => { let lo = 0, hi = nb; while (lo < hi) { const mid = (lo + hi) >> 1; if (arr[mid] <= v) lo = mid + 1; else hi = mid } return lo }
 
+// Sutherland-Hodgman：把凸多边形 srcFlat（扁平 [x,y,d,m,u,v,...]，len 顶点，只取 x=lon,y=lat）裁到
+// 凸窗口 hull（{ ring:[[u,lat]...] CCW, satLon }，u=lon−satLon 解缠空间——绕过 ±180° 接缝）。
+// 用途：把延伸到地平外的填充三角形，沿密采样的平滑地平弧（凸包）精确切到 0°仰角线，填充边缘=地平弧、无月牙缝。
+// 返回裁剪后 [[lon,lat]...]（已转回标准经度）或 null（裁空）。窗口须凸+CCW。
+function clipToHull(srcFlat, len, hull) {
+  const R = hull.ring, nh = R.length, ref = hull.satLon
+  if (nh < 3) return null
+  let poly = new Array(len)
+  for (let i = 0; i < len; i++) poly[i] = [wrap180(srcFlat[i * 6] - ref), srcFlat[i * 6 + 1]]   // → u 空间
+  for (let e = 0; e < nh && poly.length; e++) {
+    const ax = R[e][0], ay = R[e][1], bx = R[(e + 1) % nh][0], by = R[(e + 1) % nh][1]
+    const ex = bx - ax, ey = by - ay
+    const out = []
+    let prev = poly[poly.length - 1], prevIn = ex * (prev[1] - ay) - ey * (prev[0] - ax) >= 0
+    for (let i = 0; i < poly.length; i++) {
+      const cur = poly[i], curIn = ex * (cur[1] - ay) - ey * (cur[0] - ax) >= 0
+      if (prevIn !== curIn) {                                   // 边跨窗口 → 插入交点
+        const dx = cur[0] - prev[0], dy = cur[1] - prev[1], den = dx * ey - dy * ex
+        const t = den !== 0 ? ((ax - prev[0]) * ey - (ay - prev[1]) * ex) / den : 0
+        out.push([prev[0] + dx * t, prev[1] + dy * t])
+      }
+      if (curIn) out.push(cur)
+      prev = cur; prevIn = curIn
+    }
+    poly = out
+  }
+  if (poly.length < 3) return null
+  for (const p of poly) p[0] += ref                            // u → 经度（保持多边形内连续，勿逐点 wrap：
+  return poly                                                  //   否则跨 ±180° 顶点裂成 +179/−179，2D 直线横扫全图）
+}
 // ===== 波束峰值（表与线同一基准）=====
 // 真峰值在网格点之间，离散最大值低估。在所选极化的功率网格上找离散最大，再沿行/列各做抛物线顶点细化
 //（可分离二次近似）后转 dB。按 beam×pol 记忆化（峰值与指向无关）。性能指标表「相对峰值」以它为 0 dB；
@@ -785,17 +819,13 @@ export function buildEdgeRefine(beam, field, levelsAsc, { pol = 'RSS', gainOffse
   const cells = new Int32Array(nc)
   for (let i = 0, q = 0; i < N; i++) if (flag[i]) cells[q++] = i
 
-  // ---- 弧点（每个跨档三角形 × 每档一串「真实等值面上的点」，按曲率自适应）----
-  // 三角形内某档的两个交点 P、Q 在表的插值下恰为档值，但它们之间是直弦，真实等值面在格内是弯的。
-  // 每条弦递归二分：中点沿法线在同一插值上求根得 M；若 ∠(P,M,Q) > 3° 或矢高 > 0.005 格就对 P–M、M–Q 继续，
-  // 深度 ≤ 3（最多 7 点 / 弦）。够直的弦一个点都不插 —— 曲率大的地方（小波束、峰附近、副瓣）自动加密。
-  // bandGeometry 把 P–Q 画成 P–a₁–…–a_k–Q，填充按弧所在侧把弦与弧之间的薄片划给正确的档（凹口 / 薄片）。
-  // 记录按 cells 分组（moff[ci]..moff[ci+1]）：mt 三角形（0=A(i00,i10,i11) 1=B(i00,i11,i01)）、mk 档、
-  // mu/mv 格内局部坐标、ms=1 表示弧在「≥档值」一侧（弧鼓向上档 → 上档开凹口、下档得薄片）。
-  // 同一 (三角形, 档) 的弧点【连续存放且按 P→Q 有序】—— 下游 midRange 取区间、按弦上投影定序。
-  // 守门（任一不满足就丢掉该点，弦上其余点照留）：根在 ±0.5 格内且 |Δ| ≤ 1e-4 dB、∠(P,M,Q) ≤ 60°（尖刺：根跳到了
-  // 等值线另一支）、在三角形内、与首点同侧、沿弦投影单调（不回折）、折线转向一致（弦与弧围出的区域是凸的 →
-  // 薄片以 P 为扇心、凹口以最深点为扇心都合法）、相对本三角形其它各档的弦在正确一侧（薄档不许交叉）。
+  // ---- 弦中点（每个跨档三角形 × 每档一个「真实等值面上的点」）----
+  // 三角形内某档的两个交点 P、Q 在表的插值下恰为档值，但它们之间是直弦，真实等值面在格内是弯的：0.1° 网格上弦中点
+  // 偏离档值 p95 0.05~0.1 dB。从弦中点沿法线在同一插值上求根得 M；bandGeometry 把 P–Q 画成 P–M–Q，填充按 M 所在侧
+  // 把弦与弧之间的薄片划给正确的档（凹口 / 薄片）。记录按 cells 分组（moff[ci]..moff[ci+1]）：mt 三角形（0=A(i00,i10,i11)
+  // 1=B(i00,i11,i01)）、mk 档、mu/mv 格内局部坐标、ms=1 表示 M 在「≥档值」一侧（弧鼓向上档 → 上档开凹口、下档得薄片）。
+  // 守门（任一不满足就不记，该弦保持直线）：弦中点误差 >1e-5 dB、根在 ±0.5 格内且 |Δ|≤1e-4 dB、M 在三角形内、
+  // M 相对本三角形其它各档的弦都在正确一侧（薄档不许交叉）、该档在本三角形恰有两个交点（档值恰等于节点值时不做）。
   const moff = new Int32Array(nc + 1)
   let mcap = 1024, mt = new Uint8Array(mcap), mk = new Uint16Array(mcap), mu = new Float32Array(mcap), mv = new Float32Array(mcap), ms = new Uint8Array(mcap), nm = 0
   const mgrow = () => {
@@ -824,58 +854,6 @@ export function buildEdgeRefine(beam, field, levelsAsc, { pol = 'RSS', gainOffse
     return n2
   }
   const cross2 = (ax, ay, bx, by) => ax * by - ay * bx
-  // 从弦 a–b 的中点沿法线把 dB 压回档值 L（牛顿一步 + 割线）：命中写 _rt=[u, v, 矢高] 返回 true；
-  // 中点已在档上 / 不收敛 / 跑出 ±0.5 格 / 残差 > 1e-4 dB 一律 false（该段保持直线）。
-  const _rt = new Float64Array(4)                             // [u, v, 矢高, 法向梯度 |d(dB)/d法向|]
-  const arcRoot = (c, r, au, av, bu, bv, L, gdHint) => {
-    const eu = bu - au, ev = bv - av, el = Math.hypot(eu, ev)
-    if (!(el > 1e-9)) return false
-    const nu = -ev / el, nv = eu / el, cmu = 0.5 * (au + bu), cmv = 0.5 * (av + bv)
-    const f = (t) => dbAt(c + cmu + nu * t, r + cmv + nv * t) - L
-    const e0 = f(0); if (e0 !== e0 || Math.abs(e0) < 1e-5) return false
-    // 预筛：拿父弦的法向梯度把「中点偏离档值」折成矢高，明显够直就不解（省五次取值）。
-    // 判据与下面的接收条件同一口径：矢高 > ε 或转角 > θmax，后者等价于矢高 > tan(θmax/4)·弦长 ≈ 0.0131·弦长。留 2 倍余量。
-    if (gdHint > 0 && Math.abs(e0) / gdHint < 0.5 * Math.min(ARC_SAG, 0.0131 * el)) return false
-    const h = Math.min(0.02, 0.25 * el)                       // 中心差分步长：整条弦上仍是 0.02（与 09-16 逐位同），子弦按长度收窄
-    const fp = f(h), fm = f(-h); if (fp !== fp || fm !== fm) return false
-    const gd = (fp - fm) / (2 * h); if (!(Math.abs(gd) > 1e-9)) return false
-    let ta = 0, fa = e0, tb = -e0 / gd
-    if (!(Math.abs(tb) <= 0.5)) return false
-    let fb = f(tb); if (fb !== fb) return false
-    for (let it = 0; it < 5 && Math.abs(fb) > 1e-5 && fb !== fa; it++) {
-      const tn = tb - fb * (tb - ta) / (fb - fa)
-      if (!(Math.abs(tn) <= 0.5)) break
-      const fn = f(tn); if (fn !== fn) break
-      ta = tb; fa = fb; tb = tn; fb = fn
-    }
-    if (!(Math.abs(fb) <= 1e-4)) return false
-    _rt[0] = cmu + nu * tb; _rt[1] = cmv + nv * tb; _rt[2] = Math.abs(tb); _rt[3] = Math.abs(gd)
-    return true
-  }
-  const angDeg = (ax, ay, bx, by, cx2, cy2) => {
-    const ux = bx - ax, uy = by - ay, vx = cx2 - bx, vy = cy2 - by
-    const n1 = Math.hypot(ux, uy), n2 = Math.hypot(vx, vy)
-    if (!(n1 > 0 && n2 > 0)) return 0
-    let t = (ux * vx + uy * vy) / (n1 * n2); if (t > 1) t = 1; else if (t < -1) t = -1
-    return Math.acos(t) * 180 / Math.PI
-  }
-  const ARC_CAP = 7, ARC_DEPTH = 3, ARC_THETA = 3, ARC_SAG = 0.005, ARC_TURN_MAX = 60
-  const arcU = new Float64Array(ARC_CAP), arcV = new Float64Array(ARC_CAP)
-  let na = 0
-  // force：整条弦的中点照旧无条件插（= 09-16 起的弦中点，本改动只在它之上加密）；
-  // 子弦按自己的矢高 / 转角决定要不要再分 —— 曲率大的地方自动加密，平直段一个点都不多。
-  const arcRec = (c, r, au, av, bu, bv, L, depth, force, gdHint) => {
-    if (depth >= ARC_DEPTH || na >= ARC_CAP) return
-    if (!arcRoot(c, r, au, av, bu, bv, L, force ? 0 : gdHint)) return
-    const mu2 = _rt[0], mv2 = _rt[1], sag = _rt[2], gd2 = _rt[3]   // _rt 是共享暂存：递归前先存下来
-    const ang = angDeg(au, av, mu2, mv2, bu, bv)
-    if (ang > ARC_TURN_MAX) return                            // 尖刺：根跳到了等值线的另一支
-    if (!force && !(sag > ARC_SAG || ang > ARC_THETA)) return // 这一段够直，不插点
-    arcRec(c, r, au, av, mu2, mv2, L, depth + 1, false, gd2)
-    if (na < ARC_CAP) { arcU[na] = mu2; arcV[na] = mv2; na++ }
-    arcRec(c, r, mu2, mv2, bu, bv, L, depth + 1, false, gd2)
-  }
-  const _oc = new Float64Array(5 * nb)                        // 其它各档在本三角形的弦：[c0u, c0v, ju, jv, sV]
   for (let ci = 0; ci < nc; ci++) {
     moff[ci] = nm
     const i00 = cells[ci], c = i00 % NX, r = (i00 / NX) | 0
@@ -897,58 +875,39 @@ export function buildEdgeRefine(beam, field, levelsAsc, { pol = 'RSS', gainOffse
         if (chordOf(tri, i00, i10, i01, k) !== 2) continue
         const L = levelsAsc[k]
         const pu = cu[0], pv = cv[0], qu = cu[1], qv = cv[1]
-        const eu = qu - pu, ev = qv - pv, el2 = eu * eu + ev * ev; if (!(el2 > 1e-18)) continue
-        na = 0
-        arcRec(c, r, pu, pv, qu, qv, L, 0, true, 0)
-        if (!na) continue
-        // 其它各档在本三角形的弦先取好（chordOf 会覆写 cu/cv，逐点再取要多跑一遍）
-        let noc = 0
-        for (let j = kLo; j <= kHi; j++) {
+        const eu = qu - pu, ev = qv - pv, el = Math.hypot(eu, ev); if (!(el > 1e-9)) continue
+        const nu = -ev / el, nv = eu / el, cmu = 0.5 * (pu + qu), cmv = 0.5 * (pv + qv)
+        const f = (t) => dbAt(c + cmu + nu * t, r + cmv + nv * t) - L
+        const e0 = f(0); if (e0 !== e0 || Math.abs(e0) < 1e-5) continue
+        // 法向梯度（中心差分）→ 牛顿一步 → 割线收敛到 1e-5 dB
+        const fp = f(0.02), fm = f(-0.02); if (fp !== fp || fm !== fm) continue
+        const gd = (fp - fm) / 0.04; if (!(Math.abs(gd) > 1e-9)) continue
+        let ta = 0, fa = e0, tb = -e0 / gd
+        if (!(Math.abs(tb) <= 0.5)) continue
+        let fb = f(tb); if (fb !== fb) continue
+        for (let it = 0; it < 5 && Math.abs(fb) > 1e-5 && fb !== fa; it++) {
+          const tn = tb - fb * (tb - ta) / (fb - fa)
+          if (!(Math.abs(tn) <= 0.5)) break
+          const fn = f(tn); if (fn !== fn) break
+          ta = tb; fa = fb; tb = tn; fb = fn
+        }
+        if (!(Math.abs(fb) <= 1e-4)) continue
+        const muv = cmu + nu * tb, mvv = cmv + nv * tb
+        const lA = tri ? 1 - mvv : 1 - muv, lB = tri ? muv : muv - mvv, lC = tri ? mvv - muv : mvv    // 重心坐标：须在三角形内
+        if (lA < -1e-9 || lB < -1e-9 || lC < -1e-9) continue
+        // 相对其它档的弦：更高的档，M 须与最低顶点同侧；更低的档，与最高顶点同侧（薄档不交叉）
+        let okSide = true
+        for (let j = kLo; j <= kHi && okSide; j++) {
           if (j === k || chordOf(tri, i00, i10, i01, j) !== 2) continue
-          const w = noc * 5, ju = cu[1] - cu[0], jv = cv[1] - cv[0]
-          _oc[w] = cu[0]; _oc[w + 1] = cv[0]; _oc[w + 2] = ju; _oc[w + 3] = jv
-          _oc[w + 4] = j > k ? cross2(ju, jv, uMin - cu[0], vMin - cv[0]) : cross2(ju, jv, uMax - cu[0], vMax - cv[0])
-          noc++
+          const ju = cu[1] - cu[0], jv = cv[1] - cv[0]
+          const sM = cross2(ju, jv, muv - cu[0], mvv - cv[0])
+          const sV = j > k ? cross2(ju, jv, uMin - cu[0], vMin - cv[0]) : cross2(ju, jv, uMax - cu[0], vMax - cv[0])
+          if (!(sM * sV > 0)) okSide = false
         }
-        const base = nm
-        let side0 = 0, lastProj = 0, turnSgn = 0, prevU = pu, prevV = pv, pprevU = NaN, pprevV = 0
-        for (let a2 = 0; a2 < na; a2++) {
-          const muv = arcU[a2], mvv = arcV[a2]
-          const lA = tri ? 1 - mvv : 1 - muv, lB = tri ? muv : muv - mvv, lC = tri ? mvv - muv : mvv
-          if (lA < -1e-9 || lB < -1e-9 || lC < -1e-9) continue                  // 在三角形内
-          const sg = cross2(eu, ev, muv - pu, mvv - pv); if (sg === 0) continue
-          const sgn = sg > 0 ? 1 : -1
-          if (!side0) side0 = sgn; else if (sgn !== side0) continue             // 与首点同侧
-          const proj = (muv - pu) * eu + (mvv - pv) * ev
-          if (!(proj > lastProj) || !(proj < el2)) continue                     // 沿弦投影单调、不越出 P–Q
-          // 折线转向一致（弦与弧围出的区域是凸的）：与前两点比一次
-          if (pprevU === pprevU) {
-            const t2 = cross2(prevU - pprevU, prevV - pprevV, muv - prevU, mvv - prevV)
-            if (t2 !== 0) { const ts = t2 > 0 ? 1 : -1; if (!turnSgn) turnSgn = ts; else if (ts !== turnSgn) continue }
-          }
-          let okSide = true
-          for (let j = 0; j < noc && okSide; j++) {
-            const w = j * 5
-            if (!(cross2(_oc[w + 2], _oc[w + 3], muv - _oc[w], mvv - _oc[w + 1]) * _oc[w + 4] > 0)) okSide = false
-          }
-          if (!okSide) continue
-          if (nm >= mcap) mgrow()
-          mt[nm] = tri; mk[nm] = k; mu[nm] = muv; mv[nm] = mvv; ms[nm] = 0; nm++
-          lastProj = proj; pprevU = prevU; pprevV = prevV; prevU = muv; prevV = mvv
-        }
-        if (nm === base) continue
-        // 收尾：Q 也要满足同一转向（否则弧与弦围出的区域不凸，扇形三角化会重叠）—— 不合就砍掉最后一个点
-        while (nm > base && pprevU === pprevU) {
-          const t2 = cross2(prevU - pprevU, prevV - pprevV, qu - prevU, qv - prevV)
-          if (t2 === 0 || !turnSgn || (t2 > 0 ? 1 : -1) === turnSgn) break
-          nm--
-          if (nm === base) break
-          prevU = mu[nm - 1]; prevV = mv[nm - 1]
-          pprevU = nm - 1 > base ? mu[nm - 2] : pu; pprevV = nm - 1 > base ? mv[nm - 2] : pv
-        }
-        if (nm === base) continue
-        const side = side0 * cross2(eu, ev, uMax - pu, vMax - pv) > 0 ? 1 : 0
-        for (let p2 = base; p2 < nm; p2++) ms[p2] = side
+        if (!okSide) continue
+        const side = cross2(eu, ev, muv - pu, mvv - pv) * cross2(eu, ev, uMax - pu, vMax - pv) > 0 ? 1 : 0
+        if (nm >= mcap) mgrow()
+        mt[nm] = tri; mk[nm] = k; mu[nm] = muv; mv[nm] = mvv; ms[nm] = side; nm++
       }
     }
   }
@@ -1039,19 +998,19 @@ export function bandGeometry(field, levelsAsc, wantFills = true, box = null, hul
   const rf = (refine && refine.n && st === 1 && refine.NX === NX && refine.NY === NY) ? refine : null
   const ps = (rf && pos && pos.lon && pos.lon.length === rf.n && pos.mlon && pos.mlon.length === (rf.nm || 0)) ? pos : null
   const limbSolve = (ps && ps.solve) ? ps.solve : null                  // 格坐标 → [lon, lat, m]（掠地几何逐点求交）
-  _bgEnsure((rf ? 3 * nb + 10 : 16) + 32)   // +32：地平边的 hull 弧点、两条弦各最多 7 个弧点
+  _bgEnsure(rf ? 3 * nb + 10 : 16)
   _fillReset(nb)
   const L0 = levelsAsc[0]
   // Sutherland-Hodgman：凸多边形(src 扁平缓冲, len 顶点数)按分量 ci(2=d,3=m) 与阈值 t 半平面裁剪写入 dst，返回新顶点数。
   // keepGE: 留分量≥t，否则留≤t。顶点 4 分量 [x,y,d,m] 全程线性插值（与旧 {x,y,d,m} 版逐位等价）。
-  const clip = (src, len, ci, t, keepGE, dst, uv) => {
+  const clip = (src, len, ci, t, keepGE, dst) => {
     let out = 0
     for (let i = 0; i < len; i++) {
       const ai = i * 6, bi = ((i + 1) % len) * 6
       const va = src[ai + ci], vb = src[bi + ci]
       const ina = keepGE ? va >= t : va <= t, inb = keepGE ? vb >= t : vb <= t
       // 逐档裁剪（ci=2）不带 u,v：格坐标只有地平裁剪（ci=3）后面才用到（等值线地平端点），省 1/3 的搬运
-      if (ina) { const o = out * 6; dst[o] = src[ai]; dst[o + 1] = src[ai + 1]; dst[o + 2] = src[ai + 2]; dst[o + 3] = src[ai + 3]; if (ci === 3 || uv) { dst[o + 4] = src[ai + 4]; dst[o + 5] = src[ai + 5] } out++ }
+      if (ina) { const o = out * 6; dst[o] = src[ai]; dst[o + 1] = src[ai + 1]; dst[o + 2] = src[ai + 2]; dst[o + 3] = src[ai + 3]; if (ci === 3) { dst[o + 4] = src[ai + 4]; dst[o + 5] = src[ai + 5] } out++ }
       // 边界恰穿过顶点（细化插入的顶点 d 精确等于档值）时交点就是该顶点本身，不再重复吐一次
       if (ina !== inb && va !== t && vb !== t) {
         let s = (t - va) / (vb - va)
@@ -1070,25 +1029,12 @@ export function bandGeometry(field, levelsAsc, wantFills = true, box = null, hul
             done = true
           }
         }
-        if (!done && ci === 2 && limbSolve && dbAtR && src[ai + 3] === 0 && src[bi + 3] === 0) {
-          // 地平边（两端 m=0）上的档交点：与等值线的地平端点走同一个 limbEnd —— 同一份 (u, v, 边向, L) 进去，
-          // 出来逐位同一点，填充边与线由构造重合（不然线走二维求根、填充走沿边线性，两者差 16~39 km）。
-          const ua = src[ai + 4], wa = src[ai + 5]
-          const eu = src[bi + 4] - ua, ev = src[bi + 5] - wa
-          const cu = ua + eu * s, cv = wa + ev * s
-          const r = limbEnd(cu, cv, eu, ev, t)
-          if (r[0] === r[0] && r[1] === r[1]) {
-            const ax = src[0]; let l = r[0]; while (l - ax > 180) l -= 360; while (l - ax < -180) l += 360
-            dst[o] = l; dst[o + 1] = r[1]; dst[o + 2] = t; dst[o + 3] = 0; dst[o + 4] = cu; dst[o + 5] = cv
-            done = true
-          }
-        }
         if (!done) {
           dst[o] = src[ai] + (src[bi] - src[ai]) * s
           dst[o + 1] = src[ai + 1] + (src[bi + 1] - src[ai + 1]) * s
           dst[o + 2] = src[ai + 2] + (src[bi + 2] - src[ai + 2]) * s
           dst[o + 3] = src[ai + 3] + (src[bi + 3] - src[ai + 3]) * s
-          if (ci === 3 || uv) { dst[o + 4] = src[ai + 4] + (src[bi + 4] - src[ai + 4]) * s; dst[o + 5] = src[ai + 5] + (src[bi + 5] - src[ai + 5]) * s }
+          if (ci === 3) { dst[o + 4] = src[ai + 4] + (src[bi + 4] - src[ai + 4]) * s; dst[o + 5] = src[ai + 5] + (src[bi + 5] - src[ai + 5]) * s }
           dst[o + ci] = t                                              // 被裁分量精确取阈值（地平交点 m=0 / 档交点 d=L）
         }
         out++
@@ -1170,41 +1116,7 @@ export function bandGeometry(field, levelsAsc, wantFills = true, box = null, hul
     _mp[1] = lA * _bgTri[1] + lB * _bgTri[7] + lC * _bgTri[13]
     _mp[2] = lA * _bgTri[3] + lB * _bgTri[9] + lC * _bgTri[15]
   }
-  // 本三角形本档的弧点区间 [_mr0, _mr1)（同一 (三角形, 档) 的记录连续、按 P→Q 有序）
-  let _mr0 = 0, _mr1 = 0
-  const midRange = (m0, m1, isB, k) => {
-    const t = isB ? 1 : 0
-    let p = m0
-    while (p < m1 && !(rMt[p] === t && rMk[p] === k)) p++
-    if (p >= m1) { _mr0 = _mr1 = 0; return 0 }
-    let q = p + 1
-    while (q < m1 && rMt[q] === t && rMk[q] === k) q++
-    _mr0 = p; _mr1 = q; return q - p
-  }
-  const ARC_CAP = 7
-  const _arcP = new Float64Array(5 * ARC_CAP)     // 逐弧点 [x, y, m, u, v]
-  // 算好 [_mr0, _mr0+cnt) 这几个弧点的本帧位置；任一点越地平就整条退回直弦（线与填充同一判据，两者才始终重合）
-  const arcPos = (cnt, isB) => {
-    for (let i = 0; i < cnt; i++) {
-      mPos(_mr0 + i, isB)
-      if (!(_mp[2] >= 0)) return false
-      const w = i * 5
-      _arcP[w] = _mp[0]; _arcP[w + 1] = _mp[1]; _arcP[w + 2] = _mp[2]; _arcP[w + 3] = _mp[3]; _arcP[w + 4] = _mp[4]
-    }
-    return true
-  }
-  // 区间 + 位置一步到位（等值线那一路用）
-  const arcOf = (m0, m1, isB, k) => {
-    const cnt = midRange(m0, m1, isB, k)
-    if (!cnt || cnt > ARC_CAP) return 0
-    return arcPos(cnt, isB) ? cnt : 0
-  }
-  // 弧点按 P→Q 存，而弦在多边形 / 线上的走向可能相反：按在弦上的投影定序
-  const arcRev = (ax, ay, bx, by, cnt) => {
-    if (cnt < 2) return false
-    const ex = bx - ax, ey = by - ay, w = (cnt - 1) * 5
-    return (_arcP[0] - ax) * ex + (_arcP[1] - ay) * ey > (_arcP[w] - ax) * ex + (_arcP[w + 1] - ay) * ey
-  }
+  const midOf = (m0, m1, isB, k) => { const t = isB ? 1 : 0; for (let p = m0; p < m1; p++) if (rMt[p] === t && rMk[p] === k) return p; return -1 }
   // 等值线的地平端点：线性交点 Z 落在两地平顶点的弦上，弦离真实地平差一个矢高——天线角 0.002° 的矢高在地平处就是
   // 仰角 1°（仰角 ∝ √Δθ）。交替求根：沿弦法线把 m 压到 0（Illinois），再沿弦方向把 d 拉回 L（割线，rf.dbAt），两轮收敛。
   const dbAtR = (rf && rf.dbAt) ? rf.dbAt : null
@@ -1249,177 +1161,31 @@ export function bandGeometry(field, levelsAsc, wantFills = true, box = null, hul
     for (let i = 0; i < len; i++) { const j = (i + 1) % len; if (src[i * 6 + 2] === L && src[j * 6 + 2] === L) return i }
     return -1
   }
-  // 以 start 号顶点为扇心的扇形三角化是否合法：全部三角形同向 ⇔ 该顶点在多边形的核内
-  const fanOk = (b, n2, start) => {
-    let sgn = 0
-    const o = start * 6
-    for (let i = 1; i < n2 - 1; i++) {
-      const a = ((start + i) % n2) * 6, c2 = ((start + i + 1) % n2) * 6
-      const t = (b[a] - b[o]) * (b[c2 + 1] - b[o + 1]) - (b[a + 1] - b[o + 1]) * (b[c2] - b[o])
-      if (t === 0) continue
-      const u = t > 0 ? 1 : -1
-      if (!sgn) sgn = u; else if (u !== sgn) return false
-    }
-    return true
-  }
-  // 耳切兜底（两条弦都开凹口时扇心校验会不过）：O(n²)，n ≤ 3 + 档数 + 弧点数，逐个吐三角形
-  const _ear = new Int32Array(96)
-  const _inTri = (b, p, i0, i1, i2) => {
-    const px = b[p * 6], py = b[p * 6 + 1]
-    const ax = b[i0 * 6], ay = b[i0 * 6 + 1], bx = b[i1 * 6], by = b[i1 * 6 + 1], cx2 = b[i2 * 6], cy2 = b[i2 * 6 + 1]
-    const d1 = (bx - ax) * (py - ay) - (by - ay) * (px - ax)
-    const d2 = (cx2 - bx) * (py - by) - (cy2 - by) * (px - bx)
-    const d3 = (ax - cx2) * (py - cy2) - (ay - cy2) * (px - cx2)
-    return !((d1 < 0 || d2 < 0 || d3 < 0) && (d1 > 0 || d2 > 0 || d3 > 0))
-  }
-  const earClip = (k, b, n2) => {
-    if (n2 > _ear.length) { _fillPushFlat(k, b, n2); return }
-    for (let i = 0; i < n2; i++) _ear[i] = i
-    let m = n2, area2 = 0
-    for (let i = 0; i < n2; i++) { const a = i * 6, c2 = ((i + 1) % n2) * 6; area2 += b[a] * b[c2 + 1] - b[c2] * b[a + 1] }
-    const ccw = area2 > 0
-    while (m > 3) {
-      let cut = -1
-      for (let i = 0; i < m && cut < 0; i++) {
-        const i0 = _ear[(i + m - 1) % m], i1 = _ear[i], i2 = _ear[(i + 1) % m]
-        const a = i0 * 6, b2 = i1 * 6, c2 = i2 * 6
-        const cr = (b[b2] - b[a]) * (b[c2 + 1] - b[a + 1]) - (b[b2 + 1] - b[a + 1]) * (b[c2] - b[a])
-        if (ccw ? !(cr > 0) : !(cr < 0)) continue
-        let ok2 = true
-        for (let j = 0; j < m && ok2; j++) { const p = _ear[j]; if (p !== i0 && p !== i1 && p !== i2 && _inTri(b, p, i0, i1, i2)) ok2 = false }
-        if (!ok2) continue
-        cut = i
-        _fillPush3(k, b[a], b[a + 1], b[b2], b[b2 + 1], b[c2], b[c2 + 1])
-        for (let j = i; j < m - 1; j++) _ear[j] = _ear[j + 1]
-        m--
-      }
-      if (cut < 0) break
-    }
-    const o = _ear[0] * 6
-    for (let i = 1; i < m - 1; i++) { const a = _ear[i] * 6, c2 = _ear[i + 1] * 6; _fillPush3(k, b[o], b[o + 1], b[a], b[a + 1], b[c2], b[c2 + 1]) }
-  }
-  // 把带弧点的填充多边形推进第 k 档：下弦（档 k）与上弦（档 k+1）各看一次——弧鼓进本档 → 在弦上按序插入全部弧点
-  // 开凹口（扇心取离弦最远的那个弧点并转到 0 号：3D 扇形三角化以 0 号为扇心；校验不过走耳切）；
-  // 弧鼓向邻档 → 弦与弧之间的薄片，以 P 为扇心的三角带归本档。相邻两档对同一条弦一个开凹口一个得薄片 →
-  // 仍是无重叠的划分，边界 = P–a₁–…–Q = 等值线。
+  // 把带弦中点的填充多边形推进第 k 档：下弦（档 k）与上弦（档 k+1）各看一次——弧鼓进本档 → 在弦上插 M 开凹口
+  //（凹口顶点转到 0 号：3D 扇形三角化以 0 号为扇心，凹口做扇心才既不漏画也不重叠）；弧鼓向邻档 → 弦与弧之间的薄片
+  // 三角形 (P,M,Q) 归本档。相邻两档对同一条弦一个开凹口一个得薄片 → 仍是无重叠的划分，边界 = P–M–Q = 等值线。
   const pushBand = (k, src, len, isB, m0, m1) => {
-    let buf = src, n = len, notch = -1, notches = 0, arcs1 = false
+    const lo = midOf(m0, m1, isB, k), hi = k < nb - 1 ? midOf(m0, m1, isB, k + 1) : -1
+    if (lo < 0 && hi < 0) { _fillPushFlat(k, src, len); return }
+    let buf = src, n = len, notch = -1                                 // 只有要开凹口时才拷到 _bgN 插点；只出薄片则原样推 src
     for (let pass = 0; pass < 2; pass++) {
-      if (pass === 1 && k >= nb - 1) continue
-      const kk = pass === 0 ? k : k + 1
-      const cnt = midRange(m0, m1, isB, kk); if (!cnt || cnt > ARC_CAP) continue
-      const q = _mr0, L = levelsAsc[kk]
-      const ia = chordAt(buf, n, L); if (ia < 0) continue      // 先看本多边形有没有这条弦，再算弧点位置（掠地格子逐点求交不便宜）
-      if (!arcPos(cnt, isB)) continue
+      const q = pass === 0 ? lo : hi
+      if (q < 0) continue
+      const L = levelsAsc[pass === 0 ? k : k + 1]
+      const ia = chordAt(buf, n, L); if (ia < 0) continue
+      mPos(q, isB); if (!(_mp[2] >= 0)) continue                     // 弦中点越地平：本帧不用
       const ib = (ia + 1) % n
-      const rev = arcRev(buf[ia * 6], buf[ia * 6 + 1], buf[ib * 6], buf[ib * 6 + 1], cnt)
-      if (pass === 0 ? rMs[q] === 1 : rMs[q] === 0) {                 // 弧鼓进本档 → 在 ia 之后按序插入弧点
-        const ax0 = buf[ia * 6], ay0 = buf[ia * 6 + 1], ex = buf[ib * 6] - ax0, ey = buf[ib * 6 + 1] - ay0   // 弦向：插点前先取（插点会把 Q 往后挪）
+      if (pass === 0 ? rMs[q] === 1 : rMs[q] === 0) {                 // 弧鼓进本档 → 在 ia 之后插入 M 开凹口
         if (buf === src) { for (let i = 0; i < n * 6; i++) _bgN[i] = src[i]; buf = _bgN }
-        for (let i = n * 6 - 1; i >= (ia + 1) * 6; i--) _bgN[i + cnt * 6] = _bgN[i]
-        for (let j = 0; j < cnt; j++) {
-          const w = (ia + 1 + j) * 6, a2 = (rev ? cnt - 1 - j : j) * 5
-          _bgN[w] = _arcP[a2]; _bgN[w + 1] = _arcP[a2 + 1]; _bgN[w + 2] = L; _bgN[w + 3] = _arcP[a2 + 2]; _bgN[w + 4] = _arcP[a2 + 3]; _bgN[w + 5] = _arcP[a2 + 4]
-        }
-        n += cnt
-        notches++
-        // 扇心：只有一个弧点时就取它（凸多边形挖一个凹角，以凹角为扇心恒合法，与 09-16 起的做法逐位相同）；
-        // 弧点 ≥ 2 时不行 —— 弧点彼此相邻且都凹向多边形内侧，以其中任何一个为扇心，最后一个扇形三角形
-        //（扇心, 前一个弧点的前驱, 前一个弧点）会翻到弧外，3D 会画出多边形外的一块。改取【离弦最远的顶点】。
-        if (cnt === 1 && notches === 1) { notch = ia + 1; arcs1 = true }
-        else {
-          let far = -1, farD = -1
-          for (let i = 0; i < n; i++) {
-            const d2 = Math.abs((buf[i * 6] - ax0) * ey - (buf[i * 6 + 1] - ay0) * ex)
-            if (d2 > farD) { farD = d2; far = i }
-          }
-          notch = far
-        }
-      } else {                                                        // 薄片：以 P 为扇心的三角带
-        let px = buf[ia * 6], py = buf[ia * 6 + 1]
-        for (let j = 0; j < cnt; j++) {
-          const a2 = (rev ? cnt - 1 - j : j) * 5
-          if (j > 0) _fillPush3(k, buf[ia * 6], buf[ia * 6 + 1], px, py, _arcP[a2], _arcP[a2 + 1])
-          px = _arcP[a2]; py = _arcP[a2 + 1]
-        }
-        _fillPush3(k, buf[ia * 6], buf[ia * 6 + 1], px, py, buf[ib * 6], buf[ib * 6 + 1])
-      }
+        for (let i = n * 6 - 1; i >= (ia + 1) * 6; i--) _bgN[i + 6] = _bgN[i]
+        const w = (ia + 1) * 6; _bgN[w] = _mp[0]; _bgN[w + 1] = _mp[1]; _bgN[w + 2] = L; _bgN[w + 3] = _mp[2]; _bgN[w + 4] = _mp[3]; _bgN[w + 5] = _mp[4]
+        n++
+        if (notch < 0) notch = ia + 1; else if (notch > ia) notch++
+      } else _fillPush3(k, buf[ia * 6], buf[ia * 6 + 1], _mp[0], _mp[1], buf[ib * 6], buf[ib * 6 + 1])   // 薄片归本档
     }
-    if (notch < 0) { _fillPushFlat(k, buf, n); return }
-    // 同向 ⇔ 扇形三角形面积和 = 多边形面积 ⇔ 不重叠且恰好铺满；不过就换个顶点试，全不行才耳切
-    if (!(notches === 1 && arcs1) && !fanOk(buf, n, notch)) { notch = -1; for (let i = 0; i < n && notch < 0; i++) if (fanOk(buf, n, i)) notch = i }
-    if (notch >= 0) _fillPushFlatRot(k, buf, n, notch)
-    else earClip(k, buf, n)
+    if (notch > 0) _fillPushFlatRot(k, buf, n, notch); else _fillPushFlat(k, buf, n)
   }
   const useHull = !!(hull && hull.ring && hull.ring.length >= 3)
-  // 带多边形上的地平边（两端 m === 0；凸多边形被 m ≥ 0 半平面裁只会切出一条）换成 hull 环上落在两端之间的弧点：
-  // 外缘仍是密采样的平滑地平弧，而带边界与等值线由构造重合。旧路把整三角形裁到 hull，弦的方向来自延伸到地平外的
-  // 「垂足」假坐标，且跳过弦中点 —— 线顶点到填充边中位 34 km / p95 354 km。
-  // 取弧点按「绕星下点的极角」：hull 是包住星下点的凸环，极角沿环单调，两端极角之间的那些顶点就是这段弧。
-  // 环上按极角取点：a = 绕星下点的极角 → 该射线与环边的交点 [u, lat]（环凸且包住原点 → 恰一个交点），写 _rs
-  const _rs = new Float64Array(2)
-  const ringAt = (ring, ang, nh, a) => {
-    for (let i = 0; i < nh; i++) {
-      const j = (i + 1) % nh
-      let w = ang[j] - ang[i]; while (w <= 0) w += 2 * Math.PI
-      let t = a - ang[i]; while (t < 0) t += 2 * Math.PI; while (t >= 2 * Math.PI) t -= 2 * Math.PI
-      if (t <= w) {
-        const A = ring[i], B = ring[j], dx = Math.cos(a), dy = Math.sin(a)
-        const den = (B[0] - A[0]) * dy - (B[1] - A[1]) * dx
-        const f = den !== 0 ? -(A[0] * dy - A[1] * dx) / den : 0
-        _rs[0] = A[0] + (B[0] - A[0]) * f; _rs[1] = A[1] + (B[1] - A[1]) * f
-        return true
-      }
-    }
-    return false
-  }
-  const _arcI = [], _arcT = []
-  const limbArc = (src, len, dst) => {
-    let ia = -1
-    for (let i = 0; i < len; i++) { const j = (i + 1) % len; if (src[i * 6 + 3] === 0 && src[j * 6 + 3] === 0) { ia = i; break } }
-    if (ia < 0) return 0
-    const ring = hull.ring, nh = ring.length, ref = hull.satLon
-    let ang = hull._ang
-    if (!ang || ang.length !== nh) { ang = hull._ang = new Float64Array(nh); for (let i = 0; i < nh; i++) ang[i] = Math.atan2(ring[i][1], ring[i][0]) }
-    const ib = (ia + 1) % len
-    const a0 = Math.atan2(src[ia * 6 + 1], wrap180(src[ia * 6] - ref))
-    const a1 = Math.atan2(src[ib * 6 + 1], wrap180(src[ib * 6] - ref))
-    let o = 0
-    for (let i = 0; i < len; i++, o++) for (let c = 0; c < 6; c++) dst[o * 6 + c] = src[i * 6 + c]
-    // ★ 地平边的两个端点先【贴到环上】：半平面裁剪出的地平交点按线性 m 取，位置落在真地平里侧（实测仰角
-    //   0.1~0.46°），而环上弧点在地平上 —— 不贴就是一排锯齿（2026-09-22 用户「填充还不如之前」的根因）。
-    //   贴法＝沿该点的极角射线取环边交点，只动 x,y（d / m / u / v 不变）。等值线的地平端点仍走 limbEnd
-    //  （真地平，离环 ≤ 0.11°），线端与填充角的差回到 09-16 之前那一档。
-    const xa = src[ia * 6]
-    const snap = (idx, a) => {
-      if (!ringAt(ring, ang, nh, a)) return
-      let l = _rs[0] + ref; while (l - xa > 180) l -= 360; while (l - xa < -180) l += 360
-      dst[idx * 6] = l; dst[idx * 6 + 1] = _rs[1]
-    }
-    snap(ia, a0); snap(ib, a1)
-    let dA = a1 - a0; while (dA > Math.PI) dA -= 2 * Math.PI; while (dA <= -Math.PI) dA += 2 * Math.PI
-    const span = Math.abs(dA); if (!(span > 1e-9)) return o
-    const dir = dA > 0 ? 1 : -1
-    _arcI.length = 0; _arcT.length = 0
-    for (let i = 0; i < nh; i++) {
-      let t = (ang[i] - a0) * dir; while (t < 0) t += 2 * Math.PI; while (t >= 2 * Math.PI) t -= 2 * Math.PI
-      if (t > 1e-9 && t < span - 1e-9) { _arcI.push(i); _arcT.push(t / span) }
-    }
-    const na = _arcI.length
-    if (!na) return o
-    if (len + na > _BG_CAP) return 0
-    for (let i = 1; i < na; i++) { const t = _arcT[i], v = _arcI[i]; let j = i - 1; while (j >= 0 && _arcT[j] > t) { _arcT[j + 1] = _arcT[j]; _arcI[j + 1] = _arcI[j]; j-- } _arcT[j + 1] = t; _arcI[j + 1] = v }
-    // 弧点插在 ia 之后：ib > 0 时把 [ib, len) 后移 na 位；ib === 0（地平边是末顶点→首顶点）直接追加在末尾
-    if (ib > 0) for (let i = len - 1; i >= ib; i--) for (let c = 0; c < 6; c++) dst[(i + na) * 6 + c] = dst[i * 6 + c]
-    const da = src[ia * 6 + 2], dbb = src[ib * 6 + 2], ua = src[ia * 6 + 4], wa = src[ia * 6 + 5]
-    const du = src[ib * 6 + 4] - ua, dw = src[ib * 6 + 5] - wa
-    for (let i = 0; i < na; i++) {
-      const p = ring[_arcI[i]], f = _arcT[i], w = (ia + 1 + i) * 6
-      let l = p[0] + ref; while (l - xa > 180) l -= 360; while (l - xa < -180) l += 360
-      dst[w] = l; dst[w + 1] = p[1]; dst[w + 2] = da + (dbb - da) * f; dst[w + 3] = 0; dst[w + 4] = ua + du * f; dst[w + 5] = wa + dw * f
-    }
-    return len + na
-  }
   // aug=这格在细化表的 cells 里（三角化循环用指针顺着表判，O(1)）；isB=格内第二个三角形（见 augment）；
   // [m0,m1)=本格的弦中点记录
   const emitTri = (i0, i1, i2, aug, isB, m0, m1) => {
@@ -1437,20 +1203,19 @@ export function bandGeometry(field, levelsAsc, wantFills = true, box = null, hul
     let lineBase = _bgBase, lineLen = len
     if (crossLimb) { lineLen = clip(_bgBase, len, 3, 0, true, _bgVis); lineBase = _bgVis }
     if (wantFills) {
-      // 填充基底：跨地平时与等值线同一份「按 m ≥ 0 精确裁」的基底（lineBase），逐档裁 + 弦中点照常；
-      // 有平滑地平弧(hull) 时最后把带多边形的地平边换成环上弧点 → 外缘仍是平滑地平弧，带边界与线由构造重合。
-      const fb = crossLimb ? lineBase : _bgBase
-      const fbLen = crossLimb ? lineLen : len
-      const wantArc = crossLimb && useHull
+      // 填充基底：有平滑地平弧(hull) → 用未裁三角形(顶点已延伸到地平外，limbOutside)，逐档裁后再沿弧 SH 裁，
+      //   填充边缘=地平弧、无月牙缝；无 hull 时回退到 0°仰角线半平面裁的基底（旧行为，可能有锯齿）。
+      const fillHull = crossLimb && useHull
+      const fb = (crossLimb && !useHull) ? lineBase : _bgBase
+      const fbLen = (crossLimb && !useHull) ? lineLen : len
       if (fbLen >= 3) for (let k = kLo; k <= kHi; k++) {
-        let bl = clip(fb, fbLen, 2, levelsAsc[k], true, _bgP, crossLimb)          // d ≥ Lk
+        let bl = clip(fb, fbLen, 2, levelsAsc[k], true, _bgP)          // d ≥ Lk
         let cur = _bgP
-        if (k < nb - 1 && bl) { bl = clip(_bgP, bl, 2, levelsAsc[k + 1], false, _bgQ, crossLimb); cur = _bgQ }  // 且 d ≤ Lk+1（顶档不封顶）
+        if (k < nb - 1 && bl) { bl = clip(_bgP, bl, 2, levelsAsc[k + 1], false, _bgQ); cur = _bgQ }  // 且 d ≤ Lk+1（顶档不封顶）
         if (bl < 3) continue
-        if (wantArc) { const na = limbArc(cur, bl, _bgA); if (na >= 3) { cur = _bgA; bl = na } }
-        if (hasM) pushBand(k, cur, bl, isB, m0, m1)
-        else if (!wantArc || fanOk(cur, bl, 0)) _fillPushFlat(k, cur, bl)   // 端点贴环后可能微凹：扇形不合法就耳切
-        else earClip(k, cur, bl)
+        if (fillHull) { const poly = clipToHull(cur, bl, hull); if (poly && poly.length >= 3) _fillPushLL(k, poly) }
+        else if (hasM) pushBand(k, cur, bl, isB, m0, m1)
+        else _fillPushFlat(k, cur, bl)
       }
     }
     if (lineLen >= 3) for (let k = kLo; k <= kHi; k++) {              // 各档等值线 = lineBase 上 d==Lk 的穿越段（仅相交档）
@@ -1468,11 +1233,8 @@ export function bandGeometry(field, levelsAsc, wantFills = true, box = null, hul
             if (limbSolve && lineBase[ai + 3] === 0 && lineBase[bi + 3] === 0) {   // 档线的地平端点：拉到真实地平线与等值面的交点
               const eu = lineBase[bi + 4] - lineBase[ai + 4], ev = lineBase[bi + 5] - lineBase[ai + 5]
               const r = limbEnd(lineBase[ai + 4] + eu * s, lineBase[ai + 5] + ev * s, eu, ev, L)
-              const ax = _bgBase[0]; let l = r[0], yy = r[1]
-              // 有 hull（3D / 导出）时端点再贴到环上：填充的地平角点在 limbArc 里同样贴环 → 线端与填充角逐位同一点
-              if (useHull) { const rg = hull.ring, ref = hull.satLon; let ang = hull._ang; if (!ang || ang.length !== rg.length) { ang = hull._ang = new Float64Array(rg.length); for (let i2 = 0; i2 < rg.length; i2++) ang[i2] = Math.atan2(rg[i2][1], rg[i2][0]) } if (ringAt(rg, ang, rg.length, Math.atan2(yy, wrap180(l - ref)))) { l = _rs[0] + ref; yy = _rs[1] } }
-              while (l - ax > 180) l -= 360; while (l - ax < -180) l += 360
-              x = l; y = yy
+              const ax = _bgBase[0]; let l = r[0]; while (l - ax > 180) l -= 360; while (l - ax < -180) l += 360
+              x = l; y = r[1]
             } else { x = lineBase[ai] + (lineBase[bi] - lineBase[ai]) * s; y = lineBase[ai + 1] + (lineBase[bi + 1] - lineBase[ai + 1]) * s }
           }
           if (cnt === 0) { x0 = x; y0 = y } else { x1 = x; y1 = y }
@@ -1482,18 +1244,8 @@ export function bandGeometry(field, levelsAsc, wantFills = true, box = null, hul
       if (cnt === 2) {                                                  // 凸多边形上恰 0 或 2 个穿越
         // 两端都是细化顶点且本三角形本档有弦中点（且未越地平）→ 画 P–M–Q，与填充的凹口 / 薄片边界同一批点
         if (hasM && exact === 2) {
-          const cnt = arcOf(m0, m1, isB, k)
-          if (cnt) {
-            const rev = arcRev(x0, y0, x1, y1, cnt)
-            let px = x0, py = y0
-            for (let j = 0; j < cnt; j++) {
-              const a2 = (rev ? cnt - 1 - j : j) * 5
-              lines[k].push([[px, py], [_arcP[a2], _arcP[a2 + 1]]])
-              px = _arcP[a2]; py = _arcP[a2 + 1]
-            }
-            lines[k].push([[px, py], [x1, y1]])
-            continue
-          }
+          const q = midOf(m0, m1, isB, k)
+          if (q >= 0) { mPos(q, isB); if (_mp[2] >= 0) { lines[k].push([[x0, y0], [_mp[0], _mp[1]]]); lines[k].push([[_mp[0], _mp[1]], [x1, y1]]); continue } }
         }
         lines[k].push([[x0, y0], [x1, y1]])
       }
