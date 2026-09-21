@@ -155,7 +155,9 @@ async function removeCustomGroup(g) {
 // 逐组导出（导入组：文件历元）
 async function exportGroup(g) {
   if (!api?.omm?.customExportGroup) return
-  const r = await api.omm.customExportGroup(g.id, g.name, g.format || 'omm-csv')
+  // SP3 只解析不写出：导出一律按 STK .e 走（与 3D 页星座栏 impExport 同一口径）
+  const fmt = g.format === 'sp3' ? 'stk-e' : (g.format || 'omm-csv')
+  const r = await api.omm.customExportGroup(g.id, g.name, fmt)
   if (r && r.canceled) return
   if (r && r.ok) flash('已导出：' + r.filePath)
   else flash('导出失败：' + ((r && r.error) || '未知错误'))

@@ -33,6 +33,12 @@ const FORMAT_LABEL = {
   sp3: 'SP3 精密星历'
 }
 const FORMAT_EXT = { 'stk-e': '.e', 'ccsds-oem-kvn': '.oem', 'ccsds-oem-xml': '.xml', sp3: '.sp3' }
+// 【写得出的格式】SP3 只解析不写出（定长栏位 + 钟差哨兵那一套，本平台没有写出器），
+// 故 FORMATS 四种里只有下面三种进得了 serializeEphemeris。凡「导出成 sp3」的请求一律归一成
+// stk-e —— 扩展名、默认文件名、返回值的 format 都要跟着归一后的走，否则会落盘一个
+// 「扩展名 .sp3、正文却是 STK .e」的文件。
+const WRITABLE = ['stk-e', 'ccsds-oem-kvn', 'ccsds-oem-xml']
+const writableFormat = (f) => (f === 'sp3' ? 'stk-e' : f)
 
 const stripBom = (s) => String(s == null ? '' : s).replace(/^﻿/, '')
 const DEG = Math.PI / 180
@@ -549,7 +555,7 @@ function serializeEphemeris(sats, format, opts) {
 }
 
 module.exports = {
-  FORMATS, FORMAT_LABEL, FORMAT_EXT,
+  FORMATS, FORMAT_LABEL, FORMAT_EXT, WRITABLE, writableFormat,
   stripBom, detectFormat, parseEphemeris, serializeEphemeris, convertSat, parseSp3, SP3_SYS,
   geodeticToEcef, sphericalToEcef, oemFrame
 }

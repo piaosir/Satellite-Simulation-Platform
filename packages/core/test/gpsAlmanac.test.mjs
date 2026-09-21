@@ -208,7 +208,7 @@ for (let i = 0; i < 3; i++) {
   near(d, 0, RAAN_TOL, 'PRN ' + a.prn + '：两式相等到 (ω_GMST − ω_e)·toa 以内')
 }
 
-/* ===== ④ Ω̇ 的 5% 校验 ===== */
+/* ===== ④ Ω̇ 的 15% 校验 ===== */
 section('Ω̇ 校验')
 ok(!y.warnings.some((w) => /Ω̇/.test(w)), '正常年历不触发 Ω̇ 告警', JSON.stringify(y.warnings.filter((w) => /Ω̇/.test(w))))
 // ★ 真件那 3 颗里有一颗（PRN 3）与纯 J2 理论值差 7.75%（日月摄动，不是错）—— 5% 门限会误报

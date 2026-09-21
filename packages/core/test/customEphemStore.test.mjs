@@ -293,5 +293,61 @@ section('年历 NORAD 反查')
   customSats.removeGroup(g2.id)
 }
 
+/* ===== ⑭ SP3 组导出：仓库没有 SP3 写出器，一律落到 STK .e ===== */
+// 现象：SP3 导入组的 g.format 是 'sp3'，原样传下来后 groupText 里静默改写成 stk-e 出内容，
+// 而保存对话框的默认名与返回值 format 仍按 sp3 走 —— 得到的是「内容是 STK .e 的 .sp3 文件」。
+// 归一收口到 groupText 的 want 与 saveEph 入口后，两种写法必须出同一份字节。
+section('SP3 组导出')
+{
+  const MU2 = 398600.4418, R = 26560, we = 7.2921151467e-5
+  const nn = Math.sqrt(MU2 / (R * R * R)), inc = 55 * Math.PI / 180
+  const f14 = (v) => v.toFixed(6).padStart(14)
+  const L = ['#cP2026  9 21  0  0  0.00000000       8 ORBIT IGS20 HLM  IGS',
+    '## 2338 259200.00000000   900.00000000 61204 0.0000000000000',
+    '+    1   G01  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0']
+  for (let i = 0; i < 4; i++) L.push('+         ' + '  0'.repeat(17))
+  for (let i = 0; i < 5; i++) L.push('++       ' + '  5'.repeat(17))
+  L.push('%c G  cc GPS ccc cccc cccc cccc cccc ccccc ccccc ccccc ccccc',
+    '%c cc cc ccc ccc cccc cccc cccc cccc ccccc ccccc ccccc ccccc',
+    '%f  1.2500000  1.025000000  0.00000000000  0.000000000000000',
+    '%f  0.0000000  0.000000000  0.00000000000  0.000000000000000',
+    '%i    0    0    0    0      0      0      0      0         0',
+    '%i    0    0    0    0      0      0      0      0         0',
+    '/* 测试用 SP3，非真实产品')
+  for (let e2 = 0; e2 < 8; e2++) {
+    const secs = e2 * 900, d = new Date(T0 + secs * 1000)
+    L.push('*  ' + d.getUTCFullYear() + ' ' + String(d.getUTCMonth() + 1).padStart(2) + ' ' + String(d.getUTCDate()).padStart(2) +
+      ' ' + String(d.getUTCHours()).padStart(2) + ' ' + String(d.getUTCMinutes()).padStart(2) + ' ' + d.getUTCSeconds().toFixed(8).padStart(11))
+    const u = nn * secs, lon = u - we * secs
+    L.push('PG01' + f14(R * (Math.cos(u) * Math.cos(lon - u) - Math.sin(u) * Math.cos(inc) * Math.sin(lon - u))) +
+      f14(R * (Math.cos(u) * Math.sin(lon - u) + Math.sin(u) * Math.cos(inc) * Math.cos(lon - u))) +
+      f14(R * Math.sin(u) * Math.sin(inc)) + f14(-12.345678))
+  }
+  L.push('EOF')
+  const rSp3 = customSats.importFile('SP3组', L.join('\n') + '\n')
+  ok(rSp3.ok && rSp3.kind === 'ephem', 'SP3 走 ephem 分支', JSON.stringify(rSp3.error || ''))
+  ok(rSp3.group.format === 'sp3', '组格式记成 sp3（导入来源如实记账，不改）', rSp3.group.format)
+  // ★ 本条的根：保存框拿来定扩展名 / 默认文件名 / 返回值 format 的那个格式，必须是真写得出的那个 ——
+  //   否则落盘的是「扩展名 .sp3、正文却是 STK .e」的文件（serializeEphemeris 根本没有 sp3 写出器）。
+  ok(typeof ephF.writableFormat === 'function', '★ ephemFormats 导出 writableFormat')
+  ok(ephF.writableFormat('sp3') === 'stk-e', '★ sp3 归一成 stk-e', String(ephF.writableFormat && ephF.writableFormat('sp3')))
+  ok(ephF.FORMAT_EXT[ephF.writableFormat('sp3')] === '.e', '★ 归一后扩展名是 .e，不是 .sp3',
+    String(ephF.FORMAT_EXT[ephF.writableFormat ? ephF.writableFormat('sp3') : 'sp3']))
+  ok(Array.isArray(ephF.WRITABLE) && !ephF.WRITABLE.includes('sp3') && ephF.WRITABLE.every((f) => ephF.FORMATS.includes(f)),
+    'WRITABLE 是 FORMATS 的真子集且不含 sp3', JSON.stringify(ephF.WRITABLE))
+  for (const f of ephF.FORMATS) {
+    let e2 = ''
+    try { ephF.serializeEphemeris(customSats.ephemSats(rSp3.group.id), ephF.writableFormat(f), {}) } catch (err) { e2 = err.message }
+    ok(!e2, '★ 归一后 ' + f + ' 写得出（不抛「未知导出格式」）', e2)
+  }
+  // 下面两条改前改后都绿，是回归护栏：防止将来按字面「把三元删掉」而破掉这条对外契约
+  const tSp3 = customSats.groupText(rSp3.group.id, 'sp3')
+  const tE = customSats.groupText(rSp3.group.id, 'stk-e')
+  ok(!!tSp3 && !!tE, '两种写法都出得了文本')
+  ok(tSp3 === tE, "groupText(…, 'sp3') 与 'stk-e' 输出逐字相同（护栏，非先失败项）", tSp3 === tE ? '' : '长度 ' + (tSp3 || '').length + ' vs ' + (tE || '').length)
+  ok(ephF.detectFormat(tSp3) === 'stk-e', '内容确实是 STK .e', ephF.detectFormat(tSp3))
+  customSats.removeGroup(rSp3.group.id)
+}
+
 console.log('\ncustomEphemStore: 通过 ' + pass + '，失败 ' + fail)
 process.exit(fail ? 1 : 0)

@@ -576,7 +576,8 @@ module.exports = function createCustomSats(getCore) {
   function groupText(id, format, opts) {
     const g = readStore().groups.find((x) => x.id === id)
     if (!g) return null
-    const want = normFormat(format) || (g.kind === 'ephem' ? 'stk-e' : 'omm-csv')
+    // sp3 只解析不写出，落到它的导出请求一律归一成 stk-e（见 ephemFormats.writableFormat）
+    const want = ephF.writableFormat(normFormat(format) || (g.kind === 'ephem' ? 'stk-e' : 'omm-csv'))
     const sats = g.sats || []
     if (!sats.length) return null
     const wantEphem = ephF.FORMATS.includes(want)
@@ -585,9 +586,9 @@ module.exports = function createCustomSats(getCore) {
       if (!wantEphem) throw new Error('星历点序列只能导出成 STK .e 或 CCSDS OEM')
       const es = ephemSats(id)
       if (!es) return null
-      return ephF.serializeEphemeris(es, want === 'sp3' ? 'stk-e' : want, opts || {})
+      return ephF.serializeEphemeris(es, want, opts || {})
     }
-    if (wantEphem) return ephF.serializeEphemeris(sampleGpToEphem(sats, opts), want === 'sp3' ? 'stk-e' : want, opts || {})
+    if (wantEphem) return ephF.serializeEphemeris(sampleGpToEphem(sats, opts), want, opts || {})
     if (g.rawText && normFormat(g.format) === want && g.rawCount === sats.length) return g.rawText
     return recordsToText(sats, want)
   }
@@ -637,7 +638,7 @@ module.exports = function createCustomSats(getCore) {
   function recordsEphemText(records, format, opts) {
     const arr = Array.isArray(records) ? records : []
     if (!arr.length) return null
-    return ephF.serializeEphemeris(sampleGpToEphem(arr, opts), format === 'sp3' ? 'stk-e' : format, opts || {})
+    return ephF.serializeEphemeris(sampleGpToEphem(arr, opts), ephF.writableFormat(format), opts || {})
   }
 
   return {

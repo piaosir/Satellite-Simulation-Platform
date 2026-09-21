@@ -32,7 +32,7 @@ const wrap360 = (d) => ((d % 360) + 360) % 360
 
 /* ===================== 嗅探 ===================== */
 // YUMA：每星 13 行「键: 值」，以 "ID:" 或 "******** Week ... almanac ..." 起头
-// SEM  ：行 1「N 记录数 名字」，行 2「周 toa」，其后每星 13 个数值行
+// SEM  ：行 1「N 记录数 名字」，行 2「周 toa」，其后每星 14 个数值（PRN…config），不按行对齐
 function detectAlmanac(text) {
   const s = String(text == null ? '' : text).replace(/^﻿/, '')
   if (/^\s*\*+\s*Week\s+\d+\s+almanac/im.test(s) || /^\s*ID:\s*\d+/m.test(s)) return 'yuma'

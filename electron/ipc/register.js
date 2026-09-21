@@ -299,9 +299,12 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
       (fmt) => (isEphemFmt(fmt) ? customSats.recordsEphemText(records, fmt, opts) : customSats.recordsText(records, fmt)),
       '无可导出的星历记录')
   })
-  // 保存对话框 → 按最终扩展名定格式 → 交给 build(fmt) 出文本
+  // 保存对话框 → 按最终扩展名定格式 → 交给 build(fmt) 出文本。
+  // SP3 只解析不写出（ephF.WRITABLE 只有三种），故入口先归一成 stk-e：扩展名、默认文件名、
+  // 类型下拉与返回值里的 format 全部以归一后的为准；出口再归一一次，接住用户手打 .sp3 的情况。
   async function saveEph(e, baseName, format, build, emptyMsg, ephemOnly) {
-    const pref = (ephemOnly ? ephF.FORMAT_EXT[format] : (eph.FORMAT_EXT[format] || ephF.FORMAT_EXT[format]))
+    const want = ephF.writableFormat(format)
+    const pref = (ephemOnly ? ephF.FORMAT_EXT[want] : (eph.FORMAT_EXT[want] || ephF.FORMAT_EXT[want]))
     const ext = String(pref || (ephemOnly ? '.e' : 'csv')).replace(/^\./, '')
     const win = BrowserWindow.fromWebContents(e.sender)
     const { canceled, filePath } = await dialog.showSaveDialog(win, {
@@ -309,7 +312,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
       filters: ephemOnly ? saveFiltersEphem(ext) : saveFilters(ext)
     })
     if (canceled || !filePath) return { ok: false, canceled: true }
-    const fmt = fmtOfPath(filePath, format)
+    const fmt = ephF.writableFormat(fmtOfPath(filePath, want))
     let text
     try { text = build(fmt) } catch (err) { return { ok: false, error: err.message || String(err) } }
     if (!text) return { ok: false, error: emptyMsg }
