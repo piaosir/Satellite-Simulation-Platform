@@ -7140,6 +7140,7 @@ function pageCommands() {
     { id: 'const.live', label: '实时时钟', icon: 'clock', group: '星座', keywords: kwId('const.live'), lock: true, check: live.value, run: toggleLive },
     { id: 'const.sendMini', label: '发送卫星到小程序…', icon: 'external-link', group: '星座', keywords: kwId('const.sendMini'), lock: true, run: () => { shellUi.side = 'constellation'; sendSatsToMiniapp() } },
     { id: 'const.import', label: '导入星历…', icon: 'import', group: '星座', keywords: kwId('const.import'), lock: true, run: () => { shellUi.side = 'constellation'; revealSection('constellation', 'const-import'); importTleToLibrary() } },
+    { id: 'const.filter', label: '筛选卫星', icon: 'sliders-horizontal', group: '星座', keywords: kwId('const.filter'), lock: true, run: () => { shellUi.side = 'constellation'; ensureSatcatIndex() } },
     { id: 'poly.draw', label: '绘制多边形', icon: 'hexagon', group: 'Polygon（协调区）', keywords: kwId('poly.draw'), lock: true, run: () => { shellUi.side = 'poly'; polyStartDraw() } },
     { id: 'poly.import', label: '导入多边形…', icon: 'import', group: 'Polygon（协调区）', keywords: kwId('poly.import'), lock: true, run: () => { shellUi.side = 'poly'; importPolys() } },
     { id: 'grd.addSat', label: '添加卫星…', icon: 'plus', group: '对地覆盖分析', keywords: kwId('grd.addSat'), lock: true, disabled: !covNav.grdAvail, run: () => { shellUi.side = 'antenna'; openAddSat() } },
@@ -7535,9 +7536,9 @@ onBeforeUnmount(() => {
               <div class="cesec">预览</div>
               <div class="cefv"><label>预览圈数</label><div class="ceinp"><NumBox class="ci" :model-value="constModal.previewRevs" :min="1" :max="20" :step="1" @commit="v => constModal.previewRevs = v" /><span class="u">圈</span></div></div>
               <div class="cepv">
-                <label class="layersw" title="轨道线"><input type="checkbox" v-model="constModal.pvOrbit" /><span class="lsw"></span><span>轨道线</span></label>
-                <label class="layersw" title="星下点轨迹"><input type="checkbox" v-model="constModal.pvTrack" /><span class="lsw"></span><span>星下点轨迹</span></label>
-                <label class="layersw" title="覆盖圈"><input type="checkbox" v-model="constModal.pvFoot" /><span class="lsw"></span><span>覆盖圈</span></label>
+                <span class="pvsw"><button type="button" class="layersw" :class="{ on: constModal.pvOrbit }" role="switch" :aria-checked="constModal.pvOrbit ? 'true' : 'false'" :title="constModal.pvOrbit ? '隐藏轨道线' : '显示轨道线'" @click="constModal.pvOrbit = !constModal.pvOrbit"><i></i></button><span>轨道线</span></span>
+                <span class="pvsw"><button type="button" class="layersw" :class="{ on: constModal.pvTrack }" role="switch" :aria-checked="constModal.pvTrack ? 'true' : 'false'" :title="constModal.pvTrack ? '隐藏星下点轨迹' : '显示星下点轨迹'" @click="constModal.pvTrack = !constModal.pvTrack"><i></i></button><span>星下点轨迹</span></span>
+                <span class="pvsw"><button type="button" class="layersw" :class="{ on: constModal.pvFoot }" role="switch" :aria-checked="constModal.pvFoot ? 'true' : 'false'" :title="constModal.pvFoot ? '隐藏覆盖圈' : '显示覆盖圈'" @click="constModal.pvFoot = !constModal.pvFoot"><i></i></button><span>覆盖圈</span></span>
               </div>
 
               <div v-if="constDerived" class="ceread">
@@ -10448,7 +10449,9 @@ onBeforeUnmount(() => {
 /* 拖文件进「导入星历」区块 / 地图时的描边高亮（token 色，不出提示字） */
 .ccsec.dragon { outline: 1px dashed var(--accent); outline-offset: -2px; background: color-mix(in srgb, var(--accent) 8%, transparent); }
 /* 向导预览区：三个图层拨杆一行排开 */
-.cepv { display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 2px 12px 6px; }
+.cepv { display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 2px 12px 6px; }
+/* 一个拨杆 + 一行名字；名字整行换行、不缩、不裁（侧栏不许显示不全） */
+.cepv .pvsw { display: inline-flex; align-items: center; gap: 5px; font-size: var(--fs-2); color: var(--text-muted); white-space: nowrap; }
 /* 解不出来的那一项：红框（诊断文字在读数区的 .crwarn 里） */
 .cebody .ci.bad, .cebody .ci.bad input { border-color: var(--danger, #c0392b) !important; }
 .stage-wrap.dragon { outline: 2px dashed var(--accent); outline-offset: -4px; }

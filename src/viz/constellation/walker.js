@@ -109,7 +109,9 @@ export function orbitPeriodMin(p) {
 
 // Walker 码串，如 "53°: 24/6/1" / 单面 "0° · 单面 12"
 export function walkerCode(p) {
-  const i = num(p.incl)
+  // 倾角最多两位小数（去尾零）：手填的 53 仍显示 53，轨道向导解出来的 98.60311066… 显示 98.6，
+  // 不然这一行会被一串浮点数字撑破。
+  const i = Number(num(p.incl).toFixed(2))
   if (p.pattern === 'single') return `${i}° · 单星`
   if (p.pattern === 'plane') return `${i}° · 单面 ${Math.round(num(p.T, 1))}`
   return `${i}°: ${Math.round(num(p.T, 1))}/${Math.round(num(p.P, 1))}/${Math.round(num(p.F))}`
