@@ -159,4 +159,155 @@ function loadCase(f) {
   ok(vertsAll > 1000 && worstOff === 0, `近地平：${vertsAll} 个线顶点全部落在填充多边形顶点上（最坏 ${worstOff} 个不在，最大间隙 ${worstGap.toFixed(2)} km）`)
 }
 
+// ============ ② 转角（对应任务书 §2）============
+// 折线在顶点处的转角分布：「放大后像多边形」的量化口径（与缩放无关，只看转角）。
+// 三条线逐档比：旧路（不细化）/ 只插弦中点 / 自适应弧点（现行）。
+{
+  const ang = (a, b, c) => {
+    const ax = b[0] - a[0], ay = b[1] - a[1], bx = c[0] - b[0], by = c[1] - b[1]
+    const na = Math.hypot(ax, ay), nb = Math.hypot(bx, by)
+    if (!(na > 0 && nb > 0)) return 0
+    return Math.acos(Math.max(-1, Math.min(1, (ax * bx + ay * by) / (na * nb)))) * 180 / Math.PI
+  }
+  const q = (a, f) => { if (!a.length) return NaN; const s = Float64Array.from(a).sort(); return s[Math.min(s.length - 1, Math.floor(f * s.length))] }
+  console.log('  ② 转角：档组 | 旧路(不细化) p95 / >8° | 现行(自适应弧点) p95 / >8° / 顶点')
+  const GRP = [['峰附近 −1~−3 dB', -3.5, 0], ['中间档 −4~−10 dB', -10.5, -3.5], ['副瓣 −12~−20 dB', -99, -10.5]]
+  let worstP95 = 0, worstGt8 = 0, better = 0, total = 0
+  for (const f of have) {
+    const c = loadCase({ ...f, rels: [-1, -2, -3, -4, -6, -8, -10, -12, -15, -20] })
+    const geoR = bandGeometry(c.gridField, c.levels, false, null, null, 1, c.refine, null)
+    const geoL = bandGeometry(c.gridField, c.levels, false, null, null, 1, null, null)
+    console.log(`     ${f.tag}`)
+    GRP.forEach(([lab, lo, hi]) => {
+      const A = [], B = []; let nv = 0
+      c.levels.forEach((L, k) => {
+        const rel = L - c.peak; if (!(rel > lo && rel <= hi)) return
+        for (const ch of stitchLoops(geoR.lines[k])) { nv += ch.length; for (let i = 1; i < ch.length - 1; i++) A.push(ang(ch[i - 1], ch[i], ch[i + 1])) }
+        for (const ch of stitchLoops(geoL.lines[k])) for (let i = 1; i < ch.length - 1; i++) B.push(ang(ch[i - 1], ch[i], ch[i + 1]))
+      })
+      if (!A.length) return
+      const gA = 100 * A.filter((x) => x > 8).length / A.length, gB = 100 * B.filter((x) => x > 8).length / B.length
+      console.log(`       ${lab}：旧路 ${q(B, 0.95).toFixed(1)}° / ${gB.toFixed(1)}%  →  现行 ${q(A, 0.95).toFixed(1)}° / ${gA.toFixed(1)}% / ${nv} 顶点`)
+      total++; if (gA <= gB) better++
+      worstP95 = Math.max(worstP95, q(A, 0.95)); worstGt8 = Math.max(worstGt8, gA)
+    })
+  }
+  ok(total >= 6 && better === total, `每个档组的 > 8° 顶点占比都不高于旧路（${better} / ${total}）`)
+  ok(worstP95 <= 12 && worstGt8 <= 8, `最差档组：转角 p95 ${worstP95.toFixed(1)}° ≤ 12°、> 8° 占比 ${worstGt8.toFixed(1)}% ≤ 8%`)
+}
+
+// ============ ④ 与 SATSOFT 线的距离（对应任务书 §2.5 因素 C）============
+// 复现 SATSOFT §11.1：四个复场分量各自 FFT 零填充 ×5 的 Whittaker 重建 → RSS 功率 dB → 5 倍细网格线性 marching squares。
+// 与本平台线逐点比距离：剩余差全部来自插值核（sinc vs bicubic），与折线密度无关。只跑一份文件（重建 ~2 s）。
+{
+  const N5 = 5
+  // 实序列 → DFT → 零填充 → 逆变换（可分离直接求和；N 与网格尺寸无关）
+  const whittaker2D = (x, NX, NY, N) => {
+    const W = N * NX, H = N * NY
+    const Ar = new Float64Array(NX * NY), Ai = new Float64Array(NX * NY)
+    const cx = new Float64Array(NX * NX), sx2 = new Float64Array(NX * NX)
+    for (let c = 0; c < NX; c++) for (let k = 0; k < NX; k++) { const a = -2 * Math.PI * c * k / NX; cx[c * NX + k] = Math.cos(a); sx2[c * NX + k] = Math.sin(a) }
+    for (let r = 0; r < NY; r++) {
+      const rb = r * NX
+      for (let k = 0; k < NX; k++) { let re = 0, im = 0; for (let c = 0; c < NX; c++) { const v = x[rb + c]; re += v * cx[c * NX + k]; im += v * sx2[c * NX + k] } Ar[rb + k] = re; Ai[rb + k] = im }
+    }
+    const Br = new Float64Array(NX * NY), Bi = new Float64Array(NX * NY)
+    const cy = new Float64Array(NY * NY), sy = new Float64Array(NY * NY)
+    for (let r = 0; r < NY; r++) for (let l = 0; l < NY; l++) { const a = -2 * Math.PI * r * l / NY; cy[r * NY + l] = Math.cos(a); sy[r * NY + l] = Math.sin(a) }
+    for (let k = 0; k < NX; k++) for (let l = 0; l < NY; l++) {
+      let re = 0, im = 0
+      for (let r = 0; r < NY; r++) { const ar = Ar[r * NX + k], ai = Ai[r * NX + k], cc = cy[r * NY + l], ss = sy[r * NY + l]; re += ar * cc - ai * ss; im += ar * ss + ai * cc }
+      Br[l * NX + k] = re; Bi[l * NX + k] = im
+    }
+    const freqs = (M) => { const fr = new Float64Array(M), w = new Float64Array(M); for (let l = 0; l < M; l++) { if (l < M / 2) { fr[l] = l; w[l] = 1 } else if (l === M / 2) { fr[l] = l; w[l] = 0.5 } else { fr[l] = l - M; w[l] = 1 } } return { f: fr, w } }
+    const FY = freqs(NY), FX = freqs(NX)
+    const Cr = new Float64Array(NX * H), Ci = new Float64Array(NX * H)
+    const icy = new Float64Array(NY * H), isy = new Float64Array(NY * H)
+    for (let l = 0; l < NY; l++) for (let m = 0; m < H; m++) { const a = 2 * Math.PI * FY.f[l] * m / H; icy[l * H + m] = Math.cos(a) * FY.w[l]; isy[l * H + m] = Math.sin(a) * FY.w[l] * (FY.w[l] < 1 ? 0 : 1) }
+    for (let k = 0; k < NX; k++) for (let m = 0; m < H; m++) {
+      let re = 0, im = 0
+      for (let l = 0; l < NY; l++) { const br = Br[l * NX + k], bi = Bi[l * NX + k], cc = icy[l * H + m], ss = isy[l * H + m]; re += br * cc - bi * ss; im += br * ss + bi * cc }
+      Cr[m * NX + k] = re / NY; Ci[m * NX + k] = im / NY
+    }
+    const out = new Float32Array(W * H)
+    const icx = new Float64Array(NX * W), isx = new Float64Array(NX * W)
+    for (let k = 0; k < NX; k++) for (let n2 = 0; n2 < W; n2++) { const a = 2 * Math.PI * FX.f[k] * n2 / W; icx[k * W + n2] = Math.cos(a) * FX.w[k]; isx[k * W + n2] = Math.sin(a) * FX.w[k] * (FX.w[k] < 1 ? 0 : 1) }
+    for (let m = 0; m < H; m++) {
+      const mb = m * NX, ob = m * W
+      for (let n2 = 0; n2 < W; n2++) { let re = 0; for (let k = 0; k < NX; k++) re += Cr[mb + k] * icx[k * W + n2] - Ci[mb + k] * isx[k * W + n2]; out[ob + n2] = re / NX }
+    }
+    return out
+  }
+  // 细网格线性 marching squares（标准 16 例，两处二义按中心均值）
+  const marching = (d, W, H, L) => {
+    const segs = []
+    for (let j = 0; j < H - 1; j++) {
+      const r0 = j * W, r1 = r0 + W
+      for (let i = 0; i < W - 1; i++) {
+        const v00 = d[r0 + i], v10 = d[r0 + i + 1], v01 = d[r1 + i], v11 = d[r1 + i + 1]
+        if (v00 !== v00 || v10 !== v10 || v01 !== v01 || v11 !== v11) continue
+        if (Math.max(v00, v10, v01, v11) < L || Math.min(v00, v10, v01, v11) >= L) continue
+        const code = (v00 >= L ? 1 : 0) | (v10 >= L ? 2 : 0) | (v11 >= L ? 4 : 0) | (v01 >= L ? 8 : 0)
+        const pB = [i + (L - v00) / (v10 - v00), j], pR = [i + 1, j + (L - v10) / (v11 - v10)]
+        const pT = [i + (L - v01) / (v11 - v01), j + 1], pL = [i, j + (L - v00) / (v01 - v00)]
+        switch (code) {
+          case 1: case 14: segs.push([pL, pB]); break
+          case 2: case 13: segs.push([pB, pR]); break
+          case 3: case 12: segs.push([pL, pR]); break
+          case 4: case 11: segs.push([pR, pT]); break
+          case 6: case 9: segs.push([pB, pT]); break
+          case 7: case 8: segs.push([pL, pT]); break
+          case 5: { const cc = 0.25 * (v00 + v10 + v01 + v11); if (cc >= L) { segs.push([pT, pL]); segs.push([pB, pR]) } else { segs.push([pL, pB]); segs.push([pR, pT]) } break }
+          case 10: { const cc = 0.25 * (v00 + v10 + v01 + v11); if (cc >= L) { segs.push([pL, pB]); segs.push([pR, pT]) } else { segs.push([pB, pR]); segs.push([pT, pL]) } break }
+        }
+      }
+    }
+    return segs
+  }
+  const f = have.find((x) => x.name.startsWith('CS-6C'))
+  if (!f) { console.log('  ④ 与 SATSOFT 线的距离：本机无 CS-6C 样例，跳过') } else {
+    const c = loadCase({ ...f, rels: [-1, -3, -6, -10] })
+    const s = c.set, NX = c.NX, NY = c.NY, W = N5 * NX, H = N5 * NY
+    const t0 = Date.now()
+    const f1r = whittaker2D(s.c1re, NX, NY, N5), f1i = whittaker2D(s.c1im, NX, NY, N5)
+    const f2r = whittaker2D(s.c2re, NX, NY, N5), f2i = whittaker2D(s.c2im, NX, NY, N5)
+    const dS = new Float32Array(W * H)
+    for (let i = 0; i < W * H; i++) { const P = f1r[i] * f1r[i] + f1i[i] * f1i[i] + f2r[i] * f2r[i] + f2i[i] * f2i[i]; dS[i] = P > 0 ? 10 * Math.log10(P) : NaN }
+    // 节点处 sinc 重建应逐点等于原场（插值型）
+    let nodeErr = 0
+    for (let r = 0; r < NY; r++) for (let cc = 0; cc < NX; cc++) { const v = c.field.db[r * NX + cc]; if (v === v) nodeErr = Math.max(nodeErr, Math.abs(dS[(r * N5) * W + cc * N5] - v)) }
+    ok(nodeErr < 1e-3, `Whittaker 密度 ${N5} 重建在网格节点上复现原场（最大 |Δ| ${nodeErr.toExponential(1)} dB）`)
+    const geo = bandGeometry(c.gridField, c.levels, false, null, null, 1, c.refine, null)
+    const dAll = []
+    for (let k = 0; k < c.levels.length; k++) {
+      const segS = marching(dS, W, H, c.levels[k]).map((sg) => [[sg[0][0] / N5, sg[0][1] / N5], [sg[1][0] / N5, sg[1][1] / N5]])
+      if (!segS.length) continue
+      // 空间桶：点到 SATSOFT 折线的最近距离（格）
+      const bucket = new Map()
+      const put = (kk, i) => { let a = bucket.get(kk); if (!a) { a = []; bucket.set(kk, a) } a.push(i) }
+      segS.forEach((sg, i) => {
+        const x0 = Math.floor(Math.min(sg[0][0], sg[1][0])), x1 = Math.floor(Math.max(sg[0][0], sg[1][0]))
+        const y0 = Math.floor(Math.min(sg[0][1], sg[1][1])), y1 = Math.floor(Math.max(sg[0][1], sg[1][1]))
+        for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) put(x + ',' + y, i)
+      })
+      const dseg = (p, a, b) => { const dx = b[0] - a[0], dy = b[1] - a[1], l2 = dx * dx + dy * dy; let t = l2 > 0 ? ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / l2 : 0; t = t < 0 ? 0 : t > 1 ? 1 : t; return Math.hypot(p[0] - a[0] - dx * t, p[1] - a[1] - dy * t) }
+      for (const sg of geo.lines[k]) for (const p of sg) {
+        const cx2 = Math.floor(p[0]), cy2 = Math.floor(p[1])
+        let best = Infinity
+        for (let rad = 1; rad <= 4 && !(best < rad - 0.5); rad++) {
+          for (let x = cx2 - rad; x <= cx2 + rad; x++) for (let y = cy2 - rad; y <= cy2 + rad; y++) {
+            const a = bucket.get(x + ',' + y); if (!a) continue
+            for (const i of a) { const d = dseg(p, segS[i][0], segS[i][1]); if (d < best) best = d }
+          }
+        }
+        if (best < Infinity) dAll.push(best)
+      }
+    }
+    const qq = (a, fr) => { const s2 = Float64Array.from(a).sort(); return s2[Math.min(s2.length - 1, Math.floor(fr * s2.length))] }
+    const p50 = qq(dAll, 0.5), p95 = qq(dAll, 0.95), mx = Math.max(...dAll)
+    console.log(`  ④ 与 SATSOFT（Whittaker 密度 ${N5}）线的距离：${dAll.length} 个顶点 p50/p95/max = ${p50.toFixed(4)}/${p95.toFixed(4)}/${mx.toFixed(3)} 格（重建 ${((Date.now() - t0) / 1000).toFixed(1)} s）`)
+    ok(dAll.length > 1000 && p50 <= 0.06 && p95 <= 0.35, `本平台线与 SATSOFT 线的距离 p50 ≤ 0.06 格、p95 ≤ 0.35 格（剩余差来自插值核 sinc vs bicubic）`)
+  }
+}
+
 console.log(`covRealGrd.test.mjs：${pass} 条断言全绿（样例 ${have.length} / ${FILES.length}）`)

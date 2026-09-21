@@ -221,12 +221,71 @@ export function buildMeshIndices(mesh, plane = null) {
   const upperB = (arr, cnt, v) => { let lo = 0, hi = cnt; while (lo < hi) { const mid = (lo + hi) >> 1; if (arr[mid] <= v) lo = mid + 1; else hi = mid } return lo }
   // isB=格内第二个三角形。三条边在表里的定位与 coverage.bandGeometry 的 augment 逐字同序：
   //   A=(i00,i10,i11)：底边 h@i00、右边 v@i10、对角 d@i00；B=(i00,i11,i01)：对角 d@i00、顶边 h@i01、左边 v@i00
-  // 弦中点（与 coverage.bandGeometry.pushBand 同一套规则）：某档在本三角形的弦 P–Q 若有中点 M，弧鼓进哪一档，
-  // 那一档就在弦上插 M 开凹口（扇心取凹口顶点，既不漏画也不重叠），另一档得薄片三角形 (P,M,Q)。
+  // 弧点（与 coverage.bandGeometry.pushBand 同一套规则）：某档在本三角形的弦 P–Q 若有弧点 a₁…a_k，弧鼓进哪一档，
+  // 那一档就在弦上按序插入全部弧点开凹口（扇心取离弦最远的那个弧点，既不漏画也不重叠；校验不过走耳切），
+  // 另一档得弦与弧之间的薄片（以 P 为扇心的三角带）。
   const rMt = rf ? rf.mt : null, rMk = rf ? rf.mk : null, rMs = rf ? rf.ms : null
   const mBase = len + nR
-  const bv = rf ? new Int32Array(12 + 3 * nb) : null, bd = rf ? new Float64Array(12 + 3 * nb) : null
-  const midOf = (m0, m1, tri, k) => { for (let p = m0; p < m1; p++) if (rMt[p] === tri && rMk[p] === k) return p; return -1 }
+  const bv = rf ? new Int32Array(28 + 3 * nb) : null, bd = rf ? new Float64Array(28 + 3 * nb) : null
+  // 同一 (三角形, 档) 的弧点记录连续、按 P→Q 有序 → 取区间 [_mg0, _mg1)
+  let _mg0 = 0, _mg1 = 0
+  const midRange = (m0, m1, tri, k) => {
+    let p = m0
+    while (p < m1 && !(rMt[p] === tri && rMk[p] === k)) p++
+    if (p >= m1) { _mg0 = _mg1 = 0; return 0 }
+    let q = p + 1
+    while (q < m1 && rMt[q] === tri && rMk[q] === k) q++
+    _mg0 = p; _mg1 = q; return q - p
+  }
+  const vX = (id) => (id < len ? lonU[id + rowOff] : extra.lon[id - len])
+  const vY = (id) => (id < len ? lat[id + rowOff] : extra.lat[id - len])
+  // 以 start 号顶点为扇心的扇形三角化是否合法：全部三角形同向 ⇔ 该顶点在多边形的核内
+  const fanOkG = (b, n2, start) => {
+    let sgn = 0
+    const ox = vX(b[start]), oy = vY(b[start])
+    for (let i = 1; i < n2 - 1; i++) {
+      const a = b[(start + i) % n2], c3 = b[(start + i + 1) % n2]
+      const t = (vX(a) - ox) * (vY(c3) - oy) - (vY(a) - oy) * (vX(c3) - ox)
+      if (t === 0) continue
+      const u = t > 0 ? 1 : -1
+      if (!sgn) sgn = u; else if (u !== sgn) return false
+    }
+    return true
+  }
+  // 耳切兜底（两条弦都开凹口时扇心校验会不过）：与 CPU 侧同一套，保证两边覆盖同一块区域
+  const _earG = rf ? new Int32Array(96) : null
+  const inTriG = (p, i0, i1, i2) => {
+    const px = vX(p), py = vY(p), ax = vX(i0), ay = vY(i0), bx = vX(i1), by = vY(i1), cx3 = vX(i2), cy3 = vY(i2)
+    const d1 = (bx - ax) * (py - ay) - (by - ay) * (px - ax)
+    const d2 = (cx3 - bx) * (py - by) - (cy3 - by) * (px - bx)
+    const d3 = (ax - cx3) * (py - cy3) - (ay - cy3) * (px - cx3)
+    return !((d1 < 0 || d2 < 0 || d3 < 0) && (d1 > 0 || d2 > 0 || d3 > 0))
+  }
+  const fanPut = (b, n2, start) => { for (let i = 1; i < n2 - 1; i++) { idx[n] = b[start]; idx[n + 1] = b[(start + i) % n2]; idx[n + 2] = b[(start + i + 1) % n2]; n += 3 } }
+  const earClipG = (b, n2) => {
+    if (n2 > _earG.length) { fanPut(b, n2, 0); return }
+    for (let i = 0; i < n2; i++) _earG[i] = i
+    let m = n2, area2 = 0
+    for (let i = 0; i < n2; i++) { const a = b[i], c3 = b[(i + 1) % n2]; area2 += vX(a) * vY(c3) - vX(c3) * vY(a) }
+    const ccw = area2 > 0
+    while (m > 3) {
+      let cut = -1
+      for (let i = 0; i < m && cut < 0; i++) {
+        const i0 = b[_earG[(i + m - 1) % m]], i1 = b[_earG[i]], i2 = b[_earG[(i + 1) % m]]
+        const cr = (vX(i1) - vX(i0)) * (vY(i2) - vY(i0)) - (vY(i1) - vY(i0)) * (vX(i2) - vX(i0))
+        if (ccw ? !(cr > 0) : !(cr < 0)) continue
+        let ok2 = true
+        for (let j = 0; j < m && ok2; j++) { const p = b[_earG[j]]; if (p !== i0 && p !== i1 && p !== i2 && inTriG(p, i0, i1, i2)) ok2 = false }
+        if (!ok2) continue
+        cut = i
+        idx[n] = i0; idx[n + 1] = i1; idx[n + 2] = i2; n += 3
+        for (let j = i; j < m - 1; j++) _earG[j] = _earG[j + 1]
+        m--
+      }
+      if (cut < 0) break
+    }
+    for (let i = 1; i < m - 1; i++) { idx[n] = b[_earG[0]]; idx[n + 1] = b[_earG[i]]; idx[n + 2] = b[_earG[i + 1]]; n += 3 }
+  }
   // 薄片 (P,M,Q) 归第 k 档：三顶点位置抄自 P/M/Q，d 取带内值 → 片元稳落第 k 档
   const copyV = (id, s) => {
     if (id < len) { const i = id + rowOff; extra.lon[s] = lonU[i]; extra.lat[s] = lat[i]; if (xy) { const o = id * 2; extra.xy[s * 2] = xy[o]; extra.xy[s * 2 + 1] = xy[o + 1] } }
@@ -254,22 +313,43 @@ export function buildMeshIndices(mesh, plane = null) {
         let c2 = 0
         for (let q = 0; q < m; q++) { const d = pd[q]; if (d < lo || d > hi) continue; bv[c2] = pv[q]; bd[c2] = d; c2++ }   // 本档顶点子列（环序）
         if (c2 < 3) continue
-        let apex = 0
+        let apex = 0, notches = 0, arcs1 = false
         if (m1 > m0) for (let pass = 0; pass < 2; pass++) {
-          const q = pass === 0 ? midOf(m0, m1, tri, k) : (k < nb - 1 ? midOf(m0, m1, tri, k + 1) : -1)
-          if (q < 0) continue
-          const L = pass === 0 ? lo : hi
+          if (pass === 1 && k >= nb - 1) continue
+          const cnt = midRange(m0, m1, tri, pass === 0 ? k : k + 1); if (!cnt) continue
+          const q = _mg0, L = pass === 0 ? lo : hi
           let ia = -1
           for (let i = 0; i < c2; i++) { if (bd[i] === L && bd[(i + 1) % c2] === L) { ia = i; break } }   // 弦 = 相邻两个 d===L
           if (ia < 0) continue
-          const idM = mBase + q, ib = (ia + 1) % c2
-          if (pass === 0 ? rMs[q] === 1 : rMs[q] === 0) {            // 弧鼓进本档 → 插 M 开凹口
-            for (let i = c2 - 1; i > ia; i--) { bv[i + 1] = bv[i]; bd[i + 1] = bd[i] }
-            bv[ia + 1] = idM; bd[ia + 1] = L; c2++
-            if (apex === 0) apex = ia + 1; else if (apex > ia) apex++
-          } else sliver(q, k, bv[ia], idM, bv[ib])                       // 薄片归本档
+          const ib = (ia + 1) % c2
+          const ax0 = vX(bv[ia]), ay0 = vY(bv[ia]), ex = vX(bv[ib]) - ax0, ey = vY(bv[ib]) - ay0
+          // 弧点按 P→Q 存，弦在本多边形上的走向可能相反 → 按在弦上的投影定序
+          const rev = cnt > 1 && (vX(mBase + q) - ax0) * ex + (vY(mBase + q) - ay0) * ey
+            > (vX(mBase + q + cnt - 1) - ax0) * ex + (vY(mBase + q + cnt - 1) - ay0) * ey
+          if (pass === 0 ? rMs[q] === 1 : rMs[q] === 0) {            // 弧鼓进本档 → 按序插入全部弧点开凹口
+            for (let i = c2 - 1; i > ia; i--) { bv[i + cnt] = bv[i]; bd[i + cnt] = bd[i] }
+            for (let j = 0; j < cnt; j++) { const id = mBase + q + (rev ? cnt - 1 - j : j); bv[ia + 1 + j] = id; bd[ia + 1 + j] = L }
+            c2 += cnt
+            notches++
+            // 扇心：一个弧点就取它，≥2 个取【离弦最远的多边形顶点】（理由见 coverage.bandGeometry.pushBand）
+            if (cnt === 1 && notches === 1) { apex = ia + 1; arcs1 = true }
+            else {
+              let far = 0, farD = -1
+              for (let i = 0; i < c2; i++) { const d2 = Math.abs((vX(bv[i]) - ax0) * ey - (vY(bv[i]) - ay0) * ex); if (d2 > farD) { farD = d2; far = i } }
+              apex = far; arcs1 = false
+            }
+          } else {                                                    // 薄片：以 P 为扇心的三角带（每个三角形 3 个专属顶点）
+            let prev = bv[ia]
+            for (let j = 0; j < cnt; j++) {
+              const id = mBase + q + (rev ? cnt - 1 - j : j)
+              if (j > 0) sliver(q + j - 1, k, bv[ia], prev, id)
+              prev = id
+            }
+            sliver(q + cnt - 1, k, bv[ia], prev, bv[ib])
+          }
         }
-        for (let i = 1; i < c2 - 1; i++) { idx[n] = bv[apex]; idx[n + 1] = bv[(apex + i) % c2]; idx[n + 2] = bv[(apex + i + 1) % c2]; n += 3 }
+        if (notches && !(notches === 1 && arcs1) && !fanOkG(bv, c2, apex)) { apex = -1; for (let i = 0; i < c2 && apex < 0; i++) if (fanOkG(bv, c2, i)) apex = i }
+        if (apex >= 0) fanPut(bv, c2, apex); else earClipG(bv, c2)
       }
     }
     ext(i0); ext(i1); ext(i2)
