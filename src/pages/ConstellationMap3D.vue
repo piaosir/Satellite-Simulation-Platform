@@ -5,7 +5,7 @@ import { view } from '../stores/view'
 import { covNav } from '../stores/coveragePanels'
 import { zoom } from '../stores/zoom'
 import { effective as displayQuality } from '../stores/displayQuality'
-import { viewPrefs, FRAME_MODES, VIEW_PREF_RANGE } from '../stores/viewPrefs'
+import { viewPrefs, FRAME_MODES, VIEW_PREF_RANGE, VIEW_PREFS_REV } from '../stores/viewPrefs'
 import { setGrdBridge, clearGrdBridge, fileBridge, bumpCustomSats } from '../stores/fileBridge'
 import { shellUi, sideCtx } from '../stores/shellUi'
 import { isSecOpen, toggleSec, revealSection } from '../stores/panelSections'
@@ -1583,6 +1583,7 @@ function defaultConstDraft() {
     orbitType: 'custom', design: OD.defaultInputs('custom'),
     pattern: 'delta', T: 24, P: 6, F: 1, incl: 53, shape: 'circ', perigeeKm: 550, apogeeKm: 550, argp: 0, raan0: 0, m0: 0,
     color: '#4dabf7', colorByPlane: true,
+    pvAll: false,  // 聚焦档：false = 只把种子星放进选中集；true = 预览星座每一颗都进选中集（轨道线 / 轨迹 / 覆盖圈逐颗画）
     pvSolo: true   // 「仅预览」：向导开着时地图上只有正在生成的星座；关掉才叠加在当前显示的卫星上
   }
 }
@@ -1712,20 +1713,33 @@ let _wizSavedSel = null      // 进向导那一刻的选中集（null = 不在�
 let _wizFaced = false        // 种子星是否已转到正面
 let _wizCommitted = false    // 本次关向导是「生成 / 更新」而非取消
 function wizPreviewCommit() { _wizCommitted = true }
+let _wizAllMode = null       // 上一轮套用的聚焦档（null = 还没套过）：换档才整批重选，不换档尊重用户在预览星里的手动多选
 function wizPreviewSelect() {
-  if (_wizSavedSel === null) { _wizSavedSel = selEntries.slice(); _wizFaced = false; _wizCommitted = false }
+  if (_wizSavedSel === null) { _wizSavedSel = selEntries.slice(); _wizFaced = false; _wizCommitted = false; _wizAllMode = null }
   const pv = customConst.previewEntries()
   if (!pv.length) {                                                       // 参数非法 → 没有预览星，预览星从选中集退出
     if (selEntries.some((e) => e.group === PREVIEW_GROUP)) { selEntries = []; selEntry = null; closeCard() }
     return
   }
+  const all = !!(constModal.value && constModal.value.pvAll)
+  const modeChanged = _wizAllMode !== all
+  _wizAllMode = all
   rebindSelection(PREVIEW_GROUP)                                          // 上一轮的预览对象按名重绑到这一轮（改名 / 减星会掉一部分）
   const kept = selEntries.filter((e) => e.group === PREVIEW_GROUP && renderEntries.includes(e))
-  if (kept.length) {
+  if (all) {
+    // 「全部」：预览星座每一颗都进选中集（增减星 / 换档时整批重铺；已经是整批则不动）
+    if (!modeChanged && kept.length === pv.length && kept.length === selEntries.length) return
+    selEntries = pv.slice(); selEntry = pv[0]
+    resetBeam(); refreshSelection()
+    if (!_wizFaced) { faceEntries(pv); _wizFaced = true }
+    saveSelection()
+    return
+  }
+  if (kept.length && !modeChanged) {
     if (kept.length !== selEntries.length) { selEntries = kept; if (!kept.includes(selEntry)) selEntry = kept[kept.length - 1]; refreshSelection() }
     return
   }
-  selectSat(pv[0], !_wizFaced)
+  selectSat(pv[0], !_wizFaced)                                            // 「种子星」：第 1 面第 1 颗；首次预览把地球转过来
   _wizFaced = true
 }
 function wizPreviewRelease() {
@@ -6926,7 +6940,7 @@ function snapshot() {
     nameMode: nameMode.value, countryName: countryNameSize.value, provName: provNameSize.value, cityName: cityNameSize.value,
     oceanMode: oceanNameMode.value, seaMode: seaNameMode.value, oceanName: oceanNameSize.value, seaName: seaNameSize.value, waterOff: { ...waterOff },
     chain: { on: chainOn.value, off: { ...chainOff }, style: { ...chainStyle } },
-    showProvinces: showProvinces.value, showCities: showCities.value, admSel1: [...admSel1.value], admName1: admName1.value, admName2: admName2.value, borderStyle: { ...borderStyle }, labelStyle: { ...labelStyle }, termOn: termOn.value, termNight: termNight.value, termLine: termLine.value, termStyle: { ...termStyle }, tzMode: tzMode.value, crs: { ...mapCrs }, oceanColor: oceanColor.value, imagery: { on: imageryOn.value, k: imageryKey.value, bright: imageryBright.value }, landScheme: landScheme.value, landOverrides: { ...landOverrides }, groupColors: { ...groupColors }, frame: viewPrefs.frame, dragDamping: viewPrefs.dragDamping, wheelStep3d: viewPrefs.wheelStep3d, wheelStep2d: viewPrefs.wheelStep2d, live: live.value, clock: { stepSec: clock.stepSec, speed: clock.speed }, beamLock: beamLock.value, fpMode: fpMode.value, beam: beam.value, elevMin: elevMin.value, focusStyle: { ...focusStyle }, windowMin: windowMin.value,
+    showProvinces: showProvinces.value, showCities: showCities.value, admSel1: [...admSel1.value], admName1: admName1.value, admName2: admName2.value, borderStyle: { ...borderStyle }, labelStyle: { ...labelStyle }, termOn: termOn.value, termNight: termNight.value, termLine: termLine.value, termStyle: { ...termStyle }, tzMode: tzMode.value, crs: { ...mapCrs }, oceanColor: oceanColor.value, imagery: { on: imageryOn.value, k: imageryKey.value, bright: imageryBright.value }, landScheme: landScheme.value, landOverrides: { ...landOverrides }, groupColors: { ...groupColors }, viewRev: VIEW_PREFS_REV, frame: viewPrefs.frame, dragDamping: viewPrefs.dragDamping, wheelStep3d: viewPrefs.wheelStep3d, wheelStep2d: viewPrefs.wheelStep2d, live: live.value, clock: { stepSec: clock.stepSec, speed: clock.speed }, beamLock: beamLock.value, fpMode: fpMode.value, beam: beam.value, elevMin: elevMin.value, focusStyle: { ...focusStyle }, windowMin: windowMin.value,
     markStyle: { ...markStyle },
     mkPtLayer: showPtLayer.value, mkStLayer: showStLayer.value, mkTrajLayer: showTrajLayer.value,
     covOpen: covOpen.value, polyOpen: polyOpen.value,
@@ -7063,7 +7077,9 @@ async function restoreSettings() {
   syncMarkers()   // 以恢复后的尺寸重建标记（含坐标/名称显隐、各图层显隐）
   // 基础视图偏好：参考系只认两个枚举串，三个数各自钳到范围。老存档里残留的 autoRotate / autoRotateSpeed
   // 一律忽略 —— 那是【展示性】匀速旋转的开关，"开着" ≠ "想看惯性视角"，不迁移、不映射。
-  if (FRAME_MODES.includes(s.frame)) viewPrefs.frame = s.frame
+  // ★ 出厂档从「相机跟随」改成「惯性视角」那次：viewRev 比当前小的存档，里面的 frame 不认（那是旧
+  //   出厂值顺手存下来的，不是用户挑的），按新出厂值入场；存过一次后就跟用户的选择走。
+  if (s.viewRev >= VIEW_PREFS_REV && FRAME_MODES.includes(s.frame)) viewPrefs.frame = s.frame
   for (const k of ['dragDamping', 'wheelStep3d', 'wheelStep2d']) {
     const r = VIEW_PREF_RANGE[k]
     if (Number.isFinite(s[k])) viewPrefs[k] = Math.max(r.min, Math.min(r.max, Math.round(s[k])))
@@ -7691,6 +7707,12 @@ onBeforeUnmount(() => {
                 <span class="pvsw"><button type="button" class="layersw" :class="{ on: focusStyle.trkOn }" role="switch" :aria-checked="focusStyle.trkOn ? 'true' : 'false'" :title="focusStyle.trkOn ? '隐藏星下点轨迹' : '显示星下点轨迹'" @click="toggleFocus('trkOn')"><i></i></button><span>星下点轨迹</span></span>
                 <span class="pvsw"><button type="button" class="layersw" :class="{ on: focusStyle.fpOn }" role="switch" :aria-checked="focusStyle.fpOn ? 'true' : 'false'" :title="focusStyle.fpOn ? '隐藏覆盖圈' : '显示覆盖圈'" @click="toggleFocus('fpOn')"><i></i></button><span>覆盖圈</span></span>
                 <span class="pvsw"><button type="button" class="layersw" :class="{ on: focusStyle.coneOn }" role="switch" :aria-checked="focusStyle.coneOn ? 'true' : 'false'" :title="focusStyle.coneOn ? '隐藏覆盖锥' : '显示覆盖锥'" @click="toggleFocus('coneOn')"><i></i></button><span>覆盖锥</span></span>
+              </div>
+              <div class="cef"><label>聚焦</label>
+                <span class="seg3">
+                  <span :class="{ on: !constModal.pvAll }" title="只把预览星座的种子星（第 1 面第 1 颗）放进选中集" @click="constModal.pvAll = false">种子星</span>
+                  <span :class="{ on: constModal.pvAll }" title="预览星座每一颗都进选中集，轨道线 / 星下点轨迹 / 覆盖圈逐颗画" @click="constModal.pvAll = true">全部</span>
+                </span>
               </div>
               <div class="cef"><label>轨迹长度</label>
                 <span class="seg3">
