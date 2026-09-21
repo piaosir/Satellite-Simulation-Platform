@@ -6850,6 +6850,7 @@ onMounted(async () => {
   nowBeat = setInterval(() => { nowStamp.value = Date.now() }, 1000)
   scene = createGlobeScene(el.value, { ...displayQuality.value })
   scene.setFrameMode(viewPrefs.frame)
+  scene.setDragDamping(viewPrefs.dragDamping)
   scene.setLabelMode(nameMode.value)
   scene.setWaterOff({ ...waterOff })
   scene.setWaterMode({ ocean: oceanNameMode.value, sea: seaNameMode.value })
@@ -6928,12 +6929,14 @@ onMounted(async () => {
   redrawSats()   // 恢复后立即绘制自定义卫星（关联卫星待 loadGroup 完成由 refreshPositions 跟踪）
   applyDisplayQuality()   // 套用当前画质档位（低/中/高档的 50m 底图按需加载，超高/极致档用静态 10m；110m 已于 v1.3.32 下线）
   applyTerminator()   // 晨昏线：按恢复后的开关画一次（不依赖星历，故不等 loadGroup）
-  scene.setFrameMode(viewPrefs.frame)   // 存档里的参考系（restoreSettings 只回填 store）
+  scene.setFrameMode(viewPrefs.frame)   // 存档里的参考系与拖拽阻尼（restoreSettings 只回填 store）
+  scene.setDragDamping(viewPrefs.dragDamping)
   if (view.flat) await applyFlat(true)   // 恢复上次退出时的 2D 平面图（watch 不触发初始值，故挂载时主动套用一次）
   watch(snapshot, saveSettings, { deep: true })   // 此后任意改动自动本地缓存
   watch(displayQuality, applyDisplayQuality, { deep: true })   // 画质档位变化 → 实时套用（msaa 除外，由重挂载处理）
   // 参考系换档（设置弹窗 / 侧栏小标 / 命令面板写的都是同一个 viewPrefs.frame）
   watch(() => viewPrefs.frame, (v) => { if (scene) scene.setFrameMode(v) })
+  watch(() => viewPrefs.dragDamping, (v) => { if (scene) scene.setDragDamping(v) })
 })
 onBeforeUnmount(() => {
   // 离开 3D 页：复位顶栏覆盖图入口（按钮随之隐藏），并关掉面板镜像状态
