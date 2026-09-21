@@ -303,6 +303,11 @@ resources/imagery/
 # ★ 非得 Electron 不可：改的全是逐帧行为，而窗口不可见时 Chromium 把 rAF 压到 ~1 Hz（show:false 量出来
 #   ω₀ 只有 7 °/s，全是伪影）—— 故窗口真显示、透明度调到 2%，页面自己先报一条实测帧率作前提。
 # ★ Electron 在 Windows 是 GUI 子系统，主进程 console.log 到不了父进程的管道 —— 结果全落 out/report.txt。
+# ★ 合成拖动每次必须换一个 pointerId：OrbitControls 用 _pointers 记着「哪几根指头按着」，同号的第二次
+#   pointerdown 会被 _isTrackingPointer 直接吞掉，表现是「这一次拖动只走了一小半」且只偶发。
+# ★ 判「滑行停了没有」必须按时间，不能按「连续几帧没变化」：台子 rAF 275 Hz 而画质中/低档把 scene
+#   压到 30 Hz，相机每 33 ms 才动一次、中间 9 帧原地不动 —— 按帧数判会把 30 fps 档一上来就判成停。
+# ★ 合成拖动要按【墙钟时长】铺（360 px / 200 ms），按帧数铺的话 30 fps 档一次拖动只够采一个样本。
 # 台子还顺带做源码级核对（A5 接线位置 / A9 快照与恢复字段 / A11 未动区），那几条跑起来量不到。
 # launch.json 的 spin-harness（端口 5823）只装页面，用来肉眼看。
 .spinharness/
