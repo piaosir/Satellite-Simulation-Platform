@@ -2360,130 +2360,141 @@ function sunOutageIcsEvents(payload) {
   return out
 }
 
-// ==================== 日凌预报导出（模板版 Excel）====================
-// 《三线表模板_TimesNewRoman_11pt.xlsx》口径，★ 与模板一模一样：整本只有两张表、各自从 A1 起，
-// 没有页首标题、没有空行、没有表注、没有筛选器、不冻结、不贴 logo。只用 tplSheet 的
-// caption / headRow / dataRow / endTable 四件（heading / note / skip 一概不调）——三线、行高、
-// 对齐、字体全由它保证，别绕开它手画边框。
+// ==================== 日凌预报导出（运行版《日凌时间表》Excel）====================
+// 版式照用户给的运行原件《CH12_C_全球_1.8m.xls》（中星12号 87.5°E · C 频段全球波束 · 1.8 m ·
+// 2026 秋季，68 站 1094 天）逐项量出来复刻。★ 不是三线表：这一张是发给值班与客户的时间表。
 //
-// 时刻口径：payload 里的 date 与 *Sec（当天 0 时起的秒）都已在渲染端按显示时区平移好，
-// 主进程只写不算。日期写真日期值（Date，yyyy-mm-dd），三个时刻写 Excel 时间序列值（sec/86400，
-// hh:mm:ss）——xlsx 的日期序列号没有时区概念，本地墙钟只能靠平移伪装，与过境导出同一做法。
-const SO_SEASON_CN = { vernal: '春分', autumnal: '秋分' }
-// 列宽：显式给（模板是 20 / 12 一类的整数），但不得窄于表头一行放得下的宽度 ——
-// tplSheet 的表头带 wrapText，表头一折行，autofitBook 就会把那一行拔高，
-// 模板钉死的 21.75 磅就保不住了。1.3 = autofitSheet 的 padWidth 0.9 + 死区 0.35 再留一点。
-function soCols(cols) {
-  return cols.map((c) => Object.assign({}, c, { w: Math.max(c.w, Math.ceil((maxLineUnits(c.h, 11) + 1.3) * 10) / 10) }))
-}
-function buildSunOutageExcel(payload) {
-  const p = payload || {}
-  const sat = p.sat || {}
-  const seasons = (Array.isArray(p.seasons) && p.seasons.length ? p.seasons : ['vernal', 'autumnal'])
-    .filter((s) => s === 'vernal' || s === 'autumnal')
-  const stations = Array.isArray(p.stations) ? p.stations : []
-  const year = p.year != null ? p.year : ''
-  const tzLabel = p.tzLabel || 'UTC'
-  const crit = p.criterion || {}
-  const critTxt = crit.mode === 'geometric'
-    ? '判据：纯几何，θ_th = θ_3dB'
-    : `判据：C/N 恶化 ≥ ${crit.degDb != null && crit.degDb !== '' ? crit.degDb : 1} dB`
-  const satTitle = `${sat.name || '—'}（${sat.slotText || '—'}）${year} 年`
-  const wb = new ExcelJS.Workbook()
-  wb.creator = '卫星仿真平台'; wb.created = new Date()
+//   R1  A1:I1 合并  「{卫星}  {年}年{春季|秋季}日凌时间表」 华文楷体 24 磅粗 居中 行高 34.5
+//   R2  A2:I2 合并  「卫星名称:{卫星}    东经{轨位}度」      华文楷体 16 磅粗 居中 行高 22.5
+//   R3  表头        序号/地点/经度/纬度/天线尺寸（米）/日期/开始时间/结束时间/持续时间（分）
+//                                                          华文楷体 12 磅粗 居中 行高 16.5
+//   R4+ 数据        等线 11 磅 居中 行高 14；★ 站信息列 A–E 按站纵向合并（一站一块）
+//   全表每格四边细实线（不是三线）、无底纹、不冻结、不筛选、网格线保持显示
+//   列宽 8.45 8.45 8.45 8.45 10 12 9 9 10
+//   日期真日期值 yyyy-mm-dd；开始/结束是【带秒的】时间序列值，由 hh:mm 只显示到分（与原件一致）；
+//   持续时间 = round(真实秒/60) 的整数分 —— 原件里 14:10~14:17 那天写的是 8 而不是 7，
+//   正是因为它取的是真实时长（460 s = 7.67 min）而不是两个显示值相减。
+//
+// ★ 不调 applyBookFont：那一支把中西文归位成 宋体 + Times New Roman，会把原件的 华文楷体/等线 冲掉。
+// ★ 不调 autofitBook：列宽行高都是原件量出来的定值，自适应会把版式改走样。
+//   唯一的例外是「地点」列 —— 站名超过原件那批四字名（8.45 字符）时只增不减地放宽，截断是丢信息。
+const SO_SEASON_TABLE = { vernal: '春季', autumnal: '秋季' }
+const SO_FONT_TITLE = '华文楷体'
+const SO_FONT_BODY = '等线'
+const SO_COL_W = [8.45, 8.45, 8.45, 8.45, 10, 12, 9, 9, 10]
+const SO_HEAD = ['序号', '地点', '经度', '纬度', '天线尺寸（米）', '日期', '开始时间', '结束时间', '持续时间（分）']
+const SO_NCOL = 9
 
-  // —— 表 1：地球站参数 ——
-  const cols1 = [
-    { h: '地球站', w: 16, text: true },
-    { h: '纬度 (°N)', w: 12, fmt: '0.0000' },
-    { h: '经度 (°E)', w: 12, fmt: '0.0000' },
-    { h: '频段', w: 8, text: true },
-    { h: '频率 (GHz)', w: 12, fmt: '0.00' },
-    { h: '口径 (m)', w: 10, fmt: '0.00' },
-    { h: 'T_sys (K)', w: 10, fmt: '0' },
-    { h: '方位 (°)', w: 10, fmt: '0.00' },
-    { h: '仰角 (°)', w: 10, fmt: '0.00' },
-    { h: '3 dB 波束宽 (°)', w: 15, fmt: '0.000' },
-    { h: '门限角 (°)', w: 12, fmt: '0.000' }
-  ]
-  for (const s of seasons) {
-    const cn = SO_SEASON_CN[s]
-    cols1.push({ h: `${cn}·天数`, w: 10, fmt: '0', season: s, key: 'days' })
-    cols1.push({ h: `${cn}·单日最长 (min)`, w: 16, fmt: '0.0', season: s, key: 'maxMin' })
-  }
-  const ws1 = wb.addWorksheet('地球站', { views: [{ showGridLines: false }] })
-  soCols(cols1).forEach((c, i) => { ws1.getColumn(i + 1).width = c.w })
-  const T1 = tplSheet(ws1)
-  T1.caption(`${satTitle}日凌预报 · 地球站参数（${critTxt}）`, cols1.length)
-  T1.headRow(cols1.map((c) => c.h))
-  const fmts1 = cols1.map((c) => c.fmt || '')
-  for (const st of stations) {
-    const vals = [
-      st.name == null ? '' : String(st.name),
-      numOrText(st.lat), numOrText(st.lon),
-      st.band == null ? '' : String(st.band),
-      numOrText(st.freq), numOrText(st.diameter), numOrText(st.sysTemp),
-      numOrText(st.satAz), numOrText(st.satEl), numOrText(st.beamWidth), numOrText(st.thresholdAngle)
-    ]
-    for (const c of cols1) {
-      if (!c.season) continue
-      const sea = st[c.season]
-      vals.push(sea ? numOrText(sea[c.key]) : '—')
-    }
-    T1.dataRow(vals, fmts1)
-  }
-  if (stations.length) T1.endTable(cols1.length)
-
-  // —— 表 2：逐日日凌窗口（跨 sheet 连号，故 tplSheet(ws2, 1)）——
-  const cols2 = [
-    { h: '地球站', w: 16 },
-    { h: '分点', w: 8 },
-    { h: '日期', w: 13, fmt: 'yyyy-mm-dd' },
-    { h: `开始 (${tzLabel})`, w: 13, fmt: 'hh:mm:ss' },
-    { h: `峰值 (${tzLabel})`, w: 13, fmt: 'hh:mm:ss' },
-    { h: `结束 (${tzLabel})`, w: 13, fmt: 'hh:mm:ss' },
-    { h: '时长 (min)', w: 12, fmt: '0.0' },
-    { h: '峰值恶化 (dB)', w: 14, fmt: '0.00' },
-    { h: '最小夹角 (°)', w: 14, fmt: '0.000' }
-  ]
-  const ws2 = wb.addWorksheet('日凌窗口', { views: [{ showGridLines: false }] })
-  soCols(cols2).forEach((c, i) => { ws2.getColumn(i + 1).width = c.w })
-  const T2 = tplSheet(ws2, 1)
-  T2.caption(`${satTitle}逐日日凌窗口`, cols2.length)
-  T2.headRow(cols2.map((c) => c.h))
-  const fmts2 = cols2.map((c) => c.fmt || '')
-  let nRows = 0
-  // 行序：站表顺序 → 春分在前 → 日期升序
-  for (const st of stations) {
-    for (const s of seasons) {
-      const sea = st[s]
-      const rows = (sea && Array.isArray(sea.rows)) ? sea.rows : []
-      for (const d of rows) {
-        T2.dataRow([
-          st.name == null ? '' : String(st.name),
-          SO_SEASON_CN[s],
-          soDateVal(d.date),
-          soTimeVal(d.startSec), soTimeVal(d.peakSec), soTimeVal(d.endSec),
-          numOrText(d.durMin), numOrText(d.peakDb), numOrText(d.sep)
-        ], fmts2)
-        nRows++
-      }
-    }
-  }
-  if (nRows) T2.endTable(cols2.length)
-
-  autofitBook(wb)                       // 只增不减：装不下才放宽，版式逐格不变
-  return applyBookFont(wb).xlsx.writeBuffer()
+// 轨位 → 「东经87.5度」/「西经61度」（原件副标题的写法；尾随零去掉）
+function soLonText(lon) {
+  const v = Number(lon)
+  if (!Number.isFinite(v)) return ''
+  const n = ((v % 360) + 540) % 360 - 180
+  const a = Math.round(Math.abs(n) * 100) / 100
+  return (n >= 0 ? '东经' : '西经') + String(a) + '度'
 }
 // 'yyyy-mm-dd' → 真日期值（UTC 分量入格；已在渲染端按显示时区平移好，此处不再动）
 function soDateVal(s) {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(s || ''))
   return m ? new Date(Date.UTC(+m[1], +m[2] - 1, +m[3])) : (s == null ? '' : String(s))
 }
-// 当天 0 时起的秒 → Excel 时间序列值（0~1）
+// 当天 0 时起的秒 → Excel 时间序列值（0~1，保留秒；hh:mm 只显示到分）
 function soTimeVal(sec) {
   const n = Number(sec)
   return Number.isFinite(n) ? (((n % 86400) + 86400) % 86400) / 86400 : '—'
+}
+const SO_THIN = { style: 'thin', color: { argb: 'FF000000' } }
+const soBoxAll = (ws, r1, c1, r2, c2) => {
+  for (let r = r1; r <= r2; r++) {
+    for (let c = c1; c <= c2; c++) {
+      ws.getCell(r, c).border = { top: SO_THIN, left: SO_THIN, bottom: SO_THIN, right: SO_THIN }
+    }
+  }
+}
+const SO_MID = { horizontal: 'center', vertical: 'middle' }
+
+// 一季一张表
+function soSeasonSheet(wb, payload, season) {
+  const sat = payload.sat || {}
+  const year = payload.year != null ? payload.year : ''
+  const seasonCn = SO_SEASON_TABLE[season] || ''
+  const satName = sat.name || sat.slotText || '卫星'
+  // ★ views 必须显式给：exceljs 不写 <sheetViews> 时，Excel 打开会把【整表行高按 2/3 缩掉】
+  //   （34.5 → 23、22.5 → 15、14 → 9.4；用 Excel 重存一遍，ht 真就被改写成 23）。
+  //   本仓库别的 Excel 出口都顺手带了 views（多是 showGridLines:false），所以从没撞上这一条。
+  //   原件的网格线是开着的，故这里给 true —— 要的只是让 <sheetViews> 这个元素存在。
+  const ws = wb.addWorksheet(`${year}年${seasonCn}`, { views: [{ showGridLines: true }] })
+  SO_COL_W.forEach((w, i) => { ws.getColumn(i + 1).width = w })
+
+  // R1 页首标题
+  ws.mergeCells(1, 1, 1, SO_NCOL)
+  const t = ws.getCell(1, 1)
+  t.value = `${satName}  ${year}年${seasonCn}日凌时间表`
+  t.font = { name: SO_FONT_TITLE, size: 24, bold: true }
+  t.alignment = SO_MID
+  ws.getRow(1).height = 34.5
+
+  // R2 副标题
+  ws.mergeCells(2, 1, 2, SO_NCOL)
+  const st = ws.getCell(2, 1)
+  st.value = `卫星名称:${satName}    ${soLonText(sat.slotLon != null ? sat.slotLon : NaN)}`.trimEnd()
+  st.font = { name: SO_FONT_TITLE, size: 16, bold: true }
+  st.alignment = SO_MID
+  ws.getRow(2).height = 22.5
+
+  // R3 表头
+  SO_HEAD.forEach((h, i) => {
+    const c = ws.getCell(3, i + 1)
+    c.value = h
+    c.font = { name: SO_FONT_TITLE, size: 12, bold: true }
+    c.alignment = SO_MID
+  })
+  ws.getRow(3).height = 16.5
+
+  // R4+ 逐站一块
+  let rn = 4, no = 0, wideB = SO_COL_W[1]
+  for (const s of (payload.stations || [])) {
+    const sea = s[season]
+    const rows = (sea && Array.isArray(sea.rows)) ? sea.rows : []
+    if (!rows.length) continue                   // 该季无事件的站不出块（与原件一致）
+    no++
+    const top = rn
+    for (const d of rows) {
+      const vals = [
+        no, s.name == null ? '' : String(s.name), numOrText(s.lon), numOrText(s.lat), numOrText(s.diameter),
+        soDateVal(d.date), soTimeVal(d.startSec), soTimeVal(d.endSec),
+        Number.isFinite(Number(d.durSec)) ? Math.round(Number(d.durSec) / 60) : numOrText(d.durMin)
+      ]
+      const fmts = ['', '', '0.00', '0.00', '', 'yyyy-mm-dd', 'hh:mm', 'hh:mm', '0']
+      vals.forEach((v, i) => {
+        const c = ws.getCell(rn, i + 1)
+        c.value = v
+        if (fmts[i] && (typeof v === 'number' || v instanceof Date)) c.numFmt = fmts[i]
+        c.font = { name: SO_FONT_BODY, size: 11 }
+        c.alignment = SO_MID
+      })
+      ws.getRow(rn).height = 14
+      rn++
+    }
+    // 站信息列（序号 / 地点 / 经度 / 纬度 / 天线尺寸）按站纵向合并；只有一天时不合并（单格不能合并）
+    if (rn - 1 > top) for (let c = 1; c <= 5; c++) ws.mergeCells(top, c, rn - 1, c)
+    const nm = String(s.name == null ? '' : s.name)
+    wideB = Math.max(wideB, Math.ceil((maxLineUnits(nm, 11) + 1.3) * 10) / 10)
+  }
+  ws.getColumn(2).width = wideB               // 地点列只增不减：站名截断是丢信息
+  soBoxAll(ws, 1, 1, Math.max(3, rn - 1), SO_NCOL)
+  return ws
+}
+
+function buildSunOutageExcel(payload) {
+  const p = payload || {}
+  const seasons = (Array.isArray(p.seasons) && p.seasons.length ? p.seasons : ['vernal', 'autumnal'])
+    .filter((x) => x === 'vernal' || x === 'autumnal')
+  const wb = new ExcelJS.Workbook()
+  wb.creator = '卫星仿真平台'; wb.created = new Date()
+  for (const s of seasons) soSeasonSheet(wb, p, s)
+  if (!wb.worksheets.length) soSeasonSheet(wb, p, 'vernal')   // 一季都没选：出个空表，别给个零张表的工作簿
+  return wb.xlsx.writeBuffer()
 }
 
 // ==================== 可见性分析 · 时段过境导出 ====================

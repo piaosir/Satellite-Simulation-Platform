@@ -380,7 +380,7 @@ function stationExport(row) {
           startSec: st.sec, peakSec: pk.sec, endSec: en.sec,
           dateDisp: st.date, startDisp: st.time, peakDisp: pk.time, endDisp: en.time,
           peakUtc: d.peakTimeUTC, startUtc: d.startTimeUTC, endUtc: d.endTimeUTC,
-          durMin: Math.round(d.durationSec / 6) / 10, durStr: d.durationStr,
+          durSec: d.durationSec, durMin: Math.round(d.durationSec / 6) / 10, durStr: d.durationStr,
           peakDb: d.peakCNdeg, sep: d.peakSeparation, isPeak: !!d.isPeak
         }
       })
@@ -398,6 +398,7 @@ function exportPayload() {
     sat: {
       name: (sat.name || '').trim() || slotText.value,
       slotText: slotText.value,
+      slotLon: Number.isFinite(pf(sat.slotLon)) ? pf(sat.slotLon) : null,
       source: sat.source, noradId: sat.noradId || null,
       epoch: sat.epoch || null, inclDeg: sat.inclDeg
     },
