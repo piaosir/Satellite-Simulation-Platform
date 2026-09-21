@@ -1991,6 +1991,11 @@ async function refreshPositions() {
   else followCursor()                                                  // 播放推进跑出可见窗口 → 平移尺子接回来
   // 晨昏线随时间轴/实时移动。放在早退之前：一颗星都不显示时晨昏线照样该走（它只跟时刻有关，与星无关）。
   if (termOn.value) applyTerminator()
+  // 地球自转（惯性档）：一拍一次，与本拍星位同一帧上屏（外层 holdFrames 掐着出帧）。
+  // ★ 与晨昏线一样放在早退【之前】：星座选「无」时地球照样该转 —— 它只跟时刻有关，与星无关。
+  //   本拍的时刻与 GMST 就此定下，正常分支往下复用同一份，不再算第二遍（算两遍＝两个时刻同框的口子）。
+  const now = calcAt(), gmst = sat.gstime(now)
+  scene.setEarthSpin(gmst)
   // renderEntries 已含可见自定义星座（即使内置组选「无」也可能非空），故只按空判断，不再短路 'none'
   if (!renderEntries.length) {
     scene.setSatellites([]); shownCount.value = 0; _tickEcefN = 0
@@ -2007,7 +2012,6 @@ async function refreshPositions() {
     await geomPending
     return
   }
-  const now = calcAt(), gmst = sat.gstime(now)
   const ccNow = ccTimeAt(now), ccGmst = sat.gstime(ccNow)   // 合成星按固定场景历元解算（跨会话稳定）
   const n = renderEntries.length
   const positions = new Array(n)
@@ -6845,6 +6849,7 @@ onMounted(async () => {
   // 不碰星位、不碰场景。没有它的话，暂停期间这三样会冻在最后一拍上 —— 停十分钟后点「此刻」会发现按钮是灰的。
   nowBeat = setInterval(() => { nowStamp.value = Date.now() }, 1000)
   scene = createGlobeScene(el.value, { ...displayQuality.value })
+  scene.setFrameMode(viewPrefs.frame)
   scene.setLabelMode(nameMode.value)
   scene.setWaterOff({ ...waterOff })
   scene.setWaterMode({ ocean: oceanNameMode.value, sea: seaNameMode.value })
@@ -6923,9 +6928,12 @@ onMounted(async () => {
   redrawSats()   // 恢复后立即绘制自定义卫星（关联卫星待 loadGroup 完成由 refreshPositions 跟踪）
   applyDisplayQuality()   // 套用当前画质档位（低/中/高档的 50m 底图按需加载，超高/极致档用静态 10m；110m 已于 v1.3.32 下线）
   applyTerminator()   // 晨昏线：按恢复后的开关画一次（不依赖星历，故不等 loadGroup）
+  scene.setFrameMode(viewPrefs.frame)   // 存档里的参考系（restoreSettings 只回填 store）
   if (view.flat) await applyFlat(true)   // 恢复上次退出时的 2D 平面图（watch 不触发初始值，故挂载时主动套用一次）
   watch(snapshot, saveSettings, { deep: true })   // 此后任意改动自动本地缓存
   watch(displayQuality, applyDisplayQuality, { deep: true })   // 画质档位变化 → 实时套用（msaa 除外，由重挂载处理）
+  // 参考系换档（设置弹窗 / 侧栏小标 / 命令面板写的都是同一个 viewPrefs.frame）
+  watch(() => viewPrefs.frame, (v) => { if (scene) scene.setFrameMode(v) })
 })
 onBeforeUnmount(() => {
   // 离开 3D 页：复位顶栏覆盖图入口（按钮随之隐藏），并关掉面板镜像状态

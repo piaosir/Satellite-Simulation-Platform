@@ -31,6 +31,7 @@ import { vehicleCanvas } from '../vehicleSymbol.js'
 // 影像瓦片金字塔（EPSG:4326 / GIBS 网格）：网格数学与取片缓存，与 2D 平面图共用同一份
 import { TILE, span as tileSpan, tileBox, tileClip, tileRange, pickZoom, getTile, isMissing, warm as warmTiles, tileGutter, tileImgSize } from '../imageryTiles.js'
 // 顶点级几何原语：与聚焦几何 Worker 共用同一份实现（别在这里再写一份）
+import { spinDelta } from './earthSpin.js'
 import { RE, LIFT, llaToVec, pushStripSegs, pushDashed, densifyArc, DASH_SPEC, FILL_R, FILL_CELL, slerpUnit, footprintFill, coneFace, swathFill, swathEdges, createSink } from './focusLanes.js'
 
 
@@ -1622,6 +1623,38 @@ export function createGlobeScene(container, quality = {}) {
     _rotOff.setFromSpherical(_rotSph)
     camera.position.copy(controls.target).add(_rotOff)
     controls.update()
+  }
+
+  // ===================== 地球自转：惯性视角 / 相机跟随 =====================
+  // 场景是【地固】的（地球网格静止，卫星 SGP4 → ECI → eciToEcf 落到地固系，晨昏线同一 GMST），
+  // 所以「地球在转」这件事只能由相机来表达 —— 与 Cesium Sandcastle 的 ICRF 示例同一思路：
+  // 场景照旧在地固系画，每拍给相机套一次 ECI↔ECEF 的增量。两档：
+  //   'fixed'    相机跟随：相机固定在地固系，地面不动（出厂；逐位等于改造前不勾自转时的画面）
+  //   'inertial' 惯性视角：相机在地固系里以 −ΔGMST 绕极轴退 → 看上去地球东转 15.041°/h，
+  //              GEO 星跟着地面走，LEO 轨道面 / 聚焦星轨道圈在屏上不动
+  // ★ 轴与符号【照抄】聚焦星轨道圈：圈用 setFromAxisAngle(ORB_AXIS, 参考 gmst − 当前 gmst)，
+  //   相机每拍累加 −(当前 − 上一拍)，两者同轴同号 —— 于是惯性档下轨道圈相对屏幕静止（这正是验收判据）。
+  //   符号若写反，圈会以两倍速度反跑。
+  let frameMode = 'fixed', lastGmst = null
+  const _spinQ = new THREE.Quaternion()
+  // 切档不跳：只记模式，增量从下一拍起施加（lastGmst 在两档都每拍记录）
+  function setFrameMode(m) { frameMode = m === 'inertial' ? 'inertial' : 'fixed' }
+  // 每拍一次，由 refreshPositions 调（两条分支都要调）。gmst = 本拍时刻的 gstime（弧度）。
+  // ★ 只在时钟回调里施加，绝不在帧间插值 —— 插值就是「星在 t、地在 t+δ」同框，simClock 明令禁止。
+  //   增量落在 holdFrames 闸内，与本拍星位同一帧上屏。
+  // ★ 直接改 camera.position 即可：controls.update() 每帧都从 camera.position 重算球坐标，
+  //   用户拖动的 _sphericalDelta 自然叠加在其上，无需碰 OrbitControls 的私有量。
+  function setEarthSpin(gmst) {
+    if (!Number.isFinite(gmst)) return
+    if (frameMode === 'inertial' && lastGmst != null) {
+      const d = spinDelta(lastGmst, gmst)   // wrapToPi：拖游标跳 3 天不转三圈（多转的整圈画面上不可区分）
+      if (d) {
+        _spinQ.setFromAxisAngle(ORB_AXIS, -d)
+        camera.position.applyQuaternion(_spinQ)
+        controls.target.applyQuaternion(_spinQ)   // target 恒为原点（enablePan=false），一并转只是为了通用
+      }
+    }
+    lastGmst = gmst
   }
 
   // ===================== GEO 卫星覆盖（仿小程序卫星覆盖，移到 3D 地球） =====================
@@ -3524,7 +3557,7 @@ export function createGlobeScene(container, quality = {}) {
       if (markerDragging && !dragOk(markerDragging.kind, markerDragging.tid)) { markerDragging = null; markerGrab = null; updateRotate() }
     },
     setOnMarkerDrag: (fn) => { onMarkerDrag = fn }, setSatPointsVisible, setOnHover, setOnRightClick, setBeamDragMode, setOnBeamDrag, setBeamDragPivot, setLabelDragMode, setOnLabelDrag, setPolyDrawMode, setOnPolyDraw, setPlaceMode, setOnPlace,
-    faceTo, rotateBy, resize, pause, resume, snapshot, destroy,
+    faceTo, rotateBy, setFrameMode, setEarthSpin, resize, pause, resume, snapshot, destroy,
     // 缩放进度条接口：getZoom 读当前进度、setZoom 设到进度 t、setOnZoom 注册滚轮缩放回填回调
     getZoom: () => distToT(zoomTarget),
     setZoom: (t) => { zoomTarget = Math.max(controls.minDistance, Math.min(controls.maxDistance, tToDist(t))); syncNear(zoomTarget) },
