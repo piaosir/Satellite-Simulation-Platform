@@ -8,7 +8,7 @@ import { covNav } from './stores/coveragePanels'
 import { zoom, ZOOM_TMAX } from './stores/zoom'
 import { shellUi as ui, toggleUi, sideWKey, SIDE_W_LIM } from './stores/shellUi'
 import { theme, setTheme } from './stores/theme'
-import { logStore, logMsg, clearLog } from './stores/log'
+import { logStore, logMsg, clearLog, diag, setDiag } from './stores/log'
 import { registerCommands, commands } from './stores/commands'
 import cmdIndex from './shared/cmdIndex.data.js'
 import { kwOf, kwId } from './shared/cmdKeywords.js'
@@ -520,6 +520,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
         <div v-if="ui.log" class="dock logdock">
           <div class="dock-hd">
             <span class="dock-tt">日志</span>
+            <span class="dock-x" :class="{ on: diag.on }" title="搜索诊断（顶部命令搜索与侧栏卫星搜索的下拉收起 / 命令表重建 / 登记方抛错 / 全量池更换）" @click="setDiag(!diag.on)"><Icon name="search" :size="12" /></span>
             <span class="dock-x" title="清空日志" @click="clearLog()"><Icon name="trash" :size="12" /></span>
             <span class="dock-x" title="关闭（视图菜单可恢复）" @click="toggleUi('log')"><Icon name="x" :size="12" /></span>
           </div>

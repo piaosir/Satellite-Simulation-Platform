@@ -1,4 +1,5 @@
 import { reactive, computed } from 'vue'
+import { diagMsg } from './log.js'
 
 // 命令注册表 —— 顶部搜索框（仿 Office 标题栏「搜索」/ 旧版「告诉我你想要做什么」）的数据源。
 //
@@ -17,18 +18,32 @@ import { reactive, computed } from 'vue'
 const providers = reactive(new Map())
 
 export function registerCommands(key, getter) {
+  warned.delete(key)
   providers.set(key, getter)
   return () => { if (providers.get(key) === getter) providers.delete(key) }
 }
 
 // 全部命令（扁平；子项不展开，匹配时另行下钻）
+// ★ 登记方抛错不连累其余，但【不能静默】：某个 getter 一旦抛错（如 3D 页卸载 / 重挂载期间回调为 null），
+//   该来源的命令整批消失 —— 搜什么都「没有匹配的操作」，界面上一点痕迹都没有。同一个 key 只报一次
+//   （computed 每次取用都会跑，出错的 getter 会一直错，不设闸会把控制台刷爆）。
+const warned = new Set()
 export const commands = computed(() => {
   const out = []
-  for (const g of providers.values()) {
-    try { const list = typeof g === 'function' ? g() : g; if (Array.isArray(list)) out.push(...list) } catch { /* 单个登记方出错不连累其余 */ }
+  for (const [key, g] of providers) {
+    if (!g) continue
+    try {
+      const list = typeof g === 'function' ? g() : g
+      if (Array.isArray(list)) out.push(...list)
+    } catch (e) {
+      if (!warned.has(key)) { warned.add(key); console.warn('[commands] 登记方「' + key + '」取命令时抛错，该来源本次整批缺席：', e) }
+      diagMsg('命令登记方「' + key + '」抛错：' + ((e && e.message) || e))
+    }
   }
   return out
 })
+// 登记方重新挂上时清掉它的「已报过」标记：下一轮再抛错要能再报一次
+export function clearCommandWarn(key) { warned.delete(key) }
 
 // ---- 最近使用的操作（本地记忆，跨会话）----
 const RECENT_KEY = 'cmd-search-recent-v1'

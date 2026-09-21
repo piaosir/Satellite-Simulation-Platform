@@ -1,5 +1,6 @@
 <script setup>
 import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
+import { diagMsg } from '../stores/log.js'
 import { commands, recent, noteUsed, searchCommands } from '../stores/commands'
 import Icon from './Icon.vue'
 
@@ -75,7 +76,16 @@ const hasChildren = (row) => !!(row && row.cmd && Array.isArray(row.cmd.children
 // 「点外面收起」在那里失效 —— 宿主据此在下拉开着时把标题栏临时切成非拖拽区（App.vue .menubar.ms-open）。
 watch(open, (v) => emit('open', v))
 
+// 结果行的身份签名：命令表是 computed，任一登记方读到的响应式状态一变（每分钟一次的激活自查、
+// 时钟播放态、主题 / 语言…）就整表重建，flat 于是换了一批【内容相同】的新对象。只按引用比就会
+// 在键盘导航中途把高亮打回第一条、把飞出子菜单关掉 —— 改按 id 序列比，真没变就什么都不做。
+const rowSig = (rows) => rows.map((r) => (r.cmd ? (r.parent ? r.parent.id + '>' : '') + (r.cmd.id || r.cmd.label) : (r.find ? 'find:' + r.text : 'x'))).join('|')
+let lastSig = ''
 watch(flat, (rows) => {
+  const sig = rowSig(rows)
+  if (sig === lastSig) return                  // 只是命令表重建、结果没变：高亮与子菜单原样留着
+  lastSig = sig
+  if (open.value && q.value.trim()) diagMsg('结果表变化：' + rows.length + ' 行（高亮复位）')
   // 结果变了：高亮回到第一条（Office：Enter 执行第一条）；空框时不预选
   active.value = rows.length && q.value.trim() ? 0 : -1
   sub.value = null
@@ -164,13 +174,21 @@ function scrollActive() {
   })
 }
 
+// ★ 切到别的程序 / 窗口最小化时收起下拉：原先只有 Esc、Tab、点外面三条路。挂机切走时下拉还开着、
+//   首行还预高亮、标题栏还是 no-drag（.menubar.ms-open），回来随手一个回车就执行了首条命令。
+function onWinBlur() { if (open.value) { diagMsg('窗口失焦 → 收起下拉'); hide() } }
+function onVis() { if (document.hidden && open.value) { diagMsg('窗口隐藏 → 收起下拉'); hide() } }
 onMounted(() => {
   window.addEventListener('keydown', onWinKey)
   document.addEventListener('mousedown', onDocDown, true)
+  window.addEventListener('blur', onWinBlur)
+  document.addEventListener('visibilitychange', onVis)
 })
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onWinKey)
   document.removeEventListener('mousedown', onDocDown, true)
+  window.removeEventListener('blur', onWinBlur)
+  document.removeEventListener('visibilitychange', onVis)
 })
 </script>
 
