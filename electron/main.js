@@ -753,6 +753,8 @@ app.whenReady().then(async () => {
 // 退出前统一放行【全部】带关窗守卫的窗口。
 // ★ 新加一扇带守卫的窗口就必须在下面补一行 —— 漏了的那扇会把整个退出流程顶回去，
 //   而症状（关机卡住 / 更新装不上）离这里很远，极难回溯到是少写了一行。
+//   这张表与全部 `let _*AllowClose = false` 声明由 packages/core/test/updaterPending.test.mjs
+//   第 ⑤ 节源码级逐个对账，漏一个单测就红。
 // 守卫（_*AllowClose=false → close 时 preventDefault 转问渲染进程）是为「用户点窗口 X」设计的，
 // 但它对 close 事件一视同仁，因此会把整个退出流程也一并拦下：
 //   · Windows 注销 / 关机：退出被 preventDefault 挡住 → 系统等超时后强杀，本来防丢数据反而丢；
@@ -764,6 +766,7 @@ app.on('before-quit', () => {
   _ngsoAllowClose = true
   _regenAllowClose = true
   _e2eAllowClose = true
+  _soAllowClose = true
   _rainAllowClose = true
   _ssaAllowClose = true
 })

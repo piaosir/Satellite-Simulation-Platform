@@ -4,7 +4,7 @@
 // ① 版本比较不按字符串（1.4.10 > 1.4.8）；② 决策矩阵的每一格（安装器重开 / 安装进行中 /
 // 版本已到 / 包不在 / 次数用尽 / 该装）；③ 同一个包重复触发 update-downloaded 时 attempts 不复位，
 // 否则「尝试两次就放弃」的闸每个会话都会被复位；④ 标记读写与 sha512 口径（base64）。
-import { mkdtempSync, writeFileSync, existsSync, rmSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, existsSync, rmSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
@@ -94,5 +94,20 @@ try {
 }
 
 eq(P.INSTALLER_ARGS, ['--updated', '/S', '--force-run'], '安装器参数与 electron-updater quitAndInstall(true, true) 一致')
+
+// ⑤ before-quit 放行表与关窗守卫逐个对账（源码级）。
+//    「退出时安装」挂在 app 'quit' 上：任何一扇带守卫的窗口漏进 before-quit 的放行表，退出就会被
+//    preventDefault 顶回去 —— 更新装不上、注销 / 关机被系统等超时强杀。症状离 main.js 那张表很远，
+//    所以在这里钉死：声明了 _*AllowClose 的窗口，必须全部出现在 before-quit 里。
+{
+  const src = readFileSync(join(import.meta.dirname, '../../../electron/main.js'), 'utf8')
+  const declared = [...src.matchAll(/^let\s+(_\w+AllowClose)\s*=\s*false/gm)].map((m) => m[1]).sort()
+  const i0 = src.indexOf("app.on('before-quit'")
+  ok(i0 > 0, "main.js 里有 app.on('before-quit')")
+  const body = src.slice(i0, src.indexOf('\n})', i0))
+  const released = [...new Set([...body.matchAll(/(_\w+AllowClose)\s*=\s*true/g)].map((m) => m[1]))].sort()
+  ok(declared.length >= 7, `带关窗守卫的窗口 ≥ 7 扇（实得 ${declared.length}：${declared.join(' ')}）`)
+  eq(released, declared, `before-quit 放行表与守卫对账零缺口（漏了：${declared.filter((d) => released.indexOf(d) < 0).join(' ') || '无'}）`)
+}
 
 console.log(`updaterPending: ${pass} 项通过`)
