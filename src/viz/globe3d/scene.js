@@ -32,7 +32,7 @@ import { vehicleCanvas } from '../vehicleSymbol.js'
 import { TILE, span as tileSpan, tileBox, tileClip, tileRange, pickZoom, getTile, isMissing, warm as warmTiles, tileGutter, tileImgSize } from '../imageryTiles.js'
 // 顶点级几何原语：与聚焦几何 Worker 共用同一份实现（别在这里再写一份）
 import { spinDelta, rotateSpeedFor } from './earthSpin.js'
-import { createDragInertia } from './dragInertia.js'
+import { tauFor, dampingFor, ZOOM_TAU_MS } from './dragFollow.js'
 import { wheelNotches, stepZoomT } from '../../shared/wheelStep.js'
 import { RE, LIFT, llaToVec, pushStripSegs, pushDashed, densifyArc, DASH_SPEC, FILL_R, FILL_CELL, slerpUnit, footprintFill, coneFace, swathFill, swathEdges, createSink } from './focusLanes.js'
 
@@ -339,15 +339,16 @@ export function createGlobeScene(container, quality = {}) {
   const LABEL_REF_DIST = 3.0
   const SAT_POINT_PX = 3.2   // 卫星点基准像素（基准距离上的屏幕大小，逐帧按缩放联动）
 
-  // 惯性滑行的时间基准：与 rAF 回调的时间戳同一时间原点，故拖动采样与逐帧积分可以混用
+  // 逐帧时间基准：与 rAF 回调的时间戳同一时间原点（loop 拿不到 now 时兜底）
   const nowMs = () => (typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now())
 
   const controls = new OrbitControls(camera, renderer.domElement)
-  // ★ 不用 OrbitControls 的 damping：它是【逐次 update 的一阶滞后滤波】（相机以 delta×factor 逐帧
-  //   逼近指针命令），时间常数 1/0.08 = 12.5 帧 ≈ 208 ms @60fps / 417 ms @30fps —— 拖动中地球落后
-  //   指针约 200 ms、松手后再滑同样多，且手感随帧率变。关掉它，拖动量下一次 update() 全额生效（1:1），
-  //   松手后的惯性另走 dragInertia（按时间衰减，与帧率无关）。
-  controls.enableDamping = false
+  // 粘滞跟随（仪器手感，见 dragFollow.js）：借 OrbitControls 自己的 damping 递推，但 dampingFactor 不是常数 ——
+  // loop 里每帧按真实经过时间取 1 − e^{−dt/τ}，τ 由「拖拽阻尼」定（出厂 42 ms）。相机只逼近、不越过指针命令，
+  // 松手后没有自由滑行；30 / 60 / 不限三档轨迹逐点相同。早先那份常数 0.08（≈208 ms @60fps、随帧率变）
+  // 就是被判「滑溜」的根因之一，另一个是与距离无关的 rotateSpeed（见下）。
+  controls.enableDamping = true
+  controls.dampingFactor = 1   // 开场值：第一帧之前若来了 pointermove，全额生效即可；之后每帧由 loop 现算
   controls.minDistance = 1.02   // 贴到离地面 0.02 R（≈130 km）：进度条那 100→120% 的余量就在这一段
   controls.maxDistance = 50
   // 旋转灵敏度每帧在 loop 里按当前相机距离重算（见 earthSpin.rotateSpeedFor）。这里给个开场值，
@@ -355,11 +356,16 @@ export function createGlobeScene(container, quality = {}) {
   controls.rotateSpeed = rotateSpeedFor(camera.position.length(), camera.fov)
   controls.enablePan = false    // 关掉平移：右键留给“标点”，避免误平移
   controls.enableZoom = false   // 自定义滚轮缩放（见下方 wheel）：指数步进 + 每帧缓动，手感更顺、不突兀
-  // 松手后的惯性滑行（Google Earth / Cesium 口径）：拖动期间采样角速度，松手后按时间指数衰减。
-  // 出厂阻尼 50%（λ=12.5，半衰期 55 ms）；页面经 setDragDamping 推设置值。
-  const inertia = createDragInertia(50)
-  controls.addEventListener('start', () => inertia.begin())
-  controls.addEventListener('end', () => inertia.release(nowMs()))
+  // 跟随时间常数（秒）：出厂阻尼 50% → 42 ms；页面经 setDragDamping 推设置值。
+  let followTau = tauFor(50)
+  // 拖动中（OrbitControls 的 'start' → 'end'，只有真在转的拖动才发）：loop 据此临时解除帧率上限 ——
+  // 仪器手感要的是「手一动画面就跟」，省电档的 30 fps 留给静止时。
+  let dragging = false
+  controls.addEventListener('start', () => { dragging = true })
+  controls.addEventListener('end', () => { dragging = false })
+  // 清掉 OrbitControls 里还没施加完的拖动命令（搜索定位 / 恢复视图这种【绝对】摆位之后，欠着的那一小段
+  // 不该再往新姿态上加）。_sphericalDelta 是它的私有量，缺席就跳过 —— 残余最多几千分之一度，无害。
+  function clearFollow() { const d = controls._sphericalDelta; if (d && typeof d.set === 'function') d.set(0, 0, 0) }
 
   // ★ 这里曾有 controls.autoRotate —— OrbitControls 的展示性匀速旋转，与仿真时钟无关（暂停时钟它照转、
   //   播放 ×3600 它也不快），不是自转。2026-09-21 整份删除，换成由时钟驱动的真自转（见 setEarthSpin）。
@@ -397,7 +403,6 @@ export function createGlobeScene(container, quality = {}) {
   function setWheelStep(p) { if (Number.isFinite(p)) wheelPct = Math.max(1, Math.min(20, Math.round(p))) }
   renderer.domElement.addEventListener('wheel', (e) => {
     e.preventDefault()
-    inertia.cancel()   // 滚轮立即终止惯性滑行
     const t1 = stepZoomT(distToT(zoomTarget), wheelNotches(e), wheelPct, TMAX)
     zoomTarget = Math.max(controls.minDistance, Math.min(controls.maxDistance, tToDist(t1)))
     reportZoom()
@@ -418,9 +423,20 @@ export function createGlobeScene(container, quality = {}) {
   // ★ 打 userData.covLine 标记 —— setCoverageLineAlpha 靠它认人。同一个 covFieldGroup 里还挂着
   //   天线视轴(covRayGroup，自有 rayOpacity)与峰值点十字，都是 LineMaterial，按材质类型一刀切会把它们一起调暗。
   // 对地(buildDeco) / 对星(buildShellDeco) 同一口径，改这里两边一起变。
+  // 每档线型（SATSOFT Line Style）：dashed LineMaterial + computeLineDistances（不算线上距离就不显示虚线）。
+  // 花样按线宽等比放大，与 2D 的 DASH_PX 同一比例。
+  const COV_DASH = { dash: [0.006, 0.004], dashdot: [0.008, 0.003] }
   function covContourLine(flat, grp, o) {
     const ln = fatSegments(flat, grp.color != null ? grp.color : 0xffffff, grp.width || 1.2,
       grp.opacity != null ? grp.opacity : ((o && o.lineAlpha != null) ? o.lineAlpha : 0.95), 6)
+    const d = COV_DASH[grp.dash]
+    if (d) {
+      const w = Math.max(0.6, grp.width || 1.2) / 1.2
+      ln.material.dashed = true; ln.material.dashSize = d[0] * w; ln.material.gapSize = d[1] * w
+      ln.material.defines = { ...(ln.material.defines || {}), USE_DASH: '' }
+      ln.material.needsUpdate = true
+      ln.computeLineDistances()
+    }
     ln.userData.covLine = true
     return ln
   }
@@ -1627,7 +1643,7 @@ export function createGlobeScene(container, quality = {}) {
   // 旋转相机使指定方向正对视图（搜索定位时用），保持当前距离
   function faceTo(vec) {
     if (!vec) return
-    inertia.cancel()   // 搜索定位 / 聚焦：立即终止惯性滑行
+    clearFollow()   // 搜索定位 / 聚焦：绝对摆位，丢掉欠着的拖动命令
     const dist = camera.position.length()
     camera.position.copy(vec).normalize().multiplyScalar(dist)
     controls.update()
@@ -1636,8 +1652,7 @@ export function createGlobeScene(container, quality = {}) {
   // phi 夹在两极附近避免翻面。与 faceTo 一样直接改相机位后 update()。
   const _rotSph = new THREE.Spherical()
   const _rotOff = new THREE.Vector3()
-  // 绕地心步进旋转的球坐标数学：方向键（rotateBy）与惯性滑行（loop 里）共用同一套，免得两份各写一遍。
-  // 返回 true 表示 φ 被两极钳住了 —— 滑行撞到极点时据此把纬向角速度清零，不贴着极点空转到阈值。
+  // 绕地心步进旋转的球坐标数学（方向键 rotateBy 用）。返回 true 表示 φ 被两极钳住了。
   function spinCam(dAz, dPol) {
     _rotOff.copy(camera.position).sub(controls.target)
     _rotSph.setFromVector3(_rotOff)
@@ -1650,11 +1665,10 @@ export function createGlobeScene(container, quality = {}) {
   }
   function rotateBy(dAz, dPol) {
     if (!dAz && !dPol) return
-    inertia.cancel()   // 方向键：立即终止惯性滑行
     spinCam(dAz, dPol)
     controls.update()
   }
-  function setDragDamping(p) { inertia.setDamping(p) }
+  function setDragDamping(p) { followTau = tauFor(p) }
 
   // ===================== 地球自转：惯性视角 / 相机跟随 =====================
   // 场景是【地固】的（地球网格静止，卫星 SGP4 → ECI → eciToEcf 落到地固系，晨昏线同一 GMST），
@@ -2263,8 +2277,8 @@ export function createGlobeScene(container, quality = {}) {
     fm.geo.clearGroups()
     let gs = 0
     for (let bi = 0; bi < fillBands.length; bi++) {
-      const ge = (bandTri[bi] || 0) * 3, m = fm.mats[bi], c = fillBands[bi].color
-      m.opacity = fm.alpha; m.color.setRGB(c[0] / 255, c[1] / 255, c[2] / 255)
+      const ge = (bandTri[bi] || 0) * 3, m = fm.mats[bi], c = fillBands[bi].color, ba = fillBands[bi].alpha
+      m.opacity = fm.alpha * (ba == null ? 1 : ba); m.color.setRGB(c[0] / 255, c[1] / 255, c[2] / 255)
       if (ge > gs) fm.geo.addGroup(gs, ge - gs, bi)
       gs = ge
     }
@@ -3291,9 +3305,6 @@ export function createGlobeScene(container, quality = {}) {
   let downX = 0, downY = 0
   renderer.domElement.addEventListener('pointerdown', (e) => {
     downX = e.clientX; downY = e.clientY
-    // 按下即终止上一段滑行。★ 旋转拖动那条路 OrbitControls 的 'start' 已经 begin() 过（它的监听器
-    //   注册在前，先于本处跑），此时 dragging 为真 —— 再 cancel 会把整段采样掐掉，就再也甩不动了。
-    if (!inertia.dragging) inertia.cancel()
     // ★ 排在绘制态/放置态【之前】：那两个是「按下即落点」，而光标正压在一枚可拖的标记上时，
     //   要的多半是把它挪一挪，不是在它身上再叠一个点（2D 侧同口径）。
     if (markerDragAny() && e.button === 0 && !beamDragMode && !labelDragMode) {
@@ -3447,7 +3458,8 @@ export function createGlobeScene(container, quality = {}) {
 
   const zoomDir = new THREE.Vector3()
   let raf = 0, lastFrameT = 0, running = true, frameHold = 0
-  let lastLoopT = 0   // 上一次【真正出帧】的时间戳：惯性滑行按真实经过时间积分，跳帧/停帧都不会多滑
+  let lastLoopT = 0   // 上一次【真正出帧】的时间戳：粘滞跟随与缩放缓动都按真实经过时间走，跳帧/停帧不会多补
+  let camMoved = false   // 上一出帧里相机（方位/极角）动过：跟随尚未停稳 → 下一帧不受帧率上限约束
   // 出帧闸：一拍里星位是同步算的、聚焦几何要等 Worker 回来，中间若出一帧就成了「星在 t、轨道在 t−Δ」——
   // 那正是 simClock「一次时钟回调 = 一个时刻的完整画面」明令禁止的。故整拍期间不出帧，画面停在上一拍的完整状态。
   // ★ 计数不是布尔：simClock 的 emit() 已是 async，而 setTime/stepBy/pause 那几个入口是「发了不等」，
@@ -3459,27 +3471,28 @@ export function createGlobeScene(container, quality = {}) {
     if (!running) return   // 已暂停（切到 2D 平面图）：停掉 rAF 链，不再空转渲染被盖住的球面
     raf = requestAnimationFrame(loop)
     if (frameHold) return
-    // 帧率上限（省电）：未到间隔则跳过本帧的更新与渲染（留 1ms 余量避免临界抖动）
-    if (fpsCap > 0) { if (now && (now - lastFrameT) < (1000 / fpsCap - 1)) return; lastFrameT = now || 0 }
-    // 惯性滑行：拖动中不滑（只采样），松手后按时间指数衰减。dt 取【真正出帧】之间的间隔并钳到
-    // 100 ms —— 掉帧不该补出一大跳；解析积分保证 30 / 60 / 不限三档滑出的总角度一致（见 dragInertia）。
+    // 帧率上限（省电）只管静止画面：拖动中、跟随还没停稳、缩放还在缓动 → 每个 rAF 都出帧（仪器手感：
+    // 手一动画面就跟，30 fps 的省电档不该让拖动一顿一顿）。未到间隔则跳过本帧（留 1ms 余量避免临界抖动）。
+    const busy = dragging || camMoved || Math.abs(camera.position.distanceTo(controls.target) - zoomTarget) > 1e-4
+    if (fpsCap > 0 && !busy && now && (now - lastFrameT) < (1000 / fpsCap - 1)) return
+    lastFrameT = now || 0
+    // dt 取【真正出帧】之间的间隔并钳到 100 ms —— 掉帧不该补出一大跳
     const tNow = now || nowMs()
     const dtSec = lastLoopT ? Math.min(0.1, Math.max(0, (tNow - lastLoopT) / 1000)) : 0
     lastLoopT = tNow
-    if (!inertia.dragging) {
-      const g = inertia.step(dtSec)
-      if (g && spinCam(g.dTheta, g.dPhi)) inertia.stopPhi()   // φ 撞到极点 → 清掉纬向角速度
-    }
+    // 粘滞跟随：这一帧施加剩余拖动命令的 1 − e^{−dt/τ}（见 dragFollow.js）。τ=0 即 1:1 直连。
+    controls.dampingFactor = dampingFor(dtSec, followTau)
+    const az0 = controls.getAzimuthalAngle(), po0 = controls.getPolarAngle()
     controls.update()   // 旋转（半径在此保持不变）
+    camMoved = Math.abs(controls.getAzimuthalAngle() - az0) > 1e-7 || Math.abs(controls.getPolarAngle() - po0) > 1e-7
     const cur = camera.position.distanceTo(controls.target)
     // 距离感知的旋转灵敏度：每像素转角 = 屏幕中心处地面每像素位移 / 半径（见 earthSpin.rotateSpeedFor）。
     // 贴地时每像素转得少、拉远时多 —— 抓住的地面点始终跟着指针走，不再「贴地时地面在指针下飞过」。
     controls.rotateSpeed = rotateSpeedFor(cur, camera.fov)
-    // 拖动中每帧采一次角速度：松手时取最近 ≤80 ms 那一段作为起滑速度
-    if (inertia.dragging) inertia.sample(tNow, controls.getAzimuthalAngle(), controls.getPolarAngle())
-    // 滚轮缩放缓动：把当前半径向 zoomTarget 逼近（0.18 的缓动系数 -> 顺滑且跟手）
+    // 滚轮缩放缓动：把当前半径向 zoomTarget 逼近。比例按真实经过时间取 1 − e^{−dt/τz}（τz=84 ms，
+    // 60 fps 下逐帧等于改造前的 0.18），30 fps / 144 Hz 下手感与之相同。
     if (Math.abs(cur - zoomTarget) > 1e-4) {
-      const next = cur + (zoomTarget - cur) * 0.18
+      const next = cur + (zoomTarget - cur) * dampingFor(dtSec, ZOOM_TAU_MS / 1000)
       zoomDir.copy(camera.position).sub(controls.target).normalize()
       camera.position.copy(controls.target).addScaledVector(zoomDir, next)
     }
@@ -3615,7 +3628,7 @@ export function createGlobeScene(container, quality = {}) {
     getView: () => { const p = camera.position; return { x: p.x, y: p.y, z: p.z, t: distToT(zoomTarget) } },
     setView: (v) => {
       if (!v) return
-      inertia.cancel()   // 恢复视图：立即终止惯性滑行
+      clearFollow()   // 恢复视图：绝对摆位，丢掉欠着的拖动命令
       if (Number.isFinite(v.t)) zoomTarget = Math.max(controls.minDistance, Math.min(controls.maxDistance, tToDist(v.t)))
       if (Number.isFinite(v.x) && Number.isFinite(v.y) && Number.isFinite(v.z)) {
         const d = Math.hypot(v.x, v.y, v.z) || 1

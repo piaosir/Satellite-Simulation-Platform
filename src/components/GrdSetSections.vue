@@ -7,8 +7,9 @@
 // 逐像素一致，且以后只有一处要改。变体只影响【文案】，不影响控件与口径：
 //   variant='ground' —— 对地覆盖分析（拖拽落点是地表）
 //   variant='shell'  —— 对星覆盖分析（拖拽落点是轨道壳层）
-import { ref, computed, watch, nextTick, onBeforeUnmount } from 'vue'
+import { ref, reactive, computed, watch, nextTick, onBeforeUnmount } from 'vue'
 import Icon from './Icon.vue'
+import { SCHEME_NAMES } from '../viz/grd/colormap.js'
 import { isSecOpen, toggleSec } from '../stores/panelSections'
 import { useCheckList } from '../shared/ui/useCheckList.js'
 
@@ -116,6 +117,24 @@ function commitRenameLv(i) {
   if (L && nm !== (L.name || '')) L.name = nm    // 未改则跳过（改 levels 会触发 watch(s.levels) 回存+重绘）
   editLv.value = ''; editLvVal.value = ''
 }
+
+// ---- 电平表：当前行 / 行内样式 / 工具条 / 生成器（SATSOFT Contour Levels 那一栏）----
+const curLv = ref(0)          // 工具条作用的那一行
+const styLv = ref(-1)         // 展开样式编辑的那一行
+const LV_DASH = [['', '跟全局'], ['solid', '实线'], ['dash', '虚线'], ['dashdot', '点划线']]
+const hasSty = (L) => !!(L.dash || L.width != null || L.fillAlpha != null)
+function lvMove(d) { curLv.value = grd.moveLevel(curLv.value, d); styLv.value = -1 }
+function lvInsert() { curLv.value = grd.insertLevel(curLv.value); styLv.value = -1 }
+async function lvCopy() { try { await navigator.clipboard.writeText(grd.levelsText()) } catch (e) { /* 无剪贴板权限 */ } }
+async function lvPaste() {
+  let t = ''
+  try { t = await navigator.clipboard.readText() } catch (e) { return }
+  if (grd.pasteLevels(t)) { curLv.value = 0; styLv.value = -1 }
+}
+// 数字输入：清空 = 回到「跟全局」（null），故不能用 v-model.number（空串会落成 0）
+const lvNum = (L, k, v, lo, hi) => { const x = String(v).trim(); L[k] = x === '' ? null : Math.max(lo, Math.min(hi, +x || 0)) }
+const gen = reactive({ start: -1, step: -1, count: 5, scheme: 'jet' })
+function lvGenerate() { grd.generateLevels(gen.start, gen.step, gen.count, gen.scheme); curLv.value = 0; styLv.value = -1 }
 
 // ---- 指向 ----
 const boreMode = computed({ get: () => grd.boreModeOf(), set: (m) => grd.setBoreMode(m) })
@@ -236,19 +255,45 @@ const boreTip = computed(() => {
         <div class="glv">
           <!-- 表头落在表内、用与数据行同一套列宽 —— 原来是一串靠右的「填充 · 线 · 值 · 绝对」，
                飘在表格右上角，压根不在它命名的那几列头上，两个色块也分不出谁是填充谁是线。 -->
-          <div class="glvhd" aria-hidden="true"><span class="h-clr">填充</span><span class="h-clr">线</span><span class="h-val">值</span><span class="h-nm">名称</span><span class="h-del"></span></div>
-          <div v-for="(L, i) in st.levels" :key="i" class="glvrow">
-            <input class="lvclr" type="color" title="填充色" :value="lvHex(L.color)" @input="e => setLevelColor(i, e)" />
-            <input class="lvclr" type="color" title="线色" :value="lvHex(L.lineColor)" @input="e => setLineColor(i, e)" />
-            <input class="lvval" type="number" step="0.5" v-model.number.lazy="L.v" />
-            <input class="lvabs lvname" :class="{ named: !!L.name }"
-              :value="editLv === String(i) ? editLvVal : (L.name || lvDefaultText(L))"
-              :title="L.name ? '自定义名称（等值线数值标签用此名，清空恢复电平值）' : '点击自定义名称（默认显示电平值，作等值线数值标签）'"
-              @click.stop @focus="startRenameLv(i, L)" @input="e => inputRenameLv(i, e.target.value)"
-              @keydown.enter="e => e.target.blur()" @blur="commitRenameLv(i)" />
-            <span class="ic del" title="删除该档" @click="grd.removeLevel(i)"><Icon name="x" :size="12" /></span>
+          <div class="glvtb">
+            <span class="ic" title="上移当前档" @click="lvMove(-1)"><Icon name="arrow-up" :size="12" /></span>
+            <span class="ic" title="下移当前档" @click="lvMove(1)"><Icon name="arrow-down" :size="12" /></span>
+            <span class="ic" title="在当前档后插入一档" @click="lvInsert()"><Icon name="plus" :size="12" /></span>
+            <span class="ic" title="复制全部电平值到剪贴板" @click="lvCopy()"><Icon name="clipboard" :size="12" /></span>
+            <span class="ic" title="从剪贴板粘贴电平值（空格 / 逗号 / 换行分隔）" @click="lvPaste()"><Icon name="file-down" :size="12" /></span>
           </div>
+          <div class="glvhd" aria-hidden="true"><span class="h-clr">填充</span><span class="h-clr">线</span><span class="h-val">值</span><span class="h-nm">名称</span><span class="h-del"></span><span class="h-del"></span></div>
+          <template v-for="(L, i) in st.levels" :key="i">
+            <div class="glvrow" :class="{ cur: curLv === i }" @mousedown="curLv = i">
+              <input class="lvclr" type="color" title="填充色" :value="lvHex(L.color)" @input="e => setLevelColor(i, e)" />
+              <input class="lvclr" type="color" title="线色" :value="lvHex(L.lineColor)" @input="e => setLineColor(i, e)" />
+              <input class="lvval" type="number" step="0.5" v-model.number.lazy="L.v" />
+              <input class="lvabs lvname" :class="{ named: !!L.name }"
+                :value="editLv === String(i) ? editLvVal : (L.name || lvDefaultText(L))"
+                :title="L.name ? '自定义名称（等值线数值标签用此名，清空恢复电平值）' : '点击自定义名称（默认显示电平值，作等值线数值标签）'"
+                @click.stop @focus="startRenameLv(i, L)" @input="e => inputRenameLv(i, e.target.value)"
+                @keydown.enter="e => e.target.blur()" @blur="commitRenameLv(i)" />
+              <span class="ic" :class="{ on: hasSty(L) }" title="该档的线型 / 线宽 / 填充透明度（留空＝跟全局）" @click.stop="styLv = styLv === i ? -1 : i"><Icon name="sliders-horizontal" :size="12" /></span>
+              <span class="ic del" title="删除该档" @click.stop="grd.removeLevel(i)"><Icon name="x" :size="12" /></span>
+            </div>
+            <div v-if="styLv === i" class="glvsty">
+              <div class="srow"><label>线型</label>
+                <select :value="L.dash || ''" @change="e => L.dash = e.target.value || null"><option v-for="d in LV_DASH" :key="d[0]" :value="d[0]">{{ d[1] }}</option></select>
+              </div>
+              <div class="srow"><label>线宽</label><input class="ci" type="number" step="0.1" min="0.1" max="8" placeholder="跟全局" :value="L.width == null ? '' : L.width" @change="e => lvNum(L, 'width', e.target.value, 0.1, 8)" /></div>
+              <div class="srow"><label>填充透明度</label><input class="ci" type="number" step="0.05" min="0" max="1" placeholder="跟全局" :value="L.fillAlpha == null ? '' : L.fillAlpha" @change="e => lvNum(L, 'fillAlpha', e.target.value, 0, 1)" /></div>
+            </div>
+          </template>
           <div class="glvadd" @click="grd.addLevel()"><Icon name="plus" :size="12" /> 添加电平</div>
+        </div>
+        <div class="glvgen" data-sec="电平生成">
+          <div class="srow"><label>起始</label><input class="ci" type="number" step="0.5" v-model.number="gen.start" /><span class="u">dB</span></div>
+          <div class="srow"><label>间隔</label><input class="ci" type="number" step="0.5" v-model.number="gen.step" /><span class="u">dB</span></div>
+          <div class="srow"><label>档数</label><input class="ci" type="number" step="1" min="1" max="64" v-model.number="gen.count" /></div>
+          <div class="srow"><label>配色</label>
+            <select v-model="gen.scheme"><option v-for="n in SCHEME_NAMES" :key="n" :value="n">{{ n }}</option><option value="custom">自定义</option></select>
+          </div>
+          <div class="glvadd" title="按起始 / 间隔 / 档数重建整张电平表" @click="lvGenerate()"><Icon name="refresh-cw" :size="12" /> 生成电平</div>
         </div>
         <div class="srow"><label>线宽</label><input class="rng" type="range" min="0.1" max="8" step="0.1" v-model.number="st.lineWidth" /><span class="u">{{ st.lineWidth.toFixed(1) }}</span></div>
         <div class="srow"><label>线透明度</label><input class="rng" type="range" min="0" max="1" step="0.05" v-model.number="st.lineAlpha" title="只作用于等值线，不影响分带填充" /><span class="u">{{ fx(st.lineAlpha) }}</span></div>
@@ -428,6 +473,18 @@ const boreTip = computed(() => {
 .glvhd .h-val { flex: none; width: 66px; padding-left: 7px; }
 .glvhd .h-nm { flex: 1; min-width: 0; padding-left: 6px; }
 .glvhd .h-del { flex: none; width: 13px; }
+/* 电平表工具条（上移 / 下移 / 插入 / 复制 / 粘贴）：钉在表头之上，与表同宽 */
+.glvtb { display: flex; align-items: center; gap: 2px; padding: 3px 4px; border-bottom: 1px solid var(--border); }
+/* 当前行：工具条作用的那一档 */
+.glvrow.cur { background: var(--surface-2); }
+/* 行内样式编辑（线型 / 线宽 / 填充透明度）：缩进一档挂在该行之下 */
+.glvsty { padding: 2px 6px 4px 22px; border-bottom: 1px solid var(--border); }
+.glvsty .srow { padding: 2px 0; }
+.glvsty .srow label { width: 72px; }
+/* 电平生成器（起始 / 间隔 / 档数 / 配色） */
+.glvgen { margin-top: 4px; border: 1px solid var(--border); border-radius: var(--r-1); }
+.glvgen .srow { padding: 3px 6px; }
+.glvgen .srow label { width: 56px; }
 .glvrow { display: flex; align-items: center; gap: 5px; padding: 3px 6px; }
 .glvrow + .glvrow { border-top: 1px solid var(--border); }
 .glvrow .lvclr { width: 20px; height: 18px; }

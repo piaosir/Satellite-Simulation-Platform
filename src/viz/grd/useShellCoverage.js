@@ -289,7 +289,7 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
           if (key === active.value && !focus) focus = { bi: bm.bi, name: bm.name }
           const map = shellMapper(igrid, basis, g, br)
           const fillBands = st.fill
-            ? tessellateFills(asc.map((x, i) => ({ color: cssRgb(x.color), verts: geo.fills[i].verts, counts: geo.fills[i].counts })).filter((b) => b.counts.length), map)
+            ? tessellateFills(asc.map((x, i) => ({ color: cssRgb(x.color), alpha: x.fillAlpha, verts: geo.fills[i].verts, counts: geo.fills[i].counts })).filter((b) => b.counts.length), map)
             : null
           const wl = wantLabels()
           const segGroups = st.line
@@ -297,7 +297,7 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
               const segs = tessellateSegs(geo.lines[i], map)
               const labels = []
               if (wl) for (const loop of stitchLoops(segs)) { if (loop.length >= 4) labels.push(loopLabelAnchor(loop, i, asc.length)) }
-              return { segs, color: x.lineColor, width: st.lineWidth, txt: (x.name || String(x.v)), labels }
+              return { segs, color: x.lineColor, width: (x.width == null ? st.lineWidth : x.width), dash: x.dash || null, txt: (x.name || String(x.v)), labels }
             }).filter((gp) => gp.segs.length)
             : []
           if (!(fillBands && fillBands.length) && !segGroups.length) {
@@ -357,7 +357,7 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
         ascAbs, st.fill, box, hull, stride, refine, pos
       )
       const fillBands = st.fill
-        ? asc.map((x, i) => ({ color: cssRgb(x.color), verts: geo.fills[i].verts, counts: geo.fills[i].counts })).filter((b) => b.counts.length)
+        ? asc.map((x, i) => ({ color: cssRgb(x.color), alpha: x.fillAlpha, verts: geo.fills[i].verts, counts: geo.fills[i].counts })).filter((b) => b.counts.length)
         : null
       const wl = wantLabels()
       const segGroups = st.line
@@ -365,7 +365,7 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
           const segs = geo.lines[i]
           const labels = []
           if (wl) for (const loop of stitchLoops(segs)) { if (loop.length >= 4) labels.push(loopLabelAnchor(loop, i, asc.length)) }
-          return { segs, color: x.lineColor, width: st.lineWidth, txt: (x.name || String(x.v)), labels }
+          return { segs, color: x.lineColor, width: (x.width == null ? st.lineWidth : x.width), dash: x.dash || null, txt: (x.name || String(x.v)), labels }
         }).filter((gp) => gp.segs.length)
         : []
       if (!(fillBands && fillBands.length) && !segGroups.length) continue

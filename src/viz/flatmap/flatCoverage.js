@@ -2003,9 +2003,12 @@ export function createFlatCoverage(canvas) {
     return { type: 'MultiPolygon', coordinates: polys }
   }
   const segsToGeo = (grp) => asLines((grp.segs || []).map((sg) => [[sg[0][0], sg[0][1]], [sg[1][0], sg[1][1]]]))
+  // 每档线型（SATSOFT Line Style）：花样复用边界线那张表（DASH_PX，屏上 px），按线宽等比放大，
+  // 再除以 kk 折回世界坐标 —— 与线宽同款，缩放时屏上疏密不变。
+  const dashOf = (style, w, kk) => { const p = DASH_PX[style]; return p ? p.map((x) => x * Math.max(0.6, w) / 1.2 / kk) : null }
   function buildFillPaths(fillBands) {
     if (!PJ.identity) return fillBands.map((fb) => ({
-      color: 'rgb(' + fb.color[0] + ',' + fb.color[1] + ',' + fb.color[2] + ')',
+      color: 'rgb(' + fb.color[0] + ',' + fb.color[1] + ',' + fb.color[2] + ')', alpha: (fb.alpha == null ? null : +fb.alpha),
       path: PJ.path(bandsToGeo(fb), new Path2D())
     }))
     return fillBands.map((fb) => {
@@ -2024,7 +2027,7 @@ export function createFlatCoverage(canvas) {
         path.closePath()
         vi += plen
       }
-      return { color: 'rgb(' + fb.color[0] + ',' + fb.color[1] + ',' + fb.color[2] + ')', path }
+      return { color: 'rgb(' + fb.color[0] + ',' + fb.color[1] + ',' + fb.color[2] + ')', alpha: (fb.alpha == null ? null : +fb.alpha), path }
     })
   }
   // 等值线：与填充同策略——每档一条「世界坐标」Path2D（x=lon-LON0, y=90-lat），仅在 setField/patchField 时烘一次。
@@ -2032,7 +2035,7 @@ export function createFlatCoverage(canvas) {
   // 段两端就近解缠（跨 ±180° 不被直线横扫全图）。线宽在描边时 /kk 保持恒定屏幕 px。
   function buildSegPaths(segGroups) {
     if (!PJ.identity) return segGroups.map((grp) => ({
-      color: grp.color || 'rgba(255,255,255,0.9)', width: grp.width || 1.2,
+      color: grp.color || 'rgba(255,255,255,0.9)', width: grp.width || 1.2, dash: grp.dash || null,
       path: PJ.path(segsToGeo(grp), new Path2D())
     }))
     return segGroups.map((grp) => {
@@ -2041,7 +2044,7 @@ export function createFlatCoverage(canvas) {
         let a = sg[0][0], b = sg[1][0]; while (b - a > 180) b -= 360; while (b - a < -180) b += 360
         path.moveTo(a - LON0, 90 - sg[0][1]); path.lineTo(b - LON0, 90 - sg[1][1])
       }
-      return { color: grp.color || 'rgba(255,255,255,0.9)', width: grp.width || 1.2, path }
+      return { color: grp.color || 'rgba(255,255,255,0.9)', width: grp.width || 1.2, dash: grp.dash || null, path }
     })
   }
 
@@ -2179,8 +2182,9 @@ export function createFlatCoverage(canvas) {
       for (const off of wraps()) {
         if (L.bounds && (L.bounds.hi + off < wl || L.bounds.lo + off > wr)) continue
         ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * (tx + off * kk), dpr * ty)
-        if (compat) for (const grp of (L.segGroups || [])) { if (!grp.segs || !grp.segs.length) continue; ctx.strokeStyle = grp.color || 'rgba(255,255,255,0.9)'; ctx.lineWidth = (grp.width || 1.2) / kk; traceSegGroup(grp); ctx.stroke() }
-        else for (const sp of L.segPaths) { ctx.strokeStyle = sp.color; ctx.lineWidth = sp.width / kk; ctx.stroke(sp.path) }
+        if (compat) for (const grp of (L.segGroups || [])) { if (!grp.segs || !grp.segs.length) continue; ctx.strokeStyle = grp.color || 'rgba(255,255,255,0.9)'; ctx.lineWidth = (grp.width || 1.2) / kk; const d = dashOf(grp.dash, grp.width || 1.2, kk); ctx.setLineDash(d || []); traceSegGroup(grp); ctx.stroke() }
+        else for (const sp of L.segPaths) { ctx.strokeStyle = sp.color; ctx.lineWidth = sp.width / kk; const d = dashOf(sp.dash, sp.width, kk); ctx.setLineDash(d || []); ctx.stroke(sp.path) }
+        ctx.setLineDash([])
       }
     }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.globalAlpha = 1; ctx.restore()
@@ -2248,8 +2252,10 @@ export function createFlatCoverage(canvas) {
       for (const off of wraps()) {
         if (L.bounds && (L.bounds.hi + off < wl || L.bounds.lo + off > wr)) continue
         ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * (tx + off * kk), dpr * ty)
-        if (compat) for (const fb of (L.fillBands || [])) { ctx.fillStyle = 'rgb(' + fb.color[0] + ',' + fb.color[1] + ',' + fb.color[2] + ')'; traceFillBand(fb); ctx.fill() }
-        else for (const fb of L.fillPaths) { ctx.fillStyle = fb.color; ctx.fill(fb.path) }
+        // 逐档填充透明度（缺省 null = 跟整层 fieldAlpha）：SATSOFT 把透明度也放在 Contour Levels 每一档里
+        if (compat) for (const fb of (L.fillBands || [])) { ctx.globalAlpha = fieldAlpha * (fb.alpha == null ? 1 : fb.alpha); ctx.fillStyle = 'rgb(' + fb.color[0] + ',' + fb.color[1] + ',' + fb.color[2] + ')'; traceFillBand(fb); ctx.fill() }
+        else for (const fb of L.fillPaths) { ctx.globalAlpha = fieldAlpha * (fb.alpha == null ? 1 : fb.alpha); ctx.fillStyle = fb.color; ctx.fill(fb.path) }
+        ctx.globalAlpha = fieldAlpha
       }
     }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.globalAlpha = 1; ctx.restore()

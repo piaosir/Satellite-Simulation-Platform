@@ -59,6 +59,7 @@ uniform float uRe;           // sqrt(1 − e²)
 uniform int uN;
 uniform float uLevels[${GL_MAX_LEVELS}];
 uniform vec3 uColors[${GL_MAX_LEVELS}];
+uniform float uAlphas[${GL_MAX_LEVELS}];
 out vec4 fragColor;
 void main() {
   // ① 精确地平：归一坐标下地表点恰在单位球上，可见 ⇔ dot(P′, S′) ≥ 1
@@ -75,7 +76,9 @@ void main() {
     if (uLevels[i] <= vDb) k = i; else break;
   }
   if (k < 0) discard;
-  fragColor = vec4(uColors[k], 1.0);
+  // 逐档填充透明度（缺省 1 = 跟整层）：画布是 premultipliedAlpha，颜色先乘 a
+  float a = uAlphas[k];
+  fragColor = vec4(uColors[k] * a, a);
 }`
 
 const FRAG = FRAG_SRC
@@ -422,8 +425,8 @@ export function createGlField() {
       gl.deleteShader(vs); gl.deleteShader(fs)
       if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog))
       uni = {}
-      for (const k of ['uLon0', 'uOff', 'uK', 'uTx', 'uTy', 'uDpr', 'uW', 'uH', 'uSatN', 'uE2', 'uRe', 'uN', 'uLevels', 'uColors', 'uProj']) {
-        uni[k] = gl.getUniformLocation(prog, k === 'uLevels' || k === 'uColors' ? k + '[0]' : k)
+      for (const k of ['uLon0', 'uOff', 'uK', 'uTx', 'uTy', 'uDpr', 'uW', 'uH', 'uSatN', 'uE2', 'uRe', 'uN', 'uLevels', 'uColors', 'uAlphas', 'uProj']) {
+        uni[k] = gl.getUniformLocation(prog, (k === 'uLevels' || k === 'uColors' || k === 'uAlphas') ? k + '[0]' : k)
       }
       gl.disable(gl.DEPTH_TEST); gl.disable(gl.BLEND); gl.disable(gl.CULL_FACE)
       gl.clearColor(0, 0, 0, 0)
@@ -444,8 +447,8 @@ export function createGlField() {
       gl.linkProgram(prog); gl.deleteShader(vs); gl.deleteShader(fs)
       if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) { gl = null; prog = null; return }
       uni = {}
-      for (const k of ['uLon0', 'uOff', 'uK', 'uTx', 'uTy', 'uDpr', 'uW', 'uH', 'uSatN', 'uE2', 'uRe', 'uN', 'uLevels', 'uColors', 'uProj']) {
-        uni[k] = gl.getUniformLocation(prog, k === 'uLevels' || k === 'uColors' ? k + '[0]' : k)
+      for (const k of ['uLon0', 'uOff', 'uK', 'uTx', 'uTy', 'uDpr', 'uW', 'uH', 'uSatN', 'uE2', 'uRe', 'uN', 'uLevels', 'uColors', 'uAlphas', 'uProj']) {
+        uni[k] = gl.getUniformLocation(prog, (k === 'uLevels' || k === 'uColors' || k === 'uAlphas') ? k + '[0]' : k)
       }
       gl.disable(gl.DEPTH_TEST); gl.disable(gl.BLEND); gl.disable(gl.CULL_FACE)
       gl.clearColor(0, 0, 0, 0)
@@ -551,6 +554,7 @@ export function createGlField() {
       gl.uniform1i(uni.uN, nb)
       gl.uniform1fv(uni.uLevels, mesh.levels.subarray ? mesh.levels.subarray(0, nb) : mesh.levels.slice(0, nb))
       gl.uniform3fv(uni.uColors, mesh.colors.subarray ? mesh.colors.subarray(0, nb * 3) : mesh.colors.slice(0, nb * 3))
+      gl.uniform1fv(uni.uAlphas, mesh.alphas && mesh.alphas.length >= nb ? mesh.alphas.subarray(0, nb) : new Float32Array(nb).fill(1))
       gl.uniform3f(uni.uSatN, mesh.satN[0], mesh.satN[1], mesh.satN[2])
       gl.uniform1f(uni.uE2, mesh.e2); gl.uniform1f(uni.uRe, Math.sqrt(1 - mesh.e2))
       gl.uniform1f(uni.uW, W); gl.uniform1f(uni.uH, H)

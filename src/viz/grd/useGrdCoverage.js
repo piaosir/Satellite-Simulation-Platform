@@ -7,6 +7,7 @@ import { sniffPatternFormat, foreignPatternToGrd } from './patFormats.js'
 import { antennaBasis, antennaBasisEcef, beamBasisFrom, dirAzElAbout, dirToAzEl, azElGround, surfaceAzEl, projectGrid, projectLimb, gridDirs, fieldDb, bandGeometry, edgeRefineFor, projectRefine, peakRefDb, stitchLoops, dLon, loopPointAtFraction, loopLabelAnchor, nearestFractionOnLoop } from './coverage.js'
 import { boresightShellPoint } from './shellProj.js'
 import { schemeColorsRGB, rgbCss, cssRgb } from './colormap.js'
+import { parseLevelValues, levelValuesText, levelValues } from './levelTable.js'
 import { RS_GEO, A, B, E2, geodeticToEcef, geocentricToEcef, isoElevationContourAt } from '../wgs84.js'
 import { effective as displayQuality } from '../../stores/displayQuality.js'
 import { appAlert } from '../../stores/alert.js'   // 应用内提示，替代会夺焦点的原生 alert
@@ -98,16 +99,18 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
   const STEP = 1   // 电平间隔（固定 1 dB，用户不可见）
   // 默认 5 档：相对峰值 −1..−5；绝对模式（默认）下换算为 peakDb + (−1..−5) 的绝对值（无 peak 时退回相对数值）。
   // jet 配色按值自动分配（填充色与线色默认同色，可分别改）。
+  // 一档的可选样式（SATSOFT Contour Levels 双击那一栏）：三项缺省 null = 跟全局（线宽 / 线型 / 填充透明度）
+  const LV_BLANK = { name: '', labelT: null, color: '', lineColor: '', locked: false, lineSet: false, dash: null, width: null, fillAlpha: null }
   function defaultLevels(peakDb) {
     const abs = Number.isFinite(peakDb)
-    const lv = [-1, -2, -3, -4, -5].map((v) => ({ v: abs ? +(peakDb + v).toFixed(2) : v, name: '', labelT: null, color: '', lineColor: '', locked: false, lineSet: false }))
+    const lv = [-1, -2, -3, -4, -5].map((v) => ({ v: abs ? +(peakDb + v).toFixed(2) : v, ...LV_BLANK }))
     recolorList(lv); return lv
   }
   // 按值升序分配 jet 色（外圈冷、内圈热）。locked 标记「用户手动配过色」的档：整档锁定，填充与线色
   // 都不再被 jet 重配（记忆到用户下次再改，增删档不抹手动色）。lineSet 表示线色已单独设定（改填充时不跟随）。
-  function recolorList(lv) {
+  function recolorList(lv, scheme = 'jet') {
     const n = lv.length; if (!n) return
-    const cols = schemeColorsRGB('jet', n)
+    const cols = schemeColorsRGB(scheme, n)
     lv.map((_, i) => i).sort((a, b) => lv[a].v - lv[b].v).forEach((idx, rank) => {
       if (lv[idx].locked) return
       const css = rgbCss(cols[rank]); lv[idx].color = css; lv[idx].lineColor = css
@@ -287,20 +290,56 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     if (!lv.length) v = s.ctype === 'rel' ? -1 : (Number.isFinite(peak) ? Math.floor(peak) - 1 : 50)
     else if (lv.length === 1) v = Math.floor(lv[0].v) - 1
     else { const dir = Math.sign(lv[lv.length - 1].v - lv[lv.length - 2].v) || (s.ctype === 'rel' ? -1 : 1); v = Math.floor(lv[lv.length - 1].v) + dir * STEP }
-    lv.push({ v, name: '', labelT: null, color: '', lineColor: '', locked: false, lineSet: false })
+    lv.push({ v, ...LV_BLANK })
     recolorList(lv)
   }
   function removeLevel(i) { s.levels.splice(i, 1); recolorList(s.levels) }
   // 由指定 dB 值数组构造电平表（jet 自动配色）：波束合成设默认档用
   function levelsFromValues(vals) {
-    const lv = vals.map((v) => ({ v, name: '', labelT: null, color: '', lineColor: '', locked: false, lineSet: false }))
+    const lv = vals.map((v) => ({ v, ...LV_BLANK }))
     recolorList(lv); return lv
+  }
+  // ---- 电平表工具条（SATSOFT Contour Levels 那一排）----
+  function moveLevel(i, d) {
+    const lv = s.levels, j = i + d
+    if (i < 0 || i >= lv.length || j < 0 || j >= lv.length) return i
+    const t = lv[i]; lv.splice(i, 1); lv.splice(j, 0, t)
+    return j
+  }
+  // 当前行【之后】插入一档：值取与下一档的中点，没有下一档就照末两档的步长外推
+  function insertLevel(i) {
+    const lv = s.levels
+    if (!lv.length) { addLevel(); return 0 }
+    const at = Math.max(0, Math.min(i, lv.length - 1))
+    const a = lv[at].v
+    const b = lv[at + 1] ? lv[at + 1].v : a + (lv.length > 1 ? (lv[lv.length - 1].v - lv[lv.length - 2].v) : (s.ctype === 'abs' ? 1 : -1))
+    lv.splice(at + 1, 0, { v: +((a + b) / 2).toFixed(2), ...LV_BLANK })
+    recolorList(lv)
+    return at + 1
+  }
+  const levelsText = () => levelValuesText(s.levels.map((L) => L.v))
+  function pasteLevels(txt) {
+    const vs = parseLevelValues(txt); if (!vs.length) return 0
+    s.levels = levelsFromValues(vs); return vs.length
+  }
+  // 生成器（SATSOFT Generate Contour Levels）：起始 / 间隔 / 档数 + 配色方案。
+  // scheme='custom' —— 保留原表同序号那一档的手动色（少的按方案补），其余按方案重配。
+  function generateLevels(start, step, count, scheme) {
+    const old = s.levels
+    const lv = levelValues(start, step, count).map((v) => ({ v, ...LV_BLANK }))
+    const n = lv.length
+    if (scheme === 'custom') {
+      recolorList(lv)
+      for (let i = 0; i < n && i < old.length; i++) { lv[i].color = old[i].color; lv[i].lineColor = old[i].lineColor; lv[i].locked = !!old[i].locked; lv[i].lineSet = !!old[i].lineSet }
+    } else recolorList(lv, scheme)
+    s.levels = lv
+    return n
   }
 
   // 每个天线的独立设置（数据库）：除等仰角线(全局参考线)外的全部绘制设置都按天线保存，
   // 切换聚焦时载入该天线设置、编辑时回存，只有用户改动才变。bore 指向同样并入。
   const PA = ['ctype', 'pol', 'gainOffset', 'pathLoss', 'fill', 'line', 'lineWidth', 'lineAlpha', 'alpha', 'boreType', 'boreLon', 'boreLat', 'boreAz', 'boreEl', 'yaw', 'boreLock', 'boreSat', 'boreSatName', 'boreOffAz', 'boreOffEl', 'borePtLon', 'borePtLat', 'borePtAlt']
-  const copyLevels = (lv) => lv.map((L) => ({ v: L.v, name: L.name || '', labelT: (L.labelT == null ? null : L.labelT), color: L.color, lineColor: L.lineColor, locked: !!L.locked, lineSet: !!L.lineSet }))
+  const copyLevels = (lv) => lv.map((L) => ({ v: L.v, name: L.name || '', labelT: (L.labelT == null ? null : L.labelT), color: L.color, lineColor: L.lineColor, locked: !!L.locked, lineSet: !!L.lineSet, dash: L.dash || null, width: (L.width == null ? null : +L.width), fillAlpha: (L.fillAlpha == null ? null : +L.fillAlpha) }))
   function defaultSettings(satLon, satLat = 0, peakDb) {
     return { ctype: 'abs', pol: 'RSS', gainOffset: 0, pathLoss: 'none', fill: false, line: true, lineWidth: 1.6, lineAlpha: 1, alpha: 0.78,
       boreType: 'azel', boreLon: satLon == null ? null : satLon, boreLat: satLat || 0, boreAz: 0, boreEl: 0, yaw: 0, boreLock: true,
@@ -829,7 +868,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     for (const bi of plot) { const beam = c.beams[bi]; if (beam) syncBeamProj(c, beam, c.settings, (c.settings.pathLoss === 'none' && beam._fld) ? beam._fld.field : null) }
   }
 
-  function absLevels(peak, cfg) { return cfg.levels.map((L, idx) => ({ idx, abs: cfg.ctype === 'rel' ? peak + L.v : L.v, v: L.v, name: L.name || '', labelT: (L.labelT == null ? null : L.labelT), color: L.color, lineColor: L.lineColor })) }
+  function absLevels(peak, cfg) { return cfg.levels.map((L, idx) => ({ idx, abs: cfg.ctype === 'rel' ? peak + L.v : L.v, v: L.v, name: L.name || '', labelT: (L.labelT == null ? null : L.labelT), color: L.color, lineColor: L.lineColor, dash: L.dash || null, width: (L.width == null ? null : +L.width), fillAlpha: (L.fillAlpha == null ? null : +L.fillAlpha) })) }
 
   // 数值标签锚点/沿环拖动（loopTop·loopPointAtFraction·nearestFractionOnLoop：把标签位置存成
   // 「沿环弧长的比例 t∈[0,1)」，几何每帧重算也始终贴在线上）的几何本体在 coverage.js —— 对星覆盖
@@ -903,15 +942,16 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     }
     const S = beamBasis(c.meta, cfg).S
     const nb = asc.length
-    const levels = new Float32Array(nb), colors = new Float32Array(nb * 3)
+    const levels = new Float32Array(nb), colors = new Float32Array(nb * 3), alphas = new Float32Array(nb)
     for (let i = 0; i < nb; i++) {
       levels[i] = asc[i].abs
       const rgb = cssRgb(asc[i].color)
       colors[i * 3] = rgb[0] / 255; colors[i * 3 + 1] = rgb[1] / 255; colors[i * 3 + 2] = rgb[2] / 255
+      alphas[i] = asc[i].fillAlpha == null ? 1 : asc[i].fillAlpha    // 逐档填充透明度（缺省跟整层）
     }
     // satN：卫星 ECEF 逐分量除以 (A, A, B)。该归一坐标下椭球即单位球 → 片元判地平只是一次点积。
     // refine / pos：与 bandGeometry 同一张交点细化表与同一份精确位置（glField.buildMeshIndices 据此插顶点、按档扇形化，填充边界 = CPU 等值线）
-    return { NX, NY, box, stride, lonU, lat: proj.lat, db: field.db, vis: proj.vis, satN: [S[0] / A, S[1] / A, S[2] / B], e2: E2, levels, colors, refine, pos }
+    return { NX, NY, box, stride, lonU, lat: proj.lat, db: field.db, vis: proj.vis, satN: [S[0] / A, S[1] / A, S[2] / B], e2: E2, levels, colors, alphas, refine, pos }
   }
   // glMesh=true：2D 的分带填充走 GPU 网格着色 —— 此时 bandGeometry 只出等值线（省掉逐档裁剪与
   // 全部 Path2D 烘制），fillBands 置空，改送 fieldMesh。3D / 导出 / 投影档 / 无 WebGL2 一切照旧。
@@ -935,7 +975,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     // ★ stride 必须与 fieldMesh 的索引生成用同一个值：等值线（CPU）与填充（GPU）要落在同一张三角网上。
     const geo = need ? bandGeometry({ lon: beam.proj.lon, lat: beam.proj.lat, vis: beam.proj.vis, db: field.db, NX: beam.proj.NX, NY: beam.proj.NY }, ascAbs, wantFills, box, wantFills ? satHull(c) : null, stride, refine, pos) : null
     // 分带填充：每档一个颜色 + 该档环带多边形（升序，逐层从外到内绘制，非嵌套→无重叠透明叠加）
-    const fillBands = wantFills && geo ? asc.map((x, i) => ({ color: cssRgb(x.color), verts: geo.fills[i].verts, counts: geo.fills[i].counts })).filter((b) => b.counts.length) : null
+    const fillBands = wantFills && geo ? asc.map((x, i) => ({ color: cssRgb(x.color), alpha: x.fillAlpha, verts: geo.fills[i].verts, counts: geo.fills[i].counts })).filter((b) => b.counts.length) : null
     const fieldMesh = (cfg.fill && glMesh) ? buildFieldMesh(c, cfg, beam, field, asc, box, stride, refine, pos) : null
     // 等值线：每档一组线段（= 填充相邻档公共边）；数值标签锚点：该档拖过（labelT 非空）则按弧长比例取点，
     // 否则默认取环最上端点。标签仅在「显示数值」开启时才拼环求锚点——关闭时跳过 stitchLoops，拖拽时省一笔。
@@ -953,7 +993,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
         // txt：该档【自定义名称】优先（电平表灰色列可改名），为空则回退电平值 x.v = L.v。
         // 数值回退不做小数位裁剪——绝对模式下 x.abs 恒等于 x.v，之前用 toFixed(1) 会把用户输入的
         // 更高精度电平（如 42.567）显示成 42.6，与输入框对不上。
-        return { segs, color: x.lineColor, width: cfg.lineWidth, txt: (x.name || String(x.v)), labels }
+        return { segs, color: x.lineColor, width: (x.width == null ? cfg.lineWidth : x.width), dash: x.dash || null, txt: (x.name || String(x.v)), labels }
       }).filter((g) => g.segs.length)
       : []
     // 峰值点（随指向/拖拽实时变化）：波束名标签贴在此处。hit=false（峰值方向越过地平）时
@@ -1689,7 +1729,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     activeBeams, beamListOn, isBeamOn, setBeamsToPlot, renameBeam,
     beamQuery, setBeamQuery, filteredBeams,
     deleteBeam, deleteCheckedBeams,
-    loadIndex, setActive, toggleAnt, toggleSatAll, toggleExpand, addLevel, removeLevel, importGrd, importSynthGrd,
+    loadIndex, setActive, toggleAnt, toggleSatAll, toggleExpand, addLevel, removeLevel, moveLevel, insertLevel, levelsText, pasteLevels, generateLevels, importGrd, importSynthGrd,
     addSatellite, addElevLine, updateSatellite, removeSatellite, removeAntenna, renameAntenna, setElev, onTreeKeys,
     setDragBore, beamDrag, dragLabel, setDragLabel, labelDrag, getState, restoreState, recompute, onZoomEnd, clearAll, clearDrawing, setActiveKey,
     setLivePos, tickLive, getPerfContext, ensureAntLoaded, exportContours,
