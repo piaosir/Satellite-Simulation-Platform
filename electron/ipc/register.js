@@ -1023,45 +1023,17 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
       return { ok: false, error: busy ? '文件可能正被其他程序打开（如 Word），请关闭后重试' : (err.message || String(err)) }
     }
   })
-  // ICS 日历：事件时刻恒用 UTC（导入方自动换算本地时区）；SUMMARY 附本地峰值便于值班速读。
+  // ICS 日历（多站 × 多季一份）：事件时刻恒用 UTC（导入方自动换算本地时区）；
+  // SUMMARY 里的峰值用渲染端按显示时区平移好的串 —— 主进程不再按经度推时区。
   ipcMain.handle('sunoutage:exportIcs', async (e, payload) => {
-    const { result, station = {}, satellite = {} } = payload || {}
-    const days = (result && result.dailyResults) || []
-    if (!days.length) return { ok: false, error: '无日凌事件可导出' }
-    const satName = satellite.name || `${satellite.lon}°E`
-    const stnName = station.name || '地球站'
-    const yearStr = String(result.equinoxDate || '').slice(0, 4)
-    // 本地时刻：按地球站经度推算整点时区 round(经度/15)h，据 UTC 瞬间平移
-    const p2 = (n) => String(n).padStart(2, '0')
-    const staOffMin = (() => { const l = Number(station.lon); return isFinite(l) ? Math.round(l / 15) * 60 : 0 })()
-    const locTime = (dateUTC, hms) => { const dt = new Date(`${dateUTC}T${hms}Z`); if (isNaN(dt.getTime())) return hms; dt.setTime(dt.getTime() + staOffMin * 60000); return `${p2(dt.getUTCHours())}:${p2(dt.getUTCMinutes())}:${p2(dt.getUTCSeconds())}` }
-    const offH = staOffMin / 60
-    const tzLbl = offH === 0 ? 'UTC' : 'UTC' + (offH > 0 ? '+' : '−') + Math.abs(offH)
-    const events = days.map((d) => ({
-      // UID 含 星-站-日期：同一事件重复导入时日历自动更新而非重复
-      uid: `so-${satellite.lon}E-${Number(station.lat).toFixed(2)}N-${Number(station.lon).toFixed(2)}E-${d.date}@satsim-platform`,
-      date: d.date, start: d.startTimeUTC, end: d.endTimeUTC,
-      summary: `日凌 ${satName} @ ${stnName} · 峰值${locTime(d.date, d.peakTimeUTC)}(本地) · -${d.peakCNdeg}dB`,
-      description: [
-        `卫星: ${satName}（${satellite.lon}°E）`,
-        `地球站: ${stnName}（${station.lat}, ${station.lon}）· 方位 ${result.satAz}° 仰角 ${result.satEl}°`,
-        `窗口(UTC): ${d.startTimeUTC} ~ ${d.endTimeUTC}（峰值 ${d.peakTimeUTC}）`,
-        `窗口(本地 ${tzLbl}): ${locTime(d.date, d.startTimeUTC)} ~ ${locTime(d.date, d.endTimeUTC)}（峰值 ${locTime(d.date, d.peakTimeUTC)}）`,
-        `时长: ${d.durationStr} · 峰值 C/N 恶化: ${d.peakCNdeg} dB · 强度: ${d.intensity}`,
-        `判据: C/N 恶化 ≥ ${result.model ? result.model.degThreshold : '—'} dB · 频率 ${result.frequency} GHz · 口径 ${result.model ? result.model.diameter : '—'} m`,
-        `由 卫星仿真平台 生成`
-      ].join('\n'),
-      location: stnName,
-      categories: ['日凌', 'SUN OUTAGE'],
-      alarms: [
-        { minutesBefore: 1440, description: `明日日凌：${satName} @ ${stnName}` },
-        { minutesBefore: 30, description: `30 分钟后日凌开始：${satName} @ ${stnName}` }
-      ]
-    }))
-    const ics = core().buildIcs({ name: `日凌预报 ${satName} @ ${stnName} · ${result.seasonName}${yearStr}`, events })
+    const p = payload || {}
+    const satName = (p.sat && (p.sat.name || p.sat.slotText)) || '卫星'
+    const events = report.sunOutageIcsEvents(p)
+    if (!events.length) return { ok: false, error: '无日凌事件可导出' }
+    const ics = core().buildIcs({ name: `日凌预报 ${satName} ${p.year != null ? p.year : ''}`.trim(), events })
     const win = BrowserWindow.fromWebContents(e.sender)
     const { canceled, filePath } = await dialog.showSaveDialog(win, {
-      defaultPath: (payload && payload.defaultName) || `日凌预报_${satName}_${stnName}_${yearStr}${result.seasonName}.ics`,
+      defaultPath: p.defaultName || `日凌预报_${satName}_${p.year != null ? p.year : ''}.ics`,
       filters: [{ name: 'iCalendar 日历', extensions: ['ics'] }]
     })
     if (canceled || !filePath) return { ok: false, canceled: true }
@@ -1069,10 +1041,9 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
       fs.writeFileSync(filePath, ics, 'utf8')
       return { ok: true, filePath, count: events.length }
     } catch (err) {
-      return { ok: false, error: err.message || String(err) }
+      return { ok: false, error: writeErrText(err) }
     }
   })
-
   // ---- 本地存储 ----
   ipcMain.handle('store:history:list', () => storage.listHistory())
   ipcMain.handle('store:history:add', (_e, r) => storage.addHistory(r))

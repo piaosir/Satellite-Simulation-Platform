@@ -1838,25 +1838,8 @@ async function buildReportWorkbook(model) {
 // 布局：标题 → 参数/模型信息块（键值两列）→ 逐日事件表（三线表）→ 方法学脚注。
 // 时标由 tz 决定（默认本地=运行机时区，由 UTC 时刻换算，表头注明偏移；UTC 时刻在 ICS 日历中恒有）。
 
-// 本地时刻：按地球站经度推算整点时区 round(经度/15)h，据 UTC 瞬间平移（随站点位置变化）
-function soOffMinFromLon(lon) {
-  const l = Number(lon)
-  return isFinite(l) ? Math.round(l / 15) * 60 : 0
-}
-function soLocalOf(dateUTC, hmsUTC, offMin) {
-  const dt = new Date(`${dateUTC}T${hmsUTC}Z`)
-  if (isNaN(dt.getTime())) return { date: dateUTC, time: hmsUTC }
-  dt.setTime(dt.getTime() + (offMin || 0) * 60000)
-  const p = (n) => String(n).padStart(2, '0')
-  return {
-    date: `${dt.getUTCFullYear()}-${p(dt.getUTCMonth() + 1)}-${p(dt.getUTCDate())}`,
-    time: `${p(dt.getUTCHours())}:${p(dt.getUTCMinutes())}:${p(dt.getUTCSeconds())}`
-  }
-}
-function soLocalTzLabel(offMin) {
-  const h = (offMin || 0) / 60
-  return h === 0 ? 'UTC' : 'UTC' + (h > 0 ? '+' : '−') + Math.abs(h)
-}
+// 时标：渲染端按平台显示时区档（src/shared/tz.js）把逐日行的显示串一并送过来，主进程只排版不算时刻。
+// （改造前这里按地球站经度推整点时区 round(经度/15)h —— 把乌鲁木齐算成 UTC+6，与法定时区不符。）
 
 function soKV(k, v) {
   return new TableRow({ children: [
@@ -1872,61 +1855,91 @@ function soTd(text, opts) {
   })] })
 }
 
+// 日凌 Word 报告（多站 × 多季）。payload 由渲染端组装，逐日行已带按显示时区平移好的显示串
+// （dateDisp / startDisp / peakDisp / endDisp）—— 主进程只排版不算时刻，不再按经度推时区。
+// ★ 没有「强度」列：那是文字判定（见仓库根 CLAUDE.md），屏上与本报告一并删掉；峰值恶化 dB 照出。
 async function buildSunOutageWord(payload) {
-  const { result: r = {}, station = {}, satellite = {}, tz = 'local' } = payload
-  const m = r.model || {}
-  const isLocal = tz !== 'utc'
-  const staOffMin = soOffMinFromLon(station.lon)
-  const tzLabel = isLocal ? `本地时 (${soLocalTzLabel(staOffMin)})` : 'UTC'
-  const fmtLL = (lat, lon) => `${Math.abs(lat).toFixed(4)}°${lat >= 0 ? 'N' : 'S'}, ${Math.abs(lon).toFixed(4)}°${lon >= 0 ? 'E' : 'W'}`
-
-  const info = new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows: [
-    soKV('地球站', `${station.name || '—'}（${fmtLL(Number(station.lat) || 0, Number(station.lon) || 0)}）`),
-    soKV('卫星', `${satellite.name || '—'} · 轨位 ${satellite.lon}°E`),
-    soKV('指向', `方位 ${r.satAz}° · 仰角 ${r.satEl}°`),
-    soKV('频率 / 口径', `${r.frequency} GHz · ${m.diameter} m（3dB 波束宽 ${m.beamWidth3dB}°）`),
-    soKV('判据', `C/N 恶化 ≥ ${m.degThreshold} dB（T_sys = ${m.sysTemp} K，T_sun = ${m.solarTemp} K${m.solarTempSource === 'manual' ? '·手动指定' : `·由 F10.7=${m.f107} 推算`}）`),
-    soKV('分点', `${r.seasonName} ${r.equinoxDate} · 主轴对准恶化上限 ${m.boresightDeg} dB`),
-    soKV('事件概况', `${r.startDate} ~ ${r.endDate} 共 ${r.totalDays} 天 · 单日最长 ${r.maxDurationStr}`),
-    soKV('时标', tzLabel),
-    soKV('生成时间', new Date().toLocaleString())
-  ] })
+  const p = payload || {}
+  const sat = p.sat || {}
+  const seasons = (Array.isArray(p.seasons) && p.seasons.length ? p.seasons : ['vernal', 'autumnal'])
+    .filter((x) => x === 'vernal' || x === 'autumnal')
+  const stations = Array.isArray(p.stations) ? p.stations : []
+  const tzLabel = p.tzLabel || 'UTC'
+  const crit = p.criterion || {}
+  const critTxt = crit.mode === 'geometric'
+    ? '纯几何：门限角 θ_th ≡ θ_3dB = 70λ/D'
+    : `C/N 恶化 ≥ ${crit.degDb != null && crit.degDb !== '' ? crit.degDb : 1} dB`
+  const f = (v, d, u) => (v == null || !Number.isFinite(+v)) ? '—' : ((+v).toFixed(d) + (u ? ' ' + u : ''))
+  const fmtLL = (lat, lon) => `${Math.abs(Number(lat) || 0).toFixed(4)}°${(Number(lat) || 0) >= 0 ? 'N' : 'S'}, ${Math.abs(Number(lon) || 0).toFixed(4)}°${(Number(lon) || 0) >= 0 ? 'E' : 'W'}`
+  // 取星来源三档（第三档留给将来的外部星历文件，见 src/suntool/sunParams.js SAT_SOURCE_LABEL）
+  const srcTxt = (() => {
+    if (sat.source !== 'ephemeris') return `定轨 · 轨位 ${sat.slotText || '—'}`
+    if (sat.spanText) return `星历文件 · 覆盖 ${sat.spanText}`
+    return `星历 · 历元 ${sat.epoch ? String(sat.epoch).replace('T', ' ').slice(0, 16) : '—'}` +
+      (sat.noradId ? ` · NORAD ${sat.noradId}` : '') +
+      (sat.inclDeg != null ? ` · 倾角 ${Number(sat.inclDeg).toFixed(2)}°` : '')
+  })()
 
   const header = new TableRow({ children: [
     soTd('序号', { bold: true, align: 'center' }), soTd('日期', { bold: true }),
     soTd('开始', { bold: true, align: 'right' }), soTd('峰值', { bold: true, align: 'right' }),
     soTd('结束', { bold: true, align: 'right' }), soTd('时长', { bold: true, align: 'right' }),
-    soTd('峰值恶化 (dB)', { bold: true, align: 'right' }), soTd('强度', { bold: true, align: 'center' })
+    soTd('峰值恶化 (dB)', { bold: true, align: 'right' })
   ] })
-  const body = (r.dailyResults || []).map((d, i) => new TableRow({ children: [
-    soTd(i + 1, { align: 'center' }),
-    soTd((isLocal ? soLocalOf(d.date, d.startTimeUTC, staOffMin).date : d.date) + (d.isPeak ? ' ★' : ''), { bold: !!d.isPeak }),
-    soTd(isLocal ? soLocalOf(d.date, d.startTimeUTC, staOffMin).time : d.startTimeUTC, { align: 'right' }),
-    soTd(isLocal ? soLocalOf(d.date, d.peakTimeUTC, staOffMin).time : d.peakTimeUTC, { align: 'right', bold: !!d.isPeak }),
-    soTd(isLocal ? soLocalOf(d.date, d.endTimeUTC, staOffMin).time : d.endTimeUTC, { align: 'right' }),
-    soTd(d.durationStr, { align: 'right' }),
-    soTd(d.peakCNdeg, { align: 'right' }),
-    soTd(d.intensity, { align: 'center' })
-  ] }))
 
-  const doc = new Document({ styles: wordStyles(payload.fonts), sections: [{ children: [
+  const kids = [
     new Paragraph({ text: '日凌预报报告', heading: HeadingLevel.HEADING_1 }),
     new Paragraph({ children: [new TextRun({
-      text: `${satellite.name || ''} ${satellite.lon}°E → ${station.name || ''} · ${r.seasonName} ${String(r.equinoxDate || '').slice(0, 4)}`,
+      text: `${sat.name || '—'}（${sat.slotText || '—'}）· ${p.year != null ? p.year : ''}`,
       size: 20, color: '444444'
     })] }),
-    new Paragraph({ text: '' }),
-    info,
-    new Paragraph({ text: '' }),
-    new Paragraph({ children: [new TextRun({ text: `逐日日凌窗口（时标：${tzLabel}，★ 为最长日）`, bold: true, size: 20 })] }),
-    new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows: [header, ...body] }),
-    new Paragraph({ text: '' }),
-    new Paragraph({ children: [new TextRun({
-      text: '方法：太阳视位置 VSOP87+IAU1980 章动（黄经精度 ≈1″）；窗口判据为 C/N 恶化门限——太阳均匀盘（当日视直径）与天线高斯主瓣（3dB 波束宽 70λ/D）作精确卷积得 ΔT(θ)，D(θ)=10lg(1+ΔT/T_sys)≥门限即计入窗口。太阳亮温由太阳射电流量指数 F10.7（2.8GHz 实测，NOAA SWPC 每日发布）锚定、按 (2.8/f)^1.8 谱外推（光球层 6000K floor）。采用当日实测 F10.7 与本站实测 T_sys 时峰值恶化不确定度约 ±1dB；起止时刻对噪温仅对数敏感（±数十秒）。',
-      size: 16, color: '999999'
-    })] }),
-    new Paragraph({ children: [new TextRun({ text: '强度分级：高 ≥10dB（链路失锁）· 中 3~10dB · 低 <3dB。', size: 16, color: '999999' })] })
-  ] }] })
+    new Paragraph({ text: '' })
+  ]
+
+  for (const st of stations) {
+    kids.push(new Paragraph({ text: st.name || '地球站', heading: HeadingLevel.HEADING_2 }))
+    kids.push(new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows: [
+      soKV('地球站', `${st.name || '—'}（${fmtLL(st.lat, st.lon)}）`),
+      soKV('卫星', `${sat.name || '—'} · ${srcTxt}`),
+      soKV('指向', `方位 ${f(st.satAz, 2, '°')} · 仰角 ${f(st.satEl, 2, '°')}`),
+      soKV('频率 / 口径', `${st.band || '—'} ${f(st.freq, 2, 'GHz')} · ${f(st.diameter, 2, 'm')}（3dB 波束宽 ${f(st.beamWidth, 3, '°')}）`),
+      soKV('判据', `${critTxt}（T_sys = ${f(st.sysTemp, 0, 'K')}，门限角 ${f(st.thresholdAngle, 3, '°')}）`),
+      soKV('时标', tzLabel)
+    ] }))
+    if (st.error) {
+      kids.push(new Paragraph({ children: [new TextRun({ text: String(st.error), size: 18, color: '9c5751' })] }))
+      kids.push(new Paragraph({ text: '' }))
+      continue
+    }
+    for (const sn of seasons) {
+      const sea = st[sn]
+      if (!sea) continue
+      const cn = sn === 'vernal' ? '春分' : '秋分'
+      kids.push(new Paragraph({ children: [new TextRun({
+        text: `${cn} ${sea.equinoxDate || ''} · ${sea.days} 天` + (sea.days ? ` · 单日最长 ${f(sea.maxMin, 1, 'min')}` : ''),
+        bold: true, size: 20
+      })] }))
+      const rows = Array.isArray(sea.rows) ? sea.rows : []
+      if (!rows.length) { kids.push(new Paragraph({ text: '' })); continue }
+      kids.push(new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows: [header, ...rows.map((d, i) => new TableRow({ children: [
+        soTd(i + 1, { align: 'center' }),
+        soTd(String(d.dateDisp || '') + (d.isPeak ? ' ★' : ''), { bold: !!d.isPeak }),
+        soTd(d.startDisp || '', { align: 'right' }),
+        soTd(d.peakDisp || '', { align: 'right', bold: !!d.isPeak }),
+        soTd(d.endDisp || '', { align: 'right' }),
+        soTd(d.durStr || f(d.durMin, 1, 'min'), { align: 'right' }),
+        soTd(d.peakDb, { align: 'right' })
+      ] }))] }))
+      kids.push(new Paragraph({ text: '' }))
+    }
+  }
+
+  kids.push(new Paragraph({ children: [new TextRun({
+    text: '方法：太阳视位置 VSOP87+IAU1980 章动（黄经精度 ≈1″）；窗口判据为 C/N 恶化门限——太阳均匀盘（当日视直径）与天线高斯主瓣（3dB 波束宽 70λ/D）作精确卷积得 ΔT(θ)，D(θ)=10lg(1+ΔT/T_sys)≥门限即计入窗口（纯几何档改以 θ_th ≡ θ_3dB 定窗，峰值恶化 dB 仍按同一物理模型算出）。太阳亮温由太阳射电流量指数 F10.7（2.8GHz 实测，NOAA SWPC 每日发布）锚定、按 (2.8/f)^1.8 谱外推（光球层 6000K floor）。采用当日实测 F10.7 与本站实测 T_sys 时峰值恶化不确定度约 ±1dB；起止时刻对噪温仅对数敏感（±数十秒）。星历档按该星 GP 根数逐时刻 SGP4/SDP4 推算，含倾角、偏心率与漂移，不含轨道保持机动 —— 历元离分点越远越偏。',
+    size: 16, color: '999999'
+  })] }))
+
+  const doc = new Document({ styles: wordStyles(p.fonts), sections: [{ children: kids }] })
   return Packer.toBuffer(doc)
 }
 
@@ -2294,6 +2307,59 @@ async function buildRainAttenuationExcel(payload) {
   return applyBookFont(wb).xlsx.writeBuffer()
 }
 
+// ==================== 日凌预报 · ICS 日历事件 ====================
+// 多站 × 多季进一份日历。事件时刻恒用 UTC（导入方自动换算本地时区）；描述里的本地时刻用渲染端
+// 按显示时区平移好的串 —— 主进程不再按经度推时区。UID 含 星-站-日期：重复导入时日历自动更新而非重复。
+// ★ 没有「强度」一行：那是文字判定（见仓库根 CLAUDE.md）。
+// 抽成纯函数（不碰 dialog / fs / core）是为了能单测，验证台也调同一份。
+function sunOutageIcsEvents(payload) {
+  const p = payload || {}
+  const sat = p.sat || {}
+  const seasons = (Array.isArray(p.seasons) && p.seasons.length ? p.seasons : ['vernal', 'autumnal'])
+    .filter((x) => x === 'vernal' || x === 'autumnal')
+  const stations = Array.isArray(p.stations) ? p.stations : []
+  const satName = sat.name || sat.slotText || '卫星'
+  const satKey = sat.noradId || sat.slotText || 'sat'
+  const tzLbl = p.tzLabel || 'UTC'
+  const crit = p.criterion || {}
+  const critTxt = crit.mode === 'geometric'
+    ? '纯几何，θ_th = θ_3dB'
+    : `C/N 恶化 ≥ ${crit.degDb != null && crit.degDb !== '' ? crit.degDb : 1} dB`
+  const f4 = (v) => (Number.isFinite(Number(v)) ? Number(v).toFixed(4) : '—')
+  const f2 = (v) => (Number.isFinite(Number(v)) ? Number(v).toFixed(2) : '—')
+  const out = []
+  for (const st of stations) {
+    const stnName = st.name || '地球站'
+    for (const sn of seasons) {
+      const sea = st[sn]
+      if (!sea || !Array.isArray(sea.rows)) continue
+      for (const d of sea.rows) {
+        out.push({
+          uid: `so-${satKey}-${f4(st.lat)}-${f4(st.lon)}-${d.dateUTC}@satsim-platform`,
+          date: d.dateUTC, start: d.startUtc, end: d.endUtc,
+          summary: `日凌 ${satName} @ ${stnName} · 峰值 ${d.peakDisp} (${tzLbl}) · −${d.peakDb} dB`,
+          description: [
+            `卫星: ${satName}（${sat.slotText || '—'}）`,
+            `地球站: ${stnName}（${f4(st.lat)}, ${f4(st.lon)}）· 方位 ${f2(st.satAz)}° 仰角 ${f2(st.satEl)}°`,
+            `窗口(UTC): ${d.startUtc} ~ ${d.endUtc}（峰值 ${d.peakUtc}）`,
+            `窗口(${tzLbl}): ${d.startDisp} ~ ${d.endDisp}（峰值 ${d.peakDisp}）`,
+            `时长: ${d.durStr || (d.durMin + ' min')} · 峰值 C/N 恶化: ${d.peakDb} dB`,
+            `判据: ${critTxt} · 频率 ${f2(st.freq)} GHz · 口径 ${f2(st.diameter)} m`,
+            '由 卫星仿真平台 生成'
+          ].join('\n'),
+          location: stnName,
+          categories: ['日凌', 'SUN OUTAGE'],
+          alarms: [
+            { minutesBefore: 1440, description: `明日日凌：${satName} @ ${stnName}` },
+            { minutesBefore: 30, description: `30 分钟后日凌开始：${satName} @ ${stnName}` }
+          ]
+        })
+      }
+    }
+  }
+  return out
+}
+
 // ==================== 日凌预报导出（模板版 Excel）====================
 // 《三线表模板_TimesNewRoman_11pt.xlsx》口径，★ 与模板一模一样：整本只有两张表、各自从 A1 起，
 // 没有页首标题、没有空行、没有表注、没有筛选器、不冻结、不贴 logo。只用 tplSheet 的
@@ -2591,7 +2657,7 @@ function buildVisAccessExcel(payload) {
 }
 
 module.exports = {
-  buildWord, buildExcel, buildSunOutageWord, buildSunOutageExcel, buildRainAttenuationExcel, buildVisAccessExcel, ROWS,
+  buildWord, buildExcel, buildSunOutageWord, buildSunOutageExcel, sunOutageIcsEvents, buildRainAttenuationExcel, buildVisAccessExcel, ROWS,
   enrichReportModel, buildReportWorkbook, sectionsOf, linkSectionTitle,
   // 独立《服务等级指标（SLA）》报告的 Excel 出口（reportSla.js）复用这几件：只加导出，实现一个字不动。
   // 版式必须与全报告一致（三线表 / 表头随数据列对齐 / logo / 中西文分家），照抄一份必然漂移。

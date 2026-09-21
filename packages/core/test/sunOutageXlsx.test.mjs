@@ -247,5 +247,44 @@ for (const [ws, no] of [[ws1, 1], [ws2, 2]]) {
   ok('无事件：表 2 只剩表题 + 表头', w.actualRowCount === 2, String(w.actualRowCount))
 }
 
+
+// ---- 同一份 payload 的另外两个出口：Word（多站多季）与 ICS（多站一份日历）----
+// ★ 两处都不许再出现「强度 高/中/低」（文字判定，见仓库根 CLAUDE.md）。
+{
+  const { buildSunOutageWord, sunOutageIcsEvents } = require('../../../electron/services/report.js')
+  const { buildIcs } = require('../utils/icsBuilder.js')
+  // Word 的逐日行吃显示串，补上（Excel 吃的是秒，两者同一份 payload）
+  const wp = JSON.parse(JSON.stringify(payload))
+  const hms = (s) => [Math.floor(s / 3600), Math.floor(s % 3600 / 60), s % 60].map((n) => String(n).padStart(2, '0')).join(':')
+  for (const st of wp.stations) {
+    for (const s of SEASONS) {
+      if (!st[s]) continue
+      for (const d of st[s].rows) {
+        d.dateUTC = d.date; d.dateDisp = d.date
+        d.startDisp = hms(d.startSec); d.peakDisp = hms(d.peakSec); d.endDisp = hms(d.endSec)
+        d.startUtc = d.startDisp; d.peakUtc = d.peakDisp; d.endUtc = d.endDisp
+        d.durStr = d.durMin + 'm'
+      }
+    }
+  }
+  const buf = await buildSunOutageWord(wp)
+  ok('Word 出得来', buf && buf.length > 4000, (buf && buf.length) + ' bytes')
+
+  const ev = sunOutageIcsEvents(wp)
+  ok('ICS 事件数 = Σ 事件天数（多站多季一份日历）', ev.length === nEvents, `${ev.length} vs ${nEvents}`)
+  ok('ICS UID 两两不同（重导覆盖而非重复）', new Set(ev.map((e) => e.uid)).size === ev.length)
+  ok('ICS UID 含 星-站-日期', /^so-.+-\d+\.\d{4}-\d+\.\d{4}-\d{4}-\d{2}-\d{2}@satsim-platform$/.test(ev[0].uid), ev[0].uid)
+  ok('ICS 描述里没有「强度」', !ev.some((e) => /强度/.test(e.description)))
+  ok('ICS 描述里没有「高」「中」「低」这类判定', !ev.some((e) => /强度|达标|受限|合格/.test(e.summary + e.description)))
+  ok('ICS 本地时刻用 payload 的 tzLabel', ev.every((e) => e.description.includes('(' + wp.tzLabel + ')') || e.description.includes('窗口(' + wp.tzLabel + ')')))
+  ok('ICS 两条提醒不变', ev.every((e) => e.alarms.length === 2 && e.alarms[0].minutesBefore === 1440 && e.alarms[1].minutesBefore === 30))
+  ok('ICS 覆盖到了每个站', new Set(ev.map((e) => e.location)).size === wp.stations.filter((s) => SEASONS.some((x) => s[x] && s[x].rows.length)).length)
+  const text = buildIcs({ name: 'T', events: ev })
+  ok('ICS 文本可生成且含 VEVENT', /BEGIN:VEVENT/.test(text) && text.split('BEGIN:VEVENT').length - 1 === ev.length)
+  ok('ICS 文本里没有「强度」', !/强度/.test(text))
+  // 无事件：不出空日历
+  ok('无事件时事件数为 0', sunOutageIcsEvents({ ...wp, stations: [] }).length === 0)
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 if (fail) process.exit(1)
