@@ -89,6 +89,10 @@ contextBridge.exposeInMainWorld('api', {
     exportExcel: (payload) => ipcRenderer.invoke('sunoutage:exportExcel', payload),
     exportWord: (payload) => ipcRenderer.invoke('sunoutage:exportWord', payload),
     exportIcs: (payload) => ipcRenderer.invoke('sunoutage:exportIcs', payload),
+    // 太阳射电流量 F10.7 的数据时间与来源（顶栏读数）；refresh 为用户点读数时硬刷一遍全链路。
+    // 计算本身不用这两条 —— F10.7 由主进程在算的时候按分点日现取，永不等网络。
+    solarFlux: () => ipcRenderer.invoke('sunoutage:solarFlux'),
+    solarFluxRefresh: () => ipcRenderer.invoke('sunoutage:solarFluxRefresh'),
     // 城市库（转发链路预算那条通道，与 rainAttenuation 同法）
     cities: () => ipcRenderer.invoke('link:cities'),
     searchCities: (kw) => ipcRenderer.invoke('link:searchCities', kw),

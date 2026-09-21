@@ -6,8 +6,16 @@
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
+import fs from 'node:fs'
+import os from 'node:os'
 const require = createRequire(import.meta.url)
 const Module = require('module')
+
+// 单测不许摸网络，也不许往仓库里造数据目录：SWPC 服务一律离线 + 临时数据目录。
+// 两段断言各自切 SATSIM_SWPC_BUNDLE_DIR（没有内置快照 → 缺省 120；指向夹具 → 按分点日取预测值）。
+process.env.SATSIM_SWPC_OFFLINE = '1'
+process.env.SATSIM_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'sunipc-'))
+delete process.env.SATSIM_SWPC_BUNDLE_DIR
 
 const handlers = new Map()
 let closedCalled = 0
@@ -48,6 +56,8 @@ ok('注册了 sunoutage:exportExcel', handlers.has('sunoutage:exportExcel'))
 ok('注册了 sunoutage:exportWord', handlers.has('sunoutage:exportWord'))
 ok('注册了 sunoutage:exportIcs', handlers.has('sunoutage:exportIcs'))
 ok('注册了 suntool:confirmClose', handlers.has('suntool:confirmClose'))
+ok('注册了 sunoutage:solarFlux', handlers.has('sunoutage:solarFlux'))
+ok('注册了 sunoutage:solarFluxRefresh', handlers.has('sunoutage:solarFluxRefresh'))
 
 const BASE = { lat: 39.9042, lon: 116.4074, satLon: 130.5, diameter: 2.4, band: 'Ku', customFreq: 12.5, sysTemp: 150, year: 2026, degThreshold: 1 }
 
@@ -102,18 +112,53 @@ const BASE = { lat: 39.9042, lon: 116.4074, satLon: 130.5, diameter: 2.4, band: 
   ok('④ 批量结果过 structuredClone', cloneOk)
 }
 
-// ⑤ 关窗守卫
+// ⑤ F10.7 按分点日自动填（渲染端不传，界面上也没有这个输入）
 {
-  await call('suntool:confirmClose')
-  ok('⑤ suntool:confirmClose 打到 confirmCloseSunOutage', closedCalled === 1)
+  const solarFlux = require(ROOT + '/electron/services/solarFlux.js')
+  // 本机什么都没有：引擎走缺省 120，来源如实写 default —— 取不到数也必须算得出来
+  solarFlux._reset()
+  const bare = (await call('sunoutage:computeBatch', [{ ...BASE, seasons: ['autumnal'] }]))[0].autumnal
+  ok('⑤ 无任何 F10.7 数据 → f107 是数、来源 default', typeof bare.model.f107 === 'number' && bare.model.f107 === 120 && bare.model.f107Source === 'default', `${bare.model.f107} / ${bare.model.f107Source}`)
+  ok('⑤ 缺省档是 norp', bare.model.solarModel === 'norp')
+
+  // 指向夹具（只有观测月均 + 太阳周预测）：2026 秋分落在预测覆盖里 → predicted ≈ 129.6
+  process.env.SATSIM_SWPC_BUNDLE_DIR = ROOT + '/packages/core/test/fixtures/swpc'
+  solarFlux._reset()
+  const out = await call('sunoutage:computeBatch', [{ ...BASE }])
+  const au = out[0].autumnal, ve = out[0].vernal
+  ok('⑤ 有数据 → 秋分按分点日取到预测值', au.model.f107Source === 'predicted' && Math.abs(au.model.f107 - 129.6) < 0.5, `${au.model.f107Source} ${au.model.f107}`)
+  ok('⑤ f107Meta 原样回显到 model', au.model.f107At === '2026-09 ~ 2026-10' && au.model.f107FetchedAt === '2026-09-21T00:00:00.000Z' && au.model.f107Low > 0 && au.model.f107High > au.model.f107Low,
+    `${au.model.f107At} · ${au.model.f107FetchedAt} · ${au.model.f107Low}~${au.model.f107High}`)
+  // ★ 两季各取各的：春分与秋分相隔半年，一份入参填不了两季
+  ok('⑤ 春分取的是另一个日子的 F10.7（不是秋分那份照抄）', ve.model.f107 !== au.model.f107 && ve.model.f107At !== au.model.f107At,
+    `春 ${ve.model.f107.toFixed(1)} @${ve.model.f107At} · 秋 ${au.model.f107.toFixed(1)} @${au.model.f107At}`)
+  ok('⑤ F10.7 真进了算式（太阳亮温随之变）', au.model.solarTemp !== bare.model.solarTemp, `${bare.model.solarTemp} → ${au.model.solarTemp}`)
+  // 显式传 f107 / solarTemp 的调用方不被覆盖
+  const fixed = (await call('sunoutage:computeBatch', [{ ...BASE, f107: 200, seasons: ['autumnal'] }]))[0].autumnal
+  ok('⑤ 调用方显式传 f107 → 不被自动填覆盖', fixed.model.f107 === 200 && fixed.model.f107Source === 'default')
+  const man = (await call('sunoutage:computeBatch', [{ ...BASE, solarTemp: 9000, seasons: ['autumnal'] }]))[0].autumnal
+  ok('⑤ 显式传 solarTemp → 仍是 manual、f107 为 null', man.model.solarTempSource === 'manual' && man.model.f107 === null && man.model.solarTemp === 9000)
+
+  // 读数那两条
+  const st = await call('sunoutage:solarFlux')
+  ok('⑤ sunoutage:solarFlux 回数据时间与来源', st.source === 'bundled' && st.fetchedAt === '2026-09-21T00:00:00.000Z' && st.products.predicted, JSON.stringify(st))
+  const st2 = await call('sunoutage:solarFluxRefresh')
+  ok('⑤ sunoutage:solarFluxRefresh 离线也回 status、不抛', !!st2 && st2.source === 'bundled')
+  ok('⑤ 两条读数通道过 structuredClone', (() => { try { structuredClone(st); structuredClone(st2); return true } catch { return false } })())
 }
 
-// ⑥ 三个导出：取消保存框也不该抛
+// ⑥ 关窗守卫
+{
+  await call('suntool:confirmClose')
+  ok('⑥ suntool:confirmClose 打到 confirmCloseSunOutage', closedCalled === 1)
+}
+
+// ⑦ 三个导出：取消保存框也不该抛
 for (const ch of ['sunoutage:exportExcel', 'sunoutage:exportWord', 'sunoutage:exportIcs']) {
   let r = null, threw = ''
   try { r = await call(ch, { sat: { name: 'X', slotText: '130.5°E' }, year: 2026, seasons: ['vernal'], stations: [] }) }
   catch (e) { threw = e.message }
-  ok('⑥ ' + ch + ' 不抛', !threw, threw || JSON.stringify(r))
+  ok('⑦ ' + ch + ' 不抛', !threw, threw || JSON.stringify(r))
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

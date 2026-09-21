@@ -9,6 +9,9 @@ const createCustomSats = require('../services/customSats')
 const createInterference = require('../services/interference')
 const createModcod = require('../services/modcod')
 const admBoundaries = require('../services/admBoundaries')
+// 太阳射电流量 F10.7（日凌的太阳亮温靠它）：单例服务，取数链路与 omm.js 同一口径。
+// ★ 只用 snapshot()（同步、只读本机）喂计算；联网刷新一律在算完之后不 await 地捅一下。
+const solarFlux = require('../services/solarFlux')
 
 // 写盘失败的友好文案：目标文件被其他程序占用（PDF/图片查看器打开着）→ EBUSY/EPERM/EACCES。
 const writeErrText = (err) => (err && (err.code === 'EBUSY' || err.code === 'EPERM' || err.code === 'EACCES')
@@ -66,6 +69,8 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     'store:history:list', 'store:config:list', 'store:library:get',
     'env:defs', 'env:field',
     'adm:pack',
+    // 太阳射电流量 F10.7：一条只读查询 + 一条后台刷新，都不产出交付物（日凌计算本身仍在锁内）
+    'sunoutage:solarFlux', 'sunoutage:solarFluxRefresh',
     'link:cities', 'link:cityGroups', 'link:searchCities', 'link:baseband', 'link:outputDefs',
     // 分享的收件侧：收/删/探视是别人推过来的东西，不算本机产出；发件侧（send/boxSend/
     // gxtSnapshot/boxRevoke）不在表里，未激活不许往外发
@@ -966,12 +971,53 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     return Object.assign({}, p, { orbit: spec })
   }
 
+  // ---- 太阳亮温要的 F10.7：按该季分点日从本机已有的 SWPC 数据里取，永不等网络 ----
+  // 渲染端不传 f107（界面上也没有这个输入），一律在这里按 year × season 填。分点日走引擎导出的
+  // equinoxDateOf —— 别在这里抄第二份分点公式。调用方显式给了 f107 / solarTemp 就不动它。
+  function withF107(p, season) {
+    if (!p || p.f107 > 0 || p.solarTemp > 0) return p
+    const y = parseInt(p.year, 10)
+    if (!(y >= 1900 && y <= 2200)) return p
+    try {
+      const m = solarFlux.f107For(core().equinoxDateOf(y, season))
+      if (!m || !(m.f107 > 0)) return p
+      return Object.assign({}, p, {
+        f107: m.f107,
+        f107Meta: { source: m.source, at: m.at, fetchedAt: m.fetchedAt, low: m.low, high: m.high }
+      })
+    } catch (e) { return p }   // 取不到就让引擎走缺省 120，绝不因为取数失败而算不出来
+  }
+  // 批量入口逐季各算各的：春分与秋分相隔半年，F10.7 能差几十 sfu，一份入参填不了两季。
+  // 每季仍走引擎的 calculateSunOutageSeasons（seasons 的口径归引擎管，这里不复制一份）。
+  function sunSeasons(p, ctx) {
+    const want = (p && Array.isArray(p.seasons) && p.seasons.length) ? p.seasons : ['vernal', 'autumnal']
+    const out = { vernal: null, autumnal: null }
+    for (const s of ['vernal', 'autumnal']) {
+      if (!want.includes(s)) continue
+      out[s] = core().calculateSunOutageSeasons(Object.assign({}, withF107(p, s), { seasons: [s] }), ctx)[s]
+    }
+    return out
+  }
+  // 算完顺手在后台刷一次 SWPC（一天一次的闸门由服务自己管）；不 await —— 计算永不等网络
+  const bumpSolarFlux = () => { try { solarFlux.refresh().catch(() => {}) } catch (e) { /* 刷不动不影响计算 */ } }
+
   // ---- 日凌预报（独立窗口 + 计算 + Excel/Word/ICS 导出）----
   ipcMain.handle('suntool:open', gate(() => { if (openSunOutage) openSunOutage(); return true }))
   ipcMain.handle('suntool:confirmClose', () => { if (confirmCloseSunOutage) confirmCloseSunOutage(); return true })
   ipcMain.handle('sunoutage:compute', (_e, p) => {
-    try { return core().calculateSunOutage(resolveOrbitParams(p || {}), soCtxFor(p && p.orbit)) }
-    catch (err) { return { error: true, message: err.message || String(err) } }
+    try {
+      const q = resolveOrbitParams(p || {})
+      const r = core().calculateSunOutage(withF107(q, q.season === 'vernal' ? 'vernal' : 'autumnal'), soCtxFor(p && p.orbit))
+      bumpSolarFlux()
+      return r
+    } catch (err) { return { error: true, message: err.message || String(err) } }
+  })
+  // F10.7 数据的读数（顶栏那一行）：status() 是同步只读，顺手在后台刷一次
+  ipcMain.handle('sunoutage:solarFlux', () => { const s = solarFlux.status(); bumpSolarFlux(); return s })
+  // 点读数 = 硬刷一遍全链路（绕过一天一次的闸门），刷完回新的 status
+  ipcMain.handle('sunoutage:solarFluxRefresh', async () => {
+    try { await solarFlux.refresh({ force: true }) } catch (e) { /* 失败照样回 status，读数如实显示旧数据 */ }
+    return solarFlux.status()
   })
   // 整表批量（站表整页 / SLA 弹窗与报告）：一次 IPC 全算完，站与站之间 setImmediate 让出，
   // 别的窗口的 IPC 与档位扫描不必排在整批后面（同 link:slaScanBatch 的做法）。
@@ -984,7 +1030,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     for (const p of arr) {
       let one
       try {
-        one = core().calculateSunOutageSeasons(resolveOrbitParams(p || {}), soCtxFor(p && p.orbit))
+        one = sunSeasons(resolveOrbitParams(p || {}), soCtxFor(p && p.orbit))
       } catch (err) {
         const e1 = { error: true, message: err.message || String(err) }
         const want = (p && Array.isArray(p.seasons) && p.seasons.length) ? p.seasons : ['vernal', 'autumnal']
@@ -993,6 +1039,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
       out.push(one)
       if (out.length < arr.length) await new Promise((r) => setImmediate(r))
     }
+    bumpSolarFlux()
     return out
   })
   // 模板版 Excel：整本只有两张表（地球站参数 / 逐日日凌窗口），版式见 report.buildSunOutageExcel
