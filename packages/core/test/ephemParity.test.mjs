@@ -254,6 +254,21 @@ section('渲染端 periodMinOf')
   const sp = validSpan({ eph: tabLong })
   ok(sp && sp.t0 === t[0] && sp.t1 === t[cnt - 1], 'validSpan 给出表的时段', JSON.stringify(sp))
   ok(validSpan({ rec: rec0 }) === null, 'satrec 无时段限制')
+
+  /* ===== 渲染集去留：星历星不因「此刻不在时段内」被剔出集合 ===== */
+  // 3D 页的 renderEntries 只在换组 / 换可见层时重建，时钟推进只重算位置。原来 add() 按「此刻
+  // posAt 为 null」直接 continue —— 导入一份覆盖【明天】的 .e，当场 0 颗，时钟拖进时段也不出现，
+  // 因为没有任何一条时间驱动的重建路径。
+  const { keepInRenderSet } = await import('../../../src/viz/constellation/satPos.js')
+  const inside = t[Math.floor(cnt / 2)], before = t[0] - 86400000, after = t[cnt - 1] + 86400000
+  ok(ephI.evalTable(tabLong, inside) !== null, '前提：时段内取得到位置')
+  ok(ephI.evalTable(tabLong, before) === null && ephI.evalTable(tabLong, after) === null, '前提：时段外取不到位置')
+  ok(keepInRenderSet({ eph: tabLong }, new Date(before)) === true, '★ 时段【之前】：星历星仍留在渲染集里')
+  ok(keepInRenderSet({ eph: tabLong }, new Date(inside)) === true, '时段内当然留')
+  ok(keepInRenderSet({ eph: tabLong }, new Date(after)) === true, '★ 时段【之后】：也留（拖回去还要再出现）')
+  ok(keepInRenderSet({ rec: rec0 }, new Date(inside)) === true, 'satrec 解得出来 → 留')
+  ok(keepInRenderSet({ rec: { no: 0, inclo: 0, error: 1 } }, new Date(inside)) === false, '★ satrec 解不出来 → 剔（这一支行为不变）')
+  ok(keepInRenderSet(null, new Date(inside)) === false, '空 entry → 剔')
 }
 
 console.log('\nephemParity: 通过 ' + pass + '，失败 ' + fail)

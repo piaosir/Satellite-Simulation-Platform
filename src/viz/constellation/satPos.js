@@ -77,4 +77,16 @@ export function periodMinOf(x) {
   return periodMinFromNo(o.no)
 }
 
-export default { posAt, posAtMs, propOf, isEphem, isEphemEntry, propagatorLabel, validSpan, periodMinOf }
+// 渲染集去留判据（3D 页 rebuildRenderSet 的 add 用）。
+// ★ 星历星「此刻不在采样时段内」不等于「解算不了」：渲染集只在换组 / 换可见层时重建，时钟推进只重算
+//   位置 —— 一旦按「此刻取位为 null」把它剔出集合，导入覆盖未来时段的 .e 之后就永远是 0 颗，
+//   时钟走进时段也不会出现。故星历星一律留在集里，这一拍画不画交给 posAt 说话（refreshPositions
+//   对 null 本来就有占位分支，保持索引对齐）。
+// satrec 星相反：这一刻解不出来多半是根数坏了 / 已衰落，留着只是每拍白跑一次 SGP4。
+export function keepInRenderSet(x, t) {
+  if (isEphem(x)) return true
+  const pv = posAt(x, t)
+  return !!(pv && pv.position)
+}
+
+export default { posAt, posAtMs, propOf, isEphem, isEphemEntry, propagatorLabel, validSpan, periodMinOf, keepInRenderSet }

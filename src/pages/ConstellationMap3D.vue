@@ -75,7 +75,7 @@ import { useMarkerTable, trajsFromSheets } from '../viz/markers/useMarkerTable.j
 import sat from '../viz/constellation/satellite.js'
 // 取位的唯一入口：satrec（SGP4）与星历点序列（插值）两种传播体都走它。
 // 本文件从前有 15 处 sat.propagate，全部改到这里 —— 少改一处，点序列星就在那处静默出 NaN。
-import { posAt, isEphemEntry, propagatorLabel, periodMinOf } from '../viz/constellation/satPos.js'
+import { posAt, isEphemEntry, propagatorLabel, periodMinOf, keepInRenderSet } from '../viz/constellation/satPos.js'
 import { metricsFromEntry } from '../shared/satrecMetrics.js'
 import { tableFrom } from '../viz/constellation/ephemTable.js'
 import { sampleOrbitAdaptive } from '../viz/constellation/adaptiveSample.js'
@@ -1649,16 +1649,22 @@ function saveConstWizard() {
   if (!params) { const s = constSolved.value; appAlert((s && s.errs.map((e) => e.msg).join('；')) || '轨道解不出来'); return }
   const v = validateWalker(params)
   if (!v.ok) { appAlert(v.errs.join('；')); return }
-  customConst.setPreview(null)   // 撤实时预览，避免与提交版本重叠
   const draft = { name: m.name, params, color: m.color, colorByPlane: m.colorByPlane !== false,
     design: { type: m.orbitType || 'custom', inputs: { ...(m.design || {}) } } }
+  // ★ 顺序即修复：customConst.add/update 会【同步】notify → rebuildRenderSet。向导还开着（pvSolo 默认开）
+  //   而预览已撤时，那一趟走「仅预览」分支拿到空 renderEntries —— 此刻做任何重绑都只会把选中集丢光
+  //   （rebindSelection 找不到就 closeCard），卡片与轨道线随之消失。故：先置提交标记 → 先关向导 →
+  //   再撤预览 → 再落库 → 等新座真的进了可见集，最后才在【有提交版本的】渲染集上重绑。
+  wizPreviewCommit()             // 先置位：constModal 的 watch（pre-flush，本函数跑完才执行）据此不再还原进向导前的选中集
+  constModal.value = null        // 先关向导：此后 wizardSolo() 为假，任何重建都走并集分支
+  customConst.setPreview(null)   // 撤实时预览，避免与提交版本重叠（watch 里还会再撤一次，幂等）
   let id = m.id
   if (m.id) customConst.update(m.id, draft); else { const cfg = customConst.add(draft); id = cfg.id }
-  rebindSelection('cc_' + id)   // 选中的预览星重绑到提交版本，卡片/覆盖/星下点/轨迹不断
-  wizPreviewCommit()            // 已生成 / 更新：关向导时不再把进向导前的选中集还回去
-  constModal.value = null
   registerSets()
-  if (!m.id) soloSet('c:' + id)   // 新建星座：仅显示它（顶部「仅显示」标签一点就还原叠加）；编辑则保持当前显示
+  if (!m.id) soloSet('c:' + id)  // 新建星座：仅显示它。satSets.ensure 只排序不置可见 —— 新座要到这一步才进
+                                 //   可见集，所以重绑必须排在它后面（顶部「仅显示」标签一点就还原叠加）
+  rebindSelection('cc_' + id)    // 选中的预览星重绑到提交版本，卡片/覆盖/星下点/轨迹不断
+  saveSelection()                // 持久化的选中星还停在预览段的合成号上，换成提交版本
 }
 // 预览特效（轨道线 / 星下点轨迹 / 覆盖圈 / 覆盖锥 / 轨迹长度）就是「聚焦卫星」显示设置那一份 focusStyle：
 // 向导里的开关直接改它、关向导不还原 —— 预览星与任何一颗聚焦星长得一样，两边永远同步。
@@ -2153,14 +2159,15 @@ function rebuildRenderSet() {
     return
   }
   // 地图 = 全部可见卫星集的并集，按 NORAD 去重；同号谁优先：自定义星座 > 导入组 > 搜索结果 > 卫星组 > 内置组。
-  // 内置组 / 导入组的「剔除」（satSets.hiddenOf）在这里生效；点序列星出了采样时段取位为 null → 不画。
+  // 内置组 / 导入组的「剔除」（satSets.hiddenOf）在这里生效；点序列星【一律留在集里】，
+  // 出了采样时段只是这一拍不画（渲染集不随时钟重建，剔出去就再也回不来了）。
   const now = calcAt()
   const out = [], seen = new Set()
   const add = (list, hidden) => {
     for (const e of list) {
       const k = String(e.noradId)
       if (seen.has(k) || (hidden && hidden.has(k))) continue
-      if (!isCustomEntry(e)) { const pv = posAt(e, now); if (!pv || !pv.position) continue }
+      if (!isCustomEntry(e) && !keepInRenderSet(e, now)) continue   // 只剔 SGP4 解不出来的；星历星留下，画不画逐拍由 refreshPositions 定
       seen.add(k); out.push(e)
     }
   }
@@ -2232,6 +2239,7 @@ async function refreshPositions() {
   const ccNow = ccTimeAt(now), ccGmst = sat.gstime(ccNow)   // 合成星按固定场景历元解算（跨会话稳定）
   const n = renderEntries.length
   const positions = new Array(n)
+  let drawn = 0                                                    // 本拍真画出来的颗数：星历星出时段那几拍只有占位，不算在内
   const colors = renderHasColor ? new Float32Array(n * 3) : null   // 有自定义星座时逐点上色（真实星取默认色）
   const sgOn = satGrpColor.size > 0   // 卫星组配色查表开关：没人着色时逐星免掉 String+Map.get
   // 本拍的在场星 ECEF 快照：只在【真有人要】时才存 ——「波束内的星」那个档开着才用得上。
@@ -2251,13 +2259,14 @@ async function refreshPositions() {
       if (pv && pv.position) {
         const gd = sat.eciToGeodetic(pv.position, g); pos = { lat: sat.degreesLat(gd.latitude), lon: sat.degreesLong(gd.longitude), altKm: gd.height }
         if (wantEcef) { const ecf = sat.eciToEcf(pv.position, g); _tickEcef[k * 3] = ecf.x; _tickEcef[k * 3 + 1] = ecf.y; _tickEcef[k * 3 + 2] = ecf.z }
+        drawn++
       } else { pos = { lat: 0, lon: 0, altKm: -RE }; if (wantEcef) _tickEcef[k * 3] = NaN }   // 占位，保持索引对齐（落到地心不可见）
     } catch { pos = { lat: 0, lon: 0, altKm: -RE }; if (wantEcef) _tickEcef[k * 3] = NaN }
     positions[k] = pos
     if (colors) { const c = (sgOn && satGrpColor.get(String(e.noradId))) || e.color || groupRgb(e.group) || DEFAULT_SAT_RGB; colors[k * 3] = c[0]; colors[k * 3 + 1] = c[1]; colors[k * 3 + 2] = c[2] }
   }
   scene.setSatellites(positions, colors)
-  shownCount.value = n
+  shownCount.value = drawn
   if (vis.open.value) vis.recompute()   // 可见性：可见星随时间轴/实时重算（commitGeometry 读取其结果）
   if (selEntry) {
     const c = cardFor(selEntry); if (c) selected.value = c
@@ -3164,7 +3173,9 @@ const setRows = computed(() => {
   return rows
 })
 const searchRow = computed(() => (filterN.value > 0 ? { id: 'q', kind: 'search', name: setName('q'), count: filterN.value, sub: '', color: SEARCH_LAYER_HEX, colorable: false, visible: satSets.visible.value.has('q'), renamable: false } : null))
-const setSummary = computed(() => ({ shown: satCount.value, layers: satSets.visible.value.size, dataTime: dataTime.value, status: status.value }))
+// shown 取【本拍真画出来的】颗数，不是集合规模 —— 星历星在采样时段外仍留在集里（见 keepInRenderSet），
+// 读 satCount 会在一个点都看不见时报出「显示 N 颗」。
+const setSummary = computed(() => ({ shown: shownCount.value, layers: satSets.visible.value.size, dataTime: dataTime.value, status: status.value }))
 const soloInfo = computed(() => (satSets.solo.value ? { id: satSets.solo.value.id, name: setName(satSets.solo.value.id) } : null))
 const setSearch = computed(() => ({
   keyword: keyword.value,
