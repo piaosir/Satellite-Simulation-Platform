@@ -14,7 +14,7 @@ export const CMD_KW = {
   'NGSO 透明转发链路预算': ['LEO', 'MEO', 'HEO', 'link budget', 'non-GSO', '非同步', '非静止', '星座链路', '链路预算', 'SGP4'],
   '再生处理（OBP）链路预算': ['OBP', 'regenerative', 'onboard processing', 'link budget', '再生式', '星上处理', '星间', '激光', '链路预算'],
   '端到端链路预算（多跳 / 混合转发）': ['E2E', 'end to end', 'multi hop', 'chain', '多跳', '混合转发', 'ISL', '双跳', '链路预算'],
-  '日凌预报（GSO）': ['sun outage', 'sun transit', 'solar', '日凌', '太阳', '中断'],
+  '日凌预报（GSO）': ['sun outage', 'sun transit', 'solar', '日凌', '太阳', '中断', 'excel', 'ephemeris', '多站', '星历'],
   '雨衰计算': ['rain attenuation', 'rain fade', 'P.618', 'ITU', '降雨', '雨衰', '衰减', '可用度'],
   '干扰分析（C/I）': ['interference', 'C/I', 'ASI', 'CCI', 'XPI', '邻星', '同频', '交叉极化', '干扰'],
   'PFD EIRP Mask 生成器': ['PFD', 'EIRP', 'mask', 'S.1503', 'ITU', '掩模', '功率通量密度'],

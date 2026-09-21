@@ -23,7 +23,7 @@ import { ensureSearchPool, findPoolByNorad, orbitSpecOf, slotLonOf } from '../ng
 import {
   sunFields, GRID_GROUPS, RESULT_DIGITS, SEASONS, SEASON_CN, normSeasons,
   defaultRow, effectiveRow, buildSpec, blankState, normState, equinoxApproxMs,
-  normSatName, matchSat, ORBIT_TYPE, ORBIT_INLINE_MAX
+  normSatName, matchSat, SAT_SOURCE_LABEL, ORBIT_TYPE, ORBIT_INLINE_MAX
 } from './sunParams.js'
 
 const api = (typeof window !== 'undefined' && window.api) ? window.api.sunOutage : null
@@ -271,7 +271,13 @@ const epochRead = computed(() => {
   const gaps = seasons.value.map((s) => {
     const eq = equinoxApproxMs(y, s)
     const d = Number.isFinite(eq) ? Math.round((eq - ms) / 86400e3) : NaN
-    return { season: s, label: SEASON_CN[s], days: Number.isFinite(d) ? String(d).replace("-", "−") : "—", far: Number.isFinite(d) && Math.abs(d) > 60 }
+    return {
+      season: s,
+      // 含运行时数据的读数：整串由 byLang 出中英，不进呈现层词典
+      text: byLang('距' + SEASON_CN[s], 'from ' + (s === 'vernal' ? 'spring equinox' : 'autumn equinox')),
+      days: Number.isFinite(d) ? String(d).replace('-', '−') : '—',
+      far: Number.isFinite(d) && Math.abs(d) > 60
+    }
   })
   return {
     stamp: `${t.y}-${p2(t.mo)}-${p2(t.d)} ${p2(t.h)}:${p2(t.mi)}`,
@@ -286,7 +292,10 @@ const spanRead = computed(() => {
   if (!sp) return null
   const d = (iso) => { const t = tzParts(Date.parse(iso), tzMode.value); return `${p2(t.mo)}-${p2(t.d)}` }
   const cov = r.coverageDays == null ? null : (61 - r.coverageDays)
-  return { start: d(sp.start), end: d(sp.end), miss: cov }
+  return {
+    start: d(sp.start), end: d(sp.end),
+    miss: cov ? byLang(`缺 ${cov} 天`, `${cov} days missing`) : ''
+  }
 })
 
 // ============ 结果栏 ============
@@ -592,10 +601,10 @@ onMounted(async () => {
             </label>
             <label class="rain-geom so-name" title="卫星名称（检索到的星取编目名，可改）"><input v-model="sat.name" spellcheck="false" /></label>
             <div class="rain-seg">
-              <button :class="{ on: sat.source === 'slot' }" title="定轨：按轨位把卫星当理想地球静止轨道" @click="setSatSource('slot')">定轨</button>
+              <button :class="{ on: sat.source === 'slot' }" title="定轨：按轨位把卫星当理想地球静止轨道" @click="setSatSource('slot')">{{ SAT_SOURCE_LABEL.slot }}</button>
               <button :class="{ on: sat.source === 'ephemeris' }" :disabled="!canEphem"
                       :title="canEphem ? '星历：按该星 GP 根数逐时刻 SGP4/SDP4 推算真实位置（含倾角、偏心率与漂移，不含轨道保持机动）' : '需先检索到带星历的卫星'"
-                      @click="setSatSource('ephemeris')">星历</button>
+                      @click="setSatSource('ephemeris')">{{ SAT_SOURCE_LABEL.ephemeris }}</button>
             </div>
             <label class="rain-geom" :title="sat.source === 'ephemeris' ? '历元星下点经度（星历档下由根数算出）' : '定点轨位（东经为正，西经为负）'">
               <span>轨位</span><input v-model="sat.slotLon" :readonly="sat.source === 'ephemeris'" spellcheck="false" /><i>°E</i>
@@ -604,14 +613,14 @@ onMounted(async () => {
           <div v-if="epochRead" class="so-read">
             <span class="so-read-k">历元</span><b data-i18n-skip>{{ epochRead.stamp }}</b>
             <template v-for="g in epochRead.gaps" :key="g.season">
-              <span class="so-d" data-i18n-skip>·</span><span class="so-read-k">距{{ g.label }}</span><b :class="{ far: g.far }" data-i18n-skip>{{ g.days }}</b><span class="so-read-k">天</span>
+              <span class="so-d" data-i18n-skip>·</span><span class="so-read-k" data-i18n-skip>{{ g.text }}</span><b :class="{ far: g.far }" data-i18n-skip>{{ g.days }}</b><span class="so-read-k">天</span>
             </template>
             <span class="so-d" data-i18n-skip>·</span><span class="so-read-k">倾角</span><b data-i18n-skip>{{ epochRead.incl }}°</b>
             <button v-if="sat.orbit && sat.orbit.type === 'omm'" class="lb-mini" title="按 NORAD 回星历库重取根数" @click="refreshOrbit">刷新星历</button>
           </div>
           <div v-if="spanRead" class="so-read">
             <span class="so-read-k">星历覆盖</span><b data-i18n-skip>{{ spanRead.start }} ~ {{ spanRead.end }}</b>
-            <template v-if="spanRead.miss"><span class="so-d" data-i18n-skip>·</span><span class="so-read-k">缺</span><b data-i18n-skip>{{ spanRead.miss }}</b><span class="so-read-k">天</span></template>
+            <template v-if="spanRead.miss"><span class="so-d" data-i18n-skip>·</span><span class="so-read-k" data-i18n-skip>{{ spanRead.miss }}</span></template>
           </div>
         </div>
 
