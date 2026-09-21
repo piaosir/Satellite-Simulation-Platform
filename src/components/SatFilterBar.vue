@@ -14,11 +14,12 @@ const props = defineProps({
   modelValue: { type: Object, default: null },
   satcat: { type: Object, default: null },      // Map(NORAD -> row) 或 null
   pool: { type: Array, default: () => [] },     // 供「所有者」下拉只列池里真有的那些
-  matched: { type: Number, default: -1 }        // >=0 时显示「已筛选 · N 颗」
+  matched: { type: Number, default: -1 },       // >=0 时显示「已筛选 · N 颗」
+  expanded: { type: Boolean, default: false }   // 常开且不出折叠头（嵌在「查找卫星」对话框里那份）
 })
 const emit = defineEmits(['update:modelValue', 'change'])
 
-const open = ref(false)
+const open = ref(false)   // expanded=true 时忽略它
 const f = computed(() => props.modelValue || emptyFilters())
 const hasCat = computed(() => !!(props.satcat && props.satcat.size > 0))
 const active = computed(() => !isEmpty(f.value))
@@ -39,14 +40,14 @@ function clearAll() {
 
 <template>
   <div class="satfb">
-    <div class="fbh">
+    <div v-if="!expanded" class="fbh">
       <span class="lnk" :class="{ on: open }" @click="open = !open">
         <Icon :name="open ? 'chevron-down' : 'chevron-right'" :size="12" /> 筛选
       </span>
       <span v-if="matched >= 0" class="fbn" data-i18n-skip>已筛选 · {{ matched }} 颗</span>
       <span v-if="active" class="lnk clr" title="清空全部筛选" @click="clearAll"><Icon name="x" :size="12" /> 清空</span>
     </div>
-    <div v-if="open" class="fbody">
+    <div v-if="open || expanded" class="fbody">
       <div class="frow" :title="hasCat ? '' : CAT_TIP">
         <label>所有者</label>
         <select class="ci" :disabled="!hasCat" :value="f.owner" @change="set('owner', $event.target.value)">
