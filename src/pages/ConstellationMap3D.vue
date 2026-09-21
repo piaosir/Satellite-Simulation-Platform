@@ -13,7 +13,7 @@ import { registerCommands } from '../stores/commands'
 import { kwId } from '../shared/cmdKeywords.js'
 import { clock, onTick, goLive, togglePlay, setTime as clockSetTime, stepBy as clockStepBy, setStep as clockSetStep, setSpeed as clockSetSpeed, releaseClock, resumeClock, effective as clockEff, restoreState as clockRestore } from '../stores/simClock'
 import { STEP_PRESETS, SPEED_PRESETS, cursorSnapSec, followWindow, snapMs, fmtStepShort, fmtRate, fmtOffset } from '../shared/simClockCore.js'
-import { logMsg } from '../stores/log'
+import { logMsg, diagMsg } from '../stores/log'
 import { alertMsg, appAlert, closeAlert } from '../stores/alert'
 import { displaySatName } from '../viz/satName.js'
 import { serializeGxt } from '../viz/gxt/serialize.js'
@@ -25,6 +25,9 @@ import NumBox from '../components/NumBox.vue'
 import TzPicker from '../components/TzPicker.vue'
 import { tzOffMin, tzTag, tzParts, tzToMs, normTzMode } from '../shared/tz.js'
 import SatList from '../components/SatList.vue'
+import SatFilterBar from '../components/SatFilterBar.vue'
+import { loadSatcatIndex } from '../shared/satcatIndex.js'
+import { makePredicate, emptyFilters, normalize as normalizeFilters, isEmpty as isFilterEmpty } from '../shared/satFilter.js'
 import MiniSendDialog from '../components/MiniSendDialog.vue'
 import { MINI_COVERAGE_SATS, satKey, inMiniList } from '../shared/miniSatList.js'
 defineOptions({ inheritAttrs: false })   // 不把父级传入的 title 落到根节点（去掉鼠标悬停的“星座3D”原生提示）
@@ -2422,7 +2425,9 @@ function setSearchPool(sats) {
   const pool = []
   for (const s of sats || []) { try { const r = sat.omm2satrec(s); if (r && !r.error) pool.push({ rec: r, name: s.name, noradId: s.noradId, group: s._group || 'other' }) } catch { /* skip */ } }
   if (!pool.length) return false
-  searchPool = pool; poolReady = true; _poolByNorad = null; poolTick.value++   // 就绪信号：卫星组行内列表重映射补 GEO 定点标注
+  // ★ 三份索引一起作废：池不是「建一次就不变」—— ensureSearchPool 先用本机缓存建一版，联网那版回来再换一次。
+  //   只清 _poolByNorad 会让 _poolById/_poolByName 一直指着上一版池的条目（指向解算、聚焦特效都走它）。
+  searchPool = pool; poolReady = true; _poolByNorad = null; _poolById = null; _poolByName = null; poolTick.value++   // 就绪信号：卫星组行内列表重映射补 GEO 定点标注
   grpListCache.delete('all'); grpListCache.delete('other')   // 「全部/其他」名录快照由同一份并集来，随池一起作废
   return true
 }
@@ -2530,18 +2535,47 @@ function clearSearch() {
   if (filterEntries.length) { filterEntries = []; filterN.value = 0; filterKw.value = ''; filterGroupId.value = ''; rebuildRenderSet(); redrawSats() }   // 退出筛选态（含卫星组显示）→ 恢复当前分组
 }
 // 搜索即筛选显示：命中星（全量池，跨分组）作为临时显示集渲染到 3D；空词恢复当前分组。可见性分析「当前显示的星」随之变。
-async function applyFilter(kw) {
-  const k = String(kw || '').trim().toLowerCase()
-  if (!k) { if (filterEntries.length) { filterEntries = []; filterN.value = 0; filterKw.value = ''; filterGroupId.value = ''; rebuildRenderSet(); redrawSats() } return }
+// 关键词 + 筛选条。两者都空才退出筛选态；只有筛选没关键词也照样生效
+//（「所有者 PRC · 载荷 · GEO」这种用法根本没有关键词可打）。
+async function applyFilter(kw, filters) {
+  const k = String(kw == null ? filterKw.value : kw).trim().toLowerCase()
+  const pred = makePredicate(filters === undefined ? satFilters : filters, satcatIdx.value)
+  if (!k && !pred) { if (filterEntries.length) { filterEntries = []; filterN.value = 0; filterKw.value = ''; filterGroupId.value = ''; rebuildRenderSet(); redrawSats() } return }
   await ensureSearchPool()
   const src = searchSource(), hit = [], seen = new Set()
   for (const en of src) {
-    if (!(en.name.toLowerCase().includes(k) || String(en.noradId).includes(k) || (en.groupLabel && en.groupLabel.toLowerCase().includes(k)))) continue
+    if (k && !(en.name.toLowerCase().includes(k) || String(en.noradId).includes(k) || (en.groupLabel && en.groupLabel.toLowerCase().includes(k)))) continue
+    if (pred && !pred(en)) continue
     const nid = String(en.noradId); if (seen.has(nid)) continue
     seen.add(nid); hit.push(en)
   }
-  filterEntries = hit; filterN.value = hit.length; filterKw.value = String(kw).trim(); filterGroupId.value = ''   // 键入关键词 → 退出卫星组显示态
+  filterEntries = hit; filterN.value = hit.length; filterKw.value = k ? String(kw == null ? filterKw.value : kw).trim() : ''
+  filterGroupId.value = ''   // 键入关键词 / 改筛选 → 退出卫星组显示态
   rebuildRenderSet(); redrawSats()
+}
+/* ===================== 搜索筛选条（SATCAT 过滤器） ===================== */
+// 筛选状态存 localStorage：关掉软件再开，上次筛的那一组还在（与搜索关键词不同，筛选是「设定」不是「一次性动作」）
+const SATFILTER_KEY = 'constellation3d/searchFilters'
+const satFilters = reactive(emptyFilters())
+const satcatIdx = shallowRef(null)     // Map(NORAD -> 编目行) 或 null
+// searchPool 是普通变量（不是 ref），直接当 prop 传不会随池就绪重渲染 —— 靠 poolTick 兜一层
+const satPoolForFilter = computed(() => { void poolTick.value; return searchPool })
+try {
+  const saved = JSON.parse(localStorage.getItem(SATFILTER_KEY) || 'null')
+  if (saved) Object.assign(satFilters, normalizeFilters(saved))
+} catch { /* 坏存档：就当没筛过 */ }
+function onSatFilterChange(next) {
+  Object.assign(satFilters, normalizeFilters(next))
+  try { localStorage.setItem(SATFILTER_KEY, JSON.stringify(satFilters)) } catch { /* 存不下不影响用 */ }
+  applyFilter(undefined, satFilters)
+}
+// 编目索引按需取一次（只读本机缓存、绝不联网）；取不到就 null，筛选条把编目四项禁用
+async function ensureSatcatIndex() {
+  if (satcatIdx.value) return satcatIdx.value
+  const idx = await loadSatcatIndex()
+  satcatIdx.value = idx
+  if (idx && !isFilterEmpty(satFilters)) applyFilter(undefined, satFilters)   // 编目到位 -> 之前禁用的四项现在能生效了
+  return idx
 }
 function pickResult(item) { searchResults.value = []; keyword.value = ''; selectSat(item.en, true) }
 function closeCard() { selEntries = []; selEntry = null; selected.value = null; selList.value = []; resetBeam(); pushMarkers(); commitGeometry(); saveSelection() }   // commitGeometry 清聚焦星几何/星下点；可见性叠加层（若开）保留
@@ -2743,6 +2777,42 @@ const poolTick = ref(0)
 // 全量目录就绪 → 实时气象的目标星重解算。★ 不让 liveSatPosAt 自己去读 poolTick：它在 setup 期
 // 就会被 watch 调一次，那时 poolTick 还没轮到声明（TDZ）。由这条 watch 显式转达，依赖关系也看得见。
 watch(poolTick, () => { envLive.satTick.value++ })
+// ★ 池换了一批 → 停在屏上的搜索结果与筛选显示集按 NORAD 重映射到新池。
+// 不重映射的后果：结果行里 item.en 还指着【上一版池】的条目，pickResult → selectSat(item.en) 选中的是
+// 一颗已经不在渲染集里的孤儿星（星历也是旧的）。池的两段式更新（本机缓存一版、联网再一版）与跨天刷新、
+// 文件管理导入都会走到这里，挂机越久越容易撞上。池里没有了的（离轨 / 编目变动）直接从结果里去掉。
+watch(poolTick, () => {
+  if (!poolReady) return
+  const idx = poolIndex()
+  const rs = searchResults.value
+  if (rs.length) {
+    let changed = 0
+    const out = []
+    for (const r of rs) {
+      const en = idx.get(String(r.noradId))
+      if (!en) { changed++; continue }                       // 池里没有了：去掉这一行
+      if (en === r.en) { out.push(r); continue }
+      changed++
+      out.push({ ...r, en, slot: geoSlotOfSatrec(en.rec) })
+    }
+    if (changed) { searchResults.value = out; diagMsg('全量池更换：搜索结果重映射 ' + rs.length + ' → ' + out.length + ' 行') }
+  }
+  if (filterEntries.length) {
+    let changed = 0
+    const out = []
+    for (const e of filterEntries) {
+      const en = idx.get(String(e.noradId))
+      if (!en) { if (e.noradId >= 900000) out.push(e); else changed++; continue }   // 自定义星座合成星不在池里，照留
+      if (en !== e) changed++
+      out.push(en)
+    }
+    if (changed) {
+      filterEntries = out; filterN.value = out.length
+      diagMsg('全量池更换：筛选显示集重映射，' + changed + ' 条改指新池')
+      rebuildRenderSet(); redrawSats()
+    }
+  }
+})
 // NORAD → entry 索引，惰性建一次。只索引 searchPool（真实目录并集 ∪ active ∪ 本地自定义卫星库），
 // 不含自定义星座合成星 —— 成员核对要的正是「真实星历」这条口径（合成星走 searchSource 那一路）。
 function poolIndex() {
@@ -3204,15 +3274,23 @@ function sgmOnSearch() {
       if (!sgmPool.value.size) await sgmSnapPool()
       if (sgmKw.value.trim() !== k) return   // 等待期间用户又改了词 → 本次结果作废
       const kk = k.toLowerCase(), out = [], seen = new Set()
+      // 管理器的搜索结果同样受筛选条约束（与侧栏共用一份 satFilters）
+      const pred = makePredicate(satFilters, satcatIdx.value)
       for (const en of searchSource()) {
         if (out.length >= SGM_MAX) break
         if (!(en.name.toLowerCase().includes(kk) || String(en.noradId).includes(kk) || (en.groupLabel && en.groupLabel.toLowerCase().includes(kk)))) continue
+        if (pred && !pred(en)) continue
         const nid = String(en.noradId); if (seen.has(nid)) continue
         seen.add(nid); out.push({ id: nid, name: en.name, groupLabel: en.groupLabel || GROUP_LABEL[en.group] || '', slot: geoSlotOfSatrec(en.rec) })
       }
       sgmRes.value = out
     } finally { if (sgmKw.value.trim() === k) sgmBusy.value = false }
   }, 220)
+}
+// 管理器里改筛选：落库 + 重跑管理器搜索 + 同步侧栏那一路（两处是同一份筛选）
+function onSgmFilterChange(next) {
+  onSatFilterChange(next)
+  sgmOnSearch()
 }
 function sgmTogglePick(it) {
   const i = sgmPick.value.findIndex((s) => s.id === it.id)
@@ -7095,6 +7173,8 @@ onMounted(async () => {
   covNav.importTle = importTleToLibrary   // 「文件」菜单「导入星历文件」入口 → 落库自定义卫星（贯通文件管理/搜索池）
   // 顶部搜索框：星座搜索桥（「在星座中搜索“…”」）+ 只有本页够得着的命令（图层开关 / 绘制 / 投影档…）
   covNav.searchSats = (q) => onSearch({ target: { value: q } })
+  ensureSatcatIndex()   // 取一次卫星编目索引（只读本机缓存）：筛选条的前四项靠它
+  if (!isFilterEmpty(satFilters)) applyFilter(undefined, satFilters)   // 上次留下的筛选，开页即生效
   offCmds = registerCommands('globe3d', pageCommands)
   watch(status, (v) => { if (v) logMsg(v) })   // 加载进度/失败信息落日志窗格
   // 文件管理导入/删除自定义卫星 → 若正看 custom/all/other 分组则重载；并重建全量搜索库纳入新星。
@@ -7501,10 +7581,14 @@ onBeforeUnmount(() => {
                 </div>
               </div>
             </div>
+            <SatFilterBar
+              v-model="satFilters" :satcat="satcatIdx" :pool="satPoolForFilter" :matched="filterN ? filterN : -1"
+              @change="onSatFilterChange"
+            />
             <div v-if="filterN" class="fbar">
               <span class="fdot"></span>
               <template v-if="filterGroupId">查看组 <b>{{ filterKw }}</b> · {{ filterN }} 颗</template>
-              <template v-else>已筛选 <b>{{ filterKw }}</b> · 显示 {{ filterN }} 颗</template>
+              <template v-else>已筛选<template v-if="filterKw"> <b>{{ filterKw }}</b></template> · 显示 {{ filterN }} 颗</template>
               <span v-if="!filterGroupId" class="fsave" title="将当前筛选结果存为卫星组（可稍后重新显示）" @click="saveFilterAsGroup"><Icon name="folder-plus" :size="12" /> 存为组</span>
               <span class="fx" @click="clearSearch">清除</span>
             </div>
@@ -9827,6 +9911,10 @@ onBeforeUnmount(() => {
                 <input class="ci" v-model="sgmKw" placeholder="卫星名 / NORAD 编号 / 星座名，如 starlink、48274" @input="sgmOnSearch" />
                 <span v-if="sgmRes.length" class="gbtn" title="将当前结果中未入组的全部勾选" @click="sgmPickAllRes">全选结果</span>
               </div>
+              <SatFilterBar
+                v-model="satFilters" :satcat="satcatIdx" :pool="satPoolForFilter" :matched="-1"
+                @change="onSgmFilterChange"
+              />
               <div class="sgm-reslist">
                 <div v-if="sgmBusy" class="sgm-empty">搜索中…</div>
                 <div v-else-if="!sgmKw.trim()" class="sgm-empty">输入关键词搜索。</div>
