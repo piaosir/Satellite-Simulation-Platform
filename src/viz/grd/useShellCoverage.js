@@ -301,7 +301,7 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
               const segs = tessellateSegs(geo.lines[i], map)
               const labels = []
               if (wl) for (const loop of stitchLoops(segs)) { if (loop.length >= 4) labels.push(loopLabelAnchor(loop, i, asc.length)) }
-              return { segs, color: x.lineColor, width: (x.width == null ? st.lineWidth : x.width), dash: x.dash || null, txt: (x.name || String(x.lab)), labels }
+              return { segs, color: x.lineColor, width: (x.width == null ? st.lineWidth : x.width), dash: (x.dash || st.lineStyle || null), txt: (x.name || String(x.lab)), labels }
             }).filter((gp) => gp.segs.length)
             : []
           if (!(fillBands && fillBands.length) && !segGroups.length) {
@@ -369,7 +369,7 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
           const segs = geo.lines[i]
           const labels = []
           if (wl) for (const loop of stitchLoops(segs)) { if (loop.length >= 4) labels.push(loopLabelAnchor(loop, i, asc.length)) }
-          return { segs, color: x.lineColor, width: (x.width == null ? st.lineWidth : x.width), dash: x.dash || null, txt: (x.name || String(x.lab)), labels }
+          return { segs, color: x.lineColor, width: (x.width == null ? st.lineWidth : x.width), dash: (x.dash || st.lineStyle || null), txt: (x.name || String(x.lab)), labels }
         }).filter((gp) => gp.segs.length)
         : []
       if (!(fillBands && fillBands.length) && !segGroups.length) continue

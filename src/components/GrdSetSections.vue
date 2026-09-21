@@ -124,7 +124,7 @@ const plSpan = computed(() => { const d = grd.pathLossSpanDb(); return Number.is
 // ---- 电平表：当前行 / 行内样式 / 工具条 / 生成器（SATSOFT Contour Levels 那一栏）----
 const curLv = ref(0)          // 工具条作用的那一行
 const styLv = ref(-1)         // 展开样式编辑的那一行
-const LV_DASH = [['', '跟全局'], ['solid', '实线'], ['dash', '虚线'], ['dashdot', '点划线']]
+const LV_DASH = [['', '跟全局'], ['solid', '实线'], ['dash', '虚线'], ['dot', '点线'], ['dashdot', '点划线']]
 const hasSty = (L) => !!(L.dash || L.width != null || L.fillAlpha != null)
 function lvMove(d) { curLv.value = grd.moveLevel(curLv.value, d); styLv.value = -1 }
 function lvInsert() { curLv.value = grd.insertLevel(curLv.value); styLv.value = -1 }
@@ -301,6 +301,10 @@ const boreTip = computed(() => {
           <div class="glvadd" title="按起始 / 间隔 / 档数重建整张电平表" @click="lvGenerate()"><Icon name="refresh-cw" :size="12" /> 生成电平</div>
         </div>
         <div class="srow"><label>线宽</label><input class="rng" type="range" min="0.1" max="8" step="0.1" v-model.number="st.lineWidth" /><span class="u">{{ st.lineWidth.toFixed(1) }}</span></div>
+        <div class="srow"><label>线型</label>
+          <select v-model="st.lineStyle"><option value="solid">实线</option><option value="dash">虚线</option><option value="dot">点线</option><option value="dashdot">点划线</option></select>
+          <span class="lnk" title="清掉每档单独设的线宽 / 线型，全表回到这两项" @click="grd.applyLineToAll()">应用到全部档</span>
+        </div>
         <div class="srow"><label>线透明度</label><input class="rng" type="range" min="0" max="1" step="0.05" v-model.number="st.lineAlpha" title="只作用于等值线，不影响分带填充" /><span class="u">{{ fx(st.lineAlpha) }}</span></div>
       </template>
     </div>

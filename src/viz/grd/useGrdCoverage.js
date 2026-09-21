@@ -118,7 +118,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
   }
 
   const s = reactive({
-    fill: false, alpha: 0.78, line: true, lineWidth: 1.6, lineAlpha: 1,   // 默认不填充（多天线/多星叠加时按需逐个开启）；alpha 只管填充，lineAlpha 只管等值线
+    fill: false, alpha: 0.78, line: true, lineWidth: 1.6, lineStyle: 'solid', lineAlpha: 1,   // 默认不填充（多天线/多星叠加时按需逐个开启）；alpha 只管填充，lineAlpha 只管等值线
     // ctype（SATSOFT Contour Type）：rel 相对峰值 | relInput 相对输入值(refDb) | abs 绝对。
     // labelAbs：相对档时数值标签印【绝对 dB】（SATSOFT 的 relative dB w/ absolute levels 两档）。
     ctype: 'abs', refDb: 0, labelAbs: false, levels: defaultLevels(),
@@ -319,6 +319,8 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     recolorList(lv)
     return at + 1
   }
+  // Default Line Thickness / Style 的 Apply：清掉每档的线宽 / 线型覆盖 → 全表回到跟全局
+  function applyLineToAll() { for (const L of s.levels) { L.dash = null; L.width = null } }
   const levelsText = () => levelValuesText(s.levels.map((L) => L.v))
   function pasteLevels(txt) {
     const vs = parseLevelValues(txt); if (!vs.length) return 0
@@ -340,16 +342,16 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
 
   // 每个天线的独立设置（数据库）：除等仰角线(全局参考线)外的全部绘制设置都按天线保存，
   // 切换聚焦时载入该天线设置、编辑时回存，只有用户改动才变。bore 指向同样并入。
-  const PA = ['ctype', 'refDb', 'labelAbs', 'pol', 'gainOffset', 'pathLoss', 'fill', 'line', 'lineWidth', 'lineAlpha', 'alpha', 'boreType', 'boreLon', 'boreLat', 'boreAz', 'boreEl', 'yaw', 'boreLock', 'boreSat', 'boreSatName', 'boreOffAz', 'boreOffEl', 'borePtLon', 'borePtLat', 'borePtAlt']
+  const PA = ['ctype', 'refDb', 'labelAbs', 'pol', 'gainOffset', 'pathLoss', 'fill', 'line', 'lineWidth', 'lineStyle', 'lineAlpha', 'alpha', 'boreType', 'boreLon', 'boreLat', 'boreAz', 'boreEl', 'yaw', 'boreLock', 'boreSat', 'boreSatName', 'boreOffAz', 'boreOffEl', 'borePtLon', 'borePtLat', 'borePtAlt']
   const copyLevels = (lv) => lv.map((L) => ({ v: L.v, name: L.name || '', labelT: (L.labelT == null ? null : L.labelT), color: L.color, lineColor: L.lineColor, locked: !!L.locked, lineSet: !!L.lineSet, dash: L.dash || null, width: (L.width == null ? null : +L.width), fillAlpha: (L.fillAlpha == null ? null : +L.fillAlpha) }))
   function defaultSettings(satLon, satLat = 0, peakDb) {
-    return { ctype: 'abs', refDb: 0, labelAbs: false, pol: 'RSS', gainOffset: 0, pathLoss: 'none', fill: false, line: true, lineWidth: 1.6, lineAlpha: 1, alpha: 0.78,
+    return { ctype: 'abs', refDb: 0, labelAbs: false, pol: 'RSS', gainOffset: 0, pathLoss: 'none', fill: false, line: true, lineWidth: 1.6, lineStyle: 'solid', lineAlpha: 1, alpha: 0.78,
       boreType: 'azel', boreLon: satLon == null ? null : satLon, boreLat: satLat || 0, boreAz: 0, boreEl: 0, yaw: 0, boreLock: true,
       boreSat: null, boreSatName: '', boreOffAz: 0, boreOffEl: 0,
       borePtLon: satLon == null ? null : satLon, borePtLat: satLat || 0, borePtAlt: 550,
       beamsToPlot: [0], beamNames: {}, levels: defaultLevels(peakDb) }
   }
-  function applySettings(cfg) { if (!cfg) return; for (const k of PA) s[k] = cfg[k]; if (!Number.isFinite(s.lineAlpha)) s.lineAlpha = 1; s.levels = copyLevels(cfg.levels || defaultLevels()); s.beamsToPlot = (cfg.beamsToPlot || []).slice(); s.beamNames = { ...(cfg.beamNames || {}) } }
+  function applySettings(cfg) { if (!cfg) return; for (const k of PA) s[k] = cfg[k]; if (!Number.isFinite(s.lineAlpha)) s.lineAlpha = 1; if (!s.lineStyle) s.lineStyle = 'solid'; if (!Number.isFinite(s.refDb)) s.refDb = 0; s.labelAbs = !!s.labelAbs; s.levels = copyLevels(cfg.levels || defaultLevels()); s.beamsToPlot = (cfg.beamsToPlot || []).slice(); s.beamNames = { ...(cfg.beamNames || {}) } }
   // 设置序列化（深拷贝 levels/beamsToPlot/beamNames/keptSets），供 getState 回存每个天线
   function serializeCfg(st) { return { ...st, levels: copyLevels(st.levels || []), beamsToPlot: (st.beamsToPlot || [0]).slice(), beamNames: { ...(st.beamNames || {}) }, keptSets: Array.isArray(st.keptSets) ? st.keptSets.slice() : null } }
   // 把存档 cfg 合到该天线一份完整 settings（缺省字段以 meta 默认补齐）
@@ -1012,7 +1014,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
         // txt：该档【自定义名称】优先（电平表灰色列可改名），为空则回退电平值 x.v = L.v。
         // 数值回退不做小数位裁剪——绝对模式下 x.abs 恒等于 x.v，之前用 toFixed(1) 会把用户输入的
         // 更高精度电平（如 42.567）显示成 42.6，与输入框对不上。
-        return { segs, color: x.lineColor, width: (x.width == null ? cfg.lineWidth : x.width), dash: x.dash || null, txt: (x.name || String(x.lab)), labels }
+        return { segs, color: x.lineColor, width: (x.width == null ? cfg.lineWidth : x.width), dash: (x.dash || cfg.lineStyle || null), txt: (x.name || String(x.lab)), labels }
       }).filter((g) => g.segs.length)
       : []
     // 峰值点（随指向/拖拽实时变化）：波束名标签贴在此处。hit=false（峰值方向越过地平）时
@@ -1710,7 +1712,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
   // 一键清除绘图：抹掉地图上的填充/线，但保留各天线设置（数据库）与聚焦项 → 再次勾选天线即按原设置重绘。
   function clearDrawing() { selected.value = []; const sc = getScene(), fl = flatField(); if (sc) sc.setCoverageField([], {}); if (fl) fl.setField([], {}) }
 
-  watch(() => [s.fill, s.line, s.lineWidth, s.ctype, s.pol, s.gainOffset, s.pathLoss], () => { persistActive(); recompute() }, { deep: true })
+  watch(() => [s.fill, s.line, s.lineWidth, s.lineStyle, s.ctype, s.refDb, s.labelAbs, s.pol, s.gainOffset, s.pathLoss], () => { persistActive(); recompute() }, { deep: true })
   // 电平改动只影响聚焦天线这一层（persistActive 仅写 active）→ 走单层快路径 recomputeActive，只 patch 当前可见视图。
   // 另一视图（2D/3D）在切换时由 applyFlat 的 recompute 一次性补齐（与拖拽波束同策略，避免每次编辑全量重算所有选中层）。
   watch(() => s.levels, () => { persistActive(); scheduleRecomputeActive() }, { deep: true })   // 合帧：挑色高频连发不再卡（persistActive 同步保证状态最新，重算合到下一帧）
@@ -1748,7 +1750,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     activeBeams, beamListOn, isBeamOn, setBeamsToPlot, renameBeam,
     beamQuery, setBeamQuery, filteredBeams,
     deleteBeam, deleteCheckedBeams,
-    loadIndex, setActive, toggleAnt, toggleSatAll, toggleExpand, addLevel, removeLevel, moveLevel, insertLevel, levelsText, pasteLevels, generateLevels, importGrd, importSynthGrd,
+    loadIndex, setActive, toggleAnt, toggleSatAll, toggleExpand, addLevel, removeLevel, moveLevel, insertLevel, levelsText, pasteLevels, generateLevels, applyLineToAll, importGrd, importSynthGrd,
     addSatellite, addElevLine, updateSatellite, removeSatellite, removeAntenna, renameAntenna, setElev, onTreeKeys,
     setDragBore, beamDrag, dragLabel, setDragLabel, labelDrag, getState, restoreState, recompute, onZoomEnd, clearAll, clearDrawing, setActiveKey, pathLossSpanDb,
     setLivePos, tickLive, getPerfContext, ensureAntLoaded, exportContours,
