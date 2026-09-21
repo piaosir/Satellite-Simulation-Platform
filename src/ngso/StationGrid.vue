@@ -745,17 +745,20 @@ function selectRowRange(a, b) {
 // 整行勾选(sel)后把单元格选区(range)同步铺到这些行的全部列——这样 Ctrl+C/X/V、Delete 等快捷键都按整行生效
 // （否则它们只认单元格选区，会对上一次遗留的某个格误操作）。与右键 onIdxContext 已有的做法一致。
 function syncRangeToRows() { const idx = selectedRowIdx(); if (idx.length) selectFullRows(idx[0], idx[idx.length - 1]) }
+// 整行选择走 selectFullRows 直写 range，不经 setFocus，所以要在这里自己报聚焦行（Excel：点行头即活动行）。
+// Shift 扩选与拖刷不报：Excel 里活动格留在锚点行。
+function emitRowFocus(i) { const s = props.stations[i]; if (s) emit('rowFocus', i, s._id) }
 function onRowDown(i, e) {
   e.preventDefault()
   if (editing.value) endEdit()
   if (e.ctrlKey || e.metaKey) {   // Ctrl+点：增/减单行（离散多选）
     sel.value = { ...sel.value, [props.stations[i]._id]: !sel.value[props.stations[i]._id] }
-    rowAnchor = i; syncRangeToRows(); focusGrid(); return
+    rowAnchor = i; syncRangeToRows(); emitRowFocus(i); focusGrid(); return
   }
   rowDragging = true
   if (e.shiftKey) selectRowRange(rowAnchor, i)     // Shift：从锚点行扩展（与 Excel 一致），不改锚点
   else { rowAnchor = i; sel.value = { [props.stations[i]._id]: true } }
-  syncRangeToRows(); focusGrid()
+  syncRangeToRows(); if (!e.shiftKey) emitRowFocus(i); focusGrid()
 }
 function onRowEnter(i) { if (rowDragging) { selectRowRange(rowAnchor, i); syncRangeToRows() } }
 
@@ -1341,6 +1344,7 @@ function onIdxContext(i, e) {
   if (!sel.value[props.stations[i]._id]) sel.value = { [props.stations[i]._id]: true }
   const idx = selectedRowIdx()
   if (idx.length) selectFullRows(Math.min(...idx), Math.max(...idx))
+  emitRowFocus(i)
   focusGrid(); openMenu(e, 'row')
 }
 
