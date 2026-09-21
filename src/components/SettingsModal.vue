@@ -40,10 +40,11 @@ const onPickMapLevel = (e) => { const l = MAP_LEVELS[Number(e.target.value)]; if
 const msaaOn = computed(() => eff.value.msaa !== false)
 function toggleMsaa() { setField('msaa', !msaaOn.value) }
 
-const speedPct = computed({
-  get: () => Math.round((viewPrefs.autoRotateSpeed / 2) * 100),
-  set: (v) => { viewPrefs.autoRotateSpeed = (Number(v) / 100) * 2 }
-})
+// 参考系两档：惯性视角（相机固定在惯性空间，地球随仿真时钟东转）/ 相机跟随（相机随地球一起转）
+const FRAME_OPTS = [
+  { key: 'inertial', label: '惯性视角' },
+  { key: 'fixed', label: '相机跟随' }
+]
 </script>
 
 <template>
@@ -142,12 +143,22 @@ const speedPct = computed({
           <div class="shd" data-sec="set-basic">基础设置</div>
           <div class="grid">
             <div class="frow">
-              <span class="fn">地球自转</span>
-              <button type="button" class="layersw lg" :class="{ on: viewPrefs.autoRotate }" role="switch" :aria-checked="viewPrefs.autoRotate ? 'true' : 'false'" :aria-label="'地球自转'" @click="viewPrefs.autoRotate = !viewPrefs.autoRotate"><i></i></button>
+              <span class="fn" title="惯性视角：相机固定在惯性空间，地球随仿真时钟东转；相机跟随：相机随地球一起转，地面不动">地球自转</span>
+              <div class="tiers seg">
+                <button v-for="f in FRAME_OPTS" :key="f.key" class="tier" :class="{ on: viewPrefs.frame === f.key }" @click="viewPrefs.frame = f.key">{{ f.label }}</button>
+              </div>
             </div>
             <label class="frow">
-              <span class="fn">自转速度<em>{{ speedPct }}%</em></span>
-              <input type="range" min="10" max="100" step="5" v-model.number="speedPct" :disabled="!viewPrefs.autoRotate" />
+              <span class="fn" title="松手后滑行的衰减：100% 立即停住，0% 滑得最远">拖拽阻尼<em>{{ viewPrefs.dragDamping }}%</em></span>
+              <input type="range" min="0" max="100" step="5" v-model.number="viewPrefs.dragDamping" />
+            </label>
+            <label class="frow">
+              <span class="fn" title="每滚一格，底部状态栏的缩放读数走多少个百分点">3D 滚轮缩放<em>{{ viewPrefs.wheelStep3d }}%</em></span>
+              <input type="range" min="1" max="20" step="1" v-model.number="viewPrefs.wheelStep3d" />
+            </label>
+            <label class="frow">
+              <span class="fn" title="每滚一格，底部状态栏的缩放读数走多少个百分点">2D 滚轮缩放<em>{{ viewPrefs.wheelStep2d }}%</em></span>
+              <input type="range" min="1" max="20" step="1" v-model.number="viewPrefs.wheelStep2d" />
             </label>
           </div>
         </section>
@@ -187,6 +198,9 @@ const speedPct = computed({
 .fn em { font-style: normal; font-size: var(--fs-2); color: var(--text-faint); margin-top: 2px; }
 .frow select { min-width: 150px; border: 1px solid var(--field-border); background-color: var(--field-bg); color: var(--text); padding: 5px 8px; outline: none; }
 .frow input[type=range] { width: 150px; }
+/* 行内两段式（参考系）：宽度与右侧那一栏的 150px 对齐，两枚各 72px */
+.frow .tiers.seg { flex: none; width: 150px; flex-wrap: nowrap; }
+.frow .tiers.seg .tier { min-width: 0; padding: 5px 0; }
 .frow select.fsel { min-width: 176px; }
 .dft { display: flex; align-items: center; justify-content: flex-end; gap: 10px; padding: 12px 16px; border-top: 1px solid var(--border); }
 .dft button { height: var(--h-ctl-lg); white-space: nowrap; padding: 0 16px; cursor: pointer; border-radius: var(--r-box); font-size: var(--fs-4); }

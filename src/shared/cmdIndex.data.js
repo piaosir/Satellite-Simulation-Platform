@@ -56,5 +56,5 @@ export default [
   {"view":"settings","key":"set-lang","title":"语言","items":[]},
   {"view":"settings","key":"set-font","title":"界面字体","items":[{"label":"西文"},{"label":"中文"}]},
   {"view":"settings","key":"set-quality","title":"显示设置","items":[{"label":"渲染分辨率","hint":"超采样倍率，对性能影响最大"},{"label":"底图精细化"},{"label":"覆盖网格"},{"label":"渲染帧率","hint":"帧率上限越低越省电"},{"label":"球体细分","hint":"地球网格精度"},{"label":"MSAA 抗锯齿"}]},
-  {"view":"settings","key":"set-basic","title":"基础设置","items":[{"label":"地球自转"},{"label":"自转速度"}]}
+  {"view":"settings","key":"set-basic","title":"基础设置","items":[{"label":"地球自转","hint":"惯性视角：相机固定在惯性空间，地球随仿真时钟东转；相机跟随：相机随地球一起转，地面不动"},{"label":"拖拽阻尼","hint":"松手后滑行的衰减：100% 立即停住，0% 滑得最远"},{"label":"3D 滚轮缩放","hint":"每滚一格，底部状态栏的缩放读数走多少个百分点"},{"label":"2D 滚轮缩放","hint":"每滚一格，底部状态栏的缩放读数走多少个百分点"}]}
 ]

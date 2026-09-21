@@ -5,7 +5,7 @@ import { view } from '../stores/view'
 import { covNav } from '../stores/coveragePanels'
 import { zoom } from '../stores/zoom'
 import { effective as displayQuality } from '../stores/displayQuality'
-import { viewPrefs } from '../stores/viewPrefs'
+import { viewPrefs, FRAME_MODES, VIEW_PREF_RANGE } from '../stores/viewPrefs'
 import { setGrdBridge, clearGrdBridge, fileBridge, bumpCustomSats } from '../stores/fileBridge'
 import { shellUi, sideCtx } from '../stores/shellUi'
 import { isSecOpen, toggleSec, revealSection } from '../stores/panelSections'
@@ -134,7 +134,6 @@ const dataTime = ref('')
 // 否则时钟自己的定时器与页面的标志位会各说各话。
 const live = computed(() => clock.mode === 'live')
 const nowTick = ref(0)      // 每拍自增：驱动时间条上随时刻走的读数（时钟推进 / 实时 / 拖游标都算一拍）
-const autoRotate = toRef(viewPrefs, 'autoRotate')   // 自转开关：以 viewPrefs 为单一真相（设置弹窗共享）
 const nameMode = ref('off')   // 国名：'zh' | 'en' | 'off'（默认不显示）
 // 水域注记两档，各自独立于国名：'zh' | 'en' | 'off'（默认不显示，与国名同）。
 // ★ 老存档里没有这两个键 —— 那时洋名是跟着国名走的，故 restoreSettings 把 oceanMode 回落到存档的 nameMode，
@@ -956,7 +955,6 @@ async function satcovFocusTarget(t) {
   if (!en && nid) { await ensureSearchPool(); en = searchSource().find((x) => String(x.noradId) === nid) }
   if (!en) { status.value = `「${t.name}」不在当前星历中`; return }
   selectSat(en, true)
-  autoRotate.value = false
 }
 
 // 树里每根天线下的「对星性能指标表」入口：开该天线的独立窗口（一根天线一窗、可多开）
@@ -2324,7 +2322,6 @@ function faceEntry(e) {
   const lat = sat.degreesLat(gd.latitude), lon = sat.degreesLong(gd.longitude)
   const phi = (90 - lat) * Math.PI / 180, theta = (lon + 180) * Math.PI / 180
   scene.faceTo({ x: -Math.sin(phi) * Math.cos(theta), y: Math.cos(phi), z: Math.sin(phi) * Math.sin(theta) })
-  autoRotate.value = false
 }
 // 卡片 mini-row：设为主选 / 移出
 function setPrimary(row) { const e = selEntries[row.idx]; if (!e || e === selEntry) return; selEntry = e; refreshSelection(); saveSelection() }
@@ -2464,7 +2461,6 @@ function faceEntries(list) {
   const m = Math.hypot(x, y, z)
   if (!(m > 1e-6)) return
   scene.faceTo({ x: x / m, y: y / m, z: z / m })
-  autoRotate.value = false
 }
 // 按 NORAD 集显示到地图。sats=[{id|noradId}]；label=状态条标签；groupId 非空表示这批来自某个已存卫星组（组行随之高亮）。
 async function showNorads(sats, label, groupId) {
@@ -3692,7 +3688,7 @@ function projCenterToSat() {
   if (p) { setMapCrs({ subFollow: true }); followT = 0; followAt = null; centerOnSubPt(p, true) }
 }
 // 「拖动调整」：开着的时候左键在图上拖动改的是投影中心，不是平移画面。
-// 与 3D 的 autoRotate（面板上叫「旋转中 / 已停止」）是两回事，别混 —— 那个是地球自转。
+// 与「地球自转」那两档参考系是两回事，别混 —— 那个改的是相机所在的系。
 const projSpin = ref(false)
 function toggleProjSpin() {
   projSpin.value = !projSpin.value
@@ -3729,7 +3725,8 @@ const projTitle = computed(() => (curLang() === 'en' ? [
   '方位等距：整个地球装在一个圆里。到圆心的图上距离正比于真实地心角、圆周即对跖点，圆心放在星下点时半径直接读地心角'
 ]).join('\n'))
 
-function toggleRotate() { autoRotate.value = !autoRotate.value; scene && scene.setAutoRotate(autoRotate.value) }
+// 参考系两档来回切：惯性视角（地球随仿真时钟东转）↔ 相机跟随（地面不动）。套到 scene 的活由 watch 干。
+function toggleFrame() { viewPrefs.frame = viewPrefs.frame === 'inertial' ? 'fixed' : 'inertial' }
 function setNameMode(m) { nameMode.value = m; scene && scene.setLabelMode(m); if (flat) flat.setNameMode(m) }
 // 省界/市界：按开关加载数据（一次）并套用可见性。开关切换与「默认开启的无存档首启」共用同一路径
 // 行政区图层：按选中的国家集合拉包、按当前视角过滤 groups、并成一份喂给两个渲染器。
@@ -4140,7 +4137,7 @@ function onItemBand(it, e) {
 function addBatch(it) { it.batches.push(newBatch()); redraw() }
 function removeBatch(it, ba) { const i = it.batches.indexOf(ba); if (i >= 0) it.batches.splice(i, 1); redraw() }
 function setBatchName(it, ba, e) { ba.name = e.target.value }
-function focusCovSat(it) { const idx = idxOf(it.folder); if (idx && idx.lon != null) { scene.faceLonLat(idx.lon, 0); autoRotate.value = false } }
+function focusCovSat(it) { const idx = idxOf(it.folder); if (idx && idx.lon != null) scene.faceLonLat(idx.lon, 0) }
 
 // 批次内设置统一作用于全部波束。增删波束时【保留已选增益档】（新增的波束并入其档，删除的仅去掉失效档）
 function toggleBatchBeam(it, ba, id) {
@@ -6150,7 +6147,7 @@ function loadMarkers() {
 function addPoint(lat, lon, face) {
   if (!validLat(lat) || !validLon(lon)) return
   points.value.push({ id: newId(), lat, lon }); syncMarkers()
-  if (face && scene) { scene.faceLonLat(lon, lat); autoRotate.value = false }
+  if (face && scene) scene.faceLonLat(lon, lat)
 }
 function addPointInput() { addPoint(parseFloat(ptLat.value), parseFloat(ptLon.value)); ptLat.value = ''; ptLon.value = '' }
 function removePoint(id) { points.value = points.value.filter((p) => p.id !== id); syncMarkers() }
@@ -6522,7 +6519,7 @@ function snapshot() {
     nameMode: nameMode.value, countryName: countryNameSize.value, provName: provNameSize.value, cityName: cityNameSize.value,
     oceanMode: oceanNameMode.value, seaMode: seaNameMode.value, oceanName: oceanNameSize.value, seaName: seaNameSize.value, waterOff: { ...waterOff },
     chain: { on: chainOn.value, off: { ...chainOff }, style: { ...chainStyle } },
-    showProvinces: showProvinces.value, showCities: showCities.value, admSel1: [...admSel1.value], admName1: admName1.value, admName2: admName2.value, borderStyle: { ...borderStyle }, labelStyle: { ...labelStyle }, termOn: termOn.value, termNight: termNight.value, termLine: termLine.value, termStyle: { ...termStyle }, tzMode: tzMode.value, crs: { ...mapCrs }, oceanColor: oceanColor.value, imagery: { on: imageryOn.value, k: imageryKey.value, bright: imageryBright.value }, landScheme: landScheme.value, landOverrides: { ...landOverrides }, groupColors: { ...groupColors }, autoRotate: autoRotate.value, autoRotateSpeed: viewPrefs.autoRotateSpeed, live: live.value, clock: { stepSec: clock.stepSec, speed: clock.speed }, beamLock: beamLock.value, fpMode: fpMode.value, beam: beam.value, elevMin: elevMin.value, focusStyle: { ...focusStyle }, windowMin: windowMin.value,
+    showProvinces: showProvinces.value, showCities: showCities.value, admSel1: [...admSel1.value], admName1: admName1.value, admName2: admName2.value, borderStyle: { ...borderStyle }, labelStyle: { ...labelStyle }, termOn: termOn.value, termNight: termNight.value, termLine: termLine.value, termStyle: { ...termStyle }, tzMode: tzMode.value, crs: { ...mapCrs }, oceanColor: oceanColor.value, imagery: { on: imageryOn.value, k: imageryKey.value, bright: imageryBright.value }, landScheme: landScheme.value, landOverrides: { ...landOverrides }, groupColors: { ...groupColors }, frame: viewPrefs.frame, dragDamping: viewPrefs.dragDamping, wheelStep3d: viewPrefs.wheelStep3d, wheelStep2d: viewPrefs.wheelStep2d, live: live.value, clock: { stepSec: clock.stepSec, speed: clock.speed }, beamLock: beamLock.value, fpMode: fpMode.value, beam: beam.value, elevMin: elevMin.value, focusStyle: { ...focusStyle }, windowMin: windowMin.value,
     markStyle: { ...markStyle },
     mkPtLayer: showPtLayer.value, mkStLayer: showStLayer.value, mkTrajLayer: showTrajLayer.value,
     covOpen: covOpen.value, polyOpen: polyOpen.value,
@@ -6656,8 +6653,13 @@ async function restoreSettings() {
   if (typeof s.mkStLayer === 'boolean') showStLayer.value = s.mkStLayer
   if (typeof s.mkTrajLayer === 'boolean') showTrajLayer.value = s.mkTrajLayer
   syncMarkers()   // 以恢复后的尺寸重建标记（含坐标/名称显隐、各图层显隐）
-  if (typeof s.autoRotate === 'boolean') { autoRotate.value = s.autoRotate; scene.setAutoRotate(autoRotate.value) }
-  if (Number.isFinite(s.autoRotateSpeed)) { viewPrefs.autoRotateSpeed = s.autoRotateSpeed; scene.setAutoRotateSpeed(s.autoRotateSpeed) }
+  // 基础视图偏好：参考系只认两个枚举串，三个数各自钳到范围。老存档里残留的 autoRotate / autoRotateSpeed
+  // 一律忽略 —— 那是【展示性】匀速旋转的开关，"开着" ≠ "想看惯性视角"，不迁移、不映射。
+  if (FRAME_MODES.includes(s.frame)) viewPrefs.frame = s.frame
+  for (const k of ['dragDamping', 'wheelStep3d', 'wheelStep2d']) {
+    const r = VIEW_PREF_RANGE[k]
+    if (Number.isFinite(s[k])) viewPrefs[k] = Math.max(r.min, Math.min(r.max, Math.round(s[k])))
+  }
   // 聚焦卫星显示样式：逐字段按类型合并（旧存档没这一项时全留出厂值），随后一次性推给两个渲染器
   if (s.focusStyle && typeof s.focusStyle === 'object') {
     for (const [k, v] of Object.entries(s.focusStyle)) {
@@ -6779,7 +6781,7 @@ function pageCommands() {
   const sw = (id, view, key, label, on, fn, group, icon, keywords) => ({ id, label, icon, group, keywords, lock: true, check: on, run: () => { fn(); revealSection(view, key) } })
   return [
     { id: 'const.wizard', label: '生成星座…', icon: 'satellite', group: '星座', keywords: kwId('const.wizard'), lock: true, run: () => { shellUi.side = 'constellation'; openConstWizard() } },
-    { id: 'const.rotate', label: '地球自转', icon: 'rotate-cw', group: '星座', keywords: kwId('const.rotate'), lock: true, check: autoRotate.value, run: toggleRotate },
+    { id: 'const.frame', label: '地球自转', icon: 'rotate-cw', group: '星座', keywords: kwId('const.frame'), lock: true, check: viewPrefs.frame === 'inertial', run: toggleFrame },
     { id: 'const.live', label: '实时时钟', icon: 'clock', group: '星座', keywords: kwId('const.live'), lock: true, check: live.value, run: toggleLive },
     { id: 'const.sendMini', label: '发送卫星到小程序…', icon: 'external-link', group: '星座', keywords: kwId('const.sendMini'), lock: true, run: () => { shellUi.side = 'constellation'; sendSatsToMiniapp() } },
     { id: 'poly.draw', label: '绘制多边形', icon: 'hexagon', group: 'Polygon（协调区）', keywords: kwId('poly.draw'), lock: true, run: () => { shellUi.side = 'poly'; polyStartDraw() } },
@@ -6843,7 +6845,6 @@ onMounted(async () => {
   // 不碰星位、不碰场景。没有它的话，暂停期间这三样会冻在最后一拍上 —— 停十分钟后点「此刻」会发现按钮是灰的。
   nowBeat = setInterval(() => { nowStamp.value = Date.now() }, 1000)
   scene = createGlobeScene(el.value, { ...displayQuality.value })
-  scene.setAutoRotate(autoRotate.value)
   scene.setLabelMode(nameMode.value)
   scene.setWaterOff({ ...waterOff })
   scene.setWaterMode({ ocean: oceanNameMode.value, sea: seaNameMode.value })
@@ -6854,7 +6855,6 @@ onMounted(async () => {
   if (imageryOn.value) applyImagery()
   scene.setFocusStyle(focusStyle3D())
   scene.setSatPointsVisible(focusStyle.cloudOn)
-  scene.setOnAutoRotateOff(() => { autoRotate.value = false })
   scene.setOnPick((index, point, additive) => {
     // 从星座点选模式：命中的星填入卫星编辑弹窗，不改变当前选中星
     if (satPick.value && satModal.value) { if (index >= 0) { const en = renderEntries[index]; if (en) pickEntryIntoModal(en) } return }
@@ -6923,12 +6923,9 @@ onMounted(async () => {
   redrawSats()   // 恢复后立即绘制自定义卫星（关联卫星待 loadGroup 完成由 refreshPositions 跟踪）
   applyDisplayQuality()   // 套用当前画质档位（低/中/高档的 50m 底图按需加载，超高/极致档用静态 10m；110m 已于 v1.3.32 下线）
   applyTerminator()   // 晨昏线：按恢复后的开关画一次（不依赖星历，故不等 loadGroup）
-  scene.setAutoRotateSpeed(viewPrefs.autoRotateSpeed)
   if (view.flat) await applyFlat(true)   // 恢复上次退出时的 2D 平面图（watch 不触发初始值，故挂载时主动套用一次）
   watch(snapshot, saveSettings, { deep: true })   // 此后任意改动自动本地缓存
   watch(displayQuality, applyDisplayQuality, { deep: true })   // 画质档位变化 → 实时套用（msaa 除外，由重挂载处理）
-  // 设置弹窗改自转开关/速度 → 套到 scene（自转开关亦由页内按钮 toggleRotate 写同一 viewPrefs）
-  watch(() => [viewPrefs.autoRotate, viewPrefs.autoRotateSpeed], () => { if (scene) { scene.setAutoRotate(viewPrefs.autoRotate); scene.setAutoRotateSpeed(viewPrefs.autoRotateSpeed) } })
 })
 onBeforeUnmount(() => {
   // 离开 3D 页：复位顶栏覆盖图入口（按钮随之隐藏），并关掉面板镜像状态
@@ -7119,7 +7116,7 @@ onBeforeUnmount(() => {
               <span class="fx" title="取消全部选择" @click="closeCard">清除</span>
             </div>
             <div class="pchips">
-              <span class="mini" :class="{ on: autoRotate }" @click="toggleRotate">{{ autoRotate ? '旋转中' : '已停止' }}</span>
+              <span class="mini" :class="{ on: viewPrefs.frame === 'inertial' }" @click="toggleFrame">{{ viewPrefs.frame === 'inertial' ? '惯性视角' : '相机跟随' }}</span>
               <span class="mini" :class="{ on: live }" @click="toggleLive">{{ live ? '实时开' : '实时关' }}</span>
               <span class="mini act" title="把卫星组 / 自定义卫星 / 自定义星座发送到小程序「星座地图」（投给已绑定账号，或生成一次性密钥）" @click="sendSatsToMiniapp"><Icon name="external-link" :size="12" /> 发送到小程序</span>
             </div>

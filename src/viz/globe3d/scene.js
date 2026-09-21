@@ -344,11 +344,8 @@ export function createGlobeScene(container, quality = {}) {
   controls.rotateSpeed = 0.5
   controls.enablePan = false    // 关掉平移：右键留给“标点”，避免误平移
   controls.enableZoom = false   // 自定义滚轮缩放（见下方 wheel）：指数步进 + 每帧缓动，手感更顺、不突兀
-  controls.autoRotate = true
-  controls.autoRotateSpeed = 0.5
-  // 拖动旋转才停自转（滚轮缩放不影响旋转，与 2D 星座地图一致）；停转时通知上层同步开关
-  let onAutoRotateOff = null
-  function stopAutoRotate() { if (controls.autoRotate) { controls.autoRotate = false; if (onAutoRotateOff) onAutoRotateOff() } }
+  // ★ 这里曾有 controls.autoRotate —— OrbitControls 的展示性匀速旋转，与仿真时钟无关（暂停时钟它照转、
+  //   播放 ×3600 它也不快），不是自转。2026-09-21 整份删除，换成由时钟驱动的真自转（见 setEarthSpin）。
 
   // 滚轮缩放：维护一个「目标距离」，按指数步进（zoomTarget *= e^(deltaY·k)）——
   // 乘性步进天然就是梯度：离地球近时每格走得少（精细），远时每格走得多（快速）。
@@ -1610,11 +1607,10 @@ export function createGlobeScene(container, quality = {}) {
     if (!vec) return
     const dist = camera.position.length()
     camera.position.copy(vec).normalize().multiplyScalar(dist)
-    controls.autoRotate = false
     controls.update()
   }
   // 键盘方向键：绕地心步进旋转（dAz 水平/经向、dPol 垂直/纬向，弧度）。保持相机距离，
-  // 关自转并经 stopAutoRotate 同步按钮态；phi 夹在两极附近避免翻面。与 faceTo 一样直接改相机位后 update()。
+  // phi 夹在两极附近避免翻面。与 faceTo 一样直接改相机位后 update()。
   const _rotSph = new THREE.Spherical()
   const _rotOff = new THREE.Vector3()
   function rotateBy(dAz, dPol) {
@@ -1625,12 +1621,8 @@ export function createGlobeScene(container, quality = {}) {
     _rotSph.phi = Math.max(1e-4, Math.min(Math.PI - 1e-4, _rotSph.phi + (dPol || 0)))
     _rotOff.setFromSpherical(_rotSph)
     camera.position.copy(controls.target).add(_rotOff)
-    stopAutoRotate()
     controls.update()
   }
-  function setAutoRotate(v) { controls.autoRotate = !!v }
-  function setAutoRotateSpeed(v) { if (Number.isFinite(v)) controls.autoRotateSpeed = v }
-  function setOnAutoRotateOff(fn) { onAutoRotateOff = fn }
 
   // ===================== GEO 卫星覆盖（仿小程序卫星覆盖，移到 3D 地球） =====================
   let covGroup = null
@@ -3241,7 +3233,7 @@ export function createGlobeScene(container, quality = {}) {
       const h = markerAtScreen(e.clientX, e.clientY)
       if (h) {
         const t = { kind: h.kind, id: h.id, tid: h.tid }
-        markerDragging = t; updateRotate(); stopAutoRotate()
+        markerDragging = t; updateRotate()
         try { renderer.domElement.setPointerCapture(e.pointerId) } catch { /* ignore */ }
         const ll = pickGlobeOrLimb(e.clientX, e.clientY)
         markerGrab = (ll && Number.isFinite(h.lat)) ? { dLat: h.lat - ll.lat, dLon: shortLon(h.lon - ll.lon) } : null
@@ -3259,8 +3251,8 @@ export function createGlobeScene(container, quality = {}) {
     if (beamDragging) { beamDragging = false; if (onBeamDrag) onBeamDrag(null, 'end'); return }   // 拖波束结束，不当作选星
     if (labelDragging) { labelDragging = false; if (onLabelDrag) onLabelDrag(null, 'end'); return }   // 拖标签结束，不当作选星
     if (e.button !== 0) return   // 仅左键当作选星；右键（标点）/中键不改变聚焦
-    // 拖动（旋转）-> 停自转、不当作点击
-    if (Math.abs(e.clientX - downX) + Math.abs(e.clientY - downY) > 6) { stopAutoRotate(); return }
+    // 拖动（旋转）-> 不当作点击
+    if (Math.abs(e.clientX - downX) + Math.abs(e.clientY - downY) > 6) return
     // 放置模式：左键点击 = 在球面落点放置（波束合成），不当作选星
     if (placeMode) { const ll = pickGlobe(e.clientX, e.clientY); if (ll && onPlace) onPlace(ll); return }
     if (!satPoints || !satPoints.visible || !onPick) return   // 点云关着就不拾取（见 setSatPointsVisible）
@@ -3532,7 +3524,7 @@ export function createGlobeScene(container, quality = {}) {
       if (markerDragging && !dragOk(markerDragging.kind, markerDragging.tid)) { markerDragging = null; markerGrab = null; updateRotate() }
     },
     setOnMarkerDrag: (fn) => { onMarkerDrag = fn }, setSatPointsVisible, setOnHover, setOnRightClick, setBeamDragMode, setOnBeamDrag, setBeamDragPivot, setLabelDragMode, setOnLabelDrag, setPolyDrawMode, setOnPolyDraw, setPlaceMode, setOnPlace,
-    faceTo, rotateBy, setAutoRotate, setAutoRotateSpeed, setOnAutoRotateOff, resize, pause, resume, snapshot, destroy,
+    faceTo, rotateBy, resize, pause, resume, snapshot, destroy,
     // 缩放进度条接口：getZoom 读当前进度、setZoom 设到进度 t、setOnZoom 注册滚轮缩放回填回调
     getZoom: () => distToT(zoomTarget),
     setZoom: (t) => { zoomTarget = Math.max(controls.minDistance, Math.min(controls.maxDistance, tToDist(t))); syncNear(zoomTarget) },

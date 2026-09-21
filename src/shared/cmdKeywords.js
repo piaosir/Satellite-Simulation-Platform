@@ -95,7 +95,7 @@ export const ID_KW = {
   'sec.geo-pov': ['view', 'camera', 'center', '画面中心', '视角', '切口'],
   // 星座地图页登记的动作与图层开关
   'const.wizard': ['walker', 'constellation', 'generate', '星座生成器', '新建星座', '轨道面'],
-  'const.rotate': ['rotate', 'auto rotate', 'spin', '旋转', '自转'],
+  'const.frame': ['rotate', 'spin', 'inertial', 'fixed', 'earth rotation', '自转', '惯性', '跟随', '地固'],
   'const.live': ['live', 'real time', 'clock', '实时', '当前时间'],
   'const.sendMini': ['miniapp', 'wechat', '微信', '小程序', '卫星组', '自定义卫星', '星座'],
   'poly.draw': ['polygon', 'draw', 'coordination', '协调区', '画多边形', '绘制'],
