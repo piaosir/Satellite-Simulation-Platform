@@ -3937,6 +3937,7 @@ function ensureFlat() {
     flat = createFlatCoverage(flatCanvas.value)
     perfHost.pushBoxes()   // 平面渲染器是按需建的：性能指标表的城市层（框 + 标签）之前只推给了 3D，这里补推一份，否则切到平面图不见框
     flat.setRenderScale(displayQuality.value.pixelRatio); flat.setMapDetail(displayQuality.value.mapDetail, displayQuality.value.mapThin)
+    flat.setWheelStep(viewPrefs.wheelStep2d)   // 平面渲染器按需建：滚轮比例在这里补推一次
     flat.setOnRightClick(onMapRightClick); flat.setOnHover(onHoverLL); flat.setOnBeamDrag(onBeamDragAny); flat.setBeamDragMode(grd.dragBore.value)
     flat.setOnLabelDrag(grd.labelDrag); flat.setLabelDragMode(grd.dragLabel.value)   // 拖拽等值线数值标签（沿线滑动）
     flat.setOnVertexDrag(onVertexDrag)   // 拖动单个顶点/标记点（Polygon 调点 或 标记「调整点位置」，分发）
@@ -6851,6 +6852,7 @@ onMounted(async () => {
   scene = createGlobeScene(el.value, { ...displayQuality.value })
   scene.setFrameMode(viewPrefs.frame)
   scene.setDragDamping(viewPrefs.dragDamping)
+  scene.setWheelStep(viewPrefs.wheelStep3d)
   scene.setLabelMode(nameMode.value)
   scene.setWaterOff({ ...waterOff })
   scene.setWaterMode({ ocean: oceanNameMode.value, sea: seaNameMode.value })
@@ -6929,14 +6931,18 @@ onMounted(async () => {
   redrawSats()   // 恢复后立即绘制自定义卫星（关联卫星待 loadGroup 完成由 refreshPositions 跟踪）
   applyDisplayQuality()   // 套用当前画质档位（低/中/高档的 50m 底图按需加载，超高/极致档用静态 10m；110m 已于 v1.3.32 下线）
   applyTerminator()   // 晨昏线：按恢复后的开关画一次（不依赖星历，故不等 loadGroup）
-  scene.setFrameMode(viewPrefs.frame)   // 存档里的参考系与拖拽阻尼（restoreSettings 只回填 store）
+  scene.setFrameMode(viewPrefs.frame)   // 存档里的参考系 / 拖拽阻尼 / 滚轮比例（restoreSettings 只回填 store）
   scene.setDragDamping(viewPrefs.dragDamping)
+  scene.setWheelStep(viewPrefs.wheelStep3d)
+  if (flat) flat.setWheelStep(viewPrefs.wheelStep2d)
   if (view.flat) await applyFlat(true)   // 恢复上次退出时的 2D 平面图（watch 不触发初始值，故挂载时主动套用一次）
   watch(snapshot, saveSettings, { deep: true })   // 此后任意改动自动本地缓存
   watch(displayQuality, applyDisplayQuality, { deep: true })   // 画质档位变化 → 实时套用（msaa 除外，由重挂载处理）
   // 参考系换档（设置弹窗 / 侧栏小标 / 命令面板写的都是同一个 viewPrefs.frame）
   watch(() => viewPrefs.frame, (v) => { if (scene) scene.setFrameMode(v) })
   watch(() => viewPrefs.dragDamping, (v) => { if (scene) scene.setDragDamping(v) })
+  watch(() => viewPrefs.wheelStep3d, (v) => { if (scene) scene.setWheelStep(v) })
+  watch(() => viewPrefs.wheelStep2d, (v) => { if (flat) flat.setWheelStep(v) })
 })
 onBeforeUnmount(() => {
   // 离开 3D 页：复位顶栏覆盖图入口（按钮随之隐藏），并关掉面板镜像状态

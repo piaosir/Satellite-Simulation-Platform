@@ -46,14 +46,14 @@ import { geoArea, geoContains } from 'd3-geo'
 import { antarcticaFillRings } from '../globe3d/antarctica.js'
 // 导出（compat）时陆地面的分组：基础面按色合并、争议叠加面逐面单独填（纯函数，见其文件头）
 import { groupLandForExport } from './landGroups.js'
+// 滚轮缩放口径（一格 = 状态栏缩放读数走几个百分点）：与 3D 球体共用同一份
+import { wheelNotches, stepZoomT } from '../../shared/wheelStep.js'
 
 const OCEAN = '#15426b'
 const BG = '#070b12'
 // 切口（左边缘经度）：默认西经 30°，经度范围 [LON0, LON0+360)。可由「地图设置 → 坐标系」改，
 // 改后要重烘所有「世界度坐标」(x = lon − LON0) 的 Path2D —— 陆地/边界线/覆盖场/等值线/夜区都是这套坐标。
 let LON0 = -30
-// 参考系：'ecef' 地固（缺省，地球不动）| 'eci' 惯性（轨道面不动、地球自转着从下面滑过）。
-// 地球站图标（与 3D 同一张 SVG）
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v))
 const hex = (c) => typeof c === 'number' ? '#' + (c & 0xffffff).toString(16).padStart(6, '0') : (c || '#fff')
@@ -3250,20 +3250,23 @@ export function createFlatCoverage(canvas) {
   const TMAX = 1.2
   const SCAP = Math.exp(_lnS0 + TMAX * (_lnS1 - _lnS0))
   const scaleToT = () => (Math.log(scale) - _lnS0) / (_lnS1 - _lnS0)
+  const tToScale = (t) => clamp(Math.exp(_lnS0 + Math.max(0, Math.min(TMAX, t)) * (_lnS1 - _lnS0)), SMIN, SCAP)
   let onZoom = null
+  // 一格滚轮走几个百分点（＝底部状态栏那条缩放读数的百分点数，与 ± 按钮的 0.01 同刻度、与 3D 同一口径）
+  let wheelPct = 3
   // ---- 交互 ----
   function onWheel(e) {
     e.preventDefault()
     const r = canvas.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top
     const kk = k(), wx = (mx - tx) / kk, wy = (my - ty) / kk
-    scale = clamp(scale * Math.exp(-e.deltaY * 0.0015), SMIN, SCAP)
+    scale = tToScale(stepZoomT(scaleToT(), wheelNotches(e), wheelPct, TMAX))
     const k2 = k(); tx = mx - wx * k2; ty = my - wy * k2; noteZoom(); requestDraw()   // ★ 不作废快照：缩放期缩位图，静止后由 scheduleRebuild 补一次
     if (onZoom) onZoom(scaleToT())
   }
   // 进度条设缩放：绕画布中心缩放（锚定中心世界点），t∈[0,1]
   function setZoomT(t) {
     const mx = cw / 2, my = ch / 2, kk = k(), wx = (mx - tx) / kk, wy = (my - ty) / kk
-    scale = clamp(Math.exp(_lnS0 + Math.max(0, Math.min(TMAX, t)) * (_lnS1 - _lnS0)), SMIN, SCAP)
+    scale = tToScale(t)
     const k2 = k(); tx = mx - wx * k2; ty = my - wy * k2; noteZoom(); requestDraw()
   }
   // 空闲态光标：普通箭头。地图能拖，但常态给「小手」等于把「可拖」当成这张图的主要用途 ——
@@ -3742,6 +3745,7 @@ export function createFlatCoverage(canvas) {
     // 缩放进度条接口：getZoom 读当前进度、setZoom 设到进度 t、setOnZoom 注册滚轮缩放回填回调
     getZoom: () => scaleToT(),
     setZoom: (t) => setZoomT(t),
+    setWheelStep(p) { if (Number.isFinite(p)) wheelPct = Math.max(1, Math.min(20, Math.round(p))) },
     setOnZoom(fn) { onZoom = fn },
     // 覆盖填充用：屏上尺度（1° 纬度占多少【设备像素】），供 useGrdCoverage.autoStride 按屏定三角化步长。
     // ★ 必须是 O(1) 且不碰 DOM：拖拽时每帧都要问一次。早先写成「屏幕探针逐点反算」——26 个采样点

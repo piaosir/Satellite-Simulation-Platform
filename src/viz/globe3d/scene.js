@@ -33,6 +33,7 @@ import { TILE, span as tileSpan, tileBox, tileClip, tileRange, pickZoom, getTile
 // 顶点级几何原语：与聚焦几何 Worker 共用同一份实现（别在这里再写一份）
 import { spinDelta, rotateSpeedFor } from './earthSpin.js'
 import { createDragInertia } from './dragInertia.js'
+import { wheelNotches, stepZoomT } from '../../shared/wheelStep.js'
 import { RE, LIFT, llaToVec, pushStripSegs, pushDashed, densifyArc, DASH_SPEC, FILL_R, FILL_CELL, slerpUnit, footprintFill, coneFace, swathFill, swathEdges, createSink } from './focusLanes.js'
 
 
@@ -388,11 +389,15 @@ export function createGlobeScene(container, quality = {}) {
   }
   let onZoom = null
   const reportZoom = () => { if (onZoom) onZoom(distToT(zoomTarget)) }
+  // 一格滚轮走几个百分点（＝底部状态栏那条缩放读数的百分点数，与 ± 按钮的 0.01 同刻度）。
+  // 改成在【t 空间】等步进而不是「距离乘一个固定倍率」：读数才是用户看得见、能跟设置值对上的那把尺子。
+  let wheelPct = 3
+  function setWheelStep(p) { if (Number.isFinite(p)) wheelPct = Math.max(1, Math.min(20, Math.round(p))) }
   renderer.domElement.addEventListener('wheel', (e) => {
     e.preventDefault()
     inertia.cancel()   // 滚轮立即终止惯性滑行
-    const factor = Math.exp(e.deltaY * 0.0018)   // 每格 deltaY≈±100 -> ~±20% 距离
-    zoomTarget = Math.max(controls.minDistance, Math.min(controls.maxDistance, zoomTarget * factor))
+    const t1 = stepZoomT(distToT(zoomTarget), wheelNotches(e), wheelPct, TMAX)
+    zoomTarget = Math.max(controls.minDistance, Math.min(controls.maxDistance, tToDist(t1)))
     reportZoom()
   }, { passive: false })
 
@@ -3599,7 +3604,7 @@ export function createGlobeScene(container, quality = {}) {
       if (markerDragging && !dragOk(markerDragging.kind, markerDragging.tid)) { markerDragging = null; markerGrab = null; updateRotate() }
     },
     setOnMarkerDrag: (fn) => { onMarkerDrag = fn }, setSatPointsVisible, setOnHover, setOnRightClick, setBeamDragMode, setOnBeamDrag, setBeamDragPivot, setLabelDragMode, setOnLabelDrag, setPolyDrawMode, setOnPolyDraw, setPlaceMode, setOnPlace,
-    faceTo, rotateBy, setFrameMode, setEarthSpin, setDragDamping, resize, pause, resume, snapshot, destroy,
+    faceTo, rotateBy, setFrameMode, setEarthSpin, setDragDamping, setWheelStep, resize, pause, resume, snapshot, destroy,
     // 缩放进度条接口：getZoom 读当前进度、setZoom 设到进度 t、setOnZoom 注册滚轮缩放回填回调
     getZoom: () => distToT(zoomTarget),
     setZoom: (t) => { zoomTarget = Math.max(controls.minDistance, Math.min(controls.maxDistance, tToDist(t))); syncNear(zoomTarget) },
