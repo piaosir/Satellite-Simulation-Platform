@@ -183,6 +183,91 @@ const ok = (n, c) => { console.log((c ? 'PASS' : 'FAIL') + '  ' + n); c ? pass++
   customSats.removeGroup(anyEph.id)
   ok('删组后采样文件也没了（不留孤儿）', !fs.existsSync(ephemStore.fileOf(anyEph.id)))
 
+
+  /* ---- SP3 与 GPS 年历：经主进程 importFile 落库（六种新格式的另外三种） ---- */
+  console.log('\n--- SP3 与 GPS 年历 ---')
+  const T2 = require('../packages/core/utils/timeSystems.js')
+  // SP3-c：2 星 × 6 历元，MEO 圆轨道（地固系坐标直接写）
+  const sp3Lines = []
+  {
+    const R = 26560, nn = Math.sqrt(MU / (R * R * R)), we = 7.2921151467e-5
+    const f = (v) => v.toFixed(6).padStart(14)
+    sp3Lines.push('#cP2026  9 21  0  0  0.00000000       6 ORBIT IGS20 HLM  IGS')
+    sp3Lines.push('## 2338 259200.00000000   900.00000000 61204 0.0000000000000')
+    sp3Lines.push('+    2   G01G02  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0')
+    for (let i = 0; i < 4; i++) sp3Lines.push('+         ' + '  0'.repeat(17))
+    for (let i = 0; i < 5; i++) sp3Lines.push('++       ' + '  5'.repeat(17))
+    sp3Lines.push('%c G  cc GPS ccc cccc cccc cccc cccc ccccc ccccc ccccc ccccc')
+    for (let e = 0; e < 6; e++) {
+      const secs = e * 900, d = new Date(T0 + secs * 1000)
+      sp3Lines.push('*  ' + d.getUTCFullYear() + ' ' + String(d.getUTCMonth() + 1).padStart(2) + ' ' + String(d.getUTCDate()).padStart(2) +
+        ' ' + String(d.getUTCHours()).padStart(2) + ' ' + String(d.getUTCMinutes()).padStart(2) + ' ' + d.getUTCSeconds().toFixed(8).padStart(11))
+      for (let k = 0; k < 2; k++) {
+        const u = nn * secs + k * 2, lon = u - we * secs + k * 1.2, inc = 55 * Math.PI / 180
+        const x = R * (Math.cos(u) * Math.cos(lon - u) - Math.sin(u) * Math.cos(inc) * Math.sin(lon - u))
+        const yv = R * (Math.cos(u) * Math.sin(lon - u) + Math.sin(u) * Math.cos(inc) * Math.cos(lon - u))
+        const z = R * Math.sin(u) * Math.sin(inc)
+        sp3Lines.push('P' + 'G0' + (k + 1) + f(x) + f(yv) + f(z) + f(-12.345678))
+      }
+    }
+    sp3Lines.push('EOF')
+  }
+  const rSp3 = customSats.importFile('SP3测试', sp3Lines.join('\n') + '\n')
+  ok('导入 SP3：落库（' + (rSp3.ok ? rSp3.group.count + ' 颗' : rSp3.error) + '）', !!(rSp3.ok && rSp3.group.count === 2))
+  ok('SP3 归到 ephem 组', !!(rSp3.ok && rSp3.group.kind === 'ephem' && rSp3.group.format === 'sp3'))
+  if (rSp3.ok) {
+    const g = customSats.list().groups.find((x) => x.id === rSp3.group.id)
+    ok('SP3 星名按系统前缀命名（GPS PRN 01）', !!g && g.sats[0].name === 'GPS PRN 01')
+    ok('SP3 原帧记作 FIXED', !!g && g.sats[0].frame === 'FIXED')
+    const when = T0 + 1800000 - 18000
+    const lk = customSats.ephemLookup(rSp3.group.id)
+    const pv = OP.positionAt(lk, when)
+    const gd = pv ? core.sgp4.eciToGeodetic(pv.position, core.sgp4.gstime(new Date(when))) : null
+    ok('SP3 取位后高度 ≈ 20200 km（实得 ' + (gd ? gd.height.toFixed(0) : '—') + '）', !!gd && Math.abs(gd.height - 20180) < 300)
+  }
+  // YUMA 年历（3 星）→ 换算成 OMM 记录 → gp 组
+  {
+    const DEG2 = Math.PI / 180, TOA2 = 61440
+    const WEEK2 = Math.floor((T2.msInSystem(T0, 'GPS') - T2.GPS_EPOCH_MS) / T2.WEEK_MS)
+    const svs = [
+      { prn: 1, e: 0.006, iDeg: 55.1, od: -2.514e-9, sqrtA: 5153.650391, o0: 0.32, ap: 0.55, m0: -0.42 },
+      { prn: 2, e: 0.019, iDeg: 53.6, od: -2.520e-9, sqrtA: 5153.601563, o0: -0.61, ap: -0.90, m0: 0.77 },
+      { prn: 3, e: 0.002, iDeg: 54.4, od: -2.517e-9, sqrtA: 5153.712891, o0: 0.95, ap: 0.10, m0: -0.05 }
+    ]
+    const L = []
+    for (const v of svs) {
+      L.push('******** Week ' + (WEEK2 % 1024) + ' almanac for PRN-' + String(v.prn).padStart(2, '0') + ' ********')
+      L.push('ID:                         ' + String(v.prn).padStart(2, '0'))
+      L.push('Health:                     000')
+      L.push('Eccentricity:               ' + v.e.toExponential(10))
+      L.push('Time of Applicability(s):   ' + TOA2.toFixed(4))
+      L.push('Orbital Inclination(rad):   ' + (v.iDeg * DEG2).toFixed(10))
+      L.push('Rate of Right Ascen(r/s):   ' + (v.od * Math.PI).toExponential(10))
+      L.push('SQRT(A)  (m 1/2):           ' + v.sqrtA.toFixed(6))
+      L.push('Right Ascen at Week(rad):   ' + (v.o0 * Math.PI).toExponential(10))
+      L.push('Argument of Perigee(rad):   ' + (v.ap * Math.PI).toFixed(9))
+      L.push('Mean Anom(rad):             ' + (v.m0 * Math.PI).toExponential(10))
+      L.push('Af0(s):                     0.0000000000E+00')
+      L.push('Af1(s/s):                   0.0000000000E+00')
+      L.push('week:                       ' + (WEEK2 % 1024))
+      L.push('')
+    }
+    const rAlm = customSats.importFile('年历测试', L.join('\n'))
+    ok('导入 YUMA 年历：落库（' + (rAlm.ok ? rAlm.group.count + ' 颗' : rAlm.error) + '）', !!(rAlm.ok && rAlm.group.count === 3))
+    ok('年历走 gp 组（换算成 OMM 记录后仍是 SGP4 通路）', !!(rAlm.ok && rAlm.group.kind !== 'ephem' && rAlm.group.format === 'yuma'))
+    if (rAlm.ok) {
+      const recs = customSats.groupRecords(rAlm.group.id)
+      const good = !!(recs && recs.length === 3 && (() => {
+        const sr = core.sgp4.omm2satrec(recs[0])
+        const pv = core.sgp4.propagate(sr, new Date(Date.parse(recs[0].epoch + 'Z')))
+        return sr && !sr.error && pv && pv.position && Number.isFinite(pv.position.x)
+      })())
+      ok('年历记录能建 satrec 并传播', good)
+      ok('年历星名体例「GPS PRN nn」', !!recs && /^GPS PRN \d{2}/.test(recs[0].name))
+      ok('年历组能导出成 OMM CSV', !!customSats.groupText(rAlm.group.id, 'omm-csv'))
+      ok('年历的 NORAD 反查给出结论（命中或合成号）', !!recs && recs.every((r) => String(r.noradId).length > 0))
+    }
+  }
   console.log(`\n=== ${pass} passed, ${fail} failed ===`)
   process.exit(fail ? 1 : 0)
 })()

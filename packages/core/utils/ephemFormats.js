@@ -5,7 +5,7 @@
 //   stk-e            STK .e（BEGIN/END Ephemeris，EpSec/UTCG/ISO-YMD/JDate 四种时间写法）
 //   ccsds-oem-kvn    CCSDS 502.0-B OEM 关键字=值报文（多段 = 同一星多段）
 //   ccsds-oem-xml    CCSDS 505.0-B NDM/XML 的 <oem>
-//   sp3              SP3-c/d 精密星历（见 §7，本文件另行承担）
+//   sp3              SP3-c/d 精密星历（解析在 sp3.js，本文件只负责嗅探与分派）
 //
 // 【星记录形状】{ name, objectId, frame, timeSystem, interp:{method,samples},
 //   t:Float64Array（UTC 毫秒）, p:Float64Array（3n，km，frame 所指的帧）, v:Float64Array|null（3n，km/s）,
@@ -22,6 +22,8 @@
 
 const T = require('./timeSystems.js')
 const FR = require('./frames.js')
+// SP3 单独一个文件：它的定长栏位与哨兵值自成一套，与 .e / OEM 没有共用逻辑（见 sp3.js 头注）
+const { parseSp3, SP3_SYS } = require('./sp3.js')
 
 const FORMATS = ['stk-e', 'ccsds-oem-kvn', 'ccsds-oem-xml', 'sp3']
 const FORMAT_LABEL = {
@@ -362,7 +364,7 @@ function parseEphemeris(text, fmt, opts) {
     case 'stk-e': r = parseStkE(src, name); break
     case 'ccsds-oem-kvn': r = parseOemKvn(src); break
     case 'ccsds-oem-xml': r = parseOemXml(src); break
-    case 'sp3': r = parseSp3 ? parseSp3(src) : { sats: [], errors: ['SP3 解析未启用'], warnings: [] }; break
+    case 'sp3': r = parseSp3(src); break
     default: return { format: '', sats: [], errors: ['无法识别的星历格式（支持 STK .e / CCSDS OEM 的 KVN 与 XML / SP3）'], warnings: [] }
   }
   return { format: f, sats: r.sats || [], errors: r.errors || [], warnings: r.warnings || [] }
@@ -546,12 +548,8 @@ function serializeEphemeris(sats, format, opts) {
   }
 }
 
-// SP3 在 §7 另行接入（本文件的 parseSp3 由 sp3.js 注入，保持本模块只管一件事）
-let parseSp3 = null
-function registerSp3(fn) { parseSp3 = fn }
-
 module.exports = {
   FORMATS, FORMAT_LABEL, FORMAT_EXT,
-  stripBom, detectFormat, parseEphemeris, serializeEphemeris, convertSat, registerSp3,
+  stripBom, detectFormat, parseEphemeris, serializeEphemeris, convertSat, parseSp3, SP3_SYS,
   geodeticToEcef, sphericalToEcef, oemFrame
 }

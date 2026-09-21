@@ -18,6 +18,7 @@ const path = require('path')
 const { writeJsonAtomic, readJsonSafe } = require('./jsonStore')
 const eph = require('../../packages/core/utils/ommFormats.js')
 const ephF = require('../../packages/core/utils/ephemFormats.js')
+const gpsAlm = require('../../packages/core/utils/gpsAlmanac.js')
 const ephI = require('../../packages/core/utils/ephemInterp.js')
 const ephemStore = require('./ephemStore')
 
@@ -195,8 +196,42 @@ const mtimeOf = () => { try { return fs.statSync(storeFile()).mtime.toISOString(
 let _seq = 0
 const genId = () => 'g' + Date.now().toString(36) + (_seq++).toString(36)
 
-// GPS 年历（YUMA / SEM）-> OMM 记录。§8 接上 gpsAlmanac.js 之前恒返 null，importFile 会跳过这一档。
-let almanacToRecords = null
+// GPS 年历（YUMA / SEM）-> OMM 记录。
+// NORAD：年历里只有 PRN，没有编号。内置 gps 组的星名带「(PRN nn)」（CelesTrak 体例），
+// 按它反查即可；查不到（没下载过 / 该 PRN 当天没在轨）就给 9 开头的合成号 —— 合成号只是个
+// 身份标签，不参与任何计算，但不能与真实编号撞车。
+const GPS_SYNTH_BASE = 990000
+function gpsPrnIndex(getCore) {
+  // 只读本机缓存，绝不联网（导入是个本地动作，不该因为没网就卡住）
+  try {
+    const base = process.env.SATSIM_DATA_DIR || path.join(require('electron').app.getPath('userData'), 'data')
+    const f = path.join(base, 'omm', 'csv_gps.csv')
+    const text = fs.readFileSync(f, 'utf8')
+    const map = new Map()
+    for (const r of parseOMMCsv(text)) {
+      const m = /(PRNs*(d+))/i.exec(r.name || '')
+      if (m) map.set(String(parseInt(m[1], 10)), String(r.noradId))
+    }
+    return map
+  } catch { return new Map() }
+}
+function almanacToRecords(text, getCore) {
+  const core = getCore && getCore()
+  const gstime = core && core.sgp4 && core.sgp4.gstime
+  if (typeof gstime !== 'function') return null            // 引擎未就绪：这一档跳过，交给 ommFormats
+  if (!gpsAlm.detectAlmanac(text)) return null
+  const r = gpsAlm.parseAlmanac(text, { gstime })
+  if (!r.records.length) return null
+  const idx = gpsPrnIndex(getCore)
+  let hit = 0
+  for (const rec of r.records) {
+    const found = idx.get(String(rec.prn))
+    if (found) { rec.noradId = found; hit++ } else rec.noradId = String(GPS_SYNTH_BASE + rec.prn)
+  }
+  const warnings = r.warnings.slice()
+  warnings.push('NORAD 反查：' + hit + ' / ' + r.records.length + ' 颗命中内置 GPS 组，其余用合成号')
+  return { records: r.records, format: r.format, errors: r.errors, warnings }
+}
 // 解析文本 → OMM 记录 + 格式（六种官方格式按内容嗅探，扩展名不作判据）。都认不出返回 records=[]。
 function parseAny(text) {
   const r = eph.parseEphemeris(text)
@@ -285,7 +320,7 @@ module.exports = function createCustomSats(getCore) {
   function importFile(name, text) {
     const efmt = ephF.detectFormat(text)
     if (efmt) return importEphem(name, text, efmt)
-    const alm = almanacToRecords ? almanacToRecords(text) : null
+    const alm = almanacToRecords(text, getCore)
     if (alm) return importGp(name, text, alm.records, alm.format, alm.errors, alm.warnings)
     const p = parseAny(text)
     return importGp(name, text, p.records, p.format, p.errors, p.warnings)
