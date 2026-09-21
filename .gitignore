@@ -311,3 +311,12 @@ resources/imagery/
 # 台子还顺带做源码级核对（A5 接线位置 / A9 快照与恢复字段 / A11 未动区），那几条跑起来量不到。
 # launch.json 的 spin-harness（端口 5823）只装页面，用来肉眼看。
 .spinharness/
+# 覆盖分析 2D 等值线的离线复现台（node --no-warnings .covharness/cov_harness.mjs A|B|C|D）：直接 import
+# src/viz 下的 coverage.js / parse.js，读 %APPDATA% 里的真 GRD，量拼环碎片 / 折线感 / 贴合三项。
+.covharness/
+# 星座侧栏「卫星集」面板原型台（npx vite --config .layersharness/vite.config.mjs，launch.json 的
+# layers-harness）：真组件 + 假数据假显隐模型，验交互口径，不抠主文件。
+.layersharness/
+# 轨道向导验证台（npx vite --config .owizharness/vite.config.mjs，launch.json 的 owiz-harness）：
+# 模板与逻辑由 extract.mjs 从 ConstellationMap3D.vue 原样抠出（锚点挪了就抛），不抄一遍。
+.owizharness/
