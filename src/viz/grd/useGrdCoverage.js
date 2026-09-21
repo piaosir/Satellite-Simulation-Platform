@@ -397,6 +397,48 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     pendingCfgs.delete(key)
   }
   let _muteSync = false
+  // ---- 等值线方案（SATSOFT Apply to Antennas / Save to File / Load from File）----
+  // 方案 = 一根天线里【与指向、与选波束无关】的那部分设置 + 三类标签的全局显示设置。
+  // 不含 beamsToPlot 与任何指向字段：换一根天线用的是同一套档位与样式，选哪些波束、指哪儿各归各的。
+  const SCHEME_KEYS = ['ctype', 'refDb', 'labelAbs', 'pol', 'gainOffset', 'pathLoss', 'fill', 'line', 'lineWidth', 'lineStyle', 'lineAlpha', 'alpha']
+  const SCHEME_DISP = ['showVal', 'valSize', 'valColor', 'labelMode', 'labelGap', 'labelWithName', 'fontBold', 'showName', 'nameSize', 'nameColor', 'showPeak', 'peakSize', 'peakColor']
+  function schemeOf() {
+    const o = { kind: 'satsim.grd.contours', v: 1, levels: copyLevels(s.levels), disp: {} }
+    for (const k of SCHEME_KEYS) o[k] = s[k]
+    for (const k of SCHEME_DISP) o.disp[k] = s[k]
+    return o
+  }
+  // 载入方案：缺的键保持现状（老方案文件照样能用）
+  function applyScheme(o) {
+    if (!o || typeof o !== 'object') return false
+    for (const k of SCHEME_KEYS) if (o[k] !== undefined && o[k] !== null) s[k] = o[k]
+    if (Array.isArray(o.levels) && o.levels.length) s.levels = copyLevels(o.levels)
+    if (o.disp) for (const k of SCHEME_DISP) if (o.disp[k] != null) s[k] = o.disp[k]
+    persistActive(); recompute()
+    return true
+  }
+  // 当前方案套到其它天线：已加载的写 cache.settings，未加载的写 pending 存档；返回套中的天线数
+  function applySchemeTo(keys) {
+    const o = schemeOf()
+    let n = 0
+    for (const key of (keys || [])) {
+      if (key === active.value) continue
+      const c = cache.get(key)
+      const cfg = (c && c.settings) || pendingCfgs.get(key)
+      if (!cfg) continue
+      for (const k of SCHEME_KEYS) cfg[k] = o[k]
+      cfg.levels = copyLevels(o.levels)
+      n++
+    }
+    if (n) recompute()
+    return n
+  }
+  // 全部天线（含未加载）：[{ key, sat, ant }]，供「应用到其它天线」的勾选列表
+  function antList() {
+    const out = []
+    for (const sat of sats.value) for (const a of (sat.antennas || [])) out.push({ key: keyOf(sat.folder, a.name), sat: sat.satName || sat.folder, ant: a.name })
+    return out
+  }
   // 路损补偿在「天底 → 地平」之间的变化量（SATSOFT 把它印在 Path Loss 下拉右边）：
   // 20·lg(Rs_edge / h)，Rs_edge = √((R+h)² − R²)。GEO 1.32 dB、1200 km 10.6 dB，与手册一致。
   function pathLossSpanDb() {
@@ -1766,7 +1808,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     activeBeams, beamListOn, isBeamOn, setBeamsToPlot, renameBeam,
     beamQuery, setBeamQuery, filteredBeams,
     deleteBeam, deleteCheckedBeams,
-    loadIndex, setActive, toggleAnt, toggleSatAll, toggleExpand, addLevel, removeLevel, moveLevel, insertLevel, levelsText, pasteLevels, generateLevels, applyLineToAll, importGrd, importSynthGrd,
+    loadIndex, setActive, toggleAnt, toggleSatAll, toggleExpand, addLevel, removeLevel, moveLevel, insertLevel, levelsText, pasteLevels, generateLevels, applyLineToAll, schemeOf, applyScheme, applySchemeTo, antList, importGrd, importSynthGrd,
     addSatellite, addElevLine, updateSatellite, removeSatellite, removeAntenna, renameAntenna, setElev, onTreeKeys,
     setDragBore, beamDrag, dragLabel, setDragLabel, labelDrag, getState, restoreState, recompute, onZoomEnd, clearAll, clearDrawing, setActiveKey, pathLossSpanDb,
     setLivePos, tickLive, getPerfContext, ensureAntLoaded, exportContours,

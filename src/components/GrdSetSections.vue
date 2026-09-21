@@ -118,6 +118,29 @@ function commitRenameLv(i) {
   editLv.value = ''; editLvVal.value = ''
 }
 
+// ---- 等值线方案：应用到其它天线 / 保存 / 载入（SATSOFT Apply to Antennas · Save · Load）----
+const applyOpen = ref(false)
+const applySel = ref({})
+const applyRows = computed(() => grd.antList().filter((r) => r.key !== grd.active.value))
+const applyN = computed(() => applyRows.value.filter((r) => applySel.value[r.key]).length)
+function applyToggle() { applyOpen.value = !applyOpen.value; if (applyOpen.value) applySel.value = {} }
+function applyDo() {
+  const keys = applyRows.value.filter((r) => applySel.value[r.key]).map((r) => r.key)
+  if (!keys.length) return
+  grd.applySchemeTo(keys)
+  applyOpen.value = false
+}
+async function schemeSave() {
+  if (!(window.api && window.api.exportFile)) return
+  try { await window.api.exportFile({ defaultName: '等值线方案.json', data: JSON.stringify(grd.schemeOf(), null, 2), filters: [{ name: 'JSON', extensions: ['json'] }] }) } catch (e) { /* 用户取消 */ }
+}
+const schemeFile = ref(null)
+function schemePick() { const el = schemeFile.value; if (el) { el.value = ''; el.click() } }
+async function schemeLoad(e) {
+  const f = e.target.files && e.target.files[0]; if (!f) return
+  try { grd.applyScheme(JSON.parse(await f.text())) } catch (err) { /* 不是方案文件 */ }
+}
+
 // 路损补偿从天底到地平的变化量（SATSOFT 印在 Path Loss 下拉右边的读数）
 const plSpan = computed(() => { const d = grd.pathLossSpanDb(); return Number.isFinite(d) ? d.toFixed(2) + ' dB' : '' })
 
@@ -306,6 +329,21 @@ const boreTip = computed(() => {
           <span class="lnk" title="清掉每档单独设的线宽 / 线型，全表回到这两项" @click="grd.applyLineToAll()">应用到全部档</span>
         </div>
         <div class="srow"><label>线透明度</label><input class="rng" type="range" min="0" max="1" step="0.05" v-model.number="st.lineAlpha" title="只作用于等值线，不影响分带填充" /><span class="u">{{ fx(st.lineAlpha) }}</span></div>
+        <div class="srow" style="justify-content:flex-start;gap:10px" data-sec="等值线方案">
+          <span class="lnk" :class="{ on: applyOpen }" title="把当前电平表与样式复制到其它天线（不含选波束与指向）" @click="applyToggle()">应用到其它天线</span>
+          <span class="lnk" title="把当前电平表与样式存成 JSON" @click="schemeSave()">保存方案</span>
+          <span class="lnk" title="从 JSON 载入电平表与样式" @click="schemePick()">载入方案</span>
+          <input ref="schemeFile" type="file" accept=".json,application/json" style="display:none" @change="schemeLoad" />
+        </div>
+        <div v-if="applyOpen" class="applylist">
+          <div v-for="r in applyRows" :key="r.key" class="arow" @click="applySel[r.key] = !applySel[r.key]">
+            <input type="checkbox" :checked="!!applySel[r.key]" />
+            <span class="anm" :title="r.sat + ' · ' + r.ant" data-i18n-skip>{{ r.ant }}</span>
+            <span class="asat" data-i18n-skip>{{ r.sat }}</span>
+          </div>
+          <div v-if="!applyRows.length" class="empty">只有这一根天线。</div>
+          <div v-else class="glvadd" :class="{ off: !applyN }" @click="applyDo()"><Icon name="check" :size="12" /> 应用（{{ applyN }}）</div>
+        </div>
       </template>
     </div>
 
@@ -494,6 +532,14 @@ const boreTip = computed(() => {
 .glvsty { padding: 2px 6px 4px 22px; border-bottom: 1px solid var(--border); }
 .glvsty .srow { padding: 2px 0; }
 .glvsty .srow label { width: 72px; }
+/* 「应用到其它天线」的勾选列表 */
+.applylist { margin-top: 4px; border: 1px solid var(--border); border-radius: var(--r-1); max-height: 180px; overflow: auto; }
+.applylist .arow { display: flex; align-items: center; gap: 6px; padding: 3px 6px; cursor: pointer; }
+.applylist .arow:hover { background: var(--surface-2); }
+.applylist .arow input { pointer-events: none; }
+.applylist .anm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.applylist .asat { flex: none; color: var(--text-faint); font-size: var(--fs-1); }
+.applylist .glvadd.off { opacity: 0.45; pointer-events: none; }
 /* 电平生成器（起始 / 间隔 / 档数 / 配色） */
 .glvgen { margin-top: 4px; border: 1px solid var(--border); border-radius: var(--r-1); }
 .glvgen .srow { padding: 3px 6px; }
