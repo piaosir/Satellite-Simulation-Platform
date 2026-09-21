@@ -12,7 +12,7 @@ import { parseOMMCsv } from '../../../src/viz/constellation/tle.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const require = createRequire(import.meta.url)
-const { calculateSunOutage, calculateSunOutageSeasons } = require('../utils/sunOutageCalculator.js')
+const { calculateSunOutage, calculateSunOutageSeasons, solarFluxAt, solarTempAt, solarTempLegacy, equinoxDateOf } = require('../utils/sunOutageCalculator.js')
 const { orbitSource, jdToMs } = require('../utils/orbitSource.js')
 const sat = require('../vendor/satellite.js')
 
@@ -195,7 +195,9 @@ const BASE = { lat: 39.9042, lon: 116.4074, diameter: 2.4, band: 'Ku', customFre
   const NEW_TOP = ['satSource', 'satLonEff', 'coverageDays']
   const OLD_MODEL = ['degThreshold', 'sysTemp', 'solarTemp', 'solarTempSource', 'f107', 'diameter',
     'beamWidth3dB', 'sunDiameter', 'boresightDeg']
-  const NEW_MODEL = ['satSource', 'noradId', 'epoch', 'epochAgeDays', 'inclDeg', 'ephemSpan', 'criterion', 'thresholdAngleSource']
+  const NEW_MODEL = ['satSource', 'noradId', 'epoch', 'epochAgeDays', 'inclDeg', 'ephemSpan', 'criterion', 'thresholdAngleSource',
+    // v5.3 太阳亮温：模型档 + F10.7 的出处（IPC 层查好传进来，引擎只回显）
+    'solarModel', 'f107Source', 'f107At', 'f107FetchedAt', 'f107Low', 'f107High']
   const OLD_DAY = ['date', 'dateBJT', 'startTimeUTC', 'endTimeUTC', 'peakTimeUTC', 'startTimeBJT', 'endTimeBJT',
     'peakTimeBJT', 'durationSec', 'durationStr', 'peakSeparation', 'peakCNdeg', 'thresholdDeg',
     'intensity', 'intensityClass', 'isPeak']
@@ -308,4 +310,97 @@ const fakeSource = (lonDeg, span) => ({
   console.log(`  耗时：定轨 ${msSlot.toFixed(1)} ms/季 · 星历首算 ${msFirst.toFixed(0)} ms · 缓存命中 ${msHit.toFixed(0)} ms`)
 }
 
-console.log('sunOutageModes: 星历档 / 纯几何档 / ctx 缓存 / 返回形状 / 轨道源缝 全部通过')
+/* ── 11. v5.3 太阳亮温：野边山回归谱本身 ──────────────────────────────────
+ * 系数是终值（docs/research/solar-flux-fit/coef.json），这里只验模型的三条硬性质：
+ * 恒等锚点、对 RSTN 独立台站的交叉验证、以及固定 F10.7 下 T_b 随频率单调下降。
+ */
+const D_1AU = 2 * 0.26656                        // 1 AU 太阳视直径 °（与引擎同一常量）
+{
+  for (const F of [67, 100, 120, 200]) {
+    assert.ok(Math.abs(solarFluxAt(2.8, F) - F) < 1e-9, `2.8 GHz 恒等锚点破了：F=${F} → ${solarFluxAt(2.8, F)}`)
+  }
+
+  // RSTN 三站 2026-09-16 正午实测（附录 A 表 3；F10.7 同日 DRAO 观测约 100）
+  const RSTN = [[4.995, (147 + 141 + 131) / 3], [8.8, (270 + 258) / 2], [15.4, 542]]
+  for (const [f, obs] of RSTN) {
+    const dev = Math.abs(solarFluxAt(f, 100) / obs - 1)
+    assert.ok(dev <= 0.06, `${f} GHz 对 RSTN 实测偏差 ${(dev * 100).toFixed(1)}% > 6%`)
+  }
+
+  for (const F of [67, 120, 200]) {
+    let prev = Infinity, bad = 0
+    for (let f = 1; f <= 300; f += 0.05) {
+      const t = solarTempAt(f, F, D_1AU)
+      if (t > prev + 1e-9) { bad = f; break }
+      prev = t
+    }
+    assert.equal(bad, 0, `F=${F} 时 T_b 在 ${bad} GHz 处不再单调下降`)
+  }
+
+  // 17 GHz 以上的锚定：35 / 80 GHz 用的是 NoRP 手册的标定常量，静日亮温必须落回文献量级
+  const t17 = solarTempAt(17, 67, D_1AU), t35 = solarTempAt(35, 67, D_1AU), t300 = solarTempAt(300, 67, D_1AU)
+  assert.ok(t17 > 10000 && t17 < 10800, '静日 17 GHz 亮温 ' + t17.toFixed(0))
+  assert.ok(Math.abs(t35 - 9380) <= 50, '静日 35 GHz 亮温 ' + t35.toFixed(0))
+  assert.ok(t300 > 6000 && t300 < 6300, '静日 300 GHz 亮温 ' + t300.toFixed(0))
+  console.log(`  v5.3 谱：静日 17/35/300 GHz = ${t17.toFixed(0)} / ${t35.toFixed(0)} / ${t300.toFixed(0)} K，RSTN 三频偏差 ≤ 6%`)
+}
+
+/* ── 12. legacy 档与改前逐位相同 ────────────────────────────────────────
+ * 三个数是改造【之前】从当前代码里跑出来的（f = 3.95 / 12.5 / 19.45，F10.7 = 120，视直径 0.533°）。
+ * 金标准 sunOutage.test.mjs 整批用例靠的就是这条路径，这里把内核单独钉一遍。
+ */
+{
+  const PIN = [[3.95, 42225.483066733854], [12.5, 10554.607261465262], [19.45, 8055.10335116402]]
+  for (const [f, k] of PIN) {
+    assert.equal(solarTempLegacy(f, 120, 0.533), k, `legacy ${f} GHz`)
+    assert.equal(solarTempAt(f, 120, 0.533, 'legacy'), k, `solarTempAt legacy 分派 ${f} GHz`)
+  }
+  const a = calculateSunOutage({ ...BASE, satLon: SLOT, solarModel: 'legacy' })
+  const b = calculateSunOutage({ ...BASE, satLon: SLOT, solarModel: 'legacy', f107: 120 })
+  assert.equal(a.model.solarModel, 'legacy')
+  assert.deepEqual(JSON.parse(JSON.stringify(a)), JSON.parse(JSON.stringify(b)), 'legacy 档下显式传 F10.7=120 与不传应逐位相同')
+}
+
+/* ── 13. 缺省档 vs legacy：Ku 12.5 GHz 高 15~40%，F10.7 出处如实回显 ──── */
+{
+  const norp = solarTempAt(12.5, 120, D_1AU)
+  const leg = solarTempLegacy(12.5, 120, D_1AU)
+  const up = norp / leg - 1
+  assert.ok(up > 0.15 && up < 0.40, `Ku 12.5 GHz 缺省档比 legacy 高 ${(up * 100).toFixed(1)}%（应在 15~40%）`)
+
+  const r = calculateSunOutage({ ...BASE, satLon: SLOT })
+  assert.equal(r.model.solarModel, 'norp', '缺省档应是 norp')
+  assert.equal(r.model.f107Source, 'default', '没传 f107Meta 时来源是 default')
+  assert.equal(r.model.f107, 120)
+  assert.equal(r.model.f107At, null)
+  assert.equal(r.model.f107Low, null)
+
+  const META = { source: 'predicted', at: '2026-09', fetchedAt: '2026-09-21T03:00:00.000Z', low: 120.4, high: 137 }
+  const m = calculateSunOutage({ ...BASE, satLon: SLOT, f107: 129.6, f107Meta: META })
+  assert.equal(m.model.f107, 129.6)
+  assert.equal(m.model.f107Source, META.source)
+  assert.equal(m.model.f107At, META.at)
+  assert.equal(m.model.f107FetchedAt, META.fetchedAt)
+  assert.equal(m.model.f107Low, META.low)
+  assert.equal(m.model.f107High, META.high)
+
+  // F10.7 真的进了算式：谷底 / 峰年的太阳亮温与窗口天数都该跟着走
+  const lo = calculateSunOutage({ ...BASE, satLon: SLOT, f107: 70 })
+  const hi = calculateSunOutage({ ...BASE, satLon: SLOT, f107: 200 })
+  assert.ok(hi.model.solarTemp > lo.model.solarTemp, 'F10.7 高的那档太阳亮温应更高')
+  assert.ok(hi.totalDays >= lo.totalDays, 'F10.7 高的那档事件天数不应更少')
+  console.log(`  缺省档：Ku 12.5 GHz 比 legacy 高 ${(up * 100).toFixed(1)}%；F10.7 70→200 时 ${lo.model.solarTemp}→${hi.model.solarTemp} K、${lo.totalDays}→${hi.totalDays} 天`)
+}
+
+/* ── 14. equinoxDateOf：与 calculateSunOutage 回的分点日逐字相同 ───────── */
+{
+  for (const y of [2019, 2026, 2033]) {
+    for (const s of ['vernal', 'autumnal']) {
+      const r = calculateSunOutage({ ...BASE, satLon: SLOT, year: y, season: s })
+      assert.equal(equinoxDateOf(y, s), r.equinoxDate, `${y} ${s} 分点日`)
+    }
+  }
+  console.log(`  equinoxDateOf：2019 / 2026 / 2033 两季共 6 个分点日与引擎逐字相同`)
+}
+
+console.log('sunOutageModes: 星历档 / 纯几何档 / ctx 缓存 / 返回形状 / 轨道源缝 / v5.3 太阳亮温 全部通过')

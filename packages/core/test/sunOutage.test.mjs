@@ -3,6 +3,10 @@
 // 判据：天数与日期逐日相同；起止 / 峰值时刻差 ≤ 1 s（求根容差 0.5 s 的量级）；时长差 ≤ 1 s；
 //       峰值恶化差 ≤ 0.01 dB；分点日门限角 / 波束宽逐位相同（这两项不经插值）。
 // 另验：卫星在地平线下报错不算；长事件季（小口径 C 频段）预筛不会把事件筛没、逐日连续。
+// ★ 一律显式传 solarModel:'legacy'：夹具是 2026-09-07 用 v5.1 太阳亮温抓的，而 v5.3 换了太阳
+//   亮温模型（野边山逐日流量对 F10.7 的回归谱，已是缺省档），门限角与峰值恶化必然随之变。
+//   本文件钉的是【采样 / 插值路径】逐位不变，不是太阳模型 —— 换档就得换夹具，那会把这条
+//   金标准的意义一起换掉。新模型自身的断言在 sunOutageModes.test.mjs ⑪~⑬。
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
@@ -21,7 +25,7 @@ for (const g of G) {
   const { days, season, thr, bw, maxDur, ...k } = g
   const tag = `${k.lat},${k.lon}→${k.satLon} ${k.diameter}m ${season}`
   const t0 = process.hrtime.bigint()
-  const r = calculateSunOutage({ ...k, degThreshold: 1, year: 2026, season })
+  const r = calculateSunOutage({ ...k, degThreshold: 1, year: 2026, season, solarModel: 'legacy' })
   ms += Number(process.hrtime.bigint() - t0) / 1e6
   assert.equal(r.error, false, tag)
   assert.equal(r.dailyResults.length, days.length, tag + ' 天数')
@@ -43,11 +47,11 @@ for (const g of G) {
 }
 
 // 卫星在地平线下：报错，不出结果
-assert.equal(calculateSunOutage({ lat: 70, lon: 0, satLon: 180, diameter: 2.4, customFreq: 12.5, sysTemp: 150, year: 2026, season: 'vernal' }).error, true)
+assert.equal(calculateSunOutage({ lat: 70, lon: 0, satLon: 180, diameter: 2.4, customFreq: 12.5, sysTemp: 150, year: 2026, season: 'vernal', solarModel: 'legacy' }).error, true)
 
 // 长事件季：预筛不能把事件筛没，且事件日逐日连续（中间不许出现被误筛掉的空洞）
 {
-  const r = calculateSunOutage({ lat: 30, lon: 120, satLon: 110.5, diameter: 0.6, customFreq: 3.95, sysTemp: 80, year: 2026, season: 'autumnal' })
+  const r = calculateSunOutage({ lat: 30, lon: 120, satLon: 110.5, diameter: 0.6, customFreq: 3.95, sysTemp: 80, year: 2026, season: 'autumnal', solarModel: 'legacy' })
   assert.equal(r.error, false)
   assert.ok(r.totalDays >= 20, '0.6 m C 频段秋分季应有 20 天以上事件，实得 ' + r.totalDays)
   for (let i = 1; i < r.dailyResults.length; i++) {

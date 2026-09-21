@@ -854,8 +854,11 @@ ok('分享码往返出来的是新对象（深拷贝，不与源共用引用）'
     autumnal: core.calculateSunOutage(Object.assign({}, SUN, { season: 'autumnal' }))
   }
   const sum = sunOutageSummary(raw)
-  ok('日凌合计 = 逐日窗口时长之和（北京 2.4 m Ku → 春分 29.98 + 秋分 32.07 min）',
-    near(sum.vernal.minutes, 29.98, 1) && near(sum.autumnal.minutes, 32.07, 1),
+  // ★ 数值随引擎 v5.3 太阳亮温模型（野边山回归谱，缺省档）更新：Ku 12.5 GHz 的亮温比 v5.1 高
+  //   约 24%，门限角随之变大、窗口变长。这里直接调引擎、不经 IPC，测试环境查不到 F10.7，
+  //   故 F10.7 走引擎缺省 120（v5.1 那套恒 120，是 29.98 + 32.07）。
+  ok('日凌合计 = 逐日窗口时长之和（v5.3 模型 · 测试环境无 F10.7 数据时按 120；北京 2.4 m Ku → 春分 32.97 + 秋分 33.22 min）',
+    near(sum.vernal.minutes, 32.97, 1) && near(sum.autumnal.minutes, 33.22, 1),
     `${sum.vernal.minutes.toFixed(2)} + ${sum.autumnal.minutes.toFixed(2)}`)
   ok('日凌逐日窗口带 UTC 与北京时两套时刻（报告那张表直接照抄）',
     sum.vernal.rows.length === sum.vernal.days

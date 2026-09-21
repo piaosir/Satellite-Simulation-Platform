@@ -29,6 +29,31 @@
  *   指数 1.8 拟合公开静太阳测量（10.7GHz≈1e4 K、5GHz≈2e4 K、30GHz+→光球层），
  *   适用 3~50 GHz。F10.7 默认 120（周期均值；深谷~70，峰年可达 200+）。
  *   仍可传 solarTemp 直接覆盖（如需对齐第三方工具口径）。
+ *   ★ v5.3 起这一套整体降为 legacy 档（solarTempLegacy，一个数字都没改），缺省档见下。
+ *
+ * 太阳亮温 T_sun（v5.3，缺省档 solarModel:'norp'）：
+ *   病灶：v5.1 的 (2.8/f)^1.8 单一谱指数对 3~40 GHz 太陡 —— 与野边山逐日实测比（F10.7=120），
+ *   3.75 GHz 偏高 9%、Ku 12.5 GHz 偏低 19%、Ka 19.45 GHz 偏低 23%、Q 40 GHz 偏低 27%；
+ *   且 F10.7 恒取 120 与真实太阳活动无关（谷底~70、峰年 200+，同一副天线峰值恶化差 2 dB 量级）。
+ *   改法：不再由单一锚点外推，而是【逐频各自对 F10.7 回归】——
+ *     野边山射电偏振计（NoRP，国立天文台）1 / 2 / 3.75 / 9.4 / 17 GHz 逐日总流量，
+ *     与 DRAO Penticton F10.7 逐日观测值按日期配对（2004-10 ~ 2026-07，7325 天），
+ *     逐频稳健线性回归 S_f = a_f + b_f·F10.7（3σ 剔野点迭代 5 轮）→ SOLAR_ANCHORS。
+ *     2.8 GHz 是 F10.7 自身，恒等锚点（a=0, b=1）。锚点之间按 log S – log f 线性插值。
+ *   17 GHz 以上没有逐日数据：静日谱用 NoRP 自己的绝对标定常量锚定（手册 man_v04e §2：
+ *     35 / 80 GHz 的流量刻度即固定为 2400 / 9000 sfu 这两个静日值），换算成光学盘亮温
+ *     9 378 K / 6 731 K，与文献静太阳 8 mm ≈ 8 500~9 500 K、3.7 mm ≈ 6 500~7 500 K 相符；
+ *     80 GHz 以上按光球层 floor 6000 K 收敛（T_q(f) = 6000 + 731·80/f）。活动增量在 17 GHz
+ *     以上按【流量恒定】ΔS = b₁₇·(F − F_QUIET)（活动区自由-自由辐射平谱，回旋共振分量 20 GHz
+ *     以上消失），换成亮温即 ∝ f⁻²，35 GHz 处峰年也只有 +2.6%。
+ *   Ω_d 仍取【当日】光学盘，S 是「地球处观测流量」，两者随日地距离同比变化 —— 口径自洽，
+ *     不做 1 AU 归算（>80 GHz 那一段由 T_q 反算流量时用 1 AU 盘，与 T_q 的定义域一致）。
+ *   F10.7 由调用方（IPC 层）按目标日期从 NOAA SWPC 查好传进来（params.f107 / f107Meta）——
+ *     引擎不碰文件系统、不联网；查不到时才落到 F107_DEFAULT = 120。
+ *   精度：拟合残差 3.75 GHz σ≈2.5%、9.4 GHz 2.4%、17 GHz 2%；17 GHz 以上是锚定外推，
+ *     Ka ±10%、Q ±15%。RSTN 四个独立台站交叉验证（2695/4995/8800/15400 MHz）偏差 ≤ 5%。
+ *   legacy 档（solarModel:'legacy'）保留 v5.1 整套，一个数字都没改 —— 金标准
+ *     test/sunOutage.test.mjs 与任何要「与改前逐位一致」的场合走它。
  *
  * v5.2：星历档与纯几何档
  * - 星历档（params.orbit）：卫星位置不再当成理想静止轨道的常量，而是经 utils/orbitSource.js
@@ -478,6 +503,17 @@ function equinoxJDE(year, season) {
   return JDE0 + (0.00001 * S) / dL;
 }
 
+/**
+ * 分点日（UT 日期串 'YYYY-MM-DD'）—— 与 calculateSunOutage 里用的是同一条路径。
+ * IPC 层按「该季分点日」去取 F10.7 时用它，别在外面再抄一份分点公式。
+ */
+function equinoxDateOf(year, season) {
+  var s = season === 'vernal' ? 'vernal' : 'autumnal';
+  var jdut = equinoxJDE(year, s) - deltaT(year) / SECONDS_PER_DAY;
+  var d = jdToDate(jdut);
+  return fmtDate(d.y, d.m, d.d);
+}
+
 function periodicSum(T) {
   var terms = [
     [485,324.96,1934.136],[203,337.23,32964.467],[199,342.08,20.186],
@@ -551,17 +587,97 @@ function couplingAt(thetaDeg, thetaB, thetaD) {
 }
 
 /**
- * 太阳亮温 K（全日面均匀盘等效）：
+ * 太阳亮温 K（全日面均匀盘等效）· v5.1 原式，v5.3 起降为 legacy 档：
  *   T_b(2.8GHz) = F10.7·sfu·λ²/(2k·Ω_d) —— 由当日太阳视直径的立体角换算，
  *   与耦合计算共用同一盘径 → 小源区 ΔT∝流量，盘径选取误差自相抵消；
  *   T_b(f) = 6000 + (T_b(2.8)−6000)·(2.8/f)^1.8 谱外推。
+ * ★ 一个数字都不许改：金标准与「与改前逐位一致」的场合靠它。
  */
-function solarTempAt(freqGHz, f107, sunDiamDeg) {
+function solarTempLegacy(freqGHz, f107, sunDiamDeg) {
   var th = sunDiamDeg * RAD;
   var omega = Math.PI / 4 * th * th;                 // 均匀盘立体角 sr
   var lam = 0.299792458 / F_REF;                     // 2.8GHz 波长 m
   var t28 = f107 * SFU * lam * lam / (2 * KB * omega);
   return T_FLOOR + Math.max(0, t28 - T_FLOOR) * Math.pow(F_REF / freqGHz, SPEC_ALPHA);
+}
+
+/* ------------------------------------------------------------
+ * v5.3 缺省档：野边山（NoRP）1~17 GHz 逐日流量对 F10.7 的回归谱
+ * 系数为终值，出处 docs/research/solar-flux-fit/（fit.mjs / coef.json），别重新拟合。
+ * ---------------------------------------------------------- */
+// S_f(F) = a_f + b_f·F（sfu；F 为 DRAO 观测的 F10.7）。2.8 GHz 即 F10.7 自身，恒等锚点。
+var SOLAR_ANCHORS = [
+  { f: 1.0,  a: -1.979,   b: 0.70334 },
+  { f: 2.0,  a: -10.643,  b: 0.94073 },
+  { f: 2.8,  a: 0,        b: 1       },
+  { f: 3.75, a: 17.318,   b: 0.88345 },
+  { f: 9.4,  a: 210.379,  b: 0.68094 },
+  { f: 17.0, a: 592.284,  b: 0.45292 }
+];
+var F_QUIET = 67;                 // 静日 F10.7（太阳周谷底典型值）
+var B_HIGH = 0.45292;             // 17 GHz 以上的活动增量斜率：沿用 17 GHz 的 b（流量恒定外推）
+var SUN_DIAM_1AU = 2 * 0.26656;   // 1 AU 处太阳视直径 °（959.63″ 视半径的两倍，与扫描里同一常量）
+var OMEGA_1AU = Math.PI / 4 * (SUN_DIAM_1AU * RAD) * (SUN_DIAM_1AU * RAD);   // 1 AU 光学盘立体角 sr
+// 静日谱在 17 / 35 / 80 GHz 的三个锚（35 / 80 来自 NoRP 手册 man_v04e §2 的绝对标定常量）
+var S_Q_HIGH = [
+  { f: 17, s: SOLAR_ANCHORS[5].a + SOLAR_ANCHORS[5].b * F_QUIET },
+  { f: 35, s: 2400 },
+  { f: 80, s: 9000 }
+];
+var T_Q_80 = 9000 * SFU * (0.299792458 / 80) * (0.299792458 / 80) / (2 * KB * OMEGA_1AU);   // ≈ 6731 K
+
+/** 两个锚点之间按 log S – log f 线性插值 */
+function logInterp(f, f1, s1, f2, s2) {
+  var t = Math.log(f / f1) / Math.log(f2 / f1);
+  return Math.exp(Math.log(s1) + t * (Math.log(s2) - Math.log(s1)));
+}
+
+/**
+ * 太阳全日面射电流量 S(f, F10.7)，单位 sfu。
+ * f ≤ 17 GHz：逐频回归锚点（S = a + b·F）之间 log-log 插值；f < 1 GHz 取 1 GHz 锚点值。
+ * f > 17 GHz：静日谱 S_q(f)（≤80 GHz 走 35 / 80 两个标定锚，>80 GHz 由 T_q(f) 反算）
+ *             + 活动增量 b₁₇·(F − F_QUIET)（流量恒定，换成亮温即 ∝ f⁻²）。
+ */
+function solarFluxAt(fGHz, f107) {
+  var F = Number(f107);
+  if (!(F > 0)) F = F107_DEFAULT;
+  var f = Number(fGHz);
+  if (!(f > 0)) f = F_REF;
+  var sOf = function (k) { return SOLAR_ANCHORS[k].a + SOLAR_ANCHORS[k].b * F; };
+  var last = SOLAR_ANCHORS.length - 1;
+  if (f <= SOLAR_ANCHORS[0].f) return Math.max(0, sOf(0));          // 1 GHz 以下：取 1 GHz 锚点值
+  if (f <= SOLAR_ANCHORS[last].f) {
+    for (var i = 1; i <= last; i++) {
+      if (f <= SOLAR_ANCHORS[i].f) {
+        return Math.max(0, logInterp(f, SOLAR_ANCHORS[i - 1].f, Math.max(1e-6, sOf(i - 1)),
+                                        SOLAR_ANCHORS[i].f,     Math.max(1e-6, sOf(i))));
+      }
+    }
+  }
+  var sq;
+  if (f <= S_Q_HIGH[2].f) {
+    var j = f <= S_Q_HIGH[1].f ? 1 : 2;
+    sq = logInterp(f, S_Q_HIGH[j - 1].f, S_Q_HIGH[j - 1].s, S_Q_HIGH[j].f, S_Q_HIGH[j].s);
+  } else {
+    // 80 GHz 以上：静日亮温向光球层 floor 收敛 → 反算成流量（1 AU 盘，与 T_q 的定义域一致）
+    var lamQ = 0.299792458 / f;
+    var tq = T_FLOOR + (T_Q_80 - T_FLOOR) * (S_Q_HIGH[2].f / f);
+    sq = tq * 2 * KB * OMEGA_1AU / (lamQ * lamQ * SFU);
+  }
+  return Math.max(0, sq + B_HIGH * (F - F_QUIET));
+}
+
+/**
+ * 太阳亮温 K（全日面均匀盘等效）：T_b = S(f, F10.7)·sfu·λ²/(2k·Ω_d)。
+ * Ω_d 取【当日】太阳视直径的立体角，与耦合计算共用同一盘径（小源区流量守恒，盘径误差自相抵消）。
+ * model：'legacy' 走 v5.1 原式（逐位不变），其余一律 v5.3 回归谱。
+ */
+function solarTempAt(freqGHz, f107, sunDiamDeg, model) {
+  if (model === 'legacy') return solarTempLegacy(freqGHz, f107, sunDiamDeg);
+  var th = sunDiamDeg * RAD;
+  var omega = Math.PI / 4 * th * th;                 // 当日均匀盘立体角 sr
+  var lam = 0.299792458 / freqGHz;                   // 观测频率波长 m
+  return solarFluxAt(freqGHz, f107) * SFU * lam * lam / (2 * KB * omega);
 }
 
 /**
@@ -673,9 +789,12 @@ function calculateSunOutage(params, ctx) {
   var bi = BAND_PARAMS[band] || BAND_PARAMS['Ku'];
   var freq = customFreq || bi.freq;
   var sysTemp = params.sysTemp > 0 ? Number(params.sysTemp) : bi.sysTemp;
-  // 太阳亮温：显式 solarTemp 覆盖 > F10.7 连续模型（默认 F10.7=120，随当日太阳视直径逐日换算）
+  // 太阳亮温：显式 solarTemp 覆盖 > F10.7 连续模型（F10.7 由 IPC 层按目标日期查好传进来，
+  // 引擎自己不知道该日该取多少 —— 没传才落到 F107_DEFAULT = 120）。
   var solarTempOverride = params.solarTemp > 0 ? Number(params.solarTemp) : null;
   var f107 = params.f107 > 0 ? Number(params.f107) : F107_DEFAULT;
+  var solarModel = params.solarModel === 'legacy' ? 'legacy' : 'norp';
+  var f107Meta = (params.f107Meta && typeof params.f107Meta === 'object') ? params.f107Meta : null;
   // 定窗判据：C/N 恶化门限 dB（默认 1 dB，行业预报惯例口径）。
   // 旧参数 cnThreshold 曾是"峰值恶化过滤器"，语义保留为额外过滤（通常不再需要）。
   var degTh = params.degThreshold > 0 ? Number(params.degThreshold) : 1.0;
@@ -686,8 +805,7 @@ function calculateSunOutage(params, ctx) {
   var eqJDE = equinoxJDE(year, season);
   var eqJDut = eqJDE - dT / SECONDS_PER_DAY;
   var seasonName = season === 'vernal' ? '春分' : '秋分';
-  var eqD = jdToDate(eqJDut);
-  var equinoxDateStr = fmtDate(eqD.y, eqD.m, eqD.d);
+  var equinoxDateStr = equinoxDateOf(year, season);
   var eqDayJD = Math.floor(eqJDut - 0.5) + 0.5;
 
   // ECEF 常量（不随时间变化）
@@ -746,7 +864,7 @@ function calculateSunOutage(params, ctx) {
   // 分点日正午的模型快照（供汇总显示：3dB 波束宽 / 门限角 / 主轴对准恶化上限）
   var midSun = solarPosition(eqDayJD + 0.5 + dT / SECONDS_PER_DAY);
   var midSunRad = 0.26656 / midSun.R;
-  var midTsun = solarTempOverride != null ? solarTempOverride : solarTempAt(freq, f107, 2 * midSunRad);
+  var midTsun = solarTempOverride != null ? solarTempOverride : solarTempAt(freq, f107, 2 * midSunRad, solarModel);
   var midModel = outageModel(freq, diameter, sysTemp, midTsun, degTh, midSunRad, criterion);
 
   var scanDays = 30;
@@ -774,7 +892,7 @@ function calculateSunOutage(params, ctx) {
     var noonJDE = dayJD + 0.5 + dT / SECONDS_PER_DAY;
     var noonSun = solarPosition(noonJDE);
     var sunRad = 0.26656 / noonSun.R;       // 度
-    var tSun = solarTempOverride != null ? solarTempOverride : solarTempAt(freq, f107, 2 * sunRad);
+    var tSun = solarTempOverride != null ? solarTempOverride : solarTempAt(freq, f107, 2 * sunRad, solarModel);
     var model = outageModel(freq, diameter, sysTemp, tSun, degTh, sunRad, criterion);
     if (model.thetaTh <= 0) continue;   // 当日即使主轴对准，恶化也不足门限 → 无事件
 
@@ -887,6 +1005,13 @@ function calculateSunOutage(params, ctx) {
       solarTemp:     Math.round(midTsun),                                    // 分点日实际采用的太阳亮温
       solarTempSource: solarTempOverride != null ? 'manual' : 'f107',
       f107:          solarTempOverride != null ? null : f107,
+      // v5.3：太阳亮温模型档与 F10.7 的出处（IPC 层查好后原样传进来，这里只回显，供读数与报告）
+      solarModel:    solarModel,
+      f107Source:    (f107Meta && f107Meta.source) || 'default',
+      f107At:        (f107Meta && f107Meta.at != null) ? f107Meta.at : null,
+      f107FetchedAt: (f107Meta && f107Meta.fetchedAt != null) ? f107Meta.fetchedAt : null,
+      f107Low:       (f107Meta && Number.isFinite(Number(f107Meta.low))) ? Number(f107Meta.low) : null,
+      f107High:      (f107Meta && Number.isFinite(Number(f107Meta.high))) ? Number(f107Meta.high) : null,
       diameter:      diameter,
       beamWidth3dB:  Number(midModel.thetaB.toFixed(3)),
       sunDiameter:   Number(midModel.thetaD.toFixed(3)),
@@ -972,5 +1097,10 @@ module.exports = {
   BAND_PARAMS: BAND_PARAMS,
   // v5.1 模型内核单独导出（测试互验 / UI 预览用）
   solarTempAt: solarTempAt,
+  // v5.3：回归谱流量与 legacy 档单独导出（测试逐位对拍 / 交叉验证用）
+  solarFluxAt: solarFluxAt,
+  solarTempLegacy: solarTempLegacy,
+  // 分点日期（IPC 层按目标日取 F10.7 用；别在外面再抄一份分点公式）
+  equinoxDateOf: equinoxDateOf,
   couplingAt: couplingAt
 };

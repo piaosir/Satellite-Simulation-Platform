@@ -172,6 +172,11 @@ module.exports = {
   // 一站一星的春秋两季（批量入口）：seasons 缺省两季、未选的季回 null；ctx 让一批站共用轨道源与轨迹表
   calculateSunOutageSeasons: sunOutage.calculateSunOutageSeasons,
   sunOutageBands: sunOutage.BAND_PARAMS,
+  // 分点日（IPC 层按目标日取 F10.7 用；别在外面再抄一份分点公式）
+  equinoxDateOf: sunOutage.equinoxDateOf,
+  // v5.3 太阳亮温模型内核（野边山回归谱流量 / 亮温 / legacy 档），供测试与主进程互验
+  solarFluxAt: sunOutage.solarFluxAt,
+  solarTempAt: sunOutage.solarTempAt,
   // 轨道源（日凌星历档 / 将来的外部星历共用的唯一接口，见 utils/orbitSource.js）
   orbitSource: require('./utils/orbitSource.js').orbitSource,
   buildIcs: icsBuilder.buildIcs,
