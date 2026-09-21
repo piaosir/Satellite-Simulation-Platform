@@ -71,6 +71,22 @@ ok(T.parseEpochLoose('21 Sep 2026 00:00:00.000') === ep, 'parseEpochLoose 认 UT
 near(T.parseEpochLoose('2451545.0'), Date.UTC(2000, 0, 1, 12), 1e-6, 'parseEpochLoose 认 JD')
 ok(Number.isNaN(T.parseEpochLoose('60.0')), 'parseEpochLoose 不把 EpSec 当 JD')
 
+/* ===== ③b 年积日写法 YYYY-DDDThh:mm:ss（CCSDS 502.0-B 明文允许） ===== */
+section('年积日历元')
+ok(T.parseIsoYmd('2026-001T00:00:00.000') === Date.UTC(2026, 0, 1), '年积日 001 = 1 月 1 日')
+ok(T.parseIsoYmd('2026-264T12:34:56.123456') === Date.UTC(2026, 8, 21, 12, 34, 56) + 123.456, '年积日 264 = 2026-09-21，微秒照收')
+ok(T.parseIsoYmd('2026-264 12:34:56Z') === Date.UTC(2026, 8, 21, 12, 34, 56), '年积日空格分隔 + Z')
+ok(T.parseIsoYmd('2026-264') === Date.UTC(2026, 8, 21), '年积日只有日期')
+ok(T.parseIsoYmd('2024-366T12:00:00') === Date.UTC(2024, 11, 31, 12), '闰年 366 合法')
+ok(Number.isNaN(T.parseIsoYmd('2023-366T12:00:00')), '平年 366 非法')
+ok(Number.isNaN(T.parseIsoYmd('2026-000T00:00:00')), '年积日 000 非法')
+ok(Number.isNaN(T.parseIsoYmd('2026-367T00:00:00')), '年积日 367 非法')
+// 与 YYYY-MM-DD 不会撞：年积日恰好一个连字符 + 三位数字，月日写法是两个连字符
+ok(T.parseIsoYmd('2026-01-01') === Date.UTC(2026, 0, 1), '月日写法不受影响')
+ok(Number.isNaN(T.parseIsoYmd('2026-12')), '「年-月」不当年积日解')
+ok(T.parseEpochLoose('2026-264T12:34:56') === Date.UTC(2026, 8, 21, 12, 34, 56), 'parseEpochLoose 认年积日')
+ok(T.parseTimeToken('2026-264T00:00:00', 'ISO-YMD', ep) === Date.UTC(2026, 8, 21), 'parseTimeToken ISO-YMD 也认年积日')
+
 /* ===== ④ GPS 周 ===== */
 section('GPS 周')
 // 第一次 GPS 周卷绕（1023 -> 0）发生在 1999-08-21/22 午夜：周 1024 第 0 秒 = 1999-08-22 00:00:00 GPS。

@@ -161,26 +161,44 @@ for (const fmt of FORMATS) {
 
 /* ===== ⑦ OEM：多段 / COMMENT 无等号 / 协方差 ===== */
 section('OEM 细节')
-function makeOemKvn(segs, extra) {
-  const L = ['CCSDS_OEM_VERS = 2.0', 'COMMENT 这一行没有等号，是 KVN 的老坑', 'CREATION_DATE = ' + T.formatCcsds(T0), 'ORIGINATOR = TEST']
+function makeOemKvn(segs, extra, tfmt) {
+  const TF = tfmt || T.formatCcsds                 // 历元写法（缺省 yyyy-mm-dd，另一档是年积日）
+  const L = ['CCSDS_OEM_VERS = 2.0', 'COMMENT 这一行没有等号，是 KVN 的老坑', 'CREATION_DATE = ' + TF(T0), 'ORIGINATOR = TEST']
   for (const sg of segs) {
     L.push('', 'META_START', 'COMMENT 段内也可能有 COMMENT', 'OBJECT_NAME = ' + (sg.name || 'SAT-A'), 'OBJECT_ID = ' + (sg.id || '2026-001A'),
       'CENTER_NAME = EARTH', 'REF_FRAME = ' + (sg.frame || 'EME2000'), 'TIME_SYSTEM = ' + (sg.tsys || 'UTC'),
-      'START_TIME = ' + T.formatCcsds(T0 + sg.from * 1000), 'STOP_TIME = ' + T.formatCcsds(T0 + sg.to * 1000),
+      'START_TIME = ' + TF(T0 + sg.from * 1000), 'STOP_TIME = ' + TF(T0 + sg.to * 1000),
       'INTERPOLATION = LAGRANGE', 'INTERPOLATION_DEGREE = 5', 'META_STOP', '')
     for (let s = sg.from; s <= sg.to; s += STEP) {
       const q = truth(s)
-      L.push([T.formatCcsds(T0 + s * 1000), f9(q.x), f9(q.y), f9(q.z), f9(q.vx), f9(q.vy), f9(q.vz)].join(' '))
+      L.push([TF(T0 + s * 1000), f9(q.x), f9(q.y), f9(q.z), f9(q.vx), f9(q.vy), f9(q.vz)].join(' '))
     }
-    if (extra === 'cov') L.push('COVARIANCE_START', 'EPOCH = ' + T.formatCcsds(T0), '1.0 2.0 3.0', '4.0 5.0 6.0', 'COVARIANCE_STOP')
+    if (extra === 'cov') L.push('COVARIANCE_START', 'EPOCH = ' + TF(T0), '1.0 2.0 3.0', '4.0 5.0 6.0', 'COVARIANCE_STOP')
   }
   return L.join('\n') + '\n'
+}
+// CCSDS 502.0-B 的另一种历元写法：yyyy-dddThh:mm:ss.ffffff（年积日）。整份文件都写成这个体例的
+// OEM 真实存在，原来 parseIsoYmd 认不出 → 一条状态矢量都读不到，整份被拒「没有可用的状态矢量段」。
+function fmtCcsdsDoy(ms) {
+  const base = Math.floor(ms / 1000) * 1000
+  const d = new Date(base)
+  const ddd = Math.round((Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) - Date.UTC(d.getUTCFullYear(), 0, 1)) / 86400000) + 1
+  const p = (v, w) => String(v).padStart(w, '0')
+  return d.getUTCFullYear() + '-' + p(ddd, 3) + 'T' + p(d.getUTCHours(), 2) + ':' + p(d.getUTCMinutes(), 2) + ':' +
+    p(d.getUTCSeconds(), 2) + '.' + p(Math.round((ms - base) * 1000), 6)
 }
 const one = E.parseEphemeris(makeOemKvn([{ from: 0, to: 600 }]))
 ok(one.format === 'ccsds-oem-kvn' && !one.errors.length, 'OEM KVN 单段解析', JSON.stringify(one.errors))
 ok(one.sats.length === 1 && one.sats[0].t.length === 11, 'OEM KVN 单段 11 点', String(one.sats[0] && one.sats[0].t.length))
 ok(one.sats[0].name === 'SAT-A' && one.sats[0].objectId === '2026-001A', 'OBJECT_NAME / OBJECT_ID')
 ok(one.sats[0].interp.samples === 6, 'INTERPOLATION_DEGREE 5 -> 6 点')
+// ★ 年积日体例：整份 OEM（CREATION_DATE / START_TIME / STOP_TIME / 每一行状态矢量）都写成 yyyy-dddT…
+const doyOem = E.parseEphemeris(makeOemKvn([{ from: 0, to: 600 }], null, fmtCcsdsDoy))
+ok(/^\S*2026-264T/m.test(makeOemKvn([{ from: 0, to: 600 }], null, fmtCcsdsDoy).split('\n').find((l) => /^\d{4}-/.test(l)) || ''),
+  '夹具确实写成年积日（2026-264 = 2026-09-21）')
+ok(doyOem.format === 'ccsds-oem-kvn' && !doyOem.errors.length, '年积日体例的 OEM 解析无错', JSON.stringify(doyOem.errors))
+ok(doyOem.sats.length === 1 && doyOem.sats[0].t.length === 11, '年积日体例的 OEM 读到 11 点', String(doyOem.sats[0] && doyOem.sats[0].t.length))
+ok(doyOem.sats[0].t.every((v, i) => v === one.sats[0].t[i]), '年积日与 yyyy-mm-dd 两种写法解出同一批时刻')
 const covOem = E.parseEphemeris(makeOemKvn([{ from: 0, to: 600 }], 'cov'))
 ok(covOem.sats[0].t.length === 11, '协方差块跳过，点数不变', String(covOem.sats[0].t.length))
 const twoSeg = E.parseEphemeris(makeOemKvn([{ from: 0, to: 600 }, { from: 3600, to: 4200 }]))

@@ -96,10 +96,23 @@ function parseUtcg(s) {
   const sec = parseFloat(m[6])
   return Date.UTC(+m[3], mon, +m[1], +m[4], +m[5], 0) + sec * 1000
 }
-// ISO-YMD：yyyy-mm-ddThh:mm:ss.sss（T 可为空格，尾部 Z 可有可无；一律按所在时标读，不做时区偏移）
+// 年积日：yyyy-dddThh:mm:ss.sss（CCSDS 502.0-B 与 OEM 里明文允许的另一种历元写法）。
+// 与 yyyy-mm-dd 不会撞：年积日只有一个连字符、日序恰好三位数字，月日写法有两个连字符。
+// ddd 范围 1–366，366 只在闰年合法（不校验的话 2023-366 会被静悄悄算成 2024-01-01）。
+function parseIsoDoy(s) {
+  const m = /^\s*(\d{4})-(\d{3})(?:[T ](\d{1,2}):(\d{1,2})(?::(\d{1,2}(?:\.\d+)?))?)?\s*Z?\s*$/.exec(String(s == null ? '' : s))
+  if (!m) return NaN
+  const y = +m[1], ddd = +m[2]
+  const leap = (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0
+  if (ddd < 1 || ddd > (leap ? 366 : 365)) return NaN
+  const sec = m[5] === undefined ? 0 : parseFloat(m[5])
+  return Date.UTC(y, 0, 1, +(m[3] || 0), +(m[4] || 0), 0) + (ddd - 1) * DAY_MS + sec * 1000
+}
+// ISO-YMD：yyyy-mm-ddThh:mm:ss.sss（T 可为空格，尾部 Z 可有可无；一律按所在时标读，不做时区偏移）。
+// 年积日写法一并收（同一入口，调用方不必分支）。
 function parseIsoYmd(s) {
   const m = /^\s*(\d{4})-(\d{1,2})-(\d{1,2})(?:[T ](\d{1,2}):(\d{1,2})(?::(\d{1,2}(?:\.\d+)?))?)?\s*Z?\s*$/.exec(String(s == null ? '' : s))
-  if (!m) return NaN
+  if (!m) return parseIsoDoy(s)
   const sec = m[6] === undefined ? 0 : parseFloat(m[6])
   return Date.UTC(+m[1], +m[2] - 1, +m[3], +(m[4] || 0), +(m[5] || 0), 0) + sec * 1000
 }
@@ -182,7 +195,7 @@ module.exports = {
   LEAP_SECONDS, SYSTEMS, TT_MINUS_TAI, TAI_MINUS_GPS, GPS_EPOCH_MS, WEEK_MS, MONTHS, DAY_MS,
   taiMinusUtc, utcMsFrom, msInSystem,
   jdFromMs, msFromJd, julianCenturiesTT,
-  parseUtcg, parseIsoYmd, parseJDate, parseTimeToken, parseEpochLoose,
+  parseUtcg, parseIsoYmd, parseIsoDoy, parseJDate, parseTimeToken, parseEpochLoose,
   gpsWeekSecToUtcMs, unrollGpsWeek,
   formatUtcg, formatCcsds
 }
