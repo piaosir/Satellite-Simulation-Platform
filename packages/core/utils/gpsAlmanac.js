@@ -96,7 +96,7 @@ function parseYuma(text) {
 }
 
 /* ===================== SEM ===================== */
-// 行 1：N 记录数 名字；行 2：周 toa；每星依次 13 个字段（PRN / SVN / URA / e / δi / Ω̇ / √A /
+// 行 1：N 记录数 名字；行 2：周 toa；每星依次 14 个字段（PRN / SVN / URA / e / δi / Ω̇ / √A /
 // Ω₀ / ω / M₀ / af0 / af1 / health / config）—— 逐行或多值一行都有人写，故整份按数值流读。
 function parseSem(text) {
   const warnings = [], errors = [], out = []
@@ -111,10 +111,22 @@ function parseSem(text) {
     errors.push('SEM 头两行无法解析（应为「记录数 名字」与「周 周内秒」）')
     return { sats: out, errors, warnings }
   }
-  // 其后全部数值按流读：每 13 个一颗星（config 是第 14 个，某些产品缺省，故按 13 取、多的跳过）
+  // 其后全部数值按流读：每 14 个一颗星。
+  // ★ 别按 13 切：ICD-GPS-240 的记录末尾还有 config，按 13 切的话数值流从第 2 颗起整体错位
+  //   （第 2 颗的 PRN 读到上一颗的 config），而第 1 颗照样对、头里的记录数也兜不住
+  //   （floor(N·14/13) ≥ N，条数校验不报警），症状是「导进来的 GPS 星位置全不对」。
+  // 兼容 13 字段的老变体（个别产品不写 config）：只在数值流长度【恰好】等于头里声明的记录数 × 13
+  //   时才退回 13；两档都对不上按 14 走并告警。
   const nums = []
   for (let i = 2; i < lines.length; i++) for (const t of lines[i].trim().split(/\s+/)) { const v = Number(t); if (Number.isFinite(v)) nums.push(v) }
-  const PER = 13
+  let PER = 14
+  if (Number.isFinite(count) && count > 0) {
+    if (nums.length === count * 13) PER = 13
+    else if (nums.length !== count * 14) {
+      warnings.push('记录数与字段数对不上（头里声明 ' + count + ' 条，数值流共 ' + nums.length +
+        ' 个数，既不是 ' + count * 14 + ' 也不是 ' + count * 13 + '），按每颗 14 个数切')
+    }
+  }
   const have = Math.floor(nums.length / PER)
   if (!have) { errors.push('SEM 里没有解析到任何卫星记录'); return { sats: out, errors, warnings } }
   if (Number.isFinite(count) && have < count) warnings.push('头里声明 ' + count + ' 条，实得 ' + have)
@@ -131,6 +143,7 @@ function parseSem(text) {
       argp: f[8] * SEMI / DEG,
       m0: f[9] * SEMI / DEG,
       af0: f[10], af1: f[11], health: Math.round(f[12]),
+      config: PER >= 14 ? Math.round(f[13]) : null,
       week, toa
     })
   }
@@ -203,10 +216,13 @@ function parseAlmanac(text, opts) {
     if (!(a.sqrtA > 0) || !Number.isFinite(a.e) || !Number.isFinite(a.i)) { warnings.push('PRN ' + a.prn + '：根数不全，已跳过'); continue }
     const w = Number.isFinite(a.week) ? (a.week > 1023 ? a.week : T.unrollGpsWeek(a.week, o.refMs)) : weekFull
     const rec = toOmmRecord(a, w, o)
-    // 年历自带的 Ω̇ 与 J2 理论值对不上 5% 以上 → 告警（多半是单位或半圆换算弄错了）
+    // 年历自带的 Ω̇ 与 J2 理论值对不上 15% 以上 → 告警。
+    // ★ 门限不能按 5% 给：raanRateJ2 只有 J2 一项，真实广播年历的 Ω̇ 是定轨拟合值、含日月摄动，
+    //   32 颗一份的实测（CelesTrak week0352）里最大差 7.75%、6 颗超 5%、无一超 10% —— 5% 会把
+    //   正常年历整片刷成告警。15% 留出一倍余量，仍足以拦住单位 / 半圆换算错（那会差一个量级）。
     if (Number.isFinite(a.omegaDot) && a.omegaDot !== 0) {
       const theo = raanRateJ2(rec.aKm, a.e, a.i)
-      if (theo !== 0 && Math.abs((a.omegaDot - theo) / theo) > 0.05) {
+      if (theo !== 0 && Math.abs((a.omegaDot - theo) / theo) > 0.15) {
         warnings.push('PRN ' + a.prn + '：年历的 Ω̇ 与 J2 理论值差 ' +
           (Math.abs((a.omegaDot - theo) / theo) * 100).toFixed(1) + '%（' + a.omegaDot.toExponential(3) + ' vs ' + theo.toExponential(3) + '）')
       }

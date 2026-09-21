@@ -28,11 +28,12 @@ const TOA = 61440                     // 周内秒（GPS 年历惯用值）
 // 一颗典型 GPS 星：a≈26560 km（√A≈5153.6 m^½）、e≈0.006、i≈55°、周期半个恒星日
 // ★ Ω̇ 的单位是坑：YUMA 的「Rate of Right Ascen(r/s)」是 rad/s（真实年历里 ≈ -0.78975E-08），
 //   SEM 的同一项是【半圆/s】（= rad/s ÷ π ≈ -2.514e-9）。夹具按半圆存，YUMA 那一路再乘 π 还原。
-//   J2 理论值 raanRateJ2(26560, 0.006, 55°) = -7.835e-9 rad/s，与真实年历差 0.8% —— 5% 判据的由来。
+//   J2 理论值 raanRateJ2(26560, 0.006, 55°) = -7.835e-9 rad/s，与本夹具差 0.8%；真实年历的 Ω̇ 是含
+//   日月摄动的定轨拟合值，32 颗一份实测最大差 7.75% —— 门限 15% 的由来（见 gpsAlmanac.js）。
 const SV = [
-  { prn: 1, svn: 63, e: 0.006, iDeg: 55.1, omegaDotSemi: -2.514e-9, sqrtA: 5153.650391, omega0Semi: 0.32, argpSemi: 0.55, m0Semi: -0.42, health: 0 },
-  { prn: 2, svn: 61, e: 0.019, iDeg: 53.6, omegaDotSemi: -2.520e-9, sqrtA: 5153.601563, omega0Semi: -0.61, argpSemi: -0.90, m0Semi: 0.77, health: 0 },
-  { prn: 3, svn: 69, e: 0.002, iDeg: 54.4, omegaDotSemi: -2.517e-9, sqrtA: 5153.712891, omega0Semi: 0.95, argpSemi: 0.10, m0Semi: -0.05, health: 63 }
+  { prn: 1, svn: 63, e: 0.006, iDeg: 55.1, omegaDotSemi: -2.514e-9, sqrtA: 5153.650391, omega0Semi: 0.32, argpSemi: 0.55, m0Semi: -0.42, health: 0, config: 12 },
+  { prn: 2, svn: 61, e: 0.019, iDeg: 53.6, omegaDotSemi: -2.520e-9, sqrtA: 5153.601563, omega0Semi: -0.61, argpSemi: -0.90, m0Semi: 0.77, health: 0, config: 9 },
+  { prn: 3, svn: 69, e: 0.002, iDeg: 54.4, omegaDotSemi: -2.517e-9, sqrtA: 5153.712891, omega0Semi: 0.95, argpSemi: 0.10, m0Semi: -0.05, health: 63, config: 11 }
 ]
 const semi = (rad) => rad / Math.PI              // rad -> 半圆
 function yumaText(list, week) {
@@ -56,23 +57,25 @@ function yumaText(list, week) {
   }
   return L.join('\n')
 }
-function semText(list, week) {
-  const L = [list.length + ' CURRENT.ALM', week % 1024 + ' ' + TOA]
+// ★ 按真实 CelesTrak SEM 体例写（almanac.sem.weekNNNN.SSSSSS.txt）：头两行「记录数 名字」「周 周内秒」，
+//   之后每颗星 PRN / SVN / URA 各一行，再三行各 3 个数（e δi Ω̇ | √A Ω₀ ω | M₀ af0 af1），最后
+//   health / config 各一行 —— 每颗星【14】个数。逐行还是多值一行都有人写，故解析按数值流走；
+//   这份夹具刻意用「3 个数一行」的真布局，切错一颗就会跨行错位。
+//   opt.noConfig：13 字段变体（个别产品不写末尾的 config），兼容分支用。
+function semText(list, week, opt) {
+  const o = opt || {}
+  const n = (v) => v.toExponential(14).toUpperCase()
+  const L = [(o.count == null ? list.length : o.count) + '  CURRENT.ALM', ' ' + (week % 1024) + ' ' + TOA]
   for (const s of list) {
     L.push('')
     L.push(String(s.prn))
     L.push(String(s.svn))
-    L.push('0')
-    L.push(s.e.toExponential(10))
-    L.push(((s.iDeg - 54) / 180).toExponential(10))     // δi（半圆，相对 0.30 半圆 = 54°）
-    L.push(s.omegaDotSemi.toExponential(10))
-    L.push(s.sqrtA.toFixed(6))
-    L.push(s.omega0Semi.toExponential(10))
-    L.push(s.argpSemi.toExponential(10))
-    L.push(s.m0Semi.toExponential(10))
-    L.push('0.0000000000E+00')
-    L.push('0.0000000000E+00')
+    L.push('0')                                                                      // URA
+    L.push([n(s.e), n((s.iDeg - 54) / 180), n(s.omegaDotSemi)].join(' '))             // δi 是半圆，相对 0.30 半圆 = 54°
+    L.push([n(s.sqrtA), n(s.omega0Semi), n(s.argpSemi)].join(' '))
+    L.push([n(s.m0Semi), n(0), n(0)].join(' '))                                      // M₀ / af0 / af1
     L.push(String(s.health))
+    if (!o.noConfig) L.push(String(s.config))
   }
   return L.join('\n') + '\n'
 }
@@ -88,6 +91,74 @@ const y = A.parseAlmanac(yTxt, OPTS), s = A.parseAlmanac(sTxt, OPTS)
 ok(y.format === 'yuma' && y.records.length === 3, 'YUMA 解出 3 颗', y.records.length + ' / ' + JSON.stringify(y.errors))
 ok(s.format === 'sem' && s.records.length === 3, 'SEM 解出 3 颗', s.records.length + ' / ' + JSON.stringify(s.errors))
 ok(y.week === WEEK && s.week === WEEK, '周号解卷回完整周 ' + WEEK, y.week + ' / ' + s.week)
+
+/* ===== ①b ★ SEM 每颗星 14 个数 ===== */
+// ICD-GPS-240 的 SEM 记录每颗 14 个数（末尾 config）。按 13 个切的话数值流从第 2 颗起整体错位：
+// 第 2 颗的 PRN 会读到上一颗的 config，倾角 / √A 全是别人的数 —— 而第 1 颗照样对，头里的记录数也
+// 对不出破（floor(N·14/13) ≥ N），所以只有逐颗断言第 2、3 颗才拦得住。
+section('SEM 按 14 个数切')
+for (let i = 0; i < 3; i++) {
+  const r = s.records[i], a = s.almanacs[i]
+  ok(r.prn === SV[i].prn, '第 ' + (i + 1) + ' 颗 PRN = ' + SV[i].prn, String(r.prn))
+  ok(a.svn === SV[i].svn, '第 ' + (i + 1) + ' 颗 SVN = ' + SV[i].svn, String(a.svn))
+  near(Number(r.incl), SV[i].iDeg, 1e-3, '第 ' + (i + 1) + ' 颗倾角 = ' + SV[i].iDeg + '°')
+  near(a.sqrtA, SV[i].sqrtA, 1e-6, '第 ' + (i + 1) + ' 颗 √A = ' + SV[i].sqrtA)
+  ok(a.config === SV[i].config, '第 ' + (i + 1) + ' 颗 config = ' + SV[i].config, String(a.config))
+}
+// 真件片段：CelesTrak almanac.sem.week0352.061440.txt 的前 3 条原样照抄（头里记录数 32 改成 3）。
+// 32 颗那一份实测数值流 448 个数 = 32 × 14，按 13 切只得 22 条、PRN 一片 0。
+const SEM_REAL = ` 3  CURRENT.ALM
+ 352 61440
+
+1
+80
+0
+ 1.31225585937500E-03  5.05638122558594E-03 -2.55386112257838E-09
+ 5.15358789062500E+03 -6.81949138641357E-01 -1.48062705993652E-02
+-3.88994455337524E-01  3.47137451171875E-04 -3.63797880709171E-12
+0
+12
+
+2
+61
+0
+ 1.69768333435059E-02  6.83021545410156E-03 -2.47382558882236E-09
+ 5.15357373046875E+03 -7.33782887458801E-01 -2.73502826690674E-01
+ 4.64537143707275E-02  9.53674316406250E-06  7.27595761418343E-12
+0
+9
+
+3
+69
+0
+ 6.32762908935547E-03  1.59091949462891E-02 -2.56113708019257E-09
+ 5.15360986328125E+03 -3.68172764778137E-01  3.85980963706970E-01
+ 8.89324426651001E-01  6.07490539550781E-04 -1.09139364212751E-11
+0
+11
+`
+const sReal = A.parseAlmanac(SEM_REAL, OPTS)
+ok(A.detectAlmanac(SEM_REAL) === 'sem', '真件片段嗅探成 SEM', A.detectAlmanac(SEM_REAL))
+ok(sReal.records.length === 3 && !sReal.errors.length, '真件片段解出 3 颗', sReal.records.length + ' / ' + JSON.stringify(sReal.errors))
+ok(sReal.records.map((r) => r.prn).join(',') === '1,2,3', '真件片段 PRN = 1,2,3', sReal.records.map((r) => r.prn).join(','))
+ok(sReal.almanacs.map((a) => a.svn).join(',') === '80,61,69', '真件片段 SVN = 80,61,69', sReal.almanacs.map((a) => a.svn).join(','))
+ok(sReal.almanacs.map((a) => a.config).join(',') === '12,9,11', '真件片段 config = 12,9,11', sReal.almanacs.map((a) => a.config).join(','))
+near(Number(sReal.records[1].incl), 55.2294, 1e-3, '真件片段第 2 颗倾角')
+near(Number(sReal.records[2].incl), 56.8637, 1e-3, '真件片段第 3 颗倾角')
+near(sReal.almanacs[1].sqrtA, 5153.57373046875, 1e-9, '真件片段第 2 颗 √A')
+near(sReal.almanacs[2].sqrtA, 5153.60986328125, 1e-9, '真件片段第 3 颗 √A')
+near(sReal.records[0].aKm, 26559.5, 0.2, '真件片段第 1 颗半长轴 ≈ 26560 km')
+// 13 字段变体（个别产品不写 config）：数值流长度恰好 = 头里记录数 × 13 时退回 13 切
+const s13 = A.parseAlmanac(semText(SV, WEEK, { noConfig: true }), OPTS)
+ok(s13.records.length === 3 && s13.records.map((r) => r.prn).join(',') === '1,2,3', '13 字段变体仍解出 3 颗且 PRN 不错位',
+  s13.records.length + ' / ' + s13.records.map((r) => r.prn).join(','))
+near(Number(s13.records[1].incl), SV[1].iDeg, 1e-3, '13 字段变体第 2 颗倾角对上')
+ok(!s13.warnings.some((w) => /对不上/.test(w)), '13 字段变体不报「对不上」', JSON.stringify(s13.warnings.filter((w) => /对不上/.test(w))))
+// 记录数与字段数两档都对不上：按 14 切并告警（头里声明 3 条、实际只给了 2 颗 × 14 个数）
+const sBad = A.parseAlmanac(semText(SV.slice(0, 2), WEEK, { count: 3 }), OPTS)
+ok(sBad.records.length === 2 && sBad.records[1].prn === 2, '对不上时按 14 切、已有的两颗不错位',
+  sBad.records.length + ' / ' + sBad.records.map((r) => r.prn).join(','))
+ok(sBad.warnings.some((w) => /对不上/.test(w)), '对不上要告警', JSON.stringify(sBad.warnings))
 
 /* ===== ② 两种格式换算出同一批根数 ===== */
 section('YUMA 与 SEM 同源一致')
@@ -140,6 +211,9 @@ for (let i = 0; i < 3; i++) {
 /* ===== ④ Ω̇ 的 5% 校验 ===== */
 section('Ω̇ 校验')
 ok(!y.warnings.some((w) => /Ω̇/.test(w)), '正常年历不触发 Ω̇ 告警', JSON.stringify(y.warnings.filter((w) => /Ω̇/.test(w))))
+// ★ 真件那 3 颗里有一颗（PRN 3）与纯 J2 理论值差 7.75%（日月摄动，不是错）—— 5% 门限会误报
+ok(!sReal.warnings.some((w) => /Ω̇/.test(w)), '真件片段不触发 Ω̇ 告警（最大差 7.75% < 15%）', JSON.stringify(sReal.warnings.filter((w) => /Ω̇/.test(w))))
+ok(!/换算弄错/.test(JSON.stringify(sReal.warnings) + JSON.stringify(y.warnings)), 'Ω̇ 告警措辞不带教学式从句')
 const badRate = yumaText([Object.assign({}, SV[0], { omegaDotSemi: -1e-7 })], WEEK)   // 故意错一个量级
 const yBad = A.parseAlmanac(badRate, OPTS)
 ok(yBad.warnings.some((w) => /Ω̇/.test(w)), '错一个量级的 Ω̇ 要告警', JSON.stringify(yBad.warnings))
