@@ -198,9 +198,10 @@ const FRAME_OPTS = [
 .fn em { font-style: normal; font-size: var(--fs-2); color: var(--text-faint); margin-top: 2px; }
 .frow select { min-width: 150px; border: 1px solid var(--field-border); background-color: var(--field-bg); color: var(--text); padding: 5px 8px; outline: none; }
 .frow input[type=range] { width: 150px; }
-/* 行内两段式（参考系）：宽度与右侧那一栏的 150px 对齐，两枚各 72px */
-.frow .tiers.seg { flex: none; width: 150px; flex-wrap: nowrap; }
-.frow .tiers.seg .tier { min-width: 0; padding: 5px 0; }
+/* 行内两段式（参考系）：宽度跟着内容走 —— 中文两枚各 72px、整组 150px，正好与右侧那一栏齐；
+   英文「Camera Follows」一枚就要 114px，钉死 150px 会裁字。grid + 1fr 让两枚等宽并取较宽那个的宽度。*/
+.frow .tiers.seg { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 6px; flex: none; width: auto; }
+.frow .tiers.seg .tier { min-width: 72px; padding: 5px 10px; white-space: nowrap; }
 .frow select.fsel { min-width: 176px; }
 .dft { display: flex; align-items: center; justify-content: flex-end; gap: 10px; padding: 12px 16px; border-top: 1px solid var(--border); }
 .dft button { height: var(--h-ctl-lg); white-space: nowrap; padding: 0 16px; cursor: pointer; border-radius: var(--r-box); font-size: var(--fs-4); }

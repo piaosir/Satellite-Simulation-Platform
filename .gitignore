@@ -292,3 +292,11 @@ resources/imagery/
 # 导出一次会把真模型落成 .ssaharness/model.json（vite 中间件 /__model），再
 # node .ssaharness/docx.mjs 出 out.docx —— 图放大后糊不糊、表跨页断在哪，只有打开 Word 才知道。
 .ssaharness/
+# 「地球自转（惯性视角 / 相机跟随）· 拖拽阻尼 · 滚轮缩放比例」验证台（npx electron .spinharness/shot.cjs）：
+# 挂真 createGlobeScene + 真 createFlatCoverage，合成 PointerEvent / WheelEvent 逐帧量。
+# ★ 非得 Electron 不可：改的全是逐帧行为，而窗口不可见时 Chromium 把 rAF 压到 ~1 Hz（show:false 量出来
+#   ω₀ 只有 7 °/s，全是伪影）—— 故窗口真显示、透明度调到 2%，页面自己先报一条实测帧率作前提。
+# ★ Electron 在 Windows 是 GUI 子系统，主进程 console.log 到不了父进程的管道 —— 结果全落 out/report.txt。
+# 台子还顺带做源码级核对（A5 接线位置 / A9 快照与恢复字段 / A11 未动区），那几条跑起来量不到。
+# launch.json 的 spin-harness（端口 5823）只装页面，用来肉眼看。
+.spinharness/

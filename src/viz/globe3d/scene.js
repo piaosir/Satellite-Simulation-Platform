@@ -350,7 +350,9 @@ export function createGlobeScene(container, quality = {}) {
   controls.enableDamping = false
   controls.minDistance = 1.02   // 贴到离地面 0.02 R（≈130 km）：进度条那 100→120% 的余量就在这一段
   controls.maxDistance = 50
-  controls.rotateSpeed = 0.5
+  // 旋转灵敏度每帧在 loop 里按当前相机距离重算（见 earthSpin.rotateSpeedFor）。这里给个开场值，
+  // 免得「还没出第一帧就先来一次 pointermove」那一下用的是别的数。
+  controls.rotateSpeed = rotateSpeedFor(camera.position.length(), camera.fov)
   controls.enablePan = false    // 关掉平移：右键留给“标点”，避免误平移
   controls.enableZoom = false   // 自定义滚轮缩放（见下方 wheel）：指数步进 + 每帧缓动，手感更顺、不突兀
   // 松手后的惯性滑行（Google Earth / Cesium 口径）：拖动期间采样角速度，松手后按时间指数衰减。
