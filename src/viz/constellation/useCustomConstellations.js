@@ -119,6 +119,11 @@ export function useCustomConstellations(onChange) {
     if (pv) for (const e of build(pv.cfg)) out.push(e)   // 预览星（编辑器打开时随参数刷新）
     return out
   }
+  // 只取实时预览星：向导「仅预览」开着时地图上只画正在生成的这一座（没有预览就是空数组）
+  function previewEntries() {
+    const pv = preview.value
+    return pv ? build(pv.cfg) : []
+  }
 
   // 某座星座的卫星数（向导/列表显示用）
   function count(cfg) { return build(cfg).length }
@@ -220,7 +225,7 @@ export function useCustomConstellations(onChange) {
     preview.value = { editId: draft.id || null, cfg: normalize({ ...draft, id: '__preview__', noradBase: PREVIEW_BASE }) }
   }
 
-  return { list, scenarioEpoch, setScenarioEpoch, add, update, remove, toggle, showOnly, setPreview, count, entriesForRender, catalog, satsOf, findByNorad, load, PLANE_PALETTE }
+  return { list, scenarioEpoch, setScenarioEpoch, add, update, remove, toggle, showOnly, setPreview, count, entriesForRender, previewEntries, catalog, satsOf, findByNorad, load, PLANE_PALETTE }
 }
 
 /* ===================== 只读读取（供「文件管理 · 星历」镜像展示 / 导出，无需实例化 composable） ===================== */

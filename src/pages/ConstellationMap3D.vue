@@ -1588,7 +1588,8 @@ function defaultConstDraft() {
     orbitType: 'custom', design: OD.defaultInputs('custom'),
     pattern: 'delta', T: 24, P: 6, F: 1, incl: 53, shape: 'circ', perigeeKm: 550, apogeeKm: 550, argp: 0, raan0: 0, m0: 0,
     color: '#4dabf7', colorByPlane: true,
-    previewRevs: 1, pvOrbit: true, pvTrack: true, pvFoot: false
+    previewRevs: 1, pvOrbit: true, pvTrack: true, pvFoot: false,
+    pvSolo: true   // 「仅预览」：向导开着时地图上只有正在生成的星座；关掉才叠加在当前显示的卫星上
   }
 }
 function openConstWizard(cfg) {
@@ -1654,6 +1655,7 @@ function saveConstWizard() {
   let id = m.id
   if (m.id) customConst.update(m.id, draft); else { const cfg = customConst.add(draft); id = cfg.id }
   rebindSelection('cc_' + id)   // 选中的预览星重绑到提交版本，卡片/覆盖/星下点/轨迹不断
+  wizPreviewCommit()            // 已生成 / 更新：关向导时不再把进向导前的选中集还回去
   constModal.value = null
   if (!m.id) showConstAlone({ id })   // 新建星座：生成后单独显示（与「选哪个看哪个」一致，不叠加内置组）；编辑则保持当前显示
 }
@@ -1678,16 +1680,16 @@ function restoreWizardPreviewStyle() {
 let _cpvTimer = null
 watch(constModal, (m) => {
   if (_cpvTimer) { clearTimeout(_cpvTimer); _cpvTimer = null }
-  if (!m) { customConst.setPreview(null); restoreWizardPreviewStyle(); rebuildRenderSet(); return }
+  if (!m) { customConst.setPreview(null); restoreWizardPreviewStyle(); rebuildRenderSet(); wizPreviewRelease(); return }
   _cpvTimer = setTimeout(() => {
     _cpvTimer = null
     const cur = constModal.value; if (!cur) return
     const params = draftParams(cur)
-    if (!params || !validateWalker(params).ok) { customConst.setPreview(null); rebuildRenderSet(); return }
+    if (!params || !validateWalker(params).ok) { customConst.setPreview(null); rebuildRenderSet(); wizPreviewSelect(); return }   // 解不出来：预览撤掉，预览星也从选中集退出（不然上一轮的轨道还挂在图上）
     customConst.setPreview({ id: cur.id, name: cur.name, color: cur.color, colorByPlane: cur.colorByPlane !== false, params })
     rebuildRenderSet()
     applyWizardPreviewStyle(cur)        // 预览圈数 + 三个图层开关（关闭向导时恢复用户原值）
-    rebindSelection('cc___preview__')   // 选中该星座的星 → 随参数实时更新覆盖/星下点/轨迹/卡片
+    wizPreviewSelect()                  // 种子星进选中集 → 轨道线 / N 圈星下点轨迹 / 覆盖圈走聚焦几何管线随参数实时重画
   }, 140)
 }, { deep: true })
 // 向导实时预览：每面数 / 面间相位 / Walker 码 / 周期 / 校验提示
@@ -1720,6 +1722,48 @@ const ltanText = computed(() => {
 })
 const ORBIT_TYPES = OD.ORBIT_TYPES
 const ccCode = (c) => walkerCode(c.params)
+// ===== 向导预览：只看正在生成的星座 + 种子星自动成为选中 =====
+// 聚焦几何管线（轨道线 / 星下点轨迹 / 覆盖圈）只画【选中集】里的星 —— 没有选中什么都不画，早先的预览就只剩
+// 几颗小点混在当前分组里。现在：进向导那一刻记下原选中集；每轮预览把预览星座的种子星（第 1 面第 1 颗）
+// 放进选中集（首次预览把地球转过来，之后改参数不再转动）；「仅预览」开着时 rebuildRenderSet 只渲染预览星座；
+// 取消时原选中集还回去，生成 / 更新时选中已由 saveConstWizard 重绑到提交版本。
+const PREVIEW_GROUP = 'cc___preview__'
+const wizardSolo = () => !!(constModal.value && constModal.value.pvSolo !== false)
+let _wizSavedSel = null      // 进向导那一刻的选中集（null = 不在向导里）
+let _wizFaced = false        // 种子星是否已转到正面
+let _wizCommitted = false    // 本次关向导是「生成 / 更新」而非取消
+function wizPreviewCommit() { _wizCommitted = true }
+function wizPreviewSelect() {
+  if (_wizSavedSel === null) { _wizSavedSel = selEntries.slice(); _wizFaced = false; _wizCommitted = false }
+  const pv = customConst.previewEntries()
+  if (!pv.length) {                                                       // 参数非法 → 没有预览星，预览星从选中集退出
+    if (selEntries.some((e) => e.group === PREVIEW_GROUP)) { selEntries = []; selEntry = null; closeCard() }
+    return
+  }
+  rebindSelection(PREVIEW_GROUP)                                          // 上一轮的预览对象按名重绑到这一轮（改名 / 减星会掉一部分）
+  const kept = selEntries.filter((e) => e.group === PREVIEW_GROUP && renderEntries.includes(e))
+  if (kept.length) {
+    if (kept.length !== selEntries.length) { selEntries = kept; if (!kept.includes(selEntry)) selEntry = kept[kept.length - 1]; refreshSelection() }
+    return
+  }
+  selectSat(pv[0], !_wizFaced)
+  _wizFaced = true
+}
+function wizPreviewRelease() {
+  const saved = _wizSavedSel; _wizSavedSel = null; _wizFaced = false
+  if (saved === null) return
+  if (_wizCommitted) { _wizCommitted = false; return }
+  // 取消：还原进向导前的选中集。真实星对象一直在 entries 里；自定义星座的对象可能已重建，按「组 + 名」重绑，已不在场的丢掉
+  const back = []
+  for (const e of saved) {
+    if (!isCustomEntry(e) || renderEntries.includes(e)) { back.push(e); continue }
+    const m = renderEntries.find((x) => x.group === e.group && x.name === e.name)
+    if (m) back.push(m)
+  }
+  selEntries = back; selEntry = back.length ? back[back.length - 1] : null
+  if (!selEntry) { closeCard(); return }
+  refreshSelection(); saveSelection()
+}
 // 点击自定义星座行 → 单独显示该星座（内置组切「无」，仅该星座可见）
 function showConstAlone(c) {
   const noneIdx = GROUPS.findIndex((g) => g.key === 'none')
@@ -2099,6 +2143,14 @@ function circleLatLon(lat0, lon0, lambda, N) {
 // 换组/加载后：算一次此刻位置，过滤掉不可解算的，渲染全部有效卫星（PC 端性能足够，不再抽稀）
 function rebuildRenderSet() {
   if (!scene) return
+  if (wizardSolo()) {
+    // 「仅预览」：向导开着时地图上只有正在生成的星座 —— 当前分组 / 其它自定义星座 / 导入组 / 搜索筛选态一律让路
+    renderEntries = customConst.previewEntries()
+    renderHasColor = true
+    satCount.value = renderEntries.length
+    refreshPositions()
+    return
+  }
   const now = calcAt()
   const filtering = filterEntries.length > 0
   const base = filtering ? filterEntries : entries   // 搜索筛选态：渲染命中星（跨分组），否则渲染当前分组
@@ -7403,6 +7455,7 @@ onBeforeUnmount(() => {
             <div class="cehd">
               <span class="ceback" @click="closeConstWizard"><Icon name="chevron-left" :size="12" /> 返回</span>
               <span class="cetitle">{{ constModal.id ? '编辑星座' : '生成星座' }}</span>
+              <span class="cesolo" :title="constModal.pvSolo !== false ? '地图上只显示正在生成的星座；关掉则叠加在当前显示的卫星上' : '叠加在当前显示的卫星上；打开则只显示正在生成的星座'"><button type="button" class="layersw" :class="{ on: constModal.pvSolo !== false }" role="switch" :aria-checked="constModal.pvSolo !== false ? 'true' : 'false'" @click="constModal.pvSolo = constModal.pvSolo === false"><i></i></button><span>仅预览</span></span>
               <span class="celive" title="改动实时预览到地球">● 实时</span>
             </div>
             <div class="cebody">
@@ -7583,8 +7636,8 @@ onBeforeUnmount(() => {
               </div>
             </div>
             <SatFilterBar
-              v-model="satFilters" :satcat="satcatIdx" :pool="satPoolForFilter" :matched="filterN ? filterN : -1"
-              @change="onSatFilterChange"
+              :model-value="satFilters" :satcat="satcatIdx" :pool="satPoolForFilter" :matched="filterN ? filterN : -1"
+              @update:model-value="onSatFilterChange"
             />
             <div v-if="filterN" class="fbar">
               <span class="fdot"></span>
@@ -9913,8 +9966,8 @@ onBeforeUnmount(() => {
                 <span v-if="sgmRes.length" class="gbtn" title="将当前结果中未入组的全部勾选" @click="sgmPickAllRes">全选结果</span>
               </div>
               <SatFilterBar
-                v-model="satFilters" :satcat="satcatIdx" :pool="satPoolForFilter" :matched="-1"
-                @change="onSgmFilterChange"
+                :model-value="satFilters" :satcat="satcatIdx" :pool="satPoolForFilter" :matched="-1"
+                @update:model-value="onSgmFilterChange"
               />
               <div class="sgm-reslist">
                 <div v-if="sgmBusy" class="sgm-empty">搜索中…</div>
@@ -10496,7 +10549,8 @@ onBeforeUnmount(() => {
 .cehd .ceback { display: inline-flex; align-items: center; gap: 1px; color: var(--text-muted); cursor: pointer; font-size: var(--fs-3); }
 .cehd .ceback:hover { color: var(--text); }
 .cehd .cetitle { font-size: var(--fs-4); color: var(--text); font-weight: 600; }
-.cehd .celive { margin-left: auto; font-size: var(--fs-1); color: var(--accent); letter-spacing: var(--ls-tight); }
+.cehd .cesolo { margin-left: auto; display: inline-flex; align-items: center; gap: 5px; font-size: var(--fs-2); color: var(--text-muted); white-space: nowrap; }
+.cehd .celive { flex: none; font-size: var(--fs-1); color: var(--accent); letter-spacing: var(--ls-tight); }
 .cebody { flex: 1; min-height: 0; overflow-y: auto; padding: 10px 12px; }
 .cesec { margin: 13px 0 8px; padding-top: 9px; border-top: 1px solid var(--border); color: var(--text-muted); font-size: var(--fs-2); }
 .cef { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
