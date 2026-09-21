@@ -29,6 +29,30 @@ const R_MIN = RE_KM + 80          // 有效位置下界（80 km 以下即再入�
 const R_MAX = 2e6                 // 上界（月球轨道外，2×10^6 km）
 const DEFAULT_SAMPLES = 6
 
+/* ===================== 分段 ===================== */
+// 采样表的分段索引：sg[k] = 第 k 点所属段号；sgA/sgB = 每段首 / 末点下标（被并掉的段 sgA = -1）。
+// t 必须是【整理后】的严格递增 UTC 毫秒序列（buildTable 第 ① 步的产物）；spans 形如 [[t0,t1],…]。
+// 单段（spans 为空或只有 1 段）返回三个 null —— 取位走无分支的快路。
+// ★ 主进程 customSats.ephemTable() 也调它：渲染端经 IPC 只拿到 t/p/v，那边没有建表逻辑、只认
+//   sg/sgA/sgB，分段索引必须随表一起发过去，否则多段 OEM 的缝里会跨段 Lagrange 插出假位置。
+function segmentTables(t, spansIn) {
+  const n = t ? t.length : 0
+  const spans = Array.isArray(spansIn) && spansIn.length > 1 ? spansIn : null
+  if (!spans || !(n >= 1)) return { sg: null, sgA: null, sgB: null }
+  const sg = new Int32Array(n)
+  let cur = 0
+  for (let k = 0; k < n; k++) {
+    while (cur < spans.length - 1 && t[k] > spans[cur][1]) cur++
+    sg[k] = cur
+  }
+  const m = sg[n - 1] + 1
+  const sgA = new Int32Array(m).fill(-1), sgB = new Int32Array(m).fill(-1)
+  for (let k = 0; k < n; k++) { const s = sg[k]; if (sgA[s] < 0) sgA[s] = k; sgB[s] = k }
+  // 段内只剩 1 点的：并进前一段（1 点插不出值，留着只会在缝里制造假 null）
+  for (let s = 0; s < m; s++) if (sgA[s] >= 0 && sgA[s] === sgB[s] && s > 0) { sgB[s - 1] = sgB[s]; for (let k = sgA[s]; k <= sgB[s]; k++) sg[k] = s - 1; sgA[s] = -1 }
+  return { sg, sgA, sgB }
+}
+
 /* ===================== 建表 ===================== */
 // spec: { t:Float64Array|number[]（该时标下已换算好的 UTC 毫秒）, p:Float64Array|number[]（3n，km）,
 //         v:Float64Array|number[]|null（3n，km/s）, frame, interp:{method,samples} }
@@ -91,21 +115,7 @@ function buildTable(spec) {
 
   // ②b 分段（OEM 多段）：段间不插值，落在缝里取位返 null，Lagrange 窗口也不跨段。
   //     单段（绝大多数文件）不建这三张表，取位走无分支的快路。
-  let sg = null, sgA = null, sgB = null
-  const spans = Array.isArray(src.spans) && src.spans.length > 1 ? src.spans : null
-  if (spans) {
-    sg = new Int32Array(n)
-    let cur = 0
-    for (let k = 0; k < n; k++) {
-      while (cur < spans.length - 1 && t[k] > spans[cur][1]) cur++
-      sg[k] = cur
-    }
-    const m = sg[n - 1] + 1
-    sgA = new Int32Array(m).fill(-1); sgB = new Int32Array(m).fill(-1)
-    for (let k = 0; k < n; k++) { const s = sg[k]; if (sgA[s] < 0) sgA[s] = k; sgB[s] = k }
-    // 段内只剩 1 点的：并进前一段（1 点插不出值，留着只会在缝里制造假 null）
-    for (let s = 0; s < m; s++) if (sgA[s] >= 0 && sgA[s] === sgB[s] && s > 0) { sgB[s - 1] = sgB[s]; for (let k = sgA[s]; k <= sgB[s]; k++) sg[k] = s - 1; sgA[s] = -1 }
-  }
+  const { sg, sgA, sgB } = segmentTables(t, src.spans)
 
   // ③ 插值口径
   const ip = src.interp || {}
@@ -245,4 +255,4 @@ function estimatePeriodMin(tab) {
   return (cross[1] - cross[0]) / 60000
 }
 
-module.exports = { EDGE_TOL_MS, DEFAULT_SAMPLES, buildTable, evalTable, positionAt, findIndex, estimatePeriodMin }
+module.exports = { EDGE_TOL_MS, DEFAULT_SAMPLES, buildTable, segmentTables, evalTable, positionAt, findIndex, estimatePeriodMin }

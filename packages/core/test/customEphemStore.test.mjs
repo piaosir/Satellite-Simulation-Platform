@@ -7,6 +7,9 @@ import { createRequire } from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
 import fs from 'node:fs'
+// 渲染端那份 ESM 镜像（src/viz/constellation/ephemTable.js）：装表口子与取位都从这里来，
+// 用它验「主进程发出去的 payload 渲染端能不能正确认出分段」。
+import { tableFrom, evalTable as evalRt } from '../../../src/viz/constellation/ephemTable.js'
 
 const require = createRequire(import.meta.url)
 const DATA = path.join(os.tmpdir(), 'satsim-ephemstore-test')
@@ -407,6 +410,69 @@ section('采样导出上限')
   let edgeMsg = ''
   try { customSats.sampleGpToEphem(edge.slice(0, 2), {}) } catch (err) { edgeMsg = err.message }
   ok(!edgeMsg, '上限以内照常采样', edgeMsg)
+}
+
+/* ===== ⑰ 分段索引随表一起过 IPC：渲染端只认 sg/sgA/sgB，光发 spans 它会当成单段 ===== */
+// 现象：多段 OEM（段间有空档）在主进程各引擎里缝中央正确返回 null，3D 图却跨段 Lagrange 插出
+// 一个卫星从未到过的假位置 —— 渲染端 tableFrom 压根不读 spans。
+section('分段索引过 IPC')
+{
+  const R = 6878.137, nn = Math.sqrt(MU / (R * R * R))
+  const ci = Math.cos(51.6 * Math.PI / 180), si = Math.sin(51.6 * Math.PI / 180)
+  const f9 = (v) => v.toFixed(9)
+  const iso = (ms) => new Date(ms).toISOString().replace('Z', '')
+  // 同一个 OBJECT_ID 的两段：0–600 s 与 4200–4800 s，中间空 1 h
+  const seg = (fromS, toS) => {
+    const L = ['', 'META_START', 'OBJECT_NAME = SEG-A', 'OBJECT_ID = 2026-077A', 'CENTER_NAME = EARTH',
+      'REF_FRAME = TEME', 'TIME_SYSTEM = UTC', 'START_TIME = ' + iso(T0 + fromS * 1000),
+      'STOP_TIME = ' + iso(T0 + toS * 1000), 'INTERPOLATION = LAGRANGE', 'INTERPOLATION_DEGREE = 5', 'META_STOP', '']
+    for (let s2 = fromS; s2 <= toS; s2 += 60) {
+      const u = nn * s2
+      L.push([iso(T0 + s2 * 1000), f9(R * Math.cos(u)), f9(R * Math.sin(u) * ci), f9(R * Math.sin(u) * si),
+        f9(-R * nn * Math.sin(u)), f9(R * nn * Math.cos(u) * ci), f9(R * nn * Math.cos(u) * si)].join(' '))
+    }
+    return L.join('\n')
+  }
+  const oem = ['CCSDS_OEM_VERS = 2.0', 'CREATION_DATE = ' + iso(T0), 'ORIGINATOR = TEST', seg(0, 600), seg(4200, 4800)].join('\n') + '\n'
+  const rSeg = customSats.importFile('两段组', oem)
+  ok(rSeg.ok && rSeg.group.count === 1, '两段归并成一颗星', JSON.stringify(rSeg.error || rSeg.group.count))
+
+  const payload = customSats.ephemTable(rSeg.group.id)
+  const s0 = payload && payload.sats[0]
+  ok(!!s0, 'ephemTable 取得到这颗星')
+  ok(!!s0.spans && s0.spans.length === 2, 'payload 仍带 spans（自描述，保留）', JSON.stringify(s0.spans && s0.spans.length))
+  ok(!!s0.sg && !!s0.sgA && !!s0.sgB, '★ payload 带 sg / sgA / sgB', [!!s0.sg, !!s0.sgA, !!s0.sgB].join(','))
+  ok(s0.sg && s0.sg.length === s0.t.length, 'sg 与 t 等长', (s0.sg && s0.sg.length) + ' / ' + s0.t.length)
+  ok(s0.sgA && s0.sgA.length === 2 && s0.sgA[0] === 0 && s0.sgA[1] === 11, 'sgA = [0, 11]', JSON.stringify(s0.sgA && Array.from(s0.sgA)))
+
+  // 结构化克隆得过（真走 IPC 的那一下）
+  let cloned = null
+  try { cloned = structuredClone({ t: s0.t, p: s0.p, v: s0.v, sg: s0.sg, sgA: s0.sgA, sgB: s0.sgB }) } catch (e) { cloned = null }
+  ok(!!cloned && cloned.sg instanceof Int32Array, 'Int32Array 过得了结构化克隆', cloned ? String(cloned.sg.constructor.name) : 'null')
+
+  // 喂渲染端那份镜像：缝里 null、段内正常，且与主进程 buildTable 逐位一致
+  const rt = tableFrom(s0)
+  ok(!!rt && !!rt.sg, '★ 渲染端装表后认出两段', String(rt && !!rt.sg))
+  const gapMs = (s0.t[10] + s0.t[11]) / 2
+  ok(evalRt(rt, gapMs) === null, '★ 缝中央取位为 null（原来会插出低 575 km 的假位置）',
+    JSON.stringify(evalRt(rt, gapMs)))
+  const inMs = T0 + 300000
+  const pIn = evalRt(rt, inMs)
+  ok(!!pIn && Math.abs(Math.hypot(pIn.x, pIn.y, pIn.z) - R) < 1e-6, '段内取位正常、半径对得上',
+    pIn ? String(Math.hypot(pIn.x, pIn.y, pIn.z)) : 'null')
+  // 与主进程 buildTable（各引擎走的那一份）逐位对拍
+  const mainTab = ephI.buildTable({ t: s0.t, p: s0.p, v: s0.v, frame: 'TEME', spans: s0.spans, interp: { method: s0.method, samples: s0.samples } })
+  let diff = 0, nulls = 0, checked = 0
+  for (let ms = T0 - 10000; ms <= T0 + 4900000; ms += 1000) {
+    const a = evalRt(rt, ms), b = ephI.evalTable(mainTab, ms)
+    checked++
+    if ((a === null) !== (b === null)) { diff++; continue }
+    if (a === null) { nulls++; continue }
+    if (a.x !== b.x || a.y !== b.y || a.z !== b.z) diff++
+  }
+  ok(diff === 0, '★ 渲染端与主进程 buildTable 逐位一致（' + checked + ' 个时刻，其中 ' + nulls + ' 个 null）', String(diff))
+  ok(nulls > 100, '缝里真的有一大片 null（否则上一条是空跑）', String(nulls))
+  customSats.removeGroup(rSeg.group.id)
 }
 
 console.log('\ncustomEphemStore: 通过 ' + pass + '，失败 ' + fail)

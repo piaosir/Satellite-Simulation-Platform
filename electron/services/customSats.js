@@ -467,12 +467,18 @@ module.exports = function createCustomSats(getCore) {
     for (const m of (g.sats || [])) {
       const s = byKey.get(String(m.key))
       if (!s) continue
+      // 分段索引随表一起发：渲染端（src/viz/constellation/ephemTable.js 的 tableFrom）没有建表
+      // 逻辑、只认 sg/sgA/sgB，光发 spans 它会当成单段，多段 OEM 的缝里会跨段插出假位置。
+      // 与主进程各引擎（ephemLookup / resolveOrbitSpec 走的 buildTable）共用同一个 segmentTables，
+      // 输入也是同一份（s.t 就是建表时的 tab.t、s.spans 就是那张表的分段），故两侧取位逐位一致。
+      const t = Float64Array.from(s.t)
+      const seg = ephI.segmentTables(t, s.spans || null)
       sats.push({
         key: m.key, name: m.name, noradId: m.noradId, objectId: m.objectId,
         frame: 'TEME', srcFrame: m.frame, timeSystem: m.timeSystem,
         method: m.interp && m.interp.method, samples: m.interp && m.interp.samples,
-        t: Float64Array.from(s.t), p: Float64Array.from(s.p), v: s.v ? Float64Array.from(s.v) : null,
-        spans: s.spans || null
+        t, p: Float64Array.from(s.p), v: s.v ? Float64Array.from(s.v) : null,
+        spans: s.spans || null, sg: seg.sg, sgA: seg.sgA, sgB: seg.sgB
       })
     }
     return sats.length ? { id: g.id, name: g.name, color: g.color, visible: g.visible, sats } : null
