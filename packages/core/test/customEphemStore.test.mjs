@@ -234,5 +234,64 @@ const keep = customSats.list().groups.filter((g) => g.kind === 'ephem').map((g) 
 ok(ephemStore.sweep(keep) >= 1, 'sweep 清掉孤儿采样文件')
 ok(ephemStore.listFiles().every((id) => keep.includes(id)), '剩下的都在组清单里')
 
+/* ===== ⑬ 年历导入的 NORAD 反查（PRN → 内置 gps 组的编号） ===== */
+// 年历里只有 PRN、没有 NORAD 编号。内置 gps 组的星名是 CelesTrak 体例「GPS BIIR-5  (PRN 22)」，
+// 按名字里的 PRN 反查即可；查不到才给 9900xx 合成号。反查正则写错的话整批全落到合成号上 ——
+// 合成号不参与计算，但这批星与编目、卫星组、SATCAT 全对不上号，用户看到的是「导进来的 GPS 星
+// 都是陌生编号」。这里用随包的 gps 快照跑真反查。
+section('年历 NORAD 反查')
+{
+  // 32 颗的 SEM 年历（PRN 1–32，真实体例：每颗 14 个数，三行各 3 个）
+  const semAlmanacText = () => {
+    const n = (v) => v.toExponential(14).toUpperCase()
+    const L = ['32  CURRENT.ALM', ' 352 61440']
+    for (let prn = 1; prn <= 32; prn++) {
+      L.push('', String(prn), String(40 + prn), '0',
+        [n(0.004 + prn * 1e-4), n((1 + (prn % 5) * 0.2) / 180), n(-2.5e-9)].join(' '),
+        [n(5153.6 + prn * 0.01), n(((prn % 6) / 3) - 1), n(((prn % 7) / 3.5) - 1)].join(' '),
+        [n(((prn % 11) / 5.5) - 1), n(0), n(0)].join(' '),
+        '0', String(9 + (prn % 4)))
+    }
+    return L.join('\n') + '\n'
+  }
+  const zlib = require('node:zlib')
+  const gpsCsv = zlib.gunzipSync(fs.readFileSync(path.join(import.meta.dirname, '../../../resources/omm/csv_gps.csv.gz'))).toString('utf8')
+  fs.mkdirSync(path.join(DATA, 'omm'), { recursive: true })
+  fs.writeFileSync(path.join(DATA, 'omm', 'csv_gps.csv'), gpsCsv)       // gpsPrnIndex 只读本机缓存
+  const names = gpsCsv.split(/\r?\n/).slice(1).filter(Boolean).map((l) => l.split(',')[0])
+  ok(names.filter((n) => /PRN/.test(n)).length >= 30, '随包 gps 快照里带「(PRN nn)」的星 ≥ 30 颗', String(names.filter((n) => /PRN/.test(n)).length))
+
+  const rAlm = customSats.importFile('GPS年历', semAlmanacText())
+  ok(rAlm.ok && rAlm.group.count === 32, '年历导入 32 颗', JSON.stringify(rAlm.error || rAlm.group.count))
+  const w = (rAlm.warnings || []).find((x) => /NORAD 反查/.test(x)) || ''
+  const m = /NORAD 反查：(\d+) \/ (\d+)/.exec(w)
+  ok(!!m, '带出反查命中读数', w)
+  ok(m && Number(m[1]) >= 30, '★ 反查命中 ≥ 30 颗（正则丢了反斜杠的话是 0）', w)
+  const almGroup = customSats.list().groups.find((g) => g.name === 'GPS年历')
+  const synth = almGroup.sats.filter((s) => String(s.noradId).startsWith('99'))
+  ok(synth.length <= 2, '落到 9900xx 合成号的不超过 2 颗', synth.map((s) => s.name + '=' + s.noradId).join(' '))
+  const prn22 = almGroup.sats.find((s) => /PRN 22/.test(s.name))
+  ok(prn22 && String(prn22.noradId) === '26407', 'PRN 22 反查到 NORAD 26407（随包快照里「GPS BIIR-5  (PRN 22)」那一行）',
+    prn22 ? String(prn22.noradId) : '(没有 PRN 22)')
+  customSats.removeGroup(almGroup.id)
+
+  // 名字体例逐条：带「(PRN nn)」的命中、不带的（NAVSTAR 编号体例）不命中，也不能误伤
+  const hdr = gpsCsv.split(/\r?\n/)[0]
+  const row = (name, norad) => [name, '2000-040A', '2026-09-16T04:02:29.626080', '2.00558423', '.01181404',
+    '54.8385', '211.5512', '303.8515', '151.4150', '0', 'U', String(norad), '999', '19177', '0', '.23E-6', '0'].join(',')
+  fs.writeFileSync(path.join(DATA, 'omm', 'csv_gps.csv'),
+    [hdr, row('GPS BIIR-2  (PRN 13)', 24876), row('NAVSTAR 43 (USA 132)', 20302)].join('\n') + '\n')
+  const r2 = customSats.importFile('GPS年历2', semAlmanacText())
+  ok(r2.ok, '第二次导入成功', JSON.stringify(r2.error || ''))
+  const g2 = customSats.list().groups.find((g) => g.name === 'GPS年历2')
+  const s13 = g2.sats.find((s) => /PRN 13/.test(s.name))
+  ok(String(s13.noradId) === '24876', '「GPS BIIR-2  (PRN 13)」→ PRN 13 命中 24876（双空格也要认）', String(s13.noradId))
+  ok(!g2.sats.some((s) => String(s.noradId) === '20302'), '「NAVSTAR 43 (USA 132)」不含 PRN，不参与反查（132 / 43 都不许被当成 PRN）',
+    (g2.sats.find((s) => String(s.noradId) === '20302') || {}).name || '')
+  ok(g2.sats.filter((s) => String(s.noradId).startsWith('99')).length === 31, '其余 31 颗落合成号',
+    String(g2.sats.filter((s) => String(s.noradId).startsWith('99')).length))
+  customSats.removeGroup(g2.id)
+}
+
 console.log('\ncustomEphemStore: 通过 ' + pass + '，失败 ' + fail)
 process.exit(fail ? 1 : 0)

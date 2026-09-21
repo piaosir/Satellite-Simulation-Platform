@@ -209,7 +209,7 @@ function gpsPrnIndex(getCore) {
     const text = fs.readFileSync(f, 'utf8')
     const map = new Map()
     for (const r of parseOMMCsv(text)) {
-      const m = /(PRNs*(d+))/i.exec(r.name || '')
+      const m = /PRN\s*(\d+)/i.exec(r.name || '')
       if (m) map.set(String(parseInt(m[1], 10)), String(r.noradId))
     }
     return map
