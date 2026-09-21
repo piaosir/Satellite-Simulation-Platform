@@ -70,9 +70,13 @@ export function makeSatSetItem({ srcKind, id, name, records, epochMode, epoch } 
   const prefix = srcKind === 'custom' ? 'cs' : srcKind === 'walker' ? 'cc' : 'sg'
   const setId = prefix + '_' + safeId(id)
   const map = new Map()
+  // 小程序端只有 SGP4，喂不了星历点序列（它没有平均根数）：这类记录跳过【并计数】，
+  // 由调用方在发送弹窗里如实说明少送了几颗 —— 静默少送比报错还糟（§4.4 拒收清单）。
+  let skipped = 0
   for (const r of (Array.isArray(records) ? records : [])) {
     const t = trimOmm(r)
     if (t) map.set(t.noradId, t)
+    else if (r && (r.orbitType === 'ephem' || r.ephem || r.kind === 'ephem')) skipped++
   }
   const sats = [...map.values()]
   if (!sats.length) return null
@@ -86,6 +90,7 @@ export function makeSatSetItem({ srcKind, id, name, records, epochMode, epoch } 
     epochMode: epochMode === 'scenario' ? 'scenario' : 'file',
     epoch: epochMode === 'scenario' ? S(epoch) : '',
     count: sats.length,
+    skipped,
     sats
   }
 }

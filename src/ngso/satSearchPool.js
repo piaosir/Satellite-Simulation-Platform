@@ -6,9 +6,12 @@
 //      叠加其常用名（"GPS BIIR-5 (PRN 22)"），并把 active 的编目名留作 altName 仍可搜；
 //   ③ 本地自定义星座（星座3D 页 Walker 生成器，localStorage 持久化）——按经典六根数合成，
 //      支持椭圆/HEO，走 buildSatrec 的 type:'elements'（与 SGP4 口径一致）。
+//   ④ 本地导入的星历点序列（文件管理 / 星座栏「导入星历」的 .e / OEM / SP3）——没有根数，
+//      只带一个引用 ref:{groupId,key}，取位靠插值；表几 MB，绝不进池记录与 IPC 参数。
 // 统一记录 schema（供搜索显示 + 选星建 orbit spec）：
-//   { name, altName?, noradId, incl, meanMotion, ecc, orbitType:'omm'|'elements',
+//   { name, altName?, noradId, incl, meanMotion, ecc, orbitType:'omm'|'elements'|'ephem',
 //     epoch?/raan?/argp?/ma?/bstar?/mdot?/mddot? (omm), elements?{altKm,ecc,incl,raan,argp,ma} (custom),
+//     ref?{groupId,key} + summary?{t0,t1,n,frame,interp} (ephem),
 //     apogeeKm, perigeeKm, groupLabel, custom? }
 
 import { fetchGroupLiveOrSup, parseOMMCsv } from '../viz/constellation/tle.js'
@@ -59,6 +62,33 @@ function fromCustom(satObj, noradId, constName, epoch) {
     elements: { altKm: Number(el.altKm) || 0, ecc, incl: Number(el.incl) || 0, raan: Number(el.raan) || 0, argp: Number(el.argp) || 0, ma: Number(el.ma) || 0 },
     ...apoPeri(a, ecc), groupLabel: '自定义 · ' + constName, custom: true
   }
+}
+
+// 读本地导入的【星历点序列】组 → 池记录（orbitType 'ephem'）。
+// 只读组清单里的元数据（起止 / 点数 / 插值口径），不取采样表 —— 建池时把几十 MB 的表拉过来毫无意义，
+// 真要取位时各引擎按 ref 去主进程拿（见 customSats.resolveOrbitSpec）。
+// 近远地点由「组清单里没有」→ 留 null：编不出来的数不许编，搜索列表那两列显示为空。
+async function loadEphemSats() {
+  try {
+    const api = (typeof window !== 'undefined') && window.api
+    if (!api || !api.omm || !api.omm.customList) return []
+    const r = await api.omm.customList()
+    const out = []
+    for (const g of ((r && r.groups) || [])) {
+      if (g.kind !== 'ephem') continue
+      for (const s of (g.sats || [])) {
+        out.push({
+          name: s.name, noradId: String(s.noradId), orbitType: 'ephem',
+          incl: null, meanMotion: null, ecc: null,
+          apogeeKm: null, perigeeKm: null,
+          ref: { groupId: g.id, key: s.key },
+          summary: { t0: s.t0, t1: s.t1, n: s.n, frame: s.frame, interp: s.interp },
+          groupLabel: '星历 · ' + g.name, custom: true, ephem: true
+        })
+      }
+    }
+    return out
+  } catch { return [] }
 }
 
 // 读本地自定义卫星库（文件管理导入的 OMM/TLE，主进程持久化为一份 OMM CSV）→ 池记录（orbitType 'omm'）。
@@ -121,13 +151,15 @@ export async function buildSearchPool() {
   // 自定义卫星库（文件管理导入的 OMM/TLE）：以用户库为准覆盖同号目录星（用户明确添加，优先级最高）。
   const customOmm = await loadCustomOmmSats()
   for (const c of customOmm) map.set(String(c.noradId), c)
+  // 星历点序列另走一路：它们的合成 NORAD 在 800000 段，与目录星不会撞号，无需并进 map 去重
+  const ephemSats = await loadEphemSats()
   const real = Array.from(map.values())
   const { sats: custom, names: customNames } = loadCustomSats()
   // 排序：自定义卫星（OMM 库 + Walker 星座）置顶，确保结果条数上限内先被扫到、搜得到；
   // 从 real 剔除已并入的自定义 OMM 星，避免同一颗出现两次。
   const customIds = new Set(customOmm.map((c) => String(c.noradId)))
   const realTail = real.filter((r) => !customIds.has(String(r.noradId)))
-  return { all: custom.concat(customOmm, realTail), real, custom, customNames }
+  return { all: custom.concat(ephemSats, customOmm, realTail), real, custom, customNames, ephem: ephemSats }
 }
 
 // 单例缓存：天线树选星（按 NORAD 反解真实轨道）与「搜索卫星」面板必须读**同一份**候选池，
@@ -175,6 +207,18 @@ export function orbitSpecOf(rec) {
       mddot: Number(rec.mddot) || 0
     }
   }
+  // 星历点序列：只传引用，表由主进程在进 core 之前按 ref 解析（表几 MB，不许进配置文件与 IPC 参数）
+  if (t === 'ephem') {
+    if (!rec.ref || !rec.ref.groupId) throw new Error('星历点序列缺少引用（组已删除？）')
+    return {
+      type: 'ephem',
+      noradId: String(rec.noradId),
+      name: rec.name || '',
+      ref: { groupId: rec.ref.groupId, key: rec.ref.key },
+      t0: rec.summary ? rec.summary.t0 : null,
+      t1: rec.summary ? rec.summary.t1 : null
+    }
+  }
   if (t === 'elements') {
     const el = rec.elements || {}
     return {
@@ -202,6 +246,8 @@ export function slotLonOf(rec) {
   if (Number.isFinite(given)) return given
   try {
     const t = rec.orbitType || 'omm'
+    // 点序列没有「定点经度」这个概念（它不是平均根数，也未必是 GEO）：返回 NaN，显示端留空
+    if (t === 'ephem') return NaN
     if (t === 'omm') return geoLonAtEpoch(sat.omm2satrec(rec))
     if (t === 'elements') {
       // 与 buildSatrec 的 'elements' 分支同一换算：a=(RE+近地点高度)/(1−e)，n=√(μ/a³)

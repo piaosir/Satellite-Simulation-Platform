@@ -445,6 +445,41 @@ module.exports = function createCustomSats(getCore) {
       interp: meta.interp || {}
     })
   }
+  // 轨道 spec 里的星历引用 -> 采样表。渲染端只传 ref（表几 MB，绝不进配置文件与 IPC 参数），
+  // 主进程在进 core 之前把它换成 samples —— core 不碰文件系统，拿不到表就点名报错，不会静默退成 SGP4。
+  function resolveOrbitSpec(spec) {
+    if (!spec || spec.type !== 'ephem' || spec.samples || spec.table) return spec
+    const ref = spec.ref || {}
+    const g = readStore().groups.find((x) => x.id === ref.groupId)
+    if (!g || g.kind !== 'ephem') return Object.assign({}, spec, { unresolved: '找不到星历组（可能已删除）' })
+    const raw = ephemStore.load(ref.groupId)
+    if (!raw) return Object.assign({}, spec, { unresolved: '星历采样文件读不出来' })
+    const meta = (g.sats || []).find((s) => (ref.key ? String(s.key) === String(ref.key) : true))
+    const s = meta && raw.sats.find((x) => String(x.key) === String(meta.key))
+    if (!s) return Object.assign({}, spec, { unresolved: '星历组里找不到这颗星' })
+    return Object.assign({}, spec, {
+      noradId: spec.noradId != null ? spec.noradId : meta.noradId,
+      name: spec.name || meta.name,
+      samples: { t: s.t, p: s.p, v: s.v || null, frame: 'TEME', spans: s.spans || null, interp: meta.interp || {} }
+    })
+  }
+  // 递归把请求体里所有 orbit spec 的 ref 换成 samples（各 link:* 通道的入参形状各不相同，
+  // 逐个手接迟早漏一处；深走一遍最省心，请求体本身只有几十个键）。
+  function resolveEphemDeep(obj, depth) {
+    const d = depth || 0
+    if (!obj || typeof obj !== 'object' || d > 6) return obj
+    if (Array.isArray(obj)) return obj.map((x) => resolveEphemDeep(x, d + 1))
+    if (obj.type === 'ephem' && obj.ref && !obj.samples && !obj.table) return resolveOrbitSpec(obj)
+    let out = obj, copied = false
+    for (const k of Object.keys(obj)) {
+      const v = obj[k]
+      if (!v || typeof v !== 'object') continue
+      const nv = resolveEphemDeep(v, d + 1)
+      if (nv !== v) { if (!copied) { out = Object.assign({}, obj); copied = true } out[k] = nv }
+    }
+    return out
+  }
+
   // ephem 组重建成可序列化的星记录（导出用）：采样按 TEME 存，这里换回组的原帧。
   function ephemSats(groupId) {
     const g = readStore().groups.find((x) => x.id === groupId)
@@ -573,7 +608,7 @@ module.exports = function createCustomSats(getCore) {
   return {
     list, raw, rawVisible, importFile, removeGroup, renameGroup, updateGroup,
     groupRecords, recordsCsv, recordsText, recordsEphemText, groupText, checkRecords,
-    ephemTable, ephemLookup, ephemSats, sampleGpToEphem,
+    ephemTable, ephemLookup, ephemSats, sampleGpToEphem, resolveOrbitSpec, resolveEphemDeep,
     _parseOMMCsv: parseOMMCsv
   }
 }

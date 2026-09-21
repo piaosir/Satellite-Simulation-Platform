@@ -516,25 +516,30 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   })
   // 可绘输出量清单（扫描器的因变量池，按物理意义分组）
   ipcMain.handle('link:outputDefs', () => core().lbOutputDefs.OUTPUT_GROUPS)
+  // ★ 星历点序列的「引用 -> 采样表」就在这一层做：渲染端只传 spec:{type:'ephem',ref:{groupId,key}}
+  //   （表几 MB，绝不进配置文件与 IPC 参数），进 core 之前换成 samples。core 不碰文件系统，
+  //   拿不到表它会点名报错而不是静默退成 SGP4 —— 那种错一眼看不出来。
+  //   非 ephem 的请求体原样返回同一个对象（深走只在真有 ephem 时才复制），gp 那条路开销为零。
+  const RE_ = (x) => (customSats && customSats.resolveEphemDeep ? customSats.resolveEphemDeep(x) : x)
   // NGSO 计算方式求解（同四种方式，切 NGSO 引擎，强制 ISL 跳数=0）
   ipcMain.handle('link:computeModeNGSO', (_e, s, l, opt) =>
     core().computeLinkModeNGSO
-      ? core().computeLinkModeNGSO(s || {}, l || {}, opt || {})
+      ? core().computeLinkModeNGSO(RE_(s || {}), l || {}, opt || {})
       : { success: false, message: 'NGSO 引擎未加载' })
   // 再生式上行计算方式求解（设置余量 / 设置功放；合计 C/N = 上行 C/(N+I)；复用 NGSO 几何）
   ipcMain.handle('link:computeRegenUplink', (_e, s, l, opt) =>
     core().computeRegenUplinkMode
-      ? core().computeRegenUplinkMode(s || {}, l || {}, opt || {})
+      ? core().computeRegenUplinkMode(RE_(s || {}), l || {}, opt || {})
       : { success: false, message: '再生式引擎未加载' })
   // 再生式下行计算方式求解（给定工作点 G/T / 目标余量；合计 C/N = 下行 C/(N+I)；复用 NGSO 几何）
   ipcMain.handle('link:computeRegenDownlink', (_e, s, l, opt) =>
     core().computeRegenDownlinkMode
-      ? core().computeRegenDownlinkMode(s || {}, l || {}, opt || {})
+      ? core().computeRegenDownlinkMode(RE_(s || {}), l || {}, opt || {})
       : { success: false, message: '再生式引擎未加载' })
   // 再生式星间计算（发射卫星 EIRP / 接收卫星 G/T；合计 C/N = 星间单跳 C/N）
   ipcMain.handle('link:computeRegenIsl', (_e, s, l, opt) =>
     core().computeRegenIslMode
-      ? core().computeRegenIslMode(s || {}, l || {}, opt || {})
+      ? core().computeRegenIslMode(RE_(s || {}), l || {}, opt || {})
       : { success: false, message: '再生式引擎未加载' })
   // 再生式星间激光计算（MathWorks 简化功率链 P_rx=P_tx+OE+G−LP−L_PS；余量=P_rx−P_req）
   ipcMain.handle('link:computeRegenLaser', (_e, p, opt) =>
@@ -544,28 +549,28 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   // 端到端链路（多跳 / 混合转发）：一条链一次算完（分段 + 级联 + 汇总）。批量＝渲染端逐行调用。
   ipcMain.handle('link:chainCompute', (_e, chain) =>
     core().computeLinkChain
-      ? core().computeLinkChain(chain || {})
+      ? core().computeLinkChain(RE_(chain || {}))
       : { success: false, message: '端到端链路引擎未加载' });
   // 星间链路(ISL)两星几何求解（双 SGP4 + 地球临边遮挡 → 最差星间距离 + 互视可见度 + 访问窗口）
   ipcMain.handle('link:islGeometry', (_e, opt) =>
     core().solveIslWorstCase
-      ? core().solveIslWorstCase(opt || {})
+      ? core().solveIslWorstCase(RE_(opt || {}))
       : { feasible: false, reason: '星间几何求解器未加载' })
   // 星间距离时间序列（双 SGP4 逐拍出星间距离/掠地高度/互视）：供「星间链路距离」工具的时间轴
   ipcMain.handle('link:islRangeSeries', (_e, opt) =>
     core().sampleIslRangeSeries
-      ? core().sampleIslRangeSeries(opt || {})
+      ? core().sampleIslRangeSeries(RE_(opt || {}))
       : { ok: false, reason: '星间几何求解器未加载' })
   // NGSO 站星几何求解（选星=SGP4/SDP4 单一典型时刻 t* 几何；手动=闭式球面最差 + 轨道根数）
   ipcMain.handle('link:ngsoGeometry', (_e, opt) =>
     core().solveNgsoMutualWorstCase
-      ? core().solveNgsoMutualWorstCase(opt || {})
+      ? core().solveNgsoMutualWorstCase(RE_(opt || {}))
       : { feasible: false, reason: 'NGSO 几何求解器未加载' })
   // 批量几何：一次带回整表各链路的几何。同一颗星、同一 t0/时窗下，SGP4 粗扫的传播部分与站址无关，
   // 主进程内各站对共享一份采样（结果与逐条调用逐位一致），顺带把 N 次 IPC 往返压成 1 次。
   ipcMain.handle('link:ngsoGeometryBatch', (_e, opt) =>
     core().solveNgsoMutualWorstCaseBatch
-      ? core().solveNgsoMutualWorstCaseBatch(opt || {})
+      ? core().solveNgsoMutualWorstCaseBatch(RE_(opt || {}))
       : (((opt && opt.pairs) || []).map(() => ({ feasible: false, reason: 'NGSO 几何求解器未加载' }))))
   // 批量计算方式求解：一组 linkParams 在主进程内连算完再一次返回（候选几何逐个跑引擎时用），
   // 逐条口径与 link:computeModeNGSO 完全相同，只省 IPC 往返
@@ -573,15 +578,16 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     const fn = core().computeLinkModeNGSO
     const arr = Array.isArray(list) ? list : []
     if (!fn) return arr.map(() => ({ success: false, message: 'NGSO 引擎未加载' }))
+    const sr = RE_(s || {})
     return arr.map((l) => {
-      try { return fn(s || {}, l || {}, opt || {}) }
+      try { return fn(sr, l || {}, opt || {}) }
       catch (err) { return { success: false, message: err.message || String(err) } }
     })
   })
   // 单站访问窗口（再生式几何：时窗内满足最低仰角及以上的全部过境）
   ipcMain.handle('link:accessWindows', (_e, opt) =>
     core().solveAccessWindows
-      ? core().solveAccessWindows(opt || {})
+      ? core().solveAccessWindows(RE_(opt || {}))
       : { feasible: false, reason: '访问窗口求解器未加载', windows: [] })
   // 经纬度 → 降雨率/海拔自动填值（与小程序口径一致）
   ipcMain.handle('link:geoFill', (_e, lat, lon) => core().geoAutoFill(parseFloat(lat), parseFloat(lon)))

@@ -20,6 +20,8 @@
 //   多普勒（选星）取 t* 该刻 |range-rate|（含地球自转）；无 t0ISO 时锚星历元(可复现)。
 
 const sat = require('../vendor/satellite.js');
+const orbitPos = require('./orbitPos.js');
+const ephemInterp = require('./ephemInterp.js');
 const { findWindows } = require('./eventWindows.js');
 
 // —— 几何权威常量（与 wgs84.js / walker.js / useCustomConstellations 同源）——
@@ -80,6 +82,24 @@ function buildSatrec(spec) {
       mddot: Number(spec.mddot) || 0
     });
   }
+  // 时间标签位置序列：不建 satrec，直接给一张插值表（orbitPos 认它）。
+  // 表【必须由调用方带上】—— 主进程拿到 spec:{type:'ephem',ref:{groupId,key}} 后先 ephemStore.load
+  // 解析成 samples 再进来（core 不碰文件系统）。只给 ref 不给表的，点名报错，绝不静默退成 SGP4。
+  if (spec.type === 'ephem') {
+    if (spec.table && spec.table.__ephem) return spec.table;
+    const s = spec.samples;
+    if (!s || !s.t || !s.p) {
+      throw new Error('星历点序列未解析成采样表（主进程应先按 ref 取表再调用几何引擎）');
+    }
+    const tab = ephemInterp.buildTable({
+      t: s.t, p: s.p, v: s.v || null, frame: s.frame || 'TEME',
+      spans: s.spans || null, interp: s.interp || {}
+    });
+    if (!tab) throw new Error('星历点序列没有有效采样点');
+    if (spec.noradId != null) tab.satnum = String(spec.noradId);
+    if (spec.name) tab.name = spec.name;
+    return tab;
+  }
   if (spec.type === 'elements') {
     // 经典六根数 → OMM：a=(Re+近地点高度)/(1−e)，n=√(μ/a³)，与 walker.js/useCustomConstellations 完全一致。
     // epoch 为自定义星座的场景历元 scenarioEpoch（由上游透传）；缺省才退回当前时刻（仅兜底）。
@@ -101,9 +121,27 @@ function buildSatrec(spec) {
   throw new Error('未知轨道来源 orbit.type: ' + spec.type);
 }
 
-// satrec 传播器标注：'d' 深空(SDP4) / 'n' 近地(SGP4)
+// 传播器标注：'d' 深空(SDP4) / 'n' 近地(SGP4) / 星历点序列
 function propagatorLabel(satrec) {
-  return satrec && satrec.method === 'd' ? 'SDP4' : 'SGP4';
+  return orbitPos.propagatorLabel(satrec);
+}
+
+// 传播体的默认锚点时刻（无显式 t0 时用）：satrec 锚星历元；星历点序列锚采样表起点。
+function anchorDate(satrec) {
+  if (satrec && satrec.__ephem) return new Date(satrec.t0);
+  return new Date((satrec.jdsatepoch + (satrec.jdsatepochF || 0) - 2440587.5) * 86400000);
+}
+const fmtUtcMin = (ms) => new Date(ms).toISOString().slice(0, 16).replace('T', ' ') + 'Z';
+// 星历点序列的采样时段与分析时窗相交：无交集给一句可读诊断，有交集返回收窄后的 [startMs, endMs]。
+// satrec 一路原样返回（SGP4 没有时段限制）。
+function ephemSpanClip(satrec, startMs, endMs) {
+  if (!satrec || !satrec.__ephem) return { startMs, endMs };
+  const a = Math.max(startMs, satrec.t0), b = Math.min(endMs, satrec.t1);
+  if (!(b > a)) {
+    return { reason: '星历时段 ' + fmtUtcMin(satrec.t0) + ' → ' + fmtUtcMin(satrec.t1) +
+      ' 与分析时段 ' + fmtUtcMin(startMs) + ' → ' + fmtUtcMin(endMs) + ' 不重叠' };
+  }
+  return { startMs: a, endMs: b };
 }
 
 // ============================================================================
@@ -111,9 +149,7 @@ function propagatorLabel(satrec) {
 // ============================================================================
 // station: { lonDeg, latDeg, altKm }
 function propagateAt(satrec, date) {
-  const pv = sat.propagate(satrec, date);
-  if (!pv || !pv.position || (satrec.error && satrec.error !== 0)) return null;
-  return pv;
+  return orbitPos.positionAt(satrec, date);
 }
 
 // 站址观测点（弧度）——同一个站在扫描循环里每样本都要用，值恒定，故可一次算好复用。
@@ -159,6 +195,9 @@ function subPoint(satrec, date) {
 // 3. 轨道根数（历元静态根数 + 派生量）
 // ============================================================================
 function staticElements(satrec) {
+  // 星历点序列：没有平均根数可取，只从采样反推可观测的几项（周期由相邻两次升交点估，
+  // 近远地点由 |r| 的极值给）。倾角 / RAAN / 近地点幅角一律留 null —— 编不出来的数不许编。
+  if (satrec && satrec.__ephem) return ephemElements(satrec);
   const nRadMin = satrec.no;              // rad/min
   const nRadS = nRadMin / 60;             // rad/s
   const a = Math.cbrt(MU / (nRadS * nRadS)); // km
@@ -418,11 +457,13 @@ function coupledTypicalMoment(satrec, tx, rx, opts) {
   const txMin = Math.max(0, Number(tx.minElevDeg) || 0);
   const rxMin = Math.max(0, Number(rx.minElevDeg) || 0);
   // 无显式 t0 时锚到星历元（确定性、可复现；且 TLE 在历元附近精度最高），而非非确定性的 wall-clock now()
-  const t0 = opts.t0ISO ? new Date(opts.t0ISO)
-    : new Date((satrec.jdsatepoch + (satrec.jdsatepochF || 0) - 2440587.5) * 86400000);
+  const t0 = opts.t0ISO ? new Date(opts.t0ISO) : anchorDate(satrec);
   const horizonHours = Number(opts.horizonHours) > 0 ? Number(opts.horizonHours) : 24;
-  const startMs = t0.getTime();
-  const endMs = startMs + horizonHours * 3600 * 1000;
+  // 星历点序列：扫描时窗与采样时段取交，无交集直接报「不重叠」（扫也扫不出东西，取位全是 null）
+  const clip = ephemSpanClip(satrec, t0.getTime(), t0.getTime() + horizonHours * 3600 * 1000);
+  if (clip.reason) return { feasible: false, reason: clip.reason };
+  const startMs = clip.startMs;
+  const endMs = clip.endMs;
   // 采样步长：周期的 1/3000 与「时窗均分 2 万点」取较大（既密采近地点快段、又封顶总传播次数）
   const periodSec = stat.periodMin * 60;
   const stepMs = Math.max(1000, Math.min(periodSec / 3000, horizonHours * 3600 / 20000) * 1000);
@@ -693,9 +734,10 @@ function solveAccessWindows(opts) {
   }
 
   const stat = staticElements(satrec);
-  const t0 = opts.t0ISO ? new Date(opts.t0ISO)
-    : new Date((satrec.jdsatepoch + (satrec.jdsatepochF || 0) - 2440587.5) * 86400000);
-  const startS = t0.getTime() / 1000, endS = startS + horizonHours * 3600;
+  const t0 = opts.t0ISO ? new Date(opts.t0ISO) : anchorDate(satrec);
+  const clip = ephemSpanClip(satrec, t0.getTime(), t0.getTime() + horizonHours * 3600000);
+  if (clip.reason) return { feasible: false, method, reason: clip.reason, windows: [] };
+  const startS = clip.startMs / 1000, endS = clip.endMs / 1000;
   const elAt = (ts) => { const la = lookAngles(satrec, station, new Date(ts * 1000)); return la ? la.elevDeg : NaN; };
   const f = (ts) => { const e = elAt(ts); return isFinite(e) ? e - minEl : NaN; };
   // 粗扫步长：周期 1/200 与 60s 取较小（既能抓住 LEO 短过境、又封顶总传播次数）
@@ -996,9 +1038,32 @@ function sampleIslRangeSeries(opts) {
   };
 }
 
+// 星历点序列的「静态量」：周期取相邻两次升交点之差（估不出就按整段时长），近远地点取 |r| 极值。
+function ephemElements(tab) {
+  let rMin = Infinity, rMax = 0;
+  for (let i = 0; i < tab.n; i++) {
+    const r = Math.hypot(tab.p[3 * i], tab.p[3 * i + 1], tab.p[3 * i + 2]);
+    if (r < rMin) rMin = r;
+    if (r > rMax) rMax = r;
+  }
+  const periodMin = ephemInterp.estimatePeriodMin(tab) || ((tab.t1 - tab.t0) / 60000);
+  const a = (rMin + rMax) / 2;
+  return {
+    a, e: rMax > 0 ? (rMax - rMin) / (rMax + rMin) : 0,
+    iDeg: null, raanDeg: null, argpDeg: null, maDeg: null,
+    meanMotionRevDay: periodMin > 0 ? 1440 / periodMin : 0,
+    periodMin,
+    apogeeAltKm: rMax - RE_KM,
+    perigeeAltKm: rMin - RE_KM,
+    epochJd: tab.t0 / 86400000 + 2440587.5,
+    satnum: tab.satnum || '',
+    ephem: { t0: tab.t0, t1: tab.t1, n: tab.n }
+  };
+}
+
 module.exports = {
   RE_KM, MU, OMEGA_E, C_KM_S, ECC_CIRCULAR_TOL,
-  buildSatrec,
+  buildSatrec, ephemElements, anchorDate, ephemSpanClip,
   solveAccessWindows,
   solveIslWorstCase,
   sampleIslRangeSeries,
