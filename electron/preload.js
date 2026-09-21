@@ -90,6 +90,7 @@ contextBridge.exposeInMainWorld('api', {
     exportWord: (payload) => ipcRenderer.invoke('sunoutage:exportWord', payload),
     exportIcs: (payload) => ipcRenderer.invoke('sunoutage:exportIcs', payload),
     // 城市库（转发链路预算那条通道，与 rainAttenuation 同法）
+    cities: () => ipcRenderer.invoke('link:cities'),
     searchCities: (kw) => ipcRenderer.invoke('link:searchCities', kw),
     cityGroups: () => ipcRenderer.invoke('link:cityGroups'),
     onCloseRequested: (cb) => ipcRenderer.on('suntool:closeRequested', cb),
@@ -277,10 +278,18 @@ contextBridge.exposeInMainWorld('api', {
     customCsv: () => ipcRenderer.invoke('omm:customCsv'),
     customGroupRecords: (groupId) => ipcRenderer.invoke('omm:customGroupRecords', groupId),
     customImport: () => ipcRenderer.invoke('omm:customImport'),
+    // 拖放导入：渲染端 FileReader 读成文本再传（[{name,text}]），不依赖 Electron 版本的 File.path
+    customImportText: (files) => ipcRenderer.invoke('omm:customImportText', files),
     customRemove: (groupId) => ipcRenderer.invoke('omm:customRemove', groupId),
     customRename: (groupId, name) => ipcRenderer.invoke('omm:customRename', groupId, name),
-    customExportGroup: (groupId, defaultName, format) => ipcRenderer.invoke('omm:customExportGroup', groupId, defaultName, format),
-    exportRecords: (records, defaultName, format) => ipcRenderer.invoke('omm:exportRecords', records, defaultName, format),
+    // 星座栏「导入星历」区块：显隐 / 配色落库
+    customUpdateGroup: (groupId, patch) => ipcRenderer.invoke('omm:customUpdateGroup', groupId, patch),
+    // 地图用：只吐可见 gp 组的并集 + NORAD→组 归属表
+    customRawVisible: () => ipcRenderer.invoke('omm:customRawVisible'),
+    // 某点序列组的采样表（typed array 走结构化克隆）
+    ephemTable: (groupId) => ipcRenderer.invoke('omm:ephemTable', groupId),
+    customExportGroup: (groupId, defaultName, format, opts) => ipcRenderer.invoke('omm:customExportGroup', groupId, defaultName, format, opts),
+    exportRecords: (records, defaultName, format, opts) => ipcRenderer.invoke('omm:exportRecords', records, defaultName, format, opts),
     // 星历取数链路的操作明细（主进程广播）→ 底部「日志」窗格；{ text, level }
     onLog: (cb) => ipcRenderer.on('omm:log', (_e, p) => cb(p))
   },

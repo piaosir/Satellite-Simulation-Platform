@@ -56,6 +56,9 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     // ② 浏览面（只读查询，不产出交付物）
     'omm:load', 'omm:positions', 'omm:csv', 'omm:list',
     'omm:customList', 'omm:customCsv', 'omm:customGroupRecords',
+    // 地图取星的两条：customRawVisible 顶替 customCsv 供「自定义卫星」分组取可见组的并集，
+    // ephemTable 供点序列星取位。不放行主窗口的星座图就空了一半（与 customCsv 同一条理由）。
+    'omm:customRawVisible', 'omm:ephemTable',
     'coverage:index', 'coverage:get',
     'coverageGrd:index', 'coverageGrd:get', 'coverageGrd:raw',
     'coverageGxt:index', 'coverageGxt:get', 'coverageGxt:raw',
@@ -102,11 +105,19 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   // 故一律以最终 filePath 的扩展名为准（选了类型，文件名的扩展名就跟着变，两者天然同步）。
   const eph = require('../../packages/core/utils/ommFormats.js')
   // 只收无歧义的扩展名。'.txt' 不在表里是有意的：TLE/3LE/OMM 都有人存成 .txt，用它猜格式必然猜错一半。
-  const EXT2FMT = { csv: 'omm-csv', json: 'omm-json', kvn: 'omm-kvn', xml: 'omm-xml', tle: 'tle', '3le': '3le' }
+  const EXT2FMT = { csv: 'omm-csv', json: 'omm-json', kvn: 'omm-kvn', xml: 'omm-xml', tle: 'tle', '3le': '3le', e: 'stk-e', oem: 'ccsds-oem-kvn' }
+  // 点序列那一侧的同名表：.xml 在两套体系里都合法（OMM/XML 与 OEM/XML），
+  // 故按「本次导出想要的是哪一类」分表查，不靠扩展名单独断。
+  const ephF = require('../../packages/core/utils/ephemFormats.js')
+  const EXT2FMT_EPH = { e: 'stk-e', oem: 'ccsds-oem-kvn', xml: 'ccsds-oem-xml', kvn: 'ccsds-oem-kvn', sp3: 'sp3' }
+  const isEphemFmt = (f) => ephF.FORMATS.includes(f)
   // 扩展名认不出（手打了 .txt、或压根没打扩展名）时不硬猜，落回对话框里选中的那个格式 want——
   // 否则「类型选 OMM CSV、文件名手打 a.txt」会静默导出成 3LE，文件打开前一点提示都没有。
-  const fmtOfPath = (fp, want) => EXT2FMT[String(fp || '').split('.').pop().toLowerCase()]
-    || (eph.FORMATS.includes(want) ? want : 'omm-csv')
+  const fmtOfPath = (fp, want) => {
+    const ext = String(fp || '').split('.').pop().toLowerCase()
+    if (isEphemFmt(want)) return EXT2FMT_EPH[ext] || want
+    return EXT2FMT[ext] || (eph.FORMATS.includes(want) ? want : 'omm-csv')
+  }
   // 保存对话框的类型下拉：把 preferred 排在首位，它决定默认扩展名与默认选中项
   function saveFilters(preferred) {
     const all = [
@@ -115,13 +126,25 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
       { name: 'OMM KVN（CCSDS）', extensions: ['kvn'] },
       { name: 'OMM XML（CCSDS）', extensions: ['xml'] },
       { name: 'TLE（两行）', extensions: ['tle'] },
-      { name: '3LE（三行）', extensions: ['3le'] }
+      { name: '3LE（三行）', extensions: ['3le'] },
+      { name: 'STK 星历（.e）', extensions: ['e'] },
+      { name: 'CCSDS OEM（KVN）', extensions: ['oem'] }
+    ]
+    const i = all.findIndex((f) => f.extensions[0] === preferred)
+    return i > 0 ? [all[i]].concat(all.slice(0, i), all.slice(i + 1)) : all
+  }
+  // 点序列组的保存下拉：只给点序列三种（它没有平均根数，出不了 OMM/TLE）
+  function saveFiltersEphem(preferred) {
+    const all = [
+      { name: 'STK 星历（.e）', extensions: ['e'] },
+      { name: 'CCSDS OEM（KVN）', extensions: ['oem'] },
+      { name: 'CCSDS OEM（XML）', extensions: ['xml'] }
     ]
     const i = all.findIndex((f) => f.extensions[0] === preferred)
     return i > 0 ? [all[i]].concat(all.slice(0, i), all.slice(i + 1)) : all
   }
   const openFilters = () => [
-    { name: '星历文件 (OMM CSV/JSON/KVN/XML · TLE/3LE)', extensions: ['csv', 'json', 'kvn', 'xml', 'tle', '3le', 'txt'] },
+    { name: '星历文件 (OMM · TLE · STK .e · CCSDS OEM · SP3 · GPS 年历)', extensions: ['csv', 'json', 'kvn', 'xml', 'tle', '3le', 'txt', 'e', 'oem', 'sp3', 'sp3c', 'sp3d', 'alm', 'al3'] },
     { name: '所有文件', extensions: ['*'] }
   ]
 
@@ -211,6 +234,34 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   // 删除 / 改名某个导入组
   ipcMain.handle('omm:customRemove', (_e, groupId) => customSats.removeGroup(groupId))
   ipcMain.handle('omm:customRename', (_e, groupId, name) => customSats.renameGroup(groupId, name))
+  // 星座栏「导入星历」区块：显隐 / 配色落库（只改这两项）
+  ipcMain.handle('omm:customUpdateGroup', (_e, groupId, patch) => customSats.updateGroup(groupId, patch))
+  // 地图用的扁平并集：只吐【可见】的 gp 组，另附 NORAD -> 'ci:<组id>' 归属表（按组着色靠它）
+  ipcMain.handle('omm:customRawVisible', () => customSats.rawVisible())
+  // 某 ephem 组的采样表：typed array 走结构化克隆原样过去，不转普通数组（几 MB 的表转数组会慢一个量级）
+  ipcMain.handle('omm:ephemTable', (_e, groupId) => customSats.ephemTable(groupId))
+  // 拖放导入：渲染端 FileReader 读好文本再传（不依赖 Electron 版本的 File.path）
+  ipcMain.handle('omm:customImportText', (_e, files) => {
+    const list = Array.isArray(files) ? files : []
+    const acc = { ok: true, groups: 0, sats: 0, replaced: 0, invalid: 0, ephem: 0, errors: [], warnings: [], formats: [], kinds: {} }
+    for (const f of list) {
+      const base = String((f && f.name) || '星历').replace(/\.[^.]+$/, '')
+      const r = customSats.importFile(base, String((f && f.text) || ''))
+      accImport(acc, base, r)
+    }
+    return acc
+  })
+  // 导入结果累加（原生对话框与拖放两条路共用，口径必须一致）
+  function accImport(acc, label, r) {
+    if (!r || !r.ok) { acc.errors.push(label + '：' + ((r && r.error) || '导入失败')); return }
+    acc.groups += 1; acc.sats += r.group.count; acc.replaced += r.replaced ? 1 : 0; acc.invalid += r.invalid || 0
+    const kind = r.group.kind || 'gp'
+    acc.kinds[kind] = (acc.kinds[kind] || 0) + 1
+    if (kind === 'ephem') acc.ephem += r.group.count
+    if (r.group.format && acc.formats.indexOf(r.group.format) < 0) acc.formats.push(r.group.format)
+    if (r.errors && r.errors.length) acc.errors.push(...r.errors)
+    if (r.warnings && r.warnings.length) acc.warnings.push(...r.warnings)
+  }
   // 导入星历（可多选）：每个文件 = 一个命名组（同名替换），六种官方格式按内容自动识别。
   ipcMain.handle('omm:customImport', async (e) => {
     const win = BrowserWindow.fromWebContents(e.sender)
@@ -219,35 +270,38 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     })
     if (canceled || !filePaths || !filePaths.length) return { canceled: true }
     const path = require('path')
-    const acc = { ok: true, groups: 0, sats: 0, replaced: 0, invalid: 0, errors: [], warnings: [], formats: [] }
+    const acc = { ok: true, groups: 0, sats: 0, replaced: 0, invalid: 0, ephem: 0, errors: [], warnings: [], formats: [], kinds: {} }
     for (const fp of filePaths) {
-      const base = path.basename(fp).replace(/\.(csv|json|kvn|xml|tle|3le|txt)$/i, '')
+      const base = path.basename(fp).replace(/\.(csv|json|kvn|xml|tle|3le|txt|e|oem|sp3|sp3c|sp3d|alm|al3)$/i, '')
       let text
       try { text = fs.readFileSync(fp, 'utf8') } catch (err) { acc.errors.push(path.basename(fp) + '：读取失败 ' + (err.message || err)); continue }
-      const r = customSats.importFile(base, text)
-      if (!r.ok) { acc.errors.push(path.basename(fp) + '：' + (r.error || '导入失败')); continue }
-      acc.groups += 1; acc.sats += r.group.count; acc.replaced += r.replaced ? 1 : 0; acc.invalid += r.invalid || 0
-      if (r.group.format && acc.formats.indexOf(r.group.format) < 0) acc.formats.push(r.group.format)
-      if (r.errors && r.errors.length) acc.errors.push(...r.errors)
-      if (r.warnings && r.warnings.length) acc.warnings.push(...r.warnings)
+      accImport(acc, path.basename(fp), customSats.importFile(base, text))
     }
     return acc
   })
   // 导出某个导入组（文件历元）。格式与导入时相同 → 吐原文，逐字节等同官方源文件。
-  ipcMain.handle('omm:customExportGroup', async (e, groupId, defaultName, format) => {
-    if (!customSats.groupRecords(groupId)) return { ok: false, error: '该组不存在' }
-    return saveEph(e, defaultName || '导入组', format, (fmt) => customSats.groupText(groupId, fmt), '该组无卫星可导出')
+  // 点序列组只给点序列三格式；gp 组导出成点序列格式时按 opts 用 SGP4 采样（缺省历元 ±1 天 / 60 s / TEME）。
+  ipcMain.handle('omm:customExportGroup', async (e, groupId, defaultName, format, opts) => {
+    const g = (customSats.list().groups || []).find((x) => x.id === groupId)
+    if (!g) return { ok: false, error: '该组不存在' }
+    const isEph = g.kind === 'ephem'
+    return saveEph(e, defaultName || (isEph ? '导入星历' : '导入组'), format,
+      (fmt) => customSats.groupText(groupId, fmt, opts), '该组无卫星可导出', isEph)
   })
   // 导出任意 OMM 记录（自建星座展开记录由渲染进程传入，场景历元）
-  ipcMain.handle('omm:exportRecords', async (e, records, defaultName, format) => {
-    return saveEph(e, defaultName || '自定义星历', format, (fmt) => customSats.recordsText(records, fmt), '无可导出的星历记录')
+  ipcMain.handle('omm:exportRecords', async (e, records, defaultName, format, opts) => {
+    return saveEph(e, defaultName || '自定义星历', format,
+      (fmt) => (isEphemFmt(fmt) ? customSats.recordsEphemText(records, fmt, opts) : customSats.recordsText(records, fmt)),
+      '无可导出的星历记录')
   })
   // 保存对话框 → 按最终扩展名定格式 → 交给 build(fmt) 出文本
-  async function saveEph(e, baseName, format, build, emptyMsg) {
-    const pref = eph.FORMAT_EXT[format] || 'csv'
+  async function saveEph(e, baseName, format, build, emptyMsg, ephemOnly) {
+    const pref = (ephemOnly ? ephF.FORMAT_EXT[format] : (eph.FORMAT_EXT[format] || ephF.FORMAT_EXT[format]))
+    const ext = String(pref || (ephemOnly ? '.e' : 'csv')).replace(/^\./, '')
     const win = BrowserWindow.fromWebContents(e.sender)
     const { canceled, filePath } = await dialog.showSaveDialog(win, {
-      defaultPath: `${baseName}_OMM.${pref}`, filters: saveFilters(pref)
+      defaultPath: `${baseName}_${ephemOnly ? '星历' : 'OMM'}.${ext}`,
+      filters: ephemOnly ? saveFiltersEphem(ext) : saveFilters(ext)
     })
     if (canceled || !filePath) return { ok: false, canceled: true }
     const fmt = fmtOfPath(filePath, format)
