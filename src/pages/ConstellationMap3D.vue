@@ -84,6 +84,7 @@ import { useCustomConstellations, customConstellationsToOmmRecords, NORAD_BASE }
 import { useSatGroups } from '../viz/constellation/useSatGroups.js'
 import { makeSatSetItem } from '../shared/satconMiniExport.js'
 import { walkerCode, orbitPeriodMin, validateWalker } from '../viz/constellation/walker.js'
+import OD from '../viz/constellation/orbitDesign.js'   // 轨道向导求解器（九种类型 -> 六根数）
 import { classifyOrbit } from '../shared/orbitClass.js'
 import { fmtGeoSlot, geoSlotOfSatrec, geoSlotOfOmm } from '../shared/geoSlot.js'
 import { byLang, curLang } from '../shared/i18n/lang.js'   // 空名占位是界面语汇，却画在打了 skip 的名字位上（呈现层翻不到），故在这里按语言出字
@@ -1575,21 +1576,62 @@ async function loadEphemEntries() {
 }
 
 // 生成/编辑向导草稿（null=关闭）
+// orbitType = 轨道向导的九种类型之一；'custom' 就是原来那套六根数表单（旧存档没有 design 字段，
+// 读回时一律当 'custom'，行为与从前逐字一致）。design 存该类型自己的输入，供再编辑回显。
 const constModal = ref(null)
 function defaultConstDraft() {
-  return { id: null, name: byLang('自定义星座', 'Custom Constellation'), pattern: 'delta', T: 24, P: 6, F: 1, incl: 53, shape: 'circ', perigeeKm: 550, apogeeKm: 550, argp: 0, raan0: 0, m0: 0, color: '#4dabf7', colorByPlane: true }
+  return {
+    id: null, name: byLang('自定义星座', 'Custom Constellation'),
+    orbitType: 'custom', design: OD.defaultInputs('custom'),
+    pattern: 'delta', T: 24, P: 6, F: 1, incl: 53, shape: 'circ', perigeeKm: 550, apogeeKm: 550, argp: 0, raan0: 0, m0: 0,
+    color: '#4dabf7', colorByPlane: true,
+    previewRevs: 1, pvOrbit: true, pvTrack: true, pvFoot: false
+  }
 }
 function openConstWizard(cfg) {
-  if (cfg) constModal.value = { ...defaultConstDraft(), id: cfg.id, name: cfg.name, color: cfg.color, colorByPlane: cfg.colorByPlane !== false, ...cfg.params }
-  else constModal.value = defaultConstDraft()
+  if (cfg) {
+    const d = cfg.design || null
+    constModal.value = { ...defaultConstDraft(), id: cfg.id, name: cfg.name, color: cfg.color, colorByPlane: cfg.colorByPlane !== false, ...cfg.params,
+      orbitType: (d && d.type) || 'custom', design: (d && d.inputs) ? { ...d.inputs } : OD.defaultInputs('custom') }
+  } else constModal.value = defaultConstDraft()
+}
+// 换轨道类型：换一套缺省输入（'custom' 那一档用当前表单值回填，切过去不丢已填的根数）
+function setOrbitType(t) {
+  const m = constModal.value; if (!m || m.orbitType === t) return
+  m.orbitType = t
+  m.design = t === 'custom'
+    ? { shape: m.shape, perigeeKm: m.perigeeKm, apogeeKm: m.apogeeKm, inclDeg: m.incl, argpDeg: m.argp, raanDeg: m.raan0, m0Deg: m.m0 }
+    : OD.defaultInputs(t)
+}
+const setDesign = (k, v) => { const m = constModal.value; if (m) m.design = { ...m.design, [k]: v } }
+// 当前草稿解出来的一组根数（null = 解不出来，读数区与预览都据此停住）
+const constSolved = computed(() => {
+  const m = constModal.value; if (!m) return null
+  const t0 = ccTimeAt().getTime()
+  const inputs = m.orbitType === 'custom'
+    ? { shape: m.shape, perigeeKm: m.perigeeKm, apogeeKm: m.apogeeKm, inclDeg: m.incl, argpDeg: m.argp, raanDeg: m.raan0, m0Deg: m.m0 }
+    : m.design
+  return OD.solveDesign(m.orbitType, inputs, t0, { gmst: sat.gstime(new Date(t0)) })
+})
+// 某一项输入有没有被判错（界面据此给红框）
+const constFieldBad = (field) => {
+  const s = constSolved.value
+  return !!(s && !s.ok && s.errs.some((e) => e.field === field))
 }
 function closeConstWizard() {
   const editId = constModal.value && constModal.value.id
   constModal.value = null   // 触发 watch：撤预览 + 重建
   if (editId) nextTick(() => rebindSelection('cc_' + editId))   // 编辑现有星座取消：选中重绑回原版
 }
-// 草稿 → 生成参数（校验后调用）
+// 草稿 → 生成参数（校验后调用）。
+// 轨道向导的八种类型：先解出一组根数再交给既有的 seedToParams / generateConstellation —— 
+// walker.js 一个字没改，向导只是换了一种【输入】方式。
 function draftParams(m) {
+  if (m.orbitType && m.orbitType !== 'custom') {
+    const s = constSolved.value
+    if (!s || !s.ok) return null
+    return OD.seedToParams(s.seed, { pattern: m.pattern, T: m.T, P: m.P, F: m.F }, m.name)
+  }
   return {
     pattern: m.pattern, T: Math.round(+m.T) || 1, P: Math.max(1, Math.round(+m.P) || 1), F: Math.round(+m.F) || 0,
     incl: +m.incl || 0, shape: m.shape, perigeeKm: +m.perigeeKm || 0,
@@ -1599,38 +1641,81 @@ function draftParams(m) {
 }
 function saveConstWizard() {
   const m = constModal.value; if (!m) return
-  const v = validateWalker(m)
+  const params = draftParams(m)
+  if (!params) { const s = constSolved.value; appAlert((s && s.errs.map((e) => e.msg).join('；')) || '轨道解不出来'); return }
+  const v = validateWalker(params)
   if (!v.ok) { appAlert(v.errs.join('；')); return }
   customConst.setPreview(null)   // 撤实时预览，避免与提交版本重叠
-  const draft = { name: m.name, params: draftParams(m), color: m.color, colorByPlane: m.colorByPlane !== false }
+  const draft = { name: m.name, params, color: m.color, colorByPlane: m.colorByPlane !== false,
+    design: { type: m.orbitType || 'custom', inputs: { ...(m.design || {}) } } }
   let id = m.id
   if (m.id) customConst.update(m.id, draft); else { const cfg = customConst.add(draft); id = cfg.id }
   rebindSelection('cc_' + id)   // 选中的预览星重绑到提交版本，卡片/覆盖/星下点/轨迹不断
   constModal.value = null
   if (!m.id) showConstAlone({ id })   // 新建星座：生成后单独显示（与「选哪个看哪个」一致，不叠加内置组）；编辑则保持当前显示
 }
+// 向导预览的图层与圈数：开着时按草稿临时覆盖聚焦样式，关闭时【原样还回去】。
+// 存的是进向导那一刻的用户原值，中途改草稿不会把它冲掉。
+let _wizStyleSaved = null
+function applyWizardPreviewStyle(m) {
+  if (!_wizStyleSaved) _wizStyleSaved = { orbOn: focusStyle.orbOn, trkOn: focusStyle.trkOn, fpOn: focusStyle.fpOn, trkSpanMode: focusStyle.trkSpanMode, trkPeriods: focusStyle.trkPeriods }
+  focusStyle.orbOn = m.pvOrbit !== false
+  focusStyle.trkOn = m.pvTrack !== false
+  focusStyle.fpOn = !!m.pvFoot
+  focusStyle.trkSpanMode = 'rev'
+  const n = Math.max(1, Math.min(20, Math.round(Number(m.previewRevs) || 1)))
+  focusStyle.trkPeriods = n
+}
+function restoreWizardPreviewStyle() {
+  if (!_wizStyleSaved) return
+  Object.assign(focusStyle, _wizStyleSaved)
+  _wizStyleSaved = null
+}
 // 编辑器打开时：参数变动实时预览到地球（防抖 140ms；非法参数撤预览）。关闭时撤预览。
 let _cpvTimer = null
 watch(constModal, (m) => {
   if (_cpvTimer) { clearTimeout(_cpvTimer); _cpvTimer = null }
-  if (!m) { customConst.setPreview(null); rebuildRenderSet(); return }
+  if (!m) { customConst.setPreview(null); restoreWizardPreviewStyle(); rebuildRenderSet(); return }
   _cpvTimer = setTimeout(() => {
     _cpvTimer = null
     const cur = constModal.value; if (!cur) return
-    if (!validateWalker(cur).ok) { customConst.setPreview(null); rebuildRenderSet(); return }
-    customConst.setPreview({ id: cur.id, name: cur.name, color: cur.color, colorByPlane: cur.colorByPlane !== false, params: draftParams(cur) })
+    const params = draftParams(cur)
+    if (!params || !validateWalker(params).ok) { customConst.setPreview(null); rebuildRenderSet(); return }
+    customConst.setPreview({ id: cur.id, name: cur.name, color: cur.color, colorByPlane: cur.colorByPlane !== false, params })
     rebuildRenderSet()
+    applyWizardPreviewStyle(cur)        // 预览圈数 + 三个图层开关（关闭向导时恢复用户原值）
     rebindSelection('cc___preview__')   // 选中该星座的星 → 随参数实时更新覆盖/星下点/轨迹/卡片
   }, 140)
 }, { deep: true })
 // 向导实时预览：每面数 / 面间相位 / Walker 码 / 周期 / 校验提示
 const constDerived = computed(() => {
   const m = constModal.value; if (!m) return null
-  const T = Math.round(+m.T) || 0, P = m.pattern === 'plane' ? 1 : Math.max(1, Math.round(+m.P) || 1), F = Math.round(+m.F) || 0
-  const S = Math.floor(T / P) || 0
-  const v = validateWalker(m)
-  return { S, total: m.pattern === 'plane' ? T : P * S, phase: (T ? F * 360 / T : 0).toFixed(1), code: walkerCode(m), periodMin: orbitPeriodMin(m).toFixed(1), warns: v.warns, errs: v.errs }
+  const single = m.pattern === 'single'
+  const T = single ? 1 : (Math.round(+m.T) || 0)
+  const P = (single || m.pattern === 'plane') ? 1 : Math.max(1, Math.round(+m.P) || 1)
+  const F = (single || m.pattern === 'plane') ? 0 : (Math.round(+m.F) || 0)
+  const S = single ? 1 : (Math.floor(T / P) || 0)
+  const s = constSolved.value
+  // 布局校验按【解出来的 params】判，解不出来就只报求解器的错（别再叠一层 Walker 的）
+  const params = s && s.ok ? draftParams(m) : null
+  const v = params ? validateWalker(params) : { warns: [], errs: [] }
+  const warns = (s ? s.warns : []).concat(v.warns)
+  const errs = (s && !s.ok ? s.errs.map((e) => e.msg) : []).concat(v.errs)
+  return {
+    S, total: single ? 1 : (m.pattern === 'plane' ? T : P * S),
+    phase: (T ? F * 360 / T : 0).toFixed(1),
+    code: params ? walkerCode(params) : '—',
+    seed: s && s.ok ? s.seed : null,
+    d: s && s.ok ? s.derived : null,
+    warns, errs
+  }
 })
+// LTAN 读数（hh:mm）；解不出来显示「—」
+const ltanText = computed(() => {
+  const d = constDerived.value && constDerived.value.d
+  return d ? OD.formatHm(d.ltanHours) : '—'
+})
+const ORBIT_TYPES = OD.ORBIT_TYPES
 const ccCode = (c) => walkerCode(c.params)
 // 点击自定义星座行 → 单独显示该星座（内置组切「无」，仅该星座可见）
 function showConstAlone(c) {
@@ -7240,50 +7325,155 @@ onBeforeUnmount(() => {
               <span class="celive" title="改动实时预览到地球">● 实时</span>
             </div>
             <div class="cebody">
-              <div class="cef"><label>星座名称</label><input class="ci" v-model="constModal.name" placeholder="星座名称" /></div>
-              <div class="cef"><label>星座构型</label>
+              <div class="cef"><label>轨道类型</label>
+                <select class="ci" :value="constModal.orbitType" @change="setOrbitType($event.target.value)"
+                  title="按 STK Orbit Wizard 的九种类型出题：给「设计意图」（高度 / 地方时 / 回归圈数 / 星下点经度…），解出六根数">
+                  <option v-for="t in ORBIT_TYPES" :key="t.key" :value="t.key">{{ byLang(t.zh, t.en) }}</option>
+                </select>
+              </div>
+              <div class="cef"><label>布局</label>
                 <span class="seg3">
+                  <span :class="{ on: constModal.pattern === 'single' }" @click="constModal.pattern = 'single'">单星</span>
                   <span :class="{ on: constModal.pattern === 'delta' }" @click="constModal.pattern = 'delta'">Delta</span>
                   <span :class="{ on: constModal.pattern === 'star' }" @click="constModal.pattern = 'star'">Star</span>
                   <span :class="{ on: constModal.pattern === 'plane' }" @click="constModal.pattern = 'plane'">单轨道面</span>
                 </span>
               </div>
+              <div class="cef"><label>星座名称</label><input class="ci" v-model="constModal.name" placeholder="星座名称" /></div>
 
-              <div class="cesec">Walker 构型参数 (i : T/P/F)</div>
-              <div class="cetpf">
-                <div><small>卫星总数 T</small><input class="ci" type="number" min="1" step="1" v-model.number="constModal.T" /></div>
-                <div v-if="constModal.pattern !== 'plane'"><small>轨道面数 P</small><input class="ci" type="number" min="1" step="1" v-model.number="constModal.P" /></div>
-                <div v-if="constModal.pattern !== 'plane'"><small>相位因子 F</small><input class="ci" type="number" min="0" step="1" v-model.number="constModal.F" /></div>
-              </div>
-              <div class="cef"><label>轨道倾角 i</label><input class="ci" type="number" step="0.1" v-model.number="constModal.incl" /><span class="u">°</span></div>
-
-              <div class="cesec">轨道尺寸与形状</div>
-              <div class="cef"><label>轨道形状</label>
-                <span class="seg3">
-                  <span :class="{ on: constModal.shape === 'circ' }" @click="constModal.shape = 'circ'">圆轨道</span>
-                  <span :class="{ on: constModal.shape === 'ellip' }" @click="constModal.shape = 'ellip'">椭圆轨道</span>
-                </span>
-              </div>
-              <div class="cefv"><label>{{ constModal.shape === 'ellip' ? '近地点高度 hₚ' : '轨道高度 h' }}</label><div class="ceinp"><input class="ci" type="number" step="10" v-model.number="constModal.perigeeKm" /><span class="u">km</span></div></div>
-              <template v-if="constModal.shape === 'ellip'">
-                <div class="cefv"><label>远地点高度 hₐ</label><div class="ceinp"><input class="ci" type="number" step="10" v-model.number="constModal.apogeeKm" /><span class="u">km</span></div></div>
-                <div class="cefv"><label>近地点幅角 ω</label><div class="ceinp"><input class="ci" type="number" step="1" v-model.number="constModal.argp" /><span class="u">°</span></div></div>
+              <!-- 轨道设计：每种类型只问自己要的那几项 -->
+              <template v-if="constModal.orbitType !== 'custom'">
+                <div class="cesec">轨道设计</div>
+                <template v-if="constModal.orbitType === 'circular'">
+                  <div class="cefv"><label>轨道倾角 i</label><div class="ceinp"><NumBox class="ci" :class="{ bad: constFieldBad('inclDeg') }" :model-value="constModal.design.inclDeg" :min="0" :max="180" :step="0.1" @commit="v => setDesign('inclDeg', v)" /><span class="u">°</span></div></div>
+                  <div class="cefv"><label>轨道高度 h</label><div class="ceinp"><NumBox class="ci" :class="{ bad: constFieldBad('altKm') }" :model-value="constModal.design.altKm" :min="80" :step="10" @commit="v => setDesign('altKm', v)" /><span class="u">km</span></div></div>
+                  <div class="cefv"><label>升交点赤经 Ω</label><div class="ceinp"><NumBox class="ci" :model-value="constModal.design.raanDeg" :step="1" @commit="v => setDesign('raanDeg', v)" /><span class="u">°</span></div></div>
+                </template>
+                <template v-else-if="constModal.orbitType === 'critical'">
+                  <div class="cef"><label>方向</label>
+                    <span class="seg3">
+                      <span :class="{ on: constModal.design.direction !== 'retro' }" title="顺行 63.4349°" @click="setDesign('direction', 'pro')">顺行</span>
+                      <span :class="{ on: constModal.design.direction === 'retro' }" title="逆行 116.5651°" @click="setDesign('direction', 'retro')">逆行</span>
+                    </span>
+                  </div>
+                  <div class="cefv"><label>远地点高度 hₐ</label><div class="ceinp"><NumBox class="ci" :class="{ bad: constFieldBad('apogeeKm') }" :model-value="constModal.design.apogeeKm" :step="10" @commit="v => setDesign('apogeeKm', v)" /><span class="u">km</span></div></div>
+                  <div class="cefv"><label>近地点高度 hₚ</label><div class="ceinp"><NumBox class="ci" :class="{ bad: constFieldBad('perigeeKm') }" :model-value="constModal.design.perigeeKm" :min="80" :step="10" @commit="v => setDesign('perigeeKm', v)" /><span class="u">km</span></div></div>
+                  <div class="cefv"><label>升交点经度 λ</label><div class="ceinp"><NumBox class="ci" :model-value="constModal.design.anLonDeg" :min="-180" :max="180" :step="1" @commit="v => setDesign('anLonDeg', v)" /><span class="u">°</span></div></div>
+                  <div class="cefv"><label>近地点幅角 ω</label><div class="ceinp"><NumBox class="ci" :model-value="constModal.design.argpDeg" :step="1" @commit="v => setDesign('argpDeg', v)" /><span class="u">°</span></div></div>
+                </template>
+                <template v-else-if="constModal.orbitType === 'criticalSunSync'">
+                  <div class="cefv"><label>近地点高度 hₚ</label><div class="ceinp"><NumBox class="ci" :class="{ bad: constFieldBad('perigeeKm') }" :model-value="constModal.design.perigeeKm" :min="80" :step="10" @commit="v => setDesign('perigeeKm', v)" /><span class="u">km</span></div></div>
+                  <div class="cefv"><label>升交点经度 λ</label><div class="ceinp"><NumBox class="ci" :model-value="constModal.design.anLonDeg" :min="-180" :max="180" :step="1" @commit="v => setDesign('anLonDeg', v)" /><span class="u">°</span></div></div>
+                  <div class="cefv"><label>近地点幅角 ω</label><div class="ceinp"><NumBox class="ci" :model-value="constModal.design.argpDeg" :step="1" @commit="v => setDesign('argpDeg', v)" /><span class="u">°</span></div></div>
+                </template>
+                <template v-else-if="constModal.orbitType === 'geosync'">
+                  <div class="cefv"><label>星下点经度 λ</label><div class="ceinp"><NumBox class="ci" :model-value="constModal.design.subLonDeg" :min="-180" :max="180" :step="0.1" @commit="v => setDesign('subLonDeg', v)" /><span class="u">°</span></div></div>
+                  <div class="cefv"><label>轨道倾角 i</label><div class="ceinp"><NumBox class="ci" :class="{ bad: constFieldBad('inclDeg') }" :model-value="constModal.design.inclDeg" :min="0" :max="180" :step="0.1" @commit="v => setDesign('inclDeg', v)" /><span class="u">°</span></div></div>
+                </template>
+                <template v-else-if="constModal.orbitType === 'molniya'">
+                  <div class="cefv"><label>远地点经度 λₐ</label><div class="ceinp"><NumBox class="ci" :model-value="constModal.design.apogeeLonDeg" :min="-180" :max="180" :step="1" @commit="v => setDesign('apogeeLonDeg', v)" /><span class="u">°</span></div></div>
+                  <div class="cefv"><label>近地点高度 hₚ</label><div class="ceinp"><NumBox class="ci" :class="{ bad: constFieldBad('perigeeKm') }" :model-value="constModal.design.perigeeKm" :min="80" :step="10" @commit="v => setDesign('perigeeKm', v)" /><span class="u">km</span></div></div>
+                  <div class="cefv"><label>近地点幅角 ω</label><div class="ceinp"><NumBox class="ci" :model-value="constModal.design.argpDeg" :step="1" @commit="v => setDesign('argpDeg', v)" /><span class="u">°</span></div></div>
+                </template>
+                <template v-else-if="constModal.orbitType === 'repeat'">
+                  <div class="cefv"><label>轨道倾角 i</label><div class="ceinp"><NumBox class="ci" :class="{ bad: constFieldBad('inclDeg') }" :model-value="constModal.design.inclDeg" :min="0" :max="180" :step="0.1" @commit="v => setDesign('inclDeg', v)" /><span class="u">°</span></div></div>
+                  <div class="cetpf">
+                    <div><small>回归圈数 k</small><NumBox class="ci" :class="{ bad: constFieldBad('k') }" :model-value="constModal.design.k" :min="1" :step="1" @commit="v => setDesign('k', v)" /></div>
+                    <div><small>回归天数 m</small><NumBox class="ci" :class="{ bad: constFieldBad('m') }" :model-value="constModal.design.m" :min="1" :step="1" @commit="v => setDesign('m', v)" /></div>
+                  </div>
+                  <div class="cefv"><label>升交点经度 λ</label><div class="ceinp"><NumBox class="ci" :model-value="constModal.design.anLonDeg" :min="-180" :max="180" :step="1" @commit="v => setDesign('anLonDeg', v)" /><span class="u">°</span></div></div>
+                </template>
+                <template v-else-if="constModal.orbitType === 'repeatSunSync'">
+                  <div class="cetpf">
+                    <div><small>回归圈数 k</small><NumBox class="ci" :class="{ bad: constFieldBad('k') }" :model-value="constModal.design.k" :min="1" :step="1" @commit="v => setDesign('k', v)" /></div>
+                    <div><small>回归天数 m</small><NumBox class="ci" :class="{ bad: constFieldBad('m') }" :model-value="constModal.design.m" :min="1" :step="1" @commit="v => setDesign('m', v)" /></div>
+                  </div>
+                  <div class="cefv"><label>升交点经度 λ</label><div class="ceinp"><NumBox class="ci" :model-value="constModal.design.anLonDeg" :min="-180" :max="180" :step="1" @commit="v => setDesign('anLonDeg', v)" /><span class="u">°</span></div></div>
+                  <div class="cef"><label>地方时</label>
+                    <span class="seg3">
+                      <span :class="{ on: constModal.design.localMode !== 'ltdn' }" @click="setDesign('localMode', 'ltan')">升交点</span>
+                      <span :class="{ on: constModal.design.localMode === 'ltdn' }" @click="setDesign('localMode', 'ltdn')">降交点</span>
+                    </span>
+                  </div>
+                  <div class="cefv"><label>{{ constModal.design.localMode === 'ltdn' ? 'LTDN' : 'LTAN' }}</label><div class="ceinp"><input class="ci" :class="{ bad: constFieldBad('localTime') }" :value="constModal.design.localTime" placeholder="hh:mm" title="平太阳时，与视太阳相差时差 ≤16 min" @change="e => setDesign('localTime', e.target.value)" @keyup.enter="e => setDesign('localTime', e.target.value)" /></div></div>
+                </template>
+                <template v-else-if="constModal.orbitType === 'sunSync'">
+                  <div class="cef"><label>由谁定</label>
+                    <span class="seg3">
+                      <span :class="{ on: constModal.design.driver !== 'incl' }" @click="setDesign('driver', 'alt')">高度</span>
+                      <span :class="{ on: constModal.design.driver === 'incl' }" @click="setDesign('driver', 'incl')">倾角</span>
+                    </span>
+                  </div>
+                  <div v-if="constModal.design.driver !== 'incl'" class="cefv"><label>轨道高度 h</label><div class="ceinp"><NumBox class="ci" :class="{ bad: constFieldBad('altKm') }" :model-value="constModal.design.altKm" :min="80" :step="10" @commit="v => setDesign('altKm', v)" /><span class="u">km</span></div></div>
+                  <div v-else class="cefv"><label>轨道倾角 i</label><div class="ceinp"><NumBox class="ci" :class="{ bad: constFieldBad('inclDeg') }" :model-value="constModal.design.inclDeg" :min="90" :max="180" :step="0.01" @commit="v => setDesign('inclDeg', v)" /><span class="u">°</span></div></div>
+                  <div class="cef"><label>地方时</label>
+                    <span class="seg3">
+                      <span :class="{ on: constModal.design.localMode !== 'ltdn' }" @click="setDesign('localMode', 'ltan')">升交点</span>
+                      <span :class="{ on: constModal.design.localMode === 'ltdn' }" @click="setDesign('localMode', 'ltdn')">降交点</span>
+                    </span>
+                  </div>
+                  <div class="cefv"><label>{{ constModal.design.localMode === 'ltdn' ? 'LTDN' : 'LTAN' }}</label><div class="ceinp"><input class="ci" :class="{ bad: constFieldBad('localTime') }" :value="constModal.design.localTime" placeholder="hh:mm" title="平太阳时，与视太阳相差时差 ≤16 min" @change="e => setDesign('localTime', e.target.value)" @keyup.enter="e => setDesign('localTime', e.target.value)" /></div></div>
+                </template>
               </template>
 
-              <div class="cesec">星座定向与初始相位</div>
-              <div class="cetpf">
-                <div><small>升交点赤经 Ω₀</small><input class="ci" type="number" step="1" v-model.number="constModal.raan0" /></div>
-                <div><small>初始平近点角 M₀</small><input class="ci" type="number" step="1" v-model.number="constModal.m0" /></div>
-              </div>
+              <!-- 自定义根数：原来那套六根数表单，一项不少（数字框统一换成 NumBox：草稿串 + 失焦落值） -->
+              <template v-else>
+                <div class="cesec">轨道尺寸与形状</div>
+                <div class="cef"><label>轨道形状</label>
+                  <span class="seg3">
+                    <span :class="{ on: constModal.shape === 'circ' }" @click="constModal.shape = 'circ'">圆轨道</span>
+                    <span :class="{ on: constModal.shape === 'ellip' }" @click="constModal.shape = 'ellip'">椭圆轨道</span>
+                  </span>
+                </div>
+                <div class="cefv"><label>轨道倾角 i</label><div class="ceinp"><NumBox class="ci" :model-value="constModal.incl" :min="0" :max="180" :step="0.1" @commit="v => constModal.incl = v" /><span class="u">°</span></div></div>
+                <div class="cefv"><label>{{ constModal.shape === 'ellip' ? '近地点高度 hₚ' : '轨道高度 h' }}</label><div class="ceinp"><NumBox class="ci" :model-value="constModal.perigeeKm" :min="80" :step="10" @commit="v => constModal.perigeeKm = v" /><span class="u">km</span></div></div>
+                <template v-if="constModal.shape === 'ellip'">
+                  <div class="cefv"><label>远地点高度 hₐ</label><div class="ceinp"><NumBox class="ci" :model-value="constModal.apogeeKm" :step="10" @commit="v => constModal.apogeeKm = v" /><span class="u">km</span></div></div>
+                  <div class="cefv"><label>近地点幅角 ω</label><div class="ceinp"><NumBox class="ci" :model-value="constModal.argp" :step="1" @commit="v => constModal.argp = v" /><span class="u">°</span></div></div>
+                </template>
+                <div class="cesec">星座定向与初始相位</div>
+                <div class="cetpf">
+                  <div><small>升交点赤经 Ω₀</small><NumBox class="ci" :model-value="constModal.raan0" :step="1" @commit="v => constModal.raan0 = v" /></div>
+                  <div><small>初始平近点角 M₀</small><NumBox class="ci" :model-value="constModal.m0" :step="1" @commit="v => constModal.m0 = v" /></div>
+                </div>
+              </template>
+
+              <!-- 布局参数：单星不问 T/P/F -->
+              <template v-if="constModal.pattern !== 'single'">
+                <div class="cesec">布局参数 (i : T/P/F)</div>
+                <div class="cetpf">
+                  <div><small>卫星总数 T</small><NumBox class="ci" :model-value="constModal.T" :min="1" :step="1" @commit="v => constModal.T = v" /></div>
+                  <div v-if="constModal.pattern !== 'plane'"><small>轨道面数 P</small><NumBox class="ci" :model-value="constModal.P" :min="1" :step="1" @commit="v => constModal.P = v" /></div>
+                  <div v-if="constModal.pattern !== 'plane'"><small>相位因子 F</small><NumBox class="ci" :model-value="constModal.F" :min="0" :step="1" @commit="v => constModal.F = v" /></div>
+                </div>
+              </template>
 
               <div class="cesec">显示外观</div>
               <label class="chk2"><input type="checkbox" v-model="constModal.colorByPlane" /><span>按轨道面配色</span></label>
               <div v-if="!constModal.colorByPlane" class="cef"><label>标识颜色</label><input class="clr" type="color" v-model="constModal.color" /></div>
 
+              <div class="cesec">预览</div>
+              <div class="cefv"><label>预览圈数</label><div class="ceinp"><NumBox class="ci" :model-value="constModal.previewRevs" :min="1" :max="20" :step="1" @commit="v => constModal.previewRevs = v" /><span class="u">圈</span></div></div>
+              <div class="cepv">
+                <label class="layersw" title="轨道线"><input type="checkbox" v-model="constModal.pvOrbit" /><span class="lsw"></span><span>轨道线</span></label>
+                <label class="layersw" title="星下点轨迹"><input type="checkbox" v-model="constModal.pvTrack" /><span class="lsw"></span><span>星下点轨迹</span></label>
+                <label class="layersw" title="覆盖圈"><input type="checkbox" v-model="constModal.pvFoot" /><span class="lsw"></span><span>覆盖圈</span></label>
+              </div>
+
               <div v-if="constDerived" class="ceread">
                 <div class="crcode">{{ constDerived.code }}</div>
-                <div class="crsub">共 {{ constDerived.total }} 颗<template v-if="constModal.pattern !== 'plane'"> · 每面 {{ constDerived.S }} · 面间 {{ constDerived.phase }}°</template> · 周期 {{ constDerived.periodMin }} min</div>
-                <div v-if="constDerived.warns.length" class="crwarn">{{ constDerived.warns.join('；') }}</div>
+                <div class="crsub">共 {{ constDerived.total }} 颗<template v-if="constModal.pattern !== 'plane' && constModal.pattern !== 'single'"> · 每面 {{ constDerived.S }} · 面间 {{ constDerived.phase }}°</template></div>
+                <template v-if="constDerived.d">
+                  <div class="crsub" data-i18n-skip>T = {{ constDerived.d.periodMin.toFixed(1) }} min · T_Ω = {{ constDerived.d.nodalPeriodMin.toFixed(1) }} min</div>
+                  <div class="crsub" data-i18n-skip>a = {{ constDerived.d.aKm.toFixed(1) }} km · e = {{ constDerived.d.e.toFixed(6) }} · i = {{ constDerived.seed.inclDeg.toFixed(4) }}°</div>
+                  <div class="crsub" data-i18n-skip>Ω = {{ constDerived.seed.raanDeg.toFixed(4) }}° · ω = {{ constDerived.seed.argpDeg.toFixed(4) }}° · M₀ = {{ constDerived.seed.m0Deg.toFixed(4) }}°</div>
+                  <div class="crsub" data-i18n-skip>Ω̇ = {{ constDerived.d.raanRateDegDay >= 0 ? '+' : '' }}{{ constDerived.d.raanRateDegDay.toFixed(3) }} °/d · ω̇ = {{ constDerived.d.argpRateDegDay >= 0 ? '+' : '' }}{{ constDerived.d.argpRateDegDay.toFixed(3) }} °/d</div>
+                  <div class="crsub" data-i18n-skip>LTAN {{ ltanText }}<template v-if="constDerived.d.repeat"> · 回归 {{ constDerived.d.repeat.k }}/{{ constDerived.d.repeat.m }}</template></div>
+                  <div class="crsub" data-i18n-skip>星下点 λ = {{ constDerived.d.subLonDeg.toFixed(1) }}° · hₚ = {{ constDerived.d.perigeeKm.toFixed(1) }} km · hₐ = {{ constDerived.d.apogeeKm.toFixed(1) }} km</div>
+                </template>
+                <!-- 解不出来时这里就是那一句诊断（输入框同时加红框）；能解出来时才轮到 warns -->
+                <div v-if="constDerived.errs.length" class="crwarn">{{ constDerived.errs.join('；') }}</div>
+                <div v-else-if="constDerived.warns.length" class="crwarn">{{ constDerived.warns.join('；') }}</div>
               </div>
             </div>
             <div class="cefoot">
@@ -10169,6 +10359,10 @@ onBeforeUnmount(() => {
 .ccsec { border-top: 1px solid var(--border); margin-top: 4px; padding-top: 4px; }
 /* 拖文件进「导入星历」区块 / 地图时的描边高亮（token 色，不出提示字） */
 .ccsec.dragon { outline: 1px dashed var(--accent); outline-offset: -2px; background: color-mix(in srgb, var(--accent) 8%, transparent); }
+/* 向导预览区：三个图层拨杆一行排开 */
+.cepv { display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 2px 12px 6px; }
+/* 解不出来的那一项：红框（诊断文字在读数区的 .crwarn 里） */
+.cebody .ci.bad, .cebody .ci.bad input { border-color: var(--danger, #c0392b) !important; }
 .stage-wrap.dragon { outline: 2px dashed var(--accent); outline-offset: -4px; }
 .cchd { display: flex; align-items: center; justify-content: space-between; padding: 4px 12px; font-size: var(--fs-3); color: var(--text-muted); }
 .cchd .lnk { cursor: pointer; color: var(--accent); display: inline-flex; align-items: center; gap: 3px; }

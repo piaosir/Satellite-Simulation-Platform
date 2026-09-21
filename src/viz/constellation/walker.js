@@ -12,6 +12,8 @@ const RE = 6378.137          // 地球赤道半径 km
 const MU = 398600.4418       // 地球引力常数 km^3/s^2
 
 export const PATTERNS = [
+  // 单星：T=P=1、名字不加 -Pxx-Sxx 后缀（轨道向导解出一组根数后最常见的落点就是它）
+  { key: 'single', label: '单星' },
   { key: 'delta', label: 'Walker Delta' },
   { key: 'star', label: 'Walker Star' },
   { key: 'plane', label: '单轨道面' }
@@ -20,16 +22,17 @@ export const PATTERNS = [
 const norm360 = (x) => ((x % 360) + 360) % 360
 const num = (v, d = 0) => { const n = Number(v); return Number.isFinite(n) ? n : d }
 
-// RAAN 展布（°）：Delta=360、Star=180、单面=0（同一升交点）、自定义=用户值
+// RAAN 展布（°）：Delta=360、Star=180、单面/单星=0（同一升交点）、自定义=用户值
 export function walkerSpread(pattern, custom) {
   if (pattern === 'star') return 180
-  if (pattern === 'plane') return 0
+  if (pattern === 'plane' || pattern === 'single') return 0
   if (pattern === 'custom' && Number.isFinite(Number(custom))) return Number(custom)
   return 360
 }
 
 // 每面卫星数（单面即 T；否则 floor(T/P)，不整除时按此截断并告警）
 function satsPerPlane(p) {
+  if (p.pattern === 'single') return 1
   const T = Math.max(1, Math.round(num(p.T, 1)))
   if (p.pattern === 'plane') return T
   const P = Math.max(1, Math.round(num(p.P, 1)))
@@ -39,6 +42,14 @@ function satsPerPlane(p) {
 // 校验：返回 { ok, errs[], warns[] }
 export function validateWalker(p) {
   const errs = [], warns = []
+  if (p.pattern === 'single') {
+    // 单星：T/P/F 一概不看，只校验轨道本身
+    const i1 = num(p.incl), hp1 = num(p.perigeeKm)
+    if (!(i1 >= 0 && i1 <= 180)) errs.push('倾角需在 0…180°')
+    if (!(hp1 > 0)) errs.push('近地点高度需 > 0')
+    if (p.shape === 'ellip' && !(num(p.apogeeKm) >= hp1)) errs.push('远地点高度需 ≥ 近地点高度')
+    return { ok: errs.length === 0, errs, warns }
+  }
   const T = Math.round(num(p.T)), P = p.pattern === 'plane' ? 1 : Math.round(num(p.P))
   if (!(T >= 1)) errs.push('总数 T 需 ≥ 1')
   if (!(P >= 1)) errs.push('面数 P 需 ≥ 1')
@@ -65,9 +76,10 @@ function orbitShape(p) {
 
 // 生成 → [{ name, plane, slot, elements:{ altKm, ecc, incl, raan, argp, ma } }]
 export function generateConstellation(p) {
-  const T = Math.max(1, Math.round(num(p.T, 1)))
-  const P = p.pattern === 'plane' ? 1 : Math.max(1, Math.round(num(p.P, 1)))
-  const F = p.pattern === 'plane' ? 0 : Math.round(num(p.F))
+  const single = p.pattern === 'single'
+  const T = single ? 1 : Math.max(1, Math.round(num(p.T, 1)))
+  const P = (single || p.pattern === 'plane') ? 1 : Math.max(1, Math.round(num(p.P, 1)))
+  const F = (single || p.pattern === 'plane') ? 0 : Math.round(num(p.F))
   const S = satsPerPlane(p)
   const spread = walkerSpread(p.pattern, p.spread)
   const incl = num(p.incl), argp = num(p.argp), raan0 = num(p.raan0), m0 = num(p.m0)
@@ -79,7 +91,9 @@ export function generateConstellation(p) {
     const raan = norm360(raan0 + pl * (spread / P))
     for (let s = 0; s < S; s++) {
       const ma = norm360(m0 + s * (360 / S) + F * pl * (360 / T))
-      out.push({ name: `${prefix}-P${pad(pl + 1)}-S${pad(s + 1)}`, plane: pl, slot: s, elements: { altKm, ecc, incl, raan, argp, ma } })
+      // 单星不加 -Pxx-Sxx 后缀：它就是一颗星，叫什么就是什么
+      const nm = single ? prefix : `${prefix}-P${pad(pl + 1)}-S${pad(s + 1)}`
+      out.push({ name: nm, plane: pl, slot: s, elements: { altKm, ecc, incl, raan, argp, ma } })
     }
   }
   return out
@@ -96,6 +110,7 @@ export function orbitPeriodMin(p) {
 // Walker 码串，如 "53°: 24/6/1" / 单面 "0° · 单面 12"
 export function walkerCode(p) {
   const i = num(p.incl)
+  if (p.pattern === 'single') return `${i}° · 单星`
   if (p.pattern === 'plane') return `${i}° · 单面 ${Math.round(num(p.T, 1))}`
   return `${i}°: ${Math.round(num(p.T, 1))}/${Math.round(num(p.P, 1))}/${Math.round(num(p.F))}`
 }

@@ -2,7 +2,7 @@
 // 生成器：scripts/cmd-index.mjs（electron-vite dev / build 起步时由 cmdIndexPlugin 自动刷新，模板改了随手重生成；
 // 也可手动 node scripts/cmd-index.mjs）。口径见生成器头注；packages/core/test/cmdIndex.test.mjs 校验本文件与模板同步。
 export default [
-  {"view":"constellation","key":"constellation-top","title":null,"items":[{"label":"星座名称"},{"label":"星座构型"},{"label":"轨道倾角 i"},{"label":"轨道形状"},{"label":"远地点高度 hₐ"},{"label":"近地点幅角 ω"},{"label":"标识颜色"},{"label":"按轨道面配色"}]},
+  {"view":"constellation","key":"constellation-top","title":null,"items":[{"label":"轨道类型"},{"label":"布局"},{"label":"星座名称"},{"label":"轨道倾角 i"},{"label":"轨道高度 h"},{"label":"升交点赤经 Ω"},{"label":"方向"},{"label":"远地点高度 hₐ"},{"label":"近地点高度 hₚ"},{"label":"升交点经度 λ"},{"label":"近地点幅角 ω"},{"label":"星下点经度 λ"},{"label":"远地点经度 λₐ"},{"label":"地方时"},{"label":"由谁定"},{"label":"轨道形状"},{"label":"标识颜色"},{"label":"预览圈数"},{"label":"按轨道面配色"}]},
   {"view":"constellation","key":"const-import","title":"导入星历","items":[{"label":"场景历元"}]},
   {"view":"gxt","key":"gxt-top","title":null,"items":[{"label":"添加卫星"},{"label":"频段"},{"label":"自定义"},{"label":"线粗"}]},
   {"view":"gxt","key":"gxt-disp","title":"显示选项","items":[{"label":"字号"},{"label":"大小"},{"label":"显示波束名"},{"label":"显示波束中心"},{"label":"显示数值标签"}]},
