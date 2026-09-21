@@ -1356,6 +1356,23 @@ export function bandGeometry(field, levelsAsc, wantFills = true, box = null, hul
   // 外缘仍是密采样的平滑地平弧，而带边界与等值线由构造重合。旧路把整三角形裁到 hull，弦的方向来自延伸到地平外的
   // 「垂足」假坐标，且跳过弦中点 —— 线顶点到填充边中位 34 km / p95 354 km。
   // 取弧点按「绕星下点的极角」：hull 是包住星下点的凸环，极角沿环单调，两端极角之间的那些顶点就是这段弧。
+  // 环上按极角取点：a = 绕星下点的极角 → 该射线与环边的交点 [u, lat]（环凸且包住原点 → 恰一个交点），写 _rs
+  const _rs = new Float64Array(2)
+  const ringAt = (ring, ang, nh, a) => {
+    for (let i = 0; i < nh; i++) {
+      const j = (i + 1) % nh
+      let w = ang[j] - ang[i]; while (w <= 0) w += 2 * Math.PI
+      let t = a - ang[i]; while (t < 0) t += 2 * Math.PI; while (t >= 2 * Math.PI) t -= 2 * Math.PI
+      if (t <= w) {
+        const A = ring[i], B = ring[j], dx = Math.cos(a), dy = Math.sin(a)
+        const den = (B[0] - A[0]) * dy - (B[1] - A[1]) * dx
+        const f = den !== 0 ? -(A[0] * dy - A[1] * dx) / den : 0
+        _rs[0] = A[0] + (B[0] - A[0]) * f; _rs[1] = A[1] + (B[1] - A[1]) * f
+        return true
+      }
+    }
+    return false
+  }
   const _arcI = [], _arcT = []
   const limbArc = (src, len, dst) => {
     let ia = -1
@@ -1367,8 +1384,21 @@ export function bandGeometry(field, levelsAsc, wantFills = true, box = null, hul
     const ib = (ia + 1) % len
     const a0 = Math.atan2(src[ia * 6 + 1], wrap180(src[ia * 6] - ref))
     const a1 = Math.atan2(src[ib * 6 + 1], wrap180(src[ib * 6] - ref))
+    let o = 0
+    for (let i = 0; i < len; i++, o++) for (let c = 0; c < 6; c++) dst[o * 6 + c] = src[i * 6 + c]
+    // ★ 地平边的两个端点先【贴到环上】：半平面裁剪出的地平交点按线性 m 取，位置落在真地平里侧（实测仰角
+    //   0.1~0.46°），而环上弧点在地平上 —— 不贴就是一排锯齿（2026-09-22 用户「填充还不如之前」的根因）。
+    //   贴法＝沿该点的极角射线取环边交点，只动 x,y（d / m / u / v 不变）。等值线的地平端点仍走 limbEnd
+    //  （真地平，离环 ≤ 0.11°），线端与填充角的差回到 09-16 之前那一档。
+    const xa = src[ia * 6]
+    const snap = (idx, a) => {
+      if (!ringAt(ring, ang, nh, a)) return
+      let l = _rs[0] + ref; while (l - xa > 180) l -= 360; while (l - xa < -180) l += 360
+      dst[idx * 6] = l; dst[idx * 6 + 1] = _rs[1]
+    }
+    snap(ia, a0); snap(ib, a1)
     let dA = a1 - a0; while (dA > Math.PI) dA -= 2 * Math.PI; while (dA <= -Math.PI) dA += 2 * Math.PI
-    const span = Math.abs(dA); if (!(span > 1e-9)) return 0
+    const span = Math.abs(dA); if (!(span > 1e-9)) return o
     const dir = dA > 0 ? 1 : -1
     _arcI.length = 0; _arcT.length = 0
     for (let i = 0; i < nh; i++) {
@@ -1376,19 +1406,19 @@ export function bandGeometry(field, levelsAsc, wantFills = true, box = null, hul
       if (t > 1e-9 && t < span - 1e-9) { _arcI.push(i); _arcT.push(t / span) }
     }
     const na = _arcI.length
-    if (!na || len + na > _BG_CAP) return 0
+    if (!na) return o
+    if (len + na > _BG_CAP) return 0
     for (let i = 1; i < na; i++) { const t = _arcT[i], v = _arcI[i]; let j = i - 1; while (j >= 0 && _arcT[j] > t) { _arcT[j + 1] = _arcT[j]; _arcI[j + 1] = _arcI[j]; j-- } _arcT[j + 1] = t; _arcI[j + 1] = v }
-    let o = 0
-    for (let i = 0; i <= ia; i++, o++) for (let c = 0; c < 6; c++) dst[o * 6 + c] = src[i * 6 + c]
-    const xa = src[ia * 6], da = src[ia * 6 + 2], dbb = src[ib * 6 + 2], ua = src[ia * 6 + 4], wa = src[ia * 6 + 5]
+    // 弧点插在 ia 之后：ib > 0 时把 [ib, len) 后移 na 位；ib === 0（地平边是末顶点→首顶点）直接追加在末尾
+    if (ib > 0) for (let i = len - 1; i >= ib; i--) for (let c = 0; c < 6; c++) dst[(i + na) * 6 + c] = dst[i * 6 + c]
+    const da = src[ia * 6 + 2], dbb = src[ib * 6 + 2], ua = src[ia * 6 + 4], wa = src[ia * 6 + 5]
     const du = src[ib * 6 + 4] - ua, dw = src[ib * 6 + 5] - wa
-    for (let i = 0; i < na; i++, o++) {
-      const p = ring[_arcI[i]], f = _arcT[i], w = o * 6
+    for (let i = 0; i < na; i++) {
+      const p = ring[_arcI[i]], f = _arcT[i], w = (ia + 1 + i) * 6
       let l = p[0] + ref; while (l - xa > 180) l -= 360; while (l - xa < -180) l += 360
       dst[w] = l; dst[w + 1] = p[1]; dst[w + 2] = da + (dbb - da) * f; dst[w + 3] = 0; dst[w + 4] = ua + du * f; dst[w + 5] = wa + dw * f
     }
-    for (let i = ib; i < len; i++, o++) for (let c = 0; c < 6; c++) dst[o * 6 + c] = src[i * 6 + c]
-    return o
+    return len + na
   }
   // aug=这格在细化表的 cells 里（三角化循环用指针顺着表判，O(1)）；isB=格内第二个三角形（见 augment）；
   // [m0,m1)=本格的弦中点记录
@@ -1419,7 +1449,8 @@ export function bandGeometry(field, levelsAsc, wantFills = true, box = null, hul
         if (bl < 3) continue
         if (wantArc) { const na = limbArc(cur, bl, _bgA); if (na >= 3) { cur = _bgA; bl = na } }
         if (hasM) pushBand(k, cur, bl, isB, m0, m1)
-        else _fillPushFlat(k, cur, bl)
+        else if (!wantArc || fanOk(cur, bl, 0)) _fillPushFlat(k, cur, bl)   // 端点贴环后可能微凹：扇形不合法就耳切
+        else earClip(k, cur, bl)
       }
     }
     if (lineLen >= 3) for (let k = kLo; k <= kHi; k++) {              // 各档等值线 = lineBase 上 d==Lk 的穿越段（仅相交档）
@@ -1437,8 +1468,11 @@ export function bandGeometry(field, levelsAsc, wantFills = true, box = null, hul
             if (limbSolve && lineBase[ai + 3] === 0 && lineBase[bi + 3] === 0) {   // 档线的地平端点：拉到真实地平线与等值面的交点
               const eu = lineBase[bi + 4] - lineBase[ai + 4], ev = lineBase[bi + 5] - lineBase[ai + 5]
               const r = limbEnd(lineBase[ai + 4] + eu * s, lineBase[ai + 5] + ev * s, eu, ev, L)
-              const ax = _bgBase[0]; let l = r[0]; while (l - ax > 180) l -= 360; while (l - ax < -180) l += 360
-              x = l; y = r[1]
+              const ax = _bgBase[0]; let l = r[0], yy = r[1]
+              // 有 hull（3D / 导出）时端点再贴到环上：填充的地平角点在 limbArc 里同样贴环 → 线端与填充角逐位同一点
+              if (useHull) { const rg = hull.ring, ref = hull.satLon; let ang = hull._ang; if (!ang || ang.length !== rg.length) { ang = hull._ang = new Float64Array(rg.length); for (let i2 = 0; i2 < rg.length; i2++) ang[i2] = Math.atan2(rg[i2][1], rg[i2][0]) } if (ringAt(rg, ang, rg.length, Math.atan2(yy, wrap180(l - ref)))) { l = _rs[0] + ref; yy = _rs[1] } }
+              while (l - ax > 180) l -= 360; while (l - ax < -180) l += 360
+              x = l; y = yy
             } else { x = lineBase[ai] + (lineBase[bi] - lineBase[ai]) * s; y = lineBase[ai + 1] + (lineBase[bi + 1] - lineBase[ai + 1]) * s }
           }
           if (cnt === 0) { x0 = x; y0 = y } else { x1 = x; y1 = y }

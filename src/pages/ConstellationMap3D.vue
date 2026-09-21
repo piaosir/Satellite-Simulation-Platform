@@ -10066,6 +10066,16 @@ onBeforeUnmount(() => {
       <span class="lnk" @click="polyCancel">取消</span>
     </div>
 
+    <!-- 覆盖分析两种拖拽模式的横幅（与 Polygon 绘制同款）：开着就常显，「完成」退出该模式 -->
+    <div v-if="grd.dragLabel.value" class="traj-banner">
+      正在拖动数值标签 · 在地图上按住标签沿等值线拖动
+      <span class="lnk" @click="grd.setDragLabel(false)">完成</span>
+    </div>
+    <div v-if="grd.dragBore.value" class="traj-banner">
+      正在拖拽波束「{{ grd.activeName() }}」 · 在地图上按住左键拖动改指向
+      <span class="lnk" @click="grd.setDragBore(false)">完成</span>
+    </div>
+
     <!-- Polygon 调整顶点横幅：拖动地图上的顶点圆点调整位置 -->
     <div v-if="polyEditId" class="traj-banner">
       正在调整「{{ curEditPoly() ? curEditPoly().name : '' }}」顶点 · 在平面图上拖动圆点改位置
