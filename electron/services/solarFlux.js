@@ -238,7 +238,7 @@ async function doRefresh(o) {
         const n = (k) => Object.keys((merged.products[k] && merged.products[k].data) || {}).length
         log.emit(`${TAG}SWPC 直连获取成功 —— ${got}/4 个产品（日值 ${n('daily30')} 天 · 预报 ${n('forecast45')} 天 · 观测月均 ${n('monthly')} 月 · 预测 ${n('predicted')} 月）· ${fmtBytes(text.length)} · 耗时 ${fmtSec(Date.now() - t0)}${saved ? '，已写入本地缓存' : ''}`)
         // 众包回传：不 await，上传慢 / 失败都不该拖住任何东西
-        ommCloud.maybeUpload(CLOUD_KEY, text, CLOUD_LABEL, validSolarFlux).catch(() => {})
+        ommCloud.maybeUpload(CLOUD_KEY, text, CLOUD_LABEL, validSolarFlux, TAG).catch(() => {})
         return { ok: true, source: 'network', fetchedAt: merged.fetchedAt }
       }
       log.emit(`${TAG}合并后的数据不满足有效性判据，已丢弃本轮结果`, 'warn')
@@ -246,7 +246,7 @@ async function doRefresh(o) {
   }
   // ② 云镜像兜底
   const cloud = await ommCloud.download(CLOUD_KEY, {
-    newerThan: o.force ? null : (cur && cur.fetchedAt), label: CLOUD_LABEL, valid: validSolarFlux
+    newerThan: o.force ? null : (cur && cur.fetchedAt), label: CLOUD_LABEL, valid: validSolarFlux, tag: TAG
   })
   if (cloud) {
     let merged = null

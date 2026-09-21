@@ -146,8 +146,10 @@ async function head(group) {
 // 从桶下载某组 → { text, fetchedAt } ；任何环节不成立都返回 null（对用户无感，但每一步都写日志）。
 // newerThan：本地已有副本的时间，云端不比它新就不下载（省流量，且不用旧数据覆盖新数据）。
 // valid：该键自己的有效性判据（缺省＝OMM 的 MEAN_MOTION 正则）。
+// tag：日志前缀（缺省「星历「…」：」）。桶里不只有星历 —— 太阳射电流量那一路走的是自己的
+//   前缀「太阳射电流量：」，按前缀检索日志才检得到同一条链路上的全部行。
 async function download(group, opts = {}) {
-  const tag = `星历「${opts.label || group}」：`
+  const tag = opts.tag || `星历「${opts.label || group}」：`
   const isValid = opts.valid || valid
   const t0 = Date.now()
   try {
@@ -164,7 +166,7 @@ async function download(group, opts = {}) {
     let text = ''
     try { text = zlib.gunzipSync(r.body, { maxOutputLength: MAX_RAW }).toString('utf8') }
     catch { text = r.body.toString('utf8') }   // 兼容万一存成了明文 CSV
-    if (!isValid(text)) { log.emit(`${tag}云镜像内容非有效 OMM CSV，已丢弃`, 'warn'); return null }
+    if (!isValid(text)) { log.emit(`${tag}云镜像内容不满足有效性判据，已丢弃`, 'warn'); return null }
     log.emit(`${tag}云镜像下载成功 —— ${fmtBytes(r.body.length)}(gz) 解压 ${fmtBytes(text.length)} · 对象时间 ${fmtTime(meta.lastModified)} · 耗时 ${fmtSec(Date.now() - t0)}`)
     return { text, fetchedAt: meta.lastModified || new Date().toISOString() }
   } catch (e) {
@@ -199,13 +201,13 @@ let _permDenied = false
 // 且不打断主流程；但每种跳过原因都写进日志，便于现场判断「众包这条腿到底有没有在跑」。
 // 第四参 checkValid：该键自己的有效性判据（缺省＝OMM 的 MEAN_MOTION 正则）——别把非星历数据集
 // 当成坏数据默默丢掉，也别把坏数据当好的传上去污染别人的兜底。
-async function maybeUpload(group, text, label, checkValid) {
-  const tag = `星历「${label || group}」：`
+async function maybeUpload(group, text, label, checkValid, tagOverride) {
+  const tag = tagOverride || `星历「${label || group}」：`
   const isValid = checkValid || valid
   try {
     if (_permDenied || _uploaded.has(group) || !isValid(text)) return false
     if (!canUpload()) {
-      if (!_noCredWarned) { _noCredWarned = true; log.emit('星历回传：本机未配置云镜像凭证，不参与众包回传（仅下载，不影响使用）') }
+      if (!_noCredWarned) { _noCredWarned = true; log.emit('众包回传：本机未配置云镜像凭证，不参与回传（仅下载，不影响使用）') }
       return false
     }
     const meta = await head(group)
