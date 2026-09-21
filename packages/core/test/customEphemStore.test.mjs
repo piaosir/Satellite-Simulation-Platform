@@ -475,5 +475,32 @@ section('分段索引过 IPC')
   customSats.removeGroup(rSeg.group.id)
 }
 
+/* ===== ⑱ 星历组「双击聚焦」依赖的数据契约 ===== */
+// 3D 页的双击聚焦原来只在【全量搜索池】里按 NORAD 找，而点序列星不进全量池（那份全集是 OMM
+// 记录表，点序列星没有根数塞不进来），必然报「不在当前星历中」。修法是在 expResolve / expLocate
+// 里加一支走本组的 ephemTable —— 下面钉死这一支依赖的三条契约。
+section('星历组聚焦的数据契约')
+{
+  const rEph2 = customSats.importFile('聚焦契约组', makeE('J2000', 6878.137, 51.6, 61, 60))
+  const gEph = customSats.list().groups.find((g) => g.id === rEph2.group.id)
+  ok(!!gEph && gEph.kind === 'ephem', '造一个 ephem 组', gEph && gEph.name)
+  const pay = customSats.ephemTable(gEph.id)
+  ok(!!pay && pay.sats.length > 0, 'ephemTable 取得到', pay && pay.sats.length)
+  ok(pay.sats.every((s) => s.noradId != null && String(s.noradId) !== ''),
+    '★ 每颗点序列星都有 NORAD（合成号，主进程无条件发放）—— 行 id 不必、也不可以换成 key',
+    pay.sats.map((s) => s.noradId).join(','))
+  ok(pay.sats.every((s) => s.key != null && String(s.key) !== ''), '★ payload 带 key（渲染端 entry 照它补上，供按名字 / key 兜底匹配）',
+    pay.sats.map((s) => s.key).join(','))
+  ok(new Set(pay.sats.map((s) => String(s.noradId))).size === pay.sats.length, '组内 NORAD 不重号')
+  ok(pay.sats.every((s) => Number(s.noradId) >= 800000), '合成号落在 800000 段（编目对账时被豁免）',
+    pay.sats.map((s) => s.noradId).join(','))
+  // 任务书建议的「退回 customGroupRecords」对 ephem 组是南辕北辙：那条路本来就只吐 gp 组
+  ok(customSats.groupRecords(gEph.id) === null, '★ groupRecords 对 ephem 组返 null（拿它救星历组只会静默空转）',
+    String(customSats.groupRecords(gEph.id)))
+  const gGp2 = customSats.list().groups.find((g) => g.kind === 'gp')
+  ok(Array.isArray(customSats.groupRecords(gGp2.id)) && customSats.groupRecords(gGp2.id).length > 0, 'gp 组照常有记录')
+  customSats.removeGroup(gEph.id)
+}
+
 console.log('\ncustomEphemStore: 通过 ' + pass + '，失败 ' + fail)
 process.exit(fail ? 1 : 0)

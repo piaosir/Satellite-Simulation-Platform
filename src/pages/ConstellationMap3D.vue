@@ -1567,7 +1567,7 @@ async function ephemEntriesOf(gid) {
     for (const s of ((t && t.sats) || [])) {
       const tab = tableFrom(s)
       if (!tab) continue
-      out.push({ eph: tab, name: s.name, noradId: s.noradId, group: 'ci:' + gid, _ephGroup: gid })
+      out.push({ eph: tab, key: s.key, name: s.name, noradId: s.noradId, group: 'ci:' + gid, _ephGroup: gid })
     }
   } catch { out = [] }
   ephTables.set(gid, out)
@@ -2904,6 +2904,21 @@ async function expResolve(sats, tagOverride) {
       if (out.length) return out
     } catch { /* 取该组星历失败：回退全量池 */ }
   }
+  // 导入组：点序列（ephem）星【不进全量搜索池】——loadUniverse 只并 gp 组（全集是一份 OMM 记录表，
+  // 点序列星没有根数塞不进来），不走这一支就必然落到下面的全量池、然后报「都未找到」。
+  // ensureImportEntries 两种 kind 都覆盖（ephem → ephemEntriesOf、gp → customGroupRecords），
+  // 自带缓存，且返回的就是渲染集里那批 entry 对象本身 —— 选中集与图上星点是同一个对象。
+  if (tag[0] === 'i') {
+    try {
+      const hit = [], got = new Set()
+      for (const e of await ensureImportEntries(key)) {
+        const nid = String(e.noradId)
+        if (got.has(nid)) continue
+        if (want.has(nid) || (e.key != null && want.has(String(e.key))) || (e.name && want.has(String(e.name)))) { got.add(nid); hit.push(e) }
+      }
+      if (hit.length) return hit
+    } catch { /* 读该导入组失败：回退全量池 */ }
+  }
   await ensureSearchPool()
   const out = [], seen = new Set()
   for (const en of searchSource()) {
@@ -2990,10 +3005,18 @@ async function expLoad(tag) {
     expErr.value = '列表加载失败：' + ((e && e.message) || e)
   } finally { if (seq === expSeq) expLoading.value = false }
 }
-// 双击 / 回车：按 NORAD 从全量池解回该星并聚焦（与搜索结果点选同一路径，未渲染的星也能定位）
-async function expLocate(it) {
-  await ensureSearchPool()
+// 双击 / 回车：解回该星并聚焦（与搜索结果点选同一路径，未渲染的星也能定位）。
+// row = 被展开的那一集（SatLayersPanel 随 activate 一并给出；查找对话框那条路没有，回落 expTag）。
+// 导入的点序列星不在全量搜索池里，只有本集这条快路径找得到它；其余各集仍按原样走全量池，行为逐位不变。
+async function expLocate(it, row) {
+  const tag = String((row && row.id) || expTag.value || '')
   const nid = String(it.id)
+  if (tag[0] === 'i') {
+    let hit = null
+    try { hit = (await ensureImportEntries(tag.slice(2))).find((e) => String(e.noradId) === nid || (e.key != null && String(e.key) === nid)) || null } catch { hit = null }
+    if (hit) { selectSat(hit, true); return }
+  }
+  await ensureSearchPool()
   const en = searchSource().find((x) => String(x.noradId) === nid)
   if (!en) { appAlert(`「${it.name}」不在当前星历中（可能未联网加载全量目录，或卫星已退役）`); return }
   selectSat(en, true)
@@ -7237,7 +7260,11 @@ async function impSatList(gid) {
   const g = importGroups.value.find((x) => x.id === gid)
   if (!g) return []
   if (g.kind === 'ephem') {
-    return (g.sats || []).map((s) => expMkItem(s.noradId, s.name,
+    // 行 id 必须是 NORAD：剔除集（satSets.hide）、加入 / 存为卫星组（useSatGroups 按 NORAD 存成员）、
+    // 聚焦（expResolve 按 NORAD 匹配）三处全按它对账，换成 key 会让卫星组存进一批查不到的死号，
+    // 进而被 reconcile 判成「已离轨」自动移除。点序列星的合成 NORAD 由主进程无条件发放
+    // （customSats.importEphem 的 String(base + i)），这里的 || s.key 只是坏数据兜底。
+    return (g.sats || []).map((s) => expMkItem(s.noradId || s.key, s.name,
       `${s.name} · ${s.n} 点 · ${impDay(s.t0)} → ${impDay(s.t1)} · ${s.frame}`, '', null))
   }
   const recs = (apiOk && window.api.omm.customGroupRecords) ? await window.api.omm.customGroupRecords(gid) : []
