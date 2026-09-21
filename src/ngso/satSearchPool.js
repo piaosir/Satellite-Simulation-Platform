@@ -14,6 +14,8 @@
 import { fetchGroupLiveOrSup, parseOMMCsv } from '../viz/constellation/tle.js'
 import { generateConstellation } from '../viz/constellation/walker.js'
 import { resolveScenarioEpoch } from '../viz/constellation/useCustomConstellations.js'
+import sat from '../viz/constellation/satellite.js'
+import { geoLonAtEpoch } from '../shared/geoSlot.js'
 
 const RE = 6378.137
 const MU = 398600.4418
@@ -143,4 +145,78 @@ export async function findPoolByNorad(noradId) {
   const res = await ensureSearchPool()
   const id = String(noradId)
   return res.all.find((r) => String(r.noradId) === id) || null
+}
+
+// ============================================================================
+// 池记录 → 轨道 spec / 定点经度 —— 取星的【唯一出口】
+// ============================================================================
+// 各窗口选完星之后要的东西只有两样：喂 SGP4 的轨道 spec，和 GEO 的定点经度。
+// 这两件都只跟池记录的形状有关，不该由每个窗口各按 orbitType 分支、各手拼一遍十三个字段
+// （NGSO 窗口里那三处手拼是历史欠账）。将来星历导入新增 'ephem' 型池记录时，只需在这里加一支，
+// 用到它的窗口一行都不用改 —— 这是「星历导入」那份设计与本文件的接口约定。
+
+/** 池记录 → 轨道 spec（packages/core 的 buildSatrec / orbitSource 入参）。未知类型抛错。 */
+export function orbitSpecOf(rec) {
+  if (!rec) throw new Error('缺少卫星记录')
+  const t = rec.orbitType || 'omm'
+  if (t === 'omm') {
+    return {
+      type: 'omm',
+      noradId: String(rec.noradId),
+      epoch: rec.epoch || null,
+      meanMotion: Number(rec.meanMotion),
+      ecc: Number(rec.ecc) || 0,
+      incl: Number(rec.incl) || 0,
+      raan: Number(rec.raan) || 0,
+      argp: Number(rec.argp) || 0,
+      ma: Number(rec.ma) || 0,
+      bstar: Number(rec.bstar) || 0,
+      mdot: Number(rec.mdot) || 0,
+      mddot: Number(rec.mddot) || 0
+    }
+  }
+  if (t === 'elements') {
+    const el = rec.elements || {}
+    return {
+      type: 'elements',
+      noradId: String(rec.noradId),
+      epoch: rec.epoch || null,
+      altKm: Number(el.altKm) || 0,
+      ecc: Number(el.ecc) || 0,
+      incl: Number(el.incl) || 0,
+      raan: Number(el.raan) || 0,
+      argp: Number(el.argp) || 0,
+      ma: Number(el.ma) || 0
+    }
+  }
+  throw new Error('未知轨道类型：' + t)
+}
+
+/**
+ * 池记录 → 定点经度（°，西经为负）。取不到返回 NaN（不抛）。
+ * 记录自带 summary.lonDeg 时优先用它（将来的 'ephem' 型记录只带摘要，不必建 satrec）。
+ */
+export function slotLonOf(rec) {
+  if (!rec) return NaN
+  const given = rec.summary && Number(rec.summary.lonDeg)
+  if (Number.isFinite(given)) return given
+  try {
+    const t = rec.orbitType || 'omm'
+    if (t === 'omm') return geoLonAtEpoch(sat.omm2satrec(rec))
+    if (t === 'elements') {
+      // 与 buildSatrec 的 'elements' 分支同一换算：a=(RE+近地点高度)/(1−e)，n=√(μ/a³)
+      const el = rec.elements || {}
+      const ecc = Math.max(0, Math.min(0.999, Number(el.ecc) || 0))
+      const a = (RE + (Number(el.altKm) || 0)) / (1 - ecc)
+      const meanMotion = 86400 * Math.sqrt(MU / (a * a * a)) / TWO_PI
+      return geoLonAtEpoch(sat.omm2satrec({
+        noradId: rec.noradId, epoch: rec.epoch || new Date().toISOString(),
+        meanMotion, ecc,
+        incl: Number(el.incl) || 0, raan: Number(el.raan) || 0,
+        argp: Number(el.argp) || 0, ma: Number(el.ma) || 0,
+        bstar: 0, mdot: 0, mddot: 0
+      }))
+    }
+    return NaN
+  } catch { return NaN }
 }

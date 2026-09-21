@@ -29,6 +29,12 @@ release/
 .lbntnharness/
 .satpickharness/
 
+# 离屏验证台（日凌预报 · GSO：整页挂起来核对交互），本地开发用，不进仓库。
+# ★ 与别的台不同：计算与三个导出【不走桩】—— .sunharness/vite.config.mjs 的中间件把它们转发到真
+# packages/core 与真 electron/services/report.js，城市库走真 cities，星历是从随包 GEO 快照抽的 3 颗。
+# 于是屏上的数、导出的 xlsx/docx/ics 都是真的，只有 window.api 这一层是桩。
+# shots/ 由 npx electron .sunharness/shoot.mjs 抓（五种状态：定轨 / 星历 / 纯几何 / 暗色 / 英文）。
+.sunharness/
 # 离屏验证台（地理场图：等值线标注 + 可拖色标条，场为合成值），本地开发用，不进仓库
 .sfharness/
 
