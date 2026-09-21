@@ -13,6 +13,7 @@
 
 import sat from './satellite.js'
 import { evalTable } from './ephemTable.js'
+import { periodMinFromNo, metricsFromEphem } from '../../shared/satrecMetrics.js'
 
 const JD_UNIX = 2440587.5, MS_PER_DAY = 864e5, MIN_PER_DAY = 1440
 const _sgp4 = (typeof sat.sgp4 === 'function') ? sat.sgp4 : null
@@ -64,5 +65,16 @@ export function validSpan(x) {
   const o = propOf(x)
   return o && o.__ephem ? { t0: o.t0, t1: o.t1 } : null
 }
+// 轨道周期（分钟）—— 信息卡 / 轨道圈 TTL / 轨迹长度的【唯一】口径。
+//   satrec       -> 2π/no（no 是 un-Kozai 后的平均运动，rad/min）
+//   星历点序列表 -> 表内相邻两次升交点估计（结果缓存在表上，见 shared/satrecMetrics.js）
+// 估不出（表不足两次升交点，例如整天一档的 GEO）返回 null —— 调用方据此走「按表点连线」，不编数。
+// ★ satrec 这一路刻意不走 metricsFromSatrec：它每次都建一个对象，而本函数在逐拍逐颗的热路径上。
+export function periodMinOf(x) {
+  const o = propOf(x)
+  if (!o) return null
+  if (o.__ephem) { const m = metricsFromEphem(o); return m ? m.periodMin : null }
+  return periodMinFromNo(o.no)
+}
 
-export default { posAt, posAtMs, propOf, isEphem, isEphemEntry, propagatorLabel, validSpan }
+export default { posAt, posAtMs, propOf, isEphem, isEphemEntry, propagatorLabel, validSpan, periodMinOf }

@@ -75,7 +75,8 @@ import { useMarkerTable, trajsFromSheets } from '../viz/markers/useMarkerTable.j
 import sat from '../viz/constellation/satellite.js'
 // 取位的唯一入口：satrec（SGP4）与星历点序列（插值）两种传播体都走它。
 // 本文件从前有 15 处 sat.propagate，全部改到这里 —— 少改一处，点序列星就在那处静默出 NaN。
-import { posAt, isEphemEntry, propagatorLabel } from '../viz/constellation/satPos.js'
+import { posAt, isEphemEntry, propagatorLabel, periodMinOf } from '../viz/constellation/satPos.js'
+import { metricsFromEntry } from '../shared/satrecMetrics.js'
 import { tableFrom } from '../viz/constellation/ephemTable.js'
 import { sampleOrbitAdaptive } from '../viz/constellation/adaptiveSample.js'
 import { ringTtlMs } from '../viz/constellation/focusGeomCache.js'
@@ -1796,20 +1797,30 @@ function cardFor(e) {
   const WE = 7.2921159e-5
   const speedAbs = v ? Math.hypot(v.x, v.y, v.z) : 0
   const speedRel = (v && r) ? Math.hypot(v.x + WE * r.y, v.y - WE * r.x, v.z) : 0
-  const rec = e.rec
-  const periodMin = (2 * Math.PI) / rec.no            // 轨道周期(min)
-  const meanMotion = rec.no * 1440 / (2 * Math.PI)    // 平均运动(rev/day)
-  const apoKm = rec.alta * RE, perKm = rec.altp * RE, meanKm = (apoKm + perKm) / 2
+  // 星历点序列星没有 satrec：倾角 / 周期 / 近远地点由采样表算（shared/satrecMetrics.js 那一份算式，
+  // 与「查找卫星」筛选器共用），Ω / ω / M 这类只有平根数才有的量一律留空 —— 不由位置反推假根数。
+  const rec = e.rec || null
+  const g = metricsFromEntry(e) || {}
+  const periodMin = g.periodMin != null ? g.periodMin : null          // 轨道周期(min)，估不出为 null
+  const meanMotion = g.meanMotion != null ? g.meanMotion : null       // 平均运动(rev/day)
+  const apoKm = g.apogeeKm != null ? g.apogeeKm : null, perKm = g.perigeeKm != null ? g.perigeeKm : null
+  const meanKm = (apoKm != null && perKm != null) ? (apoKm + perKm) / 2 : null
   // 轨道区制判定（GEO/IGSO/MEO/LEO/HEO）——严谨口径见 shared/orbitClass.js（先偏心率→再同步周期→高度带）
-  const kind = classifyOrbit({ aKm: RE + meanKm, e: rec.ecco, inclDeg: rec.inclo / DEG, perigeeAltKm: perKm, apogeeAltKm: apoKm, periodMin })
+  // 星历星可能只有周期（classifyOrbit 据此推半长轴）；连周期都估不出就不给区制，不拿默认值冒充判定
+  const kind = (periodMin != null || meanKm != null)
+    ? classifyOrbit({ aKm: meanKm != null ? RE + meanKm : null, e: g.ecc, inclDeg: g.incl, perigeeAltKm: perKm, apogeeAltKm: apoKm, periodMin })
+    : ''
+  const ang = (x) => (x == null || !Number.isFinite(x) ? '' : (((x / DEG) % 360 + 360) % 360).toFixed(2))
   return {
     name: e.name, noradId: e.noradId, group: e.groupLabel || GROUP_LABEL[e.group] || '', kind,
-    slot: geoSlotOfSatrec(e.rec),   // GEO 才有定点标注（严区制判定，与分组无关；历元值缓存，不随时钟漂移）
+    slot: geoSlotOfSatrec(rec),   // GEO 才有定点标注（严区制判定，与分组无关；历元值缓存，不随时钟漂移）
     alt: gd.height.toFixed(0), lat: sat.degreesLat(gd.latitude).toFixed(2), lon: sat.degreesLong(gd.longitude).toFixed(2),
-    incl: (rec.inclo / DEG).toFixed(2), ecc: rec.ecco.toFixed(5), period: periodMin.toFixed(1), periodMinRaw: periodMin,
-    perigee: perKm.toFixed(0), apogee: apoKm.toFixed(0), meanMotion: meanMotion.toFixed(4),
-    raan: (((rec.nodeo / DEG) % 360 + 360) % 360).toFixed(2), argp: (((rec.argpo / DEG) % 360 + 360) % 360).toFixed(2),
-    ma: (((rec.mo / DEG) % 360 + 360) % 360).toFixed(2),
+    hasEl: !!rec || periodMin != null || g.incl != null,   // 有没有可显示的根数行（星历星只可能有倾角 / 周期 / 平均运动）
+    incl: g.incl != null ? g.incl.toFixed(2) : '', ecc: g.ecc != null ? g.ecc.toFixed(5) : '',
+    period: periodMin != null ? periodMin.toFixed(1) : '', periodMinRaw: periodMin,
+    perigee: perKm != null ? perKm.toFixed(0) : '', apogee: apoKm != null ? apoKm.toFixed(0) : '',
+    meanMotion: meanMotion != null ? meanMotion.toFixed(4) : '',
+    raan: rec ? ang(rec.nodeo) : '', argp: rec ? ang(rec.argpo) : '', ma: rec ? ang(rec.mo) : '',
     speedAbs: speedAbs.toFixed(3), speedRel: speedRel.toFixed(3)
   }
 }
@@ -1900,13 +1911,15 @@ function startFocusGeometry() {
   syncPool(draw, selEntry)
   const lod = focusLod(draw.length)
   // 星下点轨迹长度：圈数档给 per（各星按自己的周期），时长档给 spanMs（全体同一段；预算按主选星周期折算）
-  const pMin = selEntry && selEntry.rec ? (2 * Math.PI) / selEntry.rec.no : 0
+  const pMin = periodMinOf(selEntry) || 0         // 星历星走表内升交点估计；估不出为 0（按圈数档退化）
   const per = focusTrackPeriods(draw.length, lod.samples, pMin)
   const spanMs = focusStyle.trkSpanMode === 'time' && pMin > 0 ? per * pMin * 60000 : 0
   const orbOn = !!focusStyle.orbOn
-  // TTL 取选中集里【最短】的那个（周期越短，重建时被换掉的环长占比越大）
+  // TTL 取选中集里【最短】的那个（周期越短，重建时被换掉的环长占比越大）。
+  // 估不出周期的星历星跳过：它的环是按表点连的，不随时间漂，全是这种星时 ttl 保持 Infinity ——
+  // 只在首次 / ringDirty 时重建，这正确。
   let ttl = Infinity
-  if (orbOn) for (let i = 0; i < draw.length; i++) { const v = ringTtlMs((2 * Math.PI) / draw[i].rec.no * 60000); if (v < ttl) ttl = v }
+  if (orbOn) for (let i = 0; i < draw.length; i++) { const pm = periodMinOf(draw[i]); if (!(pm > 0)) continue; const v = ringTtlMs(pm * 60000); if (v < ttl) ttl = v }
   const reRing = orbOn && (!ringEpoch || ringDirty || Math.abs(nowMs - ringEpoch.tMs) > ttl)   // 跳变/倒放取绝对值
   if (reRing) { ringEpoch = { tMs: nowMs, gmst: gmstNow }; ringDirty = false }
   const p = {
@@ -1989,7 +2002,9 @@ function focusGeomOfRec(rec, isCc, color) {
     const gd = sat.eciToGeodetic(pv.position, g)
     const lat = sat.degreesLat(gd.latitude), lon = sat.degreesLong(gd.longitude), h = gd.height
     // 自适应采样，与选中星同源（含「轨迹画几个周期」那档设置：轨道圈仍只取一个整周期）
-    const periodMin = (2 * Math.PI) / rec.no, per = focusTrackPeriods(1, 120, periodMin)
+    const periodMin = periodMinOf(rec)          // 星历表也认（估不出周期就没有「一整圈」可画）
+    if (!(periodMin > 0)) return null
+    const per = focusTrackPeriods(1, 120, periodMin)
     const samples = sampleOrbitAdaptive(rec, t, periodMin * Math.max(1, per), Math.round(120 * Math.max(1, per)))
     const t1 = t.getTime() + periodMin * 60000, tTrk = t.getTime() + periodMin * per * 60000
     const orbit = [], track = [], pts = []
@@ -3571,7 +3586,7 @@ function trkCommit(k) {
 function setTrkSpanMode(m) {
   if (m !== 'time') m = 'rev'
   if (focusStyle.trkSpanMode === m) return
-  const pMin = selEntry && selEntry.rec ? (2 * Math.PI) / selEntry.rec.no : 0
+  const pMin = periodMinOf(selEntry) || 0        // 星历星走表内升交点估计
   if (pMin > 0) {
     if (m === 'time') { const r = Number(focusStyle.trkPeriods); focusStyle.trkSpanMin = +((r > 0 ? r : 1) * pMin).toFixed(1) }
     else { const t = Number(focusStyle.trkSpanMin); if (t > 0) focusStyle.trkPeriods = +(t / pMin).toFixed(3) }
@@ -7522,15 +7537,15 @@ onBeforeUnmount(() => {
             <div v-for="s in selList" :key="s.idx" class="mrow" :class="{ active: s.active }" @click="setPrimary(s)">
               <div class="mmain">
                 <div class="mr1"><span class="mnm" :title="s.name" data-i18n-skip>{{ s.name }}</span><span class="mkind">{{ s.kind }}</span></div>
-                <div class="msub">{{ s.noradId }}<template v-if="s.slot"> · {{ s.slot }}</template> · {{ s.alt }}km · {{ s.incl }}°</div>
+                <div class="msub">{{ s.noradId }}<template v-if="s.slot"> · {{ s.slot }}</template> · {{ s.alt }}km<template v-if="s.incl"> · {{ s.incl }}°</template></div>
               </div>
               <span class="mx" title="移出该星" @click.stop="removeSel(s)"><Icon name="x" :size="12" /></span>
             </div>
           </div>
           <div v-show="!cardCollapsed" class="cbody">
           <div class="cmeta">
-            <span class="badge">NORAD {{ selected.noradId }}</span>
-            <span class="badge kind">{{ selected.kind }}</span>
+            <span v-if="selected.noradId" class="badge">NORAD {{ selected.noradId }}</span>
+            <span v-if="selected.kind" class="badge kind">{{ selected.kind }}</span>
             <span v-if="selected.group" class="badge">{{ selected.group }}</span>
             <span v-if="selected.slot" class="badge geo">定点 {{ selected.slot }}</span>
           </div>
@@ -7544,17 +7559,17 @@ onBeforeUnmount(() => {
             <div class="row"><span class="k">惯性速度</span><span class="v">{{ selected.speedAbs }}<i>km/s</i></span></div>
           </div>
 
-          <div class="csec">轨道根数（开普勒）</div>
-          <div class="rows">
-            <div class="row"><span class="k">轨道周期</span><span class="v">{{ selected.period }}<i>min</i></span></div>
-            <div class="row"><span class="k">平均运动 <em>n</em></span><span class="v">{{ selected.meanMotion }}<i>圈/日</i></span></div>
-            <div class="row"><span class="k">轨道倾角 <em>i</em></span><span class="v">{{ selected.incl }}<i>°</i></span></div>
-            <div class="row"><span class="k">偏心率 <em>e</em></span><span class="v">{{ selected.ecc }}</span></div>
-            <div class="row"><span class="k">近地点高度</span><span class="v">{{ selected.perigee }}<i>km</i></span></div>
-            <div class="row"><span class="k">远地点高度</span><span class="v">{{ selected.apogee }}<i>km</i></span></div>
-            <div class="row"><span class="k">升交点赤经 <em>Ω</em></span><span class="v">{{ selected.raan }}<i>°</i></span></div>
-            <div class="row"><span class="k">近地点幅角 <em>ω</em></span><span class="v">{{ selected.argp }}<i>°</i></span></div>
-            <div class="row"><span class="k">平近点角 <em>M</em></span><span class="v">{{ selected.ma }}<i>°</i></span></div>
+          <div v-if="selected.hasEl" class="csec">轨道根数（开普勒）</div>
+          <div v-if="selected.hasEl" class="rows">
+            <div v-if="selected.period" class="row"><span class="k">轨道周期</span><span class="v">{{ selected.period }}<i>min</i></span></div>
+            <div v-if="selected.meanMotion" class="row"><span class="k">平均运动 <em>n</em></span><span class="v">{{ selected.meanMotion }}<i>圈/日</i></span></div>
+            <div v-if="selected.incl" class="row"><span class="k">轨道倾角 <em>i</em></span><span class="v">{{ selected.incl }}<i>°</i></span></div>
+            <div v-if="selected.ecc" class="row"><span class="k">偏心率 <em>e</em></span><span class="v">{{ selected.ecc }}</span></div>
+            <div v-if="selected.perigee" class="row"><span class="k">近地点高度</span><span class="v">{{ selected.perigee }}<i>km</i></span></div>
+            <div v-if="selected.apogee" class="row"><span class="k">远地点高度</span><span class="v">{{ selected.apogee }}<i>km</i></span></div>
+            <div v-if="selected.raan" class="row"><span class="k">升交点赤经 <em>Ω</em></span><span class="v">{{ selected.raan }}<i>°</i></span></div>
+            <div v-if="selected.argp" class="row"><span class="k">近地点幅角 <em>ω</em></span><span class="v">{{ selected.argp }}<i>°</i></span></div>
+            <div v-if="selected.ma" class="row"><span class="k">平近点角 <em>M</em></span><span class="v">{{ selected.ma }}<i>°</i></span></div>
           </div>
           </div>
         </div>

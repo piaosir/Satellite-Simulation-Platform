@@ -18,6 +18,7 @@
 // 同一颗星恒落在同一个 Worker 上，缓存才立得住）。
 import sat from './satellite.js'
 import { propAt, refineInto, sampleOrbitAdaptive } from './adaptiveSample.js'
+import { periodMinOf, validSpan } from './satPos.js'
 import { headingAz } from './focusSwath.js'
 
 // 轨道圈缓存的有效期。定它的不是「误差随时间累积到多大」，而是【重建那一瞬会换掉多长一段环】：
@@ -56,14 +57,30 @@ export function createFocusGeomCache() {
     const e = ent(key)
     const c = e.ring
     if (!rebuild && c && c.rec === rec && c.N === N && c.stepDeg === stepDeg) return c.lla
-    const periodMin = (2 * Math.PI) / rec.no
+    // 周期：satrec → 2π/no；星历点序列表 → 表内相邻两次升交点估计（satPos.periodMinOf）。
+    // ★ 星历星原来在这里读 rec.no（表上没有这个字段）得到 NaN，采样时刻全是 Invalid Date，
+    //   取位一律 null —— 轨道线一根都画不出来。
+    // 星历星的采样窗还必须落在表的时段内；估不出周期（表不足一整圈，例如整天一档的 GEO）时，
+    // 整张表就是那条轨迹，按表的整段采。
+    const periodMin = periodMinOf(rec)
+    const sp = validSpan(rec)
+    let t0 = tMs, spanMin = periodMin > 0 ? periodMin : 0
+    if (sp) {
+      if (!(spanMin > 0)) { t0 = sp.t0; spanMin = (sp.t1 - sp.t0) / 60000 }
+      else {
+        const need = spanMin * 60000
+        if (t0 + need > sp.t1) t0 = Math.max(sp.t0, sp.t1 - need)   // 采样窗右对齐到表末，仍包住当前时刻
+        if (sp.t1 - t0 < need) spanMin = (sp.t1 - t0) / 60000
+      }
+    }
     const lla = []
-    for (const s of sampleOrbitAdaptive(rec, new Date(tMs), periodMin, N, stepDeg)) {
+    if (spanMin > 0) for (const s of sampleOrbitAdaptive(rec, new Date(t0), spanMin, N, stepDeg)) {
       const gd = sat.eciToGeodetic(s.pv.position, gmst)
       lla.push({ lat: sat.degreesLat(gd.latitude), lon: sat.degreesLong(gd.longitude), altKm: gd.height })
     }
-    // 轨道本就是闭曲线（惯性系里首尾同一点），补个首点收口
-    if (lla.length > 1) lla.push(lla[0])
+    // 整周期那一档本就是闭曲线（惯性系里首尾同一点），补个首点收口；
+    // 按表整段画的那一档不是闭曲线，补首点会画出一条横跨的假弦
+    if (periodMin > 0 && lla.length > 1) lla.push(lla[0])
     e.ring = { rec, N, stepDeg, lla }
     return lla
   }

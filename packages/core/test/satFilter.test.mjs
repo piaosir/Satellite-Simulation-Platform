@@ -4,6 +4,9 @@
 // 一律【视为不限】而不是「全都筛掉」—— 把没编目的星全滤没了，用户只会以为搜索坏了。
 
 import SF from '../../../src/shared/satFilter.js'
+import SM from '../../../src/shared/satrecMetrics.js'
+import { tableFrom } from '../../../src/viz/constellation/ephemTable.js'
+import sat from '../../../src/viz/constellation/satellite.js'
 
 let pass = 0, fail = 0
 const ok = (cond, msg, extra) => { if (cond) { pass++ } else { fail++; console.error('  ✗ ' + msg + (extra ? '\n      ' + extra : '')) } }
@@ -131,6 +134,92 @@ section('清单')
 ok(SF.OBJECT_TYPES.join('|') === 'PAY|R/B|DEB|UNK', '对象类型四档')
 ok(SF.ORBIT_CLASSES.join('|') === 'GEO|IGSO|MEO|LEO|HEO', '轨道区制五档')
 ok(SF.STATUS_KINDS.length === 4 && SF.STATUS_KINDS.every((s) => s.key && s.zh && s.en), '状态四档各有中英名')
+
+/* ===== ⑨ ★ 真实池形记录：根数在 rec（satrec）里，不是扁平字段 ===== */
+// 搜索池（ConstellationMap3D 的 setSearchPool / buildEntries / 自建星座 build）产出的记录形如
+// { rec: satrec, name, noradId, group }，根数在 satrec 的 inclo / no / ecco / alta / altp 上。
+// metricsOf 原来只认扁平字段，四种池记录形状一个都不命中 —— 于是「没下载编目时按倾角筛 → 0 颗」。
+// NORAD 一律取 8000x（故意【不在】上面的 ROWS / IDX 里），一并钉死「有编目但这颗查不到时几何五项照样筛」。
+section('池形记录（rec 是 satrec）')
+const REC = (id, name, incl, mm, ecc) => ({
+  rec: sat.omm2satrec({ noradId: String(id), epoch: '2026-09-20T00:00:00.000000', meanMotion: mm, ecc, incl, raan: 0, argp: 0, ma: 0, bstar: 0, mdot: 0, mddot: 0 }),
+  name, noradId: String(id), group: 'other'
+})
+const SPOOL = [
+  REC(80001, 'ISS/池', 51.64, 15.5, 0.0007),       // LEO
+  REC(80002, 'CS-6D/池', 0.03, 1.0027, 0.0002),    // GEO
+  REC(80003, 'GPS/池', 55.0, 2.0056, 0.006),       // MEO
+  REC(80004, 'MOLNIYA/池', 63.4, 2.006, 0.72)      // HEO
+]
+const mPool = SF.metricsOf(SPOOL[0], null)
+ok(mPool.incl != null && Math.abs(mPool.incl - 51.64) < 0.01, '★ 倾角从 satrec 的 inclo 取到', String(mPool.incl))
+ok(mPool.periodMin != null && Math.abs(mPool.periodMin - 92.9136) < 0.01, '★ 周期从 satrec 的 no 取到', String(mPool.periodMin))
+ok(mPool.apogeeKm != null && Math.abs(mPool.apogeeKm - 422) < 5, '★ 远地点高度从 alta×RE 取到', String(mPool.apogeeKm))
+ok(mPool.perigeeKm != null && Math.abs(mPool.perigeeKm - 412) < 5, '★ 近地点高度从 altp×RE 取到', String(mPool.perigeeKm))
+ok(mPool.orbit === 'LEO', '★ 区制判得出来', String(mPool.orbit))
+const byIncl = (lo, hi, index) => SPOOL.filter(SF.makePredicate({ ...SF.emptyFilters(), inclFrom: lo, inclTo: hi }, index)).map((r) => r.name)
+ok(byIncl(50, 60, null).join(',') === 'ISS/池,GPS/池', '★ 无编目时按倾角筛命中（原来是 0 颗）', byIncl(50, 60, null).join(','))
+ok(byIncl(50, 60, IDX).join(',') === 'ISS/池,GPS/池', '★ 有编目但这几颗不在编目里，仍照样命中', byIncl(50, 60, IDX).join(','))
+const byOrbit = (o) => SPOOL.filter(SF.makePredicate({ ...SF.emptyFilters(), orbit: o }, null)).map((r) => r.name)
+ok(byOrbit('GEO').join(',') === 'CS-6D/池', '★ 按区制筛 GEO', byOrbit('GEO').join(','))
+ok(byOrbit('MEO').join(',') === 'GPS/池', '★ 按区制筛 MEO', byOrbit('MEO').join(','))
+ok(byOrbit('HEO').join(',') === 'MOLNIYA/池', '★ 按区制筛 HEO', byOrbit('HEO').join(','))
+// GPS（2.0056 圈/日）与 Molniya（2.006）周期都是 718 min，靠周期分不开它们；
+// 取 1400–1500 只圈住同步周期那一颗，判据才唯一
+const byPeriod = (lo, hi) => SPOOL.filter(SF.makePredicate({ ...SF.emptyFilters(), periodFrom: lo, periodTo: hi }, null)).map((r) => r.name)
+ok(byPeriod(1400, 1500).join(',') === 'CS-6D/池', '★ 按周期筛（1436 min 的 GEO）', byPeriod(1400, 1500).join(','))
+ok(byPeriod(700, 800).join(',') === 'GPS/池,MOLNIYA/池', '★ 12 h 那两颗一起命中（718 / 718 min）', byPeriod(700, 800).join(','))
+const byPer = (lo, hi) => SPOOL.filter(SF.makePredicate({ ...SF.emptyFilters(), perigeeFrom: lo, perigeeTo: hi }, null)).map((r) => r.name)
+ok(byPer(0, 500).join(',') === 'ISS/池', '★ 按近地点高度筛（ISS 412 km）', byPer(0, 500).join(','))
+ok(byPer(900, 1200).join(',') === 'MOLNIYA/池', '★ 大偏心那颗按近地点筛（1058 km，不是半长轴）', byPer(900, 1200).join(','))
+// helper 直测：单位换算不许漂
+const gm = SM.metricsFromSatrec(SPOOL[1].rec)
+ok(Math.abs(gm.periodMin - 1436.176) < 0.05, 'metricsFromSatrec：GEO 周期 ≈ 1436.18 min', String(gm.periodMin))
+ok(Math.abs(gm.meanMotion - 1.0027) < 1e-3, 'metricsFromSatrec：平均运动回读', String(gm.meanMotion))
+ok(Math.abs(gm.apogeeKm - 35796) < 20 && Math.abs(gm.perigeeKm - 35780) < 20, 'metricsFromSatrec：近远地点是【高度】不是地心距',
+  gm.perigeeKm.toFixed(0) + ' / ' + gm.apogeeKm.toFixed(0))
+ok(SM.metricsFromSatrec(null) === null && SM.metricsFromSatrec({}) === null, 'metricsFromSatrec 认不出返回 null')
+ok(SM.metricsFromEntry(SPOOL[0]) !== null && SM.metricsFromEntry({ name: 'x' }) === null, 'metricsFromEntry 判形')
+
+/* ===== ⑩ ★ 星历点序列星：{ eph: 采样表 } ===== */
+// 池里第四种形状（ephemEntriesOf 造的 entry）压根没有 rec。周期只能由表内相邻两次升交点估，
+// 近远地点只能由整表地心距极值减 RE，估不出的一律 null —— 不拿不足一圈的端点冒充。
+section('星历点序列星（eph 是采样表）')
+{
+  const RE0 = 6378.137, R = RE0 + 500, nn = Math.sqrt(398600.4418 / (R * R * R))
+  const inc = 51.6 * Math.PI / 180, ci = Math.cos(inc), si = Math.sin(inc)
+  const mkTab = (minutes, step) => {
+    const cnt = Math.round(minutes * 60 / step) + 1
+    const t = new Float64Array(cnt), p = new Float64Array(3 * cnt), v = new Float64Array(3 * cnt)
+    for (let i = 0; i < cnt; i++) {
+      const s = i * step, u = nn * s
+      t[i] = Date.UTC(2026, 8, 21) + s * 1000
+      p[3 * i] = R * Math.cos(u); p[3 * i + 1] = R * Math.sin(u) * ci; p[3 * i + 2] = R * Math.sin(u) * si
+      v[3 * i] = -R * nn * Math.sin(u); v[3 * i + 1] = R * nn * Math.cos(u) * ci; v[3 * i + 2] = R * nn * Math.cos(u) * si
+    }
+    return tableFrom({ t, p, v, method: 'lagrange', samples: 6 })
+  }
+  const longTab = mkTab(200, 60)      // 200 min > 2 圈（真周期 94.6 min）
+  const shortTab = mkTab(29, 60)      // 不足一圈
+  const eLong = { eph: longTab, name: '星历/长', noradId: '800000', group: 'ci:g1' }
+  const eShort = { eph: shortTab, name: '星历/短', noradId: '800001', group: 'ci:g1' }
+  const mL = SF.metricsOf(eLong, null)
+  ok(mL.incl != null && Math.abs(mL.incl - 51.6) < 0.05, '★ 倾角由轨道面法向算出', String(mL.incl))
+  ok(mL.periodMin != null && Math.abs(mL.periodMin - 94.62) < 0.05, '★ 周期由表内两次升交点估出', String(mL.periodMin))
+  ok(mL.apogeeKm != null && Math.abs(mL.apogeeKm - 500) < 1 && Math.abs(mL.perigeeKm - 500) < 1,
+    '★ 近远地点由地心距极值减 RE（圆轨道两者相等）', mL.perigeeKm + ' / ' + mL.apogeeKm)
+  ok(mL.orbit === 'LEO', '★ 星历星也判得出区制', String(mL.orbit))
+  const hitEph = [eLong, eShort].filter(SF.makePredicate({ ...SF.emptyFilters(), inclFrom: 50, inclTo: 55 }, null)).map((r) => r.name)
+  ok(hitEph.join(',') === '星历/长,星历/短', '★ 按倾角筛，两种表都命中（倾角不靠周期）', hitEph.join(','))
+  const mS = SF.metricsOf(eShort, null)
+  ok(mS.incl != null, '短表仍算得出倾角', String(mS.incl))
+  ok(mS.periodMin === null && mS.apogeeKm === null && mS.perigeeKm === null,
+    '★ 不足一圈的表：周期 / 近远地点一律 null，不编数', [mS.periodMin, mS.apogeeKm, mS.perigeeKm].join(','))
+  const hitPeriod = [eLong, eShort].filter(SF.makePredicate({ ...SF.emptyFilters(), periodFrom: 90, periodTo: 100 }, null)).map((r) => r.name)
+  ok(hitPeriod.join(',') === '星历/长', '要筛周期时，估不出周期的那颗不命中（inRange 对 null 返 false）', hitPeriod.join(','))
+  ok(!!longTab._metrics, '结果缓存在表上，逐拍筛选不重复扫全表')
+  ok(SM.periodMinFromNo(0) === null && Math.abs(SM.periodMinFromNo(2 * Math.PI / 100) - 100) < 1e-9, 'periodMinFromNo 单位对')
+}
 
 console.log('\nsatFilter: 通过 ' + pass + '，失败 ' + fail)
 process.exit(fail ? 1 : 0)

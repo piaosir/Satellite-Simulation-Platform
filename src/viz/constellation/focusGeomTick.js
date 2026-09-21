@@ -6,7 +6,7 @@
 // ★ 分片必须稳定：同一颗星恒落在同一片上，轨道圈缓存与星下点环形缓冲才立得住（池子按 key 哈希分片）。
 // ★ 出参一律是 Float32Array（连同底层 buffer 一起 transfer 回主线程，零拷贝），主线程只管上传。
 import sat from './satellite.js'
-import { posAt } from './satPos.js'   // 取位的唯一入口（satrec 与星历点序列两种传播体都走它）
+import { posAt, periodMinOf, validSpan } from './satPos.js'   // 取位的唯一入口（satrec 与星历点序列两种传播体都走它）
 import { createFocusGeomCache, ringSegments } from './focusGeomCache.js'
 import { footprintRing } from './focusFootprint.js'
 import { swathK, swathSig, sectionOf, headingAz } from './focusSwath.js'
@@ -73,9 +73,16 @@ export function computeTick(st, p) {
     let track = null, secs = null, K = 0
     const swathOn = S.trkOn && S.trkMode === 'swath'
     if (S.trkOn || p.want2d) {
-      const periodMin = (2 * Math.PI) / rec.no
-      // 长度：时长档（p.spanMs > 0）全体同一段；圈数档各星按自己的周期 × p.per
-      track = st.cache.track(e.key, rec, tMs, p.spanMs > 0 ? p.spanMs : periodMin * p.per * 60000, periodMin * 60000 / p.lod.samples, p.lod.stepDeg,
+      // 周期：satrec → 2π/no；星历点序列表 → 表内升交点估计（原来直接读 rec.no，表上没有这个字段
+      // 得到 NaN，spanMs / dtMs 全是 NaN，轨迹一根都画不出来）
+      const periodMin = periodMinOf(rec)
+      const sp = validSpan(rec)
+      // 长度：时长档（p.spanMs > 0）全体同一段；圈数档各星按自己的周期 × p.per；
+      // 估不出周期的星历星没有「圈」可言，按表的整段长度给 —— 表本身就是轨迹
+      const spanMs = p.spanMs > 0 ? p.spanMs : (periodMin > 0 ? periodMin * p.per * 60000 : (sp ? sp.t1 - sp.t0 : 0))
+      // 节拍：有周期按周期 / 采样数，否则按整段 / 采样数
+      const dtMs = (periodMin > 0 ? periodMin * 60000 : spanMs) / p.lod.samples
+      track = st.cache.track(e.key, rec, tMs, spanMs, dtMs, p.lod.stepDeg,
         { tMs, t, lat, lon, h, az: headingAz(pv, g) })
       if (swathOn && track.length > 1) {
         K = swathK(Math.max(h, (rec.alta > 0 ? rec.alta : 0) * RE), p.fp)   // 按远地点高度定横向分段（rec.alta 以地球半径为单位）

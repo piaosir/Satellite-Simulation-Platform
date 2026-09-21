@@ -214,5 +214,47 @@ ok(/未解析/.test(threw), '只给 ref 不给表 → 抛可读错误', threw)
 const bad = G.solveMutualWorstCase({ orbit: { type: 'ephem', ref: { groupId: 'g1' } }, tx: C0.tx, rx: C0.rx, t0ISO: new Date(e0).toISOString(), horizonHours: 4 })
 ok(bad.feasible === false && /未解析|无效/.test(bad.reason || ''), '几何入口把它变成 feasible:false + 原因', bad.reason)
 
+/* ===== 渲染端 periodMinOf：satrec 与星历表同一个口子 ===== */
+// 3D 页的信息卡、轨道圈 TTL、轨迹长度原来一律直接读 rec.no —— 星历点序列星连 rec 都没有：
+// 信息卡与 TTL 两处是真抛 TypeError（点一下星点、之后时钟每拍再抛一次），
+// 两个 Worker 文件里 rec 是表对象本身、rec.no 为 undefined，周期 NaN → 轨道线 / 轨迹一根都画不出。
+section('渲染端 periodMinOf')
+{
+  const { periodMinOf, validSpan } = await import('../../../src/viz/constellation/satPos.js')
+  const { tableFrom } = await import('../../../src/viz/constellation/ephemTable.js')
+  const rec0 = sr                              // ⑤ 节那颗真实 TLE 星（G.buildSatrec 建的 satrec）
+  const pSat = periodMinOf({ rec: rec0 })
+  near(pSat, (2 * Math.PI) / rec0.no, 0, 'satrec 一路逐位等于 2π/no（不许漂）')
+  ok(periodMinOf(rec0) === pSat, '裸 satrec 与 { rec } 同结果')
+  // 星历表：SGP4 采 2.5 圈，周期必须估得出并与 TLE 的对得上
+  const stepS = 60, cnt = Math.round(pSat * 2.5 * 60 / stepS) + 1
+  const t = new Float64Array(cnt), p = new Float64Array(3 * cnt), v = new Float64Array(3 * cnt)
+  for (let i = 0; i < cnt; i++) {
+    const ms = e0 + i * stepS * 1000
+    const pv = sat.propagate(rec0, new Date(ms))
+    t[i] = ms
+    p[3 * i] = pv.position.x; p[3 * i + 1] = pv.position.y; p[3 * i + 2] = pv.position.z
+    v[3 * i] = pv.velocity.x; v[3 * i + 1] = pv.velocity.y; v[3 * i + 2] = pv.velocity.z
+  }
+  const tabLong = tableFrom({ t, p, v, method: 'lagrange', samples: 6 })
+  const pEph = periodMinOf({ eph: tabLong })
+  ok(pEph != null, '★ 星历表估得出周期（原来读 rec.no 得 NaN / 抛 TypeError）', String(pEph))
+  // 【容差怎么来的】estimatePeriodMin 量的是【交点周期】（升交点到升交点），而 2π/no 是开普勒平周期。
+  // J2 的长期项让两者相差 2π/no − 2π/(ṁ+ω̇)：这颗星上是 0.0720 min（4.32 s），是物理差不是实现错。
+  // 故判据对着【交点周期】给，容差 0.01 min —— 只留给采样步长 60 s 下线性插零点的那点误差。
+  const pNodal = (2 * Math.PI) / (rec0.mdot + rec0.argpdot)
+  near(pEph, pNodal, 0.01, '★ 表内升交点估的周期 = 交点周期 2π/(ṁ+ω̇)')
+  ok(Math.abs(pEph - pSat) < 0.1, '与开普勒平周期只差 J2 长期项那一点（实得 ' + Math.abs(pEph - pSat).toFixed(4) + ' min，理论 ' + Math.abs(pSat - pNodal).toFixed(4) + '）')
+  ok(periodMinOf(tabLong) === pEph, '裸表与 { eph } 同结果')
+  // 不足一圈的表：估不出就 null，不编数
+  const short = tableFrom({ t: t.slice(0, 20), p: p.slice(0, 60), v: v.slice(0, 60), method: 'lagrange', samples: 6 })
+  ok(periodMinOf({ eph: short }) === null, '★ 不足一圈的表 → null（调用方据此走「按表点连线」）', String(periodMinOf({ eph: short })))
+  ok(periodMinOf(null) === null && periodMinOf({ name: 'x' }) === null, '空 / 认不出 → null，不抛')
+  // 有效时段：轨道圈采样窗要靠它夹住
+  const sp = validSpan({ eph: tabLong })
+  ok(sp && sp.t0 === t[0] && sp.t1 === t[cnt - 1], 'validSpan 给出表的时段', JSON.stringify(sp))
+  ok(validSpan({ rec: rec0 }) === null, 'satrec 无时段限制')
+}
+
 console.log('\nephemParity: 通过 ' + pass + '，失败 ' + fail)
 process.exit(fail ? 1 : 0)

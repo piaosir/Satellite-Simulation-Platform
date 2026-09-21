@@ -11,6 +11,7 @@
 
 import { classifyOrbit } from './orbitClass.js'
 import { ACTIVE_STATUS } from './satcatCodes.js'
+import { metricsFromEntry } from './satrecMetrics.js'
 
 const RE = 6378.137
 const MU = 398600.4418
@@ -58,30 +59,40 @@ export function normalize(f) {
   return out
 }
 
-// 池记录 / entry -> 可筛的数值。两种形状都收：
-//   搜索池记录 { incl, meanMotion, ecc, apogeeKm, perigeeKm }
-//   SATCAT 行  { inclDeg, periodMin, apogeeKm, perigeeKm }
+// 池记录 / entry -> 可筛的数值。四种形状都收（几何五项与编目在不在无关，故先认记录自己带的传播体）：
+//   搜索池 / 渲染 entry { rec: satrec }  —— 池里【实际】的形状（setSearchPool / buildEntries / 自建星座
+//                                         build 三处产出的都是它），根数在 satrec 的 inclo/no/ecco/alta/altp 上
+//   星历点序列 entry    { eph: 采样表 }  —— 周期由表内升交点估、近远地点由地心距极值减 RE，估不出就 null
+//   扁平记录            { incl, meanMotion, ecc, apogeeKm, perigeeKm }
+//   SATCAT 行           { inclDeg, periodMin, apogeeKm, perigeeKm }
+// ★ 原来只认后两种，而池里【一颗都不是】后两种 —— 于是没下载编目时按倾角筛命中 0 颗。
 export function metricsOf(rec, row) {
   const n = (v) => (v == null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v))
-  let incl = n(rec && rec.incl)
+  const g = metricsFromEntry(rec) || null    // 记录自带的传播体算出来的那一份，见 shared/satrecMetrics.js
+  let incl = n(g && g.incl)
+  if (incl == null) incl = n(rec && rec.incl)
   if (incl == null) incl = n(rec && rec.inclDeg)
   if (incl == null) incl = n(row && row.inclDeg)
-  let apo = n(rec && rec.apogeeKm), per = n(rec && rec.perigeeKm)
+  let apo = n(g && g.apogeeKm), per = n(g && g.perigeeKm)
+  if (apo == null) apo = n(rec && rec.apogeeKm)
+  if (per == null) per = n(rec && rec.perigeeKm)
   if (apo == null) apo = n(row && row.apogeeKm)
   if (per == null) per = n(row && row.perigeeKm)
-  // 周期：优先平均运动（池记录的权威量），其次编目里的 PERIOD
-  let period = null
-  const mm = n(rec && rec.meanMotion)
-  if (mm != null && mm > 0) period = 1440 / mm
+  // 周期：优先传播体（权威），其次扁平记录的平均运动，最后编目里的 PERIOD
+  let period = n(g && g.periodMin)
+  if (period == null) {
+    const mm = n(rec && rec.meanMotion)
+    if (mm != null && mm > 0) period = 1440 / mm
+  }
   if (period == null) period = n(rec && rec.periodMin)
   if (period == null) period = n(row && row.periodMin)
   // 轨道区制：能算就算（classifyOrbit 自己会按 a / 周期 / 近远地点三条路兜底）
   let aKm = null
   if (period != null && period > 0) aKm = Math.cbrt(MU * Math.pow(period * 60 / TWO_PI, 2))
   else if (apo != null && per != null) aKm = ((apo + RE) + (per + RE)) / 2
-  const ecc = (apo != null && per != null && apo + per + 2 * RE > 0)
-    ? ((apo + RE) - (per + RE)) / ((apo + RE) + (per + RE))
-    : n(rec && rec.ecc)
+  let ecc = n(g && g.ecc)
+  if (ecc == null && apo != null && per != null && apo + per + 2 * RE > 0) ecc = ((apo + RE) - (per + RE)) / ((apo + RE) + (per + RE))
+  if (ecc == null) ecc = n(rec && rec.ecc)
   let orbit = null
   if (aKm != null || period != null || (apo != null && per != null)) {
     try { orbit = classifyOrbit({ aKm, e: ecc, inclDeg: incl, periodMin: period, apogeeAltKm: apo, perigeeAltKm: per }) } catch { orbit = null }
