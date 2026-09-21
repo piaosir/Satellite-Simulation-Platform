@@ -2,7 +2,8 @@
 // 生成器：scripts/cmd-index.mjs（electron-vite dev / build 起步时由 cmdIndexPlugin 自动刷新，模板改了随手重生成；
 // 也可手动 node scripts/cmd-index.mjs）。口径见生成器头注；packages/core/test/cmdIndex.test.mjs 校验本文件与模板同步。
 export default [
-  {"view":"constellation","key":"constellation-top","title":null,"items":[{"label":"星座名称"},{"label":"星座构型"},{"label":"轨道倾角 i"},{"label":"轨道形状"},{"label":"远地点高度 hₐ"},{"label":"近地点幅角 ω"},{"label":"标识颜色"},{"label":"场景历元"},{"label":"按轨道面配色"}]},
+  {"view":"constellation","key":"constellation-top","title":null,"items":[{"label":"星座名称"},{"label":"星座构型"},{"label":"轨道倾角 i"},{"label":"轨道形状"},{"label":"远地点高度 hₐ"},{"label":"近地点幅角 ω"},{"label":"标识颜色"},{"label":"按轨道面配色"}]},
+  {"view":"constellation","key":"const-import","title":"导入星历","items":[{"label":"场景历元"}]},
   {"view":"gxt","key":"gxt-top","title":null,"items":[{"label":"添加卫星"},{"label":"频段"},{"label":"自定义"},{"label":"线粗"}]},
   {"view":"gxt","key":"gxt-disp","title":"显示选项","items":[{"label":"字号"},{"label":"大小"},{"label":"显示波束名"},{"label":"显示波束中心"},{"label":"显示数值标签"}]},
   {"view":"poly","key":"poly-list","title":"协调区多边形","items":[{"label":"数值"},{"label":"轨位"},{"label":"卫星"},{"label":"填充"},{"label":"线粗"},{"label":"字号"}]},

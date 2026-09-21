@@ -98,6 +98,8 @@ export const ID_KW = {
   'const.frame': ['rotate', 'spin', 'inertial', 'fixed', 'earth rotation', '自转', '惯性', '跟随', '地固'],
   'const.live': ['live', 'real time', 'clock', '实时', '当前时间'],
   'const.sendMini': ['miniapp', 'wechat', '微信', '小程序', '卫星组', '自定义卫星', '星座'],
+  'const.import': ['import', 'ephemeris', 'stk', 'oem', 'ccsds', 'sp3', 'tle', 'omm', 'almanac', 'yuma', 'sem',
+    '导入', '星历', '外部星历', '点序列', '精密星历', '年历'],
   'poly.draw': ['polygon', 'draw', 'coordination', '协调区', '画多边形', '绘制'],
   'poly.import': ['polygon', 'import', 'gxt', 'kml', '协调区', '导入'],
   'grd.addSat': ['satellite', 'add', 'antenna tree', '自定义卫星', '天线树', '关联卫星'],

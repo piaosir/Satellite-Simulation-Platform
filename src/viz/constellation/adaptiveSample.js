@@ -11,12 +11,13 @@
 //  - 经度差先归一到 ≤180° 再判跳变——真实反经线穿越差值很小，不会被误细分；
 //  - 深度上限硬保证终止；中点推演失败则该段放弃细分退化为直连（温和降级）。
 import sat from './satellite.js';
+import { posAt } from './satPos.js';   // 取位的唯一入口（satrec 与星历点序列两种传播体都走它）
 
 const MAX_STEP_DEG = 4;   // 相邻点地面跳变阈值：高于近圆轨道基线(~3.2°)不触发，远低于失真弦(130°+)
 const MAX_DEPTH = 7;      // 单段最多二分 7 层(×128)：TANGO 近地点 27min 步长加密到 ~12.6s、跳变 ~1°
 
 // 一个周期内自适应采样。返回 [{ t, pv, gd, lat, lon }]：
-//   t 采样时刻(Date)、pv=sat.propagate 结果（含 ECI position，供调用方按需转轨道圈坐标）、
+//   t 采样时刻(Date)、pv=satPos.posAt 结果（含 ECI position，供调用方按需转轨道圈坐标）、
 //   gd=逐时刻 gmst 的大地坐标（弧度制，星下点）、lat/lon 为 gd 的度数形式。
 // 推演失败的时刻直接跳过（与原实现一致）。
 // stepDeg：细分阈值，【必须随 N 一起放宽】—— 多选降采样时若仍按 4° 判，二分会把点数原样补回来，
@@ -25,7 +26,7 @@ const MAX_DEPTH = 7;      // 单段最多二分 7 层(×128)：TANGO 近地点 2
 // 导出供环形缓冲（focusGeomCache.js）复用 —— 细分口径必须只有一份，两处各写一遍迟早对不上。
 // gmst 一并带回：轨迹面要按该时刻的恒星时把 ECI 速度转成地面航向（见 focusSwath.headingAz），省得再算一遍。
 export function propAt(rec, t) {
-  const pv = sat.propagate(rec, t);
+  const pv = posAt(rec, t);
   if (!pv || !pv.position) return null;
   const gmst = sat.gstime(t);
   const gd = sat.eciToGeodetic(pv.position, gmst);

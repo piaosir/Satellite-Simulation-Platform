@@ -29,6 +29,7 @@
 //   宿主按窗口逐 key 读 session(key)。
 import { ref, reactive, computed } from 'vue'
 import sat from '../constellation/satellite.js'
+import { posAt } from '../constellation/satPos.js'   // 取位的唯一入口（对星覆盖不收星历点序列，见 satcovReject）
 import { sampleBeamAtEcef, sampleBeamAtParam, invGridDir, perturbSpacecraft, antennaBasis, axialRatioDb, beamBasisFrom, boreSettingsAtPos } from './coverage.js'
 import { losBlocked } from './shellProj.js'
 import { scanWindows, summarize } from './satcovScan.js'
@@ -490,8 +491,7 @@ export function useSatPerfTable() {
     const posOf = (e) => {
       const t = e._cc ? times.ccNow : times.now
       const gm = e._cc ? times.ccGmst : times.gmst
-      let pv
-      try { pv = sat.propagate(e.rec, t) } catch { return null }
+      const pv = posAt(e, t)
       if (!pv || !pv.position) return null
       const ecf = sat.eciToEcf(pv.position, gm), g = geoOf(pv, gm)
       return { P: [ecf.x, ecf.y, ecf.z], lon: g.lon, lat: g.lat, alt: g.alt }
@@ -561,8 +561,7 @@ export function useSatPerfTable() {
     const srcMetaAt = srcRec
       ? (tMs) => {
         const d = new Date(tMs + (srcRec._cc ? ccOff : 0))
-        let pv
-        try { pv = sat.propagate(srcRec.rec, d) } catch { return null }
+        const pv = posAt(srcRec, d)
         if (!pv || !pv.position) return null
         const g = geoOf(pv, sat.gstime(d))
         return { satLon: g.lon, satLat: g.lat, satAlt: g.alt }
@@ -570,8 +569,7 @@ export function useSatPerfTable() {
       : () => baseMeta
     const geoAt = (rec, tMs) => {
       const d = new Date(tMs)
-      let pv
-      try { pv = sat.propagate(rec, d) } catch { return null }
+      const pv = posAt(rec, d)
       if (!pv || !pv.position) return null
       const gm = sat.gstime(d), e = sat.eciToEcf(pv.position, gm), g = geoOf(pv, gm)
       return { P: [e.x, e.y, e.z], lon: g.lon, lat: g.lat, alt: g.alt }

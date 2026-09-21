@@ -6,6 +6,7 @@
 // 双历元约定：真实星按墙钟 now/gmst 解算，自定义/合成星按固定场景历元 ccNow/ccGmst 解算——
 // 由调用方在 entry 上打好 _cc 标记并预备两套时刻（见 useVisibility.recompute）。
 import sat from '../constellation/satellite.js'
+import { posAt, posAtMs } from '../constellation/satPos.js'   // 取位的唯一入口
 
 const DEG = Math.PI / 180
 
@@ -47,8 +48,7 @@ export function computeVisibility(entries, targets, times, minElevDeg) {
     const cc = e._cc
     const t = cc ? times.ccNow : times.now
     const g = cc ? times.ccGmst : times.gmst
-    let pv
-    try { pv = sat.propagate(e.rec, t) } catch { continue }
+    const pv = posAt(e, t)
     if (!pv || !pv.position) continue
     const ecf = sat.eciToEcf(pv.position, g)
     let best = null
@@ -63,7 +63,7 @@ export function computeVisibility(entries, targets, times, minElevDeg) {
     let rising = null
     try {
       const t2 = new Date(t.getTime() + 30000)
-      const pv2 = sat.propagate(e.rec, t2)
+      const pv2 = posAt(e, t2)
       if (pv2 && pv2.position) {
         const gs2 = { longitude: best.atLon * DEG, latitude: best.atLat * DEG, height: 0 }
         const el2 = sat.ecfToLookAngles(gs2, sat.eciToEcf(pv2.position, sat.gstime(t2))).elevation / DEG
@@ -90,7 +90,7 @@ export function computeVisibility(entries, targets, times, minElevDeg) {
 //   ① 观测者基（buildObservers）：固定目标点的 ECEF + 天顶方向余弦一次性预算，每采样只剩「向量差·天顶 → asin」，
 //      免去 ecfToLookAngles 内每次重建 geodeticToEcf(sqrt+三角) 与站点 sin/cos；access 不需方位/斜距，故只算仰角。
 //   ② SGP4 直核：ms→JD→tsince 直接调 sat.sgp4，省去 new Date 分配与 propagate/gstime 各算一遍 jday（jday 只算 1 次）。
-//      vendored 库未导出 sgp4 时回退 propagate(Date)，数值一致仅略慢。
+//      这一档现在落在 satPos.posAtMs 里（它顺带认星历点序列：表对象走插值，同样不 new Date）。
 //   ③ 峰值黄金分割：单峰区间搜索每步仅新增 1 次传播（旧三分法每步 2 次）。
 
 // WGS84 地球（与 satellite.js geodeticToEcf 同参），预建观测者基：ox/oy/oz=站点 ECEF(h=0)；ux/uy/uz=当地天顶方向余弦。
@@ -108,13 +108,11 @@ function buildObservers(targets) {
   return obs
 }
 
-const _sgp4 = (typeof sat.sgp4 === 'function') ? sat.sgp4 : null   // 直核；缺失则走 propagate 回退
-const JD_UNIX = 2440587.5, MS_PER_DAY = 864e5, MIN_PER_DAY = 1440, RAD2DEG = 180 / Math.PI
+const JD_UNIX = 2440587.5, MS_PER_DAY = 864e5, RAD2DEG = 180 / Math.PI
 // 某时刻该星对 obs 各点的最大仰角（度）；obs = buildObservers 产物。返回 -999 表示传播失败。
 const elevMaxAt = (rec, obs, tMs) => {
   const jd = tMs / MS_PER_DAY + JD_UNIX
-  let pv
-  try { pv = _sgp4 ? _sgp4(rec, (jd - rec.jdsatepoch) * MIN_PER_DAY) : sat.propagate(rec, new Date(tMs)) } catch { return -999 }
+  const pv = posAtMs(rec, tMs, jd)
   if (!pv || !pv.position) return -999
   const g = sat.gstime(jd), cg = Math.cos(g), sg = Math.sin(g), p = pv.position
   const ex = p.x * cg + p.y * sg, ey = p.y * cg - p.x * sg, ez = p.z   // ECI→ECEF

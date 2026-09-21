@@ -1,0 +1,68 @@
+// 取卫星位置 —— 渲染端【唯一】入口（packages/core/utils/orbitPos.js 的渲染端对应物）。
+//
+// 两种传播体，同一个 posAt、同一种返回形状，调用方不必分支：
+//   satrec（SGP4/SDP4，来自 OMM / TLE / 六根数）        -> satellite.js 的 propagate
+//   ephem 表（时间标签位置序列，来自 .e / OEM / SP3）    -> ephemTable.js 的插值
+// 两者都返 { position:{x,y,z}, velocity:{x,y,z} }（TEME，km / km·s⁻¹）或 null。
+//   satrec 的 null = SGP4 报错 / 位置非有限；ephem 的 null = 查询时刻【落在采样时段之外】
+//   （口径：不外推、不钉端点，该星此刻不画、不参与几何）。
+//
+// ★ 渲染端凡取卫星位置一律走本模块，不再直接调 sat.propagate ——
+//   否则新加的 ephem 星会静默出 NaN（表对象不是 satrec，喂给 SGP4 只会得到垃圾）。
+//   判据：grep -n "propagate(" src/pages src/viz 只允许剩 satellite.js 的定义与本文件。
+
+import sat from './satellite.js'
+import { evalTable } from './ephemTable.js'
+
+const JD_UNIX = 2440587.5, MS_PER_DAY = 864e5, MIN_PER_DAY = 1440
+const _sgp4 = (typeof sat.sgp4 === 'function') ? sat.sgp4 : null
+
+// entry（{rec} 或 {eph}）或裸传播体都收；ephem 表优先（同一条 entry 不会两者都有）
+export const propOf = (x) => (x && (x.__ephem || x.jdsatepoch !== undefined) ? x : (x && (x.eph || x.rec)) || x)
+export const isEphem = (x) => !!(propOf(x) || {}).__ephem
+// 该 entry 是不是点序列星（给「拒收」那一批模块判一句用）
+export const isEphemEntry = (e) => !!(e && e.eph && e.eph.__ephem)
+
+const wrap = (r) => (r ? { position: { x: r.x, y: r.y, z: r.z }, velocity: { x: r.vx, y: r.vy, z: r.vz } } : null)
+
+// 通用取位。t 可以是 Date 或 UTC 毫秒。任何情况下都不抛。
+export function posAt(x, t) {
+  const o = propOf(x)
+  if (!o) return null
+  if (o.__ephem) return wrap(evalTable(o, t instanceof Date ? t.getTime() : Number(t)))
+  const d = t instanceof Date ? t : new Date(Number(t))
+  let pv
+  try { pv = sat.propagate(o, d) } catch { return null }
+  if (!pv || !pv.position || (o.error && o.error !== 0)) return null
+  return Number.isFinite(pv.position.x) ? pv : null
+}
+
+// 热路径取位（可见性扫描、逐帧点云）：给毫秒，satrec 一路直调 sgp4 内核，
+// 省掉 new Date 分配与 propagate/gstime 各算一遍 jday。数值与 posAt 完全一致。
+// 返回 { position, velocity } 或 null。jd 可由调用方传入复用（它多半已经算过）。
+export function posAtMs(x, tMs, jd) {
+  const o = propOf(x)
+  if (!o) return null
+  if (o.__ephem) return wrap(evalTable(o, tMs))
+  if (!_sgp4) return posAt(o, tMs)
+  const j = jd === undefined ? tMs / MS_PER_DAY + JD_UNIX : jd
+  let pv
+  try { pv = _sgp4(o, (j - o.jdsatepoch) * MIN_PER_DAY) } catch { return null }
+  if (!pv || !pv.position || (o.error && o.error !== 0)) return null
+  return Number.isFinite(pv.position.x) ? pv : null
+}
+
+// 传播器标注（信息卡 / 链路窗口读数）
+export function propagatorLabel(x) {
+  const o = propOf(x)
+  if (!o) return ''
+  if (o.__ephem) return '星历点序列'
+  return o.method === 'd' ? 'SDP4' : 'SGP4'
+}
+// 有效时段（UTC 毫秒）；satrec 无限制返回 null
+export function validSpan(x) {
+  const o = propOf(x)
+  return o && o.__ephem ? { t0: o.t0, t1: o.t1 } : null
+}
+
+export default { posAt, posAtMs, propOf, isEphem, isEphemEntry, propagatorLabel, validSpan }

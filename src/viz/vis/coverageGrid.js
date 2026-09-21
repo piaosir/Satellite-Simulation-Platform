@@ -9,6 +9,7 @@
 // 分批可续算：createCoverageRun 返回 { T, stepBatch(k), finalize() }，由 useVisibility 按「时间批」分帧调用，
 // 避免长扫描冻结 UI（accessWindows 分帧同款思路，只是这里状态在累加器里跨批延续）。
 import sat from '../constellation/satellite.js'
+import { posAt } from '../constellation/satPos.js'   // 取位的唯一入口
 import { orbitCanReach } from './visibility.js'
 import { schemeColorsRGB } from '../grd/colormap.js'
 
@@ -141,7 +142,7 @@ export function createCoverageRun(entries, grid, times, params) {
 
   // 一颗星在某时刻散射：星下点 + 覆盖冠 λ → 触及行 × 经度窗内胞元 tmpN++（并记 touched 供清零）
   function scatter(rec, cc, tReal, gReal, tCc, gCc) {
-    let pv; try { pv = sat.propagate(rec, cc ? tCc : tReal) } catch { return }
+    const pv = posAt(rec, cc ? tCc : tReal)
     if (!pv || !pv.position) return
     const gd = sat.eciToGeodetic(pv.position, cc ? gCc : gReal)
     const h = gd.height

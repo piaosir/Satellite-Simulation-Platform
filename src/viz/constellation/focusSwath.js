@@ -14,7 +14,7 @@ const WE = 7.2921159e-5     // 地球自转角速度 rad/s（与信息卡的对�
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v))
 
 // 地面航向（rad，北起顺时针）：星下点相对【地球】的运动方向。
-// pv = sat.propagate 结果（ECI，km / km·s⁻¹），gmst = 该时刻恒星时。相对速度 v − ω×r 先在 ECI 轴上减掉
+// pv = satPos.posAt 结果（ECI，km / km·s⁻¹），gmst = 该时刻恒星时。相对速度 v − ω×r 先在 ECI 轴上减掉
 // 自转分量，再绕 z 轴转到 ECEF（与 satellite.js 的 eciToEcf 同一旋转），最后投到地心方向的本地东/北。
 export function headingAz(pv, gmst) {
   const r = pv && pv.position, v = pv && pv.velocity

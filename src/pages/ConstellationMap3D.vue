@@ -836,9 +836,19 @@ satPerf.setTimeFmt((ms) => {
   return `${tYear(d)}-${p(tMon(d) + 1)}-${p(tDay(d))} ${p(tHour(d))}:${p(tMin(d))}:${p(tSec(d))}`
 })
 const satcovNowMs = computed(() => clock.tMs)
+// 点序列星被对星覆盖拒收时的一句状态（§4.4：不进计算，只说明状态）。
+// 同一颗星只报一次，免得逐拍刷屏。
+const satcovRejSeen = new Set()
+function satcovRejected(e) {
+  const k = String((e && e.noradId) || (e && e.name) || '')
+  if (!k || satcovRejSeen.has(k)) return
+  satcovRejSeen.add(k)
+  status.value = byLang('星历点序列不支持对星覆盖：', 'Ephemeris point sequences are not supported in satellite coverage: ') + ((e && e.name) || k)
+}
 function satcovEntries(ctx) {
   const selfName = ctx ? String(ctx.satName || '') : ''
-  return renderEntries.filter((e) => !selfName || e.name !== selfName)
+  // 点序列星不进对星覆盖（§4.4 拒收清单）：壳层投影按轨道壳做，点序列没有壳的概念。
+  return renderEntries.filter((e) => (!selfName || e.name !== selfName) && !isEphemEntry(e))
     .map((e) => ({ rec: e.rec, name: e.name, noradId: e.noradId, group: e.group, _cc: !!isCustomEntry(e) }))
 }
 // picks（只存名字/NORAD）→ 活体条目。星历更新后按身份重新解析，解析不到的自动缺席。
@@ -849,6 +859,7 @@ function satcovResolvePicks(key) {
   for (const p of satPerf.picksOf(key)) {
     const e = satEntryById(p.noradId ? 'n:' + p.noradId : 'm:' + p.name)
       || renderEntries.find((x) => x.name === p.name)      // 编号对不上了但名字还在（星历换版）
+    if (e && isEphemEntry(e)) { satcovRejected(e); continue }
     if (e) out.push({ rec: e.rec, name: e.name, noradId: e.noradId, group: e.group, _cc: !!isCustomEntry(e) })
   }
   return out
@@ -886,6 +897,7 @@ function satcovInBeamNow(ctx) {
       P[0] = ecf.x; P[1] = ecf.y; P[2] = ecf.z
     }
     if (!sampleBeamAtEcef(bm.beam, ctx.igrid, ctx.basis, P, dirOpts)) continue
+    if (isEphemEntry(e)) continue                    // 点序列星不进对星覆盖（§4.4 拒收清单）
     out.push({ rec: e.rec, name: e.name, noradId: e.noradId, group: e.group, _cc: cc })
   }
   return out
@@ -920,6 +932,7 @@ function satcovSourceRec(ctx) {
     const en = entries.find((x) => String(x.noradId) === String(node.noradId))
       || searchPool.find((x) => String(x.noradId) === String(node.noradId))
       || customConst.findByNorad(node.noradId)
+    if (en && isEphemEntry(en)) { satcovRejected(en); return null }
     if (en) return { rec: en.rec, _cc: !!isCustomEntry(en) }
   } else if (node.elements) {
     try { return { rec: orbitSatrec(node), _cc: false } } catch { return null }
@@ -931,6 +944,7 @@ function satcovBoreRec(ctx) {
   const st = ctx && ctx.settings
   if (!st || (st.boreType !== 'sat' && st.boreType !== 'satoff')) return null
   const e = satEntryById(st.boreSat)
+  if (e && isEphemEntry(e)) { satcovRejected(e); return null }
   return e ? { rec: e.rec, _cc: !!isCustomEntry(e) } : null
 }
 async function satcovScanWindows(key) {
@@ -1522,6 +1536,10 @@ async function refreshCustomImportCount() {
     const r = (apiOk && window.api.omm.customList) ? await window.api.omm.customList() : null
     customImportCount.value = (r && r.count) || 0
     importGroups.value = (r && r.groups) || []
+    // 组色进 groupColors：entries 的 group 是 'ci:<组id>'，逐点取色链（satGrpColor > e.color >
+    // groupRgb(e.group) > 默认）就能按组命中，不必给每颗星单独塞 color。
+    for (const k of Object.keys(groupColors)) if (k.indexOf('ci:') === 0) delete groupColors[k]
+    for (const g of importGroups.value) if (g.color && HEX6.test(g.color)) groupColors['ci:' + g.id] = g.color.toLowerCase()
   } catch { customImportCount.value = 0; importGroups.value = [] }
 }
 // 「自定义卫星」这一行有没有数据，判据是【组数 > 0】而不是星数：
@@ -1755,7 +1773,8 @@ function syncPool(draw, primary) {
   //   主选变了同样算：主/非主两桶的线宽与透明度不同（orbP / orb），不重建就换不过来。
   ringDirty = true
   poolEntries = draw.slice(); poolPrimary = primary
-  geomPool.setSats(draw.map((e) => ({ key: satIdOf(e), rec: e.rec, cc: isCustomEntry(e), color: hexNum(satDotHex(e)) })),
+  // eph 表与 satrec 一样是纯数据，结构化克隆得动 Worker；下游 focusGeomTick 走 posAt，两种都认。
+  geomPool.setSats(draw.map((e) => ({ key: satIdOf(e), rec: e.eph || e.rec, cc: isCustomEntry(e), color: hexNum(satDotHex(e)) })),
     primary ? satIdOf(primary) : null)
 }
 // 只「算」不「推」：返回 Promise<{shards, ringBuild, spin} | null>；null＝这一拍被更新的一拍顶掉了，别画。
@@ -2667,6 +2686,7 @@ const expList = computed(() => {
     }
     return expMemCache.out
   }
+  if (tag[0] === 'i') return expItems.value   // 导入组：名单异步读回后放进 expItems（见 expLoad）
   if (tag[0] === 'c') {
     const src = customConst.satsOf(tag.slice(2))
     if (expMemCache.src !== src) expMemCache = { src, out: src.map((e) => expMkItem(e.noradId, e.name, `${e.name} · 第 ${(e.plane || 0) + 1} 轨道面 · NORAD ${e.noradId}`, '', geoSlotOfSatrec(e.rec))) }
@@ -2780,13 +2800,13 @@ function expToggle(tag, label) {
   expMenu.value = null
   if (expTag.value === tag) { expTag.value = ''; expItems.value = []; expErr.value = ''; expLoading.value = false; return }
   expTag.value = tag; expLabel.value = label || ''; expErr.value = ''; expItems.value = []
-  if (tag[0] === 'g') expLoad(tag)
+  if (tag[0] === 'g' || tag[0] === 'i') expLoad(tag)
 }
 async function expLoad(tag) {
   const seq = ++expSeq
   expLoading.value = true
   try {
-    const list = await grpSatList(tag.slice(2))
+    const list = tag[0] === 'i' ? await impSatList(tag.slice(2)) : await grpSatList(tag.slice(2))
     if (seq !== expSeq || expTag.value !== tag) return
     expItems.value = list
   } catch (e) {
@@ -2860,11 +2880,12 @@ function openRowMenu(e, kind, obj, idx) {
 }
 function closeRowMenu() { rowMenu.value = null; rowMenuArm.value = false }
 const rowMenuName = (m) => !m ? '' : (m.kind === 'grp' ? m.obj.label : m.obj.name)
-const rowMenuTag = (m) => !m ? '' : (m.kind === 'sg' ? 's:' + m.obj.id : (m.kind === 'cc' ? 'c:' + m.obj.id : 'g:' + m.obj.key))
+const rowMenuTag = (m) => !m ? '' : (m.kind === 'sg' ? 's:' + m.obj.id : (m.kind === 'cc' ? 'c:' + m.obj.id : (m.kind === 'ci' ? 'i:' + m.obj.id : 'g:' + m.obj.key)))
 // 菜单里能显示的颗数：卫星组/自定义星座当场就知道；内置星座要读名录，未读过则不显示计数
 const rowMenuCount = computed(() => {
   const m = rowMenu.value; if (!m) return null
   if (m.kind === 'sg') return m.obj.sats.length
+  if (m.kind === 'ci') return m.obj.count
   if (m.kind === 'cc') return customConst.count(m.obj)
   const hit = grpListCache.get(m.obj.key)
   return hit ? hit.length : null
@@ -2874,6 +2895,7 @@ const rowMenuHasSats = computed(() => { const m = rowMenu.value; return !!m && !
 async function rowMenuSats(m) {
   if (!m) return []
   if (m.kind === 'sg') return (m.obj.sats || []).map((s) => ({ noradId: s.id, name: s.name }))
+  if (m.kind === 'ci') return (await impSatList(m.obj.id)).map((it) => ({ noradId: it.id, name: it.name }))
   if (m.kind === 'cc') return customConst.satsOf(m.obj.id).map((e) => ({ noradId: e.noradId, name: e.name }))
   return (await grpSatList(m.obj.key)).map((it) => ({ noradId: it.id, name: it.name }))
 }
@@ -2952,6 +2974,7 @@ function rowMenuShow() {
   closeRowMenu()
   if (m.kind === 'grp') { pickGroup(m.idx); return }
   if (m.kind === 'sg') { toggleSatGroup(m.obj); return }
+  if (m.kind === 'ci') { impToggleVis(m.obj); return }
   showConstAlone(m.obj)
 }
 function rowMenuExpand() {
@@ -2975,10 +2998,20 @@ function rowMenuDup() {
     showConstAlone(cfg)
   }
 }
-function rowMenuRename() { const m = rowMenu.value; if (!m || m.kind !== 'sg') return; const g = m.obj; closeRowMenu(); satGrpEnterRename(g) }
+function rowMenuRename() {
+  const m = rowMenu.value; if (!m) return
+  const g = m.obj; closeRowMenu()
+  if (m.kind === 'ci') { impEnterRename(g); return }
+  if (m.kind === 'sg') satGrpEnterRename(g)
+}
 function rowMenuManage() { const m = rowMenu.value; if (!m || m.kind !== 'sg') return; const g = m.obj; closeRowMenu(); openSatGrpMgr(g) }
 function rowMenuEdit() { const m = rowMenu.value; if (!m || m.kind !== 'cc') return; const c = m.obj; closeRowMenu(); openConstWizard(c) }
-function rowMenuToggleVis() { const m = rowMenu.value; if (!m || m.kind !== 'cc') return; const id = m.obj.id; closeRowMenu(); customConst.toggle(id) }
+function rowMenuToggleVis() {
+  const m = rowMenu.value; if (!m) return
+  const o = m.obj; closeRowMenu()
+  if (m.kind === 'ci') { impToggleVis(o); return }
+  if (m.kind === 'cc') customConst.toggle(o.id)
+}
 function rowMenuResetColor() { const m = rowMenu.value; if (!m || m.kind !== 'grp') return; const k = m.obj.key; closeRowMenu(); resetGroupColor(k) }
 function rowMenuAddSel() {
   const m = rowMenu.value; if (!m || m.kind !== 'sg') return
@@ -2989,6 +3022,7 @@ function rowMenuDelete() {
   const m = rowMenu.value; if (!m) return
   if (!rowMenuArm.value) { rowMenuArm.value = true; return }
   closeRowMenu()
+  if (m.kind === 'ci') { expDrop('i:' + m.obj.id); impDelId.value = m.obj.id; impDelete(m.obj); return }
   if (m.kind === 'sg') {
     const g = m.obj
     if (filterGroupId.value === g.id) clearSearch()   // 正在显示的组被删 → 退出显示态
@@ -6814,16 +6848,122 @@ async function importTleToLibrary() {
   try { r = await window.api.omm.customImport() } catch (e) { status.value = '导入失败：' + ((e && e.message) || e); return }
   if (!r || r.canceled) return
   if (!r.ok) { status.value = '导入失败：' + (r.error || '未知错误'); return }
+  afterImport(r)
+}
+// 导入完成后的共同收尾（原生对话框与拖放两条路共用）：日志一行汇总 + 切到「自定义卫星」分组 + 刷新各处。
+function afterImport(r) {
   const parts = []
   if (r.groups) parts.push(`${r.groups} 组 / ${r.sats} 颗`)
   if (r.replaced) parts.push(`替换 ${r.replaced}`)
   if (r.invalid) parts.push(`无效 ${r.invalid}`)
+  if (r.ephem) parts.push(`星历 ${r.ephem}`)
   const errs = (r.errors || []).filter(Boolean)
   logMsg(`导入星历：${parts.length ? parts.join(' · ') : '无变化'}${errs.length ? `；${errs.length} 条失败：${errs[0]}` : ''}`, errs.length ? 'warn' : 'info')
-  // 切到「自定义卫星」分组立即可见（保留旧路径导入即见的体验）；bumpCustomSats 同步刷新文件管理 + 搜索池。
+  invalidateEphTables()
   const ci = GROUPS.findIndex((g) => g.key === 'custom')
   if (ci >= 0) pickGroup(ci)
   bumpCustomSats()
+}
+
+/* ===================== 星座栏「导入星历」区块 ===================== */
+// 组内名单（展开箭头用）：gp 组读 OMM 记录，点序列组读采样表的元数据。
+async function impSatList(gid) {
+  const g = importGroups.value.find((x) => x.id === gid)
+  if (!g) return []
+  if (g.kind === 'ephem') {
+    return (g.sats || []).map((s) => expMkItem(s.noradId, s.name,
+      `${s.name} · ${s.n} 点 · ${impDay(s.t0)} → ${impDay(s.t1)} · ${s.frame}`, '', null))
+  }
+  const recs = (apiOk && window.api.omm.customGroupRecords) ? await window.api.omm.customGroupRecords(gid) : []
+  return (recs || []).map((r) => expMkItem(r.noradId, r.name, `${r.name} · NORAD ${r.noradId}`, '', slotByNorad(r.noradId)))
+}
+const impDelId = ref('')          // 两次点击确认删除（与卫星组同手感）
+const impRenameId = ref('')
+const impRenameVal = ref('')
+const impDragOver = ref(false)
+// 行读数：gp 组「N 颗 · 格式 · 历元日期」，点序列组「N 颗 · 星历 · 起 → 止」
+const impDay = (ms) => { if (!Number.isFinite(ms)) return '—'; const d = new Date(ms); const p = (n) => String(n).padStart(2, '0'); return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}` }
+function impRead(g) {
+  const n = `${g.count} 颗`
+  if (g.kind === 'ephem') return `${n} · 星历 · ${impDay(g.t0)} → ${impDay(g.t1)}`
+  return `${n} · ${g.formatLabel || g.format || '—'} · ${g.importedAt ? impDay(Date.parse(g.importedAt)) : '—'}`
+}
+const impTitle = (g) => (g.kind === 'ephem'
+  ? `${g.name}｜时间标签位置序列，按插值取位，不做轨道外推｜${g.formatLabel || g.format}｜${g.count} 颗｜${impDay(g.t0)} → ${impDay(g.t1)}`
+  : `${g.name}｜平均根数，走 SGP4｜${g.formatLabel || g.format}｜${g.count} 颗`)
+async function impRefreshAndRedraw(gid) {
+  invalidateEphTables(gid)
+  await refreshCustomImportCount()
+  const k = curKey()
+  if (k === 'custom' || k === 'all' || k === 'other') await loadGroup()
+  else { recalcHasColor(); refreshPositions() }
+}
+async function impToggleVis(g) {
+  if (!apiOk || !window.api.omm.customUpdateGroup) return
+  try { await window.api.omm.customUpdateGroup(g.id, { visible: !(g.visible !== false) }) }
+  catch (e) { status.value = '显隐保存失败：' + ((e && e.message) || e); return }
+  await impRefreshAndRedraw()
+}
+async function impSetColor(g, hex) {
+  if (!HEX6.test(hex) || !apiOk || !window.api.omm.customUpdateGroup) return
+  try { await window.api.omm.customUpdateGroup(g.id, { color: hex.toLowerCase() }) } catch { return }
+  await impRefreshAndRedraw()
+}
+async function impResetColor(g) {
+  if (!apiOk || !window.api.omm.customUpdateGroup) return
+  try { await window.api.omm.customUpdateGroup(g.id, { color: '' }) } catch { return }
+  await impRefreshAndRedraw()
+}
+function impEnterRename(g) { impDelId.value = ''; impRenameId.value = g.id; impRenameVal.value = g.name }
+async function impCommitRename(g) {
+  const nm = String(impRenameVal.value || '').trim()
+  impRenameId.value = ''
+  if (!nm || nm === g.name) return
+  try { await window.api.omm.customRename(g.id, nm) } catch (e) { status.value = '改名失败：' + ((e && e.message) || e); return }
+  await impRefreshAndRedraw()
+}
+async function impDelete(g) {
+  if (impDelId.value !== g.id) { impDelId.value = g.id; return }
+  impDelId.value = ''
+  try { await window.api.omm.customRemove(g.id) } catch (e) { status.value = '删除失败：' + ((e && e.message) || e); return }
+  invalidateEphTables(g.id)
+  await impRefreshAndRedraw(g.id)
+  bumpCustomSats()
+}
+async function impExport(g) {
+  if (!apiOk || !window.api.omm.customExportGroup) return
+  const fmt = g.kind === 'ephem' ? (g.format === 'sp3' ? 'stk-e' : g.format) : g.format
+  try {
+    const r = await window.api.omm.customExportGroup(g.id, g.name, fmt)
+    if (r && r.ok) logMsg(`导出「${g.name}」：${r.filePath}`)
+    else if (r && !r.canceled) status.value = '导出失败：' + (r.error || '未知错误')
+  } catch (e) { status.value = '导出失败：' + ((e && e.message) || e) }
+}
+// —— 拖放导入：文本由渲染端读好再传，不依赖 Electron 版本的 File.path ——
+function impDragEnter(e) { if (impHasFiles(e)) { impDragOver.value = true; e.preventDefault() } }
+function impDragOverH(e) { if (impHasFiles(e)) { impDragOver.value = true; e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy' } }
+function impDragLeave() { impDragOver.value = false }
+const impHasFiles = (e) => !!(e && e.dataTransfer && Array.from(e.dataTransfer.types || []).indexOf('Files') >= 0)
+async function onImpDrop(e) {
+  impDragOver.value = false
+  if (!impHasFiles(e)) return
+  e.preventDefault(); e.stopPropagation()
+  if (!apiOk || !window.api.omm.customImportText) { status.value = '需在桌面客户端中运行'; return }
+  const files = Array.from((e.dataTransfer && e.dataTransfer.files) || [])
+  if (!files.length) return
+  const MAX = 64 * 1024 * 1024
+  const payload = []
+  for (const f of files) {
+    if (f.size > MAX) { status.value = `${f.name} 超过 64 MB，未导入`; continue }
+    try { payload.push({ name: f.name, text: await f.text() }) }
+    catch (err) { status.value = `${f.name} 读取失败：${(err && err.message) || err}` }
+  }
+  if (!payload.length) return
+  try {
+    const r = await window.api.omm.customImportText(payload)
+    if (r && r.ok) afterImport(r)
+    else status.value = '导入失败：' + ((r && r.error) || '未知错误')
+  } catch (err) { status.value = '导入失败：' + ((err && err.message) || err) }
 }
 
 // ---- 顶部搜索框命令（本页登记；App.vue 登记菜单 / 视图 / 分区那些）----
@@ -6836,6 +6976,7 @@ function pageCommands() {
     { id: 'const.frame', label: '地球自转', icon: 'rotate-cw', group: '星座', keywords: kwId('const.frame'), lock: true, check: viewPrefs.frame === 'inertial', run: toggleFrame },
     { id: 'const.live', label: '实时时钟', icon: 'clock', group: '星座', keywords: kwId('const.live'), lock: true, check: live.value, run: toggleLive },
     { id: 'const.sendMini', label: '发送卫星到小程序…', icon: 'external-link', group: '星座', keywords: kwId('const.sendMini'), lock: true, run: () => { shellUi.side = 'constellation'; sendSatsToMiniapp() } },
+    { id: 'const.import', label: '导入星历…', icon: 'import', group: '星座', keywords: kwId('const.import'), lock: true, run: () => { shellUi.side = 'constellation'; revealSection('constellation', 'const-import'); importTleToLibrary() } },
     { id: 'poly.draw', label: '绘制多边形', icon: 'hexagon', group: 'Polygon（协调区）', keywords: kwId('poly.draw'), lock: true, run: () => { shellUi.side = 'poly'; polyStartDraw() } },
     { id: 'poly.import', label: '导入多边形…', icon: 'import', group: 'Polygon（协调区）', keywords: kwId('poly.import'), lock: true, run: () => { shellUi.side = 'poly'; importPolys() } },
     { id: 'grd.addSat', label: '添加卫星…', icon: 'plus', group: '对地覆盖分析', keywords: kwId('grd.addSat'), lock: true, disabled: !covNav.grdAvail, run: () => { shellUi.side = 'antenna'; openAddSat() } },
@@ -6872,11 +7013,12 @@ onMounted(async () => {
   offCmds = registerCommands('globe3d', pageCommands)
   watch(status, (v) => { if (v) logMsg(v) })   // 加载进度/失败信息落日志窗格
   // 文件管理导入/删除自定义卫星 → 若正看 custom/all/other 分组则重载；并重建全量搜索库纳入新星。
-  watch(() => fileBridge.customSatTick, () => {
+  watch(() => fileBridge.customSatTick, async () => {
+    invalidateEphTables()          // 组内容可能整份换掉：采样表缓存一律作废，下一次取位重新从主进程取
+    await refreshCustomImportCount()   // 先刷组清单（loadGroup 的 custom 分支要按它决定并哪几组）
     const k = curKey()
     if (k === 'custom' || k === 'all' || k === 'other') loadGroup()
     poolReady = false; ensureSearchPool()
-    refreshCustomImportCount()   // 导入组增删 → 刷新权威计数（决定「自定义卫星」分组显隐）
   })
   // 活动栏切换侧栏视图 → 首次进入时懒加载对应面板内容（复用原 toggle* 的索引加载/重绘逻辑）
   watch(() => shellUi.side, (s) => {
@@ -7022,7 +7164,10 @@ onBeforeUnmount(() => {
 <template>
   <div class="g3" ref="g3el">
     <div class="body">
-      <div class="stage-wrap">
+      <div
+        class="stage-wrap" :class="{ dragon: impDragOver }"
+        @dragenter="impDragEnter" @dragover="impDragOverH" @dragleave="impDragLeave" @drop="onImpDrop"
+      >
         <div ref="el" class="stage"></div>
         <canvas v-show="flatView" ref="flatCanvas" class="flat"></canvas>
 
@@ -7274,6 +7419,54 @@ onBeforeUnmount(() => {
             />
             </template>
           </div>
+          <!-- 导入星历：文件管理仍是权威库，这里是同一份库的星座栏视图（显隐 / 改名 / 配色 / 导出 / 删除 / 展开）。
+               「自定义卫星」那一行 = 全部【可见】导入组的并集，故点眼睛即改地图，点行不切分组。 -->
+          <div
+            class="ccsec" data-sec="const-import" :class="{ dragon: impDragOver }"
+            @dragenter="impDragEnter" @dragover="impDragOverH" @dragleave="impDragLeave" @drop="onImpDrop"
+          >
+            <div class="cchd"><span>导入星历</span>
+              <span class="cchr">
+                <span v-if="importGroups.length" class="ccsub">{{ importGroups.length }} 组</span>
+                <span class="lnk" title="导入星历文件（OMM CSV/JSON/KVN/XML · TLE/3LE · STK .e · CCSDS OEM · SP3 · GPS 年历）；也可把文件拖到这里或地图上" @click="importTleToLibrary()"><Icon name="import" :size="12" /> 导入</span>
+              </span>
+            </div>
+            <div v-if="!importGroups.length" class="cctip">还没有导入星历。</div>
+            <template v-for="g in importGroups" :key="g.id">
+            <div
+              class="ccrow" :class="{ exp: expTag === 'i:' + g.id, off: g.visible === false }"
+              :title="impTitle(g)"
+              @contextmenu.prevent.stop="openRowMenu($event, 'ci', g)"
+            >
+              <span class="pgex" :title="expTag === 'i:' + g.id ? '收起成员列表' : '展开成员列表'" @click.stop="expToggle('i:' + g.id, g.name)"><Icon :name="expTag === 'i:' + g.id ? 'chevron-down' : 'chevron-right'" :size="12" /></span>
+              <template v-if="impRenameId === g.id">
+                <span class="ccic"><Icon :name="g.kind === 'ephem' ? 'clock' : 'satellite'" :size="12" /></span>
+                <input class="sgnm-in" v-model="impRenameVal" @click.stop :ref="setRenameEl" @keydown.enter="impCommitRename(g)" @keydown.esc.stop="impRenameId = ''" />
+                <span class="ccic ok" title="确认重命名" @click.stop="impCommitRename(g)"><Icon name="check" :size="12" /></span>
+                <span class="ccic" title="取消" @click.stop="impRenameId = ''"><Icon name="x" :size="12" /></span>
+              </template>
+              <template v-else>
+                <span class="ccic" :title="g.kind === 'ephem' ? '时间标签位置序列，按插值取位，不做轨道外推' : '平均根数，走 SGP4'"><Icon :name="g.kind === 'ephem' ? 'clock' : 'satellite'" :size="12" /></span>
+                <span class="ccnm" title="重命名" data-i18n-skip @click.stop="impEnterRename(g)">{{ g.name }}</span>
+                <span class="cccode" data-i18n-skip>{{ impRead(g) }}</span>
+                <span class="ccic" :title="g.visible === false ? '显示该组' : '隐藏该组'" @click.stop="impToggleVis(g)"><Icon :name="g.visible === false ? 'eye-off' : 'eye'" :size="12" /></span>
+                <span class="ccic" :title="g.kind === 'ephem' ? '导出为 STK .e / CCSDS OEM' : '导出为导入时的格式'" @click.stop="impExport(g)"><Icon name="download" :size="12" /></span>
+                <span class="ccic del" :class="{ warn: impDelId === g.id }" :title="impDelId === g.id ? '再次点击确认删除' : '删除该组'" @click.stop="impDelete(g)"><Icon name="trash" :size="12" /></span>
+                <span v-if="g.color" class="pgrst" title="恢复默认星点色" @click.stop="impResetColor(g)"><Icon name="x" :size="12" /></span>
+                <label class="pgclr" :title="'星点颜色（' + (g.color || '未设置') + '）'" @click.stop>
+                  <span class="pgsw" :class="{ unset: !g.color }" :style="g.color ? { background: g.color } : null"></span>
+                  <input type="color" :value="g.color || DEFAULT_SAT_HEX" @input="e => impSetColor(g, e.target.value)" />
+                </label>
+              </template>
+            </div>
+            <SatList
+              v-if="expTag === 'i:' + g.id"
+              :items="expList" :reset-key="expTag" :actions="expActions" :rows="14"
+              :placeholder="'在「' + g.name + '」里筛选'" empty="该组还没有卫星。"
+              @action="expOnAction" @activate="expLocate"
+            />
+            </template>
+          </div>
           <!-- 自定义星座（仿 STK Walker 生成器）：星点 + 轨道圈叠加显示 -->
           <div class="ccsec">
             <div class="cchd"><span>自定义星座</span><span class="lnk" @click="openConstWizard()"><Icon name="plus" :size="12" /> 生成</span></div>
@@ -7321,9 +7514,10 @@ onBeforeUnmount(() => {
                 <Icon name="eye" :size="12" />
                 <span v-if="rowMenu.kind === 'sg'">{{ filterGroupId === rowMenu.obj.id ? '退出显示' : '显示该组' }}</span>
                 <span v-else-if="rowMenu.kind === 'cc'">单独显示</span>
+                <span v-else-if="rowMenu.kind === 'ci'">{{ rowMenu.obj.visible === false ? '显示该组' : '隐藏该组' }}</span>
                 <span v-else>显示该星座</span>
               </div>
-              <div v-if="rowMenu.kind === 'cc'" class="rmi" @click="rowMenuToggleVis"><Icon :name="rowMenu.obj.visible === false ? 'eye-off' : 'eye'" :size="12" /><span>{{ rowMenu.obj.visible === false ? '取消隐藏' : '隐藏' }}</span></div>
+              <div v-if="rowMenu.kind === 'cc' || rowMenu.kind === 'ci'" class="rmi" @click="rowMenuToggleVis"><Icon :name="rowMenu.obj.visible === false ? 'eye-off' : 'eye'" :size="12" /><span>{{ rowMenu.obj.visible === false ? '取消隐藏' : '隐藏' }}</span></div>
               <div v-if="rowMenuHasSats" class="rmi" @click="rowMenuExpand"><Icon :name="expTag === rowMenuTag(rowMenu) ? 'chevron-down' : 'chevron-right'" :size="12" /><span>{{ expTag === rowMenuTag(rowMenu) ? '收起卫星列表' : '展开卫星列表' }}</span></div>
               <div class="rms"></div>
               <div v-if="rowMenu.kind === 'cc'" class="rmi" @click="rowMenuCopyConst"><Icon name="copy" :size="12" /><span>复制星座</span></div>
@@ -7335,12 +7529,12 @@ onBeforeUnmount(() => {
                 <span v-else>粘贴为新卫星组</span>
                 <em v-if="satClip">{{ satClip.label }}</em>
               </div>
-              <div v-if="rowMenu.kind !== 'grp'" class="rmi" @click="rowMenuDup"><Icon name="copy" :size="12" /><span>创建副本</span></div>
+              <div v-if="rowMenu.kind !== 'grp' && rowMenu.kind !== 'ci'" class="rmi" @click="rowMenuDup"><Icon name="copy" :size="12" /><span>创建副本</span></div>
               <div v-if="rowMenu.kind !== 'sg'" class="rmi" :class="{ dis: !rowMenuHasSats }" @click="rowMenuHasSats && rowMenuSaveGroup()"><Icon name="folder-plus" :size="12" /><span>存为卫星组</span></div>
               <div v-if="rowMenu.kind === 'sg' && selList.length" class="rmi" @click="rowMenuAddSel"><Icon name="plus" :size="12" /><span>加入选中的 {{ selList.length }} 颗</span></div>
               <!-- 内置星座行下面这段常常整段没有条目（只有配过色才出一条）→ 分隔线跟着条件出，避免菜单尾巴上挂一条空线 -->
               <div v-if="rowMenu.kind !== 'grp' || (groupColorable(rowMenu.obj.key) && groupColors[rowMenu.obj.key])" class="rms"></div>
-              <div v-if="rowMenu.kind === 'sg'" class="rmi" @click="rowMenuRename"><Icon name="pencil" :size="12" /><span>重命名</span></div>
+              <div v-if="rowMenu.kind === 'sg' || rowMenu.kind === 'ci'" class="rmi" @click="rowMenuRename"><Icon name="pencil" :size="12" /><span>重命名</span></div>
               <div v-if="rowMenu.kind === 'sg'" class="rmi" @click="rowMenuManage"><Icon name="sliders-horizontal" :size="12" /><span>管理成员…</span></div>
               <div v-if="rowMenu.kind === 'cc'" class="rmi" @click="rowMenuEdit"><Icon name="pencil" :size="12" /><span>编辑…</span></div>
               <div v-if="rowMenu.kind === 'grp' && groupColorable(rowMenu.obj.key) && groupColors[rowMenu.obj.key]" class="rmi" @click="rowMenuResetColor"><Icon name="x" :size="12" /><span>恢复默认星点色</span></div>
@@ -9973,6 +10167,9 @@ onBeforeUnmount(() => {
 .rms { height: 1px; background: var(--border); margin: 3px 6px; }
 /* 自定义星座（仿 STK Walker 生成器）：侧栏区 + 列表 */
 .ccsec { border-top: 1px solid var(--border); margin-top: 4px; padding-top: 4px; }
+/* 拖文件进「导入星历」区块 / 地图时的描边高亮（token 色，不出提示字） */
+.ccsec.dragon { outline: 1px dashed var(--accent); outline-offset: -2px; background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.stage-wrap.dragon { outline: 2px dashed var(--accent); outline-offset: -4px; }
 .cchd { display: flex; align-items: center; justify-content: space-between; padding: 4px 12px; font-size: var(--fs-3); color: var(--text-muted); }
 .cchd .lnk { cursor: pointer; color: var(--accent); display: inline-flex; align-items: center; gap: 3px; }
 .cctip { padding: 2px 12px 6px; font-size: var(--fs-2); color: var(--text-faint); line-height: 1.5; }

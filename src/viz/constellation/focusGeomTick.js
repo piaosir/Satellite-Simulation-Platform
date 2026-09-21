@@ -6,6 +6,7 @@
 // ★ 分片必须稳定：同一颗星恒落在同一片上，轨道圈缓存与星下点环形缓冲才立得住（池子按 key 哈希分片）。
 // ★ 出参一律是 Float32Array（连同底层 buffer 一起 transfer 回主线程，零拷贝），主线程只管上传。
 import sat from './satellite.js'
+import { posAt } from './satPos.js'   // 取位的唯一入口（satrec 与星历点序列两种传播体都走它）
 import { createFocusGeomCache, ringSegments } from './focusGeomCache.js'
 import { footprintRing } from './focusFootprint.js'
 import { swathK, swathSig, sectionOf, headingAz } from './focusSwath.js'
@@ -51,7 +52,7 @@ export function computeTick(st, p) {
     const tMs = e.cc ? p.ccTMs : p.tMs, g = e.cc ? p.ccGmst : p.gmst
     const t = new Date(tMs)
     let pv = null
-    try { pv = sat.propagate(rec, t) } catch { pv = null }
+    pv = posAt(rec, t)
     if (!pv || !pv.position) { if (f2) { f2.trkOff.push(f2.trkLL.length / 2); f2.fpOff.push(f2.fpLL.length / 2); f2.sub.push(NaN, NaN); f2.swK.push(0); f2.swOff.push(f2.swLL.length / 2) } continue }
     const gd = sat.eciToGeodetic(pv.position, g)
     const lat = sat.degreesLat(gd.latitude), lon = sat.degreesLong(gd.longitude), h = gd.height
