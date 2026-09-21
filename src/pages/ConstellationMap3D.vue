@@ -1583,7 +1583,6 @@ function defaultConstDraft() {
     orbitType: 'custom', design: OD.defaultInputs('custom'),
     pattern: 'delta', T: 24, P: 6, F: 1, incl: 53, shape: 'circ', perigeeKm: 550, apogeeKm: 550, argp: 0, raan0: 0, m0: 0,
     color: '#4dabf7', colorByPlane: true,
-    previewRevs: 1, pvOrbit: true, pvTrack: true, pvFoot: false,
     pvSolo: true   // 「仅预览」：向导开着时地图上只有正在生成的星座；关掉才叠加在当前显示的卫星上
   }
 }
@@ -1655,28 +1654,13 @@ function saveConstWizard() {
   registerSets()
   if (!m.id) soloSet('c:' + id)   // 新建星座：仅显示它（顶部「仅显示」标签一点就还原叠加）；编辑则保持当前显示
 }
-// 向导预览的图层与圈数：开着时按草稿临时覆盖聚焦样式，关闭时【原样还回去】。
-// 存的是进向导那一刻的用户原值，中途改草稿不会把它冲掉。
-let _wizStyleSaved = null
-function applyWizardPreviewStyle(m) {
-  if (!_wizStyleSaved) _wizStyleSaved = { orbOn: focusStyle.orbOn, trkOn: focusStyle.trkOn, fpOn: focusStyle.fpOn, trkSpanMode: focusStyle.trkSpanMode, trkPeriods: focusStyle.trkPeriods }
-  focusStyle.orbOn = m.pvOrbit !== false
-  focusStyle.trkOn = m.pvTrack !== false
-  focusStyle.fpOn = !!m.pvFoot
-  focusStyle.trkSpanMode = 'rev'
-  const n = Math.max(1, Math.min(20, Math.round(Number(m.previewRevs) || 1)))
-  focusStyle.trkPeriods = n
-}
-function restoreWizardPreviewStyle() {
-  if (!_wizStyleSaved) return
-  Object.assign(focusStyle, _wizStyleSaved)
-  _wizStyleSaved = null
-}
+// 预览特效（轨道线 / 星下点轨迹 / 覆盖圈 / 覆盖锥 / 轨迹长度）就是「聚焦卫星」显示设置那一份 focusStyle：
+// 向导里的开关直接改它、关向导不还原 —— 预览星与任何一颗聚焦星长得一样，两边永远同步。
 // 编辑器打开时：参数变动实时预览到地球（防抖 140ms；非法参数撤预览）。关闭时撤预览。
 let _cpvTimer = null
 watch(constModal, (m) => {
   if (_cpvTimer) { clearTimeout(_cpvTimer); _cpvTimer = null }
-  if (!m) { customConst.setPreview(null); restoreWizardPreviewStyle(); rebuildRenderSet(); wizPreviewRelease(); return }
+  if (!m) { customConst.setPreview(null); rebuildRenderSet(); wizPreviewRelease(); return }
   _cpvTimer = setTimeout(() => {
     _cpvTimer = null
     const cur = constModal.value; if (!cur) return
@@ -1684,7 +1668,6 @@ watch(constModal, (m) => {
     if (!params || !validateWalker(params).ok) { customConst.setPreview(null); rebuildRenderSet(); wizPreviewSelect(); return }   // 解不出来：预览撤掉，预览星也从选中集退出（不然上一轮的轨道还挂在图上）
     customConst.setPreview({ id: cur.id, name: cur.name, color: cur.color, colorByPlane: cur.colorByPlane !== false, params })
     rebuildRenderSet()
-    applyWizardPreviewStyle(cur)        // 预览圈数 + 三个图层开关（关闭向导时恢复用户原值）
     wizPreviewSelect()                  // 种子星进选中集 → 轨道线 / N 圈星下点轨迹 / 覆盖圈走聚焦几何管线随参数实时重画
   }, 140)
 }, { deep: true })
@@ -7703,12 +7686,21 @@ onBeforeUnmount(() => {
               <div v-if="!constModal.colorByPlane" class="cef"><label>标识颜色</label><input class="clr" type="color" v-model="constModal.color" /></div>
 
               <div class="cesec">预览</div>
-              <div class="cefv"><label>预览圈数</label><div class="ceinp"><NumBox class="ci" :model-value="constModal.previewRevs" :min="1" :max="20" :step="1" @commit="v => constModal.previewRevs = v" /><span class="u">圈</span></div></div>
               <div class="cepv">
-                <span class="pvsw"><button type="button" class="layersw" :class="{ on: constModal.pvOrbit }" role="switch" :aria-checked="constModal.pvOrbit ? 'true' : 'false'" :title="constModal.pvOrbit ? '隐藏轨道线' : '显示轨道线'" @click="constModal.pvOrbit = !constModal.pvOrbit"><i></i></button><span>轨道线</span></span>
-                <span class="pvsw"><button type="button" class="layersw" :class="{ on: constModal.pvTrack }" role="switch" :aria-checked="constModal.pvTrack ? 'true' : 'false'" :title="constModal.pvTrack ? '隐藏星下点轨迹' : '显示星下点轨迹'" @click="constModal.pvTrack = !constModal.pvTrack"><i></i></button><span>星下点轨迹</span></span>
-                <span class="pvsw"><button type="button" class="layersw" :class="{ on: constModal.pvFoot }" role="switch" :aria-checked="constModal.pvFoot ? 'true' : 'false'" :title="constModal.pvFoot ? '隐藏覆盖圈' : '显示覆盖圈'" @click="constModal.pvFoot = !constModal.pvFoot"><i></i></button><span>覆盖圈</span></span>
+                <span class="pvsw"><button type="button" class="layersw" :class="{ on: focusStyle.orbOn }" role="switch" :aria-checked="focusStyle.orbOn ? 'true' : 'false'" :title="focusStyle.orbOn ? '隐藏轨道线' : '显示轨道线'" @click="toggleFocus('orbOn')"><i></i></button><span>轨道线</span></span>
+                <span class="pvsw"><button type="button" class="layersw" :class="{ on: focusStyle.trkOn }" role="switch" :aria-checked="focusStyle.trkOn ? 'true' : 'false'" :title="focusStyle.trkOn ? '隐藏星下点轨迹' : '显示星下点轨迹'" @click="toggleFocus('trkOn')"><i></i></button><span>星下点轨迹</span></span>
+                <span class="pvsw"><button type="button" class="layersw" :class="{ on: focusStyle.fpOn }" role="switch" :aria-checked="focusStyle.fpOn ? 'true' : 'false'" :title="focusStyle.fpOn ? '隐藏覆盖圈' : '显示覆盖圈'" @click="toggleFocus('fpOn')"><i></i></button><span>覆盖圈</span></span>
+                <span class="pvsw"><button type="button" class="layersw" :class="{ on: focusStyle.coneOn }" role="switch" :aria-checked="focusStyle.coneOn ? 'true' : 'false'" :title="focusStyle.coneOn ? '隐藏覆盖锥' : '显示覆盖锥'" @click="toggleFocus('coneOn')"><i></i></button><span>覆盖锥</span></span>
               </div>
+              <div class="cef"><label>轨迹长度</label>
+                <span class="seg3">
+                  <span :class="{ on: focusStyle.trkSpanMode !== 'time' }" title="按轨道周期的倍数给长度" @click="setTrkSpanMode('rev')">轨迹圈数</span>
+                  <span :class="{ on: focusStyle.trkSpanMode === 'time' }" title="按时长给长度（分钟）" @click="setTrkSpanMode('time')">轨迹周期</span>
+                </span>
+              </div>
+              <div v-if="focusStyle.trkSpanMode !== 'time'" class="cefv"><label>轨迹圈数</label><div class="ceinp"><input class="ci" :value="trkVal('rev')" placeholder="1" @input="e => trkInput('rev', e)" @change="trkCommit('rev')" @blur="trkCommit('rev')" @keyup.enter="trkCommit('rev')" /><span class="u">圈</span></div></div>
+              <div v-else class="cefv"><label>轨迹周期</label><div class="ceinp"><input class="ci" :value="trkVal('time')" placeholder="0" @input="e => trkInput('time', e)" @change="trkCommit('time')" @blur="trkCommit('time')" @keyup.enter="trkCommit('time')" /><span class="u">min</span></div></div>
+              <div class="cef ceset"><span class="lnk" title="颜色 / 线粗 / 线型 / 覆盖圈口径等全部显示设置（与聚焦卫星同一份）" @click="openFocusSettings"><Icon name="sliders-horizontal" :size="12" /> 聚焦卫星显示设置…</span></div>
 
               <div v-if="constDerived" class="ceread">
                 <div class="crcode">{{ constDerived.code }}</div>
@@ -10365,6 +10357,9 @@ onBeforeUnmount(() => {
 .cepv { display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 2px 12px 6px; }
 /* 一个拨杆 + 一行名字；名字整行换行、不缩、不裁（侧栏不许显示不全） */
 .cepv .pvsw { display: inline-flex; align-items: center; gap: 5px; font-size: var(--fs-2); color: var(--text-muted); white-space: nowrap; }
+.cef.ceset { margin-top: 2px; }
+.cef.ceset .lnk { color: var(--accent); cursor: pointer; display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-3); }
+.cef.ceset .lnk:hover { text-decoration: underline; }
 /* 解不出来的那一项：红框（诊断文字在读数区的 .crwarn 里） */
 .cebody .ci.bad, .cebody .ci.bad input { border-color: var(--danger, #c0392b) !important; }
 .stage-wrap.dragon { outline: 2px dashed var(--accent); outline-offset: -4px; }
