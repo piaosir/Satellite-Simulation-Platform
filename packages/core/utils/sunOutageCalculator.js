@@ -29,9 +29,25 @@
  *   指数 1.8 拟合公开静太阳测量（10.7GHz≈1e4 K、5GHz≈2e4 K、30GHz+→光球层），
  *   适用 3~50 GHz。F10.7 默认 120（周期均值；深谷~70，峰年可达 200+）。
  *   仍可传 solarTemp 直接覆盖（如需对齐第三方工具口径）。
+ *
+ * v5.2：星历档与纯几何档
+ * - 星历档（params.orbit）：卫星位置不再当成理想静止轨道的常量，而是经 utils/orbitSource.js
+ *   的轨道源逐时刻取（SGP4/SDP4，含倾角、偏心率与漂移；不含轨道保持机动）。引擎只吃 ECEF，
+ *   不建 satrec、不做坐标系转换——外部星历（.e / OEM / SP3）将来只是换一种轨道源实现。
+ *   ★ 不逐秒 propagate：与 daySun 同一条原则，改为两级采样 + 日内线性插值——
+ *     粗表 10 min（145 点/天）只用于「当天有没有星历」与逐日赤纬预筛；
+ *     细表 60 s（1441 点/天）供事件求根逐秒取值。倾角 15° 的 GSO 在 60 s 内的弦垂 ≈ 9 m，
+ *     从 38 000 km 外看 ≈ 1.4e-5°，远小于求根容差 0.5 s 对应的太阳位移 ≈ 0.002°。
+ *   逐日预筛 margin = 0.05°（插值余量，与定轨档同）+ inclDeg·(2π/1436.07)·5：星下点赤纬
+ *     δ = i·sin u、du/dt = 2π/P，10 min 粗采样两点之间赤纬最多走这么多，不留就会漏筛事件日。
+ *   轨迹表按 (轨道, 日) 记忆化，经 ctx.satTrack 在一批站之间共用——轨迹与站无关，一颗星一季只算一次。
+ * - 纯几何档（params.criterion = 'geometric'）：门限角 θ_th ≡ θ_3dB = 70λ/D（全宽，不加太阳视半径），
+ *   窗口 = { t : θ(t) ≤ θ_3dB }。峰值恶化 dB 仍按上面的物理模型算出——它是物理量，与定窗判据无关。
+ * - 定轨档（params.satLon）的计算路径逐位不变：satU 仍是常量，新增分支一律走 if (orbit)。
  */
 
 var findWindows = require('./eventWindows.js').findWindows;
+var orbitSourceMod = require('./orbitSource.js');
 
 const PI = Math.PI;
 const RAD = PI / 180;
@@ -47,6 +63,11 @@ const E2_WGS = 2 * F_WGS - F_WGS * F_WGS;       // 第一偏心率平方
 
 // GEO 轨道：a = 42164.17 km（含地球自转）
 const R_GEO = 42164.17;
+
+// 同步轨道守卫（星历档拒算非 GSO）：与 src/shared/orbitClass.js 的 T_SIDEREAL_MIN /
+// GSO_PERIOD_TOL_MIN 同一组数（恒星日 ±2%），两处改动须同步。
+const T_SIDEREAL_MIN = 1436.07;
+const GSO_PERIOD_TOL_MIN = 28.72;
 
 // 频段参数：频率 GHz、典型系统噪温 K（晴空，天线+LNA，供未填 T_sys 时兜底——
 // T_sys 本质是用户站的属性，精确计算应填实测值或由 G/T 反推）。
@@ -548,13 +569,16 @@ function solarTempAt(freqGHz, f107, sunDiamDeg) {
  * @returns { thetaB 3dB波束宽°, thetaD 太阳视直径°, Tb 太阳亮温K,
  *            dTmax 主轴对准温升K, dTth 门限温升K, thetaTh 门限角°(≤0 表示当日峰值恶化不足门限) }
  */
-function outageModel(freqGHz, diameterM, sysTemp, solarTemp, degThresholdDb, sunRadDeg) {
+function outageModel(freqGHz, diameterM, sysTemp, solarTemp, degThresholdDb, sunRadDeg, criterion) {
   var thetaB = 20.98547 / (freqGHz * diameterM);   // 70λ/D（λ=0.2998/f m）
   var thetaD = 2 * sunRadDeg;
   var dTmax = solarTemp * couplingAt(0, thetaB, thetaD);
   var dTth = sysTemp * (Math.pow(10, degThresholdDb / 10) - 1);
   var thetaTh = -1;
-  if (dTth < dTmax) {
+  if (criterion === 'geometric') {
+    // 纯几何档：门限角恒等于 3dB 波束宽（全宽），与噪温、恶化门限无关——恒 > 0，天天有窗口
+    thetaTh = thetaB;
+  } else if (dTth < dTmax) {
     // K(θ) 单调递减 → 二分反解门限角；上界处 K 已高斯衰减到远低于任何门限
     var lo = 0, hi = 6 * thetaB + thetaD;
     while (hi - lo > 1e-5) {
@@ -573,13 +597,78 @@ function degradationAt(sepDeg, model, sysTemp) {
 }
 
 /* ============================================================
+ * 卫星轨迹表（星历档）—— 两级采样 + 日内线性插值，见头注 v5.2
+ * ============================================================ */
+
+function makeSatTrack(src) {
+  var coarseCache = new Map(), fineCache = new Map();
+  function sample(dayJD, n, stepSec) {
+    var arr = new Float64Array((n + 1) * 3);
+    var base = orbitSourceMod.jdToMs(dayJD);
+    for (var i = 0; i <= n; i++) {
+      var p = src.posEcefKm(base + i * stepSec * 1000);
+      if (!p) return null;                     // 区间外 / 传播失败 → 整天记为「无星历」
+      arr[i * 3] = p[0]; arr[i * 3 + 1] = p[1]; arr[i * 3 + 2] = p[2];
+    }
+    return arr;
+  }
+  function memo(cache, dayJD, n, stepSec) {
+    var k = Math.round(dayJD * 2);             // dayJD 恒为 X.5（UT 零时），×2 取整即唯一键
+    if (!cache.has(k)) cache.set(k, sample(dayJD, n, stepSec));
+    return cache.get(k);
+  }
+  return {
+    coarse: function (dayJD) { return memo(coarseCache, dayJD, 144, 600); },   // 10 min × 145 点
+    fine:   function (dayJD) { return memo(fineCache, dayJD, 1440, 60); }      // 60 s × 1441 点
+  };
+}
+
+// 轨迹与地球站无关：一批站共用 ctx.satTrack（键 = 轨道 spec 串），一颗星一季只采样一次。
+function satTrackFor(src, ctx, orbit) {
+  var store = ctx && ctx.satTrack;
+  if (!store || typeof store.get !== 'function') return makeSatTrack(src);
+  var key = JSON.stringify(orbit);
+  var t = store.get(key);
+  if (!t) { t = makeSatTrack(src); store.set(key, t); }
+  return t;
+}
+
+/** 采样表里「站→星」单位向量的赤纬区间（°）——绕极轴旋转不改变赤纬差，逐日预筛用 */
+function decRange(arr, stn) {
+  var lo = 91, hi = -91, n = arr.length / 3;
+  for (var i = 0; i < n; i++) {
+    var dx = arr[i * 3] - stn[0], dy = arr[i * 3 + 1] - stn[1], dz = arr[i * 3 + 2] - stn[2];
+    var dc = Math.asin(Math.max(-1, Math.min(1, dz / Math.sqrt(dx * dx + dy * dy + dz * dz)))) * DEG;
+    if (dc < lo) lo = dc;
+    if (dc > hi) hi = dc;
+  }
+  return [lo, hi];
+}
+
+/** 60 s 细表按秒线性插值 → 站→星单位向量（★ 星历档逐秒取值的唯一出口，不逐秒 propagate） */
+function satUAt(arr, stn, sec) {
+  var x = sec / 60;
+  var i0 = Math.floor(x);
+  if (i0 < 0) i0 = 0; else if (i0 > 1439) i0 = 1439;
+  var fr = x - i0, a = i0 * 3, b = a + 3;
+  var dx = arr[a] + (arr[b] - arr[a]) * fr - stn[0];
+  var dy = arr[a + 1] + (arr[b + 1] - arr[a + 1]) * fr - stn[1];
+  var dz = arr[a + 2] + (arr[b + 2] - arr[a + 2]) * fr - stn[2];
+  var r = Math.sqrt(dx * dx + dy * dy + dz * dz);
+  return [dx / r, dy / r, dz / r];
+}
+
+/* ============================================================
  * 主入口
  * ============================================================ */
-function calculateSunOutage(params) {
+function calculateSunOutage(params, ctx) {
   var lat = params.lat, lon = params.lon, satLon = params.satLon;
   var diameter = params.diameter, year = params.year;
   var season = params.season, band = params.band;
   var customFreq = params.customFreq;
+  // v5.2：星历档（给了 orbit 就走星历，satLon 让位）与纯几何判据
+  var orbit = params.orbit || null;
+  var criterion = params.criterion === 'geometric' ? 'geometric' : 'degradation';
 
   var bi = BAND_PARAMS[band] || BAND_PARAMS['Ku'];
   var freq = customFreq || bi.freq;
@@ -593,18 +682,7 @@ function calculateSunOutage(params) {
   var cnFilter = params.cnThreshold || 0;
   var dT = deltaT(year);
 
-  // ECEF 常量（不随时间变化）
-  var stn = stnXYZ(lat, lon);
-  var sat = satXYZ(satLon);
-  var satU = unitVec(stn, sat);  // station → satellite 单位向量
-
-  // 卫星 Az/El（显示用）
-  var ae = satAzElECEF(stn, sat, lat, lon);
-  if (ae.el <= 0) {
-    return { error: true, message: '卫星在地平线以下，无法计算日凌', satEl: ae.el };
-  }
-
-  // 分点
+  // 分点（纯函数，与卫星位置无关；星历档的汇总量要按分点日正午取，故先算）
   var eqJDE = equinoxJDE(year, season);
   var eqJDut = eqJDE - dT / SECONDS_PER_DAY;
   var seasonName = season === 'vernal' ? '春分' : '秋分';
@@ -612,41 +690,120 @@ function calculateSunOutage(params) {
   var equinoxDateStr = fmtDate(eqD.y, eqD.m, eqD.d);
   var eqDayJD = Math.floor(eqJDut - 0.5) + 0.5;
 
+  // ECEF 常量（不随时间变化）
+  var stn = stnXYZ(lat, lon);
+  var satU = null, ae = null, src = null, track = null;
+  var satLonEff = null, preMargin = 0.05, ephemSpan = null;
+  var satMeta = { noradId: null, epoch: null, epochAgeDays: null, inclDeg: 0 };
+
+  if (orbit) {
+    // 星历档：位置随时刻变，交给轨道源（utils/orbitSource.js）；引擎只吃 ECEF
+    try { src = (ctx && ctx.orbitSource) || orbitSourceMod.orbitSource(orbit); }
+    catch (e) { return { error: true, message: (e && e.message) || '轨道源建立失败' }; }
+    var sm = src.summary || {};
+    if (!(Math.abs(sm.periodMin - T_SIDEREAL_MIN) <= GSO_PERIOD_TOL_MIN)) {
+      return { error: true, message: '非地球同步轨道，日凌预报只支持 GSO' };
+    }
+    track = satTrackFor(src, ctx, orbit);
+    preMargin = 0.05 + Math.abs(Number(sm.inclDeg) || 0) * (2 * PI / T_SIDEREAL_MIN) * 5;
+    ephemSpan = src.span
+      ? { start: new Date(src.span.startMs).toISOString(), end: new Date(src.span.endMs).toISOString() }
+      : null;
+    satMeta.noradId = orbit.noradId != null ? String(orbit.noradId) : null;
+    satMeta.epoch = sm.epochIso || null;
+    satMeta.inclDeg = Number((Number(sm.inclDeg) || 0).toFixed(4));
+    if (sm.epochIso) {
+      var epJD = orbitSourceMod.msToJd(Date.parse(sm.epochIso));
+      if (isFinite(epJD)) satMeta.epochAgeDays = Number((eqDayJD + 0.5 - epJD).toFixed(2));
+    }
+    // 汇总量（方位 / 仰角 / 星下点经度）取分点日正午（UT）那一拍；短期星历不覆盖分点日时
+    // 向两边找最近的有星历的一天，别为了一个汇总读数把整季算不出来。
+    var refMs = null, pRef = null;
+    for (var dd = 0; dd <= 30 && !pRef; dd++) {
+      var cand = dd === 0 ? [0] : [dd, -dd];
+      for (var ci = 0; ci < cand.length && !pRef; ci++) {
+        var m0 = orbitSourceMod.jdToMs(eqDayJD + cand[ci] + 0.5);
+        var p0 = src.posEcefKm(m0);
+        if (p0) { refMs = m0; pRef = p0; }
+      }
+    }
+    if (!pRef) return { error: true, message: '星历未覆盖日凌扫描区间，无法计算' };
+    ae = satAzElECEF(stn, pRef, lat, lon);
+    var lonRef = src.lonAt(refMs);
+    satLonEff = isFinite(lonRef) ? Number(lonRef.toFixed(3)) : null;
+  } else {
+    var sat = satXYZ(satLon);
+    satU = unitVec(stn, sat);  // station → satellite 单位向量
+    ae = satAzElECEF(stn, sat, lat, lon);
+    satLonEff = Number(satLon);
+  }
+
+  // 卫星 Az/El（显示用）
+  if (ae.el <= 0) {
+    return { error: true, message: '卫星在地平线以下，无法计算日凌', satEl: ae.el };
+  }
+
   // 分点日正午的模型快照（供汇总显示：3dB 波束宽 / 门限角 / 主轴对准恶化上限）
   var midSun = solarPosition(eqDayJD + 0.5 + dT / SECONDS_PER_DAY);
   var midSunRad = 0.26656 / midSun.R;
   var midTsun = solarTempOverride != null ? solarTempOverride : solarTempAt(freq, f107, 2 * midSunRad);
-  var midModel = outageModel(freq, diameter, sysTemp, midTsun, degTh, midSunRad);
+  var midModel = outageModel(freq, diameter, sysTemp, midTsun, degTh, midSunRad, criterion);
 
   var scanDays = 30;
   var dailyResults = [];
   var peakIdx = null, maxDurSec = 0;
   // 站→星方向的赤纬：一天里太阳与它的夹角下界 = |δ_sun − δ_sat|（绕极轴旋转不改变赤纬差），
   // 太阳赤纬整天都离它超过门限角的日子不可能有事件——逐日预筛，61 天通常只剩十来天要真扫
-  var decSat = Math.asin(Math.max(-1, Math.min(1, satU[2]))) / RAD;
+  var decSat = orbit ? 0 : Math.asin(Math.max(-1, Math.min(1, satU[2]))) / RAD;
+  var coverageDays = 0;
 
   for (var d = -scanDays; d <= scanDays; d++) {
     var dayJD = eqDayJD + d;
+
+    // 星历档：当天粗表（10 min）既定「有没有星历」，又给逐日预筛的站→星赤纬区间
+    var decSatLo = 0, decSatHi = 0;
+    if (orbit) {
+      var coarse = track.coarse(dayJD);
+      if (!coarse) continue;                     // 该天无星历：跳过，且不计入 coverageDays
+      var rg = decRange(coarse, stn);
+      decSatLo = rg[0]; decSatHi = rg[1];
+    }
+    coverageDays++;
 
     // 每天正午太阳视半径（0.26656° = 959.63″ 为1AU处标准值，除以实际日地距离R得到当日视半径）
     var noonJDE = dayJD + 0.5 + dT / SECONDS_PER_DAY;
     var noonSun = solarPosition(noonJDE);
     var sunRad = 0.26656 / noonSun.R;       // 度
     var tSun = solarTempOverride != null ? solarTempOverride : solarTempAt(freq, f107, 2 * sunRad);
-    var model = outageModel(freq, diameter, sysTemp, tSun, degTh, sunRad);
+    var model = outageModel(freq, diameter, sysTemp, tSun, degTh, sunRad, criterion);
     if (model.thetaTh <= 0) continue;   // 当日即使主轴对准，恶化也不足门限 → 无事件
 
     // 当天太阳（两端各一次 VSOP87，日内插值）+ 赤纬预筛（留 0.05° 给插值误差）
     var day = daySun(dayJD, dT);
-    if (day.decLo - decSat > model.thetaTh + 0.05 || day.decHi - decSat < -(model.thetaTh + 0.05)) continue;
+    var fine = null;
+    if (orbit) {
+      var mg = model.thetaTh + preMargin;        // 星历档：卫星赤纬也是区间，对区间判
+      if (day.decLo - decSatHi > mg || day.decHi - decSatLo < -mg) continue;
+      fine = track.fine(dayJD);                  // 过了预筛才铺 60 s 细表
+      if (!fine) continue;
+    } else {
+      if (day.decLo - decSat > model.thetaTh + 0.05 || day.decHi - decSat < -(model.thetaTh + 0.05)) continue;
+    }
 
     // 事件求根：f(s) = θ_th − 夹角(s)，>0 在窗口内；太阳在地平线下 → NaN（窗口外）
-    var fDay = (function (dy, th) {
-      return function (s) {
-        var r = sepAtSec(dy, s, satU, lat, lon);
-        return r.up ? th - r.sep : NaN;
-      };
-    })(day, model.thetaTh);
+    var fDay = orbit
+      ? (function (dy, th, ft) {
+          return function (s) {
+            var sd = dy.dir(s);
+            return sunUp(lat, lon, sd) ? th - vecAngle(satUAt(ft, stn, s), sd) : NaN;
+          };
+        })(day, model.thetaTh, fine)
+      : (function (dy, th) {
+          return function (s) {
+            var r = sepAtSec(dy, s, satU, lat, lon);
+            return r.up ? th - r.sep : NaN;
+          };
+        })(day, model.thetaTh);
     var wins = findWindows(fDay, 0, 86399, { coarseStep: 15, tol: 0.5 });
     if (!wins.length) continue;
     // GEO 日凌每天至多一个真窗口；防御性取峰值最深的那个
@@ -693,6 +850,10 @@ function calculateSunOutage(params) {
       intensityClass: intensityClass,
       isPeak:         false
     };
+    if (orbit) {
+      var lp = src.lonAt(orbitSourceMod.jdToMs(dayJD) + pkSec * 1000);   // 峰值时刻星下点经度
+      rec.satLon = isFinite(lp) ? Number(lp.toFixed(3)) : null;
+    }
     dailyResults.push(rec);
     if (dur > maxDurSec) { maxDurSec = dur; peakIdx = dailyResults.length - 1; }
   }
@@ -709,6 +870,9 @@ function calculateSunOutage(params) {
     satAz:          Number(ae.az.toFixed(2)),
     satEl:          Number(ae.el.toFixed(2)),
     frequency:      freq,
+    satSource:      orbit ? 'ephemeris' : 'slot',
+    satLonEff:      satLonEff,
+    coverageDays:   coverageDays,
     totalDays:      total,
     startDate:      total > 0 ? dailyResults[0].date : '--',
     endDate:        total > 0 ? dailyResults[total - 1].date : '--',
@@ -726,9 +890,39 @@ function calculateSunOutage(params) {
       diameter:      diameter,
       beamWidth3dB:  Number(midModel.thetaB.toFixed(3)),
       sunDiameter:   Number(midModel.thetaD.toFixed(3)),
-      boresightDeg:  Number(degradationAt(0, midModel, sysTemp).toFixed(2))  // 主轴对准恶化上限
+      boresightDeg:  Number(degradationAt(0, midModel, sysTemp).toFixed(2)), // 主轴对准恶化上限
+      // v5.2：取星来源与定窗判据（degThreshold 在纯几何档下不参与定窗，仍原样回显）
+      satSource:     orbit ? 'ephemeris' : 'slot',
+      noradId:       satMeta.noradId,
+      epoch:         satMeta.epoch,
+      epochAgeDays:  satMeta.epochAgeDays,
+      inclDeg:       satMeta.inclDeg,
+      ephemSpan:     ephemSpan,
+      criterion:     criterion,
+      thresholdAngleSource: criterion === 'geometric' ? 'beamwidth' : 'degradation'
     }
   };
+}
+
+/**
+ * 一站一星的春秋两季（批量入口）。
+ * params.seasons 缺省或为空 → 两季都算；未选的季回 null（SLA 那条链路不传 seasons，行为不变）。
+ * ctx 原样透传：一批站共用同一份轨道源与轨迹表，一颗星一季只采样一次。
+ */
+function calculateSunOutageSeasons(params, ctx) {
+  var p0 = params || {};
+  var want = (Array.isArray(p0.seasons) && p0.seasons.length) ? p0.seasons : ['vernal', 'autumnal'];
+  var out = { vernal: null, autumnal: null };
+  for (var i = 0; i < want.length; i++) {
+    var s = want[i] === 'autumnal' ? 'autumnal' : (want[i] === 'vernal' ? 'vernal' : null);
+    if (!s || out[s]) continue;
+    var p = {};
+    for (var k in p0) if (Object.prototype.hasOwnProperty.call(p0, k)) p[k] = p0[k];
+    p.season = s;
+    delete p.seasons;
+    out[s] = calculateSunOutage(p, ctx);
+  }
+  return out;
 }
 
 /* ============================================================
@@ -774,6 +968,7 @@ function fmtDate(y, m, d) {
 
 module.exports = {
   calculateSunOutage: calculateSunOutage,
+  calculateSunOutageSeasons: calculateSunOutageSeasons,
   BAND_PARAMS: BAND_PARAMS,
   // v5.1 模型内核单独导出（测试互验 / UI 预览用）
   solarTempAt: solarTempAt,
