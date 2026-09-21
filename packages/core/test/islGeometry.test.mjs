@@ -106,5 +106,96 @@ ok('同参两次调用逐位复现',
 const bad = sampleIslRangeSeries({ ...BASE, orbitB: { type: 'circular', altKm: 0 } })
 ok('轨道无效 → 不可解并报因', bad.ok === false && /轨道高度/.test(bad.reason || ''), bad.reason)
 
+/* ===================== 星历点序列两端 ===================== */
+// 站-星两条路早就用 anchorDate + ephemSpanClip 处理星历表了，星间这两条路没跟上：
+//   · epochOf 直接读 satrec.jdsatepoch —— 星历表没有这个字段，得到 new Date(NaN)。
+//     Invalid Date 是【对象】，`epochOf(A) || epochOf(B) || new Date()` 这条兜底链拦不住它，
+//     于是 startS/endS 全是 NaN、扫描一拍都不进，最后在 t0.toISOString() 上抛 RangeError。
+//   · 时窗与表的采样时段不相交时（再生 / 端到端窗口拿墙钟做 t0ISO，而导入的星历多半不含「现在」），
+//     逐拍取位全 null，最后误报「搜索时窗内两星从不互视」——把「表里没有这段时间」说成了物理结论。
+console.log('\n=== 星间几何：星历点序列两端 ===\n')
+const EI2 = createRequire(import.meta.url)('../utils/ephemInterp.js')
+const G2 = createRequire(import.meta.url)('../utils/ngsoGeometry.js')
+const TAB_T0 = Date.UTC(2026, 8, 21)
+// 两颗同高、相位拉开的圆轨道星，直接按 TEME 圆轨道造采样表（6 h / 30 s，含两次以上升交点）
+function ephSpec(phase, raanDeg, hours) {
+  const R = RE_ALT(1200), n = Math.sqrt(398600.4418 / (R * R * R))
+  const inc = 53 * Math.PI / 180, ci = Math.cos(inc), si = Math.sin(inc)
+  const O = raanDeg * Math.PI / 180, cO = Math.cos(O), sO = Math.sin(O)
+  const step = 30, cnt = Math.round((hours * 3600) / step) + 1
+  const t = new Float64Array(cnt), p = new Float64Array(3 * cnt), v = new Float64Array(3 * cnt)
+  for (let i = 0; i < cnt; i++) {
+    const s = i * step, u = n * s + phase
+    const xo = R * Math.cos(u), yo = R * Math.sin(u)
+    t[i] = TAB_T0 + s * 1000
+    p[3 * i] = xo * cO - yo * ci * sO; p[3 * i + 1] = xo * sO + yo * ci * cO; p[3 * i + 2] = yo * si
+    const vxo = -R * n * Math.sin(u), vyo = R * n * Math.cos(u)
+    v[3 * i] = vxo * cO - vyo * ci * sO; v[3 * i + 1] = vxo * sO + vyo * ci * cO; v[3 * i + 2] = vyo * si
+  }
+  return { type: 'ephem', samples: { t, p, v, frame: 'TEME', interp: { method: 'lagrange', samples: 6 } } }
+}
+function RE_ALT(alt) { return 6378.137 + alt }
+const EA = ephSpec(0, 0, 6), EB = ephSpec(0.44, 40, 6)
+
+// ① 不带 t0ISO：不许抛，要锚到表的采样起点
+let threw = ''
+let r1 = null
+try { r1 = solveIslWorstCase({ orbitA: EA, orbitB: EB, horizonHours: 6, freqGHz: 23, atmMarginKm: 100 }) } catch (e) { threw = String(e && e.message || e) }
+ok('★ 两端都是星历表、不带 t0ISO → 不抛', !threw, threw)
+ok('★ 锚到采样表起点（而不是 Invalid Date）', !!r1 && r1.search && r1.search.t0ISO === new Date(TAB_T0).toISOString(),
+  r1 && r1.search ? r1.search.t0ISO : '(无 search)')
+ok('★ 锚对了就能真的解出互视', !!r1 && r1.feasible === true, r1 && r1.reason)
+
+let threwS = ''
+let s1 = null
+try { s1 = sampleIslRangeSeries({ orbitA: EA, orbitB: EB, horizonHours: 6 }) } catch (e) { threwS = String(e && e.message || e) }
+ok('★ 距离序列不带 t0ISO → 不抛', !threwS, threwS)
+ok('★ 距离序列锚到采样表起点、能出样本', !!s1 && s1.ok === true && s1.samples.length > 10, s1 && (s1.reason || s1.samples.length))
+
+// ② t0ISO 落在采样时段之外 → 要报「不重叠」，不许说「从不互视」
+const OUT = '2026-10-01T00:00:00.000Z'
+const r2 = solveIslWorstCase({ orbitA: EA, orbitB: EB, t0ISO: OUT, horizonHours: 6, freqGHz: 23, atmMarginKm: 100 })
+ok('★ 时段外 → 不可行', r2.feasible === false, String(r2.feasible))
+ok('★ 时段外的 reason 说「不重叠」而不是「从不互视」', /不重叠/.test(r2.reason || '') && !/从不互视/.test(r2.reason || ''), r2.reason)
+ok('不可行分支仍带出 search（调用方读 search.stepSec 不会拿到 undefined）', !!(r2.search && r2.search.stepSec > 0), JSON.stringify(r2.search || null))
+const s2 = sampleIslRangeSeries({ orbitA: EA, orbitB: EB, t0ISO: OUT, horizonHours: 6 })
+ok('★ 距离序列时段外也说「不重叠」', s2.ok === false && /不重叠/.test(s2.reason || ''), s2.reason)
+
+// ③ 混合端（A 是根数、B 是星历表）：时段相交只由星历那一端决定
+const r3 = solveIslWorstCase({ orbitA: BASE.orbitA, orbitB: EB, t0ISO: OUT, horizonHours: 6, freqGHz: 23, atmMarginKm: 100 })
+ok('★ 混合端时段外也说「不重叠」', r3.feasible === false && /不重叠/.test(r3.reason || ''), r3.reason)
+const r3b = solveIslWorstCase({ orbitA: BASE.orbitA, orbitB: EB, horizonHours: 6, freqGHz: 23, atmMarginKm: 100 })
+ok('★ 混合端不带 t0ISO → 锚到星历表起点，不抛也不误报', r3b.search.t0ISO === new Date(TAB_T0).toISOString(), r3b.search.t0ISO)
+
+// ④ 时窗被表收窄时，可用度的分母按实际分析时段算（不能拿请求的 24 h 当分母）
+const r4 = solveIslWorstCase({ orbitA: EA, orbitB: EB, t0ISO: new Date(TAB_T0).toISOString(), horizonHours: 24, freqGHz: 23, atmMarginKm: 100 })
+ok('★ 请求 24 h、表只有 6 h → 分母是 6 h 不是 24 h',
+  Math.abs(r4.visibility.windowMinutes - 360) < 1, String(r4.visibility.windowMinutes))
+ok('可见时长不超过分析时段', r4.visibility.visibleMinutes <= r4.visibility.windowMinutes + 1e-9,
+  r4.visibility.visibleMinutes + ' / ' + r4.visibility.windowMinutes)
+
+/* ===================== 第 16 条：周期估不出就留空 ===================== */
+console.log('\n=== 星历静态量：周期估不出不拿整段时长冒充 ===\n')
+{
+  // 30 min 的短表：LEO 真周期 109 min，表内根本凑不出两次升交点
+  const short = ephSpec(0, 0, 0.5)
+  const tab = EI2.buildTable(Object.assign({}, short.samples, { interp: short.samples.interp }))
+  ok('短表估不出周期', EI2.estimatePeriodMin(tab) === null, String(EI2.estimatePeriodMin(tab)))
+  const el = G2.ephemElements(tab)
+  ok('★ 估不出时 periodMin 留 null（原来拿整段 30 min 冒充）', el.periodMin === null, String(el.periodMin))
+  ok('★ meanMotionRevDay 一并留 null（原来是 48 圈/天）', el.meanMotionRevDay === null, String(el.meanMotionRevDay))
+  ok('★ 带出 periodEstimated: false', el.periodEstimated === false, String(el.periodEstimated))
+  // 长表能估出来，照常给数
+  const longTab = EI2.buildTable(Object.assign({}, EA.samples, { interp: EA.samples.interp }))
+  const el2 = G2.ephemElements(longTab)
+  ok('长表估得出周期、periodEstimated: true', el2.periodEstimated === true && el2.periodMin > 100 && el2.periodMin < 120,
+    String(el2.periodMin))
+  ok('长表的 meanMotionRevDay 照常给数', Math.abs(el2.meanMotionRevDay - 1440 / el2.periodMin) < 1e-9, String(el2.meanMotionRevDay))
+  // 周期为 null 时扫描步长要走缺省，不能被压到硬下限（1 s / 2 s / 5 s 的盲扫）
+  const rShort = solveIslWorstCase({ orbitA: short, orbitB: ephSpec(0.44, 40, 0.5), horizonHours: 1, freqGHz: 23, atmMarginKm: 100 })
+  ok('★ 周期估不出时步长走缺省（绕地最小周期 84.49 min → 25.3 s），不是 2 s 盲扫',
+    Math.abs(rShort.search.stepSec - 84.48906331469738 * 60 / 200) < 1e-6, String(rShort.search.stepSec))
+}
+
 console.log(`\n=== ${pass} passed, ${fail} failed ===`)
 process.exit(fail ? 1 : 0)

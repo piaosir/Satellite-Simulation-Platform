@@ -116,6 +116,15 @@ ok('再生下行：余量随之改善', parseFloat(regenDnOn.data.linkmargin) > 
   ok('门控：大偏心 HEO 跳过', Object.keys(s8LinkParams(heo, { minElevUp: '10' })).length === 0);
   ok('门控：快照/静止星跳过', Object.keys(s8LinkParams(snap, { minElevUp: '10' })).length === 0);
   ok('门控：无最低仰角跳过', Object.keys(s8LinkParams(leo, {})).length === 0);
+  // ★ 星历点序列星（ngsoGeometry.ephemElements）的 iDeg 恒为 null、periodMin 估不出时也是 null。
+  //   Number(null) 是 0 且 isFinite —— 不加判空就会带着「倾角 0°」进 §8 的统计口径。
+  //   原来挡住它的是那个拿整段时长冒充的假周期（24 h 的表正好落进「同步周期不混合」的窗口）。
+  const ephNoPeriod = { elements: { a: 6378.137 + 1200, e: 1e-16, iDeg: null, periodMin: null } };
+  const ephDayLong = { elements: { a: 6378.137 + 1200, e: 1e-16, iDeg: null, periodMin: 1440 } };
+  ok('门控：星历星无倾角 → 跳过（周期也估不出）', Object.keys(s8LinkParams(ephNoPeriod, { minElevUp: '10' })).length === 0,
+    JSON.stringify(s8LinkParams(ephNoPeriod, { minElevUp: '10' })));
+  ok('门控：星历星无倾角 → 跳过（不靠假周期挡）', Object.keys(s8LinkParams(ephDayLong, { minElevUp: '10' })).length === 0,
+    JSON.stringify(s8LinkParams(ephDayLong, { minElevUp: '10' })));
 
   console.log(`\n=== ${pass} passed, ${fail} failed ===`);
   process.exit(fail ? 1 : 0);

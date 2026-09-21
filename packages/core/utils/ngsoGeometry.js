@@ -33,6 +33,10 @@ const DEG = Math.PI / 180;
 const RAD = 180 / Math.PI;
 const XPDOTP = 1440 / (2 * Math.PI); // rev/day ↔ rad/min
 const ECC_CIRCULAR_TOL = 1e-3;   // e < 此值视为圆轨道 → 走闭式球面（与时间/历元无关）
+// 周期未知时的缺省周期（min）：地心半径 = Re 的圆轨道周期 2π√(Re³/μ) ≈ 84.49 min —— 任何绕地
+// 闭合轨道的周期都 ≥ 它。下面几处扫描步长都是周期的单调递增函数，故按它算出的步长是该公式能给出
+// 的最细一档，不会漏掉真实周期下抓得到的过境 / 互视窗口（代价只是多扫几拍）。
+const MIN_ORBIT_PERIOD_MIN = 2 * Math.PI * Math.sqrt(RE_KM * RE_KM * RE_KM / MU) / 60;
 // 互视窗内“余量最差”候选几何的内部采样点数（两窗口边缘 + 几何 t* 之外，再等分插 N 个内点）。
 // 几何最差(仰角)≠链路最差(总C/N被弱侧主导)：两端捕捉“瓶颈站压最低仰角”的两种边缘工况，内点是对
 // 降雨等非凸衰减的稳健兜底（晴空/FSL 主导时最差必在边缘，内点不改结果、仅多几次评估）。调大更稳、更慢。
@@ -464,8 +468,9 @@ function coupledTypicalMoment(satrec, tx, rx, opts) {
   if (clip.reason) return { feasible: false, reason: clip.reason };
   const startMs = clip.startMs;
   const endMs = clip.endMs;
-  // 采样步长：周期的 1/3000 与「时窗均分 2 万点」取较大（既密采近地点快段、又封顶总传播次数）
-  const periodSec = stat.periodMin * 60;
+  // 采样步长：周期的 1/3000 与「时窗均分 2 万点」取较大（既密采近地点快段、又封顶总传播次数）。
+  // 周期估不出（星历表凑不出两次升交点）时按绕地最小周期算 —— 该式对周期单调递增，取下界即取最细步长。
+  const periodSec = (stat.periodMin > 0 ? stat.periodMin : MIN_ORBIT_PERIOD_MIN) * 60;
   const stepMs = Math.max(1000, Math.min(periodSec / 3000, horizonHours * 3600 / 20000) * 1000);
 
   // 站址 ECEF（求 range-rate 用，含地球自转），一次算好复用
@@ -740,8 +745,9 @@ function solveAccessWindows(opts) {
   const startS = clip.startMs / 1000, endS = clip.endMs / 1000;
   const elAt = (ts) => { const la = lookAngles(satrec, station, new Date(ts * 1000)); return la ? la.elevDeg : NaN; };
   const f = (ts) => { const e = elAt(ts); return isFinite(e) ? e - minEl : NaN; };
-  // 粗扫步长：周期 1/200 与 60s 取较小（既能抓住 LEO 短过境、又封顶总传播次数）
-  const periodSec = stat.periodMin * 60;
+  // 粗扫步长：周期 1/200 与 60s 取较小（既能抓住 LEO 短过境、又封顶总传播次数）。
+  // 周期估不出（星历表凑不出两次升交点）时按绕地最小周期算 —— 该式对周期单调递增，取下界即取最细步长。
+  const periodSec = (stat.periodMin > 0 ? stat.periodMin : MIN_ORBIT_PERIOD_MIN) * 60;
   const coarse = Math.max(5, Math.min(periodSec / 200, 60));
   const raw = findWindows(f, startS, endS, { coarseStep: coarse, tol: 1, findPeak: true });
   const windows = raw.map((w) => {
@@ -832,6 +838,50 @@ function _islNode(orbit) {
   return { node: { kind: 'sat', satrec }, method: propagatorLabel(satrec), representative: false, elements: staticElements(satrec) };
 }
 
+// 星间两条路的传播体（_islNode 把星历表也装进 node.kind='sat'）
+const _islRecOf = (nd) => (nd && nd.node && nd.node.kind === 'sat' && nd.node.satrec) ? nd.node.satrec : null;
+// 无显式 t0 时的搜索起点。
+// ★ 一律走 anchorDate：星历表没有 jdsatepoch，直接读得到 new Date(NaN)，而 Invalid Date 是【对象】，
+//   原来那条 `epochOf(A) || epochOf(B) || new Date()` 兜底链拦不住它 —— 最后在 t0.toISOString() 上抛。
+// 任一端是星历表 → 锚「各表采样起点的较晚者」：在它之前必有一端无数据，从更早处起扫只会扫出一片 null。
+function _islDefaultT0(A, B) {
+  const starts = [A, B].map(_islRecOf).filter((r) => r && r.__ephem).map((r) => r.t0);
+  if (starts.length) return new Date(Math.max.apply(null, starts));
+  for (const nd of [A, B]) {
+    const r = _islRecOf(nd);
+    if (!r) continue;
+    const d = anchorDate(r);
+    if (isFinite(d.getTime())) return d;
+  }
+  return new Date();
+}
+// 两端的星历采样时段与分析时窗取交（站-星路 ephemSpanClip 的双端版）：satrec / 快照星无时段限制，
+// 原样透过；两端都是表时结果是两段的交集。无交集 → 与站-星路同款「不重叠」诊断，不许落到「从不互视」
+// （那是把「表里没有这段时间」说成了物理结论）。两端各自先与【原始时窗】相交，故诊断句里的「分析时段」
+// 始终是用户请求的那一段，不会被另一端先收窄过。
+function _islSpanClip(A, B, startMs, endMs, tagA, tagB) {
+  const recA = _islRecOf(A), recB = _islRecOf(B);
+  const cA = ephemSpanClip(recA, startMs, endMs);
+  if (cA.reason) return { reason: (tagA || '') + cA.reason };
+  const cB = ephemSpanClip(recB, startMs, endMs);
+  if (cB.reason) return { reason: (tagB || '') + cB.reason };
+  const s2 = Math.max(cA.startMs, cB.startMs), e2 = Math.min(cA.endMs, cB.endMs);
+  if (!(e2 > s2)) {
+    return { reason: (recA && recA.__ephem && recB && recB.__ephem)
+      ? '两星星历时段 ' + fmtUtcMin(recA.t0) + ' → ' + fmtUtcMin(recA.t1) + ' 与 ' +
+        fmtUtcMin(recB.t0) + ' → ' + fmtUtcMin(recB.t1) + ' 不重叠'
+      : '星历时段与分析时段不重叠' };
+  }
+  return { startMs: s2, endMs: e2 };
+}
+// 端点周期（min）：星历表估不出周期时用绕地最小周期当下界（步长公式对周期单调递增，取下界即取最细
+// 步长）；快照星（elements 为 null，位置时不变）沿用 1440，步长不变。
+function _islPerMin(nd) {
+  const el = nd && nd.elements;
+  if (!el) return 1440;
+  return el.periodMin > 0 ? el.periodMin : MIN_ORBIT_PERIOD_MIN;
+}
+
 function solveIslWorstCase(opts) {
   opts = opts || {};
   const A = _islNode(opts.orbitA), B = _islNode(opts.orbitB);
@@ -849,11 +899,26 @@ function solveIslWorstCase(opts) {
   const representative = A.representative || B.representative;
   const method = representative ? '闭式球面·示意' : (A.method + '↔' + B.method);
 
-  const epochOf = (nd) => (nd.node.kind === 'sat' && nd.node.satrec) ? new Date((nd.node.satrec.jdsatepoch + (nd.node.satrec.jdsatepochF || 0) - 2440587.5) * 86400000) : null;
-  const t0 = opts.t0ISO ? new Date(opts.t0ISO) : (epochOf(A) || epochOf(B) || new Date());
-  const startS = t0.getTime() / 1000, endS = startS + horizonHours * 3600;
-  const perMin = Math.min(A.elements ? A.elements.periodMin : 1440, B.elements ? B.elements.periodMin : 1440);
+  const t0 = opts.t0ISO ? new Date(opts.t0ISO) : _islDefaultT0(A, B);
+  if (!isFinite(t0.getTime())) {
+    return { feasible: false, method, representative, reason: '起始时刻无效',
+      visibility: { visibleFrac: 0, visibleMinutes: 0, windowMinutes: horizonHours * 60 } };
+  }
+  const perMin = Math.min(_islPerMin(A), _islPerMin(B));
   const stepSec = Math.max(2, Math.min((perMin * 60) / 200, 30));
+  // 星历点序列：扫描时窗与两星的采样时段取交，无交集直接报「不重叠」（扫也扫不出东西，取位全是 null）。
+  // 先算 stepSec 再 clip，是为了让这条不可行返回的 search 形状与下面 !worst 分支完全一致。
+  const reqStartMs = t0.getTime(), reqEndMs = reqStartMs + horizonHours * 3600000;
+  const clip = _islSpanClip(A, B, reqStartMs, reqEndMs, '发射卫星：', '接收卫星：');
+  if (clip.reason) {
+    return {
+      feasible: false, method, representative, reason: clip.reason,
+      visibility: { visibleFrac: 0, visibleMinutes: 0, windowMinutes: horizonHours * 60 },
+      search: { t0ISO: t0.toISOString(), horizonHours, stepSec, atmMarginKm, blockRadiusKm, freqGHz, maxRangeKm }
+    };
+  }
+  const spanClipped = clip.startMs !== reqStartMs || clip.endMs !== reqEndMs;
+  const startS = clip.startMs / 1000, endS = clip.endMs / 1000;
 
   // visible = 「可用」：LOS 清过遮挡球，且（给了上限时）距离不超过最大工作距离。
   // geoVisible 保留纯几何互视，供「超出工作距离」与「压根不互视」两种不可行如实分辨。
@@ -885,7 +950,10 @@ function solveIslWorstCase(opts) {
     }
     prevVis = { ts, rangeKm: s.rangeKm };
   }
-  const windowMinutes = horizonHours * 60;
+  // 时窗被星历时段收窄时，可用度的分母按【实际分析时段】算 —— 否则 nVis/nTot 是收窄段内的比例，
+  // 乘上未收窄的 horizon 就是两个分母混用（实测「请求 24h、表只有 6h」会报出整整一天可见）。
+  // 未收窄时表达式逐位等于原值。
+  const windowMinutes = spanClipped ? (endS - startS) / 60 : horizonHours * 60;
   const visibleFrac = nTot > 0 ? nVis / nTot : 0;
 
   if (!worst) {
@@ -992,11 +1060,13 @@ function sampleIslRangeSeries(opts) {
   const representative = A.representative || B.representative;
   const method = representative ? '闭式球面·示意' : (A.method + '↔' + B.method);
 
-  const epochOf = (nd) => (nd.node.kind === 'sat' && nd.node.satrec) ? new Date((nd.node.satrec.jdsatepoch + (nd.node.satrec.jdsatepochF || 0) - 2440587.5) * 86400000) : null;
-  const t0 = opts.t0ISO ? new Date(opts.t0ISO) : (epochOf(A) || epochOf(B) || new Date());
+  const t0 = opts.t0ISO ? new Date(opts.t0ISO) : _islDefaultT0(A, B);
   if (!isFinite(t0.getTime())) return { ok: false, reason: '起始时刻无效' };
-  const startS = t0.getTime() / 1000, endS = startS + horizonHours * 3600;
-  const perMin = Math.min(A.elements ? A.elements.periodMin : 1440, B.elements ? B.elements.periodMin : 1440);
+  // 星历点序列：时窗与两星采样时段取交，无交集报「不重叠」（不能落到「取不到任何样本」那句）
+  const clip = _islSpanClip(A, B, t0.getTime(), t0.getTime() + horizonHours * 3600000, '卫星一：', '卫星二：');
+  if (clip.reason) return { ok: false, method, representative, reason: clip.reason };
+  const startS = clip.startMs / 1000, endS = clip.endMs / 1000;
+  const perMin = Math.min(_islPerMin(A), _islPerMin(B));
   const baseStep = Math.max(2, Math.min((perMin * 60) / 200, 30));
   const stepSec = Math.max(baseStep, (endS - startS) / maxSamples);
 
@@ -1038,7 +1108,8 @@ function sampleIslRangeSeries(opts) {
   };
 }
 
-// 星历点序列的「静态量」：周期取相邻两次升交点之差（估不出就按整段时长），近远地点取 |r| 极值。
+// 星历点序列的「静态量」：周期取相邻两次升交点之差（表内凑不出两次升交点就留 null，不拿整段时长
+// 冒充），近远地点取 |r| 极值。
 function ephemElements(tab) {
   let rMin = Infinity, rMax = 0;
   for (let i = 0; i < tab.n; i++) {
@@ -1046,13 +1117,14 @@ function ephemElements(tab) {
     if (r < rMin) rMin = r;
     if (r > rMax) rMax = r;
   }
-  const periodMin = ephemInterp.estimatePeriodMin(tab) || ((tab.t1 - tab.t0) / 60000);
+  const est = ephemInterp.estimatePeriodMin(tab);
+  const periodMin = est > 0 ? est : null;      // 估不出就留空：整段时长不是周期
   const a = (rMin + rMax) / 2;
   return {
     a, e: rMax > 0 ? (rMax - rMin) / (rMax + rMin) : 0,
     iDeg: null, raanDeg: null, argpDeg: null, maDeg: null,
-    meanMotionRevDay: periodMin > 0 ? 1440 / periodMin : 0,
-    periodMin,
+    meanMotionRevDay: periodMin != null ? 1440 / periodMin : null,
+    periodMin, periodEstimated: periodMin != null,
     apogeeAltKm: rMax - RE_KM,
     perigeeAltKm: rMin - RE_KM,
     epochJd: tab.t0 / 86400000 + 2440587.5,
@@ -1062,7 +1134,7 @@ function ephemElements(tab) {
 }
 
 module.exports = {
-  RE_KM, MU, OMEGA_E, C_KM_S, ECC_CIRCULAR_TOL,
+  RE_KM, MU, OMEGA_E, C_KM_S, ECC_CIRCULAR_TOL, MIN_ORBIT_PERIOD_MIN,
   buildSatrec, ephemElements, anchorDate, ephemSpanClip,
   solveAccessWindows,
   solveIslWorstCase,

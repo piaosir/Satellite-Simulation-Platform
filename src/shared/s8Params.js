@@ -36,6 +36,10 @@ export function s8LinkParams(geom, opt) {
   const a = Number(el.a)
   const periodMin = Number(el.periodMin)
   if (!Number.isFinite(e) || e > 0.05) return {}                     // 非近圆
+  // 星历点序列星没有倾角可取（ephemElements 的 iDeg 恒为 null），Number(null) 是 0 且 isFinite ——
+  // 不能拿 0° 冒充倾角进 P.618 §8 的统计口径。原来挡住它的是那个拿整段时长冒充的假周期（24 h 的表
+  // 正好落在下面「同步周期不混合」的窗口里），周期改成 null 之后就得在这里明写。
+  if (el.iDeg == null) return {}
   if (!Number.isFinite(iDeg) || !Number.isFinite(a)) return {}
   if (Number.isFinite(periodMin) &&
       Math.abs(periodMin - SIDEREAL_DAY_MIN) / SIDEREAL_DAY_MIN < 0.05) return {}  // 同步周期不混合
