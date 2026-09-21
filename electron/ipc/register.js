@@ -116,6 +116,22 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   const ephF = require('../../packages/core/utils/ephemFormats.js')
   const EXT2FMT_EPH = { e: 'stk-e', oem: 'ccsds-oem-kvn', xml: 'ccsds-oem-xml', kvn: 'ccsds-oem-kvn', sp3: 'sp3' }
   const isEphemFmt = (f) => ephF.FORMATS.includes(f)
+  // gp 记录按 SGP4 采样导出成点序列时的实际口径：渲染端没给 opts 就是 customSats 的缺省
+  // （每颗星历元 ±1 天 / 60 s / TEME = 2881 点），随保存结果一并回去，省得两边各写一份缺省值。
+  // fromMs / toMs 为 null 表示「按每颗星各自的历元 ±1 天」—— 缺省口径下唯一诚实的写法。
+  const ephemSampleMeta = (opts) => {
+    const o = opts || {}
+    const d = createCustomSats.EPHEM_SAMPLE
+    const from = Number(o.fromMs), to = Number(o.toMs)
+    const stepS = Math.max(1, Number(o.stepS) || d.stepS)
+    const spanMs = Number.isFinite(from) && Number.isFinite(to) ? to - from : 2 * d.spanMs
+    return {
+      stepS, frame: o.frame || 'TEME', maxSats: d.maxSats,
+      fromMs: Number.isFinite(from) ? from : null,
+      toMs: Number.isFinite(to) ? to : null,
+      spanMs, points: Math.floor(spanMs / (stepS * 1000)) + 1
+    }
+  }
   // 扩展名认不出（手打了 .txt、或压根没打扩展名）时不硬猜，落回对话框里选中的那个格式 want——
   // 否则「类型选 OMM CSV、文件名手打 a.txt」会静默导出成 3LE，文件打开前一点提示都没有。
   const fmtOfPath = (fp, want) => {
@@ -290,14 +306,19 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     const g = (customSats.list().groups || []).find((x) => x.id === groupId)
     if (!g) return { ok: false, error: '该组不存在' }
     const isEph = g.kind === 'ephem'
-    return saveEph(e, defaultName || (isEph ? '导入星历' : '导入组'), format,
+    const r = await saveEph(e, defaultName || (isEph ? '导入星历' : '导入组'), format,
       (fmt) => customSats.groupText(groupId, fmt, opts), '该组无卫星可导出', isEph)
+    // gp 组落成点序列的那一档是现采的：把本次的时窗 / 步长 / 帧一并回给调用方
+    if (r.ok && !isEph && isEphemFmt(r.format)) r.sample = ephemSampleMeta(opts)
+    return r
   })
   // 导出任意 OMM 记录（自建星座展开记录由渲染进程传入，场景历元）
   ipcMain.handle('omm:exportRecords', async (e, records, defaultName, format, opts) => {
-    return saveEph(e, defaultName || '自定义星历', format,
+    const r = await saveEph(e, defaultName || '自定义星历', format,
       (fmt) => (isEphemFmt(fmt) ? customSats.recordsEphemText(records, fmt, opts) : customSats.recordsText(records, fmt)),
       '无可导出的星历记录')
+    if (r.ok && isEphemFmt(r.format)) r.sample = ephemSampleMeta(opts)
+    return r
   })
   // 保存对话框 → 按最终扩展名定格式 → 交给 build(fmt) 出文本。
   // SP3 只解析不写出（ephF.WRITABLE 只有三种），故入口先归一成 stk-e：扩展名、默认文件名、

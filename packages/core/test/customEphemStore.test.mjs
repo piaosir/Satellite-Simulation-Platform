@@ -349,5 +349,65 @@ section('SP3 组导出')
   customSats.removeGroup(rSp3.group.id)
 }
 
+/* ===== ⑮ 建表告警按整句去重、同句跨 N 颗合并成一条 ===== */
+// 原来拿未加前缀的原句去查已加前缀的数组，indexOf 永远 -1 —— 去重完全失效。
+// 用户可见面：文件管理导入后只报条数（FileManager 的「N 条告警」），500 颗同一个毛病就刷 500 条，
+// 真正不同的那条被淹掉。
+section('建表告警合并')
+{
+  // 多星件用 OEM 造（.e 一份只装一颗星）：两颗同轨道半径 + 一颗更低的 —— 前两颗拿到逐字相同的
+  // 「步长过粗」告警（300 s 采样 / LEO），第三颗半径不同、那句里的度数也不同
+  const f9 = (v) => v.toFixed(9)
+  const seg = (id, R) => {
+    const nn = Math.sqrt(MU / (R * R * R)), ci = Math.cos(51.6 * Math.PI / 180), si = Math.sin(51.6 * Math.PI / 180)
+    const L = ['', 'META_START', 'OBJECT_NAME = SAT-' + id, 'OBJECT_ID = 2026-00' + id + 'A', 'CENTER_NAME = EARTH',
+      'REF_FRAME = EME2000', 'TIME_SYSTEM = UTC', 'START_TIME = ' + new Date(T0).toISOString().replace('Z', ''),
+      'STOP_TIME = ' + new Date(T0 + 1200000).toISOString().replace('Z', ''),
+      'INTERPOLATION = LAGRANGE', 'INTERPOLATION_DEGREE = 5', 'META_STOP', '']
+    for (let i = 0; i < 5; i++) {
+      const s2 = i * 300, u = nn * s2
+      L.push([new Date(T0 + s2 * 1000).toISOString().replace('Z', ''), f9(R * Math.cos(u)), f9(R * Math.sin(u) * ci), f9(R * Math.sin(u) * si),
+        f9(-R * nn * Math.sin(u)), f9(R * nn * Math.cos(u) * ci), f9(R * nn * Math.cos(u) * si)].join(' '))
+    }
+    return L.join('\n')
+  }
+  const oemText = ['CCSDS_OEM_VERS = 2.0', 'CREATION_DATE = ' + new Date(T0).toISOString().replace('Z', ''), 'ORIGINATOR = TEST',
+    seg(1, 6878.137), seg(2, 6878.137), seg(3, 6578.137)].join('\n') + '\n'
+  const rW = customSats.importFile('告警组', oemText)
+  ok(rW.ok && rW.group.count === 3, '三颗星导进来', JSON.stringify(rW.error || rW.group.count))
+  const ws = (rW.warnings || []).filter((w) => /过粗/.test(w))
+  ok(ws.length === 2, '★ 两种不同的「步长过粗」告警各一条（原来是逐颗 3 条）', JSON.stringify(rW.warnings))
+  ok(ws.some((w) => /^2 颗：/.test(w)), '★ 同一句跨 2 颗合并成「2 颗：…」', JSON.stringify(ws))
+  ok(ws.some((w) => /^SAT-3：/.test(w)), '只有一颗的那句仍写星名', JSON.stringify(ws))
+  ok(!/颗：.*颗：/.test(ws.join('|')), '前缀不重复叠加')
+  customSats.removeGroup(rW.group.id)
+}
+
+/* ===== ⑯ gp 组按 SGP4 采样导出：颗数上限 + 采样口径随返回值 ===== */
+// 每颗星 = 时窗 ÷ 步长 + 1 = 2881 次 SGP4，全程同步跑在主进程。不设上限时万颗组直接冻住。
+section('采样导出上限')
+{
+  const D = customSats.EPHEM_SAMPLE || require('../../../electron/services/customSats.js').EPHEM_SAMPLE
+  ok(D && D.maxSats === 300 && D.stepS === 60 && D.spanMs === 86400000, '★ 缺省口径与上限导出成常量', JSON.stringify(D))
+  const gGp = customSats.list().groups.find((g) => g.kind === 'gp')
+  ok(!!gGp, 'gp 组还在', gGp && gGp.name)
+  const one = customSats.sampleGpToEphem(customSats.groupRecords(gGp.id), {})
+  ok(one.length === 1 && one[0].t.length === 2881, '单颗缺省采样 2881 点（±1 天 / 60 s）', String(one[0] && one[0].t.length))
+  // 301 颗（把同一条记录复制开）→ 入口就该拦下，不许跑起来
+  const recs = customSats.groupRecords(gGp.id)
+  const many = []
+  for (let i = 0; i < D.maxSats + 1; i++) many.push(Object.assign({}, recs[0], { noradId: String(90000 + i) }))
+  let msg = ''
+  const t0 = Date.now()
+  try { customSats.sampleGpToEphem(many, {}) } catch (err) { msg = err.message }
+  ok(/最多 300 颗（本次 301 颗）/.test(msg), '★ 超上限直接报可读错误，不跑传播', msg)
+  ok(Date.now() - t0 < 500, '★ 是入口拦下的，不是跑完才报（耗时 ' + (Date.now() - t0) + ' ms）')
+  const edge = []
+  for (let i = 0; i < D.maxSats; i++) edge.push(Object.assign({}, recs[0], { noradId: String(90000 + i) }))
+  let edgeMsg = ''
+  try { customSats.sampleGpToEphem(edge.slice(0, 2), {}) } catch (err) { edgeMsg = err.message }
+  ok(!edgeMsg, '上限以内照常采样', edgeMsg)
+}
+
 console.log('\ncustomEphemStore: 通过 ' + pass + '，失败 ' + fail)
 process.exit(fail ? 1 : 0)

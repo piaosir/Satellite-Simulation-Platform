@@ -37,6 +37,11 @@ const EPHEM_GROUP_SLOT = 10000
 // 留存导入原文的体积上限（超过则不留，见头部说明）。8MB 覆盖 CelesTrak 最大的 active 组（~3.4MB）。
 const RAW_KEEP_MAX = 8 * 1024 * 1024
 
+// gp 组导出成点序列格式时的采样口径：缺省每颗星历元 ±1 天、步长 60 s、TEME —— 每颗 2881 次 SGP4
+// （172800 s ÷ 60 s + 1）。颗数上限 300：再多就是同步几十秒起步的传播加上 GB 量级的采样缓冲，
+// 全程跑在主进程，界面会整个冻住。
+const EPHEM_SAMPLE = { stepS: 60, spanMs: 86400000, maxSats: 300 }
+
 const MU = 398600.4418
 const RE = 6378.137
 
@@ -339,6 +344,7 @@ module.exports = function createCustomSats(getCore) {
     const base = existing && existing.noradBase ? existing.noradBase : nextNoradBase(store.groups)
 
     const meta = [], tables = [], errs = []
+    const warnHits = new Map()   // 建表告警原句 -> { n: 出这句的颗数, name: 第一颗的星名 }
     let invalid = 0, dropped = 0
     r.sats.forEach((s, i) => {
       // buildTable 就是校验：至少 2 点、时刻严格递增、|r| 在 (Re+80 km, 2e6 km) 之间，坏样本剔除并计数
@@ -352,8 +358,15 @@ module.exports = function createCustomSats(getCore) {
         t0: tab.t0, t1: tab.t1, n: tab.n, interp: { method: tab.method, samples: tab.samples }
       })
       tables.push({ key, t: tab.t, p: tab.p, v: tab.v, spans: spansOf(tab) })
-      if (tab.warnings && tab.warnings.length) for (const w of tab.warnings) if (r.warnings.indexOf(w) < 0) r.warnings.push((s.name || key) + '：' + w)
+      if (tab.warnings && tab.warnings.length) for (const w of tab.warnings) {
+        const hit = warnHits.get(w)
+        if (hit) hit.n++
+        else warnHits.set(w, { n: 1, name: s.name || key })
+      }
     })
+    // 同一句告警跨 N 颗星只出一条。原来拿未加前缀的原句去查已加前缀的数组，indexOf 永远 -1，
+    // 去重完全失效：一份 500 颗的 OEM 会刷出 500 条告警，真正不同的那条反被淹掉。
+    for (const [w, hit] of warnHits) r.warnings.push((hit.n > 1 ? hit.n + ' 颗' : hit.name) + '：' + w)
     if (!meta.length) return { ok: false, error: '无有效卫星（' + (errs[0] || '全部采样无效') + '）', invalid }
     ephemStore.save(id, tables)
     const group = {
@@ -597,7 +610,12 @@ module.exports = function createCustomSats(getCore) {
   // 缺省跨度 = 历元 ±1 天、步长 60 s、TEME（任务书 §14 第 4 条）。
   function sampleGpToEphem(records, opts) {
     const o = opts || {}
-    const stepS = Math.max(1, Number(o.stepS) || 60)
+    // 每颗星 = 时窗 ÷ 步长 + 1 次 SGP4，全程同步跑在主进程：不设上限时万颗组会把主进程冻住甚至 OOM
+    const count = (records && records.length) || 0
+    if (count > EPHEM_SAMPLE.maxSats) {
+      throw new Error('按 SGP4 采样导出最多 ' + EPHEM_SAMPLE.maxSats + ' 颗（本次 ' + count + ' 颗），请拆成小组后导出')
+    }
+    const stepS = Math.max(1, Number(o.stepS) || EPHEM_SAMPLE.stepS)
     const frame = o.frame || 'TEME'
     const core = getCore && getCore()
     const sgp4 = core && core.sgp4
@@ -607,8 +625,8 @@ module.exports = function createCustomSats(getCore) {
       const satrec = sgp4.omm2satrec(rec)
       if (!satrec || satrec.error) continue
       const epochMs = epochDate(rec).getTime()
-      const fromMs = Number.isFinite(Number(o.fromMs)) ? Number(o.fromMs) : epochMs - 86400000
-      const toMs = Number.isFinite(Number(o.toMs)) ? Number(o.toMs) : epochMs + 86400000
+      const fromMs = Number.isFinite(Number(o.fromMs)) ? Number(o.fromMs) : epochMs - EPHEM_SAMPLE.spanMs
+      const toMs = Number.isFinite(Number(o.toMs)) ? Number(o.toMs) : epochMs + EPHEM_SAMPLE.spanMs
       if (!(toMs > fromMs)) throw new Error('导出时段无效：起止时刻相同或颠倒')
       const n = Math.floor((toMs - fromMs) / (stepS * 1000)) + 1
       if (n < 2) throw new Error('导出时段太短：按 ' + stepS + ' s 步长取不到 2 个点')
@@ -652,3 +670,5 @@ module.exports = function createCustomSats(getCore) {
 // OMM CSV 解析器提成模块级静态导出：omm.js 的 satrecs() 也要用，
 // 不该为了一个纯函数去造一个 customSats 实例（那会碰文件系统）。
 module.exports.parseOMMCsv = parseOMMCsv
+// 采样导出的缺省口径与颗数上限：IPC 层要把它随保存结果回给渲染端，不该两边各写一份
+module.exports.EPHEM_SAMPLE = EPHEM_SAMPLE
