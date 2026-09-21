@@ -184,6 +184,42 @@ export const raanToLon = (raanDeg, gmstRad) => {
   return v > 180 ? v - 360 : v
 }
 
+/* ===================== 平近点角 -> 真近点角 -> 星下点经度 ===================== */
+// 平近点角 M（°）-> 真近点角 ν（°）。e <= 1e-12 视作圆轨道，ν 恒等于 M；
+// 否则 Newton 解 Kepler 方程 E − e·sinE = M（初值 M ± e/2，收敛 1e-14 rad、上限 60 次），
+// 再取 ν = atan2(√(1−e²)·sinE, cosE − e)。
+export function trueAnomalyDeg(mDeg, e) {
+  const ecc = num(e, 0)
+  if (!(ecc > 1e-12)) return num(mDeg)
+  const M = norm360(num(mDeg)) * DEG
+  let E = M < Math.PI ? M + ecc / 2 : M - ecc / 2
+  for (let it = 0; it < 60; it++) {
+    const den = 1 - ecc * Math.cos(E)
+    if (!(Math.abs(den) > 1e-15)) break
+    const d = (E - ecc * Math.sin(E) - M) / den
+    E -= d
+    if (Math.abs(d) < 1e-14) break
+  }
+  return Math.atan2(Math.sqrt(1 - ecc * ecc) * Math.sin(E), Math.cos(E) - ecc) * RAD
+}
+// t0 时刻的星下点经度（°，(−180,180]）：
+//   u = ω + ν（纬度幅角，从升交点量起）
+//   赤经 = Ω + atan2(cos i · sin u, cos u)     ← 球面直角三角形。必须用双参数 atan2：u 在第二 / 三
+//                                                象限时 cos u < 0，单参数 atan 会把经度折回错的半圈；
+//                                                i > 90° 时 cos i < 0 使 y 变号，正是逆行轨道升交点后
+//                                                往西走的几何。
+//   λ = 赤经 − GMST(t0)                        ← 交给 raanToLon（gmstRad 为弧度）
+// ★ 原来这里写的是 λ = Ω + ω + M₀ − GMST —— 那只在「圆·赤道」或 u 恰为 90° 整数倍时才成立：
+//   出厂缺省的临界倾角太阳同步（i=116.57°、ω=270°）差【整整 180°】，i=53° 圆轨道 M₀=70° 差 11°，
+//   e=0.7 的大椭圆 M₀=34° 差 22°。i=0 时本式退化成老式那条恒等式。
+//   与 solveDesign 里 Molniya 那条远地点定位式互为逆运算。
+export function subLonOf(seed, gmstRad) {
+  const s = seed || {}
+  const u = (num(s.argpDeg) + trueAnomalyDeg(s.m0Deg, s.e)) * DEG
+  const dl = Math.atan2(Math.cos(num(s.inclDeg) * DEG) * Math.sin(u), Math.cos(u)) * RAD
+  return raanToLon(num(s.raanDeg) + dl, gmstRad)
+}
+
 /* ===================== 九种类型 ===================== */
 export const ORBIT_TYPES = [
   { key: 'circular', zh: '圆轨道', en: 'Circular' },
@@ -402,8 +438,8 @@ export function solveDesign(type, inputs, t0Ms, ctx) {
     ltanHours,
     ltdnHours: ltanToLtdn(ltanHours),
     repeat,
-    // 圆轨道的 t0 星下点经度（argp/M0 一并计入）
-    subLonDeg: raanToLon(seed.raanDeg + seed.argpDeg + seed.m0Deg, gmst),
+    // t0 星下点经度：含倾角，且 u = ω + ν（ν 由 M₀ 解 Kepler 方程得来），见 subLonOf
+    subLonDeg: subLonOf(seed, gmst),
     apogeeKm: h.apogeeKm,
     perigeeKm: h.perigeeKm,
     aKm, e
@@ -445,5 +481,5 @@ export default {
   meanSunLongitudeDeg, ltanToRaan, ltdnToRaan, raanToLtan, ltanToLtdn, parseHm, formatHm,
   sunSyncInclination, sunSyncSma, sunSyncMaxAltKm, repeatSma, repeatSunSyncSolve,
   raanRate, argpRate, maRate, nodalPeriodSec, keplerPeriodSec, geosyncSma,
-  lonToRaan, raanToLon, solveRoot
+  lonToRaan, raanToLon, subLonOf, trueAnomalyDeg, solveRoot
 }

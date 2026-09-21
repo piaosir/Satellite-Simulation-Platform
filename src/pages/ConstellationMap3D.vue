@@ -1607,7 +1607,11 @@ const setDesign = (k, v) => { const m = constModal.value; if (m) m.design = { ..
 // 当前草稿解出来的一组根数（null = 解不出来，读数区与预览都据此停住）
 const constSolved = computed(() => {
   const m = constModal.value; if (!m) return null
-  const t0 = ccTimeAt().getTime()
+  // 求解时刻 = 场景历元（各合成星 satrec 的历元就是它，见 useCustomConstellations.elementsToSatrec）：
+  // 经度类轨道用 GMST(t0) 把经度换成 RAAN、地方时类用 t0 的太阳平黄经定 RAAN，而 M₀ 同样从 t0 起算 ——
+  // 三者必须同一时刻。取仿真时钟会让整座星座偏 15°/h ×（时钟 − 历元）。历元串坏掉才退回时钟。
+  const ep = new Date(customConst.scenarioEpoch.value)
+  const t0 = isNaN(ep) ? calcAt().getTime() : ep.getTime()
   const inputs = m.orbitType === 'custom'
     ? { shape: m.shape, perigeeKm: m.perigeeKm, apogeeKm: m.apogeeKm, inclDeg: m.incl, argpDeg: m.argp, raanDeg: m.raan0, m0Deg: m.m0 }
     : m.design
@@ -7739,7 +7743,7 @@ onBeforeUnmount(() => {
               <div v-else class="cefv"><label>轨迹周期</label><div class="ceinp"><input class="ci" :value="trkVal('time')" placeholder="0" @input="e => trkInput('time', e)" @change="trkCommit('time')" @blur="trkCommit('time')" @keyup.enter="trkCommit('time')" /><span class="u">min</span></div></div>
               <div class="cef ceset"><span class="lnk" title="颜色 / 线粗 / 线型 / 覆盖圈口径等全部显示设置（与聚焦卫星同一份）" @click="openFocusSettings"><Icon name="sliders-horizontal" :size="12" /> 聚焦卫星显示设置…</span></div>
 
-              <div v-if="constDerived" class="ceread">
+              <div v-if="constDerived" class="ceread" title="场景历元 t0">
                 <div class="crcode">{{ constDerived.code }}</div>
                 <div class="crsub">共 {{ constDerived.total }} 颗<template v-if="constModal.pattern !== 'plane' && constModal.pattern !== 'single'"> · 每面 {{ constDerived.S }} · 面间 {{ constDerived.phase }}°</template></div>
                 <template v-if="constDerived.d">

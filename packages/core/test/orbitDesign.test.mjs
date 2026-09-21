@@ -279,5 +279,108 @@ for (const key of D.ORBIT_TYPE_KEYS) {
   ok(Number.isFinite(d.apogeeKm) && Number.isFinite(d.perigeeKm), key + '：近远地点都是数')
 }
 
+/* ===== ⑨ ★ 星下点经度算式：含倾角与真近点角 ===== */
+// 老式 λ = Ω + ω + M₀ − GMST 只在「圆·赤道」或 u 恰是 90° 整数倍时才对：
+//   · 忽略倾角 —— ECI 赤经是 Ω + atan2(cos i·sin u, cos u)，不是 Ω + u；i > 90°（逆行）时
+//     cos i < 0，在 u = ±90° 处 atan2 的象限整个翻过去，差【180°】；
+//   · 把平近点角当真近点角 —— u = ω + ν，e 一大就爆。
+// 判据全部拿 SGP4 在 t0 的真星下点对拍（按 seed 建 satrec，传播到 t0）。
+section('星下点经度算式')
+const sub2 = (seed, t0Ms) => {
+  const a = seed.aKm, n = Math.sqrt(MU / (a * a * a))
+  const rec = sat.omm2satrec({
+    noradId: '99999', epoch: new Date(t0Ms).toISOString().replace('Z', ''),
+    meanMotion: 86400 * n / (2 * Math.PI), ecc: seed.e, incl: seed.inclDeg,
+    raan: seed.raanDeg, argp: seed.argpDeg, ma: seed.m0Deg, bstar: 0, mdot: 0, mddot: 0
+  })
+  const pv = sat.propagate(rec, new Date(t0Ms))
+  if (!pv || !pv.position) return NaN
+  const gd = sat.eciToGeodetic(pv.position, sat.gstime(new Date(t0Ms)))
+  return sat.degreesLong(gd.longitude)
+}
+const dLon = (a, b) => Math.abs(((a - b) % 360 + 540) % 360 - 180)
+// 逆行（临界倾角太阳同步）：向导出厂缺省输入，老式一打开读数就差 180°
+for (const [type, inp, tol, tag] of [
+  ['criticalSunSync', { perigeeKm: 500, ascLonDeg: 0, argpDeg: 270 }, 0.05, '临界倾角太阳同步（i=116.6°，出厂缺省）'],
+  ['criticalSunSync', { perigeeKm: 500, ascLonDeg: 0, argpDeg: 30 }, 0.1, '临界倾角太阳同步 ω=30°'],
+  ['custom', { perigeeKm: 550, apogeeKm: 550, inclDeg: 53, raanDeg: 30, argpDeg: 0, m0Deg: 70 }, 0.1, '自定义圆轨道 i=53°、M₀=70°'],
+  ['custom', { perigeeKm: 600, apogeeKm: 39700, inclDeg: 63.4, raanDeg: 0, argpDeg: 270, m0Deg: 34 }, 0.3, '自定义大椭圆 e≈0.7、M₀=34°'],
+  ['molniya', { apogeeLonDeg: 100, perigeeKm: 500, argpDeg: 250 }, 0.1, 'Molniya ω=250°']
+]) {
+  const r = solve(type, inp)
+  ok(r.ok, tag + '：解得出来', JSON.stringify(r.errs))
+  if (!r.ok) continue
+  const truth = sub2(r.seed, T0)
+  const d = dLon(r.derived.subLonDeg, truth)
+  ok(d <= tol, '★ ' + tag + '：读数与 SGP4 真星下点差 ' + d.toFixed(4) + '° ≤ ' + tol + '°',
+    '读数 ' + r.derived.subLonDeg.toFixed(4) + ' vs 真值 ' + truth.toFixed(4))
+  // 老式算式在这几例上差多少（同时证明这条用例不是空跑）
+  const old = ((((r.seed.raanDeg + r.seed.argpDeg + r.seed.m0Deg) - GMST0 * 180 / Math.PI) % 360 + 360) % 360)
+  ok(dLon(old, truth) > tol * 2, tag + '：老式算式确实差得出来（' + dLon(old, truth).toFixed(3) + '°）')
+}
+// Molniya：derived.subLonDeg 与 solveDesign 内部那条远地点定位式互为逆运算，任意 ω 都要严格回读
+for (const argpDeg of [0, 90, 180, 250, 270, 300]) {
+  const r = solve('molniya', { apogeeLonDeg: 100, perigeeKm: 500, argpDeg })
+  // 远地点经度是「u = ω+180°」处的经度，不是 t0 星下点；这里改用 subLonOf 直接验逆运算
+  const back = D.subLonOf({ raanDeg: r.seed.raanDeg, argpDeg, inclDeg: r.seed.inclDeg, e: 0, m0Deg: 180 }, GMST0)
+  near(back, 100, 1e-9, '★ Molniya ω=' + argpDeg + '°：远地点经度严格回读 100°')
+}
+// Kepler 方程：M → ν → M 回环
+for (const e of [0, 1e-13, 0.001, 0.1, 0.5, 0.9, 0.99]) {
+  for (const M of [0.001, 30, 90, 179.9, 180, 270, 359.999]) {
+    const nu = D.trueAnomalyDeg(M, e)
+    const E = 2 * Math.atan2(Math.sqrt(1 - e) * Math.sin(nu * Math.PI / 360), Math.sqrt(1 + e) * Math.cos(nu * Math.PI / 360))
+    const back = ((E - e * Math.sin(E)) * 180 / Math.PI % 360 + 360) % 360
+    ok(dLon(back, M) < 1e-8, 'Kepler 回环 e=' + e + ' M=' + M + '（回读 ' + back.toFixed(9) + '）')
+  }
+}
+ok(D.trueAnomalyDeg(70, 0) === 70, 'e=0 时 ν 恒等于 M（不走迭代）')
+// i=0 时退化成老式那条「圆赤道」算式
+{
+  const seed = { raanDeg: 30, argpDeg: 20, m0Deg: 40, inclDeg: 0, e: 0 }
+  near(D.subLonOf(seed, GMST0), D.raanToLon(30 + 20 + 40, GMST0), 1e-9, 'i=0 退化成 Ω+ω+M₀−GMST')
+}
+
+/* ===== ⑩ ★ 求解时刻必须 = 合成星 satrec 的历元（场景历元） ===== */
+// solveDesign 的 t0Ms/gmst 决定「经度 → RAAN」与 M₀ 的起算时刻；而向导生成的合成星，satrec 历元
+// 恒为【场景历元】（useCustomConstellations.elementsToSatrec 用的就是 scenarioEpoch）。
+// 3D 页的 constSolved 原来拿【仿真时钟】当 t0 求解：RAAN 按时钟的 GMST 反算、M₀ 却从历元起算，
+// 两个时刻混用 —— 地球同步星座整座偏 15°/h ×（时钟 − 历元）。下面把这条契约钉死。
+section('求解时刻 = 场景历元')
+{
+  const E = Date.UTC(2026, 8, 21, 8, 0, 0)          // 场景历元（出厂默认是当天 08:00）
+  const CLOCK = E + 12 * 3600 * 1000                // 时钟拖到 12 h 后
+  const LON = 110.5
+  // 合成星一律按【场景历元 E】建 satrec（与 elementsToSatrec 同一口径），传播到任意时刻看星下点
+  const lonAt = (seed, atMs) => {
+    const a = seed.aKm, n = Math.sqrt(MU / (a * a * a))
+    const rec = sat.omm2satrec({
+      noradId: '900003', epoch: new Date(E).toISOString().replace('Z', ''),
+      meanMotion: 86400 * n / (2 * Math.PI), ecc: seed.e, incl: seed.inclDeg,
+      raan: seed.raanDeg, argp: seed.argpDeg, ma: seed.m0Deg, bstar: 0, mdot: 0, mddot: 0
+    })
+    const pv = sat.propagate(rec, new Date(atMs))
+    const gd = sat.eciToGeodetic(pv.position, sat.gstime(new Date(atMs)))
+    return sat.degreesLong(gd.longitude)
+  }
+  const good = D.solveDesign('geosync', { subLonDeg: LON, inclDeg: 0 }, E, { gmst: sat.gstime(new Date(E)) })
+  ok(good.ok, '按场景历元解得出来', JSON.stringify(good.errs))
+  for (const [dh, tag] of [[0, 't0'], [12, 't0+12h'], [24, 't0+24h']]) {
+    const d = dLon(lonAt(good.seed, E + dh * 3600000), LON)
+    ok(d <= 0.1, '★ 按场景历元求解：' + tag + ' 星下点仍在 ' + LON + '°E（差 ' + d.toFixed(4) + '° ≤ 0.1°）')
+  }
+  // 反例：拿时钟当 t0 求解（根数仍钉在 E）—— 偏差正好等于这段时间的 GMST 变化量
+  const bad = D.solveDesign('geosync', { subLonDeg: LON, inclDeg: 0 }, CLOCK, { gmst: sat.gstime(new Date(CLOCK)) })
+  const dBad = dLon(lonAt(bad.seed, CLOCK), LON)
+  const dGmst = dLon((sat.gstime(new Date(CLOCK)) - sat.gstime(new Date(E))) * 180 / Math.PI, 0)
+  ok(dBad > 90, '★ 拿时钟当 t0 求解 → 整座偏 ' + dBad.toFixed(3) + '°（不是小误差）')
+  ok(Math.abs(dBad - dGmst) < 0.1, '★ 偏差正好是这 12 h 的 GMST 变化量 ' + dGmst.toFixed(3) + '°（= 15°/h × Δt 的表现）',
+    dBad.toFixed(3) + ' vs ' + dGmst.toFixed(3))
+  // 地方时类（太阳同步）同样受影响：太阳平黄经 0.98564736 °/d，12 h 就是 0.4928°
+  const ssE = D.solveDesign('sunSync', { driver: 'alt', altKm: 700, localTime: '10:30', localMode: 'ltan' }, E, { gmst: sat.gstime(new Date(E)) })
+  const ssC = D.solveDesign('sunSync', { driver: 'alt', altKm: 700, localTime: '10:30', localMode: 'ltan' }, CLOCK, { gmst: sat.gstime(new Date(CLOCK)) })
+  near(dLon(ssC.seed.raanDeg, ssE.seed.raanDeg), 0.98564736 / 2, 0.01, '★ 太阳同步的 RAAN 也随 t0 走（12 h 差半个 0.9856°）')
+}
+
 console.log('\norbitDesign: 通过 ' + pass + '，失败 ' + fail)
 process.exit(fail ? 1 : 0)
