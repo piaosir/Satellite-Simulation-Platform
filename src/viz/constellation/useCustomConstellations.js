@@ -124,6 +124,8 @@ export function useCustomConstellations(onChange) {
     const pv = preview.value
     return pv ? build(pv.cfg) : []
   }
+  // 正在编辑的那座星座 id（预览顶替它；不在编辑则 null）—— 页面按可见图层拼渲染集时据此跳过本体
+  function previewEditId() { const pv = preview.value; return pv ? (pv.editId || null) : null }
 
   // 某座星座的卫星数（向导/列表显示用）
   function count(cfg) { return build(cfg).length }
@@ -225,7 +227,7 @@ export function useCustomConstellations(onChange) {
     preview.value = { editId: draft.id || null, cfg: normalize({ ...draft, id: '__preview__', noradBase: PREVIEW_BASE }) }
   }
 
-  return { list, scenarioEpoch, setScenarioEpoch, add, update, remove, toggle, showOnly, setPreview, count, entriesForRender, previewEntries, catalog, satsOf, findByNorad, load, PLANE_PALETTE }
+  return { list, scenarioEpoch, setScenarioEpoch, add, update, remove, toggle, showOnly, setPreview, count, entriesForRender, previewEntries, previewEditId, catalog, satsOf, findByNorad, load, PLANE_PALETTE }
 }
 
 /* ===================== 只读读取（供「文件管理 · 星历」镜像展示 / 导出，无需实例化 composable） ===================== */
