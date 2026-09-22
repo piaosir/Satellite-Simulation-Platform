@@ -24,6 +24,8 @@
 
 // 电平表上限：超过这个档数退回 CPU 路（uniform 数组是定长的）。
 export const GL_MAX_LEVELS = 64
+// 线的 GPU 后端：同一上下文上的第二个程序（等值线 / 聚焦星几何 / 波束线），见 glLines.js 文件头
+import { createGlLines } from './glLines.js'
 
 const VERT = `#version 300 es
 in float aLon;
@@ -327,6 +329,8 @@ export function createGlField() {
   let onLost = null
   const layers = new Map()   // id → { vLon, vLat, vDb, ebo, vao, count, rowOff }
   let W = 1, H = 1
+  // 线程序（glLines.js）：与填充共用这同一个上下文与画布，按需建；上下文丢失即作废，恢复后再建
+  let gll = null
 
   function init() {
     try {
@@ -351,8 +355,8 @@ export function createGlField() {
       gl.disable(gl.DEPTH_TEST); gl.disable(gl.BLEND); gl.disable(gl.CULL_FACE)
       gl.clearColor(0, 0, 0, 0)
       // 上下文丢失：立刻停用（调用方据此把后端切回 'paths' 并重算一轮），恢复后重建
-      cv.addEventListener('webglcontextlost', (e) => { e.preventDefault(); lost = true; layers.clear(); if (onLost) onLost(false) })
-      cv.addEventListener('webglcontextrestored', () => { lost = false; gl = null; prog = null; init2(); if (onLost) onLost(true) })
+      cv.addEventListener('webglcontextlost', (e) => { e.preventDefault(); lost = true; layers.clear(); gll = null; if (onLost) onLost(false) })
+      cv.addEventListener('webglcontextrestored', () => { lost = false; gl = null; prog = null; gll = null; init2(); if (onLost) onLost(true) })
     } catch { gl = null; prog = null }
   }
   // 上下文恢复后的重建：拿回同一张 canvas 上的新上下文（缓冲全丢，由调用方重喂）
@@ -396,6 +400,13 @@ export function createGlField() {
     available: () => alive(),
     // 上下文丢失/恢复的通知（参数 true=恢复可用）
     setOnContextChange(fn) { onLost = fn },
+    // 线的 GPU 后端（同一上下文上的第二个程序，见 glLines.js）。建不出来（着色器编译失败等）返回 null，
+    // 调用方退回 Canvas2D 描边；上下文丢失期间同样返回 null。
+    lines() {
+      if (!alive()) return null
+      if (gll === null) { try { gll = createGlLines(gl) } catch { gll = false } }
+      return gll || null
+    },
     resize(w, h) {
       W = Math.max(1, w | 0); H = Math.max(1, h | 0)
       if (cv && (cv.width !== W || cv.height !== H)) { cv.width = W; cv.height = H }
@@ -494,8 +505,8 @@ export function createGlField() {
     // 该层实际画了多少三角形（验证台/开发计数器用）
     tris(id) { const e = layers.get(id); return e ? e.count / 3 : 0 },
     dispose() {
-      if (gl) { for (const [, e] of layers) dropLayer(e); if (prog) gl.deleteProgram(prog) }
-      layers.clear(); gl = null; prog = null; cv = null
+      if (gl) { for (const [, e] of layers) dropLayer(e); if (prog) gl.deleteProgram(prog); if (gll) { try { gll.dispose() } catch { /* 上下文已丢 */ } } }
+      layers.clear(); gl = null; prog = null; cv = null; gll = null
     }
   }
 }

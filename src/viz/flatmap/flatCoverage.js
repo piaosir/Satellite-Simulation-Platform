@@ -34,6 +34,8 @@ import { planRasterMesh, COARSE as MESH_BLOCK } from '../geo/rasterMesh.js'
 import { createGlRaster, GL_TEX_MAX } from './glRaster.js'
 // GRD 分带填充的 GPU 后端（等距圆柱 + 屏上绘制时启用；导出/投影档/无 WebGL2 时退回 Path2D）
 import { createGlField, GL_MAX_LEVELS, meshLattice } from './glField.js'
+// 线的 GPU 后端（同一上下文上的第二个程序）：线段打包器 + 颜色解析；程序本身由 glField().lines() 持有
+import { createLinePacker, parseColor } from './glLines.js'
 // 等值线拼链（每链一个子路径烘 Path2D）：与几何层的数值标签 / 导出用的是同一个 stitchLoops
 import { stitchLoops } from '../grd/coverage.js'
 // 静态快照的调度口径（重不重建 / 何时补建 / 盖不住时垫哪张）：纯函数拆在这里，见其文件头
@@ -160,11 +162,21 @@ export function createFlatCoverage(canvas) {
     if (!glf) {
       try { glf = createGlField() } catch { glFail = true; return null }
       if (!glf.available()) { glFail = true; glf = null; return null }
-      glf.setOnContextChange(() => { requestDraw(); notifyBackend() })
+      glf.setOnContextChange(() => { requestDraw(); notifyBackend(); resetGlLines() })
       glf.resize(canvas.width, canvas.height)
     }
     return glf.available() ? glf : null
   }
+  // ---- 线的 GPU 路（等值线 / 聚焦星轨迹与覆盖圈 / 波束线 / 仰角线）：见 glLines.js 文件头 ----
+  // 闸门：屏上绘制（导出恒走 Canvas2D 描边，PNG/PDF 逐字节不变）且 WebGL2 可用且线程序建得出来。
+  // glLinesOn 是开发/验证台的总开关（关掉即整条 Canvas2D 老路，用来做 A/B 逐像素对拍与计时）。
+  let glLinesOn = true
+  const glLines = () => { if (!glLinesOn) return null; const g = glField(); return g ? g.lines() : null }
+  const lnOk = () => !compat && !exporting && !!glLines()
+  const DL_KEY = 'data'          // 数据线集合（波束线 + 仰角线 + 聚焦几何）在线程序里的 id
+  let dlMeta = null, dlDirty = true   // 数据线集合：上传后的元数据（趟区间 / 跨度）；内容或平面变了就重打包
+  // 上下文丢失 / 恢复：显存里的线集合全没了，等值线层按当前状态重传、数据线下一帧重打包
+  function resetGlLines() { dlMeta = null; dlDirty = true; for (const L of fieldLayers) { L._lnKey = null; L._lnMeta = null; L._lnPlaneKey = null } syncFieldLines() }
   // nLevels：本次要画多少档（几何层传入）。uniform 数组是定长的 → 超上限退回 CPU 路。
   function fieldBackend(nLevels) {
     // 导出恒走 CPU 路：exportRender 的 compat 分支只认 fillBands，PNG/PDF 逐字节一致是硬约束。
@@ -476,8 +488,10 @@ export function createFlatCoverage(canvas) {
     buildBaseGeo(resolvedFeatures(curDetail()), curThin())
     // 覆盖场在转动期间不画，也就不必重烘 —— 松手那一次（fast=false）把它补回来。
     if (!rotLive) {
-      fieldLayers = fieldLayers.map((L) => ({ ...L, fillPaths: L.fillBands ? buildFillPaths(L.fillBands) : null, segPaths: L.segGroups ? buildSegPaths(L.segGroups) : null, bounds: layerBounds(L) }))
+      fieldLayers = fieldLayers.map((L) => ({ ...L, fillPaths: L.fillBands ? buildFillPaths(L.fillBands) : null, segPaths: null, bounds: layerBounds(L) }))
       reprojectGlLayers()                       // GPU 层：投影档要按新平面重投顶点（等距圆柱只改 uniform）
+      syncFieldLines()                          // 等值线的 GPU 线集合同理（投影档重投；等距圆柱不动）
+      dlDirty = true                            // 数据线集合：投影档要按新平面重投；等距圆柱重打包一次也无妨（几毫秒）
       fieldLayers = fieldLayers.map((L) => ({ ...L, bounds: layerBounds(L) }))   // 重投后跨度才是新的
     }
     if (op.term) termData = null
@@ -1963,9 +1977,12 @@ export function createFlatCoverage(canvas) {
     const entry = {
       ...L,
       fillPaths: L.fillBands ? buildFillPaths(L.fillBands) : null,
-      segPaths: L.segGroups ? buildSegPaths(L.segGroups) : null,
+      // 等值线的 Path2D 改成【按需】烘（segPathsOf）：屏上走 GPU 路时根本用不到它，
+      // 55 档 11 万段烘一遍是几十毫秒；只有 GPU 不可用那一帧才补烘一次
+      segPaths: null,
       bounds: null,
-      _glKey: null, _glExt: null, _glPlaneKey: null
+      _glKey: null, _glExt: null, _glPlaneKey: null,
+      _lnKey: null, _lnMeta: null, _lnPlaneKey: null
     }
     if (L.fieldMesh) {
       const g = glField()
@@ -1976,8 +1993,123 @@ export function createFlatCoverage(canvas) {
       //   只该改一个 uniform —— 记了键就会在每次 rebuildPlane 上白重传一轮缓冲。
       if (ext) { entry._glKey = key; entry._glExt = ext; entry._glPlaneKey = plane ? planeKey() : null }
     }
+    uploadFieldLines(entry, i)
     entry.bounds = layerBounds(entry)
     return entry
+  }
+  const segPathsOf = (L) => (L.segPaths || (L.segPaths = L.segGroups ? buildSegPaths(L.segGroups) : null))
+  // ---- 等值线的 GPU 线集合 ----
+  // 一层的各档等值线打成一份实例缓冲（每档一种样式：色 / 宽 / 线型；透明度来自颜色的 alpha）。
+  // 等距圆柱喂 (lon, lat)（位置在着色器里现算，换切口不重传）；投影档经 d3 投成平面折线后再打包（换平面重传）。
+  function packFieldLines(L) {
+    const pk = createLinePacker({ period: PJ.identity ? 360 : 0 })
+    for (const grp of (L.segGroups || [])) {
+      if (!grp.segs || !grp.segs.length) continue
+      const w = grp.width || 1.2, c = parseColor(grp.color || 'rgba(255,255,255,0.9)')
+      // 线型花样与 dashOf 同一口径：DASH_PX 按线宽等比放大（屏幕 px）
+      pk.style({ rgb: c, alpha: c[3], width: w, dash: DASH_PX[grp.dash] || null, dashScale: Math.max(0.6, w) / 1.2 })
+      if (PJ.identity) for (const ch of chainsOf(grp)) pk.polyline(ch, false)
+      else packGeoInto(pk, chainsToGeo(grp))
+    }
+    return pk.finish()
+  }
+  function uploadFieldLines(L, i) {
+    L._lnKey = null; L._lnMeta = null; L._lnPlaneKey = null
+    if (!L.segGroups || !L.segGroups.length || !lnOk()) return
+    const g = glLines()
+    const key = 'f:' + (L.id != null ? L.id : '#' + i)
+    const meta = g ? g.upload(key, packFieldLines(L)) : null
+    if (meta) { L._lnKey = key; L._lnMeta = meta; L._lnPlaneKey = PJ.identity ? null : planeKey() }
+  }
+  // 各层的线集合与当前状态对齐：换平面（投影档重投）/ 上下文恢复（重传）/ 样式热路径（重打包）。
+  // 等距圆柱下换切口什么都不做 —— LON0 在 uniform 里。
+  function syncFieldLines(force) {
+    for (let i = 0; i < fieldLayers.length; i++) {
+      const L = fieldLayers[i]
+      if (!L.segGroups || !L.segGroups.length) continue
+      if (!lnOk()) { L._lnKey = null; L._lnMeta = null; continue }
+      const want = PJ.identity ? null : planeKey()
+      if (!force && L._lnKey != null && L._lnPlaneKey === want) continue
+      uploadFieldLines(L, i)
+    }
+  }
+  // 投影档：把 GeoJSON（LineString / MultiLineString）经 d3 投成平面折线（含自适应加密与日界线切分）后打进打包器。
+  // 与 drawPolylineProj / buildSegPaths 的投影档分支走的是同一个 PJ.path，出来的折线逐点相同。
+  let _capPk = null
+  const _capAdapt = {
+    moveTo(x, y) { _capPk.moveTo(x, y) },
+    lineTo(x, y) { _capPk.lineTo(x, y) },
+    closePath() { _capPk.closePath() },
+    arc() {}
+  }
+  function packGeoInto(pk, geo) { _capPk = pk; PJ.path(geo, _capAdapt); pk.end(); _capPk = null }
+  // 数据线集合：波束线（geom.lines）→ 仰角线（satLayer 非 under 的线）→ 逐颗聚焦星的覆盖圈 / 轨迹（轨迹面时描两缘与圆盘轮廓），
+  // 与 drawDataLines 的 Canvas2D 路同序同样式；实例按透明度分桶（见 glLines.js 文件头）。
+  function packDataLines() {
+    const pk = createLinePacker({ period: PJ.identity ? 360 : 0 })
+    const put = (pts, closed) => { if (PJ.identity) pk.polyline(pts, closed); else packGeoInto(pk, { type: 'LineString', coordinates: pts.map((a) => (Array.isArray(a) ? [a[0], a[1]] : [a.lon, a.lat])) }) }
+    if (geom) for (const ln of (geom.lines || [])) if (ln.p && ln.p.length > 1) { const c = parseColor(hex(ln.color)); pk.style({ rgb: c, alpha: c[3], width: Math.max(0.1, ln.width || 1.6), dash: null }); put(ln.p, false) }
+    if (satLayer) for (const ln of (satLayer.lines || [])) if (!ln.under && ln.p && ln.p.length > 1) { const c = parseColor(hex(ln.color != null ? ln.color : 0x66ddff)); pk.style({ rgb: c, alpha: c[3], width: Math.max(0.1, ln.width || 1.4), dash: null }); put(ln.p, false) }
+    const fpC = parseColor(focusCfg.fpColor), trC = parseColor(focusCfg.trkColor)
+    const fpSt = { rgb: fpC, alpha: fpC[3] * Math.max(0, Math.min(1, focusCfg.fpOpacity)), width: Math.max(0.1, focusCfg.fpWidth), dash: DASH_2D[focusCfg.fpDash] || null }
+    const trSt = { rgb: trC, alpha: trC[3] * Math.max(0, Math.min(1, focusCfg.trkOpacity)), width: Math.max(0.1, focusCfg.trkWidth), dash: DASH_2D[focusCfg.trkDash] || null }
+    for (const g of selGeomList) {
+      if (focusCfg.fpOn && g.footprint && g.footprint.length > 1) { pk.style(fpSt); put(g.footprint, false) }
+      if (focusCfg.trkOn && g.track && g.track.length > 1) {
+        pk.style(trSt)
+        if (focusCfg.trkMode === 'swath' && g.swath) {
+          if (g.swL) for (const pl of g.swL) if (pl && pl.length > 1) put(pl, false)
+          if (g.swR) for (const pl of g.swR) if (pl && pl.length > 1) put(pl, false)
+          if (g.swOutline && g.swRings) for (const ring of g.swRings) if (ring && ring.length > 2) put(ring, false)
+        } else put(g.track, false)
+      }
+    }
+    return pk.finish()
+  }
+  // 画若干线集合：跨集合按趟透明度归并 —— 同透明度的所有实例画进同一张 GL 画布、按该透明度贴回一次
+  // （每像素只混合一次，与 Canvas2D 一条 Path2D 一次 stroke 同口径）。items=[{ id, meta }]；alphaMul=层级透明度。
+  // 等距圆柱按集合的经度跨度裁掉整份不可见的环绕副本。返回 false = GL 当场不可用（调用方退回 Canvas2D）。
+  function drawGlLineSets(items, alphaMul) {
+    const g = glLines()
+    if (!g || !glf) return false
+    const kk = k(), wl = -tx / kk, wr = (cw - tx) / kk
+    const byA = new Map()
+    for (const it of items) for (const p of (it.meta.passes || [])) { let arr = byA.get(p.alpha); if (!arr) byA.set(p.alpha, arr = []); arr.push({ id: it.id, pass: p, meta: it.meta }) }
+    if (!byA.size) return true
+    // 贴回的范围：世界矩形 ∩ 画布（设备 px）—— 线可能铺满整个地图，不逐集合算包围盒
+    const _wr = worldRect()
+    const sx = Math.max(0, Math.floor(_wr.x * dpr) - 1), sy = Math.max(0, Math.floor(_wr.y * dpr) - 1)
+    const ex = Math.min(canvas.width, Math.ceil((_wr.x + _wr.w) * dpr) + 1), ey = Math.min(canvas.height, Math.ceil((_wr.y + _wr.h) * dpr) + 1)
+    if (ex <= sx || ey <= sy) return true
+    const u = { w: canvas.width, h: canvas.height, dpr, k: kk, tx, ty, lon0: LON0, proj: !PJ.identity }
+    const sa = ctx.globalAlpha
+    const _t0 = performance.now()
+    let nInst = 0
+    for (const it of items) nInst += it.meta.n || 0
+    ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0)
+    let ok = true
+    for (const [alpha, list] of byA) {
+      glf.clear()
+      if (!g.begin(u)) { ok = false; break }
+      let any = false
+      for (const it of list) {
+        // 等距圆柱：经度跨度窄（< 180°）的集合按「取模后的世界 X 区间」裁掉整份不在视口里的（三个可能落点都不沾视口）；
+        // 跨度宽的集合直接画 —— 副本由着色器按实例决定（见 glLines.js VERT_SRC）
+        if (PJ.identity && Number.isFinite(it.meta.xMin) && it.meta.xMax - it.meta.xMin < 180) {
+          let a = it.meta.xMin - LON0; a -= 360 * Math.floor(a / 360)
+          const b = a + (it.meta.xMax - it.meta.xMin)
+          if ((b < wl || a > wr) && (b - 360 < wl || a - 360 > wr) && (b + 360 < wl || a + 360 > wr)) continue
+        }
+        if (g.draw(it.id, it.pass)) any = true
+      }
+      g.end()
+      if (any) { ctx.globalAlpha = sa * alphaMul * alpha; ctx.drawImage(glf.canvas(), sx, sy, ex - sx, ey - sy, sx, sy, ex - sx, ey - sy) }
+    }
+    glf.clear()   // 填充路（drawFieldGL）不自己清画布：留一张干净的给它
+    ctx.restore()
+    // 开发期计数器（手测时在控制台读）：最近一次线合成的毫秒数 / 趟数 / 实例数。与 __fillStat 同款。
+    globalThis.__lineStat = { ms: +(performance.now() - _t0).toFixed(2), passes: byA.size, sets: items.length, instances: nInst }
+    return ok
   }
   // 换平面（换投影档 / 换切口 / 改中心纬度或标准纬线）后重投影各 GPU 层。
   // 等距圆柱只需重算 bounds —— 位置在着色器里按新的 LON0 现算。
@@ -2193,13 +2325,22 @@ export function createFlatCoverage(canvas) {
     // ±360 环绕按视口裁剪只描可见副本（与填充同策略）。线宽 /kk 保持恒定屏幕 px。
     ctx.lineJoin = 'round'; ctx.lineCap = 'round'
     ctx.save(); ctx.globalAlpha = fieldLineAlpha
+    // GPU 路：上过线集合的层一次合成（每帧只改 uniform，不碰几何）；其余层（GPU 不可用 / 导出）描 Path2D
+    const glItems = [], cpuLayers = []
+    const useGl = lnOk()
     for (const L of fieldLayers) {
-      if (!L.segPaths || !L.segPaths.length) continue
+      if (!L.segGroups || !L.segGroups.length) continue
+      if (useGl && L._lnKey != null && L._lnMeta) glItems.push({ id: L._lnKey, meta: L._lnMeta, L }); else cpuLayers.push(L)
+    }
+    if (glItems.length && !drawGlLineSets(glItems, fieldLineAlpha)) for (const it of glItems) cpuLayers.push(it.L)
+    for (const L of cpuLayers) {
+      const paths = compat ? null : segPathsOf(L)
+      if (!compat && (!paths || !paths.length)) continue
       for (const off of wraps()) {
         if (L.bounds && (L.bounds.hi + off < wl || L.bounds.lo + off > wr)) continue
         ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * (tx + off * kk), dpr * ty)
         if (compat) for (const grp of (L.segGroups || [])) { if (!grp.segs || !grp.segs.length) continue; ctx.strokeStyle = grp.color || 'rgba(255,255,255,0.9)'; ctx.lineWidth = (grp.width || 1.2) / kk; const d = dashOf(grp.dash, grp.width || 1.2, kk); ctx.setLineDash(d || []); traceSegGroup(grp); ctx.stroke() }
-        else for (const sp of L.segPaths) { ctx.strokeStyle = sp.color; ctx.lineWidth = sp.width / kk; const d = dashOf(sp.dash, sp.width, kk); ctx.setLineDash(d || []); ctx.stroke(sp.path) }
+        else for (const sp of paths) { ctx.strokeStyle = sp.color; ctx.lineWidth = sp.width / kk; const d = dashOf(sp.dash, sp.width, kk); ctx.setLineDash(d || []); ctx.stroke(sp.path) }
         ctx.setLineDash([])
       }
     }
@@ -2972,6 +3113,12 @@ export function createFlatCoverage(canvas) {
   // 边界压在线上仍清晰可见。各线的圆点/标签仍留在 above 层或顶层（属标注，不遮边界线）。
   // ★航迹不在此层（已提到地名之上，见 drawTrajLayer）。
   function drawDataLines() {
+    // GPU 路：内容变了（setGeom / setSatLayer / setSelGeom / 改样式 / 换平面）才重打包上传，平移缩放与时间轴每拍只改 uniform。
+    // 投影档「拖着转」期间（rotLive）平面逐帧在变，预投的折线对不上 → 那几帧走 Canvas2D 现投；等距圆柱不受影响（LON0 在 uniform 里）。
+    if (lnOk() && (PJ.identity || !rotLive)) {
+      if (dlDirty) { const g = glLines(); dlMeta = g ? g.upload(DL_KEY, packDataLines()) : null; dlDirty = !dlMeta }
+      if (dlMeta && (!dlMeta.n || drawGlLineSets([{ id: DL_KEY, meta: dlMeta }], 1))) return
+    }
     if (geom) for (const ln of (geom.lines || [])) if (ln.p && ln.p.length > 1) drawPolyline(ln.p, hex(ln.color), Math.max(0.1, ln.width || 1.6))
     if (satLayer) for (const ln of (satLayer.lines || [])) if (!ln.under && ln.p && ln.p.length > 1) drawPolyline(ln.p, hex(ln.color != null ? ln.color : 0x66ddff), Math.max(0.1, ln.width || 1.4))   // 下限 0.1：跟随全库统一的线粗最细档
     // 聚焦卫星几何（实时，不入快照）：覆盖范围 + 星下点轨迹，样式与 3D 球体同一份设置；多选=每颗都画
@@ -3673,7 +3820,7 @@ export function createFlatCoverage(canvas) {
   }
 
   return {
-    setGeom(g) { geom = g; invalidateStatic(); requestDraw() },
+    setGeom(g) { geom = g; dlDirty = true; invalidateStatic(); requestDraw() },
     // GRD 覆盖多层：layers=[{fillBands:[{color:[r,g,b], verts:Float64Array[x,y,...], counts:Int32Array}]|null, segGroups:[...]}]；
     // opts={alpha}。setField 时把每层 fillBands 烘成各档世界坐标 Path2D 缓存（fillPaths），draw 只设变换矢量填充。整体替换。
     setField(layers, opts) {
@@ -3681,6 +3828,7 @@ export function createFlatCoverage(canvas) {
       fieldLayers = src.map((L, i) => makeFieldEntry(L, i))
       // 消失的层收回显存（GPU 路），并记下「几何层是不是自己拒绝了 GL」
       if (glf) glf.keepOnly(fieldLayers.filter((L) => L.fieldMesh).map((L) => L._glKey))
+      { const g = glf ? glf.lines() : null; if (g) g.keepOnly([DL_KEY, ...fieldLayers.map((L) => L._lnKey).filter((x) => x != null)]) }
       glDenied = !!(src.length && fieldBackend() === 'gl' && !src.some((L) => L.fieldMesh))
       if (opts) { if (opts.alpha != null) fieldAlpha = opts.alpha; if (opts.lineAlpha != null) fieldLineAlpha = opts.lineAlpha; fieldOpts = { ...fieldOpts, ...opts } }
       requestDraw()
@@ -3694,6 +3842,7 @@ export function createFlatCoverage(canvas) {
         const entry = makeFieldEntry(L, i >= 0 ? i : fieldLayers.length)
         // 这一层从 GPU 路换回了 CPU 路（后端变了）：旧缓冲当场收回，别等下一次整体 setField
         if (glf && old && old._glKey != null && entry._glKey == null) glf.remove(old._glKey)
+        if (glf && old && old._lnKey != null && entry._lnKey == null) { const g = glf.lines(); if (g) g.remove(old._lnKey) }
         if (i >= 0) fieldLayers[i] = entry; else fieldLayers.push(entry)
       }
       requestDraw()
@@ -3712,9 +3861,14 @@ export function createFlatCoverage(canvas) {
           groups[i].width = st.width; groups[i].dash = st.dash
           if (paths[i]) { paths[i].width = st.width || 1.2; paths[i].dash = st.dash || null }
         }
+        // GPU 线集合：线宽 / 线型是逐实例属性，重打包一次（几毫秒，只在拖滑杆时发生）
+        if (L._lnKey != null) uploadFieldLines(L, fieldLayers.indexOf(L))
       }
       requestDraw()
     },
+    // 开发 / 验证台：关掉线的 GPU 路（整条 Canvas2D 老路），用来 A/B 对拍与计时。运行时不用。
+    setGlLines(v) { glLinesOn = v !== false; dlDirty = true; syncFieldLines(); requestDraw() },
+    glLinesActive: () => lnOk(),
     // ---- 分带填充的后端（见文件头 glField 那段）----
     // 几何层每次组装图层前问一次：'gl' → 只出等值线 + fieldMesh；'paths' → 出老的 fillBands。不缓存。
     // nLevels 是本次的档数（超过 GL_MAX_LEVELS 退回 CPU 路）。
@@ -3975,10 +4129,10 @@ export function createFlatCoverage(canvas) {
     // p：单个 {lat,lon} 或数组，兼容旧单选调用；聚焦星每帧实时绘制，不在快照内
     setFocusSat(p) { focusSats = (Array.isArray(p) ? p : (p ? [p] : [])).filter((q) => q && Number.isFinite(q.lat) && Number.isFinite(q.lon)); requestDraw() },
     // g：单个 {footprint,track} 或数组（多选=每颗都画），随时间实时，不入快照
-    setSelGeom(g) { selGeomList = Array.isArray(g) ? g.filter(Boolean) : (g ? [g] : []); requestDraw() },
+    setSelGeom(g) { selGeomList = Array.isArray(g) ? g.filter(Boolean) : (g ? [g] : []); dlDirty = true; requestDraw() },
     // 聚焦卫星显示样式（轨道线只在 3D 有，这里收轨迹/覆盖圈/星下点图标三项）
-    setFocusStyle(s) { Object.assign(focusCfg, s || {}); requestDraw() },
-    setSatLayer(spec) { satLayer = spec; invalidateText(); requestDraw() },
+    setFocusStyle(s) { Object.assign(focusCfg, s || {}); dlDirty = true; requestDraw() },
+    setSatLayer(spec) { satLayer = spec; dlDirty = true; invalidateText(); requestDraw() },
     resize() { resizeNow() },
     reset() { fit(); invalidateStatic(); requestDraw() },
     // 当前屏幕视图的逻辑尺寸（CSS px）：供「所见即所得」导出按当前画面比例/范围出图

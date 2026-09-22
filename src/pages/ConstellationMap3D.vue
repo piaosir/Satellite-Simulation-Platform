@@ -1771,7 +1771,9 @@ function wizPreviewRelease() {
 function removeConst(c) { expDrop('c:' + c.id); satSets.drop('c:' + c.id); customConst.remove(c.id); registerSets(); applySetsChanged() }
 let ro = null, trackRo = null
 let unsubClock = null, nowBeat = null   // nowBeat：1 Hz 心跳，只刷「真实此刻」参考量（见 nowStamp）
-let pendingNorad = null, pendingNoFace = false
+// 跨会话待恢复的选中集：{ ids:[satIdOf…], primary }。渲染集每加载出一集就从里面认领（哪一集先到就先画哪些），
+// 全部认领完置 null；用户任何一次显式改选（saveSelection）也把它作废 —— 否则晚到的集会把旧存档里的星塞进新选中集。
+let restoreSel = null
 
 // 全平台取时刻的唯一入口：星位 / GRD 覆盖 / 对星壳层 / 可见性 / 晨昏线 / 两张指标表都从这里拿。
 // 实时模式下时钟每拍把 tMs 对齐系统时间，故这里不再单独 new Date()——同一拍内多次调用得到同一时刻，
@@ -2194,10 +2196,27 @@ function rebuildRenderSet() {
   satCount.value = out.length
   dataTime.value = latestDataTime()
   refreshPositions()
-  // 跨会话恢复选中：按 NORAD 定位（哪一集先加载出来就在哪一集里找到）
-  if (pendingNorad) {
-    const e = out.find((x) => String(x.noradId) === String(pendingNorad))
-    if (e) { const nf = pendingNoFace; pendingNorad = null; pendingNoFace = false; selectSat(e, !nf) }
+  // 跨会话恢复选中（整个选中集，不只主选）：按 satIdOf 定位，哪一集先加载出来就先认领哪些；
+  // 不转地球（保留上次的视角）、不重置覆盖圈口径（beam / elevMin 已由 restoreSettings 回填）。
+  if (restoreSel) {
+    const byId = new Map()
+    for (const x of out) byId.set(satIdOf(x), x)
+    const have = new Set(selEntries)
+    const left = []
+    let added = false
+    for (const id of restoreSel.ids) {
+      const e = byId.get(id)
+      if (!e) { left.push(id); continue }
+      if (!have.has(e)) { selEntries.push(e); have.add(e); added = true }
+    }
+    restoreSel.ids = left
+    if (added) {
+      const p = restoreSel.primary ? byId.get(restoreSel.primary) : null
+      if (p && have.has(p)) selEntry = p
+      else if (!selEntry || !have.has(selEntry)) selEntry = selEntries[selEntries.length - 1]
+      refreshSelection()
+    }
+    if (!left.length) restoreSel = null
   }
 }
 
@@ -6957,8 +6976,16 @@ function setTzMode(v) { tzMode.value = normTzMode(v, tzMode.value); saveSettings
 
 // ===================== 持久化（记住分组 + 选中星） =====================
 function saveSelection() {
-  // 只记选中星（分组 / 可见集合由 satSets 自己持久化；旧存档里的 groupKey 只在首次迁移时读一次）
-  try { localStorage.setItem(STORE_KEY, JSON.stringify({ selNorad: selEntry ? String(selEntry.noradId) : '' })) } catch { /* ignore */ }
+  // 记【整个选中集】（satIdOf 键，含主选）：聚焦多颗 / 聚焦整个星座重开软件后原样回来。
+  // selNorad 仍写着 —— 老版本只认它；分组 / 可见集合由 satSets 自己持久化，旧存档里的 groupKey 只在首次迁移时读一次。
+  restoreSel = null   // 用户显式改选：待恢复的旧选中集作废（晚加载的集不再往里塞旧星）
+  try {
+    localStorage.setItem(STORE_KEY, JSON.stringify({
+      selNorad: selEntry ? String(selEntry.noradId) : '',
+      sel: selEntries.map(satIdOf).filter(Boolean),
+      primary: selEntry ? satIdOf(selEntry) : ''
+    }))
+  } catch { /* ignore */ }
 }
 
 // ===================== 全部选项/设置本地缓存（无感） =====================
@@ -7497,7 +7524,11 @@ onMounted(async () => {
   let legacySel = null
   try {
     legacySel = JSON.parse(localStorage.getItem(STORE_KEY) || 'null')
-    if (legacySel && legacySel.selNorad) { pendingNorad = legacySel.selNorad; pendingNoFace = true }
+    if (legacySel) {
+      // 新存档：整个选中集；老存档：只有主选的 NORAD
+      const ids = Array.isArray(legacySel.sel) ? legacySel.sel.filter((s) => typeof s === 'string' && s) : (legacySel.selNorad ? ['n:' + legacySel.selNorad] : [])
+      if (ids.length) restoreSel = { ids, primary: typeof legacySel.primary === 'string' && legacySel.primary ? legacySel.primary : (legacySel.selNorad ? 'n:' + legacySel.selNorad : '') }
+    }
   } catch { legacySel = null }
 
   await restoreSettings()   // 恢复全部选项/设置（无感）

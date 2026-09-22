@@ -320,3 +320,10 @@ resources/imagery/
 # 轨道向导验证台（npx vite --config .owizharness/vite.config.mjs，launch.json 的 owiz-harness）：
 # 模板与逻辑由 extract.mjs 从 ConstellationMap3D.vue 原样抠出（锚点挪了就抛），不抄一遍。
 .owizharness/
+# 2D 平面图「线的 GPU 路」验证台（npx vite --config .lineharness/vite.config.mjs，launch.json 的 line-harness，端口 5988）：
+# 真 flatCoverage.js + 合成等值线 / 聚焦星几何，用 flat.setGlLines 开关做 A/B —— 平移与「每拍重喂几何」的帧耗时、
+# 以及 GL 路与 Canvas2D 描边的逐像素对拍（着墨比 + 差异像素占比）。
+# ★ ?flush=1：每帧画完读一像素强制冲刷 —— Chromium 把 canvas 光栅化甩到别的线程，draw() 的同步耗时读不到它；
+#   读几次之后画布会切到软件光栅，冲刷时间掉回 0，那时帧间隔才是真耗时。?realraf=1：面板可见时用真 rAF。
+# ★ 逐像素对拍前必须等 1.6 s 让静止补建落地，否则比的是「糊 / 清」两张底图而不是线。
+.lineharness/
