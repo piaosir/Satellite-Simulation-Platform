@@ -327,3 +327,7 @@ resources/imagery/
 #   读几次之后画布会切到软件光栅，冲刷时间掉回 0，那时帧间隔才是真耗时。?realraf=1：面板可见时用真 rAF。
 # ★ 逐像素对拍前必须等 1.6 s 让静止补建落地，否则比的是「糊 / 清」两张底图而不是线。
 .lineharness/
+# 仓库根的临时下载件，代码不读不写：manifest.txt＝Starlink 公开星历文件清单（MEME_*.txt 文件名列表）、
+# starlink.csv＝CelesTrak 按 GROUP 取数时回的「2 小时内未更新」提示，不是星历数据。
+/manifest.txt
+/starlink.csv
