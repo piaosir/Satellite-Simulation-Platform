@@ -21,21 +21,30 @@
     "dist": "node scripts/check-share-config.mjs && node scripts/check-imagery.mjs && node -e \"require('fs').rmSync('release',{recursive:true,force:true})\" && electron-vite build && electron-builder --win && node scripts/verify-asar.mjs && node scripts/publish-cos.mjs",
     "publish:cos": "node scripts/publish-cos.mjs",
     "i18n:scan": "node scripts/i18n-scan.mjs",
-    "imagery:tiles": "electron scripts/build-imagery-tiles.mjs"
+    "imagery:tiles": "electron scripts/build-imagery-tiles.mjs",
+    "nasa3d:catalog": "node scripts/nasa3d/catalog.mjs",
+    "nasa3d:fetch": "node scripts/nasa3d/fetch.mjs",
+    "nasa3d:corpus-report": "node scripts/nasa3d/corpus-report.mjs"
   },
   "dependencies": {
+    "@gltf-transform/core": "^4.5.0",
+    "@gltf-transform/extensions": "^4.5.0",
     "cesium": "^1.142.0",
     "d3-geo": "^3.1.1",
     "d3-geo-projection": "^4.0.0",
     "docx": "^9.7.1",
+    "draco3dgltf": "^1.5.7",
     "earcut": "^3.0.2",
     "electron-updater": "^6.8.9",
     "exceljs": "^4.4.0",
     "jspdf": "^4.2.1",
+    "meshoptimizer": "^1.2.0",
+    "occt-import-js": "^0.0.23",
     "pinia": "^2.1.7",
     "svg2pdf.js": "^2.7.0",
     "svgcanvas": "^2.6.0",
     "three": "^0.184.0",
+    "three-mesh-bvh": "^0.9.15",
     "topojson-client": "^3.1.0",
     "vue": "^3.4.21"
   },
@@ -93,11 +102,15 @@
     ]
   },
   "devDependencies": {
+    "@gltf-transform/functions": "^4.5.0",
     "@vitejs/plugin-vue": "^5.0.4",
     "electron": "^31.0.2",
     "electron-builder": "^24.13.3",
     "electron-vite": "^2.3.0",
+    "gltf-validator": "^2.0.0-dev.3.10",
+    "sharp": "^0.35.4",
     "topojson-server": "^3.0.1",
+    "undici": "^7.29.1",
     "vite": "^5.3.1",
     "vite-plugin-cesium": "^1.2.23",
     "vite-plugin-static-copy": "^1.0.6"

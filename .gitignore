@@ -331,3 +331,9 @@ resources/imagery/
 # starlink.csv＝CelesTrak 按 GROUP 取数时回的「2 小时内未更新」提示，不是星历数据。
 /manifest.txt
 /starlink.csv
+# NASA 3D 语料（npm run nasa3d:fetch 落盘的 glb 原件 + .sha256 旁车 + meta.json，外加 catalog.json / corpus-report / 失败清单，
+# 七组约 0.5 GB）：原件只读保存、可随时重下，不进 git。
+.models-src/
+# 语料离线管线（scripts/nasa3d/build.mjs）的加工产物 lod0/1/2 + manifest，同样不进 git。
+# ★ 只忽略 build/models/：build/ 下的 icon.ico / icon.png 是打包图标，照常入库。
+build/models/
