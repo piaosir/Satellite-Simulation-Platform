@@ -1,0 +1,161 @@
+/* 模型工作台窗口的公共件（非 scoped：各页签组件共用；类名一律 md- 前缀，不与平台别处撞车）。
+   外壳 .lb-* 仍按惯例抄在 ModelApp.vue 的 scoped 里；这里只放本窗口自己的小件。 */
+
+/* ExcelGrid 宿主：给组件根 .eg-scroll 尺寸（它自己不定高） */
+.md-grid { flex: none; min-height: 0; overflow: auto; outline: none; border: 1px solid var(--border); border-radius: var(--r-ctl); max-height: 320px; }
+.md-grid.tall { max-height: 440px; }
+.md-grid.short { max-height: 200px; }
+.md-grid td.eg-c.md-bad .eg-v { color: var(--danger); }
+.md-grid td.eg-c.md-dim .eg-v { color: var(--text-faint); }
+.md-grid td.eg-c.md-ok .eg-v { color: var(--ok); }
+.md-grid td.eg-c.md-mono .eg-v { font-family: var(--font-mono); }
+
+/* 勾选列（checkCol.js）：格内画一个复选框；勾上＝机位色实底 + 背景色的勾（accent 实底字色一律 var(--bg)） */
+.md-grid td.eg-c.md-chk { cursor: pointer; text-align: center; }
+.md-grid td.eg-c.md-chk .eg-v {
+  display: inline-flex; align-items: center; justify-content: center; width: 13px; height: 13px; box-sizing: border-box; vertical-align: -2px;
+  border: 1px solid var(--field-border); border-radius: 2px; background: var(--field-bg); color: var(--bg); font-size: 10px; line-height: 1; font-weight: 700;
+}
+.md-grid td.eg-c.md-chk:hover .eg-v { border-color: var(--field-border-hover, var(--border-strong)); }
+.md-grid td.eg-c.md-chk.on .eg-v { background: var(--accent-ui); border-color: var(--accent-ui); }
+.md-grid th.eg-h[data-k="chk"], .md-grid th.eg-h[data-k="ok"] { cursor: pointer; }
+
+/* 按钮行 */
+.md-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
+.md-acts .sp { flex: 1; }
+.md-acts .lb-mini, .md-sec-acts .lb-mini { height: var(--h-ctl); padding: 0 8px; font-size: var(--fs-2); }
+.md-acts .lb-mini.on { color: var(--accent-ui); border-color: var(--accent-ui); background: color-mix(in srgb, var(--accent-ui) 8%, var(--bg)); }
+
+/* 只读读数行：标签 … 数值 单位（结果区只出数字） */
+.md-kvs { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 1px 14px; }
+.md-kv { display: flex; align-items: baseline; gap: 6px; min-height: 20px; border-bottom: 1px solid var(--lb-rule-soft); font-size: var(--fs-3); }
+.md-kv > .k { flex: 1; min-width: 0; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.md-kv > .v { color: var(--text); font-family: var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.md-kv > .u { color: var(--text-faint); font-size: var(--fs-2); min-width: 22px; }
+
+/* 三格向量输入（x / y / z） */
+.md-v3 { flex: 1 1 0; min-width: 150px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 3px; }
+.md-v3 > input { width: 100%; }
+
+/* 状态行（错误 / 告警：只留状态本身） */
+.md-state { font-size: var(--fs-2); color: var(--text-muted); display: flex; align-items: center; gap: 5px; }
+.md-state.bad { color: var(--danger); }
+.md-state.warn { color: var(--warn); }
+.md-state.ok { color: var(--ok); }
+
+/* 图标读数（闭合 / 可信度 / 核定）：只是状态，不写判定句 */
+.md-ico { display: inline-flex; align-items: center; gap: 3px; color: var(--text-muted); font-size: var(--fs-2); }
+.md-ico.good { color: var(--ok); }
+.md-ico.poor { color: var(--warn); }
+
+/* 描红：缺值 / 示意值 */
+.md-red, .srow > label.md-red { color: var(--danger) !important; }
+
+/* 小号复选框行 */
+.md-chkrow { display: flex; align-items: center; gap: 6px; font-size: var(--fs-3); color: var(--text); cursor: pointer; min-height: var(--h-ctl); }
+.md-chkrow input { margin: 0; }
+.md-chkrow.dim { color: var(--text-muted); }
+
+/* —— 子组件里用到的 .lb-* 小件 ——
+   ModelApp.vue 的 scoped 外壳样式只到得了它自己的模板（scoped 给选择器缀了 data-v-），页签组件里的 .lb-mini
+   吃不到，深色主题下就退回 UA 按钮（白底白字）。这里按 SsaApp 同名规则再给一份非 scoped 的（只在本窗口加载）。 */
+.lb-mini { font: inherit; font-size: var(--fs-2); line-height: 1; padding: 3px 8px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl); display: inline-flex; align-items: center; justify-content: center; gap: 4px; white-space: nowrap; }
+.lb-mini:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
+.lb-mini:disabled { opacity: .45; cursor: not-allowed; }
+.lb-mini.primary { background: var(--accent-ui); color: var(--bg); border-color: var(--accent-ui); }
+.lb-mini.primary:hover:not(:disabled) { color: var(--bg); background: var(--accent-ui-hover); border-color: var(--accent-ui-hover); }
+.lb-mini-ico { display: inline-flex; align-items: center; justify-content: center; height: var(--h-ctl); white-space: nowrap; padding: 0 5px; }
+.lb-placeholder { color: var(--text-faint); font-size: var(--fs-3); text-align: center; line-height: 1.7; padding: 10px 0; }
+
+/* ═════════════════════ 装配页（P3，契约 scratchpad p3/CONTRACT.md §6）═════════════════════
+   全部挂在 .asm 作用域下（组件库左栏 / 右侧结构树 + 属性 dock 的根都带 .asm）；功能区的小拨钮 .asm-tg 在 .lbr 里。 */
+
+/* 侧栏分区 / 参数行 / 分段：照 src/components/ModelSidePanel.vue 的 .sec/.sect/.seg/.sg/.srow（逐字同源，那份是 scoped 的进不来；改动请两边一起改） */
+.asm .sec { padding: 10px 12px; border-bottom: 1px solid var(--border); }
+.asm .sec > * + * { margin-top: 8px; }
+.asm .sec > .sect + * { margin-top: 6px; }
+.asm .sec.hid > :not(.sect) { opacity: .5; }
+.asm .srow { --srow-lab: 70px; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.asm .srow > label { color: var(--text-muted); min-width: var(--srow-lab); max-width: 100%; flex: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.asm .srow select { flex: 1; min-width: 116px; border: 1px solid var(--field-border); background-color: var(--field-bg); padding: 0 7px; font-size: var(--fs-3); outline: none; color: var(--text); }
+.asm .srow .u { flex: none; min-width: 34px; text-align: right; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.asm .sect { display: flex; align-items: center; color: var(--text); }
+.asm .sect.acc { cursor: pointer; user-select: none; gap: 5px; margin-inline: -6px; padding: 3px 6px; border-radius: var(--r-box); transition: background-color var(--dur-1) linear; }
+.asm .sect.acc .app-icon { flex: none; color: var(--text-faint); }
+.asm .sect.acc:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
+.asm .sec > .sect.acc:first-child { margin-top: -3px; }
+.asm .sec > .sect.acc:last-child { margin-bottom: -3px; }
+.asm .sect .cnt { margin-left: auto; color: var(--text-faint); font-variant-numeric: tabular-nums; font-size: var(--fs-2); }
+.asm .sect-t { font-weight: 600; letter-spacing: var(--ls-tight); }
+.asm .seg { display: flex; box-sizing: border-box; min-height: var(--h-ctl); border: 1px solid var(--border-strong); border-radius: var(--r-ctl); overflow: hidden; }
+.asm .seg .sg { flex: 1 1 auto; text-align: center; padding: 2px 4px; line-height: 16px; cursor: pointer; color: var(--text-muted); user-select: none; white-space: nowrap; transition: var(--t-state); }
+.asm .seg .sg + .sg { border-left: 1px solid var(--border); }
+.asm .seg .sg:hover:not(.on):not(.off) { background: var(--surface-2); color: var(--text); }
+.asm .seg .sg:active:not(.on):not(.off) { box-shadow: var(--press); transition-duration: 0s; }
+.asm .seg .sg.on { background: var(--sel-fill); color: var(--sel-on); transition-duration: 0s; }
+.asm .seg .sg.on, .asm .seg .sg.on + .sg { border-left-color: transparent; }
+.asm .seg .sg.off { color: var(--text-faint); cursor: not-allowed; }
+.asm .seg.nseg { flex: 1; min-width: 0; }
+.asm .srow > .seg { flex: 1; }
+/* 行内数字框（NumIn）/ 文本框占满标签与单位之间 */
+.asm .srow > .md-num, .asm .srow > .asm-txt { flex: 1 1 64px; min-width: 64px; width: 0; }
+.asm .srow > .md-chkrow { flex: 1; min-height: var(--h-ctl); }
+.asm .asm-v3 { flex: 1 1 150px; min-width: 150px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 3px; }
+.asm .asm-v3 > input { width: 100%; }
+.asm .asm-ro { flex: 1; min-width: 0; color: var(--text); font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: var(--fs-3); overflow-wrap: anywhere; }
+.asm .asm-ro.dim { color: var(--text-faint); font-family: var(--font-ui); }
+.asm .asm-empty { color: var(--text-faint); font-size: var(--fs-3); text-align: center; padding: 18px 8px; }
+
+/* 栏头（结构 / 属性）：文档名 · 领域 · 件数 —— 与 .lb-col-hd 同高、同底色，但名字按正文字号（这是数据，不是栏名） */
+.asm .asm-hd { display: flex; align-items: center; gap: 6px; height: 30px; flex: none; padding: 0 8px 0 12px; background: var(--surface-2); border-bottom: 1px solid var(--border); font-size: var(--fs-3); }
+.asm .asm-hd-t { flex: 0 1 auto; min-width: 0; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.asm .asm-hd-k { flex: none; font-size: var(--fs-2); font-weight: 600; letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--text-muted); }
+.asm .asm-hd-tag { flex: none; font-size: var(--fs-1); line-height: 1; padding: 2px 5px; border-radius: var(--r-ctl); color: var(--text-muted); background: var(--bg); border: 1px solid var(--border); }
+.asm .asm-hd-id { flex: none; font-family: var(--font-mono); font-size: var(--fs-2); color: var(--text-faint); }
+.asm .asm-hd-n { margin-left: auto; flex: none; font-size: var(--fs-2); color: var(--text-faint); font-variant-numeric: tabular-nums; }
+.asm .asm-hd-in { flex: 1; min-width: 0; height: var(--h-ctl-sm); font: inherit; font-size: var(--fs-3); padding: 0 5px; background: var(--field-bg); color: var(--text); border: 1px solid var(--accent-ui); border-radius: var(--r-ctl); }
+.asm .asm-hd-in:focus { outline: none; }
+.asm .asm-hd .sp { flex: 1; }
+/* 头行小图标钮（隐藏 / 锁定）：开 = 墨色实字 + 底色抬一档 */
+.asm .asm-ib { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; padding: 0; cursor: pointer; color: var(--text-faint); background: transparent; border: 1px solid transparent; border-radius: var(--r-ctl); transition: var(--t-state); }
+.asm .asm-ib:hover:not(:disabled) { color: var(--text); background: var(--wash-hover); }
+.asm .asm-ib:active:not(:disabled) { box-shadow: var(--press); transition-duration: 0s; }
+.asm .asm-ib.on { color: var(--text); background: var(--bg); border-color: var(--border); }
+.asm .asm-ib:disabled { opacity: .4; cursor: not-allowed; }
+
+/* 搜索框（照库页 .lib-search；那份是 scoped 的） */
+.asm .asm-search { flex: none; display: flex; align-items: center; gap: 5px; height: var(--h-ctl); padding: 0 6px; color: var(--text-faint); background: var(--field-bg); border: 1px solid var(--field-border); border-radius: var(--r-ctl); }
+.asm .asm-search:focus-within { border-color: var(--accent-ui); }
+.asm .asm-search > input { flex: 1; min-width: 0; height: 100%; border: 0 !important; background: transparent !important; outline: none; padding: 0 !important; font-size: var(--fs-3); color: var(--text); box-shadow: none !important; }
+.asm .asm-search > button { display: inline-flex; padding: 0; border: 0; background: transparent; color: var(--text-faint); cursor: pointer; }
+.asm .asm-search > button:hover { color: var(--text); }
+
+/* 功能区小拨钮（照 ModelApp scoped 的 .md-tg；开 = 机位色底缘条 + 底色抬一档）与装配页各组的排版 */
+.asm-tg { position: relative; display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 6px; font: inherit; font-size: var(--fs-2); line-height: 1; cursor: pointer; white-space: nowrap;
+  color: var(--text-muted); background: transparent; border: 1px solid transparent; border-radius: var(--r-ctl); transition: var(--t-state); }
+.asm-tg:hover:not(:disabled) { color: var(--text); border-color: var(--border); background: var(--bg); }
+.asm-tg:active:not(:disabled) { box-shadow: var(--press); transition-duration: 0s; }
+.asm-tg.on { color: var(--text); background: var(--surface-2); border-color: var(--border-strong); box-shadow: inset 0 -2px 0 var(--accent-ui); transition-duration: 0s; }
+.asm-tg:disabled { opacity: .42; cursor: not-allowed; }
+/* 未存改动的脏点：紧跟「保存」二字（同 .lbx-dirty 的警示色） */
+.asm-tg .asm-dirty { flex: none; width: 5px; height: 5px; margin-left: 1px; border-radius: 50%; background: var(--warn); }
+.asm-tg.ico { width: 26px; height: 22px; padding: 0; justify-content: center; }
+.asm-rb .asm-rb-col { display: flex; flex-direction: column; justify-content: center; gap: 1px; padding: 0 2px; }
+.asm-rb .asm-rb-grid { display: grid; grid-template-columns: repeat(3, auto); gap: 2px 3px; padding: 0 2px; }
+.asm-rb .asm-rb-grid.two { grid-template-columns: repeat(2, auto); }
+.asm-rb .lbr-form select { min-width: 72px; }
+.asm-rb .lbr-form select.asm-rb-sm { min-width: 64px; }
+.asm-rb .lbr-form select.asm-rb-n { min-width: 42px; }
+.asm-rb .lbr-form .lbu-seg > button { height: 20px; padding: 0 6px; }
+.asm-rb .lbr-form .lbu-seg > button:disabled { color: var(--text-faint); cursor: not-allowed; }
+.asm-rb .lbr-form label > span:first-child { min-width: 38px; display: inline-flex; align-items: center; }
+/* 吸附组：首行的「吸附」开关兼作行标签，与下一行的「对称」标签同宽对齐 */
+.asm-rb .lbr-form .asm-rb-lead, .asm-rb .lbr-form label > .asm-rb-lead-l { min-width: 52px; box-sizing: border-box; }
+.asm-rb .lbr-form label > .asm-rb-lead-l { padding-left: 6px; }
+/* 行标签用图标（坐标系）：只占图标宽，口径进 title */
+.asm-rb .lbr-form label > span.asm-rb-ic { min-width: 0; color: var(--text-faint); }
+
+/* 右键菜单里的快捷键列（与菜单栏同一口径：右对齐、弱一档；悬停实底时跟着反白） */
+.lb-ctx .asm-kbd { margin-left: 18px; float: right; color: var(--text-faint); font-size: var(--fs-2); font-variant-numeric: tabular-nums; }
+.lb-ctx .lb-ctx-i:hover:not(:disabled) .asm-kbd { color: color-mix(in srgb, var(--bg) 78%, transparent); }
+.lb-ctx .lb-ctx-i .app-icon { margin-right: 7px; vertical-align: -2px; }

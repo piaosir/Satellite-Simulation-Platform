@@ -177,6 +177,13 @@ module.exports = {
   // v5.3 太阳亮温模型内核（野边山回归谱流量 / 亮温 / legacy 档），供测试与主进程互验
   solarFluxAt: sunOutage.solarFluxAt,
   solarTempAt: sunOutage.solarTempAt,
+  // 二期（卫星模型工具 §6.8）：太阳噪温 ΔT / 太阳 ECEF（与日凌扫描逐位同源）/ 当日视直径 / 日面被地球遮挡比例 / 星侧逐样本批量
+  sunNoiseTemp: sunOutage.sunNoiseTemp,
+  sunEcefAt: sunOutage.sunEcefAt,
+  sunDiamDegAt: sunOutage.sunDiamDegAt,
+  sunDistAuAt: sunOutage.sunDistAuAt,
+  earthBlockFraction: sunOutage.earthBlockFraction,
+  satSunIntrusionSeries: sunOutage.satSunIntrusionSeries,
   // 轨道源（日凌星历档 / 将来的外部星历共用的唯一接口，见 utils/orbitSource.js）
   orbitSource: require('./utils/orbitSource.js').orbitSource,
   buildIcs: icsBuilder.buildIcs,

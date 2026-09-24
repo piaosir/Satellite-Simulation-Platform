@@ -1,5 +1,127 @@
 const { contextBridge, ipcRenderer } = require('electron')
 
+// ── 星侧太阳侵入的渲染端半截（api.sunOutage.satIntrusion）──
+// ① GRD 树天线键 folder|name → {found, file, cfg}：卫星树与各天线设置由 3D 页持久化在 localStorage('globe3d/settings').grd
+//    （同源各窗共享，主进程读不到），口径同 src/model/satSources.grdTreeSats 与 useGrdCoverage.getState —— 只有已存盘的导入天线带 file。
+//    cfg 只带取值吃的三项：增益偏置 gainOffset、存活波束 keptSets（原始 set 序号）、旋转 Rot（yaw）。
+// ② 分段：一次最多 SAT_SUN_SEG 拍（60 s 步长约半年），逐段 invoke 再拼回 —— 拍与拍互不相干，拼接结果与一次算完逐位相同；
+//    段间看代号：同 jobKey 的新请求（或 cancelSatIntrusion）一来就停，回 {ok:false, canceled:true}。
+const SAT_SUN_SEG = 262144
+const satSunGen = new Map()
+function grdAntOf(key) {
+  let g = null
+  try { g = JSON.parse((typeof localStorage !== 'undefined' && localStorage.getItem('globe3d/settings')) || 'null') } catch { g = null }
+  g = g && typeof g === 'object' ? g.grd : null
+  for (const s of (g && Array.isArray(g.sats) ? g.sats : [])) {
+    for (const a of (s && Array.isArray(s.antennas) ? s.antennas : [])) {
+      if (!a || `${s.folder}|${a.name}` !== key) continue
+      if (!a.imported || !a.file) return { found: true, file: null }
+      const c = g.cfgs && typeof g.cfgs === 'object' ? g.cfgs[key] : null
+      const cfg = {}
+      if (c && typeof c === 'object') {
+        if (Number.isFinite(c.gainOffset)) cfg.gainOffset = c.gainOffset
+        if (Number.isFinite(c.yaw)) cfg.yaw = c.yaw
+        if (Array.isArray(c.keptSets)) cfg.keptSets = c.keptSets.filter(Number.isInteger)
+      }
+      return { found: true, file: String(a.file), cfg }
+    }
+  }
+  return { found: false }
+}
+function mergeSatSun(parts, n) {
+  if (parts.length === 1) return parts[0]
+  const cat = (k) => { const out = new Float32Array(n); let at = 0; for (const r of parts) { out.set(r[k], at); at += r.n } return out }
+  const counts = {}, f107 = [], seen = new Set()
+  let worst = null, at = 0, ms = 0
+  for (const r of parts) {
+    const w = r.worst
+    if (w && (!worst || w.dT > worst.dT)) worst = Object.assign({}, w, { i: w.i + at })
+    for (const k of Object.keys(r.counts || {})) counts[k] = (counts[k] || 0) + (Number(r.counts[k]) || 0)
+    for (const f of r.f107 || []) { const d = f.date == null ? '' : f.date; if (!seen.has(d)) { seen.add(d); f107.push(f) } }
+    ms += Number(r.ms) || 0
+    at += r.n
+  }
+  return Object.assign({}, parts[0], { n, dT: cat('dT'), gtLossDb: cat('gtLossDb'), offAxisDeg: cat('offAxisDeg'), visibleFrac: cat('visibleFrac'), worst, counts, f107, ms })
+}
+async function satIntrusion(o) {
+  const p = o || {}
+  const jobKey = typeof p.jobKey === 'string' && p.jobKey ? p.jobKey : 'default'
+  const gen = (satSunGen.get(jobKey) || 0) + 1
+  satSunGen.set(jobKey, gen)
+  let s = p.samples
+  if (Array.isArray(s)) s = Float64Array.from(s)
+  const pattern = p.pattern ? JSON.parse(JSON.stringify(p.pattern)) : undefined
+  if (pattern && pattern.kind === 'grd' && !pattern.ant && !pattern.file && typeof pattern.key === 'string' && pattern.key.includes('|')) pattern.ant = grdAntOf(pattern.key)
+  const base = { freqGHz: p.freqGHz, sysTempK: p.sysTempK, solarModel: p.solarModel, f107: p.f107, solarTemp: p.solarTemp, pattern, jobKey }
+  const onProgress = typeof p.onProgress === 'function' ? p.onProgress : null
+  const tell = (d, n) => { if (onProgress) { try { onProgress(d, n) } catch { /* 回调出错不影响计算 */ } } }
+  const n = ArrayBuffer.isView(s) && !(s instanceof DataView) && s.length % 10 === 0 ? s.length / 10 : 0
+  if (n <= SAT_SUN_SEG) {
+    // 样本是别的大缓冲区的一截视图时先拷出来（结构化克隆按整块 ArrayBuffer 走）
+    const samples = ArrayBuffer.isView(s) && (s.byteOffset || s.byteLength !== s.buffer.byteLength) ? s.slice() : s
+    const r = await ipcRenderer.invoke('sunoutage:satIntrusion', Object.assign({}, base, { samples }))
+    if (r && r.ok) tell(n, n)
+    return r
+  }
+  const parts = []
+  for (let a = 0; a < n; a += SAT_SUN_SEG) {
+    if (satSunGen.get(jobKey) !== gen) return { ok: false, canceled: true, code: 'canceled', error: '已取消。' }
+    const b = Math.min(n, a + SAT_SUN_SEG)
+    const r = await ipcRenderer.invoke('sunoutage:satIntrusion', Object.assign({}, base, { samples: s.slice(a * 10, b * 10) }))
+    if (!r || r.ok !== true) return r
+    parts.push(r)
+    tell(b, n)
+  }
+  return mergeSatSun(parts, n)
+}
+
+// ── 表格导出的线上形状（api.models.exportTable）──
+// 小表照旧 JSON 深拷（Vue Proxy 过不了结构化克隆；typed array 行摊成普通数组）。大表（> TABLE_PACK_ROWS 行）按列打包：
+// {n, columns:[每列一个]} —— 全是数（或空）的列用 Float64Array（空 = NaN），全是串（或空）的列 {join: 以 U+001F 连起来的长串}，
+// 其余列普通数组（串 / 数 / null）。主进程 models.tableSource 都认，取格口径（tableCell：空 → null、非有限数 → null、数字列的数字串转数）不变。
+const TABLE_PACK_ROWS = 2000
+const TABLE_JOIN_SEP = '\u001f'
+const jsonPlain = (x) => JSON.parse(JSON.stringify(x, (_k, v) => (ArrayBuffer.isView(v) && !(v instanceof DataView) ? Array.from(v) : v)))
+function tableWire(o) {
+  if (!o || typeof o !== 'object') return o
+  const sheets = Array.isArray(o.sheets) ? o.sheets : null
+  const big = (sh) => sh && typeof sh === 'object' && Array.isArray(sh.rows) && sh.rows.length > TABLE_PACK_ROWS
+  if (!sheets || !sheets.some(big)) return jsonPlain(o)
+  const out = jsonPlain(Object.assign({}, o, { sheets: [] }))
+  out.sheets = sheets.map((sh) => {
+    if (!big(sh)) return jsonPlain(sh)
+    const { rows, ...rest } = sh
+    const head = jsonPlain(rest)
+    const cols = Array.isArray(head.cols) ? head.cols : []
+    const n = rows.length
+    head.n = n
+    head.columns = cols.map((c, k) => {
+      const key = c && (typeof c.key === 'string' || Number.isFinite(c.key)) ? String(c.key) : String(k)
+      const get = (r) => { const x = rows[r]; return Array.isArray(x) || (ArrayBuffer.isView(x) && !(x instanceof DataView)) ? x[k] : (x && typeof x === 'object' ? x[key] : null) }
+      const f = new Float64Array(n)
+      let r = 0
+      for (; r < n; r++) {
+        const v = get(r)
+        if (v == null || v === '') f[r] = NaN
+        else if (typeof v === 'number') f[r] = v === 0 ? 0 : v          // −0 抹成 0（与 JSON 一致）
+        else break
+      }
+      if (r === n) return f
+      const a = new Array(n)
+      let allStr = true
+      for (let i = 0; i < n; i++) {
+        const v = get(i)
+        a[i] = v == null ? null : (typeof v === 'number' ? (Number.isFinite(v) ? (v === 0 ? 0 : v) : null) : (typeof v === 'string' ? v : String(v)))
+        if (allStr && a[i] !== null && (typeof a[i] !== 'string' || a[i].includes(TABLE_JOIN_SEP))) allStr = false
+      }
+      // 全是串（或空）的列连成一个长串：几十万个小串逐个反序列化要在主进程里占几十 ms，一个长串只是一次拷贝（空 = ''，与 null 同为空格）
+      return allStr ? { join: a.map((v) => (v === null ? '' : v)).join(TABLE_JOIN_SEP) } : a
+    })
+    return head
+  })
+  return out
+}
+
 // 安全桥：渲染进程通过 window.api.* 调用主进程能力，不直接暴露 Node。
 contextBridge.exposeInMainWorld('api', {
   computeLink: (s, l) => ipcRenderer.invoke('link:compute', s, l),
@@ -93,6 +215,19 @@ contextBridge.exposeInMainWorld('api', {
     // 计算本身不用这两条 —— F10.7 由主进程在算的时候按分点日现取，永不等网络。
     solarFlux: () => ipcRenderer.invoke('sunoutage:solarFlux'),
     solarFluxRefresh: () => ipcRenderer.invoke('sunoutage:solarFluxRefresh'),
+    // 星侧太阳侵入（模型工作台「分析」页；契约见 register.js 的 sunoutage:satIntrusion）：
+    //   {samples: Float64Array[N×10](t, 卫星 ECEF km, 视轴, up), freqGHz, pattern:{kind:'gauss', thetaB3dB}|{kind:'diameter', diameterM}|
+    //    {kind:'grd', key:'folder|name'（挂点 antennaRef.id，这里就地解析成 GRD 文件与天线设置）| file, beamIndex?, pol?, peakDbi?, thetaB3dB?},
+    //    sysTempK, solarModel?, f107?, solarTemp?, jobKey?, onProgress?(已算拍数, 总拍数)}
+    //   → {ok, dT, gtLossDb, offAxisDeg, visibleFrac（Float32Array）, worst, counts, f107, grd, …} | {ok:false, error, code?}
+    //   超过 262 144 拍自动分段（渲染端 200 万拍上限照收）；同窗同 jobKey（缺省 'default'）的新请求顶掉旧的 → 旧的回 {ok:false, canceled:true}
+    satIntrusion: (o) => satIntrusion(o),
+    // 取消在算的星侧太阳侵入（jobKey 缺省 'default'）→ 主进程有没有这么一个在算的任务
+    cancelSatIntrusion: (jobKey) => {
+      const k = typeof jobKey === 'string' && jobKey ? jobKey : 'default'
+      satSunGen.set(k, (satSunGen.get(k) || 0) + 1)
+      return ipcRenderer.invoke('sunoutage:satIntrusionCancel', k)
+    },
     // 城市库（转发链路预算那条通道，与 rainAttenuation 同法）
     cities: () => ipcRenderer.invoke('link:cities'),
     searchCities: (kw) => ipcRenderer.invoke('link:searchCities', kw),
@@ -362,6 +497,50 @@ contextBridge.exposeInMainWorld('api', {
   // 协调区 Polygon：原生框选 .gxt / .kml → 读原文交渲染进程解析导入
   poly: {
     open: () => ipcRenderer.invoke('poly:open')
+  },
+  // 卫星 3D 模型（契约见 electron/services/models.js 文件头）。
+  // 入参出门前现造纯数据（Vue Proxy 过不了结构化克隆）；typed array 原样走。
+  // 订阅一律返回取消函数：3D 页 / 侧栏 / 工作台会反复挂载卸载，不取消就一路漏监听。
+  models: {
+    open: (o) => ipcRenderer.invoke('modelwb:open', o ? JSON.parse(JSON.stringify(o)) : undefined),
+    onTarget: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('modelwb:target', h); return () => ipcRenderer.removeListener('modelwb:target', h) },
+    manifest: () => ipcRenderer.invoke('models:manifest'),
+    ensure: (o) => ipcRenderer.invoke('models:ensure', o ? { id: o.id, lod: o.lod } : o),
+    thumbnail: (id) => ipcRenderer.invoke('models:thumbnail', id),
+    cancel: (id) => ipcRenderer.send('models:cancel', id),
+    remove: (id) => ipcRenderer.invoke('models:remove', id),
+    cacheInfo: () => ipcRenderer.invoke('models:cacheInfo'),
+    setCacheCap: (bytes) => ipcRenderer.invoke('models:setCacheCap', bytes),
+    openCacheDir: () => ipcRenderer.invoke('models:openCacheDir'),
+    refreshManifest: () => ipcRenderer.invoke('models:refreshManifest'),
+    pickFiles: () => ipcRenderer.invoke('models:pickFiles'),
+    readFile: (path) => ipcRenderer.invoke('models:readFile', path),
+    importGlb: (o) => ipcRenderer.invoke('models:importGlb', o && o.bytes ? { bytes: o.bytes, name: o.name } : { path: o && o.path }),
+    importCad: (o) => ipcRenderer.invoke('models:importCad', { path: o && o.path, token: o && o.token }),
+    saveImported: (o) => ipcRenderer.invoke('models:saveImported', { glb: o && o.glb, meta: o && o.meta ? JSON.parse(JSON.stringify(o.meta)) : null }),
+    scanStk: (o) => ipcRenderer.invoke('models:scanStk', { dir: o && o.dir }),
+    pickStkDir: () => ipcRenderer.invoke('models:pickStkDir'),
+    importStk: (o) => ipcRenderer.invoke('models:importStk', { dir: o && o.dir, files: o && o.files ? [...o.files] : [] }),
+    saveMeta: (o) => ipcRenderer.invoke('models:saveMeta', { id: o && o.id, meta: o && o.meta ? JSON.parse(JSON.stringify(o.meta)) : null }),
+    getMeta: (id) => ipcRenderer.invoke('models:getMeta', id),
+    exportModel: (o) => ipcRenderer.invoke('models:export', {
+      id: o && o.id, glb: o && o.glb, suggestedName: o && o.suggestedName,
+      gmdf: o && o.gmdf ? JSON.parse(JSON.stringify(o.gmdf)) : undefined,
+      satsimJson: o && o.satsimJson ? JSON.parse(JSON.stringify(o.satsimJson)) : undefined
+    }),
+    saveThumb: (o) => ipcRenderer.invoke('models:saveThumb', { id: o && o.id, webp: o && o.webp }),
+    bindingsGet: () => ipcRenderer.invoke('models:bindings:get'),
+    bindingsSet: (o) => ipcRenderer.invoke('models:bindings:set', o ? JSON.parse(JSON.stringify(o)) : o),
+    // 本体遮挡掩模（D18）：{sig, bytes: Uint8Array(encodeMask)} | {sig, blocked: Uint8Array, clearance: Float32Array} → {ok, sig, bytes}；
+    // getMask(sig) → Uint8Array（.bin 原样，decodeMask 解）| null
+    saveMask: (o) => ipcRenderer.invoke('models:saveMask', o ? { sig: o.sig, bytes: o.bytes, blocked: o.blocked, clearance: o.clearance } : o),
+    getMask: (sig) => ipcRenderer.invoke('models:getMask', typeof sig === 'string' ? sig : String(sig || '')),
+    // 表格导出：{sheets:[{name, cols:[{key, label, unit?, num?, fix?, align?}], rows, note?}], defaultName, title?, style?:'report'|'plain'} → xlsx；
+    // {format:'csv', text | sheets, defaultName} → csv。→ {ok, filePath} | {ok:false, canceled?, error?}
+    // 行可以是 typed array（时间序列直接切片）：JSON 会把它写成 {"0":…} 对象，先摊成普通数组；NaN / ±∞ → null（空格）。
+    // 超过 2000 行的表按列打包（tableWire），主进程反序列化不必逐个造几十万个行对象；写出来的格子与逐行传逐位相同
+    exportTable: (o) => ipcRenderer.invoke('models:exportTable', tableWire(o)),
+    onChanged: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('models:changed', h); return () => ipcRenderer.removeListener('models:changed', h) }
   },
   platform: process.platform
 })

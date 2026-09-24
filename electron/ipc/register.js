@@ -12,6 +12,8 @@ const admBoundaries = require('../services/admBoundaries')
 // 太阳射电流量 F10.7（日凌的太阳亮温靠它）：单例服务，取数链路与 omm.js 同一口径。
 // ★ 只用 snapshot()（同步、只读本机）喂计算；联网刷新一律在算完之后不 await 地捅一下。
 const solarFlux = require('../services/solarFlux')
+// 卫星模型：modelwb:open 的目标参数清洗（纯函数；服务本体由 main 构造后传进来）
+const { sanitizeTarget: sanitizeModelTarget } = require('../services/modelsLogic')
 
 // 写盘失败的友好文案：目标文件被其他程序占用（PDF/图片查看器打开着）→ EBUSY/EPERM/EACCES。
 const writeErrText = (err) => (err && (err.code === 'EBUSY' || err.code === 'EPERM' || err.code === 'EACCES')
@@ -19,7 +21,7 @@ const writeErrText = (err) => (err && (err.code === 'EBUSY' || err.code === 'EPE
   : (err && err.message) || String(err))
 
 // 注册所有 IPC 处理器。core 为返回引擎实例的函数（延迟解析）。
-function register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget, openSunOutage, confirmCloseSunOutage, grd, confirmCloseLinkBudget, openNgso, confirmCloseNgso, openRegen, confirmCloseRegen, openE2e, confirmCloseE2e, openRain, confirmCloseRain, openCi, openPfd, openSsa, confirmCloseSsa, freqPlan, openFreqPlan, notifyFreqPlan, activation, weather, gfs, updater, perfWin }) {
+function register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget, openSunOutage, confirmCloseSunOutage, grd, confirmCloseLinkBudget, openNgso, confirmCloseNgso, openRegen, confirmCloseRegen, openE2e, confirmCloseE2e, openRain, confirmCloseRain, openCi, openPfd, openSsa, confirmCloseSsa, freqPlan, openFreqPlan, notifyFreqPlan, activation, weather, gfs, updater, perfWin, models, openModel }) {
   // 未激活拦截（主进程硬防线；渲染端菜单/工具栏的拦截只是第一道观感）：
   // 各功能窗口的 open 一律先过这里——渲染端被绕过（devtools 直调 IPC）也开不出窗。
   // （下方九处 *:open 仍显式写着 gate(...)，在新的默认全拦之下已是冗余的第二层，无副作用，
@@ -74,7 +76,11 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     'link:cities', 'link:cityGroups', 'link:searchCities', 'link:baseband', 'link:outputDefs',
     // 分享的收件侧：收/删/探视是别人推过来的东西，不算本机产出；发件侧（send/boxSend/
     // gxtSnapshot/boxRevoke）不在表里，未激活不许往外发
-    'share:configured', 'share:inbox', 'share:delete', 'share:boxPeek'
+    'share:configured', 'share:inbox', 'share:delete', 'share:boxPeek',
+    // 卫星 3D 模型的只读浏览面（设计契约 T13）：主窗口 3D 页未激活也能看球面模型图标 / 跟随视图，
+    // 所以清单、取件（ensure 会按需下载公开的 NASA 模型）、元数据、绑定表与缓存读数放行。
+    // 导入 / 导出 / 改元数据 / 改绑定 / 开工作台全在锁内。models:cancel 走 ipcMain.on，本就不经门禁。
+    'models:manifest', 'models:ensure', 'models:thumbnail', 'models:getMeta', 'models:bindings:get', 'models:cacheInfo'
   ])
   // 同名遮蔽 electron 的 ipcMain：本文件下方一百多处 ipcMain.handle 因此自动过门禁，
   // 不必逐条改写、将来新增的也漏不掉。注意只覆盖本文件——services/reportPdf.js 里那个
@@ -758,6 +764,55 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
       return { canceled: false, ...r, errors }
     })
   }
+
+  // ---- 卫星模型工作台（独立窗口）与模型服务 models:*（契约写在 services/models.js 文件头）----
+  // 带目标打开（3D 页信息卡「编辑…」/ 侧栏卡片）：已开则 focus 后立即送；新开则等页面就绪再送（同 freqPlan:open）
+  ipcMain.handle('modelwb:open', gate((_e, o) => {
+    if (!openModel) return false
+    const win = openModel()
+    const target = sanitizeModelTarget(o)
+    if (win && target) {
+      const send = () => { try { win.webContents.send('modelwb:target', target) } catch { /* 窗口已关 */ } }
+      if (win.webContents.isLoading()) win.webContents.once('did-finish-load', send)
+      else send()
+    }
+    return true
+  }))
+  if (models) {
+    // 出参一律过一遍纯数据（服务内部已是纯对象；Buffer 由结构化克隆转成 Uint8Array）
+    const winOf = (e) => BrowserWindow.fromWebContents(e.sender)
+    const safe = (fn) => async (...a) => {
+      try { return await fn(...a) } catch (err) { return { ok: false, error: err.message || String(err) } }
+    }
+    ipcMain.handle('models:manifest', safe(() => models.manifest()))
+    ipcMain.handle('models:ensure', safe((_e, o) => models.ensure(o)))
+    ipcMain.handle('models:thumbnail', safe((_e, id) => models.thumbnail(id)))
+    // 取消走 send / on：进度条上的「×」是即时动作，不等回执；on 不经 gate（本就是只读浏览面的一部分）
+    ipcMain.on('models:cancel', (_e, id) => { try { models.cancel(id) } catch { /* 无 */ } })
+    ipcMain.handle('models:remove', safe((_e, id) => models.remove(id)))
+    ipcMain.handle('models:cacheInfo', safe(() => models.cacheInfo()))
+    ipcMain.handle('models:setCacheCap', safe((_e, b) => models.setCacheCap(b)))
+    ipcMain.handle('models:openCacheDir', safe(() => models.openCacheDir()))
+    ipcMain.handle('models:refreshManifest', safe(() => models.refreshManifest()))
+    ipcMain.handle('models:pickFiles', safe((e) => models.pickFiles(winOf(e))))
+    ipcMain.handle('models:readFile', safe((_e, p) => models.readFile(p)))
+    ipcMain.handle('models:importGlb', safe((_e, o) => models.importGlb(o)))
+    ipcMain.handle('models:importCad', safe((_e, o) => models.importCad(o)))
+    ipcMain.handle('models:saveImported', safe((_e, o) => models.saveImported(o)))
+    ipcMain.handle('models:scanStk', safe((_e, o) => models.scanStk(o)))
+    ipcMain.handle('models:pickStkDir', safe((e) => models.pickStkDir(winOf(e))))
+    ipcMain.handle('models:importStk', safe((_e, o) => models.importStk(o)))
+    ipcMain.handle('models:saveMeta', safe((_e, o) => models.saveMeta(o)))
+    ipcMain.handle('models:getMeta', safe((_e, id) => models.getMeta(id)))
+    ipcMain.handle('models:export', safe((e, o) => models.exportModel(o, winOf(e))))
+    ipcMain.handle('models:saveThumb', safe((_e, o) => models.saveThumb(o)))
+    ipcMain.handle('models:bindings:get', safe(() => models.bindingsGet()))
+    ipcMain.handle('models:bindings:set', safe((_e, o) => models.bindingsSet(o)))
+    // 二期：本体遮挡掩模存取（D18，userData/models/masks/<sig>.bin）与分析页表格导出（xlsx 三线表 / csv）。三条都在锁内
+    ipcMain.handle('models:saveMask', safe((_e, o) => models.saveMask(o)))
+    ipcMain.handle('models:getMask', safe((_e, sig) => models.getMask(sig)))
+    ipcMain.handle('models:exportTable', safe((e, o) => models.exportTable(o, winOf(e))))
+  }
   ipcMain.handle('ci:asi', (_e, req) => interference.asi(req))
   ipcMain.handle('ci:xpi', (_e, req) => interference.xpi(req))
   ipcMain.handle('ci:xpiTerm', (_e, req) => interference.xpiTerm(req))
@@ -1065,6 +1120,339 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     }
     bumpSolarFlux()
     return out
+  })
+  // ---- 星侧太阳侵入（模型工作台「分析」页；二期 §6.8 / DESIGN2 D10–D13；进门禁）----
+  // 太阳落进星上接收天线方向图 → 噪温升 ΔT 与等效 G/T 损失 ΔG/T = 10·lg(1 + ΔT/T_sys)。物理全在日凌核
+  // satSunIntrusionSeries（太阳方向含卫星处视差 → 地球遮挡按日面弓形面积比 → 偏轴角 → sunNoiseTemp），这里只做：
+  //   ① F10.7 按样本所在 UT 日经 solarFlux.f107For 现取（与 withF107 同一个数据源，永不等网络；调用方给了 f107 / solarTemp 就不动）；
+  //   ② GRD 实测方向图的方向取值（grdPatternSource）：挂点的天线键 folder|name 由 preload 从 3D 页卫星树（localStorage，主进程读不到）
+  //      解析成 {file, cfg} 附在 pattern.ant 上；方向图口径 = 3D 页该天线的存活波束 / 增益偏置 / 旋转 Rot，极化恒取两分量功率和
+  //      （太阳是非极化源，天线收到的是 G_co + G_x 那一份）；整体电平按网格内功率积分核一遍（grdPowerFrac）；
+  //   ③ 预筛 sep > θd/2 + 6θB 直接 0（高斯 / 口径档；日凌核内部另有一道 6θB + θd 的跳算，二者之间的值 < 1e−40 K）；
+  //   ④ 按「同一 UT 日内 ≤ 256 拍」分块算，连续占用主线程 ≥ 30 ms 就让出一次事件循环；可取消（同窗同 jobKey 的新请求顶掉旧的，
+  //      sunoutage:satIntrusionCancel 显式取消，窗口关了也停）。
+  // 入参（纯数据）：
+  //   samples   Float64Array[N×10]：tMs, 卫星 ECEF xyz（km）, 视轴 ECEF xyz, up ECEF xyz（标准 ECEF，z 为极轴）。
+  //             up 为零或与视轴平行时按 coverage.basisFromAxes 的退化口径补（x = ẑ × z，极区退 x̂ × z，y = z × x；计入 counts.upDefault）
+  //   freqGHz   挂点天线的接收（上行）频率 —— T_b 对频率敏感，C / Ku 能差 2–3 倍
+  //   pattern   {kind:'gauss', thetaB3dB（°，3 dB 全宽）} | {kind:'diameter', diameterM}（→ 70λ/D）|
+  //             {kind:'grd', key:'folder|name', ant?:{found, file, cfg}（preload 附）| file?（直接给导入 GRD 的相对路径，与 link:grdSample 的
+  //              file 同口径；不带 '|' 的 key 也按文件认）, cfg?:{gainOffset, keptSets, yaw}（file 档用）, beamIndex?（原始 set 序号，0 基）,
+  //              pol?（'RSS' 缺省 | 'P1' | 'P2'）, peakDbi?（给了就把方向图整体平移到这个峰值，不再做功率核对）, thetaB3dB?（网格外回退的高斯主瓣）}
+  //   sysTempK  星上接收系统噪温（挂点 sysTempK，D10 缺省 500 K）；solarModel 'norp'（缺省）| 'legacy'；f107?；solarTemp?
+  //   jobKey?   同一窗口里同键的请求互相顶替（缺省 'default'）；要并发算几路就各给各的键
+  // 出参：{ok:true, n, dT:Float32Array(K), gtLossDb:Float32Array(dB), offAxisDeg:Float32Array(°), visibleFrac:Float32Array,
+  //        worst:{i, tMs, dT, gtLossDb, offAxisDeg, visibleFrac}（dT 最大的第一拍）, counts:{gain, gauss, none, blocked, prescreened, upDefault},
+  //        f107:[{date, f107, source}], sysTempK, solarModel, thetaB3dB|null,
+  //        grd:{file, beams, peakDbi, offsetDb, level:'file'|'power'|'peak', powerFrac, fallbackThetaB3dB}|null, ms}
+  //       | {ok:false, error, code?}（code：'canceled' | 'grd-unresolved' | 'grd-missing' | 'grd-bad'）
+  const grdSampler = require('../../packages/core/utils/grdSampler.js')
+  const SAT_SUN_MAX_N = 1200000            // 单次上限（IPC 包 ≈ 96 MB）；preload 按 26 万拍一段自动分段，渲染端不必管
+  const SAT_SUN_T_MIN = Date.UTC(1900, 0, 1), SAT_SUN_T_MAX = Date.UTC(2200, 0, 1)
+  const SAT_SUN_CHUNK = 256                // 一块的拍数：GRD 档一块 ≈ 256 × 24 次取值 ≈ 5–9 ms（时间片按块查，块小停顿才短）
+  const SAT_SUN_SLICE_MS = 30              // 连续占用主线程超过这么久就让出一次（别的窗口的 IPC 与档位扫描不必排在一整年后面）
+  const SAT_SUN_CODES = new Set(['canceled', 'grd-unresolved', 'grd-missing', 'grd-bad'])
+  const DAY_MS = 86400000
+  const R2D = 180 / Math.PI, D2R = Math.PI / 180
+  const isoDay = (d0) => new Date(d0).toISOString().slice(0, 10)
+  const codeErr = (code, msg) => Object.assign(new Error(msg), { code })
+  const toF64 = (v) => {
+    if (v instanceof Float64Array) return v
+    if (ArrayBuffer.isView(v) && !(v instanceof DataView)) return Float64Array.from(v)
+    if (Array.isArray(v)) return Float64Array.from(v, Number)
+    return null
+  }
+  // 时间片：due() 查是否到点；step() 到点就让出一次；两处都在让出后查取消（取消 = 抛 code:'canceled'）。
+  // 让出用两层 setImmediate：从 IPC 回调里第一次排的 immediate 在同一轮 check 阶段就跑回来了，定时器与下一批 IPC 轮不上；
+  // 在 check 阶段里再排一层才真正隔开一轮事件循环（实测第一片从 ~60 ms 降到 ~30 ms）
+  const nextTurn = () => new Promise((r) => setImmediate(() => setImmediate(r)))
+  function sliceClock(job) {
+    let last = Date.now()
+    const yieldNow = async () => {
+      await nextTurn()
+      last = Date.now()
+      if (job && job.canceled) throw codeErr('canceled', '已取消。')
+    }
+    return {
+      due: () => Date.now() - last >= SAT_SUN_SLICE_MS,
+      yieldNow,
+      async step() { if (Date.now() - last >= SAT_SUN_SLICE_MS) await yieldNow(); else if (job && job.canceled) throw codeErr('canceled', '已取消。') }
+    }
+  }
+
+  // ── GRD 方向图 ──
+  // 取值只经 grdSampler 的公开函数（loadBin / makeSampleCtx / sampleMaxCtx / peakDb），与 grd.sample、link:grdSample 同一条代码路径、同一口径
+  // （复场双三次、0.01 dB、存活波束取最大包络），只是上下文每次调用建一次而不是每个点建一次。.grdbin 由 grd.precompile 按需生成，
+  // 文件位置经 coverageGrd.exportSrc 解析（两个服务同一个 coverage-grd-imported 目录，main.js 构造时给的）。
+  //   天线放在地心、视轴沿 ECEF +X：卫星取 {lon:0, lat:0, alt:−A}（赤道上 N = A，geodeticToEcef 的 (A − A) 恰为 0），
+  //   cfg 取 azel 档 boreAz = boreEl = 0 → 天线基底 x = ECEF +Y、y = ECEF +Z、z = ECEF +X，再按 yaw（3D 页「旋转 Rot」）绕视轴转 ——
+  //   与 coverage.basisFromAxes 在「姿态 + 挂点」档对挂点系施加 Rot 的转法逐字相同。天线系方向 d = (a, b, c)（z = 视轴、y = up、x = y × z，
+  //   与日凌核 gain 档同一套轴）于是对应「无穷远点」经度 atan2(a, c)、纬度 atan2(b, √(a² + c²))、高度 1e15 km ——
+  //   sampleBeamAt 由它还原出的方向与 d 相差 ≤ N·e²/H ≈ 4e−14 rad，高度 > 0 的空间目标也不走地平线闸。
+  const GRD_A = 6378.137                   // = grdSampler.js 的 A（WGS-84 长半轴）
+  const GRD_FAR_KM = 1e15
+  const GRD_HOLD_MS = 120000               // 载入的 .grdbin 在这里留两分钟（连着改参数重算不必重读几十 MB）
+  // 功率核对的两道门：网格内 (1/4π)∫G dΩ 落在 [0.2, 1.1] 才信文件电平是 dBi（方向性 / 增益）。
+  //   > 1.1：比全空间方向性积分还大（留 0.4 dB 给求积误差），文件存的必是 EIRP 或带发射功率的电平；
+  //   < 0.2：网格里连主瓣的能量都不到两成 —— 峰值归一（0 dB）或相对电平件（1/D₀ 量级）；
+  //   两种都按「网格内功率 = 4π」重定标，即网格外不再有能量时的方向性（真值的上界，ΔT 只会偏大）。
+  const GRD_POWER_LO = 0.2, GRD_POWER_HI = 1.1
+  let grdHeld = null, grdHeldTimer = null
+  function grdLoad(file) {
+    if (!grd || typeof grd.precompile !== 'function' || !coverageGrd || typeof coverageGrd.exportSrc !== 'function') throw codeErr('grd-bad', 'GRD 服务未加载')
+    let src
+    try { src = coverageGrd.exportSrc(file) } catch (e) {
+      throw codeErr(e && e.code === 'ENOENT' ? 'grd-missing' : 'grd-bad', e && e.code === 'ENOENT' ? `方向图文件 ${file} 不在了。` : `方向图读不出：${(e && e.message) || e}`)
+    }
+    const pc = grd.precompile(file)
+    if (!pc || !pc.ok) throw codeErr('grd-bad', `方向图读不出：${(pc && pc.error) || '解析失败'}`)
+    const bin = src.path + '.grdbin'
+    let st
+    try { st = fs.statSync(bin) } catch (e) { throw codeErr('grd-bad', `方向图读不出：${(e && e.message) || e}`) }
+    if (!(grdHeld && grdHeld.bin === bin && grdHeld.mtimeMs === st.mtimeMs)) {
+      grdHeld = null                         // 先放掉旧的再读新的（大件别两份同时占着）
+      const buf = fs.readFileSync(bin)
+      grdHeld = { bin, file, mtimeMs: st.mtimeMs, buf, loaded: grdSampler.loadBin(buf), power: null }
+    }
+    clearTimeout(grdHeldTimer)
+    grdHeldTimer = setTimeout(() => { grdHeld = null }, GRD_HOLD_MS)
+    if (grdHeldTimer.unref) grdHeldTimer.unref()
+    return grdHeld
+  }
+  // 网格节点 → 立体角密度 dΩ / (dX·dY)（uv 无量纲、其余网格按弧度）。只算视轴前半球（c > 0）—— 采样器也只取这半球
+  // （grdSampler.invGridDir 在 c ≤ 0 返回 null）；θφ 网格（igrid 7）的负 θ 节点若镜像 (φ + 180°, −θ) 也在网格里就是同一方向，跳过。
+  const inRangeMod360 = (x, a, b) => { const x2 = x + 360 * Math.ceil((a - x) / 360 - 1e-9); return x2 <= b + 1e-9 }
+  function gridJac(igrid, X, Y, g) {
+    if (igrid === 1) { const w2 = 1 - X * X - Y * Y; return w2 > 0 ? 1 / Math.sqrt(w2) : 0 }
+    const a = X * D2R, b = Y * D2R
+    switch (igrid) {
+      case 4: case 9: return Math.cos(a) * Math.cos(b) > 0 ? Math.abs(Math.cos(b)) : 0      // d = [∓sa·ce, se, ca·ce]
+      case 6: case 10: return Math.cos(a) * Math.cos(b) > 0 ? Math.abs(Math.cos(a)) : 0     // d = [∓sa, ca·se, ca·ce]
+      case 5: { const th = Math.hypot(a, b); return th < Math.PI / 2 ? (th > 1e-12 ? Math.sin(th) / th : 1) : 0 }   // 方位等距极坐标
+      case 7: {                                                                              // X = φ、Y = θ
+        if (!(Math.cos(b) > 0)) return 0
+        if (b < 0 && -Y >= Math.min(g.YS, g.YE) - 1e-9 && -Y <= Math.max(g.YS, g.YE) + 1e-9 && inRangeMod360(X + 180, Math.min(g.XS, g.XE), Math.max(g.XS, g.XE))) return 0
+        return Math.abs(Math.sin(b))
+      }
+      default: return 0
+    }
+  }
+  // 每个波束网格内的功率积分 (1/4π)·∫|E₁|² dΩ、(1/4π)·∫|E₂|² dΩ（梯形求积；按文件缓存，与极化 / 增益偏置无关）
+  async function grdBeamPower(held, clock) {
+    if (held.power) return held.power
+    const L = held.loaded, out = []
+    for (const bm of L.beams) {
+      const g = bm.grid, NX = g.NX, NY = g.NY
+      const dX = (g.XE - g.XS) / (NX - 1), dY = (g.YE - g.YS) / (NY - 1)
+      const cell = Math.abs(dX * dY) * (L.igrid === 1 ? 1 : D2R * D2R) / (4 * Math.PI)
+      const jx = new Float64Array(NX)
+      let s1 = 0, s2 = 0
+      for (let r = 0; r < NY; r++) {
+        const Y = g.YS + r * dY, wy = r === 0 || r === NY - 1 ? 0.5 : 1
+        for (let c = 0; c < NX; c++) jx[c] = gridJac(L.igrid, g.XS + c * dX, Y, g) * (c === 0 || c === NX - 1 ? 0.5 : 1)
+        let a1 = 0, a2 = 0
+        for (let c = 0, i = r * NX; c < NX; c++, i++) {
+          const w = jx[c]
+          if (!(w > 0)) continue
+          a1 += w * (bm.c1re[i] * bm.c1re[i] + bm.c1im[i] * bm.c1im[i])
+          a2 += w * (bm.c2re[i] * bm.c2re[i] + bm.c2im[i] * bm.c2im[i])
+        }
+        s1 += wy * a1; s2 += wy * a2
+        if (clock.due()) await clock.yieldNow()
+      }
+      out.push([s1 * cell, s2 * cell])
+    }
+    held.power = out
+    return out
+  }
+  // pattern → 方向取值源。key 的解析：preload 附的 ant 优先；否则 file；否则不带 '|' 的 key 按文件认（直接调用 / 单测）
+  async function grdPatternSource(p0, clock) {
+    const key = typeof p0.key === 'string' ? p0.key : ''
+    const ant = p0.ant && typeof p0.ant === 'object' ? p0.ant : null
+    let file = '', c0 = {}
+    if (ant) {
+      if (!ant.found) throw codeErr('grd-unresolved', `GRD 天线 ${key || '（空）'} 不在卫星树里。`)
+      if (!ant.file) throw codeErr('grd-unresolved', `GRD 天线 ${key} 没有方向图文件。`)
+      file = String(ant.file); c0 = ant.cfg && typeof ant.cfg === 'object' ? ant.cfg : {}
+    } else if (typeof p0.file === 'string' && p0.file) {
+      file = p0.file; c0 = p0.cfg && typeof p0.cfg === 'object' ? p0.cfg : {}
+    } else if (key && !key.includes('|')) {
+      file = key; c0 = p0.cfg && typeof p0.cfg === 'object' ? p0.cfg : {}
+    } else if (key) throw codeErr('grd-unresolved', `GRD 天线 ${key} 解析不出方向图文件。`)
+    else throw codeErr('grd-unresolved', '缺少方向图文件。')
+    const held = grdLoad(file)
+    const L = held.loaded
+    const pol = p0.pol === 'P1' || p0.pol === 'P2' ? p0.pol : 'RSS'
+    const cfg = { boreType: 'azel', boreAz: 0, boreEl: 0, yaw: Number(c0.yaw) || 0, pathLoss: 'none', pol, gainOffset: Number(c0.gainOffset) || 0 }
+    if (Array.isArray(c0.keptSets)) cfg.keptSets = c0.keptSets.filter(Number.isInteger)
+    const bi = Number.isInteger(p0.beamIndex) ? p0.beamIndex : null
+    if (bi !== null) {
+      if (bi < 0 || bi >= L.beams.length) throw codeErr('grd-bad', `方向图只有 ${L.beams.length} 个波束，波束序号 ${bi + 1} 越界。`)
+      cfg.keptSets = [bi]
+    }
+    const peak = grdSampler.peakDb(L, cfg)
+    if (!Number.isFinite(peak)) throw codeErr('grd-bad', '方向图里取不到峰值。')
+    const ctx = grdSampler.makeSampleCtx(L, { lon: 0, lat: 0, alt: -GRD_A }, cfg)
+    if (!ctx || !ctx.beams.length) throw codeErr('grd-bad', '方向图没有可用的波束。')
+    // 电平：显式 peakDbi > 功率核对 > 文件原值
+    const pw = await grdBeamPower(held, clock)
+    let powerFrac = 0
+    for (const i of ctx.beamIdx) {
+      const p = pw[i]
+      const v = (pol === 'P1' ? p[0] : pol === 'P2' ? p[1] : p[0] + p[1]) * Math.pow(10, cfg.gainOffset / 10)
+      if (v > powerFrac) powerFrac = v
+    }
+    let level = 'file', offsetDb = 0
+    if (Number.isFinite(p0.peakDbi)) { level = 'peak'; offsetDb = p0.peakDbi - peak }
+    else if (powerFrac > 0 && (powerFrac > GRD_POWER_HI || powerFrac < GRD_POWER_LO)) { level = 'power'; offsetDb = -10 * Math.log10(powerFrac) }
+    const peakEff = peak + offsetDb
+    // 网格外（太阳没被遮挡时多半在网格外，摸底 §1.4 坑 4）回退高斯主瓣：θB 给了用给的，否则取与峰值增益等效的理想高斯束
+    // （∫G dΩ = 4π ⇒ G₀ = 16·ln2 / θB²，θB 弧度）——真实天线效率 < 1，等效束只会更宽一点，远处照样 ≈ 0
+    const fallbackThetaB3dB = Number(p0.thetaB3dB) > 0 ? Number(p0.thetaB3dB)
+      : (peakEff > 0 ? Math.sqrt(16 * Math.LN2 / Math.pow(10, peakEff / 10)) * R2D : 0)
+    return {
+      file, beams: ctx.beamIdx.length, peakDbi: peak, offsetDb, level, powerFrac, fallbackThetaB3dB,
+      // d：天线系单位矢量 → dBi；网格外 / 视轴背面 → null（日凌核随即整拍退回高斯主瓣）
+      gainAt(d) {
+        const a = d[0], b = d[1], c = d[2]
+        const v = grdSampler.sampleMaxCtx(ctx, Math.atan2(a, c) * R2D, Math.atan2(b, Math.hypot(a, c)) * R2D, GRD_FAR_KM)
+        return v == null || !Number.isFinite(v) ? null : v + offsetDb
+      }
+    }
+  }
+
+  async function satIntrusion(req, job) {
+    const t0 = Date.now()
+    const clock = sliceClock(job)
+    const o = req && typeof req === 'object' ? req : {}
+    let S = toF64(o.samples)
+    if (!S || !S.length || S.length % 10) return { ok: false, error: '样本须为 N×10 的数组' }
+    const n = S.length / 10
+    if (n > SAT_SUN_MAX_N) return { ok: false, error: `样本数超过 ${SAT_SUN_MAX_N}。` }
+    let upDefault = 0
+    for (let i = 0; i < n; i++) {
+      if ((i & 4095) === 4095 && clock.due()) await clock.yieldNow()
+      const k = i * 10
+      for (let j = 0; j < 10; j++) if (!Number.isFinite(S[k + j])) return { ok: false, error: `第 ${i + 1} 个样本含非数值` }
+      if (S[k] < SAT_SUN_T_MIN || S[k] > SAT_SUN_T_MAX) return { ok: false, error: `第 ${i + 1} 个样本的时刻越界` }
+      if (!(Math.hypot(S[k + 1], S[k + 2], S[k + 3]) > 6000)) return { ok: false, error: `第 ${i + 1} 个样本的卫星位置不在地球外` }
+      const bl = Math.hypot(S[k + 4], S[k + 5], S[k + 6])
+      if (!(bl > 0)) return { ok: false, error: `第 ${i + 1} 个样本的视轴为零向量` }
+      // up 去掉视轴分量后退化（零 / 与视轴平行）：日凌核 gain 档会把天线 x/y 轴塌成零、整拍按视轴上的峰值取 —— 这里按 basisFromAxes 的退化口径补
+      const zx = S[k + 4] / bl, zy = S[k + 5] / bl, zz = S[k + 6] / bl
+      const ux = S[k + 7], uy = S[k + 8], uz = S[k + 9], ud = ux * zx + uy * zy + uz * zz
+      if (!(Math.hypot(ux - ud * zx, uy - ud * zy, uz - ud * zz) > 1e-9 * Math.hypot(ux, uy, uz))) {
+        if (S === o.samples) S = Float64Array.from(S)          // 调用方的数组不改
+        let xx = -zy, xy = zx, xz = 0                             // x = ẑ × z
+        let xl = Math.hypot(xx, xy)
+        if (!(xl > 1e-9)) { xx = 0; xy = -zz; xz = zy; xl = Math.hypot(xy, xz) }   // 极区：x = x̂ × z
+        xx /= xl; xy /= xl; xz /= xl
+        S[k + 7] = zy * xz - zz * xy; S[k + 8] = zz * xx - zx * xz; S[k + 9] = zx * xy - zy * xx   // up = y = z × x
+        upDefault++
+      }
+    }
+    const freqGHz = Number(o.freqGHz)
+    if (!(freqGHz > 0)) return { ok: false, error: '缺少接收频率' }
+    const sysTempK = Number(o.sysTempK) > 0 ? Number(o.sysTempK) : 500
+    const solarModel = o.solarModel === 'legacy' ? 'legacy' : 'norp'
+    const solarTemp = Number(o.solarTemp) > 0 ? Number(o.solarTemp) : undefined
+    const fixedF107 = Number(o.f107) > 0 ? Number(o.f107) : null
+    const p0 = o.pattern && typeof o.pattern === 'object' ? o.pattern : {}
+    let pat = null, thetaB = null, gsrc = null
+    if (p0.kind === 'grd') {
+      gsrc = await grdPatternSource(p0, clock)
+      pat = { kind: 'gain', gainAt: gsrc.gainAt, fallbackThetaB3dBDeg: gsrc.fallbackThetaB3dB }
+    } else if (p0.kind === 'diameter') {
+      const D = Number(p0.diameterM)
+      if (!(D > 0)) return { ok: false, error: '缺少天线口径' }
+      pat = { kind: 'diameter', diameterM: D }
+      thetaB = 20.98547 / (freqGHz * D)            // 与日凌核 sunNoiseTemp / outageModel 同式（70λ/D）
+    } else {
+      thetaB = Number(p0.thetaB3dB !== undefined ? p0.thetaB3dB : p0.thetaB3dBDeg)
+      if (!(thetaB > 0)) return { ok: false, error: '缺少 3 dB 波束宽' }
+      pat = { kind: 'gauss', thetaB3dBDeg: thetaB }
+    }
+    const C = core()
+    // 块：同一 UT 日内每 ≤ SAT_SUN_CHUNK 拍一块（F10.7 按日取；拍与拍之间互不相干，怎么切结果都逐位相同）
+    const blocks = []
+    for (let i = 0; i < n;) {
+      const d0 = Math.floor(S[i * 10] / DAY_MS) * DAY_MS
+      let j = i + 1
+      while (j < n && j - i < SAT_SUN_CHUNK && Math.floor(S[j * 10] / DAY_MS) * DAY_MS === d0) j++
+      blocks.push({ a: i, b: j, d0 })
+      i = j
+    }
+    const fDay = new Map()
+    const f107Of = (d0) => {
+      if (solarTemp) return undefined
+      if (fixedF107) return fixedF107
+      if (!fDay.has(d0)) {
+        let m = null
+        try { m = solarFlux.f107For(isoDay(d0)) } catch (e) { m = null }
+        fDay.set(d0, m && m.f107 > 0 ? m : null)
+      }
+      const m = fDay.get(d0)
+      return m ? m.f107 : undefined               // 取不到 → 日凌核缺省 120，绝不因取数失败而算不出来
+    }
+    const dT = new Float64Array(n), gl = new Float64Array(n), off = new Float64Array(n), vis = new Float32Array(n)
+    const counts = { gain: 0, gauss: 0, none: 0, blocked: 0, prescreened: 0, upDefault }
+    const base = { freqGHz, sysTempK, solarModel, solarTemp }
+    for (const r of blocks) {
+      const res = C.satSunIntrusionSeries({ ...base, f107: f107Of(r.d0), samples: S.subarray(r.a * 10, r.b * 10), pattern: pat })
+      dT.set(res.dT, r.a); gl.set(res.gtLossDb, r.a); off.set(res.offAxisDeg, r.a); vis.set(res.visibleFrac, r.a)
+      for (const k of ['gain', 'gauss', 'none', 'blocked']) counts[k] += res.counts[k] || 0
+      await clock.step()
+    }
+    if (!gsrc) {
+      // ③ 预筛：日面最近边缘离视轴超过 6θB（主瓣 −108 dB 以外）的拍直接记 0
+      for (let i = 0; i < n; i++) {
+        if (vis[i] > 0 && off[i] > C.sunDiamDegAt(S[i * 10]) / 2 + 6 * thetaB) { counts.prescreened++; dT[i] = 0; gl[i] = 0 }
+        if ((i & 4095) === 4095 && clock.due()) await clock.yieldNow()
+      }
+    }
+    let wi = -1
+    for (let i = 0; i < n; i++) if (wi < 0 || dT[i] > dT[wi]) wi = i
+    const f107 = solarTemp ? []
+      : fixedF107 ? [{ date: null, f107: fixedF107, source: 'manual' }]
+        : [...fDay].map(([d0, m]) => ({ date: isoDay(d0), f107: m ? m.f107 : 120, source: m ? m.source : 'default' }))
+    return {
+      ok: true, n,
+      dT: Float32Array.from(dT), gtLossDb: Float32Array.from(gl), offAxisDeg: Float32Array.from(off), visibleFrac: vis,
+      worst: wi < 0 ? null : { i: wi, tMs: S[wi * 10], dT: dT[wi], gtLossDb: gl[wi], offAxisDeg: off[wi], visibleFrac: vis[wi] },
+      counts, f107, sysTempK, solarModel, solarTemp: solarTemp || null, thetaB3dB: thetaB,
+      grd: gsrc ? { file: gsrc.file, beams: gsrc.beams, peakDbi: gsrc.peakDbi, offsetDb: gsrc.offsetDb, level: gsrc.level, powerFrac: gsrc.powerFrac, fallbackThetaB3dB: gsrc.fallbackThetaB3dB } : null,
+      ms: Date.now() - t0
+    }
+  }
+  // 在算的任务：键 = 发起窗口 + jobKey。同键新请求到了就把旧的标成取消（旧的在下一个时间片退出，回 code:'canceled'）
+  const satSunJobs = new Map()
+  const satSunJobKey = (e, k) => `${(e && e.sender && e.sender.id) || 0}|${typeof k === 'string' && k ? k.slice(0, 64) : 'default'}`
+  ipcMain.handle('sunoutage:satIntrusion', async (e, req) => {
+    const key = satSunJobKey(e, req && req.jobKey)
+    const prev = satSunJobs.get(key)
+    if (prev) prev.canceled = true
+    const job = { canceled: false }
+    satSunJobs.set(key, job)
+    const wc = e && e.sender
+    const onGone = () => { job.canceled = true }
+    if (wc && typeof wc.once === 'function') wc.once('destroyed', onGone)
+    try {
+      const r = await satIntrusion(req, job)
+      if (r && r.ok) bumpSolarFlux()
+      return r
+    } catch (err) {
+      const code = err && SAT_SUN_CODES.has(err.code) ? err.code : undefined
+      return code ? { ok: false, error: err.message, code, ...(code === 'canceled' ? { canceled: true } : {}) } : { ok: false, error: (err && err.message) || String(err) }
+    } finally {
+      if (satSunJobs.get(key) === job) satSunJobs.delete(key)
+      if (wc && typeof wc.removeListener === 'function') wc.removeListener('destroyed', onGone)
+    }
+  })
+  // 显式取消：jobKey 缺省 'default'。→ 有没有这么一个在算的任务
+  ipcMain.handle('sunoutage:satIntrusionCancel', (e, k) => {
+    const j = satSunJobs.get(satSunJobKey(e, k))
+    if (j) j.canceled = true
+    return !!j
   })
   // 模板版 Excel：整本只有两张表（地球站参数 / 逐日日凌窗口），版式见 report.buildSunOutageExcel
   ipcMain.handle('sunoutage:exportExcel', async (e, payload) => {

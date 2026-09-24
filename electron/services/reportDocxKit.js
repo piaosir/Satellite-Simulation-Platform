@@ -133,28 +133,37 @@ function docTable(head, rows, opts) {
   const thStyle = dense ? 'RptThS' : 'RptTh'
   const align = opts.align || []
   const M = TPL.table.cellMarTw
-  const cell = (text, i, o) => new TableCell({
-    width: opts.widths ? { size: opts.widths[i], type: WidthType.PERCENTAGE } : undefined,
+  // o.span：这一格横跨整行（分组行，见下 spanKeyRows）——宽度取各列之和；不跨的格一个键都不多写
+  const cell = (text, i, o) => new TableCell(Object.assign({
+    width: opts.widths ? { size: o.span ? opts.widths.reduce((a, b) => a + b, 0) : opts.widths[i], type: WidthType.PERCENTAGE } : undefined,
     borders: { top: o.top ? B(o.top) : NONE, bottom: o.bottom ? B(o.bottom) : NONE, left: NONE, right: NONE },
     verticalAlign: VerticalAlign.CENTER,
     margins: { top: M.top, bottom: M.bottom, left: M.left, right: M.right },
-    children: [new Paragraph({
+    children: [new Paragraph(Object.assign({
       style: o.head ? thStyle : tdStyle,
       alignment: colAlign(align[i]),   // ★ 表头与数据行同一对齐：表头才压得住它那一列
       // 关键行（分组行 / 小计 / 余量）换黑体，不加粗：三线表不许底纹，层次只能靠字体给，
       // 而黑体上再加粗会被 Word 合成成假粗体，糊成一团。
       children: [new TextRun({ text: text == null ? '' : String(text), style: o.key ? 'RptKey' : undefined })]
-    })]
-  })
+    }, o.keepNext ? { keepNext: true } : {}))]   // 只在要求时才写这个键：不要求的表与改前逐字节相同
+  }, o.span ? { columnSpan: o.span } : {}))
   const trs = []
   const hasHead = !!(head && head.length)
   // cantSplit：一行不许被分页拦腰截断
-  if (hasHead) trs.push(new TableRow({ tableHeader: true, cantSplit: true, children: head.map((h, i) => cell(h, i, { head: true, top: strong, bottom: thin })) }))
+  // 与下一行同页（段落「与下段同页」）：keepTogether = 整张表不跨页（除末行外每行都挂）；keepRows = 逐行指定（分组行跟住它下面那行）
+  const keepAt = (ri) => !!(ri < rows.length - 1 && (opts.keepTogether || (opts.keepRows && opts.keepRows[ri])))
+  if (hasHead) trs.push(new TableRow({ tableHeader: true, cantSplit: true, children: head.map((h, i) => cell(h, i, { head: true, top: strong, bottom: thin, keepNext: !!(opts.keepTogether && rows.length) })) }))
   rows.forEach((r, ri) => {
     const first = !hasHead && ri === 0
     const last = ri === rows.length - 1
     const key = !!(opts.keyRows && opts.keyRows[ri])
-    trs.push(new TableRow({ cantSplit: true, children: r.map((v, i) => cell(v, i, { top: first ? strong : 0, bottom: last ? strong : 0, key })) }))
+    // spanKeyRows：分组行（keyRows）只有第一格有字，整行并成一格（gridSpan = 列数）——长组名不再挤在首列里折行，
+    // 与 PDF 的 colspan 同形。只有传了这个选项才并；不传的表与改前逐字节相同
+    if (key && opts.spanKeyRows && r.length > 1) {
+      trs.push(new TableRow({ cantSplit: true, children: [cell(r[0], 0, { top: first ? strong : 0, bottom: last ? strong : 0, key, keepNext: keepAt(ri), span: r.length })] }))
+      return
+    }
+    trs.push(new TableRow({ cantSplit: true, children: r.map((v, i) => cell(v, i, { top: first ? strong : 0, bottom: last ? strong : 0, key, keepNext: keepAt(ri) })) }))
   })
   // widthPct：三列的小表（输入参数）铺满 253mm 的横向版心会显得空旷，收窄并居中更像正式文档里的表
   return new Table({

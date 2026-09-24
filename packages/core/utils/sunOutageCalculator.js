@@ -1091,6 +1091,248 @@ function fmtDate(y, m, d) {
   return y + '-' + pad2(m) + '-' + pad2(d);
 }
 
+/* ============================================================
+ * 二期（卫星模型工具 §6.8，DESIGN2 D10–D13）：太阳噪温 · 太阳位置 · 地球遮挡 —— 地面日凌与星侧太阳侵入共用
+ *
+ * ★ 只追加：上面任何函数一个字不改（_nutation 也不动），这里只是把已有内核拼成共享函数：
+ *   sunNoiseTemp      ΔT = T_b·K·可见比例（T_b = solarTempAt，K = couplingAt）——与 degradationAt 同输入逐位同值（单测把
+ *                     本文件原样载入、取出内部 degradationAt / outageModel 对拍）
+ *   sunEcefAt         与 daySun(dayJD, deltaT(year)).dir(sec) 逐位同值（同一组表达式；按 UT 日缓存两端 VSOP87）
+ *   sunDiamDegAt      2·(0.26656 / R_正午)，与 calculateSunOutage 逐日取的视直径同一口径
+ *   earthBlockFraction 日面被地盘挡住的比例（圆锥 + 半影，两圆盘重叠面积 / 日面面积）——与 models/attitude.mjs 的
+ *                     eclipseFactor（D13 唯一实现）同一套式子的 CJS 镜像：blocked = 1 − eclipseFactor（单测对拍）
+ *   satSunIntrusionSeries 星侧逐样本批量：太阳方向（含卫星处视差）→ 地球遮挡 → 偏轴角 → ΔT / ΔG/T，IPC 直接调它
+ * ============================================================ */
+
+var SUN_RADIUS_KM_NOMINAL = 695700;   // IAU 2015 B3 名义太阳半径（= attitude.mjs 的 SUN_RADIUS_KM）
+var EARTH_RADIUS_KM_MEAN = 6371;      // 地影口径的球地球半径（= attitude.mjs 的 EARTH_RADIUS_KM，D13 同口径）
+var AU_KM_NOMINAL = 1.495978707e8;    // 天文单位（IAU 2012 B2）
+var DAY_MS = 86400000;
+
+// 按 UT 日缓存：当天 0h / 24h 两次 VSOP87（与 daySun 同）+ 正午一次（视直径与日地距离，与 calculateSunOutage 逐日同）。
+// 星侧时间序列一天几千拍，只在跨日时算 3 次 VSOP87；最多留 64 天。
+var _sunDayCache = new Map();
+function _sunDay(utcMs) {
+  var d0 = Math.floor(utcMs / DAY_MS) * DAY_MS;
+  var hit = _sunDayCache.get(d0);
+  if (hit) return hit;
+  var dayJD = d0 / DAY_MS + 2440587.5;                 // UT 0h 的儒略日（X.5，精确可表示，与 eqDayJD + d 同值）
+  var dT = deltaT(new Date(d0).getUTCFullYear());
+  var a = solarPosition(dayJD + dT / SECONDS_PER_DAY);
+  var b = solarPosition(dayJD + 1 + dT / SECONDS_PER_DAY);
+  var dra = b.ra - a.ra;
+  if (dra > 180) dra -= 360; else if (dra < -180) dra += 360;
+  var noonSun = solarPosition(dayJD + 0.5 + dT / SECONDS_PER_DAY);
+  var sunRad = 0.26656 / noonSun.R;
+  var rec = { d0: d0, dayJD: dayJD, a: a, b: b, dra: dra, nut: a.dpsi * Math.cos(a.eps0 * RAD), diam: 2 * sunRad, R: noonSun.R };
+  _sunDayCache.set(d0, rec);
+  if (_sunDayCache.size > 64) _sunDayCache.delete(_sunDayCache.keys().next().value);
+  return rec;
+}
+
+/**
+ * 太阳单位矢量（标准 ECEF，z 为极轴），UTC 毫秒。与日凌扫描用的 daySun(...).dir(sec) 逐位同值（VSOP87 + IAU80 章动，~1″）。
+ * @param {number} utcMs
+ * @param {number[]} [out]
+ */
+function sunEcefAt(utcMs, out) {
+  var o = out || [0, 0, 0];
+  var d = _sunDay(utcMs), a = d.a, b = d.b;
+  var sec = (utcMs - d.d0) / 1000;
+  var u = sec / SECONDS_PER_DAY;
+  var raR = (a.ra + d.dra * u) * RAD;
+  var decR = (a.dec + (b.dec - a.dec) * u) * RAD;
+  var gastR = (gmst(d.dayJD + sec * JD_SEC) + d.nut) * RAD;
+  var cd = Math.cos(decR);
+  o[0] = cd * Math.cos(raR - gastR); o[1] = cd * Math.sin(raR - gastR); o[2] = Math.sin(decR);
+  return o;
+}
+
+/** 当日（UT）太阳视直径（°）：2·(0.26656 / R_正午)，与 calculateSunOutage 逐日 outageModel 用的 θ_d 同值。 */
+function sunDiamDegAt(utcMs) { return _sunDay(utcMs).diam; }
+/** 当日（UT 正午）日地距离（AU），VSOP87。 */
+function sunDistAuAt(utcMs) { return _sunDay(utcMs).R; }
+
+/**
+ * 从卫星看，日面被地球圆盘挡住的比例（0 = 不挡，1 = 全挡）。
+ *   日面角半径 a = asin(R☉ / |s − r|)、地球角半径 b = asin(R⊕ / |r|)、两圆心角距 c = ∠(s − r, −r)；
+ *   c ≥ a + b → 0；c ≤ b − a → 1；c ≤ a − b（环食）→ b²/a²；其余 = 两圆盘重叠面积 / πa²（弓形之和）。
+ * 太阳距离缺省由视直径反推：d = R☉ / sin(θ_d / 2)（地心处看到的角半径恰为 θ_d / 2）。卫星在地球内部返回 1。
+ * @param {number[]} satEcefKm
+ * @param {number[]} sunDirEcef  太阳单位矢量（地心，ECEF）
+ * @param {number} sunDiamDeg
+ * @param {{earthRadiusKm?:number, sunDistKm?:number}} [opts]
+ */
+function earthBlockFraction(satEcefKm, sunDirEcef, sunDiamDeg, opts) {
+  var Re = (opts && opts.earthRadiusKm > 0) ? opts.earthRadiusKm : EARTH_RADIUS_KM_MEAN;
+  var Rs = SUN_RADIUS_KM_NOMINAL;
+  var th = sunDiamDeg > 0 ? sunDiamDeg : SUN_DIAM_1AU;
+  var sunDist = (opts && opts.sunDistKm > 0) ? opts.sunDistKm : Rs / Math.sin(th / 2 * RAD);
+  var rx = satEcefKm[0], ry = satEcefKm[1], rz = satEcefKm[2];
+  // ★ 用 Math.hypot 而不是 sqrt(x²+y²+z²)：与 eclipseFactor 逐运算同式。半影边缘 acos(x/a) 的 x/a 贴近 ±1，
+  //   导数发散，1 ulp 的模长差会被放大到 ~1e-9；同式才能保证 blocked ≡ 1 − eclipseFactor 到 1e-16 量级。
+  var rn = Math.hypot(rx, ry, rz);
+  if (!(rn > Re)) return 1;
+  var sl = Math.hypot(sunDirEcef[0], sunDirEcef[1], sunDirEcef[2]);
+  var tx = (sunDirEcef[0] / sl) * sunDist - rx, ty = (sunDirEcef[1] / sl) * sunDist - ry, tz = (sunDirEcef[2] / sl) * sunDist - rz;
+  var ds = Math.hypot(tx, ty, tz);
+  var a = Math.asin(Math.min(1, Rs / ds));
+  var b = Math.asin(Math.min(1, Re / rn));
+  var cc = -(tx * rx + ty * ry + tz * rz) / (ds * rn);
+  var c = Math.acos(Math.max(-1, Math.min(1, cc)));
+  if (c >= a + b) return 0;
+  if (c <= b - a) return 1;
+  if (c <= a - b) return (b * b) / (a * a);
+  var x = (c * c + a * a - b * b) / (2 * c);
+  var y = Math.sqrt(Math.max(0, a * a - x * x));
+  var A = a * a * Math.acos(Math.max(-1, Math.min(1, x / a))) + b * b * Math.acos(Math.max(-1, Math.min(1, (c - x) / b))) - c * y;
+  return Math.max(0, Math.min(1, A / (Math.PI * a * a)));
+}
+
+/**
+ * 太阳落在方向图里引起的噪声温升（地面日凌与星侧太阳侵入共用；亮温模型就是上面的 solarTempAt，不另造）。
+ * @param {object} o
+ *   freqGHz      接收频率（必填）
+ *   offAxisDeg   视轴与日面中心的夹角（°）
+ *   方向图三选一：thetaB3dBDeg（高斯主瓣 3 dB 全宽）| diameterM（→ 70λ/D = 20.98547/(f·D)，与 outageModel 同式）|
+ *                gainLin | gainDbi（实测方向图【在日面上的平均增益】，线性 / dBi：K = Ω☉·Ḡ/(4π)，Ω☉ = π/4·θ_d²；gainLin 优先）——
+ *                  只拿日面中心一个值当 Ḡ 就是小源近似，比高斯档轴上闭式 1 − e^(−x) 偏大 x/(1 − e^(−x)) 倍，x = ln2·(θd/θB)²；
+ *                  窄波束（θB ≲ 3θd）要用 satSunIntrusionSeries 那样在日面上求积（SUN_DISK_RULE）
+ *   sunDiamDeg | utcMs   当日视直径（°）；给 utcMs 则按 sunDiamDegAt；都没有取 1 AU 值
+ *   f107 / solarModel ('norp' 缺省 | 'legacy') / solarTemp（直接覆盖 T_b）
+ *   visibleFrac  日面未被遮挡的比例（1 − earthBlockFraction；缺省 1）——半遮挡按弓形面积比例缩放 ΔT
+ *   sysTempK     给了就出 gtLossDb = 10·lg(1 + ΔT/T_sys)（= C/N 恶化 = 等效 G/T 损失）
+ *   prescreen    true 时偏轴 > 6θ_B + θ_d 直接 K = 0（批量用；与 outageModel 二分上界同一界，缺省关以保逐位）
+ * @returns {{Tb, K, dT, gtLossDb:number|null, thetaB:number|null, thetaD, visibleFrac, mode:'gauss'|'gain', f107, solarModel}|null}
+ */
+function sunNoiseTemp(o) {
+  o = o || {};
+  var f = Number(o.freqGHz);
+  if (!(f > 0)) return null;
+  var off = Math.abs(Number(o.offAxisDeg));
+  if (!isFinite(off)) return null;
+  var thetaD = o.sunDiamDeg > 0 ? Number(o.sunDiamDeg) : (isFinite(o.utcMs) && o.utcMs !== null ? sunDiamDegAt(Number(o.utcMs)) : SUN_DIAM_1AU);
+  var f107 = o.f107 > 0 ? Number(o.f107) : F107_DEFAULT;
+  var model = o.solarModel === 'legacy' ? 'legacy' : 'norp';
+  var Tb = o.solarTemp > 0 ? Number(o.solarTemp) : solarTempAt(f, f107, thetaD, model);
+  var vis = (o.visibleFrac === undefined || o.visibleFrac === null) ? 1 : Math.max(0, Math.min(1, Number(o.visibleFrac)));
+  if (!(vis >= 0)) vis = 1;
+  var thetaB = null, K, mode;
+  var gLin = (o.gainLin !== undefined && o.gainLin !== null && Number(o.gainLin) >= 0 && isFinite(o.gainLin)) ? Number(o.gainLin)
+    : ((o.gainDbi !== undefined && o.gainDbi !== null && isFinite(o.gainDbi)) ? Math.pow(10, Number(o.gainDbi) / 10) : null);
+  if (gLin !== null) {
+    mode = 'gain';
+    var th = thetaD * RAD;
+    K = (Math.PI / 4 * th * th) * gLin / (4 * Math.PI);
+  } else {
+    thetaB = o.thetaB3dBDeg > 0 ? Number(o.thetaB3dBDeg) : (o.diameterM > 0 ? 20.98547 / (f * Number(o.diameterM)) : null);
+    if (!(thetaB > 0)) return null;
+    mode = 'gauss';
+    K = (o.prescreen && off > 6 * thetaB + thetaD) ? 0 : couplingAt(off, thetaB, thetaD);
+  }
+  var dT = Tb * K * vis;
+  var sys = o.sysTempK > 0 ? Number(o.sysTempK) : null;
+  return {
+    Tb: Tb, K: K, dT: dT,
+    gtLossDb: sys ? 10 * Math.log10(1 + dT / sys) : null,
+    thetaB: thetaB, thetaD: thetaD, visibleFrac: vis, mode: mode, f107: f107, solarModel: model
+  };
+}
+
+/*
+ * 日面平均增益的求积点（单位圆盘上，权和 = 1）：径向在 u = r² 上取 3 点 Gauss–Legendre（圆盘面积元 dA ∝ du，所以对 u 均匀），
+ * 方位 8 等分，共 24 点——对 u 的 5 次多项式、方位 7 阶三角多项式精确。以高斯主瓣回调对 couplingAt 闭式核（sunNoiseTemp 单测，
+ * 差值里还含 couplingAt 自身的平面近似与 48 段 Simpson 误差）：θB = 0.58°（18 m S 频段）偏轴 ≤ 1° 最差 9.6e-4；
+ * θB = 1.25°（1.2 m Ku）偏轴 ≤ 2.5° 最差 3.6e-5。只取日面中心一点（小源近似）在 θB = 0.58° 时轴上 +32 %、偏 1° 处 −77 %。
+ * 每点 [x, y, 权]。
+ */
+var SUN_DISK_RULE = (function () {
+  var gl = [[-0.7745966692414834, 5 / 18], [0, 8 / 18], [0.7745966692414834, 5 / 18]];   // [-1,1] 上权 5/9·8/9·5/9 → 映到 u∈[0,1] 权减半
+  var pts = [];
+  for (var i = 0; i < gl.length; i++) {
+    var rf = Math.sqrt((gl[i][0] + 1) / 2);
+    for (var j = 0; j < 8; j++) { var ph = Math.PI * j / 4; pts.push([rf * Math.cos(ph), rf * Math.sin(ph), gl[i][1] / 8]); }
+  }
+  return pts;
+})();
+
+/**
+ * 星侧太阳侵入：逐样本批量（主进程 IPC sunoutage:satIntrusion 直接调它；纯函数、不联网）。
+ * @param {object} o
+ *   samples   Float64Array，每样本 10 个数：tMs, 卫星 ECEF xyz（km）, 视轴 ECEF xyz（单位）, up ECEF xyz（单位；只有 gain 档用）
+ *   freqGHz / sysTempK / f107 / solarModel / solarTemp   同 sunNoiseTemp
+ *   pattern   {kind:'gauss', thetaB3dBDeg} | {kind:'diameter', diameterM} |
+ *             {kind:'gain', gainAt(dirAnt:[x,y,z]) → dBi|null, fallbackThetaB3dBDeg?}（dirAnt = 天线系单位矢量：z = 视轴、y = up、x = y × z；
+ *              每拍在日面上按 SUN_DISK_RULE 取 24 个方向求线性平均增益（不是只取日面中心——窄波束下小源近似会差几十 %）；
+ *              传给回调的数组每次复用（零分配），回调里要留就自己拷；
+ *              GRD 网格通常只盖地球盘附近，任一点取不到（null）时整拍退回高斯主瓣 fallbackThetaB3dBDeg，再没有记 0）
+ *   earthRadiusKm  地球遮挡用（缺省 6371，D13）
+ * 太阳方向取「卫星 → 太阳」：地心太阳单位矢量 × 当日日地距离 − 卫星位置（GEO 处视差约 0.016°，对 0.3° 量级窄波束不可忽略）。
+ * @returns {{n, dT:Float64Array, gtLossDb:Float64Array, offAxisDeg:Float64Array, visibleFrac:Float64Array,
+ *            worst:{i, tMs, dT, gtLossDb, offAxisDeg}|null, counts:{gain, gauss, none, blocked}}}
+ *   counts：gain = 用实测方向图的拍数、gauss = 高斯档（含 gain 退回）、none = 没有可用方向图记 0、blocked = 日面全被地球挡住
+ */
+function satSunIntrusionSeries(o) {
+  o = o || {};
+  var S = o.samples, n = S ? Math.floor(S.length / 10) : 0;
+  var dTs = new Float64Array(n), gl = new Float64Array(n), offs = new Float64Array(n), viss = new Float64Array(n);
+  var pat = o.pattern || {};
+  var sys = o.sysTempK > 0 ? Number(o.sysTempK) : 500;
+  var s = [0, 0, 0], rv = [0, 0, 0], eo = { earthRadiusKm: o.earthRadiusKm, sunDistKm: 0 }, worst = null, dir = [0, 0, 0];
+  var counts = { gain: 0, gauss: 0, none: 0, blocked: 0 };
+  for (var i = 0; i < n; i++) {
+    var k = i * 10, t = S[k];
+    var rx = S[k + 1], ry = S[k + 2], rz = S[k + 3], bx = S[k + 4], by = S[k + 5], bz = S[k + 6];
+    sunEcefAt(t, s);
+    var diam = sunDiamDegAt(t), dist = sunDistAuAt(t) * AU_KM_NOMINAL;
+    var vx = s[0] * dist - rx, vy = s[1] * dist - ry, vz = s[2] * dist - rz, vl = Math.sqrt(vx * vx + vy * vy + vz * vz);
+    vx /= vl; vy /= vl; vz /= vl;
+    var bl = Math.sqrt(bx * bx + by * by + bz * bz) || 1;
+    var off = Math.acos(Math.max(-1, Math.min(1, (vx * bx + vy * by + vz * bz) / bl))) * DEG;
+    rv[0] = rx; rv[1] = ry; rv[2] = rz; eo.sunDistKm = dist;
+    var vis = 1 - earthBlockFraction(rv, s, diam, eo);
+    var r = null;
+    if (vis > 0) {
+      var q = { freqGHz: o.freqGHz, f107: o.f107, solarModel: o.solarModel, solarTemp: o.solarTemp, sysTempK: sys, prescreen: true,
+                offAxisDeg: off, sunDiamDeg: diam, visibleFrac: vis };
+      if (pat.kind === 'gain' && typeof pat.gainAt === 'function') {
+        // 天线系：z = 视轴、y = up（去视轴分量）、x = y × z
+        var zx = bx / bl, zy = by / bl, zz = bz / bl;
+        var ux = S[k + 7], uy = S[k + 8], uz = S[k + 9], ud = ux * zx + uy * zy + uz * zz;
+        ux -= ud * zx; uy -= ud * zy; uz -= ud * zz;
+        var ul = Math.sqrt(ux * ux + uy * uy + uz * uz) || 1; ux /= ul; uy /= ul; uz /= ul;
+        var xx = uy * zz - uz * zy, xy = uz * zx - ux * zz, xz = ux * zy - uy * zx;
+        // 日面中心在天线系 c，再取 c 的两根正交横轴 e1 / e2（避开与 c 最平行的坐标轴）
+        var cx = vx * xx + vy * xy + vz * xz, cy = vx * ux + vy * uy + vz * uz, cz = vx * zx + vy * zy + vz * zz;
+        var ax = Math.abs(cx), ay = Math.abs(cy), az = Math.abs(cz);
+        var e1x, e1y, e1z;                                          // e1 = c × (最不平行的坐标轴)
+        if (ax <= ay && ax <= az) { e1x = 0; e1y = cz; e1z = -cy; } else if (ay <= az) { e1x = -cz; e1y = 0; e1z = cx; } else { e1x = cy; e1y = -cx; e1z = 0; }
+        var el = Math.sqrt(e1x * e1x + e1y * e1y + e1z * e1z); e1x /= el; e1y /= el; e1z /= el;
+        var e2x = cy * e1z - cz * e1y, e2y = cz * e1x - cx * e1z, e2z = cx * e1y - cy * e1x;
+        var rad = diam / 2 * RAD, gsum = 0, okAll = true;
+        for (var p = 0; p < SUN_DISK_RULE.length; p++) {
+          var P = SUN_DISK_RULE[p], rho = Math.hypot(P[0], P[1]) * rad;
+          var cr = Math.cos(rho), sr = rho > 0 ? Math.sin(rho) / (rho / rad) : 0;  // sin(ρ)·(P/|P|) = sin(ρ)/|P|·P
+          dir[0] = cr * cx + sr * (P[0] * e1x + P[1] * e2x);
+          dir[1] = cr * cy + sr * (P[0] * e1y + P[1] * e2y);
+          dir[2] = cr * cz + sr * (P[0] * e1z + P[1] * e2z);
+          var g = pat.gainAt(dir);
+          if (g === null || g === undefined || !isFinite(g)) { okAll = false; break; }
+          gsum += P[2] * Math.pow(10, g / 10);
+        }
+        if (okAll) q.gainLin = gsum;
+        else if (pat.fallbackThetaB3dBDeg > 0) q.thetaB3dBDeg = pat.fallbackThetaB3dBDeg;
+      } else if (pat.kind === 'diameter') q.diameterM = pat.diameterM;
+      else q.thetaB3dBDeg = pat.thetaB3dBDeg;
+      r = sunNoiseTemp(q);
+      if (!r) counts.none++; else if (r.mode === 'gain') counts.gain++; else counts.gauss++;
+    } else counts.blocked++;
+    dTs[i] = r ? r.dT : 0; gl[i] = r ? r.gtLossDb : 0; offs[i] = off; viss[i] = vis;
+    if (!worst || dTs[i] > worst.dT) worst = { i: i, tMs: t, dT: dTs[i], gtLossDb: gl[i], offAxisDeg: off };
+  }
+  return { n: n, dT: dTs, gtLossDb: gl, offAxisDeg: offs, visibleFrac: viss, worst: worst, counts: counts };
+}
+
 module.exports = {
   calculateSunOutage: calculateSunOutage,
   calculateSunOutageSeasons: calculateSunOutageSeasons,
@@ -1102,5 +1344,13 @@ module.exports = {
   solarTempLegacy: solarTempLegacy,
   // 分点日期（IPC 层按目标日取 F10.7 用；别在外面再抄一份分点公式）
   equinoxDateOf: equinoxDateOf,
-  couplingAt: couplingAt
+  couplingAt: couplingAt,
+  // 二期（卫星模型工具 §6.8）：太阳噪温 / 太阳位置 / 地球遮挡 / 星侧批量——只追加
+  sunNoiseTemp: sunNoiseTemp,
+  sunEcefAt: sunEcefAt,
+  sunDiamDegAt: sunDiamDegAt,
+  sunDistAuAt: sunDistAuAt,
+  earthBlockFraction: earthBlockFraction,
+  satSunIntrusionSeries: satSunIntrusionSeries,
+  SUN_DISK_RULE: SUN_DISK_RULE
 };

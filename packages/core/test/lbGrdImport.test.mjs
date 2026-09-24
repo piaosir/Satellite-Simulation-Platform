@@ -304,13 +304,14 @@ ok('没有 file 的天线 ⇒ 空基底', base(stat(110.5).node, { name: 'x' }, 
 // 清单对拍：采样器 makeSampleCtx 里读过的每个 c.<键> 都必须在 SAMPLE_CFG_KEYS 里（反之亦然）——两边任一边加字段都会在这里露头
 {
   const fs = await import('node:fs')
-  const src = fs.readFileSync(new URL('../utils/grdSampler.js', import.meta.url), 'utf8')
+  // 采样器是 CRLF 文件：先归一行尾，否则找不到函数结尾的 '\n}\n'，body 会一路截到文件末尾（清单对拍形同虚设）
+  const src = fs.readFileSync(new URL('../utils/grdSampler.js', import.meta.url), 'utf8').replace(/\r\n/g, '\n')
   const i = src.indexOf('function makeSampleCtx('), j = src.indexOf('\n}\n', i)
-  const body = src.slice(i, j)
+  const body = j > i ? src.slice(i, j) : ''
   const used = new Set([...body.matchAll(/\bc\.([A-Za-z_]\w*)/g)].map((m) => m[1]))
   const listed = new Set(geo.SAMPLE_CFG_KEYS)
   const miss = [...used].filter((k) => !listed.has(k)), extra = [...listed].filter((k) => !used.has(k))
-  ok('SAMPLE_CFG_KEYS 与采样器 makeSampleCtx 读的键一致', body.length > 0 && !miss.length && !extra.length, `采样器多读: [${miss}] 清单多列: [${extra}]`)
+  ok('SAMPLE_CFG_KEYS 与采样器 makeSampleCtx 读的键一致', body.length > 0 && !body.includes('function sampleMax(') && !miss.length && !extra.length, `采样器多读: [${miss}] 清单多列: [${extra}]`)
 }
 
 console.log(`\n=== ${pass} passed, ${fail} failed ===`)

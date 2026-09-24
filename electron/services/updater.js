@@ -19,12 +19,13 @@ const fs = require('fs')
 const { spawn } = require('child_process')
 const P = require('./updaterPending')
 const S = require('./updaterState')
+// 文件日志抽到 fileLog.js（models.log 也用它），实现与截断口径原样未动
+const { createFileLogger } = require('./fileLog')
 
 const FIRST_CHECK_MS = 3 * 1000
 const RECHECK_OK_MS = 4 * 60 * 60 * 1000
 const RECHECK_ERR_MS = 10 * 60 * 1000
 const RESUME_DELAY_MS = 30 * 1000
-const LOG_MAX_BYTES = 512 * 1024
 
 let started = false
 let logger = null
@@ -48,30 +49,6 @@ function dispatch(ev) {
   for (const fn of listeners) { try { fn(state) } catch { /* 监听方自己的事 */ } }
 }
 function onChange(fn) { listeners.add(fn); return () => listeners.delete(fn) }
-
-// 追加写、超上限砍掉前一半。同步写：量小（每次检查几行、下载每 10% 一行），不值得上队列
-function createFileLogger(file) {
-  const write = (level, args) => {
-    const line = `${new Date().toISOString()} [${level}] ${args.map((a) => (a instanceof Error ? a.stack || a.message : String(a))).join(' ')}\r\n`
-    try {
-      let size = 0
-      try { size = fs.statSync(file).size } catch {}
-      if (size > LOG_MAX_BYTES) {
-        const buf = fs.readFileSync(file)
-        fs.writeFileSync(file, buf.subarray(buf.length >> 1))
-      }
-      fs.appendFileSync(file, line)
-    } catch {}
-    if (level === 'error' || level === 'warn') console.warn(line.trim())
-    else console.log(line.trim())
-  }
-  return {
-    info: (...a) => write('info', a),
-    warn: (...a) => write('warn', a),
-    error: (...a) => write('error', a),
-    debug: () => {}
-  }
-}
 
 function getLogger() {
   if (!logger) logger = createFileLogger(path.join(app.getPath('userData'), 'updater.log'))

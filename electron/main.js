@@ -7,8 +7,13 @@ const { join } = require('path')
 //   还得自己管回收；协议方式让 Chromium 自己做磁盘/内存缓存，pan 回头看过的地方是零成本。
 // ★ registerSchemesAsPrivileged 必须在 app ready 之前调用，晚一步就静默不生效（不报错）。
 //   standard: <img> 需要它才按常规 URL 解析；supportFetchAPI 留给将来预热/探测用。
+// ★ 整个进程只能调这一次（第二次调用会静默盖掉 / 失效）：新协议一律并进下面这个数组。
+// models://blobs|user|builtin|thumbs/<sha256>.<glb|webp|png> → 卫星 3D 模型与缩略图（services/models.js）。
+//   GLTFLoader 用 fetch() 取 glb，页面来源（dev 的 http://localhost、打包的 file://）对它都算跨域 →
+//   corsEnabled + 响应带 ACAO；stream 让 90 MB 级的 lod0 能流式回，不必整块读进主进程内存。
 protocol.registerSchemesAsPrivileged([
-  { scheme: 'imagery', privileges: { standard: true, secure: true, supportFetchAPI: true, bypassCSP: true } }
+  { scheme: 'imagery', privileges: { standard: true, secure: true, supportFetchAPI: true, bypassCSP: true } },
+  { scheme: 'models', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, bypassCSP: true, stream: true } }
 ])
 
 // 强制启用硬件加速：部分老旧集显（常见于国企办公机）落在 Electron 的 GPU 黑名单内，会静默
@@ -505,6 +510,43 @@ function createCiWindow() {
   return win
 }
 
+// 卫星模型工作台：独立 BrowserWindow，单例复用。
+// 不设关窗守卫——元数据改一下即经 models:saveMeta 落盘（与频率计划同形态），关窗无可丢之物；
+// 也因此不声明 _modelAllowClose（updaterPending.test.mjs ⑤ 会对账每个守卫都进了 before-quit）。
+let _modelWin = null
+function createModelWindow() {
+  if (_modelWin && !_modelWin.isDestroyed()) {
+    if (_modelWin.isMinimized()) _modelWin.restore()
+    _modelWin.focus()
+    return _modelWin
+  }
+  const win = new BrowserWindow({
+    width: 1560,
+    height: 960,
+    minWidth: 1180,
+    minHeight: 720,
+    title: '模型工作台',
+    backgroundColor: '#ffffff',
+    autoHideMenuBar: true,
+    webPreferences: {
+      preload: join(__dirname, '../preload/preload.js'),
+      contextIsolation: true,
+      sandbox: false,
+      // 打包版彻底关闭 DevTools（同其它工具窗，见 createWindow 注释）
+      devTools: !app.isPackaged
+    }
+  })
+  if (process.env['ELECTRON_RENDERER_URL']) {
+    win.loadURL(process.env['ELECTRON_RENDERER_URL'] + '/model.html')
+  } else {
+    win.loadFile(join(__dirname, '../renderer/model.html'))
+  }
+  bindDevTools(win)
+  win.on('closed', () => { _modelWin = null })
+  _modelWin = win
+  return win
+}
+
 // 雨衰计算：独立 BrowserWindow，单例复用（通用于各类卫星；与链路预算工作台同模式，带关窗守卫）。
 let _rainWin = null
 let _rainAllowClose = false
@@ -691,6 +733,18 @@ app.whenReady().then(async () => {
       return new Response(buf, { status: 200, headers: { 'content-type': 'image/jpeg', 'cache-control': 'public, max-age=31536000, immutable' } })
     } catch { return new Response('err', { status: 500 }) }
   })
+  // 卫星 3D 模型：清单 / 下载缓存 / 导入 / 绑定表（services/models.js）。内置模型走 extraResources
+  // （同 imagery：打包后在 asar 外的 resources/models，开发期读仓库 resources/models）。
+  // 服务顶层不碰 electron，net / dialog / shell 从这里注入（它因此能在裸 node 里单测）。
+  // models:// 的路径白名单、host 分派、>4 MB 流式、ACAO 头都在 models.handleProtocol 里。
+  const { dialog, shell } = require('electron')
+  const models = require(join(root, 'electron/services/models'))({
+    appRoot: root,
+    userDataDir: app.getPath('userData'),
+    bundleDir: app.isPackaged ? join(process.resourcesPath, 'models') : join(root, 'resources', 'models'),
+    electron: { net, dialog, shell }
+  })
+  protocol.handle('models', (req) => models.handleProtocol(req))
   const storage = require(join(root, 'electron/services/storage'))
   const report = require(join(root, 'electron/services/report'))
   const coverage = require(join(root, 'electron/services/coverage'))(join(root, 'resources/coverage'))
@@ -711,7 +765,17 @@ app.whenReady().then(async () => {
   const activation = require(join(root, 'electron/services/activation'))(share, storage)
   const { register } = require(join(root, 'electron/ipc/register'))
   register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget: createLinkBudgetWindow, openSunOutage: createSunOutageWindow, confirmCloseSunOutage, grd, confirmCloseLinkBudget, openNgso: createNgsoWindow, confirmCloseNgso, openRegen: createRegenWindow, confirmCloseRegen, openE2e: createE2eWindow, confirmCloseE2e, openRain: createRainWindow, confirmCloseRain, openCi: createCiWindow, openPfd: createPfdWindow, openSsa: createSsaWindow, confirmCloseSsa, freqPlan, openFreqPlan: createFreqPlanWindow, notifyFreqPlan, activation, weather, gfs, updater,
-    perfWin: { open: createPerfWindow, push: perfWinPush, act: perfWinAct, close: perfWinClose, setTitle: perfWinSetTitle, list: perfWinList, self: perfWinSelf } })
+    perfWin: { open: createPerfWindow, push: perfWinPush, act: perfWinAct, close: perfWinClose, setTitle: perfWinSetTitle, list: perfWinList, self: perfWinSelf },
+    models, openModel: createModelWindow })
+  // 模型服务的变化（远端清单 / 下载进度 / 导入 / 元数据 / 绑定 / 缓存）广播到所有窗口：3D 页、侧栏、工作台各自取需要的
+  models.onChange((ev) => {
+    for (const w of BrowserWindow.getAllWindows()) {
+      try { w.webContents.send('models:changed', ev) } catch { /* 窗口正在关 */ }
+    }
+  })
+  // 远端清单：启动 30 s 后刷一次、之后每 24 h（失败静默写 models.log）
+  models.start()
+  app.on('will-quit', () => { try { models.stop() } catch { /* 退出中 */ } })
   // 定时心跳；激活状态变化（管理端激活/撤销被拉到）广播到所有窗口，各窗口就地上锁/解锁
   activation.start((st) => {
     for (const w of BrowserWindow.getAllWindows()) {

@@ -259,9 +259,19 @@ function makeSampleCtx(loaded, sat, cfg) {
   const c = cfg || {}, s = sat || {};
   const satLon = Number(s.lon), satLat = Number(s.lat) || 0, satAlt = Number.isFinite(s.alt) ? Number(s.alt) : H;
   if (!Number.isFinite(satLon)) return null;
-  const basis = (c.boreType || 'azel') === 'azel'
-    ? antennaBasisAzEl(satLon, satLat, satAlt, c.boreAz || 0, c.boreEl || 0, c.yaw || 0)
-    : antennaBasis(satLon, c.boreLon == null ? satLon : c.boreLon, c.boreLat || 0, c.yaw || 0, satLat, satAlt);
+  // 姿态 + 挂点（'att'，DESIGN2 D9）：主进程拿不到姿态律与星历，吃 3D 页按仿真时刻写回 cfg 的等效手动指向
+  // attEquiv {boreAz, boreEl, yaw}（yaw 已含「旋转 Rot」偏置，不再叠 c.yaw），照 azel 档建基底；没写过（老存档 /
+  // 3D 页还没跑到那一拍）退回天底 + 偏置，与渲染端 beamBasisFrom 的 att 缺轴口径一致。
+  // （sat / satoff / point 三档在这里仍落进 geo 分支 —— 既有问题，范围外，见二期报告。）
+  const bt = c.boreType || 'azel';
+  const eq = bt === 'att' ? c.attEquiv : null;
+  const basis = bt === 'att'
+    ? (eq && Number.isFinite(eq.boreAz) && Number.isFinite(eq.boreEl) && Number.isFinite(eq.yaw)
+      ? antennaBasisAzEl(satLon, satLat, satAlt, eq.boreAz, eq.boreEl, eq.yaw)
+      : antennaBasisAzEl(satLon, satLat, satAlt, 0, 0, c.yaw || 0))
+    : bt === 'azel'
+      ? antennaBasisAzEl(satLon, satLat, satAlt, c.boreAz || 0, c.boreEl || 0, c.yaw || 0)
+      : antennaBasis(satLon, c.boreLon == null ? satLon : c.boreLon, c.boreLat || 0, c.yaw || 0, satLat, satAlt);
   const par = { pol: c.pol || 'RSS', gainOffset: Number(c.gainOffset) || 0, pathLoss: c.pathLoss || 'none' };
   const all = loaded.beams;
   const keep = Array.isArray(c.keptSets) ? c.keptSets : null;

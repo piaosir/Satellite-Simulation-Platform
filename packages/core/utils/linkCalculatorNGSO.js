@@ -335,6 +335,13 @@ function performCalculations(satParams, inputs) {
   const orbitPosition = _orbitPosRaw !== null ? parseFloat(_orbitPosRaw) : 110.5;
   const EIRPs = pickNum(inputs.rxEIRP, 46); // dBW - 卫星下行EIRP
   const G_Ts = pickNum(inputs.G_Ts, 2); // dB/K - 卫星G/T
+  // 星侧太阳侵入（DESIGN2 D11）：太阳落进卫星接收天线方向图 → 星上系统噪温升高 ΔT，等效 G/T 损失
+  // ΔG/T = 10lg(1+ΔT/T_sys)（值由模型工作台「分析 › 星侧太阳侵入」给出最坏值，用户填入）。
+  // ★ 物理上是 T 升高、G 与 SFD 不变：只从 uplinkCT 与 uplinkThermalCN 各减一次，绝不改 G_Ts——
+  //   改 G_Ts 会让 SFDs = SFDref − G_Ts 跟着变，uplinkCT 里 +G_Ts 与 SFDs 的 −G_Ts 正负抵消而不变，
+  //   UPPOWER / DOWNPOWER / PFD 全部错口径。关闭（缺省）时恒为 0：x − 0 === x，既有数字逐位不变。
+  const satSunGtLoss = (inputs.satSunIntrusion === '开' || inputs.satSunIntrusion === 'on')
+    ? Math.max(0, pickNum(inputs.satSunGtLoss, 0) || 0) : 0; // dB
   const SFDref = (satParams.sfdRef !== '' && satParams.sfdRef !== null && satParams.sfdRef !== undefined)
     ? parseFloat(satParams.sfdRef) : -84; // dBW/m² - SFD参考值（空回退对齐字段默认 -84）
   
@@ -880,7 +887,7 @@ function performCalculations(satParams, inputs) {
     : 0.3; // 下行其他损耗 (dB) 默认值0.3dB
   
   // 各项C/T值计算
-  const uplinkCT = SFDs - antennaGain - BOi + G_Ts;
+  const uplinkCT = SFDs - antennaGain - BOi + G_Ts - satSunGtLoss;
   const aciUplinkCT = 10 * Math.log10(transponderBandwidth * 1e6) + 
                       CONSTANTS.BOLTZMANN + aciUplinkFactor;
   const adjUplinkCT = 10 * Math.log10(transponderBandwidth * 1e6) + 
@@ -1095,7 +1102,7 @@ function performCalculations(satParams, inputs) {
                             uplinkRainAttenuation - uplinkCloudAttenuation - uplinkMiscLoss;
   // 实际到达卫星通量密度：到达卫星载波电平 + 卫星单位面积增益（与级联自洽，含实际上行雨衰）
   const arrivalPFDAtSatellite = cLevelAtSatellite + antennaGain;
-  const uplinkThermalCN = cLevelAtSatellite + G_Ts - CONSTANTS.BOLTZMANN - RXnoiseBW;
+  const uplinkThermalCN = cLevelAtSatellite + G_Ts - satSunGtLoss - CONSTANTS.BOLTZMANN - RXnoiseBW;
   // 上行干扰损失（dB）：纯干扰造成的 C/N 退化 = 仅热噪声上行 C/T − 含干扰上行总 C/T
   // EIRP、雨衰、带宽、k 等热噪声项在差值中抵消，结果只反映 ACI/ASI/XPI/IM 干扰，与降雨解耦
   const uplinkInterferenceLoss = uplinkCT - uplinkTotalCT;
@@ -1483,6 +1490,7 @@ function performCalculations(satParams, inputs) {
   results.satellitePSDResult = satellitePSD.toFixed(3 + FX);
   results.SFDsResult = SFDs.toFixed(2 + FX);
   results.satelliteGTResult = G_Ts.toFixed(2 + FX); // 卫星接收 G/T (dB/K)，上行 C/T 转换用
+  results.satSunGtLossResult = satSunGtLoss.toFixed(2 + FX); // 星侧太阳侵入 G/T 劣化 (dB)，恒出（关闭 '0.00'）
   results.BOiResult = BOi;
   results.BOoResult = BOo;
   results.antennaGainResult = antennaGain.toFixed(2 + FX);

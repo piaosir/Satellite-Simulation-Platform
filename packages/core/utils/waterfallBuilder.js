@@ -161,6 +161,7 @@ const WF_DICT = {
   '地球站 EIRP': 'Earth Station EIRP',
   '到达卫星载波电平 C': 'Carrier Level at Satellite C',
   '卫星 G/T': 'Satellite G/T',
+  '星侧太阳侵入 G/T 劣化': 'Satellite-Side Sun Intrusion G/T Degradation',
   '上行 C/T': 'Uplink C/T',
   '−玻尔兹曼常数 k': '−Boltzmann Constant k',
   '上行 C/N₀': 'Uplink C/N₀',
@@ -900,7 +901,10 @@ function createBuilder(ctx) {
     // 上行：沿功率链得到到达卫星热噪声 C/N，再扣除上行干扰损失 → 引擎实际上行 C/N
     const cUp = num('stationEIRPResult') - num('uplinkFSLResult') - num('uplinkAtmosphericAttenuationResult')
       - num('uplinkRainAttenuation') - num('uplinkCloudAttenuation') - num('uplinkMiscLossResult');
-    const upThermalCN = cUp + num('satelliteGTResult') + KB - noiseBW;
+    // 星侧太阳侵入（D11）：引擎从上行 C/T 与上行热噪 C/N 各减一次 satSunGtLoss（G_Ts 不动）——这里同步减，
+    // 否则「上行干扰损失 = 热噪 C/N − 实际 C/N」会把它双重计入。关闭（'0.00'）时 sunGtLoss 恒 0，逐位不变。
+    const sunGtLoss = num('satSunGtLossResult') > 0 ? num('satSunGtLossResult') : 0;
+    const upThermalCN = cUp + num('satelliteGTResult') - sunGtLoss + KB - noiseBW;
     const upIntfLoss = upThermalCN - num('uplinkCN');
     // 主导降雨场景：上行降雨占主导时，下行按晴空（下行雨衰与 G/T 劣化不参与）
     const uplinkRainDominant = num('uplinkPowerRatioResult') > num('downlinkPowerRatioResult');
@@ -931,6 +935,7 @@ function createBuilder(ctx) {
       C('sub', '到达卫星载波电平 C', null, 'dBW', 'up'),
       C('ref', '到达卫星通量密度', 'arrivalPFDAtSatelliteResult', 'dBW/m²', 'up'),
       C('gain', '卫星 G/T', 'satelliteGTResult', 'dB/K', 'up'),
+      ...(sunGtLoss > 0 ? [C('loss', '星侧太阳侵入 G/T 劣化', 'satSunGtLossResult', 'dB', 'up')] : []),
       C('chk', '上行 C/T', null, 'dBW/K', 'up'),
       C('gain', '−玻尔兹曼常数 k', KB, 'dB', 'up'),
       C('chk', '上行 C/N₀', null, 'dBHz', 'up'),
@@ -1166,7 +1171,10 @@ function createBuilder(ctx) {
     const paBackoffDb = num('paRecommendationdBResult') - num('selectedPowerResult');
     const cUp = num('stationEIRPResult') - num('uplinkFSLResult') - num('uplinkAtmosphericAttenuationResult')
       - num('uplinkRainAttenuation') - num('uplinkCloudAttenuation') - num('uplinkMiscLossResult');
-    const upThermalCN = cUp + num('satelliteGTResult') + KB - noiseBW;
+    // 星侧太阳侵入（D11）：引擎从上行 C/T 与上行热噪 C/N 各减一次 satSunGtLoss（G_Ts 不动）——这里同步减，
+    // 否则「上行干扰损失 = 热噪 C/N − 实际 C/N」会把它双重计入。关闭（'0.00'）时 sunGtLoss 恒 0，逐位不变。
+    const sunGtLoss = num('satSunGtLossResult') > 0 ? num('satSunGtLossResult') : 0;
+    const upThermalCN = cUp + num('satelliteGTResult') - sunGtLoss + KB - noiseBW;
     const upIntfLoss = upThermalCN - num('uplinkCN');
     const uplinkRainDominant = num('uplinkPowerRatioResult') > num('downlinkPowerRatioResult');
     const dnRainEff = uplinkRainDominant ? 0 : num('downlinkRainAttenuationResult');
@@ -1196,6 +1204,7 @@ function createBuilder(ctx) {
       C('sub', '到达卫星载波电平 C', null, 'dBW', 'up'),
       C('ref', '到达卫星通量密度', 'arrivalPFDAtSatelliteResult', 'dBW/m²', 'up'),
       C('gain', '卫星 G/T', 'satelliteGTResult', 'dB/K', 'up'),
+      ...(sunGtLoss > 0 ? [C('loss', '星侧太阳侵入 G/T 劣化', 'satSunGtLossResult', 'dB', 'up')] : []),
       C('chk', '上行 C/T', null, 'dBW/K', 'up'),
       C('gain', '−玻尔兹曼常数 k', KB, 'dB', 'up'),
       C('chk', '上行 C/N₀', null, 'dBHz', 'up'),
@@ -1452,7 +1461,10 @@ function createBuilder(ctx) {
     const paBackoffDb = num('paRecommendationdBResult') - num('selectedPowerResult');
     const cUp = num('stationEIRPResult') - num('uplinkFSLResult') - num('uplinkAtmosphericAttenuationResult')
       - num('uplinkRainAttenuation') - num('uplinkCloudAttenuation') - num('uplinkMiscLossResult');
-    const upThermalCN = cUp + num('satelliteGTResult') + KB - noiseBW;
+    // 星侧太阳侵入（D11）：引擎从上行 C/T 与上行热噪 C/N 各减一次 satSunGtLoss（G_Ts 不动）——这里同步减，
+    // 否则「上行干扰损失 = 热噪 C/N − 实际 C/N」会把它双重计入。关闭（'0.00'）时 sunGtLoss 恒 0，逐位不变。
+    const sunGtLoss = num('satSunGtLossResult') > 0 ? num('satSunGtLossResult') : 0;
+    const upThermalCN = cUp + num('satelliteGTResult') - sunGtLoss + KB - noiseBW;
     const upIntfLoss = upThermalCN - num('uplinkCN');
     segs.push(b._cascadeSingleSeg('链路预算级联（再生式上行）', [
       C('base', '功放建议功率', 'paRecommendationdBResult', 'dBW', 'up'),
@@ -1468,6 +1480,7 @@ function createBuilder(ctx) {
       C('sub', '到达卫星载波电平 C', null, 'dBW', 'up'),
       C('ref', '到达卫星通量密度', 'arrivalPFDAtSatelliteResult', 'dBW/m²', 'up'),
       C('gain', '卫星 G/T', 'satelliteGTResult', 'dB/K', 'up'),
+      ...(sunGtLoss > 0 ? [C('loss', '星侧太阳侵入 G/T 劣化', 'satSunGtLossResult', 'dB', 'up')] : []),
       C('chk', '上行 C/T', null, 'dBW/K', 'up'),
       C('gain', '−玻尔兹曼常数 k', KB, 'dB', 'up'),
       C('chk', '上行 C/N₀', null, 'dBHz', 'up'),

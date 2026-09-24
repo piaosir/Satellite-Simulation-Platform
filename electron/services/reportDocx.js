@@ -38,6 +38,11 @@ function tocItems(model) {
   }
   items.push({ n: '3', t: L.refs, sub: true })
   if (model.hasSla) items.push({ n: '4', t: L.sla, sub: true })
+  const lay = layoutOf(model)
+  if (lay.length) {
+    items.push({ n: '5', t: L.layout, sub: true })
+    if (lay.length > 1) lay.forEach((d, i) => items.push({ n: '5.' + (i + 1), t: d.title, sub: true }))   // 与 1.n / 2.n 同级（同 PDF 目录）
+  }
   items.push({ t: L.detail })
   for (const s of secs) {
     if (multi) items.push({ n: '', t: s.title, sub: true })
@@ -139,7 +144,50 @@ function masterTailSection(model) {
     const sp = model.slaParams || []
     if (sp.length) children.push(P(L.slaParams + '　' + sp.map((x) => `${x.label} ${x.value}${x.unit ? ' ' + x.unit : ''}`).join('　·　'), 'RptNote'))
   }
+  children.push(...layoutChapter(model))
   return { properties: sectPage(false), headers: { default: logoHeader((model.doc || {}).logo) }, footers: { default: pageFooter() }, children }
+}
+
+// —— 第 5 章「卫星本体与天线布局」（二期契约 D14–D16；排版计划由渲染端 lbReport.bodyLayoutDoc 定死）——
+// 章号固定 5（没有 SLA 时正文就是 1、2、3、5，与目录一致——章号本就允许跳号）；另起一页（图大、主题与前几章无关）。
+// 多星逐星一个 5.n 小节（第二颗起各自另起一页）。表号接全文连续号；图号全局连续（图 1、图 2…，D15）——
+// 详情章的图是「图 <链路号>-i」，二者格式不同，#5 链路的「图 5-1」不会与本章撞号。
+// 授权（D16）：redistributable=false 的星不出图（渲染端组块时已丢，这里再兜一道），数字表照出。
+function layoutOf(model) {
+  if (!model || !model.hasLayout || !Array.isArray(model.layoutDoc)) return []
+  return model.layoutDoc.filter((d) => d && (d.figure || d.mass || d.mount))
+}
+function layoutChapter(model) {
+  const lay = layoutOf(model)
+  if (!lay.length) return []
+  const L = model.t || {}
+  const sats = (model.bodyLayout && model.bodyLayout.sats) || []
+  const multi = lay.length > 1
+  const out = [P('5　' + L.layout, 'RptH2', { pageBreakBefore: true })]
+  // 纵向版心宽 ≈ 605 px；四宫格是正方，高度也钉在 560 px（≈ 148 mm），给图题与下一张表题留出同页的余地
+  const maxW = contentPx(false), maxH = 560
+  lay.forEach((d, i) => {
+    if (multi) out.push(P('5.' + (i + 1) + '　' + d.title, 'RptH3', i > 0 ? { pageBreakBefore: true } : undefined))
+    const s = sats[d.sat] || {}
+    const v = s.views
+    if (d.figure && v && v.dataUrl && s.redistributable !== false) {
+      out.push(...figureParagraphs(v.dataUrl, capFigureNo(model, nextFigureNo(model), d.figure.caption), maxW, maxH))
+    }
+    if (d.mass) {
+      out.push(P(capTable(model, nextTableNo(model), 0, 1, d.mass.title), 'RptCaption'))
+      // 质量特性表紧跟大图，放不下就续页；分组行跟住它下面那行（不落在页脚），并成整行一格（同 PDF 的 colspan）
+      out.push(docTable(d.mass.head, d.mass.rows, { widths: d.mass.widths, align: d.mass.align, keyRows: d.mass.keyRows, keepRows: d.mass.keyRows, spanKeyRows: true }))
+    }
+    if (d.mount && d.mount.chunks && d.mount.chunks.length) {
+      const no = nextTableNo(model)     // 续表共用一个表号（表 n-1 / 表 n-2 …），同「逐参数对照」
+      d.mount.chunks.forEach((ck, ci) => {
+        out.push(P(capTable(model, no, ci, d.mount.chunks.length, d.mount.title), 'RptCaption'))
+        // 挂点表不长，整张不跨页（同 PDF 的 .rp-keep）；分组行并成整行一格
+        out.push(docTable(ck.head, ck.rows, { widths: ck.widths, align: ck.align, keyRows: ck.keyRows, keepTogether: true, spanKeyRows: true, widthPct: ck.widthPct < 100 ? ck.widthPct : undefined }))
+      })
+    }
+  })
+  return out
 }
 
 // 逐链路详情（横向）：输入参数 → 级联主表 → 图 → 参考段各表
@@ -244,9 +292,16 @@ function capFigure(model, linkNo, i, title) {
   const en = model.lang === 'en'
   return en ? `Figure ${linkNo}-${i + 1}  ${title}` : `${(model.t || {}).figure || '图'} ${linkNo}-${i + 1}　${title}`
 }
+// 总报告部分的图：全局连续号（图 1、图 2…；D15），与表号一样一张图取一次号
+const nextFigureNo = (model) => { model.__figNo = (model.__figNo || 0) + 1; return model.__figNo }
+function capFigureNo(model, no, title) {
+  const en = model.lang === 'en'
+  return en ? `Figure ${no}  ${title}` : `${(model.t || {}).figure || '图'} ${no}　${title}`
+}
 
 async function buildReportDocx(model) {
   model.__tblNo = 0     // 表号从头数（同一份模型可能被反复渲染）
+  model.__figNo = 0     // 总报告部分的图号同理
   const doc = new Document({
     creator: (model.doc && model.doc.org) || '',
     title: (model.doc && model.doc.title) || '',
